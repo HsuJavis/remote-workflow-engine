@@ -50,7 +50,11 @@ export interface ExpectedGraph {
 
 export type DeriveResult =
   | { ok: true; graph: ExpectedGraph }
-  | { ok: false; rule: 'AGENT_BEFORE_PHASE' | 'UNDECIDABLE_SHAPE'; line: number; label: string | null; message: string };
+  // v26 (M-5 send-back repair): `'UNDECIDABLE_SHAPE'` deleted from this union — it had no producer
+  // anywhere in this function (or anywhere else); ADR-039's narrowing cases are already refused via
+  // the existing `SCAN_VIOLATION` (workflow-catalog.ts, from `scanAgentCalls`'s own violations),
+  // a step BEFORE this function ever runs. See errors.ts's matching deletion for the full reasoning.
+  | { ok: false; rule: 'AGENT_BEFORE_PHASE'; line: number; label: string | null; message: string };
 
 type ScanCall = AgentCallScan['calls'][number];
 
@@ -63,18 +67,30 @@ function toolsFor(allowedTools: ScanCall['allowedTools']): string[] | 'default' 
   return allowedTools === 'absent' || allowedTools === undefined ? 'default' : [...allowedTools].sort();
 }
 
-/** `deriveExpectedGraph(nodes, scan) → {ok:true; graph} | {ok:false; rule; line; label; message}` —
- *  TOTAL, never throws for any input (a dashboard read path must not 500; a registration path must
- *  answer with a code). Rules L1/L2/S1–S4/T1/E1 (ARCH-113), adopted verbatim:
- *  (L1) one lane per `phase` node, in source order; a dynamic (runtime-computed) title is `null`,
- *  matched by POSITION, never by the truncated regex match. (L2) an `agent()` before the first
- *  `phase()` refuses `AGENT_BEFORE_PHASE`. (S1) a sequential (ungrouped) `agent()` → one `single`
- *  slot. (S2) `parallel([...])` members → one `parallel` slot. (S3) both arms of one ternary/
- *  if-else → one `alt` slot. (S4) `kind:'workflow'` nodes are TRANSPARENT — no slot, and a
- *  `parallel()` of `workflow()` calls yields no slot at all. (T1) `tools[label]` = the literal
- *  `allowedTools` (sorted) or `'default'`. (E1) one edge between every two CONSECUTIVE slots
- *  (by creation order), across lane boundaries too. */
-export function deriveExpectedGraph(nodes: SkeletonNode[], scan: AgentCallScan): DeriveResult {
+/** `deriveExpectedGraph(nodes, scan, contract?) → {ok:true; graph} | {ok:false; rule; line; label;
+ *  message}` — TOTAL, never throws for any input (a dashboard read path must not 500; a
+ *  registration path must answer with a code). Rules L1/L2/S1–S4/T1/E1 (ARCH-113), adopted
+ *  verbatim: (L1) one lane per `phase` node, in source order; a dynamic (runtime-computed) title is
+ *  `null`, matched by POSITION, never by the truncated regex match. (L2) an `agent()` before the
+ *  first `phase()` refuses `AGENT_BEFORE_PHASE` — UNLESS `contract:'v1'` (below). (S1) a sequential
+ *  (ungrouped) `agent()` → one `single` slot. (S2) `parallel([...])` members → one `parallel` slot.
+ *  (S3) both arms of one ternary/if-else → one `alt` slot. (S4) `kind:'workflow'` nodes are
+ *  TRANSPARENT — no slot, and a `parallel()` of `workflow()` calls yields no slot at all. (T1)
+ *  `tools[label]` = the literal `allowedTools` (sorted) or `'default'`. (E1) one edge between every
+ *  two CONSECUTIVE slots (by creation order), across lane boundaries too.
+ *
+ *  `contract` (v26 M-3 send-back repair, INV-V26-3, ARCH-113 "one derivation, two consumers"):
+ *  `'v2'` (default) is the REGISTRATION gate's contract — L2 refuses a phase-less script, same as
+ *  always. `'v1'` is the READ path's own permissive half of DES-174's stated split (server.ts's DAG
+ *  layout, for a pre-v26 script L2 would refuse at registration but which is perfectly legal to run
+ *  and to draw, REQ-124): every `agent()` dispatched before the first REAL `phase()` lands in ONE
+ *  lazily-created implicit lane (title `null`, never `dynamic`) instead of refusing — replaces the
+ *  retired `v1FallbackGraph`, which built that same implicit lane from `scan.calls` directly and
+ *  NEVER read `call.group`, so a v1 script's `parallel([a,b,c])` rendered three CHAINED `single`
+ *  slots instead of one `parallel` slot. `contract:'v1'` reuses this function's own S1–S4/T1/E1
+ *  logic unchanged past the lane-selection point, so `call.group` is honoured exactly as it is for
+ *  a `'v2'` script — one derivation, no second shape-decider. */
+export function deriveExpectedGraph(nodes: SkeletonNode[], scan: AgentCallScan, contract: 'v1' | 'v2' = 'v2'): DeriveResult {
   const safeNodes: SkeletonNode[] = Array.isArray(nodes) ? nodes : [];
   const safeCalls: ScanCall[] = Array.isArray(scan?.calls) ? scan.calls : [];
 
@@ -110,15 +126,23 @@ export function deriveExpectedGraph(nodes: SkeletonNode[], scan: AgentCallScan):
     scanPtr++;
 
     if (currentLaneIndex === undefined) {
-      // L2: an agent() before the first phase() — the layout consumer treats this same negative arm
-      // as "v1-contract script" (DES-174's own boundary); this function always returns the refusal.
-      return {
-        ok: false,
-        rule: 'AGENT_BEFORE_PHASE',
-        line: call.line,
-        label: call.label || null,
-        message: 'every agent must be dispatched inside a phase',
-      };
+      if (contract === 'v1') {
+        // v1-contract read path (M-3 repair): lazily open the ONE implicit lane every pre-phase
+        // agent() lands in — created here, on first need, rather than unconditionally up front, so
+        // a script that DOES open with a real phase() still gets lane 0 from L1 normally.
+        lanes.push({ index: lanes.length, title: null, dynamic: false, slots: [] });
+        currentLaneIndex = lanes.length - 1;
+      } else {
+        // L2: an agent() before the first phase() — the layout consumer treats this same negative
+        // arm as "v1-contract script" (DES-174's own boundary) and re-derives with `contract:'v1'`.
+        return {
+          ok: false,
+          rule: 'AGENT_BEFORE_PHASE',
+          line: call.line,
+          label: call.label || null,
+          message: 'every agent must be dispatched inside a phase',
+        };
+      }
     }
 
     const group = call.group;
@@ -162,32 +186,3 @@ export function deriveExpectedGraph(nodes: SkeletonNode[], scan: AgentCallScan):
   return { ok: true, graph: { lanes, slots, edges } };
 }
 
-/** v26 integration (DES-176's own boundary: "at layout the same negative arm means 'v1-contract
- *  script' and the layout falls back"): the predicted overlay for a script `deriveExpectedGraph`
- *  REFUSES. At registration a refusal is an error code (rule L2 — under the v2 contract every
- *  agent must be dispatched inside a phase); at LAYOUT the very same script is simply a legal
- *  pre-v26 workflow, and REQ-124 requires the dashboard to keep rendering it exactly as it did.
- *
- *  Collapsing a refusal to an empty overlay — which is what the dag route did — deleted every
- *  predicted/inert cell from every v1-contract run's graph, i.e. from every workflow on the owner's
- *  box that has no `phase()` calls. This rebuilds the pre-v26 shape from the same two scans: ONE
- *  implicit lane (title `null`, never `dynamic`, so the layout raises no warning) holding one
- *  `single` slot per scanned agent call, in source order, with the same edge chain E1 builds.
- *  Never throws, for the same reason `deriveExpectedGraph` never does. */
-export function v1FallbackGraph(nodes: SkeletonNode[], scan: AgentCallScan): ExpectedGraph {
-  const safeCalls: ScanCall[] = Array.isArray(scan?.calls) ? scan.calls : [];
-  const slots: ExpectedSlot[] = safeCalls.map((call, i) => ({
-    index: i,
-    lane: 0,
-    labels: [call.label],
-    kind: 'single' as const,
-    tools: { [call.label]: toolsFor(call.allowedTools) },
-  }));
-  const edges: ExpectedEdge[] = slots.slice(1).map((s) => ({ from: s.index - 1, to: s.index }));
-  if (slots.length === 0) return { lanes: [], slots: [], edges: [] };
-  return {
-    lanes: [{ index: 0, title: null, dynamic: false, slots: slots.map((s) => s.index) }],
-    slots,
-    edges,
-  };
-}

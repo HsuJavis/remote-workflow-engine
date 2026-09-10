@@ -1,10 +1,861 @@
 ---
 stage: review
-status: sent-back
+status: passed
 ---
 # 07 Review & Retro — Gate 8
 
-## v24 GATE 8 REVIEW (2026-09-05, CURRENT / AUTHORITATIVE — **SEND BACK**, `send_back = ["impl","validation"]`, 3 HIGH)
+## v26 GATE 8 RE-REVIEW #1 (2026-09-11, CURRENT / AUTHORITATIVE — **CLOSE**, `send_back = []`, 0 HIGH)
+
+> Re-review after the workflow's ONE automatic send-back re-run of `["impl","architecture"]`.
+> **Scope discipline per the dispatch: the previously-blocking items only** — 4 HIGH (H-1..H-4) and
+> 7 MID (M-1..M-7) routed to `impl`, and 2 MID (A-1, A-2) routed to `architecture`. The full review
+> scope is NOT re-opened; every other section below is a re-confirmation of a mechanical check, not a
+> fresh audit.
+> Tree at re-review: `14b8861` + an **uncommitted working tree** (35 files modified/untracked — the
+> two repair halves, see §7 hygiene). Both repair halves are recorded in `journal.md`
+> (2026-09-11 impl half, 2026-09-11 architecture half) and as `- **amended (2026-09-11, Gate 8
+> send-back repair, …)**` bullets on the existing IMPL/ARCH/ADR items — **zero new ARCH/ADR IDs**.
+> The two pre-run architecture-expert reports under `.panel/review/` are the ORIGINAL pass's
+> (adversarial 11 findings, quality-dimensions 16) — **consolidated, not re-spawned**, per the
+> dispatch. Every claim below was re-verified by this reviewer at `file:line`; nothing was taken
+> from a repair note.
+>
+> **Verdict: `send_back = []` — the iteration closes.** 13 of 13 blocking findings are closed on
+> disk. One **residual** (not a re-opened finding — a NEW interaction the architecture panel found
+> AFTER the impl half had already landed, and which that half explicitly routed forward) is recorded
+> as **MID tech debt with its one-line seam and its falsifying test**, per §2's routing rule. It is
+> not blocking: the client-visible surface `ARCH-111`'s api clause names (`run_result.meta.unmappedMessages`)
+> **is** satisfied end-to-end on the terminal path, proven by a real-facade integration test.
+>
+> **`arch_consistent: NO`** — 0 HIGH, 2 MID, 6 carried LOW, **all recorded debt**. This is the same
+> disposition the ledger's own v23 RE-REVIEW #2 closed on ("NOT consistent … all recorded debt");
+> the residual is not downgraded to LOW to make the flag come out true.
+
+### §0 Gap tally
+
+**HIGH 0 · MID 2 · LOW 49.**
+
+| Sev | Count | Composition |
+|-----|-------|-------------|
+| HIGH | 0 | H-1..H-4 all closed and re-verified — see §2 |
+| MID | 2 | **R-1** (M-2 residual: `foldUsage` still skips the failed-call `unmapped` column) + the pre-v26 **IMPL-082** TDD trace gap (carried unchanged) |
+| LOW | 49 | 23 trace gaps (21 漂移 + 2 TASK 未實作) · 10 `solid_check` unclaimed files · 7 `dashboard_check` (6 checker false positives + 1 offline fallback) · 6 carried panel LOWs (D-1..D-5, D-8 — **D-6 and D-7 closed this pass**) · 3 ledger/tooling hygiene (§7) |
+
+---
+
+### §1 Traceability consistency — checked, clean
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` → **1492 items / 24 gaps** (was 1486 / 24).
+The gap **set is byte-identical** to the previous pass's — same 21 漂移 IDs, same 2 未實作 TASKs,
+same 1 TDD — enumerated by re-running `analyze()` directly, not read off a summary. **0 new gaps
+while the item count grew by 6.**
+
+- **0 斷鏈, 0 孤兒, 0 未實作 REQ, 0 未驗證 REQ, 0 未真實驗證 REQ.** The Gate 7.5 mock hard-rule
+  still holds: every REQ-121..130 carries a `real: true` green VAL.
+- **Trend: flat-at-the-floor.** Gate 5: 1413/65 → round 7: 1485/24 → first Gate 8: 1486/24 → now
+  1492/24. Two repair halves added six work items and no gap. No 趨勢-tab finding.
+- **doc↔code iteration drift: none unrecorded.** Both repair halves deliberately did NOT bump `iter:`
+  (both journal entries state the reason visibly rather than silently). Verified independently:
+  `.sdlc/trace.py`'s drift rule compares `iter:` only between a `build`/`verify` item and a
+  **design**-stage parent, and `ARCH`/`ADR` are not design-stage — so the architecture amendments
+  cannot move the gap count in either direction. Confirmed empirically by the identical gap set.
+- **D-8 stands, unchanged (LOW debt):** `src/sandbox/host.ts` still appears on **no** v26 IMPL
+  `files:` line — swept mechanically over `06-impl-log.md` lines 3130-3960; the v26 `files:` union
+  contains `src/sandbox/guards.ts` but not `host.ts`. Code present and correct; traceability row
+  missing. Fix at the next `06-impl-log.md` touch.
+
+---
+
+### §2 Architecture consistency — the 13 blocking findings, re-verified on disk
+
+**Routing rule (unchanged from the first pass, applied mechanically):** blocking = (a) code violates
+a declared `INV-V26-*` / `ARCH-*` **api** clause, or (b) the architecture body contradicts an owner
+ruling already recorded in this ledger. Recorded debt = the code is right and honest, no external
+reader is misled on a surface an api clause names, and it is not a repeat miss.
+
+#### The 4 HIGH — all CLOSED
+
+| # | What it was | Re-verified closed at | Evidence this reviewer ran |
+|---|---|---|---|
+| **H-1** | `resolveEffortApplied` was a FOURTH effort table; direct-fetch never read `PROVIDER_CAPS` | `src/gateway/client.ts:488` | `grep -rn resolveEffortApplied src/` now returns **one hit — a comment naming it "retired"** (`:486`). The direct-fetch `invoke()` calls the SAME `wireEffort(target.provider, req.caps ?? UNKNOWN_CAPS, req.opts.effort)` the SDK transport uses; `client.ts:9` really imports `PROVIDER_CAPS` (the false comment is gone, the import is real); `caps?: Caps` is now DECLARED on `LiteLLMGatewayClient.invoke` (`:475`), so structural typing can no longer drop it in silence; and the openrouter direct branch spreads `...effortBodyFields(applied)` (`:334`) like the anthropic (`:302`) and proxy (`:434`) branches. `wireEffort`'s own docblock (`:61-64`) now states the boundary the invariant asks for — one `PROVIDER_CAPS` reader, `effortBodyFields` only PROJECTS. **INV-V26-2 / ADR-045 satisfied.** |
+| **H-2** | direct-fetch provider errors never ended the attempt: no `retryable:false`, no `detail`, no status | `src/gateway/client.ts:252-259`, `:533` | `terminalHttpFailure()` sets `detail: \`${res.status} ${res.statusText}\`` on **every** HTTP failure and `retryable:false` on 401/403/404 — the same classification the SDK client's `TERMINAL_ERROR_KINDS` uses. The retry loop gained the terminal break `if (!last.ok && last.retryable === false) break;` (`:533`), the line the SDK client already had. The missing-key terminals now carry `detail` too (`:297`, `:325`, `:478`). **ARCH-111 api / ADR-040 satisfied.** New test: `tests/integration/direct-fetch-terminal-error-detail.test.ts`. |
+| **H-3** | `detail` capped BEFORE redact; `AgentRecord.detail` did not exist; sweep had no case | `src/agent-executor.ts:397-402`, `src/types.ts:254`, `tests/integration/redact-sweep.test.ts:365-409` | All three halves closed. (i) **Order corrected**: `capDetail` (`agent-executor.ts:43`) now runs at the persist site AFTER `redact()` — the SDK client's build-time `capErrorDetail` is gone (`claude-agent-sdk-client.ts:792-794` records the reason). (ii) **Field exists**: `awk '/export interface AgentRecord/,/^}/' src/types.ts \| grep detail` now hits `:254`, written on the failed branch at `agent-executor.ts:414`. (iii) **Sweep grew sink (7)** with the case that actually falsifies the order — *a secret STRADDLING the 1024-byte cap boundary* — plus the 64-byte unmapped-subtype lock. **INV-V26-5 satisfied.** |
+| **H-4** | `catalogFetchedAt` hardcoded `null`; `models_list` bypassed the pinned snapshot | `src/call-tool.ts:277-279`, `src/server.ts:381-383` | Both surfaces now go through `ModelBook.snapshot()` (TTL'd, single-flight) and stamp each row with the snapshot's real `fetchedAt` via `enrichModelEntry(e, snapshot.fetchedAt)`. `grep -rn catalogFetchedAt src/` no longer contains an unconditional `null`. New test `tests/integration/models-list-catalog-fetched-at.test.ts` pins BOTH halves: two calls inside the TTL fire **one** upstream fetch and report the same non-null stamp, and `GET /api/models` reads the same snapshot. **ARCH-116 satisfied.** *Shape note, adjudicated by the architecture half rather than by code:* the stamp is per-ROW, not the top-level wrapper ARCH-116's api originally said — wrapping a bare array would be a breaking MCP shape change to save ~24 B/row; the api line was amended to what shipped (`02-architecture.md:2823(b)`), so the record and the wire now agree. |
+
+#### The 7 MID routed to `impl` — all CLOSED
+
+- **M-1** (silent usage projection) — `numField(v, name, gaps)` (`src/gateway/client.ts:270-273`) names every dropped `input`/`output` field as `usage.<name>` on all four direct-fetch arms (`:313`, `:345`, `:369`, `:445`), and the SDK client pushes `'result.usage'` when neither `usage` nor `modelUsage` is present (`claude-agent-sdk-client.ts:403`). Both feed the EXISTING `unmapped` → `meta.unmappedMessages` counter, which already has a dashboard reader (`dashboard-page.ts:495-502`) — so **INV-V26-6's "a NAMED counter that has a reader"** is met without minting a new column. The deliberate non-instrumentation of the *cache* columns is argued in the docblock (a counter that fires on every healthy call has no reader) — accepted. New test `tests/integration/usage-projection-gap.test.ts`.
+- **M-2** (failed branch dropped `unmapped`) — **CLOSED as filed**; see **R-1** below for the residual. `agent-executor.ts:419` writes the record field and `:436` the usage-event field, the same spread the `done` branch has. `tests/integration/failed-call-unmapped-meta.test.ts` (IT-162) proves the client-visible outcome end-to-end through a **real** `McpFacade` + `RunManager` + `InMemoryRunStore` + `AgentExecutor` (only the gateway faked): a terminally-failed call's `weird_subtype` reaches `run_result.meta.usage.unmappedMessages` with count 2.
+- **M-3** (`v1FallbackGraph` a second derivation) — deleted. `deriveExpectedGraph(nodes, scan, contract: 'v1' | 'v2' = 'v2')` (`src/skeleton-graph.ts:93`) is the ONE derivation; `server.ts:529-536` switches by contract instead of by function. `call.group` is now honoured on both contracts, so a v1 `parallel([a,b,c])` no longer renders as three chained slots. **INV-V26-3 restored**, and ARCH-113's api line was amended in the same round (`02-architecture.md:2794`) so signature and record agree. `tests/unit/skeleton-graph.test.ts` +99 lines.
+- **M-4** (DAG cell showed no money) — `LayoutCell` carries `tokens`/`costUSD`/`unpriced` (`src/dashboard.ts:252-254`), every `placeCell` site populates them (`:384`, `:396`, `:409`, `:437`), and the client renders the per-call line `… tok · $… (unpriced)` on agent cells (`src/dashboard-page.ts:583-591`). **ARCH-118's literal "and the dashboard agent detail" is now true.** Acceptance test `val-193-dag-fit-and-columns.test.ts` +26 lines.
+- **M-5** (`UNDECIDABLE_SHAPE` advertised with no producer) — deleted from all three declaration sites (`skeleton-graph.ts:53`, `errors.ts:68`, `tool-specs.ts:263`) **and** from `docs/AUTHORING.md:193`, which the first pass had not even listed. `tests/unit/skeleton-graph.test.ts:132-141` locks BOTH directions — the advertised set must not contain it, and it must not be type-assignable to `DeriveResult.rule`. **ARCH-119/121's catalog drift-lock converse is now true.**
+- **M-6** (IPC contract declared the pre-v26 bare number) — `src/ipc/protocol.ts:21` now declares `spent?: { usd: number; tokens: Tokens }`, matching `SandboxHostConfig.onBudgetSnapshot` and the child's `Spend` reader; the stale file-header prose about a "token total" is rewritten. `tests/unit/ipc-protocol.test.ts` +14 lines. **ARCH-118 api satisfied.**
+- **M-7** (guard's prose contradicted its own assertion) — `tests/unit/no-skeleton-surface.test.ts` says **SIX** at `:5`, `:28-29` and `:50`, cites ADR-048's amended Action, and the assertion `expect(ALLOWLIST.size).toBe(6)` (`:82`) plus the "a SEVENTH entry would still fail" case (`:78`) are untouched. Verified independently: `npx vitest run tests/unit/no-skeleton-surface.test.ts` is part of the green suite below.
+
+#### The 2 MID routed to `architecture` — both CLOSED
+
+- **A-1** (body published a refusal and a wire record the owner overruled) — closed by **amendment across ten sites**, all verified: ADR-038's **heading** now reads "an unpriced model is ADMITTED and charged `costUSD: 0` with `unpriced: true` (owner ruling 2026-09-08)" (`02-architecture.md:2880`) — the line the RTM and every cross-reference render, which the first pass had not listed; its `owner_decision` normalised to the contract's `answered(2026-09-08) —` form (`:2884`) with the retired option analysis kept as record inside the amendment bullet (`:2885`); ARCH-118's `api:` line corrected in four clauses (`:2843`); ARCH-117's openrouter arm corrected from `applied:true` to what VAL-186 measured (`:2833`); ARCH-116's provenance sentence rewritten (`:2823`). The logical view's `PU` branch is **relabelled, not deleted** — `PU -->|yes| NOTE["admitted · costUSD 0 · unpriced:true …"]` (`:2961-2972`) — and the reasoning is written down (`:3218`): deleting the unpriced case is how REQ-127's forbidden option (i)「不得默默採 (i)」gets adopted by nobody deciding. **This reviewer's independent stale-term sweep** over `02-architecture.md` for `PRICE_UNKNOWN` returns two hits, both *inside the amendment prose arguing why the term must not come back* (`:3220`, `:3247`) — none in a normative clause. `grep -rn PRICE_UNKNOWN src/` returns nothing.
+- **A-2** (ADR-048's Action authorised five allowlist members; six shipped) — closed by **argument, not by a mechanical count edit** (`02-architecture.md:3308`). The amended Action names `skeleton-graph.ts` AND `workflow-catalog.ts`, applies ADR-048's own S-2 criterion **to each by name** (`validateRegistration` is the call site that hands the refusal back to the principal who just submitted that very script), carries the security constraint forward verbatim (no read path from `workflow_describe`/dashboard/anonymous route; no prompt text, secret or literal argument in the `expected:` block), and leaves the `toBe(6)` pin and the seventh-entry case untouched so growth keeps costing an argument. **ADR-022's rule is honoured, not bypassed.**
+
+#### R-1 — MID, **recorded debt, NOT blocking** — the at-rest fold still cannot see the failed call's `unmapped` column
+
+*What is on disk.* `src/run-guard.ts:45` — `if (!data.tokens) continue;` runs **before** the
+`data.unmapped` accumulation at `:51-53`. The failed-branch usage event M-2 added
+(`src/agent-executor.ts:426-437`) carries `unmapped` but, by DES-180's deliberate "a failed call
+moves no counter", carries **no** `tokens`. So `foldUsage(events)` skips it, while
+`foldUsageFromRecords` (`src/run-manager.ts:245-249`) counts `r.unmapped` on records of **every**
+state — and `deriveAgentRecords` really does rebuild `unmapped` onto a failed record
+(`tests/unit/derive-agent-records.test.ts:73-84`). The two folds therefore disagree by construction.
+
+*Three ledger sentences are now false and must move with the one-line fix:* `src/types.ts:82`
+("THREE producers share this one shape, so 'what a run has spent' cannot drift between them"),
+`src/types.ts:248-250` ("carried on the record so the LIVE fold and the AT-REST fold reach the SAME
+`RunUsage.unmappedMessages`"), and `src/run-manager.ts:232-234` ("one arithmetic, two entry points,
+instead of two folds that silently disagreed on a whole column"). Also `06-impl-log.md:3190`'s M-2
+amendment says the field "was silently dropped here **only**" — false on disk.
+
+*Why it is debt and not a second send-back — the discriminating check this reviewer ran, not
+inherited.* `ARCH-111`'s api clause names one surface: `GatewayResult.unmapped` →
+`run_result.meta.unmappedMessages`. That surface reads `view.usage`
+(`src/mcp-facade.ts:645`) = `s?.usage ?? foldUsage(...)` (`src/run-store.ts:349`,
+`src/store/sqlite-run-store.ts:277`), and `run_result` only answers for a **terminal** run, whose
+snapshot `_transition` writes from `foldUsageFromRecords` (`src/run-manager.ts:1007`). **The named
+surface is satisfied**, proven end-to-end by IT-162 through a real facade. `foldUsage` is reached
+only (a) as the snapshot-less fallback — a restart-orphaned run read via `run_status`, where a live
+in-process run is served by `_mergeLive`'s `foldUsageFromRecords` anyway — and (b) at
+`run-manager.ts:958`, where **only `costUSD`/`tokens` are consumed** for `guard.setSpent`, so **no
+money or budget path is affected**. `INV-V26-6` governs defaults applied to an external payload, not
+a fold guard, so routing rule (a) does not fire. It is not a repeat miss: the `!data.tokens` guard is
+DES-180's deliberate decision, and M-2's repair added `unmapped` to that event **after** it — a new
+interaction, found by the adversarial panel during the architecture half and **routed forward by that
+half rather than hidden** (`journal.md`, "Routed out, so neither is lost between the halves").
+
+*The seam, so the debt is actionable rather than a wave:*
+1. `src/run-guard.ts:45` — move the `data.unmapped` loop **above** the `!data.tokens` guard; tokens
+   and cost stay guarded. One line.
+2. Correct the three code sentences above and `06-impl-log.md:3190`.
+3. `04-design.md` DES-180 — "a failed call moves no counter" needs an explicit carve-out for
+   `unmappedMessages` (the M-2 adjudication made failed-call chatter count; the design text was never
+   revisited).
+4. **Falsifying test** (extend IT-156 / `failed-call-unmapped-meta.test.ts`, do not add a file): a
+   failed usage event carrying `unmapped` and no `tokens`, asserting
+   `foldUsage(events).unmappedMessages` deep-equals
+   `foldUsageFromRecords(deriveAgentRecords(events)).unmappedMessages`. `derive-agent-records.test.ts`
+   has cases for the record derivation (`:73`, `:87`) but **no two-folds-agree assertion** — which is
+   exactly why the suite is green over this.
+
+#### Carried LOW debt (6) — re-verified unchanged, D-6 and D-7 CLOSED
+
+| # | Finding | Re-verified |
+|---|---|---|
+| D-1 | `PROVIDER_CAPS.effortDelivered` has ONE reader against ARCH-112's ≥2 criterion | Sole reader still `src/authoring-guide.ts:399-403`. Unchanged. |
+| D-2 | `RunGuard.budgetView()` has zero production callers | `src/run-guard.ts:236`; only callers `tests/unit/run-guard.test.ts:39-62`. Unchanged. |
+| D-3 | `session-options-builder.ts` is dead production code | `grep -rn session-options-builder src/` returns **no importer**. Unchanged. |
+| D-4 | `check-mermaid.ts` declares a third local `ExpectedGraph` `tsc` cannot cross-check | `src/check-mermaid.ts:15-32`. Still byte-compatible (M-5's `UNDECIDABLE_SHAPE` removal did not touch this shape). Unchanged — **but see §7 hygiene: its comment at `:12` still says "exactly-four-file allowlist", which ADR-048's amended Action made six.** |
+| D-5 | `dagBox` has no production caller; the shipped `viewBox` math is a hand-copy | `src/dashboard.ts:279` vs `src/dashboard-page.ts:516,534`. Unchanged. |
+| D-8 | ARCH-114's `src/sandbox/host.ts` change is on no v26 IMPL `files:` line | Re-swept mechanically. Unchanged. |
+| ~~D-6~~ | ~~`caps` answers `'unknown'` where ARCH-116 says `true`/`false`~~ | **CLOSED** — `02-architecture.md:2823(c)` amends the text to the honest code AND records the consumability consequence (`models_list` reports anthropic effort as undeclared) as chartered backlog with its own red test, rather than smuggling a static-table change into a documentation repair. |
+| ~~D-7~~ | ~~ARCH-110's `additionalProperties:false` note read as a TODO~~ | **CLOSED** — `02-architecture.md:2766` restates it as a made decision with the refusal-precedence reason. |
+
+---
+
+### §3 Dashboard QA — checked, clean (degraded: no browser tools)
+
+`sh .sdlc/trace` regenerated the dashboard after this review was written (6.7 MB single file,
+1492 items). `dashboard_check.py` (plugin 2.4.3): **0 high / 6 mid / 1 low** — the SAME 7 as the
+previous pass.
+
+**Playwright browser tools are NOT available in this session — degraded mode, stated not glossed.**
+Every static check was run in full and each mid was re-diagnosed against the source block.
+
+- **SoT `file:line` links: PASS** — every work item's target exists, in range, and is that item's
+  heading. No dead-end.
+- **Freshness: PASS** — regenerated after 07-review.md.
+- **The 6 mermaid "括號不平衡" mids remain checker FALSE POSITIVES, re-verified individually.** Five
+  are **erDiagram cardinality tokens** (`||--o{` / `}o--||`), which `check_balance()`'s naive `{`
+  stack cannot model — including the v26 block, whose flag moved `:3079` → **`:3087`** purely from
+  the A-1 amendment's line shift (`02-architecture.md:3087-3088`:
+  `RUNS ||--o{ USAGE_EVENT : "journals"`). The sixth (`:2528`) is the sequenceDiagram whose
+  `workspace_pull({runId of U's run, path})` apostrophe opens a string in the checker's model.
+  **Disposition: no doc change**; tool debt against `dashboard_check.py` (strip erDiagram cardinality
+  tokens; do not treat `'` as a string delimiter in message text).
+- **1 low, real:** no mermaid offline fallback, because the project-local `.sdlc/trace.py`
+  (2026-08-01) predates the plugin version that emits one. Tool debt — §7.
+
+---
+
+### §4 Module boundaries (SOLID) & module build — checked, clean
+
+- `solid_check.py` → **PASS**: 58 modules, dependencies all as `02-architecture.md` declares.
+  **0 undeclared cross-module deps, 0 cycles, 0 deep-internal imports, 0 god-modules** (scanned
+  javascript×81, shell×3). The 10 lows are the same unclaimed pre-v26 files
+  (`harness-defaults.ts`, `self-update.ts`, `agent-semaphore.ts`, `mcp-probe.ts`,
+  `scan-agent-calls.ts`, `net-guard.ts`, `workspace-artifacts.ts`, `clock.ts`,
+  `agent-definitions.ts`, `owner-lookup.ts`) — carried debt, unchanged by either repair half.
+  Notably the H-1 repair **added** an edge (`gateway/client.ts` → `providers.ts`) and it is a
+  DECLARED one.
+- `module_check.py` → **dormant** (no ARCH item declares `build:`). Not a finding.
+
+---
+
+### §5 Owner-deferral ledger sweep (issue #15) — checked, clean
+
+`grep -rn "owner_decision" .sdlc/features/001-remote-workflow-engine` → **0 unanswered `pending`
+markers.** Reconciled mechanically on the metadata key, never on prose: every marker-form hit is
+either `answered(<date>) — …` (ADR-038 `:2884`, ADR-047 `:2948`, both normalised to the contract's
+form by the architecture half), the `DECIDED 2026-09-10 by the owner — …` form in `08-validation.md`
+(`:8671` VAL-186, `:8680` VAL-187 — a legal answered state; `trace.py` keys only on the `pending`
+prefix), or `- **owner_decision:** —` (no deferral). Every other hit in `journal.md`/`07-review.md`
+is narrative prose *about* markers, not a marker. `trace --check` reports **0 待業主決策**.
+
+**ADR hedging spot-check:** the 2026-09-11 architecture amendments were swept for decision-shaped
+hedging without the marker. The declined items in the architecture half (persisted last-good pricing,
+a `caps` code change, restoring `PRICE_UNKNOWN`, the cross-run cost index, money on the home cards,
+an engine-counters block, a `--check-config` reachability probe, the retention slice) are declined
+**as unchartered scope with a named seam**, not deferred to the owner — the correct disposition, and
+the journal says so explicitly. **No unmarked deferral found.** One item is routed OUT rather than
+decided and is recorded here so it is not lost: **REQ-124's "shared phase timeline" clause carries
+the same nested-lane drift ARCH-114 was amended for** — routed by the architecture half to
+**orchestrator / requirements** (an architecture repair must not silently rewrite another document's
+REQ). `requirements` is not a `send_back` key, so this section is its channel.
+
+---
+
+### §6 Validation & handover (Gate 7.5) — checked, clean, untouched
+
+- `trace.py`: **0 未真實驗證 (mock-only) and 0 未驗證** — every REQ-121..130 has a `real: true` green.
+- `08-validation.md` present (866 KB, Gate 7.5 rounds 1-7 + the round-7 out-of-closure fix pass).
+- `state.yaml layout.readme` = `README.md`, `layout.deploy` = `DEPLOY.md`, both at the product root,
+  both present, and **neither was touched by either repair half** (`git status` — not in the modified
+  set), so the previous pass's confirmation stands unchanged: step-by-step 淺白繁中 with ASCII
+  diagrams, current-state, history-free, one deduplicated `## 設定總表`, and DEPLOY.md leading with
+  the 一鍵部署 command Gate 7.5 actually ran. Not re-audited — out of re-review scope, and unchanged.
+
+**Special-file review (Task 4b):** **N/A this pass.** The only doc outside `.sdlc/` either half
+touched is `docs/AUTHORING.md` (one line — M-5's `UNDECIDABLE_SHAPE` row removed, verified consistent
+with the code deletion). **No `CLAUDE.md`, `AGENTS.md` or `SKILL.md` was touched** (`git status`
+confirms), so neither claude-md-improver nor skill-creator applies.
+
+**Regression evidence run by this reviewer, not inherited:**
+- `npx tsc --noEmit` → **clean**.
+- `npx vitest run` → **376 test files passed / 1 skipped; 2641 tests passed / 26 skipped; 0 failed**
+  (355 s). No test was weakened: the diffs are +99 `skeleton-graph`, +88 `redact-sweep`, +66
+  `gateway-effort`, +32 `derive-agent-records`, +27 `no-skeleton-surface`, +26 `val-193`, +14
+  `ipc-protocol`, and four **new** integration files (`direct-fetch-terminal-error-detail`,
+  `failed-call-unmapped-meta`, `models-list-catalog-fetched-at`, `usage-projection-gap`).
+
+---
+
+### §7 Ledger / tooling hygiene (3 LOW, recorded)
+
+1. **`dashboard_check.py` mermaid balance checker** — flags erDiagram cardinality tokens and treats
+   `'` as a string delimiter in sequence-message text. 6 false positives every run; teaches reviewers
+   to ignore the check. Tool debt (plugin), not a doc defect.
+2. **`.sdlc/trace.py` is the 2026-08-01 project-local copy** — predates the plugin version that emits
+   a mermaid offline fallback, and has no `待業主決策` gap type (the sweep in §5 was therefore done
+   by hand as well as by tool). Refresh from the plugin at the next tooling touch.
+3. **Two record-vs-record staleness items.** (a) `src/check-mermaid.ts:12` still describes ADR-022's
+   allowlist as "exactly-four-file", which ADR-048's amended Action made **six** — the comment is the
+   only place that number is now wrong, and it is the same defect class M-7 was filed for. (b) **The
+   working tree is uncommitted** — 35 files modified/untracked carrying both repair halves, and the
+   `- **amended (2026-09-11, …)**` IMPL bullets therefore cite no sha, unlike this ledger's own
+   convention (`IMPL-216/217 carry the sha they were committed under`, `c8cd686`). Recorded, not
+   fixed: committing another agent's working tree is outside the reviewer contract, and this repo's
+   CLAUDE.md is explicit about the hazard of touching a shared tree. **The orchestrator should land a
+   checkpoint commit.**
+
+---
+
+### §8 Conclusion
+
+**The iteration closes. `send_back = []`, `blocking_findings = []`.**
+
+All 13 blocking findings from the 2026-09-10 pass are closed on disk and re-verified at `file:line`
+by this reviewer: 4 HIGH and 7 MID in code, 2 MID by architecture amendment. `tsc` is clean, the full
+suite is green at 2641 passing with four new integration files and no weakened assertion, the trace
+gap set is byte-identical at 24 with 0 new, `solid_check` passes, `module_check` is dormant, every
+dashboard SoT link resolves, there are **0 unanswered `owner_decision: pending`**, and Gate 7.5's
+mock hard-rule still holds with 0 未真實驗證.
+
+**`arch_consistent: NO`, and the iteration closes anyway** — deliberately, per the routing rule and
+this ledger's own v23 precedent. What remains is **1 MID residual (R-1)** with a one-line seam, four
+named false sentences and a specified falsifying test; **1 MID carried pre-v26 TDD gap (IMPL-082)**;
+and **49 LOW**, every one enumerated above. Nothing left open touches money, a budget, a refusal, a
+security boundary, or a client-visible api clause. R-1 is explicitly NOT downgraded to LOW to make
+the consistency flag read true: two folds that disagree by construction, over a column three code
+comments swear cannot drift, is worth a MID even when its blast radius is a diagnostic counter on a
+fallback read path.
+
+**Routed out of Gate 8, so neither is lost:** R-1's four-part seam → the next `impl` touch (or a
+`/sdlc-fix` slice); **REQ-124's nested-lane clause → orchestrator / requirements** (§5).
+
+### §9 Retro
+
+**What went well.**
+- **Splitting the send-back into an impl half and an architecture half worked**, and worked because
+  each half declared its boundary in writing before touching anything. The architecture half's
+  "anti-collision honoured verbatim" note (ARCH-117's direct-fetch clause left alone because it was
+  H-1's *code* fix) is the reason the two halves did not undo each other — the exact failure this
+  ledger has hit before.
+- **The repairs went WIDER than the finding list where the finding list was under-specified, and said
+  so.** A-1 amended ADR-038's *heading* (not on the review's ten-site list, found by both panels);
+  M-5's repair swept `docs/AUTHORING.md`, which the review had missed. A repair agent that only does
+  the literal list ships a half-fix; both halves noticed and documented the overreach instead of
+  hiding it.
+- **`arch_consistent: NO` with `send_back: []` is a real disposition, not a fudge**, and having used
+  it once before (v23 RE-REVIEW #2) made it cheap to use correctly here.
+- **Amend-by-argument beat amend-by-count.** A-2 could have been closed by editing "5" to "6". ADR-022
+  exists precisely to stop that, and the amended Action adjudicates the sixth member by name against
+  S-2 — so the NEXT widening still costs an argument.
+
+**What to change.**
+- **A blocking finding must state its acceptance in terms of the client-visible outcome, not the code
+  edit.** M-2 said "the ok-branch spread is copy-pasteable verbatim" — so the repair pasted the
+  spread, and the sentence one line above it ("`foldUsage` can therefore never count…") stayed true
+  for the fallback read path. Had the finding said "assert `foldUsage` and `foldUsageFromRecords`
+  agree on a failed call", the repair would have closed it whole. **Write the falsifying test into
+  the finding.**
+- **Two folds over one shape want ONE property test, not two example tests.** Three code comments
+  assert the folds cannot drift and nothing asserts it executably. `derive-agent-records.test.ts`
+  even has the right fixture and stops one assertion short. This is the second v26 finding of the
+  "one rule, two implementations" class (H-1 was the first, over effort) — the class is worth a
+  standing check, not three more findings.
+- **A gate that ends with an uncommitted 35-file tree is one interrupted session from unrecoverable**,
+  and this repo has already lost a ledger that way. WIP-commit per half, and let the IMPL amendment
+  cite the sha — the convention `IMPL-216/217` already follow.
+- **`dashboard_check.py`'s mermaid balance check has now produced 6 false positives in two
+  consecutive reviews.** A check that is always wrong in the same way trains reviewers to skip it;
+  fix the checker or drop the rule.
+
+---
+
+
+## v26 GATE 8 REVIEW (2026-09-10, SUPERSEDED by the v26 GATE 8 RE-REVIEW #1 above — kept for history; was **SEND BACK**, `send_back = ["impl","architecture"]`, 4 HIGH; all 13 blocking findings closed and re-verified 2026-09-11)
+
+> First Gate 8 pass for **v26** (REQ-121..130: seed refusal, provider fail-fast, three provider paths,
+> run-DAG phase join, resolved provider on the terminal record, effort→OpenRouter + declared capability
+> columns, four-field tokens + per-model cost budget, LR swimlane contract, zoom+pan, guide gaps).
+> Tree: `14b8861` (master; working tree clean apart from `.panel/review/`).
+> Both architecture-expert groups were **pre-run by the workflow**
+> (`.panel/review/{adversarial,quality-dimensions}.md`, both against `14b8861`) — **consolidated here,
+> not re-spawned**, per the dispatch. Every blocking claim below was re-verified by this reviewer
+> against source at `file:line`; nothing was accepted from a panel summary or an IMPL note.
+>
+> **Routing rule used (stated once, applied mechanically):**
+> **Blocking =** (a) code violates a declared v26 `INV-V26-*` / `ARCH-*` **api** clause, **or**
+> (b) the architecture body contradicts an **owner ruling already recorded in this ledger**.
+> **Recorded debt =** architecture text merely predates what shipped, the code is right and honest,
+> no external reader is misled, and it is not a repeat miss.
+>
+> **Verdict: `send_back = ["impl","architecture"]`.**
+> - **impl (Gate 6)** — 4 HIGH + 7 MID code deviations, all re-verified on disk. The two lenses
+>   converge without negotiation on the two biggest (`H-1` one wire field / two writers, `H-2` one
+>   liveness rule / one transport) — where two independent lenses reach the same finding from
+>   opposite directions, the finding is structural, not stylistic.
+> - **architecture (Gate 2)** — 2 MID: the v26 section body still publishes a refusal and a wire
+>   record that **this ledger's own owner rulings overruled** (ADR-038 on 2026-09-08, VAL-186 on
+>   2026-09-10). Both Gate 4 design panels already flagged the ADR-038 contradiction
+>   (`.panel/design/adversarial.r1.md:124`, `.panel/design/quality-dimensions.r1.md:29,228`) and it
+>   was left; recording it as debt a second time is the mechanism by which it stays unfixed.
+>
+> **Validation, handover, traceability, module boundaries and the dashboard are otherwise clean:**
+> 0 未驗證 / 0 未真實驗證 / 0 斷鏈 / 0 孤兒, `solid_check` PASS, `module_check` dormant, every
+> dashboard SoT link resolves, DEPLOY.md leads with a 一鍵部署 command Gate 7.5 actually ran, and
+> **0 unanswered `owner_decision: pending`**.
+
+### §0 Gap tally (every finding in this review, so the sections below sum to it)
+
+**HIGH 4 · MID 9 · LOW 51.**
+
+| Sev | Count | Composition |
+|-----|-------|-------------|
+| HIGH | 4 | H-1..H-4 — architecture-consistency, code side, all blocking → `impl` |
+| MID | 9 | M-1..M-7 (code, blocking → `impl`) + A-1..A-2 (ledger contradiction, blocking → `architecture`) + 1 trace TDD gap (IMPL-082, recorded debt) |
+| LOW | 51 | 23 trace gaps (21 漂移 + 2 TASK 未實作) · 10 `solid_check` unclaimed files · 7 dashboard_check (6 checker false positives + 1 offline fallback) · 8 panel LOWs carried as debt · 3 tooling/ledger-hygiene items |
+
+---
+
+### §1 Traceability consistency
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` → **1486 items / 24 gaps**, regenerated at
+review time. `--check` exits 1 on those 24; every one is enumerated here, so Exit Gate #1 is met by
+record rather than by clearance.
+
+- **0 斷鏈 (broken links), 0 孤兒 (orphans)** — the chain REQ→ARCH→TASK→DES→UT/IT/E2E/VAL→IMPL is whole.
+- **0 未實作 REQ, 0 未驗證 REQ, 0 未真實驗證 REQ** — the Gate 7.5 mock hard-rule holds: every
+  REQ-121..130 carries a `real: true` green VAL. This is the bar the dispatch calls blocking, and it
+  passes.
+- **Trend: down.** Gate 5 measured 1413 items / 65 gaps; round 7 measured 1485 / 24; this pass reads
+  1486 / 24. Gaps fell 65 → 24 across the iteration while the item count grew — the direction a
+  healthy iteration should show. No 趨勢-tab finding.
+
+**The 24 gaps, all recorded as known tech debt:**
+
+| # | Type | IDs | Disposition |
+|---|------|-----|-------------|
+| 1–21 | 漂移 (low) | UT-010, IT-011, UT-058, UT-064, IT-057, UT-094, UT-095, DES-094, DES-088 ×2, DES-066 ×2, DES-099 ×2, DES-100, DES-064, DES-112, DES-157, DES-141, DES-149, DES-022 | Iteration-number lag markers, not content drift. The five v26 ones (DES-112/157/141/149/022) are the **deliberate** no-iter-bump amendments landed at `e8fb8a7`/`1f57f20`/`14b8861`: the design text was corrected to match what shipped, and the `iter:` was intentionally left so the marker stays visible. The other sixteen are pre-v26 and unchanged this iteration. |
+| 22–23 | 未實作 (low) | TASK-018, TASK-153 | Pre-v26 tasks with no IMPL row. Carried unchanged. |
+| 24 | TDD (mid) | IMPL-082 | Pre-v26 implementation with no test tracing it. Carried unchanged; not a v26 regression. |
+
+**doc↔code iteration drift:** none unrecorded. Every v26 IMPL (IMPL-197..219) traces a v26 DES, and
+the five design documents an IMPL now outruns were amended in this iteration's own doc commits.
+**One traceability hole, recorded as debt (not a gap trace can see):** `src/sandbox/host.ts` carries
+ARCH-114's load-bearing change — the synchronous `currentPhase()` read inside `case 'agent'` before
+the `Promise.resolve().then(handler)` deferral (`src/sandbox/host.ts:136-141`, config declared at
+`:63-71`) — and appears on **no** v26 IMPL entry's `files:` line. The code is present and correct;
+only its traceability row is missing. Fix at the next 06-impl-log touch.
+
+---
+
+### §2 Architecture consistency (consolidated from the 2 pre-run expert groups)
+
+**`arch_consistent: NO.** Two grouped experts ran and both returned `consistent: no`:
+
+| Group | File | Verdict | Findings |
+|---|---|---|---|
+| Adversarial (security × scalability × testability, Karpathy simplicity-first) | `.panel/review/adversarial.md` | not consistent | 11 — 2 HIGH, 3 MED, 6 LOW |
+| Quality dimensions (observability · replaceability · consumability · self-sustainability) | `.panel/review/quality-dimensions.md` | not consistent | 16 — 4 HIGH, 6 MED, 6 LOW |
+
+v26 is the first slice to declare an `INV-*` list, so all seven `INV-V26-1..7` were checked directly
+by both groups. **This reviewer re-verified every blocking finding on disk**; the confirmations are
+quoted per finding below. De-duplicated across the two reports, the picture is 4 HIGH + 8 MID
+blocking (the ninth MID in §0 is the pre-v26 IMPL-082 TDD gap, recorded debt — not a v26 finding),
+plus 8 LOW carried as debt.
+
+**Where the two lenses converge:** the security lens and the scalability lens reach `H-1` and `H-2`
+from opposite directions — "one wire field, two writers" and "one liveness rule, one transport".
+Convergence without negotiation is the signal that these are structural.
+
+#### HIGH — blocking, → `impl`
+
+**H-1 — `resolveEffortApplied` is a FOURTH effort table, and the direct-fetch transport never reads `PROVIDER_CAPS`.**
+*Violates* `INV-V26-2` ("`options.thinking` and `options.effort` are written only by `wireEffort`
+(SDK) / `effortBodyFields` (direct-fetch), **both reading `PROVIDER_CAPS`**"), `ADR-045` ("one effort
+table, and it is `PROVIDER_CAPS[p].effort`"), `ARCH-117` api.
+*Re-verified on disk:* `src/gateway/client.ts:41-45` hardcodes
+`{applied:true, param:'effort', restPath:['output_config','effort']}` for `anthropic` and a flat
+`{applied:false, reason:'no reasoning dial for this provider'}` for every other provider.
+`grep -n PROVIDER_CAPS src/gateway/client.ts` returns **one hit — a comment at `:66` claiming
+"`effortBodyFields` below … reads the same `PROVIDER_CAPS` table"**, which is false: the file imports
+nothing from `providers.ts`. The literal is duplicated byte-for-byte with `src/providers.ts:34`.
+Two further halves ride this: `LiteLLMGatewayClient.invoke` (`:419`) does not declare the `caps?: Caps`
+the `GatewayClient` interface gained at `:200` — `AgentExecutor` computes and passes it
+(`src/agent-executor.ts:656-657`) and structural typing drops it in silence; and the openrouter
+direct branch (`:290-297`) omits `...effortBodyFields(applied)` from its body entirely, where the
+anthropic (`:270`) and proxy (`:386`) branches include it.
+*Why it is HIGH:* ARCH-117's thesis is that effort is *provider profile × MODEL capability from the
+run's pin*; on this transport there is no capability term at all. The duplicate is **already divergent
+in message** — `wireEffort`'s openrouter arm returns VAL-186's specific reason, `resolveEffortApplied`
+returns the generic one, so a run's `effortApplied` says a different thing depending on which
+transport carried it. The deletion guard `tests/unit/no-retired-surface.test.ts` greps ten
+*identifiers* and passes, because this table's name is not on the list — exactly the case DES-173's own
+warning predicted ("a grep proves a NAME is gone, not that a BEHAVIOUR is").
+*Simplicity pushback, weighed and rejected:* the function predates v26 and direct-fetch is not the
+primary path — but ADR-045's own cost-benefit was that *three* tables is how "effort is a documented
+no-op" happened once. Shipping v26 with four is strictly worse than the state the ADR was written
+against, and the fix is deleting one function, not adding a mechanism.
+
+**H-2 — provider errors do not end the attempt on the direct-fetch transport: no `retryable:false`, no `detail`, no status, no counter.**
+*Violates* `ARCH-111` api ("the direct-fetch client sets the same `retryable:false` from its own
+401/403/404"; "`invoke()` gains `if (!last.ok && last.retryable === false) break;`"), `ADR-040`'s two
+stated consequences, `REQ-122`.
+*Re-verified on disk:* `grep -n retryable src/gateway/client.ts` returns **one hit — the type
+declaration at `:166`**. Nothing ever sets it. The retry loop at `:460-467` is a bare
+`for (let i=0;i<attempts;i++) { … if (last.ok) return last; }` with no terminal break; the SDK client
+has exactly that line at `src/gateway/claude-agent-sdk-client.ts:526`. Every `if (!res.ok)` arm —
+`:272` anthropic, `:297` openrouter, `:319` ollama, `:388` proxy — returns
+`{ok:false, provider, reason: res.status >= 500 ? 'unreachable' : 'terminal'}`, dropping `res.status`
+and the body: no `detail`, no `error:{kind,status,attempt}`, no counter, no comment naming the drop.
+The missing-key and unknown-alias terminals (`:265`, `:290`, `:422`) carry no `detail` either.
+*Why it is HIGH:* `gateway:"direct-fetch"` is live configuration — IMPL-209 fixed its proxied arm this
+same iteration. A revoked key burns `timeoutMs × (1 + retries)` per call while holding a `RunGuard`
+slot and a host `AgentSemaphore` permit; on a wide `parallel()` that is the "24 dead subprocesses"
+ARCH-111's own note computes. A 401 vs 403 vs 404 vs 400 are indistinguishable in the record —
+IMPL-209's own round-1 finding (a `400 … no healthy deployments for this model` that took a live proxy
+capture to diagnose) is the direct cost, and the fix landed on the *request* side without closing the
+*reporting* side.
+*Simplicity pushback, weighed and accepted-but-insufficient:* a second HTTP classifier would be
+machinery, and is not required — `retryable: res.status===401||res.status===403||res.status===404`
+plus `detail: \`${res.status} ${res.statusText}\`` is four literals on four lines, which is what
+ARCH-111's api already asked for.
+
+**H-3 — the error `detail` is CAPPED BEFORE it is REDACTED, the field the invariant names does not exist, and the sink sweep gained no case.**
+*Violates* `INV-V26-5` ("every new string persisted from a provider-authored stream
+(`AgentRecord.detail`, the unmapped subtype) is **redacted FIRST, then capped** (1024 B / 64 B), and
+appears in the REQ-083 sink sweep"), `ARCH-111` note ("redacted THEN capped … cutting before
+`redact()` can split a secret and defeat its value-exact match"), `DES-171`, and the v26
+data-architecture ER row `AGENT_RECORD { text detail … }` (`02-architecture.md:3100`).
+*Re-verified on disk, all three halves:*
+(i) **Order is wrong.** `src/gateway/claude-agent-sdk-client.ts:441-449` defines
+`MAX_ERROR_DETAIL_BYTES`/`capErrorDetail`; `:822` calls it on
+`[m.subtype, m.result ?? m.error].filter(Boolean).join(': ')` — provider-authored free text — at build
+time. `redact()` runs only later at the persist sink (`src/agent-executor.ts:203-216`, `:639-648`).
+A secret straddling byte 1024 is cut in half before `redact()` runs, and `redact()` is a value-EXACT
+substring match, so neither fragment matches and the leading fragment persists. **This repo already
+learned this rule at v21 Gate 8 (§R2 / R-G9)** and wrote it into `src/agent-executor.ts:22-26` for
+`prompt` — "cap after redact, never before". `detail` got the opposite treatment three files over.
+(ii) **The field does not exist.** `awk '/export interface AgentRecord/,/^}/' src/types.ts | grep detail`
+returns **nothing**. ARCH-111, DES-171 and INV-V26-5 all name `AgentRecord.detail?: string`;
+`src/agent-executor.ts:377-383` writes the failed record without it. The string survives only on the
+usage transcript event (`:391`), reachable only by pulling per-agent JSONL. `run_status.agents[]` —
+the structured surface a caller or a cold model reads — answers `state:'failed'` and nothing else,
+which is precisely the post-mortem question ARCH-115 says must be answerable "from the record alone".
+(iii) **The sweep did not grow.** `tests/integration/redact-sweep.test.ts` has seven cases (A, B, C,
+JournalEntry.value, AgentRecord field, appendPrompt override, harness descriptor.prompt) — **none for
+`detail` or the unmapped subtype**. INV-V26-5's third clause is unmet, so nothing in the suite can
+fail if the order is wrong.
+
+**H-4 — `models_list.catalogFetchedAt` is a hardcoded `null`, and `models_list` never touches the pinned snapshot.**
+*Violates* `ARCH-116` api ("`models_list` renders from the same snapshot and adds a top-level
+`catalogFetchedAt: string | null`") and its note ("one snapshot-level `catalogFetchedAt` already
+carries the only honest 'as of'").
+*Re-verified on disk:* `grep -rn catalogFetchedAt src/` returns exactly four hits — the field
+declaration (`src/models/model-catalog.ts:359`), the unconditional `catalogFetchedAt: null,`
+(`:436`), and the two places that **advertise it to clients as real provenance**
+(`src/tool-specs.ts:964`, `src/authoring-guide.ts:588`). No caller ever sets it. Separately
+`models_list` and `GET /api/models` call the raw builder rather than the book
+(`src/call-tool.ts:270`, `src/server.ts:376`).
+*Why it is HIGH:* the field is the **only** freshness signal on the catalog surface and it is
+structurally constant, so a reader cannot distinguish a live listing from a six-hour-stale one — the
+question ARCH-116 itself calls "load-bearing, not decoration". The second half compounds it: bypassing
+`ModelBook` also escapes the TTL and the single-flight, so a burst of `models_list` calls fires one
+full catalog fetch each — the cost ARCH-116 exists to bound.
+
+#### MID — blocking, → `impl`
+
+**M-1 — the gateway usage projections still default silently, with no named counter.**
+*Violates* `INV-V26-6` and `ADR-046`'s own mandated checklist line D-V26-projection, which
+**self-designates this as a Gate 8 finding**: "a bare `?? 0` / `?? ''` over such a payload is a Gate 8
+finding". Evidence: `src/gateway/client.ts:279-282` (anthropic), `:304-307` (openrouter — five `?? 0`
+over `data.usage`), `:326` (ollama); `src/gateway/claude-agent-sdk-client.ts:404` returns
+`ZERO_TOKENS` when neither `usage` nor `modelUsage` is present. None moves a counter. A provider that
+renames a usage key yields `tokens {0,0,0,0}` → `costUSD 0` → `unpriced:false` — a run reporting it
+spent nothing and a budget that can never bind, with nothing saying a projection dropped anything.
+That is the same failure shape IMPL-214 found through the price path, reached through the token path.
+
+**M-2 — `capture()`'s failed branch drops `result.unmapped`.**
+*Violates* `ADR-046`/`INV-V26-6` and `ARCH-111` (`GatewayResult.unmapped` → `run_result.meta.unmappedMessages`).
+The failure arm of `GatewayResult` declares `unmapped?: string[]` (`src/gateway/client.ts:170`) and
+`src/gateway/claude-agent-sdk-client.ts:807` really returns it, but `src/agent-executor.ts:376-392`
+writes neither the record field nor the usage-event field on the failed branch; the done branch does
+both (`:336`, `:366`). `foldUsage` (`src/run-guard.ts:30-56`) can therefore never count an unmapped
+subtype from a terminally-failed call — the call whose unmapped provider chatter is worth reading.
+The ok-branch spread is copy-pasteable verbatim.
+
+**M-3 — `v1FallbackGraph` is a SECOND shape derivation and draws a sequential chain for a `parallel()` script.**
+*Violates* `INV-V26-3` ("the registration checker and the run-DAG layout consume the SAME
+`ExpectedGraph`; **neither re-derives a script's shape on its own**") and `ARCH-113`'s load-bearing
+"one derivation, two consumers". Named in neither ARCH-113/114 nor DES-174/176.
+`src/skeleton-graph.ts:177-192` maps **every** scanned call to `kind:'single'` and chains consecutive
+slots, never reading `call.group` — which the same scan populates (`src/workflow-meta.ts:184`,
+`:430-444`) and which `deriveExpectedGraph` does consume (`src/skeleton-graph.ts:124-159`).
+`src/server.ts:524` is the only switch point. The affected cohort is **every pre-v26 workflow on the
+owner's box** (rule L2 refuses a phase-less script, so the fallback fires for all of them): a v1 script
+with `parallel([a,b,c])` renders three chained slots, asserting a sequential dependency the script does
+not have. REQ-124's clause is that the DAG reflects the run's real shape.
+*Lens conflict, adjudicated:* testability defends a separate total pure function that cannot regress
+the checker's refusal semantics; simplicity says one derivation with a `contract:'v1'|'v2'` parameter
+that skips rule L2. **Simplicity wins** — the split is what makes INV-V26-3 vacuous for the majority
+cohort, and the parameterised form keeps the registration gate strict while the read path stays
+permissive, which is DES-174's stated split anyway.
+
+**M-4 — the per-agent DAG cell shows no tokens, no cost, no `(unpriced)` badge.**
+*Violates* `ARCH-118` api, which literally names the surface: "`run_status.agents[]` **and the
+dashboard agent detail** show all four columns and the cost". `run_status.agents[]` does; the page does
+not. `src/dashboard-page.ts:557-590` builds a rect and one `<text>` of `c.label||c.kind||''` (`:581`);
+`renderAgent` (`:456-466`) does append `tok`/`cost`/`unpriced` spans but `loadDag` (`:616-628`) takes
+the `payload.kind==='run'` branch on every v26 run and never reaches it. The gap is server-side too:
+`LayoutCell` (`src/dashboard.ts:237-248`) carries no `tokens` or `costUSD` at all. The run header is
+fine (`renderUsage`, `:489-503`) — "which agent spent that" is not answerable on the page, which is the
+per-call cost attribution REQ-127 asks for.
+
+**M-5 — `UNDECIDABLE_SHAPE` is advertised to clients and catalogued, with no producer anywhere.**
+*Violates* `ARCH-119`/`ARCH-121`'s error-catalog drift-lock ("every code any validator emits has an
+`ERROR_CATALOG` row" — the converse is now false). Re-verified: `grep -rn UNDECIDABLE_SHAPE src/`
+returns exactly three hits, all declarations — `src/skeleton-graph.ts:53` (the union arm),
+`src/errors.ts:69` (hint + `see:`), `src/tool-specs.ts:263` (advertised on the tool surface a cold
+client reads). Zero constructions; the only refusal built is `AGENT_BEFORE_PHASE` (`:117`).
+ARCH-121's acceptance is a cold model writing a correct script first try from `tools/list` plus the
+guide; a code in the advertised error list the engine can never emit is a branch a client may
+implement and never exercise, and it implies the checker refuses undecidable shapes when ADR-039's
+narrowing cases either fall through to a generic `SCAN_VIOLATION` or are not refused at all.
+
+**M-6 — the declared IPC contract for `agentResult.spent` is still the pre-v26 bare number.**
+*Violates* `ARCH-118` api ("IPC `agentResult.spent` becomes `{usd, tokens}`").
+`src/ipc/protocol.ts:18` declares `spent?: number`, with the file header still describing "the real
+cumulative RunGuard **token** total" (`:15-17`), while the wire really carries the object
+(`src/sandbox/host.ts:142` sends `this._config.onBudgetSnapshot?.()`, typed
+`() => {usd:number; tokens:Tokens}` at `:63`; the child reads it as `Spend`,
+`src/sandbox/child-entry.ts:19,35`). `protocol.ts` is the **only** declarative statement of the sandbox
+IPC contract and neither send site is typed against it, so this is documentation `tsc` cannot falsify:
+a third-party child implemented against it ships a `number` reader and silently gets
+`[object Object]` arithmetic. IMPL-203 fixed the sibling `init.budget` field in this same file and
+left this one.
+
+**M-7 — `no-skeleton-surface.test.ts`'s own prose no longer describes the guard it implements.**
+Rides `A-2` but is an **impl-side** edit, listed separately so neither repair agent skips it as the
+other's job: the allowlist holds six entries and pins `toBe(6)`, while the file's header comments at
+`:5`, `:28` and `:62` still say **"EXACTLY-FOUR"**. A guard whose documentation contradicts its
+assertion is the failure mode ADR-022 exists to prevent. Update the three comments to six and cite
+ADR-048's amended Action; do not change the assertion.
+
+#### MID — blocking, → `architecture` (rule (b): the body contradicts an owner ruling in this ledger)
+
+**A-1 — the v26 section still publishes `PRICE_UNKNOWN` and a nullable `costUSD`, and still specifies `applied:true` for openrouter, after the owner overruled both.**
+Two rulings are recorded in this ledger and the body was never amended to match:
+- **ADR-038, ruled 2026-09-08** — "no refusal: an unpriced model is charged 0 (`costUSD: 0`) … The
+  proposed `PRICE_UNKNOWN` refusal is **overruled**." Only the `owner_decision:` field was rewritten.
+  The body still says otherwise at `02-architecture.md:2957` (logical view,
+  `PU -->|yes| REF2["PRICE_UNKNOWN (ADR-038)"]`), `:3118` (interface-contract row: "may refuse
+  `PRICE_UNKNOWN` … (pending the owner ruling…)") and `:3091`/`:3102` (ER rows: `costUSD … null when
+  unpriced`). The code follows the ruling — `src/agent-executor.ts:315-318` collapses `priceCall`'s
+  `null` to `{costUSD:0, unpriced:true}`, `grep -rn PRICE_UNKNOWN src/` returns nothing, and
+  `tests/integration/public-shapes-pin.test.ts:49` pins its absence.
+- **VAL-186, ruled 2026-09-10 (option (a))** — REQ-126's acceptance is amended to "declared, and
+  reported honestly when undeliverable". `ARCH-117`'s api still specifies the openrouter arm as
+  `applied:{applied:true, param:'thinking', …}`; the shipped `wireEffort` returns
+  `applied:false` with VAL-186's measured reason (`src/gateway/client.ts:87-111`).
+*Why blocking, not debt:* the interface-contract table is the surface a client integrator reads to know
+which refusals `run_start` can produce; it documents a refusal that cannot happen and an ER `costUSD`
+the wire never carries, so a caller writing defensive code against `costUSD === null` never hits that
+branch and misses the `unpriced` flag that actually carries the fact. **And it is a repeat miss** —
+both Gate 4 design panels flagged exactly this body/ruling split
+(`.panel/design/adversarial.r1.md:124`, `.panel/design/quality-dimensions.r1.md:29,228`).
+*Scope note for the repair, so the two send-backs cannot collide:* amend the **`wireEffort` (SDK)**
+openrouter clause only. The **direct-fetch `effortBodyFields`** clause of ARCH-117 is correct as
+written and is `H-1`'s **impl** fix — do not relax it.
+
+**A-2 — ADR-048's Action line was executed for TWO files, not the one it names.**
+ADR-048's Action reads "add `skeleton-graph.ts` to the allowlist in
+`tests/unit/no-skeleton-surface.test.ts` and **bump its pinned size from 4 to 5**". The shipped
+allowlist has **six** entries (`:48`) with `expect(ALLOWLIST.size).toBe(6)` (`:73-77`), while the
+file's own header still says "EXACTLY-FOUR" (`:5`, `:28`, `:62`). ADR-022's rule is that a new member
+needs a **new adjudication, not a mechanical edit**. IMPL-201 flagged it explicitly *for Gate 8*
+(`06-impl-log.md:3286-3289`).
+**Gate 8 adjudication (this reviewer, both panels concurring):** the sixth entry `workflow-catalog.ts`
+**does** pass ADR-048's own S-2 criterion — it is the `workflow_register` call site that returns the
+refusal to the submitter — so the correct closure is to **amend ADR-048**, not to revert the code. The
+allowlist *is* the module boundary, and it is currently wider than the architecture record says.
+
+#### LOW — recorded debt, not blocking (8)
+
+| # | Finding | Evidence | Why debt |
+|---|---|---|---|
+| D-1 | `PROVIDER_CAPS.effortDelivered` has ONE reader, against ARCH-112's own ≥2-readers column criterion | `src/providers.ts:31,34,38,39`; sole reader `src/authoring-guide.ts:399-404` | The column exists because VAL-186 proved the guide was lying, and the value is correct and honestly annotated. The one-writer form (render the guide from `wireEffort(p, UNKNOWN_CAPS, 'medium').applied`) is a follow-up, not a defect. |
+| D-2 | `RunGuard.budgetView()` survives with zero production callers, returning the `Infinity` ARCH-118 named as the wrong-value class | `src/run-guard.ts:236-244`; only callers `tests/unit/run-guard.test.ts:39-62` | Dead surface; the real script-visible object is correct in USD at `src/sandbox/child-entry.ts:103-115`. Delete-with-its-tests cleanup. |
+| D-3 | `session-options-builder.ts` is dead production code carrying a second provider→thinking policy | `src/session-options-builder.ts:14,20,95`; no `src/` importer | Writes a record field, never `options.thinking`, so not an INV-V26-2 violation. One line to delete or to state why it stays. |
+| D-4 | `check-mermaid.ts` declares a third local `ExpectedGraph` shape `tsc` cannot cross-check | `src/check-mermaid.ts:15-32` vs `src/skeleton-graph.ts:24-48` | Byte-equal today; the local declaration exists because ADR-022's word-grep guard would fail on the import's source text. IMPL-206 named it deliberate. Recorded so the trade-off is a ledger fact. |
+| D-5 | `dagBox` has no production caller; the shipped `viewBox` math is a hand-copy | `src/dashboard.ts:272-288`; `src/dashboard-page.ts:518,536-539` | The two expressions are byte-equal and the rendered path is covered by the Playwright acceptance case. Cheap repair (interpolate the function body) but no live defect. |
+| D-6 | `caps.reasoning`/`caps.tools` answer `'unknown'` where ARCH-116 says `true`/`false` | `src/models/model-book.ts:56,146-148,153-156`; `src/models/model-catalog.ts:144-147` | The code is the honest one ("declared, not probed", ARCH-121(d)) and the wire is unaffected. Amend the ARCH text at the next Gate 2 touch. *Side effect worth naming:* `models_list` reports anthropic effort as undeclared, steering a reader away from the one provider where the dial works. |
+| D-7 | ARCH-110's `additionalProperties:false` note reads as unfinished work, but the condition WAS met and the action deliberately not taken | `src/tool-specs.ts:457-474` (9-line comment recording the decision); `src/workspace-seed.ts:44-74` | **The code is right, the ledger is stale.** Conflict adjudicated: security wants the closed schema, consumability wants the typed `INVALID_SEED_SPEC` that names the offending path — closing the schema puts ajv's generic `INVALID_ARGUMENT` in front of it, restoring the whole content of issue #64. Consumability wins; residual risk (an ignored extra key) materialises nothing. Amend ARCH-110's note to state the refusal-precedence reason. |
+| D-8 | ARCH-114's `src/sandbox/host.ts` change appears on no v26 IMPL `files:` line | `src/sandbox/host.ts:63-71,136-141` | Code present and correct; traceability row missing (see §1). |
+
+---
+
+### §3 Dashboard QA
+
+`sh .sdlc/trace` regenerated the dashboard at review time (6.7 MB single file, 1486 items).
+`dashboard_check.py` (plugin 2.4.3) reports **0 high / 6 mid / 1 low**.
+
+**Playwright browser tools are NOT available in this session — degraded mode, stated not glossed.**
+The static checks were run in full and each mid was diagnosed by hand against the source block rather
+than accepted or dismissed.
+
+- **SoT `file:line` links: PASS.** Every work item's link target exists, the line is in range, and the
+  line is that item's heading. No dead-end.
+- **Freshness: PASS.** The dashboard is regenerated after this review is written, so it is not staler
+  than any source `.md`.
+- **The 6 mermaid "括號不平衡" mids are checker FALSE POSITIVES — all six, verified individually.**
+  `dashboard_check.check_balance()` is a naive stack over `(`/`[`/`{` that skips quoted text but knows
+  nothing of Mermaid grammar. Re-running the identical algorithm with position reporting shows:
+  - `02-architecture.md:934`, `:1198`, `:2597`, `:3079` — every unclosed `{` is an **erDiagram
+    cardinality token** `||--o{` (e.g. `:3080` `RUNS ||--o{ USAGE_EVENT : "journals"`). Valid Mermaid.
+  - `:1645` — same class, the mirrored form `}o--||` (`:1648-1651`,
+    `SCHEDULES }o--|| WORKFLOWS : "workflow (cron binding)"`). Valid Mermaid.
+  - `:2528` — a **sequenceDiagram**, and the only non-erDiagram flag. The unclosed pair is at
+    `:2559` `M->>S: workspace_pull({runId of U's run, path})`: the **apostrophe in "U's"** opens a
+    string in the checker's model and swallows the closing `})`. Valid Mermaid; message text is free-form.
+  **Disposition: no doc change.** Recorded as tool debt against `dashboard_check.py` (strip erDiagram
+  cardinality tokens; do not treat `'` as a string delimiter in message text).
+- **1 low, real:** `dashboard.html` carries no mermaid offline fallback, because the project-local
+  `.sdlc/trace.py` (2026-08-01) predates the plugin version that emits one. Tool debt — see §7.
+
+---
+
+### §4 Module boundaries (SOLID) & module build
+
+- **`solid_check`: PASS.** 58 modules, 81 JavaScript/TypeScript + 3 shell files scanned; **0 high,
+  0 mid**. No undeclared cross-module dependency, no dependency cycle, no deep-internal import
+  bypassing a module's public surface, no god-module. The `module:`/`deps:` declarations on the
+  ARCH-* items match the real import graph.
+- **10 low, recorded debt:** files claimed by no ARCH `module:` declaration —
+  `src/harness-defaults.ts`, `src/self-update.ts`, `src/agent-semaphore.ts`, `src/mcp-probe.ts`,
+  `src/scan-agent-calls.ts`, `src/net-guard.ts`, `src/workspace-artifacts.ts`, `src/clock.ts`,
+  `src/agent-definitions.ts`, `src/owner-lookup.ts`. All pre-v26; architecture-doc drift, no boundary
+  violation. Claim them at the next Gate 2 touch.
+- **`module_check`: DORMANT** — no ARCH-* declares a `build:` command, so independent-build
+  verification is switched off by design (zero-burden default). Not a finding. Enabling it is a
+  standing option, not a v26 debt.
+
+---
+
+### §5 Owner-deferral ledger sweep (issue #15)
+
+Reconciled **mechanically on the fixed `owner_decision` metadata key**, never on prose.
+`grep -rn "owner_decision" .sdlc/features/001-remote-workflow-engine` → four `- **owner_decision:**`
+metadata lines carry a value, eight carry `—` (not applicable), and the remainder are narrative prose
+in `journal.md` / `08-validation.md` / the design panels.
+
+**`owner_decisions: []` — zero unanswered. The iteration is not blocked on the owner.**
+
+| Item | File:line | State |
+|---|---|---|
+| ADR-038 (unpriced model + USD budget) | `02-architecture.md:2878` | DECIDED 2026-09-08 — charge 0, `unpriced:true`, `PRICE_UNKNOWN` overruled |
+| ADR-047 (trigger-started run spend limit) | `02-architecture.md:2941` | DECIDED 2026-09-08 — option (b), no spend limit; tracking still mandatory |
+| VAL-186 (REQ-126 effort undeliverable) | `08-validation.md:8671` | DECIDED 2026-09-10 — option (a), acceptance amended |
+| VAL-187 (misnamed production alias) | `08-validation.md:8680` | DECIDED 2026-09-10 — alias renamed to match its target; done and verified live |
+
+**Unmarked-deferral spot-check on the ADRs: one hit, already accounted for.**
+`02-architecture.md:3118`'s "(pending the owner ruling on ADR-047's sibling question)" is **stale text,
+not an unmarked deferral** — ADR-038 carries the marker and the ruling landed. It is folded into
+finding **A-1**, so it is fixed as part of that send-back rather than raised twice. No other
+decision-shaped hedging without the marker was found in the v26 section.
+
+**Format debt (low, no mechanical consequence):** all four markers read
+`DECIDED <date> by the owner — <ruling>` rather than the contract's `answered(<date>) — <ruling>`.
+`trace.py` keys only on the `pending` prefix, so detection is unaffected; normalise at the next touch.
+
+---
+
+### §6 Validation & handover (Gate 7.5)
+
+**PASS — not sent back.**
+
+- **Mock hard-rule: satisfied.** `trace --check` reports **0 未真實驗證 and 0 未驗證**. Every
+  REQ-121..130 carries a `real: true`, `result: pass` VAL row. No REQ closes on mock-only evidence.
+- **`08-validation.md` present** (846 KB) with round-6 and round-7 evidence and a Gate self-check.
+- **The tree that shipped was validated.** Round 6 measured `d1c453b`; the only `src`/`deploy`
+  commit after it is `5f5742b` (D13/D14), and both are covered by real-tier rows measured on that
+  fix: **VAL-200** (real migration + real `SqliteSchedulerPort.create` against a byte copy of
+  production's `schedules.db`, with the boundary honestly stated and IT-159 as the regression lock)
+  and **VAL-201** (the real step-2 block out of the real `deploy.sh`, red-first, IT-160 the lock).
+- **The one-command deploy is real and was run.** DEPLOY.md leads with **§0 一鍵部署** —
+  `./deploy.sh --background` — and Gate 7.5 round 6 booted **two** scratch engines through §0's own
+  documented second-instance form
+  (`RWE_CONFIG_PATH=… RWE_BIND=127.0.0.1 RWE_PORT=89xx ./deploy.sh --background`).
+- **v26 is live on production and verified there.** **VAL-202** (2026-09-10, real `rwe.service`,
+  owner-authorised): alias rename → `--check-config` OK → `systemctl --user restart` (MainPID
+  1188044 → 2438430, dashboard 200) → D13's migration ran unattended on the real database
+  (`schedules.workflow` `TEXT NOT NULL` → `TEXT`, rows preserved) → `schedule_create` succeeded on
+  production for the first time since v24 → `models_list` serves four anthropic rows, zero unpriced.
+- **Handover manuals: present, step-by-step, 淺白繁中, current-state.** `README.md` (36 KB) and
+  `DEPLOY.md` (92 KB) at `layout.readme`/`layout.deploy`. DEPLOY.md carries its own history rule at
+  `:4` ("整份改寫成當下事實。歷史紀錄只在 `.sdlc/` 追溯帳本內"), a **single deduplicated
+  `## 1b. 設定總表`** (`:409`) that `:403` explicitly points at as the only place keys are listed, and
+  every other mention is a cross-reference to it, not a second copy. Expected output is shown for each
+  step. No changelog or version-diff section anywhere.
+- **Two hygiene items examined and cleared, not waved through:**
+  - `DEPLOY.md:461` documents `auth.googleBase` as **deprecated**. This is **current state, not a
+    superseded instruction** — the engine really still accepts it as a backward-compat fallback
+    (`src/auth/auth-service.ts:25-26,124-130`), and its deliberate retention was adjudicated at the
+    **v18 Gate 8 review** (`07-review.md:3626`) as documented low doc-debt with no production
+    behaviour change. Documenting a key the engine honours is correct; omitting it would be the defect.
+  - The 設定總表's `版本` column records "the release a key first appeared in". That is per-key
+    metadata inside the single reference table, not a changelog section, and it does not instruct the
+    reader to do anything historical. Kept. Recorded as a low watch-item only.
+- **Special-file reviews (task 3b): N/A this iteration.** No `CLAUDE.md`, `AGENTS.md` or `SKILL.md`
+  appears on any v26 IMPL `files:` line, and `git log --name-only 525ade4..HEAD` touched none. (The
+  `SKILL.md` files under `data/` are runtime test fixtures produced by past validation runs, not
+  source.) `docs/AUTHORING.md` WAS touched but is a generated authoring guide, not a skill manifest,
+  and is covered by `tests/unit/authoring-md-generated.test.ts`.
+
+---
+
+### §7 Tooling debt found during this review (low, recorded)
+
+The project-local `.sdlc/trace.py` (2026-08-01, 1034 lines) lags the plugin's shipped copy
+(2.4.3, 1234 lines). Concrete consequences seen this pass:
+
+1. **`sh .sdlc/trace --tool <name>` is unsupported** — the dispatch's `--tool dashboard_check` /
+   `solid_check` / `module_check` invocations fail with `unrecognized arguments`. This review ran the
+   plugin's scripts directly against the ledger instead; results are unaffected.
+2. **No `待業主決策` gap type** — the local copy cannot flag an unanswered `owner_decision: pending`.
+   §5's sweep was therefore done by mechanical grep on the fixed key, which is the contract's own
+   method and is authoritative. Zero pending, so nothing was missed — but the automated guard is
+   absent and should be restored.
+3. **No mermaid offline fallback in the generated dashboard** — the `dashboard_check` low in §3.
+4. **Do not simply swap the file in.** The plugin's newer `trace.py` parses THIS ledger as
+   **482 gaps** (325 of them `TASK-* 未實作`) against the local copy's 24 — a parser-rule difference
+   in how TASK→IMPL linkage is resolved, not a real regression in the ledger. Whoever syncs the tool
+   must reconcile that first, or the next gate will read a cliff that is not there.
+
+---
+
+### §8 Conclusion
+
+**The iteration cannot close. `send_back = ["impl", "architecture"]`; `arch_consistent = false`.**
+
+Gate 7.5 is genuinely done — every REQ real-green, v26 running on production and verified there, both
+manuals current-state with a working 一鍵部署 command that was actually run. Traceability, module
+boundaries and the dashboard are clean. What blocks is architecture consistency: **four HIGH code
+deviations from declared `INV-V26-*`/`ARCH-*` clauses**, on which two independently-run expert lenses
+converge; **six MID code deviations**, one of which (`M-1`) `ADR-046` designates a Gate 8 finding in
+its own text; and **two MID ledger contradictions** where the architecture body still publishes
+behaviour this ledger's owner already overruled — the second time the ADR-038 split has been reported.
+
+The recurring shape across `H-1`, `H-3`, `M-1` and `M-2` is worth naming, because it is one lesson and
+not four: **v26 correctly deleted duplicated tables and correctly declared new invariants, but the
+guards it shipped test NAMES, not BEHAVIOUR** — `no-retired-surface.test.ts` greps ten identifiers,
+`redact-sweep.test.ts` enumerates sinks by hand, `ERROR_CATALOG` is checked for rows and not for
+producers. Every one of the four slipped through a green suite. DES-173 wrote the warning down
+in this very iteration ("a grep proves a NAME is gone, not that a BEHAVIOUR is") and then the
+iteration shipped the case it predicted.
+
+### Retro
+
+**What went well**
+- **The `INV-V26-*` list is the single best thing in this iteration.** v26 is the first slice to
+  declare cross-component invariants, and it is *why* this review is precise: every HIGH cites a
+  numbered invariant with a testable clause instead of a reviewer's taste. Three of the seven
+  (INV-V26-1 replay key, -4 price immutability, -7 fail-closed config) were verified end-to-end by
+  both panels and hold exactly as written. Keep doing this; make it global.
+- **Gate 7.5 got harder and better.** Round 7's rule — D13's test may never use a fresh database,
+  D14's may never use a copy of the script's text — is the sharpest formulation of "the thing that hid
+  the defect is the thing the test must refuse to do" this ledger has produced. It found a breakage
+  that had been live on every upgraded deployment since v24 while passing every test.
+- **Honest self-reporting under pressure.** IMPL-201, IMPL-204, IMPL-206 and IMPL-212 each pre-flagged
+  a defect *for Gate 8* rather than quietly closing it; four of this review's findings were
+  dispositioned rather than discovered. Round 7 also recorded a genuine hygiene slip (copying
+  `auth-tokens.db` into a scratchpad) unprompted. That culture is worth more than a clean report.
+- **The owner loop closed fast and mechanically.** Both `pending` markers raised at round 6 were ruled
+  on within a day, and VAL-187's ruling was *executed and re-verified live* rather than just recorded.
+
+**What to change**
+- **Ship a behaviour guard with every deletion ADR, not a name guard.** ADR-045 deleted three effort
+  tables and the guard greps identifiers; a fourth table survived under a name nobody listed. The
+  invariant "both transports resolve one effort from one table" is a five-line test that would have
+  failed on day one.
+- **When an `owner_decision` is ruled, amend the BODY in the same commit.** Rewriting only the
+  `owner_decision:` field is what produced A-1, and it has now been reported at Gate 4 *and* Gate 8.
+  Make "grep the section for the overruled term" part of landing a ruling.
+- **An ADR's Action line is a contract.** ADR-048 said one file and "4→5"; two files and "toBe(6)"
+  shipped. If implementation finds a second case, that is a new adjudication (ADR-022's own rule),
+  not a wider edit.
+- **Give a declared field a writer in the same task that declares it.** `AgentRecord.detail`,
+  `catalogFetchedAt` and `UNDECIDABLE_SHAPE` are all "declared, catalogued, advertised, never
+  produced" — three instances of one habit in one iteration.
+- **Sync `.sdlc/trace.py`** (§7), reconciling the 24-vs-482 parser difference first.
+
+**Known tech debt carried (all recorded above, none silently dropped)**
+- 24 trace gaps (§1) · 10 unclaimed source files (§4) · 8 panel LOWs D-1..D-8 (§2) · 7
+  dashboard_check items, 6 of them checker false positives (§3) · `owner_decision` marker-format
+  normalisation (§5) · the `版本` column watch-item (§6) · 4 tooling items (§7).
+- `module_check` stays dormant by design until an ARCH declares `build:`.
+
+---
+
+
+## v24 GATE 8 REVIEW (2026-09-05, SUPERSEDED by the v26 section above — kept for history; was **SEND BACK**, `send_back = ["impl","validation"]`, 3 HIGH)
 
 > First Gate 8 pass for **v24** (REQ-107..118: interface consolidation, roles, per-agent params,
 > author-supplied diagram, workflow-owned assets, `pushedBy`, trigger claim-at-registration, the

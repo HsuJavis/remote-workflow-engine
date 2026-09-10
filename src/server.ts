@@ -31,7 +31,7 @@ import { CasStore, isValidSha256Hex, isValidNamespace } from './cas-store.js';
 import type { SecretValueProvider } from './secret-resolver.js';
 import { isAllowedHost, isAllowedOrigin, isLoopback, isLoopbackPeer } from './net-guard.js';
 import { parseWorkflowSkeleton, scanAgentCalls } from './workflow-meta.js';
-import { deriveExpectedGraph, v1FallbackGraph } from './skeleton-graph.js';
+import { deriveExpectedGraph } from './skeleton-graph.js';
 import { tick, RealTicker, type Ticker } from './scheduler-engine.js';
 import { AssetSyncService, defaultAssetRoot, globalAssetRoot, migrateLegacyGlobalAssets, resolveMcp, type AssetCatalogPort, type AssetCatalogRow, type AssetKind } from './asset-sync.js';
 import { RealMcpProbe, type McpProbe } from './mcp-probe.js';
@@ -325,7 +325,9 @@ async function handleDashboardRequest(
   issueReporter: IssueReporter,
   facade: McpFacade,
   systemInfo: SystemInfoSampler,
-  buildModelCatalog: () => Promise<ModelEntry[]>,
+  // v26 (H-4 send-back repair, ARCH-116): `ModelBook` (TTL'd, single-flight), never a raw catalog
+  // builder — see the `/api/models` route below for why.
+  modelBook: ModelBook,
   // v22 (DES-115, REQ-100, TASK-111): several dashboard routes are script-derived and have no
   // bearer/identity plumbing at all (a browser GET carries none) — so under auth those routes are
   // unconditionally the non-owner/masked row; auth off keeps the pre-v22 surface.
@@ -372,9 +374,13 @@ async function handleDashboardRequest(
       return;
     }
     // v12 (REQ-078, DES-075/076): enriched model list — returns EnrichedModelEntry[] directly.
+    // v26 (H-4 send-back repair, ARCH-116): through `ModelBook.snapshot()` (TTL'd, single-flight —
+    // a burst of dashboard loads fires at most one upstream fetch), and `catalogFetchedAt` on each
+    // row is the snapshot's own "as of", not a hardcoded `null`.
     if (path === '/api/models') {
-      const entries = await buildModelCatalog();
-      sendJson(res, 200, filterCatalog(entries).map(enrichModelEntry));
+      const snapshot = await modelBook.snapshot();
+      const entries = snapshot.entries as ModelEntry[];
+      sendJson(res, 200, filterCatalog(entries).map((e) => enrichModelEntry(e, snapshot.fetchedAt)));
       return;
     }
     if (path === '/api/runs') {
@@ -519,9 +525,18 @@ async function handleDashboardRequest(
           // v26 integration (DES-176 boundary): a REFUSAL here does not mean "no overlay" — at
           // layout it means "this is a v1-contract script" (typically: it has no `phase()` at
           // all, which rule L2 refuses at REGISTRATION but which is perfectly legal to run and
-          // to draw). Collapsing it to the empty overlay withheld every predicted cell from
-          // every pre-v26 workflow's graph; REQ-124 requires those runs to render as before.
-          expectedGraph = derived.ok ? derived.graph : v1FallbackGraph(nodes, scan);
+          // to draw). v26 (M-3 send-back repair, INV-V26-3): re-derives with the SAME function's
+          // `contract:'v1'` instead of the retired `v1FallbackGraph` — one derivation, so a v1
+          // script's `parallel([a,b,c])` still lays out as a `parallel` slot (`call.group` honoured),
+          // not three chained `single` ones. REQ-124 requires those runs to render as before.
+          if (derived.ok) {
+            expectedGraph = derived.graph;
+          } else {
+            const v1 = deriveExpectedGraph(nodes, scan, 'v1');
+            // `contract:'v1'` never refuses on L2 (its only refusal rule today) — this stays
+            // defensive rather than assuming that invariant with a cast.
+            expectedGraph = v1.ok ? v1.graph : { lanes: [], slots: [], edges: [] };
+          }
         } catch {
           // A parse/derivation fault degrades to an empty predicted overlay rather than a 500.
         }
@@ -798,7 +813,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // the incoming Host header) — `assetSync` is read live off the outer `let` so a call after
   // `bindAssetSync` runs sees the real instance.
   function buildToolDeps(webhookBaseUrl: string): ToolDeps {
-    return { facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, buildModelCatalog, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store };
+    return { facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, modelBook, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store };
   }
   // v24 (DES-140, ARCH-089): `Principal` built ONCE per request from `resolvePrincipal` +
   // `authEnabled` + `isLoopbackPeer` — the three shapes ARCH-088 defines.
@@ -1050,7 +1065,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // the two copies would mask on one path and not the other, with no type error. Same
     // one-declaration rule as `DEFAULT_CEILINGS`/`UNBOUND_ENTRY_LABEL`.
     const dispatchDashboard = (): void => {
-      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, buildModelCatalog, !!authCfg, authAnnounce, diagrams).catch(() => {
+      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, modelBook, !!authCfg, authAnnounce, diagrams).catch(() => {
         sendJson(res, 200, { degraded: 'internal dashboard error' });
       });
     };

@@ -37,6 +37,13 @@ export interface BookSnapshot {
    *  (anthropic's static table + ollama's fixed zero rate) is priced. */
   source: 'live' | 'last-good' | 'static';
   lookup(provider: string, model: string): BookEntry;
+  /** v26 (H-4 send-back repair, ARCH-116): the SAME rows `source()` returned this refresh (or the
+   *  last-good/static fallback), for a caller that needs the full catalog — not just a price/caps
+   *  lookup — without a second, un-TTL'd fetch of its own (`models_list`, `GET /api/models`).
+   *  Typed `CatalogSourceRow[]` (this class's own generic row shape); the one production `source()`
+   *  (`server.ts`'s `buildModelCatalog`) really returns `ModelEntry[]`, a superset, so that caller
+   *  narrows it back. */
+  entries: CatalogSourceRow[];
 }
 
 const UNKNOWN_CAPS: Caps = { reasoning: 'unknown', tools: 'unknown', source: 'unknown' };
@@ -68,6 +75,7 @@ interface BookCache {
   index: Map<string, BookEntry>;
   fetchedAt: string;
   source: BookSnapshot['source'];
+  entries: CatalogSourceRow[];
 }
 
 export class ModelBook {
@@ -130,16 +138,17 @@ export class ModelBook {
       const incumbent = index.get(key);
       if (incumbent === undefined || (incumbent.price === null && entry.price !== null)) index.set(key, entry);
     }
-    this._cache = { index, fetchedAt, source };
+    this._cache = { index, fetchedAt, source, entries };
     this._lastFetchMs = this._clock.now();
     return this._toSnapshot(this._cache);
   }
 
   private _toSnapshot(cache: BookCache): BookSnapshot {
-    const { index, fetchedAt, source } = cache;
+    const { index, fetchedAt, source, entries } = cache;
     return {
       fetchedAt,
       source,
+      entries,
       lookup(provider: string, model: string): BookEntry {
         // ADR-038 / DES-178 boundary: ollama is priced all-zero UNCONDITIONALLY (a KNOWN fact, not
         // an absence of one) — never dependent on whatever the source did or didn't return.

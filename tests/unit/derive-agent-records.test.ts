@@ -65,4 +65,36 @@ describe('deriveAgentRecords — four branches, one base() helper (UT-202, DES-1
     expect(record.state).toBe('failed');
     expect(record.model).toBe('the-model');
   });
+
+  // H-3/M-2 send-back repair (DES-188 lock, ARCH-115): a restart-reconstructed FAILED record must
+  // carry `detail`/`unmapped` exactly like the live one `capture()` builds — otherwise the derived≡
+  // snapshot lock goes false the moment a failed call carries either, and "answerable from the
+  // record alone" (ARCH-115) is false after a restart specifically.
+  it('a failed usage event\'s detail and unmapped survive into the reconstructed record', () => {
+    const transcripts = new Map([
+      ['a5', [
+        { ts: 't0', kind: 'harness' as const, data: { agentId: 'a5', descriptor: { model: 'the-model', provider: 'anthropic' } } },
+        { ts: 't1', kind: 'usage' as const, data: { reason: 'terminal', provider: 'anthropic', detail: '401 Unauthorized', unmapped: ['weird_subtype'] } },
+      ]],
+    ]);
+    const records = deriveAgentRecords(transcripts, 'completed');
+    const record = records.find((r) => r.agentId === 'a5') as any;
+    expect(record.state).toBe('failed');
+    expect(record.detail).toBe('401 Unauthorized');
+    expect(record.unmapped).toEqual(['weird_subtype']);
+  });
+
+  it('a failed usage event with neither detail nor unmapped carries neither field (absent, never defaulted)', () => {
+    const transcripts = new Map([
+      ['a6', [
+        { ts: 't0', kind: 'harness' as const, data: { agentId: 'a6', descriptor: { model: 'the-model', provider: 'anthropic' } } },
+        { ts: 't1', kind: 'usage' as const, data: { reason: 'timeout', provider: 'anthropic' } },
+      ]],
+    ]);
+    const records = deriveAgentRecords(transcripts, 'completed');
+    const record = records.find((r) => r.agentId === 'a6') as any;
+    expect(record.state).toBe('failed');
+    expect('detail' in record).toBe(false);
+    expect('unmapped' in record).toBe(false);
+  });
 });

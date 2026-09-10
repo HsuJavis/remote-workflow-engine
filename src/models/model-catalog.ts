@@ -411,7 +411,12 @@ export function computeCostLevel(e: ModelEntry): number | null {
 
 /** Enrich a ModelEntry with capability/stability/costLevel (DES-075, ARCH-050).
  *  Pure — no I/O, no side effects. Called after filterCatalog (insertion point DES-075). */
-export function enrichModelEntry(e: ModelEntry): EnrichedModelEntry {
+/** `catalogFetchedAt` (v26 H-4 send-back repair, ARCH-116): the snapshot's own "as of" timestamp
+ *  (`BookSnapshot.fetchedAt`) when a caller has one in hand (`models_list`, `GET /api/models`, both
+ *  wired through `ModelBook.snapshot()`) — optional and defaulting to `null` so a direct call with
+ *  no catalog context (a unit test, or `check-mermaid.ts`-style internal use) keeps DES-179's
+ *  original honest "we never looked" default unchanged. */
+export function enrichModelEntry(e: ModelEntry, catalogFetchedAt: string | null = null): EnrichedModelEntry {
   // capability: truncate at 200 chars (199 + '…'); empty/null → fallback "${provider} model"
   let capability = e.description?.trim() ?? '';
   if (!capability) capability = `${e.provider} model`;
@@ -430,10 +435,9 @@ export function enrichModelEntry(e: ModelEntry): EnrichedModelEntry {
     toolUseDeclared: toolUse,
     effortDeclared: effortDeclared ?? 'unknown',
     declaredSource: declaredSource ?? 'unknown',
-    // v26 (DES-179's own boundary): per-row, never a top-level wrapper — `null` here (no catalog
-    // snapshot threaded to this call) is the honest "we never looked" until a caller with a
-    // `ModelBook`/`BookSnapshot.fetchedAt` in hand is wired (no v26 task wires that call site).
-    catalogFetchedAt: null,
+    // v26 (DES-179's own boundary): per-row, never a top-level wrapper — `null` when the caller has
+    // no catalog snapshot timestamp to attach (the parameter's own default).
+    catalogFetchedAt,
   };
 }
 

@@ -4404,6 +4404,22 @@ that doesn't hold (onHarness never redacts either) — so the raw secret reaches
 transcript. Confirmed via direct re-run: 1/7 fail for exactly this reason (full file: 7 tests, 1
 failed / 6 passed).
 
+**v26 Gate 8 send-back repair (2026-09-10, H-3): new `sink (7): AgentRecord.detail` describe block,
+2 cases.** `AgentRecord.detail`/the failed-branch usage event's `detail` were CAPPED at build time
+(inside `claude-agent-sdk-client.ts`'s `_drain`), before `redact()` ever saw the string — the SAME
+order bug this sweep's own history (above) already fixed once for `capPrompt` at v21 Gate 8. (1) a
+secret straddling the 1024-byte cap boundary (a dedicated longer secret so its MARKER, not just the
+raw value, fits below the cutoff) is still redacted on both the `AgentRecord` and the usage event —
+the DISCRIMINATING assertion is marker PRESENCE, not raw-value absence (a cap-first bug cuts the
+secret into two fragments that don't value-exact-match either, so `not.toContain` passes even under
+the wrong order — verified directly: replaying both orderings through the real `redact()`/`capDetail`
+functions showed cap-first loses the marker entirely, redact-first preserves it). (2) a secret
+straddling the 64-byte unmapped-subtype cap boundary is redacted at the persist site — a LOCK, not a
+red→green (the real order-sensitive step, `sanitizeSubtype`'s whitelist, is unreachable through a
+fake `GatewayClient`; this proves the persist-site half only). RED (measured, before the fix): case
+1's marker was absent (the cap ran first, splitting the secret); the AgentRecord had no `detail`
+field at all (compile-time, pre-H-3).
+
 ### IT-076 — real server HTTP routes: `POST /assets/blob/:sha` + `POST /assets/manifest` (DES-086, DES-087)
 - **status:** green
 - **traces:** DES-086, DES-087, ARCH-054, ARCH-055, TASK-080, TASK-081
@@ -9924,6 +9940,20 @@ three new fields read `undefined`); 1 legitimate green pin (a sequential call al
 File: `tests/unit/skeleton-graph.test.ts` (the 14-fixture shared corpus + 4 never-throws/refusal
 cases). Red (measured): whole-file red — `src/skeleton-graph.ts` does not exist.
 
+- **amended (2026-09-10, Gate 8 send-back repair, M-3 + M-5 converse):** extends this SAME file, not a
+  new one (no new ID — this note IS the record of the extension). **(M-3):** three new cases under a
+  `contract:'v1'` describe block — a v1 (phase-less) `parallel([a,b,c])` script lays out ONE
+  `parallel` slot (not three chained `single` ones, which `v1FallbackGraph` produced before this
+  repair, since it never read `call.group`); three sequential calls still chain (S1 unchanged);
+  `contract:'v1'` never refuses (total). **(M-5 converse-direction catalog lock):** a `DERIVE_RESULT_RULES`
+  literal (today just `AGENT_BEFORE_PHASE`) is asserted (a) really producible by `deriveExpectedGraph`,
+  (b) exactly what `workflow_register.errors[]` advertises FROM this source (no more, no fewer —
+  `UNDECIDABLE_SHAPE`'s absence is asserted by name), and (c) a `@ts-expect-error` pin that
+  `'UNDECIDABLE_SHAPE'` no longer type-checks as a `DeriveResult.rule`. RED (measured, before the
+  fix): the M-3 parallel case produced THREE `single` slots via the old `v1FallbackGraph`, not one
+  `parallel` slot; the M-5 catalog case found `UNDECIDABLE_SHAPE` still in `errors[]` with zero
+  producers.
+
 ### UT-174 — validateSeedSpec: one door, refuses the first offender
 - **status:** green
 - **traces:** DES-170, ARCH-110, REQ-121
@@ -10548,6 +10578,15 @@ File: `tests/unit/derive-agent-records.test.ts` (4 cases). Red (measured): 4/4 f
 function has exactly two branches (usage, harness-only); no `refused` branch exists at all, and
 neither existing branch fills `cacheRead`/`cacheWrite`/`costUSD`/`unpriced`/`startedAt` (from the
 FIRST harness event) or preserves the harness-resolved model on a failed call.
+
+- **amended (2026-09-10, Gate 8 send-back repair, H-3/M-2 restart-survival blocker):** 2 new cases,
+  found while verifying H-3/M-2 (not a named finding — a DES-188 lock consequence of those two:
+  `capture()`'s failed branch now writes `detail`/`unmapped` onto the persisted usage event, but this
+  function's own failed-usage branch read neither back). (1) a failed usage event's `detail` and
+  `unmapped` survive into the reconstructed record byte-identically. (2) a failed usage event with
+  neither field carries neither (absent, never defaulted — matches this file's own established
+  convention). RED (measured, before the fix): case 1's `record.detail`/`record.unmapped` were both
+  `undefined` even though the fixture's transcript event carried both.
 
 ### IT-152 — THE LOCK: deriveAgentRecords deep-equals the terminal snapshot, minus lastActivityAt
 - **status:** green
@@ -11374,3 +11413,111 @@ the fix): the `beforeAll` anchor check fails outright — `from=54 to=34`, i.e. 
 `RWE_CONFIG_PATH` at step 4, AFTER step 2 had already run — and the old block prints
 `== 步驟 2/5：確認設定檔 (rwe.config.json) ==` / `rwe.config.json 已存在，保留不覆蓋。` while
 `RWE_CONFIG_PATH` points elsewhere; the target file is never created.
+
+---
+
+## v26 Gate 8 send-back repair (2026-09-10) — new items
+
+The following items (UT-228/229, IT-161..164) were written during the Gate 8 send-back repair
+(H-1/H-2/H-3/H-4/M-1/M-2/M-4/M-6), not at Gate 5 test-first. Each was run once against the pre-fix
+tree and confirmed red for the stated reason before the fix landed, per the same discipline Gate 5
+items use — recorded here as "RED (measured)" identically.
+
+### UT-228 — direct-fetch effortApplied is IDENTICAL to wireEffort(provider, caps, effort) (H-1)
+- **status:** green
+- **traces:** ARCH-117, ADR-045
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/gateway-effort.test.ts` (new describe block, 3 cases). `LiteLLMGatewayClient.invoke`
+computed `applied` via a private `resolveEffortApplied` — a fourth effort table, never reading
+`req.caps`/`PROVIDER_CAPS` — while `ClaudeAgentSdkGatewayClient` already called the real `wireEffort`.
+Cases: openrouter with `caps.reasoning:true` reports the SAME `effortApplied` as calling
+`wireEffort` directly (asserts the reason is NOT the old generic "no reasoning dial for this
+provider"); anthropic reports the same `effortApplied` too, reading `PROVIDER_CAPS` rather than a
+duplicated literal; no effort requested at all still omits `effortApplied` entirely (pre-v26 shape
+preserved). RED (measured, before the fix): the openrouter case's reason equalled the generic string
+instead of `wireEffort`'s VAL-186-measured one — the exact divergence H-1 names.
+
+### UT-229 — agentResult.spent accepts exactly what SandboxHostConfig.onBudgetSnapshot returns (M-6)
+- **status:** green
+- **traces:** ARCH-118
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/ipc-protocol.test.ts` (new case). TYPE-LEVEL pin: `ParentMsg`'s declared
+`agentResult.spent` field must accept, with no cast, exactly what `SandboxHostConfig.onBudgetSnapshot`
+(host.ts's own send-site type) returns. RED (measured, before the fix): `spent?: number` while
+`onBudgetSnapshot` returns `{usd:number; tokens:Tokens}` — the assignment did not COMPILE
+(`Type '{usd, tokens}' is not assignable to type 'number'`), confirmed via `npx tsc --noEmit`.
+
+### IT-161 — direct-fetch transport ends a terminal 401 attempt immediately, with a named detail (H-2)
+- **status:** green
+- **traces:** ARCH-111, ADR-040, REQ-122
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/integration/direct-fetch-terminal-error-detail.test.ts` (new, 3 cases). The direct-fetch
+twin of the SDK transport's own IT-142. Real `LiteLLMGatewayClient` + real `AgentExecutor`; only
+`fetchImpl` faked. Cases: a terminal 401 with a configured `retries:3` bound still hits `fetchImpl`
+exactly ONCE (`result.retryable === false`, `result.detail` contains "401"); a retryable 5xx still
+retries `1+retries` times, unchanged; the resulting `AgentRecord` (via `AgentExecutor.getRecord`)
+carries `state:'failed'` and a `detail` naming the status. RED (measured, before the fix): case 1
+hit `fetchImpl` 1+3=4 times and `result.retryable` was `undefined`; case 3 failed to compile
+(`AgentRecord` had no `detail` field yet — depends on H-3 landing first).
+
+### IT-162 — a terminally-failed call's unmapped subtype reaches run_result.meta.unmappedMessages (M-2)
+- **status:** green
+- **traces:** ADR-046, ARCH-111
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/integration/failed-call-unmapped-meta.test.ts` (new). Real `McpFacade` + `RunManager` +
+`InMemoryRunStore` + `AgentExecutor`; a fake `GatewayClient` whose FAILURE arm carries `unmapped:
+['weird_subtype','weird_subtype']` (mirrors IT-156's success-arm convention — counts occurrences, not
+distinct names). Asserts `run_result.meta.usage.unmappedMessages['weird_subtype'] === 2` after the
+run completes (a failed `agent()` call resolves to `null`, the run itself completes). RED (measured,
+before the fix): `capture()`'s failed branch wrote `unmapped` onto neither the record nor the usage
+event, so the count was `undefined`.
+
+### IT-163 — models_list.catalogFetchedAt reads the SAME ModelBook snapshot (H-4)
+- **status:** green
+- **traces:** ARCH-116
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/integration/models-list-catalog-fetched-at.test.ts` (new, 2 cases). Real `createServer()`
++ real MCP HTTP; only the live Ollama/OpenRouter fetchers faked, with call counters. Cases: two
+`models_list` calls inside the TTL trigger ONE upstream fetch each (ollama/openrouter counters stay
+at 1) and both report the same non-null `catalogFetchedAt`; `GET /api/models` reads the SAME cached
+snapshot as `models_list` — still no third fetch, identical `catalogFetchedAt`. RED (measured, before
+the fix): `catalogFetchedAt` was `null` on every row (hardcoded), and each `models_list` call
+incremented both fetcher counters (bypassing `ModelBook`'s TTL/single-flight entirely).
+
+### IT-164 — a renamed usage key names itself in run_result.meta.unmappedMessages, never a silent zero (M-1)
+- **status:** green
+- **traces:** ADR-046
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/integration/usage-projection-gap.test.ts` (new, 2 cases). Real `McpFacade` + `RunManager`
++ `InMemoryRunStore` + real `LiteLLMGatewayClient`; only `fetchImpl` faked, returning `usage:
+{inputTokens, outputTokens}` (camelCase — the wrong key names) on case 1 and the documented
+`input_tokens`/`output_tokens` on case 2. Case 1 asserts `tokens.input === 0` (the silent shape this
+repair makes visible, deliberately NOT gated on) AND
+`unmappedMessages['usage.input_tokens'] >= 1`/`['usage.output_tokens'] >= 1`; case 2 asserts the
+healthy response counts NO gap at all (`unmappedMessages` empty). RED (measured, before the fix):
+case 1's `unmappedMessages` was `{}` — the drop was silent, exactly the shape ADR-046's
+D-V26-projection checklist line calls a Gate 8 finding.

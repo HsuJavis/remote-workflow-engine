@@ -31,6 +31,21 @@ export function capPrompt(prompt: string): string {
     : prompt;
 }
 
+const DETAIL_CAP_BYTES = 1024;
+
+/** v26 (H-3 send-back repair, ARCH-111, DES-171, INV-V26-5): the SAME redact-then-cap rule as
+ *  `capPrompt` above, for a provider-authored error `detail` string. Used to run inside
+ *  `claude-agent-sdk-client.ts`'s `_drain`, at BUILD time — before `redact()` ever saw the string —
+ *  so a secret straddling the 1024-byte seam was cut in half and `redact()`'s value-exact match
+ *  then failed on both fragments. Applied here instead, AFTER each persist site's own `redact()`
+ *  call (`_emit` below, the streaming `onEvent` closure in `_invokeOnce`, and `capture()`'s failed
+ *  branch for `AgentRecord.detail`). */
+export function capDetail(detail: string): string {
+  return Buffer.byteLength(detail, 'utf8') <= DETAIL_CAP_BYTES
+    ? detail
+    : `${Buffer.from(detail, 'utf8').subarray(0, DETAIL_CAP_BYTES).toString('utf8')}…[truncated]`;
+}
+
 /** DES-066 (TASK-069): pure STRUCTURAL transform — strips all resolved values, keeps names only.
  *  Redacts no secret VALUES and emits no `‹secret:NAME›` markers; that is the persist site's job.
  *  - surfaceType:'none' (direct-fetch) → all arrays empty (no curated surface available).
@@ -212,6 +227,12 @@ export class AgentTranscriptSink {
       const stored = this._secretValueProvider
         ? redact(ev, this._secretValueProvider.entries()) as TranscriptEvent
         : ev;
+      // v26 (H-3 repair, INV-V26-5): cap a `detail` field AFTER redact — see `capDetail`'s own doc
+      // comment (the R-G9 rule `capPrompt` already follows). Covers both the failed-branch `usage`
+      // event (`capture()` below) and an SDK `kind:'message'` error event (claude-agent-sdk-client.ts's
+      // `_drain`, non-streaming path) — the only two event shapes that ever carry one.
+      const data = stored.data as { detail?: unknown } | undefined;
+      if (typeof data?.detail === 'string') stored.data = { ...data, detail: capDetail(data.detail) };
       await this._store.appendTranscript(runId, agentId, stored);
     }
   }
@@ -367,6 +388,18 @@ export class AgentTranscriptSink {
         },
       });
     } else {
+      // v26 (H-3 send-back repair, ARCH-111, INV-V26-5): `AgentRecord.detail` — redact FIRST (this
+      // sink's own `SecretValueProvider`), THEN cap (`capDetail`, 1024 B) — so `run_status.agents[]`
+      // answers "why did this fail" from the record alone (ARCH-115), not only from the per-agent
+      // transcript. The usage event below gets the SAME cap independently, applied to the RAW
+      // `result.detail` at `_emit`'s own persist site (never this already-capped value — capping
+      // twice would double-truncate and double the "…[truncated]" marker).
+      const redactedDetail = result.detail === undefined
+        ? undefined
+        : this._secretValueProvider
+          ? (redact({ detail: result.detail }, this._secretValueProvider.entries()) as { detail: string }).detail
+          : result.detail;
+      const detail = redactedDetail === undefined ? undefined : capDetail(redactedDetail);
       this._records.set(req.agentId, {
         agentId: req.agentId, label: req.label, phase, phaseIndex, frame, startedAt, lastActivityAt, endedAt: ts,
         // #20: preserve the model markHarness stamped on the live record — a failed/timed-out call
@@ -378,6 +411,12 @@ export class AgentTranscriptSink {
         // dispatched, so genuinely not an unpriced call).
         state: 'failed', provider: prev?.provider || result.provider, model: prev?.model ?? '', tokens: ZERO_TOKENS, costUSD: 0, unpriced: false,
         ...(result.transport !== undefined ? { transport: result.transport } : {}),
+        ...(detail !== undefined ? { detail } : {}),
+        // v26 (M-2 send-back repair, ADR-046, INV-V26-6, ARCH-111): the SAME spread the `done`
+        // branch above already has — a terminally-failed call's unmapped provider chatter is the
+        // exact call whose unmapped subtypes matter most, and `foldUsage` could never count one
+        // from this branch before (the field was silently dropped here only).
+        ...(result.unmapped && result.unmapped.length > 0 ? { unmapped: result.unmapped } : {}),
       });
       // Forward any partial transcript + the CLI error detail captured before a terminal failure,
       // so a 0-token `terminal` is diagnosable (the error subtype/text) instead of opaque.
@@ -388,7 +427,13 @@ export class AgentTranscriptSink {
         ts, kind: 'usage',
         // v26 integration: same reason as the done branch — a failed call's record carries
         // `transport` live, so the event must carry it or the restart-rebuilt record loses it.
-        data: { reason: result.reason, provider: result.provider, detail: result.detail, ...(result.transport !== undefined ? { transport: result.transport } : {}) },
+        // v26 (M-2 send-back repair): `unmapped` rides this event too, same spread as the done
+        // branch — the terminally-failed call whose unmapped provider chatter matters most.
+        data: {
+          reason: result.reason, provider: result.provider, detail: result.detail,
+          ...(result.transport !== undefined ? { transport: result.transport } : {}),
+          ...(result.unmapped && result.unmapped.length > 0 ? { unmapped: result.unmapped } : {}),
+        },
       });
     }
   }
@@ -646,6 +691,10 @@ export class AgentExecutor implements AgentSpawner {
         const stored = secretValueProvider
           ? redact(ev, secretValueProvider.entries()) as TranscriptEvent
           : ev;
+        // v26 (H-3 repair, INV-V26-5): same cap-after-redact as `_emit` above — the streaming path's
+        // own persist site for an SDK `kind:'message'` error event (`_drain`'s streaming branch).
+        const data = stored.data as { detail?: unknown } | undefined;
+        if (typeof data?.detail === 'string') stored.data = { ...data, detail: capDetail(data.detail) };
         await store.appendTranscript(req.runId, req.agentId, stored);
       }
       sink.markActivity(req.agentId, ev.ts);

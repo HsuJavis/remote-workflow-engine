@@ -9,13 +9,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events'; // a real ChildProcess IS an EventEmitter — the fake must be too (v23 adjudication #6 V-2)
 import type { ChildProcess } from 'node:child_process';
-import { LiteLLMGatewayClient } from '../../src/gateway/client.js';
+import { LiteLLMGatewayClient, wireEffort } from '../../src/gateway/client.js';
 import type { GatewayConfig } from '../../src/gateway/client.js';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
+import type { Caps } from '../../src/types.js';
 
 const ALIASES: GatewayConfig['aliases'] = {
   sonnet: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
   local: { provider: 'ollama', model: 'qwen2.5:7b' },
+  router: { provider: 'openrouter', model: 'meta-llama/llama-3-70b' },
 };
 
 // Same fake-proxy pattern as tests/integration/gateway-provider-down.test.ts (IT-005): the proxy's
@@ -85,6 +87,68 @@ describe('LiteLLMGatewayClient effort-on-the-wire (UT-101, DES-106)', () => {
 
     expect(result.ok).toBe(true);
     expect(captured?.effortApplied).toEqual(expect.objectContaining({ applied: false }));
+  });
+});
+
+// UT-228 (H-1 send-back repair, ARCH-117, ADR-045, INV-V26-2): before this repair,
+// `LiteLLMGatewayClient.invoke` computed `applied` via a private `resolveEffortApplied` — a FOURTH
+// effort table that hardcoded the anthropic placement and returned a flat generic reason for every
+// other provider, never reading `req.caps`/`PROVIDER_CAPS`. `ClaudeAgentSdkGatewayClient` already
+// called the real `wireEffort`. The two transports therefore disagreed in MESSAGE for openrouter
+// (the generic "no reasoning dial for this provider" vs `wireEffort`'s VAL-186-measured reason).
+// This pins the fix: the direct-fetch transport's own `effortApplied` (captured via `onHarness`) is
+// now BYTE-IDENTICAL to calling `wireEffort` directly with the same (provider, caps, effort) — by
+// construction, since `invoke()` now calls `wireEffort` itself instead of a second mapper.
+// Mock policy (unit): fetchImpl spy, no network.
+describe('direct-fetch effortApplied is IDENTICAL to wireEffort(provider, caps, effort) (UT-228, H-1 repair)', () => {
+  const ORIGINAL_KEY = process.env['ANTHROPIC_API_KEY'];
+  const ORIGINAL_OR_KEY = process.env['OPENROUTER_API_KEY'];
+  beforeEach(() => {
+    process.env['ANTHROPIC_API_KEY'] = 'fake-unit-test-key';
+    process.env['OPENROUTER_API_KEY'] = 'fake-unit-test-key';
+  });
+  afterEach(() => {
+    if (ORIGINAL_KEY === undefined) delete process.env['ANTHROPIC_API_KEY'];
+    else process.env['ANTHROPIC_API_KEY'] = ORIGINAL_KEY;
+    if (ORIGINAL_OR_KEY === undefined) delete process.env['OPENROUTER_API_KEY'];
+    else process.env['OPENROUTER_API_KEY'] = ORIGINAL_OR_KEY;
+  });
+
+  it('openrouter, caps.reasoning:true — direct-fetch reports the SAME effortApplied as wireEffort (previously differed: this transport had no capability term at all)', async () => {
+    const { fetchImpl } = spyFetch();
+    const caps: Caps = { reasoning: true, tools: true, source: 'upstream' };
+    const gw = new LiteLLMGatewayClient({ aliases: ALIASES, timeoutMs: 5000, retries: 0, fetchImpl });
+    let captured: { effortApplied?: unknown } | undefined;
+    const onHarness = async (h: unknown): Promise<void> => { captured = h as { effortApplied?: unknown }; };
+    const result = await gw.invoke({ prompt: 'hi', opts: { model: 'router', effort: 'low' }, runId: 'r1', agentId: 'a1', onHarness, caps });
+
+    expect(result.ok).toBe(true);
+    const expected = wireEffort('openrouter', caps, 'low').applied;
+    expect(captured?.effortApplied).toEqual(expected);
+    // Not the old generic reason — proves the fix reads caps/PROVIDER_CAPS, not a hardcoded literal.
+    expect((captured?.effortApplied as { reason?: string } | undefined)?.reason).not.toBe('no reasoning dial for this provider');
+  });
+
+  it('anthropic — direct-fetch reports the SAME effortApplied as wireEffort, reading PROVIDER_CAPS (not a duplicated literal)', async () => {
+    const { fetchImpl } = spyFetch();
+    const caps: Caps = { reasoning: true, tools: true, source: 'static' };
+    const gw = new LiteLLMGatewayClient({ aliases: ALIASES, timeoutMs: 5000, retries: 0, fetchImpl });
+    let captured: { effortApplied?: unknown } | undefined;
+    const onHarness = async (h: unknown): Promise<void> => { captured = h as { effortApplied?: unknown }; };
+    const result = await gw.invoke({ prompt: 'hi', opts: { model: 'sonnet', effort: 'high' }, runId: 'r1', agentId: 'a1', onHarness, caps });
+
+    expect(result.ok).toBe(true);
+    expect(captured?.effortApplied).toEqual(wireEffort('anthropic', caps, 'high').applied);
+  });
+
+  it('no effort requested at all — direct-fetch still omits effortApplied entirely (pre-v26 byte-identical shape preserved)', async () => {
+    const { fetchImpl } = spyFetch();
+    const gw = new LiteLLMGatewayClient({ aliases: ALIASES, timeoutMs: 5000, retries: 0, fetchImpl });
+    let captured: { effortApplied?: unknown } | undefined;
+    const onHarness = async (h: unknown): Promise<void> => { captured = h as { effortApplied?: unknown }; };
+    await gw.invoke({ prompt: 'hi', opts: { model: 'sonnet' }, runId: 'r1', agentId: 'a1', onHarness });
+
+    expect(captured && 'effortApplied' in captured).toBe(false);
   });
 });
 

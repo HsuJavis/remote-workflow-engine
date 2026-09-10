@@ -81,6 +81,10 @@ export function deriveAgentRecords(
         tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
         provider?: string; model?: string; costUSD?: number; unpriced?: boolean; unmapped?: string[];
         transport?: 'claude-agent-sdk' | 'direct-fetch'; proxyModel?: string;
+        // v26 (H-3/M-2 send-back repair, DES-188 lock): the failed-branch usage event carries both
+        // — read here so a restart-reconstructed record stays byte-identical to the live one
+        // `capture()` built (ARCH-115: "answerable from the record alone" must survive a restart).
+        detail?: string;
       };
       const startedAt = firstHarnessTs;
       const endedAt = usage.ts;
@@ -105,6 +109,11 @@ export function deriveAgentRecords(
           agentId, state: 'failed', provider: data.provider ?? 'unknown', model: harnessDescriptor?.model ?? '',
           tokens: ZERO_TOKENS, costUSD: 0, unpriced: false,
           ...(data.transport !== undefined ? { transport: data.transport } : {}),
+          // v26 (H-3/M-2 send-back repair, DES-188 lock): same fields `capture()`'s failed branch
+          // sets live — present only when the event carries them, matching the ok-branch's own
+          // `unmapped` convention two lines below in that branch.
+          ...(data.detail !== undefined ? { detail: data.detail } : {}),
+          ...(data.unmapped && data.unmapped.length > 0 ? { unmapped: data.unmapped } : {}),
           ...(startedAt !== undefined ? { startedAt } : {}),
           ...(endedAt !== undefined ? { endedAt } : {}),
         }, harnessCommon));

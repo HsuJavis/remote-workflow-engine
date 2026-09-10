@@ -245,6 +245,13 @@ export interface LayoutCell {
   agentId?: string;
   frame?: string;
   depth?: number;
+  /** v26 (M-4 send-back repair, ARCH-118, REQ-127): per-call cost attribution on the DAG cell
+   *  itself — `run_status.agents[]` already carries these three; the cell payload didn't. Optional,
+   *  additive: present only on a LIVE agent cell (never on a predicted/inert `__skel_*` one, which
+   *  has no dispatched call to report a cost for). Mirrors `AgentRecord`'s own fields verbatim. */
+  tokens?: AgentRecord['tokens'];
+  costUSD?: number;
+  unpriced?: boolean;
 }
 
 export interface LayoutEdge {
@@ -374,7 +381,7 @@ export function layoutGraph(
   // --- Implicit lane 0 (no resolvable lane — legally before the first phase()) ---
   for (const a of implicitLane0) {
     if (agentCellCount >= maxNodes) { truncated = true; break; }
-    placeCell(0, { id: a.agentId, kind: 'agent', laneSpan: 1, label: a.label, state: a.state, agentId: a.agentId });
+    placeCell(0, { id: a.agentId, kind: 'agent', laneSpan: 1, label: a.label, state: a.state, agentId: a.agentId, tokens: a.tokens, costUSD: a.costUSD, unpriced: a.unpriced });
   }
 
   // --- Declared lanes: label-matched (static) or frame-grouped-with-warning (dynamic) ---
@@ -386,7 +393,7 @@ export function layoutGraph(
       warnings.push(`lane ${lane.index}${lane.title ? ` (${lane.title})` : ''} is dynamic: agents cannot be statically slotted`);
       for (const a of laneAgents) {
         if (agentCellCount >= maxNodes) { truncated = true; break; }
-        placeCell(lane.index, { id: a.agentId, kind: 'agent', laneSpan: 1, label: a.label, state: a.state, agentId: a.agentId });
+        placeCell(lane.index, { id: a.agentId, kind: 'agent', laneSpan: 1, label: a.label, state: a.state, agentId: a.agentId, tokens: a.tokens, costUSD: a.costUSD, unpriced: a.unpriced });
         warnings.push(`agent ${a.agentId} unmatched to the predicted layout: frame-grouped`);
       }
       continue;
@@ -399,7 +406,7 @@ export function layoutGraph(
     for (const a of laneAgents) {
       if (agentCellCount >= maxNodes) { truncated = true; break; }
       const matched = a.label !== undefined && labelSet.has(a.label);
-      placeCell(lane.index, { id: a.agentId, kind: 'agent', laneSpan: 1, label: a.label, state: a.state, agentId: a.agentId });
+      placeCell(lane.index, { id: a.agentId, kind: 'agent', laneSpan: 1, label: a.label, state: a.state, agentId: a.agentId, tokens: a.tokens, costUSD: a.costUSD, unpriced: a.unpriced });
       if (!matched) warnings.push(`agent ${a.agentId} unmatched to the predicted layout: frame-grouped`);
     }
     // Inert cells for predicted slots that matched no live agent yet (v11 DES-064 behavior kept).
@@ -427,7 +434,7 @@ export function layoutGraph(
       warnings.push(`lane ${laneIdx} is beyond the predicted layout: appended`);
       for (const a of byLane.get(laneIdx)!) {
         if (agentCellCount >= maxNodes) { truncated = true; break; }
-        placeCell(laneIdx, { id: a.agentId, kind: 'agent', laneSpan: 1, label: a.label, state: a.state, agentId: a.agentId });
+        placeCell(laneIdx, { id: a.agentId, kind: 'agent', laneSpan: 1, label: a.label, state: a.state, agentId: a.agentId, tokens: a.tokens, costUSD: a.costUSD, unpriced: a.unpriced });
       }
     }
   }

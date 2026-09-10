@@ -2,10 +2,11 @@
 // finished while something still describes the deleted thing" is this ledger's single most-repeated
 // defect (nine recorded instances across v21/v22), so REQ-105's deletion is enforced by a grep guard
 // in CI, not by review discipline. `src/**` must mention "skeleton" (case-insensitive) NOWHERE outside
-// an EXACTLY-FOUR file allowlist (`workflow-meta.ts`, `dashboard.ts`, `server.ts` — the last for its
+// an EXACTLY-SIX file allowlist (`workflow-meta.ts`, `dashboard.ts`, `server.ts` — the last for its
 // unchanged, still-auth-gated `/api/runs/:id/dag` branch, ADR-022/v22 finding H2 — and
-// `graph-analyzer.ts`, added by Orchestrator adjudication (v23) #3, 04-design.md), and no advertised
-// MCP tool description or input-schema string may contain the word at all.
+// `graph-analyzer.ts`, added by Orchestrator adjudication (v23) #3, 04-design.md — and, per ADR-048's
+// amended Action line, `skeleton-graph.ts` and its one caller `workflow-catalog.ts`), and no
+// advertised MCP tool description or input-schema string may contain the word at all.
 //
 // Adjudication (v23) #3 criterion (S-2) for ANY allowlist membership — both required, or it is not
 // on the list: (1) the file consumes the skeleton INTERNALLY (layout, or grounding for the graph
@@ -23,11 +24,13 @@
 // reading this repo's own files, no server boot (same convention as no-mock static-grep guards
 // elsewhere in this ledger, e.g. schema-drift's own tools/list check but at the source-text level).
 //
-// Red reason: TODAY six files mention "skeleton" (`dashboard-page.ts`, `dashboard.ts`,
-// `mcp-facade.ts`, `server.ts`, `workflow-meta.ts`, `workflow-view.ts` — confirmed via
-// `grep -rIli skeleton src/`), three more than the allowlist permits; `workflow_source`'s own advertised
-// tool description ALSO contains the literal word "skeleton" (`server.ts` TOOL_METADATA, confirmed by
-// direct read) — both assertions fail against the current tree, for the genuine unimplemented reason.
+// Red reason (frozen v22/23 history — the allowlist was FOUR entries at the time this was written
+// test-first; it is SIX now, per ADR-048's amended Action line, see the file header above): TODAY
+// six files mention "skeleton" (`dashboard-page.ts`, `dashboard.ts`, `mcp-facade.ts`, `server.ts`,
+// `workflow-meta.ts`, `workflow-view.ts` — confirmed via `grep -rIli skeleton src/`), three more than
+// the allowlist permits; `workflow_source`'s own advertised tool description ALSO contains the
+// literal word "skeleton" (`server.ts` TOOL_METADATA, confirmed by direct read) — both assertions
+// fail against the current tree, for the genuine unimplemented reason.
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { projectToolsList } from '../../src/tool-specs.js';
@@ -43,8 +46,10 @@ const SRC_ROOT = join(__dirname, '..', '..', 'src');
 // prevent. `workflow-catalog.ts` joins on exactly the same argument, because ADR-048's own sentence
 // describes THAT file: `validateRegistration` is the call site that invokes the derivation and
 // throws the refusal.
-// FLAGGED for Gate 8: ADR-048's Action line names only `skeleton-graph.ts`; it should be amended to
-// name its one caller too, since the adjudication's reasoning is about that caller's behaviour.
+// Gate 8 (2026-09-11) CLOSED that flag as finding A-2: ADR-048's Action line is amended to name both
+// members and to pin SIX, adjudicating each by S-2 in its own `- **amended (2026-09-11, …, A-2):**`
+// bullet in `02-architecture.md`. Ledger and allowlist now agree; the entries below and the pinned
+// size are unchanged by that amendment — growth still costs an argument, not an edit.
 const ALLOWLIST = new Set(['workflow-meta.ts', 'dashboard.ts', 'server.ts', 'graph-analyzer.ts', 'skeleton-graph.ts', 'workflow-catalog.ts']);
 
 function listTsFiles(dir: string): string[] {
@@ -59,7 +64,7 @@ function listTsFiles(dir: string): string[] {
 }
 
 describe('no-skeleton-surface guard (UT-115, ADR-022, REQ-105)', () => {
-  it('src/** mentions "skeleton" (case-insensitive) NOWHERE outside the exactly-four-file allowlist', () => {
+  it('src/** mentions "skeleton" (case-insensitive) NOWHERE outside the exactly-six-file allowlist (ADR-048)', () => {
     const violators: string[] = [];
     for (const file of listTsFiles(SRC_ROOT)) {
       const base = relative(SRC_ROOT, file);

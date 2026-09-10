@@ -6,7 +6,15 @@ import type { AgentOpts, Caps, HarnessDescriptor, TranscriptEvent } from '../typ
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import { LiteLLMProxyManager, proxyModelName } from './litellm-proxy.js';
 import { redactHarness } from '../agent-executor.js';
+import { PROVIDER_CAPS } from '../providers.js';
 import type { Provider } from '../providers.js';
+
+/** v26 (DES-178/DES-179, ARCH-116/ARCH-117): the fail-safe capability BOTH gateways resolve
+ *  `wireEffort` against when no run pin was threaded onto `req.caps` (no admission-time pin
+ *  available, or a caller that never wires one) — the single shared copy of what used to be a
+ *  private constant on the SDK client only, so a direct-fetch call without a pin degrades exactly
+ *  the same way an SDK call without one does. */
+export const UNKNOWN_CAPS: Caps = { reasoning: 'unknown', tools: 'unknown', source: 'unknown' };
 
 export interface AliasMap {
   [alias: string]: { provider: Provider; model: string };
@@ -31,19 +39,6 @@ export type EffortApplied =
   | { applied: true; param: string; restPath: string[]; value: unknown }
   | { applied: false; reason: string };
 
-/** v26 (DES-173, ARCH-112, TASK-174, REQ-123): the single shared pure mapper, called ONCE per
- *  invoke inside each gateway — replaces the retired `EFFORT_PROFILES`/`profileFor`/`mapEffort`
- *  trio now that `anthropic` is the only provider with a reasoning-effort dial (`openrouter`'s own
- *  `thinking`/`budget_tokens` dial is DES-179/`wireEffort`'s job, gated on a pinned capability this
- *  gateway does not have yet — out of scope here). Absent (`undefined`) when no effort was ever
- *  requested — effort-absent request composition must stay byte-identical to pre-v21 on both
- *  clients (pinned by UT-101). */
-export function resolveEffortApplied(provider: string | undefined, effort: AgentOpts['effort']): EffortApplied | undefined {
-  if (effort === undefined) return undefined;
-  if (provider !== 'anthropic') return { applied: false, reason: 'no reasoning dial for this provider' };
-  return { applied: true, param: 'effort', restPath: ['output_config', 'effort'], value: effort };
-}
-
 /** v26 (DES-179, ARCH-117, TASK-179, REQ-126, issue #71): the reasoning-effort budget levels the
  *  deployed LiteLLM proxy translates into upstream `reasoning_effort` low/medium/high for the
  *  openrouter `thinking.budgetTokens` dial. A claim about a THIRD PARTY: `result.usage` carries no
@@ -63,8 +58,11 @@ export const REASONING_BUDGET: Record<NonNullable<AgentOpts['effort']>, number> 
  *  the pre-v26 byte-identical shape: `anthropic` leaves `thinking` at the SDK default (`undefined`),
  *  every other (or absent) provider disables it explicitly — independent of `caps`, matching
  *  `resolveThinkingMode`'s retired alias-aware behavior (claude-agent-sdk-client.ts) byte for byte.
- *  `effortBodyFields` below (the direct-fetch transport) reads the same `PROVIDER_CAPS` table for its
- *  own body — two transport-local writers, one table, no third (ADR-045). */
+ *  This is the ONE function that reads `PROVIDER_CAPS` for the effort placement (the anthropic arm,
+ *  below) — `LiteLLMGatewayClient.invoke` (direct-fetch) calls this SAME function for its own
+ *  `applied`, exactly like `ClaudeAgentSdkGatewayClient` does, so the two transports can never
+ *  disagree; `effortBodyFields` below only PROJECTS the already-resolved `EffortApplied` into REST
+ *  body fields — one table, one reader, no third (ADR-045). */
 export function wireEffort(
   provider: Provider | undefined,
   caps: Caps,
@@ -77,10 +75,15 @@ export function wireEffort(
     };
   }
   if (provider === 'anthropic') {
+    // ADR-045: the ONE effort table — read here instead of a hardcoded literal, so this is the
+    // single source both transports' `applied` ultimately comes from.
+    const profile = PROVIDER_CAPS.anthropic.effort;
     return {
       thinking: undefined, // SDK default
       effort,
-      applied: { applied: true, param: 'effort', restPath: ['output_config', 'effort'], value: effort },
+      applied: profile
+        ? { applied: true, param: profile.param, restPath: profile.restPath, value: effort }
+        : { applied: false, reason: 'no reasoning dial for this provider' },
     };
   }
   if (provider === 'openrouter') {
@@ -182,8 +185,8 @@ export interface GatewayClient {
   /** `onHarness` (DES-066 / TASK-069): optional hook called eagerly at session-build time (post-curation,
    *  before any query) with the redacted `HarnessDescriptor`. The executor wires this to append a
    *  `{kind:'harness'}` transcript event so deriveAgentRecords can surface the dispatched agent's model.
-   *  `applied` (DES-106 / TASK-102): the same `EffortApplied` object `resolveEffortApplied` computed,
-   *  when any effort directive was requested — recorded ≡ applied by object identity, never a re-lookup. */
+   *  `applied` (DES-106 / TASK-102): the same `EffortApplied` object `wireEffort` computed, when any
+   *  effort directive was requested — recorded ≡ applied by object identity, never a re-lookup. */
   invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string;
     /** v24 (ARCH-103/DES-154, TASK-145): this label's declared skill/mcp asset names + the asset
      *  store's two scope roots — only `ClaudeAgentSdkGatewayClient` consumes it (selective
@@ -195,8 +198,8 @@ export interface GatewayClient {
      *  turn-by-turn stream (LiteLLMGatewayClient) never call it — unchanged terminal-only behavior. */
     onEvent?: (ev: TranscriptEvent) => void | Promise<void>;
     /** v26 (DES-179, ARCH-117, TASK-179): the run's admission-time pinned capability for THIS call's
-     *  model (ARCH-116) — only `ClaudeAgentSdkGatewayClient`'s `wireEffort` call reads it today;
-     *  other gateways ignore it, unchanged. Absent -> the fail-safe branch (see `wireEffort`). */
+     *  model (ARCH-116) — both gateways thread it into their own `wireEffort` call. Absent -> the
+     *  fail-safe branch (see `wireEffort` / `UNKNOWN_CAPS`). */
     caps?: Caps }): Promise<GatewayResult>;
   /** D-V2I-6: optional lifecycle hook — a gateway that owns a subprocess (e.g.
    *  `LiteLLMGatewayClient`'s managed `LiteLLMProxyManager`) cascades the stop here so
@@ -231,7 +234,7 @@ export interface GatewayConfig {
 }
 
 type ProviderTarget = AliasMap[string];
-type AttemptFailure = { ok: false; provider: string; reason: 'timeout' | 'unreachable' | 'terminal' };
+type AttemptFailure = Extract<GatewayResult, { ok: false }>;
 
 /** DES-106/P-A1: the wire-level fields an applied effort directive contributes to an outbound
  *  Anthropic-Messages-shaped request body — nested per `applied.restPath` (the documented contract
@@ -239,6 +242,35 @@ type AttemptFailure = { ok: false; provider: string; reason: 'timeout' | 'unreac
  *  applies (untargeted provider) or no effort was requested. */
 function effortBodyFields(applied: EffortApplied | undefined): Record<string, unknown> {
   return applied?.applied ? applied.restPath.reduceRight<unknown>((acc, key) => ({ [key]: acc }), applied.value) as Record<string, unknown> : {};
+}
+
+/** v26 (H-2 repair, ARCH-111, ADR-040, issue #65): the direct-fetch transport's own terminal
+ *  classification — the SAME 401/403/404 the SDK client's `classifyApiError` treats as un-retryable
+ *  (`claude-agent-sdk-client.ts`'s `TERMINAL_ERROR_KINDS`/status heuristic). `retryable:false` ends
+ *  the attempt immediately instead of burning the full `timeoutMs × (1+retries)` bound against a
+ *  provider that already said no; `detail` names the status so a 401 vs 403 vs 404 vs a 5xx is
+ *  distinguishable in the record (previously indistinguishable — issue #65's own cost). */
+function terminalHttpFailure(provider: string, reason: 'timeout' | 'unreachable' | 'terminal', res: { status: number; statusText: string }): AttemptFailure {
+  const isTerminal = res.status === 401 || res.status === 403 || res.status === 404;
+  return {
+    ok: false, provider, reason,
+    detail: `${res.status} ${res.statusText}`,
+    ...(isTerminal ? { retryable: false as const } : {}),
+  };
+}
+
+/** v26 (M-1 send-back repair, ADR-046 D-V26-projection): reads a numeric usage field from a parsed
+ *  provider body, naming the drop (pushed onto `gaps` as `usage.<name>`, the SAME `unmapped` array
+ *  REQ-125's unmapped-subtype counter already reaches `run_result.meta.unmappedMessages` through —
+ *  ADR-046 groups both under one class) when the field is missing or not a number, rather than
+ *  silently reading 0. Used ONLY for `input`/`output` — unambiguous on every provider's healthy
+ *  response. Cache columns are NOT run through this: openrouter's are documented optional and
+ *  LiteLLM may strip anthropic's on the proxy branch, so a healthy call routinely omits them; a
+ *  counter that fires on every healthy call has no reader. */
+function numField(v: unknown, name: string, gaps: string[]): number {
+  if (typeof v === 'number') return v;
+  gaps.push(`usage.${name}`);
+  return 0;
 }
 
 /** Real provider call — one impl per provider, all sharing the same bounded-timeout contract. */
@@ -262,50 +294,60 @@ async function callProvider(
     switch (target.provider) {
       case 'anthropic': {
         const apiKey = process.env['ANTHROPIC_API_KEY'];
-        if (!apiKey) return { ok: false, provider: 'anthropic', reason: 'terminal' };
+        if (!apiKey) return { ok: false, provider: 'anthropic', reason: 'terminal', detail: 'ANTHROPIC_API_KEY not set' };
         const res = await fetchImpl('https://api.anthropic.com/v1/messages', {
           method: 'POST',
           signal: controller.signal,
           headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json', ...correlationHeaders },
           body: JSON.stringify({ model: target.model, max_tokens: 1024, messages: [{ role: 'user', content: req.prompt }], ...effortBodyFields(applied) }),
         });
-        if (!res.ok) return { ok: false, provider: 'anthropic', reason: res.status >= 500 ? 'unreachable' : 'terminal' };
+        if (!res.ok) return terminalHttpFailure('anthropic', res.status >= 500 ? 'unreachable' : 'terminal', res);
         const data = (await res.json()) as any;
         const content = Array.isArray(data.content) ? data.content.map((c: any) => c.text ?? '').join('') : data.content;
+        const anthropicGaps: string[] = [];
         return {
           ok: true, provider: 'anthropic', model: target.model,
           // v26 (DES-180): the real Anthropic Messages API shape — same four fields the SDK path
           // reads (claude-agent-sdk-client.ts's _drain).
           tokens: {
-            input: data.usage?.input_tokens ?? 0, output: data.usage?.output_tokens ?? 0,
+            input: numField(data.usage?.input_tokens, 'input_tokens', anthropicGaps),
+            output: numField(data.usage?.output_tokens, 'output_tokens', anthropicGaps),
             cacheRead: data.usage?.cache_read_input_tokens ?? 0, cacheWrite: data.usage?.cache_creation_input_tokens ?? 0,
           },
           content,
+          ...(anthropicGaps.length > 0 ? { unmapped: anthropicGaps } : {}),
         };
       }
       case 'openrouter': {
         // REQ-038: OpenRouter speaks an OpenAI-shaped chat-completions API; its key is its OWN env
         // var (OPENROUTER_API_KEY), independent of any other provider's credentials.
         const apiKey = process.env['OPENROUTER_API_KEY'];
-        if (!apiKey) return { ok: false, provider: 'openrouter', reason: 'terminal' };
+        if (!apiKey) return { ok: false, provider: 'openrouter', reason: 'terminal', detail: 'OPENROUTER_API_KEY not set' };
         const res = await fetchImpl('https://openrouter.ai/api/v1/chat/completions', {
           method: 'POST',
           signal: controller.signal,
           headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json', ...correlationHeaders },
-          body: JSON.stringify({ model: target.model, messages: [{ role: 'user', content: req.prompt }] }),
+          // v26 (H-1 repair): same `...effortBodyFields(applied)` spread as the anthropic (above)
+          // and proxy (callViaLiteLLMProxy) branches — a no-op `{}` today (VAL-186: `wireEffort`'s
+          // openrouter arm never resolves `applied:true`), but the branch shape now matches its
+          // siblings instead of silently omitting the field.
+          body: JSON.stringify({ model: target.model, messages: [{ role: 'user', content: req.prompt }], ...effortBodyFields(applied) }),
         });
-        if (!res.ok) return { ok: false, provider: 'openrouter', reason: res.status >= 500 ? 'unreachable' : 'terminal' };
+        if (!res.ok) return terminalHttpFailure('openrouter', res.status >= 500 ? 'unreachable' : 'terminal', res);
         const data = (await res.json()) as any;
+        const openrouterGaps: string[] = [];
         return {
           ok: true, provider: 'openrouter', model: target.model,
           // v26 (DES-180): OpenRouter's OpenAI-shaped usage carries cache read under
           // `prompt_tokens_details.cached_tokens` and cache write as a top-level `cache_write_tokens`
           // (present for providers OpenRouter fronts that report it, e.g. an Anthropic passthrough).
           tokens: {
-            input: data.usage?.prompt_tokens ?? 0, output: data.usage?.completion_tokens ?? 0,
+            input: numField(data.usage?.prompt_tokens, 'prompt_tokens', openrouterGaps),
+            output: numField(data.usage?.completion_tokens, 'completion_tokens', openrouterGaps),
             cacheRead: data.usage?.prompt_tokens_details?.cached_tokens ?? 0, cacheWrite: data.usage?.cache_write_tokens ?? 0,
           },
           content: data.choices?.[0]?.message?.content,
+          ...(openrouterGaps.length > 0 ? { unmapped: openrouterGaps } : {}),
         };
       }
       case 'ollama': {
@@ -316,14 +358,20 @@ async function callProvider(
           headers: { 'content-type': 'application/json', ...correlationHeaders },
           body: JSON.stringify({ model: target.model, prompt: req.prompt, stream: false }),
         });
-        if (!res.ok) return { ok: false, provider: 'ollama', reason: res.status === 404 ? 'terminal' : 'unreachable' };
+        if (!res.ok) return terminalHttpFailure('ollama', res.status === 404 ? 'terminal' : 'unreachable', res);
         const data = (await res.json()) as any;
+        const ollamaGaps: string[] = [];
         return {
           ok: true, provider: 'ollama', model: target.model,
           // v26 (DES-180): ollama has no prompt-cache concept — cache columns are a KNOWN 0, never
           // an absence.
-          tokens: { input: data.prompt_eval_count ?? 0, output: data.eval_count ?? 0, cacheRead: 0, cacheWrite: 0 },
+          tokens: {
+            input: numField(data.prompt_eval_count, 'prompt_eval_count', ollamaGaps),
+            output: numField(data.eval_count, 'eval_count', ollamaGaps),
+            cacheRead: 0, cacheWrite: 0,
+          },
           content: data.response,
+          ...(ollamaGaps.length > 0 ? { unmapped: ollamaGaps } : {}),
         };
       }
       default:
@@ -385,18 +433,21 @@ async function callViaLiteLLMProxy(
       // prefix must be applied identically on both sides; this side was the one that was missed.
       body: JSON.stringify({ model: proxyModelName(aliasName), max_tokens: 1024, messages: [{ role: 'user', content: req.prompt }], ...effortBodyFields(applied) }),
     });
-    if (!res.ok) return { ok: false, provider: target.provider, reason: res.status >= 500 ? 'unreachable' : 'terminal' };
+    if (!res.ok) return terminalHttpFailure(target.provider, res.status >= 500 ? 'unreachable' : 'terminal', res);
     const data = (await res.json()) as any;
     const content = Array.isArray(data.content) ? data.content.map((c: any) => c.text ?? '').join('') : data.content;
+    const proxyGaps: string[] = [];
     return {
       ok: true, provider: target.provider, model: target.model,
       // v26 (DES-180): the Anthropic-Messages-shaped proxy response — same four fields as the
       // anthropic-direct branch above.
       tokens: {
-        input: data.usage?.input_tokens ?? 0, output: data.usage?.output_tokens ?? 0,
+        input: numField(data.usage?.input_tokens, 'input_tokens', proxyGaps),
+        output: numField(data.usage?.output_tokens, 'output_tokens', proxyGaps),
         cacheRead: data.usage?.cache_read_input_tokens ?? 0, cacheWrite: data.usage?.cache_creation_input_tokens ?? 0,
       },
       content,
+      ...(proxyGaps.length > 0 ? { unmapped: proxyGaps } : {}),
     };
   } catch (err) {
     return { ok: false, provider: target.provider, reason: err instanceof Error && err.name === 'AbortError' ? 'timeout' : 'unreachable' };
@@ -416,13 +467,25 @@ export class LiteLLMGatewayClient implements GatewayClient {
     }
   }
 
-  async invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void> }): Promise<GatewayResult> {
+  async invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>;
+    /** v26 (DES-179, ARCH-117): the run's admission-time pinned capability (ARCH-116) — the
+     *  `GatewayClient` interface's own field, now actually declared and read here (previously
+     *  dropped in silence by structural typing: `AgentExecutor` always sent it). Absent -> `wireEffort`'s
+     *  fail-safe (`UNKNOWN_CAPS`), same as the SDK transport. */
+    caps?: Caps }): Promise<GatewayResult> {
     const aliasName = req.opts.model ?? 'default';
     const target = this._config.aliases[aliasName];
-    if (!target) return { ok: false, provider: 'unknown', reason: 'terminal' };
+    if (!target) return { ok: false, provider: 'unknown', reason: 'terminal', detail: `no alias registered for model "${aliasName}"` };
     // DES-106 (TASK-102): computed ONCE per invoke, inside the gateway — the provider is only
     // resolvable here. The SAME object travels to onHarness AND (below) onto the outbound request.
-    const applied = resolveEffortApplied(target.provider, req.opts.effort);
+    // v26 (H-1 repair): routed through the SAME `wireEffort` the SDK transport uses (ADR-045's one
+    // table, one reader) instead of a second hardcoded mapper — the two transports can no longer
+    // disagree about what `effortApplied` says for the same (provider, caps, effort). Gated on
+    // `req.opts.effort !== undefined` to keep the pre-v26 byte-identical shape (no `effortApplied`
+    // field at all when no effort was ever requested) — `wireEffort.applied` is ALWAYS present,
+    // unlike the retired `resolveEffortApplied`'s `undefined` short-circuit.
+    const applied: EffortApplied | undefined =
+      req.opts.effort !== undefined ? wireEffort(target.provider, req.caps ?? UNKNOWN_CAPS, req.opts.effort).applied : undefined;
     // DES-066 (TASK-069): emit harness descriptor eagerly at model-resolution time (surfaceType:'none'
     // — direct-fetch has no curated tool surface). The prompt rides UNCUT: the 4KB head+tail cap is
     // applied at the persist site after `redact()` (review §R2 R-G9 — capping first can split a
@@ -464,6 +527,10 @@ export class LiteLLMGatewayClient implements GatewayClient {
           : await callProvider(target, req, effTimeout, fetchImpl, req.signal, applied),
       );
       if (last.ok) return last;
+      // v26 (H-2 repair, ARCH-111, ADR-040): the same terminal break the SDK client already has
+      // (claude-agent-sdk-client.ts's own `invoke()` loop) — a `retryable:false` attempt (401/403/404)
+      // ends here instead of burning the rest of the configured retry bound.
+      if (!last.ok && last.retryable === false) break;
     }
     return last;
   }

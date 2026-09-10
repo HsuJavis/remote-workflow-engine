@@ -167,4 +167,30 @@ describe('the run DAG: Fit survives a pan, and the four token columns are readab
       await browser.close();
     }
   }, 60000);
+
+  // M-4 send-back repair (ARCH-118, REQ-127): the RUN-LEVEL total above already carried all four
+  // columns; the PER-CELL cost attribution on the DAG itself did not — `run_status.agents[]` and
+  // the dashboard agent detail both name the surface. Extends this same case rather than a new
+  // file, per its own header's "real Chromium, real mouse events" scope.
+  itReal('each agent cell on the run DAG shows its own token count and cost, not just the run total', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.setViewport({ width: 1100, height: 900 });
+      await page.goto(`${baseUrl}/dashboard/${runId}`, { waitUntil: 'networkidle0' });
+      await page.waitForSelector('#dag-graph text');
+
+      const cellTexts = await page.$$eval('#dag-graph text', (nodes: any[]) => nodes.map((n) => n.textContent ?? ''));
+      // At least one per-cell line (distinct from the label lines and the warnings badge) names a
+      // token count AND a dollar figure — the per-agent cost attribution this repair adds.
+      const usageLines = cellTexts.filter((t: string) => /tok/.test(t) && /\$/.test(t));
+      expect(usageLines.length).toBeGreaterThan(0);
+      // The per-agent sum (53 = 39+2+5+7) is readable on at least one cell — proves it reads the
+      // REAL per-call record, not a repeated/hardcoded figure.
+      expect(usageLines.some((t: string) => /53\s*tok/.test(t))).toBe(true);
+    } finally {
+      await browser.close();
+    }
+  }, 60000);
 });

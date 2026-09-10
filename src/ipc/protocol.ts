@@ -1,5 +1,5 @@
 // IPC message protocol (DES-006). Pure discriminated-union types; no implementation needed.
-import type { AgentOpts } from '../types.js';
+import type { AgentOpts, Tokens } from '../types.js';
 
 // child → parent
 export type ChildMsg =
@@ -12,10 +12,13 @@ export type ChildMsg =
 
 // parent → child
 export type ParentMsg =
-  // `spent` (D-F8): the real cumulative RunGuard token total as of this call's completion,
-  // piggybacked so the child can keep its own script-visible budget.spent()/remaining() live
-  // instead of a hard-coded stub.
-  | { t: 'agentResult';    callSeq: number; value: unknown | null; spent?: number }
+  // `spent` (D-F8; v26 ARCH-118, M-6 send-back repair): the run's cumulative spend as of this
+  // call's completion — `{usd, tokens}`, matching `SandboxHostConfig.onBudgetSnapshot`'s own return
+  // shape (host.ts) and the child's own `Spend` reader (child-entry.ts) — piggybacked so the child
+  // can keep its own script-visible budget.spent()/remaining() live instead of a hard-coded stub.
+  // This was a bare `number` (the pre-v26 token-only total) after DES-182 widened the wire to four
+  // token columns plus USD everywhere else in this same file except here.
+  | { t: 'agentResult';    callSeq: number; value: unknown | null; spent?: { usd: number; tokens: Tokens } }
   | { t: 'workflowResult'; callSeq: number; value: unknown }
   | { t: 'agentThrow';     callSeq: number; error: { code: string; message: string } }
   | { t: 'abort';          reason: 'suspend' | 'stop' }

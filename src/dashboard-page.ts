@@ -580,6 +580,17 @@ function renderGraph(payload, runId){
     label.setAttribute('font-size','11'); label.setAttribute('fill','#4A4842');
     label.textContent=c.label||c.kind||'';
     g.appendChild(label);
+    // v26 (M-4 send-back repair, ARCH-118, REQ-127): the per-call cost line — tokens/cost/unpriced
+    // beside the label, same three facts renderAgent's DOM cell already shows for the legacy
+    // DagNode path. Present only on a live agent cell that carries tokens (never on a predicted/
+    // inert __skel_ cell, which has no dispatched call to report).
+    if(c.kind==='agent' && c.tokens){
+      var usageLine=document.createElementNS(ns,'text');
+      usageLine.setAttribute('x',String(r.x+8)); usageLine.setAttribute('y',String(r.y+r.height/2+16));
+      usageLine.setAttribute('font-size','9'); usageLine.setAttribute('fill','#6B6558');
+      usageLine.textContent=sumTokens(c.tokens)+' tok · $'+(c.costUSD||0).toFixed(4)+(c.unpriced?' (unpriced)':'');
+      g.appendChild(usageLine);
+    }
     if(c.kind==='agent' && runId){
       g.style.cursor='pointer';
       g.onclick=function(){ loadTranscript(runId,c.agentId||c.id,c.label); };

@@ -2953,3 +2953,343 @@ and unaffected.
 
 No production code, test or requirement was touched; no gate flag was flipped (Gate 8 is the
 orchestrator's to launch); `state.yaml` was deliberately not edited and still parses.
+
+## 2026-09-10 — v26 Gate 8 review (reviewer): NOT PASSED — send back to impl + architecture, 4 HIGH
+
+Consolidated the two PRE-RUN architecture-expert groups (`.panel/review/adversarial.md`,
+`quality-dimensions.md` — both `consistent: no`, 11 and 16 findings) rather than re-spawning them, per
+the dispatch. **Every blocking claim was re-verified by this reviewer against source at `file:line`;
+nothing was taken from a panel summary or an IMPL note.** Verdict `send_back = ["impl","architecture"]`,
+`arch_consistent = false`, gaps **high 4 / mid 9 / low 51**. Full detail in `07-review.md`'s v26 section.
+
+Routing rule, stated once and applied mechanically: **blocking** = (a) code violates a declared
+`INV-V26-*` / `ARCH-*` **api** clause, or (b) the architecture body contradicts an **owner ruling
+already recorded in this ledger**; **debt** = ARCH text merely predates what shipped, code is right and
+honest, no external reader misled, not a repeat miss.
+
+**impl (10):** H-1 `resolveEffortApplied` is a fourth effort table and `gateway/client.ts` reads
+`PROVIDER_CAPS` nowhere — only a comment at `:66` claims it does (INV-V26-2/ADR-045), with
+`invoke()` silently dropping the `caps?: Caps` the interface gained and the openrouter direct branch
+omitting `effortBodyFields` entirely; H-2 no `retryable:false`, no terminal break and no
+`detail`/status on any direct-fetch `!res.ok` arm (ARCH-111/ADR-040/REQ-122) — `grep -n retryable`
+finds only the type declaration; H-3 `detail` is capped BEFORE `redact()`, `AgentRecord.detail` was
+never implemented at all, and the REQ-083 sink sweep gained no case (INV-V26-5, all three clauses);
+H-4 `catalogFetchedAt` is a hardcoded `null` while two surfaces advertise it as provenance, and
+`models_list` bypasses `ModelBook`'s TTL and single-flight (ARCH-116); M-1 silent `?? 0` usage
+projections with no named counter — **ADR-046's own checklist calls this a Gate 8 finding**; M-2
+`capture()`'s failed branch drops `result.unmapped`; M-3 `v1FallbackGraph` is a second shape
+derivation that chains a `parallel()` into a false sequential dependency for **every pre-v26 workflow
+on the box** (INV-V26-3/REQ-124); M-4 the per-agent DAG cell renders no tokens or cost and
+`LayoutCell` does not even carry them (ARCH-118); M-5 `UNDECIDABLE_SHAPE` is catalogued and
+advertised with no producer; M-6 `ipc/protocol.ts` still declares `spent?: number`.
+
+**architecture (2):** A-1 the v26 body still publishes `PRICE_UNKNOWN` and a nullable `costUSD`
+(`02-architecture.md:2957`, `:3118`, `:3091`, `:3102`) and still specifies ARCH-117's openrouter
+`applied:true` — contradicting ADR-038 (2026-09-08) and VAL-186 (2026-09-10), which the code correctly
+follows. **A repeat miss:** both Gate 4 design panels flagged the ADR-038 split and it was left, so it
+is routed rather than recorded as debt a second time. Scoped so the two send-backs cannot collide —
+the architect amends the **`wireEffort` (SDK)** clause only; ARCH-117's direct-fetch clause is correct
+and is H-1's impl fix. A-2 ADR-048's Action names one file and "4→5" while the allowlist ships six with
+`toBe(6)` and a header still saying EXACTLY-FOUR; Gate 8 adjudicates `workflow-catalog.ts` as passing
+ADR-048's own S-2 criterion, so **amend the ADR, do not revert the code** (IMPL-201 flagged this
+explicitly for Gate 8).
+
+**Clean, and stated so it is not re-litigated:** Gate 7.5 holds — 0 `未真實驗證` / 0 `未驗證`, every
+REQ-121..130 real-green, VAL-200/201 cover the only post-`d1c453b` code commit, VAL-202 verifies v26
+live on production (alias rename → `--check-config` OK → restart → D13's migration self-healed the real
+database → `schedule_create` worked for the first time since v24), and DEPLOY.md leads with a
+一鍵部署 `./deploy.sh --background` that round 6 actually ran twice. Traceability 1486 items / 24 gaps,
+0 斷鏈 / 0 孤兒, trend 65→24 down. `solid_check` PASS (0 high / 0 mid). `module_check` dormant by
+design. Dashboard SoT links all resolve. `owner_decisions: []` — all four markers answered
+(ADR-038, ADR-047, VAL-186, VAL-187); the one "pending the owner ruling" phrase left in the body is
+stale text folded into A-1, not an unmarked deferral.
+
+**Two things worth recording as method, not just result.** (1) The six `dashboard_check` mermaid
+"括號不平衡" mids are **checker false positives — all six, diagnosed individually** rather than
+accepted or waved off: five are erDiagram cardinality tokens (`||--o{`, `}o--||`) and one is the
+apostrophe in `workspace_pull({runId of U's run, path})` opening a phantom string. No doc change; the
+bug is in `dashboard_check.py`. (2) Playwright was unavailable, so the render half of the dashboard QA
+ran in **documented degraded mode** — said plainly rather than reported as a full pass.
+
+**The one lesson behind four of the findings:** v26 correctly deleted duplicate tables and correctly
+declared its first `INV-*` list, but the guards it shipped test **names, not behaviour** —
+`no-retired-surface.test.ts` greps ten identifiers, `redact-sweep.test.ts` enumerates sinks by hand,
+`ERROR_CATALOG` is checked for rows and never for producers. H-1, H-3, M-1 and M-2 all walked through a
+green suite. DES-173 wrote the warning down *in this same iteration* ("a grep proves a NAME is gone,
+not that a BEHAVIOUR is") and the iteration then shipped the case it predicted.
+
+`state.yaml`: `gates.review.passed` stays **false** (a send-back may not land the gate),
+`gates.review.note` / `current_stage` / `updated` rewritten with the v26 verdict. `.panel/` is
+**deliberately retained** — the re-run gates and the re-review need it; cleanup happens only on a
+close. No production code, test, requirement, design or architecture file was edited by this review.
+
+## 2026-09-11 — v26 Gate 8 send-back repair, impl half (implementer): 11 blocking findings closed
+
+Scope: the eleven `[impl]`-tagged blocking findings from 07-review.md's v26 Gate 8 review (H-1..H-4,
+M-1..M-7). A-1 (`[architecture]`-tagged) is explicitly out of scope — routed to the architecture
+repair agent per its own tag; this run's H-1 fix was written to match, not touch, the ARCH-117
+direct-fetch clause the architecture agent preserves.
+
+**H-1** — `resolveEffortApplied` (a fourth, undocumented effort table) deleted; `LiteLLMGatewayClient
+.invoke` now computes `applied` via the SAME `wireEffort(provider, caps, effort)` the SDK transport
+calls (`wireEffort`'s anthropic arm itself now reads `PROVIDER_CAPS.anthropic.effort` instead of a
+hardcoded literal), so the two transports can no longer disagree — proved by construction. `caps?:
+Caps` declared on `invoke()` (was silently dropped by structural typing); the openrouter direct-fetch
+branch gains the `...effortBodyFields(applied)` spread its siblings already had. `UNKNOWN_CAPS` moved
+from a private SDK-client constant to a shared export.
+
+**H-2** — the direct-fetch transport never set `retryable`, never carried `detail`/status, and the
+retry loop had no terminal break (`grep -n retryable client.ts` found only the type declaration). A
+shared `terminalHttpFailure()` helper now sets `retryable:false` + `detail` on 401/403/404 at all four
+`!res.ok` arms; the retry loop gains the same `if (!last.ok && last.retryable === false) break;` line
+the SDK client already has; the missing-key/unknown-alias terminals gain `detail`.
+
+**H-3** — the error `detail` was capped at BUILD time (`claude-agent-sdk-client.ts`'s `_drain`),
+before `redact()` ever saw it — a secret straddling the 1024-byte seam was cut in half and
+`redact()`'s value-exact match failed on both fragments, the SAME order bug this repo fixed once for
+`capPrompt` at v21 Gate 8. Fixed: `AgentRecord.detail?: string` added; the build-time cap deleted;
+`capture()`'s failed branch redacts then caps (`capDetail`, new) for the record, the usage event's
+raw `detail` gets the same cap at each persist sink AFTER its own `redact()` call. **Restart-survival
+blocker found while verifying (not a named finding):** `deriveAgentRecords`'s failed-usage branch read
+neither `detail` nor `unmapped` back from the persisted event — DES-188's derived≡snapshot lock would
+have gone false the moment a failed call carried either. Fixed alongside.
+
+**H-4** — `catalogFetchedAt` was a hardcoded `null`; `models_list`/`GET /api/models` called the raw
+catalog builder directly, escaping `ModelBook`'s TTL/single-flight. `ModelBook`/`BookSnapshot` gains
+`entries` (the same rows `source()` returned this refresh); `enrichModelEntry` gains an optional
+`catalogFetchedAt` parameter (default `null` — the existing pure-function unit test is unaffected);
+both surfaces now read `modelBook.snapshot()` once.
+
+**M-1** — the gateway's token projections defaulted `?? 0` silently over external payloads (ADR-046
+D-V26-projection). A `numField()` helper (input/output only — cache columns stay a bare `?? 0`,
+commented, since they are legitimately optional on a healthy call) pushes `usage.<name>` onto the SAME
+`unmapped` array REQ-125's counter already reaches `run_result.meta.unmappedMessages` through — no new
+field, per ADR-046's own "choose per seam, don't abstract" ruling and the `EXPECTED_RUN_USAGE_KEYS`
+pin this repair deliberately did not touch.
+
+**M-2** — `capture()`'s failed branch dropped `GatewayResult.unmapped` on both the `AgentRecord` and
+the usage event, while the done branch wrote both. The ok-branch spread copied verbatim into the
+failed branch, both sites.
+
+**M-3** — `v1FallbackGraph` was a second shape derivation that never read `call.group`, so a v1
+(phase-less) script's `parallel([a,b,c])` rendered three chained `single` slots instead of one
+`parallel` slot — a false sequential dependency on every pre-v26 workflow on the box. Deleted;
+`deriveExpectedGraph` gains a `contract: 'v1'|'v2' = 'v2'` parameter — `'v1'` lazily opens one implicit
+lane on first need instead of refusing L2, then falls through to the SAME S1–S4/T1/E1 logic a `'v2'`
+script gets. One derivation, `call.group` honoured on both contracts.
+
+**M-4** — the live `renderGraph` DAG cell showed a label only; the per-agent cost attribution ARCH-118
+names was reachable solely on the legacy `DagNode`/`renderAgent` fallback the v26 payload never takes.
+`LayoutCell` gains `tokens?`/`costUSD?`/`unpriced?` (populated from the live `AgentRecord`); the SVG
+cell gains a second `<text>` line. Verified against REAL Chromium (extended VAL-193, not a new file).
+
+**M-5** — `UNDECIDABLE_SHAPE` was declared in three places (`skeleton-graph.ts`'s union, `errors.ts`'s
+catalog row, `tool-specs.ts`'s advertisement) and constructed in none. ADR-039's own decision already
+routes every case it would have covered through the existing `SCAN_VIOLATION`, so the arm is deleted,
+not given a producer — a technical call, not owner-deferrable, per the review's own framing. New
+converse-direction catalog test locks it: every `deriveExpectedGraph`-sourced code in
+`workflow_register.errors[]` has a real producer, plus a `@ts-expect-error` type-level pin.
+
+**M-6** — `ipc/protocol.ts`'s `agentResult.spent?: number` was the pre-v26 bare number while
+`host.ts`/`child-entry.ts` actually send/read `{usd, tokens}`, and neither send site is typed against
+`ParentMsg` (so `tsc` never caught the drift). Fixed: `spent?: {usd: number; tokens: Tokens}`. New
+type-level test asserts `SandboxHostConfig.onBudgetSnapshot`'s return type assigns with no cast.
+
+**M-7** — `no-skeleton-surface.test.ts`'s three header comments still said "EXACTLY-FOUR" against a
+six-entry allowlist and its own pinned `toBe(6)` assertion (ADR-048). Prose corrected; assertion and
+allowlist untouched, per the finding's own scope note.
+
+**Ledger:** IMPL-198, 201, 203, 205, 212, 213, 216 amended in place (an `- **amended (date, role): …**`
+bullet appended to each existing heading, per this ledger's own IMPL-205 precedent — no new IMPL IDs).
+New test items: UT-228, UT-229, IT-161, IT-162, IT-163, IT-164. Amended in place (extends an existing
+describe block, no new ID): UT-173 (`skeleton-graph.test.ts` — M-3 + M-5 converse), IT-075
+(`redact-sweep.test.ts` — H-3's sink 7), UT-202 (`derive-agent-records.test.ts` — the restart-survival
+blocker). `docs/AUTHORING.md` regenerated via `npm run gen:authoring` (M-5's `UNDECIDABLE_SHAPE` row
+correctly dropped) — this is a GENERATED file, never hand-edited, per `authoring-md-generated.test.ts`.
+
+**Full regression:** `npm test` → 2641 passed / 0 failed / 26 pre-existing skips over 376 files
+(re-run twice; one transient failure in `unclaimed-trigger-create.test.ts` on the first run — a
+wall-clock cron-timing test, unrelated to any file this repair touched, passed clean both standalone
+and on the clean re-run). `npx tsc --noEmit` clean throughout.
+
+**Trace:** `sh .sdlc/trace` → 1492 items / 24 gaps — the SAME 24 items Gate 8's own review measured at
+1486/24 (21 漂移 + 2 未實作 TASK + 1 TDD gap), 0 new. Two new-item `traces:` fields that named
+`INV-V26-*` (an invariant listed inside an ARCH-* item's body, never its own `### INV-V26-*` heading)
+briefly registered as 斷鏈 (broken link) — corrected to the real headed IDs (ARCH-*/ADR-*) before this
+count.
+
+`state.yaml`: `gates.impl.passed` stays `true` (it already was — this is a send-back repair, not a
+fresh Gate 6 pass); `current_stage` moves to `verification` per the send-back's own re-run order;
+`updated` and the top-level status note record this repair. `gates.review` is untouched here — Gate 8
+re-reviews once the architecture half also lands.
+
+## 2026-09-11 — v26 Gate 8 send-back repair, ARCHITECTURE half (architect)
+
+**Scope, and where its boundary is.** Gate 8 sent v26 back with twelve blocking findings; eleven are
+`[impl]`-tagged and were closed earlier today, and the two `[architecture]`-tagged ones — **A-1**
+(`07-review.md:278`) and **A-2** (`:317`) — are this pass. Synthesised from the two panel proposals that
+already existed on disk (`.panel/architecture/adversarial.r1.md`, `quality-dimensions.r1.md`, both
+2026-09-11); no new panel was spawned. Both findings are the same defect class in two directions: *the
+record and the shipped behaviour disagree, and the record is the one that is wrong*. So the whole repair is
+an amendment — **zero new ARCH/ADR IDs, zero new fields, zero new modules, zero code changes in the blocking
+path**. No re-decomposition, no re-partitioning.
+
+**A-1 — the v26 section published behaviour this ledger's own owner rulings overruled.** Ten sites, all in
+`02-architecture.md`: ADR-038's **heading** (the line the RTM and every cross-reference render — not on the
+review's list, found by both panels), its note (the "Decision: (d)" argument and the dangling
+in-memory-last-good *consequence* paragraph that described a refusal which no longer exists), its
+`owner_decision` marker (normalised to the contract's `answered(<date>) —` form, and ADR-047's with it —
+a file with one marker in each format is how a format rule dies), ARCH-118's `api:` line (`AgentRecord.costUSD:
+number | null` → `number` + `unpriced?: boolean`; the real `addUsage`/`foldUsage` signatures; and
+`meta.budgetEnforceable`, which shipped and was designed but appeared nowhere in the architecture — it is what
+REPLACED the deleted refusal as the caller's answer to "can my limit bind"), the logical view's `PU` branch,
+both ER `costUSD` rows plus a `bool unpriced` **added** to each, ARCH-116's provenance note, the
+§API-contracts `run_start`-admission row, and ARCH-117's openrouter arm plus its two Gate-7.5 claims that
+still read as unfalsified predictions after VAL-186 falsified them.
+
+Two judgement calls worth recording. **The `PU` node is RELABELLED, not deleted** — deletion is fewer bytes
+and it is also how REQ-127's forbidden option (i)「不得默默採 (i)」gets adopted without anyone deciding: a
+diagram with no unpriced case reads as *prices are always known*, and that is the sentence the next
+USD-budget reader re-derives `PRICE_UNKNOWN` from. **ADR-038's option analysis is kept as record and retired
+in the amendment bullet** rather than cut: quality-dimensions wanted the dead consequence paragraph deleted,
+adversarial wanted the ruled-on argument preserved; retiring it inside the bullet gives both.
+
+**A-2 — ADR-048's Action line is amended by ARGUMENT, to six.** The Action authorised five allowlist members
+and six shipped. ADR-022's whole rule is that a new member costs a new adjudication, so the amended Action
+names `skeleton-graph.ts` AND its one caller `workflow-catalog.ts`, applies S-2 to each by name
+(`validateRegistration` is the call site that hands the refusal back to the principal who just submitted that
+very script), carries the security constraint forward verbatim, and leaves `expect(ALLOWLIST.size).toBe(6)`
+and its "a SEVENTH entry would still fail" case untouched. **One deliberate touch outside
+`02-architecture.md`:** the guard's own `FLAGGED for Gate 8` comment asked for exactly this amendment, so it
+is retired to a citation of it — comment-only, no assertion, no entry, no behaviour
+(`npx vitest run tests/unit/no-skeleton-surface.test.ts` → 3 passed).
+
+**Two cross-half consistency fixes (required, not optional).** Two `api:` lines declared shapes the impl half
+of THIS SAME send-back changed, so leaving them would hand the joint re-review a shipped fix that reads as a
+violation of the record: ARCH-116's `catalogFetchedAt` is per **ROW** (H-4 — a top-level wrapper would be a
+breaking MCP shape change to save ~24 bytes/row), and ARCH-113's `deriveExpectedGraph` gained
+`contract: 'v1' | 'v2'` (M-3). **Housekeeping already routed here** was taken in the same pass because it was
+sitting exactly where A-1 sat before Gate 8 found it: `04-design.md:6259`'s hand-off to *"the architect"*
+(ARCH-114's non-existent `buildRecordsFromTranscript` → `deriveAgentRecords`; the nested-lane sentence
+DES-175 rules out) and the two review LOWs scheduled for *"the next Gate 2 touch"* — D-6 (`caps` answers
+`'unknown'`, and the consumability consequence is written down rather than fixed in code inside a
+documentation send-back) and D-7 (ARCH-110's `additionalProperties:false` note read as a TODO for a decision
+that was deliberately made).
+
+**Anti-collision honoured verbatim:** ARCH-117's direct-fetch `effortBodyFields` clause is untouched. For the
+record, H-1 landed that half *stronger* than the clause specifies — `wireEffort` is now the single
+`PROVIDER_CAPS` reader for both transports and `effortBodyFields` only projects the resolved `EffortApplied`
+— and the amendment says so without relaxing the clause.
+
+**`iter:` deliberately NOT bumped**, against the dispatch's boilerplate and stated visibly rather than
+silently: these items already carry this iteration's number, no `v27` exists (`01-requirements.md` has no
+REQ-131+), the precedent is this ledger's own (`e8fb8a7` — *"none of them gets an iter bump"*) and the impl
+half of this same send-back did the same. Verified, not assumed: `.sdlc/trace.py`'s drift rule compares
+`iter:` only between a `build`/`verify` item and a **design**-stage parent; `ARCH` is stage `architecture`
+and `ADR` is unmapped, so an amendment cannot move the gap count either way.
+
+**Declined, and why (Karpathy: the minimum that closes the finding).** A doc-lint vitest over
+`02-architecture.md` — `npm test` is the gate `deploy/rwe-update.sh` runs before a production restart, so a
+stale sentence in a 665 KB document would gain the power to block a release, and a legitimate mid-gate
+`pending` marker could red the suite for ~20 implementers on one shared tree; the adversarial lens
+pre-conceded it to a **non-blocking** `trace.py --check` recommendation whose dependency (the parser-sync
+debt) is named. Also declined: persisted last-good pricing, a `caps` code change, any restoration of
+`PRICE_UNKNOWN`. **Not chartered by REQ-121..130 and recorded as named backlog with its seam** (no
+`owner_decision` marker — declining unchartered scope inside a repair is staying in scope, and QD conceded
+placement in advance): a cross-run cost index on `RunSummary`, money on the dashboard home cards, an engine
+counters block on `system_info`, a zero-token reachability check in `--check-config`, and a retention slice
+(whose binding constraint — *any sweep must exclude non-terminal and suspended runs or it breaks REQ-060* —
+is written down now, not when it is chartered).
+
+**Routed out, so neither is lost between the halves.** (1) **[→ impl / Gate 8]** the adversarial lens read the
+send-back's own M-2 repair and found that `foldUsage` (`src/run-guard.ts:45`) does `if (!data.tokens) continue;`
+**before** it reads `data.unmapped`, so the at-rest fold still cannot count a terminally-failed call's unmapped
+subtype while the live fold does — and `src/types.ts:82`/`:248` both assert the two folds cannot drift.
+Diagnostic counter, not money; minimal fix is one line; the falsifying test extends IT-156 rather than adding a
+file. (2) **[→ orchestrator, requirements]** REQ-124's *"shared phase timeline"* clause carries the same
+nested-lane drift ARCH-114 was amended for; an architecture repair must not silently correct another document's
+REQ.
+
+**Self-check.** `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → **1492 items / 24 gaps**,
+and the gap SET is byte-identical to the one measured before this pass (21 漂移 + 2 未實作 TASK + 1 TDD, same
+IDs) — **0 new**. 130 REQ / 121 ARCH, **0 orphan REQ**, 0 broken links, 0 `owner_decision: pending` markers
+repo-wide. **Marker-format normalisation is deliberately partial:** ADR-038's and ADR-047's `owner_decision` markers move to the contract's `answered(<date>) —` form because they live in this agent's file; VAL-186's and VAL-187's keep the `DECIDED` form in `08-validation.md` — not this agent's file, normalise at the validator's next touch (`trace.py` keys only on the `pending` prefix, so detection is unaffected either way). The QD-R1 stale-term sweep over `02-architecture.md` (`PRICE_UNKNOWN`, `costUSD … null`,
+`applied:true`, `pending the owner`, `top-level catalogFetchedAt`, `buildRecordsFromTranscript`,
+`Decision: (d)`, `ONLY armed limit`) leaves only hits that are the `owner_decision` record, the retired option
+analysis, an amendment bullet quoting the old text *as* the defect, or the ANTHROPIC effort arm where
+`applied:true` is true. `gates.architecture.passed` stays `true`; `current_stage` stays `verification`
+(this is a send-back repair, not a fresh Gate 2 — the dispatch's "advance to design" is boilerplate that does
+not fit); `gates.review` untouched — **Gate 8 now re-reviews both halves together.**
+
+## 2026-09-11 — v26 Gate 8 RE-REVIEW #1 (reviewer): the iteration closes
+
+**What this pass was.** The workflow's ONE automatic send-back re-run of `["impl","architecture"]`
+had landed (impl half + architecture half, both journalled above), so this is the re-review, scoped
+by the dispatch to **the previously-blocking items only** — 4 HIGH (H-1..H-4) and 7 MID (M-1..M-7)
+routed to `impl`, 2 MID (A-1, A-2) routed to `architecture`. The full review scope was **not**
+re-opened. The two `.panel/review/` expert reports are the ORIGINAL pass's and were **consolidated,
+not re-spawned**, per the dispatch. Every claim was re-verified on disk at `file:line`; nothing was
+accepted from a repair note or an amendment bullet.
+
+**Verdict: `send_back = []` — 13 of 13 blocking findings CLOSED.** H-1 (`resolveEffortApplied`
+retired; direct-fetch calls the same `wireEffort` and genuinely imports `PROVIDER_CAPS`; `caps?: Caps`
+declared so structural typing can no longer drop it; the openrouter branch spreads
+`effortBodyFields`), H-2 (`terminalHttpFailure` + the terminal break the SDK loop already had),
+H-3 (all three halves: redact-then-cap at the persist site, `AgentRecord.detail` exists, and the
+sweep's new sink (7) is the *straddling-the-cap* case that actually falsifies the order), H-4 (both
+model surfaces read `ModelBook.snapshot()` and stamp a real `fetchedAt`), M-1..M-7, and both
+architecture amendments. A-1's `PRICE_UNKNOWN` sweep leaves only hits **inside the prose arguing why
+the term must not come back**; A-2 was amended **by argument** to six with each member adjudicated by
+name against S-2, leaving `toBe(6)` and the seventh-entry case untouched — ADR-022 honoured, not
+bypassed. Two review LOWs (D-6, D-7) closed in the same round.
+
+**Evidence this reviewer ran, not inherited.** `npx tsc --noEmit` clean. `npx vitest run` →
+**376 files / 2641 tests passed, 0 failed** (four NEW integration files; no assertion weakened).
+`sh .sdlc/trace` → **1492 items / 24 gaps**, the gap **SET byte-identical** to the previous pass
+(21 漂移 + 2 未實作 TASK + 1 TDD, same IDs) — 0 new while the item count grew by 6, and verified
+independently that an `ARCH`/`ADR` amendment cannot move the drift count either way (trace.py compares
+`iter:` only against a **design**-stage parent), so both halves' deliberate no-`iter`-bump is sound.
+`solid_check` PASS (58 modules, 0 mid — and H-1's repair *added* an edge that is a DECLARED one).
+`module_check` dormant. `dashboard_check` 0 high / 6 mid / 1 low, each mid re-diagnosed individually
+against its source block: five are erDiagram cardinality tokens (`||--o{` / `}o--||`, the v26 one
+merely shifted `:3079` → `:3087` from the A-1 amendment) and one is the apostrophe in `U's` inside a
+sequenceDiagram message — all six checker false positives, no doc change. **0 unanswered
+`owner_decision: pending`**, reconciled on the metadata key and never on prose. Gate 7.5 re-confirmed:
+0 未真實驗證 / 0 未驗證, `08-validation.md` present, `README.md` + `DEPLOY.md` present and **untouched
+by either repair half**. Browser tools unavailable — dashboard QA ran in **stated** degraded mode.
+
+**`arch_consistent: FALSE`, and the iteration closes anyway — deliberately.** One **residual** stands
+(**R-1**, MID debt): `src/run-guard.ts:45`'s `if (!data.tokens) continue;` runs *before* the
+`data.unmapped` accumulation, and the failed-branch usage event M-2 added carries `unmapped` but no
+`tokens` (DES-180: "a failed call moves no counter"), so the at-rest fold undercounts what
+`foldUsageFromRecords` counts — over a column three code comments (`types.ts:82`, `types.ts:248-250`,
+`run-manager.ts:232-234`) swear cannot drift. **Why debt and not a second send-back, from the
+discriminating check rather than from the cost of stopping:** `ARCH-111`'s api clause names exactly
+one surface, `run_result.meta.unmappedMessages`; `run_result` answers only for a terminal run, whose
+snapshot `_transition` writes from `foldUsageFromRecords`, and **IT-162 proves that end-to-end through
+a real `McpFacade`/`RunManager`/`AgentExecutor`**. `foldUsage` is reached only as the snapshot-less
+fallback and at `run-manager.ts:958`, where **only `costUSD`/`tokens` are consumed** — no money,
+budget, refusal or security path is affected. It is also not a repeat miss: it is a NEW interaction
+the adversarial panel found *after* the impl half had landed, and the architecture half **routed it
+forward in writing** instead of burying it. R-1 is recorded with its full seam — the one-line move,
+the four false sentences, the DES-180 carve-out, and the falsifying two-folds-agree test
+(`derive-agent-records.test.ts` already has the right fixture and stops one assertion short, which is
+exactly why the green suite says nothing).
+
+**Remaining, all recorded in `07-review.md`:** MID 2 (R-1 + the pre-v26 IMPL-082 TDD gap), LOW 49
+(23 trace + 10 `solid_check` unclaimed + 7 `dashboard_check` + 6 carried panel LOWs D-1..D-5/D-8 +
+3 hygiene). **Routed out so neither is lost:** R-1's seam → the next `impl` touch or a `/sdlc-fix`
+slice; **REQ-124's "shared phase timeline" nested-lane clause → orchestrator / requirements**
+(`requirements` is not a `send_back` key, so 07-review.md §5 and this line are its channel).
+
+**One thing the orchestrator should do:** the working tree is **uncommitted** — 35 files carrying both
+repair halves, and the `- **amended (2026-09-11, …)**` IMPL bullets therefore cite no sha, against
+this ledger's own convention (`c8cd686` — "IMPL-216/217 carry the sha they were committed under").
+Land a checkpoint commit. Committing another agent's working tree is outside the reviewer contract,
+and this repo has already lost a ledger to a shared-tree mishap.
+
+**Gate landed here, not left to the orchestrator:** `gates.review.passed=true`, `current_stage=review`,
+`updated=2026-09-11` in `state.yaml`; `07-review.md` frontmatter `status: passed`; the 2026-09-10
+section marked SUPERSEDED and kept for history; the dashboard regenerated **after** this review was
+written so it is not staler than any doc; and `.panel/` removed as transient process scratch, which is
+safe only because `send_back` is empty and this is the last gate.

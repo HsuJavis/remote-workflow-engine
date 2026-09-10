@@ -17,7 +17,7 @@ import { ZERO_TOKENS } from '../run-guard.js';
 import { redactHarness } from '../agent-executor.js';
 import type { McpServerConfig } from '../mcp-probe.js';
 import type { AliasMap, EffortApplied, GatewayClient, GatewayResult } from './client.js';
-import { resolveTimeout, wireEffort } from './client.js';
+import { resolveTimeout, wireEffort, UNKNOWN_CAPS } from './client.js';
 import { resolveAlias, type Provider } from '../providers.js';
 import { isPathContained } from '../path-containment.js';
 import { resolveConfig, type SecretSource } from '../secret-resolver.js';
@@ -302,14 +302,6 @@ function makePreToolUseHook(root: string | undefined): HookCallback {
   };
 }
 
-/** v26 (DES-179, ARCH-117, TASK-179, REQ-126): the fail-safe capability this gateway resolves
- *  `wireEffort` against when no run pin was threaded onto `req.caps` — no agent-executor.ts wiring
- *  exists yet (out of this task's scope; `caps` is optional exactly so that lands separately without
- *  a second breaking change here). `reasoning:'unknown'` still keeps `resolveThinkingMode`'s retired
- *  alias-aware behavior byte-identical: `wireEffort`'s anthropic arm never reads `caps`, and every
- *  other/absent provider disables thinking regardless of it (see wireEffort's own doc comment). */
-const UNKNOWN_CAPS: Caps = { reasoning: 'unknown', tools: 'unknown', source: 'unknown' };
-
 // Never a real credential (D-R2): the SDK still requires ANTHROPIC_API_KEY to be non-empty even
 // when ANTHROPIC_BASE_URL points somewhere else entirely (a local proxy, or a local stub server).
 const DUMMY_API_KEY = 'sk-local-dev-dummy-not-a-real-key';
@@ -380,8 +372,15 @@ function extractEvents(msg: SDKMessage, ts: string): TranscriptEvent[] {
  *  is absent; all-zero `Tokens` when neither is present. Runtime-checked rather than trusting the
  *  SDK's own `usage: NonNullableUsage` type — a queryImpl fake (or a future SDK build) may omit it.
  *  `cache_creation_input_tokens` flattens the 5-minute/1-hour TTL cache-write breakdown into one
- *  column, priced downstream at one flat rate (ADR-046's named, bounded approximation). */
-function extractTokens(msg: unknown): Tokens {
+ *  column, priced downstream at one flat rate (ADR-046's named, bounded approximation).
+ *  v26 (M-1 send-back repair, ADR-046 D-V26-projection): when NEITHER shape is present, the
+ *  all-zero `ZERO_TOKENS` used to be silent — `'result.usage'` is now pushed onto `gaps` (the
+ *  SAME `unmapped` array REQ-125's unmapped-subtype counter already accumulates into; ADR-046
+ *  groups both under one class), reaching `run_result.meta.unmappedMessages` via the existing
+ *  wiring. Per-field absence WITHIN a present `usage`/`modelUsage` is not gap-counted — a `?? 0`
+ *  over an optional field (e.g. no cache activity this call) is a healthy, expected shape and a
+ *  counter that fires on every healthy call has no reader. */
+function extractTokens(msg: unknown, gaps: string[]): Tokens {
   const m = msg as { usage?: Record<string, number>; modelUsage?: Record<string, Record<string, number>> };
   if (m.usage) {
     return {
@@ -401,6 +400,7 @@ function extractTokens(msg: unknown): Tokens {
     }
     return t;
   }
+  gaps.push('result.usage');
   return ZERO_TOKENS;
 }
 
@@ -438,16 +438,6 @@ const BENIGN_SYSTEM_SUBTYPES = new Set<string>([
   'task_progress', 'task_started', 'task_updated', 'thinking_tokens', 'worker_shutting_down',
 ]);
 
-/** v26 (DES-171, clarification 11): the byte bound on an error `detail` string built from provider
- *  text. 1024 is DES-171's own number. Truncation is marked, never silent — an operator reading a
- *  transcript must be able to tell a short provider message from a cut one. */
-export const MAX_ERROR_DETAIL_BYTES = 1024;
-
-function capErrorDetail(detail: string): string {
-  return Buffer.byteLength(detail, 'utf8') <= MAX_ERROR_DETAIL_BYTES
-    ? detail
-    : `${Buffer.from(detail, 'utf8').subarray(0, MAX_ERROR_DETAIL_BYTES).toString('utf8')}…[truncated]`;
-}
 
 /** v26 (DES-171): an unmapped subtype is COUNTED, never stored as a payload — capped at 64 bytes,
  *  restricted to `[a-z0-9_.-]` (anything else becomes `?`) so a subtype string can never smuggle
@@ -719,7 +709,8 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       // v26 (DES-179): `wireEffort.applied` is ALWAYS present (its own doc comment), but the
       // PERSISTED `effortApplied` field's presence still means "an effort was actually requested"
       // (agent-executor.ts:492's `applied !== undefined` gate) — unchanged from v25 and matching the
-      // direct-fetch gateway's `resolveEffortApplied`, which still returns `undefined` here. Passing
+      // direct-fetch gateway's own `req.opts.effort !== undefined` gate in `LiteLLMGatewayClient.invoke`
+      // (client.ts), which still passes `undefined` here for the same reason. Passing
       // `wired.applied` unconditionally would silently add `effortApplied:{reason:'no effort
       // requested'}` to EVERY SDK-gateway record, a persisted-shape change no DES asked for.
       await req.onHarness(descriptor, req.opts.effort !== undefined ? applied : undefined);
@@ -796,12 +787,12 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
             // Terminal: end the attempt NOW, instead of waiting out the rest of `timeoutMs` for a
             // `result` that will never come — the ONE error event for this call (D-G8-2's
             // duplicate trap: never both streamed AND accumulated).
-            // v26 (DES-171, clarification 11): SIZE-capped. Redaction of this string is already
-            // free — every TranscriptEvent, including this one, goes through `capture()`/`_emit`'s
-            // existing `redact()` sweep before it is persisted — so the cap is a bound on how much
-            // provider-authored text a single failure can put in a transcript, applied where the
-            // string is built rather than at the sink.
-            const detail = capErrorDetail(`${kind}${status !== null ? ` (status ${status})` : ''} — provider ended the attempt (attempt ${attempt})`);
+            // v26 (DES-171, clarification 11; H-3 send-back repair, INV-V26-5): UNCAPPED here on
+            // purpose — the 1024-byte SIZE bound used to be applied at THIS build-time site, before
+            // `capture()`/`_emit`'s `redact()` sweep ever saw the string, so a secret straddling the
+            // seam was cut in half and `redact()`'s value-exact match failed on both fragments. The
+            // cap now runs AFTER redaction, at each persist site (`agent-executor.ts`'s `capDetail`).
+            const detail = `${kind}${status !== null ? ` (status ${status})` : ''} — provider ended the attempt (attempt ${attempt})`;
             const errEv: TranscriptEvent = { ts: new Date().toISOString(), kind: 'message', data: { type: 'error', detail, status, kind, attempt } }; // det:allow — transcript timestamp
             if (streaming) { await onEvent!(errEv); } else { events.push(errEv); }
             return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', retryable: false, detail, error: { kind, status, attempt }, events, unmapped };
@@ -819,7 +810,8 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         }
         if (msg.subtype !== 'success' || msg.is_error) {
           const m = msg as unknown as { subtype?: string; result?: string; error?: string };
-          const detail = capErrorDetail([m.subtype, m.result ?? m.error].filter(Boolean).join(': ') || 'error');
+          // v26 (H-3 send-back repair): same UNCAPPED-here reasoning as the `api_retry` branch above.
+          const detail = [m.subtype, m.result ?? m.error].filter(Boolean).join(': ') || 'error';
           const errEv: TranscriptEvent = { ts: new Date().toISOString(), kind: 'message', data: { type: 'error', detail } }; // det:allow — transcript timestamp
           if (streaming) { await onEvent!(errEv); } else { events.push(errEv); }
           return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', detail, events, unmapped };
@@ -828,7 +820,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
           ok: true,
           provider: 'claude-agent-sdk',
           model: model ?? 'default',
-          tokens: extractTokens(msg),
+          tokens: extractTokens(msg, unmapped),
           content: msg.result,
           events,
           unmapped,

@@ -35,9 +35,11 @@ export interface ExpectedGraph {
   edges: ExpectedEdge[];
 }
 
+// v26 (M-5 send-back repair): `UNDECIDABLE_SHAPE` removed from this local structural copy, matching
+// the real `src/skeleton-graph.ts` — see the FLAGGED note below for the resolution.
 export type DeriveResult =
   | { ok: true; graph: ExpectedGraph }
-  | { ok: false; rule: 'AGENT_BEFORE_PHASE' | 'UNDECIDABLE_SHAPE'; line: number; label: string | null; message: string };
+  | { ok: false; rule: 'AGENT_BEFORE_PHASE'; line: number; label: string | null; message: string };
 
 export interface GraphFixture {
   name: string;
@@ -333,9 +335,11 @@ export const GRAPH_FIXTURES: GraphFixture[] = [
     // consumers (the v2 checker and the run-DAG layout) not to claim a shape they cannot know.
     // `switch` was missing from `DYNAMIC_OPENERS` in workflow-meta.ts, beside `for`/`while`/`if`;
     // that gap is what made the derivation confidently emit two static slots, and it is now closed.
-    // FLAGGED FOR GATE 8: `UNDECIDABLE_SHAPE` is now an arm of `DeriveResult` with no producer.
-    // Either a later iteration gives the scanner a switch-shaped violation to report, or the arm
-    // should be removed from the union.
+    // FLAGGED FOR GATE 8 (RESOLVED, M-5 send-back repair): `UNDECIDABLE_SHAPE` was an arm of
+    // `DeriveResult` with no producer. Resolved by the SECOND option this flag named — the arm is
+    // removed from the union (`skeleton-graph.ts`, `errors.ts`, `tool-specs.ts`) — because ADR-039's
+    // own decision already routes every narrowing case it would have covered through the EXISTING
+    // `SCAN_VIOLATION`, so a second refusal code for the same class was never architecturally needed.
     name: 'switch — dynamic lane, no static slot (undecidable, same category as a loop body)',
     script: switchScript,
     expected: {

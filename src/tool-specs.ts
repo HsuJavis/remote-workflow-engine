@@ -255,12 +255,14 @@ export const TOOL_SPECS = [
       'SCRIPT_INVALID', 'PARSE_ERROR', 'UNKNOWN_ALIAS', 'MCP_NOT_PROVISIONED', 'SCAN_VIOLATION',
       'AGENT_UNDECLARED', 'AGENT_DECLARED_NOT_IN_SCRIPT', 'PARAM_CONTRACT_INVALID', 'DEFAULTS_RETIRED',
       'MERMAID_REQUIRED', 'MERMAID_INVALID', 'DIAGRAM_MISMATCH',
-      // v26 (REQ-128, DES-184): the v2 diagram contract's own refusals, plus the two
-      // `deriveExpectedGraph` rules registration now answers with before it ever reads the diagram.
+      // v26 (REQ-128, DES-184): the v2 diagram contract's own refusals, plus the
+      // `deriveExpectedGraph` rule registration now answers with before it ever reads the diagram.
       // Advertised because `advertised-surface-truth`/`facade-refusal-arms` pin "every code this
       // tool can throw is on its errors list" — and because a cold model that cannot see
       // AGENT_BEFORE_PHASE cannot satisfy REQ-117's first-try bar.
-      'AGENT_BEFORE_PHASE', 'UNDECIDABLE_SHAPE',
+      // v26 (M-5 send-back repair): `UNDECIDABLE_SHAPE` deleted — see errors.ts's matching row for
+      // the full reasoning (zero producers; ADR-039 already routes those cases through SCAN_VIOLATION).
+      'AGENT_BEFORE_PHASE',
       'DIAGRAM_DIRECTION', 'LANE_MISMATCH', 'TOOLS_MISMATCH', 'EDGE_MISMATCH',
       'NOT_WORKFLOW_OWNER', 'REGISTRATION_CONFLICT', 'VERSION_CEILING_EXCEEDED',
       'INVALID_ARGUMENT', 'TRIGGER_NOT_FOUND', 'NOT_TRIGGER_OWNER', 'TRIGGER_ALREADY_CLAIMED',

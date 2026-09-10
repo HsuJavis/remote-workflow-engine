@@ -190,7 +190,6 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 - `TOOLS_MISMATCH` — a stadium's tools: line disagrees with the script's allowedTools for that label
 - `EDGE_MISMATCH` — the diagram's edges do not realise the script's consecutive-slot flow
 - `AGENT_BEFORE_PHASE` — under the v2 diagram contract every agent() must be dispatched inside a phase() — add a phase() before the first agent()
-- `UNDECIDABLE_SHAPE` — the script's agent() shape cannot be statically resolved into a diagram slot
 - `AGENT_UNDECLARED` — a script agent() label has no params.agents.<label> declaration
 - `AGENT_DECLARED_NOT_IN_SCRIPT` — params.agents declares a label no agent() call in the script uses
 - `PARAM_CONTRACT_INVALID` — the declared parameter contract itself is malformed or out of its own bounds

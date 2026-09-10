@@ -250,6 +250,15 @@ export interface AgentRecord {
    *  Absent (never `[]`) when the call produced none, so a pre-v26 record and a clean v26 record
    *  keep the same shape and DES-188's derived≡snapshot deep-equal lock still holds. */
   unmapped?: string[];
+  /** v26 (H-3 send-back repair, ARCH-111, DES-171, INV-V26-5): the provider-authored error detail
+   *  from a `state:'failed'` call (`GatewayResult.detail`) — so `run_status.agents[]`/the dashboard
+   *  agent detail answers the post-mortem question "why did this fail" from the record alone
+   *  (ARCH-115), instead of only on the per-agent transcript's `usage` event. Redacted THEN capped
+   *  at 1024 bytes (never the reverse — capping first can split a secret across the cut and defeat
+   *  `redact()`'s value-exact match, the same rule `capPrompt` was moved for at v21 Gate 8, R-G9).
+   *  Absent on `done`/`queued`/`running`/`refused` records, and on a `failed` record whose gateway
+   *  reported no detail. */
+  detail?: string;
   /** v8 Slice 2 (REQ-045): the composite nesting frame this agent ran in — `""` for the top-level
    *  script's own agents; a nested workflow()'s agents carry a non-root frame whose parent frame is a
    *  strict prefix (so the dashboard groups + nests agents by frame). Absent for pre-v8 records. */

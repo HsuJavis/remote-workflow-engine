@@ -1,6 +1,7 @@
 // UT-006: IPC message protocol — discriminated union shape + callSeq correlation (DES-006)
 import { describe, it, expect } from 'vitest';
 import type { ChildMsg, ParentMsg } from '../../src/ipc/protocol.js';
+import type { SandboxHostConfig } from '../../src/sandbox/host.js';
 
 // These tests verify the TYPE CONTRACT of the IPC protocol.
 // They check that a message handler can discriminate by `t` and that callSeq
@@ -38,6 +39,19 @@ describe('IPC protocol types', () => {
     const stop: ParentMsg = { t: 'abort', reason: 'stop' };
     expect((suspend as Extract<ParentMsg, { t: 'abort' }>).reason).toBe('suspend');
     expect((stop as Extract<ParentMsg, { t: 'abort' }>).reason).toBe('stop');
+  });
+
+  // UT-229 (M-6 send-back repair, ARCH-118): TYPE-LEVEL pin — `ParentMsg`'s declared
+  // `agentResult.spent` must accept, with NO cast, exactly what `SandboxHostConfig.onBudgetSnapshot`
+  // (host.ts's own send-site type) returns. Before this repair `spent?: number` while
+  // `onBudgetSnapshot` returned `{usd:number; tokens:Tokens}` — this line would not COMPILE (a real
+  // `tsc` red), because neither `host.ts` nor `child-entry.ts` is typed against `ParentMsg` at all,
+  // so no other test could ever falsify the drift.
+  it('agentResult.spent accepts exactly what SandboxHostConfig.onBudgetSnapshot returns, with no cast', () => {
+    type Snapshot = ReturnType<NonNullable<SandboxHostConfig['onBudgetSnapshot']>>;
+    const snapshot: Snapshot = { usd: 1.5, tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 } };
+    const msg: ParentMsg = { t: 'agentResult', callSeq: 0, value: null, spent: snapshot };
+    expect((msg as Extract<ParentMsg, { t: 'agentResult' }>).spent).toEqual(snapshot);
   });
 
   it('callSeq from agent request matches the callSeq in parent reply', () => {

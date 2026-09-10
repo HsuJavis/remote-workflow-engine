@@ -3187,6 +3187,27 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   rebuilt the record without them and DES-188's derived≡snapshot lock was false on every
   real-gateway run.
 
+- **amended (2026-09-10, Gate 8 send-back repair, M-1/M-2):** two gaps in this same seam, found at
+  Gate 8. **(M-1, ADR-046 D-V26-projection):** `client.ts`'s three direct-fetch provider branches and
+  the LiteLLM-proxy branch defaulted `data.usage?.input_tokens ?? 0` (and the sibling
+  output/prompt/eval fields) silently — a provider response with a RENAMED usage key read as a
+  genuine zero, with nothing recording the drop. A new `numField(v, name, gaps)` helper (input/output
+  only — cache columns stay a bare `?? 0`, commented, since they are documented-optional on a healthy
+  call and a counter that fires on every healthy call has no reader) pushes `usage.<name>` onto the
+  SAME `unmapped` array this entry's own `GatewayResult.unmapped` wiring already reaches
+  `run_result.meta.unmappedMessages` through — ADR-046 groups both under one class, so no new field.
+  `claude-agent-sdk-client.ts`'s `extractTokens` gained the same treatment (`gaps.push('result.usage')`
+  when NEITHER `usage` NOR `modelUsage` is present). **(M-2, INV-V26-6):** `capture()`'s FAILED branch
+  wrote `unmapped` onto neither the `AgentRecord` nor the usage event, while the done branch wrote
+  both — the ok-branch spread copied verbatim into the failed branch (both sites). **Restart-survival
+  blocker found while verifying:** `deriveAgentRecords`'s failed-usage branch (`run-store.ts`) read
+  neither `data.detail` nor `data.unmapped` from the persisted event — fixed alongside so DES-188's
+  derived≡snapshot lock holds for a failed call carrying either (this entry's own file list already
+  covers `run-store.ts`).
+  Tests: UT-228, IT-161 (H-2, not this entry — see IMPL-203), IT-164, plus two cases added to
+  `tests/unit/derive-agent-records.test.ts`.
+- **files (amended):** + src/gateway/claude-agent-sdk-client.ts, tests/integration/usage-projection-gap.test.ts, tests/integration/failed-call-unmapped-meta.test.ts, tests/unit/derive-agent-records.test.ts
+
 ### IMPL-199 — `supported_parameters` reaches the pin, and the pin reaches `wireEffort`
 - **status:** done
 - **traces:** TASK-178, TASK-179, DES-178, DES-179, ARCH-116, ARCH-117, REQ-126
@@ -3283,6 +3304,24 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   re-checked, still rendered), but the next re-registration of a workflow without `phase()` calls is
   refused `AGENT_BEFORE_PHASE`.
 
+- **amended (2026-09-10, Gate 8 send-back repair, M-5/M-7):** **(M-5, ARCH-119/121 catalog
+  drift-lock):** `UNDECIDABLE_SHAPE` — a second, speculative arm of `DeriveResult` this entry's own
+  `v1FallbackGraph` note never mentions constructing — had zero producers anywhere in `src/`
+  (`skeleton-graph.ts`'s union, `errors.ts`'s catalog row, `tool-specs.ts`'s advertisement were its
+  only three appearances, all declarations). ADR-039's own decision already routes every narrowing
+  case it would have covered (a switch, a loop-body/helper-reached `agent()`) through the EXISTING
+  `SCAN_VIOLATION`, so the arm is deleted from all three, not given a producer. New converse-direction
+  catalog test (skeleton-graph.test.ts): `deriveExpectedGraph`'s advertised rule codes all have a real
+  producer, plus a `@ts-expect-error` type-level pin that `'UNDECIDABLE_SHAPE'` no longer compiles as
+  a `DeriveResult.rule`. **(M-7, ADR-022):** `tests/unit/no-skeleton-surface.test.ts`'s three header
+  comments (`:5`, `:28`, `:62`) still said "EXACTLY-FOUR" while the allowlist and its pinned assertion
+  are six (ADR-048) — updated the prose only, per the finding's own scope note; the allowlist and the
+  assertion are untouched.
+  Also, unrelated to M-5/M-7 but in this same file (M-3, below): `v1FallbackGraph` — introduced by
+  this entry — is DELETED by IMPL-205's amendment; `deriveExpectedGraph` gains a `contract:'v1'|'v2'`
+  parameter instead. See IMPL-205's amendment for the fix.
+- **files (amended):** + src/errors.ts, src/tool-specs.ts
+
 ### IMPL-202 — the record's phase survives a restart, and the harness table stops saying "—"
 - **status:** done
 - **traces:** TASK-186, TASK-192, DES-175, DES-176, DES-188, ARCH-114, REQ-124, REQ-128
@@ -3321,6 +3360,39 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   DES-170 / REQ-121 exist to guarantee the typed `INVALID_SEED_SPEC` that NAMES the offending path
   and points at `seedManifest` — the entire content of issue #64. Measured: closing it turns IT-141
   red for exactly that reason. The reasoning is recorded at the schema, not just here.
+
+- **amended (2026-09-10, Gate 8 send-back repair, H-2/H-3/M-6):** three gaps, all in this entry's own
+  DES-171/`ipc/protocol.ts` seam. **(H-2, ARCH-111, ADR-040):** the `MAX_ERROR_DETAIL_BYTES` cap this
+  entry built was applied only on the SDK transport (IT-142's own scope) — the direct-fetch transport
+  (`client.ts`) never set `retryable`, never carried `detail`/status on a `!res.ok` arm, and the retry
+  loop had no terminal break, so a 401 burned the full `timeoutMs × (1+retries)` bound on that
+  transport. Fixed: a shared `terminalHttpFailure()` helper (401/403/404 → `retryable:false` +
+  `detail: "<status> <statusText>"`) at all four `!res.ok` arms, the missing-key/unknown-alias
+  terminals gain `detail`, and the retry loop gains the SAME `if (!last.ok && last.retryable ===
+  false) break;` line `claude-agent-sdk-client.ts` already has. Test: IT-161 (direct-fetch twin of
+  IT-142). **(H-3, INV-V26-5):** this entry's own claim — "redaction was already free through the
+  existing sweep, so this is a size bound only" — was the exact ordering bug the entry's cap
+  contradicted: `MAX_ERROR_DETAIL_BYTES`/`capErrorDetail` capped the string at BUILD time, inside
+  `_drain`, before `redact()` (`agent-executor.ts`) ever saw it, so a secret straddling the 1024-byte
+  seam was cut in half and `redact()`'s value-exact match failed on both fragments — the SAME order
+  bug this repo fixed for `prompt`/`capPrompt` at v21 Gate 8 (R-G9), reintroduced here. Fixed: the
+  build-time cap deleted from `claude-agent-sdk-client.ts`; `AgentRecord.detail?: string` added
+  (`types.ts`); `capture()`'s failed branch (`agent-executor.ts`) now redacts its OWN copy explicitly
+  then caps it (`capDetail`, new, beside `capPrompt`) for the record, while the usage event's `detail`
+  rides RAW and gets the SAME cap at `_emit`'s/the streaming `onEvent` closure's own persist site,
+  AFTER their `redact()` call — one cap per sink, on the raw input, never a re-cap of an
+  already-capped value. `redact-sweep.test.ts` gains a straddling-secret case (marker PRESENCE is the
+  discriminating assertion — absence alone passes even under the wrong order) and a lock case for the
+  unmapped-subtype's own 64-byte cap. **Restart-survival blocker found while verifying:**
+  `deriveAgentRecords`'s failed-usage branch (`run-store.ts`) read neither `data.detail` nor
+  `data.unmapped` — fixed alongside (see IMPL-198's amendment). **(M-6, ARCH-118):** this entry fixed
+  the sibling `init.budget` field in `ipc/protocol.ts` and left `agentResult.spent?: number` — the
+  pre-v26 bare number, while `host.ts`/`child-entry.ts` actually send/read `{usd, tokens}` and neither
+  send site is typed against `ParentMsg` (so `tsc` could not have caught it). Fixed: `spent?: {usd:
+  number; tokens: Tokens}`, header comment corrected. New TYPE-LEVEL test (`ipc-protocol.test.ts`):
+  `SandboxHostConfig.onBudgetSnapshot`'s return type assigns to `agentResult.spent` with no cast.
+  Tests: UT-229.
+- **files (amended):** + src/types.ts, src/run-store.ts, tests/integration/direct-fetch-terminal-error-detail.test.ts, tests/unit/ipc-protocol.test.ts
 
 ### IMPL-204 — the v26 parallel phase, recorded: the fourteen TASKs that landed without an IMPL row of their own
 - **status:** done
@@ -3437,6 +3509,23 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   `opts.model` — ARCH-096 refuses a tunable written inside the agent() options, so `effectiveOpts.model`
   is overwritten from the run's admission snapshot. A caps test driven off `opts.model` passes
   through a code path production never takes.
+
+- **amended (2026-09-10, Gate 8 send-back repair, M-3):** `v1FallbackGraph` (IMPL-201) — the fallback
+  this entry's own (1) fixed the coverage math for — was a SECOND shape derivation: it built slots
+  from `scan.calls` directly and never read `call.group`, so a v1 (phase-less) script's
+  `parallel([a,b,c])` rendered three CHAINED `single` slots instead of one `parallel` slot,
+  contradicting INV-V26-3 ("neither re-derives a script's shape on its own") for every pre-v26
+  workflow on the box. Fixed: `v1FallbackGraph` deleted; `deriveExpectedGraph`
+  (`skeleton-graph.ts`) gains a `contract: 'v1'|'v2' = 'v2'` parameter — `'v2'` (registration) refuses
+  `AGENT_BEFORE_PHASE` unchanged; `'v1'` (this entry's read path, `server.ts:524`) lazily opens ONE
+  implicit lane on first need instead of refusing, then falls through to the SAME S1–S4/T1/E1 logic a
+  `'v2'` script gets — one derivation, `call.group` honoured on both contracts. `server.ts`'s
+  `expectedGraph = derived.ok ? derived.graph : v1FallbackGraph(nodes, scan)` becomes a second
+  `deriveExpectedGraph(nodes, scan, 'v1')` call. Tests: two new cases in `skeleton-graph.test.ts`
+  (parallel-of-3 under `contract:'v1'` lays out ONE `parallel` slot, not three chained; sequential
+  calls still chain, S1 unchanged) plus the converse-direction catalog lock (see IMPL-201's
+  amendment).
+- **files (amended):** + src/server.ts, tests/unit/skeleton-graph.test.ts
 
 ### IMPL-206 — Gate 6.5's simplify pass, and the two clocks `expires_in` was subtracting
 - **status:** done
@@ -3607,6 +3696,20 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   `renderAgent`'s tok/cost spans are reachable solely on the legacy DagNode fallback — so the run
   header was the one rendered surface showing a sum in place of the four.
 
+- **amended (2026-09-10, Gate 8 send-back repair, M-4):** the gap this entry's own note recorded but
+  did not close, per ARCH-118's api ("`run_status.agents[]` AND the dashboard agent detail show all
+  four columns and the cost") — REQ-127's per-call cost attribution. Fixed, minimal shape (no page
+  rebuild): `LayoutCell` (`dashboard.ts`) gains `tokens?`, `costUSD?`, `unpriced?`, populated from the
+  live `AgentRecord` at all four `placeCell(...)` call sites that place a real agent cell (the
+  predicted/inert `__skel_*` cell is untouched — it has no dispatched call to report a cost for).
+  `renderGraph`'s SVG cell (`dashboard-page.ts`) gains a second `<text>` line below the label —
+  `sumTokens(c.tokens)+' tok · $'+costUSD.toFixed(4)+unpriced-badge` — present only when `c.tokens` is
+  set. Extends the existing VAL-193 acceptance case (real Chromium) rather than a new file: a third
+  `itReal` asserts the run DAG's per-cell `<text>` nodes carry a token count and a dollar figure, and
+  that the per-agent sum (not a repeated/hardcoded figure) is readable — ran green against real
+  Chromium in this session.
+- **files (amended):** + src/dashboard.ts
+
 ### IMPL-213 — item 8: effortApplied stops claiming a field that is not on the wire
 - **status:** done
 - **traces:** TASK-179, DES-179, ARCH-117, ADR-045, REQ-126, REQ-125
@@ -3623,6 +3726,33 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   for openrouter). ROUTING IS UNCHANGED and the test pins that it is. REQ-126's acceptance is NOT
   amended — the owner's call. STILL FALSE and out of this scope: the guide's provider table asserts
   「`openrouter` — effort applies: yes」.
+
+- **amended (2026-09-10, Gate 8 send-back repair, H-1):** `wireEffort` fixed the openrouter MESSAGE;
+  the direct-fetch transport (`LiteLLMGatewayClient.invoke`) still computed its OWN `applied` via a
+  private `resolveEffortApplied` — a FOURTH effort table (ADR-045 names three retired; this one was
+  never named) hardcoding the anthropic placement and a flat generic reason for every other provider,
+  never reading `PROVIDER_CAPS` or `req.caps` at all. `grep -n PROVIDER_CAPS src/gateway/client.ts`
+  returned one hit — a comment claiming `effortBodyFields` "reads the same PROVIDER_CAPS table",
+  false (the file imported nothing from `providers.ts`). Two further halves: `invoke()` never declared
+  the `caps?: Caps` the `GatewayClient` interface already had (AgentExecutor computed and sent it;
+  structural typing dropped it silently), and the openrouter direct-fetch branch never spread
+  `...effortBodyFields(applied)` into its body at all (the anthropic and proxy branches did). Fixed:
+  `resolveEffortApplied` deleted; `wireEffort`'s anthropic arm now reads `PROVIDER_CAPS.anthropic.effort`
+  (the ONE literal read, satisfying ADR-045 for real); `invoke()` declares `caps?: Caps` and computes
+  `applied` via the SAME `wireEffort(provider, req.caps ?? UNKNOWN_CAPS, effort)` the SDK transport
+  calls, gated on `req.opts.effort !== undefined` to keep the pre-v26 no-effort-requested shape
+  (`wireEffort.applied` is always present; the retired function's `undefined` short-circuit is
+  reproduced at the call site instead); `UNKNOWN_CAPS` moved from a private SDK-client constant to a
+  shared export here. The two transports can no longer disagree — proved by construction, since both
+  now call the identical function. Test: UT-228, three cases (openrouter identity — was the divergent
+  case; anthropic identity; no-effort shape preserved).
+  **For the architecture side of this same finding (ARCH-117's api still names `effortBodyFields` as
+  a `PROVIDER_CAPS` reader):** `effortBodyFields` (unchanged by this repair) stays a pure PROJECTOR —
+  it takes the already-resolved `EffortApplied` and nests it into REST body fields via
+  `applied.restPath`; the actual `PROVIDER_CAPS` READ lives in `wireEffort`, which both transports now
+  call for that same object. ARCH-117's clause is still accurate in effect (the direct-fetch body IS
+  built from a `PROVIDER_CAPS`-sourced value), so no ARCH-117 amendment is needed for this half.
+- **files (amended):** + tests/unit/gateway-effort.test.ts
 
 ### IMPL-214 — D9: an unpriced row can never displace a priced one, so REQ-127 works on a real deployment
 - **status:** done
@@ -3707,6 +3837,25 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   tool description and the authoring guide now say what a reader is looking at — one row per model,
   `aliases` lists every configured name resolving to it, `ref` is the one to pass to `agent({model})`;
   `docs/AUTHORING.md` regenerated by `npm run gen:authoring` (UT-160's drift lock).
+
+- **amended (2026-09-10, Gate 8 send-back repair, H-4):** `catalogFetchedAt` — DES-179's own
+  per-row provenance field this entry's rename touched — was a hardcoded `null` (`enrichModelEntry`'s
+  own comment conceded "no catalog snapshot threaded to this call"), while `tool-specs.ts` and
+  `authoring-guide.ts` advertise it to clients as real provenance. Separately, `models_list`
+  (`call-tool.ts`) and `GET /api/models` (`server.ts`) called the raw catalog builder directly,
+  bypassing `ModelBook`'s TTL and single-flight — a burst of `models_list` calls fired one full
+  upstream fetch each. Fixed: `ModelBook`/`BookSnapshot` gains `entries: CatalogSourceRow[]` (the SAME
+  rows `source()` returned this refresh — the one production `source()`, `server.ts`'s
+  `buildModelCatalog`, really returns `ModelEntry[]`, a superset, so the one caller that knows narrows
+  it back); `enrichModelEntry` gains an optional `catalogFetchedAt: string | null = null` parameter
+  (default preserves the existing pure-function unit test, `models-list-declared.test.ts`, unchanged);
+  both `models_list` (`ToolDeps.buildModelCatalog` renamed to `modelBook: ModelBook`) and `GET
+  /api/models` (`handleDashboardRequest`'s positional param renamed the same way) now call
+  `modelBook.snapshot()` ONCE and populate `catalogFetchedAt` from `snapshot.fetchedAt`. Test: IT-163,
+  two cases (two `models_list` calls inside the TTL trigger ONE upstream fetch and both report the
+  same non-null `catalogFetchedAt`; `GET /api/models` reads the SAME cached snapshot as `models_list`
+  — no third fetch).
+- **files (amended):** + src/models/model-book.ts, src/call-tool.ts, src/server.ts, tests/integration/models-list-catalog-fetched-at.test.ts
 
 ### IMPL-217 — D12: claude-fable-5 has a price, so the `fable` alias can carry a USD budget
 - **status:** done

@@ -15,6 +15,7 @@ import type { AssetSyncService } from './asset-sync.js';
 import type { McpProbe } from './mcp-probe.js';
 import type { IssueReporter, IssueReportInput, IssueListFilter } from './github/issue-reporter.js';
 import { filterCatalog, enrichModelEntry, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
+import type { ModelBook } from './models/model-book.js';
 import type { SystemInfoSampler } from './system-info.js';
 import type { RunStore } from './run-store.js';
 
@@ -38,7 +39,10 @@ export interface ToolDeps {
   assetSync: AssetSyncService;
   mcpProbe: McpProbe;
   issueReporter: IssueReporter;
-  buildModelCatalog: () => Promise<ModelEntry[]>;
+  /** v26 (H-4 send-back repair, ARCH-116): `models_list` reads THIS, never a raw catalog builder —
+   *  `ModelBook.snapshot()` is TTL'd and single-flight, so a burst of `models_list` calls fires at
+   *  most one upstream fetch, and its `fetchedAt` becomes the served rows' `catalogFetchedAt`. */
+  modelBook: ModelBook;
   systemInfo: SystemInfoSampler;
   lookup: OwnerLookup;
   audit: AuditWriter;
@@ -267,8 +271,12 @@ export async function callTool(
 
     // ---- environment (2) ----
     case 'models_list': {
-      const entries = await deps.buildModelCatalog();
-      return { result: filterCatalog(entries, a as CatalogFilter).map(enrichModelEntry) };
+      // v26 (H-4 send-back repair, ARCH-116): through `ModelBook.snapshot()` (TTL'd, single-flight)
+      // rather than a raw catalog fetch per call — `entries` is really `ModelEntry[]` at the one
+      // production wiring site (server.ts's `buildModelCatalog` is `ModelBook`'s own `source()`).
+      const snapshot = await deps.modelBook.snapshot();
+      const entries = snapshot.entries as ModelEntry[];
+      return { result: filterCatalog(entries, a as CatalogFilter).map((e) => enrichModelEntry(e, snapshot.fetchedAt)) };
     }
     case 'system_info': {
       const topN = a['topN'] !== undefined ? Math.floor(Number(a['topN'])) : 5;

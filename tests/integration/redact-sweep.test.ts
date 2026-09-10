@@ -343,3 +343,91 @@ describe('redact-at-capture completeness sweep — sink (6): kind:\'harness\' tr
     expect(json).toContain(SECRET_MARKER);
   });
 });
+
+// H-3 send-back repair (2026-09-10, ARCH-111, DES-171, INV-V26-5): `AgentRecord.detail` and the
+// failed-branch `usage` event's `data.detail` used to be CAPPED at build time, inside
+// `claude-agent-sdk-client.ts`'s `_drain`, before `redact()` ever saw the string — a secret
+// straddling the 1024-byte seam was cut in half and `redact()`'s value-exact match then failed on
+// BOTH fragments. Under that bug, `not.toContain(SECRET_VALUE)` still PASSES (the two cut fragments
+// don't equal the whole secret either), so the discriminating assertion is SECRET_MARKER PRESENCE,
+// not raw-value absence — a case that only checks absence proves nothing (review's own wording).
+// A dedicated, longer secret for the straddle case — its MARKER (`‹secret:<name>›`, fixed-length,
+// independent of the secret's own length) must fit entirely below the 1024-byte cutoff so capping
+// the (already-redacted, now-shorter) string cannot ALSO clip the marker itself and produce a false
+// negative. The RAW secret is long enough that it still straddles byte 1024 either way.
+const BIG_SECRET_NAME = 'IT075_STRADDLE_TOKEN';
+const BIG_SECRET_VALUE = `it075-straddle-${'Z'.repeat(90)}`; // 105 bytes
+const BIG_SECRET_MARKER = `‹secret:${BIG_SECRET_NAME}›`;
+const bigSecretProvider: SecretValueProvider = {
+  entries: () => [{ name: BIG_SECRET_NAME, value: BIG_SECRET_VALUE }],
+};
+
+describe('redact-at-capture completeness sweep — sink (7): AgentRecord.detail (H-3 send-back repair, INV-V26-5)', () => {
+  it('a secret STRADDLING the 1024-byte detail cap boundary is still redacted — the marker survives on both the AgentRecord and the failed-branch usage event', async () => {
+    const store = new InMemoryRunStore(clock);
+    const runId = await store.createRun({ script: 'return 1;' }, 'v1');
+    // Secret (105 bytes) spans bytes 950..1055 — straddles the 1024-byte cutoff with margin on both
+    // sides, while its marker (29 bytes) spans 950..979, comfortably below the cutoff once redacted.
+    // A cap-first bug slices the RAW secret into two fragments, neither a value-exact match, so
+    // SECRET_MARKER never appears anywhere in the output under the old order.
+    const detail = `${'x'.repeat(950)}${BIG_SECRET_VALUE}${'y'.repeat(200)}`;
+    const gateway: GatewayClient = {
+      async invoke(): Promise<GatewayResult> {
+        return { ok: false, provider: 'fake', reason: 'terminal', detail };
+      },
+    };
+    const executor = new AgentExecutor({ gateway, store, clock, secretValueProvider: bigSecretProvider } as any);
+
+    const agentId = 'agent-007';
+    await executor.run({
+      runId, agentId, prompt: 'x', opts: {}, workspace: '/tmp',
+      signal: new AbortController().signal,
+      runParams: defaultRunParams(undefined),
+    });
+
+    const record = executor.getRecord(agentId);
+    expect(record?.detail).not.toContain(BIG_SECRET_VALUE);
+    expect(record?.detail).toContain(BIG_SECRET_MARKER);
+    // Cap still bounds the size — the redacted string (950 filler + 29-byte marker + 200 filler =
+    // 1179 bytes) is still over 1024, so the "…[truncated]" suffix is expected; this pins the bound
+    // stays enforced (byte length, not `.length`/UTF-16 units — the suffix's `…` is a 3-byte glyph).
+    expect(Buffer.byteLength(record?.detail ?? '', 'utf8')).toBeLessThanOrEqual(1024 + Buffer.byteLength('…[truncated]', 'utf8'));
+
+    const transcript = await store.getTranscript(runId, agentId);
+    const json = JSON.stringify(transcript);
+    expect(json).not.toContain(BIG_SECRET_VALUE);
+    expect(json).toContain(BIG_SECRET_MARKER);
+  });
+
+  // INV-V26-5's second named surface. This is a LOCK, not a red→green: the real order-sensitive step
+  // for an unmapped subtype is `sanitizeSubtype`'s `[a-z0-9_.-]` whitelist inside
+  // `claude-agent-sdk-client.ts`'s `_drain` (unreachable through a fake `GatewayClient` — a unit
+  // concern, not this integration sweep's), which mangles any realistic secret before `redact()` ever
+  // runs regardless of order. What this DOES prove, at the persist site every `unmapped` entry
+  // reaches: `redact()` still applies to `AgentRecord.unmapped`/the usage event's `data.unmapped`
+  // whatever built the string, even one straddling the 64-byte cap `sanitizeSubtype` itself applies.
+  it('a secret straddling the 64-byte unmapped-subtype cap boundary is redacted at the persist site (lock)', async () => {
+    const store = new InMemoryRunStore(clock);
+    const runId = await store.createRun({ script: 'return 1;' }, 'v1');
+    // Secret spans bytes 50..76 — straddles sanitizeSubtype's own 64-byte cap.
+    const unmappedEntry = `${'a'.repeat(50)}${SECRET_VALUE}`;
+    const gateway: GatewayClient = {
+      async invoke(): Promise<GatewayResult> {
+        return { ok: true, provider: 'fake', model: 'fake-model', tokens: { input: 1, output: 1 }, content: 'ok', unmapped: [unmappedEntry] };
+      },
+    };
+    const executor = new AgentExecutor({ gateway, store, clock, secretValueProvider: secretProvider } as any);
+
+    const agentId = 'agent-008';
+    await executor.run({
+      runId, agentId, prompt: 'x', opts: {}, workspace: '/tmp',
+      signal: new AbortController().signal,
+      runParams: defaultRunParams(undefined),
+    });
+
+    const transcript = await store.getTranscript(runId, agentId);
+    const json = JSON.stringify(transcript);
+    expect(json).not.toContain(SECRET_VALUE);
+    expect(json).toContain(SECRET_MARKER);
+  });
+});
