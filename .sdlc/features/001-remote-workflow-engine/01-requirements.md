@@ -1482,6 +1482,24 @@ orchestrator 標明兩個後果,照裁決執行:(1) DEPLOY.md 記載的「自架
   **Given** `models_list` **Then** 每列有 `toolUseDeclared`(boolean|'unknown')與 `effortDeclared`
   (boolean|'unknown'),明寫是**宣告**(來自上游清單或 provider 常識)不是探測;現有 `toolUse` 改名或保留為別名。
   **紅測:** `mapEffort(profileFor('openrouter'), 'low')` 現況 `applied:false` → 期望 `applied:true`。
+
+  **修訂(擁有者裁決,2026-09-10,選項 a)—— 第一條 Given 的結果條款改為「宣告支援,且送不到時誠實回報」。**
+  Gate 7.5 VAL-186 在真實 OpenRouter API 前架側錄代理,抓下 low 與 high 兩次請求的原文:**兩者位元組相同,
+  且都沒有 `reasoning` / `reasoning_effort` / `thinking` 任何欄位**。鏈路逐跳隔離:SDK 把 budget 映成
+  `--max-thinking-tokens`,Claude CLI 只送 `thinking:{type:'adaptive'}`(budget 與 low/high 的差別在第一跳
+  就消失),LiteLLM 再把它對 openrouter 丟掉;顯式送 `reasoning` 會被自家產生的 config 擋成 400
+  `UnsupportedParamsError`。**這是這個部署的派送路徑的性質,不是引擎的疏漏。**
+  修訂後的條款:**Given** `openrouter/<id>` 且模型宣告 `reasoning` **Then** 引擎仍照映射把 budget 交給 SDK
+  (路由不變),但 `effortApplied` 必須回 `{applied:false, reason}`,reason 要點名真正的原因(CLI 摺疊成
+  adaptive、LiteLLM 對 openrouter 丟棄),**不得宣稱送出了線路上沒有的欄位**;`workflow_authoring_guide`
+  的 provider 表由 `PROVIDER_CAPS.effortDelivered`(觀察到的事實)而非 `effort !== null`(有沒有調節鈕)
+  渲染,所以手冊不會承諾做不到的事。其餘四條 Given(不宣告 reasoning 的模型、anthropic、ollama、
+  `models_list` 宣告欄位)**維持原樣且已全部實測通過**。
+  **本條的來由要記下:** Gate 1 當時給擁有者看的「可行」證據是直接打 LiteLLM 量的,繞過了 SDK 與 CLI;
+  orchestrator 當時有標注需 Gate 7.5 驗證,Gate 7.5 驗了並否證了它。**教訓:驗 provider 參數必須走正式的
+  派送路徑,只打中介層會得到相反的結論。**
+  選項 (b)(改走 direct-fetch 顯式送 `reasoning`)未採用:那條路目前沒有工具面,且屬設計變更,
+  記為後續迭代的候選。
 - **iter:** v26
 
 ### REQ-127 — token 四欄、依模型價格算花費、budget 以花費計

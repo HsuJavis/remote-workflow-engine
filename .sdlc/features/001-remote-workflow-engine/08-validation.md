@@ -8668,7 +8668,7 @@ never reads it (harmless, left alone — it is the owner's file, not a repo arti
   provider table asserts 「`openrouter` — effort applies: yes」, which this deployment does not
   deliver. A fix has to cover both the CLI hop (the budget is lost before LiteLLM) and the proxy
   config (`allowed_openai_params`/`drop_params` are not emitted by `generateLiteLLMConfig`).
-- **owner_decision:** pending — REQ-126 says `effort` must take effect for OpenRouter models that declare reasoning support, but on this deployment's dispatch path it never reaches the wire (SDK → `--max-thinking-tokens` → the CLI collapses it to `thinking:{type:'adaptive'}` → LiteLLM drops it for openrouter; the explicit shape 400s). The code now reports `effortApplied {applied:false, reason:…}` honestly. Which does the owner want: (a) amend REQ-126's acceptance to "declared, and reported honestly when undeliverable", (b) change routing (bypass the CLI for OpenRouter so the reasoning field is sent), or (c) accept it as a documented limitation and close the REQ as-is?
+- **owner_decision:** DECIDED 2026-09-10 by the owner — **option (a): amend REQ-126's acceptance to "declared, and reported honestly when undeliverable"**. The routing is unchanged and the code already behaves this way (`effortApplied {applied:false, reason}`, and the guide's provider table renders `PROVIDER_CAPS.effortDelivered`, the observed fact, not `effort !== null`). REQ-126's acceptance is amended in 01-requirements.md, including the record that Gate 1's contrary evidence was measured off the SDK path and Gate 7.5 disproved it. Option (b) (bypass the CLI via direct-fetch) is noted as a later-iteration candidate: that path carries no tool surface and is a design change. Original question kept for the record: REQ-126 says `effort` must take effect for OpenRouter models that declare reasoning support, but on this deployment's dispatch path it never reaches the wire (SDK → `--max-thinking-tokens` → the CLI collapses it to `thinking:{type:'adaptive'}` → LiteLLM drops it for openrouter; the explicit shape 400s). The code now reports `effortApplied {applied:false, reason:…}` honestly. Which does the owner want: (a) amend REQ-126's acceptance to "declared, and reported honestly when undeliverable", (b) change routing (bypass the CLI for OpenRouter so the reasoning field is sent), or (c) accept it as a documented limitation and close the REQ as-is?
 - **iter:** v26
 
 ### VAL-187 — REQ-127: four token columns, per-model cost, and both budget ceilings — real on the production alias table
@@ -8677,7 +8677,7 @@ never reads it (harmless, left alone — it is the owner's file, not a repo arti
 - **tier:** acceptance
 - **real:** true
 - **result:** pass
-- **owner_decision:** pending — this box's `rwe.config.json` maps the alias `claude-sonnet-4-6` to model `claude-sonnet-5`. The engine prices the row correctly for what it RESOLVES to ($2/$10, measured in the round-6 catalog capture), so nothing is wrong in the code; the NAME is what misleads whoever writes it in `model.default` — Sonnet 4.6 is a different, $3/$15 model. Does the owner want the alias (a) renamed to match its target, (b) repointed at a real Sonnet 4.6 model row, or (c) kept deliberately as a legacy pointer? A gate may not edit the deployed config.
+- **owner_decision:** DECIDED 2026-09-10 by the owner — **rename the alias to match its target**. Done by the orchestrator in the deployed `rwe.config.json` (the alias key `claude-sonnet-4-6` became `claude-sonnet-5`; the `{provider, model}` value was already correct and is unchanged). Verified before the edit that no registered workflow version names the old key, then `--check-config` OK, then confirmed live after the restart: `models_list {provider:'anthropic'}` serves `claude-sonnet-5` with `aliases ['sonnet','claude-sonnet-5']` at $2/$10. Backup: `~/rwe.config.json.bak-pre-aliasrename-20260910-*`. Original question kept for the record: this box's `rwe.config.json` maps the alias `claude-sonnet-4-6` to model `claude-sonnet-5`. The engine prices the row correctly for what it RESOLVES to ($2/$10, measured in the round-6 catalog capture), so nothing is wrong in the code; the NAME is what misleads whoever writes it in `model.default` — Sonnet 4.6 is a different, $3/$15 model. Does the owner want the alias (a) renamed to match its target, (b) repointed at a real Sonnet 4.6 model row, or (c) kept deliberately as a legacy pointer? A gate may not edit the deployed config.
 - **evidence:** **ROUND 6 (2026-09-09, validator, on `d1c453b`) — GREEN. Every clause re-measured by the
   validator on a scratch engine booted from DEPLOY.md §0's documented second-instance form
   (`RWE_CONFIG_PATH=~/.local/share/rwe-val-r6/cfg.json RWE_BIND=127.0.0.1 RWE_PORT=8935
@@ -9824,3 +9824,30 @@ the owner and untouched.
    per the round-3 precedent restated in the round-5 carry-forward: a fixer does not amend a design
    document. DES-149's signature says `workflow` becomes nullable but nothing in it mentions a
    migration for an existing file; DES-022 predates `RWE_CONFIG_PATH` entirely.
+
+### VAL-202 — v26 landed on production: the alias rename, the restart, and the self-healing migration, all verified live
+- **status:** green
+- **traces:** REQ-123, REQ-126, REQ-127, REQ-128
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** 2026-09-10 14:2x–14:3x, orchestrator, on the real `rwe.service` (port 8899) with the owner's
+  explicit authorization for all three actions. **(1) Alias rename.** `rwe.config.json`'s key
+  `claude-sonnet-4-6` → `claude-sonnet-5` (the `{provider:'anthropic', model:'claude-sonnet-5'}` value was
+  already correct). Checked FIRST that no registered workflow version names the old key (0 of 18 rows in
+  `catalog.db`), then `npx tsx src/main.ts --check-config` ⇒ **OK**. Backed up to
+  `~/rwe.config.json.bak-pre-aliasrename-20260910-*`. **(2) Restart.** `schedules.db` backed up to
+  `~/rwe-schedules.db.bak-pre-v26-20260910-*` first; `systemctl --user restart rwe` ⇒ up in ~8 s,
+  `MainPID 1188044 → 2438430`, dashboard 200. This is the first production process running v26 code — the
+  previous one loaded 2026-09-08 04:20, before any v26 commit. **(3) D13's migration ran on the real
+  database, unattended, exactly as designed:** `schedules.workflow` read `TEXT NOT NULL` before the restart
+  and `TEXT` after it, with the row count unchanged (0). **(4) `schedule_create` then succeeded on that same
+  production database** ⇒ `id 4aedb4f7-6c76-4f39-9f74-b10071a85dba` — the capability an upgraded deployment
+  had lacked since v24 (REQ-115). The probe schedule was deleted afterwards; `schedules` is back to 0 rows.
+  **(5) The catalogue on the live engine** (`models_list {provider:'anthropic'}`) serves **four rows for four
+  models with zero unpriced** — `claude-fable-5 [fable, claude-fable-5] $10/$50`, `claude-opus-4-8 [opus,
+  claude-opus-4-8] $5/$25`, `claude-sonnet-5 [sonnet, claude-sonnet-5] $2/$10`, `claude-haiku-4-5-20251001
+  [haiku, claude-haiku-4-5] $1/$5` — closing D11, D12 and the rename on production in one observation
+  (before this iteration the same table served eight rows, four of them claiming `price:"unknown"` for a
+  priced model).
+- **iter:** v26
