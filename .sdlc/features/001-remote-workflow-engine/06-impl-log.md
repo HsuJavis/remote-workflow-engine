@@ -3207,6 +3207,15 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   Tests: UT-228, IT-161 (H-2, not this entry — see IMPL-203), IT-164, plus two cases added to
   `tests/unit/derive-agent-records.test.ts`.
 - **files (amended):** + src/gateway/claude-agent-sdk-client.ts, tests/integration/usage-projection-gap.test.ts, tests/integration/failed-call-unmapped-meta.test.ts, tests/unit/derive-agent-records.test.ts
+- **amended (2026-09-11, Gate 8 R-1 closure — the "dropped here only" above was false):** the M-2
+  half of the bullet above says the failed-branch `unmapped` "was silently dropped here only". It was
+  dropped at TWO sites. The second is `foldUsage` itself (`run-guard.ts`), whose `if (!data.tokens)
+  continue;` ran BEFORE the `unmapped` accumulation — so the at-rest fold discarded exactly the names
+  M-2 had just taught the failed-branch usage event to carry, and could never count one. M-2's own
+  claim two paragraphs up, "the two folds no longer disagree on a whole column", was therefore true
+  only of the LIVE fold. Closed by IMPL-220 (`run-guard.ts`: the `unmapped` loop moved above the
+  tokens guard; tokens/costUSD/unpricedCalls stay guarded, so DES-180 is untouched) with the
+  deep-equal falsifying case the review specified, measured RED first. See IMPL-220 and VAL-203.
 
 ### IMPL-199 — `supported_parameters` reaches the pin, and the pin reaches `wireEffort`
 - **status:** done
@@ -3956,3 +3965,54 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   and the engine still found nothing), and a path whose directory does not exist stops the script at
   step 2 under `set -e` instead of booting on the wrong config. DEPLOY.md §0's second-instance block
   states both.
+
+### IMPL-220 — R-1: the two usage folds agree on the `unmappedMessages` column, and the four sentences that said so become true
+- **status:** done
+- **traces:** TASK-183, DES-183, DES-180, ARCH-118, REQ-127
+- **greens:** IT-156
+- **files:** src/run-guard.ts, src/types.ts, src/run-manager.ts, src/agent-executor.ts, tests/integration/unmapped-column-folds.test.ts
+- **iter:** v26
+- **note (owner instruction 2026-09-11 — close the two MID items Gate 8 carried as recorded debt):**
+  `foldUsage` (`run-guard.ts`) began with `if (!data.tokens) continue;`, which ran BEFORE the
+  `data.unmapped` accumulation. M-2 (IMPL-198's amendment) had just taught the terminally-failed
+  branch (`agent-executor.ts`) to emit a usage event carrying `unmapped` and — deliberately, per
+  DES-180's "a failed call moves no counter" — no `tokens`. So the AT-REST fold threw away exactly
+  the names M-2 added and could never count one, while the LIVE fold (`foldUsageFromRecords`,
+  `run-manager.ts`) counts `r.unmapped` on records of EVERY state and `deriveAgentRecords` really
+  does rebuild `unmapped` onto a failed record. The two folds disagreed by construction on a whole
+  column of `RunUsage`.
+  **The fix is the review's own seam, one move:** the `unmapped` loop now runs above the tokens
+  guard. Nothing else moved — `tokens`, `costUSD` and `unpricedCalls` stay behind `!data.tokens`, so
+  a failed call still contributes nothing to any of them and **DES-180 stands unchanged**. This is
+  safe because `unmapped` is a list of NAME strings only (sanitized, 64-byte-capped `system`
+  subtypes plus the literal `'result.usage'` marker from `extractTokens`) and never carries numeric
+  values — there is no "unmapped token" to add to a total, which is also why the injection guard is
+  left exactly as it is: no values were introduced into `unmapped`.
+- **note — `unpricedCalls` was checked on both sides, and it AGREES for every event shape the engine
+  produces; documented rather than changed.** The live side guards it with `r.state === 'done' &&
+  r.unpriced === true`; the at-rest side reads `data.unpriced ?? true` behind the `!data.tokens`
+  guard. Those are two spellings of ONE rule, because a `tokens` field on a usage event is exactly
+  what makes `deriveAgentRecords` derive `state:'done'` (`run-store.ts`'s `if (data.tokens)`), and
+  `capture()`'s done branch writes `tokens`/`costUSD`/`unpriced` **together and unconditionally** on
+  that one event (`agent-executor.ts:377`) — so `?? true` fires only for a pre-v26 legacy event,
+  where the derive branch applies the identical `data.unpriced ?? true`. Every other shape lands on
+  zero on both sides: a failed usage event (skipped at rest; `state:'failed'` live), a `refused`
+  event and a `harness` event (not `kind:'usage'` at rest; `unpriced:false` live). This is DES-183's
+  own boundary sentence and it stays true; the rule now reads that way in `foldUsage`'s docblock
+  instead of being an unstated coincidence. **Not fixed, reported as a pre-existing divergence
+  outside R-1's seam:** `foldUsage` sums EVERY usage event of an agent while `deriveAgentRecords` is
+  latest-wins (`reversed.find`), so two usage events for one agentId would diverge in `tokens`/
+  `costUSD` too. The engine emits exactly one per agent; no test forces the case and nothing in this
+  repair changes it.
+- **note — the four false sentences, corrected in place rather than deleted:** `src/types.ts` (the
+  `RunUsage` docblock) no longer claims that sharing a shape is what prevents drift — it names the
+  per-column rule and points at `foldUsage`'s docblock as the one place that rule is written down;
+  `src/types.ts` (`AgentRecord.unmapped`) no longer claims the field's presence is what makes the
+  folds agree — it names the pair of rules that do, and says a fold gating this column on
+  tokens/`done` re-opens the disagreement; `src/run-manager.ts` (`foldUsageFromRecords`'s docblock)
+  keeps "one arithmetic, two entry points" but now states the per-column rule that has to hold for
+  it to be true and records R-1 as the iteration where it did not; `src/agent-executor.ts`'s failed
+  branch no longer says the field "was silently dropped here only" — it names both drop sites. The
+  ledger half is a nested amendment bullet on IMPL-198 (never a rewrite of the M-2 bullet) and a
+  `v26 amendment` bullet on DES-180 carving `unmappedMessages` out of "a failed call moves no
+  counter" (spend counters unchanged). No REQ and no architecture row needed an edit.

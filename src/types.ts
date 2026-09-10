@@ -79,9 +79,16 @@ export interface ResultEnvelope<T = unknown> {
 
 /** v26 (DES-183, ARCH-118, ADR-046/047, TASK-183, REQ-127): one run's usage total — THREE
  *  producers share this one shape (live guard overlay, at-rest fold over persisted transcripts,
- *  terminal snapshot), so "what a run has spent" cannot drift between them. `unpricedCalls` counts
- *  only `done` calls whose price could not be resolved (ADR-046); `unmappedMessages` counts
- *  unmapped provider system-message subtypes observed, keyed by subtype name. */
+ *  terminal snapshot). Sharing the shape is not what keeps them equal; the two folds agree because
+ *  they apply the SAME per-column rule, and that rule is stated in one place, `foldUsage`'s docblock
+ *  (run-guard.ts), with the live fold (`foldUsageFromRecords`, run-manager.ts) pointing at it:
+ *  `tokens`/`costUSD`/`unpricedCalls` count only a `done` call — `unpricedCalls` only a `done` call
+ *  whose price could not be resolved (ADR-046) — while `unmappedMessages` counts the unmapped
+ *  provider system-message subtypes observed on a call of ANY state, keyed by subtype name and
+ *  never carrying a value. v26 R-1 is what proves the distinction is load-bearing: for one
+ *  iteration the at-rest fold gated the `unmappedMessages` column on the tokens rule as well, and
+ *  the two producers silently disagreed on that whole column with every test green. IT-156's
+ *  deep-equal case (a done call and a terminally-failed call, one run, both folds) is the lock. */
 export interface RunUsage {
   tokens: Tokens;
   costUSD: number;
@@ -245,8 +252,12 @@ export interface AgentRecord {
   unpriced?: boolean;
   /** v26 integration (DES-183, clarification 38): the provider system-message subtypes this call
    *  produced that the engine could not map — carried on the record so the LIVE fold
-   *  (`foldUsageFromRecords`) and the AT-REST fold (`foldUsage` over persisted usage events) reach
-   *  the SAME `RunUsage.unmappedMessages` instead of the live one being structurally `{}` forever.
+   *  (`foldUsageFromRecords`) has a column to count at all, instead of being structurally `{}`
+   *  forever. It is carried on a record of EVERY state, and (v26 R-1) counted by the AT-REST fold
+   *  (`foldUsage`) on every persisted usage event, tokens or not — that pair of rules, not the
+   *  presence of the field, is what makes the two folds reach the SAME
+   *  `RunUsage.unmappedMessages`; a terminally-failed call carries `unmapped` and no `tokens`, so
+   *  either fold gating this column on tokens/`done` re-opens the disagreement.
    *  Absent (never `[]`) when the call produced none, so a pre-v26 record and a clean v26 record
    *  keep the same shape and DES-188's derived≡snapshot deep-equal lock still holds. */
   unmapped?: string[];

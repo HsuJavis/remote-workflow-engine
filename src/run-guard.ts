@@ -26,11 +26,22 @@ export function priceCall(tokens: Tokens, rates: FourRates | null): number | nul
 }
 
 /** v26 (DES-183, ARCH-118, ADR-046/047, TASK-183, REQ-127): pure — the "at rest" `RunUsage`
- *  producer, folded over one run's PERSISTED transcript events (every agent's, flattened). Only
- *  `kind:'usage'` events with a `tokens` field contribute (a `failed` usage event carries none —
- *  DES-180's "a failed call moves no counter"); `unpriced` follows the SAME rule
- *  `deriveAgentRecords` (run-store.ts) applies to a `done` branch — absent means "pre-v26 event",
- *  read as unpriced, never as free. Never throws. */
+ *  producer, folded over one run's PERSISTED transcript events (every agent's, flattened). Never
+ *  throws. Two column groups, two rules — the SAME split the LIVE fold (`foldUsageFromRecords`,
+ *  run-manager.ts) applies to records, so the two cannot disagree:
+ *   - **tokens / costUSD / unpricedCalls** count only on a usage event carrying `tokens`, i.e. a
+ *     `done` call (DES-180: "a failed call carries no usage and moves no counter"). `unpriced`
+ *     follows the SAME rule `deriveAgentRecords` (run-store.ts) applies to its `done` branch —
+ *     absent means "pre-v26 event", read as unpriced, never as free. The live fold spells this
+ *     `r.state === 'done'`; the two spellings are ONE rule, because a `tokens` field on a usage
+ *     event is exactly what makes `deriveAgentRecords` derive `state: 'done'` (and `capture()`
+ *     writes `tokens`/`costUSD`/`unpriced` together, unconditionally, on that one event) —
+ *     DES-183's "`unpricedCalls` follows ONE rule … applied by the guard live and by `foldUsage`
+ *     at rest".
+ *   - **unmappedMessages** counts on EVERY usage event, tokens or not — v26 R-1: the failed branch
+ *     emits `unmapped` with no `tokens` (M-2), and the live fold counts `r.unmapped` on records of
+ *     every state, so gating this column on `tokens` is precisely how the two folds disagreed on a
+ *     whole column. Names only, never values (the sanitized-subtype injection guard). */
 export function foldUsage(events: TranscriptEvent[]): RunUsage {
   const tokens: Tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   let costUSD = 0;
@@ -42,16 +53,18 @@ export function foldUsage(events: TranscriptEvent[]): RunUsage {
       tokens?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
       costUSD?: number; unpriced?: boolean; unmapped?: string[];
     };
-    if (!data.tokens) continue; // failed/no-tokens usage event — contributes nothing
+    // v26 (R-1): ABOVE the tokens guard on purpose — a terminally-failed call's unmapped provider
+    // chatter is the call whose chatter matters most, and it rides a usage event with no `tokens`.
+    for (const name of data.unmapped ?? []) {
+      unmappedMessages[name] = (unmappedMessages[name] ?? 0) + 1;
+    }
+    if (!data.tokens) continue; // failed/no-tokens usage event — moves no token/cost/unpriced counter
     tokens.input += data.tokens.input ?? 0;
     tokens.output += data.tokens.output ?? 0;
     tokens.cacheRead += data.tokens.cacheRead ?? 0;
     tokens.cacheWrite += data.tokens.cacheWrite ?? 0;
     costUSD += data.costUSD ?? 0;
     if (data.unpriced ?? true) unpricedCalls += 1;
-    for (const name of data.unmapped ?? []) {
-      unmappedMessages[name] = (unmappedMessages[name] ?? 0) + 1;
-    }
   }
   return { tokens, costUSD, unpricedCalls, unmappedMessages };
 }

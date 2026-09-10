@@ -227,11 +227,18 @@ function declaredAssetsOf(contract: ParamContract | undefined): Record<string, {
  *  `addUsage` yet). Read by `_mergeLive` (in-process status), the terminal snapshot writer
  *  (`_transition`) and `_budgetSnapshotFor` (its own USD/tokens projection) — one fold, not three.
  *  v26 integration (clarifications 38/39): `unmappedMessages` is no longer hard-coded `{}`. The
- *  capture site now stamps `AgentRecord.unmapped` from the same `GatewayResult.unmapped` it writes
- *  onto the persisted usage event, and `deriveAgentRecords` derives it back the same way, so this
- *  LIVE fold and `foldUsage`'s AT-REST fold (run-guard.ts) count the same subtypes by the same
- *  rule — one arithmetic, two entry points, instead of two folds that silently disagreed on a
- *  whole column of `RunUsage`. */
+ *  capture site stamps `AgentRecord.unmapped` from the same `GatewayResult.unmapped` it writes onto
+ *  the persisted usage event, and `deriveAgentRecords` derives it back the same way.
+ *  **The per-column rule this fold applies — and the one `foldUsage` (run-guard.ts) must keep
+ *  applying for "one arithmetic, two entry points" to be true:** `tokens`/`costUSD` accumulate off
+ *  every record (a non-`done` record carries the known zero `ZERO_TOKENS`/`costUSD: 0`, so it adds
+ *  nothing), `unpricedCalls` counts `state === 'done' && unpriced === true` — at rest that same
+ *  rule is spelled "the usage event carries `tokens`", which is exactly the condition that derives
+ *  `state: 'done'` — and `unmappedMessages` counts `r.unmapped` on records of EVERY state, at rest
+ *  every usage event, tokens or not. v26 R-1: for one iteration the at-rest fold ran its
+ *  `!data.tokens` guard BEFORE the `unmapped` accumulation, so the two folds silently disagreed on
+ *  that whole column for a terminally-failed call (which carries `unmapped` and no `tokens`). Fixed
+ *  in run-guard.ts; IT-156's deep-equal-both-folds case is the lock that keeps it fixed. */
 function foldUsageFromRecords(records: AgentRecord[]): RunUsage {
   const tokens: Tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   let costUSD = 0;

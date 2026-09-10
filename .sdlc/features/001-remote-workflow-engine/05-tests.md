@@ -3570,8 +3570,9 @@ error).
 - tests/unit/workspace-gc.test.ts (terminal+old deleted; active/young/unknown kept).
 ### IT-042 — v1.5/v2 workspace transport over HTTP (REQ-022..026)
 - **status:** green
-- **traces:** ARCH-020, ARCH-021, ARCH-022
+- **traces:** ARCH-020, ARCH-021, ARCH-022, DES-033
 - tests/integration/v15-v2-workspace-transport.test.ts (seed→recursive artifacts+sha256+.claude-stripped→windowed artifact_get+escape-denied→purge; body-cap 413). Real-run validated on the live engine 2026-07-11 (all 5 REQs green via curl).
+- **amended (2026-09-11, Gate 8 v26 — closes the carried MID `IMPL-082（實作）沒有任何測試覆蓋` trace gap; the test was never missing, the LINK was):** `DES-033` added to `traces:` above. This file's own case `REQ-024: an over-cap request body is rejected with 413, not buffered/OOMed` (`:87`) POSTs a ~9 MiB body to the real server and asserts `413` — which IS DES-033 (`readBody(req, maxBytes=8MiB)`: discard past cap, `BodyTooLargeError` → 413) and IS what IMPL-082 implements (`src/server.ts` `MAX_BODY_BYTES`). `trace.py` credits an implementation when its own `traces:` are named by SOME test item's `traces:` (`covered = bool(greens) or any(t in test_targets for t in traces)`), and IMPL-082 traces exactly `DES-033`, which no test item named — so the index reported an untested implementation over tested behaviour. This ledger's own v10 review already diagnosed it and prescribed this exact edit three times (`07-review.md:6956`, `:7046-7047`, `:7054`) and it was never applied. Nothing about the behaviour, the test or `trace.py` changed. **Not linked, deliberately:** `tests/acceptance/val-090-blob-stream.test.ts:123` (VAL-090) — its 413 is `BLOB_TOO_LARGE` from `maxBlobBytes` on the `/assets/blob/:sha` route (DES-086/DES-091), a DIFFERENT cap; and `tests/integration/compressed-body.test.ts:46,55` (IT-058) — its over-cap and gzip-bomb 413s go through `readBodyDecoded`/`MAX_DECOMPRESSED_BYTES` (DES-055), the successor cap, so linking it would credit IMPL-082 with a test written for v10's design row.
 
 ## v5 slice — GitHub issue reporting tests (UT-057, IT-043)
 
@@ -11018,6 +11019,42 @@ fake gateway is the only stand-in, and it is the component that legitimately pro
 `GatewayResult.unmapped`. Two agents so the counter must ADD across calls (`task_progress` ×3,
 `mirror_error` ×1) rather than overwrite; the second case pins `{}` (never a missing field) for a
 run with no unmapped subtypes.
+
+**amended (2026-09-11, Gate 8 v26 R-1 closure — a THIRD case, in this same file, no new file):**
+`the two folds agree on the WHOLE RunUsage, failed call included`. The two cases above only ever fed
+both folds *successful* calls, so they could not see R-1: `foldUsage`'s `if (!data.tokens) continue;`
+ran BEFORE its `unmapped` accumulation, and M-2 had made the terminally-failed branch emit a usage
+event carrying `unmapped` and (by DES-180) no `tokens` — so the AT-REST fold discarded exactly those
+names while the LIVE fold counted `r.unmapped` on records of every state. The new case runs ONE run
+through the same real RunManager/InMemoryRunStore/AgentExecutor with a fake gateway whose FIRST call
+succeeds (`tokens {10,5,0,0}`, `unmapped ['task_progress','task_progress']`) and whose SECOND fails
+terminally (`ok:false, reason:'terminal'`, `unmapped ['weird_subtype']`, no tokens), then feeds the
+SAME material to both: `expect(foldUsage(persistedEvents)).toEqual(view.usage)` — the WHOLE
+`RunUsage`, not just the one column, so a future divergence in ANY column fails here too. It also
+pins the shape being tested (exactly one persisted usage event with `unmapped` and no `tokens`), that
+the failed call's chatter is genuinely counted (`{task_progress: 2, weird_subtype: 1}`, not
+equal-because-both-empty), and that DES-180 still stands (`tokens {10,5,0,0}`, `costUSD 0`,
+`unpricedCalls 1` — the done call only). RED (measured, before the fix, 2026-09-11):
+
+```
+AssertionError: expected { tokens: { input: 10, ...(3) }, ...(3) } to deeply equal { tokens: { input: 10, ...(3) }, ...(3) }
+- Expected
++ Received
+  Object {
+    "costUSD": 0,
+    "tokens": Object { "cacheRead": 0, "cacheWrite": 0, "input": 10, "output": 5 },
+    "unmappedMessages": Object {
+      "task_progress": 2,
+-     "weird_subtype": 1,
+    },
+    "unpricedCalls": 1,
+  }
+```
+
+i.e. the at-rest fold (Received) was missing the failed call's `weird_subtype` that the live fold
+(Expected) had. GREEN after IMPL-220's one-line move. Note the RED is a *whole-object* mismatch — the
+three supporting assertions below it never ran until the fix landed, and they are what keep the
+equality from being satisfied by both folds going empty.
 
 ### Coverage gate — measured, and what is left
 

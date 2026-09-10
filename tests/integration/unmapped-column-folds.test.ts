@@ -72,3 +72,55 @@ describe('the unmappedMessages column, counted the same by both folds (IT-156, D
     expect(view.usage?.unmappedMessages).toEqual({});
   });
 });
+
+// R-1 (v26 Gate 8 re-review, recorded debt now closed): the two folds are supposed to be "one
+// arithmetic, two entry points", but the AT-REST fold began with `if (!data.tokens) continue;` —
+// which runs BEFORE the `unmapped` accumulation. M-2 taught the terminally-failed branch's usage
+// event to carry `unmapped` (and, by DES-180, no `tokens`), so that guard threw away exactly the
+// names M-2 had just added, and the at-rest fold could never count them while the LIVE fold counts
+// `r.unmapped` on records of EVERY state. This feeds the SAME run to both folds — one done call and
+// one terminally-failed call, each carrying unmapped chatter — and deep-equals the whole `RunUsage`,
+// not just the one column, so a future divergence in ANY column fails here too.
+const gatewayOneDoneOneFailed = {
+  async invoke(req: any) {
+    const failing = req.agentId?.endsWith('2') ?? false;
+    if (failing) {
+      return { ok: false, provider: 'anthropic', reason: 'terminal', detail: 'simulated terminal failure', unmapped: ['weird_subtype'] };
+    }
+    return {
+      ok: true, provider: 'anthropic', model: 'claude-haiku-4-5-20251001',
+      tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+      unmapped: ['task_progress', 'task_progress'],
+      content: 'x',
+    };
+  },
+};
+
+describe('the two folds agree on the WHOLE RunUsage, failed call included (R-1, DES-183)', () => {
+  it('at-rest foldUsage deep-equals the live fold when one call failed carrying unmapped and no tokens', async () => {
+    const store = new InMemoryRunStore(new FixedClock(new Date('2026-09-11T00:00:00Z')));
+    const mgr = new RunManager({ gateway: gatewayOneDoneOneFailed as any, store });
+    const runId = await startScript(mgr, `await agent('a', { prompt: 'p' }); await agent('b', { prompt: 'q' });`, {});
+    const view = await pollStatus(mgr, runId);
+    expect(view.status).toBe('completed');
+
+    const events: any[] = [];
+    for (const a of view.agents ?? []) {
+      events.push(...(await store.getTranscript(runId, a.agentId)));
+    }
+    // The failed call really did persist its unmapped names on a usage event carrying NO tokens —
+    // the exact shape the at-rest guard used to skip.
+    const failedUsage = events.filter((e) => e.kind === 'usage' && !e.data.tokens);
+    expect(failedUsage).toHaveLength(1);
+    expect(failedUsage[0].data.unmapped).toEqual(['weird_subtype']);
+
+    // The falsifying assertion: same material, both folds, deep-equal RunUsage.
+    expect(foldUsage(events as any)).toEqual(view.usage);
+    // ...and the failed call's chatter is genuinely counted, not equal-because-both-empty.
+    expect(foldUsage(events as any).unmappedMessages).toEqual({ task_progress: 2, weird_subtype: 1 });
+    // DES-180 still stands: the failed call moved no token, no cost and no unpriced counter.
+    expect(foldUsage(events as any).tokens).toEqual({ input: 10, output: 5, cacheRead: 0, cacheWrite: 0 });
+    expect(foldUsage(events as any).costUSD).toBe(0);
+    expect(foldUsage(events as any).unpricedCalls).toBe(1); // the DONE call only (no price book pinned)
+  });
+});

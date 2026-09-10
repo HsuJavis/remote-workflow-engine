@@ -415,7 +415,11 @@ export class AgentTranscriptSink {
         // v26 (M-2 send-back repair, ADR-046, INV-V26-6, ARCH-111): the SAME spread the `done`
         // branch above already has — a terminally-failed call's unmapped provider chatter is the
         // exact call whose unmapped subtypes matter most, and `foldUsage` could never count one
-        // from this branch before (the field was silently dropped here only).
+        // from this branch before. The field was dropped at TWO sites, not here only (v26 R-1):
+        // here, and again in `foldUsage` itself, whose `!data.tokens` guard used to run before the
+        // `unmapped` accumulation and so discarded the names this repair had just taught the event
+        // below to carry. Both sites are closed; IT-156 deep-equals the two folds over a run
+        // containing exactly this branch.
         ...(result.unmapped && result.unmapped.length > 0 ? { unmapped: result.unmapped } : {}),
       });
       // Forward any partial transcript + the CLI error detail captured before a terminal failure,

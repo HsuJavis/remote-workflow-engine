@@ -38,7 +38,7 @@ status: passed
 | Sev | Count | Composition |
 |-----|-------|-------------|
 | HIGH | 0 | H-1..H-4 all closed and re-verified — see §2 |
-| MID | 2 | **R-1** (M-2 residual: `foldUsage` still skips the failed-call `unmapped` column) + the pre-v26 **IMPL-082** TDD trace gap (carried unchanged) |
+| MID | 2 | **R-1** (M-2 residual: `foldUsage` still skips the failed-call `unmapped` column) + the pre-v26 **IMPL-082** TDD trace gap (carried unchanged) — **both CLOSED 2026-09-11 by owner instruction AFTER this review closed** (post-gate debt repair, no gate flag flipped, no finding re-opened): R-1 → IMPL-220 / VAL-203 (see the amendment bullet on R-1 below), IMPL-082 → the DES-033 link on IT-042 / VAL-204, trace 24 → 23 gaps. The counts in this table are what this review FOUND and are left as found. |
 | LOW | 49 | 23 trace gaps (21 漂移 + 2 TASK 未實作) · 10 `solid_check` unclaimed files · 7 `dashboard_check` (6 checker false positives + 1 offline fallback) · 6 carried panel LOWs (D-1..D-5, D-8 — **D-6 and D-7 closed this pass**) · 3 ledger/tooling hygiene (§7) |
 
 ---
@@ -143,6 +143,32 @@ half rather than hidden** (`journal.md`, "Routed out, so neither is lost between
    `foldUsageFromRecords(deriveAgentRecords(events)).unmappedMessages`. `derive-agent-records.test.ts`
    has cases for the record derivation (`:73`, `:87`) but **no two-folds-agree assertion** — which is
    exactly why the suite is green over this.
+
+- **amended (2026-09-11) — R-1 is CLOSED; the debt was called in by the owner rather than carried.**
+  The finding above is left exactly as it was found (it was true of the tree it reviewed); this
+  bullet records what closed it, after this review's `send_back = []` verdict and without re-opening
+  any gate. All four seam items landed, plus the two the seam had not named. **(1)** `run-guard.ts`
+  — the `data.unmapped` loop now runs ABOVE the `!data.tokens` guard; `tokens`/`costUSD`/
+  `unpricedCalls` stay behind it, so a failed call still moves no spend counter and **DES-180 is
+  untouched**. **(2)** All four named sentences were made TRUE rather than deleted — `types.ts`'s
+  `RunUsage` docblock (a shared shape is not what prevents drift; the per-column rule is, and it is
+  stated in `foldUsage`'s docblock), `types.ts`'s `AgentRecord.unmapped` (the field's presence is
+  not what makes the folds agree; the pair of rules is), `run-manager.ts`'s `foldUsageFromRecords`
+  docblock (keeps "one arithmetic, two entry points", now states the rule that has to hold for it
+  and records R-1 as the iteration where it did not), and `agent-executor.ts:418`'s "dropped here
+  **only**", which now names both drop sites. `06-impl-log.md`'s M-2 bullet got a NESTED amendment
+  saying the same, never a rewrite. **(3)** DES-180 carries a `v26 amendment` bullet carving
+  `unmappedMessages` out of "a failed call moves no counter" — it is a diagnostic name-count, never
+  a value, so it cannot inflate a total or a budget. **(4)** The falsifying test is IT-156's third
+  case, in IT-156's own file as the seam required, measured RED first (the whole-`RunUsage`
+  deep-equal failed with `weird_subtype: 1` missing from the at-rest side) and quoted in VAL-203.
+  **Beyond the seam:** `unpricedCalls` was audited on both sides for every event shape and **agrees**
+  — `r.state === 'done' && r.unpriced === true` and `data.unpriced ?? true` behind the tokens guard
+  are two spellings of one rule, because a `tokens` field is exactly what derives `state:'done'` and
+  `capture()` writes the three fields together and unconditionally; documented in `foldUsage`'s
+  docblock, not changed. One pre-existing divergence OUTSIDE R-1's seam is reported, not fixed:
+  `foldUsage` sums every usage event per agent while `deriveAgentRecords` is latest-wins. Evidence:
+  **IMPL-220**, **VAL-203**; suite 2641 passed / 26 skipped, `tsc --noEmit` clean.
 
 #### Carried LOW debt (6) — re-verified unchanged, D-6 and D-7 CLOSED
 
@@ -395,7 +421,7 @@ record rather than by clearance.
 |---|------|-----|-------------|
 | 1–21 | 漂移 (low) | UT-010, IT-011, UT-058, UT-064, IT-057, UT-094, UT-095, DES-094, DES-088 ×2, DES-066 ×2, DES-099 ×2, DES-100, DES-064, DES-112, DES-157, DES-141, DES-149, DES-022 | Iteration-number lag markers, not content drift. The five v26 ones (DES-112/157/141/149/022) are the **deliberate** no-iter-bump amendments landed at `e8fb8a7`/`1f57f20`/`14b8861`: the design text was corrected to match what shipped, and the `iter:` was intentionally left so the marker stays visible. The other sixteen are pre-v26 and unchanged this iteration. |
 | 22–23 | 未實作 (low) | TASK-018, TASK-153 | Pre-v26 tasks with no IMPL row. Carried unchanged. |
-| 24 | TDD (mid) | IMPL-082 | Pre-v26 implementation with no test tracing it. Carried unchanged; not a v26 regression. |
+| ~~24~~ | TDD (mid) | IMPL-082 | Pre-v26 implementation with no test tracing it. Carried unchanged at review time; not a v26 regression. **CLOSED 2026-09-11 (owner instruction, after this review):** the tests existed and were good — the LINK did not. `DES-033` added to IT-042's `traces:`, which is the mechanism `trace.py` already uses (`covered = greens or any(trace in test_targets)`); no behaviour, test or `trace.py` rule changed. **24 gaps → 23**, same 21 漂移 + same 2 未實作. See VAL-204. |
 
 **doc↔code iteration drift:** none unrecorded. Every v26 IMPL (IMPL-197..219) traces a v26 DES, and
 the five design documents an IMPL now outruns were amended in this iteration's own doc commits.

@@ -9851,3 +9851,77 @@ the owner and untouched.
   (before this iteration the same table served eight rows, four of them claiming `price:"unknown"` for a
   priced model).
 - **iter:** v26
+
+### VAL-203 — R-1 closed: the LIVE and AT-REST usage folds agree on the WHOLE `RunUsage`, terminally-failed call included
+- **status:** green
+- **traces:** REQ-127, DES-183, DES-180, ARCH-118
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v26
+- **evidence:** 2026-09-11, owner instruction "close the two MID items Gate 8 carried as recorded
+  debt". The falsifying test the v26 Gate 8 re-review specified for R-1 was written FIRST and
+  measured RED against the shipped code, as a third case in IT-156's own file
+  (`tests/integration/unmapped-column-folds.test.ts`, no new file — the seam said so): one run, real
+  `RunManager` + real `InMemoryRunStore` + real `AgentExecutor`, a fake gateway whose first call
+  succeeds with `tokens {10,5,0,0}` + `unmapped ['task_progress','task_progress']` and whose second
+  fails terminally with `unmapped ['weird_subtype']` and no tokens; then the SAME material into both
+  folds — `expect(foldUsage(persistedEvents)).toEqual(view.usage)`, the whole `RunUsage`.
+  **RED (measured, before the fix):**
+  ```
+  AssertionError: expected { tokens: { input: 10, ...(3) }, ...(3) } to deeply equal { tokens: { input: 10, ...(3) }, ...(3) }
+  - Expected
+  + Received
+    Object {
+      "costUSD": 0,
+      "tokens": Object { "cacheRead": 0, "cacheWrite": 0, "input": 10, "output": 5 },
+      "unmappedMessages": Object {
+        "task_progress": 2,
+  -     "weird_subtype": 1,
+      },
+      "unpricedCalls": 1,
+    }
+  ```
+  — the at-rest fold (Received) was missing the terminally-failed call's `weird_subtype` the live
+  fold (Expected) had. **GREEN** after IMPL-220's one move in `run-guard.ts` (the `unmapped` loop
+  above the `!data.tokens` guard): `3 passed (3)` in that file, and the assertions that only became
+  reachable once the objects matched — `unmappedMessages {task_progress: 2, weird_subtype: 1}` (so
+  the agreement is not "both empty"), `tokens {input:10, output:5, cacheRead:0, cacheWrite:0}`,
+  `costUSD 0`, `unpricedCalls 1` — confirm **DES-180 is untouched: the failed call still moves no
+  token, no cost and no unpriced counter.** No money or budget path is affected; the only other
+  `foldUsage` consumer, `run-manager.ts`'s resume hydration, reads `costUSD`/`tokens` only.
+  Whole-suite regression after the change: **2641 passed | 26 skipped (376 files)**, identical to the
+  pre-change baseline, and `npx tsc --noEmit` clean. Nothing deleted, nothing skipped.
+- **note:** `real: false` — this is a fold-arithmetic equality provable in-process; there is no
+  production observation to make (VAL-090 is the ledger precedent for an acceptance-shaped row with
+  `real: false`). The production `rwe.service` on port 8899 was NOT touched: not restarted, not
+  reconfigured, not read into.
+
+### VAL-204 — the carried MID trace gap `IMPL-082` is closed in the INDEX, and the index now tells the truth
+- **status:** green
+- **traces:** REQ-024, DES-033
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v26
+- **evidence:** 2026-09-11. `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` **before:
+  1492 items / 24 gaps** = 1 mid `TDD IMPL-082（實作）沒有任何測試覆蓋` + 2 low `未實作`
+  (TASK-018, TASK-153) + 21 low `漂移` iteration-drift pairs. **After: 1492 items / 23 gaps** = the
+  same 2 low `未實作` + the same 21 low `漂移`, byte-for-byte the same rows; **the single mid is
+  gone and no new gap, broken link or orphan appeared.** The defect was in the index, not the
+  behaviour and not `trace.py`: `trace.py` credits an implementation when its own `traces:` are
+  named by some test item's `traces:` (`covered = bool(it["greens"]) or any(t in test_targets for t
+  in it["traces"])`), IMPL-082 traces exactly `DES-033`, and no test item named `DES-033` —
+  although IT-042's own case at `tests/integration/v15-v2-workspace-transport.test.ts:87` POSTs a
+  ~9 MiB body to the real server and asserts `413`, which is precisely DES-033 (`readBody(req,
+  maxBytes=8MiB)` → `BodyTooLargeError` → 413) and precisely what IMPL-082 implements in
+  `src/server.ts`. Fix: `DES-033` added to IT-042's `traces:` (05-tests.md), with the reasoning and
+  the two deliberate non-links recorded in an amendment bullet on that entry. **No behaviour, no
+  test and no `trace.py` rule changed**; the rule is sound and the ledger's own v10 review had
+  prescribed this exact edit three times (`07-review.md:6956`, `:7046-7047`, `:7054`) without it
+  ever being applied. **Not linked, and why:** `tests/acceptance/val-090-blob-stream.test.ts:123`
+  (VAL-090) asserts `413 BLOB_TOO_LARGE` from `maxBlobBytes` on `/assets/blob/:sha` — a different
+  cap under DES-086/DES-091; `tests/integration/compressed-body.test.ts:46,55` (IT-058) exercises
+  `readBodyDecoded`/`MAX_DECOMPRESSED_BYTES`, DES-055's successor cap. Both are real body-cap tests,
+  neither is DES-033's, and crediting IMPL-082 with them would put back a softer version of the same
+  lie the gap was reporting.
