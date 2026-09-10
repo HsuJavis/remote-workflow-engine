@@ -9890,8 +9890,10 @@ the owner and untouched.
   `costUSD 0`, `unpricedCalls 1` — confirm **DES-180 is untouched: the failed call still moves no
   token, no cost and no unpriced counter.** No money or budget path is affected; the only other
   `foldUsage` consumer, `run-manager.ts`'s resume hydration, reads `costUSD`/`tokens` only.
-  Whole-suite regression after the change: **2641 passed | 26 skipped (376 files)**, identical to the
-  pre-change baseline, and `npx tsc --noEmit` clean. Nothing deleted, nothing skipped.
+  Whole-suite regression, MEASURED after the change (`npx vitest run`, 359 s): **2642 passed | 26
+  skipped | 0 failed; 376 test files passed | 1 skipped**. That is the pre-change baseline (2641 /
+  26 / 0) **plus exactly the one new case**, IT-156's third — no file added, nothing deleted,
+  nothing skipped, no assertion weakened. `npx tsc --noEmit` clean.
 - **note:** `real: false` — this is a fold-arithmetic equality provable in-process; there is no
   production observation to make (VAL-090 is the ledger precedent for an acceptance-shaped row with
   `real: false`). The production `rwe.service` on port 8899 was NOT touched: not restarted, not
@@ -9918,7 +9920,8 @@ the owner and untouched.
   `src/server.ts`. Fix: `DES-033` added to IT-042's `traces:` (05-tests.md), with the reasoning and
   the two deliberate non-links recorded in an amendment bullet on that entry. **No behaviour, no
   test and no `trace.py` rule changed**; the rule is sound and the ledger's own v10 review had
-  prescribed this exact edit three times (`07-review.md:6956`, `:7046-7047`, `:7054`) without it
+  prescribed this exact edit three times (`07-review.md:6982`, `:7072-7073`, `:7080` — line
+  numbers as of this commit, in the v10 GATE 8 REVIEW section) without it
   ever being applied. **Not linked, and why:** `tests/acceptance/val-090-blob-stream.test.ts:123`
   (VAL-090) asserts `413 BLOB_TOO_LARGE` from `maxBlobBytes` on `/assets/blob/:sha` — a different
   cap under DES-086/DES-091; `tests/integration/compressed-body.test.ts:46,55` (IT-058) exercises

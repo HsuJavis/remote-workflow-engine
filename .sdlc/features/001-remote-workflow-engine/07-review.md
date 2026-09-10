@@ -168,7 +168,8 @@ half rather than hidden** (`journal.md`, "Routed out, so neither is lost between
   `capture()` writes the three fields together and unconditionally; documented in `foldUsage`'s
   docblock, not changed. One pre-existing divergence OUTSIDE R-1's seam is reported, not fixed:
   `foldUsage` sums every usage event per agent while `deriveAgentRecords` is latest-wins. Evidence:
-  **IMPL-220**, **VAL-203**; suite 2641 passed / 26 skipped, `tsc --noEmit` clean.
+  **IMPL-220**, **VAL-203**; suite MEASURED after the change at **2642 passed / 26 skipped / 0
+  failed** (the pre-change 2641 plus exactly this one new case), `tsc --noEmit` clean.
 
 #### Carried LOW debt (6) — re-verified unchanged, D-6 and D-7 CLOSED
 

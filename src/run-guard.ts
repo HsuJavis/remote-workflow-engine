@@ -28,7 +28,9 @@ export function priceCall(tokens: Tokens, rates: FourRates | null): number | nul
 /** v26 (DES-183, ARCH-118, ADR-046/047, TASK-183, REQ-127): pure — the "at rest" `RunUsage`
  *  producer, folded over one run's PERSISTED transcript events (every agent's, flattened). Never
  *  throws. Two column groups, two rules — the SAME split the LIVE fold (`foldUsageFromRecords`,
- *  run-manager.ts) applies to records, so the two cannot disagree:
+ *  run-manager.ts) applies to records, which is why the two agree. Nothing here ENFORCES that; the
+ *  lock is IT-156's third case, which deep-equals both folds over one run containing a
+ *  terminally-failed call (v26 R-1 is what a comment promising agreement was worth):
  *   - **tokens / costUSD / unpricedCalls** count only on a usage event carrying `tokens`, i.e. a
  *     `done` call (DES-180: "a failed call carries no usage and moves no counter"). `unpriced`
  *     follows the SAME rule `deriveAgentRecords` (run-store.ts) applies to its `done` branch —
