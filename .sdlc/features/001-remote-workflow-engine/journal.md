@@ -2878,3 +2878,70 @@ zoom/pan was documented nowhere; D13). No config file changed — this round shi
 trace 1479/22 (0 未驗證, 0 未真實驗證; the 22 are pre-existing low-severity drift/未實作/TDD).
 rtm regenerated: 0 ❌, 1 ⚠️. `gates.validation.passed=true`, `current_stage: review` — and Gate 8 is
 blocked by design until the owner answers VAL-186 and VAL-187's `owner_decision` markers.
+
+## 2026-09-10 — v26 design-drift closeout (designer): thirteen rows amended, no `iter:` bumped, 24 gaps in and 24 out
+
+The last ledger work before Gate 8. `sh .sdlc/trace` reported **24 gaps / 1486 work items** before this
+pass and **24 / 1486** after — 0 broken links, 0 orphans, 0 high-severity, either side. That flat number
+is the finding, not a failure to act, and the whole argument is now written into `04-design.md`'s
+**Decision rationale item 22** rather than re-derived by the next reviewer.
+
+**What was amended.** Every row the dashboard names, plus one it does not. Five sit behind a v26
+implementation and each got a bullet describing what the code now does: **DES-022** (D14/IMPL-219 —
+`deploy.sh` resolves `RWE_CONFIG_PATH` above step 2, so the step checks, creates and reports on the file
+the engine will actually read; the `cp` target moved with it because fixing only the message would have
+minted a new lie), **DES-112** (D6/IMPL-208 — `PARSE_ERROR` carries `{field, line?, source?, construct?}`,
+correct only because the `meta` span is blanked to its own line count instead of deleted; confined to
+`script-checks.ts` because `guards.ts` is loaded by the sandbox child, which does not resolve `.js`→`.ts`
+value imports), **DES-141** (D7/IMPL-210 — `Record<keyof FileConfig, true>` proves the LIST is complete
+and not that any key is FORWARDED, the third instance of this repo's `composeConfig` wiring class, so the
+key list is exported and UT-219 sweeps it: 32 round-trip, 11 excluded with reasons), **DES-149**
+(D13/IMPL-218 — the row presumed an unclaimed `schedules` row could exist and never said how an EXISTING
+database gets there; the guarded one-transaction rebuild sits AFTER the additive ALTERs, unlike its twin
+in `webhook-registry.ts`, because placement follows the OLDEST file a deployment can present, not the
+newest) and **DES-157** (D6/IMPL-208 — the guide finally states the script-body form; both halves are
+mistakes a real cold subject made).
+
+Six rows (**DES-064, DES-066, DES-088, DES-094, DES-099, DES-100**) lag v15–v23 implementations and
+**already carried an inline `[AMENDED vNN]` clause covering that exact change** — the marker survives only
+because `iter:` records origin. Each got a one-line closeout naming its marker and where the substance
+already lives. DES-094's turned out not to be drift at all but an artefact of a COMPOSITE implementation
+row (IMPL-122 carries v15→v20 auth work under one `iter: v20`; only its v18 half ever touched
+`google-verifier.ts`). DES-099's is the one that gained real content: review §S7's prescribed reorder of
+register-time `validateHarnessDefaults` was retired **by measurement** in v21 and that was never written
+into the design, leaving an ordering a future reader could helpfully "fix" back into a rejection-code
+regression.
+
+**The §G carry-forward item was mis-addressed, and the correction moved with it.** It reported
+`04-design.md:1441 (DES-076)` still describing `ModelEntry` as `{provider, model, alias?, …}`. Line 1441
+is real and the text is genuinely false, but the line belongs to **DES-040**, 550 lines from the row
+named — DES-076 is at 1995. The shape correction (`alias?: string` → `aliases?: string[]`, `ref` staying
+the one agent-ready id, because collapsing D11's duplicate rows must not lose the alias NAME an author
+writes in `model.default`) therefore landed on DES-040, and DES-076 — which owns `GET /api/models` and
+the Models section — carries the client-facing half: `.alias` now reads `undefined`, one for v26's
+breaking-change list beside the budget object and `toolUse`→`toolUseDeclared`. Neither row is in the 24;
+their drift was a false statement, not a stale stamp.
+
+**No `iter:` was bumped, and the arithmetic is why.** The drift check is two-sided, so bumping a design
+row converts N design-lag gaps into M test-lag gaps. Measured for all eleven flagged rows, every single
+bump nets ≥ 0 (DES-066 and DES-094 are the only break-evens, and a break-even merely moves the marker
+onto the verifier's side); bumping all eleven takes the ledger from 24 gaps to **53**. Round 3's specific
+refusal on DES-112/141/157 was re-measured and **still holds — and is now worse than round 3 recorded**:
+it clears 3 and opens 11 (round 3 said 10; the v26 tests written since added one), 24 → 32. Declined
+again, deliberately, rather than making the number look better at the cost of eleven new gaps.
+
+**Composition of what remains, unchanged:** 21 drift — 14 design-lag gap ROWS over 11 distinct design
+rows (DES-066, DES-088 and DES-099 are each flagged twice, once per implementing IMPL), of which 5 sit
+behind a v26 IMPL and 6 were already documented; and **7 are the mirror-image test-lag class** — IT-011,
+IT-057, UT-010, UT-058, UT-064, UT-094, UT-095 — which is the verifier's side, not the designer's. The
+remaining 3 gaps are not drift: TASK-018 / TASK-153 (task without implementation) and IMPL-082
+(implementation without a test).
+
+**Declared cost.** The pass added 11 lines above `04-design.md:3526`, so three line-number
+cross-references into that file shift by 11: `tests/helpers/workflow-fixtures.ts:294` now means `:3537`
+— a TEST comment, which a design-only pass may not edit, so it is routed here rather than fixed — and
+`08-validation.md:6063` / `journal.md:113` now mean `:4235`. `04-design.md:45` is above every insertion
+and unaffected.
+
+No production code, test or requirement was touched; no gate flag was flipped (Gate 8 is the
+orchestrator's to launch); `state.yaml` was deliberately not edited and still parses.
