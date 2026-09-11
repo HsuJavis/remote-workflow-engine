@@ -1655,6 +1655,38 @@ AskUserQuestion 訪談擁有者。
 
 ---
 
+**Round v27b — 2026-09-11 (owner decision on ADR-051 / ADR-055, taken mid-run)**
+
+Gate 2 passed with one `owner_decision: pending` — ADR-051 asked whether, under `auth.enabled:true`,
+the dashboard may show the **predicted overlay** (lanes and nodes not yet reached). The architect took
+option (a) (derive `lanes` from `view.phases`, leave the v22 send-back H2 / ADR-012 mask in place) and
+escalated the reversal rather than taking it, because it widens what a non-owner principal sees.
+
+The orchestrator put it to the owner with the consequence attached: on the deployment the owner
+actually described (「我 + 團隊,遠端連進來」, i.e. auth ON) keeping the mask means the swimlane graph
+loses its dashed edges to not-yet-reached nodes, and REQ-134's 「5 lane、9 agent 一眼看出卡在哪」
+degrades to reached-lanes-only — precisely the observability the owner ranked first in Round 1.
+
+**Owner's ruling: 開 —— 撤銷遮罩.** The predicted overlay is served regardless of `auth.enabled`.
+Rationale accepted as stated by the architect: the same structure is already anonymously public through
+`/api/workflows`, `describe.phases`, `describe.mermaid` and `toolSurface`, so the mask protects nothing
+it does not already leak. ADR-055's sibling surface (`describe.phases[].agents`) follows the identical
+predicate and is widened with it — both surfaces or neither, as ADR-051 stated.
+
+This **reverses v22 send-back H2 / DES-114 / ARCH-073 / ARCH-075 / ADR-012** for the predicted-overlay
+predicate only. It does **not** reopen Won't-have D1: no per-principal dashboard permission tier is
+introduced — the overlay is simply not principal-dependent. Everything else those items decided stands.
+
+**Consequences for this iteration** (the architect folds these into ADR-051/ADR-055 and the affected
+ARCH/DES/TASK rows; Gate 5's `tests/integration/dag-masking-auth.test.ts` flips from asserting the mask
+to asserting the overlay is served):
+- REQ-133 / REQ-134 acceptance is **not** scoped to `auth.enabled:false` — the clause ADR-051 warned it
+  would need is hereby refused by the owner.
+- Gate 7.5 must still run at least one case with `auth.enabled:true`, but now to prove the overlay IS
+  visible there, not to record what degrades.
+
+---
+
 ### REQ-131 — dashboard 外殼:主題、自帶字體、語言、accent hue 與連線指示
 - **status:** draft
 - **traces:** REQ-008, REQ-074
@@ -1709,6 +1741,8 @@ AskUserQuestion 訪談擁有者。
   **Given** 該 workflow 完全沒有執行過 **Then** 圖區顯示其**預測結構**並標明尚無執行 —— 文案與識別字
   一律使用「預測結構 / predicted layout」,**不得出現 "skeleton"**(C3,`no-skeleton-surface` 守衛)。
   **紅測:** 現行無 workflow detail 這一層(卡片直接進 run 詳情)→ 期望有。
+  **Owner ruling (Round v27b):** 這條的驗收**不**限定 `auth.enabled:false` —— 預測結構在啟用 auth 時同樣
+  必須可見(撤銷 v22 H2 / ADR-012 的預測疊層遮罩,見 ADR-051)。
 - **iter:** v27
 
 ### REQ-134 — swimlane 執行圖取代現行 DAG 版面
@@ -1732,6 +1766,8 @@ AskUserQuestion 訪談擁有者。
   **Given** 重建後的圖 **Then** `#dag-fit` / `#dag-graph` / `#dag-zoom` 錨點與滾輪 zoom / 拖曳 pan /
   fit 重置行為皆保留,REQ-129 的真實驗證不得回歸(C2)。
   **紅測:** 現行 DAG 無 lane 標頭、無貝茲邊、節點只有單列標籤 → 期望有。
+  **Owner ruling (Round v27b):** 「5 lane、9 agent」這條在 `auth.enabled:true` 下同樣成立 —— 指向尚未
+  執行到的節點的虛線邊必須畫得出來,不得因 auth 而退化成只顯示已走到的 lane(ADR-051)。
 - **iter:** v27
 
 ### REQ-135 — agent 滑入面板:一次看完一個節點的全貌
@@ -1829,6 +1865,8 @@ AskUserQuestion 訪談擁有者。
   **Given** `GET /api/runs/:id/agents/:agentId` **Then** 回應含 `record`(對應的 `AgentRecord`),
   與既有的 `harness` / `events` 並存 —— 該物件已於 `mcp-facade.ts:677-683` 解析出,只是 `:699` 未放進回傳。
   **紅測:** 現行回應無 `lanes`、無 `record` → 期望有。
+  **Owner ruling (Round v27b):** ADR-051 選項 (b) 獲准 —— 除了從 `view.phases` 取 `lanes` 之外,
+  `server.ts` 的 `!authEnabled` 預測疊層分支一併退場,`describe.phases[].agents`(ADR-055)同步放寬。
 - **iter:** v27
 
 ### REQ-141 — `RunSummary` 帶 `costUSD`,且與單筆 run 的 fold 一致

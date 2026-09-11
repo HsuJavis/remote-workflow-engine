@@ -74,3 +74,47 @@ describe('the harness table indexes EVERY alias a catalog row carries (UT-227, D
     expect(DASHBOARD_HTML).toMatch(/\(m\.aliases\|\|\[\]\)\.forEach\(function\(a\)\{ byAlias\[a\]=m; \}\)/);
   });
 });
+
+// v27 (UT-240, DES-200/201, ARCH-122, TASK-205, REQ-131): the served page becomes a SHELL — markup
+// + tokens CSS + a JSON data island + one module script; ZERO inline executable JS. `DASHBOARD_HTML`
+// keeps its export name (it stays the subject of page-source tests) but now holds markup/CSS only.
+//
+// Red reason (measured): today's `DASHBOARD_HTML` has NO `data-theme` attribute, links no
+// `/static/dashboard/*` asset, and its one `<script>` is the executable inline panel script (no
+// `type="application/json"` data island at all) — every assertion below fails against the current
+// template literal.
+describe('the v27 shell: markup + tokens CSS + a JSON data island, zero inline executable JS (UT-240, DES-200)', () => {
+  it('the root element carries the dark default theme and zh-Hant language', () => {
+    expect(DASHBOARD_HTML).toMatch(/<html[^>]*data-theme="dark"[^>]*lang="zh-Hant"/);
+  });
+
+  it('the page links the vendored stylesheet and the two served scripts from /static/dashboard/*', () => {
+    expect(DASHBOARD_HTML).toContain('/static/dashboard/dashboard.css');
+    expect(DASHBOARD_HTML).toContain('/static/dashboard/ui/theme-init.js');
+    expect(DASHBOARD_HTML).toContain('/static/dashboard/ui/app.js');
+  });
+
+  it('exactly ONE inline <script>, and it is the non-executable JSON data island', () => {
+    const scriptTags = DASHBOARD_HTML.match(/<script(?![^>]*\bsrc=)[^>]*>/g) ?? [];
+    expect(scriptTags.length).toBe(1);
+    expect(scriptTags[0]).toMatch(/type="application\/json"\s+id="rwe-init"/);
+  });
+
+  it('the island round-trips {version} through JSON.parse with "<" escaped', () => {
+    const match = /<script type="application\/json" id="rwe-init">([\s\S]*?)<\/script>/.exec(DASHBOARD_HTML);
+    expect(match).not.toBeNull();
+    const parsed = JSON.parse((match![1] ?? '').replace(/\\u003c/g, '<')) as { version?: string };
+    expect(typeof parsed.version).toBe('string');
+  });
+
+  it('the CSS declares the dark/light --color-bg tokens and an oklch()-based accent ramp over --rwe-hue', () => {
+    expect(DASHBOARD_HTML).toMatch(/\[data-theme="dark"\][^}]*--color-bg:\s*#18191b/);
+    expect(DASHBOARD_HTML).toMatch(/\[data-theme="light"\][^}]*--color-bg:\s*#eef2f1/);
+    expect(DASHBOARD_HTML).toMatch(/oklch\([^)]*var\(--rwe-hue\)\)/);
+  });
+
+  it('the C1 page-source pins (CSS/markup, not behaviour) survive the rebuild', () => {
+    expect(DASHBOARD_HTML).toMatch(/\.fit-btn\{position:relative;z-index:1;/);
+    expect(DASHBOARD_HTML).toMatch(/draggable="false"/);
+  });
+});

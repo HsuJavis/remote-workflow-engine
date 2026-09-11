@@ -34,3 +34,43 @@ describe('UpdateOutcome.configCheck renders on the dashboard banner (UT-180, DES
     expect(html).not.toContain('undefined');
   });
 });
+
+// v27 (DES-200, ARCH-040, TASK-205, REQ-070): `updatePanelModel(init, lang) -> {version, update,
+// configCheck, cta}` — the four branches `dashboard-page.ts:67-81` hard-codes today, as a pure
+// function. INV-V27-5: the shell rebuild (ARCH-122 empties DASHBOARD_HTML of executable JS) must
+// not silently drop the update panel — no v27 REQ names it, so the first person to notice a
+// regression here would be an operator not seeing that a self-update FAILED.
+//
+// Tier: unit, pure — a literal-fixture oracle (mock policy v27).
+//
+// Red reason (measured): `src/dashboard/lib/status.js` does not exist (whole-file import failure);
+// `updatePanelModel` has no production counterpart today (the four branches are inline, unexported
+// template-literal logic in `dashboard-page.ts`).
+describe('updatePanelModel: four fixture rows, pure (UT-241, DES-200, INV-V27-5)', () => {
+  it('pending: no update outcome at all -> update is null', async () => {
+    const { updatePanelModel } = await import('../../src/dashboard/lib/status.js');
+    const vm = updatePanelModel({ version: '1.2.3' }, 'en');
+    expect(vm.version).toBe('1.2.3');
+    expect(vm.update).toBeNull();
+  });
+
+  it('applied + interruptedRuns>0: update.tone is "applied" and cta is non-null', async () => {
+    const { updatePanelModel } = await import('../../src/dashboard/lib/status.js');
+    const vm = updatePanelModel({ version: '1.2.3', lastUpdate: { tag: 'v27', status: 'applied', ts: '2026-09-11T00:00:00Z' }, interruptedRuns: 2 }, 'en');
+    expect(vm.update?.tone).toBe('applied');
+    expect(vm.cta).not.toBeNull();
+  });
+
+  it('failed with detail: update.tone is "failed" and the text carries the detail', async () => {
+    const { updatePanelModel } = await import('../../src/dashboard/lib/status.js');
+    const vm = updatePanelModel({ version: '1.2.3', lastUpdate: { tag: 'v27', status: 'failed', ts: '2026-09-11T00:00:00Z', detail: 'build failed: xyz' } }, 'en');
+    expect(vm.update?.tone).toBe('failed');
+    expect(vm.update?.text).toContain('xyz');
+  });
+
+  it('skipped with configCheck: update.tone is "skipped" and configCheck is surfaced (never a silent pass)', async () => {
+    const { updatePanelModel } = await import('../../src/dashboard/lib/status.js');
+    const vm = updatePanelModel({ version: '1.2.3', lastUpdate: { tag: 'v27', status: 'applied', ts: '2026-09-11T00:00:00Z', configCheck: 'skipped' } }, 'en');
+    expect(vm.configCheck).toBe('skipped');
+  });
+});

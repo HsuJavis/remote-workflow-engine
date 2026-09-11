@@ -1616,3 +1616,190 @@ recorded `unpriced: true`; there is no admission refusal and no `PRICE_UNKNOWN`;
 - **dod:** `npx vitest run tests/acceptance/v24-tool-surface.test.ts` → every `TOOL_SPECS` row exercised once including its error path, with the v26 rows updated (`run_start.seed`/`seedManifest`/`seedManifestRef` item shapes, `run_start.budget` object + `null`, `models_list` declared columns, `workflow_describe.diagramContract`) and the regenerated table committed; the REQ-117/128/130 cold-model runbook names the guide + `tools/list` as the ONLY inputs and a first-try failure as a DOCUMENTATION defect.
 - **estimate:** M
 - **iter:** v26
+
+## v27 tasks (REQ-131..136, REQ-140, REQ-141 / ARCH-120, ARCH-122..131 / ADR-049..056) — TASK-196..213
+
+Synthesized from the pre-run two-group design panel on disk (`.panel/design/adversarial.r1.md`,
+`.panel/design/quality-dimensions.r1.md`); round 1 only — the two headlines were complementary, so no
+round 2. Reasoning lives in `04-design.md`'s one `## Decision rationale — v27`.
+
+**Order is load-bearing, not cosmetic — three rules, and each is provable after the fact.**
+1. **TASK-196 lands before ANY file under `src/dashboard/`.** `vitest.config.ts:7` includes `.ts` only and
+   both grep guards walk `.ts` only, so a `.js` test authored first never runs (green, unshipped) and a
+   client module landed first is bytes no guard reads (green, forbidden word served). TASK-196's own
+   planted-violation test is what proves the widening happened.
+2. **TASK-197 lands before every task that edits `src/types.ts` or writes a view test.** It owns ALL v27
+   `types.ts` deltas and the one wire fixture; TASK-198/199/200 therefore do NOT list `types.ts`.
+3. **TASK-213 (the pin migration) lands in the same batch as TASK-205**, never after it: the shell rewrite
+   turns ~41 existing assertions red or, worse, VACUOUSLY GREEN, and the cheapest wrong fix is deletion.
+4. **TASK-204's `listed ⇒ on disk` half is the slice's FINAL green, not TASK-204's.** DES-199's literal
+   enumerates every `ui/`/`lib/` key, and those files arrive in TASK-206..212 — so that one assertion is
+   RED for the js keys until the last client task lands, and that is expected, not a defect. TASK-204's own
+   DoD is scoped to the halves it can satisfy alone (fonts, css, traversal, cache policy, sha256, the
+   missing-file degrade); the full closed-both-ways assertion is re-run as TASK-212's last check.
+
+**Out of this closure and deliberately untouched:** REQ-137/138/139 (Models/System/Issues tab *upgrades*)
+and REQ-142/143. TASK-212 PORTS the three shipped tabs unchanged so REQ-067/076/077/078 do not regress —
+it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'s rationale §1.
+
+### TASK-196 — the guards see the served bytes, and the browser tier can fail instead of skipping
+- **status:** draft
+- **traces:** ARCH-124, ARCH-123, REQ-131, REQ-134
+- **files:** vitest.config.ts, tests/unit/no-skeleton-surface.test.ts, tests/unit/no-retired-surface.test.ts, tests/unit/dashboard-no-external-host.test.ts, tests/acceptance/val-193-dag-fit-and-columns.test.ts, tests/acceptance/val-197-diagram-pan.test.ts
+- **des:** DES-191
+- **dod:** `RWE_REQUIRE_BROWSER=1 npx vitest run tests/unit/no-skeleton-surface.test.ts tests/unit/no-retired-surface.test.ts tests/unit/dashboard-no-external-host.test.ts tests/acceptance/val-193-dag-fit-and-columns.test.ts` → both walkers return a planted temp-fixture `*.js` AND `*.css` and go RED on the forbidden word planted in each; the no-external-host guard reports the planted `https://fonts.googleapis.com` in a planted `.css`; and the acceptance file THROWS (not skips) when no puppeteer Chrome is present. Same command without the env var still skips.
+- **estimate:** S
+- **iter:** v27
+
+### TASK-197 — the v27 wire types, the one fixture, and the disclosure key-set test
+- **status:** draft
+- **traces:** ARCH-131, ARCH-127, ARCH-129, ADR-054, REQ-140, REQ-141, REQ-136
+- **files:** src/types.ts, src/mcp-facade.ts, tests/fixtures/dashboard-wire.ts, tests/integration/dashboard-disclosure.test.ts
+- **des:** DES-192
+- **dod:** `npx tsc --noEmit && npx vitest run tests/integration/dashboard-disclosure.test.ts` → `tsc` is green with the fixture `satisfies` each named route type (`AgentLogView`, `RunSummary`, the DAG payload, `HomeView`, the describe view); the fixture literals are POST-delta, so the disclosure table asserts, per (endpoint × outcome: ok / facade-error / http-error / degraded), `keys ⊆ ALLOWED` and `REQUIRED ⊆ keys` against the shape v27 is building toward: every row for a route this slice does not change is GREEN at this task's completion, and exactly the rows whose REQUIRED set carries `record`, `lanes`/`current` and the four summary fields are RED until TASK-198/199/202/203 land. That split is the expected outcome here, not a defect.
+- **estimate:** M
+- **iter:** v27
+
+### TASK-198 — the store's at-rest usage projection and the narrow `usage`-only backfill
+- **status:** draft
+- **traces:** ARCH-128, ADR-052, REQ-141
+- **files:** src/store/sqlite-run-store.ts, src/run-store.ts, tests/unit/sqlite-run-store-usage-projection.test.ts, tests/integration/run-store-parity.test.ts
+- **des:** DES-193
+- **dod:** `npx vitest run tests/unit/sqlite-run-store-usage-projection.test.ts tests/integration/run-store-parity.test.ts` → against a real temp `better-sqlite3` file, five rows (no snapshot / full snapshot / `{usage}`-only snapshot / a `usage.tokens` missing `cacheWrite` / a full snapshot whose `agents` is `[]`) project exactly as DES-193 states — all four fields absent for rows 1 and 5, `tokensTotal` a COALESCE'd sum never `NULL`, `agentCount` absent (not 0) for row 3; `backfillUsage` writes only for a TERMINAL run whose snapshot lacks `usage` AND whose transcript carries a `kind:'usage'` event, is idempotent across two calls, and `InMemoryRunStore` passes the SAME table.
+- **estimate:** M
+- **iter:** v27
+
+### TASK-199 — `listSummaries()`: one accessor, one precedence chain, and both routes moved onto it
+- **status:** draft
+- **traces:** ARCH-127, ADR-052, REQ-141, REQ-132, REQ-133
+- **files:** src/run-manager.ts, src/server.ts, README.md, .sdlc/features/001-remote-workflow-engine/v24-tool-surface.md, tests/unit/run-manager-summarize-usage.test.ts, tests/integration/usage-live-equals-fold.test.ts, scripts/bench-run-list.ts
+- **des:** DES-194
+- **dod:** `npx vitest run tests/unit/run-manager-summarize-usage.test.ts tests/integration/usage-live-equals-fold.test.ts` → `summarizeUsage` returns `undefined` for zero records and a PRESENT `{costUSD:0, unpricedCalls:1, …}` for one unpriced done call; over HTTP, `/api/runs[i].costUSD` equals `/api/runs/:id.usage.costUSD` for a run holding both a terminally-failed and an unpriced call, and BOTH are absent/zero-fold for a run that completed having made zero `agent()` calls; a counting `prepare` proxy shows `listRuns()` issuing exactly ONE statement at N=10 and N=1000, and `listSummaries()` issuing `1 + c·25` for a fixed small `c` on the first call (each healed run costs one `getRun` fan-out plus its write) and exactly 1 on the second; `{event:'usage_backfill', healed}` appears once per healing call. Because `list(filter)` gains the same projection, MCP `run_list` widens too — the regenerated tool-surface table and the README row must both name the four optional fields. `scripts/bench-run-list.ts` records p50/p95 of `/api/runs`, `/api/home` and boot recovery at N=1000 into 08-validation.md (ADR-052's measurement obligation).
+- **estimate:** L
+- **iter:** v27
+
+### TASK-200 — REQ-136: the guarded strip at the one decoration site, and the contract change told three times
+- **status:** draft
+- **traces:** ARCH-129, ADR-050, REQ-136, REQ-135
+- **files:** src/params/resolve.ts, src/agent-executor.ts, src/tool-specs.ts, README.md, tests/unit/strip-first-segment.test.ts, tests/unit/agent-executor-harness-descriptor.test.ts, tests/acceptance/v24-tool-surface.test.ts, .sdlc/features/001-remote-workflow-engine/v24-tool-surface.md
+- **des:** DES-195
+- **dod:** `npx vitest run tests/unit/strip-first-segment.test.ts tests/unit/agent-executor-harness-descriptor.test.ts tests/integration/dashboard-disclosure.test.ts tests/acceptance/v24-tool-surface.test.ts` → the six-case table plus the property `stripFirstSegment(composePrompt(s,a,p,ap), s).prompt === composePrompt(undefined,a,p,ap)`; a stub gateway returning a prompt that is NOT what it was given yields `prompt:''` and one `{event:'harness_prompt_prefix_mismatch'}` line; the persisted descriptor carries `systemPrompt:{agentType,bytes}` present-iff-applied; the REQ-136 three-conjunct oracle passes against the real BODY of both `GET /api/runs/:id/agents/:agentId` and MCP `run_agent_log`; and the regenerated tool-surface table carries the new `run_agent_log` row. `val-082`/`val-104`'s existing assertions pass UNCHANGED. The cross-repo grep of the `rwe-mcp` plugin for `harness.prompt` and the one release-note line are recorded in the commit message.
+- **estimate:** M
+- **iter:** v27
+
+### TASK-201 — `dashboard.ts`: `deriveLanes`, `predictedLanes`, and cost-aware workflow metrics
+- **status:** draft
+- **traces:** ARCH-126, ADR-051, ADR-055, REQ-140, REQ-132, REQ-133
+- **files:** src/dashboard.ts, tests/unit/dashboard-derive-lanes.test.ts, tests/unit/dashboard-metrics.test.ts
+- **des:** DES-196
+- **dod:** `npx vitest run tests/unit/dashboard-derive-lanes.test.ts tests/unit/dashboard-metrics.test.ts` → a 7×2×2 table over every `RunStatus` × empty/non-empty `phases` × `masked` gives `current` = last observed index for `running|suspended|interrupted` and `null` for the other four; `lanes` are observed-only when `masked`, observed+expected otherwise, ordinal-joined never title-joined; `predictedLanes` returns per-lane agent labels in slot order from the ONE `deriveExpectedGraph`; `avgCostUSD` is `null` (never `0`) when no terminal summary carries `costUSD`, and `unpricedRuns` counts the rest.
+- **estimate:** M
+- **iter:** v27
+
+### TASK-202 — the facade: `record` on the agent detail, `phases[].agents`, and the fail-closed masking dep
+- **status:** draft
+- **traces:** ARCH-131, ADR-051, ADR-055, REQ-140, REQ-133
+- **files:** src/mcp-facade.ts, src/server.ts, README.md, tests/integration/dag-masking-auth.test.ts, tests/integration/dashboard-http.test.ts
+- **des:** DES-197
+- **dod:** `npx vitest run tests/integration/dag-masking-auth.test.ts tests/integration/dashboard-http.test.ts` → a facade constructed with NO `maskPredictedOverlay` omits `phases[].agents` (fail-closed); the open server (auth off) answers `phases[].agents` present and `dag.lanes` including unreached lanes; the auth server answers `agents` ABSENT (not `[]`), `lanes` observed-only and `current` present; `runAgentLog` returns `record` on the success branch and omits it on the error branch; README.md §Dashboard JSON REST API carries the `describe.phases[].agents` row with its masking sentence; and every pre-existing assertion in `dashboard-http.test.ts` (the pinned `{kind,cells,edges,startedBy}` shape) and IT-092's `['__trigger__']` case pass unchanged.
+- **estimate:** M
+- **iter:** v27
+
+### TASK-203 — the server wire: the `/static/dashboard/*` arm, the CSP, `lanes`/`current`, and the degraded log line
+- **status:** draft
+- **traces:** ARCH-130, ARCH-123, REQ-131, REQ-140, REQ-133
+- **files:** src/server.ts, README.md, tests/integration/static-assets-route.test.ts, tests/integration/dashboard-http.test.ts
+- **des:** DES-198
+- **dod:** `npx vitest run tests/integration/static-assets-route.test.ts tests/integration/dashboard-http.test.ts` → against a really booted `createServer()`, `GET /static/dashboard/ui/app.js` returns `text/javascript` + `no-store` + `nosniff` (NOT the SPA's `text/html`, i.e. the arm is registered before the catch-all), a woff2 returns `font/woff2` + `immutable`, every traversal string in the DES-199 table returns 404 with no echo of the key, a non-GET returns 405; `GET /dashboard` carries the exact ADR-130 CSP string including `img-src 'self' blob:`; the DAG payload gains `lanes`+`current` with its old keys byte-compatible; and a forced degrade on both catches emits one `{event:'dashboard_api_degraded', route, reason}` line.
+- **estimate:** M
+- **iter:** v27
+
+### TASK-204 — `src/static-assets.ts` and the vendored font payload
+- **status:** draft
+- **traces:** ARCH-123, ADR-049, REQ-131
+- **files:** src/static-assets.ts, src/dashboard/fonts/, src/dashboard/fonts/SOURCE.md, src/dashboard/fonts/OFL.txt, tests/unit/static-assets.test.ts
+- **des:** DES-199
+- **dod:** `npx vitest run tests/unit/static-assets.test.ts` → for the keys this task itself ships (`dashboard.css` and the five woff2) the map is closed in BOTH directions (listed ⇒ on disk, on disk ⇒ listed); the `ui/`/`lib/` keys are declared and their on-disk half stays RED until TASK-206..212 land (preamble rule 4, re-run as TASK-212's last check). `lookupStaticAsset` answers `null` for every row of the traversal table (`../../etc/passwd`, `%2e%2e%2f`, `ui/../lib/theme.js`, `ui/app.js%00.png`, `//etc/passwd`) and is a bare `Map.get` (no `join`/`normalize`/`decode` appears in the module); cache policy is `immutable` for woff2 and `no-store` for js/css; `fonts/SOURCE.md`'s recorded sha256 matches each woff2 byte-for-byte and `fonts/OFL.txt` exists; and a key whose file is deleted logs `{event:'dashboard_asset_missing', key}` once and then 404s instead of throwing at boot.
+- **estimate:** M
+- **iter:** v27
+
+### TASK-205 — the shell page: markup, tokens CSS with the OKLCH ramp, the data island, and the update panel that must not vanish
+- **status:** draft
+- **traces:** ARCH-122, ARCH-120, ADR-049, REQ-131, REQ-070
+- **files:** src/dashboard-page.ts, src/dashboard/dashboard.css, tests/unit/dashboard-page-source.test.ts, tests/unit/update-outcome-config-check.test.ts
+- **des:** DES-200, DES-201
+- **dod:** `npx vitest run tests/unit/dashboard-page-source.test.ts tests/unit/update-outcome-config-check.test.ts` → `buildDashboardHtml()` keeps its signature and its one caller; the emitted HTML contains `data-theme="dark"`, the three asset `<link>`/`<script>` references, exactly ONE inline `<script>` and it is `type="application/json" id="rwe-init"` (a grep for `<script>` without `type=` returns 0); the island round-trips `{version,lastUpdate,interruptedRuns}` through `JSON.parse` with `<` escaped; `DASHBOARD_HTML` still contains `.fit-btn{position:relative;z-index:1;` and the `#diagram-img{…-webkit-user-drag:none}` rule and `draggable="false"`; and `dashboard.css` declares `--color-bg:#18191b` under `[data-theme="dark"]`, `#eef2f1` under `[data-theme="light"]`, and every accent token as an `oklch(L C var(--rwe-hue))` literal.
+- **estimate:** L
+- **iter:** v27
+
+### TASK-206 — `lib/` I: viewer preferences + the string table, and the connection reducer
+- **status:** draft
+- **traces:** ARCH-124, ADR-049, REQ-131
+- **files:** src/dashboard/lib/theme.js, src/dashboard/lib/strings.js, src/dashboard/lib/connection.js, tests/unit/dashboard-lib-theme.test.js, tests/unit/dashboard-lib-strings.test.js, tests/unit/dashboard-lib-connection.test.js
+- **des:** DES-201, DES-202
+- **dod:** `npx vitest run tests/unit/dashboard-lib-theme.test.js tests/unit/dashboard-lib-strings.test.js tests/unit/dashboard-lib-connection.test.js` → the `.js` tests RUN (they are silently skipped without TASK-196); `clampHue` totals over `-1 / 0 / 359 / 360 / NaN`, `prefsFromStorage` is pure over an injected getter and survives a throwing `localStorage`; `Object.keys(STR.zh).sort()` deep-equals `Object.keys(STR.en).sort()` and the table contains the key `predictedLayout` and NOT the C3 word; `nextConnection`'s transition table passes with a literal-fixture oracle — any `ok` → `live` with `consecutiveFails:0`, a degraded worst → `degraded`, one all-`fail` tick keeps the previous status and two consecutive make it `offline`; `classifyResponse` maps a 200-with-`degraded` body to `'degraded'`, a 404/500 and a parse failure to `'fail'`, never throwing.
+- **estimate:** M
+- **iter:** v27
+
+### TASK-207 — `lib/` II: swimlane geometry, the list projections and the one money formatter, the panel VM
+- **status:** draft
+- **traces:** ARCH-124, ARCH-120, REQ-132, REQ-133, REQ-134, REQ-135
+- **files:** src/dashboard/lib/swimlane.js, src/dashboard/lib/runlist.js, src/dashboard/lib/agent.js, tests/unit/dashboard-lib-swimlane.test.js, tests/unit/dashboard-lib-runlist.test.js, tests/unit/dashboard-lib-agent.test.js
+- **des:** DES-203, DES-204, DES-205
+- **dod:** `npx vitest run tests/unit/dashboard-lib-swimlane.test.js tests/unit/dashboard-lib-runlist.test.js tests/unit/dashboard-lib-agent.test.js` → `SWIMLANE_BOX` equals REQ-134's seven constants exactly, `svgBox` of a 5-lane/9-agent fixture is a minimum box for zero cells (never `0×0`), `edgePath` emits a cubic from right-mid to left-mid, `panelSide` is total at exactly `graphWidth/2`; `fmtCost` renders `—` for absent, `≥ $0.42 · 2 未定價` when `unpricedCalls>0` and `$0.42` otherwise, `sortRows` puts absent values LAST in BOTH directions, `historyRow` emits REQ-133's nine columns with `4m 12s 進行中` for a live run; `panelModel` builds the six stat cards (timeout twice, four token columns), renders BOTH `effortApplied` branches, the `provider · transport · proxyModel` line, the `lastActivityAt`-vs-`startedAt` activity line, `mcpUnresolved`/`unmapped` counts, `reasonCode`, `detail`, and — for an absent `harness.systemPrompt` — the wording 「無 system prompt 紀錄」, never 「未套用」. Every function takes `now` as a parameter; `grep -rn "Date.now()\|new Date()" src/dashboard/lib` → 0.
+- **estimate:** L
+- **iter:** v27
+
+### TASK-208 — `ui/` I: the app entry, the settle-then-reschedule poller, and the Workflows home
+- **status:** draft
+- **traces:** ARCH-125, ARCH-122, REQ-131, REQ-132
+- **files:** src/dashboard/ui/app.js, src/dashboard/ui/theme-init.js, src/dashboard/ui/poll.js, src/dashboard/ui/home.js, tests/unit/dashboard-client-corpus.test.ts, tests/acceptance/val-198-shell-and-home.test.ts
+- **des:** DES-206, DES-200, DES-201
+- **dod:** `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-198-shell-and-home.test.ts` → in real Chromium against a really booted `createServer()`: first load is `data-theme="dark"` with `--color-bg` computing to `#18191b`; switching to 淺 gives `#eef2f1` and survives a reload; 「系統」 follows an emulated `prefers-color-scheme` flip with no reload; moving the hue slider to `h` recomputes `--color-accent` to `oklch(0.72 0.065 h)` and writes `localStorage['rwe-hue']`; EN/中 swap every nav and column label; `performance.getEntriesByType('resource')` lists ONLY same-origin URLs and both font families are applied; home shows the three segments, the search box, the segment counts, the `平均費用` meta figure and the running card's sweep; and a dark + a light screenshot per view are written to `evidence/v27/`.
+- **estimate:** L
+- **iter:** v27
+
+### TASK-209 — `ui/workflow.js`: the workflow detail view, the run chips, the history table and the predicted layout
+- **status:** draft
+- **traces:** ARCH-125, ARCH-131, REQ-133
+- **files:** src/dashboard/ui/workflow.js, tests/acceptance/val-199-workflow-detail.test.ts
+- **des:** DES-206, DES-204
+- **dod:** `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-199-workflow-detail.test.ts` → in real Chromium: the detail page renders the h2, the `版本 vN` tag, the executable tag, the TRIGGERS outline tags, at most six run chips with 7px status dots and 8-char runIds, and the nine-column history table (a live row reading `4m 12s 進行中`); clicking a row switches the figure above to that run; a never-run workflow renders its predicted lanes with agent labels from `describe.phases[].agents` (or lanes-only plus 「尚無執行」 when the overlay is masked); `grep -rin "skeleton" src/dashboard` → 0; and the author's diagram still loads through `createObjectURL`/`revokeObjectURL` with the per-(name,version) memo, fetched once rather than once per tick.
+- **estimate:** M
+- **iter:** v27
+
+### TASK-210 — `ui/run.js`: the swimlane painter, and the zoom/pan/fit contract that may not regress
+- **status:** draft
+- **traces:** ARCH-125, ARCH-120, REQ-134, REQ-129
+- **files:** src/dashboard/ui/run.js, tests/acceptance/val-193-dag-fit-and-columns.test.ts, tests/acceptance/val-200-swimlane.test.ts
+- **des:** DES-206, DES-203
+- **dod:** `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-200-swimlane.test.ts tests/acceptance/val-193-dag-fit-and-columns.test.ts` → in real Chromium on a 5-lane/9-agent run: lane headers are 13px uppercase `.04em` semibold with the current lane accent + `目前` tag and a hairline per lane x; edges are 1.2px cubic béziers, dashed `4 4` into pending/queued; nodes are 216×74 three-row with the running node's `rweGlow`/`rweRing` and the failed node's `oklch(0.55 0.16 25)`; the trigger node is 112×40; the legend row and the right-aligned run summary render; and — the non-regression half — a real wheel-zoom then real drag survives at least two 3-second rebuilds (the transform stays on `#dag-zoom`), `#dag-fit` resets, and val-193's existing assertions on `#dag-fit`/`#dag-graph`/`#dag-zoom`/`#run-usage`/`#diagram-img`/`#diagram-zoom` pass unchanged.
+- **estimate:** L
+- **iter:** v27
+
+### TASK-211 — `ui/agent-panel.js`: the slide-in panel
+- **status:** draft
+- **traces:** ARCH-125, ARCH-131, REQ-135, REQ-136
+- **files:** src/dashboard/ui/agent-panel.js, tests/acceptance/val-201-agent-panel.test.ts
+- **des:** DES-206, DES-205
+- **dod:** `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-201-agent-panel.test.ts` → in real Chromium: clicking a node in the LEFT half slides the panel in from the right and a node in the right half from the left, over a `rgba(8,12,9,.5)` backdrop; the header carries the close button, label h2, state tag, phase tag and monospace agentId; six stat cards render including the four token columns and the timeout shown twice; the user prompt appears in the `<pre>` and contains the script prompt but NOT the agentType system prompt; the three tag columns carry counts; event rows carry `HH:MM:SS` + a kind tag + monospace content, a row over 2 KB is clipped with a click-to-expand that restores the full text, and the window marker 「顯示 N / 共 M+」 appears when `hasMore`; a failed event's `detail` renders in the red block; Esc and a backdrop click both close.
+- **estimate:** L
+- **iter:** v27
+
+### TASK-212 — the three shipped tabs are PORTED, not redesigned
+- **status:** draft
+- **traces:** ARCH-125, ARCH-123, REQ-067, REQ-076, REQ-077, REQ-078
+- **files:** src/dashboard/ui/models.js, src/dashboard/ui/system.js, src/dashboard/ui/issues.js, src/static-assets.ts, tests/acceptance/val-202-ported-tabs.test.ts
+- **des:** DES-207
+- **dod:** `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-202-ported-tabs.test.ts` → in real Chromium after the rebuild, the Models tab still renders its `.models-table` rows from `/api/models`, the System tab still renders `#system-panel` from `/api/system` (with the ONE 「無法取樣」 component on a degraded section rather than a thrown render), and the Issues tab still lists open and resolved issues from `/api/issues` — each re-themed only by inheriting the new tokens, with NO sorting, NO filtering, NO slide-in and NO new endpoint. A diff of the three modules against `dashboard-page.ts`'s retired functions is recorded in the commit message as evidence the move was mechanical.
+- **estimate:** M
+- **iter:** v27
+
+### TASK-213 — the page-source pin migration: one corpus, one disposition per assertion
+- **status:** draft
+- **traces:** ARCH-122, ARCH-124, ADR-053, REQ-131, REQ-129, REQ-119
+- **files:** tests/helpers/client-corpus.ts, tests/unit/dashboard-page-source.test.ts, tests/unit/dashboard-diagram-render.test.ts, tests/unit/dashboard-zoom-source.test.ts, tests/unit/workflow-page-harness-table.test.ts, tests/unit/update-outcome-config-check.test.ts
+- **des:** DES-208
+- **dod:** `npx vitest run tests/unit/dashboard-page-source.test.ts tests/unit/dashboard-diagram-render.test.ts tests/unit/dashboard-zoom-source.test.ts tests/unit/workflow-page-harness-table.test.ts tests/unit/update-outcome-config-check.test.ts tests/unit/dashboard-client-corpus.test.ts` → every assertion that took `DASHBOARD_HTML` as its subject and grepped it for client-JS content has been dispositioned STAYS / MOVES / RETIRES (the table is in the commit message, one row per assertion, retirements naming the VAL id that re-proves them); each re-pointed file carries at least one POSITIVE anchor on `clientCorpus()` beside its negatives plus `expect(clientCorpus().length).toBeGreaterThan(5000)`; and `clientCorpus()` THROWS on an empty directory rather than returning `''`.
+- **estimate:** M
+- **iter:** v27

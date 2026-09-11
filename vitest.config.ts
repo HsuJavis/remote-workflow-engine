@@ -4,7 +4,10 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['tests/**/*.test.ts'],
+    // v27 (DES-191, TASK-196): src/dashboard/{lib,ui}/*.js has no build step (ADR-049) and its unit
+    // tests are plain .js files importing those bytes directly — without this, a .test.js file is
+    // never collected at all and its absence reads as a pass (DES-191's own boundary warning).
+    include: ['tests/**/*.test.{ts,js}'],
     testTimeout: 15000,
     // Many tests spawn real child processes (sandbox host) or a real HTTP server.
     // Running test files fully in parallel creates host-level scheduling contention

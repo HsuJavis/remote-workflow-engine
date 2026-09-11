@@ -24,6 +24,7 @@ import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
 import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
+import { throwIfBrowserRequired } from '../helpers/require-browser.js';
 
 /** Same probe val-169-diagram-render.test.ts uses: puppeteer's own executable override first, then
  *  whatever revision its cache holds. A host with no Chrome skips with the reason printed. */
@@ -43,6 +44,8 @@ function findChrome(): string | null {
 
 const chrome = findChrome();
 const reason = chrome ? null : 'SKIPPED: no puppeteer Chrome found (set PUPPETEER_EXECUTABLE_PATH)';
+// v27 (DES-191, TASK-196, UT-232): fail instead of skip when the browser tier is required.
+throwIfBrowserRequired(chrome);
 
 /** Four distinct, non-zero, mutually distinguishable columns — a sum-only render cannot fake them. */
 const TOKENS = { input: 39, output: 2, cacheRead: 5, cacheWrite: 7 };

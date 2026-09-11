@@ -126,3 +126,42 @@ describe('REQ-100/H2: GET /api/runs/:id/dag masks the script-derived skeleton wh
     expect(ids.filter((id) => id.startsWith('__skel_')).length).toBe(3);
   });
 });
+
+// v27 (IT-168, DES-197, ARCH-131, ADR-051, TASK-202, REQ-140/133): the SAME masking predicate
+// (ADR-051/ADR-055, decision (a): served unconditionally from observed phases, the predicted
+// OVERLAY stays masked under auth) now applies to TWO more surfaces this dispatch adds: `dag.lanes`
+// (unconditional) and `describe.phases[].agents` (masked, same predicate as the run-DAG overlay).
+// This extends the SAME harness — real createServer() x2 (auth on/off), real MCP HTTP.
+//
+// Red reason (measured): `dag.lanes` does not exist on the DAG payload at all today (`server.ts`'s
+// dagMatch handler never calls `deriveLanes`); `describe.phases[].agents` does not exist either
+// (`workflowDescribe`'s `phases` projection is title-only, `workflow-view.ts:106`).
+describe('REQ-140/REQ-133 (v27): dag.lanes served unconditionally; describe.phases[].agents masked identically to the run-DAG overlay (IT-168, DES-197)', () => {
+  it('auth ON: GET .../dag carries lanes (observed-only, never []) even though the predicted overlay stays masked', async () => {
+    const ownerToken = await mintBearer(authTmpDir, 'it092-owner@example.com');
+    await registerPublishedVia(callerFor(authServer, ownerToken), 'it168-auth-lanes', SCRIPT);
+    const started = await toolCall(authServer, 'run_start', { name: 'it168-auth-lanes' }, ownerToken);
+    const runId = started['runId'] as string;
+    const res = await fetch(`http://127.0.0.1:${authServer.port}/api/runs/${runId}/dag`);
+    const dag = await res.json() as { lanes?: Array<{ index: number; title: string | null }>; current?: number | null };
+    expect(Array.isArray(dag.lanes)).toBe(true);
+    expect((dag.lanes ?? []).length).toBeGreaterThan(0);
+  });
+
+  it('auth ON: describe.phases[].agents is ABSENT (masked), never [] — a lie that "this lane has no agents"', async () => {
+    const ownerToken = await mintBearer(authTmpDir, 'it092-owner@example.com');
+    await registerPublishedVia(callerFor(authServer, ownerToken), 'it168-auth-describe', SCRIPT);
+    const body = await toolCall(authServer, 'workflow_describe', { name: 'it168-auth-describe' }, ownerToken);
+    const result = body['result'] as { phases?: Array<{ agents?: string[] }> } | undefined;
+    for (const phase of result?.phases ?? []) {
+      expect(phase.agents).toBeUndefined();
+    }
+  });
+
+  it('auth OFF: describe.phases[].agents IS present, with the predicted agent labels', async () => {
+    await registerPublishedVia(callerFor(openServer), 'it168-open-describe', SCRIPT);
+    const body = await toolCall(openServer, 'workflow_describe', { name: 'it168-open-describe' });
+    const result = body['result'] as { phases?: Array<{ agents?: string[] }> } | undefined;
+    expect((result?.phases ?? []).some((p) => Array.isArray(p.agents) && p.agents.length > 0)).toBe(true);
+  });
+});

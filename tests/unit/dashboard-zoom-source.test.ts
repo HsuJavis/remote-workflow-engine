@@ -27,3 +27,19 @@ describe('the run DAG and author SVG scale via viewBox + one .zoomable wrapper (
     expect(DASHBOARD_HTML).toMatch(/fit/i);
   });
 });
+
+// v27 (UT-253, DES-208, TASK-213, REQ-134/129): the `viewBox`/`preserveAspectRatio`/no-absolute-
+// `width` behaviour pins MOVE into `ui/run.js` (the swimlane painter) under this SAME UT id, per
+// DES-208's "MOVES" disposition — a positive anchor beside the negative, or the corpus going empty
+// would pass this vacuously (adjudication (v23) #4).
+//
+// Red reason (measured): `clientCorpus()` throws today — `src/dashboard/**/*.js` does not exist.
+describe('v27 disposition anchor: viewBox/preserveAspectRatio re-points to ui/run.js (UT-253, DES-208)', () => {
+  it('the client corpus (once built) carries the SVG viewBox/preserveAspectRatio wiring and is not vacuously tiny', async () => {
+    const { clientCorpus } = await import('../helpers/client-corpus.js');
+    const corpus = clientCorpus();
+    expect(corpus).toContain('viewBox');
+    expect(corpus).toContain('preserveAspectRatio');
+    expect(corpus.length).toBeGreaterThan(5000);
+  });
+});

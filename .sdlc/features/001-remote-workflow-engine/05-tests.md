@@ -11558,3 +11558,534 @@ repair makes visible, deliberately NOT gated on) AND
 healthy response counts NO gap at all (`unmappedMessages` empty). RED (measured, before the fix):
 case 1's `unmappedMessages` was `{}` — the drop was silent, exactly the shape ADR-046's
 D-V26-projection checklist line calls a Gate 8 finding.
+
+---
+
+## v27 — REQ-131..136/140/141 / ARCH-122..131 / DES-191..208 / TASK-196..213 test-first (Gate 5, RED, 2026-09-11)
+
+Every item below was written BEFORE implementation and run once to confirm red for the stated
+reason, per this dispatch's mock policy (04-design.md §Per-tier mock policy v27): unit mocks freely
+(oracle external to the code under test — hand-written fixture literals, a real temp
+`better-sqlite3` file, a real temp fixture directory, an injected `localStorage` getter); integration
+uses real adjacent components (a really-booted `createServer()` over real MCP HTTP, real
+`SqliteRunStore`/`InMemoryRunStore`, the real agent executor with an injected gateway stub at the
+TRANSPORT boundary only); E2E/acceptance never mocks the SUT's own boundary (real Chromium via the
+existing puppeteer harness, against a really booted engine).
+
+**Test infrastructure landed at this gate** (per DES-191's own boundary — Gate 5 cannot exit without
+it, since a `.test.js` file that is never collected reads as a silent pass): `vitest.config.ts`'s
+`include` widened to `tests/**/*.test.{ts,js}` (one line); `tests/helpers/require-browser.ts`
+(`throwIfBrowserRequired`) wired into `val-193`/`val-197-diagram-drag-pan` and every new v27
+acceptance file, so `RWE_REQUIRE_BROWSER=1` fails instead of silently skipping when no Chrome is
+found; `tests/helpers/client-corpus.ts` (`clientCorpus`/`clientFile`, DES-208's anti-vacuity floor);
+`tests/fixtures/dashboard-wire.ts` (DES-192's ONE fixture, `.ts` on purpose per ADR-049).
+
+**Known compile-time consequence, accepted per DES-192's own framing ("`tsc --noEmit` IS the first
+test"):** `tests/fixtures/dashboard-wire.ts` imports `AgentLogView` from `src/types.ts`, which does
+not exist until TASK-197 lands — `npx tsc --noEmit` is RED repo-wide on this one missing export
+until Gate 6. Vitest itself is unaffected (esbuild does not type-check), so every test below still
+runs and reports its own genuine red/green. This is a deliberate compile-time lock, not a build
+regression to silently work around.
+
+**Filename correction (housekeeping, not a product decision):** TASK-196's own `files:` line names
+`tests/acceptance/val-197-diagram-pan.test.ts`; the real file (VAL-197, landed v26 Gate 7.5 round 3)
+is `tests/acceptance/val-197-diagram-drag-pan.test.ts`. Wired against the real filename.
+
+**Test-first observation on DES-196's own `api:` line (not an owner_decision — no product
+ambiguity):** `deriveLanes(phases, expected, opts:{masked})`'s literal signature carries no `status`
+parameter, yet the boundary text requires branching on `status` too ("current = last observed index
+for running|suspended|interrupted... null for the other four") — `status` cannot be derived from
+`phases`/`expected` alone (a terminal run still has non-empty `phases`). `tests/unit/dashboard-derive-lanes.test.ts`
+calls the signature the boundary text actually needs (`opts:{masked,status}`); left for Gate 6 to
+reconcile literally.
+
+**ADR-051's `owner_decision: pending`** (reversing the `!authEnabled` mask over the predicted
+overlay) is the architect's own marker, untouched since Gate 2 and not duplicated here — every test
+below encodes DECISION (a) exactly as DES-197 specifies: open server → `phases[].agents`
+present/`dag.lanes` includes unreached lanes; auth server → `agents` ABSENT (never `[]`), `lanes`
+observed-only, `current` present.
+
+**Known scope reduction, disclosed rather than silently narrowed:** DES-208's full disposition table
+(STAYS/MOVES/RETIRES, one row per ~41 existing page-source assertions across five files) is NOT
+completed at this gate — only the `clientCorpus()`/`clientFile()` helper, its own anti-vacuity test
+(UT-249), and one genuine positive-anchor case per touched file (UT-252/253/254) are written test-first.
+The full per-assertion sweep is mechanical but voluminous Gate-6-adjacent work matching TASK-213's own
+`dod`; flagged here rather than rushed into a possibly-incorrect disposition.
+
+No time-related literal appears anywhere in this batch; `lib/runlist.js`'s `historyRow`/`fmtCost` and
+`lib/agent.js`'s `panelModel` take `now` as a parameter per DES-201/204/205's own seam rule (no
+`Date.now()`/`new Date()` under `src/dashboard/lib/**`).
+
+### UT-230 — the guard tier: no-skeleton-surface / no-retired-surface widen to see `.js`/`.css`
+- **status:** red
+- **traces:** DES-191, ARCH-124, ARCH-123, REQ-131, REQ-134
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+Files: `tests/unit/no-skeleton-surface.test.ts`, `tests/unit/no-retired-surface.test.ts` (extended
+in place, one new case each; all pre-existing cases re-run and still green — 9/9 pre-existing pass).
+Each new case plants a `.js` AND a `.css` file carrying a forbidden word/identifier in a temp
+fixture directory and asserts the SAME walker (`listTsFiles`/`walk`) reports both. RED (measured):
+both walkers filter `entry.endsWith('.ts')` only, so the planted files are invisible — 0 violators
+found where 2 are required (`expected +0 to be 2`).
+
+### UT-231 — `dashboard-no-external-host.test.ts`: no external host in `src/dashboard/**/*.{css,js}`
+- **status:** green
+- **traces:** DES-191, ARCH-124, REQ-131
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v27
+
+File: `tests/unit/dashboard-no-external-host.test.ts` (new, 2 cases). Checks (a) no `https?://`
+outside a comment, (b) every CSS `url(...)` starts with `/static/dashboard/`, (c) no `@import`.
+Mode C (green-by-construction, not forced red): the real-directory arm is vacuously true today
+(`src/dashboard/` does not exist yet, per DES-191's own "must tolerate an ABSENT directory" rule)
+and the planted-fixture arm proves the detector itself works — both legitimately pass now.
+
+### UT-232 — acceptance browser-required guard: val-193/val-197 throw instead of skip under `RWE_REQUIRE_BROWSER=1`
+- **status:** green
+- **traces:** DES-191, TASK-196, REQ-134, REQ-129
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v27
+
+New `tests/helpers/require-browser.ts` (`throwIfBrowserRequired`), wired into
+`tests/acceptance/val-193-dag-fit-and-columns.test.ts` and
+`tests/acceptance/val-197-diagram-drag-pan.test.ts` (both extended, one import + one call each).
+Green today (Chrome IS present in this environment, confirmed by measurement — `throwIfBrowserRequired`
+is a no-op on this box); all 4 pre-existing val-193/197 cases re-run and stay green (real Chromium,
+unaffected).
+
+### IT-165 — `dashboard-disclosure.test.ts`: the (endpoint x outcome) key-set table, and REQ-136's real-run oracle
+- **status:** red
+- **traces:** DES-192, ADR-054, ARCH-131, ARCH-127, ARCH-129, ADR-050, DES-195, TASK-197, TASK-200, REQ-140, REQ-141, REQ-136
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+New `tests/fixtures/dashboard-wire.ts` (the ONE v27 wire fixture) and
+`tests/integration/dashboard-disclosure.test.ts` (2 describe blocks). Block 1: `keys ⊆ ALLOWED` and
+`REQUIRED ⊆ keys` over the fixture's own DISCLOSURE_TABLE (6 rows) — passes today (fixture
+self-consistency; the real RED for this half is the `tsc --noEmit` compile lock on the missing
+`AgentLogView` export, per this section's own compile-time note). Block 2 (REQ-136's three-conjunct
+oracle, also VAL-203's real-tier path): a real agentType (`agents/*.md` frontmatter) with a
+distinctive systemPrompt marker, dispatched through a real stub-Ollama-backed run; both `MCP
+run_agent_log` and `GET /api/runs/:id/agents/:agentId` bodies asserted for `¬contains(marker) ∧
+contains(scriptPrompt)`. RED (measured): the real response body contains the marker verbatim
+(`"prompt":"RWE-V27-SYSTEMPROMPT-MARKER-DO-NOT-LEAK\n\nsummarize the ticket..."`) — today's
+composed prompt is persisted and returned unstripped.
+
+### UT-233 — `sqlite-run-store-usage-projection.test.ts`: the at-rest usage projection + `backfillUsage`
+- **status:** red
+- **traces:** DES-193, ARCH-128, TASK-198, REQ-141
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/unit/sqlite-run-store-usage-projection.test.ts` (new, 4 cases over a real temp
+`better-sqlite3` file). Five-row table (no snapshot / full+usage / `{usage}`-only / tokens missing
+`cacheWrite` / full snapshot with `agents:[]`) asserts `listRuns()`/`list()` project exactly per
+DES-193 (all four fields absent for rows 1 and 5, `tokensTotal` COALESCE'd never NULL, `agentCount`
+absent for row 3); `backfillUsage` idempotence; `backfillUsage` no-op on a non-terminal run. RED
+(measured): `listRuns()`/`list()` carry no projection at all (every field `undefined`);
+`store.backfillUsage is not a function`.
+
+### IT-166 — `run-store-parity.test.ts`: `InMemoryRunStore` matches the SAME projection (ARCH-128 parity)
+- **status:** red
+- **traces:** DES-193, ARCH-128, TASK-198, REQ-141
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/integration/run-store-parity.test.ts` (new, 2 cases). The SAME scenario as UT-233's
+core case, run through `InMemoryRunStore` — nothing enforces the two stores agree today. RED
+(measured): `costUSD`/`tokensTotal`/`agentCount` all `undefined`; `backfillUsage is not a function`.
+
+### UT-234 — `run-manager-summarize-usage.test.ts`: `RunManager.listSummaries()`
+- **status:** red
+- **traces:** DES-194, ARCH-127, ADR-052, TASK-199, REQ-141, REQ-132, REQ-133
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/unit/run-manager-summarize-usage.test.ts` (new, 5 cases). A fake `RunStore` (mock
+policy: oracle external to the code under test) proves absence-is-keyed-on-zero-records (never
+`costUSD===0`), a rejecting `backfillUsage` never fails the read, and delegation through a real
+`InMemoryRunStore`; a fifth case against a real temp `SqliteRunStore` counts `_db.prepare()` calls —
+`listRuns()` exactly 1, `listSummaries()` ≤ 1+10·25 on the healing call and exactly 1 once every row
+is healed. RED (measured): `TypeError: manager.listSummaries is not a function` on all 5.
+
+### IT-167 — `usage-live-equals-fold.test.ts`: the INV-V27-1 lock over real SQLite + real HTTP (VAL-205)
+- **status:** red
+- **traces:** DES-194, ARCH-127, ADR-052, TASK-199, REQ-141, REQ-132, REQ-133
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/integration/usage-live-equals-fold.test.ts` (new, 2 cases; real `createServer()`, real
+MCP HTTP, an injected `GatewayClient` faking only the model-provider network). Case 1: a run holding
+one priced + one deliberately-unpriced call — `/api/runs[i].costUSD === /api/runs/:id.usage.costUSD`.
+Case 2: a run that completed with ZERO `agent()` calls — the summary omits all four fields while the
+detail folds over zero records. This is v27's real-tier validation path for REQ-141 (no separate
+browser file — 04-design.md's own table names none) and doubles as **VAL-205**. RED (measured):
+case 1 `summary.costUSD` is `undefined` vs a real non-zero detail figure; case 2 passes already
+(the zero-records omission already holds via the pre-v27 `/api/runs/:id` fold, though `/api/runs`
+carries no field at all to compare — recorded green per Mode C for that half).
+
+### UT-235 — `strip-first-segment.test.ts`: `stripFirstSegment` — total, fail-closed, six cases
+- **status:** red
+- **traces:** DES-195, ARCH-129, ADR-050, TASK-200, REQ-136, REQ-094
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/unit/strip-first-segment.test.ts` (new, 8 cases incl. a property test over
+`composePrompt`). RED (measured): whole-file behavioural red — `TypeError: stripFirstSegment is not
+a function` (params/resolve.ts exports only `composePrompt`, its inverse).
+
+### UT-236 — `agent-executor-harness-descriptor.test.ts`: the ONE decoration site strips the systemPrompt
+- **status:** red
+- **traces:** DES-195, ARCH-129, ADR-050, TASK-200, REQ-136, REQ-135
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/unit/agent-executor-harness-descriptor.test.ts` (new, 4 cases; a real `AgentExecutor` +
+real `InMemoryRunStore`, an echo-gateway fake modeling both real gateways' `prompt: req.prompt`
+contract). 2/4 red (measured): a known agentType's persisted `descriptor.prompt` STILL starts with
+its systemPrompt verbatim and carries no `systemPrompt` field at all; a mismatched-echo stub gateway
+is NOT stripped to `""` (no fail-closed behaviour exists yet). 2/4 already green (Mode C, not forced
+red — these pin CURRENT correct behaviour that must not regress): no-agentType and
+empty-systemPrompt cases already carry no leaked segment (there is nothing to strip).
+
+### UT-238 — `dashboard-derive-lanes.test.ts`: `deriveLanes` — the 7x2x2 status/phases/masked table
+- **status:** red
+- **traces:** DES-196, ARCH-126, ADR-051, TASK-201, REQ-140, REQ-132, REQ-133, REQ-134
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/unit/dashboard-derive-lanes.test.ts` (new, 28+3 cases — the full 7x2x2 table plus lane-join
+and undefined-`expected` cases). RED (measured): whole-file behavioural red — `TypeError: deriveLanes
+is not a function` (35/35 cases fail on this one call).
+
+### UT-239 — `dashboard-metrics.test.ts`: `predictedLanes` + `computeWorkflowMetrics`'s `avgCostUSD`/`unpricedRuns`
+- **status:** red
+- **traces:** DES-196, ARCH-126, ADR-055, TASK-201, REQ-132, REQ-133
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/unit/dashboard-metrics.test.ts` (new, 4 cases; a 5-lane/9-agent script fixture,
+cross-checked directly against `deriveExpectedGraph` for INV-V26-3's third-consumer property). RED
+(measured): `predictedLanes is not a function`; `computeWorkflowMetrics`'s existing `WorkflowMetrics`
+carries no `avgCostUSD`/`unpricedRuns` (reads `undefined`, never `null`).
+
+### IT-168 — `dag-masking-auth.test.ts` extended: `dag.lanes` unconditional; `describe.phases[].agents` masked identically
+- **status:** red
+- **traces:** DES-197, ARCH-131, ADR-051, ADR-055, TASK-202, REQ-140, REQ-133
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/integration/dag-masking-auth.test.ts` (extended, 3 new cases; the existing dual-server
+auth-on/auth-off harness reused verbatim — the 2 pre-existing cases re-run and stay green). 2/3 red
+(measured): `dag.lanes` absent entirely on the auth-enabled DAG payload; `describe.phases[].agents`
+absent on the auth-DISABLED server too (no such projection exists yet at all). 1/3 already correct
+by absence (auth-ON `describe.phases[].agents` is undefined today, matching the masked/absent
+requirement — Mode C).
+
+### IT-169 — `dashboard-http.test.ts` extended: `record` on agent detail, `lanes`/`current` on DAG, real CSP
+- **status:** red
+- **traces:** DES-197, DES-198, ARCH-130, ARCH-131, ARCH-123, TASK-202, TASK-203, REQ-140, REQ-131, REQ-133
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/integration/dashboard-http.test.ts` (extended, 3 new cases; the existing real
+`createServer()` harness reused — all 9 pre-existing cases re-run and stay green). RED (measured):
+`GET /api/runs/:id/agents/:agentId` carries no `record` key; the DAG payload carries no
+`lanes`/`current`; `GET /dashboard` sets no `Content-Security-Policy` header at all.
+
+### IT-170 — `static-assets-route.test.ts`: `/static/dashboard/*` registered before the SPA catch-all
+- **status:** red
+- **traces:** DES-198, DES-199, ARCH-130, ARCH-123, TASK-203, REQ-131, REQ-140
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/integration/static-assets-route.test.ts` (new, 5 cases; real `createServer()`). 3/5 red
+(measured): a known JS/woff2 key answers 404 (the arm does not exist — falls through to the final
+404); a non-GET answers 404, not 405. 2/5 already correct by the pre-existing routing's own default
+(the traversal table and an unknown key both already 404 today, for the unrelated reason that
+nothing under `/static/*` is registered at all) — recorded green, not forced.
+
+### UT-240 — `static-assets.test.ts`: `STATIC_ASSETS` — closed map, exact `Map.get`, no path built from a URL
+- **status:** red
+- **traces:** DES-199, ARCH-123, ADR-049, TASK-204, REQ-131
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/unit/static-assets.test.ts` (new, 5 cases). RED (measured): whole-file import failure —
+`src/static-assets.ts` does not exist (`Failed to load url ../../src/static-assets.js`).
+
+### UT-241 — `dashboard-page-source.test.ts` extended: the v27 shell (markup + tokens CSS + data island)
+- **status:** red
+- **traces:** DES-200, DES-201, ARCH-122, TASK-205, REQ-131, REQ-070
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/unit/dashboard-page-source.test.ts` (extended, 5 new cases; all 11 pre-existing cases
+re-run and stay green). RED (measured): no `data-theme` attribute at all; no `/static/dashboard/*`
+asset references; the one inline `<script>` is executable JS, not `type="application/json"`; no
+`--color-bg`/`oklch(...var(--rwe-hue))` tokens in the CSS.
+
+### UT-242 — `update-outcome-config-check.test.ts` extended: `updatePanelModel` (INV-V27-5)
+- **status:** red
+- **traces:** DES-200, ARCH-040, TASK-205, REQ-070
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/unit/update-outcome-config-check.test.ts` (extended, 4 new cases via dynamic `import()`
+so the pre-existing 4 cases stay collected/green even though `src/dashboard/lib/status.js` does not
+exist yet). RED (measured): whole-file import failure on the dynamic import.
+
+### UT-243 — `dashboard-lib-theme.test.js`: viewer preferences (`PREF_KEYS`, `clampHue`, `prefsFromStorage`)
+- **status:** red
+- **traces:** DES-201, ARCH-124, TASK-206, REQ-131
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/unit/dashboard-lib-theme.test.js` (new, `.js`, 5 cases — confirms vitest.config.ts's
+widened `include` actually collects it). RED (measured): whole-file import failure —
+`src/dashboard/lib/theme.js` does not exist.
+
+### UT-244 — `dashboard-lib-strings.test.js`: `STR`/`t()` — key parity, no forbidden word
+- **status:** red
+- **traces:** DES-201, ARCH-124, TASK-206, REQ-131, REQ-133
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/unit/dashboard-lib-strings.test.js` (new, `.js`, 3 cases). RED (measured): whole-file
+import failure — `src/dashboard/lib/strings.js` does not exist.
+
+### UT-245 — `dashboard-lib-connection.test.js`: `nextConnection`/`worstOf`/`classifyResponse`
+- **status:** red
+- **traces:** DES-202, ARCH-124, ARCH-125, ARCH-130, TASK-206, REQ-131
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/unit/dashboard-lib-connection.test.js` (new, `.js`, 11 cases — the full transition
+table). RED (measured): whole-file import failure — `src/dashboard/lib/connection.js` does not
+exist.
+
+### UT-246 — `dashboard-lib-swimlane.test.js`: `SWIMLANE_BOX`/`laneX`/`cellRect`/`edgePath`/`svgBox`/`panelSide`
+- **status:** red
+- **traces:** DES-203, ARCH-124, ARCH-120, TASK-207, REQ-134, REQ-135
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/unit/dashboard-lib-swimlane.test.js` (new, `.js`, 7 cases). RED (measured): whole-file
+import failure — `src/dashboard/lib/swimlane.js` does not exist.
+
+### UT-247 — `dashboard-lib-runlist.test.js`: `fmtCost`/`sortRows`/`historyRow`/`matchCards`/`segmentCounts`/`sumTokens`
+- **status:** red
+- **traces:** DES-204, ARCH-124, ARCH-126, ADR-046, TASK-207, REQ-132, REQ-133, REQ-141
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/unit/dashboard-lib-runlist.test.js` (new, `.js`, 8 cases). RED (measured): whole-file
+import failure — `src/dashboard/lib/runlist.js` does not exist.
+
+### UT-248 — `dashboard-lib-agent.test.js`: `panelModel`/`eventListModel`/`clipText`
+- **status:** red
+- **traces:** DES-205, ARCH-124, ARCH-131, ARCH-129, TASK-207, REQ-135, REQ-136
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/unit/dashboard-lib-agent.test.js` (new, `.js`, 10 cases over the four record-state
+fixtures). RED (measured): whole-file import failure — `src/dashboard/lib/agent.js` does not exist.
+
+### UT-249 — `dashboard-client-corpus.test.ts`: `endpointsFor(view)` + `clientCorpus()`'s own anti-vacuity floor
+- **status:** red
+- **traces:** DES-206, DES-208, ARCH-125, TASK-208, REQ-131, REQ-132, REQ-133, REQ-134, REQ-135
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/unit/dashboard-client-corpus.test.ts` (new, 3 cases). 2/3 red (measured): whole-file
+import failure on `src/dashboard/ui/poll.js` (does not exist). 1/3 green (Mode C): `clientCorpus()`
+already correctly throws on the absent `src/dashboard/` directory — the helper's own correctness
+floor, not waiting on Gate 6.
+
+### UT-252 — `dashboard-diagram-render.test.ts` disposition anchor: `createObjectURL`/`revokeObjectURL` re-point to `ui/workflow.js`
+- **status:** red
+- **traces:** DES-208, ARCH-124, ARCH-122, TASK-213, REQ-129, REQ-119
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/unit/dashboard-diagram-render.test.ts` (extended, 1 new case; all 20 pre-existing cases
+re-run and stay green). Positive anchor on `clientCorpus()` beside the file's existing negatives —
+anti-vacuity per adjudication (v23) #4. RED (measured): `clientCorpus()` throws (client not built).
+
+### UT-253 — `dashboard-zoom-source.test.ts` disposition anchor: `viewBox`/`preserveAspectRatio` re-point to `ui/run.js`
+- **status:** red
+- **traces:** DES-208, ARCH-124, TASK-213, REQ-134, REQ-129
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/unit/dashboard-zoom-source.test.ts` (extended, 1 new case; all 3 pre-existing cases
+re-run and stay green). RED (measured): `clientCorpus()` throws.
+
+### UT-254 — `workflow-page-harness-table.test.ts` disposition anchor: effort/timeoutMs re-point to `lib/agent.js`
+- **status:** red
+- **traces:** DES-208, ARCH-124, TASK-213, REQ-135
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/unit/workflow-page-harness-table.test.ts` (extended, 1 new case; both pre-existing cases
+re-run and stay green). RED (measured): `clientCorpus()` throws.
+
+### VAL-198 — real Chromium: the v27 shell (theme/lang/hue/connection) and the Workflows home
+- **status:** red
+- **traces:** REQ-131, REQ-132
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/acceptance/val-198-shell-and-home.test.ts` (new, 5 cases; real `createServer()`, real
+Chromium via puppeteer — Chrome IS present in this environment, confirmed, so every case actually
+RUNS rather than skipping). RED (measured): no `data-theme` attribute; light-preference does not
+persist (no `localStorage` read at all); the hue custom property is not recomputed by CSS; setting
+`rwe-lang=zh` produces no 繁中 text anywhere (no i18n exists); no search input exists on home.
+
+### VAL-199 — real Chromium: workflow detail — version tag, run history table, predicted layout
+- **status:** red
+- **traces:** REQ-133
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/acceptance/val-199-workflow-detail.test.ts` (new, 2 cases; real Chromium). RED
+(measured): no `<table>` renders on a workflow-detail-shaped URL at all (no such view exists —
+`/dashboard/workflow/<name>` falls through to the run-detail pane, `(run not found)`); a never-run
+workflow's rendered VISIBLE text (script/style stripped, to avoid a false pass off a code comment
+containing the word "predicted") contains neither "predicted" nor "預測".
+
+### VAL-200 — real Chromium: the swimlane run graph — lane headers, 216x74 nodes, legend
+- **status:** red
+- **traces:** REQ-134
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/acceptance/val-200-swimlane.test.ts` (new, 3 cases; real Chromium, a fake gateway
+completing 9 agent calls across 5 phases fast). RED (measured): no `[data-lane-header]`/`[class*="lane-head"]`
+elements exist; no `[data-node-cell]` sized 216x74 exists; no `[data-legend]` element exists.
+
+### VAL-201 — real Chromium: the agent slide-in panel — stat cards, prompt, Esc close (REQ-136 proof)
+- **status:** red
+- **traces:** REQ-135, REQ-136
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/acceptance/val-201-agent-panel.test.ts` (new, 3 cases; real Chromium, a real agentType
+composition root with a marker systemPrompt, same technique as IT-165). RED (measured): no
+`[data-agent-panel]` element exists at all (clicking a node does nothing panel-shaped) — all three
+cases time out waiting for it.
+
+### VAL-202 — real Chromium: Models/System/Issues PORTED to tabs, not redesigned (non-regression)
+- **status:** red
+- **traces:** REQ-067, REQ-076, REQ-077, REQ-078
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+File: `tests/acceptance/val-202-ported-tabs.test.ts` (new, 3 cases; real Chromium). RED (measured):
+no `[data-tab="models"|"system"|"issues"]` element exists — today's Models/System are stacked
+sections on home and Issues is a separate route, not a tab.
+
+### VAL-203 — REQ-136: agent detail never carries the agentType systemPrompt online
+- **status:** red
+- **traces:** REQ-136
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+Real-tier path per 04-design.md's own table: backed by `tests/integration/dashboard-disclosure.test.ts`'s
+REQ-136 block (IT-165) — a real run, both transports, asserted on the real response body. RED
+(measured): see IT-165.
+
+### VAL-204 — REQ-140: `dag.lanes` unconditional; agent detail carries `record`
+- **status:** red
+- **traces:** REQ-140
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+Real-tier path per 04-design.md's own table: backed by `tests/integration/dag-masking-auth.test.ts`
+(IT-168, both auth on/off servers) and `tests/integration/dashboard-http.test.ts` (IT-169, `record`
++ byte-compatible DAG keys). RED (measured): see IT-168/IT-169.
+
+### VAL-205 — REQ-141: `RunSummary.costUSD` shares ONE fold with `/api/runs/:id`
+- **status:** red
+- **traces:** REQ-141
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v27
+
+Real-tier path per 04-design.md's own table: backed by `tests/integration/usage-live-equals-fold.test.ts`
+(IT-167, the INV-V27-1 equality + absence clauses over real SQLite + real HTTP). `scripts/bench-run-list.ts`
+(ADR-052's N=1000 measurement obligation) is NOT written at this gate — it is a Gate-7.5-only
+measurement script, not a test-first RED item (no red/green state to confirm; it records a number).
+RED (measured): see IT-167.

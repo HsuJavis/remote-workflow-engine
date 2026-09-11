@@ -3338,3 +3338,260 @@ impact; `safety_class: QM` unchanged and **no `00-safety.md` is written**, per S
 
 **Not done here, deliberately:** no ARCH/DES/TASK items and no code — the orchestrator does not
 ghost-write Gates 2–8. Next step is `/sdlc-run` for Gate 2→8.
+
+---
+
+## 2026-09-11 — v27 Gate 2 (architecture): the dashboard rebuild gets a shape, and one decision goes back to the owner
+
+**Gate: PASSED.** Closure dispatched to this gate: **REQ-131..136, REQ-140, REQ-141 — eight REQs.**
+Written into `02-architecture.md` as one `## v27 slice` section: **ARCH-122..131 + ADR-049..056** (18
+items), the 4+1 mermaid views, the data architecture (**no schema change** — v27 is a read-and-render
+slice), the interface & API contract table, `INV-V27-1..8`, and a Decision rationale that records who
+conceded on each contested point. **ARCH-120 was amended in place and bumped to `iter: v27`** — the
+swimlane replaces the DAG layout that item rendered, while its zoom/pan/fit contract and the C2
+selector anchors survive verbatim. No new ID namespace, no existing trace link touched.
+
+**Synthesis, not a second panel.** The two lens groups had already run and their proposals were on
+disk (`.panel/architecture/adversarial.r1.md`, `quality-dimensions.r1.md`). Round 1 only: the two
+headlines were complementary rather than contradictory, so no round 2 was warranted. Four splits
+needed a decision and each is recorded with its loser:
+- **How much mechanism the client split needs.** The deciding fact neither lens weighed: REQ-131's
+  vendored fonts force a static-asset route into existence anyway, so serving plain-JS ESM modules
+  through that same fixed map costs *zero* new mechanism — which flips the simplicity tie-break to
+  the served-module form (ADR-049). Both typing proposals (a second `tsconfig.client.json`; a
+  `satisfies` lock in TS data modules) are dropped in favour of one `satisfies`-checked test fixture
+  and a one-line key-parity test. No bundler, no framework, no jsdom, no tsconfig change.
+- **REQ-136.** Not "strip at emission" but **never capture**: the descriptor records the composed
+  prompt minus segment 1 plus `systemPrompt {agentType, bytes}` — the FACT, never the text — at the
+  executor's single decoration site, which covers both gateways, both transports, and the
+  GitHub-issue enrichment path that is safe today only by accident. `appendPrompt` and the author
+  default stay (the Gate-2 ruling REQ-136 asked for). Pre-v27 records cannot be repaired: named as
+  an accepted gap now, not discovered at Gate 6.
+- **REQ-141.** One accessor, one precedence chain (live entry → snapshot → a one-time backfilled
+  fold → absent), a batched `LEFT JOIN` instead of N transcript folds, and four optional summary
+  fields that are omitted together rather than zeroed. The list stays unbounded this round with a
+  **measurement obligation at N = 1 000** instead of a guessed limit.
+- **REQ-140 under auth.** `lanes` are derived from the observed phases, so REQ-140's 「在啟用 auth
+  時同樣回傳」 holds unconditionally. What that does *not* fix — the predicted overlay, i.e. REQ-134's
+  「5 lane、9 agent」 and REQ-133's predicted view, still masked under auth — is escalated rather
+  than taken or hidden.
+
+**One `owner_decision: pending` (ADR-051).** Retiring the `!authEnabled` mask would widen what a
+non-owner principal sees, against the owner's own v27 D1 ruling that no dashboard permission
+dimension is added. So the question goes back with its consequence attached: allow the predicted
+lanes/nodes under auth, or accept that REQ-133/134's acceptance is explicitly scoped to
+`auth.enabled:false`. Until it is answered, their validation must include one `auth.enabled:true`
+case. `describe.phases[].agents` follows the identical predicate — the owner widens both surfaces
+or neither.
+
+**The non-regression nobody asked for.** No v27 REQ names REQ-070/ARCH-040's update panel, and the
+rebuild deletes the page it lived in. The shell keeps the server-injected data as a JSON data island
+(which also keeps a real CSP achievable without a nonce) and `INV-V27-5` pins that the rebuilt page
+still renders version + last-update outcome + the interrupted-runs call-to-action.
+
+**Out of this dispatch's closure, stated so it cannot be missed:** REQ-137/138/139 (Models / System /
+Issues tabs) and the two `kind:nfr` rows REQ-142/143 (visibility-gated polling, self-labelled demo
+data) carry **no ARCH row**. The architecture is shaped so each attaches without a new module — a tab
+is one more view module under ARCH-125, REQ-142's gate is two lines in its single poll scheduler, and
+REQ-143 is one isolated module plus one more input to ARCH-124's connection state machine (which is
+exactly why that machine is a pure function over inputs rather than `try { fetch } catch { offline }`).
+
+**Self-check.** `sh .sdlc/trace` 1508/49 → **1526 items / 49 gaps with the gap set byte-identical**
+(0 new, 0 broken links, 0 orphans — the 49 are the 13 v27 REQs' expected 未實作/未驗證 pairs plus 21
+pre-existing 低-severity drift rows and 2 task rows). `solid_check` PASS (68 modules, 0 mid, 10
+pre-existing low unclaimed-file warnings). `dashboard_check` unchanged apart from one NEW mid of the
+known `erDiagram` cardinality false-positive class, documented in the section's own housekeeping note.
+
+**Reminder for the orchestrator:** `state.yaml notes` still carries the standing user directive
+*"after Gate 2 passes, PAUSE for user architecture review before dispatching Gate 3."*
+
+## 2026-09-11 — v27 Gate 3+4 (merged, designer): 18 tasks, 18 lean design rows, and the three tabs the rebuild would have deleted
+
+**Scope.** The dispatched impact closure REQ-131..136 / REQ-140 / REQ-141 (eight REQs), decomposed from
+ARCH-120/122..131 + ADR-049..056 into **TASK-196..213** (03-tasks.md) and **DES-191..208** (04-design.md).
+Synthesised from the pre-run two-group lens panel on disk (`.panel/design/adversarial.r1.md`,
+`.panel/design/quality-dimensions.r1.md`) — round 1 only; the headlines were complementary (both demanded
+the fail-closed prompt strip, one usage accessor, one wire fixture, `.js`-aware guards, no bundler), so a
+round 2 would have manufactured conflict. Eleven genuinely contested or missing points are settled, one per
+numbered paragraph, in the single file-end `## Decision rationale — v27`.
+
+**The one finding that changes the slice.** ARCH-122 empties `DASHBOARD_HTML` of executable JS — and that
+single inline `<script>` (`dashboard-page.ts:241`) is what renders **Models** (`:410-415`), **System**
+(`:390-394`) and **Issues** (`:643-676`). No ARCH row rehomed them, so the closure as scoped would have
+deleted three shipped surfaces and regressed REQ-067/076/077/078. **TASK-212 / DES-207 port them
+mechanically** — three modules, three asset keys, no sorting, no filtering, no slide-in, no new endpoint.
+That is the rebuild's non-regression obligation, not a widening: REQ-137/138/139 stay out of closure and
+will upgrade these same three modules when their own closure is dispatched.
+
+**Two architecture rows amended in place (iter v27), because implementers grep `api:` lines.**
+ARCH-124's `accentVars(hue, dark)` is not implementable as written — `theme-init.js` must run before first
+paint, a `type="module"` script is deferred, and a classic script cannot ESM-`import` — so the literal
+reading copies the OKLCH formula into it, creating exactly the mirror pair that item's own note promises to
+shrink. The ramp moves into `dashboard.css` as `oklch(L C var(--rwe-hue))` literals (DES-201). ARCH-125's
+`setInterval(tick, 3000)` becomes a self-rescheduling `setTimeout` armed after the tick settles (DES-206):
+same line count, and the only form that cannot pile up requests over a tunnel at ADR-052's own N=1000
+measurement — where a stacking client would corrupt the measurement that decides v28's scope.
+
+**Four places a Gate-6 implementer could satisfy the sentence and lose the property**, each now a boundary
+line with a test: the backfill's fold is NAMED as `foldUsage(transcripts)`, the expression `getRun` already
+evaluates, so it memoizes rather than mints a third arithmetic (v26 R-1's exact shape); absence in
+`RunSummary` is keyed on `records.length === 0` BEFORE the fold, never on `costUSD === 0`, and the SQL
+projection gates on `json_array_length($.agents) > 0` because `run-manager.ts:1014` writes a fully-populated
+ZERO usage for a run that made no `agent()` calls; `stripFirstSegment` is `startsWith`-verified and
+**fails closed** (`prompt: ''` + one `harness_prompt_prefix_mismatch` line) instead of slicing blindly at
+`sys.length + 2`; and `maskPredictedOverlay` arrives as an explicit facade dep defaulting to **masked**,
+because the dashboard passes a synthetic `{kind:'auth-disabled'}` principal on exactly the route REQ-133
+renders — a `principal.kind` test would have inverted ADR-051's pending decision with every assertion green.
+
+**Refused on Karpathy grounds, with the concession recorded:** the `/api/status` every-tenth-tick re-read
+(INV-V27-5 is satisfied at LOAD TIME ONLY and DES-200 says so; the live re-read is v28); the backfill's
+`remaining` COUNT (the `healed` line ceasing answers the same question for zero new state); `stripped` on
+the wire (decidable already, and the lens's own "no named reader" rule applies to its own field);
+`pollDecision` / the `demo` arm / `barPct` (logic for REQ-142/143/137/138, all out of closure).
+
+**Ordering is recorded as a rule, not a hope.** TASK-196 (vitest `include` + both guard walkers gaining
+`.js`/`.css` + a no-external-host guard over `dashboard.css` + `RWE_REQUIRE_BROWSER=1`) lands before ANY
+file under `src/dashboard/`: a `.js` test written first never runs and a client module landed first is bytes
+no guard reads — both failure modes are GREEN. TASK-197 owns every v27 `types.ts` delta plus the one wire
+fixture. TASK-213 (the ~41 page-source assertions, dispositioned STAYS / MOVES / RETIRES with a positive
+anchor per file) batches with TASK-205, because the dangerous half of that migration is not the reds but the
+greens — `not.toContain('innerHTML')` passes trivially once the subject is empty.
+
+**Exit-gate items 4 and 5 are written down**, not assumed: a real-tier path per in-closure REQ (real
+Chromium against a really booted `createServer()` with `RWE_REQUIRE_BROWSER=1` for 131–135; both transports'
+real BODIES for 136; both auth servers for 140; real SQLite + HTTP plus the N=1000 bench for 141), the
+per-tier mock policy (E2E may mock no SUT boundary), and the seam statement — no `Date.now()`/`new Date()`
+anywhere under `src/dashboard/lib/**` with `now` a parameter on every function that needs it, grep-enforced;
+`listSummaries()` reads no clock; both stores implement the new read and the one new write.
+
+**Self-check.** `sh .sdlc/trace` 1526/49 → **1544/67** after the tasks (the 18 new gaps are exactly the
+structural `low 未實作 TASK-19x..21x` class — a task with no implementation yet — with 0 新斷鏈, 0 孤兒,
+0 new mid/high) → **1562/67 after the design rows and the two ARCH amendments, with the gap set
+byte-identical**. `state.yaml`: `gates.tasks.passed=true`, `gates.design.passed=true`,
+`current_stage: design → tests`. **0 owner_decisions raised by this gate** — ADR-051 remains the
+architect's single pending marker, and DES-196/DES-197 are written so either answer is one `!!authCfg`
+boolean at two call sites with no arithmetic moved.
+
+**Reminder for the orchestrator:** `state.yaml notes` carries the standing user directive *"after Gate 2
+passes, PAUSE for user architecture review before dispatching Gate 3."* This gate ran on the orchestrator's
+dispatch; if that pause has not happened, it is still owed before Gate 5.
+
+## 2026-09-11 — v27 Gate 5 (verifier, test-first RED): 34 items, every red measured before a line of production code exists
+
+Wrote 34 new work items test-first, BEFORE any v27 implementation: UT-230..249, UT-252..254 (20),
+IT-165..170 (6), VAL-198..205 (8) — across every in-closure DES-191..208 and every REQ-131..136/140/141.
+Every item run once and confirmed red for its stated reason, per this dispatch's own mock policy
+(unit mocks freely with an oracle external to the code under test; integration uses real adjacent
+components — a really-booted `createServer()`, real `SqliteRunStore`/`InMemoryRunStore`, a real
+agentType composition root with only the model-provider network faked; E2E/acceptance never mocks
+the SUT boundary — real Chromium against a really booted engine, which this environment's Chrome
+made a REAL run, not a skip, on every new acceptance file).
+
+**Test infrastructure landed as part of this gate, not implementation**: `vitest.config.ts`'s
+`include` widened from `tests/**/*.test.ts` to `tests/**/*.test.{ts,js}` — without this, every one
+of the six new `.js` lib tests would never be collected at all, and DES-191's own warning is exactly
+this: a test that never runs reads as a pass, indistinguishable from green. `tests/helpers/require-browser.ts`
+(`throwIfBrowserRequired`) is wired into val-193, the real val-197-diagram-drag-pan.test.ts (TASK-196's
+own `files:` line has a typo — `val-197-diagram-pan.test.ts` does not exist; wired against the real
+filename, a housekeeping correction not a reinterpretation), and every new v27 acceptance file.
+`tests/helpers/client-corpus.ts` is DES-208's anti-vacuity floor (throws on an absent/empty
+directory rather than returning `''`). `tests/fixtures/dashboard-wire.ts` is DES-192's ONE wire
+fixture.
+
+**Red-reason taxonomy** (as v26 recorded once, applying here): whole-file import failure for nine
+brand-new modules (`src/static-assets.ts`, six `src/dashboard/lib/*.js` files, `src/dashboard/ui/poll.js`,
+plus the dynamically-imported `src/dashboard/lib/status.js`); `TypeError: x is not a function` for a
+new export expected on an EXISTING module (`RunManager.listSummaries`, `dashboard.ts`'s `deriveLanes`/
+`predictedLanes`, `params/resolve.ts`'s `stripFirstSegment`, `RunStore.backfillUsage`); and genuine
+behavioural red against running code — the sharpest of these is IT-165's REQ-136 case, where a REAL
+run through a REAL agentType with a REAL distinctive systemPrompt marker produces a REAL response
+body that contains the marker verbatim (`"prompt":"RWE-V27-SYSTEMPROMPT-MARKER-DO-NOT-LEAK\n\n..."`),
+over both the MCP and the HTTP transport — not a mock's approximation of the defect, the actual
+defect, measured.
+
+**A genuine near-miss worth recording**: VAL-199's "never-run workflow renders predicted layout,
+never the forbidden word" case initially PASSED — not because the feature existed, but because
+`document.body.textContent` includes the CURRENT dashboard's own giant inline `<script>` tag's
+source TEXT, and that source happens to contain the word "predicted" inside a code COMMENT
+(`dashboard-page.ts:585`, "never on a predicted/..."). A vacuous green from the wrong subject is
+exactly the failure mode DES-208's own anti-vacuity discipline exists to prevent, one level removed —
+fixed by stripping `<script>`/`<style>` before reading visible text. Recorded here because it is the
+same defect class as adjudication (v23) #4, caught by hand rather than by the corpus helper this
+time.
+
+**Nine items are Mode-C** (already-true / brand-new self-contained, recorded green rather than
+forced red, one line each in 05-tests.md): UT-231 (external-host guard tolerates an absent
+directory, and its own detector logic is proven directly, not waiting on the client to exist);
+UT-232 (val-193/197's browser-required guard is a no-op on this box, which HAS Chrome); half of
+UT-236 (the no-agentType and empty-systemPrompt cases were already correct — there was nothing to
+strip); half of UT-249 (`clientCorpus()` already throws correctly on the absent directory — the
+helper's OWN floor, not Gate 6's); one clause each of IT-168/IT-169/IT-170 (a masked field already
+reads `undefined` today by simple absence, or a 404 already falls out of the pre-existing default
+routing for an unrelated reason).
+
+**Two disclosed, deliberate scope decisions, not silent gaps**: (1) `tests/fixtures/dashboard-wire.ts`
+imports `AgentLogView`, which does not exist in `src/types.ts` until TASK-197 — `npx tsc --noEmit`
+is RED repo-wide on this one missing export until Gate 6 lands it. This is DES-192's own explicit
+framing ("`tsc --noEmit` IS the first test"), not an accident; vitest/esbuild does not type-check,
+so every test still runs and reports its own genuine result. (2) DES-208's full disposition table —
+one STAYS/MOVES/RETIRES row per ~41 existing page-source assertions across five files — is NOT
+completed at this gate. Only the `clientCorpus()`/`clientFile()` helper, its own anti-vacuity test,
+and one genuine positive-anchor case per touched file are written test-first now; the remaining
+sweep is mechanical but voluminous and is flagged as Gate-6-adjacent follow-up rather than rushed
+into a possibly-wrong disposition under this gate's own time budget.
+
+**Test-first observation, explicitly NOT an owner_decision** (no product ambiguity — a pure
+signature gap): ARCH-126/DES-196's own `api:` line types `deriveLanes`'s third parameter as
+`{masked: boolean}` only, yet the boundary text requires branching on `status` too, and `status`
+cannot be derived from `phases`/`expected` alone (a terminal run still carries non-empty `phases`).
+`tests/unit/dashboard-derive-lanes.test.ts` calls the signature the boundary text actually needs
+(`opts: {masked, status}`); left for Gate 6 to reconcile literally, recorded here and in 05-tests.md
+so the next reader does not re-derive it.
+
+**ADR-051's `owner_decision: pending`** (reversing the `!authEnabled` mask over the predicted
+overlay) is untouched — the architect's own marker from Gate 2, not duplicated here. Every test
+written this gate encodes DECISION (a) exactly as DES-197 specifies: the open server exposes
+`phases[].agents` and unreached `dag.lanes`; the auth server withholds `agents` (ABSENT, never `[]`)
+while still serving observed-only `lanes` and `current`.
+
+**Self-check.** `sh .sdlc/trace`: 1562/67 → 1591/67 — the gap COUNT is unchanged (every in-closure
+REQ already carried exactly 2 gap rows; this gate flips their TYPE, not their count: 未實作+未驗證 →
+未實作+未真實驗證, the intended Gate 5 signal per the v24/v26 precedent, not a new defect); 0 new
+broken links (3, byte-identical to `git show HEAD`'s own dashboard.html); 0 new orphans (2,
+byte-identical). `state.yaml`: `gates.tests.passed=true`, `current_stage: tests → impl`. Full
+regression (`npx vitest run`, the whole suite, not just the new files) run before this gate closed —
+see the dispatch report for the pass/fail count. 0 owner_decisions raised by this gate.
+
+**Next**: Gate 6 (implementer) — 18 tasks, TASK-196..213, to turn every red item green in the order
+DES-191..208 lays out (guards → wire types → store projection → accessor → prompt strip → dashboard.ts
+pure additions → facade → server wire → static assets → shell → lib/ → ui/ → page-source migration).
+
+---
+
+## 2026-09-11 — v27 Sprint A: owner decision on ADR-051 taken mid-run, Gate 6 stopped to absorb it
+
+Sprint A (`REQ-131..136/140/141`) launched as a composed `/sdlc-run` (`wf_1fd419a3-dd5`, tier full,
+models overridden per the owner's standing policy: arch panel adversarial=opus / quality=fable-5.1,
+synth=opus, tests/impl/verify/validate=sonnet, review=opus, cheap/partition=haiku).
+
+Gates 2, 3+4 and 5 passed and are on disk: ARCH-122..131 + ADR-049..056; 18 DES + 18 TASK; 36 test
+items across 21 new test files. Gate 2 passed **with one `owner_decision: pending`** — ADR-051, whether
+the predicted overlay (lanes/nodes not yet reached) may be served under `auth.enabled:true`. The
+architect correctly took option (a) and escalated the reversal instead of taking it.
+
+The orchestrator relayed it to the owner with the consequence attached (under auth the swimlane loses
+its dashed edges to unreached nodes, degrading exactly the observability ranked first in Round 1).
+**Owner ruled: reverse the mask.** Recorded in `01-requirements.md` Round v27b and in the acceptance of
+REQ-133/134/140.
+
+**Why the run was stopped.** The 5-minute liveness sampling lagged the real progress: by the time the
+ruling was in hand the workflow had finished Gate 5 and was inside Gate 6. Stopping there is the cheap
+moment — the superseded decision had reached the TESTS
+(`tests/integration/dag-masking-auth.test.ts` asserts the mask) but **no product code had been written
+against it yet**. Absorbing it now costs a test flip; absorbing it after Gate 6/7/7.5 would have cost
+the whole expensive half of the run twice.
+
+**Plan from here:** (1) scoped delta run — `gates:[architecture,design,tests]`,
+`impactIds:[REQ-133,REQ-134,REQ-140]` — the architect folds the ruling into ADR-051/ADR-055 and the
+affected ARCH/DES/TASK rows and the masking test flips; (2) then `gates:[impl,verify,validation,review]`
+over the full Sprint A closure. Gate flags for `tests` and below are left as the delta run finds them.

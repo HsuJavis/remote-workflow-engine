@@ -141,3 +141,20 @@ describe('v25: the diagram does not survive into the run view (UT-169, REQ-119)'
     expect(hideBody).toContain("getElementById('diagram').style.display='none'");
   });
 });
+
+// v27 (UT-252, DES-208, TASK-213, REQ-129/119): the `createObjectURL`/`revokeObjectURL` diagram
+// pair MOVES into `ui/workflow.js` under this SAME UT id, per DES-208's "MOVES" disposition — the
+// negative pin above (this file's OTHER describe blocks) stays pointed at `DASHBOARD_HTML` only
+// until the shell actually empties (ARCH-122); this positive anchor is what proves the migration
+// landed rather than the corpus going quietly empty (adjudication (v23) #4's vacuous-survivor class).
+//
+// Red reason (measured): `clientCorpus()` throws today — `src/dashboard/**/*.js` does not exist.
+describe('v27 disposition anchor: the diagram createObjectURL/revokeObjectURL pair re-points to ui/workflow.js (UT-252, DES-208)', () => {
+  it('the client corpus (once built) carries the createObjectURL/revokeObjectURL pair and is not vacuously tiny', async () => {
+    const { clientCorpus } = await import('../helpers/client-corpus.js');
+    const corpus = clientCorpus();
+    expect(corpus).toContain('createObjectURL');
+    expect(corpus).toContain('revokeObjectURL');
+    expect(corpus.length).toBeGreaterThan(5000);
+  });
+});

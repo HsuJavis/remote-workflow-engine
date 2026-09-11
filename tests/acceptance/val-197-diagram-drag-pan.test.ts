@@ -24,6 +24,7 @@ import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { resolveMmdcCli } from '../../src/diagram-render.js';
 import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
+import { throwIfBrowserRequired } from '../helpers/require-browser.js';
 
 /** Same probe val-169 / val-193 use. */
 function findChrome(): string | null {
@@ -41,6 +42,9 @@ function findChrome(): string | null {
 }
 
 const chrome = findChrome();
+// v27 (DES-191, TASK-196, UT-232): fail instead of skip when the browser tier is required — only
+// the Chrome half (mmdc's absence is a distinct, legitimately-skippable tool gap).
+throwIfBrowserRequired(chrome);
 const mmdc = resolveMmdcCli();
 // Both are needed: with no mmdc the diagram route never answers an SVG, the <img> never gets a src,
 // and there is nothing to drag — that must SKIP with a reason, not fail as if the fix regressed.

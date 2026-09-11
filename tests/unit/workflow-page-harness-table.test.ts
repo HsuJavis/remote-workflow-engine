@@ -17,3 +17,19 @@ describe('the workflow page renders a per-agent harness table via textContent (U
     expect(DASHBOARD_HTML).toMatch(/timeoutMs/);
   });
 });
+
+// v27 (UT-254, DES-208, TASK-213, REQ-135): the alias-index / token-column greps this file pins
+// MOVE into real `lib/` unit tests (UT-247's `panelModel`) — this positive anchor proves the
+// client corpus still names `effort`/`timeoutMs` once built, rather than the corpus going quietly
+// empty (adjudication (v23) #4's vacuous-survivor class).
+//
+// Red reason (measured): `clientCorpus()` throws today — `src/dashboard/**/*.js` does not exist.
+describe('v27 disposition anchor: effort/timeoutMs rendering re-points to lib/agent.js (UT-254, DES-208)', () => {
+  it('the client corpus (once built) still names effort/timeoutMs and is not vacuously tiny', async () => {
+    const { clientCorpus } = await import('../helpers/client-corpus.js');
+    const corpus = clientCorpus();
+    expect(corpus).toMatch(/effort/);
+    expect(corpus).toMatch(/timeoutMs/);
+    expect(corpus.length).toBeGreaterThan(5000);
+  });
+});

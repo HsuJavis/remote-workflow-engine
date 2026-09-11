@@ -32,9 +32,10 @@
 // literal word "skeleton" (`server.ts` TOOL_METADATA, confirmed by direct read) — both assertions
 // fail against the current tree, for the genuine unimplemented reason.
 import { describe, it, expect } from 'vitest';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { projectToolsList } from '../../src/tool-specs.js';
 import { join, relative } from 'node:path';
+import { tmpdir } from 'node:os';
 
 const SRC_ROOT = join(__dirname, '..', '..', 'src');
 // v26 (ADR-048, REQ-128, ARCH-113): a FIFTH and a SIXTH entry, added by the new adjudication
@@ -90,5 +91,28 @@ describe('no-skeleton-surface guard (UT-115, ADR-022, REQ-105)', () => {
   it('no advertised tool description or input/output schema contains the word "skeleton" (REQ-105)', () => {
     const advertised = JSON.stringify(projectToolsList());
     expect(/skeleton/i.test(advertised)).toBe(false);
+  });
+});
+
+// v27 (UT-230, DES-191, TASK-196, REQ-131/134): the client is landing as plain-JS ESM
+// (src/dashboard/{lib,ui}/*.js) and vendored CSS (ADR-049) — this guard's own `listTsFiles` must
+// see those bytes too, or a forbidden word shipped in served JS/CSS is invisible to CI while this
+// test stays green. RED reason (measured): `listTsFiles` filters `entry.endsWith('.ts')` only, so a
+// planted `.js`/`.css` violation in a temp fixture is never walked at all — 0 violators found where
+// DES-191 requires 2.
+describe('the walker widens to .js/.css before the client lands (UT-230, DES-191)', () => {
+  it('a planted .js AND .css file carrying "skeleton" in a temp fixture dir is caught once the walker widens', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'no-skeleton-planted-'));
+    try {
+      writeFileSync(join(tmp, 'violation.js'), "export const bad = 'skeleton';\n");
+      writeFileSync(join(tmp, 'violation.css'), '/* skeleton */\n');
+      writeFileSync(join(tmp, 'clean.ts'), 'export const ok = 1;\n');
+      const violators = listTsFiles(tmp).filter((f) => /skeleton/i.test(readFileSync(f, 'utf8')));
+      // DES-191: today only `.ts` is walked, so the two planted files are invisible — RED until
+      // TASK-196 widens `listTsFiles` to `.ts`/`.js`/`.css`.
+      expect(violators.length).toBe(2);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

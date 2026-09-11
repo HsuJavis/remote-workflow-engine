@@ -216,4 +216,62 @@ describe('Dashboard read-only HTTP endpoints (DES-018, ARCH-011)', () => {
     // trigger/agent cells (if any) remain.
     expect((payload.cells ?? []).some((c) => String((c as { id?: string }).id ?? '').startsWith('__skel_'))).toBe(false);
   });
+
+  // v27 (IT-169, DES-197/198, ARCH-130/131, TASK-202/203, REQ-140/131): three v27 wire additions —
+  // `record` on the agent-detail route, `lanes`/`current` on the DAG payload (byte-compatible with
+  // the pre-v27 keys), and a real CSP on GET /dashboard.
+  //
+  // Red reason (measured): `GET /api/runs/:id/agents/:agentId` returns `{harness,events,hasMore}`
+  // only (`server.ts`'s `agentMatch` handler forwards `facade.runAgentLog`'s current return object
+  // verbatim, which has no `record`); the DAG payload has no `lanes`/`current` key at all; `GET
+  // /dashboard` sets no `Content-Security-Policy` header today (`server.ts:1251-1257`).
+  it('v27: GET /api/runs/:id/agents/:agentId includes `record` (the AgentRecord) beside harness/events/hasMore', async () => {
+    const runId = await submitRun("return agent('rec', { prompt: 'p' });");
+    let agentId: string | undefined;
+    for (let i = 0; i < 25; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      const statusRes = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 20, method: 'tools/call', params: { name: 'run_status', arguments: { runId } } }),
+      });
+      const sb = await statusRes.json() as { result?: { content?: Array<{ text?: string }> } };
+      const view = JSON.parse(sb.result?.content?.[0]?.text ?? '{}') as { result?: { status?: string; agents?: Array<{ agentId: string }> } };
+      if (['completed', 'failed'].includes(view.result?.status ?? '') && (view.result?.agents?.length ?? 0) > 0) {
+        agentId = view.result!.agents![0]!.agentId;
+        break;
+      }
+    }
+    expect(agentId).toBeDefined();
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/runs/${runId}/agents/${agentId}`);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { record?: { agentId?: string } };
+    expect(body.record?.agentId).toBe(agentId);
+  }, 15000);
+
+  it('v27: GET /api/runs/:id/dag gains lanes+current, with the pre-v27 keys BYTE-COMPATIBLE', async () => {
+    const runId = await submitRun("phase('p1'); return {dag:true};");
+    for (let i = 0; i < 25; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      const res = await fetch(`http://127.0.0.1:${server.port}/api/runs/${runId}/dag`);
+      if (res.status === 200) {
+        const payload = await res.json() as { kind?: string; cells?: unknown[]; edges?: unknown[]; startedBy?: unknown; lanes?: unknown; current?: unknown };
+        // pre-v27 keys unchanged
+        expect(payload.kind).toBe('run');
+        expect(Array.isArray(payload.cells)).toBe(true);
+        expect(Array.isArray(payload.edges)).toBe(true);
+        expect(payload.startedBy).toBeDefined();
+        // v27 additions
+        expect(Array.isArray(payload.lanes)).toBe(true);
+        expect('current' in payload).toBe(true);
+        return;
+      }
+    }
+    throw new Error('/api/runs/:id/dag never returned 200');
+  });
+
+  it('v27: GET /dashboard carries the real Content-Security-Policy header (ARCH-130)', async () => {
+    const res = await fetch(`http://127.0.0.1:${server.port}/dashboard`);
+    const csp = res.headers.get('content-security-policy') ?? '';
+    expect(csp).toContain("default-src 'none'");
+  });
 });

@@ -5,9 +5,10 @@
 // callTool's switch today (this is the ENTIRE point of the guard: it must be red until TASK-152's
 // rename sweep removes them).
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 const SRC_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../src');
 
@@ -111,5 +112,23 @@ describe('grep guards — v26 provider retirement is complete (DES-173, issue #6
       }
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+// v27 (UT-230, DES-191, TASK-196, REQ-131/134): same widening obligation as no-skeleton-surface's
+// `listTsFiles` — this file's `walk` also filters `.ts` only, so a retired identifier shipped in
+// the new plain-JS client would be invisible to this guard. RED reason (measured): `walk` never
+// descends into a planted `.js`/`.css` fixture's content at all — 0 offenders found where 2 exist.
+describe('walk() widens to .js/.css before the client lands (UT-230, DES-191)', () => {
+  it('a planted .js AND .css file carrying a retired identifier in a temp fixture dir is caught once walk() widens', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'no-retired-planted-'));
+    try {
+      writeFileSync(join(tmp, 'violation.js'), "export const bad = 'openai';\n");
+      writeFileSync(join(tmp, 'violation.css'), "/* openai */\n");
+      const offenders = walk(tmp).filter((f) => readFileSync(f, 'utf-8').includes("'openai'") || readFileSync(f, 'utf-8').includes('openai'));
+      expect(offenders.length).toBe(2);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
