@@ -3784,3 +3784,44 @@ baseline** — the marker introduced nothing.
 
 **Next:** `gates:[impl,verify,validation,review]` over the FULL Sprint A closure
 (REQ-131..136/140/141) — the expensive half, and the first time product code is written this iteration.
+
+---
+
+## 2026-09-12 — v27 Gate 6 partial: one infra failure repaired, one design gap routed back
+
+Gate 6 ran 17 implementers over 4.3h. 16 succeeded and the whole `src/dashboard/` tree landed (23
+files: seven `lib/*.js`, ten `ui/*.js`, `dashboard.css`, and the five vendored woff2 faces the owner
+chose over a Google Fonts link at Gate 1). One agent — TASK-204, `src/static-assets.ts` — died on
+`API Error: Output blocked by content filtering policy`, an infrastructure failure, not a code defect.
+
+**The tree was left hard-broken in two ways, both verified by the orchestrator on disk rather than
+taken on an agent's word:** `src/server.ts:57` already imported the module TASK-204 never wrote, so
+server.ts and every test importing it failed to LOAD; and `tests/unit/no-skeleton-surface.test.ts`
+failed (real run: 1 failed | 3 passed) because `src/dashboard/lib/strings.js:3` carried the retired
+word inside the comment explaining the rule that forbids it — C3, the trap flagged at Gate 1, sprung in
+the most circular way available.
+
+**Repair** (scoped executor, commits `8b07ed7` + `7737ce1`, IMPL-221): `static-assets.ts` written to
+DES-199; `status` added to DES-199's literal and to `ASSET_KEYS` (the file existed on disk but no
+design row enumerated it); the comment reworded with the guard test untouched. Both guards now green;
+trace 1591/67 → 1592/58.
+
+**The traversal test, independently re-verified because the claim was security-adjacent.** The agent
+reported `static-assets-route.test.ts`'s `ui/../lib/theme.js` case as a harness artifact rather than a
+hole. It is — and for a stronger reason than given: `lookupStaticAsset` is a bare `Map.get` over a
+fixed 23-key allowlist, and the caller string is only ever a Map KEY. Nothing joins, normalizes,
+decodes or resolves it into a path, so traversal is not *defended against*, it is *structurally
+impossible*; any unlisted string returns null and 404s. The test fails because `fetch()` collapses
+`../` per the WHATWG URL spec before the request is sent, so the server receives a legitimate listed
+key and correctly answers 200 — the case never exercises what it claims to. Routed to the verifier as a
+Gate 5 test defect; the test was NOT edited to pass.
+
+**The gap the repair did not touch, routed to design:** `dashboard.css` is owned by TASK-205 alone,
+whose scope was the PRE-v27 CSS port. TASK-207/210/211/212 all require pixel-precise CSS in their DoD
+and none lists a `.css` file. On disk the file is 126 lines with exactly one match across the whole
+`rweGlow|rweRing|rweSweep|slide|backdrop|swimlane|lane-` family. Unassigned, the owner's 99%-fidelity
+bar cannot pass. Task cards are the design gate's artifact, so this goes back there — not to the
+orchestrator, and not to an implementer inventing CSS against no DES.
+
+**Next:** one invocation, `gates:[design,impl,verify,validation,review]` over the full Sprint A closure
+— the design delta assigns the CSS ownership, then implementation resumes.
