@@ -1,6 +1,7 @@
 // src/dashboard/lib/strings.js
 // DES-201, ARCH-124, ADR-049, TASK-206, REQ-131/133 — the zh/en string table and t(lang, key).
-// C3: neither language may carry the retired word ("skeleton").
+// C3: neither language may carry the retired UI term that the repo-wide mechanical grep guard
+// (ADR-022, REQ-105) forbids across src/** -- the same term this project always calls "the C3 word".
 //
 // [v27b, ADR-051] warningText(lang, raw) maps the DAG route's warning grammar
 // (`WARNING := TOKEN (': ' DETAIL)?`, DES-198) to a rendered sentence for the two known TOKENs,

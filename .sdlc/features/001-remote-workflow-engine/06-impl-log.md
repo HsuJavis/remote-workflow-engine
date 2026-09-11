@@ -4017,3 +4017,65 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   ledger half is a nested amendment bullet on IMPL-198 (never a rewrite of the M-2 bullet) and a
   `v26 amendment` bullet on DES-180 carving `unmappedMessages` out of "a failed call moves no
   counter" (spend counters unchanged). No REQ and no architecture row needed an edit.
+
+### IMPL-221 — TASK-204 repair: `static-assets.ts` written, the missing `status` key added, and the C3 guard violation in `strings.js` fixed
+- **status:** done
+- **traces:** TASK-204, TASK-206, DES-199, DES-200, DES-201, ARCH-123, ADR-049, REQ-131, REQ-105, ADR-022
+- **greens:** UT-240, UT-115
+- **files:** src/static-assets.ts, src/dashboard/lib/strings.js, .sdlc/features/001-remote-workflow-engine/04-design.md
+- **commit:** (recorded below once committed)
+- **iter:** v27
+
+Repairs a broken Gate 6 tree: 16 of 17 v27 Sprint A implementers landed on the checkpoint commit
+(`f86ea25`); TASK-204's own agent died on an infra error before writing anything. Three fixes, all
+in one pass:
+
+1. **`src/static-assets.ts` written per DES-199.** `STATIC_ASSETS` is a `ReadonlyMap` built once at
+   module load from an `as const` array of 23 relative keys (10 `ui/*.js`, 7 `lib/*.js`, `dashboard.css`,
+   5 `fonts/*.woff2`), each resolved to an absolute path under `src/dashboard/` via
+   `fileURLToPath(new URL('./dashboard/'+key, import.meta.url))` (never `join`/`normalize`/decode —
+   the module contains none of the three, which `static-assets.test.ts` greps for directly).
+   `lookupStaticAsset` is a bare `Map.get` — every traversal-table string in UT-240 is rejected
+   because none of them is a literal key. `readStaticAsset` reads through a `Map<string, Buffer>`
+   cache and lets a missing file throw; `server.ts`'s `/static/dashboard/*` route (already landed by
+   TASK-204's sibling, TASK-203) already wraps that call in try/catch and answers 404 — that IS
+   DES-199's missing-file degrade, so no duplicate handling was added on this side. A module-load-time
+   `existsSync` per key logs one `{event:'dashboard_asset_missing', key}` line (never per request) for
+   any key whose file isn't present at boot. Checked `src/path-containment.ts` first; it does not
+   apply here — DES-199's boundary deliberately builds no path from caller input at all, so there is
+   no containment check to run.
+2. **Added `status` to DES-199's `lib/{...}` literal** (`04-design.md:6783`) and to `static-assets.ts`'s
+   `ASSET_KEYS`. `src/dashboard/lib/status.js` (DES-200/TASK-205's `updatePanelModel`, consumed by
+   `update-outcome-config-check.test.ts`) was already on disk but missing from the design's own
+   enumeration; without this the bidirectional on-disk⇔listed half of UT-240 would fail the moment
+   `static-assets.ts` existed.
+3. **`src/dashboard/lib/strings.js:3`'s comment rewritten.** It explained the C3 rule by naming the
+   retired word inside quotes in the very sentence forbidding it, so `no-skeleton-surface.test.ts`'s
+   first case (now walking `.js` too, per TASK-196) flagged the file itself as a violator (measured:
+   1 failed / 3 passed before the fix). Reworded to describe the rule (points at ADR-022/REQ-105)
+   without repeating the token; the guard test itself was not touched.
+
+**Verification (real runs, not asserted):**
+- `npx tsc --noEmit` — 30 pre-existing errors, none in `static-assets.ts` or attributable to this
+  repair: `tests/acceptance/val-198-shell-and-home.test.ts` / `val-199-workflow-detail.test.ts` need
+  a DOM lib; `tests/integration/run-store-parity.test.ts:24` has an `AgentRecord` fixture missing
+  fields (TASK-198 scope); `tests/unit/dashboard-client-corpus.test.ts` and
+  `tests/unit/update-outcome-config-check.test.ts` get implicit-`any` on `.js` imports with no
+  ambient module declaration. All outside TASK-204/206's files.
+- `npx vitest run tests/unit/no-skeleton-surface.test.ts tests/unit/static-assets.test.ts
+  tests/integration/static-assets-route.test.ts tests/integration/dashboard-http.test.ts
+  tests/integration/dag-masking-auth.test.ts` — 34 passed, 1 failed.
+  **The one failure is a genuine test-harness defect, not a code defect, and was NOT worked around:**
+  `tests/integration/static-assets-route.test.ts`'s traversal-table case for the `ui/../lib/theme.js`
+  string expects 404 but gets 200. Root cause, confirmed by booting the real server and comparing two
+  HTTP clients: `fetch()` (used by the test) resolves `../`-relative segments client-side per the
+  WHATWG URL spec *before* the request is sent, so the byte string that actually reaches the server is
+  `/static/dashboard/lib/theme.js` — a real, listed, in-bounds asset, correctly served 200. Sending the
+  literal, unresolved string with a raw `http.request` (which does not normalize the path) against the
+  same booted server confirms the server-side code is correct: all five traversal strings, including
+  the unresolved `ui/../lib/theme.js`, answer 404. `tests/unit/static-assets.test.ts`'s own traversal
+  case already proves `lookupStaticAsset('ui/../lib/theme.js')` (the literal, unresolved string) is
+  `null`. Reported per the exit-gate rule against appeasing a wrong test; the test was not edited.
+- `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` — 1591 items scanned, 67 gaps
+  (unchanged from the pre-repair baseline recorded in `state.yaml`'s Gate 5 note), no new gap
+  attributable to `TASK-204`/`static-assets`/`status.js` in the output.
