@@ -8,7 +8,7 @@ import { ZERO_TOKENS, priceCall } from './run-guard.js';
 import type { RunStore } from './run-store.js';
 import { redact } from './secret-resolver.js';
 import type { SecretValueProvider } from './secret-resolver.js';
-import { composePrompt, type RunParams, type EffectiveCallParams } from './params/resolve.js';
+import { composePrompt, stripFirstSegment, type RunParams, type EffectiveCallParams } from './params/resolve.js';
 import { isEffort } from './params/contract.js';
 import { codedError } from './errors.js';
 import type { ErrorCode } from './errors.js';
@@ -598,7 +598,7 @@ export class AgentExecutor implements AgentSpawner {
         attempt === 0
           ? schemaPrompt
           : `${schemaPrompt}\n\n(Your previous reply did not parse as JSON matching the schema above. Reply with ONLY the JSON value — nothing else.)`;
-      const outcome = await this._invokeOnce(req, prompt, effectiveOpts, eff);
+      const outcome = await this._invokeOnce(req, prompt, effectiveOpts, eff, def?.systemPrompt);
       if (outcome === 'aborted') return { kind: 'null', aborted: true };
       const result = outcome;
 
@@ -614,7 +614,7 @@ export class AgentExecutor implements AgentSpawner {
     return { kind: 'null' };
   }
 
-  private async _invokeOnce(req: AgentReq, prompt: string, opts: AgentOpts, eff: EffectiveCallParams): Promise<GatewayResult | 'aborted'> {
+  private async _invokeOnce(req: AgentReq, prompt: string, opts: AgentOpts, eff: EffectiveCallParams, sys?: string): Promise<GatewayResult | 'aborted'> {
     // D-V2V-1: forward the run's own workspace — only ClaudeAgentSdkGatewayClient consumes it
     // (per-call cwd re-scoping + asset materialization); other gateways ignore the extra field.
     // DES-066 (TASK-069): onHarness closure — appends a kind:'harness' transcript event when the
@@ -643,8 +643,18 @@ export class AgentExecutor implements AgentSpawner {
       // the same reason — `deriveAgentRecords` reads the harness event to rebuild a record after a
       // restart, and without this the lane existed only in this process's memory.
       const queued = sink.getRecord(req.agentId);
+      // v27 (REQ-136, DES-195, TASK-200): `descriptor.prompt` is whatever the gateway echoed back
+      // (both real gateways echo `req.prompt` verbatim) — strip the agentType systemPrompt segment
+      // BEFORE persisting so it never reaches the transcript. Fails closed: a gateway that echoes
+      // something other than what it was given yields `prompt: ''` plus one warning line, never the
+      // untouched composed string.
+      const stripResult = stripFirstSegment(descriptor.prompt, sys);
+      if (sys !== undefined && sys !== '' && !stripResult.stripped) {
+        console.warn(JSON.stringify({ event: 'harness_prompt_prefix_mismatch', agentId: req.agentId, agentType: req.opts.agentType }));
+      }
       const decorated: HarnessDescriptor = {
         ...descriptor,
+        prompt: stripResult.prompt,
         effort: eff.effort,
         timeoutMs: eff.timeoutMs,
         provenance: eff.provenance,
@@ -653,6 +663,7 @@ export class AgentExecutor implements AgentSpawner {
         ...(queued?.phaseIndex !== undefined ? { phaseIndex: queued.phaseIndex } : {}),
         materialized: descriptor.materialized ?? { skills: [], mcp: [], missing: declaredNames },
         ...(applied !== undefined ? { effortApplied: applied.applied ? { param: applied.param, value: applied.value } : { reason: applied.reason } } : {}),
+        ...(sys !== undefined && sys !== '' ? { systemPrompt: { agentType: req.opts.agentType!, bytes: Buffer.byteLength(sys, 'utf8') } } : {}),
       };
       // #20: surface model/provider on the LIVE agent record the moment the session is built (before
       // the first token) so workflow_status shows WHICH backend a still-running agent is waiting on,

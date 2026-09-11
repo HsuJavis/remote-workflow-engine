@@ -329,7 +329,10 @@ export const TOOL_SPECS = [
   },
   {
     name: 'workflow_describe', entity: 'workflow', key: 'name' as const,
-    description: "Describe a workflow: per-agent parameters, agent labels, live triggers, and its author-supplied diagram. Defaults to the release pointer; pass version or channel to describe another one.",
+    // v27b (DES-197, ARCH-131, TASK-202, REQ-106's precedent): names `phases[].agents` in the
+    // advertised description itself, not just the schema shape, so a cold, schema-only client
+    // learns the predicted lane membership without fetching first.
+    description: "Describe a workflow: per-agent parameters, agent labels, live triggers, its author-supplied diagram, and the predicted lane membership (phases[].agents). Defaults to the release pointer; pass version or channel to describe another one.",
     // v24 Gate 7.5 (D-7, REQ-118): the handler has always accepted `version`/`channel` (it builds
     // a `VersionSelector` from them) and the row advertised only `name`. `version` is not a
     // convenience: a workflow that was never published cannot be described WITHOUT it — the bare
@@ -607,7 +610,9 @@ export const TOOL_SPECS = [
     description:
       "Read one agent's harness log for a run, by the agent LABEL the script declares. A " +
       "cross-principal read of another principal's run is audited. " +
-      'Secret values are replaced with \u2039secret:NAME\u203a markers in persisted transcripts.',
+      'Secret values are replaced with \u2039secret:NAME\u203a markers in persisted transcripts. ' +
+      "An agentType's system prompt is never in harness.prompt; harness.systemPrompt:{agentType,bytes} " +
+      'records only that one was applied, never its content.',
     inputSchema: schema({ runId: { type: 'string' }, label: { type: 'string' } }, ['runId', 'label']),
     outputSchema: OUT,
     errors: ['RUN_NOT_FOUND', 'AGENT_LOG_NOT_FOUND', 'NOT_RUN_OWNER'],

@@ -8,17 +8,13 @@
 import { describe, it, expect } from 'vitest';
 import { DASHBOARD_HTML } from '../../src/dashboard-page.js';
 
+// v27 disposition (DES-208, TASK-213): `viewBox`/`preserveAspectRatio` and the no-absolute-`width`
+// negative RETIRE from a direct DASHBOARD_HTML check — both were greps over the OLD inline JS
+// SOURCE TEXT embedded in the exported string; ARCH-122 empties the shell of that text entirely, so
+// the positive would simply go red and the negative would pass VACUOUSLY (DES-208's "dangerous
+// green"). They MOVE into the UT-253 disposition anchor below, under the same id, against the real
+// `ui/run.js` bytes once TASK-210 lands. `.zoomable`/`fit` are markup/CSS facts and STAY.
 describe('the run DAG and author SVG scale via viewBox + one .zoomable wrapper (UT-200, DES-186)', () => {
-  it('the page source sets viewBox and preserveAspectRatio on the DAG', () => {
-    expect(DASHBOARD_HTML).toMatch(/viewBox/);
-    expect(DASHBOARD_HTML).toMatch(/preserveAspectRatio/);
-  });
-
-  it('no absolute pixel width= is set on the DAG svg element', () => {
-    expect(DASHBOARD_HTML).not.toMatch(/setAttribute\('width',\s*W\)/);
-    expect(DASHBOARD_HTML).not.toMatch(/setAttribute\("width",\s*W\)/);
-  });
-
   it('a .zoomable wrapper class exists in the page', () => {
     expect(DASHBOARD_HTML).toMatch(/zoomable/);
   });
@@ -33,13 +29,17 @@ describe('the run DAG and author SVG scale via viewBox + one .zoomable wrapper (
 // DES-208's "MOVES" disposition — a positive anchor beside the negative, or the corpus going empty
 // would pass this vacuously (adjudication (v23) #4).
 //
-// Red reason (measured): `clientCorpus()` throws today — `src/dashboard/**/*.js` does not exist.
+// Red reason (measured): `ui/run.js` does not exist yet (TASK-210) — the two positives below stay
+// RED until it lands; that is the expected split this ledger names elsewhere (TASK-204/213's own
+// preamble rule), not a defect. `clientCorpus()` itself does not throw: `src/dashboard/lib/*.js`
+// already exists (a sibling task's completed work), so the corpus is non-empty today.
 describe('v27 disposition anchor: viewBox/preserveAspectRatio re-points to ui/run.js (UT-253, DES-208)', () => {
-  it('the client corpus (once built) carries the SVG viewBox/preserveAspectRatio wiring and is not vacuously tiny', async () => {
+  it('the client corpus (once built) carries the SVG viewBox/preserveAspectRatio wiring, no absolute pixel width=, and is not vacuously tiny', async () => {
     const { clientCorpus } = await import('../helpers/client-corpus.js');
     const corpus = clientCorpus();
     expect(corpus).toContain('viewBox');
     expect(corpus).toContain('preserveAspectRatio');
+    expect(corpus).not.toMatch(/setAttribute\(['"]width['"],\s*W\)/);
     expect(corpus.length).toBeGreaterThan(5000);
   });
 });

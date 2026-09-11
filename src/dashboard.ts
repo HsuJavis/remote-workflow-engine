@@ -3,8 +3,10 @@
 // it shapes exactly the existing RunSummary[]/RunStatusView/TranscriptEvent[] shapes (DES-010).
 // HTTP transport + live-tail polling (TASK-025) reads this VM; not built here (distinct test seam,
 // D-V2f task split).
-import type { RunSummary, RunStatusView, TranscriptEvent, AgentRecord, PhaseView } from './types.js';
+import type { RunSummary, RunStatusView, TranscriptEvent, AgentRecord, PhaseView, RunStatus } from './types.js';
 import type { ExpectedLane, ExpectedSlot, ExpectedGraph } from './skeleton-graph.js';
+import { deriveExpectedGraph } from './skeleton-graph.js';
+import { parseWorkflowSkeleton, scanAgentCalls } from './workflow-meta.js';
 import { sumTokens } from './run-guard.js';
 
 export interface DashboardVM {
@@ -94,6 +96,10 @@ export interface WorkflowMetrics {
   successRate: number | null;
   avgDurationMs: number | null;
   terminalCount: number;
+  /** v27b (DES-196, ADR-055, TASK-201, REQ-141): mean `costUSD` over TERMINAL runs that carry it —
+   *  `null` (never `0`) when none does. `unpricedRuns` counts the rest of the terminal group. */
+  avgCostUSD: number | null;
+  unpricedRuns: number;
 }
 
 export interface WorkflowCard {
@@ -111,7 +117,7 @@ export interface HomeView {
   other: WorkflowCard[];
 }
 
-const ZERO_METRICS: WorkflowMetrics = { successRate: null, avgDurationMs: null, terminalCount: 0 };
+const ZERO_METRICS: WorkflowMetrics = { successRate: null, avgDurationMs: null, terminalCount: 0, avgCostUSD: null, unpricedRuns: 0 };
 const TERMINAL_STATUSES = new Set<string>(['completed', 'failed', 'stopped']);
 const ACTIVE_STATUSES = new Set<string>(['running', 'queued', 'suspended', 'interrupted']);
 
@@ -121,6 +127,8 @@ const ACTIVE_STATUSES = new Set<string>(['running', 'queued', 'suspended', 'inte
  * successRate = completedCount / terminalCount; null if terminalCount === 0.
  * avgDurationMs = mean(Date.parse(terminalAt) − Date.parse(createdAt)) over terminal runs
  *   with a parseable terminalAt; null if none are parseable.
+ * avgCostUSD = mean(costUSD) over terminal runs that CARRY a costUSD; null (never 0) if none does
+ *   (DES-196, REQ-141). unpricedRuns = terminal runs that do not carry a costUSD.
  * Never throws, never emits NaN.
  */
 export function computeWorkflowMetrics(runs: RunSummary[]): Map<string | undefined, WorkflowMetrics> {
@@ -153,7 +161,12 @@ export function computeWorkflowMetrics(runs: RunSummary[]): Map<string | undefin
     const avgDurationMs = durations.length > 0
       ? durations.reduce((a, b) => a + b, 0) / durations.length
       : null;
-    out.set(key, { successRate, avgDurationMs, terminalCount });
+    const priced = terminal.filter((r) => r.costUSD !== undefined);
+    const avgCostUSD = priced.length > 0
+      ? priced.reduce((a, r) => a + r.costUSD!, 0) / priced.length
+      : null;
+    const unpricedRuns = terminalCount - priced.length;
+    out.set(key, { successRate, avgDurationMs, terminalCount, avgCostUSD, unpricedRuns });
   }
   return out;
 }
@@ -232,6 +245,54 @@ export function buildHomeView(
  *  local copy on purpose — see its comment: UT-115/ADR-022's `skeleton` allowlist does not include
  *  that file, and even a type import would put the word in its source text.) */
 export type { ExpectedLane, ExpectedSlot, ExpectedGraph };
+
+const LIVE_LANE_STATUSES = new Set<RunStatus>(['running', 'suspended', 'interrupted']);
+
+/** v27b (DES-196, ARCH-126, ADR-051, TASK-201): `{lanes, current}` for the dashboard swimlane —
+ *  pure, no I/O. `lanes` = the observed `phases` (regardless of auth) extended UNCONDITIONALLY by
+ *  the `expected` overlay's UNREACHED tail (any expected lane at or beyond `phases.length`),
+ *  re-indexed dense so `lanes[k].index === k` even over a non-contiguous `expected.lanes`. `current`
+ *  is the last observed phase index for the three LIVE statuses (`running`/`suspended`/
+ *  `interrupted`) and `null` otherwise (or when `phases` is empty) — never clamped to
+ *  `expected.lanes.length - 1` (a loop-body `phase()` can legally observe more phases than the
+ *  predicted graph has lanes). Body stays garbage-tolerant (`Array.isArray(expected?.lanes)`,
+ *  matching `layoutGraph` at :346) even though `expected` is typed non-optional (ADR-051). */
+export function deriveLanes(
+  phases: PhaseView[],
+  expected: ExpectedGraph,
+  opts: { status: RunStatus },
+): { lanes: Array<{ index: number; title: string | null }>; current: number | null } {
+  const safePhases = Array.isArray(phases) ? phases : [];
+  const observed = safePhases.map((p, i) => ({ index: i, title: p.title }));
+  const expectedLanes = Array.isArray(expected?.lanes) ? expected.lanes : [];
+  const unreached = expectedLanes
+    .filter((l) => l.index >= safePhases.length)
+    .sort((a, b) => a.index - b.index)
+    .map((l, i) => ({ index: safePhases.length + i, title: l.title }));
+  const lanes = [...observed, ...unreached];
+  const current = safePhases.length > 0 && LIVE_LANE_STATUSES.has(opts.status) ? safePhases.length - 1 : null;
+  return { lanes, current };
+}
+
+/** v27b (DES-196, ADR-055, TASK-201): per-lane predicted agent labels for a workflow's registered
+ *  script — the THIRD consumer of `deriveExpectedGraph` (INV-V26-3/INV-V27-4: registration checker,
+ *  run-DAG layout, and this), never a fourth derivation. Lives here (not the facade) because
+ *  `dashboard.ts` is on the `no-skeleton-surface` allowlist (C3/ADR-048) and `mcp-facade.ts` is not.
+ *  Empty array when the script fails to derive (`derived.ok === false`) — indistinguishable here
+ *  from a legitimately empty graph; DES-197's facade contract is to emit no `agents` key on the
+ *  phase in either case, never `[]` standing in for "unavailable" (that signal is the DAG route's
+ *  own `PREDICTED_OVERLAY_UNAVAILABLE` warning, DES-198, a different call site). */
+export function predictedLanes(script: string): Array<{ index: number; title: string | null; agents: string[] }> {
+  const nodes = parseWorkflowSkeleton(script);
+  const scan = scanAgentCalls(script);
+  const derived = deriveExpectedGraph(nodes, scan);
+  if (!derived.ok) return [];
+  const bySlotLane = new Map<number, string[]>();
+  for (const slot of derived.graph.slots) {
+    bySlotLane.set(slot.lane, [...(bySlotLane.get(slot.lane) ?? []), ...slot.labels]);
+  }
+  return derived.graph.lanes.map((lane) => ({ index: lane.index, title: lane.title, agents: bySlotLane.get(lane.index) ?? [] }));
+}
 
 /** Logical grid cell — NO pixel coords (no x/y/width/height). Stable id across re-layout calls. */
 export interface LayoutCell {
@@ -422,7 +483,7 @@ export function layoutGraph(
       for (const s of laneSlots) {
         if (covering.some((a) => a.label !== undefined && s.labels.includes(a.label))) continue;
         if (agentCellCount >= maxNodes) { truncated = true; break; }
-        placeCell(lane.index, { id: `__skel_${s.index}__`, kind: 'agent', laneSpan: 1 });
+        placeCell(lane.index, { id: `__skel_${s.index}__`, kind: 'agent', laneSpan: 1, ...(s.labels.length ? { label: s.labels.join(' / ') } : {}) });
       }
     }
   }

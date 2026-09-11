@@ -22,7 +22,7 @@ import type { WorkflowMetrics } from '../../src/dashboard.js';
 import type { RunSummary } from '../../src/types.js';
 
 // Fixture helpers
-const ZERO_METRICS: WorkflowMetrics = { successRate: null, avgDurationMs: null, terminalCount: 0 };
+const ZERO_METRICS: WorkflowMetrics = { successRate: null, avgDurationMs: null, terminalCount: 0, avgCostUSD: null, unpricedRuns: 0 };
 const metricsMap = (entries: [string, WorkflowMetrics][] = []) =>
   new Map(entries);
 
@@ -121,7 +121,7 @@ describe('buildHomeView — pure 3-way grouping (UT-072, DES-070)', () => {
 
   it('metrics from map are passed through to card; unknown workflow gets zero-metrics', () => {
     const catalog = [{ name: 'wf', description: '' }];
-    const known = { successRate: 0.8, avgDurationMs: 1000, terminalCount: 5 };
+    const known: WorkflowMetrics = { successRate: 0.8, avgDurationMs: 1000, terminalCount: 5, avgCostUSD: null, unpricedRuns: 0 };
     const m = metricsMap([['wf', known]]);
     const view = buildHomeView(catalog, [], m);
     const card = view.registered.find((c) => c.name === 'wf');

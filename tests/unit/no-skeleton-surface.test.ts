@@ -59,7 +59,7 @@ function listTsFiles(dir: string): string[] {
     const p = join(dir, entry);
     const st = statSync(p);
     if (st.isDirectory()) out.push(...listTsFiles(p));
-    else if (entry.endsWith('.ts')) out.push(p);
+    else if (entry.endsWith('.ts') || entry.endsWith('.js') || entry.endsWith('.css')) out.push(p);
   }
   return out;
 }

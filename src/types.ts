@@ -366,6 +366,13 @@ export interface RunSummary {
   /** v11 F1 (DES-071): ISO timestamp of the first terminal transition (completed/failed/stopped);
    *  absent for non-terminal or legacy runs where no terminal transition is recorded. */
   terminalAt?: string;
+  /** v27 (DES-194, ADR-052, TASK-199, REQ-141): the four usage-projection fields, sourced by
+   *  `listSummaries()`'s one precedence chain (live overlay, else at-rest fold). Omitted TOGETHER
+   *  for a run with zero `agent()` calls — never `0`, which would mean "priced at zero". */
+  costUSD?: number;
+  unpricedCalls?: number;
+  tokensTotal?: number;
+  agentCount?: number;
 }
 
 /** v24 (DES-151, TASK-155): the four tool names whose read surfaces an admin cross-owner read
@@ -536,6 +543,11 @@ export interface HarnessDescriptor {
    *  `surfaceType:'none'` dispatch materializes nothing (DES-154), so its `skills`/`mcp` are empty
    *  and every declared name is `missing`. Absent for every pre-v24 record. */
   materialized?: { skills: string[]; mcp: string[]; missing: string[] };
+  /** v27 (DES-195, ARCH-129, TASK-200, REQ-136): present iff a non-empty agentType systemPrompt
+   *  was applied at the one decoration site — `bytes` is the stripped segment's length, never its
+   *  content, so REQ-136's confidentiality guarantee holds even on this descriptor. Absent when no
+   *  agentType systemPrompt applied (script-only prompt, or none). */
+  systemPrompt?: { agentType: string; bytes: number };
 }
 
 export interface TranscriptEvent {
@@ -546,4 +558,19 @@ export interface TranscriptEvent {
    *  being silently omitted. */
   kind: 'message' | 'tool_call' | 'tool_result' | 'usage' | 'harness' | 'refused';
   data: unknown;
+}
+
+/** v27 (DES-192, ARCH-131/127/129, ADR-054, TASK-197): `run_agent_log`'s / the HTTP agent-detail
+ *  route's own view type — replaces the anonymous inline intersection this used to be declared as
+ *  at the one call site. `result` is NOT redeclared here: `ResultEnvelope<T>` already carries it as
+ *  OPTIONAL, and the facade-error branch returns without it, so a required redeclaration would fail
+ *  that branch's fixture `satisfies` check. `record` is OPTIONAL for the same reason — the error
+ *  branch never resolved an agent to attach one. */
+export interface AgentLogView extends ResultEnvelope<TranscriptEvent[]> {
+  harness: HarnessDescriptor | null;
+  events: TranscriptEvent[];
+  hasMore: boolean;
+  /** v27 (DES-197, ARCH-131, TASK-202): the full `AgentRecord` — present on the success branch,
+   *  absent on the facade-error branch. */
+  record?: AgentRecord;
 }

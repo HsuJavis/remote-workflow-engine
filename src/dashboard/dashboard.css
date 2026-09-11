@@ -1,0 +1,126 @@
+/* v27 (DES-201, ARCH-124, ADR-049, TASK-205, REQ-131): tokens CSS with the OKLCH accent ramp.
+   Served at /static/dashboard/dashboard.css (DES-199) AND embedded verbatim into the shell's
+   inline <style> (dashboard-page.ts reads this file once at module load) so the FIRST paint has
+   the correct theme before the external stylesheet round-trips — one source, two destinations.
+   --rwe-hue is the ONLY value theme-init.js (a classic script) ever writes; every other token is
+   a CSS formula over it, so the OKLCH ramp has exactly one home (DES-201's amendment of ARCH-124:
+   no accentVars() JS mirror). */
+:root {
+  --rwe-hue: 236;
+}
+
+/* Dark is the no-preference default (REQ-131). */
+:root[data-theme="dark"] {
+  --color-bg: #18191b;
+  --color-panel: #212226;
+  --color-panel2: #292a2f;
+  --color-line: #34363c;
+  --color-ink: #e7e9ec;
+  --color-muted: #8e97a3;
+  --color-link: #9fb8d6;
+  --color-accent: oklch(0.72 0.065 var(--rwe-hue));
+  --accent-100: oklch(0.93 0.02 var(--rwe-hue));
+  --accent-200: oklch(0.86 0.03 var(--rwe-hue));
+  --accent-300: oklch(0.8 0.045 var(--rwe-hue));
+  --accent-400: oklch(0.76 0.055 var(--rwe-hue));
+  --accent-500: oklch(0.72 0.065 var(--rwe-hue));
+  --accent-600: oklch(0.63 0.08 var(--rwe-hue));
+  --accent-700: oklch(0.54 0.085 var(--rwe-hue));
+  --accent-800: oklch(0.42 0.075 var(--rwe-hue));
+  --accent-900: oklch(0.3 0.055 var(--rwe-hue));
+}
+
+:root[data-theme="light"] {
+  --color-bg: #eef2f1;
+  --color-panel: #ffffff;
+  --color-panel2: #e6ebe9;
+  --color-line: #cfd7d4;
+  --color-ink: #23262a;
+  --color-muted: #6c7379;
+  --color-link: #3f6488;
+  --color-accent: oklch(0.56 0.065 var(--rwe-hue));
+  --accent-100: oklch(0.96 0.015 var(--rwe-hue));
+  --accent-200: oklch(0.9 0.025 var(--rwe-hue));
+  --accent-300: oklch(0.82 0.04 var(--rwe-hue));
+  --accent-400: oklch(0.72 0.05 var(--rwe-hue));
+  --accent-500: oklch(0.63 0.06 var(--rwe-hue));
+  --accent-600: oklch(0.56 0.065 var(--rwe-hue));
+  --accent-700: oklch(0.47 0.07 var(--rwe-hue));
+  --accent-800: oklch(0.37 0.06 var(--rwe-hue));
+  --accent-900: oklch(0.26 0.045 var(--rwe-hue));
+}
+
+/* Vendored web fonts (DES-199) — served from this same origin, no external host (REQ-131/ARCH-123).
+   font-display:swap + a system stack on every @font-face: a missing/slow woff2 degrades to the
+   fallback rather than a blank/blocked paint (DES-199's boundary). */
+@font-face { font-family: 'Archivo'; src: url('/static/dashboard/fonts/archivo-400.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Archivo'; src: url('/static/dashboard/fonts/archivo-500.woff2') format('woff2'); font-weight: 500; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Archivo'; src: url('/static/dashboard/fonts/archivo-600.woff2') format('woff2'); font-weight: 600; font-style: normal; font-display: swap; }
+@font-face { font-family: 'JetBrains Mono'; src: url('/static/dashboard/fonts/jetbrains-mono-400.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'JetBrains Mono'; src: url('/static/dashboard/fonts/jetbrains-mono-500.woff2') format('woff2'); font-weight: 500; font-style: normal; font-display: swap; }
+
+/* Component CSS ported from the pre-v27 page (v11-v26), re-mapped from the old single-theme
+   Morandi variables (--bg/--panel/--panel2/--line/--ink/--muted/--link) onto the dark/light tokens
+   above. NOT built here: swimlane/agent-panel/ported-tab component CSS (TASK-207/210/211/212's own
+   pixel specs) — this file has no other owner in the v27 task decomposition (see the implementer's
+   needs_clarification note); adding those classes speculatively ahead of their own DES would be
+   exactly the "no abstraction for code used once" trap. */
+body{font-family:'Archivo',-apple-system,'Segoe UI',sans-serif;margin:0;background:var(--color-bg);color:var(--color-ink)}
+header{padding:16px 24px;border-bottom:1px solid var(--color-line);display:flex;align-items:center;gap:24px}
+h1{font-size:18px;margin:0}h2{font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:var(--color-muted);margin:22px 0 10px}
+main{padding:16px 24px;max-width:1100px}
+a{color:var(--color-link);text-decoration:none}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}
+.card{background:var(--color-panel);border:1px solid var(--color-line);border-radius:10px;padding:11px 13px;font-size:13px;cursor:pointer}
+.card:hover{border-color:var(--color-link)}
+.card .t{font-weight:600;font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;word-break:break-all}
+.card .s{color:var(--color-muted);font-size:11.5px;margin-top:4px}
+.pill{display:inline-block;padding:1px 7px;border-radius:100px;font-size:11px;border:1px solid var(--color-line)}
+.st-queued{color:#B08A5B}.st-running{color:#6E8199}.st-done,.st-completed{color:#7A9078}.st-failed{color:#B0776E}.st-stopped,.st-suspended{color:#9A948A}.st-interrupted{color:#B08A5B}
+/* v26 Gate 7.5 round 3 (defect D10, REQ-129): -webkit-user-drag:none is load-bearing, not styling —
+   see the draggable="false" note on the <img> itself in dashboard-page.ts. user-select:none stops a
+   drag across the figure from painting a text selection instead of panning. */
+#diagram-img{max-width:100%;background:var(--color-panel);border:1px solid var(--color-line);border-radius:8px;padding:8px;margin:6px 0;-webkit-user-drag:none;user-select:none}
+/* v26 (DES-186, ARCH-120, ADR-044, TASK-191): one .zoomable wrapper serves BOTH the run DAG svg
+   and the author's diagram img — the wheel/drag transform lives HERE, never on rebuilt children. */
+.zoomable{transform-origin:0 0;touch-action:none}
+/* v26 Gate 7.5 round 1 (REQ-129's fit clause): position:relative;z-index:1 is load-bearing — a
+   transformed .zoomable sibling paints in the positioned layer above an in-flow button that merely
+   precedes it in the source, so a drag-pan could otherwise cover this control (VAL-189). */
+.fit-btn{position:relative;z-index:1;font-size:11px;padding:2px 9px;border-radius:100px;border:1px solid var(--color-line);background:var(--color-panel);color:var(--color-ink);cursor:pointer;margin:4px 0}
+.fit-btn:hover{border-color:var(--color-link)}
+#tree{margin-top:6px}
+.grp{border-left:2px solid var(--color-line);margin:6px 0 6px 4px;padding:2px 0 2px 12px}
+.grp-h{font-size:12px;color:var(--color-muted);margin:4px 0}
+.grp-h b{color:var(--color-ink);font-family:'JetBrains Mono',ui-monospace,Consolas,monospace}
+.node{padding:5px 9px;margin:4px 0;background:var(--color-panel2);border:1px solid var(--color-line);border-radius:8px;font-size:12.5px;cursor:pointer;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.node:hover{border-color:var(--color-link)}
+.node .dot{width:8px;height:8px;border-radius:50%;background:currentColor;flex:none}
+.node .lbl{font-weight:600}.node .mdl{color:var(--color-muted);font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;font-size:11.5px}
+.node .tok{color:var(--color-muted);font-size:11px;margin-left:auto}
+.node .cost{color:var(--color-muted);font-size:11px}
+.node .unpriced{color:var(--accent-700);font-size:10.5px}
+.node .dur{color:var(--color-muted);font-size:11px}
+#run-usage{margin:2px 0 8px;font-size:11.5px;color:var(--color-muted)}
+#run-usage span{margin-right:12px}
+#run-usage .usage-cols{font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;font-size:11px}
+#run-usage .usage-lowerbound{color:var(--accent-700)}
+#phases{margin:8px 0 4px}
+.ph-lbl{font-size:11px;color:var(--color-muted);text-transform:uppercase;letter-spacing:.06em;margin-right:6px}
+.phase{display:inline-block;padding:2px 9px;margin:2px 5px 2px 0;border-radius:100px;border:1px solid var(--color-line);font-size:11.5px;color:var(--color-muted)}
+.phase.cur{border-color:var(--color-link);color:var(--color-link);font-weight:600}
+pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--color-line);padding:12px;border-radius:8px;max-height:340px;overflow:auto;font-size:12px;font-family:'JetBrains Mono',ui-monospace,Consolas,monospace}
+.back{font-size:13px}
+.empty{color:var(--color-muted);font-size:12.5px}
+.issue-row{display:flex;align-items:baseline;gap:8px;padding:6px 0;border-bottom:1px solid var(--color-line);font-size:13px;cursor:pointer}
+.issue-row:hover .issue-title{color:var(--color-link)}
+.issue-num{color:var(--color-muted);font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;min-width:40px}
+.issue-title{flex:1}
+.issue-lbl{font-size:11px;padding:1px 6px;border-radius:100px;border:1px solid var(--color-line);color:var(--color-muted)}
+.issue-detail{background:var(--color-panel2);border:1px solid var(--color-line);border-radius:8px;padding:12px;margin-top:10px;font-size:13px}
+.issue-detail pre{max-height:200px}
+.degraded{color:var(--color-muted);font-size:12.5px;font-style:italic}
+.sys-table,.models-table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}
+.sys-table td,.models-table td,.models-table th{padding:4px 8px;border-bottom:1px solid var(--color-line);vertical-align:top}
+.sys-table td:first-child{color:var(--color-muted);font-size:11px;width:140px}
+.models-table th{text-align:left;color:var(--color-muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em}

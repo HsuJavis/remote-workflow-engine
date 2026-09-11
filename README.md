@@ -16,7 +16,9 @@
   含 inline seed + CAS seedManifest + `seedManifestRef` + 每個 agent 各自的 `overrides`）。
   **`run_start` 只回 `runId`，不回結果**——要拿結果得先 `run_status` 輪詢到終態，再 `run_result`；
   另有 `run_suspend`/`run_resume`/`run_stop`、`run_agent_log`（依腳本宣告的 agent label 讀該次 harness
-  逐字稿）、`run_list`，以及當機可續跑（重啟後 `interrupted` → `run_resume`）
+  逐字稿）、`run_list`（每筆可能帶 `costUSD`/`unpricedCalls`/`tokensTotal`/`agentCount` 四個選填欄位，
+  若該 run 從未呼叫過 `agent()` 則四者一起省略，不是填 `0`），以及當機可續跑（重啟後
+  `interrupted` → `run_resume`）
 - **版本與發布頻道**：同一個工作流程名稱可以註冊多次——每次註冊都保留成一個新版本（`v1`、`v2`、…），
   既有版本不會被覆蓋。擁有者用 `workflow_publish({name,version,channel})` 把 `release`（穩定）或 `beta`
   （測試）頻道指到某個版本（三個參數都是必填，`version` 是 `workflow_register` 回傳的**字串**如 `'v1'`）；
@@ -367,11 +369,14 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 ```bash
 # Dashboard JSON REST API
 curl -s http://127.0.0.1:8787/api/home           # 首頁工作流程分組 {running,registered,other}
-curl -s http://127.0.0.1:8787/api/runs           # 列出所有 run（含即時狀態）
+curl -s http://127.0.0.1:8787/api/runs           # 列出所有 run（含即時狀態；每筆可能帶 costUSD/unpricedCalls/
+                                                  # tokensTotal/agentCount，該 run 從未呼叫過 agent() 時四者一起省略，不是 0）
 curl -s http://127.0.0.1:8787/api/runs/<runId>   # run 詳情（phase/agent tree）
-curl -s http://127.0.0.1:8787/api/runs/<runId>/dag   # composite 呼叫樹（DAG）
+curl -s http://127.0.0.1:8787/api/runs/<runId>/dag   # composite 呼叫樹（DAG，含 lanes/current）
 curl -s http://127.0.0.1:8787/api/workflows          # 已註冊工作流程目錄
+curl -s http://127.0.0.1:8787/api/workflows/<name>/describe   # phases[].agents：預測 lane 的 agent 標籤，不論 auth 開關一律回傳每個呼叫端；動態 lane 沒有靜態標籤時是 []；引擎無法推導這個版本的預測結構時該欄位整個不存在（不是 []）
 curl -s http://127.0.0.1:8787/api/status             # agentSemaphore 即時狀態
+curl -s http://127.0.0.1:8787/static/dashboard/dashboard.css   # 儀表板自身的靜態資源（JS/CSS/字型），無需 auth
 ```
 
 ```bash
@@ -411,6 +416,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 10. **腳本本文只有一個出口，且對非擁有者遮蔽**：能回傳腳本本文的工具只有 `workflow_source`（需要 `author` 角色）。啟用 auth 後，它對非擁有者回傳 `scriptWithheld:true`、不含腳本本文；擁有者/admin 仍可看到完整腳本。`workflow_describe`／`workflow_list`／`/api/workflows*`／儀表板**在設計上就不含**腳本本文，不論身份。`auth.enabled:false`（單人本機部署的預設）沒有「非擁有者」這個概念——任何人都能透過 `workflow_source` 看到完整腳本。
 11. **SSRF-safe seedRef**：`seedRef:{repoUrl,sha}` 由 `HardenedSeedRefFetcher` 拉取；URL 必須匹配 `seedRefAllowlist`，否則 `SEEDREF_EGRESS_DENIED`；省略 allowlist 則全部 `SEEDREF_DISABLED`（fail-closed）；hardened git subprocess，不轉 shell。
 12. **角色（`principals`）fail-closed**：`rwe.config.json` 的 `principals` 角色字串打錯（不是 `admin`/`author`/`user`）→ 開機直接拒絕啟動，不會靜默退回 `user`；整個鍵省略時，`auth.enabled:true` 下每個已驗證呼叫者一律 `user`，且開機那行 `auth:` log 如實顯示（ADR-028）。`workspace_push({kind:"mcp"})` 的 `http` transport 同理受 `mcpEgressAllowlist` fail-closed：省略/不匹配 → `EGRESS_DENIED`，探測次數為零；`stdio` transport（`config.type:"stdio"`）與 `scope:'global'` 的推送都需要 `admin`，其他角色一律 `FORBIDDEN_ROLE`、不會探測也不會啟動任何子行程。
+13. **agentType 的 system prompt 不進逐字稿**：v27 起，`agent()` 呼叫套用了 `agentType` 的 system prompt 時，`run_agent_log`／`GET /api/runs/:id/agents/:agentId` 回傳的 `harness.prompt` 只保留腳本自帶的提示與使用者附加指令，system prompt 本文在寫入前被切掉（前綴不符時 fail closed 成空字串，絕不原樣回傳）；`harness.systemPrompt:{agentType,bytes}` 只記錄「套用了哪個 agentType、幾個 byte」這個事實，從不記錄內容本身——內容本來就在引擎主機的 `agents/<type>.md`。沒有套用 agentType（或該 agentType 的 system prompt 是空字串）時，這個欄位整個不存在。（v27 之前寫入的紀錄仍是合成後的整段，不會回頭修。）
 
 ## 已知限制
 

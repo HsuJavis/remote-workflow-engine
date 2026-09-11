@@ -16,12 +16,13 @@ import { SubmissionValidator } from './submission-validator.js';
 // called the local one, the catalog's `see:'workflow_authoring_guide'` pointer never reached the
 // wire — the guide a cold model is told to consult was unreachable from the errors that tell it to.
 import { CatalogNotFoundError, codedError, toErrEnvelope, type ErrorCode } from './errors.js';
-import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, TranscriptEvent, HarnessDescriptor, RunListFilter, AuditAction, RunSpec, RunUsage } from './types.js';
+import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, HarnessDescriptor, RunListFilter, AuditAction, RunSpec, RunUsage, AgentLogView } from './types.js';
 import { parseMeta } from './workflow-meta.js';
 import { buildAuthoringGuide } from './authoring-guide.js';
 import { effectiveAgentBounds, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type AgentParamSpec } from './params/contract.js';
 import { projectWorkflowForRead, projectWorkflowDescribe, type WorkflowOwnerView } from './workflow-view.js';
 import { scanAgentCalls } from './scan-agent-calls.js';
+import { predictedLanes } from './dashboard.js';
 import type { Principal } from './authz.js';
 import { pathVerdict } from './path-verdict.js';
 import { auditedWorkspaceRead } from './audited-read.js';
@@ -487,7 +488,19 @@ export class McpFacade {
         ? 'default'
         : [...call.allowedTools].sort();
     }
-    return { runId: '', status: 'completed', result: { ...view, diagramContract: full.diagramContract, toolSurface } };
+    // v27b (DES-197, ARCH-131, TASK-202, ADR-051): `phases[].agents` — predicted per-lane agent
+    // labels, joined by lane ORDINAL against `view.phases` (the author-declared, registered
+    // metadata). Served UNCONDITIONALLY to every caller; no masking predicate. A phase ordinal
+    // with a derived lane gets its labels (`[]` when the lane is dynamic and declares none, never
+    // absent); a phase ordinal with NO derived lane gets no `agents` key at all (never `[]`
+    // standing in for "unavailable" — `describe.phases` is the author's contract and this
+    // projection may not invent a row in it, so lanes beyond `phases.length` are dropped).
+    const lanes = predictedLanes(full.script);
+    const phases = view.phases.map((p, i) => {
+      const lane = lanes.find((l) => l.index === i);
+      return lane ? { ...p, agents: lane.agents } : p;
+    });
+    return { runId: '', status: 'completed', result: { ...view, phases, diagramContract: full.diagramContract, toolSurface } };
   }
 
   /** v24 rename of `workflow_get` (ARCH-091: "the former workflow_get") — owner/admin full,
@@ -661,9 +674,7 @@ export class McpFacade {
     return lifecycle(this.store, a.runId, () => this.runManager.stop(a.runId));
   }
 
-  async runAgentLog(a: { runId: string; agentId?: string; label?: string; limit?: number; offset?: number }, _principal: Principal, crossPrincipalRead: boolean, actor: string | null): Promise<
-    ResultEnvelope<TranscriptEvent[]> & { harness: HarnessDescriptor | null; events: TranscriptEvent[]; hasMore: boolean }
-  > {
+  async runAgentLog(a: { runId: string; agentId?: string; label?: string; limit?: number; offset?: number }, _principal: Principal, crossPrincipalRead: boolean, actor: string | null): Promise<AgentLogView> {
     const stored = await this.store.getRun(a.runId);
     if (!stored) return { runId: a.runId, status: 'failed', error: notFound(a.runId), harness: null, events: [], hasMore: false };
     const view = await this.runManager.status(a.runId).catch(() => stored);
@@ -696,7 +707,10 @@ export class McpFacade {
     const offset = a.offset ?? 0;
     const window = nonHarness.slice(offset, offset + cap);
     const hasMore = offset + cap < nonHarness.length;
-    return { runId: a.runId, status: view.status, harness, events: window, result: window, hasMore };
+    // v27b (DES-192/197, ARCH-131, TASK-202): `record` — the full `AgentRecord` this method already
+    // resolved above (`agent`), added on the success branch only; the not-found/error branches above
+    // return before this point and carry no `record`.
+    return { runId: a.runId, status: view.status, harness, events: window, result: window, hasMore, record: agent };
   }
 
   /** DES-152: filtered/paginated in SQL — `principal` is set by the facade from the caller's own

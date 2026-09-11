@@ -1,0 +1,195 @@
+// src/dashboard/ui/home.js
+// DES-206, ARCH-125, TASK-208, REQ-132 — the Workflows tab: three groups (Running / Registered /
+// Other), a search box, a segment filter with live counts, and the running card's meta line. The
+// pure projections (`matchCards` / `segmentCounts` / `fmtCost`) come from `lib/runlist.js`
+// (DES-204, TASK-207) — this layer only builds/updates DOM and decides nothing a pure function
+// could decide (ARCH-125's own boundary).
+//
+// `render(container, vm, handlers)` follows DES-206's uniform view contract. Because the poll tick
+// calls this again every ~3s, the static chrome (the search input, the segment tabs) is built ONCE
+// per mount — rebuilding it every tick would blow away the input's value/focus mid-keystroke. A
+// per-container state object (keyed by a WeakMap, so a re-mount into a fresh container starts
+// clean) tracks whether the chrome already exists.
+
+import { matchCards, segmentCounts, fmtCost } from '../lib/runlist.js';
+
+const LABELS = {
+  zh: {
+    searchPlaceholder: '搜尋 workflow…',
+    all: '全部',
+    running: '執行中',
+    registered: '已註冊',
+    other: '其他',
+    active: 'ACTIVE',
+    lastRun: 'LAST RUN',
+  },
+  en: {
+    searchPlaceholder: 'Search workflows…',
+    all: 'All',
+    running: 'Running',
+    registered: 'Registered',
+    other: 'Other',
+    active: 'ACTIVE',
+    lastRun: 'LAST RUN',
+  },
+};
+function L(lang, key) {
+  return (LABELS[lang] || LABELS.zh)[key];
+}
+
+// `lib/runlist.js`'s own duration formatter is not exported (it is a private helper of
+// `historyRow`) — this is a small, deliberate duplication rather than a change to TASK-207's file.
+function formatDuration(ms) {
+  if (ms === null || ms === undefined) return '—';
+  const totalSec = Math.max(0, Math.round(ms / 1000));
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}m ${s}s`;
+}
+
+function metaLine(card, lang) {
+  const m = card.metrics;
+  const rateText = m.successRate === null ? '—' : `${Math.round(m.successRate * 100)}%`;
+  const completed = m.successRate === null ? 0 : Math.round(m.successRate * m.terminalCount);
+  const dur = formatDuration(m.avgDurationMs);
+  const cost = fmtCost(m.avgCostUSD, m.unpricedRuns, lang);
+  // WorkflowMetrics carries terminalCount, not a total-runs field — a still-running execution is
+  // counted here from `activeRunId`'s presence, the only other run-count signal on the card.
+  const runs = m.terminalCount + (card.activeRunId ? 1 : 0);
+  return lang === 'zh'
+    ? `成功率 ${rateText} (${completed}/${m.terminalCount}) · 平均耗時 ${dur} · 平均費用 ${cost} · ${runs} 次執行`
+    : `success ${rateText} (${completed}/${m.terminalCount}) · avg ${dur} · avg cost ${cost} · ${runs} runs`;
+}
+
+function buildCard(card, lang, handlers) {
+  const el = document.createElement('div');
+  el.className = 'card' + (card.group === 'running' ? ' running' : '') + (card.group === 'other' ? ' other' : '');
+  el.dataset.workflow = card.name;
+
+  const kicker = document.createElement('div');
+  kicker.className = 'kicker';
+  // `WorkflowCard` carries no last-run timestamp (only the id) — a fabricated date would be a
+  // confident-wrong statement of the same class `fmtCost` exists to prevent, so this renders the
+  // id rather than inventing "M/D HH:MM".
+  if (card.activeRunId) {
+    kicker.textContent = `${L(lang, 'active')} · ${card.activeRunId.slice(0, 8)}`;
+  } else if (card.latestRunId) {
+    kicker.textContent = `${L(lang, 'lastRun')} · ${card.latestRunId.slice(0, 8)}`;
+  }
+  el.appendChild(kicker);
+
+  const title = document.createElement('div');
+  title.className = 't';
+  title.textContent = card.name;
+  el.appendChild(title);
+
+  if (card.description) {
+    const desc = document.createElement('div');
+    desc.className = 's';
+    desc.textContent = card.description;
+    el.appendChild(desc);
+  }
+
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  meta.textContent = metaLine(card, lang);
+  el.appendChild(meta);
+
+  el.addEventListener('click', () => {
+    if (handlers.onSelect) handlers.onSelect(card);
+  });
+  return el;
+}
+
+function groupLabel(lang, group) {
+  return L(lang, group);
+}
+
+function renderGrid(container, state, handlers) {
+  const grid = container.querySelector('.card-grid');
+  if (!grid) return;
+  const bySegment = state.segment === 'all' ? state.cards : state.cards.filter((c) => c.group === state.segment);
+  const filtered = matchCards(bySegment, state.query);
+  grid.replaceChildren();
+  const groups = state.segment === 'all' ? ['running', 'registered', 'other'] : [state.segment];
+  for (const g of groups) {
+    const groupCards = filtered.filter((c) => c.group === g);
+    if (groupCards.length === 0) continue;
+    const section = document.createElement('section');
+    section.className = 'card-section' + (g === 'other' ? ' other' : '');
+    const h = document.createElement('h3');
+    h.textContent = groupLabel(state.lang, g);
+    section.appendChild(h);
+    const cardsEl = document.createElement('div');
+    cardsEl.className = 'cards';
+    for (const c of groupCards) cardsEl.appendChild(buildCard(c, state.lang, handlers));
+    section.appendChild(cardsEl);
+    grid.appendChild(section);
+  }
+}
+
+function updateCounts(container, state) {
+  const counts = segmentCounts(state.cards);
+  container.querySelectorAll('.segment-tabs button').forEach((btn) => {
+    const seg = btn.dataset.segment;
+    btn.textContent = `${L(state.lang, seg)} (${counts[seg]})`;
+    btn.classList.toggle('active', seg === state.segment);
+  });
+}
+
+function buildChrome(container, state, handlers) {
+  container.replaceChildren();
+
+  const toolbar = document.createElement('div');
+  toolbar.className = 'home-toolbar';
+
+  const search = document.createElement('input');
+  search.type = 'search';
+  search.placeholder = L(state.lang, 'searchPlaceholder');
+  search.className = 'home-search';
+  search.addEventListener('input', () => {
+    state.query = search.value;
+    renderGrid(container, state, handlers);
+  });
+  toolbar.appendChild(search);
+
+  const tabs = document.createElement('div');
+  tabs.className = 'segment-tabs';
+  for (const seg of ['all', 'running', 'registered']) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.dataset.segment = seg;
+    btn.addEventListener('click', () => {
+      state.segment = seg;
+      renderGrid(container, state, handlers);
+      updateCounts(container, state);
+    });
+    tabs.appendChild(btn);
+  }
+  toolbar.appendChild(tabs);
+  container.appendChild(toolbar);
+
+  const grid = document.createElement('div');
+  grid.className = 'card-grid';
+  container.appendChild(grid);
+}
+
+const stateByContainer = new WeakMap();
+
+/** DES-206's uniform view contract. `vm = { cards: WorkflowCard[], lang }` — `cards` is the
+ *  flattened `{running, registered, other}` HomeView (each card already carries its own `group`).
+ *  `handlers.onSelect(card)` fires on a card click (workflow-detail navigation is the caller's
+ *  concern, not this layer's). */
+export function render(container, vm, handlers) {
+  handlers = handlers || {};
+  let state = stateByContainer.get(container);
+  if (!state) {
+    state = { query: '', segment: 'all', lang: vm.lang || 'zh', cards: [] };
+    stateByContainer.set(container, state);
+    buildChrome(container, state, handlers);
+  }
+  state.cards = vm.cards || [];
+  state.lang = vm.lang || state.lang;
+  renderGrid(container, state, handlers);
+  updateCounts(container, state);
+}

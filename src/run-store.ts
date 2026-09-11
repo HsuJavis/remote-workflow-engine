@@ -224,6 +224,11 @@ export interface RunStore {
   appendAudit(ev: AuditEvent): void;
   /** v24 (DES-151): newest-first, capped at `limit` (default 200). */
   auditFor(runId: string, limit?: number): AuditEvent[];
+  /** v27 (DES-193, ARCH-128, TASK-198, REQ-141): merges a `{usage}`-only row into a run's
+   *  persisted snapshot when it has none — a no-op unless the run is TERMINAL AND the existing
+   *  snapshot (if any) carries no `usage` key already (idempotent: a second call never
+   *  overwrites). Re-checked INSIDE the store, not only by the caller. */
+  backfillUsage(runId: string, usage: RunUsage): Promise<void>;
 }
 
 /** v8 Slice 2c: the persisted DAG detail a getRun overlays after a restart. */
@@ -361,6 +366,18 @@ export class InMemoryRunStore implements RunStore {
     if (run) run.snapshot = snapshot;
   }
 
+  /** v27 (DES-193, ARCH-128, TASK-198): no-op unless TERMINAL and no `usage` persisted yet;
+   *  merges into an existing snapshot, or writes a `{usage}`-only one — mirroring
+   *  SqliteRunStore's JSON row, which literally omits the `agents` key in that case. */
+  async backfillUsage(runId: string, usage: RunUsage): Promise<void> {
+    const run = this._runs.get(runId);
+    if (!run) return;
+    const TERMINAL = new Set<RunStatus>(['completed', 'failed', 'stopped']);
+    if (!TERMINAL.has(run.status)) return;
+    if (run.snapshot?.usage !== undefined) return;
+    run.snapshot = run.snapshot ? { ...run.snapshot, usage } : ({ usage } as RunDagSnapshot);
+  }
+
   async recordLegacySubstitution(runId: string, sub: { pinned: string; resolved: string }): Promise<void> {
     const run = this._runs.get(runId);
     if (run) run.legacySubstitution = sub;
@@ -389,7 +406,7 @@ export class InMemoryRunStore implements RunStore {
   private _toSummary(r: StoredRun): RunSummary {
     const TERMINAL = new Set<RunStatus>(['completed', 'failed', 'stopped']);
     const terminalTransition = r.transitions.find((t) => TERMINAL.has(t.to));
-    return {
+    const summary: RunSummary = {
       runId: r.runId,
       name: r.spec.name,
       status: r.status,
@@ -398,6 +415,18 @@ export class InMemoryRunStore implements RunStore {
       startedBy: r.spec.startedBy ?? { type: 'unknown' },
       ...(terminalTransition ? { terminalAt: terminalTransition.ts } : {}),
     };
+    // v27 (DES-193, ARCH-128, TASK-198): the SAME projection/presence rule as SqliteRunStore's
+    // `_rowToSummary` — keyed on usage-present AND non-empty agents, never on the arithmetic (a
+    // run with zero agent() calls must not surface costUSD:0).
+    const usage = r.snapshot?.usage;
+    const agents = r.snapshot?.agents;
+    if (usage !== undefined && (agents?.length ?? 1) > 0) {
+      summary.costUSD = usage.costUSD;
+      summary.unpricedCalls = usage.unpricedCalls;
+      summary.tokensTotal = usage.tokens.input + usage.tokens.output + usage.tokens.cacheRead + usage.tokens.cacheWrite;
+      if (agents !== undefined) summary.agentCount = agents.length;
+    }
+    return summary;
   }
 
   async getJournal(runId: string): Promise<JournalEntry[]> {

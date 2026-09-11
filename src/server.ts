@@ -52,8 +52,9 @@ import { DEFAULT_CEILINGS, type Ceilings, type Effort } from './params/contract.
 
 // REQ-066 (v11): engine version from package.json + best-effort git describe, replacing the hardcoded '1.0.0'.
 const ENGINE_VERSION = resolveEngineVersion();
-import { buildDashboardModel, layoutGraph, buildHomeView, computeWorkflowMetrics, type ExpectedGraph } from './dashboard.js';
+import { buildDashboardModel, layoutGraph, deriveLanes, buildHomeView, computeWorkflowMetrics, type ExpectedGraph } from './dashboard.js';
 import { DASHBOARD_HTML, buildDashboardHtml } from './dashboard-page.js';
+import { lookupStaticAsset, readStaticAsset } from './static-assets.js';
 import type { RunStore } from './run-store.js';
 // v24 (DES-140/162, ARCH-089, TASK-147): the new tool surface — one deps object, schema-before-
 // authz dispatcher, `tools/list` as a pure projection, and the ungated-route identity strip.
@@ -328,10 +329,6 @@ async function handleDashboardRequest(
   // v26 (H-4 send-back repair, ARCH-116): `ModelBook` (TTL'd, single-flight), never a raw catalog
   // builder — see the `/api/models` route below for why.
   modelBook: ModelBook,
-  // v22 (DES-115, REQ-100, TASK-111): several dashboard routes are script-derived and have no
-  // bearer/identity plumbing at all (a browser GET carries none) — so under auth those routes are
-  // unconditionally the non-owner/masked row; auth off keeps the pre-v22 surface.
-  authEnabled = false,
   // v24 (DES-141): the same {enabled, principalsCount, defaultRole} shape as the boot line, computed
   // once at boot — GET /api/system's `auth` key (ARCH-090).
   authAnnounce: { enabled: boolean; principalsCount: number; defaultRole: 'user' } = { enabled: false, principalsCount: 0, defaultRole: 'user' },
@@ -348,7 +345,8 @@ async function handleDashboardRequest(
   // v23 (DES-125/132, REQ-101, ARCH-083, TASK-120): replaces the deleted /skeleton route. This
   // route carries no bearer/identity at all (a browser GET carries none), so — unlike /skeleton,
   // which branched on `authEnabled` to choose WHAT to disclose — `workflow_describe` makes no
-  // masking decision on `ctx` at all: every principal gets the same shape (DES-125).
+  // masking decision on `ctx` at all: every principal gets the same shape (DES-125). v27b (DES-198,
+  // ADR-051): the DAG route below now shares this same no-masking posture.
   const describeMatch = /^\/api\/workflows\/([^/]+)\/describe$/.exec(path);
   // v25 (REQ-119, DES-166, TASK-166): the RENDERED diagram, as an image. Anonymous like /describe
   // beside it — which is exactly why `diagrams` is cache-first, single-flight and capped.
@@ -360,7 +358,8 @@ async function handleDashboardRequest(
     if (path === '/api/home') {
       const [catalogEntries, runs] = await Promise.all([
         runManager.catalog.list(),
-        store.listRuns(),
+        // v27 (DES-194, ARCH-127, TASK-199): the usage-projected accessor — same one `/api/runs` reads.
+        runManager.listSummaries(),
       ]);
       const metrics = computeWorkflowMetrics(runs);
       sendJson(res, 200, buildHomeView(catalogEntries, runs, metrics));
@@ -384,7 +383,9 @@ async function handleDashboardRequest(
       return;
     }
     if (path === '/api/runs') {
-      const runs = await store.listRuns();
+      // v27 (DES-194, ARCH-127, TASK-199): the usage-projected accessor — same precedence chain
+      // (live -> snapshot -> one-time backfilled fold -> absent) `/api/runs/:id`'s detail route folds.
+      const runs = await runManager.listSummaries();
       sendJson(res, 200, buildDashboardModel(runs).runs);
       return;
     }
@@ -494,59 +495,87 @@ async function handleDashboardRequest(
       // catalog), so `spec?.script` is empty for every named run today. Mirrors run-manager.ts's own
       // legacy-cohort fallback (`_requireLive`): try the pin, else `release`, else an empty skeleton
       // (never crash the dashboard route over a stale/unresolvable pin).
+      // v27b (DES-198, ADR-051, TASK-203): one warning per resolution/derivation fault, pushed onto
+      // the payload's `warnings` beside `layoutGraph`'s own prose ones. `PREDICTED_OVERLAY_UNAVAILABLE`
+      // is the one token both fault arms below spell (`PREDICTED_FROM_FALLBACK_VERSION` stays a
+      // one-off literal — it has only one producer).
+      const PREDICTED_OVERLAY_UNAVAILABLE = 'PREDICTED_OVERLAY_UNAVAILABLE';
+      const routeWarnings: string[] = [];
       let skeletonScript = spec?.script ?? '';
       if (spec?.name) {
         try {
-          skeletonScript = (await runManager.catalog.resolve(spec.name, { version: view.scriptVersion })).script;
+          // arm (i): the run's own pin — or, if resume already recorded a legacy substitution, the
+          // version it actually resolved to that time (never the stale pin, `types.ts:351`).
+          skeletonScript = (await runManager.catalog.resolve(spec.name, { version: view.legacySubstitution?.resolved ?? view.scriptVersion })).script;
         } catch {
           try {
-            skeletonScript = (await runManager.catalog.resolve(spec.name, {})).script;
+            // arm (ii): the pin itself is gone (e.g. a deregister/re-register restarted the
+            // lineage) — fall back to the name's current release and say so; FALLBACK is a STATE,
+            // never logged (its durable record is `legacySubstitution`, not this line).
+            const fallback = await runManager.catalog.resolve(spec.name, {});
+            skeletonScript = fallback.script;
+            routeWarnings.push(`PREDICTED_FROM_FALLBACK_VERSION: pinned=${view.scriptVersion} resolved=${fallback.version}`);
           } catch {
+            // arm (iii): no version of this name resolves at all — the only cell of the two-arm
+            // catch that pushes AND logs (this is the single most likely silent failure in this
+            // delta: the push MUST sit inside this catch, never downstream of it).
             skeletonScript = '';
+            routeWarnings.push(`${PREDICTED_OVERLAY_UNAVAILABLE}: reason=catalog-resolve-failed`);
+            console.warn(JSON.stringify({ event: 'dashboard_api_degraded', route: 'dag', reason: 'catalog-resolve-failed', runId, name: spec.name }));
           }
         }
       }
-      // v22 send-back H2 (DES-114, ARCH-073/075, ADR-012, REQ-100): this route carries no bearer/
-      // identity plumbing at all, so under auth it must always serve the non-owner projection —
-      // same rule the sibling /api/workflows/:name/skeleton route already applies. The
-      // script-derived skeleton overlay is withheld; live agent nodes still render (layoutGraph
-      // below still receives view.agents).
       // v26 (DES-176, ARCH-114/113, TASK-187): the predicted overlay is now an `ExpectedGraph`
       // (ARCH-113/TASK-185's `deriveExpectedGraph`), not a flat `SkeletonNode[]`. A script that
       // fails to parse into a predicted graph degrades to an EMPTY overlay: live agent nodes still
-      // render, only the predicted/inert-skeleton cells are withheld — the same graceful-
-      // degradation contract auth-masking already relies on, never a 500 over a dashboard read.
+      // render, only the predicted/inert-skeleton cells are withheld, never a 500 over a dashboard
+      // read. v27b (DES-198, ADR-051): served on every deployment — this route no longer branches
+      // on auth (the sibling describe route beside it already made the same call, DES-125).
       let expectedGraph: ExpectedGraph = { lanes: [], slots: [], edges: [] };
-      if (!authEnabled) {
-        try {
-          const nodes = parseWorkflowSkeleton(skeletonScript);
-          const scan = scanAgentCalls(skeletonScript);
-          const derived = deriveExpectedGraph(nodes, scan);
-          // v26 integration (DES-176 boundary): a REFUSAL here does not mean "no overlay" — at
-          // layout it means "this is a v1-contract script" (typically: it has no `phase()` at
-          // all, which rule L2 refuses at REGISTRATION but which is perfectly legal to run and
-          // to draw). v26 (M-3 send-back repair, INV-V26-3): re-derives with the SAME function's
-          // `contract:'v1'` instead of the retired `v1FallbackGraph` — one derivation, so a v1
-          // script's `parallel([a,b,c])` still lays out as a `parallel` slot (`call.group` honoured),
-          // not three chained `single` ones. REQ-124 requires those runs to render as before.
-          if (derived.ok) {
-            expectedGraph = derived.graph;
+      try {
+        const nodes = parseWorkflowSkeleton(skeletonScript);
+        const scan = scanAgentCalls(skeletonScript);
+        const derived = deriveExpectedGraph(nodes, scan);
+        // v26 integration (DES-176 boundary): a REFUSAL here does not mean "no overlay" — at
+        // layout it means "this is a v1-contract script" (typically: it has no `phase()` at
+        // all, which rule L2 refuses at REGISTRATION but which is perfectly legal to run and
+        // to draw). v26 (M-3 send-back repair, INV-V26-3): re-derives with the SAME function's
+        // `contract:'v1'` instead of the retired `v1FallbackGraph` — one derivation, so a v1
+        // script's `parallel([a,b,c])` still lays out as a `parallel` slot (`call.group` honoured),
+        // not three chained `single` ones. REQ-124 requires those runs to render as before.
+        if (derived.ok) {
+          expectedGraph = derived.graph;
+        } else {
+          const v1 = deriveExpectedGraph(nodes, scan, 'v1');
+          if (v1.ok) {
+            // `contract:'v1'` never refuses on L2 (its only refusal rule today) — this is the
+            // legitimate v1-contract cohort (REQ-124), not a fault: emits no warning.
+            expectedGraph = v1.graph;
           } else {
-            const v1 = deriveExpectedGraph(nodes, scan, 'v1');
-            // `contract:'v1'` never refuses on L2 (its only refusal rule today) — this stays
-            // defensive rather than assuming that invariant with a cast.
-            expectedGraph = v1.ok ? v1.graph : { lanes: [], slots: [], edges: [] };
+            expectedGraph = { lanes: [], slots: [], edges: [] };
+            routeWarnings.push(`${PREDICTED_OVERLAY_UNAVAILABLE}: reason=derivation-failed`);
+            console.warn(JSON.stringify({ event: 'dashboard_api_degraded', route: 'dag', reason: 'derivation-failed', runId, name: spec?.name }));
           }
-        } catch {
-          // A parse/derivation fault degrades to an empty predicted overlay rather than a 500.
         }
+      } catch {
+        // arm (iv): a parse/derivation fault degrades to an empty predicted overlay rather than a
+        // 500 — defensive only (registration ran the same derivation, INV-V26-3), so no producer
+        // with a registered script reaches this catch today.
+        routeWarnings.push(`${PREDICTED_OVERLAY_UNAVAILABLE}: reason=derivation-failed`);
+        console.warn(JSON.stringify({ event: 'dashboard_api_degraded', route: 'dag', reason: 'derivation-failed', runId, name: spec?.name }));
       }
       const layout = layoutGraph(expectedGraph, view.agents, view.phases, { startedByType: view.startedBy?.type });
+      // v27b (DES-198/DES-196, ADR-051, TASK-203, REQ-134): `lanes`/`current` — the observed phases
+      // extended UNCONDITIONALLY by the predicted overlay's unreached tail.
+      const { lanes, current } = deriveLanes(view.phases, expectedGraph, { status: view.status });
       // DES-064: flat GraphPayload — cells/edges/warnings/truncated at top level (not nested under 'layout').
       const payload: Record<string, unknown> = {
         kind: 'run',
         ...layout,
+        warnings: [...layout.warnings, ...routeWarnings],
         startedBy: view.startedBy ?? { type: 'unknown' },
+        lanes,
+        current,
       };
       if (view.terminalAt) payload['terminalAt'] = view.terminalAt;
       sendJson(res, 200, payload);
@@ -581,6 +610,9 @@ async function handleDashboardRequest(
     sendJson(res, 404, { error: 'Not found' });
   } catch (err) {
     // DES-018: never a 500 — degrade to a partial/last-known view with an error badge.
+    // v27b (DES-198, TASK-203): 'internal' is the one member of the closed reason set that has no
+    // warning by construction (an unexpected fault in ANY dashboard route, not just /dag).
+    console.warn(JSON.stringify({ event: 'dashboard_api_degraded', route: path, reason: 'internal', detail: (err as Error).message }));
     sendJson(res, 200, buildDashboardModel([], undefined, undefined, (err as Error).message));
   }
 }
@@ -1060,12 +1092,15 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // Tunnel/forwarded headers → NEVER exempt (D-AUTH-3 cloudflared-on-loopback hole).
     const dbindExempt = isLoopbackPeer(req.socket?.remoteAddress, req.headers) && !isLoopback(bind);
     // v23 Gate 6.5 (round 4): the ONE way this handler dispatches a dashboard/API request. A1 gave
-    // `/api/workflows/:name/describe` a second, authenticated entry, and the nine POSITIONAL
-    // arguments — including the `!!authCfg` masking flag — were typed out twice; a drift between
-    // the two copies would mask on one path and not the other, with no type error. Same
-    // one-declaration rule as `DEFAULT_CEILINGS`/`UNBOUND_ENTRY_LABEL`.
+    // `/api/workflows/:name/describe` a second, authenticated entry, and the POSITIONAL argument
+    // list was typed out twice; a drift between the two copies would diverge on one path and not
+    // the other, with no type error. Same one-declaration rule as
+    // `DEFAULT_CEILINGS`/`UNBOUND_ENTRY_LABEL`.
     const dispatchDashboard = (): void => {
-      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, modelBook, !!authCfg, authAnnounce, diagrams).catch(() => {
+      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, modelBook, authAnnounce, diagrams).catch((err) => {
+        // v27b (DES-198, TASK-203): 'internal' — the closed reason set's one member with no warning
+        // by construction (a promise rejection `handleDashboardRequest`'s own try/catch didn't catch).
+        console.warn(JSON.stringify({ event: 'dashboard_api_degraded', route: (req.url ?? '').split('?')[0], reason: 'internal', detail: (err as Error)?.message }));
         sendJson(res, 200, { degraded: 'internal dashboard error' });
       });
     };
@@ -1244,6 +1279,42 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       // members (blob/manifest/mcp) are unchanged, and workflow_source — the privileged view, the one
       // carrying script text — keeps its own protection.
     }
+    // v27b (DES-198/DES-199, ARCH-130/123, TASK-203/204, REQ-131/140): the dashboard's own static
+    // assets (JS/CSS/fonts) — registered BEFORE the `/dashboard` SPA catch-all below. Route ORDER
+    // is a correctness condition, not a style choice: an asset registered after the catch-all would
+    // get the HTML page back with a 200 and the browser would silently render nothing. No auth (the
+    // same posture as the page it serves). `lookupStaticAsset` is a closed-map `Map.get` — the URL
+    // suffix is a KEY, not a path, so no traversal string ever reaches the filesystem (DES-199).
+    if (req.url?.startsWith('/static/dashboard/')) {
+      if (req.method !== 'GET') {
+        sendJson(res, 405, { error: 'Method not allowed' });
+        return;
+      }
+      const key = req.url.slice('/static/dashboard/'.length).split('?')[0]!;
+      const entry = lookupStaticAsset(key);
+      // Read BEFORE writing the head: a listed key can still be missing on disk (DES-199's own
+      // boundary — "a listed key whose file is deleted... 404s thereafter") and a `writeHead(200)`
+      // already sent cannot be taken back for the 404 that follows.
+      let body: Buffer | null = null;
+      if (entry) {
+        try {
+          body = readStaticAsset(entry);
+        } catch {
+          body = null;
+        }
+      }
+      if (!entry || !body) {
+        sendJson(res, 404, { error: 'Not found' }); // never echoes the requested key
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': entry.type,
+        'Cache-Control': entry.cache,
+        'X-Content-Type-Options': 'nosniff',
+      });
+      res.end(body);
+      return;
+    }
     // D-V2V-2 (REQ-008 route-back): a real browser-renderable HTML/JS dashboard page, on the SAME
     // port as /mcp and /api/runs* (one data model, two transports — now genuinely two). SPA-style
     // routing: /dashboard/<runId> serves this exact same static page; its own client JS reads the
@@ -1252,7 +1323,14 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       // DES-061 (TASK-064): lazily re-read the update result so the dashboard shows fresh state
       // even when the engine was NOT restarted after a failed build (the "failed" lazy-read case).
       ingestUpdateResult();
-      res.writeHead(200, { 'Content-Type': 'text/html' });
+      // v27b (DES-198, ARCH-130, TASK-203, REQ-131): the SPA's own CSP — no inline executable JS
+      // remains on this page (the one inline `<script>` left is `type="application/json"`, never
+      // prepared for execution, so it needs no nonce); `blob:` in img-src is load-bearing for the
+      // author-diagram `createObjectURL` render (REQ-119).
+      res.writeHead(200, {
+        'Content-Type': 'text/html',
+        'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' blob:; connect-src 'self'",
+      });
       res.end(buildDashboardHtml({ lastUpdate: lastUpdateOutcome, interruptedRuns: interruptedRuns || undefined }));
       return;
     }

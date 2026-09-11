@@ -17,59 +17,29 @@
 import { describe, it, expect } from 'vitest';
 import { DASHBOARD_HTML } from '../../src/dashboard-page.js';
 
-describe('dashboard workflow-detail view — diagram surface (UT-116, DES-133)', () => {
-  it('fetches /api/workflows/:name/describe (NOT /skeleton) for the workflow-detail view', () => {
-    expect(DASHBOARD_HTML).toContain("/api/workflows/'+encodeURIComponent(name)+'/describe");
-    expect(DASHBOARD_HTML).not.toContain("/api/workflows/'+encodeURIComponent(name)+'/skeleton");
-  });
+// v27 disposition (DES-208, TASK-213): every assertion in this describe block was a grep over the
+// OLD inline JS SOURCE TEXT embedded in DASHBOARD_HTML — the describe/mermaid fetch, the
+// `.textContent = s.mermaid` write, and the `mermaidNote` reference. ARCH-122 empties the shell of
+// that text entirely; the workflow-detail view (fetch, textContent write, and the
+// `predictedLayoutUnavailable` note that supersedes the old `mermaidNote` concept) now lives in
+// `ui/workflow.js` (TASK-209, DES-206), re-proven at the real-Chromium tier by val-199. The
+// `/describe` fetch-literal (RETIRED here as a direct grep) MOVES into the disposition anchor below
+// as a corpus-wide count, since a bare grep over DASHBOARD_HTML would now find nothing to count.
 
-  it('writes describe.mermaid into a <pre> via textContent — never innerHTML, for this specific field (v24, DES-156)', () => {
-    // A `<pre>` element written via `.textContent = s.mermaid` (or an equivalent field read), never
-    // `.innerHTML =` anywhere the mermaid source could reach — the codepoint gate is the upstream
-    // layer, textContent is the renderer's own belt-and-suspenders (DES-133/DES-156).
-    expect(DASHBOARD_HTML).toMatch(/\.textContent\s*=\s*s\.mermaid/);
-  });
+// (the "not /skeleton" negative retires too — a grep with nothing left to scan is vacuous, and
+// TASK-196's no-skeleton-surface guard already walks the real client corpus for this broadly.)
 
-  it('renders mermaidNote when there is no mermaid string (v24, DES-156)', () => {
-    expect(DASHBOARD_HTML).toContain('mermaidNote');
-  });
-});
+// v27 disposition (DES-208): RETIRES — `renderMiniPreviewAsync`'s absence and `renderHomeGroup`'s
+// presence were both greps over inline JS source text that no longer exists in the shell at all;
+// checking for either is vacuous once ARCH-122 empties DASHBOARD_HTML. The real invariant (no
+// per-card mini-preview fetch, one card-click-through fetch only) is owned by `ui/home.js`
+// (TASK-208) and re-proven by val-198's real Chromium home view.
 
-describe('dashboard home-card mini-preview — honest absence, no fallback drawing (UT-116, DES-133, owner decision A1)', () => {
-  // RE-POINTED at v23 Gate 6.5+7 round 4, per 02-architecture.md's A4 amendment (ARCH-084 dashboard
-  // row) and the Gate-2-re-run handoff line "A4's two deleted lines + UT-116 re-point": "removed"
-  // means `renderMiniPreviewAsync` and its call site are DELETED, not re-pointed at a different
-  // endpoint. The old oracle asserted the function still existed and fetched /describe — which is
-  // the very cost A4 removes (one request per card per 3s tick, response discarded). The oracle is
-  // now ABSENCE, and it is two-sided: the home-card renderer must still exist, so a whole-file
-  // truncation cannot pass this.
-  it('has no home-card mini-preview at all — no renderMiniPreviewAsync, no per-card /describe fetch', () => {
-    expect(DASHBOARD_HTML).not.toContain('renderMiniPreviewAsync');
-    expect(DASHBOARD_HTML).toContain('function renderHomeGroup(');
-    // The ONLY surviving /describe fetch is the workflow-detail view's (case 1 above), reached from a
-    // card click, never from the card render itself.
-    const fetches = DASHBOARD_HTML.split("/api/workflows/'+encodeURIComponent(name)+'/describe").length - 1;
-    expect(fetches).toBe(1);
-  });
-});
-
-// UT-158 (DES-156, v24 [T3]): the dashboard renders describe.mermaid into <pre> via textContent;
-// the diagramStatus/diagramNote branches this file's earlier cases used to pin (now rewritten
-// above, in the same task) and per-card describe fetches are gone; no client-side Mermaid library.
-describe('v24: dashboard renders mermaid, not diagramStatus (UT-158, DES-156)', () => {
-  it('the page source references describe.mermaid rendered via textContent', () => {
-    expect(DASHBOARD_HTML).toMatch(/\.mermaid\b/);
-  });
-
-  it('the page source no longer branches on diagramStatus/diagramNote (retired v23 machinery)', () => {
-    expect(DASHBOARD_HTML).not.toMatch(/diagramStatus/);
-    expect(DASHBOARD_HTML).not.toMatch(/diagramNote/);
-  });
-
-  it('no client-side Mermaid rendering library is referenced (CDN script or import)', () => {
-    expect(DASHBOARD_HTML.toLowerCase()).not.toMatch(/mermaid\.min\.js|cdn.*mermaid/);
-  });
-});
+// UT-158 (DES-156, v24 [T3]) disposition (DES-208): the `.mermaid` reference RETIRES with the same
+// reasoning as the block above (real coverage: val-199). The two negative guards (no
+// diagramStatus/diagramNote, no CDN Mermaid) are exactly DES-208's "dangerous green" class — a
+// negative grep with nothing left to scan passes trivially — so they MOVE to the corpus-wide check
+// in the disposition anchor below rather than being deleted outright.
 
 // UT-169 (v25, REQ-119, DES-166, TASK-166): the dashboard shows a RENDERED PICTURE, and the way it
 // loads that picture is itself the security property.
@@ -83,78 +53,64 @@ describe('v24: dashboard renders mermaid, not diagramStatus (UT-158, DES-156)', 
 // Same mock policy as the cases above (DES-119): `dashboard-page.ts`'s browser logic lives inside an
 // embedded `<script>` STRING with no jsdom harness in this repo, so these are source-level
 // assertions over the served page. The behavioural proof is VAL-169 (a real engine, a real render).
+// v27 disposition (DES-208): the fetch-literal and "no Mermaid library" negatives MOVE below (the
+// same class as UT-158's). `<img>`/never-`<object>`/never-`<embed>` is a markup fact and STAYS.
 describe('v25: the dashboard loads the rendered diagram as an image (UT-169, REQ-119, DES-166)', () => {
-  it('fetches the server-rendered /diagram.svg for the resolved version', () => {
-    expect(DASHBOARD_HTML).toContain('/diagram.svg');
-    expect(DASHBOARD_HTML).toMatch(/version=/);
-  });
-
   it('renders it in an <img> — never <object>/<embed>, which execute script inside an SVG', () => {
     expect(DASHBOARD_HTML).toContain('id="diagram-img"');
     expect(DASHBOARD_HTML).not.toContain('<object');
     expect(DASHBOARD_HTML).not.toContain('<embed');
   });
-
-  it('keeps a client-side Mermaid library out — UT-161\'s guard, restated at the display site', () => {
-    expect(DASHBOARD_HTML).not.toMatch(/from ['"]mermaid['"]/);
-    expect(DASHBOARD_HTML).not.toMatch(/cdn.*mermaid/i);
-  });
-
-  it('never writes the fetched diagram through innerHTML', () => {
-    const fn = DASHBOARD_HTML.slice(DASHBOARD_HTML.indexOf('async function renderDiagram('));
-    const body = fn.slice(0, fn.indexOf('\n}'));
-    expect(body).not.toContain('innerHTML');
-    expect(body).toContain('createObjectURL');
-    // A blob URL held across the 3s tick is a leak unless the previous one is released.
-    expect(body).toContain('revokeObjectURL');
-  });
-
-  it('fetches ONCE per (name, version), not once per 3s poll tick', () => {
-    // render() re-enters renderDescribe on every tick; without a memo each viewer would pull a
-    // ~60KB SVG every three seconds forever.
-    expect(DASHBOARD_HTML).toContain('diagramKey');
-  });
-
-  it('falls back to the source <pre> with the reason when the render is unavailable — never a blank pane', () => {
-    const fn = DASHBOARD_HTML.slice(DASHBOARD_HTML.indexOf('async function renderDiagram('));
-    const body = fn.slice(0, fn.indexOf('\n}'));
-    // The pre-v25 display is the fallback, not deleted: `pre.textContent = s.mermaid` (asserted
-    // above) still runs, and the failure branch is what makes it visible.
-    expect(body).toMatch(/pre\.style\.display\s*=\s*'block'/);
-    expect(body).toContain('reason');
-  });
 });
 
-// UT-169 (v25, REQ-119, DES-166): `#detail` is ONE pane shared by the workflow view and the run
-// view. The v24 `<pre>` was never hidden when the pane switched to a run — a latent defect that a
-// block of text made easy to miss and a 60KB picture would not.
-describe('v25: the diagram does not survive into the run view (UT-169, REQ-119)', () => {
-  it('loadDag clears the diagram surface before drawing a run', () => {
-    const fn = DASHBOARD_HTML.slice(DASHBOARD_HTML.indexOf('async function loadDag('));
-    const body = fn.slice(0, fn.indexOf('\n}'));
-    expect(body).toContain('hideDiagram()');
-    // and hideDiagram really clears all three surfaces + the memo, so the next workflow view refetches
-    const hide = DASHBOARD_HTML.slice(DASHBOARD_HTML.indexOf('function hideDiagram('));
-    const hideBody = hide.slice(0, hide.indexOf('\n}'));
-    expect(hideBody).toContain('diagramKey=null');
-    expect(hideBody).toContain('revokeObjectURL');
-    expect(hideBody).toContain("getElementById('diagram').style.display='none'");
-  });
-});
+// v27 disposition (DES-208): RETIRES — "never writes through innerHTML" (the function-body-slice
+// technique), "fetches once per (name,version)" (the `diagramKey` memo) and "falls back to the
+// source <pre> with a reason" were all greps over inline JS that no longer exists as text anywhere
+// in DASHBOARD_HTML. `createObjectURL`/`revokeObjectURL` already re-point under UT-252 below (DES-
+// 208 names this pair + "the diagram memo" explicitly); the broader "no innerHTML anywhere in the
+// client corpus" invariant (DES-206's D5) MOVES into the same anchor. The once-per-key fetch and
+// the unavailable-render fallback are re-proven behaviourally by `ui/workflow.js` (TASK-209) —
+// val-199's own dod does not name a Chromium case for the render-failure fallback path specifically,
+// which is flagged to the orchestrator as a possible coverage gap (see needs_clarification).
 
-// v27 (UT-252, DES-208, TASK-213, REQ-129/119): the `createObjectURL`/`revokeObjectURL` diagram
-// pair MOVES into `ui/workflow.js` under this SAME UT id, per DES-208's "MOVES" disposition — the
-// negative pin above (this file's OTHER describe blocks) stays pointed at `DASHBOARD_HTML` only
-// until the shell actually empties (ARCH-122); this positive anchor is what proves the migration
-// landed rather than the corpus going quietly empty (adjudication (v23) #4's vacuous-survivor class).
+// v27 disposition (DES-208): RETIRES — `loadDag`/`hideDiagram`'s text-slice checks are moot once
+// there is no inline JS to slice. Architecturally the bug class (a stale diagram surviving into the
+// run view) cannot recur under DES-206: `app.js` fully tears down and rebuilds the view container on
+// every route change, so there is no "previous view's leftover DOM" for a run view to inherit — a
+// stronger guarantee than the old per-call `hideDiagram()` cleanup it replaces.
+
+// v27 (UT-252, DES-208, TASK-213, REQ-129/119): the disposition anchor for this file — one positive
+// beside the negatives DES-208 requires moved here (adjudication (v23) #4's vacuous-survivor class):
+// `createObjectURL`/`revokeObjectURL` + "the diagram memo" (TASK-209/`ui/workflow.js`), the
+// `/diagram.svg?version=` fetch and the `/describe` fetch-once-per-corpus count (TASK-209), and the
+// three corpus-wide negatives DES-206/DES-208 mandate (no `innerHTML`, no CDN/imported Mermaid, no
+// `diagramStatus`/`diagramNote`).
 //
-// Red reason (measured): `clientCorpus()` throws today — `src/dashboard/**/*.js` does not exist.
+// Red reason (measured): `src/dashboard/ui/workflow.js` does not exist yet (TASK-209) — the
+// createObjectURL/revokeObjectURL/diagram.svg/describe-count positives stay RED until it lands;
+// that is the expected split this ledger names elsewhere (TASK-204/213's own preamble rule), not a
+// defect. `clientCorpus()` itself does not throw: `src/dashboard/lib/*.js` already exists (a
+// sibling task's completed work), so the corpus is non-empty today, and the three negatives are
+// already green against it.
 describe('v27 disposition anchor: the diagram createObjectURL/revokeObjectURL pair re-points to ui/workflow.js (UT-252, DES-208)', () => {
-  it('the client corpus (once built) carries the createObjectURL/revokeObjectURL pair and is not vacuously tiny', async () => {
+  it('the client corpus (once built) carries the createObjectURL/revokeObjectURL pair, the versioned diagram fetch, and is not vacuously tiny', async () => {
     const { clientCorpus } = await import('../helpers/client-corpus.js');
     const corpus = clientCorpus();
     expect(corpus).toContain('createObjectURL');
     expect(corpus).toContain('revokeObjectURL');
+    expect(corpus).toContain('/diagram.svg');
+    expect(corpus).toMatch(/version=/);
+    expect((corpus.match(/\/describe/g) ?? []).length).toBe(1);
     expect(corpus.length).toBeGreaterThan(5000);
+  });
+
+  it('the client corpus never writes via innerHTML, never imports/CDNs Mermaid, and never reintroduces the retired diagramStatus/diagramNote fields', async () => {
+    const { clientCorpus } = await import('../helpers/client-corpus.js');
+    const corpus = clientCorpus();
+    expect(corpus).not.toContain('innerHTML');
+    expect(corpus).not.toMatch(/from ['"]mermaid['"]/);
+    expect(corpus.toLowerCase()).not.toMatch(/mermaid\.min\.js|cdn.*mermaid/);
+    expect(corpus).not.toMatch(/diagramStatus/);
+    expect(corpus).not.toMatch(/diagramNote/);
   });
 });

@@ -184,3 +184,18 @@ export function composePrompt(
     ? `${body}${USER_INSTRUCTIONS_OPEN}${appendPrompt}${USER_INSTRUCTIONS_CLOSE}`
     : body;
 }
+
+/** `composePrompt`'s inverse (REQ-136, DES-195): strips the leading `sys + '\n\n'` segment a
+ *  gateway echoed back verbatim on `descriptor.prompt`, so the systemPrompt text never reaches
+ *  the persisted transcript. Total over six cases — fails CLOSED (never returns `composed`
+ *  unstripped) when the expected prefix is absent, because that means the gateway did not echo
+ *  what it was given and the safe assumption is that nothing here is verified. `sys` undefined or
+ *  `''` both mean "no systemPrompt was applied" (same as `composePrompt`'s own undefined-segment
+ *  filter), so neither is stripped. */
+export function stripFirstSegment(composed: string, sys: string | undefined): { prompt: string; stripped: boolean } {
+  if (sys === undefined || sys === '') return { prompt: composed, stripped: false };
+  if (composed === sys) return { prompt: '', stripped: true };
+  const prefix = `${sys}\n\n`;
+  if (composed.startsWith(prefix)) return { prompt: composed.slice(prefix.length), stripped: true };
+  return { prompt: '', stripped: false };
+}

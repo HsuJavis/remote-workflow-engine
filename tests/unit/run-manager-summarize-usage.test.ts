@@ -19,7 +19,8 @@ import { RunManager } from '../../src/run-manager.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import { SqliteRunStore } from '../../src/store/sqlite-run-store.js';
 import { FixedClock } from '../../src/clock.js';
-import type { RunStore, RunSummary, RunUsage } from '../../src/types.js';
+import type { RunStore } from '../../src/run-store.js';
+import type { RunSummary, RunUsage } from '../../src/types.js';
 
 type ProjectedSummary = RunSummary & { costUSD?: number; unpricedCalls?: number; tokensTotal?: number; agentCount?: number };
 

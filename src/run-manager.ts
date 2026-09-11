@@ -22,7 +22,7 @@ import { HardenedSeedRefFetcher } from './seedref-fetcher.js';
 const SEEDREF_TIMEOUT_MS = 30_000;
 const SEEDREF_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 const SEEDREF_MAX_FILE_BYTES = 10 * 1024 * 1024;
-import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView, ManifestEntry, EngineWarning, PriceBook, Tokens, RunUsage } from './types.js';
+import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView, ManifestEntry, EngineWarning, PriceBook, Tokens, RunUsage, RunSummary } from './types.js';
 import type { RunStore } from './run-store.js';
 import { InMemoryRunStore } from './run-store.js';
 import type { Clock } from './clock.js';
@@ -258,6 +258,32 @@ function foldUsageFromRecords(records: AgentRecord[]): RunUsage {
   return { tokens, costUSD, unpricedCalls, unmappedMessages };
 }
 
+/** v27 (DES-194, ARCH-127, ADR-052, TASK-199, REQ-141): the one projection both `listSummaries()`
+ *  branches (live overlay, at-rest backfill) spread onto a `RunSummary` — "omitted together" is
+ *  structural (one return value), not four fields remembered separately. **Absence is keyed on
+ *  `agentCount` (records.length), decided BEFORE the fold, never on `costUSD === 0`** —
+ *  `foldUsageFromRecords([])` is a fully-populated zero, and a run that made zero `agent()` calls
+ *  must omit the column entirely (REQ-141). `agentCount` is itself omitted from the return when the
+ *  caller has none to report (the legacy-cohort backfill path, DES-194's own "second transcript walk
+ *  for a column that renders `—` honestly"). */
+function summarizeUsage(
+  u: RunUsage | undefined,
+  agentCount: number | undefined,
+): { costUSD: number; unpricedCalls: number; tokensTotal: number; agentCount?: number } | undefined {
+  if (u === undefined || (agentCount ?? 1) === 0) return undefined;
+  return {
+    costUSD: u.costUSD,
+    unpricedCalls: u.unpricedCalls,
+    tokensTotal: u.tokens.input + u.tokens.output + u.tokens.cacheRead + u.tokens.cacheWrite,
+    ...(agentCount !== undefined ? { agentCount } : {}),
+  };
+}
+
+/** v27 (DES-194): max legacy (never-snapshotted) rows healed by ONE `listSummaries()` call — bounds
+ *  the store-read fan-out (one `getRun` plus one `backfillUsage` write per row healed) when a large
+ *  unhealed cohort exists; rows past the budget are simply retried on the next call. */
+const BACKFILL_PER_TICK = 25;
+
 export class RunManager {
   private readonly _store: RunStore;
   private readonly _clock: Clock;
@@ -294,6 +320,12 @@ export class RunManager {
   /** v25 (#53): runIds already reported for `terminal_without_transition` — one record per run,
    *  not one per poll (a terminal run is polled until the caller notices it is terminal). */
   private readonly _warnedMissingTransition = new Set<string>();
+  /** v27 (DES-194, TASK-199): runIds `listSummaries()` has already resolved (healed OR confirmed
+   *  permanently absent — zero `agent()` calls ever made) — without this, a legacy row with no
+   *  usage events would be re-walked via `store.getRun` on every single call forever, since the
+   *  store itself must never persist a `{usage}`-only snapshot for a zero-record run (that would
+   *  make `agentCount` look NULL, not 0, and resurrect it as present — DES-194's own boundary). */
+  private readonly _usageBackfillChecked = new Set<string>();
 
   /** v8 Slice 1: config values are positive integers — reject bad config loudly at construction
    *  (the composition root builds RunManager from rwe.config.json, so this IS the config-load check). */
@@ -780,6 +812,77 @@ export class RunManager {
     if (!view) throw new IllegalTransitionError('unknown', 'status');
     await this._checkTerminalHasTransition(runId, view);
     return this._mergeLive(runId, view);
+  }
+
+  /** v27 (DES-194, ARCH-127, ADR-052, TASK-199, REQ-141): the ONE accessor `/api/runs` and
+   *  `/api/home` both read for the usage-projected `RunSummary[]` — one precedence chain, not two
+   *  routes each guessing at it separately: **(1) live entry → (2) snapshot `usage` (already
+   *  projected by `store.listRuns()`, DES-193) → (3) a one-time backfilled fold → (4) absent.**
+   *  Boot recovery and the GC sweep stay on `store.listRuns()` directly — they need every row, not
+   *  the usage projection. */
+  async listSummaries(): Promise<RunSummary[]> {
+    const rows = await this._store.listRuns();
+    let backfillBudget = BACKFILL_PER_TICK;
+    let healed = 0;
+    const out: RunSummary[] = [];
+    for (const row of rows) {
+      const entry = this._runs.get(row.runId);
+      if (entry && entry.spawner instanceof AgentExecutor) {
+        // (1) live entry — the SAME fold `_mergeLive` overlays onto `/api/runs/:id`.
+        const agents = entry.spawner.getAllRecords();
+        const usage = summarizeUsage(foldUsageFromRecords(agents), agents.length);
+        out.push(usage ? { ...row, ...usage } : row);
+        continue;
+      }
+      if (
+        row.costUSD !== undefined || // (2) store already projected a present usage — pass through.
+        !TERMINAL.includes(row.status) ||
+        this._usageBackfillChecked.has(row.runId) ||
+        backfillBudget <= 0
+      ) {
+        out.push(row);
+        continue;
+      }
+      // (3) one-time backfill: NOT memoized here. Memoizing is only safe once we know WHY (see
+      // below) — a transient store failure must be retried on the next call, not forgotten.
+      backfillBudget--;
+      try {
+        const view = await this._store.getRun(row.runId);
+        const agents = view?.agents ?? [];
+        const rawUsage = view?.usage;
+        // Third conjunct (DES-194 boundary): only a run whose transcript carries ≥ 1 real `usage`
+        // event (a 'done' or 'failed' agent record) may be memoized as a `{usage}`-only snapshot —
+        // otherwise a genuinely zero-record run's missing `agents` key reads back as `agentCount
+        // ?? 1 > 0` (DES-193's COALESCE) and would wrongly resurrect as present.
+        const hasUsageEvent = agents.some((a) => a.state === 'done' || a.state === 'failed');
+        if (!hasUsageEvent) {
+          // Permanently absent (zero `agent()` calls ever made) — safe to memoize forever, since
+          // DES-194 forbids ever writing a `{usage}`-only snapshot for this row.
+          this._usageBackfillChecked.add(row.runId);
+          out.push(row);
+          continue;
+        }
+        // `agentCount` omitted here (DES-194: "absent for the legacy cohort") — the write below is
+        // a `{usage}`-only snapshot (no `agents` key), so a LATER read of this same row would see
+        // `agentCount` as absent too; reporting a real count now and absent forever after would be
+        // exactly the flip-flop this omission avoids.
+        const usage = summarizeUsage(rawUsage, undefined);
+        if (usage && rawUsage !== undefined) {
+          await this._store.backfillUsage(row.runId, rawUsage);
+          this._usageBackfillChecked.add(row.runId); // now present via store.listRuns() henceforth.
+          healed++;
+          out.push({ ...row, ...usage });
+          continue;
+        }
+      } catch (err) {
+        // A write-path (or read-path) failure on this cache-warming path never fails the list — the
+        // row renders absent for one more tick and is retried (never memoized) on the next call.
+        console.log(JSON.stringify({ event: 'usage_backfill_failed', runId: row.runId, error: (err as Error).message }));
+      }
+      out.push(row);
+    }
+    if (healed > 0) console.log(JSON.stringify({ event: 'usage_backfill', healed }));
+    return out;
   }
 
   /** v25 (issue #53, adjudication #9 I-2, warning 2): the invariant ARCH-006 promises — a terminal
