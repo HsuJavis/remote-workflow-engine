@@ -4023,7 +4023,7 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
 - **traces:** TASK-204, TASK-206, DES-199, DES-200, DES-201, ARCH-123, ADR-049, REQ-131, REQ-105, ADR-022
 - **greens:** UT-240, UT-115
 - **files:** src/static-assets.ts, src/dashboard/lib/strings.js, .sdlc/features/001-remote-workflow-engine/04-design.md
-- **commit:** (recorded below once committed)
+- **commit:** 8b07ed7
 - **iter:** v27
 
 Repairs a broken Gate 6 tree: 16 of 17 v27 Sprint A implementers landed on the checkpoint commit
