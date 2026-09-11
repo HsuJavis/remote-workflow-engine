@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
-import { runScriptVia, type ToolCaller } from '../helpers/workflow-fixtures.js';
+import { runScriptVia, registerPublishedVia, type ToolCaller } from '../helpers/workflow-fixtures.js';
+import { DAG_WARNING_EXAMPLES } from '../fixtures/dashboard-wire.js';
 
 let server: Server;
 let tmpDir: string;
@@ -208,13 +209,68 @@ describe('Dashboard read-only HTTP endpoints (DES-018, ARCH-011)', () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 13, method: 'tools/call', params: { name: 'workflow_deregister', arguments: { name } } }),
     });
-    const res = await fetch(`http://127.0.0.1:${server.port}/api/runs/${runId}/dag`);
+    // v27b (IT-169, DES-198, TASK-203, Round v27b owner ruling ADR-051): this IS "arm (iii)" — the
+    // deregister recipe reachable-producer for `PREDICTED_OVERLAY_UNAVAILABLE: reason=catalog-resolve-failed`.
+    // The push must sit INSIDE the catch that assigns `skeletonScript = ''` — an implementer who puts
+    // it downstream (where `parseWorkflowSkeleton('')` does NOT throw) pushes nothing, forever, with
+    // every OTHER test green; this is the single most likely silent failure in the delta (DES-198's
+    // own words). Spy `console.warn` only around this ONE GET, filtered to a JSON-parseable line with
+    // `event === 'dashboard_api_degraded'` (other unrelated `console.warn` call sites exist in
+    // server.ts — scheduler firings, diagram render — none of which this flow can reach).
+    const warnLines: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warnLines.push(args.map(String).join(' ')); };
+    let res: Response;
+    try {
+      res = await fetch(`http://127.0.0.1:${server.port}/api/runs/${runId}/dag`);
+    } finally {
+      console.warn = originalWarn;
+    }
     expect(res.status).toBe(200);
-    const payload = await res.json() as { kind?: string; cells?: unknown[] };
+    const payload = await res.json() as { kind?: string; cells?: unknown[]; warnings?: string[] };
     expect(payload.kind).toBe('run');
     // No __skel_* placeholder cells — the skeleton derives from an empty script, only the live
     // trigger/agent cells (if any) remain.
     expect((payload.cells ?? []).some((c) => String((c as { id?: string }).id ?? '').startsWith('__skel_'))).toBe(false);
+    // Exactly ONE token warning, the UNAVAILABLE one, byte-for-byte the fixture literal — a
+    // whole-array `toEqual` would go red for the WRONG reason if a `layoutGraph` prose warning ever
+    // legitimately rode along; `filter` isolates the token vocabulary first.
+    expect((payload.warnings ?? []).filter((w) => /^PREDICTED_/.test(w))).toEqual([DAG_WARNING_EXAMPLES.unavailable]);
+    const degradeLines = warnLines
+      .map((l) => { try { return JSON.parse(l) as { event?: string; route?: string; runId?: string; reason?: string }; } catch { return null; } })
+      .filter((p): p is { event?: string; route?: string; runId?: string; reason?: string } => p !== null && p.event === 'dashboard_api_degraded');
+    expect(degradeLines).toHaveLength(1);
+    expect(degradeLines[0]!.reason).toBe('catalog-resolve-failed'); // byte-for-byte the warning's `reason=` value
+  });
+
+  it('v27b (IT-169, DES-198, TASK-203): a reused-then-relineaged name resolves to a SUBSTITUTE version — exactly one PREDICTED_FROM_FALLBACK_VERSION warning, and NO degrade log line (FALLBACK is a STATE, never logged)', async () => {
+    const name = 'dash-fallback-dag';
+    // arm (ii)'s reachable-producer recipe (DES-198's own words): register+publish TWICE under
+    // `release` (pins v2 on run_start), deregister (removes EVERY version), register+publish ONCE
+    // more under a NEW lineage (restarts at v1). The pin (v2) must OUTNUMBER the re-registered
+    // lineage (v1) or arm (i) finds a same-numbered new row and the case proves nothing.
+    await registerPublishedVia(callTool, name, 'return 1;');
+    await registerPublishedVia(callTool, name, 'return 2;');
+    const started = await callTool('run_start', { name }) as { runId?: string };
+    const runId = started.runId!;
+    expect(typeof runId).toBe('string');
+    await callTool('workflow_deregister', { name });
+    await registerPublishedVia(callTool, name, 'return 3;');
+
+    const warnLines: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warnLines.push(args.map(String).join(' ')); };
+    let res: Response;
+    try {
+      res = await fetch(`http://127.0.0.1:${server.port}/api/runs/${runId}/dag`);
+    } finally {
+      console.warn = originalWarn;
+    }
+    expect(res.status).toBe(200);
+    const payload = await res.json() as { warnings?: string[] };
+    expect((payload.warnings ?? []).filter((w) => /^PREDICTED_/.test(w))).toEqual([DAG_WARNING_EXAMPLES.fallback]);
+    const degradeLines = warnLines.filter((l) => { try { return (JSON.parse(l) as { event?: string }).event === 'dashboard_api_degraded'; } catch { return false; } });
+    expect(degradeLines).toHaveLength(0); // FALLBACK is a state, never logged — only the two fault arms log
   });
 
   // v27 (IT-169, DES-197/198, ARCH-130/131, TASK-202/203, REQ-140/131): three v27 wire additions —

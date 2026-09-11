@@ -1070,6 +1070,32 @@ registration).
 - **acceptance:** Given any user-facing read surface — `workflow_get`, the `/api/workflows/:name/skeleton` route, `workflow-view.ts`'s projection, the dashboard workflow-detail preview and home-card mini-preview, and `workflow_get`'s own tool description — Then **none of them returns, renders, or mentions the regex-derived skeleton**, so a schema-reading client can no longer learn the concept exists; Given the run-DAG route `/api/runs/:id/dag`, which retains the skeleton internally as its layout spine Then it stays **behind the auth gate** (v22 finding H2 closed exactly this hole; v23 must not re-open it) and serves layout only, never a named artifact a client can request; Given the codebase after v23 Then no comment, docblock, tool description, architecture note, or ledger entry still tells a reader the skeleton is a surface available to them — **the deletion is not finished while something still describes the deleted thing**, which is the single most-repeated defect in this ledger's history (nine recorded instances across v21 and v22).
 - **iter:** v23
 
+**[PARTIALLY SUPERSEDED v27b, Round v27b owner ruling — ADR-051 / ADR-055]** — for the run-DAG
+auth clause ONLY. This requirement's second clause says `/api/runs/:id/dag` 「stays **behind the
+auth gate** (v22 finding H2 closed exactly this hole; v23 must not re-open it)」. The owner ruled
+otherwise on 2026-09-11: the **predicted overlay** (lanes and cells not yet reached) is served
+regardless of `auth.enabled`, because the same structure is already anonymously public through
+`/api/workflows`, `describe.phases`, `describe.mermaid` and `toolSurface` — the mask withheld
+nothing those surfaces did not already give away, while costing the swimlane graph its dashed edges
+to unreached nodes on exactly the deployment the owner runs (team, remote, auth on). `if
+(!authEnabled)` at `server.ts:520` is deleted, not defaulted, and ADR-055's sibling
+`describe.phases[].agents` widens with it — both surfaces or neither, as ADR-051 required.
+
+**What this does NOT supersede — every other word of this requirement stands:**
+- the skeleton still leaves `workflow_get`, the deleted `/api/workflows/:name/skeleton` route,
+  `workflow-view.ts`'s projection, the dashboard previews and `workflow_get`'s tool description;
+- `/api/runs/:id/dag` still serves **derived layout only** — lane/cell/edge shapes — and **never a
+  named artifact a client can request**, and never the pinned script's own source bytes. That last
+  guard is not weakened by the ruling; it is now carried explicitly by IT-092, re-traced to REQ-100
+  and kept green with its sentinel asserted on the raw response text;
+- INV-V27-9 (the exclusion-form DAG-payload parity oracle plus a positive anchor on the auth server)
+  is the **replacement control** for the retired mask — the reversal removes a predicate, not a check;
+- and the closing clause — 「**the deletion is not finished while something still describes the
+  deleted thing**」 — stands untouched. This marker exists *because* of that clause: the Gate 2
+  architect found this contradiction, could not edit a REQ outside its own impact closure
+  (REQ-133/134/140), and handed the obligation to the orchestrator rather than leaving the ledger
+  saying two opposite things. Recorded by the orchestrator 2026-09-12.
+
 ### REQ-106 — authoring rules are documented and discoverable, so authors keep data out of logic
 - **status:** draft
 - **traces:** REQ-090, REQ-101

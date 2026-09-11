@@ -3,18 +3,29 @@
 // row, a row click switching the figure, and a never-registered-run workflow rendering its
 // predicted lanes.
 //
+// [v27b amendment, Round v27b owner ruling, ADR-051]: a THIRD case adds a SECOND, auth-ENABLED
+// server and proves the predicted overlay is visible there too — the reversal's whole point. The
+// Gate 7.5 instruction FLIPPED from "record what degrades under auth" to "PROVE the overlay IS
+// visible" (ADR-051's own words); this case may not be judged before TASK-201's predicted-cell
+// `label` has landed, or the Chromium oracle photographs grey boxes reading the literal word "agent"
+// and that screenshot becomes the wrong baseline.
+//
 // Mock policy (acceptance): real createServer(), real MCP HTTP, real Chromium.
 //
 // Red reason (measured): today's dashboard has no "workflow detail" page at all — a card click goes
 // straight to a run's DAG/diagram view (`showDescribe`/`renderDescribe` in `dashboard-page.ts`
-// render only the diagram + harness table, no version tag, no run-chips row, no history table).
+// render only the diagram + harness table, no version tag, no run-chips row, no history table). The
+// auth-ENABLED case is red for the SAME reason (no such view exists), not for an auth-specific one.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { existsSync, readdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import Database from 'better-sqlite3';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
-import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
+import { TokenStore } from '../../src/auth/token-store.js';
+import { registerPublishedVia, type ToolCaller } from '../helpers/workflow-fixtures.js';
 import { throwIfBrowserRequired } from '../helpers/require-browser.js';
 
 function findChrome(): string | null {
@@ -38,6 +49,17 @@ let server: Server;
 let baseUrl: string;
 let tmpDir: string;
 
+// v27b (Round v27b owner ruling, ADR-051): a SECOND, auth-ENABLED server proving the predicted
+// overlay is visible there too — the reversal's whole point. Same `mintBearer` pattern as
+// dag-masking-auth.test.ts: authServer is loopback-bound (127.0.0.1), so D-BIND does not exempt it
+// and registration genuinely needs the bearer; the dashboard PAGE itself needs none (no identity
+// plumbing on that route at all — the same reachability the original H2 finding described).
+let authServer: Server;
+let authBaseUrl: string;
+let authTmpDir: string;
+const AUTH_OWNER = 'val199-owner@example.com';
+const AUTH_AGENT_MARKER = 'val199-auth-marker-agent';
+
 async function mcpCall(name: string, args: unknown): Promise<any> {
   const res = await fetch(`${baseUrl}/mcp`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -45,6 +67,26 @@ async function mcpCall(name: string, args: unknown): Promise<any> {
   });
   const body = (await res.json()) as { result?: { content: Array<{ text: string }> } };
   return JSON.parse(body.result!.content[0]!.text);
+}
+
+async function mintBearer(workRoot: string, email: string): Promise<string> {
+  const db = new Database(join(workRoot, 'auth-tokens.db'));
+  const now = Date.now();
+  const store = new TokenStore(db, { clock: () => now, csprng: (n: number) => randomBytes(n) });
+  const { token } = store.issue(email, 7 * 24 * 3600_000);
+  db.close();
+  return token;
+}
+
+function authMcpCallFor(bearer: string): ToolCaller {
+  return async (name, args) => {
+    const res = await fetch(`${authBaseUrl}/mcp`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${bearer}` },
+      body: JSON.stringify({ jsonrpc: '2.0', id: Math.random(), method: 'tools/call', params: { name, arguments: args } }),
+    });
+    const body = (await res.json()) as { result?: { content: Array<{ text: string }> } };
+    return JSON.parse(body.result!.content[0]!.text);
+  };
 }
 
 beforeAll(async () => {
@@ -61,11 +103,27 @@ beforeAll(async () => {
     await new Promise((r) => setTimeout(r, 100));
   }
   await registerPublishedVia(mcpCall, 'val199-never-run', `phase('a'); await agent('x', {}); return 1;`);
+
+  authTmpDir = mkdtempSync(join(tmpdir(), 'rwe-val199-auth-'));
+  authServer = await createServer({
+    port: 0, bind: '127.0.0.1', workRoot: authTmpDir,
+    auth: {
+      enabled: true, issuer: 'http://127.0.0.1:0',
+      googleClientId: 'val199-client-id', googleClientSecret: 'val199-client-secret',
+      googleBase: 'http://127.0.0.1:0', jwksFetch: async () => [],
+    },
+    principals: { [AUTH_OWNER]: { role: 'author' } },
+  } as never);
+  authBaseUrl = `http://127.0.0.1:${authServer.port}`;
+  const ownerToken = await mintBearer(authTmpDir, AUTH_OWNER);
+  await registerPublishedVia(authMcpCallFor(ownerToken), 'val199-auth-never-run', `phase('a'); await agent('${AUTH_AGENT_MARKER}', {}); return 1;`);
 }, 30000);
 
 afterAll(async () => {
   await server?.close();
+  await authServer?.close();
   if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+  if (authTmpDir) rmSync(authTmpDir, { recursive: true, force: true });
 });
 
 const itReal = (name: string, fn: () => Promise<void>, timeout?: number): void => {
@@ -102,6 +160,33 @@ describe('workflow detail page, real Chromium (VAL-199, REQ-133)', () => {
       });
       expect(bodyText.toLowerCase()).not.toContain('skeleton');
       expect(bodyText).toMatch(/predicted|預測/i);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
+  // v27b (Round v27b owner ruling, ADR-051; VAL-199/VAL-204's own "may not be judged before
+  // TASK-201's label has landed" note): the Gate 7.5 instruction FLIPPED from "record what degrades
+  // under auth" to "PROVE the overlay IS visible". A structural DOM check (a lane element exists)
+  // would pass on grey boxes reading the literal word "agent" — the actual proof is the AGENT NAME
+  // itself, rendered from `describe.phases[].agents`, visible in an ANONYMOUS page load against an
+  // auth-ENABLED engine (registration needed the bearer; the page GET needs none).
+  itReal('auth-ENABLED engine: a never-run workflow renders the predicted agent NAME, anonymously, with no auth-scoped degradation', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      // No Authorization header at all — the dashboard page and its /api/* GETs carry no bearer on
+      // this route (the same reachability the original H2 finding described); only registration
+      // above needed the mintBearer trap.
+      await page.goto(`${authBaseUrl}/dashboard/workflow/val199-auth-never-run`, { waitUntil: 'networkidle0', timeout: 10000 });
+      const bodyText = await page.evaluate(() => {
+        const clone = document.body.cloneNode(true) as HTMLElement;
+        clone.querySelectorAll('script, style').forEach((el) => el.remove());
+        return clone.textContent ?? '';
+      });
+      expect(bodyText.toLowerCase()).not.toContain('skeleton');
+      expect(bodyText).toContain(AUTH_AGENT_MARKER);
     } finally {
       await browser.close();
     }

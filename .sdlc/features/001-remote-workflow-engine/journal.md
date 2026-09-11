@@ -3595,3 +3595,192 @@ the whole expensive half of the run twice.
 `impactIds:[REQ-133,REQ-134,REQ-140]` — the architect folds the ruling into ADR-051/ADR-055 and the
 affected ARCH/DES/TASK rows and the masking test flips; (2) then `gates:[impl,verify,validation,review]`
 over the full Sprint A closure. Gate flags for `tests` and below are left as the delta run finds them.
+
+## 2026-09-11 — v27b Gate 2 (architecture delta): PASSED
+
+**Scope.** The scoped delta run's architecture half — `impactIds:[REQ-133, REQ-134, REQ-140]`, iteration v27,
+Round v27b. Amendment pass only: **no new ARCH/ADR id, no new ledger, no trace link cut.** Synthesised from
+the pre-run two-group panel on disk (`.panel/architecture/{adversarial,quality-dimensions}.r1.md` and the
+converged `.r2.md`); no panel was re-spawned.
+
+**Amended in place at `iter: v27b`.** ADR-051 — decision (a) → **(b)**, the owner's 「開 —— 撤銷遮罩」 recorded
+with its date, `owner_decision` flipped from *pending* to **answered**, the options analysis kept, plus the
+F-2 residual (the newly-anonymous cohort is exactly the pinned non-release version whose author `mermaid` is
+`null`), the B-1 boundary (the `contract:'v1'` refusal folds into `derivation-failed`, pushed in the FALSE arm
+of the `:538` ternary and nowhere else), the B-2 residual, where a future withholding policy would live (a
+principal-aware projection, never a global config knob), and the **flipped Gate 7.5 instruction** (prove the
+overlay IS visible, not record what degrades) with K-5's p95 measurement and a **bounded** pre-approved memo.
+ADR-055 — the sibling surface `describe.phases[].agents` is unconditional; absence now means *derivation
+failed*, nothing else. ADR-054 — the key-set budget rule (only the endpoints this delta widens owe a test).
+ARCH-126 — `deriveLanes(phases, expected, {status})`: the `masked` axis is deleted rather than defaulted, and
+the observed-wins join rule is written down while the proposed title-conflict detector is rejected on a
+measured counter-example (a loop-body `phase()`). ARCH-130 — the `if (!authEnabled)` wrapper, the
+`handleDashboardRequest` `authEnabled` parameter and its `!!authCfg` argument are deleted; the route's version
+resolution now reads the already-recorded `legacySubstitution.resolved`, which makes the overlay **correct**
+for the v22 legacy cohort instead of merely labelled; three `TOKEN: detail` warnings are pushed at the route
+(never inside `layoutGraph`) and the two fault arms emit `dashboard_api_degraded`. ARCH-131 — `phases[].agents`
+unconditional, `maskPredictedOverlay` never built (0 grep hits), the synthetic-principal hazard recorded as a
+pattern. ARCH-125 — the run view renders the warning **text**, not today's count.
+
+**New invariant.** INV-V27-9 — the dashboard read is auth-invariant, locked by an EXCLUSION-form parity
+assertion across the two servers the existing harness already boots plus one positive anchor on the auth
+server. This is the replacement control for the retired mask, and it is strictly stronger than the assertion
+it retires.
+
+**History marked, not rewritten.** ARCH-073 / ARCH-075 / ADR-012 each carry one `superseded_in_part:` line
+scoped to the predicted-overlay predicate; their `iter:` stays v22. REQ-100's script masking, REQ-136's
+system-prompt strip and the three `dbindExempt` gates are explicitly out of closure and untouched.
+
+**Gate self-check.** `sh .sdlc/trace` → 1591 items / 67 gaps, byte-identical to the pre-edit baseline (0 new
+orphan, 0 new broken link); `solid_check` → PASS, 68 modules, 0 mid (the same 10 pre-existing low
+unclaimed-file warnings); `dashboard_check` → unchanged 7 known `erDiagram` false positives, 0 high.
+
+**Open for the orchestrator (outside this closure, recorded in ADR-051's note and in the report):** REQ-105's
+acceptance still says the DAG route 「stays behind the auth gate … v23 must not re-open it」
+(`01-requirements.md:1070`) and needs a `[PARTIALLY SUPERSEDED v27b, Round v27b]` marker in REQ-100's house
+style — Gate 8 verifies REQs against code, so left as is it fails by construction. Next: the design+tests half
+of the same delta (DES-196/197/198/206, TASK-202/203, UT-238, IT-092/IT-168, VAL-199/VAL-204).
+
+## 2026-09-11 — v27b GATE 3+4 DELTA (merged tasks+design, designer): PASSED
+
+Scoped delta, impactIds REQ-133 / REQ-134 / REQ-140 — the design half of the Round v27b owner ruling
+(ADR-051: 開 —— 撤銷遮罩). Synthesized from the two-group lens panel's rounds 1 **and** 2 on disk; no panel was
+re-spawned. The two r2 files CROSSED (each answers the other's r1), so seven items both sides believed settled
+were still open. Ruled, with the discriminator recorded in the new file-end `## Decision rationale — v27b`:
+(1) the FALLBACK warning's first key is `pinned=<view.scriptVersion>` — the run's own pin — not `requested=`,
+because `pinned` already means exactly that in `types.ts:351` and in the journal line at `run-manager.ts:909`;
+(2) the predicted cell's label is `s.labels.join(' / ')` with no branch on `kind` (a `parallel([a,b,c])` group
+puts every label in ONE slot, so `labels[0]` names a three-agent node after one member); (3)
+`PARITY_EXCLUDED = ['runId','terminalAt']` per INV-V27-9, and **`current` IS compared** — the adversarial
+timing objection was aimed at a precondition its author's counterpart had already retracted in favour of the
+adversarial's own stabilization predicate, under which `current === 0` deterministically on both servers;
+(4) one export, `warningText(lang, raw)` in `lib/strings.js` (the second export lost its only consumer when the
+FALLBACK greying was withdrawn as a no-op); (5) `server.ts:350`'s comment is AMENDED, not deleted — it is the
+only place the describe route's masking posture is written down and the reversal makes it more true; (6) one
+`const` for the UNAVAILABLE token in `server.ts` (arm (iv) has no reachable producer, so sharing arm (iii)'s
+identifier is all that vouches for its spelling) — no formatter, no token module, no grep guard; (7)
+`SCRIPT_PHASED` as a `const` in the existing test file, not a new fixture module.
+
+Zero new DES ids, zero new TASK ids, zero new modules / routes / config keys, zero `owner_decision` deferrals
+(the owner already ruled). Amended in place at `iter: v27b`: DES-196 (non-optional `expected`, the `masked`
+axis deleted, dense/ordered `lanes`, unclamped `current`, the predicted `label`), DES-197 (the never-implemented
+`maskPredictedOverlay` dep deleted rather than defaulted — withdrawn by its own author's lens; `agents`
+unconditional with `[]` vs ABSENT made machine-decidable), DES-198 (four deletions by line, the resolve chain's
+`??`, the four warning pushes AT THEIR SITES — arm (iii) inside the catch that assigns `skeletonScript = ''` and
+falls through, which is the delta's single most likely silent failure — the closed `reason` vocabulary, the
+cohort transition, the reused-pin blind spot with its v28 check named), DES-201 (`warningText` + three string
+keys), DES-206 (warnings rendered as TEXT; a predicted cell is `kind === 'agent' && agentId === undefined`, not
+`agentId === undefined` alone, which also matches the trigger). DES-114/115 gained `superseded_in_part`
+markers (`iter:` stays v22) and the v27 rationale's point 11 is marked WITHDRAWN. TASK-197/201/202/203/206/209/210
+`dod:` amended (TASK-209 lost its stale 「when the overlay is masked」 arm; TASK-202 lost the fail-closed clause
+and gained `src/tool-specs.ts`), plus ordering rule 5 in the section preamble: 197 → 201 → 203 → 202 → 206 →
+209/210, and VAL-199/204 judged only after 201's `label` lands or the Chromium oracle photographs grey boxes
+reading `agent`. ARCH-125/126/130 took one-clause `amended (v27b Gate 4)` bullets in the house style.
+
+`sh .sdlc/trace` → 67 gaps, identical to the pre-edit baseline; every in-closure gap is 「no IMPL yet」 / 「no
+real-tier VAL yet」, which is what the design gate is supposed to leave. No broken links, no pending
+`owner_decision` anywhere in the ledger. `gates.tasks.passed` stays true, `gates.design.passed` true,
+`current_stage: tests`. STILL OPEN, and not this gate's to fix: REQ-105's auth-gate clause
+(`01-requirements.md:1070`) needs its `[PARTIALLY SUPERSEDED v27b]` marker — orchestrator housekeeping, named
+by both lenses at both stages, and Gate 8 verifies REQs against code, so left undone it fails by construction.
+
+## 2026-09-12 — v27b GATE 5 DELTA (verifier, test-first RED) — PASSED
+
+The TESTS half of the Round v27b scoped delta (impactIds REQ-133/REQ-134/REQ-140, closing the same
+delta the architect/designer landed at Gate 2 and Gate 3+4) is done. ADR-051's owner-ruled reversal
+(「開 —— 撤銷遮罩」 — the predicted overlay is served regardless of `auth.enabled`) is now encoded
+test-first across 7 EXISTING items, amended in place at `iter: v27b`, no new UT/IT/VAL id opened:
+
+- **UT-238** (`tests/unit/dashboard-derive-lanes.test.ts` + `tests/unit/layout-graph-phase.test.ts`,
+  second `File:` for the same item): rewritten — the `masked` axis is GONE (28→14 status/phases
+  cases + 4 lane-join rows + 1 `@ts-expect-error` robustness row = 19), the `:34` cast is gone, lanes
+  extend unconditionally, plus the `layoutGraph` inert-cell `label` case (1 red, 1 Mode-C green).
+- **UT-244** (`tests/unit/dashboard-lib-strings.test.js`): gains `warningText(lang, raw)` (6 cases)
+  reading a new `DAG_WARNING_EXAMPLES` fixture export; fixed its own header-comment ID typo
+  (UT-243→244) in the same edit.
+- **IT-168** (`tests/integration/dag-masking-auth.test.ts`): FLIPPED from masked-negative to
+  unconditional-positive — `dag.lanes` + `__skel_` cells under auth, `describe.phases[].agents` on
+  both servers, a `phases`-scoped describe-parity case, and the INV-V27-9 stabilized-parity sub-test
+  (a named stabilization predicate + deadline error, live key-set check, `PARITY_EXCLUDED =
+  ['runId','terminalAt']` with `current` COMPARED, positive anchors on the auth server; both servers
+  polled CONCURRENTLY via `Promise.all`, not sequentially, so two independent 15s deadlines cannot
+  collide with the 30s test timeout). Mid-gate test-first finding, fixed in the same pass (not an
+  owner_decision): `describe.phases` is the author-declared `meta.phases`
+  (`workflow-meta.ts:parseMeta`), a THIRD "phases" concept separate from the script's own `phase()`
+  call structure and from `RunStatusView.phases`; `registerPublishedVia`'s `synthesizeMeta` never
+  emits `phases`, so `SCRIPT`/`SCRIPT_PHASED` now declare their own `export const meta =
+  {phases, params.agents}` via a `metaBlock()` test helper — otherwise the `describe.phases[].agents`
+  cases would stay red forever for a fixture reason, never the intended one. The describe-parity case
+  measures Mode-C green as a result (both servers already agree on the identical, agent-less
+  projection).
+- **IT-169** (`tests/integration/dashboard-http.test.ts`): the existing deregister case extended with
+  the UNAVAILABLE warning + a scoped `console.warn` spy; a new FALLBACK recipe case added
+  (register×2/deregister/register×1 → `pinned=v2 resolved=v1`, no log line).
+- **IT-092** (same file): RE-TRACED to `REQ-100` alone (the five historical IDs kept as lineage prose,
+  not as active trace metadata — all already `superseded_in_part` and still cited by other items, 0
+  new orphans measured) and rewritten as a Mode-C guard: the `['__trigger__']`-only assertion this
+  v22 test made is DELETED (it pinned the exact mask ADR-051 reverses); the surviving invariant is a
+  planted comment sentinel asserted absent from the raw DAG response text — GREEN now, unaffected by
+  the reversal (REQ-100's script-text masking stands).
+- **VAL-199**: a third case stands up a second, auth-ENABLED server and proves the predicted overlay
+  renders a real agent NAME anonymously — the Gate 7.5 instruction this proves at acceptance tier
+  flipped from "record what degrades" to "PROVE the overlay IS visible" (ADR-051).
+- **VAL-204**: text-only amendment recording the p95 measurement as a Gate-7.5-only VAL-side number
+  (same non-test-first pattern as VAL-205's bench script), and warning that any surviving "records a
+  degradation" sentence elsewhere is now false evidence.
+
+Every touched item run this gate and confirmed red for the stated reason, except IT-092 (Mode C,
+green throughout) and the layoutGraph empty-labels case (Mode C). `sh .sdlc/trace --check`: 1591
+items / 67 gaps, byte-identical to the pre-delta baseline — 0 broken links, 0 orphans, the 21 drift
+rows all pre-existing and unrelated to any touched ID. REQ-133/134/140 read 未真實驗證 (test exists,
+not yet real — the intended Gate 5 signal, not a new defect). `npx tsc --noEmit`: 41 project-wide
+errors, all pre-existing-class or self-correcting (`@ts-expect-error` TS2578 on the not-yet-existing
+`deriveLanes` export) — 0 new error classes. No `owner_decision` opened this gate; ADR-051's is
+already answered. `gates.tests.passed` stays `true`; `current_stage` moves to `impl`. Next: Gate 6
+(implementer) turns TASK-196..213 green over the FULL Sprint A closure (REQ-131..136/140/141),
+including this delta's red items.
+
+---
+
+## 2026-09-12 — v27b delta run COMPLETE (architecture + design + tests), and the one item it handed back
+
+The scoped delta (`wf_5831d268-dee`, `gates:[architecture,design,tests]`,
+`impactIds:[REQ-133,REQ-134,REQ-140]`) absorbed the owner's Round v27b ruling. 16 agents, 0 errors.
+Its first attempt died on a session limit after the round-1 panels had landed; the resume replayed
+those from cache rather than re-spawning them.
+
+**Architecture (v27b).** Four **deletions, not four `false`s**, unanimous across both lens groups:
+`if (!authEnabled)` (`server.ts:520`), the never-implemented `McpFacadeDeps.maskPredictedOverlay`
+(0 hits in src and tests — deleting design text, not code), `deriveLanes`'s `masked` axis, and
+`handleDashboardRequest`'s `authEnabled` parameter. Kept: the inner try/catch degradation and
+`authAnnounce`. Zero new ARCH/ADR ids, zero new wire fields, zero new config keys; amended rows carry
+`iter: v27b`. INV-V27-9 (exclusion-form DAG-payload parity oracle + a positive anchor on the auth
+server) is recorded as the **replacement control** for the retired mask — the reversal removes a
+predicate, not a check. ADR-051's Gate 7.5 instruction is flipped from "record what degrades" to
+"prove the overlay IS visible".
+
+**One contested point worth keeping.** The adversarial group self-corrected in round 2 on the
+wrong-version overlay: rather than merely *labelling* a stale predicted overlay, the route now
+resolves `view.legacySubstitution?.resolved ?? view.scriptVersion` — one expression that makes the
+overlay CORRECT for the v22 legacy cohort, a no-op for healthy runs. The title-conflict detector was
+REJECTED on a measured counter-example (a loop-body `phase()` produces the same mismatch with no
+substitution).
+
+**Design + tests (v27b).** DES-196/197/198/201/206 + DES-114/115 marked, 7 TASK cards amended, and the
+tests half folded into **7 existing items with no new UT/IT/VAL id**. IT-092 was re-traced to REQ-100
+and kept green with its sentinel asserted on the raw response text — the old masking assertions were
+**deleted outright, never relaxed**, which is what REQ-136's own wording demands of this iteration.
+
+**The item the architect could not discharge, and the orchestrator did.** REQ-105's acceptance still
+instructed that `/api/runs/:id/dag` 「stays behind the auth gate … v23 must not re-open it」 — the exact
+thing this ruling reverses. REQ-105 is outside the delta's impact closure, so the architect recorded
+the obligation in three durable places instead of editing a REQ it did not own, noting that Gate 8
+verifies REQs against code and so would fail by construction if it were left. The orchestrator wrote
+the `[PARTIALLY SUPERSEDED v27b]` marker in REQ-100's own house style, scoped to that one clause and
+enumerating what still stands — including REQ-105's closing line, 「the deletion is not finished while
+something still describes the deleted thing」, which is the very clause that made this marker
+mandatory. `sh .sdlc/trace` after the edit: **1591 items / 67 gaps, byte-identical to the architect's
+baseline** — the marker introduced nothing.
+
+**Next:** `gates:[impl,verify,validation,review]` over the FULL Sprint A closure
+(REQ-131..136/140/141) — the expensive half, and the first time product code is written this iteration.

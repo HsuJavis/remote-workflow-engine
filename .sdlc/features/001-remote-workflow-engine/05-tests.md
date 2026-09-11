@@ -6321,33 +6321,42 @@ out so they cannot drift on the `!authEnabled` gate independently, mirroring the
 `catalogResolveErrorEnvelope` precedent one round earlier). All 3 cases pass; wrinkle-1 no-auth
 attribution confirmed unaffected.
 
-### IT-092 — H2: `GET /api/runs/:id/dag` masks the script-derived skeleton overlay while auth is enabled
+### IT-092 — REQ-100: `GET /api/runs/:id/dag` never leaks the pinned script's own source bytes (re-traced, Round v27b — the v22 H2 masking predicate it used to assert is REVERSED)
 - **status:** green
-- **traces:** ARCH-073, ARCH-075, ADR-012, DES-114, DES-115, REQ-100
+- **traces:** REQ-100
 - **tier:** integration
 - **real:** false
 - **result:** pass
-- **iter:** v22
+- **iter:** v27b
 
-File: `tests/integration/dag-masking-auth.test.ts`. Mock policy (integration, DES-119): real
-`createServer` + real HTTP + real `RunManager`/catalog; only the `GatewayClient` is faked (a
-never-resolving stub, so the run is provably still `running` with ZERO completed agents at the
-moment the DAG route is read — the skeleton-derived-vs-live distinction only means something
-before any agent has finished). 2 cases: (1) auth ON, no bearer on the DAG GET (the route has no
-identity plumbing at all, confirmed by the review's own read — an anonymous GET is exactly the
-finding's reachability claim): `cells` carries ONLY `__trigger__`, no `__skel_*` placeholder for
-any of the script's 3 registered `agent()` calls; (2) GREEN PIN — auth OFF (pre-v22 surface): the
-same shape of run serves the full predicted skeleton (`__trigger__` + 3 `__skel_*` cells). The
-owner/bearer setup for the auth-ON case uses a real minted `TokenStore` bearer (IT-089's
-`mintBearer` pattern) — register/publish/run all need one, since this server binds to loopback
-(`127.0.0.1`, not `0.0.0.0`), so D-BIND does not exempt it and every `/mcp` call is genuinely
-bearer-gated; only the subsequent DAG GET is deliberately anonymous, matching what the finding
-itself describes as reachable with none.
+**[v27b amendment, Round v27b owner ruling, ADR-051]: RE-TRACED, REWRITTEN, kept GREEN throughout
+(Mode C — not this delta's red test).** The v22 H2 masking predicate this test used to assert
+(`cells` carries ONLY `__trigger__` under auth) is REVERSED by ADR-051 decision (b) — the predicted
+overlay is now served UNCONDITIONALLY (see IT-168, same file). The `['__trigger__']`-only equality,
+its `__skel_` negation, and the auth-OFF contrast pin are DELETED outright — they pinned the exact
+mask this ruling retires; asserting them today would be asserting a defect. Historically traced to
+`ARCH-073`/`ARCH-075`/`ADR-012`/`DES-114`/`DES-115` (all `superseded_in_part` v27b, per
+02-architecture.md/04-design.md's own markers) — kept here as LINEAGE prose, not as an active
+`traces:` link: `traces:` narrows to `REQ-100` alone, the ONE thing this test proves now (ADR-051's
+own "what the reversal is NOT" clause: REQ-100's script-text masking stands, untouched).
 
-Red reason (measured, pre-fix): case 1 observes `cells = [__trigger__, __skel_0__, __skel_1__,
-__skel_2__]` where `[__trigger__]` is required — `dagMatch`'s handler (`server.ts`) has no
-`authEnabled` branch at all, confirmed by direct read, unlike its sibling `/api/workflows/:name/
-skeleton` route which already masks. Case 2 is a legitimate green pin, already true today.
+File: `tests/integration/dag-masking-auth.test.ts` (rewritten, 3 cases on the same dual-server
+harness). Guard mechanic: a comment sentinel (`// RWE-IT092-SCRIPT-BYTES-DO-NOT-LEAK`) planted in
+the fixture SCRIPT — the derivation cannot legitimately surface a comment (`parseWorkflowSkeleton`/
+`scanAgentCalls` never read one), so it is asserted absent from the RAW response TEXT
+(`res.text()`, not `res.json()` — a JSON round-trip can hide a byte a naive re-serialization would
+not). A label-based sentinel would go red the day the predicted `label` lands (DES-196/UT-238); a
+comment cannot legitimately reach any projection. Cases: (0) guards the guard — `SCRIPT` genuinely
+contains the sentinel (a typo would pass every other case vacuously); (1) auth ON, anonymous GET —
+sentinel absent from `res.text()`; (2) auth OFF — same guard holds (the invariant is not
+auth-dependent). All 3 confirmed GREEN on this run, both before and structurally unaffected by
+ADR-051's reversal — the route has never emitted script SOURCE TEXT, masked or not, only a
+structurally DERIVED skeleton.
+
+`sh .sdlc/trace` self-check for this rewrite specifically: `REQ-100` is a live, unbroken trace
+target; the five historical IDs remain valid elsewhere in the ledger (their own `superseded_in_part`
+markers), so removing them from THIS item's `traces:` line drops a citation, not a link — no ID was
+deleted, no broken link introduced.
 
 ### UT-106 — H3: `register()`'s version allocator uses MAX over a name's rows, not COUNT
 - **status:** green
@@ -11769,17 +11778,38 @@ is NOT stripped to `""` (no fail-closed behaviour exists yet). 2/4 already green
 red — these pin CURRENT correct behaviour that must not regress): no-agentType and
 empty-systemPrompt cases already carry no leaked segment (there is nothing to strip).
 
-### UT-238 — `dashboard-derive-lanes.test.ts`: `deriveLanes` — the 7x2x2 status/phases/masked table
+### UT-238 — `dashboard-derive-lanes.test.ts` + `layout-graph-phase.test.ts`: `deriveLanes` — the 7x2 status/phases table, UNCONDITIONAL lane join, and the predicted cell's label
 - **status:** red
 - **traces:** DES-196, ARCH-126, ADR-051, TASK-201, REQ-140, REQ-132, REQ-133, REQ-134
 - **tier:** unit
 - **real:** false
 - **result:** fail
-- **iter:** v27
+- **iter:** v27b
 
-File: `tests/unit/dashboard-derive-lanes.test.ts` (new, 28+3 cases — the full 7x2x2 table plus lane-join
-and undefined-`expected` cases). RED (measured): whole-file behavioural red — `TypeError: deriveLanes
-is not a function` (35/35 cases fail on this one call).
+**[v27b amendment, Round v27b owner ruling, ADR-051, TASK-201]: REWRITTEN.** The `masked` axis DOES
+NOT EXIST — `expected` is NON-optional and `opts` is `{ status }` alone; the `as { masked: boolean;
+status: RunStatus }` cast this file carried at line 34 is GONE (its disappearance IS the evidence the
+signature was reconciled literally, not re-cast — a shrink is the shape of an accidental weakening).
+
+File: `tests/unit/dashboard-derive-lanes.test.ts` (rewritten, 19 cases: 14 status×phases + 4 lane-join
+rows [unconditional extension, the production `{lanes:[],slots:[],edges:[]}` derivation-failure
+input, observed-longer-than-expected/current-not-clamped, DENSITY over a non-contiguous
+`expected.lanes`] + 1 `@ts-expect-error` robustness row proving the BODY still tolerates `undefined`
+even though the TYPE no longer advertises it). RED (measured): whole-file behavioural red —
+`TypeError: deriveLanes is not a function` (19/19 cases fail on this one call). The
+`@ts-expect-error` directive itself is `tsc`-red as TS2578 (unused directive) for the SAME reason —
+`deriveLanes` resolves to `any` while the export is missing — and self-corrects at Gate 6 once the
+real signature exists; noted here so Gate 6 does not "fix" it by casting instead.
+
+Second `File:` for this SAME item (TASK-201's own dod collects it by name, so the label cases live
+HERE and not in dashboard-derive-lanes.test.ts): `tests/unit/layout-graph-phase.test.ts` (extended, 2
+new cases — a `parallel([a,b,c])`-shaped slot with no covering agent, direct `ExpectedGraph` literal
+input). 1/2 RED (measured): the inert `__skel_` cell's ONE emission site (`dashboard.ts:425`) carries
+no `label` key at all today regardless of the slot's `labels`, so the 3-label join case
+(`'a / b / c'`) fails — `expected undefined to be 'a / b / c'`. 1/2 Mode-C green by construction: a
+slot declaring NO labels already emits a cell with no `label` key (the join is additive, so the
+"nothing to add" case was already true before this delta) — recorded green, not forced red; all 24
+pre-existing cases in this file re-run and stay green (no regression).
 
 ### UT-239 — `dashboard-metrics.test.ts`: `predictedLanes` + `computeWorkflowMetrics`'s `avgCostUSD`/`unpricedRuns`
 - **status:** red
@@ -11794,33 +11824,89 @@ cross-checked directly against `deriveExpectedGraph` for INV-V26-3's third-consu
 (measured): `predictedLanes is not a function`; `computeWorkflowMetrics`'s existing `WorkflowMetrics`
 carries no `avgCostUSD`/`unpricedRuns` (reads `undefined`, never `null`).
 
-### IT-168 — `dag-masking-auth.test.ts` extended: `dag.lanes` unconditional; `describe.phases[].agents` masked identically
+### IT-168 — `dag-masking-auth.test.ts` extended: `dag.lanes`/predicted overlay/`describe.phases[].agents` ALL served UNCONDITIONALLY (flipped from masked to positive)
 - **status:** red
-- **traces:** DES-197, ARCH-131, ADR-051, ADR-055, TASK-202, REQ-140, REQ-133
+- **traces:** DES-197, DES-198, ARCH-131, ARCH-126, ADR-051, ADR-055, TASK-201, TASK-202, TASK-203, REQ-140, REQ-133, REQ-134
 - **tier:** integration
 - **real:** false
 - **result:** fail
-- **iter:** v27
+- **iter:** v27b
 
-File: `tests/integration/dag-masking-auth.test.ts` (extended, 3 new cases; the existing dual-server
-auth-on/auth-off harness reused verbatim — the 2 pre-existing cases re-run and stay green). 2/3 red
-(measured): `dag.lanes` absent entirely on the auth-enabled DAG payload; `describe.phases[].agents`
-absent on the auth-DISABLED server too (no such projection exists yet at all). 1/3 already correct
-by absence (auth-ON `describe.phases[].agents` is undefined today, matching the masked/absent
-requirement — Mode C).
+**[v27b amendment, Round v27b owner ruling, ADR-051]: FLIPPED from masked to positive, and EXTENDED.**
+The two v27 cases that asserted `describe.phases[].agents` stays ABSENT under auth (masking) are
+DELETED — they pinned the exact predicate ADR-051 reverses. File: `tests/integration/dag-masking-auth.test.ts`
+(extended further, 5 new/rewritten cases on the SAME dual-server harness).
 
-### IT-169 — `dashboard-http.test.ts` extended: `record` on agent detail, `lanes`/`current` on DAG, real CSP
+**Test-first finding, fixed in the same edit (not an owner_decision — a measured fixture-authoring
+fact):** `describe.phases` is the AUTHOR-DECLARED `meta.phases` (`workflow-meta.ts`'s `parseMeta`,
+evaluated from the script's own `export const meta = {…}` literal) — a THIRD, separate "phases"
+concept from both the script's `phase()` CALL STRUCTURE (feeds only the static
+`deriveExpectedGraph`/`predictedLanes` derivation) and `RunStatusView.phases` (the RUNTIME-tracked
+list `deriveLanes` reads for the DAG route). `registerPublishedVia`'s `synthesizeMeta` only ever
+emits `params.agents`, NEVER `phases` (`workflow-fixtures.ts:157-167`, measured directly) — so a
+script registered without its OWN `meta.phases` declaration yields `describe.phases: []` forever,
+regardless of Gate 6, because DES-197's join is BY ORDINAL onto `full.phases` and "derived lanes
+beyond `phases.length` are DROPPED, not appended" (no row to attach `agents` to). `SCRIPT` and
+`SCRIPT_PHASED` (below) now declare their own `export const meta = { phases: […], params: { agents:
+{…} } }` via a small `metaBlock()` test helper — writing the exact `params.agents.<label>` shape
+`synthesizeMeta` itself generates, since declaring `meta` at all makes `synthesizeMeta` return the
+script unchanged. This does NOT affect the DAG-side cases (1, 5/6 below) — those read `view.phases`
+(runtime) and the script's own `phase()` calls, neither of which depends on `meta.phases`.
+
+1. auth ON: `dag.lanes` present AND a `__skel_` predicted cell now reaches an anonymous auth-ON GET
+   (the positive anchor IT-092 used to invert) — RED (measured): `Array.isArray(dag.lanes)` is
+   `false` (`dag.lanes` does not exist at all — `deriveLanes` is never called); the `__skel_`
+   assertion also fails (`server.ts:520`'s `if (!authEnabled)` wrapper still masks it).
+2. auth ON: `describe.phases[].agents` present with labels — RED (measured, post-fixture-fix):
+   `phases` is now `[{title:'main'}]` (non-empty, the fixture fix above), but `p.agents` is
+   `undefined` on it — the GENUINE gap (`workflowDescribe`'s `phases` projection has no `agents` key
+   at all yet, `workflow-view.ts:106`), not an auth-specific mask and not a fixture artifact.
+3. auth OFF: `describe.phases[].agents` present with labels — RED for the SAME genuine reason (2).
+4. `describe.phases` parity (auth vs. open, scoped to `phases` only, over anonymous HTTP) — GREEN
+   (measured, post-fixture-fix): `SCRIPT_PHASED`'s declared `meta.phases` (`[{title:'one'},
+   {title:'two'},{title:'three'}]`) is identical on both servers and neither derives `agents` yet, so
+   the positive length check (`>0`) AND the deep-equal both hold today — Mode C, not forced red; it
+   will keep passing once Gate 6 lands `agents` too, since both servers still receive the identical
+   projection.
+5. INV-V27-9 stabilized-parity sub-describe (live key-set on both payloads + `__skel_`/lane-title/
+   `current` positive anchors on the auth server + full parity minus `PARITY_EXCLUDED =
+   ['runId','terminalAt']`, `current` COMPARED, over a new `SCRIPT_PHASED` const, 3-phase, one
+   `agent()` per phase, exactly `agent-1` running forever on `NEVER_RESOLVES_GATEWAY`'s steady state)
+   — RED (measured, NAMED error not a hook timeout): the auth server's DAG payload never reaches the
+   stabilization predicate (≥1 predicted cell AND exactly 1 live `running` agent cell) within 15s —
+   confirmed empirically: after 15s the auth server's `cells` carry only `[__trigger__, agent-1]`,
+   zero predicted cells, because the mask still withholds them. Test timeout set to 30000ms so this
+   reads as the NAMED stabilization-deadline error, not a misattributed vitest hook timeout.
+
+The 2 pre-existing v22 IT-092 cases (`['__trigger__']`-only + its auth-OFF contrast pin) are DELETED
+(replaced by IT-092's own re-traced sentinel guard, above); of the 3 pre-existing v27 IT-168 cases,
+case 1 is REWRITTEN in place (masked-negative → unconditional-positive) and the two
+`describe.phases[].agents` masking cases are DELETED and replaced by cases 2/3 above (now positive,
+same-direction on both servers) — no orphaned assertions remain.
+
+### IT-169 — `dashboard-http.test.ts` extended: `record` on agent detail, `lanes`/`current` on DAG, real CSP, and the two reachable warning-producer recipes
 - **status:** red
 - **traces:** DES-197, DES-198, ARCH-130, ARCH-131, ARCH-123, TASK-202, TASK-203, REQ-140, REQ-131, REQ-133
 - **tier:** integration
 - **real:** false
 - **result:** fail
-- **iter:** v27
+- **iter:** v27b
 
-File: `tests/integration/dashboard-http.test.ts` (extended, 3 new cases; the existing real
-`createServer()` harness reused — all 9 pre-existing cases re-run and stay green). RED (measured):
+File: `tests/integration/dashboard-http.test.ts` (3 pre-v27b cases + 2 v27b additions on the existing
+real `createServer()` harness — all 9 pre-existing v27 cases re-run and stay green). RED (measured):
 `GET /api/runs/:id/agents/:agentId` carries no `record` key; the DAG payload carries no
 `lanes`/`current`; `GET /dashboard` sets no `Content-Security-Policy` header at all.
+
+**[v27b amendment, Round v27b owner ruling, ADR-051, TASK-203]:** two reachable-producer cases, both
+real calls, no stubs. (iii) The EXISTING "deregistered after it started" case (line ~187) is EXTENDED
+in place with a `console.warn` spy (installed only around the DAG GET, filtered to a JSON-parseable
+line with `event === 'dashboard_api_degraded'` — other unrelated `console.warn` sites exist in
+`server.ts`) plus the `warnings` assertion. RED (measured): `(payload.warnings ?? []).filter(w =>
+/^PREDICTED_/.test(w))` is `[]`, not `[DAG_WARNING_EXAMPLES.unavailable]` — the push does not exist
+yet; consequently 0 parsed `dashboard_api_degraded` lines too. (ii) NEW case: register×2 (`release`,
+pins `v2` on `run_start`) → `workflow_deregister` → register×1 (new lineage, restarts at `v1`) → GET
+— RED (measured): `warnings` carries no `PREDICTED_FROM_FALLBACK_VERSION: pinned=v2 resolved=v1`
+entry (`[]`, not `[DAG_WARNING_EXAMPLES.fallback]`).
 
 ### IT-170 — `static-assets-route.test.ts`: `/static/dashboard/*` registered before the SPA catch-all
 - **status:** red
@@ -11884,16 +11970,37 @@ File: `tests/unit/dashboard-lib-theme.test.js` (new, `.js`, 5 cases — confirms
 widened `include` actually collects it). RED (measured): whole-file import failure —
 `src/dashboard/lib/theme.js` does not exist.
 
-### UT-244 — `dashboard-lib-strings.test.js`: `STR`/`t()` — key parity, no forbidden word
+### UT-244 — `dashboard-lib-strings.test.js`: `STR`/`t()` — key parity, no forbidden word; `warningText(lang, raw)`
 - **status:** red
-- **traces:** DES-201, ARCH-124, TASK-206, REQ-131, REQ-133
+- **traces:** DES-201, DES-206, ARCH-124, TASK-206, REQ-131, REQ-133, REQ-134
 - **tier:** unit
 - **real:** false
 - **result:** fail
-- **iter:** v27
+- **iter:** v27b
 
-File: `tests/unit/dashboard-lib-strings.test.js` (new, `.js`, 3 cases). RED (measured): whole-file
-import failure — `src/dashboard/lib/strings.js` does not exist.
+File: `tests/unit/dashboard-lib-strings.test.js` (3 pre-existing cases + 6 new). RED (measured):
+whole-file import failure — `src/dashboard/lib/strings.js` does not exist — same reason for every
+case in the file, old and new alike. Housekeeping fixed in the same edit: the file's own header
+comment carried a copy-paste-off-by-one (`UT-243`, matching the sibling `dashboard-lib-theme.test.js`)
+— corrected to `UT-244` to match this ledger.
+
+**[v27b amendment, Round v27b owner ruling, ADR-051, TASK-206]:** 6 new cases for `warningText(lang,
+raw)` (Decision rationale v27b, ruling 4 — ONE export, no `parseDagWarning`; lives in `lib/strings.js`
+because parsing is a DECISION and ADR-049 leaves `ui/` no unit tier). Reads
+`DAG_WARNING_EXAMPLES` off `tests/fixtures/dashboard-wire.ts` (the SAME literal `dashboard-http.test.ts`'s
+IT-169 asserts against — one literal, three readers, per TASK-197's own rationale). Cases: the
+FALLBACK token in both languages (mapped, contains the substitute version, never `skeleton`); the
+UNAVAILABLE token in both languages (mapped to its own string-table entry); the `layoutGraph` PROSE
+literal (also contains `': '`) passes through RAW; an unknown head / a detail with no `=` / a known
+token with a malformed detail all return raw, never `undefined`, never the detail half; a string with
+no `': '` at all returns raw; the three new `STR` keys (`predictedLayoutUnavailable`,
+`predictedLayoutFromFallback`, `laneUntitled`) asserted present in both languages (the pre-existing
+key-parity case already covers them for free). Test-first note on the import mechanic: the fixture is
+imported with an explicit `.ts` extension (`../fixtures/dashboard-wire.ts`), unlike every
+`../../src/*.js` specifier in this file — measured empirically: a `.js` specifier from a `.js`
+IMPORTER 404s (Vite's own loader map needs the real extension; the `.js`-resolves-to-`.ts`
+convenience is a `moduleResolution: bundler` behavior that only applies when the IMPORTER goes
+through the TS-aware transform, i.e. a `.ts` test file).
 
 ### UT-245 — `dashboard-lib-connection.test.js`: `nextConnection`/`worstOf`/`classifyResponse`
 - **status:** red
@@ -12001,19 +12108,34 @@ RUNS rather than skipping). RED (measured): no `data-theme` attribute; light-pre
 persist (no `localStorage` read at all); the hue custom property is not recomputed by CSS; setting
 `rwe-lang=zh` produces no 繁中 text anywhere (no i18n exists); no search input exists on home.
 
-### VAL-199 — real Chromium: workflow detail — version tag, run history table, predicted layout
+### VAL-199 — real Chromium: workflow detail — version tag, run history table, predicted layout — INCLUDING under auth
 - **status:** red
-- **traces:** REQ-133
+- **traces:** REQ-133, REQ-134
 - **tier:** acceptance
 - **real:** false
 - **result:** fail
-- **iter:** v27
+- **iter:** v27b
 
-File: `tests/acceptance/val-199-workflow-detail.test.ts` (new, 2 cases; real Chromium). RED
-(measured): no `<table>` renders on a workflow-detail-shaped URL at all (no such view exists —
+File: `tests/acceptance/val-199-workflow-detail.test.ts` (2 pre-existing cases + 1 new; real
+Chromium — Chrome IS present, confirmed, all 3 cases actually RUN). RED (measured, pre-existing 2):
+no `<table>` renders on a workflow-detail-shaped URL at all (no such view exists —
 `/dashboard/workflow/<name>` falls through to the run-detail pane, `(run not found)`); a never-run
 workflow's rendered VISIBLE text (script/style stripped, to avoid a false pass off a code comment
-containing the word "predicted") contains neither "predicted" nor "預測".
+containing the word "predicted") does not match `/predicted|預測/i` yet (no such view exists).
+
+**[v27b amendment, Round v27b owner ruling, ADR-051]:** new THIRD case stands up a SECOND,
+auth-ENABLED `createServer()` (same `mintBearer`/`TokenStore` pattern as `dag-masking-auth.test.ts`
+— loopback-bound, D-BIND does not exempt it, registration genuinely needs the bearer) and registers
+a never-run workflow whose one `agent()` call carries a DISTINCTIVE marker label
+(`val199-auth-marker-agent`, chosen so `toContain` cannot pass vacuously off a generic label like
+`x`). The dashboard PAGE GET itself is anonymous — no bearer at all, the same reachability the
+original H2 finding described. Asserts the rendered VISIBLE body text contains the marker label
+verbatim — the Gate 7.5 instruction FLIPPED by ADR-051 from "record what degrades under auth" to
+"PROVE the overlay IS visible", and a structural DOM check alone (a lane element exists) would pass
+on grey boxes reading the literal word "agent"; this case may not be judged before TASK-201's
+predicted-cell `label` has landed (VAL-204's own note), or the Chromium oracle photographs exactly
+that and the screenshot becomes the wrong baseline. RED (measured): same reason as the two
+pre-existing cases — no workflow-detail view exists at all yet, not an auth-specific gap.
 
 ### VAL-200 — real Chromium: the swimlane run graph — lane headers, 216x74 nodes, legend
 - **status:** red
@@ -12064,17 +12186,31 @@ Real-tier path per 04-design.md's own table: backed by `tests/integration/dashbo
 REQ-136 block (IT-165) — a real run, both transports, asserted on the real response body. RED
 (measured): see IT-165.
 
-### VAL-204 — REQ-140: `dag.lanes` unconditional; agent detail carries `record`
+### VAL-204 — REQ-140/REQ-134: `dag.lanes` + the predicted overlay unconditional (Round v27b: PROVE visible, not "record what degrades"); agent detail carries `record`
 - **status:** red
-- **traces:** REQ-140
+- **traces:** REQ-140, REQ-134
 - **tier:** acceptance
 - **real:** false
 - **result:** fail
-- **iter:** v27
+- **iter:** v27b
 
 Real-tier path per 04-design.md's own table: backed by `tests/integration/dag-masking-auth.test.ts`
-(IT-168, both auth on/off servers) and `tests/integration/dashboard-http.test.ts` (IT-169, `record`
-+ byte-compatible DAG keys). RED (measured): see IT-168/IT-169.
+(IT-168, both auth on/off servers, the stabilized INV-V27-9 parity + positive anchors + live
+key-set) and `tests/integration/dashboard-http.test.ts` (IT-169, `record`, byte-compatible DAG keys,
+the UNAVAILABLE/FALLBACK warning + degrade-log recipes). RED (measured): see IT-168/IT-169.
+
+**[v27b amendment, Round v27b owner ruling, ADR-051]:** the standing Gate 7.5 instruction FLIPS from
+「run one `auth.enabled:true` case and record what degrades」 to 「run one `auth.enabled:true` case and
+PROVE the overlay IS visible」 — VAL-199's new auth-ON Chromium case (agent NAMES rendered
+anonymously against an auth-enabled engine) is that proof at the acceptance tier; VAL-204 must not be
+judged before TASK-201's predicted-cell `label` has landed, or the oracle would photograph grey boxes
+reading the literal word "agent". **One number rides along, VAL-side, NOT built here** (same
+Gate-7.5-only pattern as VAL-205's `scripts/bench-run-list.ts`; no red/green state to confirm at this
+gate): the p95 wall time of `GET /api/runs/:id/dag`, auth ON, largest corpus script, taken as 200
+sequential GETs (ADR-051's measurement obligation) — it decides only whether a bounded per-`(name,
+version)` memo is warranted (>50ms), never a v27b test-first item. If any surviving text elsewhere
+says the auth-ON case merely "records a degradation", that sentence is now FALSE evidence (ADR-051's
+own words) and must be read as superseded by this amendment.
 
 ### VAL-205 — REQ-141: `RunSummary.costUSD` shares ONE fold with `/api/runs/:id`
 - **status:** red

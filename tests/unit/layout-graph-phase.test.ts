@@ -135,3 +135,41 @@ describe('layoutGraph — dynamic lanes and lanes beyond the prediction (UT-212,
     expect(out.cells.filter((c) => c.agentId)).toHaveLength(2);
   });
 });
+
+// UT-238 (DES-196, ARCH-126, ADR-051, TASK-201, REQ-140/132/133/134) — second `File:` for the same
+// ledger item (TASK-201's own dod collects this file by name, so the label cases live HERE and not
+// in dashboard-derive-lanes.test.ts). [v27b amendment, Round v27b owner ruling, ADR-051]: the
+// predicted (inert `__skel_`) cell's ONE emission site (`dashboard.ts:425`) gains a `label`:
+// `s.labels.join(' / ')`, present only when the slot declares at least one label — without it every
+// unreached node on an auth deployment paints the literal word `agent` (`dashboard-page.ts:581`),
+// and REQ-134's 「一眼看出卡在哪」 is unsatisfiable now that the overlay is finally visible there.
+// Direct-input unit test — the ExpectedGraph literal is fed straight to `layoutGraph`, not hunted
+// for in a script (a dynamic LANE emits no inert cells at all — UT-212 above, :102).
+// Mock policy (unit): pure function, no I/O — synthetic ExpectedGraph fixtures, no live agents.
+// Red reason (measured): `dashboard.ts:425`'s `placeCell` call for an inert `__skel_` cell carries
+// no `label` key at all today, regardless of the slot's `labels` — the join simply does not exist.
+describe('layoutGraph — the inert predicted cell carries a label (UT-238, DES-196, Round v27b)', () => {
+  it('a parallel([a,b,c])-shaped slot (3 labels, one slot) with no covering agent renders ONE inert cell labelled "a / b / c"', () => {
+    const expected = {
+      lanes: [{ index: 0, title: 'fan-out', dynamic: false, slots: [0] }],
+      slots: [{ index: 0, lane: 0, labels: ['a', 'b', 'c'], kind: 'parallel', tools: {} }],
+      edges: [],
+    } as any;
+    const out = layoutGraph(expected, [], [] as any);
+    const skel = out.cells.filter((c) => String(c.id).startsWith('__skel_'));
+    expect(skel).toHaveLength(1);
+    expect((skel[0] as any).label).toBe('a / b / c');
+  });
+
+  it('a slot declaring NO labels renders an inert cell with NO `label` key at all (absent, never empty string)', () => {
+    const expected = {
+      lanes: [{ index: 0, title: 'empty-slot', dynamic: false, slots: [0] }],
+      slots: [{ index: 0, lane: 0, labels: [], kind: 'single', tools: {} }],
+      edges: [],
+    } as any;
+    const out = layoutGraph(expected, [], [] as any);
+    const skel = out.cells.filter((c) => String(c.id).startsWith('__skel_'));
+    expect(skel).toHaveLength(1);
+    expect('label' in skel[0]!).toBe(false);
+  });
+});
