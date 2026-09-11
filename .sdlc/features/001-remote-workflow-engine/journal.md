@@ -3293,3 +3293,48 @@ and this repo has already lost a ledger to a shared-tree mishap.
 section marked SUPERSEDED and kept for history; the dashboard regenerated **after** this review was
 written so it is not staler than any doc; and `.panel/` removed as transient process scratch, which is
 safe only because `send_back` is empty and this is the last gate.
+
+---
+
+## 2026-09-11 — v27 GATE 1 PASSED (orchestrator, in session)
+
+**Trigger.** The owner asked to pull in a dashboard design they had finished in Claude Design and apply
+it to `src/dashboard-page.ts`. The first target named was the *Classical* design system
+(`f8a17458-…`); the owner corrected it mid-session — the real target is the project
+**`38fc8181-5b00-45aa-a354-bf07994e19ab` "Workflow Dashboard Design"**, whose
+`design_handoff_workflow_dashboard/` carries a HIGH-fidelity spec, the design itself
+(`Workflow Dashboard.dc.html`), `rwe-data.js` (i18n / formatters / REST client / demo dataset) and a
+`github.md` naming this repo @ master. Classical is only the component-class layer there; every token
+is overridden per theme, which is why the design is dark, not Classical's gold-on-white.
+
+**Triage gate applied before anything was created.** `src/dashboard-page.ts` appears 30× in this
+feature's `06-impl-log.md` `files:`, so per SKILL.md §2 this is an **iteration of feature 001**, not a
+new `.sdlc/features/NNN`. Size (>1 ARCH module, 13 REQs, wire-shape changes) puts it past `/sdlc-fix`'s
+refusal threshold → full `/sdlc-run`.
+
+**Gate 0.** An `explorer` agent produced `v27-gate0-asis-map.md` (read-only, file:line throughout):
+the ID closure for the dashboard surface, the test pins that constrain a rebuild, and verdicts on five
+API gaps. It also surfaced a code orphan (`buildDagModel`/`DagNode`, `dashboard.ts:18-71`, zero
+production callers) and confirmed REQ-072's frame tinting is dead on the live DAG path
+(`LayoutCell.frame` is declared but never populated).
+
+**Interview.** Three `AskUserQuestion` rounds, 12 questions, all owner-answered in session; the full
+Q/A is in `01-requirements.md` → *Round v27*. Two answers changed the shape of the work:
+1. 「system prompt 看不到 只有 user prompt 會顯示」 — the orchestrator then verified this is **not** a UI
+   concern: `agent-executor.ts:580` composes the agentType `systemPrompt` as the FIRST segment,
+   `gateway/client.ts:501` puts that composed string into `HarnessDescriptor.prompt`, and
+   `mcp-facade.ts:699` returns it. The wire leaks it today → **REQ-136**, a strip-at-source requirement.
+2. 「要和設計出來的UI 99% 相似」 — promoted from a nice-to-have to acceptance on REQ-131..138, verified
+   at Gate 7.5 by paired dark/light Playwright screenshots in `evidence/` plus an item-by-item walk of
+   the handoff README's colour/size/animation spec.
+
+**Written.** `01-requirements.md`: `## Iteration v27` with the Round v27 clarification log (interview
+table, the four Gate-0 constraints C1–C4, four Won't-haves D1–D4, the owner's confirmation) and
+**REQ-131..143**. `state.yaml`: `iteration: v27`, `gates.requirements.passed=true`, the seven
+downstream gates flipped to `passed:false` with their v26 notes preserved behind `PRIOR(v26):`.
+
+**Gate 1.5 — safety triage: QM.** Operator-facing developer tooling, no safety or cyber-physical
+impact; `safety_class: QM` unchanged and **no `00-safety.md` is written**, per SKILL.md §1.5.
+
+**Not done here, deliberately:** no ARCH/DES/TASK items and no code — the orchestrator does not
+ghost-write Gates 2–8. Next step is `/sdlc-run` for Gate 2→8.

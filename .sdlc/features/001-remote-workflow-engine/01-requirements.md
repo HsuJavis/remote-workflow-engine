@@ -1579,3 +1579,295 @@ orchestrator 標明兩個後果,照裁決執行:(1) DEPLOY.md 記載的「自架
   builder 重生成。
   **紅測:** 現行 guide 文字不含「DETERMINISM_GUARD」與 `seedManifest` → 期望含。
 - **iter:** v26
+
+## Iteration v27 — 依 Claude Design 交付包重建 operator dashboard (REQ-131..143)
+
+### Round v27 — 2026-09-11 (Gate 1 interview, owner-answered in session)
+
+來源:擁有者在 Claude Design 完成了一份 high-fidelity 的 dashboard 設計並備妥交付包
+(project `38fc8181-5b00-45aa-a354-bf07994e19ab`「Workflow Dashboard Design」,交付路徑
+`design_handoff_workflow_dashboard/`:`README.md` 規格、`Workflow Dashboard.dc.html` 設計本體、
+`rwe-data.js` i18n/formatter/REST client/示範資料、`github.md` 指名本 repo @ master)。交付包的
+`README.md` 自述 **fidelity: HIGH — Colors, type, spacing and interactions are final. Match them
+exactly**,並指定「在既有的 `src/dashboard-page.ts` server-side HTML stack 裡重做」。綁定的
+design system 是 Classical(`f8a17458-…`),但**只借用元件類別**(`.card .tag .btn .table .seg
+.input .nav .hr`),token 全數被每個主題覆寫 —— 這份設計不是 Classical 的金色白底。
+
+orchestrator 先派 explorer 做 Gate 0 as-is 盤點(全文 `v27-gate0-asis-map.md`),再以三輪
+AskUserQuestion 訪談擁有者。
+
+**Round 1 — 5W1H**
+
+| Q | 問題 | 擁有者的回答 |
+|---|---|---|
+| Q1 (Why) | 重做 dashboard 最想解決什麼? | **以觀測性為主,但三者都要**(看不到 agent 在幹嘛 / 畫面醜 / 模型與系統資源不好查) |
+| Q2 (Who·Where) | 誰在看、在哪看? | **我 + 團隊,遠端連進來** |
+| Q3 (What) | 怎樣算成功? | 四項全選:點任一 agent 看到全貌、一眼看出卡在哪個 lane、跟設計稿像素級一致、成本一目了然;並自行補上一句 **「要和設計出來的UI 99% 相似」** |
+| Q4 (How much) | 這次一定要做完哪幾塊? | **四塊全要**:主題外殼、Workflows tab、Agent 滑入面板、Models tab + System tab |
+
+**Round 2 — 5 Whys + 關鍵決策**
+
+| Q | 問題 | 擁有者的回答 | 改變了什麼 |
+|---|---|---|---|
+| Q5 | 「看不到 agent 在幹嘛」最痛的是哪一刻——即時介入還是事後驗屍? | **一樣重** | 畫面不得只為其中一邊最佳化;即時度(輪詢、進行中樣式)與可回溯(完整 log、失敗 detail、歷史比對)同為 acceptance |
+| Q6 | 遠端 + 團隊會看到完整 prompt 與 log,怎麼處理? | **「system prompt 看不到 只有 user prompt 會顯示, log 無害 沒關係」** | 產生 REQ-136。經查證這**不是**前端問題:`agent-executor.ts:580` 把 agentType 的 systemPrompt 合成在第一段,`gateway/client.ts:501` 原樣放進 harness descriptor,`mcp-facade.ts:699` 直接回傳 —— 今天線上就在吐。改為線上不傳 |
+| Q7 | 字體 Archivo + JetBrains Mono 原走 Google Fonts,但本 repo 連 mermaid CDN 都刻意拒絕 | **字體檔 vendor 進 repo** | REQ-131 要求字體自 repo 自帶的 woff2 載入,HTML 不得含任何外部 host |
+| Q8 | API 連不上時畫面怎麼表現? | **「3 因為我要看有缺什麼 如果可以正式上線 再拿掉就好」**(選項 3 = 保留示範資料但標記得很明顯) | 產生 REQ-143,並在該 REQ 內寫死退場條件 |
+
+**Round 3 — NFR 與紅卡**
+
+| Q | 問題 | 擁有者的回答 | 改變了什麼 |
+|---|---|---|---|
+| Q9 | models 的 latency / benchmarks 完全不存在,資料哪來?(唯一無法從程式碼回答的紅卡) | **先顯示「—」,下個迴代再補** | REQ-137 保留欄位與 `—` 呈現;資料來源列為 Won't-have(D2) |
+| Q10 | 「99% 相似」要怎麼驗收才算數? | **截圖並排比對 + 規格逐條核** | 成為 Gate 7.5 的手續:每個畫面 dark/light 各一張 Playwright 截圖存 `evidence/`,與交付包並排;再依交付 README 的顏色/尺寸/動畫清單逐條核 |
+| Q11 | 遠端多人 + 3 秒輪詢的效能底線? | **只選「頁面隱藏時暫停輪詢」** | 產生 REQ-142;輪詢間隔可設定與其他效能項目**未**被選取,列為 Won't-have(D3) |
+| Q12 | 主題/語言/hue 偏好存哪? | **localStorage,每人各自記** | REQ-131;不新增引擎端偏好設定面向 |
+
+**Gate 0 盤點帶回、成為本輪硬約束的四件事**
+
+- **C1 — page-source 文字斷言**:`tests/unit/dashboard-page-source.test.ts` 釘死三段字面值
+  (`.fit-btn{position:relative;z-index:1;`、`<img id="diagram-img" … draggable="false"`、
+  `addEventListener('mousedown', function(e){ e.preventDefault();`),每一段都對應一個真實的
+  Gate 7.5 缺陷(被 transform 蓋住的按鈕、原生圖片拖曳劫持 pan)。重建後這三個行為不得回歸。
+- **C2 — Chromium 驗收選擇器錨點**:`val-193` / `val-197` 釘死 `#dag-fit #dag-graph #dag-zoom
+  #run-usage #diagram-img #diagram-zoom .card .t`。**本輪裁定:優先沿用為相容錨點**;確有設計上
+  無法沿用者,於同一 VAL ID 下重寫測試並重跑 REQ-129 的真實驗證,不得默默移除。
+- **C3 — `no-skeleton-surface` 守衛(REQ-105 / ADR-048)**:`src/**` 只有六個檔案允許出現
+  "skeleton"(不分大小寫、含註解),`dashboard-page.ts` **不在**允許清單內。交付包 `rwe-data.js`
+  的 i18n 帶有 `skeleton: '預測結構(尚無執行)'` 鍵,**照抄會讓 CI 變紅** —— 重建時該鍵與其文案
+  一律改用「預測結構 / predicted layout」用語。
+- **C4 — 交付包與現實的兩處落差**(給 Gate 2/4 的提醒,不是缺陷):(a) `.dc.html` 的靜態色票烘焙在
+  teal(`--color-accent:#5fb3a1` dark / `#2f8f7d` light),與 README 所述 hue 預設 236° 不一致 ——
+  **以 README 的 OKLCH 執行期公式為準**,靜態 hex 只是某個 hue 的快照;(b) `describe` 與
+  `GET /api/workflows` 的實際線上形狀比設計假設更寬(`mcp-facade.ts:471-490`、
+  `workflow-catalog.ts:807`),設計取用時要以實際形狀為準。
+
+**Won't-have(本輪明確不做,已向擁有者陳述)**
+
+- **D1** — 應用層權限/登入分級:擁有者對 Q6 只要求 system prompt 不外流,log 視為無害;不新增
+  per-principal 的 dashboard 權限面向。遠端存取沿用引擎現有機制。
+- **D2** — models 的 latency 量測管線與 benchmark 資料源(Q9)。欄位做出來但恆為 `—`,資料源下一迭代。
+- **D3** — 可設定的輪詢間隔、SSE/長連線推播(Q11 未選)。
+- **D4** — 手機/平板 responsive:Q2 選的是「我 + 團隊,遠端連進來」,未選行動裝置;桌機寬度優先。
+
+**擁有者確認**:2026-09-11,擁有者於 session 內逐輪作答並確認四塊全做、Issues tab「保留,照新主題
+重畫」、驗收採「截圖並排比對 + 規格逐條核」。
+
+---
+
+### REQ-131 — dashboard 外殼:主題、自帶字體、語言、accent hue 與連線指示
+- **status:** draft
+- **traces:** REQ-008, REQ-074
+- **acceptance:**
+  **Given** 首次載入且無既存偏好 **Then** 根元素帶 `data-theme="dark"`,`--color-bg` 計算值為 `#18191b`
+  (交付包的 dark 預設)。
+  **Given** 主題分段控制選「淺」 **Then** `data-theme="light"`、`--color-bg` 為 `#eef2f1`,且重新整理後
+  仍為 light(偏好存 `localStorage`)。
+  **Given** 主題為「系統」 **When** `prefers-color-scheme` 由 light 轉 dark **Then** 版面隨之改變,不需重新整理。
+  **Given** hue 滑桿移到 h **Then** `--color-accent` 依 OKLCH 公式重算(dark `oklch(.72 .065 h)`、
+  light `oklch(.56 .065 h)`,ramp 100–900 依交付 README 的 L/C 序列),且值寫入 `localStorage['rwe-hue']`。
+  **Given** 語言分段設 EN **Then** nav/tab/欄位標題全英文;設「中」**Then** 全繁中。兩種語言的字串
+  同源於單一字串表,畫面不得散落字面值。
+  **Given** 任一 `/api/*` 取得成功 **Then** nav 的來源 tag 顯示「連線中 / Live」(accent tint);連續失敗
+  **Then** 顯示「離線 / Offline」(紅色 outline)。
+  **Given** 在無網路環境開啟頁面 **Then** Archivo 與 JetBrains Mono 仍正確套用 —— 字體由本 repo 自帶的
+  woff2 供應,產出的 HTML 不含 `fonts.googleapis.com` 或任何其他外部 host(C3 之外的離線立場,與既有
+  「不引 mermaid CDN」一致)。
+  **紅測:** 現行 `DASHBOARD_HTML` 無 `data-theme`、無 `--color-accent`、`lang="en"` 寫死、字體為
+  `-apple-system,Segoe UI,sans-serif` → 期望上述皆成立。
+- **iter:** v27
+
+### REQ-132 — Workflows home:搜尋、篩選、帶成本的卡片指標與執行中掃光
+- **status:** draft
+- **traces:** REQ-076, REQ-008
+- **acceptance:**
+  **Given** home **Then** 卡片分 Running / Registered / Other 三段,Running 段標題帶脈動 accent 圓點
+  (`rwePulse` 1.6s),Other 段整體 opacity .75;格線 `repeat(auto-fill, minmax(280px,1fr))`、gap 16px。
+  **Given** 任一卡片 **Then** 顯示 kicker(`ACTIVE · <8碼 runId>` 或 `LAST RUN · <M/D HH:MM>`)、
+  workflow 名稱、描述,與 meta 列 `成功率 67% (2/3) · 平均耗時 12m 4s · 平均費用 $0.42 · 5 次執行`,
+  數字為 tabular figures,成功率項 `white-space:nowrap`。
+  **Given** 搜尋框輸入字串 **Then** 僅保留名稱或描述命中的卡片;分段篩選「全部 / 執行中 / 已註冊」
+  各自顯示對應數量。
+  **Given** 一個有進行中 run 的 workflow **Then** 其卡片為 accent 邊框,頂端有 2px accent 掃光
+  (`rweSweep` 2.4s linear infinite);hover 時 5–6% accent 底色。
+  **Given** 點擊卡片 **Then** 進入該 workflow detail,麵包屑為 `總覽 › <name>`。
+  **視覺驗收:** dark 與 light 各一張 Playwright 截圖存 `evidence/`,與交付包並排比對。
+  **紅測:** 現行 home 無搜尋框、無分段篩選、卡片無平均費用 → 期望有。
+- **iter:** v27
+
+### REQ-133 — Workflow detail:版本/觸發器、run chips 與執行歷史表
+- **status:** draft
+- **traces:** REQ-097, REQ-119, REQ-008
+- **acceptance:**
+  **Given** workflow detail **Then** 顯示 h2 名稱、`版本 vN` tag、可執行/不可執行 tag、描述(最寬 720px),
+  右欄「TRIGGERS」以 outline tag 逐一列出(如 `webhook · gh-issue-labeled`)。
+  **Given** 該 workflow 有執行記錄 **Then** 顯示最近 6 個 run chip(outline `.btn` + 7px 狀態點 + 8 碼
+  runId),選中者為 accent 邊框 + accent-100 底。
+  **Given** 執行歷史表 **Then** 欄位為 執行ID(等寬)· 狀態 tag · 版本 · 觸發者 · 開始時間 · 耗時 ·
+  節點數 · Tokens · 費用;進行中的耗時顯示為 `4m 12s 進行中`;選中列為 7% accent 底。
+  **Given** 點擊歷史表某一列 **Then** 上方的執行圖切換到該 run。
+  **Given** 該 workflow 完全沒有執行過 **Then** 圖區顯示其**預測結構**並標明尚無執行 —— 文案與識別字
+  一律使用「預測結構 / predicted layout」,**不得出現 "skeleton"**(C3,`no-skeleton-surface` 守衛)。
+  **紅測:** 現行無 workflow detail 這一層(卡片直接進 run 詳情)→ 期望有。
+- **iter:** v27
+
+### REQ-134 — swimlane 執行圖取代現行 DAG 版面
+- **status:** draft
+- **traces:** REQ-071, REQ-072, REQ-128, REQ-129
+- **acceptance:**
+  版面常數:`PAD 16 / TRIG_W 112 / LANE_W 216 / LANE_GAP 40 / HEAD_H 48 / CELL_H 74 / GAP_Y 14`。
+  **Given** 一個 5 lane、9 agent 的 run **Then** 每個 lane 有標頭(如 `01 REQUIREMENTS`,大寫 13px、
+  letter-spacing .04em、semibold),目前 lane 的標頭為 accent 色 + accent 底線 + `目前` tag,
+  各 lane 的 x 位置有垂直髮絲線。
+  **Given** 邊 **Then** 為來源右中到目標左中的三次貝茲曲線、1.2px;目標執行中為 accent、已走過為
+  neutral-500、其餘為 divider;指向 pending/queued 的邊為 `4 4` 虛線。
+  **Given** 節點 **Then** 216×74、radius 3px、surface 底、1px divider 邊、padding 8/12,三列:
+  ①9px 狀態點 + 標籤(13.5px semibold,溢出省略) ②模型短名(11px,70%)+ effort tag(`.tag-neutral` 10px)
+  ③`52k tok · $0.31 · 2m 10s`(10.5px,55%)。
+  **Given** 執行中節點 **Then** accent-100 底、accent-600 邊、`--shadow-md` + `rweGlow` 1.8s 光環,
+  狀態點 `rweRing` 1.3s;**done** 狀態點為文字色;**failed** 邊與點為 `oklch(0.55 0.16 25)`;
+  **queued/pending** 為虛線邊、opacity .65、空心點。
+  **Given** 觸發節點 **Then** 112×40、透明底、標籤為觸發類型。
+  **Given** 圖區 **Then** 下方有 legend 列,右對齊執行摘要(如 `執行中 · 8 個節點 · 412k tok · $2.13`)。
+  **Given** 重建後的圖 **Then** `#dag-fit` / `#dag-graph` / `#dag-zoom` 錨點與滾輪 zoom / 拖曳 pan /
+  fit 重置行為皆保留,REQ-129 的真實驗證不得回歸(C2)。
+  **紅測:** 現行 DAG 無 lane 標頭、無貝茲邊、節點只有單列標籤 → 期望有。
+- **iter:** v27
+
+### REQ-135 — agent 滑入面板:一次看完一個節點的全貌
+- **status:** draft
+- **traces:** REQ-118, REQ-127, REQ-008
+- **acceptance:**
+  **Given** 點擊任一 agent 節點 **Then** 面板由右側滑入(`translateX(40px)→0`,.28s
+  `cubic-bezier(.2,.7,.2,1)`);**When** 該節點中心位於圖的右半 **Then** 改由左側滑入
+  (`translateX(-40px)→0`)。背景遮罩 `rgba(8,12,9,.5)` 於 .2s 淡入。
+  **Given** 面板 **Then** 標頭含 32px `.btn-icon` 關閉鈕、標籤 h2、狀態 tag、階段 tag、右對齊等寬 agentId。
+  **Given** 面板 **Then** 六張 stat 卡(`auto-fit minmax(150px,1fr)`):模型 / 努力程度
+  (`reasoning.effort = high`)/ 逾時(`15m 0s` 與 `900,000 ms` 並陳)/ 耗時(開始→結束)/
+  Tokens(總數 + 輸入·輸出·快取讀·快取寫 四欄)/ 費用。
+  **Given** 面板 **Then** 以 `<pre>`(13.5px/1.6、pre-wrap、max-height 420、外框)顯示**使用者提示詞**;
+  三欄列出 允許工具(`.tag-neutral`)、MCP 伺服器(`.tag-accent`)、技能(`.tag-outline`),各帶數量。
+  **Given** 輸出事件列表(max-height 420) **Then** 每列為 `HH:MM:SS` · 種類 tag(tool call = accent tint、
+  message = neutral、log = 紅 outline、其餘 outline)· 內容(tool_call / tool_result / log 用等寬字)。
+  **Given** 失敗事件帶 `detail` **Then** 以紅色外框方塊顯示該 detail。
+  **Given** 按 Esc 或點擊背景遮罩 **Then** 面板關閉。
+  **紅測:** 現行以共用的 `#detail` 區塊就地顯示 transcript,無滑入面板、無 stat 卡 → 期望有。
+- **iter:** v27
+
+### REQ-136 — agent 明細的線上回應不得含 agentType 的 system prompt
+- **status:** draft
+- **traces:** REQ-094, REQ-118, REQ-135
+- **acceptance:**
+  **現況(已於 Gate 1 查證):** `agent-executor.ts:580` 以
+  `composePrompt(def?.systemPrompt, runParams.prompt, req.prompt, appendPrompt)` 合成,agentType 的
+  **systemPrompt 是第一段**;`gateway/client.ts:501` 將該合成結果原樣放進 `HarnessDescriptor.prompt`
+  (4KB 頭尾截斷,`agent-executor.ts:676`);`mcp-facade.ts:699` 的 `run_agent_log` 直接回傳 `harness`。
+  因此今天 agent 明細的線上回應**含 system prompt**。
+  **Given** 任一 agentType 帶非空 systemPrompt 的 agent **When** 取其明細(MCP `run_agent_log` 或
+  dashboard 所用的 HTTP 路由) **Then** 回應 body 不含該 systemPrompt 的任何片段。
+  **Given** 同一回應 **Then** 仍含腳本提供的 agent 提示詞(使用者提示詞),使 REQ-135 的面板有東西可顯示。
+  **Given** 呼叫者是 run 的擁有者本人 **Then** 結果相同 —— 這是**線上不傳**,不是前端隱藏。
+  **開放給 Gate 2 裁定:** `appendPrompt` 與 `runParams.prompt` 兩段是否比照 systemPrompt 一併剔除,
+  以及既有以 `harness.prompt` 為斷言對象的測試如何調整(不得以放寬斷言了事)。
+  **紅測:** 對一個有 systemPrompt 的 agentType 實跑一次後取明細,斷言回應 body 不含其 systemPrompt
+  片段 → 現況為含,紅。
+- **iter:** v27
+
+### REQ-137 — Models tab:可排序可篩選的目錄與滑入細節
+- **status:** draft
+- **traces:** REQ-040, REQ-077, REQ-008
+- **acceptance:**
+  **Given** Models tab **Then** 表格(min 960px,可水平捲動)欄位為:模型(nowrap,min 170)· 供應商 ·
+  別名 · 上下文(右對齊)· 價格(輸入/輸出 每 M)· 工具 · effort · 模態(`text+image → text`)·
+  延遲(`TTFT 900ms · p50 6.8s`)· 穩定度 tag · 基準分數(`78 avg`)· 位置。
+  **Given** 點擊任一欄標題 **Then** 依該欄排序,再點切換升降冪,作用中欄標題為 accent-700 並帶 ▲/▼。
+  **Given** `/api/models` 的某列未提供 `latency` 或 `benchmarks` **Then** 該格顯示 `—` 而非 0 或空白。
+  (本迭代這兩欄**必定**為 `—`,資料來源為 Won't-have D2。)
+  **Given** 搜尋框、供應商下拉、「全部 / 遠端 / 本機」分段 **Then** 計數顯示 `9`,有篩選時顯示 `4 / 9`。
+  **Given** 點擊任一列 **Then** 右側滑入 560px 面板:kicker「供應商 · 位置」、h2 模型名、別名列、描述、
+  定義列表(能力 / 模態 / 上下文 / 價格 / 成本等級以 ●●●○○ 呈現 / 延遲 / 穩定度 / 工具 / effort)、
+  **Benchmarks** 區(grid `140px 1fr 48px`,每項 2px 軌 + 4px accent 長條)、支援參數以 neutral tag 列出。
+  **紅測:** 現行 Models 面板為單一 `.models-table`,無排序、無篩選、無滑入細節 → 期望有。
+- **iter:** v27
+
+### REQ-138 — System tab:資源卡片、處理程序表與引擎自身
+- **status:** draft
+- **traces:** REQ-078, REQ-008
+- **acceptance:**
+  **Given** System tab **Then** 四張 stat 卡:CPU %、記憶體 %、磁碟 %(kicker 為路徑)、儲存的工作流數;
+  數字 34px/weight 500,下方 2px 軌 + 4px accent 長條,meta 行如 `16 核心 · 負載 5.2 / 4.87 / 3.91`、
+  `26 GB / 64 GB · 38 GB 可用`、`9 個版本 · 13 次執行記錄`。
+  **Given** 處理程序表 **Then** 欄位 PID · 名稱(等寬;引擎自身的列標 ★ 並帶 accent 長條)· CPU %(長條)·
+  記憶體;表頭顯示 `總處理程序 312 · S 298 · R 7 …`。
+  **Given** 引擎自身 **Then** 以 `<dl>` 置於外框方塊,列出 PID / 運作時間 / CPU % / 記憶體 / 執行緒 /
+  檔案描述子。
+  **Given** `/api/system` 回報某區段 degraded **Then** 該區顯示「無法取樣 / Unavailable」,不得顯示 0
+  假裝有值(沿用本 repo「degrade, never pretend」立場)。
+  **紅測:** 現行 System 面板為單一 `.sys-table` 鍵值表,無 stat 卡、無長條、無處理程序表 → 期望有。
+- **iter:** v27
+
+### REQ-139 — Issues tab 保留,並與其他 tab 同主題
+- **status:** draft
+- **traces:** REQ-067, REQ-131
+- **acceptance:**
+  **Given** Issues tab **Then** 仍由 `/api/issues` 供資料、仍分 Open / Resolved、仍可展開細節並開啟
+  GitHub 連結,REQ-067 的行為不得回歸(未設定 GitHub 時仍顯示 degraded 而非空白)。
+  **Given** Issues tab **Then** 其 tag / 列表 / 細節方塊一律使用 v27 的 token 與元件類別,在 dark 與
+  light 下與其他三個 tab 無視覺落差(兩張截圖為證)。
+  **註:** 交付包的設計只有三個 tab,Issues 是擁有者明確要求保留的第四個;因此它**沒有**設計稿可比對,
+  其視覺驗收以「與其他 tab 同主題、同元件類別」為準,不適用 99% 相似條款。
+- **iter:** v27
+
+### REQ-140 — 兩處小型 API 補齊:`dag.lanes` 與 agent 明細的 `record`
+- **status:** draft
+- **traces:** REQ-128, REQ-118, REQ-134, REQ-135
+- **acceptance:**
+  **Given** `GET /api/runs/:id/dag` **Then** 回應含 `lanes:[{index,title}]`,且**在啟用 auth 時同樣回傳**
+  —— 現況 `server.ts:519-552` 只在 `!authEnabled` 才填,`skeleton-graph.ts:25-30` 算出的 lane 資訊
+  算完即丟。既有的 `{kind,cells,edges,startedBy}` 欄位一併保留,不得移除
+  (`tests/integration/dashboard-http.test.ts` 已釘住現行形狀)。
+  **Given** `GET /api/runs/:id/agents/:agentId` **Then** 回應含 `record`(對應的 `AgentRecord`),
+  與既有的 `harness` / `events` 並存 —— 該物件已於 `mcp-facade.ts:677-683` 解析出,只是 `:699` 未放進回傳。
+  **紅測:** 現行回應無 `lanes`、無 `record` → 期望有。
+- **iter:** v27
+
+### REQ-141 — `RunSummary` 帶 `costUSD`,且與單筆 run 的 fold 一致
+- **status:** draft
+- **traces:** REQ-127, REQ-132
+- **acceptance:**
+  **Given** `GET /api/runs` **Then** 每筆 summary 帶 `costUSD`;有可定價呼叫時為其總和,完全無用量時
+  省略該欄而非填 0。
+  **Given** home 卡片的「平均費用」 **Then** 由這些 summary 計算,不得由前端對每個 run 再打一次
+  `/api/runs/:id`。
+  **Given** 同一個 run **Then** `/api/runs` 的 `costUSD` 與 `/api/runs/:id` 的 `usage.costUSD` 數值一致
+  —— 兩者必須走同一個 fold,不得各算一套(v26 殘留缺陷 R-1 的教訓:live 與 at-rest 兩條 fold 路徑分歧)。
+  **紅測:** `RunSummary`(`types.ts:358-369`)現無任何 cost 欄位 → 期望有。
+- **iter:** v27
+
+### REQ-142 — (nfr) 頁面隱藏時暫停輪詢
+- **status:** draft
+- **kind:** nfr
+- **traces:** REQ-131
+- **acceptance:**
+  **Given** dashboard 開啟且分頁可見 **Then** 每 3 秒輪詢一次。
+  **Given** 分頁切走(`document.visibilityState === 'hidden'`)持續 30 秒 **Then** 該期間對 `/api/*` 的
+  請求數為 0(以 Playwright 攔截請求計數為證,而非檢查原始碼是否含 `visibilitychange`)。
+  **Given** 分頁切回 **Then** 立即輪詢一次,並恢復 3 秒節奏。
+  **紅測:** 現行輪詢為無條件 `setInterval` → 期望有 visibility 判斷。
+- **iter:** v27
+
+### REQ-143 — (nfr) 示範資料必須自我標示,並登記退場條件
+- **status:** draft
+- **kind:** nfr
+- **traces:** REQ-131
+- **acceptance:**
+  **Given** 引擎 API 不可達 **Then** 畫面以交付包的示範資料集渲染(擁有者裁定:先保留,「因為我要看
+  有缺什麼」),且 nav 的來源 tag 顯示「示範資料 / Demo data」。
+  **Given** 示範資料模式 **Then** 該 tag 不得與「連線中 / Live」同時出現;且每個 tab 的可見區域都能看出
+  處於示範模式,不是只有 nav 一處。
+  **Given** 引擎 API 恢復可達 **Then** 下一次輪詢即切回真實資料並改顯示「連線中 / Live」。
+  **退場條件(登記於此,擁有者原話「如果可以正式上線 再拿掉就好」):** 正式上線前移除示範資料集;
+  移除時必須同步退役本 REQ、其測試與所有畫面文案 —— 本 ledger 記錄最多次的缺陷類型正是
+  「刪掉了卻還有東西在描述它」(REQ-105 / ADR-048 / UT-115 的由來)。
+  **紅測:** 現行畫面在 API 失敗時為空白,無示範資料也無標示 → 期望有。
+- **iter:** v27
