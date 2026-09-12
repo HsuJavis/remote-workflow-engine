@@ -230,36 +230,34 @@ function buildChrome(island) {
   navDivider.className = 'hr';
   nav.appendChild(navDivider);
 
-  const themeGroup = document.createElement('div');
-  themeGroup.className = 'rwe-theme-group';
-  for (const t of ['dark', 'light', 'system']) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.dataset.theme = t;
-    btn.textContent = L(prefs.lang, t === 'system' ? 'system_theme' : t);
-    btn.classList.toggle('active', prefs.theme === t);
-    btn.addEventListener('click', () => {
-      prefs.theme = t;
-      safeSet(PREF_KEYS.theme, t);
-      applyTheme();
-      themeGroup.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.theme === t));
-    });
-    themeGroup.appendChild(btn);
-  }
-  nav.appendChild(themeGroup);
-
+  // README "Header / chrome": "Right cluster: hue slider ..., lang seg ..., theme seg ..." — hue,
+  // then lang, then theme, in that DOM order (previously theme/hue/lang; reordered here, no
+  // behaviour change to any of the three controls). The slider and its degrees readout are ONE
+  // README bullet ("hue slider (150px, ..., current degrees)"), so they share one flex item
+  // (`.rwe-hue-wrap`) — also what keeps the nav's own flex-wrap line count from growing at a
+  // narrow viewport (measured: two separate nav children cost one extra 16px gap over one shared
+  // 6px internal gap, enough to tip `.rwe-nav`'s wrap at 1100px and push page content down).
+  const hueWrap = document.createElement('span');
+  hueWrap.className = 'rwe-hue-wrap';
   const hue = document.createElement('input');
   hue.type = 'range';
   hue.min = '0';
   hue.max = '359';
   hue.value = String(prefs.hue);
   hue.className = 'rwe-hue-slider';
+  const hueValue = document.createElement('span');
+  hueValue.className = 'rwe-hue-value';
+  hueValue.setAttribute('data-hue-value', '');
+  hueValue.textContent = `${prefs.hue}°`;
   hue.addEventListener('input', () => {
     prefs.hue = clampHue(Number(hue.value));
     safeSet(PREF_KEYS.hue, String(prefs.hue));
     document.documentElement.style.setProperty('--rwe-hue', String(prefs.hue));
+    hueValue.textContent = `${prefs.hue}°`;
   });
-  nav.appendChild(hue);
+  hueWrap.appendChild(hue);
+  hueWrap.appendChild(hueValue);
+  nav.appendChild(hueWrap);
 
   const langGroup = document.createElement('div');
   langGroup.className = 'rwe-lang-group';
@@ -279,6 +277,24 @@ function buildChrome(island) {
     langGroup.appendChild(btn);
   }
   nav.appendChild(langGroup);
+
+  const themeGroup = document.createElement('div');
+  themeGroup.className = 'rwe-theme-group';
+  for (const t of ['dark', 'light', 'system']) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.dataset.theme = t;
+    btn.textContent = L(prefs.lang, t === 'system' ? 'system_theme' : t);
+    btn.classList.toggle('active', prefs.theme === t);
+    btn.addEventListener('click', () => {
+      prefs.theme = t;
+      safeSet(PREF_KEYS.theme, t);
+      applyTheme();
+      themeGroup.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.theme === t));
+    });
+    themeGroup.appendChild(btn);
+  }
+  nav.appendChild(themeGroup);
 
   connectionTagEl = document.createElement('span');
   connectionTagEl.className = 'rwe-connection';

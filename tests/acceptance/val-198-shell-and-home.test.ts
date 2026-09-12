@@ -119,6 +119,56 @@ describe('the v27 dashboard shell + Workflows home, real Chromium (VAL-198, REQ-
     }
   }, 20000);
 
+  // [v27 README-fidelity closure] README "Header / chrome": "Right cluster: hue slider ..., lang
+  // seg ..., theme seg ...". DOM order is not a `getComputedStyle` fact, so SPEC_ROWS cannot carry
+  // it (DES-209's SpecExpect is style-shaped only) — asserted directly here instead.
+  itReal('the right cluster orders hue -> lang -> theme (README "Header / chrome")', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+      const order = await page.evaluate(() => {
+        const children = Array.from(document.querySelector('.rwe-nav')!.children);
+        // `.rwe-hue-slider` itself is nested one level down inside `.rwe-hue-wrap` (the slider +
+        // its degrees readout share one nav flex item) — the DIRECT nav child is the wrap.
+        return {
+          hue: children.indexOf(document.querySelector('.rwe-hue-wrap')!),
+          lang: children.indexOf(document.querySelector('.rwe-lang-group')!),
+          theme: children.indexOf(document.querySelector('.rwe-theme-group')!),
+        };
+      });
+      expect(order.hue).toBeGreaterThanOrEqual(0);
+      expect(order.hue).toBeLessThan(order.lang);
+      expect(order.lang).toBeLessThan(order.theme);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
+  // [v27 README-fidelity closure] README "Header / chrome": the hue slider carries a "current
+  // degrees" readout. Its VALUE is text content, not a style fact — SPEC_ROWS cannot express it
+  // either; checked directly here (existence + format + that it tracks a real `input` event).
+  itReal('the hue slider shows a current-degrees readout that updates on input (README "Header / chrome")', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+      const initial = await page.$eval('[data-hue-value]', (el) => el.textContent);
+      expect(initial).toMatch(/^\d{1,3}°$/);
+      await page.evaluate(() => {
+        const el = document.querySelector('.rwe-hue-slider') as HTMLInputElement;
+        el.value = '80';
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      const after = await page.$eval('[data-hue-value]', (el) => el.textContent);
+      expect(after).toBe('80°');
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
   itReal('the language toggle swaps a nav label between EN and 中 — 中 must actually appear when selected', async () => {
     const puppeteer = (await import('puppeteer')).default;
     const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });

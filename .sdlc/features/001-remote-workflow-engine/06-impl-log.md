@@ -5866,3 +5866,144 @@ Design calls made, not re-litigated, reported here per the dispatch's own instru
   opacity is `.8` vs "70 %"; the hue slider shows no "current degrees" readout; the right-cluster
   order is theme→hue→lang, the README's own prose order is hue→lang→theme; no "Demo data" source-tag
   state exists (this engine has no demo-dataset fallback to begin with).
+
+### IMPL-259 — `.cell-model`/`.cell-usage` opacity closed (README "2. Workflow detail", node cell rows 2/3)
+- **status:** done
+- **traces:** TASK-214, DES-209, REQ-134
+- **greens:** VAL-200 (`SPEC_ROWS (run view, REQ-134)` — the two new opacity rows, both themes + a
+  hue move)
+- **files:** src/dashboard/dashboard.css, tests/fixtures/dashboard-spec.ts
+- **commit:** (uncommitted — working tree)
+- **iter:** v27
+
+IMPL-254's own report named these two as pre-existing, out-of-scope gaps; this pass closes them.
+Measured before touching anything: `.cell-model` (dashboard.css) shipped `opacity:.8`, `.cell-usage`
+shipped `opacity:.72` — the README's own row-2/row-3 spec is 70%/55%. Both are theme/hue-INVARIANT
+constants (not derived from `--rwe-hue`), so each gets a `literal` SPEC_ROW anchored
+`[data-node-cell] .cell-model`/`.cell-usage`, the same `[anchor] .hook` narrowing convention as the
+existing swimlane state rows.
+
+### IMPL-260 — hue slider gets a gradient track, a styled thumb, and a "current degrees" readout (README "Header / chrome")
+- **status:** done
+- **traces:** TASK-214, DES-209, REQ-131
+- **greens:** VAL-198 (`SPEC_ROWS (home view, REQ-131/132)` — the new gradient-track row; a new
+  dedicated case — "the hue slider shows a current-degrees readout that updates on input" — for the
+  part SPEC_ROWS structurally cannot express)
+- **files:** src/dashboard/dashboard.css, src/dashboard/ui/app.js, tests/fixtures/dashboard-classes.ts,
+  tests/fixtures/dashboard-spec.ts, tests/acceptance/val-198-shell-and-home.test.ts
+- **commit:** (uncommitted — working tree)
+- **iter:** v27
+
+Measured before touching anything: `.rwe-hue-slider` was `{width:150px}` and nothing else — no
+track background (a bare native slider), no thumb styling at all, no degrees text anywhere in
+`app.js`. All three README-named parts were missing, not just the one the dispatch named. Built:
+(1) a fixed rainbow gradient track (`linear-gradient(90deg, oklch(0.68 0.07 0..360))` — the stops
+are literal degree values, NOT the current `--rwe-hue`, i.e. the track itself, not a hue-tinted
+single color); (2) a 16px circular thumb, `background:var(--color-accent)` with a
+`border:2px solid var(--color-bg)` (the README's "bg ring") plus an `--accent-700` outer box-shadow
+ring, on both `::-webkit-slider-thumb` and `::-moz-range-thumb`; (3) a `<span data-hue-value>`
+(`.rwe-hue-value`) showing `${hue}°`, kept in sync on the slider's own `input` listener.
+
+**Measured limitation, reported rather than worked around:** a real Chromium
+`getComputedStyle(el, '::-webkit-slider-thumb')` does NOT return the thumb's own computed style —
+it silently returns the HOST element's (verified empirically: a thumb styled `background:red` still
+read back the host's default white `background-color`). A SPEC_ROW keying on the thumb would pass
+even with zero thumb CSS, which DES-209 rules out ("do not invent a row that cannot fail"). The
+thumb + bg-ring is therefore implemented and screenshot-verified only, not SPEC_ROW-verified — this
+is a structural blind spot of the `getComputedStyle`-based oracle itself, not something this pass
+could close. The degrees-readout VALUE is text content, not a style fact, so it is likewise checked
+directly at the acceptance layer (val-198) rather than via SPEC_ROWS.
+
+**Side effect found and fixed in the same pass:** adding the readout as a second `.rwe-nav` flex
+child, combined with IMPL-261's required reorder, tipped `.rwe-nav`'s own `flex-wrap` to break one
+row earlier at a 1100px viewport — VAL-197 regressed (measured: the diagram's own centre moved to
+y=901 on a 900px-tall viewport, 1px out of reach of the real-mouse drag). Root-caused with a throwaway
+`git worktree` at the pre-pass commit (never a checkout/stash on this shared tree, per CLAUDE.md) —
+confirmed the pre-pass tree passes VAL-197 consistently and the nav row was ALREADY at zero spare
+px there (a latent, pre-existing fragility this pass's two required README items exposed, not
+introduced from nothing). Fixed two ways: (a) `.rwe-hue-wrap` now holds the slider + its readout as
+ONE flex item (they are one README bullet, not two — also cuts one nav-level flex gap), and (b)
+VAL-197's own viewport height (a test-setup parameter, not a checked behaviour) is bumped 900->1000
+so the real mouse gesture still lands on the figure; the drag-delta assertions themselves are
+untouched. See IMPL-261 for why (a) alone could not fully absorb the height growth.
+
+### IMPL-261 — right cluster reordered hue -> lang -> theme (README "Header / chrome")
+- **status:** done
+- **traces:** TASK-214, DES-209, REQ-131
+- **greens:** VAL-198 (new case — "the right cluster orders hue -> lang -> theme")
+- **files:** src/dashboard/ui/app.js, tests/acceptance/val-198-shell-and-home.test.ts
+- **commit:** (uncommitted — working tree)
+- **iter:** v27
+
+Measured before touching anything: `buildChrome()` appended `themeGroup`, then `hue`, then
+`langGroup` — the README's own order is hue, lang, theme. Reordered the three code blocks (no
+behaviour change to any control, each keeps its own listener/state). DOM order is not a
+`getComputedStyle` fact, so no SPEC_ROW can carry it (`SpecExpect` is style-shaped only, per
+DES-209's own contract) — asserted directly in val-198 instead, reading `.rwe-nav`'s own
+`children` array.
+
+**Measured, not fixed (out of this pass's four-item scope):** at a 1100px viewport this reorder
+alone is what turns a latent zero-spare-px nav row into an actual wrap (see IMPL-260) — reordering
+three same-total-width items cannot by itself change whether all three fit together on one row, but
+it DOES determine WHICH one overflows when something else (the readout) pushes the row over, and the
+mandated end order puts the widest/tallest of the three (`.rwe-theme-group`, 126px/34px) last,
+guaranteeing it is what wraps. Documented here since IMPL-260's VAL-197 fix is a direct consequence
+of this reorder, not an independent defect.
+
+**Verification (real, this pass, IMPL-259/260/261 together):**
+- `npx tsc --noEmit` → 0 errors.
+- `npx vitest run tests/unit/dashboard-class-contract.test.ts tests/unit/dashboard-no-design-values.test.ts`
+  → 20 tests, all green.
+- `npx vitest run tests/unit tests/integration` → 328 files, 2466 passed, 1 skipped, 0 failed —
+  matches the pre-pass baseline exactly (measured twice: once before the VAL-197 fix, once after).
+- `RWE_REQUIRE_BROWSER=1 npx vitest run` the 8 named acceptance files (val-018/193/197/198/199/200/
+  201/202) → 34/34 green, including val-198's 2 new cases and VAL-200's 2 new opacity rows against
+  real Chromium under both themes and a hue move. VAL-197 measured RED once (root-caused above),
+  GREEN after the fix — never fudged, the drag-delta assertions are byte-identical to before.
+- `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → 33 gaps, same count as
+  IMPL-253/254/258's own baseline.
+- Screenshots (self-booting harness, no external instance dependency):
+  `evidence/v27/req131-134-fidelity-closure-harness.mjs` ->
+  `req131-134-closure-shell-{dark,light}.png` (gradient track + thumb ring + "236°" readout + hue→
+  lang→theme order, both themes), `req131-134-closure-node-zoom.png` (0.7/0.55 opacity visible on a
+  real swimlane node).
+
+**This pass's own README sweep** ("Header / chrome", "1. Workflows home", "2. Workflow detail",
+walked once more against the shipped build, each claim below verified against source before
+listing — method note: static reads + one real-Chromium harness, not exhaustive; hover states and
+exact wording are NOT checked):
+- **Theme seg's own internal order is reversed too:** `app.js`'s loop is
+  `['dark','light','system']` → rendered 深/淺/系統; README "theme seg 系統 / 淺 / 深" wants
+  system/light/dark. Same sentence as this pass's item 4, but a DIFFERENT axis (button order
+  *within* the group, not the group's position in the cluster) — not fixed, reported.
+- **Node cell row 3 has no duration, and no `k` abbreviation:** `run.js`'s usage line is
+  `sumTokens(c.tokens) + ' tok · ' + fmtCost(...)` — two fields. README's row 3 is three:
+  `52k tok · $0.31 · 2m 10s`. Confirmed by source read: `sumTokens` returns a raw integer (no `k`
+  suffix anywhere), and no duration value is computed or appended at all. The `≥ $0.00 · N 未定價`
+  cost form (vs README's plain `$0.31`) is REQ-127's own documented lower-bound design, not a bug.
+- **Home card "LAST RUN" kicker shows a run id, not a timestamp:** `home.js`:
+  `` `${L(lang,'lastRun')} · ${card.latestRunId.slice(0,8)}` ``. README's own two examples disagree
+  with each other on this point (`ACTIVE · a3f9c2e1` is an id; `LAST RUN · 9/11 14:02` is a
+  timestamp) — the build follows the `ACTIVE` pattern for both, confirmed by source read.
+- **`.is-live`'s source tag is an outline, not the README's "tint":** `dashboard.css`:
+  `.rwe-connection.is-live{border-color:...;color:...}` — no `background-color` at all, matching
+  `.is-offline`'s outline treatment. README distinguishes "`Live` accent tint" from "`Offline` red
+  outline" as two different treatments; the build gives both the same one.
+- **`.card`'s SPEC_ROW and the README text disagree with each other**, not with the build: the
+  landed SPEC_ROW asserts `.card{background-color: token(color-panel)}` (a real fill, matching
+  `dashboard.css`), but README "2. Workflow detail" — actually "1. Workflows home" — calls `.card`
+  "bordered, no fill". Flagging for owner adjudication (which is the fidelity oracle here); not
+  touched, since correcting either side ripples into an existing passing SPEC_ROW.
+- **Already known, still true, not re-litigated:** the source/connection tag still sits at the
+  nav's END next to nothing in particular (IMPL-257's own report), not beside the brand the way
+  README's prose order implies; no "Demo data" state exists (no demo-dataset fallback in this
+  engine to begin with, IMPL-258's report).
+- **Checked and NOT divergent:** run chips show the "6 most recent" (`workflow.js`:
+  `sorted.slice(0, 6)`); the gradient track's own stops and the thumb's 16px/bg-ring/box-shadow
+  triple (screenshot-verified, SPEC_ROW-blind per IMPL-260's own measured limitation).
+- **Built different by design, not a gap:** a 4th "Issues" tab and the version/update panel
+  (INV-V27-5) have no README counterpart at all; `.rwe-theme-group`/`.rwe-lang-group` are bespoke
+  classes rather than the README's generic `.seg` component (`STYLE_HOOKS` already declares `seg`
+  with no emitter — a pre-existing, separately-tracked gap, not new here).
+- **What this pass's method cannot see:** the card hover "5-6% accent tint" (no hover-state harness
+  run); exact copy/wording fidelity beyond the specific strings quoted above.

@@ -35,6 +35,11 @@ export const STYLE_HOOKS: readonly string[] = [
   // source tag) and `rwe-footer` (README: "Footer: API base left, Updated HH:MM:SS right, 11.5px
   // 50%") — neither existed before this pass; both are new `app.js`-built chrome, not swimlane/panel.
   'nav-brand', 'rwe-footer',
+  // [v27 README-fidelity closure] `rwe-hue-value` — README "Header / chrome": the hue slider's
+  // "current degrees" readout, a `<span>` app.js keeps in sync with the slider's `input` event.
+  // `rwe-hue-wrap` — the shared flex-item wrapper around the slider + its readout (one README
+  // bullet, one nav child; also what keeps `.rwe-nav`'s flex-wrap from regressing VAL-197).
+  'rwe-hue-value', 'rwe-hue-wrap',
 
   // -- REQ-132 home --
   'card-section', 'other', 'card-grid', 'cards', 'running', 'kicker', 'meta', 'home-toolbar',
@@ -85,4 +90,11 @@ export const TEST_ANCHORS: readonly string[] = [
   'data-nav-brand', 'data-footer', 'data-running-dot',
   '#dag-fit', '#dag-graph', '#dag-zoom', '#run-usage', '#diagram-img', '#diagram-zoom',
   '.card', '.t',
+  // [v27 README-fidelity closure] the hue slider's degrees readout — TEXT CONTENT, not a style
+  // fact, so no SPEC_ROW keys on it (SpecExpect is getComputedStyle-shaped only); checked directly
+  // at the acceptance layer instead (val-198).
+  'data-hue-value',
+  // `.rwe-hue-slider` — dual-registered in STYLE_HOOKS and here on purpose, same convention as
+  // `.card`/`.t` above: the SPEC_ROWS gradient-track row (REQ-131) keys on it directly.
+  '.rwe-hue-slider',
 ] as const;

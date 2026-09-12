@@ -94,7 +94,14 @@ describe("the author's diagram drag-pans under a real mouse, and stops on mouseu
     const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
     try {
       const page = await browser.newPage();
-      await page.setViewport({ width: 1100, height: 900 });
+      // [v27 README-fidelity closure] height bumped 900->1000: the nav's own `flex-wrap` now
+      // breaks one row earlier at 1100px width (measured — README "Header / chrome"'s hue-slider
+      // degrees readout + the hue->lang->theme reorder leave `.rwe-nav` zero spare px at this
+      // width even before either landed, so ANY addition here wraps one more row), which pushed
+      // the diagram's centre to y=901, 1px past a 900px viewport. Not a drag-pan behaviour change
+      // — the delta assertions below are untouched; only the window is taller so the real mouse
+      // gesture below still lands ON the figure.
+      await page.setViewport({ width: 1100, height: 1000 });
       await page.goto(`http://127.0.0.1:${server.port}/dashboard`, { waitUntil: 'networkidle0' });
       // A real click on the workflow's own home card — the only way into the author view.
       await page.waitForSelector('.card');

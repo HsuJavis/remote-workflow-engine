@@ -33,10 +33,11 @@
 // own headers note); six rows rewritten or deleted in this same pass where the ORACLE, not the
 // implementation, was wrong (a permanently-unsatisfiable literal, or an anchor DES-209's own table
 // does not actually assign the checked rule to) — each carries its own `[v27c gate 5 fix]` comment.
-// `SPEC_ROWS.length >= 40` (61, after the v27c deletion, the v27 Gate 6 VAL-208 additions, the v27
-// README-fidelity audit's own rows, and this pass's 10 rows for the footer/nav-brand/running-dot/
-// tabs build plus the re-added `.event-kind.is-tool`/`.is-message` pair) is asserted at the
-// acceptance tier.
+// `SPEC_ROWS.length >= 40` (64, after the v27c deletion, the v27 Gate 6 VAL-208 additions, the v27
+// README-fidelity audit's own rows, the v27 README-fidelity build's 10 rows for the footer/nav-
+// brand/running-dot/tabs build plus the re-added `.event-kind.is-tool`/`.is-message` pair, and this
+// README-fidelity closure pass's 3 rows for the hue-slider gradient track and the two cell opacity
+// fixes) is asserted at the acceptance tier.
 //
 // [v27 Gate 6 fix, VAL-208]: a new row kind, `notClipped` — the ONE failure class every row above
 // is structurally blind to. A literal/token/animation row compares a stylesheet-authored VALUE
@@ -93,6 +94,18 @@ export const SPEC_ROWS: ReadonlyArray<SpecRow> = [
   // HH:MM:SS` right, 11.5 px 50 %" — no footer existed at all before this pass.
   { req: 'REQ-131', view: 'home', anchor: 'data-footer', prop: 'font-size', expect: { literal: '11.5px' } },
   { req: 'REQ-131', view: 'home', anchor: 'data-footer', prop: 'opacity', expect: { literal: '0.5' } },
+
+  // [v27 README-fidelity closure] README "Header / chrome": "hue slider (150 px, gradient track of
+  // oklch(0.68 0.07 h) stops, 16 px accent thumb with bg ring, current degrees)" — the track had NO
+  // background at all before this pass (a bare native slider). The gradient's own stops are FIXED
+  // degree literals (0/45/.../360), not the current --rwe-hue, so this is theme/hue-INVARIANT — a
+  // `literal` row, same convention as the fixed failure-red rows elsewhere in this table. Measured
+  // via a real Chromium `getComputedStyle` read (`oklch(... 360)` normalises to `oklch(... 0)`, a
+  // browser fact, not a typo). The 16px thumb + bg ring is NOT a row: measured (this same pass) that
+  // Chromium's `getComputedStyle(el, '::-webkit-slider-thumb')` silently returns the HOST element's
+  // own computed style, not the thumb's — a row here could never fail even with zero thumb CSS, so
+  // none is added (DES-209's "do not invent a row that cannot fail"); verified by screenshot only.
+  { req: 'REQ-131', view: 'home', anchor: '.rwe-hue-slider', prop: 'background-image', expect: { literal: 'linear-gradient(90deg, oklch(0.68 0.07 0), oklch(0.68 0.07 45), oklch(0.68 0.07 90), oklch(0.68 0.07 135), oklch(0.68 0.07 180), oklch(0.68 0.07 225), oklch(0.68 0.07 270), oklch(0.68 0.07 315), oklch(0.68 0.07 0))' } },
 
   // -- REQ-132 home (view: home) --
   { req: 'REQ-132', view: 'home', anchor: '.card', prop: 'border-radius', expect: { literal: '3px' } },
@@ -182,6 +195,11 @@ export const SPEC_ROWS: ReadonlyArray<SpecRow> = [
   // same defect class cannot ship invisibly again.
   { req: 'REQ-134', view: 'run', anchor: '[data-node-cell] .cell-label', prop: 'height', expect: { notClipped: true } },
   { req: 'REQ-134', view: 'run', anchor: '[data-node-cell] .cell-model', prop: 'height', expect: { notClipped: true } },
+  // [v27 README-fidelity closure] README "2. Workflow detail", node cell row 2/row 3: "model short
+  // name (11 px, 70 %)" / "`52k tok · $0.31 · 2m 10s` (10.5 px, 55 %)" — measured before this pass:
+  // `.cell-model` shipped at opacity .8, `.cell-usage` at .72, both theme/hue-INVARIANT constants.
+  { req: 'REQ-134', view: 'run', anchor: '[data-node-cell] .cell-model', prop: 'opacity', expect: { literal: '0.7' } },
+  { req: 'REQ-134', view: 'run', anchor: '[data-node-cell] .cell-usage', prop: 'opacity', expect: { literal: '0.55' } },
 
   // -- REQ-135 agent panel (view: panel) --
   { req: 'REQ-135', view: 'panel', anchor: 'data-agent-panel', prop: 'width', expect: { literal: '760px' } },

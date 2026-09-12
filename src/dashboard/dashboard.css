@@ -162,7 +162,19 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 .rwe-theme-group,.rwe-lang-group{display:inline-flex;border:1px solid var(--color-line);border-radius:var(--radius-md);overflow:hidden}
 .rwe-theme-group button,.rwe-lang-group button{background:none;border:0;padding:4px 10px;color:var(--color-muted);font:inherit;cursor:pointer}
 .rwe-theme-group button.active,.rwe-lang-group button.active{color:var(--color-ink);background:var(--color-panel2)}
-.rwe-hue-slider{width:150px}
+/* README "Header / chrome": hue slider — 150px, a gradient track of fixed oklch(0.68 0.07 h) stops
+   (the rainbow track itself, not the current --rwe-hue), a 16px accent thumb with a bg-colored
+   ring, plus a current-degrees readout (`.rwe-hue-value`, textContent, not a style fact — see
+   app.js). `-webkit-appearance:none`/`appearance:none` on the host is required for the gradient
+   background to paint through a default native track. `.rwe-hue-wrap` holds the slider + readout as
+   ONE flex item (they are one README bullet, not two) — measured necessary, not cosmetic: two
+   separate `.rwe-nav` children here cost an extra 16px flex gap over one shared 6px internal gap,
+   which was enough to tip the nav's own `flex-wrap` at a 1100px viewport and regress VAL-197. */
+.rwe-hue-wrap{display:inline-flex;align-items:center;gap:6px}
+.rwe-hue-slider{width:150px;height:8px;border-radius:4px;-webkit-appearance:none;appearance:none;outline:none;cursor:pointer;background:linear-gradient(90deg,oklch(0.68 0.07 0),oklch(0.68 0.07 45),oklch(0.68 0.07 90),oklch(0.68 0.07 135),oklch(0.68 0.07 180),oklch(0.68 0.07 225),oklch(0.68 0.07 270),oklch(0.68 0.07 315),oklch(0.68 0.07 360))}
+.rwe-hue-slider::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:var(--color-accent);border:2px solid var(--color-bg);box-shadow:0 0 0 1px var(--accent-700)}
+.rwe-hue-slider::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:var(--color-accent);border:2px solid var(--color-bg);box-shadow:0 0 0 1px var(--accent-700)}
+.rwe-hue-value{font-size:12px;color:var(--color-muted);font-variant-numeric:tabular-nums}
 .rwe-version{font-size:11px;color:var(--color-muted);font-variant-numeric:tabular-nums}
 .rwe-update-panel{display:flex;align-items:center;gap:10px;font-size:12px;margin-left:auto}
 .rwe-update-outcome{color:var(--color-muted)}
@@ -265,13 +277,13 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 .cell.is-queued .cell-dot,.cell.is-predicted .cell-dot{background:transparent;border:1px solid var(--color-muted)}
 .cell-label{font-weight:600;font-size:13.5px;line-height:1.15;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .cell-meta{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:11px;min-width:0;flex:none}
-.cell-model{font-size:11px;opacity:.8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.cell-model{font-size:11px;opacity:.7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 /* [v27 Gate 6 fix] `.tag-neutral`'s background (`--color-panel2`) is IDENTICAL to `.cell`'s own
    background, so on a swimlane node the "tag" painted no visible pill at all — just bare muted
    text (screenshot evidence, `req134-node-zoom-hires.png`). `--color-panel` is a distinct existing
    token in BOTH themes (never an invented value), giving the chip real contrast against the cell. */
 .cell-effort{padding:1px 7px;font-size:10px;flex:none;background:var(--color-panel);border-color:var(--color-line)}
-.cell-usage{font-size:10.5px;opacity:.72;font-variant-numeric:tabular-nums;white-space:nowrap;flex:none}
+.cell-usage{font-size:10.5px;opacity:.55;font-variant-numeric:tabular-nums;white-space:nowrap;flex:none}
 .cell-trigger{width:112px;height:40px}
 .legend{display:flex;flex-wrap:wrap;gap:16px;font-size:11.5px;color:var(--color-muted);align-items:center}
 .run-summary{margin-left:auto;font-variant-numeric:tabular-nums}
