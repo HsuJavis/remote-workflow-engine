@@ -4177,7 +4177,7 @@ touched here.
 - **traces:** TASK-210, TASK-211, DES-206, REQ-135, REQ-136
 - **greens:** VAL-209
 - **files:** src/dashboard/ui/run.js
-- **commit:** pending (working tree on 3a1c58d)
+- **commit:** 09c6089
 - **iter:** v27c
 
 Closes the gap `agent-panel.js`'s own header comment (`src/dashboard/ui/agent-panel.js:12-21`)
@@ -4624,7 +4624,7 @@ for it).
 - **traces:** TASK-210, DES-209, DES-203, DES-206, REQ-134
 - **greens:** UT-256
 - **files:** src/dashboard/ui/run.js, src/dashboard/ui/workflow.js, src/dashboard/dashboard.css, tests/fixtures/dashboard-classes.ts
-- **commit:** pending (working tree)
+- **commit:** e8232ea
 - **iter:** v27
 
 Closes the two items IMPL-226 left REPORTED rather than fixed (both outside that pass's own scope).
@@ -4931,7 +4931,7 @@ passing on their own planted-fixture cases, which is what its DoD commands direc
 - **traces:** TASK-213, DES-208, REQ-134
 - **greens:** UT-252
 - **files:** tests/unit/dashboard-diagram-render.test.ts
-- **commit:** uncommitted (orchestrator)
+- **commit:** 5b76624
 - **iter:** v27
 
 Two-part dispatch. **Part 1 (val-199, REQ-133 run-history table) — no code change, routed to Gate 5
@@ -5233,7 +5233,7 @@ names `IMPL-224` and the actual call chain instead of describing a gap that had 
 - **traces:** DES-200, DES-206, REQ-008, REQ-129, ARCH-125
 - **greens:** VAL-018 (6/6, was 2/6)
 - **files:** tests/acceptance/val-018-dashboard-browser-ui.test.ts
-- **commit:** 654c719 (initial re-point), plus one follow-up commit tightening cases 3/4 per reviewer feedback (self-cited once that commit lands)
+- **commit:** 654c719 (initial re-point), c30b4f6 (tightened cases 3/4 per reviewer feedback)
 - **iter:** v27
 
 Test-only fix, no `src/` change (flagged as a real regression by `f8b167e`'s own note and this
@@ -5751,7 +5751,7 @@ is the evidence nobody was checking these lines before now.
 - **greens:** VAL-198 (`SPEC_ROWS (home view, REQ-131/132)` — `data-nav-brand` notClipped,
   `data-footer` font-size/opacity)
 - **files:** src/dashboard/lib/strings.js, src/dashboard/ui/app.js, src/dashboard/dashboard.css, tests/fixtures/dashboard-spec.ts, tests/fixtures/dashboard-classes.ts
-- **commit:** (uncommitted — working tree)
+- **commit:** 3091398
 - **iter:** v27
 
 Brand text "工作流引擎 / Workflow Engine" did not exist anywhere in the built chrome. Per the dispatch
@@ -5778,7 +5778,7 @@ size:11.5px;opacity:.5}` matches the README's "11.5 px 50 %" literally.
 - **greens:** VAL-198 (`SPEC_ROWS (home view, REQ-131/132)` — `data-running-dot` width/background-
   color/animation-name)
 - **files:** src/dashboard/ui/home.js, src/dashboard/dashboard.css, tests/fixtures/dashboard-spec.ts, tests/fixtures/dashboard-classes.ts
-- **commit:** (uncommitted — working tree)
+- **commit:** 3091398
 - **iter:** v27
 
 `rwePulse` was declared in `dashboard.css` since the v27c pass but had no emitter anywhere
@@ -5799,7 +5799,7 @@ item scope; no SPEC_ROW or test keys on the tag name either way).
   color/text-decoration-line), VAL-202 (Models/System/Issues tabs still real-render via `[data-
   tab="..."]` + `.click()` on the new `<a>` elements — non-regression)
 - **files:** src/dashboard/ui/app.js, src/dashboard/dashboard.css, tests/fixtures/dashboard-spec.ts
-- **commit:** (uncommitted — working tree)
+- **commit:** 3091398
 - **iter:** v27
 
 Shipped was `.rwe-tabs button.active` with a `--color-panel2` background fill; zero `aria-current`
@@ -5821,7 +5821,7 @@ lost).
 - **greens:** VAL-201 (`SPEC_ROWS (panel view, REQ-135)` — the two `.event-kind` rows, checked
   against a THIRD run/server, not the pre-existing ollama-stub one)
 - **files:** tests/acceptance/val-201-agent-panel.test.ts, tests/fixtures/dashboard-spec.ts
-- **commit:** (uncommitted — working tree)
+- **commit:** 3091398
 - **iter:** v27
 
 IMPL-254 added `.event-kind.is-tool`/`.is-message` rows, measured them red three times ("anchor
@@ -5873,7 +5873,7 @@ Design calls made, not re-litigated, reported here per the dispatch's own instru
 - **greens:** VAL-200 (`SPEC_ROWS (run view, REQ-134)` — the two new opacity rows, both themes + a
   hue move)
 - **files:** src/dashboard/dashboard.css, tests/fixtures/dashboard-spec.ts
-- **commit:** (uncommitted — working tree)
+- **commit:** 26210ee
 - **iter:** v27
 
 IMPL-254's own report named these two as pre-existing, out-of-scope gaps; this pass closes them.
@@ -5891,7 +5891,7 @@ existing swimlane state rows.
   part SPEC_ROWS structurally cannot express)
 - **files:** src/dashboard/dashboard.css, src/dashboard/ui/app.js, tests/fixtures/dashboard-classes.ts,
   tests/fixtures/dashboard-spec.ts, tests/acceptance/val-198-shell-and-home.test.ts
-- **commit:** (uncommitted — working tree)
+- **commit:** 26210ee
 - **iter:** v27
 
 Measured before touching anything: `.rwe-hue-slider` was `{width:150px}` and nothing else — no
@@ -5932,7 +5932,7 @@ untouched. See IMPL-261 for why (a) alone could not fully absorb the height grow
 - **traces:** TASK-214, DES-209, REQ-131
 - **greens:** VAL-198 (new case — "the right cluster orders hue -> lang -> theme")
 - **files:** src/dashboard/ui/app.js, tests/acceptance/val-198-shell-and-home.test.ts
-- **commit:** (uncommitted — working tree)
+- **commit:** 26210ee
 - **iter:** v27
 
 Measured before touching anything: `buildChrome()` appended `themeGroup`, then `hue`, then
@@ -6013,7 +6013,7 @@ exact wording are NOT checked):
 - **traces:** TASK-214, DES-209, REQ-131
 - **greens:** VAL-198 (new case — "the theme segment orders system -> light -> dark")
 - **files:** src/dashboard/ui/app.js, tests/acceptance/val-198-shell-and-home.test.ts
-- **commit:** (uncommitted — working tree)
+- **commit:** 1a1746a
 - **iter:** v27
 
 IMPL-261's own report named this axis (button order *within* the theme segment, distinct from that
@@ -6031,7 +6031,7 @@ hue->lang->theme cluster-order test.
   tokens/cost"), UT-246 (`lib/runlist.js: fmtTok` — 4 new cases)
 - **files:** src/dashboard.ts, src/dashboard/lib/runlist.js, src/dashboard/ui/run.js,
   tests/unit/dashboard-lib-runlist.test.js, tests/acceptance/val-200-swimlane.test.ts
-- **commit:** (uncommitted — working tree)
+- **commit:** 1a1746a
 - **iter:** v27
 
 Root cause was upstream of the client: `layoutGraph`'s `LayoutCell` (the `/api/runs/:id/dag` payload
@@ -6055,7 +6055,7 @@ exactly (round thousands drop the decimal; non-round ones keep one, e.g. `52.4k`
 - **traces:** TASK-214, DES-209, REQ-132
 - **greens:** VAL-198 (new case — "the LAST RUN kicker shows a timestamp, not a run id")
 - **files:** src/dashboard.ts, src/dashboard/ui/home.js, tests/acceptance/val-198-shell-and-home.test.ts
-- **commit:** (uncommitted — working tree)
+- **commit:** 1a1746a
 - **iter:** v27
 
 IMPL-261's own report read the README's two kicker examples as contradicting each other
@@ -6078,7 +6078,7 @@ no longer read by this one render site.
   background-color row)
 - **files:** src/dashboard/dashboard.css, tests/fixtures/dashboard-classes.ts,
   tests/fixtures/dashboard-spec.ts
-- **commit:** (uncommitted — working tree)
+- **commit:** 1a1746a
 - **iter:** v27
 
 IMPL-261's own report flagged `.is-live` as border-only, matching `.is-offline`'s outline treatment,
@@ -6098,7 +6098,7 @@ STYLE_HOOK, `data-status` only lets the TEST find the element, same `[data-x] .i
 - **traces:** TASK-214, DES-209, REQ-132
 - **greens:** VAL-198 (`SPEC_ROWS (home view, REQ-131/132)` — corrected `.card` background-color row)
 - **files:** src/dashboard/dashboard.css, tests/fixtures/dashboard-spec.ts
-- **commit:** (uncommitted — working tree)
+- **commit:** 1a1746a
 - **iter:** v27
 
 IMPL-261's own report treated this as "the README and the SPEC_ROW disagree with each other" and
@@ -6161,7 +6161,7 @@ you find"). Fix, if taken: narrow to `'[data-run-chip].is-selected'`, mirroring
   and the right-half click never taking the `from-left` branch — are now green; see IMPL-268 for the
   acceptance-suite cases that assert it)
 - **files:** src/dashboard/ui/workflow.js, src/dashboard/ui/run.js, src/dashboard/ui/agent-panel.js
-- **commit:** (uncommitted — working tree)
+- **commit:** 0673f22
 - **iter:** v27
 
 VAL-209 (Gate 7.5 RE-RUN, 2026-09-13) found two real defects, both fixed here exactly as VAL-209's
@@ -6227,7 +6227,7 @@ between the two `render()`/`onTick()` pairs. No third divergence found.
   agent node on /dashboard/workflow/:name (the primary route) opens the slide-in panel`, `the slide
   side follows the clicked node's real position on /dashboard/workflow/:name (REQ-135)`)
 - **files:** tests/acceptance/val-201-agent-panel.test.ts, tests/fixtures/dashboard-spec.ts
-- **commit:** (uncommitted — working tree)
+- **commit:** 0673f22
 - **iter:** v27
 
 VAL-209 named the exact gap in the existing suite: "no test in `val-201-agent-panel.test.ts`

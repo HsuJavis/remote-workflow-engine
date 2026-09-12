@@ -4337,3 +4337,75 @@ flips to `passed: true`; `current_stage` moves from `impl` to `review` — the f
 (REQ-131/132/133/134/135/136/140/141) now has ≥1 `real:true`/`pass` VAL item each.
 
 **Next**: Gate 8 (review).
+
+## 2026-09-13 — v27 Gate 8 precheck (reviewer): two stale bookkeeping markers cleared, an 18-entry IMPL commit sweep, and a contract/tooling drift recorded
+
+Two markers were blocking Gate 8 from starting; both verified against the record before being touched.
+
+**DES-209's `owner_decision` (`04-design.md:6876`) flipped from `pending` to `answered`.** The owner
+already ruled — commit `7039586` ("docs(v27): vendor the design handoff as the fidelity oracle") vendored
+`.sdlc/design-handoff/{README.md,Workflow Dashboard.dc.html,PROVENANCE.md}` — only the marker text had
+never been flipped. Wrote the resolved entry in the same house style as ADR-051's answered decision:
+states the ruling, cites the landing commit, notes the one path detail (vendored one level up at
+`.sdlc/design-handoff/`, not under `.sdlc/features/001-remote-workflow-engine/design-handoff/` as the
+question proposed — immaterial, still the only copy), and records the consequence, because that is the
+point of the decision: the first three audits against the vendored file (`f5ee006`, `3091398`, `1a1746a`)
+found four spec items nobody had built (footer, bilingual nav brand, the Running-section pulsing dot,
+`aria-current` tabs), nine value divergences the hand-copied `SPEC_ROWS` fixture had missed or gotten
+wrong, and three `SPEC_ROWS` that had encoded the BUILD rather than the design instead of catching it
+(`.card`'s background, `[data-run-chip]`'s coincidental pass, the agent panel's `animation-name` — the
+last fixed in `0673f22`). None of those were reachable under the rejected enumerated-`SPEC_ROWS`
+alternative, since that fixture was the very artifact that had absorbed the drift. **Not touched, flagged
+instead**: DES-209's own `boundary` (`:6800`) and `tests` (`:6877`) prose still read "is the open
+`owner_decision` on DES-209" / "resolves with the `owner_decision`" for the accent-ramp exact L/C sequence
+and the agent-panel's README-target width — both are downstream of the same now-answered decision and
+worth a follow-up sweep, but rewriting them was outside this dispatch's scope and risks disturbing dense,
+interlocking design prose without full context on whether either was separately closed by a later pass.
+
+**`06-impl-log.md`'s `commit:` field swept for the whole v27/v27b/v27c range**, not just the two named
+(IMPL-267/268, landed `0673f22`). Every entry's field was cross-checked against `git log`/`git show` for
+the file(s) it lists, not trusted from its own text. Found **18 stale entries total**, all self-referential
+staleness (an IMPL row written in the same commit that landed the code cannot cite its own not-yet-made
+hash, and nobody swept it after): IMPL-224 (`pending (working tree on 3a1c58d)` → `09c6089`, confirmed by
+that commit's own "Agent panel wired (IMPL-224)" paragraph), IMPL-232 (`pending (working tree)` →
+`e8232ea`, confirmed by that commit's own "IMPL-230/231/232" byline), IMPL-239 (`uncommitted
+(orchestrator)` → `5b76624`, confirmed — the `toBe(1)`→`toBe(2)` diff in
+`tests/unit/dashboard-diagram-render.test.ts` is literally IN that commit, not a later one as the entry's
+own "Not committed" note implied it would be), IMPL-246 (the placeholder "self-cited once that commit
+lands" → resolved to the actual follow-up hash `c30b4f6`, found via `git log` on
+`val-018-dashboard-browser-ui.test.ts`), and IMPL-255 through IMPL-268 (14 entries, all `(uncommitted —
+working tree)`) mapped via each commit's own IMPL-range byline: 255-258→`3091398`, 259-261→`26210ee`,
+262-266→`1a1746a`, 267-268→`0673f22`. IMPL-230/231 were checked and left alone — `e8232ea`'s own commit
+message documents a prior ledger-accuracy pass that already verified their `f86ea25` citation is correct
+(a backfill of pre-existing code, not the later dispatch a draft had wrongly wanted to credit). This is the
+fourth time this exact field has gone stale this iteration (previously IMPL-225, IMPL-226..229) — worth a
+standing note for future gates: an IMPL entry's `commit:` field is written before the commit exists
+whenever the entry and the commit are the same act, so it is stale BY CONSTRUCTION until someone sweeps it
+after the fact, and "two known instances" should always prompt a full-range grep rather than a two-item fix.
+
+**Recorded, not fixed — a real contract/tooling drift, not this iteration's doing.**
+`references/contracts/validator.md:36` (this repo's installed plugin, `iso-agile-sdlc` 2.4.3) instructs
+`sh .sdlc/trace <sdlc_dir> --rtm <sdlc_dir>/rtm.md`. This repo's own `.sdlc/trace.py` (58,019 bytes, dated
+2026-08-01) has **no `--rtm` flag at all** — its `argparse` block only defines `sdlc_dir`, `-o/--out`,
+`--check`, `--impact`, `--features`; the string `rtm` does not occur anywhere else in the file either.
+`rtm.md` is hand-regenerated every round (already self-noted at the v27 GATE 7.5 round 3 entry above, and
+at `rtm.md:3`). **The drift is in this repo's copy of the script, not in the plugin's contract**: the
+currently-cached plugin source at
+`~/.claude/plugins/cache/iso-agile-sdlc/iso-agile-sdlc/2.4.3/skills/iso-agile-sdlc/scripts/trace.py`
+(72,425 bytes, dated 2026-09-07 — newer and larger) already implements `--rtm` in full (`add_argument`
+at its own `:1075`, writes to stdout or `OUT` at `:1171-1196`). This repo's `.sdlc/trace.py` was vendored
+before that feature landed upstream and has not been re-synced since. A future gate should NOT assume
+`--rtm` works against the copy actually installed here without re-vendoring `trace.py` first; treat
+`rtm.md`'s hand-regeneration as the correct workaround until that happens, not as a bug to route back to
+the validator.
+
+**Verified, not just asserted:** `grep -c 'owner_decision:\*\* pending' 04-design.md 02-architecture.md` →
+`0` and `0`. `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → 1651 items / 33 gaps,
+same as the pre-edit baseline; the gap SET itself re-extracted via `trace.analyze()` directly (not the
+summary count alone) and confirmed byte-identical in composition: 21 LOW doc/test drift ids + TASK-018/
+TASK-153 (LOW, no implementation) + REQ-137/138/139/142/143 (MID ×2 each, out-of-closure Sprint B) — no
+new id, no dropped id, no severity change. Neither edit (the owner_decision prose, the 18 commit-field
+corrections) touches any REQ/DES/IMPL/TASK trace link or `iter:` field, so this null result was expected,
+not assumed.
+
+**Next**: Gate 8 (review) is now unblocked on both markers.
