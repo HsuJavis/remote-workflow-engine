@@ -4631,3 +4631,34 @@ still has its ARCH; every amended row's `traces:` is unchanged; all four amended
 `module:`/`deps:` as before. `current_stage` stays `review` — Gate 8 owns this loop, same as v27g.
 
 **Next**: validation's DOC-1, design's DASH-2 + the TASK-A/TASK-B rows, then the Gate 8 re-review.
+
+## v27i Gate 7.5 SEND-BACK REPAIR (2026-09-13, validator)
+
+**Scope**: exactly the one Gate 8 blocking finding routed to validation — **DOC-1** (HIGH). No other
+finding, no re-decomposition, no re-run of unrelated work.
+
+**Fix**: `README.md:112/113/114/120/139/140` and `DEPLOY.md:788` claimed a sortable/filterable
+Models table with a slide-in detail panel, System stat-cards plus a process table, and polling that
+pauses when the dashboard tab is hidden — none of that exists. Re-checked against the running code
+before editing: `src/dashboard/ui/models.js:6` ("No sorting, no filtering"), `src/dashboard/ui/
+system.js:2-6,40-64` (one six-row table, no cards, no process table), and `grep -rn
+"visibilitychange|document.hidden|visibilityState" src/` → 0 hits repo-wide. Rewrote both manuals to
+current-state (「模型：目錄表，本版不支援排序/篩選/滑入細節」、「系統：資源表格」, pause claim
+deleted). In the same edit, fixed `README.md:114`'s fabricated quoted string 「資料無法取得」 to the
+real rendered text `GitHub not configured` (`src/dashboard/ui/issues.js:5`). No code, test, or
+config file was touched — this is a pure documentation-accuracy fix; confirmed no test pins any of
+the removed strings.
+
+**Gate self-check.** `sh .sdlc/trace --check` → **1659 items / 33 gaps**, byte-identical gap SET to
+the pre-edit baseline (0 new orphan, broken link, or 未真實驗證/未驗證 row) — expected, since this
+round adds no new work-item ID and touches no `src/`/`tests/` file. `rtm.md` unchanged: all 8 v27
+closure REQs (131-136/140/141) remain ✅; a doc-prose fix does not change any REQ's verification
+status. Full detail in `08-validation.md`'s "v27i GATE 7.5 SEND-BACK REPAIR" section.
+
+`current_stage` stays `review` — Gate 8 owns this loop, same as v27g/v27h. The one remaining named
+finding before the re-review is design's **DASH-2** (`04-design.md:3306`, a `classDiagram` that
+fails to render in a real browser) — out of this gate's scope, untouched here. The `ARCH-124`
+owner_decision (REQ-131's 任一-success-to-Live acceptance vs the shipped `worstOf` narrowing) is
+still PENDING and still blocks Gate 8, not this stage.
+
+**Next**: design's DASH-2, then the Gate 8 re-review.

@@ -10570,3 +10570,101 @@ rule; no changelog entry added to either manual, the fix's history lives only in
 `gates.validation.passed` flips to `true` and `current_stage` to `review` in `state.yaml` at the end
 of this round — the full v27 closure (REQ-131/132/133/134/135/136/140/141) now has ≥1 real:true/pass
 VAL/E2E item each.
+
+## v27i GATE 7.5 SEND-BACK REPAIR (2026-09-13, validator) — DOC-1 closed: README/DEPLOY no longer claim unbuilt Models/System/pause behaviour
+
+**Scope**: exactly one Gate 8 finding routed to validation, `07-review.md:338-349` §6 DOC-1 (HIGH,
+blocking). No code, test, or config file is in scope for this finding — it is a documentation-only
+defect: two operator manuals asserted three features that do not exist (`README.md:112/113/120/
+139/140`, `DEPLOY.md:788`) plus one wrong quoted string (`README.md:114`), all introduced during
+this same v27 iteration's own doc rewrite (`git blame`: `9371402`, `fe21155b`). Per the send-back
+instruction, no other finding, no re-decomposition, and no re-run of unrelated work is done here —
+AC-1/AC-3b/AC-4/AC-5/AC-6/AC-7/AC-8/AC-9 (impl) were already closed at `v27g` (`06-impl-log.md`
+IMPL-269..276) and AC-2/AC-3a/DASH-1 (architecture) were already closed at `v27h`
+(`02-architecture.md`); DASH-2 (design) is a separate gate's finding and is untouched here.
+
+**Fix, verified against the running code (not the reviewer's report alone) before editing**:
+
+| Claim removed | Source-of-truth re-checked |
+|---|---|
+| README.md:112/139 「可排序、可篩選的模型目錄表，點一列從右側滑出細節面板」 | `src/dashboard/ui/models.js:6` — 「No sorting, no filtering」, `buildTable()` (:19-33) builds a plain six-column `<table>`, no sort handler, no panel. `grep` for a slide-in trigger on this file → none. |
+| README.md:113/140 「CPU / 記憶體 / 磁碟用量卡片，加上處理程序表」 | `src/dashboard/ui/system.js:2-6,40-64` — one ported `<table>` of six rows (cpu cores / load avg / cpu util / memory / disk / sampled at); its own header comment states REQ-077's process metrics were never rendered. No cards, no process table anywhere in the file. |
+| README.md:120 「分頁切到背景時會暫停更新」 / DEPLOY.md:788 「分頁在背景時暫停」 | `grep -rn "visibilitychange\|document.hidden\|visibilityState" src/` → **0 hits** repo-wide. `src/dashboard/ui/poll.js`'s `endpointsFor(view)` scopes the fetch set to the visible **dashboard tab**, which is a different mechanism from an OS/browser tab-hidden pause; `app.js`'s `tick()` reschedules unconditionally (no `document.hidden` guard anywhere in `src/dashboard/ui/app.js`). The 3-second poll runs forever regardless of OS tab visibility. |
+| README.md:114 quoted string 「資料無法取得」 | `grep -rn "資料無法取得" src/ tests/` → 0 hits. `src/dashboard/ui/issues.js:5` and its degrade branch render the literal English string `"GitHub not configured"` (confirmed against `server.ts`'s `{open:[],resolved:[],degraded:'GitHub not configured'}`). The *behaviour* (a degrade message instead of a blank list) was already correct — only the quoted Chinese string was fabricated. |
+
+**Edits made** (current-state rewrite, no changelog, no version-conditional wording):
+- `README.md:112-115` — Models tab now reads 「目錄表（provider / model / capability / stability /
+  costLevel / modalities 六欄），本版不支援排序、篩選，也沒有點列滑出細節面板」; System tab now reads
+  「資源表格（CPU 核心數、負載平均、CPU 使用率、記憶體、磁碟、取樣時間，共六列），本版沒有卡片版面，
+  也沒有處理程序表」; Issues tab's quoted degrade string corrected to 「GitHub not configured」.
+- `README.md:120` — the tab-hidden pause sentence deleted; the remaining sentence (3-second
+  auto-update, zoom/pan preserved across ticks) is unchanged and still true.
+- `README.md:139-140` (ASCII sketch) — 「模型（可排序 + 滑入細節）」→「模型（目錄表）」; 「系統
+  （資源卡片 + 處理程序表）」→「系統（資源表格）」.
+- `DEPLOY.md:788` — 「3 秒輪詢自動更新，分頁在背景時暫停，未支援 SSE」→「3 秒輪詢自動更新，未支援
+  SSE」.
+- Confirmed no test pins any of the removed strings: `grep -rln` for each removed phrase over
+  `tests/` and `src/` → 0 hits, so no test file needed a matching edit.
+- `models_list`/`GET /api/models`'s own 「支援多維篩選」 claim at `README.md:99`/`:384` is UNCHANGED
+  and stays true — that is the **MCP tool's** server-side `filterCatalog(entries, a as
+  CatalogFilter)` (`src/call-tool.ts:273-277`), a different surface from the dashboard **UI** table
+  DOC-1 is about; conflating the two would have been a new, self-inflicted inaccuracy.
+
+**Config-file sync check**: this finding touches no config/settings file and adds no key, secret,
+port, or flag — `§1 設定總表` in DEPLOY.md is unaffected, confirmed by inspection (no config file in
+`git diff` for this round).
+
+**Current-state / history-free check (Exit Gate 3b)**: re-grepped both manuals for
+「舊版」「原本」「以前」「previously」「變更紀錄」「Changelog」/dead keys/「now use … instead」 —
+the only hits (`README.md:434`, `DEPLOY.md:435,730,747`) are pre-existing, describe CURRENT
+upgrade/migration behaviour the system still performs today (e.g. the automatic `schedules` table
+rebuild on boot), and are unrelated to this finding's scope; none is a changelog or a superseded
+instruction. No new history-tell-tale introduced by this edit.
+
+**Real-run confirmation (Gate 7.5's own job, not left to source-reading alone)**: production
+`rwe.service` (port 8899, `MainPID 2713463`, `ActiveEnterTimestamp 2026-09-11 11:47:25`) was never
+touched — confirmed unchanged before and after. A separate scratch instance was booted the
+documented one-command way (DEPLOY.md §0's second-instance form):
+
+```
+set -a; . ~/.config/rwe.env; set +a
+export PATH="$HOME/.rwe-litellm-venv/bin:$PATH"
+RWE_CONFIG_PATH=<scratch>/cfg.json RWE_BIND=127.0.0.1 RWE_PORT=8940 ./deploy.sh --background
+```
+
+Health check passed, no undocumented manual step needed. Beyond reading source, the **served bytes**
+were pulled over real HTTP and grepped: `curl .../static/dashboard/ui/models.js` → the sole
+`sort|filter` hit is the file's own "No sorting, no filtering" comment, no sort/filter code;
+`curl .../static/dashboard/ui/system.js` → the sole `card|process` hit is the comment stating
+process metrics were never rendered; `curl .../static/dashboard/ui/poll.js` →
+`visibilitychange|document.hidden|visibilityState` = **0 hits**; `curl .../static/dashboard/ui/
+issues.js` → the literal string `GitHub not configured` present, `資料無法取得` absent. A real
+headless-Chromium session (`.sdlc/features/001-remote-workflow-engine/evidence/v27i/
+doc1-live-check-harness.mjs`) then drove the **rendered page**, not the source: on the Models tab,
+clicking a `<th>` column header left the first five row values in the SAME order (no sort control
+exists), and clicking a data row opened no slide-in/detail panel (`querySelector` for
+`.agent-panel`/`[class*="slide-in"]`/`[class*="detail-panel"]` → `no-such-element` while on that
+tab). On the System tab, `document.querySelectorAll('.card, [class*="stat-card"]')` → **0** and the
+rendered table body text is exactly the six documented rows (`cpu cores`, `load avg 1m/5m/15m`,
+`cpu util`, `memory`, `disk`, `sampled at`) — no cards, no process table. The Issues-tab degrade
+BEHAVIOUR was not re-exercised live in this pass (this scratch instance's `rwe.env` carries a real
+GitHub token, so it rendered real issues instead of the degrade branch) — that behaviour itself was
+never in dispute (`07-review.md:349` confirms it is right); only the quoted STRING was wrong, and
+the served-bytes grep above closes that. Scratch instance stopped afterward
+(`kill $(cat .rwe.pid)`), production untouched throughout.
+
+### Gate self-check (v27i, 2026-09-13, validator)
+No REQ evidence changes as a result of this repair (DOC-1 is prose-only; the underlying REQ-131..
+136/140/141 real:true/pass evidence from `v27 GATE 7.5 round 3` — VAL-206..212, VAL-205 — is
+unaffected and unchanged). `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`
+re-run after this edit: **1659 items / 33 gaps**, gap SET unchanged from the pre-edit baseline (no
+new orphan, no new broken link, no new 未真實驗證/未驗證 row) — expected, since this round adds no
+new work-item ID and touches no `src/`/`tests/` file. `--rtm` regenerated: no row changes (this
+finding does not touch any REQ's verification status). README.md/DEPLOY.md now match the running
+code for every claim this finding named; the rest of both manuals was left untouched (in scope was
+exactly `07-review.md:338-349`, nothing broader).
+
+`gates.validation` note updated in `state.yaml` to record this repair; `current_stage` is
+DELIBERATELY LEFT AT `review` (unchanged) — Gate 8 owns this send-back loop, and design's DASH-2
+(`04-design.md:3306`) is the one remaining named finding before the re-review, out of this gate's
+scope.

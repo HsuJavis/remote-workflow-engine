@@ -785,8 +785,8 @@ process manager（systemd/pm2/docker）收集；沒有另外寫檔案 log。狀�
 frame，頂層 `""`）+ `startedAt`/`endedAt`，`workflowNodes:[{frame,name,parentFrame,depth}]`；
 `phases[]` 每項帶 `ts`（進入時間，`running` 時最後一項即目前步驟）。`GET /dashboard` 列出已註冊
 工作流程卡片（`GET /api/workflows`）；點卡片進工作流程詳情頁，點某次 run 則畫出泳道圖（底層資料
-仍是巢狀 DAG，`GET /api/runs/:id/dag`，含 `lanes`；3 秒輪詢自動更新，分頁在背景時暫停，未支援
-SSE）。**跨重啟**：run 結束時（`completed`/
+仍是巢狀 DAG，`GET /api/runs/:id/dag`，含 `lanes`；3 秒輪詢自動更新，未支援 SSE）。
+**跨重啟**：run 結束時（`completed`/
 `failed`/`stopped`）DAG 快照一次性寫入 `run_snapshots` side table，重啟後 `getRun` 讀回同一棵
 巢狀樹（不攤平）；改動前留下、無快照的舊 run 仍以既有方式重建。**尚未支援**：parallel-group
 標記（需 sandbox-IPC 改動）、樹的靜態預讀+快取。
