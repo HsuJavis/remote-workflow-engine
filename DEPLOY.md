@@ -757,6 +757,11 @@ npm run start
 
 **目前已知、會影響操作判斷的限制**（每一條都在真機上實測過）：
 
+- **工作流程詳情頁（`/dashboard/workflow/<name>`）的泳道圖上點節點，目前不會打開 agent
+  細節面板。** 面板功能本身沒問題——用該次 run 的專屬網址 `/dashboard/<runId>`（執行歷史表 mono
+  字型那欄就是 run ID，複製貼到網址列）打開同一張圖，點節點就會正常打開面板；差別只在詳情頁的
+  兩處泳道圖繪製沒有接上開面板的回呼函式。已回報給下一輪修復（`src/dashboard/ui/workflow.js`）。
+
 - **`effort` 對 OpenRouter 模型沒有作用。** 引擎會把 `effort` 換算成 thinking 預算交給 CLI，但這個值
   到不了 OpenRouter：實測攔下真正送出的請求，`low` 與 `high` 兩次的內容完全相同、也沒有
   `reasoning_effort` 欄位（CLI 把預算收斂成 `thinking:{type:"adaptive"}`，LiteLLM 再對 openrouter

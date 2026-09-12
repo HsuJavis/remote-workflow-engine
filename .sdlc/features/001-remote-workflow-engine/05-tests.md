@@ -12116,6 +12116,15 @@ IMPORTER 404s (Vite's own loader map needs the real extension; the `.js`-resolve
 convenience is a `moduleResolution: bundler` behavior that only applies when the IMPORTER goes
 through the TS-aware transform, i.e. a `.ts` test file).
 
+**[Gate 5 re-run, 2026-09-13, verifier]:** re-measured — `npx vitest run tests/unit/dashboard-lib-strings.test.js`
+→ 9/9 pass at current HEAD. `status`/`result` above are a stale bookkeeping header: the v27 Gate
+6.5+7 regression closeout's flip pass named "UT-230/233/235/236/240..249/252..256" as flipped
+red→green (state.yaml `gates.tests` note), a range that includes this item's number (244), but no
+matching flip or "Re-measured" note ever landed on this heading the way UT-245 (immediately below)
+got one — a miss in that pass's bookkeeping, not a current defect. Left unflipped here per this
+ledger's own Mode-A-does-not-flip-status convention (same precedent as VAL-208's history below);
+flagged for whoever next runs the regression closeout to correct the header.
+
 ### UT-245 — `dashboard-lib-connection.test.js`: `nextConnection`/`worstOf`/`classifyResponse`
 - **status:** green
 - **traces:** DES-202, ARCH-124, ARCH-125, ARCH-130, TASK-206, REQ-131
@@ -12408,6 +12417,20 @@ already expresses "themed value with its own name" exactly. Re-measured (real Ch
 `RWE_REQUIRE_BROWSER=1`): the full `SPEC_ROWS (workflow view, REQ-133)` case is GREEN (0 failures
 across both themes + the hue move) — this row is no longer among TASK-209's unlanded-emitter
 failures listed above.
+
+**[Gate 5 re-run, 2026-09-13, verifier — oracle precision fix, not a behavior change]:** the
+`[data-run-chip]` `background-color`/`token: 'accent-100'` row asserted the accent fill on the FIRST
+`[data-run-chip]` match, which passed only by coincidence — `dashboard.css:225` scopes the fill to
+`.run-chip.is-selected`, and `workflow.js` happens to sort chips newest-first with the newest also
+the default selection, so the bare anchor's first match and the actually-selected chip were the same
+element. Change either behavior (sort order, default selection) and the row would either assert the
+wrong element or keep passing while the guarantee it names is gone. Found and reported (not fixed,
+scoped to implementer's own dispatch) at IMPL-266 (`06-impl-log.md`, commit `1a1746a`); fixed here per
+that report by narrowing `dashboard-spec.ts:145`'s anchor to `[data-run-chip].is-selected` (the exact
+narrowing pattern already used for `[data-node-cell].is-*` rows). Re-measured (real Chromium,
+`RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-199-workflow-detail.test.ts`): 4/4 pass —
+still GREEN under the corrected, non-coincidental anchor. No `src/` change; test oracle only.
+- **iter:** v27d
 
 ### VAL-208 — real Chromium: the swimlane run graph — lane headers, 216x74 nodes, legend
 - **status:** red

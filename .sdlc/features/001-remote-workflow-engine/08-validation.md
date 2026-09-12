@@ -10004,6 +10004,24 @@ limitation (DEPLOY.md §6), not a new one.
   Command: `node .sdlc/features/001-remote-workflow-engine/evidence/v27/req131-135-browser-harness.mjs`
   (`RWE_BASE=http://127.0.0.1:8935 RWE_RUN_ID=<runId>`) → `results.req131`/`results.req132` blocks,
   all fields as above.
+  **RE-CONFIRMED (2026-09-13, v27 Gate 7.5 RE-RUN, after commits 23a909a..1a1746a touched
+  `dashboard.css`/`ui/app.js`/`ui/home.js` for other fixes)** — booted fresh `deploy.sh` scratch
+  instance B (127.0.0.1:8935, `gateway:"direct-fetch"`, `auth.enabled:false`). Real Chrome against
+  `/dashboard`: `html[data-theme]` dark→light toggle unchanged; `zh` locale still real 繁中. THREE
+  things this same code touched and were re-measured, not assumed still true: tabs are now
+  `<a aria-current="page">` (`document.querySelector('[aria-current="page"]').textContent` =
+  `"工作流程"`, was a `<button class="active">` at the last measurement — confirmed real, not a
+  regression: `aria-current` is new accessibility affordance IMPL-255 added, not a removal); the hue
+  slider now has a live degrees readout (`"236°"`, absent before); footer now renders
+  (`"http://127.0.0.1:8935更新於 02:25:18"` — API base + a live clock, IMPL-255, did not exist at
+  VAL-206's original measurement); nav brand renders bilingual at `[data-nav-brand]` =
+  `"工作流引擎 / Workflow Engine"` (also new, IMPL-255). REQ-132: the home card's kicker line now
+  reads `"LAST RUN · 9/13 02:19"` — a TIMESTAMP (IMPL-262's `WorkflowCard.latestRunAt`), not the old
+  run-id-slice kicker VAL-206 originally recorded (`LAST RUN · 41E2791D`) — the README's own spec
+  names a timestamp, so this is the fix, not drift; search-filter re-confirmed (typing
+  `val27-swimlane` removes `val27-neverrun` from `document.body.textContent`). Command:
+  `node .sdlc/features/001-remote-workflow-engine/evidence/v27e/revalidation-harness.mjs`
+  (`req131`/`req132` blocks) against `RWE_BASE=http://127.0.0.1:8935`.
 
 ### VAL-207 — REQ-133/REQ-134: workflow detail — version tag, run history, predicted layout INCLUDING under auth
 - **status:** green
@@ -10035,13 +10053,28 @@ limitation (DEPLOY.md §6), not a new one.
   `req131-135-browser-harness.mjs` (auth-OFF half) and
   `npx tsx .sdlc/features/001-remote-workflow-engine/evidence/v27/req207-212-auth-on-harness.mjs`
   (auth-ON half, full transcript below under VAL-212).
+  **RE-CONFIRMED (2026-09-13, v27 Gate 7.5 RE-RUN)**, fresh scratch instances (B=8935 auth off,
+  A=8936 auth on, both `deploy.sh`-booted, production `rwe.service` PID 2713463 untouched
+  throughout): never-run workflow `val27-neverrun` detail page shows 9 `.cell.is-predicted` elements
+  (`evidence/v27e/req133-neverrun.png`); the real completed-run detail page (`val27-swimlane`) shows
+  2 `[data-run-chip]` elements, one carrying `.is-selected`, and a 3-row `<table>`
+  (1 header + 2 real runs) — `evidence/v27e/req133-detail.png`. On instance A (auth on): a bearer
+  minted directly against the real `TokenStore` (`auth-tokens.db` at
+  `/home/user/.local/share/rwe-scratch-a-v27e`); `workflow_register` with no bearer refused
+  (`"unauthorized"`); WITH the bearer, register→publish→run all succeeded
+  (`val27e-authrun`, run `6c850f29-b44b-41b2-be20-0d08a474611b`); every `/api/*` GET (dag, runs
+  list, run detail) returned 200 with **no** bearer, confirming the read surface is still
+  unconditionally open under `auth.enabled:true`. Command:
+  `node .sdlc/features/001-remote-workflow-engine/evidence/v27e/revalidation-harness.mjs`
+  (`req133_neverrun`/`req133_detail`) +
+  `node .sdlc/features/001-remote-workflow-engine/evidence/v27e/auth-on-check.mjs`.
 
-### VAL-208 — REQ-134: swimlane run graph — FAILS: node label/model text renders clipped (real defect)
-- **status:** red
+### VAL-208 — REQ-134: swimlane run graph — node label/model text clip FIXED, re-confirmed for real
+- **status:** green
 - **traces:** REQ-134
 - **tier:** acceptance
-- **real:** false
-- **result:** fail
+- **real:** true
+- **result:** pass
 - **iter:** v27
 - **evidence:** Against the real completed 9-agent run (`41e2791d-6495-4a46-a7ce-c383aa485219`,
   instance B) with real Chromium: the STRUCTURAL clauses of REQ-134 are genuinely met — 5
@@ -10087,26 +10120,124 @@ limitation (DEPLOY.md §6), not a new one.
   `getBoundingClientRect()` height against content — add one `SPEC_ROWS` kind asserting
   `rect.height >= k * lineHeight` for text anchors, or this exact failure class (correct CSS
   property, wrong rendered box) will keep passing every future run of this suite.
-  **Disposition: REQ-134 FAILS at Gate 7.5. Routed back to Gate 6 (implementer: `src/dashboard/ui/run.js`
-  + `src/dashboard/dashboard.css`, the `.cell` row structure) per the validator contract's L-003/exit-
-  gate rule — a real, reproducible rendering defect is not passed on the strength of a sibling
-  REQ's passing evidence (REQ-133/140 also trace this VAL item's neighbours and are independently
-  green; that is not license to call REQ-134 closed).**
+  **Disposition at the time (2026-09-12): REQ-134 FAILED at Gate 7.5.** Routed back to Gate 6
+  (implementer: `src/dashboard/ui/run.js` + `src/dashboard/dashboard.css`, the `.cell` row
+  structure) per the validator contract's L-003/exit-gate rule — a real, reproducible rendering
+  defect is not passed on the strength of a sibling REQ's passing evidence (REQ-133/140 also trace
+  this VAL item's neighbours and are independently green; that was not license to call REQ-134
+  closed).
 
-### VAL-209 — REQ-135/REQ-136: agent slide-in panel — stat cards, prompt, Esc close, real deployed instance
-- **status:** green
+  **FIX LANDED AND RE-CONFIRMED FOR REAL (2026-09-13, v27 Gate 7.5 RE-RUN, commits
+  `23a909a`/`1ec82b5` IMPL-250..252, plus `f5ee006`/`3091398`/`26210ee`/`1a1746a` IMPL-253..266
+  which touched the same file for other REQ-131/132/133/135/140 fixes).** Fresh `deploy.sh` scratch
+  instance B (127.0.0.1:8935), a NEW real 9-agent run (`b92fa5e0-0ddb-4e9e-a32e-6b92f9d76108`), real
+  Chromium, the SAME `clipRatio` formula VAL-208 introduced
+  (`getBoundingClientRect().height / (fontSize * lineHeight)`, now also the `notClipped` SPEC_ROWS
+  kind in `tests/helpers/spec-rows.ts`):
+  - **Row grouping fixed**: `document.querySelector('.cell.is-done').children.length` = **3**
+    (`cell-head`, `cell-meta`, `cell-usage` — was 5 flat siblings).
+  - **Clip ratio fixed**: `.cell-label` = **0.999** (was 0.33), `.cell-model` = **0.909** (was 0.30)
+    — both comfortably above the 0.8 floor. `modelText` renders the full string
+    (`"qwen2.5:7b"`), not a sliver of glyph tops.
+  - **Effort-tag contrast fixed**: `.cell-effort` background `rgb(33,34,38)` now genuinely differs
+    from `.cell`'s own `rgb(41,42,47)` (was byte-identical, camouflaged).
+  - **Duration now appended to row 3** (README-fidelity closure, `LayoutCell.durationMs` via
+    `dashboard.ts`'s new `durationOf()`): `usageText` = `"41 tok · $0.00 · 0m 7s"`.
+  - **All four `.cell-dot` states measured on genuinely distinct real runs**, not a fixture:
+    `done` → `rgb(231,233,236)` (a real completed agent, `var(--color-ink)`); `failed` →
+    `oklch(0.55 0.16 25)` (a real agent that hit a genuine 50ms timeout against real local Ollama —
+    `agent()` resolves the failed call to `null` per the documented D-F5 behaviour, so the WORKFLOW
+    script still returns `{ok:true}` and the RUN reads `completed` while the AGENT record itself is
+    genuinely `state:"failed"` — confirmed via `/api/runs/<id>/dag`, not a new defect, the
+    documented resolve-to-null semantics); `predicted`/`queued` → transparent + `1px solid` ring (9
+    real `.cell.is-predicted` elements on the never-run workflow); `running` → real accent colour
+    `oklch(0.72 0.065 236)` with `animation-name:rweRing`, caught live mid-flight by polling a real
+    in-flight ~27s local-Ollama call (`evidence/v27e/req134-running-cell.png`).
+  - **Blast-radius holds**: nothing else regressed — REQ-131/132/133/135/136/140/141's own
+    re-confirmations (this file's other VAL items) all still measure clean.
+  Screenshots: `evidence/v27e/req134-swimlane.png`, `req134-cell-zoom.png`,
+  `req134-failed-cell.png`, `req134-running-cell.png`. Commands:
+  `node .sdlc/features/001-remote-workflow-engine/evidence/v27e/revalidation-harness.mjs`
+  (`req134_done`/`req134_failed` blocks) and
+  `node .sdlc/features/001-remote-workflow-engine/evidence/v27e/running-probe.mjs`.
+  **Disposition: REQ-134 PASSES at Gate 7.5 RE-RUN. `pending:`'s blocking-finding item marked
+  RESOLVED in `state.yaml` with this citation.**
+
+### VAL-209 — REQ-135/REQ-136: agent slide-in panel — FAILS on the real primary page (workflow detail)
+- **status:** red
 - **traces:** REQ-135, REQ-136
 - **tier:** acceptance
 - **real:** true
-- **result:** pass
+- **result:** fail
 - **iter:** v27
-- **evidence:** Instance B, real Chrome: clicking a real `[data-node-cell]` opens
-  `[data-agent-panel]` (screenshot `evidence/v27/req135-agent-panel.png`) with 6
-  `[data-stat-card]` elements and a `<pre>` showing the real user prompt text ("Say hello in one
-  word."). `page.keyboard.press('Escape')` closes the panel (`[data-agent-panel]` absent after).
-  The flex-shrink audit (VAL-208's harness) swept all 25 text-bearing nodes under
-  `[data-agent-panel]` for the same clipping class VAL-208 found — every one measured
-  `rect.height/lineHeight >= 0.8`; the panel does not share the swimlane node's defect.
+- **evidence:** **Original measurement (2026-09-12), still true on its own route**: instance B,
+  real Chrome, `GET /dashboard/<runId>` (the LEGACY standalone run route, `app.js`'s own comment:
+  "a bookmarked/shared run URL carries no workflow name") — clicking a real `[data-node-cell]`
+  opens `[data-agent-panel]` (screenshot `evidence/v27/req135-agent-panel.png`) with 6
+  `[data-stat-card]` elements and a `<pre>` showing the real user prompt text. `Escape` closes it.
+  The flex-shrink audit swept all 25 text-bearing nodes under `[data-agent-panel]` — all clean.
+  REQ-136 (systemPrompt never on the wire) is independently confirmed real:true by VAL-211/its
+  auth-on re-confirmation below and is UNAFFECTED by this item's REQ-135 failure.
+
+  **REAL DEFECT FOUND (2026-09-13, v27 Gate 7.5 RE-RUN) — REQ-135 does NOT work on the PRIMARY page
+  a user actually reaches.** The design handoff (`.sdlc/design-handoff/README.md` §"2. Workflow
+  detail" / §"3. Agent panel (slide-in)") describes ONE view: the workflow-detail page's own
+  swimlane, clicking a node opens the panel — there is no separate "run view" in the design at all.
+  The real navigation path a user follows is Home → click a workflow card → `go('/dashboard/workflow/
+  ${name}')` (`app.js:399`) → `ui/workflow.js` renders that page's swimlane via TWO direct
+  `paintSwimlane(shell.svgEl, payload, { lang, pAgents[, agentsById] })` calls
+  (`workflow.js:292`/`:306`) — **neither passes `onSelectAgent`**. Measured on a real, fully loaded
+  `/dashboard/workflow/val27-swimlane` page in real Chrome:
+  `document.querySelector('.cell-layer').onSelectAgent` = `undefined`; clicking a real
+  `[data-node-cell][data-agent-id]` (`elementFromPoint` confirms the click genuinely lands inside
+  the cell) fires no `/api/runs/:id/agents/:agentId` request at all, and
+  `document.querySelector('[data-agent-panel]')` stays `null` after a 3s wait — the SAME code that
+  works via the legacy route (`ui/run.js`'s own `render()`, whose default `onSelectAgent` wiring —
+  DES-206's "option (a)" — is real and correct) was never threaded into `workflow.js`'s two call
+  sites. `openAgentPanel()` itself is not broken (directly invoking it from the console, bypassing
+  the click, opens a real panel) — this is a wiring gap in `workflow.js`, not in `agent-panel.js`.
+  **Root cause and fix, both one line**: `workflow.js:292` and `:306` need
+  `onSelectAgent: (id, lbl) => openAgentPanel(runId, id, lbl, { lang })` added to the opts object
+  (the same default `run.js:430` already implements) or the caller-supplied handler `ui/run.js`
+  exports threaded through. Files: `src/dashboard/ui/workflow.js` (2 call sites); no test in
+  `tests/acceptance/val-201-agent-panel.test.ts` currently catches this because that suite ONLY
+  navigates to `/dashboard/${runId}` (line 202/220/239/275/283/291) — never
+  `/dashboard/workflow/:name` — recommended (not built here): add one case there.
+
+  **A SECOND, independent REQ-135 defect found while isolating the first**, confirmed on the ONE
+  route where clicking does work (`/dashboard/<runId>`): REQ-135's own acceptance text requires the
+  panel to slide in from the LEFT when the clicked node's center is in the graph's right half.
+  `agent-panel.js`'s `openAgentPanel()` reads `window.event` to find the click coordinates AFTER
+  `await getJSON(...)` has already resolved — by then the click event has finished dispatching and
+  `window.event` is `undefined`, so `side` always falls through to the `'right'` default. Measured:
+  clicking the rightmost real cell (`agent-9`/`e2`, `translate(1152px, …)`, well into the right half
+  of the ~1300px+ graph) on a real completed run still opens `class="agent-panel"` (no `from-left`)
+  — the design's own "opposite side" rule never fires. Root cause + fix (not built here): capture
+  `window.event` (or the click's `clientX`) SYNCHRONOUSLY inside the `onSelectAgent` callback, before
+  the `await`, and pass it through `opts.nodeCenterX`/`opts.graphWidth` (the mechanism
+  `openAgentPanel` already accepts and prefers when supplied).
+
+  Commands: `node .sdlc/features/001-remote-workflow-engine/evidence/v27e/revalidation-harness.mjs`
+  (`req135` block — `panelExists:false` against `/dashboard/workflow/val27-swimlane`);
+  `node .sdlc/features/001-remote-workflow-engine/evidence/v27e/panel-debug.mjs` (isolates
+  `layer.onSelectAgent === undefined`); manual right-half-click probe (this item's own transcript).
+
+  **Disposition: REQ-135 FAILS at Gate 7.5 RE-RUN.** Routed back to Gate 6 (implementer:
+  `src/dashboard/ui/workflow.js`'s two `paintSwimlane` call sites, and `src/dashboard/ui/
+  agent-panel.js`'s `window.event` timing) per the validator contract's exit-gate rule — a real,
+  reproducible wiring gap on the product's own primary page is not passed on the strength of the
+  legacy-route acceptance suite being green.
+
+  **SAME MECHANICAL CAVEAT as VAL-208 last round, verified this time by reading `trace.py`'s own
+  `is_real_test`/`verified_real` (`.sdlc/trace.py:185-188,199`) rather than assumed**: it tests
+  `real in ('true',...)` only — it never reads `result`. `VAL-209` is `real:true` (a genuine
+  real-tier run, its failure IS the real evidence), so `REQ-135 in verified_real` is **`True`** and
+  `sh .sdlc/trace --check` will **NOT** list REQ-135 as a `未真實驗證` gap, exactly like REQ-134's
+  own case last round (confirmed empirically:
+  `python3 -c` against `trace.analyze()`/`reachable_from_pred(is_real_test,...)` returns
+  `REQ-135 in verified_real: True`). **Do not read a clean trace gap-count as REQ-135 being closed —
+  read this item and `pending:`.** `gates.validation.passed` stays `false` and `current_stage` stays
+  `impl` regardless of what the gap count shows.
 
 ### VAL-210 — REQ-067/076/077/078: Models/System/Issues ported to tabs (non-regression), real deployed instance
 - **status:** green
@@ -10141,6 +10272,15 @@ limitation (DEPLOY.md §6), not a new one.
   systemPrompt marker count **0**, user-prompt marker count **1**, in the returned
   `harness.prompt` string. Both transports confirmed on the real response body, not on a decorator
   or a mock.
+  **RE-CONFIRMED (2026-09-13, v27 Gate 7.5 RE-RUN), on BOTH instances**: instance B (auth off), a
+  NEW real run (`b92fa5e0-0ddb-4e9e-a32e-6b92f9d76108`, agent `agent-9`/`e2`, `echoer` agentType):
+  MCP `run_agent_log({runId, label:'e2'})` → `harness.prompt` contains
+  `"RWE-V27-USERPROMPT-MARKER"`, `harness.systemPrompt` = `{"agentType":"echoer","bytes":134}`
+  (metadata only); dashboard-HTTP `GET /api/runs/<id>/agents/agent-9` → byte-identical result. On
+  instance A (auth on, bearer-authenticated run `6c850f29-b44b-41b2-be20-0d08a474611b`): SAME check
+  on BOTH transports — MCP `promptHasMarker:true sysPromptLeaked:false`, dashboard-HTTP (no bearer,
+  ungated) `http 200 promptHasMarker:true sysPromptLeaked:false`. Command:
+  `node .sdlc/features/001-remote-workflow-engine/evidence/v27e/auth-on-check.mjs`.
 
 ### VAL-212 — REQ-140/REQ-134: `dag.lanes` + `record`, and the predicted overlay unconditional under auth
 - **status:** green
@@ -10181,6 +10321,16 @@ limitation (DEPLOY.md §6), not a new one.
   GETs against the auth-ON instance, p50=5.27ms/p95=6.33ms — well under the 50ms threshold ADR-051
   set, so per its own decision no per-`(name,version)` memo is warranted this iteration; the number
   is the record.
+  **RE-CONFIRMED (2026-09-13, v27 Gate 7.5 RE-RUN)** — the README-fidelity closure
+  (`23a909a..1a1746a`) added `LayoutCell.durationMs` (`dashboard.ts`'s new `durationOf()`); checked
+  it did not disturb `dag.lanes`/`record`: `curl http://127.0.0.1:8935/api/runs/<runId>/dag` (fresh
+  run `b92fa5e0…`) still returns the same 5-title `lanes` array, `current:null` on a terminal run,
+  and every agent cell now ALSO carries `"durationMs":<n>` alongside the pre-existing
+  `agentId`/`tokens`/`costUSD`/`unpriced` fields — an addition, not a removal. On instance A (auth
+  on, bearer run): `GET /api/runs/<id>/dag` with NO bearer → `http 200`, `cells:2`,
+  `lanes:[{"index":0,"title":"X"}]` — still unconditionally open. Predicted-overlay-under-auth
+  clause unchanged since the code path it exercises (`describe`-driven overlay, not the live `/dag`
+  route) was not touched by the fidelity sweeps.
 
 ### VAL-205 — REQ-141: `RunSummary.costUSD` shares ONE fold with `/api/runs/:id`, real deployed instance
 - **status:** green
@@ -10207,6 +10357,14 @@ limitation (DEPLOY.md §6), not a new one.
   ```
   Recorded per ADR-052's "a number rather than a hope" decision — decides only whether v28 needs the
   `?workflow=&limit=` bound; nothing built this round.
+  **RE-CONFIRMED (2026-09-13, v27 Gate 7.5 RE-RUN)** — fresh scratch instance B, a NEW real 9-agent
+  run (`b92fa5e0-0ddb-4e9e-a32e-6b92f9d76108`) with the SAME `d1`/`gpt41nano` real priced OpenRouter
+  call: `GET /api/runs` list entry `costUSD: 2.1e-06`; `GET /api/runs/<id>` →
+  `usage.costUSD: 2.1e-06` — identical float, both endpoints, the exact regression target still
+  holds after the fidelity sweeps touched `dashboard.ts`. On instance A (auth on, bearer run
+  `6c850f29…`, a local-only unpriced call): `usage.costUSD` on the detail endpoint === `costUSD` on
+  the list endpoint (both `0`) — `costUSDMatch:true` — confirming the SAME fold on the auth-on
+  instance too, not just auth-off.
 
 ### Configuration — no drift found
 Checked `rwe.config.example.json` / `rwe.config.json` / DEPLOY.md §1b against this iteration's own
@@ -10228,6 +10386,57 @@ pre-existing items are untouched, out of this closure's scope). Exit code: **1**
 expected and reported honestly, not fudged: the ledger-wide `--check` cannot reach 0 while
 REQ-137/138/139/142/143's own slice remains unstarted and REQ-134 remains failed; both are named
 explicitly rather than the exit code being silently reported as 0.
+
+### Gate self-check (v27 Gate 7.5 RE-RUN, 2026-09-13)
+Re-ran the whole closure (REQ-131/132/133/134/135/136/140/141), not only REQ-134, because the three
+fidelity-sweep commits landed between the last validation and this one
+(`23a909a`/`1ec82b5`/`f5ee006`/`3091398`/`26210ee`/`1a1746a`, IMPL-250..266) touched shared dashboard
+surface (`dashboard.css`, `ui/app.js`, `ui/home.js`, `ui/run.js`, `src/dashboard.ts`) for reasons
+other than REQ-134's own fix. **Result: 7 of 8 PASS, 1 of 8 (REQ-135) FAILS with a NEW real defect
+found this round** (unrelated to REQ-134's fix — a pre-existing gap the fidelity sweeps did not
+touch and did not introduce, just never previously exercised on its real primary route):
+- **REQ-134 (VAL-208): FIXED, now PASSES.** The row-grouping/clip defect this file recorded on
+  2026-09-12 is confirmed fixed for real (3 direct children, clip ratios 0.999/0.909, all four dot
+  states measured on real distinct runs, duration now in row 3).
+- **REQ-131/132/133/136/140/141: RE-CONFIRMED PASS**, fresh evidence gathered against NEW real runs
+  on freshly `deploy.sh`-booted scratch instances (B=8935 auth off, A=8936 auth on — different ports
+  from the prior round's B=8935/A=8936 pairing but the SAME documented second-instance form;
+  production `rwe.service` PID 2713463 untouched throughout, confirmed before and after via
+  `systemctl --user status rwe.service` — `Active`/`Main PID`/`Invocation` unchanged). Each item's
+  own evidence bullet above carries the fresh command + output.
+- **REQ-135 (VAL-209): NEW REAL FAILURE.** Works on the legacy `/dashboard/<runId>` route (where the
+  acceptance suite tests it) but NOT on `/dashboard/workflow/:name` — the actual page a user reaches
+  from the home page, and the ONLY page the design handoff describes. Two independent real defects
+  found (workflow.js never wires `onSelectAgent`; `agent-panel.js` reads `window.event` too late for
+  the from-left clause to ever fire). Full record in VAL-209 above.
+
+Command log (every boot/probe command actually run, so this is reproducible): `systemctl --user
+status rwe.service` (pre-flight + post-check); `set -a; . ~/.config/rwe.env; set +a`;
+`RWE_CONFIG_PATH=/home/user/.config-scratch/rwe.config.b.json RWE_BIND=127.0.0.1 RWE_PORT=8935
+./deploy.sh --background`; same for instance A on 8936 (`rwe.config.a.json`, `auth.enabled:true`);
+both configs set `"gateway":"direct-fetch"` (the documented fallback — `gateway:"sdk"`'s
+Ollama-thinking-400 limitation is unchanged and out of this closure) and
+`"agentDefinitionsDir":"/home/user/rwe-val-v27/agents"` (the real custom `echoer` agentType
+fixture). Evidence scripts: `.sdlc/features/001-remote-workflow-engine/evidence/v27e/{
+setup-instance-b-harness (reused from evidence/v27/), revalidation-harness.mjs, running-probe.mjs,
+auth-on-check.mjs, panel-debug.mjs}`.
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: **1649 items, 33 gaps**
+(byte-identical set to the prior two v27 measurements this session — 10 MID for
+REQ-137/138/139/142/143, explicitly out of this closure; 23 LOW pre-existing drift/`TASK-018`/
+`TASK-153`). Exit code **1**. **The gap count does NOT include REQ-135** — confirmed by reading
+`trace.py`'s own `is_real_test`/`verified_real` (see VAL-209's own note): a `real:true` item counts
+toward `verified_real` regardless of `result`, so `VAL-209`'s real:true/fail still satisfies REQ-135
+mechanically, the SAME blind spot the previous round documented for REQ-134. **This is why
+`gates.validation.passed` is decided from this document and `pending:`, never from the trace gap
+count alone.**
+
+**Configuration**: re-checked `rwe.config.example.json`/`rwe.config.json`/DEPLOY.md §1b against
+`git diff` since the last validation (`9371402..HEAD`, covering all six fidelity-sweep commits) —
+no new/changed/removed server-side config key, secret, port, or feature flag (the sweeps touched
+only client-side `src/dashboard/**` and one server-side pure addition, `LayoutCell.durationMs` via
+`dashboard.ts`, which reads no new config). No config file changed this pass; the §1 設定總表
+round-trip from the prior round stands unmodified.
 
 ### Ledger defect found and fixed: VAL-198..204 ID collision (05-tests.md vs this file)
 The v27 Gate 5 verifier (test-first RED, 2026-09-12) numbered the closure's new acceptance items

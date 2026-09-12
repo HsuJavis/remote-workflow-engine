@@ -142,7 +142,12 @@ export const SPEC_ROWS: ReadonlyArray<SpecRow> = [
   // -- REQ-133 workflow detail (view: workflow) --
   { req: 'REQ-133', view: 'workflow', anchor: 'data-run-chip', prop: 'border-radius', expect: { literal: '100px' } },
   { req: 'REQ-133', view: 'workflow', anchor: 'data-run-chip', prop: 'font-size', expect: { literal: '12px' } },
-  { req: 'REQ-133', view: 'workflow', anchor: 'data-run-chip', prop: 'background-color', expect: { token: 'accent-100' } },
+  // [Gate 5 re-run, v27 3rd-sweep audit] narrowed from bare `data-run-chip` — the accent-100 fill is
+  // `.run-chip.is-selected` only (`dashboard.css:225`); the bare anchor passed by COINCIDENCE
+  // (`querySelector` returns the first DOM match, and `workflow.js` sorts chips newest-first with the
+  // newest also the default selection, so the two happened to be the same element) — not because
+  // every chip carries the fill. Reported at IMPL-266 (1a1746a), fixed here per that report.
+  { req: 'REQ-133', view: 'workflow', anchor: '[data-run-chip].is-selected', prop: 'background-color', expect: { token: 'accent-100' } },
   { req: 'REQ-133', view: 'workflow', anchor: 'data-history-table', prop: 'border-collapse', expect: { literal: 'collapse' } },
   // [TASK-214 oracle fix] `width` is a resolved-value property — `getComputedStyle` returns the
   // used pixel width, never the specified `100%`, on any browser (this row could never pass at

@@ -4154,3 +4154,127 @@ for REQ-137/138/139/142/143, explicitly out of this closure; 23 LOW pre-existing
 
 **Next**: Gate 6 (implementer) fixes the `.cell` row-grouping in `dashboard.css`/`run.js`, then
 Gate 7.5 re-runs ONLY REQ-134's real-tier check (the other 7 closure REQs do not need re-validation).
+
+## 2026-09-13 — v27d GATE 5 RE-RUN (verifier, test-first RED) — PASSED, zero new RED (dispatch premise was stale)
+
+**Dispatched as Mode A test-first RED** for the impact closure REQ-131/132/133/134/135/136/140/141,
+"before implementation... confirm red because unimplemented." At HEAD (`1a1746a`) that premise no
+longer held: three further Gate-6-style fidelity sweeps had already landed in this same session
+after the Gate 7.5 send-back above — `23a909a`/`1ec82b5` (REQ-134's own row-grouping fix, IMPL-250/
+251/252), then `7039586` (vendoring the design handoff README as a fidelity oracle, DES-209),
+`f5ee006`, `3091398` (IMPL-255..258), `26210ee` (IMPL-259/260/261) and `1a1746a` (IMPL-262..266) —
+each one test-first with its own red confirmed before any `src/` edit, per their own commit
+messages. There was no unimplemented behavior left in the closure to write a new RED test against.
+**Writing a red test anyway would have been the "always-pass shell" the contract forbids, inverted
+— a manufactured red against already-green code.** Zero new RED tests is the honest Mode A result
+here and is reported as such, not papered over.
+
+**What this stage's own lane still had work in:**
+1. **UT-244 stale header.** `status: red`/`result: fail` in the header, but
+   `npx vitest run tests/unit/dashboard-lib-strings.test.js` measures 9/9 green at HEAD. The v27
+   Gate 6.5+7 flip pass's own note names "UT-240..249" as flipped red→green, a range that includes
+   244, but no flip or "Re-measured" note ever landed on this specific heading (its sibling UT-245
+   got one, immediately below it in the file) — a bookkeeping miss in that pass, not a current
+   defect. Left unflipped here, per this ledger's own established convention that Mode A does not
+   flip status; noted in `05-tests.md` for the next regression closeout to correct.
+2. **A genuine test-oracle bug, found by IMPL-266's own audit and reported but scoped out of that
+   implementer dispatch ("not `src/`").** `tests/fixtures/dashboard-spec.ts`'s REQ-133 SPEC_ROW for
+   `[data-run-chip]` `background-color: accent-100` used a bare, unnarrowed anchor for a property
+   that is genuinely state-conditional (`dashboard.css:225`: only `.run-chip.is-selected` carries
+   the fill). It passed only because `workflow.js` sorts chips newest-first and the default
+   selection is also the newest run, so the first DOM match happened to be the selected one — two
+   unrelated behaviors coinciding, not the guarantee the row claims to check. Narrowed the anchor to
+   `[data-run-chip].is-selected` (the same narrowing pattern already used for `[data-node-cell].is-*`
+   rows). Re-measured real Chromium: `RWE_REQUIRE_BROWSER=1 npx vitest run
+   tests/acceptance/val-199-workflow-detail.test.ts` → 4/4 pass, unchanged — an oracle-precision fix,
+   not a behavior change. Amended on VAL-207 in `05-tests.md`.
+
+**Drift flagged, not fixed here (out of this stage's lane):** the three fidelity sweeps added
+roughly 13 new `SPEC_ROWS`/unit cases directly to `tests/fixtures/dashboard-*.ts` and
+`tests/acceptance/*.test.ts` with no matching `05-tests.md` items — invisible to `sh .sdlc/trace`
+(it reads the ledger, not code, so this produces no gap). Recording those is Mode B's (Gate 6.5+7's)
+job, not Gate 5's; noted for whoever runs that pass next.
+
+**Trace**: `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → 1649 items, 33 gaps,
+unchanged from every prior v27 measurement this session (10 MID for REQ-139/142/143, explicitly out
+of this closure; 23 LOW pre-existing drift). None name a REQ/DES in this closure. Exit code 1 per
+`trace.py`'s own any-gap convention; no HIGH severity, consistent with every prior pass this
+iteration reporting the same baseline as acceptable.
+
+**Still open, unaffected by this stage:** REQ-134 (`VAL-208`) still awaits Gate 7.5 RE-validation
+before its `real:true` flips — this stage does not run a real-deployed check, only unit/acceptance
+suites against the working tree.
+
+**Next**: Gate 6.5+7 (simplify + regression closeout) to backfill the ~13 undocumented test-code
+additions from the three fidelity sweeps into `05-tests.md`, then Gate 7.5 re-validates REQ-134.
+
+## 2026-09-13 — v27e GATE 7.5 RE-RUN (validator, real-run validation & handover) — NOT PASSED, REQ-134 fixed, NEW REQ-135 defect
+
+**Booted from documented steps only.** Pre-flight: production `rwe.service` confirmed
+`active (running)`, `MainPID 2713463`, unchanged before and after. Two fresh SEPARATE scratch
+instances via DEPLOY.md §0's own second-instance form (`set -a; . ~/.config/rwe.env; set +a`;
+`RWE_CONFIG_PATH=… RWE_BIND=127.0.0.1 RWE_PORT=89xx ./deploy.sh --background`): **B** (8935,
+`auth.enabled:false`) and **A** (8936, `auth.enabled:true`), both `"gateway":"direct-fetch"` (the
+documented Ollama-thinking fallback, unchanged limitation, out of this closure). Re-ran the WHOLE
+impact closure, not only REQ-134, because three further fidelity-sweep commits
+(`23a909a`/`1ec82b5`/`f5ee006`/`3091398`/`26210ee`/`1a1746a`, IMPL-250..266) landed in the SAME
+session after the last validation and touched shared dashboard surface (`dashboard.css`,
+`ui/app.js`, `ui/home.js`, `ui/run.js`, `src/dashboard.ts`) for reasons other than REQ-134's own fix.
+
+**REQ-134 FIXED, RE-CONFIRMED FOR REAL.** Gate 6's row-grouping fix (IMPL-250/251/252) holds on a
+brand-new real 9-agent run: `.cell` now has exactly 3 direct children (`cell-head`/`cell-meta`/
+`cell-usage`, was 5 flat siblings); `.cell-label` clip ratio 0.999 (was 0.33), `.cell-model` 0.909
+(was 0.30) — the SAME `getBoundingClientRect()/font-size×line-height` formula VAL-208 introduced,
+now also `tests/helpers/spec-rows.ts`'s `notClipped` kind; effort-tag background now genuinely
+distinct from the cell's own; duration now appended to row 3 (`LayoutCell.durationMs`, the
+README-fidelity closure's own addition). All four `.cell-dot` states measured on genuinely distinct
+real conditions, not a fixture: done (a real completed agent), failed (a real 50ms timeout against
+real local Ollama — the agent record genuinely reads `state:"failed"` while the WORKFLOW still
+completes, per the documented resolve-to-null behavior, not a new defect), predicted/queued (9 real
+`.cell.is-predicted` nodes on a never-run workflow), running (caught live mid-flight polling a real
+~27s local-Ollama call). REQ-131/132/133/136/140/141 all RE-CONFIRMED real:true GREEN on fresh runs
+across both instances — nothing the fidelity sweeps touched regressed (tabs now `<a
+aria-current="page">`, hue slider gained a degrees readout, footer + nav brand now render, home
+card's "LAST RUN" kicker is now a timestamp not a run-id slice — all confirmed as the intended fix,
+not drift).
+
+**REQ-135 FAILS FOR REAL — a NEW defect, unrelated to REQ-134's fix.** The design handoff
+(`.sdlc/design-handoff/README.md` §2/§3) describes ONE view: the workflow-detail page's own
+swimlane, click a node to open the agent panel. The real user path (Home → click a workflow card →
+`/dashboard/workflow/:name`) renders that swimlane via `ui/workflow.js`'s own two direct
+`paintSwimlane(...)` calls, neither of which passes `onSelectAgent` — measured on a real loaded
+page: `.cell-layer.onSelectAgent` is `undefined`, clicking a real agent cell fires no
+`/agents/:id` request, no panel ever appears. `openAgentPanel()` itself works (confirmed by calling
+it directly); this is a wiring gap in `workflow.js` alone, never wired since IMPL-224 defaulted
+`onSelectAgent` only inside `ui/run.js`'s own `render()` (the legacy `/dashboard/<runId>` route —
+also the ONLY route `val-201-agent-panel.test.ts` navigates to, so no test catches this). A SECOND,
+independent defect found on that same working legacy route: `agent-panel.js`'s `openAgentPanel()`
+reads `window.event` after an `await`, so it is always `undefined` by the time it's read — the
+"clicked node in the right half → panel slides from the left" clause never fires (measured: the
+rightmost real cell still opens `class="agent-panel"`, never `from-left`).
+
+**Mechanical caveat, same shape as REQ-134's last round, stated so it is not silently missed**:
+`sh .sdlc/trace --check` will NOT show REQ-135 as a gap. Read directly from `trace.py`'s own
+`is_real_test`: it checks `real:true` only, never `result` — `VAL-209` is genuinely `real:true`
+(its FAILURE is the real evidence) so `REQ-135 in verified_real` reads `True`
+(confirmed empirically via `trace.analyze()`/`reachable_from_pred`). `gates.validation.passed` stays
+`false`, `current_stage` stays `impl` (routed back), and a `pending:` item states the defect and
+this exact mechanical blind spot in full.
+
+**Docs.** `README.md`/`DEPLOY.md` rewritten current-state for everything the fidelity sweeps
+changed (tabs, hue slider readout, footer, nav brand, theme segment order, home card LAST RUN
+timestamp); REQ-135's defect is NOT described in the human manuals, per the manuals' history-free
+rule — it lives only in `08-validation.md`/`pending:`/this entry. Config: checked the fidelity-sweep
+diff (`9371402..HEAD`) against `rwe.config.example.json`/DEPLOY.md §1 — no new/changed/removed key;
+`LayoutCell.durationMs` is a pure server-side addition that reads no config.
+
+**Trace**: `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → 1649 items, 33 gaps,
+byte-identical set to every prior v27 measurement this session (10 MID for REQ-139/142/143 — out of
+closure; 23 LOW pre-existing drift). Exit code 1. `rtm.md` regenerated: REQ-134 flips ✅ (was the
+manual-override ⚠️), REQ-135 flips to the manual-override ⚠️ (was ✅) — the mirror image of last
+round, both citing the mechanical caveat above rather than trusting the tool's own gap count.
+
+**Next**: Gate 6 (implementer) wires `onSelectAgent` into `ui/workflow.js`'s two `paintSwimlane`
+calls and fixes `agent-panel.js`'s `window.event` timing, then Gate 7.5 re-validates ONLY REQ-135
+(the other 7 closure REQs, including the now-fixed REQ-134, do not need re-validation again unless
+touched).
