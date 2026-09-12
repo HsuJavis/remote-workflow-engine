@@ -25,6 +25,7 @@
 // is available (val-201 does not assert a side, only that clicking the node opens the panel).
 import { panelSide } from '../lib/swimlane.js';
 import { panelModel, clipText } from '../lib/agent.js';
+import { clockNow } from '../lib/clock.js';
 import { getJSON } from './poll.js';
 
 const EVENT_CLIP = 2048;
@@ -232,7 +233,7 @@ export async function openAgentPanel(runId, agentId, label, opts) {
   const harness = body.harness || null;
   const events = body.events || [];
   const hasMore = !!body.hasMore;
-  const now = new Date().toISOString();
+  const now = clockNow();
   // `onSelectAgent` fires synchronously from the swimlane's own click listener (`run.js:169`), so
   // `window.event` (still live in every Chromium build though formally deprecated) carries the
   // real click coordinates when neither `opts.nodeCenterX` nor `opts.graphWidth` was threaded

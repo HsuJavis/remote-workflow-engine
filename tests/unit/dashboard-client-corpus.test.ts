@@ -14,7 +14,7 @@
 // anti-vacuity GUARANTEE is a property of `clientCorpus()` given *any* empty directory, not a fact
 // about today's `src/dashboard/` — re-pointed to a real, disposable empty temp dir so it stays true
 // regardless of how large the real client tree grows.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -44,5 +44,49 @@ describe("poll.js: endpointsFor(view) is the VISIBLE view's fetch set only (UT-2
     const eps = endpointsFor('run');
     expect(eps.some((e) => e.includes('/dag'))).toBe(true);
     expect(eps.some((e) => e.includes('/api/home'))).toBe(false);
+  });
+
+  it('the workflow view fetches describe + /api/runs, name-encoded when ctx.name is given', async () => {
+    const { endpointsFor } = await import('../../src/dashboard/ui/poll.js');
+    const eps = endpointsFor('workflow', { name: 'a b' });
+    expect(eps).toContain('/api/workflows/a%20b/describe');
+    expect(eps).toContain('/api/runs');
+  });
+
+  it("the three ported tabs (issues/models/system) each fetch their own single endpoint", async () => {
+    const { endpointsFor } = await import('../../src/dashboard/ui/poll.js');
+    expect(endpointsFor('issues')).toEqual(['/api/issues']);
+    expect(endpointsFor('models')).toEqual(['/api/models']);
+    expect(endpointsFor('system')).toEqual(['/api/system']);
+  });
+});
+
+// v27 Gate 6.5+7 (verifier, coverage gate): `getJSON` executes under Node whenever `poll.js` is
+// imported (UT-249 already does) — its three branches (ok/degraded body, unparseable JSON body,
+// `fetch` itself rejecting) had no case before this pass.
+describe('poll.js: getJSON(url) always resolves {status, body}, never throws (UT-249, DES-202)', () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('a 200 with a normal JSON body classifies ok', async () => {
+    globalThis.fetch = async () => ({ status: 200, json: async () => ({ a: 1 }) }) as unknown as Response;
+    const { getJSON } = await import('../../src/dashboard/ui/poll.js');
+    const r = await getJSON('/x');
+    expect(r).toEqual({ status: 'ok', body: { a: 1 } });
+  });
+
+  it('a 200 whose body is not valid JSON resolves body:null, never throws', async () => {
+    globalThis.fetch = async () => ({ status: 200, json: async () => { throw new Error('bad json'); } }) as unknown as Response;
+    const { getJSON } = await import('../../src/dashboard/ui/poll.js');
+    const r = await getJSON('/x');
+    expect(r).toEqual({ status: 'fail', body: null });
+  });
+
+  it('fetch() itself rejecting (network error) resolves {status:"fail", body:null}, never rejects', async () => {
+    globalThis.fetch = async () => { throw new Error('network down'); };
+    const { getJSON } = await import('../../src/dashboard/ui/poll.js');
+    await expect(getJSON('/x')).resolves.toEqual({ status: 'fail', body: null });
   });
 });

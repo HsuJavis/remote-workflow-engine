@@ -11668,12 +11668,14 @@ No time-related literal appears anywhere in this batch; `lib/runlist.js`'s `hist
 `Date.now()`/`new Date()` under `src/dashboard/lib/**`).
 
 ### UT-230 — the guard tier: no-skeleton-surface / no-retired-surface widen to see `.js`/`.css`
-- **status:** red
+- **status:** green
 - **traces:** DES-191, ARCH-124, ARCH-123, REQ-131, REQ-134
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
 Files: `tests/unit/no-skeleton-surface.test.ts`, `tests/unit/no-retired-surface.test.ts` (extended
 in place, one new case each; all pre-existing cases re-run and still green — 9/9 pre-existing pass).
@@ -11738,12 +11740,14 @@ contains(scriptPrompt)`. RED (measured): the real response body contains the mar
 composed prompt is persisted and returned unstripped.
 
 ### UT-233 — `sqlite-run-store-usage-projection.test.ts`: the at-rest usage projection + `backfillUsage`
-- **status:** red
+- **status:** green
 - **traces:** DES-193, ARCH-128, TASK-198, REQ-141
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
 File: `tests/unit/sqlite-run-store-usage-projection.test.ts` (new, 4 cases over a real temp
 `better-sqlite3` file). Five-row table (no snapshot / full+usage / `{usage}`-only / tokens missing
@@ -11754,12 +11758,14 @@ absent for row 3); `backfillUsage` idempotence; `backfillUsage` no-op on a non-t
 `store.backfillUsage is not a function`.
 
 ### IT-166 — `run-store-parity.test.ts`: `InMemoryRunStore` matches the SAME projection (ARCH-128 parity)
-- **status:** red
+- **status:** green
 - **traces:** DES-193, ARCH-128, TASK-198, REQ-141
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history, not a current description of the code.
 
 File: `tests/integration/run-store-parity.test.ts` (new, 2 cases). The SAME scenario as UT-233's
 core case, run through `InMemoryRunStore` — nothing enforces the two stores agree today. RED
@@ -11809,24 +11815,28 @@ case 1 `summary.costUSD` is `undefined` vs a real non-zero detail figure; case 2
 carries no field at all to compare — recorded green per Mode C for that half).
 
 ### UT-235 — `strip-first-segment.test.ts`: `stripFirstSegment` — total, fail-closed, six cases
-- **status:** red
+- **status:** green
 - **traces:** DES-195, ARCH-129, ADR-050, TASK-200, REQ-136, REQ-094
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
 File: `tests/unit/strip-first-segment.test.ts` (new, 8 cases incl. a property test over
 `composePrompt`). RED (measured): whole-file behavioural red — `TypeError: stripFirstSegment is not
 a function` (params/resolve.ts exports only `composePrompt`, its inverse).
 
 ### UT-236 — `agent-executor-harness-descriptor.test.ts`: the ONE decoration site strips the systemPrompt
-- **status:** red
+- **status:** green
 - **traces:** DES-195, ARCH-129, ADR-050, TASK-200, REQ-136, REQ-135
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
 File: `tests/unit/agent-executor-harness-descriptor.test.ts` (new, 4 cases; a real `AgentExecutor` +
 real `InMemoryRunStore`, an echo-gateway fake modeling both real gateways' `prompt: req.prompt`
@@ -11989,12 +11999,14 @@ pins `v2` on `run_start`) → `workflow_deregister` → register×1 (new lineage
 entry (`[]`, not `[DAG_WARNING_EXAMPLES.fallback]`).
 
 ### IT-170 — `static-assets-route.test.ts`: `/static/dashboard/*` registered before the SPA catch-all
-- **status:** red
+- **status:** green
 - **traces:** DES-198, DES-199, ARCH-130, ARCH-123, TASK-203, REQ-131, REQ-140
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history, not a current description of the code.
 
 File: `tests/integration/static-assets-route.test.ts` (new, 5 cases; real `createServer()`). 3/5 red
 (measured): a known JS/woff2 key answers 404 (the arm does not exist — falls through to the final
@@ -12017,23 +12029,27 @@ report). Re-run: `npx vitest run tests/integration/static-assets-route.test.ts` 
 `result` left as the original Gate-5 measurement, same bookkeeping precedent as UT-249 above.
 
 ### UT-240 — `static-assets.test.ts`: `STATIC_ASSETS` — closed map, exact `Map.get`, no path built from a URL
-- **status:** red
+- **status:** green
 - **traces:** DES-199, ARCH-123, ADR-049, TASK-204, REQ-131
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
 File: `tests/unit/static-assets.test.ts` (new, 5 cases). RED (measured): whole-file import failure —
 `src/static-assets.ts` does not exist (`Failed to load url ../../src/static-assets.js`).
 
 ### UT-241 — `dashboard-page-source.test.ts` extended: the v27 shell (markup + tokens CSS + data island)
-- **status:** red
+- **status:** green
 - **traces:** DES-200, DES-201, ARCH-122, TASK-205, REQ-131, REQ-070
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
 File: `tests/unit/dashboard-page-source.test.ts` (extended, 5 new cases; all 11 pre-existing cases
 re-run and stay green). RED (measured): no `data-theme` attribute at all; no `/static/dashboard/*`
@@ -12041,24 +12057,28 @@ asset references; the one inline `<script>` is executable JS, not `type="applica
 `--color-bg`/`oklch(...var(--rwe-hue))` tokens in the CSS.
 
 ### UT-242 — `update-outcome-config-check.test.ts` extended: `updatePanelModel` (INV-V27-5)
-- **status:** red
+- **status:** green
 - **traces:** DES-200, ARCH-040, TASK-205, REQ-070
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
 File: `tests/unit/update-outcome-config-check.test.ts` (extended, 4 new cases via dynamic `import()`
 so the pre-existing 4 cases stay collected/green even though `src/dashboard/lib/status.js` does not
 exist yet). RED (measured): whole-file import failure on the dynamic import.
 
 ### UT-243 — `dashboard-lib-theme.test.js`: viewer preferences (`PREF_KEYS`, `clampHue`, `prefsFromStorage`)
-- **status:** red
+- **status:** green
 - **traces:** DES-201, ARCH-124, TASK-206, REQ-131
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
 File: `tests/unit/dashboard-lib-theme.test.js` (new, `.js`, 5 cases — confirms vitest.config.ts's
 widened `include` actually collects it). RED (measured): whole-file import failure —
@@ -12097,57 +12117,67 @@ convenience is a `moduleResolution: bundler` behavior that only applies when the
 through the TS-aware transform, i.e. a `.ts` test file).
 
 ### UT-245 — `dashboard-lib-connection.test.js`: `nextConnection`/`worstOf`/`classifyResponse`
-- **status:** red
+- **status:** green
 - **traces:** DES-202, ARCH-124, ARCH-125, ARCH-130, TASK-206, REQ-131
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
 File: `tests/unit/dashboard-lib-connection.test.js` (new, `.js`, 11 cases — the full transition
 table). RED (measured): whole-file import failure — `src/dashboard/lib/connection.js` does not
 exist.
 
 ### UT-246 — `dashboard-lib-swimlane.test.js`: `SWIMLANE_BOX`/`laneX`/`cellRect`/`edgePath`/`svgBox`/`panelSide`
-- **status:** red
+- **status:** green
 - **traces:** DES-203, ARCH-124, ARCH-120, TASK-207, REQ-134, REQ-135
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
 File: `tests/unit/dashboard-lib-swimlane.test.js` (new, `.js`, 7 cases). RED (measured): whole-file
 import failure — `src/dashboard/lib/swimlane.js` does not exist.
 
 ### UT-247 — `dashboard-lib-runlist.test.js`: `fmtCost`/`sortRows`/`historyRow`/`matchCards`/`segmentCounts`/`sumTokens`
-- **status:** red
+- **status:** green
 - **traces:** DES-204, ARCH-124, ARCH-126, ADR-046, TASK-207, REQ-132, REQ-133, REQ-141
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
 File: `tests/unit/dashboard-lib-runlist.test.js` (new, `.js`, 8 cases). RED (measured): whole-file
 import failure — `src/dashboard/lib/runlist.js` does not exist.
 
 ### UT-248 — `dashboard-lib-agent.test.js`: `panelModel`/`eventListModel`/`clipText`
-- **status:** red
+- **status:** green
 - **traces:** DES-205, ARCH-124, ARCH-131, ARCH-129, TASK-207, REQ-135, REQ-136
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
 File: `tests/unit/dashboard-lib-agent.test.js` (new, `.js`, 10 cases over the four record-state
 fixtures). RED (measured): whole-file import failure — `src/dashboard/lib/agent.js` does not exist.
 
 ### UT-249 — `dashboard-client-corpus.test.ts`: `endpointsFor(view)` + `clientCorpus()`'s own anti-vacuity floor
-- **status:** red
+- **status:** green
 - **traces:** DES-206, DES-208, ARCH-125, TASK-208, REQ-131, REQ-132, REQ-133, REQ-134, REQ-135
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
 File: `tests/unit/dashboard-client-corpus.test.ts` (new, 3 cases). 2/3 red (measured): whole-file
 import failure on `src/dashboard/ui/poll.js` (does not exist). 1/3 green (Mode C): `clientCorpus()`
@@ -12167,35 +12197,41 @@ population state. Re-run: `npx vitest run tests/unit/dashboard-client-corpus.tes
 job, per precedent — see IMPL-240/241's notes on UT-233/235/236); not silently flipped.
 
 ### UT-252 — `dashboard-diagram-render.test.ts` disposition anchor: `createObjectURL`/`revokeObjectURL` re-point to `ui/workflow.js`
-- **status:** red
+- **status:** green
 - **traces:** DES-208, ARCH-124, ARCH-122, TASK-213, REQ-129, REQ-119
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
 File: `tests/unit/dashboard-diagram-render.test.ts` (extended, 1 new case; all 20 pre-existing cases
 re-run and stay green). Positive anchor on `clientCorpus()` beside the file's existing negatives —
 anti-vacuity per adjudication (v23) #4. RED (measured): `clientCorpus()` throws (client not built).
 
 ### UT-253 — `dashboard-zoom-source.test.ts` disposition anchor: `viewBox`/`preserveAspectRatio` re-point to `ui/run.js`
-- **status:** red
+- **status:** green
 - **traces:** DES-208, ARCH-124, TASK-213, REQ-134, REQ-129
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
 File: `tests/unit/dashboard-zoom-source.test.ts` (extended, 1 new case; all 3 pre-existing cases
 re-run and stay green). RED (measured): `clientCorpus()` throws.
 
 ### UT-254 — `workflow-page-harness-table.test.ts` disposition anchor: effort/timeoutMs re-point to `lib/agent.js`
-- **status:** red
+- **status:** green
 - **traces:** DES-208, ARCH-124, TASK-213, REQ-135
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
 File: `tests/unit/workflow-page-harness-table.test.ts` (extended, 1 new case; both pre-existing cases
 re-run and stay green). RED (measured): `clientCorpus()` throws.
@@ -12221,12 +12257,14 @@ File: `tests/unit/dashboard-class-contract.test.ts` (new, 13 cases). GREEN (meas
 sizing, both accent-ramp directions) all hold against the landed `dashboard.css`.
 
 ### UT-256 — `dashboard-no-design-values.test.ts`: the SLICE's final green — emitter half of the class lock + the no-design-values guard (DES-209)
-- **status:** red
+- **status:** green
 - **traces:** DES-209, TASK-214
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27c
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
 Same F-pattern note as UT-255. By DES-209's own ordering rule 4, this file is **not** TASK-214's own
 green — it is the SLICE's final green, expected to stay red until every view task
@@ -12242,12 +12280,14 @@ missing either the `// rwe-allow-style: svgBox` marker or a class (TASK-210/211/
 scope). The other 4 cases (hex/oklch/rgba/cssText/setAttribute-literal guards) are already green.
 
 ### VAL-198 — real Chromium: the v27 shell (theme/lang/hue/connection) and the Workflows home
-- **status:** red
+- **status:** green
 - **traces:** REQ-131, REQ-132
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27c
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance tests/e2e` -> 75 files passed, 1 skipped (no-provider, pre-existing), 352 tests passed, 25 skipped (pre-existing, no-provider), 0 failed. This item's own real-Chromium case(s) are green at current HEAD. `real:` stays `false` here -- Gate 7.5 (validator) is what flips it after a real deployed run. The RED narrative below is preserved as history, not a current description of the code.
 
 File: `tests/acceptance/val-198-shell-and-home.test.ts` (new, 5 cases; real `createServer()`, real
 Chromium via puppeteer — Chrome IS present in this environment, confirmed, so every case actually
@@ -12272,12 +12312,14 @@ RED (measured, 6 remaining failures across the 3 theme/hue passes): `data-sectio
 `[data-section] .cards` — TASK-208's unlanded `home.js` emitters (same gap UT-256 names).
 
 ### VAL-199 — real Chromium: workflow detail — version tag, run history table, predicted layout — INCLUDING under auth
-- **status:** red
+- **status:** green
 - **traces:** REQ-133, REQ-134
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27c
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance tests/e2e` -> 75 files passed, 1 skipped (no-provider, pre-existing), 352 tests passed, 25 skipped (pre-existing, no-provider), 0 failed. This item's own real-Chromium case(s) are green at current HEAD. `real:` stays `false` here -- Gate 7.5 (validator) is what flips it after a real deployed run. The RED narrative below is preserved as history, not a current description of the code.
 
 File: `tests/acceptance/val-199-workflow-detail.test.ts` (2 pre-existing cases + 1 new; real
 Chromium — Chrome IS present, confirmed, all 3 cases actually RUN). RED (measured, pre-existing 2):
@@ -12325,12 +12367,14 @@ across both themes + the hue move) — this row is no longer among TASK-209's un
 failures listed above.
 
 ### VAL-200 — real Chromium: the swimlane run graph — lane headers, 216x74 nodes, legend
-- **status:** red
+- **status:** green
 - **traces:** REQ-134
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27c
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance tests/e2e` -> 75 files passed, 1 skipped (no-provider, pre-existing), 352 tests passed, 25 skipped (pre-existing, no-provider), 0 failed. This item's own real-Chromium case(s) are green at current HEAD. `real:` stays `false` here -- Gate 7.5 (validator) is what flips it after a real deployed run. The RED narrative below is preserved as history, not a current description of the code.
 
 File: `tests/acceptance/val-200-swimlane.test.ts` (new, 3 cases; real Chromium, a fake gateway
 completing 9 agent calls across 5 phases fast). RED (measured): no `[data-lane-header]`/`[class*="lane-head"]`
@@ -12355,13 +12399,26 @@ attempted here per the mock-policy boundary (constructing new engine-level fixtu
 territory, not a test-oracle fix). RED (measured, 15 failures across the 3 theme/hue passes, 5
 unique rows): the 3 state rows above (scenario gap, not an unlanded surface).
 
+**Scenario gap CLOSED (v27 Gate 6.5+7, 2026-09-12, verifier):** the file now runs a SECOND fixture
+(`val200-state-cells`) alongside the base 9-agent run, purpose-built to put all three states on one
+page at once — `phase('one')` a `FAIL_MARKER`-planted call (`failer`, resolves `ok:false`), then
+`phase('two')` a `parallel()` of two `HOLD_MARKER` calls under `runConcurrency:1` (`runner` stays
+`running`, `waiter` stays `queued` behind it), held open past `beforeAll`'s own poll and released
+only in `afterAll`. `SPEC_ROWS`'s `stateRows` (`.is-running`/`.is-queued`/`.is-failed`) are checked
+against this held run; every other row stays on the original base run. `RWE_REQUIRE_BROWSER=1 npx
+vitest run tests/acceptance/val-200-swimlane.test.ts` → 4/4 pass, real Chromium (was 3/4 red for the
+scenario-gap reason above). No engine/production code changed for this closure — the fixture was the
+only gap.
+
 ### VAL-201 — real Chromium: the agent slide-in panel — stat cards, prompt, Esc close (REQ-136 proof)
-- **status:** red
+- **status:** green
 - **traces:** REQ-135, REQ-136
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27c
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance tests/e2e` -> 75 files passed, 1 skipped (no-provider, pre-existing), 352 tests passed, 25 skipped (pre-existing, no-provider), 0 failed. This item's own real-Chromium case(s) are green at current HEAD. `real:` stays `false` here -- Gate 7.5 (validator) is what flips it after a real deployed run. The RED narrative below is preserved as history, not a current description of the code.
 
 File: `tests/acceptance/val-201-agent-panel.test.ts` (new, 3 cases; real Chromium, a real agentType
 composition root with a marker systemPrompt, same technique as IT-165). RED (measured): no
@@ -12386,37 +12443,53 @@ theme/hue passes, 1 unique row): `.detail-block` (scenario gap, not an unlanded 
 6 panel rows, including the 760px width row DES-209 leaves to the pending `owner_decision`, all
 measure green already).
 
+**Scenario gap CLOSED (v27 Gate 6.5+7, 2026-09-12, verifier):** the file's `beforeAll` now opens a
+second run (`panel-agent-failing`, prompt carrying `FAIL_MARKER`) against the same stub Ollama
+server, which the stub answers with a real 404 for that one prompt — `terminalHttpFailure`
+classifies it `reason:'terminal', retryable:false` and stamps `AgentRecord.detail`, the only way
+`agent.js`'s `panelModel` ever sets `vm.detail`. The `SPEC_ROWS` case checks the `.detail-block` row
+against this failed run's panel and every other row against the original success run. `RWE_REQUIRE_
+BROWSER=1 npx vitest run tests/acceptance/val-201-agent-panel.test.ts` → 4/4 pass, real Chromium
+(was 3/4 red for the scenario-gap reason above). No engine/production code changed for this closure
+— the fixture was the only gap.
+
 ### VAL-202 — real Chromium: Models/System/Issues PORTED to tabs, not redesigned (non-regression)
-- **status:** red
+- **status:** green
 - **traces:** REQ-067, REQ-076, REQ-077, REQ-078
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance tests/e2e` -> 75 files passed, 1 skipped (no-provider, pre-existing), 352 tests passed, 25 skipped (pre-existing, no-provider), 0 failed. This item's own real-Chromium case(s) are green at current HEAD. `real:` stays `false` here -- Gate 7.5 (validator) is what flips it after a real deployed run. The RED narrative below is preserved as history, not a current description of the code.
 
 File: `tests/acceptance/val-202-ported-tabs.test.ts` (new, 3 cases; real Chromium). RED (measured):
 no `[data-tab="models"|"system"|"issues"]` element exists — today's Models/System are stacked
 sections on home and Issues is a separate route, not a tab.
 
 ### VAL-203 — REQ-136: agent detail never carries the agentType systemPrompt online
-- **status:** red
+- **status:** green
 - **traces:** REQ-136
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** this item's own real-tier evidence (the IT case(s) named above) is green in the same full-regression run recorded on those IT items. `real:` stays `false` here -- Gate 7.5 (validator) is what flips it after a real deployed run. The RED narrative below is preserved as history, not a current description.
 
 Real-tier path per 04-design.md's own table: backed by `tests/integration/dashboard-disclosure.test.ts`'s
 REQ-136 block (IT-165) — a real run, both transports, asserted on the real response body. RED
 (measured): see IT-165.
 
 ### VAL-204 — REQ-140/REQ-134: `dag.lanes` + the predicted overlay unconditional (Round v27b: PROVE visible, not "record what degrades"); agent detail carries `record`
-- **status:** red
+- **status:** green
 - **traces:** REQ-140, REQ-134
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27b
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** this item's own real-tier evidence (the IT case(s) named above) is green in the same full-regression run recorded on those IT items. `real:` stays `false` here -- Gate 7.5 (validator) is what flips it after a real deployed run. The RED narrative below is preserved as history, not a current description.
 
 Real-tier path per 04-design.md's own table: backed by `tests/integration/dag-masking-auth.test.ts`
 (IT-168, both auth on/off servers, the stabilized INV-V27-9 parity + positive anchors + live
@@ -12437,12 +12510,14 @@ says the auth-ON case merely "records a degradation", that sentence is now FALSE
 own words) and must be read as superseded by this amendment.
 
 ### VAL-205 — REQ-141: `RunSummary.costUSD` shares ONE fold with `/api/runs/:id`
-- **status:** red
+- **status:** green
 - **traces:** REQ-141
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** this item's own real-tier evidence (the IT case(s) named above) is green in the same full-regression run recorded on those IT items. `real:` stays `false` here -- Gate 7.5 (validator) is what flips it after a real deployed run. The RED narrative below is preserved as history, not a current description.
 
 Real-tier path per 04-design.md's own table: backed by `tests/integration/usage-live-equals-fold.test.ts`
 (IT-167, the INV-V27-1 equality + absence clauses over real SQLite + real HTTP). `scripts/bench-run-list.ts`

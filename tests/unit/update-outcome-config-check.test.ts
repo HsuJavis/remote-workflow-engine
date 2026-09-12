@@ -61,6 +61,14 @@ describe('updatePanelModel: four fixture rows, pure (UT-241, DES-200, INV-V27-5)
     expect(vm.cta).not.toBeNull();
   });
 
+  it('applied + interruptedRuns>0, lang "zh": cta uses the Chinese CTA text, not the English one (Gate 6.5+7 coverage)', async () => {
+    const { updatePanelModel } = await import('../../src/dashboard/lib/status.js');
+    const vm = updatePanelModel({ version: '1.2.3', lastUpdate: { tag: 'v27', status: 'applied', ts: '2026-09-11T00:00:00Z' }, interruptedRuns: 3 }, 'zh');
+    expect(vm.cta).toContain('workflow_resume');
+    expect(vm.cta).toContain('3');
+    expect(vm.cta).not.toMatch(/run\(s\) interrupted/);
+  });
+
   it('failed with detail: update.tone is "failed" and the text carries the detail', async () => {
     const { updatePanelModel } = await import('../../src/dashboard/lib/status.js');
     const vm = updatePanelModel({ version: '1.2.3', lastUpdate: { tag: 'v27', status: 'failed', ts: '2026-09-11T00:00:00Z', detail: 'build failed: xyz' } }, 'en');

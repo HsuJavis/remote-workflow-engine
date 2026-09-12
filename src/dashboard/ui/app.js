@@ -271,11 +271,13 @@ async function tick() {
   const urls = endpointsFor(view.name, view.ctx);
   const results = {};
   const bodies = {};
-  for (const url of urls) {
+  // Independent endpoints (`workflow`'s `describe` + `/api/runs`) fetched concurrently, not
+  // serialized — `getJSON` never throws, so `Promise.all` needs no per-call try/catch of its own.
+  await Promise.all(urls.map(async (url) => {
     const res = await getJSON(url);
     results[url] = res.status;
     bodies[url] = res.body;
-  }
+  }));
   if (view.onTick && view.container) {
     const extra = await view.onTick(view.container, bodies, view.ctx);
     if (extra) Object.assign(results, extra);

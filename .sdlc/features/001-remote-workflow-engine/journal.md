@@ -3991,3 +3991,96 @@ not touched here. The width/accent-token rows on the same test read as genuine u
 
 **Next:** Gate 6 (implementer) continues the Sprint A closure; look at the val-018/val-199 findings
 above before closing out.
+
+## 2026-09-12 — v27 GATE 6.5+7 (simplify + verification closeout, verifier) — PASSED
+
+Dispatched for the REQ-131..136/140/141 closure (the operator-dashboard rebuild). `state.yaml`'s
+`current_stage` was already `impl` mid-flight with `gates.impl.passed:false`; the journal's last
+entry (above) still named `TASK-208/209/211/212` outstanding — but four more commits had landed
+since without a journal entry (`09cf...` through `c30b4f6`): TASK-196..214 all read `status: done`,
+and a Gate 6 pass's own commit message states plainly "Gate 6's implementation is done." Read the
+tree before acting, per this ledger's own precedent, rather than trusting the stale narrative.
+
+**(0) SIMPLIFY**, scoped to `git diff 576a972..HEAD -- src/` (the v27 diff): found and fixed two
+genuine issues, left the rest alone as already deliberately reasoned. **Reuse:** `el(tag, className,
+text)` was byte-identical in three of TASK-212's ported tabs (`models.js`/`system.js`/`issues.js`)
+— hoisted to a new `ui/dom.js`. **Efficiency:** `app.js`'s poll `tick()` fetched a view's endpoints
+in a `for` loop with an `await` per iteration; the `workflow` view's two endpoints (`describe` +
+`/api/runs`) are independent, so this serialized two round-trips every ~3s for no reason — changed
+to `Promise.all`. **A determinism_check finding led to a near-miss, caught and fixed, not shipped
+broken:** `determinism_check.py src --check` found `ui/agent-panel.js`/`ui/workflow.js` each reading
+`new Date()` ad hoc — a genuine "decision" use (staleness/elapsed-time formatting), not display, so
+`det:allow` was not an option. Fixed with a named seam, `lib/clock.js`'s `clockNow()` (IMPL-247).
+Adding that file WITHOUT registering it in `static-assets.ts`'s closed `ASSET_KEYS` map broke the
+served client bundle silently — `RWE_REQUIRE_BROWSER=1` acceptance went **0/12** across
+val-199/200/201 (`#dag-graph` never appeared; the real failure, a 404'd ES module import, was far
+from that symptom) because the first verification pass after writing the file ran only a narrow
+unit subset and missed it. Reproduced the pre-fix tree via `git show HEAD:<path>` (never checkout)
+to confirm root cause, fixed by adding the key, re-verified 12/12. Recorded in IMPL-247 as the exact
+"ran a narrow subset, not the full regression" trap this gate exists to close.
+
+**The two "known scenario gaps" the v27c Gate 5 delta and this ledger's own journal carried forward
+(val-200's `is-running`/`is-queued`/`is-failed`, val-201's `.detail-block`) were ALREADY CLOSED in
+the tree** — the fixture files (`val-200-swimlane.test.ts`, `val-201-agent-panel.test.ts`) already
+carried the `FAIL_MARKER`/`HOLD_MARKER` second-run scenarios (a held `parallel()` under
+`runConcurrency:1` for running/queued, a planted `ok:false` for failed) by the time this gate
+started; they only needed re-measuring, not re-engineering. `05-tests.md`'s VAL-200/201 entries
+gained a dated closure note saying so, rather than silently deleting the stale "gap" prose.
+
+**(1) REGRESSION**, run in full (not narrow subsets, after the near-miss above): `npx vitest run
+tests/unit tests/integration` → **2460 passed, 0 failed, 1 skipped, 327 files** (the coverage-run snapshot below measured 2458; two more trivial per-function-coverage cases landed right after it and are included here).
+`RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance tests/e2e` → **352 passed, 0 failed, 25
+skipped (pre-existing, no LLM provider in this environment), 76 files**. `TZ='Pacific/Kiritimati'`
+re-run of unit+integration → byte-identical (2452/0/1skip against that pre-clock-fix baseline) — no
+time bombs. 24 test items flipped `red`→`green`/`fail`→`pass` in `05-tests.md`
+(UT-230/233/235/236/240..249/252..256, IT-166/170, VAL-198..205), each with a dated
+**Re-measured** note; the original RED narrative on each is preserved as history, never rewritten.
+
+**(1b) COVERAGE.** `--coverage.include=src/**` measured **87.78%** overall lines — under the 90%
+floor entirely because `src/dashboard/ui/*.js` (2003 lines across 10 files, TASK-208..212) never
+executes under Node; it is real-browser-only client code, already proven at the VAL tier (every
+REQ-131..141 acceptance test above, all real Chromium, all green). Excluded those 10 files with a
+Decision-rationale (IMPL-249, mirrors the v21 Gate 6.5+7 precedent of scoping the per-function bar
+to the current iteration's own diff) → **95.73% lines / 87.94% branches / 94.44% functions**. Every
+function in `src/dashboard/lib/*.js`, `dashboard.ts`, `dashboard-page.ts`, and `static-assets.ts`
+was already 100%. Five real per-function gaps found and **closed with tests, not excused**:
+`ui/poll.js`'s `getJSON` (0%→100%, plus its 3 never-called `ROUTES` arms), `lib/clock.js`'s
+`clockNow` (0%→100% — a genuinely 0%-covered 1-line function that the "≤5-line function may miss ≤1
+line" allowance would have let pass on a technicality, tested for real instead), `run-manager.ts`'s
+`listSummaries()` successful-backfill arm (REQ-141's own one-fold consistency guarantee had never
+been proven on its write-SUCCESS path — the one existing "heals the legacy cohort" test only ever
+supplied rows with zero agent records, which take the permanently-absent arm, not this one), and
+`lib/status.js`'s `zh` CTA branch (all 4 existing cases used `lang:'en'`). One class of genuinely
+defensive branches — `server.ts` (both derivation fallbacks failing; the derivation throwing; the
+outermost dashboard-request `.catch`) and `static-assets.ts` (the boot-time missing-file warn) —
+left as a named Decision-rationale: each is <6 lines, each is diagnostics/`console.warn` around an
+already-commented "unreachable under this system's own upstream invariants" branch, and forcing a
+test would mean bypassing registration's own validation gate or racing a shared, non-parallel
+module-level file cache, not exercising a real request.
+
+**(2) No remaining red. (3)** `trace --check`: **1624 items / 41 gaps**, byte-identical SET to the
+pre-pass baseline (8 HIGH REQ-131/132/133/134/135/136/140/141 未真實驗證 — expected at this gate,
+Gate 7.5's job by design; 10 MID for REQ-137/138/139/142/143 — a later slice, explicitly OUT of this
+closure's scope, not touched; 23 LOW pre-existing drift/`TASK-018`/`TASK-153` — untouched); +3 items
+only (IMPL-247/248/249), 0 new gaps. **(3b)** `solid_check`: 0 high / 0 mid / 10 low, unchanged.
+**(4)** `determinism_check`: **0 hits** (was 2, closed by the clock seam). **(5)** TZ-travel:
+confirmed byte-identical above. **(6) Seam wiring:** `lib/clock.js`'s two real call sites are
+production code, not test-only; `static-assets.ts` is wired into `server.ts`'s real request handler
+(`createServer()`'s own route table), proven by every real-Chromium test above actually fetching
+`/static/dashboard/*`. **(7) Real-dependency smoke:** real Chromium via val-198..202/018/193/197,
+all green — this iteration's only new external dependency; no other integration is new this pass.
+**Module gate:** dormant — no `02-architecture.md` entry declares `build:`.
+
+**Also resolved, doc-only:** the stale `pending:` item "v27 UNLANDED CLAUSE, NO WAIVER" (TASK-200's
+tool-surface regeneration) — commit `9812645` had already regenerated it for real before this gate
+even started; marked RESOLVED with the file/commit citation instead of left contradicting the
+evidence on disk.
+
+`gates.impl.passed` and `gates.verification.passed` both flip to `true` in this pass — the
+implementer's own six Gate 6 rounds (TASK-196..214, IMPL-221..249) never flipped `current_stage`
+or `gates.impl` themselves; this verifier does so on the evidence a fully green regression + a
+green VAL for every closure REQ together constitute (state.yaml's `current_stage` note carries the
+full record). `current_stage`: impl → validation.
+
+**Next:** Gate 7.5 (validator) — a real deployed run, flipping `real:true` on the closure's own
+VAL/E2E items (VAL-198..205 plus the aliased VAL-203/204/205) and writing the handover docs.

@@ -52,6 +52,25 @@ describe('RunManager.listSummaries() (UT-234, DES-194)', () => {
     expect(rows[0]?.agentCount).toBeUndefined();
   });
 
+  it('a terminal legacy row WITH a real usage event backfills successfully: writes the store, heals in place, and never re-writes on the next call (Gate 6.5+7 coverage)', async () => {
+    const backfillCalls: Array<{ runId: string; usage: RunUsage }> = [];
+    const usage: RunUsage = { tokens: { input: 10, output: 20, cacheRead: 0, cacheWrite: 0 }, costUSD: 0.75, unpricedCalls: 0, unmappedMessages: {} };
+    const store = {
+      listRuns: async (): Promise<ProjectedSummary[]> => [{ runId: 'r-legacy', status: 'completed', scriptVersion: 'v1', createdAt: '2026-09-11T00:00:00.000Z' }],
+      getRun: async () => ({ agents: [{ agentId: 'a1', label: 'x', state: 'done' }], usage }),
+      backfillUsage: async (runId: string, u: RunUsage) => { backfillCalls.push({ runId, usage: u }); },
+    } as unknown as RunStore;
+    const manager = new RunManager({ store, clock: new FixedClock(new Date('2026-09-11T00:00:00.000Z')) });
+    const rows = await (manager as unknown as { listSummaries(): Promise<ProjectedSummary[]> }).listSummaries();
+    expect(backfillCalls).toEqual([{ runId: 'r-legacy', usage }]);
+    expect(rows[0]).toMatchObject({ costUSD: 0.75, unpricedCalls: 0, tokensTotal: 30 });
+
+    // Second call: the row is now memoized as checked — no redundant getRun/backfillUsage.
+    backfillCalls.length = 0;
+    await (manager as unknown as { listSummaries(): Promise<ProjectedSummary[]> }).listSummaries();
+    expect(backfillCalls).toEqual([]);
+  });
+
   it('a store whose backfillUsage rejects still resolves listSummaries() (a write-path failure never fails the read)', async () => {
     const store = {
       listRuns: async (): Promise<ProjectedSummary[]> => [{ runId: 'r3', status: 'completed', scriptVersion: 'v1', createdAt: '2026-09-11T00:00:00.000Z' }],

@@ -17,6 +17,7 @@
 // this view's endpoint for whenever the tab strip's own poll wiring joins it to the app-wide tick.
 
 import { getJSON } from './poll.js';
+import { el } from './dom.js';
 
 // system-info.ts's own UTIL_PCT_CONVENTION ('host-aggregate-0-100') — a fixed string, not a runtime
 // value, so it is duplicated here rather than imported (a `.js` client module cannot import a
@@ -26,13 +27,6 @@ const UTIL_PCT_CONVENTION = 'host-aggregate-0-100';
 // DES-207's ONE degraded-section component — every field this tab cannot sample renders THIS,
 // never a fabricated 0/'—' number.
 const UNAVAILABLE = '無法取樣';
-
-function el(tag, className, text) {
-  const e = document.createElement(tag);
-  if (className) e.className = className;
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
 
 function sysRow(k, v) {
   const tr = document.createElement('tr');

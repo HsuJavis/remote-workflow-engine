@@ -26,6 +26,7 @@ import { paintSwimlane, renderLegend, initZoomable, currentLang } from './run.js
 import { endpointsFor, getJSON } from './poll.js';
 import { historyRow } from '../lib/runlist.js';
 import { t } from '../lib/strings.js';
+import { clockNow } from '../lib/clock.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const COLUMNS = {
@@ -198,7 +199,7 @@ function renderChipsAndTable(shell, runs, selectedRunId, lang, onPick) {
   }
 
   shell.tbody.replaceChildren();
-  const now = new Date().toISOString();
+  const now = clockNow();
   for (const r of sorted) {
     const tr = document.createElement('tr');
     if (r.runId === selectedRunId) tr.className = 'is-selected'; // DES-209: `tr.is-selected` in the stylesheet.

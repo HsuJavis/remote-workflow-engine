@@ -15,13 +15,7 @@
 // endpoint for whenever the tab strip's own poll wiring joins it to the app-wide tick.
 
 import { getJSON } from './poll.js';
-
-function el(tag, className, text) {
-  const e = document.createElement(tag);
-  if (className) e.className = className;
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
+import { el } from './dom.js';
 
 // v11 (REQ-067): render a list of issue summaries in a container (XSS-safe: textContent only).
 function renderIssueList(issues, container, onSelect) {
