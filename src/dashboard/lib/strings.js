@@ -8,18 +8,25 @@
 // or passes an unrecognized string through UNCHANGED — a `layoutGraph` prose warning carries no
 // token and must reach the viewer verbatim, in either language.
 
+// [v27 README-fidelity build] `brand` (README "Header / chrome": nav brand text next to the source
+// tag) is the SAME literal in both languages — the design shows zh/en side by side always, it does
+// not swap on the lang toggle — but it still lives here, not as a hard-coded literal in `ui/app.js`,
+// so REQ-131's "both languages come from one source" holds even for a string that happens not to
+// vary by language today.
 export const STR = {
   zh: {
     predictedLayout: '預測結構',
     predictedLayoutUnavailable: '預測結構不可用',
     predictedLayoutFromFallback: '預測結構來自替代版本 v{resolved}',
     laneUntitled: '未命名 lane',
+    brand: '工作流引擎 / Workflow Engine',
   },
   en: {
     predictedLayout: 'predicted layout',
     predictedLayoutUnavailable: 'predicted layout unavailable',
     predictedLayoutFromFallback: 'predicted layout from substitute version v{resolved}',
     laneUntitled: 'untitled lane',
+    brand: '工作流引擎 / Workflow Engine',
   },
 };
 

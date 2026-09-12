@@ -33,8 +33,10 @@
 // own headers note); six rows rewritten or deleted in this same pass where the ORACLE, not the
 // implementation, was wrong (a permanently-unsatisfiable literal, or an anchor DES-209's own table
 // does not actually assign the checked rule to) — each carries its own `[v27c gate 5 fix]` comment.
-// `SPEC_ROWS.length >= 40` (51, after the v27c deletion, the v27 Gate 6 VAL-208 additions, and the
-// v27 README-fidelity audit's own 7 new rows below) is asserted at the acceptance tier.
+// `SPEC_ROWS.length >= 40` (61, after the v27c deletion, the v27 Gate 6 VAL-208 additions, the v27
+// README-fidelity audit's own rows, and this pass's 10 rows for the footer/nav-brand/running-dot/
+// tabs build plus the re-added `.event-kind.is-tool`/`.is-message` pair) is asserted at the
+// acceptance tier.
 //
 // [v27 Gate 6 fix, VAL-208]: a new row kind, `notClipped` — the ONE failure class every row above
 // is structurally blind to. A literal/token/animation row compares a stylesheet-authored VALUE
@@ -75,6 +77,23 @@ export const SPEC_ROWS: ReadonlyArray<SpecRow> = [
   { req: 'REQ-131', view: 'home', anchor: 'data-tab', prop: 'cursor', expect: { literal: 'pointer' } },
   { req: 'REQ-131', view: 'home', anchor: ':root', prop: '--shadow-md', expect: { token: 'shadow-md' } },
 
+  // [v27 README-fidelity build] README "Header / chrome": "Tabs are underlined links
+  // (`aria-current="page"` → accent-700 text + accent underline)" — shipped before this pass was a
+  // filled `button.active`; rebuilt as `<a>` elements with `aria-current` marking the current tab.
+  { req: 'REQ-131', view: 'home', anchor: '[data-tab][aria-current="page"]', prop: 'color', expect: { token: 'accent-700' } },
+  { req: 'REQ-131', view: 'home', anchor: '[data-tab][aria-current="page"]', prop: 'text-decoration-line', expect: { literal: 'underline' } },
+
+  // [v27 README-fidelity build] README "Header / chrome": brand "工作流引擎 / Workflow Engine" next
+  // to the source tag — did not exist at all before this pass. `notClipped` (not a literal/token
+  // row): the thing this line is actually about is the bilingual label FITTING its box in the nav
+  // row, not any one property's value.
+  { req: 'REQ-131', view: 'home', anchor: 'data-nav-brand', prop: 'height', expect: { notClipped: true } },
+
+  // [v27 README-fidelity build] README "Header / chrome": "Footer: API base left, `Updated
+  // HH:MM:SS` right, 11.5 px 50 %" — no footer existed at all before this pass.
+  { req: 'REQ-131', view: 'home', anchor: 'data-footer', prop: 'font-size', expect: { literal: '11.5px' } },
+  { req: 'REQ-131', view: 'home', anchor: 'data-footer', prop: 'opacity', expect: { literal: '0.5' } },
+
   // -- REQ-132 home (view: home) --
   { req: 'REQ-132', view: 'home', anchor: '.card', prop: 'border-radius', expect: { literal: '3px' } },
   { req: 'REQ-132', view: 'home', anchor: '.card', prop: 'cursor', expect: { literal: 'pointer' } },
@@ -86,6 +105,12 @@ export const SPEC_ROWS: ReadonlyArray<SpecRow> = [
   // [v27c gate 5 fix] the sweep is DES-209's own table row: `.card.running::before` — `.card`
   // bare carries no animation at all (dashboard.css:173).
   { req: 'REQ-132', view: 'home', anchor: '.card.running::before', prop: 'animation-name', expect: { animation: ['rweSweep', '2.4s'] } },
+
+  // [v27 README-fidelity build] README "1. Workflows home": "Running (h6 with pulsing 8 px accent
+  // dot)" — `rwePulse` was declared in dashboard.css but nothing used it until this pass.
+  { req: 'REQ-132', view: 'home', anchor: 'data-running-dot', prop: 'width', expect: { literal: '8px' } },
+  { req: 'REQ-132', view: 'home', anchor: 'data-running-dot', prop: 'background-color', expect: { token: 'color-accent' } },
+  { req: 'REQ-132', view: 'home', anchor: 'data-running-dot', prop: 'animation-name', expect: { animation: ['rwePulse', '1.6s'] } },
 
   // -- REQ-133 workflow detail (view: workflow) --
   { req: 'REQ-133', view: 'workflow', anchor: 'data-run-chip', prop: 'border-radius', expect: { literal: '100px' } },
@@ -175,15 +200,19 @@ export const SPEC_ROWS: ReadonlyArray<SpecRow> = [
   // against SPEC_ROWS: the backdrop's own fade/tint (was checked by nothing — `data-agent-panel-
   // backdrop` is newly registered above, an anchor that already existed on disk), and the failure
   // detail box's own border (README: "shown in a red-outlined box" — only its TEXT colour had a
-  // row). `.event-kind.is-tool`/`.is-message` (README: "tool call = accent tint, message = neutral")
-  // are the SAME class of gap but deliberately NOT added here — measured (real Chromium, this pass)
-  // that no existing fixture in val-201 ever drives a `tool_call`/`tool_result`/`message`-kind
-  // transcript event into the panel (its agents call a plain ollama-style stub with no tool use,
-  // and `message`-kind events are an SDK-gateway-only path per `types.ts:559`'s own comment) — a row
-  // for either would be permanently "anchor matched no element", a fixture gap masquerading as a
-  // style defect. Confirmed by adding them and watching both fail this exact way, then removing them
-  // rather than leaving a red row for the wrong reason (see this implementer's report).
+  // row).
   { req: 'REQ-135', view: 'panel', anchor: 'data-agent-panel-backdrop', prop: 'background-color', expect: { literal: 'rgba(8, 12, 9, 0.5)' } },
   { req: 'REQ-135', view: 'panel', anchor: 'data-agent-panel-backdrop', prop: 'animation-name', expect: { animation: ['rweFadeIn', '0.2s'] } },
   { req: 'REQ-135', view: 'panel', anchor: '[data-agent-panel] .detail-block', prop: 'border-color', expect: { literal: 'oklch(0.55 0.16 25)' } },
+  // [v27 README-fidelity build] `.event-kind.is-tool`/`.is-message` (README: "tool call = accent
+  // tint, message = neutral") — the PREVIOUS pass added these, measured them red three times ("anchor
+  // matched no element": no fixture in val-201 ever drove a `tool_call`/`tool_result`/`message`-kind
+  // event into the panel), and correctly removed them rather than leave a permanently-red row. This
+  // pass fixes the ROOT CAUSE instead of the row: val-201's own fixture now runs one agent call
+  // through a real `ClaudeAgentSdkGatewayClient` session (mocked `@anthropic-ai/claude-agent-sdk`
+  // `query()`, same technique as IT-027) that yields a real assistant-text turn and a real tool_use/
+  // tool_result pair — both event kinds now genuinely reach the panel, so these rows are re-added
+  // and checked against THAT run, never against `runId`'s plain ollama-stub run.
+  { req: 'REQ-135', view: 'panel', anchor: '[data-agent-panel] .event-kind.is-tool', prop: 'background-color', expect: { token: 'accent-100' } },
+  { req: 'REQ-135', view: 'panel', anchor: '[data-agent-panel] .event-kind.is-message', prop: 'background-color', expect: { token: 'color-panel2' } },
 ] as const;

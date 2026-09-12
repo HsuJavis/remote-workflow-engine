@@ -119,7 +119,15 @@ function renderGrid(container, state, handlers) {
     section.className = 'card-section' + (g === 'other' ? ' other' : '');
     section.setAttribute('data-section', '');
     const h = document.createElement('h3');
-    h.textContent = groupLabel(state.lang, g);
+    // README "1. Workflows home": "Running (h6 with pulsing 8 px accent dot)" — the Running
+    // group's own heading only; Registered/Other get no dot.
+    if (g === 'running') {
+      const dot = document.createElement('span');
+      dot.className = 'running-dot';
+      dot.setAttribute('data-running-dot', '');
+      h.appendChild(dot);
+    }
+    h.appendChild(document.createTextNode(groupLabel(state.lang, g)));
     section.appendChild(h);
     const cardsEl = document.createElement('div');
     cardsEl.className = 'cards';

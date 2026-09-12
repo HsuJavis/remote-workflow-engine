@@ -31,10 +31,18 @@ export const STYLE_HOOKS: readonly string[] = [
   'rwe-nav', 'rwe-tabs', 'rwe-tab-panels', 'rwe-connection', 'is-live', 'is-degraded', 'is-offline',
   'rwe-theme-group', 'rwe-lang-group', 'rwe-hue-slider', 'rwe-version', 'rwe-update-panel',
   'rwe-update-outcome', 'rwe-update-cta', 'rwe-config-check', 'active',
+  // [v27 README-fidelity build] `nav-brand` (README "Header / chrome": brand text next to the
+  // source tag) and `rwe-footer` (README: "Footer: API base left, Updated HH:MM:SS right, 11.5px
+  // 50%") — neither existed before this pass; both are new `app.js`-built chrome, not swimlane/panel.
+  'nav-brand', 'rwe-footer',
 
   // -- REQ-132 home --
   'card-section', 'other', 'card-grid', 'cards', 'running', 'kicker', 'meta', 'home-toolbar',
   'home-search', 'segment-tabs',
+  // [v27 README-fidelity build] `running-dot` — README "1. Workflows home": the Running section's
+  // h6 carries a pulsing 8px accent dot (`rwePulse`, already declared as a keyframe, unused until
+  // now). `home.js` builds it inside the Running group's own heading only.
+  'running-dot',
 
   // -- REQ-133 workflow detail --
   'workflow-view', 'run-view', 'wf-desc', 'run-chip', 'is-selected', 'status-dot',
@@ -71,6 +79,10 @@ export const TEST_ANCHORS: readonly string[] = [
   // the backdrop's fade/dim (README "Backdrop rgba(8,12,9,.5) fades in .2s") was checked by
   // nothing. Registering the anchor that already exists on disk, not inventing a new one.
   'data-agent-panel-backdrop',
+  // [v27 README-fidelity build] the three new chrome anchors this pass's SPEC_ROWS key on: the nav
+  // brand text, the footer, and the Running section's pulsing dot (see the STYLE_HOOKS comments
+  // above for which README lines each closes).
+  'data-nav-brand', 'data-footer', 'data-running-dot',
   '#dag-fit', '#dag-graph', '#dag-zoom', '#run-usage', '#diagram-img', '#diagram-zoom',
   '.card', '.t',
 ] as const;

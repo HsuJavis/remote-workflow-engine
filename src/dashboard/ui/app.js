@@ -21,6 +21,7 @@
 import { PREF_KEYS, clampHue, prefsFromStorage } from '../lib/theme.js';
 import { updatePanelModel } from '../lib/status.js';
 import { nextConnection } from '../lib/connection.js';
+import { t as tStr } from '../lib/strings.js';
 import { endpointsFor, getJSON } from './poll.js';
 import { render as renderHome, onTick as onTickHome } from './home.js';
 
@@ -28,12 +29,12 @@ const LABELS = {
   zh: {
     workflows: '工作流程', models: '模型', system: '系統', issues: '問題',
     live: '連線中', offline: '離線', degraded: '部分異常', checking: '連線中…',
-    dark: '深', light: '淺', system_theme: '系統',
+    dark: '深', light: '淺', system_theme: '系統', updated: '更新於',
   },
   en: {
     workflows: 'Workflows', models: 'Models', system: 'System', issues: 'Issues',
     live: 'Live', offline: 'Offline', degraded: 'Degraded', checking: 'Connecting…',
-    dark: 'Dark', light: 'Light', system_theme: 'System',
+    dark: 'Dark', light: 'Light', system_theme: 'System', updated: 'Updated',
   },
 };
 function L(lang, key) {
@@ -120,14 +121,44 @@ function updateConnectionTag() {
   }
 }
 
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+let footerUpdatedEl = null;
+// README "Header / chrome": "Footer: API base left, `Updated HH:MM:SS` right, 11.5 px 50 %" —
+// `location.origin` IS the API base here (every `fetch()` in `poll.js` is same-origin relative).
+function updateFooterClock() {
+  if (!footerUpdatedEl) return;
+  const d = new Date();
+  footerUpdatedEl.textContent = `${L(prefs.lang, 'updated')} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+
+function buildFooter() {
+  const footer = document.createElement('footer');
+  footer.className = 'rwe-footer';
+  footer.setAttribute('data-footer', '');
+  const api = document.createElement('span');
+  api.textContent = location.origin;
+  footer.appendChild(api);
+  footerUpdatedEl = document.createElement('span');
+  footer.appendChild(footerUpdatedEl);
+  updateFooterClock();
+  return footer;
+}
+
 let pendingTab = null;
 function activateTab(tab) {
   const panels = document.querySelectorAll('[data-tab-panel]');
   panels.forEach((p) => {
     p.style.display = p.dataset.tabPanel === tab ? '' : 'none';
   });
-  document.querySelectorAll('.rwe-tabs button').forEach((b) => {
-    b.classList.toggle('active', b.dataset.tab === tab);
+  // README "Header / chrome": tabs are underlined links, `aria-current="page"` marks the current
+  // one (accent-700 text + accent underline, dashboard.css) — replaces the pre-v27README
+  // `button.active` background fill.
+  document.querySelectorAll('.rwe-tabs a').forEach((a) => {
+    if (a.dataset.tab === tab) a.setAttribute('aria-current', 'page');
+    else a.removeAttribute('aria-current');
   });
   const TAB_MODULES = { models: './models.js', system: './system.js', issues: './issues.js' };
   if (tab !== 'workflows' && TAB_MODULES[tab]) {
@@ -156,17 +187,40 @@ function buildChrome(island) {
   const nav = document.createElement('nav');
   nav.className = 'rwe-nav';
 
+  // README "Header / chrome": brand "工作流引擎 / Workflow Engine" next to the source tag
+  // (`rwe-connection`, appended further below in this same function).
+  const brand = document.createElement('span');
+  brand.className = 'nav-brand';
+  brand.setAttribute('data-nav-brand', '');
+  brand.textContent = tStr(prefs.lang, 'brand');
+  nav.appendChild(brand);
+
   nav.appendChild(buildUpdatePanel(island, prefs.lang));
 
   const tabStrip = document.createElement('div');
   tabStrip.className = 'rwe-tabs';
   for (const tab of ['workflows', 'models', 'system', 'issues']) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.dataset.tab = tab;
-    btn.textContent = L(prefs.lang, tab);
-    btn.addEventListener('click', () => setTab(tab));
-    tabStrip.appendChild(btn);
+    // README "Header / chrome": "Tabs are underlined links (`aria-current="page"` -> accent-700
+    // text + accent underline)" — an <a> rather than a <button>. `href` points back at the tab
+    // root (never changes the URL per this app's own routing contract above); the click handler
+    // still owns navigation via `setTab`, same as the button it replaces.
+    const link = document.createElement('a');
+    link.href = '/dashboard';
+    link.dataset.tab = tab;
+    link.textContent = L(prefs.lang, tab);
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      setTab(tab);
+    });
+    // A native <a> activates on Enter but not Space (a <button> activates on both) — this keeps
+    // Space working too, so the tabs lose no keyboard operability by becoming links.
+    link.addEventListener('keydown', (e) => {
+      if (e.key === ' ') {
+        e.preventDefault();
+        setTab(tab);
+      }
+    });
+    tabStrip.appendChild(link);
   }
   nav.appendChild(tabStrip);
 
@@ -286,6 +340,7 @@ async function tick() {
     connectionState = nextConnection(connectionState, { results });
     updateConnectionTag();
   }
+  updateFooterClock(); // README footer: "Updated HH:MM:SS" — every tick, whether or not it changed anything.
 }
 
 function scheduleTick() {
@@ -353,7 +408,7 @@ function mountApp() {
   const island = readIsland();
   applyTheme();
   const { nav, routeMount } = buildChrome(island);
-  document.body.replaceChildren(nav, routeMount);
+  document.body.replaceChildren(nav, routeMount, buildFooter());
   mountRoute();
 }
 

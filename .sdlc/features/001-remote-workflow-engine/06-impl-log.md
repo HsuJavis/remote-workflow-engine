@@ -5735,3 +5735,134 @@ re-run standalone to confirm the new `data-agent-panel-backdrop` `TEST_ANCHORS` 
 emitted (it is — `agent-panel.js:118`'s pre-existing `setAttribute` call) and the bidirectional class
 lock is unaffected (no new `STYLE_HOOKS` class was added — `.agent-backdrop`/`.detail-block` were
 already registered): 3 files, 29 tests, all green.
+
+## v27 — README-fidelity build: the three spec items IMPL-254's audit found never built, plus the divergence (IMPL-255..258)
+
+IMPL-254's audit walked the vendored README against `SPEC_ROWS` and reported (never silently
+widened into) three items with zero implementation and one shipped divergence. This pass builds all
+four, test-first: every new `STYLE_HOOKS`/`TEST_ANCHORS`/`SPEC_ROWS` entry was added and measured RED
+(`dashboard-class-contract.test.ts`/`dashboard-no-design-values.test.ts` unit-tier; val-198/val-201
+acceptance-tier "anchor matched no element") BEFORE any `src/dashboard/**` edit, so the red run itself
+is the evidence nobody was checking these lines before now.
+
+### IMPL-255 — nav brand + footer (README "Header / chrome")
+- **status:** done
+- **traces:** TASK-206, TASK-208, DES-201, DES-209, REQ-131
+- **greens:** VAL-198 (`SPEC_ROWS (home view, REQ-131/132)` — `data-nav-brand` notClipped,
+  `data-footer` font-size/opacity)
+- **files:** src/dashboard/lib/strings.js, src/dashboard/ui/app.js, src/dashboard/dashboard.css, tests/fixtures/dashboard-spec.ts, tests/fixtures/dashboard-classes.ts
+- **commit:** (uncommitted — working tree)
+- **iter:** v27
+
+Brand text "工作流引擎 / Workflow Engine" did not exist anywhere in the built chrome. Per the dispatch
+ruling, it is bilingual and therefore lives in `strings.js`'s `STR.{zh,en}.brand` (both langs carry
+the SAME literal — the design shows it side by side always, it does not swap on the lang toggle —
+but the ONE literal now has ONE source, never a hard-coded string in `ui/app.js`), read via `t(lang,
+'brand')` and rendered next to the connection ("source") tag at the end of `buildChrome()`'s nav
+(README puts brand+tag at the nav's LEFT edge; this build does not reorder the existing nav, only
+adds the brand adjacent to the tag that was already there — reported, not silently fixed, since
+reordering the whole nav was not in this pass's scope).
+
+Footer did not exist at all. `buildFooter()` (`app.js`) renders a `<footer class="rwe-footer"
+data-footer>` with the API base (`location.origin` — every fetch in `poll.js` is same-origin
+relative, so the page's own origin IS the API base here) on the left and `Updated HH:MM:SS` on the
+right; `updateFooterClock()` runs once at mount and unconditionally at the end of every `tick()`
+(3s poll), so the timestamp advances even on ticks that change nothing else. `.rwe-footer{font-
+size:11.5px;opacity:.5}` matches the README's "11.5 px 50 %" literally.
+
+**Verification (real, this pass):** included in IMPL-258's shared run below.
+
+### IMPL-256 — Home Running-section pulsing dot (README "1. Workflows home")
+- **status:** done
+- **traces:** TASK-208, DES-209, REQ-132
+- **greens:** VAL-198 (`SPEC_ROWS (home view, REQ-131/132)` — `data-running-dot` width/background-
+  color/animation-name)
+- **files:** src/dashboard/ui/home.js, src/dashboard/dashboard.css, tests/fixtures/dashboard-spec.ts, tests/fixtures/dashboard-classes.ts
+- **commit:** (uncommitted — working tree)
+- **iter:** v27
+
+`rwePulse` was declared in `dashboard.css` since the v27c pass but had no emitter anywhere
+(dashboard.css's own file banner named it "reserved... not yet built by any landed ui/*.js"). The
+Running group's own `<h3>` (home.js's `renderGrid`, group === 'running' only) now prepends a
+`<span class="running-dot" data-running-dot>` 8px accent dot animated `rwePulse 1.6s`. Kept the
+heading as `<h3>` rather than retagging to `<h6>` (README literally says h6; this build's headings
+were already `<h3>` before this pass, styled down to 14px via `.card-section h3` regardless of tag)
+— a tag-semantics gap noted in this implementer's report, not fixed here (out of this pass's four-
+item scope; no SPEC_ROW or test keys on the tag name either way).
+
+**Verification (real, this pass):** included in IMPL-258's shared run below.
+
+### IMPL-257 — Tabs rebuilt as underlined links with `aria-current="page"` (README "Header / chrome")
+- **status:** done
+- **traces:** TASK-208, DES-209, REQ-131
+- **greens:** VAL-198 (`SPEC_ROWS (home view, REQ-131/132)` — `[data-tab][aria-current="page"]`
+  color/text-decoration-line), VAL-202 (Models/System/Issues tabs still real-render via `[data-
+  tab="..."]` + `.click()` on the new `<a>` elements — non-regression)
+- **files:** src/dashboard/ui/app.js, src/dashboard/dashboard.css, tests/fixtures/dashboard-spec.ts
+- **commit:** (uncommitted — working tree)
+- **iter:** v27
+
+Shipped was `.rwe-tabs button.active` with a `--color-panel2` background fill; zero `aria-current`
+hits anywhere in `src/`/`tests/` before this pass. `buildChrome()`'s tab strip now builds `<a
+href="/dashboard" data-tab="...">` elements (`preventDefault()`; `setTab()` still owns navigation,
+unchanged) and `activateTab()` sets/clears `aria-current="page"` instead of toggling `.active`.
+CSS: `.rwe-tabs a[aria-current="page"]{color:accent-700;text-decoration:underline;text-decoration-
+color:accent}` — the README's own "accent-700 text + accent underline". Keyboard parity: a native
+`<a>` activates on Enter but not Space (a `<button>` activates on both) — each tab link also gets
+its own `keydown` handler firing `setTab()` on Space, so no keyboard operability is lost by the
+button→link change (reported per the dispatch's own instruction to say so if anything would be
+lost).
+
+**Verification (real, this pass):** included in IMPL-258's shared run below.
+
+### IMPL-258 — val-201 fixture gap closed: real tool_call/message events, `.event-kind.is-tool`/`.is-message` SPEC_ROWS re-added
+- **status:** done
+- **traces:** TASK-214, DES-209, REQ-135
+- **greens:** VAL-201 (`SPEC_ROWS (panel view, REQ-135)` — the two `.event-kind` rows, checked
+  against a THIRD run/server, not the pre-existing ollama-stub one)
+- **files:** tests/acceptance/val-201-agent-panel.test.ts, tests/fixtures/dashboard-spec.ts
+- **commit:** (uncommitted — working tree)
+- **iter:** v27
+
+IMPL-254 added `.event-kind.is-tool`/`.is-message` rows, measured them red three times ("anchor
+matched no element" — no fixture in `val-201-agent-panel.test.ts` ever drove a `tool_call`/
+`tool_result`/`message`-kind event into the panel), and correctly removed them rather than leave a
+permanently-red row or fudge the assertion. This pass fixes the FIXTURE, not the assertion: val-201
+now boots a SECOND server (`toolServer`) whose one gateway is a real `ClaudeAgentSdkGatewayClient` —
+only the third-party `@anthropic-ai/claude-agent-sdk` `query` export is faked (`vi.hoisted` +
+`vi.mock(..., async (orig) => ({ ...(await orig()), query: queryMock }))`, the same seam IT-027
+already uses at the integration tier, adapted for `vi.mock`'s hoisting-above-imports rule since this
+file statically imports `server.js` → `claude-agent-sdk-client.ts` → the SDK module at eval time,
+unlike IT-027's dynamic imports). The mocked session yields one real assistant-text turn (`message`)
+and one real tool_use/tool_result pair (`tool_call`/`tool_result`), so a real agent panel now
+genuinely renders both `.event-kind` classes. The `SPEC_ROWS (panel view, REQ-135)` test partitions
+rows three ways: `.detail-block` against `failRunId`'s panel, `.event-kind.is-tool`/`.is-message`
+against the new `toolRunId`'s panel, everything else against the pre-existing `runId`'s panel —
+unchanged from before for every row this pass did not touch.
+
+**Verification (real, this pass):**
+- `npx tsc --noEmit` → 0 errors.
+- `npx vitest run tests/unit/dashboard-class-contract.test.ts tests/unit/dashboard-no-design-values.test.ts`
+  → 20 tests, all green (measured RED first: 3 failures — `nav-brand`/`rwe-footer`/`running-dot` not
+  yet a selector/not yet emitted, `data-nav-brand`/`data-footer`/`data-running-dot` not yet emitted —
+  before any `src/dashboard/**` edit).
+- `npx vitest run tests/unit tests/integration` → 328 files, 2466 passed, 1 skipped, 0 failed —
+  byte-identical to the pre-pass baseline (no regression).
+- `RWE_REQUIRE_BROWSER=1 npx vitest run` the 8 named acceptance files (val-018/193/197/198/199/200/
+  201/202) → all green, including val-198's and val-201's own `SPEC_ROWS` cases now exercising the
+  10 new/re-added rows against real Chromium under both themes and a hue move.
+- `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → 33 gaps, identical set to
+  IMPL-253/254's own baseline; none name REQ-131/132/135, `app.js`, `home.js`, `dashboard.css`, or
+  `val-201-agent-panel.test.ts`.
+- Screenshots: `evidence/v27/req131-nav-footer-tabs-{dark,light}.png` (both themes; footer/brand/
+  tabs visible).
+
+Design calls made, not re-litigated, reported here per the dispatch's own instruction:
+- Brand sits at the END of the nav (next to the connection tag), not reordered to the nav's left
+  edge the way the README's own prose order implies.
+- `.card-section h3` stays `<h3>` (README says h6).
+- Pre-existing, unrelated README/CSS divergences noticed while auditing this area (not this pass's
+  four items, not fixed): `.cell-usage` opacity is `.72` vs the README's "55 %"; `.cell-model`
+  opacity is `.8` vs "70 %"; the hue slider shows no "current degrees" readout; the right-cluster
+  order is theme→hue→lang, the README's own prose order is hue→lang→theme; no "Demo data" source-tag
+  state exists (this engine has no demo-dataset fallback to begin with).
