@@ -10592,7 +10592,10 @@ IMPL-269..276) and AC-2/AC-3a/DASH-1 (architecture) were already closed at `v27h
 | README.md:120 「分頁切到背景時會暫停更新」 / DEPLOY.md:788 「分頁在背景時暫停」 | `grep -rn "visibilitychange\|document.hidden\|visibilityState" src/` → **0 hits** repo-wide. `src/dashboard/ui/poll.js`'s `endpointsFor(view)` scopes the fetch set to the visible **dashboard tab**, which is a different mechanism from an OS/browser tab-hidden pause; `app.js`'s `tick()` reschedules unconditionally (no `document.hidden` guard anywhere in `src/dashboard/ui/app.js`). The 3-second poll runs forever regardless of OS tab visibility. |
 | README.md:114 quoted string 「資料無法取得」 | `grep -rn "資料無法取得" src/ tests/` → 0 hits. `src/dashboard/ui/issues.js:5` and its degrade branch render the literal English string `"GitHub not configured"` (confirmed against `server.ts`'s `{open:[],resolved:[],degraded:'GitHub not configured'}`). The *behaviour* (a degrade message instead of a blank list) was already correct — only the quoted Chinese string was fabricated. |
 
-**Edits made** (current-state rewrite, no changelog, no version-conditional wording):
+**Edits made** (current-state rewrite, no changelog, no version-conditional wording; line numbers
+below are PRE-EDIT, matching `07-review.md`'s DOC-1 citation — post-edit the Models/System/Issues
+block shifted to `README.md:112-117` and the ASCII sketch to `:141-142`, both +2 lines from the
+Models/System text now wrapping to two lines each):
 - `README.md:112-115` — Models tab now reads 「目錄表（provider / model / capability / stability /
   costLevel / modalities 六欄），本版不支援排序、篩選，也沒有點列滑出細節面板」; System tab now reads
   「資源表格（CPU 核心數、負載平均、CPU 使用率、記憶體、磁碟、取樣時間，共六列），本版沒有卡片版面，
@@ -10652,6 +10655,18 @@ GitHub token, so it rendered real issues instead of the degrade branch) — that
 never in dispute (`07-review.md:349` confirms it is right); only the quoted STRING was wrong, and
 the served-bytes grep above closes that. Scratch instance stopped afterward
 (`kill $(cat .rwe.pid)`), production untouched throughout.
+
+**Checked for staleness the two v27g impl fixes could have induced OUTSIDE DOC-1's named lines**
+(the Gate 8 reviewer's "everything else is accurate" sample was taken at `ef0a400`, before v27g):
+AC-4 changed the connection tag from "any `/api/*` route ok → Live" to `worstOf(perRoute)`, and AC-5
+joined the ported tabs to the one poll tick. `grep -n "連線\|Live\|degraded\|離線\|斷線\|worstOf"
+README.md DEPLOY.md` → the only hit is `README.md:132`'s ASCII sketch labelling the shell
+「連線燈」(a connection indicator exists) plus the footer-shows-API-address prose (`README.md:104`) —
+**neither states the tag's computation RULE**, so `worstOf` is not a documentation drift, nothing to
+fix. `grep -n "3 秒\|自動更新\|不會更新\|一次性"` → README only makes a refresh-cadence claim for the
+swimlane (`:121`, unaffected by AC-5) and DEPLOY only for the DAG poll (`:788`, ditto); neither
+manual ever claimed the Models/System/Issues tabs do or don't refresh, so AC-5 introduces no drift
+either. No edit needed for either.
 
 ### Gate self-check (v27i, 2026-09-13, validator)
 No REQ evidence changes as a result of this repair (DOC-1 is prose-only; the underlying REQ-131..
