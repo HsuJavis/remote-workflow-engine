@@ -6295,7 +6295,7 @@ position rather than being pinned to `from-left` by some new bug.
   SERVED BODY`, rewritten; two new `DISCLOSURE_TABLE` rows (`GET /api/home`,
   `GET /api/runs/:id/agents/:agentId (http, ok)`)
 - **files:** tests/integration/dashboard-disclosure.test.ts, tests/fixtures/dashboard-wire.ts
-- **commit:** (pending — see journal entry for this round)
+- **commit:** 005892b
 - **iter:** v27g
 
 The pre-repair case computed `Object.keys(row.body)` against `dashboard-wire.ts`'s own hand-written
@@ -6332,7 +6332,7 @@ not a new top-level key) and the HTTP `GET /api/runs/:id/agents/:agentId` (reuse
 - **greens:** UT-224 (`tests/unit/dashboard-page-source.test.ts` — "the diagram `<img>` is
   explicitly non-draggable")
 - **files:** tests/unit/dashboard-page-source.test.ts
-- **commit:** (pending — see journal entry for this round)
+- **commit:** 005892b
 - **iter:** v27g
 
 `app.js:427`'s `document.body.replaceChildren(nav, routeMount, buildFooter())` deletes
@@ -6355,7 +6355,7 @@ confirming the new pin goes red if `workflow.js`'s two lines are removed.
   describe: the connection tag reads degraded, no page error (AC-4)")
 - **files:** src/dashboard/lib/connection.js, src/dashboard/ui/workflow.js,
   tests/unit/dashboard-lib-connection.test.js, tests/acceptance/val-199-workflow-detail.test.ts
-- **commit:** (pending — see journal entry for this round)
+- **commit:** 005892b
 - **iter:** v27g
 
 Two independent bugs, both from the SAME finding:
@@ -6391,7 +6391,7 @@ ever runs in that `onTick` call. Restored, re-ran: 5/5 real-Chromium cases pass.
   keeps polling once it is the visible tab (AC-5): /api/models refetches on the timer, not just once
   at mount")
 - **files:** src/dashboard/ui/app.js, tests/acceptance/val-202-ported-tabs.test.ts
-- **commit:** (pending — see journal entry for this round)
+- **commit:** 005892b
 - **iter:** v27g
 
 `activateTab` used to only toggle panel visibility and `import()`+`render()` a tab module exactly
@@ -6427,7 +6427,7 @@ Restored, re-ran: 4/4 real-Chromium cases pass.
   panel is reachable in the rendered nav: version, outcome, and the interrupted-runs CTA (AC-6,
   INV-V27-5)")
 - **files:** tests/acceptance/val-198-shell-and-home.test.ts
-- **commit:** (pending — see journal entry for this round)
+- **commit:** 005892b
 - **iter:** v27g
 
 UT-241 already covers `updatePanelModel`'s pure projection and the island's own JSON; INV-V27-5
@@ -6458,7 +6458,7 @@ demonstration. Restored, re-ran: 12/12 cases in the file pass.
 - **files:** src/dashboard/ui/clock.js (new), src/dashboard/lib/clock.js (removed),
   src/dashboard/ui/workflow.js, src/dashboard/ui/agent-panel.js, src/static-assets.ts,
   tests/unit/dashboard-lib-clock.test.js
-- **commit:** (pending — see journal entry for this round)
+- **commit:** 005892b
 - **iter:** v27g
 
 `lib/clock.js`'s `new Date().toISOString()` sat inside the directory ARCH-124's `api:` declares
@@ -6483,7 +6483,7 @@ returns only historical-reference comments explaining the move.
   font/woff2 + a year-long public immutable cache")
 - **files:** src/static-assets.ts, tests/unit/static-assets.test.ts,
   tests/integration/static-assets-route.test.ts
-- **commit:** (pending — see journal entry for this round)
+- **commit:** 005892b
 - **iter:** v27g
 
 ARCH-123's `api:` specifies `public, max-age=31536000, immutable` for woff2; `cacheForKey` emitted
@@ -6500,7 +6500,7 @@ matching a substring. `no-store` for JS/CSS is unchanged.
   extended: "a run holding a priced call, an unpriced call, AND a terminally-failed call: the
   summary and the detail agree, via ONE fold (AC-9, INV-V27-1's named oracle)")
 - **files:** tests/integration/usage-live-equals-fold.test.ts
-- **commit:** (pending — see journal entry for this round)
+- **commit:** 005892b
 - **iter:** v27g
 
 INV-V27-1/ADR-052 name the run verbatim: "both a terminally-failed call AND an unpriced call — the
