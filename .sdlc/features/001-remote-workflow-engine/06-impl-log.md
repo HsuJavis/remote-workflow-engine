@@ -5233,7 +5233,7 @@ names `IMPL-224` and the actual call chain instead of describing a gap that had 
 - **traces:** DES-200, DES-206, REQ-008, REQ-129, ARCH-125
 - **greens:** VAL-018 (6/6, was 2/6)
 - **files:** tests/acceptance/val-018-dashboard-browser-ui.test.ts
-- **commit:** pending (working tree)
+- **commit:** 654c719 (initial re-point), plus one follow-up commit tightening cases 3/4 per reviewer feedback (self-cited once that commit lands)
 - **iter:** v27
 
 Test-only fix, no `src/` change (flagged as a real regression by `f8b167e`'s own note and this
@@ -5246,15 +5246,21 @@ literal `/api/runs` in `ROUTES.workflow` at `poll.js:22`) — re-pointed there. 
 `agentId`/`tokens`/`state` — measured: absent from the shell, present in
 `/static/dashboard/ui/run.js` (the swimlane painter, `run.js:124-336`) — re-pointed there. **(3)**
 `EventSource`/`setInterval` — measured: `/static/dashboard/ui/app.js` has neither; it has
-`setTimeout(` instead. `02-architecture.md`'s ARCH-125 amendment records why: `setInterval` was
-deliberately retired for a self-rescheduling `setTimeout` armed in `tick().finally(...)`, because
-`setInterval` stacks requests once a tick outlives its 3s period. Not a code bug — re-pointed to
-`app.js` with the regex broadened to accept `setTimeout(` alongside the original two (never
-narrowed, so a future revert to either still passes). **(4)** the transcript-endpoint pattern
-`/\/api\/runs\/.*\/agents\//` — measured: the ORIGINAL regex, unchanged, already matches
-`/static/dashboard/ui/agent-panel.js`'s `openAgentPanel` template literal
-(`` `/api/runs/${...}/agents/${...}?limit=500` ``, `agent-panel.js:226`) because `.*` matches the
-`${...}` interpolation syntax on the same line — re-pointed there with no regex change.
+`setTimeout(loop, 3000)` instead. `02-architecture.md`'s ARCH-125 amendment records why:
+`setInterval` was deliberately retired for a self-rescheduling `setTimeout` armed in
+`tick().finally(...)`, because `setInterval` stacks requests once a tick outlives its 3s period. Not
+a code bug — re-pointed to `app.js`. **Reviewer caught (advisor pass) that a bare `setTimeout\(`
+also matches a one-shot, non-repeating timer** (proves nothing about auto-refresh); tightened to pin
+the RE-ARM callsite specifically, `setTimeout\(\s*loop\b` (`app.js:296`), added as a third
+alternative alongside the original two (never narrowed — a future revert to either still passes).
+**(4)** the transcript-endpoint pattern `/\/api\/runs\/.*\/agents\//` — measured: the ORIGINAL
+regex, unchanged, already matches `/static/dashboard/ui/agent-panel.js`'s `openAgentPanel` template
+literal (`` `/api/runs/${...}/agents/${...}?limit=500` ``, `agent-panel.js:226`). **Reviewer also
+caught that the SAME regex matches the module's own banner COMMENT** (`agent-panel.js:10`, which
+spells `/api/runs/:id/agents/:agentId` in prose) — deleting the real fetch at line 226 would leave
+this green. Tightened to `\/api\/runs\/\$\{.*\/agents\/\$\{`, requiring the `${` a template-literal
+call site carries and a `:id`-style comment never does, so it pins the CODE. Both tightenings
+verified 6/6 green again after the edit; no `src/` change, no other case affected.
 `05-tests.md`'s VAL-018 entry (header `status`/`iter`, and the case-1/2/4/5 prose) and this file are
 the only docs touched; `06-impl-log.md`'s own next entry above (`IMPL-245`) is the one the prior
 pass could not append because this file was outside its scope.

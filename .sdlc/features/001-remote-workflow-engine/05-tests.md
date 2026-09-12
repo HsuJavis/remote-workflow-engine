@@ -2920,11 +2920,18 @@ never loosened. **(1)** `/api/runs` + `fetch(` — moved to `/static/dashboard/u
 `EventSource`/`setInterval` — `app.js` (measured) carries neither: ARCH-125's own v27 amendment
 retired `setInterval(tick, 3000)` for a self-rescheduling `setTimeout` armed in
 `tick().finally(...)`, a deliberate fix for request pile-up over a slow tunnel, not a regression —
-the assertion is broadened to `EventSource|setInterval|setTimeout` (never narrowed) against
-`/static/dashboard/ui/app.js`. **(4)** the transcript-endpoint pattern — `agent-panel.js:226`'s
-`openAgentPanel` template literal contains the SAME literal substrings the original unchanged regex
-looks for, confirmed against the real served `/static/dashboard/ui/agent-panel.js`. Result:
-6/6 green (`RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-018-dashboard-browser-ui.test.ts`).
+the assertion is broadened to `EventSource|setInterval|setTimeout\(\s*loop\b` (never narrowed) against
+`/static/dashboard/ui/app.js`; the reviewer caught that a bare `setTimeout\(` also matches a
+one-shot, non-repeating timer, so the pin is on the RE-ARM callsite (`pendingTick =
+setTimeout(loop, 3000)`, `app.js:296`) to keep the same "repeating" semantics `setInterval(` used to
+guarantee. **(4)** the transcript-endpoint pattern — `agent-panel.js:226`'s `openAgentPanel`
+template literal contains the SAME literal substrings the original unchanged regex looks for,
+confirmed against the real served `/static/dashboard/ui/agent-panel.js`; the reviewer also caught
+that the file's OWN module-banner comment (`agent-panel.js:10`) spells the same route in prose and
+would satisfy the original regex too, so the regex is tightened to `\/api\/runs\/\$\{.*\/agents\/\$\{`
+— the `${` a template-literal call site carries and a `:id`-style comment never does — to pin the
+CODE, not prose describing it. Result: 6/6 green
+(`RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-018-dashboard-browser-ui.test.ts`).
 
 ---
 

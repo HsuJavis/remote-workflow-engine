@@ -82,29 +82,34 @@ describe('GET /dashboard — real browser-renderable HTML page on the same port 
   // in favor of a self-rescheduling `setTimeout` armed in `tick().finally(...)` — "setInterval
   // stacks requests the moment a tick outlives its period, which... makes the client the load being
   // measured" (02-architecture.md ARCH-125 amendment). This is a deliberate architecture decision,
-  // not a regression: `app.js` (measured against the real served file) carries `setTimeout(` and no
-  // `setInterval(`/`EventSource` at all. The guarantee — some auto-refresh mechanism exists so
-  // state/tokens update with no manual reload — is unchanged; `setTimeout` is added as the (now
-  // sole) real mechanism rather than replacing the other two, so a future revert to either still
-  // passes.
-  it('has an auto-update mechanism (self-rescheduling setTimeout, setInterval, or SSE) so agent state/tokens refresh without a manual page reload', async () => {
+  // not a regression: `app.js` (measured against the real served file) carries `setTimeout(loop,
+  // 3000)` at `app.js:296` and no `setInterval(`/`EventSource` at all. A bare `setTimeout\(` would
+  // also match a one-shot, non-repeating timer (e.g. a toast-dismiss), which proves nothing about
+  // auto-refresh — so the pin is on the RE-ARM callsite specifically (`pendingTick =
+  // setTimeout(loop, ...)`, `app.js:293-296`), the same "repeating" semantics `setInterval(` used
+  // to guarantee. `setTimeout\(\s*loop\b` is added as a third alternative rather than replacing the
+  // other two, so a future revert to either still passes.
+  it('has an auto-update mechanism (self-rescheduling setTimeout re-arm, setInterval, or SSE) so agent state/tokens refresh without a manual page reload', async () => {
     const res = await fetch(`${baseUrl}/static/dashboard/ui/app.js`);
     expect(res.status).toBe(200);
     const body = await res.text();
-    expect(/new EventSource\(|setInterval\(|setTimeout\(/.test(body)).toBe(true);
+    expect(/new EventSource\(|setInterval\(|setTimeout\(\s*loop\b/.test(body)).toBe(true);
   });
 
   // [Gate 5 oracle fix, 2026-09-12] Same move: the transcript drill-in fetch is `agent-panel.js`'s
-  // `openAgentPanel` (ARCH-125, REQ-135), whose template literal
-  // `` `/api/runs/${...}/agents/${...}?limit=500` `` (`agent-panel.js:226`) contains the literal
-  // substrings `/api/runs/` then `/agents/` on one line, so the ORIGINAL regex — unchanged — still
-  // matches it (confirmed against the real served file); only the fetch target moved from the
-  // static shell to this file.
+  // `openAgentPanel` (ARCH-125, REQ-135), whose template literal at `agent-panel.js:226`
+  // (`` `/api/runs/${encodeURIComponent(runId)}/agents/${encodeURIComponent(agentId)}?limit=500` ``)
+  // is the real fetch call. The file's own module-banner COMMENT at line 10 also spells
+  // `/api/runs/:id/agents/:agentId` in prose — the original (unchanged) regex would match that
+  // comment too, which would stay green even if line 226's fetch were deleted; this file has no
+  // such comment-vs-code ambiguity in the static shell it replaces, so the regex is tightened here
+  // to require the `${` a template-literal call site carries and a `:id`-style comment never does —
+  // pinning the CODE, not prose that merely describes it.
   it('exposes a transcript view referencing the per-agent transcript endpoint', async () => {
     const res = await fetch(`${baseUrl}/static/dashboard/ui/agent-panel.js`);
     expect(res.status).toBe(200);
     const body = await res.text();
-    expect(body).toMatch(/\/api\/runs\/.*\/agents\//);
+    expect(body).toMatch(/\/api\/runs\/\$\{.*\/agents\/\$\{/);
   });
 
   // v26 (DES-186, ARCH-120, ADR-044, TASK-191, REQ-129/119): both figures scale with their
