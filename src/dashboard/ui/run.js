@@ -64,6 +64,18 @@
 // flex-shrunk into illegible slivers) is fixed this pass — see `.cell-head`/`.cell-meta` below and
 // `dashboard.css`. Item 3 above (no `shortModel` formatter) is also fixed — see `lib/model.js` and
 // its use in row 2 below.
+//
+// [v27 Gate 7.5 round 2 fix, REQ-135] Two real defects the validator measured on
+// `/dashboard/workflow/:name`: (1) `ui/workflow.js`'s two `paintSwimlane` calls never passed
+// `onSelectAgent` at all (fixed there, not here); (2) `agent-panel.js`'s slide-side fallback read
+// `window.event` AFTER its first `await`, where it is always `undefined` — and even before that bug,
+// `document.getElementById('dag-graph')` only exists on THIS file's own route, never on the
+// workflow route. Fixed here: `ensureCellLayer`'s click listener now computes the clicked node's
+// on-screen center and the wrap's width SYNCHRONOUSLY (before any await, from the actual clicked
+// element — works on either route since neither reads an id) and passes them as a third
+// `onSelectAgent(id, label, {nodeCenterX, graphWidth})` argument; this file's own default
+// `onSelectAgent` forwards them into `openAgentPanel`'s `opts`, closing REQ-135's slide-by-position
+// dod item for real (`agent-panel.js`'s own banner covers its side of the fix).
 import { SWIMLANE_BOX, cellRect, svgBox, edgePath } from '../lib/swimlane.js';
 import { sumTokens, fmtCost, fmtTok } from '../lib/runlist.js';
 import { t, warningText } from '../lib/strings.js';
@@ -138,8 +150,16 @@ function edgeClassName(toCell, predictedTarget) {
   return modifier ? 'edge ' + modifier : 'edge';
 }
 
-/** Finds or creates the `.cell-layer` HTML sibling of `svgEl` inside its own parent (`#dag-zoom`).
- *  Created ONCE per shell (never per tick, so the single click listener stays single — DES-206). */
+/** Finds or creates the `.cell-layer` HTML sibling of `svgEl` inside its own parent (`#dag-zoom`
+ *  on the run route, an unnamed `.zoomable` on the workflow route — never looked up by id, so this
+ *  works on both). Created ONCE per shell (never per tick, so the single click listener stays
+ *  single — DES-206).
+ *  [v27 Gate 7.5 round 2 fix, REQ-135] The clicked node's on-screen center and the wrap's own
+ *  width are read HERE, synchronously inside the click handler — never via `window.event` read
+ *  later inside `openAgentPanel` (async, past its first `await`, `window.event` is already gone;
+ *  see `agent-panel.js`'s own banner) and never via an id lookup (`#dag-graph` only exists on the
+ *  run route). Passed as a third `onSelectAgent` argument so `panelSide` gets real numbers on
+ *  EITHER route. */
 function ensureCellLayer(wrap) {
   if (!wrap) return null;
   let layer = wrap.querySelector(':scope > .cell-layer');
@@ -149,7 +169,11 @@ function ensureCellLayer(wrap) {
     layer.addEventListener('click', (e) => {
       const cellEl = e.target.closest('[data-node-cell]');
       if (!cellEl || !layer.contains(cellEl) || !cellEl.dataset.agentId) return;
-      if (layer.onSelectAgent) layer.onSelectAgent(cellEl.dataset.agentId, cellEl.dataset.agentLabel || '');
+      if (!layer.onSelectAgent) return;
+      const wrapRect = wrap.getBoundingClientRect();
+      const cellRect = cellEl.getBoundingClientRect();
+      const nodeCenterX = cellRect.left + cellRect.width / 2 - wrapRect.left;
+      layer.onSelectAgent(cellEl.dataset.agentId, cellEl.dataset.agentLabel || '', { nodeCenterX, graphWidth: wrapRect.width });
     });
     wrap.appendChild(layer);
   }
@@ -427,7 +451,7 @@ export function render(container, vm, handlers) {
   const lang = currentLang();
   const shell = buildShell(container);
   if (!runId) return;
-  const onSelectAgent = (handlers && handlers.onSelectAgent) || ((id, lbl) => openAgentPanel(runId, id, lbl, { lang }));
+  const onSelectAgent = (handlers && handlers.onSelectAgent) || ((id, lbl, extra) => openAgentPanel(runId, id, lbl, { lang, ...(extra || {}) }));
   stateByContainer.set(container, {
     shell, runId, lang, handlers: { ...(handlers || {}), onSelectAgent },
     // REQ-134 row 2's declared-effort join (see file banner): resolved lazily in `onTick` and

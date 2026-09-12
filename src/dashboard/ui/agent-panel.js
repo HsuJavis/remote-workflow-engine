@@ -10,19 +10,25 @@
 // swimlane node calls: fetch `/api/runs/:id/agents/:agentId`, project it through `panelModel`,
 // mount on `document.body` (so the panel survives `ui/run.js`'s own 3s rebuild of `#dag-graph`,
 // which replaces only its own subtree). IMPL-224 wired this: `ui/run.js`'s own click handler
-// (`ui/run.js:147`) invokes `layer.onSelectAgent(agentId, label)`, and `render()`
+// (`ui/run.js:147`) invokes `layer.onSelectAgent(agentId, label, extra)`, and `render()`
 // (`ui/run.js:410`) now defaults `handlers.onSelectAgent` to
-// `(id, lbl) => openAgentPanel(runId, id, lbl, { lang })` when the caller (`ui/app.js`'s
-// `mountLazy`) supplies none — option (a) of the two this banner used to weigh between; a
-// caller-supplied `onSelectAgent` still wins, so option (b) is not shadowed. Verified end-to-end
-// at val-201 (real Chromium).
-// A second, smaller gap the same wiring exposes: REQ-135's slide-by-node-position needs the
-// clicked node's on-screen center and the graph's width (`lib/swimlane.js`'s `panelSide`), and
-// `onSelectAgent(agentId, label)` carries neither. `opts.nodeCenterX`/`opts.graphWidth` are
-// accepted for a future wiring that supplies them directly; absent, `openAgentPanel` falls back to
-// `window.event` (live at call time, since `onSelectAgent` fires synchronously from the swimlane's
-// own click listener) to recover the click's real x — only defaulting to a bare 'right' if neither
-// is available (val-201 does not assert a side, only that clicking the node opens the panel).
+// `(id, lbl, extra) => openAgentPanel(runId, id, lbl, { lang, ...extra })` when the caller
+// (`ui/app.js`'s `mountLazy`) supplies none — option (a) of the two this banner used to weigh
+// between; a caller-supplied `onSelectAgent` still wins, so option (b) is not shadowed. Verified
+// end-to-end at val-201 (real Chromium).
+//
+// [v27 Gate 7.5 round 2 fix, REQ-135] `opts.nodeCenterX`/`opts.graphWidth` (fed into
+// `lib/swimlane.js`'s `panelSide`) are now ALWAYS supplied by both real wirings (`ui/run.js`'s
+// `ensureCellLayer` click listener and `ui/workflow.js`'s own `onSelectAgent`, both computed
+// synchronously from the clicked cell's own `getBoundingClientRect()` at click time — never an id
+// lookup, so it works on `/dashboard/:runId` AND `/dashboard/workflow/:name` alike). The previous
+// fallback here read `window.event` AFTER the `await getJSON(...)` below, by which point the click
+// event's dispatch had long finished and `window.event` was always `undefined` — silently forcing
+// the 'right' default every time and never taking the left branch the README describes. Removed
+// rather than reordered: even reading it before the `await` would still have missed on the
+// workflow route, since it also looked up `#dag-graph` by id, an element that only exists on this
+// file's `ui/run.js` sibling. A caller that supplies neither field still gets the safe 'right'
+// default.
 import { panelSide } from '../lib/swimlane.js';
 import { panelModel, clipText } from '../lib/agent.js';
 import { clockNow } from '../lib/clock.js';
@@ -234,21 +240,14 @@ export async function openAgentPanel(runId, agentId, label, opts) {
   const events = body.events || [];
   const hasMore = !!body.hasMore;
   const now = clockNow();
-  // `onSelectAgent` fires synchronously from the swimlane's own click listener (`run.js:169`), so
-  // `window.event` (still live in every Chromium build though formally deprecated) carries the
-  // real click coordinates when neither `opts.nodeCenterX` nor `opts.graphWidth` was threaded
-  // through — closes REQ-135's slide-by-position dod item without widening `onSelectAgent`'s
-  // signature or touching `run.js`.
+  // Both real wirings (`ui/run.js`'s `ensureCellLayer` click listener, `ui/workflow.js`'s own
+  // `onSelectAgent`) compute `nodeCenterX`/`graphWidth` SYNCHRONOUSLY at click time, before this
+  // function's own `await` above ever runs — see the module banner for why a post-await
+  // `window.event` read (the previous approach) never worked. A caller that supplies neither still
+  // gets the safe 'right' default.
   let side = 'right';
   if (opts && typeof opts.nodeCenterX === 'number' && typeof opts.graphWidth === 'number') {
     side = panelSide(opts.nodeCenterX, opts.graphWidth);
-  } else {
-    const clickEvent = typeof window !== 'undefined' ? window.event : null;
-    const graph = typeof document !== 'undefined' ? document.getElementById('dag-graph') : null;
-    if (clickEvent && graph && typeof clickEvent.clientX === 'number') {
-      const rect = graph.getBoundingClientRect();
-      if (rect.width > 0) side = panelSide(clickEvent.clientX - rect.left, rect.width);
-    }
   }
   const vm = {
     ...panelModel(record, harness, events, hasMore, now, lang),

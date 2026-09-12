@@ -14,6 +14,15 @@
 // Red reason (measured): today's `#detail` pane shows the transcript inline with no slide-in panel
 // and no stat cards at all (`dashboard-page.ts`'s `renderTranscript`) — none of the panel selectors
 // below exist.
+//
+// [v27 Gate 7.5 round 2 fix] Every case above only ever opens the panel via the LEGACY
+// `/dashboard/<runId>` route. The validator measured that route and the product's PRIMARY route,
+// `/dashboard/workflow/:name` (`ui/workflow.js`), diverge: the latter's `paintSwimlane` calls never
+// passed `onSelectAgent`, so a click there opened nothing. The two cases at the end of this file
+// close that gap — one proves the panel opens on the primary route, the other proves the slide
+// SIDE (left half of the graph -> slides from the left, right half -> from the right) really
+// follows the clicked node, a clause this file never asserted before (see `agent-panel.js`'s own
+// banner: the previous side computation read `window.event` after an `await`, always `undefined`).
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { existsSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -22,7 +31,7 @@ import { createServer as createHttpServer, type Server as HttpServer } from 'nod
 import { createServer } from '../../src/server.js';
 import type { Server, ServerConfig } from '../../src/server.js';
 import { ClaudeAgentSdkGatewayClient } from '../../src/gateway/claude-agent-sdk-client.js';
-import { runScriptVia } from '../helpers/workflow-fixtures.js';
+import { runScriptVia, registerPublishedVia, uniqueWorkflowName } from '../helpers/workflow-fixtures.js';
 import { throwIfBrowserRequired } from '../helpers/require-browser.js';
 import { SPEC_ROWS } from '../fixtures/dashboard-spec.js';
 import { specRowFailuresAcrossThemeAndHue } from '../helpers/spec-rows.js';
@@ -119,6 +128,13 @@ let stub: HttpServer;
 let toolServer: Server;
 let toolBaseUrl: string;
 let toolRunId: string;
+// [v27 Gate 7.5 round 2 fix] Registered under an EXPLICIT name (needed to navigate
+// `/dashboard/workflow/:name` — `runScriptVia`'s auto-generated name above is never returned to
+// the caller), four phases/lanes wide so the swimlane places a real agent cell in EACH half of the
+// graph (`SWIMLANE_BOX`'s own constants: with 4 lanes, lane 0's cell center sits at ~21% of the
+// total width and lane 3's at ~89%) — the fixture the side-assertion case below needs.
+let sideWorkflowName: string;
+let sideRunId: string;
 const ORIGINAL_OLLAMA_BASE_URL = process.env['OLLAMA_BASE_URL'];
 
 function makeCaller(base: string) {
@@ -164,6 +180,18 @@ beforeAll(async () => {
   const failRun = await runScriptVia(caller, `return agent('panel-agent-failing', { prompt: '${FAIL_MARKER}' });`);
   failRunId = failRun.runId as string;
   await waitTerminal(baseUrl, failRunId);
+
+  // [v27 Gate 7.5 round 2 fix, REQ-135] see the `sideWorkflowName`/`sideRunId` comment above.
+  sideWorkflowName = uniqueWorkflowName('val201-side');
+  await registerPublishedVia(caller, sideWorkflowName,
+    `phase('one'); await agent('leftAgent', { prompt: 'p' });\n` +
+    `phase('two'); await agent('midAgentA', { prompt: 'p' });\n` +
+    `phase('three'); await agent('midAgentB', { prompt: 'p' });\n` +
+    `phase('four'); await agent('rightAgent', { prompt: 'p' });\n` +
+    `return 'ok';`);
+  const sideRun = await caller('run_start', { name: sideWorkflowName });
+  sideRunId = sideRun.runId as string;
+  await waitTerminal(baseUrl, sideRunId);
 
   // The tool-call run: a SEPARATE server (no ollama stub involved) whose ONE gateway is a real
   // ClaudeAgentSdkGatewayClient — `query()` is mocked (module-level, above) to yield one real
@@ -301,4 +329,57 @@ describe('the agent slide-in panel, real Chromium (VAL-201, REQ-135/136)', () =>
       await browser.close();
     }
   }, 40000);
+
+  // [v27 Gate 7.5 round 2 fix, REQ-135] Every case above opens the panel on the LEGACY
+  // `/dashboard/<runId>` route. This is the PRIMARY route (`ui/workflow.js`) — the one that was
+  // measured broken (`ui/workflow.js`'s two `paintSwimlane` calls never passed `onSelectAgent`).
+  itReal('clicking a real agent node on /dashboard/workflow/:name (the primary route) opens the slide-in panel', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/dashboard/workflow/${sideWorkflowName}`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await page.waitForSelector('[data-node-cell]', { timeout: 3000 });
+      const node = await page.$('[data-node-cell]');
+      expect(node).not.toBeNull();
+      if (node) await node.click();
+      await page.waitForSelector('[data-agent-panel]', { timeout: 3000 });
+      const statCardCount = await page.$$eval('[data-agent-panel] [data-stat-card]', (els) => els.length);
+      expect(statCardCount).toBe(6);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
+  // [v27 Gate 7.5 round 2 fix, REQ-135] The slide SIDE — never asserted anywhere before this case
+  // (the previous side computation read `window.event` after an `await`, always `undefined`, so it
+  // always defaulted to 'right'; see `agent-panel.js`'s own banner). `sideWorkflowName`'s 4-lane
+  // fixture places `leftAgent` in the graph's LEFT half (-> slides in from the RIGHT, no
+  // `.from-left`) and `rightAgent` in the RIGHT half (-> slides in from the LEFT, `.from-left`).
+  itReal('the slide side follows the clicked node\'s real position on /dashboard/workflow/:name (REQ-135)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/dashboard/workflow/${sideWorkflowName}`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await page.waitForSelector('[data-node-cell]', { timeout: 3000 });
+      const nodes = await page.$$('[data-node-cell]');
+      expect(nodes.length).toBeGreaterThanOrEqual(2);
+
+      await nodes[0]!.click();
+      await page.waitForSelector('[data-agent-panel]', { timeout: 3000 });
+      const leftHalfClass = await page.$eval('[data-agent-panel]', (el) => el.className);
+      expect(leftHalfClass).not.toContain('from-left');
+
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('[data-agent-panel]', { hidden: true, timeout: 3000 });
+
+      await nodes[nodes.length - 1]!.click();
+      await page.waitForSelector('[data-agent-panel]', { timeout: 3000 });
+      const rightHalfClass = await page.$eval('[data-agent-panel]', (el) => el.className);
+      expect(rightHalfClass).toContain('from-left');
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
 });

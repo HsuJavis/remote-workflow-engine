@@ -222,7 +222,17 @@ export const SPEC_ROWS: ReadonlyArray<SpecRow> = [
 
   // -- REQ-135 agent panel (view: panel) --
   { req: 'REQ-135', view: 'panel', anchor: 'data-agent-panel', prop: 'width', expect: { literal: '760px' } },
-  { req: 'REQ-135', view: 'panel', anchor: 'data-agent-panel', prop: 'animation-name', expect: { animation: ['rweSlideIn', '0.28s'] } },
+  // [v27 Gate 7.5 round 2 fix] This literal was `'rweSlideIn'` (the RIGHT-slide default) — copied
+  // from what shipped while `agent-panel.js`'s side computation was broken (a post-`await`
+  // `window.event` read that was ALWAYS `undefined`, so the panel ALWAYS slid from the right,
+  // regardless of the clicked node). Now that `panelSide` runs on real numbers (`ui/run.js`'s
+  // `ensureCellLayer` measures the clicked cell synchronously), every val-201 fixture that reaches
+  // this row clicks the SOLE node of a single-phase/single-lane run — and `SWIMLANE_BOX`'s own
+  // constants put that one lane's cell center (x=236, `PAD 16 + TRIG_W 112 + LANE_W 216 / 2`) past
+  // the midpoint of the whole graph's width (360/2=180, `PAD*2 + TRIG_W + LANE_W`), which is the
+  // RIGHT half by `panelSide`'s own comparison — so it genuinely, deterministically slides from the
+  // LEFT. Measured directly in real Chromium (val-201's own SPEC_ROWS case) before this edit.
+  { req: 'REQ-135', view: 'panel', anchor: 'data-agent-panel', prop: 'animation-name', expect: { animation: ['rweSlideInL', '0.28s'] } },
   { req: 'REQ-135', view: 'panel', anchor: 'data-agent-panel', prop: 'box-shadow', expect: { token: 'shadow-lg' } },
   // [v27c gate 5 fix] getComputedStyle never echoes back a `repeat()`/`minmax()` formula — it
   // always resolves to the concrete px track list, so this literal could never pass under any

@@ -22,7 +22,17 @@
 // REQ-134 row 2 (model short name + effort tag, `ui/run.js`'s `paintSwimlane`): this view already
 // has `describe` in scope wherever it paints a figure, so it passes `pAgents` straight through with
 // no extra fetch — see `ui/run.js`'s own banner for the join `paintSwimlane` performs with it.
+//
+// [v27 Gate 7.5 round 2 fix, REQ-135] Both `paintSwimlane` calls in `paintSelected` below now pass
+// `onSelectAgent` — this view's own click-to-open-the-agent-panel wiring was simply missing before
+// this pass (the ONLY route affected: `/dashboard/:runId`'s `ui/run.js` already wired it, per that
+// file's own `render()`). Same pattern as `ui/run.js`'s default: a caller-supplied
+// `handlers.onSelectAgent` still wins; absent one, clicking a real agent cell opens
+// `openAgentPanel(state.selectedRunId, id, lbl, {lang, ...extra})`, where `extra` carries the
+// clicked cell's own `{nodeCenterX, graphWidth}` (`ui/run.js`'s `ensureCellLayer` computes and
+// forwards them synchronously — see its own banner).
 import { paintSwimlane, renderLegend, initZoomable, currentLang } from './run.js';
+import { openAgentPanel } from './agent-panel.js';
 import { endpointsFor, getJSON } from './poll.js';
 import { historyRow } from '../lib/runlist.js';
 import { t } from '../lib/strings.js';
@@ -287,9 +297,14 @@ async function paintSelected(state, runs, describe, lang) {
   // REQ-134 row 2 (`ui/run.js`'s `paintSwimlane`, see its own banner) — `describe` is already in
   // scope on both branches here, so the declared model/effort defaults need no extra fetch.
   const pAgents = (describe && describe.params && describe.params.agents) || {};
+  // REQ-135 (see this file's own banner) — a caller-supplied handler still wins; the default opens
+  // the panel against WHICHEVER run is currently selected, read at CLICK time (never captured
+  // early), since `state.selectedRunId` can change between paints via the run chips/history table.
+  const onSelectAgent = state.handlers.onSelectAgent
+    || ((id, lbl, extra) => openAgentPanel(state.selectedRunId, id, lbl, { lang, ...(extra || {}) }));
   if (runs.length === 0) {
     const { payload, anyAgentsKey } = predictedPayload(describe);
-    paintSwimlane(shell.svgEl, payload, { lang, pAgents });
+    paintSwimlane(shell.svgEl, payload, { lang, pAgents, onSelectAgent });
     renderLegend(shell.legend, payload, null, lang);
     shell.predictedLabel.textContent = anyAgentsKey
       ? t(lang, 'predictedLayout')
@@ -303,7 +318,7 @@ async function paintSelected(state, runs, describe, lang) {
   const [dagRes, viewRes] = await Promise.all([getJSON(dagUrl), getJSON(viewUrl)]);
   const payload = dagRes.body || { cells: [], edges: [], warnings: [], lanes: [], current: null };
   const agentsById = new Map(((viewRes.body && viewRes.body.agents) || []).map((a) => [a.agentId, a]));
-  paintSwimlane(shell.svgEl, payload, { lang, pAgents, agentsById });
+  paintSwimlane(shell.svgEl, payload, { lang, pAgents, agentsById, onSelectAgent });
   renderLegend(shell.legend, payload, viewRes.body, lang);
   return { [dagUrl]: dagRes.status, [viewUrl]: viewRes.status };
 }
@@ -313,7 +328,7 @@ export function render(container, vm, handlers) {
   const lang = currentLang();
   const shell = buildShell(container);
   if (!name) return;
-  stateByContainer.set(container, { shell, name, lang, selectedRunId: null, diagramKey: null, diagramUrl: null });
+  stateByContainer.set(container, { shell, name, lang, handlers: handlers || {}, selectedRunId: null, diagramKey: null, diagramUrl: null });
 }
 
 /** DES-206 [v27c] — `app.js`'s one timer calls this every ~3s with `endpointsFor('workflow', ctx)`'s

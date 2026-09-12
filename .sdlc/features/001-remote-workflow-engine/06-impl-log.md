@@ -6153,3 +6153,129 @@ you find"). Fix, if taken: narrow to `'[data-run-chip].is-selected'`, mirroring
 - Screenshots (self-booting harness, `evidence/v27/`): both themes' home view (theme segment order,
   LAST RUN timestamp, `.card` no-fill + 5% hover tint, `.is-live` tint) and a node close-up (row 3's
   three segments including the new duration).
+
+### IMPL-267 — REQ-135 round 2: `ui/workflow.js` wires `onSelectAgent`; the slide side is computed synchronously at click time, never via `window.event`
+- **status:** done
+- **traces:** TASK-209, TASK-210, TASK-211, DES-205, DES-206, REQ-135
+- **greens:** VAL-209 (both defects it measured — `panelExists:false` on `/dashboard/workflow/:name`
+  and the right-half click never taking the `from-left` branch — are now green; see IMPL-268 for the
+  acceptance-suite cases that assert it)
+- **files:** src/dashboard/ui/workflow.js, src/dashboard/ui/run.js, src/dashboard/ui/agent-panel.js
+- **commit:** (uncommitted — working tree)
+- **iter:** v27
+
+VAL-209 (Gate 7.5 RE-RUN, 2026-09-13) found two real defects, both fixed here exactly as VAL-209's
+own "root cause and fix" paragraphs described:
+
+1. **`ui/workflow.js`'s two `paintSwimlane` calls (`:302`/`:316` after this edit) never passed
+   `onSelectAgent`.** `render()` now stores `handlers` on `state`; `paintSelected()` builds one
+   `onSelectAgent` (`state.handlers.onSelectAgent` if the caller supplied one, else
+   `(id, lbl, extra) => openAgentPanel(state.selectedRunId, id, lbl, { lang, ...extra })`, reading
+   `state.selectedRunId` at CLICK time since it can change via the run chips/history table) and
+   passes it into both calls (the predicted-layout branch too, though a predicted cell carries no
+   `agentId` so the delegated click listener never fires there).
+
+2. **`agent-panel.js`'s side computation read `window.event` AFTER `await getJSON(...)`**, by which
+   point the click's dispatch had finished and it was always `undefined` — so `side` always fell
+   through to `'right'`. Fixed at the source of truth instead of reordering a doomed read:
+   `ui/run.js`'s `ensureCellLayer` click listener now computes `nodeCenterX`
+   (`cellRect.left + cellRect.width/2 - wrapRect.left`) and `graphWidth` (`wrapRect.width`)
+   SYNCHRONOUSLY, from the actually-clicked cell's own `getBoundingClientRect()` — never an id
+   lookup (VAL-209 also measured that even a reordered `window.event` fix would have looked up
+   `#dag-graph` by id, which does not exist on `ui/workflow.js`'s page) — and forwards them as a
+   third `onSelectAgent(id, label, {nodeCenterX, graphWidth})` argument. Both `run.js`'s own default
+   `onSelectAgent` and `workflow.js`'s new one spread `extra` into `openAgentPanel`'s `opts`, so
+   `panelSide` (`lib/swimlane.js`, untouched — already total and unit-tested) now runs on real
+   numbers on EITHER route. `agent-panel.js`'s `window.event`/`#dag-graph` fallback branch is
+   removed (dead once both real wirings always supply the fields, and it could never have been
+   correct on the workflow route regardless of ordering); a caller supplying neither field still
+   gets the safe `'right'` default.
+
+**Third divergence check (per the dispatch's own ask):** compared everything else `ui/run.js`'s
+`render()`/`onTick()` wire against `ui/workflow.js`'s. `renderUsageBox`/`#run-usage` (the 4-column
+token breakdown) is `run.js`-only and NOT a gap: the design handoff's own "2. Workflow detail"
+section names no such element for this page, only the legend's right-aligned run summary text
+(`Running · 8 agents · 412k tok · $2.13`), which `workflow.js` already renders via `renderLegend` —
+`renderUsageBox` is a LEGACY-route-only affordance, predating the design, kept for URL
+compatibility (same category as `run.js`'s own file-banner note about `#dag-fit`). `run.js`'s own
+`#dag-fit` "Fit" reset button is similarly legacy-route-only; the design's swimlane paragraph for
+the workflow-detail page describes no Fit control either. No other handler or fetch pattern differs
+between the two `render()`/`onTick()` pairs. No third divergence found.
+
+**Verification (real, this pass):**
+- `npx tsc --noEmit` → 0 errors.
+- `npx vitest run tests/unit tests/integration` → 328 files, 2470 passed, 1 skipped, 0 failed — no
+  regression (same count as the pre-pass baseline).
+- A self-booting real-run harness (`evidence/v27/req135-workflow-route-panel-side-fix-verify.mjs`,
+  new) registers a real 4-phase/4-lane workflow under an explicit name, runs it, then drives real
+  Chromium against `/dashboard/workflow/:name` (never the legacy route): clicking the FIRST
+  (leftmost) node opens `[data-agent-panel]` with 6 stat cards and class `"agent-panel"` (no
+  `from-left`); clicking the LAST (rightmost) node opens it with class `"agent-panel from-left"`.
+  Screenshots: `evidence/v27/req135-workflow-route-panel-right-slide.png`,
+  `evidence/v27/req135-workflow-route-panel-left-slide.png`.
+- See IMPL-268 for the new `tests/acceptance/val-201-agent-panel.test.ts` cases (same fix, asserted
+  in the suite) and the one SPEC_ROW correction this fix's own correctness exposed.
+- `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → 33 gaps, 0 severe — same
+  count/composition as the pre-pass baseline (confirmed by listing `trace.analyze()`'s own gap set
+  directly, not by trusting the summary count alone); none name REQ-135, TASK-209/210/211,
+  DES-205/206, or any id this pass touched.
+
+### IMPL-268 — VAL-201 extended to the primary route + the slide-side clause; one pre-existing SPEC_ROW corrected
+- **status:** done
+- **traces:** TASK-211, REQ-135
+- **greens:** VAL-209; new cases in `tests/acceptance/val-201-agent-panel.test.ts` (`clicking a real
+  agent node on /dashboard/workflow/:name (the primary route) opens the slide-in panel`, `the slide
+  side follows the clicked node's real position on /dashboard/workflow/:name (REQ-135)`)
+- **files:** tests/acceptance/val-201-agent-panel.test.ts, tests/fixtures/dashboard-spec.ts
+- **commit:** (uncommitted — working tree)
+- **iter:** v27
+
+VAL-209 named the exact gap in the existing suite: "no test in `val-201-agent-panel.test.ts`
+currently catches this because that suite ONLY navigates to `/dashboard/${runId}` — never
+`/dashboard/workflow/:name`" and separately, the slide SIDE was never asserted anywhere in it. Both
+closed:
+
+- A new fixture (`sideWorkflowName`, `uniqueWorkflowName('val201-side')`, registered explicitly so
+  the workflow-route URL is known — `run_start`'s response never returns the auto-generated name
+  `runScriptVia` uses for every other fixture in this file) with FOUR phases/lanes so the swimlane
+  is wide enough to place a real agent cell in each half of the graph:  `SWIMLANE_BOX`'s own
+  constants (`PAD 16, TRIG_W 112, LANE_W 216, LANE_GAP 40`) put lane 0's cell center at x=236 of a
+  total width of 1128 (~21%, left half) and lane 3's at x=1004 (~89%, right half).
+- New case 1 navigates to `/dashboard/workflow/${sideWorkflowName}` (the primary route), clicks the
+  first real `[data-node-cell]`, and asserts the panel opens with 6 stat cards — the same oracle
+  VAL-201's very first (legacy-route) case already used, now proving it on the route that was
+  actually broken.
+- New case 2 clicks the first (left-half) and, after closing, the last (right-half) node on the SAME
+  route and asserts `[data-agent-panel]`'s className does/does not contain `from-left` respectively
+  — the slide-side clause this file's own header comment used to admit was never checked
+  (`agent-panel.js`'s pre-fix banner: "val-201 does not assert a side, only that clicking the node
+  opens the panel").
+
+**One pre-existing SPEC_ROW was wrong, found by this fix's own correctness (audit precedent:
+IMPL-266's `.card`/`run-chip` finding — "a row that reads green today for a reason other than the
+one it claims to check")**: `dashboard-spec.ts`'s `{anchor: 'data-agent-panel', prop:
+'animation-name'}` row expected the literal `'rweSlideIn'` (right-slide, the DEFAULT). That literal
+was only ever true because `openAgentPanel`'s side computation was broken and always fell through to
+`'right'`, never because any of val-201's own fixtures actually click a node in the graph's LEFT
+half. Every real click target in this file (`panel-agent`, `panel-agent-failing`, `toolcall-agent`)
+is a SINGLE-phase, single-lane run — and `SWIMLANE_BOX`'s own geometry puts that one lane's sole
+cell center (x=236) past the midpoint of the whole graph's width (180, `PAD*2 + TRIG_W + LANE_W`),
+i.e. in the RIGHT half — so `panelSide` now correctly returns `'left'` for every one of them, and the
+panel now genuinely gets `class="agent-panel from-left"` there (measured directly: the SPEC_ROWS
+case failed 3× — dark theme, light theme, hue move — each reporting `got "rweSlideInL"`, before this
+row was corrected). Fixed the literal to `'rweSlideInL'`, with a comment recording the arithmetic so
+a future geometry change re-derives it rather than re-guessing. **Not fudged**: this is the row
+being wrong, not the implementation — the same formula (`lib/swimlane.js`'s `panelSide`) is
+independently unit-tested (`dashboard-lib-swimlane.test.js`) and this pass's own harness
+(`req135-workflow-route-panel-side-fix-verify.mjs`, a 4-lane fixture where the FIRST lane's node
+correctly stays `'right'`/no `from-left`) confirms the side genuinely varies with real click
+position rather than being pinned to `from-left` by some new bug.
+
+**Verification (real, this pass — same run as IMPL-267, reported once):**
+- `npx tsc --noEmit` → 0 errors.
+- `npx vitest run tests/unit tests/integration` → 328 files, 2470 passed, 1 skipped, 0 failed.
+- `RWE_REQUIRE_BROWSER=1 npx vitest run` the 8 named acceptance files (val-018/193/197/198/199/200/
+  201/202) → 8 files, 39 tests, all passed, real Chromium — `val-201-agent-panel.test.ts` alone is
+  6/6 (4 pre-existing + 2 new), including the corrected SPEC_ROWS case.
+- `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → 33 gaps, 0 severe, same
+  composition as the pre-pass baseline (verified by listing the gap set directly).
