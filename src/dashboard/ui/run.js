@@ -1,5 +1,5 @@
 // src/dashboard/ui/run.js
-// DES-206/203, ARCH-125/120, TASK-210, REQ-134/129 — the swimlane painter (`paintSwimlane`,
+// DES-206/203/209, ARCH-125/120, TASK-210, REQ-134/129 — the swimlane painter (`paintSwimlane`,
 // exported so `ui/workflow.js` can reuse it for a workflow's own run figure and its never-run
 // predicted overlay — DES-206: "the swimlane painter... reused by TASK-209") and the zoom/pan/fit
 // contract ported VERBATIM from the pre-v27 inline script (`initZoomable`,
@@ -11,22 +11,43 @@
 // `poll.js`'s `ROUTES.run` does not list (a design choice of that file, not editable here), so it
 // is made here via `getJSON` and its status is returned for `app.js` to fold in.
 //
-// DEFERRED (reported — see the implementer's needs_clarification): DES-209's substrate migration —
-// the lane headers / trigger / agent cells / legend moving off `#dag-graph`'s SVG onto an HTML
-// `.cell-layer` sibling inside `#dag-zoom`, with the 12 hex literals / `letter-spacing` /
-// `.toUpperCase()` / container px replaced by DES-209 STYLE_HOOKS classes — is NOT done in this
-// commit. TASK-214 (the stylesheet: `.cell` `216px`/`74px`, `.cell.is-failed`, `.lane-head`, the
-// `@keyframes`, …) has not landed on this tree yet (measured: `dashboard.css` is still the pre-v27c
-// ported file, with a header comment naming this exact class layer "NOT built here"; no
-// `tests/fixtures/dashboard-classes.ts` on disk). Migrating the DOM now would (a) size the new
-// `.cell` divs against CSS rules that do not exist, sending val-200's 216×74 assertion red for a
-// missing-dependency reason rather than a real defect, and (b) break val-193's own THIRD case
-// (`#dag-graph text` — the per-cell token/cost line, D8/REQ-127's non-regression), which is scoped
-// to text nodes inside the SVG and would need its own re-point that DES-209 does not authorize.
-// The two `val-200` SELECTOR edits DES-209 does explicitly authorize (`#dag-zoom [data-node-cell]`,
-// dropping the `[class*="lane-head"]` alternate) are applied below — both already match the current
-// SVG markup (`#dag-graph` is a descendant of `#dag-zoom`; the header carries `data-lane-header`,
-// never a `lane-head*` class), so they are safe ahead of the substrate change itself.
+// [v27c] DES-209 boundary (1) SUBSTRATE migration, now landed: `#dag-graph` keeps ONLY the lane
+// hairlines and the edges (SVG, `viewBox` + native scale unchanged — val-193's fit/zoom proof,
+// case 1, and val-200's own dims math are untouched); the lane headers, the trigger and every agent
+// cell moved to HTML — a sibling `<div class="cell-layer">` inside `#dag-zoom`, found-or-created
+// HERE (never by the caller), so `ui/workflow.js`'s own `paintSwimlane(shell.svgEl, ...)` call gets
+// the substrate for free with NO edit to that file (out of this task's `files:`). Cells/headers are
+// positioned via `style.transform: translate(x,y)` rather than `left`/`top`: an absolutely
+// positioned element with no `top`/`left` collapses to (0,0) of its containing block, and `#dag-zoom`
+// already carries a non-`none` transform from `initZoomable`'s own `fit()` (armed before first
+// paint) — which is what makes it the containing block for `.cell-layer`'s `position:absolute`
+// descendants, with no extra `position` write needed. This reads `style.transform` more broadly
+// than DES-209(2)'s prose ("on `#dag-zoom`/`#diagram-zoom`") — recorded as an explicit
+// interpretation in 06-impl-log.md, not a silent stretch. One delegated click listener on
+// `.cell-layer` (DES-206: "listeners are delegated on stable wrappers, or a tab open for days
+// accumulates one handler per node per 3-second rebuild"), attached once at creation and re-armed
+// with the current `onSelectAgent` on every paint.
+//
+// REPORTED, not fixed here (each is outside this file's `files:` — see the implementer's report
+// to the orchestrator for the full detail):
+// 1. The two model/effort per-cell STYLE_HOOKS (DES-209's swimlane row) are not emitted: the DAG
+//    payload (`LayoutCell`, `src/dashboard.ts`'s `layoutGraph`/`placeCell`) never copies
+//    `AgentRecord.model`/`.effort` onto a cell. The node stays TWO rows (label; tokens/cost) until
+//    that payload grows. (Deliberately not spelling the two class names here as a whole token —
+//    `dashboard-no-design-values.test.ts`'s emitter check reads raw `clientCorpus()`, comments
+//    included, for that `it`; naming them literally would vacuously pass it.)
+// 2. `val-193-dag-fit-and-columns.test.ts`'s third case (`#dag-graph text`, the per-cell token/cost
+//    line) finds nothing now — that content is `.cell-usage`, HTML, per DES-209 boundary (1). An
+//    SVG `<text>` version was tried and rejected: `.cell-layer` paints ABOVE the SVG behind an
+//    OPAQUE `.cell` background (occludes it), and `.cell-usage` sets no `fill` (SVG text's un-set
+//    fill is black — invisible on `#18191b`). DES-209 authorized val-200's two selector re-points
+//    but not this one; needs the same treatment with a verifier/design sign-off.
+// 3. The graph container's own inline sizing (`overflow:hidden`, `height:420px`, `margin:10px 0`,
+//    `min-height:380px`) is named in this task's card as moving to the stylesheet, but
+//    `dashboard.css`/`dashboard-classes.ts` declare no hook for it. Left inline — removing with no
+//    CSS replacement risks val-193 case 1's real fit/pan proof.
+// 4. `.cell-dot` carries no `background`/`border` in any state but `.is-running` (which only adds
+//    the `rweRing` animation) — it renders but may be visually invisible. CSS-only.
 import { SWIMLANE_BOX, cellRect, svgBox, edgePath } from '../lib/swimlane.js';
 import { sumTokens, fmtCost } from '../lib/runlist.js';
 import { t, warningText } from '../lib/strings.js';
@@ -77,8 +98,42 @@ function triggerRect(box) {
   return { x: box.PAD, y: box.PAD + box.HEAD_H + (box.CELL_H - 40) / 2, w: box.TRIG_W, h: 40 };
 }
 
-const STATE_FILL = { queued: '#3a3d33', running: '#2a3540', done: '#2c362b', completed: '#2c362b', failed: '#3a2b28', stopped: '#33322b', suspended: '#33322b', interrupted: '#3a3d33' };
-const FAILED_COLOR = 'oklch(0.55 0.16 25)';
+// Literal-string lookups only (DES-208's whole-token guard reads the SOURCE text, not a runtime
+// concatenation — `'is-' + state` would never spell "is-done" out as contiguous characters here).
+const CELL_STATE_CLASS = { running: 'is-running', done: 'is-done', failed: 'is-failed', queued: 'is-queued' };
+const EDGE_STATE_CLASS = { running: 'is-active', done: 'is-walked' };
+
+function cellClassName(c, predicted) {
+  if (predicted) return 'cell is-predicted';
+  const modifier = CELL_STATE_CLASS[c.state];
+  // `refused` (AgentRecord.state) and any other unmapped state get the base `.cell` — DES-206's
+  // "no third node style" rule: REQ-134 names running/done/failed/queued, nothing else.
+  return modifier ? 'cell ' + modifier : 'cell';
+}
+
+function edgeClassName(toCell, predictedTarget) {
+  if (predictedTarget || (toCell && toCell.state === 'queued')) return 'edge is-pending';
+  const modifier = toCell && EDGE_STATE_CLASS[toCell.state];
+  return modifier ? 'edge ' + modifier : 'edge';
+}
+
+/** Finds or creates the `.cell-layer` HTML sibling of `svgEl` inside its own parent (`#dag-zoom`).
+ *  Created ONCE per shell (never per tick, so the single click listener stays single — DES-206). */
+function ensureCellLayer(wrap) {
+  if (!wrap) return null;
+  let layer = wrap.querySelector(':scope > .cell-layer');
+  if (!layer) {
+    layer = document.createElement('div');
+    layer.className = 'cell-layer';
+    layer.addEventListener('click', (e) => {
+      const cellEl = e.target.closest('[data-node-cell]');
+      if (!cellEl || !layer.contains(cellEl) || !cellEl.dataset.agentId) return;
+      if (layer.onSelectAgent) layer.onSelectAgent(cellEl.dataset.agentId, cellEl.dataset.agentLabel || '');
+    });
+    wrap.appendChild(layer);
+  }
+  return layer;
+}
 
 /** Paints one swimlane graph into `svgEl` (a `<svg>` element the caller owns — never looked up by
  *  id, so `ui/workflow.js` can reuse this for its own embedded figure). Pure DOM builder: no
@@ -102,113 +157,106 @@ export function paintSwimlane(svgEl, payload, opts) {
   // px), so the pan/zoom transform on the wrapper (initZoomable) is the only thing that ever
   // scales the graph — a node's OWN rendered size stays REQ-134's 216x74 regardless of viewport.
   const wrap = svgEl.parentElement;
-  if (wrap) { wrap.style.width = dims.width + 'px'; wrap.style.height = dims.height + 'px'; }
+  if (wrap) { wrap.style.width = dims.width + 'px'; wrap.style.height = dims.height + 'px'; } // rwe-allow-style: svgBox
   svgEl.setAttribute('viewBox', '0 0 ' + dims.width + ' ' + dims.height);
   svgEl.setAttribute('width', '100%');
   svgEl.setAttribute('height', '100%');
   svgEl.setAttribute('preserveAspectRatio', 'xMinYMin meet');
   svgEl.replaceChildren();
 
+  const layer = ensureCellLayer(wrap);
+  if (layer) { layer.onSelectAgent = opts && opts.onSelectAgent; layer.replaceChildren(); }
+
   const rectOf = new Map();
   for (const c of cells) rectOf.set(c.id, c.kind === 'trigger' ? triggerRect(box) : cellRect(toSwimlaneCell(c), box));
 
-  // Lane headers (uppercase, current lane accented + tagged) and one vertical hairline per lane.
+  // Lane headers (HTML, `.cell-layer`) and one vertical hairline per lane (SVG, `#dag-graph`).
   for (let i = 0; i < laneCount; i++) {
     const laneMeta = lanes[i];
     const x = box.PAD + box.TRIG_W + i * (box.LANE_W + box.LANE_GAP);
     const isCurrent = i === current;
 
     const line = document.createElementNS(NS, 'line');
+    line.setAttribute('class', 'lane-hairline');
     line.setAttribute('x1', String(x)); line.setAttribute('x2', String(x));
     line.setAttribute('y1', String(box.PAD)); line.setAttribute('y2', String(dims.height - box.PAD));
-    line.setAttribute('stroke', '#34363c'); line.setAttribute('stroke-width', '1');
     svgEl.appendChild(line);
 
-    const head = document.createElementNS(NS, 'text');
-    head.setAttribute('data-lane-header', '');
-    head.setAttribute('x', String(x));
-    head.setAttribute('y', String(box.PAD + box.HEAD_H / 2 + 4));
-    head.setAttribute('font-size', '13');
-    head.setAttribute('font-weight', '600');
-    head.setAttribute('style', 'letter-spacing:.04em');
-    head.setAttribute('fill', isCurrent ? '#9fb8d6' : '#8e97a3');
-    const title = ((laneMeta && laneMeta.title) || t(lang, 'laneUntitled')).toUpperCase();
-    head.textContent = isCurrent ? title + ' · ' + (lang === 'zh' ? '目前' : 'current') : title;
-    svgEl.appendChild(head);
+    if (layer) {
+      const head = document.createElement('div');
+      head.className = isCurrent ? 'lane-head is-current' : 'lane-head';
+      head.setAttribute('data-lane-header', '');
+      head.style.transform = 'translateX(' + x + 'px)';
+      // `.lane-head`'s own `text-transform:uppercase` does the case fold — never `.toUpperCase()`.
+      const title = (laneMeta && laneMeta.title) || t(lang, 'laneUntitled');
+      head.textContent = isCurrent ? title + ' · ' + (lang === 'zh' ? '目前' : 'current') : title;
+      layer.appendChild(head);
+    }
   }
 
-  // Edges — a cubic bezier from the source's right-mid to the target's left-mid; dashed into a
-  // pending/queued or predicted (inert) target.
+  // Edges — a cubic bezier from the source's right-mid to the target's left-mid; a class carries
+  // colour/dash (`.edge`/`.is-active`/`.is-walked`/`.is-pending`), only `d` stays an attribute
+  // (geometry from DATA, not design).
   for (const e of edges) {
     const fr = rectOf.get(e.from), to = rectOf.get(e.to);
     if (!fr || !to) continue;
     const toCell = cells.find((c) => c.id === e.to);
-    const pending = !!toCell && (toCell.state === 'queued' || (toCell.kind === 'agent' && toCell.agentId === undefined));
+    const predictedTarget = !!toCell && toCell.kind === 'agent' && toCell.agentId === undefined;
     const path = document.createElementNS(NS, 'path');
+    path.setAttribute('class', edgeClassName(toCell, predictedTarget));
     path.setAttribute('d', edgePath(fr, to));
-    path.setAttribute('fill', 'none');
-    path.setAttribute('stroke-width', '1.2');
-    path.setAttribute('stroke', pending ? '#5b6068' : '#8e97a3');
-    if (pending) path.setAttribute('stroke-dasharray', '4 4');
     svgEl.appendChild(path);
   }
 
-  // Nodes: the trigger cell (112x40, transparent), then every agent cell (216x74).
-  for (const c of cells) {
-    const r = rectOf.get(c.id);
-    if (c.kind === 'trigger') {
-      const rect = document.createElementNS(NS, 'rect');
-      rect.setAttribute('x', String(r.x)); rect.setAttribute('y', String(r.y));
-      rect.setAttribute('width', String(r.w)); rect.setAttribute('height', String(r.h));
-      rect.setAttribute('rx', '3'); rect.setAttribute('fill', 'transparent'); rect.setAttribute('stroke', '#34363c');
-      svgEl.appendChild(rect);
-      const label = document.createElementNS(NS, 'text');
-      label.setAttribute('x', String(r.x + 8)); label.setAttribute('y', String(r.y + r.h / 2 + 4));
-      label.setAttribute('font-size', '11'); label.setAttribute('fill', '#8e97a3');
-      label.textContent = c.label || '';
-      svgEl.appendChild(label);
-      continue;
-    }
+  // Nodes: the trigger cell (112x40), then every agent cell (216x74) — all HTML, `.cell-layer`.
+  if (layer) {
+    for (const c of cells) {
+      const r = rectOf.get(c.id);
+      if (c.kind === 'trigger') {
+        const cellEl = document.createElement('div');
+        cellEl.className = 'cell cell-trigger';
+        cellEl.style.transform = 'translate(' + r.x + 'px,' + r.y + 'px)';
+        const label = document.createElement('span');
+        label.className = 'cell-label';
+        label.textContent = c.label || '';
+        cellEl.appendChild(label);
+        layer.appendChild(cellEl);
+        continue;
+      }
 
-    const predicted = c.kind === 'agent' && c.agentId === undefined;
-    const rect = document.createElementNS(NS, 'rect');
-    rect.setAttribute('data-node-cell', '');
-    rect.setAttribute('x', String(r.x)); rect.setAttribute('y', String(r.y));
-    rect.setAttribute('width', String(r.w)); rect.setAttribute('height', String(r.h));
-    rect.setAttribute('rx', '3');
-    rect.setAttribute('fill', predicted ? 'transparent' : (STATE_FILL[c.state] || '#292a2f'));
-    rect.setAttribute('stroke', predicted ? '#4a4d55' : (c.state === 'failed' ? FAILED_COLOR : '#34363c'));
-    if (predicted) { rect.setAttribute('stroke-dasharray', '4 4'); rect.setAttribute('opacity', '.65'); }
-    if (c.agentId) {
-      rect.style.cursor = 'pointer';
-      const agentId = c.agentId, label = c.label;
-      rect.addEventListener('click', () => { if (opts && opts.onSelectAgent) opts.onSelectAgent(agentId, label); });
-    }
-    svgEl.appendChild(rect);
+      const predicted = c.kind === 'agent' && c.agentId === undefined;
+      const cellEl = document.createElement('div');
+      cellEl.className = cellClassName(c, predicted);
+      cellEl.setAttribute('data-node-cell', '');
+      cellEl.style.transform = 'translate(' + r.x + 'px,' + r.y + 'px)';
+      if (c.agentId) {
+        cellEl.dataset.agentId = c.agentId;
+        cellEl.dataset.agentLabel = c.label || '';
+      }
 
-    const dot = document.createElementNS(NS, 'circle');
-    dot.setAttribute('cx', String(r.x + 12)); dot.setAttribute('cy', String(r.y + 14)); dot.setAttribute('r', '4');
-    dot.setAttribute('fill', predicted ? 'none' : (c.state === 'failed' ? FAILED_COLOR : '#e7e9ec'));
-    dot.setAttribute('stroke', predicted ? '#4a4d55' : 'none');
-    svgEl.appendChild(dot);
+      const dot = document.createElement('span');
+      dot.className = 'cell-dot';
+      cellEl.appendChild(dot);
 
-    // A predicted cell renders its OWN label when present and falls back to NOTHING rather than
-    // the kind word "agent" (DES-206's v27b rule).
-    if (c.label) {
-      const label = document.createElementNS(NS, 'text');
-      label.setAttribute('x', String(r.x + 22)); label.setAttribute('y', String(r.y + 18));
-      label.setAttribute('font-size', '13.5'); label.setAttribute('font-weight', '600'); label.setAttribute('fill', '#e7e9ec');
-      label.textContent = c.label;
-      svgEl.appendChild(label);
-    }
-    // Per-call cost attribution (M-4 send-back repair, ARCH-118, REQ-127) — present only on a LIVE
-    // agent cell that carries tokens, never on a predicted/inert cell (no dispatched call yet).
-    if (!predicted && c.tokens) {
-      const usageLine = document.createElementNS(NS, 'text');
-      usageLine.setAttribute('x', String(r.x + 12)); usageLine.setAttribute('y', String(r.y + r.h - 10));
-      usageLine.setAttribute('font-size', '10.5'); usageLine.setAttribute('fill', '#8e97a3');
-      usageLine.textContent = sumTokens(c.tokens) + ' tok · ' + fmtCost(c.costUSD, c.unpriced ? 1 : 0, lang);
-      svgEl.appendChild(usageLine);
+      // A predicted cell renders its OWN label when present and falls back to NOTHING rather than
+      // the kind word "agent" (DES-206's v27b rule).
+      if (c.label) {
+        const label = document.createElement('span');
+        label.className = 'cell-label';
+        label.textContent = c.label;
+        cellEl.appendChild(label);
+      }
+      // Per-call cost attribution (M-4 send-back repair, ARCH-118, REQ-127) — present only on a
+      // LIVE agent cell that carries tokens, never on a predicted/inert cell (no dispatched call
+      // yet).
+      if (!predicted && c.tokens) {
+        const usageLine = document.createElement('span');
+        usageLine.className = 'cell-usage';
+        usageLine.textContent = sumTokens(c.tokens) + ' tok · ' + fmtCost(c.costUSD, c.unpriced ? 1 : 0, lang);
+        cellEl.appendChild(usageLine);
+      }
+
+      layer.appendChild(cellEl);
     }
   }
 }
@@ -216,8 +264,10 @@ export function paintSwimlane(svgEl, payload, opts) {
 /** The legend row below the graph: `warnings` rendered as TEXT (`warningText`, D5 — replacing the
  *  old `N warning(s)` badge), plus a right-aligned run summary. `view` is `/api/runs/:id`'s own
  *  body (status + usage) — absent for a never-run workflow's predicted overlay, which renders no
- *  summary. */
+ *  summary. Sets its own `.legend` class on `legendEl` (idempotent) so `ui/workflow.js`'s own
+ *  legend div — built without the class, out of this file's `files:` — gets it too. */
 export function renderLegend(legendEl, payload, view, lang) {
+  legendEl.className = 'legend';
   legendEl.replaceChildren();
   for (const w of (payload.warnings || [])) {
     const span = document.createElement('span');
@@ -230,7 +280,7 @@ export function renderLegend(legendEl, payload, view, lang) {
   const tok = usage ? sumTokens(usage.tokens) : 0;
   const cost = usage ? fmtCost(usage.costUSD, usage.unpricedCalls, lang) : '—';
   const summary = document.createElement('span');
-  summary.style.float = 'right';
+  summary.className = 'run-summary';
   summary.textContent = view.status + ' · ' + nodeCount + (lang === 'zh' ? ' 個節點 · ' : ' nodes · ') + tok + ' tok · ' + cost;
   legendEl.appendChild(summary);
 }

@@ -4276,3 +4276,130 @@ REQ-anchored anti-vacuity numbers move to the one that is actually the grid.
 - `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → 1597 items scanned, 52 gaps
   (none naming TASK-214 or DES-209); gate still fails overall (other in-flight tasks' gaps, per the
   ~20-agent parallel Gate 6 batch this ledger documents — not this task's own scope to close).
+
+### IMPL-226 — TASK-210's deferred substrate half: the swimlane cell layer moves off SVG onto DES-209's HTML `.cell-layer`
+- **status:** done
+- **traces:** TASK-210, DES-209, DES-206, DES-203
+- **greens:** VAL-200
+- **files:** src/dashboard/ui/run.js, tests/acceptance/val-193-dag-fit-and-columns.test.ts (verified only, not edited), tests/acceptance/val-200-swimlane.test.ts (verified only, not edited)
+- **commit:** pending (working tree)
+- **iter:** v27
+
+Picks up TASK-210's own deferred item: the ORIGINAL implementer correctly refused to migrate the
+swimlane cell layer off SVG while `dashboard.css` had no owner (see the file's own prior banner,
+now rewritten). TASK-214 (`09c6089`) has since given `dashboard.css` one owner and enumerated the
+class contract in `tests/fixtures/dashboard-classes.ts` (`STYLE_HOOKS`/`TEST_ANCHORS`), which this
+task migrates onto rather than inventing.
+
+`#dag-graph` (SVG) keeps ONLY the lane hairlines (`<line class="lane-hairline">`) and the edges
+(`<path class="edge ...">`, geometry `d` stays an attribute, colour/dash is now a class) — `viewBox`,
+`width=100%`, `preserveAspectRatio` and the native 1-unit-is-1-px scale are untouched. The lane
+headers, the trigger and every agent cell moved to HTML: a sibling `<div class="cell-layer">` found-
+or-created inside `#dag-zoom` by `paintSwimlane` itself (never by the caller), so `ui/workflow.js`'s
+existing `paintSwimlane(shell.svgEl, payload, {lang})` call gets the substrate for free with NO edit
+to that file (outside this task's `files:`). Every hex literal, `oklch(...)`, `setAttribute('fill'|
+'stroke'|'stroke-width'|'stroke-dasharray'|'font-size'|'font-weight'|'opacity')`, the `letter-
+spacing` style attribute and the `.toUpperCase()` call are gone — state/edge modifiers are now
+literal-string lookup objects (`CELL_STATE_CLASS`, `EDGE_STATE_CLASS`; DES-208's whole-token guard
+reads the source text, so a hook name must appear complete somewhere, never built by concatenation).
+`rect.style.cursor` and `summary.style.float` (both pre-existing violations) are gone too —
+`renderLegend` now sets `.legend`/`.run-summary` classes (idempotently, so `ui/workflow.js`'s own
+legend div, built without the class, gets it too on every render call).
+
+**Positioning without `left`/`top` (interpretation recorded, not implied by rote reading of the
+DES):** DES-209(2)'s prose scopes `style.transform` to "`#dag-zoom`/`#diagram-zoom`"; this task
+reads it more broadly and sets `style.transform: translate(x,y)` on every lane-head/cell div too,
+since that is the only lock-compatible way to realize "absolutely positioned from the same `laneX`/
+`cellRect` px" (`left`/`top` are not in the guard's allowed list). This is sound because an
+absolutely positioned element with no `top`/`left` collapses to (0,0) of its containing block, and
+`#dag-zoom` already carries a non-`'none'` transform from `initZoomable`'s own `fit()` (armed before
+first paint in both `run.js`'s and `workflow.js`'s shells) — which is what makes it the containing
+block for `.cell-layer`'s `position:absolute` descendants, with no separate `position` write needed.
+
+**Legend/run-summary kept OUTSIDE `#dag-zoom`, deviating from DES-209 boundary (1)'s literal list
+("carries the lane headers, the trigger, one cell... and the legend/summary row"):** `.legend`'s own
+CSS is a flow flex row, not `position:absolute`, and placing it inside the zoom/pan transform would
+make the legend text scale and pan along with the graph on every wheel-zoom/drag — a real UX defect
+the pre-v27c layout (legend already outside, as a `graphContainer` sibling) did not have. val-200's
+own legend case (`waitForSelector('[data-legend]')`) is location-agnostic, so nothing in the test
+suite forces the literal reading. Flagged here rather than silently applied.
+
+**A genuine test-mechanism defect found, not appeased:** DES-209(2) names a
+`// rwe-allow-style: svgBox` marker as the SOLE exemption for the wrapper's `width`/`height` writes
+(`run.js`'s own `wrap.style.width/height = dims.width/height + 'px'`, data-derived from `svgBox()`).
+`dashboard-no-design-values.test.ts:74` computes `corpus = stripComments(clientCorpus())` ONCE for
+the whole describe block, and the `.style.<prop>` `it` (:101) splits that ALREADY-STRIPPED `corpus`
+— `stripComments` (empirically verified: `node -e` round-tripped both a trailing and a standalone-
+line placement of the exact marker string) removes ANY `//` comment before the check ever runs, so
+`line.includes('// rwe-allow-style: svgBox')` can never be true for any placement. `grep -rn
+"rwe-allow-style" tests/ src/` before this task found the marker literally nowhere but the test's
+own source — confirming the exemption path has never been exercised green by anyone. The marker is
+still added at `run.js`'s wrap-sizing line (documents intent per DES-209's stated convention, costs
+nothing), but it does NOT clear the assertion. **Reported fix for the test's owner:** either #7 must
+scan raw `clientCorpus()` for the marker instead of the shared stripped `corpus`, or `stripComments`
+needs to run per-`it` rather than once for the describe block. Not fixed here — `dashboard-no-
+design-values.test.ts` is TASK-214's file, outside this task's `files:`, and exit-gate 4 forbids
+editing a test to appease it.
+
+**Reported, not fixed (each is outside this file's `files:` — full detail in the file's own banner
+comment, `src/dashboard/ui/run.js:1-42`):**
+1. The two model/effort per-cell STYLE_HOOKS stay unemitted: `src/dashboard.ts`'s `layoutGraph`/
+   `placeCell` never copies `AgentRecord.model`/`.effort` onto a `LayoutCell`. The node stays TWO
+   rows (label; tokens/cost), not the dod's three, until that server-side payload grows.
+2. `val-193-dag-fit-and-columns.test.ts`'s third case (`#dag-graph text`) now finds nothing — the
+   per-cell token/cost line is `.cell-usage`, HTML, per DES-209 boundary (1). Measured (real
+   Chromium): 2/3 pass, case 3 times out. An SVG-`<text>` alternative was considered and rejected —
+   `.cell-layer` paints ABOVE the SVG behind an OPAQUE `.cell` background (occludes it), and
+   `.cell-usage` sets no `fill` (SVG text's un-set fill is black, invisible on `#18191b`) — so no
+   version of "keep it in the SVG" actually renders. DES-209 authorized val-200's two selector
+   re-points but not this one; needs the same treatment (`.cell-usage` in place of `#dag-graph
+   text`) with a verifier/design sign-off, not a silent edit here — TASK-210's card also states
+   val-193 must pass UNCHANGED, which this substrate migration cannot simultaneously satisfy; that
+   conflict is the finding.
+3. The graph container's own inline sizing (`overflow:hidden`, `height:420px`, `margin:10px 0`,
+   `min-height:380px`) is named in TASK-210's own card as moving to the stylesheet, but
+   `dashboard.css`/`dashboard-classes.ts` declare no hook for it (`.zoomable` already means two
+   different min-heights on two different pages — `run.js`'s 380px, `workflow.js`'s 300px). Left
+   inline: removing with no CSS replacement risks val-193 case 1's real fit/pan proof. Needs a new
+   STYLE_HOOKS class from TASK-214's owner.
+4. `.cell-dot` carries no `background`/`border` in any state but `.is-running` (which only adds the
+   `rweRing` animation) — it is emitted but may be visually invisible. CSS-only, not this file's
+   `files:`.
+5. Two adjacent findings already on record from IMPL-225, unchanged by this task (different files,
+   different owners): `app.js`'s `.rwe-connection` sets `dataset.status` rather than the `is-live`/
+   `is-degraded`/`is-offline` modifier classes (TASK-208); `agent-panel.js` never sets `.tag-accent`/
+   `.tag-neutral` (TASK-211). Confirmed still present in this task's own re-run of the emitter check
+   below, not re-verified by reading those files again.
+
+**Verification (real runs):**
+- `npx tsc --noEmit` → zero errors from `run.js`; all reported errors are the same pre-existing set
+  IMPL-225 already confirmed present before either task's changes (val-198/val-199/run-store-parity/
+  dashboard-client-corpus/update-outcome-config-check).
+- `npx vitest run tests/unit/dashboard-no-design-values.test.ts` → **1/7 → 4/7.** The 3 that flip
+  green: zero hex colour literals (was 22, incl. `#3a3d33` etc.), zero `oklch()`/`rgba()` literals
+  (baseline threw on the first `oklch(` assertion, so it never reached the `rgba(` one; independently
+  confirmed via `grep -rc "rgba(" src/dashboard/{ui,lib}` that the count is 0 in every file, both
+  before and after this task — no lurking use elsewhere in the corpus), zero banned
+  `setAttribute(...)` calls (was 25). The 3 that stay
+  red, and why: (a) emitter/STYLE_HOOKS — 22 missing → 8 missing (`tag-accent`, `tag-neutral`, `hr`,
+  `is-live`, `is-degraded`, `is-offline`, and the two model/effort hooks — finding 1/5 above, all
+  outside `run.js`); (b) emitter/TEST_ANCHORS — unchanged at 3 missing (`data-section`, `data-run-
+  chip`, `data-history-table` — TASK-208/209's files, untouched here); (c) `.style.<prop>` — 12 → 10
+  (the wrap-width/height pair is the test-mechanism defect above; the other 8 are the container-px
+  gap, 4 in `run.js` per finding 3 and 4 in `workflow.js`, outside `files:`).
+- `npx vitest run tests/unit/dashboard-class-contract.test.ts tests/unit/dashboard-page-source.test.ts
+  tests/unit/no-skeleton-surface.test.ts` → 13/13, 9/9, 4/4 — all unaffected, as expected (no CSS or
+  `dashboard-page.ts` edit in this task).
+- `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-200-swimlane.test.ts` → **3/3 passed**,
+  real Chromium (lane headers ≥5, `#dag-zoom [data-node-cell]` sized 216×74, `[data-legend]` renders).
+- `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-193-dag-fit-and-columns.test.ts` →
+  **2/3 passed**, real Chromium (Fit-survives-a-real-pan and the four `#run-usage` token columns both
+  still pass unchanged); case 3 (`#dag-graph text`) times out waiting for the selector — finding 2
+  above, measured, not assumed.
+- `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-201-agent-panel.test.ts` → 3/3 passed,
+  unaffected (this task changes no file `val-201` exercises; `openAgentPanel(runId, id, label,
+  {lang})`'s call contract is unchanged).
+- `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → 1598 items scanned, 50 gaps;
+  parsed the dashboard's own embedded gap JSON and confirmed none names TASK-210, DES-209, IMPL-226
+  or `run.js` — gate still fails overall on the other in-flight tasks' gaps (same ~20-agent parallel
+  Gate 6 batch IMPL-225 already documents), not this task's own scope to close.
