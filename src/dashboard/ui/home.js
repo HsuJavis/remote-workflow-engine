@@ -184,12 +184,26 @@ export function render(container, vm, handlers) {
   handlers = handlers || {};
   let state = stateByContainer.get(container);
   if (!state) {
-    state = { query: '', segment: 'all', lang: vm.lang || 'zh', cards: [] };
+    state = { query: '', segment: 'all', lang: vm.lang || 'zh', cards: [], handlers };
     stateByContainer.set(container, state);
     buildChrome(container, state, handlers);
   }
+  state.handlers = handlers;
   state.cards = vm.cards || [];
   state.lang = vm.lang || state.lang;
   renderGrid(container, state, handlers);
+  updateCounts(container, state);
+}
+
+/** DES-206 [v27c] — the poll-tick half of the same view contract: `app.js`'s one timer calls this
+ *  every ~3s with `/api/home`'s freshly-fetched body (never a second fetch of its own). No status
+ *  to hand back beyond what `app.js`'s own base fetch already recorded for `/api/home`. */
+export function onTick(container, bodies) {
+  const state = stateByContainer.get(container);
+  if (!state) return;
+  const body = bodies['/api/home'];
+  if (!body) return;
+  state.cards = [...(body.running || []), ...(body.registered || []), ...(body.other || [])];
+  renderGrid(container, state, state.handlers);
   updateCounts(container, state);
 }

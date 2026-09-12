@@ -102,7 +102,13 @@ beforeAll(async () => {
     if (['completed', 'failed'].includes(s.status)) break;
     await new Promise((r) => setTimeout(r, 100));
   }
-  await registerPublishedVia(mcpCall, 'val199-never-run', `phase('a'); await agent('x', {}); return 1;`);
+  // `meta.phases` is declared explicitly — `describe.phases` is the author's own static contract
+  // (mcp-facade.ts:491-503/workflow-meta.ts's `parseMeta`, val-111's own precedent), never derived
+  // from scanning a `phase()` CALL at runtime, so a script that only calls `phase('a')` describes
+  // as `phases: []` and the predicted-lane join (`predictedLanes`) never has a row to attach agents
+  // to. Without this, both never-run cases below can only exercise the `predictedLayoutUnavailable`
+  // fallback, never the agent-NAME branch the design and the auth-enabled case require.
+  await registerPublishedVia(mcpCall, 'val199-never-run', `export const meta = { params: { agents: { x: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } }, phases: [{title:'a'}] };\nphase('a'); await agent('x', {}); return 1;`);
 
   authTmpDir = mkdtempSync(join(tmpdir(), 'rwe-val199-auth-'));
   authServer = await createServer({
@@ -116,7 +122,9 @@ beforeAll(async () => {
   } as never);
   authBaseUrl = `http://127.0.0.1:${authServer.port}`;
   const ownerToken = await mintBearer(authTmpDir, AUTH_OWNER);
-  await registerPublishedVia(authMcpCallFor(ownerToken), 'val199-auth-never-run', `phase('a'); await agent('${AUTH_AGENT_MARKER}', {}); return 1;`);
+  // Same `meta.phases` declaration as the plain-server fixture above — required for the predicted
+  // agent NAME (not just the fallback wording) to reach `describe.phases[].agents` at all.
+  await registerPublishedVia(authMcpCallFor(ownerToken), 'val199-auth-never-run', `export const meta = { params: { agents: { '${AUTH_AGENT_MARKER}': { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } }, phases: [{title:'a'}] };\nphase('a'); await agent('${AUTH_AGENT_MARKER}', {}); return 1;`);
 }, 30000);
 
 afterAll(async () => {

@@ -6,9 +6,13 @@
 // (`/dashboard/issues`) before this rebuild; it is now a tab (`app.js`'s routing contract) — no
 // other behaviour changes (no sorting, no filtering, no new endpoint, DES-207's boundary).
 //
-// This tab owns its own fetch loop (self-rescheduling `setTimeout`, guarded by
-// `container.isConnected`) — it is never `app.js`'s `currentView`, same as `ui/models.js`/
-// `ui/system.js`.
+// [v27c] DES-206's "one timer" completion: this view exports `onTick(container, bodies, ctx)` per
+// the same uniform view contract as `home.js`/`workflow.js`/`run.js`, instead of scheduling its own
+// repeated fetch. `app.js`'s tab strip (`activateTab`) mounts this module via `render()` only, so
+// `render()` builds the static chrome once (the two group headers, the detail box — a per-container
+// state, `home.js`'s own pattern, so a re-render never rebuilds a click handler's closure mid-use)
+// and calls `onTick()` itself for first paint; `poll.js`'s `issues` route already names this view's
+// endpoint for whenever the tab strip's own poll wiring joins it to the app-wide tick.
 
 import { getJSON } from './poll.js';
 
@@ -28,21 +32,23 @@ function renderIssueList(issues, container, onSelect) {
   }
   issues.forEach((iss) => {
     const row = el('div', 'issue-row');
-    row.appendChild(el('span', 'issue-num', '#' + iss.number));
-    row.appendChild(el('span', 'issue-title', iss.title));
-    // Severity from labels (e.g. "severity:high") as a pill.
+    row.appendChild(el('span', 'mono', '#' + iss.number));
+    row.appendChild(el('span', undefined, iss.title));
+    // Severity from labels (e.g. "severity:high") — DES-209's `.tag` component (the pre-v27 page
+    // used `.pill`, DES-209 boundary clause 3).
     (iss.labels || []).forEach((lbl) => {
-      if (lbl && lbl !== 'agent-reported') row.appendChild(el('span', 'issue-lbl', lbl));
+      if (lbl && lbl !== 'agent-reported') row.appendChild(el('span', 'tag', lbl));
     });
     row.addEventListener('click', () => onSelect(iss.number));
     container.appendChild(row);
   });
 }
 
-/** DES-206's uniform view contract — `vm`/`handlers` are unused; this tab fetches its own data. */
-export function render(container, _vm, _handlers) {
-  container.id = 'issues';
+// Per-container chrome state (`home.js`'s own pattern) — built once so a re-render never rebuilds
+// the `loadIssueDetail` closure (and the detail box it owns) mid-use.
+const stateByContainer = new WeakMap();
 
+function buildChrome(container) {
   const openEl = el('div');
   openEl.id = 'issues-open';
   const resolvedEl = el('div');
@@ -87,19 +93,34 @@ export function render(container, _vm, _handlers) {
     detailBox.style.display = 'block';
   }
 
-  async function tick() {
-    if (!container.isConnected) return;
-    const res = await getJSON('/api/issues');
-    if (!container.isConnected) return;
-    const data = res.body;
-    if (data && data.degraded) {
-      openEl.replaceChildren(el('div', 'degraded', data.degraded));
-      resolvedEl.replaceChildren(el('div', 'degraded', data.degraded));
-    } else if (data) {
-      renderIssueList(data.open || [], openEl, loadIssueDetail);
-      renderIssueList(data.resolved || [], resolvedEl, loadIssueDetail);
-    }
-    setTimeout(tick, 3000);
+  return { openEl, resolvedEl, loadIssueDetail };
+}
+
+/** [v27c] DES-206's uniform view contract, poll half — fetches `/api/issues` and paints; returns
+ *  the endpoint's status so a caller folding it into `nextConnection` can do so like every other
+ *  view. Assumes `render()` already built the chrome (bails otherwise, `home.js`'s own guard). */
+export async function onTick(container, _bodies, _ctx) {
+  const state = stateByContainer.get(container);
+  if (!state || !container.isConnected) return undefined;
+  const res = await getJSON('/api/issues');
+  if (!container.isConnected) return undefined;
+  const data = res.body;
+  if (data && data.degraded) {
+    state.openEl.replaceChildren(el('div', 'degraded', data.degraded));
+    state.resolvedEl.replaceChildren(el('div', 'degraded', data.degraded));
+  } else if (data) {
+    renderIssueList(data.open || [], state.openEl, state.loadIssueDetail);
+    renderIssueList(data.resolved || [], state.resolvedEl, state.loadIssueDetail);
   }
-  tick();
+  return { '/api/issues': res.status };
+}
+
+/** DES-206's uniform view contract — `vm`/`handlers` are unused; builds the chrome once, then calls
+ *  `onTick` itself for first paint since nothing else calls it yet. */
+export function render(container, _vm, _handlers) {
+  container.id = 'issues';
+  if (!stateByContainer.has(container)) {
+    stateByContainer.set(container, buildChrome(container));
+  }
+  onTick(container, {}, {});
 }

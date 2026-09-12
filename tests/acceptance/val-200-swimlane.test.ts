@@ -91,7 +91,7 @@ describe('the swimlane run graph, real Chromium (VAL-200, REQ-134)', () => {
       const page = await browser.newPage();
       await page.goto(`${baseUrl}/dashboard/${runId}`, { waitUntil: 'networkidle0', timeout: 10000 });
       await page.waitForSelector('#dag-graph', { timeout: 3000 });
-      const laneHeaderCount = await page.$$eval('[class*="lane-head"], [data-lane-header]', (els) => els.length);
+      const laneHeaderCount = await page.$$eval('[data-lane-header]', (els) => els.length);
       expect(laneHeaderCount).toBeGreaterThanOrEqual(5);
     } finally {
       await browser.close();
@@ -105,7 +105,7 @@ describe('the swimlane run graph, real Chromium (VAL-200, REQ-134)', () => {
       const page = await browser.newPage();
       await page.goto(`${baseUrl}/dashboard/${runId}`, { waitUntil: 'networkidle0', timeout: 10000 });
       await page.waitForSelector('#dag-graph', { timeout: 3000 });
-      const nodeSizes = await page.$$eval('#dag-graph [data-node-cell]', (els) => els.map((e) => ({ w: e.getBoundingClientRect().width, h: e.getBoundingClientRect().height })));
+      const nodeSizes = await page.$$eval('#dag-zoom [data-node-cell]', (els) => els.map((e) => ({ w: e.getBoundingClientRect().width, h: e.getBoundingClientRect().height })));
       expect(nodeSizes.some((s) => Math.abs(s.w - 216) < 2 && Math.abs(s.h - 74) < 2)).toBe(true);
     } finally {
       await browser.close();

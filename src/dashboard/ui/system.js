@@ -10,8 +10,11 @@
 // REQ-076's degrade rule) renders the SAME `UNAVAILABLE` component instead of a confident '—' or a
 // thrown render — the same defect class as a confident $0.00 (DES-204).
 //
-// This tab owns its own fetch loop (self-rescheduling `setTimeout`, guarded by
-// `container.isConnected`) — it is never `app.js`'s `currentView`, same as `ui/models.js`.
+// [v27c] DES-206's "one timer" completion: this view exports `onTick(container, bodies, ctx)` per
+// the same uniform view contract as `home.js`/`workflow.js`/`run.js`, instead of scheduling its own
+// repeated fetch. `app.js`'s tab strip (`activateTab`) mounts this module via `render()` only, so
+// `render()` calls `onTick()` once itself for first paint; `poll.js`'s `system` route already names
+// this view's endpoint for whenever the tab strip's own poll wiring joins it to the app-wide tick.
 
 import { getJSON } from './poll.js';
 
@@ -47,7 +50,8 @@ function fmtBytes(b) {
 
 function buildTable(data) {
   const t = document.createElement('table');
-  t.className = 'sys-table';
+  t.className = 'table sys-table'; // DES-209 STYLE_HOOKS: .table (component layer) + the ported
+                                    // .sys-table modifier (DES-209 boundary clause 5).
   t.appendChild(sysRow('cpu cores', String(data.cpu.cores)));
   t.appendChild(sysRow('load avg 1m/5m/15m', data.cpu.loadAvg.map((v) => v.toFixed(2)).join(' / ')));
   const utilStr = data.cpu.utilizationPct != null ? data.cpu.utilizationPct.toFixed(1) + '%' : UNAVAILABLE;
@@ -66,20 +70,24 @@ function buildTable(data) {
   return t;
 }
 
-/** DES-206's uniform view contract — `vm`/`handlers` are unused; this tab fetches its own data. */
+/** [v27c] DES-206's uniform view contract, poll half — fetches `/api/system` and paints (the ONE
+ *  degraded-section swap, DES-207's own stated behaviour change); returns the endpoint's status so
+ *  a caller folding it into `nextConnection` can do so like every other view. */
+export async function onTick(container, _bodies, _ctx) {
+  if (!container.isConnected) return undefined;
+  const res = await getJSON('/api/system');
+  if (!container.isConnected) return undefined;
+  if (!res.body) {
+    container.replaceChildren(el('div', 'empty', UNAVAILABLE));
+  } else {
+    container.replaceChildren(buildTable(res.body));
+  }
+  return { '/api/system': res.status };
+}
+
+/** DES-206's uniform view contract — `vm`/`handlers` are unused; `onTick` owns the actual fetch and
+ *  paint, called once here for first paint since nothing else calls it yet. */
 export function render(container, _vm, _handlers) {
   container.id = 'system-panel';
-
-  async function tick() {
-    if (!container.isConnected) return;
-    const res = await getJSON('/api/system');
-    if (!container.isConnected) return;
-    if (!res.body) {
-      container.replaceChildren(el('div', 'empty', UNAVAILABLE));
-    } else {
-      container.replaceChildren(buildTable(res.body));
-    }
-    setTimeout(tick, 3000);
-  }
-  tick();
+  onTick(container, {}, {});
 }

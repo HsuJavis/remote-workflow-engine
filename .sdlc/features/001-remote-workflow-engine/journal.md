@@ -3825,3 +3825,65 @@ orchestrator, and not to an implementer inventing CSS against no DES.
 
 **Next:** one invocation, `gates:[design,impl,verify,validation,review]` over the full Sprint A closure
 — the design delta assigns the CSS ownership, then implementation resumes.
+
+## 2026-09-12 — v27c GATE 3+4 DELTA PASSED (designer): the stylesheet gets an owner, and the panel found three things the routing note could not
+
+**Scope:** the one item routed back from Gate 6 — `src/dashboard/dashboard.css` was listed in TASK-205 only,
+whose scope was porting the pre-v27 component CSS onto the new token set, while the four tasks that build the
+new surfaces carry pixel-precise DoDs and no `.css` file. Synthesized from the pre-run two-group lens panel,
+**round 1 only** (`.panel/design/{adversarial,quality-dimensions}.r1.md`): the r1 headlines were
+complementary — both open with 「one stylesheet, one new task, ordered before the view acceptance is
+judged」 — so no round 2 was run. Every measurement either lens used to decide something was re-verified at
+the working tree before adoption.
+
+**Closed:** **TASK-214** (new) owns `dashboard.css` end-to-end — the declared class contract
+(`tests/fixtures/dashboard-classes.ts`), every component and view section headed by its REQ, and the two
+locks — ordered BEFORE val-198..202 are judged and before TASK-209/210/211/212 re-run (new ordering rule 6).
+**DES-209** (new) carries the contract, the substrate, the `ui/` style allowlist, the delivery path and
+`SPEC_ROWS`. Seven TASK cards and five DES rows amended in place at `iter: v27c`; **no new ledger, no new ID
+namespace, no ARCH or test file touched.**
+TASK-214 owns the stylesheet, the two fixtures and the two locks and **nothing else** — no `ui/*.js`, no
+`dashboard-page.ts` — so the partitioner cannot batch two writers onto one file; the hook edits and the
+literal relocation belong to each view's own task, and the two halves of the locks that depend on those
+edits are the SLICE's final green (re-run as TASK-212's last check), exactly as ordering rule 4 already
+governs TASK-204's `listed ⇒ on disk` half.
+
+**Three findings the routing note did not know, all re-measured this session:**
+1. The gap is a **vocabulary** gap first — **29 of the 40 class names `ui/*.js` sets have no rule at all**,
+   including the whole REQ-070/ARCH-040 update panel (`rwe-update-panel`, `rwe-update-outcome`,
+   `rwe-config-check`, `rwe-update-cta`), which DES-200 calls 「the one non-regression this slice could lose
+   silently」. It did not get lost; it got emitted with no rule, which is the same outcome with a better alibi.
+2. **REQ-134's node is not deliverable on the painter that exists.** `run.js` paints pure SVG; row ① needs
+   `text-overflow: ellipsis`, row ② needs an HTML `.tag-neutral` *component* inside the node, and the running
+   node needs `--shadow-md` — SVG has none of the three. DES-209 decides the substrate (SVG keeps the edges,
+   HTML cells go in a sibling layer inside `#dag-zoom`, one geometry) rather than leaving it to whoever hit it
+   first in the middle of the impl gate.
+3. **The committed dark accent ramp runs the wrong direction for the token REQ-134 uses.**
+   `dashboard.css:22` ships dark `--accent-100` at L .93, and REQ-134 makes that token the running node's
+   **fill** under `--color-ink` text — near-white on near-white, on the most important cell of the most
+   important screen, in already-green committed code. DES-201 corrects the DIRECTION only; the exact L/C
+   sequence is REQ-131's deferral to the delivery README and is the open `owner_decision`.
+
+**Also decided:** the stylesheet is delivered **once** (`<link>` only — the inline `<style>` copy and its
+`readFileSync` go, and the two C1 CSS pins exercise the `dashboard.css`-bytes option DES-208 already granted
+them); every design value **leaves** `ui/*.js` (12 hex literals as SVG attributes in `run.js`, three
+`cssText` blocks in `agent-panel.js`, the `maxWidth`/`fontSize`/`rgba` literals in `workflow.js`) behind a
+four-form allowlist and a grep guard with a positive anchor; and DES-206's 「one timer」 is **made true** —
+it is six on disk, so five view loops are deleted and one `onTick(container, bodies, ctx)` hook is added,
+which deletes more than it adds and stops the run view double-fetching `/dag` into ADR-052's own N=1000
+measurement.
+
+**Open, and it blocks Gate 8 by design:** one `owner_decision` on DES-209 — vendor
+`design_handoff_workflow_dashboard/README.md` under `.sdlc/.../design-handoff/` (the README only;
+`rwe-data.js` carries the C3 word and would be a REQ-105 finding anywhere in the repo), or accept that the
+99%-fidelity bar is scoped to REQ-131..135's enumerated constants.
+
+**Trace:** 1594 items / 59 gaps against a 1592 / 58 baseline; the one delta is `未實作 TASK-214 (low)`, the
+identical pre-implementation signal TASK-196..203 / 207 / 209..213 already carry and Gate 6 closes. 0 broken
+links, 0 orphans.
+
+**Next:** Gate 6 (implementer) re-runs the Sprint A closure with **TASK-214 first**. The tests this delta
+implies have no gate in this invocation (`gates:[design,impl,verify,validation,review]`), so TASK-214 carries
+the `/sdlc-fix` F-pattern in its `dod:` — the class lock, the no-design-values guard and `SPEC_ROWS` are
+written RED first, then green, and the verifier records them as UT items at the next gate that owns
+`05-tests.md`.

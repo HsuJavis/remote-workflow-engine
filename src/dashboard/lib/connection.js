@@ -1,6 +1,6 @@
 // src/dashboard/lib/connection.js
 // DES-202, ARCH-124/125/130, TASK-206, REQ-131 — a reducer, a worstOf, and a response classifier.
-// All pure: no fetch, no Date.now()/new Date(), no timestamp field kept — `live` requires an `ok`
+// All pure: no fetch, no system-clock read, no timestamp field kept — `live` requires an `ok`
 // THIS tick and therefore cannot go stale by itself.
 
 const RANK = { ok: 0, degraded: 1, fail: 2 };

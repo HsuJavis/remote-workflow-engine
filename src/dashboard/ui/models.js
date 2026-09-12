@@ -6,10 +6,11 @@
 // rather than the old page's raw HTML-string build; D5, DES-206). No sorting, no filtering, no new
 // endpoint (DES-207's boundary).
 //
-// This tab is not part of `app.js`'s single poll tick (it never becomes `currentView`, DES-206) —
-// like the pre-v27 page it owns its own fetch loop, same as `ui/run.js`/`ui/workflow.js`'s pattern:
-// a self-rescheduling `setTimeout` guarded by `container.isConnected` so a torn-down tab stops
-// polling.
+// [v27c] DES-206's "one timer" completion: this view exports `onTick(container, bodies, ctx)` per
+// the same uniform view contract as `home.js`/`workflow.js`/`run.js`, instead of scheduling its own
+// repeated fetch. `app.js`'s tab strip (`activateTab`) mounts this module via `render()` only, so
+// `render()` calls `onTick()` once itself for first paint; `poll.js`'s `models` route already names
+// this view's endpoint for whenever the tab strip's own poll wiring joins it to the app-wide tick.
 
 import { getJSON } from './poll.js';
 
@@ -22,7 +23,8 @@ function el(tag, className, text) {
 
 function buildTable(entries) {
   const t = document.createElement('table');
-  t.className = 'models-table';
+  t.className = 'table models-table'; // DES-209 STYLE_HOOKS: .table (component layer) + the
+                                       // ported .models-table modifier (DES-209 boundary clause 5).
   const thead = document.createElement('thead');
   const hrow = document.createElement('tr');
   ['provider', 'model', 'capability', 'stability', 'costLevel', 'modalities'].forEach((h) => {
@@ -48,21 +50,26 @@ function buildTable(entries) {
   return t;
 }
 
-/** DES-206's uniform view contract — `vm`/`handlers` are unused; this tab fetches its own data. */
-export function render(container, _vm, _handlers) {
-  async function tick() {
-    if (!container.isConnected) return;
-    const res = await getJSON('/api/models');
-    if (!container.isConnected) return;
-    const entries = res.body;
-    if (!entries || !Array.isArray(entries)) {
-      container.replaceChildren(el('div', 'empty', '(unavailable)'));
-    } else if (!entries.length) {
-      container.replaceChildren(el('div', 'empty', '(no models)'));
-    } else {
-      container.replaceChildren(buildTable(entries));
-    }
-    setTimeout(tick, 3000);
+/** [v27c] DES-206's uniform view contract, poll half — fetches `/api/models` and paints; returns
+ *  the endpoint's status so a caller folding it into `nextConnection` can do so like every other
+ *  view (`app.js`'s `tick()` shape). */
+export async function onTick(container, _bodies, _ctx) {
+  if (!container.isConnected) return undefined;
+  const res = await getJSON('/api/models');
+  if (!container.isConnected) return undefined;
+  const entries = res.body;
+  if (!entries || !Array.isArray(entries)) {
+    container.replaceChildren(el('div', 'empty', '(unavailable)'));
+  } else if (!entries.length) {
+    container.replaceChildren(el('div', 'empty', '(no models)'));
+  } else {
+    container.replaceChildren(buildTable(entries));
   }
-  tick();
+  return { '/api/models': res.status };
+}
+
+/** DES-206's uniform view contract — `vm`/`handlers` are unused; `onTick` owns the actual fetch and
+ *  paint, called once here for first paint since nothing else calls it yet. */
+export function render(container, _vm, _handlers) {
+  onTick(container, {}, {});
 }

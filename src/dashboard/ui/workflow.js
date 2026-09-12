@@ -8,8 +8,11 @@
 // diagram (`createObjectURL`/`revokeObjectURL`, memoized per (name,version)) is ported verbatim
 // from the pre-v27 inline script's `renderDiagram`/`hideDiagram` pair.
 //
-// Same self-rescheduling fetch+repaint caveat as `ui/run.js`: `app.js`'s own tick() does not yet
-// dispatch a body to this view — see that file's banner and the implementer's needs_clarification.
+// [v27c] `onTick(container, bodies, ctx)` (DES-206) replaces this view's own `setTimeout` loop:
+// `app.js`'s one timer fetches `endpointsFor('workflow', ctx)` (describe + /api/runs) and hands the
+// bodies here every ~3s; the selected run's own `/dag` + `/api/runs/:id` fetch is state-dependent
+// (which run is selected lives in THIS view, not in `ctx`), so it is made here via `getJSON` and its
+// statuses are returned for `app.js` to fold into the connection reducer.
 import { paintSwimlane, renderLegend, initZoomable, currentLang } from './run.js';
 import { endpointsFor, getJSON } from './poll.js';
 import { historyRow } from '../lib/runlist.js';
@@ -20,11 +23,6 @@ const COLUMNS = {
   zh: ['執行ID', '狀態', '版本', '觸發者', '開始時間', '耗時', '節點數', 'Tokens', '費用'],
   en: ['Run ID', 'Status', 'Version', 'Triggered by', 'Started', 'Duration', 'Agents', 'Tokens', 'Cost'],
 };
-
-function nameFromPath() {
-  const m = /^\/dashboard\/workflow\/([^/]+)\/?$/.exec(location.pathname);
-  return m ? decodeURIComponent(m[1]) : null;
-}
 
 /** Best-effort one-line label for a resolved trigger claim — the shape is a closed union the
  *  dashboard has no import path to at this layer (scheduler claim / webhook claim / a bare
@@ -63,13 +61,13 @@ function buildShell(container) {
   const h2 = document.createElement('h2');
   root.appendChild(h2);
   const versionTag = document.createElement('span');
-  versionTag.className = 'pill';
+  versionTag.className = 'tag';
   root.appendChild(versionTag);
   const execTag = document.createElement('span');
-  execTag.className = 'pill';
+  execTag.className = 'tag';
   root.appendChild(execTag);
   const desc = document.createElement('p');
-  desc.style.maxWidth = '720px';
+  desc.className = 'wf-desc'; // DES-209 STYLE_HOOKS — `max-width:720px` moves to the stylesheet.
   root.appendChild(desc);
 
   const triggers = document.createElement('div');
@@ -103,6 +101,7 @@ function buildShell(container) {
   root.appendChild(chips);
 
   const table = document.createElement('table');
+  table.className = 'table'; // DES-209 STYLE_HOOKS component layer.
   const thead = document.createElement('thead');
   const headRow = document.createElement('tr');
   const lang = currentLang();
@@ -159,7 +158,7 @@ function renderHeader(shell, describe, lang) {
   shell.triggers.replaceChildren();
   for (const tr of describe.triggers || []) {
     const tag = document.createElement('span');
-    tag.className = 'pill';
+    tag.className = 'tag tag-outline'; // DES-209 STYLE_HOOKS — the "TRIGGERS outline tags".
     tag.textContent = triggerLabel(tr);
     shell.triggers.appendChild(tag);
   }
@@ -171,11 +170,10 @@ function renderChipsAndTable(shell, runs, selectedRunId, lang, onPick) {
   for (const r of sorted.slice(0, 6)) {
     const chip = document.createElement('button');
     chip.type = 'button';
-    chip.className = 'pill';
-    if (r.runId === selectedRunId) chip.dataset.selected = '1';
+    chip.className = 'run-chip' + (r.runId === selectedRunId ? ' is-selected' : '');
     const dot = document.createElement('span');
     dot.textContent = '●';
-    dot.style.fontSize = '7px';
+    dot.className = 'status-dot'; // DES-209 STYLE_HOOKS — the 7px size moves to the stylesheet.
     chip.appendChild(dot);
     chip.appendChild(document.createTextNode(' ' + r.runId.slice(0, 8)));
     chip.addEventListener('click', () => onPick(r.runId));
@@ -186,13 +184,12 @@ function renderChipsAndTable(shell, runs, selectedRunId, lang, onPick) {
   const now = new Date().toISOString();
   for (const r of sorted) {
     const tr = document.createElement('tr');
-    if (r.runId === selectedRunId) tr.style.background = 'rgba(159,184,214,.07)';
+    if (r.runId === selectedRunId) tr.className = 'is-selected'; // DES-209: `tr.is-selected` in the stylesheet.
     for (const cell of historyRow(r, now, lang)) {
       const td = document.createElement('td');
       td.textContent = cell;
       tr.appendChild(td);
     }
-    tr.style.cursor = 'pointer';
     tr.addEventListener('click', () => onPick(r.runId));
     shell.tbody.appendChild(tr);
   }
@@ -202,107 +199,115 @@ function nameFilteredRuns(allRuns, name) {
   return (allRuns || []).filter((r) => r.name === name);
 }
 
-export function render(container, vm, handlers) {
-  const name = nameFromPath();
-  const lang = currentLang();
-  const shell = buildShell(container);
-  if (!name) return;
+const stateByContainer = new WeakMap();
 
-  let selectedRunId = null;
-  let diagramKey = null;
-  let diagramUrl = null;
+function hideDiagram(state) {
+  const shell = state.shell;
+  state.diagramKey = null;
+  shell.img.removeAttribute('src');
+  shell.diagramZoom.style.display = 'none';
+  shell.diagramFit.style.display = 'none';
+  if (state.diagramUrl) { URL.revokeObjectURL(state.diagramUrl); state.diagramUrl = null; }
+  shell.pre.style.display = 'none';
+  shell.note.style.display = 'none';
+}
 
-  function hideDiagram() {
-    diagramKey = null;
-    shell.img.removeAttribute('src');
-    shell.diagramZoom.style.display = 'none';
-    shell.diagramFit.style.display = 'none';
-    if (diagramUrl) { URL.revokeObjectURL(diagramUrl); diagramUrl = null; }
-    shell.pre.style.display = 'none';
-    shell.note.style.display = 'none';
-  }
-
-  async function loadDiagram(describe) {
-    if (!describe.mermaid) {
-      hideDiagram();
-      shell.pre.style.display = 'block';
-      shell.pre.textContent = describe.description || '';
-      shell.note.style.display = 'block';
-      shell.note.textContent = describe.mermaidNote || '';
-      return;
-    }
-    const key = describe.name + '@' + describe.version;
-    if (diagramKey === key) return; // fetched once per (name, version) — never once per tick.
-    diagramKey = key;
-    let res = null;
-    try {
-      res = await fetch('/api/workflows/' + encodeURIComponent(describe.name) + '/diagram.svg?version=' + encodeURIComponent(describe.version));
-    } catch {
-      res = null;
-    }
-    if (res && res.ok) {
-      const blob = await res.blob();
-      if (diagramUrl) URL.revokeObjectURL(diagramUrl);
-      diagramUrl = URL.createObjectURL(blob);
-      shell.img.src = diagramUrl;
-      shell.diagramZoom.style.display = 'block';
-      shell.diagramFit.style.display = 'inline-block';
-      shell.pre.style.display = 'none';
-      shell.note.style.display = 'none';
-      return;
-    }
-    shell.img.removeAttribute('src');
-    shell.diagramZoom.style.display = 'none';
-    shell.diagramFit.style.display = 'none';
+async function loadDiagram(state, describe, lang) {
+  const shell = state.shell;
+  if (!describe.mermaid) {
+    hideDiagram(state);
     shell.pre.style.display = 'block';
     shell.pre.textContent = describe.description || '';
     shell.note.style.display = 'block';
-    shell.note.textContent = t(lang, 'predictedLayoutUnavailable');
+    shell.note.textContent = describe.mermaidNote || '';
+    return;
   }
+  const key = describe.name + '@' + describe.version;
+  if (state.diagramKey === key) return; // fetched once per (name, version) — never once per tick.
+  state.diagramKey = key;
+  let res = null;
+  try {
+    res = await fetch('/api/workflows/' + encodeURIComponent(describe.name) + '/diagram.svg?version=' + encodeURIComponent(describe.version));
+  } catch {
+    res = null;
+  }
+  if (res && res.ok) {
+    const blob = await res.blob();
+    if (state.diagramUrl) URL.revokeObjectURL(state.diagramUrl);
+    state.diagramUrl = URL.createObjectURL(blob);
+    shell.img.src = state.diagramUrl;
+    shell.diagramZoom.style.display = 'block';
+    shell.diagramFit.style.display = 'inline-block';
+    shell.pre.style.display = 'none';
+    shell.note.style.display = 'none';
+    return;
+  }
+  shell.img.removeAttribute('src');
+  shell.diagramZoom.style.display = 'none';
+  shell.diagramFit.style.display = 'none';
+  shell.pre.style.display = 'block';
+  shell.pre.textContent = describe.description || '';
+  shell.note.style.display = 'block';
+  shell.note.textContent = t(lang, 'predictedLayoutUnavailable');
+}
 
-  async function paintSelected(runs, describe) {
-    if (runs.length === 0) {
-      const { payload, anyAgentsKey } = predictedPayload(describe);
-      paintSwimlane(shell.svgEl, payload, { lang });
-      renderLegend(shell.legend, payload, null, lang);
-      shell.predictedLabel.textContent = anyAgentsKey
-        ? t(lang, 'predictedLayout')
-        : t(lang, 'predictedLayout') + ' — ' + t(lang, 'predictedLayoutUnavailable');
-      return;
-    }
-    shell.predictedLabel.textContent = '';
-    if (!selectedRunId || !runs.some((r) => r.runId === selectedRunId)) {
-      const active = runs.find((r) => r.status === 'running' || r.status === 'queued');
-      selectedRunId = active ? active.runId : [...runs].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))[0].runId;
-    }
-    const [dagRes, viewRes] = await Promise.all([
-      getJSON('/api/runs/' + encodeURIComponent(selectedRunId) + '/dag'),
-      getJSON('/api/runs/' + encodeURIComponent(selectedRunId)),
-    ]);
-    const payload = dagRes.body || { cells: [], edges: [], warnings: [], lanes: [], current: null };
+/** Paints the selected (or predicted) figure; returns the state-dependent fetch statuses (the
+ *  selected run's own `/dag` + `/api/runs/:id`) for `onTick` to fold into the connection reducer —
+ *  `{}` for the no-runs/predicted branch, which makes no such fetch. */
+async function paintSelected(state, runs, describe, lang) {
+  const shell = state.shell;
+  if (runs.length === 0) {
+    const { payload, anyAgentsKey } = predictedPayload(describe);
     paintSwimlane(shell.svgEl, payload, { lang });
-    renderLegend(shell.legend, payload, viewRes.body, lang);
+    renderLegend(shell.legend, payload, null, lang);
+    shell.predictedLabel.textContent = anyAgentsKey
+      ? t(lang, 'predictedLayout')
+      : t(lang, 'predictedLayout') + ' — ' + t(lang, 'predictedLayoutUnavailable');
+    return {};
   }
+  shell.predictedLabel.textContent = '';
+  if (!state.selectedRunId || !runs.some((r) => r.runId === state.selectedRunId)) {
+    const active = runs.find((r) => r.status === 'running' || r.status === 'queued');
+    state.selectedRunId = active ? active.runId : [...runs].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))[0].runId;
+  }
+  const dagUrl = '/api/runs/' + encodeURIComponent(state.selectedRunId) + '/dag';
+  const viewUrl = '/api/runs/' + encodeURIComponent(state.selectedRunId);
+  const [dagRes, viewRes] = await Promise.all([getJSON(dagUrl), getJSON(viewUrl)]);
+  const payload = dagRes.body || { cells: [], edges: [], warnings: [], lanes: [], current: null };
+  paintSwimlane(shell.svgEl, payload, { lang });
+  renderLegend(shell.legend, payload, viewRes.body, lang);
+  return { [dagUrl]: dagRes.status, [viewUrl]: viewRes.status };
+}
 
-  async function tick() {
-    if (!shell.root.isConnected) return;
-    const [describeUrl, runsUrl] = endpointsFor('workflow', { name });
-    const [describeRes, runsRes] = await Promise.all([getJSON(describeUrl), getJSON(runsUrl)]);
-    if (!shell.root.isConnected) return;
-    const describe = describeRes.body;
-    if (!describe) { setTimeout(tick, 3000); return; }
-    const runs = nameFilteredRuns(runsRes.body, name);
-    renderHeader(shell, describe, lang);
-    function onPick(runId) {
-      selectedRunId = runId;
-      renderChipsAndTable(shell, runs, selectedRunId, lang, onPick);
-      paintSelected(runs, describe);
-    }
-    renderChipsAndTable(shell, runs, selectedRunId, lang, onPick);
-    await paintSelected(runs, describe);
-    await loadDiagram(describe);
-    if (!shell.root.isConnected) return;
-    setTimeout(tick, 3000);
+export function render(container, vm, handlers) {
+  const name = (vm && vm.name) || null;
+  const lang = currentLang();
+  const shell = buildShell(container);
+  if (!name) return;
+  stateByContainer.set(container, { shell, name, lang, selectedRunId: null, diagramKey: null, diagramUrl: null });
+}
+
+/** DES-206 [v27c] — `app.js`'s one timer calls this every ~3s with `endpointsFor('workflow', ctx)`'s
+ *  freshly-fetched bodies (describe + `/api/runs`); the selected run's own `/dag` + `/api/runs/:id`
+ *  fetch is made here (state-dependent — which run is selected lives in this view) and its statuses
+ *  are returned for the caller to fold in. */
+export async function onTick(container, bodies, ctx) {
+  const state = stateByContainer.get(container);
+  if (!state || !state.shell.root.isConnected) return {};
+  const lang = state.lang;
+  const [describeUrl, runsUrl] = endpointsFor('workflow', ctx);
+  const describe = bodies[describeUrl];
+  if (!describe) return {};
+  const runs = nameFilteredRuns(bodies[runsUrl], state.name);
+  renderHeader(state.shell, describe, lang);
+  function onPick(runId) {
+    state.selectedRunId = runId;
+    renderChipsAndTable(state.shell, runs, state.selectedRunId, lang, onPick);
+    paintSelected(state, runs, describe, lang);
   }
-  tick();
+  renderChipsAndTable(state.shell, runs, state.selectedRunId, lang, onPick);
+  const extra = await paintSelected(state, runs, describe, lang);
+  if (!state.shell.root.isConnected) return extra;
+  await loadDiagram(state, describe, lang);
+  return extra;
 }

@@ -22,7 +22,7 @@ import { PREF_KEYS, clampHue, prefsFromStorage } from '../lib/theme.js';
 import { updatePanelModel } from '../lib/status.js';
 import { nextConnection } from '../lib/connection.js';
 import { endpointsFor, getJSON } from './poll.js';
-import { render as renderHome } from './home.js';
+import { render as renderHome, onTick as onTickHome } from './home.js';
 
 const LABELS = {
   zh: {
@@ -245,30 +245,33 @@ function go(path) {
   mountRoute();
 }
 
-let currentView = null; // { name, ctx, container }
+let currentView = null; // { name, ctx, container, onTick }
 let viewGeneration = 0;
 let pendingTick = null;
 
+// DES-206 [v27c] — "one timer" completed: every mounted view supplies its own `onTick(container,
+// bodies, ctx)` (home.js/workflow.js/run.js so far; system.js/issues.js/models.js are TASK-212's
+// own re-run). This is the ONE poll loop for the whole app — it keeps EVERY fetched body (not just
+// a `primaryBody`), hands them to the mounted view, merges whatever additional (state-dependent)
+// fetch statuses the view's own `onTick` made, and only THEN reduces `nextConnection`.
 async function tick() {
   const view = currentView;
   if (!view) return;
   const urls = endpointsFor(view.name, view.ctx);
   const results = {};
-  let primaryBody = null;
+  const bodies = {};
   for (const url of urls) {
     const res = await getJSON(url);
     results[url] = res.status;
-    if (primaryBody === null) primaryBody = res.body;
+    bodies[url] = res.body;
   }
-  if (urls.length > 0) {
+  if (view.onTick && view.container) {
+    const extra = await view.onTick(view.container, bodies, view.ctx);
+    if (extra) Object.assign(results, extra);
+  }
+  if (Object.keys(results).length > 0) {
     connectionState = nextConnection(connectionState, { results });
     updateConnectionTag();
-  }
-  if (view.name === 'home' && primaryBody && view.container) {
-    const cards = [...(primaryBody.running || []), ...(primaryBody.registered || []), ...(primaryBody.other || [])];
-    renderHome(view.container, { cards, lang: prefs.lang }, {
-      onSelect: (card) => go(`/dashboard/workflow/${encodeURIComponent(card.name)}`),
-    });
   }
 }
 
@@ -288,17 +291,18 @@ function scheduleTick() {
 async function mountLazy(modulePath, viewName, ctx) {
   const container = document.getElementById('app-view');
   container.replaceChildren();
+  const handlers = {};
   try {
     const mod = await import(modulePath);
-    currentView = { name: viewName, ctx, container };
-    mod.render(container, {}, {});
+    currentView = { name: viewName, ctx, container, onTick: mod.onTick };
+    mod.render(container, ctx, handlers);
   } catch {
     // The sibling module has not landed yet in this Gate-6 dispatch, or genuinely failed to load —
     // degrade visibly (D5: `textContent` only) rather than a blank page.
     const p = document.createElement('p');
     p.textContent = `${viewName} view unavailable`;
     container.appendChild(p);
-    currentView = { name: viewName, ctx, container: null };
+    currentView = { name: viewName, ctx, container: null, onTick: null };
   }
   scheduleTick();
 }
@@ -308,10 +312,9 @@ function mountHomeRoot() {
   container.replaceChildren();
   const { wrapper, workflowsPanel } = buildTabPanels();
   container.appendChild(wrapper);
-  currentView = { name: 'home', ctx: {}, container: workflowsPanel };
-  renderHome(workflowsPanel, { cards: [], lang: prefs.lang }, {
-    onSelect: (card) => go(`/dashboard/workflow/${encodeURIComponent(card.name)}`),
-  });
+  const handlers = { onSelect: (card) => go(`/dashboard/workflow/${encodeURIComponent(card.name)}`) };
+  currentView = { name: 'home', ctx: {}, container: workflowsPanel, onTick: onTickHome };
+  renderHome(workflowsPanel, { cards: [], lang: prefs.lang }, handlers);
   activateTab(pendingTab || 'workflows');
   pendingTab = null;
   scheduleTick(); // fires the first tick immediately — the initial data-island render above is

@@ -1,10 +1,11 @@
 // v27 (DES-200/201, ARCH-122, TASK-205, REQ-131/REQ-070): the dashboard becomes a SHELL — markup +
-// tokens CSS + a JSON data island + one classic script + one module script. ZERO inline executable
+// a <link> to the tokens stylesheet + a JSON data island + one classic script + one module script.
+// [v27c] The tokens CSS itself is served ONLY at /static/dashboard/dashboard.css — this file no
+// longer inlines a copy (DES-200's one-delivery-path rule). ZERO inline executable
 // JS (ARCH-122's boundary; makes ARCH-130's `script-src 'self'` CSP achievable). All browser
 // BEHAVIOUR (fetching, DOM rendering, zoom/pan, theme/lang) now lives in `src/dashboard/{lib,ui}/*.js`
 // (TASK-206..212), served byte-for-byte with no build step (ADR-049) — this file's ONLY job is to
 // assemble the static bytes; it decides nothing.
-import { readFileSync } from 'node:fs';
 import type { UpdateOutcome } from './update-types.js';
 import { resolveEngineVersion } from './github/issue-reporter.js';
 
@@ -60,12 +61,12 @@ export function morandiFrameHue(frame: string): string {
 // GET /api/version already serves, DES-061/TASK-064) — the data island's ONE always-present field.
 const ENGINE_VERSION = resolveEngineVersion();
 
-// DES-201: the tokens CSS (dark/light bg, the OKLCH accent ramp over --rwe-hue, the ported
-// component rules) has ONE source — this file on disk, served externally at
-// /static/dashboard/dashboard.css (DES-199) AND read once here to inline into the shell's <style>
-// so first paint is themed correctly before the external stylesheet round-trips (both carry the
-// SAME bytes; ARCH-130's `style-src 'self' 'unsafe-inline'` CSP permits the inline copy).
-const DASHBOARD_CSS = readFileSync(new URL('./dashboard/dashboard.css', import.meta.url), 'utf8');
+// DES-201/DES-200 [v27c]: the tokens CSS (dark/light bg, the OKLCH accent ramp over --rwe-hue, the
+// ported component rules) has ONE delivery path — the served `/static/dashboard/dashboard.css`
+// (DES-199) linked below. A `<link rel="stylesheet">` in `<head>` is render-blocking by spec, so
+// there is no unstyled-paint window an inlined copy would prevent; inlining it would only ship the
+// stylesheet twice per navigation with two paths that can silently disagree (INV-V27-3: every byte
+// comes from ARCH-123's map — the earlier `readFileSync`+`<style>` copy here violated that).
 
 interface ShellInit {
   version: string;
@@ -85,7 +86,6 @@ function shell(init: ShellInit): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Remote Workflow Engine — Dashboard</title>
 <link rel="stylesheet" href="/static/dashboard/dashboard.css">
-<style>${DASHBOARD_CSS}</style>
 <script src="/static/dashboard/ui/theme-init.js"></script>
 </head>
 <body>
@@ -170,5 +170,6 @@ export function buildDashboardHtml(init?: { lastUpdate?: UpdateOutcome | null; i
 // Static browser dashboard shell (DES-018/REQ-008, rebuilt v27 per DES-200/ARCH-122): the SAME
 // single page served at GET /dashboard for every /dashboard/<sub-path> (server.ts's SPA catch-all);
 // client-side routing reads location.pathname. All behaviour lives in the external ui/*.js + lib/*.js
-// modules (TASK-206..212) that query these containers by id — this export holds markup and CSS only.
+// modules (TASK-206..212) that query these containers by id — this export holds markup only
+// [v27c]; the tokens CSS is a separate served file linked via <link>, never inlined here.
 export const DASHBOARD_HTML = buildDashboardHtml();

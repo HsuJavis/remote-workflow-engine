@@ -110,7 +110,8 @@ describe('the agent slide-in panel, real Chromium (VAL-201, REQ-135/136)', () =>
       const page = await browser.newPage();
       await page.goto(`${baseUrl}/dashboard/${runId}`, { waitUntil: 'networkidle0', timeout: 10000 });
       await page.waitForSelector('#dag-graph', { timeout: 3000 });
-      const node = await page.$('#dag-graph [data-node-cell]');
+      const node = await page.$('#dag-zoom [data-node-cell]');
+      expect(node).not.toBeNull();
       if (node) await node.click();
       await page.waitForSelector('[data-agent-panel]', { timeout: 3000 });
       const statCardCount = await page.$$eval('[data-agent-panel] [data-stat-card]', (els) => els.length);
@@ -127,7 +128,8 @@ describe('the agent slide-in panel, real Chromium (VAL-201, REQ-135/136)', () =>
       const page = await browser.newPage();
       await page.goto(`${baseUrl}/dashboard/${runId}`, { waitUntil: 'networkidle0', timeout: 10000 });
       await page.waitForSelector('#dag-graph', { timeout: 3000 });
-      const node = await page.$('#dag-graph [data-node-cell]');
+      const node = await page.$('#dag-zoom [data-node-cell]');
+      expect(node).not.toBeNull();
       if (node) await node.click();
       await page.waitForSelector('[data-agent-panel] pre', { timeout: 3000 });
       const promptText = await page.$eval('[data-agent-panel] pre', (el) => el.textContent ?? '');
@@ -145,7 +147,8 @@ describe('the agent slide-in panel, real Chromium (VAL-201, REQ-135/136)', () =>
       const page = await browser.newPage();
       await page.goto(`${baseUrl}/dashboard/${runId}`, { waitUntil: 'networkidle0', timeout: 10000 });
       await page.waitForSelector('#dag-graph', { timeout: 3000 });
-      const node = await page.$('#dag-graph [data-node-cell]');
+      const node = await page.$('#dag-zoom [data-node-cell]');
+      expect(node).not.toBeNull();
       if (node) await node.click();
       await page.waitForSelector('[data-agent-panel]', { timeout: 3000 });
       await page.keyboard.press('Escape');

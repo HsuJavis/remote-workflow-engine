@@ -65,13 +65,30 @@ function buildStatCard(label, value) {
   return card;
 }
 
+// DES-209's REQ-135 row declares `.event-kind{.is-tool,.is-message,.is-log}` — three CSS
+// categories for the wire's six `kind` values (`types.ts:559`); tool_call/tool_result share the
+// tool look, message keeps its own, and the rest (usage/harness/refused) read as log lines. No
+// design-doc oracle names this grouping; it is this task's own resolved-and-surfaced decision.
+function eventKindCategory(kind) {
+  if (kind === 'tool_call' || kind === 'tool_result') return 'tool';
+  if (kind === 'message') return 'message';
+  return 'log';
+}
+
+function buildEventKindTag(kind) {
+  const span = document.createElement('span');
+  span.className = `event-kind is-${eventKindCategory(kind)}`;
+  span.textContent = kind;
+  return span;
+}
+
 function buildEventRow(ev, lang) {
   const row = document.createElement('div');
   row.className = 'event-row';
   const clock = document.createElement('span');
   clock.textContent = fmtClock(ev.ts);
   row.appendChild(clock);
-  row.appendChild(buildTag(ev.kind));
+  row.appendChild(buildEventKindTag(ev.kind));
   const raw = typeof ev.data === 'string' ? ev.data : JSON.stringify(ev.data ?? {});
   const { shown, clipped } = clipText(raw, EVENT_CLIP);
   const content = document.createElement('code');
@@ -101,13 +118,12 @@ export function render(container, vm, handlers) {
 
   const backdrop = document.createElement('div');
   backdrop.setAttribute('data-agent-panel-backdrop', '');
-  backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(8,12,9,.5);z-index:40;';
+  backdrop.className = 'agent-backdrop';
 
   const panel = document.createElement('aside');
   panel.setAttribute('data-agent-panel', '');
   const side = vm.side === 'left' ? 'left' : 'right';
-  panel.dataset.side = side;
-  panel.style.cssText = `position:fixed;top:0;bottom:0;${side}:0;width:420px;max-width:90vw;overflow-y:auto;z-index:41;`;
+  panel.className = side === 'left' ? 'agent-panel from-left' : 'agent-panel';
 
   function close() {
     backdrop.remove();
@@ -124,6 +140,7 @@ export function render(container, vm, handlers) {
   const header = document.createElement('header');
   const closeBtn = document.createElement('button');
   closeBtn.type = 'button';
+  closeBtn.className = 'btn-icon';
   closeBtn.setAttribute('data-panel-close', '');
   closeBtn.textContent = '×';
   closeBtn.addEventListener('click', close);
@@ -148,6 +165,7 @@ export function render(container, vm, handlers) {
   panel.appendChild(statsWrap);
 
   const promptPre = document.createElement('pre');
+  promptPre.className = 'prompt-pre';
   promptPre.setAttribute('data-agent-prompt', '');
   promptPre.textContent = vm.prompt || '';
   panel.appendChild(promptPre);
@@ -176,8 +194,8 @@ export function render(container, vm, handlers) {
 
   if (vm.detail) {
     const detailBlock = document.createElement('div');
+    detailBlock.className = 'detail-block';
     detailBlock.setAttribute('data-agent-detail', '');
-    detailBlock.style.cssText = 'background:oklch(0.3 0.12 25);color:#fff;padding:10px;border-radius:6px;margin:10px 0;';
     detailBlock.textContent = vm.detail;
     panel.appendChild(detailBlock);
   }

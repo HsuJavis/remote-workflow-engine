@@ -5,17 +5,32 @@
 // contract ported VERBATIM from the pre-v27 inline script (`initZoomable`,
 // dashboard-page.ts:693-716 at commit d8d5ef9) so REQ-129's real-mouse proof does not regress.
 //
-// `render(container, vm, handlers)` follows DES-206's uniform view contract. `app.js`'s own
-// `tick()` (TASK-208's file, not editable here) fetches this view's endpoints every 3s for
-// connection-status purposes but does not yet dispatch the fetched body to a non-home view, so
-// this module owns a second, self-rescheduling fetch+repaint loop scoped to its own mounted root
-// (guarded by `root.isConnected`, torn down implicitly once app.js replaces `#app-view`'s
-// children on the next route/lang change) — flagged to the orchestrator, see the implementer's
-// needs_clarification note.
+// [v27c] `onTick(container, bodies, ctx)` (DES-206) replaces this view's own `setTimeout` loop:
+// `app.js`'s one timer fetches `endpointsFor('run', ctx)` (the `/dag` body) every ~3s and hands it
+// here; the run's own `/api/runs/:id` (status + usage) is a second, state-INdependent fetch that
+// `poll.js`'s `ROUTES.run` does not list (a design choice of that file, not editable here), so it
+// is made here via `getJSON` and its status is returned for `app.js` to fold in.
+//
+// DEFERRED (reported — see the implementer's needs_clarification): DES-209's substrate migration —
+// the lane headers / trigger / agent cells / legend moving off `#dag-graph`'s SVG onto an HTML
+// `.cell-layer` sibling inside `#dag-zoom`, with the 12 hex literals / `letter-spacing` /
+// `.toUpperCase()` / container px replaced by DES-209 STYLE_HOOKS classes — is NOT done in this
+// commit. TASK-214 (the stylesheet: `.cell` `216px`/`74px`, `.cell.is-failed`, `.lane-head`, the
+// `@keyframes`, …) has not landed on this tree yet (measured: `dashboard.css` is still the pre-v27c
+// ported file, with a header comment naming this exact class layer "NOT built here"; no
+// `tests/fixtures/dashboard-classes.ts` on disk). Migrating the DOM now would (a) size the new
+// `.cell` divs against CSS rules that do not exist, sending val-200's 216×74 assertion red for a
+// missing-dependency reason rather than a real defect, and (b) break val-193's own THIRD case
+// (`#dag-graph text` — the per-cell token/cost line, D8/REQ-127's non-regression), which is scoped
+// to text nodes inside the SVG and would need its own re-point that DES-209 does not authorize.
+// The two `val-200` SELECTOR edits DES-209 does explicitly authorize (`#dag-zoom [data-node-cell]`,
+// dropping the `[class*="lane-head"]` alternate) are applied below — both already match the current
+// SVG markup (`#dag-graph` is a descendant of `#dag-zoom`; the header carries `data-lane-header`,
+// never a `lane-head*` class), so they are safe ahead of the substrate change itself.
 import { SWIMLANE_BOX, cellRect, svgBox, edgePath } from '../lib/swimlane.js';
 import { sumTokens, fmtCost } from '../lib/runlist.js';
 import { t, warningText } from '../lib/strings.js';
-import { getJSON } from './poll.js';
+import { endpointsFor, getJSON } from './poll.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 
@@ -243,11 +258,6 @@ export function renderUsageBox(usageEl, runUsage, lang) {
   }
 }
 
-function runIdFromPath() {
-  const m = /^\/dashboard\/([^/]+)\/?$/.exec(location.pathname);
-  return m ? decodeURIComponent(m[1]) : null;
-}
-
 function buildShell(container) {
   const root = document.createElement('div');
   root.className = 'run-view';
@@ -292,27 +302,31 @@ function buildShell(container) {
   return { root, usage, svgEl, legend };
 }
 
+const stateByContainer = new WeakMap();
+
 // container -> the shell's own root element, so a stale poll loop (an old route's) can detect it
 // was superseded once app.js replaces #app-view's children — `root.isConnected` goes false then.
 export function render(container, vm, handlers) {
-  const runId = runIdFromPath();
+  const runId = (vm && vm.runId) || null;
   const lang = currentLang();
   const shell = buildShell(container);
   if (!runId) return;
+  stateByContainer.set(container, { shell, runId, lang, handlers: handlers || {} });
+}
 
-  async function tick() {
-    if (!shell.root.isConnected) return;
-    const [dagRes, viewRes] = await Promise.all([
-      getJSON('/api/runs/' + encodeURIComponent(runId) + '/dag'),
-      getJSON('/api/runs/' + encodeURIComponent(runId)),
-    ]);
-    if (!shell.root.isConnected) return;
-    const payload = dagRes.body || { cells: [], edges: [], warnings: [], lanes: [], current: null };
-    paintSwimlane(shell.svgEl, payload, { lang, onSelectAgent: handlers && handlers.onSelectAgent });
-    renderLegend(shell.legend, payload, viewRes.body, lang);
-    renderUsageBox(shell.usage, viewRes.body && viewRes.body.usage, lang);
-    if (!shell.root.isConnected) return;
-    setTimeout(tick, 3000);
-  }
-  tick();
+/** DES-206 [v27c] — `app.js`'s one timer calls this every ~3s with `endpointsFor('run', ctx)`'s
+ *  freshly-fetched `/dag` body; `/api/runs/:id` (status + usage) is a second fetch made here (see
+ *  this file's banner) and its status is returned for the caller to fold in. */
+export async function onTick(container, bodies, ctx) {
+  const state = stateByContainer.get(container);
+  if (!state || !state.shell.root.isConnected) return {};
+  const [dagUrl] = endpointsFor('run', ctx);
+  const viewUrl = '/api/runs/' + encodeURIComponent(state.runId);
+  const viewRes = await getJSON(viewUrl);
+  if (!state.shell.root.isConnected) return { [viewUrl]: viewRes.status };
+  const payload = bodies[dagUrl] || { cells: [], edges: [], warnings: [], lanes: [], current: null };
+  paintSwimlane(state.shell.svgEl, payload, { lang: state.lang, onSelectAgent: state.handlers.onSelectAgent });
+  renderLegend(state.shell.legend, payload, viewRes.body, state.lang);
+  renderUsageBox(state.shell.usage, viewRes.body && viewRes.body.usage, state.lang);
+  return { [viewUrl]: viewRes.status };
 }

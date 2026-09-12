@@ -1,485 +1,553 @@
 ---
 stage: design
 lens: quality-dimensions
-iteration: v27 — Round v27b delta (scoped run: gates architecture+design+tests, impactIds REQ-133 / REQ-134 / REQ-140)
-round: 1 (independent proposal — design altitude for the v27b amendment pass)
-builds_on: .panel/architecture/quality-dimensions.r2.md (my converged architecture stance for this delta; everything it settled is CITED here, not re-argued). The Sprint A design r1 this file overwrites stands unchanged for the rest of the closure at `git show 07266be:.sdlc/features/001-remote-workflow-engine/.panel/design/quality-dimensions.r1.md` — except its C-4, which is withdrawn below by its author.
-verified_this_round (file:line, all re-read at the working tree): src/server.ts :331-334, :350, :402, :490-552 (resolve chain :497-508, `if (!authEnabled)` :520, catch :540-542, layoutGraph :544, payload :546-551), :563, :582-585, :819, :1064-1071, :440; src/run-manager.ts :893-909; src/types.ts :6-9 (StartedBy), :345, :351, :363; src/run-view.ts :11-14; src/mcp-facade.ts :590; src/workflow-catalog.ts :228-231 (workflow_versions.createdAt), :583, :604-626 (version = v<max+1> over the name's OWN rows), :709-715; src/dashboard.ts :325-345, :390-445; src/dashboard-page.ts :601-607; tests/integration/dag-masking-auth.test.ts (whole); tests/unit/dashboard-derive-lanes.test.ts (whole); tests/integration/dashboard-http.test.ts :139-152, :205-222, :222-276; tests/integration/dashboard-disclosure.test.ts :1-50; tests/fixtures/dashboard-wire.ts :71-113; tests/helpers/workflow-fixtures.ts :133-143, :286-310; 01-requirements.md :1655-1690, :1730-1770, :1857-1866, :1070; 02-architecture.md ARCH-125 :3359, ARCH-126 :3370, ARCH-130 :3407, ARCH-131 :3417, ADR-051 :3441, ADR-054 :3462, ADR-055 :3470, INV-V27-9 :3657, Decision rationale v27b :3675-3763; 04-design.md DES-196 :6745, DES-197 :6753, DES-198 :6761, DES-201 :6785, DES-206 :6825, real-tier table :6849-6866, mock policy :6867-6871, Decision rationale v27 point 11; 03-tasks.md TASK-197/201/202/203/206/209/210 :1690-1780; 05-tests.md UT-238 :11772, UT-244 :11887, IT-168 :11797, IT-169 :11812, IT-092 :6324, VAL-199 :12004, VAL-204 :12067; README.md :312-313, :368-375
+iteration: v27 — Sprint A closure RE-OPENED at the design gate (invocation `gates:[design,impl,verify,validation,review]`, journal 2026-09-12 「Gate 6 partial」): the one item routed back is the unowned `dashboard.css`
+round: 1 (independent proposal)
+closure: REQ-131..136, REQ-140, REQ-141 (unchanged); REQ-137/138/139/142/143 stay out and are only named where an attachment point is decided here
+builds_on: my Sprint A design r1 (`git show 07266be:.sdlc/features/001-remote-workflow-engine/.panel/design/quality-dimensions.r1.md`) and the v27b delta r1/r2 (`git show c7447d0:…/.panel/design/quality-dimensions.r{1,2}.md`) — everything those settled and 04-design.md's two rationales adopted (the CSS-native ramp, `REQUIRED ⊆ keys ⊆ ALLOWED`, `stripFirstSegment` fail-closed, the settle-then-reschedule timer, `warningText`, the four deletions) is CITED, not re-argued. This file overwrites the v27b delta r1; that file stays readable at the commit above.
+what_changed_since: Gate 6 ran (commit `f86ea25` + repair `8b07ed7`/`7737ce1`); the client tree EXISTS on disk now (23 files under `src/dashboard/`), so this round measures the implementation instead of predicting it.
+verified_this_round (file:line, all re-read at the working tree, HEAD 4e7412c): src/dashboard/dashboard.css :1-7 (served AND inlined, "one source, two destinations"), :13-51 (tokens), :56-60 (@font-face), :62-67 (the implementer's own "NOT built here: swimlane/agent-panel/ported-tab component CSS … no other owner" note), :68-126 (the pre-v27 port; `.st-failed{color:#B0776E}` :79); 44 class selectors total (measured); src/dashboard-page.ts :65-68 (`readFileSync` of the css at module load), :87-88 (`<link>` AND `<style>${DASHBOARD_CSS}`), :100-146 (shell markup classes: back cards fit-btn issue-detail mdl pill zoomable — all styled); src/dashboard/ui/run.js :1-15 (header: "this module owns a second, self-rescheduling fetch+repaint loop … flagged to the orchestrator"), :85-93 (1 svg unit === 1 CSS px; `viewBox`, `width=100%`, `preserveAspectRatio`), :89 (wrapper sized in px from `svgBox`), :106-112 (hairline `stroke #34363c`), :114-125 (lane head `font-size 13` / `font-weight 600` / `style="letter-spacing:.04em"` / `fill #9fb8d6|#8e97a3` / `.toUpperCase()` in JS), :132-141 (edge `stroke-width 1.2`, `#5b6068|#8e97a3`, `stroke-dasharray 4 4`), :146-153 (trigger rect), :157-167 (agent `<rect>`: `STATE_FILL`, `FAILED_COLOR`, `#34363c`, `#4a4d55`, `opacity .65`, `rect.style.cursor`), :171-174 (dot `r=4`), :178-183 (label `13.5`/`600`/`#e7e9ec`), :187-193 (usage `10.5`/`#8e97a3`), :217 (`summary.style.float`), :260-262 / :279 (container `420px`/margin/minHeight in JS), :281 (`svgEl.id = 'dag-graph'`), :297 (`render`), :304-315 (the view's own `getJSON` ×2 + `setTimeout(tick, 3000)`); 12 hex literals in run.js, 1 in agent-panel.js (measured); src/dashboard/ui/agent-panel.js :104 (backdrop `cssText` with `rgba(8,12,9,.5)`), :110 (panel `cssText`, `width:420px`), :180 (detail block `cssText` with `oklch(0.3 0.12 25)`), :207-209 (`openAgentPanel`, `?limit=500`); src/dashboard/ui/workflow.js :11-14 (same own-loop caveat), :72 (`desc.style.maxWidth = '720px'`), :84-89 (container px in JS), :178 (`dot.style.fontSize = '7px'`), :189 (selected row `rgba(159,184,214,.07)` — a LITERAL, not the accent), :195, :205 (`render`), :211/:274-280 (`selectedRunId` is view-local; the DAG + detail of the selected run are fetched by the view), :293/:305 (own `setTimeout`); src/dashboard/ui/home.js :66 (concatenated modifiers `'card' + ' running'|' other'`), :70-173 (class names set), 0 inline styles; src/dashboard/ui/app.js :23-24, :252-272 (`tick()` fetches `endpointsFor(view)`, keeps ONLY `primaryBody`, renders it ONLY for `home`, discards the rest), :280-282 (the one settle-then-reschedule timer), :294 (`mod.render(container, {}, {})` — an EMPTY vm), :130-132 (tab modules mounted once with `{}`); src/dashboard/ui/{system,issues,models}.js :82/:102/:65 (three more own `setTimeout(tick, 3000)` loops) — SIX timers in `ui/` (measured: `grep -n setTimeout src/dashboard/ui/*.js`); src/dashboard/ui/poll.js :15-26 (`ROUTES`: workflow → describe + `/api/runs`; run → `/dag` only), :32-35; tests/acceptance/val-198-shell-and-home.test.ts :82/:99/:113 (the ONLY three `getComputedStyle` reads in the acceptance tier — all three read a token on `documentElement`), val-200-swimlane.test.ts :87/:101/:109 (lane header existence + one 216×74 box; nothing else), val-199/val-201/val-202 (0 computed-style reads — measured); tests/unit/dashboard-page-source.test.ts :23/:35/:72-74/:78 (five CSS assertions whose SUBJECT is `DASHBOARD_HTML` — the reason the inline copy exists); tests/helpers/client-corpus.ts :18 (`.js` only), :33 (`clientFile(rel)`); tests/unit/dashboard-no-external-host.test.ts :27 (walks `.css` + `.js` — DES-191 landed); 03-tasks.md :1734-1741 (TASK-205: files `dashboard-page.ts` + `dashboard.css`; DoD = tokens + C1 pins ONLY), :1752-1759 (TASK-207), :1779-1786 (TASK-210: pixel DoD, no `.css` file), :1788-1795 (TASK-211), :1797-1804 (TASK-212), :1641-1647 (ordering rule 5); 04-design.md :6788-6794 (DES-200: `<link rel="stylesheet">`), :6836-6842 (DES-206: `render(container, vm, handlers)`, "app.js … owns ONE timer", VMs in / DOM out), :6852-6858 (DES-208: STAYS pins "still assertable against `DASHBOARD_HTML` or against `dashboard.css` bytes"); 02-architecture.md :3336 (ARCH-122 api: the `rwePulse/rweSweep/rweGlow/rweRing` keyframes and the `.card/.t/.tag/.btn` component classes live in the shell CSS), :3364 (ARCH-125 api: swimlane "built with `createElementNS` + `textContent` inside `#dag-graph`"), :3461 (ADR-053: "a table-driven `getComputedStyle` check … one row per delivery-README spec line"), :2927-2933 (ADR-044); 01-requirements.md :1613-1620 (the handoff: project `38fc8181-…`, `design_handoff_workflow_dashboard/{README.md, Workflow Dashboard.dc.html, rwe-data.js}` — NOT on disk in this checkout, `find` measured), :1665-1669 (C4), :1716-1736 (REQ-131), :1738-1754 (REQ-132), :1756-1772 (REQ-133), :1774-1797 (REQ-134 — node rows ①②③ at :1784-1786, running/failed/queued at :1787-1789), :1799-1817 (REQ-135); journal.md :3819-3827 (the routing sentence).
 ---
-# Quality-dimensions — v27b DESIGN r1: one fixture locks the warning vocabulary, one cohort transition is written down, one of my own rows is withdrawn
+# Quality-dimensions — v27 DESIGN r1 (closure re-opened): the unowned stylesheet is a CLASS CONTRACT nobody wrote, the 99% oracle is a table Gate 5 never built, and the "one timer" is six
 
 ## summary
 
-**What this stage is.** The dispatch text says 03-tasks.md does not exist; it does (TASK-196..213), and so does
-04-design.md (DES-191..208). The design half of the v27b delta is therefore an **amendment pass over rows that
-already exist** — DES-196, DES-197, DES-198, DES-206 (and one line of DES-201), TASK-201/202/203/206/210 `dod:`
-lines, TASK-197's fixture, UT-238, IT-168, IT-169, IT-092, VAL-199, VAL-204 — exactly the list the architect
-left at the end of `Decision rationale — v27b` (02-architecture.md:3675). Zero new DES ids, zero new modules,
-zero new wire fields, zero `owner_decision`s: the owner already ruled (01-requirements.md:1655-1690).
+**The answer to the question the gate asked, first.** `dashboard.css` gets ONE owner — a new task (call it
+TASK-214) whose deliverable is the whole component + view stylesheet to the REQ-131..135 constants, ordered
+BEFORE val-198..201 are judged — and TASK-207/210/211/212 keep their pixel DoDs but gain one sentence each:
+*this task adds no `.css`; the rules it needs are TASK-214's*. That is a TASK/DES repair, not an ARCH change:
+ARCH-122's `api:` line already puts the four keyframes and the `.card/.tag/.btn` component classes in the shell
+CSS (`02-architecture.md:3336`); TASK-205 simply scoped itself to "tokens + the pre-v27 port"
+(`03-tasks.md:1734-1741`), and the implementer said so in the file (`dashboard.css:62-67`). Measured size of
+the hole: **29 of the 40 class names `ui/*.js` sets have no rule at all** (`card-grid card-section event-list
+event-row home-search home-toolbar kicker meta run-view rwe-connection rwe-hue-slider rwe-nav rwe-tabs
+segment-tabs stat-cards stat-label stat-value tag tag-columns workflow-view …`), and my extractor UNDER-counts
+— it misses `home.js:66`'s concatenated modifiers and every SVG attribute in `run.js`.
 
-**What the architecture settled and this proposal does not reopen** (cite, don't re-litigate): delete the axis
-rather than default it (`if (!authEnabled)`, `McpFacadeDeps.maskPredictedOverlay`, `deriveLanes`'s `masked`,
-`handleDashboardRequest`'s `authEnabled` + `!!authCfg`); `TOKEN: detail` warnings pushed at the route, never in
-`layoutGraph`; the observed-wins join rule with NO title-conflict detector; the version resolution reading
-`legacySubstitution.resolved`; parity in EXCLUSION form plus one positive anchor (INV-V27-9); the key-set budget
-rule; the sweep boundary; a bounded pre-approved memo after a measured p95.
+**But "assign the CSS" is not enough, for three reasons this round measured rather than predicted:**
 
-**What is left for the design altitude — my contribution, one item per dimension:**
+1. **The design values are not waiting in a stylesheet to be written; they are already in JS, as the wrong
+   values.** `run.js` paints the swimlane with **12 hex literals as SVG attributes** — dark-theme hairlines
+   (`#34363c`), the "accent" lane header as the OLD Morandi link colour (`#9fb8d6`), edges, fills, dots — plus
+   font sizes and `letter-spacing` as attributes; `agent-panel.js` styles the backdrop, the panel and the red
+   detail block through `cssText`; `workflow.js` hard-codes `maxWidth = '720px'`, a 7px dot and the selected
+   row as `rgba(159,184,214,.07)` (a literal — REQ-133 says 7% *accent*). Consequences: the run view does
+   not follow the light theme or the hue slider at all, and **VAL-198 cannot see it** — its three
+   `getComputedStyle` reads are all tokens on `documentElement`. A CSS task that only writes rules leaves
+   every one of those values where the stylesheet cannot reach them. The task must also RELOCATE them
+   (§2 R-3), and the design must say what may stay in `ui/` (`display`, the zoom `transform`, `--rwe-hue`,
+   the wrapper's px size from `svgBox`) — which is a one-line allowlist, not a style guide.
+2. **REQ-134's node cannot be drawn on the substrate `run.js` chose.** Row ① wants 溢出省略 (an ellipsis —
+   SVG `<text>` has no `text-overflow`), row ② wants a `.tag-neutral` *component* inside the node (an HTML
+   element cannot live inside a `<rect>`), the running node wants `--shadow-md` (no `box-shadow` on SVG
+   elements). So a CSS author handed the painter as written cannot deliver REQ-134's node against it. The
+   design must decide the substrate first: **HTML node layer positioned by the SAME `cellRect` over the SVG
+   edge layer, both children of `#dag-zoom`** (INV-V27-6 and ADR-044's "client-constructed DOM + `textContent`"
+   both survive; `#dag-graph` stays the SVG and keeps its C2/UT-253 pins), with `foreignObject` as the recorded
+   runner-up (§2 R-4). Left undecided, the CSS implementer invents it.
+3. **ADR-053's oracle for 「99% 相似」 does not exist.** The ADR promises "a table-driven `getComputedStyle`
+   check, one row per delivery-README spec line"; Gate 5 wrote three token reads (val-198) and one 216×74 box
+   (val-200). Nothing on disk can fail when a lane header is 12px, an edge is 1px, a running node has no
+   `rweGlow`, or the swimlane stays dark on the light theme. This is the observability seam for the owner's
+   first-ranked success criterion, and it is missing — not as new scope, as the row the ADR already named
+   (§1 O-1). The rows must be RELATIONAL (element ↔ token on the same page, both themes, after a hue move),
+   not literal `oklch(…)` strings.
 
-1. **Observability — the warning vocabulary needs a LOCK, and the only legal place for it is the fixture.**
-   Under the v27 mock policy a `.js` client test may import only `src/dashboard/{lib,ui}/*.js` plus the `.ts`
-   fixture, and a `.test.ts` cannot import a `.js` client module (TS7016, ADR-049). So "the route emits this
-   prefix" and "the client maps this prefix" share exactly one surface: `tests/fixtures/dashboard-wire.ts`.
-   The DAG literal must carry example warnings (one FALLBACK, one UNAVAILABLE, one existing `layoutGraph`
-   prose line) that IT-169 asserts as prefixes on the wire and UT-244 maps through the string table. And the
-   `detail` grammar has to be fixed NOW — space-separated `key=value`, a closed reason enum — or `ui/run.js`
-   cannot extract `resolved` for 「預測結構來自替代版本 vN」 (§1 O-1, O-2).
-2. **Replaceability — withdraw C-4.** 04-design.md's `Decision rationale — v27` point 11 credits this lens for
-   the fail-closed `maskPredictedOverlay` dep. It is withdrawn by its author: after the ruling its fail-closed
-   default fails closed to the behaviour the owner refused, silently and only under auth. DES-197's UT line
-   ("a facade constructed with no `maskPredictedOverlay` omits `agents`") is DELETED, not amended (§2 R-1).
-3. **Consumability — the FALLBACK cohort has a transition the contract must state.** `legacySubstitution` is
-   written only on RESUME (`run-manager.ts:903-909`), so a run whose pin was purged carries the
-   `PREDICTED_FROM_FALLBACK_VERSION` warning before a resume and none after (the route's arm (i) then reads
-   the recorded `resolved` and resolves cleanly). That is what makes "the DAG warning is the authority for
-   this read" load-bearing rather than decorative — and it is why no test may assert the warning persists
-   (§3 C-2).
-4. **Self-sustainability — an honest limit on what the new witness can see.** `register()` mints
-   `v<max+1>` over the name's OWN rows (`workflow-catalog.ts:583, :621`), so deregister → re-register restarts
-   the lineage at `v1`, and a run pinned to the OLD `v1` resolves the NEW `v1` with no throw, no warning and
-   a wrong overlay. The FALLBACK arm witnesses an ABSENT pin, never a REUSED one. Out of closure to fix (it is
-   DES-113's resume path too), but the design row must say it, and the one-comparison v28 check is named
-   (`workflow_versions.createdAt > view.createdAt`) so it is not rediscovered as a Gate 7.5 surprise (§4 S-4).
+**Two further findings, sized and made optional so the synthesizer can rule without me:**
+
+- **DES-206's "ONE timer" is six on disk.** `app.js`'s tick fetches the visible view's endpoints, keeps ONLY
+  `primaryBody`, renders it ONLY for `home`, and calls every other view with `render(container, {}, {})`
+  (`app.js:252-272`, `:294`) — so `run.js`, `workflow.js`, `system.js`, `issues.js` and `models.js` each
+  built their own `setTimeout(tick, 3000)` loop, and `run.js` flagged it (`:1-15`). The run view now fetches
+  `/api/runs/:id/dag` TWICE per tick (once for the connection tag, once to paint), the connection reducer
+  never sees the view loops' failures, and REQ-142's later visibility gate would attach to one loop of six.
+  This is in closure (it is DES-206/TASK-208's own contract) and it does NOT block the CSS task; the fix is
+  one `onTick(container, bodies, ctx)` hook and five deletions (§4 S-1), with the deferral form and its
+  recorded consequence stated so deferring is a decision, not an oversight.
+- **The handoff is not in this repository.** The spec of record inside the repo is the constants REQ-131..135
+  enumerate (tabled in §3 C-1 as the fixture seed); everything the REQ prose does NOT enumerate — the nav,
+  tabs, tables, tag paddings, the Classical component look — is unverifiable here until
+  `design_handoff_workflow_dashboard/README.md` is vendored under `.sdlc/…` (the README ONLY —
+  `rwe-data.js` carries the C3 word and is a Gate 8 finding anywhere in the repo). That is an
+  orchestrator/owner action; the DES should say what
+  "99%" can mean until it happens.
+
+One decision line, low priority: the shell delivers the stylesheet TWICE (`<link>` + an inline copy read at
+boot, `dashboard-page.ts:65-68, :87-88`) because UT-241's five CSS assertions take `DASHBOARD_HTML` as their
+subject; keep one path (§2 R-5).
 
 ## Altitude call
 
-Both altitudes exist in this project — an HTTP/MCP server (system) that dispatches LLM agents (agent). This
-delta is **predominantly system-altitude**: what an anonymous `GET /api/runs/:id/dag` and a `workflow_describe`
-serialize, on every deployment. The **agent-altitude** reading is the owner's reason for ranking it: the run
-page is the only surface that joins an agent workflow's *plan* (the predicted lanes and slots) to its
-*progress* (the observed phases and live records), and after this delta it is also the surface where "the
-plan shown is not the plan that ran" is stated. Memory metabolism, tool-liveness probing and prompt
-calibration have **no seam in this closure**; each dimension below says so in one line rather than padding.
+**Both, and the split is unchanged from Gate 2 and my two prior rounds.** *System altitude* — REQ-131 (shell,
+tokens, fonts, i18n, connection tag), REQ-132/133 (views), REQ-134 (swimlane), REQ-140/141 (wire, untouched
+this round). *Agent altitude* — REQ-135 (the slide-in panel IS the agent's inspectability) and REQ-136 (already
+built at the decoration site; nothing here reopens it). This round's subject — a stylesheet and a poll loop —
+is almost entirely system-altitude; the agent-altitude reading enters exactly where the panel's styling is
+what makes `record`/`harness`/`events` LEGIBLE (§1 agent altitude) and nowhere else. Memory metabolism, tool
+liveness and prompt calibration have no seam in this closure; each dimension says so in one line.
 
 ---
 
-## 0. Withdrawn and converged — stated once so the synthesizer does not re-derive it
+## 0. What Gate 6 left on disk — measured, so the four sections argue from the same facts
 
-| # | Item | Status | Where |
+| # | Fact | Where | Why it matters to this round |
 |---|---|---|---|
-| W-1 | **C-4 (fail-closed `maskPredictedOverlay`) — withdrawn by its author.** The dep was specified at Gate 4, credited to this lens (rationale v27 #11), and never implemented (`grep -rn maskPredictedOverlay src tests` → 0 hits). Deleting design text, not code. | withdrawn | DES-197 signature + boundary paragraph; TASK-202 `dod:` first clause |
-| W-2 | The fail-closed reasoning survives in ONE place only: a seam whose only correct value is constant is an unexercised branch that decays — that sentence is already in ADR-051 and ARCH-126; the DES rows cite it, they do not restate it. | converged | ADR-051 :3441, ARCH-126 :3370 |
-| W-3 | `deriveLanes(phases, expected \| undefined, { status })` — UT-238's cast (`dashboard-derive-lanes.test.ts:33-35`) is reconciled here, not at Gate 6. | converged | DES-196 |
-| W-4 | The four deletions in `server.ts` (`:520` branch, `:334` param with its `= false` default, `:1068` argument, comments `:331-334`/`:350`/`:1064`); the comment at `:819` is about ARCH-088's peer shapes and STAYS. | converged | DES-198, TASK-203 `dod:` |
-| W-5 | Three-member vocabulary, pushed at the route (`warnings: [...layout.warnings, ...routeWarnings]`); the v1 re-derive and the inline-script path stay silent; grandfather `warnings: []` pins untouched. | converged | DES-198 (2) |
-| W-6 | Parity (exclusion form) + one positive anchor on the auth server + `SCRIPT_PHASED`; `startedBy: { type: 'client' }` carries no `id` (`mcp-facade.ts:590`, `types.ts:6-9`), so parity is safe on it. | converged | IT-168 |
-| W-7 | REQ-105's `[PARTIALLY SUPERSEDED v27b]` marker at `01-requirements.md:1070` — orchestrator housekeeping, named twice already; not headlined here. | recorded | — |
+| F-1 | `dashboard.css` = tokens (:13-51) + fonts (:56-60) + the pre-v27 port re-mapped onto the tokens (:68-126); 44 class selectors; the implementer's own note that swimlane/panel/tab CSS is unowned (:62-67) | `src/dashboard/dashboard.css` | the routed gap, confirmed at the source, with the implementer's reason |
+| F-2 | 40 class names set by `ui/*.js` (under-count: `home.js:66` concatenates modifiers; SVG uses attributes); 11 have a rule, **29 do not** | `ui/*.js` vs `dashboard.css` (comm) | the CSS gap is a VOCABULARY gap first — nobody wrote the contract both sides read |
+| F-3 | 12 hex literals as SVG attributes in `run.js` (:108, :121, :139-140, :151-152, :162-163, :172-173, :181, :190); `letter-spacing` as a `style` attr (:119); `.toUpperCase()` in JS (:122); `cssText` ×3 in `agent-panel.js` (:104, :110, :180); `maxWidth`/`fontSize`/`background` literals in `workflow.js` (:72, :178, :189); container px in JS (`run.js:260-262, :279`, `workflow.js:84-89`) | `src/dashboard/ui/` | design values live where no stylesheet reaches them; the swimlane is theme- and hue-blind |
+| F-4 | The acceptance tier reads computed style THREE times, all tokens on `documentElement` (val-198 :82/:99/:113); val-200 asserts one 216×74 box (:109); val-199/201/202 read no style | `tests/acceptance/` | ADR-053's table is not built; 「99%」 has no mechanical oracle |
+| F-5 | Six `setTimeout(tick, 3000)` loops in `ui/` (`app.js:282`, `run.js:315`, `workflow.js:293/:305`, `system.js:82`, `issues.js:102`, `models.js:65`); `app.js` discards every body but the first and renders only `home` (:252-272, :294) | `src/dashboard/ui/` | DES-206's contract (`render(container, vm, handlers)`, one timer, VMs in) is not implementable as `app.js` was written, so every view worked around it |
+| F-6 | The stylesheet is delivered twice: `<link>` (:87) AND `<style>${DASHBOARD_CSS}` read at module load (:65-68, :88); UT-241's five CSS pins take `DASHBOARD_HTML` as subject (`dashboard-page-source.test.ts:23/:35/:72-74/:78`) | `src/dashboard-page.ts` | "one source, two destinations" cannot drift, but it is two delivery paths for one byte stream |
+| F-7 | No `design_handoff_workflow_dashboard/`, `*.dc.html` or `rwe-data.js` anywhere under the checkout or the home tree | `find` (measured) | the spec of record in-repo is REQ-131..135's constants and nothing else |
+| F-8 | The guards already walk `.css` (`dashboard-no-external-host.test.ts:27`; DES-191 landed); `clientCorpus()` is `.js`-only (`client-corpus.ts:18`) but `clientFile('dashboard.css')` reads the file (:33) | `tests/` | the offline stance is safe; the pin subject for CSS bytes already exists |
+| F-9 | `run.js:85-93`: the SVG is native-scale (1 unit = 1 px; wrapper sized from `svgBox` in px; `viewBox` + `width=100%` + `preserveAspectRatio` — UT-253's pins) | `src/dashboard/ui/run.js` | an HTML node layer positioned in the same px coordinates lines up with the SVG edge layer by construction |
+| F-10 | `ROUTES.workflow(ctx)` = describe + `/api/runs`; the selected run's `/dag` + detail are fetched by the view against a view-local `selectedRunId` (`poll.js:15-26`, `workflow.js:211, :274-280`) | `src/dashboard/ui/` | the poller fix must let a view chain a state-dependent fetch INSIDE the tick, not carry UI state in `ROUTES` |
 
 ---
 
 ## 1. Observability
 
-**The design question: when the route serves the overlay from another version, or cannot serve it at all,
-is that fact (a) on the payload in a form the rebuilt client can render in two languages, (b) in the
-journal in a form an operator can correlate with the payload, and (c) locked by a test that cannot drift
-between the server that emits it and the client that reads it.**
+**Design question for this round: when the page is 1% off the design, or dark on the light theme, or polling
+twice, what goes red — and when nothing does, is that a decision?**
 
 ### System altitude
 
-**O-1 — The token lock lives in the fixture, because nothing else may be shared.** The constraints, each
-verified rather than assumed: a `.js` test imports only `src/dashboard/{lib,ui}/*.js` and the `.ts` fixture
-(mock policy v27, 04-design.md:6869); a `.test.ts` importing a `.js` client module fails `tsc` with TS7016
-absent `allowJs`, which ADR-049 refuses; `tests/fixtures/dashboard-wire.ts` is `.ts`, `satisfies`-checked, and
-already the one literal both tiers read (DES-192). So the lock is:
+**O-1 — Build ADR-053's table, and make its rows relational.** ADR-053 (`02-architecture.md:3461`) is explicit:
+「a table-driven `getComputedStyle` check in the real browser — one row per delivery-README spec line」. F-4
+shows the table was never written — and the omission is THIS gate's own, not Gate 5's: DES-201's `tests:` line
+(`04-design.md:6801`) scoped 「the computed-style table」 to REQ-131's tokens, and DES-203/DES-206 asked the
+browser tier for geometry and existence only, so Gate 5 wrote exactly what Gate 4 asked for. Proposal, at the
+design altitude: `tests/fixtures/dashboard-spec.ts` exports
+`SPEC_ROWS: ReadonlyArray<{ req: 'REQ-131'|…|'REQ-135'; view: 'home'|'workflow'|'run'|'panel'; anchor: string;
+prop: string; expect: { literal: string } | { token: string } | { animation: [name, duration] } }>` — one row
+per REQ constant (the seed table is §3 C-1), and val-198/199/200/201 each iterate the rows of their view under
+BOTH `data-theme` values and once more after moving the hue slider. Three row kinds, because three kinds of
+value exist:
+- **literal** — a size or timing the REQ states as a number: `getComputedStyle(el)[prop] === literal`
+  (`'216px'`, `'1.2px'`, `'0.04em'`, `'uppercase'`, `'ellipsis'`, `'0.65'`).
+- **token** — a colour the REQ states as a token name (accent, accent-100/600, divider, neutral-500, text
+  colour): compare the ELEMENT's computed value to the computed value of a probe element styled
+  `color: var(--<token>)` on the SAME page. Never a literal `oklch(0.72 0.065 236)` string: that hard-codes
+  Chromium's serialization and is false for every hue but the default. The relational row is the one that
+  catches F-3 — under `data-theme="light"` a node's `stroke` must equal `var(--color-line)`'s light value,
+  and after the slider moves the current lane header must equal the new `--color-accent` — and it holds
+  for any hue and any future palette edit without touching the test.
+- **animation** — `animationName`/`animationDuration` on the element (`['rweGlow','1.8s']`,
+  `['rweRing','1.3s']`, `['rweSweep','2.4s']`, `['rwePulse','1.6s']`) and the panel's `transition`
+  (`'.28s cubic-bezier(.2,.7,.2,1)'`).
+The screenshots to `evidence/v27/` stay as the owner's side-by-side (Q10); the table is what CI can fail on.
+Anti-vacuity: `SPEC_ROWS.length ≥ 40` and every `anchor` must match ≥ 1 element or the row FAILS (a row that
+matches nothing is the vacuous green DES-208 warned about).
 
-- `dashboard-wire.ts`: the DAG literal gains a populated `warnings` — exactly three strings:
-  `'PREDICTED_FROM_FALLBACK_VERSION: pinned=v3 resolved=v2'` (`resolved` LOWER than `pinned` — the only ordering deregister/re-register can produce, S-4),
-  `'PREDICTED_OVERLAY_UNAVAILABLE: catalog-resolve-failed'`, and one existing `layoutGraph` prose line
-  verbatim (`'lane 2 (review) is dynamic: agents cannot be statically slotted'`, `dashboard.ts:393`). Plus
-  `export const DAG_WARNING_TOKENS = ['PREDICTED_FROM_FALLBACK_VERSION', 'PREDICTED_OVERLAY_UNAVAILABLE'] as const`.
-  `warnings` is already in `ALLOWED_DAG_KEYS` (`:88`) — no key-set shape change; only the rename in O-5.
-- Server side (`.ts`): `dashboard.ts` — allowlisted, pure — exports the same two tokens as a `const` object
-  and one formatter `dagWarning(token, detail: Record<string, string>) → string` producing
-  `TOKEN: k=v k=v` in key order given. IT-169 asserts (i) `dagWarning(...)` over the fixture's inputs equals
-  the fixture's literal byte-for-byte, and (ii) the wire `warnings[]` from the real producers (O-3) `startsWith`
-  the fixture's prefixes. The route imports the formatter; it never spells a token as a string literal
-  (`grep -c PREDICTED_ src/server.ts` → 0 is the cheap guard, and it is what keeps the vocabulary in one file).
-- Client side (`.js`): `lib/strings.js` — the string-table module DES-201 already owns — gains
-  `parseDagWarning(w) → { token: string | null; detail: Record<string, string>; raw: string }` and
-  `warningText(w, lang) → string`. UT-244 (`dashboard-lib-strings.test.js`) maps each fixture literal:
-  FALLBACK → 「預測結構來自替代版本 v2」/`predicted layout from substitute version v2`; UNAVAILABLE →
-  「預測結構不可用」/`predicted layout unavailable`; the prose line → its RAW string, unchanged.
+**O-2 — The theme-blind swimlane is a silent failure today; name the row that ends it.** F-3 + F-4 together:
+switching to light repaints the page chrome and leaves the graph painted in dark-theme hex; the hue slider
+moves `--color-accent` and the "accent" lane header stays `#9fb8d6`. VAL-198's light case passes (it reads
+`--color-bg`). The fix is R-3 (values out of JS) plus ONE relational row per view per theme in O-1's table —
+the cheapest observable seam there is, and it is the seam that makes REQ-131's 「版面隨之改變」 mean the whole
+page rather than the token it samples.
 
-Two mirror halves (format ↔ parse) and one literal both read — the same "one fixture, two readers" pattern
-DES-192 already uses for key sets. Without this the token is a string in `server.ts`, a different string in
-`strings.js`, and the day one is edited the legend row silently shows an English enum to a zh-TW viewer.
+**O-3 — Six pollers make the connection tag a partial truth.** `nextConnection` is fed by `app.js`'s tick only
+(`app.js:264`); `run.js`/`workflow.js`/the three tabs fetch on their own loops and their outcomes never reach
+the reducer. So the nav can read 「連線中 / Live」 while the run view's own loop is failing (or the reverse:
+the tag goes Offline on the connection loop while the view keeps painting from its own). One reducer, one tick,
+every fetch — that is DES-202's whole design and it is bypassed by construction. The remedy is §4 S-1; the
+observability consequence is why it belongs in this closure rather than in v28.
 
-**O-2 — Fix the `detail` grammar now, not at Gate 6.** `TOKEN: detail` is settled; what is open is what
-`detail` may contain, and the client cannot be written until it is closed:
+**O-4 — A class with no rule is the most silent failure on this page, and it needs a node-tier lock.** F-2:
+29 of 40 hooks render unstyled today and every unit test is green, because nothing reads the vocabulary from
+both sides. Proposal (the lock's shape matters more than its existence): the class contract is a DECLARED
+list in a fixture (`tests/fixtures/dashboard-classes.ts` — `STYLE_HOOKS` and `TEST_ANCHORS`, the two columns
+of §2 R-2's table), and one `.ts` unit test asserts every `STYLE_HOOKS` entry appears as a selector in
+`clientFile('dashboard.css')` and every `TEST_ANCHORS` entry appears in `clientCorpus()` or `DASHBOARD_HTML`.
+**Not** a test that re-derives the vocabulary from `ui/*.js` by regex — my own extractor missed
+`home.js:66`'s concatenation and every SVG attribute, so a regex-derived list is exactly the vacuous green
+this lock exists to prevent. The reverse direction (every CSS selector used in JS) is NOT asserted: a
+stylesheet may carry states and helpers the JS reaches by cascade.
 
-| Token | `detail` grammar | Closed set |
-|---|---|---|
-| `PREDICTED_FROM_FALLBACK_VERSION` | `pinned=<version> resolved=<version>` — two `key=value` pairs, space-separated, this order | keys `{pinned, resolved}`; values match `/^v\d+$/` (the catalog's own shape, `workflow-catalog.ts:621`) |
-| `PREDICTED_OVERLAY_UNAVAILABLE` | one bare reason token | `{catalog-resolve-failed, derivation-failed}` |
-
-Split rule for the client: on the FIRST `': '` only. The prose warnings `layoutGraph` already emits contain
-`': '` too (`lane 2 is dynamic: agents cannot…`, `agent x unmatched to the predicted layout: frame-grouped`,
-`dashboard.ts:393-436`), so the leading segment must be matched against the CLOSED token set and an unmatched
-token must fall back to the **raw string** — never to the detail half, which for a prose line would drop its
-subject. The grammar carries version strings and an enum only — never script text — so the IT-092 sentinel
-(§4 S-2) guards this channel as well. `graph-layout.test.ts:165` asserts no `layoutGraph` warning matches
-`/skeleton/i`; the route-pushed strings need the same assertion once, in IT-169, because they are served bytes.
-
-**O-3 — The producers, and which of them a real test can reach.** Enumerated so the tests are written
-against producers that exist:
-
-| Arm (ARCH-130) | Producer | Reachable at the integration tier? |
-|---|---|---|
-| (i) pin resolves | any healthy run | yes — every existing DAG case |
-| (ii) pin absent, `release` resolves → FALLBACK | `registerPublishedVia` **twice** (release = `v2`) → `run_start` (pins `v2`) → `workflow_deregister` → `registerPublishedVia` **once** (new lineage = `v1` only) → DAG read: `resolve({version:'v2'})` throws `VERSION_NOT_FOUND`, `release` = `v1` → `PREDICTED_FROM_FALLBACK_VERSION: pinned=v2 resolved=v1`. **Rule: the run's pin must be numerically HIGHER than the re-registered lineage's count**, or arm (i) finds a same-numbered new row and the collision in §4 S-4 greens the test | yes — real calls, in that order |
-| (iii) both throw → UNAVAILABLE `catalog-resolve-failed` | register → `run_start` → `workflow_deregister` — the exact producer `dashboard-http.test.ts:205-222` already builds | yes — extend THAT case |
-| (iv) derivation throws / v1 re-derive refuses → UNAVAILABLE `derivation-failed` | none with a registered script: registration ran the SAME derivation (INV-V26-3), and `contract:'v1'` never refuses today (`skeleton-graph.ts:129-137`) | **no** — defensive; do not add an injection seam to test it (see O-4) |
-
-**O-4 — Say `derivation-failed` is defensive; do not build a seam for it.** Its coverage is
-`deriveLanes(phases, undefined, …)` never throwing (UT-238 row (ii)) plus the `try/catch` at `:540-542`
-staying in the route. A mockable `derive` parameter on the route would be a seam whose only production value
-is constant — the class this delta is deleting. DES-198's `tests:` line says so in one sentence.
-
-**O-5 — Journal ↔ payload correlation is a design rule, not a coincidence.** The line
-`{event:'dashboard_api_degraded', route:'dag', runId, reason}` on the two UNAVAILABLE arms must use, as
-`reason`, the SAME enum string the warning's `detail` carries (`catalog-resolve-failed` / `derivation-failed`),
-so an operator whose team reports 「預測結構不可用」 can `grep <runId>` the journal and match the payload 1:1.
-Test: a `console.warn` spy in the deregister case (O-3 (iii)) parsing exactly one line and asserting
-`reason === warnings[k].split(': ')[1]`. FALLBACK is NOT logged (a state, on every read; its durable record is
-`legacySubstitution`, which already writes `run.legacySubstitution: {…}` to the journal at
-`run-manager.ts:909` the moment a resume makes it durable). The flood memo the architect pre-approved is
-**documented in DES-198 as a shape, not built**: `dedupeKey = runId + ':' + reason`, a per-process `Set`,
-triggered only if Gate 7.5 records it drowning the journal.
-
-**O-6 — The fixture's stale qualifier.** `DAG_PAYLOAD_OPEN` (`dashboard-wire.ts:84`) and the row label
-`GET /api/runs/:id/dag (open)` (`:112`) become `DAG_PAYLOAD` / `GET /api/runs/:id/dag` — "(open)" implies a
-second, masked shape that no longer exists. One identifier, TASK-197's file, no allowed-set change.
-
-**O-7 — DES-206 / `ui/run.js` renders the text, not the count.** `dashboard-page.ts:601-607` emits `N
-warning(s)` today; the rebuilt legend row renders `warningText(w, lang)` per entry via `textContent` (D5) and,
-for a FALLBACK entry, ALSO paints the predicted cells (`agentId === undefined`, `dashboard.ts:330-331`) at the
-greyed style REQ-134 already defines for `queued/pending` (dashed border, opacity .65) — one class reused, no
-new CSS rule. The DAG warning is the authority for greying THIS read; the client never reads
-`legacySubstitution` off `/api/runs/:id` to decide it (C-2).
+**O-5 — The inline copy of the stylesheet is not a mirror pair, but it is two delivery paths.** F-6: the
+bytes are read once at boot and emitted twice, so they cannot drift; what is lost is one truth about which
+path served the page (a `no-store` `<link>` that 404s is invisible because the inline copy paints anyway).
+Decision line in §2 R-5.
 
 ### Agent altitude
 
-**O-8.** After this delta the run page distinguishes three states an operator watching agents needs:
-"this agent has not been dispatched yet" (inert cell, `agentId === undefined`), "this agent does not exist in
-the plan" (no cell), and "the plan shown is not the plan that ran" (FALLBACK). Chain-of-thought, token and
-tool-call inspection (REQ-135/140/141) are untouched by this delta; no memory or prompt seam moves.
+**O-6 — The panel's styling is what makes the agent's record LEGIBLE; the values are in `cssText` today.**
+REQ-135's panel is the only surface that joins `record` (state, provider · transport · proxyModel, four token
+columns, cost, `detail`) to `harness` (prompt, tools, MCP, skills) and to the event stream. On disk the
+backdrop, the panel box and the red `detail` block are `cssText` literals (`agent-panel.js:104, :110, :180`)
+and the six stat cards / tag columns / event rows carry classes with no rule (F-2: `stat-cards stat-label
+stat-value tag-columns event-list event-row tag`). The panel therefore renders its facts as an unstyled list;
+a failure `detail` is not a red block, a kind tag is not a tag. Nothing about the agent's inspectability
+changes in this round except that it becomes visible — the `data-agent-panel` anchor VAL-201 keys on stays,
+the wire is untouched, and chain-of-thought / token / tool-call inspection are exactly as REQ-135/140 built
+them. One row per stat card and one per event-kind tag in O-1's table is the whole obligation.
 
 ---
 
 ## 2. Replaceability
 
-**The delta removes a seam. The design's job is to remove it completely — including from its own prior
-text — and to keep the derivation single.**
+**Design question for this round: is every design value in exactly one home (the stylesheet), is the contract
+between the DOM layer and that home written down, and can the swimlane be restyled without touching a
+formula — or the painter rewritten without touching a colour?**
 
 ### System altitude
 
-**R-1 — C-4 withdrawn; DES-197 loses a sentence and a paragraph, not gains a default.** Delete from DES-197:
-the signature clause `McpFacadeDeps.maskPredictedOverlay?: boolean — absent ⇒ true (masked)` and `server.ts
-forwards maskPredictedOverlay: !!authCfg`; the whole boundary paragraph from "The masking predicate must
-arrive through the dep" to "rather than over-disclosing"; and the UT line "a facade constructed with no
-`maskPredictedOverlay` omits `agents`". What REPLACES the paragraph is one sentence, not a mechanism: *the
-synthetic `{kind:'auth-disabled'}` principal the dashboard's describe and agent routes pass (`server.ts:402`,
-`:563`) means any future principal-dependent facade projection would silently take the auth-disabled branch
-on exactly the paths REQ-133/135 render; there is no such projection today, and INV-V27-9's parity is the
-empirical guard.* ARCH-131 already says this; the DES cites it.
+**R-1 — Ownership: one stylesheet, one owner, ordered before the views are judged.** Proposal: **TASK-214 —
+`dashboard.css`: the component and view sections to the REQ-131..135 constants, and the class hooks that
+reach them** — `files:` `src/dashboard/dashboard.css`, `src/dashboard/ui/{run,agent-panel,workflow,home,app}.js`
+(hook edits only), `tests/fixtures/dashboard-classes.ts`, `tests/fixtures/dashboard-spec.ts`, the two
+node-tier tests (O-4, R-3); `des:` a new DES-209; `estimate:` L. The file keeps its ONE `STATIC_ASSETS` key and
+is organised in **sections headed by the REQ they implement** (`/* == REQ-131 shell: nav · tabs · connection
+tag · controls == */`, `/* == REQ-132 home == */`, `/* == REQ-133 workflow detail == */`, `/* == REQ-134
+swimlane == */`, `/* == REQ-135 agent panel == */`, `/* == components (Classical borrow): .card .tag .btn
+.table .seg .input .nav .hr == */`) so a reader and the trace chain find a rule by its requirement. Runner-up,
+recorded and refused: **per-view CSS files** (`ui/home.css`, `ui/run.css`, …) each owned by its view task —
+it needs new map keys (closed both ways: DES-199), extra `<link>`s in the shell, and above all it makes FOUR
+authors spell one vocabulary; and **CSS inside the view tasks** on one shared file is four implementers
+writing one file on one working tree in the same gate (the CLAUDE.md hazard) with no arbiter for the class
+names. One file, one author, one table is the smallest form that keeps the vocabulary in one head.
 
-**R-2 — `expected: ExpectedGraph | undefined` stays, for the right reason.** DES-196's signature sentence
-(`server.ts:519-520 populates it only if (!authEnabled)`) is the one that must be REWRITTEN, or the next
-reader restores the auth reading from the type alone: *`undefined` means the derivation failed, and it is the
-only reason.* The signature becomes `deriveLanes(phases: PhaseView[], expected: ExpectedGraph | undefined,
-opts: { status: RunStatus })`. DES-196's own refinement of `current` over all seven `RunStatus` members
-(`running | suspended | interrupted` → last observed index; `queued` and the three terminal states → `null`;
-empty `phases` → `null` everywhere) STANDS — it is one altitude below ARCH-126's `status === 'running'` line
-and was recorded at Gate 4; the v27b amendment did not touch it.
+**R-2 — The class contract is the design artifact, and it has two columns that must not be confused.**
+The DES row carries a table: *REQ clause · style hook (class) · test anchor (`data-*` / C2 id) · set by*.
+The two hook kinds have different owners and different stability: **style hooks** (classes) belong to the
+CSS author and may be renamed by TASK-214 as long as the JS edit travels in the same commit; **test anchors**
+(`data-lane-header`, `data-node-cell`, `data-legend`, `data-agent-panel`, `data-tab`, `data-section`,
+`data-run-chip`, `data-history-table`, and the C2 ids `#dag-fit #dag-graph #dag-zoom #run-usage #diagram-img
+#diagram-zoom` + `.card .t`) belong to the tests and are FROZEN — VAL-200/201/202 already key on the first
+five (`05-tests.md:12149-12150, :12161-12162, :12174`). One instance of the hazard is already on disk:
+`val-200-swimlane.test.ts:94` accepts `[class*="lane-head"]` as an alternative to `[data-lane-header]` — a
+style class as a test anchor; the synthesizer should freeze `data-lane-header` and drop the class form in the
+same edit that moves the headers (R-4). A test keyed on a style class is the C2 problem reborn;
+a style keyed on a `data-*` anchor couples the design to the test. Seed of the table (the on-disk names are
+ADOPTED, not renamed — a rename costs a JS edit for no property; only the MISSING hooks are new):
 
-**R-3 — The route's version resolution is three lines in the route, not a helper.** ARCH-130 (i)-(iv) is
-`catalog.resolve(spec.name, { version: view.legacySubstitution?.resolved ?? view.scriptVersion })`, a second
-`resolve(spec.name, {})` on throw with the FALLBACK push, and the UNAVAILABLE push on a second throw. Extracting
-`resolvePredictedOverlay(...)` would buy a unit tier for arm (iv) only (O-4 refuses that) and would move code
-the trace chain cites by `server.ts:line`. Karpathy: the minimum that satisfies the ruling is a
-`??` inside an expression that already exists.
+| REQ clause | style hook(s) | test anchor | set by |
+|---|---|---|---|
+| REQ-131 nav, tabs, source tag, theme/lang groups, hue slider, version, update panel | `.rwe-nav .rwe-tabs .rwe-tab-panels .rwe-connection.is-live/.is-degraded/.is-offline .rwe-theme-group .rwe-lang-group .rwe-hue-slider .rwe-version .rwe-update-panel .rwe-update-outcome .rwe-update-cta .rwe-config-check` (all exist in `app.js`) | `data-tab` (VAL-202) | app.js |
+| REQ-132 sections, running dot, other opacity, grid, card, kicker, meta, running sweep, hover | `.card-section .card-section.other .card-grid .cards .card .card.running .card.other .kicker .meta` (`home.js:66, :119-173`) + NEW `.card.running::before` (sweep) and the section title dot | `.card .t` (C2), NEW `data-section` | home.js |
+| REQ-132 toolbar, search, segment filter | `.home-toolbar .home-search .segment-tabs .seg .active` | — | home.js |
+| REQ-133 tags, description width, triggers | `.tag .tag-outline .tag-accent .tag-neutral` (NEW rules; `tag` exists in JS) + NEW `.wf-desc` (replaces `maxWidth` in JS) | — | workflow.js |
+| REQ-133 run chips, selected, dot | NEW `.run-chip .run-chip.is-selected .status-dot` (replaces `dataset.selected` + `fontSize='7px'`) | NEW `data-run-chip` | workflow.js |
+| REQ-133 history table, live row, selected row | `.table` + NEW `tr.is-selected` (replaces the `rgba` literal) + `.mono` | NEW `data-history-table` | workflow.js |
+| REQ-134 lane header, current, hairline | NEW `.lane-head .lane-head.is-current .lane-hairline` | `data-lane-header` (VAL-200) | run.js |
+| REQ-134 edges | NEW `.edge .edge.is-active .edge.is-walked .edge.is-pending` | — | run.js |
+| REQ-134 nodes (rows ①②③), states, predicted | NEW `.cell .cell.is-running/.is-done/.is-failed/.is-queued/.is-predicted .cell-dot .cell-label .cell-model .cell-effort .cell-usage` | `data-node-cell` (VAL-200) | run.js |
+| REQ-134 trigger, legend, summary | NEW `.cell-trigger .legend .run-summary` (replaces `float`) | `data-legend` (VAL-200) | run.js |
+| REQ-135 backdrop, panel, side, header, stat cards, prompt, tag columns, events, detail | `.stat-cards .stat-label .stat-value .tag-columns .event-list .event-row` (exist) + NEW `.agent-backdrop .agent-panel .agent-panel.from-left .btn-icon .prompt-pre .event-kind.is-tool/.is-message/.is-log .detail-block` (replace the three `cssText`s) | `data-agent-panel` (VAL-201) | agent-panel.js |
+| shell (C1) | `.fit-btn .zoomable #diagram-img` (exist) | C2 ids | dashboard-page.ts |
 
-**R-4 — The deletion is type-safe and the DoD must say which deletions.** `handleDashboardRequest`'s
-`authEnabled = false` (`:334`) is positional; the two trailing parameters are `authAnnounce: {…}` and
-`diagrams: DiagramRenderer` (`:336-338`) — disjoint types, so a mis-shift at the one call site (`:1068`,
-v23 one-dispatch rule) is a `tsc --noEmit` error, not a runtime surprise. `authAnnounce` STAYS (`/api/system`'s
-`auth` key, ARCH-090, is how an operator learns auth is on — a different fact). TASK-203's `dod:` lists the
-four deletions by line, because a deletion that is not a DoD line is the thing left behind.
+The synthesizer owns the final spelling; the lens's requirement is only that the table exists, that both
+columns are declared in a fixture (O-4), and that a name appears in it BEFORE it appears in code.
 
-**R-5 — No new config key.** Nothing for the twice-bitten `composeConfig()` class to bite; worth the one
-positive sentence in DES-198 so the next author does not add a `dashboard.predictedOverlay` knob "for
-safety" — ADR-051 names where a future withholding policy lives (a principal-aware projection), and it is
-not a config key.
+**R-3 — No design value in JS: the allowlist is one line, and the guard is a grep with named exceptions.**
+After TASK-214, `ui/*.js` may write exactly: `style.display` (state), `style.transform` on `#dag-zoom` /
+`#diagram-zoom` (the zoom, INV-V27-6), `style.setProperty('--rwe-hue', …)` (the one theme write, DES-201), and
+the wrapper's `style.width/height` from `svgBox` (geometry from DATA, `run.js:89`). Everything else in F-3
+moves to a class: fills, strokes, font sizes, weights, `letter-spacing`, dasharrays, opacity, `cursor`, the
+container heights, the `float`, the `maxWidth`, the three `cssText`s, the `rgba` row, the 7px dot.
+`.toUpperCase()` becomes `text-transform: uppercase` on the HTML `.lane-head` (R-4 moves the headers out of
+SVG, so this is plain CSS; the JS call at `run.js:122` is a design rule executed in the wrong layer; the row
+in O-1 reads `textTransform`). Node-tier guard (`.ts`,
+over `clientCorpus()`): zero matches for `#[0-9a-fA-F]{3,6}\b`, `oklch(`, `rgba(`, `cssText`,
+`setAttribute('fill'|'stroke'|'font-size'|'font-weight'|'opacity'|'stroke-dasharray'|'style'`, and
+`\.style\.(?!display|transform)` — the ONE geometry exemption (`run.js:89`'s wrapper `width`/`height`
+from `svgBox`) carried by a `// rwe-allow-style: svgBox` marker on that line and honoured by the guard as its
+sole `width|height` exception, because a bare `(?!…|width|height)` would also admit the container heights at
+`run.js:260-262/:279` and `workflow.js:84-89` that this same paragraph says must MOVE — the allowed forms
+listed in the test as the exceptions and a positive anchor beside the negatives (`expect(corpus).toContain("style.transform")`), per
+DES-208's anti-vacuity rule. Geometry attributes (`x y width height d cx cy r rx`) stay attributes: they are
+data from `lib/swimlane.js`, not design.
+
+**R-4 — Substrate: HTML nodes over an SVG edge layer, both inside `#dag-zoom`.** REQ-134 rows ①②③
+(`01-requirements.md:1784-1786`) and the running-node spec (:1787) need three things SVG elements do not
+have: `text-overflow: ellipsis` on the label, an HTML `.tag-neutral` (a *component*) inside the node, and
+`--shadow-md` (`box-shadow`; SVG needs a `filter: drop-shadow()` approximation that does not read the
+token). The painter on disk is pure SVG (`run.js:143-193`), so a CSS task alone cannot deliver the node.
+Proposal: `paintSwimlane` keeps `#dag-graph` as the SVG for **hairlines and edges ONLY** (geometry +
+`viewBox` unchanged, F-9 — UT-253's pins and val-193's fit/zoom proof are untouched) and adds a SIBLING
+`<div class="cell-layer">` inside `#dag-zoom` holding, absolutely positioned by the SAME
+`laneX`/`cellRect`/`triggerRect` px (1 unit = 1 px by construction, F-9): the **lane headers** (REQ-134
+`:1779-1781` wants a `目前` `.tag` component and an accent underline INSIDE the header — the same two things
+SVG `<text>` cannot carry, so `run.js:114-125`'s SVG headers move with the nodes, which also makes any
+`text-transform`-on-SVG question moot), the **trigger**, one `<div class="cell …" data-node-cell>` per agent
+cell, and the **legend / summary** row — each built with `createElement` + `textContent` (D5) with delegated
+click on the layer (DES-206's listener rule). The wrapper transform scales both layers together (INV-V27-6). Why this and
+not `foreignObject`: `foreignObject` is the same HTML wrapped in an SVG element per node, with Chromium's
+known transform/filter/z-order quirks and nothing gained; the two-layer form is the standard node-graph
+shape (n8n's own), and it keeps SVG for the only thing SVG is good at here — curves. Cost: ARCH-125's `api:`
+clause 「built with `createElementNS` + `textContent` inside `#dag-graph`」 takes a one-clause amendment in
+the house style (edges in `#dag-graph`, nodes in the sibling layer, one geometry). VAL-200 measures with
+`getBoundingClientRect` (`val-200-swimlane.test.ts:108`), so a `<div>` measures the same — but its selector is
+`'#dag-graph [data-node-cell]'`, scoped INSIDE the SVG, and matches nothing once nodes live in the sibling
+layer: ONE edit, `'#dag-zoom [data-node-cell]'`, or the case goes red for a non-defect reason (the exact
+failure mode R-4 exists to avoid). Runner-up
+recorded: keep pure SVG and DROP rows ①-② and the shadow — refused because it is the 99% bar the owner set,
+not a preference. Not built: a layout library, a canvas, a virtual DOM.
+
+**R-5 — One delivery path for the stylesheet.** F-6. Either **(i)** keep the `<link>`, delete the
+`readFileSync` + `<style>` copy (`dashboard-page.ts:65-68, :88`), and re-point UT-241's five CSS assertions
+(`:23, :35, :72-74, :78`) plus TASK-205's DoD sentence to `clientFile('dashboard.css')` — DES-208 already
+allows exactly this ("or against `dashboard.css` bytes", `04-design.md:6856`); the `draggable="false"` pin is
+markup and stays on `DASHBOARD_HTML`; or **(ii)** ratify the inline copy as the delivery path, delete the
+`<link>`, and record that `/static/dashboard/dashboard.css` is served for the guards and the corpus only.
+I hold (i), weakly: INV-V27-3's sentence is "every byte of JS, CSS and font comes from ARCH-123's map";
+the implementer's stated reason for the copy (first paint before the stylesheet round-trips,
+`dashboard.css:3-4`) does not hold — a `<link rel="stylesheet">` in `<head>` is render-blocking, so there is
+no unstyled paint to prevent, only the same RTT `theme-init.js` already costs; and the stylesheet is about
+to grow several-fold, which makes "twice per navigation" real bytes. Equal cost either way (five re-points
+vs. one deleted tag); the property is one path.
+
+**R-6 — The class contract is what makes the painter and the stylesheet independently replaceable.** With
+R-2..R-4 in place a restyle is a CSS-only commit (the table's names are the seam) and a painter rewrite is a
+JS-only commit (it must set the same names). Today neither is true: the painter carries the palette and the
+stylesheet does not know the painter exists.
 
 ### Agent altitude
 
-**R-6.** Provider, transport and model seams do not move; the overlay is script-derived and provider-agnostic.
-Recorded so the section is honest rather than padded.
+**R-7 — Provider / transport / model seams are untouched.** No file under `src/` outside `src/dashboard/`
+and `src/dashboard-page.ts` changes in this delta; the gateways, the executor's decoration site and the
+facade are as the closure left them. One line.
 
 ---
 
 ## 3. Consumability
 
-**Two consumers, one wire shape regardless of auth. What the design adds is the exact sentence each contract
-row and each `dod:` needs, and the cohort transition a client would otherwise get wrong.**
+**Design question for this round: what does the CSS implementer READ, what does the next author (Sprint B:
+REQ-137/138/139) reuse, and what does the view-module contract promise a view author?**
 
-### System altitude
+**C-1 — The spec of record, stated, because the handoff is not here.** F-7. REQ-131..135 enumerate the
+constants below; they are the ONLY spec a TASK-214 implementer can read in this checkout, and they are also
+the seed of O-1's `SPEC_ROWS`. The DES must say two things: (a) this table IS the acceptance for everything
+it lists; (b) everything it does NOT list — the nav/tab/table/tag/button/input/segmented-control look
+(the Classical borrow), row heights, paddings, the panel's width, the legend's typography — is **unverifiable
+in this repository until `design_handoff_workflow_dashboard/README.md` is vendored under
+`.sdlc/features/001-remote-workflow-engine/design-handoff/`** — the README ONLY: `rwe-data.js` carries the C3
+key `skeleton: '預測結構(尚無執行)'` (`01-requirements.md:1662-1664`), and a copy of it ANYWHERE in the repo —
+`src/` or `.sdlc/` — is a file that 「still describes the deleted thing」 under REQ-105's closing clause
+(`:1093-1094`), which Gate 8 verifies; the string table it would have supplied already lives in
+`lib/strings.js`, and the demo dataset it carries is REQ-143's, out of closure. Vendoring is an orchestrator/owner action (the REQ names the project id and the three paths,
+`:1613-1620`); until it happens, 「99%」 for the unlisted surfaces rests on the owner's Q10 side-by-side alone,
+and the DES should say so rather than let an implementer invent Classical from memory.
 
-**C-1 — Contract sentences (final, for README `:368-375` and the ARCH contract rows).**
-`GET /api/runs/:id/dag`: *gains `lanes` (the observed phases extended by every unreached expected lane —
-regardless of auth, Round v27b) and `current`; `warnings[]` may carry `PREDICTED_OVERLAY_UNAVAILABLE:
-<reason>` (lanes observed-only) or `PREDICTED_FROM_FALLBACK_VERSION: pinned=vN resolved=vM` (overlay derived
-from a substitute version — the client greys it).* `describe.phases[]`: *`agents?: string[]` — the predicted
-lane membership, served to every caller regardless of auth; absent only when the engine could not derive the
-predicted layout for this version.* TASK-202's `dod:` (`03-tasks.md:1704`) currently asks for the README
-describe row "with its masking sentence" — that clause is deleted; the row is added WITHOUT one. README
-`:312-313`'s existing sentence (the dashboard never contained script text) is unchanged and still true.
+| REQ | constant (verbatim from the acceptance) | O-1 row kind |
+|---|---|---|
+| 131 | `--color-bg` `#18191b` dark / `#eef2f1` light; accent `oklch(.72 .065 h)` / `oklch(.56 .065 h)`; ramp 100–900 per README L/C; Live tag = accent tint, Offline = red outline; fonts Archivo / JetBrains Mono from `/static/dashboard/fonts/` | literal · token · literal |
+| 132 | Running section title dot `rwePulse` 1.6s; Other section opacity .75; grid `repeat(auto-fill, minmax(280px,1fr))` gap 16px; kicker `ACTIVE · <8>` / `LAST RUN · <M/D HH:MM>`; meta line tabular figures, 成功率 `white-space:nowrap`; running card accent border + top 2px `rweSweep` 2.4s linear infinite; hover 5–6% accent | animation · literal · literal · token |
+| 133 | h2 name; `版本 vN` tag; runnable tag; description `max-width 720px`; TRIGGERS outline tags; ≤ 6 run chips = outline `.btn` + 7px status dot + 8-char id, selected = accent border + accent-100 fill; nine-column table, 執行ID monospace, live row `4m 12s 進行中`, selected row 7% accent | literal · token |
+| 134 | `PAD 16 / TRIG_W 112 / LANE_W 216 / LANE_GAP 40 / HEAD_H 48 / CELL_H 74 / GAP_Y 14`; lane header uppercase 13px, letter-spacing .04em, semibold; current = accent + accent underline + `目前` tag; hairline per lane; edge = cubic 1.2px, active target accent, walked neutral-500, else divider, pending/queued `4 4` dashed; node 216×74 radius 3 surface fill 1px divider border padding 8/12; ① 9px dot + label 13.5px semibold ellipsis; ② model 11px @70% + effort `.tag-neutral` 10px; ③ `52k tok · $0.31 · 2m 10s` 10.5px @55%; running = accent-100 fill, accent-600 border, `--shadow-md`, `rweGlow` 1.8s, dot `rweRing` 1.3s; done dot = text colour; failed border+dot `oklch(0.55 0.16 25)`; queued/pending dashed border, opacity .65, hollow dot; trigger 112×40 transparent; legend row + right-aligned summary | literal · token · animation |
+| 135 | slide `translateX(40px)→0` .28s `cubic-bezier(.2,.7,.2,1)`, from the left when the node centre is in the right half; backdrop `rgba(8,12,9,.5)` .2s; header 32px `.btn-icon` + h2 + state tag + phase tag + monospace id; six stat cards `auto-fit minmax(150px,1fr)`; `<pre>` 13.5px/1.6 pre-wrap max-height 420 with border; three tag columns `.tag-neutral` / `.tag-accent` / `.tag-outline`; event list max-height 420, `HH:MM:SS` + kind tag (tool call accent tint, message neutral, log red outline, else outline) + monospace content; failed `detail` red-bordered block; Esc / backdrop close | literal · token |
 
-**C-2 — The one client rule, and the cohort transition behind it.** *The DAG `warnings[]` entry is the
-authority for greying the overlay on this read; `legacySubstitution` on `/api/runs/:id` is the durable record
-that an EXECUTION resumed on a substitute.* They do not coincide, and the design must say why so no test
-asserts the wrong thing: `legacySubstitution` is written only by `_requireLive` on RESUME
-(`run-manager.ts:903-909`); a run whose pin was purged after it started carries the FALLBACK warning on every
-DAG read and NO field — until a resume records the substitution, after which arm (i) reads `resolved`
-directly and the warning disappears. Same run, two honest answers at two times. A test that asserts the
-warning PERSISTS across a resume is asserting a defect.
+**C-2 — What the CSS implementer reads is three artifacts, and the DoD names them.** (1) C-1's table (the
+values); (2) R-2's class table (the names); (3) the section-header format (where each rule goes). A DoD
+that says 「pixel-precise CSS」 without those three is what produced F-1. The DoD's mechanical lines: the
+O-4 lock green; the R-3 guard green; `SPEC_ROWS` ≥ 40 with every anchor matching; val-198..201's table
+cases green under both themes and after a hue move; the `evidence/v27/` screenshots written; the
+no-external-host guard and the `.css` walkers unchanged and green.
 
-**C-3 — MCP consumer.** `phases[].agents` is additive for every `workflow_describe` caller. `tool-specs.ts:332`'s
-description ("per-agent parameters, agent labels, live triggers, and its author-supplied diagram") gains
-"and the predicted lane membership (`phases[].agents`)" — REQ-106's precedent that a cold, schema-only client
-learns the field without fetching anything. One clause; a `dod:` line on TASK-202.
+**C-3 — Sprint B reuses the component layer, so it must be COMPLETE now, not view-shaped.** REQ-137 (a
+sortable table with a 560px slide-in), REQ-138 (stat cards with 2px track + 4px bar, a process table), REQ-139
+(the Issues tab re-themed) are out of closure and will attach as view sections (ARCH-125's scope paragraph).
+They reuse `.table`, `.tag-*`, `.btn`, `.seg`, `.input`, `.stat-cards`, the slide-in panel shell and the
+sortable-header affordance. TASK-214's component section must therefore be written as the Classical borrow
+in full (`.card .tag .btn .table .seg .input .nav .hr` + the panel shell), not as "whatever REQ-132..135
+happen to touch" — otherwise Sprint B's first task is a second CSS ownership dispute over the same file.
+This is the one place this round is allowed to build for a requirement outside the closure, and it is
+allowed because the REQ text names the classes (:1619) and TASK-212 already ports the three tabs onto them.
 
-**C-4 — Inert-cell detection.** The client detects a predicted cell by `agentId === undefined`
-(`dashboard.ts:330-331`), never by the `__skel_` id prefix; the engine's own tests may key on the prefix
-(IT-092, IT-168, `dashboard-http.test.ts:220`) because that is the wire id asserted where it is produced.
-DES-206 states the client half; unchanged from Sprint A, cited for completeness.
+**C-4 — The view-module contract, as it must read for a view author (and for REQ-142 later).** F-5/F-10.
+DES-206's `render(container, vm, handlers)` cannot be honoured by `app.js` as written (it has no vm to pass
+on tick). Proposal, the minimal change: every view module exports `render(container, ctx, handlers)` (mount:
+build the shell once) and `onTick(container, bodies, ctx) → Promise<Record<url, 'ok'|'degraded'|'fail'>> |
+void` (data: `bodies` is `{ [url]: body }` for `endpointsFor(view, ctx)`); `app.js`'s tick keeps EVERY body,
+calls the mounted module's `onTick`, merges any statuses it returns into `results`, and THEN reduces
+`nextConnection` — one timer, one reducer, every fetch. A view that needs a state-dependent extra fetch
+(the workflow page's selected run, F-10) performs it INSIDE `onTick` with `getJSON` and returns its statuses;
+`ROUTES` stays exactly as `poll.js:15-26` has it (UI state never enters `ROUTES`). The five own-loops are
+deleted (`run.js:304-315`, `workflow.js:288-305`, `system.js:82`, `issues.js:102`, `models.js:65`) and
+`app.js:294`'s `render(container, {}, {})` becomes `render(container, ctx, handlers)`. REQ-142's gate then
+has ONE place to attach (skip arming while hidden; one immediate tick on visible), which is the sentence
+ARCH-125 wrote for it. Deferral form, if the synthesizer rules it out of this delta: DES-206's 「one timer」
+clause is marked `not-yet-true-on-disk` with the six sites listed, the run view's double fetch is recorded
+as a KNOWN cost in ADR-052's N=1000 measurement (it inflates the number that decides v28's scope), and
+REQ-142's attachment point is re-stated as "after the pollers are unified" — so the deferral is a decision
+with a consequence, not an oversight.
 
-**C-5 — Timing on the positive anchor.** `lanes.map(l => l.title)` and `describe.phases[].agents` are
-timing-independent on `SCRIPT_PHASED` (every lane is an expected lane whether entered or not; describe
-involves no run). `current` is NOT: the harness reads the DAG immediately after `run_start`, and whether
-`phase('one')` has fired `onPhase` at that instant is unverified — assert `current ∈ {null, 0}`, or poll
-`/api/runs/:id` until `phases.length ≥ 1`. The full `current` table is UT-238's job.
-
-**C-6 — A `null` lane title.** `lanes[].title: string | null` is on the wire (a `phase()` whose first argument
-is not a string literal). `lib/strings.js` needs one key (`laneUntitled` → 「未命名 lane」/`untitled lane`) or
-`ui/run.js` renders the literal `null`. Small, but it is a string in a view, which REQ-131 forbids.
-
-### Agent altitude
-
-**C-7.** A cold model calling `workflow_describe` gets one shape on every deployment and can draw the
-predicted layout from `phases[].agents` without parsing `mermaid` — the reuse REQ-133's data buys beyond the
-page.
+**C-5 — The MCP surface is unchanged by this round.** No wire field, no tool description, no README API row
+moves; the cross-repo `rwe-mcp` check and the tool-surface regeneration TASK-200/202 carry are untouched.
+One line.
 
 ---
 
 ## 4. Self-sustainability
 
-**Will the ruling still be in force three iterations from now with nobody watching, will the tests that
-guard it be able to fail, and what can they NOT see?**
+**Design question for this round: a team leaves the page open for days, the engine restarts itself on a
+release tag, somebody "cleans up" the stylesheet in v29 — does the page keep matching the design without a
+human noticing it stopped?**
 
 ### System altitude
 
-**S-1 — The parity oracle, as a test row.** IT-168's harness already boots both servers
-(`dag-masking-auth.test.ts:46-64`). The new case: register `SCRIPT_PHASED` on both, `run_start` on both, read
-`/api/runs/:id/dag` anonymously on both, and deep-equal the two payloads MINUS `terminalAt` (there is no
-`runId` on the DAG payload — `ALLOWED_DAG_KEYS`, `:88`; the exclusion list is written against the fixture's
-key tuple so a new key is compared by default). The describe half runs over HTTP
-`GET /api/workflows/:name/describe` on BOTH servers — anonymous on both, synthetic principal on both
-(`server.ts:402`) — so the only bearer asymmetry in the whole test is setup (`mintBearer`, `:76-84`). Plus the
-positive anchor on the AUTH server (`['one','two','three']`, `[['p-1'],['p-2'],['p-3']]`, `current ∈ {null,0}`),
-because parity is vacuous when both engines degrade identically. **Precondition, asserted BEFORE the parity
-assertion on both servers:** `cells.every(c => c.agentId === undefined)` — a live `AgentRecord` carries a
-runtime `agentId`, so if either server dispatched its first `agent()` before the anonymous GET landed,
-`cells`/`edges` would differ by a random string and parity would fail as an illegible diff. IT-092 has relied
-on "no live record yet" since v22 (sandbox boot ≫ one GET); the precondition makes a timing shift fail
-legibly instead — the same hazard C-5 names for `current`. `SCRIPT_PHASED` is one constant:
-`registerPublishedVia` wraps a phase-less script in a single synthesized `main` lane
-(`workflow-fixtures.ts:139-143`, `:302`) on which no lane is ever unreached, so the DES-196 join — the clause
-REQ-134's dashed edges depend on — cannot be anchored on IT-092's `SCRIPT`.
+**S-1 — One timer, or REQ-142 attaches to one loop of six and the run view polls twice forever.** F-5. The
+remedy is C-4 (one hook, five deletions, no new module); the reason it is self-sustainability and not only
+observability: a tab left open on a run page today issues two `/dag` fetches every 3 s per viewer, the
+visibility gate REQ-142 will add pauses one of them, and the client is then the load ADR-052's measurement
+is supposed to attribute to the server. The fix costs less than the workaround it replaces (five loops
+deleted, one hook added).
 
-**S-2 — Red versus guard, labelled, or Gate 5 records a false red.** RED today: IT-168's flipped cases
-(`describe.phases[].agents` is not projected; the auth server answers 1 cell where the open server answers 4,
-`:520`) and the parity case. GREEN before and after: IT-092 re-traced as a REQ-100 **guard** — 「the DAG
-payload carries no script bytes」 — with a sentinel line in the script (`const IT092_SENTINEL =
-'never-leaves-the-engine';`, matching neither `CALL_RE` nor `AGENT_CALL_RE`) asserted absent on
-`await res.text()`, not on parsed fields, so a future field cannot smuggle it past a key-set. House precedent:
-`dashboard-disclosure.test.ts:50`'s `MARKER`. The file's header comment (`:1-15`) and the IT-168 block comment
-(`:130-139`) still state decision (a) and the mask — both are rewritten with the test, or the file lies about
-itself to the next reader.
+**S-2 — Two locks so the stylesheet cannot decay green.** O-4's class lock fails the day a class is
+renamed on one side; O-1's spec table fails the day a rule is "simplified" away. Both are node-tier
+(vitest, no browser) except the table's browser rows, which run under `RWE_REQUIRE_BROWSER=1` (DES-191) so a
+missing Chrome FAILS rather than skips. Between them, "the page drifted from the design" becomes a red CI
+run instead of an owner noticing a month later.
 
-**S-3 — UT-238 after this delta.** 7 × 2 (status × phases empty/non-empty) for `current`, plus three join
-rows: (i) unreached expected lanes extend the observed list (index 2 `three`); (ii) `expected: undefined` →
-observed-only, never throws; (iii) **new** — observed longer than expected (the loop-body `phase()` case,
-`run-manager.ts:1075` vs `skeleton-graph.ts:111-112`) → `lanes` IS the observed list, no conflict output.
-Row (iii) is what retires the rejected detector permanently: a future author who adds one turns it red.
+**S-3 — Theme-following by construction, once the values leave JS.** With R-3 done, every colour on the
+page is a token reference, so the light theme, the hue slider and a future palette change are one CSS edit
+with zero JS. Today (F-3) a palette change is a CSS edit PLUS twelve attribute literals in a painter, and the
+light theme is already wrong on the run view.
 
-**S-4 — The honest limit of the new witness: a REUSED pin is invisible.** `register()` assigns
-`v<max+1>` over the name's own rows (`workflow-catalog.ts:583`, `:621`); `workflow_deregister` removes every
-row; a re-register under the same name starts again at `v1`. A run pinned to the OLD `v1` then resolves the
-NEW `v1` on arm (i) — no throw, no FALLBACK, a predicted overlay from a script the run never executed, and
-`legacySubstitution` never set because resume resolves the same way (`run-manager.ts:899-901`, DES-113). The
-FALLBACK arm witnesses an ABSENT pin, never a reused one. Two consequences for this delta: **(a)** the FALLBACK
-integration producer (O-3 (ii)) must pin the run to a version number HIGHER than the re-registered lineage
-will reach — register twice BEFORE the run (pin `v2`), re-register once AFTER the deregister (lineage `v1`) —
-because any recipe where old pin ≤ new lineage count produces the collision and a green test that proves
-nothing; **(b)** DES-198's boundary states the limit in one sentence and names the v28 check that closes it — the
-version row's `createdAt` (`workflow_versions.createdAt`, `:230`) later than the run's `createdAt`
-(`types.ts:363`) ⇒ the pin was reused — as a catalog-lineage item OUT of this closure (ADR-051's sweep
-boundary: REQ-100's masking, DES-113's resume path and the catalog are untouched here). Named now so it is a
-requirement later, not a Gate 7.5 surprise.
+**S-4 — `no-store` on the stylesheet + the self-update: already right, keep it.** ARCH-123's cache split
+means a release-tag restart never serves an old `dashboard.css` against new markup; R-5's single delivery
+path keeps that guarantee from being half-true (an inline copy is by definition the version baked into the
+page that served it — which is fine, and is the same version, but only while both paths exist together).
 
-**S-5 — Gate 7.5 rows.** VAL-199 gains one Chromium case with `auth.enabled:true`: a never-run workflow
-renders its predicted lanes on the auth-enabled engine (no gateway needed), with the `mintBearer` trap named
-in the row (registration needs the bearer; the page and `/api/*` GETs need none) so the case cannot pass
-vacuously on 「找不到」. VAL-204 gains the p95: a VAL-side wall-clock loop (200 sequential `GET
-/api/runs/:id/dag`, auth on, the largest corpus script), one number recorded, no product timing seam. The
-bounded memo (LRU 64 or evict on catalog GC, keyed `${name}@${version}`, per process) is pre-approved on that
-number and not built before it. The v27 real-tier table rows for REQ-133 ("…rendering its predicted lanes")
-and REQ-140 ("`lanes` present in BOTH") gain the words "on the auth-enabled engine" and "the unreached
-predicted lanes and `describe.phases[].agents` present in BOTH".
-
-**S-6 — Self-healing unchanged; journal noise bounded by design, not by hope.** Every fault still degrades
-to an empty overlay and a 200 (`:540-542`, `:582-585`). The two fault-arm log lines are the closed loop the
-dashboard's "never a 500" contract opens; the dedupe shape is documented (O-5) so that if k viewers at a 3 s
-poll drown the journal on a deregistered workflow's old run, the fix is a five-line bounded `Set`, not a
-debate.
+**S-5 — Order, so the locks exist before the surfaces they lock.** TASK-214 lands (contract fixture → CSS →
+hook edits → guards green) BEFORE val-198..201 are judged; the pollers (C-4) land before or with TASK-208's
+re-verification; the handoff is vendored (C-1) before TASK-214 starts if at all possible — an implementer who
+starts from REQ prose and later receives the README re-does the component section. The guards that must
+precede any of this (`.css` walkers, no-external-host) already landed (F-8).
 
 ### Agent altitude
 
-**S-7.** No memory to metabolize (the overlay is derived from stored script text on every read until a
-measured number says otherwise), no tool probed, no prompt calibrated. One line, honestly.
+**S-6 — Nothing to metabolize, probe or calibrate.** The panel reads what the engine journaled; the event
+window and 2 KB row clip are already built. One line, honestly.
 
 ---
 
-## 5. Task-splitting — where the order decides whether a property survives (for the design synthesizer)
+## 5. Where task-splitting decides whether a property survives (for the synthesizer)
 
-The dispatch asked for this explicitly; 03-tasks.md exists, so these are `dod:` and ORDER amendments, not new
-tasks.
+1. **TASK-214 (new): the stylesheet + the class contract + the two locks.** One owner. `files:` per R-1;
+   `des:` DES-209 (new: the class table, the section format, the substrate decision R-4, the allowlist R-3,
+   the delivery-path decision R-5); `dod:` per C-2. Ordering rule 6 in the section preamble: 214 before
+   208/209/210/211's acceptance is judged.
+2. **TASK-207/210/211/212: one sentence each, no other change.** "This task adds no `.css`; the rules its
+   DoD needs are TASK-214's, and it sets only class names that appear in DES-209's table." TASK-205's DoD
+   loses its `DASHBOARD_HTML`-subject CSS sentence if R-5(i) is taken.
+3. **The poller unification (C-4/S-1): either a DoD amendment on TASK-208 (`app.js`, `poll.js`) with the five
+   deletions listed by file:line, or an explicit deferral with the three recorded consequences.** Not a new
+   module either way.
+4. **ARCH-125: one amendment clause** (R-4's node layer; the substrate is an ARCH `api:` word, and
+   implementers grep `api:` lines). No new ARCH/ADR id.
+5. **The tests this delta implies have no gate in the announced invocation.** `gates:[design,impl,verify,
+   validation,review]` skips Gate 5, yet DES-209 creates RED-first obligations — the class lock, the
+   no-design-values guard, `SPEC_ROWS`, and val-198..201's table cases. Either the orchestrator adds `tests`
+   to the invocation, or TASK-214's DoD carries "writes UT-25x / the VAL amendments FIRST, runs them red,
+   then green" (the `/sdlc-fix` F-pattern), and 05-tests.md is amended by the verify gate. Left unsaid, the
+   locks in §1/§4 land as nothing, and the whole reason this round argues for them is lost.
+6. **Vendoring the handoff is not a task; it is a precondition, and it is the orchestrator's.** Record it
+   in DES-209's boundary as "spec of record = C-1's table until `design-handoff/README.md` is present"; do
+   not make TASK-214 wait on it silently.
 
-1. **TASK-201 (`deriveLanes` signature) before TASK-203 (route) before TASK-202 (facade).** The route calls
-   the new signature; the facade's `phases[].agents` reuses `predictedLanes` from the same file. Reversed,
-   Gate 6 writes the cast UT-238 already carries.
-2. **TASK-197 (fixture: rename + `warnings` literals + `DAG_WARNING_TOKENS`) before IT-165/168/169 and before
-   TASK-206.** The fixture is the lock (O-1); every reader lands after it.
-3. **TASK-206 (`lib/strings.js`: `parseDagWarning`, `warningText`, the two token keys and `laneUntitled`)
-   before TASK-210 (`ui/run.js` renders the text).** UT-244's key-parity case covers the new keys for free.
-4. **TASK-203's `dod:` enumerates the four deletions by line** (`:520` branch, `:334` param + default, `:1068`
-   argument, comments `:331-334`/`:350`/`:1064`; `:819` stays) and the two producer cases in IT-169 (deregister →
-   UNAVAILABLE + one log line; register×2 → run pinned `v2` → deregister → register×1 → FALLBACK
-   `pinned=v2 resolved=v1` + no log line).
-5. **TASK-202's `dod:`** loses "a facade constructed with NO `maskPredictedOverlay` omits `phases[].agents`"
-   and "with its masking sentence"; gains "both servers answer `phases[].agents` present with labels; HTTP
-   describe parity across the two servers; `tool-specs.ts:332` names the field".
-6. **IT-092's row is re-traced (REQ-100, guard, green) in the same edit as IT-168's flip** — two rows in one
-   file, two different statuses, both stated.
+## 6. Ledger edit map (proposed)
+
+| Item | Edit |
+|---|---|
+| DES-209 (new) | the class contract table (R-2, two columns); the section format (R-1); the substrate (R-4: SVG edges in `#dag-graph`, HTML nodes in a sibling layer, one `cellRect`); the `ui/` style allowlist (R-3); the delivery-path decision (R-5); the spec-of-record statement and the vendoring precondition (C-1); the component layer written in full for Sprint B (C-3); tests: the class lock, the no-design-values guard, `SPEC_ROWS` + the relational rows per view per theme (O-1/O-4/R-3) |
+| DES-206 | either the `onTick` contract (C-4) or the `not-yet-true-on-disk` marker with the six sites and the three consequences |
+| DES-200 | R-5's outcome: `<link>` only (and the C1 CSS pins re-pointed to `clientFile('dashboard.css')`), or the inline copy ratified with the `<link>` removed |
+| DES-203 | `cellRect`/`triggerRect` now position HTML nodes as well as SVG edges (same numbers; one sentence) |
+| ARCH-125 | one `amended (v27 Gate 4 re-run)` clause: nodes are HTML in a sibling layer inside `#dag-zoom`, edges stay SVG in `#dag-graph`, both from one geometry |
+| TASK-214 (new) | per §5.1 |
+| TASK-205 / 207 / 210 / 211 / 212 `dod:` | per §5.2 |
+| TASK-208 `dod:` | per §5.3 (or the deferral marker) |
+| 03-tasks preamble | ordering rule 6: 214 before the view acceptance; pollers before 208's re-verification |
+| UT-241 | subject of the five CSS assertions → `clientFile('dashboard.css')` (if R-5(i)) |
+| VAL-198..201 | gain the `SPEC_ROWS` iteration for their view under both themes + after a hue move (needs a tests gate or the F-pattern, §5.5) |
+| new UT ids | the class lock; the no-design-values guard; `SPEC_ROWS` anti-vacuity |
+| `.sdlc/…/design-handoff/` | orchestrator: vendor `README.md` ONLY (not `rwe-data.js` — C3 / REQ-105's closing clause, a Gate 8 finding anywhere in the repo) |
 
 ---
 
 ## key_points
 
-1. **Amendment pass, not authorship:** DES-196/197/198/206 (+ one DES-201 line), TASK-197/201/202/203/206/210
-   `dod:`, UT-238, IT-092/168/169, VAL-199/204, the fixture. Zero new ids, zero `owner_decision`s.
-2. **C-4 withdrawn by its author** (§0 W-1): DES-197's `maskPredictedOverlay` signature clause, its fail-closed
-   paragraph and its UT line are deleted; the synthetic-principal hazard survives as one cited sentence with
-   INV-V27-9 as the guard.
-3. **The warning vocabulary is locked by the fixture** (O-1): three literal `warnings` in `dashboard-wire.ts`
-   + `DAG_WARNING_TOKENS`; `dagWarning()` formatter in `dashboard.ts` (route spells no token literal);
-   `parseDagWarning`/`warningText` in `lib/strings.js`; IT-169 asserts the format, UT-244 asserts the map.
-4. **`detail` grammar closed now** (O-2): FALLBACK = `pinned=vN resolved=vM`; UNAVAILABLE = one reason from
-   `{catalog-resolve-failed, derivation-failed}`; split on the first `': '`; unknown token → RAW string;
-   `/skeleton/i` asserted absent on the served bytes once.
-5. **Producers named per arm** (O-3): deregister → UNAVAILABLE (extend `dashboard-http.test.ts:205-222`);
-   register×2 → run pinned `v2` → deregister → register×1 → FALLBACK `pinned=v2 resolved=v1` (the pin must
-   outnumber the new lineage); `derivation-failed` is defensive, tested by `deriveLanes(…, undefined)` + the
-   kept `try/catch`, no injection seam (O-4).
-6. **Journal `reason` = warning `detail`, verbatim** (O-5), asserted by a `console.warn` spy; FALLBACK not
-   logged; dedupe shape documented, not built.
-7. **The cohort transition is a contract sentence** (C-2): FALLBACK warning before a resume, none after;
-   no test may assert persistence; the DAG warning is the authority for this read.
-8. **`deriveLanes(phases, expected | undefined, { status })`** (R-2, S-3): `undefined` = derivation failed,
-   the `server.ts:519-520` sentence rewritten; UT-238 = 7×2 + three join rows incl. observed-longer-than-expected.
-9. **Deletions are `dod:` lines by `server.ts` line number** (R-4, §5.4); `authAnnounce` and the `:819` comment
-   stay; no new config key (R-5).
-10. **Parity + anchor as written rows** (S-1): exclusion against the fixture's key tuple minus `terminalAt`;
-    describe half over anonymous HTTP on both servers; `SCRIPT_PHASED`; `current ∈ {null, 0}`.
-11. **Red-vs-guard labels** (S-2): IT-168 + parity red; IT-092 sentinel on `res.text()` green under REQ-100;
-    both header comments rewritten with the tests.
-12. **The reused-pin blind spot is stated, and the v28 check named** (S-4): `workflow_versions.createdAt >
-    run.createdAt` ⇒ pin reused; out of closure; the FALLBACK test recipe pins the run ABOVE the
-    re-registered lineage's count (old pin `v2`, new lineage `v1`) so it does not green on the collision.
-13. **Gate 7.5** (S-5): one auth-ON Chromium case in VAL-199 with the `mintBearer` trap named; VAL-204's
-    VAL-side p95; the real-tier table rows for REQ-133/140 amended in words.
-14. **Order** (§5): 201 → 203 → 202; 197 before every reader; 206 before 210; IT-092 re-trace in the same
-    edit as IT-168's flip.
+1. **CSS ownership: one stylesheet, one new task (TASK-214), sections headed by REQ, ordered before
+   val-198..201 are judged;** the four view tasks gain one sentence each. TASK/DES repair, no ARCH change
+   for ownership itself (ARCH-122 already places keyframes + components in the shell CSS).
+2. **Measured hole: 29 of 40 class names set by `ui/*.js` have no rule** — the gap is a vocabulary nobody
+   wrote; the design artifact is a two-column class table (style hooks vs. frozen `data-*`/C2 test anchors),
+   declared in a fixture, locked by a node-tier test that walks the DECLARED list (never a regex over JS).
+3. **The design values are already in JS as the wrong values:** 12 hex literals as SVG attributes in `run.js`,
+   three `cssText`s in `agent-panel.js`, `maxWidth`/`fontSize`/`rgba` literals in `workflow.js` — the run
+   view is theme- and hue-blind and VAL-198 cannot see it. TASK-214 relocates them; a one-line allowlist
+   (`display`, the zoom `transform`, `--rwe-hue`, the wrapper px from `svgBox`) plus a grep guard with a
+   positive anchor keeps them out.
+4. **REQ-134's node is undeliverable on pure SVG** (ellipsis, an HTML `.tag-neutral` inside the node,
+   `--shadow-md`): decide the substrate BEFORE assigning CSS — HTML nodes positioned by the same `cellRect`
+   in a sibling layer inside `#dag-zoom`, SVG edges stay in `#dag-graph`; INV-V27-6, ADR-044, UT-253 and
+   VAL-200's anchor all survive; one ARCH-125 clause; `foreignObject` recorded as runner-up.
+5. **ADR-053's computed-style table does not exist** (3 token reads + 1 box on disk). Build `SPEC_ROWS`
+   from REQ-131..135's constants with RELATIONAL colour rows (element ↔ `var(--token)` probe on the same
+   page, both themes, after a hue move), animation rows (`animationName`/`Duration`), and anti-vacuity.
+6. **"One timer" is six on disk** because `app.js` discards every body but the first and calls
+   `render(container, {}, {})`; the run view fetches `/dag` twice per tick and the connection reducer sees
+   one loop. Fix = `onTick(container, bodies, ctx)` returning statuses + five deletions, `ROUTES`
+   untouched, UI state (`selectedRunId`) chained inside the tick; deferral form written with its three
+   consequences (DES-206 marker, ADR-052's number inflated, REQ-142's attach point).
+7. **The handoff is not on disk:** the spec of record is C-1's table; everything unlisted is unverifiable
+   until `README.md` is vendored under `.sdlc/…/design-handoff/` (the README only — `rwe-data.js` carries
+   the C3 word, a Gate 8 finding anywhere in the repo); the DES
+   says so instead of letting 99% rest on prose.
+8. **The component layer (Classical borrow) is written in full now** so Sprint B (REQ-137/138/139) adds view
+   sections, not a second ownership dispute — the one deliberate out-of-closure build, justified by the REQ
+   naming the classes and TASK-212 already porting onto them.
+9. **One delivery path for the stylesheet** (hold (i): `<link>` only, five UT-241 re-points to
+   `clientFile('dashboard.css')`; the "first paint" reason for the inline copy does not hold for a head
+   stylesheet). Low priority, one decision line.
+10. **The announced invocation has no tests gate**, and this delta implies red-first tests (locks, guard,
+    `SPEC_ROWS`, VAL amendments): add `tests`, or put the F-pattern in TASK-214's DoD — otherwise §1/§4's
+    locks land as nothing.
 
 ## risks
 
 | # | Risk | Severity | Where it lands |
 |---|---|---|---|
-| QD-Δ-D1 | **The token is spelled in two files with no shared literal** — the fixture carries no `warnings` example, so the server test pins one string and the client test another; a rename on either side ships an English enum into the zh-TW legend with CI green. | HIGH | O-1, TASK-197/206, IT-169, UT-244 |
-| QD-Δ-D2 | **The FALLBACK integration case greens on the reused-pin collision**: whenever the run's old pin number ≤ the re-registered lineage's count (e.g. pin `v1`, then any number of re-registers), arm (i) FINDS a same-numbered new row, resolves the NEW script, pushes no warning, and a test that "proves" FALLBACK passes only because it asserted nothing about `warnings`. The producing recipe is the inverse: pin HIGH, re-register LOW. | HIGH (certainty under the natural recipe) | O-3 (ii), S-4, IT-169 |
-| QD-Δ-D3 | **A test asserts the FALLBACK warning persists across a resume** — it disappears by design once `legacySubstitution` is recorded; the "fix" would be to log or persist the warning, inventing a second durable record. | MID | C-2, DES-198 boundary |
-| QD-Δ-D4 | **`derivation-failed` grows an injection seam** (a `derive` parameter on the route or a `predictedOverlayFor()` helper) to make an unreachable arm unit-testable — a constant-valued seam of the class this delta deletes. | MID | O-4, R-3 |
-| QD-Δ-D5 | **The client splits on every `': '`** or falls back to the detail half, so `layoutGraph`'s prose warnings render as `agents cannot be statically slotted` with their subject dropped. | MID | O-2, DES-206 |
-| QD-Δ-D6 | **The journal `reason` and the warning `detail` drift** (`catalog_resolve_failed` vs `catalog-resolve-failed`); the operator's `grep` matches nothing and the correlation the log line exists for is gone. | MID | O-5, IT-169 |
-| QD-Δ-D7 | **DES-197's masking paragraph is "amended" rather than deleted** — a fail-closed sentence survives in design text after the ruling, and a Gate 6 reader restores the dep from it. | MID | R-1, W-1 |
-| QD-Δ-D8 | **The parity case is written as a pick-list** (`cells`, `edges`, `lanes`) and the likeliest future leak — a new sibling field via `...view` — is never compared. | MID | S-1 |
-| QD-Δ-D9 | **`dag-masking-auth.test.ts`'s header comments still describe the mask** after the cases flip; the next reader trusts the comment over the assertions. | LOW | S-2 |
-| QD-Δ-D10 | **A `null` lane title renders as the literal `null`** in the swimlane header for a `phase()` with a non-literal argument. | LOW | C-6 |
-| QD-Δ-D11 | **The reused-pin blind spot surfaces at Gate 7.5 as "the overlay is wrong under auth"** and is misattributed to the reversal instead of to the catalog lineage. | LOW (cost) / MID (confusion) | S-4 |
+| QD-R1 | **The CSS task is assigned and the values stay in JS** — the stylesheet defines `.cell.is-running` while `run.js` keeps setting `fill="#292a2f"` as an attribute (attributes lose to CSS only for properties the CSS actually sets; fills set by attribute stay wherever no rule overrides), so the swimlane stays theme-blind with every rule "present" and the table rows for it either fail late or are never written. | HIGH | R-3, O-2 |
+| QD-R2 | **No substrate decision; the CSS author discovers rows ①②/the shadow are undeliverable on SVG** and either drops them (not 99%) or invents `foreignObject`/HTML nodes against no DES, in the middle of the impl gate. | HIGH | R-4 |
+| QD-R3 | **The class lock is written as a regex over `ui/*.js`** — it under-counts (measured), goes green on a partial vocabulary, and the first unstyled hook ships silently. | HIGH | O-4 |
+| QD-R4 | **The spec table is written with literal `oklch(…)` strings** — false for every hue but 236, "fixed" by asserting the default hue only, and the hue-follow property is never observed. | HIGH | O-1 |
+| QD-R5 | **The tests this delta implies have no gate** — the invocation skips Gate 5, TASK-214 ships CSS with no lock, and the round's observability seam exists only in this file. | HIGH | §5.5 |
+| QD-R6 | **The handoff never arrives and nobody says so** — the component layer is invented from REQ prose, the owner's side-by-side fails on surfaces no table covers, and the failure is attributed to the implementer. | MID (certainty) / HIGH (cost) | C-1 |
+| QD-R7 | **Pollers deferred silently** — REQ-142 later attaches to `app.js` only, five loops keep polling hidden tabs, the run view's double fetch inflates ADR-052's N=1000 number, and v28's scope is decided on a client-caused measurement. | MID | C-4, S-1 |
+| QD-R8 | **Style hooks used as test anchors (or the reverse)** — a CSS rename breaks VAL-200/201, or a design change is blocked by a test id; the C2 problem reborn one layer down. | MID | R-2 |
+| QD-R9 | **Per-view CSS files or CSS inside the view tasks** — four authors, one vocabulary, one shared file on one working tree; the contract is spelled four ways. | MID | R-1 |
+| QD-R10 | **The component layer is written view-shaped** — Sprint B's first task is a second CSS ownership dispute over the same file. | MID | C-3 |
+| QD-R11 | **Both stylesheet delivery paths survive** — a 404 on the `no-store` `<link>` is invisible, the stylesheet ships twice per navigation as it grows, and INV-V27-3's sentence is half-true. | LOW | R-5 |
+| QD-R12 | **The node layer breaks the zoom contract** — nodes placed outside `#dag-zoom` or positioned in a different coordinate space than the SVG, so wheel-zoom moves edges and not nodes; val-193's real-mouse proof is the catch, if it is re-run. | LOW (cost) / MID (if unrun) | R-4, S-5 |
 
 ## expected disagreements with other lenses
 
-- **vs. the adversarial lens — on O-1's `dagWarning()` formatter in `dashboard.ts`.** They will call a
-  formatter for two strings machinery. It is one function with one home and one caller file, and it is
-  what lets `grep -c PREDICTED_ src/server.ts` be zero; the alternative is two string literals in the route
-  and a third in the test. If they win, the fixture literal + the `startsWith` assertion in IT-169 is the
-  floor I hold — the lock is the fixture, not the formatter.
-- **vs. the adversarial lens — on S-4 (the reused-pin blind spot).** They may say it is out of closure and
-  should not appear. Out of closure to FIX, agreed; but a warning that implies completeness it does not
-  have is an observability defect in THIS delta's row, and the double-register recipe is needed for THIS
-  delta's test to be non-vacuous. One sentence in DES-198 and one v28 line.
-- **vs. a security/testability lens — on parity over HTTP describe instead of MCP `workflow_describe`.**
-  They may want the MCP surface compared. The HTTP route IS the MCP projection unwrapped (`server.ts:395-410`,
-  DES-132's parity guarantee), it takes no bearer on either server, and it is the surface REQ-133 renders;
-  comparing MCP would add the bearer asymmetry to the assertion itself.
-- **vs. the design synthesizer — on R-3 (no helper for the resolve chain).** They may prefer a named
-  function for readability. The chain is three lines the trace chain already cites by `server.ts:line`; a
-  helper buys a unit tier only for the arm O-4 declines to test. If they extract it anyway, it must stay in
-  `server.ts` (it is async I/O; `dashboard.ts` is pure) and must not take a `derive` parameter.
-- **vs. a UX lens — on O-7 reusing the `queued/pending` greyed style for a FALLBACK overlay.** They may
-  want a distinct treatment. The legend text already says 「預測結構來自替代版本 vN」; a third node style is
-  a new CSS rule and a new computed-style row for a state that is rare by construction after ARCH-130 (i).
-- **vs. whoever writes DES-197 — on W-1's wording.** Expected uncontested once stated: the withdrawal is
-  mine to make, and the sentence that replaces the paragraph cites ARCH-131 rather than restating it.
-
-## Ledger edit map — one row per item the synthesizer touches
-
-| Item | Edit |
-|---|---|
-| DES-196 | signature `opts: { status: RunStatus }`, `expected \| undefined` = derivation failed (rewrite the `:519-520` sentence); boundary: observed wins / predicted fills the tail / no conflict output; `current` seven-member rule STANDS; tests: 7×2 + three join rows |
-| DES-197 | DELETE the `maskPredictedOverlay` signature clause, the fail-closed boundary paragraph and the UT line; `phases[].agents` unconditional, absent ⇔ derivation failed; one cited sentence on the synthetic principal + INV-V27-9; tests: both servers `agents` present, HTTP describe parity, `record` unchanged |
-| DES-198 | (2) `deriveLanes(view.phases, expectedGraph, { status: view.status })`; the four deletions by line; resolution (i)-(iv) with `legacySubstitution?.resolved ?? scriptVersion`; `dagWarning()` imported, no token literal in the route; (4) `{event, route:'dag', runId, reason}` on the two UNAVAILABLE arms, `reason` = detail enum; dedupe shape documented; boundary: the cohort transition (C-2), the reused-pin limit + v28 check (S-4), `derivation-failed` defensive (O-4), no new config key; tests: deregister → UNAVAILABLE + one parsed log line; register×2 → run pinned `v2` → deregister → register×1 → FALLBACK `pinned=v2 resolved=v1` + no line; `/skeleton/i` absent on served bytes |
-| DES-201 | `lib/strings.js` gains `parseDagWarning`, `warningText`, keys `predictedUnavailable`, `predictedFromFallback` (takes `resolved`), `laneUntitled`; key parity covers them |
-| DES-206 | `ui/run.js` renders `warningText(w, lang)` per entry (text, not a count); FALLBACK greys the inert cells with the existing pending style; the DAG warning is the authority, never `legacySubstitution` |
-| TASK-197 | `DAG_PAYLOAD_OPEN` → `DAG_PAYLOAD`, row label without "(open)", three `warnings` literals, `DAG_WARNING_TOKENS` |
-| TASK-201 / 202 / 203 / 206 / 210 `dod:` | per §5 |
-| UT-238 | `masked` cases out; 7×2 `status` table; join rows (i)(ii)(iii) |
-| UT-244 | + the map over the fixture literals; + `laneUntitled` in parity |
-| IT-168 | flipped positive on both servers; precondition `cells.every(c => c.agentId === undefined)` on both, THEN parity (exclusion vs the fixture tuple minus `terminalAt`) + describe parity over HTTP; positive anchor on the auth server; `SCRIPT_PHASED`; header comments rewritten |
-| IT-169 | the deregister case gains the UNAVAILABLE warning + the log-line spy; new FALLBACK case with the pin-HIGH / re-register-LOW recipe (`pinned=v2 resolved=v1`); `dagWarning()` equals the fixture literal; no `/skeleton/i` |
-| IT-092 | re-traced to REQ-100 as a green GUARD: sentinel absent on `res.text()`; `['__trigger__']` assertion deleted |
-| VAL-199 / VAL-204 | one auth-ON Chromium never-run case with the `mintBearer` trap named; VAL-side p95 loop; bounded memo pre-approved on the number |
-| Real-tier table (04-design.md:6849) | REQ-133 row + "on the auth-enabled engine"; REQ-140 row + "the unreached predicted lanes and `describe.phases[].agents` present in BOTH" |
-| README `:368-375`, `tool-specs.ts:332` | the two C-1 sentences; the describe row WITHOUT a masking sentence; the tool description names `phases[].agents` |
-| REQ-105 `:1070` | orchestrator: `[PARTIALLY SUPERSEDED v27b, Round v27b]` on the auth-gate clause only (W-7) |
+- **vs. the adversarial / simplicity lens — on C-4 (the poller unification) as scope creep.** They will say
+  the routed item was the stylesheet and six loops that work are not a defect. My position: DES-206's
+  contract is on disk as text and false as code, `run.js` itself flagged it, the run view fetches twice per
+  tick, and the remedy DELETES more than it adds (five loops out, one hook in, no module). I have written the
+  deferral form with its consequences so they can win without silence; what I will not concede is that the
+  double fetch goes unrecorded into ADR-052's measurement.
+- **vs. the adversarial lens — on the class-contract fixture as "machinery".** A `STYLE_HOOKS` array and a
+  30-line test are the minimum that makes 29 unstyled hooks red; the alternative they may offer (a regex over
+  `ui/*.js`) is the vacuous green my own extractor demonstrated. If they hold that ANY lock is machinery,
+  the table still belongs in the DES — a name must exist before code, and that costs no test.
+- **vs. the design synthesizer / architect — on R-4 (HTML nodes over SVG edges).** They may read ADR-044's
+  「client-constructed DOM (`createElementNS` + `textContent`)」 as binding the painter to SVG. `createElement`
+  + `textContent` is the same rule at the same layer; ADR-044's property was "box math server-side, DOM
+  client-side, no `innerHTML`", and it survives whole. If they hold pure SVG, REQ-134 rows ①-② and the
+  running shadow must be marked as consciously not built, in the REQ's own house style, before Gate 7.5
+  photographs their absence.
+- **vs. a testability lens — on relational colour rows.** They may prefer exact literals as the stronger
+  oracle. A literal is stronger on one hue and false on every other; the relational row pins the property
+  REQ-131 states (「依 OKLCH 公式重算」) and stays true after a palette edit. Where a value IS a literal in the
+  REQ (sizes, timings, `oklch(0.55 0.16 25)` for failed), the row is literal.
+- **vs. whoever wants the CSS inside TASK-210/211 "because the painter is there".** The painter and the
+  stylesheet are two seams with one contract between them; putting the rules in the painter's task puts the
+  palette back in JS (F-3 is exactly what that produces). One author for the vocabulary, then anyone may
+  restyle.
+- **vs. the orchestrator — on §5.5.** The announced gate list is theirs to set; I only note that the locks
+  in this proposal are tests, and a design delta whose tests have no gate is a design delta whose properties
+  have no proof.
