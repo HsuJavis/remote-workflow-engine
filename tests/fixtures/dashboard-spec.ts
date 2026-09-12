@@ -33,8 +33,8 @@
 // own headers note); six rows rewritten or deleted in this same pass where the ORACLE, not the
 // implementation, was wrong (a permanently-unsatisfiable literal, or an anchor DES-209's own table
 // does not actually assign the checked rule to) — each carries its own `[v27c gate 5 fix]` comment.
-// `SPEC_ROWS.length >= 40` (45, after the v27c deletion and the v27 Gate 6 VAL-208 additions) is
-// asserted at the acceptance tier.
+// `SPEC_ROWS.length >= 40` (51, after the v27c deletion, the v27 Gate 6 VAL-208 additions, and the
+// v27 README-fidelity audit's own 7 new rows below) is asserted at the acceptance tier.
 //
 // [v27 Gate 6 fix, VAL-208]: a new row kind, `notClipped` — the ONE failure class every row above
 // is structurally blind to. A literal/token/animation row compares a stylesheet-authored VALUE
@@ -129,6 +129,20 @@ export const SPEC_ROWS: ReadonlyArray<SpecRow> = [
   { req: 'REQ-134', view: 'run', anchor: '[data-node-cell].is-queued', prop: 'border-style', expect: { literal: 'dashed' } },
   { req: 'REQ-134', view: 'run', anchor: '[data-node-cell].is-running', prop: 'animation-name', expect: { animation: ['rweGlow', '1.8s'] } },
   { req: 'REQ-134', view: 'run', anchor: '[data-node-cell].is-running .cell-dot', prop: 'animation-name', expect: { animation: ['rweRing', '1.3s'] } },
+  // [pending item "the status dot is invisible" fix] `.cell-dot` had shape but no paint in any
+  // state — these four rows are the real-tier proof the fix landed, one per README state rule
+  // ("running: dot = accent" / "done: dot = text colour" / "failed: dot = the fixed failure red" /
+  // "queued/pending: hollow dot"). `is-done`/`is-running` are `token` rows (hue-derived, compared
+  // against a same-page probe, DES-209's rule); `is-failed` is `literal` (the fixed red is NOT
+  // hue-derived, same convention as the existing `[data-node-cell].is-failed` border-color row
+  // above); `is-queued`'s HOLLOW dot is proven via `border-color`, not `background-color` —
+  // `getComputedStyle` normalises an authored `transparent` to `rgba(0, 0, 0, 0)`, a serialization
+  // detail no `SPEC_ROW` kind should pin as if it were the spec fact (the spec fact is "no fill,
+  // a muted ring", and the ring is what the border-color row actually checks).
+  { req: 'REQ-134', view: 'run', anchor: '[data-node-cell].is-running .cell-dot', prop: 'background-color', expect: { token: 'color-accent' } },
+  { req: 'REQ-134', view: 'run', anchor: '[data-node-cell].is-done .cell-dot', prop: 'background-color', expect: { token: 'color-ink' } },
+  { req: 'REQ-134', view: 'run', anchor: '[data-node-cell].is-failed .cell-dot', prop: 'background-color', expect: { literal: 'oklch(0.55 0.16 25)' } },
+  { req: 'REQ-134', view: 'run', anchor: '[data-node-cell].is-queued .cell-dot', prop: 'border-color', expect: { token: 'color-muted' } },
   { req: 'REQ-134', view: 'run', anchor: 'data-lane-header', prop: 'font-size', expect: { literal: '13px' } },
   { req: 'REQ-134', view: 'run', anchor: 'data-lane-header', prop: 'font-weight', expect: { literal: '600' } },
   // [v27c gate 5 fix] getComputedStyle always resolves letter-spacing to px, never `em` — 0.52px
@@ -157,4 +171,19 @@ export const SPEC_ROWS: ReadonlyArray<SpecRow> = [
   { req: 'REQ-135', view: 'panel', anchor: '[data-agent-panel] .prompt-pre', prop: 'white-space', expect: { literal: 'pre-wrap' } },
   { req: 'REQ-135', view: 'panel', anchor: '[data-agent-panel] .detail-block', prop: 'color', expect: { literal: 'oklch(0.45 0.16 25)' } },
   { req: 'REQ-135', view: 'panel', anchor: '[data-agent-panel] .event-kind.is-log', prop: 'border-color', expect: { literal: 'oklch(0.55 0.16 25)' } },
+  // [v27 README-fidelity audit] two rows below close gaps found walking README §3 "Agent panel"
+  // against SPEC_ROWS: the backdrop's own fade/tint (was checked by nothing — `data-agent-panel-
+  // backdrop` is newly registered above, an anchor that already existed on disk), and the failure
+  // detail box's own border (README: "shown in a red-outlined box" — only its TEXT colour had a
+  // row). `.event-kind.is-tool`/`.is-message` (README: "tool call = accent tint, message = neutral")
+  // are the SAME class of gap but deliberately NOT added here — measured (real Chromium, this pass)
+  // that no existing fixture in val-201 ever drives a `tool_call`/`tool_result`/`message`-kind
+  // transcript event into the panel (its agents call a plain ollama-style stub with no tool use,
+  // and `message`-kind events are an SDK-gateway-only path per `types.ts:559`'s own comment) — a row
+  // for either would be permanently "anchor matched no element", a fixture gap masquerading as a
+  // style defect. Confirmed by adding them and watching both fail this exact way, then removing them
+  // rather than leaving a red row for the wrong reason (see this implementer's report).
+  { req: 'REQ-135', view: 'panel', anchor: 'data-agent-panel-backdrop', prop: 'background-color', expect: { literal: 'rgba(8, 12, 9, 0.5)' } },
+  { req: 'REQ-135', view: 'panel', anchor: 'data-agent-panel-backdrop', prop: 'animation-name', expect: { animation: ['rweFadeIn', '0.2s'] } },
+  { req: 'REQ-135', view: 'panel', anchor: '[data-agent-panel] .detail-block', prop: 'border-color', expect: { literal: 'oklch(0.55 0.16 25)' } },
 ] as const;

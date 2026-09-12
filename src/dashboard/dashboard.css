@@ -242,8 +242,19 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
    for 5) so no shrink is triggered at all; `flex:none` on each row is belt-and-braces against any
    future content growth reopening the same class of defect. */
 .cell-head{display:flex;align-items:center;gap:7px;min-width:0;flex:none}
-.cell-dot{width:9px;height:9px;border-radius:50%;flex:none;box-sizing:border-box}
-.cell.is-running .cell-dot{animation:rweRing 1.3s ease-out infinite}
+/* [v27 Gate 6 fix, pending item "the status dot is invisible"] `.cell-dot` carried a size/shape
+   but no `background`/`border` in any state but `.is-running` (and that state only added the
+   `rweRing` animation, on a dot with no fill to ring around) — the 9px dot painted nothing in
+   EVERY state, on EVERY node (`req134-node-zoom-hires-AFTER.png`). Per the handoff README's own
+   per-state rules ("2. Workflow detail" -> Node cell): running = accent fill (matching
+   `stColor('running')`/`.edge.is-active`'s own accent), done = text colour, failed = the fixed
+   failure red (matching this same file's `.cell.is-failed` border-color, not hue-derived), queued
+   = a HOLLOW dot (transparent fill, muted border) rather than a fifth invented colour. */
+.cell-dot{width:9px;height:9px;border-radius:50%;flex:none;box-sizing:border-box;background:var(--color-muted)}
+.cell.is-running .cell-dot{background:var(--color-accent);animation:rweRing 1.3s ease-out infinite}
+.cell.is-done .cell-dot{background:var(--color-ink)}
+.cell.is-failed .cell-dot{background:oklch(0.55 0.16 25)}
+.cell.is-queued .cell-dot,.cell.is-predicted .cell-dot{background:transparent;border:1px solid var(--color-muted)}
 .cell-label{font-weight:600;font-size:13.5px;line-height:1.15;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .cell-meta{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:11px;min-width:0;flex:none}
 .cell-model{font-size:11px;opacity:.8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}

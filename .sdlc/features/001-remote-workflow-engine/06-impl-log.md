@@ -5641,3 +5641,97 @@ unregistered class fails `dashboard-class-contract.test.ts`'s bidirectional lock
   two rows would have measured ~0.30/0.33 ratio, well under the 0.8 floor — confirmed by hand against
   the pre-fix tree via the harness's own printed ratios in IMPL-250's verification, not re-run
   separately against a reverted tree per CLAUDE.md's no-checkout rule).
+
+### IMPL-253 — the status dot fix: `.cell-dot` gets a per-state background/border (state.yaml pending item, REQ-134)
+- **status:** done
+- **traces:** TASK-210, DES-206, REQ-134
+- **greens:** `[data-node-cell].is-running/.is-done/.is-failed/.is-queued .cell-dot` (4 new SPEC_ROWS, `val-200-swimlane.test.ts`'s own `SPEC_ROWS (run view, REQ-134)` case)
+- **files:** src/dashboard/dashboard.css, src/dashboard/ui/run.js, tests/fixtures/dashboard-spec.ts
+- **commit:** (pending — see report)
+- **iter:** v27
+
+The pending item routed to Gate 6: `.cell-dot` (dashboard.css) had shape (`width`/`height`/`border-
+radius`) but no `background`/`border` in ANY state but `.is-running` (which only added the `rweRing`
+animation — a ring around a dot with no fill to ring). The 9px dot painted nothing, in every state,
+on every swimlane node — `run.js`'s own file banner already named this exact gap ("item 2") as
+reported-not-fixed by the prior VAL-208 pass. Fixed purely in `dashboard.css`, no `run.js` code
+change needed (the `<span class="cell-dot">` already carries no inline style and inherits entirely
+from its parent `.cell.is-*` class already set by `cellClassName()`); `run.js`'s banner comment is
+updated to record the resolution.
+
+Per the README's own per-state rules ("2. Workflow detail" -> Node cell): **running** = accent fill
+(`var(--color-accent)`, matching `stColor('running')`/this file's own `.edge.is-active` convention);
+**done** = text colour (`var(--color-ink)`, the same token `.btn`/`.seg button.active` already use
+for "ink"); **failed** = the fixed failure red `oklch(0.55 0.16 25)` (NOT hue-derived, same literal
+already used by `.cell.is-failed`'s own border-color and `.event-kind.is-log`); **queued** (and the
+parallel `is-predicted` cell, same visual family as the handoff's "queued/pending") = a HOLLOW dot —
+`background:transparent` + `border:1px solid var(--color-muted)` — rather than inventing a fifth
+colour. The base `.cell-dot` rule keeps a `var(--color-muted)` fill as a fallback for the ONE
+`AgentRecord` state `cellClassName()` deliberately does not map to an `is-*` class (`refused` — an
+existing, unrelated "no third node style" rule, `run.js:125`), giving it a neutral dot rather than
+an invisible one; this is an interpretation, not a new node style — REQ-134 names four states and
+this pass implements exactly those four.
+
+**Verification (real, this pass):**
+- `npx tsc --noEmit` → 0 errors.
+- `npx vitest run tests/unit tests/integration` → 328 files, 2466 passed, 1 skipped, 0 failed. One
+  run in the middle of this pass showed 1 failure in `unclaimed-trigger-create.test.ts` (a schedule
+  fired 5 times instead of 1) under full-suite resource contention; re-run alone (7/7 green) and
+  re-run of the full suite again (2466/0) both confirm this is a pre-existing timing flake unrelated
+  to this pass's files (dashboard.css/run.js/test fixtures, nothing schedule/trigger-related).
+- `RWE_REQUIRE_BROWSER=1 npx vitest run` the 7 named acceptance files → 26 tests, all green,
+  including `val-200-swimlane.test.ts`'s `SPEC_ROWS (run view, REQ-134)` case, now exercising the 4
+  new dot rows against the LIVE `is-failed`/`is-running`/`is-queued` state-cells run (`stateRunId`)
+  and the completed base run (`is-done`).
+- A self-booting real-run harness, `evidence/v27/req134-dot-fix-verify.mjs` (new — reuses val-200's
+  own `FAIL_MARKER`/`HOLD_MARKER`/`runConcurrency:1` technique to get failed+running+queued cells
+  live on one page, plus a plain completed run for `done`), measured `getComputedStyle('.cell-dot')`
+  on the REAL rendered DOM: `is-done` `rgb(231, 233, 236)` fill (dark theme's `--color-ink` hex),
+  `is-failed` `oklch(0.55 0.16 25)` fill, `is-running` `oklch(0.72 0.065 236)` fill (dark theme's
+  `--color-accent` at the default hue 236), `is-queued` `rgba(0, 0, 0, 0)` fill + `rgb(142, 151,
+  163)` 1px border (dark theme's `--color-muted` hex) — a real hollow ring, not a CSS no-op.
+  Screenshots: `evidence/v27/req134-dot-{done,failed,running,queued}-AFTER.png`.
+- `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → 33 gaps, identical set to
+  IMPL-250's own baseline (REQ-137/138/139/142/143 unimplemented, TASK-018/153 unimplemented, v1-v26
+  drift warnings) — confirmed by diffing the gap tab's own text, not the summary count alone; none
+  name REQ-134, dashboard.css, run.js, or any id this pass touched.
+
+### IMPL-254 — README-fidelity audit: SPEC_ROWS walked against the vendored oracle for REQ-131/132/133/134/135
+- **status:** done
+- **traces:** DES-209, REQ-131, REQ-135
+- **greens:** `data-agent-panel-backdrop` background-color/animation-name, `[data-agent-panel] .detail-block` border-color (3 new SPEC_ROWS, `val-201-agent-panel.test.ts`'s own `SPEC_ROWS (panel view, REQ-135)` case)
+- **files:** tests/fixtures/dashboard-spec.ts, tests/fixtures/dashboard-classes.ts
+- **commit:** (pending — see report)
+- **iter:** v27
+
+DES-209's owner_decision (2026-09-12) vendored the handoff `README.md`/`.dc.html` into
+`.sdlc/design-handoff/` as the real fidelity oracle, precisely because REQ-134's dot bug proved a
+spec line nobody copied into the old hand-transcribed `SPEC_ROWS` subset is a line nobody checks.
+This pass walked the vendored README's "Header / chrome" (REQ-131), "1. Workflows home" (REQ-132),
+"2. Workflow detail" incl. swimlane (REQ-133/134), and "3. Agent panel" (REQ-135) sections against
+`SPEC_ROWS`, `dashboard-classes.ts`, and the acceptance tests (val-198..202), and the full coverage
+table is in this implementer's report to the orchestrator (kept out of this ledger entry per the
+report's own line budget). Two rows added (`data-agent-panel-backdrop`'s fade/tint — the backdrop
+was ALREADY emitted by `agent-panel.js` but its own `data-*` anchor was never registered in
+`TEST_ANCHORS` nor used by any row) plus one row (`.detail-block`'s own border, README: "shown in a
+red-outlined box" — only its TEXT colour had a row before this pass).
+
+Two rows were ADDED, MEASURED RED for a genuine reason, then REMOVED rather than left red or
+fudged: `[data-agent-panel] .event-kind.is-tool`/`.is-message` background-color (README: "tool call
+= accent tint, message = neutral"). Real Chromium confirmed both fail with "anchor matched no
+element" under all three theme/hue passes — measured, not assumed: no existing fixture in
+`val-201-agent-panel.test.ts` ever drives a `tool_call`/`tool_result`/`message`-kind transcript
+event into the panel (its agents call a plain ollama-style stub with no tool use, and `message`-kind
+events are an SDK-gateway-only path per `types.ts:559`'s own comment on the union). A permanently-red
+row for a fixture gap, not a style defect, would be worse than the gap staying visible in the
+coverage table — recorded there instead, with the reason, per this pass's own instruction not to pad
+the fixture with rows that cannot fail (or, symmetrically here, cannot pass for the right reason).
+
+**Verification (real, this pass):** included in IMPL-253's own three test runs above (`tsc`,
+unit/integration, the 7-file acceptance run, `sh .sdlc/trace --check`) — this entry adds no
+additional test files, only additional `SPEC_ROWS`/`TEST_ANCHORS` rows exercised by the SAME
+`val-201-agent-panel.test.ts` run. `dashboard-class-contract.test.ts`/`dashboard-no-design-values.test.ts`
+re-run standalone to confirm the new `data-agent-panel-backdrop` `TEST_ANCHORS` entry is genuinely
+emitted (it is — `agent-panel.js:118`'s pre-existing `setAttribute` call) and the bidirectional class
+lock is unaffected (no new `STYLE_HOOKS` class was added — `.agent-backdrop`/`.detail-block` were
+already registered): 3 files, 29 tests, all green.

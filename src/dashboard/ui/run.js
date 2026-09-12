@@ -56,8 +56,9 @@
 // 1. RESOLVED — `val-193-dag-fit-and-columns.test.ts`'s third case was re-pointed to `.cell-usage`
 //    by the tests/verifier gate per the orchestrator's v27 authorization (state.yaml); confirmed on
 //    disk, no longer open.
-// 2. `.cell-dot` carries no `background`/`border` in any state but `.is-running` (which only adds
-//    the `rweRing` animation) — it renders but may be visually invisible. CSS-only.
+// 2. RESOLVED — `.cell-dot` now carries a per-state `background`/`border` (dashboard.css's own
+//    comment above `.cell-dot`); no change needed in this file, the dot element already carries no
+//    inline style and relies entirely on the `.cell.is-*` class already set by `cellClassName()`.
 //
 // [v27 Gate 6 fix pass, VAL-208] The row-grouping defect VAL-208 reported (`.cell`'s five children
 // flex-shrunk into illegible slivers) is fixed this pass — see `.cell-head`/`.cell-meta` below and

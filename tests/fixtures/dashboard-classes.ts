@@ -65,6 +65,12 @@ export const STYLE_HOOKS: readonly string[] = [
 export const TEST_ANCHORS: readonly string[] = [
   'data-lane-header', 'data-node-cell', 'data-legend', 'data-agent-panel', 'data-tab',
   'data-section', 'data-run-chip', 'data-history-table',
+  // [v27 README-fidelity audit] `data-agent-panel-backdrop` was already emitted by
+  // `agent-panel.js` (the DES-209-style comment right next to its own `setAttribute` call even
+  // names it a TEST_ANCHORS candidate) but never actually added here or used by any SPEC_ROW —
+  // the backdrop's fade/dim (README "Backdrop rgba(8,12,9,.5) fades in .2s") was checked by
+  // nothing. Registering the anchor that already exists on disk, not inventing a new one.
+  'data-agent-panel-backdrop',
   '#dag-fit', '#dag-graph', '#dag-zoom', '#run-usage', '#diagram-img', '#diagram-zoom',
   '.card', '.t',
 ] as const;
