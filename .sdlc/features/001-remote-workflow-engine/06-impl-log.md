@@ -5647,7 +5647,7 @@ unregistered class fails `dashboard-class-contract.test.ts`'s bidirectional lock
 - **traces:** TASK-210, DES-206, REQ-134
 - **greens:** `[data-node-cell].is-running/.is-done/.is-failed/.is-queued .cell-dot` (4 new SPEC_ROWS, `val-200-swimlane.test.ts`'s own `SPEC_ROWS (run view, REQ-134)` case)
 - **files:** src/dashboard/dashboard.css, src/dashboard/ui/run.js, tests/fixtures/dashboard-spec.ts
-- **commit:** (pending — see report)
+- **commit:** f5ee006
 - **iter:** v27
 
 The pending item routed to Gate 6: `.cell-dot` (dashboard.css) had shape (`width`/`height`/`border-
@@ -5701,7 +5701,7 @@ this pass implements exactly those four.
 - **traces:** DES-209, REQ-131, REQ-135
 - **greens:** `data-agent-panel-backdrop` background-color/animation-name, `[data-agent-panel] .detail-block` border-color (3 new SPEC_ROWS, `val-201-agent-panel.test.ts`'s own `SPEC_ROWS (panel view, REQ-135)` case)
 - **files:** tests/fixtures/dashboard-spec.ts, tests/fixtures/dashboard-classes.ts
-- **commit:** (pending — see report)
+- **commit:** f5ee006
 - **iter:** v27
 
 DES-209's owner_decision (2026-09-12) vendored the handoff `README.md`/`.dc.html` into
