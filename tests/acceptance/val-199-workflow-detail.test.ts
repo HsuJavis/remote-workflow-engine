@@ -218,4 +218,41 @@ describe('workflow detail page, real Chromium (VAL-199, REQ-133)', () => {
       await browser.close();
     }
   }, 20000);
+
+  // [v27c AC-4 Gate 8 repair] the falsifying test the review named: "describe ok + runs degraded ->
+  // tag degraded, no throw". `ui/workflow.js` has no unit tier (ADR-049/ARCH-124: no DOM outside a
+  // real browser), so this is the only tier that can witness it. ONE network response is faked at
+  // the browser's edge (`/api/runs`, the SAME single-boundary-fake convention as `FAKE_GATEWAY` in
+  // the integration tests) — everything else (server, page, describe route, scripts/CSS) is real.
+  // Before the repair this reproduced as a `pageerror` (`allRuns.filter is not a function`,
+  // `ui/workflow.js`'s `nameFilteredRuns`) and the tag stuck at `checking` — `nextConnection` never
+  // even ran because the throw happened before it, in the SAME `onTick` call (`app.js:352`, before
+  // `app.js:356`).
+  itReal('a degraded /api/runs beside a healthy describe: the connection tag reads degraded, no page error (AC-4)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      const pageErrors: string[] = [];
+      page.on('pageerror', (err) => pageErrors.push(String(err)));
+      await page.setRequestInterception(true);
+      page.on('request', (req) => {
+        if (new URL(req.url()).pathname === '/api/runs') {
+          req.respond({ status: 200, contentType: 'application/json', body: JSON.stringify({ runs: [], degraded: 'val199 injected degrade' }) });
+          return;
+        }
+        req.continue();
+      });
+      await page.goto(`${baseUrl}/dashboard/workflow/val199-detail`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await page.waitForFunction(
+        () => document.querySelector('.rwe-connection')?.getAttribute('data-status') !== 'checking',
+        { timeout: 10000 },
+      );
+      const status = await page.$eval('.rwe-connection', (el) => el.getAttribute('data-status'));
+      expect(status).toBe('degraded');
+      expect(pageErrors).toEqual([]);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
 });

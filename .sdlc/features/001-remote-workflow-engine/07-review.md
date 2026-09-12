@@ -1,10 +1,475 @@
 ---
 stage: review
-status: passed
+status: sent-back   # v27 Gate 8: 13 blocking findings → impl / architecture / validation / design
 ---
 # 07 Review & Retro — Gate 8
 
-## v26 GATE 8 RE-REVIEW #1 (2026-09-11, CURRENT / AUTHORITATIVE — **CLOSE**, `send_back = []`, 0 HIGH)
+## v27 GATE 8 REVIEW (2026-09-13, CURRENT / AUTHORITATIVE — **SEND BACK**, `send_back = ["impl","architecture","validation","design"]`, 2 HIGH)
+
+> First Gate 8 pass of the v27 closure (**REQ-131..136, REQ-140, REQ-141** — the operator dashboard
+> rebuilt to the Claude Design handoff). Tree at review: **`ef0a400`**, working tree otherwise clean
+> (only the untracked `.panel/review/` expert reports). Every `file:line` below was opened and
+> re-verified by this reviewer at `ef0a400`; nothing is quoted from a gate's own report without a
+> disk check, and three claims were **reproduced by execution** (`node` against the shipped
+> `lib/connection.js`, a real headless-Chromium render of `dashboard.html`, and the full suite).
+>
+> The two architecture-consistency experts were **pre-run by the workflow** and are consolidated,
+> not re-spawned: `.panel/review/adversarial.md` (security × scalability × testability, 8 findings —
+> 1 HIGH / 2 MED / 5 LOW) and `.panel/review/quality-dimensions.md` (observability / replaceability /
+> consumability / self-sustainability, 15 findings — 1 HIGH / 7 MED / 7 LOW). Their two HIGHs are the
+> **same finding** seen from two lenses.
+>
+> **Verdict: the iteration does NOT close.** 13 blocking findings across four gates. Two of them are
+> HIGH and neither was reachable from any green signal: the full suite is **2829 passed / 26 skipped,
+> 0 failed** and `sh .sdlc/trace --check` is at its usual floor, *while* the disclosure control
+> asserts a fixture against itself and both operator manuals document three features that do not
+> exist in the code.
+>
+> **`arch_consistent: NO`** — the two panels agree the implementation deviates from the Gate 2
+> decisions; this review confirms 11 of their findings on disk and adds 2 of its own.
+
+### §0 Gap tally
+
+**HIGH 2 · MID 11 · LOW 46.** (HIGH + MID = the 13 blocking findings in §8; every LOW is recorded debt in §9.)
+
+| Sev | Count | Composition |
+|-----|-------|-------------|
+| HIGH | 2 | **AC-1** (ADR-054 / INV-V27-7 — the disclosure key-set control asserts a fixture against itself; two endpoints this delta widened carry no row) · **DOC-1** (README.md + DEPLOY.md document Models sorting/filter/slide-in, System stat-cards + process table, and hidden-tab poll pause — none of which exist) |
+| MID | 11 | The eleven blocking MIDs, one per §8 item 2–13: **AC-2** (`tsconfig.json` adds `DOM`+`allowJs`, which ADR-049 refuses by name) · **AC-3a** (ARCH-122's shell is discarded by `app.js:427`) · **AC-3b** (the C1 page-source pin guards dead bytes) · **AC-4** (degraded `/api/runs` crashes the workflow view; `worstOf` unwired) · **AC-5** (three tabs poll once at mount while the footer clock keeps claiming freshness) · **AC-6** (INV-V27-5's lock does not cover the rendered panel) · **AC-7** (`lib/clock.js` breaks ARCH-124's purity clause) · **AC-8** (ARCH-123's split cache policy ships as a bare `Cache-Control: immutable`) · **AC-9** (INV-V27-1's oracle substitutes a priced call for the terminally-failed one) · **DASH-1** (two `sequenceDiagram`s in `02-architecture.md` do not render) · **DASH-2** (the `classDiagram` in `04-design.md` does not render). **2 HIGH + 11 MID = the 13 blocking findings in §8.** |
+| LOW | 46 | 23 trace gaps (21 漂移 + 2 TASK 未實作, **byte-identical to v26's set, zero v27 entries**) · 10 `solid_check` 未認領檔案 · 11 carried panel findings recorded as debt (F-4, F-5, F-6, F-7≡QD-S2, QD-O4, QD-O5, QD-R2, QD-R3, QD-R4, QD-C2, QD-C3) · 2 ledger/tooling (TOOL-FORK, DOC-H) — all sixteen §9 rows. **Not carried from v26's LOW list:** its 7 `dashboard_check` rows — 6 are now *proven* false positives (they render, §3) and the 7th is promoted to blocking DASH-1b. **Not counted here either:** the 10 MID trace rows for REQ-137/138/139/142/143, which are the recorded out-of-closure slice (§1). |
+
+---
+
+### §1 Traceability consistency — checked, clean (no new gap, no v27 drift)
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` → **1651 items / 33 gaps**, regenerated
+this pass. Gap set enumerated by calling `analyze()` directly rather than read off the summary:
+
+| Type | Count | Disposition |
+|---|---|---|
+| `未實作` / `未驗證` REQ (mid) | 10 | REQ-137/138/139/142/143 × 2. **Recorded, not neglect**: `02-architecture.md:3323` names all five as outside this dispatch's closure and states each one's attachment point; `03-tasks.md:1662` repeats it ("Out of this closure and deliberately untouched"); `04-design.md:7019` records REQ-142's visibility gate and REQ-143's demo arm as "refused this round". Carried debt. |
+| `漂移` (low) | 21 | **All pre-v27** — the newest is `DES-022 (v2) 落後於 IMPL-219 (v26)`. Not one row involves a v27 item. |
+| `未實作` TASK (low) | 2 | TASK-018, TASK-153 — carried unchanged since v23. |
+
+- **0 斷鏈, 0 孤兒, 0 未真實驗證(mock-only), 0 未驗證 REQ in the closure.** The Gate 7.5 mock hard-rule
+  holds: every one of REQ-131..136/140/141 carries a `real: true` green (§6).
+- **doc↔code iteration drift: NONE.** Every v27 IMPL has a design parent at the same or a later
+  `iter`; the drift detector's 21 hits are all pre-v27 and unchanged from v26's set. This is the
+  cleanest drift result in the ledger's history for a slice this size (48 IMPL rows).
+- **Trend:** v26 closed at 1492/24; v27 is 1651/33 — **+159 items, +9 gaps, and all 9 are the five
+  parked REQs' two rows each minus one resolved**. No 趨勢-tab finding.
+- **Tooling note (carried debt, unchanged):** `.sdlc/trace.py` is an **old vendored fork** of the
+  plugin's scanner (1034 lines vs 1234 at plugin 2.4.3) — it has no `--tool` dispatch, no
+  `待業主決策` gap type, and its dashboard emits no offline mermaid fallback and no `#Lnnn` SoT
+  anchors. Running the plugin's newer `trace.py` against this ledger reports 530 gaps, of which 143
+  are "REQ has no IMPL" for REQs that demonstrably do (REQ-001 included) — a **parser incompatibility
+  with this ledger's conventions, not a ledger defect**; the vendored copy stays the tool of record
+  and the newer checkers were run standalone (§3, §4). Already recorded at `07-review.md:809`.
+
+---
+
+### §2 Architecture consistency — consolidated from the two pre-run expert panels
+
+**Routing rule (inherited from v26 §2, applied mechanically, not re-invented):** *blocking* = (a) code
+or its named control violates a declared `INV-V27-*` / `ARCH-*` **api** clause, or (b) the
+architecture body asserts something the tree contradicts. *Recorded debt* = the code is right and
+honest, no reader is misled on a surface an `api:` clause names, and it is not a repeat miss.
+
+Both panels return **`consistent: no`**. Their two HIGHs are one finding (AC-1). This reviewer
+re-verified 11 findings on disk; the ones that bite are below, the rest are §9.
+
+#### AC-1 — **HIGH** (adversarial F-1 ≡ quality QD-C1) — the disclosure key-set control asserts a fixture against itself
+
+**Violates** INV-V27-7 (「every `/api/*` response's top-level key set is enumerated in one test whose
+SHAPE … may not be relaxed」) and ADR-054 decision (b).
+
+Verified independently: `tests/integration/dashboard-disclosure.test.ts:36-43` — the case is even
+*titled* 「… against the fixture itself」 — iterates `DISCLOSURE_TABLE` and computes
+`Object.keys(row.body)`, where `row.body` is a static literal from
+`tests/fixtures/dashboard-wire.ts:125-131` (`AGENT_LOG_OK`, `RUN_SUMMARY_PRICED`, `DAG_PAYLOAD`,
+`DEGRADED_BODY`…). **No production code is a subject of that assertion**, and the `satisfies` lock
+does not close it: an *optional* field added to a route type leaves every fixture still satisfying
+it, so `tsc --noEmit` stays green too. The file **does** boot a real server (`:71+`) — for the
+REQ-136 confidentiality oracle, which *is* asserted against the real response body on both
+transports (`:114-129`). That is exactly the shape the key-set half needed and did not get.
+
+Two endpoints **this delta widened** additionally carry no row at all: `/api/home` (ARCH-126 added
+`avgCostUSD`/`unpricedRuns`, `src/dashboard.ts:101-102`) and the HTTP
+`GET /api/runs/:id/agents/:agentId` — the one route ADR-054 names by URL, widened with `record`
+(ARCH-131), dispatched **before any auth check** (`src/server.ts:563`, posture at `:1284-1294`).
+
+**Why HIGH and not debt.** ADR-054 refused option (a) — a real projection module every payload
+passes through — on the explicit ground that (a) and (b) 「deliver the identical property」. As built
+they do not: (a) would sit in the request path. This is the only named control for a security
+property on an anonymous surface that v27 widened three times, and INV-V27-9's own scoping sentence
+delegates the "leaks identically on both servers" case *to this test*.
+
+#### AC-2 — MID (F-2) — `tsconfig.json` adds `DOM` and `allowJs`, which ADR-049 refuses by name
+
+`tsconfig.json:7` → `"lib": ["ES2022", "DOM", "DOM.Iterable"]`; `:8` → `"allowJs": true`; one
+tsconfig in the repo, `include: ["src","tests","vitest.config.ts"]`, no project references — so it
+applies to the whole server tree. ADR-049's Consequences say these are 「**deliberately NOT added** to
+the root tsconfig, because that would make `document` a known global in server code」 and ARCH-124's
+note repeats it. IMPL-229 (`06-impl-log.md:4481-4547`) landed it honestly (36 `tsc` errors → 0) but
+**no ADR-049/ARCH-124 amendment and no `superseded_in_part:` marker was written**, so the
+architecture still asserts a compile-time guard that no longer exists, repo-wide.
+
+#### AC-3 — MID (F-3 ≡ QD-R5) — ARCH-122's shell is deleted by the client before first paint, and the C1 pin guards bytes no browser renders
+
+`src/dashboard/ui/app.js:427` — `document.body.replaceChildren(nav, routeMount, buildFooter())`.
+What the shell actually emits (`src/dashboard-page.ts:92-150`) is the **pre-v27 page body**
+(`<h1>Remote Workflow Engine — Live Dashboard</h1>`, `Runs`/`Issues` links, `#home`/`#detail`/`#issues`
+sections). ARCH-122's `api:` attributes the nav, the four tab shells, the `#dag-*` anchors,
+`#run-usage`, the component classes and the panel container to this module; all are built in
+`run.js`/`workflow.js`/`agent-panel.js` instead. Consequence: `tests/unit/dashboard-page-source.test.ts:38`
+asserts `<img id="diagram-img" … draggable="false">` on markup `app.js:427` deletes — delete
+`img.draggable = false` from `workflow.js:154` and the pin stays green while REQ-129/D10's recorded
+defect (VAL-189) regresses. Behaviour is still covered at the real tier
+(`val-197-diagram-drag-pan.test.ts:119-123`), which is why this is MID, not HIGH — what failed is the
+*unit pin's* claim to guard it, and ARCH-122's own note still says these stay 「assertable here」.
+*Split for repair: the ARCH-122 amendment is Gate 2's (AC-3a); the dead pin is Gate 6's (AC-3b).*
+
+#### AC-4 — MID (QD-O1) — a degraded `/api/runs` body crashes the workflow view, and the nav tag keeps saying 連線中
+
+**Reproduced by execution**, not read: `node` against the shipped `src/dashboard/lib/connection.js`
+returns `nextConnection({…},{results:{a:'ok',b:'degraded'}})` → `{"status":"live",…}` — any `ok`
+wins outright, `worstOf` (`:9-15`) has **no caller** (`grep -rn "worstOf" src/dashboard` → the export
+only), and `perRoute` is written but never read. ARCH-124's `api:` requires 「`degraded` … for the tag
+when it is the worst state among the routes the visible view depends on」. Worse, the degraded body
+reaches the view as data: `server.ts:615` answers `/api/runs` with `{runs:[],degraded:…}` (an
+**object**, where the success path at `:389` returns an **array**), `app.js:346-350` stores every
+body regardless of status and hands the map to the view at `:352` **before** `nextConnection` runs at
+`:356`, and `workflow.js:227-229`'s `(allRuns || []).filter(...)` throws `TypeError` on it. The tick
+is swallowed by `scheduleTick`'s `.finally` (`app.js:366-370`), so the page silently stops updating
+while the tag still reads 連線中/Live — the exact 「silent HTTP 200」 ARCH-124/125/130 exist to close,
+closed on the server and reopened on the client. ARCH-125's `getJSON` clause (「never rendered as
+data」) is violated in the same line.
+
+#### AC-5 — MID (QD-O2) — three tabs poll once at mount; the footer keeps advancing 「Updated HH:MM:SS」 over data that was never refetched
+
+`app.js:163-174` (`activateTab`) mounts a tab module and calls `render()` once behind a
+`panel.dataset.mounted` guard **without changing `currentView`**, so `tick()` (`:338-341`) keeps
+fetching `endpointsFor('home')` → `/api/home` for the now-hidden Workflows panel and never
+`/api/models` / `/api/system` / `/api/issues` — while `updateFooterClock()` (`:131-135`, called at
+`:359` 「whether or not it changed anything」) advances the freshness claim every 3 s. ARCH-125's
+`api:`/`note:` make `endpointsFor(view)` 「the fetch set of the VISIBLE view only」 and call per-view
+scoping 「the polling budget」. An operator watching memory on the System tab during a run reads a
+mount-time sample forever under a clock that says it is current. The tabs' *content* is REQ-137/138/139
+(out of closure); **the poll owner and the footer are ARCH-125/REQ-131, in closure.**
+
+#### AC-6 — MID (QD-O3) — INV-V27-5's lock covers the island and the pure model, never the rendered panel
+
+INV-V27-5: 「the v27 shell renders `version`, the last-update outcome and the interrupted-runs
+call-to-action from the data island … **One test asserts all three are reachable in the rebuilt
+page**」. The render path is `app.js:81-109` (`buildUpdatePanel`) over `lib/status.js:22-39`.
+Verified: `grep -rln "rwe-update-panel|rwe-update-outcome|rwe-update-cta" tests/ src/` → only
+`tests/fixtures/dashboard-classes.ts` (a class-name fixture), `src/dashboard/dashboard.css` and
+`app.js` itself. UT-241 asserts the pure model and the island; `val-198-shell-and-home.test.ts`
+contains **no** reference to the update panel, the version span or the CTA. Drop the
+`nav.appendChild(buildUpdatePanel(...))` at `app.js:198` and the whole suite stays green.
+
+#### AC-7 — MID (QD-R1) — `lib/clock.js` puts a wall-clock read inside the directory ARCH-124 declares pure and total
+
+`src/dashboard/lib/clock.js:10` — `export const clockNow = () => new Date().toISOString();`,
+imported by `ui/agent-panel.js:34,242` and `ui/workflow.js:39,212`. ARCH-124's `api:` is 「every
+export pure and total, no DOM, no `fetch`, no import outside this directory」; `lib/connection.js:2-4`
+still advertises 「no system-clock read」 for the directory, and TASK-207's own DoD command
+(`grep -rn "Date\.now()\|new Date()" src/dashboard/lib`, recorded at IMPL-243 as scrubbed to 0 hits)
+now returns this line. The seam is **correct in kind** — it belongs one directory up, in `ui/`, the
+layer ARCH-125 says may do I/O.
+
+#### AC-8 — MID (QD-S1) — ARCH-123's split cache policy ships as a bare `Cache-Control: immutable`
+
+ARCH-123's `api:` spells it out: **woff2 → `public, max-age=31536000, immutable`**, JS/CSS →
+`no-store`. `src/static-assets.ts:42-44` yields the token `'immutable' | 'no-store'` and
+`src/server.ts:1312` writes `'Cache-Control': entry.cache` verbatim, so a woff2 answers
+`Cache-Control: immutable` — a modifier with no freshness lifetime to modify (RFC 8246), i.e. not
+the year-long policy the row specifies. The two assertions that let it through are
+`tests/integration/static-assets-route.test.ts:70` (`toContain('immutable')`) and
+`tests/unit/static-assets.test.ts:38` (the literal `'immutable'`). The `no-store` half is correct.
+
+#### AC-9 — MID (F-8) — INV-V27-1's oracle substitutes a priced call for the terminally-failed one
+
+INV-V27-1 and ADR-052's Consequences both name the run: 「both a terminally-failed call **and** an
+unpriced call — the two cases that split the folds last time (v26 R-1)」. In
+`tests/integration/usage-live-equals-fold.test.ts:25-31` the injected `FAKE_GATEWAY` returns
+`ok: true` on **both** branches; the `unpriced` label differs only by an unrecognised model name, and
+the fixture's own comment rewrites the invariant's phrase around the substitution. Neither case
+produces a terminally-failed record. VAL-205's real-tier evidence (`08-validation.md:10403-10409`) is
+genuine and valuable but ran on `unpricedCalls: 0`. The defect class the oracle exists to catch — the
+v26 R-1 class — is therefore asserted by construction, not witnessed. One-line repair: a third label
+returning `ok:false`.
+
+#### Verified consistent — stated so the next reviewer does not re-derive it
+
+Both panels independently walked the rest of the v27 surface and this reviewer spot-checked the
+security-relevant rows. **Clean:** ARCH-123's closed asset map (`static-assets.ts:18-27,60-62` — a
+literal key array and a bare `Map.get`, no `join`/`normalize`/`decodeURIComponent` anywhere, the
+first path-traversal surface the engine ever had and it has no traversal); ARCH-130's route posture,
+CSP string (`server.ts:1332`, byte-for-byte, `blob:` included) and `dashboard_api_degraded` closed
+reason set; ARCH-129/INV-V27-2 (one decoration site, strip → `redact()` → `capPrompt`, **fails
+closed** to `prompt: ''` on a prefix mismatch); ARCH-126's `deriveLanes` (no `masked`, dense
+re-index, `avgCostUSD` never a silent `0`); ARCH-127/128's precedence chain and single `LEFT JOIN`;
+ARCH-131's `record` on the success branch only; INV-V27-3 (three script tags, `<` escaped in the
+island); INV-V27-8 (both guards walk `.ts`/`.js`/`.css` with a planted-violation self-case);
+INV-V27-9 (the exclusion-form DAG parity with positive anchors — the strongest control in the
+slice); and the **Karpathy tie-breaker**, honoured without exception (no ETag, no content hashing,
+no compression, no build step, no framework/router, no `runs.cost_usd` column, no derivation memo) —
+because both measurement obligations the architecture substituted for mechanism were actually
+discharged at Gate 7.5 (`08-validation.md:10375`, `:10415`).
+
+**The meta-pattern both panels converge on, recorded because it is the retro's real content:** three
+times in v27 the architecture chose the cheap half of a pair arguing it delivers an identical
+property — ADR-054 (key-set test over a projection module), ARCH-122/ADR-053 (page-source pins over
+a server-rendered shell), ADR-052 (one shared fold + one equality assertion over a second at-rest
+column). Each shipped the *form* of the cheap half without its load-bearing property: the key-set
+test's subject is a fixture (AC-1), the pins' subject is deleted markup (AC-3), the equality
+assertion's subject is not the run the invariant names (AC-9). 「Simpler of two equals」 needs one
+line at Gate 6 naming **what the cheap control's subject must be**.
+
+---
+
+### §3 Dashboard QA — **the dashboard does not fully render: 3 of 43 diagrams fail in a real browser**
+
+Playwright MCP tools are not present in this session; the check was run in a **real headless
+Chromium via the repo's own puppeteer** (`~/.cache/puppeteer/chrome`), loading
+`file://…/dashboard.html`, clicking through every tab and waiting for mermaid to settle. The CDN was
+reachable from this host, so this is a genuine online render, not a fallback.
+
+**Result: 43 mermaid blocks · 40 rendered to `<svg>` · 3 rendered the error box 「圖渲染失敗：Parse
+error…」.** Zero page errors, zero console errors. Each failure was then root-caused by running
+`mermaid.parse()` on the extracted source, so the repair is exact:
+
+| # | Diagram | Root cause (reproduced) |
+|---|---|---|
+| **DASH-1a** | `02-architecture.md:3561` — **v27's own** 4+1 process view (`sequenceDiagram`) | Line 14 `S-->>B: 200 [{…, costUSD?}]  %% never a 500; a fault is 200 {degraded} + dashboard_api_degraded` — the **`;` inside the `%%` comment** ends the statement; mermaid then parses `a fault is …` as a new statement and fails with `got '+'`. |
+| **DASH-1b** | `02-architecture.md:2531` — v24 4+1 process view (`sequenceDiagram`) | Line 9 `Z-->>S: ok (minRole author; ownership workflow → owner or new)` — same cause, the **`;` inside the message text**; fails with `Expecting …ARROW…, got 'NEWLINE'`. |
+| **DASH-2** | `04-design.md:3306` — v22 `classDiagram` | Line 3 `+register(name, script, defaults, principal) Promise~{version}~` — **`{` inside a class member** opens a struct; fails with `Expecting 'STRUCT_STOP','MEMBER', got 'OPEN_IN_STRUCT'`. Same for `Promise~{channel,version,from}~` and `Promise~{removed}~`. |
+
+`sh .sdlc/trace --tool dashboard_check` (run from the plugin, since the vendored launcher has no
+`--tool`) reports **0 high / 7 mid / 1 low**: every SoT link target resolves, and the 7 mid are all
+「括號不平衡」 mermaid warnings. **Cross-checked against the browser, the checker is wrong in both
+directions** — a fact worth recording, because v26's Gate 8 dismissed all six of its predecessors as
+false positives:
+
+- 6 of the 7 flagged blocks (`:934`, `:1201`, `:1648`, `:2600`, `:3091`, `:3612`) are `erDiagram`s
+  whose cardinality tokens (`||--o{`) read as unbalanced braces — **confirmed false positives, they
+  render**. v26's diagnosis was right about these.
+- The 7th (`:2531`) is **a true positive** that v26 classified as a false positive — DASH-1b. Under
+  this ledger's own routing rule ("not a repeat miss"), a re-recorded miss is blocking.
+- The checker **missed two real failures entirely** (`:3561`, `04-design.md:3306`) — false negatives.
+  The lexical bracket heuristic cannot see `;` statement-splitting or `~{…}~` generics.
+
+The `[low]` row (「dashboard.html 無 mermaid 離線 fallback（舊版 trace.py 產出）」) and the absent
+`#Lnnn` SoT anchors are the vendored-tooling debt from §1; the line number is rendered as text beside
+each link. **Stated to exactly what was measured:** `dashboard_check` resolved all 1693 SoT targets at
+the **file** level (0 unresolved), and this reviewer spot-checked the `02-architecture.md`,
+`04-design.md` and `06-impl-log.md` targets by hand — all present. **Line-level resolution was NOT
+verified and cannot be**: the vendored generator emits `href="02-architecture.md"` with no `#Lnnn`
+anchor, so a click lands at the top of the file, not on the item's line. Recorded as TOOL-FORK debt
+(§9), not as a link failure.
+
+**趨勢 tab:** the vendored generator has no trend section (the plugin's `tr2` tab reads a
+`metrics.jsonl` the vendored copy never writes), so the trend in §1 is computed from the ledger's own
+recorded counts instead of read off a tab. No trend finding either way — gaps are flat at the floor.
+
+---
+
+### §4 Module boundary & module build — checked, clean
+
+- `sh .sdlc/trace --tool solid_check` → **✅ 68 modules, dependencies all as declared in
+  02-architecture; 0 mid / 10 low.** No undeclared cross-module dependency, **no cycle**, no
+  deep-internal import bypassing a public surface, no god-module — across a slice that added a whole
+  new two-layer client tree (`src/dashboard/lib` + `src/dashboard/ui`, 103 JS files scanned). That is
+  the single best mechanical result of this iteration.
+- The 10 LOW are the same carried 未認領檔案 set as v26 (`src/self-update.ts`, `src/net-guard.ts`,
+  `src/clock.ts`, `src/agent-definitions.ts`, `src/owner-lookup.ts`, `src/harness-defaults.ts`,
+  `src/agent-semaphore.ts`, `src/mcp-probe.ts`, `src/scan-agent-calls.ts`,
+  `src/workspace-artifacts.ts`) — files owned by no ARCH `module:` declaration. Debt, unchanged.
+- `sh .sdlc/trace --tool module_check` → **dormant**: no ARCH row declares `build:`. Nothing to
+  verify, no finding.
+- **Full regression, run by this reviewer**: `npx vitest run` → **403 test files passed / 1 skipped;
+  2829 tests passed / 26 skipped; 0 failed; exit 0; 440 s.** Note this is *better* than the last
+  recorded state (`state.yaml` Gate 5: 2798/2830 with 2 pre-existing failures) — both are now green.
+  **The whole point of §2 and §3 is that this number was green throughout.**
+
+---
+
+### §5 Owner-deferral ledger sweep (issue #15) — clean
+
+`grep -rn "owner_decision" .sdlc/features/001-remote-workflow-engine` → 104 hits, reconciled
+**mechanically on the metadata key**, never on prose. In the contract's bullet form
+(`- **owner_decision:**`) there are exactly 22 items: **16 `—` (no deferral), 2 `answered(2026-09-08)`
+(ADR-038, ADR-047), 2 `DECIDED 2026-09-10` (VAL-186, VAL-187), 1 `answered 2026-09-11`
+(ADR-051 — the predicted-overlay mask reversal), 1 `answered` with its commit (DES-209 — vendor the
+design handoff as the fidelity oracle)**. **Zero `pending`.** Every remaining `pending` string in the
+tree is historical narrative in `journal.md` / `08-validation.md` / `state.yaml` notes describing
+rounds that are closed.
+
+`owner_decisions: []`. ADR spot-check for **unmarked** decision-shaped hedging over the v27 ADRs
+(ADR-049..056): none found — the two real product calls of this slice (the overlay-mask reversal and
+the fidelity oracle) both carry the marker and both are answered with a date and a ruling.
+
+---
+
+### §6 Validation & handover — Gate 7.5's real-tier evidence PASSES; the manuals do not
+
+**Real-tier coverage: PASS.** `08-validation.md` exists (10 572 lines) and every closure REQ carries
+a `real: true` / `result: pass` item at `iter: v27`: VAL-206 (REQ-131/132), VAL-207 (REQ-133/134),
+VAL-208 (REQ-134), VAL-209 (REQ-135/136), VAL-210 (REQ-067/076/077/078 non-regression), VAL-211
+(REQ-136), VAL-212 (REQ-140/134), VAL-205 (REQ-141). trace reports **0 未真實驗證 and 0 未驗證** in
+the closure. Spot-checked VAL-211 for evidence quality: a real custom `agentType` with a planted
+marker, dispatched for real against local Ollama on two separately booted instances (auth off *and*
+auth on), `grep -c` on the **raw response body** of both transports = 0 leaks / 1 user-prompt hit.
+That is real-tier work, not a mock.
+
+**一鍵部署: PASS.** `DEPLOY.md` leads with `## §0 一鍵部署 One-command Deploy` (`:23`) →
+`./deploy.sh --background`, and Gate 7.5 genuinely ran it — `08-validation.md` cites it at `:9948`,
+`:10008`, `:10132`, `:10243`, `:10462`, `:10533` (「Booted a BRAND NEW `deploy.sh --background`
+scratch instance」; 「No undocumented manual step was needed」), on scratch instances at ports
+8935/8936/8937 with the production service untouched.
+
+**Structure: PASS.** Both manuals are 淺白繁中, step-by-step, with ASCII structure sketches
+(`README.md:130-142` sketches the new four-tab dashboard). `## 1b. 設定總表` (`DEPLOY.md:409`) is the
+single deduplicated config table; the other mentions are cross-references by name. DEPLOY opens with
+the history-free declaration (「本文件描述系統**目前**的部署方式與行為——不是變更歷程 … 歷史紀錄只在
+`.sdlc/` 追溯帳本內」). No changelog section, no superseded port/key/command.
+
+#### DOC-1 — **HIGH**, blocking, routed to Gate 7.5 — both manuals document three features that do not exist
+
+A current-state manual that promises unbuilt behaviour is worse than a stale one: the operator has
+no way to tell. All three claims were written **during v27** (`git blame`: `9371402`, `fe21155b`,
+both 2026-09-12/13) and all three describe REQs this closure explicitly parked.
+
+| Claim | Reality on disk |
+|---|---|
+| `README.md:112` + `:139` 「**模型**：可排序、可篩選的模型目錄表，點一列從右側滑出細節面板」 | `src/dashboard/ui/models.js:6` — 「**No sorting, no filtering**, no new …」; 69 lines, no sort handler, no panel. REQ-137 is out of closure (`04-design.md:6848`: 「no sorting, no filtering, no slide-in」). |
+| `README.md:113` + `:140` 「**系統**：CPU / 記憶體 / 磁碟用量卡片，加上**處理程序表**（引擎自己那一列會特別標示）」 | `src/dashboard/ui/system.js:40-64` builds one ported `<table>` of six rows; its own banner (`:2-6`) says 「REQ-077's process metrics **were never rendered** on the pre-v27 panel either … this port ships nothing new, per DES-207's "no resource bars" boundary」. No cards, no process table. REQ-138 is out of closure. |
+| `README.md:120` 「分頁切到背景時會暫停更新，切回來才繼續打」 **and** `DEPLOY.md:788` 「3 秒輪詢自動更新，**分頁在背景時暫停**」 | `grep -rn "visibilitychange\|document.hidden\|visibilityState" src/` → **0 hits**. REQ-142's visibility gate is recorded as 「refused this round」 at `04-design.md:7019`. The page polls at 3 s forever, hidden or not. |
+| *(LOW half of the same repair)* `README.md:114` 「沒設定 GitHub token 時顯示「**資料無法取得**」」 | The behaviour is right — `server.ts:463` answers `{open:[],resolved:[],degraded:'GitHub not configured'}` and `ui/issues.js:102-104` renders it in a `.degraded` block instead of an empty list — but the **quoted string does not exist**: `grep -rn "資料無法取得" src/ tests/` → 0 hits; what an operator sees is the English `GitHub not configured`. Fix the quote in the same edit. |
+
+Everything else in the two manuals that this reviewer sampled against code is accurate, including the
+whole swimlane/agent-panel description (`README.md:117-138`), the both-routes panel clause (fixed at
+Gate 7.5 round 3, IMPL-267/268), the 35-tool count, and the Issues tab's degrade *behaviour*
+(`ui/issues.js:102-104` — verified, only its quoted string is wrong, see the last row above).
+
+**Carried LOW doc-debt (unchanged, non-blocking, same disposition as v26's D-H):** the 設定總表's
+「版本」 column records the release a key first appeared in — per-key provenance inside the single
+reference table, not a changelog section and not a superseded instruction.
+
+---
+
+### §7 Special-file reviews (issue-scoped) — not applicable this iteration
+
+`git diff --name-only ca42063~1 HEAD` outside `src/`/`tests/`/`.sdlc/` → `README.md`, `DEPLOY.md`,
+`scripts/bench-run-list.ts`, `tsconfig.json`, `vitest.config.ts`. **No `CLAUDE.md`, no `AGENTS.md`,
+no `SKILL.md` was touched by v27**, cross-checked against the `files:` union of IMPL-221..268. The
+claude-md-improver / skill-creator reviews are therefore not owed. README/DEPLOY are reviewed as
+handover docs in §6.
+
+---
+
+### §8 Blocking findings — the repair scope, verbatim
+
+Thirteen findings, each actionable alone. The gate named is the owner of the file that must change.
+
+**→ `impl` (Gate 6)**
+
+1. **AC-1** — `tests/integration/dashboard-disclosure.test.ts:36-43` asserts `Object.keys()` on the hand-written fixtures in `tests/fixtures/dashboard-wire.ts:125-131`, so no served body is ever checked → assert `Object.keys(await res.json())` against the **real server the same file already boots at `:71+`** for each row, and add the two missing rows: `GET /api/home` (`avgCostUSD`/`unpricedRuns`) and the HTTP `GET /api/runs/:id/agents/:agentId`. Keep the fixture as the allow-list; no new module, no projection layer.
+2. **AC-3b** — `tests/unit/dashboard-page-source.test.ts:38` pins `<img id="diagram-img" … draggable="false">` in `DASHBOARD_HTML`, which `src/dashboard/ui/app.js:427` deletes before first paint → re-point the pin at the file that actually builds the element (`src/dashboard/ui/workflow.js:151-154`, `img.draggable = false`), the way the two CSS pins were honestly re-pointed to `clientFile('dashboard.css')` at v27c.
+3. **AC-4** — a degraded `/api/runs` (`src/server.ts:615`, `{runs:[],degraded}`) is stored as a body at `src/dashboard/ui/app.js:346-350` and handed to the view **before** `nextConnection` runs, where `src/dashboard/ui/workflow.js:227-229` throws `TypeError` on `(allRuns||[]).filter`; and `nextConnection` (`src/dashboard/lib/connection.js:26-31`) returns `live` whenever any route is `ok`, leaving `worstOf` (`:9-15`) with no caller → hand views only `ok` bodies (or make each view guard), and wire `worstOf`/`perRoute` so the tag shows the worst status of the visible view's routes, per ARCH-124's `api:`. Add the falsifying test: describe `ok` + runs `degraded` → tag `degraded`, no throw.
+4. **AC-5** — `src/dashboard/ui/app.js:163-174` mounts a tab once without changing `currentView`, so `/api/home` keeps polling for a hidden panel and `/api/models`,`/api/system`,`/api/issues` are never re-fetched, while `updateFooterClock()` (`:131-135`, called at `:359`) keeps advancing 「Updated HH:MM:SS」 → **the required fix is to join the mounted tab to the one tick**: `activateTab` must set the poll view so `endpointsFor` returns the visible tab's route (`poll.js:24-26` already declares `models`/`system`/`issues`), which is the only outcome that makes ARCH-125's 「the fetch set of the VISIBLE view only」 true of the shipped page. Silencing the footer clock alone is **not** sufficient — it removes the lie but leaves the declared polling budget false; do that as well if you want, not instead.
+5. **AC-6** — INV-V27-5 requires one test asserting `version`, the update outcome and the interrupted-runs CTA are reachable **in the rebuilt page**, and no test references `.rwe-update-panel`/`.rwe-version`/`.rwe-update-outcome`/`.rwe-update-cta` outside `tests/fixtures/dashboard-classes.ts` → add that assertion to the existing real-browser shell test (`tests/acceptance/val-198-shell-and-home.test.ts`), against the rendered nav, not the island.
+6. **AC-7** — `src/dashboard/lib/clock.js:10` (`new Date().toISOString()`) sits inside the directory ARCH-124's `api:` declares pure and total, and trips TASK-207's own DoD grep → move the seam to `src/dashboard/ui/clock.js` (the layer ARCH-125 allows I/O in), updating its three importers (`ui/agent-panel.js:34,242`, `ui/workflow.js:39,212`), the `ASSET_KEYS` entry in `src/static-assets.ts`, and `tests/unit/dashboard-lib-clock.test.js`'s path.
+7. **AC-8** — `src/static-assets.ts:42-44` returns the bare token `immutable`, written verbatim by `src/server.ts:1312`, where ARCH-123's `api:` specifies `public, max-age=31536000, immutable` for woff2 → emit the full directive and tighten the two assertions that let the bare token through (`tests/integration/static-assets-route.test.ts:70`, `tests/unit/static-assets.test.ts:38`) to the exact header value. `no-store` for JS/CSS is already correct.
+8. **AC-9** — `tests/integration/usage-live-equals-fold.test.ts:25-31`'s `FAKE_GATEWAY` returns `ok:true` on both branches, so INV-V27-1's named oracle (「a run containing both a terminally-failed call **and** an unpriced call」) is never exercised → add a third label returning `ok:false` and put it in the existing case's script, so the equality is witnessed on the v26-R-1 shape instead of asserted by construction.
+
+**→ `architecture` (Gate 2)**
+
+9. **AC-2** — `tsconfig.json:7-8` adds `"DOM","DOM.Iterable"` and `"allowJs": true` to the single root config, which ADR-049's Consequences and ARCH-124's note refuse **by name** as the guard that keeps `document` out of server code → either amend ADR-049/ARCH-124 to record what shipped and why (with the replacement guard named), or record the decision that the DOM lib must be scoped to a tests-only config. **If the second outcome is chosen, record it as a decision with the tsconfig split named as a follow-up impl item** — Gate 2 cannot make that code change itself, and the re-review will otherwise find an amended ADR beside an unchanged `tsconfig.json`. Either way the architecture may not keep asserting a compile-time guard the tree does not have.
+10. **AC-3a** — ARCH-122's `api:`/`note:` attribute the nav, the four tab shells, the `#dag-zoom`/`#dag-graph`/`#dag-fit`/`#run-usage`/`#diagram-*` anchors, the component classes and the panel container to `dashboard-page.ts`, but `src/dashboard-page.ts:92-150` emits the **pre-v27 body** and `src/dashboard/ui/app.js:427` `replaceChildren`s it away; the note still calls C1's literal pins 「assertable here」 → amend ARCH-122 to the built shape (shell = `<head>` + island + asset refs + a mount point; the tab shells and anchors are client-built) and strike or re-aim the 「assertable here」 clause.
+11. **DASH-1** — two `sequenceDiagram`s in `02-architecture.md` fail to render in a real browser (verified in Chromium, root-caused with `mermaid.parse`): `:3561` line 14 and `:2531` line 9 each contain a **`;` that mermaid treats as a statement separator** (inside a `%%` comment and inside message text respectively) → replace those two semicolons with `·`/`,`/a line break so both diagrams render; `:3561` is v27's own new process view, and `:2531` was mis-recorded as a checker false positive at v26's Gate 8.
+
+**→ `validation` (Gate 7.5)**
+
+12. **DOC-1** — `README.md:112`/`:113`/`:120`/`:139`/`:140` and `DEPLOY.md:788` describe a sortable/filterable Models table with a slide-in panel, System stat-cards plus a process table, and polling that pauses when the tab is hidden; none exists (`src/dashboard/ui/models.js:6` 「No sorting, no filtering」; `src/dashboard/ui/system.js:2-6` ports six table rows and no process metrics; `grep -rn "visibilitychange\|document.hidden" src/` → 0 hits — REQ-137/138/142 are out of this closure per `02-architecture.md:3323` and `04-design.md:7019`) → rewrite those lines to what the tabs actually do today (「模型：目錄表（本版不支援排序/篩選/滑入細節）」、「系統：資源表格」、delete the pause claim), keeping both manuals current-state and adding no changelog. **In the same edit** fix `README.md:114`'s quoted Issues-tab string: the degrade behaviour is real but the product renders `GitHub not configured`, not 「資料無法取得」 (`grep -rn "資料無法取得" src/ tests/` → 0 hits).
+
+**→ `design` (Gate 3/4)**
+
+13. **DASH-2** — the `classDiagram` at `04-design.md:3306` fails to render in a real browser: `Promise~{version}~` (and `Promise~{channel,version,from}~`, `Promise~{removed}~`) put `{` inside a class member, which mermaid parses as a struct opener (`Expecting 'STRUCT_STOP','MEMBER', got 'OPEN_IN_STRUCT'`) → drop the braces inside the generics (e.g. `Promise~VersionResult~`) or move the shape to the member's trailing note, so the design tab renders instead of showing 「圖渲染失敗」.
+
+---
+
+### §9 Recorded tech debt (non-blocking, carried with evidence)
+
+| ID | Sev | What | Where |
+|---|---|---|---|
+| F-4 | LOW | `endpointsFor(view)` is no longer the run view's whole fetch set — `onTick` issues `/api/runs/:id` every tick plus one-shot `/api/runs` and `describe`. **Disclosed** in a banner at `run.js:462-464`, and REQ-142's future gate still attaches to the one scheduler → honest, so debt. | `src/dashboard/ui/poll.js:17-19` vs `src/dashboard/ui/run.js:471-489` |
+| F-5 | LOW | `BACKFILL_PER_TICK = 25` bounds a *call*, not the process (`listSummaries` is not single-flight, and the memo is added after the `await`), and `_usageBackfillChecked` is an unbounded `Set`. Correctness survives on `backfillUsage`'s idempotence; ADR-051's own 「a memo needs a bound」 rule is owed here. | `src/run-manager.ts:823-885`, `:323` |
+| F-6 | LOW | ARCH-128's convergence claim rests on an unstated single-writer assumption — `backfillUsage` is an untransacted read-modify-write. Safe today (one synchronous process); name the assumption or wrap the three statements. | `src/store/sqlite-run-store.ts:310-322` |
+| F-7 / QD-S2 | LOW | `initZoomable` adds three `window` listeners per shell build and removes none; `mountLazy` has no unmount hook; the diagram blob URL is revoked only on replace. Bounded by navigations, not by time. | `src/dashboard/ui/run.js:115-118`, `:434`; `workflow.js:119`, `:172`, `:248`, `:274` |
+| QD-O4 | LOW | A 404 classifies as `fail`, so two ticks on a swept/mistyped `/dashboard/<runId>` paint the nav tag 離線 while the engine answered. The `api:` clause does not define the status mapping, so this is a spec gap, not a violation. | `src/dashboard/lib/connection.js:40` |
+| QD-O5 | LOW | The agent panel drops `res.status` and the server's error text; a 404 renders six 「—」 cards indistinguishable from an empty agent. | `src/dashboard/ui/agent-panel.js:233-241` |
+| QD-R2 | LOW→MID watch | Decidable logic lives in `ui/*.js` (`predictedPayload`, `nameFilteredRuns`, `resolveSelectedRunId`, `toSwimlaneCell`, `cellClassName`, `metaLine`, `eventKindCategory`, `fmtBytes`), and IMPL-249 excluded those files from the coverage denominator **on ARCH-124's premise that none does**. AC-4's crash lives in exactly this untested layer. Either the ARCH sentences move or the formulas do. | `06-impl-log.md` IMPL-249; `ui/workflow.js:62-75,227-238`, `ui/home.js:44-74`, `ui/run.js:126-151` |
+| QD-R3 | LOW→MID watch | 「One string table in two languages」 shipped as a five-key `strings.js` plus 17 `lang`-conditional copy sites across nine files and four private label tables; the key-parity test guards 5 strings. | `src/dashboard/lib/strings.js:16-31` vs `ui/app.js:28-42`, `ui/home.js:16-38`, `ui/workflow.js:42-45,180-183`, `lib/agent.js:55-69` |
+| QD-R4 | LOW | The nine-column history table is a two-file mirror pair (headers in `ui/`, values in `lib/`) with nothing tying order or length. | `ui/workflow.js:42-45` vs `lib/runlist.js:70-83` |
+| QD-C2 | LOW | The agent-detail `limit` is uncapped end-to-end (`cap = a.limit ?? 50`, no ceiling) while ARCH-125 assumes 「the engine's own cap decides」, and `run_agent_log`'s MCP schema advertises no paging despite returning `hasMore`. | `src/server.ts:588-590`, `src/mcp-facade.ts:706`, `src/tool-specs.ts:616` |
+| QD-C3 | LOW | The regenerated tool-surface doc's `run_agent_log` row truncates at ~300 chars inside `harness`, so the only machine-readable description of the surface shows **neither** `record` nor `systemPrompt` (`grep -c` → 0). The `pending:` entry that calls this RESOLVED at `9812645` is optimistic; the regeneration ran, the fields did not land. | `v24-tool-surface.md:22` |
+| SOLID-10 | LOW | 10 `src/*.ts` files belong to no ARCH `module:` declaration. Unchanged from v26. | `solid_check` output |
+| TRACE-23 | LOW | 21 pre-v27 漂移 rows + TASK-018/TASK-153 未實作. Byte-identical to v26's set. | `sh .sdlc/trace` |
+| REQ-PARK | — | REQ-137/138/139/142/143 carry 10 MID trace rows by design; recorded out-of-closure at `02-architecture.md:3323`, `03-tasks.md:1662`, `04-design.md:7019`. **Note the interaction with DOC-1:** parking a REQ is legitimate; describing it in the manual as shipped is not. | — |
+| TOOL-FORK | LOW | `.sdlc/trace.py` is an old vendored fork: no `--tool`, no `待業主決策` gap type, no offline mermaid fallback, no `#Lnnn` SoT anchors. The plugin's current checkers must be invoked directly (as this review did). | `.sdlc/trace.py` vs plugin 2.4.3 |
+| DOC-H | LOW | DEPLOY §1b's per-key 「版本」 provenance column. Same disposition as v26's D-H: provenance metadata inside the single reference table, not a changelog. | `DEPLOY.md:409+` |
+
+---
+
+### §10 Retro
+
+**What went well.**
+- **The module boundary held under the largest structural addition since v8.** A whole two-layer
+  browser client (`lib/` pure + `ui/` wiring, 103 JS files) landed with `solid_check` returning **0
+  cycles, 0 undeclared cross-module deps, 0 deep-internal imports**. The `lib/`-imported-by-vitest
+  bet from ADR-049 paid: eight `.js` unit suites now test the exact bytes the browser runs.
+- **Zero doc↔code iteration drift.** 48 IMPL rows, 159 new work items, and not one design parent left
+  behind — the first slice of this size in the ledger with a drift delta of exactly zero.
+- **The security-shaped rows are genuinely clean.** The first path-traversal surface the engine ever
+  had is a closed `Map.get`; the CSP shipped byte-for-byte; REQ-136's system prompt is never
+  captured and **fails closed** on a prefix mismatch, proven against the real response body on both
+  transports at Gate 7.5 on two separately booted instances.
+- **Gate 7.5 did its job three times.** Round 2 refused REQ-134 on a real `getBoundingClientRect()`
+  measurement and round 3 caught REQ-135 passing on the legacy route while failing on the page
+  operators actually open. That is the validation gate working exactly as designed.
+- **The Karpathy discipline held**: every 「Not built」 list survived contact, and both measurement
+  obligations substituted for mechanism were actually discharged with numbers.
+
+**What to change.**
+1. **Name the subject of every cheap control.** Three times this slice an ADR chose the cheaper of
+   two 「equal」 options and shipped its form without its property (AC-1, AC-3, AC-9). A control's
+   ADR row must state *what it asserts against* — 「a served body」, 「the element the browser
+   builds」, 「a run containing X」 — or the cheap half silently degrades to a self-test.
+2. **A green suite is not evidence.** 2829 tests passed while a security control asserted a fixture
+   against itself, a view crashed on its own degrade path and the manual promised three unbuilt
+   features. Gate 7 should run **one falsification pass per new control**: break the thing the
+   control claims to guard and prove it goes red.
+3. **The manual is part of the closure, not a postscript.** DOC-1 was written by the same gate that
+   was proving the closure real, describing tabs that were explicitly parked. When a REQ is parked,
+   the parking decision needs to reach the doc writer: add the out-of-closure REQ list to the Gate
+   7.5 dispatch, and diff manual claims against `files:`/`grep` before signing.
+4. **The dashboard is a deliverable — render it, don't lint it.** `dashboard_check`'s lexical bracket
+   heuristic produced 6 false positives and missed 2 real failures; one real failure was recorded as a
+   false positive an iteration ago and shipped again. A real-browser render is cheap (the repo has
+   puppeteer) and is the only oracle that answers the question actually being asked.
+5. **Refresh the vendored tooling.** `.sdlc/trace.py` has drifted far enough from the plugin that the
+   Gate 8 checkers must be invoked out-of-band and the `待業主決策` gap type does not exist locally.
+   Plan a one-off migration iteration; do not adopt the newer scanner silently, because its REQ
+   reachability rules disagree with 27 iterations of this ledger's conventions.
+
+**Known tech debt:** §9, 16 rows, all with `file:line` evidence. Nothing in §9 blocks the closure;
+everything in §8 does.
+
+---
+
+## v26 GATE 8 RE-REVIEW #1 (2026-09-11, PRIOR — superseded by the v27 section above; was CLOSE, `send_back = []`, 0 HIGH)
 
 > Re-review after the workflow's ONE automatic send-back re-run of `["impl","architecture"]`.
 > **Scope discipline per the dispatch: the previously-blocking items only** — 4 HIGH (H-1..H-4) and

@@ -148,6 +148,18 @@ function buildFooter() {
 }
 
 let pendingTab = null;
+const TAB_MODULES = { models: './models.js', system: './system.js', issues: './issues.js' };
+// [v27c AC-5 Gate 8 repair] once a tab's module has loaded, its `onTick` is cached here so
+// switching BACK to an already-mounted tab re-joins the one poll timer without a second
+// `import()` (the module is only ever `render()`ed once — `panel.dataset.mounted` still owns that).
+const tabModuleCache = {};
+
+// [v27c AC-5 Gate 8 repair] this function used to only toggle panel visibility — `currentView`
+// (the ONE poll timer's target, `tick()` below) stayed on 'home' forever, so `/api/home` kept
+// being fetched for a hidden panel while the VISIBLE tab's own route was never joined to the timer
+// (ARCH-125's "the fetch set of the VISIBLE view only"). It now sets `currentView` to the visible
+// tab on every activation, which is what makes `endpointsFor(currentView.name)` (in `tick()`)
+// return that tab's route.
 function activateTab(tab) {
   const panels = document.querySelectorAll('[data-tab-panel]');
   panels.forEach((p) => {
@@ -160,17 +172,32 @@ function activateTab(tab) {
     if (a.dataset.tab === tab) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   });
-  const TAB_MODULES = { models: './models.js', system: './system.js', issues: './issues.js' };
-  if (tab !== 'workflows' && TAB_MODULES[tab]) {
-    const panel = document.querySelector(`[data-tab-panel="${tab}"]`);
-    if (panel && !panel.dataset.mounted) {
-      panel.dataset.mounted = '1';
-      import(TAB_MODULES[tab]).then((mod) => mod.render(panel, {}, {})).catch(() => {
-        const p = document.createElement('p');
-        p.textContent = `${tab} unavailable`;
-        panel.appendChild(p);
-      });
-    }
+  const panel = document.querySelector(`[data-tab-panel="${tab}"]`);
+  if (tab === 'workflows') {
+    currentView = { name: 'home', ctx: {}, container: panel, onTick: onTickHome };
+    return;
+  }
+  if (!TAB_MODULES[tab]) return;
+  const cached = tabModuleCache[tab];
+  // `onTick: null` until the module (and its own first `render()`-triggered fetch) resolves below —
+  // `tick()` already skips calling a null `onTick`, and the per-url fetch it always does still
+  // reports this tab's route status to `nextConnection` in the meantime.
+  currentView = { name: tab, ctx: {}, container: panel, onTick: cached ? cached.onTick : null };
+  if (cached) return;
+  if (panel && !panel.dataset.mounted) {
+    panel.dataset.mounted = '1';
+    import(TAB_MODULES[tab]).then((mod) => {
+      tabModuleCache[tab] = mod;
+      mod.render(panel, {}, {});
+      // Only join THIS module's onTick to the timer if the operator is still on this tab — a fast
+      // switch away before the import settled must not steal the tick back from whichever tab is
+      // actually visible now.
+      if (currentView && currentView.name === tab) currentView.onTick = mod.onTick;
+    }).catch(() => {
+      const p = document.createElement('p');
+      p.textContent = `${tab} unavailable`;
+      panel.appendChild(p);
+    });
   }
 }
 
@@ -397,7 +424,8 @@ function mountHomeRoot() {
   const { wrapper, workflowsPanel } = buildTabPanels();
   container.appendChild(wrapper);
   const handlers = { onSelect: (card) => go(`/dashboard/workflow/${encodeURIComponent(card.name)}`) };
-  currentView = { name: 'home', ctx: {}, container: workflowsPanel, onTick: onTickHome };
+  // `currentView` is set by `activateTab` below (every tab, including 'workflows', as of the AC-5
+  // repair) — no separate assignment needed here.
   renderHome(workflowsPanel, { cards: [], lang: prefs.lang }, handlers);
   activateTab(pendingTab || 'workflows');
   pendingTab = null;

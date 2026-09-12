@@ -10,14 +10,17 @@
 // search box, or the segment counts exist on the current dashboard (confirmed: no `data-theme`,
 // `localStorage`, or `prefers-color-scheme` reference anywhere in `src/dashboard-page.ts`).
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { existsSync, readdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
-import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
+import { registerPublishedVia, startScript } from '../helpers/workflow-fixtures.js';
 import { throwIfBrowserRequired } from '../helpers/require-browser.js';
+import { RunManager } from '../../src/run-manager.js';
+import { SqliteRunStore } from '../../src/store/sqlite-run-store.js';
+import { SystemClock } from '../../src/clock.js';
 import { SPEC_ROWS } from '../fixtures/dashboard-spec.js';
 import { specRowFailuresAcrossThemeAndHue } from '../helpers/spec-rows.js';
 
@@ -271,6 +274,58 @@ describe('the v27 dashboard shell + Workflows home, real Chromium (VAL-198, REQ-
       expect(failures).toEqual([]);
     } finally {
       await browser.close();
+    }
+  }, 20000);
+
+  // [v27c AC-6 Gate 8 repair] INV-V27-5: "the v27 shell renders version, the last-update outcome
+  // and the interrupted-runs call-to-action from the data island … one test asserts all three are
+  // reachable in the REBUILT PAGE". UT-241 already covers the pure `updatePanelModel` projection
+  // and the island's own JSON — this is the missing DOM half, against the rendered nav rather than
+  // `#rwe-init`'s raw text. A SEPARATE server/workRoot is needed (not the shared `server` above):
+  // an `interruptedRuns` > 0 count and an `applied` `lastUpdate` (the CTA's own two-conjunct
+  // condition, `lib/status.js`) both come from real boot-time state a running dashboard never has.
+  itReal('the update panel is reachable in the rendered nav: version, outcome, and the interrupted-runs CTA (AC-6, INV-V27-5)', async () => {
+    const crashDir = mkdtempSync(join(tmpdir(), 'rwe-val198-crash-'));
+    const resultDir = mkdtempSync(join(tmpdir(), 'rwe-val198-result-'));
+    let crashServer: Server | undefined;
+    try {
+      // Phase 1 ("process 1"): a run that never resolves, then abandoned with no clean shutdown —
+      // the same two-phase crash recipe as tests/integration/crash-resume.test.ts. `store1`/`mgr1`
+      // are deliberately never closed/stopped: that IS the crash.
+      const clock1 = new SystemClock();
+      const store1 = new SqliteRunStore(join(crashDir, 'store'), clock1);
+      const mgr1 = new RunManager({ store: store1, clock: clock1, workRoot: crashDir, gateway: NEVER_RESOLVES_GATEWAY });
+      await startScript(mgr1, `await agent('a', { prompt: 'p' }); return 'ok';`, { name: 'val198-crashed' });
+
+      // The result file a real `rwe-update.sh` writes on an APPLIED self-update — outside
+      // `crashDir` (server.ts's boot guard refuses a result path inside the workRoot).
+      const resultPath = join(resultDir, 'update-result.json');
+      writeFileSync(resultPath, JSON.stringify({ tag: 'v27-repair-check', status: 'applied', ts: '2026-09-12T00:00:01.000Z' }));
+
+      // Phase 2 ("process 2" / "restart"): the REAL dashboard server, on the SAME workRoot — its own
+      // boot-time `store.hydrateAll()` reclassifies the still-'running' run as 'interrupted'
+      // (server.ts:647-648), and `updateResultPath` feeds the applied outcome (server.ts:658-675).
+      crashServer = await createServer({ port: 0, bind: '127.0.0.1', workRoot: crashDir, updateResultPath: resultPath });
+      const crashBaseUrl = `http://127.0.0.1:${crashServer.port}`;
+
+      const puppeteer = (await import('puppeteer')).default;
+      const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+      try {
+        const page = await browser.newPage();
+        await page.goto(`${crashBaseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+        const version = await page.$eval('.rwe-version', (el) => el.textContent);
+        expect(version).toMatch(/^v/);
+        const outcome = await page.$eval('.rwe-update-outcome', (el) => el.textContent);
+        expect(outcome).toContain('v27-repair-check');
+        const cta = await page.$eval('.rwe-update-cta', (el) => el.textContent);
+        expect(cta).toMatch(/1|workflow_resume|中斷/); // one interrupted run — either language's CTA text
+      } finally {
+        await browser.close();
+      }
+    } finally {
+      await crashServer?.close();
+      rmSync(crashDir, { recursive: true, force: true });
+      rmSync(resultDir, { recursive: true, force: true });
     }
   }, 20000);
 });

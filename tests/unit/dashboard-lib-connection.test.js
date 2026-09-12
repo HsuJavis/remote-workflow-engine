@@ -20,10 +20,24 @@ describe('lib/connection.js: nextConnection transition table (UT-244, DES-202)',
     expect(next.consecutiveFails).toBe(0);
   });
 
-  it('live -> live on a degraded-plus-ok tick (an ok result still wins)', () => {
+  // [v27c AC-4 Gate 8 repair] this case used to assert "an ok result still wins" — that reading of
+  // ARCH-124's api let a genuinely degraded route hide behind an unrelated healthy one (worstOf's
+  // export at :9-15 had no caller). The tag now shows the WORST status among the routes the
+  // visible view depends on. Shape is the WORKFLOW view's own tick (`poll.js`'s
+  // `endpointsFor('workflow', ctx)`: `describe` + `/api/runs`) — the exact scenario that crashed
+  // `ui/workflow.js`'s `onTick` before the AC-4 repair (val-199-workflow-detail.test.ts).
+  it('degraded wins over a healthy sibling route (describe ok, runs degraded -> tag degraded)', () => {
     const live = { status: 'live', consecutiveFails: 0, perRoute: {} };
-    const next = nextConnection(live, { results: { runs: 'ok', issues: 'degraded' } });
-    expect(next.status).toBe('live');
+    const next = nextConnection(live, { results: { '/api/workflows/wf/describe': 'ok', '/api/runs': 'degraded' } });
+    expect(next.status).toBe('degraded');
+    expect(next.consecutiveFails).toBe(0);
+  });
+
+  it('a failing route beside a healthy or degraded one reports degraded, not offline-tracked (only a UNANIMOUS fail counts)', () => {
+    const live = { status: 'live', consecutiveFails: 0, perRoute: {} };
+    const mixedOkFail = nextConnection(live, { results: { runs: 'ok', issues: 'fail' } });
+    expect(mixedOkFail.status).toBe('degraded');
+    expect(mixedOkFail.consecutiveFails).toBe(0);
   });
 
   it('live -> degraded on a worst-degraded tick (no ok, at least one degraded)', () => {

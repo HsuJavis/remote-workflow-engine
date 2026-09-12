@@ -63,11 +63,13 @@ describe('GET /static/dashboard/<key> (IT-170, DES-198)', () => {
     expect(res.headers.get('cache-control')).toContain('no-store');
   });
 
-  it('a woff2 key answers font/woff2 + immutable', async () => {
+  // [v27c AC-8 Gate 8 repair] the exact header value (ARCH-123's api), not just a substring
+  // containing `immutable` — a bare `Cache-Control: immutable` would still pass `.toContain`.
+  it('a woff2 key answers font/woff2 + a year-long public immutable cache', async () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/static/dashboard/fonts/archivo-400.woff2`);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('font/woff2');
-    expect(res.headers.get('cache-control')).toContain('immutable');
+    expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
   });
 
   it('every traversal string in the table answers 404 with NO echo of the key', async () => {

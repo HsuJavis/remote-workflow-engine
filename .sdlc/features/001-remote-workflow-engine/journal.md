@@ -4409,3 +4409,132 @@ corrections) touches any REQ/DES/IMPL/TASK trace link or `iter:` field, so this 
 not assumed.
 
 **Next**: Gate 8 (review) is now unblocked on both markers.
+
+---
+
+## 2026-09-13 — v27 GATE 8 (review) — **NOT PASSED, SENT BACK**: 13 blocking findings across four gates
+
+Tree at review `ef0a400`, working tree otherwise clean. The two architecture-consistency experts were
+**pre-run by the workflow** (`.panel/review/adversarial.md`, `.panel/review/quality-dimensions.md`) and
+were consolidated, not re-spawned. Every `file:line` in `07-review.md`'s new section was opened and
+re-verified by this reviewer; three claims were reproduced by **execution** rather than reading.
+
+**The two HIGHs, neither visible from any green signal.**
+1. **AC-1** (both panels, independently, from different lenses) — ADR-054 / INV-V27-7's disclosure
+   key-set control asserts a **hand-written fixture against itself**: `dashboard-disclosure.test.ts:36-43`
+   computes `Object.keys(row.body)` over the literals in `dashboard-wire.ts:125-131`. No served body is
+   ever a subject, and `tsc` cannot see an *optional* field added to a route type either. The two
+   endpoints v27 widened — `/api/home` and the anonymous HTTP `GET /api/runs/:id/agents/:agentId` — carry
+   no row at all. ADR-054 refused a projection module because the test 「delivers the identical property」;
+   as built it does not.
+2. **DOC-1** (this reviewer; neither panel reads the manuals) — `README.md:112/113/120/139/140` and
+   `DEPLOY.md:788` document a **sortable/filterable Models table with a slide-in panel**, **System stat
+   cards plus a process table**, and **polling that pauses when the tab is hidden**. None of the three
+   exists: `models.js:6` says 「No sorting, no filtering」, `system.js:2-6` ports six table rows and says
+   REQ-077's process metrics were never rendered, and `grep -rn "visibilitychange\|document.hidden" src/`
+   returns **0 hits**. All three are REQ-137/138/142 — REQs this closure explicitly parked
+   (`02-architecture.md:3323`, `04-design.md:7019`). Parking a REQ is legitimate; shipping a manual that
+   says it was built is not, and the operator has no way to tell.
+
+**The dashboard does not fully render — and the lexical checker is wrong in both directions.** Loaded
+`dashboard.html` in a real headless Chromium (the repo's own puppeteer; the mermaid CDN was reachable),
+clicked through every tab: **43 diagrams, 40 `<svg>`, 3 error boxes**. Root-caused each with
+`mermaid.parse()`: `02-architecture.md:3561` (v27's OWN process view) and `:2531` each contain a **`;`
+that mermaid treats as a statement separator** — one inside a `%%` comment, one inside message text; and
+`04-design.md:3306` puts **`{` inside a classDiagram member** (`Promise~{version}~`). Meanwhile
+`dashboard_check`'s 7 「括號不平衡」 warnings are **6 confirmed false positives** (erDiagram `||--o{`,
+they all render) **plus one true positive that v26's Gate 8 dismissed as a false positive** — and it
+missed the other two failures entirely. A real-browser render is the only oracle that answers the
+question being asked, and the repo already has the browser.
+
+**Everything mechanical came back clean, which is exactly the point.** `sh .sdlc/trace` 1651 items /
+33 gaps (0 broken links, 0 orphans, 0 mock-only, 0 未驗證 in the closure; the 21 drift rows + TASK-018/153
+are byte-identical to v26's set and **not one of them is a v27 item** — zero doc↔code iteration drift
+across 48 IMPL rows); `solid_check` **68 modules, 0 cycles, 0 undeclared deps, 0 deep-internal imports**
+over a brand-new two-layer client tree; `module_check` dormant; `owner_decision` sweep **0 pending** on
+the metadata key (22 bullets, 16 `—`, 6 answered/DECIDED); and the full regression `npx vitest run` is
+**403 files / 2829 tests passed, 0 failed, exit 0** — better than the last recorded state. Gate 7.5's
+real-tier evidence is genuine (VAL-211's planted system-prompt marker `grep`ped off the raw response
+body of both transports on two separately booted instances) and `./deploy.sh --background` was really
+run six times on scratch ports.
+
+**Routing** (this ledger's own rule, applied mechanically — blocking = code/control violates a declared
+`api:`/INV clause, or the architecture body contradicts the tree): **impl** AC-1, AC-3b, AC-4, AC-5,
+AC-6, AC-7, AC-8, AC-9 · **architecture** AC-2 (tsconfig `DOM`+`allowJs` contradicts ADR-049 by name),
+AC-3a (ARCH-122's shell is `replaceChildren`'d away by `app.js:427`), DASH-1 · **validation** DOC-1 ·
+**design** DASH-2. Sixteen further findings are recorded tech debt with `file:line` (07-review.md §9).
+
+**`.panel/` is deliberately LEFT IN PLACE** — the re-run gates and the re-review still need it.
+
+**Next**: the workflow's one automatic re-run of the four gates, scoped **verbatim** to 07-review.md's
+§8 list, then a Gate 8 re-review.
+
+## 2026-09-13 — v27g Gate 6 SEND-BACK REPAIR (implementer) — the 8 impl-owned findings, all fixed and re-verified real
+
+Scope: `07-review.md`'s v27 GATE 8 REVIEW §8, items 1–8 ONLY (the `→ impl (Gate 6)` group — AC-1,
+AC-3b, AC-4, AC-5, AC-6, AC-7, AC-8, AC-9). AC-2/AC-3a/DASH-1 (architecture) and DOC-1 (validation)
+are explicitly untouched — those gates own their own repair. Full record: IMPL-269..276
+(`06-impl-log.md`, "v27g Gate 8 SEND-BACK REPAIR" section).
+
+**Each fix was falsified before being counted done** — reverted (via a scratch-dir backup + `Edit`,
+never `git checkout`/`git stash`, per this repo's own CLAUDE.md), re-run to confirm RED, then
+restored and re-confirmed GREEN:
+
+- **AC-1**: `dashboard-disclosure.test.ts`'s key-set table now checks a REAL booted server's
+  response for every row (was: the fixture's own literal, against itself), plus the two missing
+  rows (`GET /api/home`, HTTP `GET /api/runs/:id/agents/:agentId`). One real drift surfaced by the
+  switch: the shared "any /api/* (degraded)" path always carries `runs:[]` alongside `degraded`
+  (measured via a throwaway probe against a real server) — the fixture's allow-list was missing that
+  key; widened to match, not relaxed.
+- **AC-3b**: the diagram non-draggable pin moves from dead `DASHBOARD_HTML` bytes `app.js:427`
+  deletes before paint to `ui/workflow.js`'s two actual lines building the element.
+- **AC-4**: `nextConnection` now uses `worstOf` (previously dead code) instead of "any `ok` wins
+  outright"; `ui/workflow.js`'s `onTick` no longer crashes on a degraded `/api/runs` body
+  (`TypeError: allRuns.filter is not a function`) — fixed with a per-view guard, not a blanket
+  `app.js` body filter, because `issues.js` deliberately reads its own `.degraded` body and a
+  blanket filter would have silently broken that real feature. New real-Chromium case in
+  `val-199-workflow-detail.test.ts` fakes ONE network response (`/api/runs`) at the browser edge and
+  proves the tag reads `degraded` with zero page errors — reverting either fix alone reproduces a
+  stuck `checking` tag (the reducer fix is necessary but not sufficient without the crash guard).
+- **AC-5**: `activateTab` now joins the visible tab to the ONE poll timer (`currentView`), so
+  Models/System/Issues keep refetching while visible instead of exactly once at mount. New
+  real-Chromium case in `val-202-ported-tabs.test.ts` counts `/api/models` requests over a 7s
+  window and requires more than the mount-time one. Accepted as debt, not fixed (matches the
+  finding's own "not instead" wording): the three ported tabs still also do their own internal
+  fetch, so each visible tick now double-fetches — harmless, same-origin, no external network.
+- **AC-6**: one new real-Chromium case in `val-198-shell-and-home.test.ts` proves `.rwe-version` /
+  `.rwe-update-outcome` / `.rwe-update-cta` are reachable in the REBUILT nav — a genuine two-phase
+  crash recipe (`RunManager`+`SqliteRunStore` abandoned mid-run, then a real dashboard server boots
+  on the same workRoot) produces a real `interruptedRuns > 0` + an `applied` `update-result.json`,
+  the CTA's own two-conjunct condition. Falsified by commenting out `app.js`'s
+  `nav.appendChild(buildUpdatePanel(...))` — confirmed the rest of the suite stays green without it,
+  exactly the review's own demonstration.
+- **AC-7**: `lib/clock.js` (a wall-clock read, i.e. I/O) moves to `ui/clock.js` — `lib/` stays pure
+  per ARCH-124. Both importers, the `ASSET_KEYS` entry, and the unit test's import path all updated;
+  the test itself is unchanged (the function is still pure/DOM-free and directly unit-testable in
+  its new home).
+- **AC-8**: the woff2 `Cache-Control` now ships `public, max-age=31536000, immutable` (was the bare
+  `immutable` token, a modifier with nothing to modify per RFC 8246) — both assertions tightened
+  from a substring `.toContain` to the exact value.
+- **AC-9**: `usage-live-equals-fold.test.ts`'s `FAKE_GATEWAY` gained a third, `ok:false` branch
+  (`reason:'terminal'`) and the existing case's script now calls it — INV-V27-1's named oracle ("a
+  run containing both a terminally-failed call AND an unpriced call") is now witnessed on that real
+  shape instead of asserted by construction (both prior branches were `ok:true`).
+
+**Full-suite verification, this round:** `npx tsc --noEmit` → 0 errors, both before and after every
+change. `npx vitest run` (full suite, twice — once mid-round as a checkpoint at 2832/AC-1..AC-5, once
+at the end with all 8 findings landed) → **2833 passed / 26 skipped / 0 failed** (403 files + 1
+skipped), +4 over the pre-round 2829 baseline: one new case each in AC-4's lib-level and
+acceptance-level tests, plus AC-5's and AC-6's new acceptance cases (AC-4's OTHER lib-level case
+REPLACES a pre-existing one rather than adding a fifth). AC-1/AC-9's rewrites and AC-3b/AC-7/AC-8's
+re-pointed assertions replace or extend existing cases rather than adding new ones counted
+separately. `sh .sdlc/trace` re-run with no new gaps (recorded in the
+structured report, not duplicated here).
+
+**Not touched, by design**: AC-2 (tsconfig), AC-3a (ARCH-122 amendment), DASH-1 (mermaid `;` fix) —
+architecture's own repair; DOC-1 (README/DEPLOY wording) — validation's own repair. `current_stage`
+stays whatever Gate 8's own routing left it at — this round does not flip it; Gate 8 owns the loop
+per the prior entry's own note.
+
+**Next**: architecture's AC-2/AC-3a/DASH-1 repair, validation's DOC-1 repair, and design's DASH-2
+repair (if not already run in parallel), then the Gate 8 re-review.

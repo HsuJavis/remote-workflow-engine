@@ -17,15 +17,20 @@ const DASHBOARD_ROOT = fileURLToPath(new URL('./dashboard/', import.meta.url));
 
 const ASSET_KEYS = [
   'ui/app.js', 'ui/theme-init.js', 'ui/poll.js', 'ui/home.js', 'ui/workflow.js', 'ui/run.js',
-  'ui/agent-panel.js', 'ui/models.js', 'ui/system.js', 'ui/issues.js', 'ui/dom.js',
+  'ui/agent-panel.js', 'ui/models.js', 'ui/system.js', 'ui/issues.js', 'ui/dom.js', 'ui/clock.js',
   'lib/theme.js', 'lib/strings.js', 'lib/connection.js', 'lib/swimlane.js', 'lib/runlist.js',
-  'lib/agent.js', 'lib/status.js', 'lib/clock.js', 'lib/model.js',
+  'lib/agent.js', 'lib/status.js', 'lib/model.js',
   'dashboard.css',
   'fonts/archivo-400.woff2', 'fonts/archivo-500.woff2', 'fonts/archivo-600.woff2',
   'fonts/jetbrains-mono-400.woff2', 'fonts/jetbrains-mono-500.woff2',
 ] as const;
 
-export type StaticAssetCache = 'immutable' | 'no-store';
+// [v27c AC-8 Gate 8 repair] the FULL directive, not the bare `immutable` token — ARCH-123's `api:`
+// specifies `public, max-age=31536000, immutable` for woff2 (a year-long freshness lifetime;
+// `immutable` alone is a modifier with nothing to modify, RFC 8246). JS/CSS's `no-store` is
+// unchanged — this type is now the exact `Cache-Control` header VALUE, written verbatim by
+// `server.ts`'s `entry.cache`.
+export type StaticAssetCache = 'public, max-age=31536000, immutable' | 'no-store';
 
 export interface StaticAssetEntry {
   file: string;
@@ -40,7 +45,7 @@ function typeForKey(key: string): string {
 }
 
 function cacheForKey(key: string): StaticAssetCache {
-  return key.endsWith('.woff2') ? 'immutable' : 'no-store';
+  return key.endsWith('.woff2') ? 'public, max-age=31536000, immutable' : 'no-store';
 }
 
 export const STATIC_ASSETS: ReadonlyMap<string, StaticAssetEntry> = new Map(

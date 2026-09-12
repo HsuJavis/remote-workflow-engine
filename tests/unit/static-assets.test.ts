@@ -31,11 +31,13 @@ describe('static-assets.ts (UT-240, DES-199)', () => {
     expect(existsSync(entry!.file)).toBe(true);
   });
 
-  it('a vendored woff2 key resolves with immutable cache', () => {
+  // [v27c AC-8 Gate 8 repair] the FULL directive (ARCH-123's api: `public, max-age=31536000,
+  // immutable`) — the bare token `'immutable'` let a modifier with no freshness lifetime through.
+  it('a vendored woff2 key resolves with a year-long public immutable cache', () => {
     const entry = lookupStaticAsset('fonts/archivo-400.woff2');
     expect(entry).not.toBeNull();
     expect(entry?.type).toBe('font/woff2');
-    expect(entry?.cache).toBe('immutable');
+    expect(entry?.cache).toBe('public, max-age=31536000, immutable');
   });
 
   it('the module contains no join(/normalize(/decodeURI( — the URL is a key, never a path', () => {

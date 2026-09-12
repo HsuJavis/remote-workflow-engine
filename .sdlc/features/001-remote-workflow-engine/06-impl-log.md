@@ -6279,3 +6279,251 @@ position rather than being pinned to `from-left` by some new bug.
   6/6 (4 pre-existing + 2 new), including the corrected SPEC_ROWS case.
 - `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → 33 gaps, 0 severe, same
   composition as the pre-pass baseline (verified by listing the gap set directly).
+
+## v27g Gate 8 SEND-BACK REPAIR (impl-owned findings AC-1/AC-3b/AC-4/AC-5/AC-6/AC-7/AC-8/AC-9)
+
+> Scope: `07-review.md`'s v27 GATE 8 REVIEW §8 items 1–8 (the `→ impl (Gate 6)` group) — 2 HIGH-owned
+> repairs are elsewhere; this round fixes the 1 HIGH + 7 MID items routed to this gate only. AC-2/
+> AC-3a/DASH-1 (architecture) and DOC-1 (validation) are explicitly OUT of this round's scope —
+> named here so a re-reviewer does not read their absence as neglect.
+
+### IMPL-269 — AC-1: the disclosure key-set table now asserts the REAL served body, not the fixture against itself
+- **status:** done
+- **traces:** TASK-197, REQ-136, REQ-140, REQ-141
+- **greens:** IT-165 (`tests/integration/dashboard-disclosure.test.ts`) — the existing case
+  `every (endpoint x outcome) row satisfies keys ⊆ ALLOWED and REQUIRED ⊆ keys against the REAL
+  SERVED BODY`, rewritten; two new `DISCLOSURE_TABLE` rows (`GET /api/home`,
+  `GET /api/runs/:id/agents/:agentId (http, ok)`)
+- **files:** tests/integration/dashboard-disclosure.test.ts, tests/fixtures/dashboard-wire.ts
+- **commit:** (pending — see journal entry for this round)
+- **iter:** v27g
+
+The pre-repair case computed `Object.keys(row.body)` against `dashboard-wire.ts`'s own hand-written
+literals — no production response was ever in the loop. Added a `beforeAll` that boots a REAL
+server (a local `GatewayClient` double standing in only for the third-party model provider, the same
+single-boundary-fake convention as `usage-live-equals-fold.test.ts`), drives it through real MCP/
+HTTP calls (a run with one `agent()` call for the `run_agent_log` ok/error + HTTP agent-detail rows
+and the "priced"-shape `RunSummary` row, a zero-`agent()`-call run for the "no records" row,
+`/api/home`, and the shared degrade path via a malformed `%`-encoded `/api/workflows/.../describe`
+segment — `dashboard-http.test.ts`'s own precedent for reaching that catch for real), and populates
+a `route -> real body` map the test reads instead of `row.body`. `row.allowed`/`row.required` stay
+the allow-list (unchanged instruction: keep the fixture as the allow-list, no new module).
+
+**One real drift the real body surfaced, fixed as part of closing this exact gap (not scope creep —
+this IS what "check the served body" was for):** the generic `any /api/* (degraded)` path
+(`server.ts:611-617`, `buildDashboardModel([], undefined, undefined, message)`) always sets `runs:
+[]` alongside `degraded` (`dashboard.ts:87`, unconditional) — the fixture's `ALLOWED_DEGRADED_KEYS`
+only had `['degraded']`. Measured directly (a throwaway `tsx` probe against a real booted server hit
+with `GET /api/workflows/%/describe`): real body is `{"runs":[],"degraded":"URI malformed"}`. Widened
+`ALLOWED_DEGRADED_KEYS`/`REQUIRED_DEGRADED_KEYS` to `['runs','degraded']` to match — this is the
+allow-list catching up to reality, not being relaxed to dodge a failure (the key was ALWAYS served;
+the old fixture simply never checked a real body to notice).
+
+Two new rows added per the finding: `GET /api/home` (`ALLOWED_HOME_KEYS`/`REQUIRED_HOME_KEYS =
+['running','registered','other']`, the fixed top-level `HomeView` envelope INV-V27-7 scopes this
+control to — ARCH-126's `avgCostUSD`/`unpricedRuns` widening is nested inside each card's `metrics`,
+not a new top-level key) and the HTTP `GET /api/runs/:id/agents/:agentId` (reuses
+`ALLOWED_AGENT_LOG_OK_KEYS`/`REQUIRED_AGENT_LOG_OK_KEYS` — `server.ts:592-599` forwards
+`facade.runAgentLog`'s object verbatim, the identical shape family as the MCP route).
+
+### IMPL-270 — AC-3b: the diagram non-draggable pin re-points from dead DASHBOARD_HTML bytes to the file that builds the element
+- **status:** done
+- **traces:** TASK-213, REQ-134
+- **greens:** UT-224 (`tests/unit/dashboard-page-source.test.ts` — "the diagram `<img>` is
+  explicitly non-draggable")
+- **files:** tests/unit/dashboard-page-source.test.ts
+- **commit:** (pending — see journal entry for this round)
+- **iter:** v27g
+
+`app.js:427`'s `document.body.replaceChildren(nav, routeMount, buildFooter())` deletes
+`DASHBOARD_HTML`'s pre-v27 body (including the `<img id="diagram-img" ... draggable="false">` this
+pin asserted on) before first paint — the pin guarded bytes no browser renders. Re-pointed to
+`clientFile('ui/workflow.js')`, asserting the two statements that actually build the element
+(`img.id = 'diagram-img';` … `img.draggable = false;`), the same re-pointing pattern the sibling CSS
+pin in the same `describe` block already used for `dashboard.css` at v27c. Real-tier coverage is
+unchanged (`val-197-diagram-drag-pan.test.ts:119-123`). Falsified by temporarily reverting the pin
+to the old `DASHBOARD_HTML` regex and confirming it still passes vacuously against dead markup, then
+confirming the new pin goes red if `workflow.js`'s two lines are removed.
+
+### IMPL-271 — AC-4: the connection tag now shows the WORST status of the visible view's routes; a degraded /api/runs no longer crashes ui/workflow.js
+- **status:** done
+- **traces:** TASK-206, REQ-131
+- **greens:** UT-245 (`tests/unit/dashboard-lib-connection.test.js` — replaced the "an ok result
+  still wins" case with "degraded wins over a healthy sibling route", added "a failing route beside
+  a healthy or degraded one reports degraded, not offline-tracked"); new acceptance case in
+  `tests/acceptance/val-199-workflow-detail.test.ts` ("a degraded /api/runs beside a healthy
+  describe: the connection tag reads degraded, no page error (AC-4)")
+- **files:** src/dashboard/lib/connection.js, src/dashboard/ui/workflow.js,
+  tests/unit/dashboard-lib-connection.test.js, tests/acceptance/val-199-workflow-detail.test.ts
+- **commit:** (pending — see journal entry for this round)
+- **iter:** v27g
+
+Two independent bugs, both from the SAME finding:
+1. `nextConnection` used "any `ok` wins outright" (`hasOk`/`hasDegraded` booleans) — `worstOf`
+   (already exported) had no caller. Rewrote to compute `worstOf(tick.results)` and branch on it:
+   `ok` -> `live`; not-all-`fail` (a `degraded`, or a `fail` mixed with something better) -> `degraded`
+   immediately (never counted toward the offline streak); only a UNANIMOUS `fail` across every route
+   in the tick advances `consecutiveFails` (`offline` at >= 2, REQ-131's own "連續失敗" clause,
+   unchanged). This is what makes ARCH-124's "the tag shows the worst state among the routes the
+   visible view depends on" true of the shipped reducer.
+2. `ui/workflow.js`'s `onTick` fed `nameFilteredRuns` the RAW `/api/runs` body regardless of status —
+   a degraded body is `{runs:[], degraded:'...'}` (an object), and `(allRuns || []).filter(...)`
+   threw `TypeError: allRuns.filter is not a function` (`allRuns` is a truthy object, so `|| []`
+   never triggers). Added a guard: `if (!describe || describe.degraded || !Array.isArray(bodies[runsUrl]))
+   return {}` — bails the WHOLE tick (last-known render stays, DES-018) rather than painting an
+   empty/predicted state over a transient degrade. Fixed in the VIEW, not by filtering bodies in
+   `app.js`, because `issues.js` deliberately reads a `.degraded` body itself (its own `getJSON`
+   call, ignoring `app.js`'s shared `bodies` map entirely) — a blanket filter in `app.js` would have
+   silently broken that real, designed feature.
+
+**Falsified both ways, reverting each fix independently and confirming red, then restored:**
+reverting only the `workflow.js` guard reproduces the pre-repair hang (`ui/workflow.js` has no unit
+tier per ADR-049/ARCH-124, so the acceptance case above — real Chromium, ONE network response faked
+at the browser edge via `page.setRequestInterception`, same single-boundary-fake convention as
+`FAKE_GATEWAY` — is the only tier that can witness it): the connection tag never leaves `checking`
+(`TimeoutError: Waiting failed: 10000ms exceeded`) because the throw happens before `nextConnection`
+ever runs in that `onTick` call. Restored, re-ran: 5/5 real-Chromium cases pass.
+
+### IMPL-272 — AC-5: switching tabs now joins the visible tab to the ONE poll timer (models/system/issues no longer poll forever behind a hidden Workflows panel)
+- **status:** done
+- **traces:** TASK-208, REQ-131
+- **greens:** new acceptance case in `tests/acceptance/val-202-ported-tabs.test.ts` ("the Models tab
+  keeps polling once it is the visible tab (AC-5): /api/models refetches on the timer, not just once
+  at mount")
+- **files:** src/dashboard/ui/app.js, tests/acceptance/val-202-ported-tabs.test.ts
+- **commit:** (pending — see journal entry for this round)
+- **iter:** v27g
+
+`activateTab` used to only toggle panel visibility and `import()`+`render()` a tab module exactly
+once — `currentView` (the poll timer's target, read by `tick()` via `endpointsFor(view.name,
+view.ctx)`) stayed pinned to `{name:'home', ...}` from `mountHomeRoot` forever, so `/api/home` kept
+being fetched for a HIDDEN panel while `/api/models`/`/api/system`/`/api/issues` were only ever
+fetched once (`render()`'s own internal first-paint `onTick` call) no matter how long the tab stayed
+open — ARCH-125's "the fetch set of the VISIBLE view only" was false of the shipped page.
+`activateTab` now sets `currentView` to the visible tab on every activation (`{name: 'home', ...}`
+for the Workflows tab, `{name: tab, ...}` for the ported ones), with a small `tabModuleCache` so
+re-activating an already-mounted tab re-joins the timer without a second `import()` (the module is
+still `render()`ed exactly once, unchanged). `mountHomeRoot`'s own `currentView` assignment — now
+provably dead, since the very next line's `activateTab(pendingTab || 'workflows')` always overwrites
+it for every tab including `'workflows'` — was removed (orphaned by this change, per the surgical-
+changes rule).
+
+Accepted, not fixed (per the finding's own "not instead" wording and the advisor consult recorded
+for this round): `models.js`/`system.js`/`issues.js` each still do their OWN internal `getJSON`
+fetch inside `onTick` (ignoring the `bodies` param `app.js`'s generic per-url loop already fetched),
+so each tick while one of those tabs is visible now does TWO real fetches to the same endpoint
+(harmless — same-origin, in-process, no external network) instead of one. Restructuring those three
+views to read `bodies[url]` instead is a separate, larger change the finding did not name.
+
+Falsified by reverting `activateTab` to its pre-repair form and re-running the new acceptance case:
+`expected 1 to be greater than 1` (the module's own one-shot mount fetch, and nothing after it, even
+after a full extra 7s tick window) — confirms the timer genuinely was never joined before this fix.
+Restored, re-ran: 4/4 real-Chromium cases pass.
+
+### IMPL-273 — AC-6: one real-browser test proves the update panel (version, outcome, interrupted-runs CTA) is reachable in the REBUILT page
+- **status:** done
+- **traces:** TASK-205, REQ-131
+- **greens:** new acceptance case in `tests/acceptance/val-198-shell-and-home.test.ts` ("the update
+  panel is reachable in the rendered nav: version, outcome, and the interrupted-runs CTA (AC-6,
+  INV-V27-5)")
+- **files:** tests/acceptance/val-198-shell-and-home.test.ts
+- **commit:** (pending — see journal entry for this round)
+- **iter:** v27g
+
+UT-241 already covers `updatePanelModel`'s pure projection and the island's own JSON; INV-V27-5
+requires ONE test asserting `version`/outcome/CTA are reachable in the REBUILT PAGE, and none
+existed. `app.js`'s `buildUpdatePanel` already renders all three (`nav.appendChild(...)` at
+`app.js:198`, unchanged by this repair) — the gap was purely in test coverage. Added a case with its
+OWN server/workRoot (not the shared one, since an `interruptedRuns > 0` count and an `applied`
+`lastUpdate` — the CTA's own two-conjunct condition in `lib/status.js` — both need real boot-time
+state a running dashboard never produces on its own): a genuine two-phase crash recipe (a
+`RunManager`+`SqliteRunStore` starts a run against a never-resolving gateway, then is abandoned with
+no clean shutdown — the same recipe as `tests/integration/crash-resume.test.ts`), a real
+`update-result.json` an applied self-update writes, then the REAL dashboard server boots on the SAME
+workRoot — its own `store.hydrateAll()` reclassifies the still-`running` run to `interrupted`
+(measured: `[RunStore] hydrateAll: re-hydrated 1 run(s), 1 re-classified running→interrupted`) and
+`updateResultPath` feeds the applied outcome. Asserts `.rwe-version`/`.rwe-update-outcome`/
+`.rwe-update-cta` against the RENDERED nav (not `#rwe-init`'s raw JSON).
+
+Falsified by temporarily commenting out `app.js`'s `nav.appendChild(buildUpdatePanel(...))` line and
+re-running: `Error: failed to find element matching selector ".rwe-version"` — confirms the whole
+suite would otherwise stay green if that line were ever dropped, exactly the review's own
+demonstration. Restored, re-ran: 12/12 cases in the file pass.
+
+### IMPL-274 — AC-7: the wall-clock read moves from lib/ (pure-only) to ui/ (I/O allowed)
+- **status:** done
+- **traces:** TASK-206, TASK-207, REQ-131
+- **greens:** UT-247b (`tests/unit/dashboard-lib-clock.test.js`, import path updated — same
+  assertions, now against `ui/clock.js`)
+- **files:** src/dashboard/ui/clock.js (new), src/dashboard/lib/clock.js (removed),
+  src/dashboard/ui/workflow.js, src/dashboard/ui/agent-panel.js, src/static-assets.ts,
+  tests/unit/dashboard-lib-clock.test.js
+- **commit:** (pending — see journal entry for this round)
+- **iter:** v27g
+
+`lib/clock.js`'s `new Date().toISOString()` sat inside the directory ARCH-124's `api:` declares
+"every export pure and total, no DOM, no `fetch`, no import outside this directory" — a wall-clock
+read is I/O, and TASK-207's own DoD grep (`Date\.now()\|new Date()` over `src/dashboard/lib`) is
+tripped by it. Moved the file verbatim to `src/dashboard/ui/clock.js` (the layer ARCH-125 allows I/O
+in) — the seam itself (one named function, read once per render, handed to the pure projector) is
+unchanged, only which directory owns it. Updated both real importers
+(`ui/workflow.js`/`ui/agent-panel.js`, `'../lib/clock.js'` -> `'./clock.js'`), the `ASSET_KEYS` entry
+in `src/static-assets.ts` (`'lib/clock.js'` -> `'ui/clock.js'`, moved into the `ui/*.js` group), and
+the unit test's import path + prose (kept the test FILE's name — only its import target and banner
+changed — the function is still pure/DOM-free and directly unit-testable regardless of which
+directory it lives in; this is not the "no unit tier for ui/" boundary, which is about
+DOM-touching decision logic, none of which this file has). `grep -rn "lib/clock" src/ tests/` now
+returns only historical-reference comments explaining the move.
+
+### IMPL-275 — AC-8: the woff2 Cache-Control header ships the full year-long directive, not a bare modifier
+- **status:** done
+- **traces:** TASK-204, REQ-131
+- **greens:** `tests/unit/static-assets.test.ts` ("a vendored woff2 key resolves with a year-long
+  public immutable cache"), `tests/integration/static-assets-route.test.ts` ("a woff2 key answers
+  font/woff2 + a year-long public immutable cache")
+- **files:** src/static-assets.ts, tests/unit/static-assets.test.ts,
+  tests/integration/static-assets-route.test.ts
+- **commit:** (pending — see journal entry for this round)
+- **iter:** v27g
+
+ARCH-123's `api:` specifies `public, max-age=31536000, immutable` for woff2; `cacheForKey` emitted
+the bare token `'immutable'` (a modifier with no freshness lifetime to modify, RFC 8246), written
+verbatim by `server.ts:1312`. `StaticAssetCache`'s woff2 member is now the exact header value.
+Tightened both assertions that let the bare token through from `.toContain('immutable')`/`toBe
+('immutable')` to the exact string, so a future regression back to the bare token fails instead of
+matching a substring. `no-store` for JS/CSS is unchanged.
+
+### IMPL-276 — AC-9: the usage-fold oracle now witnesses a run with BOTH a terminally-failed call and an unpriced call, not two priced-shape calls
+- **status:** done
+- **traces:** TASK-199, REQ-132, REQ-133, REQ-141
+- **greens:** IT-167 (`tests/integration/usage-live-equals-fold.test.ts` — case renamed and
+  extended: "a run holding a priced call, an unpriced call, AND a terminally-failed call: the
+  summary and the detail agree, via ONE fold (AC-9, INV-V27-1's named oracle)")
+- **files:** tests/integration/usage-live-equals-fold.test.ts
+- **commit:** (pending — see journal entry for this round)
+- **iter:** v27g
+
+INV-V27-1/ADR-052 name the run verbatim: "both a terminally-failed call AND an unpriced call — the
+two cases that split the folds last time (v26 R-1)". The pre-repair `FAKE_GATEWAY` returned `ok:
+true` on both its branches (a priced-model call and an unrecognized-model call) — no branch ever
+produced a terminally-failed record, so the equality was witnessed by construction rather than on
+the named shape. Added a third label, `'failed'`, returning `{ok:false, provider:'anthropic',
+reason:'terminal', ...}`, and added `await agent('failed', {prompt:'p'})` to the existing case's
+script. Measured directly (throwaway probe): `agent-executor.ts:607` captures the failed call into
+the transcript and resolves it to `null` rather than throwing, so the script still reaches `return
+'ok'` with all three calls on the record (`state:'failed'` for the third, distinct from
+`unpriced:true` on the first two) — `/api/runs/:id`'s `usage` and `/api/runs[i]`'s summary agree
+(`costUSD`, `unpricedCalls: 2`, `tokensTotal: 24`, `agentCount: 3`) on this real, named shape rather
+than on the substituted one.
+
+**Full-suite verification (this round, real):**
+- `npx tsc --noEmit` → 0 errors.
+- `npx vitest run` (full suite, run at the end after all 8 findings landed) → **2833 passed / 26
+  skipped / 0 failed** (403 files + 1 skipped; +4 over the pre-round baseline of 2829). The four net-
+  new cases: IMPL-271's `dashboard-lib-connection.test.js` "a failing route beside a healthy or
+  degraded one..." (its sibling case in the same commit REPLACES the old "an ok result still wins"
+  case — net +1 for that file), IMPL-271's new `val-199` case, IMPL-272's new `val-202` case, and
+  IMPL-273's new `val-198` case. IMPL-269's/IMPL-276's rewrites and IMPL-270/274/275's re-pointed
+  assertions replace or tighten existing cases rather than adding new ones.
+- Every fix in this round was independently falsified (reverted, confirmed red, restored, confirmed
+  green) before being counted done — recorded per-IMPL above.

@@ -36,7 +36,7 @@ import { openAgentPanel } from './agent-panel.js';
 import { endpointsFor, getJSON } from './poll.js';
 import { historyRow } from '../lib/runlist.js';
 import { t } from '../lib/strings.js';
-import { clockNow } from '../lib/clock.js';
+import { clockNow } from './clock.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const COLUMNS = {
@@ -341,7 +341,13 @@ export async function onTick(container, bodies, ctx) {
   const lang = state.lang;
   const [describeUrl, runsUrl] = endpointsFor('workflow', ctx);
   const describe = bodies[describeUrl];
-  if (!describe) return {};
+  // [v27c AC-4 Gate 8 repair] a degraded body is `{runs:[], degraded: '...'}` on EITHER route
+  // (server.ts:611-617's shared catch-all) — an object, never the array `/api/runs` answers on
+  // success. Bail before touching either body: DES-018's "never rendered as data" for this view
+  // means skipping this tick's repaint (last-known render stays), not painting an empty/predicted
+  // state over a transient degrade. Without the `Array.isArray` guard, `nameFilteredRuns` fed that
+  // object threw `TypeError: allRuns.filter is not a function` (ARCH-124's api, AC-4).
+  if (!describe || describe.degraded || !Array.isArray(bodies[runsUrl])) return {};
   const runs = nameFilteredRuns(bodies[runsUrl], state.name);
   renderHeader(state.shell, describe, lang);
   // Resolve the default selection BEFORE the first chip/table render — otherwise tick 1 paints

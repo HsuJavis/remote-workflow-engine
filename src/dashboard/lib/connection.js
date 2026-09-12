@@ -14,19 +14,21 @@ export function worstOf(perRoute) {
   return worst;
 }
 
-// Any `ok` in the tick wins outright (a run page whose /api/issues is degraded is still `live`).
-// Failing that, any `degraded` in the tick makes the view `degraded`. Only when every route in
-// the tick failed does the consecutive-failure counter move: `offline` only at >= 2 in a row, so
-// one transient miss (e.g. a self-update restart) does not paint the whole team's tabs red.
+// [v27c AC-4 Gate 8 repair] The tag shows the WORST status among the routes the visible view
+// depends on (ARCH-124's api), via `worstOf` — not "any `ok` wins outright" (the pre-repair
+// behaviour, which let one healthy route mask a degraded/failing sibling the tag is supposed to
+// report on). Only when EVERY route in the tick failed does the consecutive-failure counter move:
+// `offline` only at >= 2 in a row, so one transient miss (e.g. a self-update restart) does not
+// paint the whole team's tabs red — a mix of `fail` and something better than `fail` (`ok` or
+// `degraded`) is reported as `degraded` immediately, never counted toward the offline streak.
 export function nextConnection(prev, tick) {
   const values = Object.values(tick.results);
-  const hasOk = values.includes('ok');
-  const hasDegraded = values.includes('degraded');
-
-  if (hasOk) {
+  const worst = worstOf(tick.results);
+  if (worst === 'ok') {
     return { status: 'live', consecutiveFails: 0, perRoute: tick.results };
   }
-  if (hasDegraded) {
+  const allFail = values.length > 0 && values.every((s) => s === 'fail');
+  if (!allFail) {
     return { status: 'degraded', consecutiveFails: 0, perRoute: tick.results };
   }
   const consecutiveFails = prev.consecutiveFails + 1;

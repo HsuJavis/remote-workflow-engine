@@ -11372,7 +11372,7 @@ can see either half — a synthetic event sequence never starts the native image
 - **tier:** unit
 - **real:** false
 - **result:** pass
-- **iter:** v26
+- **iter:** v27g
 
 File: `tests/unit/dashboard-page-source.test.ts` (extended, 3 cases). Mirrors, in the fast suite
 (no Chrome, no mmdc), the three source facts VAL-197 proves behaviourally: `draggable="false"` on
@@ -11380,6 +11380,14 @@ File: `tests/unit/dashboard-page-source.test.ts` (extended, 3 cases). Mirrors, i
 as the first statement of the shared `.zoomable` mousedown handler. Not independently forced red —
 all three strings occur ZERO times in the pre-fix file
 (`git show HEAD:src/dashboard-page.ts | grep -c` ⇒ 0, 0, 0).
+
+**[v27g AC-3b amendment, Gate 8 send-back repair, IMPL-270]:** the `draggable="false"` half of this
+case re-points from `DASHBOARD_HTML` (dead bytes — `app.js:427`'s `replaceChildren` deletes the
+pre-v27 body ARCH-122's shell used to guard here, before first paint) to `clientFile('ui/workflow.js')`
+— the file that actually builds the `<img id="diagram-img">` element client-side, the same
+re-pointing pattern the sibling CSS-rule half of this `describe` block already used for
+`dashboard.css` at v27c. Real-tier coverage is unchanged (`val-197-diagram-drag-pan.test.ts:119-123`).
+The `-webkit-user-drag`/`preventDefault` halves are untouched.
 
 ### UT-225 — one catalog row per model, carrying every alias that resolves to it (D11)
 - **status:** green
@@ -11719,7 +11727,18 @@ unaffected).
 - **tier:** integration
 - **real:** false
 - **result:** pass
-- **iter:** v27
+- **iter:** v27g
+
+**[v27g AC-1 amendment, Gate 8 send-back repair, IMPL-269]:** Block 1 (the key-set table) no longer
+asserts `keys ⊆ ALLOWED`/`REQUIRED ⊆ keys` against `DISCLOSURE_TABLE`'s own hand-written `body`
+literal — Gate 8 found that checked the fixture against itself, never a served response. It now
+boots a REAL server (a `GatewayClient` double standing in only for the third-party model provider),
+drives it through real MCP/HTTP calls, and checks each row's keys against the REAL body the server
+returned for that (endpoint × outcome). `DISCLOSURE_TABLE` gained two rows for the two endpoints
+this delta widened with no prior row (`GET /api/home`, HTTP `GET /api/runs/:id/agents/:agentId`).
+`allowed`/`required` stay the allow-list (unchanged); `ALLOWED_DEGRADED_KEYS`/`REQUIRED_DEGRADED_KEYS`
+widened to include `runs` (the real shared-degrade body's actual, always-present key the old fixture
+never checked for). Full detail: `06-impl-log.md` IMPL-269.
 
 **Re-measured (Gate 8, 2026-09-12):** `npx vitest run tests/integration/dashboard-disclosure.test.ts`
 → 2/2 passed at current HEAD (both describe blocks — the key-set table and REQ-136's real-run
@@ -11731,7 +11750,9 @@ New `tests/fixtures/dashboard-wire.ts` (the ONE v27 wire fixture) and
 `tests/integration/dashboard-disclosure.test.ts` (2 describe blocks). Block 1: `keys ⊆ ALLOWED` and
 `REQUIRED ⊆ keys` over the fixture's own DISCLOSURE_TABLE (6 rows) — passes today (fixture
 self-consistency; the real RED for this half is the `tsc --noEmit` compile lock on the missing
-`AgentLogView` export, per this section's own compile-time note). Block 2 (REQ-136's three-conjunct
+`AgentLogView` export, per this section's own compile-time note). **[Superseded by the v27g
+amendment above — this half's oracle changed from the fixture to a real served body.]** Block 2
+(REQ-136's three-conjunct
 oracle, also VAL-211's real-tier path): a real agentType (`agents/*.md` frontmatter) with a
 distinctive systemPrompt marker, dispatched through a real stub-Ollama-backed run; both `MCP
 run_agent_log` and `GET /api/runs/:id/agents/:agentId` bodies asserted for `¬contains(marker) ∧
@@ -11797,7 +11818,16 @@ is healed. RED (measured): `TypeError: manager.listSummaries is not a function` 
 - **tier:** acceptance
 - **real:** false
 - **result:** pass
-- **iter:** v27
+- **iter:** v27g
+
+**[v27g AC-9 amendment, Gate 8 send-back repair, IMPL-276]:** Case 1's `FAKE_GATEWAY` gained a third,
+`ok:false` branch (`reason:'terminal'`) and its script now also calls `agent('failed', ...)` — Gate 8
+found both prior branches returned `ok:true`, so INV-V27-1/ADR-052's named oracle ("a run containing
+both a terminally-failed call AND an unpriced call — the two cases that split the folds last time,
+v26 R-1") was witnessed by construction, not on the shape the invariant actually names. The run now
+genuinely carries a `state:'failed'` record beside the priced/unpriced ones, and the two-fold
+equality (`/api/runs[i].costUSD === /api/runs/:id.usage.costUSD`) is asserted on it. Full detail:
+`06-impl-log.md` IMPL-276.
 
 **Re-measured (Gate 8, 2026-09-12):** `npx vitest run tests/integration/usage-live-equals-fold.test.ts`
 → 2/2 passed at current HEAD (`RunManager.listSummaries()` landed at checkpoint `f86ea25`, IMPL-231).
@@ -11805,7 +11835,8 @@ The below RED narrative is preserved as history of the original test-first measu
 current description of the code.
 
 File: `tests/integration/usage-live-equals-fold.test.ts` (new, 2 cases; real `createServer()`, real
-MCP HTTP, an injected `GatewayClient` faking only the model-provider network). Case 1: a run holding
+MCP HTTP, an injected `GatewayClient` faking only the model-provider network). Case 1 **[v27g: now
+also a terminally-failed call, see amendment above]**: a run holding
 one priced + one deliberately-unpriced call — `/api/runs[i].costUSD === /api/runs/:id.usage.costUSD`.
 Case 2: a run that completed with ZERO `agent()` calls — the summary omits all four fields while the
 detail folds over zero records. This is v27's real-tier validation path for REQ-141 (no separate

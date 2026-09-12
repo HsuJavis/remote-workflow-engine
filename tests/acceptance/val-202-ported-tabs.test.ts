@@ -70,6 +70,37 @@ describe('Models/System/Issues are PORTED to tabs, not redesigned (VAL-202, REQ-
     }
   }, 20000);
 
+  // [v27c AC-5 Gate 8 repair] the falsifying test the review named: before this repair, `app.js`'s
+  // ONE poll timer stayed pointed at 'home' forever — a tab switch mounted the module and rendered
+  // it ONCE (this file's case above), but never joined it to the recurring tick, so `/api/models`
+  // was fetched exactly once no matter how long the tab stayed open (ARCH-125's "the fetch set of
+  // the VISIBLE view only" was false of the shipped page). `activateTab` now sets `currentView` to
+  // the visible tab, so `/api/models` keeps refetching on the SAME 3s-after-settle timer every
+  // other view uses.
+  itReal('the Models tab keeps polling once it is the visible tab (AC-5): /api/models refetches on the timer, not just once at mount', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      const modelsRequestTimes: number[] = [];
+      page.on('request', (req) => {
+        if (new URL(req.url()).pathname === '/api/models') modelsRequestTimes.push(Date.now());
+      });
+      await page.goto(`${baseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+      const modelsTab = await page.$('[data-tab="models"]');
+      expect(modelsTab).not.toBeNull();
+      if (modelsTab) await modelsTab.click();
+      await page.waitForSelector('.models-table tr', { timeout: 3000 });
+      const afterMount = modelsRequestTimes.length;
+      // One full extra tick cycle (`app.js`'s `setTimeout(loop, 3000)`, re-armed AFTER the previous
+      // tick settles) — 7s comfortably covers a second fetch without making the suite flaky.
+      await new Promise((r) => setTimeout(r, 7000));
+      expect(modelsRequestTimes.length).toBeGreaterThan(afterMount);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
   itReal('a System tab exists and renders /api/system data, with a degraded section showing the Unavailable component (never 0)', async () => {
     const puppeteer = (await import('puppeteer')).default;
     const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });

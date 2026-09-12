@@ -18,6 +18,7 @@
 // row; a healthy DAG carries no warning). New export `DAG_WARNING_EXAMPLES` below — no key-set
 // change.
 import type { AgentLogView, RunSummary, HarnessDescriptor, AgentRecord, TranscriptEvent } from '../../src/types.js';
+import type { HomeView } from '../../src/dashboard.js';
 
 // ---- run_agent_log / GET /api/runs/:id/agents/:agentId ----
 
@@ -106,11 +107,22 @@ export const DAG_WARNING_EXAMPLES = {
   prose: 'lane 1 is beyond the predicted layout: appended',
 } as const;
 
-// ---- degraded outcome shared by every /api/* route (server.ts:582-585, :1067-1071) ----
+// ---- degraded outcome shared by every /api/* route (server.ts:611-617) ----
+// [v27c AC-1 repair]: measured against the real server (a malformed %-encoded describe path
+// throws inside handleDashboardRequest's try, caught by its own outer catch) — the shape is
+// `buildDashboardModel([], undefined, undefined, message)`, which ALWAYS sets `runs` too
+// (`dashboard.ts:87`, unconditional), not `degraded` alone. `DEGRADED_BODY` is kept as the
+// documentation literal; the real-body check (dashboard-disclosure.test.ts) reads the served JSON.
+export const DEGRADED_BODY = { runs: [], degraded: 'internal dashboard error' };
+export const ALLOWED_DEGRADED_KEYS = ['runs', 'degraded'] as const;
+export const REQUIRED_DEGRADED_KEYS = ['runs', 'degraded'] as const;
 
-export const DEGRADED_BODY = { degraded: 'internal dashboard error' };
-export const ALLOWED_DEGRADED_KEYS = ['degraded'] as const;
-export const REQUIRED_DEGRADED_KEYS = ['degraded'] as const;
+// ---- GET /api/home (v27 AC-1 repair: ARCH-126 widened this route with avgCostUSD/unpricedRuns
+// nested under each card's `metrics`; the top-level shape stays the fixed 3-array envelope) ----
+
+export const HOME_VIEW_EXAMPLE: HomeView = { running: [], registered: [], other: [] };
+export const ALLOWED_HOME_KEYS = ['running', 'registered', 'other'] as const;
+export const REQUIRED_HOME_KEYS = ['running', 'registered', 'other'] as const;
 
 // ---- (endpoint x outcome) table DES-192/ADR-054 requires ----
 
@@ -129,4 +141,7 @@ export const DISCLOSURE_TABLE: DisclosureRow[] = [
   { route: 'GET /api/runs[i] (ok, no records)', outcome: 'ok', body: RUN_SUMMARY_NO_RECORDS as unknown as Record<string, unknown>, allowed: ALLOWED_RUN_SUMMARY_KEYS, required: REQUIRED_RUN_SUMMARY_KEYS },
   { route: 'GET /api/runs/:id/dag', outcome: 'ok', body: DAG_PAYLOAD as unknown as Record<string, unknown>, allowed: ALLOWED_DAG_KEYS, required: REQUIRED_DAG_KEYS },
   { route: 'any /api/* (degraded)', outcome: 'degraded', body: DEGRADED_BODY, allowed: ALLOWED_DEGRADED_KEYS, required: REQUIRED_DEGRADED_KEYS },
+  // v27c AC-1 repair: the two endpoints this delta widened with no prior row (ADR-054, INV-V27-7).
+  { route: 'GET /api/home', outcome: 'ok', body: HOME_VIEW_EXAMPLE as unknown as Record<string, unknown>, allowed: ALLOWED_HOME_KEYS, required: REQUIRED_HOME_KEYS },
+  { route: 'GET /api/runs/:id/agents/:agentId (http, ok)', outcome: 'ok', body: AGENT_LOG_OK as unknown as Record<string, unknown>, allowed: ALLOWED_AGENT_LOG_OK_KEYS, required: REQUIRED_AGENT_LOG_OK_KEYS },
 ];

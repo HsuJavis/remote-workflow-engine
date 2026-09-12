@@ -31,7 +31,7 @@
 // default.
 import { panelSide } from '../lib/swimlane.js';
 import { panelModel, clipText } from '../lib/agent.js';
-import { clockNow } from '../lib/clock.js';
+import { clockNow } from './clock.js';
 import { getJSON } from './poll.js';
 
 const EVENT_CLIP = 2048;

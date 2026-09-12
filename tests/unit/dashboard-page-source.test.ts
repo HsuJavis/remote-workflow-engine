@@ -32,10 +32,15 @@ describe('the run page keeps Fit clickable (UT-222, D8/REQ-129)', () => {
 
 // UT-224 (v26 Gate 7.5 round 3, defect D10) — the two markup/CSS facts STAY; the "mousedown
 // preventDefault" JS behaviour pin RETIRES (see the file banner above). [v27c] the CSS-rule half
-// re-points to `dashboard.css` bytes; the markup half (`draggable="false"`) stays on DASHBOARD_HTML.
+// re-points to `dashboard.css` bytes. [v27c AC-3b Gate 8 repair]: the markup half re-points to
+// `ui/workflow.js` too — `app.js:427`'s `replaceChildren` deletes DASHBOARD_HTML's pre-v27 body
+// before first paint (ARCH-122), so the `<img id="diagram-img" ... draggable="false">` this pin
+// asserted on DASHBOARD_HTML was guarding dead bytes no browser renders; the element is actually
+// built by `workflow.js`'s `img.id = 'diagram-img'` / `img.draggable = false` (real-tier coverage
+// unchanged: val-197-diagram-drag-pan.test.ts:119-123).
 describe("the author's diagram can be drag-panned: no native image drag (UT-224, D10/REQ-129)", () => {
   it('the diagram <img> is explicitly non-draggable', () => {
-    expect(DASHBOARD_HTML).toMatch(/<img id="diagram-img"[^>]*draggable="false"/);
+    expect(clientFile('ui/workflow.js')).toMatch(/img\.id = 'diagram-img';[\s\S]*?img\.draggable = false;/);
   });
 
   it('#diagram-img also disables the webkit image drag and text selection', () => {

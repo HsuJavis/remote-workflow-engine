@@ -20,12 +20,20 @@ import type { Server } from '../../src/server.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
 import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 
-// One priced (known model) + one deliberately unpriced (unrecognized model) call per run — the two
-// cases that split the folds last time (v26 R-1), per DES-194's own oracle.
+// [v27c AC-9 Gate 8 repair] INV-V27-1/ADR-052 name the run VERBATIM: "both a terminally-failed
+// call AND an unpriced call — the two cases that split the folds last time (v26 R-1)". The
+// pre-repair fixture had only a priced + an unrecognized-model call — both `ok:true` — so the
+// terminally-failed branch (`ok:false`) the invariant exists to catch was never exercised; the
+// equality was witnessed by construction, not on the named shape. `'failed'` now returns `ok:false`
+// — `agent-executor.ts:607` captures it into the transcript and resolves the call to `null` (never
+// throws), so the script still reaches `return 'ok'` with all three calls on the record.
 const FAKE_GATEWAY: GatewayClient = {
   invoke: async (req) => {
     if (req.opts.label === 'unpriced') {
       return { ok: true, provider: 'anthropic', model: 'totally-unrecognized-test-model-xyz', tokens: { input: 5, output: 5 }, content: 'x' };
+    }
+    if (req.opts.label === 'failed') {
+      return { ok: false, provider: 'anthropic', reason: 'terminal', detail: 'IT-167/AC-9 injected terminal failure' };
     }
     return { ok: true, provider: 'anthropic', model: 'claude-3-5-sonnet-20241022', tokens: { input: 10, output: 4 }, content: 'x' };
   },
@@ -69,10 +77,11 @@ async function runAndWait(name: string, script: string): Promise<string> {
 }
 
 describe('/api/runs[i].costUSD equals /api/runs/:id.usage.costUSD for the SAME run (IT-167, INV-V27-1, VAL-205)', () => {
-  it('a run holding both a priced and an unpriced call: the summary and the detail agree, via ONE fold', async () => {
-    const runId = await runAndWait('it167-priced-and-unpriced', `
+  it('a run holding a priced call, an unpriced call, AND a terminally-failed call: the summary and the detail agree, via ONE fold (AC-9, INV-V27-1\'s named oracle)', async () => {
+    const runId = await runAndWait('it167-priced-unpriced-and-failed', `
       await agent('priced', { prompt: 'p' });
       await agent('unpriced', { prompt: 'p' });
+      await agent('failed', { prompt: 'p' });
       return 'ok';
     `);
     const detailRes = await fetch(`${baseUrl}/api/runs/${runId}`);
