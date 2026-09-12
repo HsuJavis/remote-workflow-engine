@@ -5503,6 +5503,7 @@ iteration's OWN novel logic (REQ-131..141's acceptance clauses do not name any o
 - **traces:** TASK-210, DES-206, DES-203, REQ-134
 - **greens:** VAL-208 (real-Chromium case 2, `SPEC_ROWS (run view, REQ-134)`), VAL-200
 - **files:** src/dashboard/dashboard.css, src/dashboard/ui/run.js
+- **commit:** 23a909a
 - **iter:** v27
 
 Gate 7.5's REAL-run finding (state.yaml pending, 08-validation.md VAL-208): `.cell`'s five children
@@ -5570,6 +5571,7 @@ edit's own test-fixture file, landed together).
 - **traces:** DES-206, TASK-210, REQ-134
 - **greens:** UT-257
 - **files:** src/dashboard/lib/model.js (new), tests/unit/dashboard-lib-model.test.js (new), src/static-assets.ts, src/dashboard/ui/run.js
+- **commit:** 23a909a
 - **iter:** v27
 
 `ui/run.js`'s own file banner (pre-existing) recorded that no `shortModel`-style formatter existed
@@ -5607,6 +5609,7 @@ since Node-side tests never fetch the file over HTTP). Wired into `ui/run.js`'s 
 - **traces:** TASK-214, DES-209, REQ-134
 - **greens:** VAL-208 (real-Chromium case 2, `SPEC_ROWS (run view, REQ-134)`)
 - **files:** tests/fixtures/dashboard-spec.ts, tests/helpers/spec-rows.ts, tests/fixtures/dashboard-classes.ts
+- **commit:** 23a909a
 - **iter:** v27
 
 VAL-208's own finding named the gap precisely: the entire real-Chromium tier (`SPEC_ROWS`,
