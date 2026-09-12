@@ -2864,10 +2864,12 @@ materializes anything today either way, so this fact stays true both before and 
 - **tier:** acceptance
 - **real:** false
 - **result:** pass
-- **iter:** v2
+- **iter:** v27
 
 **Gate 6 route-back closed this GREEN (IMPL-063); re-confirmed standalone by Gate 7.5 v2 round 2
-(2026-07-04): `npx vitest run tests/acceptance/val-018-dashboard-browser-ui.test.ts` → 5/5 pass.**
+(2026-07-04): `npx vitest run tests/acceptance/val-018-dashboard-browser-ui.test.ts` → 5/5 pass.
+Re-confirmed again after the v27 oracle fix below (2026-09-12):
+`RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-018-dashboard-browser-ui.test.ts` → 6/6 pass.**
 See 08-validation.md "v2 ROUND 2" for the independent real-process confirmation (real HTTP GET
 `/dashboard` and `/dashboard/<runId>`, real live-update-without-reload demonstration).
 
@@ -2907,9 +2909,22 @@ OF SCOPE for this item and NOT touched:** the file's other 4 pre-existing cases 
 for the same underlying reason — DES-200/DES-206 moved all of that content client-side too, out of the
 static shell body, and this file was never updated after that architecture shift (last confirmed
 green 2026-07-04, v2, per this entry's own header). Flagged to the orchestrator as a real regression
-needing its own scoped fix; `status`/`result` below are left as this file's ORIGINAL recorded values
-per the Mode A convention (status/result flips are Gate 7's job), not as a claim that all 5/6 cases
-pass today.
+needing its own scoped fix.
+
+**[Gate 5 oracle fix, 2026-09-12, verifier — the 4 flagged cases above, closed]:** each case's
+guarantee re-verified against real server output and re-pointed to where it is now observable,
+never loosened. **(1)** `/api/runs` + `fetch(` — moved to `/static/dashboard/ui/poll.js`
+(`getJSON`/`ROUTES.workflow`, `poll.js:22,44`), the one low-level fetch primitive ARCH-125 names.
+**(2)** `agentId`/`tokens`/`state` — moved to `/static/dashboard/ui/run.js`, the swimlane painter
+(`run.js:124-336`) that reads all three fields off `AgentRecord`/DAG cells directly. **(3)**
+`EventSource`/`setInterval` — `app.js` (measured) carries neither: ARCH-125's own v27 amendment
+retired `setInterval(tick, 3000)` for a self-rescheduling `setTimeout` armed in
+`tick().finally(...)`, a deliberate fix for request pile-up over a slow tunnel, not a regression —
+the assertion is broadened to `EventSource|setInterval|setTimeout` (never narrowed) against
+`/static/dashboard/ui/app.js`. **(4)** the transcript-endpoint pattern — `agent-panel.js:226`'s
+`openAgentPanel` template literal contains the SAME literal substrings the original unchanged regex
+looks for, confirmed against the real served `/static/dashboard/ui/agent-panel.js`. Result:
+6/6 green (`RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-018-dashboard-browser-ui.test.ts`).
 
 ---
 

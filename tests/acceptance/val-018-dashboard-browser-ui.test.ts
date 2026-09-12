@@ -33,25 +33,40 @@ describe('GET /dashboard — real browser-renderable HTML page on the same port 
     await server?.close();
   });
 
-  it('returns a real HTML page (not the JSON API) whose client-side JS fetches the run list from /api/runs', async () => {
+  // [Gate 5 oracle fix, 2026-09-12] Since DES-200/DES-206 (v27 client rewrite) the shell served at
+  // `/dashboard` carries markup + a `#rwe-init` data island only — every fetch call and DTO field
+  // name lives in `src/dashboard/ui/*.js`, served at `/static/dashboard/ui/*.js`, so a static GET
+  // can never contain them however correct the implementation is. Measured directly (this file's
+  // own probe against the real server): the shell response has no `/api/runs`, no `fetch(`, no
+  // `agentId`/`tokens`/`state`. The guarantee — "client JS calls the SAME read-only JSON API, not a
+  // parallel dashboard DTO" (DES-018) — is unchanged; only WHERE it is observable moved, to
+  // `poll.js`, the one low-level fetch primitive (`getJSON`, ARCH-125) whose own `ROUTES.workflow`
+  // table names `/api/runs` literally (`poll.js:22,44`).
+  it('returns a real HTML page (not the JSON API), and its served client fetch primitive calls /api/runs', async () => {
     const res = await fetch(`${baseUrl}/dashboard`);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type') ?? '').toContain('text/html');
 
     const body = await res.text();
     expect(body).toMatch(/<html/i);
-    // "one data model, two transports" (DES-018): the page's own client JS must call the SAME
-    // read-only JSON API the MCP tools/dashboard already share, not a parallel dashboard DTO.
-    expect(body).toMatch(/\/api\/runs/);
-    expect(body).toMatch(/fetch\s*\(/);
+
+    const pollRes = await fetch(`${baseUrl}/static/dashboard/ui/poll.js`);
+    expect(pollRes.status).toBe(200);
+    const pollJs = await pollRes.text();
+    expect(pollJs).toMatch(/\/api\/runs/);
+    expect(pollJs).toMatch(/fetch\s*\(/);
   });
 
+  // [Gate 5 oracle fix, 2026-09-12] Same DES-200/DES-206 move: the phase/agent tree is now painted
+  // by `ui/run.js`'s swimlane painter (ARCH-125 — "the swimlane painter... reused by TASK-209"),
+  // which reads `c.agentId`, `c.state`/`toCell.state` and `c.tokens` directly (`run.js:124-336`,
+  // measured against the real served file). The static shell has none of these fields any more —
+  // the guarantee (a real per-agent state + token drill-in, not just a run-list shell) is unchanged,
+  // only re-pointed to where it now renders.
   it('exposes a drill-in view rendering the phase/agent tree with per-agent state + token usage', async () => {
-    const res = await fetch(`${baseUrl}/dashboard`);
+    const res = await fetch(`${baseUrl}/static/dashboard/ui/run.js`);
+    expect(res.status).toBe(200);
     const body = await res.text();
-    // Client-side rendering logic for a selected run's agent tree must reference the real
-    // RunStatusView/AgentRecord fields it drills into (agentId/state/tokens) — not just a static
-    // run-list shell with no per-agent detail view at all.
     expect(body).toMatch(/agentId/);
     expect(body).toMatch(/tokens/);
     expect(body).toMatch(/state/);
@@ -63,14 +78,31 @@ describe('GET /dashboard — real browser-renderable HTML page on the same port 
     expect(res.headers.get('content-type') ?? '').toContain('text/html');
   });
 
-  it('has an auto-update mechanism (SSE or polling) so agent state/tokens refresh without a manual page reload', async () => {
-    const res = await fetch(`${baseUrl}/dashboard`);
+  // [Gate 5 oracle fix, 2026-09-12] ARCH-125's own v27 amendment retired `setInterval(tick, 3000)`
+  // in favor of a self-rescheduling `setTimeout` armed in `tick().finally(...)` — "setInterval
+  // stacks requests the moment a tick outlives its period, which... makes the client the load being
+  // measured" (02-architecture.md ARCH-125 amendment). This is a deliberate architecture decision,
+  // not a regression: `app.js` (measured against the real served file) carries `setTimeout(` and no
+  // `setInterval(`/`EventSource` at all. The guarantee — some auto-refresh mechanism exists so
+  // state/tokens update with no manual reload — is unchanged; `setTimeout` is added as the (now
+  // sole) real mechanism rather than replacing the other two, so a future revert to either still
+  // passes.
+  it('has an auto-update mechanism (self-rescheduling setTimeout, setInterval, or SSE) so agent state/tokens refresh without a manual page reload', async () => {
+    const res = await fetch(`${baseUrl}/static/dashboard/ui/app.js`);
+    expect(res.status).toBe(200);
     const body = await res.text();
-    expect(/new EventSource\(|setInterval\(/.test(body)).toBe(true);
+    expect(/new EventSource\(|setInterval\(|setTimeout\(/.test(body)).toBe(true);
   });
 
+  // [Gate 5 oracle fix, 2026-09-12] Same move: the transcript drill-in fetch is `agent-panel.js`'s
+  // `openAgentPanel` (ARCH-125, REQ-135), whose template literal
+  // `` `/api/runs/${...}/agents/${...}?limit=500` `` (`agent-panel.js:226`) contains the literal
+  // substrings `/api/runs/` then `/agents/` on one line, so the ORIGINAL regex — unchanged — still
+  // matches it (confirmed against the real served file); only the fetch target moved from the
+  // static shell to this file.
   it('exposes a transcript view referencing the per-agent transcript endpoint', async () => {
-    const res = await fetch(`${baseUrl}/dashboard`);
+    const res = await fetch(`${baseUrl}/static/dashboard/ui/agent-panel.js`);
+    expect(res.status).toBe(200);
     const body = await res.text();
     expect(body).toMatch(/\/api\/runs\/.*\/agents\//);
   });

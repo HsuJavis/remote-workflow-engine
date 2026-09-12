@@ -5195,3 +5195,79 @@ with a real Chromium probe, not inferred, and NOT this file's own markup/class d
   passed, real Chromium; the one red is the `SPEC_ROWS` case above.
 - `git show f86ea25 --stat -- src/dashboard/ui/workflow.js` → confirms 308 insertions, 0 deletions,
   new file (the original build, not a later edit).
+
+### IMPL-245 — `--row-selected-bg` token (REQ-133 7% tint) + `agent-panel.js` banner correction, both landed at `f8b167e`
+- **status:** done
+- **traces:** TASK-214, DES-209, REQ-133, TASK-210, TASK-211, DES-206, REQ-135
+- **greens:** VAL-199 (the `tr.is-selected` SPEC_ROWS sub-case, previously red per IMPL-244's caveat)
+- **files:** src/dashboard/dashboard.css, src/dashboard/ui/agent-panel.js
+- **commit:** f8b167e
+- **iter:** v27
+
+Two unrelated fixes landed in one commit; recorded here as the one row neither had (the pass that
+made them could not append to this file). **(1) `dashboard.css:17-25,191`:** the already-correct
+`.table tr.is-selected{background:color-mix(in srgb, var(--color-accent) 7%, transparent)}` is
+hoisted into a `--row-selected-bg` custom property at `:root`, and the rule now reads
+`background:var(--row-selected-bg)`. Motivation: DES-209's spec-row oracle
+(`tests/fixtures/dashboard-spec.ts`) can only probe a `token` row by setting
+`background-color: var(--token-name)` and comparing — it cannot probe a raw `color-mix()` literal
+against itself, which is what VAL-199's `tr.is-selected` case was wrongly doing (expecting the flat
+`--color-accent`, not the actual 7% mix). The token gives the 7% tint one place to change and lets
+the spec row assert the real computed value. **(2) `agent-panel.js:9-21,224-225`:** comment-only.
+The module banner and the `openAgentPanel` JSDoc both still read as though nothing called
+`openAgentPanel` (a `NEEDS_CLARIFICATION` note from before the wiring landed); `IMPL-224` wired it
+at `ui/run.js:147` → `render()`'s default `handlers.onSelectAgent` at `ui/run.js:410` several
+commits earlier, and this comment was never updated to say so. No behavior change — the banner now
+names `IMPL-224` and the actual call chain instead of describing a gap that had already closed.
+
+**Verification (real runs, this pass):**
+- `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-199-workflow-detail.test.ts` → 4/4
+  passed (the `tr.is-selected` sub-case is green; IMPL-244 recorded this same file at 3/4 before
+  this commit).
+- `git show f8b167e -- src/dashboard/dashboard.css src/dashboard/ui/agent-panel.js` confirms the
+  two diffs described above (CSS: 1 new custom property + 1 rule changed to reference it;
+  agent-panel.js: comment-only, no code line changed).
+
+### IMPL-246 — VAL-018's other 4 cases closed: each re-pointed to the served client file that now carries its guarantee, none loosened
+- **status:** done
+- **traces:** DES-200, DES-206, REQ-008, REQ-129, ARCH-125
+- **greens:** VAL-018 (6/6, was 2/6)
+- **files:** tests/acceptance/val-018-dashboard-browser-ui.test.ts
+- **commit:** pending (working tree)
+- **iter:** v27
+
+Test-only fix, no `src/` change (flagged as a real regression by `f8b167e`'s own note and this
+entry closes it). Each of the 4 red cases was re-verified against the REAL running server before
+being re-pointed — never assumed from the design docs alone, per the precedent this pass was warned
+about (a prior attempt on this same file's REQ-129 case re-pointed a marker that was still correct
+in the static shell). **(1)** `/api/runs` + `fetch(` — measured: the static `/dashboard` shell has
+neither. Both live in `/static/dashboard/ui/poll.js` (`getJSON`'s `fetch(url)` at `poll.js:44`; the
+literal `/api/runs` in `ROUTES.workflow` at `poll.js:22`) — re-pointed there. **(2)**
+`agentId`/`tokens`/`state` — measured: absent from the shell, present in
+`/static/dashboard/ui/run.js` (the swimlane painter, `run.js:124-336`) — re-pointed there. **(3)**
+`EventSource`/`setInterval` — measured: `/static/dashboard/ui/app.js` has neither; it has
+`setTimeout(` instead. `02-architecture.md`'s ARCH-125 amendment records why: `setInterval` was
+deliberately retired for a self-rescheduling `setTimeout` armed in `tick().finally(...)`, because
+`setInterval` stacks requests once a tick outlives its 3s period. Not a code bug — re-pointed to
+`app.js` with the regex broadened to accept `setTimeout(` alongside the original two (never
+narrowed, so a future revert to either still passes). **(4)** the transcript-endpoint pattern
+`/\/api\/runs\/.*\/agents\//` — measured: the ORIGINAL regex, unchanged, already matches
+`/static/dashboard/ui/agent-panel.js`'s `openAgentPanel` template literal
+(`` `/api/runs/${...}/agents/${...}?limit=500` ``, `agent-panel.js:226`) because `.*` matches the
+`${...}` interpolation syntax on the same line — re-pointed there with no regex change.
+`05-tests.md`'s VAL-018 entry (header `status`/`iter`, and the case-1/2/4/5 prose) and this file are
+the only docs touched; `06-impl-log.md`'s own next entry above (`IMPL-245`) is the one the prior
+pass could not append because this file was outside its scope.
+
+**Verification (real runs, this pass):**
+- `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-018-dashboard-browser-ui.test.ts` →
+  6/6 passed (was 2/6 — cases 3 and 6 already green, unchanged).
+- `npx tsc --noEmit` → 0 errors.
+- `npx vitest run tests/unit tests/integration` → 2452 passed, 0 failed (no regression).
+- `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-193-dag-fit-and-columns.test.ts
+  tests/acceptance/val-197-diagram-drag-pan.test.ts tests/acceptance/val-200-swimlane.test.ts
+  tests/acceptance/val-201-agent-panel.test.ts` → all passed, real Chromium (untouched, checked for
+  collateral damage from the re-pointing).
+- `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → 1621 items / 41 gaps (the
+  baseline's 1619 + this entry's own IMPL-245/IMPL-246 rows; gap count is byte-identical to the
+  1619/41 baseline — no new gap introduced).
