@@ -11960,6 +11960,20 @@ File: `tests/integration/static-assets-route.test.ts` (new, 5 cases; real `creat
 (the traversal table and an unknown key both already 404 today, for the unrelated reason that
 nothing under `/static/*` is registered at all) — recorded green, not forced.
 
+**Amended (2026-09-12, verifier, v27 Gate 5 defect-queue item (6)):** once TASK-203/204 landed the
+real route, the traversal case (`fetch()` against `/static/dashboard/ui/../lib/theme.js`) started
+failing with `200` instead of `404` — not a real vulnerability: `fetch()` parses the target through
+the WHATWG URL parser, which collapses `../` dot-segments CLIENT-SIDE before the request line is
+built, so the string resolved to the already-legitimate `lib/theme.js` before it ever left the
+client. The server (`src/static-assets.ts`'s `lookupStaticAsset`) is a bare `Map.get` over a fixed
+allowlist — no path is ever built from caller input, so it was never reachable via a real traversal;
+the test's transport, not the code, was the defect. Rewritten to send each `TRAVERSAL_TABLE` string
+over `node:http`'s `path` option (`rawGet`), which puts the exact byte string on the wire unnormalized
+(verified empirically against a throwaway echo server, and cross-checked against a deliberately
+vulnerable `path.join`/`normalize` variant, which the same probe correctly catches — see this gate's
+report). Re-run: `npx vitest run tests/integration/static-assets-route.test.ts` → 5/5 pass. `status`/
+`result` left as the original Gate-5 measurement, same bookkeeping precedent as UT-249 above.
+
 ### UT-240 — `static-assets.test.ts`: `STATIC_ASSETS` — closed map, exact `Map.get`, no path built from a URL
 - **status:** red
 - **traces:** DES-199, ARCH-123, ADR-049, TASK-204, REQ-131
@@ -12097,6 +12111,18 @@ File: `tests/unit/dashboard-client-corpus.test.ts` (new, 3 cases). 2/3 red (meas
 import failure on `src/dashboard/ui/poll.js` (does not exist). 1/3 green (Mode C): `clientCorpus()`
 already correctly throws on the absent `src/dashboard/` directory — the helper's own correctness
 floor, not waiting on Gate 6.
+
+**Amended (2026-09-12, verifier, v27 Gate 5 defect-queue item (1)):** the Mode-C green case's oracle
+went stale once Gate 6 built the real client tree (TASK-204..214) — `src/dashboard/` is no longer
+empty, so `clientCorpus()` (no-arg) correctly stops throwing and the original assertion started
+failing for the wrong reason (a defect in the test, not the code). `clientCorpus()` (in
+`tests/helpers/client-corpus.ts`) gained an optional `root` param, defaulting to the real client
+tree so every other caller (`dashboard-no-design-values`/`dashboard-diagram-render`/
+`dashboard-zoom-source`/`workflow-page-harness-table`) is unaffected; the case now injects a real,
+disposable empty temp dir so it tests the anti-vacuity GUARANTEE itself rather than today's
+population state. Re-run: `npx vitest run tests/unit/dashboard-client-corpus.test.ts` → 3/3 pass.
+`status`/`result` left as the original Gate-5 measurement (test-first bookkeeping is Gate 6.5+7's
+job, per precedent — see IMPL-240/241's notes on UT-233/235/236); not silently flipped.
 
 ### UT-252 — `dashboard-diagram-render.test.ts` disposition anchor: `createObjectURL`/`revokeObjectURL` re-point to `ui/workflow.js`
 - **status:** red

@@ -21,10 +21,12 @@ function listJsFiles(dir: string): string[] {
 }
 
 /** Every `src/dashboard/{lib,ui}/**\/*.js` file concatenated. THROWS if the directory is absent or
- *  empty — a re-pointed guard reading '' would pass every negative assertion vacuously. */
-export function clientCorpus(): string {
-  const files = listJsFiles(CLIENT_ROOT);
-  if (files.length === 0) throw new Error(`clientCorpus(): no .js files found under ${CLIENT_ROOT} — the client has not been built yet`);
+ *  empty — a re-pointed guard reading '' would pass every negative assertion vacuously. `root`
+ *  defaults to the real client tree; UT-249's own floor test injects a disposable empty temp dir so
+ *  it exercises the guarantee directly instead of relying on the real tree staying unbuilt. */
+export function clientCorpus(root: string = CLIENT_ROOT): string {
+  const files = listJsFiles(root);
+  if (files.length === 0) throw new Error(`clientCorpus(): no .js files found under ${root} — the client has not been built yet`);
   return files.map((f) => readFileSync(f, 'utf8')).join('\n');
 }
 

@@ -6,16 +6,28 @@
 //
 // Tier: unit — pure.
 //
-// Red reason (measured): `src/dashboard/ui/poll.js` does not exist (whole-file import failure);
-// `tests/helpers/client-corpus.ts` exists (this dispatch's own test infra) but
-// `src/dashboard/**/*.js` does not exist yet, so `clientCorpus()` throwing is the CORRECT,
-// already-true behaviour today — recorded green per Mode C, not forced red.
+// [v27 Gate 5 defect-queue item (1), fixed 2026-09-12] The original case asserted
+// `clientCorpus()` throws against the REAL `src/dashboard/` root, true only while Gate 6 had not
+// yet built the client. That premise is now stale — the client tree legitimately exists (TASK-204..
+// 214 landed it), so the real root always has files and the case genuinely fails today, not because
+// the floor is broken but because the oracle described a directory that no longer stays empty. The
+// anti-vacuity GUARANTEE is a property of `clientCorpus()` given *any* empty directory, not a fact
+// about today's `src/dashboard/` — re-pointed to a real, disposable empty temp dir so it stays true
+// regardless of how large the real client tree grows.
 import { describe, it, expect } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { clientCorpus } from '../helpers/client-corpus.js';
 
 describe('clientCorpus() anti-vacuity floor (UT-249, DES-208)', () => {
-  it('THROWS today because src/dashboard/**/*.js does not exist yet — never returns "" silently', () => {
-    expect(() => clientCorpus()).toThrow(/no \.js files found/);
+  it('throws on a genuinely empty directory — never returns "" silently', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'client-corpus-empty-'));
+    try {
+      expect(() => clientCorpus(tmp)).toThrow(/no \.js files found/);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 

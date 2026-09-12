@@ -3937,3 +3937,57 @@ links, 0 orphans.
 
 **Next:** Gate 6 (implementer) re-runs the Sprint A closure (TASK-208/209/211/212 remaining), then
 closes UT-256 and the two flagged scenario gaps as part of its own view-task work.
+
+## 2026-09-12 — v27 GATE 5 DEFECT-QUEUE REPAIR (verifier) — PASSED
+
+Dispatched as the generic Gate-5 (test-first RED) role for the REQ-131..136/140/141 closure, but
+`gates.tests.passed` was already `true` (v27, v27b delta, v27c delta all closed) and `current_stage`
+was already `impl` mid-flight. Read `pending:` and the journal before acting (precedent: v23's
+targeted Gate 5 re-entries during Gate 6) — the only thing actually routed to the verifier was the
+**v27 GATE 5 DEFECT QUEUE**'s two still-open items, (1) and (6); (2)–(5) were already resolved at
+`cb895d0`/`e8232ea`.
+
+**(1) UT-249 (`dashboard-client-corpus.test.ts`):** the anti-vacuity case asserted `clientCorpus()`
+throws against the REAL `src/dashboard/` root — true only while Gate 6 had not yet built the client.
+Now that TASK-204..214 landed the tree, the root is never empty and the assertion genuinely failed.
+`clientCorpus()` (`tests/helpers/client-corpus.ts`) gained an optional `root` param (default
+unchanged; its 4 other callers — `dashboard-no-design-values`/`dashboard-diagram-render`/
+`dashboard-zoom-source`/`workflow-page-harness-table` — untouched); the case now injects a real,
+disposable empty temp dir so it tests the anti-vacuity GUARANTEE, not today's population state.
+
+**(6) IT-170 (`static-assets-route.test.ts`):** the traversal case sent `TRAVERSAL_TABLE` through
+`fetch()`, which parses the target through the WHATWG URL parser and collapses `../` dot-segments
+CLIENT-SIDE before the request line is built — `ui/../lib/theme.js` resolved to the already-legitimate
+`lib/theme.js` before it ever left the client, so the case measured `200` and could never prove the
+SERVER refuses a traversal. Confirmed `src/static-assets.ts`'s `lookupStaticAsset` is a bare `Map.get`
+over a fixed allowlist — no path is ever built from caller input, so this was never a real
+vulnerability. Rewrote the case to use `node:http`'s `path` option directly (`rawGet`), verified
+empirically against a throwaway echo server that this puts the exact byte string on the wire
+unnormalized, and cross-checked non-vacuity against a deliberately-vulnerable `path.join`/`normalize`
+variant (the same probe correctly returns 200 there, proving the probe would catch a real bug).
+
+Also verified (no action needed): the **val-193 case 3 C2 re-point** (orchestrator authorization,
+`.cell-usage` selector replacing `#dag-graph text`) was already correctly applied at `ddc4409` — the
+`#dag-graph` anchor itself is still asserted, VAL id unchanged.
+
+`status`/`result` on UT-249/IT-170 left as their original Gate-5 red/fail measurement — the bookkeeping
+flip to green is Gate 6.5+7's job (IMPL-240/241 precedent on UT-233/235/236); `05-tests.md` gained a
+dated **Amended** note on each explaining the fix instead.
+
+**Verification:** `npx vitest run` on the 8 touched/adjacent files → 27/27 pass. `npx tsc --noEmit`
+clean. `sh .sdlc/trace --check` → 1617 items / 41 gaps, byte-identical gap SET to the pre-edit baseline
+(diffed the dashboard's own embedded gap array, not just the count — 0 new, 0 broken, 0 orphans). Full
+regression `npx vitest run` → 399/402 files, 2798/2830 tests passed. The 2 failing files are
+pre-existing and unrelated to this pass (confirmed by dependency inspection — neither imports anything
+this pass touched — and by an isolated clean re-run): `val-018-dashboard-browser-ui.test.ts` (no
+`viewBox` in the served HTML) and `val-199-workflow-detail.test.ts` (3 `SPEC_ROWS` failures: history-
+table width, accent-color token, and `.mono` font-family). **Flagged, not fixed:** the `.mono`
+font-family row compares a single-quoted CSS literal against `getComputedStyle()`, which browsers
+ALWAYS return double-quoted regardless of source quote style — this reads as a likely 7th `SPEC_ROWS`
+oracle bug of the same class the v27c Gate 5 delta already fixed six of, but discovering it was outside
+this pass's routed scope (the defect queue named four specific items, not a SPEC_ROWS sweep) so it was
+not touched here. The width/accent-token rows on the same test read as genuine unimplemented CSS
+(Gate 6 still has TASK-208/209/211/212 outstanding per the prior journal entry).
+
+**Next:** Gate 6 (implementer) continues the Sprint A closure; look at the val-018/val-199 findings
+above before closing out.
