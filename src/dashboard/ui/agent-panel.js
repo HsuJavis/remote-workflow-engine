@@ -7,18 +7,15 @@
 // listeners.
 //
 // `openAgentPanel(runId, agentId, label, opts)` is the integration entry point a click on a real
-// swimlane node is meant to call: fetch `/api/runs/:id/agents/:agentId`, project it through
-// `panelModel`, mount on `document.body` (so the panel survives `ui/run.js`'s own 3s rebuild of
-// `#dag-graph`, which replaces only its own subtree). NEEDS_CLARIFICATION (reported, not silently
-// worked around): nothing currently calls this. `ui/run.js`'s own click handler
-// (`ui/run.js:169`) invokes `opts.onSelectAgent(agentId, label)` only when the view's `render()`
-// receives it via `handlers.onSelectAgent`, and `ui/app.js`'s `mountLazy` (the only caller of
-// `run.js`'s `render`) passes `{}` — both files are outside TASK-211's file list. Wiring this
-// needs ONE of: (a) `ui/run.js`'s `render()` defaulting `handlers.onSelectAgent` to
-// `(id, lbl) => openAgentPanel(runId, id, lbl, { lang })`, or (b) `ui/app.js` passing that handler
-// into `run.js`'s `render` call. Verified working end-to-end (val-201, real Chromium) against a
-// scratch copy of the tree with (a) applied as a two-line patch; not applied here since it would
-// touch a sibling task's file on a tree ~20 parallel implementers share.
+// swimlane node calls: fetch `/api/runs/:id/agents/:agentId`, project it through `panelModel`,
+// mount on `document.body` (so the panel survives `ui/run.js`'s own 3s rebuild of `#dag-graph`,
+// which replaces only its own subtree). IMPL-224 wired this: `ui/run.js`'s own click handler
+// (`ui/run.js:147`) invokes `layer.onSelectAgent(agentId, label)`, and `render()`
+// (`ui/run.js:410`) now defaults `handlers.onSelectAgent` to
+// `(id, lbl) => openAgentPanel(runId, id, lbl, { lang })` when the caller (`ui/app.js`'s
+// `mountLazy`) supplies none — option (a) of the two this banner used to weigh between; a
+// caller-supplied `onSelectAgent` still wins, so option (b) is not shadowed. Verified end-to-end
+// at val-201 (real Chromium).
 // A second, smaller gap the same wiring exposes: REQ-135's slide-by-node-position needs the
 // clicked node's on-screen center and the graph's width (`lib/swimlane.js`'s `panelSide`), and
 // `onSelectAgent(agentId, label)` carries neither. `opts.nodeCenterX`/`opts.graphWidth` are
@@ -221,8 +218,8 @@ export function render(container, vm, handlers) {
   return { backdrop, panel, close };
 }
 
-/** Integration entry point (see the module banner's needs_clarification: nothing wires this to a
- *  real node click yet). Fetches the agent's record/harness/events, projects them through
+/** Integration entry point (see the module banner: `ui/run.js`'s `render()` wires a real node
+ *  click to this, per IMPL-224). Fetches the agent's record/harness/events, projects them through
  *  `panelModel` (DES-205) and mounts on `document.body`. */
 export async function openAgentPanel(runId, agentId, label, opts) {
   const lang = (opts && opts.lang) || currentLang();

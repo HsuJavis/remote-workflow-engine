@@ -87,7 +87,15 @@ export const SPEC_ROWS: ReadonlyArray<SpecRow> = [
   // anchor either; deleted rather than rewritten to a viewport-sized px literal, which would pin
   // Puppeteer's default 800x600 viewport as if it were a requirement.
   { req: 'REQ-133', view: 'workflow', anchor: 'data-history-table', prop: 'font-size', expect: { literal: '12.5px' } },
-  { req: 'REQ-133', view: 'workflow', anchor: '[data-history-table] tr.is-selected', prop: 'background-color', expect: { token: 'color-accent' } },
+  // [Gate 5 oracle fix, 2026-09-12] REQ-133 itself (01-requirements.md:1765,
+  // 「選中列為 7% accent 底」) specifies a 7% TINT, not a flat `--color-accent` fill — the CSS
+  // (`dashboard.css`, `.table tr.is-selected`) already had this right; this row mis-encoded the
+  // requirement by probing the wrong token. Fixed via the token-set route (dashboard.css hoists the
+  // 7% color-mix() into its own `--row-selected-bg` custom property) rather than extending
+  // `tokenProbeValue` with an expression-capable row kind: one row needed it, the existing `token`
+  // row kind already expresses "themed value with its own name" exactly, and REQ-133's 7% figure
+  // now has a named, greppable home instead of being buried as an inline literal.
+  { req: 'REQ-133', view: 'workflow', anchor: '[data-history-table] tr.is-selected', prop: 'background-color', expect: { token: 'row-selected-bg' } },
   // [v27c gate 5 fix] `.t`'s rule is `.card .t` (dashboard.css:99, card-scoped); DES-209's own
   // REQ-133 style-hook row lists `.mono` (dashboard.css:101, standalone), the class the workflow
   // view's monospace figures actually carry.

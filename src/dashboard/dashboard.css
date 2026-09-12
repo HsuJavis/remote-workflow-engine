@@ -18,6 +18,13 @@
   --rwe-hue: 236;
   --radius-md: 3px;
   --radius-sm: 2px;
+  /* REQ-133 「選中列為 7% accent 底」 (history-table selected row). Hoisted into its own token
+     (rather than left as an inline color-mix() on the rule below) so the DES-209 spec-row oracle
+     (tests/fixtures/dashboard-spec.ts) can probe it as a `token` row like every other themed value
+     — a probe element can set `background-color: var(--row-selected-bg)` and compare, the same
+     mechanism as `--color-panel`/`--shadow-md`; it could not do that against a raw color-mix()
+     literal, since the literal itself IS the thing being probed FOR. */
+  --row-selected-bg: color-mix(in srgb, var(--color-accent) 7%, transparent);
 }
 
 /* Dark is the no-preference default (REQ-131). [v27c] The accent ramp direction is corrected: DES-
@@ -188,7 +195,7 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 .run-chip:hover{background:color-mix(in srgb, var(--color-accent) 10%, transparent)}
 .run-chip.is-selected{border-color:var(--color-accent);background:var(--accent-100)}
 .status-dot{font-size:7px;color:var(--color-muted)}
-.table tr.is-selected{background:color-mix(in srgb, var(--color-accent) 7%, transparent)}
+.table tr.is-selected{background:var(--row-selected-bg)}
 .usage-cols{font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;font-size:11px}
 .usage-lowerbound{color:var(--accent-700)}
 

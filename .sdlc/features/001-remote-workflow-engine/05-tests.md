@@ -2891,6 +2891,26 @@ Red reason: all 5 cases fail with the server's own generic JSON-RPC 404 `{"error
 its HTTP handler only ever routes `/api/runs*` (JSON) or `/mcp` (JSON-RPC); no `/dashboard` branch
 exists anywhere — not an import/syntax error.
 
+**[Gate 5 oracle fix, 2026-09-12, verifier]:** the REQ-129 case ("the served page carries the viewBox
++ .zoomable markers…", added v26) asserted both tokens against the STATIC `/dashboard` shell body.
+Measured: `.zoomable` IS still a literal class in that static shell (`<div id="dag-zoom"
+class="zoomable">` / `<div id="diagram-zoom" class="zoomable" ...>`) — DES-200/DES-206 did not move
+that marker client-side, and UT-200 (`dashboard-zoom-source.test.ts:18-19`) already pins it there to
+stay — so that half of the original diagnosis was wrong and that half of the assertion is UNCHANGED.
+`viewBox`, however, is genuinely absent from the shell: `<svg id="dag-graph" ...></svg>` ships with no
+`viewBox` attribute; `ui/run.js:186` sets it programmatically only after a run is selected and the
+graph is built, so a static GET can never contain it even given a correct implementation. Only that
+half is re-pointed, to the real server's own `/static/dashboard/ui/run.js` response (real HTTP, no
+fakes, same route IT-170 exercises); now GREEN. **Separately measured while verifying this fix, OUT
+OF SCOPE for this item and NOT touched:** the file's other 4 pre-existing cases (`/api/runs`,
+`agentId`/`tokens`/`state`, `EventSource`/`setInterval`, the transcript-endpoint pattern) all now FAIL
+for the same underlying reason — DES-200/DES-206 moved all of that content client-side too, out of the
+static shell body, and this file was never updated after that architecture shift (last confirmed
+green 2026-07-04, v2, per this entry's own header). Flagged to the orchestrator as a real regression
+needing its own scoped fix; `status`/`result` below are left as this file's ORIGINAL recorded values
+per the Mode A convention (status/result flips are Gate 7's job), not as a claim that all 5/6 cases
+pass today.
+
 ---
 
 ## Gate 8 v2 review route-back — RED tests for D-V2G8-1 (V3 HIGH security) and D-V2G8-2 (V4 MEDIUM regression)
@@ -12267,6 +12287,20 @@ style-hook row, not the card-scoped `.t`). RED (measured, 24 failures across the
 8 unique rows): `data-run-chip`/`data-history-table`/`.mono` — TASK-209's unlanded `workflow.js`
 emitters (same gap UT-256 names for `data-run-chip`/`data-history-table`; `.mono` is an additional
 measured gap on the same task, not previously named).
+
+**[Gate 5 oracle fix, 2026-09-12, verifier]:** the `[data-history-table]
+tr.is-selected` row (`dashboard-spec.ts`) probed `token: 'color-accent'` (a flat fill), but REQ-133
+itself (01-requirements.md:1765, 「選中列為 7% accent 底」) specifies a 7% TINT — the CSS
+(`.table tr.is-selected{background:color-mix(in srgb, var(--color-accent) 7%, transparent)}`) was
+already right; the row mis-encoded the requirement. Fixed via the token-set route: `dashboard.css`
+hoists the 7% `color-mix()` into its own `--row-selected-bg` custom property (defined once at
+`:root`, alongside `--rwe-hue`/`--radius-*`) and the rule now reads `background:var(--row-selected-bg)`;
+the row's `expect` was re-pointed to `token: 'row-selected-bg'`. `tokenProbeValue` (spec-rows.ts) was
+NOT extended with an expression-capable kind — one row needed it, and the existing `token` kind
+already expresses "themed value with its own name" exactly. Re-measured (real Chromium,
+`RWE_REQUIRE_BROWSER=1`): the full `SPEC_ROWS (workflow view, REQ-133)` case is GREEN (0 failures
+across both themes + the hue move) — this row is no longer among TASK-209's unlanded-emitter
+failures listed above.
 
 ### VAL-200 — real Chromium: the swimlane run graph — lane headers, 216x74 nodes, legend
 - **status:** red

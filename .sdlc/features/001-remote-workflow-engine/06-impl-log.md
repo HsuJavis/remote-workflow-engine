@@ -4282,7 +4282,7 @@ REQ-anchored anti-vacuity numbers move to the one that is actually the grid.
 - **traces:** TASK-210, DES-209, DES-206, DES-203
 - **greens:** VAL-200
 - **files:** src/dashboard/ui/run.js, tests/acceptance/val-193-dag-fit-and-columns.test.ts (verified only, not edited), tests/acceptance/val-200-swimlane.test.ts (verified only, not edited)
-- **commit:** pending (working tree)
+- **commit:** a30d4a9
 - **iter:** v27
 
 Picks up TASK-210's own deferred item: the ORIGINAL implementer correctly refused to migrate the
@@ -4409,7 +4409,7 @@ comment, `src/dashboard/ui/run.js:1-42`):**
 - **traces:** TASK-209, REQ-129, DES-206
 - **greens:** VAL-197
 - **files:** src/dashboard/ui/workflow.js
-- **commit:** pending (working tree)
+- **commit:** ddc4409
 - **iter:** v27
 
 Dispatch's own hypothesis was that `initZoomable`'s mousedown/mousemove/mouseup wiring in `run.js`
@@ -4460,7 +4460,7 @@ inside the 900px viewport.
 - **traces:** DES-209, REQ-129
 - **greens:** VAL-193
 - **files:** tests/acceptance/val-193-dag-fit-and-columns.test.ts
-- **commit:** pending (working tree)
+- **commit:** ddc4409
 - **iter:** v27
 
 Per `state.yaml`'s `pending:` "v27 ORCHESTRATOR AUTHORIZATION" entry (Gate 1 C2, `01-requirements.md`
@@ -4486,7 +4486,7 @@ implied. The other two cases in this file are untouched.
   proxies are the 4 acceptance files + full unit/integration suite staying green post-change, both
   cited below)
 - **files:** tsconfig.json, src/dashboard/ui/poll.js, tests/acceptance/val-091-seed-manifest-ref.test.ts
-- **commit:** pending (working tree)
+- **commit:** ddc4409
 - **iter:** v27
 
 All 36 pre-existing errors trace to the SAME cause: `tsconfig.json`'s `lib` was `["ES2022"]` (no DOM)
@@ -5115,9 +5115,83 @@ either way (it's TASK-206's `ROUTES` table, referenced not owned).
   screenshots).
 - `grep -n "setTimeout(" src/dashboard/ui/*.js` excluding comment lines → exactly one hit,
   `app.js:296`, confirming the DoD's "the scheduler in `app.js` ONLY" clause.
-- `npx vitest run tests/unit/dashboard-client-corpus.test.ts` → 2/3 passed; the one red is `UT-249`,
-  already recorded in `state.yaml`'s "v27 GATE 5 DEFECT QUEUE" item 1 as a stale-premise test defect
-  (the client tree it asserts absent now legitimately exists) — not caused by or fixable within this
-  entry's `files:`.
+- `npx vitest run tests/unit/dashboard-client-corpus.test.ts` → 2/3 passed AT THE TIME this entry was
+  written; the one red was `UT-249`, then a stale-premise test defect recorded in `state.yaml`'s
+  "v27 GATE 5 DEFECT QUEUE" item 1. **Update:** `f083b80` genuinely fixed it (`clientCorpus()` gained
+  an optional `root` param so the case exercises the throw-on-empty guarantee against a disposable
+  temp dir instead of today's populated `src/dashboard/`) — re-run just now: 3/3 passed. Neither state
+  was ever this entry's own `files:` to fix; recording the update so this note does not read as
+  current when it is history.
 - `git show f86ea25 cb895d0 3a1c58d -- src/dashboard/ui/app.js src/dashboard/ui/home.js
   src/dashboard/ui/theme-init.js` confirms the three-commit split above.
+
+### IMPL-243 — TASK-206 under-coverage closed: `lib/theme.js` and `lib/connection.js` get their own row (IMPL-221 named only `strings.js`)
+- **status:** done
+- **traces:** TASK-206, DES-201, DES-202, ARCH-124, ARCH-125, ARCH-130, REQ-131
+- **greens:** UT-243, UT-245
+- **files:** src/dashboard/lib/theme.js, src/dashboard/lib/connection.js
+- **commit:** f86ea25, 3a1c58d
+- **iter:** v27b
+
+`IMPL-221` traces `TASK-204, TASK-206` but its own `files:` names only `src/dashboard/lib/strings.js`
+(the C3-comment fix) — `theme.js` and `connection.js` are the other two of TASK-206's three `lib/`
+files, real, landed, green, with no row of their own. Checked independently rather than inheriting a
+prior agent's suggestion: `git log` confirms `theme.js` at ONE commit, `f86ea25` only (never touched
+again); `connection.js` at TWO, `f86ea25` then `3a1c58d` — matching the suggestion for `connection.js`,
+verified rather than assumed. `theme.js`: `PREF_KEYS`, `clampHue` (totals over -1/0/359/360/NaN),
+`prefsFromStorage` (pure over an injected getter, survives a throwing `localStorage`). `connection.js`:
+`nextConnection`'s transition table, `worstOf`, `classifyResponse` (200-degraded→`'degraded'`,
+404/500/parse-failure→`'fail'`, never throws). `3a1c58d`'s hunk to `connection.js` is COMMENT-ONLY
+(1 line: `no Date.now()/new Date()` → `no system-clock read`) — the original comment's own prose
+contained the literal substrings TASK-207's DoD greps for (`Date.now()`/`new Date()`) as a demonstration
+of absence, which would have false-positived that grep the moment `lib/runlist.js` etc. landed and
+someone ran it project-wide; the same self-referential-comment bug class already found once in
+`strings.js`'s "skeleton" word (`IMPL-221`). Confirmed clean now: `grep -rn "Date\.now()\|new Date()"
+src/dashboard/lib` → 0 hits.
+
+**Verification (real runs, this pass):**
+- `npx vitest run tests/unit/dashboard-lib-theme.test.js tests/unit/dashboard-lib-strings.test.js
+  tests/unit/dashboard-lib-connection.test.js` → 25/25 passed (5 + 9 + 11) — covers UT-243 and
+  UT-245 in full (UT-244/`strings.js` already credited to `IMPL-221`).
+- `grep -rn "Date\.now()\|new Date()" src/dashboard/lib` → 0 hits (confirms the comment fix holds
+  and no other `lib/` file has since regressed it).
+- `git show f86ea25 --stat -- src/dashboard/lib/theme.js` (new file, first landing) and
+  `git show 3a1c58d -- src/dashboard/lib/connection.js` (the 1-line comment-only diff) confirm the
+  two-commit split above.
+
+### IMPL-244 — TASK-209 backfill: `ui/workflow.js`'s original build — the detail view, run chips, history table, predicted layout
+- **status:** done
+- **traces:** TASK-209, ARCH-125, ARCH-131, REQ-133, DES-206, DES-204
+- **greens:** VAL-199 (3/4 — see caveat)
+- **files:** src/dashboard/ui/workflow.js
+- **commit:** f86ea25
+- **iter:** v27
+
+Backfill for the CORE build, distinct from `IMPL-227` (which already traces `TASK-209` but is a
+narrow regression-FIX entry for a later layout bug, not the original construction). `git log` on
+`workflow.js` shows five v27 commits; `git show f86ea25 --stat` confirms it is a wholly NEW 308-line
+file there — the original build this entry covers. The other four commits each already have their
+own IMPL row and are not re-described here: `cb895d0`'s REQ-129 pan regression + `ddc4409`'s real
+layout fix (`IMPL-227`/`IMPL-229`), `3a1c58d`'s `onTick` "one timer" completion (`IMPL-242`, shared
+with `home.js`/`app.js`), and `e8232ea`'s `.graph-frame` className hook (`IMPL-232`, TASK-210's seam
+closure). This entry's own scope is what `f86ea25` actually delivered: the `h2`/version-tag/executable-
+tag header, TRIGGERS outline tags, up to six run chips (7px status dots, 8-char runIds), the
+nine-column history table with a live row's `4m 12s 進行中` rendering, row-click switching the figure,
+and predicted-lane rendering from `describe.phases[].agents` (empty-array lane renders no cells,
+absent-`agents` renders lanes-only + the `predictedLayoutUnavailable` string) with the diagram fetched
+once per (name,version) via `createObjectURL`/`revokeObjectURL`, not once per tick.
+
+**Caveat, stated not buried:** `VAL-199`'s own acceptance file is 3/4 green, not 4/4 — the SAME
+known, reported test-oracle defect already recorded at commit `5b76624`'s own message (not a TASK-209
+code defect): the `SPEC_ROWS` case bundles nine sub-assertions into one `toEqual([])`, and the one
+that still fails is `tr.is-selected`'s `background-color` expecting a flat `--color-accent` token
+when REQ-133 (`01-requirements.md:1765`) and the handoff both specify a 7%-color-mix, which the test
+helper's `getComputedStyle` probe cannot express (`color(srgb ...)` vs the token literal) — proven
+with a real Chromium probe, not inferred, and NOT this file's own markup/class defect (`.table`/
+`.mono`/`tr.is-selected` are already declared in `dashboard.css` and emitted by `workflow.js` itself).
+
+**Verification (real runs, this pass):**
+- `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-199-workflow-detail.test.ts` → 3/4
+  passed, real Chromium; the one red is the `SPEC_ROWS` case above.
+- `git show f86ea25 --stat -- src/dashboard/ui/workflow.js` → confirms 308 insertions, 0 deletions,
+  new file (the original build, not a later edit).

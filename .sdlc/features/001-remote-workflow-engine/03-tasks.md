@@ -1664,7 +1664,7 @@ and REQ-142/143. TASK-212 PORTS the three shipped tabs unchanged so REQ-067/076/
 it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'s rationale §1.
 
 ### TASK-196 — the guards see the served bytes, and the browser tier can fail instead of skipping
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-124, ARCH-123, REQ-131, REQ-134
 - **files:** vitest.config.ts, tests/unit/no-skeleton-surface.test.ts, tests/unit/no-retired-surface.test.ts, tests/unit/dashboard-no-external-host.test.ts, tests/acceptance/val-193-dag-fit-and-columns.test.ts, tests/acceptance/val-197-diagram-drag-pan.test.ts
 - **des:** DES-191
@@ -1673,7 +1673,7 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
 - **iter:** v27
 
 ### TASK-197 — the v27 wire types, the one fixture, and the disclosure key-set test
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-131, ARCH-127, ARCH-129, ADR-054, REQ-140, REQ-141, REQ-136
 - **files:** src/types.ts, src/mcp-facade.ts, tests/fixtures/dashboard-wire.ts, tests/integration/dashboard-disclosure.test.ts
 - **des:** DES-192
@@ -1682,7 +1682,7 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
 - **iter:** v27b
 
 ### TASK-198 — the store's at-rest usage projection and the narrow `usage`-only backfill
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-128, ADR-052, REQ-141
 - **files:** src/store/sqlite-run-store.ts, src/run-store.ts, tests/unit/sqlite-run-store-usage-projection.test.ts, tests/integration/run-store-parity.test.ts
 - **des:** DES-193
@@ -1691,7 +1691,7 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
 - **iter:** v27
 
 ### TASK-199 — `listSummaries()`: one accessor, one precedence chain, and both routes moved onto it
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-127, ADR-052, REQ-141, REQ-132, REQ-133
 - **files:** src/run-manager.ts, src/server.ts, README.md, .sdlc/features/001-remote-workflow-engine/v24-tool-surface.md, tests/unit/run-manager-summarize-usage.test.ts, tests/integration/usage-live-equals-fold.test.ts, scripts/bench-run-list.ts
 - **des:** DES-194
@@ -1700,7 +1700,7 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
 - **iter:** v27
 
 ### TASK-200 — REQ-136: the guarded strip at the one decoration site, and the contract change told three times
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-129, ADR-050, REQ-136, REQ-135
 - **files:** src/params/resolve.ts, src/agent-executor.ts, src/tool-specs.ts, README.md, tests/unit/strip-first-segment.test.ts, tests/unit/agent-executor-harness-descriptor.test.ts, tests/acceptance/v24-tool-surface.test.ts, .sdlc/features/001-remote-workflow-engine/v24-tool-surface.md
 - **des:** DES-195
@@ -1709,7 +1709,7 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
 - **iter:** v27
 
 ### TASK-201 — `dashboard.ts`: `deriveLanes`, `predictedLanes`, and cost-aware workflow metrics
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-126, ADR-051, ADR-055, REQ-140, REQ-132, REQ-133, REQ-134
 - **files:** src/dashboard.ts, tests/unit/dashboard-derive-lanes.test.ts, tests/unit/dashboard-metrics.test.ts
 - **des:** DES-196
@@ -1718,7 +1718,7 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
 - **iter:** v27b
 
 ### TASK-202 — the facade: `record` on the agent detail, and `phases[].agents` served to every caller
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-131, ADR-051, ADR-055, REQ-140, REQ-133
 - **files:** src/mcp-facade.ts, src/tool-specs.ts, README.md, tests/integration/dag-masking-auth.test.ts, tests/integration/dashboard-http.test.ts
 - **des:** DES-197
@@ -1727,7 +1727,7 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
 - **iter:** v27b
 
 ### TASK-203 — the server wire: the `/static/dashboard/*` arm, the CSP, `lanes`/`current`, and the degraded log line
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-130, ARCH-123, REQ-131, REQ-140, REQ-133
 - **files:** src/server.ts, README.md, tests/integration/static-assets-route.test.ts, tests/integration/dashboard-http.test.ts, tests/integration/dag-masking-auth.test.ts
 - **des:** DES-198
@@ -1736,7 +1736,7 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
 - **iter:** v27b
 
 ### TASK-204 — `src/static-assets.ts` and the vendored font payload
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-123, ADR-049, REQ-131
 - **files:** src/static-assets.ts, src/dashboard/fonts/, src/dashboard/fonts/SOURCE.md, src/dashboard/fonts/OFL.txt, tests/unit/static-assets.test.ts
 - **des:** DES-199
@@ -1745,7 +1745,7 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
 - **iter:** v27
 
 ### TASK-205 — the shell page: markup, tokens CSS with the OKLCH ramp, the data island, and the update panel that must not vanish
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-122, ARCH-120, ADR-049, REQ-131, REQ-070
 - **files:** src/dashboard-page.ts, src/dashboard/lib/status.js, tests/unit/dashboard-page-source.test.ts, tests/unit/update-outcome-config-check.test.ts
 - **des:** DES-200, DES-201
@@ -1754,7 +1754,7 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
 - **iter:** v27c
 
 ### TASK-206 — `lib/` I: viewer preferences + the string table, and the connection reducer
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-124, ADR-049, REQ-131
 - **files:** src/dashboard/lib/theme.js, src/dashboard/lib/strings.js, src/dashboard/lib/connection.js, tests/unit/dashboard-lib-theme.test.js, tests/unit/dashboard-lib-strings.test.js, tests/unit/dashboard-lib-connection.test.js
 - **des:** DES-201, DES-202
@@ -1763,7 +1763,7 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
 - **iter:** v27b
 
 ### TASK-207 — `lib/` II: swimlane geometry, the list projections and the one money formatter, the panel VM
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-124, ARCH-120, REQ-132, REQ-133, REQ-134, REQ-135
 - **files:** src/dashboard/lib/swimlane.js, src/dashboard/lib/runlist.js, src/dashboard/lib/agent.js, tests/unit/dashboard-lib-swimlane.test.js, tests/unit/dashboard-lib-runlist.test.js, tests/unit/dashboard-lib-agent.test.js
 - **des:** DES-203, DES-204, DES-205
@@ -1772,7 +1772,7 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
 - **iter:** v27c
 
 ### TASK-208 — `ui/` I: the app entry, the settle-then-reschedule poller, and the Workflows home
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-125, ARCH-122, REQ-131, REQ-132
 - **files:** src/dashboard/ui/app.js, src/dashboard/ui/theme-init.js, src/dashboard/ui/poll.js, src/dashboard/ui/home.js, tests/unit/dashboard-client-corpus.test.ts, tests/acceptance/val-198-shell-and-home.test.ts
 - **des:** DES-206, DES-200, DES-201
@@ -1781,7 +1781,7 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
 - **iter:** v27c
 
 ### TASK-209 — `ui/workflow.js`: the workflow detail view, the run chips, the history table and the predicted layout
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-125, ARCH-131, REQ-133
 - **files:** src/dashboard/ui/workflow.js, tests/acceptance/val-199-workflow-detail.test.ts
 - **des:** DES-206, DES-204
@@ -1790,7 +1790,7 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
 - **iter:** v27c
 
 ### TASK-210 — `ui/run.js`: the swimlane painter, and the zoom/pan/fit contract that may not regress
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-125, ARCH-120, REQ-134, REQ-129
 - **files:** src/dashboard/ui/run.js, tests/acceptance/val-193-dag-fit-and-columns.test.ts, tests/acceptance/val-200-swimlane.test.ts
 - **des:** DES-206, DES-203
@@ -1799,7 +1799,7 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
 - **iter:** v27c
 
 ### TASK-211 — `ui/agent-panel.js`: the slide-in panel
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-125, ARCH-131, REQ-135, REQ-136
 - **files:** src/dashboard/ui/agent-panel.js, tests/acceptance/val-201-agent-panel.test.ts
 - **des:** DES-206, DES-205
@@ -1808,7 +1808,7 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
 - **iter:** v27c
 
 ### TASK-212 — the three shipped tabs are PORTED, not redesigned
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-125, ARCH-123, REQ-067, REQ-076, REQ-077, REQ-078
 - **files:** src/dashboard/ui/models.js, src/dashboard/ui/system.js, src/dashboard/ui/issues.js, src/static-assets.ts, tests/acceptance/val-202-ported-tabs.test.ts
 - **des:** DES-207
@@ -1817,7 +1817,7 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
 - **iter:** v27c
 
 ### TASK-213 — the page-source pin migration: one corpus, one disposition per assertion
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-122, ARCH-124, ADR-053, REQ-131, REQ-129, REQ-119
 - **files:** tests/helpers/client-corpus.ts, tests/unit/dashboard-page-source.test.ts, tests/unit/dashboard-diagram-render.test.ts, tests/unit/dashboard-zoom-source.test.ts, tests/unit/workflow-page-harness-table.test.ts, tests/unit/update-outcome-config-check.test.ts
 - **des:** DES-208
@@ -1826,7 +1826,7 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
 - **iter:** v27
 
 ### TASK-214 — `dashboard.css` gets ONE owner: the class contract, every component and view section, and the two locks that keep them
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-122, ARCH-125, ARCH-123, ADR-053, REQ-131, REQ-132, REQ-133, REQ-134, REQ-135, REQ-067, REQ-076, REQ-077, REQ-078
 - **files:** src/dashboard/dashboard.css, tests/fixtures/dashboard-classes.ts, tests/fixtures/dashboard-spec.ts, tests/unit/dashboard-class-contract.test.ts, tests/unit/dashboard-no-design-values.test.ts
 - **des:** DES-209, DES-201, DES-200, DES-203
