@@ -5644,8 +5644,8 @@ unregistered class fails `dashboard-class-contract.test.ts`'s bidirectional lock
 
 ### IMPL-253 — the status dot fix: `.cell-dot` gets a per-state background/border (state.yaml pending item, REQ-134)
 - **status:** done
-- **traces:** TASK-210, DES-206, REQ-134
-- **greens:** `[data-node-cell].is-running/.is-done/.is-failed/.is-queued .cell-dot` (4 new SPEC_ROWS, `val-200-swimlane.test.ts`'s own `SPEC_ROWS (run view, REQ-134)` case)
+- **traces:** TASK-210, TASK-214, DES-206, REQ-134
+- **greens:** VAL-200 (4 new `[data-node-cell].is-running/.is-done/.is-failed/.is-queued .cell-dot` SPEC_ROWS, `val-200-swimlane.test.ts`'s own `SPEC_ROWS (run view, REQ-134)` case)
 - **files:** src/dashboard/dashboard.css, src/dashboard/ui/run.js, tests/fixtures/dashboard-spec.ts
 - **commit:** f5ee006
 - **iter:** v27
@@ -5668,7 +5668,7 @@ parallel `is-predicted` cell, same visual family as the handoff's "queued/pendin
 `background:transparent` + `border:1px solid var(--color-muted)` — rather than inventing a fifth
 colour. The base `.cell-dot` rule keeps a `var(--color-muted)` fill as a fallback for the ONE
 `AgentRecord` state `cellClassName()` deliberately does not map to an `is-*` class (`refused` — an
-existing, unrelated "no third node style" rule, `run.js:125`), giving it a neutral dot rather than
+existing, unrelated "no third node style" rule, `run.js:126`), giving it a neutral dot rather than
 an invisible one; this is an interpretation, not a new node style — REQ-134 names four states and
 this pass implements exactly those four.
 
@@ -5698,8 +5698,8 @@ this pass implements exactly those four.
 
 ### IMPL-254 — README-fidelity audit: SPEC_ROWS walked against the vendored oracle for REQ-131/132/133/134/135
 - **status:** done
-- **traces:** DES-209, REQ-131, REQ-135
-- **greens:** `data-agent-panel-backdrop` background-color/animation-name, `[data-agent-panel] .detail-block` border-color (3 new SPEC_ROWS, `val-201-agent-panel.test.ts`'s own `SPEC_ROWS (panel view, REQ-135)` case)
+- **traces:** TASK-214, DES-209, REQ-131, REQ-135
+- **greens:** VAL-201 (3 new SPEC_ROWS — `data-agent-panel-backdrop` background-color/animation-name, `[data-agent-panel] .detail-block` border-color — `val-201-agent-panel.test.ts`'s own `SPEC_ROWS (panel view, REQ-135)` case)
 - **files:** tests/fixtures/dashboard-spec.ts, tests/fixtures/dashboard-classes.ts
 - **commit:** f5ee006
 - **iter:** v27
