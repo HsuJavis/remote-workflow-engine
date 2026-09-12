@@ -5283,7 +5283,7 @@ pass could not append because this file was outside its scope.
 - **traces:** TASK-206, TASK-209, TASK-211, DES-206, ARCH-122, ARCH-125, REQ-133, REQ-135, REQ-136
 - **greens:** UT-247, UT-236, UT-240
 - **files:** src/dashboard/lib/clock.js (new), src/dashboard/ui/agent-panel.js, src/dashboard/ui/workflow.js, src/static-assets.ts
-- **commit:** pending (working tree)
+- **commit:** 1cfac21
 - **iter:** v27
 
 Gate 6.5's `determinism_check.py src --check` found 2 hits, both real: `ui/agent-panel.js:235` and
@@ -5332,7 +5332,7 @@ still boots (see Verification below).
 - **traces:** TASK-212, TASK-208, DES-206, DES-207, ARCH-125, REQ-131, REQ-067, REQ-076, REQ-077, REQ-078
 - **greens:** UT-240 (static-assets), UT-255/UT-256 (class-contract/no-design-values), VAL-198, VAL-202
 - **files:** src/dashboard/ui/dom.js (new), src/dashboard/ui/models.js, src/dashboard/ui/system.js, src/dashboard/ui/issues.js, src/dashboard/ui/app.js, src/static-assets.ts
-- **commit:** pending (working tree)
+- **commit:** 1cfac21
 - **iter:** v27
 
 Two findings from the Gate 6.5 simplify pass over the v27 diff (`git diff 576a972..HEAD -- src/`),
@@ -5384,7 +5384,7 @@ iteration.
 - **traces:** TASK-199, TASK-205, TASK-207, TASK-208, DES-194, DES-200, DES-206, REQ-131, REQ-140, REQ-141
 - **greens:** UT-249 (extended), UT-234 (extended), UT-241 (extended), new UT for `lib/clock.js`
 - **files:** tests/unit/dashboard-client-corpus.test.ts, tests/unit/run-manager-summarize-usage.test.ts, tests/unit/dashboard-lib-clock.test.js, tests/unit/update-outcome-config-check.test.ts
-- **commit:** pending (working tree)
+- **commit:** 1cfac21
 - **iter:** v27
 
 `--coverage.include=src/**` over `tests/unit tests/integration` measured **87.78% overall lines**
