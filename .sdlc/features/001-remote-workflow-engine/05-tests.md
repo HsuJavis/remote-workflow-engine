@@ -11670,12 +11670,18 @@ is a no-op on this box); all 4 pre-existing val-193/197 cases re-run and stay gr
 unaffected).
 
 ### IT-165 — `dashboard-disclosure.test.ts`: the (endpoint x outcome) key-set table, and REQ-136's real-run oracle
-- **status:** red
+- **status:** green
 - **traces:** DES-192, ADR-054, ARCH-131, ARCH-127, ARCH-129, ADR-050, DES-195, TASK-197, TASK-200, REQ-140, REQ-141, REQ-136
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (Gate 8, 2026-09-12):** `npx vitest run tests/integration/dashboard-disclosure.test.ts`
+→ 2/2 passed at current HEAD (both describe blocks — the key-set table and REQ-136's real-run
+oracle). TASK-197 (`src/types.ts`/`src/mcp-facade.ts`, IMPL-233) and TASK-200 landed at checkpoint
+`f86ea25`. The below RED narrative is preserved as history of the original test-first measurement,
+not a current description of the code.
 
 New `tests/fixtures/dashboard-wire.ts` (the ONE v27 wire fixture) and
 `tests/integration/dashboard-disclosure.test.ts` (2 describe blocks). Block 1: `keys ⊆ ALLOWED` and
@@ -11718,12 +11724,17 @@ core case, run through `InMemoryRunStore` — nothing enforces the two stores ag
 (measured): `costUSD`/`tokensTotal`/`agentCount` all `undefined`; `backfillUsage is not a function`.
 
 ### UT-234 — `run-manager-summarize-usage.test.ts`: `RunManager.listSummaries()`
-- **status:** red
+- **status:** green
 - **traces:** DES-194, ARCH-127, ADR-052, TASK-199, REQ-141, REQ-132, REQ-133
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (Gate 8, 2026-09-12):** `npx vitest run tests/unit/run-manager-summarize-usage.test.ts`
+→ 5/5 passed at current HEAD (`RunManager.listSummaries()` landed at checkpoint `f86ea25`, IMPL-231).
+The below RED narrative is preserved as history of the original test-first measurement, not a
+current description of the code.
 
 File: `tests/unit/run-manager-summarize-usage.test.ts` (new, 5 cases). A fake `RunStore` (mock
 policy: oracle external to the code under test) proves absence-is-keyed-on-zero-records (never
@@ -11733,12 +11744,17 @@ policy: oracle external to the code under test) proves absence-is-keyed-on-zero-
 is healed. RED (measured): `TypeError: manager.listSummaries is not a function` on all 5.
 
 ### IT-167 — `usage-live-equals-fold.test.ts`: the INV-V27-1 lock over real SQLite + real HTTP (VAL-205)
-- **status:** red
+- **status:** green
 - **traces:** DES-194, ARCH-127, ADR-052, TASK-199, REQ-141, REQ-132, REQ-133
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (Gate 8, 2026-09-12):** `npx vitest run tests/integration/usage-live-equals-fold.test.ts`
+→ 2/2 passed at current HEAD (`RunManager.listSummaries()` landed at checkpoint `f86ea25`, IMPL-231).
+The below RED narrative is preserved as history of the original test-first measurement, not a
+current description of the code.
 
 File: `tests/integration/usage-live-equals-fold.test.ts` (new, 2 cases; real `createServer()`, real
 MCP HTTP, an injected `GatewayClient` faking only the model-provider network). Case 1: a run holding
@@ -11779,12 +11795,18 @@ red — these pin CURRENT correct behaviour that must not regress): no-agentType
 empty-systemPrompt cases already carry no leaked segment (there is nothing to strip).
 
 ### UT-238 — `dashboard-derive-lanes.test.ts` + `layout-graph-phase.test.ts`: `deriveLanes` — the 7x2 status/phases table, UNCONDITIONAL lane join, and the predicted cell's label
-- **status:** red
+- **status:** green
 - **traces:** DES-196, ARCH-126, ADR-051, TASK-201, REQ-140, REQ-132, REQ-133, REQ-134
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27b
+
+**Re-measured (Gate 8, 2026-09-12):** `npx vitest run tests/unit/dashboard-derive-lanes.test.ts
+tests/unit/layout-graph-phase.test.ts` → 19/19 + 26/26 passed at current HEAD, including the
+`__skel_` cell's `'a / b / c'` label-join case. `deriveLanes` and the `layoutGraph` label join both
+landed at checkpoint `f86ea25` (TASK-201, IMPL-234). The below RED narrative is preserved as history
+of the original test-first measurement, not a current description of the code.
 
 **[v27b amendment, Round v27b owner ruling, ADR-051, TASK-201]: REWRITTEN.** The `masked` axis DOES
 NOT EXIST — `expected` is NON-optional and `opts` is `{ status }` alone; the `as { masked: boolean;
@@ -11812,12 +11834,16 @@ slot declaring NO labels already emits a cell with no `label` key (the join is a
 pre-existing cases in this file re-run and stay green (no regression).
 
 ### UT-239 — `dashboard-metrics.test.ts`: `predictedLanes` + `computeWorkflowMetrics`'s `avgCostUSD`/`unpricedRuns`
-- **status:** red
+- **status:** green
 - **traces:** DES-196, ARCH-126, ADR-055, TASK-201, REQ-132, REQ-133
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27
+
+**Re-measured (Gate 8, 2026-09-12):** `npx vitest run tests/unit/dashboard-metrics.test.ts` → 4/4
+passed at current HEAD (`predictedLanes`/`avgCostUSD`/`unpricedRuns` landed at checkpoint `f86ea25`,
+TASK-201, IMPL-234). The below RED narrative is preserved as history, not a current description.
 
 File: `tests/unit/dashboard-metrics.test.ts` (new, 4 cases; a 5-lane/9-agent script fixture,
 cross-checked directly against `deriveExpectedGraph` for INV-V26-3's third-consumer property). RED

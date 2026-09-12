@@ -100,7 +100,14 @@ describe('v27 disposition anchor: the diagram createObjectURL/revokeObjectURL pa
     expect(corpus).toContain('revokeObjectURL');
     expect(corpus).toContain('/diagram.svg');
     expect(corpus).toMatch(/version=/);
-    expect((corpus.match(/\/describe/g) ?? []).length).toBe(1);
+    // v27 (REQ-134 join, state.yaml pending "v27 ORCHESTRATOR CORRECTION"): TWO call sites are
+    // architecturally required, not a duplication regression — `ui/poll.js:22` (`endpointsFor`'s
+    // 'workflow' route, the pre-existing workflow-detail-page describe fetch `ui/workflow.js`
+    // polls through) and `ui/run.js:442` (REQ-134 row 2's declared-effort join: the swimlane view
+    // has no workflow name of its own, so it resolves one via `/api/runs` and fetches `describe`
+    // to read `params.agents[].effort.default`). The anti-duplication INTENT stays: a third site
+    // added later must justify itself here, same as these two do.
+    expect((corpus.match(/\/describe/g) ?? []).length).toBe(2);
     expect(corpus.length).toBeGreaterThan(5000);
   });
 

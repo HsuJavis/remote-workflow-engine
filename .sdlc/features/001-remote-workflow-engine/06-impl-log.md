@@ -4714,3 +4714,410 @@ included) for — confirmed by grep before/after, not by inspection alone.
 3. Val-199's 9 REQ-133 `SPEC_ROWS` failures (above) are pre-existing and unrelated to this pass's two
    files — reported for whichever task/gate owns `ui/workflow.js`'s history table and
    `dashboard.css`'s `.table`/`.mono`/`tr.is-selected` rules.
+
+### IMPL-233 — TASK-197 backfill: the v27 wire types (`AgentLogView`, the four `RunSummary` fields, `HarnessDescriptor.systemPrompt`) and the disclosure key-set fixture
+- **status:** done
+- **traces:** TASK-197, DES-192, ARCH-131, ARCH-127, ARCH-129, ADR-054, REQ-140, REQ-141, REQ-136
+- **greens:** IT-165 (disclosure key-set half only — see caveat below)
+- **files:** src/types.ts, src/mcp-facade.ts
+- **commit:** f86ea25
+- **iter:** v27b
+
+Backfill — this code landed in the same 17-implementer Gate 6 checkpoint (`f86ea25`) as
+TASK-198/199/200/201/202/203/206..212, with no IMPL row of its own (same pattern as IMPL-230/231).
+`src/types.ts` gains `AgentLogView` (extends `ResultEnvelope<TranscriptEvent[]>`, `harness`/`events`/
+`hasMore` required, `record?: AgentRecord` optional — the not-found/error branches never resolve one)
+and the four `RunSummary` usage fields (`costUSD`/`unpricedCalls`/`tokensTotal`/`agentCount`, all
+optional, TASK-199's own projection). `HarnessDescriptor.systemPrompt?: {agentType, bytes}` also
+lands here (TASK-200's field, declared on this same type). `src/mcp-facade.ts`'s `runAgentLog` return
+type is narrowed from an anonymous inline intersection to `AgentLogView` (a signature-only change;
+the `record:` value itself is TASK-202's addition, see IMPL-230). `tests/fixtures/dashboard-wire.ts`
+and `tests/integration/dashboard-disclosure.test.ts` are NOT in this task's commit — both predate
+`f86ea25` (Gate 5 test-first, commits `07266be`/`c7447d0`), so they carry no `files:` entry here.
+
+**Caveat, stated not buried:** `IT-165` is TWO describe blocks in one file — "the (endpoint × outcome)
+key-set table" (which `AgentLogView`/the four `RunSummary` fields make pass) and "REQ-136 (real run,
+both transports)" (TASK-200's `systemPrompt`-stripping behavior, a different task's DoD). Both are
+green today, but this entry's own scope is the TYPES only; the REQ-136 real-run behavior is TASK-200's
+— see IMPL-241 (written in a later pass this same session), which also flags one TASK-200 DoD
+sub-clause that did not land.
+
+**Verification (real runs, this pass):**
+- `npx tsc --noEmit` → 0 errors.
+- `npx vitest run tests/integration/dashboard-disclosure.test.ts` → 2/2 passed (both describe blocks).
+- `git show f86ea25 -- src/types.ts src/mcp-facade.ts` confirms the `AgentLogView` interface, the
+  four `RunSummary` fields, `HarnessDescriptor.systemPrompt`, and the `runAgentLog` return-type
+  narrowing are this commit's own diff.
+- `git log --oneline -- tests/fixtures/dashboard-wire.ts tests/integration/dashboard-disclosure.test.ts`
+  confirms both predate `f86ea25` (last touched at `c7447d0`, `07266be`).
+
+**Update (Gate 8, 2026-09-12):** `05-tests.md:11672`'s IT-165 entry, flagged above as stale red, was
+re-measured and flipped green in a later pass this same session — see its own dated re-measurement
+note in `05-tests.md`.
+
+### IMPL-234 — TASK-201 backfill: `dashboard.ts` gains `deriveLanes`, `predictedLanes`, and cost-aware `WorkflowMetrics`
+- **status:** done
+- **traces:** TASK-201, DES-196, ARCH-126, ADR-051, ADR-055, REQ-140, REQ-132, REQ-133, REQ-134
+- **greens:** UT-238, UT-239
+- **files:** src/dashboard.ts
+- **commit:** f86ea25
+- **iter:** v27b
+
+Backfill — same checkpoint as IMPL-233 above, same reason. `src/dashboard.ts` gains four things, all
+in the SAME commit diff (`git show f86ea25 -- src/dashboard.ts`, 4 hunks, 65 insertions): (1)
+`deriveLanes(phases, expected, {status})` — pure, no `masked` axis (removed per the ADR-051
+reversal): `lanes` is the observed `phases` UNCONDITIONALLY extended by `expected`'s unreached tail,
+re-indexed dense; `current` is the last observed index for the three LIVE statuses
+(`running`/`suspended`/`interrupted`), `null` otherwise, never clamped. (2) `predictedLanes(script)` —
+derives per-lane agent labels from the ONE `deriveExpectedGraph`, consumed by TASK-202's
+`describe.phases[].agents` join (IMPL-230). (3) `computeWorkflowMetrics`'s `WorkflowMetrics` gains
+`avgCostUSD` (mean over terminal runs carrying `costUSD`, `null` never `0` when none does) and
+`unpricedRuns` (the rest of the terminal group); `ZERO_METRICS` updated to match. (4) `layoutGraph`'s
+`__skel_` cell builder (old line 425, new line 486, a 4th hunk easy to miss because the first three
+hunks land far above it) gains `...(s.labels.length ? { label: s.labels.join(' / ') } : {})` — the
+`'a / b / c'` join `UT-238`'s `layout-graph-phase.test.ts` extension asserts, and no `label` key at
+all for a labelless slot.
+
+**Verification (real runs, this pass):**
+- `npx vitest run tests/unit/dashboard-derive-lanes.test.ts tests/unit/dashboard-metrics.test.ts
+  tests/unit/layout-graph-phase.test.ts` → 49/49 passed (19 + 4 + 26) — covers UT-238 (both files)
+  and UT-239 in full, no sub-case caveat.
+- `git show f86ea25 -- src/dashboard.ts` confirms `deriveLanes`, `predictedLanes`, `avgCostUSD`/
+  `unpricedRuns`, the updated `ZERO_METRICS`, AND the `layoutGraph` label-join hunk are all this
+  commit's own diff (65 insertions across 4 hunks).
+
+**Update (Gate 8, 2026-09-12):** `05-tests.md:11781` (UT-238) and `:11814` (UT-239), flagged above as
+stale red, were re-measured and flipped green in a later pass this same session — see their own
+dated re-measurement notes in `05-tests.md`.
+
+### IMPL-235 — TASK-203 backfill: `/static/dashboard/*`, the real ARCH-130 CSP, `dag.lanes`/`current`, and the degraded-log line
+- **status:** done
+- **traces:** TASK-203, DES-198, ARCH-130, ARCH-123, REQ-131, REQ-140, REQ-133
+- **greens:** IT-168, IT-169, IT-170 (4/5 — see caveat)
+- **files:** src/server.ts, README.md
+- **commit:** f86ea25
+- **iter:** v27b
+
+Backfill — this code landed in the same `f86ea25` checkpoint as TASK-198/199/200/201/202/206..212,
+with no IMPL row of its own (same pattern as IMPL-230/231/233/234). `src/server.ts` gains: the
+`/static/dashboard/*` route (via `lookupStaticAsset`/`readStaticAsset`, TASK-204's module),
+registered before the SPA catch-all; the real `GET /dashboard` CSP header (`server.ts:1332`,
+byte-matches ARCH-130 including `img-src 'self' blob:`); the DAG payload's `lanes`/`current` fields
+(old keys byte-compatible); and every `authEnabled` masking branch/parameter/argument deleted per
+the DoD's line-by-line spec (`grep -n authEnabled src/server.ts` returns exactly two historical
+comments, `:347` and `:851`, confirmed this pass — no parameter, no default, no branch). `README.md`
+gains the `/static/dashboard/*` curl example.
+
+**Caveat, stated not buried:** `IT-170`'s traversal-table case is 4/5 green, not 5/5 — the
+`ui/../lib/theme.js` string is a REPORTED, not fixed, test-harness defect (already recorded at
+IMPL-221 for `UT-240`, and in `state.yaml`'s "v27 GATE 5 DEFECT QUEUE" item 6): `fetch()` normalizes
+`../` segments client-side before the request is sent, so the byte string the server actually
+receives is the resolved, in-bounds `/static/dashboard/lib/theme.js`, correctly served 200; a raw
+`http.request` sending the literal unresolved string against the same booted server gets 404 for all
+five rows, confirming the server-side code is correct. Not this entry's to fix — a test-harness
+finding, not a `src/server.ts` defect.
+
+**Verification (real runs, this pass):**
+- `npx vitest run tests/integration/static-assets-route.test.ts tests/integration/dashboard-http.test.ts
+  tests/integration/dag-masking-auth.test.ts` → 25/26 passed (the one red is the reported IT-170
+  case above); `npx tsc --noEmit` → 0 errors.
+- `git show f86ea25 -- src/server.ts README.md` confirms the static route, the CSP header, the
+  `lanes`/`current` fields, all four `authEnabled` deletions, and the README curl line are this
+  commit's own diff.
+
+### IMPL-236 — TASK-207 backfill: `lib/swimlane.js`, `lib/runlist.js`, `lib/agent.js` — geometry, list projections, money formatter, panel VM
+- **status:** done
+- **traces:** TASK-207, DES-203, DES-204, DES-205, ARCH-124, ARCH-120, ADR-046, REQ-132, REQ-133, REQ-134, REQ-135, REQ-141
+- **greens:** UT-246, UT-247, UT-248
+- **files:** src/dashboard/lib/swimlane.js, src/dashboard/lib/runlist.js, src/dashboard/lib/agent.js
+- **commit:** f86ea25
+- **iter:** v27c
+
+Backfill — same checkpoint as IMPL-235 above, same reason; single-commit (`git log --oneline` for
+all three files shows only `f86ea25`, no later rework). `lib/swimlane.js`: `SWIMLANE_BOX`'s seven
+REQ-134 constants, `laneX`/`cellRect`/`edgePath`/`svgBox`/`panelSide`, pure geometry, no I/O.
+`lib/runlist.js`: `fmtCost`/`sortRows`/`historyRow`/`matchCards`/`segmentCounts`/`sumTokens` — the
+money formatter and list projections REQ-132/133/141 need. `lib/agent.js`: `panelModel`/
+`eventListModel`/`clipText` — the agent-panel VM, six stat cards, both `effortApplied` branches,
+`mcpUnresolved`/`unmapped` counts. No `.css`, no colour/typography literal, no class name outside
+DES-209's `STYLE_HOOKS` allowlist (grep-confirmed: no hex/oklch/rgba literal in any of the three
+files).
+
+**Verification (real runs, this pass):**
+- `npx vitest run tests/unit/dashboard-lib-swimlane.test.js tests/unit/dashboard-lib-runlist.test.js
+  tests/unit/dashboard-lib-agent.test.js` → 27/27 passed (7 + 9 + 11).
+- `git show f86ea25 --stat -- src/dashboard/lib/swimlane.js src/dashboard/lib/runlist.js
+  src/dashboard/lib/agent.js` confirms all three are new files in this commit (48/88/106 insertions).
+
+### IMPL-237 — TASK-212 backfill: the three ported tabs (Models/System/Issues) — landed in two passes, not one
+- **status:** done
+- **traces:** TASK-212, DES-207, ARCH-125, ARCH-123, REQ-067, REQ-076, REQ-077, REQ-078
+- **greens:** VAL-202, UT-240 (bidirectional on-disk⇔listed half, as its own card names)
+- **files:** src/dashboard/ui/models.js, src/dashboard/ui/system.js, src/dashboard/ui/issues.js
+- **commit:** f86ea25, 3a1c58d
+- **iter:** v27c
+
+Backfill, checked independently before writing (per instruction — do not credit landed code that
+did not land). `git log --oneline` for all three files shows TWO commits, not one: an initial version
+at `f86ea25` (Gate 6 round 1, each view still ran its own self-rescheduling `setTimeout` loop), then
+a SECOND, completing rework at `3a1c58d` ("Gate 6 round 2 — 19/19 agents clean") that is the one
+actually satisfying this task's `[v27c]` DoD clause — each view now exports `onTick(container,
+bodies, ctx)` instead of scheduling its own timer (TASK-208's "one timer" completion), `render()`
+calls `onTick` once for first paint, and `models.js`'s `<table>` gains the DES-209 `.table`
+component-layer class alongside its own `.models-table` modifier. Confirmed on disk this pass, not
+assumed: all three files exist, `grep` finds zero `setTimeout` in any of them, zero hex/oklch/rgba
+literal (DES-207's "no colour/typography literal" clause holds), and each still fetches only its own
+pre-existing endpoint (`/api/models`, `/api/system`, `/api/issues` — no new endpoint, confirmed by
+reading each file's one `getJSON` call site). `src/static-assets.ts` (also in this task's `files:`)
+carries no TASK-212-specific change — its registration of these three keys was already established
+by TASK-204 (IMPL-221); listed on the card as a shared dependency, not additional work here.
+
+**Verification (real runs, this pass):**
+- `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-202-ported-tabs.test.ts` → 3/3 passed,
+  real Chromium: Models/System/Issues tabs each still render from their pre-existing endpoint,
+  re-themed only.
+- `npx vitest run tests/unit/static-assets.test.ts` → 5/5 passed (UT-240's bidirectional map fully
+  closed now that TASK-206..212 have all landed, per DES-199's own preamble rule 4).
+- `git show 3a1c58d -- src/dashboard/ui/models.js src/dashboard/ui/system.js
+  src/dashboard/ui/issues.js` confirms the `onTick` rework, the deleted `setTimeout` loops, and the
+  `.table` class addition are this commit's own diff (69/49/42 insertions on top of `f86ea25`'s
+  initial version).
+
+### IMPL-238 — TASK-196 backfill: the guards walk `.js` too, `val-193` throws instead of skipping without Chrome
+- **status:** done
+- **traces:** TASK-196, DES-191, REQ-131, REQ-134
+- **greens:** (no dedicated UT/IT id — these are the guard TESTS themselves, see convention note below)
+- **files:** vitest.config.ts, tests/unit/no-skeleton-surface.test.ts, tests/unit/no-retired-surface.test.ts, tests/unit/dashboard-no-external-host.test.ts, tests/acceptance/val-193-dag-fit-and-columns.test.ts
+- **commit:** 07266be
+- **iter:** v27
+
+Backfill, landed NOT at the `f86ea25` Gate 6 checkpoint like every sibling entry above but at
+`07266be` — the Gate 2-5 commit itself, whose own message says Gate 6 was "stopped deliberately, no
+product code written yet." TASK-196's card is a test-infrastructure task (all five `files:` are
+config/test files, zero `src/**`), and its whole DoD landed in this ONE commit's diff, confirmed:
+`vitest.config.ts`'s `include` widened to `tests/**/*.test.{ts,js}` (a `.js` test file was silently
+never collected before this — DES-191's own boundary warning, cited in the change's own comment);
+`no-skeleton-surface.test.ts`/`no-retired-surface.test.ts` extended to walk `.js` files, not just
+`.ts`; `dashboard-no-external-host.test.ts` written new (71 lines); `val-193-dag-fit-and-columns.test.ts`
+gained the throw-not-skip guard for a missing Chrome.
+
+**Convention check, done before writing (per instruction, not assumed):** is a test-authoring-only
+TASK exempt from an IMPL row in this ledger's own practice? Checked against precedent — TASK-213
+(also all-test-files: `tests/helpers/client-corpus.ts` + five `.test.ts` files) got a dedicated
+backfill row, IMPL-223, which states outright "same convention as IMPL-222/204/221): no prior
+`traces:` named TASK-213, though the migration is real and landed." IMPL-223 also spans multiple
+commits (`07266be, f86ea25, 3a1c58d`) exactly like this entry could have but didn't need to — TASK-196's
+whole DoD landed in ONE commit. No exemption exists in this ledger's actual practice for a
+test-only TASK; the convention is "credit real landed work with an accurate row," not "skip rows for
+non-`src/**` tasks." Written accordingly.
+
+**Convention note on `greens:`:** every other backfill entry above cites a UT/IT/VAL id whose GREEN
+state is the evidence. TASK-196 has none — its own "greens" ARE the guard test files themselves
+passing on their own planted-fixture cases, which is what its DoD commands directly.
+
+**Verification (real runs, this pass):**
+- `RWE_REQUIRE_BROWSER=1 npx vitest run tests/unit/no-skeleton-surface.test.ts
+  tests/unit/no-retired-surface.test.ts tests/unit/dashboard-no-external-host.test.ts
+  tests/acceptance/val-193-dag-fit-and-columns.test.ts` → 16/16 passed.
+- **Not independently confirmed this pass:** the DoD's "same command without the env var still
+  skips" clause — this environment has a real Chromium at `~/.cache/puppeteer/chrome`, so val-193
+  runs for real either way and the skip branch is never exercised here to observe.
+- `git show 07266be -- vitest.config.ts` confirms the `include` widening and its TASK-196 citation
+  are this commit's own diff.
+
+### IMPL-239 — v27 dispatch: REQ-133 run-history table CSS confirmed already-owned (no code change); UT-252 describe-count re-bound to 2
+
+- **status:** done
+- **traces:** TASK-213, DES-208, REQ-134
+- **greens:** UT-252
+- **files:** tests/unit/dashboard-diagram-render.test.ts
+- **commit:** uncommitted (orchestrator)
+- **iter:** v27
+
+Two-part dispatch. **Part 1 (val-199, REQ-133 run-history table) — no code change, routed to Gate 5
+as an oracle defect, not an implementation gap.** The dispatch's premise ("nothing declares the CSS")
+is stale: `dashboard.css:101` (`.mono`), `:109-111` (`.table`, incl. `width:100%`/`border-collapse:
+collapse`/`font-size:12.5px`) and `:191` (`.table tr.is-selected{background:color-mix(in srgb,
+var(--color-accent) 7%, transparent)}`) already landed at commit `09c6089` (TASK-214), and
+`workflow.js:118-120,189-190,204,207` already emits `.table`/`data-history-table`/`data-run-chip`/
+`tr.is-selected`/`.mono` — all three STYLE_HOOKS (`table`, `mono`, `is-selected`) were already
+registered too. The 9 `val-199` SPEC_ROWS failures (`dashboard-spec.ts:84,86,90`) are three oracle
+defects, confirmed by direct measurement, not missing styling:
+  - `:84` (`data-history-table` `width`, expect literal `'100%'`) — `getComputedStyle` always
+    resolves a percentage `width` to its used pixel value once the containing block is definite
+    (confirmed empirically: a bare `<table style="width:100%">` in a 400px container reads back
+    `"400px"`, never `"100%"`, via real Chromium in this repo's own puppeteer). Structurally
+    unobservable regardless of CSS content — same class as the `--rwe-hue:236` row already deleted
+    at `:60-63`.
+  - `:86` (`[data-history-table] tr.is-selected` `background-color`, expect `token: 'color-accent'`)
+    — REQ-133's own acceptance text (`01-requirements.md:1765`) says 選中列為「7% accent 底」, and the
+    handoff `Workflow Dashboard.dc.html:735` confirms `color-mix(in srgb, var(--color-accent) 7%,
+    transparent)` is the design's own selected-row formula — the CSS is right, the ROW mis-encoded
+    the REQ as an exact-token match. `tokenProbeValue` (`tests/helpers/spec-rows.ts:50-63`) only
+    probes `prop: var(--token)` verbatim; it has no way to express a 7%-mix comparison.
+  - `:90` (`.mono` `font-family`, expect literal with single quotes) — `getComputedStyle` always
+    serializes a quoted font-family to double quotes (confirmed empirically: the exact CSS at
+    `dashboard.css:101` reads back `"\"JetBrains Mono\", ui-monospace, Consolas, monospace"`); the
+    row's own `[v27c gate 5 fix]` comment shows the verifier rewrote this row already and left the
+    quote-style defect in.
+  Suggested fixes for the verifier (Gate 5), one per row: `:84` delete (same disposition as the
+  `--rwe-hue` row); `:86` either extend `tokenProbeValue` to accept a `{ token, mix: '7%' }` variant
+  or re-express as a `literal` row computed once against a live probe; `:90` flip the literal's quotes
+  to double. **Not done here** — Karpathy discipline #4 (do not appease/fudge a wrong test) and the
+  dispatch's own scope (only the diagram-render count in Part 2 was pre-authorized for a test edit).
+  Also note: the handoff `README.md` the dispatch cited does not exist in this session's scratchpad
+  (`handoff/` holds only `PROVENANCE.md` + the `.dc.html`; `PROVENANCE.md` itself says the README is
+  the real spec but was not fetched) — DES-209's own boundary (4) already anticipated this ("the
+  delivery README is not in this repo"). Verified instead directly against the `.dc.html` markup
+  (`:246-260`, column set matches `workflow.js:32-33`'s `COLUMNS` exactly) and REQ-133's text. No
+  `min-width:720px`/`font-variant-numeric:tabular-nums`/`overflow-x:auto` wrapper added from
+  `.dc.html:247-248` — no SPEC_ROW requires them and no other DoD names them (surgical-changes rule).
+
+**Part 2 (UT-252, pre-authorized re-bind) — done.** `tests/unit/dashboard-diagram-render.test.ts:103`
+asserted exactly one `/describe` call site in the client corpus; REQ-134's join (`IMPL` for `run.js`'s
+declared-effort lookup, state.yaml pending "v27 ORCHESTRATOR CORRECTION") added a second, in
+`run.js:442` (`ui/poll.js:22`'s `endpointsFor('workflow', …)` route is the pre-existing first site,
+which `ui/workflow.js` polls through). Measured `grep -rno '/describe' src/dashboard --include='*.js'`
+→ exactly 2 matches, both accounted for. Assertion changed `toBe(1)` → `toBe(2)`, comment added naming
+both call sites and their reasons; `toBe` kept (not loosened), intent (anti-duplication, a future 3rd
+site must justify itself) preserved.
+
+**Verification (real runs, this pass):**
+- `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-199-workflow-detail.test.ts` — unchanged
+  at 1 failed / 3 passed, 9 SPEC_ROWS messages (all three root-caused above; stable before/after, no
+  code touched this file's path).
+- `npx vitest run tests/unit/dashboard-diagram-render.test.ts tests/unit/dashboard-class-contract.test.ts
+  tests/unit/dashboard-no-design-values.test.ts` → 3/3/13/7 → all 23 green (`dashboard-no-design-values`
+  was 3/7 red per state.yaml's Gate 5 note; already green now — pre-existing fix by another pass, not
+  this one).
+- `npx tsc --noEmit` → 0 errors.
+- `npx vitest run tests/unit tests/integration` → 2450 passed / 2 failed / 1 skipped (326 files). Both
+  failures are pre-existing, already recorded in state.yaml's "v27 GATE 5 DEFECT QUEUE": `UT-249`
+  (`dashboard-client-corpus.test.ts`, stale premise — the client tree exists now) and `IT-170`
+  (`static-assets-route.test.ts`, `fetch()`'s own URL-segment collapsing makes the traversal case
+  unexercisable). Neither touched here.
+- `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-193-dag-fit-and-columns.test.ts
+  tests/acceptance/val-197-diagram-drag-pan.test.ts tests/acceptance/val-200-swimlane.test.ts
+  tests/acceptance/val-201-agent-panel.test.ts` → 12/12 passed. val-197's `#diagram-img` centering
+  (900px viewport) unaffected — no CSS/markup edited this pass, no vertical-rhythm change to re-run.
+- `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → 1613 items / 43 gaps (pre-
+  existing baseline at time of this entry; this entry's own `traces:` resolve to existing TASK-213/
+  DES-208 and add no new gap).
+
+**Not committed** — no commit requested this pass, and a concurrent ledger-only agent has other
+uncommitted edits in this working tree (`05-tests.md`, `dashboard.html`) at the same time.
+
+### IMPL-240 — TASK-198 backfill: `SqliteRunStore`'s at-rest usage projection and `backfillUsage`
+- **status:** done
+- **traces:** TASK-198, DES-193, ARCH-128, REQ-141
+- **greens:** UT-233, IT-166
+- **files:** src/store/sqlite-run-store.ts, src/run-store.ts
+- **commit:** f86ea25
+- **iter:** v27
+
+Backfill — this code landed in the same `f86ea25` checkpoint as TASK-199/200/201/202/203/206..212,
+with no IMPL row of its own (same pattern as IMPL-230/231/233/234/235/236/237/238). `src/run-store.ts`
+gains `backfillUsage(runId, usage): Promise<void>` on the `RunStore` interface. `SqliteRunStore`
+implements it: a no-op unless the run is TERMINAL and its persisted snapshot has no `usage` key yet
+(re-checked inside the store, not only by the caller — idempotent across repeat calls). `_rowToSummary`
+projects the four usage fields onto `RunSummary`, presence keyed on `usagePresentRaw` AND
+`COALESCE(agentCount,1) > 0` — decided BEFORE reading the arithmetic, so a zero-`agent()`-call run
+never surfaces `costUSD:0`. `InMemoryRunStore` (also `src/run-store.ts`) implements the same method
+so `IT-166`'s parity check has something to compare against.
+
+**Verification (real runs, this pass):**
+- `npx vitest run tests/unit/sqlite-run-store-usage-projection.test.ts tests/integration/run-store-parity.test.ts`
+  → 6/6 passed (4 + 2) — covers UT-233's five-row table and `backfillUsage` idempotence/no-op-on-
+  non-terminal, and IT-166's `InMemoryRunStore` parity.
+- `npx tsc --noEmit` → 0 errors, including `run-store-parity.test.ts:24`'s `AgentRecord` literal
+  (`state.yaml`'s "v27 GATE 5 DEFECT QUEUE" item 5 named this as failing tsc; it does not fail here —
+  already fixed by `cb895d0`'s own defect-queue pass, confirmed by `git show cb895d0 --stat -- tests/integration/run-store-parity.test.ts`, +2/-1).
+- `git show f86ea25 -- src/store/sqlite-run-store.ts src/run-store.ts` confirms `backfillUsage`, the
+  `_rowToSummary` projection, and the `RunStore` interface addition are this commit's own diff.
+
+**Ledger note, not acted on here (out of this pass's file scope):** `05-tests.md`'s `UT-233`/`IT-166`
+entries are still marked `status: red` / `result: fail` from test-first measurement, though both
+measure green at current HEAD. Flagged for the same re-measurement treatment applied to
+IT-168/169/UT-234/IT-167/IT-165/UT-238/UT-239, not flipped in this pass (not asked for this round).
+
+### IMPL-241 — TASK-200 backfill: the ONE decoration site strips the systemPrompt (REQ-136), across two commits
+- **status:** done (one DoD sub-clause did NOT land — see caveat)
+- **traces:** TASK-200, DES-195, ARCH-129, ADR-050, REQ-136, REQ-135
+- **greens:** UT-235, UT-236, IT-165
+- **files:** src/params/resolve.ts, src/agent-executor.ts, src/tool-specs.ts, README.md
+- **commit:** f86ea25, cb895d0
+- **iter:** v27
+
+Backfill, checked independently before writing. `git log` shows TWO v27 commits touching this task's
+core files, not one: `f86ea25` landed the main implementation — `stripFirstSegment(composed, sys)`
+in `src/params/resolve.ts` (`composePrompt`'s inverse, fails CLOSED to `''` when the expected prefix
+is absent), `agent-executor.ts`'s ONE decoration site calling it before persisting `descriptor.prompt`
+and emitting `{event:'harness_prompt_prefix_mismatch'}` on a mismatch, `HarnessDescriptor.systemPrompt`
+usage, the `tool-specs.ts` `run_agent_log` description addition, and the README.md `agentType 的
+system prompt 不進逐字稿` paragraph. `cb895d0` (titled "Gate 5 defect queue cleared") then fixed
+`composePrompt` itself to filter out empty-string segments (`s !== undefined && s !== ''`), which —
+confirmed by re-running the test — is what actually resolves `state.yaml`'s "v27 GATE 5 DEFECT QUEUE"
+item 4 (the `s=''` property row that note said "needs... a designer ruling, not an implementer pick"):
+with the empty-string filter, `composePrompt('', a, p, ap) === composePrompt(undefined, a, p, ap)`
+holds structurally, so the property test passes without needing a ruling. Recording this since the
+outstanding note in `state.yaml` reads as still-open when the code has since resolved it.
+
+**Caveat, stated not buried:** the DoD's "the regenerated tool-surface table carries the new
+`run_agent_log` row" did **NOT** land — `.sdlc/features/001-remote-workflow-engine/v24-tool-surface.md`
+was not touched by either `f86ea25` or `cb895d0` (confirmed: `git log` on the file stops at v26's
+`55144ba`), and its existing `run_agent_log` row predates v27 entirely (no `record`/`systemPrompt`
+key present). No waiver for this specific sub-clause is recorded anywhere in `state.yaml` (only
+TASK-199's tool-surface sub-clause has one) — reported as a genuine, unwaived gap, not assumed covered
+by TASK-199's waiver. The DoD's "cross-repo grep of the rwe-mcp plugin for `harness.prompt`" clause
+WAS run this pass: `grep -rn "harness.prompt" /home/user/Documents/remote-workflow-plugin` → zero
+hits, so no cross-repo update was needed (a clean negative, not a skipped check). The "one release-
+note line... recorded in the commit message" clause is satisfied by `f86ea25`'s own commit message,
+which documents the systemPrompt-stripping change in prose — this repo carries no separate changelog
+file (consistent with the manuals' history-free rule).
+
+**Verification (real runs, this pass):**
+- `npx vitest run tests/unit/strip-first-segment.test.ts tests/unit/agent-executor-harness-descriptor.test.ts
+  tests/integration/dashboard-disclosure.test.ts tests/acceptance/v24-tool-surface.test.ts` → 85
+  passed, 5 skipped, 0 failed (8 + 4 + 2 + 71 of 76) — covers UT-235, UT-236, IT-165 in full.
+- `git show f86ea25 -- src/agent-executor.ts src/params/resolve.ts src/tool-specs.ts README.md` and
+  `git show cb895d0 -- src/params/resolve.ts` confirm the hunks named above are each commit's own diff.
+
+**Ledger note, not acted on here:** `05-tests.md`'s `UT-235`/`UT-236` entries are still marked
+`status: red` from test-first measurement, though both measure green at current HEAD. Same treatment
+as IMPL-240's note above — flagged, not flipped this round.
+
+### IMPL-242 — TASK-208 backfill: `app.js`'s one poll timer, `onTick` uniform view contract, across three commits
+- **status:** done
+- **traces:** TASK-208, DES-206, DES-200, DES-201, ARCH-125, ARCH-122, REQ-131, REQ-132
+- **greens:** (VAL-198, its own DoD's real-Chromium file — no dedicated UT/IT id on `03-tasks.md`'s own card)
+- **files:** src/dashboard/ui/app.js, src/dashboard/ui/theme-init.js, src/dashboard/ui/home.js
+- **commit:** f86ea25, cb895d0, 3a1c58d
+- **iter:** v27c
+
+Backfill, checked independently before writing — `git log` on this task's four `files:` shows a
+THIRD commit pattern (not two, not one): `theme-init.js` only ever changed at `f86ea25` (initial,
+unmodified since); `app.js` and `home.js` changed at `f86ea25`, then again at `cb895d0` (small
+DES-209 `STYLE_HOOKS` class additions — `.hr` on a new nav divider, `.input` on the home search box,
+`.seg` on the segment tabs — NOT called out in `cb895d0`'s own commit-message prose, confirmed only
+by reading its diff directly), then again at `3a1c58d` — the commit that actually makes the card's
+`[v27c]` "one timer" clause TRUE: every view (`home.js` via `onTickHome`, plus `run.js`/`workflow.js`
+from other tasks) exports `onTick(container, bodies, ctx)`; `app.js`'s own loop (`pendingTick =
+setTimeout(loop, 3000)`, the ONE remaining real `setTimeout(` call in `src/dashboard/ui/*.js` —
+confirmed by grep excluding comment-only matches) keeps every fetched body, calls the mounted view's
+`onTick`, merges the extra statuses it returns, and only then reduces `nextConnection`. `poll.js`
+(also touched, at `f86ea25` and later `ddc4409`) is NOT credited here — `ddc4409`'s hunk is IMPL-229's
+own JSDoc/tsc fix, unrelated to this task's DoD, and `poll.js` is not this task's own `files:` entry
+either way (it's TASK-206's `ROUTES` table, referenced not owned).
+
+**Verification (real runs, this pass):**
+- `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-198-shell-and-home.test.ts` → 7/7
+  passed, real Chromium (theme/hue/lang persistence, three home segments, search, sweep, dual
+  screenshots).
+- `grep -n "setTimeout(" src/dashboard/ui/*.js` excluding comment lines → exactly one hit,
+  `app.js:296`, confirming the DoD's "the scheduler in `app.js` ONLY" clause.
+- `npx vitest run tests/unit/dashboard-client-corpus.test.ts` → 2/3 passed; the one red is `UT-249`,
+  already recorded in `state.yaml`'s "v27 GATE 5 DEFECT QUEUE" item 1 as a stale-premise test defect
+  (the client tree it asserts absent now legitimately exists) — not caused by or fixable within this
+  entry's `files:`.
+- `git show f86ea25 cb895d0 3a1c58d -- src/dashboard/ui/app.js src/dashboard/ui/home.js
+  src/dashboard/ui/theme-init.js` confirms the three-commit split above.
