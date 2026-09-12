@@ -33,14 +33,25 @@
 // own headers note); six rows rewritten or deleted in this same pass where the ORACLE, not the
 // implementation, was wrong (a permanently-unsatisfiable literal, or an anchor DES-209's own table
 // does not actually assign the checked rule to) — each carries its own `[v27c gate 5 fix]` comment.
-// `SPEC_ROWS.length >= 40` (43, after the one deletion) is asserted at the acceptance tier.
+// `SPEC_ROWS.length >= 40` (45, after the v27c deletion and the v27 Gate 6 VAL-208 additions) is
+// asserted at the acceptance tier.
+//
+// [v27 Gate 6 fix, VAL-208]: a new row kind, `notClipped` — the ONE failure class every row above
+// is structurally blind to. A literal/token/animation row compares a stylesheet-authored VALUE
+// against `getComputedStyle`; a flex-shrink clip has no such authored value to compare (no rule
+// sets `height` on `.cell-label`/`.cell-model` — their box height is a LAYOUT OUTCOME of
+// `font-size`/`line-height` inside a shrinkable flex column), so the defect VAL-208 found was
+// invisible to this oracle until now. `notClipped` compares the anchor's rendered
+// `getBoundingClientRect().height` against its OWN `font-size`×`line-height` (read via
+// `getComputedStyle` on the SAME element) — see `tests/helpers/spec-rows.ts`.
 
 export type SpecReq = 'REQ-131' | 'REQ-132' | 'REQ-133' | 'REQ-134' | 'REQ-135';
 export type SpecView = 'home' | 'workflow' | 'run' | 'panel';
 export type SpecExpect =
   | { literal: string }
   | { token: string }
-  | { animation: [name: string, duration: string] };
+  | { animation: [name: string, duration: string] }
+  | { notClipped: true };
 
 export interface SpecRow {
   req: SpecReq;
@@ -126,6 +137,12 @@ export const SPEC_ROWS: ReadonlyArray<SpecRow> = [
   { req: 'REQ-134', view: 'run', anchor: 'data-lane-header', prop: 'letter-spacing', expect: { literal: '0.52px' } },
   { req: 'REQ-134', view: 'run', anchor: 'data-lane-header', prop: 'text-transform', expect: { literal: 'uppercase' } },
   { req: 'REQ-134', view: 'run', anchor: 'data-legend', prop: 'font-size', expect: { literal: '11.5px' } },
+  // [v27 Gate 6 fix, VAL-208] the flex-shrink clip itself: `.cell-label`/`.cell-model` measured
+  // rendered at ~30% of their own font-size×line-height before the `.cell-head`/`.cell-meta`
+  // row-grouping fix (dashboard.css) — this is the "new SPEC_ROWS kind" VAL-208 recommended so the
+  // same defect class cannot ship invisibly again.
+  { req: 'REQ-134', view: 'run', anchor: '[data-node-cell] .cell-label', prop: 'height', expect: { notClipped: true } },
+  { req: 'REQ-134', view: 'run', anchor: '[data-node-cell] .cell-model', prop: 'height', expect: { notClipped: true } },
 
   // -- REQ-135 agent panel (view: panel) --
   { req: 'REQ-135', view: 'panel', anchor: 'data-agent-panel', prop: 'width', expect: { literal: '760px' } },

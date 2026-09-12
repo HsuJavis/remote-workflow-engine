@@ -11732,7 +11732,7 @@ New `tests/fixtures/dashboard-wire.ts` (the ONE v27 wire fixture) and
 `REQUIRED ⊆ keys` over the fixture's own DISCLOSURE_TABLE (6 rows) — passes today (fixture
 self-consistency; the real RED for this half is the `tsc --noEmit` compile lock on the missing
 `AgentLogView` export, per this section's own compile-time note). Block 2 (REQ-136's three-conjunct
-oracle, also VAL-203's real-tier path): a real agentType (`agents/*.md` frontmatter) with a
+oracle, also VAL-211's real-tier path): a real agentType (`agents/*.md` frontmatter) with a
 distinctive systemPrompt marker, dispatched through a real stub-Ollama-backed run; both `MCP
 run_agent_log` and `GET /api/runs/:id/agents/:agentId` bodies asserted for `¬contains(marker) ∧
 contains(scriptPrompt)`. RED (measured): the real response body contains the marker verbatim
@@ -12279,13 +12279,45 @@ allowlist guard* — 10 hits, all container-geometry literals (`wrap.style.width
 missing either the `// rwe-allow-style: svgBox` marker or a class (TASK-210/211/212's remaining
 scope). The other 4 cases (hex/oklch/rgba/cssText/setAttribute-literal guards) are already green.
 
-### VAL-198 — real Chromium: the v27 shell (theme/lang/hue/connection) and the Workflows home
+### UT-257 — `dashboard-lib-model.test.js`: `shortModel(model)` — the REQ-134 row-2 formatter (VAL-208 fix pass)
+- **status:** green
+- **traces:** DES-206, TASK-210, REQ-134
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v27
+
+Written at Gate 6 (2026-09-12), not Gate 5: a prior implementer flagged this exact gap (no
+`shortModel`-style formatter existed anywhere in `lib/`, and writing one with no Gate 5 oracle would
+be untested implementation per the implementer contract) and the orchestrator's routed note
+(state.yaml) directed that "the oracle is now your job too" for this fix pass, so the test is
+written and run RED first, same TDD discipline as any Gate-5-authored case. Spec (mirrors the design
+handoff's own `D.shortModel`): strip a leading `openrouter/`, strip a leading `anthropic/`, fold a
+trailing `:free` into ` (free)`.
+
+File: `tests/unit/dashboard-lib-model.test.js` (new, 6 cases). RED (measured): whole-file import
+failure — `src/dashboard/lib/model.js` does not exist. GREEN after implementing `shortModel` (same
+pass): `npx vitest run tests/unit/dashboard-lib-model.test.js` -> 6/6 pass. Registered in
+`src/static-assets.ts`'s `ASSET_KEYS` in the same commit (the `lib/clock.js` near-miss this ledger
+already recorded once, IMPL-247, is the exact trap this registration avoids) and wired into
+`ui/run.js`'s swimlane row 2 (`modelEl.textContent = model ? shortModel(model) : '—'`).
+
+### VAL-206 — real Chromium: the v27 shell (theme/lang/hue/connection) and the Workflows home
 - **status:** green
 - **traces:** REQ-131, REQ-132
 - **tier:** acceptance
-- **real:** false
+- **real:** true
 - **result:** pass
 - **iter:** v27c
+
+**Gate 7.5 real run (validator, 2026-09-12):** confirmed real against a `deploy.sh`-booted scratch
+instance (127.0.0.1:8935, `gateway:"direct-fetch"`, auth off) with two really-registered workflows
+and a real completed 9-agent run. Real Puppeteer Chrome: dark-default `data-theme="dark"`/
+`--color-bg:#18191b`; `localStorage['rwe-theme']='light'` + reload -> `#eef2f1`; hue slider ->
+`--color-accent` recomputes to `oklch(0.56 0.065 80)` (light-theme OKLCH formula, matches README);
+`localStorage['rwe-lang']='zh'` + reload -> real 繁中 text renders; `fontFamily` resolves to
+`Archivo, -apple-system, "Segoe UI", sans-serif`; served HTML contains no external host
+(`fonts.googleapis.com`/CDN). Full evidence: `08-validation.md` VAL-206.
 
 **Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance tests/e2e` -> 75 files passed, 1 skipped (no-provider, pre-existing), 352 tests passed, 25 skipped (pre-existing, no-provider), 0 failed. This item's own real-Chromium case(s) are green at current HEAD. `real:` stays `false` here -- Gate 7.5 (validator) is what flips it after a real deployed run. The RED narrative below is preserved as history, not a current description of the code.
 
@@ -12311,13 +12343,24 @@ always reads whichever cell is first — `is-done`, which none of the four state
 RED (measured, 6 remaining failures across the 3 theme/hue passes): `data-section`/
 `[data-section] .cards` — TASK-208's unlanded `home.js` emitters (same gap UT-256 names).
 
-### VAL-199 — real Chromium: workflow detail — version tag, run history table, predicted layout — INCLUDING under auth
+### VAL-207 — real Chromium: workflow detail — version tag, run history table, predicted layout — INCLUDING under auth
 - **status:** green
 - **traces:** REQ-133, REQ-134
 - **tier:** acceptance
-- **real:** false
+- **real:** true
 - **result:** pass
 - **iter:** v27c
+
+**Gate 7.5 real run (validator, 2026-09-12):** confirmed real on TWO separately `deploy.sh`-booted
+instances. On the auth-OFF instance (8935): `/dashboard/workflow/val27-neverrun` (real Chrome) shows
+「預測結構」text with the 5 phase titles and no "skeleton" anywhere in the stripped body text;
+`/dashboard/workflow/val27-swimlane` shows a `v1` version tag and a real `<table>` run-history row.
+On the auth-ON instance (8936, a SEPARATE `deploy.sh` instance, `auth.enabled:true`, a real bearer
+minted via the real `TokenStore.issue()` against that instance's own `auth-tokens.db` — registration
+without a bearer was independently confirmed REFUSED `unauthorized`): an ANONYMOUS real-Chrome GET
+(no bearer at all) of `/dashboard/workflow/val27-auth-neverrun` shows the SAME 「預測結構」 text with
+the real agent labels (`a1`,`a2`,`b1`,…) — the ADR-051 owner ruling's "PROVE the overlay IS visible"
+instruction, not "record what degrades". Full evidence + screenshots: `08-validation.md` VAL-207.
 
 **Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance tests/e2e` -> 75 files passed, 1 skipped (no-provider, pre-existing), 352 tests passed, 25 skipped (pre-existing, no-provider), 0 failed. This item's own real-Chromium case(s) are green at current HEAD. `real:` stays `false` here -- Gate 7.5 (validator) is what flips it after a real deployed run. The RED narrative below is preserved as history, not a current description of the code.
 
@@ -12338,7 +12381,7 @@ original H2 finding described. Asserts the rendered VISIBLE body text contains t
 verbatim — the Gate 7.5 instruction FLIPPED by ADR-051 from "record what degrades under auth" to
 "PROVE the overlay IS visible", and a structural DOM check alone (a lane element exists) would pass
 on grey boxes reading the literal word "agent"; this case may not be judged before TASK-201's
-predicted-cell `label` has landed (VAL-204's own note), or the Chromium oracle photographs exactly
+predicted-cell `label` has landed (VAL-212's own note), or the Chromium oracle photographs exactly
 that and the screenshot becomes the wrong baseline. RED (measured): same reason as the two
 pre-existing cases — no workflow-detail view exists at all yet, not an auth-specific gap.
 **[stale, superseded by Gate 6 landing since]:** the 3 cases above now measure GREEN — left as
@@ -12346,7 +12389,7 @@ recorded since Mode A does not flip status; Gate 7 regression closeout re-measur
 
 **[v27c]** DES-209's own promised real-tier oracle: a 4th case,
 `+1 SPEC_ROWS (workflow view, REQ-133) hold under both themes and a hue move` (`tests/helpers/spec-rows.ts`).
-One fixture row fixed in the same pass as VAL-198's (see there): `.t`->`.mono` (DES-209's own REQ-133
+One fixture row fixed in the same pass as VAL-206's (see there): `.t`->`.mono` (DES-209's own REQ-133
 style-hook row, not the card-scoped `.t`). RED (measured, 24 failures across the 3 theme/hue passes,
 8 unique rows): `data-run-chip`/`data-history-table`/`.mono` — TASK-209's unlanded `workflow.js`
 emitters (same gap UT-256 names for `data-run-chip`/`data-history-table`; `.mono` is an additional
@@ -12366,13 +12409,49 @@ already expresses "themed value with its own name" exactly. Re-measured (real Ch
 across both themes + the hue move) — this row is no longer among TASK-209's unlanded-emitter
 failures listed above.
 
-### VAL-200 — real Chromium: the swimlane run graph — lane headers, 216x74 nodes, legend
-- **status:** green
+### VAL-208 — real Chromium: the swimlane run graph — lane headers, 216x74 nodes, legend
+- **status:** red
 - **traces:** REQ-134
 - **tier:** acceptance
 - **real:** false
-- **result:** pass
+- **result:** fail
 - **iter:** v27c
+
+**Gate 7.5 REAL RUN FINDING (validator, 2026-09-12) — FAILS, sent back to Gate 6, `status`/`result`
+flipped from the automated measurement below because this is a REAL, currently-reproducible defect,
+not a re-measurement of the same clause:** against a real `deploy.sh`-booted instance (8935) with a
+real completed 9-agent run, real Chromium confirms the lane-header count (5), node size (216×74 ×9)
+and legend presence this item's own automated case already measured — **those clauses are genuinely
+green.** But REQ-134's node content spec ("①9px 狀態點 + 標籤(13.5px semibold) ②模型短名(11px)+effort
+tag") is NOT met: `getBoundingClientRect()` on a real rendered `.cell-label` (text `a1`) measures
+**5.08px tall** against an expected line-height of 15.5px (ratio 0.33), and `.cell-model` (text
+`qwen2.5:7b`) measures **3.92px** against an expected 13.2px (ratio 0.30) — both clipped by
+`overflow:hidden`, which resets a flex item's automatic minimum size to 0 (CSS Flexbox §4.5), so
+`.cell`'s `flex-direction:column` shrink algorithm compresses them far below their content height.
+The rendered result is a garbled sliver of glyph tops, illegible — screenshot
+`evidence/v27/req134-node-zoom-hires.png` (a 3x-scale crop) and the full-page
+`evidence/v27/req134-swimlane-dark.png`/`-light.png` (visible in every node in both themes).
+**Root cause is structural, not a missing `flex:none`:** `.cell`'s five children (`cell-dot`,
+`cell-label`, `cell-model`, `cell-effort`, `cell-usage`) are FIVE flex-column siblings — REQ-134
+specifies THREE rows (①dot+label together ②model+effort together ③usage). A bounded diagnostic
+override (`.cell-label,.cell-model{flex:none}`, evidence script `req134-flexshrink-audit-harness.mjs`,
+no `src/` touched) confirms this: forcing `flex:none` makes both elements render at their full
+natural height (15.5px / 12px) but then `cell.scrollHeight > cell.clientHeight` — the 74px cell
+genuinely has no room for 5 full-height rows plus 4×3px gaps (≈77.5px needed vs 58px available after
+padding). **The fix needs the missing row-grouping (①②③), not a one-line CSS patch.** The SAME
+harness swept every other v27 text-bearing surface for the identical failure class (rendered
+`rect.height` vs `font-size×line-height`, invisible to a plain `getComputedStyle` check) — agent
+panel stat cards, lane headers, legend, home card meta line, workflow-detail run chips — **all
+clean** (ratio ≥ 0.8 everywhere else); the defect is isolated to `.cell-label`/`.cell-model` inside
+the swimlane node. **Observed, not chased further (out of this defect's own scope):** the run page's
+top-left usage banner (`410 tok` overlapping `in 384 · out 26 · cache read 0 · cache write 0< $0.01`,
+same screenshots) shows a SEPARATE overlap — flagged for whoever fixes the row-grouping to check
+while already in this CSS, not diagnosed here. **A systemic gap this exposes:** the entire
+automated real-Chromium tier (VAL-206..212, all green at Gate 6.5+7) checks `getComputedStyle`
+PROPERTY VALUES, never rendered `getBoundingClientRect()` height against content — a flex-shrink
+clip is invisible to every SPEC_ROWS row as currently written. Recommend one new `SPEC_ROWS` kind
+asserting `rect.height >= k * lineHeight` for text anchors (a Gate 5/6 test-gate change, not built
+here). Full evidence: `08-validation.md` VAL-208.
 
 **Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance tests/e2e` -> 75 files passed, 1 skipped (no-provider, pre-existing), 352 tests passed, 25 skipped (pre-existing, no-provider), 0 failed. This item's own real-Chromium case(s) are green at current HEAD. `real:` stays `false` here -- Gate 7.5 (validator) is what flips it after a real deployed run. The RED narrative below is preserved as history, not a current description of the code.
 
@@ -12384,7 +12463,7 @@ recorded since Mode A does not flip status; Gate 7 regression closeout re-measur
 
 **[v27c]** DES-209's own promised real-tier oracle: a 4th case,
 `+1 SPEC_ROWS (run view, REQ-134) hold under both themes and a hue move`. Two fixture-row classes
-fixed in the same pass as VAL-198's: `letter-spacing:0.04em`->`0.52px` (`getComputedStyle` always
+fixed in the same pass as VAL-206's: `letter-spacing:0.04em`->`0.52px` (`getComputedStyle` always
 resolves to px — 0.52 is 0.04×13px, the landed value, not a relaxed one) and the five
 `[data-node-cell]` state rows narrowed to `.is-failed`/`.is-queued`/`.is-running`
 (`getComputedStyle` on the bare anchor always reads the first cell, `is-done`, which none of the
@@ -12410,13 +12489,55 @@ vitest run tests/acceptance/val-200-swimlane.test.ts` → 4/4 pass, real Chromiu
 scenario-gap reason above). No engine/production code changed for this closure — the fixture was the
 only gap.
 
-### VAL-201 — real Chromium: the agent slide-in panel — stat cards, prompt, Esc close (REQ-136 proof)
+**Blocking finding FIXED (v27 Gate 6 fix pass, 2026-09-12, implementer — IMPL-250/251/252; `status`/
+`result`/`real` left as this item's own Gate 6.5+7 measurement above, unflipped here per precedent —
+Gate 7.5/the validator is what confirms a real deployed re-run):** the row-grouping defect this
+item's Gate 7.5 REAL RUN FINDING (above) reported is fixed. `.cell-head` (row 1: dot+label) and
+`.cell-meta` (row 2: model+effort) group the five flat children into REQ-134's three rows, each
+`flex:none` so the outer column's shrink algorithm is never re-triggered. The effort-tag-renders-as-
+bare-text defect (same evidence) is fixed: `.cell-effort` gets its own `background:var(--color-
+panel)` (was implicitly `--color-panel2`, identical to `.cell`'s own background — zero contrast).
+The `#run-usage` overlap this item flagged as "observed, not chased further" is fixed with a class
+hook (`usage.className='usage-row'`, never the frozen `#run-usage` id). `shortModel()` (this item's
+own "no formatter exists" note, `ui/run.js`'s file banner) is now written test-first (UT-257) and
+wired into row 2. The systemic gap this item named — "the entire automated real-Chromium tier checks
+`getComputedStyle` property values, never rendered `getBoundingClientRect()` height... recommend one
+new `SPEC_ROWS` kind" — is closed: a `notClipped` row kind (`tests/helpers/spec-rows.ts`) with two
+new `SPEC_ROWS` rows on `.cell-label`/`.cell-model`, using the SAME 0.8 ratio floor this item's own
+`req134-flexshrink-audit-harness.mjs` used.
+
+Verified on a REAL rendered DOM (self-booting harness, `evidence/v27/req134-rowgroup-fix-verify.mjs`
+— the validator's own 127.0.0.1:8935 scratch instance no longer exists, so this boots a fresh real
+`createServer()`): `.cell-label`/`.cell-model` clip ratio 0.999/0.909 (was 0.33/0.30, floor 0.8);
+`.cell` has exactly 3 direct children; the effort tag's background (`rgb(33,34,38)`) now differs from
+the cell's (`rgb(41,42,47)`); `shortModel()` renders `openrouter/anthropic/claude-3.5-sonnet:free` as
+`claude-3.5-sonnet (free)` in the live cell; `#run-usage`'s four spans no longer overlap. Full
+regression: `npx tsc --noEmit` 0 errors; `npx vitest run tests/unit tests/integration` 328 files,
+2466 passed, 1 skipped, 0 failed; `RWE_REQUIRE_BROWSER=1` over val-193/197/198/199/200/201/202/018 →
+8 files, 32 passed (val-200's own `SPEC_ROWS (run view, REQ-134)` case is the one exercising the two
+new rows). Screenshots: `evidence/v27/req134-swimlane-dark-AFTER.png`,
+`evidence/v27/req134-node-zoom-hires-AFTER.png` — compare against this item's own pre-fix
+`req134-swimlane-dark.png`/`req134-node-zoom-hires.png`. `sh .sdlc/trace --check`: 33 gaps, all
+pre-existing (drift on v1-v26 items, REQ-137/138/139/142/143, TASK-018/153) — none name REQ-134 or
+any id this pass touched. Full detail: `06-impl-log.md` IMPL-250/251/252.
+
+### VAL-209 — real Chromium: the agent slide-in panel — stat cards, prompt, Esc close (REQ-136 proof)
 - **status:** green
 - **traces:** REQ-135, REQ-136
 - **tier:** acceptance
-- **real:** false
+- **real:** true
 - **result:** pass
 - **iter:** v27c
+
+**Gate 7.5 real run (validator, 2026-09-12):** confirmed real on the `deploy.sh`-booted scratch
+instance (8935): clicking a real `[data-node-cell]` opens `[data-agent-panel]` with 6
+`[data-stat-card]` elements and a `<pre>` showing the real user prompt ("Say hello in one word.");
+Esc closes it (`[data-agent-panel]` gone after `page.keyboard.press('Escape')`). A companion
+flex-shrink audit (`evidence/v27/req134-flexshrink-audit-harness.mjs`) swept every text-bearing
+element under `[data-agent-panel]` for the SAME clipping-vs-`getComputedStyle` blind spot VAL-208
+found in the swimlane node — all 25 text nodes measured clean (rendered height ≥ 80% of
+`font-size×line-height`); the agent panel does not share VAL-208's defect. Full evidence:
+`08-validation.md` VAL-209.
 
 **Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance tests/e2e` -> 75 files passed, 1 skipped (no-provider, pre-existing), 352 tests passed, 25 skipped (pre-existing, no-provider), 0 failed. This item's own real-Chromium case(s) are green at current HEAD. `real:` stays `false` here -- Gate 7.5 (validator) is what flips it after a real deployed run. The RED narrative below is preserved as history, not a current description of the code.
 
@@ -12429,16 +12550,16 @@ recorded since Mode A does not flip status; Gate 7 regression closeout re-measur
 
 **[v27c]** DES-209's own promised real-tier oracle: a 4th case,
 `+1 SPEC_ROWS (panel view, REQ-135) hold under both themes and a hue move`. One fixture row fixed in
-the same pass as VAL-198's: `grid-template-columns:'repeat(auto-fit, minmax(150px, 1fr))'`->
+the same pass as VAL-206's: `grid-template-columns:'repeat(auto-fit, minmax(150px, 1fr))'`->
 `display:'grid'` (`getComputedStyle` never echoes a `repeat()`/`minmax()` formula back as text, only
 the resolved px track list — this literal could never pass under any implementation; the
 `minmax(150px)` figure itself has no anchor at either tier yet, `grep -c 'minmax(150px'
 tests/unit/dashboard-class-contract.test.ts` = 0, a gap for `gate_check`, not fixed here since it
-would touch UT-255's already-green file). **Known scenario gap, same shape as VAL-200's:** the
+would touch UT-255's already-green file). **Known scenario gap, same shape as VAL-208's:** the
 `[data-agent-panel] .detail-block` row still reads "anchor matched no element" because this file's
 fixture run never produces a FAILED agent event (REQ-135: `.detail-block` only renders for a failed
 event's `detail`) — needs a second stub branch making the panel agent fail, Gate 6/7 scenario work,
-not attempted here for the same reason as VAL-200's. RED (measured, 3 failures across the 3
+not attempted here for the same reason as VAL-208's. RED (measured, 3 failures across the 3
 theme/hue passes, 1 unique row): `.detail-block` (scenario gap, not an unlanded surface — the other
 6 panel rows, including the 760px width row DES-209 leaves to the pending `owner_decision`, all
 measure green already).
@@ -12453,13 +12574,19 @@ BROWSER=1 npx vitest run tests/acceptance/val-201-agent-panel.test.ts` → 4/4 p
 (was 3/4 red for the scenario-gap reason above). No engine/production code changed for this closure
 — the fixture was the only gap.
 
-### VAL-202 — real Chromium: Models/System/Issues PORTED to tabs, not redesigned (non-regression)
+### VAL-210 — real Chromium: Models/System/Issues PORTED to tabs, not redesigned (non-regression)
 - **status:** green
 - **traces:** REQ-067, REQ-076, REQ-077, REQ-078
 - **tier:** acceptance
-- **real:** false
+- **real:** true
 - **result:** pass
 - **iter:** v27
+
+**Gate 7.5 real run (validator, 2026-09-12), non-regression check (no `iter` bump on REQ-067/076/
+077/078 — this is a re-confirmation, not new closure scope):** confirmed real on the `deploy.sh`-
+booted scratch instance (8935): `[data-tab]` elements `workflows`/`models`/`system`/`issues` all
+present and clickable, tab switch does not remove the tab bar. Full evidence: `08-validation.md`
+VAL-210.
 
 **Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance tests/e2e` -> 75 files passed, 1 skipped (no-provider, pre-existing), 352 tests passed, 25 skipped (pre-existing, no-provider), 0 failed. This item's own real-Chromium case(s) are green at current HEAD. `real:` stays `false` here -- Gate 7.5 (validator) is what flips it after a real deployed run. The RED narrative below is preserved as history, not a current description of the code.
 
@@ -12467,13 +12594,23 @@ File: `tests/acceptance/val-202-ported-tabs.test.ts` (new, 3 cases; real Chromiu
 no `[data-tab="models"|"system"|"issues"]` element exists — today's Models/System are stacked
 sections on home and Issues is a separate route, not a tab.
 
-### VAL-203 — REQ-136: agent detail never carries the agentType systemPrompt online
+### VAL-211 — REQ-136: agent detail never carries the agentType systemPrompt online
 - **status:** green
 - **traces:** REQ-136
 - **tier:** acceptance
-- **real:** false
+- **real:** true
 - **result:** pass
 - **iter:** v27
+
+**Gate 7.5 real run (validator, 2026-09-12):** a real custom `agentType` (`echoer`, systemPrompt
+containing the distinctive marker `RWE-V27-VALIDATOR-SYSTEMPROMPT-MARKER-DO-NOT-LEAK`) dispatched
+for real on the `deploy.sh`-booted scratch instance (8935, `gateway:"direct-fetch"`, real local
+Ollama). BOTH transports checked on the real response body: MCP `run_agent_log` and the dashboard's
+own HTTP route `GET /api/runs/:id/agents/:agentId` — the systemPrompt marker appears **0 times** in
+either raw body (`grep -c` on the captured JSON), and the run's own user prompt
+(`RWE-V27-USERPROMPT-MARKER: what is 2+2?...`) appears **1 time** in both (non-vacuity: the strip
+does not also remove the user's own content, so REQ-135's panel still has something to show). Full
+evidence: `08-validation.md` VAL-211.
 
 **Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** this item's own real-tier evidence (the IT case(s) named above) is green in the same full-regression run recorded on those IT items. `real:` stays `false` here -- Gate 7.5 (validator) is what flips it after a real deployed run. The RED narrative below is preserved as history, not a current description.
 
@@ -12481,13 +12618,26 @@ Real-tier path per 04-design.md's own table: backed by `tests/integration/dashbo
 REQ-136 block (IT-165) — a real run, both transports, asserted on the real response body. RED
 (measured): see IT-165.
 
-### VAL-204 — REQ-140/REQ-134: `dag.lanes` + the predicted overlay unconditional (Round v27b: PROVE visible, not "record what degrades"); agent detail carries `record`
+### VAL-212 — REQ-140/REQ-134: `dag.lanes` + the predicted overlay unconditional (Round v27b: PROVE visible, not "record what degrades"); agent detail carries `record`
 - **status:** green
 - **traces:** REQ-140, REQ-134
 - **tier:** acceptance
-- **real:** false
+- **real:** true
 - **result:** pass
 - **iter:** v27b
+
+**Gate 7.5 real run (validator, 2026-09-12):** on the auth-OFF instance (8935): `GET
+/api/runs/:id/dag` returns `lanes:[{index,title}]` for all 5 real phases alongside the pre-existing
+`kind`/`cells`/`edges`/`startedBy` keys (none removed); `GET /api/runs/:id/agents/:agentId` carries
+a `record` key (the real `AgentRecord`, `label`/`agentId` verified matching) alongside the
+pre-existing `harness`/`events`. On a SEPARATE auth-ON instance (8936, real bearer minted via the
+real `TokenStore`, registration without a bearer independently confirmed refused): the SAME
+anonymous (no-bearer) `GET /api/runs/:id/dag` still returns real `lanes` (5) and real per-cell agent
+labels (`a1`,`a2`,`b1`,…, not masked/generic) — the ADR-051 reversal confirmed live, not just in
+tests. **ADR-051's own p95 measurement obligation, taken here (200 sequential real HTTP GETs against
+the auth-ON instance):** p50=5.27ms, p95=6.33ms — well under the 50ms threshold, so per ADR-051's own
+decision no per-`(name,version)` memo is warranted; the number is recorded, nothing built. Full
+evidence: `08-validation.md` VAL-212.
 
 **Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** this item's own real-tier evidence (the IT case(s) named above) is green in the same full-regression run recorded on those IT items. `real:` stays `false` here -- Gate 7.5 (validator) is what flips it after a real deployed run. The RED narrative below is preserved as history, not a current description.
 
@@ -12498,8 +12648,8 @@ the UNAVAILABLE/FALLBACK warning + degrade-log recipes). RED (measured): see IT-
 
 **[v27b amendment, Round v27b owner ruling, ADR-051]:** the standing Gate 7.5 instruction FLIPS from
 「run one `auth.enabled:true` case and record what degrades」 to 「run one `auth.enabled:true` case and
-PROVE the overlay IS visible」 — VAL-199's new auth-ON Chromium case (agent NAMES rendered
-anonymously against an auth-enabled engine) is that proof at the acceptance tier; VAL-204 must not be
+PROVE the overlay IS visible」 — VAL-207's new auth-ON Chromium case (agent NAMES rendered
+anonymously against an auth-enabled engine) is that proof at the acceptance tier; VAL-212 must not be
 judged before TASK-201's predicted-cell `label` has landed, or the oracle would photograph grey boxes
 reading the literal word "agent". **One number rides along, VAL-side, NOT built here** (same
 Gate-7.5-only pattern as VAL-205's `scripts/bench-run-list.ts`; no red/green state to confirm at this
@@ -12513,9 +12663,20 @@ own words) and must be read as superseded by this amendment.
 - **status:** green
 - **traces:** REQ-141
 - **tier:** acceptance
-- **real:** false
+- **real:** true
 - **result:** pass
 - **iter:** v27
+
+**Gate 7.5 real run (validator, 2026-09-12):** on the `deploy.sh`-booted scratch instance (8935), a
+real 9-agent run included one genuinely PRICED call (`gpt41nano` via real OpenRouter, real
+`OPENROUTER_API_KEY`): `GET /api/runs` (list) reports `costUSD: 2.4999999999999998e-06` for that run;
+`GET /api/runs/:id` (detail) reports `usage.costUSD: 2.4999999999999998e-06` for the SAME run — the
+exact same float, bit-for-bit, confirming the one-fold guarantee (not two folds that happen to agree
+on a rounded display value). **ADR-052's own N=1000 measurement obligation, run here**
+(`scripts/bench-run-list.ts`, already committed, unmodified): boot recovery over 1000 terminal
+runs = 276.9ms; `GET /api/runs` p50=68.3ms/p95=83.2ms; `GET /api/home` p50=64.9ms/p95=73.9ms (30
+samples each) — recorded per ADR-052's "a number rather than a hope" decision; no `?workflow=&limit=`
+bound built this round. Full evidence: `08-validation.md` VAL-205.
 
 **Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** this item's own real-tier evidence (the IT case(s) named above) is green in the same full-regression run recorded on those IT items. `real:` stays `false` here -- Gate 7.5 (validator) is what flips it after a real deployed run. The RED narrative below is preserved as history, not a current description.
 

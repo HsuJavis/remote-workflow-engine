@@ -4175,7 +4175,7 @@ touched here.
 ### IMPL-224 — the agent panel gets wired: `ui/run.js`'s `render()` defaults `onSelectAgent` to `openAgentPanel`
 - **status:** done
 - **traces:** TASK-210, TASK-211, DES-206, REQ-135, REQ-136
-- **greens:** VAL-201
+- **greens:** VAL-209
 - **files:** src/dashboard/ui/run.js
 - **commit:** pending (working tree on 3a1c58d)
 - **iter:** v27c
@@ -4280,7 +4280,7 @@ REQ-anchored anti-vacuity numbers move to the one that is actually the grid.
 ### IMPL-226 — TASK-210's deferred substrate half: the swimlane cell layer moves off SVG onto DES-209's HTML `.cell-layer`
 - **status:** done
 - **traces:** TASK-210, DES-209, DES-206, DES-203
-- **greens:** VAL-200
+- **greens:** VAL-208
 - **files:** src/dashboard/ui/run.js, tests/acceptance/val-193-dag-fit-and-columns.test.ts (verified only, not edited), tests/acceptance/val-200-swimlane.test.ts (verified only, not edited)
 - **commit:** a30d4a9
 - **iter:** v27
@@ -4852,7 +4852,7 @@ files).
 ### IMPL-237 — TASK-212 backfill: the three ported tabs (Models/System/Issues) — landed in two passes, not one
 - **status:** done
 - **traces:** TASK-212, DES-207, ARCH-125, ARCH-123, REQ-067, REQ-076, REQ-077, REQ-078
-- **greens:** VAL-202, UT-240 (bidirectional on-disk⇔listed half, as its own card names)
+- **greens:** VAL-210, UT-240 (bidirectional on-disk⇔listed half, as its own card names)
 - **files:** src/dashboard/ui/models.js, src/dashboard/ui/system.js, src/dashboard/ui/issues.js
 - **commit:** f86ea25, 3a1c58d
 - **iter:** v27c
@@ -5089,7 +5089,7 @@ as IMPL-240's note above — flagged, not flipped this round.
 ### IMPL-242 — TASK-208 backfill: `app.js`'s one poll timer, `onTick` uniform view contract, across three commits
 - **status:** done
 - **traces:** TASK-208, DES-206, DES-200, DES-201, ARCH-125, ARCH-122, REQ-131, REQ-132
-- **greens:** (VAL-198, its own DoD's real-Chromium file — no dedicated UT/IT id on `03-tasks.md`'s own card)
+- **greens:** (VAL-206, its own DoD's real-Chromium file — no dedicated UT/IT id on `03-tasks.md`'s own card)
 - **files:** src/dashboard/ui/app.js, src/dashboard/ui/theme-init.js, src/dashboard/ui/home.js
 - **commit:** f86ea25, cb895d0, 3a1c58d
 - **iter:** v27c
@@ -5162,7 +5162,7 @@ src/dashboard/lib` → 0 hits.
 ### IMPL-244 — TASK-209 backfill: `ui/workflow.js`'s original build — the detail view, run chips, history table, predicted layout
 - **status:** done
 - **traces:** TASK-209, ARCH-125, ARCH-131, REQ-133, DES-206, DES-204
-- **greens:** VAL-199 (3/4 — see caveat)
+- **greens:** VAL-207 (3/4 — see caveat)
 - **files:** src/dashboard/ui/workflow.js
 - **commit:** f86ea25
 - **iter:** v27
@@ -5181,7 +5181,7 @@ and predicted-lane rendering from `describe.phases[].agents` (empty-array lane r
 absent-`agents` renders lanes-only + the `predictedLayoutUnavailable` string) with the diagram fetched
 once per (name,version) via `createObjectURL`/`revokeObjectURL`, not once per tick.
 
-**Caveat, stated not buried:** `VAL-199`'s own acceptance file is 3/4 green, not 4/4 — the SAME
+**Caveat, stated not buried:** `VAL-207`'s own acceptance file is 3/4 green, not 4/4 — the SAME
 known, reported test-oracle defect already recorded at commit `5b76624`'s own message (not a TASK-209
 code defect): the `SPEC_ROWS` case bundles nine sub-assertions into one `toEqual([])`, and the one
 that still fails is `tr.is-selected`'s `background-color` expecting a flat `--color-accent` token
@@ -5199,7 +5199,7 @@ with a real Chromium probe, not inferred, and NOT this file's own markup/class d
 ### IMPL-245 — `--row-selected-bg` token (REQ-133 7% tint) + `agent-panel.js` banner correction, both landed at `f8b167e`
 - **status:** done
 - **traces:** TASK-214, DES-209, REQ-133, TASK-210, TASK-211, DES-206, REQ-135
-- **greens:** VAL-199 (the `tr.is-selected` SPEC_ROWS sub-case, previously red per IMPL-244's caveat)
+- **greens:** VAL-207 (the `tr.is-selected` SPEC_ROWS sub-case, previously red per IMPL-244's caveat)
 - **files:** src/dashboard/dashboard.css, src/dashboard/ui/agent-panel.js
 - **commit:** f8b167e
 - **iter:** v27
@@ -5211,7 +5211,7 @@ hoisted into a `--row-selected-bg` custom property at `:root`, and the rule now 
 `background:var(--row-selected-bg)`. Motivation: DES-209's spec-row oracle
 (`tests/fixtures/dashboard-spec.ts`) can only probe a `token` row by setting
 `background-color: var(--token-name)` and comparing — it cannot probe a raw `color-mix()` literal
-against itself, which is what VAL-199's `tr.is-selected` case was wrongly doing (expecting the flat
+against itself, which is what VAL-207's `tr.is-selected` case was wrongly doing (expecting the flat
 `--color-accent`, not the actual 7% mix). The token gives the 7% tint one place to change and lets
 the spec row assert the real computed value. **(2) `agent-panel.js:9-21,224-225`:** comment-only.
 The module banner and the `openAgentPanel` JSDoc both still read as though nothing called
@@ -5330,7 +5330,7 @@ still boots (see Verification below).
 ### IMPL-248 — Gate 6.5 simplify: `el()` de-triplicated into `ui/dom.js`, `app.js`'s poll tick stops serializing independent fetches
 - **status:** done
 - **traces:** TASK-212, TASK-208, DES-206, DES-207, ARCH-125, REQ-131, REQ-067, REQ-076, REQ-077, REQ-078
-- **greens:** UT-240 (static-assets), UT-255/UT-256 (class-contract/no-design-values), VAL-198, VAL-202
+- **greens:** UT-240 (static-assets), UT-255/UT-256 (class-contract/no-design-values), VAL-206, VAL-210
 - **files:** src/dashboard/ui/dom.js (new), src/dashboard/ui/models.js, src/dashboard/ui/system.js, src/dashboard/ui/issues.js, src/dashboard/ui/app.js, src/static-assets.ts
 - **commit:** 1cfac21
 - **iter:** v27
@@ -5391,7 +5391,7 @@ iteration.
 (21582/24585) — below the 90% floor, entirely because `src/dashboard/ui/*.js` (2003 lines, TASK-
 208..212) never executes under Node: it is real-browser-only client code, already proven at the VAL
 tier (val-198..202, val-018, val-193/197, all real Chromium, all green — see this file's IMPL-246/247/
-248 entries and 05-tests.md's VAL-198..205). Every function in `src/dashboard/lib/*.js` (the pure
+248 entries and 05-tests.md's VAL-206..212/205). Every function in `src/dashboard/lib/*.js` (the pure
 half TASK-206/207 own) and in `dashboard.ts`/`dashboard-page.ts`/`static-assets.ts` was already
 **100%** — the shortfall was ENTIRELY the browser-tier client files, not this iteration's server-side
 or pure-logic code.
@@ -5402,7 +5402,7 @@ issues,models,run,system,theme-init,workflow}.js` are EXCLUDED from the UT/IT li
 denominator. These files' own module banners already state their contract is DOM construction with
 no server-testable logic of their own (`lib/*.js` carries every pure decision, ARCH-125's boundary);
 Node has no DOM, so a UT-tier test of these files can only re-implement the same real-Chromium proof
-VAL-198..202 already give for real, or degrade into a jsdom mock of the SUT's own boundary — exactly
+VAL-206..210 already give for real, or degrade into a jsdom mock of the SUT's own boundary — exactly
 what the verifier contract's mock-policy forbids at E2E/VAL tier and would be theater at UT tier too.
 `ui/poll.js` was NOT excluded (it has real pure logic, `endpointsFor`, worth testing directly — see
 below). Excluding the other ten: **95.73%** overall (see re-measurement below) — clear of the 90%
@@ -5497,3 +5497,144 @@ iteration's OWN novel logic (REQ-131..141's acceptance clauses do not name any o
   snapshot above are items 4/5's own new cases).
   Scoped per-file recheck confirms both item-4/5 fixes independently: `poll.js` 62.5% → 100%
   functions, `status.js` 66.66% → 100% functions (both 100% lines already).
+
+### IMPL-250 — VAL-208 fix: REQ-134's swimlane node gets its 3 grouped rows back, and the effort tag becomes visible
+- **status:** done
+- **traces:** TASK-210, DES-206, DES-203, REQ-134
+- **greens:** VAL-208 (real-Chromium case 2, `SPEC_ROWS (run view, REQ-134)`), VAL-200
+- **files:** src/dashboard/dashboard.css, src/dashboard/ui/run.js
+- **iter:** v27
+
+Gate 7.5's REAL-run finding (state.yaml pending, 08-validation.md VAL-208): `.cell`'s five children
+(`cell-dot`/`cell-label`/`cell-model`/`cell-effort`/`cell-usage`) were five flat
+`flex-direction:column` siblings sharing a 58px content box; `cell-label`/`cell-model` both carry
+`overflow:hidden`, which resets a flex item's automatic minimum size to 0 (CSS Flexbox §4.5), so the
+column-shrink algorithm compressed both to ~30% of their line-height (measured: 5.08px/15.5px and
+3.92px/13.2px) — an illegible sliver of glyph tops in every node, both themes. Fix: two new grouping
+wrappers, `.cell-head` (row 1: dot+label) and `.cell-meta` (row 2: model+effort), each `flex:none`
+so the outer column never re-triggers the same shrink (3 rows' combined natural height, ~42px, fits
+the 58px box with room; each row's own children still shrink/ellipsis correctly WITHIN their row,
+which is the desired behaviour). `run.js`'s `paintSwimlane` restructured to build these two wrapper
+`<div>`s instead of appending five flat children directly to `.cell`; `.cell-usage` (row 3) stays a
+direct child, unwrapped, matching the design handoff's own markup shape.
+
+Second defect in the same VAL-208 evidence: the effort tag (`.tag.tag-neutral.cell-effort`) rendered
+as bare muted text with no visible pill — `.tag-neutral`'s `background` (`--color-panel2`) is
+IDENTICAL to `.cell`'s own background, so the "tag" painted no contrast at all. Fixed by giving
+`.cell-effort` its own `background:var(--color-panel)` (a distinct existing token in both themes,
+never an invented value) + `border-color:var(--color-line)`.
+
+Third (secondary) defect from the same screenshots: `#run-usage`'s three sibling `<span>`s (total
+tok / the four-column breakdown / cost) had no separator and ran together
+(`410 tokin 384 · out 26 · cache read 0 · cache write 0< $0.01`). Fixed with a class hook —
+`usage.className = 'usage-row'` in `run.js`'s `buildShell` + `.usage-row{display:flex;flex-wrap:
+wrap;align-items:baseline;gap:10px}` in `dashboard.css` — never the `#run-usage` id itself, which
+`dashboard-classes.ts`'s own header forbids a style rule from keying on (it is a frozen
+`TEST_ANCHORS`/C2 entry).
+
+Both `.cell-head`/`.cell-meta`/`.cell-effort` are pre-existing-scoped surfaces (`.cell-effort` was
+already declared; only its rule body gained two declarations) — no new STYLE_HOOKS entry was needed
+for it, but `cell-head`/`cell-meta`/`usage-row` ARE new class selectors and are registered in
+`tests/fixtures/dashboard-classes.ts`'s `STYLE_HOOKS` in the same commit (IMPL-252 covers that
+edit's own test-fixture file, landed together).
+
+**Verification (real, this pass):**
+- `npx tsc --noEmit` → 0 errors.
+- `npx vitest run tests/unit tests/integration` → 328 files, 2466 passed, 1 skipped, 0 failed (no
+  regression; the +6 over the v27 Gate 6.5+7 baseline of 2460 are UT-257's own new cases, IMPL-251).
+- `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-193-dag-fit-and-columns.test.ts
+  tests/acceptance/val-197-diagram-drag-pan.test.ts tests/acceptance/val-198-shell-and-home.test.ts
+  tests/acceptance/val-199-workflow-detail.test.ts tests/acceptance/val-200-swimlane.test.ts
+  tests/acceptance/val-201-agent-panel.test.ts tests/acceptance/val-202-ported-tabs.test.ts
+  tests/acceptance/val-018-dashboard-browser-ui.test.ts` → 8 files, 32 tests, all passed, real
+  Chromium — val-200's own `SPEC_ROWS (run view, REQ-134)` case is the one that now exercises the
+  two new `notClipped` rows (IMPL-252) against this fix.
+- A self-booting real-run harness (`evidence/v27/req134-rowgroup-fix-verify.mjs`, new — the
+  validator's own scratch instance at 127.0.0.1:8935 is gone, so this boots a real `createServer()`
+  + a real 3-agent 2-lane run rather than depending on it) measured, on the REAL rendered DOM: the
+  cell-label/cell-model clip ratio is now 0.999 / 0.909 (was ~0.30-0.33, floor is 0.8); the cell has
+  exactly 3 direct children (`cell-head`/`cell-meta`/`cell-usage`, was 5); the effort tag's
+  `background-color` (`rgb(33,34,38)`) is now genuinely distinct from the cell's
+  (`rgb(41,42,47)`); `#run-usage`'s four sibling spans' bounding rects no longer overlap on the x
+  axis. Screenshots: `evidence/v27/req134-swimlane-dark-AFTER.png`,
+  `evidence/v27/req134-node-zoom-hires-AFTER.png` (compare against the pre-fix
+  `req134-swimlane-dark.png`/`req134-node-zoom-hires.png` from the same directory).
+- `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → 33 gaps, all pre-existing
+  (drift warnings on v1-v26 items, REQ-137/138/139/142/143 unimplemented, TASK-018/153
+  unimplemented) — none name REQ-134, this file, or any IMPL/UT/VAL id this pass touched; confirmed
+  by extracting the gap list from the regenerated dashboard's own embedded JSON, not by trusting the
+  summary count alone.
+
+### IMPL-251 — `lib/model.js`: `shortModel()`, the REQ-134 row-2 formatter the previous pass correctly declined to write untested
+- **status:** done
+- **traces:** DES-206, TASK-210, REQ-134
+- **greens:** UT-257
+- **files:** src/dashboard/lib/model.js (new), tests/unit/dashboard-lib-model.test.js (new), src/static-assets.ts, src/dashboard/ui/run.js
+- **iter:** v27
+
+`ui/run.js`'s own file banner (pre-existing) recorded that no `shortModel`-style formatter existed
+anywhere in `lib/`, and that writing one with no Gate 5 oracle would be untested implementation
+(implementer contract §3) — correctly flagged rather than silently built. The orchestrator's routed
+note (state.yaml pending) makes that oracle this pass's own job. Test-first, per the contract's red
+→ green discipline: `tests/unit/dashboard-lib-model.test.js` written and run RED (whole-file import
+failure, `lib/model.js` did not exist) BEFORE `src/dashboard/lib/model.js` was written — see UT-257
+in 05-tests.md for the measured RED. Spec (mirrors the design handoff's own `D.shortModel`): strip a
+leading `openrouter/`, strip a leading `anthropic/`, fold a trailing `:free` into ` (free)`.
+
+Registered in `src/static-assets.ts`'s `ASSET_KEYS` in the SAME commit as the new file — this
+ledger already recorded the cost of skipping that step once (IMPL-247's `lib/clock.js` near-miss:
+unregistered, the served bundle's `<script type="module">` 404's on the import and aborts before
+anything runs, so real-browser acceptance goes 0/12 while the unit tests stay green throughout,
+since Node-side tests never fetch the file over HTTP). Wired into `ui/run.js`'s row 2:
+`modelEl.textContent = model ? shortModel(model) : '—'`.
+
+**Verification (real, this pass):**
+- `npx vitest run tests/unit/dashboard-lib-model.test.js` → RED first (import failure, measured),
+  then 6/6 pass after implementing.
+- `npx vitest run tests/unit/static-assets.test.ts` → included in the full-regression run below;
+  the closed-map bidirectional check (listed ⇒ on disk, on disk ⇒ listed) passes with `lib/model.js`
+  in both directions.
+- The self-booting harness (IMPL-250's own, `req134-rowgroup-fix-verify.mjs`) proves the wiring
+  against a REAL rendered cell, not just the unit test: a fake gateway echoing back the requested
+  model `openrouter/anthropic/claude-3.5-sonnet:free` renders as `claude-3.5-sonnet (free)` in
+  `.cell-model`'s live `textContent` — see `evidence/v27/req134-node-zoom-hires-AFTER.png`.
+- Full regression (`npx tsc --noEmit`, `npx vitest run tests/unit tests/integration`) and the
+  8-file real-Chromium acceptance run are reported once under IMPL-250 (same verification pass,
+  same commit).
+
+### IMPL-252 — the `notClipped` SPEC_ROWS kind: closing the test-tier gap VAL-208 itself named
+- **status:** done
+- **traces:** TASK-214, DES-209, REQ-134
+- **greens:** VAL-208 (real-Chromium case 2, `SPEC_ROWS (run view, REQ-134)`)
+- **files:** tests/fixtures/dashboard-spec.ts, tests/helpers/spec-rows.ts, tests/fixtures/dashboard-classes.ts
+- **iter:** v27
+
+VAL-208's own finding named the gap precisely: the entire real-Chromium tier (`SPEC_ROWS`,
+`literal`/`token`/`animation` row kinds) compares a stylesheet-AUTHORED value against
+`getComputedStyle` — a flex-shrink clip has no authored value to compare, since no rule sets
+`height` on `.cell-label`/`.cell-model` (their box height is a layout OUTCOME of
+`font-size`/`line-height` inside a shrinkable flex column). VAL-208's own recommendation: "one new
+`SPEC_ROWS` kind asserting `rect.height >= k * lineHeight` for text anchors." Implemented as a
+fourth `SpecExpect` variant, `{ notClipped: true }`: `tests/helpers/spec-rows.ts`'s `clipRatio()`
+reads the anchor's `getBoundingClientRect().height` and its own `font-size`×`line-height` (both via
+`getComputedStyle` on the SAME element) and compares their ratio against a 0.8 floor — the SAME
+ratio the validator's own flex-shrink audit harness used
+(`evidence/v27/req134-flexshrink-audit-harness.mjs`), not a fresh number. Two rows added to
+`SPEC_ROWS` (REQ-134/run view): `[data-node-cell] .cell-label` and `[data-node-cell] .cell-model`,
+both `height`. `SPEC_ROWS.length` 43 → 45.
+
+`cell-head`/`cell-meta`/`usage-row` (the three new class selectors IMPL-250 adds to `dashboard.css`)
+are registered in `tests/fixtures/dashboard-classes.ts`'s `STYLE_HOOKS` in this same commit — an
+unregistered class fails `dashboard-class-contract.test.ts`'s bidirectional lock (every selector in
+`dashboard.css` must be in `STYLE_HOOKS`, and vice versa).
+
+**Verification (real, this pass):**
+- `npx vitest run tests/unit/dashboard-class-contract.test.ts tests/unit/dashboard-no-design-values.test.ts`
+  → included in the full-regression run (IMPL-250); both green, no orphaned class, no unregistered
+  hook.
+- `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-200-swimlane.test.ts` → included in the
+  8-file real-Chromium run (IMPL-250); the `SPEC_ROWS (run view, REQ-134)` case is now GREEN with
+  the two new `notClipped` rows exercised against the row-grouping fix (before IMPL-250's fix, these
+  two rows would have measured ~0.30/0.33 ratio, well under the 0.8 floor — confirmed by hand against
+  the pre-fix tree via the harness's own printed ratios in IMPL-250's verification, not re-run
+  separately against a reverted tree per CLAUDE.md's no-checkout rule).

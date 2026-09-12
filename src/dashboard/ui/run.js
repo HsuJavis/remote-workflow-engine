@@ -51,22 +51,22 @@
 // sizes itself from the live `gW`/`gH`, with no fixed box and no pan/zoom at all — it predates
 // REQ-129), so the pre-existing per-view figures are kept verbatim, only relocated.
 //
-// REPORTED, not fixed here (each is outside this file's `files:` — see the implementer's report to
-// the orchestrator for the full detail):
-// 1. `val-193-dag-fit-and-columns.test.ts`'s third case (`#dag-graph text`, the per-cell token/cost
-//    line) finds nothing now — that content is `.cell-usage`, HTML, per DES-209 boundary (1). An
-//    SVG `<text>` version was tried and rejected: `.cell-layer` paints ABOVE the SVG behind an
-//    OPAQUE `.cell` background (occludes it), and `.cell-usage` sets no `fill` (SVG text's un-set
-//    fill is black — invisible on `#18191b`). DES-209 authorized val-200's two selector re-points
-//    but not this one; needs the same treatment with a verifier/design sign-off.
+// REPORTED, not fixed here (outside this file's `files:` — see the implementer's report to the
+// orchestrator for the full detail):
+// 1. RESOLVED — `val-193-dag-fit-and-columns.test.ts`'s third case was re-pointed to `.cell-usage`
+//    by the tests/verifier gate per the orchestrator's v27 authorization (state.yaml); confirmed on
+//    disk, no longer open.
 // 2. `.cell-dot` carries no `background`/`border` in any state but `.is-running` (which only adds
 //    the `rweRing` animation) — it renders but may be visually invisible. CSS-only.
-// 3. No `shortModel`-style formatter exists anywhere in `lib/` — the model id renders RAW (clipped
-//    by `.cell-model`'s own `text-overflow:ellipsis`). Writing one here with no Gate 5 oracle would
-//    be untested implementation (implementer contract §3); flagged for a DES/task decision instead.
+//
+// [v27 Gate 6 fix pass, VAL-208] The row-grouping defect VAL-208 reported (`.cell`'s five children
+// flex-shrunk into illegible slivers) is fixed this pass — see `.cell-head`/`.cell-meta` below and
+// `dashboard.css`. Item 3 above (no `shortModel` formatter) is also fixed — see `lib/model.js` and
+// its use in row 2 below.
 import { SWIMLANE_BOX, cellRect, svgBox, edgePath } from '../lib/swimlane.js';
 import { sumTokens, fmtCost } from '../lib/runlist.js';
 import { t, warningText } from '../lib/strings.js';
+import { shortModel } from '../lib/model.js';
 import { endpointsFor, getJSON } from './poll.js';
 import { openAgentPanel } from './agent-panel.js';
 
@@ -259,9 +259,15 @@ export function paintSwimlane(svgEl, payload, opts) {
         cellEl.dataset.agentLabel = c.label || '';
       }
 
+      // Row 1 — status dot + label, grouped (VAL-208 fix: was 5 flat `.cell` column siblings,
+      // REQ-134 specifies 3 grouped rows — see dashboard.css's `.cell-head` comment).
+      const head = document.createElement('div');
+      head.className = 'cell-head';
+      cellEl.appendChild(head);
+
       const dot = document.createElement('span');
       dot.className = 'cell-dot';
-      cellEl.appendChild(dot);
+      head.appendChild(dot);
 
       // A predicted cell renders its OWN label when present and falls back to NOTHING rather than
       // the kind word "agent" (DES-206's v27b rule).
@@ -269,22 +275,25 @@ export function paintSwimlane(svgEl, payload, opts) {
         const label = document.createElement('span');
         label.className = 'cell-label';
         label.textContent = c.label;
-        cellEl.appendChild(label);
+        head.appendChild(label);
       }
 
-      // REQ-134 row 2 — model short name + effort tag (see this file's own banner for the join).
+      // Row 2 — model short name + effort tag (see this file's own banner for the join).
       const rec = c.agentId ? agentsById.get(c.agentId) : null;
       const declared = pAgents[c.label] || {};
       const model = (rec && rec.model) || (declared.model && declared.model.default);
       const effort = declared.effort && declared.effort.default;
+      const meta = document.createElement('div');
+      meta.className = 'cell-meta';
+      cellEl.appendChild(meta);
       const modelEl = document.createElement('span');
       modelEl.className = 'cell-model';
-      modelEl.textContent = model || '—';
-      cellEl.appendChild(modelEl);
+      modelEl.textContent = model ? shortModel(model) : '—';
+      meta.appendChild(modelEl);
       const effortEl = document.createElement('span');
       effortEl.className = 'tag tag-neutral cell-effort';
       effortEl.textContent = effort || '—';
-      cellEl.appendChild(effortEl);
+      meta.appendChild(effortEl);
 
       // Per-call cost attribution (M-4 send-back repair, ARCH-118, REQ-127) — present only on a
       // LIVE agent cell that carries tokens, never on a predicted/inert cell (no dispatched call
@@ -355,6 +364,7 @@ function buildShell(container) {
 
   const usage = document.createElement('div');
   usage.id = 'run-usage';
+  usage.className = 'usage-row'; // VAL-208 fix: separates the three sibling spans (dashboard.css).
   root.appendChild(usage);
 
   const graphContainer = document.createElement('div');

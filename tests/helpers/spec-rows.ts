@@ -11,8 +11,11 @@
 // `oklch(...)` is only true for hue 236; a self-referential `:root` row, where `prop` already IS
 // `--<token>`, has no independent reference to probe against, so it is checked for non-emptiness
 // only — the weakest row kind, recorded as such), `animation` (`[name, duration]` against
-// `animation-name`/`animation-duration`). A row whose anchor matches no element is a FAILURE the
-// caller collects, never a skip — `expect(failures).toEqual([])` at the call site.
+// `animation-name`/`animation-duration`), `notClipped` ([v27 Gate 6 fix, VAL-208] — the anchor's
+// rendered `getBoundingClientRect().height` against its OWN `font-size`×`line-height`, catching a
+// flex-shrink clip that has no authored value for the other three kinds to compare against). A row
+// whose anchor matches no element is a FAILURE the caller collects, never a skip —
+// `expect(failures).toEqual([])` at the call site.
 import type { Page } from 'puppeteer';
 import type { SpecRow } from '../fixtures/dashboard-spec.js';
 
@@ -44,6 +47,27 @@ async function computedProp(page: Page, anchor: string, prop: string): Promise<s
   );
 }
 
+// [v27 Gate 6 fix, VAL-208] `notClipped` rows have no authored value to read back — the check IS
+// the relationship between two computed facts on the SAME element, `getBoundingClientRect().height`
+// vs `font-size`×`line-height`. 0.8 is the same ratio floor the validator's own flex-shrink audit
+// harness used (`evidence/v27/req134-flexshrink-audit-harness.mjs`), not a fresh number.
+const CLIP_RATIO_FLOOR = 0.8;
+
+async function clipRatio(page: Page, anchor: string): Promise<number | null> {
+  const { selector, pseudo } = splitPseudo(selectorFor(anchor));
+  if (pseudo) return null; // getBoundingClientRect has no meaning on a pseudo-element.
+  return page.evaluate((sel: string) => {
+    const el = document.querySelector(sel) as HTMLElement | null;
+    if (!el) return null;
+    const cs = getComputedStyle(el);
+    const fontSize = parseFloat(cs.fontSize) || 0;
+    const lh = cs.lineHeight;
+    const lineHeight = lh === 'normal' ? fontSize * 1.2 : parseFloat(lh) || fontSize;
+    if (lineHeight <= 0) return null;
+    return el.getBoundingClientRect().height / lineHeight;
+  }, selector);
+}
+
 /** Probe a fresh element with `prop: var(--token)` and read the SAME prop back — generalises
  * DES-209's "styled `color: var(--<token>)`" example to whatever property the row is judging
  * (a `color:`-only probe cannot judge `box-shadow`, a compound property with no color grammar). */
@@ -66,6 +90,15 @@ async function tokenProbeValue(page: Page, prop: string, token: string): Promise
 export async function specRowFailures(page: Page, rows: readonly SpecRow[]): Promise<string[]> {
   const failures: string[] = [];
   for (const row of rows) {
+    if ('notClipped' in row.expect) {
+      const ratio = await clipRatio(page, row.anchor);
+      if (ratio === null) {
+        failures.push(`${row.req} ${row.anchor} ${row.prop}: anchor matched no element`);
+      } else if (ratio < CLIP_RATIO_FLOOR) {
+        failures.push(`${row.req} ${row.anchor} ${row.prop}: rendered height is ${(ratio * 100).toFixed(0)}% of font-size×line-height (flex-shrink clip)`);
+      }
+      continue;
+    }
     const actual = await computedProp(page, row.anchor, row.prop);
     if (actual === ANCHOR_NOT_FOUND) {
       failures.push(`${row.req} ${row.anchor} ${row.prop}: anchor matched no element`);

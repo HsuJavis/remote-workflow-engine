@@ -198,6 +198,10 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 .table tr.is-selected{background:var(--row-selected-bg)}
 .usage-cols{font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;font-size:11px}
 .usage-lowerbound{color:var(--accent-700)}
+/* [v27 Gate 6 fix, VAL-208] `#run-usage`'s three spans (total/cols/cost) had no separator and ran
+   together — a class hook, not the frozen `#run-usage` id, carries the fix (DES-209's rule: a style
+   rule may never key on a TEST_ANCHORS id). */
+.usage-row{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px}
 
 /* == REQ-134 swimlane == */
 /* [v27c] DES-209 boundary (1): the substrate is a SIBLING <div class="cell-layer"> inside #dag-zoom,
@@ -229,12 +233,26 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 .cell.is-failed{border-color:oklch(0.55 0.16 25);cursor:pointer}
 .cell.is-queued{opacity:.65;border-style:dashed}
 .cell.is-predicted{opacity:.65;border-style:dashed}
+/* [v27 Gate 6 fix, VAL-208] REQ-134 specifies THREE grouped rows (①dot+label ②model+effort
+   ③usage), not five flat `.cell` column siblings — `.cell-label`/`.cell-model` both carry
+   `overflow:hidden`, which resets a flex item's automatic minimum size to 0 (CSS Flexbox §4.5), so
+   with 5 siblings sharing `.cell`'s 58px content box the column-shrink algorithm compressed both to
+   ~30% of their line-height (measured: 5.08px/15.5px and 3.92px/13.2px). Grouping into 3 rows drops
+   the item count the outer column has to fit (~42px of natural height for 3 rows vs ~78px needed
+   for 5) so no shrink is triggered at all; `flex:none` on each row is belt-and-braces against any
+   future content growth reopening the same class of defect. */
+.cell-head{display:flex;align-items:center;gap:7px;min-width:0;flex:none}
 .cell-dot{width:9px;height:9px;border-radius:50%;flex:none;box-sizing:border-box}
 .cell.is-running .cell-dot{animation:rweRing 1.3s ease-out infinite}
-.cell-label{font-weight:600;font-size:13.5px;line-height:1.15;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cell-model{font-size:11px;opacity:.8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cell-effort{padding:1px 7px;font-size:10px;flex:none}
-.cell-usage{font-size:10.5px;opacity:.72;font-variant-numeric:tabular-nums;white-space:nowrap}
+.cell-label{font-weight:600;font-size:13.5px;line-height:1.15;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.cell-meta{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:11px;min-width:0;flex:none}
+.cell-model{font-size:11px;opacity:.8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+/* [v27 Gate 6 fix] `.tag-neutral`'s background (`--color-panel2`) is IDENTICAL to `.cell`'s own
+   background, so on a swimlane node the "tag" painted no visible pill at all — just bare muted
+   text (screenshot evidence, `req134-node-zoom-hires.png`). `--color-panel` is a distinct existing
+   token in BOTH themes (never an invented value), giving the chip real contrast against the cell. */
+.cell-effort{padding:1px 7px;font-size:10px;flex:none;background:var(--color-panel);border-color:var(--color-line)}
+.cell-usage{font-size:10.5px;opacity:.72;font-variant-numeric:tabular-nums;white-space:nowrap;flex:none}
 .cell-trigger{width:112px;height:40px}
 .legend{display:flex;flex-wrap:wrap;gap:16px;font-size:11.5px;color:var(--color-muted);align-items:center}
 .run-summary{margin-left:auto;font-variant-numeric:tabular-nums}

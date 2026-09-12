@@ -38,13 +38,16 @@ export const STYLE_HOOKS: readonly string[] = [
 
   // -- REQ-133 workflow detail --
   'workflow-view', 'run-view', 'wf-desc', 'run-chip', 'is-selected', 'status-dot',
-  'usage-cols', 'usage-lowerbound',
+  'usage-cols', 'usage-lowerbound', 'usage-row',
 
   // -- REQ-134 swimlane (DES-209 boundary (1) substrate — declared ahead of TASK-210's re-run) --
+  // [v27 Gate 6 fix, VAL-208] `cell-head` (row 1: dot+label) and `cell-meta` (row 2: model+effort)
+  // are the row-grouping wrappers that close VAL-208's flex-shrink defect (5 flat column siblings
+  // -> 3 grouped rows, per REQ-134's own spec).
   'cell-layer', 'lane-head', 'is-current', 'lane-hairline', 'edge', 'is-active', 'is-walked',
   'is-pending', 'cell', 'is-running', 'is-done', 'is-failed', 'is-queued', 'is-predicted',
-  'cell-dot', 'cell-label', 'cell-model', 'cell-effort', 'cell-usage', 'cell-trigger', 'legend',
-  'run-summary',
+  'cell-head', 'cell-dot', 'cell-label', 'cell-meta', 'cell-model', 'cell-effort', 'cell-usage',
+  'cell-trigger', 'legend', 'run-summary',
   // -- graph container (DES-209 boundary (2): run.js's/workflow.js's own graphContainer/zoom
   // sizing, moved off `.style.*` — no handoff spec exists for these px values (measured: the
   // handoff's own graph wrapper is `overflow:auto` with dynamic width/height, no fixed height, no
