@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="_ds/classical-f8a17458-220b-47fd-bca7-474d25bff7a7/styles.css">
+  <script src="_ds/classical-f8a17458-220b-47fd-bca7-474d25bff7a7/_ds_bundle.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+  <style>
+    body { margin: 0; background: var(--color-bg); }
+    a { color: var(--color-accent-700); } a:hover { color: var(--color-accent-800); }
+    .nav nav a { color: inherit; text-decoration: none; padding-bottom: 2px; border-bottom: 1px solid transparent; }
+    .nav nav a[aria-current="page"] { color: var(--color-accent-700); border-bottom-color: var(--color-accent); }
+    [data-theme] {
+      --font-heading: 'Archivo', system-ui, sans-serif; --font-body: 'Archivo', system-ui, sans-serif; --font-mono: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+      --font-heading-weight: 600; --radius-md: 3px; --radius-sm: 2px;
+    }
+    [data-theme="light"] {
+      --color-bg: #eef2f1; --color-surface: #f8faf9; --color-text: #1e2523; --color-divider: #b8bdbb;
+      --color-accent: #2f8f7d; --color-accent-2: #2f8f7d;
+      --color-neutral-100: #dde2e1; --color-neutral-200: #cfd3d2; --color-neutral-300: #b8bdbb; --color-neutral-400: #9ba09f; --color-neutral-500: #7e8382; --color-neutral-600: #656b69; --color-neutral-700: #4c5250; --color-neutral-800: #373e3c; --color-neutral-900: #1e2523;
+      --color-accent-100: #c8deda; --color-accent-200: #abcfc8; --color-accent-300: #85bcb1; --color-accent-400: #5fa89a; --color-accent-500: #2f8f7d; --color-accent-600: #267264; --color-accent-700: #1d594e; --color-accent-800: #17453c; --color-accent-900: #10312a;
+      --color-accent-2-100: #c8deda; --color-accent-2-800: #17453c;
+      --shadow-sm: 0 1px 2px rgba(20,25,35,.12); --shadow-md: 0 4px 12px rgba(20,25,35,.14); --shadow-lg: 0 16px 40px rgba(20,25,35,.22);
+    }
+    [data-theme="dark"] {
+      --color-bg: #18191b; --color-surface: #222325; --color-text: #e2e6e5; --color-divider: #404243;
+      --color-accent: #5fb3a1; --color-accent-2: #5fb3a1;
+      --color-neutral-100: #242527; --color-neutral-200: #303233; --color-neutral-300: #404243; --color-neutral-400: #595b5c; --color-neutral-500: #797b7c; --color-neutral-600: #999c9c; --color-neutral-700: #b6b9b9; --color-neutral-800: #ced2d1; --color-neutral-900: #e2e6e5;
+      --color-accent-100: #2a403d; --color-accent-200: #345751; --color-accent-300: #3f6e65; --color-accent-400: #4d8d80; --color-accent-500: #58a494; --color-accent-600: #5fb3a1; --color-accent-700: #87c6b9; --color-accent-800: #afd9d0; --color-accent-900: #d7ece8;
+      --color-accent-2-100: #2a403d; --color-accent-2-800: #afd9d0;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,.5); --shadow-md: 0 3px 10px rgba(0,0,0,.55); --shadow-lg: 0 16px 40px rgba(0,0,0,.65);
+    }
+    input[name="rwe-hue"] { -webkit-appearance: none; appearance: none; height: 8px; border-radius: 4px; outline: none; cursor: pointer; }
+    input[name="rwe-hue"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--color-accent); border: 2px solid var(--color-bg); box-shadow: 0 0 0 1px var(--color-accent-700); }
+    input[name="rwe-hue"]::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--color-accent); border: 2px solid var(--color-bg); box-shadow: 0 0 0 1px var(--color-accent-700); }
+    @keyframes rwePulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.7); } }
+    @keyframes rweRing { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent) 70%, transparent); } 100% { box-shadow: 0 0 0 9px transparent; } }
+    @keyframes rweGlow { 0%,100% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 30%, transparent), var(--shadow-md); } 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-accent) 12%, transparent), var(--shadow-md); } }
+    @keyframes rweSlideInL { from { transform: translateX(-40px); opacity: 0; } to { transform: none; opacity: 1; } }
+    @keyframes rweSweep { from { left: -40%; } to { left: 100%; } }
+    @keyframes rweSlideIn { from { transform: translateX(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+    @keyframes rweFadeIn { from { opacity: 0; } to { opacity: 1; } }
+  </style>
+</helmet>
+<div data-theme="{{ themeAttr }}" style="{{ hueVars }}">
+<div style="min-height:100vh; background:var(--color-bg); color:var(--color-text); font-family:var(--font-body); font-size:14px; line-height:1.55; display:flex; flex-direction:column;">
+
+  <header class="nav" style="position:sticky; top:0; z-index:5; background:var(--color-bg); flex-wrap:wrap; row-gap:var(--space-2);">
+    <div class="nav-brand" style="display:flex; align-items:baseline; gap:10px;">
+      <span>{{ t.brand }}</span>
+      <span class="tag" style="{{ sourceTagStyle }}">{{ sourceLabel }}</span><a href="#workflows" aria-current="{{ curWorkflows }}" onClick="{{ goWorkflows }}">{{ t.tabWorkflows }}</a><a href="#models" aria-current="{{ curModels }}" onClick="{{ goModels }}">{{ t.tabModels }}</a><a href="#system" aria-current="{{ curSystem }}" onClick="{{ goSystem }}">{{ t.tabSystem }}</a>
+    </div>
+    <nav style="display:flex; gap:var(--space-4); font-size:14px;">
+      
+      
+      
+    </nav>
+    <div style="display:flex; gap:var(--space-3); align-items:center; flex-wrap:wrap;">
+      <label style="display:flex; align-items:center; gap:8px; font-size:12px;" title="{{ t.hue }}">
+        <span style="width:10px; height:10px; border-radius:50%; background:var(--color-accent); flex:none;"></span>
+        <input type="range" name="rwe-hue" min="0" max="360" step="1" value="{{ hue }}" onChange="{{ setHue }}" style="width:150px; background:linear-gradient(90deg, oklch(0.68 0.07 0), oklch(0.68 0.07 45), oklch(0.68 0.07 90), oklch(0.68 0.07 135), oklch(0.68 0.07 180), oklch(0.68 0.07 225), oklch(0.68 0.07 270), oklch(0.68 0.07 315), oklch(0.68 0.07 360));">
+        <span style="font-variant-numeric:tabular-nums; opacity:.74; width:28px;">{{ hue }}°</span>
+      </label>
+      <div class="seg">
+        <label class="seg-opt" style="position:relative;"><input type="radio" name="rwe-lang" checked="{{ langZh }}" onChange="{{ setLangZh }}">{{ t.langZh }}</label>
+        <label class="seg-opt" style="position:relative;"><input type="radio" name="rwe-lang" checked="{{ langEn }}" onChange="{{ setLangEn }}">{{ t.langEn }}</label>
+      </div>
+      <div class="seg">
+        <label class="seg-opt" style="position:relative;"><input type="radio" name="rwe-theme" checked="{{ themeSystem }}" onChange="{{ setThemeSystem }}">{{ t.themeSystem }}</label>
+        <label class="seg-opt" style="position:relative;"><input type="radio" name="rwe-theme" checked="{{ themeLight }}" onChange="{{ setThemeLight }}">{{ t.themeLight }}</label>
+        <label class="seg-opt" style="position:relative;"><input type="radio" name="rwe-theme" checked="{{ themeDark }}" onChange="{{ setThemeDark }}">{{ t.themeDark }}</label>
+      </div>
+    </div>
+  </header>
+
+  <main style="flex:1; width:100%; max-width:1440px; margin:0 auto; padding:var(--space-4) var(--space-4) var(--space-8); display:flex; flex-direction:column; gap:var(--space-4); box-sizing:border-box;">
+
+    <sc-if value="{{ isWorkflows }}" hint-placeholder-val="{{ true }}">
+
+      <sc-if value="{{ notHome }}" hint-placeholder-val="{{ false }}">
+        <nav style="display:flex; align-items:center; gap:8px; font-size:13px; color:color-mix(in srgb, var(--color-text) 74%, transparent);">
+          <a href="#workflows" onClick="{{ goHome }}" style="color:var(--color-accent); text-decoration:none;">{{ t.home }}</a>
+          <span>›</span>
+          <span style="color:var(--color-text);">{{ selectedName }}</span>
+        </nav>
+      </sc-if>
+
+      <sc-if value="{{ isHome }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex; flex-wrap:wrap; gap:var(--space-2); align-items:center; justify-content:space-between;">
+          <input class="input" type="search" placeholder="{{ t.search }}" value="{{ query }}" onChange="{{ setQuery }}" style="max-width:320px;">
+          <div class="seg">
+            <label class="seg-opt" style="position:relative;"><input type="radio" name="rwe-filter" checked="{{ filterAll }}" onChange="{{ setFilterAll }}">{{ t.all }} <span style="opacity:.72; font-variant-numeric:tabular-nums;">{{ countAll }}</span></label>
+            <label class="seg-opt" style="position:relative;"><input type="radio" name="rwe-filter" checked="{{ filterRunning }}" onChange="{{ setFilterRunning }}">{{ t.running }} <span style="opacity:.72; font-variant-numeric:tabular-nums;">{{ countRunning }}</span></label>
+            <label class="seg-opt" style="position:relative;"><input type="radio" name="rwe-filter" checked="{{ filterRegistered }}" onChange="{{ setFilterRegistered }}">{{ t.registered }} <span style="opacity:.72; font-variant-numeric:tabular-nums;">{{ countRegistered }}</span></label>
+          </div>
+        </div>
+
+        <sc-if value="{{ showRunning }}" hint-placeholder-val="{{ true }}">
+          <section style="display:flex; flex-direction:column; gap:var(--space-3);">
+            <h6 style="margin:0; display:flex; align-items:center; gap:10px;"><span style="width:8px; height:8px; border-radius:50%; background:var(--color-accent); animation:rwePulse 1.6s ease-in-out infinite;"></span>{{ t.running }}<span style="opacity:.68; font-variant-numeric:tabular-nums;">{{ countRunning }}</span></h6>
+            <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:var(--space-3);">
+              <sc-for list="{{ runningCards }}" as="c" hint-placeholder-count="2">
+                <div class="card" role="button" tabindex="0" onClick="{{ c.open }}" style="cursor:pointer; border-color:var(--color-accent); position:relative; overflow:hidden;" style-hover="background:color-mix(in srgb, var(--color-accent) 6%, transparent);">
+                  <div style="position:absolute; left:0; top:0; height:2px; width:40%; background:var(--color-accent); animation:rweSweep 2.4s linear infinite;"></div>
+                  <div class="card-kicker">{{ t.activeRun }} · {{ c.activeShort }}</div>
+                  <div class="card-title">{{ c.name }}</div>
+                  <p class="card-body" style="text-wrap:pretty;">{{ c.description }}</p>
+                  <div class="card-meta" style="font-variant-numeric:tabular-nums; flex-wrap:wrap;">
+                    <span style="white-space:nowrap;">{{ t.successRate }} {{ c.rate }} <span style="opacity:.7;">({{ c.rateFrac }})</span></span><span>·</span><span>{{ t.avgDuration }} {{ c.avg }}</span><span>·</span><span>{{ t.avgCost }} {{ c.avgCost }}</span><span>·</span><span>{{ c.count }} {{ t.runs }}</span>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </section>
+        </sc-if>
+
+        <sc-if value="{{ showRegistered }}" hint-placeholder-val="{{ true }}">
+          <section style="display:flex; flex-direction:column; gap:var(--space-3);">
+            <h6 style="margin:0; display:flex; align-items:center; gap:10px;">{{ t.registered }}<span style="opacity:.68; font-variant-numeric:tabular-nums;">{{ countRegistered }}</span></h6>
+            <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:var(--space-3);">
+              <sc-for list="{{ registeredCards }}" as="c" hint-placeholder-count="3">
+                <div class="card" role="button" tabindex="0" onClick="{{ c.open }}" style="cursor:pointer;" style-hover="border-color:var(--color-accent); background:color-mix(in srgb, var(--color-accent) 5%, transparent);">
+                  <div class="card-kicker" style="color:color-mix(in srgb, var(--color-text) 70%, transparent);">{{ t.lastRun }} · {{ c.lastRun }}</div>
+                  <div class="card-title">{{ c.name }}</div>
+                  <p class="card-body" style="text-wrap:pretty;">{{ c.description }}</p>
+                  <div class="card-meta" style="font-variant-numeric:tabular-nums; flex-wrap:wrap;">
+                    <span style="white-space:nowrap;">{{ t.successRate }} {{ c.rate }} <span style="opacity:.7;">({{ c.rateFrac }})</span></span><span>·</span><span>{{ t.avgDuration }} {{ c.avg }}</span><span>·</span><span>{{ t.avgCost }} {{ c.avgCost }}</span><span>·</span><span>{{ c.count }} {{ t.runs }}</span>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </section>
+        </sc-if>
+
+        <sc-if value="{{ showOther }}" hint-placeholder-val="{{ false }}">
+          <section style="display:flex; flex-direction:column; gap:var(--space-3);">
+            <h6 style="margin:0; display:flex; align-items:center; gap:10px;">{{ t.other }}<span style="opacity:.68; font-variant-numeric:tabular-nums;">{{ countOther }}</span></h6>
+            <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:var(--space-3);">
+              <sc-for list="{{ otherCards }}" as="c" hint-placeholder-count="1">
+                <div class="card" style="opacity:.75;">
+                  <div class="card-kicker" style="color:color-mix(in srgb, var(--color-text) 70%, transparent);">{{ t.lastRun }} · {{ c.lastRun }}</div>
+                  <div class="card-title">{{ c.name }}</div>
+                  <div class="card-meta" style="font-variant-numeric:tabular-nums;"><span>{{ c.count }} {{ t.runs }}</span></div>
+                </div>
+              </sc-for>
+            </div>
+          </section>
+        </sc-if>
+
+        <sc-if value="{{ noResults }}" hint-placeholder-val="{{ false }}">
+          <p class="text-muted" style="text-align:center; padding:var(--space-8) 0;">{{ t.noResults }}</p>
+        </sc-if>
+      </sc-if>
+
+      <sc-if value="{{ isWorkflowView }}" hint-placeholder-val="{{ false }}">
+        <header style="display:flex; flex-wrap:wrap; gap:var(--space-3); align-items:flex-start; justify-content:space-between;">
+          <div style="max-width:720px;">
+            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:6px;">
+              <h2 style="margin:0;">{{ selectedName }}</h2>
+              <span class="tag tag-neutral" style="font-variant-numeric:tabular-nums;">{{ t.version }} {{ wfVersion }}</span>
+              <span class="tag" style="{{ wfRunnableStyle }}">{{ wfRunnableLabel }}</span>
+            </div>
+            <p style="margin:0; text-wrap:pretty; opacity:.85;">{{ wfDescription }}</p>
+          </div>
+          <div style="display:flex; flex-direction:column; gap:6px; font-size:12px; min-width:200px;">
+            <span style="letter-spacing:.08em; text-transform:uppercase; font-size:11px; opacity:.74;">{{ t.triggers }}</span>
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+              <sc-for list="{{ wfTriggers }}" as="tr" hint-placeholder-count="1">
+                <span class="tag tag-outline">{{ tr.label }}</span>
+              </sc-for>
+              <sc-if value="{{ wfNoTriggers }}" hint-placeholder-val="{{ false }}"><span class="text-muted">{{ t.none }}</span></sc-if>
+            </div>
+          </div>
+        </header>
+
+        <div class="hr" style="margin:0;"></div>
+
+        <section style="display:flex; flex-direction:column; gap:var(--space-3);">
+          <div style="display:flex; flex-wrap:wrap; gap:var(--space-2); align-items:center; justify-content:space-between;">
+            <h6 style="margin:0;">{{ t.graph }}</h6>
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:12px;">
+              <span class="text-muted">{{ t.selectRun }}</span>
+              <sc-for list="{{ runChips }}" as="r" hint-placeholder-count="3">
+                <button type="button" class="btn" onClick="{{ r.select }}" style="{{ r.style }}" style-hover="background:color-mix(in srgb, var(--color-accent) 10%, transparent);">
+                  <span style="width:7px; height:7px; border-radius:50%; background:{{ r.dot }}; flex:none;"></span>
+                  <span style="font-family:var(--font-body); font-size:12px; font-variant-numeric:tabular-nums;">{{ r.short }}</span>
+                </button>
+              </sc-for>
+              <sc-if value="{{ noRuns }}" hint-placeholder-val="{{ false }}"><span class="tag tag-neutral">{{ t.skeleton }}</span></sc-if>
+            </div>
+          </div>
+
+          <div style="border:1px solid var(--color-divider); border-radius:var(--radius-md); overflow:auto; background:var(--color-bg);">
+            <div style="position:relative; width:{{ gW }}px; height:{{ gH }}px; min-width:100%;">
+              <svg width="{{ gW }}" height="{{ gH }}" style="position:absolute; inset:0; pointer-events:none;">
+                <sc-for list="{{ gLanes }}" as="l" hint-placeholder-count="3">
+                  <line x1="{{ l.x }}" x2="{{ l.x }}" y1="0" y2="{{ gH }}" stroke="var(--color-divider)" stroke-width="1"></line>
+                </sc-for>
+                <sc-for list="{{ gEdges }}" as="e" hint-placeholder-count="4">
+                  <path d="{{ e.d }}" fill="none" stroke="{{ e.stroke }}" stroke-width="1.2" stroke-dasharray="{{ e.dash }}"></path>
+                </sc-for>
+              </svg>
+              <sc-for list="{{ gLanes }}" as="l" hint-placeholder-count="3">
+                <div style="position:absolute; left:{{ l.x }}px; top:0; width:{{ l.w }}px; height:48px; display:flex; align-items:center; gap:8px; padding:0 14px; box-sizing:border-box; border-bottom:1px solid {{ l.line }}; color:{{ l.color }}; font-family:var(--font-heading); font-weight:600; font-size:13px; letter-spacing:.04em; text-transform:uppercase; white-space:nowrap;">
+                  <span style="font-variant-numeric:tabular-nums; font-size:12px; opacity:.72; font-family:var(--font-body);">{{ l.num }}</span>
+                  <span style="overflow:hidden; text-overflow:ellipsis;">{{ l.title }}</span>
+                  <sc-if value="{{ l.current }}" hint-placeholder-val="{{ false }}"><span class="tag tag-accent" style="font-family:var(--font-body); font-weight:400; margin-left:auto;">{{ t.current }}</span></sc-if>
+                </div>
+              </sc-for>
+              <sc-for list="{{ gCells }}" as="c" hint-placeholder-count="6">
+                <div role="{{ c.role }}" tabindex="{{ c.tabIndex }}" onClick="{{ c.open }}" title="{{ c.title }}" style="position:absolute; left:{{ c.x }}px; top:{{ c.y }}px; width:{{ c.w }}px; height:{{ c.h }}px; box-sizing:border-box; border:1px {{ c.borderStyle }} {{ c.border }}; border-radius:var(--radius-md); background:{{ c.bg }}; padding:8px 12px; display:flex; flex-direction:column; justify-content:center; gap:3px; cursor:{{ c.cursor }}; opacity:{{ c.opacity }}; box-shadow:{{ c.shadow }}; animation:{{ c.cellAnim }};" style-hover="border-color:var(--color-accent); box-shadow:var(--shadow-sm);">
+                  <div style="display:flex; align-items:center; gap:7px; min-width:0;">
+                    <span style="width:9px; height:9px; border-radius:50%; flex:none; box-sizing:border-box; background:{{ c.dot }}; border:1px solid {{ c.dotBorder }}; animation:{{ c.anim }};"></span>
+                    <span style="font-family:var(--font-heading); font-weight:600; font-size:13.5px; line-height:1.15; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ c.label }}</span>
+                  </div>
+                  <sc-if value="{{ c.isAgent }}" hint-placeholder-val="{{ true }}">
+                    <div style="display:flex; align-items:center; justify-content:space-between; gap:6px; font-size:11px; min-width:0;">
+                      <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; opacity:.8;">{{ c.model }}</span>
+                      <span class="tag tag-neutral" style="padding:1px 7px; font-size:10px; flex:none;">{{ c.effort }}</span>
+                    </div>
+                    <div style="font-size:10.5px; opacity:.72; font-variant-numeric:tabular-nums; white-space:nowrap;">{{ c.meta }}</div>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <div style="display:flex; flex-wrap:wrap; gap:var(--space-3); font-size:11.5px; color:color-mix(in srgb, var(--color-text) 76%, transparent); align-items:center;">
+            <span style="display:inline-flex; align-items:center; gap:6px;"><span style="width:9px; height:9px; border-radius:50%; background:var(--color-accent); animation:rweRing 1.3s ease-out infinite;"></span>{{ t.stRunning }}</span>
+            <span style="display:inline-flex; align-items:center; gap:6px;"><span style="width:7px; height:7px; border-radius:50%; background:var(--color-text);"></span>{{ t.stDone }}</span>
+            <span style="display:inline-flex; align-items:center; gap:6px;"><span style="width:7px; height:7px; border-radius:50%; background:oklch(0.55 0.16 25);"></span>{{ t.stFailed }}</span>
+            <span style="display:inline-flex; align-items:center; gap:6px;"><span style="width:7px; height:7px; border-radius:50%; border:1px solid var(--color-neutral-500); box-sizing:border-box;"></span>{{ t.stQueued }} / {{ t.stPending }}</span>
+            <sc-for list="{{ gWarnings }}" as="w" hint-placeholder-count="0"><span class="tag tag-outline">{{ w }}</span></sc-for>
+            <span style="margin-left:auto; font-variant-numeric:tabular-nums;">{{ runSummaryLine }}</span>
+          </div>
+        </section>
+
+        <section style="display:flex; flex-direction:column; gap:var(--space-3);">
+          <h6 style="margin:0;">{{ t.history }}</h6>
+          <div style="overflow-x:auto;">
+            <table class="table" style="font-variant-numeric:tabular-nums; min-width:720px;">
+              <thead><tr><th>{{ t.runId }}</th><th>{{ t.status }}</th><th>{{ t.version }}</th><th>{{ t.startedBy }}</th><th>{{ t.createdAt }}</th><th>{{ t.duration }}</th><th>{{ t.agents }}</th><th style="text-align:right;">{{ t.tokens }}</th><th style="text-align:right;">{{ t.cost }}</th></tr></thead>
+              <tbody>
+                <sc-for list="{{ historyRows }}" as="r" hint-placeholder-count="3">
+                  <tr onClick="{{ r.select }}" style="cursor:pointer; background:{{ r.bg }};">
+                    <td style="font-family:var(--font-mono); font-size:12.5px;">{{ r.short }}</td>
+                    <td><span class="tag" style="{{ r.tagStyle }}">{{ r.statusLabel }}</span></td>
+                    <td>{{ r.version }}</td>
+                    <td>{{ r.by }}</td>
+                    <td>{{ r.created }}</td>
+                    <td>{{ r.duration }}</td>
+                    <td>{{ r.agentCount }}</td>
+                    <td style="text-align:right;">{{ r.tokens }}</td>
+                    <td style="text-align:right;">{{ r.cost }}</td>
+                  </tr>
+                </sc-for>
+              </tbody>
+            </table>
+            <sc-if value="{{ noRuns }}" hint-placeholder-val="{{ false }}"><p class="text-muted" style="padding:var(--space-4) 0; margin:0;">{{ t.noHistory }}</p></sc-if>
+          </div>
+        </section>
+      </sc-if>
+
+    </sc-if>
+
+    <sc-if value="{{ isModels }}" hint-placeholder-val="{{ false }}">
+      <header style="display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;">
+        <h2 style="margin:0;">{{ t.modelsTitle }}</h2>
+        <span class="text-muted" style="font-variant-numeric:tabular-nums; white-space:nowrap; flex:none;">{{ modelCount }} {{ t.modelCount }}</span>
+        <span class="text-muted" style="margin-left:auto; font-size:12px;">{{ t.catalogFetched }} {{ catalogFetched }}</span>
+      </header>
+      <div class="hr" style="margin:0;"></div>
+      <div style="display:flex; flex-wrap:wrap; gap:var(--space-2); align-items:center;">
+        <input class="input" type="search" placeholder="{{ t.searchModels }}" value="{{ modelQuery }}" onChange="{{ setModelQuery }}" style="max-width:280px;">
+        <select class="input" value="{{ modelProvider }}" onChange="{{ setModelProvider }}" style="max-width:200px;">
+          <option value="all">{{ t.allProviders }}</option>
+          <sc-for list="{{ providerOpts }}" as="p" hint-placeholder-count="2"><option value="{{ p }}">{{ p }}</option></sc-for>
+        </select>
+        <div class="seg">
+          <label class="seg-opt" style="position:relative;"><input type="radio" name="rwe-mloc" checked="{{ mlocAll }}" onChange="{{ setMlocAll }}">{{ t.all }}</label>
+          <label class="seg-opt" style="position:relative;"><input type="radio" name="rwe-mloc" checked="{{ mlocRemote }}" onChange="{{ setMlocRemote }}">{{ t.remote }}</label>
+          <label class="seg-opt" style="position:relative;"><input type="radio" name="rwe-mloc" checked="{{ mlocLocal }}" onChange="{{ setMlocLocal }}">{{ t.local }}</label>
+        </div>
+        <span class="text-muted" style="margin-left:auto; font-size:12px;">{{ t.sortHint }}</span>
+      </div>
+      <div style="display:flex; flex-wrap:wrap; gap:var(--space-4); align-items:flex-start;">
+        <div style="flex:1 1 100%; min-width:0; overflow-x:auto;">
+          <table class="table" style="font-variant-numeric:tabular-nums; min-width:960px;">
+            <thead><tr>
+              <sc-for list="{{ modelCols }}" as="col" hint-placeholder-count="12">
+                <th onClick="{{ col.sort }}" aria-sort="{{ col.ariaSort }}" style="cursor:pointer; user-select:none; white-space:nowrap; text-align:{{ col.align }}; color:{{ col.color }};" style-hover="color:var(--color-accent-700);">{{ col.label }} <span style="font-size:10px; opacity:.8;">{{ col.arrow }}</span></th>
+              </sc-for>
+            </tr></thead>
+            <tbody>
+              <sc-for list="{{ modelRows }}" as="m" hint-placeholder-count="6">
+                <tr onClick="{{ m.select }}" style="cursor:pointer; background:{{ m.bg }};">
+                  <td style="font-family:var(--font-heading); font-weight:500; font-size:13.5px; white-space:nowrap; min-width:170px;">{{ m.name }}</td>
+                  <td>{{ m.provider }}</td>
+                  <td>{{ m.alias }}</td>
+                  <td style="text-align:right;">{{ m.ctx }}</td>
+                  <td style="white-space:nowrap;">{{ m.price }}</td>
+                  <td>{{ m.tools }}</td>
+                  <td>{{ m.effort }}</td>
+                  <td style="white-space:nowrap;">{{ m.modalities }}</td>
+                  <td style="white-space:nowrap;">{{ m.latency }}</td>
+                  <td style="white-space:nowrap;"><span class="tag" style="{{ m.stabStyle }} white-space:nowrap;">{{ m.stability }}</span></td>
+                  <td style="white-space:nowrap;">{{ m.bench }}</td>
+                  <td>{{ m.location }}</td>
+                </tr>
+              </sc-for>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isSystem }}" hint-placeholder-val="{{ false }}">
+      <header style="display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;">
+        <h2 style="margin:0;">{{ t.systemTitle }}</h2>
+        <span class="text-muted" style="margin-left:auto; font-size:12px; font-variant-numeric:tabular-nums;">{{ t.sampledAt }} {{ sysSampled }}</span>
+      </header>
+      <div class="hr" style="margin:0;"></div>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(230px, 1fr)); gap:var(--space-3);">
+        <div class="card" style="gap:6px;">
+          <span class="card-kicker">{{ t.cpu }}</span>
+          <span style="font-family:var(--font-heading); font-weight:500; font-size:34px; line-height:1; font-variant-numeric:tabular-nums;">{{ sys.cpuPct }}</span>
+          <div style="height:2px; background:var(--color-divider); position:relative;"><div style="position:absolute; left:0; top:-1px; height:4px; width:{{ sys.cpuBar }}; background:var(--color-accent); transition:width .6s;"></div></div>
+          <span class="card-meta" style="font-variant-numeric:tabular-nums;">{{ sys.cores }} {{ t.cores }} · {{ t.load }} {{ sys.load }}</span>
+        </div>
+        <div class="card" style="gap:6px;">
+          <span class="card-kicker">{{ t.memory }}</span>
+          <span style="font-family:var(--font-heading); font-weight:500; font-size:34px; line-height:1; font-variant-numeric:tabular-nums;">{{ sys.memPct }}</span>
+          <div style="height:2px; background:var(--color-divider); position:relative;"><div style="position:absolute; left:0; top:-1px; height:4px; width:{{ sys.memBar }}; background:var(--color-accent); transition:width .6s;"></div></div>
+          <span class="card-meta" style="font-variant-numeric:tabular-nums;">{{ sys.memUsed }} {{ t.of }} {{ sys.memTotal }} · {{ sys.memFree }} {{ t.avail }}</span>
+        </div>
+        <div class="card" style="gap:6px;">
+          <span class="card-kicker">{{ t.disk }} · {{ sys.diskPath }}</span>
+          <span style="font-family:var(--font-heading); font-weight:500; font-size:34px; line-height:1; font-variant-numeric:tabular-nums;">{{ sys.diskPct }}</span>
+          <div style="height:2px; background:var(--color-divider); position:relative;"><div style="position:absolute; left:0; top:-1px; height:4px; width:{{ sys.diskBar }}; background:var(--color-accent);"></div></div>
+          <span class="card-meta" style="font-variant-numeric:tabular-nums;">{{ sys.diskUsed }} {{ t.of }} {{ sys.diskTotal }} · {{ sys.diskFree }} {{ t.avail }}</span>
+        </div>
+        <div class="card" style="gap:6px;">
+          <span class="card-kicker">{{ t.workflowsStored }}</span>
+          <span style="font-family:var(--font-heading); font-weight:500; font-size:34px; line-height:1; font-variant-numeric:tabular-nums;">{{ sys.wfCount }}</span>
+          <div style="height:2px; background:var(--color-divider);"></div>
+          <span class="card-meta" style="font-variant-numeric:tabular-nums;">{{ sys.versionCount }} {{ t.versionsStored }} · {{ sys.runCount }} {{ t.runsStored }}</span>
+        </div>
+      </div>
+
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap:var(--space-4); align-items:start;">
+        <section style="display:flex; flex-direction:column; gap:var(--space-3);">
+          <h6 style="margin:0;">{{ t.processes }} <span style="opacity:.68; font-variant-numeric:tabular-nums;">{{ t.totalProcs }} {{ sys.procTotal }} · {{ sys.procStates }}</span></h6>
+          <table class="table" style="font-variant-numeric:tabular-nums;">
+            <thead><tr><th>{{ t.pid }}</th><th>{{ t.name }}</th><th style="width:40%;">{{ t.cpuPct }}</th><th style="text-align:right;">{{ t.mem }}</th></tr></thead>
+            <tbody>
+              <sc-for list="{{ procRows }}" as="p" hint-placeholder-count="5">
+                <tr>
+                  <td style="opacity:.74;">{{ p.pid }}</td>
+                  <td style="font-family:var(--font-mono); font-size:12.5px;">{{ p.name }}</td>
+                  <td><div style="display:flex; align-items:center; gap:10px;"><div style="flex:1; height:2px; background:var(--color-divider); position:relative;"><div style="position:absolute; left:0; top:-1px; height:4px; width:{{ p.bar }}; background:{{ p.color }}; transition:width .6s;"></div></div><span style="width:44px; text-align:right; font-size:12.5px;">{{ p.cpu }}</span></div></td>
+                  <td style="text-align:right;">{{ p.mem }}</td>
+                </tr>
+              </sc-for>
+            </tbody>
+          </table>
+        </section>
+        <section style="display:flex; flex-direction:column; gap:var(--space-3);">
+          <h6 style="margin:0;">{{ t.engineSelf }}</h6>
+          <dl style="margin:0; display:grid; grid-template-columns:auto minmax(0,1fr); gap:8px 18px; font-size:14px; font-variant-numeric:tabular-nums; padding:var(--space-3); border:1px solid var(--color-divider); border-radius:var(--radius-md);">
+            <dt style="opacity:.74;">{{ t.pid }}</dt><dd style="margin:0;">{{ sys.selfPid }}</dd>
+            <dt style="opacity:.74;">{{ t.uptime }}</dt><dd style="margin:0;">{{ sys.selfUptime }}</dd>
+            <dt style="opacity:.74;">{{ t.cpuPct }}</dt><dd style="margin:0;">{{ sys.selfCpu }}</dd>
+            <dt style="opacity:.74;">{{ t.mem }}</dt><dd style="margin:0;">{{ sys.selfRss }}</dd>
+            <dt style="opacity:.74;">{{ t.threads }}</dt><dd style="margin:0;">{{ sys.selfThreads }}</dd>
+            <dt style="opacity:.74;">{{ t.fds }}</dt><dd style="margin:0;">{{ sys.selfFds }}</dd>
+          </dl>
+        </section>
+      </div>
+    </sc-if>
+
+
+  <sc-if value="{{ hasModel }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ closeModel }}" style="position:fixed; inset:0; z-index:20; background:rgba(8,12,9,.5); animation:rweFadeIn .2s ease-out;"></div>
+    <aside role="dialog" aria-modal="true" style="position:fixed; top:0; bottom:0; right:0; z-index:21; width:min(560px, 100vw); background:var(--color-bg); color:var(--color-text); border-left:1px solid var(--color-divider); box-shadow:var(--shadow-lg); overflow:auto; padding:var(--space-4); box-sizing:border-box; display:flex; flex-direction:column; gap:var(--space-4); animation:rweSlideIn .28s cubic-bezier(.2,.7,.2,1);">
+      <header style="display:flex; gap:var(--space-3); align-items:flex-start;">
+        <button type="button" class="btn btn-icon" aria-label="Close" onClick="{{ closeModel }}" style="width:32px; height:32px; padding:0; font-size:18px; line-height:1; flex:none;">×</button>
+        <div style="min-width:0;">
+          <div class="card-kicker">{{ selModel.provider }} · {{ selModel.location }}</div>
+          <h2 style="margin:0; font-size:20px; overflow-wrap:anywhere;">{{ selModel.name }}</h2>
+          <div class="card-meta" style="margin-top:4px;">{{ selModel.aliasLine }}</div>
+        </div>
+      </header>
+      <div class="hr" style="margin:0;"></div>
+      <p style="margin:0; text-wrap:pretty; opacity:.9;">{{ selModel.description }}</p>
+      <dl style="margin:0; display:grid; grid-template-columns:auto minmax(0,1fr); gap:8px 16px; font-size:13px; font-variant-numeric:tabular-nums;">
+        <dt style="opacity:.74;">{{ t.capability }}</dt><dd style="margin:0;">{{ selModel.capability }}</dd>
+        <dt style="opacity:.74;">{{ t.modalities }}</dt><dd style="margin:0;">{{ selModel.modalities }}</dd>
+        <dt style="opacity:.74;">{{ t.context }}</dt><dd style="margin:0;">{{ selModel.ctx }}</dd>
+        <dt style="opacity:.74;">{{ t.price }}</dt><dd style="margin:0;">{{ selModel.price }}</dd>
+        <dt style="opacity:.74;">{{ t.costLevel }}</dt><dd style="margin:0; letter-spacing:2px; color:var(--color-accent);">{{ selModel.costLevel }}</dd>
+        <dt style="opacity:.74;">{{ t.latency }}</dt><dd style="margin:0;">{{ selModel.latencyLine }}</dd>
+        <dt style="opacity:.74;">{{ t.stability }}</dt><dd style="margin:0;">{{ selModel.stability }}</dd>
+        <dt style="opacity:.74;">{{ t.toolUse }}</dt><dd style="margin:0;">{{ selModel.tools }}</dd>
+        <dt style="opacity:.74;">{{ t.effort }}</dt><dd style="margin:0;">{{ selModel.effort }}</dd>
+      </dl>
+      <section style="display:flex; flex-direction:column; gap:10px;">
+        <h6 style="margin:0;">{{ t.benchmarks }} <span style="opacity:.68; font-variant-numeric:tabular-nums;">{{ selModel.benchCount }}</span></h6>
+        <sc-for list="{{ selModel.benchRows }}" as="b" hint-placeholder-count="3">
+          <div style="display:grid; grid-template-columns:140px minmax(0,1fr) 48px; gap:12px; align-items:center; font-size:13px; font-variant-numeric:tabular-nums;">
+            <span style="opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ b.name }}</span>
+            <div style="height:2px; background:var(--color-divider); position:relative;"><div style="position:absolute; left:0; top:-1px; height:4px; width:{{ b.bar }}; background:var(--color-accent);"></div></div>
+            <span style="text-align:right;">{{ b.score }}</span>
+          </div>
+        </sc-for>
+        <sc-if value="{{ selModel.noBench }}" hint-placeholder-val="{{ false }}"><span class="text-muted" style="font-size:12px;">{{ t.none }}</span></sc-if>
+      </section>
+      <div style="display:flex; flex-direction:column; gap:6px;">
+        <span style="font-size:11px; letter-spacing:.08em; text-transform:uppercase; opacity:.74;">{{ t.params }}</span>
+        <div style="display:flex; flex-wrap:wrap; gap:6px;">
+          <sc-for list="{{ selModel.params }}" as="p" hint-placeholder-count="3"><span class="tag tag-neutral">{{ p }}</span></sc-for>
+        </div>
+      </div>
+    </aside>
+  </sc-if>
+  <sc-if value="{{ isAgent }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ closeAgent }}" style="position:fixed; inset:0; z-index:20; background:rgba(8,12,9,.5); animation:rweFadeIn .2s ease-out;"></div>
+    <aside role="dialog" aria-modal="true" style="position:fixed; top:0; bottom:0; left:{{ panelLeft }}; right:{{ panelRight }}; z-index:21; width:min(760px, 100vw); background:var(--color-bg); color:var(--color-text); border-left:1px solid {{ panelBorderL }}; border-right:1px solid {{ panelBorderR }}; box-shadow:var(--shadow-lg); overflow:auto; padding:var(--space-4); box-sizing:border-box; display:flex; flex-direction:column; gap:var(--space-4); animation:{{ panelAnim }};">
+        <header style="display:flex; flex-wrap:wrap; gap:var(--space-3); align-items:center;">
+          <button type="button" class="btn btn-icon" aria-label="Close" onClick="{{ closeAgent }}" style="width:32px; height:32px; padding:0; font-size:18px; line-height:1;">×</button>
+          <h2 style="margin:0;">{{ agentLabel }}</h2>
+          <span class="tag" style="{{ agentStateStyle }}">{{ agentStateLabel }}</span>
+          <span class="tag tag-neutral">{{ agentPhase }}</span>
+          <span style="margin-left:auto; font-size:12px; opacity:.74; font-family:var(--font-mono);">{{ agentId }}</span>
+        </header>
+        <div class="hr" style="margin:0;"></div>
+
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:var(--space-3);">
+          <div class="card" style="gap:4px;"><span class="card-kicker">{{ t.model }}</span><span style="font-family:var(--font-heading); font-weight:600; font-size:18px; overflow-wrap:anywhere;">{{ agentModel }}</span><span class="card-meta">{{ agentProvider }}</span></div>
+          <div class="card" style="gap:4px;"><span class="card-kicker">{{ t.effort }}</span><span style="font-family:var(--font-heading); font-weight:600; font-size:18px;">{{ agentEffort }}</span><span class="card-meta">{{ agentEffortNote }}</span></div>
+          <div class="card" style="gap:4px;"><span class="card-kicker">{{ t.timeout }}</span><span style="font-family:var(--font-heading); font-weight:600; font-size:18px; font-variant-numeric:tabular-nums;">{{ agentTimeout }}</span><span class="card-meta">{{ agentTimeoutMs }}</span></div>
+          <div class="card" style="gap:4px;"><span class="card-kicker">{{ t.duration }}</span><span style="font-family:var(--font-heading); font-weight:600; font-size:18px; font-variant-numeric:tabular-nums;">{{ agentDuration }}</span><span class="card-meta" style="font-variant-numeric:tabular-nums;">{{ agentTimes }}</span></div>
+          <div class="card" style="gap:4px;"><span class="card-kicker">{{ t.tokens }}</span><span style="font-family:var(--font-heading); font-weight:600; font-size:18px; font-variant-numeric:tabular-nums;">{{ agentTokTotal }}</span><span class="card-meta" style="font-variant-numeric:tabular-nums; flex-wrap:wrap;">{{ agentTokBreakdown }}</span></div>
+          <div class="card" style="gap:4px;"><span class="card-kicker">{{ t.cost }}</span><span style="font-family:var(--font-heading); font-weight:600; font-size:18px; font-variant-numeric:tabular-nums;">{{ agentCost }}</span><span class="card-meta">{{ agentCostNote }}</span></div>
+        </div>
+
+        <div style="display:grid; grid-template-columns:minmax(0,1fr); gap:var(--space-4); align-items:start;">
+          <section style="display:flex; flex-direction:column; gap:var(--space-3);">
+            <h6 style="margin:0;">{{ t.prompt }}</h6>
+            <pre style="margin:0; padding:var(--space-3); border:1px solid var(--color-divider); border-radius:var(--radius-md); font-family:var(--font-body); font-size:13.5px; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; max-height:420px; overflow:auto;">{{ agentPrompt }}</pre>
+
+            <div style="display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:var(--space-3);">
+              <div style="display:flex; flex-direction:column; gap:8px;">
+                <h6 style="margin:0;">{{ t.tools }} <span style="opacity:.68; font-variant-numeric:tabular-nums;">{{ agentToolCount }}</span></h6>
+                <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                  <sc-for list="{{ agentTools }}" as="x" hint-placeholder-count="3"><span class="tag tag-neutral">{{ x }}</span></sc-for>
+                  <sc-if value="{{ agentNoTools }}" hint-placeholder-val="{{ false }}"><span class="text-muted" style="font-size:12px;">{{ t.none }}</span></sc-if>
+                </div>
+              </div>
+              <div style="display:flex; flex-direction:column; gap:8px;">
+                <h6 style="margin:0;">{{ t.mcp }} <span style="opacity:.68; font-variant-numeric:tabular-nums;">{{ agentMcpCount }}</span></h6>
+                <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                  <sc-for list="{{ agentMcp }}" as="x" hint-placeholder-count="2"><span class="tag tag-accent">{{ x }}</span></sc-for>
+                  <sc-if value="{{ agentNoMcp }}" hint-placeholder-val="{{ false }}"><span class="text-muted" style="font-size:12px;">{{ t.none }}</span></sc-if>
+                </div>
+              </div>
+              <div style="display:flex; flex-direction:column; gap:8px;">
+                <h6 style="margin:0;">{{ t.skills }} <span style="opacity:.68; font-variant-numeric:tabular-nums;">{{ agentSkillCount }}</span></h6>
+                <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                  <sc-for list="{{ agentSkills }}" as="x" hint-placeholder-count="1"><span class="tag tag-outline">{{ x }}</span></sc-for>
+                  <sc-if value="{{ agentNoSkills }}" hint-placeholder-val="{{ false }}"><span class="text-muted" style="font-size:12px;">{{ t.none }}</span></sc-if>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section style="display:flex; flex-direction:column; gap:var(--space-3);">
+            <h6 style="margin:0;">{{ t.log }} <span style="opacity:.68; font-variant-numeric:tabular-nums;">{{ agentEventCount }}</span></h6>
+            <div style="border:1px solid var(--color-divider); border-radius:var(--radius-md); max-height:420px; overflow:auto; font-size:13px;">
+              <sc-for list="{{ agentEvents }}" as="ev" hint-placeholder-count="4">
+                <div style="display:grid; grid-template-columns:64px 84px minmax(0,1fr); gap:10px; padding:8px 12px; border-bottom:1px solid var(--color-divider); align-items:baseline;">
+                  <span style="font-variant-numeric:tabular-nums; font-size:11.5px; opacity:.72;">{{ ev.time }}</span>
+                  <span class="tag" style="{{ ev.style }}">{{ ev.kind }}</span>
+                  <span style="font-family:{{ ev.font }}; font-size:{{ ev.size }}; white-space:pre-wrap; overflow-wrap:anywhere;">{{ ev.text }}</span>
+                </div>
+              </sc-for>
+              <sc-if value="{{ agentNoEvents }}" hint-placeholder-val="{{ false }}"><p class="text-muted" style="padding:var(--space-4); margin:0;">{{ t.noLog }}</p></sc-if>
+            </div>
+            <sc-if value="{{ agentHasDetail }}" hint-placeholder-val="{{ false }}">
+              <p style="margin:0; padding:10px 12px; border:1px solid oklch(0.55 0.16 25); border-radius:var(--radius-md); font-size:13px; color:oklch(0.45 0.16 25);">{{ agentDetail }}</p>
+            </sc-if>
+          </section>
+        </div>
+    </aside>
+  </sc-if>
+  </main>
+  <footer style="padding:var(--space-2) var(--space-4); border-top:1px solid var(--color-divider); font-size:11.5px; color:color-mix(in srgb, var(--color-text) 70%, transparent); display:flex; justify-content:space-between; font-variant-numeric:tabular-nums;">
+    <span>{{ apiLabel }}</span><span>{{ t.updated }} {{ lastUpdated }}</span>
+  </footer>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;lang&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;zh&quot;,&quot;options&quot;:[&quot;zh&quot;,&quot;en&quot;],&quot;tsType&quot;:&quot;'zh' | 'en'&quot;,&quot;section&quot;:&quot;Display&quot;},&quot;hue&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:236,&quot;min&quot;:0,&quot;max&quot;:360,&quot;step&quot;:1,&quot;unit&quot;:&quot;°&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Display&quot;},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;system&quot;,&quot;light&quot;,&quot;dark&quot;],&quot;tsType&quot;:&quot;'system' | 'light' | 'dark'&quot;,&quot;section&quot;:&quot;Display&quot;},&quot;apiBase&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Data&quot;},&quot;pollMs&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:3000,&quot;min&quot;:1000,&quot;max&quot;:30000,&quot;step&quot;:500,&quot;unit&quot;:&quot;ms&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Data&quot;}}">
+class Component extends DCLogic {
+  state = { lang: null, theme: null, hue: null, systemDark: false, tab: 'workflows', view: 'home', source: 'checking', query: '', filter: 'all',
+    home: null, runs: [], describe: null, selectedName: null, selectedRunId: null, runView: null, dag: null, agent: null,
+    models: null, selectedModel: null, panelSide: 'right', modelQuery: '', modelProvider: 'all', modelLoc: 'all', modelSort: { key: 'model', dir: 1 }, sys: null, tick: 0, lastUpdated: null, versionsCount: null };
+  D = null; api = null; timer = null; mq = null;
+
+  async componentDidMount() {
+    this.D = await import('./rwe-data.js');
+    this.api = this.D.makeApi(this.props.apiBase ?? '');
+    this.mq = window.matchMedia('(prefers-color-scheme: dark)');
+    this.mq.onchange = (e) => this.setState({ systemDark: e.matches });
+    this.setState({ systemDark: this.mq.matches });
+    try { const saved = localStorage.getItem('rwe-hue'); if (saved != null) this.setState({ hue: +saved }); } catch {}
+    await this.probe();
+    await this.refresh(true);
+    this.timer = setInterval(() => this.refresh(false), Math.max(1000, this.props.pollMs ?? 3000));
+  }
+  componentWillUnmount() { clearInterval(this.timer); if (this.mq) this.mq.onchange = null; }
+
+  async probe() {
+    try { await this.api.home(); this.setState({ source: 'live' }); } catch { this.setState({ source: 'demo' }); }
+  }
+  async call(name, ...args) {
+    if (this.state.source === 'live' || this.state.source === 'offline') {
+      try { const v = await this.api[name](...args); if (this.state.source === 'offline') this.setState({ source: 'live' }); return v; }
+      catch { this.setState({ source: 'offline' }); return null; }
+    }
+    return this.D.DEMO[name](...args, this.state.tick);
+  }
+  norm(list, key) { return Array.isArray(list) ? list : (list && Array.isArray(list[key]) ? list[key] : []); }
+
+  async refresh(first) {
+    const { tab, view, selectedRunId, agent } = this.state;
+    const patch = { tick: this.state.tick + 1, lastUpdated: new Date().toISOString() };
+    if (tab === 'workflows' || first) {
+      const [home, runs] = await Promise.all([this.call('home'), this.call('runs')]);
+      if (home) patch.home = home; if (runs) patch.runs = this.norm(runs, 'runs');
+      if (view !== 'home' && selectedRunId) {
+        const [runView, dag] = await Promise.all([this.call('run', selectedRunId), this.call('dag', selectedRunId)]);
+        if (runView) patch.runView = runView; if (dag) patch.dag = dag;
+        if (view === 'agent' && agent) { const a = await this.loadAgent(selectedRunId, agent.record.agentId, runView); if (a) patch.agent = a; }
+      }
+    }
+    if (tab === 'models' && !this.state.models) { const m = await this.call('models'); if (m) patch.models = this.norm(m, 'models'); }
+    if (tab === 'system' || first) { const s = await this.call('system'); if (s) patch.sys = s; }
+    if (first) { const w = await this.call('workflows'); if (w) patch.versionsCount = this.norm(w, 'workflows').reduce((n, x) => n + (x.versions?.length || 1), 0); }
+    this.setState(patch);
+  }
+
+  async loadAgent(runId, agentId, runView) {
+    const raw = await this.call('agent', runId, agentId); if (!raw) return null;
+    if (raw.record) return raw;
+    const rv = runView || this.state.runView;
+    const events = this.norm(raw, 'events');
+    const harnessEv = events.find((e) => e.kind === 'harness');
+    return { record: rv?.agents.find((a) => a.agentId === agentId) || { agentId, state: 'done', tokens: {} }, harness: (harnessEv && typeof harnessEv.data === 'object') ? harnessEv.data : {}, events };
+  }
+
+  cardFor(name) { const h = this.state.home; if (!h) return null; return [...h.running, ...h.registered, ...h.other].find((c) => c.name === name) || null; }
+  async openWorkflow(name) {
+    this.setState({ view: 'workflow', selectedName: name, describe: null, runView: null, dag: null, agent: null, selectedRunId: null });
+    const desc = await this.call('describe', name);
+    const card = this.cardFor(name);
+    const rid = card?.activeRunId || card?.latestRunId || null;
+    const patch = { describe: desc, selectedRunId: rid };
+    if (rid) { const [runView, dag] = await Promise.all([this.call('run', rid), this.call('dag', rid)]); patch.runView = runView; patch.dag = dag; }
+    else if (desc) patch.dag = this.D.skeletonFromDescribe(desc);
+    this.setState(patch);
+  }
+  async selectRun(rid) {
+    this.setState({ selectedRunId: rid, agent: null, view: 'workflow' });
+    const [runView, dag] = await Promise.all([this.call('run', rid), this.call('dag', rid)]);
+    this.setState({ runView, dag });
+  }
+  async openAgent(agentId, side) {
+    const a = await this.loadAgent(this.state.selectedRunId, agentId);
+    if (a) this.setState({ view: 'agent', agent: a, panelSide: side || 'right' });
+  }
+  goTab(tab) { return (e) => { e.preventDefault(); this.setState({ tab }, () => this.refresh(false)); }; }
+
+  stLabel(t, s) { return t['st' + s.charAt(0).toUpperCase() + s.slice(1)] || s; }
+  stColor(s) {
+    if (s === 'running' || s === 'queued') return 'var(--color-accent)';
+    if (s === 'failed' || s === 'refused' || s === 'interrupted') return 'oklch(0.55 0.16 25)';
+    if (s === 'completed' || s === 'done') return 'var(--color-text)';
+    return 'var(--color-neutral-500)';
+  }
+  stTagStyle(s) {
+    if (s === 'running' || s === 'queued' || s === 'suspended') return 'background:var(--color-accent-100); color:var(--color-accent-800);';
+    if (s === 'failed' || s === 'refused' || s === 'interrupted') return 'border:1px solid oklch(0.55 0.16 25); color:oklch(0.45 0.16 25);';
+    if (s === 'stopped' || s === 'pending') return 'border:1px solid var(--color-divider); color:color-mix(in srgb, var(--color-text) 74%, transparent);';
+    return 'background:var(--color-neutral-100); color:var(--color-neutral-800);';
+  }
+  byLabel(t, sb) { if (!sb) return '—'; const k = t['byType_' + sb.type] || sb.type; return sb.id ? `${k} · ${sb.id}` : k; }
+
+  // Left→right swimlanes: col 0 = trigger, col n = phase n.
+  layout(t) {
+    const { dag, runView, describe } = this.state; const D = this.D;
+    const PAD = 16, TRIG_W = 112, LANE_W = 216, LANE_GAP = 40, HEAD_H = 48, CELL_H = 74, GAP_Y = 14;
+    if (!dag || !D) return { gW: 800, gH: 260, gLanes: [], gCells: [], gEdges: [], gWarnings: [] };
+    const cells = dag.cells || [];
+    const maxCol = Math.max(1, ...cells.map((c) => c.col));
+    const titles = dag.lanes ? dag.lanes.map((l) => l.title) : (runView?.phases?.length ? runView.phases.map((p) => p.title) : (describe?.phases || []).map((p) => p.title));
+    const laneCount = Math.max(maxCol, titles.length);
+    const isRunning = runView?.status === 'running';
+    const currentLane = isRunning ? (runView.phases.length - 1) : -1;
+    const xFor = (col) => col === 0 ? PAD : PAD + TRIG_W + LANE_GAP + (col - 1) * (LANE_W + LANE_GAP);
+    const rows = Math.max(1, ...cells.map((c) => c.row + 1));
+    const gH = HEAD_H + PAD * 2 + rows * (CELL_H + GAP_Y) - GAP_Y;
+    const gW = xFor(laneCount) + LANE_W + PAD;
+    const agentsById = new Map((runView?.agents || []).map((a) => [a.agentId, a]));
+    const pAgents = describe?.params?.agents || {};
+    const gLanes = [{ x: PAD, w: TRIG_W, num: '', title: t.trigger, line: 'var(--color-divider)', color: 'color-mix(in srgb, var(--color-text) 72%, transparent)', current: false }];
+    for (let i = 0; i < laneCount; i++) {
+      const cur = i === currentLane; const done = runView ? i < runView.phases.length : true;
+      gLanes.push({ x: xFor(i + 1), w: LANE_W, num: String(i + 1).padStart(2, '0'), title: titles[i] || `Phase ${i + 1}`, current: cur,
+        line: cur ? 'var(--color-accent)' : 'var(--color-divider)', color: cur ? 'var(--color-accent)' : done ? 'var(--color-text)' : 'color-mix(in srgb, var(--color-text) 62%, transparent)' });
+    }
+    const pos = new Map(); const stateOf = new Map();
+    const gCells = cells.map((c) => {
+      const isTrig = c.kind === 'trigger';
+      const x = xFor(c.col), y = HEAD_H + PAD + c.row * (CELL_H + GAP_Y), w = isTrig ? TRIG_W : LANE_W, h = isTrig ? 40 : CELL_H;
+      pos.set(c.id, { x, y, w, h });
+      const rec = c.agentId ? agentsById.get(c.agentId) : null;
+      const state = isTrig ? 'trigger' : (c.state || rec?.state || 'pending');
+      stateOf.set(c.id, state);
+      const p = pAgents[c.label] || {};
+      const model = rec?.model || p.model?.default || '—';
+      const effort = p.effort?.default || '—';
+      const tok = rec ? D.sumTok(rec.tokens) : (c.tokens ? D.sumTok(c.tokens) : 0);
+      const dur = rec?.startedAt ? D.fmtDur((rec.endedAt ? Date.parse(rec.endedAt) : Date.now()) - Date.parse(rec.startedAt)) : null;
+      const meta = isTrig ? '' : [tok ? D.fmtTok(tok) + ' tok' : null, rec?.costUSD != null ? D.fmtUsd(rec.costUSD) : null, dur].filter(Boolean).join(' · ') || (state === 'queued' ? t.stQueued : t.stPending);
+      const isRun = state === 'running', isFail = state === 'failed' || state === 'refused', isPend = state === 'pending' || state === 'queued';
+      return { x, y, w, h, label: isTrig ? (t['byType_' + c.label] || c.label) : c.label, isAgent: !isTrig, model: D.shortModel(model), effort, meta,
+        dot: isTrig ? 'var(--color-neutral-500)' : isPend ? 'transparent' : this.stColor(state), dotBorder: isPend ? 'var(--color-neutral-500)' : 'transparent',
+        anim: isRun ? 'rweRing 1.3s ease-out infinite' : 'none', cellAnim: isRun ? 'rweGlow 1.8s ease-in-out infinite' : 'none',
+        border: isRun ? 'var(--color-accent-600)' : isFail ? 'oklch(0.55 0.16 25)' : 'var(--color-divider)', borderStyle: isPend ? 'dashed' : 'solid',
+        bg: isRun ? 'var(--color-accent-100)' : isTrig ? 'transparent' : 'var(--color-surface)',
+        opacity: isPend ? 0.65 : 1, shadow: isRun ? 'var(--shadow-md)' : 'none',
+        cursor: rec ? 'pointer' : 'default', role: rec ? 'button' : undefined, tabIndex: rec ? 0 : undefined,
+        open: rec ? () => this.openAgent(rec.agentId, (x + w / 2) > gW / 2 ? 'left' : 'right') : undefined, title: rec ? `${c.label} · ${this.stLabel(t, state)}` : c.label };
+    });
+    const gEdges = (dag.edges || []).map((e) => {
+      const a = pos.get(e.from), b = pos.get(e.to); if (!a || !b) return null;
+      const x1 = a.x + a.w, y1 = a.y + a.h / 2, x2 = b.x, y2 = b.y + b.h / 2, mx = (x1 + x2) / 2;
+      const sTo = stateOf.get(e.to), sFrom = stateOf.get(e.from);
+      const live = (sFrom === 'done' || sFrom === 'trigger') && (sTo === 'done' || sTo === 'running' || sTo === 'failed');
+      return { d: `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`, stroke: sTo === 'running' ? 'var(--color-accent)' : live ? 'var(--color-neutral-500)' : 'var(--color-divider)', dash: sTo === 'pending' || sTo === 'queued' ? '4 4' : 'none' };
+    }).filter(Boolean);
+    return { gW, gH, gLanes, gCells, gEdges, gWarnings: dag.warnings || [] };
+  }
+
+  renderVals() {
+    const D = this.D; const s = this.state;
+    const lang = s.lang ?? this.props.lang ?? 'zh';
+    const theme = s.theme ?? this.props.theme ?? 'dark';
+    const themeAttr = theme === 'system' ? (s.systemDark ? 'dark' : 'light') : theme;
+    const t = D ? D.STR[lang] : {};
+    const F = D || { fmtBytes: () => '', fmtDur: () => '', fmtTime: () => '', fmtClock: () => '', fmtTok: () => '', fmtUsd: () => '', fmtPct: () => '', shortId: () => '', sumTok: () => 0, fmtCtx: () => '', shortModel: (m) => m, fmtUptime: () => '' };
+    const hue = s.hue ?? this.props.hue ?? 236;
+    const dark = themeAttr === 'dark';
+    const ok = (L, C) => `oklch(${L} ${C} ${hue})`;
+    const aL = dark ? [.30, .37, .45, .55, .65, .72, .80, .87, .93] : [.93, .87, .79, .68, .56, .48, .40, .33, .26];
+    const aC = dark ? [.035, .045, .055, .06, .065, .065, .06, .05, .035] : [.03, .045, .06, .07, .075, .07, .06, .05, .04];
+    const hueVars = { '--color-accent': ok(dark ? .72 : .56, .065), '--color-accent-2': ok(dark ? .72 : .56, .065),
+      '--color-bg': dark ? ok(.21, .006) : ok(.955, .008), '--color-surface': dark ? ok(.25, .007) : ok(.985, .005), '--color-divider': dark ? ok(.36, .01) : ok(.82, .012) };
+    aL.forEach((L, i) => { hueVars['--color-accent-' + (i + 1) * 100] = ok(L, aC[i]); });
+    hueVars['--color-accent-2-100'] = hueVars['--color-accent-100']; hueVars['--color-accent-2-800'] = hueVars['--color-accent-800'];
+    const v = { t, themeAttr, lang, hue, hueVars,
+      setHue: (e) => { const val = +e.target.value; this.setState({ hue: val }); try { localStorage.setItem('rwe-hue', String(val)); } catch {} },
+      langZh: lang === 'zh', langEn: lang === 'en', setLangZh: () => this.setState({ lang: 'zh' }), setLangEn: () => this.setState({ lang: 'en' }),
+      themeSystem: theme === 'system', themeLight: theme === 'light', themeDark: theme === 'dark',
+      setThemeSystem: () => this.setState({ theme: 'system' }), setThemeLight: () => this.setState({ theme: 'light' }), setThemeDark: () => this.setState({ theme: 'dark' }),
+      isWorkflows: s.tab === 'workflows', isModels: s.tab === 'models', isSystem: s.tab === 'system',
+      curWorkflows: s.tab === 'workflows' ? 'page' : undefined, curModels: s.tab === 'models' ? 'page' : undefined, curSystem: s.tab === 'system' ? 'page' : undefined,
+      goWorkflows: this.goTab('workflows'), goModels: this.goTab('models'), goSystem: this.goTab('system'),
+      isHome: s.view === 'home', notHome: s.view !== 'home', isWorkflowView: s.view === 'workflow' || s.view === 'agent', isAgent: s.view === 'agent',
+      goHome: (e) => { e.preventDefault(); this.setState({ view: 'home', agent: null }); },
+      closeAgent: () => this.setState({ view: 'workflow', agent: null }),
+      panelLeft: s.panelSide === 'left' ? '0' : 'auto', panelRight: s.panelSide === 'left' ? 'auto' : '0',
+      panelBorderL: s.panelSide === 'left' ? 'transparent' : 'var(--color-divider)', panelBorderR: s.panelSide === 'left' ? 'var(--color-divider)' : 'transparent',
+      panelAnim: (s.panelSide === 'left' ? 'rweSlideInL' : 'rweSlideIn') + ' .28s cubic-bezier(.2,.7,.2,1)',
+      sourceLabel: s.source === 'live' ? t.live : s.source === 'offline' ? t.offline : s.source === 'demo' ? t.demoData : '…',
+      sourceTagStyle: s.source === 'live' ? 'background:var(--color-accent-100); color:var(--color-accent-800);' : s.source === 'offline' ? 'border:1px solid oklch(0.55 0.16 25); color:oklch(0.45 0.16 25);' : 'border:1px solid var(--color-divider); color:color-mix(in srgb, var(--color-text) 74%, transparent);',
+      apiLabel: (this.props.apiBase || location.origin) + '/api', lastUpdated: F.fmtClock(s.lastUpdated),
+      query: s.query, setQuery: (e) => this.setState({ query: e.target.value }),
+      filterAll: s.filter === 'all', filterRunning: s.filter === 'running', filterRegistered: s.filter === 'registered',
+      setFilterAll: () => this.setState({ filter: 'all' }), setFilterRunning: () => this.setState({ filter: 'running' }), setFilterRegistered: () => this.setState({ filter: 'registered' }),
+    };
+
+    // ── home cards ──
+    const q = s.query.trim().toLowerCase();
+    const runsByName = new Map(); for (const r of s.runs) { const k = r.name ?? '(inline)'; (runsByName.get(k) || runsByName.set(k, []).get(k)).push(r); }
+    const avgCost = (rs) => { const cs = rs.filter((r) => r.status !== 'running' && r.status !== 'queued').map((r) => r.usage?.costUSD ?? r.costUSD).filter((x) => x != null); return cs.length ? F.fmtUsd(cs.reduce((a, b) => a + b, 0) / cs.length) : '—'; };
+    const mkCard = (c) => {
+      const rs = (runsByName.get(c.name) || []).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      return { name: c.name, description: c.description || t.noDescription, open: () => this.openWorkflow(c.name), activeShort: F.shortId(c.activeRunId),
+        rate: c.metrics.successRate == null ? '—' : F.fmtPct(c.metrics.successRate * 100), rateFrac: c.metrics.terminalCount ? `${Math.round(c.metrics.successRate * c.metrics.terminalCount)}/${c.metrics.terminalCount}` : '0/0', avg: F.fmtDur(c.metrics.avgDurationMs), avgCost: avgCost(rs), count: rs.length, lastRun: rs[0] ? F.fmtTime(rs[0].createdAt) : '—' };
+    };
+    const match = (c) => !q || c.name.toLowerCase().includes(q) || (c.description || '').toLowerCase().includes(q);
+    const h = s.home || { running: [], registered: [], other: [] };
+    v.runningCards = h.running.filter(match).map(mkCard); v.registeredCards = h.registered.filter(match).map(mkCard); v.otherCards = h.other.filter(match).map(mkCard);
+    v.countRunning = v.runningCards.length; v.countRegistered = v.registeredCards.length; v.countOther = v.otherCards.length; v.countAll = v.countRunning + v.countRegistered;
+    v.showRunning = (s.filter !== 'registered') && v.countRunning > 0; v.showRegistered = (s.filter !== 'running') && v.countRegistered > 0; v.showOther = s.filter === 'all' && v.countOther > 0;
+    v.noResults = !!s.home && !v.showRunning && !v.showRegistered && !v.showOther;
+
+    // ── workflow detail ──
+    const desc = s.describe; const rv = s.runView;
+    v.selectedName = s.selectedName || '';
+    v.wfVersion = desc?.version || rv?.scriptVersion || '—'; v.wfDescription = desc?.description || t.noDescription;
+    v.wfRunnableLabel = desc ? (desc.runnable ? t.runnable : t.notRunnable) : '…';
+    v.wfRunnableStyle = desc && !desc.runnable ? 'border:1px solid var(--color-divider); color:color-mix(in srgb, var(--color-text) 74%, transparent);' : 'background:var(--color-accent-100); color:var(--color-accent-800);';
+    v.wfTriggers = (desc?.triggers || []).map((tr) => ({ label: (t['byType_' + tr.kind] || tr.kind) + (tr.id ? ' · ' + tr.id : '') }));
+    v.wfNoTriggers = !!desc && v.wfTriggers.length === 0;
+    const wfRuns = (runsByName.get(s.selectedName) || []).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    v.noRuns = wfRuns.length === 0 && s.view !== 'home' && !!desc;
+    v.runChips = wfRuns.slice(0, 6).map((r) => ({ short: F.shortId(r.runId), dot: this.stColor(r.status), select: () => this.selectRun(r.runId),
+      style: 'padding:3px 10px; gap:6px; ' + (r.runId === s.selectedRunId ? 'border-color:var(--color-accent); background:var(--color-accent-100);' : 'border-color:var(--color-divider); color:inherit;') }));
+    Object.assign(v, this.layout(t));
+    v.runSummaryLine = rv ? [this.stLabel(t, rv.status), `${rv.agents.length} ${t.agents}`, rv.usage ? F.fmtTok(F.sumTok(rv.usage.tokens)) + ' tok' : null, rv.usage ? F.fmtUsd(rv.usage.costUSD) : null].filter(Boolean).join(' · ') : '';
+    v.historyRows = wfRuns.map((r) => {
+      const isSel = r.runId === s.selectedRunId; const view = isSel ? rv : null;
+      return { short: F.shortId(r.runId), statusLabel: this.stLabel(t, r.status), tagStyle: this.stTagStyle(r.status), version: r.scriptVersion, by: this.byLabel(t, r.startedBy),
+        created: F.fmtTime(r.createdAt), duration: r.terminalAt ? F.fmtDur(Date.parse(r.terminalAt) - Date.parse(r.createdAt)) : (r.status === 'running' ? F.fmtDur(Date.now() - Date.parse(r.createdAt)) + ' ' + t.inFlight : '—'),
+        agentCount: view ? view.agents.length : '—', tokens: view?.usage ? F.fmtTok(F.sumTok(view.usage.tokens)) : '—', cost: view?.usage ? F.fmtUsd(view.usage.costUSD) : '—',
+        select: () => this.selectRun(r.runId), bg: isSel ? 'color-mix(in srgb, var(--color-accent) 7%, transparent)' : 'transparent' };
+    });
+
+    // ── agent detail ──
+    const ag = s.agent; const rec = ag?.record || {}; const hz = ag?.harness || {};
+    v.agentLabel = rec.label || hz.label || ''; v.agentId = rec.agentId || ''; v.agentPhase = hz.phase || (rv?.phases?.[rec.phaseIndex]?.title) || '';
+    v.agentStateLabel = rec.state ? this.stLabel(t, rec.state) : ''; v.agentStateStyle = this.stTagStyle(rec.state || 'pending');
+    v.agentModel = F.shortModel(hz.model || rec.model || '—'); v.agentProvider = hz.provider || rec.provider || '';
+    v.agentEffort = hz.effort || '—'; v.agentEffortNote = hz.effortApplied ? `${hz.effortApplied.param} = ${hz.effortApplied.value}` : '';
+    v.agentTimeout = hz.timeoutMs ? F.fmtDur(hz.timeoutMs) : '—'; v.agentTimeoutMs = hz.timeoutMs ? hz.timeoutMs.toLocaleString() + ' ms' : '';
+    const st = rec.startedAt ? Date.parse(rec.startedAt) : null; const en = rec.endedAt ? Date.parse(rec.endedAt) : null;
+    v.agentDuration = st ? F.fmtDur((en || Date.now()) - st) + (en ? '' : ' ' + t.inFlight) : '—';
+    v.agentTimes = st ? `${F.fmtTime(rec.startedAt)} → ${en ? F.fmtTime(rec.endedAt) : '…'}` : '';
+    const tk = rec.tokens || {};
+    v.agentTokTotal = F.fmtTok(F.sumTok(tk)); v.agentTokBreakdown = `${t.input} ${F.fmtTok(tk.input || 0)} · ${t.output} ${F.fmtTok(tk.output || 0)} · ${t.cacheRead} ${F.fmtTok(tk.cacheRead || 0)} · ${t.cacheWrite} ${F.fmtTok(tk.cacheWrite || 0)}`;
+    v.agentCost = rec.unpriced ? t.unpriced : F.fmtUsd(rec.costUSD); v.agentCostNote = rec.costUSD === 0 ? t.free : '';
+    v.agentPrompt = hz.prompt || t.none;
+    v.agentTools = hz.tools || []; v.agentToolCount = v.agentTools.length; v.agentNoTools = v.agentToolCount === 0;
+    v.agentMcp = hz.mcpServers || hz.materialized?.mcp || []; v.agentMcpCount = v.agentMcp.length; v.agentNoMcp = v.agentMcpCount === 0;
+    v.agentSkills = hz.skills || hz.materialized?.skills || []; v.agentSkillCount = v.agentSkills.length; v.agentNoSkills = v.agentSkillCount === 0;
+    const evStyle = (k) => k === 'tool_call' ? 'background:var(--color-accent-100); color:var(--color-accent-800);' : k === 'message' ? 'background:var(--color-neutral-100); color:var(--color-neutral-800);' : k === 'log' ? 'border:1px solid oklch(0.55 0.16 25); color:oklch(0.45 0.16 25);' : 'border:1px solid var(--color-divider); color:color-mix(in srgb, var(--color-text) 74%, transparent);';
+    v.agentEvents = (ag?.events || []).map((e) => ({ time: F.fmtClock(e.ts), kind: t['kind_' + e.kind] || e.kind, style: evStyle(e.kind),
+      text: typeof e.data === 'string' ? e.data : JSON.stringify(e.data), font: e.kind === 'tool_call' || e.kind === 'tool_result' || e.kind === 'log' ? 'var(--font-mono)' : 'var(--font-body)', size: e.kind === 'message' ? '13px' : '12px' }));
+    v.agentEventCount = v.agentEvents.length; v.agentNoEvents = !!ag && v.agentEventCount === 0;
+    v.agentHasDetail = !!rec.detail; v.agentDetail = rec.detail || '';
+
+    // ── models ──
+    const models = s.models || [];
+    const yn = (x) => x === true ? t.yes : x === false ? t.no : t.unknown;
+    const stab = (x) => x === 'stable' ? t.stable : x === 'variable' ? t.variable : x === 'best-effort' ? t.bestEffort : x || '—';
+    const stabStyle = (x) => x === 'stable' ? 'background:var(--color-neutral-100); color:var(--color-neutral-800);' : 'border:1px solid var(--color-divider); color:color-mix(in srgb, var(--color-text) 74%, transparent);';
+    const price = (p) => p === 'free' ? t.free : p && typeof p === 'object' ? `${p.in} / ${p.out}` : p == null ? t.unknown : String(p);
+    const ctxNum = (m) => m.contextWindow || 0;
+    const priceNum = (m) => m.price === 'free' ? 0 : m.price && typeof m.price === 'object' ? parseFloat(String(m.price.in).replace(/[^0-9.]/g, '')) || 0 : Infinity;
+    const triNum = (x) => x === true ? 2 : x === false ? 0 : 1;
+    const stabNum = (x) => x === 'stable' ? 2 : x === 'variable' ? 1 : 0;
+    const keyFns = { model: (m) => m.model, provider: (m) => m.provider, alias: (m) => (m.aliases || [])[0] || '', context: ctxNum, price: priceNum, toolUse: (m) => triNum(m.toolUseDeclared), effort: (m) => triNum(m.effortDeclared), stability: (m) => stabNum(m.stability), location: (m) => m.location, modalities: (m) => modStr(m), latency: (m) => m.latency?.p50Ms ?? Infinity, bench: (m) => -benchAvg(m) };
+    const modStr = (m) => m.modalities ? `${(m.modalities.in || []).join('+')} → ${(m.modalities.out || []).join('+')}` : '—';
+    const benchAvg = (m) => { const vs = Object.values(m.benchmarks || {}); return vs.length ? vs.reduce((a, b) => a + b, 0) / vs.length : -1; };
+    const latStr = (m) => m.latency ? `${t.ttft} ${m.latency.ttftMs < 1000 ? m.latency.ttftMs + 'ms' : (m.latency.ttftMs / 1000).toFixed(1) + 's'} · p50 ${(m.latency.p50Ms / 1000).toFixed(1)}s` : '—';
+    const mq = s.modelQuery.trim().toLowerCase();
+    const filtered = models.filter((m) => (s.modelProvider === 'all' || m.provider === s.modelProvider) && (s.modelLoc === 'all' || m.location === s.modelLoc)
+      && (!mq || [m.model, m.provider, m.description, m.capability, ...(m.aliases || [])].join(' ').toLowerCase().includes(mq)));
+    const kf = keyFns[s.modelSort.key] || keyFns.model;
+    const sorted = filtered.slice().sort((a, b) => { const x = kf(a), y = kf(b); const c = typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y)); return c * s.modelSort.dir; });
+    const cols = [['model', t.model], ['provider', t.provider], ['alias', t.alias], ['context', t.context, 'right'], ['price', t.price], ['toolUse', t.toolUse], ['effort', t.effort], ['modalities', t.modalities], ['latency', t.latency], ['stability', t.stability], ['bench', t.benchmarks], ['location', t.location]];
+    v.modelCols = cols.map(([key, label, align]) => { const on = s.modelSort.key === key; return { label, align: align || 'left', arrow: on ? (s.modelSort.dir > 0 ? '▲' : '▼') : '', ariaSort: on ? (s.modelSort.dir > 0 ? 'ascending' : 'descending') : 'none', color: on ? 'var(--color-accent-700)' : 'inherit',
+      sort: () => this.setState({ modelSort: { key, dir: on ? -s.modelSort.dir : 1 } }) }; });
+    v.providerOpts = [...new Set(models.map((m) => m.provider))].sort();
+    v.modelQuery = s.modelQuery; v.setModelQuery = (e) => this.setState({ modelQuery: e.target.value });
+    v.modelProvider = s.modelProvider; v.setModelProvider = (e) => this.setState({ modelProvider: e.target.value });
+    v.mlocAll = s.modelLoc === 'all'; v.mlocRemote = s.modelLoc === 'remote'; v.mlocLocal = s.modelLoc === 'local';
+    v.setMlocAll = () => this.setState({ modelLoc: 'all' }); v.setMlocRemote = () => this.setState({ modelLoc: 'remote' }); v.setMlocLocal = () => this.setState({ modelLoc: 'local' });
+    const selKey = s.selectedModel;
+    v.modelCount = sorted.length === models.length ? models.length : sorted.length + ' / ' + models.length; v.catalogFetched = models[0]?.catalogFetchedAt ? F.fmtTime(models[0].catalogFetchedAt) : '—';
+    v.modelRows = sorted.map((m) => ({ name: F.shortModel(m.model), provider: m.provider, alias: (m.aliases || []).join(', ') || '—', ctx: F.fmtCtx(m.contextWindow), price: price(m.price),
+      tools: yn(m.toolUseDeclared), effort: yn(m.effortDeclared), stability: stab(m.stability), stabStyle: stabStyle(m.stability), location: m.location === 'local' ? t.local : t.remote, modalities: modStr(m), latency: latStr(m), bench: benchAvg(m) < 0 ? '—' : Math.round(benchAvg(m)) + ' avg',
+      select: () => this.setState({ selectedModel: m.model }), bg: m.model === selKey ? 'color-mix(in srgb, var(--color-accent) 7%, transparent)' : 'transparent' }));
+    const sm = models.find((m) => m.model === selKey);
+    v.hasModel = !!sm; v.noModel = false; v.closeModel = () => this.setState({ selectedModel: null });
+    v.selModel = sm ? { name: sm.model, provider: sm.provider, location: sm.location === 'local' ? t.local : t.remote, aliasLine: (sm.aliases || []).length ? t.alias + ': ' + sm.aliases.join(', ') : '',
+      description: sm.description || '', capability: sm.capability || '—', ctx: sm.contextWindow ? sm.contextWindow.toLocaleString() : '—', price: price(sm.price),
+      costLevel: sm.costLevel == null ? '—' : '●'.repeat(sm.costLevel) + '○'.repeat(Math.max(0, 5 - sm.costLevel)), tools: yn(sm.toolUseDeclared), effort: yn(sm.effortDeclared), stability: stab(sm.stability),
+      modalities: modStr(sm), latencyLine: latStr(sm), params: sm.supported_parameters || [],
+      benchRows: Object.entries(sm.benchmarks || {}).sort((a, b) => b[1] - a[1]).map(([name, score]) => ({ name, score: score.toFixed(1), bar: Math.min(100, score) + '%' })), benchCount: Object.keys(sm.benchmarks || {}).length, noBench: !sm.benchmarks || !Object.keys(sm.benchmarks).length } : { params: [], benchRows: [] };
+
+    // ── system ──
+    const sy = s.sys; const cpu = sy?.cpu, mem = sy?.memory, dsk = sy?.disk, pr = sy?.process;
+    v.sysSampled = sy ? F.fmtClock(sy.sampledAt) : '—';
+    const wfCount = s.home ? s.home.running.length + s.home.registered.length : '—';
+    v.sys = { cpuPct: cpu ? F.fmtPct(cpu.utilizationPct) : '—', cpuBar: (cpu?.utilizationPct ?? 0) + '%', cores: cpu?.cores ?? '—', load: cpu ? cpu.loadAvg.map((x) => (+x).toFixed(2)).join(' / ') : '—',
+      memPct: mem ? F.fmtPct(mem.usedPct) : '—', memBar: (mem?.usedPct ?? 0) + '%', memUsed: F.fmtBytes(mem?.usedBytes), memTotal: F.fmtBytes(mem?.totalBytes), memFree: F.fmtBytes(mem?.freeBytes),
+      diskPct: dsk ? F.fmtPct(dsk.usedPct) : '—', diskBar: (dsk?.usedPct ?? 0) + '%', diskPath: dsk?.path || '', diskUsed: F.fmtBytes(dsk?.usedBytes), diskTotal: F.fmtBytes(dsk?.totalBytes), diskFree: F.fmtBytes(dsk?.freeBytes),
+      wfCount, versionCount: s.versionsCount ?? '—', runCount: s.runs.length,
+      procTotal: pr?.system?.total ?? '—', procStates: pr?.system?.byState ? Object.entries(pr.system.byState).map(([k, n]) => `${k} ${n}`).join(' · ') : '',
+      selfPid: pr?.self?.pid ?? '—', selfUptime: pr?.self ? F.fmtUptime(pr.self.uptimeSec) : '—', selfCpu: pr?.self ? pr.self.cpuPct.toFixed(1) + '%' : '—', selfRss: F.fmtBytes(pr?.self?.rssBytes), selfThreads: pr?.self?.threads ?? '—', selfFds: pr?.self?.fdCount ?? '—' };
+    v.procRows = (pr?.topN || []).map((p) => ({ pid: p.pid, name: p.name + (p.pid === pr?.self?.pid ? ' ★' : ''), cpu: p.cpuPct.toFixed(1) + '%', bar: Math.min(100, p.cpuPct) + '%', mem: F.fmtBytes(p.memBytes),
+      color: p.pid === pr?.self?.pid ? 'var(--color-accent)' : 'var(--color-neutral-500)' }));
+    return v;
+  }
+}
+</script>
+</body>
+</html>
