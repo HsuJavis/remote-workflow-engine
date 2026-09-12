@@ -3479,7 +3479,9 @@ dispatch; if that pause has not happened, it is still owed before Gate 5.
 ## 2026-09-11 — v27 Gate 5 (verifier, test-first RED): 34 items, every red measured before a line of production code exists
 
 Wrote 34 new work items test-first, BEFORE any v27 implementation: UT-230..249, UT-252..254 (20),
-IT-165..170 (6), VAL-198..205 (8) — across every in-closure DES-191..208 and every REQ-131..136/140/141.
+IT-165..170 (6), VAL-206..212/205 (8) — across every in-closure DES-191..208 and every REQ-131..136/140/141.
+(VAL-198..204 were renumbered VAL-206..212 at Gate 7.5 after an ID collision with pre-existing v26
+08-validation.md items of the same numbers was discovered — see the Gate 7.5 journal entry below.)
 Every item run once and confirmed red for its stated reason, per this dispatch's own mock policy
 (unit mocks freely with an oracle external to the code under test; integration uses real adjacent
 components — a really-booted `createServer()`, real `SqliteRunStore`/`InMemoryRunStore`, a real
@@ -3509,7 +3511,7 @@ body that contains the marker verbatim (`"prompt":"RWE-V27-SYSTEMPROMPT-MARKER-D
 over both the MCP and the HTTP transport — not a mock's approximation of the defect, the actual
 defect, measured.
 
-**A genuine near-miss worth recording**: VAL-199's "never-run workflow renders predicted layout,
+**A genuine near-miss worth recording**: VAL-207's "never-run workflow renders predicted layout,
 never the forbidden word" case initially PASSED — not because the feature existed, but because
 `document.body.textContent` includes the CURRENT dashboard's own giant inline `<script>` tag's
 source TEXT, and that source happens to contain the word "predicted" inside a code COMMENT
@@ -3639,7 +3641,7 @@ unclaimed-file warnings); `dashboard_check` → unchanged 7 known `erDiagram` fa
 acceptance still says the DAG route 「stays behind the auth gate … v23 must not re-open it」
 (`01-requirements.md:1070`) and needs a `[PARTIALLY SUPERSEDED v27b, Round v27b]` marker in REQ-100's house
 style — Gate 8 verifies REQs against code, so left as is it fails by construction. Next: the design+tests half
-of the same delta (DES-196/197/198/206, TASK-202/203, UT-238, IT-092/IT-168, VAL-199/VAL-204).
+of the same delta (DES-196/197/198/206, TASK-202/203, UT-238, IT-092/IT-168, VAL-207/VAL-212).
 
 ## 2026-09-11 — v27b GATE 3+4 DELTA (merged tasks+design, designer): PASSED
 
@@ -3674,7 +3676,7 @@ keys), DES-206 (warnings rendered as TEXT; a predicted cell is `kind === 'agent'
 markers (`iter:` stays v22) and the v27 rationale's point 11 is marked WITHDRAWN. TASK-197/201/202/203/206/209/210
 `dod:` amended (TASK-209 lost its stale 「when the overlay is masked」 arm; TASK-202 lost the fail-closed clause
 and gained `src/tool-specs.ts`), plus ordering rule 5 in the section preamble: 197 → 201 → 203 → 202 → 206 →
-209/210, and VAL-199/204 judged only after 201's `label` lands or the Chromium oracle photographs grey boxes
+209/210, and VAL-207/212 judged only after 201's `label` lands or the Chromium oracle photographs grey boxes
 reading `agent`. ARCH-125/126/130 took one-clause `amended (v27b Gate 4)` bullets in the house style.
 
 `sh .sdlc/trace` → 67 gaps, identical to the pre-edit baseline; every in-closure gap is 「no IMPL yet」 / 「no
@@ -3722,10 +3724,10 @@ test-first across 7 EXISTING items, amended in place at `iter: v27b`, no new UT/
   v22 test made is DELETED (it pinned the exact mask ADR-051 reverses); the surviving invariant is a
   planted comment sentinel asserted absent from the raw DAG response text — GREEN now, unaffected by
   the reversal (REQ-100's script-text masking stands).
-- **VAL-199**: a third case stands up a second, auth-ENABLED server and proves the predicted overlay
+- **VAL-207**: a third case stands up a second, auth-ENABLED server and proves the predicted overlay
   renders a real agent NAME anonymously — the Gate 7.5 instruction this proves at acceptance tier
   flipped from "record what degrades" to "PROVE the overlay IS visible" (ADR-051).
-- **VAL-204**: text-only amendment recording the p95 measurement as a Gate-7.5-only VAL-side number
+- **VAL-212**: text-only amendment recording the p95 measurement as a Gate-7.5-only VAL-side number
   (same non-test-first pattern as VAL-205's bench script), and warning that any surviving "records a
   degradation" sentence elsewhere is now false evidence.
 
@@ -3894,7 +3896,7 @@ written RED first, then green, and the verifier records them as UT items at the 
 ownership) — its own note said "no Gate 5 of its own in this invocation... the verifier records
 them as UT items at the next gate that owns 05-tests.md." That gate is this one. Dispatch impact
 closure was the full Sprint A set (REQ-131..136/140/141); the other 7 items amended by the prior
-v27b Gate 5 delta (UT-238, UT-244, IT-168, IT-169, IT-092, VAL-199, VAL-204) were left untouched —
+v27b Gate 5 delta (UT-238, UT-244, IT-168, IT-169, IT-092, VAL-207, VAL-212) were left untouched —
 Mode A never flips an existing item's status, and none of them are downstream of the CSS-ownership
 delta.
 
@@ -4024,7 +4026,7 @@ to confirm root cause, fixed by adding the key, re-verified 12/12. Recorded in I
 the tree** — the fixture files (`val-200-swimlane.test.ts`, `val-201-agent-panel.test.ts`) already
 carried the `FAIL_MARKER`/`HOLD_MARKER` second-run scenarios (a held `parallel()` under
 `runConcurrency:1` for running/queued, a planted `ok:false` for failed) by the time this gate
-started; they only needed re-measuring, not re-engineering. `05-tests.md`'s VAL-200/201 entries
+started; they only needed re-measuring, not re-engineering. `05-tests.md`'s VAL-208/209 entries
 gained a dated closure note saying so, rather than silently deleting the stale "gap" prose.
 
 **(1) REGRESSION**, run in full (not narrow subsets, after the near-miss above): `npx vitest run
@@ -4033,7 +4035,7 @@ tests/unit tests/integration` → **2460 passed, 0 failed, 1 skipped, 327 files*
 skipped (pre-existing, no LLM provider in this environment), 76 files**. `TZ='Pacific/Kiritimati'`
 re-run of unit+integration → byte-identical (2452/0/1skip against that pre-clock-fix baseline) — no
 time bombs. 24 test items flipped `red`→`green`/`fail`→`pass` in `05-tests.md`
-(UT-230/233/235/236/240..249/252..256, IT-166/170, VAL-198..205), each with a dated
+(UT-230/233/235/236/240..249/252..256, IT-166/170, VAL-206..212/205), each with a dated
 **Re-measured** note; the original RED narrative on each is preserved as history, never rewritten.
 
 **(1b) COVERAGE.** `--coverage.include=src/**` measured **87.78%** overall lines — under the 90%
@@ -4083,4 +4085,72 @@ green VAL for every closure REQ together constitute (state.yaml's `current_stage
 full record). `current_stage`: impl → validation.
 
 **Next:** Gate 7.5 (validator) — a real deployed run, flipping `real:true` on the closure's own
-VAL/E2E items (VAL-198..205 plus the aliased VAL-203/204/205) and writing the handover docs.
+VAL/E2E items (VAL-206..212/205 plus the aliased VAL-211/212/205) and writing the handover docs.
+
+---
+
+## 2026-09-12 — v27 GATE 7.5 (validator, real-run validation & handover) — NOT PASSED, send-back to Gate 6
+
+**Booted from documented steps only.** Two SEPARATE scratch instances via DEPLOY.md §0's own
+second-instance form (`set -a; . ~/.config/rwe.env; set +a`; `RWE_CONFIG_PATH=… RWE_BIND=127.0.0.1
+RWE_PORT=89xx ./deploy.sh --background`), copying the production `rwe.config.json`'s alias table
+with only `bind`/`port`/`workRoot`/`agentDefinitionsDir` changed: **B** (8935, `auth.enabled:false`)
+and **A** (8936, `auth.enabled:true`). Production `rwe.service` (PID 2713463) never touched
+(`ActiveEnterTimestamp`/`MainPID`/`NRestarts` all unchanged before and after). One already-documented
+gap re-confirmed, not newly discovered: `gateway:"sdk"` (the default) makes every real local-Ollama
+call fail after ~2 minutes (the known thinking/Ollama-400 limitation) — switched both scratch
+configs to the documented `"gateway":"direct-fetch"` fallback, already the working path DEPLOY.md
+names.
+
+**Seven of eight closure REQs are real:true GREEN**, each against genuinely booted, running server
+processes (not the vitest acceptance harness alone, though that suite corroborates): REQ-131 (shell
+theme/lang/hue, real Chrome), REQ-132 (home search/filter/avg-cost, real cards from a real
+9-agent run), REQ-133 (workflow detail + predicted layout, confirmed BOTH auth off and — via a real
+bearer minted against the real `TokenStore` on a SEPARATE auth-on instance — anonymously under
+auth), REQ-135 (agent slide-in panel, real click→panel→Esc), REQ-136 (systemPrompt strip, a real
+custom `agentType` with a marker prompt, checked on BOTH the MCP and dashboard-HTTP transports,
+marker absent / user prompt present), REQ-140 (`dag.lanes`+`record`, confirmed on both instances,
+including the ADR-051 p95 measurement: p50=5.27ms/p95=6.33ms, well under the 50ms memo threshold),
+REQ-141 (`RunSummary.costUSD` — a real priced OpenRouter call folds to the IDENTICAL float on
+`/api/runs` and `/api/runs/:id`; ADR-052's N=1000 bench run recorded: `/api/runs` p95=83.2ms).
+
+**REQ-134 FAILS FOR REAL.** The swimlane node's `.cell-label`/`.cell-model` render clipped to ~30%
+of their declared line-height — a real, reproducible flexbox bug (`.cell`'s 5 flex-column children
+where REQ-134 specifies 3 grouped rows; `overflow:hidden` resets the two text children's automatic
+minimum size to 0, so the column shrink algorithm crushes them). Measured via real
+`getBoundingClientRect()` against a real completed run; a bounded diagnostic (no `src/` touched)
+shows the fix needs the missing row-grouping, not a one-line `flex:none` patch. Every OTHER v27 text
+surface (agent panel, lane headers, legend, home cards, run chips) was swept with the same probe and
+is clean — the defect is isolated. Full record, screenshots and harness scripts:
+`08-validation.md` VAL-208, `evidence/v27/`.
+
+**A genuine ledger defect found and fixed in the same pass**: the v27 Gate 5 verifier's own
+VAL-198..204 collided with SEVEN pre-existing v26 `08-validation.md` entries under the same
+numbers — `trace.py`'s file-sort-order scan silently let the OLDER entries win, so
+REQ-131/132/133/134/135/136/140 had ZERO acceptance-tier evidence visible in the trace graph before
+this was caught (`--impact REQ-131` listed no `VAL-*` at all). Fixed by renumbering only the
+v27-era occurrences to VAL-206..212 everywhere they appear in the v27 thread of the ledger; the old
+v26 entries (REQ-127 D11/D12, D13, D14) are untouched and still correctly serve REQ-127. See
+`08-validation.md`'s own "Ledger defect found and fixed" section for the full file-by-file record.
+
+**Mechanical caveat, stated so it is not silently missed**: `sh .sdlc/trace --check` cannot show
+REQ-134 as a gap once VAL-207/VAL-212 (siblings tracing the same REQ) are `real:true` — trace.py's
+`verified_real` only needs ANY ONE real:true item per REQ. The trace dashboard will read
+"REQ-134 verified_real" despite VAL-208's real failure. `gates.validation.passed` stays `false`,
+`current_stage` moves to `impl` (not `review`), and a `pending:` item states the defect and this
+exact mechanical blind spot in full, so Gate 8 does not rediscover — or worse, miss — it.
+
+**Docs.** `README.md`/`DEPLOY.md` rewritten current-state for what genuinely runs today (the v27
+dashboard shell/home/workflow-detail/swimlane/agent-panel, the tabs, the disclosure surfaces); no
+new config key this iteration (checked against `composeConfig`/`rwe.config.example.json` — none
+needed). REQ-134's defect is NOT described in the human manuals — it lives only in
+`08-validation.md`/`pending:`/this entry, per the manuals' history-free rule.
+
+**Trace**: 1631 items / 33 gaps (was 1624/41 before the ID-collision fix + real-tier flips; +7 items
+from un-collapsing the collision, -8 gaps from the 7 genuinely-closed REQs plus REQ-134's own
+mechanically-closed-but-actually-failed gap — see the caveat above). `--check` exit code 1 (10 MID
+for REQ-137/138/139/142/143, explicitly out of this closure; 23 LOW pre-existing drift/`TASK-018`/
+`TASK-153`, untouched) — reported honestly, not fudged to 0.
+
+**Next**: Gate 6 (implementer) fixes the `.cell` row-grouping in `dashboard.css`/`run.js`, then
+Gate 7.5 re-runs ONLY REQ-134's real-tier check (the other 7 closure REQs do not need re-validation).

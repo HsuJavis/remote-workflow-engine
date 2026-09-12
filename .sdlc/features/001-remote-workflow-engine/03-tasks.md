@@ -1641,7 +1641,7 @@ round 2. Reasoning lives in `04-design.md`'s one `## Decision rationale — v27`
    the stylesheet and the declared list land first, the emitters catch up in TASK-208..212, and both halves
    are re-run as TASK-212's last check.
 
-5. **[v27b] Within the Round-v27b delta the order is 197 → 201 → 203 → 202 → 206 → 209/210, and VAL-199/204
+5. **[v27b] Within the Round-v27b delta the order is 197 → 201 → 203 → 202 → 206 → 209/210, and VAL-207/212
    are judged only after 201.** The fixture is the shared literal every later reader locks against. If the
    route (203) ships after the views (209/210), the views map warning tokens that never arrive and their
    acceptance passes VACUOUSLY — a healthy run renders no warning either. If 201's predicted `label` has not

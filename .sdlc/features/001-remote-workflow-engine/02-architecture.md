@@ -3759,7 +3759,7 @@ sentence; a forced degrade produces the warning AND the log line), UT-238 (`mask
 and the observed-longer-than-expected row in), IT-168 (flips to positive), IT-092 (RE-TRACED, never relaxed:
 「the DAG payload carries no script bytes」 with a sentinel the derivation cannot legitimately surface,
 asserted on `res.text()`; it is a REQ-100 guard riding along, green before and after — not this delta's red
-test), VAL-199/VAL-204 (one `auth.enabled:true` Chromium case proving the overlay IS visible, plus the p95
+test), VAL-207/VAL-212 (one `auth.enabled:true` Chromium case proving the overlay IS visible, plus the p95
 number). (3) `tests/fixtures/dashboard-wire.ts`'s `DAG_PAYLOAD_OPEN` / the 「(open)」 row label are stale
 qualifiers once the payload is auth-invariant. (4) Unchanged from v26/v27: archify's Typed JSON IR is still
 not authored (a v27b-only map would fail `dashboard_check`'s both-ways ARCH↔node cross-check against 131

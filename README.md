@@ -98,14 +98,39 @@
 - **系統監控**：`system_info`（CPU 負載 + 核心數 + 利用率 %、記憶體 total/used/free、磁碟、引擎行程 + 主機 Top-N 行程 + 系統行程統計，`GET /api/system`）
 - **模型目錄**：`models_list`（跨供應商統一目錄，含 `capability`/`stability`/`costLevel 0–10`/`modalities`/`ref` 等豐富欄位，支援多維篩選，`GET /api/models`）。
   **每個模型只有一列**；該列的 `aliases` 列出這台部署所有指向它的別名（`ref` 是其中第一個，也就是可以直接丟給 `agent({model})` 的那個字串）。
-- **儀表板**：`GET /dashboard`（首頁：工作流程卡片按 RUNNING/REGISTERED/OTHER 分組，各附描述 +
-  可靠性指標；點進工作流程會看到**畫出來的流程圖**（伺服端渲染的 SVG）,渲染器不可用時退回顯示 Mermaid 原文,
-  沒有圖時顯示 `mermaidNote`；System 面板：即時主機資源；
-  Models 面板：模型目錄）、`GET /dashboard/issues`（Issues 頁面：Open/Resolved 分組、點擊顯示 detail）、
-  `GET /dashboard/<runId>`（run 詳情：DAG + 逐字稿）。
-  兩張圖（工作流程的結構圖、run 的 DAG）都會**隨視窗寬度自動縮放**，並且可以**滑鼠滾輪放大縮小、
-  按住拖曳平移**；每張圖旁邊的 `Fit` 按鈕把它復位（很長的直式圖，`Fit` 在圖的下方，往下捲動就看得到）。
-  run 頁面每 3 秒自動更新，不會把你已經縮放/平移好的畫面重設
+- **儀表板**：`GET /dashboard` —— 深色系操作介面（可切在畫面右上角切成淺色；語言可切中/英；還有一顆
+  accent 色調滑桿，喜歡什麼顏色自己調，選擇存在瀏覽器 `localStorage`，換裝置不會帶過去）。分四個分頁：
+  - **工作流程**（首頁）：卡片依「執行中 / 已註冊 / 其他」分三段，可搜尋、可依狀態篩選，每張卡片顯示
+    成功率、平均耗時、平均費用。點卡片進工作流程詳情頁（`/dashboard/workflow/<name>`）：版本標籤、
+    觸發器列表、最近 6 筆 run 的圓點按鈕，和完整的執行歷史表；點歷史表某一列，上方的圖切到那次 run。
+    **還沒執行過的 workflow** 一樣看得到圖，顯示的是根據腳本推算出來的「預測結構」（哪個 agent 在
+    哪個 phase），不是真的跑過，即使開了登入驗證也一樣看得到（不會因為沒登入就變空白）。
+  - **模型**：可排序、可篩選的模型目錄表，點一列從右側滑出細節面板。
+  - **系統**：CPU / 記憶體 / 磁碟用量卡片，加上處理程序表（引擎自己那一列會特別標示）。
+  - **問題**：GitHub issue 列表（Open / Resolved），沒設定 GitHub token 時顯示「資料無法取得」而不是
+    空白一片。
+  點進某一次 run（`/dashboard/<runId>`）看到的是**泳道圖**：每個 `phase()` 是一條直向泳道，agent
+  節點依派工順序排列、用曲線互相連接，顏色會隨狀態變化（執行中發光、完成、失敗轉紅、排隊中則是
+  虛線框）。**點一個節點**，細節面板會從畫面側邊滑入，顯示這個 agent 的模型 / 努力程度 / 逾時 /
+  token 用量（含快取讀寫）/ 費用，以及**使用者自己寫的提示詞全文**——但看不到 agentType 檔案裡
+  預先寫好的 system prompt，那一段線上永遠不會送出來，不是前端刻意隱藏，是伺服器根本沒回傳（見
+  下方「已知限制」之前的權限段落）。按 Esc 或點背景可以關閉面板。圖支援滑鼠滾輪縮放、按住拖曳
+  平移，`Fit` 按鈕重置；每 3 秒自動更新一次，已經做好的縮放/平移不會被重設；分頁切到背景時會暫停
+  更新，切回來才繼續打。
+
+  ```
+  /dashboard  （深色殼：主題/語言/連線燈，四個分頁）
+   ├─ 工作流程（首頁）──點卡片──▶ /dashboard/workflow/<name> （版本 / 觸發器 / 執行歷史表）
+   │                                          │ 點歷史列
+   │                                          ▼
+   │                              /dashboard/<runId> （泳道圖）
+   │                                          │ 點 agent 節點
+   │                                          ▼
+   │                              agent 細節面板（滑入，不含 system prompt）
+   ├─ 模型（可排序 + 滑入細節）
+   ├─ 系統（資源卡片 + 處理程序表）
+   └─ 問題（GitHub issue 列表）
+  ```
 - **可觀測性**：`GET /api/home`（首頁工作流程分組 JSON）、`GET /api/status`（agentSemaphore）、
   `GET /api/system`（主機 + 行程快照）、`GET /api/models`（統一模型目錄）、
   `GET /api/issues`、`GET /api/issues/:number`
@@ -350,9 +375,10 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"models_list","arguments":{"location":"remote","toolUseDeclared":true,"maxPricePerM":1}}}'
 
-# 儀表板（瀏覽器直接開）
-open http://127.0.0.1:8787/dashboard           # run 清單 + DAG
-open http://127.0.0.1:8787/dashboard/issues    # Issues 頁面（Open/Resolved 分組）
+# 儀表板（瀏覽器直接開；問題/模型/系統是同一頁裡的分頁，不是獨立網址）
+open http://127.0.0.1:8787/dashboard                      # 工作流程首頁（含模型/系統/問題分頁）
+open http://127.0.0.1:8787/dashboard/workflow/<name>       # 工作流程詳情：版本/觸發器/執行歷史
+open http://127.0.0.1:8787/dashboard/<runId>               # 該次 run 的泳道圖
 
 # Issues REST API
 curl -s http://127.0.0.1:8787/api/issues            # {open:[...], resolved:[...]}

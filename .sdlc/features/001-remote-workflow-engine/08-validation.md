@@ -9928,3 +9928,328 @@ the owner and untouched.
   `readBodyDecoded`/`MAX_DECOMPRESSED_BYTES`, DES-055's successor cap. Both are real body-cap tests,
   neither is DES-033's, and crediting IMPL-082 with them would put back a softer version of the same
   lie the gap was reporting.
+
+## v27 GATE 7.5 (validator, 2026-09-12) — REQ-131/132/133/135/136/140/141 real-green; REQ-134 FAILS (sent back to Gate 6)
+
+**Scope of this pass**: the impact closure REQ-131, REQ-132, REQ-133, REQ-134, REQ-135, REQ-136,
+REQ-140, REQ-141 (the v27 operator-dashboard rebuild). REQ-137/138/139/142/143 are explicitly OUT
+of this closure (a later slice, per the Gate 6.5+7 verifier's own trace note — 10 MID gaps for those
+five REQs are untouched by design, not silently skipped here).
+
+**Boot, from documented steps only.** Production `rwe.service` (port 8899, `MainPID 2713463`,
+`ActiveEnterTimestamp 2026-09-11 11:47:25`) was never touched — confirmed unchanged before and after
+this pass (`systemctl --user show rwe.service -p ActiveEnterTimestamp -p MainPID -p NRestarts`).
+Two SEPARATE scratch instances were booted with DEPLOY.md §0's own documented second-instance form:
+
+```
+set -a; . ~/.config/rwe.env; set +a
+export PATH="$HOME/.rwe-litellm-venv/bin:$PATH"
+RWE_CONFIG_PATH=/home/user/rwe-val-v27/B/cfg.json RWE_BIND=127.0.0.1 RWE_PORT=8935 ./deploy.sh --background
+RWE_CONFIG_PATH=/home/user/rwe-val-v27/A/cfg.json RWE_BIND=127.0.0.1 RWE_PORT=8936 ./deploy.sh --background
+```
+
+Both configs are the production `rwe.config.json` (same alias table: `local`→ollama qwen2.5:7b,
+`gpt41nano`→openrouter openai/gpt-4.1-nano, etc.), copied with only `bind`/`port`/`workRoot`/
+`agentDefinitionsDir` changed and secrets untouched. Instance **B** (8935): `auth.enabled:false`,
+fresh `workRoot`. Instance **A** (8936): `auth.enabled:true`, fresh `workRoot`. Both set
+`agentDefinitionsDir` to a scratch dir carrying one custom real agentType (`echoer`, a distinctive
+systemPrompt marker, for REQ-136).
+
+**One real doc gap found and folded into DEPLOY.md, not silently worked around**: `gateway:"sdk"`
+(this deployment's default) makes every real local-Ollama `agent()` call fail after ~2 minutes
+(`"no response from model … — timeout"`) — this is the ALREADY-DOCUMENTED tech_stack limitation
+(SDK unconditionally requests `thinking`, which Ollama's non-reasoning models 400 on), re-confirmed
+live here, not a new defect. Switching both scratch configs to the documented `"gateway":
+"direct-fetch"` fallback made every call fast and real (see `tech_stack`/DEPLOY.md §6, already
+documented as the working local-Ollama path — this pass adds no new doc content, it re-confirms the
+existing one is still accurate).
+
+**`.rwe.pid` hygiene (DEPLOY.md's own warning)**: copied to `/home/user/rwe-val-v27/{A,B}/{A,B}.pid`
+immediately after each boot, before booting the next instance. Two orphaned subprocesses (a litellm
+proxy + an ollama llama-server child) from an earlier `gateway:"sdk"` boot attempt were reaped
+manually after `kill`ing that instance — the pre-existing, already-documented "orphan on shutdown"
+limitation (DEPLOY.md §6), not a new one.
+
+**Evidence harness scripts and screenshots**: all committed under
+`.sdlc/features/001-remote-workflow-engine/evidence/v27/` (`setup-instance-b-harness.mjs`,
+`req131-135-browser-harness.mjs`, `req134-flexshrink-audit-harness.mjs`,
+`req134-cell-zoom-harness.mjs`, `req207-212-auth-on-harness.mjs`,
+`req210-ported-tabs-check-harness.mjs`, plus 9 `.png` screenshots).
+
+### VAL-206 — REQ-131/REQ-132: the v27 shell (theme/lang/hue/connection) and the Workflows home, real deployed instance
+- **status:** green
+- **traces:** REQ-131, REQ-132
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v27
+- **evidence:** Real Puppeteer Chrome (`~/.cache/puppeteer/chrome`) against the `deploy.sh`-booted
+  instance B (`http://127.0.0.1:8935/dashboard`). **REQ-131 (shell):** first load: `html[data-theme]`
+  = `dark`, `getComputedStyle(html).getPropertyValue('--color-bg')` = `#18191b` (screenshot
+  `evidence/v27/req131-shell-dark.png`). `localStorage.setItem('rwe-theme','light')` + reload:
+  `data-theme` = `light`, `--color-bg` = `#eef2f1` (screenshot `req131-shell-light.png`). Hue slider
+  (`--rwe-hue` set to `80`): `--color-accent` recomputes to `oklch(0.56 0.065 80)` — the light-theme
+  OKLCH formula from the README (`oklch(.56 .065 h)`), string-comparable and deterministic.
+  `localStorage.setItem('rwe-lang','zh')` + reload: real 繁中 text present in `document.body.textContent`
+  (`/[一-鿿]/` matches). `getComputedStyle(document.body).fontFamily` = `Archivo, -apple-system,
+  "Segoe UI", sans-serif` (the vendored font, no Google Fonts). The served HTML contains no
+  `fonts.googleapis.com`/CDN host string.
+  **REQ-132 (Workflows home):** the same session's home page (screenshot
+  `evidence/v27/req131-shell-dark.png`) shows two real registered-workflow cards: `val27-swimlane`
+  (kicker `LAST RUN · 41E2791D`, meta line `成功率 100% (1/1) · 平均耗時 0m 18s · 平均費用 < $0.01 ·
+  1 次執行` — tabular-figure formatted, matching REQ-132's literal example shape) and
+  `val27-neverrun` (`0 次執行`, dashes for the never-run metrics). Typing `val27-swimlane` into the
+  real search `<input>` filters the card list (the neverrun card disappears from
+  `document.body.textContent`). Segment counts render `全部 (2)`/`執行中 (0)`/`已註冊 (2)`.
+  Command: `node .sdlc/features/001-remote-workflow-engine/evidence/v27/req131-135-browser-harness.mjs`
+  (`RWE_BASE=http://127.0.0.1:8935 RWE_RUN_ID=<runId>`) → `results.req131`/`results.req132` blocks,
+  all fields as above.
+
+### VAL-207 — REQ-133/REQ-134: workflow detail — version tag, run history, predicted layout INCLUDING under auth
+- **status:** green
+- **traces:** REQ-133, REQ-134
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v27
+- **evidence:** **Auth OFF (instance B, 8935)**: `GET /dashboard/workflow/val27-neverrun` (real
+  Chrome, script/style stripped before the text check) contains 「預測結構」 plus all 5 phase titles
+  (`REQUIREMENTS`/`ARCHITECTURE`/`DESIGN`/`IMPLEMENTATION`/`VERIFICATION`) and **zero** occurrences
+  of "skeleton" (C3 guard) — screenshot `evidence/v27/req133-workflow-neverrun.png`.
+  `GET /dashboard/workflow/val27-swimlane` shows a `v1` version tag and a real `<table>` run-history
+  row — screenshot `req133-workflow-detail.png`.
+  **Auth ON (instance A, 8936, SEPARATE `deploy.sh` boot, `auth.enabled:true`)**: a bearer was minted
+  directly against the real, running server's own `auth-tokens.db` via the production `TokenStore`
+  class (`store.issue(email, ttl)` — the same technique `tests/integration/dag-masking-auth.test.ts`'s
+  `mintBearer` uses; the interactive Google OAuth consent screen is not automatable in this
+  environment and the acceptance clause under test is the READ path's behaviour under auth, not the
+  login flow, which earlier iterations already real-validated). `workflow_register` with **no**
+  bearer was independently confirmed REFUSED (`{"error":"unauthorized"}`) — auth genuinely gates
+  writes on this instance. A never-run workflow (`val27-auth-neverrun`) was then registered WITH the
+  bearer. An ANONYMOUS real-Chrome session (no bearer at all, no cookie, nothing) loaded
+  `/dashboard/workflow/val27-auth-neverrun` and found the SAME 「預測結構」 text plus the real agent
+  labels (`a1`,`a2`,`b1`,`c1`,`c2`,`c3`,`d1`,`e1`,`e2`) rendered — screenshot
+  `evidence/v27/req133-req134-auth-on-neverrun.png`. This is ADR-051's owner-ruling instruction
+  ("PROVE the overlay IS visible", not "record what degrades") satisfied against a REAL running
+  auth-enabled process, not only against the integration test. Commands:
+  `req131-135-browser-harness.mjs` (auth-OFF half) and
+  `npx tsx .sdlc/features/001-remote-workflow-engine/evidence/v27/req207-212-auth-on-harness.mjs`
+  (auth-ON half, full transcript below under VAL-212).
+
+### VAL-208 — REQ-134: swimlane run graph — FAILS: node label/model text renders clipped (real defect)
+- **status:** red
+- **traces:** REQ-134
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v27
+- **evidence:** Against the real completed 9-agent run (`41e2791d-6495-4a46-a7ce-c383aa485219`,
+  instance B) with real Chromium: the STRUCTURAL clauses of REQ-134 are genuinely met — 5
+  `[data-lane-header]` elements with the correct titles, 9 `[data-node-cell]` elements each measuring
+  exactly 216×74px (`getBoundingClientRect()`), 1 `[data-legend]` element reading `completed · 9
+  個節點 · 410 tok · < $0.01` (screenshots `evidence/v27/req134-swimlane-dark.png`/`-light.png`).
+  **But the node CONTENT clause fails**: `document.querySelector('[data-node-cell]').outerHTML` is
+  `<div class="cell is-done" ...><span class="cell-dot"></span><span class="cell-label">a1</span>
+  <span class="cell-model">qwen2.5:7b</span><span class="tag tag-neutral cell-effort">low</span>
+  <span class="cell-usage">41 tok · $0.00</span></div>` — semantically correct DOM, but
+  `getBoundingClientRect()` on `.cell-label` measures **5.08px tall** (CSS says `font-size:13.5px;
+  line-height:1.15` ⇒ expected ≈15.5px, ratio **0.33**) and on `.cell-model` measures **3.92px**
+  (CSS `font-size:11px` ⇒ expected ≈13.2px, ratio **0.30**) — both far below their own declared type
+  size. High-res (3x) crop: `evidence/v27/req134-node-zoom-hires.png` — a garbled sliver of glyph
+  tops where the agent label and model name should read "a1" / "qwen2.5:7b" legibly. Zoomed
+  screenshot + exact DOM: `evidence/v27/req134-cell-zoom-harness.mjs`.
+  **Root cause, confirmed by reading `src/dashboard/dashboard.css:225-238`**: `.cell` is
+  `display:flex; flex-direction:column; justify-content:center; gap:3px` over **five** direct
+  children (`cell-dot`, `cell-label`, `cell-model`, the effort `tag`, `cell-usage`) — REQ-134 specifies
+  THREE rows (①dot+label together ②model+effort together ③usage). `.cell-label`/`.cell-model` both
+  carry `overflow:hidden`, which per the CSS Flexbox spec resets a flex item's AUTOMATIC MINIMUM SIZE
+  to 0, so the column's shrink algorithm (content needs ≈77.5px, the box has ≈58px after padding)
+  compresses exactly those two elements down near zero rather than the dot/tag (`flex:none`) or the
+  usage line. **Bounded diagnostic, no `src/` touched** (`evidence/v27/req134-flexshrink-audit-harness.mjs`):
+  a page-injected `<style>.cell-label,.cell-model{flex:none}</style>` override makes both elements
+  render at their FULL natural height (15.5px / 12px) — confirming the container has the right
+  content, just the wrong row grouping — but then `cell.scrollHeight > cell.clientHeight` is `true`:
+  the 74px cell genuinely has no room for 5 full-height rows. **The fix needs the missing two-row
+  grouping wrapper, not a one-line `flex:none` patch** (a `flex:none`-only fix would produce 5
+  legible-but-still-wrong rows and keep failing the clause). **Blast-radius check, same harness**:
+  swept every other v27 text-bearing surface for the identical failure class (rendered
+  `getBoundingClientRect().height` vs `font-size×line-height`, a check `getComputedStyle`-only
+  SPEC_ROWS rows cannot see) — `[data-agent-panel] [data-stat-card]` (25 nodes), `[data-lane-header]`,
+  `[data-legend]`, the home card meta line (8 nodes), `[data-run-chip]` (1 node) — **all clean**
+  (ratio ≥ 0.8 everywhere else). The defect is isolated to `.cell-label`/`.cell-model` inside the
+  swimlane node; REQ-131/132/133/135/136/140/141 do not share it.
+  **Observed, not chased (separate from this defect, flagged for whoever fixes the row-grouping to
+  check while already in this CSS)**: the run page's top-left usage banner overlaps —
+  `410 tok` (large) runs into `in 384 · out 26 · cache read 0 · cache write 0< $0.01` (small) with no
+  separation, visible in every `req134-swimlane-*.png` screenshot.
+  **Test-gate recommendation** (routed via this report, not built here): the entire real-Chromium
+  tier (VAL-206..212) checks `getComputedStyle` PROPERTY values, never rendered
+  `getBoundingClientRect()` height against content — add one `SPEC_ROWS` kind asserting
+  `rect.height >= k * lineHeight` for text anchors, or this exact failure class (correct CSS
+  property, wrong rendered box) will keep passing every future run of this suite.
+  **Disposition: REQ-134 FAILS at Gate 7.5. Routed back to Gate 6 (implementer: `src/dashboard/ui/run.js`
+  + `src/dashboard/dashboard.css`, the `.cell` row structure) per the validator contract's L-003/exit-
+  gate rule — a real, reproducible rendering defect is not passed on the strength of a sibling
+  REQ's passing evidence (REQ-133/140 also trace this VAL item's neighbours and are independently
+  green; that is not license to call REQ-134 closed).**
+
+### VAL-209 — REQ-135/REQ-136: agent slide-in panel — stat cards, prompt, Esc close, real deployed instance
+- **status:** green
+- **traces:** REQ-135, REQ-136
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v27
+- **evidence:** Instance B, real Chrome: clicking a real `[data-node-cell]` opens
+  `[data-agent-panel]` (screenshot `evidence/v27/req135-agent-panel.png`) with 6
+  `[data-stat-card]` elements and a `<pre>` showing the real user prompt text ("Say hello in one
+  word."). `page.keyboard.press('Escape')` closes the panel (`[data-agent-panel]` absent after).
+  The flex-shrink audit (VAL-208's harness) swept all 25 text-bearing nodes under
+  `[data-agent-panel]` for the same clipping class VAL-208 found — every one measured
+  `rect.height/lineHeight >= 0.8`; the panel does not share the swimlane node's defect.
+
+### VAL-210 — REQ-067/076/077/078: Models/System/Issues ported to tabs (non-regression), real deployed instance
+- **status:** green
+- **traces:** REQ-067, REQ-076, REQ-077, REQ-078
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v27
+- **note:** non-regression re-confirmation; no `iter` bump on REQ-067/076/077/078 (untouched by this
+  closure, still true today).
+- **evidence:** Instance B, real Chrome: `[data-tab]` elements `workflows`/`models`/`system`/`issues`
+  all present; clicking each keeps the tab bar and switches the visible section (verified
+  clickable, no navigation error). Command:
+  `node .sdlc/features/001-remote-workflow-engine/evidence/v27/req210-ported-tabs-check-harness.mjs`.
+
+### VAL-211 — REQ-136: agent detail never carries the agentType systemPrompt online, real deployed instance
+- **status:** green
+- **traces:** REQ-136
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v27
+- **evidence:** A real custom `agentType` (`echoer`, `agents/echoer.md`,
+  systemPrompt = "You are the v27 Gate 7.5 validation probe.
+  RWE-V27-VALIDATOR-SYSTEMPROMPT-MARKER-DO-NOT-LEAK. Just answer the user's question briefly.")
+  dispatched for real on instance B (`gateway:"direct-fetch"`, real local Ollama, agent `e2` of the
+  real completed run `41e2791d-6495-4a46-a7ce-c383aa485219`), prompt
+  `"RWE-V27-USERPROMPT-MARKER: what is 2+2? Answer with just the number."`.
+  `curl http://127.0.0.1:8935/api/runs/41e2791d.../agents/agent-9` (the dashboard's own HTTP route):
+  `grep -c RWE-V27-VALIDATOR-SYSTEMPROMPT-MARKER` on the raw response body = **0**;
+  `grep -c RWE-V27-USERPROMPT-MARKER` = **1**. MCP `run_agent_log({runId, label:'e2'})`: same result —
+  systemPrompt marker count **0**, user-prompt marker count **1**, in the returned
+  `harness.prompt` string. Both transports confirmed on the real response body, not on a decorator
+  or a mock.
+
+### VAL-212 — REQ-140/REQ-134: `dag.lanes` + `record`, and the predicted overlay unconditional under auth
+- **status:** green
+- **traces:** REQ-140, REQ-134
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v27
+- **evidence:** **Auth OFF (instance B)**: `curl http://127.0.0.1:8935/api/runs/<runId>/dag` →
+  `"lanes":[{"index":0,"title":"REQUIREMENTS"},{"index":1,"title":"ARCHITECTURE"},{"index":2,"title":"DESIGN"},{"index":3,"title":"IMPLEMENTATION"},{"index":4,"title":"VERIFICATION"}]`,
+  plus the pre-existing `kind`/`cells`/`edges`/`startedBy` keys all still present (nothing removed).
+  `curl http://127.0.0.1:8935/api/runs/<runId>/agents/agent-9` → top-level keys
+  `["runId","status","harness","events","result","hasMore","record"]` — `record.label` = `"e2"`,
+  `record.agentId` = `"agent-9"`, matching the real `AgentRecord`.
+  **Auth ON (instance A, 8936)** — full transcript
+  (`npx tsx .sdlc/features/001-remote-workflow-engine/evidence/v27/req207-212-auth-on-harness.mjs`):
+  ```
+  minted bearer for hsuhungjung@gmail.com (len 64)
+  register with NO bearer refused (expected): workflow_register -> "unauthorized"
+  registered+published val27-auth-run@v1 (WITH bearer)
+  run ca808fa2-237f-4dbd-a97d-997df5949e71 -> completed
+  registered+published val27-auth-neverrun@v1 (WITH bearer)
+  anonymous real-browser GET (auth ON, no bearer) /dashboard/workflow/val27-auth-neverrun:
+    hasPredicted: true  hasAgentLabels: true
+  anonymous GET /api/runs/:id/dag (auth ON) -> status 200  lanes: [5 real lanes, same shape as above]
+    has cells: true cell count: 10
+    cell labels (real agent names, not masked): ["client","a1","a2","b1","c1","c2","c3","d1","e1","e2"]
+  anonymous GET /api/workflows/:name/describe (no bearer) -> status 200 phases[].agents:
+    [{"title":"REQUIREMENTS","agents":["a1","a2"]},{"title":"ARCHITECTURE","agents":["b1"]},
+     {"title":"DESIGN","agents":["c1","c2","c3"]},{"title":"IMPLEMENTATION","agents":["d1"]},
+     {"title":"VERIFICATION","agents":["e1","e2"]}]
+  p95 measurement: N=200 sequential GET /api/runs/:id/dag (auth ON) p50=5.27ms p95=6.33ms
+  ```
+  Confirms: registration/`run_start` genuinely need the bearer (real refusal without one); the
+  dashboard page and every `/api/*` GET need none, even under `auth.enabled:true`; the predicted
+  overlay and `dag.lanes` are served UNCONDITIONALLY with REAL (not masked/generic) agent names —
+  ADR-051's reversal, live. **ADR-051's own p95 measurement obligation**: 200 sequential real HTTP
+  GETs against the auth-ON instance, p50=5.27ms/p95=6.33ms — well under the 50ms threshold ADR-051
+  set, so per its own decision no per-`(name,version)` memo is warranted this iteration; the number
+  is the record.
+
+### VAL-205 — REQ-141: `RunSummary.costUSD` shares ONE fold with `/api/runs/:id`, real deployed instance
+- **status:** green
+- **traces:** REQ-141
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v27
+- **evidence:** Instance B's real 9-agent run included one genuinely PRICED call (`d1`, alias
+  `gpt41nano` → real OpenRouter `openai/gpt-4.1-nano`, real `OPENROUTER_API_KEY` from
+  `~/.config/rwe.env`, `set -a; . ~/.config/rwe.env; set +a` per DEPLOY.md §0):
+  `curl http://127.0.0.1:8935/api/runs` → the run's list entry:
+  `"costUSD": 2.4999999999999998e-06`. `curl http://127.0.0.1:8935/api/runs/<runId>` →
+  `"usage":{"costUSD": 2.4999999999999998e-06, ...}` — **the identical IEEE-754 float**, not a
+  rounded match — confirming `/api/runs` and `/api/runs/:id` share one fold (REQ-141's own
+  regression target, v26's R-1 lesson). `unpricedCalls: 0` on both. **ADR-052's own N=1000
+  measurement obligation**, run via the already-committed `scripts/bench-run-list.ts`
+  (unmodified — the Gate-7.5-only measurement script ADR-052 names):
+  ```
+  N = 1000 terminal runs
+  boot recovery (one-shot, hydrateAll over 1000 rows): 276.9 ms
+  /api/runs   p50=68.3ms p95=83.2ms  (30 samples)
+  /api/home   p50=64.9ms p95=73.9ms  (30 samples)
+  ```
+  Recorded per ADR-052's "a number rather than a hope" decision — decides only whether v28 needs the
+  `?workflow=&limit=` bound; nothing built this round.
+
+### Configuration — no drift found
+Checked `rwe.config.example.json` / `rwe.config.json` / DEPLOY.md §1b against this iteration's own
+diff: v27 adds no new server-side config key, secret, port, or feature flag (confirmed against
+`composeConfig`/`FileConfig` — no new field read anywhere in `src/dashboard*`). The browser
+`localStorage` keys (`rwe-theme`, `rwe-lang`, `rwe-hue`) are CLIENT preferences, not server config,
+and are documented in README's REQ-131 usage section, not in DEPLOY.md's 設定總表 (which lists only
+carrier=env/.env/config§/flag/port keys the SERVER reads). No config file changed this pass.
+
+### Gate self-check
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` (after the ID-collision fix
+below): item count rose from 1624 to 1631 (the 7 renumbered VAL items becoming independently visible
+— see the ledger-defect note), gap count held at **41** (unchanged set: the 7 HIGH `未真實驗證` gaps
+for REQ-131/132/133/135/136/140/141 are now closed by the `real:true` flips above; REQ-134's own
+HIGH gap is now a REAL, CONFIRMED FAILURE rather than "not yet run" — trace.py has no distinct gap
+type for "a real:false item with result:fail", so this defect is carried in `pending:` and this
+document, not as a new trace.py category; the 10 MID for REQ-137/138/139/142/143 and 23 LOW
+pre-existing items are untouched, out of this closure's scope). Exit code: **1** (non-zero) —
+expected and reported honestly, not fudged: the ledger-wide `--check` cannot reach 0 while
+REQ-137/138/139/142/143's own slice remains unstarted and REQ-134 remains failed; both are named
+explicitly rather than the exit code being silently reported as 0.
+
+### Ledger defect found and fixed: VAL-198..204 ID collision (05-tests.md vs this file)
+The v27 Gate 5 verifier (test-first RED, 2026-09-12) numbered the closure's new acceptance items
+VAL-198 through VAL-205 by taking `max(05-tests.md's own VAL ids) + 1` — but this file
+(`08-validation.md`) already used VAL-198 through VAL-204 for SEVEN UNRELATED v26 items (D9-D14
+pricing-catalog closures, REQ-127). Because `trace.py`'s `scan()` walks files in sorted filename
+order (`05-tests.md` before `08-validation.md`) and does `items[id] = it` with no duplicate-id
+detection, this file's OLDER v26 entries silently WON the collision — REQ-131/132/133/134/135/136/140
+had ZERO visible acceptance-tier evidence in the trace graph (confirmed empirically:
+`--impact REQ-131` listed no `VAL-*` item at all before the fix). This was a real, load-bearing
+defect: no `real:true` flip on the original VAL-198..204 headings could ever have closed these REQs.
+**Fixed** by renumbering ONLY the v27-era occurrences (198→206, 199→207, 200→208, 201→209, 202→210,
+203→211, 204→212; VAL-205 was already unique, unchanged) across every v27-era mention —
+`05-tests.md`'s own headings/cross-references, `04-design.md`'s real-tier-path table,
+`02-architecture.md`'s ADR-051 cross-reference, `03-tasks.md`'s ordering-rule cross-reference,
+`06-impl-log.md`'s `greens:` fields and prose (one v26 mention, IMPL-220/VAL-203, left untouched —
+confirmed by content, not by number), `journal.md` (only entries at/after the v27 Gate 1 line, one
+v26 mention left untouched), and `state.yaml`'s gates notes (one v26 mention, "v26 live on
+production", left untouched). The OLD v26 VAL-198..204 headings in THIS file are UNCHANGED — their
+own evidence (REQ-127 D11/D12 catalog pricing, D13 schedule migration, D14 deploy.sh step 2) remains
+exactly as recorded; `--impact REQ-127` still lists both VAL-198 and VAL-199 after the fix. Verified:
+`--impact REQ-131` now lists `VAL-206`; `--impact REQ-127` still lists `VAL-198`/`VAL-199`; total
+trace.py gap count held at 41 throughout (0 new gaps from the renumbering itself). Recommend a
+trace.py enhancement (routed via this report, not built here): warn on a duplicate work-item ID
+across files instead of silently letting file-sort order pick a winner.
