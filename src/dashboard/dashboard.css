@@ -1,15 +1,33 @@
-/* v27 (DES-201, ARCH-124, ADR-049, TASK-205, REQ-131): tokens CSS with the OKLCH accent ramp.
-   Served at /static/dashboard/dashboard.css (DES-199) AND embedded verbatim into the shell's
-   inline <style> (dashboard-page.ts reads this file once at module load) so the FIRST paint has
-   the correct theme before the external stylesheet round-trips — one source, two destinations.
-   --rwe-hue is the ONLY value theme-init.js (a classic script) ever writes; every other token is
-   a CSS formula over it, so the OKLCH ramp has exactly one home (DES-201's amendment of ARCH-124:
-   no accentVars() JS mirror). */
+/* v27c (DES-209, ARCH-122/123/125, ADR-053, TASK-214, REQ-131/132/133/134/135/067/076/077/078):
+   dashboard.css has ONE owner and ONE delivery path — served at /static/dashboard/dashboard.css
+   (DES-199) and linked once from the shell's <head> (DES-200); no inline <style> copy exists
+   anywhere (dashboard-page.ts deletes that copy in the same v27c batch). Sectioned by the
+   requirement each block implements (DES-209's contract), against the declared class vocabulary in
+   tests/fixtures/dashboard-classes.ts (STYLE_HOOKS/TEST_ANCHORS) and the spec table in
+   tests/fixtures/dashboard-spec.ts (SPEC_ROWS). --rwe-hue is the ONLY value theme-init.js (a classic
+   script) ever writes; every accent token is a CSS formula over it (DES-201 — no accentVars() JS
+   mirror). The dead ported rules whose emitters retired with dashboard-page.ts's inline script
+   (.pill .st-* .grp .node .phase .ph-lbl #tree) are DELETED here, not grandfathered (DES-209's own
+   authorisation). DES-209 also names `.usage-*` on that deletion list, but `ui/run.js:247/255`
+   measurably still sets `.usage-cols`/`.usage-lowerbound` for the REQ-127 usage line — the
+   "emitters retired" premise is false for these two, so they are KEPT and added to STYLE_HOOKS
+   instead (reported to the orchestrator, not silently deleted against a live emitter). */
+
+/* == tokens (REQ-131) == */
 :root {
   --rwe-hue: 236;
+  --radius-md: 3px;
+  --radius-sm: 2px;
 }
 
-/* Dark is the no-preference default (REQ-131). */
+/* Dark is the no-preference default (REQ-131). [v27c] The accent ramp direction is corrected: DES-
+   201 rules the ramp is indexed by SUBTLETY against the theme's own --color-bg, not by absolute
+   lightness — --accent-100 is the subtlest step, --accent-900 the strongest, so under a dark bg the
+   L sequence ASCENDS 100->900 (the pre-v27c ramp here descended, the same shape as light, which made
+   --accent-100 a near-white fill under near-white --color-ink text on REQ-134's running node — the
+   defect DES-201 repairs). The delivery README's own L/C sequence is still pending in-repo (DES-209
+   owner_decision); until then this mirrors the light ramp's existing curve REVERSED, position for
+   position, which is DES-201's stated fallback. */
 :root[data-theme="dark"] {
   --color-bg: #18191b;
   --color-panel: #212226;
@@ -19,15 +37,18 @@
   --color-muted: #8e97a3;
   --color-link: #9fb8d6;
   --color-accent: oklch(0.72 0.065 var(--rwe-hue));
-  --accent-100: oklch(0.93 0.02 var(--rwe-hue));
-  --accent-200: oklch(0.86 0.03 var(--rwe-hue));
-  --accent-300: oklch(0.8 0.045 var(--rwe-hue));
-  --accent-400: oklch(0.76 0.055 var(--rwe-hue));
-  --accent-500: oklch(0.72 0.065 var(--rwe-hue));
-  --accent-600: oklch(0.63 0.08 var(--rwe-hue));
-  --accent-700: oklch(0.54 0.085 var(--rwe-hue));
-  --accent-800: oklch(0.42 0.075 var(--rwe-hue));
-  --accent-900: oklch(0.3 0.055 var(--rwe-hue));
+  --accent-100: oklch(0.26 0.045 var(--rwe-hue));
+  --accent-200: oklch(0.37 0.06 var(--rwe-hue));
+  --accent-300: oklch(0.47 0.07 var(--rwe-hue));
+  --accent-400: oklch(0.56 0.065 var(--rwe-hue));
+  --accent-500: oklch(0.63 0.06 var(--rwe-hue));
+  --accent-600: oklch(0.72 0.05 var(--rwe-hue));
+  --accent-700: oklch(0.82 0.04 var(--rwe-hue));
+  --accent-800: oklch(0.9 0.025 var(--rwe-hue));
+  --accent-900: oklch(0.96 0.015 var(--rwe-hue));
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .5);
+  --shadow-md: 0 3px 10px rgba(0, 0, 0, .55);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, .65);
 }
 
 :root[data-theme="light"] {
@@ -48,79 +69,187 @@
   --accent-700: oklch(0.47 0.07 var(--rwe-hue));
   --accent-800: oklch(0.37 0.06 var(--rwe-hue));
   --accent-900: oklch(0.26 0.045 var(--rwe-hue));
+  --shadow-sm: 0 1px 2px rgba(20, 25, 35, .12);
+  --shadow-md: 0 4px 12px rgba(20, 25, 35, .14);
+  --shadow-lg: 0 16px 40px rgba(20, 25, 35, .22);
 }
 
 /* Vendored web fonts (DES-199) — served from this same origin, no external host (REQ-131/ARCH-123).
-   font-display:swap + a system stack on every @font-face: a missing/slow woff2 degrades to the
-   fallback rather than a blank/blocked paint (DES-199's boundary). */
+   The embedded family names inside the binaries read "Archivo SemiBold" etc (Google Fonts' static-
+   instance naming) — irrelevant here, since font-weight below is what selects the face and the
+   binaries carry the matching usWeightClass. font-display:swap + a system stack on every @font-face:
+   a missing/slow woff2 degrades to the fallback rather than a blank/blocked paint. */
 @font-face { font-family: 'Archivo'; src: url('/static/dashboard/fonts/archivo-400.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
 @font-face { font-family: 'Archivo'; src: url('/static/dashboard/fonts/archivo-500.woff2') format('woff2'); font-weight: 500; font-style: normal; font-display: swap; }
 @font-face { font-family: 'Archivo'; src: url('/static/dashboard/fonts/archivo-600.woff2') format('woff2'); font-weight: 600; font-style: normal; font-display: swap; }
 @font-face { font-family: 'JetBrains Mono'; src: url('/static/dashboard/fonts/jetbrains-mono-400.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
 @font-face { font-family: 'JetBrains Mono'; src: url('/static/dashboard/fonts/jetbrains-mono-500.woff2') format('woff2'); font-weight: 500; font-style: normal; font-display: swap; }
 
-/* Component CSS ported from the pre-v27 page (v11-v26), re-mapped from the old single-theme
-   Morandi variables (--bg/--panel/--panel2/--line/--ink/--muted/--link) onto the dark/light tokens
-   above. NOT built here: swimlane/agent-panel/ported-tab component CSS (TASK-207/210/211/212's own
-   pixel specs) — this file has no other owner in the v27 task decomposition (see the implementer's
-   needs_clarification note); adding those classes speculatively ahead of their own DES would be
-   exactly the "no abstraction for code used once" trap. */
 body{font-family:'Archivo',-apple-system,'Segoe UI',sans-serif;margin:0;background:var(--color-bg);color:var(--color-ink)}
-header{padding:16px 24px;border-bottom:1px solid var(--color-line);display:flex;align-items:center;gap:24px}
-h1{font-size:18px;margin:0}h2{font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:var(--color-muted);margin:22px 0 10px}
-main{padding:16px 24px;max-width:1100px}
+h1{font-size:18px;margin:0}
+h2{font-size:20px;margin:0}
+h3{font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:var(--color-muted);margin:0}
+h6{font-size:13px;margin:0;text-transform:uppercase;letter-spacing:.05em;color:var(--color-muted)}
 a{color:var(--color-link);text-decoration:none}
-.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}
-.card{background:var(--color-panel);border:1px solid var(--color-line);border-radius:10px;padding:11px 13px;font-size:13px;cursor:pointer}
+pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--color-line);padding:12px;border-radius:var(--radius-md);max-height:340px;overflow:auto;font-size:12px;font-family:'JetBrains Mono',ui-monospace,Consolas,monospace}
+
+/* == components — the Classical borrow: .card .tag .btn .table .seg .input .nav .hr + ported utilities == */
+.card{background:var(--color-panel);border:1px solid var(--color-line);border-radius:var(--radius-md);padding:12px 14px;font-size:13px;cursor:pointer;display:flex;flex-direction:column;gap:4px}
 .card:hover{border-color:var(--color-link)}
 .card .t{font-weight:600;font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;word-break:break-all}
-.card .s{color:var(--color-muted);font-size:11.5px;margin-top:4px}
-.pill{display:inline-block;padding:1px 7px;border-radius:100px;font-size:11px;border:1px solid var(--color-line)}
-.st-queued{color:#B08A5B}.st-running{color:#6E8199}.st-done,.st-completed{color:#7A9078}.st-failed{color:#B0776E}.st-stopped,.st-suspended{color:#9A948A}.st-interrupted{color:#B08A5B}
-/* v26 Gate 7.5 round 3 (defect D10, REQ-129): -webkit-user-drag:none is load-bearing, not styling —
-   see the draggable="false" note on the <img> itself in dashboard-page.ts. user-select:none stops a
-   drag across the figure from painting a text selection instead of panning. */
-#diagram-img{max-width:100%;background:var(--color-panel);border:1px solid var(--color-line);border-radius:8px;padding:8px;margin:6px 0;-webkit-user-drag:none;user-select:none}
-/* v26 (DES-186, ARCH-120, ADR-044, TASK-191): one .zoomable wrapper serves BOTH the run DAG svg
-   and the author's diagram img — the wheel/drag transform lives HERE, never on rebuilt children. */
-.zoomable{transform-origin:0 0;touch-action:none}
+.card .s{color:var(--color-muted);font-size:11.5px}
+.mono{font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;font-size:12.5px}
+.tag{display:inline-block;padding:1px 8px;border-radius:100px;font-size:11px;border:1px solid var(--color-line);color:var(--color-muted)}
+.tag-outline{background:none;border:1px solid var(--color-line)}
+.tag-accent{background:var(--accent-100);color:var(--accent-800);border-color:transparent}
+.tag-neutral{background:var(--color-panel2);color:var(--color-muted);border-color:transparent}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:100px;border:1px solid var(--color-line);background:var(--color-panel);color:var(--color-ink);font:inherit;cursor:pointer}
+.btn:hover{border-color:var(--color-link)}
+.btn-icon{width:32px;height:32px;padding:0;font-size:18px;line-height:1;border-radius:50%}
+.table{width:100%;border-collapse:collapse;font-size:12.5px}
+.table td,.table th{padding:4px 8px;border-bottom:1px solid var(--color-line);text-align:left;vertical-align:top}
+.table th{color:var(--color-muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+.seg{display:inline-flex;border:1px solid var(--color-line);border-radius:var(--radius-md);overflow:hidden}
+.seg button{background:none;border:0;padding:4px 12px;color:var(--color-muted);font:inherit;cursor:pointer}
+.seg button.active{color:var(--color-ink);background:var(--color-panel2)}
+.input{background:var(--color-panel);border:1px solid var(--color-line);border-radius:var(--radius-md);padding:5px 10px;font:inherit;color:var(--color-ink)}
+.nav{display:flex;align-items:center;gap:16px;padding:10px 20px;border-bottom:1px solid var(--color-line)}
+.hr{height:1px;background:var(--color-line);border:0;margin:0}
+.sys-table td:first-child{color:var(--color-muted);font-size:11px;width:140px}
+.models-table th{white-space:nowrap}
+.issue-row{display:flex;align-items:baseline;gap:8px;padding:6px 0;border-bottom:1px solid var(--color-line);font-size:13px;cursor:pointer}
+.issue-row:hover{color:var(--color-link)}
+.issue-detail{background:var(--color-panel2);border:1px solid var(--color-line);border-radius:var(--radius-md);padding:12px;margin-top:10px;font-size:13px}
+.degraded{color:var(--color-muted);font-size:12.5px;font-style:italic}
+.empty{color:var(--color-muted);font-size:12.5px}
+.back{font-size:13px;color:var(--color-link)}
 /* v26 Gate 7.5 round 1 (REQ-129's fit clause): position:relative;z-index:1 is load-bearing — a
    transformed .zoomable sibling paints in the positioned layer above an in-flow button that merely
-   precedes it in the source, so a drag-pan could otherwise cover this control (VAL-189). */
+   precedes it in the source, so a drag-pan could otherwise cover this control (VAL-189). [v27c]
+   re-pointed pin (DES-200/208) — this exact substring is asserted against THIS file's bytes now. */
 .fit-btn{position:relative;z-index:1;font-size:11px;padding:2px 9px;border-radius:100px;border:1px solid var(--color-line);background:var(--color-panel);color:var(--color-ink);cursor:pointer;margin:4px 0}
 .fit-btn:hover{border-color:var(--color-link)}
-#tree{margin-top:6px}
-.grp{border-left:2px solid var(--color-line);margin:6px 0 6px 4px;padding:2px 0 2px 12px}
-.grp-h{font-size:12px;color:var(--color-muted);margin:4px 0}
-.grp-h b{color:var(--color-ink);font-family:'JetBrains Mono',ui-monospace,Consolas,monospace}
-.node{padding:5px 9px;margin:4px 0;background:var(--color-panel2);border:1px solid var(--color-line);border-radius:8px;font-size:12.5px;cursor:pointer;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.node:hover{border-color:var(--color-link)}
-.node .dot{width:8px;height:8px;border-radius:50%;background:currentColor;flex:none}
-.node .lbl{font-weight:600}.node .mdl{color:var(--color-muted);font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;font-size:11.5px}
-.node .tok{color:var(--color-muted);font-size:11px;margin-left:auto}
-.node .cost{color:var(--color-muted);font-size:11px}
-.node .unpriced{color:var(--accent-700);font-size:10.5px}
-.node .dur{color:var(--color-muted);font-size:11px}
-#run-usage{margin:2px 0 8px;font-size:11.5px;color:var(--color-muted)}
-#run-usage span{margin-right:12px}
-#run-usage .usage-cols{font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;font-size:11px}
-#run-usage .usage-lowerbound{color:var(--accent-700)}
-#phases{margin:8px 0 4px}
-.ph-lbl{font-size:11px;color:var(--color-muted);text-transform:uppercase;letter-spacing:.06em;margin-right:6px}
-.phase{display:inline-block;padding:2px 9px;margin:2px 5px 2px 0;border-radius:100px;border:1px solid var(--color-line);font-size:11.5px;color:var(--color-muted)}
-.phase.cur{border-color:var(--color-link);color:var(--color-link);font-weight:600}
-pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--color-line);padding:12px;border-radius:8px;max-height:340px;overflow:auto;font-size:12px;font-family:'JetBrains Mono',ui-monospace,Consolas,monospace}
-.back{font-size:13px}
-.empty{color:var(--color-muted);font-size:12.5px}
-.issue-row{display:flex;align-items:baseline;gap:8px;padding:6px 0;border-bottom:1px solid var(--color-line);font-size:13px;cursor:pointer}
-.issue-row:hover .issue-title{color:var(--color-link)}
-.issue-num{color:var(--color-muted);font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;min-width:40px}
-.issue-title{flex:1}
-.issue-lbl{font-size:11px;padding:1px 6px;border-radius:100px;border:1px solid var(--color-line);color:var(--color-muted)}
-.issue-detail{background:var(--color-panel2);border:1px solid var(--color-line);border-radius:8px;padding:12px;margin-top:10px;font-size:13px}
-.issue-detail pre{max-height:200px}
-.degraded{color:var(--color-muted);font-size:12.5px;font-style:italic}
-.sys-table,.models-table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}
-.sys-table td,.models-table td,.models-table th{padding:4px 8px;border-bottom:1px solid var(--color-line);vertical-align:top}
-.sys-table td:first-child{color:var(--color-muted);font-size:11px;width:140px}
-.models-table th{text-align:left;color:var(--color-muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+/* v26 (DES-186, ARCH-120, ADR-044, TASK-191): one .zoomable wrapper serves the run DAG svg, the
+   swimlane's HTML cell-layer, and the author's diagram img — the wheel/drag transform lives HERE,
+   never on rebuilt children. */
+.zoomable{transform-origin:0 0;touch-action:none}
+/* v26 Gate 7.5 round 3 (defect D10, REQ-129): -webkit-user-drag:none is load-bearing, not styling —
+   see the draggable="false" note on the <img> itself in dashboard-page.ts. user-select:none stops a
+   drag across the figure from painting a text selection instead of panning. [v27c] re-pointed pin. */
+#diagram-img{max-width:100%;background:var(--color-panel);border:1px solid var(--color-line);border-radius:8px;padding:8px;margin:6px 0;-webkit-user-drag:none;user-select:none}
+
+/* == REQ-131 shell == */
+.rwe-nav{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:10px 20px;border-bottom:1px solid var(--color-line);position:sticky;top:0;background:var(--color-bg);z-index:5}
+.rwe-tabs{display:flex;gap:4px}
+.rwe-tabs button{background:none;border:0;padding:6px 12px;border-radius:var(--radius-md);color:var(--color-muted);font:inherit;cursor:pointer}
+.rwe-tabs button.active{color:var(--color-ink);background:var(--color-panel2)}
+.rwe-tab-panels{padding:16px 24px;max-width:1440px;margin:0 auto}
+.rwe-connection{font-size:11px;padding:1px 8px;border-radius:100px;border:1px solid var(--color-line);color:var(--color-muted)}
+.rwe-connection.is-live{border-color:var(--accent-600);color:var(--accent-800)}
+.rwe-connection.is-degraded{border-color:#B08A5B;color:#B08A5B}
+.rwe-connection.is-offline{border-color:oklch(0.55 0.16 25);color:oklch(0.45 0.16 25)}
+.rwe-theme-group,.rwe-lang-group{display:inline-flex;border:1px solid var(--color-line);border-radius:var(--radius-md);overflow:hidden}
+.rwe-theme-group button,.rwe-lang-group button{background:none;border:0;padding:4px 10px;color:var(--color-muted);font:inherit;cursor:pointer}
+.rwe-theme-group button.active,.rwe-lang-group button.active{color:var(--color-ink);background:var(--color-panel2)}
+.rwe-hue-slider{width:150px}
+.rwe-version{font-size:11px;color:var(--color-muted);font-variant-numeric:tabular-nums}
+.rwe-update-panel{display:flex;align-items:center;gap:10px;font-size:12px;margin-left:auto}
+.rwe-update-outcome{color:var(--color-muted)}
+.rwe-update-cta{color:var(--color-link)}
+.rwe-config-check{color:var(--color-muted)}
+
+/* == REQ-132 home == */
+.card-grid{display:flex;flex-direction:column;gap:24px}
+.card-section{display:flex;flex-direction:column;gap:10px}
+.card-section.other{opacity:.75}
+.card-section h3{margin:0;font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:var(--color-muted)}
+/* REQ-132's own acceptance numbers (the auto-fill grid, the 16px gap) land on .cards — the actual
+   per-section grid in the landed home.js — not on .card-grid, which is the vertical section stack
+   home.js nests .cards INSIDE (measured: home.js:172 `grid.className = 'card-grid'` is the outer
+   container; home.js:124 `cardsEl.className = 'cards'` is the per-group grid). */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}
+.card.running{border-color:var(--color-accent);position:relative;overflow:hidden}
+.card.running:hover{background:color-mix(in srgb, var(--color-accent) 6%, transparent)}
+.card.running::before{content:'';position:absolute;left:0;top:0;height:2px;width:40%;background:var(--color-accent);animation:rweSweep 2.4s linear infinite}
+.card.other{opacity:.75}
+.kicker{color:var(--color-muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+.meta{color:var(--color-muted);font-size:11.5px;margin-top:2px}
+.home-toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:16px}
+.home-search{max-width:320px}
+.segment-tabs{display:inline-flex;border:1px solid var(--color-line);border-radius:var(--radius-md);overflow:hidden}
+.segment-tabs button{background:none;border:0;padding:4px 12px;color:var(--color-muted);font:inherit;cursor:pointer}
+.segment-tabs button.active{color:var(--color-ink);background:var(--color-panel2)}
+
+/* == REQ-133 workflow detail == */
+.workflow-view{display:flex;flex-direction:column;gap:20px}
+.run-view{display:flex;flex-direction:column;gap:12px}
+.wf-desc{max-width:720px;margin:0;opacity:.85}
+.run-chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:100px;border:1px solid var(--color-line);background:none;color:var(--color-ink);font:inherit;font-size:12px;cursor:pointer}
+.run-chip:hover{background:color-mix(in srgb, var(--color-accent) 10%, transparent)}
+.run-chip.is-selected{border-color:var(--color-accent);background:var(--accent-100)}
+.status-dot{font-size:7px;color:var(--color-muted)}
+.table tr.is-selected{background:color-mix(in srgb, var(--color-accent) 7%, transparent)}
+.usage-cols{font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;font-size:11px}
+.usage-lowerbound{color:var(--accent-700)}
+
+/* == REQ-134 swimlane == */
+/* [v27c] DES-209 boundary (1): the substrate is a SIBLING <div class="cell-layer"> inside #dag-zoom,
+   absolutely positioned from the same lib/swimlane.js px as the SVG lane hairlines/edges — TASK-210's
+   own migration (deferred, see src/dashboard/ui/run.js's file banner); these rules are declared here
+   ahead of that emitter, same order of operations as the class contract itself. */
+.cell-layer{position:absolute;inset:0;pointer-events:none}
+.cell-layer .cell{pointer-events:auto}
+.lane-head{position:absolute;top:0;display:flex;align-items:center;gap:8px;height:48px;padding:0 14px;box-sizing:border-box;border-bottom:1px solid var(--color-line);color:var(--color-muted);font-weight:600;font-size:13px;letter-spacing:.04em;text-transform:uppercase;white-space:nowrap}
+.lane-head.is-current{border-color:var(--color-accent);color:var(--color-accent)}
+.lane-hairline{stroke:var(--color-line);stroke-width:1}
+.edge{fill:none;stroke:var(--color-line);stroke-width:1.2}
+.edge.is-active{stroke:var(--color-accent)}
+.edge.is-walked{stroke:var(--color-muted)}
+.edge.is-pending{stroke-dasharray:4 4}
+.cell{position:absolute;box-sizing:border-box;width:216px;height:74px;border:1px solid var(--color-line);border-radius:3px;background:var(--color-panel2);padding:8px 12px;display:flex;flex-direction:column;justify-content:center;gap:3px;cursor:default}
+.cell:hover{border-color:var(--color-accent)}
+.cell.is-running{border-color:var(--accent-600);background:var(--accent-100);animation:rweGlow 1.8s ease-in-out infinite;cursor:pointer}
+.cell.is-done{cursor:pointer}
+.cell.is-failed{border-color:oklch(0.55 0.16 25);cursor:pointer}
+.cell.is-queued{opacity:.65;border-style:dashed}
+.cell.is-predicted{opacity:.65;border-style:dashed}
+.cell-dot{width:9px;height:9px;border-radius:50%;flex:none;box-sizing:border-box}
+.cell.is-running .cell-dot{animation:rweRing 1.3s ease-out infinite}
+.cell-label{font-weight:600;font-size:13.5px;line-height:1.15;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cell-model{font-size:11px;opacity:.8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cell-effort{padding:1px 7px;font-size:10px;flex:none}
+.cell-usage{font-size:10.5px;opacity:.72;font-variant-numeric:tabular-nums;white-space:nowrap}
+.cell-trigger{width:112px;height:40px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;font-size:11.5px;color:var(--color-muted);align-items:center}
+.run-summary{margin-left:auto;font-variant-numeric:tabular-nums}
+
+/* == REQ-135 agent panel == */
+.agent-backdrop{position:fixed;inset:0;z-index:20;background:rgba(8,12,9,.5);animation:rweFadeIn .2s ease-out}
+.agent-panel{position:fixed;top:0;bottom:0;right:0;z-index:21;width:min(760px,100vw);background:var(--color-bg);color:var(--color-ink);border-left:1px solid var(--color-line);box-shadow:var(--shadow-lg);overflow:auto;padding:20px;box-sizing:border-box;display:flex;flex-direction:column;gap:20px;animation:rweSlideIn .28s cubic-bezier(.2,.7,.2,1)}
+.agent-panel.from-left{right:auto;left:0;border-left:0;border-right:1px solid var(--color-line);animation:rweSlideInL .28s cubic-bezier(.2,.7,.2,1)}
+.stat-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.stat-label{color:var(--color-muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+.stat-value{font-weight:600;font-size:18px}
+.prompt-pre{margin:0;padding:12px;border:1px solid var(--color-line);border-radius:var(--radius-md);font-size:13.5px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto}
+.tag-columns{display:flex;flex-wrap:wrap;gap:6px}
+.event-list{border:1px solid var(--color-line);border-radius:var(--radius-md);max-height:420px;overflow:auto;font-size:13px}
+.event-row{display:grid;grid-template-columns:64px 84px minmax(0,1fr);gap:10px;padding:8px 12px;border-bottom:1px solid var(--color-line);align-items:baseline}
+.event-kind{font-size:11px;padding:1px 8px;border-radius:100px;border:1px solid var(--color-line)}
+.event-kind.is-tool{background:var(--accent-100);color:var(--accent-800);border-color:transparent}
+.event-kind.is-message{background:var(--color-panel2);color:var(--color-ink);border-color:transparent}
+.event-kind.is-log{border-color:oklch(0.55 0.16 25);color:oklch(0.45 0.16 25)}
+.detail-block{margin:0;padding:10px 12px;border:1px solid oklch(0.55 0.16 25);border-radius:var(--radius-md);font-size:13px;color:oklch(0.45 0.16 25)}
+
+/* == @keyframes ==
+   The first four names and all seven durations/easings come from REQ-132/134/135's own acceptance
+   text; rweSlideIn/rweSlideInL/rweFadeIn are this row's own internal names (REQ-135 states the
+   motion, not an identifier) — no test may key on them beyond animationName equality. rwePulse is
+   reserved for the "Running" section's status-indicator dot (design mockup only, not yet built by
+   any landed ui/*.js — declared here so the class contract does not have to grow again when it is). */
+@keyframes rwePulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.7); } }
+@keyframes rweSweep { from { left: -40%; } to { left: 100%; } }
+@keyframes rweGlow { 0%,100% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 30%, transparent), var(--shadow-md); } 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-accent) 12%, transparent), var(--shadow-md); } }
+@keyframes rweRing { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent) 70%, transparent); } 100% { box-shadow: 0 0 0 9px transparent; } }
+@keyframes rweSlideIn { from { transform: translateX(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes rweSlideInL { from { transform: translateX(-40px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes rweFadeIn { from { opacity: 0; } to { opacity: 1; } }

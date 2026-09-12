@@ -31,6 +31,7 @@ import { SWIMLANE_BOX, cellRect, svgBox, edgePath } from '../lib/swimlane.js';
 import { sumTokens, fmtCost } from '../lib/runlist.js';
 import { t, warningText } from '../lib/strings.js';
 import { endpointsFor, getJSON } from './poll.js';
+import { openAgentPanel } from './agent-panel.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 
@@ -306,12 +307,20 @@ const stateByContainer = new WeakMap();
 
 // container -> the shell's own root element, so a stale poll loop (an old route's) can detect it
 // was superseded once app.js replaces #app-view's children — `root.isConnected` goes false then.
+//
+// Wiring (TASK-210/TASK-211 gap, closed here per DES-206): `app.js`'s `mountLazy` is the only
+// caller of this `render()` and passes an empty `handlers` object (nothing wires a node click to
+// the agent panel yet). `agent-panel.js`'s own header comment names two options; this applies
+// option (a) — default `onSelectAgent` here, to `openAgentPanel`, rather than threading it through
+// `app.js` (option (b), which is outside this file's scope). A caller-supplied `onSelectAgent`
+// still wins, so a future explicit wiring is not shadowed.
 export function render(container, vm, handlers) {
   const runId = (vm && vm.runId) || null;
   const lang = currentLang();
   const shell = buildShell(container);
   if (!runId) return;
-  stateByContainer.set(container, { shell, runId, lang, handlers: handlers || {} });
+  const onSelectAgent = (handlers && handlers.onSelectAgent) || ((id, lbl) => openAgentPanel(runId, id, lbl, { lang }));
+  stateByContainer.set(container, { shell, runId, lang, handlers: { ...(handlers || {}), onSelectAgent } });
 }
 
 /** DES-206 [v27c] — `app.js`'s one timer calls this every ~3s with `endpointsFor('run', ctx)`'s

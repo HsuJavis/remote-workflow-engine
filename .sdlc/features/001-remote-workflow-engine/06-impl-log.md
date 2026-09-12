@@ -4079,3 +4079,200 @@ in one pass:
 - `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` — 1591 items scanned, 67 gaps
   (unchanged from the pre-repair baseline recorded in `state.yaml`'s Gate 5 note), no new gap
   attributable to `TASK-204`/`static-assets`/`status.js` in the output.
+
+### IMPL-222 — TASK-205 backfill: the v27/v27c shell landed across two commits with no IMPL row of its own
+- **status:** done
+- **traces:** TASK-205, DES-200, DES-201, ARCH-122, REQ-131, REQ-070
+- **greens:** UT-241, UT-242
+- **files:** src/dashboard-page.ts
+- **commit:** f86ea25, 3a1c58d
+- **iter:** v27c
+
+Bookkeeping row written by a later pass, not a claim of authorship (same convention as IMPL-204/
+IMPL-221): a grep of this log found no `traces:` naming TASK-205, even though `buildDashboardHtml`'s
+v27 shell rebuild is real, landed, and green on disk. TASK-205's own card text says "these two v27c
+clauses are a RE-RUN of an already-landed task (IMPL exists)" — that claim is corrected here: no IMPL
+row existed until this one.
+
+Landed across two commits:
+- **f86ea25** (the original v27 shell rebuild): `buildDashboardHtml(init?)` keeps its signature and
+  its one caller (`export const DASHBOARD_HTML = buildDashboardHtml()`); the emitted HTML carries
+  `data-theme="dark"`; exactly one inline `<script type="application/json" id="rwe-init">` (no bare
+  `<script>` — `grep -c '<script>' ` without `type=` is 0); the three external asset references
+  (`<link rel="stylesheet" href="/static/dashboard/dashboard.css">`, the classic
+  `ui/theme-init.js`, the module `ui/app.js`); the data island round-trips
+  `{version,lastUpdate,interruptedRuns}` through `JSON.parse` with `<` escaped (`dashboard-page.ts`'s
+  own island-serialization helper, unchanged by this backfill).
+- **3a1c58d** (the v27c re-run TASK-205's card names): deletes the `readFileSync` import, the
+  `DASHBOARD_CSS` const and the inline `<style>${DASHBOARD_CSS}</style>` tag, so the `<link>` is the
+  ONLY delivery path (DES-200's one-delivery-path rule); in the same commit the `.fit-btn` and
+  `#diagram-img` CSS pins in `tests/unit/dashboard-page-source.test.ts` are re-pointed from
+  `DASHBOARD_HTML` to `clientFile('dashboard.css')` (DES-208's STAYS option).
+
+**Not claimed as implemented here:** the dark/light `--accent-100…900` ascend/descend ramp-direction
+clause is an ASSERTION over TASK-214's own output (`dashboard.css`), not something `dashboard-page.ts`
+implements; TASK-214 had not landed on this tree at the time of this entry (a concurrent agent owns
+it this pass). The two CSS pins above currently pass only because the pre-v27c `dashboard.css` still
+carries those two rules verbatim — this is DES-209's own stated ordering (TASK-214 lands in the same
+batch, not necessarily before).
+
+**Verification (real runs):**
+- `npx vitest run tests/unit/dashboard-page-source.test.ts tests/unit/update-outcome-config-check.test.ts`
+  → 9 passed, 8 passed (17/17).
+- `npx tsc --noEmit 2>&1 | grep -c "error TS"` → 30, unchanged from IMPL-221's recorded pre-existing
+  baseline; none attributable to `dashboard-page.ts`.
+
+### IMPL-223 — TASK-213 backfill: the page-source pin migration, dispositioned and green, with one stale test flagged
+- **status:** done
+- **traces:** TASK-213, DES-208, ARCH-122, ARCH-124, ADR-053, REQ-131, REQ-129, REQ-119
+- **greens:** UT-252, UT-253, UT-254
+- **files:** tests/helpers/client-corpus.ts, tests/unit/dashboard-page-source.test.ts, tests/unit/dashboard-diagram-render.test.ts, tests/unit/dashboard-zoom-source.test.ts, tests/unit/workflow-page-harness-table.test.ts, tests/unit/update-outcome-config-check.test.ts
+- **commit:** 07266be, f86ea25, 3a1c58d
+- **iter:** v27c
+
+Bookkeeping row written by a later pass (same convention as IMPL-222/204/221): no prior `traces:`
+named TASK-213, though the migration is real and landed. Landed across three commits:
+`tests/helpers/client-corpus.ts` (`clientCorpus()`/`clientFile(rel)`, throwing on an empty directory)
+was written test-first at **07266be** (Gate 5, RED); the per-assertion disposition was applied at
+**f86ea25**; the one CSS-pin re-point TASK-205's card also names travelled in the same commit as that
+task's re-run, **3a1c58d**.
+
+**Disposition table (DES-208's dod requires this "in the commit message" — neither f86ea25 nor
+3a1c58d carries one; recorded here instead, one row per assertion group, read from the actual diffs):**
+
+| assertion (file) | disposition | where it lives now |
+|---|---|---|
+| UT-191 `a.tokens\|\|0`/`sumTokens`/`costUSD`/`unpriced` grep (page-source) | RETIRES | `dashboard-lib-runlist.test.js` (unit) + val-200/val-199 (Chromium) |
+| UT-222's `tokenCols`/cache-read/write JS-text grep (page-source) | RETIRES | val-199 (Chromium); its `.fit-btn` CSS pin STAYS on `DASHBOARD_HTML` |
+| UT-224's `mousedown preventDefault` JS-text grep (page-source) | RETIRES | val-193/val-197 (Chromium, real mouse); its two markup/CSS pins (`draggable="false"`, `#diagram-img` rule) STAY |
+| UT-227's singular `m.alias` index grep (page-source) | RETIRES | val-199 (Chromium, harness table) |
+| UT-200's `viewBox`/`preserveAspectRatio`/no-absolute-`width` grep (zoom-source) | MOVES | UT-253 anchor, `clientFile`/`clientCorpus` against `ui/run.js` (TASK-210); `.zoomable`/fit markup STAYS |
+| diagram-render's `createObjectURL`/`revokeObjectURL`/diagram-memo grep | MOVES | UT-252 anchor against `ui/workflow.js` (TASK-209) |
+| harness-table's `effort`/`timeoutMs` cell-text grep | MOVES | UT-254 anchor against `lib/agent.js`'s `panelModel` (TASK-207); the static `#harness-table-section`/`#harness-table` containers STAY on `DASHBOARD_HTML` |
+| update-outcome-config-check.test.ts's 4 assertions | **not one of DES-208's ~41 targets** | they call `buildDashboardHtml()` and assert on the JSON data island (a markup/data fact), never grep for client-JS behaviour — needed no edit in either commit; listed in `files:` here because TASK-213 names the file, not because it changed |
+
+Each re-pointed file (`dashboard-diagram-render.test.ts`, `dashboard-zoom-source.test.ts`,
+`workflow-page-harness-table.test.ts`) carries the required positive anchor
+(`expect(corpus).toContain('createObjectURL')` etc.) beside its negatives, plus
+`expect(corpus.length).toBeGreaterThan(5000)` — confirmed present and passing, not just claimed.
+
+**Reported, not fixed (exit-gate rule against appeasing a wrong test):** `tests/unit/dashboard-client-corpus.test.ts`'s
+case `"THROWS today because src/dashboard/**/*.js does not exist yet"` (UT-249 — traces TASK-208, not
+TASK-213, so it is outside this task's own `dod:` scope, but its file IS in TASK-213's dod command) now
+fails: `clientCorpus()` no longer throws, because `src/dashboard/**/*.js` genuinely exists (TASK-206..212
+landed it). The test's own premise ("today ... does not exist yet") is a Gate-5 red-state assertion that
+is now stale, not a code defect — `clientCorpus()` correctly returns the real corpus. Suggested fix for
+the verifier: assert the throw against an artificially empty temp directory rather than against
+`src/dashboard` itself, since that directory is expected to be populated once the client lands. Not
+touched here.
+
+**Verification (real runs):**
+- `npx vitest run tests/unit/dashboard-page-source.test.ts tests/unit/dashboard-diagram-render.test.ts tests/unit/dashboard-zoom-source.test.ts tests/unit/workflow-page-harness-table.test.ts tests/unit/update-outcome-config-check.test.ts`
+  → 9 + 3 + 3 + 2 + 8 passed (25/25).
+- `npx vitest run tests/unit/dashboard-client-corpus.test.ts` → 2 passed, 1 failed (the UT-249 case
+  above; not this task's own greens, reported not fixed).
+
+### IMPL-224 — the agent panel gets wired: `ui/run.js`'s `render()` defaults `onSelectAgent` to `openAgentPanel`
+- **status:** done
+- **traces:** TASK-210, TASK-211, DES-206, REQ-135, REQ-136
+- **greens:** VAL-201
+- **files:** src/dashboard/ui/run.js
+- **commit:** pending (working tree on 3a1c58d)
+- **iter:** v27c
+
+Closes the gap `agent-panel.js`'s own header comment (`src/dashboard/ui/agent-panel.js:12-21`)
+diagnosed and deliberately left: nothing connected a swimlane node click to `openAgentPanel`, because
+`app.js`'s `mountLazy` (the only caller of `run.js`'s `render()`) passes an empty `handlers` object.
+That comment names two options; DES-206's own signature (`render(container, vm, handlers)`, "handlers
+are delegated listeners on a stable wrapper") does not discriminate between them — it is silent on
+which side supplies a default. Per dispatch, option (a) is applied here rather than (b): `render()`
+now defaults `handlers.onSelectAgent` to `(id, lbl) => openAgentPanel(runId, id, lbl, { lang })` when
+the caller did not supply one; a caller-supplied `onSelectAgent` still wins, so a future explicit wire
+from `app.js` (option b) is not shadowed. `openAgentPanel` is imported directly
+(`agent-panel.js` imports only `lib/` + `poll.js`, never `run.js`, so this is not a cycle).
+
+**Scope note (not fixed, flagged to the orchestrator):** this closes ONLY the cross-module wiring gap
+between TASK-210 and TASK-211 — it is not a claim that either task's full card is now on disk. TASK-210
+still explicitly defers DES-209's substrate migration (the cell-layer HTML sibling; see this same
+file's own banner, `src/dashboard/ui/run.js:14-29`), and TASK-211's own scope beyond this wiring point
+was not re-audited in this pass. Both TASKs will likely still show as gaps in `sh .sdlc/trace`'s
+未實作 list for that reason; closing them fully is out of this dispatch's scope.
+
+**Verification (real runs):**
+- `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-201-agent-panel.test.ts` — RED before
+  this change (3/3 failed, `TimeoutError: Waiting for selector '[data-agent-panel]'`), GREEN after
+  (3/3 passed, real Chromium).
+- Regression: `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-200-swimlane.test.ts tests/acceptance/val-193-dag-fit-and-columns.test.ts`
+  → 6/6 passed, unchanged.
+- `npx tsc --noEmit 2>&1 | grep -c "error TS"` → 30 before and after; no new error.
+
+### IMPL-225 — `dashboard.css` gets its one owner: the class contract, the seven keyframes, and the corrected accent ramp
+- **status:** done
+- **traces:** TASK-214, DES-209, DES-201, DES-200, DES-203
+- **greens:** dashboard-class-contract.test.ts (13/13, new)
+- **files:** src/dashboard/dashboard.css, tests/fixtures/dashboard-classes.ts, tests/fixtures/dashboard-spec.ts, tests/unit/dashboard-class-contract.test.ts, tests/unit/dashboard-no-design-values.test.ts
+- **commit:** pending (working tree)
+- **iter:** v27c
+
+Rewrites `dashboard.css` from the 126-line pre-v27c port to the full v27c stylesheet: all seven
+`@keyframes` (`rwePulse rweSweep rweGlow rweRing rweSlideIn rweSlideInL rweFadeIn`), ~95 declared
+`STYLE_HOOKS` classes across the tokens/components/REQ-131..135 sections, and DES-201's corrected
+accent-ramp direction (dark `--accent-100…900` L now ASCENDS 100->900, light unchanged/descends —
+the pre-v27c dark ramp descended, the same shape as light, making `--accent-100` a near-white fill
+under near-white `--color-ink` text on REQ-134's running node). The exact L/C sequence mirrors the
+light ramp's own curve reversed, position for position (DES-201's stated fallback — the delivery
+README with the binding sequence is not in this repo). The two C1 pins (`.fit-btn{position:relative;
+z-index:1;` and `#diagram-img{…-webkit-user-drag:none;user-select:none}`) are preserved byte-for-byte.
+The dead ported rules whose emitters retired with the inline script (`.pill .st-* .grp .node .phase
+.ph-lbl #tree`) are deleted per DES-209's own authorisation. Two new fixtures (`dashboard-classes.ts`:
+`STYLE_HOOKS`/`TEST_ANCHORS`; `dashboard-spec.ts`: `SPEC_ROWS`, 44 rows) and two new lock tests
+(`dashboard-class-contract.test.ts` — this task's own green; `dashboard-no-design-values.test.ts` —
+written and confirmed genuinely RED, per DES-209's own note that it is the slice's final green, not
+this task's). This task owns no `.js` product file — no `src/dashboard/{ui,lib}/*.js` and no
+`src/dashboard-page.ts` edited.
+
+**Design decision recorded:** REQ-132's own acceptance numbers (`repeat(auto-fill,minmax(280px,1fr))`
+gap `16px`) land on `.cards` — the actual per-section auto-fill grid in the landed `home.js` — rather
+than on `.card-grid`, which DES-209's prose names generically but which `home.js` uses as the OUTER
+vertical section stack (`.cards` nests INSIDE it). Both classes are declared and styled; only the
+REQ-anchored anti-vacuity numbers move to the one that is actually the grid.
+
+**Reported, not fixed (out of this task's `files:` — DES-209 boundary (6) forbids editing `ui/*.js`):**
+1. `dashboard-no-design-values.test.ts` is genuinely RED (6/7 `it`s), for real, already-documented
+   reasons: `ui/run.js`'s swimlane substrate migration (the `.cell-layer` HTML sibling) is TASK-210's
+   own deferred item (see that file's banner comment) — its still-SVG-`setAttribute` rendering trips
+   every "no design values" negative (hex colours, `oklch(`, `setAttribute('fill'|...)`, extra
+   `.style.<prop>` writers beyond `display`/`transform`/`--rwe-hue`). Measured, not assumed: reran
+   after fixing a false-negative in my own checker (below).
+2. Three `TEST_ANCHORS` DES-209 declares are not yet emitted by the landed view code: `data-section`
+   (`home.js` sets none), `data-history-table` (nowhere in `workflow.js`), and `data-run-chip`
+   singular — `workflow.js:100` sets `data-run-chips` (plural) on the CONTAINER, not one per chip.
+   Belongs to TASK-208/209's owners.
+3. `app.js`'s `.rwe-connection` element never adds an `is-live`/`is-degraded`/`is-offline` modifier
+   class (it sets `dataset.status` instead) — DES-209's spec-table row for REQ-131 names these three
+   as style hooks; the CSS rules exist and wait for the emitter.
+4. Pre-existing, unrelated to this task: `tests/unit/dashboard-no-external-host.test.ts`'s first case
+   fails because `run.js`/`workflow.js`'s SVG namespace constant (`'http://www.w3.org/2000/svg'`,
+   present since before this task, confirmed via `git show HEAD`) matches the test's bare
+   `https?://` regex — an XML namespace URI is not a fetched external host. Not touched (out of
+   `files:`, and the fix belongs to that test's own regex, not to this task's stylesheet).
+5. During authoring, `dashboard-no-design-values.test.ts`'s own `TEST_ANCHORS` emitter check had a
+   false negative: a bare substring search reported `data-run-chip` as "emitted" because it is a
+   substring of the real `data-run-chips`. Fixed in the same commit (whole-token boundary check) —
+   listed here since it is a correction to a file this task itself authors, not a defect report.
+
+**Verification (real runs):**
+- `npx tsc --noEmit` → no new errors from any file this task touches (pre-existing unrelated errors
+  in `val-198`/`val-199`/`run-store-parity`/`dashboard-client-corpus`/`update-outcome-config-check`
+  confirmed present before this task's changes too).
+- `npx vitest run tests/unit/dashboard-class-contract.test.ts` → 13/13 passed.
+- `npx vitest run tests/unit/no-skeleton-surface.test.ts` → 4/4 passed.
+- `npx vitest run tests/unit/dashboard-no-external-host.test.ts` → 1/2 passed (finding 4 above; not a
+  regression — `dashboard.css` itself contributes zero violations).
+- `npx vitest run tests/unit/dashboard-no-design-values.test.ts` → 1/7 passed (expected; findings 1-2
+  above; this file's own green is TASK-212's, per its DoD).
+- `npx vitest run tests/unit/dashboard-page-source.test.ts tests/unit/dashboard-zoom-source.test.ts tests/unit/dashboard-diagram-render.test.ts tests/unit/update-outcome-config-check.test.ts tests/unit/dashboard-lib-swimlane.test.js tests/unit/dashboard-lib-agent.test.js tests/unit/dashboard-lib-runlist.test.js tests/unit/dashboard-lib-connection.test.js tests/unit/dashboard-lib-strings.test.js tests/unit/dashboard-lib-theme.test.js tests/unit/dashboard-model.test.ts tests/unit/dashboard-metrics.test.ts tests/unit/dashboard-dag-model.test.ts tests/unit/dashboard-derive-lanes.test.ts` → 110/111 passed (the
+  1 pre-existing `dashboard-client-corpus.test.ts` stale-red-reason failure noted above, unrelated).
+- `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → 1597 items scanned, 52 gaps
+  (none naming TASK-214 or DES-209); gate still fails overall (other in-flight tasks' gaps, per the
+  ~20-agent parallel Gate 6 batch this ledger documents — not this task's own scope to close).

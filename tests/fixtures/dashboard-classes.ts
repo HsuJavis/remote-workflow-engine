@@ -1,0 +1,61 @@
+// v27c (DES-209, TASK-214): the class contract, declared BEFORE it appears in code. A STYLE_HOOKS
+// entry is a class this row's owner (dashboard.css) defines and the view layer (ui/*.js or
+// DASHBOARD_HTML) may set or rename freely as long as the CSS edit travels in the same commit. A
+// TEST_ANCHORS entry is a `data-*` attribute or a C2 id — it belongs to the TESTS and is FROZEN; a
+// rule may never key on one and a test may never key on a style hook (DES-209's contract).
+//
+// Every entry is a FLAT atomic class name (no leading combinator, no compound chain) — a compound
+// selector in the stylesheet such as `.cell.is-failed` or `.card .t` decomposes into two atoms
+// (`cell`, `is-failed` / `card`, `t`), each declared once here regardless of how many compound
+// selectors it participates in. `.card` and `.t` appear in BOTH arrays on purpose: the stylesheet
+// defines `.card .t` (so `.t` must be a style hook the class-lock's reverse half can find), and
+// DES-209's own signature freezes the same two names as C2 test anchors — the two lists are not
+// disjoint by construction, only by DEFAULT.
+//
+// [v27c note, measured against the tree at this task's Gate 6 (2026-09-12)]: `.seg` and several
+// REQ-134 swimlane hooks are declared here but NOT YET set by any landed `ui/*.js` — the swimlane
+// substrate migration (DES-209 boundary (1)) is TASK-210's own deferred item (see
+// `src/dashboard/ui/run.js`'s file-banner comment), and `.seg` has no emitter yet either. Declaring
+// the contract ahead of the emitter is DES-209's stated order of operations, not a defect — the
+// emitter half of the class lock (`dashboard-no-design-values.test.ts`) is the SLICE's own final
+// green, re-run once every view task lands.
+
+/** Every class `dashboard.css` defines, atomised. Length is asserted `>= 60` by DES-209. */
+export const STYLE_HOOKS: readonly string[] = [
+  // -- components (the Classical borrow + ported utilities) --
+  'card', 't', 's', 'mono', 'tag', 'tag-outline', 'tag-accent', 'tag-neutral', 'btn', 'btn-icon',
+  'table', 'seg', 'input', 'nav', 'hr', 'sys-table', 'models-table', 'issue-row', 'issue-detail',
+  'degraded', 'empty', 'back', 'fit-btn', 'zoomable',
+
+  // -- REQ-131 shell --
+  'rwe-nav', 'rwe-tabs', 'rwe-tab-panels', 'rwe-connection', 'is-live', 'is-degraded', 'is-offline',
+  'rwe-theme-group', 'rwe-lang-group', 'rwe-hue-slider', 'rwe-version', 'rwe-update-panel',
+  'rwe-update-outcome', 'rwe-update-cta', 'rwe-config-check', 'active',
+
+  // -- REQ-132 home --
+  'card-section', 'other', 'card-grid', 'cards', 'running', 'kicker', 'meta', 'home-toolbar',
+  'home-search', 'segment-tabs',
+
+  // -- REQ-133 workflow detail --
+  'workflow-view', 'run-view', 'wf-desc', 'run-chip', 'is-selected', 'status-dot',
+  'usage-cols', 'usage-lowerbound',
+
+  // -- REQ-134 swimlane (DES-209 boundary (1) substrate — declared ahead of TASK-210's re-run) --
+  'cell-layer', 'lane-head', 'is-current', 'lane-hairline', 'edge', 'is-active', 'is-walked',
+  'is-pending', 'cell', 'is-running', 'is-done', 'is-failed', 'is-queued', 'is-predicted',
+  'cell-dot', 'cell-label', 'cell-model', 'cell-effort', 'cell-usage', 'cell-trigger', 'legend',
+  'run-summary',
+
+  // -- REQ-135 agent panel --
+  'agent-backdrop', 'agent-panel', 'from-left', 'stat-cards', 'stat-label',
+  'stat-value', 'prompt-pre', 'tag-columns', 'event-list', 'event-row', 'event-kind', 'is-tool',
+  'is-message', 'is-log', 'detail-block',
+] as const;
+
+/** `data-*` attributes and C2 ids — FROZEN, belongs to the tests, never renamed by a CSS edit. */
+export const TEST_ANCHORS: readonly string[] = [
+  'data-lane-header', 'data-node-cell', 'data-legend', 'data-agent-panel', 'data-tab',
+  'data-section', 'data-run-chip', 'data-history-table',
+  '#dag-fit', '#dag-graph', '#dag-zoom', '#run-usage', '#diagram-img', '#diagram-zoom',
+  '.card', '.t',
+] as const;
