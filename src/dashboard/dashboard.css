@@ -101,8 +101,14 @@ a{color:var(--color-link);text-decoration:none}
 pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--color-line);padding:12px;border-radius:var(--radius-md);max-height:340px;overflow:auto;font-size:12px;font-family:'JetBrains Mono',ui-monospace,Consolas,monospace}
 
 /* == components — the Classical borrow: .card .tag .btn .table .seg .input .nav .hr + ported utilities == */
-.card{background:var(--color-panel);border:1px solid var(--color-line);border-radius:var(--radius-md);padding:12px 14px;font-size:13px;cursor:pointer;display:flex;flex-direction:column;gap:4px}
-.card:hover{border-color:var(--color-link)}
+/* [v27 README-fidelity closure] NO fill at rest (measured against the vendored design's own
+   `.card` — Classical's base is `background: transparent`; only `.card.running`/`.card:hover`
+   below carry an accent TINT, and only then). Was `background:var(--color-panel)`, a defect this
+   file's own SPEC_ROW oracle had blessed by being copied from what shipped rather than the design. */
+.card{background:transparent;border:1px solid var(--color-line);border-radius:var(--radius-md);padding:12px 14px;font-size:13px;cursor:pointer;display:flex;flex-direction:column;gap:4px}
+/* [v27 README-fidelity closure] README "1. Workflows home": "Hover: 5–6% accent tint" — the
+   REGISTERED/OTHER card's own 5% (the running card's separate 6% is `.card.running:hover` below). */
+.card:hover{border-color:var(--color-link);background:color-mix(in srgb, var(--color-accent) 5%, transparent)}
 .card .t{font-weight:600;font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;word-break:break-all}
 .card .s{color:var(--color-muted);font-size:11.5px}
 .mono{font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;font-size:12.5px}
@@ -156,7 +162,10 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 .rwe-tabs a[aria-current="page"]{color:var(--accent-700);text-decoration:underline;text-decoration-color:var(--color-accent)}
 .rwe-tab-panels{padding:16px 24px;max-width:1440px;margin:0 auto}
 .rwe-connection{font-size:11px;padding:1px 8px;border-radius:100px;border:1px solid var(--color-line);color:var(--color-muted)}
-.rwe-connection.is-live{border-color:var(--accent-600);color:var(--accent-800)}
+/* [v27 README-fidelity closure] README "Header / chrome": "source tag (`Live` accent tint ·
+   `Offline` red outline · `Demo data` outline)" — `Live` is a TINT (no border), same convention as
+   `.tag-accent`; `is-degraded`/`is-offline` below stay outlines, unchanged. Was border-only. */
+.rwe-connection.is-live{background:var(--accent-100);color:var(--accent-800);border-color:transparent}
 .rwe-connection.is-degraded{border-color:#B08A5B;color:#B08A5B}
 .rwe-connection.is-offline{border-color:oklch(0.55 0.16 25);color:oklch(0.45 0.16 25)}
 .rwe-theme-group,.rwe-lang-group{display:inline-flex;border:1px solid var(--color-line);border-radius:var(--radius-md);overflow:hidden}

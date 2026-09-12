@@ -6007,3 +6007,149 @@ exact wording are NOT checked):
   with no emitter — a pre-existing, separately-tracked gap, not new here).
 - **What this pass's method cannot see:** the card hover "5-6% accent tint" (no hover-state harness
   run); exact copy/wording fidelity beyond the specific strings quoted above.
+
+### IMPL-262 — theme segment reordered system -> light -> dark (README "Header / chrome")
+- **status:** done
+- **traces:** TASK-214, DES-209, REQ-131
+- **greens:** VAL-198 (new case — "the theme segment orders system -> light -> dark")
+- **files:** src/dashboard/ui/app.js, tests/acceptance/val-198-shell-and-home.test.ts
+- **commit:** (uncommitted — working tree)
+- **iter:** v27
+
+IMPL-261's own report named this axis (button order *within* the theme segment, distinct from that
+pass's cluster-position fix) as measured-but-not-fixed. `buildChrome()`'s loop was
+`['dark','light','system']` (rendered 深/淺/系統); README "theme seg 系統 / 淺 / 深" wants
+system/light/dark. One-line reorder, no behaviour change to any control (each button keeps its own
+`dataset.theme`/listener/active-state logic). DOM order is not a `getComputedStyle` fact, so no
+SPEC_ROW can carry it; asserted directly in val-198 instead, same convention as IMPL-261's own
+hue->lang->theme cluster-order test.
+
+### IMPL-263 — node row 3 grows a duration and a k/M token abbreviation (README "2. Workflow detail")
+- **status:** done
+- **traces:** TASK-214, DES-209, REQ-134
+- **greens:** VAL-200 (new case — "node row 3 (.cell-usage) carries a duration segment alongside
+  tokens/cost"), UT-246 (`lib/runlist.js: fmtTok` — 4 new cases)
+- **files:** src/dashboard.ts, src/dashboard/lib/runlist.js, src/dashboard/ui/run.js,
+  tests/unit/dashboard-lib-runlist.test.js, tests/acceptance/val-200-swimlane.test.ts
+- **commit:** (uncommitted — working tree)
+- **iter:** v27
+
+Root cause was upstream of the client: `layoutGraph`'s `LayoutCell` (the `/api/runs/:id/dag` payload
+shape) carried `tokens`/`costUSD`/`unpriced` but never a duration, even though `AgentRecord.startedAt`/
+`endedAt` already reach the OTHER dag model in this same file (`buildDagModel`'s `DagAgentNode.
+durationMs`) — the swimlane route simply never threaded the same derivation through. Added
+`LayoutCell.durationMs` (same `Math.max(0, Date.parse(endedAt) - Date.parse(startedAt))` derivation,
+factored into one `durationOf()` helper used at all four `placeCell` agent call sites), undefined
+until both timestamps land (never a guessed in-flight duration, same convention as the sibling
+model). Client (`run.js`) appends `· ${formatDuration(c.durationMs)}` only when defined, reusing
+`ui/home.js`'s own exported `formatDuration(ms)` — the dispatch flagged that a duration formatter
+convention already existed and asked to reuse rather than add a third/fourth copy; moved the new
+`fmtTok` abbreviator into `lib/runlist.js` (beside `sumTokens`/`fmtCost`, the file's other pure
+formatters) rather than as a private helper inside `ui/run.js`, matching this codebase's own
+established split (pure formatters live in `lib/*.js` and get real unit tests; `ui/*.js` DOM-builders
+get acceptance-tier browser tests only) — `fmtTok(52000) === '52k'` matches the README's own example
+exactly (round thousands drop the decimal; non-round ones keep one, e.g. `52.4k`; `>=1e6` uses `M`).
+
+### IMPL-264 — home card's LAST RUN kicker now shows a timestamp, not a run id (README "1. Workflows home")
+- **status:** done
+- **traces:** TASK-214, DES-209, REQ-132
+- **greens:** VAL-198 (new case — "the LAST RUN kicker shows a timestamp, not a run id")
+- **files:** src/dashboard.ts, src/dashboard/ui/home.js, tests/acceptance/val-198-shell-and-home.test.ts
+- **commit:** (uncommitted — working tree)
+- **iter:** v27
+
+IMPL-261's own report read the README's two kicker examples as contradicting each other
+(`ACTIVE · a3f9c2e1` an id, `LAST RUN · 9/11 14:02` a timestamp); the dispatch adjudicated they are
+two DIFFERENT states, not a contradiction — ACTIVE keeps the id, LAST RUN needed the timestamp
+`WorkflowCard` never carried. `buildHomeView` already folds `RunSummary[]` (which carries
+`createdAt`/`terminalAt`) per workflow name to derive `latestRunId` — added a `latestRunAt` map
+built in the SAME loop iteration (`r.terminalAt ?? r.createdAt`, "last one wins" in lockstep with
+`latestRunId` so the two can never point at different runs) and threaded it onto `WorkflowCard` at
+both card-construction sites (catalog + "other"). `home.js`'s kicker now renders `latestRunAt`
+through a new `fmtLastRunAt` (`M/D HH:MM`, no existing formatter in this codebase produces that
+shape, unlike the duration case in IMPL-263) instead of `latestRunId.slice(0,8)`; `latestRunId`
+itself is left on the type/API (harmless additive data other consumers may still want) and simply
+no longer read by this one render site.
+
+### IMPL-265 — `.is-live` source tag becomes an accent tint, not an outline (README "Header / chrome")
+- **status:** done
+- **traces:** TASK-214, DES-209, REQ-131
+- **greens:** VAL-198 (`SPEC_ROWS (home view, REQ-131/132)` — new `[data-status="live"]`
+  background-color row)
+- **files:** src/dashboard/dashboard.css, tests/fixtures/dashboard-classes.ts,
+  tests/fixtures/dashboard-spec.ts
+- **commit:** (uncommitted — working tree)
+- **iter:** v27
+
+IMPL-261's own report flagged `.is-live` as border-only, matching `.is-offline`'s outline treatment,
+against a README that names three DIFFERENT tag treatments ("`Live` accent tint · `Offline` red
+outline · `Demo data` outline"). Changed `.rwe-connection.is-live` to `background:var(--accent-100);
+color:var(--accent-800);border-color:transparent` — the same tint formula `.tag-accent` already
+uses elsewhere in this file. `is-degraded`/`is-offline` are untouched (still outlines, per the same
+README line). Registered `data-status` as a TEST_ANCHORS entry (already emitted by `app.js`'s
+`connectionTagEl.dataset.status = connectionState.status`, but never used by a SPEC_ROW before this
+pass — same "anchor already on disk, not invented" precedent as IMPL-257's `data-agent-panel-backdrop`)
+so the new row can narrow on `[data-status="live"]` — the CSS itself still keys on the `.is-live`
+STYLE_HOOK, `data-status` only lets the TEST find the element, same `[data-x] .is-y` split as
+`[data-node-cell].is-failed`.
+
+### IMPL-266 — `.card` fill removed (no background at rest); two hover tints implemented; the SPEC_ROW that blessed the fill is fixed
+- **status:** done
+- **traces:** TASK-214, DES-209, REQ-132
+- **greens:** VAL-198 (`SPEC_ROWS (home view, REQ-131/132)` — corrected `.card` background-color row)
+- **files:** src/dashboard/dashboard.css, tests/fixtures/dashboard-spec.ts
+- **commit:** (uncommitted — working tree)
+- **iter:** v27
+
+IMPL-261's own report treated this as "the README and the SPEC_ROW disagree with each other" and
+declined to pick a side. The dispatch adjudicated it directly against the vendored
+`Workflow Dashboard.dc.html` (lines 110, 129): every `.card` there sets NO background at rest, only
+a `style-hover` tint (6% for the running/accent-bordered card, 5% for the plain one) — Classical's
+own `.card` base is `background: transparent`. Fixed: `.card` lost its `background:var(--color-panel)`
+fill (now explicit `background:transparent`); `.card:hover` (the plain/registered/other card) gained
+`background:color-mix(in srgb, var(--color-accent) 5%, transparent)` alongside its existing
+`border-color:var(--color-link)`, which the dispatch did not ask to change and this pass left alone;
+`.card.running:hover`'s existing 6% tint was already correct and untouched. The SPEC_ROW at
+`dashboard-spec.ts:117` (`anchor: '.card', prop: 'background-color', expect: { token: 'color-panel' }`)
+was hand-copied from what shipped rather than from the design — exactly the failure mode DES-209
+exists to prevent, since it would have blessed the fill forever with the suite staying green.
+Rewritten to `expect: { literal: 'rgba(0, 0, 0, 0)' }` (the browser's own serialization of an
+authored `transparent`, same convention as the existing `is-queued` hollow-dot row). The two new
+hover tints are implemented and visible on screenshot but NOT SPEC_ROW-verified: `spec-rows.ts`'s
+oracle (`computedProp`) never simulates a real `:hover` mouse state (it reads `getComputedStyle` on
+the element as loaded, no `page.hover()` call anywhere in the helper) — a genuinely different,
+smaller gap than IMPL-260's pseudo-ELEMENT blind spot (`::-webkit-slider-thumb`), but the same
+"unchecked by design, not invented cannot-fail row" category; not added this pass since it is
+test-infrastructure scope, not a `dashboard.css`/`dashboard-spec.ts` row-level fix.
+
+**Audit requested by the dispatch — every other SPEC_ROW checked for the same origin (a row copied
+from shipped behaviour rather than a README line); one more found:**
+`dashboard-spec.ts:131` — `{ anchor: 'data-run-chip', prop: 'background-color', expect: { token:
+'accent-100' } }` — is a BARE, unnarrowed anchor for a property that is genuinely state-conditional:
+`dashboard.css`'s `.run-chip` sets `background:none` at rest and only `.run-chip.is-selected` gets
+`background:var(--accent-100)` (README: "selected chip has accent-100 fill" — every OTHER chip has
+none). `document.querySelector('[data-run-chip]')` returns the FIRST chip in DOM order; `workflow.js`
+sorts chips newest-first (`renderChipsAndTable`'s own `sorted`) and `resolveSelectedRunId` picks the
+same newest run as the default selection whenever no run is active — so in every fixture that never
+clicks a different chip, the first `[data-run-chip]` the oracle finds IS the selected one, and the
+row passes by construction of that coincidence, not because it actually asserts "the SELECTED chip
+gets the tint" (a wrong-anchor scenario — a test that clicked an older chip before reading SPEC_ROWS
+would falsify it instantly). Same defect CLASS as the `.card` row this IMPL fixes (a row that reads
+green today for a reason other than the one it claims to check), but NOT fixed in this pass — out of
+the dispatch's five adjudicated items, reported per the dispatch's explicit ask ("report every one
+you find"). Fix, if taken: narrow to `'[data-run-chip].is-selected'`, mirroring
+`'[data-history-table] tr.is-selected'` two rows below it in the same file.
+
+**Verification (real, this pass, IMPL-262..266 together):**
+- `npx tsc --noEmit` → 0 errors.
+- `npx vitest run tests/unit tests/integration` → 328 files, 2470 passed, 1 skipped, 0 failed (up
+  from the pre-pass 2466/0/1 by the 4 new `fmtTok` unit cases — no regression).
+- `RWE_REQUIRE_BROWSER=1 npx vitest run` the 8 named acceptance files (val-018/193/197/198/199/200/
+  201/202) → 37/37 green (8 files), including val-198's 3 new cases (theme order, LAST RUN
+  timestamp, `.is-live` tint via SPEC_ROWS) and val-200's 1 new case (row 3 duration text), all
+  against real Chromium under both themes and a hue move.
+- `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → 33 gaps, 0 severe — same
+  count as IMPL-259/260/261's own baseline; no new gap.
+- Screenshots (self-booting harness, `evidence/v27/`): both themes' home view (theme segment order,
+  LAST RUN timestamp, `.card` no-fill + 5% hover tint, `.is-live` tint) and a node close-up (row 3's
+  three segments including the new duration).

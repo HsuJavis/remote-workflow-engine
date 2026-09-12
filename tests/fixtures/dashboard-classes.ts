@@ -97,4 +97,10 @@ export const TEST_ANCHORS: readonly string[] = [
   // `.rwe-hue-slider` — dual-registered in STYLE_HOOKS and here on purpose, same convention as
   // `.card`/`.t` above: the SPEC_ROWS gradient-track row (REQ-131) keys on it directly.
   '.rwe-hue-slider',
+  // [v27 README-fidelity closure, third audit sweep] `data-status` — already emitted by `app.js`
+  // (`connectionTagEl.dataset.status = connectionState.status`) but never registered or used by a
+  // SPEC_ROW; the CSS still keys on the `.is-live` STYLE_HOOK (that comment on `dashboard.css`'s
+  // `.rwe-connection` block stays true), this is only how the "Live" ROW below finds the element —
+  // same `[data-x] .is-y` split as `[data-node-cell].is-failed`.
+  'data-status',
 ] as const;

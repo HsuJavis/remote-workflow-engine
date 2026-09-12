@@ -8,7 +8,7 @@
 // Red reason (measured): `src/dashboard/lib/runlist.js` does not exist (whole-file import
 // failure).
 import { describe, it, expect } from 'vitest';
-import { matchCards, segmentCounts, sortRows, historyRow, fmtCost, sumTokens } from '../../src/dashboard/lib/runlist.js';
+import { matchCards, segmentCounts, sortRows, historyRow, fmtCost, sumTokens, fmtTok } from '../../src/dashboard/lib/runlist.js';
 
 describe('lib/runlist.js: fmtCost (UT-246, DES-204, ADR-046)', () => {
   it('absent costUSD -> "—" (never $0.00)', () => {
@@ -73,5 +73,27 @@ describe('lib/runlist.js: matchCards / segmentCounts (UT-246, DES-204, REQ-132)'
 describe('lib/runlist.js: sumTokens (UT-246, DES-204)', () => {
   it('sums the four token columns', () => {
     expect(sumTokens({ input: 1, output: 2, cacheRead: 3, cacheWrite: 4 })).toBe(10);
+  });
+});
+
+// [v27 README-fidelity closure] node-cell row 3: "52k tok · $0.31 · 2m 10s" — the "k"/"M"
+// abbreviation this pass added.
+describe('lib/runlist.js: fmtTok (v27 README-fidelity closure, REQ-134)', () => {
+  it('below 1000 renders the plain count', () => {
+    expect(fmtTok(0)).toBe('0');
+    expect(fmtTok(342)).toBe('342');
+  });
+
+  it('a round thousand renders as the README\'s own example (52000 -> "52k")', () => {
+    expect(fmtTok(52000)).toBe('52k');
+  });
+
+  it('a non-round thousand keeps one decimal place', () => {
+    expect(fmtTok(52400)).toBe('52.4k');
+  });
+
+  it('at or above a million abbreviates to M', () => {
+    expect(fmtTok(1200000)).toBe('1.2M');
+    expect(fmtTok(3000000)).toBe('3M');
   });
 });

@@ -29,6 +29,15 @@ export function sumTokens(tokens) {
   return (tokens.input || 0) + (tokens.output || 0) + (tokens.cacheRead || 0) + (tokens.cacheWrite || 0);
 }
 
+// v27 README-fidelity closure: node-cell row 3 (`52k tok · $0.31 · 2m 10s`) shipped the raw sum
+// unabbreviated. Below 1000 the plain count stands; above it, one decimal place with a trailing
+// ".0" stripped, so a round number (52000) reads exactly as the README's own example does (52k).
+export function fmtTok(n) {
+  const unit = n >= 1e6 ? 1e6 : n >= 1e3 ? 1e3 : 1;
+  const suffix = n >= 1e6 ? 'M' : n >= 1e3 ? 'k' : '';
+  return unit === 1 ? String(n) : (n / unit).toFixed(1).replace(/\.0$/, '') + suffix;
+}
+
 // Absent values sort LAST regardless of direction — never coerced to `0`.
 export function sortRows(rows, key, dir) {
   const sign = dir === 'desc' ? -1 : 1;

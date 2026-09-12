@@ -280,7 +280,7 @@ function buildChrome(island) {
 
   const themeGroup = document.createElement('div');
   themeGroup.className = 'rwe-theme-group';
-  for (const t of ['dark', 'light', 'system']) {
+  for (const t of ['system', 'light', 'dark']) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.dataset.theme = t;

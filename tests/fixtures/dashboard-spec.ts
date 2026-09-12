@@ -107,6 +107,14 @@ export const SPEC_ROWS: ReadonlyArray<SpecRow> = [
   // none is added (DES-209's "do not invent a row that cannot fail"); verified by screenshot only.
   { req: 'REQ-131', view: 'home', anchor: '.rwe-hue-slider', prop: 'background-image', expect: { literal: 'linear-gradient(90deg, oklch(0.68 0.07 0), oklch(0.68 0.07 45), oklch(0.68 0.07 90), oklch(0.68 0.07 135), oklch(0.68 0.07 180), oklch(0.68 0.07 225), oklch(0.68 0.07 270), oklch(0.68 0.07 315), oklch(0.68 0.07 0))' } },
 
+  // [v27 README-fidelity closure, third audit sweep] README "Header / chrome": "source tag (`Live`
+  // accent tint · `Offline` red outline · `Demo data` outline)" — `.is-live` shipped border-only
+  // (no fill), the outline look the README reserves for `Offline`/`Demo data`. `[data-status="live"]`
+  // narrows to the state the way `[data-node-cell].is-failed` does elsewhere in this table; a real
+  // page mounts with an actual fetch, so by the time SPEC_ROWS run the connection has already
+  // ticked past `checking` to `live` (measured, val-198's own `networkidle0` wait).
+  { req: 'REQ-131', view: 'home', anchor: '[data-status="live"]', prop: 'background-color', expect: { token: 'accent-100' } },
+
   // -- REQ-132 home (view: home) --
   { req: 'REQ-132', view: 'home', anchor: '.card', prop: 'border-radius', expect: { literal: '3px' } },
   { req: 'REQ-132', view: 'home', anchor: '.card', prop: 'cursor', expect: { literal: 'pointer' } },
@@ -114,7 +122,13 @@ export const SPEC_ROWS: ReadonlyArray<SpecRow> = [
   { req: 'REQ-132', view: 'home', anchor: '.t', prop: 'word-break', expect: { literal: 'break-all' } },
   { req: 'REQ-132', view: 'home', anchor: 'data-section', prop: 'display', expect: { literal: 'flex' } },
   { req: 'REQ-132', view: 'home', anchor: '[data-section] .cards', prop: 'gap', expect: { literal: '16px' } },
-  { req: 'REQ-132', view: 'home', anchor: '.card', prop: 'background-color', expect: { token: 'color-panel' } },
+  // [v27 README-fidelity closure, third audit sweep] this row was hand-copied from what shipped
+  // (a `--color-panel` fill) rather than from the design: the vendored `Workflow Dashboard.dc.html`
+  // (lines 110, 129) sets NO background on `.card` at rest — only `.card.running:hover`/
+  // `.card:hover` carry an accent TINT (dashboard.css). `background:transparent` normalises to
+  // this literal under `getComputedStyle` (same convention as the `is-queued` hollow-dot row
+  // below) — theme/hue-INVARIANT, since "no fill" does not vary with either.
+  { req: 'REQ-132', view: 'home', anchor: '.card', prop: 'background-color', expect: { literal: 'rgba(0, 0, 0, 0)' } },
   // [v27c gate 5 fix] the sweep is DES-209's own table row: `.card.running::before` — `.card`
   // bare carries no animation at all (dashboard.css:173).
   { req: 'REQ-132', view: 'home', anchor: '.card.running::before', prop: 'animation-name', expect: { animation: ['rweSweep', '2.4s'] } },

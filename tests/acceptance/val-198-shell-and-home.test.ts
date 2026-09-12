@@ -61,6 +61,17 @@ beforeAll(async () => {
   await registerPublishedVia(mcpCall, 'val198-running', `await agent('a', { prompt: 'p' }); return 'ok';`);
   await mcpCall('run_start', { name: 'val198-running' });
   await registerPublishedVia(mcpCall, 'val198-registered', `return 'ok';`);
+  // [v27 README-fidelity closure, third audit sweep] a workflow with a TERMINAL run and no active
+  // one — the LAST RUN branch (README: "LAST RUN · 9/11 14:02"), distinct from `val198-running`'s
+  // ACTIVE branch above. No `agent()` call, so it completes without ever reaching the gateway.
+  await registerPublishedVia(mcpCall, 'val198-completed', `return 'ok';`);
+  const completedRun = await mcpCall('run_start', { name: 'val198-completed' });
+  const completedDeadline = Date.now() + 8000;
+  while (Date.now() < completedDeadline) {
+    const s = await mcpCall('run_status', { runId: completedRun.runId });
+    if (['completed', 'failed'].includes(s.status)) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
 }, 30000);
 
 afterAll(async () => {
@@ -146,6 +157,23 @@ describe('the v27 dashboard shell + Workflows home, real Chromium (VAL-198, REQ-
     }
   }, 20000);
 
+  // [v27 README-fidelity closure, third audit sweep] README "Header / chrome": "theme seg 系統 / 淺
+  // / 深" — shipped as 深/淺/系統 (dark/light/system). DOM order is TEXT/ATTRIBUTE order, not a
+  // style fact — SPEC_ROWS cannot carry it either; checked directly here, same convention as the
+  // hue->lang->theme cluster order above.
+  itReal('the theme segment orders system -> light -> dark (README "Header / chrome")', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+      const order = await page.$$eval('.rwe-theme-group button', (els) => els.map((e) => (e as HTMLElement).dataset.theme));
+      expect(order).toEqual(['system', 'light', 'dark']);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
   // [v27 README-fidelity closure] README "Header / chrome": the hue slider carries a "current
   // degrees" readout. Its VALUE is text content, not a style fact — SPEC_ROWS cannot express it
   // either; checked directly here (existence + format + that it tracks a real `input` event).
@@ -196,6 +224,28 @@ describe('the v27 dashboard shell + Workflows home, real Chromium (VAL-198, REQ-
         return cards.some((c) => (c.textContent ?? '').includes('val198-running'));
       });
       expect(runningCardBorder).toBe(true);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
+  // [v27 README-fidelity closure, third audit sweep] README "1. Workflows home": ACTIVE takes a run
+  // id (`ACTIVE · a3f9c2e1`), LAST RUN takes a TIMESTAMP (`LAST RUN · 9/11 14:02`) — two distinct
+  // states, not a contradiction. `val198-completed` (beforeAll) is terminal with no active run, so
+  // its card's kicker exercises the LAST RUN branch specifically. Text content, not a style fact —
+  // SPEC_ROWS cannot express it; checked directly here.
+  itReal('the LAST RUN kicker shows a timestamp, not a run id (README "1. Workflows home")', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+      const kicker = await page.evaluate(() => {
+        const cards = Array.from(document.querySelectorAll('.card'));
+        const card = cards.find((c) => (c.textContent ?? '').includes('val198-completed'));
+        return card?.querySelector('.kicker')?.textContent ?? null;
+      });
+      expect(kicker).toMatch(/^LAST RUN · \d{1,2}\/\d{1,2} \d{2}:\d{2}$/);
     } finally {
       await browser.close();
     }

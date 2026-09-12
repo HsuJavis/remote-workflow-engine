@@ -65,11 +65,15 @@
 // `dashboard.css`. Item 3 above (no `shortModel` formatter) is also fixed — see `lib/model.js` and
 // its use in row 2 below.
 import { SWIMLANE_BOX, cellRect, svgBox, edgePath } from '../lib/swimlane.js';
-import { sumTokens, fmtCost } from '../lib/runlist.js';
+import { sumTokens, fmtCost, fmtTok } from '../lib/runlist.js';
 import { t, warningText } from '../lib/strings.js';
 import { shortModel } from '../lib/model.js';
 import { endpointsFor, getJSON } from './poll.js';
 import { openAgentPanel } from './agent-panel.js';
+// `ui/home.js`'s own duration formatter (README "1. Workflows home" avg-duration meta line) — a
+// SECOND private copy of `lib/runlist.js`'s `${m}m ${s}s` core; reused here rather than adding a
+// third/fourth (v27 README-fidelity closure, node-cell row 3's duration).
+import { formatDuration } from './home.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 
@@ -302,7 +306,12 @@ export function paintSwimlane(svgEl, payload, opts) {
       if (!predicted && c.tokens) {
         const usageLine = document.createElement('span');
         usageLine.className = 'cell-usage';
-        usageLine.textContent = sumTokens(c.tokens) + ' tok · ' + fmtCost(c.costUSD, c.unpriced ? 1 : 0, lang);
+        // README node-cell row 3: `52k tok · $0.31 · 2m 10s` — duration appended only once both
+        // endpoints exist (`durationMs`, v27 README-fidelity closure); omitted rather than a
+        // fabricated "—" for a call still in flight, same convention row 3's own tokens/cost gate
+        // already follows above.
+        const duration = c.durationMs === undefined ? '' : ' · ' + formatDuration(c.durationMs);
+        usageLine.textContent = fmtTok(sumTokens(c.tokens)) + ' tok · ' + fmtCost(c.costUSD, c.unpriced ? 1 : 0, lang) + duration;
         cellEl.appendChild(usageLine);
       }
 

@@ -174,6 +174,26 @@ describe('the swimlane run graph, real Chromium (VAL-200, REQ-134)', () => {
     }
   }, 20000);
 
+  // [v27 README-fidelity closure] README node-cell row 3: "52k tok · $0.31 · 2m 10s" — TEXT
+  // CONTENT, not a style fact, so SPEC_ROWS (getComputedStyle-shaped only) cannot carry the
+  // duration segment or the k/M abbreviation; checked directly here instead. `runId`'s 9 agents are
+  // all `done` by `beforeAll`, so every `.cell-usage` on this page has a real `durationMs`.
+  itReal('node row 3 (.cell-usage) carries a duration segment alongside tokens/cost', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/dashboard/${runId}`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await page.waitForSelector('#dag-graph', { timeout: 3000 });
+      const usageTexts = await page.$$eval('#dag-zoom .cell-usage', (els) => els.map((e) => e.textContent ?? ''));
+      expect(usageTexts.length).toBeGreaterThan(0);
+      // three ' · '-joined segments, the last shaped like a duration ("0m 0s"-style, never blank).
+      expect(usageTexts.every((s) => /^.+ tok · .+ · \d+m \d+s$/.test(s))).toBe(true);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
   itReal('a legend row renders below the graph with the run summary (nodes/tokens/cost)', async () => {
     const puppeteer = (await import('puppeteer')).default;
     const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });

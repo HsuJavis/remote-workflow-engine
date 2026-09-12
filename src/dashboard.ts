@@ -109,6 +109,11 @@ export interface WorkflowCard {
   metrics: WorkflowMetrics;
   activeRunId?: string;
   latestRunId?: string;
+  /** v27 README-fidelity closure: the LAST RUN kicker (README: `LAST RUN · 9/11 14:02`) names a
+   *  TIMESTAMP, not the id `latestRunId` already carries — the run's own `terminalAt` (else
+   *  `createdAt` for the rare non-terminal edge the ACTIVE branch didn't already claim). Set
+   *  alongside `latestRunId`, from the SAME run, so the two never drift. */
+  latestRunAt?: string;
 }
 
 export interface HomeView {
@@ -187,11 +192,13 @@ export function buildHomeView(
   // Gather active and latest run per named workflow
   const activeRunId = new Map<string, string>();
   const latestRunId = new Map<string, string>();
+  const latestRunAt = new Map<string, string>();
   for (const r of runs) {
     const name = r.name;
     if (name === undefined) continue;
     if (ACTIVE_STATUSES.has(r.status)) activeRunId.set(name, r.runId);
     latestRunId.set(name, r.runId); // last one wins (list order)
+    latestRunAt.set(name, r.terminalAt ?? r.createdAt); // same run, same "last one wins"
   }
   const running: WorkflowCard[] = [];
   const registered: WorkflowCard[] = [];
@@ -204,7 +211,7 @@ export function buildHomeView(
       group: isActive ? 'running' : 'registered',
       metrics: metrics.get(name) ?? { ...ZERO_METRICS },
       ...(isActive ? { activeRunId: activeRunId.get(name) } : {}),
-      ...(latestRunId.has(name) ? { latestRunId: latestRunId.get(name) } : {}),
+      ...(latestRunId.has(name) ? { latestRunId: latestRunId.get(name), latestRunAt: latestRunAt.get(name) } : {}),
     };
     if (isActive) running.push(card);
     else registered.push(card);
@@ -223,7 +230,7 @@ export function buildHomeView(
       description: '',
       group: 'other',
       metrics: metrics.get(name) ?? { ...ZERO_METRICS },
-      ...(latestRunId.has(key) ? { latestRunId: latestRunId.get(key) } : {}),
+      ...(latestRunId.has(key) ? { latestRunId: latestRunId.get(key), latestRunAt: latestRunAt.get(key) } : {}),
     });
   }
   return { running, registered, other };
@@ -313,6 +320,12 @@ export interface LayoutCell {
   tokens?: AgentRecord['tokens'];
   costUSD?: number;
   unpriced?: boolean;
+  /** v27 README-fidelity closure: node cell row 3 ("52k tok · $0.31 · 2m 10s") named a duration
+   *  the cell payload never carried — `AgentRecord.startedAt`/`endedAt` reach `buildDagModel`'s
+   *  `DagAgentNode` but never `layoutGraph`'s `LayoutCell`. Same derivation as that sibling model
+   *  (`dashboard.ts`'s own `buildDagModel`): present only once both timestamps exist, i.e. a
+   *  finished call — never a guess at an in-flight duration. */
+  durationMs?: number;
 }
 
 export interface LayoutEdge {
@@ -424,6 +437,10 @@ export function layoutGraph(
     cells.push({ ...cell, col: laneIdx + 1, row: nextRow(laneIdx) });
     agentCellCount++;
   };
+  // Same derivation as `buildDagModel`'s `DagAgentNode.durationMs` above — undefined until both
+  // timestamps land (never a guess at an in-flight duration).
+  const durationOf = (a: AgentRecord): number | undefined =>
+    a.startedAt && a.endedAt ? Math.max(0, Date.parse(a.endedAt) - Date.parse(a.startedAt)) : undefined;
 
   // --- Group live agents by resolved LANE ORDINAL (never by phase-title string) ---
   const byLane = new Map<number, AgentRecord[]>();
@@ -442,7 +459,7 @@ export function layoutGraph(
   // --- Implicit lane 0 (no resolvable lane — legally before the first phase()) ---
   for (const a of implicitLane0) {
     if (agentCellCount >= maxNodes) { truncated = true; break; }
-    placeCell(0, { id: a.agentId, kind: 'agent', laneSpan: 1, label: a.label, state: a.state, agentId: a.agentId, tokens: a.tokens, costUSD: a.costUSD, unpriced: a.unpriced });
+    placeCell(0, { id: a.agentId, kind: 'agent', laneSpan: 1, label: a.label, state: a.state, agentId: a.agentId, tokens: a.tokens, costUSD: a.costUSD, unpriced: a.unpriced, durationMs: durationOf(a) });
   }
 
   // --- Declared lanes: label-matched (static) or frame-grouped-with-warning (dynamic) ---
@@ -454,7 +471,7 @@ export function layoutGraph(
       warnings.push(`lane ${lane.index}${lane.title ? ` (${lane.title})` : ''} is dynamic: agents cannot be statically slotted`);
       for (const a of laneAgents) {
         if (agentCellCount >= maxNodes) { truncated = true; break; }
-        placeCell(lane.index, { id: a.agentId, kind: 'agent', laneSpan: 1, label: a.label, state: a.state, agentId: a.agentId, tokens: a.tokens, costUSD: a.costUSD, unpriced: a.unpriced });
+        placeCell(lane.index, { id: a.agentId, kind: 'agent', laneSpan: 1, label: a.label, state: a.state, agentId: a.agentId, tokens: a.tokens, costUSD: a.costUSD, unpriced: a.unpriced, durationMs: durationOf(a) });
         warnings.push(`agent ${a.agentId} unmatched to the predicted layout: frame-grouped`);
       }
       continue;
@@ -467,7 +484,7 @@ export function layoutGraph(
     for (const a of laneAgents) {
       if (agentCellCount >= maxNodes) { truncated = true; break; }
       const matched = a.label !== undefined && labelSet.has(a.label);
-      placeCell(lane.index, { id: a.agentId, kind: 'agent', laneSpan: 1, label: a.label, state: a.state, agentId: a.agentId, tokens: a.tokens, costUSD: a.costUSD, unpriced: a.unpriced });
+      placeCell(lane.index, { id: a.agentId, kind: 'agent', laneSpan: 1, label: a.label, state: a.state, agentId: a.agentId, tokens: a.tokens, costUSD: a.costUSD, unpriced: a.unpriced, durationMs: durationOf(a) });
       if (!matched) warnings.push(`agent ${a.agentId} unmatched to the predicted layout: frame-grouped`);
     }
     // Inert cells for predicted slots that matched no live agent yet (v11 DES-064 behavior kept).
@@ -495,7 +512,7 @@ export function layoutGraph(
       warnings.push(`lane ${laneIdx} is beyond the predicted layout: appended`);
       for (const a of byLane.get(laneIdx)!) {
         if (agentCellCount >= maxNodes) { truncated = true; break; }
-        placeCell(laneIdx, { id: a.agentId, kind: 'agent', laneSpan: 1, label: a.label, state: a.state, agentId: a.agentId, tokens: a.tokens, costUSD: a.costUSD, unpriced: a.unpriced });
+        placeCell(laneIdx, { id: a.agentId, kind: 'agent', laneSpan: 1, label: a.label, state: a.state, agentId: a.agentId, tokens: a.tokens, costUSD: a.costUSD, unpriced: a.unpriced, durationMs: durationOf(a) });
       }
     }
   }

@@ -39,12 +39,24 @@ function L(lang, key) {
 
 // `lib/runlist.js`'s own duration formatter is not exported (it is a private helper of
 // `historyRow`) — this is a small, deliberate duplication rather than a change to TASK-207's file.
-function formatDuration(ms) {
+// Exported (v27 README-fidelity closure) so `ui/run.js`'s node-cell row 3 reuses THIS convention
+// instead of adding a third/fourth copy of the same `${m}m ${s}s` formula.
+export function formatDuration(ms) {
   if (ms === null || ms === undefined) return '—';
   const totalSec = Math.max(0, Math.round(ms / 1000));
   const m = Math.floor(totalSec / 60);
   const s = totalSec % 60;
   return `${m}m ${s}s`;
+}
+
+// README "1. Workflows home": `LAST RUN · 9/11 14:02` — a date+time, distinct from ACTIVE's run
+// id. No existing formatter in this codebase produces "M/D HH:MM" (unlike the duration case above).
+function fmtLastRunAt(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 function metaLine(card, lang) {
@@ -68,13 +80,14 @@ function buildCard(card, lang, handlers) {
 
   const kicker = document.createElement('div');
   kicker.className = 'kicker';
-  // `WorkflowCard` carries no last-run timestamp (only the id) — a fabricated date would be a
-  // confident-wrong statement of the same class `fmtCost` exists to prevent, so this renders the
-  // id rather than inventing "M/D HH:MM".
+  // README "1. Workflows home": ACTIVE takes the run id (`ACTIVE · a3f9c2e1`); LAST RUN takes a
+  // timestamp (`LAST RUN · 9/11 14:02`), not the id — `WorkflowCard.latestRunAt` (v27
+  // README-fidelity closure) now carries that run's `terminalAt`/`createdAt`.
   if (card.activeRunId) {
     kicker.textContent = `${L(lang, 'active')} · ${card.activeRunId.slice(0, 8)}`;
-  } else if (card.latestRunId) {
-    kicker.textContent = `${L(lang, 'lastRun')} · ${card.latestRunId.slice(0, 8)}`;
+  } else if (card.latestRunAt) {
+    const at = fmtLastRunAt(card.latestRunAt);
+    if (at) kicker.textContent = `${L(lang, 'lastRun')} · ${at}`;
   }
   el.appendChild(kicker);
 
