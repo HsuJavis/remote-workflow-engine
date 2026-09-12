@@ -11825,12 +11825,18 @@ cross-checked directly against `deriveExpectedGraph` for INV-V26-3's third-consu
 carries no `avgCostUSD`/`unpricedRuns` (reads `undefined`, never `null`).
 
 ### IT-168 — `dag-masking-auth.test.ts` extended: `dag.lanes`/predicted overlay/`describe.phases[].agents` ALL served UNCONDITIONALLY (flipped from masked to positive)
-- **status:** red
+- **status:** green
 - **traces:** DES-197, DES-198, ARCH-131, ARCH-126, ADR-051, ADR-055, TASK-201, TASK-202, TASK-203, REQ-140, REQ-133, REQ-134
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27b
+
+**Re-measured (Gate 8, 2026-09-12):** `npx vitest run tests/integration/dag-masking-auth.test.ts` →
+8/8 passed (was 3/8 red at the below narrative). TASK-202 (`src/mcp-facade.ts` `phases[].agents`
+join) and TASK-203 (`src/server.ts`'s `authEnabled` deletions) both landed at checkpoint `f86ea25`
+since this section's red narrative was written; the below is preserved as history of the original
+red measurement, not a current description of the code.
 
 **[v27b amendment, Round v27b owner ruling, ADR-051]: FLIPPED from masked to positive, and EXTENDED.**
 The two v27 cases that asserted `describe.phases[].agents` stays ABSENT under auth (masking) are
@@ -11885,12 +11891,18 @@ case 1 is REWRITTEN in place (masked-negative → unconditional-positive) and th
 same-direction on both servers) — no orphaned assertions remain.
 
 ### IT-169 — `dashboard-http.test.ts` extended: `record` on agent detail, `lanes`/`current` on DAG, real CSP, and the two reachable warning-producer recipes
-- **status:** red
+- **status:** green
 - **traces:** DES-197, DES-198, ARCH-130, ARCH-131, ARCH-123, TASK-202, TASK-203, REQ-140, REQ-131, REQ-133
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v27b
+
+**Re-measured (Gate 8, 2026-09-12):** `npx vitest run tests/integration/dashboard-http.test.ts` →
+13/13 passed, including both the `record`-on-agent-detail case and the `lanes`/`current`-on-DAG
+case named in this entry's title. TASK-202/TASK-203 landed at checkpoint `f86ea25` since this
+section's red narrative was written; the below is preserved as history of the original red
+measurement, not a current description of the code.
 
 File: `tests/integration/dashboard-http.test.ts` (3 pre-v27b cases + 2 v27b additions on the existing
 real `createServer()` harness — all 9 pre-existing v27 cases re-run and stay green). RED (measured):

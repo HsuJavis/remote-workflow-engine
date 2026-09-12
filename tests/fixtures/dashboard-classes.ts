@@ -45,6 +45,12 @@ export const STYLE_HOOKS: readonly string[] = [
   'is-pending', 'cell', 'is-running', 'is-done', 'is-failed', 'is-queued', 'is-predicted',
   'cell-dot', 'cell-label', 'cell-model', 'cell-effort', 'cell-usage', 'cell-trigger', 'legend',
   'run-summary',
+  // -- graph container (DES-209 boundary (2): run.js's/workflow.js's own graphContainer/zoom
+  // sizing, moved off `.style.*` — no handoff spec exists for these px values (measured: the
+  // handoff's own graph wrapper is `overflow:auto` with dynamic width/height, no fixed height, no
+  // pan/zoom at all — it predates REQ-129), so the pre-existing per-view heights are kept verbatim
+  // and only relocated. --
+  'graph-frame',
 
   // -- REQ-135 agent panel --
   'agent-backdrop', 'agent-panel', 'from-left', 'stat-cards', 'stat-label',

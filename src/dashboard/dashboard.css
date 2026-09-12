@@ -197,6 +197,15 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
    absolutely positioned from the same lib/swimlane.js px as the SVG lane hairlines/edges — TASK-210's
    own migration (deferred, see src/dashboard/ui/run.js's file banner); these rules are declared here
    ahead of that emitter, same order of operations as the class contract itself. */
+/* [v27c] DES-209 boundary (2): the graph wrapper's own sizing (`run.js`/`workflow.js`'s
+   `buildShell`), relocated off `.style.*` — no handoff spec exists for these px values (the
+   handoff's graph wrapper is `overflow:auto` with dynamic width/height and no pan/zoom at all,
+   predating REQ-129), so the two views' pre-existing heights are kept verbatim, only moved. */
+.graph-frame{overflow:hidden;margin:10px 0}
+.run-view .graph-frame{height:420px}
+.workflow-view .graph-frame{height:340px}
+.run-view .graph-frame .zoomable{min-height:380px}
+.workflow-view .graph-frame .zoomable{min-height:300px}
 .cell-layer{position:absolute;inset:0;pointer-events:none}
 .cell-layer .cell{pointer-events:auto}
 .lane-head{position:absolute;top:0;display:flex;align-items:center;gap:8px;height:48px;padding:0 14px;box-sizing:border-box;border-bottom:1px solid var(--color-line);color:var(--color-muted);font-weight:600;font-size:13px;letter-spacing:.04em;text-transform:uppercase;white-space:nowrap}

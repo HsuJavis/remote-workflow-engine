@@ -4211,7 +4211,7 @@ was not re-audited in this pass. Both TASKs will likely still show as gaps in `s
 - **traces:** TASK-214, DES-209, DES-201, DES-200, DES-203
 - **greens:** dashboard-class-contract.test.ts (13/13, new)
 - **files:** src/dashboard/dashboard.css, tests/fixtures/dashboard-classes.ts, tests/fixtures/dashboard-spec.ts, tests/unit/dashboard-class-contract.test.ts, tests/unit/dashboard-no-design-values.test.ts
-- **commit:** pending (working tree)
+- **commit:** 09c6089
 - **iter:** v27c
 
 Rewrites `dashboard.css` from the 126-line pre-v27c port to the full v27c stylesheet: all seven
@@ -4544,3 +4544,173 @@ orchestrator should read this as "the client tree is now READABLE to `tsc`, not 
   STYLE_HOOKS-emitter finding (`tag-accent`/`tag-neutral`/`cell-model`/`cell-effort` missing) and its
   `.style.<prop>` count (10, unchanged from IMPL-226's own "12 → 10") — none traced to
   `tsconfig.json`, `poll.js`, `workflow.js`, or either edited test in this run's own stack traces.
+
+### IMPL-230 — TASK-202 backfill: `describe.phases[].agents` served unconditionally, and `record` added to the agent-detail success branch
+- **status:** done
+- **traces:** TASK-202, DES-197, ARCH-131, ADR-051, ADR-055, REQ-140, REQ-133
+- **greens:** IT-168, IT-169
+- **files:** src/mcp-facade.ts, src/tool-specs.ts, README.md
+- **commit:** f86ea25
+- **iter:** v27b
+
+Backfill — this code landed in the same 17-implementer Gate 6 checkpoint (`f86ea25`, "Gate 6
+partial") as TASK-198/200/201/203/206..212, with no IMPL row of its own (the same out-of-band
+pattern already recorded at IMPL-141/142 and repaired at IMPL-221..224). `McpFacade.workflowDescribe`
+(`src/mcp-facade.ts`) now joins `predictedLanes(full.script)` onto `view.phases` BY ORDINAL: a phase
+index with a derived lane gets `agents` (`[]` for a dynamic lane with no static labels, never
+absent); a phase index with no derived lane gets no `agents` key at all — served to every caller,
+auth on or off, with no masking predicate and no `maskPredictedOverlay` field added to
+`McpFacadeDeps`. `runAgentLog` (same file) now returns `AgentLogView`, which includes `record: agent`
+(the full `AgentRecord` already resolved earlier in the method) on the success branch only — the
+not-found/error branches return earlier and carry no `record`. `src/tool-specs.ts`'s
+`workflow_describe` row description was extended to name `phases[].agents` so a cold, schema-only
+client learns it without fetching first (REQ-106's precedent); `README.md`'s and `tests/tool-specs`'s
+own byte-check are TASK-200's file, not touched here.
+
+**Verification (real runs, this pass):**
+- `npx vitest run tests/integration/dag-masking-auth.test.ts tests/integration/dashboard-http.test.ts`
+  → 21/21 passed (8 + 13) — covers IT-168 (both auth on/off servers, the stabilized INV-V27-9 parity,
+  live key-set, positive anchors) and IT-169 (`record` on agent detail, byte-compatible DAG keys).
+- `git show f86ea25 -- src/mcp-facade.ts src/tool-specs.ts README.md` confirms all three hunks (the
+  `phases` join in `describeInternal`, the `record: agent` addition to `runAgentLog`'s return, the
+  `workflow_describe` description string, and README.md:377's `phases[].agents` row) are this
+  commit's own diff, not a later one.
+
+### IMPL-231 — TASK-199 backfill: `RunManager.listSummaries()`, the four-field usage projection, and both routes moved onto it
+- **status:** done
+- **traces:** TASK-199, DES-194, ARCH-127, ADR-052, REQ-141, REQ-132, REQ-133
+- **greens:** UT-234, IT-167
+- **files:** src/run-manager.ts, src/server.ts, README.md, scripts/bench-run-list.ts
+- **commit:** f86ea25
+- **iter:** v27
+
+Backfill — same checkpoint commit as IMPL-230 above, same reason: 17 implementers landed on
+`f86ea25` with no per-task IMPL row. `RunManager.listSummaries()` (`src/run-manager.ts`) is the one
+accessor both `/api/runs` and `/api/home` (`src/server.ts`) now call instead of `store.listRuns()`
+directly; boot recovery and the GC sweep are untouched, still on `store.listRuns()`. Precedence per
+row: (1) a live entry folds `foldUsageFromRecords` over its current `AgentRecord[]`; (2) a store row
+that already carries a projected `usage` (DES-193) passes through; (3) a terminal row with neither,
+up to `BACKFILL_PER_TICK=25` per call, is healed via one `store.getRun` + a memoizing
+`backfillUsage` write, gated on the transcript actually carrying a `'done'`/`'failed'` agent record
+(never memoized off a zero-record run, which would make `agentCount` read back as present); (4)
+otherwise passed through absent. `summarizeUsage(u, agentCount)` is the shared projection: it keys
+absence on `agentCount === 0` (decided BEFORE the fold), never on `costUSD === 0`, and omits
+`agentCount` itself when the caller has none to report. `README.md`'s `run_list` row documents the
+four optional fields and the all-four-omitted-together rule. `scripts/bench-run-list.ts` (new, 77
+lines) records p50/p95 of `/api/runs`, `/api/home` and boot recovery at N=1000 — an ADR-052
+measurement obligation, not itself a red/green test.
+
+**Per `state.yaml`'s `pending:` "v27 ORCHESTRATOR WAIVER (2026-09-12)" entry: TASK-199's DoD
+sub-clause requiring the regenerated tool-surface table to name the four optional fields is WAIVED**
+by the orchestrator, not met here — the artifact structurally truncates before the fields serialize
+(`RunSummary` declares them last, `v24-tool-surface.test.ts`'s 200-char truncation is already spent
+inside the first run object). See `state.yaml` for the ruling and its evidence; not restated as this
+entry's own judgement. `.sdlc/features/001-remote-workflow-engine/v24-tool-surface.md` itself was
+not touched by `f86ea25` or by any later commit (confirmed: `git show f86ea25 --stat` lists no hunk
+for it).
+
+**Verification (real runs, this pass):**
+- `npx vitest run tests/unit/run-manager-summarize-usage.test.ts tests/integration/usage-live-equals-fold.test.ts`
+  → 7/7 passed (5 + 2) — covers UT-234 and IT-167.
+- `git show f86ea25 -- src/run-manager.ts src/server.ts` confirms `summarizeUsage`, `listSummaries()`,
+  `_usageBackfillChecked`, `BACKFILL_PER_TICK`, and both `/api/home`/`/api/runs` call-site changes
+  are this commit's own diff.
+- `git show f86ea25 --stat -- scripts/bench-run-list.ts` confirms the file is new in this commit
+  (77 insertions, 0 prior lines).
+
+### IMPL-232 — TASK-210 seam closure: REQ-134 row 2 (model/effort join) and the `.graph-frame` hook (DES-209 boundary (2))
+
+- **status:** done
+- **traces:** TASK-210, DES-209, DES-203, DES-206, REQ-134
+- **greens:** UT-256
+- **files:** src/dashboard/ui/run.js, src/dashboard/ui/workflow.js, src/dashboard/dashboard.css, tests/fixtures/dashboard-classes.ts
+- **commit:** pending (working tree)
+- **iter:** v27
+
+Closes the two items IMPL-226 left REPORTED rather than fixed (both outside that pass's own scope).
+
+**(1) REQ-134 row 2 — model short name + effort tag.** The routed diagnosis in `state.yaml`'s "v27
+ORCHESTRATOR CORRECTION" is applied as written: no wire shape changed. `paintSwimlane` (`ui/run.js`)
+now takes two optional `opts`: `agentsById` (agentId -> `AgentRecord`, from the run view body's own
+`agents[]`) and `pAgents` (`describe.params.agents`, by label). Per cell: `model = rec?.model ||
+declared.model?.default`, `effort = declared.effort?.default` (AgentRecord carries no applied-effort
+field at all, so effort has exactly one source) — rendered as `.cell-model` (raw model id; no
+`shortModel` formatter exists anywhere in `lib/`, so none is invented here with no Gate 5 oracle —
+flagged below) and `.tag.tag-neutral.cell-effort`, both `'—'` on absence.
+
+`ui/workflow.js` already holds `describe` in scope everywhere it calls `paintSwimlane` (both the
+predicted-overlay branch and the real-run branch), so it passes `pAgents` straight through, plus
+`agentsById` built from the same `viewRes.body.agents` it already fetches for `renderLegend`. No
+extra network call.
+
+`ui/run.js`'s OWN standalone route (`/dashboard/:runId`) is the harder case: its `ctx` carries no
+workflow name (a bookmarked URL is legacy-compatible and name-free, `app.js`'s own routing comment),
+and neither the `/dag` payload nor `/api/runs/:id`'s body carries one either (`RunStatusView` has no
+`name` field — confirmed by reading `src/types.ts`). Resolving it required one genuinely NEW
+client-side lookup: `onTick` fetches the EXISTING `/api/runs` list once, finds the matching `runId`,
+caches `.name`, then fetches `/api/workflows/:name/describe` once per resolved name (same
+once-per-key memo shape as `ui/workflow.js`'s own `diagramKey`). Both fetch statuses fold into the
+tick's return value alongside the existing `/api/runs/:id` one.
+
+**(2) The `.graph-frame` hook (DES-209 boundary (2)).** `graphContainer.style.overflow/height/margin`
+and `zoom.style.minHeight` in both `run.js`'s and `workflow.js`'s `buildShell` are replaced by a
+`.graph-frame` class (`dashboard.css`, new `STYLE_HOOKS` entry). **No handoff spec exists for the
+actual pixel values** — measured against
+`/tmp/claude-1000/.../scratchpad/handoff/Workflow Dashboard.dc.html:200-201`: the handoff's own graph
+wrapper is `overflow:auto` sized dynamically from the live `gW`/`gH`, with NO fixed height, no
+`min-height` and no pan/zoom at all (it predates REQ-129's zoom/pan contract, which is a hard
+non-regression here). The pre-existing per-view figures (420/380px run, 340/300px workflow,
+`margin:10px 0`) are therefore kept VERBATIM, only relocated — `.graph-frame` carries the shared
+`overflow`/`margin`, `.run-view .graph-frame` / `.workflow-view .graph-frame` carry the two heights,
+`.run-view .graph-frame .zoomable` / `.workflow-view .graph-frame .zoomable` the two min-heights.
+`#diagram-zoom` (`workflow.js`) is `.zoomable` but lives OUTSIDE `.graph-frame` (a sibling of it on
+`root`), so it is untouched, as intended.
+
+Both file banners are rewritten to drop the two now-resolved REPORTED items and avoid re-introducing
+the `.style.<prop>` regex trap `dashboard-no-design-values.test.ts` scans raw source (comments
+included) for — confirmed by grep before/after, not by inspection alone.
+
+**Verification (real runs, this pass):**
+- `npx vitest run tests/unit/dashboard-no-design-values.test.ts` → **before: 5/7 (2 failed — the
+  `cell-model`/`cell-effort` emitter check, and the 10-line `.style.<prop>` violation list); after:
+  7/7.**
+- `npx tsc --noEmit` → 0 errors (unchanged).
+- `npx vitest run tests/unit/dashboard-class-contract.test.ts` → 13/13 unchanged (the new
+  `graph-frame` hook does not break TASK-214's own lock).
+- `npx vitest run tests/unit tests/integration` → 323 passed / 3 failed files (2449 passed / 3
+  failed / 1 skipped). Two of the three reds are the SAME pre-existing `state.yaml` "v27 GATE 5
+  DEFECT QUEUE" items (`dashboard-client-corpus.test.ts` UT-249's stale premise;
+  `static-assets-route.test.ts`'s traversal case) — unchanged by this pass, confirmed by reading both
+  files' failure text (neither mentions `run.js`/`workflow.js`/`dashboard.css`). The third,
+  **`dashboard-diagram-render.test.ts:103`, is a genuine NEW regression this pass causes and is
+  reported below, not fixed** (the file is TASK-213's, outside this pass's `files:`).
+- `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-193-dag-fit-and-columns.test.ts
+  tests/acceptance/val-197-diagram-drag-pan.test.ts tests/acceptance/val-199-workflow-detail.test.ts
+  tests/acceptance/val-200-swimlane.test.ts tests/acceptance/val-201-agent-panel.test.ts` → real
+  Chromium found (`~/.cache/puppeteer/chrome`), 15/16 passed. val-193/197/200/201 fully green
+  (val-200 includes the `#dag-zoom [data-node-cell]` 216×74 three-row case and the run-view
+  `SPEC_ROWS` pass under both themes + a hue move). val-199's own `SPEC_ROWS` case has 9 pre-existing
+  REQ-133 failures (`data-history-table` width, `tr.is-selected` background-color token comparison,
+  `.mono` font-family quoting) — none of these classes/rules were touched by this pass (grep-
+  confirmed: `.mono`/`.table`/`tr.is-selected` are untouched lines in `dashboard.css`, and this pass
+  edited no table-rendering code in `workflow.js`); reported, not fixed, as out of `files:`.
+- `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → 1606 items / 47 gaps (down
+  from the last-recorded 1601/50 baseline — concurrent Gate 6 landings, not this pass's own count to
+  reconcile alone).
+
+**Needs clarification / reported defects (not fixed here, outside this pass's `files:`):**
+1. **New test regression — `dashboard-diagram-render.test.ts:103`** (`tests/unit/`, TASK-213's file):
+   `expect((corpus.match(/\/describe/g) ?? []).length).toBe(1)` assumed exactly one client-side call
+   site ever builds a `/describe` URL (`poll.js`'s `ROUTES.workflow`). Item (1) above adds a second,
+   necessary one in `ui/run.js` — architecturally unavoidable given the constraints (`ROUTES.run`'s
+   `ctx` has no `name` to key on until the async `/api/runs` lookup resolves one, and `poll.js` is
+   out of this and TASK-210's `files:` either way). Measured: count is 2, not 3 (a duplicate literal
+   in this pass's own first comment draft was reworded out). Suggested fix: relax the assertion (e.g.
+   `toBeGreaterThanOrEqual(1)`) or split it to name both producers — a verifier/TASK-213-owner call,
+   not this pass's to make by editing a test outside its scope.
+2. **No `shortModel` formatter exists** anywhere in `src/dashboard/lib/` — `.cell-model` renders the
+   raw model id (clipped by its own `text-overflow:ellipsis`). Writing one here with no Gate 5 oracle
+   for it would be untested implementation; flagged for a DES/task decision.
+3. Val-199's 9 REQ-133 `SPEC_ROWS` failures (above) are pre-existing and unrelated to this pass's two
+   files — reported for whichever task/gate owns `ui/workflow.js`'s history table and
+   `dashboard.css`'s `.table`/`.mono`/`tr.is-selected` rules.

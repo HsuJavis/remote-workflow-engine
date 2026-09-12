@@ -14,13 +14,14 @@
 // (which run is selected lives in THIS view, not in `ctx`), so it is made here via `getJSON` and its
 // statuses are returned for `app.js` to fold into the connection reducer.
 //
-// REPORTED, not fixed here (same gap `ui/run.js`'s own header names for its identical container):
-// `buildShell`'s `graphContainer.style.overflow/height/margin` and `zoom.style.minHeight` are named
-// on this task's card as moving to the stylesheet, but `dashboard.css`/`dashboard-classes.ts`
-// declare no hook for them (measured: `tests/unit/dashboard-no-design-values.test.ts` still lists
-// all four as violations after this task's own edits land). TASK-214 owns `dashboard.css`
-// exclusively (DES-209 boundary 6) so this file cannot add one; left inline rather than removed
-// with no CSS replacement, which would risk val-193/197's real fit/pan proof.
+// [v27 seam closure] `buildShell`'s graph container now carries the `.graph-frame` class
+// (`dashboard.css`/`dashboard-classes.ts`, DES-209 boundary (2)) instead of setting its sizing as
+// element properties directly — see `ui/run.js`'s own banner for the full reasoning (no handoff
+// spec exists for the actual numbers, so this view's pre-existing figures are kept, only relocated).
+//
+// REQ-134 row 2 (model short name + effort tag, `ui/run.js`'s `paintSwimlane`): this view already
+// has `describe` in scope wherever it paints a figure, so it passes `pAgents` straight through with
+// no extra fetch — see `ui/run.js`'s own banner for the join `paintSwimlane` performs with it.
 import { paintSwimlane, renderLegend, initZoomable, currentLang } from './run.js';
 import { endpointsFor, getJSON } from './poll.js';
 import { historyRow } from '../lib/runlist.js';
@@ -96,13 +97,10 @@ function buildShell(container) {
   root.appendChild(predictedLabel);
 
   const graphContainer = document.createElement('div');
-  graphContainer.style.overflow = 'hidden';
-  graphContainer.style.height = '340px';
-  graphContainer.style.margin = '10px 0';
+  graphContainer.className = 'graph-frame'; // DES-209 boundary (2) — sizing lives in dashboard.css.
   const zoom = document.createElement('div');
-  zoom.className = 'zoomable';
-  zoom.style.minHeight = '300px'; // see run.js's own comment: keeps the pan hit-area filling the
-                                   // visible container even when the painted graph is short.
+  zoom.className = 'zoomable'; // see run.js's own comment: keeps the pan hit-area filling the
+                                // visible container even when the painted graph is short.
   const svgEl = document.createElementNS(NS, 'svg');
   zoom.appendChild(svgEl);
   graphContainer.appendChild(zoom);
@@ -285,9 +283,12 @@ async function loadDiagram(state, describe, lang) {
  *  `{}` for the no-runs/predicted branch, which makes no such fetch. */
 async function paintSelected(state, runs, describe, lang) {
   const shell = state.shell;
+  // REQ-134 row 2 (`ui/run.js`'s `paintSwimlane`, see its own banner) — `describe` is already in
+  // scope on both branches here, so the declared model/effort defaults need no extra fetch.
+  const pAgents = (describe && describe.params && describe.params.agents) || {};
   if (runs.length === 0) {
     const { payload, anyAgentsKey } = predictedPayload(describe);
-    paintSwimlane(shell.svgEl, payload, { lang });
+    paintSwimlane(shell.svgEl, payload, { lang, pAgents });
     renderLegend(shell.legend, payload, null, lang);
     shell.predictedLabel.textContent = anyAgentsKey
       ? t(lang, 'predictedLayout')
@@ -300,7 +301,8 @@ async function paintSelected(state, runs, describe, lang) {
   const viewUrl = '/api/runs/' + encodeURIComponent(state.selectedRunId);
   const [dagRes, viewRes] = await Promise.all([getJSON(dagUrl), getJSON(viewUrl)]);
   const payload = dagRes.body || { cells: [], edges: [], warnings: [], lanes: [], current: null };
-  paintSwimlane(shell.svgEl, payload, { lang });
+  const agentsById = new Map(((viewRes.body && viewRes.body.agents) || []).map((a) => [a.agentId, a]));
+  paintSwimlane(shell.svgEl, payload, { lang, pAgents, agentsById });
   renderLegend(shell.legend, payload, viewRes.body, lang);
   return { [dagUrl]: dagRes.status, [viewUrl]: viewRes.status };
 }

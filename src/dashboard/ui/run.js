@@ -28,26 +28,42 @@
 // accumulates one handler per node per 3-second rebuild"), attached once at creation and re-armed
 // with the current `onSelectAgent` on every paint.
 //
-// REPORTED, not fixed here (each is outside this file's `files:` — see the implementer's report
-// to the orchestrator for the full detail):
-// 1. The two model/effort per-cell STYLE_HOOKS (DES-209's swimlane row) are not emitted: the DAG
-//    payload (`LayoutCell`, `src/dashboard.ts`'s `layoutGraph`/`placeCell`) never copies
-//    `AgentRecord.model`/`.effort` onto a cell. The node stays TWO rows (label; tokens/cost) until
-//    that payload grows. (Deliberately not spelling the two class names here as a whole token —
-//    `dashboard-no-design-values.test.ts`'s emitter check reads raw `clientCorpus()`, comments
-//    included, for that `it`; naming them literally would vacuously pass it.)
-// 2. `val-193-dag-fit-and-columns.test.ts`'s third case (`#dag-graph text`, the per-cell token/cost
+// [v27 seam closure] The two model/effort per-cell STYLE_HOOKS (DES-209's swimlane row) are now
+// emitted — corrected per the orchestrator's binding note in `state.yaml` (a prior pass wrongly
+// concluded this needed a new `AgentRecord` wire field; it needs a client-side JOIN instead, of two
+// ALREADY-fetched things, never a wire shape change): the APPLIED model rides on the run view's own
+// `agents[]` (`RunStatusView.agents`, `onTick` already fetches it for `renderUsageBox`), joined here
+// by `c.agentId`; the DECLARED default (used as the model FALLBACK, and as the ONLY source for
+// effort — `AgentRecord` carries no applied-effort field at all) comes from the workflow `describe`
+// route's own `params.agents[label]` (`GET /api/workflows/:name/` + the describe segment). This
+// route's own `ctx` carries no
+// workflow name (a bookmarked `/dashboard/:runId` URL is legacy-compatible and name-free, `app.js`'s
+// own routing comment) and neither the `/dag` nor the `/api/runs/:id` body carries one either — so
+// `onTick` resolves it ONCE from the EXISTING `/api/runs` list (never a new field on any wire shape)
+// and caches it, the same one-time-per-key pattern `ui/workflow.js`'s own `diagramKey` uses.
+// `ui/workflow.js` already has `describe` in scope for its own call into `paintSwimlane`, so it
+// passes `pAgents` straight through with no such resolution needed.
+//
+// The graph container's own inline sizing is also moved to the stylesheet this pass: a `.graph-
+// frame` class (`dashboard.css`/`dashboard-classes.ts`, DES-209 boundary (2)) carries what
+// `buildShell` used to set as element properties directly. No handoff spec exists for the actual
+// numbers (measured: the handoff's own graph wrapper scrolls with the browser's native overflow and
+// sizes itself from the live `gW`/`gH`, with no fixed box and no pan/zoom at all — it predates
+// REQ-129), so the pre-existing per-view figures are kept verbatim, only relocated.
+//
+// REPORTED, not fixed here (each is outside this file's `files:` — see the implementer's report to
+// the orchestrator for the full detail):
+// 1. `val-193-dag-fit-and-columns.test.ts`'s third case (`#dag-graph text`, the per-cell token/cost
 //    line) finds nothing now — that content is `.cell-usage`, HTML, per DES-209 boundary (1). An
 //    SVG `<text>` version was tried and rejected: `.cell-layer` paints ABOVE the SVG behind an
 //    OPAQUE `.cell` background (occludes it), and `.cell-usage` sets no `fill` (SVG text's un-set
 //    fill is black — invisible on `#18191b`). DES-209 authorized val-200's two selector re-points
 //    but not this one; needs the same treatment with a verifier/design sign-off.
-// 3. The graph container's own inline sizing (`overflow:hidden`, `height:420px`, `margin:10px 0`,
-//    `min-height:380px`) is named in this task's card as moving to the stylesheet, but
-//    `dashboard.css`/`dashboard-classes.ts` declare no hook for it. Left inline — removing with no
-//    CSS replacement risks val-193 case 1's real fit/pan proof.
-// 4. `.cell-dot` carries no `background`/`border` in any state but `.is-running` (which only adds
+// 2. `.cell-dot` carries no `background`/`border` in any state but `.is-running` (which only adds
 //    the `rweRing` animation) — it renders but may be visually invisible. CSS-only.
+// 3. No `shortModel`-style formatter exists anywhere in `lib/` — the model id renders RAW (clipped
+//    by `.cell-model`'s own `text-overflow:ellipsis`). Writing one here with no Gate 5 oracle would
+//    be untested implementation (implementer contract §3); flagged for a DES/task decision instead.
 import { SWIMLANE_BOX, cellRect, svgBox, edgePath } from '../lib/swimlane.js';
 import { sumTokens, fmtCost } from '../lib/runlist.js';
 import { t, warningText } from '../lib/strings.js';
@@ -141,9 +157,18 @@ function ensureCellLayer(wrap) {
  *  lanes, current, startedBy}) OR a synthetic never-run overlay built the same way from
  *  `describe.phases[].agents` (TASK-209). A predicted cell is `kind==='agent' && agentId ===
  *  undefined` — never `agentId === undefined` alone (the trigger cell also carries no agentId) —
- *  and falls back to no label text rather than the kind word. */
+ *  and falls back to no label text rather than the kind word. `opts.agentsById` (agentId ->
+ *  AgentRecord) and `opts.pAgents` (`describe.params.agents`, by label) are both optional and drive
+ *  REQ-134 row 2 — see the file banner. */
 export function paintSwimlane(svgEl, payload, opts) {
   const lang = (opts && opts.lang) || currentLang();
+  // REQ-134 row 2 — `agentsById` (an agentId -> AgentRecord map, from the run's own already-fetched
+  // `/api/runs/:id`'s `agents[]`) gives the APPLIED model; `pAgents` (`describe.params.agents`, keyed
+  // by LABEL) gives the DECLARED default that backstops it and is the only source for effort at all
+  // (no AgentRecord field carries applied effort). Both optional: a caller with neither (there is no
+  // real-tier fixture for this yet) still gets '—'/'—' rather than a thrown error.
+  const agentsById = (opts && opts.agentsById) || new Map();
+  const pAgents = (opts && opts.pAgents) || {};
   const box = SWIMLANE_BOX;
   const cells = Array.isArray(payload.cells) ? payload.cells : [];
   const edges = Array.isArray(payload.edges) ? payload.edges : [];
@@ -246,6 +271,21 @@ export function paintSwimlane(svgEl, payload, opts) {
         label.textContent = c.label;
         cellEl.appendChild(label);
       }
+
+      // REQ-134 row 2 — model short name + effort tag (see this file's own banner for the join).
+      const rec = c.agentId ? agentsById.get(c.agentId) : null;
+      const declared = pAgents[c.label] || {};
+      const model = (rec && rec.model) || (declared.model && declared.model.default);
+      const effort = declared.effort && declared.effort.default;
+      const modelEl = document.createElement('span');
+      modelEl.className = 'cell-model';
+      modelEl.textContent = model || '—';
+      cellEl.appendChild(modelEl);
+      const effortEl = document.createElement('span');
+      effortEl.className = 'tag tag-neutral cell-effort';
+      effortEl.textContent = effort || '—';
+      cellEl.appendChild(effortEl);
+
       // Per-call cost attribution (M-4 send-back repair, ARCH-118, REQ-127) — present only on a
       // LIVE agent cell that carries tokens, never on a predicted/inert cell (no dispatched call
       // yet).
@@ -318,9 +358,7 @@ function buildShell(container) {
   root.appendChild(usage);
 
   const graphContainer = document.createElement('div');
-  graphContainer.style.overflow = 'hidden';
-  graphContainer.style.height = '420px';
-  graphContainer.style.margin = '10px 0';
+  graphContainer.className = 'graph-frame'; // DES-209 boundary (2) — sizing lives in dashboard.css.
 
   const fitBtn = document.createElement('button');
   fitBtn.type = 'button';
@@ -333,11 +371,11 @@ function buildShell(container) {
   zoom.id = 'dag-zoom';
   zoom.className = 'zoomable';
   // The pannable hit-area must cover the container's visible height even for a small graph (a
-  // 2-lane fixture's own svgBox is far shorter than 420px) — `paintSwimlane` sets an exact
-  // `height` per graph, but `min-height` still wins when it's the larger of the two, and
-  // `preserveAspectRatio="xMinYMin meet"` never upscales past the smaller of the two axis scales,
-  // so a short graph keeps its native 1:1 node size and simply top-aligns within the taller box.
-  zoom.style.minHeight = '380px';
+  // 2-lane fixture's own svgBox is far shorter than the frame) — `paintSwimlane` sets an exact
+  // `height` per graph, but the stylesheet's own minimum for `.zoomable` here still wins when it's
+  // the larger of the two, and `preserveAspectRatio="xMinYMin meet"` never upscales past the smaller
+  // of the two axis scales, so a short graph keeps its native 1:1 node size and simply top-aligns
+  // within the taller box.
   const svgEl = document.createElementNS(NS, 'svg');
   svgEl.id = 'dag-graph';
   zoom.appendChild(svgEl);
@@ -370,7 +408,12 @@ export function render(container, vm, handlers) {
   const shell = buildShell(container);
   if (!runId) return;
   const onSelectAgent = (handlers && handlers.onSelectAgent) || ((id, lbl) => openAgentPanel(runId, id, lbl, { lang }));
-  stateByContainer.set(container, { shell, runId, lang, handlers: { ...(handlers || {}), onSelectAgent } });
+  stateByContainer.set(container, {
+    shell, runId, lang, handlers: { ...(handlers || {}), onSelectAgent },
+    // REQ-134 row 2's declared-effort join (see file banner): resolved lazily in `onTick` and
+    // cached, since a run's own workflow name never changes over the page's lifetime.
+    name: null, pAgents: {}, describeFor: null,
+  });
 }
 
 /** DES-206 [v27c] — `app.js`'s one timer calls this every ~3s with `endpointsFor('run', ctx)`'s
@@ -383,9 +426,34 @@ export async function onTick(container, bodies, ctx) {
   const viewUrl = '/api/runs/' + encodeURIComponent(state.runId);
   const viewRes = await getJSON(viewUrl);
   if (!state.shell.root.isConnected) return { [viewUrl]: viewRes.status };
+  const extra = { [viewUrl]: viewRes.status };
+
+  // REQ-134 row 2's declared-effort join (see file banner) — resolved once, then cached: this
+  // route's own `ctx` and both fetched bodies above carry no workflow name, so it comes from the
+  // EXISTING `/api/runs` list (never a new field on either wire shape).
+  if (!state.name) {
+    const runsUrl = '/api/runs';
+    const runsRes = await getJSON(runsUrl);
+    extra[runsUrl] = runsRes.status;
+    const match = Array.isArray(runsRes.body) ? runsRes.body.find((r) => r.runId === state.runId) : null;
+    if (match && match.name) state.name = match.name;
+  }
+  if (state.name && state.describeFor !== state.name) {
+    const describeUrl = '/api/workflows/' + encodeURIComponent(state.name) + '/describe';
+    const describeRes = await getJSON(describeUrl);
+    extra[describeUrl] = describeRes.status;
+    if (describeRes.body && describeRes.body.params && describeRes.body.params.agents) {
+      state.pAgents = describeRes.body.params.agents;
+      state.describeFor = state.name;
+    }
+  }
+
   const payload = bodies[dagUrl] || { cells: [], edges: [], warnings: [], lanes: [], current: null };
-  paintSwimlane(state.shell.svgEl, payload, { lang: state.lang, onSelectAgent: state.handlers.onSelectAgent });
+  const agentsById = new Map(((viewRes.body && viewRes.body.agents) || []).map((a) => [a.agentId, a]));
+  paintSwimlane(state.shell.svgEl, payload, {
+    lang: state.lang, onSelectAgent: state.handlers.onSelectAgent, agentsById, pAgents: state.pAgents,
+  });
   renderLegend(state.shell.legend, payload, viewRes.body, state.lang);
   renderUsageBox(state.shell.usage, viewRes.body && viewRes.body.usage, state.lang);
-  return { [viewUrl]: viewRes.status };
+  return extra;
 }
