@@ -81,13 +81,20 @@ export const SPEC_ROWS: ReadonlyArray<SpecRow> = [
   { req: 'REQ-133', view: 'workflow', anchor: 'data-run-chip', prop: 'font-size', expect: { literal: '12px' } },
   { req: 'REQ-133', view: 'workflow', anchor: 'data-run-chip', prop: 'background-color', expect: { token: 'accent-100' } },
   { req: 'REQ-133', view: 'workflow', anchor: 'data-history-table', prop: 'border-collapse', expect: { literal: 'collapse' } },
-  { req: 'REQ-133', view: 'workflow', anchor: 'data-history-table', prop: 'width', expect: { literal: '100%' } },
+  // [TASK-214 oracle fix] `width` is a resolved-value property — `getComputedStyle` returns the
+  // used pixel width, never the specified `100%`, on any browser (this row could never pass at
+  // any implementation). REQ-133 names no numeric table width, so it is not a DES-209 enumerated
+  // anchor either; deleted rather than rewritten to a viewport-sized px literal, which would pin
+  // Puppeteer's default 800x600 viewport as if it were a requirement.
   { req: 'REQ-133', view: 'workflow', anchor: 'data-history-table', prop: 'font-size', expect: { literal: '12.5px' } },
   { req: 'REQ-133', view: 'workflow', anchor: '[data-history-table] tr.is-selected', prop: 'background-color', expect: { token: 'color-accent' } },
   // [v27c gate 5 fix] `.t`'s rule is `.card .t` (dashboard.css:99, card-scoped); DES-209's own
   // REQ-133 style-hook row lists `.mono` (dashboard.css:101, standalone), the class the workflow
   // view's monospace figures actually carry.
-  { req: 'REQ-133', view: 'workflow', anchor: '.mono', prop: 'font-family', expect: { literal: "'JetBrains Mono', ui-monospace, Consolas, monospace" } },
+  // [TASK-214 oracle fix] Chromium's `getComputedStyle` always serializes a quoted font-family
+  // with DOUBLE quotes regardless of the source rule's quote style (`dashboard.css:101` writes
+  // single quotes) — measured, not a style preference.
+  { req: 'REQ-133', view: 'workflow', anchor: '.mono', prop: 'font-family', expect: { literal: '"JetBrains Mono", ui-monospace, Consolas, monospace' } },
 
   // -- REQ-134 swimlane (view: run) --
   { req: 'REQ-134', view: 'run', anchor: 'data-node-cell', prop: 'width', expect: { literal: '216px' } },
