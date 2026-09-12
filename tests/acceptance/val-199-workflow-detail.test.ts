@@ -27,6 +27,8 @@ import type { Server } from '../../src/server.js';
 import { TokenStore } from '../../src/auth/token-store.js';
 import { registerPublishedVia, type ToolCaller } from '../helpers/workflow-fixtures.js';
 import { throwIfBrowserRequired } from '../helpers/require-browser.js';
+import { SPEC_ROWS } from '../fixtures/dashboard-spec.js';
+import { specRowFailuresAcrossThemeAndHue } from '../helpers/spec-rows.js';
 
 function findChrome(): string | null {
   const explicit = process.env['PUPPETEER_EXECUTABLE_PATH'];
@@ -195,6 +197,23 @@ describe('workflow detail page, real Chromium (VAL-199, REQ-133)', () => {
       });
       expect(bodyText.toLowerCase()).not.toContain('skeleton');
       expect(bodyText).toContain(AUTH_AGENT_MARKER);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
+  // [v27c] DES-209's own promised oracle (ADR-053 「規格逐條核」): every SPEC_ROWS row for the
+  // 'workflow' view, checked under BOTH data-theme values and once more after a hue-slider move. A
+  // row whose anchor matches no element FAILS (never skips) — see spec-rows.ts.
+  itReal('SPEC_ROWS (workflow view, REQ-133) hold under both themes and a hue move', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/dashboard/workflow/val199-detail`, { waitUntil: 'networkidle0', timeout: 10000 });
+      const rows = SPEC_ROWS.filter((r) => r.view === 'workflow');
+      const failures = await specRowFailuresAcrossThemeAndHue(page, rows);
+      expect(failures).toEqual([]);
     } finally {
       await browser.close();
     }

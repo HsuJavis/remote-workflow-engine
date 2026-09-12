@@ -117,6 +117,7 @@ function renderGrid(container, state, handlers) {
     if (groupCards.length === 0) continue;
     const section = document.createElement('section');
     section.className = 'card-section' + (g === 'other' ? ' other' : '');
+    section.setAttribute('data-section', '');
     const h = document.createElement('h3');
     h.textContent = groupLabel(state.lang, g);
     section.appendChild(h);
@@ -146,7 +147,7 @@ function buildChrome(container, state, handlers) {
   const search = document.createElement('input');
   search.type = 'search';
   search.placeholder = L(state.lang, 'searchPlaceholder');
-  search.className = 'home-search';
+  search.className = 'home-search input';
   search.addEventListener('input', () => {
     state.query = search.value;
     renderGrid(container, state, handlers);
@@ -154,7 +155,7 @@ function buildChrome(container, state, handlers) {
   toolbar.appendChild(search);
 
   const tabs = document.createElement('div');
-  tabs.className = 'segment-tabs';
+  tabs.className = 'segment-tabs seg';
   for (const seg of ['all', 'running', 'registered']) {
     const btn = document.createElement('button');
     btn.type = 'button';

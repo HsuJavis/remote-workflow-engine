@@ -97,8 +97,12 @@ describe('no design values in JS (DES-208/209) — colours, sizes and font facts
     // make every assertion below pass vacuously.
     expect(clientCorpus()).toContain('style.transform');
 
+    // Raw corpus, NOT the module-level `stripComments`-ed `corpus`: the `// rwe-allow-style: svgBox`
+    // marker this check honours IS a `//` comment, so scanning the stripped text would delete the
+    // marker before ever looking for it — a self-defeating check that could never see its own
+    // documented exception (found + fixed at TASK-214's Gate 6; this file is this task's own).
     const violations: string[] = [];
-    const lines = corpus.split('\n');
+    const lines = clientCorpus().split('\n');
     for (const line of lines) {
       for (const m of line.matchAll(/\.style\.(\w+)/g)) {
         const prop = m[1];

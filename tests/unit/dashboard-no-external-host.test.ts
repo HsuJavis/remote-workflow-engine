@@ -33,13 +33,21 @@ function stripComments(text: string): string {
   return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
 }
 
+// The SVG/XML namespace identifier (`createElementNS(NS, ...)`) is a fixed literal string, never a
+// fetched resource — flagging it as an "external host" would make the guard fire on ordinary SVG
+// painting code. Narrow, exact-prefix carve-out: only this one W3C namespace family, nothing else
+// starting with http(s) survives the strip.
+function stripNamespaceUris(text: string): string {
+  return text.replace(/https?:\/\/www\.w3\.org\/\S*/g, '');
+}
+
 interface Violation { file: string; reason: string }
 
 function findViolations(dir: string): Violation[] {
   const violations: Violation[] = [];
   for (const file of walkCssJs(dir)) {
     const raw = readFileSync(file, 'utf8');
-    const text = stripComments(raw);
+    const text = stripNamespaceUris(stripComments(raw));
     if (/https?:\/\//.test(text)) violations.push({ file, reason: 'external URL scheme' });
     if (/@import/.test(text)) violations.push({ file, reason: '@import' });
     for (const m of text.matchAll(/url\(\s*['"]?([^'")]+)['"]?\s*\)/g)) {
@@ -53,7 +61,7 @@ function findViolations(dir: string): Violation[] {
 }
 
 describe('dashboard client ships no external-host reference (UT-231, DES-191, REQ-131)', () => {
-  it('src/dashboard/**/*.{css,js} carries no external host today (vacuously true — the directory does not exist yet)', () => {
+  it('src/dashboard/**/*.{css,js} carries no external host today (the SVG namespace URI is not a fetch)', () => {
     expect(findViolations(DASHBOARD_CLIENT_ROOT)).toEqual([]);
   });
 

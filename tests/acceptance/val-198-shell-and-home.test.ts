@@ -18,6 +18,8 @@ import type { Server } from '../../src/server.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
 import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 import { throwIfBrowserRequired } from '../helpers/require-browser.js';
+import { SPEC_ROWS } from '../fixtures/dashboard-spec.js';
+import { specRowFailuresAcrossThemeAndHue } from '../helpers/spec-rows.js';
 
 function findChrome(): string | null {
   const explicit = process.env['PUPPETEER_EXECUTABLE_PATH'];
@@ -144,6 +146,29 @@ describe('the v27 dashboard shell + Workflows home, real Chromium (VAL-198, REQ-
         return cards.some((c) => (c.textContent ?? '').includes('val198-running'));
       });
       expect(runningCardBorder).toBe(true);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
+  // DES-209's own anti-vacuity floor for the whole table (checked once, here, not per view file —
+  // no browser needed).
+  it('SPEC_ROWS has at least 40 rows (DES-209 anti-vacuity floor)', () => {
+    expect(SPEC_ROWS.length).toBeGreaterThanOrEqual(40);
+  });
+
+  // [v27c] DES-209's own promised oracle (ADR-053 「規格逐條核」): every SPEC_ROWS row for the
+  // 'home' view, checked under BOTH data-theme values and once more after a hue-slider move. A row
+  // whose anchor matches no element FAILS (never skips) — see spec-rows.ts.
+  itReal('SPEC_ROWS (home view, REQ-131/132) hold under both themes and a hue move', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+      const rows = SPEC_ROWS.filter((r) => r.view === 'home');
+      const failures = await specRowFailuresAcrossThemeAndHue(page, rows);
+      expect(failures).toEqual([]);
     } finally {
       await browser.close();
     }

@@ -13,6 +13,14 @@
 // bodies here every ~3s; the selected run's own `/dag` + `/api/runs/:id` fetch is state-dependent
 // (which run is selected lives in THIS view, not in `ctx`), so it is made here via `getJSON` and its
 // statuses are returned for `app.js` to fold into the connection reducer.
+//
+// REPORTED, not fixed here (same gap `ui/run.js`'s own header names for its identical container):
+// `buildShell`'s `graphContainer.style.overflow/height/margin` and `zoom.style.minHeight` are named
+// on this task's card as moving to the stylesheet, but `dashboard.css`/`dashboard-classes.ts`
+// declare no hook for them (measured: `tests/unit/dashboard-no-design-values.test.ts` still lists
+// all four as violations after this task's own edits land). TASK-214 owns `dashboard.css`
+// exclusively (DES-209 boundary 6) so this file cannot add one; left inline rather than removed
+// with no CSS replacement, which would risk val-193/197's real fit/pan proof.
 import { paintSwimlane, renderLegend, initZoomable, currentLang } from './run.js';
 import { endpointsFor, getJSON } from './poll.js';
 import { historyRow } from '../lib/runlist.js';
@@ -102,6 +110,7 @@ function buildShell(container) {
 
   const table = document.createElement('table');
   table.className = 'table'; // DES-209 STYLE_HOOKS component layer.
+  table.setAttribute('data-history-table', ''); // DES-209 TEST_ANCHORS.
   const thead = document.createElement('thead');
   const headRow = document.createElement('tr');
   const lang = currentLang();
@@ -171,6 +180,7 @@ function renderChipsAndTable(shell, runs, selectedRunId, lang, onPick) {
     const chip = document.createElement('button');
     chip.type = 'button';
     chip.className = 'run-chip' + (r.runId === selectedRunId ? ' is-selected' : '');
+    chip.setAttribute('data-run-chip', ''); // DES-209 TEST_ANCHORS.
     const dot = document.createElement('span');
     dot.textContent = '●';
     dot.className = 'status-dot'; // DES-209 STYLE_HOOKS — the 7px size moves to the stylesheet.
@@ -185,11 +195,12 @@ function renderChipsAndTable(shell, runs, selectedRunId, lang, onPick) {
   for (const r of sorted) {
     const tr = document.createElement('tr');
     if (r.runId === selectedRunId) tr.className = 'is-selected'; // DES-209: `tr.is-selected` in the stylesheet.
-    for (const cell of historyRow(r, now, lang)) {
+    historyRow(r, now, lang).forEach((cell, i) => {
       const td = document.createElement('td');
+      if (i === 0) td.className = 'mono'; // DES-209 STYLE_HOOKS — column 0 is `historyRow`'s runId.
       td.textContent = cell;
       tr.appendChild(td);
-    }
+    });
     tr.addEventListener('click', () => onPick(r.runId));
     shell.tbody.appendChild(tr);
   }
@@ -197,6 +208,15 @@ function renderChipsAndTable(shell, runs, selectedRunId, lang, onPick) {
 
 function nameFilteredRuns(allRuns, name) {
   return (allRuns || []).filter((r) => r.name === name);
+}
+
+/** Picks the active (running/queued) run, else the most recent — shared by `onTick` (so the
+ *  FIRST paint already has a selection, not just the second tick 3s later) and `paintSelected`. */
+function resolveSelectedRunId(state, runs) {
+  if (!state.selectedRunId || !runs.some((r) => r.runId === state.selectedRunId)) {
+    const active = runs.find((r) => r.status === 'running' || r.status === 'queued');
+    state.selectedRunId = active ? active.runId : [...runs].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))[0].runId;
+  }
 }
 
 const stateByContainer = new WeakMap();
@@ -266,10 +286,7 @@ async function paintSelected(state, runs, describe, lang) {
     return {};
   }
   shell.predictedLabel.textContent = '';
-  if (!state.selectedRunId || !runs.some((r) => r.runId === state.selectedRunId)) {
-    const active = runs.find((r) => r.status === 'running' || r.status === 'queued');
-    state.selectedRunId = active ? active.runId : [...runs].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))[0].runId;
-  }
+  resolveSelectedRunId(state, runs);
   const dagUrl = '/api/runs/' + encodeURIComponent(state.selectedRunId) + '/dag';
   const viewUrl = '/api/runs/' + encodeURIComponent(state.selectedRunId);
   const [dagRes, viewRes] = await Promise.all([getJSON(dagUrl), getJSON(viewUrl)]);
@@ -300,6 +317,10 @@ export async function onTick(container, bodies, ctx) {
   if (!describe) return {};
   const runs = nameFilteredRuns(bodies[runsUrl], state.name);
   renderHeader(state.shell, describe, lang);
+  // Resolve the default selection BEFORE the first chip/table render — otherwise tick 1 paints
+  // with no `.is-selected` at all and a caller reading the page between tick 1 and 2 (val-199's
+  // SPEC_ROWS case) sees no selected chip/row.
+  if (runs.length > 0) resolveSelectedRunId(state, runs);
   function onPick(runId) {
     state.selectedRunId = runId;
     renderChipsAndTable(state.shell, runs, state.selectedRunId, lang, onPick);

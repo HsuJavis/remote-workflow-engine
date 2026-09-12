@@ -113,6 +113,11 @@ function updateConnectionTag() {
   if (!connectionTagEl) return;
   connectionTagEl.textContent = L(prefs.lang, connectionState.status) || L(prefs.lang, 'checking');
   connectionTagEl.dataset.status = connectionState.status;
+  // DES-209's REQ-131 row: `.rwe-connection{.is-live,.is-degraded,.is-offline}` — the stylesheet
+  // keys on a class, not the `data-status` attribute above (which nothing else reads).
+  for (const s of ['live', 'degraded', 'offline']) {
+    connectionTagEl.classList.toggle(`is-${s}`, connectionState.status === s);
+  }
 }
 
 let pendingTab = null;
@@ -164,6 +169,12 @@ function buildChrome(island) {
     tabStrip.appendChild(btn);
   }
   nav.appendChild(tabStrip);
+
+  // DES-209's component layer (`.nav`/`.hr`, REQ-131's shell) — a divider between the tab strip
+  // and the theme/lang/connection controls that follow it.
+  const navDivider = document.createElement('hr');
+  navDivider.className = 'hr';
+  nav.appendChild(navDivider);
 
   const themeGroup = document.createElement('div');
   themeGroup.className = 'rwe-theme-group';

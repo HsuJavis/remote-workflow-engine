@@ -12094,19 +12094,76 @@ re-run and stay green). RED (measured): `clientCorpus()` throws.
 File: `tests/unit/workflow-page-harness-table.test.ts` (extended, 1 new case; both pre-existing cases
 re-run and stay green). RED (measured): `clientCorpus()` throws.
 
+### UT-255 — `dashboard-class-contract.test.ts`: TASK-214's own green — the class lock + anti-vacuity value anchors (DES-209)
+- **status:** green
+- **traces:** DES-209, TASK-214
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v27c
+
+**F-pattern note (not a Gate-5-before-impl violation):** TASK-214's `dod` explicitly has "no Gate 5
+of its own" in this invocation (`gates:[design,impl,verify,validation,review]` skips `tests`) — its
+class lock and the `no-design-values` guard were written RED-then-GREEN by the TASK-214 implementer
+in the SAME commit (`09c6089`, `/sdlc-fix` F-pattern), and DES-209/the journal both say "the
+verifier records them as UT items at the next gate that owns 05-tests.md" — this entry, at the next
+real Gate 5 invocation. Recording it green here is the accurate state, not a fudge; flipping a
+genuinely-passing test to a false "red" would be the fudge this role may not commit.
+File: `tests/unit/dashboard-class-contract.test.ts` (new, 13 cases). GREEN (measured, 13/13): the
+`STYLE_HOOKS`/stylesheet class lock (both directions) and the load-bearing value anchors (seven
+`@keyframes`, `.cell` box + failed/queued state, `.lane-head` typography, `.card-grid`/`.agent-panel`
+sizing, both accent-ramp directions) all hold against the landed `dashboard.css`.
+
+### UT-256 — `dashboard-no-design-values.test.ts`: the SLICE's final green — emitter half of the class lock + the no-design-values guard (DES-209)
+- **status:** red
+- **traces:** DES-209, TASK-214
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v27c
+
+Same F-pattern note as UT-255. By DES-209's own ordering rule 4, this file is **not** TASK-214's own
+green — it is the SLICE's final green, expected to stay red until every view task
+(TASK-208/209/210/211/212) has landed, re-run as TASK-212's last check.
+File: `tests/unit/dashboard-no-design-values.test.ts` (new, 7 cases). RED (measured, 3/7 fail, 4/7
+pass): (1) *every `STYLE_HOOKS` entry is set by `clientCorpus()`* — 8 entries unemitted:
+`tag-accent`, `tag-neutral`, `hr`, `is-live`, `is-degraded`, `is-offline`, `cell-model`, `cell-effort`
+(TASK-208/209/211's unlanded emitters); (2) *every `TEST_ANCHORS` entry is emitted* — 3 unemitted:
+`data-section`, `data-run-chip`, `data-history-table` (TASK-208/209); (3) *the `.style.<prop>`
+allowlist guard* — 10 hits, all container-geometry literals (`wrap.style.width/height`,
+`graphContainer.style.overflow/height/margin`, `zoom.style.minHeight`) in `run.js`/`workflow.js`
+missing either the `// rwe-allow-style: svgBox` marker or a class (TASK-210/211/212's remaining
+scope). The other 4 cases (hex/oklch/rgba/cssText/setAttribute-literal guards) are already green.
+
 ### VAL-198 — real Chromium: the v27 shell (theme/lang/hue/connection) and the Workflows home
 - **status:** red
 - **traces:** REQ-131, REQ-132
 - **tier:** acceptance
 - **real:** false
 - **result:** fail
-- **iter:** v27
+- **iter:** v27c
 
 File: `tests/acceptance/val-198-shell-and-home.test.ts` (new, 5 cases; real `createServer()`, real
 Chromium via puppeteer — Chrome IS present in this environment, confirmed, so every case actually
 RUNS rather than skipping). RED (measured): no `data-theme` attribute; light-preference does not
 persist (no `localStorage` read at all); the hue custom property is not recomputed by CSS; setting
 `rwe-lang=zh` produces no 繁中 text anywhere (no i18n exists); no search input exists on home.
+**[stale, superseded by Gate 6 landing since]:** the 5 cases above now measure GREEN — left as
+recorded since Mode A does not flip status; Gate 7 regression closeout re-measures and flips it.
+
+**[v27c]** DES-209's own promised real-tier oracle (ADR-053 「規格逐條核」, `tests/helpers/spec-rows.ts`):
+a 6th case, `+1 SPEC_ROWS (home view, REQ-131/132) hold under both themes and a hue move`, plus a 7th
+non-browser anti-vacuity case (`SPEC_ROWS.length >= 40`, measured 43). Building the oracle surfaced
+6 rows in `tests/fixtures/dashboard-spec.ts` where the ORACLE, not the implementation, was wrong —
+rewritten/deleted in this same pass, each with its own `[v27c gate 5 fix]` comment (a
+`repeat()`/`minmax()` literal `getComputedStyle` can never echo back; a `0.04em` literal it always
+resolves to px; a bare `--rwe-hue` default row that a "swap hue" pass would always fail; three
+anchors DES-209's own table assigns to a narrower selector than the row used —
+`.card.running::before`'s sweep, `.mono` not `.t` for REQ-133's monospace hook, and the
+`[data-node-cell].is-*` state rows, since state is only ever an `is-*` hook and the bare anchor
+always reads whichever cell is first — `is-done`, which none of the four state rules touch).
+RED (measured, 6 remaining failures across the 3 theme/hue passes): `data-section`/
+`[data-section] .cards` — TASK-208's unlanded `home.js` emitters (same gap UT-256 names).
 
 ### VAL-199 — real Chromium: workflow detail — version tag, run history table, predicted layout — INCLUDING under auth
 - **status:** red
@@ -12114,7 +12171,7 @@ persist (no `localStorage` read at all); the hue custom property is not recomput
 - **tier:** acceptance
 - **real:** false
 - **result:** fail
-- **iter:** v27b
+- **iter:** v27c
 
 File: `tests/acceptance/val-199-workflow-detail.test.ts` (2 pre-existing cases + 1 new; real
 Chromium — Chrome IS present, confirmed, all 3 cases actually RUN). RED (measured, pre-existing 2):
@@ -12136,6 +12193,16 @@ on grey boxes reading the literal word "agent"; this case may not be judged befo
 predicted-cell `label` has landed (VAL-204's own note), or the Chromium oracle photographs exactly
 that and the screenshot becomes the wrong baseline. RED (measured): same reason as the two
 pre-existing cases — no workflow-detail view exists at all yet, not an auth-specific gap.
+**[stale, superseded by Gate 6 landing since]:** the 3 cases above now measure GREEN — left as
+recorded since Mode A does not flip status; Gate 7 regression closeout re-measures and flips it.
+
+**[v27c]** DES-209's own promised real-tier oracle: a 4th case,
+`+1 SPEC_ROWS (workflow view, REQ-133) hold under both themes and a hue move` (`tests/helpers/spec-rows.ts`).
+One fixture row fixed in the same pass as VAL-198's (see there): `.t`->`.mono` (DES-209's own REQ-133
+style-hook row, not the card-scoped `.t`). RED (measured, 24 failures across the 3 theme/hue passes,
+8 unique rows): `data-run-chip`/`data-history-table`/`.mono` — TASK-209's unlanded `workflow.js`
+emitters (same gap UT-256 names for `data-run-chip`/`data-history-table`; `.mono` is an additional
+measured gap on the same task, not previously named).
 
 ### VAL-200 — real Chromium: the swimlane run graph — lane headers, 216x74 nodes, legend
 - **status:** red
@@ -12143,11 +12210,30 @@ pre-existing cases — no workflow-detail view exists at all yet, not an auth-sp
 - **tier:** acceptance
 - **real:** false
 - **result:** fail
-- **iter:** v27
+- **iter:** v27c
 
 File: `tests/acceptance/val-200-swimlane.test.ts` (new, 3 cases; real Chromium, a fake gateway
 completing 9 agent calls across 5 phases fast). RED (measured): no `[data-lane-header]`/`[class*="lane-head"]`
 elements exist; no `[data-node-cell]` sized 216x74 exists; no `[data-legend]` element exists.
+**[stale, superseded by Gate 6 landing since]:** the 3 cases above now measure GREEN — left as
+recorded since Mode A does not flip status; Gate 7 regression closeout re-measures and flips it.
+
+**[v27c]** DES-209's own promised real-tier oracle: a 4th case,
+`+1 SPEC_ROWS (run view, REQ-134) hold under both themes and a hue move`. Two fixture-row classes
+fixed in the same pass as VAL-198's: `letter-spacing:0.04em`->`0.52px` (`getComputedStyle` always
+resolves to px — 0.52 is 0.04×13px, the landed value, not a relaxed one) and the five
+`[data-node-cell]` state rows narrowed to `.is-failed`/`.is-queued`/`.is-running`
+(`getComputedStyle` on the bare anchor always reads the first cell, `is-done`, which none of the
+four rules touch). **Known scenario gap, not an oracle bug and not re-engineered in this pass:** the
+narrowed `is-failed`/`is-queued`/`is-running` rows still read "anchor matched no element" because
+this file's fixture run (`FAKE_GATEWAY` completing all 9 calls) never produces those states — every
+cell in the DOM is `is-done`. The CSS/JS rules themselves are already landed and correct (measured:
+`dashboard.css:211-217`, `run.js`'s `CELL_STATE_CLASS` map). Closing this needs a second run
+scenario (a gated/never-resolving call for `is-running`+one queued behind a concurrency cap for
+`is-queued`, a `ok:false` call for `is-failed`) — Gate 6/7 scenario work, flagged rather than
+attempted here per the mock-policy boundary (constructing new engine-level fixtures is implementer
+territory, not a test-oracle fix). RED (measured, 15 failures across the 3 theme/hue passes, 5
+unique rows): the 3 state rows above (scenario gap, not an unlanded surface).
 
 ### VAL-201 — real Chromium: the agent slide-in panel — stat cards, prompt, Esc close (REQ-136 proof)
 - **status:** red
@@ -12155,12 +12241,30 @@ elements exist; no `[data-node-cell]` sized 216x74 exists; no `[data-legend]` el
 - **tier:** acceptance
 - **real:** false
 - **result:** fail
-- **iter:** v27
+- **iter:** v27c
 
 File: `tests/acceptance/val-201-agent-panel.test.ts` (new, 3 cases; real Chromium, a real agentType
 composition root with a marker systemPrompt, same technique as IT-165). RED (measured): no
 `[data-agent-panel]` element exists at all (clicking a node does nothing panel-shaped) — all three
 cases time out waiting for it.
+**[stale, superseded by Gate 6 landing since]:** the 3 cases above now measure GREEN — left as
+recorded since Mode A does not flip status; Gate 7 regression closeout re-measures and flips it.
+
+**[v27c]** DES-209's own promised real-tier oracle: a 4th case,
+`+1 SPEC_ROWS (panel view, REQ-135) hold under both themes and a hue move`. One fixture row fixed in
+the same pass as VAL-198's: `grid-template-columns:'repeat(auto-fit, minmax(150px, 1fr))'`->
+`display:'grid'` (`getComputedStyle` never echoes a `repeat()`/`minmax()` formula back as text, only
+the resolved px track list — this literal could never pass under any implementation; the
+`minmax(150px)` figure itself has no anchor at either tier yet, `grep -c 'minmax(150px'
+tests/unit/dashboard-class-contract.test.ts` = 0, a gap for `gate_check`, not fixed here since it
+would touch UT-255's already-green file). **Known scenario gap, same shape as VAL-200's:** the
+`[data-agent-panel] .detail-block` row still reads "anchor matched no element" because this file's
+fixture run never produces a FAILED agent event (REQ-135: `.detail-block` only renders for a failed
+event's `detail`) — needs a second stub branch making the panel agent fail, Gate 6/7 scenario work,
+not attempted here for the same reason as VAL-200's. RED (measured, 3 failures across the 3
+theme/hue passes, 1 unique row): `.detail-block` (scenario gap, not an unlanded surface — the other
+6 panel rows, including the 760px width row DES-209 leaves to the pending `owner_decision`, all
+measure green already).
 
 ### VAL-202 — real Chromium: Models/System/Issues PORTED to tabs, not redesigned (non-regression)
 - **status:** red

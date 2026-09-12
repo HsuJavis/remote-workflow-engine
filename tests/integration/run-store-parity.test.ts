@@ -21,7 +21,8 @@ describe('InMemoryRunStore matches the SAME usage projection as SqliteRunStore (
     const store = new InMemoryRunStore(new FixedClock(new Date('2026-09-11T00:00:00.000Z')));
     const withUsage = await store.createRun({ name: 'a', args: {} });
     await store.recordTransition(withUsage, 'running', 'completed', '2026-09-11T00:01:00.000Z');
-    await store.saveSnapshot(withUsage, { phases: [], agents: [{ agentId: 'x' }, { agentId: 'y' }], workflowNodes: [], usage: FULL_USAGE });
+    const agent = (agentId: string) => ({ agentId, state: 'done' as const, provider: 'anthropic', model: 'claude-3-5-sonnet-20241022', tokens: { input: 0, output: 0 } });
+    await store.saveSnapshot(withUsage, { phases: [], agents: [agent('x'), agent('y')], workflowNodes: [], usage: FULL_USAGE });
 
     const noSnapshot = await store.createRun({ name: 'b', args: {} });
     await store.recordTransition(noSnapshot, 'running', 'completed', '2026-09-11T00:01:00.000Z');

@@ -178,7 +178,7 @@ export function composePrompt(
   scriptPrompt: string,
   appendPrompt?: string,
 ): string {
-  const segments = [systemPrompt, authorPrompt, scriptPrompt].filter((s): s is string => s !== undefined);
+  const segments = [systemPrompt, authorPrompt, scriptPrompt].filter((s): s is string => s !== undefined && s !== '');
   const body = segments.join('\n\n');
   return appendPrompt !== undefined
     ? `${body}${USER_INSTRUCTIONS_OPEN}${appendPrompt}${USER_INSTRUCTIONS_CLOSE}`

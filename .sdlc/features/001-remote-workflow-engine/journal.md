@@ -3887,3 +3887,53 @@ implies have no gate in this invocation (`gates:[design,impl,verify,validation,r
 the `/sdlc-fix` F-pattern in its `dod:` — the class lock, the no-design-values guard and `SPEC_ROWS` are
 written RED first, then green, and the verifier records them as UT items at the next gate that owns
 `05-tests.md`.
+
+## v27c Gate 5 delta (2026-09-12, verifier, test-first RED) — PASSED
+
+**Scope:** the deferred test half of the v27c Gate 3+4 delta (TASK-214/DES-209, dashboard.css
+ownership) — its own note said "no Gate 5 of its own in this invocation... the verifier records
+them as UT items at the next gate that owns 05-tests.md." That gate is this one. Dispatch impact
+closure was the full Sprint A set (REQ-131..136/140/141); the other 7 items amended by the prior
+v27b Gate 5 delta (UT-238, UT-244, IT-168, IT-169, IT-092, VAL-199, VAL-204) were left untouched —
+Mode A never flips an existing item's status, and none of them are downstream of the CSS-ownership
+delta.
+
+**Closed:** by the time this gate ran, TASK-214 (commit `09c6089`) and TASK-210 (commit `a30d4a9`)
+had already landed via Gate 6 — an explicitly pre-authorised F-pattern deviation (DES-209/TASK-214's
+own dod: red-then-green written by the implementer in the same commit, recorded here after the
+fact). `tests/unit/dashboard-class-contract.test.ts` measures GREEN (13/13) — recorded as **UT-255**,
+status green, not fudged to red; `tests/unit/dashboard-no-design-values.test.ts` measures RED (3/7,
+the SLICE's final green per ordering rule 4, blocked on TASK-208/209/211/212) — recorded as
+**UT-256**. 2 new UT ids, 0 amended.
+
+**The genuine test-first-RED work this gate:** DES-209 promised an oracle ADR-053 named but nobody
+had wired — `SPEC_ROWS` (`tests/fixtures/dashboard-spec.ts`, 43 rows) consumed by val-198..201 under
+both `data-theme` values and once more after a hue-slider move. Wrote the shared checker
+(`tests/helpers/spec-rows.ts`) and one new case per file. Building it surfaced 6 rows where the
+**oracle**, not the implementation, was wrong — each fixed in place with its own `[v27c gate 5 fix]`
+comment rather than left as a permanently-unsatisfiable or vacuous assertion: a `repeat()`/
+`minmax()` literal `getComputedStyle` can never echo back (→ `display:grid`), a `0.04em` literal it
+always resolves to px (→ `0.52px`, the same value at 13px), a bare `--rwe-hue:236` default row that
+the file's own hue-swap pass would always fail (deleted — a UT-tier fact, not acceptance-tier), and
+three anchors DES-209's own table assigns to a narrower selector than the row used
+(`.card.running::before`'s sweep, `.mono` not the card-scoped `.t` for REQ-133, and the
+`[data-node-cell].is-*` state rows — state is only ever an `is-*` hook, the bare anchor always reads
+the DOM's first cell). The helper itself needed two of the same fix: probe with the row's *own*
+property (a `color:`-only probe cannot judge `box-shadow`) and a `::before`/`::after` split for
+`getComputedStyle(el, pseudo)`.
+
+**Two known scenario gaps, flagged rather than engineered here:** `val-200`'s
+`is-running`/`is-queued`/`is-failed` rows and `val-201`'s `.detail-block` row still read "anchor
+matched no element" — not because the CSS/JS is wrong (measured landed and correct) but because
+neither file's fixture run ever produces those states (`val-200`'s `FAKE_GATEWAY` completes all 9
+calls; `val-201`'s panel agent never fails). Closing this needs a second run scenario per file
+(a gated call + a concurrency-capped one for queued/running, an `ok:false` branch for failed) —
+judged Gate 6/7 scenario-construction work against real engine internals, not a test-oracle fix, and
+out of this gate's bounded scope; named explicitly so it isn't mistaken for "unimplemented."
+
+**Trace:** 1601 items / 50 gaps — byte-identical gap set (same sev/type/id triples) to the 1599/50
+pre-edit baseline; the only delta is the +2 items (UT-255/256), which introduce 0 new gaps. 0 broken
+links, 0 orphans.
+
+**Next:** Gate 6 (implementer) re-runs the Sprint A closure (TASK-208/209/211/212 remaining), then
+closes UT-256 and the two flagged scenario gaps as part of its own view-task work.
