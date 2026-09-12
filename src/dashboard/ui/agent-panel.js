@@ -45,9 +45,9 @@ function fmtClock(ts) {
   return d.toISOString().slice(11, 19);
 }
 
-function buildTag(text) {
+function buildTag(text, variant) {
   const span = document.createElement('span');
-  span.className = 'tag';
+  span.className = variant ? `tag ${variant}` : 'tag';
   span.textContent = text;
   return span;
 }
@@ -176,12 +176,14 @@ export function render(container, vm, handlers) {
   panel.appendChild(spNote);
 
   // The three tag columns (ARCH-125): the curated session surface's own counts — a capture with
-  // no reader is not observability, same rule as the mcpUnresolved/unmapped tags below.
+  // no reader is not observability, same rule as the mcpUnresolved/unmapped tags below. REQ-135's
+  // own acceptance text pins one variant per column: 允許工具 `.tag-neutral`, MCP 伺服器
+  // `.tag-accent`, 技能 `.tag-outline`.
   const tagCols = document.createElement('div');
   tagCols.className = 'tag-columns';
-  tagCols.appendChild(buildTag((lang === 'zh' ? '工具 ' : 'tools ') + (vm.toolsCount ?? 0)));
-  tagCols.appendChild(buildTag((lang === 'zh' ? '技能 ' : 'skills ') + (vm.skillsCount ?? 0)));
-  tagCols.appendChild(buildTag('MCP ' + (vm.mcpCount ?? 0)));
+  tagCols.appendChild(buildTag((lang === 'zh' ? '工具 ' : 'tools ') + (vm.toolsCount ?? 0), 'tag-neutral'));
+  tagCols.appendChild(buildTag((lang === 'zh' ? '技能 ' : 'skills ') + (vm.skillsCount ?? 0), 'tag-outline'));
+  tagCols.appendChild(buildTag('MCP ' + (vm.mcpCount ?? 0), 'tag-accent'));
   panel.appendChild(tagCols);
 
   if ((vm.mcpUnresolved || []).length || (vm.unmapped || []).length) {
