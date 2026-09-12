@@ -1,427 +1,245 @@
 ---
 stage: architecture
 lens: quality-dimensions
-iteration: v27 — Round v27b delta (scoped run: gates architecture+design+tests, impactIds REQ-133 / REQ-134 / REQ-140)
+iteration: v27 — Gate 8 SEND-BACK REPAIR, architecture half (07-review.md "v27 GATE 8 REVIEW" §8 items 9–11: AC-2 / AC-3a / DASH-1)
 round: 1 (independent proposal)
-supersedes: the Sprint A r1 at this same path ONLY on the predicted-overlay predicate. The Sprint A body (53 KB, 2026-09-11 17:30) is preserved at `git show 07266be:.sdlc/features/001-remote-workflow-engine/.panel/architecture/quality-dimensions.r1.md` and stands unchanged for everything else (REQ-131/132/135/136/141, the client split, the usage accessor, REQ-136, demo mode, fonts, CSP). It is deliberately NOT pasted back in here — the synthesizer needs the delta, not the archive.
-inputs: 01-requirements.md §Round v27b + REQ-133/134/140 (amended acceptance) + REQ-100 (:970-994) + REQ-105 (:1067-1070); state.yaml tech_stack + pending[0]; journal.md 2026-09-11 "Sprint A … Gate 6 stopped"; 02-architecture.md v27 slice (:3312-3663 — ADR-051 :3432, ADR-055 :3460, ARCH-126 :3364, ARCH-130 :3400, ARCH-131 :3409, the logical view, scenario 2 :3590, contract rows :3630/:3632, rationale "Retiring the `!authEnabled` mask"); 04-design.md DES-196/197/198 (:6745-6767); 03-tasks.md TASK-202/203 (:1699-1716); 05-tests.md UT-238 (:11772), IT-168 (:11797), VAL-199/200/204, IT-092 (v22 row); the v22 ancestors ADR-012, ARCH-073, ARCH-075, DES-114; 07-review.md H2 (:2983); src/server.ts :334, :500-552, :395-412, :555-575, :1236-1244; src/dashboard.ts :315-345; src/skeleton-graph.ts :25-30; src/workflow-view.ts :106; src/mcp-facade.ts :471-494; tests/integration/dag-masking-auth.test.ts; tests/unit/dashboard-derive-lanes.test.ts; tests/integration/dashboard-http.test.ts :140-150, :213-217, :251-265; tests/acceptance/val-116-skeleton-route-404.test.ts :1-4; README.md :308-330, :368-375; .panel/architecture/adversarial.r1.md D-ADV-2
+supersedes: this path's two prior bodies ONLY for the send-back repair scope. Sprint A r1 (the full v27 proposal) is at `git show 07266be:.sdlc/features/001-remote-workflow-engine/.panel/architecture/quality-dimensions.r1.md`; the v27b delta r1 (the predicted-overlay reversal) is at `git show c7447d0:…/quality-dimensions.r1.md`. Both stand unchanged for everything they decided; neither is pasted back in here — the synthesizer needs the repair, not the archive.
+inputs: 07-review.md §2 AC-2 / AC-3 / §3 DASH-1 / §8 items 9–11 / §9 / §10 retro; state.yaml tech_stack + current_stage note (v27g); journal.md :4415-4540; 01-requirements.md §Round v27 (C1–C4, D1–D4), REQ-131, REQ-134, REQ-135, REQ-136, REQ-142; 02-architecture.md ARCH-122 (:3331-3338), ARCH-123 (:3340), ARCH-124 (:3349-3357), ARCH-125 (:3359-3369), ADR-049 (:3430-3435), ADR-053 (:3458), INV-V27-3/5/8 (:3648-3661), the v24 process view (:2530-2568), the v27 process view (:3560-3582), Decision rationale v27 (:3662) and v27b (:3678); 04-design.md DES-200 (:6788), DES-201 (:6796), DES-208 (:6852), DES-209 (:6860); 03-tasks.md TASK-205 (:1747); 06-impl-log.md IMPL-229 (:4481-4547); tsconfig.json; vitest.config.ts; package.json scripts; deploy/rwe-update.sh :132-147; src/dashboard-page.ts :80-175; src/dashboard/ui/app.js :60-80, :395-465; src/dashboard/ui/theme-init.js; tests/unit/dashboard-page-source.test.ts; tests/unit/dashboard-zoom-source.test.ts; tests/unit/workflow-page-harness-table.test.ts; tests/unit/dashboard-diagram-render.test.ts; tests/unit/dashboard-no-design-values.test.ts; tests/fixtures/dashboard-classes.ts; .panel/review/quality-dimensions.md (the pre-run Gate 8 panel, QD-R5)
+verified_this_round (working tree at HEAD `eb387a1`, i.e. AFTER the v27g impl repair): every `file:line` below was re-opened at this tree; line numbers that moved since the review tree `ef0a400` are given in both forms.
+measured_this_round (three experiments, all in the scratchpad, zero edits to the tree):
+  (M1) `tsc --noEmit -p <scratch tsconfig.server.json>` — extends the root tsconfig, `lib:["ES2022"]`, `allowJs:false`, include `src`, exclude `src/dashboard` (+ the existing `src/sandbox/child-entry.ts`) → **exit 0, 76 `src/` files in the program incl. `src/dashboard-page.ts` and `src/dashboard.ts`, zero `src/dashboard/**`, 3.7 s wall**.
+  (M2) a planted probe (`document.title`, `window.location.href`, `HTMLElement`) under the SAME settings → **TS2584 + 2×TS2304, exit 2**; under the root's current `lib` (DOM present) → **exit 0**. The root config has no DOM guard today; the inverse program restores it.
+  (M3) `mermaid.parse()` in the repo's cached headless Chrome (puppeteer) with `https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js` — the exact URL `dashboard.html` loads (the bundle exposes no `mermaid.version` string, so the oracle is cited by URL/major, not by patch) — over both broken sequence diagrams and candidate fixes: **each diagram carries a SECOND `;` the review's "two semicolons" instruction leaves in place; fixing only the review's two leaves BOTH diagrams failing** (detail in §1 O-2).
 ---
-# Quality-dimensions proposal — v27 delta: the predicted overlay is not principal-dependent
+# Quality-dimensions proposal — the send-back's architecture half: four semicolons not two, a guard that exists only on paper, and a shell whose fallback impersonates the old page
 
 ## summary
 
-**What changed since the Sprint A r1.** The architect took my O-3 ("lanes from `view.phases`, leave the
-overlay masked, state the masking rule in the contract row") as ADR-051 decision (a), escalated the
-reversal as an `owner_decision`, and the owner overruled it: **開 —— 撤銷遮罩** (Round v27b). My r1
-position on this predicate is therefore the one that lost, and this delta proposal is written from the
-ruling, not from continuity. Gate 6 was stopped with zero product code written against the mask; the
-mask reached exactly two test files — `tests/integration/dag-masking-auth.test.ts` (IT-092 / IT-168)
-and `tests/unit/dashboard-derive-lanes.test.ts` (UT-238's `masked` arm) — plus every ledger row that
-describes it.
+**Three findings, three measured facts, and one pattern.** The review routed AC-2, AC-3a and DASH-1 to Gate 2 under its own rule — "the architecture body asserts something the tree contradicts" — and all three are instances of the retro's meta-pattern: a control's *form* shipped without its *subject*. ADR-049 asserts a compile-time guard (`lib:["ES2022"]` keeps `document` out of server code) that IMPL-229 removed repo-wide; ARCH-122 attributes the nav, tab shells, anchors and panel container to a shell that `app.js:455` (`:427` at `ef0a400`) `replaceChildren`s away before first paint; DASH-1's two process views fail in the very browser the ledger's dashboard is read in. Gate 2 fixes documents, not code, so every proposal below is an ADR/ARCH amendment plus a named TASK with a DoD whose subject is stated — retro lesson 1, applied to the repair itself.
 
-**The one architectural call this delta has to get right: delete the `masked` axis, do not flip its
-default.** DES-197 designed `McpFacadeDeps.maskPredictedOverlay?: boolean` as *absent ⇒ `true`
-(masked)*, and ARCH-126/DES-196 designed `deriveLanes(…, { masked })`, both "so that when the owner
-answers, one call site changes and no arithmetic moves". After the answer, a boolean whose only
-legitimate value is `false` is a dead configuration axis — and its *fail-closed default now fails
-closed to the behaviour the owner refused*: a facade constructed in a unit test, or a forgotten
-forward at the one construction site, silently reproduces the overruled mask and nothing visible goes
-red. That is this ledger's twice-bitten `composeConfig` class (MEMORY: "new config block forgotten in
-composeConfig → feature silently off"), inverted. Proposal: no dep, no `opts.masked`; `expectedGraph`
-is always derived at the DAG route; `predictedLanes` is always joined into `describe.phases[].agents`.
-The Gate-5 verifier's own signature note (UT-238 calls `{ masked, status }` because ARCH-126 typed only
-`{ masked }`, `dashboard-derive-lanes.test.ts:7-13`) collapses to `{ status }` and is reconciled here
-instead of being left for Gate 6.
+**What I measured changes the repair text in two places.**
+1. **DASH-1 is four characters, not two (M3).** The v24 diagram (`:2530-2568`) fails first at `:2539` (`minRole author; ownership`) and, once that is fixed, at `:2547` (`BEGIN IMMEDIATE; INSERT …; COMMIT`); the v27 diagram (`:3560-3582`) fails first at `:3574` (the trailing `%%` comment) and then at `:3576` (`Note over B: … pure functions; transform …`). The review's instruction — "replace those two semicolons" — produces two diagrams that still render 「圖渲染失敗」 at the re-review. Exact, parse-verified replacements are in §1 O-2 and the ledger-edit table.
+2. **AC-2's "tests-only DOM config" is infeasible, and the finding's option (i) has a real guard available (M1/M2).** Tests import `src`, so one program types both; IMPL-229 said so ("no per-tree override available"). The property ADR-049 named — *the server compiles without DOM* — is restored not by scoping DOM *out of* a tests config but by adding the **inverse program**: `tsconfig.server.json` (src minus `src/dashboard`, `lib:["ES2022"]`, no `allowJs`) run beside the root config in `typecheck` **and** `build`. It compiles clean on today's tree and goes red on a planted `document`. This is option (i) — record what shipped and why, with the replacement guard named — not option (ii).
 
-**The seam the reversal creates.** While the mask existed, a run page with fewer lanes than the script
-declares was *a decision* (ADR-051 wrote it down). With the mask gone, the only remaining cause is a
-derivation failure — and that is silent twice today: the inner `catch { }` at `server.ts:540-541` and the
-`skeletonScript = ''` fallback after two catalog-resolve failures (`server.ts:500-506`). A just-started
-run whose derivation failed is byte-identical on the wire to a run whose script has no agents
-(`cells: ['__trigger__']`, `warnings: []`). Two pushes into channels that already exist close it: one
-`warnings[]` entry on the DAG payload and the inner catch folded into ARCH-130's
-`dashboard_api_degraded` line. Without them REQ-134's 「一眼看出卡在哪」 under auth is unverifiable
-precisely when it fails.
+**AC-3a needs two layers or the re-review finds the same contradiction.** Layer 1 (contractual now, matches the tree): the shell is `<head>` + the island + the module script; everything between `<body>` and the island (`dashboard-page.ts:92-152`) is legacy markup that `app.js` discards, non-contractual, not a test subject. Layer 2 (target, a named TASK): the body becomes one mount point carrying static pre-boot text, so a module that fails to boot leaves an honest 「載入中」 on screen instead of a ghost of the pre-v27 page with empty "Running / Registered / Other" headings — today's fallback is byte-identical to "the engine has nothing registered", which is the silent-failure class this lens exists to design a seam for. Five dead pins, DES-200's and TASK-205's stale clauses, and the class-lock's safety (verified: 0 of 104 `STYLE_HOOKS`, 0 of 23 `TEST_ANCHORS` are emitted only by the shell) are enumerated so Gate 6 has the blast radius in hand.
 
-**The traceability fold — and one row nobody has named.** Round v27b lists what it reverses: v22 H2 /
-DES-114 / ARCH-073 / ARCH-075 / ADR-012. It does not list **REQ-105**, whose acceptance
-(`01-requirements.md:1070`) still reads: *"Given the run-DAG route `/api/runs/:id/dag` … Then it
-stays **behind the auth gate** (v22 finding H2 closed exactly this hole; v23 must not re-open it)"*.
-After this delta the top of the chain would contradict the code, and Gate 8 verifies REQs against
-code. REQ-105 needs the same `[PARTIALLY SUPERSEDED …]` marker REQ-100 already carries twice
-(`:976-993`) — for the auth-gate clause only; the "serves layout only, never a named artifact" clause
-and the C3 word-ban stand untouched. That is a Gate 1 housekeeping amendment for the orchestrator
-(the ADR-053 acceptance-text precedent), listed first under key_points because it is the one item
-this scoped run cannot do itself.
+**Scope discipline.** The repair text is §8 items 9–11 verbatim. Three things this lens would normally push — a syntax guard over the unit-tierless `ui/*.js`, a boot watchdog, a render-based diagram oracle — are fenced in a "recorded, non-blocking" subsection with their cost stated, because the routing rule and the Karpathy tie-breaker apply to what a repair adds as much as to what it fixes.
 
-Everything else in this file is the sweep: which rows change meaning, which get a supersession
-marker instead of a rewrite, and which must stay untouched and green so the delta cannot creep into
-REQ-100's script masking.
+## Altitude call
 
-## Altitude call (which system is this?)
+The project is both a conventional system (an HTTP/MCP engine with a browser dashboard) and an AI-agent system (it runs LLM agents and must make their prompts, tool calls and usage inspectable). **This repair scope is system-altitude on all three findings** — a compiler configuration, an HTML shell, and two ledger diagrams. The agent altitude (REQ-135's panel, REQ-136's system-prompt fact, REQ-127's four-column usage) is untouched by §8 items 9–11 and was closed at v27g; I do not force it here. Where a dimension's agent reading would say nothing new, the section says so in one line rather than inventing a finding.
 
-Unchanged from the Sprint A r1: **both**, and this delta is predominantly **system-altitude** — a
-disclosure rule on two unauthenticated read surfaces (`GET /api/runs/:id/dag`, `workflow_describe` /
-`GET /api/workflows/:name/describe`), i.e. what a plain HTTP API serializes. The **agent-altitude**
-reading is why the owner ranked it: the predicted overlay is the agent workflow's *plan* — which
-agents will run, in which lane, with which tool surface — made inspectable *before* and *during*
-execution. On the deployment the owner actually runs (「我 + 團隊,遠端連進來」 ⇒ `auth.enabled:true`)
-the mask hid exactly that plan from the people it was built for. *Memory metabolism*, *tool liveness*
-and *self-reflection* have no seam in this delta and are named once and dropped, as before.
+## The three findings, on disk at HEAD `eb387a1`
+
+| Finding | The ledger asserts | The tree has | The subject the repair must name |
+|---|---|---|---|
+| AC-2 | ADR-049 title 「no tsconfig change」; Consequences 「`allowJs`/`checkJs` and a `DOM` lib are deliberately NOT added to the root tsconfig, because that would make `document` a known global in server code」; ARCH-124 note 「a root `tsconfig.json` whose `"lib":["ES2022"]` is what stops server code from thinking `document` exists」 | `tsconfig.json:7-8` `"lib":["ES2022","DOM","DOM.Iterable"]`, `"allowJs":true`, one program over `src`+`tests`+`vitest.config.ts` (IMPL-229, honest, 36→0 `tsc` errors); M2: a server file referencing `document` compiles clean today | the real compiler over the real server files: `tsc -p tsconfig.server.json` (M1) |
+| AC-3a | ARCH-122 `api:` 「`DASHBOARD_HTML` … holds markup and CSS only: the design tokens … keyframes, the nav with the source tag, the four tab shells, the `#dag-zoom`/`#dag-graph`/`#dag-fit` anchors, `#run-usage`, `#diagram-zoom`/`#diagram-img[draggable="false"]`, the component classes, and the slide-in panel's empty container」; `note:` 「still assertable here」 | `dashboard-page.ts:91-155`: `<body>` = pre-v27 `<header>`+`<main>` (Runs/Issues links, `#home-*`, `#detail`, `#issues`) + island + module script; **no CSS at all** since v27c (DES-200); `app.js:455` `document.body.replaceChildren(nav, routeMount, buildFooter())`; nav/tabs/anchors/panel built in `ui/app.js`, `ui/run.js`, `ui/workflow.js`, `ui/agent-panel.js` | the bytes the browser keeps: `clientFile(...)` for every component pin; `DASHBOARD_HTML` only for the shell's own four facts |
+| DASH-1 | two `sequenceDiagram`s are the v24 and v27 process views | M3: `:2539` **and** `:2547`; `:3574` **and** `:3576` each break `mermaid.parse` | a real render (mermaid@11 from the same URL `dashboard.html` loads), not a lexical checker |
 
 ---
 
-## 1. Observability
+## 1. Observability — transparency of internal state
 
-**The question this delta asks of the observability lens is inverted from Sprint A's: not "does the
-page show what the engine knows" but "when the engine cannot produce the overlay, does anyone find
-out — and does every document still tell the truth about when it is shown".**
+*System altitude throughout. Agent altitude: no change — the agent seam (REQ-135 panel, `record`, `systemPrompt{agentType,bytes}`) is closed and not in this scope.*
 
-### System altitude
+### O-1 — AC-3a: the shell's fallback body impersonates a working dashboard
 
-**O-Δ1 — With the mask gone, an absent overlay is a fault, and it must say so on the payload.**
-Today the DAG route derives the overlay only `if (!authEnabled)` (`server.ts:520`) and degrades to an
-empty `ExpectedGraph` on (a) two failed catalog resolves (`skeletonScript = ''`, `:500-506`) and (b)
-any parse/derivation throw (`catch { }`, `:540-541`) — "the same graceful-degradation contract auth-masking
-already relies on" (`:516-518`). Both arms were tolerable while auth-masking produced the same shape by
-design; after the reversal they are the *only* producers of a lane-short page, and both are silent.
-`layoutGraph` already owns a `warnings: string[]` channel on the payload (`dashboard.ts:315-345`) and
-already uses it for "lane N is beyond the predicted layout: appended" (`:430-434`) — but that warning
-fires only once a live agent lands in an unpredicted lane; a run with zero completed agents (the IT-092
-harness case, and every run in its first seconds) emits nothing. Proposal: the route pushes one entry,
-`predicted overlay unavailable: <reason>` with `reason ∈ {catalog-resolve-failed, derivation-failed}`,
-into the same `warnings[]` the client already renders (REQ-134's legend row is the natural home:
-「預測結構不可用」 beside the run summary). The v1-contract fallback (`deriveExpectedGraph(nodes, scan,
-'v1')`, `:531-538`) is **not** a warning — it yields a real graph and REQ-124 requires those runs to
-draw as before.
+**What the operator sees when `app.js` does not boot.** `theme-init.js` runs (classic, in `<head>`), stamps the theme, and then nothing else happens: the browser keeps `dashboard-page.ts:92-152` on screen — `<h1>Remote Workflow Engine — Live Dashboard</h1>`, `Runs` / `Issues` links, and the headings `Running` / `Registered` / `Other` / `System` / `Models` above empty `<div class="cards">`s. That page is **visually indistinguishable from an engine with nothing registered and nothing running** — an operator over the tunnel reads "quiet", not "broken", and there is no nav tag (the tag is client-built) to say 離線. This is the design defect the lens definition names: a silent/opaque failure with no observable seam.
 
-**O-Δ2 — …and in the journal.** ARCH-130 (4) already puts `{event:'dashboard_api_degraded', route,
-reason}` on the two outer catches (`server.ts:582-585`, `:1067-1071`). The inner catch at `:540-541` is a
-third catch on the same surface and should emit the same event with `route:'dag'`, `runId`, and the
-reason — the DAG page is the one surface whose degradation now has no other witness. One line, the
-existing convention (`diagram_render_failed`, `:440`).
+**Why the failure is realistic, not hypothetical.** There is no build step (ADR-049), `allowJs` without `checkJs` makes the client tree "readable to `tsc`, not checked by it" (IMPL-229's own limit statement), `ui/` has no unit tier by design (ADR-049 — decidable logic is in `lib/`), and the real-Chromium tier is conditional on a browser being present (ADR-053: puppeteer is an `optionalDependency` behind an existing Chrome probe; IMPL-229 had to force it with `RWE_REQUIRE_BROWSER=1`). Verified this round, stated narrowly: `lib/*.js` (and, since AC-7, `ui/clock.js`) are parsed whenever their `.test.js` importers load them, but **none of the `ui/*.js` modules `app.js` statically imports — `app.js`, `poll.js`, `home.js`, `workflow.js`, `run.js`, `agent-panel.js` — nor the classic `theme-init.js` (unit-tested as TEXT) is parsed by any tier except the real-browser one**; no test runs `node --check` or any other parser over them (`grep` over `tests/unit` for `--check` / `SourceTextModule` / `acorn` → 0). A stray token in any of those seven files ships with a green unit suite and produces exactly the ghost page above.
 
-**O-Δ3 — `current` and `lanes` after the reversal: the contract row, restated so the client has one
-rule.** `lanes[]` = the observed phases (`view.phases`, `types.ts:293-298`, ordinal = index, the same
-integer `layoutGraph` lays out as `col = lane.index + 1`, `dashboard.ts:363`) **always** extended by
-the expected lanes the run has not entered yet (`ExpectedLane.index/title`, `skeleton-graph.ts:25-30`).
-The only condition under which the extension is missing is O-Δ1's warning being present. `current`
-is unchanged from DES-196 (defined for all seven `RunStatus` members). Under auth and under no auth
-the byte shape is identical — that is the whole of REQ-140's 「在啟用 auth 時同樣回傳」 now.
+**Proposal (the repair — two layers, both in ARCH-122):**
+- **Layer 1, contractual now and true of the tree:** the shell's `api:` names `<head>` (charset, viewport, title, the `dashboard.css` link, the classic `theme-init.js`) + `<body>` containing the JSON island `#rwe-init` and the module script `app.js`. Everything else in `<body>` is legacy pre-v27 markup that `app.js:455` replaces before first paint: **non-contractual, not a valid test subject, scheduled for deletion under TASK-A (below)**. The nav, source tag, tab shells, `#dag-*`/`#run-usage`/`#diagram-*` anchors, component classes and panel container are ARCH-125's (`ui/app.js`, `ui/run.js`, `ui/workflow.js`, `ui/agent-panel.js`). The shell carries **no CSS** (DES-200 v27c: one delivery path, `dashboard.css`).
+- **Layer 2, the target shape (TASK-A, Gate 6):** `<body>` = one mount element carrying static pre-boot text + `<noscript>`, then the island and the module script. `app.js`'s existing `replaceChildren` already removes it on a successful boot — **zero change to `app.js`**. On a failed boot the operator sees 「儀表板載入中… / Loading dashboard…」 forever, which is honest ("did not start"), not a page that claims the engine is idle. Class: reuse the existing `empty` style hook (`STYLE_HOOKS` already declares it; no DES-209 contract change, no new `data-*` — DES-209 freezes those as test anchors). Text: a bilingual one-liner in the shell is a literal outside `lib/strings.js` — the shell is server-side TS and cannot import the table, and the text must exist before any JS runs; record it as a boundary exception of the same class as `theme-init.js`'s deliberate copy of `PREF_KEYS` (DES-201's "one surviving source pin"), or choose language-neutral text (`…`) if the panel prefers zero exceptions. I prefer the bilingual line: an ellipsis is not an explanation.
 
-**O-Δ4 — The traceability fold: three partitions, enumerated so the architect and designer amend by
-list and Gate 8 checks by list.** This is the "folds in traceability" half of the lens, and it is
-where the delta is most likely to be under-done, because the mask is described in more places than it
-is implemented.
+**Recorded, non-blocking (beyond §8 — cost stated, fold into TASK-A only if the orchestrator agrees):**
+- **(NB-1) a syntax guard whose subject is the served bytes:** one unit test that spawns `node --check` over every `src/dashboard/**/*.js` (the package is `"type":"module"`, so the files parse as ESM exactly as the browser parses them; the `lib/` files are double-covered, harmlessly — the seven `ui/` files above are the ones that gain a parser). ~15 lines, no new dependency, falsified by a planted stray brace. It closes the gap between "readable" and "checked" at the cheapest level that matters for the ghost-page failure, without `checkJs`'s implicit-any flood.
+- **(NB-2) a boot watchdog:** `theme-init.js` (already classic, already served, already CSP-allowed) arms one `setTimeout(8000)` that, if the pre-boot element is *still present*, swaps its text to 「儀表板未能啟動 — 請看瀏覽器主控台 / Dashboard failed to start — see the browser console」. Six lines; detection by element presence, not by a new attribute. I will not fight for it — the static text is the floor; the watchdog only distinguishes "slow" from "dead".
 
-*(a) Rows whose MEANING changes — amend in place at `iter: v27`:*
-- `src/server.ts` (the only product code the delta's tests will drive, named so Gate 6 does not stop
-  at the branch) — the `if (!authEnabled)` guard (:520) leaves; `handleDashboardRequest`'s
-  `authEnabled` parameter and its v22 comment (:331-334) leave; the `!!authCfg` argument (:1068) and
-  the ":1064 masking flag" comment leave; the :508-518 comment block is rewritten to state the ruling
-  and the degradation contract (R-Δ1, O-Δ1).
-- `02-architecture.md` — **ADR-051** (:3432): decision → (b), `owner_decision` → answered (quote the
-  ruling, cite Round v27b), and one added sentence saying where a future policy would live (R-Δ2).
-  **ADR-055** (:3460): drop "masked exactly like the run-DAG predicted overlay (ADR-051), with (a) as
-  the under-auth fallback". **ARCH-126** `api:` (:3369) — `deriveLanes(phases, expected, opts:
-  { status })`, delete "only when `masked` is false", and its `note:` sentence "the `masked` parameter
-  is not a policy decision taken here". **ARCH-130** `api:` (2) (:3405) — `deriveLanes(view.phases,
-  expectedGraph, { status: view.status })`; the `if (!authEnabled)` guard leaves the route. **ARCH-131**
-  `api:`+`note:` (:3414-3415) — delete "emitted only when the predicted overlay is unmasked … under
-  auth the field is absent" and the whole "masking predicate must be handed to the facade explicitly"
-  paragraph (there is no predicate to hand). The **logical view**'s `MASK{"authEnabled?"}` node and
-  its two edges (:3505-3506). **Scenario 2** "Nine agents across five phases, auth on" (:3590) — now
-  reads: every lane, the dashed edges to unreached nodes, by the owner's ruling. **Contract rows** for
-  `GET /api/runs/:id/dag` (:3630, "Masking rule: …") and `describe` (:3632, "absent under auth").
-  **Housekeeping (3)** in the rationale (:3663) — the `auth.enabled:true` validation case now proves
-  presence, not degradation.
-- `04-design.md` — **DES-196** signature/boundary (:6748-6749): `opts: { status: RunStatus }`; delete
-  the `masked` sentences; keep "absent, never `[]`" with its new meaning (C-Δ2). **DES-197**
-  (:6756-6758): delete `McpFacadeDeps.maskPredictedOverlay` and the "fail-closed" paragraph entirely;
-  `phases[].agents` is joined unconditionally; `tests:` → open and auth servers assert the SAME
-  positive shape. **DES-198** signature (2) (:6764): the `{ masked: authEnabled }` argument goes; add
-  O-Δ1's warning and O-Δ2's log line to (4).
-- `03-tasks.md` — **TASK-202** `dod:` (:1704): "a facade constructed with NO `maskPredictedOverlay`
-  omits `phases[].agents`" and "the auth server answers `agents` ABSENT" invert; README row loses its
-  masking sentence. **TASK-203** `dod:` (:1713): the DAG payload's `lanes` include unreached lanes on
-  the auth server; the forced derivation failure produces the warning + the log line.
-- `05-tests.md` — **UT-238** (:11772): 7×2×2 → 7×2 (status × phases); the two join cases become
-  "always extends by the unreached expected lanes" + "expected `undefined` → observed-only AND the
-  caller can tell" (the `undefined` arm survives as the derivation-failure arm). **IT-168** (:11797):
-  cases 1–2 flip to positive assertions (auth ON: `lanes` includes index 2 "three"; auth ON:
-  `phases[].agents` PRESENT with labels); case 3 unchanged. **IT-092** (v22 row, `traces: ARCH-073,
-  ARCH-075, ADR-012, DES-114, DES-115, REQ-100`): case 1 flips from `['__trigger__']` to
-  `__trigger__ + 3 __skel_*` under auth — the same measured shape its own red-reason paragraph
-  recorded pre-fix; the row's title ("masks the script-derived skeleton overlay while auth is enabled")
-  and the file's header comment (`dag-masking-auth.test.ts:1-16`) and `describe` title (:113) all
-  invert. Give the flipped case its v27 trace (ADR-051, REQ-140) and keep the v22 traces as history.
-  **VAL-204** (:12067): its real-tier path now proves *presence* on the auth server. **VAL-199 /
-  VAL-200**: one `auth.enabled:true` Chromium case between them (S-Δ2).
+### O-2 — DASH-1: the ledger's own dashboard is an observability surface, and the review's instruction leaves it broken
 
-*(b) Rows that get a SUPERSESSION MARKER, not a rewrite (history is read, not edited):*
-- **REQ-105** (`01-requirements.md:1070`) — `[PARTIALLY SUPERSEDED v27, Round v27b]` on the "stays
-  behind the auth gate … v23 must not re-open it" clause only; REQ-100's two existing markers
-  (`:976-993`) are the house style. **Orchestrator item — outside this run's gates.**
-- **ADR-012** (`/api/*` and the dashboard serve the non-owner view whenever auth is on — still true
-  for *script text*; superseded for the predicted-overlay predicate), **ARCH-073** `api:` ("`/api/runs/
-  :id/dag` serve[s] the non-owner projection whenever auth is enabled"), **ARCH-075** (trap 2/3:
-  `skeleton`/`phases` "masked by default"), **DES-114** boundary ("the dashboard DAG loses its
-  predicted-skeleton overlay") — one line each: *superseded in part (predicted-overlay predicate only)
-  by Round v27b / ADR-051 v27; script masking unchanged.*
-- **07-review.md H2** (:2983) — the finding and its closure are a record; a one-line pointer at the
-  closure note ("predicate reversed by the owner at v27 Round v27b, see ADR-051") is enough.
-- **Code and test comments that now lie** — `server.ts:508-518` (the v22 H2 / v26 DES-176 block:
-  rewrite to state the ruling and the degradation contract), `val-116-skeleton-route-404.test.ts:1-4`
-  ("`GET /api/runs/:id/dag` still serves its layout behind the auth gate (unchanged, v22 finding H2)"
-  — the 404 assertion stays, the comment changes), `dag-masking-auth.test.ts:1-16, :113, :130-133`.
-  REQ-105's own last clause is the standard: *the deletion is not finished while something still
-  describes the deleted thing* — nine recorded instances by v23; this delta must not be the tenth.
+**The measurement (M3), block-relative line numbers as `mermaid.parse` reports them:**
 
-*(c) Must stay UNTOUCHED and green — the delta's outer boundary (checked by ROUTE, not by the word
-"masked": of the 16 test files that touch `/dag` or `__skel_`, only `dag-masking-auth.test.ts` boots
-an auth-enabled server — `val-080`, `val-081`, `nested-frame-phase`, `diagram-contract-grandfather`,
-`graph-payload-http`, `refused-survives-restart` and `dashboard-http` all run open, so none has an
-auth case to flip):*
-`tests/integration/workflow-masking-http.test.ts` (IT-089, `workflow_source`/`workflow_list` script
-masking), `tests/acceptance/val-110-script-masking.test.ts`, `val-111-phases-public-everywhere.test.ts`,
-`tests/unit/workflow-view.test.ts:119` (script body stays masked), `tests/acceptance/val-116-skeleton-
-route-404.test.ts` (the `/skeleton` route stays 404 — REQ-105's live clause), `tests/integration/
-dashboard-http.test.ts:213-217` (empty script ⇒ no `__skel_*` — unchanged, it is not an auth case) and
-`:140-150` (the pinned `{kind,cells,edges,startedBy}` shape). `workflowSource`'s masked projection
-(`mcp-facade.ts:494`) and `tool-specs.ts:352` are REQ-100 and are not in this closure. README
-`:312-313`'s claim ("沒有後門端點能看到未授權的**腳本本文**") remains *true* after the reversal — the
-overlay is structure, not text — and should not be edited.
+| Diagram | As on disk | Review's fix only | Both fixed |
+|---|---|---|---|
+| v24 process view `02-architecture.md:2530-2568` | FAIL line 9 (`:2539` `minRole author; ownership`) | **FAIL line 17** (`:2547` `BEGIN IMMEDIATE; INSERT …; COMMIT`) | **OK** (`diagramType: sequence`) |
+| v27 process view `02-architecture.md:3560-3582` | FAIL line 14 (`:3574` trailing `%% never a 500; a fault …`) | **FAIL line 16** (`:3576` `Note over B: … pure functions; transform …`) | **OK** |
+| control: v14 process view `:891-920` (line-start `%% … HarnessDescriptor; see …`) | OK | — | — |
 
-### Agent altitude
+**The exact replacements, each verified in combination:**
+- `:2539` `Z-->>S: ok (minRole author; ownership workflow → owner or new)` → `… (minRole author · ownership workflow → owner or new)`
+- `:2547` `C->>C: BEGIN IMMEDIATE; INSERT workflow_versions(mermaid, triggers, params); COMMIT` → `BEGIN IMMEDIATE → INSERT workflow_versions(mermaid, triggers, params) → COMMIT` — **or** `BEGIN IMMEDIATE#59; INSERT …#59; COMMIT` (the `#59;` entity renders as a literal `;`, also verified OK, if the SQL reading matters to the author)
+- `:3574` `S-->>B: 200 [{…, costUSD?}]  %% never a 500; a fault is 200 {degraded} + dashboard_api_degraded` → `… %% never a 500 — a fault is 200 {degraded} + dashboard_api_degraded`
+- `:3576` `Note over B: render from lib/* pure functions; transform stays on #dag-zoom` → `Note over B: render from lib/* pure functions · transform stays on #dag-zoom`
 
-**O-Δ5 — What the overlay makes observable, stated once so the ADR can cite it.** For a running
-agent workflow the overlay is the only surface that shows *the difference between plan and progress*:
-the dashed edge from a done node to an unreached one (REQ-134) is "this agent has not been dispatched
-yet", as opposed to "this agent does not exist". The ruling's rationale (the same structure is already
-public via `/api/workflows`, `describe.phases`, `describe.mermaid`, `toolSurface`, `mcp-facade.ts:
-471-490`) is an *information* argument; the observability argument is that the run page is the only
-place that structure is joined to live state, and the join is worthless if one side is withheld on the
-owner's own deployment.
+**The authoring rule the control block teaches** (one sentence for the ledger's house style, so this class does not recur): in a `sequenceDiagram`, `;` is a statement terminator inside message text, inside `Note` text and inside a *trailing* `%%` comment; only a `%%` comment on its own line tolerates it. The sweep over every ```mermaid block in 02/03/04/05 finds no other sequence-diagram text with a `;` — the remaining hits are quoted `erDiagram` attribute comments and quoted flowchart labels, which the review's browser pass rendered (40 of 43), and two `classDiagram` `<<…>>` annotations at `04-design.md:2036/2040` that were likewise not among the three failures (I did not parse those two myself; stated to what was measured).
+
+**After the edit:** regenerate `dashboard.html` (`sh .sdlc/trace`) — it is generated from the ledger, and the re-review's §3 renders the generated file, not the markdown.
+
+**Recorded, non-blocking (NB-3) — the closed loop the retro asked for (§10 item 4, "render it, don't lint it"):** the scratch script that produced M3 is ~30 lines — extract every ```mermaid block from the five ledger files, `mermaid.parse` each in the cached Chrome against the same CDN URL `dashboard.html` uses, print `file:line` per failure, skip loudly when the CDN is unreachable (the same soft dependency `dashboard.html` already has). It belongs beside the ledger tooling (`.sdlc/`), not in `src/` (the `no-retired-surface` guard forbids mermaid there) and not in `tests/`. Record it as TOOL debt beside TOOL-FORK; it is the only oracle that answers the question §3 asks, and the review already showed the lexical checker is wrong in both directions.
+
+### O-3 — AC-2: what "readable, not checked" means for the operator
+
+The `DOM` lib in the root is not itself an observability problem; the *absence of the promised guard* is, because it is invisible: nothing goes red, `npm run typecheck` says 0 errors, and the ADR keeps saying the guard exists. The proposal in §2 R-1 makes the guard a second `tsc` program whose exit code is the signal — visible in CI, visible in `deploy/rwe-update.sh:147` (`revert_and_fail "npm run build failed"`), and falsifiable in one line (M2).
+
+**Verified consistent (Observability):** ARCH-123's `dashboard_asset_missing` log line (a missing key is server-observable at boot); ARCH-130's `dashboard_api_degraded`; the v27g repairs of AC-4/AC-5/AC-6 (worst-of tag, per-tab poll, INV-V27-5 rendered) — re-read, not re-litigated.
 
 ---
 
-## 2. Replaceability
+## 2. Replaceability — decoupling and pluggability
 
-**The delta removes a seam; the lens's job is to make sure it is removed rather than parked, and to
-say where the next policy would go so nobody re-parks it.**
+*System altitude. Agent altitude: no change — the LLM backend seam (three provider routes behind one `GatewayClient`) is untouched by this scope.*
 
-### System altitude
+### R-1 — AC-2: the server/client compile boundary is the replaceability property, and it is currently unenforced
 
-**R-Δ1 — Delete the axis; a parameter with one legitimate value is coupling, not pluggability.**
-Three places were designed to carry the predicate: `McpFacadeDeps.maskPredictedOverlay?` (DES-197),
-`deriveLanes(…, { masked })` (ARCH-126/DES-196) and `{ masked: authEnabled }` at the DAG route
-(ARCH-130/DES-198). None exists in code yet (`grep -rn 'maskPredictedOverlay\|deriveLanes\|
-predictedLanes' src/` — no hits; the only `authEnabled` branch on this surface is `server.ts:520`).
-`McpFacadeDeps` (`mcp-facade.ts:88-118`) carries no auth field today and should not gain one for a
-value that is always `false`. Keeping the parameter "for symmetry" costs: a dead branch in a pure
-function that the 7×2×2 table then has to test both ways (testing code with no legitimate input),
-a dep that the twice-bitten wiring class can forget, and a `note:` that has to explain why it is
-always `false`. Removing it costs one call site — and it must be removed all the way down:
-`handleDashboardRequest`'s `authEnabled = false` parameter (`server.ts:334`, with its v22 comment at
-`:331-333`) has exactly ONE consumer, the `if (!authEnabled)` at `:520`, and exactly ONE caller, the
-`!!authCfg` argument at `:1068` (whose comment at `:1064` still calls it "the masking flag"). Once the
-branch is unconditional, the parameter, the argument and both comments are dead — and a dead
-`authEnabled` parameter on the dashboard handler is precisely the stump a future hardening reviewer
-restores the mask from. `authAnnounce` (`:337`, `GET /api/system`'s `auth` key) is a different
-parameter and stays; `server.ts` is on the six-file `no-skeleton-surface` allowlist
-(`no-skeleton-surface.test.ts:54`), so rewriting its comment block is safe.
+**The property ADR-049 actually cares about** is not "which strings are in `lib`"; it is *the server tree is a complete program without the client tree*. That is what lets the client be rewritten (v27 did exactly this), deleted, or replaced by a different renderer without touching the server's compile — and what stops a server module from quietly growing a `window.` reference that only fails at runtime under Node. IMPL-229 traded that property for `tsc` readability of `.js` exports and DOM types in acceptance callbacks, both legitimate, and recorded the trade honestly; what it could not do (it is a Gate 6 entry) is amend the ADR.
 
-**R-Δ2 — Where a future policy lives (one sentence for ADR-051, so it is not re-derived).** If an
-owner ever wants the overlay withheld again, the ruling itself tells us the shape: it is *not
-principal-dependent* now, so making it principal-dependent later means a per-principal projection
-through the auth layer — i.e. reopening Won't-have D1 and adding browser-session identity to
-`/api/*`, which is a subsystem ADR-012 already declined to invent. It is **not** a global
-`dashboard.predictedOverlay: boolean` config key "for safety": that would reintroduce the dead axis
-with a `composeConfig` forwarding obligation (S-Δ3) to protect a state the owner refused.
+**Why a tests-only DOM config cannot restore it.** `tests/**` import `src/**`; `tsc` types one program per config; a config that includes tests includes the server. IMPL-229: "one program, no per-tree override available". So the finding's option (ii) as literally worded has no implementation, and I do not propose it.
 
-**R-Δ3 — The derivation stays swappable and single.** INV-V27-4 ("one shape derivation") is
-untouched: the DAG route, `predictedLanes` and the registration checker all consume
-`deriveExpectedGraph` (`skeleton-graph.ts`, ARCH-113). `expected: ExpectedGraph | undefined` stays on
-`deriveLanes`'s signature — not because a server may withhold it, but because derivation can fail —
-and the docstring must say that, or the next reader restores the auth reading from the type alone.
+**What does restore it — the inverse program (M1, M2):**
 
-### Agent altitude
+```jsonc
+// tsconfig.server.json — the SERVER must compile without the client and without DOM (ADR-049).
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "lib": ["ES2022"], "allowJs": false, "declaration": false },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist", "src/sandbox/child-entry.ts", "src/dashboard"]
+}
+```
+```json
+"typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
+"build":     "tsc --noEmit && tsc --noEmit -p tsconfig.server.json"
+```
 
-**R-Δ4 — Nothing about the LLM backend or provider seam moves.** The overlay is script-derived
-(`parseWorkflowSkeleton` + `scanAgentCalls`) and provider-agnostic; REQ-125's `provider`/`transport`
-facts ride the *live* records, not the overlay. Recorded so the replaceability section is honestly
-short rather than padded.
+- **Compiles clean on today's tree**: 76 `src/` files, `src/dashboard-page.ts` and `src/dashboard.ts` (ARCH-126, a server module) included, zero `src/dashboard/**`, 3.7 s.
+- **Goes red on the planted violation**: TS2584 (`document`), TS2304 (`window`, `HTMLElement`) — the same three the root config now accepts silently.
+- **No allowlist**: `src/auth/auth-service.ts:273` contains `document.getElementById` inside an HTML *string* served to the browser — the compiler does not see a string as an identifier; a grep guard would need an allowlist entry for it on day one.
+- **Sees types and transitive imports**: `HTMLElement` in a server signature, or a server file importing a `src/dashboard/lib/*.js` module, both fail; a grep over `document.|window.` sees neither.
+- **The editor does not enforce it**: IDEs resolve the nearest `tsconfig.json`, which keeps DOM, so `document` autocompletes in server files. Stated as the accepted limit; CI (`typecheck`) and every self-update (`build`, `deploy/rwe-update.sh:132-147`) do enforce it.
 
----
+**Lineage worth recording, because the retro pattern applies to Gate 2 itself.** Sprint A's adversarial lens proposed a second tsconfig (D-ADV-5, `tsconfig.client.json`); the v27 synthesis refused it as "ceremony" and took the cheaper half — no tsconfig change — arguing the fixture's `satisfies` lock delivered the same property. It did not: the cheap half shipped without the load-bearing property and IMPL-229 had to widen the root. The inverse program is that refused idea, pointed the right way (guard the server, not type the client), at eight lines of JSON.
 
-## 3. Consumability
+**Ledger edits:** ADR-049 — the **title** ("no tsconfig change") is false and must carry the amendment marker, not only the Consequences; Consequences rewritten to what shipped and why (DOM + `allowJs` in the root for acceptance `page.evaluate` callbacks and `.js` export readability), with the replacement guard named as `tsconfig.server.json` in `typecheck`+`build` and its falsification stated; the `checkJs` limit recorded ("readable, not checked" — the opt-in path is a per-file `// @ts-check` in `lib/*.js`, non-blocking). ARCH-124 note — the sentence "without adding `DOM` to a root `tsconfig.json` whose `"lib":["ES2022"]` is what stops server code from thinking `document` exists" is replaced by "the server tree is compiled a second time without DOM and without the client (`tsconfig.server.json`, ADR-049 as amended)". Until TASK-B lands, both rows say **"guard restored by TASK-B; between this amendment and its landing the property is unguarded"** — no sentence the tree contradicts (the finding's own warning about "an amended ADR beside an unchanged `tsconfig.json`").
 
-**Two consumers: the browser client (`src/dashboard/ui/*.js`, ARCH-125) and any MCP caller of
-`workflow_describe` (including the cross-repo `rwe-mcp` plugin). The ruling makes both simpler, and
-the contract table must say so instead of leaving the "absent under auth" branch for them to discover
-by reading tests.**
+### R-2 — AC-3a: the shell's contract shrinks to what only the server can supply
 
-**C-Δ1 — One wire shape regardless of auth ⇒ one client code path.** DES-206's `ui/workflow.js`
-(predicted layout) and `ui/run.js` (swimlane) no longer need an "auth on ⇒ lanes-only, no dashed
-edges" branch, and the string table loses whatever 「auth 啟用時不顯示預測結構」 copy DES-197 would have
-required. This is a *reduction* in what the client has to know: it never learns whether auth is on
-for this view (it still does not — the synthetic `{kind:'auth-disabled'}` principal at `server.ts:402`
-and `:563` is unchanged).
+Replaceability's reading of ARCH-122: the shell should own **only what the client cannot produce for itself** — the document root's attributes before first paint, the asset references, and the server→client data path (the island). Every element the client builds belongs to the client's row; attributing them to the shell creates a two-owner mirror pair (the class this ledger's `as-is §A` counts and ADR-049 was chosen to shrink), and the dead markup is that pair's fossil. Layer 1 of the ARCH-122 amendment says exactly this; Layer 2 removes the fossil.
 
-**C-Δ2 — `agents?` stays optional on the wire, and "absent ≠ `[]`" keeps its rule with a new
-meaning.** DES-196/197's rule — absent means *unknown*, `[]` would be the lie "this lane has no
-agents" — was written for the mask; it is exactly right for derivation failure too. So the type does
-not change (`phases: Array<{ title: string; agents?: string[] }>`), only the sentence beside it in the
-contract row: *absent iff the engine could not derive the predicted layout for this version; never
-absent because of auth.* The client renders 「預測結構不可用」 for absence, one branch, one reason.
-Same for the DAG: the client detects an inert predicted cell by `cell.agentId === undefined` (the
-v11 DES-064 shape, `dashboard.ts:330-331`), **never** by the `__skel_` id prefix — the id is an
-opaque identifier, the prefix is a retired word's stump, and a prefix test would couple the served
-client bytes to it (INV-V27-8's guards walk `.js` now).
+**Pin rule for the row's `note:` (replaces "still assertable here"):** `DASHBOARD_HTML` is a valid test subject only for the shell's own facts — root attributes, the three asset references, exactly one inline `<script>` (the island), `<` escaped in the island, and after TASK-A the mount element with its pre-boot text. Every component-markup or CSS assertion takes `clientFile(...)` as its subject (DES-208's disposition table already says this for behaviour pins; v27c said it for the CSS pins; v27g said it for the `draggable` pin). **A component pin whose subject is `DASHBOARD_HTML` is dead by construction.**
 
-**C-Δ3 — The contract table rows, rewritten.** `GET /api/runs/:id/dag`: "gains `lanes` (observed
-phases extended by every unreached expected lane — **regardless of auth**, Round v27b) and `current`;
-if the predicted layout could not be derived, `warnings[]` carries `predicted overlay unavailable:
-<reason>` and `lanes` are observed-only". `describe`: "`phases[].agents?` — the predicted lane
-membership, **served to every caller regardless of auth**; absent only on derivation failure". The
-README §Dashboard JSON REST API (`README.md:368-375`) has no describe row yet; TASK-202's `dod:` says
-it gains one "with its masking sentence" — write it without one.
+**Blast radius, enumerated (TASK-A's DoD), all verified at HEAD:**
+| Dead pin | Disposition (DES-208's three verbs) |
+|---|---|
+| `tests/unit/dashboard-page-source.test.ts` UT-240 last case `expect(DASHBOARD_HTML).toMatch(/draggable="false"/)` | RETIRE — UT-224's v27g re-pointed case (`clientFile('ui/workflow.js')`) already guards it; the leftover is a second dead pin AC-3b did not reach |
+| `tests/unit/dashboard-zoom-source.test.ts:19` `/zoomable/`, `:23` `/fit/i` | MOVE → `clientFile('ui/run.js')` (the wrapper and `#dag-fit` are built there; INV-V27-6) |
+| `tests/unit/workflow-page-harness-table.test.ts:15` `/harness[-_]?table\|harnessTable/i` | RETIRE with reason — the harness table's role is REQ-135's panel now, real-tier proven by val-201; or MOVE → `clientFile('ui/agent-panel.js')` |
+| `tests/unit/dashboard-diagram-render.test.ts:60` `toContain('id="diagram-img"')`, `:61-62` `not.toContain('<object'/'<embed')` | MOVE → `clientFile('ui/workflow.js')` for the positive; the two negatives over `clientCorpus()` (over `DASHBOARD_HTML` they pass vacuously today — DES-208's "dangerous green") |
+| `tests/unit/dashboard-no-design-values.test.ts:44,50` (class-lock emitter half, `clientCorpus() + DASHBOARD_HTML`) | **no change needed** — measured: 0 of 104 `STYLE_HOOKS` and 0 of 23 `TEST_ANCHORS` are emitted only by the shell |
+| UT-240 gains one positive case | `<body>` contains the mount element, the island and the module script and **no `<section`/`<header`** — the assertion that fails if the fossil returns |
 
-**C-Δ4 — Cross-repo note stays additive.** `workflow_describe.phases[].agents` is a new optional
-field for every MCP caller; the plugin's authoring skill can now draw the predicted layout from
-`describe` alone without parsing `mermaid`. One release-note line; no breaking change on this
-surface (REQ-136's `harness.prompt` change remains the only breaking one in v27).
+**Owed to other gates (record, route — design's re-run scope is DASH-2 only):** DES-200's boundary sentence 「`draggable="false"` STAYS in this file」 and TASK-205's `dod:` 「`DASHBOARD_HTML` still contains `draggable="false"`」 have been false since v27g AC-3b; both need the same re-point note (`clientFile('ui/workflow.js')`), and DES-200's signature line "holds markup and CSS only" needs the same Layer 1 shape.
 
-**C-Δ5 — Seen, out of closure, one line for the orchestrator.** `README.md:325-330` still says the
-HTTP describe route "跟 /mcp 走同一套 D-BIND 規則 … 沒過就回 401" — that gate was removed by v24
-adjudication #8 (`server.ts:1236-1244`). Not this delta's to fix, but TASK-202 touches the same README
-section and a reader of the new `agents` row will read those lines next.
+### R-3 — DASH-1: nothing to swap, one rule to keep
+
+No replaceability content beyond §1 O-2's authoring rule; a diagram is data the dashboard renders, and the rule keeps it renderable by the one renderer the ledger uses.
+
+**Verified consistent (Replaceability):** ARCH-124's purity (post-v27g, `clock.js` is in `ui/`); ARCH-123's closed map; `solid_check` 0 cycles across the two-layer client (review §4) — nothing here widens a dependency.
 
 ---
 
-## 4. Self-sustainability
+## 3. Consumability — interface friendliness and integration cost
 
-**Will the ruling still be in force in three iterations, with nobody watching? What keeps a future
-"security hardening" pass from re-masking, and what keeps the page honest when the derivation breaks?**
+*System altitude. Agent altitude: no change — the MCP tool surface and `run_agent_log`'s shape are not in this scope (QD-C2/C3 remain §9 debt).*
 
-### System altitude
+### C-1 — AC-3a: the shell's contract becomes four lines an integrator can read
 
-**S-Δ1 — The regression guard is a positive integration assertion on the auth server, and it is
-the only one.** After the delta, the thing that stops a future pass from restoring `if (!authEnabled)`
-is IT-168/IT-092's flipped cases: *auth ON, anonymous DAG GET ⇒ `__skel_*` cells present, `lanes`
-include the unreached lane, `describe.phases[].agents` present with labels.* Both servers already
-boot in that harness (`dag-masking-auth.test.ts:46-64`, real `createServer` × 2, real `TokenStore`
-bearer). A negative assertion ("not absent") is weaker than the positive shape; assert the labels.
-Rename the file's `describe` titles so a future reader sees "the overlay is served under auth (owner
-ruling v27b)" rather than "masks … while auth is enabled" — the title is the first thing the next
-hardening reviewer reads.
+Whoever fronts the dashboard with a reverse proxy, embeds it, or one day server-renders a view needs to know exactly what the server supplies: (1) root attributes `data-theme="dark" lang="zh-Hant"` stamped before paint by `theme-init.js`; (2) three same-origin asset references under `/static/dashboard/*`; (3) one JSON island `#rwe-init` with schema `{version, lastUpdate?, interruptedRuns?}` — **the only server→client data path at load** (everything else is `/api/*`, key-set pinned by ADR-054); (4) one module entry `ui/app.js`. Layer 1 of the ARCH-122 amendment is that list; the pre-v27 body adds nothing to it and misleads anyone reading the served source. `DASHBOARD_HTML` stays exported (the page-source tests' subject; DES-200's signature).
 
-**S-Δ2 — Gate 7.5's `auth.enabled:true` case, with the harness trap named now.** Round v27b requires
-one real case proving the overlay IS visible under auth. IT-168 proves the wire; the *visible* claim
-(dashed edges to unreached nodes, REQ-134; 「預測結構」 for a never-run workflow, REQ-133) is Chromium,
-and VAL-199/VAL-200 boot open servers. Propose one auth-ON case under VAL-199 (the never-run predicted
-layout is the cheapest: no gateway needed) with VAL-204 carrying the wire half. The trap: under auth,
-`workflow_register`/`workflow_publish`/`run_start` need a minted bearer (IT-092's `mintBearer`,
-`dag-masking-auth.test.ts:76-84`) while the page and `/api/*` GETs need none — a VAL author who forgets
-gets a registration refusal and a vacuous or skipped case, and the ruling goes unproven exactly where
-the owner asked for proof.
+### C-2 — AC-2: `npm run typecheck` gains one sentence of meaning, and the limit is stated where a contributor looks
 
-**S-Δ3 — No new config key ⇒ no `composeConfig` exposure.** The delta *removes* a planned dep and adds
-no `FileConfig` field; the twice-bitten "correct implementation, unwired call site, every unit test
-green" class has nothing to bite. Worth stating as a positive in ADR-051, because the alternative
-(R-Δ2's global knob) would have reintroduced it.
+One command, two programs: "the whole tree with DOM (tests and client readability), then the server alone without it". The one-line comment in `tsconfig.server.json` (above) and the amended ADR-049 are where a contributor learns why `document` is refused in `src/` but accepted in `tests/`. The `checkJs` limit — client internals are not type-checked — is recorded in the ADR rather than discovered the day someone assumes `tsc` covers `ui/*.js`.
 
-**S-Δ4 — Self-healing when the derivation fails is unchanged, and now visible.** The route still
-degrades to live-only (never a 500 — DES-018's contract), and after O-Δ1/O-Δ2 the degradation has a
-witness on the payload and in the journal. A catalog whose pinned version was purged (REQ-026 GC) or
-a script that stopped parsing after an engine update no longer produces a page that quietly looks
-like a smaller workflow.
+### C-3 — DASH-1: the ledger is consumed by people through `dashboard.html`
 
-### Agent altitude
+A diagram that renders 「圖渲染失敗」 is a documentation defect at the point of consumption; the human reading the v27 process view is precisely the reviewer deciding whether the architecture matches the tree. The authoring rule (§1 O-2) is the one-sentence contract; the four replacements are the repair.
 
-**S-Δ5 — Not applicable, and why.** No memory, tool-liveness or prompt-calibration seam is touched:
-the overlay is derived from stored script text on every read (no cache to metabolize), and the
-agents it names are not probed. Recorded so the section is complete rather than invented.
+**Verified consistent (Consumability):** `buildDashboardHtml()`'s signature and one caller (`server.ts:1334`); the island's `<` escaping (UT-240); ADR-054's key-set lock now asserted against served bodies (v27g AC-1).
 
 ---
+
+## 4. Self-sustainability — closed-loop autonomy and lifecycle
+
+*System altitude. Agent altitude: no change — memory metabolism, tool-liveness probes and prompt calibration are not touched by three document repairs.*
+
+### S-1 — AC-2: put the guard where the system rebuilds itself, or it decays
+
+`deploy/rwe-update.sh:132-147` runs `npm ci` then `npm run build` and reverts on failure. Wiring the server-only program into `build` — not only `typecheck` — means every self-update re-proves the property with no human in the loop, and a regression is refused *before* the restart rather than found under Node at runtime. A guard that lives only in a developer-invoked script is a convention; one in the update path is a control. Cost: +3.7 s per build (M1).
+
+### S-2 — AC-3a: the honest floor is zero mechanism
+
+The static pre-boot text is self-sustaining in the strictest sense: it needs no timer, no listener, no state — the browser shows it until the module removes it, and if the module never runs, the truth stays on screen. NB-2's watchdog adds the one distinction (slow vs. dead) at six lines; NB-1's syntax guard prevents the commonest cause from shipping. Both are fenced as non-blocking; the floor is the repair.
+
+### S-3 — DASH-1: a render oracle closes the loop the lexical checker cannot
+
+The review proved the lexical checker produces false positives (6 `erDiagram` cardinalities) and false negatives (this pair, one of which was *re*-recorded as a false positive an iteration ago). A ledger that lints its diagrams will ship a broken one again; a ledger that renders them (NB-3) will not. The oracle is the repo's own cached Chrome plus the same CDN URL `dashboard.html` already depends on — no new dependency, and the offline case degrades to a loud skip exactly as the dashboard itself does.
+
+### S-4 — the two follow-up TASKs and the trace baseline
+
+Each TASK without an IMPL adds one `未實作` LOW to the 33-gap baseline the reviewer tracks (TASK-018/153 are the precedent). **Recommendation: a micro impl dispatch (v27h) before the re-review**, scoped to TASK-A (shell body + five pins) and TASK-B (`tsconfig.server.json` + two script lines) — together under 30 lines, B already verified to compile clean on this tree, A's blast radius enumerated above. If the orchestrator declines, the recorded cost is **+2 LOW** and both ADR/ARCH rows carry the "unguarded until it lands" sentence so no assertion contradicts the tree.
+
+**Verified consistent (Self-sustainability):** ARCH-123's `no-store` on client bytes (a self-update cannot leave a stale client against a new API); the v27g AC-8 woff2 directive; INV-V27-5's panel now asserted in the rebuilt nav.
+
+---
+
+## Proposed ledger edits (verbatim-ready for the synthesizer)
+
+| Row | Edit |
+|---|---|
+| **ADR-049** | Title gains `[amended v27g Gate 8 repair: the root tsconfig DID change — see Consequences]` (or `superseded_in_part:` on the title line). Consequences: replace 「`allowJs`/`checkJs` and a `DOM` lib are deliberately NOT added to the root tsconfig…」 with: 「IMPL-229 added `DOM`, `DOM.Iterable` and `allowJs:true` to the ONE root tsconfig so acceptance `page.evaluate` callbacks type-check and `.js` exports are readable to `.ts` tests; a tests-only DOM config is infeasible (tests import `src`; one program). The compile-time property this ADR named — the server compiles without DOM and without the client — is restored by the INVERSE program `tsconfig.server.json` (`src` minus `src/dashboard`, `lib:["ES2022"]`, no `allowJs`), run beside the root config in `typecheck` and `build` (TASK-B); falsification: a planted `document` reference fails TS2584. Editors keep DOM in server files; CI and every self-update do not. `checkJs` stays off: the client tree is readable to `tsc`, not checked by it (opt-in per-file `// @ts-check` in `lib/` is the non-blocking path). **Until TASK-B lands the property is unguarded.**」 |
+| **ARCH-124 note** | Replace the `"lib":["ES2022"]` sentence with the inverse-program sentence above; keep everything else. |
+| **ARCH-122 api** | Layer 1: `<html data-theme="dark" lang="zh-Hant">` + `<head>` (charset, viewport, title, `<link rel="stylesheet" href="/static/dashboard/dashboard.css">`, `<script src="/static/dashboard/ui/theme-init.js">` classic/blocking) + `<body>` containing `<script type="application/json" id="rwe-init">{version, lastUpdate?, interruptedRuns?}</script>` and `<script type="module" src="/static/dashboard/ui/app.js">`. **No CSS in the shell** (DES-200 v27c). The nav, source tag, tab shells, `#dag-zoom`/`#dag-graph`/`#dag-fit`, `#run-usage`, `#diagram-zoom`/`#diagram-img`, component classes and panel container are **client-built (ARCH-125)**. Legacy markup between `<body>` and the island (`dashboard-page.ts:92-152` at `eb387a1`) is discarded by `app.js:455` before first paint: non-contractual, not a test subject, removed by TASK-A. Layer 2 (TASK-A): `<body>` = `<main><p class="empty">儀表板載入中… / Loading dashboard…</p><noscript>…</noscript></main>` + island + module script. |
+| **ARCH-122 note** | Strike 「still assertable here」 and the CSS-in-this-file clause; insert the pin rule (§2 R-2) and the boot-failure honesty sentence (§1 O-1); record the bilingual pre-boot literal as a boundary exception of DES-201's class. |
+| **02-architecture.md `:2539`, `:2547`, `:3574`, `:3576`** | The four replacements in §1 O-2, then `sh .sdlc/trace` to regenerate `dashboard.html`. Add the one-sentence authoring rule to the file's diagram conventions. |
+| **TASK-A (new, Gate 6)** — the shell body becomes a mount point | files: `src/dashboard-page.ts`, the four test files in §2 R-2; dod: `<body>` = mount + island + module script, UT-240's new negative (`no <section/<header`) green, the five pins re-pointed/retired per the table, full unit suite green, class-lock unchanged. |
+| **TASK-B (new, Gate 6)** — the inverse program | files: `tsconfig.server.json`, `package.json`; dod: `npm run typecheck` runs both programs and exits 0 on the tree; a planted `document.title` in any `src/*.ts` outside `src/dashboard/` fails with TS2584 (falsified, then reverted, per v27g's practice); `deploy/rwe-update.sh` unchanged (it already calls `npm run build`). |
+| **Owed, routed (not Gate 2's rows)** | DES-200 boundary + signature; TASK-205 `dod:`; UT-240's last case — all carry the v27g/AC-3a re-point. |
+| **Recorded, non-blocking** | NB-1 `node --check` guard over `src/dashboard/**/*.js`; NB-2 `theme-init.js` boot watchdog by element presence; NB-3 render oracle beside `.sdlc/` tooling (TOOL debt, beside TOOL-FORK). |
 
 ## key_points
 
-1. **Orchestrator, first:** REQ-105's acceptance (`01-requirements.md:1070`, "stays behind the auth
-   gate … v23 must not re-open it") needs a `[PARTIALLY SUPERSEDED v27, Round v27b]` marker on that
-   clause — REQ-100's house style — or Gate 8 finds the top of the chain contradicting the code. Not
-   in this run's gates; must not be silently skipped.
-2. **Delete the `masked` axis, don't flip it:** no `McpFacadeDeps.maskPredictedOverlay`, no
-   `opts.masked`; `deriveLanes(phases, expected, { status })`; the DAG route derives the overlay
-   unconditionally; `predictedLanes` joins into `describe.phases[].agents` unconditionally; the
-   `authEnabled` parameter of `handleDashboardRequest` (`server.ts:331-334`) and its `!!authCfg`
-   argument (`:1068`) go with the branch — no stump. A fail-closed default now fails closed to the
-   refused behaviour (R-Δ1).
-3. **Make the only remaining absence visible:** `warnings.push('predicted overlay unavailable:
-   <reason>')` for the `''`-script and `catch {}` arms (`server.ts:500-506`, `:540-541`), and the inner
-   catch emits `dashboard_api_degraded {route:'dag', runId, reason}` (O-Δ1, O-Δ2).
-4. **Sweep by list, in three partitions** (O-Δ4): (a) meaning changes — ADR-051, ADR-055, ARCH-126/
-   130/131, logical view, scenario 2, two contract rows, housekeeping (3), DES-196/197/198,
-   TASK-202/203, UT-238 (7×2), IT-168, IT-092 (case 1 + title + header), VAL-204, VAL-199/200;
-   (b) supersession markers — REQ-105, ADR-012, ARCH-073, ARCH-075, DES-114, 07-review H2, and the
-   comments at `server.ts:508-518`, `val-116:1-4`, `dag-masking-auth.test.ts:1-16/:113/:130-133`;
-   (c) untouched and green — IT-089 / val-110 / val-111 / workflow-view.test / val-116's 404 /
-   dashboard-http `:213-217` + `:140-150`; README `:312-313` stays as written (still true).
-5. **One wire shape regardless of auth** — the client has one code path; `agents?` stays optional
-   with "absent = could not derive, never = auth"; inert cells detected by `agentId === undefined`,
-   never by the `__skel_` prefix; README/contract rows lose the masking sentence; cross-repo note is
-   additive (C-Δ1..C-Δ4).
-6. **Where a future policy lives, in one ADR-051 sentence:** a per-principal projection through the
-   auth layer (D1 reopened), never a global `dashboard.predictedOverlay` knob (R-Δ2, S-Δ3).
-7. **The guard against re-masking is a positive assertion on the auth server** (labels present, not
-   "not absent"), with the file's `describe` titles renamed to state the ruling (S-Δ1).
-8. **Gate 7.5 auth-ON proof:** one Chromium case under VAL-199 + the wire under VAL-204; the
-   `mintBearer` trap named so the case cannot be vacuous (S-Δ2).
-9. **Reconcile UT-238's `{ masked, status }` here**, not at Gate 6: the verifier's signature note
-   (`dashboard-derive-lanes.test.ts:7-13`) resolves to `{ status }` by deletion.
+1. **DASH-1 has four semicolons, not two** — `:2539`+`:2547` and `:3574`+`:3576`; fixing only the review's two leaves both diagrams failing (M3, real mermaid@11 from `dashboard.html`'s own URL). Exact replacements verified; regenerate `dashboard.html` afterwards. Rule: only a line-start `%%` comment tolerates `;` in a `sequenceDiagram`.
+2. **AC-2 is option (i) with a real guard, not option (ii)**: a tests-only DOM config is infeasible (one program), so record what shipped and restore the property with the inverse program `tsconfig.server.json` — compiles clean today (76 files, 3.7 s), red on a planted `document` (M1/M2), wired into `typecheck` **and** `build` so every self-update re-proves it. Amend ADR-049's *title*, not just its Consequences; state the editor limit; say "unguarded until TASK-B lands".
+3. **The compiler is the right subject** for the boundary: no allowlist (`auth-service.ts:273`'s HTML string), sees types and transitive imports, already installed — versus a grep guard that sees none of these. Lineage: the refused Sprint A second-tsconfig idea, pointed the right way.
+4. **AC-3a in two layers**: Layer 1 (contract = head + island + module script; body fossil non-contractual, discarded by `app.js:455`) is true of the tree now; Layer 2 (mount point + static pre-boot text, class `empty`, no `app.js` change) is TASK-A. Also fix the two other stale clauses in the same row (CSS left the shell at v27c; "still assertable here").
+5. **The fossil is an observability defect, not tidiness**: a boot failure today paints a page indistinguishable from an idle engine; the realistic cause (a syntax error in unit-tierless `ui/*.js`, `checkJs` off, Chromium tier skipped) has no guard at all (verified).
+6. **Blast radius enumerated**: five dead pins with DES-208 dispositions; class-lock verified safe (0/104 hooks, 0/23 anchors shell-only); DES-200 and TASK-205 carry the same stale `draggable` claim and are owed to design.
+7. **Follow-ups cost trace gaps**: recommend a v27h micro dispatch (TASK-A + TASK-B, <30 lines, B pre-verified); otherwise +2 LOW recorded and both rows carry the "unguarded until" sentence so nothing contradicts the tree.
+8. **Three extras fenced as non-blocking** (NB-1 syntax guard, NB-2 watchdog, NB-3 render oracle) with costs stated; none is in the repair text.
 
 ## risks
 
-| # | Risk | Severity | Where it lands |
-|---|---|---|---|
-| QD-Δ-R1 | **The dead axis survives as a parameter that defaults to masked.** DES-197's `absent ⇒ true` and DES-196's `{ masked }` were designed for a pending answer; kept after the answer, a unit-constructed facade or a forgotten forward at the one construction site silently reproduces the overruled mask with every test green — the `composeConfig` class inverted. | HIGH | ADR-051, DES-196/197/198, ARCH-126/130/131 (R-Δ1) |
-| QD-Δ-R2 | **REQ-105 still says "stays behind the auth gate; v23 must not re-open it"** (`01-requirements.md:1070`). Round v27b names the v22 rows it reverses but not this REQ; Gate 8 verifies REQs against code and will read a contradiction as a defect. | HIGH | REQ-105 → orchestrator amendment (key_point 1) |
-| QD-Δ-R3 | **IT-092's first case asserts `['__trigger__']` under auth** (`dag-masking-auth.test.ts:113-121`) and its row traces to REQ-100/ADR-012/DES-114 — a v22 ID. If the delta only touches IT-168's three cases, the suite is red on the flipped route, or worse, someone "fixes" it by restoring the branch. | HIGH (certainty) | IT-092, 05-tests.md v22 row (O-Δ4 a) |
-| QD-Δ-R4 | **A failed derivation is now indistinguishable from a small workflow.** Two silent arms (`server.ts:500-506`, `:540-541`) produce `cells:['__trigger__'], warnings:[]` for a just-started run — the same bytes as a script with no agents. Previously "by decision", now a fault with no witness. | MID | REQ-134/140 (O-Δ1, O-Δ2) |
-| QD-Δ-R5 | **"Deleted but still described."** ARCH-073's `api:` line, ARCH-075's traps, DES-114's boundary, ADR-012, REQ-105, the `server.ts:508-518` block, `val-116:1-4`, the masking test's header/titles, 07-review H2 — nine places that will state the mask after the code stops applying it. REQ-105's own last clause calls this the ledger's most-repeated defect. | MID | ledger-wide (O-Δ4 b) |
-| QD-Δ-R6 | **Scope creep into REQ-100.** The same test harness and the same words ("masked", "non-owner projection") cover script-text masking, which the ruling explicitly leaves standing. A sweep by grep rather than by list touches IT-089 / val-110 / val-111 / `workflowSource`. | MID | REQ-100 (O-Δ4 c) |
-| QD-Δ-R7 | **The Gate 7.5 auth-ON case is vacuous.** Under auth, registration and `run_start` need a minted bearer while the GETs do not; a VAL that forgets registers nothing, renders 「找不到」, and passes a negative assertion. | MID | VAL-199/VAL-204 (S-Δ2) |
-| QD-Δ-R8 | **A global kill-switch is added "for defence in depth".** `dashboard.predictedOverlay:false` would recreate the dead axis plus a `composeConfig` obligation to protect a state the owner refused; and it is not per-principal, so it does not even buy what D1 declined. | LOW | ADR-051 (R-Δ2, S-Δ3) |
-| QD-Δ-R9 | **Client keys on the `__skel_` prefix.** Couples served `.js` to a retired word's stump; `agentId === undefined` is the v11 contract and needs no string test. | LOW | DES-203/206, ui/run.js (C-Δ2) |
+| # | Risk | Mitigation in this proposal |
+|---|---|---|
+| QD-G8-R1 | The synthesizer follows the review's "two semicolons" literally → both diagrams still fail at the re-review, DASH-1 re-opens as a repeat miss (blocking under the ledger's own rule) | §1 O-2's four verified replacements; regenerate `dashboard.html`; re-run `mermaid.parse` (NB-3's script is in the scratchpad, ~30 lines) |
+| QD-G8-R2 | An amended ADR-049 beside an unchanged `tsconfig.json` — the finding's explicit warning | the rows say "guard restored by TASK-B; unguarded until it lands"; v27h dispatch recommended |
+| QD-G8-R3 | ARCH-122 rewritten to the target shape while the fossil still ships → the same contradiction class at re-review | Layer 1 describes the tree; Layer 2 is a TASK with DoD |
+| QD-G8-R4 | Removing the fossil goes red somewhere unlisted | five pins enumerated at HEAD; class-lock measured safe; UT-240's new negative pins the shape |
+| QD-G8-R5 | DES-200 / TASK-205 keep the stale `draggable` clause because design's re-run is DASH-2 only | recorded as owed and routed to the orchestrator in the ledger-edit table |
+| QD-G8-R6 | The second `tsc` pass drifts out of `build` (someone "simplifies" the script) | it is the ADR's named guard with a falsification; UT could pin `package.json`'s `build` script contains `tsconfig.server.json` (cheap, optional) |
+| QD-G8-R7 | Bilingual pre-boot literal read as a REQ-131 string-table violation | recorded as a DES-201-class boundary exception; language-neutral fallback offered |
+| QD-G8-R8 | IDE still offers DOM in server files | stated as the accepted limit; CI/build enforce |
+| QD-G8-R9 | The panel treats NB-1/2/3 as scope creep and discards the repair with them | they are fenced and separable; the repair stands without them |
 
-## expected disagreements with other lenses
+## expected disagreements with the adversarial lens (security × scalability × testability, Karpathy tie-breaker)
 
-- **vs. the adversarial lens (D-ADV-2 argued FOR the reversal — agreement on the headline is
-  expected).** Friction I anticipate: *(a)* keeping `maskPredictedOverlay` as a global kill-switch for
-  defence in depth. My answer is R-Δ2/S-Δ3: it protects nothing (the structure is anonymously public
-  through four other fields), it is not per-principal (so it is not the D1 tier either), and it
-  reintroduces the wiring class for a refused state. *(b)* that `__skel_*` cells under auth now carry
-  slot `kind` and per-label tools to anonymous callers of any `runId` — true, and already public via
-  `toolSurface` and `describe.mermaid` (`mcp-facade.ts:483-490`); ADR-054's key-set test sees no new
-  top-level key because `lanes`/`current` were already planned. If they want the widening *recorded*,
-  ADR-051's rewritten note is the place, and I support that.
-- **vs. the architect / synthesizer — on closure discipline.** The dispatch names impactIds
-  REQ-133/134/140; my sweep touches IT-092 (REQ-100 trace), the v22 ancestors, `val-116`'s comment and
-  07-review H2, and asks the orchestrator to amend REQ-105. Expected pushback: "outside the closure".
-  My answer: supersession *markers* are the trace chain's own consistency, not a widening — no v22
-  decision is rewritten, each gets one line saying what overruled which clause; and REQ-105's clause is
-  the single place where leaving it alone makes Gate 8 fail by construction. The ADR-053 precedent
-  (acceptance-text amendment handed to the orchestrator) is the mechanism.
-- **vs. a simplicity lens — on O-Δ1/O-Δ2.** "Two more lines for a case that never happens." The case
-  happens on every purged pinned version and every parse regression, and both arms are *already*
-  written as catches — the proposal adds one `push` into an existing array and one `warn` on an
-  existing convention. The alternative is a page that looks like a smaller workflow, which is the
-  silent failure this lens exists to forbid.
-- **vs. a testability lens — on deleting `masked` from `deriveLanes`.** They may prefer the parameter
-  so the 7×2×2 table can exercise both arms. A branch with no legitimate input is dead code with a
-  test; the `expected: undefined` arm keeps the interesting degradation testable (UT-238's last case,
-  `dashboard-derive-lanes.test.ts:64-66`) without a policy flag.
-- **vs. a security lens — on the ruling itself.** Not mine to relitigate; the owner ruled with the
-  consequence attached. What this lens adds is that the ruling must be *legible* three iterations
-  from now: the positive auth-ON assertion with the ruling in its title (S-Δ1), the one-sentence
-  "where a future policy lives" (R-Δ2), and no document left saying the opposite (O-Δ4 b).
+| # | Topic | My position | Their likely position | Tie-break I propose |
+|---|---|---|---|---|
+| ED-1 | AC-2 guard form | inverse-program tsconfig (8 lines JSON + 2 script lines) | (a) a grep guard with planted-violation self-case — INV-V27-8's house style; or (b) record-only, no guard ("the property was never load-bearing") | The subject decides (retro lesson 1): the compiler *is* the property; grep needs an allowlist on day one (`auth-service.ts:273`) and misses types. Against (b): ADR-049's own text called it the reason for `lib:["ES2022"]`; dropping it is a decision the ADR must state, not an omission. Note they proposed a second tsconfig first (D-ADV-5) — I expect agreement here more than dispute. |
+| ED-2 | NB-2 boot watchdog | six lines, element-presence detection, non-blocking | mechanism for a case the static text already covers | I concede on request; the static text is the floor and is in the repair. |
+| ED-3 | NB-1 `node --check` guard | fold into TASK-A if allowed; else §9 debt | beyond §8, a new test file for a hypothetical | The failure is not hypothetical — no tier parses `ui/*.js` and the Chromium tier skips without a browser; but it is outside §8 and I hold it as non-blocking. |
+| ED-4 | `:2547` spelling | `→` (reads as the transaction's order) | `#59;` (keeps the SQL literal) | Both verified; the architect's call. Constraint: not `;`. |
+| ED-5 | Whether the fossil must go at all | yes — it impersonates a working page on boot failure | leave it (harmless, discarded) and amend only the text | Layer 1 alone satisfies the routing rule; Layer 2 is the observability seam. If they hold, TASK-A shrinks to the pins + the UT-240 negative and the fossil is recorded as debt with the ghost-page consequence named. |
+| ED-6 | v27h micro dispatch vs. +2 LOW | dispatch (both changes pre-scoped, B pre-verified) | accept the LOW rows; the re-review only needs consistency | Either is honest once the "unguarded until" sentence is in the rows; the dispatch removes the sentence. |
+| ED-7 | Gate 2 touching DES-200 / TASK-205 | record and route, do not edit cross-gate | may say the architect should just fix the two clauses | The ledger's own precedent (v27b: "a supersession MARKER is owed wherever the mask is still described; a REWRITE is scope creep") — a one-line re-point note is a marker, so either reading is defensible; the synthesizer decides, the obligation must not be dropped. |

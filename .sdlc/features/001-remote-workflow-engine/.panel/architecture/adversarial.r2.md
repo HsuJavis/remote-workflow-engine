@@ -1,297 +1,334 @@
 ---
-stage: architecture
-lens: adversarial (security / scalability / testability, Karpathy simplicity-first as tie-breaker)
-round: 2 (responses + final position)
-scope: v27 Round v27b delta — gates [architecture, design, tests], impactIds REQ-133 / REQ-134 / REQ-140
-read this round: .panel/architecture/quality-dimensions.r1.md (full), .panel/architecture/adversarial.r1.md (mine),
-  .panel/architecture/adversarial.r1.sprintA.md (mine, Sprint A — unchanged, still the reference for
-  REQ-131/132/135/136/141 and the altitude table)
-new measurements this round (all at 07266be): src/server.ts:490-552, src/dashboard.ts:339-460 (:352),
-  src/dashboard-page.ts:601-607, src/types.ts:322/:347-351, src/run-manager.ts:778-783/:830-838/:895-910,
-  src/run-store.ts:253/:355/:366, src/store/sqlite-run-store.ts:283, src/mcp-facade.ts:590,
-  tests/integration/dag-masking-auth.test.ts:1-140, tests/integration/dashboard-http.test.ts:138-152/:205-218,
-  tests/integration/diagram-contract-grandfather.test.ts:85-101/:148-156,
-  tests/integration/dag-warnings-empty.test.ts:1-45, tests/e2e/nested-frame-phase.test.ts:60-63,
-  tests/unit/no-skeleton-surface.test.ts:54, 01-requirements.md REQ-105 (:1067-1070)
+stage: architecture (Gate 2) — v27 Gate 8 SEND-BACK repair round
+lens: adversarial group — (a) security, (b) scalability/performance, (c) testability;
+      Karpathy simplicity-first as the tie-breaker
+round: 2 (debate — written AFTER reading `quality-dimensions.r1.md` in the working tree at eb387a1)
+read this round: `quality-dimensions.r1.md` (working tree, NOT the body at `git show eb387a1:…` —
+      both r1 files are uncommitted edits at this HEAD; the committed bodies there are the v27b delta)
+baseline: HEAD **eb387a1**, unchanged since round 1. Every `file:line` re-opened at this tree.
+prior round preserved: this file REPLACES the Sprint A r2 body, which is committed and readable at
+      `git show eb387a1:.sdlc/features/001-remote-workflow-engine/.panel/architecture/adversarial.r2.md`.
+      My round-1 body for THIS round is `adversarial.r1.md` in the working tree.
+method: nine NEW executions this round (E1–E9 in §3), run against a clean `git archive HEAD` copy in
+      the scratchpad with `node_modules` symlinked — never against the working tree, per CLAUDE.md.
+      One of them refutes a load-bearing claim in QD's O-1; one (E9) refutes a REASON I had drafted for
+      my own concession. The concession stands; the reason did not survive its own test and is gone.
 ---
 
-# Round 2 — adversarial lens: responses, corrections, final position
+# Adversarial architecture — round 2: one concession that reverses my own proposal, one rebuttal from a rendered SVG, and one item that needs an owner
 
-**Bottom line up front.** The two lenses converge on the whole of the headline and on the instrument.
-Nothing blocking remains. What this round adds is (1) **three corrections to my own r1**, one of which
-was wrong on the mechanism; (2) one **measured collision** neither r1 caught — three existing tests pin
-`dag.warnings` to `[]`, which constrains where the new honesty warnings may be pushed; and (3) a
-**strictly better fix for F-1 than either r1 proposed**: the engine already records the substitution
-(`RunStatusView.legacySubstitution`, v22/DES-113), so the route can be made *correct* instead of merely
-*apologetic*. §3 is the converged proposal; §4 is what is left, and it is two recorded boundaries, not a
-dispute.
+## 0. Bottom line in seven lines
+
+1. **AC-2: I concede the mechanism to QD's `tsconfig.server.json` (the inverse program) and withdraw
+   my r1 A1(b) entirely.** The two shapes turn out to be equivalent on every property either panel
+   measured — including the one I first thought discriminated (**E9**: my narrow-root shape's tests
+   program also pulls in all 20 client `.js` files, so no parse coverage is lost either way. I drafted
+   that argument, tested it, and it failed; it is not in this file's final position). The concession
+   rests on three plain engineering reasons: QD's shape is **purely additive** — it leaves untouched
+   the `tsconfig.json` that editors, `tsx`, vitest plugins and any future tool resolve **by name**,
+   which my own r1 risk #1 already flagged as my shape's weak point; it is the shape both panels
+   measured with `-p` (E4–E6), while the narrow-root form never was; and Karpathy says add eight
+   lines, rewrite nothing. **The honest cost of conceding, stated:** a narrow root would have enforced
+   the DOM guard **in the editor** as well as in CI. QD's shape gives that up (their QD-R8). Accepted
+   — `typecheck`/`build` enforce it and `deploy/rwe-update.sh:147` reverts on it.
+2. **AC-2, the reason recorded must be corrected.** QD's ADR text says a tests-only DOM config is
+   *「infeasible」*. It is not — my r1's form (narrow root + `tsconfig.tests.json`) is feasible, and E9
+   shows it preserves the client parse coverage too; it is merely **worse on the three counts above**.
+   Writing a false impossibility into ADR-049 is the defect class this send-back exists to repair, and
+   I concede on merits precisely so the ADR can record merits.
+3. **NB-1 (`node --check` over `src/dashboard/**/*.js`): rebutted, and dissolved into one sentence.**
+   `npm run typecheck` / `npm run build` already parse every client `.js` file today: a planted stray
+   token in `ui/app.js` produces `TS1109` and **tsc exit 2** (E2), and `deploy/rwe-update.sh:147`
+   reverts the self-update on a failed `npm run build` (E7). QD's premise 「no tier parses `ui/*.js`」
+   is true of the *test* tiers and false of the *ship* path. The right repair is zero new mechanism:
+   record `allowJs:true`'s parse coverage as a **load-bearing consequence** in ADR-049.
+4. **DASH-1: converged on four semicolon sites** (two independent executions, same four lines).
+   **I hold on the `%%` half** — QD's authoring rule calls `:3574` a 「trailing `%%` comment」; the
+   rendered SVG proves mermaid treats mid-line `%%` as message text, so their replacement produces a
+   diagram that parses and still reads as junk. This is the only place we still disagree on a fact.
+5. **AC-3a: converged.** I adopt QD's two-layer shape, their pin-disposition table and their
+   `TASK-A`/`TASK-B` naming over my `IMPL-nnn` placeholders. Their ED-5 mis-predicted me: I also want
+   the fossil deleted, and for the same reason. **ED-2 (the boot watchdog) I dissolve rather than
+   fight**: a pre-boot line that names its own failure needs no timer.
+6. **A3 (`worstOf` vs. ARCH-124 and REQ-131) and A4 (the `cache` type literal) are uncontested —
+   QD's r1 covers neither.** I hold both at MUST. **A3 needs an owner ruling, not a panel consensus**:
+   two lenses declining to dispute a REQ-acceptance narrowing is not the same as the owner accepting
+   it. (Correction to my own r1: the `cache` literal is at `:3345`, not `:3346`.)
+7. **Dispatch: I back QD's v27h micro-dispatch.** TASK-B is 8 lines of JSON + 2 script words and I
+   have now verified it green on the tree and **red on three separate planted violations** (E4–E6).
+   An amended ADR beside an unchanged `tsconfig.json` is the failure the review pre-named.
 
 ---
 
-## 1. Corrections to my own r1 (before anything else — two of these would have cost Gate 5 a flaky test)
+## 1. Disagreement ledger — rebut / concede / hold
 
-**C-1 — K-3's caveat was wrong on the mechanism. I withdraw it, and QD's S-Δ1 gets stronger for it.**
-My r1 warned that a parity test must compare `cells[].id`, **not** `cells[].label`, because
-「`layoutGraph` is handed `startedByType`, so the trigger cell's own label legitimately differs between a
-run started by a real principal and one started anonymously」. That is false. `startedBy.type` is the
-**trigger kind**, not an identity: `mcp-facade.ts:590` stamps `{ type: 'client' }` for every
-`run_start`, `scheduler.ts:363` `'schedule'`, `webhook-registry.ts:305` `'webhook'`,
-`run-store.ts:350` coalesces to `'unknown'`. The trigger cell's label is
-`opts?.startedByType ?? 'trigger'` (`dashboard.ts:352`). In the IT-092 harness both runs are started
-through `run_start` on `/mcp` (`dag-masking-auth.test.ts:98-100`), one with a minted bearer and one
-without — **both are `'client'`, and both labels are equal**. So labels are parity-safe today, and
-QD's S-Δ1 (「assert the labels, a negative assertion is weaker」) is right without my caveat. **Concede;
-parity asserts labels too.**
-
-**C-2 — my predicted disagreement D-4 did not happen. Dropping it.** I expected QD to want ADR-054's
-golden key-set tests broadened across every `/api/*` endpoint. They did not ask for that; they wrote
-that the key-set test 「sees no new top-level key because `lanes`/`current` were already planned」,
-which is the same scoping rule I was going to argue for. The rule stands unopposed and needs no debate
-line: **a key-set test is owed by the endpoint whose key set this delta changes** — here
-`/api/runs/:id/dag` and `describe.phases[]`, nothing else.
-
-**C-3 — QD's predicted disagreement with *me* also did not happen, and the synthesizer should not
-invent it.** QD anticipated friction 「(a) keeping `maskPredictedOverlay` as a global kill-switch for
-defence in depth」. **There is no such friction.** My r1 K-2 argued for deleting the dep on security ∧
-simplicity grounds, in the same terms as their R-Δ1/S-Δ3: a seam whose only correct value is constant
-is an unexercised branch that decays, and its fail-closed default now fails closed to the refused
-behaviour. Both lenses independently reached 「delete the axis, do not flip its default」. That is the
-single most important converged item in this delta and it should be recorded as **unanimous**, not as
-a resolved dispute.
-
----
-
-## 2. Rebut / concede / hold, one row per disagreement
-
-| # | Their position | Mine (r1) | Verdict | Engineering reason |
+| # | Item | QD's r1 | My r1 | This round |
 |---|---|---|---|---|
-| 1 | **R-Δ1 / key_point 2** — delete `maskPredictedOverlay`, `opts.masked`, `handleDashboardRequest`'s `authEnabled` param and the `!!authCfg` argument; no stump | K-1/K-2 — identical, four deletions | **Agree (unanimous)** | Not a disagreement. Both lenses measured the same three facts: `grep` → `maskPredictedOverlay` has 0 hits in `src` and `tests`; `authEnabled` has exactly one consumer (`server.ts:520`) and one caller (`:1068`); the fail-closed default now defaults to the overruled behaviour. Record as unanimous so a later reader does not read the parameter's absence as an oversight. |
-| 2 | **QD-Δ-R2 / key_point 1** — REQ-105's acceptance still says the DAG route 「stays **behind the auth gate** (v22 finding H2 closed exactly this hole; v23 must not re-open it)」; needs `[PARTIALLY SUPERSEDED v27, Round v27b]` | my r1 was silent on REQ-105 | **Concede, and upgrade it from HIGH to blocking-for-Gate-8** | Verified verbatim at `01-requirements.md:1070`. My r1's F-5 flagged the *same class* one document lower (ADR-051's Gate 7.5 instruction still says 「record what degrades」). Both are the same defect: a surviving sentence that instructs a later gate to prove the opposite of the ruling. REQ-105 is worse because Gate 8 verifies REQs against code, so it fails **by construction**, not by judgement. Orchestrator item; this run's gates cannot do it. |
-| 3 | **O-Δ4 (b)** — supersession markers on ADR-012 / ARCH-073 / ARCH-075 / DES-114 / 07-review H2 and the three comment sites | my r1 scoped the sweep tighter (「a delta that touches REQ-100's rows is out of closure」, F-4) | **Concede the sweep; hold the boundary** | The two are not in conflict once the rule is named: a **marker** is the trace chain's own consistency; a **rewrite of a v22 decision** is scope creep. QD's partition (b) is all markers. And the sweep is not taste — it is REQ-105's own last clause: 「**the deletion is not finished while something still describes the deleted thing** … nine recorded instances」. This delta deletes the mask, so that clause now governs the mask's own descriptions. F-4's boundary still holds for *behaviour*: REQ-100's script masking, REQ-136's system-prompt strip and the three `dbindExempt` gates do not move. |
-| 4 | **O-Δ1 / O-Δ2** — push `predicted overlay unavailable: <reason>` into `warnings[]` for the two silent arms, and emit `dashboard_api_degraded {route:'dag'}` from the inner catch | F-1 — push `PREDICTED_FROM_FALLBACK_VERSION` for the fallback-version arm | **Hold the arm, concede the form, integrate into one vocabulary — and their reason list is incomplete** | The strings are the right instrument (existing `layoutGraph` convention, `dashboard.ts:393/397/434/442` are all prose). But QD's `reason ∈ {catalog-resolve-failed, derivation-failed}` covers only the cases where the overlay is **missing**. The dangerous case is the one where it is **present and wrong**: the pinned resolve throws, the release fallback *succeeds* (`server.ts:502-505`), and the payload looks perfect while being derived from a different script version than the run executed. A missing overlay is visibly missing; a wrong one is not. §3 merges both into three reasons and fixes the third. |
-| 5 | **C-Δ1 / O-Δ1's premise** — 「the same `warnings[]` the client already renders」 | my r1 D-3 made the same claim more carefully | **Both of us were loose; correcting with a measurement** | `dashboard-page.ts:601-607` renders `warnings.length+' warning(s)'` — a **count**. No warning *text* is rendered anywhere today. So as of `07266be` every warning either of us proposes is **write-only**. This is not a reason to drop them; it is a DoD line, and §3 places it. |
-| 6 | **S-Δ1** — the regression guard is a *positive* assertion on the auth server (labels present), file `describe` titles renamed to state the ruling | K-3 — one auth-invariance parity test | **Concede theirs; hold mine as well; they are different oracles** | Positive assertion pins the shape we want **today** and is what a future hardening reviewer reads first. Parity catches **tomorrow's** divergence on fields nobody has thought of. Parity costs one `it()` in a file that already boots both servers with the same `SCRIPT` and the same `registerPublishedVia` — no new fixture, no new harness. Keep both; §3 names the field set. |
-| 7 | **S-Δ1's rename** — QD renames the `describe` titles but not the file `dag-masking-auth.test.ts` | my r1 did not raise it | **Hold the filename, concede the titles** | Under item 3's own rule a file named `dag-masking-auth.test.ts` that asserts the *absence* of masking is a stump. But the filename is cited by `file:line` across `05-tests.md`'s IT-092 and IT-168 rows and by 07-review H2; renaming it churns the trace chain for a cosmetic gain. Titles and the header comment carry the ruling; the filename stays and earns one line in the header saying why. State it explicitly so the synthesizer is not left with an unstated ambiguity. |
-| 8 | **key_point 9 / UT-238** — reconcile `{ masked, status }` → `{ status }` here rather than at Gate 6 | K-1 row 3 — same | **Agree** | Measured: `dashboard-derive-lanes.test.ts:34, :37, :65` pass `{ masked, status }` today with a `as { masked: boolean; status: RunStatus }` cast, because ARCH-126 typed only `{ masked }`. The cast is the tell. Delete `masked` from the signature and the cast goes with it. |
-| 9 | **Scalability** | K-5 — measure at Gate 7.5, 50 ms budget, pre-approved 5-line memo **only if** exceeded; no cache now | **Hold, unopposed** | QD's file has no performance section (honestly so — their lens is observability/replaceability/consumability/self-sustainability). Stating it so the synthesizer does not read silence as agreement *or* as an omission: the reversal makes the derivation run on every DAG poll on auth deployments too (3 s poll, REQ-142, 「我 + 團隊」). It adds **no state** — the mask was stateless and so is the derivation — so there is **no horizontal-scaling or consistency delta at all**; the only axis is per-request CPU. That is why measurement, not a cache, is the right answer now. |
-| 10 | **C-Δ2** — inert cells detected by `cell.agentId === undefined`, never by the `__skel_` id prefix | not raised in my r1 | **Concede, and reinforce from my lens** | Testability: a prefix test couples served client bytes to a retired word, and `no-skeleton-surface.test.ts:54` pins a six-file allowlist that `.js` client modules are not on. `agentId === undefined` is the v11 DES-064 contract and needs no string. |
-| 11 | **R-Δ2 / QD-Δ-R8** — a future policy is a per-principal projection through the auth layer, never a global `dashboard.predictedOverlay` knob | my r1 D-1 pre-argued the same | **Agree (unanimous)** | Same reasoning from both ends: a global knob is not per-principal, so it does not buy the D1 tier either, and it re-imports the `composeConfig` forwarding obligation to protect a state the owner refused. |
+| D1 | AC-2 guard **mechanism** | `tsconfig.server.json` (inverse program) | narrow root + `tsconfig.tests.json` | **CONCEDE** — theirs; I withdraw mine on additivity (E4–E6 measured; E9 killed my first reason) |
+| D2 | AC-2 guard **recorded reason** | 「tests-only DOM config is infeasible」 | — | **REBUT** — feasible but worse; record the real reason |
+| D3 | NB-1 `node --check` guard | fold into TASK-A if allowed | not proposed | **REBUT** — already covered by `tsc`; one ADR sentence instead (E2, E7) |
+| D4 | DASH-1 semicolon count | four sites | four sites | **CONVERGED** (independent executions agree) |
+| D5 | DASH-1 `%%` annotations | 「trailing `%%` comment」, keep them mid-line | message text, move all seven | **HOLD** — rendered-SVG evidence, §2.3 |
+| D6 | AC-3a shell contract | two layers + pin table | same shape, less detail | **CONCEDE/adopt theirs** |
+| D7 | ED-2 boot watchdog | 6 lines in `theme-init.js` | (predicted: refuse) | **DISSOLVE** — self-describing static text, zero mechanism |
+| D8 | ED-5 delete the fossil | yes | yes | **CONVERGED** — their prediction of my position was wrong |
+| D9 | ED-4 `:2547` spelling | `→` or `#59;` | any non-`;` | **CONCEDE `→`** — stop bikeshedding, it is verified |
+| D10 | ED-6 v27h micro dispatch | dispatch | (silent) | **AGREE** — TASK-B especially |
+| D11 | ED-7 DES-200 / TASK-205 | record + route, marker not rewrite | (silent) | **AGREE** — v27b precedent |
+| D12 | S1 / NB-3 mermaid oracle | `.sdlc/` tooling, TOOL debt | `.sdlc/` tooling, not a CI test | **CONVERGED** — identical conclusion, independent routes |
+| D13 | QD-R2 coverage denominator | not escalated | parked | **PARKED by both** — first candidate for the next full round |
+| D14 | A3 `worstOf` / REQ-131 narrowing | not covered | MUST | **HOLD, uncontested — owner ruling owed** |
+| D15 | A4 `cache` type literal | not covered | MUST | **HOLD, uncontested** (line is `:3345`) |
+| D16 | S2 ARCH-128 single-writer sentence | not covered | SHOULD | **HOLD** — zero cost, closes a re-derived finding |
 
 ---
 
-## 3. Final position — the converged proposal (differences from both r1s marked ▲)
+## 2. The three items that moved, argued
 
-### 3.1 Delete the axis (unanimous, unchanged)
+### 2.1 D1/D2 — AC-2: I withdraw my own option, and I correct the reason theirs wins
 
-Four deletions, not four `false`s: `if (!authEnabled)` (`server.ts:520`), `McpFacadeDeps.maskPredictedOverlay`
-(DES-197, never implemented), `deriveLanes(…, { masked })` (ARCH-126/DES-196 → `deriveLanes(phases,
-expected, { status })`), and `handleDashboardRequest`'s `authEnabled` parameter (`server.ts:334`) with
-its `!!authCfg` argument (`:1068`) and both comments. The inner `try/catch` stays — a derivation fault
-still degrades to an empty overlay, never a 500 (DES-018). `authAnnounce` stays: `/api/system` is how
-an operator learns auth is on (ARCH-090). Deleting the positional parameter is type-safe because the
-two trailing parameters are disjoint types, so `tsc --noEmit` catches a mis-shift, and the v23 one-dispatch
-rule guarantees a single call site.
+**What I executed (E4–E6).** QD's `tsconfig.server.json`, written verbatim from their r1, run with `-p`
+against a clean copy of HEAD:
 
-### 3.2 ▲ Make the overlay CORRECT before making it apologetic — `legacySubstitution` already exists
+- clean tree → **exit 0, 76 files in the program, 0 files under `src/dashboard/`** (E4). Their M1 reproduces exactly.
+- planted `document.title` / `window.location.href` / `(el: HTMLElement)` in `src/dashboard-page.ts`
+  → **exit 2, TS2584 + TS2304 ×2**; the same probe under today's root config → **exit 0** (E5).
+- planted `import { worstOf } from './dashboard/lib/connection.js'` in a server `.ts`
+  → **exit 2, TS7016**; under the root config → **exit 0** (E6).
 
-This supersedes my r1's F-1 fix and completes QD's O-Δ1. The engine **already records** when a run
-executed a different version than its pin:
+E6 is new — neither r1 measured it — and it is the strongest single argument for the inverse program:
+it makes 「the server tree is a complete program **without the client tree**」 an enforced property, not
+a slogan. A grep guard (my r1's option (a)) sees none of it, and I drop option (a) with it.
 
-```
-RunStatusView.legacySubstitution?: { pinned: string; resolved: string }   // types.ts:347-351 (v22, DES-113, TASK-108)
-```
+**Why I withdraw my r1 A1(b), and the argument I killed on the way.** My first draft of this section
+said the narrow-root shape would delete the client parse coverage that E1/E2 establish. **I tested it
+and it is false (E9):** my shape's `tsconfig.tests.json` (`allowJs:true`, `include:["src","tests",…]`)
+pulls in the same **20** client `.js` files, so both shapes run one wide program that parses the
+client and one narrow program that guards the server. E1–E3 therefore describe a property **both**
+shapes must preserve — which is why it belongs in TASK-B's DoD (§4.7) rather than in the choice.
 
-written by `run-manager.ts:907-909` when `_requireLive`'s pinned resolve throws `VERSION_NOT_FOUND` and
-`release` answers instead; persisted by both stores (`run-store.ts:355`, `sqlite-run-store.ts:283`);
-and it survives onto the route's `view`, because `status()` is `_mergeLive(store.getRun(...))` and
-`_mergeLive` spreads `...view` first (`run-manager.ts:778-783`, `:830-838`). It is therefore already in
-hand at `server.ts:490` and **nobody reads it there**.
+What actually decides it is the thing my own r1 risk #1 named: **`tsconfig.json` is resolved by
+name** — by editors, by `tsx`, by vitest's type plugins, by anything added later — so the shape that
+rewrites it inherits every one of those interactions, and the shape that only adds a file inherits
+none. QD's is additive, is the one measured with `-p` end to end (E4–E6), and is eight lines. Mine
+rewrites the default config to buy in-editor enforcement of a **latent** risk (E5's probe: nothing in
+`src/` references a DOM global today). Karpathy tie-break: add, don't rewrite. Conceded.
 
-So the DAG route's version resolution becomes, in order:
+**What I refuse to let into ADR-049.** QD's amendment text says 「a tests-only DOM config is
+infeasible (tests import `src`; one program)」. That is not why theirs wins. One program per config is
+true; it does not make a tests config infeasible — you narrow the ROOT and let the tests config be
+the wide one, which is exactly what my r1 proposed and what **E9 shows works** (same 20 client files
+in the program, same guard in the narrow one). Theirs wins on additivity, not on feasibility.
+An ADR that records a false impossibility invites the next contributor to "discover" it is possible
+and re-open a closed decision. **Replacement clause (lift this instead):**
 
-1. `catalog.resolve(spec.name, { version: view.legacySubstitution?.resolved ?? view.scriptVersion })`
-   — ▲ **one expression change that makes the overlay correct for the entire v22 legacy cohort**,
-   instead of labelling it wrong. Today `server.ts:500` asks for the pin the run did *not* execute,
-   gets `VERSION_NOT_FOUND`, and falls through to a **floating** `release` that may have moved again
-   since. Reading the recorded `resolved` asks for the script that actually ran.
-2. if that throws → `catalog.resolve(spec.name, {})` (release) **and push**
-   `predicted layout derived from version <release>; this run's script version <requested> is no longer
-   in the catalog` — where `<requested>` is the SAME `legacySubstitution?.resolved ?? view.scriptVersion`
-   expression step (1) asked for, never the literal pin. (When a substitution exists but its `resolved`
-   is also gone, the run executed `resolved`, not the pin, so a string saying 「this run executed
-   `<pinned>`」 would itself be the lie this warning exists to prevent.) Overlay present, honestly labelled.
-3. if that also throws → empty overlay + `predicted layout unavailable: catalog-resolve-failed`.
-4. derivation throws (`server.ts:540`) → empty overlay + `predicted layout unavailable: derivation-failed`,
-   **plus** QD's O-Δ2 journal line `{event:'dashboard_api_degraded', route:'dag', runId, reason}` on the
-   existing convention (`server.ts:582-585`, `diagram_render_failed` at `:440`).
+> 「Two shapes were available and **both are feasible** (each runs two programs; each keeps one wide
+> program over `src`+`tests` and one narrow program over `src` alone): (i) narrow the ROOT and add a
+> wide `tsconfig.tests.json`, or (ii) keep the root as IMPL-229 left it and add the narrow inverse
+> program `tsconfig.server.json`. **(ii) is chosen because it is additive** — `tsconfig.json` is the
+> config editors, `tsx` and the test tooling resolve by name, and (ii) does not touch it — and because
+> it is the shape measured end to end (`-p`, exit 0 on 76 files; red with `TS2584`/`TS2304` on a
+> planted DOM global and `TS7016` on a planted `src/dashboard/**` import). **Accepted limit of (ii):**
+> editors keep DOM in server files, so the guard is a CI/build property, not an in-editor one.」
 
-Four rules, three warning strings, **zero new wire fields**, one existing field finally read.
+**Plus one sentence QD's text is missing and the guard needs (D3's dissolution):**
 
-▲ **Rule (1) is a separable line item, and the synthesizer should be able to take it or defer it on its
-own.** §3.1 deletes a mask; rule (1) *changes what the route resolves*, which is a behaviour change to
-the overlay's correctness. It is in closure via REQ-134 (「一眼看出卡在哪」 is false if the lanes come from
-a script the run never ran), but it stands or falls independently of the deletion — deferring it leaves
-rules (2)–(4) intact and merely keeps labelling what rule (1) would have fixed. Consequently the r1
-appendix's **ARCH-130** and **TASK-203** rows are now stale on three points — the resolution order, the
-three warning strings, and §3.3's render-strings DoD — and should be taken from this file rather than
-from that table; nothing else in the appendix moves.
+> 「`allowJs:true` is load-bearing twice: `.js` exports are readable to `.ts` tests, **and** every
+> served client file is parse-checked by `npm run build`, which `deploy/rwe-update.sh:147` reverts on.
+> `checkJs` stays off — semantic errors in client `.js` are NOT seen (a planted
+> `noSuchFunction(undeclaredIdentifier)` compiles clean, exit 0). The gap is semantic, not syntactic.」
 
-D-3 from my r1 dissolves: QD wanted a first-class record of *which version the overlay came from*, I wanted no new
-field — the field already exists upstream, so both get what they argued for.
+Everything else in QD's ADR-049 / ARCH-124 edit I take as written, including amending the **title**
+(「no tsconfig change」 is the false part) and the 「unguarded until TASK-B lands」 sentence — that
+sentence is the one thing standing between this repair and a repeat finding.
 
-**▲ Vocabulary constraints, from measurement:**
+### 2.2 D3 — NB-1 is rebutted, not merely descoped
 
-- **Push at the ROUTE, never inside `layoutGraph`.** `tests/integration/dag-warnings-empty.test.ts:37`
-  calls `layoutGraph` directly and asserts `warnings: []` as REQ-124's acceptance. Compose the payload
-  as `warnings: [...layout.warnings, ...routeWarnings]` and `layoutGraph` stays pure — which is also the
-  testability answer: the route's honesty is testable over HTTP, the layout's arithmetic stays unit-testable
-  with no server.
-- **Never the word 「skeleton」** in a warning string. `no-skeleton-surface.test.ts` walks `src/**` against a
-  six-file allowlist, these strings are served bytes, and REQ-134's legend will render them. Use
-  `layoutGraph`'s own vocabulary — 「predicted layout」 — which is why every string above says that and not
-  the other word.
-- **Trigger on the catch arm EXECUTING, not on `skeletonScript === ''`.** An unnamed run with an empty
-  inline script reaches `:498` with `''` legitimately (`spec?.script ?? ''`, no catalog resolve at all) and
-  must emit nothing. QD's O-Δ1 phrasing (「the `''`-script arm」) would make that run apologize for itself.
-- **Stable leading phrase.** `predicted layout unavailable: ` / `predicted layout derived from version ` —
-  so a test asserts a prefix, not a sentence, and the tail can carry the version without churning the test.
+QD's O-1 argues the ghost page's realistic cause is a stray token in one of seven unit-tierless
+`ui/*.js` files, and proposes a `node --check` unit test. **The realistic cause is already caught**
+(E2: `TS1109`, exit 2, on the current config) and **cannot ship through the self-update path** (E7:
+`revert_and_fail "npm run build failed"`). Their claim is precisely true of the *test* tiers — no
+vitest tier parses those files — and that phrasing should survive into the ledger; the operational
+conclusion drawn from it should not. Adding a second parser to catch what the first parser catches is
+the "control's form without its subject" pattern the retro named, one level up.
 
-**▲ Measured: this breaks no existing test, and one of them is the free RED fixture.**
-`grep` for empty-`warnings` assertions finds five sites; three are on the `/dag` payload:
-`diagram-contract-grandfather.test.ts:101` and `:156` (registered, pin resolves → no arm fires),
-`nested-frame-phase.test.ts:62` (same), and `dag-warnings-empty.test.ts:37` (direct `layoutGraph`, which
-the route-side push does not touch). **And** `dashboard-http.test.ts:205-218` deregisters the workflow so
-that *both* resolves throw — it is already the live fixture for reason (3), and it asserts only 「no
-`__skel_*` cells」, never `warnings: []`. So reason (3)'s RED test is one added line in an existing `it()`.
-This corrects QD's partition (c), which files `dashboard-http.test.ts:213-217` as 「untouched」: it is
-untouched by the *auth* flip and is simultaneously the cheapest fixture this delta has.
+**Limits I state so the rebuttal is honest, not triumphant — and measured (E8).** `tsc`'s parse is
+not node's: a module that parses but cannot RESOLVE fails in neither. Executed: appending
+`import { nope } from './nope-missing.js'` to `src/dashboard/ui/app.js` leaves `npm run typecheck`
+at **exit 0, no diagnostic** (`allowJs` without `checkJs` does not report it), and `node --check`
+would not catch it either — it is a syntactically valid import. **The only oracle for "the client actually
+boots" is the real-Chromium tier (ADR-053), which is conditional on a browser.** That is the true
+residual risk behind the ghost page, it is unaffected by either guard, and it is why QD's Layer 2
+(an honest pre-boot line) — not NB-1 — is the repair that matters. I support Layer 2 at MUST.
 
-### 3.3 ▲ The warning channel is write-only today — the rendering is IN closure, not deferred
+### 2.3 D5 — DASH-1: I hold on `%%`, with the rendered SVG as the discriminator
 
-`dashboard-page.ts:601-607` renders a **count**. Both r1s assumed text. REQ-134 is in this run's
-`impactIds`, and REQ-134's legend row is the honesty surface for exactly this class, so the rendering is
-inside the closure, not a Sprint A leftover: **TASK-203's `dod:` gains 「the run page renders the warning
-STRINGS, not a count」**, and the rebuilt client (ARCH-125 / DES-206) owes it. Without that line, §3.2 and
-QD's O-Δ1 are both a `push` into an array nobody displays, and Gate 8 would be right to call that an
-unverified honesty claim.
+We converge on the count (four sites: `:2539`, `:2547`, `:3574`, `:3576`) by two independent
+executions, which is the strongest form this ledger has. We disagree on one fact inside it.
 
-### 3.4 The two test oracles, with the field set named
+QD's authoring rule: 「`;` is a statement terminator inside message text, inside `Note` text and
+inside a *trailing* `%%` comment; only a `%%` comment on its own line tolerates it」, and their
+`:3574` fix keeps `%% never a 500 — a fault is …` on the message line.
 
-**(a) Positive shape on the auth server (QD's S-Δ1 — the guard against re-masking).** Auth ON, anonymous
-GET: `__skel_*` cells present with their **labels**, `lanes` include the unreached lane, `describe.phases[].agents`
-present with labels. `describe` titles state the ruling. C-1 withdrew my objection to asserting labels.
+**There is no trailing comment.** Mermaid honours `%%` as a comment **only at line start**; mid-line
+it is ordinary message text, which is why the `;` breaks the parse in the first place. My r1 §5.2
+`grep -o "%%[^<]*"` over the **rendered** SVG returns all four annotations of that diagram as literal
+label text — e.g. `%% never a 500 · a fault is 200 {degraded} + dashboard_api_degraded` — and three
+more in the v24 diagram. Apply QD's replacement and the diagram parses and then renders
+`… %% never a 500 — a fault is …` inside the message box, in a document whose whole purpose this
+round is that its diagrams read correctly.
 
-**(b) Auth-invariance parity (my K-3 — the guard against tomorrow's divergence).** One `it()` in the same
-file, over the two servers it already boots. ▲ **Assert it as an EXCLUSION, not a pick-list:**
+**Prescription (unchanged from r1, now with the discriminator named):** replace the four `;`, and
+move all seven `%% …` annotations to their own line as real comments, or promote to `Note over X:`
+where the reader needs to see them. **Falsifier either of us can run in 30 seconds:**
+`grep -o "%%[^<]*"` on the rendered SVG must return **nothing** after the edit. If it returns
+nothing under QD's spelling, I am wrong and I take it.
 
-```
-expect(omit(authDag, ['runId','terminalAt'])).toEqual(omit(openDag, ['runId','terminalAt']));
-expect(authDescribe.phases).toEqual(openDescribe.phases);
-```
+Their `:2547` `→` spelling I accept over `#59;` (D9): the arrow reads as the transaction's order and
+does not park an HTML entity in a diagram that a future editor will "fix".
 
-so the compared set is 「everything on the payload」 — `cells` (id, kind, col, row, laneSpan, **label**),
-`edges`, `lanes`, `current`, `warnings`, `startedBy`, and whatever a later iteration adds — minus the row's
-own identity and its timing. A pick-list is the weaker oracle and would have misstated the limit below:
-the likeliest future leak is not a field already on the list but a **new sibling**. `RunStatusView.principal?:
-string` (`types.ts:343-345`, v15/DES-096) is already on `view` at `server.ts:490`, is
-`'it092-owner@example.com'` on the auth server and absent on the open one, and is one `...view` spread away
-from the payload built at `server.ts:546-550`. A pick-list never sees it; the exclusion form goes red the
-first time it appears.
+### 2.4 D6/D7/D8 — AC-3a: adopted, with one simplification that ends the watchdog argument
 
-▲ Two mechanics that make it non-flaky, both measured: **register the SAME workflow name on both
-servers** (separate `workRoot`s, so there is no collision — IT-092 uses `it092-masked` / `it092-open`
-today, and any future name-derived field would false-red); and use the same `SCRIPT` and the same
-`run_start` path, which the harness already does.
+I adopt QD's Layer 1 / Layer 2 split, their five-row pin-disposition table (it is strictly more
+complete than my r1's single surviving pin at `dashboard-page-source.test.ts:95`, which is their
+first row), their measured class-lock safety (0/104 `STYLE_HOOKS`, 0/23 `TEST_ANCHORS` shell-only)
+as TASK-A's falsifier, and the `empty` hook for the mount element (verified present:
+`tests/fixtures/dashboard-classes.ts:28`). My r1's ARCH-122 amendment text and theirs say the same
+thing; take theirs, and keep two clauses of mine they did not write: (i) the struck 「still assertable
+here」 must be struck **as a sentence**, not softened, and (ii) the `<style>`-is-gone correction
+belongs in the same edit as the markup correction, because one sentence carries both false halves.
 
-▲ **Why `startedBy` is IN the parity set, stated precisely so it is not oversold.** It is not
-identity-bearing today: `StartedBy.id` is unset on the `client` path (`mcp-facade.ts:590`) and is a
-workflow name or webhook id on the others — no principal anywhere. The claim is narrower and forward-looking:
-the type *admits* an `id`, `server.ts:549` publishes the whole object on an ungated route, and v24 DES-162
-already states the convention (`server.ts:577`: 「`/api/runs/:id` is ungated — no identity field leaves on
-this route」). Parity makes that convention **executable**: the day someone stamps `startedBy.id = principal.id`
-under auth, the auth run and the open run stop matching and this test goes red. **Honest limit:** it catches
-only leaks that *differ by deployment*; a field that leaks identically on both servers is ADR-054's
-key-set test's job, not this one's. That is the security lens's actual replacement for the retired mask —
-a stronger oracle than the assertion it retires, because the mask only ever checked one branch.
+**ED-2, dissolved rather than won.** QD offers a 6-line `setTimeout(8000)` watchdog in
+`theme-init.js` to distinguish 「slow」 from 「dead」; they said they would concede it on request.
+I do not need them to: **the distinction is free if the static text makes it itself.**
 
-**(c) IT-092's re-trace stands as my r1 wrote it** (the ledger rule is 「不得以放寬斷言了事」): the cells
-assertion becomes 「the DAG payload carries no script bytes」 under REQ-133/REQ-140, with the sentinel a
-token the derivation *cannot* legitimately surface (`const IT092_SENTINEL = 'never-leaves-the-engine';` in
-the fixture) — **never** an agent label, phase title or tool name, because those are exactly what the
-reversal now publishes on purpose. REQ-100's real protection (script text) remains verified by IT-089 and
-`val-110-script-masking`, both untouched.
+> `<main><p class="empty">儀表板載入中… 若此訊息持續顯示，表示前端未能載入（請開瀏覽器主控台）<br>
+> Loading dashboard… if this message stays, the client failed to load — check the browser console</p>
+> <noscript>…</noscript></main>`
 
-### 3.5 Gate 7.5 (both lenses, merged)
+No timer, no listener, no new attribute, nothing to leak on a long-lived tab, and — the reason my
+testability lens prefers it — it is **assertable in a unit test as one of the shell's own four
+facts**, which a timer's behaviour is not. A watchdog is mechanism that exists to tell the operator
+something the sentence can just say. If the panel wants the watchdog anyway, it is 6 lines and I will
+not block it; I simply do not think it should be written.
 
-One `auth.enabled:true` case proving the overlay **IS** visible (QD's S-Δ2: one Chromium case under
-VAL-199 — the never-run predicted layout is cheapest, no gateway needed — plus the wire under VAL-204),
-with QD's `mintBearer` trap named in the VAL's own comment so the case cannot be vacuous. ADR-051's
-standing instruction 「run one case and **record what degrades**」 must be flipped in the same edit (my
-F-5) or the validator faithfully records a degradation that must no longer exist. Plus K-5's one number:
-p95 of `GET /api/runs/:id/dag`, auth on, largest script in the corpus; > 50 ms pre-approves a 5-line memo
-keyed `` `${name}@${version}` `` (safe: a registered version's script is immutable), ≤ 50 ms builds nothing
-and leaves the number on the record.
+I also confirm their ED-5 prediction was wrong: I am not defending the fossil. My r1 called it a
+**failure mask** for the same reason their O-1 calls it a ghost — an operator reading 「Running /
+Registered / Other」 over empty containers reads 「healthy engine, nothing running」, which is the most
+dangerous false statement an operator console can make. Two lenses, one conclusion, no compromise
+needed.
+
+### 2.5 D14/D15/D16 — the three items only I raised
+
+Uncontested is not the same as agreed; QD's r1 simply scoped to §8 items 9–11. All three stay MUST/SHOULD:
+
+- **A3 (MUST).** `src/dashboard/lib/connection.js:9-15,:24-38` wires `worstOf`; `02-architecture.md:3354`
+  still reads 「any `ok` → `live` immediately」; `grep -c worstOf 02-architecture.md` → **0**. The
+  Gate 6 repair is right on the merits (a tag saying 連線中 while the visible table's route is
+  degraded is a false statement) and the text must be amended to `worstOf(perRoute)` over the visible
+  view's routes. **The part that needs the owner, not the panel:** REQ-131's acceptance
+  (`01-requirements.md:1729`) says 「任一 `/api/*` 取得成功 → Live」, and the repair narrows it to
+  「visible-view routes ALL ok → Live」. Gate 7.5 validates REQ-131 against the requirement's own
+  text. Record the narrowing as one overturnable sentence in ARCH-124 **and raise it to the owner**;
+  if the literal reading stands, the Gate 6 repair is what changes, not the prose.
+- **A4 (MUST).** `src/static-assets.ts:33` is
+  `'public, max-age=31536000, immutable' | 'no-store'`; `02-architecture.md:3345` still types it
+  `'immutable' | 'no-store'`. One-line amendment, verbatim text in my r1 §2.A4. Left at MUST because
+  the re-review's routing rule is mechanical.
+- **S2 (SHOULD).** One sentence in ARCH-128 naming the single-synchronous-writer assumption behind
+  「Convergence: in either order the row ends identical」 (`src/store/sqlite-run-store.ts:310`,
+  untransacted read-modify-write, safe only because better-sqlite3 is synchronous and the body has
+  no `await`; two engine processes on one file break it). Zero code; closes a finding that is
+  otherwise re-derived every review.
 
 ---
 
-## 4. What is left — two recorded boundaries, no blocking dispute
+## 3. Evidence appendix — this round's nine executions
 
-I am not manufacturing a disagreement to fill this section. After §2 the count is: **zero blocking
-disagreements**, one stylistic split settled in the open (row 7, the filename), and two boundaries that
-belong in ADR-051's note so Gate 8 does not rediscover them as findings.
+All run in `…/scratchpad/tree`, a `git archive HEAD | tar -x` copy with `node_modules` symlinked from
+the repo. **Zero writes to the working tree** (CLAUDE.md: no `checkout`, no `stash`, no restore).
 
-**B-1 — the fourth, unlabelled arm.** `server.ts:532-538`: when `derived.ok` is false the route re-derives
-with `contract:'v1'`, and if *that* refuses it assigns an empty graph with **no throw and no catch** — so
-neither §3.2 (4)'s `derivation-failed` nor (3)'s `catalog-resolve-failed` fires. The code's own comment says
-`contract:'v1'` 「never refuses on L2 (its only refusal rule today)」 and keeps the branch 「defensive rather
-than assuming that invariant with a cast」. Correct call; but after the reversal an unlabelled empty overlay
-is exactly the silence this delta exists to remove. **Cheapest resolution: fold it into `derivation-failed`
-(same honesty failure, no new string), and write the invariant into ADR-051's note so it is a stated
-boundary rather than a fourth silent arm.**
+| # | Command (abridged) | Result |
+|---|---|---|
+| E1 | `tsc --noEmit -p tsconfig.json --listFiles \| grep -c src/dashboard/` | **20** — every served client `.js` is in today's root program |
+| E2 | append `const broken = = 1;` to `src/dashboard/ui/app.js`, `tsc --noEmit -p tsconfig.json` | `src/dashboard/ui/app.js(467,16): error TS1109: Expression expected.` — **exit 2** |
+| E3 | append `noSuchFunction(undeclaredIdentifier);`, same command | **no output, exit 0** — `checkJs` off: the gap is semantic, not syntactic |
+| E4 | QD's `tsconfig.server.json` verbatim, `tsc --noEmit -p` on the clean tree | **exit 0**, 76 `src/` files, **0** under `src/dashboard/` (their M1 reproduced) |
+| E5 | plant `document.title`, `window.location.href`, `(el: HTMLElement)` in `src/dashboard-page.ts` | server program **exit 2** (`TS2584`, `TS2304` ×2); root program **exit 0** |
+| E6 | plant `import { worstOf } from './dashboard/lib/connection.js'` in the same server file | server program **exit 2** (`TS7016`); root program **exit 0** — the client-boundary property, newly measured |
+| E7 | `grep -n` `deploy/rwe-update.sh` | `:143 revert_and_fail "npm ci failed"`, **`:147 revert_and_fail "npm run build failed"`** — the syntax guard is on the ship path |
+| E8 | append `import { nope } from './nope-missing.js';` to `ui/app.js`, root `tsc` | **exit 0, no diagnostic** — the resolution gap in §2.2, now measured rather than asserted |
+| E9 | build my r1 A1(b) shape (narrow root + wide `tsconfig.tests.json`) and `--listFiles \| grep -c src/dashboard/` | **20** — the narrow-root shape parses the client too; **this refutes the reason I had drafted for my own concession** (the concession survives on additivity) |
 
-▲ **The placement is exact, and getting it wrong goes red on REQ-124.** The push belongs in the **false arm
-of the `v1.ok ? v1.graph : { lanes: [], slots: [], edges: [] }` ternary at `:538`, and nowhere else** — NOT
-in the `else` at `:534`. That `else` is the *legitimate* v1-contract path taken by every script with no
-`phase()` at all, which includes IT-092's own `SCRIPT` (`dag-masking-auth.test.ts:34-39`) and
-`diagram-contract-grandfather.test.ts`'s `v1Script` — and the latter asserts `warnings: []` at `:101` as
-REQ-124's own bar. A push in the `else` warns on every v1 script and turns that assertion red.
+Re-verified at HEAD in the real tree (read-only): `grep -c worstOf 02-architecture.md` → 0;
+`02-architecture.md:3354` still carries 「any `ok` → `live` immediately」; `:3345` still types
+`cache: 'immutable' | 'no-store'`; `tests/unit/dashboard-page-source.test.ts:95` still asserts
+`expect(DASHBOARD_HTML).toMatch(/draggable="false"/)`; `src/dashboard/ui/app.js:455` is the
+`replaceChildren`; `tests/fixtures/dashboard-classes.ts:28` contains `'empty'`;
+`src/dashboard/` contains **no `.ts` files** (so QD's `exclude: ["src/dashboard"]` is belt-and-braces
+beside `allowJs:false` — keep it, it documents the intent).
 
-▲ **REQ-124 reconciled explicitly, so Gate 8 does not read it literally against §3.2.** REQ-124's
-「existing production runs show zero warnings」 covers runs whose pin resolves **and** whose derivation
-succeeds — the v1 re-derive included, since it yields a real graph and REQ-124 requires those runs to draw
-as before. All three fault strings fire strictly outside that cohort by construction: (2) only when a
-requested version is absent from the catalog, (3) only when both resolves throw, (4) only on a throw or on
-a v1 refusal that the code's own comment says cannot happen today. No healthy grandfathered run reaches any
-of them — which is why §3.2's measured survey found the three `/dag` empty-`warnings` assertions untouched.
+---
 
-**B-2 — the cohort §3.2 still cannot label.** A run whose pin resolved fine at execution time and is
-purged (REQ-026 GC) or deregistered *afterwards*, with no `legacySubstitution` record, lands on §3.2 (2)
-and IS labelled. But a run in the **pre-v22 cohort** that never recorded a substitution and whose name
-row still resolves its pinned version normally is indistinguishable from a healthy run — correctly so,
-because it *is* one. The residual is only this: the label in (2) says what the overlay was derived from and
-what the run's pin said; it cannot prove the *pin* is what executed for rows written before v22's
-substitution record existed. One sentence in ADR-051's note. **No code, no mitigation** — inventing one
-would be the speculative architecture the tie-breaker forbids.
+## 4. Final position — what the synthesizer should lift
 
-**Carried from my r1, undisputed, one line each so the synthesizer has them in one place:**
-- **F-2** (MEDIUM, record-only): the precise newly-anonymous information is the lane membership and edge
-  order of a *pinned, non-release* version whose author `mermaid` is `null` — the pre-v26 grandfathered
-  cohort, and the boundary is exact, since the diagram route answers `404 DIAGRAM_UNAVAILABLE /
-  LEGACY_NO_DIAGRAM` for precisely those rows (`server.ts:429-431`). One sentence in ADR-051; no mitigation,
-  because the mitigation the owner refused is the mask. QD said they support recording it.
-- **F-3** (MEDIUM, note-only): the synthetic `{kind:'auth-disabled'}` principal at `server.ts:563` / `:402` / `:419`
-  has no current instance of the hazard after §3.1 (no masking decision left in the facade on these routes),
-  but the *pattern* survives; §3.4 (b)'s parity test is the empirical guard and no new abstraction is
-  proposed. Name it in ARCH-131's note.
-- **F-4** (LOW, boundary): 「撤銷遮罩」 reads broader than it is. REQ-100's script masking, REQ-136's
-  system-prompt strip and the three `dbindExempt` auth gates (`server.ts:1126`, `:1146`, `:1183`) all stand. A delta
-  touching any of them is out of closure.
+**Five ledger rows + four diagram sites + two tasks.** Where QD's r1 has verbatim-ready text, take
+theirs; my deltas are named, not re-pasted.
 
-**Internal conflict between my own three lenses, surfaced as the dispatch asks:** the only real one this
-round was **testability vs security on the parity oracle**, and it resolved by measurement rather than by
-trade-off. Testability's r1 instinct (「compare ids, labels will be flaky」) was wrong on the mechanism
-(C-1); once that is corrected, security gets the stronger oracle it wanted — labels and `startedBy` in the
-parity set — at no cost to test stability. **Scalability had nothing to trade**: the delta adds no state,
-so it contributes only the per-request CPU number in §3.5 and does not compete with either. And
-simplicity-first, as tie-breaker, is what kills every remaining candidate abstraction in this delta:
-no dep, no config key, no new wire field, no cache, no new fixture, no rename of a file the trace chain cites.
+1. **ADR-049** — QD's edit, **minus** the 「tests-only DOM config is infeasible」 clause, **plus** the
+   two replacement clauses in §2.1 (both shapes feasible, (ii) chosen for additivity and because it
+   is the measured one, with the editor limit stated; and `allowJs:true`
+   as a doubly load-bearing consequence with the semantic limit stated). Amend the **title**. Keep
+   「unguarded until TASK-B lands」.
+2. **ARCH-124 (tsconfig note)** — QD's inverse-program sentence, as written.
+3. **ARCH-124 (`api:`, connection clause)** — **mine (r1 §2.A3)**: strike 「any `ok` → `live`
+   immediately」, record `worstOf`, record the REQ-131 narrowing as one overturnable sentence.
+   Not covered by QD; blocking on a mechanical re-review.
+4. **ARCH-122 (`api:` + `note:`)** — QD's Layer 1 / Layer 2 + pin rule, with my two clauses
+   (strike 「still assertable here」 outright; correct the CSS half in the same sentence) and the
+   self-describing pre-boot line from §2.4 in place of NB-2.
+5. **ARCH-123 (`api:`)** — **mine (r1 §2.A4)**, one line, at `:3345`.
+6. **`02-architecture.md:2539/2547/3574/3576`** — the four replacements (`·`, `→`, and the two Note/
+   message fixes) **plus** the seven `%% …` annotations moved to line start or promoted to
+   `Note over`; then `sh .sdlc/trace` to regenerate `dashboard.html`; then the render falsifier
+   (`grep -o "%%[^<]*"` on the SVG returns nothing, and all 40 blocks parse — my r1 §5.4 script).
+7. **TASK-A** (shell body → mount point + the five pin dispositions + UT-240's new negative) and
+   **TASK-B** (`tsconfig.server.json` + `typecheck`/`build`) — QD's names, QD's DoDs, with TASK-B's
+   DoD extended by E5 **and E6** (both planted violations must go red, then be reverted) and by
+   「`npm run typecheck` still fails on a planted syntax error in `src/dashboard/**/*.js`」 — the
+   property TASK-B must not accidentally trade away.
+8. **ARCH-128** — S2's single-writer sentence (SHOULD).
+9. **Tooling, not tests:** the mermaid render oracle beside `.sdlc/` as TOOL debt (my S1 = their NB-3;
+   we agree on both the mechanism and the home). **NB-1 is dropped**, replaced by ADR-049's sentence.
+10. **Dispatch v27h** for TASK-A + TASK-B before the re-review. If the orchestrator declines, the
+    「unguarded until」 sentences are mandatory and the cost is +2 LOW trace gaps.
+
+---
+
+## 5. Remaining disagreements after this round
+
+1. **D5, `%%` annotations (QD vs. me, a factual disagreement with a cheap falsifier).** They call
+   `:3574` a trailing comment; my rendered SVG says it is message text. Settle it by rendering, not
+   by reading: `grep -o "%%[^<]*"` on the output SVG. Cost of getting it wrong: two diagrams that
+   parse and read as junk, i.e. DASH-1 half-closed for the second consecutive round.
+2. **D14, REQ-131's 「任一…成功 → Live」 — needs the OWNER, not the panel.** Both lenses would let the
+   `worstOf` narrowing stand; neither of us may amend a requirement's acceptance. Raise it
+   explicitly at synthesis. This is the single item I would not let the two panels "agree" their way
+   past.
+3. **D2, the recorded reason for AC-2.** I expect QD to accept the correction (it strengthens their
+   own mechanism), but if the synthesizer takes their text verbatim, ADR-049 ships a false
+   impossibility claim and the ADR's own credibility is what pays.
+4. **D7, the watchdog.** Not a disagreement about facts — about whether to add 6 lines of mechanism
+   for something a sentence can say. I will not block it.
+5. **D13, the `ui/*.js` coverage denominator (QD-R2).** Neither lens escalated it this round and both
+   of us named it as owed. It should be the first item of the next full round, with AC-4's crash
+   cited as the evidence that its premise is already falsified.
+
+---
+
+**consistent: no.** Five architecture rows still require amendment before the re-review (ADR-049,
+ARCH-124 ×2, ARCH-122, ARCH-123) and two of them (the connection clause, the `cache` literal) were
+created by this round's own Gate 6 repair and are covered by only one lens. Converged this round:
+the AC-2 mechanism (I withdrew my own), the AC-3a two-layer shape and pin table, DASH-1's four
+semicolon sites, the mermaid oracle's home, and the v27h dispatch. Still open: the `%%` annotations
+(falsifiable in 30 s), and REQ-131's acceptance reading (owner ruling owed).

@@ -1,387 +1,304 @@
 ---
 stage: architecture
 lens: quality-dimensions
-iteration: v27 — Round v27b delta (scoped run: gates architecture+design+tests, impactIds REQ-133 / REQ-134 / REQ-140)
-round: 2 (responses to the other lens + final position)
-responds_to: .panel/architecture/adversarial.r1.md (the v27b delta proposal — K-1..K-5, F-1..F-5, D-1..D-5). .panel/architecture/adversarial.r1.sprintA.md was read for context only: its D-ADV-2 is the ancestor of this delta and nothing else in it is in this closure.
-builds_on: .panel/architecture/quality-dimensions.r1.md (my delta r1 — O-Δ/R-Δ/C-Δ/S-Δ items, key_points 1–9, risks QD-Δ-R1..R9). Its Sprint A body at `git show 07266be:…quality-dimensions.r1.md` stands unchanged.
-verified_this_round (file:line, all re-read at the working tree): src/server.ts :320-339, :490-552, :1060-1069, :1284-1294; src/run-manager.ts :893-907, :1075; src/types.ts :24-45, :293-298, :347-352; src/run-view.ts :11-14; src/run-store.ts :355; src/dashboard.ts :339-345, :393-442; src/dashboard-page.ts :601-607; src/skeleton-graph.ts :95-155 (lane push at :111-112); src/workflow-meta.ts :114-135, :420-560; src/workflow-view.ts :106; src/mcp-facade.ts :455-494; tests/integration/dag-masking-auth.test.ts (whole); tests/unit/dashboard-derive-lanes.test.ts (whole); tests/integration/dashboard-disclosure.test.ts :1-50; tests/fixtures/dashboard-wire.ts :71-113; tests/helpers/workflow-fixtures.ts :128-143, :286-310; tests/unit/graph-layout.test.ts :165; tests/integration/diagram-contract-grandfather.test.ts :60-160; tests/unit/no-skeleton-surface.test.ts :53-70; 01-requirements.md :1658-1690, :1744, :1769, :1868, :1070; 02-architecture.md ADR-051 :3432, ADR-054 :3453, ADR-055 :3460, ARCH-130 :3400, ARCH-131 :3414-3415, contract rows :3630-3632; 04-design.md DES-196/197 :6745-6760, DES-206 :6825; 03-tasks.md TASK-202/203 :1699-1716; 05-tests.md UT-238 :11772, IT-168 :11797, VAL-204 :12067; state.yaml pending[0]; journal.md :3571-3600
+iteration: v27 — Gate 8 SEND-BACK REPAIR, architecture half (07-review.md "v27 GATE 8 REVIEW" §8 items 9–11: AC-2 / AC-3a / DASH-1) + the two induced drifts the adversarial lens found (ARCH-124 connection clause, ARCH-123 cache literal)
+round: 2 (response to adversarial.r1.md; final position)
+supersedes: the prior body at this path (the v27b delta round-2, last written at `c7447d0`) is preserved at `git show c7447d0:.sdlc/features/001-remote-workflow-engine/.panel/architecture/quality-dimensions.r2.md`; it stands for what it decided (the ADR-051 reversal) and is not pasted back in. My round 1 for THIS repair is `quality-dimensions.r1.md` on disk.
+baseline: HEAD `eb387a1` (unchanged since round 1; `git rev-parse HEAD` re-run). Every `file:line` is at this tree.
+inputs: adversarial.r1.md (all of it — §0–§5, esp. A1–A5, S1–S2, W, §3 risks, §4 expected disagreements); quality-dimensions.r1.md; 07-review.md §2 AC-2/AC-3 (:107-131), §8 items 3, 9–11 (:372-403), §3, §10; 02-architecture.md ARCH-122 (:3331-3338), ARCH-123 (:3340-3346), ARCH-124 (:3349-3357), ARCH-125 (:3359-3369), ARCH-128 note (:3397), ADR-049 (:3430-3436), the v24 process view (:2530-2568), the v27 process view (:3560-3582); 01-requirements.md REQ-131 acceptance (:1729-1730); src/dashboard/lib/connection.js (whole file); src/static-assets.ts :28-39; src/store/sqlite-run-store.ts :310-320; src/dashboard-page.ts :85-156; src/dashboard/ui/app.js :332, :403, :422, :455; tests/unit/dashboard-page-source.test.ts :38-46, :92-96; tests/unit/dashboard-lib-connection.test.js :25-40; tsconfig.json; package.json scripts; vitest.config.ts; deploy/rwe-update.sh :132-147; scripts/ (exists: bench-run-list.ts, gen-authoring-md.ts, smoke.sh); tests/unit/no-retired-surface.test.ts :1, :42-45; .sdlc/trace.py :301-328, :489
+measured_this_round (all in the scratchpad; zero edits to the tree; commands re-runnable from §5 of adversarial.r1.md plus the deltas noted here):
+  (M4) adversarial option (b) — the NARROWED ROOT — under a real `tsc --noEmit -p` (a scratch config that `extends` the repo's tsconfig.json with `lib:["ES2022"]`, `allowJs:false`, `include:["<repo>/src"]`, the existing three excludes): **76 program files outside node_modules, incl. `src/dashboard.ts` and `src/dashboard-page.ts`, 0 under `src/dashboard/**`; exit 0; 3.72 s wall.** (M4b) the same with `vitest.config.ts` added to `include`: **exit 0; 3.80 s** — the root can keep `vitest.config.ts`.
+  (M5) option (b)'s TESTS program under a real `-p` (`extends` root; `lib:["ES2022","DOM","DOM.Iterable"]`, `allowJs:true`, `include:[src, tests, vitest.config.ts]`): **510 program files (20 client `.js`, 413 under `tests/`); exit 0; 8.83 s.** The cost delta of running both programs is therefore **+3.7 s per `typecheck`/`build`**, not 3.7 s.
+  (M6) the narrowed root + a planted probe file (`document.title`, `window.location.href`, `function f(el: HTMLElement)`): **TS2584 + 2×TS2304, exit 2.** The guard option (b) restores is the same guard my round-1 inverse program restored — identical failure set to my M2.
+  (M7) `mermaid.parse` + `mermaid.render` in the repo's cached headless Chrome with `node_modules/mermaid/dist/mermaid.min.js` (**11.17.2**, the same bundle `mmdc` used in adversarial §5.1; my round-1 M3 used the CDN `mermaid@11` URL `dashboard.html` loads and agreed on every parse result):
+    | case | parse | `%%` strings in the rendered SVG |
+    |---|---|---|
+    | v24 as on disk (`:2531-2567`) | FAIL line 9 | — |
+    | v27 as on disk (`:3561-3581`) | FAIL line 14 | — |
+    | v24 first site only (`:2539`) | **FAIL line 17** (`:2547`) | — |
+    | v27 first site only (`:3574`) | **FAIL line 16** (`:3576`) | — |
+    | v24 all four `;` sites fixed, annotations left mid-line | OK | **3** (38 375 B) |
+    | v27 all four `;` sites fixed, annotations left mid-line | OK | **4** (30 966 B) |
+    | v24 CANDIDATE below (sites + seven annotations → Notes) | OK | **0** (39 423 B) |
+    | v27 CANDIDATE below | OK | **0** (32 445 B) |
+    Sweep of every ```mermaid block in 01/02/03/04/05: **40 blocks, 3 fail** — `02-architecture.md:2531`, `:3561`, `04-design.md:3306` (DASH-2, design's). Fence census: 01 → 1, 02 → 27, 03 → 0, 04 → 12, 05 → 0 (= 40; `v24-gate1-working-notes.md` has 2 more but `trace.py:328` extracts from the `0X.md` files only). The sweep covers every authored block; `dashboard.html` regenerated at eb387a1 carries **45** `class="mermaid"` elements (`grep -c`) = the 40 embedded blocks + the diagrams `trace.py:489` generates itself (not authored text, not swept here); the review's "43" was counted at ef0a400, before the v27g regeneration.
 ---
-# Quality-dimensions — round 2: the four deletions are converged; what is left is one warning vocabulary, one fixture, and one detector I reject
+
+# Quality-dimensions — round 2: converged on every MUST; what is left is the shape of a `<p>`, seven annotations, and one owner ruling
 
 ## summary
 
-**Converged, and not worth a third round.** Both r1s delete the predicate rather than flip it — the
-`if (!authEnabled)` branch, the never-implemented `McpFacadeDeps.maskPredictedOverlay`, `deriveLanes`'s
-`masked` axis and `handleDashboardRequest`'s `authEnabled` parameter — keep the inner `try/catch`,
-keep `status` on `deriveLanes`, re-trace IT-092 instead of relaxing it, and put F-1's witness on the
-existing `warnings[]` channel. The adversarial file's D-1 ("QD will keep the seam") and D-2 ("QD will
-prefer `masked:false`") describe a position my r1 did not take (R-Δ1, key_point 2: *delete the axis,
-don't flip it*); §0 says so once so the synthesizer does not re-litigate them.
+**Nothing at MUST level is still disputed.** The adversarial round 1 and my round 1 were written blind to each other and reached the same three findings by execution, plus the adversarial lens found two drifts I missed. This round I **concede four things** — (1) the AC-2 guard's *direction* (root becomes the strict server program; my inverse program was the same guard the other way round, and their tie-break is better), (2) that my round-1 "verified consistent" for the AC-4 repair was **wrong** (ARCH-124 still says 「any `ok` → `live` immediately」 while `connection.js:24-36` is `worstOf`; `worstOf` appears 0 times in `02-architecture.md`), (3) ARCH-123's stale `cache` literal, (4) that my DASH-1 authoring rule mis-described mid-line `%%` — it is message text, not a comment, and I re-proved their junk finding by rendering (M7: 3 + 4 literal `%%` strings in the SVGs of the semicolon-only repair). I **hold two small things** with reasons — the shell's mount element should carry static pre-boot text rather than be empty, and the ADR-049 *title* must carry the amendment marker — and I **drop NB-2** (the boot watchdog) outright rather than fence it again.
 
-**Where I move.** (1) F-1 is a real case I missed — the release fallback at `server.ts:502-503`
-renders an overlay from a version the run did not execute — and it folds into my O-Δ1 as a third
-member of one reason set, *reusing the noun the engine already has for it* (`legacySubstitution
-{pinned, resolved}`, `run-manager.ts:903-907`). (2) My r1 said the client "already renders" warnings;
-it renders a count (`dashboard-page.ts:606`) — conceded, the rebuilt client owes the text. (3) K-4's
-sentinel form of IT-092 is the right one: it keeps the row's REQ-100 trace honest and leaves the
-positive shape to IT-168. (4) K-5 measure-before-cache, with a bound on the pre-approved memo. (5) D-4's
-budget rule for key-set tests.
+**What I bring that changes the merged text.** (a) Their option (b) was measured with an explicit file list, which their own risk #1 flags; M4/M4b/M5/M6 re-measure it under real `-p` runs and it holds — 76 files / 0 errors / 3.7 s for the narrowed root, 510 / 0 / 8.8 s for the tests program, planted probe red — so the amendment can cite a measured config rather than a promised one. (b) Two paste-ready DASH-1 replacement blocks, parse- and render-verified, with every content change (as opposed to form change) enumerated so the architect keeps ownership of wording; the zero-meaning-change alternative (seven line-start `%%` comments) is stated in one line and is also verified by the ledger's own control block. (c) A merged ledger-edit table covering all five rows plus the two induced drifts, so the synthesizer has one list.
 
-**Where I hold or push back — all low-stakes, all with a file:line reason.** F-1's *conflict rule* is
-right and its *detector* is wrong: a loop-body `phase()` produces the exact observed/expected title
-mismatch the detector keys on, with no substitution anywhere (`run-manager.ts:1075` appends one
-`PhaseView` per entry; L1 opens one lane per node). K-3's parity test is necessary and vacuous on its
-own — both servers failing derivation identically pass it — so it needs one positive anchor, and the
-anchor needs a second fixture, because `registerPublishedVia` registers IT-092's phase-less `SCRIPT`
-as a single synthesized lane (`workflow-fixtures.ts:139-143`) on which no lane is ever "unreached".
-REQ-105's supersession marker is still the one Gate-8-by-construction failure and nobody else has
-named it.
-
-## Altitude call
-
-Unchanged: predominantly **system**-altitude (what an unauthenticated HTTP read serializes), with the
-**agent**-altitude reading supplying the reason the owner ranked it (the run page is the only surface
-that joins an agent workflow's *plan* to its *progress*). Memory metabolism, tool liveness and prompt
-calibration have no seam in this delta; each dimension below says so in one line rather than padding.
+**Altitude.** Unchanged from both round-1 files: this repair is system-altitude throughout; the one agent-altitude thread — the dashboard is the operator's only console onto agent runs, so a tag or a page that lies about liveness is an agent-observability defect — is applied in §1 and nowhere else.
 
 ---
 
-## 0. Convergence — stated once (no dispute; the synthesizer should record these as agreed)
+## 0. Responses to the adversarial round 1 — verdict first, engineering reason second
 
-| # | Item | Adversarial r1 | My r1 | Verified this round |
-|---|---|---|---|---|
-| 1 | Delete `if (!authEnabled)`; keep the inner `try/catch` degradation | K-1 (1) | O-Δ4 (a), key_point 2 | `server.ts:520`, catch at `:540-542` |
-| 2 | `McpFacadeDeps.maskPredictedOverlay` never exists | K-1 (2), K-2 | R-Δ1, QD-Δ-R1 | `grep -rn maskPredictedOverlay src tests` → 0 hits; DES-197 text only |
-| 3 | `deriveLanes(phases, expected, { status })` — `masked` dropped, `status` kept, UT-238's signature note reconciled here | K-1 (3) | key_point 9 | `dashboard-derive-lanes.test.ts:7-13`, `:33-35` |
-| 4 | `handleDashboardRequest`'s `authEnabled` param, the `!!authCfg` argument and the comments go | K-1 (4) | R-Δ1 | declaration `:334`, one consumer `:520`, one caller `:1068`; comment `:350` goes, comment `:819` is about ARCH-088's peer shapes and **stays**; positional deletion is type-safe because the trailing params are `authAnnounce: {…}` and `diagrams: DiagramRenderer` (`:336-338`) |
-| 5 | ADR-051 amended in place → (b) with ruling + date, options analysis kept; ADR-055 amended; F-2 residual and F-5 instruction flip recorded | K-1, F-2, F-5 | O-Δ4 (a), housekeeping (3) | ADR-051 `:3432`, ADR-055 `:3460`; the HTTP describe route takes no `?version=` (`server.ts:395-412`) while the diagram route does (`:416-431`) — F-2's cohort boundary holds |
-| 6 | IT-092 re-traced, never relaxed; IT-168 flips to positive; UT-238 → 7×2 | K-4 | O-Δ4 (a), QD-Δ-R3 | see §4 |
-| 7 | F-3's synthetic-principal pattern noted in ARCH-131; F-4's scope boundary | F-3, F-4 | C-Δ1, O-Δ4 (c), QD-Δ-R6 | `server.ts:402`, `:563`; ARCH-131 `:3415` |
-| 8 | D-1 / D-2 do not exist as disputes | predicted | R-Δ1 deletes, never flips | — |
-| 9 | F-1's witness rides `warnings[]`; no new wire field | D-3 | O-Δ1 | `dashboard.ts:339-340`; `ALLOWED_DAG_KEYS` already lists `warnings` (`dashboard-wire.ts:88`) |
-| 10 | D-5's list | agreed | agreed | — |
+**In the task's three words:** **rebut — none at MUST level.** **Concede** — A1's direction (root = strict server program), A3, A4, A5's mid-line-`%%` half, NB-2 (dropped). **Hold** — the ADR-049 *title* marker; static pre-boot text and no `id` on the shell's mount element; NB-1 as an optional TASK-A DoD line (non-blocking). Everything else converged without a fight.
 
----
-
-## 1. Observability
-
-**The delta's question is unchanged from my r1: when the engine cannot produce the overlay — or
-produces the wrong one — does anyone find out, on the payload and in the journal, and does every
-document still tell the truth about when it is shown.**
-
-### System altitude
-
-**O-Δ1 (revised — integrates F-1): one reason set, three members, pushed at the site where each
-degradation happens.** The block at `server.ts:497-508` has three exits and the derivation one more;
-I enumerate all of them so the warning cannot be "inferred from an empty graph" (a legitimate script
-with no `agent()` calls yields the same empty `ExpectedGraph`, and `dashboard-http.test.ts:213-217`
-pins that case silent):
-
-| Exit | Today | `warnings[]` entry |
+| Item (theirs) | Verdict | Reason, and what I integrate |
 |---|---|---|
-| pin resolves (`:500`) | overlay from the run's own version | none |
-| pin throws, `release` resolves (`:502-503`) — **F-1** | overlay silently from a version the run did not execute | `PREDICTED_FROM_FALLBACK_VERSION: pinned=v3 resolved=v5` |
-| both throw (`:505`, `skeletonScript = ''`) | empty overlay, silent | `PREDICTED_OVERLAY_UNAVAILABLE: catalog-resolve-failed` |
-| parse/derivation throws (`:540`) | empty overlay, silent | `PREDICTED_OVERLAY_UNAVAILABLE: derivation-failed` |
-| `derived.ok === false` → `contract:'v1'` re-derive (`:531-538`) | a real graph | **none** — REQ-124's grandfather bar; both r1s agree |
-| `spec.name` absent (inline script) | no resolve at all | none |
+| **A1 — AC-2: option (b), scope DOM to a tests program; root back to `lib:["ES2022"]`, no `allowJs`** | **CONCEDE the direction.** | My round-1 inverse program (`tsconfig.server.json` beside an unchanged root) restores the *identical* compile-time property — M6 fails the planted probe with exactly the errors my M2 did. What breaks the tie is their self-sustainability argument: **the DEFAULT program should be the guard and the widening should be the named exception.** Stated carefully, because the asymmetry is weaker than "strict by default" sounds: under my shape a `build` script "simplified" back to bare `tsc --noEmit` silently drops the DOM boundary; under theirs it drops the tests program — and that is **not** harmless either, because vitest exercises runtime, not the `satisfies` wire-shape lock in `tests/fixtures/dashboard-wire.ts` (the lock ADR-049 says buys what `checkJs` would). **Both programs are load-bearing.** The tie still goes to (b) because the server boundary is the control with no runtime backstop at all, and the cheap guard for the other half is my own round-1 QD-G8-R6 mitigation, now a TASK-B DoD line: one UT pinning that `package.json`'s `typecheck` and `build` both contain `tsconfig.tests.json`. Their risk #1 ("I measured with a file list, not `-p`") is closed by M4/M4b: the narrowed root compiles under a real project file, with or without `vitest.config.ts`. I **hold** two things: the ADR-049 **title** ("no tsconfig change") must carry the amendment marker — by *their own* A4 rule, a clause the tree contradicts is blocking regardless of size — and the guard goes into `build` as well as `typecheck` (they already say both). Cost stated honestly: **+3.7 s per run** on top of today's ~8.8 s (M5). |
+| A1's refusal-overturn paragraph (D-ADV-5 was "ceremony" at v27 synthesis) | **AGREE**, and my round 1 said the same from the other side ("the refused Sprint A idea, pointed the right way") | Both lenses independently name the lineage; the synthesizer should record it once: the refusal's premise (keeping `lib:["ES2022"]` is free) was falsified by IMPL-229's 36 errors. |
+| **A2 — AC-3a: amend to the built shape; body is client-built; CSS half also false; no mount point exists today; dead body is a failure mask; delete + `<main id="app-view">` + `<noscript>` as IMPL follow-up** | **CONVERGE; HOLD** only on the replacement's shape (§Remaining #1) | We caught the same CSS-half falsity, the same `:455` line, the same surviving pin (`dashboard-page-source.test.ts:95`, their §5.5 = my UT-240 last case). They ask that the blast radius be measured, not assumed; my round 1 measured it: five dead pins enumerated with DES-208 dispositions, and the class-lock verified safe (0 of 104 `STYLE_HOOKS`, 0 of 23 `TEST_ANCHORS` are emitted only by the shell). Their "roughly 60 lines" net deletion matches `dashboard-page.ts:92-152`. |
+| **A3 (NEW) — ARCH-124's connection clause contradicts the shipped `worstOf`; REQ-131's 「任一…成功 → Live」 is narrowed and must be recorded** | **CONCEDE — and correct my round 1.** | My round 1 listed "the v27g repairs of AC-4/AC-5/AC-6 … re-read, not re-litigated" under *Verified consistent*. That was a reading error: I re-read the repair, not the row. On disk: `02-architecture.md:3354` 「any `ok` → `live` immediately; … `degraded` … when it is the worst state」 — two clauses that cannot both hold for a mixed tick; `connection.js:26-32` implements the second; `grep worstOf 02-architecture.md` → 0. One fact strengthens their side: **§8 item 3 itself told the impl repair to wire `worstOf` "per ARCH-124's `api:`"** — the review already chose the second clause; striking the first records the review's own reading, it does not invent one. The REQ-131 reading is an **owner ruling**, not a two-panel closure (§Remaining #5). |
+| **A4 (NEW) — ARCH-123's `cache: 'immutable' \| 'no-store'` vs `static-assets.ts:33`'s full directive** | **CONCEDE** (verified: `StaticAssetCache = 'public, max-age=31536000, immutable' \| 'no-store'`) | One-line edit; MUST by the mechanical routing rule. Nothing to add. |
+| **A5 — DASH-1: four `;` sites; mid-line `%%` is message text and renders as junk (seven annotations)** | **CONCEDE the `%%` half; the four sites we found independently** | Re-executed (M7): first-site-only fails at the second site in both diagrams; semicolon-only parses but renders **3 + 4** literal `%%` strings; my candidates render **0**. **Retraction:** my round-1 rule said `;` breaks "inside a *trailing* `%%` comment" — there is no trailing comment; the correct rule is *`%%` is a comment only at line start; mid-line it is text, and message/Note text tolerates no `;`*. My control block (`:891-920`, a line-start `%% … HarnessDescriptor; see …`) still stands and now proves the other half: a line-start comment tolerates even a `;`. |
+| **S1 — record the parse check as a decision + follow-up, NOT a vitest test; home `scripts/`** | **AGREE — there was never a dispute.** | My round 1 NB-3 already said "beside the ledger tooling, not in `src/` and not in `tests/`". Converge on **`scripts/mermaid-parse-check.mjs`** (the directory exists; `puppeteer` resolves from the repo root; UT-161's mermaid grep at `no-retired-surface.test.ts:42-45` walks `src/` only, so `scripts/` is outside it). Their §5.4 script is the body; the only change I would make is a loud skip when no Chrome is present, mirroring the dashboard's own soft dependency. |
+| **S2 — one sentence in ARCH-128 naming the single synchronous writer** | **AGREE** (verified `sqlite-run-store.ts:310-320` through the closing brace: three synchronous `prepare().get/run` calls, zero `await` despite the `async` signature) | Zero code; closes a finding that would otherwise be re-derived. Text adopted verbatim in the edit table. |
+| **W — the seven WON'Ts** (F-4, F-5, F-7, F-8, QD-R2, INV-V27-7 vs ADR-054, `/api/*` auth posture) | **AGREE on all seven** | I add nothing to §9 this round. On QD-R2 specifically: see their expected-disagreement #5 below. |
 
-Four constraints, each verified rather than assumed: **(a)** no warning text may contain the retired
-word — `graph-layout.test.ts:165` asserts no warning matches `/skeleton/i`; **(b)** the four
-`warnings: []` pins on the grandfather cohort (`diagram-contract-grandfather.test.ts:101`, `:156`;
-`dag-warnings-empty.test.ts:37`; `refused-survives-restart.test.ts:4`) are untouched, because those
-runs resolve their own pin (IT-151 rewrites the version row *in place*, the pin stays valid) and the v1
-arm is silent; **(c)** `warnings` is already in `ALLOWED_DAG_KEYS`, so no key-set edit (§3);
-**(d)** the push happens in the `catch` arms, never by inspecting the resulting graph.
-
-**The FALLBACK member reuses an existing noun — concede on the case, integrate on the name.** The
-adversarial file coined `PREDICTED_FROM_FALLBACK_VERSION`; I keep that spelling verbatim (less churn
-in synthesis) and make the *detail* mirror the engine's own record of exactly this situation:
-`RunStatusView.legacySubstitution?: { pinned, resolved }` (`types.ts:347-352`), written durably by
-`_requireLive` when a resume resolves through `release` (`run-manager.ts:903-907`), and already on the
-wire at `/api/runs/:id` because `toPublicRunView` strips only `principal` (`run-view.ts:11-14`,
-`run-store.ts:355`). Two sources means the client needs **one rule**, stated in the contract row so it
-is not chosen wrong: *the DAG `warnings[]` entry is the authority for greying the overlay on this
-read; `legacySubstitution` on the run view is the durable record that an* execution *resumed on a
-substitute.* They do not coincide — the run-view field is set only by resume, so a never-resumed run
-whose pin was purged after it started has the warning and no field.
-
-**Correction to my r1 (concede).** I wrote that the route pushes into "the same `warnings[]` the
-client already renders". The page renders `N warning(s)` as a **count** (`dashboard-page.ts:601-607`);
-no warning text is rendered anywhere today. The adversarial file measured this and I did not. The
-consequence is the one it drew: the rebuilt client (DES-206, `ui/run.js`) owes the legend rendering
-regardless, so no plumbing is added by this delta — but the design row must say the text is rendered,
-or REQ-134's legend row ships as a count again.
-
-**Token form (D-3 — converged on the channel; only spelling is open).** `TOKEN: detail`. The client
-splits on the first `: `, maps the token through the string table, and falls back to raw text for
-the existing prose warnings (`lane 2 is dynamic…`, `agent x unmatched…`, `graph truncated…`,
-`dashboard.ts:393-442`). The spelling is the architect's call; the *constraint* is that the detail
-carries only version strings and a reason enum — never script text — so the IT-092 sentinel (§4)
-guards this channel too.
-
-**O-Δ2 (hold, narrowed).** `{event:'dashboard_api_degraded', route:'dag', runId, reason}` on the two
-`PREDICTED_OVERLAY_UNAVAILABLE` arms — those are faults. **Not** on FALLBACK: it is a state, it is on
-the payload every read, and its durable record is `legacySubstitution` when a resume happens. Flood
-note for self-sustainability: a deregistered workflow's old run polled at 3 s by k viewers logs k
-lines / 3 s until an operator acts — acceptable for a fault that needs an operator; if Gate 7.5 sees
-it drown the journal, a once-per-`(runId, reason)`-per-process `Set` is pre-approved on K-5's pattern.
-
-**F-1's conflict rule — concede the rule, rebut the detector.** *Observed phases win for any lane the
-run entered; the predicted overlay fills gaps only* — that is O-Δ3 / DES-196's ordinal join restated,
-agreed. *"A title conflict at the same lane index emits the warning"* — rejected, because the detector
-has a producer that is not substitution. The runtime appends one `PhaseView` per `phase()` **entry**
-(`run-manager.ts:1075`, `onPhase: (title) => …phases.push({ title, ts })`), while L1 opens one lane
-per `phase` **node** in source order (`skeleton-graph.ts:111-112`). A legal loop-body `phase('step')`
-followed by `phase('after')` gives observed `[step, step, step, after]` against expected
-`[step, after]`: at ordinal 1 both titles are non-null and different, nothing was substituted, and the
-detector greys a correct overlay. When substitution *is* the cause, the FALLBACK entry already fired at
-the resolve site. This is the adversarial lens's own Karpathy tie-break applied to its own proposal:
-the rule stays, the detector is dead machinery. UT-238 gains the row that proves the rule instead
-(§4): observed longer than expected → `lanes` is the observed list, no extra output. (The lane-count
-overflow itself is already witnessed by `layoutGraph`'s `lane N is beyond the predicted layout:
-appended`, `dashboard.ts:434`.)
-
-**O-Δ4 sweep (hold; two additions from this round's reading).** Everything in my r1's three
-partitions stands. Add to partition (b): `tests/fixtures/dashboard-wire.ts:112`'s row label
-`GET /api/runs/:id/dag (open)` and its constant `DAG_PAYLOAD_OPEN` (`:84`) — "(open)" is a stale
-qualifier once the payload is auth-invariant; drop it (one identifier, no allowed-set change). And
-the adversarial appendix's list is a strict subset of mine — REQ-105, ADR-012, ARCH-073, ARCH-075,
-DES-114, 07-review H2, `val-116:1-4` and the `server.ts:508-518` block are still only in my list;
-partition (c) (untouched and green: IT-089, val-110, val-111, `workflow-view.test.ts:119`, val-116's
-404, `dashboard-http.test.ts:140-150` and `:213-217`, README `:312-313`) is the delta's outer wall.
-
-### Agent altitude
-
-**O-Δ5 stands.** The overlay is the only surface where "this agent has not been dispatched yet" is
-distinguishable from "this agent does not exist", and after this delta it is also the surface where
-"the plan shown is not the plan that ran" is distinguishable from either — the FALLBACK entry is the
-agent-altitude honesty clause. Chain-of-thought, token and tool-call inspection are REQ-135/140/141
-and untouched here.
+**Their six expected disagreements about my lens — answered in one line each.**
+1. *"They will prefer option (a), a grep guard."* — I never proposed grep; my round 1 proposed the compiler (the inverse program) and rejected grep for the reasons they give (allowlist on day one at `auth-service.ts:273`; blind to types). Now I concede to (b)'s direction; the discriminator they named ("which mechanism keeps `HTMLElement` out of a server signature") is satisfied by both compiler forms and by neither grep.
+2. *"They will want the mermaid check as a permanent CI test."* — No; round 1 said tooling, not `tests/`. Converged on `scripts/`.
+3. *"They may want the dead body kept as a graceful fallback."* — The opposite: my round 1 named it "a page that impersonates a working dashboard" independently of their "failure mask". The residual is only what replaces it (§Remaining #1), framed by their own true-vs-false test.
+4. *"They may accept the narrowing without recording the REQ-131 reading."* — No: the reading must be written where Gate 7.5 will read it (ARCH-124's row) **and** raised to the owner, because a panel cannot amend an acceptance clause.
+5. *"They will escalate QD-R2."* — I do not. QD-R2 is a coverage-policy question and belongs to the next full round. My NB-1 is not QD-R2: it is a 15-line `node --check` parse guard over the seven `ui/*.js` files no tier parses — the smallest possible step, **held** as an optional DoD line of TASK-A (non-blocking), not as a policy change (§Remaining #3).
+6. *"No disagreement on A4, A5, S2."* — Confirmed by re-execution, not by agreement.
 
 ---
 
-## 2. Replaceability
+## 1. Observability — transparency of internal state
 
-**The delta removes a seam. Both lenses agree it is removed rather than parked; the remaining work is
-to say where the next policy lives and to keep the derivation single.**
+*System altitude. Agent altitude: the one thread — the dashboard is the operator's only console onto agent runs — is why O-1 and O-3 are graded as observability defects and not tidiness.*
 
-### System altitude
+### O-1 — AC-3a: the shell's fallback must be a seam, not a mask (converged; one residual)
 
-**D-1 / D-2 — non-disputes.** My r1 deletes the axis (R-Δ1) and refuses `masked: false` in code for
-the adversarial file's own reason ("a decision nobody can find and everybody can flip"). The one
-sentence I keep asking for goes in ADR-051's amended note, not in code: *a future withholding policy
-would be a principal-aware projection through the auth layer (D1 reopened), never a global
-`dashboard.predictedOverlay` knob* (R-Δ2). The adversarial D-1 pre-argument says the same thing from
-the other side — a principal-aware seam is a different dep with different plumbing — so this is one
-sentence, jointly held.
+Both lenses: the pre-v27 body is a **failure mask** — when `app.js` 404s (ARCH-123's own degrade path), is blocked, or fails to parse, the browser keeps `dashboard-page.ts:92-152` on screen, and 「Running / Registered / Other / System / Models」 over empty containers reads as *a healthy engine with nothing running*. The connection tag cannot correct it because the code that paints the tag is the code that failed to load. Realistic cause, verified in round 1: no tier parses `ui/app.js`, `poll.js`, `home.js`, `workflow.js`, `run.js`, `agent-panel.js` or the classic `theme-init.js` except the real-browser one, which skips without a Chrome (ADR-053).
 
-**R-Δ1 (hold, verified).** Deleting the positional `authEnabled` is type-safe (§0 row 4) and the v23
-one-dispatch rule guarantees exactly one call site (`server.ts:1064-1069`). `authAnnounce` stays:
-`/api/system`'s `auth` key (ARCH-090) is how an operator learns auth is on — that is a different fact
-from "what the DAG discloses" and must not be deleted by sympathy.
+**Final position (two layers, both in ARCH-122):** Layer 1 — contractual now and true of the tree — the shell is `<html data-theme lang>` + `<head>` (charset, viewport, title, the `dashboard.css` link, the classic `theme-init.js`) + `<body>` containing the JSON island `#rwe-init` and the module script; **no CSS**; everything else in `<body>` is legacy markup `app.js:455` discards before first paint — non-contractual, not a test subject, removed by TASK-A. Layer 2 — TASK-A — the body becomes one mount element + the island + the module script.
 
-**R-Δ3 (hold).** `expected: ExpectedGraph | undefined` stays on `deriveLanes` because *derivation can
-fail*, not because a server may withhold it; DES-196's signature sentence (`server.ts:519-520
-populates it only if (!authEnabled)`) is the one that must be rewritten, or the next reader restores
-the auth reading from the type alone. INV-V26-3 / INV-V27-4 (one shape derivation, three consumers)
-is untouched.
+**The residual (held, small):** what the mount element contains. Adversarial: `<main id="app-view"></main>` + `<noscript>`. Mine: `<main><p class="empty">儀表板載入中… / Loading dashboard…</p><noscript>…</noscript></main>`, **no id**. Reasons: (i) apply *their* discriminator (what does the something *say*?) one step further — with an empty mount, a module 404 with JS enabled shows a **blank page** (`<noscript>` is hidden): not a false statement, but not a seam either; the operator cannot tell "loading" from "dead" from "the tunnel served nothing". One `<p>` that stays on screen forever says "the client did not finish booting", which is the truth. (ii) Leave `#app-view` **client-owned**: `app.js:332` creates it and `:403`/`:422` read it back; a shell-emitted `#app-view` is a second emitter of the same anchor — a mirror pair of exactly the class ADR-049 was chosen to shrink — and the class-lock is happier with one emitter. `app.js` needs **zero change** either way (`replaceChildren` removes whatever the shell put there). The bilingual literal is a DES-201-class boundary exception (the shell is server TS and cannot import `lib/strings.js`; the text must exist before any JS runs); language-neutral `…` is the fallback if the panel prefers zero exceptions. Either shape satisfies §8 item 10; the architect picks.
 
-**K-5 — concede measure-before-cache, with two riders.** No memo now; Gate 7.5 records one p95 for
-`GET /api/runs/:id/dag`, auth on, the largest corpus script; the 50 ms threshold and the
-`${name}@${version}` key are fine (a registered version's script is immutable). Rider 1 (bound): on a
-long-lived engine the key space grows with every registration and shrinks only on REQ-026 GC, so the
-*pre-approval* must carry a bound — LRU 64, or evict on catalog GC — otherwise a five-line memo is
-pre-approved as an unbounded map. Rider 2 (instrument): the p95 is a VAL-side wall-clock loop (200
-sequential GETs against the real box), not a product-side timing seam; one number does not buy a
-metrics subsystem, and the journal line in O-Δ2 already covers the failure path.
+**Dropped:** NB-2 (the `theme-init.js` boot watchdog). I said in round 1 I would concede on request; the adversarial lens's Karpathy tie-breaker is that request. The static text is the floor; slow-vs-dead is not worth six lines this round.
 
-### Agent altitude
+### O-2 — DASH-1: the ledger's dashboard is an observability surface; the repair is four sites and seven annotations (converged; wording residual)
 
-**R-Δ4 stands.** Provider, transport and model seams do not move; the overlay is script-derived and
-provider-agnostic. Recorded so the section is honest rather than padded.
+Re-executed (M7) and agreed on every number. The two paste-ready blocks are in the edit table; each parses and renders with 0 `%%` strings. **Content changes vs. form changes, enumerated** so the architect keeps ownership of wording:
+- Form-only (the four `;` sites): `:2539` `;`→`·`; `:2547` `; … ;`→`→ … →` (or `#59;` twice — both verified in round 1); `:3574` `;`→`—`; `:3576` `;`→`·`.
+- Annotations moved to Notes: `%% UPDATE … WHERE claimedBy IS NULL OR claimedBy=name` and `%% wire UNCHANGED` are **verbatim**; `%% ONE query, LEFT JOIN …` and `%% never a 500; a fault …` change only `,`/`;` → `—`; **three are paraphrased** — `%% nothing written` → 「pure checks — nothing written」, `%% BEFORE the read` → 「the audit row is written BEFORE the read」, `%% terminal + snapshot has no usage, ≤25 per call` → 「terminal runs whose snapshot has no usage · ≤25 per call」.
+- One **content** change I added and the architect may drop: the tick line gains `worstOf(perRoute) →` and `unanimous` (tied to A3; the original line, `;`-free, is verified to parse in the semicolon-only variant, so dropping the token is safe).
+- **Zero-meaning-change alternative (one line):** move each of the seven annotations onto its own line as a line-start `%%` comment. Verified by the ledger's own control block (`:891-920`); invisible in the render, present in the source. I lean Notes for the four that carry invariants (never a 500; BEFORE the read; nothing written; wire UNCHANGED) and comments for the three implementation details — but this is the architect's call, and either choice must be re-run through the parse check before DASH-1 is declared closed.
+
+After the edit: `sh .sdlc/trace` regenerates `dashboard.html` (the re-review's §3 renders the generated file), then `node scripts/mermaid-parse-check.mjs` over the five ledger files must print 40 checked / 1 failing (DASH-2, design's) or 0 once design's repair lands.
+
+### O-3 — A3: a tag that says 連線中 while the visible table's route is degraded is a false statement to the operator (conceded; the observability argument is the same as theirs)
+
+The repair is right; the text is wrong. `worstOf` makes the tag honest — that is the whole point of REQ-131's tag — and the observability lens has no better principle to offer than "the console must not lie". The amendment text is theirs (edit table), with two additions: the §8-item-3 fact (the review already chose the second clause) and an explicit owner-ruling line.
+
+### O-4 — AC-2: the guard's visibility
+
+Unchanged from round 1 and agreed by both: the absence of the promised guard is invisible today (`typecheck` says 0 errors; the ADR keeps asserting the guard). Under option (b) the default `tsc --noEmit` **is** the guard — its exit code is the signal in CI and in `deploy/rwe-update.sh:147`.
 
 ---
 
-## 3. Consumability
+## 2. Replaceability — decoupling and pluggability
 
-**Two consumers, one wire shape regardless of auth. Both r1s agree; what this round adds is the exact
-sentence for each contract row and the one client rule for the new warnings.**
+*System altitude. Agent altitude: no change — the LLM backend seam is untouched.*
 
-### System altitude
+### R-1 — AC-2: the server/client compile boundary — final shape (conceded to (b)'s direction, measured)
 
-**C-Δ1 / C-Δ2 (hold, one refinement).** The client never learns whether auth is on (the synthetic
-`{kind:'auth-disabled'}` principal at `server.ts:402` and `:563` is unchanged — F-3 agreed). The
-client detects an inert predicted cell by `agentId === undefined` (`dashboard.ts:330-331`), never by
-the `__skel_` id prefix. Refinement: the engine's own *tests* may key on that prefix (IT-092, IT-168,
-the parity case do, and the open-server case measures 3 of them today) — that is the wire id asserted
-where it is produced, not the client coupling C-Δ2 forbids.
+**The property** (both lenses): the server tree is a complete program without the client tree and without DOM. **The mechanism** (converged): two `tsc` programs — root = server (`lib:["ES2022"]`, no `allowJs`, `include:["src","vitest.config.ts"]`; M4b shows `vitest.config.ts` can stay), tests = `tsconfig.tests.json` (`extends` root; DOM + `DOM.Iterable` + `allowJs`; `include:["src","tests","vitest.config.ts"]`); `typecheck` and `build` both run `tsc --noEmit && tsc --noEmit -p tsconfig.tests.json`.
 
-**C-Δ3 — the contract rows, final wording.** `GET /api/runs/:id/dag` (`:3630`): *gains `lanes` (the
-observed phases extended by every unreached expected lane — regardless of auth, Round v27b) and
-`current`; `warnings[]` may carry `PREDICTED_OVERLAY_UNAVAILABLE: <reason>` (lanes observed-only) or
-`PREDICTED_FROM_FALLBACK_VERSION: pinned=… resolved=…` (overlay derived from a substitute version — the
-client greys it); the DAG warning is the authority for this read, `legacySubstitution` on the run view
-is the execution record.* `describe` (`:3632`): *`phases[].agents?` — the predicted lane membership,
-served to every caller regardless of auth; absent only when the engine could not derive the predicted
-layout for this version.* README §Dashboard JSON REST API gains the describe row **without** the
-masking sentence TASK-202's `dod:` (`03-tasks.md:1704`) currently asks for.
+**Why (b) over my inverse program, stated as engineering not deference:** identical guard (M6 ≡ M2); identical file count (one new file + script lines); (b) makes the strict program the default and the widening the named exception, so drift removes the *weaker* control first. The one thing my shape had that (b) does not — an unchanged root, so every file keeps today's single editor project — is an editor concern, addressed below.
 
-**D-4 — concede the budget rule; two measured notes and one hold.** *A key-set test is owed by the
-endpoint whose key set this delta changes* — agreed. Note 1: IT-165 (`dashboard-disclosure.test.ts:
-35-44`) asserts `keys ⊆ ALLOWED` and `REQUIRED ⊆ keys` **against the fixture table itself**,
-top-level only; `warnings` is already allowed (`dashboard-wire.ts:88`), so O-Δ1 costs nothing there.
-Note 2: there is **no describe row** in `DISCLOSURE_TABLE` at all (`:108-113`), so "extend the key-set
-test to `describe.phases[]`" is a *new nested row*, not an extension. Hold (defer, low stakes): the
-nested `phases[]` shape is pinned positively by IT-168's labels and by val-111; a nested key-set is a
-fixture-shape change outside this delta's impactIds and belongs to the Sprint A closure's own Gate 6.
+**Editor behaviour — stated as UNMEASURED (no IDE here).** IDEs resolve the nearest `tsconfig.json` by name. Under (b), `src/**` files get the strict program (an improvement over today: `document` stops autocompleting in server files); `tests/**` files fall outside any file named `tsconfig.json` and are typed by the editor's inferred project, which may differ from CI (strictness, resolution). If that proves noisy in practice, the tests program can live at **`tests/tsconfig.json`** (`extends:"../tsconfig.json"`, `include:["../src",".","../vitest.config.ts"]`) with **no change to CI semantics** — record it as the fallback placement, not as a third option for the synthesizer to adjudicate. No tooling in the repo pins a tsconfig path (checked: no eslint/biome/jsconfig config; `vitest.config.ts` does not reference one; `deploy/*.sh` only calls `npm run build`).
 
-**C-Δ4 / C-Δ5 (hold).** `phases[].agents` is additive for every MCP caller — one release-note line;
-README `:325-330`'s stale D-BIND sentence is seen and out of closure.
+**Compile-time facts the amendment may cite (all measured under `-p`):** narrowed root 76 files / 0 errors / 3.7 s; tests program 510 files (20 client `.js`, 413 tests) / 0 errors / 8.8 s; planted `document`/`window`/`HTMLElement` → TS2584 + 2×TS2304; no `src/**/*.ts` uses a DOM global today (adversarial §5.3 grep; the only hit is an HTML string at `auth-service.ts:273`, which the compiler does not see as an identifier — the reason a grep guard would need an allowlist on day one and the compiler does not).
 
-### Agent altitude
+### R-2 — AC-3a: the shell owns only what the client cannot produce (converged)
 
-A cold model calling `workflow_describe` gets one shape on every deployment and can draw the
-predicted layout from `phases[].agents` without parsing `mermaid`; that is the reuse REQ-133's data
-buys beyond the page.
+Pin rule for ARCH-122's `note:` (replaces 「still assertable here」, both lenses): `DASHBOARD_HTML` is a valid test subject only for the shell's own facts — root attributes, the three asset references, exactly one inline `<script>` (the island), `<` escaped in the island, and after TASK-A the mount element. Every component-markup or CSS assertion takes `clientFile(...)`. **A component pin whose subject is `DASHBOARD_HTML` is dead by construction.** Blast radius (round 1, verified at HEAD): five dead pins with DES-208 dispositions (table carried in the edit section); class-lock safe; DES-200 and TASK-205 carry the same stale `draggable` clause and are owed to design/tasks.
+
+### R-3 — A4: the `cache` literal (conceded)
+
+The value *is* the header; the type says so; the row must too. One line.
 
 ---
 
-## 4. Self-sustainability
+## 3. Consumability — interface friendliness and integration cost
 
-**Will the ruling still be in force three iterations from now, with nobody watching — and will the
-tests that guard it be able to fail?**
+*System altitude. Agent altitude: no change — the MCP tool surface and `run_agent_log`'s shape are not in scope (QD-C2/C3 remain §9 debt).*
 
-### System altitude
+### C-1 — the shell's contract is four lines an integrator can read (converged)
 
-**S-Δ1 + K-3 — integrate: parity is the invariance guard, and it needs a positive anchor.** The
-parity test (structural fields equal across the two servers the harness already boots,
-`dag-masking-auth.test.ts:46-64`) is strictly stronger than the mask assertion it replaces, and I
-accept `cells[].id` rather than `.label` (the trigger label follows `startedByType`, `server.ts:544`).
-But parity is **vacuous when both servers degrade identically**: both `derivation-failed` → both
-`['__trigger__']`, both lanes observed-only, both `warnings` equal → green, and the ruling is unproven.
-So: parity over `{ set(cells[].id), edges, lanes, current, warnings, describe.phases[].agents }` —
-**add `warnings` to the set**, a divergent degradation is exactly what parity should catch — *plus*
-one positive anchor on the **auth** server, asserting the labels.
+(1) root attributes stamped before paint by `theme-init.js`; (2) three same-origin asset references under `/static/dashboard/*`; (3) one JSON island `#rwe-init` `{version, lastUpdate?, interruptedRuns?}` — the only server→client data path at load; (4) one module entry. The pre-v27 body adds nothing and misleads anyone reading the served source. `DASHBOARD_HTML` stays exported.
 
-**The anchor needs a second fixture (new, verified).** `registerPublishedVia` wraps every script in
-`synthesizePhase` (`workflow-fixtures.ts:302`), which prepends `phase('main')` to a phase-less
-script and leaves a phased one unchanged (`:139-143`). IT-092's `SCRIPT` therefore registers as **one
-lane** `main` with three slots: fine for `phases[].agents` (`[{title:'main', agents:[do-skel-1..3]}]`)
-and for the `__skel_*` count, but no lane is ever *unreached* on it, so the DES-196 join — the clause
-REQ-134's dashed edges to unreached nodes actually depends on — cannot be anchored there. Add one
-constant: `SCRIPT_PHASED` = `phase('one'); await agent('p-1',{}); phase('two'); await agent('p-2',{});
-phase('three'); await agent('p-3',{});`. Under the never-resolving gateway the run sits in `one`, so
-on the auth server: `lanes.map(l => l.title)` deep-equals `['one','two','three']` and
-`describe.phases[].agents` is `[['p-1'],['p-2'],['p-3']]` — these two are timing-independent (every
-lane is an expected lane whether entered or not, and `describe` involves no run). **`current` is
-not:** the harness reads the DAG immediately after `run_start` (the open case measures 3 `__skel_*`
-+ trigger, i.e. no live record yet), and whether `phase('one')` has fired `onPhase` at that instant
-is unverified — observed `[]` gives `current: null`, observed `[one]` gives `0`. Assert
-`current ∈ {null, 0}`, or poll `/api/runs/:id` until `phases.length ≥ 1` before asserting `0`; the
-full `current` table is UT-238's job, not this anchor's. Registration is safe: `synthesizeMermaid`
-tries `synthesizeLrSwimlane(script)` first (the per-phase form the v2 checker wants); if the verifier
-finds it refused, pass `opts.mermaid` explicitly the way IT-151 does
-(`diagram-contract-grandfather.test.ts:66`). The harness registers per case by name — cost is one
-constant.
+### C-2 — `npm run typecheck` gains a sentence of meaning; where a contributor learns the limit (converged)
 
-**Red versus guard — label them, or Gate 5 records a false red.** The **red** tests of this delta are
-IT-168's flipped cases and the parity case: red today because `deriveLanes` is not exported,
-`phases[].agents` is not projected, and — on `cells` alone — the auth server answers 1 id where the
-open server answers 4 (the branch at `:520`). The IT-092 **sentinel** is green before and after: it is
-a REQ-100 *guard* riding along, not the delta's red test, and its row must say so. House precedent for
-the technique: `dashboard-disclosure.test.ts:50`'s `MARKER = 'RWE-V27-SYSTEMPROMPT-MARKER-DO-NOT-LEAK'`.
+"The server alone without DOM, then the whole tree with it." The amended ADR-049 is where a contributor learns why `document` is refused in `src/` and accepted in `tests/`, and that `checkJs` is off (the client is readable to `tsc`, not checked by it). Under (b) the sentence is shorter than under my shape: the default `tsc` is the strict one.
 
-**K-4 — concede the sentinel, with the precision that makes it not a false pass.** IT-092 traces to
-REQ-100 (script text); rewriting it to assert *no script bytes on the DAG payload* keeps that trace
-honest, whereas my r1's flip-to-positive would have made it a duplicate of IT-168 with a mixed trace.
-What the derivation can surface, verified at `workflow-meta.ts:420-560`: `scanAgentCalls` yields
-literal labels matching `/^[A-Za-z_][\w-]*$/` and `allowedTools` arrays; `parseWorkflowSkeleton`
-yields `phase()` titles and `workflow()` names when the whole first argument is a string literal.
-A line `const IT092_SENTINEL = 'never-leaves-the-engine';` matches neither `CALL_RE` nor
-`AGENT_CALL_RE`, and the payload's other string carriers — `cells[].label`, `lanes[].title`,
-`warnings[]` (an enum plus version strings) — cannot carry it either. Assert on `await res.text()`,
-not on parsed fields, so a future field cannot smuggle it past a key-set.
+### C-3 — the ledger is consumed by people through `dashboard.html`; "renders" ≠ "reads correctly" (conceded)
 
-**S-Δ2 (hold; F-5 agrees).** One Chromium case under VAL-199 with `auth.enabled:true` (the never-run
-predicted layout — no gateway needed) and the wire half under VAL-204; the `mintBearer` trap
-(`dag-masking-auth.test.ts:76-84`: registration and `run_start` need the bearer, the page and `/api/*`
-GETs need none) named in the VAL row so the case cannot pass vacuously on 「找不到」.
+The adversarial lens's fidelity point is the consumability point: a diagram that parses but shows `%% never a 500 · …` inside a message label is a documentation defect at the point of consumption, one grade less bad than 「圖渲染失敗」. The Note form makes the invariants visible to the reviewer deciding whether the architecture matches the tree; the comment form keeps them for the agent reading the markdown. Both are verified; §Remaining #2.
 
-**S-Δ3 / S-Δ4 (hold).** No new config key, so nothing for the twice-bitten `composeConfig` class to
-bite — worth one positive sentence in ADR-051. Self-healing on derivation failure is unchanged
-(never a 500) and now has a three-member witness on the payload and a journal line on the two fault
-arms.
+### C-4 — A3's REQ-131 reading must be written where the validator reads (converged; owner-facing)
 
-**UT-238 after this round: 7 × 2 plus four join rows.** (i) unreached expected lanes extend the
-observed list (index 2 `three`); (ii) `expected: undefined` → observed-only, never throws — the
-derivation-failure arm; (iii) **new** — observed longer than expected (the loop-body case) → `lanes`
-is the observed list, length = observed length, no conflict output — the row that pins the rule and
-retires the detector; (iv) `status` over all seven members, unchanged.
-
-### Agent altitude
-
-**S-Δ5 stands.** No memory to metabolize (the overlay is derived from stored script text on every
-read — until and unless K-5's bounded memo is triggered by a number), no tool probed, no prompt
-calibrated.
+Gate 7.5 validates REQ-131 against the requirement's own text. The narrowing — 「任一 `/api/*` 取得成功 → Live」 becomes 「visible-view routes ALL `ok` → Live; a mix → degraded; ≥2 unanimous-fail ticks → offline」 — goes into ARCH-124's row as an explicit, overturnable sentence **and** to the owner as a one-line ruling; a panel cannot amend an acceptance clause, and two panels agreeing is not a ruling.
 
 ---
 
-## Final position (key_points)
+## 4. Self-sustainability — closed-loop autonomy and lifecycle
 
-1. **Orchestrator, first (hold — nobody else has named it):** REQ-105's acceptance
-   (`01-requirements.md:1070`, "stays behind the auth gate … v23 must not re-open it") needs
-   `[PARTIALLY SUPERSEDED v27, Round v27b]` on that clause, REQ-100's house style (`:976-993`). Gate 8
-   verifies REQs against code; this is the one contradiction the delta cannot fix inside its gates.
-2. **Four deletions, converged (§0):** branch, dep, `masked`, `authEnabled` parameter + `!!authCfg`
-   argument + the `:331-334`/`:350`/`:1064` comments; inner `try/catch` kept; `status` kept.
-3. **One warning vocabulary, three members, pushed at the site:** `PREDICTED_FROM_FALLBACK_VERSION:
-   pinned=… resolved=…` (`:502-503`), `PREDICTED_OVERLAY_UNAVAILABLE: catalog-resolve-failed` (`:505`),
-   `PREDICTED_OVERLAY_UNAVAILABLE: derivation-failed` (`:540`); the v1 re-derive and the inline-script
-   path stay silent; no "skeleton" in any text; the grandfather `warnings: []` pins untouched.
-4. **One client rule:** the DAG warning is the authority for greying this read's overlay;
-   `legacySubstitution` on the run view is the execution record. Token → string table; unknown token →
-   raw text. The rebuilt client renders the text (today: a count).
-5. **Journal line** `dashboard_api_degraded {route:'dag', runId, reason}` on the two UNAVAILABLE arms
-   only; once-per-`(runId, reason)` dedupe pre-approved if Gate 7.5 sees a flood.
-6. **Conflict rule yes, detector no** (loop-body `phase()` is a non-substitution producer); UT-238
-   gains the row that pins the rule.
-7. **Tests:** parity over `{cells[].id set, edges, lanes, current, warnings, phases[].agents}` +
-   one positive anchor on the auth server; `SCRIPT_PHASED` as the second fixture; IT-168 + parity
-   labelled red, the IT-092 sentinel labelled guard under REQ-100 and asserted on `res.text()`.
-8. **Key-set budget:** only what this delta widens; `warnings` is already allowed; a nested describe
-   row is deferred to the Sprint A closure.
-9. **K-5:** measure at Gate 7.5 (VAL-side wall clock); the pre-approved memo carries a bound.
-10. **Sweep:** my r1's three partitions + `dashboard-wire.ts:84/:112`'s "(open)"; partition (c) is
-    the wall against creep into REQ-100.
-11. **Gate 7.5:** one Chromium auth-ON case + the `mintBearer` trap named; ADR-051's instruction
-    flips from "record what degrades" to "prove it is visible" (F-5).
+*System altitude. Agent altitude: no change — memory metabolism, tool-liveness probes and prompt calibration are not touched by document repairs.*
 
-## Remaining disagreements (all low; none needs a third round)
+### S-1 — the guard lives where the system rebuilds itself, and the default program is the guard (converged; this is why I conceded R-1)
 
-| # | With | Mine | Theirs | Tie-break I propose |
+`deploy/rwe-update.sh:132-147`: `npm ci` → `npm run build` → revert on failure. Both programs in `build` means every self-update re-proves the boundary with no human in the loop, at +3.7 s. Under (b), even a `build` script "simplified" back to bare `tsc --noEmit` keeps the server guard; what such a simplification would lose is the tests program — and that is not free: vitest exercises runtime, not the `satisfies` wire-shape lock in `tests/fixtures/dashboard-wire.ts`, so **both programs are load-bearing** and TASK-B pins both script strings with one UT (round-1 QD-G8-R6). The asymmetry is only about *which* control the default keeps, and the server boundary is the one with no runtime backstop — that, not "tests are less important", is the reason to prefer (b). Corollary the amendment must carry: every ledger sentence that says bare `tsc --noEmit` catches a *tests-tree* drift becomes false under (b) — found by `grep -n 'tsc --noEmit'` over 02/03/04: ARCH-124's note (two clauses — 「`npm run build` is `tsc --noEmit`」 and 「so `tsc --noEmit` fails when a wire shape drifts」), the v27 deployment-view label at `02-architecture.md:3589`, DES-192's `tests:` (`04-design.md:6729`), TASK-197's `dod:` (`03-tasks.md:1680`); ARCH-130's `:3414` claim is server-subject and stays true. The Gate-2 rows are in the edit table; the others are routed.
+
+### S-2 — the honest floor for the shell is zero mechanism (converged; NB-2 dropped)
+
+Static pre-boot text needs no timer, listener or state; the browser shows it until the module removes it, and if the module never runs the truth stays on screen. NB-1 (the `node --check` guard) is the only extra I still carry, as an optional DoD line (§Remaining #3).
+
+### S-3 — a render oracle closes the loop the lexical checker cannot (converged: tooling, `scripts/`)
+
+Three bites (v26 mis-recorded `:2531` as a false positive; v27 shipped `:3561` broken; the repair instruction was half-right) justify a standing check — but as *ledger tooling*, not a product test: `scripts/mermaid-parse-check.mjs` (adversarial §5.4 body; loud skip when no Chrome), run after any ledger diagram edit and before Gate 8's §3, and optionally invoked by `sh .sdlc/trace` when a browser is present. Recorded as a decision with a follow-up beside TOOL-FORK in §9. Not in the vitest denominator — both lenses agree the discriminator is the subject (a `.md` file is not the product).
+
+### S-4 — ARCH-128's single-writer assumption (agree; verified)
+
+`backfillUsage` (`sqlite-run-store.ts:310-320`) is an untransacted read-modify-write that is safe only because better-sqlite3 is synchronous and the body has no `await`; two engine processes on one database file would break 「in either order the row ends identical」. One sentence in the note; zero code.
+
+### S-5 — follow-ups and the trace baseline (converged; naming routed)
+
+Both lenses name follow-up impl items; the ledger's trace chain needs a **TASK row** for an IMPL to close against (TASK-018/153 precedent) — route the id assignment to the orchestrator so neither "TASK-A/TASK-B" nor "IMPL-nnn" is copied as-is. Recommendation unchanged: a **v27h micro dispatch before the re-review** scoped to TASK-A (shell body + five pins) and TASK-B (`tsconfig.json` narrowed + `tsconfig.tests.json` + two script lines; both programs pre-verified at 0 errors). If declined, the cost is **+2 LOW** (`未實作`) and both rows carry the "unguarded until it lands" sentence so no assertion contradicts the tree.
+
+---
+
+## Merged ledger edits — one list for the synthesizer (verbatim-ready)
+
+| Row | Edit |
+|---|---|
+| **ADR-049 title** | Append `— [amended v27 Gate 8 send-back AC-2: the root tsconfig DID change at ddc4409 (IMPL-229); see Consequences]`. The title's 「no tsconfig change」 is a clause the tree contradicts; by the mechanical routing rule it needs the marker, not only the Consequences. |
+| **ADR-049 Consequences** | Replace 「`allowJs`/`checkJs` and a `DOM` lib are deliberately NOT added to the root tsconfig, because that would make `document` a known global in server code」 with: 「**amended (v27 Gate 8 send-back — AC-2):** IMPL-229 (`ddc4409`) added `"DOM","DOM.Iterable"` and `"allowJs": true` to the single root `tsconfig.json`, repo-wide, to resolve 36 pre-existing `tsc` errors that all originate in the TEST tree (four acceptance files' `page.evaluate` callbacks; `.ts` tests importing client `.js`). Decision: the DOM lib and `allowJs` are **scoped to the tests program, not kept repo-wide** — root `tsconfig.json` returns to `"lib":["ES2022"]`, no `allowJs`, `include:["src","vitest.config.ts"]`; `tsconfig.tests.json` (`extends: "./tsconfig.json"`, `"lib":["ES2022","DOM","DOM.Iterable"]`, `"allowJs": true`, `include:["src","tests","vitest.config.ts"]`) types the tests; `npm run typecheck` and `npm run build` run BOTH (`tsc --noEmit && tsc --noEmit -p tsconfig.tests.json`), so every self-update (`deploy/rwe-update.sh:147`) re-proves the boundary at +3.7 s. Measured at eb387a1 under real `-p` runs: narrowed root 76 server files / 0 errors / 3.7 s; tests program 510 files / 0 errors / 8.8 s; a planted `document`/`window`/`HTMLElement` in the root program fails TS2584/TS2304 — that is the falsification. Editor: `src/` files get the strict program by the nearest-`tsconfig.json` rule; `tests/**` files fall to the editor's inferred project (unmeasured; if noisy, place the tests program at `tests/tsconfig.json` with `include:["../src",".","../vitest.config.ts"]` — CI semantics unchanged). `checkJs` stays off: the client tree is readable to `tsc`, not checked by it (opt-in `// @ts-check` per file in `lib/` is the non-blocking path). The `satisfies` wire-shape lock in `tests/fixtures/dashboard-wire.ts` is enforced by the TESTS program — `npm run typecheck` / `npm run build` — not by a bare `tsc --noEmit`, which no longer sees `tests/`; both programs are load-bearing, and TASK-B pins both script strings with one UT so neither drops out silently. Lineage: this is the second-tsconfig idea the v27 synthesis refused as ceremony (D-ADV-5, `:3666`); the refusal assumed keeping `lib:["ES2022"]` was free, and IMPL-229 proved it cost 36 errors. **State of the tree when this amendment is written: the split has NOT landed — `tsconfig.json` still carries `DOM`/`allowJs`; TASK-B (Gate 6) lands it, and until then this ADR describes a decision, not the tree.**」 |
+| **ARCH-124 note (three tsconfig clauses)** | (i) Replace 「which buys what `allowJs`/`checkJs` would buy without adding `DOM` to a root `tsconfig.json` whose `"lib":["ES2022"]` is what stops server code from thinking `document` exists」 with 「which buys what `checkJs` would buy; the compile-time server/client boundary itself is the root `tsconfig.json` (server tree, `lib:["ES2022"]`, no `allowJs`) run beside `tsconfig.tests.json` (DOM + `allowJs`, the tests program) — ADR-049 as amended at the v27 Gate 8 send-back; **unguarded until TASK-B lands**」. (ii) In the same note, 「(so `tsc --noEmit` fails when a wire shape drifts)」 → 「(so the tests program — `npm run typecheck` / `build`, `tsconfig.tests.json` — fails when a wire shape drifts)」. (iii) 「`npm run build` is `tsc --noEmit`」 → 「`npm run build` is two `tsc --noEmit` programs (server, then tests)」. |
+| **v27 deployment view `02-architecture.md:3589`** | Label `UPD --> T["npm ci · tsc --noEmit · vitest run"]` → `UPD --> T["npm ci · npm run build (tsc ×2: server, tests) · vitest run"]`; re-run `scripts/mermaid-parse-check.mjs` afterwards (a flowchart label edit; not pre-verified here). |
+| **ARCH-124 api (connection clause)** | 「**amended (v27 Gate 8 send-back — AC-4's repair):** the `connection.js` clause is superseded in part. Strike 「any `ok` → `live` immediately」. The tag is **`worstOf(perRoute)`** over the routes the VISIBLE view depends on: `live` only when every one of them is `ok` (recovery is never debounced — one all-`ok` tick restores `live` from any state); any mix containing a `degraded` or a `fail` beside a better sibling reports `degraded` and resets the failure counter; `offline` only after ≥ 2 consecutive **unanimous**-`fail` ticks (REQ-131's 連續失敗; one transient miss during a self-update restart must not paint the team's tabs red). Exports: `worstOf(perRoute) → status`, `nextConnection(prev, tick) → State`, `classifyResponse(status, body) → status` — all pure and total. Verified by `tests/unit/dashboard-lib-connection.test.js:30-40`. **Reading of REQ-131 recorded explicitly:** REQ-131's 「任一 `/api/*` 取得成功 → Live」 is narrowed to 「visible-view routes ALL `ok` → Live」, because the requirement enumerates only Live/Offline while this architecture introduces `degraded`, and a tag that says 連線中 while the table's own route is degraded misinforms the operator the tag exists to inform. §8 item 3 of the v27 Gate 8 review instructed the AC-4 repair to wire `worstOf` "per ARCH-124's `api:`" — i.e. per this clause's second half; this amendment strikes the first half that instruction left standing. **Owner ruling requested:** if the literal reading is preferred, the correct outcome is to revert the `live` half of the AC-4 repair and this sentence — recorded here so that overturning it is a one-line decision.」 |
+| **ARCH-123 api (`cache` literal)** | `STATIC_ASSETS: ReadonlyMap<string, { file: string; type: string; cache: 'public, max-age=31536000, immutable' \| 'no-store' }>` — 「the `cache` value **is** the `Cache-Control` header written verbatim by the route (v27 Gate 8 AC-8 repair; a bare `immutable` is a modifier with nothing to modify, RFC 8246). Policy unchanged: woff2 → one year immutable, JS/CSS → `no-store`.」 |
+| **ARCH-122 title + api (Layer 1)** | Title: drop 「markup + tokens CSS」 → 「the served page becomes a shell: a `<head>` with two asset references, a JSON data island and one module script; no inline executable JS, and ARCH-040's update panel survives the rebuild」. `api:` — `buildDashboardHtml(init?) → string` keeps its signature and one caller (`server.ts:1334` at eb387a1). It emits `<html data-theme="dark" lang="zh-Hant">` + `<head>` (charset, viewport, title, `<link rel="stylesheet" href="/static/dashboard/dashboard.css">`, `<script src="/static/dashboard/ui/theme-init.js">` classic/blocking — stamps `data-theme` / `lang` / `--rwe-hue` before first paint) + `<body>` containing `<script type="application/json" id="rwe-init">{version, lastUpdate?, interruptedRuns?}</script>` and `<script type="module" src="/static/dashboard/ui/app.js">`. **No CSS in the shell** (v27c, DES-200: one delivery path, `dashboard.css` via ARCH-123). **The page's entire body is client-built:** `app.js:455` runs `document.body.replaceChildren(nav, routeMount, buildFooter())` on mount, so the nav and its source tag, the four tab shells, the route container `#app-view` (`app.js:332`), the `#dag-zoom`/`#dag-graph`/`#dag-fit`/`#run-usage`/`#diagram-*` anchors, the component classes and the slide-in panel container are **ARCH-125's**. Legacy pre-v27 markup between `<body>` and the island (`dashboard-page.ts:92-152` at eb387a1) is discarded before first paint: non-contractual, not a test subject, **removed by TASK-A**. `DASHBOARD_HTML` stays exported (the page-source tests' subject). |
+| **ARCH-122 note** | Strike 「C1's three literal page-source pins keep their meaning … (still assertable here)」 and the CSS-in-this-file clause. Insert: 「**Pin rule:** `DASHBOARD_HTML` is a valid test subject only for the shell's own facts (root attributes, the three asset references, exactly one inline `<script>` — the island —, `<` escaped in the island, and after TASK-A the mount element); every component-markup or CSS assertion takes `clientFile(...)` — a component pin whose subject is `DASHBOARD_HTML` proves a string the browser discards. C1 is satisfied where the bytes live: `clientFile('dashboard.css')` for the two CSS rules, `clientFile('ui/workflow.js')` for `img.draggable = false`. **Boot-failure honesty (TASK-A):** the dead body is a failure mask — on a module 404/parse failure it paints a retired dashboard that reads as a healthy, idle engine; the body becomes one mount element (static pre-boot text 「儀表板載入中… / Loading dashboard…」 in the existing `empty` hook + `<noscript>`; no id — `#app-view` stays client-owned) + island + module script; `app.js` unchanged. The pre-boot literal is a boundary exception of DES-201's class (server TS cannot import `lib/strings.js`; the text must exist before any JS runs). The two guards unchanged and still correct: the island is data, not script (no nonce; ARCH-040/INV-V27-5 survive a rebuild) and zero inline executable JS (ARCH-130's CSP).」 |
+| **ARCH-128 note** | Append: 「Convergence rests on a single synchronous writer: `backfillUsage` (`sqlite-run-store.ts:310-320`) is an untransacted read-modify-write, safe because better-sqlite3 is synchronous and the body has no `await`. Two engine processes against one database file would violate it; the engine is single-process by deployment (D9), and this is the assumption to revisit if that ever stops being true.」 |
+| **02-architecture.md `:2530-2568` (v24 process view)** | Replace the block with the verified CANDIDATE below (or the comment-form alternative — see §1 O-2). |
+| **02-architecture.md `:3560-3582` (v27 process view)** | Replace with the verified CANDIDATE below (same choice). Then `sh .sdlc/trace`; then `node scripts/mermaid-parse-check.mjs` over the five ledger files. |
+| **Diagram authoring rule (file conventions)** | 「In a `sequenceDiagram`, `;` is a statement terminator inside message text and `Note` text; `%%` opens a comment **only at the start of a line** — mid-line it is message text and renders. Use `·` / `—` / `→` / `#59;` for a literal, and put annotations on their own line (`%%` comment) or in a `Note`. Falsifier: `scripts/mermaid-parse-check.mjs`.」 |
+| **TASK-A (id from the orchestrator; Gate 6)** — the shell body becomes a mount point | files: `src/dashboard-page.ts`; `tests/unit/dashboard-page-source.test.ts` (`:95` RETIRE — UT-224's re-pointed case at `:42-43` guards it; add one positive: `<body>` contains the mount element, the island and the module script and **no `<section`/`<header`**); `tests/unit/dashboard-zoom-source.test.ts:19,23` (MOVE → `clientFile('ui/run.js')`); `tests/unit/workflow-page-harness-table.test.ts:15` (RETIRE with reason — REQ-135's panel, real-tier val-201 — or MOVE → `clientFile('ui/agent-panel.js')`); `tests/unit/dashboard-diagram-render.test.ts:60-62` (positive → `clientFile('ui/workflow.js')`; the two negatives over `clientCorpus()`); `tests/unit/dashboard-no-design-values.test.ts:44,50` no change (measured: 0/104 hooks, 0/23 anchors shell-only). dod: full unit suite green; class-lock unchanged; **in the same commit, strike ARCH-122's tree-state sentences** (the 「Legacy pre-v27 markup … removed by TASK-A」 clause in `api:` and the 「(TASK-A)」 marker in `note:`) so the row describes the tree after the change, not before it; optional third line — NB-1: one test spawning `node --check` over `src/dashboard/**/*.js` (falsified by a planted stray brace). |
+| **TASK-B (id from the orchestrator; Gate 6)** — the two-program tsconfig | files: `tsconfig.json` (narrow), `tsconfig.tests.json` (new), `package.json` (`typecheck`, `build`). dod: both programs exit 0 on the tree (paste both exit codes); a planted `document.title` in any `src/*.ts` fails TS2584 (falsified, then reverted); one UT pins that `package.json`'s `typecheck` and `build` strings both contain `tsconfig.tests.json` (neither program may drop out silently — both are load-bearing); `deploy/rwe-update.sh` unchanged; `npm test` unchanged; **in the same commit, strike the tree-state sentences** — ADR-049's 「the split has NOT landed …」 and ARCH-124's 「unguarded until TASK-B lands」 — or the re-review finds the mirror-image contradiction. Fallback if the narrowed root fails under some path M4 did not exercise: my round-1 inverse program (`tsconfig.server.json` beside an unchanged root) — same guard, measured (M1/M2), recorded as such rather than silently. |
+| **S1 decision + follow-up** | 「Ledger diagrams are verified by rendering, not linting: `scripts/mermaid-parse-check.mjs` (mermaid 11.17.2 from `node_modules`, the repo's cached Chrome, loud skip without one) runs after any ```mermaid edit and before Gate 8 §3. Not a vitest test — its subject is a `.md` file, not the product.」 Follow-up beside TOOL-FORK in §9. |
+| **Owed, routed (not Gate 2's rows)** | DES-200's boundary sentence and signature line; TASK-205's `dod:`; the `:95` dead pin (TASK-A or AC-3b's impl owner) — all carry the v27g/AC-3a re-point (`clientFile('ui/workflow.js')`). Induced by AC-2's option (b): DES-192 `tests:` (`04-design.md:6729`) 「`tsc --noEmit` IS the first test (the `satisfies` lock)」 → 「`npm run typecheck` (the tests program) IS the first test」; TASK-197 `dod:` (`03-tasks.md:1680`) `npx tsc --noEmit && …` → `npx tsc --noEmit -p tsconfig.tests.json && …`; the v26 real-tier note at `04-design.md:6594` (「`tsc --noEmit` is `build`」) stays true as written (`build` still begins with it) — informational only. **REQ-131 acceptance reading → owner.** TASK ids for the two follow-ups → orchestrator. |
+
+### DASH-1 CANDIDATE — v24 process view (`02-architecture.md:2530-2568`), parse OK, 0 `%%` in the SVG
+
+```mermaid
+sequenceDiagram
+  participant A as author (MCP client)
+  participant S as server
+  participant Z as authorize
+  participant C as Catalog
+  participant T as Scheduler/Webhooks
+  A->>S: workflow_register({name, script, mermaid, triggers:[t1]})
+  S->>Z: authorize(spec, principal{author}, args)
+  Z-->>S: ok (minRole author · ownership workflow → owner or new)
+  S->>C: register(...)
+  C->>C: scanAgentCalls → parseParamContract → checkMermaid
+  Note right of C: pure checks — nothing written
+  alt any pure check fails
+    C-->>A: {code, line?, onlyInScript?, onlyInDiagram?, valueMismatch?, see:'workflow_authoring_guide'}
+  else
+    C->>T: claim(t1, name)
+    Note right of T: UPDATE … WHERE claimedBy IS NULL OR claimedBy=name
+    T-->>C: claimed | ALREADY_CLAIMED
+    C->>C: BEGIN IMMEDIATE → INSERT workflow_versions(mermaid, triggers, params) → COMMIT
+    Note over C,T: on INSERT failure → release(t1, name) (idempotent compensation)
+    C-->>A: {version}
+  end
+  participant U as user
+  U->>S: run_start({name, overrides:{agents:{review:{effort:'low'}}}})
+  S->>Z: authorize → ok (release must resolve, else CHANNEL_UNPUBLISHED with the fix in the error)
+  S->>C: resolve(release) → version row (params.agents)
+  S->>S: validateOverrides → PARAM_OUT_OF_RANGE | PARAM_LOCKED | UNKNOWN_AGENT_LABEL refuse, never clamp
+  loop each agent() dispatch
+    S->>S: resolveAgentParams(label) → effective + provenance
+    S->>S: materializeAssets(declared.skills/mcp) → materialized
+    S->>S: harness event {label, provenance, materialized}
+  end
+  participant M as admin
+  M->>S: workspace_pull({runId of U's run, path})
+  S->>Z: authorize → ok + crossPrincipalRead{owner:U}
+  S->>S: appendAudit({actor:M, action:'workspace_pull', runId, owner:U, path})
+  Note right of S: the audit row is written BEFORE the read
+  S-->>M: bytes
+  U->>S: run_status({runId})
+  S-->>U: {..., adminReads:[{actor:M, action, ts, path}]}
+```
+
+### DASH-1 CANDIDATE — v27 process view (`02-architecture.md:3560-3582`), parse OK, 0 `%%` in the SVG
+
+```mermaid
+sequenceDiagram
+  participant B as browser (ui/poll.js)
+  participant S as server.ts
+  participant RM as RunManager
+  participant ST as SqliteRunStore
+  participant EX as agent-executor
+  B->>S: GET /api/runs  (only the endpoints of the visible view)
+  S->>RM: listSummaries()
+  RM->>ST: listRuns()
+  Note right of ST: ONE query — LEFT JOIN run_snapshots, json_extract usage
+  ST-->>RM: summaries + at-rest {costUSD, unpricedCalls, tokensTotal, agentCount}
+  RM->>RM: overlay live entries via foldUsageFromRecords (the SAME fold /api/runs/:id uses)
+  RM->>ST: backfillUsage(runId, usage)
+  Note right of ST: terminal runs whose snapshot has no usage · ≤25 per call
+  RM-->>S: RunSummary[]
+  S-->>B: 200 [{…, costUSD?}]
+  Note over S,B: never a 500 — a fault is 200 {degraded} + dashboard_api_degraded
+  B->>B: nextConnection(prev, tick) → worstOf(perRoute) → live / degraded / offline(≥2 consecutive unanimous fails)
+  Note over B: render from lib/* pure functions · transform stays on #dag-zoom
+  B->>S: GET /api/runs/:id/agents/:aid?limit=500
+  S->>S: facade.runAgentLog (the SAME call MCP makes)
+  S-->>B: {record, harness{prompt(no segment 1), systemPrompt{agentType,bytes}}, events, hasMore}
+  EX->>EX: compose 4 segments → model
+  Note right of EX: wire UNCHANGED
+  EX->>EX: decorate: strip segment 1 → redact() → capPrompt → persist harness event
+```
+
+---
+
+## Remaining disagreements — each with its discriminator
+
+| # | Topic | Adversarial | Quality-dimensions | Discriminator / who decides |
 |---|---|---|---|---|
-| RD-1 | adversarial D-3 | `TOKEN: detail`, token mapped by the client | `PREDICTED_FROM_FALLBACK_VERSION` as a bare code | Channel and semantics are agreed; spelling is the architect's call. Constraint that is not negotiable: detail carries an enum + version strings only. |
-| RD-2 | adversarial F-1 (second half) | the title-conflict detector is rejected | "a title conflict at the same lane index emits the warning" | If the adversarial lens holds, the burden is a producer of a non-null title mismatch that is neither substitution (already witnessed) nor a loop-body `phase()` (`run-manager.ts:1075` vs `skeleton-graph.ts:111-112`). I found none. |
-| RD-3 | adversarial K-3 (supporting control 1) | nested `describe.phases[]` key-set row deferred | "ADR-054's golden key-set test extends to … `describe.phases[]`" | There is no describe row in `DISCLOSURE_TABLE` today (`dashboard-wire.ts:108-113`); IT-168's labels + val-111 pin the nested shape positively; a fixture-shape change is Sprint A Gate 6 work, not a v27b item. |
-| RD-4 | (unstated by the other lens) | no journal line on the FALLBACK arm | — | A state on every read, durably recorded by resume; the two fault arms log. Trivial either way. |
+| 1 | What replaces the dead body | `<main id="app-view"></main>` + `<noscript>` | `<main><p class="empty">載入中… / Loading…</p><noscript>…</noscript></main>`, **no id** | Their own test, one step further: on a module 404 with JS enabled, an empty mount is a **blank page** — not false, but not a seam; one `<p>` says "did not boot". `#app-view` stays single-emitter (client). Either satisfies §8 item 10; **architect decides**; `app.js` unchanged either way. |
+| 2 | The seven `%%` annotations | own-line comments *or* Notes | Notes for the four invariant-bearing ones, comments for the three implementation details — but both blocks above use Notes throughout so they are one paste | Both forms verified to parse; Notes are visible in `dashboard.html`, comments are not. **Architect decides wording**; three Notes are paraphrases (listed in §1 O-2) and the `worstOf` token is a content change tied to A3 — drop it if A3's owner ruling goes the other way. Re-run the parse check after the choice. |
+| 3 | NB-1 `node --check` over `src/dashboard/**/*.js` | beyond §8; QD-R2 territory | not QD-R2 — a 15-line parse guard, no dependency, over the seven files no tier parses; optional third DoD line of TASK-A | Does the orchestrator allow TASK-A one extra assertion? If not, §9 debt with the ghost-page consequence named. QD-R2 itself: **both lenses park it** to the next full round. |
+| 4 | Placement of the tests program | `tsconfig.tests.json` at the root | same, with `tests/tsconfig.json` recorded as the editor-native **fallback** (unmeasured) | Not a third option: CI semantics are identical; only editor diagnostics differ, and no IDE was run here. TASK-B's implementer decides on evidence. |
+| 5 | REQ-131's 「任一…成功 → Live」 vs the shipped `worstOf` narrowing | narrowing is right; record it as overturnable | same; add that §8 item 3 already chose it | **Owner ruling.** Two panels agreeing is not a ruling; the literal reading means reverting the `live` half of the AC-4 repair. |
+| 6 | v27h micro dispatch vs +2 LOW | neutral ("Gate 2 cannot close it; name the follow-up") | dispatch (both changes pre-scoped; TASK-B's two programs pre-verified at 0 errors) | Either is honest once the "unguarded until it lands" sentence is in the rows; the dispatch removes the sentence and the two `未實作` LOWs. Orchestrator. |
 
-## Ledger edits — delta over the adversarial appendix §5 (only rows where I add to or differ from it)
+Dropped this round, on purpose: **NB-2** (boot watchdog) — conceded; **my inverse-program shape for AC-2** — conceded to (b)'s direction, kept only as TASK-B's measured fallback; **my round-1 authoring rule's "trailing `%%` comment" wording** — retracted.
 
-| Item | Adversarial §5 says | Add / differ |
+## key_points
+
+1. **Converged on all five MUSTs**: AC-2 → DOM/`allowJs` scoped to a tests program with the root as the strict server program (measured under real `-p`: 76/0/3.7 s and 510/0/8.8 s, probe red; +3.7 s per run); AC-3a → two-layer ARCH-122 (contract = head + island + module script; body client-built; dead body removed by a named TASK); DASH-1 → four `;` sites **and** seven mid-line `%%` annotations (semicolon-only parses but renders 3 + 4 junk strings; candidates render 0); ARCH-124's connection clause → `worstOf`, first clause struck; ARCH-123's `cache` literal → the full directive.
+2. **Two corrections to my round 1, stated plainly**: "verified consistent" for the AC-4 repair was a misread of the row (A3 is real); "trailing `%%` comment" was wrong (mid-line `%%` is text).
+3. **Why I conceded the AC-2 direction**: identical guard, identical cost; both programs are load-bearing (the tests program carries the `satisfies` wire lock, which vitest does not exercise), but the default program should be the one with no runtime backstop — the server boundary — and one UT pins both script strings so neither drops out silently. Four ledger sentences that credit bare `tsc --noEmit` with a tests-tree catch are listed for edit/routing.
+4. **Ownership of wording stays with the architect**: the DASH-1 candidates are verified-parseable, with form-only changes, verbatim moves, three paraphrases and one content change (`worstOf`) enumerated; the zero-meaning alternative (line-start `%%` comments) is one line and also verified.
+5. **The mount element**: I hold for static pre-boot text and no `id` — blank is not false but is not a seam; `#app-view` stays client-owned — and mark it as the architect's call.
+6. **S1 was never a dispute**: tooling in `scripts/`, not the vitest denominator; the parse check is DASH-1's falsifier and the standing control for a class that has bitten three times.
+7. **Two owner/orchestrator routings**: REQ-131's reading (owner); TASK ids for the two follow-ups and whether v27h is dispatched (orchestrator).
+8. **Both rows that describe un-landed code carry the "unguarded until it lands" sentence**, per the review's own warning about an amended ADR beside an unchanged tsconfig.
+
+## risks
+
+| # | Risk | Mitigation |
 |---|---|---|
-| ARCH-130 | `warnings` gains `PREDICTED_FROM_FALLBACK_VERSION` | + the two `PREDICTED_OVERLAY_UNAVAILABLE` members; pushed in the catch arms at `:502-503` / `:505` / `:540`; (4) gains `route:'dag'` on the two UNAVAILABLE arms |
-| ARCH-126 / DES-196 | `deriveLanes(phases, expected, { status })` | + boundary: observed wins, predicted fills gaps, **no** conflict output; `expected \| undefined` means derivation can fail (rewrite the `server.ts:519-520` sentence) |
-| DES-197 | `maskPredictedOverlay` never exists | + `tests:` — open and auth servers assert the SAME positive shape; `phases[].agents` absent only on derivation failure |
-| DES-198 | signatures follow | + (4) the three pushes and the narrowed log line |
-| DES-206 / `ui/run.js` | — | token → string table; UNAVAILABLE → 「預測結構不可用」, FALLBACK → greyed overlay + 「預測結構來自替代版本 vN」; the DAG warning is the authority, not `legacySubstitution`; text rendered, not a count |
-| UT-238 | `masked` cases dropped | + join row (iii): observed longer than expected → `lanes` = observed |
-| IT-168 / IT-092 file | re-trace + flip + one parity case | + `warnings` in the parity set; + `SCRIPT_PHASED`; + positive anchor on the auth server; red-vs-guard labels; sentinel via `res.text()`; `describe` titles state the ruling |
-| contract rows `:3630` / `:3632` | — | the C-Δ3 sentences above; "regardless of auth"; "absent only on derivation failure" |
-| `dashboard-wire.ts:84/:112` | — | drop "(open)" from `DAG_PAYLOAD_OPEN` / the row label |
-| ADR-051 | amend → (b) + F-2 + F-5 | + R-Δ2's one sentence (where a future policy lives) + S-Δ3's "no new config key" positive |
-| REQ-105 | — | orchestrator: `[PARTIALLY SUPERSEDED v27, Round v27b]` on the auth-gate clause only |
-| VAL-199 / VAL-204 | Gate 7.5 instruction flip | + one Chromium auth-ON case (never-run predicted layout) with the `mintBearer` trap named |
-| K-5 memo | pre-approved if p95 > 50 ms | + bounded (LRU 64 or evict on catalog GC); instrument is VAL-side, no product timing seam |
-| TASK-202 / TASK-203 `dod:` | scope lines follow | TASK-202: README describe row **without** a masking sentence; TASK-203: forced degrade on the DAG route produces the warning + the log line |
+| QD-R2-1 | The synthesizer lifts the semicolon-only repair and DASH-1 re-opens on the `%%` junk at re-review | M7 table; candidates verified; `scripts/mermaid-parse-check.mjs` as the gate before closing |
+| QD-R2-2 | The narrowed root fails under a path M4 did not exercise (an ambient type package pulling DOM) | M4/M4b ran real `-p` configs that `extends` the repo's own tsconfig; TASK-B's fallback is my measured inverse program, recorded rather than silent |
+| QD-R2-3 | Editor diagnostics for `tests/**` diverge from CI under (b) | Stated as unmeasured; `tests/tsconfig.json` fallback with identical CI semantics |
+| QD-R2-4 | Amended rows beside an unchanged tree at re-review | every row describing TASK-A/TASK-B carries "has NOT landed / unguarded until"; v27h dispatch recommended |
+| QD-R2-5 | Removing the dead body goes red somewhere unlisted | five pins enumerated at HEAD with dispositions; class-lock measured safe; UT-240's new negative pins the shape |
+| QD-R2-6 | The `worstOf` token in the v27 diagram outlives an owner ruling that goes the other way | listed as a content change; the `;`-free original line is verified to parse, so dropping it is safe |
+| QD-R2-7 | REQ-131's narrowing is treated as closed because two panels agree | routed to the owner explicitly, in the row and in this file |
+| QD-R2-8 | The pre-boot literal is read as a REQ-131 string-table violation | DES-201-class boundary exception recorded; `…` offered as the zero-exception fallback |

@@ -4538,3 +4538,96 @@ per the prior entry's own note.
 
 **Next**: architecture's AC-2/AC-3a/DASH-1 repair, validation's DOC-1 repair, and design's DASH-2
 repair (if not already run in parallel), then the Gate 8 re-review.
+
+## 2026-09-13 — v27h Gate 2 SEND-BACK REPAIR (architect) — the 3 architecture-owned findings closed, plus the 2 drifts the v27g repairs induced
+
+**Scope, and what was deliberately left alone.** Gate 8's send-back named 13 blocking findings across
+four gates. The eight impl-owned ones landed at v27g (`005892b`). This round is the **architecture
+half only** — §8 items 9 (AC-2), 10 (AC-3a) and 11 (DASH-1) — repaired by **amending existing rows in
+place at `iter: v27h`**: zero new ARCH/ADR ids, zero new modules, zero new wire fields, zero code.
+`DOC-1` (validation's README/DEPLOY rewrite) and `DASH-2` (design's `classDiagram`) are untouched by
+design and are still open. Synthesised from the two-round panel on disk
+(`.panel/architecture/{adversarial,quality-dimensions}.r{1,2}.md`); no new panel was spawned.
+
+**AC-2 — the guard the ADR asserts and the tree does not have (ADR-049, ARCH-124).** `tsconfig.json`
+carries `"DOM"`, `"DOM.Iterable"` and `"allowJs": true` since IMPL-229 (`ddc4409`), which ADR-049's
+Consequences and ARCH-124's note refuse **by name**. The panel **cross-conceded** — each lens withdrew
+in favour of the other's shape — so the synthesis had to decide rather than lift. Taken: the
+**additive** inverse program `tsconfig.server.json` (`src` minus `src/dashboard`, `lib:["ES2022"]`, no
+`allowJs`) beside the unchanged root in `typecheck` **and** `build`. Two facts decided it: (1)
+`tsconfig.json` is resolved BY NAME by editors, `tsx` and the test tooling, so the additive shape
+touches nothing else; (2) because the default program still sees `tests/`, it induces **zero ledger
+drift** — DES-192's 「`tsc --noEmit` IS the first test」, TASK-197's `dod:` and ARCH-124's own
+`satisfies` sentence all stay true, whereas narrowing the root flips all three and adds an unmeasured
+editor question for `tests/**`. **Re-measured by this synthesis** (not quoted from the panel) on a
+clean `git archive HEAD` copy with `node_modules` symlinked, per CLAUDE.md — never against the working
+tree: exit 0, **76** `src/` files, **0** under `src/dashboard/`, ~3.5 s; a planted
+`document.title`/`window.location.href`/`(el: HTMLElement)` in a server `.ts` → **TS2584 + TS2304 ×2**;
+a planted `import { worstOf } from './dashboard/lib/connection.js'` → **TS7016**; both compile clean
+(exit 0) under today's root config, which is the falsification. The ADR records **both shapes as
+feasible** — the 「a tests-only DOM config is infeasible」 claim is corrected, because writing a false
+impossibility into an ADR is the same defect class this send-back exists to repair — and states the
+limits: editors keep DOM in server files (a CI/build property, not an in-editor one), and `checkJs`
+stays OFF, so the root program parse-checks all **20** served client files (a stray token in
+`ui/app.js` is `TS1109`, exit 2) but sees neither a semantic error (`noSuchFunction(undeclaredIdentifier)`
+→ exit 0) nor an unresolvable import. The panel's `node --check` proposal is **dropped** on that
+measurement: a second parser to catch what the first parser already catches.
+
+**AC-3a — ARCH-122 described a page deleted before first paint.** `src/dashboard-page.ts:92-152` emits
+the pre-v27 body and `src/dashboard/ui/app.js:455` `replaceChildren`s it away. The row's title, `api:`
+and `note:` are rewritten to the built shape (shell = `<head>` + asset refs + the JSON island + one
+module script; the nav, the four tab shells, `#app-view`, the `#dag-*`/`#run-usage`/`#diagram-*`
+anchors, the component classes and the panel container are **ARCH-125's**), the 「still assertable
+here」 clause is **struck as a sentence** (it was false in both halves — the CSS moved at v27c, the
+`draggable` pin at v27g) and replaced by a **pin rule**: `DASHBOARD_HTML` is a valid test subject only
+for the shell's own facts; every component-markup or CSS assertion takes `clientFile(...)`, because a
+component pin whose subject is `DASHBOARD_HTML` proves a string the browser discards. Added:
+**boot-failure honesty** — the dead body is a failure MASK (on a module 404 it paints a retired
+dashboard that reads as 「healthy engine, nothing running」), so the body becomes one mount element with
+static pre-boot text in the existing `empty` hook + `<noscript>`, **no `id`** so `#app-view` keeps a
+single emitter. The panel's 6-line boot watchdog was **dissolved**, not fought: a sentence that says
+so needs no timer.
+
+**DASH-1 — four semicolon sites, not two, and seven annotations that rendered as junk.** Repairing
+only the site the finding names moves the parse error to the second site in each diagram, which would
+have half-closed DASH-1 for a second consecutive round. Mermaid honours `%%` as a comment **only at
+line start** (leading whitespace is fine, including inside `alt`/`else`); mid-line it is message text
+that renders verbatim. Taken: the four `;` replacements (`·`, `→`, and the two moved annotations) plus
+the seven `%% …` annotations moved to their own line **verbatim** — the zero-meaning-change form, over
+the panel's `Note over` alternative, because that changes what the diagram SHOWS in a repair whose
+whole subject is that the diagram must show the right thing. The one content token the panel offered
+(`worstOf(perRoute)` on the tick line) is **not** taken: the line is true as written and the token
+would couple a diagram to a pending owner ruling. **Falsified by a real render** (mermaid 11.17.2 from
+`node_modules` + the repo's cached headless Chromium): control — both blocks fail `mermaid.parse` at
+line 9 and line 14; after the edit both **parse AND render** and `grep -o "%%[^<]*"` over the SVG
+returns **nothing**. Full sweep of every ```mermaid block in `01`–`05`: **40 blocks, 1 failing**, and
+that one is `04-design.md:3306` — design's own DASH-2.
+
+**Two drifts the v27g repairs themselves induced, fixed in rows already being amended.** ARCH-124's
+`api:` still said 「any `ok` → `live` immediately」 while the shipped `nextConnection` is
+`worstOf(perRoute)` (the review's §8 item 3 had already chosen that half by instructing the repair
+「per ARCH-124's `api:`」); and ARCH-123's `cache` type literal still said `'immutable'` where
+`src/static-assets.ts:33` is the full `'public, max-age=31536000, immutable'` directive. The line held
+for scope: **this round repairs claims the tree contradicts, and does not add missing caveats** — which
+is why the panel's ARCH-128 single-writer sentence (§9's F-6, filed non-blocking) is recorded as seen
+and deliberately not taken.
+
+**One owner decision is pending, and it blocks Gate 8, not Gate 2.** REQ-131's acceptance
+(`01-requirements.md:1729`) reads 「任一 `/api/*` 取得成功 → Live」; the shipped tag requires **all** of
+the visible view's routes to be `ok`. A panel may not amend an acceptance clause, so the narrowing is
+written into ARCH-124 as one overturnable sentence and marked
+`- **owner_decision:** pending` for the owner.
+
+**Two follow-up impl items are owed an id and a TASK row** (Gate 2 may not make code changes):
+**TASK-A** (shell body → mount element; five pin dispositions, each verified at `eb387a1`; UT-240's new
+positive) and **TASK-B** (`tsconfig.server.json` + both script strings + one UT pinning that neither
+program can vanish). Both DoDs are written verbatim in the rows, and both rows carry the 「has NOT
+landed / UNGUARDED until it lands」 sentence so that no assertion contradicts the tree in the meantime.
+Declining the micro-dispatch costs **+2 LOW `未實作`** trace rows.
+
+**Gate self-check.** `sh .sdlc/trace` → **1659 items / 33 gaps**, a **byte-identical gap set** to the
+pre-edit baseline captured before any edit (no new orphan, broken link or drift). Every in-scope REQ
+still has its ARCH; every amended row's `traces:` is unchanged; all four amended rows carry
+`module:`/`deps:` as before. `current_stage` stays `review` — Gate 8 owns this loop, same as v27g.
+
+**Next**: validation's DOC-1, design's DASH-2 + the TASK-A/TASK-B rows, then the Gate 8 re-review.
