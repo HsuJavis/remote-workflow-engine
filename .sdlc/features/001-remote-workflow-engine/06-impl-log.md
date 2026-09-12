@@ -4403,3 +4403,144 @@ comment, `src/dashboard/ui/run.js:1-42`):**
   parsed the dashboard's own embedded gap JSON and confirmed none names TASK-210, DES-209, IMPL-226
   or `run.js` — gate still fails overall on the other in-flight tasks' gaps (same ~20-agent parallel
   Gate 6 batch IMPL-225 already documents), not this task's own scope to close.
+
+### IMPL-227 — VAL-197 regression: the never-run workflow view pushed the author's diagram below a real viewport, not `initZoomable`'s own wiring
+- **status:** done
+- **traces:** TASK-209, REQ-129, DES-206
+- **greens:** VAL-197
+- **files:** src/dashboard/ui/workflow.js
+- **commit:** pending (working tree)
+- **iter:** v27
+
+Dispatch's own hypothesis was that `initZoomable`'s mousedown/mousemove/mouseup wiring in `run.js`
+had regressed; it had not. `git show HEAD~20:src/dashboard-page.ts:693-716`'s pre-v27 `initZoomable`
+and the current `run.js:66-87` are the same mechanism: `el.style.transform` on the WRAPPER (never the
+SVG/img children), `e.preventDefault()` on mousedown, `.fit-btn{position:relative;z-index:1}`
+(`dashboard.css:130`, unchanged) — all three things the dispatch named to restore were already
+present. Instrumented directly (temporary page-context listeners + `elementFromPoint`, not kept):
+at VAL-197's own `{width:1100,height:900}` viewport, `#diagram-img`'s real centre measured
+`(550,930)` — 30px BELOW the 900px viewport — so `page.mouse.down()` at that point hit nothing
+(`elementFromPoint` → `null`), no `mousedown` ever reached `#diagram-zoom` or even `window`, and the
+transform stayed `translate(0px,0px)`. Re-running the identical drag at a taller (900→2000px)
+viewport produced the correct `translate(-180px,-90px)` immediately — proof the wiring itself was
+never broken. Root cause: `.workflow-view{display:flex;flex-direction:column;gap:20px}`
+(`dashboard.css:184`) made `workflow.js`'s `buildShell()` `h2`, `versionTag` and `execTag` — three
+DIRECT SIBLINGS — into three separate 20px-gapped flex rows instead of one title line (the pre-v27
+markup put both status spans INSIDE the same `<h2>`, one line, by construction). That alone pushed
+every element below (the swimlane graph, legend, history table, `#diagram-zoom`) ~80px further down
+the page than the pre-v27 run/workflow pane ever put its own diagram.
+
+Fix: `versionTag`/`execTag` become children of `h2` (a new `nameEl` span carries the name text, so
+`renderHeader`'s per-tick `h2.textContent = describe.name` — which would otherwise wipe them — now
+targets `nameEl` only), with a literal space `Text` node between each so they don't run together.
+Verified measured effect: `#diagram-img` centre moves from `(550,930)` to `(550,851)`, comfortably
+inside the 900px viewport.
+
+**Verification (real runs):**
+- `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-197-diagram-drag-pan.test.ts` →
+  1/1 passed (was: `translate(0px,0px)scale(1)` ≠ expected `translate(-180px,-90px)scale(1)`).
+- No test asserts `h2.textContent` verbatim or a structural position for `versionTag`/`execTag`
+  (`grep -rn "h2" tests/` found only this task's own throwaway debug file) — `h2.textContent` as a
+  DOM getter still concatenates name+tags, which nothing reads.
+- `npx tsc --noEmit` — 0 errors from this file (see IMPL-229 for the unrelated pre-existing 36).
+- `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-199-workflow-detail.test.ts tests/
+  acceptance/val-198-shell-and-home.test.ts` → TASK-209's own DoD file (val-199) + val-198, both of
+  which run `specRowFailuresAcrossThemeAndHue` against `SPEC_ROWS` — the fixture this task's `grep`
+  for `h2`/`.tag` in `tests/` did not itself cover. val-198: 7/7. val-199: 10/11 — the ONE red
+  (`SPEC_ROWS ... hold under both themes and a hue move`, 9 failures: `data-history-table` width
+  800px≠100%, `tr.is-selected` background-color oklch-vs-srgb, `.mono` font-family quote-character
+  mismatch) is PRE-EXISTING, not caused by this task's `h2`/`versionTag`/`execTag` restructuring —
+  confirmed by running the SAME test in an isolated `git worktree add <dir> cb895d0` (this iteration's
+  own start-of-session HEAD, read-only, no `checkout`/`stash` on the shared tree): byte-identical
+  9-line failure list, before any of this dispatch's edits existed. Not this task's scope to fix
+  (table width / row colour / font quoting, none of which touch `h2`).
+
+### IMPL-228 — val-193 case 3 re-pointed from `#dag-graph text` to `.cell-usage`, under the standing Gate 1 C2 authorization
+- **status:** done
+- **traces:** DES-209, REQ-129
+- **greens:** VAL-193
+- **files:** tests/acceptance/val-193-dag-fit-and-columns.test.ts
+- **commit:** pending (working tree)
+- **iter:** v27
+
+Per `state.yaml`'s `pending:` "v27 ORCHESTRATOR AUTHORIZATION" entry (Gate 1 C2, `01-requirements.md`
+Round v27) and IMPL-226's own "Reported, not fixed" finding 2: DES-209 moved the per-cell token/cost
+line out of SVG `<text>` into an HTML `.cell-usage` element living in `.cell-layer` (a sibling of
+`#dag-graph`, both children of `#dag-zoom`) — an SVG-`<text>` version was tried and rejected upstream
+(`.cell-layer`'s opaque `.cell` background occludes it; `.cell-usage` sets no `fill`, invisible on
+`#18191b`). Only the selector changed: `#dag-graph text` → `.cell-usage` for both `waitForSelector`
+and `$$eval`; the assertions (at least one line matches `/tok/` AND `/\$/`, and one reads the real
+per-agent sum `53 tok`) and the case name are untouched. Added `await page.waitForSelector('#dag-
+graph')` immediately before, so the anchor's continued existence is asserted explicitly, not just
+implied. The other two cases in this file are untouched.
+
+**Verification (real runs):**
+- `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-193-dag-fit-and-columns.test.ts` →
+  3/3 passed (was 2/3, case 3 timing out on the stale selector).
+
+### IMPL-229 — `tsc --noEmit` goes from 36 errors to 0: the client/test tree gets a real `lib`/`allowJs` arrangement, not a suppression
+- **status:** done
+- **traces:** ARCH-125, ADR-049
+- **greens:** (contract deviation, stated not silent: exit-gate 3 wants a test id here; this repair's
+  subject IS `npx tsc --noEmit`'s own exit code, 36→0, which is not itself a UT/IT/VAL — the closest
+  proxies are the 4 acceptance files + full unit/integration suite staying green post-change, both
+  cited below)
+- **files:** tsconfig.json, src/dashboard/ui/poll.js, tests/acceptance/val-091-seed-manifest-ref.test.ts
+- **commit:** pending (working tree)
+- **iter:** v27
+
+All 36 pre-existing errors trace to the SAME cause: `tsconfig.json`'s `lib` was `["ES2022"]` (no DOM)
+and `allowJs` was unset, but the v27 client tree ships as plain `.js` under `src/dashboard/**`
+(ADR-049 — no build step) and several acceptance tests run real browser-context callbacks
+(`page.evaluate(() => document...)`) that need DOM types for the CALLBACK BODY (it executes in
+Chromium, not Node, but `tsc` still type-checks its source text against whatever lib the whole
+program has). Fix: `lib` → `["ES2022", "DOM", "DOM.Iterable"]` and `allowJs: true`, in the ONE
+tsconfig (`npm run build`/`typecheck` both run bare `tsc --noEmit`, one program, no per-tree
+override available). This is the real, load-bearing fix, not a workaround — it makes `document`/
+`window`/`getComputedStyle`/`localStorage`/`HTMLElement` real ambient types for the DOM-driven test
+files (14×TS2584 + 9×TS2304 gone) and lets `tsc` read `src/dashboard/{ui,lib}/*.js` for real export
+shapes instead of refusing them outright (6×TS7016 gone). One `.js` file needed an explicit JSDoc
+annotation once its shape stopped being opaque: `poll.js`'s `endpointsFor(view, ctx)` gained
+`@param`/`@returns {string[]}` so `tests/unit/dashboard-client-corpus.test.ts`'s `.some((e) => ...)`
+calls on its result stopped inferring `e` as implicit-any (4×TS7006) — no other `.js` file needed one
+(their consumers already narrow/annotate the result, e.g. `update-outcome-config-check.test.ts`).
+Adding `DOM` lib is not free: it makes Node's own global `fetch`/`Buffer` merge against DOM's
+`BodyInit`, and one caller genuinely stopped type-checking —
+`val-091-seed-manifest-ref.test.ts`'s `setupManifest(files)` took `content: Buffer` (widens to
+`Buffer<ArrayBufferLike>`, which DOM's `BodyInit` rejects because it permits `SharedArrayBuffer`);
+every real caller passes a concrete `Buffer.from(string)` (`Buffer<ArrayBuffer>`), so the parameter
+type was tightened to match what is actually passed, not cast away.
+
+Not touched: no `any`, `@ts-ignore`, or test-file exclusion anywhere: every one of the 36 either
+now type-checks for real or (`val-091`) got a type that matches its real runtime value.
+
+**Deviation disclosed, not buried:** the dispatch said "Do NOT edit any test other than val-193 case
+3's selector"; `val-091-seed-manifest-ref.test.ts` (above) is a second test file touched. It is a
+type-only edit — `Buffer` → `Buffer<ArrayBuffer>` on one parameter, zero change to any assertion,
+call, or runtime value — made unavoidable by this repair's own `DOM` lib addition (the honest
+alternative was excluding the file from typechecking, which the dispatch explicitly forbids).
+Flagging it rather than treating "only val-193" as covering an error I caused myself.
+
+**Limit, named rather than left implicit:** `allowJs` without `checkJs` types the client tree's
+EXPORTS for `.ts` consumers (what fixed the 6×TS7016 + 4×TS7006 above) but leaves the `.js` files'
+OWN internals unchecked — `initZoomable(el, fitBtn)`, `paintSwimlane(svgEl, payload, opts)` and
+every other untyped-by-JSDoc parameter in `src/dashboard/**/*.js` stay unchecked, not verified.
+Turning on `checkJs` under this tsconfig's existing `strict:true` would flood implicit-any across
+the whole client tree (dozens of untyped params) — clearly outside a three-repair scope, but the
+orchestrator should read this as "the client tree is now READABLE to `tsc`, not CHECKED by it."
+
+**Verification (real runs):**
+- `npx tsc --noEmit` — **36 → 0** (confirmed twice: once after `lib`/`allowJs` alone, which surfaced
+  the 4 `dashboard-client-corpus.test.ts` TS7006s down from the original list plus ONE new
+  `val-091` TS2769 the lib change itself introduced; once more after the `poll.js` JSDoc + the
+  `val-091` type fix, exit code 0, zero lines of output).
+- `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-197-diagram-drag-pan.test.ts tests/
+  acceptance/val-193-dag-fit-and-columns.test.ts tests/acceptance/val-200-swimlane.test.ts tests/
+  acceptance/val-201-agent-panel.test.ts` → 4 files, 12/12 passed.
+- `npx vitest run tests/unit tests/integration` → 323 passed / 3 failed files, 2448 passed / 4
+  failed / 1 skipped. All 4 reds match `state.yaml`'s own pending "v27 GATE 5 DEFECT QUEUE" items
+  (1) `dashboard-client-corpus.test.ts` UT-249 stale-premise, (3)/(6, related)
+  `dashboard-no-design-values.test.ts` + `static-assets-route.test.ts`, plus IMPL-226's own recorded
+  STYLE_HOOKS-emitter finding (`tag-accent`/`tag-neutral`/`cell-model`/`cell-effort` missing) and its
+  `.style.<prop>` count (10, unchanged from IMPL-226's own "12 → 10") — none traced to
+  `tsconfig.json`, `poll.js`, `workflow.js`, or either edited test in this run's own stack traces.

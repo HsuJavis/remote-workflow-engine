@@ -175,6 +175,11 @@ describe('the run DAG: Fit survives a pan, and the four token columns are readab
   // columns; the PER-CELL cost attribution on the DAG itself did not — `run_status.agents[]` and
   // the dashboard agent detail both name the surface. Extends this same case rather than a new
   // file, per its own header's "real Chromium, real mouse events" scope.
+  // [v27c] Re-pointed under the orchestrator's Gate 1 C2 authorization (state.yaml `pending:`):
+  // DES-209 moves this line out of SVG `<text>` into an HTML `.cell-usage` element sitting in
+  // `.cell-layer`, a sibling of `#dag-graph` inside `#dag-zoom` — `#dag-graph` itself is untouched
+  // and still the lane hairlines + edges. Only the selector changes; the proof (own token count AND
+  // cost per cell, not the run sum) is identical.
   itReal('each agent cell on the run DAG shows its own token count and cost, not just the run total', async () => {
     const puppeteer = (await import('puppeteer')).default;
     const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
@@ -182,9 +187,10 @@ describe('the run DAG: Fit survives a pan, and the four token columns are readab
       const page = await browser.newPage();
       await page.setViewport({ width: 1100, height: 900 });
       await page.goto(`${baseUrl}/dashboard/${runId}`, { waitUntil: 'networkidle0' });
-      await page.waitForSelector('#dag-graph text');
+      await page.waitForSelector('#dag-graph'); // the anchor survives; only its text descendant moved.
+      await page.waitForSelector('.cell-usage');
 
-      const cellTexts = await page.$$eval('#dag-graph text', (nodes: any[]) => nodes.map((n) => n.textContent ?? ''));
+      const cellTexts = await page.$$eval('.cell-usage', (nodes: any[]) => nodes.map((n) => n.textContent ?? ''));
       // At least one per-cell line (distinct from the label lines and the warnings badge) names a
       // token count AND a dollar figure — the per-agent cost attribution this repair adds.
       const usageLines = cellTexts.filter((t: string) => /tok/.test(t) && /\$/.test(t));

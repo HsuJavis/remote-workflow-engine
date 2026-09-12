@@ -66,14 +66,23 @@ function buildShell(container) {
   const root = document.createElement('div');
   root.className = 'workflow-view';
 
+  // v27c fix (REQ-129/VAL-197): the name + its two badges are ONE flex-column item, not three —
+  // `.workflow-view`'s `gap:20px` (dashboard.css:184) gave each of `h2`/`versionTag`/`execTag` its
+  // own row, pushing everything below (including `#diagram-zoom`) ~80px further down the page than
+  // the pre-v27 single-line "Run <id> <status>" header ever did. `nameEl` carries the name text so
+  // `renderHeader`'s per-tick write can't wipe the tags the way `h2.textContent = ...` would.
   const h2 = document.createElement('h2');
-  root.appendChild(h2);
+  const nameEl = document.createElement('span');
+  h2.appendChild(nameEl);
+  h2.appendChild(document.createTextNode(' '));
   const versionTag = document.createElement('span');
   versionTag.className = 'tag';
-  root.appendChild(versionTag);
+  h2.appendChild(versionTag);
+  h2.appendChild(document.createTextNode(' '));
   const execTag = document.createElement('span');
   execTag.className = 'tag';
-  root.appendChild(execTag);
+  h2.appendChild(execTag);
+  root.appendChild(h2);
   const desc = document.createElement('p');
   desc.className = 'wf-desc'; // DES-209 STYLE_HOOKS — `max-width:720px` moves to the stylesheet.
   root.appendChild(desc);
@@ -154,11 +163,11 @@ function buildShell(container) {
   initZoomable(diagramZoom, diagramFit);
 
   container.replaceChildren(root);
-  return { root, h2, versionTag, execTag, desc, triggers, predictedLabel, svgEl, legend, chips, tbody, diagramZoom, img, diagramFit, pre, note };
+  return { root, h2, nameEl, versionTag, execTag, desc, triggers, predictedLabel, svgEl, legend, chips, tbody, diagramZoom, img, diagramFit, pre, note };
 }
 
 function renderHeader(shell, describe, lang) {
-  shell.h2.textContent = describe.name;
+  shell.nameEl.textContent = describe.name;
   shell.versionTag.textContent = (lang === 'zh' ? '版本 v' : 'v') + describe.version;
   shell.execTag.textContent = describe.runnable
     ? (lang === 'zh' ? '可執行' : 'executable')

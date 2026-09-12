@@ -73,7 +73,11 @@ function manifestUrl(): string {
 /** Upload bytes, register a manifest, return the seedManifestRef. Every upload lands in the
  *  namespace the server derives for this caller — the helper no longer takes one. */
 async function setupManifest(
-  files: Array<{ path: string; content: Buffer; exec?: boolean }>,
+  // v27c (DOM lib added for the browser-driven acceptance tests, tsconfig.json): `fetch`'s DOM
+  // typings' `BodyInit` wants an `ArrayBufferView<ArrayBuffer>`, which the generic `Buffer`
+  // alias (`Buffer<ArrayBufferLike>`, permits `SharedArrayBuffer`) no longer satisfies — every
+  // caller here passes a concrete `Buffer.from(string)`, which IS `Buffer<ArrayBuffer>`.
+  files: Array<{ path: string; content: Buffer<ArrayBuffer>; exec?: boolean }>,
 ): Promise<string> {
   const manifestEntries: Array<{ path: string; sha256: string; exec?: boolean }> = [];
   for (const f of files) {

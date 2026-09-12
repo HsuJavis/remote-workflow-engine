@@ -28,7 +28,10 @@ const ROUTES = {
 
 /** The VISIBLE view's own fetch set (DES-206) — never the whole app's endpoints. `ctx` carries the
  *  route params (`runId` / `name`) a view needs to build concrete URLs; omitted, a route template
- *  is returned instead (still shaped enough for a caller to detect which endpoint family it is). */
+ *  is returned instead (still shaped enough for a caller to detect which endpoint family it is).
+ *  @param {string} view
+ *  @param {{ runId?: string, name?: string }} [ctx]
+ *  @returns {string[]} */
 export function endpointsFor(view, ctx) {
   const fn = ROUTES[view];
   return fn ? fn(ctx) : [];
