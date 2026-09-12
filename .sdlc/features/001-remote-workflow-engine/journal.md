@@ -4278,3 +4278,62 @@ round, both citing the mechanical caveat above rather than trusting the tool's o
 calls and fixes `agent-panel.js`'s `window.event` timing, then Gate 7.5 re-validates ONLY REQ-135
 (the other 7 closure REQs, including the now-fixed REQ-134, do not need re-validation again unless
 touched).
+
+## 2026-09-13 — v27 GATE 7.5 round 3 (validator, real-run validation & handover) — PASSED
+
+Dispatched to re-validate ONLY REQ-135, the one REQ v27e's Gate 7.5 round routed back to Gate 6.
+Gate 6 landed the fix as commit `0673f22` (IMPL-267/268): `ui/workflow.js`'s `paintSelected` now
+builds and threads `onSelectAgent` into both `paintSwimlane` calls, and `ui/run.js`'s click listener
+computes `nodeCenterX`/`graphWidth` synchronously at click time (never via `window.event` after an
+`await`), forwarded through to `agent-panel.js`. `git show --stat 0673f22` confirms it touched only
+`src/dashboard/ui/{workflow,run,agent-panel}.js`, `tests/acceptance/val-201-agent-panel.test.ts`,
+`tests/fixtures/dashboard-spec.ts`, and ledger/evidence files — no server code, no config.
+
+**Booted from documented steps only.** `set -a; . ~/.config/rwe.env; set +a` then
+`RWE_CONFIG_PATH=<scratch>/v27f-rwe.config.json RWE_BIND=127.0.0.1 RWE_PORT=8937 ./deploy.sh
+--background` (a copy of `rwe.config.example.json` with only `port`/`bind`/`workRoot` overridden,
+auth at its documented default `enabled:false`) — health check passed, version banner
+`0.1.0 (v0.20.0-313-g0673f22)` confirmed the fix commit on disk. No undocumented manual step was
+needed. Production `rwe.service` (PID 2713463, port 8899) was never touched.
+
+**REQ-135 re-measured for real, independently** (own harness — `evidence/v27f/
+req135-revalidation-harness.mjs` — not the implementer's own fix-verification script, and not a
+`FAKE_GATEWAY` self-booted server): registered a NEW real 4-phase/4-lane workflow, ran it to
+completion with four real local-Ollama `qwen2.5:7b` agent calls through the real `gateway:"sdk"`
+wiring, then drove real Chromium against `/dashboard/workflow/<name>` (the PRIMARY route). Re-checked
+the exact four signals VAL-209 recorded as failing: `.cell-layer.onSelectAgent` is now a function
+(was `undefined`); clicking the real leftmost/rightmost node cells each fired a real
+`GET /api/runs/:id/agents/:agentId` and opened `[data-agent-panel]` with 6 stat cards (was: no
+request, no panel); the slide side now genuinely follows click position — `agent-panel` (no
+`from-left`) on the left-half click, `agent-panel from-left` on the right-half click (was: always
+`right`/no `from-left`). REQ-136 re-checked on this same newly-reachable route: the `/agents/:id`
+response the panel now fetches there carries no `systemPrompt`-ish key. **REQ-135 PASSES.**
+Screenshots: `evidence/v27f/req135-round3-{left,right}-lane-click.png`.
+
+**Regression spot-check** on the same instance (the two sibling REQs rendered by the files
+`0673f22` touched): REQ-133 — 1 run chip, 1 history row, a version tag present, unregressed; REQ-134
+— `.cell` still has 3 direct children, clip ratios 0.999/0.909, unregressed
+(`evidence/v27f/req133-134-regression-spotcheck.mjs`). REQ-131/132/136/140/141 render through files
+this commit did not touch and keep their prior 2026-09-13 real:true evidence unchanged (REQ-140/141
+are server-side and independently re-confirmed already, post-dating every fidelity-sweep commit).
+
+**Docs.** README.md's dashboard section and 已知限制 list, and DEPLOY.md §6, rewritten current-state:
+the REQ-135 known-limitation text ("點節點不會打開 agent 細節面板" on the primary page) is now FALSE
+and removed — replaced with a plain description of the real current behaviour (click opens the
+panel on either route; the panel slides in from the side opposite the clicked node). No changelog or
+"previously X / now Y" text added — the fix's own history stays only in `08-validation.md`,
+`pending:`, and this entry, per the manuals' history-free rule. Config: `0673f22` touched no
+config/settings file — §1 設定總表 unchanged, confirmed via the commit's own file list.
+
+**Trace**: `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → 1651 items, 33 gaps,
+gap SET byte-identical to the pre-round baseline (10 MID for REQ-137/138/139/142/143, out of
+closure; 23 LOW pre-existing drift). Exit code 1 — expected, not chased to 0. `rtm.md`
+hand-regenerated (this repo's `trace.py` has no `--rtm` flag): REQ-135 flips back to ✅ (was the
+manual-override ⚠️); all 8 closure rows' IMPL/UT columns refreshed to include `IMPL-250..268`/
+`UT-257`, which the fidelity-sweep and REQ-135-fix commits added since the last full regeneration.
+
+`pending:`'s REQ-135 blocking-finding item marked RESOLVED with this citation. `gates.validation`
+flips to `passed: true`; `current_stage` moves from `impl` to `review` — the full v27 closure
+(REQ-131/132/133/134/135/136/140/141) now has ≥1 `real:true`/`pass` VAL item each.
+
+**Next**: Gate 8 (review).

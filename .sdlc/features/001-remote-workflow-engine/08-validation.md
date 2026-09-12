@@ -10163,12 +10163,12 @@ limitation (DEPLOY.md §6), not a new one.
   **Disposition: REQ-134 PASSES at Gate 7.5 RE-RUN. `pending:`'s blocking-finding item marked
   RESOLVED in `state.yaml` with this citation.**
 
-### VAL-209 — REQ-135/REQ-136: agent slide-in panel — FAILS on the real primary page (workflow detail)
-- **status:** red
+### VAL-209 — REQ-135/REQ-136: agent slide-in panel — FIXED, re-confirmed for real on the primary page
+- **status:** green
 - **traces:** REQ-135, REQ-136
 - **tier:** acceptance
 - **real:** true
-- **result:** fail
+- **result:** pass
 - **iter:** v27
 - **evidence:** **Original measurement (2026-09-12), still true on its own route**: instance B,
   real Chrome, `GET /dashboard/<runId>` (the LEGACY standalone run route, `app.js`'s own comment:
@@ -10238,6 +10238,66 @@ limitation (DEPLOY.md §6), not a new one.
   `REQ-135 in verified_real: True`). **Do not read a clean trace gap-count as REQ-135 being closed —
   read this item and `pending:`.** `gates.validation.passed` stays `false` and `current_stage` stays
   `impl` regardless of what the gap count shows.
+
+  **FIX LANDED AND RE-CONFIRMED FOR REAL (2026-09-13, v27 Gate 7.5 round 3, validator, commit
+  `0673f22` IMPL-267/268).** Booted a BRAND NEW `deploy.sh --background` scratch instance
+  (`RWE_CONFIG_PATH`/`RWE_BIND=127.0.0.1`/`RWE_PORT=8937`, fresh `workRoot` under this session's
+  scratchpad, no state carried over from any prior round) — the documented one-command deploy, health
+  check passed, version banner `0.1.0 (v0.20.0-313-g0673f22)` confirming the fix commit is genuinely
+  on disk. Registered a NEW real 4-phase/4-lane workflow (`val209-round3-1789241927495`) with its OWN
+  explicit name (`run_start`'s response never returns it), ran it to a real `completed` state with
+  FOUR real local-Ollama `qwen2.5:7b` agent calls through the real `gateway:"sdk"` wiring (no
+  `FAKE_GATEWAY`, unlike the implementer's own fix-verification harness — this is the validator's
+  independent measurement, against the real deployed delivery interface, not a self-booted
+  in-process server), then drove real Chromium against `/dashboard/workflow/val209-round3-1789241927495`
+  (the PRIMARY route — never `/dashboard/<runId>`) and re-measured the EXACT four signals this item
+  recorded as failing last round:
+  1. `document.querySelector('.cell-layer').onSelectAgent` → **a function** (was `undefined`).
+  2. Clicking a real `[data-node-cell][data-agent-id]` fires a real
+     `GET /api/runs/<runId>/agents/<agentId>?limit=500` request (intercepted via
+     `page.on('request')`) — observed for BOTH the leftmost (`agent-1`/`leftAgent`) and rightmost
+     (`agent-4`/`rightAgent`) cells (was: no request at all).
+  3. `[data-agent-panel]` appears with **6** `[data-stat-card]` elements (was: `null`, panel never
+     appeared).
+  4. Slide side follows the real click position on a 4-lane graph wide enough to straddle the
+     midpoint: leftmost-lane click → `class="agent-panel"` (no `from-left`); rightmost-lane click →
+     `class="agent-panel from-left"` (was: always `'right'`/no `from-left`, the `window.event`-after-
+     `await` defect).
+  Screenshots: `evidence/v27f/req135-round3-left-lane-click.png`,
+  `evidence/v27f/req135-round3-right-lane-click.png`. Command:
+  `node .sdlc/features/001-remote-workflow-engine/evidence/v27f/req135-revalidation-harness.mjs`
+  (own independent harness, not a copy of the implementer's `evidence/v27/
+  req135-workflow-route-panel-side-fix-verify.mjs`).
+
+  **REQ-136 measurement of opportunity, same run**: since the panel now genuinely fetches
+  `/api/runs/:id/agents/:agentId` on the PRIMARY route for the first time (it fetched nothing here
+  before the fix), re-checked that response's own top-level keys:
+  `["runId","status","harness","events","result","hasMore","record"]` and `harness`'s own keys
+  (`model, proxyModel, provider, prompt, tools, skills, mcpServers, surfaceType, materialized,
+  effort, timeoutMs, provenance, label, phase, phaseIndex, effortApplied`) — no `systemPrompt`/
+  prompt-template key anywhere, on either route. REQ-136 stays real:true/pass, now proven on ONE MORE
+  route than before.
+
+  **Regression spot-check on the SAME fixed instance** (the two sibling REQs whose rendering shares
+  the files `0673f22` touched — `ui/run.js`, `ui/workflow.js`; `git show --stat 0673f22` confirms it
+  touched ONLY those two plus `ui/agent-panel.js` and two test files, no server code, no config):
+  `node .sdlc/features/001-remote-workflow-engine/evidence/v27f/req133-134-regression-spotcheck.mjs`
+  on the same `/dashboard/workflow/val209-round3-…` page → REQ-133: 1 `[data-run-chip]`, 1 history
+  row, a version tag present (unregressed); REQ-134: the first `[data-node-cell]`'s `.cell` still has
+  **3** direct children (`cell-head`/`cell-meta`/`cell-usage`), clip ratio `.cell-label` **0.999**,
+  `.cell-model` **0.909** — both still comfortably above the 0.8 floor VAL-208 established, confirming
+  the row-grouping fix was not disturbed by this pass. REQ-140/REQ-141 are server-side
+  (`/api/runs/:id/dag`, `RunSummary.costUSD`) and untouched by `0673f22`'s client-only diff — not
+  re-run this round; their own 2026-09-13 re-confirmations above (VAL-212/VAL-205) already post-date
+  every fidelity-sweep commit and stand.
+
+  **Config-sync**: `git show --stat 0673f22` touched only `src/dashboard/ui/{workflow,run,
+  agent-panel}.js`, `tests/acceptance/val-201-agent-panel.test.ts`, `tests/fixtures/dashboard-spec.ts`,
+  and ledger/evidence files — no config/settings file, no new/changed/removed key. §1 設定總表
+  unchanged.
+
+  **Disposition: REQ-135 PASSES at Gate 7.5 round 3. `pending:`'s blocking-finding item for REQ-135
+  marked RESOLVED in `state.yaml` with this citation.**
 
 ### VAL-210 — REQ-067/076/077/078: Models/System/Issues ported to tabs (non-regression), real deployed instance
 - **status:** green
@@ -10462,3 +10522,51 @@ exactly as recorded; `--impact REQ-127` still lists both VAL-198 and VAL-199 aft
 trace.py gap count held at 41 throughout (0 new gaps from the renumbering itself). Recommend a
 trace.py enhancement (routed via this report, not built here): warn on a duplicate work-item ID
 across files instead of silently letting file-sort order pick a winner.
+
+### Gate self-check (v27 Gate 7.5 round 3, 2026-09-13, validator)
+Dispatched to re-validate ONLY REQ-135, the one REQ the prior round routed back to Gate 6. Gate 6
+landed the fix as commit `0673f22` (IMPL-267/268) — `git show --stat 0673f22` confirms it touched
+only `src/dashboard/ui/{workflow,run,agent-panel}.js`, the two named test files, and ledger/evidence
+files; no server code, no config file. **Result: REQ-135 PASSES.**
+
+Booted a fresh scratch instance the documented way — `set -a; . ~/.config/rwe.env; set +a` then
+`RWE_CONFIG_PATH=<scratch>/v27f-rwe.config.json RWE_BIND=127.0.0.1 RWE_PORT=8937 ./deploy.sh
+--background` (a copy of `rwe.config.example.json` with only `port`/`bind`/`workRoot` overridden,
+auth left at its documented default `enabled:false`) — health check passed, version banner
+`0.1.0 (v0.20.0-313-g0673f22)` on disk. No undocumented manual step was needed; `./deploy.sh
+--background` alone brought the instance up. Independent re-measurement (own harness, not the
+implementer's) against the real deployed instance is recorded in full under VAL-209 above. A
+regression spot-check of REQ-133/REQ-134 — the two sibling REQs whose rendering shares the exact
+files `0673f22` touched — on the SAME instance found no regression (also under VAL-209). REQ-140/
+REQ-141 are server-side, untouched by this commit's client-only diff, and were already re-confirmed
+2026-09-13 (VAL-212/VAL-205, post-dating every fidelity-sweep commit); not re-run this round.
+REQ-131/132/136 render through files this commit did not touch either (`ui/app.js`/`ui/home.js`/the
+system-prompt-never-on-the-wire server contract) and keep their prior 2026-09-13 real:true evidence
+unchanged. Stopped the scratch instance afterward (`kill $(cat .rwe.pid)`, the documented shutdown)
+— production `rwe.service` (PID 2713463, port 8899) was never touched by this round's boot/probe/
+shutdown sequence.
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: **1651 items, 33 gaps**,
+gap SET diffed programmatically against a baseline captured before this round's edits
+(`trace.analyze()` gap list, byte-identical: the same 23 LOW pre-existing drift/`TASK-018`/
+`TASK-153` items and the same 10 MID `未實作`/`未驗證` pairs for REQ-137/138/139/142/143, explicitly
+out of this closure). Exit code **1** — expected, not chased to 0: REQ-137/138/139/142/143 remain a
+later, out-of-closure slice. `REQ-131..136/140/141 in verified_real` all read `True` — but per the
+now twice-documented mechanical blind spot (`is_real_test` checks `real`, never `result`), that was
+ALREADY true even when VAL-209 was `real:true`/`result:fail` last round; the only thing that changed
+this round is `result:pass` on VAL-209 itself, which is what actually closes REQ-135 — recorded here
+and in `pending:`, not inferred from the unchanged gap count.
+
+`--rtm .sdlc/features/001-remote-workflow-engine/rtm.md` regenerated: REQ-135's row flips from the
+manual-override ⚠️ back to ✅ (the mirror image of the prior round, this time because `result:pass`
+is genuinely true, not a mechanical artifact).
+
+No config file changed this round (confirmed above); README.md/DEPLOY.md's REQ-135 known-limitation
+text (README.md's dashboard section + 已知限制 list, DEPLOY.md §6) is now FALSE — the click works on
+the primary page — and is rewritten to current-state as part of this round's docs pass (current-state
+rule; no changelog entry added to either manual, the fix's history lives only in this document,
+`pending:`, and `journal.md`).
+
+`gates.validation.passed` flips to `true` and `current_stage` to `review` in `state.yaml` at the end
+of this round — the full v27 closure (REQ-131/132/133/134/135/136/140/141) now has ≥1 real:true/pass
+VAL/E2E item each.
