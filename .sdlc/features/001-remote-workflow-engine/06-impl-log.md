@@ -6619,7 +6619,7 @@ no `pageerror` in either new case.
   (new); "a System tab exists and renders real /api/system rows" (non-regression half, now waits
   for `.sys-table tr`, not just `#system-panel`)
 - **files:** src/dashboard/ui/system.js, tests/acceptance/val-202-ported-tabs.test.ts
-- **commit:** (this commit)
+- **commit:** 2552230
 - **iter:** v27
 
 `system.js:74`'s `onTick` tested `if (!res.body)` before painting. The dashboard's catch-all
