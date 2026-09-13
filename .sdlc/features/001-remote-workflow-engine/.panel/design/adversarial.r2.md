@@ -1,181 +1,173 @@
-# Design panel — Adversarial group (interface-contract · boundary/error · testability), round 2
+---
+stage: design (Gate 3/4), v27 Gate 8 RE-REVIEW #2 send-back — design half
+lens: adversarial (interface-contract · boundary/error · testability), Karpathy simplicity-first as tie-break
+round: 2 — written AFTER reading `quality-dimensions.r1.md` in full. Verdicts below are rebut / concede / hold, per disagreement.
+head: 57ad237 (code last moved at b124430). Every claim re-verified at file:line THIS round; §9 lists what was run.
+supersedes_on_disk: the v27j round-2 file at this path — `git show 8d3584b:.sdlc/features/001-remote-workflow-engine/.panel/design/adversarial.r2.md`. Read history with `git show`, never `checkout` / `restore` / `stash` (CLAUDE.md).
+my_r1: `adversarial.r1.md` (AD-1..AD-6). Findings are cited by id below, not re-derived.
+touched: this file only. `04-design.md`, `03-tasks.md`, `src/`, `tests/` are untouched by me in both rounds.
+---
 
-- **stage:** Design (Gate 3/4), v27 Gate 8 send-back, design half. Round **2 — convergence**, written after reading `quality-dimensions.r1.md` in full.
-- **read this round:** `quality-dimensions.r1.md` (229 lines, all six sections + its 11 risks + its 6 expected disagreements); my own `adversarial.r1.md`.
-- **supersedes:** this path held the v27b/v27c round-2 proposal. Preserved at `git show c7447d0:.sdlc/features/001-remote-workflow-engine/.panel/design/adversarial.r2.md` (never `git checkout` / `git restore` / `git stash` — CLAUDE.md).
-- **measured this round** (mermaid 11.17.2 from `node_modules`, Chrome from `~/.cache/puppeteer`, `mmdc -p pptr.json`, SVG text read out of `<foreignObject>`): seven renders — QD's entity form with and without a space after `#44;`, my r1 option C, the Scheduler split, the full proposed edit, the full edit again under **trace.py's own `theme:'dark', securityLevel:'loose'`**, and a four-member arity probe that settles the comma rule (§6).
-- **I did not touch `04-design.md` or `03-tasks.md`.** This file only.
+# Adversarial — round 2: the panel converges on ten of thirteen; I concede my largest proposal; the headline is a finding neither of us owned at the start
+
+## §0 Headline
+
+**Both lenses now rank `system.js` (QD3-O2) as this round's most severe item, and both call it blocking.** QD measured it in real Chromium; I verified the throw path independently from source (§8). It contradicts `04-design.md:6857` **verbatim** — 「a `degraded` section renders the ONE 「無法取樣」 component … instead of reaching a render function as data and throwing」 — and the row's own acceptance case (`val-202:104-117`) asserts a selector, not the property. Two independent lenses converging on one blocking call is the strongest signal this panel can hand the synthesizer; put it at the top of the synthesis note rather than letting RE-REVIEW #3 rediscover it. The code is impl's lane and neither of us touches it.
+
+**And I withdraw my round-1 headline remedy.** AD-4(a) — extend `onTick` so the per-route statuses cross the `app.js` seam — would have fixed **three views that work today and missed the one that is broken**. `system.js:72` does its own `getJSON`, so it has `res.status` **in hand** at `:74` and ignores it, testing `!res.body` instead. A seam change cannot reach a view that was never fed by the seam. That is the engineering reason, not politeness: my proposal was aimed one layer away from the defect.
 
 ---
 
-## §0 Scoreboard — every disagreement, adjudicated
+## §1 Scoreboard — every disagreement, with the verdict
 
-| # | Item | QD r1 | My r1 | **Verdict** | Basis |
+| # | item | their position | mine (r1) | verdict | one-line reason |
 |---|---|---|---|---|---|
-| D-1 | DASH-2 fix form | entity codes **inside** the generic, `#44;` for commas | option C: shape out of the generic into trailing prose | **CONCEDE to QD** (one refinement, D-2) | measured: QD's form keeps `Promise<…>` *and* the brace shape; mine degrades a generic to prose |
-| D-2 | `#44;` followed by a space | `#123;channel#44; version#44; from#125;` → `{channel, version, from}` | — | **REBUT (partial): drop the space** | source is `{channel,version,from}`; the space-form adds characters the author did not write, against QD's own zero-meaning-change standard |
-| D-3 | `%%` own-line comment in the block | take it (C-4, mitigates QD-R10) | not proposed | **CONCEDE** | rendered this round: parses, 0 `%%` in SVG |
-| D-4 | Scheduler `{ +markFired() +markFailed() }` | not seen | split the line | **HOLD — confirmed by measurement** | 31 rendered rows vs **32** after the split; it parses, so QD's sweep could not see it |
-| D-5 | Induced-drift sweep breadth | six rows (DES-199/200/202, TASK-205/206) | three rows (DES-200 ×2, DES-208, TASK-205) | **CONCEDE to QD** | verified DES-202 and DES-199 at file:line against the shipped code |
-| D-6 | Which drift row ranks highest | DES-202 HIGH (QD-R2) | my Rider A | **CONCEDE — DES-202 outranks my Rider A** | DES-202 `:6809` is an instruction to *reintroduce* a repaired bug, not a stale note |
-| D-7 | `UT-240` vs `UT-241` on the `draggable` pin | ledger says UT-241; ARCH-122 copied the test file's mislabel | I wrote UT-240 | **CONCEDE — my r1 was wrong** | `05-tests.md:12062` / `:12075`; both ids resolve, so trace stays green |
-| D-8 | TASK-216 needs a `des:` parent | yes — amend DES-191 | no — TASK-018/TASK-153 precedent | **CONCEDE the direction, NARROW the content** (§3) — **and my r1's TASK-153 citation was false** | `TASK-153` carries `des: DES-138, DES-142`. Real precedent: TASK-018 (none) and 96 of 214 rows |
-| D-9 | Pre-boot literal: sentence or `…` | a sentence naming the asset | (not covered; QD expected me to object on REQ-131) | **CONCEDE + REBUT (partial): the sentence, two narrowings** (§4) | REQ-131:1728's clause is scoped to the *language-toggle* Given; and my own v27h "not a seam" objection binds me |
-| D-10 | Task ids / header range / next UT | TASK-215, TASK-216, header `..216`, UT-258 | TASK-A / TASK-B | **CONCEDE** | TASK-214 is last; `03-tasks.md:1620` says `..213`; UT-257 is last |
-| D-11 | Ordering: clauses vs task rows | DES parents amended **first** (§5.2) | mint TASK-A **first** (KP-4) | **DISSOLVED — not a dispute** (§5) | both of us require ONE batch; intra-batch order is moot. QD's DES-first is fine |
-| D-12 | Render check: where it lives | §9 tooling row beside TOOL-FORK, spec attached, manual until upstream | `.sdlc/`, renamed `mermaid-render-check.mjs`, never `tests/`, never a Gate 6 blocker | **CONVERGED** — same routing; three constraints added (§6) | — |
-| D-13 | Stale positional `register(...)` signature | `claimedTriggers` "seen, not taken" (R-3) | SHOULD, deferred, **must be recorded** | **HOLD — agree in kind, and hold the recording clause** (§7) | `workflow-catalog.ts:653` throws by name; DES-111 carries the same stale shape 12 lines below |
+| 1 | **QD3-C1 ≡ AD-1** — `worstOf` return alphabet, `:6814` | fix to `'ok'\|'degraded'\|'fail'` | identical | **converged** | Same finding, same token, found independently. Take **their** parenthetical — 「(the reducer reads THIS; the tag reads `State.status`)」 — it is shorter than mine and says the same thing. |
+| 2 | **QD3-O2** — `system.js` renders a whole-route degrade as data and throws | MID/blocking; row wording is design's, code is impl's | **I missed it entirely** | **concede + adopt, ranked #1** | `:6857` is contradicted in its own words, with a measured operator-visible consequence (0 rows under a `Live` tag). My r1 §8.6 said QD's breadth would beat my depth and I would take its row set. It did; I do. |
+| 3 | **QD3-C2** — `:6816`'s AC-4 case names `/api/home` + `/api/runs` | fix to `describe` ok + `/api/runs` degraded | **I missed it** | **concede + adopt** | Verified: `poll.js:16` home fetches `/api/home` alone; `:20-23` workflow fetches `describe` + `/api/runs`. No tick fetches the named pair. One token, on the row BF-3 was sent back for. |
+| 4 | **AD-4(a)** — `onTick` gains the statuses, + 1 TASK | refuse for this pass (QD3-R1: record, defer to REQ-137/138) | propose it, one task row | **CONCEDE — withdrawn entirely** | §0. It fixes three correct views and misses the broken one. Karpathy: the minimum design that solves the problem is QD's D7 (state the rule) + the one-line `system.js` fix. My remedy was needless machinery. |
+| 5 | **QD3-O1 (D7)** — state BF-2's property as DES-206's sixth invariant | amend in place, no task, tree-satisfied | AD-6 asked for the same sentence, worse-worded | **concede the frame, integrate one clause** | §3. D7 as QD words it covers 3 of 6 views and hands the other 3 to DES-207; one added clause makes it cover all six and *produces* QD3-O2's fix from the row. Not a disagreement — a merge. |
+| 6 | **QD3-O3** — an unguarded `onTick` throw freezes the tag | state the fold + price it in TASK-217 | **AD-2** — an empty tick reports `live` | **hold both, MERGED** | §4. They are the same defect from opposite ends: a tick with no valid observation must not produce a claim. One reducer line + one seam line, same two files, one task. |
+| 7 | **QD3-O4** — the footer stamps freshness on skipped ticks | rule: advance only on a `live` tick; clause + TASK-217 | not found by me | **concede the rule, amend it** | §5. As worded it ships a **false first stamp** (`app.js:146`) and then freezes it forever. Boundary lens earns its seat here: the fix is one token. |
+| 8 | **TASK-217** — mint a draft task, or write no clause | mint it (+1 LOW 未實作 row) | r1 §8.2/R3 predicted I would prefer debt | **CONCEDE — mint one task** | §6. The class has cost three send-back rounds; with AD-2 merged in, one S task closes four instances at once. The ledger's binary rule (`04-design.md:7285`) is right and I was arguing the wrong side of it. |
+| 9 | **New DES id for the `ui/` degraded contract** | zero new ids, amend DES-206 in place | zero new ids | **my r1 §8.2 prediction was wrong** — stated so it is on the record | QD never wanted a new id. Retracted. |
+| 10 | **QD3-R1** — a pure `renderable()` predicate in `lib/` | record, defer to REQ-137/138's closure | r1 §3 refused it as a `classifyResponse` mirror | **agreed, different reasons, same answer** | Both refusals stand and reinforce: it duplicates an answer that already exists. Deferred, not adopted. |
+| 11 | **QD3-C3** — stale `05-tests.md` counts | Gate 5's lane, route don't edit | — | **agree** | Not design's. Add `val-202:104`'s title-vs-body gap to the same routing note (§2). |
+| 12 | **AD-5** — `classifyResponse` tests key presence, prose says 「string」 | not addressed | move the prose, not the code | **hold** | §3. Free, true of HEAD, fail-closed. Tightening the code would flip it fail-open in the one row that must not. |
+| 13 | **AD-3** — an unrecognised token ranks `ok` | not addressed | LOW rider, explicitly droppable | **hold, still droppable** | §3. |
 
-**Net:** eight concessions (three of them corrections to my own r1), two holds, three partial rebuts, one dissolved, one converged. Nothing in QD r1 survives this round as a live dispute except D-2, D-4 and the §7 recording clause — all three are additive, none contradicts QD.
-
----
-
-## §1 D-1/D-2/D-3 — the DASH-2 edit, measured end to end
-
-**I withdraw option C.** My r1 measured that entity-escaped braces beside a **bare** comma render the tildes verbatim, and stopped there — concluding the generic was unsalvageable for the comma case. `#44;` was the case I never tested; QD tested it, and it works. My conclusion was overturned by their measurement: my r1's option table had a hole in it, not their form a flaw.
-
-The difference matters to the interface-contract lens, which is why I concede rather than split the difference: QD's form renders `Promise<{version}>` — still a **generic**, angle brackets intact, consistent with the five untouched `Promise~VersionEntry~`-class members in the same class body. Option C renders `Promise of {version}` — prose, inconsistent with its five neighbours. **My r1's R-2 ("the three members stop being machine-readable as generics — accepted deliberately") is retired**: it was the price of a form that is no longer on the table, and QD's form does not charge it.
-
-**D-2 — the one partial rebut of QD's form.** QD writes `#123;channel#44; version#44; from#125;` — a space after each comma entity. Measured, both forms render:
-
-| form | rendered member text |
-|---|---|
-| QD's, with space | `+publish(name, version, channel, principal) : Promise<{channel, version, from}>` |
-| **no space (proposed)** | `+publish(name, version, channel, principal) : Promise<{channel,version,from}>` |
-
-The v22 source is `Promise~{channel,version,from}~` — no spaces. QD's summary claims the entity form "renders **exactly** the shape the author wrote"; with the space it renders a shape the author did not write. Three characters, zero argument value, and it is the standard QD themselves set. Take the no-space form.
-
-**D-3, conceded and verified.** QD's C-4 comment line was not in my r1 and I had not rendered it. Rendered this round as line 2 of the block: parses, contributes nothing to the SVG (`%%: 0`). It is the mitigation for QD-R10 (a later reader "restores" the braces and the failure returns, still parse-clean), and DASH-1's authoring rule already chose own-line comments over `note for`. No trim: the line is one line and every token in it is load-bearing.
-
-**D-4, the finding QD's sweep structurally could not see.** `class Scheduler { +markFired() +markFailed() }` (`:3328`) parses, so a 40-block parse+render sweep reports it green; QD's fidelity count ("all 8 members present") was taken over `WorkflowCatalog`. Measured on the taken form:
-
-```
-rows: 31   …   |Scheduler|   |+markFired() +markFailed()|      ← two methods, ONE row
-rows: 32   …   |Scheduler|   |+markFired()|  |+markFailed()|   ← after the line split
-```
-
-Same parse-green/render-wrong class as DASH-1's `%%` literals, inside the block already being opened, one line. Take it.
-
-**The whole edit, rendered under trace.py's own config** (`theme:'dark', securityLevel:'loose'` — `trace.py:687`), i.e. the three entity members + QD's `%%` line + the Scheduler split, together:
-
-```
-+register(name, script, defaults, principal) : Promise<{version}>
-+publish(name, version, channel, principal) : Promise<{channel,version,from}>
-+deregister(name, principal) : Promise<{removed}>
-+markFired()      +markFailed()      (two rows)
-rows: 32 | tilde: 0 | raw-entity: 0 | %%: 0
-```
-
-**This narrows my r1's R-1.** I had ranked the two-environment skew MID across two axes — config and mermaid version. The config axis is now closed by measurement: `securityLevel:'loose'` + `theme:'dark'` produces byte-identical member text. What remains is only the **floating `mermaid@11`** at `trace.py:623` against the pinned 11.17.2. R-1 drops to **LOW-MID**, its discharge check is unchanged (regenerate `dashboard.html` on a `git archive` copy, assert no `圖渲染失敗`), and pinning the CDN is still **TOOL-FORK's owner's**, not this gate's.
+**Predictions from my r1 §8 that were wrong, stated plainly:** #2 (QD wanted a new DES id — it did not), and #1 (I expected QD-R3's string table to be its headline — it was not; QD carried it as debt, correctly). Prediction #3 (a fourth tag state) never materialised either; QD proposed no new status.
 
 ---
 
-## §2 D-5/D-6 — I conceded the sweep, and I rank one of QD's rows above my own
+## §2 The concession that matters — QD3-O2, and design's precise version of the fix
 
-I expected to resist this widening on the Karpathy tie-break and I do not, because I verified both unnamed rows at file:line and they are contradictions, not caveats:
+`system.js:74` reads `if (!res.body)`. `res.status` is already `classifyResponse`'s answer for the same response (`:72`). The server's catch-all (`server.ts:1101-1105`) returns HTTP 200 `{degraded:'…'}` — truthy, no `cpu` — so `:77` calls `buildTable`, `:49` reads `data.cpu.cores`, and it throws.
 
-| Row | What it says | What ships | |
+**Design's statement of the fix is one token, and it is not the two-token form.** The gate is `if (res.status !== 'ok')`, **not** `if (!res.body || res.body.degraded)`. `classifyResponse` already maps a null body, a non-2xx and a parse failure to `'fail'`, so the status check **subsumes** the `!res.body` arm it replaces — one predicate, zero re-derivation, and it reads the answer DES-207's own clause points at (「DES-202's classifier」). Anything longer re-implements the classifier at the call site, which is the habit that produced the defect.
+
+**Routing, unchanged from QD:** code → impl (a BF-2 residue, not new scope); test body → Gate 5 (`val-202:104-117` verified this round: title promises the Unavailable component, body clicks the tab and `waitForSelector('#system-panel')` — it fakes nothing and reads no cell); row wording → design, this pass (E5).
+
+---
+
+## §3 Where I hold, and the one clause I add to D7
+
+**D7 — integrate, don't dispute.** QD's §2 already says D7 should carry the seam choice 「so the next designer sees a choice, not a law」; that *is* my objection, so it is a merge. But D7 as drafted says 「the view judges the BODY — the per-route statuses never reach a view」, and stated flatly that sentence **blesses the hand-rolled shape sniff** that broke `system.js`. One added clause fixes it and makes D7 cover all six views with no seam between D7 and DES-207:
+
+> …and **where the status is already in the view's hand — the ported tabs call `getJSON` themselves (`models.js:52`, `system.js:72`, `issues.js:99`) — that status IS the gate; a view never re-derives renderability by sniffing the body's shape when `classifyResponse` has already answered.**
+
+That clause, alone, produces QD3-O2's fix from the row. Without it, DES-206 says 「sniff the body」 and DES-207 says 「render the component」 and nobody is told which applies to a tab that fetches for itself.
+
+**AD-5 (hold, LOW, free).** `connection.js:48` tests `'degraded' in body`; `:6815` and `02-architecture.md:3361` both say a `degraded` **string**. Measured: `classifyResponse(200,{degraded:null})` → `'degraded'`. The deviation is **fail-closed**, so the prose moves: 「a `degraded` **key** (presence, not type — a malformed degrade must not become data)」. Tightening the code to `typeof === 'string'` converts a fail-closed deviation into a fail-open one; refused.
+
+**AD-3 (hold at LOW, still droppable).** `worstOf({a:'bogus'})` → `'ok'`, because `RANK[status]` is `undefined` and `undefined > 0` is false. One token, fail-closed: `const r = RANK[status] ?? RANK.fail;`. It is the only item in this round that is a **behaviour** change on an unreachable input; if the synthesizer wants a zero-behaviour-change round, drop it and keep everything else. I do not fight for it.
+
+**AD-6 — folded into D7 (QD3-O1) and dropped as a separate item.** QD's version assigns the two realizations to the two rows; mine only observed that both exist. Theirs is strictly better.
+
+---
+
+## §4 The merge that changes both proposals — AD-2 + QD3-O3 are one property
+
+QD3-O3: `app.js:379`'s `await view.onTick(...)` is unguarded, so a throw skips `:383-384` and the tag keeps its last text — **measured** by QD as `live` across two ticks while `results` already held `degraded` for the same route.
+AD-2: `nextConnection(anything, {results:{}})` → `{status:'live', consecutiveFails:0}` — an `offline` page with a five-tick streak is restored to 連線中 by a tick that consulted **zero** routes. Latent at HEAD, held back only by `app.js:382`, a guard that appears in **0** lines of `04-design.md` or `02-architecture.md` (grepped both) and lives in the layer with no unit tier.
+
+**One property covers both:** *a tick that produced no valid observation must not produce a claim; a tick whose view failed must produce the claim that says so.* Three one-liners, two files:
+
+```js
+// (a) app.js:378-381 — a throwing view is an observation, not a hole in the loop
+try { const extra = await view.onTick(view.container, bodies, view.ctx); if (extra) Object.assign(results, extra); }
+catch (e) { results[`view:${view.name}`] = 'fail'; console.error(e); }  // once per distinct message, ~5 lines
+
+// (b) connection.js, before the worstOf line — no observation → no claim (identity, NOT reset)
+if (values.length === 0) return { ...prev, perRoute: tick.results };
+
+// (c) app.js:382 — the `Object.keys(results).length > 0` guard stops gating the reducer (identity
+//     makes it redundant there) and starts gating the FOOTER stamp instead — see §5. Not deleted: moved.
+```
+
+**Three things this merge lets both of us delete from our own proposals:**
+
+1. **QD3-O3's parenthetical rule is free — drop it.** QD wrote 「never counted toward the offline streak unless every route also failed」. The reducer already does exactly that: a synthetic `fail` beside any non-`fail` route makes `allFail` false (`connection.js:30`) → `degraded`, streak untouched. **No new reducer rule is needed for the fold.** State the fold; do not state a semantics the existing `allFail` branch already gives you.
+2. **The fold's only boundary risk is nil, and I checked rather than assumed.** `grep -rn perRoute src/ tests/` → the field is written in three places and **read by nobody**. A synthetic `view:<name>` key cannot reach the operator.
+3. **(b) is what frees the guard, and (a) alone is not.** The fold does not empty-proof the loop — `results` is still `{}` for a view name absent from `ROUTES` (`poll.js:37`). Identity-on-empty does, with **zero** behaviour change (identity produces exactly what the guard produces: no state change, no repaint), moving the property from an untestable layer into the module that already has a literal-fixture transition table. Price honestly: +2 files on QD's list (`connection.js` and its UT), refactor-not-behaviour. **And the guard is not deleted — §5 gives it a new job**, which is the interaction I nearly shipped past.
+
+**The clause I owe, unchanged from r1 §3 and repeated so it cannot be missed:** identity-on-empty makes BF-3's brand-new 「`status` is never carried forward from `prev`」 sentence false. It must read 「**on a tick that observed at least one route**, `status` is never carried forward from `prev`」 — in the same edit, or this round re-opens BF-3 by accident. Identity preserves `consecutiveFails` too, which is the property that distinguishes it from a reset and is the UT case: `offline(5)` + empty tick → still `offline(5)`, **RED at HEAD**.
+
+---
+
+## §5 The footer — concede the rule, and the defect in it that my lens exists to find
+
+QD3-O4's rule (advance `updateFooterClock()` only on a `live` tick) is right: a truthful under-claim beats a false stamp, and 「更新於 12:29:58」 beside `降級` becomes the staleness indicator the page lacks. I withdraw the relabel alternative QD pre-refused; its fidelity argument holds.
+
+**But as worded the rule ships a false FIRST stamp and then freezes it forever.** `app.js:146` calls `updateFooterClock()` at footer **build** time, before any tick has run. Under QD's rule, a page that loads while degraded stamps the page-load wall clock and never moves it again — strictly worse than today, where at least the lie is recent. Today's code hides this; the rule exposes it.
+
+**And my own §4 makes the rule insufficient by one condition — I found this against myself and say so here rather than let the synthesizer find it.** Identity-on-empty returns `live` for an empty tick from a `live` page. Under QD3-O4 as worded (`if (status === 'live') updateFooterClock()`), that tick **advances the stamp** — 「更新於 12:30:05」 on a tick that fetched nothing, the exact class the rule exists to close. Unreachable at HEAD for the same reason AD-2 is, and reachable in the same REQ-142 future I cite as the reason to do identity-on-empty at all; I may not invoke that future for one half of the merge and ignore it for the other. **The rule needs one qualifier: the footer advances on a tick that observed ≥ 1 route AND reduced to `live`.** Consequence, priced: `app.js:382`'s `Object.keys(results).length > 0` guard is **repurposed, not deleted** — identity makes it redundant at the reducer, and nothing else can supply the 「observed ≥ 1 route」 half of the stamp's condition. The merge moves one guard; it does not remove one.
+
+**Fix for the first stamp — one token, zero new string-table keys, DES-209-safe:** the build-time call writes the label with a placeholder instead of a time — `L(prefs.lang,'updated') + ' —'`. The handoff's 「Footer: API base left, `Updated HH:MM:SS` right」 (`README.md:70`) keeps its form for the fidelity oracle, and the page never claims a freshness it has not earned. **Verified cost: zero.** No acceptance test asserts the footer text at all (grepped `tests/acceptance/*.ts` → 0 hits for footer/Updated/更新於), so nothing breaks and QD's proposed assertion on `val-198:262` is the first one.
+
+---
+
+## §6 The converged edit list — what design lands this pass
+
+Zero new DES ids; in-place amendment, `iter:` as the synthesizer coins. **E1–E6 are unconditional** (true of HEAD, or pure row precision). **E7 is the only clause that describes a tree we do not have, and it rides TASK-217 or is not written** — `04-design.md:7285`'s binary rule.
+
+| # | row | edit | source |
 |---|---|---|---|
-| **DES-202** `:6808` | "any `ok` in the tick → `live` with `consecutiveFails: 0`" | `connection.js:26` `worstOf(tick.results) === 'ok'` → live; any mix short of unanimous fail → `degraded` | contradiction |
-| **DES-202** `:6809` tests | "`live→live` on a degraded-plus-ok tick" | `dashboard-lib-connection.test.js:30-35` asserts **`degraded`** | **inverted** |
-| **DES-199** `:6783` | `cache: 'immutable' \| 'no-store'` | `static-assets.ts:33` `'public, max-age=31536000, immutable' \| 'no-store'` | contradiction, one token |
+| **E1** | `04-design.md:6814` | `worstOf → 'ok'\|'degraded'\|'fail'`; 「(the reducer reads THIS; the tag reads `State.status`)」 | AD-1 ≡ QD3-C1 |
+| **E2** | `:6816` | the AC-4 case reads `describe` ok + `/api/runs` degraded (workflow view, `val-199:231`; UT `:29-34`) | QD3-C2 |
+| **E3** | `:6815` | 「a `degraded` **key** (presence, not type)」 | AD-5 |
+| **E4** | `:6849` DES-206 | **D7** as QD drafted it, **plus §3's status-in-hand clause**; `tests:` names `val-198:262`, `val-199:231`, `val-200:215` | QD3-O1 + AD-6 |
+| **E5** | `:6858` DES-207 | the degraded-`/api/system` case names its **fake** (route-level `{degraded}` at the browser edge, the `val-199:231` recipe) and its **assertion** (a `.sys-table` row reads 無法取樣, zero `pageerror`) — a selector must no longer satisfy it | QD3-O2 |
+| **E6** | `:6818` | **one** appended sentence recording E1–E5 as the row sweep BF-3 owed. Not a new amendment block — `:6817`/`:6818` are already two deep. | both |
+| **E7** | `:6849` DES-206 | the truth-telling clauses: the `onTick` fold, identity-on-empty, and the footer rule. **Conditional on TASK-217.** | §4, §5 |
 
-**D-6 — I rank DES-202 above my own Rider A, and the boundary lens is why.** My Rider A is a design clause authorising a test that asserts dead bytes: a live vacuous green, bad. DES-202 `:6809` is worse in kind. A design row's `tests:` line is read as a *specification for the test to write*; this one names the exact case that `v27c AC-4` repaired and states the pre-repair expectation. An implementer handed DES-202 verbatim writes an assertion that **re-introduces** the bug — the tag reading 連線中 over a degraded visible table, the thing `val-199-workflow-detail.test.ts` crashed on. That is not documentation drift; it is a defect generator, and it is the top design-owned finding of this round. QD-R2's HIGH is correct and I endorse it over my own.
+**TASK-217 — one row, three units, a stated trim order.** `files:` `src/dashboard/ui/app.js`, `src/dashboard/lib/connection.js`, `tests/unit/dashboard-lib-connection.test.js`, `tests/acceptance/val-198-shell-and-home.test.ts`. `des:` DES-206, DES-202. `traces:` ARCH-125, REQ-131. `status: draft`, S.
 
-One constraint I add to QD's O-3/R-2, from the boundary lens: the amendment inherits `ARCH-124`'s `owner_decision: pending` (`02-architecture.md:3365`) and **enumerates the flip set** — ARCH-124's sentence, DES-202's sentence, `connection.js:26-31`, UT-245 `:30-42`. QD already proposed exactly this. Agreed without reservation; naming it here so the synthesizer sees both lenses require it, not one.
+- **(a) the fold** — always. `onTick` wrapped; a rejection folds `view:<name>: 'fail'`, logs once per distinct message, `nextConnection` still runs. One real-browser case: a view throws, tag reads `degraded`, `pageerror` non-empty is *expected* and the tag is the assertion.
+- **(b) identity-on-empty; `app.js:382` repurposed** — one unit. The guard stops gating `nextConnection` (identity makes it redundant) and becomes the 「observed ≥ 1 route」 half of (c)'s condition. Two UT cases, both RED at HEAD: empty tick from `offline(5)` stays `offline(5)`; empty tick from `live` stays `live`.
+- **(c) the footer rule + the first-paint placeholder (§5)** — one unit. `updateFooterClock()` runs only on a tick that observed ≥ 1 route AND reduced to `live`; `app.js:146` writes `L(lang,'updated') + ' —'`. `val-198:262`'s existing BF-2 case gains one assertion: the footer text is unchanged across its two degraded ticks.
+- **If capacity forces a trim, drop (b) first** — it is the only latent one — and E7's identity clause and its two UT cases drop with it. (c) survives the trim unchanged: without identity, `app.js:382` keeps its original job and the stamp reads the same two-condition rule off `results` and `connectionState` directly. **(a) and (c) are both measured or free.**
 
----
+**`system.js` is NOT in this task.** It is a BF-2 residue routed to impl as a send-back item; merging it into a draft task lets a send-back item hide inside new scope. QD said this first and is right.
 
-## §3 D-7/D-8 — two corrections to my own round 1
-
-**D-7. My r1 labelled `dashboard-page-source.test.ts:95` "UT-240". It is UT-241.** `05-tests.md:12062` = UT-240 = `static-assets.test.ts` (traces DES-199/TASK-204); `:12075` = UT-241 = `dashboard-page-source.test.ts` extended (traces DES-200/TASK-205). I copied the test file's own mislabel at `:51` — the same way ARCH-122 `:3343` did, twice. My `:43` label (UT-224) was right; the `:95` one was not.
-
-This correction **sharpens** my KP-4 rather than softening it, and it is a textbook interface-contract defect: both ids exist, so `sh .sdlc/trace` is green in every direction, while an implementer handed ARCH-122's TASK-A text opens `static-assets.test.ts` looking for a `draggable` case that was never there. A reference that resolves to the wrong thing is worse than a dangling one — the dangling one has a checker. QD's TASK-215 DoD fixing `:51` in the same commit is the right closure.
-
-**D-8. My r1 cited TASK-018 *and TASK-153* as tasks tracing to ARCH with no DES row. TASK-153 carries `des: DES-138, DES-142`.** I asserted "both are prose mentions only" from a grep over `04-design.md` for `### DES-` rows and did not check the task rows' own `des:` fields. The precedent survives on the real numbers — **TASK-018 has no `des:`, and 96 of 214 task rows carry none** — so QD's "a TASK's `des:` must resolve" is too strong as stated. But QD's *direction* is right and I concede it: a compile-time guard belongs to a design row, and DES-191 is literally titled "the guard tier".
-
-**The narrowing — exactly what stays and what goes from QD's R-1 sentence:**
-
-- **KEEP** (this is design-layer content DES-191 already owns — its `tests:` line is "the planted-violation case per guard"): the three falsifiers — planted `document.title` in a server `.ts` → **TS2584**; planted `import … from './dashboard/lib/connection.js'` → **TS7016**; a planted stray token in `ui/app.js` still fails the **ROOT** program → **TS1109** (the coverage that must not be traded away); **one UT pins both `package.json` script strings**; the accepted limit (editors resolve the nearest `tsconfig.json`, which keeps DOM — a CI/build property, not an in-editor one).
-- **CUT**: the transcribed config shape (`extends` / `lib:["ES2022"]` / `allowJs:false` / `include:["src"]` / `exclude:["src/dashboard"]`). Replace with **"shape per ADR-049 as amended, `02-architecture.md:3444`"**.
-- **Why:** that literal is already written verbatim in ADR-049's amendment and again in TASK-216's DoD. A third copy is three places to drift, and the Karpathy tie-break refuses it. The falsifiers are not duplication — they are the seam that makes the property testable, which is the design gate's job and not the ADR's.
+**Trace prediction, falsifiable:** +1 LOW `TASK 未實作` row (35 → 36), zero 漂移 rows, provided every amended row's `iter:` advances in the same commit as its text. If a re-run shows otherwise, this prediction is wrong and the round should say so.
 
 ---
 
-## §4 D-9 — the pre-boot literal: conceded, twice narrowed
+## §7 My three lenses, round 2 — what the debate changed
 
-QD predicted I would invoke REQ-131's 「畫面不得散落字面值」. I read the requirement rather than the quotation. `01-requirements.md:1727-1728` puts the clause inside the **language-toggle** Given — 「語言分段設 EN **Then** nav/tab/欄位標題全英文… 兩種語言的字串同源於單一字串表,畫面不得散落字面值。」 It governs strings that must *switch language*. A string emitted by the server before any module can load is not one of those, by construction. QD's reading is correct.
+- **Interface-contract lost its biggest proposal to testability's own evidence.** AD-4(a) was the interface answer (widen the seam so the contract carries the decision). The measured defect was at a view that does not use the seam. **The tie-break is not simplicity here — it is relevance:** a contract change that cannot reach the defect is not a small fix, it is the wrong fix. Simplicity only decided what replaced it (one token at `system.js:74`, one clause in D7).
+- **Boundary/error and testability still agree, and that is still the argument.** AD-2 and QD3-O3 both move a property out of the layer ADR-049 left with no unit tier and into the module that has a transition table. Two lenses and the line count point the same way; take it.
+- **Boundary/error against a proposal I am conceding** is the round's cleanest example of the lens working: I accept QD3-O4's rule *and* find that it ships a false first stamp (§5). Conceding a proposal is not the same as not reading it.
+- **Simplicity as tie-break, applied against myself twice:** withdraw AD-4(a); refuse the two-token `system.js` gate in favour of the one-token one. Applied against QD once: drop QD3-O3's parenthetical streak rule, because `allFail` already gives it free.
 
-And my lens is bound by its own record, which I checked rather than took from QD's characterisation: `02-architecture.md:3807` — 「Adversarial adopted the static text (an empty mount is a blank page on a module 404: not false, but **not a seam either**)」. A `…` glyph is that same objection with one character added. So this is not really a concession, it is consistency: **a sentence, in the `.empty` hook, no `id`, no `<noscript>`, no timer** — the shape adversarial already adopted at v27h, now with the literal filled in.
+## §8 Remaining disagreements — three, all small, all stated for the synthesizer to settle
 
-Two partial rebuts of QD's proposed literal, both from the lenses that are mine:
+1. **D7's wording.** QD's draft says the per-route statuses never reach a view. I need §3's status-in-hand clause appended or D7 sanctions the shape sniff that broke `system.js`. **This is a wording merge, not a split** — I expect QD to take it, since its own §2 asks for the same thing.
+2. **AD-2 / unit (b).** QD has not seen it (it is not in `quality-dimensions.r1.md`). If QD rules it LOW-and-latent on the F-2 precedent, **the code half drops and E7's identity clause drops with it** — but E1's signature fix and the prose stay, because they are true of HEAD either way. I hold that (b) is cheap and belongs with (a), and I concede the reachability point up front: it is unreachable at HEAD.
+3. **AD-3.** One token, the round's only behaviour change on an unreachable input. Drop it if the synthesizer wants a zero-behaviour-change round.
 
-1. **Cut the parenthetical cause list.** QD's literal enumerates 「404 / CSP / 語法錯誤」. From the operator's seat those three are one condition — the module did not load — and the action is identical for all three. The actionable content is *the client did not start* plus *the one path to check*. Boundary lens: enumerating causes in a static string is a promise the string cannot keep (it cannot tell which of the three occurred), and a fourth cause added later makes it wrong. Drop the parenthetical; keep the path.
-2. **The path in the literal must be pinned equal to the module `<script src>`, in UT-241's positive — one assertion.** This is the testability lens's whole contribution here. QD's literal names `/static/dashboard/ui/app.js`; that prefix is owned by `STATIC_ASSETS` / the `<script src>` the same page emits. Two copies of one path, one of them unguarded, is exactly how a diagnostic starts lying silently — and this one lies precisely when it is the only thing on screen. Assert the diagnostic text contains the same path the shell's module `<script src>` carries, in the same UT-241 positive QD already proposes (`<main class="empty">` + island + module script + no `<section`/`<header`). One line, and it makes the seam falsifiable instead of asserted.
+Everything else on the scoreboard is converged.
 
-Bilingual-both-at-once, with no per-`lang` branch: accepted, for QD's reason (the shell has no language knowledge; `theme-init.js` restamps `lang` before paint) and because the audience is an operator staring at a dead page, not a user exercising the toggle.
+## §9 What was run this round (HEAD `57ad237`)
 
----
+```
+cat -n src/dashboard/lib/connection.js            → RANK{ok,degraded,fail}; worst='ok' seed; 'live' never returned (AD-1/QD3-C1 ✔)
+                                                    :30 allFail guarded, :27 healthy arm NOT guarded (AD-2 ✔)
+cat -n src/dashboard/ui/poll.js                   → :16 home=['/api/home']; :20-23 workflow=[describe,'/api/runs']
+                                                    → the :6816 pair is never co-fetched (QD3-C2 ✔)
+                                                    :37 `return fn ? fn(ctx) : []` — the empty-results door (AD-2 reachability)
+sed -n app.js:360-400                             → :379 onTick unguarded; :382 the undocumented guard; :386 footer every tick (QD3-O3/O4 ✔)
+sed -n app.js:110-127, :128-147                   → :115 tag reads State.status (AD-1 parenthetical ✔)
+                                                    :146 updateFooterClock() at BUILD time — the false first stamp (§5, NEW)
+sed -n system.js:40-85                            → :72 own getJSON → res.status in hand; :74 tests !res.body; :77 buildTable;
+                                                    :49 data.cpu.cores → throws on a 200 {degraded} (QD3-O2 ✔, from source)
+sed -n val-202-ported-tabs.test.ts:104-118        → title promises the Unavailable component; body clicks the tab and
+                                                    waitForSelector('#system-panel'). Fakes nothing, reads no cell (QD3-O2 ✔)
+grep -rn perRoute src/ tests/                     → written 3×, read 0× — a synthetic view:<name> key cannot leak (§4.2)
+grep -rn "footer|Updated|更新於" tests/acceptance/ → 0 hits; the footer has no assertion at any tier (§5 cost = zero)
+sed -n 04-design.md:6811-6819, :6845-6859         → DES-202/206/207 as amended v27k; :6857's verbatim clause (§0)
+git log -1 --format=%h -- <this path>             → 8d3584b (supersedes sha, captured before overwrite)
+```
 
-## §5 D-11 — the ordering "dispute" is not one, and the synthesizer should not read it as one
-
-My r1: "mint TASK-A first, then edit the clauses in the same batch." QD §5.2: "Both `des:` parents need the amendment first." Opposite words, identical requirement — **neither artifact may land alone**. Inside one batch the intra-batch order is invisible to every consumer: the trace tool reads the committed tree, not the edit sequence. QD's DES-first is fine and I adopt it.
-
-What both of us actually mean, stated once so it survives into the synthesis: **a design clause that forbids an assertion the tree still runs, with no task row scheduled to remove it, is strictly worse than leaving both alone.** QD's proposed DES-200 sentence 「until TASK-215 lands the fossil body stands and is not a test subject」 is the mechanism, and it is the same shape ARCH-124 already uses (「UNGUARDED until TASK-B lands」). If the orchestrator declines the micro-dispatch, that sentence is what keeps the round honest — and the priced cost stands: **+2 LOW `未實作` trace rows** (`02-architecture.md:3836`), ADR-049's UNGUARDED sentence into Gate 8, and `dashboard-page-source.test.ts:95` still green over bytes `app.js:455` discards.
-
-QD §5.4's commit rule is the one I would elevate: TASK-215's body deletion and its five dispositions in **one** commit. Deletion first turns five assertions red; dispositions first leaves them green over dead bytes — and DES-208's own sentence says which of those is the dangerous one.
-
----
-
-## §6 D-12 — the oracle: converged, plus three constraints from this session's measurements
-
-Routing agreed with QD: **§9 beside TOOL-FORK, not a TASK, not in `tests/`, manual until the plugin's `dashboard_check` grows a real-render arm.** I drop my r1's `.sdlc/` vs `scripts/` placement argument — QD's §9-row-with-spec makes the path the tooling owner's call, and that is the right owner. I keep the rename: the oracle is a **render** check, not a parse check, and the filename must not bake in the weaker oracle.
-
-QD's O-1 spec is adopted whole. Three constraints to add, each one a silent-always-pass I hit empirically this session:
-
-1. **`-p <puppeteer config>` is mandatory.** Without it `mmdc` dies inside `JSON.parse` on `/dev/null` and **exits 0**. An oracle built naively is a green light wired to nothing.
-2. **The extractor must read `<foreignObject>` / `<span>`, not `<text>` / `<tspan>`.** A classDiagram renders every member into an HTML `foreignObject`; my first extractor was written against `<text>` and returned **zero rows for every candidate**, reporting `tilde: 0 | raw-entity: 0 | %%: 0` — a perfect score on four files it had not read. QD's sweep already reads foreignObject (they counted all 8 members), so this is a spec constraint for whoever writes the script next, not a defect in their result. Name the element in the spec, and make an **empty extraction a FAIL, never a pass** — the zero-row case is the bug, not a clean block.
-3. **Keep QD's "no verbatim `~` in classDiagram member text."** It is the assertion that catches the raw-tilde failure, which parses clean and is invisible to every lexical check.
-
-**A correction to QD's authoring rule (b), and to my own r1's root cause — the discriminator is the comma COUNT, not the comma.** Both r1s reported a comma result and they looked incompatible: mine had `Promise~A,B~` → `Promise<A,B>` ✓, QD's had `Promise~channel,version,from~` → raw. Probed this round:
-
-| member | renders |
-|---|---|
-| `Promise~A,B~` (one comma) | `Promise<A,B>` ✓ |
-| `Promise~A,B,C~` (**two** commas) | **`Promise~A,B,C~` raw** ✗ |
-| `Promise~#123;A#44;B#125;~` | `Promise<{A,B}>` ✓ |
-| `Promise~A(B)~` | **`Promise~A(B) : ~`** ✗ |
-
-Neither measurement was wrong; they were different arities. **One comma converts, two do not** — which also retires my r1's stated root cause ("entity + comma *together* is what breaks"): the entity was never the variable, the comma count was. QD's paren finding is confirmed unchanged.
-
-So rule **(b)** must not be recorded as *"a `,` inside `~…~` disables the conversion"* — that is false for the single-comma case a future author will hit first, and a rule that is wrong in the common case gets ignored in the uncommon one. Record it defensively instead:
-
-> *(b) inside a `~…~` generic, a `(` always breaks the conversion and a comma breaks it from the **second** comma onward (`Promise~A,B~` converts; `Promise~A,B,C~` renders raw). Do not rely on the arity — write every literal comma as `#44;`.*
-
-**What I do NOT propose, having considered it and refused it:** a rendered-row-count assertion to catch the Scheduler collapse (D-4). To know 32 is right the oracle would have to count visibility tokens per class-body line in the source — the lexical heuristic whose noisiness is the exact reason my r1 refused to couple this check to `dashboard_check`. One property, one script. The Scheduler class belongs to the **authoring rules** instead: a third rule beside QD's two —
-
-> *(c) one member per line in a class body. Two visibility tokens on one line parse, and render as a single row.*
-
-— with, at most, a lexical **`warn`** (never a FAIL) in the oracle's pre-pass. QD's (a) and (b) plus this (c) go beside v27h's sequenceDiagram rule at `02-architecture.md:3782+`, recorded by this gate, taken by Gate 2.
-
----
-
-## §7 D-13 — the one thing I hold that QD did not raise
-
-QD's R-3 names `deregister`'s `claimedTriggers` as "seen, not taken — name it for the next v22-slice touch." Agreed in kind. My r1's §3 conflict-1 finding is larger and I hold it at **SHOULD, deferred, recorded**:
-
-- `+register(name, script, defaults, principal)` is the **retired positional form**. `src/workflow-catalog.ts:653` throws by name on it: 「the pre-v24 positional (name, script, defaults, principal) shape is retired (ADR-035)」.
-- **It may not be repaired alone.** `04-design.md:3399` — DES-111, twelve lines below the diagram — carries the identical stale shape annotated `// signature unchanged`. Fixing the member would make the diagram contradict the DES row beneath it: one honest staleness converted into a fresh inconsistency. Both together, or neither.
-- **Deferring is right** (the block is a dated v22 slice and this is a render-only send-back); **being silent is not.** `07-review.md:247` already read past this once. If the synthesis defers it, it must say so in a dated marker on DES-111 — a row that already carries two amendment markers, so the convention is established there. The failure mode here is not the deferral; it is the third silent pass.
-
----
-
-## §8 Remaining disagreements after this round
-
-Three, all narrow, none blocking:
-
-1. **D-2 — the space after `#44;`.** Three characters. I hold no-space (byte-faithful to the v22 source, QD's own standard); if the synthesizer prefers QD's spaced form, take it and move on. Not worth a round 3.
-2. **D-4 — the Scheduler split.** QD has not seen it yet; I expect agreement once the 31-vs-32 measurement is in front of them. If it is judged scope creep, note that it is one line inside a block being opened anyway, and filing it costs more than taking it.
-3. **§7's recording clause.** QD may hold that any mention of the stale signature widens a render-only send-back. I do not contest the *deferral*; I contest only *silence*, and a dated marker is the cheapest form of not-silent there is.
-
-**Where I now stand with QD, for the synthesizer:** we agree on the fix form, the sweep, the six drift rows, the two task rows and their ids, the pre-boot sentence, the oracle's routing and its oracle, the one-batch rule, and the micro-dispatch recommendation with its priced decline. The design half of this send-back does not need a third round; it needs the edit map from QD's §6 with D-2, D-4, §3's DES-191 cut, §4's two narrowings and §6's three oracle constraints folded in.
+**Not done:** I did **not** re-run QD's Chromium repro. The throw is deducible from source without a browser (`system.js:74` → `:77` → `:49`), which is what I verified; QD's measurement is the operator-visible confirmation of the same path, and I rely on it for the 「0 rows, 3 `pageerror`, tag `live`」 numbers rather than re-measuring them. No suite was run — no `src/`/`tests/` edit is proposed by design this round.

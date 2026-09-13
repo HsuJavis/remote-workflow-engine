@@ -4922,3 +4922,33 @@ after each restore, then re-ran green (`dashboard-lib-connection.test.js` 12/12,
 QD2-O2, the carried panel findings, the trace/`solid_check` rows, TOOL-FORK/DOC-H) — none was named
 blocking, so none was chased. `current_stage` stays at `review`, unchanged — Gate 8 owns this loop;
 the next step is RE-REVIEW #3, not a rewind to tests.
+
+## 2026-09-13 — v27l Gate 3+4 SEND-BACK REPAIR (designer) — BF-3 verified landed, and the sweep of the row it owned
+
+**What was dispatched and what was found.** The design half of the RE-REVIEW #2 send-back. The implementer had already landed all three findings in `b124430` (including design's BF-3), so the first job
+was to confirm the edit rather than trust it: **BF-1** — `connection.js:34-40` reports `degraded` at 1 and `offline` at ≥ 2 and reads `prev.status` nowhere, UT `:49-59` renamed to
+`live → degraded (consecutiveFails 1)`, the second-tick-`offline` and un-debounced-recovery cases unchanged; **BF-2** — `home.js:231` and `run.js:475` carry `workflow.js:350`'s guard shape ahead of any
+repaint or further fetch, with one real-Chromium falsifying case each (`val-198:262`, `val-200:215`) and their runs pasted in IMPL-278; **BF-3** — DES-202's `boundary:`/`tests:` re-stated and the
+`owner_decision` inheritance closed as SETTLED at both `:6817` and `:7274`. All three hold.
+
+**What this round adds — the sweep of the same row.** BF-3 repaired the two lines the finding quoted; three other clauses of DES-202 still contradicted the tree, each of the class BF-3 exists for.
+Re-stated in place at `iter: v27l`, under ONE consolidated `amended (…)` line, no new DES id, no trace-link change, no code: **(1) `signature:`** typed `worstOf → 'live'|…` where the function returns a
+`RANK` key (`connection.js:9-15`, caller `:27`, UT `:78`) — both lenses ranked it the round's top design item, because an implementer writing to the old union makes `worst === 'ok'` permanently false and
+the tag can never reach `live`, a worse failure than BF-1's from the row's FIRST line; its parenthetical 「the nav tag reads THIS」 was false the same way (`app.js:115` reads `State.status`, which BF-1 made
+diverge from `worstOf`). **(2) `tests:`** named an `/api/home` + `/api/runs` pair no tick co-fetches (`poll.js:16, 20-23`); the case that exists is the workflow view's (`UT :29-34`, `val-199:231`).
+**(3) `boundary:`** said a `degraded` **string** where `classifyResponse` tests key presence (`connection.js:48`) — fail-CLOSED, so the prose moved and the code did not.
+
+**What was NOT written, and why that is the ledger's own rule.** The panel converged on six further edits and two draft task rows (TASK-217 the poll loop's truth-telling, TASK-218 the `onTick` seam).
+`04-design.md:7285` — a design clause the tree does not satisfy, with no task scheduled to make it true, is worse than leaving both alone — plus the dispatch's no-re-decomposition bound make it
+all-or-nothing, and **both lenses wrote that zero-task fallback themselves**. The seven deferred items are recorded with their measured consequences in `04-design.md`'s 「Decision rationale — v27l」 as
+RE-REVIEW #3's §9 input, not converted into clauses.
+
+**One blocking-class item is open and is not design's lane.** `src/dashboard/ui/system.js:74` tests `!res.body`, so the catch-all's HTTP 200 `{degraded:'…'}` (`server.ts:1104`) is truthy, `:77` calls
+`buildTable`, and `:49` reads `data.cpu.cores` — measured in real Chromium by the quality-dimensions lens as **0 rows, 3 `pageerror`, tag frozen `live`**, once every 3 s for as long as the route stays
+degraded. It contradicts `04-design.md:6857` in that row's own words. The fix both lenses converged on is one token — `if (res.status !== 'ok')`, since `:72` already holds `classifyResponse`'s answer — and
+its test (`val-202:104-117`) asserts a selector rather than the property. BF-2's required shape named `home.js` and `run.js` only, so it is new-by-letter and residue-by-retro: **routed to impl; if impl is
+not dispatched before RE-REVIEW #3, the loop pays a round.**
+
+**Verification.** `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → **1663 items / 35 gaps**, identical to the pre-edit baseline captured in this session (the `iter:` bump produced no
+drift row). `npx tsc --noEmit` → 0 errors and `dashboard-lib-connection.test.js` 12/12 green — a docs-only round touches no code, so the implementer's full-suite run at `b124430` (2835 / 26 / 0) stands.
+`current_stage` stays at `review`, unchanged: Gate 8 owns this loop and the next step is RE-REVIEW #3.
