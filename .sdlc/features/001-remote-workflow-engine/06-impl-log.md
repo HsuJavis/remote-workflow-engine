@@ -6536,7 +6536,7 @@ than on the substituted one.
   ONE all-fail tick"; the sibling "-> offline on the SECOND consecutive all-fail tick" and
   "offline -> live on a single recovery" cases pass unchanged)
 - **files:** src/dashboard/lib/connection.js, tests/unit/dashboard-lib-connection.test.js
-- **commit:** (pending — see journal entry for this round)
+- **commit:** b124430
 - **iter:** v27k
 
 Gate 8 RE-REVIEW #2's BF-1: on the FIRST unanimous-`fail` tick, `nextConnection` returned
@@ -6565,7 +6565,7 @@ branch, neither of which this fix touches.
   swimlane painted (BF-2)")
 - **files:** src/dashboard/ui/home.js, src/dashboard/ui/run.js,
   tests/acceptance/val-198-shell-and-home.test.ts, tests/acceptance/val-200-swimlane.test.ts
-- **commit:** (pending — see journal entry for this round)
+- **commit:** b124430
 - **iter:** v27k
 
 The AC-4 repair (IMPL-271) applied ARCH-125's "never rendered as data" rule in only one of the
