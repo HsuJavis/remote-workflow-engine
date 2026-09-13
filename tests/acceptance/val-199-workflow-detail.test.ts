@@ -269,7 +269,17 @@ describe('workflow detail page, real Chromium (VAL-199, REQ-133)', () => {
   // `Array.isArray` guards already neutralize `:319`'s malformed `payload` for the swimlane itself
   // (an empty repaint either way), so the one assertion that actually falsifies is `:322`'s
   // `.run-summary` text — the same "no page error, no empty element" trap BF-5's own comment names.
-  itReal('a degraded /api/runs/:id (+ its /dag sibling) drops the run-summary line rather than rendering "undefined" (BF-6)', async () => {
+  //
+  // [BF-7 Gate 8 repair, A-2] This case's own assertion changed with the guard it now sits beside,
+  // and the change is part of BF-7's commit by necessity, not by choice. It degrades BOTH routes
+  // AFTER a healthy paint with the selection unchanged — which is exactly DES-206's (K) arm, so
+  // `paintSelected` now bails before any DOM write and the last-known `.run-summary` correctly
+  // STAYS. The old `expect(after).toBeNull()` asserted the erase, so it goes red against the right
+  // behaviour; restated as the invariant across the fault (exactly one element, text unchanged),
+  // which holds under both arms. BF-5/BF-6's actual pins — the two `not.toContain('undefined')`
+  // assertions — are untouched, and both findings stay closed: their subject was the literal text
+  // "undefined", never the element's absence.
+  itReal('a degraded /api/runs/:id (+ its /dag sibling) keeps the last-known run-summary line rather than rendering "undefined" (BF-6, BF-7)', async () => {
     const puppeteer = (await import('puppeteer')).default;
     const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
     try {
@@ -291,8 +301,11 @@ describe('workflow detail page, real Chromium (VAL-199, REQ-133)', () => {
       });
       // One poll tick is ~3s (app.js); wait past two to be sure a degraded tick actually landed.
       await new Promise((r) => setTimeout(r, 7000));
-      const after = await page.$('.run-summary');
-      expect(after).toBeNull();
+      // `$$eval` (not `$`): `page.$()` returns an ElementHandle, which has no `textContent`
+      // property at all, so `after?.textContent` would be `undefined` on every path and the
+      // assertion would be red whether the guard is right or wrong.
+      const after = await page.$$eval('.run-summary', (els) => els.map((e) => e.textContent));
+      expect(after).toEqual([before]);
       const legendText = await page.$eval('[data-legend]', (el) => el.textContent);
       expect(legendText).not.toContain('undefined');
       expect(pageErrors).toEqual([]);
@@ -300,4 +313,58 @@ describe('workflow detail page, real Chromium (VAL-199, REQ-133)', () => {
       await browser.close();
     }
   }, 20000);
+
+  // [BF-7 Gate 8 repair] The falsifying case the guard is worthless without, and the reason it is a
+  // SEPARATE case rather than an extra assertion on the BF-6 one above: BF-6's case degrades BOTH
+  // `/api/runs/:id` and `/api/runs/:id/dag` together, which nulls `view`, so `renderLegend`'s own
+  // `if (!view) return` (`run.js:360`) drops the summary element and an absence assertion passes
+  // over a BLANKED graph — that file's own comment at the BF-6 case concedes it. The fault here is
+  // ASYMMETRIC: `/dag` alone degrades while `/api/runs/:id` stays healthy, which is the shape that
+  // made `paintSelected` synthesize `{cells:[],edges:[],warnings:[],lanes:[],current:null}`, hand
+  // it to `paintSwimlane` (which `replaceChildren()`s the svg and the cell layer before appending,
+  // erasing the live figure) and then to `renderLegend`, which — `view` being truthy — computed
+  // `nodeCount` off the invented `cells` and printed 「0 個節點」 beside two true figures.
+  //
+  // The assertions are invariants ACROSS the fault, never presence/absence: an unchanged cell count
+  // (a bare "non-zero" would pass on a repaint of the wrong run) and the summary still reporting
+  // the TRUE node count (asserting the element is absent cannot catch this — on this tick it is
+  // present and wrong). Two ticks, because the defect repeats every 3 s, not once.
+  itReal('a degraded /api/runs/:id/dag ALONE: the live figure and the true node count survive, never an empty graph and「0 個節點」(BF-7)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      const pageErrors: string[] = [];
+      page.on('pageerror', (err) => pageErrors.push(String(err)));
+      await page.goto(`${baseUrl}/dashboard/workflow/val199-detail`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await page.waitForSelector('[data-node-cell]', { timeout: 5000 });
+      await page.waitForSelector('.run-summary', { timeout: 3000 });
+      const beforeCells = await page.$$eval('[data-node-cell]', (els) => els.length);
+      // Without this the "unchanged" assertion below would pass vacuously on 0 === 0.
+      expect(beforeCells).toBeGreaterThan(0);
+      const beforeSummary = await page.$eval('.run-summary', (el) => el.textContent);
+      expect(beforeSummary).not.toContain('undefined');
+
+      await page.setRequestInterception(true);
+      page.on('request', (req) => {
+        // ONE route only — the sibling `/api/runs/:id` stays healthy, which is the whole point.
+        if (new URL(req.url()).pathname === `/api/runs/${detailRunId}/dag`) {
+          req.respond({ status: 200, contentType: 'application/json', body: JSON.stringify({ runs: [], degraded: 'val199 injected dag-only degrade' }) });
+          return;
+        }
+        req.continue();
+      });
+      // One poll tick is ~3s (app.js); wait past two so a repeat of the defect would be caught.
+      await new Promise((r) => setTimeout(r, 7000));
+
+      const afterCells = await page.$$eval('[data-node-cell]', (els) => els.length);
+      expect(afterCells).toBe(beforeCells);
+      const afterSummary = await page.$$eval('.run-summary', (els) => els.map((e) => e.textContent));
+      expect(afterSummary).toEqual([beforeSummary]);
+      expect(afterSummary[0]).not.toMatch(/(^|[^\d])0 (個節點|nodes)/);
+      expect(pageErrors).toEqual([]);
+    } finally {
+      await browser.close();
+    }
+  }, 30000);
 });

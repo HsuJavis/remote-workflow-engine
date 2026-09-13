@@ -19,6 +19,13 @@ export const STR = {
     predictedLayoutUnavailable: '預測結構不可用',
     predictedLayoutFromFallback: '預測結構來自替代版本 v{resolved}',
     laneUntitled: '未命名 lane',
+    // [v27m, DES-206 (S)] the ONE Unavailable component's text, for EVERY view — the zh/en pair is
+    // REQ-138's own (01-requirements.md:1874). It lands in both languages in the same edit on
+    // purpose: `t()` has no fallback, so a one-language key renders the literal string `undefined`
+    // (the BF-5/BF-6 defect class, inside the repair for it). `ui/system.js:29`'s zh-only
+    // `UNAVAILABLE` const is the pre-existing second copy — QD-R3 debt, retired when that site is
+    // repaired, not before, or the two diverge.
+    unavailable: '無法取樣',
     brand: '工作流引擎 / Workflow Engine',
   },
   en: {
@@ -26,6 +33,7 @@ export const STR = {
     predictedLayoutUnavailable: 'predicted layout unavailable',
     predictedLayoutFromFallback: 'predicted layout from substitute version v{resolved}',
     laneUntitled: 'untitled lane',
+    unavailable: 'Unavailable',
     brand: '工作流引擎 / Workflow Engine',
   },
 };

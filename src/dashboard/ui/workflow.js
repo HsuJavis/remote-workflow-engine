@@ -34,6 +34,7 @@
 import { paintSwimlane, renderLegend, initZoomable, currentLang } from './run.js';
 import { openAgentPanel } from './agent-panel.js';
 import { endpointsFor, getJSON } from './poll.js';
+import { el } from './dom.js';
 import { historyRow } from '../lib/runlist.js';
 import { t } from '../lib/strings.js';
 import { clockNow } from './clock.js';
@@ -289,6 +290,20 @@ async function loadDiagram(state, describe, lang) {
   shell.note.textContent = t(lang, 'predictedLayoutUnavailable');
 }
 
+/** DES-206 (U) [v27m] — the ONE Unavailable component for this view's figure. Clears the CHILDREN
+ *  of the surfaces the `/dag` route feeds (the svg, the cell layer, the legend) and keeps their
+ *  NODES: `[data-legend]` is a DES-209 TEST_ANCHOR and `.cell-layer` carries `ensureCellLayer`'s
+ *  delegated click listener, so replacing either element would regress an anchor or the REQ-135
+ *  click wiring. The text comes from the string table (`t(lang, 'unavailable')`), never a per-file
+ *  literal — `ui/system.js:29`'s zh-only const is the debt this must not duplicate (QD-R3). */
+function paintFigureUnavailable(shell, lang) {
+  shell.svgEl.replaceChildren();
+  const wrap = shell.svgEl.parentElement;
+  const layer = wrap && wrap.querySelector(':scope > .cell-layer');
+  if (layer) layer.replaceChildren();
+  shell.legend.replaceChildren(el('div', 'empty', t(lang, 'unavailable')));
+}
+
 /** Paints the selected (or predicted) figure; returns the state-dependent fetch statuses (the
  *  selected run's own `/dag` + `/api/runs/:id`) for `onTick` to fold into the connection reducer —
  *  `{}` for the no-runs/predicted branch, which makes no such fetch. */
@@ -316,18 +331,40 @@ async function paintSelected(state, runs, describe, lang) {
   const dagUrl = '/api/runs/' + encodeURIComponent(state.selectedRunId) + '/dag';
   const viewUrl = '/api/runs/' + encodeURIComponent(state.selectedRunId);
   const [dagRes, viewRes] = await Promise.all([getJSON(dagUrl), getJSON(viewUrl)]);
-  // [BF-6 Gate 8 repair] `dagRes.status`/`viewRes.status` (`classifyResponse`'s verdict, `poll.js:51`)
-  // are already in scope for these two fetches — a whole-route degrade is HTTP 200 `{degraded:'…'}`
-  // (server.ts's catch-all), truthy, so `dagRes.body || {defaults}` let a degraded dag body through
-  // as `payload` and `renderLegend` below rendered `view.status` as the literal string "undefined".
-  // Same bug shape, same fix idiom as `run.js:506`'s BF-5 (`viewRes.status === 'ok' ? ... : ...`)
-  // and `system.js:78`'s `res.status !== 'ok'` — the verdict is tested directly, never re-derived
-  // from the body's shape.
-  const payload = dagRes.status === 'ok' ? dagRes.body : { cells: [], edges: [], warnings: [], lanes: [], current: null };
+  const statuses = { [dagUrl]: dagRes.status, [viewUrl]: viewRes.status };
+  // [BF-7 Gate 8 repair — DES-206's (V)/(K)/(U)/(N) clause, v27m] BF-6's own fix stopped the
+  // degraded BODY reaching the painters and then handed them a SYNTHESIZED one instead
+  // (`{cells:[],edges:[],warnings:[],lanes:[],current:null}`): `paintSwimlane` `replaceChildren()`s
+  // the svg and the cell layer BEFORE appending (`run.js:219`/`:222`), so the live figure, lane
+  // headers and legend were erased, and `renderLegend` then computed `nodeCount` off the invented
+  // `cells` and printed 「0 個節點」 — a fabricated quantity in the same sentence and styling as two
+  // real ones. (N) forbids constructing a payload for a route that delivered none; the disposition
+  // is decided by `dagRes.status` (the classifier's verdict, `poll.js:51`), never re-derived from
+  // the body, and NO `okBody(res, fallback)` helper may be introduced — its natural call here is
+  // byte-for-byte the defect. Two arms, and the one question that picks between them is whether
+  // this surface already holds a successful paint of the CURRENT subject (`state.selectedRunId`).
+  if (dagRes.status !== 'ok') {
+    // (K) poll tick, subject unchanged since the last successful paint → no DOM write derived from
+    // the non-`ok` route at all: the last-known figure and summary stay on screen and the nav tag
+    // is what reports the fault (ARCH-124). Both statuses still reach `nextConnection`.
+    if (state.paintedRunId === state.selectedRunId) return statuses;
+    // (U) first paint, or the selection changed → clear and paint the explicit component. Keeping
+    // the PREVIOUS run's graph under a newly selected chip is a worse lie than a blank, which is
+    // why a bare copy of `run.js:475`'s bail is wrong here (that view renders ONE run for the life
+    // of the page and has no selection).
+    paintFigureUnavailable(shell, lang);
+    return statuses;
+  }
+  const payload = dagRes.body;
   const agentsById = new Map(((viewRes.body && viewRes.body.agents) || []).map((a) => [a.agentId, a]));
   paintSwimlane(shell.svgEl, payload, { lang, pAgents, agentsById, onSelectAgent });
   renderLegend(shell.legend, payload, viewRes.status === 'ok' ? viewRes.body : null, lang);
-  return { [dagUrl]: dagRes.status, [viewUrl]: viewRes.status };
+  // Paint memory, DES-206: set ONLY by an `ok` route result reaching a paint function — never by
+  // `render()`, whose first paint is an EMPTY SHELL, and an empty shell is not a paint. Without
+  // that rule the (K) arm above would "keep" something no route ever produced. (The clause's own
+  // wording for this uses the C3 word, which may not appear anywhere under `src/**` — UT-115.)
+  state.paintedRunId = state.selectedRunId;
+  return statuses;
 }
 
 export function render(container, vm, handlers) {
@@ -335,7 +372,9 @@ export function render(container, vm, handlers) {
   const lang = currentLang();
   const shell = buildShell(container);
   if (!name) return;
-  stateByContainer.set(container, { shell, name, lang, handlers: handlers || {}, selectedRunId: null, diagramKey: null, diagramUrl: null });
+  // `paintedRunId` is DES-206's paint memory: null here because `render()` paints an EMPTY SHELL,
+  // and an empty shell is not a paint — only `paintSelected`'s `ok` branch may write it.
+  stateByContainer.set(container, { shell, name, lang, handlers: handlers || {}, selectedRunId: null, paintedRunId: null, diagramKey: null, diagramUrl: null });
 }
 
 /** DES-206 [v27c] — `app.js`'s one timer calls this every ~3s with `endpointsFor('workflow', ctx)`'s
