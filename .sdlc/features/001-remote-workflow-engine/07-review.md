@@ -1,10 +1,331 @@
 ---
 stage: review
-status: sent-back   # v27 Gate 8: 13 blocking findings → impl / architecture / validation / design
+status: sent-back   # v27 Gate 8 RE-REVIEW #1: all 13 closed and re-verified; ONE new blocker — ARCH-124's owner_decision marker is still `pending` → architecture
 ---
 # 07 Review & Retro — Gate 8
 
-## v27 GATE 8 REVIEW (2026-09-13, CURRENT / AUTHORITATIVE — **SEND BACK**, `send_back = ["impl","architecture","validation","design"]`, 2 HIGH)
+## v27 GATE 8 RE-REVIEW #1 (2026-09-13, CURRENT / AUTHORITATIVE — **SEND BACK**, `send_back = ["architecture"]`, 1 HIGH)
+
+> Re-review after the workflow's built-in single auto re-run of the four gates the first v27 Gate 8
+> pass sent back to (`impl`, `architecture`, `validation`, `design`). **Scope is the 13 named
+> blocking findings, not the whole review** — plus the mechanical sweeps a closure may never skip
+> (trace, dashboard QA, module boundary, owner-deferral, validation/handover), because a repair can
+> introduce a new blocker of its own. It did: exactly one.
+>
+> Tree at re-review: **`29eb8a0`**, working tree otherwise clean (only the regenerated
+> `dashboard.html`). Repairs landed as `005892b` (v27g, impl × 8), `ac26b3e` (v27h, architecture × 3
+> + 2 induced drifts), `de199a2` (v27i, validation × 1), `8d3584b` (v27j, design × 1 + 8 re-pointed
+> rows), plus the owner's own ruling commit `29eb8a0`.
+>
+> **Every one of the 13 was re-verified on disk at file:line, and four were re-verified by
+> EXECUTION** — the full suite, `tsc --noEmit`, a real headless-Chromium render of every mermaid
+> block in `dashboard.html`, and a direct `analyze()` enumeration of the gap set. Nothing below is
+> quoted from a repair gate's own note without an independent check.
+>
+> **Verdict: 13 / 13 closed. The iteration still does not close — one NEW blocking finding.**
+> The v27h architecture repair minted an `owner_decision: pending` marker on ARCH-124 and escalated
+> it; the owner **ruled** at `29eb8a0` (keep the narrowing) and amended REQ-131's acceptance — but
+> **the marker itself was never flipped**. `02-architecture.md:3365` still reads
+> `- **owner_decision:** pending`. The ruling commit says so in its own body: 「Still owed before
+> Gate 8 can pass: ARCH-124's own `owner_decision` marker in 02-architecture.md is still `pending`
+> and blocks the gate.」 Issue #15's whole mechanism is that the MARKER is the record; an iteration
+> that closes with a live `pending` marker is the exact failure mode the sweep exists to prevent.
+> This is a one-line ledger edit whose content is already decided — it is not a re-litigation.
+>
+> **`arch_consistent: YES`** (changed from NO). All nine architecture-consistency findings the two
+> pre-run expert panels raised and this reviewer confirmed are closed; the two induced drifts the
+> v27g code fixes created were closed in the same architecture pass; the remaining deviations are
+> *declared* in the amended rows with named follow-up work items (TASK-215/216), which is honesty,
+> not violation.
+
+### §0 Gap tally
+
+**HIGH 1 · MID 10 · LOW 51.** (The HIGH is the single blocking finding in §8; every MID and LOW is
+recorded debt in §9.)
+
+| Sev | Count | Composition |
+|-----|-------|-------------|
+| HIGH | 1 | **OWN-1** — `02-architecture.md:3365` carries a live `- **owner_decision:** pending` on ARCH-124. The owner ruled at `29eb8a0`; the marker was not updated to `answered(2026-09-13) — …`. Sole blocker. |
+| MID | 10 | The five parked REQs' two trace rows each (REQ-137/138/139/142/143 × 未實作 + 未驗證) — unchanged, recorded out of closure at `02-architecture.md:3332`, `03-tasks.md:1662`, `04-design.md:7028`. **No blocking MID remains**: all eleven of the first pass's blocking MIDs are closed (§2). |
+| LOW | 51 | 25 trace gaps (21 漂移 + 4 TASK 未實作) · 10 `solid_check` 未認領檔案 · 11 carried panel findings (F-4, F-5, F-6, F-7≡QD-S2, QD-O4, QD-O5, QD-R2, QD-R3, QD-R4, QD-C2, QD-C3) · 2 ledger/tooling (TOOL-FORK, DOC-H) · **3 new this pass** (DEBT-A the residual fossil pin, DEBT-B REQ-131's new mixed-state clause has unit-tier evidence only, DEBT-C DES-202's prose inherits a marker that is about to flip). §9. |
+
+**Delta vs the first pass:** HIGH 2 → 1 (both closed, one new), blocking MID 11 → 0, LOW 46 → 51
+(+2 trace rows for the two newly-minted follow-up TASKs, +3 new debt rows). The first pass's 7
+`dashboard_check` mid rows are now **all seven proven false positives** — the render is 43/43.
+
+---
+
+### §1 The 13 blocking findings — verified closed, one by one
+
+Each row was opened at the cited line at `29eb8a0`. 「Proof」 names the strongest evidence this
+reviewer produced, not the repair gate's claim.
+
+| # | ID | Owner | Closed? | Evidence re-verified by this reviewer |
+|---|----|-------|---------|--------------------------------------|
+| 1 | **AC-1** (HIGH) | impl | **YES** | `tests/integration/dashboard-disclosure.test.ts:75-115` now boots a real server and harvests **eight real served bodies** into `realBodies`; `:122-131` iterates `DISCLOSURE_TABLE` and runs `Object.keys(body)` on the SERVED json, with `expect(body).toBeDefined()` at `:124` so a row without a captured body **fails** instead of passing vacuously. The two missing rows exist: `GET /api/home` (`tests/fixtures/dashboard-wire.ts:145`, harvested at `:105-106`) and the HTTP `GET /api/runs/:id/agents/:agentId` (`:146`, harvested at `:92-93`). The fixture stayed the allow-list; no projection module was built. IMPL-269 (`06-impl-log.md:6290`, commit `005892b`). |
+| 2 | **AC-3b** | impl | **YES** (at the named line) | `tests/unit/dashboard-page-source.test.ts:43` is now `expect(clientFile('ui/workflow.js')).toMatch(/img\.id = 'diagram-img';[\s\S]*?img\.draggable = false;/)`; the element really is built there (`src/dashboard/ui/workflow.js:151-154`). Baseline check: `git show ef0a400:tests/unit/dashboard-page-source.test.ts` had the pin at `:38` on `DASHBOARD_HTML`. A **second, unnamed** `DASHBOARD_HTML` draggable pin that also existed at the baseline (`:90`, now `:95`) survives — dispositioned, not overlooked: ARCH-122's v27h amendment and TASK-215's `dod:` (`03-tasks.md:1842`) both retire it explicitly, and it is not *false* today (the fossil body still emits those bytes). → DEBT-A, §9. |
+| 3 | **AC-4** | impl | **YES** | Both halves. `src/dashboard/lib/connection.js:26` calls `worstOf(tick.results)` and `live` now requires `worst === 'ok'`; `:31` returns `degraded` for any non-unanimous failure, so the offline streak only advances on a unanimous `fail` (`:33-36`). The crash path is guarded at the view: `src/dashboard/ui/workflow.js:350` returns early unless `describe` is present, non-degraded **and** `Array.isArray(bodies[runsUrl])` — the exact `TypeError` shape at `:227-228`. The falsifying test exists and is the one the finding named: `tests/unit/dashboard-lib-connection.test.js:29-33` 「describe ok, runs degraded → tag degraded」. IMPL-271. |
+| 4 | **AC-5** | impl | **YES — the required half, not the cheap half** | `src/dashboard/ui/app.js:185` now sets `currentView = { name: tab, … }` on every tab activation (and `:177` for the Workflows tab), so `endpointsFor(view)` (`src/dashboard/ui/poll.js:24-26`) returns `/api/models` · `/api/system` · `/api/issues` for the VISIBLE tab instead of `/api/home` forever. That is ARCH-125's 「the fetch set of the VISIBLE view only」 made true of the shipped page — the finding explicitly refused a footer-clock-only fix, and this is not one. IMPL-272. |
+| 5 | **AC-6** | impl | **YES** | `tests/acceptance/val-198-shell-and-home.test.ts:311-322` boots a REAL server with an applied `update-result.json` and an interrupted run, drives real Chromium, and `$eval`s `.rwe-version` (`/^v/`), `.rwe-update-outcome` (contains the tag) and `.rwe-update-cta` — against the **rendered** nav, not the island. `grep` over `tests/` for the four INV-V27-5 class names returns hits only in this file and `tests/fixtures/dashboard-classes.ts`, as the invariant requires. IMPL-273. |
+| 6 | **AC-7** | impl | **YES** | `git diff --name-status -M` reports `R061 src/dashboard/lib/clock.js → src/dashboard/ui/clock.js`. `grep -rn "new Date\|Date.now" src/dashboard/lib/` → **0 hits** (TASK-207's own DoD grep). Importers re-pointed (`ui/agent-panel.js:34`, `ui/workflow.js:39` → `'./clock.js'`), `ASSET_KEYS` updated (`src/static-assets.ts:20` lists `ui/clock.js`, and the 404-on-missing-key boot failure class that bit IMPL-247 is therefore not re-armed), test path moved. IMPL-274. |
+| 7 | **AC-8** | impl | **YES** | `src/static-assets.ts:33` types the value as the exact header (`'public, max-age=31536000, immutable' \| 'no-store'`) and `:48` returns it; both loose assertions are now exact equality — `tests/integration/static-assets-route.test.ts:72` `toBe('public, max-age=31536000, immutable')` and `tests/unit/static-assets.test.ts:40` the same. A bare `immutable` can no longer pass. IMPL-275. |
+| 8 | **AC-9** | impl | **YES** | `tests/integration/usage-live-equals-fold.test.ts:35-37` adds the third label returning `ok:false`, and it is used **in the existing case's script** (`:81-85`: `priced` → `unpriced` → `failed`), so INV-V27-1's named v26-R-1 shape (a terminally-failed call AND an unpriced call in one run) is now witnessed rather than asserted by construction. IMPL-276. |
+| 9 | **AC-2** | architecture | **YES, on the finding's own second branch** | ADR-049's title now reads 「…and (amended v27h) the root tsconfig DID change, so the server/client compile boundary moves to a second program」 (`02-architecture.md:3439`); ARCH-124's `note:` (`:3362`) names the replacement guard (`tsconfig.server.json`: `src` minus `src/dashboard`, `lib:["ES2022"]`, no `allowJs`, run in `typecheck` AND `build`) and states in bold that **「the property is UNGUARDED until TASK-B lands」**; the amendment at `:3364` strikes the old clause verbatim and cites `tsconfig.json:5-8` / IMPL-229. The finding's condition on that branch — 「record it as a decision with the tsconfig split named as a follow-up impl item」 — is met by **TASK-216** (`03-tasks.md:1846`). Checked: the architecture no longer asserts a guard the tree lacks. `npx tsc --noEmit` → exit 0, and `ls tsconfig*.json` → one file, consistent with the recorded 「owed」 state. |
+| 10 | **AC-3a** | architecture | **YES** | ARCH-122 is rewritten to the built shape and carries an explicit `amended (2026-09-13, v27h …)` line enumerating what was struck: the 「markup + tokens CSS」 title, the nav / four tab shells / `#dag-*` / `#run-usage` / `#diagram-*` anchors / component classes / panel container attribution, the stale `server.ts:1251-1257` caller, and — the half that mattered — the 「still assertable here」 clause, replaced by a **pin rule** that says `DASHBOARD_HTML` is a valid subject only for the shell's own facts. Line-number spot-check: `app.js:455` really is the `document.body.replaceChildren(nav, routeMount, buildFooter())`, and `dashboard-page.ts:92-152` really is `<header>`…`</main>`. Follow-up code work named as **TASK-215** (`03-tasks.md:1837`), with all five fossil pins dispositioned individually. |
+| 11 | **DASH-1** (a+b) | architecture | **YES — proven by render** | `02-architecture.md:2539` now reads `ok (minRole author · ownership workflow → owner or new)` — the message-text `;` is gone; the v27 process view moved its `%%` comment onto its own line (`:3586`). Both `sequenceDiagram`s render. |
+| 12 | **DOC-1** (HIGH) | validation | **YES** | `git diff ef0a400..HEAD -- README.md DEPLOY.md` is a 6-line rewrite and nothing else. Models → 「目錄表(provider / model / capability / stability / costLevel / modalities 六欄),本版不支援排序、篩選,也沒有點列滑出細節面板」 (matches `src/dashboard/ui/models.js:24` exactly, six headers, and its own 「No sorting, no filtering」 at `:6`). System → 「資源表格(…共六列),本版沒有卡片版面,也沒有處理程序表」 (matches the six `sysRow(...)` calls at `src/dashboard/ui/system.js:45-63`). Issues → 「GitHub not configured」 (the string the product actually renders, `src/dashboard/ui/issues.js:5`). The hidden-tab **pause** claim is deleted from both `README.md:121` and `DEPLOY.md:788`; `grep -rn "visibilitychange\|document.hidden" src/` still returns 0, so nothing re-armed it. The ASCII tab diagram (`README.md:141-142`) was corrected in the same edit. **No changelog was introduced** — the replacement text is current-state 「本版…」 phrasing, and the manuals' history-free preamble is intact. |
+| 13 | **DASH-2** | design | **YES — proven by render** | `04-design.md:3309-3316` replaces the brace generics with mermaid entity escapes (`Promise~#123;version#125;~`, `#44;` for the commas). The `classDiagram` renders. |
+
+---
+
+### §2 Architecture consistency — **now YES**, consolidated from the same two pre-run expert panels
+
+No new experts were spawned (contract: consolidate when the reports exist). `.panel/review/adversarial.md`
+and `.panel/review/quality-dimensions.md` are the same two reports the first pass consolidated; their
+combined 23 findings resolve as: **2 HIGH → 1 finding (AC-1) → closed**; **9 confirmed MID/architecture
+deviations (AC-2..AC-9, AC-3a/3b) → closed**; **11 LOW → carried debt (§9), unchanged**.
+
+The first pass's headline — 「three times v27 chose the cheap half of an 'equal' pair and shipped the
+form without the property」 — is now answered in all three places, and each answer is the *subject*
+change the retro asked for, not a re-word:
+
+- ADR-054's key-set control now takes **a served body** as its subject (AC-1).
+- ARCH-122/ADR-053's pins now take **the file that builds the element** as their subject (AC-3b),
+  and the architecture row that claimed otherwise is amended with a pin rule that makes the class
+  of error un-repeatable by construction (AC-3a).
+- ADR-052/INV-V27-1's equality assertion now takes **the run the invariant names** as its subject
+  (AC-9).
+
+**Two induced drifts the v27g code fixes created were caught by the architecture panel and closed in
+the same pass** — re-verified here: ARCH-124's 「any `ok` → `live`」 clause is struck against the
+shipped `worstOf` (`02-architecture.md:3364`, verified against `connection.js:26-31` and
+`dashboard-lib-connection.test.js:30-40`), and ARCH-123's `cache` type literal is amended to the
+full directive (`:3353`, verified against `static-assets.ts:33`). That is the send-back loop working:
+the repair's own side effects were found by the next gate rather than by the next iteration.
+
+**Declared-and-owed is not violation.** Two deviations remain visible in the tree and are *stated* in
+the architecture with named work items: the server/client compile guard is UNGUARDED until TASK-216,
+and the fossil shell body plus its five page-source pins stand until TASK-215. Both are priced
+(`state.yaml` records 「if exactly one is dispatched, take TASK-215」) and both show up mechanically as
+LOW 未實作 trace rows, which is exactly where an owed item belongs. **`arch_violations: []`.**
+
+---
+
+### §3 Traceability consistency — checked, clean; **zero v27 drift, still**
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` → **1661 items / 35 gaps**, regenerated
+this pass. Enumerated by calling `analyze()` directly, not read off the summary:
+
+| Type | Sev | Count | Disposition |
+|---|---|---|---|
+| `未實作` REQ | mid | 5 | REQ-137/138/139/142/143 — parked, recorded (§9). |
+| `未驗證` REQ | mid | 5 | the same five. |
+| `漂移` | low | 21 | **All pre-v27**, newest `DES-022 (v2) 落後於 IMPL-219 (v26)`. Byte-identical to the first pass's set. |
+| `未實作` TASK | low | 4 | TASK-018, TASK-153 (carried since v23) **+ TASK-215, TASK-216** (minted this pass, the two owed follow-ups). |
+
+- **0 斷鏈 · 0 孤兒 · 0 未真實驗證(mock-only) · 0 未驗證 REQ in the closure.**
+- **Gap delta 33 → 35 is fully accounted for: exactly TASK-215 and TASK-216, nothing else moved.**
+  Four gates edited `01`/`02`/`03`/`04`/`05`/`06`/`08` today and induced **not one new 漂移 row** —
+  the repair passes kept `iter:` discipline.
+- **doc↔code iteration drift: NONE** for v27, as in the first pass. The moved seam is recorded
+  properly: `06-impl-log.md:6458` carries `files: src/dashboard/ui/clock.js (new), src/dashboard/lib/clock.js (removed)`,
+  and no ARCH/DES row still points at the old path (the only remaining `lib/clock.js` strings in the
+  ledger are historical IMPL-247 narrative, which is where history belongs).
+- All eight v27g IMPL rows (IMPL-269..276) carry `commit: 005892b` — no stale-commit-field repeat of
+  the pattern v27 opened with.
+
+---
+
+### §4 Dashboard QA — **43 / 43 diagrams render. The dashboard is deliverable.**
+
+Playwright MCP tools are absent from this session; the check was run the same way as the first pass —
+**real headless Chromium via the repo's own puppeteer**, loading `file://…/dashboard.html`, clicking
+through every tab control and waiting for mermaid to settle.
+
+```
+TABS: 概覽 · 文件 · 追溯矩陣 · 溯源 · 圖表 · 迭代差異 · 追溯圖 · 缺口
+RESULT: { total: 43, svg: 43, failed: [], pre: 0 }
+ERRORS: []
+```
+
+**40/43 → 43/43.** Zero page errors, zero console errors, no 「圖渲染失敗」 box anywhere. The three
+first-pass failures (DASH-1a `02-architecture.md`'s v27 process view, DASH-1b the v24 process view,
+DASH-2 `04-design.md`'s classDiagram) all render.
+
+`dashboard_check` (run from the plugin — the vendored launcher still has no `--tool`) reports
+**0 high / 7 mid / 1 low**. Cross-checked against the browser: **all 7 mid are now false positives.**
+The heuristic flags `erDiagram` cardinality tokens (`||--o{`) as unbalanced braces, and `:2531` — the
+one true positive the first pass promoted to blocking — now renders, so the flag is stale, not a
+defect. The `[low]` (no offline mermaid fallback) and the absent `#Lnnn` SoT anchors remain the
+vendored-tooling debt (TOOL-FORK).
+
+**SoT links:** `dashboard_check` resolves every SoT target at the file level (0 unresolved). This
+reviewer additionally parsed every `href` out of the generated HTML: 8 distinct document targets
+(`01-requirements.md` … `08-validation.md` + `rtm.md`), **all present on disk**; the only two
+non-resolving strings are `${esc(it.file)}` / `${esc(r.file)}` — *template literals inside the
+generator's own embedded JS*, not emitted links. Line-level resolution is still impossible (the
+vendored generator emits no `#Lnnn` anchor; the line renders as text beside the link) — TOOL-FORK,
+unchanged.
+
+**趨勢:** the vendored generator writes no `metrics.jsonl`, so the trend is computed from recorded
+counts: v26 1492/24 → v27 first pass 1651/33 → now 1661/35. The +2 are the two follow-up tasks this
+repair round deliberately minted. **Gaps are not trending up in substance** — every blocking finding
+from the first pass is gone. No trend finding.
+
+---
+
+### §5 Module boundary & module build — checked, clean (unchanged)
+
+- `solid_check` → **✅ 68 modules, dependencies all as declared in 02-architecture; 0 mid / 10 low**
+  (javascript × 103, shell × 3 scanned). No undeclared cross-module dependency, **no cycle**, no
+  deep-internal import bypassing a public surface, no god-module. The AC-7 seam move
+  (`lib/clock.js` → `ui/clock.js`) did not disturb it — `ui/` may depend on `lib/`, never the reverse,
+  and that direction is still the only one in the graph.
+- The 10 LOW are the same carried 未認領檔案 set as v26/v27-first-pass. Debt, unchanged.
+- `module_check` → **dormant**: no ARCH row declares `build:`. Nothing to verify, no finding.
+- **Full regression, run by this reviewer:** `npx vitest run` → **403 test files passed / 1 skipped;
+  2833 tests passed / 26 skipped; 0 failed; exit 0; 458 s.** (First pass: 2829 passed. The +4 are the
+  new falsifying cases AC-1/AC-4/AC-6/AC-9 asked for.) `npx tsc --noEmit` → exit 0.
+
+---
+
+### §6 Owner-deferral ledger sweep (issue #15) — **the blocker**
+
+`grep -rn "owner_decision" .sdlc/features/001-remote-workflow-engine`, reconciled **mechanically on
+the metadata key** (`- **owner_decision:**`), never on prose. Twenty-three bullet items:
+
+| Disposition | Count | Where |
+|---|---|---|
+| `—` (no deferral) | 16 | `02-architecture.md` |
+| `answered(2026-09-08)` | 2 | ADR-038, ADR-047 |
+| `answered 2026-09-11` | 1 | ADR-051 |
+| `answered` + commit | 1 | DES-209 (`04-design.md:6885`) |
+| `DECIDED 2026-09-10` | 2 | VAL-186, VAL-187 (`08-validation.md:8671`, `:8680`) |
+| **`pending`** | **1** | **ARCH-124 — `02-architecture.md:3365`** |
+
+**OWN-1 (HIGH, blocking).** The v27h architecture repair did the right thing: the AC-4 code fix
+(already shipped) narrowed REQ-131's 「任一 `/api/*` 成功 → Live」 to 「visible-view routes ALL `ok`
+→ Live」, the architect **refused to amend an acceptance clause itself** and escalated with the
+consequence attached, minting the marker. The owner then ruled at `29eb8a0` — **keep the narrowing** —
+and `01-requirements.md:1729-1739` carries the amended acceptance plus an `[AMENDED v27h]` block
+naming who ruled, why, and that the implementation predates the amendment. The three-state alternative
+was put and declined (it would exceed DES-209's fidelity oracle).
+
+**What is missing is only the flip.** `02-architecture.md:3365` still says `pending`, and the ruling
+commit's own body says 「Still owed before Gate 8 can pass」. The ledger is the system of record; a
+closed iteration whose `grep owner_decision` returns `pending` is precisely what issue #15 exists to
+prevent, and the reviewer may not edit the work under review. → §8.
+
+**ADR spot-check for UNMARKED decision-shaped hedging** across everything the four repair gates added
+(`02-architecture.md` from `:3782`, `04-design.md` from `:7246`): a scan for 「not taken here」/
+「product decision」/「業主」/「擁有者」/「待裁決」 in the new text returns **zero hits**. The one real
+product call of this round carries the marker; it just needs its answer written onto it. No producer
+contract violation.
+
+---
+
+### §7 Validation & handover — **PASSES** (the one validation finding is closed)
+
+- **Mock hard-rule holds.** `sh .sdlc/trace` → **0 未真實驗證(mock-only), 0 未驗證** inside the
+  closure. Every one of REQ-131..136 / 140 / 141 still carries a `real: true` / `result: pass` item
+  at `iter: v27` (VAL-206..212 + VAL-203/205); spot-verified VAL-206 (`08-validation.md:9979-10024`)
+  — real Puppeteer Chrome against a `deploy.sh`-booted instance on `127.0.0.1:8935`, with
+  `getComputedStyle` property values and named screenshots, plus a 2026-09-13 re-confirmation after
+  the intervening code touched `dashboard.css`/`ui/app.js`/`ui/home.js`.
+- **`08-validation.md` present** (932 KB) and carries the `v27i GATE 7.5 SEND-BACK REPAIR` section at `:10574` (opened, not inferred from the gate's own note)
+  with its own live-check harness committed at
+  `evidence/v27i/doc1-live-check-harness.mjs` — the DOC-1 rewrite was checked against a running
+  product, not against the source by eye.
+- **Handover docs present and current-state.** `README.md` + `DEPLOY.md` at `layout.product_root`.
+  DEPLOY.md **leads with §0 一鍵部署** — `set -a; . ~/.config/rwe.env; set +a` then
+  `./deploy.sh --background` — followed by the actual 5-step output Gate 7.5 ran, and states the
+  idempotence and the fail-loudly-on-missing-`uv` behaviour. Both manuals open with the explicit
+  history-free preamble (「本文件描述系統**目前**的部署方式與行為——不是變更歷程…歷史紀錄只在 `.sdlc/`
+  追溯帳本內」). Config keys live in the single `§1b 設定總表`. The DOC-1 rewrite added **no**
+  changelog/version-diff content (`git diff` re-read line by line, §1 row 12).
+- **No superseded instruction found** in the rewritten region: every claim now has a `src/` line
+  behind it (models six columns, system six rows, the Issues degrade string, the deleted pause claim).
+- **One honest caveat, recorded as debt not finding:** the owner's amendment added a *new* acceptance
+  clause to REQ-131 (mixed-state → 「降級」). Its evidence today is unit-tier
+  (`dashboard-lib-connection.test.js:29-33`), not real-tier; VAL-206's real-tier green predates the
+  wording and covers the theme/lang/hue/font clauses. REQ-131 still has a `real: true` green, so the
+  mock hard-rule is not breached — but the clause itself is not browser-witnessed. → DEBT-B.
+
+### §7b Special-file reviews — not applicable this round
+
+`git diff --name-only ef0a400..HEAD` (41 files) contains **no `CLAUDE.md`, no `AGENTS.md` and no
+`SKILL.md`** — cross-checked against the `files:` union of IMPL-269..276. Neither the
+claude-md-improver nor the skill-creator review is triggered. Checked, clean.
+
+---
+
+### §8 Blocking finding — the repair scope, verbatim
+
+One finding. It is a single-line ledger edit whose content is already decided by the owner.
+
+**→ `architecture` (Gate 2)**
+
+1. **OWN-1** — `02-architecture.md:3365` still reads `- **owner_decision:** pending — REQ-131 的驗收寫「任一 `/api/*` 取得成功…」`, but the owner **already ruled** on 2026-09-13 in commit `29eb8a0` (「Owner ruling: keep the narrowing」), and `01-requirements.md:1729-1739` already carries the amended acceptance with its `[AMENDED v27h]` block. The iteration cannot close over a live `pending` marker (issue #15; the ruling commit's own body says 「Still owed before Gate 8 can pass」) → rewrite that ONE bullet to `- **owner_decision:** answered(2026-09-13) — 保留收窄:nav 來源 tag 只在「可見分頁所依賴的路由全部 ok」時顯示 Live,混合狀態顯示「降級」。擁有者裁定(commit `29eb8a0`),理由:tag 顯示「連線中」而可見表格的路由正在降級等於對操作者說謊;REQ-131 的驗收已依此修訂(`01-requirements.md:1729`,[AMENDED v27h])。三態方案已考慮並否決(超出 DES-209 保真度依據)。` **In the same edit and in the SAME file only**, close the one sentence the ruling makes stale so the flip does not leave a dangling conditional: ARCH-124's v27h amendment (`02-architecture.md:3364`) 「…see `owner_decision:` below; **if the literal reading wins**, what changes is the `live` half of the AC-4 repair and this sentence…」 → state that the ruling landed and the narrowing stands. The owner's own words are already on disk to paste from — `state.yaml`'s `pending[]` list carries the `v27h OWNER RULING (2026-09-13)` entry ending 「STILL OWED: ARCH-124 own owner_decision marker in 02-architecture.md must be flipped from pending to answered citing this ruling - it BLOCKS Gate 8 until it is.」 **Scope is `02-architecture.md` and nothing else: no code change, no new ARCH/ADR/TASK id, no trace link touched, and do NOT edit `04-design.md`** — DES-202's prose at `:7274` inherits the same marker and goes stale on the flip, but it belongs to Gate 3/4 and is recorded as DEBT-C in §9 rather than crossing lanes here.
+
+---
+
+### §9 Recorded tech debt (non-blocking, carried with evidence)
+
+Everything from the first pass's §9 carries unchanged (F-4, F-5, F-6, F-7/QD-S2, QD-O4, QD-O5,
+QD-R2, QD-R3, QD-R4, QD-C2, QD-C3, SOLID-10, TRACE-23, REQ-PARK, TOOL-FORK, DOC-H) — re-confirmed
+still accurate at `29eb8a0`, with two amendments and three additions:
+
+| ID | Sev | What | Where |
+|---|---|---|---|
+| **TRACE-23** (amended) | LOW | now **25** rows: the same 21 pre-v27 漂移 + TASK-018/TASK-153 + **TASK-215/TASK-216**, the two follow-ups the architecture deliberately priced rather than micro-dispatching. | `sh .sdlc/trace` |
+| **QD-R2** (amended, pressure relieved) | LOW | the AC-4 crash that lived in the untested `ui/*.js` layer is now guarded *and* unit-witnessed at `dashboard-lib-connection.test.js:29-33`; the underlying 「decidable logic in `ui/`, excluded from the coverage denominator」 tension stands. | `06-impl-log.md` IMPL-249 |
+| **DEBT-A** *(new)* | LOW | `tests/unit/dashboard-page-source.test.ts:95` still asserts `draggable="false"` on `DASHBOARD_HTML` — bytes the browser discards at `ui/app.js:455`. Not *false* (the fossil body still emits them) and explicitly dispositioned: ARCH-122's v27h amendment and TASK-215's `dod:` both retire it. Blocked on TASK-215, which is itself a counted LOW row. | `tests/unit/dashboard-page-source.test.ts:95`; `03-tasks.md:1842` |
+| **DEBT-B** *(new)* | LOW | REQ-131's owner-amended mixed-state clause (「混合狀態 → 降級」) has unit-tier evidence only; VAL-206's real-tier green predates the wording. REQ-131 keeps a `real: true` green so the mock hard-rule is intact — but the new clause is not browser-witnessed. Cheapest close: one assertion in the existing real-browser shell test. | `01-requirements.md:1729`; `08-validation.md:9979` |
+| **DEBT-C** *(new)* | LOW | `04-design.md:7274` states DES-202 「inherits ARCH-124's `owner_decision: pending`」 — true today, stale the moment OWN-1 is flipped. Folded into OWN-1's same-edit list so it cannot rot. | `04-design.md:7274` |
+
+---
+
+### §10 Retro (re-review addendum)
+
+**What the send-back loop proved.**
+- **13 findings, 13 closed, in one automatic round, with no scope creep.** Four gates each took only
+  the findings addressed to them, and three of the four wrote down the side effects their own repair
+  created (the architecture panel caught both drifts the v27g code fixes induced; the designer
+  re-pointed eight rows the v27g+v27h repairs had made false). That is the routing rule working as
+  designed.
+- **Rendering beat linting, again.** The first pass replaced `dashboard_check`'s lexical heuristic
+  with a real browser and found 2 failures it missed while dismissing 6 it invented. This pass, the
+  same oracle is what proves the repair: 43/43. The heuristic's 7 remaining mid rows are *all* noise.
+  The retro item 「the dashboard is a deliverable — render it, don't lint it」 is now evidence-backed
+  twice; it belongs in the workflow, not in a review note.
+- **The escalation path held under pressure.** The architect hit a case where closing its own finding
+  required amending an acceptance clause, refused (correctly — a panel may not), and escalated with
+  the consequence attached. The owner ruled inside the session. That is exactly the designed
+  behaviour, and the *only* thing that went wrong is the last mechanical step.
+
+**What to change.**
+1. **An owner ruling is not landed until the marker is flipped.** The ruling commit itself wrote
+   「still owed」 and then did not do it, because flipping a marker in `02-architecture.md` is Gate 2's
+   file, not the ruling's. Make the flip part of the ruling's own definition of done: whoever records
+   an owner ruling updates every `owner_decision:` marker that asked the question, in the same commit,
+   and cites the ruling commit. A one-line edit is the cheapest possible blocker and it still cost a
+   full re-review cycle.
+2. **When a repair mints a follow-up TASK, mint it with the trace row it will create.** TASK-215/216
+   are the right call (Gate 2 may not change code), but they arrive as two new 未實作 gaps that read
+   like regression on the dashboard. Say so where the tally is read — this review's §3 does; the task
+   rows themselves should too.
+3. **A second, unnamed instance of a named defect is the finding's real size.** AC-3b named one
+   `DASHBOARD_HTML` pin; two existed at the baseline. The repair closed the named one and the
+   architecture dispositioned the other — a good outcome that happened by luck of a thorough panel,
+   not by the finding's wording. When a finding names a line, the repair scope should be the *grep*,
+   not the line.
+
+**Known tech debt:** §9. Nothing in §9 blocks the closure; OWN-1 in §8 does.
+
+---
+
+
+## v27 GATE 8 REVIEW — FIRST PASS (2026-09-13, SUPERSEDED by the RE-REVIEW #1 above — kept for history; was **SEND BACK**, `send_back = ["impl","architecture","validation","design"]`, 2 HIGH; all 13 blocking findings closed by the built-in auto re-run and re-verified at file:line 2026-09-13)
 
 > First Gate 8 pass of the v27 closure (**REQ-131..136, REQ-140, REQ-141** — the operator dashboard
 > rebuilt to the Claude Design handoff). Tree at review: **`ef0a400`**, working tree otherwise clean
