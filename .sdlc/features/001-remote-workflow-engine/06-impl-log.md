@@ -6652,10 +6652,10 @@ HEAD that passes a non-`ok` body to a render function").
 
 **One adjacent candidate noted but NOT fixed (out of this task's scope per `07-review.md` §8's own
 "Scope is exactly this" / "widening the repair is how this loop paid its last round"):**
-`run.js:463` (`onTick`)'s SECOND fetch (`/api/runs/:id`, `viewRes`) is passed unguarded to
-`renderLegend(state.shell.legend, payload, viewRes.body, state.lang)` — `renderLegend`'s own guard
-(`if (!view) return`) does not catch a truthy `{runs:[],degraded:'…'}` body from that route's own
-catch-all path, so a degraded `/api/runs/:id` would render `view.status` as literal `"undefined"`
+`run.js:466`'s `onTick`, SECOND fetch (`:477`, `/api/runs/:id` → `viewRes`), is passed unguarded to
+`renderLegend(state.shell.legend, payload, viewRes.body, state.lang)` at `:506` — `renderLegend`'s
+own guard (`:360`, `if (!view) return`) does not catch a truthy `{runs:[],degraded:'…'}` body from
+that route's own catch-all path, so a degraded `/api/runs/:id` would render `view.status` as literal `"undefined"`
 text in the run-summary line (not a crash — `usage`/`agentsById` are already shape-guarded at that
 call site). This is a different call site than BF-4 named (a render-function argument, not an
 `onTick`-top guard) and reachable only via the rarer `store.getRun` throw path, not the common
