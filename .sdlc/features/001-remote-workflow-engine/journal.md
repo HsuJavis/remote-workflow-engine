@@ -4723,3 +4723,68 @@ Gate 2's four `classDiagram` authoring rules, ARCH-122 `:3343`'s two `UT-240` �
 and `:3841`'s `scripts/mermaid-parse-check.mjs` → the render-check name.
 
 **Next**: the Gate 8 re-review (optionally a v27j impl micro-dispatch first — TASK-215 before TASK-216).
+
+---
+
+## 2026-09-13 — v27 GATE 8 RE-REVIEW #1 (reviewer): 13 / 13 closed, one line left un-flipped, so the iteration still does not close
+
+**`send_back = ["architecture"]`, 1 HIGH, 0 blocking MID.** Full record: `07-review.md` §
+「v27 GATE 8 RE-REVIEW #1」. Tree at review `29eb8a0`; the first pass's section is marked SUPERSEDED
+and kept for history.
+
+**All thirteen blocking findings from the first pass are closed**, each re-opened at its cited
+`file:line` by this reviewer rather than taken from the repairing gate's own note, and four of them
+re-verified by execution rather than by reading:
+
+- **Full suite** `npx vitest run` → 403 files passed / 1 skipped, **2833 passed / 26 skipped / 0
+  failed**, exit 0 (was 2829 — the +4 are the falsifying cases AC-1/AC-4/AC-6/AC-9 demanded).
+  `npx tsc --noEmit` → exit 0.
+- **A real headless-Chromium render of `dashboard.html`: 43 mermaid blocks, 43 `<svg>`, 0 failures,
+  0 console/page errors** (was 40/43). DASH-1a, DASH-1b and DASH-2 all render. All **seven**
+  remaining `dashboard_check` 「括號不平衡」 rows are therefore proven false positives — including
+  `:2531`, the one the first pass promoted to blocking.
+- **`analyze()` called directly**: 1661 items / 35 gaps. The 33 → 35 delta is **exactly** TASK-215
+  and TASK-216, the two follow-ups the architecture priced instead of micro-dispatching. Four gates
+  edited `01`–`08` today and induced **zero** new 漂移 rows; the 21 that remain are all pre-v27.
+- **`solid_check`** → 0 mid / 10 low, 68 modules, no cycle — the `lib/clock.js` → `ui/clock.js` seam
+  move did not disturb the boundary. `module_check` dormant (no `build:` declared).
+
+**`arch_consistent` flips NO → YES.** The first pass's headline — three times v27 shipped the *form*
+of a cheap control without its property — is answered in all three places by a change of **subject**:
+the key-set test now reads a served body (`dashboard-disclosure.test.ts:122-131`), the page-source
+pins now read the file that builds the element (`dashboard-page-source.test.ts:43`), the fold-equality
+oracle now runs the run INV-V27-1 names (`usage-live-equals-fold.test.ts:35-37,81-85`). The two
+drifts the v27g code fixes themselves induced were caught by the architecture panel and closed in the
+same pass. `arch_violations: []`.
+
+**The one blocker is a single line, and its content is already decided.** `02-architecture.md:3365`
+still carries `- **owner_decision:** pending` on ARCH-124. The owner **ruled** on 2026-09-13 in commit
+`29eb8a0` — keep the narrowing — and `01-requirements.md:1729` already carries the amended acceptance
+with its `[AMENDED v27h]` block. Only the marker was never flipped, and that commit's own body says
+so: 「Still owed before Gate 8 can pass」. Issue #15's mechanism is that the marker **is** the record,
+so the iteration may not close over it and the reviewer may not edit it. Repair = rewrite that one
+bullet to `answered(2026-09-13) — <the ruling>`, plus the one same-file sentence the ruling makes
+stale (`02-architecture.md:3364`'s 「if the literal reading wins…」 conditional). Scope is
+`02-architecture.md` only — `04-design.md:7274`'s DES-202 note inherits the same marker and goes stale
+on the flip, but it is Gate 3/4's file and is recorded as DEBT-C instead of crossing lanes. The owner's
+own words are on disk to paste from: `state.yaml`'s `pending[]` carries the `v27h OWNER RULING
+(2026-09-13)` entry, which itself ends 「STILL OWED: … it BLOCKS Gate 8 until it is.」 No code, no new
+id, no trace link.
+
+The built-in auto re-run is already spent, so this hands back to the orchestrator rather than
+re-running Gate 2 again. **`.panel/` is deliberately left in place** — cleanup happens only on a
+close. `current_stage` stays `review`.
+
+**Recorded, not blocking:** 10 MID (the five parked REQs' two rows each, unchanged) and 51 LOW,
+three of them new — DEBT-A (a *second* `DASHBOARD_HTML` `draggable` pin at
+`dashboard-page-source.test.ts:95` that AC-3b never named; not false today and dispositioned by
+TASK-215), DEBT-B (REQ-131's owner-amended mixed-state clause has unit-tier evidence only; its
+real-tier green predates the wording), DEBT-C (DES-202's prose inherits a marker about to flip).
+
+**Retro item worth keeping:** an owner ruling is not landed until the marker is flipped. A one-line
+edit that the ruling commit itself flagged as owed cost a full re-review cycle — whoever records a
+ruling should update every `owner_decision:` marker that asked the question in the same commit.
+
+## 2026-09-13 — ARCH-124 `owner_decision` flipped (reviewer): the last Gate 8 blocker, closed
+
+`02-architecture.md:3365`'s `owner_decision` moves from `pending` to `answered 2026-09-13`, transcribing the ruling already on disk in `state.yaml`'s `pending[]` (「v27h OWNER RULING (2026-09-13)」) and `01-requirements.md:1732`'s `[AMENDED v27h]` block — KEEP THE NARROWING, cited to `29eb8a0`. Two other sentences in the same file still framed the question as open and were struck with a `[RESOLVED 2026-09-13]` marker rather than rewritten: `:3364`'s "if the literal reading wins…" conditional, and `:3819`'s "an owner ruling that is still pending" in the v27h Decision rationale. `owner_decision:** pending` count is now 0/0 across `02-architecture.md`/`04-design.md`; `sh .sdlc/trace --check` reports the same 1661/35 with a byte-identical gap set (diffed row-for-row against the pre-edit baseline) — this closure touches no trace-tracked link. `04-design.md`'s DES-202 note (the DEBT-C item above) still inherits the old wording and is left alone, out of this file's scope.
