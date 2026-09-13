@@ -1,10 +1,374 @@
 ---
 stage: review
-status: sent-back   # v27 Gate 8 RE-REVIEW #2: OWN-1 closed; THREE blocking MID — the connection tag lies on an all-fail tick + a degraded body is rendered as data in 2 of 3 views (→ impl), and DES-202 describes the reducer the first repair replaces (→ design)
+status: sent-back   # v27 Gate 8 RE-REVIEW #3: BF-1/BF-2/BF-3 all verified CLOSED on disk; ONE blocking MID left — system.js:74 renders a whole-route degrade as data and throws (empty System panel, 3 pageerror, nav tag frozen live), the same ARCH-125 clause BF-2 was raised on, in the one view BF-2's required shape did not name (→ impl). Auto re-run is exhausted: this hands back to the orchestrator.
 ---
 # 07 Review & Retro — Gate 8
 
-## v27 GATE 8 RE-REVIEW #2 (2026-09-13, CURRENT / AUTHORITATIVE — **SEND BACK**, `send_back = ["impl", "design"]`, 0 HIGH / 3 blocking MID)
+## v27 GATE 8 RE-REVIEW #3 (2026-09-13, CURRENT / AUTHORITATIVE — **SEND BACK**, `send_back = ["impl"]`, 0 HIGH / 1 blocking MID)
+
+> Third re-review, after the built-in auto re-run dispatched **impl** (v27k, `b124430`) and **design**
+> (v27l, `24797c5`) against RE-REVIEW #2's three blocking findings. Tree at review: **`24797c5`**.
+> Per the RE-REVIEW dispatch this pass **verifies the three named findings on disk and does not re-open
+> the full scope**; the mechanical checks (trace, dashboard QA, solid/module, owner sweep, validation)
+> were re-run anyway because they are cheap and they are what proves the repairs induced nothing.
+>
+> The two architecture-expert panels were **not re-spawned** — `.panel/review/adversarial.md` and
+> `.panel/review/quality-dimensions.md` are the RE-REVIEW #2 reports, consolidated again in §5 against
+> the repaired tree. The **design** panel (`.panel/design/*.r1.md`, `*.r2.md`, dated 12:39–14:26) DID
+> run on the repaired tree during the v27l design repair, and it is the source of the one new finding
+> below — surfaced by the ledger, not hunted for by this reviewer, and re-opened here at `file:line`.
+>
+> **Verdict: all three of RE-REVIEW #2's blocking findings are genuinely closed — verified at
+> `file:line` and by execution, not taken from the repair gates' notes. One blocking finding takes
+> their place**: `src/dashboard/ui/system.js:74` renders a whole-route degrade as data and throws, the
+> **same ARCH-125 `api:` clause** `BF-2` was raised on, in the one view `BF-2`'s own required shape did
+> not name. It is in-closure code (TASK-212), its consequence is operator-visible at HEAD (empty System
+> panel, 3 `pageerror`, nav tag frozen 「連線中 / Live」), and its acceptance test asserts none of the
+> property its title promises. Recording it as debt after blocking on the identical class one round ago
+> would be this gate confirming rather than reviewing.
+
+### §0 Gap tally
+
+**HIGH 0 · MID 11 · LOW 60.** (The one blocking finding is MID; every other row is recorded debt in §9.)
+
+| Sev | Count | Composition |
+|-----|-------|-------------|
+| HIGH | 0 | No `未真實驗證`, no `斷鏈`, no `孤兒`, no `待業主決策`. `owner_decisions: []` — §6. |
+| MID | 11 | **1 blocking** (§8 `BF-4`: `system.js:74` renders a degrade as data and throws) + 10 non-blocking: the five parked REQs' two trace rows each (REQ-137/138/139/142/143 × 未實作 + 未驗證), recorded out of closure at `02-architecture.md:3328`/`:3332`, `03-tasks.md:1662`, `04-design.md:7028`. |
+| LOW | 60 | 25 trace gaps (21 漂移 + 4 TASK 未實作) · 10 `solid_check` 未認領檔案 · 11 carried panel findings (F-4, F-5, F-6, F-7≡QD-S2, QD-O4, QD-O5, QD-R2, QD-R3, QD-R4, QD-C2, QD-C3) · 3 carried from RE-REVIEW #2 (F-2, F-3, QD2-O2) · 2 ledger/tooling (TOOL-FORK, DOC-H) · 2 carried (DEBT-A, DEBT-B) · **7 new this pass** (§9: D3-1..D3-6, the six design-panel items the v27l synthesis recorded rather than converted into clauses, adopted here; plus DOC-UT245). |
+
+**Delta vs RE-REVIEW #2:** HIGH 0 → 0 · blocking MID 3 → 1 (three closed, one new) · LOW 53 → 60
+(+7 new, −0; `DEBT-C` stays closed by `BF-3`). Trace totals **1663 items / 35 gaps** — identical
+composition to the RE-REVIEW #2 baseline modulo the two items the repair added.
+
+---
+
+### §1 The three previously-blocking findings — **all closed**, re-opened on disk
+
+This is the whole point of a re-review, so each was re-derived from the tree rather than from
+`06-impl-log.md`'s or `04-design.md`'s account of itself.
+
+| ID | Required shape (RE-REVIEW #2 §8) | Status at `24797c5` | Evidence |
+|---|---|---|---|
+| **BF-1** | `connection.js:35` becomes `consecutiveFails >= 2 ? 'offline' : 'degraded'`; counter keeps advancing; UT flips to expect `degraded` at `consecutiveFails === 1`; no `prev.status === 'live'` carve-out; `:57-60`/`:64-67` unchanged | **CLOSED** | `src/dashboard/lib/connection.js:39` is `const status = consecutiveFails >= 2 ? 'offline' : 'degraded';` and `:40` returns it. **`prev.status` survives in no expression** — `grep -n "prev.status" src/dashboard/lib/connection.js` returns exactly one hit, `:36`, inside the explanatory comment. `:34` still does `prev.consecutiveFails + 1`. No carve-out was added. `tests/unit/dashboard-lib-connection.test.js:54-59` is `live -> degraded (consecutiveFails 1) on ONE all-fail tick`, asserting both fields; `:61-66` (second tick → `offline`) and `:68-73` (un-debounced recovery) are unchanged and pass. The file is 12 cases. |
+| **BF-2** | the `workflow.js:350` guard shape at the top of BOTH `onTick`s (absent / carries `degraded` / wrong shape → bail), **plus one falsifying test per view**, run for real and recorded | **CLOSED** | `src/dashboard/ui/home.js:231` → `if (!body \|\| body.degraded \|\| !Array.isArray(body.running)) return;`, ahead of `renderGrid`/`updateCounts`. `src/dashboard/ui/run.js:475` → `if (!dagBody \|\| dagBody.degraded \|\| !Array.isArray(dagBody.cells)) return {};`, ahead of the second `getJSON` this view makes on its own — so a degraded `/dag` also skips the `/api/runs/:id` re-fetch and leaves `#run-usage`/legend at last-known. Falsifying cases exist at `tests/acceptance/val-198-shell-and-home.test.ts:262` and `tests/acceptance/val-200-swimlane.test.ts:215`, both the `setRequestInterception` recipe. |
+| **BF-3** | DES-202's `boundary:` and `tests:` re-stated to the repaired behaviour in the `amended (…)` house style, no new DES id; **and** the now-false `owner_decision` inheritance at `04-design.md:6817` and `:7274` closed | **CLOSED** | `04-design.md:6815` (`boundary:`) now reads 「an all-`fail` tick → `consecutiveFails + 1`, and `status` reports `degraded` at 1 and becomes `offline` at ≥ 2 (the counter alone tracks the streak; `status` is never carried forward from `prev`)」; `:6816` (`tests:`) names `live→degraded (consecutiveFails 1)` on ONE all-fail tick. `:6817`'s inheritance sentence is struck through and followed by **[SETTLED 2026-09-13 … DEBT-C closed]**; `:7274` carries the same settlement. No new DES id, no trace-link change; `iter:` moved to `v27l`. |
+
+**Executed, not read** (real Chromium, `RWE_REQUIRE_BROWSER=1`,
+`PUPPETEER_EXECUTABLE_PATH=~/.cache/puppeteer/chrome/linux-152.0.7977.75/chrome-linux64/chrome`):
+
+> `npx vitest run tests/unit/dashboard-lib-connection.test.js tests/acceptance/val-198-shell-and-home.test.ts tests/acceptance/val-200-swimlane.test.ts`
+> → **3 files passed, 31 tests passed, 0 failed** (12 / 13 / 6 — exactly the counts IMPL-277/278 claim), 52.35 s.
+> `npx tsc --noEmit` → **exit 0**.
+
+**Both IMPL entries carry the commit they landed in** (`b124430`, `06-impl-log.md:6539`/`:6568`) — the
+stale-commit-field pattern this iteration paid for once did not recur. IMPL-277/278's falsification
+runs were *measured after the commit landed* and are pasted in the entries.
+
+**One precision, because the two are easy to conflate:** the design panel's measured 「tag frozen `live`」
+is **not** a BF-1 regression. The reducer is correct and its UT proves it; the tag freezes because
+`system.js`'s `onTick` **throws**, and `app.js:379`'s `await view.onTick(...)` is unguarded, so the tick
+never reaches `:383-384` (`nextConnection` + `updateConnectionTag`, behind `:382`'s non-empty guard) while `scheduleTick`'s `.finally`
+keeps the timer alive. Cause is §8; the unguarded `await` itself is §9 `D3-3`.
+
+---
+
+### §2 Traceability consistency and doc↔code drift — clean, zero new rows
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` → **1663 items / 35 gaps**, enumerated by
+calling `scan()`/`analyze()` directly rather than reading the summary line:
+
+| Type | Sev | Count | Disposition |
+|---|---|---|---|
+| 未實作 / 未驗證 (REQ-137/138/139/142/143) | mid | 10 | Recorded out of closure by Gate 2 itself — debt, unchanged. |
+| 漂移 (doc↔code iter lag) | low | 21 | **All pre-v27.** Newest pair: DES-112/DES-157 vs IMPL-208 (v26). **No DES/UT/IT row lags a v27 IMPL** — the impl (v27k) and design (v27l) repairs induced **zero** new drift rows. Debt. |
+| TASK 未實作 | low | 4 | TASK-018, TASK-153 (pre-v27) + TASK-215, TASK-216 (priced follow-ups). Debt. |
+| 斷鏈 / 孤兒 / 未真實驗證 / TDD / 待業主決策 | — | **0** | Checked, clean. No REQ is closed on mock-only evidence. |
+
+**Drift verdict: none new.** The one documentation nit found by hand is `05-tests.md:12647`, where
+UT-245's preserved RED narrative still says the file has 「11 cases」 and it now has 12 (`BF-1`'s rename
+is like-for-like, but the AC-4 repair added one). It is inside a paragraph the row itself labels as
+history; recorded LOW (`DOC-UT245`), not drift by the tool's definition.
+
+**Tooling caveat, sharpened (TOOL-FORK).** The project-local `.sdlc/trace.py` is a fork: no `--tool`
+dispatch, no `待業主決策` gap type. The plugin's `trace.py` run over the same ledger reports
+**1675 items / 536 gaps** (320 mid / 216 low) against the fork's 1663/35 — the two parsers disagree
+about nearly every pre-v21 REQ→IMPL link and about `TASK-1xx` implementation. The fork is this ledger's
+authority (every gate's numbers come from it, and its gap set matches hand-inspection), but a
+disagreement of that magnitude is undiagnosed. LOW, recorded, not re-opened here. The plugin tool
+scripts (`dashboard_check`, `solid_check`, `module_check`) were run directly, which is the contract's
+own method.
+
+---
+
+### §3 Dashboard QA — renders green; the 7 `dashboard_check` mids remain false positives
+
+`dashboard_check.py` → **0 high / 7 mid / 1 low**, unchanged from RE-REVIEW #2. All seven mids are the
+same 「括號不平衡」 lexical heuristic over `02-architecture.md`'s mermaid blocks (`:934`, `:1201`,
+`:1648`, `:2531`, `:2603`, `:3094`, `:3626`); the checker does not model `erDiagram`/quoted-label
+syntax. **Every SoT `file:line` link target resolves** (the checker's link pass is green).
+
+Falsified by execution, not by argument — playwright browser tools are not present in this session, so
+the equivalent was run headless (**degraded mode, noted**):
+
+> headless Chromium over `file://…/dashboard.html`, clicking all **8** `nav button` tabs (the dashboard
+> renders diagrams lazily per tab; measuring without the clicks reports 0 SVG and is a measurement
+> artefact) → **`{"total":43,"svg":43,"err":0,"blank":0,"links":1705,"tabs":8}`**, **zero `pageerror`,
+> zero console errors**.
+
+SoT spot-checks resolved by hand on this pass, all landing on the item's own heading:
+`IMPL-277 → 06-impl-log.md:6531`, `IMPL-278 → 06-impl-log.md:6559`, `DES-202 → 04-design.md:6811`,
+`UT-245 → 05-tests.md:12159`.
+
+The one `[low]`: no mermaid **offline fallback** in the generated file (a property of the fork). With
+network present the CDN load succeeds; air-gapped, the blocks stay blank. Carried debt (TOOL-FORK).
+
+**Note for the record:** running the *plugin* `trace.py` overwrites `dashboard.html` with the fork-
+incompatible render and writes a `metrics.jsonl` carrying the 536-gap numbers. Both were undone —
+the deliverable at `.sdlc/features/001-remote-workflow-engine/dashboard.html` is the fork's output
+(1663/35) and the stray `metrics.jsonl` was removed.
+
+---
+
+### §4 Module boundary (SOLID) and module build
+
+`solid_check.py` → **✅ 0 mid / 10 low**, 68 modules, `javascript×103, shell×3`: **no undeclared
+cross-module dependency, no cycle, no deep-internal import bypassing a public surface, no god-module.**
+The BF-1/BF-2 repairs touched no import edge. The 10 lows are the same pre-existing 未認領檔案 set
+(`src/self-update.ts`, `src/net-guard.ts`, `src/clock.ts`, `src/harness-defaults.ts`,
+`src/agent-semaphore.ts`, `src/mcp-probe.ts`, `src/scan-agent-calls.ts`, `src/workspace-artifacts.ts`,
+`src/agent-definitions.ts`, `src/owner-lookup.ts`) — carried debt, unchanged.
+
+`module_check.py` → **dormant**: no ARCH-* declares `- **build:**`. Not a finding.
+
+---
+
+### §5 Architecture consistency — **NOT consistent** (one live ARCH-125 violation at HEAD)
+
+Consolidated from the two pre-run expert reports (`.panel/review/adversarial.md` → 「NOT CONSISTENT —
+3 deviations (0 HIGH, 1 MEDIUM, 2 LOW)」; `.panel/review/quality-dimensions.md` → 「`consistent: no` —
+10 numbered deviations, 0 HIGH」), **plus** the design panel that ran on the repaired tree.
+
+**What the repair round settled.** Both review panels' MEDIUMs were `F-1`(≡`QD-O1` residue) and
+`QD2-O1` — i.e. `BF-1` and `BF-2`. Both are closed (§1), so the two ARCH rows they contradicted
+(ARCH-124's amended `api:` 「`live` only when EVERY one of them is `ok`」 and ARCH-125's `api:`
+「never rendered as data」) are now satisfied **by `connection.js`, `workflow.js`, `home.js`,
+`run.js`**. No ARCH row needed to move, exactly as RE-REVIEW #2 predicted.
+
+**What remains, and why the verdict is still `no`.** ARCH-125's 「never rendered as data」 is violated
+at HEAD in `src/dashboard/ui/system.js:74` — see §8. Both design-panel lenses ranked it independently:
+the adversarial lens **withdrew its own headline remedy** (widening the `onTick` seam) after
+quality-dimensions measured that the one genuinely broken view never reads that seam, and then
+**ranked its opponent's `system.js` row above its own top finding**. The v27l synthesis recorded it as
+「blocking-class, impl's lane, the round's most severe item and the only one with an operator-visible
+consequence today」 (`04-design.md:7357`) and correctly refused to fix code from a design gate.
+
+**Re-opened independently here, not taken on the panel's word** — the whole chain is four files:
+
+1. `src/server.ts:611-616` — the dashboard catch-all answers **HTTP 200** `{runs:[], degraded:<msg>}`
+   (`buildDashboardModel([], undefined, undefined, err.message)`) for *any* unexpected fault on *any*
+   dashboard route, `/api/system` included (`:369-373`, whose `systemInfo.get()` is the throw site).
+2. `src/dashboard/ui/poll.js:42-55` — `getJSON` returns `{ status: classifyResponse(200, body), body }`,
+   i.e. `{status:'degraded', body:{…}}`. It is never `null`.
+3. `src/dashboard/ui/system.js:74` — `if (!res.body)` is **false** for that truthy object, so `:77`
+   calls `buildTable(res.body)`.
+4. `src/dashboard/ui/system.js:49` — `buildTable`'s first statement is
+   `String(data.cpu.cores)` → **`TypeError: Cannot read properties of undefined (reading 'cores')`**.
+
+Measured consequence (quality-dimensions r1, real Chromium, two ticks): **0 rows, 3 `pageerror`, nav
+tag frozen `live`** — an empty System panel under a 「連線中」 tag, repainted every 3 s for as long as
+the route stays degraded.
+
+**The grep, not the line** (RE-REVIEW #2 §10's own lesson, applied to this finding before writing it):
+`src/dashboard/ui/issues.js:101-108` handles the degrade explicitly (renders `data.degraded` into both
+lists) and `src/dashboard/ui/models.js:54-56` is fail-closed by shape (`!Array.isArray(entries)` →
+`(unavailable)`). **`system.js` is the only view at HEAD that passes a non-`ok` body to a render
+function** — so the finding is stated as that invariant in §8, and its scope is the class, not one file.
+
+**Architecture-owned residue, LOW:** `02-architecture.md:3361` still carries the looser pre-BF-1 forms —
+`worstOf(perRoute) → status` / 「The tag is `worstOf(perRoute)`」 (false since BF-1 made the tag diverge
+from `worstOf` on the all-`fail` arm) and 「a `degraded` **string**」 (the code tests key presence). A
+design row may not amend an ARCH row, so v27l recorded it; it is `D3-6` in §9, not blocking.
+
+---
+
+### §6 Owner-deferral sweep (issue #15) — **0 pending**
+
+Reconciled mechanically on the FIXED metadata key, never on prose:
+`grep -rnE "^\s*-?\s*\*{0,2}owner_decision\*{0,2}:\*{0,2}\s*pending" .sdlc/features/001-remote-workflow-engine`
+→ **0 hits**, in every document including `journal.md`.
+
+- `02-architecture.md:3365` (ARCH-124) reads `answered 2026-09-13` with the ruling transcribed
+  (KEEP THE NARROWING), the declined three-state option recorded, and 「Nothing is outstanding on this
+  row.」 RE-REVIEW #1's OWN-1 stays closed.
+- `04-design.md:6817` / `:7274` — the two prose citations of that marker that RE-REVIEW #2 folded into
+  `BF-3` are now struck/settled (§1). Nothing in the ledger claims a pending decision it does not have.
+- **ADR hedging spot-check** (an unmarked deferral is a producer-contract violation): ADR-049..056
+  re-read. The decision-shaped hedges all have a ledger row rather than a missing marker
+  (ADR-049's 「UNGUARDED until TASK-B」 → TASK-216; ARCH-122's 「removed by the TASK-A follow-up」 →
+  TASK-215) — owed engineering work, not deferred *product* decisions. One new borderline, checked and
+  cleared: `04-design.md`'s v27l rationale item 5 says the 「最後輪詢 / Last poll」 relabel refusal 「is a
+  wording call the owner may overturn」 and states in the same breath why it carries no marker —
+  「nothing is being built on it this round」. That is the correct shape (a recorded, unbuilt wording
+  preference), not a hidden deferral. **No unmarked deferral found.**
+
+---
+
+### §7 Validation & handover (Gate 7.5) — confirmed, unchanged since v27i
+
+- **No mock-only REQ.** Zero `未真實驗證` and zero `未驗證` rows for any in-closure REQ; REQ-131..136,
+  REQ-140, REQ-141 each reach a `real: true` VAL green.
+- **`08-validation.md` present** (`status: passed`), evidence produced on `./deploy.sh --background`-
+  booted scratch instances (8935/8936/8937/8940, auth off and on); production `rwe.service` untouched.
+- **Handover docs present and current-state.** `README.md` (41 KB) + `DEPLOY.md` (92 KB) at the product
+  root per `state.yaml layout`. DEPLOY.md `:3` states the history rule; **§0 一鍵部署** leads with
+  `set -a; . ~/.config/rwe.env; set +a` + `./deploy.sh --background` and its real captured output — a
+  command Gate 7.5 ran repeatedly this iteration (`08-validation.md:10533`, `:10635`). Config keys live
+  only in the single deduplicated **§1b 設定總表**. No changelog/版本差異 section in either manual.
+- **Re-checked against the two repairs that landed since:** neither manual documents the connection
+  tag's debounce nor either poll-tick guard, so BF-1/BF-2 make **no manual sentence stale**.
+  `send_back` does not need `validation`.
+- **`BF-4` does not change that** — the System tab's manual text describes what it renders when the
+  route answers, which is still true; the defect is the degrade path, undocumented either way.
+
+**One evidence-quality note, folded into `BF-4` rather than routed to Gate 7.5.** VAL-210
+(`05-tests.md:12630`, `real: true`, traces REQ-067/076/077/078) is a genuine real-tier green, but its
+System case (`tests/acceptance/val-202-ported-tabs.test.ts:104-117`) has the 「form without the
+property」 shape this ledger has named before: the title promises 「a degraded section showing the
+Unavailable component (never 0)」 and the body clicks the tab, waits for `#system-panel`, fakes nothing
+and reads no cell. It is the test that should have caught `BF-4`, so its replacement belongs in the
+same repair — not to a separate gate.
+
+### §7b Special-file reviews (task 3b) — **N/A this iteration**
+
+No `CLAUDE.md`, `AGENTS.md` or `SKILL.md` appears on any v27 IMPL `files:` line, and neither the v27k
+nor the v27l repair touched one (`git show --name-only b124430 24797c5`). `README.md` is reviewed as a
+handover doc in §7, not as a special file.
+
+---
+
+### §8 BLOCKING finding (1) — `send_back = ["impl"]`
+
+**`BF-4` — no `onTick` in `src/dashboard/ui/*.js` may pass a body whose `getJSON` status is not `'ok'`
+to a render function. At HEAD `src/dashboard/ui/system.js:74` is the one that does — and it throws.**
+
+`:74` tests `!res.body`; the catch-all answers HTTP 200 `{runs:[], degraded:'…'}` (`src/server.ts:611-616`),
+which is truthy, so `:77` calls `buildTable`, whose first statement is `String(data.cpu.cores)` (`:49`)
+→ `TypeError`. Measured in real Chromium (quality-dimensions r1, two ticks): **0 rows, 3 `pageerror`,
+nav tag frozen `live`**. It contradicts **ARCH-125's `api:`** (「never rendered as data」 — the same
+clause `BF-2` was raised on) and **DES-207** in `04-design.md:6857`'s own words; the frozen tag also
+contradicts **ARCH-124's** amended `api:`, because the throw means `nextConnection` is never called for
+that tick even though `results['/api/system']` already holds `degraded`.
+
+**Required shape — one token, and the token matters.** `:74` becomes `if (res.status !== 'ok')`.
+`system.js:72` already holds `classifyResponse`'s answer; the status check subsumes the `!res.body` arm
+it replaces. Do **not** write `!res.body || res.body.degraded` — re-deriving the classification at the
+call site is the habit that produced the defect, and both design lenses converged on the status form.
+The existing `else` branch (`container.replaceChildren(el('div','empty',UNAVAILABLE))`) is the correct
+degraded render and needs no change.
+
+**Plus the falsifying test the guard is worthless without** — rewrite
+`tests/acceptance/val-202-ported-tabs.test.ts:104-117` using the `val-199-workflow-detail.test.ts:231`
+`setRequestInterception` recipe pointed at `/api/system`. **Keep its non-regression half**: VAL-210 is a
+`real: true` green for REQ-067/076/077/078, so the case must still assert that the un-intercepted load
+really renders data (a `.sys-table` row exists — today it only waits for `#system-panel`, which is the
+form without the property). **Then** intercept `/api/system` with the WHOLE-ROUTE degrade shape the
+catch-all actually sends — `HTTP 200 {"runs":[],"degraded":"injected"}` (`src/server.ts:611-616`), NOT a
+per-section `{memory:{reason:…}}` body, which is a different and already-handled case the title's
+「degraded section」 wording invites by mistake — and assert (a) the System panel renders the Unavailable
+component rather than emptying or throwing, (b) `pageerror` is empty across at least two poll ticks, and
+(c) the nav connection tag reads **`degraded`** (deterministic once the guard lands: `/api/system` is the
+system view's only route, so `results` is a single `degraded` entry — not an all-`fail` tick, and not
+`live`). Run it under `RWE_REQUIRE_BROWSER=1` with `PUPPETEER_EXECUTABLE_PATH` set and **paste the
+measured run into the IMPL entry** — `itReal` skips silently without Chromium, so an unrecorded run is
+indistinguishable from no run. The IMPL entry must carry the commit it lands in. `npx tsc --noEmit`
+must stay at exit 0 and the full suite green.
+
+**Scope is exactly this.** `issues.js` and `models.js` were grepped and are clean (§5), so no sibling
+edit is owed. `app.js:379`'s unguarded `await view.onTick(...)` is **not** in scope — once `system.js`
+is fixed no view at HEAD throws, so it is a latent hazard (`D3-3` in §9), and widening the repair is
+how this loop paid its last round.
+
+---
+
+### §9 Recorded tech debt (not blocking)
+
+Everything RE-REVIEW #2 recorded in its §9 still holds at `24797c5`, with line numbers refreshed by the
+repairs where applicable. Carried, unchanged: **F-4**, **F-5**, **F-6**, **F-7 ≡ QD-S2**, **QD-O4**,
+**QD-O5**, **QD-R2**, **QD-R3**, **QD-R4**, **QD-C2**, **QD-C3**, **F-2**, **F-3**, **QD2-O2**,
+**DEBT-A**, **DEBT-B**, **TOOL-FORK** (sharpened in §2 — the fork/plugin 35-vs-536 disagreement),
+**DOC-H**. **DEBT-C stays closed** (by `BF-3`).
+
+**New this pass — the six items the v27l design synthesis measured and deliberately recorded rather
+than converted into clauses (`04-design.md:7357-7386`), adopted here as this gate's debt so they are
+not lost with `.panel/`:**
+
+- **D3-1 — an empty tick reports `live` from any prior state.** `nextConnection({status:'offline',
+  consecutiveFails:5}, {results:{}})` → `{status:'live', consecutiveFails:0}`, because `worstOf({})`'s
+  `'ok'` seed survives an empty loop. Unreachable at HEAD (held back only by `app.js:382`'s
+  `Object.keys(results).length > 0`, which appears in no design row), reachable the moment REQ-142's
+  visibility gate attaches. Agreed shape: identity-on-empty. **If it lands, BF-3's new sentence must
+  gain four words in the same edit** — 「on a tick that observed ≥ 1 route, `status` is never carried
+  forward」 — or `BF-3` re-opens by accident.
+- **D3-2 — an unrecognised status token ranks `ok`.** `worstOf({a:'bogus'})` → `'ok'` (`RANK[status]`
+  is `undefined`). One token (`RANK[status] ?? RANK.fail`); unreachable input, fail-closed direction.
+- **D3-3 — a view that throws inside `onTick` freezes the tag.** `app.js:379`'s `await` is unguarded, so
+  a rejection skips `:383-384` while `scheduleTick`'s `.finally` keeps the timer alive. It is how
+  `BF-4` stays invisible in the browser. Agreed shape, measured to need no reducer change:
+  `results['view:<name>'] = 'fail'` plus one `console.error` (`perRoute` has no reader outside
+  `connection.js`). **Deliberately kept out of `BF-4`'s scope.**
+- **D3-4 — the footer stamps freshness on the ticks BF-2 designs to skip.** `app.js:386` runs
+  `updateFooterClock()` every tick, so 「更新於 12:30:05」 sits above a table from 12:29:xx beside a
+  truthful 降級 tag. Agreed rule: advance only on a tick that observed ≥ 1 route AND reduced to `live`;
+  plus `app.js:146`'s build-time stamp must become a placeholder or the rule freezes a false page-load
+  time forever. No test at any tier asserts the footer text.
+- **D3-5 — the seam.** `poll.js:51` classifies, `app.js:379` drops the answer, and three views
+  re-derive `!body || body.degraded` by hand — the clause `DES-206:6849` forbids, violated with no task.
+  Honest non-win, conceded by the adversarial lens: no new test tier is reached, so a task for it may
+  not claim a coverage gain.
+- **D3-6 — the architect's lane.** `02-architecture.md:3361` carries the looser pre-BF-1 forms of
+  `worstOf`'s type/role and 「a `degraded` string」. Not fixable from a design row; owed to the next
+  architecture touch (§5).
+
+Plus **DOC-UT245** (§2): `05-tests.md:12647` says 「11 cases」 for a 12-case file, inside a paragraph the
+row labels as history.
+
+**Known tech debt total: 60 LOW + 10 non-blocking MID, each with its consequence written down.**
+
+---
+
+### §10 Retro (this send-back loop)
+
+**What went well.** The auto re-run did its job twice over: thirteen blocking findings closed in the
+first round, then three in the second, each verified here by execution rather than by report. Four
+gates edited six ledger documents across this loop and induced **zero** new drift rows and zero new
+trace gaps. The v27l design gate deserves specific credit: handed a code-side defect it was not
+allowed to fix, it measured the defect in a real browser, wrote the one-token remedy and the reason the
+two-token form is wrong, named its own lane boundary, and put a warning in `state.yaml` that this
+re-review would pay a round if impl were not dispatched. That warning is why `BF-4` is in this report
+with a measurement attached instead of being discovered by an operator.
+
+**What to change — the same lesson, a third time, and this time against the reviewer.** RE-REVIEW #1
+wrote 「the repair scope should be the grep, not the line」. RE-REVIEW #2 caught IMPL-271 breaking it and
+then **broke it itself**: `BF-2`'s required shape enumerated 「both `onTick`s」 — `home.js` and `run.js`
+— when the actual population was every view module exporting `onTick`, and `system.js` (the one that
+throws rather than merely empties) was outside the enumeration. The implementer did exactly what was
+asked. **The fix is procedural and cheap: a finding about a call-site idiom must be written as the
+invariant plus the grep that enumerates its population, never as a list of files** — which is why
+`BF-4` is phrased as 「no `onTick` … may pass a non-`ok` body to a render function」 with `issues.js`
+and `models.js` checked and cleared in the same breath.
+
+**Second lesson, for the tooling.** Running the plugin `trace.py` against this fork-managed ledger
+silently overwrites the `dashboard.html` deliverable and drops a `metrics.jsonl` with incompatible
+numbers. Both were undone this pass, but the next reviewer should run the fork for the dashboard and
+the plugin's `*_check.py` scripts only as tools (TOOL-FORK, §2).
+
+**Process note:** `.panel/` is **deliberately left in place** — cleanup happens only on a closing pass,
+and this pass sends back.
+
+---
+
+## v27 GATE 8 RE-REVIEW #2 (2026-09-13, **SUPERSEDED** by RE-REVIEW #3 above — kept for history; its three blockers BF-1/BF-2/BF-3 are all closed, verified in RE-REVIEW #3 §1)
 
 > Second re-review, after the owner-ruling marker flip (`7604c90`) closed RE-REVIEW #1's sole blocker.
 > Tree at review: **`ced73ff`**. `src/` and `tests/` are **byte-identical to `29eb8a0`**

@@ -4952,3 +4952,54 @@ not dispatched before RE-REVIEW #3, the loop pays a round.**
 **Verification.** `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → **1663 items / 35 gaps**, identical to the pre-edit baseline captured in this session (the `iter:` bump produced no
 drift row). `npx tsc --noEmit` → 0 errors and `dashboard-lib-connection.test.js` 12/12 green — a docs-only round touches no code, so the implementer's full-suite run at `b124430` (2835 / 26 / 0) stands.
 `current_stage` stays at `review`, unchanged: Gate 8 owns this loop and the next step is RE-REVIEW #3.
+
+---
+
+## 2026-09-13 — v27 Gate 8 RE-REVIEW #3 (reviewer): the three blockers are closed; one takes their place, and the designer called it
+
+**Outcome: NOT PASSED — `send_back = ["impl"]`, 0 HIGH / 1 blocking MID.** The built-in auto re-run is
+spent, so this hands back to the orchestrator. Tree at review `24797c5`. Full record in `07-review.md`
+§「v27 GATE 8 RE-REVIEW #3」; `.panel/` deliberately left in place.
+
+**The three named findings are genuinely closed, re-opened on disk rather than taken from the repair
+gates' own accounts.** `BF-1` — `connection.js:39-40` is `consecutiveFails >= 2 ? 'offline' : 'degraded'`
+and `prev.status` survives in exactly one place, the comment at `:36`; the UT case at `:54-59` asserts
+`degraded` with `consecutiveFails === 1` and its two neighbours are unchanged. `BF-2` — `home.js:231`
+and `run.js:475` both carry `workflow.js:350`'s guard shape ahead of any repaint or further fetch, with
+one falsifying real-Chromium case per view (`val-198:262`, `val-200:215`). `BF-3` — DES-202's
+`boundary:`/`tests:` lines are re-stated at `04-design.md:6815`/`:6816` and the false `owner_decision`
+inheritance is closed at `:6817` and `:7274`. **Executed, not read:** `npx tsc --noEmit` → exit 0, and
+`RWE_REQUIRE_BROWSER=1 npx vitest run` over the three closure files → **3 files / 31 tests passed / 0
+failed** (12 / 13 / 6 — exactly IMPL-277/278's claim).
+
+**Nothing the repairs did leaked.** Trace **1663 items / 35 gaps**, composition identical to the
+RE-REVIEW #2 baseline (0 HIGH; 10 MID = the five parked REQs × 2 rows; 25 LOW = 21 pre-v27 drift + 4
+TASK). **Zero** new drift rows from the v27k impl and v27l design edits. Dashboard renders 43/43
+mermaid blocks to `<svg>` with 0 `pageerror` over all 8 tabs and every SoT link resolves;
+`solid_check` 0 mid / 10 low; `module_check` dormant; the `owner_decision` sweep on the fixed key is
+**0 pending** anywhere, `journal.md` included; Gate 7.5 unchanged (no mock-only REQ, `08-validation.md`
+passed, README+DEPLOY current-state with a 一鍵部署 command Gate 7.5 really ran).
+
+**The one blocker, `BF-4`, is the item the v27l designer wrote into `state.yaml` and was right about.**
+`src/dashboard/ui/system.js:74` tests `!res.body`; `server.ts:611-616` answers HTTP 200
+`{runs:[], degraded:'…'}`, which is truthy, so `:77` calls `buildTable` and `:49` reads `data.cpu.cores`
+→ `TypeError`. Measured by the design panel in real Chromium: **0 rows, 3 `pageerror`, nav tag frozen
+`live`**. It is the **same ARCH-125 `api:` clause `BF-2` was raised on**, in in-closure code (TASK-212),
+in the one view `BF-2`'s required shape did not name. Fix is one token — `if (res.status !== 'ok')`,
+because `:72` already holds `classifyResponse`'s answer — plus replacing
+`val-202-ported-tabs.test.ts:104-117`, which promises the Unavailable component in its title and then
+clicks a tab and asserts nothing. The siblings were grepped and are clean (`issues.js:102` renders the
+degrade, `models.js:55` is fail-closed by shape), so the scope is exactly that one file and its test.
+`app.js:379`'s unguarded `await view.onTick(...)` — the reason the tag freezes rather than turning
+`degraded` — is recorded as debt `D3-3` and **kept out of the repair scope on purpose**.
+
+**Retro line, and it lands on the reviewer.** RE-REVIEW #1 wrote 「the repair scope should be the grep,
+not the line」; RE-REVIEW #2 caught IMPL-271 breaking it and then broke it itself by enumerating
+`home.js` and `run.js` where the real population was every view module exporting `onTick`. `BF-4` is
+therefore written as an invariant plus its grep, with the two clean siblings named in the same breath.
+The six measured-but-unconverted items from the v27l design panel (`D3-1`..`D3-6`) are adopted into
+`07-review.md` §9 so they survive the eventual `.panel/` cleanup. One tooling note for whoever reviews
+next: running the *plugin* `trace.py` over this fork-managed ledger overwrites `dashboard.html` and
+drops a `metrics.jsonl` with incompatible numbers (it scores the same ledger 1675/536 against the
+fork's 1663/35) — both were undone here; use the fork for the dashboard and the plugin's `*_check.py`
+only as tools.
