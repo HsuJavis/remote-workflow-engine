@@ -224,7 +224,11 @@ export function onTick(container, bodies) {
   const state = stateByContainer.get(container);
   if (!state) return;
   const body = bodies['/api/home'];
-  if (!body) return;
+  // [BF-2 Gate 8 repair] a degraded body is `{runs:[], degraded:'...'}` (server.ts's catch-all) —
+  // never a HomeView, which always carries `running` as an array. Bail before touching the grid:
+  // last-known render stays (ARCH-125's "never rendered as data"), never an empty grid painted
+  // over a live one beside a truthful degrade tag. Same guard shape as `ui/workflow.js`'s onTick.
+  if (!body || body.degraded || !Array.isArray(body.running)) return;
   state.cards = [...(body.running || []), ...(body.registered || []), ...(body.other || [])];
   renderGrid(container, state, state.handlers);
   updateCounts(container, state);

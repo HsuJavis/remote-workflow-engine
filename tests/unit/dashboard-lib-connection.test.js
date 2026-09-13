@@ -46,10 +46,15 @@ describe('lib/connection.js: nextConnection transition table (UT-244, DES-202)',
     expect(next.status).toBe('degraded');
   });
 
-  it('live -> live (not offline) after ONE all-fail tick', () => {
+  // [BF-1 Gate 8 repair] this case used to assert "live -> live (not offline)" on one all-fail
+  // tick — that reading let a page keep claiming 「連線中 / Live」 for a full 3s interval where
+  // EVERY route failed (ARCH-124's api as amended: `live` only when EVERY route is `ok`). The
+  // debounce clause constrains the transition to `offline`, not the retention of `live`: the
+  // counter still advances, but the FIRST unanimous-fail tick reports `degraded`.
+  it('live -> degraded (consecutiveFails 1) on ONE all-fail tick', () => {
     const live = { status: 'live', consecutiveFails: 0, perRoute: {} };
     const next = nextConnection(live, { results: { runs: 'fail' } });
-    expect(next.status).toBe('live');
+    expect(next.status).toBe('degraded');
     expect(next.consecutiveFails).toBe(1);
   });
 

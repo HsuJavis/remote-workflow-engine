@@ -6527,3 +6527,82 @@ than on the substituted one.
   assertions replace or tighten existing cases rather than adding new ones.
 - Every fix in this round was independently falsified (reverted, confirmed red, restored, confirmed
   green) before being counted done — recorded per-IMPL above.
+
+### IMPL-277 — BF-1: the connection tag no longer keeps claiming `live` through a whole all-fail interval
+- **status:** done
+- **traces:** TASK-206, REQ-131
+- **greens:** UT-245 (`tests/unit/dashboard-lib-connection.test.js:49-58` — the case renamed from
+  "live -> live (not offline) after ONE all-fail tick" to "live -> degraded (consecutiveFails 1) on
+  ONE all-fail tick"; the sibling "-> offline on the SECOND consecutive all-fail tick" and
+  "offline -> live on a single recovery" cases pass unchanged)
+- **files:** src/dashboard/lib/connection.js, tests/unit/dashboard-lib-connection.test.js
+- **commit:** (pending — see journal entry for this round)
+- **iter:** v27k
+
+Gate 8 RE-REVIEW #2's BF-1: on the FIRST unanimous-`fail` tick, `nextConnection` returned
+`prev.status` (`connection.js:35`) instead of reporting what THAT tick observed — a page that was
+`live` kept showing 「連線中 / Live」 for a full 3 s poll interval while EVERY route of the visible
+view had just failed. ARCH-124's `api:` as amended (v27h owner ruling) says `live` only when EVERY
+route is `ok`; the debounce clause (REQ-131's 連續失敗) constrains the transition TO `offline`, not
+the retention of `live`. Fixed: `consecutiveFails` still advances on every unanimous-`fail` tick
+exactly as before (`offline` unchanged at `>= 2`), but `status` now reads `consecutiveFails >= 2 ?
+'offline' : 'degraded'` — never `prev.status`. No `prev.status === 'live'` carve-out was added (a
+first-tick all-fail landing on `degraded` from `checking` is correct and intended, per the finding).
+
+**Falsified both ways:** reverted to `prev.status`, confirmed the amended UT-245 case goes red
+(`expected 'live' to equal 'degraded'`... i.e. the OLD code produces `live`, which the NEW assertion
+rejects); restored, re-ran — 12/12 green in `dashboard-lib-connection.test.js`. The two neighboring
+cases ("-> offline on the SECOND consecutive all-fail tick", "offline -> live on a single recovery")
+were re-run unchanged and still pass, because they assert on `consecutiveFails`/the `ok`-recovery
+branch, neither of which this fix touches.
+
+### IMPL-278 — BF-2: a degraded body is never rendered as data on the Workflows home or a run's swimlane
+- **status:** done
+- **traces:** TASK-208, TASK-210, REQ-131, REQ-132, REQ-134
+- **greens:** new acceptance case in `tests/acceptance/val-198-shell-and-home.test.ts` ("a degraded
+  /api/home leaves the last-known card grid in place (BF-2)"); new acceptance case in
+  `tests/acceptance/val-200-swimlane.test.ts` ("a degraded /api/runs/:id/dag leaves the last-known
+  swimlane painted (BF-2)")
+- **files:** src/dashboard/ui/home.js, src/dashboard/ui/run.js,
+  tests/acceptance/val-198-shell-and-home.test.ts, tests/acceptance/val-200-swimlane.test.ts
+- **commit:** (pending — see journal entry for this round)
+- **iter:** v27k
+
+The AC-4 repair (IMPL-271) applied ARCH-125's "never rendered as data" rule in only one of the
+three poll-tick views (`ui/workflow.js:350`'s guard). `ui/home.js:227`'s `onTick` guarded only
+`if (!body) return;` — a degraded body is `{runs:[], degraded:'...'}` (server.ts's catch-all,
+`buildDashboardModel`), which is truthy and has no `running` key, so `[...(body.running||[]), ...]`
+silently produced an empty array and the next tick wiped the card grid to 「全部 (0) / 執行中 (0) /
+已註冊 (0)」 beside a truthful degrade. `ui/run.js:495`'s `onTick` took `bodies[dagUrl] || {defaults}`
+— the same truthy degraded shape has no `cells`, so `paintSwimlane`'s own `Array.isArray(payload.
+cells)` guard silently drew zero cells (no throw) over a run that had 9, and cleared `#run-usage`
+via the same tick's `renderUsageBox` call.
+
+Fixed both with the same guard shape `ui/workflow.js` already uses, at the top of each `onTick`,
+before any further fetch or repaint: bail (keep the last-known render) when the tick's own body is
+absent, carries a `degraded` key, or is not the expected array/shape (`home.js`: `!Array.isArray(
+body.running)`; `run.js`: `!Array.isArray(dagBody.cells)`, checked before the second `getJSON`
+fetch this view makes on its own, so a degraded `/dag` also skips the `/api/runs/:id` re-fetch and
+leaves the usage box/legend at their last-known values).
+
+One falsifying test was added per view, per the review's own recipe (`val-199-workflow-detail.
+test.ts:231`'s `setRequestInterception` pattern), under real Chromium: for `home.js`, load
+`/dashboard`, wait for the real `running` card to paint, then intercept `/api/home` to return the
+injected-degrade shape and confirm the card is STILL there ~7 s later (past two poll ticks); for
+`run.js`, load `/dashboard/:runId`, record the painted node-cell count, intercept `/api/runs/:id/
+dag` the same way, and confirm the count is unchanged ~7 s later. Both ran for real (`RWE_REQUIRE_
+BROWSER=1`, `PUPPETEER_EXECUTABLE_PATH` pointed at the cached Chromium — `itReal` skips silently
+without it): `val-198-shell-and-home.test.ts` 13/13 passed, `val-200-swimlane.test.ts` 6/6 passed,
+no `pageerror` in either new case.
+
+**Full-suite verification (this round, real):**
+- `npx tsc --noEmit` → 0 errors (root program).
+- `npx vitest run` (full suite, real Chromium via `PUPPETEER_EXECUTABLE_PATH`) → **2835 passed / 26
+  skipped / 0 failed** (403 files + 1 skipped; +2 over the pre-round baseline of 2833 — the two new
+  BF-2 falsifying cases above; BF-1's UT-245 rename is a like-for-like replacement, not a net-new
+  case).
+- `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` → re-run after IMPL-277/278 landed;
+  see `state.yaml`'s `gates.impl.note` for the exact item/gap counts against the RE-REVIEW #2
+  baseline (1661/35).
+- Both fixes were independently falsified (reverted, confirmed the new case goes red for the
+  reason the finding measured, restored, confirmed green) before being counted done.

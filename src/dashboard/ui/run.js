@@ -467,6 +467,12 @@ export async function onTick(container, bodies, ctx) {
   const state = stateByContainer.get(container);
   if (!state || !state.shell.root.isConnected) return {};
   const [dagUrl] = endpointsFor('run', ctx);
+  const dagBody = bodies[dagUrl];
+  // [BF-2 Gate 8 repair] a degraded body is `{runs:[], degraded:'...'}` (server.ts's catch-all) —
+  // never the DAG payload's own shape (`cells`/`edges` arrays at top level, DES-064). Bail before
+  // fetching further or repainting: last-known render stays (ARCH-125's "never rendered as data"),
+  // never an empty swimlane drawn over a live one. Same guard shape as `ui/workflow.js`'s onTick.
+  if (!dagBody || dagBody.degraded || !Array.isArray(dagBody.cells)) return {};
   const viewUrl = '/api/runs/' + encodeURIComponent(state.runId);
   const viewRes = await getJSON(viewUrl);
   if (!state.shell.root.isConnected) return { [viewUrl]: viewRes.status };
@@ -492,7 +498,7 @@ export async function onTick(container, bodies, ctx) {
     }
   }
 
-  const payload = bodies[dagUrl] || { cells: [], edges: [], warnings: [], lanes: [], current: null };
+  const payload = dagBody;
   const agentsById = new Map(((viewRes.body && viewRes.body.agents) || []).map((a) => [a.agentId, a]));
   paintSwimlane(state.shell.svgEl, payload, {
     lang: state.lang, onSelectAgent: state.handlers.onSelectAgent, agentsById, pAgents: state.pAgents,

@@ -254,6 +254,44 @@ describe('the v27 dashboard shell + Workflows home, real Chromium (VAL-198, REQ-
     }
   }, 20000);
 
+  // [BF-2 Gate 8 repair] the falsifying test the review named: a degraded `/api/home` must never
+  // repaint the card grid empty (ARCH-125's "never rendered as data"). Before the repair, a truthy
+  // `{runs:[], degraded:'...'}` body (server.ts's catch-all shape) has no `running` key, so
+  // `[...(body.running||[]), ...]` silently produced an empty array and the next poll tick wiped
+  // the running card and zeroed every segment count beside a truthful degrade tag.
+  itReal('a degraded /api/home leaves the last-known card grid in place (BF-2)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      const pageErrors: string[] = [];
+      page.on('pageerror', (err) => pageErrors.push(String(err)));
+      await page.goto(`${baseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+      // Wait for the FIRST real tick to land before degrading — proves the grid held real data,
+      // not that it started empty.
+      await page.waitForFunction(
+        () => Array.from(document.querySelectorAll('[class*="card"]')).some((c) => (c.textContent ?? '').includes('val198-running')),
+        { timeout: 5000 },
+      );
+      await page.setRequestInterception(true);
+      page.on('request', (req) => {
+        if (new URL(req.url()).pathname === '/api/home') {
+          req.respond({ status: 200, contentType: 'application/json', body: JSON.stringify({ runs: [], degraded: 'val198 injected degrade' }) });
+          return;
+        }
+        req.continue();
+      });
+      // One poll tick is ~3s (app.js); wait past two to be sure a degraded tick actually landed.
+      await new Promise((r) => setTimeout(r, 7000));
+      const stillShowsRunning = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('[class*="card"]')).some((c) => (c.textContent ?? '').includes('val198-running')));
+      expect(stillShowsRunning).toBe(true);
+      expect(pageErrors).toEqual([]);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
   // DES-209's own anti-vacuity floor for the whole table (checked once, here, not per view file —
   // no browser needed).
   it('SPEC_ROWS has at least 40 rows (DES-209 anti-vacuity floor)', () => {

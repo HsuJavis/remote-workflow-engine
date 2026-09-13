@@ -206,6 +206,41 @@ describe('the swimlane run graph, real Chromium (VAL-200, REQ-134)', () => {
     }
   }, 20000);
 
+  // [BF-2 Gate 8 repair] the falsifying test the review named: a degraded `/api/runs/:id/dag`
+  // must never repaint the swimlane empty over a live one (ARCH-125's "never rendered as data").
+  // Before the repair, `bodies[dagUrl] || {...defaults}` treated the truthy `{runs:[],
+  // degraded:'...'}` body (server.ts's catch-all shape) as the payload itself — `paintSwimlane`'s
+  // own `Array.isArray(payload.cells)` guard is false for that shape, so it silently drew ZERO
+  // cells (no page error) over a run that had 9.
+  itReal('a degraded /api/runs/:id/dag leaves the last-known swimlane painted (BF-2)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      const pageErrors: string[] = [];
+      page.on('pageerror', (err) => pageErrors.push(String(err)));
+      await page.goto(`${baseUrl}/dashboard/${runId}`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await page.waitForSelector('#dag-graph', { timeout: 3000 });
+      const before = await page.$$eval('#dag-zoom [data-node-cell]', (els) => els.length);
+      expect(before).toBeGreaterThan(0);
+      await page.setRequestInterception(true);
+      page.on('request', (req) => {
+        if (new URL(req.url()).pathname === `/api/runs/${runId}/dag`) {
+          req.respond({ status: 200, contentType: 'application/json', body: JSON.stringify({ runs: [], degraded: 'val200 injected degrade' }) });
+          return;
+        }
+        req.continue();
+      });
+      // One poll tick is ~3s (app.js); wait past two to be sure a degraded tick actually landed.
+      await new Promise((r) => setTimeout(r, 7000));
+      const after = await page.$$eval('#dag-zoom [data-node-cell]', (els) => els.length);
+      expect(after).toBe(before);
+      expect(pageErrors).toEqual([]);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
   // [v27c] DES-209's own promised oracle (ADR-053 「規格逐條核」): every SPEC_ROWS row for the
   // 'run' view, checked under BOTH data-theme values and once more after a hue-slider move. A row
   // whose anchor matches no element FAILS (never skips) — see spec-rows.ts.

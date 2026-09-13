@@ -32,7 +32,11 @@ export function nextConnection(prev, tick) {
     return { status: 'degraded', consecutiveFails: 0, perRoute: tick.results };
   }
   const consecutiveFails = prev.consecutiveFails + 1;
-  const status = consecutiveFails >= 2 ? 'offline' : prev.status;
+  // [BF-1 Gate 8 repair] the counter alone tracks the offline streak — `status` reports what THIS
+  // tick observed (`degraded` at 1, matching the not-all-fail branch above), never `prev.status`
+  // carried forward. A page that was `live` must not keep claiming it through a whole 3s interval
+  // where EVERY route failed (ARCH-124's api: `live` only when EVERY route is `ok`).
+  const status = consecutiveFails >= 2 ? 'offline' : 'degraded';
   return { status, consecutiveFails, perRoute: tick.results };
 }
 

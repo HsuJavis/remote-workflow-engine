@@ -4851,3 +4851,69 @@ merely stale), plus **3 new** — F-2 (a second, unpinned `clampHue` in
 `ui/theme-init.js` under a comment claiming a test that does not exist), F-3 (ARCH-123/ARCH-125 `api:` enumerate
 18 and 7 files against the tree's 26 and 12; the property is locked by `static-assets.test.ts`, only the prose is
 stale), QD2-O2 (the three ported tabs re-fetch inside `onTick`, doubling the stated polling budget).
+
+## 2026-09-13 — v27k Gate 8 RE-REVIEW #2 SEND-BACK REPAIR (implementer) — BF-1/BF-2/BF-3, all three findings, one dispatch
+
+**Scope:** RE-REVIEW #2's three blocking findings, exactly (`07-review.md` §8) — BF-1 and BF-2 (routed
+`→ impl`) plus BF-3 (routed `→ design`), all three dispatched to this one implementer run rather than
+split across two. No re-decomposition, no re-partitioning, no code or test touched outside the three
+named findings. Full record: `06-impl-log.md` IMPL-277/IMPL-278; `04-design.md`'s DES-202 edits (iter
+`v27j` → `v27k`).
+
+- **BF-1 — `src/dashboard/lib/connection.js:35`.** `nextConnection` returned `prev.status` on the FIRST
+  unanimous-`fail` tick — a page that was `live` kept reading 「連線中 / Live」 for a full 3s interval
+  where every route of the visible view had just failed, contradicting ARCH-124's `api:` as amended
+  (「`live` only when EVERY one of them is `ok`」) and REQ-131's owner-amended acceptance. Fixed:
+  `const status = consecutiveFails >= 2 ? 'offline' : 'degraded'` — the counter still advances exactly
+  as before (`offline` unchanged at `>= 2`); no `prev.status === 'live'` carve-out was added, per the
+  finding's own instruction (a first-tick all-fail landing on `degraded` from `checking` is intended).
+  `tests/unit/dashboard-lib-connection.test.js:49-54`'s case renamed from "live -> live (not offline)
+  after ONE all-fail tick" to "live -> degraded (consecutiveFails 1) on ONE all-fail tick"; the
+  `:57-60`/`:64-67` siblings (second-tick offline, single-recovery) pass unchanged, confirmed by
+  re-running the file (12/12 green).
+- **BF-2 — `src/dashboard/ui/home.js:226` + `src/dashboard/ui/run.js:495`.** The AC-4 repair (v27g)
+  applied ARCH-125's "never rendered as data" rule in only one of the three poll-tick views
+  (`ui/workflow.js:350`). `home.js`'s `onTick` guarded only `if (!body) return;` — a degraded body
+  (`{runs:[], degraded:'...'}`, `server.ts`'s catch-all via `buildDashboardModel`) is truthy and has no
+  `running` key, so the card grid emptied to 「全部 (0) / 執行中 (0) / 已註冊 (0)」 beside a truthful
+  degrade. `run.js`'s `onTick` took the same shape as `payload` directly — `paintSwimlane`'s own
+  `Array.isArray(payload.cells)` guard silently drew zero cells (no throw) over a run that had 9, and
+  `#run-usage` cleared via the same tick's `renderUsageBox`. Fixed both with the identical guard shape
+  `workflow.js` already uses, at the top of each `onTick`: bail (last-known render stays) when the
+  body is absent, carries `degraded`, or fails an `Array.isArray` shape check on its own array field
+  (`running` / `cells`) — `run.js`'s guard sits before the second `getJSON` fetch that view makes on
+  its own, so a degraded `/dag` also skips the redundant `/api/runs/:id` re-fetch. One falsifying
+  real-Chromium case added per view (`val-198-shell-and-home.test.ts`, `val-200-swimlane.test.ts`),
+  same `setRequestInterception` recipe as `val-199-workflow-detail.test.ts:231` — run for REAL
+  (`RWE_REQUIRE_BROWSER=1`, `PUPPETEER_EXECUTABLE_PATH` pointed at the cached Chromium build, since
+  `itReal` skips silently without it): `val-198` 13/13 green, `val-200` 6/6 green, zero `pageerror` in
+  either new case.
+- **BF-3 — `04-design.md:6815` (DES-202 `boundary:`) and `:6816` (`tests:`).** Both described the
+  reducer BF-1 replaces — 「status stays `prev.status` at 1」 and a `tests:` case named `live→live` on
+  ONE all-fail tick — the identical shape v27j itself called blocking one round earlier, on this same
+  row, for this same reason. Re-stated in place: a unanimous-`fail` tick still only advances
+  `consecutiveFails` (`offline` unchanged at `>= 2`), `status` now reads `degraded` at 1, never
+  `prev.status`. In the same edit, `:6817`'s amended bullet and `:7274`'s narrative prose both said DES-202
+  「inherits ARCH-124's `owner_decision: pending`」 — stale since `7604c90` (`02-architecture.md:3365`
+  reads `answered 2026-09-13`, owner ruled KEEP THE NARROWING); this was DEBT-C, closed inline at both
+  spots with a `[SETTLED …]` marker (the ARCH-124 v27h bullet's own strikethrough-plus-resolved-marker
+  house style), not by rewriting the historical prose. `iter: v27j` → `v27k`, 0 new DES id, 0
+  trace-link change.
+
+**Full-suite verification, this round:** `npx tsc --noEmit` → 0 errors, both before and after every
+change. `npx vitest run` (full suite, real Chromium via `PUPPETEER_EXECUTABLE_PATH` pointed at the
+cached build — `itReal` does not skip) → **2835 passed / 26 skipped / 0 failed** (403 files + 1
+skipped), +2 over the RE-REVIEW #2 pre-round baseline of 2833 — the two new BF-2 falsifying cases;
+BF-1's UT-245 rename is a like-for-like replacement, not a net-new case. `sh .sdlc/trace
+.sdlc/features/001-remote-workflow-engine` → **1663 items / 35 gaps** (was 1661/35 at RE-REVIEW #2;
++2 items for IMPL-277/278, gap SET unchanged — re-verified by calling `analyze()` directly: 0
+high/orphan/broken-link/mock-only, 10 mid = the same recorded REQ-137/138/139/142/143 pair, 25 low =
+21 pre-existing drift + 4 TASK 未實作). Every fix was independently falsified before being counted
+done: reverted (via `Edit`, restoring the exact prior text — never `git checkout`/`git stash`, per
+this repo's CLAUDE.md), the amended test/case confirmed red for the reason the finding measured,
+then restored and re-confirmed green.
+
+**Not touched, by design:** the 10 MID parked-REQ rows, the 53 LOW recorded debt items (F-2/F-3/
+QD2-O2, the carried panel findings, the trace/`solid_check` rows, TOOL-FORK/DOC-H) — none was named
+blocking, so none was chased. `current_stage` stays at `review`, unchanged — Gate 8 owns this loop;
+the next step is RE-REVIEW #3, not a rewind to tests.
