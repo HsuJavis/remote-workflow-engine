@@ -6796,3 +6796,110 @@ before this row's new case).
   gaps, zero new orphans/broken links.
 - `git diff --stat` against `HEAD` (`86617d7`) after the falsification round → empty (byte-identical
   restore).
+
+### IMPL-281 — BF-6: `workflow.js`'s `paintSelected` no longer renders "undefined" for a degraded `/api/runs/:id` (the sixth site of the same defect class; class closed with a sweep + a structural recommendation)
+
+- **status:** done
+- **traces:** TASK-209, REQ-133, ARCH-125
+- **greens:** new case in `tests/acceptance/val-199-workflow-detail.test.ts` — "a degraded
+  /api/runs/:id (+ its /dag sibling) drops the run-summary line rather than rendering \"undefined\"
+  (BF-6)"
+- **files:** src/dashboard/ui/workflow.js, tests/acceptance/val-199-workflow-detail.test.ts
+- **commit:** 35e00fc
+- **iter:** v27
+
+**The defect (IMPL-280/BF-5's own "fifth and sixth site... reported here, NOT fixed", now closed).**
+`workflow.js:319`'s `payload = dagRes.body || {defaults}` never fires on a truthy `{degraded:'…'}`
+body (server.ts's catch-all, same shape BF-2/BF-4/BF-5 were raised against). `workflow.js:322`'s
+`renderLegend(shell.legend, payload, viewRes.body, lang)` is the identical defect to BF-5's own fix,
+in a second file: `renderLegend`'s `if (!view) return` (`run.js:360`) is false for a truthy degraded
+body, so `view.status` rendered as the literal string `"undefined"` in the `.run-summary` line — no
+page error, no empty element, the same silent trap BF-5's own comment names.
+
+**Fix is the idiom `system.js:78`/`run.js:506` established, not a seventh guard shape.** Both
+`dagRes` and `viewRes` at `:318` already hold `classifyResponse`'s verdict for their own fetch —
+`:326` now reads `dagRes.status === 'ok' ? dagRes.body : {defaults}`, `:329` now reads
+`viewRes.status === 'ok' ? viewRes.body : null`. Labelled `[BF-6 Gate 8 repair]`, one comment
+covering both lines (same call, same `Promise.all`, same fetch pair) — matching BF-5's single-label
+convention rather than splitting into BF-6/BF-7 for two lines of the one defect.
+
+**Falsification (measured, `Edit` only, never `git checkout`/`restore`/`stash`):** reverted `:326`/`:329`
+to the pre-fix `dagRes.body || {defaults}` / `viewRes.body` → ran
+`val-199-workflow-detail.test.ts -t BF-6` → **1 failed / 5 skipped**,
+`AssertionError: expected { Object (isolatedHandle, handle) } to be null` at the `.run-summary`
+element-absence assertion (line 295 of the test at the time) — the element was still present,
+carrying the "undefined" text the fix removes. Restored via `Edit` → re-ran the full
+`val-199-workflow-detail.test.ts` → **6/6 passed** (was 5/5 before this row's new case) → then
+committed (`35e00fc`), at which point `git diff --stat` against that commit is empty by construction.
+
+**Sweep, re-verified independently (own grep — `grep -n "getJSON(\|\.body\b\|bodies\[\|\.status\b"
+src/dashboard/ui/*.js src/dashboard/lib/*.js`, then hand-filtered to lines that actually consume a
+fetch/poll RESULT as data, excluding unrelated `.status`/`.body` fields — a run/trigger record's own
+`.status`, an issue's own `.body` text, `document.body`, and `app.js`'s `results[url]=.../bodies[url]=...`
+bookkeeping, which is storage, not consumption) — every `src/dashboard/ui/*.js` and `lib/*.js` site:**
+
+| file:line | consumes | guard |
+|---|---|---|
+| `run.js:470/475` | `dagBody` (bodies map) | shape: `!dagBody \|\| dagBody.degraded \|\| !Array.isArray(dagBody.cells)` (BF-2) |
+| `run.js:488` | `runsRes.body` | shape: `Array.isArray(runsRes.body)` |
+| `run.js:495-496` | `describeRes.body` | shape: chained `.params.agents` truthy check |
+| `run.js:502` | `viewRes.body.agents` | shape: `(viewRes.body && viewRes.body.agents) \|\| []` |
+| `run.js:512` | `viewRes.body` → `renderLegend` | verdict: `viewRes.status === 'ok' ? ... : null` (BF-5) |
+| `run.js:513` | `viewRes.body.usage` | shape: `viewRes.body && viewRes.body.usage` |
+| `home.js:231` | `body` (bodies map) | shape: `!body \|\| body.degraded \|\| !Array.isArray(body.running)` (BF-2) |
+| `system.js:78` | `res` | verdict: `res.status !== 'ok'` (BF-4) |
+| `issues.js:80` | `res.body` (detail) | shape: `!data \|\| data.degraded` (deliberate — shows the `.degraded` reason text) |
+| `issues.js:102` | `res.body` (list) | shape: `data && data.degraded` (same deliberate reason-text read) |
+| `models.js:55` | `res.body` | shape: `!entries \|\| !Array.isArray(entries)` |
+| `agent-panel.js:234` | `res.body` | shape: destructure-with-defaults (`body.record \|\| {...}`, safe — a degraded body has none of `record`/`harness`/`events`) |
+| `workflow.js:357` | `describe`/`bodies[runsUrl]` | shape: `!describe \|\| describe.degraded \|\| !Array.isArray(...)` (AC-4) |
+| `workflow.js:326` | `dagRes.body` → `payload` | **was NOT guarded — THIS row's fix**: verdict, `dagRes.status === 'ok' ? ... : {defaults}` |
+| `workflow.js:327` | `viewRes.body.agents` | shape: `(viewRes.body && viewRes.body.agents) \|\| []` (safe — same shape as `run.js:502`, **not in IMPL-280's 15-site table**, see note below) |
+| `workflow.js:329` | `viewRes.body` → `renderLegend` | **was NOT guarded — THIS row's fix**: verdict, `viewRes.status === 'ok' ? ... : null` |
+
+`lib/*.js` (`agent.js`, `connection.js`, `model.js`, `runlist.js`, `status.js`, `strings.js`,
+`swimlane.js`, `theme.js`) and `theme-init.js`/`dom.js`/`clock.js`: zero `getJSON`/`fetch` call sites
+— none apply.
+
+**Count correction: 16 sites, not 15.** IMPL-280's table counted 15 and this dispatch inherited that
+number; `workflow.js:327` (`viewRes.body.agents`, the exact structural twin of `run.js:502`) was
+never listed in IMPL-280's table even though `workflow.js:319`/`322` two lines away were. It is
+SAFE today (a degraded body carries no `.agents` field, so the fallback `|| []` genuinely fires,
+unlike `:319`/`:322`'s bug where the fallback never fires) — so this correction changes the count,
+not the verdict: the sweep is clean now, all 16 sites are guarded, 2 by this row.
+
+**Is a guard-per-site the right end state, or a standing hazard? Standing hazard — recommend a
+shared helper, not a seventh/eighth guard.** Six sites of the identical defect, found one or two at
+a time across six rounds (BF-1..BF-6), is not bad luck — it is what happens when a caller must
+remember, on every consumption site, to test `res.status === 'ok'` before trusting `res.body`, with
+nothing enforcing that at the boundary (`poll.js`'s `getJSON` hands back `{status, body}` and lets
+every caller re-derive the same "is this really ok?" question by hand; plain `.js`, no compiler
+catches a forgotten check). The two `deliberate` shape-reads in the table above (`issues.js:80/102`)
+are the reason the fix can't be "make `getJSON` null the body on any non-`ok` status" — that would
+break `issues.js`'s intentional read of `.degraded`'s reason text (IMPL-271's own note: it reads the
+raw body itself, ignoring the shared `bodies` map, specifically to show that text). The narrower
+structural fix: add ONE helper to `poll.js` — e.g. `okBody(res, fallback)` returning `res.status ===
+'ok' ? res.body : fallback` — and have every "I want a real payload or nothing" call site (the 12
+non-`issues.js` rows above) call it instead of hand-rolling the check; `issues.js`'s two rows keep
+reading `res.body`/`.degraded` directly, unchanged, since they need the raw shape. This turns "did
+this call site remember the contract" into "did this call site use the one blessed helper" — a
+single grep (`grep -rn '\.body\b' src/dashboard/ui | grep -v okBody | grep -v issues.js` or similar)
+would then flag any future hand-rolled shape check on sight, instead of waiting for a seventh Gate 8
+round to find it by hand. **Not made in this dispatch** (out of scope, per the dispatch's own
+instruction) — recorded here for the next design touch.
+
+**Full verification (this round, real):**
+- `npx tsc --noEmit` → exit 0.
+- `npx vitest run` (full suite, no `RWE_REQUIRE_BROWSER`) → **2838 passed / 26 skipped / 0 failed**
+  (403 files + 1 skipped) — +1 over the pre-round 2837 baseline (this row's own new BF-6 case).
+- `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-198-shell-and-home.test.ts
+  tests/acceptance/val-199-workflow-detail.test.ts tests/acceptance/val-200-swimlane.test.ts
+  tests/acceptance/val-201-agent-panel.test.ts tests/acceptance/val-202-ported-tabs.test.ts` →
+  **37 passed / 0 failed** (5 files; was 36).
+- `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → **1666 items / 35 gaps**
+  (item count +1 over the pre-round 1665 baseline — this IMPL-281 heading is itself the one new
+  work item; it traces to existing TASK-209/REQ-133/ARCH-125, minting no other new IDs; gap SET
+  identical to the pre-round baseline: the five parked REQs' `未實作`/`未驗證` pairs, 22 pre-existing
+  `漂移` LOWs, 4 pre-existing `未實作` TASK LOWs) — zero new gaps, zero new orphans/broken links.
+- `git diff --stat` against `HEAD` (`35e00fc`) after the falsification round → empty (byte-identical
+  restore).
