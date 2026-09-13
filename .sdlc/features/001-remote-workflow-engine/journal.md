@@ -5167,3 +5167,43 @@ sweep for a live `- **owner_decision:** pending` marker across the ledger → **
 gains a brief v27m entry (old text preserved as `| PRIOR:`); `current_stage` is left at `review` — this is
 a Gate 8 send-back repair, not a fresh Gate 6 pass, so it routes back to the reviewer, never forward
 through Gate 6.5+7.
+
+## 2026-09-14 — v27 Gate 8 RE-REVIEW #5 (reviewer): both blockers closed, the iteration closes
+
+The fifth pass is the short one, which is the point. RE-REVIEW #4 sent back two halves of one class —
+`BF-8`, write the positive rule nobody had written, and `BF-7`, apply it at the one site that was
+synthesizing a DAG payload — and the automatic re-run closed both. I re-derived every clause from the
+tree rather than from the rows describing themselves: `DES-206`'s `amended (2026-09-14, v27m …)`
+bullet carries (V)/(K)/(U)/(O)/(N)/(S)/(R) over all thirteen consumption points with a fifteen-row
+disclosure table; `DES-205` carries its own inheriting amendment, so the clause cannot bounce as
+out-of-row at `agent-panel.js`; `ui/workflow.js:346-356` is the two arms plus the paint-memory
+definition the finding's own sentence had presupposed without defining; the synthesized
+`{cells:[],…}` literal survives only inside the comment that explains why it is gone; and
+`git diff 18b9c03..HEAD -- 02-architecture.md` is empty, as `BF-8` required. Executed, not read:
+val-198..202 in real Chromium → 39/39 with `val-199` at 8 tests / 29.6 s (the two seven-second
+interception cases genuinely ran), `tsc --noEmit` exit 0, the full suite 2840 passed / 0 failed, the
+dashboard rendering 43/43 mermaid blocks to `<svg>` across all eight tabs with zero page errors.
+
+**The finding I did NOT raise is the one worth writing down.** The design gate's own quality lens
+measured `home.js`'s FIRST-PAINT arm in a browser and found 「全部 (0) · 執行中 (0) · 已註冊 (0)」 on a
+two-workflow deployment when `/api/home` degrades from load — a fabricated quantity on the product's
+primary page, the same predicate `BF-7` blocked on. It then DISCLOSED it in `DES-206`'s table with a
+fix shape instead of quietly widening a send-back repair into it. That is the new rule working
+exactly as designed, so it is recorded as `D4-1` (MID debt) and not a sixth send-back: the automatic
+re-run is spent, it was never a blocking finding of the pass being re-reviewed, and making the fix's
+own honest disclosure the reason for another round would teach every future gate that omission is
+cheaper than disclosure.
+
+It also corrects a row of my own. RE-REVIEW #4 §8's population table rated `home.js:231`
+「clean (BF-2)」 — from a code read of the tick arm, with the first-paint arm never measured. That is
+the identical error I had been charging implementers with for five rounds (IMPL-281's 「all 16 sites
+are guarded」, corrected in place this round at its own request). The lesson generalises and belongs
+to this gate, not to them: **a population table built by reading code is a hypothesis; it is only
+true once each row has been measured under the fault it claims to survive.** Next review states, per
+row, which arm was checked and whether by reading or by executing.
+
+`gates.review.passed` flips to `true`, `current_stage` stays `review`, `send_back = []`. Gaps:
+0 HIGH / 13 MID / 62 LOW, every row owned in `07-review.md` §9 — including two more new ones this
+pass, `D4-2` (the owed test population `DES-206` now names, tripwire included) and `D4-3` (UT-244's
+RED record is stale; its file is 9/9 green). `arch_consistent` stays **NO** with three owned MIDs;
+it is not flipped to tidy the close. `.panel/` removed per the contract's task 6.
