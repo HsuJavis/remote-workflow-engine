@@ -1726,8 +1726,16 @@ to asserting the overlay is served):
   light `oklch(.56 .065 h)`,ramp 100–900 依交付 README 的 L/C 序列),且值寫入 `localStorage['rwe-hue']`。
   **Given** 語言分段設 EN **Then** nav/tab/欄位標題全英文;設「中」**Then** 全繁中。兩種語言的字串
   同源於單一字串表,畫面不得散落字面值。
-  **Given** 任一 `/api/*` 取得成功 **Then** nav 的來源 tag 顯示「連線中 / Live」(accent tint);連續失敗
-  **Then** 顯示「離線 / Offline」(紅色 outline)。
+  **Given** 目前分頁所依賴的 `/api/*` 路由**全部**取得成功 **Then** nav 的來源 tag 顯示「連線中 / Live」
+  (accent tint);**Given** 其中任一路由降級(混合狀態,例如 `describe` 成功但 `/api/runs` 失敗)**Then**
+  顯示「降級」而**非**「連線中」;連續失敗 **Then** 顯示「離線 / Offline」(紅色 outline)。
+  **[AMENDED v27h, owner ruling 2026-09-13 — ARCH-124]** 本條原寫「**任一** `/api/*` 取得成功即顯示
+  Live」。v27g 的 AC-4 修復(`src/dashboard/lib/connection.js:24-37`,已上線)把它收窄成上述的全部-ok
+  語意,於是實作與本條的字面讀法不一致。架構師拒絕自行修改驗收條款(專家組無此權限)並升級給擁有者;
+  擁有者裁定 **保留收窄**,理由採納架構師的陳述:tag 顯示「連線中」而使用者正在看的那張表所依賴的路由
+  其實正在降級,等於對操作者說謊 —— 與本 repo 既有的「degrade, never pretend」立場一致。因此改的是
+  本條的文字,不是實作。三態方案(連線中 / 部分降級 / 離線)經考慮後未採,因為交付包只定義了
+  Live / Offline / Demo data 三種來源 tag,新增第四種會超出 DES-209 所定的保真度依據。
   **Given** 在無網路環境開啟頁面 **Then** Archivo 與 JetBrains Mono 仍正確套用 —— 字體由本 repo 自帶的
   woff2 供應,產出的 HTML 不含 `fonts.googleapis.com` 或任何其他外部 host(C3 之外的離線立場,與既有
   「不引 mermaid CDN」一致)。
