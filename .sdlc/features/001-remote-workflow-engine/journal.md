@@ -5003,3 +5003,70 @@ next: running the *plugin* `trace.py` over this fork-managed ledger overwrites `
 drops a `metrics.jsonl` with incompatible numbers (it scores the same ledger 1675/536 against the
 fork's 1663/35) — both were undone here; use the fork for the dashboard and the plugin's `*_check.py`
 only as tools.
+
+## 2026-09-13 — v27 Gate 8 RE-REVIEW #4 (reviewer): BF-4/5/6 closed, the CLASS is not — send back to design + impl
+
+**Verdict: NOT PASSED. `send_back = ["design","impl"]`, 0 HIGH / 2 blocking MID.** Tree at review
+`18b9c03`. Full record in `07-review.md` §「v27 GATE 8 RE-REVIEW #4」; `gates.review.passed` stays
+`false`, `current_stage` stays `review` (Gate 8 owns this loop), `.panel/` deliberately kept.
+
+**Closed and re-verified, not taken on the repair's word.** `BF-4` (`system.js:78` is the one-token
+`if (res.status !== 'ok')`; `val-202:130-166` intercepts `/api/system` with the whole-route shape and
+`:104-121` now waits on `.sys-table tr`, so the 「form without the property」 defect is gone), plus
+`BF-5` (`run.js:512`) and `BF-6` (`workflow.js:329`) — two further sites of the same class the
+implementer found on its **own** sweep, reported in IMPL-279 rather than silently widening, then fixed
+in separate commits with separate falsifying tests. All three IMPL rows carry their commit and a
+*post-commit* falsification (`2552230`, `86617d7`, `35e00fc`). Re-run here: **6 files / 49 tests passed**
+in real Chromium 152, 0 failed; `tsc --noEmit` exit 0.
+
+**Mechanical checks, all clean or unchanged.** trace **1666 items / 35 gaps**, gap SET byte-identical to
+RE-REVIEW #3's (0 HIGH; no 斷鏈/孤兒/未真實驗證/待業主決策; **no DES/UT/VAL row lags IMPL-279/280/281** —
+zero induced drift). `dashboard_check` 0 high / 7 mid (the same `erDiagram` bracket false positives) /
+1 low, every SoT link resolves; headless render of the deliverable → `{"total":43,"svg":43,"err":0,
+"blank":0,"links":1708,"tabs":8}`, zero `pageerror` (playwright absent — degraded mode noted).
+`solid_check` 0 mid / 10 low (the same 未認領檔案 set). `module_check` dormant. `owner_decision` sweep on
+the fixed metadata key → **0 pending**, and no unmarked ADR deferral. Gate 7.5 confirmed unchanged: no
+mock-only REQ, `08-validation.md` present, `README.md` + `DEPLOY.md` current-state with §0 一鍵部署
+leading and one 設定總表 — and none of the three repairs makes a manual sentence stale, so `validation`
+is not in the send-back.
+
+**What sends it back.** Both pre-run architecture panels, working independently and each measuring in a
+real browser, found the **seventh** site of the class: `ui/workflow.js:326` answers a degraded
+`/api/runs/:id/dag` by **synthesizing** `{cells:[],edges:[],warnings:[],lanes:[],current:null}`;
+`:328` hands it to `paintSwimlane`, which `replaceChildren()`s the svg and the cell layer *before*
+appending (`run.js:219`/`:222`); `:329` hands the same fabricated payload to `renderLegend`, which —
+because `/api/runs/:id` was healthy, so `view` is truthy and `run.js:360`'s bail does not fire —
+computes `nodeCount` from the invented `cells` (`:361`) and prints 「completed · **0 個節點** · 14 tok ·
+≥ $0.00」 (`:367`). That is the same ARCH-125 `api:` clause 「never rendered as data」 this gate ruled
+blocking at `BF-2` and again at `BF-4`, with a strictly worse consequence: not a blank, a **fabricated
+number** in the same sentence and styling as two real ones, under a truthful 部分異常 tag. Re-derived
+here at `file:line` on all four statements, not inherited.
+
+**The routing is deliberately different, and that is the point of this round.** Six repairs across four
+rounds each fixed the named line and each was scoped by a file list; each time the next site survived by
+letter. Both panels reach the same root cause independently (`A4-4` / `QD3-R1`): **no ARCH or DES row
+says what a view must DO after a non-`ok` result.** ARCH-125 states only the prohibition, so four
+incompatible behaviours ship for one fault — bail and keep last-known, paint an explicit component, pass
+`null` to the renderer, synthesize a payload. You cannot grep for the absence of a rule that was never
+written; every sweep in this loop greped for the *crash*, and this class does not crash. So `BF-8`
+(design) takes the clause first — DES-206's positive rule over the whole enumerated `getJSON`-consumer
+population, amended in place at `iter: v27m`, no new id, no ARCH edit, no code — and `BF-7` (impl)
+applies it at `workflow.js:326`, **including the run-switch branch** (a naive bail would leave the
+previous run's graph under a newly selected chip, a worse lie than a blank), plus a `val-199` case that
+degrades `/dag` **ALONE**: `BF-6`'s case degrades both routes together, which nulls `view`, drops the
+summary element and lets the assertion pass over a blanked graph — the file's own comment concedes it.
+
+**Recorded as debt, with the discriminating checks written down rather than asserted.** `A4-2` (MID —
+`server.ts:616` puts the raw exception message on an unauthenticated wire) does **not** block: no ARCH
+clause pins the wire `degraded` *value* (ARCH-130's closed-set/`detail` clause is explicitly the **log**
+line, which `:615` implements correctly), and `git log -S` puts that assignment at `b6f5659`, v2-era —
+an architect-lane note is owed instead. `QD-O5`/`A4-3` (MID, upgraded from LOW on QD's corrected
+`node` reproduction — the agent panel paints four fabricated zeros and the false 「無 system prompt
+紀錄」) stays debt because the repair changes the panel's rendering shape, DES-205's lane; the two
+lenses' LOW-vs-MEDIUM split is recorded, not smoothed. Plus `QD3-O2` (LOW) and `DOC-R3-185` (LOW).
+
+**`DOC-R3-185` is this gate's own error, recorded against itself.** RE-REVIEW #3 §5 wrote 「`system.js`
+is the only view at HEAD that passes a non-`ok` body to a render function」. It was false when written —
+IMPL-279 said so in the same round — and IMPL-281 inherited it as 「all 16 sites are guarded」. A
+reviewer's reassurance becomes the next round's boundary, so this pass prints the whole `getJSON`
+consumer population as a table with a verdict per row (§8), falsifiable in one command.

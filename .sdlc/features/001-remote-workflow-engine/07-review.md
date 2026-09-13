@@ -1,10 +1,470 @@
 ---
 stage: review
-status: sent-back   # v27 Gate 8 RE-REVIEW #3: BF-1/BF-2/BF-3 all verified CLOSED on disk; ONE blocking MID left — system.js:74 renders a whole-route degrade as data and throws (empty System panel, 3 pageerror, nav tag frozen live), the same ARCH-125 clause BF-2 was raised on, in the one view BF-2's required shape did not name (→ impl). Auto re-run is exhausted: this hands back to the orchestrator.
+status: sent-back   # v27 Gate 8 RE-REVIEW #4: BF-4 (and the implementer's own BF-5/BF-6) all verified CLOSED on disk and by execution; TWO blocking MID left, both halves of one class — BF-8 (design): DES-206 must state the POSITIVE rule for a non-`ok` getJSON result (four incompatible behaviours ship today; the root cause both expert panels name); BF-7 (impl): workflow.js:326 synthesizes an empty payload on a degraded /dag, erases the swimlane and prints 「0 個節點」 for a run that has one — the 7th site of the ARCH-125 clause this gate ruled blocking at BF-2 and BF-4. send_back=["design","impl"].
 ---
 # 07 Review & Retro — Gate 8
 
-## v27 GATE 8 RE-REVIEW #3 (2026-09-13, CURRENT / AUTHORITATIVE — **SEND BACK**, `send_back = ["impl"]`, 0 HIGH / 1 blocking MID)
+## v27 GATE 8 RE-REVIEW #4 (2026-09-13, CURRENT / AUTHORITATIVE — **SEND BACK**, `send_back = ["design","impl"]`, 0 HIGH / 2 blocking MID)
+
+> Fourth re-review, after the orchestrator dispatched **impl** against RE-REVIEW #3's sole blocking
+> finding `BF-4`. Tree at review: **`18b9c03`**, working tree clean except the two `.panel/review/*.md`
+> the pre-run experts rewrote for this pass. The implementer closed `BF-4` (`2552230`) and then, on its
+> own sweep, two further sites of the same class it found and reported — `BF-5` (`86617d7`) and
+> `BF-6` (`35e00fc`).
+>
+> **All three are genuinely closed**, re-opened here at `file:line` and by execution (§1). What sends
+> this round back is that the CLASS is not: the two pre-run architecture panels, working independently
+> and both measuring in a real browser, converged on the **seventh** site — `ui/workflow.js:326`, which
+> answers a degraded `/api/runs/:id/dag` by **synthesizing an empty payload**, erasing the swimlane and
+> printing 「**0 個節點**」 for a run that has one. It is the same ARCH-125 `api:` clause 「never rendered
+> as data」 that `BF-2` and `BF-4` were each ruled blocking on, with a consequence that is strictly
+> worse than either: not a blank, a *fabricated number* rendered in the same sentence and styling as the
+> real ones, under a truthful 部分異常 tag.
+>
+> **The routing is different this time, deliberately.** Six repairs across four rounds each fixed the
+> named line and each was defined by a file list; each time the next site survived by letter. Both
+> panels independently name the same root cause (`A4-4` / `QD3-R1`): **no architecture or design row
+> says what a view must DO after a non-`ok` result** — ARCH-125 states only the negative, so four
+> incompatible behaviours now ship for one fault. So this send-back has a **design half** (`BF-8`: the
+> positive rule on DES-206, covering the whole enumerated population) and an **impl half** (`BF-7`: the
+> one MEDIUM site plus the falsifying test that degrades `/dag` ALONE). Without `BF-8` there is nothing
+> for a sweep to grep FOR, only crashes — and this class does not crash.
+
+### §0 Gap tally
+
+**HIGH 0 · MID 14 · LOW 61.** (Two of the MIDs are blocking; every other row is recorded debt in §9.)
+
+| Sev | Count | Composition |
+|-----|-------|-------------|
+| HIGH | 0 | No `未真實驗證`, no `斷鏈`, no `孤兒`, no `待業主決策`. `owner_decisions: []` — §6. |
+| MID | 14 | **2 blocking** (§8 `BF-7` impl, `BF-8` design) + 12 non-blocking: the five parked REQs' two trace rows each (REQ-137/138/139/142/143 × 未實作 + 未驗證, recorded out of closure at `02-architecture.md:3328`/`:3332`, `03-tasks.md:1662`, `04-design.md:7028`) + **2 new panel MEDIUMs recorded as debt** (`A4-2` the raw exception message on the wire, §9; `QD-O5` the agent panel's fabricated zeros, upgraded from LOW on corrected evidence, §9). |
+| LOW | 61 | 25 trace gaps (21 漂移 + 4 TASK 未實作) · 10 `solid_check` 未認領檔案 · 24 carried panel/ledger items (F-2, F-3, F-4, F-5, F-6, F-7≡QD-S2, QD-O4, QD-R2, QD-R3, QD-R4, QD-C2, QD-C3, QD2-O2, DEBT-A, DEBT-B, TOOL-FORK, DOC-H, DOC-UT245, D3-1, D3-2, D3-3≡QD-D3-3, D3-4, D3-5≡QD3-R1, D3-6) · **2 new this pass** (`QD3-O2`, `DOC-R3-185`). |
+
+**Delta vs RE-REVIEW #3:** HIGH 0 → 0 · blocking MID 1 → 2 (BF-4 closed; BF-7 + BF-8 open) · non-blocking
+MID 10 → 12 (A4-2 new, QD-O5 upgraded out of LOW) · LOW 60 → 61 (+2 new, −1 to MID). Trace totals
+**1666 items / 35 gaps** — the gap SET is byte-identical to RE-REVIEW #3's (§2); the three new items are
+IMPL-279/280/281's own headings.
+
+---
+
+### §1 RE-REVIEW #3's blocking finding, and the two the implementer added — **all three closed**
+
+Each was re-derived from the tree, not from `06-impl-log.md`'s account of itself.
+
+| ID | Required shape | Status at `18b9c03` | Evidence |
+|---|---|---|---|
+| **BF-4** | `system.js:74` becomes `if (res.status !== 'ok')` — **not** `!res.body \|\| res.body.degraded`; the existing `else` (Unavailable component) unchanged; plus a falsifying val-202 case that intercepts `/api/system` with the WHOLE-ROUTE shape, keeps the non-regression half asserting a real row, and asserts panel-renders-Unavailable + `pageerror` empty over two ticks + nav tag `degraded` | **CLOSED** | `src/dashboard/ui/system.js:78` is exactly `if (res.status !== 'ok') {`; `:72` holds `getJSON`'s `{status, body}` so the classifier's verdict is tested, never re-derived; `:79` paints `el('div','empty',UNAVAILABLE)` unchanged. `tests/acceptance/val-202-ported-tabs.test.ts:130-166` is the interception case with the `{"runs":[],"degraded":…}` shape; the non-regression half at `:104-121` now waits on `.sys-table tr`, not merely `#system-panel` — the 「form without the property」 defect RE-REVIEW #3 named is gone. |
+| **BF-5** *(implementer's own find, not in the send-back)* | — | **CLOSED** | `src/dashboard/ui/run.js:512` is `renderLegend(state.shell.legend, payload, viewRes.status === 'ok' ? viewRes.body : null, state.lang)`; lock at `tests/acceptance/val-200-swimlane.test.ts:255-283`. |
+| **BF-6** *(implementer's own find)* | — | **CLOSED for the `undefined` text it named** | `src/dashboard/ui/workflow.js:329` is the same idiom; lock at `tests/acceptance/val-199-workflow-detail.test.ts:272-299`. **`:326` on the same statement is where `BF-7` lives** — see §8. |
+
+**Executed, not read** (this reviewer's own run, real Chromium 152,
+`RWE_REQUIRE_BROWSER=1 PUPPETEER_EXECUTABLE_PATH=~/.cache/puppeteer/chrome/linux-152.0.7977.75/chrome-linux64/chrome`):
+
+> `npx vitest run tests/acceptance/val-198-shell-and-home.test.ts tests/acceptance/val-199-workflow-detail.test.ts tests/acceptance/val-200-swimlane.test.ts tests/acceptance/val-201-agent-panel.test.ts tests/acceptance/val-202-ported-tabs.test.ts tests/unit/dashboard-lib-connection.test.js`
+> → **6 files passed, 49 tests passed, 0 failed**, 120.08 s. `npx tsc --noEmit` → **exit 0**.
+
+**All three IMPL entries carry the commit they landed in** and a *post-commit* falsification run pasted
+into the entry (`06-impl-log.md:6614` IMPL-279 → `2552230`, `:6696` IMPL-280 → `86617d7`, `:6800`
+IMPL-281 → `35e00fc`). IMPL-279's falsification was re-run against the committed bytes with
+`git diff --stat` proving byte-identity first — the standard this loop asked for, met.
+
+**Scope discipline held.** `git diff --stat ced73ff..HEAD -- src/ tests/` is 10 files / 256 insertions:
+five client `.js`, five test files. No server file, no import edge, no new module, no new id beyond the
+three IMPL headings.
+
+---
+
+### §2 Traceability consistency and doc↔code drift — clean, zero new rows
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` → **1666 items / 35 gaps**, enumerated by
+calling the fork's `scan()`/`analyze()` directly rather than reading the summary line:
+
+| Type | Sev | Count | Disposition |
+|---|---|---|---|
+| 未實作 / 未驗證 (REQ-137/138/139/142/143) | mid | 10 | Recorded out of closure by Gate 2 itself — debt, unchanged. |
+| 漂移 (doc↔code iter lag) | low | 21 | **All pre-v27.** Newest pair: DES-112/DES-157 vs IMPL-208 (v26). **No DES/UT/IT/VAL row lags IMPL-279, IMPL-280 or IMPL-281** — the three repairs induced **zero** new drift rows. Debt. |
+| TASK 未實作 | low | 4 | TASK-018, TASK-153 (pre-v27) + TASK-215, TASK-216 (priced follow-ups, both still `status: draft` — re-checked, because an owed item marked done would count). Debt. |
+| 斷鏈 / 孤兒 / 未真實驗證 / TDD / 待業主決策 | — | **0** | Checked, clean. No REQ is closed on mock-only evidence. |
+
+**Drift verdict: none new.** The gap SET is byte-identical to RE-REVIEW #3's; only the item count moved
+(1663 → 1666, the three IMPL headings).
+
+**One new ledger-accuracy row, LOW (`DOC-R3-185`).** RE-REVIEW #3 §5 wrote 「**`system.js` is the only
+view at HEAD that passes a non-`ok` body to a render function**」 (RE-REVIEW #3 §5, and the same claim
+at §8). That sentence was **false when written** — `run.js:506` and `workflow.js:319`/`:326` all did,
+as IMPL-279 itself reported in the same round and IMPL-280/281 then proved by fixing two of them. The
+sentence lives in a section this document now labels SUPERSEDED, so it is not re-written in place;
+it is corrected here, on the record, because it is the sentence that scoped `BF-4` too narrowly (line numbers in this file shift each pass, so it is cited by section, not by line).
+IMPL-281's own 「the sweep is clean now, all 16 sites are guarded」 (`06-impl-log.md`) inherits the same
+error and is corrected by §8's enumeration.
+
+**Tooling caveat (TOOL-FORK), unchanged.** The project-local `.sdlc/trace.py` is a fork: no `--tool`
+dispatch, no `待業主決策` gap type. The plugin's `*_check.py` scripts were therefore invoked directly
+(the contract's own method) and the plugin's `trace.py` was **not** run over this ledger — it overwrites
+`dashboard.html` with a fork-incompatible render and drops a `metrics.jsonl` carrying incompatible
+numbers (RE-REVIEW #3 had to undo exactly that). LOW, recorded, not re-opened.
+
+---
+
+### §3 Dashboard QA — renders green; the 7 `dashboard_check` mids remain false positives
+
+`dashboard_check.py` → **0 high / 7 mid / 1 low**, unchanged. All seven mids are the same 「括號不平衡」
+lexical heuristic over `02-architecture.md`'s mermaid blocks (`:934`, `:1201`, `:1648`, `:2531`,
+`:2603`, `:3094`, `:3626`); the checker does not model `erDiagram`/quoted-label syntax, and the blocks
+render. **Every SoT `file:line` link target resolves** — the checker's link pass is green.
+
+Falsified by execution, not by argument. Playwright browser tools are **not** present in this session
+(**degraded mode, noted**), so the equivalent was run headless over `file://…/dashboard.html`, clicking
+all **8** `nav button` tabs (the dashboard renders diagrams lazily per tab — measuring without the
+clicks reports 0 SVG and is a measurement artefact):
+
+> **`{"total":43,"svg":43,"err":0,"blank":0,"links":1708,"tabs":8}`**, **zero `pageerror`, zero console
+> errors**.
+
+SoT spot-checks resolved by hand on this pass, each landing on the item's own heading:
+`IMPL-279 → 06-impl-log.md:6614`, `IMPL-280 → :6696`, `IMPL-281 → :6800`.
+
+The one `[low]`: no mermaid **offline fallback** in the generated file (a property of the fork). With
+network present the CDN load succeeds; air-gapped, the blocks stay blank. Carried debt (TOOL-FORK).
+
+---
+
+### §4 Module boundary (SOLID) and module build
+
+`solid_check.py` → **✅ 0 mid / 10 low**, 68 modules, `javascript×103, shell×3`: **no undeclared
+cross-module dependency, no cycle, no deep-internal import bypassing a public surface, no god-module.**
+The BF-4/5/6 repairs touched no import edge. The 10 lows are the same pre-existing 未認領檔案 set
+(`src/self-update.ts`, `src/net-guard.ts`, `src/clock.ts`, `src/harness-defaults.ts`,
+`src/agent-semaphore.ts`, `src/mcp-probe.ts`, `src/scan-agent-calls.ts`, `src/workspace-artifacts.ts`,
+`src/agent-definitions.ts`, `src/owner-lookup.ts`) — carried debt, unchanged.
+
+`module_check.py` → **dormant**: no ARCH-* declares `- **build:**`. Not a finding.
+
+---
+
+### §5 Architecture consistency — **NOT consistent** (one live ARCH-125 violation at HEAD, plus a MEDIUM the ledger had not seen)
+
+Consolidated from the two pre-run expert reports, which ran on the repaired tree and re-derived every
+closure themselves:
+
+- `.panel/review/adversarial.md` (security + scalability + testability, Karpathy tie-break) →
+  「**NOT CONSISTENT — 4 deviations (0 HIGH, 2 MEDIUM, 2 LOW)**」: `A4-1`, `A4-2`, `A4-3`, `A4-4`.
+- `.panel/review/quality-dimensions.md` (observability / replaceability / consumability /
+  self-sustainability) → 「`consistent: no` — **13 numbered deviations (0 HIGH, 3 MEDIUM, 10 LOW)**」,
+  of which 2 are new/residual since the BF repairs and 11 carried.
+
+**What the repair round settled.** `BF-4`/`BF-5`/`BF-6` are closed at `system.js:78`, `run.js:512`,
+`workflow.js:329` (§1), and both panels re-verified `BF-1`/`BF-2`/`BF-3` still hold at `18b9c03`
+(`connection.js:39` with `prev.status` surviving only in the comment at `:36`; `home.js:231`;
+`run.js:475`; DES-202's amended clauses). QD re-verified all nine INV-V27-* invariants consistent and
+recorded that every server-side file it had cleared at `ced73ff` is byte-identical.
+
+**Why the verdict is still `no` — re-opened independently here, not taken on either panel's word.**
+The chain is four statements in two files and I read every one of them:
+
+1. `src/dashboard/ui/workflow.js:318` — `paintSelected` fetches `/dag` and `/api/runs/:id` **itself**
+   (state-dependent: which run is selected lives in this view), so `app.js`'s `bodies` map never sees
+   them and no `onTick`-top guard can cover them.
+2. `:326` — `const payload = dagRes.status === 'ok' ? dagRes.body : { cells: [], edges: [], warnings: [], lanes: [], current: null };`
+   On a non-`ok` `/dag` the view **manufactures the input** the server never sent.
+3. `:328` — `paintSwimlane(shell.svgEl, payload, …)` runs unconditionally, and `paintSwimlane` erases
+   before it asks: `src/dashboard/ui/run.js:219` `svgEl.replaceChildren();` and `:222`
+   `layer.replaceChildren();` execute before anything is appended; with `cells`/`edges`/`lanes` all `[]`
+   (`:202-204`) nothing is appended. The live figure, its lane headers and its legend are wiped.
+4. `:329` — `renderLegend(shell.legend, payload, viewRes.status === 'ok' ? viewRes.body : null, lang)`.
+   When only `/dag` degrades, `viewRes` is `ok`, so `view` is truthy and `renderLegend` does NOT bail at
+   `run.js:360`; `:361` computes `nodeCount` from the **fabricated** `payload.cells` → `0`, and `:367`
+   prints it beside two figures that are real: 「completed · **0 個節點** · 14 tok · ≥ $0.00」.
+
+Both panels measured the same thing in real Chromium with the run view as a control under the identical
+fault (adversarial's table: workflow page svg children 2→0, cells 3→0, summary 「1 個節點」→「0 個節點」,
+0 page errors, on **both** a degraded `/dag` and a plain `abort()`; run page unchanged on both).
+
+**Why it blocks rather than joins the debt list.** It is the same ARCH-125 `api:` clause
+(`02-architecture.md:3373`, ARCH-125 heading at `:3368`, 「a 200 body carrying a `degraded` string is `degraded`, never an exception
+and **never rendered as data**」) that this gate ruled blocking for `home.js`/`run.js` at RE-REVIEW #2
+(`BF-2`) and for `system.js` at RE-REVIEW #3 (`BF-4`). The consequence here is strictly worse than
+either — a blank grid and a throw are both visibly broken; a *number* the page computed from a payload
+the server never sent is a confident false statement, and ARCH-122's own boot-failure note calls that
+「the most dangerous false statement an operator console can make」. Recording it as debt after blocking
+on the identical clause twice would be this gate confirming rather than reviewing.
+
+**The root cause both panels reached independently, and why the design gate is in the send-back.**
+`A4-4` / `QD3-R1`: *no ARCH or DES row states what a view must DO on a non-`ok` result.* ARCH-125 states
+only the negative, and DES-206's uniform view contract does not fill it, so six repairs produced **four**
+incompatible visible behaviours for one fault — bail and keep last-known (`home.js:231`, `run.js:475`),
+paint an explicit component (`system.js:79`), pass `null` to the renderer (`run.js:512`,
+`workflow.js:329`), and synthesize a plausible payload (`workflow.js:326`). The adversarial lens argues
+this is the reason five sweeps missed the site — without a positive rule there is nothing to grep FOR,
+only crashes, and this class does not crash — and it explicitly argues against IMPL-281's proposed
+`okBody(res, fallback)` helper on the ground that its natural call at `:326` would be *byte-for-byte the
+defect*. Concur. `BF-8` takes the clause first; any helper is downstream of it and out of scope.
+
+**Second MEDIUM, recorded as debt after the discriminating check (`A4-2`).** `src/server.ts:616` puts
+`(err as Error).message` verbatim on the wire as `vm.degraded` (`src/dashboard.ts:84`/`:89`), on an
+unauthenticated `/api/*` surface, for any fault under any dashboard route; the adversarial lens measured
+`GET /api/workflows/%/describe → 200 {"runs":[],"degraded":"URI malformed"}` against a booted server.
+The finding is real and the direction of the fix is right — but it does **not** block, for two reasons
+checked rather than assumed. (1) **No clause pins the wire value's format.** ARCH-130's v27b Gate 4
+amendment says 「the **degraded-log** `reason` is the closed set … with free text under a separate
+`detail` key」 — and `server.ts:615`'s log line implements exactly that, correctly. ARCH-125's `getJSON`
+clause requires only that a 200 carrying a `degraded` string be classified as degraded. INV-V27-7 is
+exact **key-set** equality, and `degraded` is an enumerated key, so it is untouched. The wire *value*
+is unpinned; closing the gap requires an architecture row to exist first. (2) **The line is not this
+iteration's code.** `git log -S` over that exact expression returns one commit, `b6f5659` (v2) — v27
+added the log line beside it, not the wire value. Recorded as MID debt with the architect-lane note in
+§9; a repair that both invents the clause and changes a wire value inside a send-back round is the
+scope-widening this loop has already paid for.
+
+**Architecture-owned residue, LOW, carried:** `02-architecture.md:3361` still carries the looser
+pre-`BF-1` forms (`worstOf(perRoute) → status`, 「a `degraded` **string**」). A design row may not amend an
+ARCH row; `D3-6` in §9, owed to the next architecture touch.
+
+---
+
+### §6 Owner-deferral sweep (issue #15) — **0 pending**
+
+Reconciled mechanically on the FIXED metadata key, never on prose:
+
+> `grep -rnE "^\s*-?\s*\*{0,2}owner_decision\*{0,2}:\*{0,2}\s*pending" .sdlc/features/001-remote-workflow-engine`
+> → **0 hits**, in every document including `journal.md`.
+
+The full key sweep (`grep -rn '\*\*owner_decision:\*\*'`) returns 22 metadata rows: 16 `—` (no
+deferral), 4 `answered(<date>)`/`answered <date>` with the ruling transcribed, 2 `DECIDED 2026-09-10`
+(VAL-186/VAL-187). `02-architecture.md:3365` (ARCH-124) reads `answered 2026-09-13` with the ruling
+(KEEP THE NARROWING), the declined three-state option, and 「Nothing is outstanding on this row.」
+Every remaining textual hit is either a `journal.md`/`07-review.md` narration of a marker's history or
+the two settled citations at `04-design.md:6817`/`:7274` — nothing claims a pending decision it does
+not have.
+
+**ADR hedging spot-check** (an unmarked deferral is a producer-contract violation): ADR-049..056
+re-read at HEAD. The decision-shaped hedges each have a ledger row rather than a missing marker —
+ADR-049's 「UNGUARDED until TASK-B lands」 → TASK-216 (`03-tasks.md:1846`), ARCH-122's fossil shell →
+TASK-215 (`:1837`); both re-checked as still `status: draft`, i.e. owed engineering work, not deferred
+*product* decisions. **No unmarked deferral found.** Neither of this round's two blocking findings
+raises one: `BF-8` is an engineering rule with no product axis (the owner has already ruled the
+governing principle — 「degrade, never pretend」, v27h), and `BF-7` is its application.
+
+---
+
+### §7 Validation & handover (Gate 7.5) — confirmed, unchanged since v27i
+
+- **No mock-only REQ.** Zero `未真實驗證` and zero `未驗證` rows for any in-closure REQ; REQ-131..136,
+  REQ-140, REQ-141 each reach a `real: true` VAL green (§2).
+- **`08-validation.md` present** (`status: passed`), evidence produced on `./deploy.sh --background`-
+  booted scratch instances (8935/8936/8937/8940, auth off and on); production `rwe.service` untouched.
+- **Handover docs present and current-state.** `README.md` (41 KB) + `DEPLOY.md` (92 KB) at the product
+  root per `state.yaml layout`. `DEPLOY.md:3-7` states the history rule in the document's own voice;
+  **§0 一鍵部署** (`:23`) leads with `set -a; . ~/.config/rwe.env; set +a` + `./deploy.sh --background`
+  and pastes the real captured five-step output — a command Gate 7.5 ran repeatedly this iteration.
+  Config keys are documented once, in **§1b 設定總表** (`:409`); the other occurrences of `RWE_WORK_ROOT`
+  / `RWE_CONFIG_PATH` / `RWE_BIND` / `RWE_PORT` are usage references that point back at §1b, not second
+  definitions. Grep for changelog/版本差異/遷移/升級 headings in either manual → **0 hits**.
+- **Re-checked against the three repairs that landed since v27i:** neither manual documents the System
+  tab's degrade rendering, the swimlane's degrade rendering, or the run-summary line's fallback — so
+  `BF-4`/`BF-5`/`BF-6` make **no manual sentence stale**, and `BF-7` will not either.
+  `send_back` does **not** include `validation`.
+
+### §7b Special-file reviews (task 3b) — **N/A this iteration**
+
+`git show --name-only 2552230 86617d7 35e00fc c958a6c 3e7e890 f09ff7c 3e0b667 18b9c03` touches exactly
+`src/dashboard/ui/{system,run,workflow}.js`, three test files, `06-impl-log.md` and `dashboard.html`.
+No `CLAUDE.md`, `AGENTS.md` or `SKILL.md` appears on any v27 IMPL `files:` line or in any commit of this
+loop, so neither the **claude-md-improver** nor the **skill-creator** review is triggered. `README.md` is
+reviewed as a handover doc in §7, not as a special file.
+
+---
+
+### §8 BLOCKING findings (2) — `send_back = ["design","impl"]`
+
+Written as the invariant plus the grep that enumerates its population — never as a list of files. That
+is the lesson this loop has now paid for six times, and §2's `DOC-R3-185` is what it costs when ignored.
+
+**The population, enumerated by me at HEAD** (`rg -n 'getJSON\(' src/dashboard/**/*.js` → 13 hits; the
+one definition at `poll.js:42`, two comments, and **10 consumption sites**):
+
+| site | what it does with a non-`ok` result | verdict |
+|---|---|---|
+| `ui/app.js:374` | stores body + status in the tick maps; `:379` drops the statuses at the view boundary | latent (`D3-5`/`QD3-R1`, debt) |
+| `ui/home.js:231` | bails, last-known render stays | **clean** (BF-2) |
+| `ui/system.js:78` | paints the explicit Unavailable component | **clean** (BF-4) |
+| `ui/models.js:55-56` | `!Array.isArray(entries)` → `(unavailable)` | clean by shape |
+| `ui/issues.js:101-108` | renders `data.degraded` into both lists by name | clean |
+| `ui/issues.js:80-83` | `!data \|\| data.degraded` → hides the detail box | clean |
+| `ui/run.js:475` | bails before the second fetch and every repaint | **clean** (BF-2) |
+| `ui/run.js:486`, `:493` | `Array.isArray` / `body &&` shape guards | clean |
+| `ui/run.js:512` | passes `null` to `renderLegend` | **clean** (BF-5) |
+| `ui/run.js:513`, `:502` | clears `#run-usage`; swaps row-2 APPLIED→DECLARED model silently | **LOW**, debt (`QD3-O2`, §9) |
+| `ui/agent-panel.js:234-241` | never reads `res.status`; synthesizes `tokens:{input:0,output:0}` | **MID**, debt (`QD-O5`/`A4-3`, §9) |
+| **`ui/workflow.js:326`** | **synthesizes `{cells:[],edges:[],warnings:[],lanes:[],current:null}` and paints it** | **VIOLATION → `BF-7`** |
+
+---
+
+**`BF-8` (design) — DES-206's uniform view contract must state the POSITIVE rule: what every consumer of
+a `getJSON` result does when `res.status !== 'ok'`.**
+
+Today it states only ARCH-125's negative (「never rendered as data」), and the population above shows four
+incompatible answers shipping for one fault. Both panels name this as the root cause of six rounds
+(`A4-4`, `QD3-R1`); `BF-7` cannot be repaired safely without it, because the workflow view has a *run
+selection* and the sibling `run.js` does not, so 「bail and keep last-known」 is **not** unconditionally
+correct there — a bail on a tick that followed a run-switch would leave the PREVIOUS run's graph sitting
+under the newly-selected chip, a worse lie than a blank. Which of the two applies when is a DES-206 /
+DES-209 decision, not an implementer's judgement call.
+
+Required shape: **amend DES-206 in place** in the `amended (…)` house style at `iter: v27m`, **no new DES
+id, no new TASK id, no trace-link change** — the same discipline the v27l repair used for DES-202. The
+clause must (a) state the rule in terms of `res.status`, never of the body's shape (re-deriving the
+classification at the call site is the habit that produced every instance of this class); (b) give the
+poll-tick answer (**no DOM write at all** — last-known render stays) and the first-paint / selection-change
+answer (**clear and paint the explicit Unavailable component**, `system.js:79`'s existing form), and say
+which applies when; (c) **forbid a view constructing a payload of its own and handing it to a render
+function** — name `workflow.js:326`'s literal as the prohibited shape, since a helper of the
+`okBody(res, fallback)` kind would re-express it; (d) be stated over the WHOLE population enumerated
+above, so the three non-blocking sites (`run.js:513`/`:502`, `agent-panel.js:234`) have a rule to be
+measured against even though they are debt this round. Do **not** amend any ARCH row (`D3-6` is the
+architect's lane and stays debt), do not re-decompose, do not add a module or a config key, and do not
+touch code — this is the design gate.
+
+---
+
+**`BF-7` (impl) — no consumer of a `getJSON` result may hand a render function a payload it constructed
+itself. At HEAD `src/dashboard/ui/workflow.js:326` is the one that does, and it prints a number that is
+false.**
+
+On `dagRes.status !== 'ok'`, `:326` synthesizes `{cells:[],edges:[],warnings:[],lanes:[],current:null}`;
+`:328` hands it to `paintSwimlane`, which `replaceChildren()`s the svg (`run.js:219`) and the cell layer
+(`:222`) before appending anything, so the live figure, lane headers and legend are erased; `:329` hands
+the same fabricated payload to `renderLegend`, which — because `/api/runs/:id` was healthy, so `view` is
+truthy and `run.js:360`'s bail does not fire — computes `nodeCount` from the invented `cells` (`:361`)
+and prints 「completed · **0 個節點** · 14 tok · ≥ $0.00」 (`:367`), a fabricated quantity in the same
+sentence and styling as two real ones. Measured by both panels in real Chromium with the run view as a
+control under the identical fault (2→0 svg children, 3→0 cells, 「1 個節點」→「0 個節點」, 0 page errors)
+on **both** a whole-route degrade and a plain dropped request. Violates **ARCH-125 `api:`**
+(`02-architecture.md:3373`), **ARCH-124 `api:`** (`:3361`, the `classifyResponse` clause) and REQ-134.
+
+Required shape — **implement DES-206's new clause (`BF-8`) at `:326`, do not invent a local answer.**
+Concretely, per the rule: replace the synthesized literal with the poll-tick behaviour
+(`if (dagRes.status !== 'ok') return { [dagUrl]: dagRes.status, [viewUrl]: viewRes.status };` placed
+ahead of `:328`, so the last-known figure and summary stay and the statuses still reach
+`nextConnection`), **plus** the selection-change branch the clause requires — when `state.selectedRunId`
+changed since the last successful paint, clear and paint the explicit Unavailable component instead of
+keeping the previous run's graph. Do **not** write `dagRes.body || {…}`, and do **not** introduce an
+`okBody(res, fallback)` helper: the natural call at this site is byte-for-byte the defect.
+
+**Plus the falsifying test the guard is worthless without.** Add a case to
+`tests/acceptance/val-199-workflow-detail.test.ts` using the `setRequestInterception` recipe already in
+that file, pointed at `/api/runs/:id/dag` **ALONE** — this is the whole point: `BF-6`'s case
+(`:283-290`) degrades **both** routes together, which makes `view` null, drops the summary element, and
+lets `expect(after).toBeNull()` pass over a blanked graph; the file's own comment at `:268-270` concedes
+it (「an empty repaint either way」). The new case must assert, on the asymmetric fault, that (a) the
+`[data-node-cell]` count is **unchanged** from before the interception (never merely non-zero), (b) the
+`.run-summary` text still reports the **true** node count — asserting the element is absent cannot catch
+this, because on this tick it is present and wrong — and (c) `pageerror` is empty across at least two
+poll ticks. Run it under `RWE_REQUIRE_BROWSER=1` with `PUPPETEER_EXECUTABLE_PATH` set and **paste the
+measured run into the IMPL entry** (`itReal` skips silently without Chromium, so an unrecorded run is
+indistinguishable from no run), falsify it by reverting the guard, and record the commit the entry lands
+in. `npx tsc --noEmit` must stay at exit 0 and the full suite green.
+
+**Scope is exactly this.** The other two unguarded sites in the table above (`run.js:513`/`:502`,
+`agent-panel.js:234-241`) are **recorded debt this round** (§9) with `BF-8`'s clause as their
+specification — they are named here so the next sweep has the full population in writing, **not** so
+this repair widens to them. `app.js:379`'s unguarded `await` and dropped statuses (`D3-3`/`D3-5`) stay
+out of scope. Correct IMPL-281's 「the sweep is clean now, all 16 sites are guarded」 sentence in the same
+edit, since it is the claim this finding falsifies.
+
+---
+
+### §9 Recorded tech debt (not blocking)
+
+Everything RE-REVIEW #3 recorded in its §9 still holds at `18b9c03`, with line numbers refreshed where
+the repairs moved them. Carried, unchanged: **F-2** (the unpinned `clampHue` mirror — re-checked,
+`ui/theme-init.js:24` still carries the second copy), **F-3** (ARCH-123/ARCH-125's closed file
+enumerations — ARCH-125's `api:` still omits `system.js`, `issues.js`, `models.js`, `dom.js`,
+`clock.js`), **F-4**, **F-5**, **F-6**, **F-7 ≡ QD-S2**, **QD-O4**, **QD-R2**, **QD-R3**, **QD-R4**,
+**QD-C2**, **QD-C3**, **QD2-O2**, **DEBT-A**, **DEBT-B**, **TOOL-FORK** (§2), **DOC-H**, **DOC-UT245**,
+and **D3-1**, **D3-2**, **D3-3 ≡ QD-D3-3**, **D3-4**, **D3-5 ≡ QD3-R1**, **D3-6**. **DEBT-C stays
+closed** (by `BF-3`). Both panels re-confirmed each of these at HEAD rather than carrying them on faith.
+
+**New this pass:**
+
+- **`A4-2` — MID — the dashboard's shared degrade path serves the raw exception message on an
+  unauthenticated wire.** `src/server.ts:616` assigns `(err as Error).message` to `vm.degraded`
+  (`src/dashboard.ts:84`/`:89`); measured `GET /api/workflows/%/describe → 200
+  {"runs":[],"degraded":"URI malformed"}`. The catch at `:611` wraps the whole dashboard API dispatch,
+  so any exception beneath `/api/home`, `/api/runs`, `/api/runs/:id`, `/api/runs/:id/dag`,
+  `/api/workflows`, `/api/models`, `/api/issues` has its `.message` published; this engine `redact()`s
+  everywhere else it emits text it did not author. **Not blocking, for the two reasons checked in §5**
+  (no ARCH clause pins the wire *value*'s format — the closed-set/`detail` clause is explicitly about the
+  **log** line, which the code implements correctly at `:615`; and the wire assignment is v2-era code,
+  `b6f5659`, not this iteration's). **Architect-lane note owed:** the next architecture touch should pin
+  the wire `degraded` value to the same `TOKEN: detail`-style closed vocabulary ARCH-130 already defines
+  for the DAG payload's warnings, with the free text staying on the journal line; the sibling catch-all
+  at `server.ts:1104` already ships a fixed literal and is the shape to copy.
+- **`QD-O5` ≡ `A4-3` — MID (upgraded from LOW on corrected evidence) — the agent panel paints confident
+  zeros for a fetch that returned nothing.** `ui/agent-panel.js:233` fetches, `:234` does
+  `res.body || {}` and never reads `res.status`, `:238` synthesizes
+  `{state:'', provider:'', model:'', tokens:{input:0,output:0}}`. Reproduced by QD with `node` against
+  the shipped `lib/agent.js`: 「Tokens: in 0 · out 0 · cache read 0 · cache write 0」 beside a correct
+  「Cost: —」, plus `無 system prompt 紀錄` — a sentence `lib/agent.js:62-70`'s own comment says must mean
+  UNKNOWN and never 「not applied」. **The two lenses split on severity** (QD MEDIUM on the corrected
+  evidence; adversarial LOW, explicitly refusing to demand a new real-tier case for a one-card honesty
+  defect) and the split is recorded rather than smoothed: this gate adopts **MID** for the rating —
+  it is INV-V26-6's silent-zero class on the surface the architecture calls 「the agent's
+  inspectability」 — and **debt** for the routing, because the repair changes the panel's rendering shape
+  (DES-205's lane) and belongs with `BF-8`'s clause, not inside a send-back round. Fix shape when it is
+  dispatched: read `res.status` at `:234`; on non-`ok` render the existing chrome with the server's
+  `error`/`degraded` text in the red `detail` block (`:201-207`) and no stat cards.
+- **`QD3-O2` — LOW — a degraded `/api/runs/:id` tick clears `#run-usage` and silently swaps every node's
+  row-2 model from APPLIED to DECLARED.** `ui/run.js:513` passes `viewRes.body && viewRes.body.usage`, so
+  `renderUsageBox` `replaceChildren()`s and returns (`:375-376`); `:502` builds an empty `agentsById`, so
+  `:313`'s `(rec && rec.model) || declared.model.default` falls back to the DECLARED default, rendered
+  identically to an applied one. Bounded to one tick and the swimlane itself survives (BF-2's guard is on
+  the `/dag` body, which was `ok`). Same fix shape as `BF-7`'s bail, under `BF-8`'s clause.
+- **`DOC-R3-185` — LOW — ledger accuracy.** §5 and §8 of the (now superseded) RE-REVIEW
+  #3 claim `system.js` was the only view passing a non-`ok` body to a render function; it was false when
+  written, and IMPL-281's 「all 16 sites are guarded」 inherits it. Corrected on the record in §2; the
+  IMPL sentence is corrected as part of `BF-7`.
+
+**Known tech debt total: 61 LOW + 12 non-blocking MID, each with its consequence written down.**
+
+---
+
+### §10 Retro (this send-back loop)
+
+**What went well.** The implementer did more than the send-back asked and did it correctly: handed one
+named line, it ran its own sweep, found two further sites of the class, fixed them in separate commits
+with separate falsifying tests, and — the part that matters — *reported in IMPL-279 the site it was not
+allowed to fix* rather than silently widening. That report is why `BF-5` and `BF-6` exist at all. Every
+IMPL entry carries its commit and a post-commit falsification measured against the committed bytes. Four
+gates have now edited seven ledger documents across this loop and induced **zero** new drift rows and
+**zero** new trace gaps. The two architecture panels re-derived every closure from the tree instead of
+quoting the IMPL rows, disagreed in public about `A4-3`'s severity and about IMPL-281's proposed helper,
+and one of them ranked a finding it had to concede against its own headline remedy.
+
+**What to change — the lesson, finally stated at the right altitude.** RE-REVIEW #1 wrote 「the repair
+scope should be the grep, not the line」. RE-REVIEW #2 broke it (`BF-2` enumerated two of three views).
+RE-REVIEW #3 broke it again and wrote a false sentence doing so (its §5, §2's `DOC-R3-185`).
+IMPL-281 inherited that sentence into 「all 16 sites are guarded」. The adversarial lens diagnoses why the
+discipline keeps failing, and it is not carelessness: **you cannot grep for the absence of a rule that
+was never written.** Every sweep in this loop greped for the *crash*, because the crash is the only thing
+the code states; the clause states only a prohibition, and a prohibition has no enumerable population.
+That is why this round's send-back leads with the DESIGN half (`BF-8`) and treats the code fix as its
+application. If the next round still finds an eighth site, the missing artefact is the clause, not the
+sweep.
+
+**Second lesson, for this gate specifically.** A reviewer's own summary sentences become the next round's
+scope. 「`system.js` is the only view that…」 (RE-REVIEW #3 §5) was written as a reassurance and functioned as a boundary.
+Sentences of the form 「X is the only…」 in a Gate 8 report must either carry the grep that proves them or
+not be written; this pass therefore prints its population as a table with a verdict per row, so the next
+reviewer can falsify it in one command instead of inheriting it.
+
+**Process note:** `.panel/` is **deliberately left in place** — cleanup happens only on a closing pass,
+and this pass sends back. The two `.panel/review/*.md` files are uncommitted at review time (the experts
+rewrote them for this pass); they are inputs, not deliverables.
+
+---
+
+## v27 GATE 8 RE-REVIEW #3 (2026-09-13, **SUPERSEDED** by RE-REVIEW #4 above — kept for history; its blocker BF-4 is closed, verified in RE-REVIEW #4 §1. NOTE: its §5/§8 sentence 「`system.js` is the only view at HEAD that passes a non-`ok` body to a render function」 was FALSE when written — see RE-REVIEW #4 §2 `DOC-R3-185`)
 
 > Third re-review, after the built-in auto re-run dispatched **impl** (v27k, `b124430`) and **design**
 > (v27l, `24797c5`) against RE-REVIEW #2's three blocking findings. Tree at review: **`24797c5`**.
