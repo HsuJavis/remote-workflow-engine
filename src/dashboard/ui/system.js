@@ -71,7 +71,11 @@ export async function onTick(container, _bodies, _ctx) {
   if (!container.isConnected) return undefined;
   const res = await getJSON('/api/system');
   if (!container.isConnected) return undefined;
-  if (!res.body) {
+  // [BF-4 Gate 8 repair] `:72` already holds `classifyResponse`'s verdict — a whole-route degrade
+  // is HTTP 200 `{degraded:'…'}` (server.ts's catch-all), which is truthy, so `!res.body` let it
+  // through to `buildTable`, which threw on `data.cpu.cores` (ARCH-125's "never rendered as data").
+  // `res.status !== 'ok'` subsumes that arm without re-deriving the classification at the call site.
+  if (res.status !== 'ok') {
     container.replaceChildren(el('div', 'empty', UNAVAILABLE));
   } else {
     container.replaceChildren(buildTable(res.body));

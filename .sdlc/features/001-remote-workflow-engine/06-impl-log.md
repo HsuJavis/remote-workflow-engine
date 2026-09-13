@@ -6610,3 +6610,74 @@ no `pageerror` in either new case.
   `run.js`'s guard reverted to `if (!dagBody) return {};` — the BF-2 case failed alone (5 passed / 1
   failed), `AssertionError: expected +0 to be 9` (`after` vs `before`). Both restored via `Edit`
   (`git diff --stat` empty after each), re-ran — `val-198` 13/13 and `val-200` 6/6 green.
+
+### IMPL-279 — BF-4: `system.js`'s System tab no longer renders a whole-route degrade as data (Gate 8 RE-REVIEW #3 send-back)
+- **status:** done
+- **traces:** TASK-212, DES-207, ARCH-125, ARCH-124, REQ-076, REQ-077
+- **greens:** `tests/acceptance/val-202-ported-tabs.test.ts` — "a whole-route /api/system degrade:
+  the Unavailable component renders, no page error, the connection tag reads degraded (BF-4)"
+  (new); "a System tab exists and renders real /api/system rows" (non-regression half, now waits
+  for `.sys-table tr`, not just `#system-panel`)
+- **files:** src/dashboard/ui/system.js, tests/acceptance/val-202-ported-tabs.test.ts
+- **commit:** (this commit)
+- **iter:** v27
+
+`system.js:74`'s `onTick` tested `if (!res.body)` before painting. The dashboard's catch-all
+(`src/server.ts:611-616`, the SAME one BF-2 was raised against) answers ANY unexpected fault on
+ANY dashboard route with **HTTP 200** `{runs:[], degraded:'…'}` — truthy, so the guard let it
+through to `buildTable(res.body)` (`:77`), whose first statement `String(data.cpu.cores)` (`:49`)
+threw `TypeError: Cannot read properties of undefined (reading 'cores')`. Measured before the fix
+(reverted for falsification, below): the System panel stayed empty (`''`, not the Unavailable
+text) — the render call itself never completed — and the connection tag never reached
+`degraded` (`nextConnection` is never invoked when the render throws mid-tick, ARCH-124's own
+clause).
+
+**Fix is the one token both Gate 8 design-panel lenses converged on**: `:74` now reads
+`if (res.status !== 'ok')`. `:72`'s `res` already carries `classifyResponse`'s verdict
+(`src/dashboard/ui/poll.js:51`) — `res.status` — so the status check subsumes the `!res.body` arm
+without re-deriving the classification at the call site (`!res.body || res.body.degraded` was
+explicitly rejected by both lenses as re-implementing the classifier, the same habit that produced
+the defect). The existing `else` branch (paints `UNAVAILABLE`) needed no change.
+
+**Fourth-site sweep** (the dispatch's own instruction, since BF-2's finding named only `home.js`/
+`run.js` and this third site — `system.js` — survived by letter): grepped every `getJSON(` call
+site under `src/dashboard/ui/*.js`. `issues.js:80,102` checks `data.degraded` explicitly (correct
+— a truthy-but-degraded body is caught by name, not by bare truthiness). `models.js:55` checks
+`Array.isArray(entries)` (correct — the degraded shape is an object, never an array, so the shape
+check discriminates it). `workflow.js:350` and the repaired `home.js`/`run.js` (BF-2) check
+`Array.isArray(...)`/`.degraded` before use. **No fifth truthiness-only site found** among the
+`onTick`-level guards — matches `07-review.md` §5/§8's own grep ("`system.js` is the only view at
+HEAD that passes a non-`ok` body to a render function").
+
+**One adjacent candidate noted but NOT fixed (out of this task's scope per `07-review.md` §8's own
+"Scope is exactly this" / "widening the repair is how this loop paid its last round"):**
+`run.js:463` (`onTick`)'s SECOND fetch (`/api/runs/:id`, `viewRes`) is passed unguarded to
+`renderLegend(state.shell.legend, payload, viewRes.body, state.lang)` — `renderLegend`'s own guard
+(`if (!view) return`) does not catch a truthy `{runs:[],degraded:'…'}` body from that route's own
+catch-all path, so a degraded `/api/runs/:id` would render `view.status` as literal `"undefined"`
+text in the run-summary line (not a crash — `usage`/`agentsById` are already shape-guarded at that
+call site). This is a different call site than BF-4 named (a render-function argument, not an
+`onTick`-top guard) and reachable only via the rarer `store.getRun` throw path, not the common
+`systemInfo.get()` one BF-4 fixed. Reported to the orchestrator per the implementer contract's
+exit-gate item 3 rather than fixed here.
+
+**Falsification (measured, this round, per the required-shape instruction):** reverted `:74` to
+`if (!res.body)` via `Edit` → re-ran `val-202-ported-tabs.test.ts` → **4 passed / 1 failed**,
+`AssertionError: expected '' to contain '無法取樣'` at the new BF-4 case. Restored via `Edit`
+(`git diff -- src/dashboard/ui/system.js` after restore matches the intended fix exactly, no
+artifacts from the revert/restore cycle) → re-ran → **5/5 passed**.
+
+**Full verification (this round, real):**
+- `npx tsc --noEmit` → exit 0.
+- `npx vitest run tests/unit tests/integration` → **2471 passed / 1 skipped / 0 failed** (328 files).
+- `RWE_REQUIRE_BROWSER=1 PUPPETEER_EXECUTABLE_PATH=<cached chrome> npx vitest run
+  tests/acceptance/val-198-shell-and-home.test.ts tests/acceptance/val-199-workflow-detail.test.ts
+  tests/acceptance/val-200-swimlane.test.ts tests/acceptance/val-201-agent-panel.test.ts
+  tests/acceptance/val-202-ported-tabs.test.ts` → **35 passed / 0 failed** (5 files; `val-202` now
+  5/5, was 4/5 pre-repair since the new BF-4 case did not exist yet).
+- `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → **1663 items / 35 gaps**,
+  identical set to the RE-REVIEW #3 baseline (the five parked REQs' `未實作`/`未驗證` pairs +
+  pre-existing `漂移`/`未實作` LOWs) — zero new gaps, zero new orphans/broken links.
+- `tests/unit/dashboard-page-source.test.ts` (C1 pinned literals) → 9/9 unaffected.
+- `grep -rl skeleton src/` → unchanged set (`skeleton-graph.ts`, `workflow-meta.ts`,
+  `workflow-catalog.ts`, `dashboard.ts`, `server.ts`); `system.js`/the test file introduce none (C3).
