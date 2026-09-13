@@ -5070,3 +5070,71 @@ is the only view at HEAD that passes a non-`ok` body to a render function」. It
 IMPL-279 said so in the same round — and IMPL-281 inherited it as 「all 16 sites are guarded」. A
 reviewer's reassurance becomes the next round's boundary, so this pass prints the whole `getJSON`
 consumer population as a table with a verdict per row (§8), falsifiable in one command.
+
+## 2026-09-14 — v27m Gate 3+4 SEND-BACK REPAIR (designer) — BF-8's positive rule written, BF-7 repaired against it, and the one MID the panels measured is disclosed rather than quietly widened into
+
+**Both halves of the RE-REVIEW #4 send-back are closed in one pass, design first.** `BF-8`: DES-206 now
+carries the POSITIVE degrade rule that ARCH-125 only ever stated as a prohibition — amended IN PLACE at
+`iter: v27m` in the house `amended (…)` style, no new DES id, no new TASK id, no trace-link change, no
+ARCH edit, and inherited by DES-205 in the same edit because a DES-206-only clause bounces as out-of-row
+at `ui/agent-panel.js`. `BF-7`: `ui/workflow.js`'s `paintSelected` applies it (`db12573`), with the
+falsifying case the guard is worthless without.
+
+**What was actually missing, and it was one sentence.** Six repairs across four Gate 8 rounds each fixed
+a named line against 「never rendered as data」, and four incompatible behaviours shipped for one fault.
+Both panels named the absence as the root cause (`A4-4` / `QD3-R1`), and writing the rule exposed a
+second absence neither the review nor any row had noticed: **BF-7's own branch (a) turns on 「unchanged
+since the last successful paint」 and nothing in the tree defined what sets paint memory.** The cheapest
+invention would have been a flag set in `render()` — which every view calls and which paints an empty
+shell — and under that reading the UNAVAILABLE arm never fires anywhere and this round would have been
+decorative on the arm it was written for. The clause therefore states it: paint memory is set ONLY by an
+`ok` route result reaching a paint function, never by `render()`, never by the `#rwe-init` island, never
+by a `{cards: []}` default. **An empty shell is not a paint.**
+
+**The panel moved five times and every move is recorded.** The quality-dimensions lens had listed
+`home.js:231` as the one fully-conforming site; the adversarial falsified it at `file:line`, and QD then
+went and MEASURED it in real Chromium — a two-workflow deployment reads 「全部 (0) · 執行中 (0) · 已註冊
+(0)」 for ≥ 2 ticks when `/api/home` is degraded from load, under a truthful `degraded` tag, no page
+error. That is BF-7's own predicate on the primary page. QD also withdrew its own `state.lastView` cache
+(a remembered `agents[]` handed to a painter in the slot of this tick's value is the same class aged
+instead of invented, and a cache is state with a lifecycle in six files with no owner) and corrected the
+adversarial's disclosure row in return: 「split the element」 cannot reach the swimlane's row 2, because
+`paintSwimlane` rebuilds every cell, so that site's shape is skip-whole. The adversarial conceded
+`run.js:512` against its own r1, and held the interim predicate with a measurement — `classifyResponse`
+tests PRESENCE while all three `bodies`-fed sites test truthiness, so QD's wording would have marked
+QD's own 「clean」 sites non-conforming.
+
+**`home.js:231` is DISCLOSED at MID, not repaired, and that is a deliberate call.** BF-7's dispatch says
+「scope is exactly this」. Widening a send-back repair to the primary page is precisely the behaviour the
+retro asked to stop; what this round owes instead is that RE-REVIEW #4 §8's 「`home.js:231` clean (BF-2)」
+row is **false on the first-paint arm**, in writing, with a measured recipe and a fix shape, in the
+clause's own disclosure table. The reviewer routes it.
+
+**One blessed assertion changed, and it had to travel in BF-7's commit.** `val-199`'s BF-6 case degrades
+both routes after a healthy paint with the selection unchanged — the (K) arm — so the last-known
+`.run-summary` now correctly SURVIVES and `expect(after).toBeNull()` asserted the erase this repair
+removes. Restated as the invariant across the fault (`$$eval` + `toEqual([before])`; `page.$()` returns an
+ElementHandle with no `textContent`, so the obvious form would be red on every path). It is RED at pre-fix
+HEAD, so landing it separately would have put a red test on master. BF-5/BF-6 stay closed: their subject
+was the literal text 「undefined」, which the two `not.toContain` assertions still pin, untouched.
+
+**The new case exists because the old one cannot see this defect.** BF-6's case degrades `/dag` AND
+`/api/runs/:id` together, which nulls `view`, drops the summary element and lets an absence assertion pass
+over a BLANKED graph — its own comment concedes it. The new case degrades `/dag` **ALONE** and asserts
+invariants: `[data-node-cell]` count UNCHANGED (with a `> 0` precondition, or 「unchanged」 passes vacuously
+on `0 === 0`), the `.run-summary` still reporting the TRUE node count, `pageerror` empty across two ticks.
+Falsified by reverting the guard: `expected [] to deeply equal [ 'completed · 1 個節點 · 0 tok · $0.00' ]`
+and `expected +0 to be 1` — both halves of the defect, the erased summary and the erased figure, in two
+lines.
+
+**One guard caught the repair itself.** The first draft of the paint-memory comment paraphrased the
+clause using the C3 word, and `no-skeleton-surface.test.ts` (UT-115) went red on `src/dashboard/ui/workflow.js`
+in the full-suite run — the mechanical guard doing exactly the job review discipline had failed at nine
+times. Reworded; the clause in `04-design.md` keeps its own wording, since the guard is scoped to `src/**`.
+
+**Verification:** `tsc` exit 0 · val-199 **7/7** in real Chromium 152.0.7977.75 with
+`RWE_REQUIRE_BROWSER=1` (not a silent `itReal` skip) · the five dashboard acceptance files **38/38** ·
+full suite **2839 passed / 26 skipped / 0 failed** · trace **1667 items / 35 gaps**, gap SET diffed
+line-for-line identical against a baseline captured BEFORE the first edit (never by checking the ledger
+backwards in place). `current_stage` stays `review`: a Gate 8 send-back returns to the reviewer, it does
+not rewind the workflow to Gate 5 — the same routing the v27l design send-back used.

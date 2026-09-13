@@ -6806,7 +6806,7 @@ before this row's new case).
   (BF-6)"
 - **files:** src/dashboard/ui/workflow.js, tests/acceptance/val-199-workflow-detail.test.ts
 - **commit:** 35e00fc
-- **iter:** v27
+- **iter:** v27m
 
 **The defect (IMPL-280/BF-5's own "fifth and sixth site... reported here, NOT fixed", now closed).**
 `workflow.js:319`'s `payload = dagRes.body || {defaults}` never fires on a truthy `{degraded:'…'}`
@@ -6866,7 +6866,27 @@ number; `workflow.js:327` (`viewRes.body.agents`, the exact structural twin of `
 never listed in IMPL-280's table even though `workflow.js:319`/`322` two lines away were. It is
 SAFE today (a degraded body carries no `.agents` field, so the fallback `|| []` genuinely fires,
 unlike `:319`/`:322`'s bug where the fallback never fires) — so this correction changes the count,
-not the verdict: the sweep is clean now, all 16 sites are guarded, 2 by this row.
+not the verdict for that line.
+
+**[v27m, Gate 8 RE-REVIEW #4 / BF-7 — this row's own closing sentence was FALSE and is corrected in
+place.]** The sentence that stood here — 「the sweep is clean now, all 16 sites are guarded, 2 by this
+row」 — is exactly the claim BF-7 falsifies, and it is corrected rather than deleted because the way
+it was false is the finding's whole point. The sweep above asked of every site 「is a guard present」,
+and `workflow.js:326` answered yes: `dagRes.status === 'ok' ? dagRes.body : {defaults}` IS a verdict
+test. What no row in the tree asked was 「and what does the guard DO on the non-`ok` arm」 — here it
+SYNTHESIZED `{cells:[],edges:[],warnings:[],lanes:[],current:null}` and handed it to `paintSwimlane`
+(which `replaceChildren()`s the svg and the cell layer before appending, erasing the live figure) and
+to `renderLegend` (which computed `nodeCount` off the invented `cells` and printed 「0 個節點」 for a
+run that has one). A guard-presence sweep cannot see that, which is why the class survived six
+rounds. The positive rule is now written — DES-206's v27m amendment, (V)/(K)/(U)/(O)/(N)/(S)/(R) —
+and the site is repaired at IMPL-282. Two further corrections to this row, both in the same spirit:
+the `|| []` at `workflow.js:327` and `run.js:502` is NOT 「safe」 under (N) either — it silently swaps
+every node's APPLIED model for the DECLARED default, rendered identically (`run.js:313`); it is
+disclosed LOW debt in DES-206's table, not a clean row. And **the `okBody(res, fallback)`
+recommendation below is WITHDRAWN**: DES-206 (N) forbids a helper of that shape by name, because its
+natural call at this very site returns the fallback that IS the defect. The recommendation is left in
+place as history, struck by this paragraph — a standing recommendation for the prohibited helper is
+exactly the confusion this round exists to end.
 
 **Is a guard-per-site the right end state, or a standing hazard? Standing hazard — recommend a
 shared helper, not a seventh/eighth guard.** Six sites of the identical defect, found one or two at
@@ -6903,3 +6923,142 @@ instruction) — recorded here for the next design touch.
   `漂移` LOWs, 4 pre-existing `未實作` TASK LOWs) — zero new gaps, zero new orphans/broken links.
 - `git diff --stat` against `HEAD` (`35e00fc`) after the falsification round → empty (byte-identical
   restore).
+
+### IMPL-282 — BF-7: `workflow.js`'s `paintSelected` stops SYNTHESIZING a DAG payload — the seventh site of the class, and the first one repaired against a positive rule
+
+- **status:** done
+- **traces:** TASK-209, REQ-133, REQ-134, ARCH-125, DES-206
+- **greens:** two cases in `tests/acceptance/val-199-workflow-detail.test.ts` — the new "a degraded
+  /api/runs/:id/dag ALONE: the live figure and the true node count survive, never an empty graph
+  and「0 個節點」(BF-7)", and the restated "a degraded /api/runs/:id (+ its /dag sibling) keeps the
+  last-known run-summary line rather than rendering \"undefined\" (BF-6, BF-7)"
+- **files:** src/dashboard/ui/workflow.js, src/dashboard/lib/strings.js, tests/acceptance/val-199-workflow-detail.test.ts
+- **commit:** db12573
+- **iter:** v27m
+
+**The defect.** BF-6's own fix stopped the degraded BODY reaching the painters and then handed them a
+FABRICATED one: `const payload = dagRes.status === 'ok' ? dagRes.body : { cells: [], edges: [],
+warnings: [], lanes: [], current: null }`. The guard was present and the verdict was read correctly —
+what no row in the tree said was what the non-`ok` arm must DO, so the arm invented a payload.
+`paintSwimlane` `replaceChildren()`s the svg (`run.js:219`) and the cell layer (`:222`) BEFORE it
+appends anything, so the invented payload erased the live figure, the lane headers and the legend;
+`renderLegend` then — `/api/runs/:id` being healthy, so `view` is truthy and `run.js:360`'s
+`if (!view) return` does not fire — computed `nodeCount` from the invented `cells` (`run.js:361`) and
+printed 「completed · **0 個節點** · 0 tok · $0.00」 (`:367`): a fabricated quantity in the same
+sentence and styling as two real ones, under a truthful 部分異常 tag, with no page error.
+
+**The fix — two arms, both mandatory, and the question that picks between them.** DES-206's v27m
+clause: does this surface already hold a successful paint of the CURRENT subject?
+
+1. **Paint memory**, which no row previously defined: `state.paintedRunId` is written ONLY after
+   `paintSwimlane`/`renderLegend` have run on an `ok` `/dag` (one line, at the end of the happy
+   path). `render()` initialises it to `null` and never sets it, because `render()` paints an empty
+   shell and an empty shell is not a paint — otherwise the KEEP arm would "keep" something no route
+   ever produced. (BF-7's branch (a) says "unchanged since the last successful paint"; this is the
+   definition that sentence presupposed.)
+2. **(K) poll tick, `state.selectedRunId` unchanged since the last successful paint** →
+   `if (state.paintedRunId === state.selectedRunId) return statuses;`, placed ahead of the
+   `paintSwimlane` call. No DOM write at all: the last-known figure and summary stay on screen and
+   the nav tag is what reports the fault. Both statuses still reach `nextConnection` (DES-206 (R)) —
+   `statuses` is built at the top of the fetch and returned on every path.
+3. **(U) selection changed, or no prior successful paint** → `paintFigureUnavailable(shell, lang)`:
+   clears the svg's children, the `.cell-layer`'s children and the legend's children, then paints
+   `el('div', 'empty', t(lang, 'unavailable'))`. It clears CHILDREN and keeps NODES on purpose —
+   `[data-legend]` is a DES-209 TEST_ANCHOR and `.cell-layer` carries `ensureCellLayer`'s delegated
+   click listener, so replacing either element would regress an anchor or REQ-135's wiring. A bare
+   copy of `run.js:475`'s bail is WRONG here: `ui/run.js` renders one run for the life of the page
+   and has no selection, so bailing there cannot leave the previous run's graph under a newly
+   selected chip — which is a worse lie than a blank.
+4. **The marker's text is the string table's**, `t(lang, 'unavailable')`, added to BOTH `STR.zh`
+   (`'無法取樣'`) and `STR.en` (`'Unavailable'`) in this same commit — REQ-138's own pair
+   (`01-requirements.md:1874`). `t()` is `STR[lang][key]` with no fallback, so a one-language key
+   would render the literal string `undefined` under a test asserting `.empty` exists: the BF-5/BF-6
+   defect class inside the repair for it. `ui/system.js:29`'s zh-only `UNAVAILABLE` const is the
+   pre-existing second copy (`QD-R3` debt) and is deliberately NOT touched here — it moves onto the
+   key when that site is repaired, not before, or the two diverge.
+5. **No `okBody(res, fallback)` helper**, and `dagRes.body || {…}` is not written either. IMPL-281
+   recommended exactly such a helper; DES-206 (N) now forbids it by name and IMPL-281's
+   recommendation is withdrawn in the same edit, because the helper's natural call at THIS site
+   returns the fallback that IS the defect.
+
+**The falsifying test, and why it had to be a NEW case.** BF-6's existing case degrades
+`/api/runs/:id` AND `/api/runs/:id/dag` together, which nulls `view`, so `renderLegend`'s own
+`if (!view) return` drops the summary element and `expect(after).toBeNull()` passes over a BLANKED
+graph — that case's own comment concedes it ("`paintSwimlane`'s own internal `Array.isArray` guards
+already neutralize `:319`'s malformed payload for the swimlane itself (an empty repaint either
+way)"). The new case makes the fault **ASYMMETRIC** — `/api/runs/:id/dag` ALONE is intercepted, its
+sibling stays healthy — which is the exact shape that produced the fabricated 「0 個節點」. Its three
+assertions are invariants ACROSS the fault, never presence/absence: the `[data-node-cell]` count is
+`toBe(beforeCells)` (with `expect(beforeCells).toBeGreaterThan(0)` first, or "unchanged" would pass
+vacuously on `0 === 0`); the `.run-summary` text is `toEqual([beforeSummary])` and additionally
+`not.toMatch(/(^|[^\d])0 (個節點|nodes)/)` (asserting the element is ABSENT cannot catch this — on
+this tick it is present and wrong); and `pageerror` is empty across two poll ticks (7 s).
+
+**Falsification (measured, `Edit` only — never `git checkout` / `restore` / `stash`, CLAUDE.md).**
+Reverted the two arms to the pre-fix one-liner
+(`const payload = dagRes.status === 'ok' ? dagRes.body : { cells: [], … }`) and re-ran
+`RWE_REQUIRE_BROWSER=1 PUPPETEER_EXECUTABLE_PATH=…/linux-152.0.7977.75/chrome-linux64/chrome
+npx vitest run tests/acceptance/val-199-workflow-detail.test.ts` →
+**2 failed | 5 passed (7)**, verbatim:
+
+```
+FAIL … > a degraded /api/runs/:id (+ its /dag sibling) keeps the last-known run-summary line … (BF-6, BF-7)
+AssertionError: expected [] to deeply equal [ 'completed · 1 個節點 · 0 tok · $0.00' ]
+FAIL … > a degraded /api/runs/:id/dag ALONE: the live figure and the true node count survive … (BF-7)
+AssertionError: expected +0 to be 1 // Object.is equality
+```
+
+Both halves of the defect are in those two lines: the summary erased (`[]` where the true
+`completed · 1 個節點 · 0 tok · $0.00` had been) and the figure erased (`[data-node-cell]` 1 → 0).
+Restored via `Edit`, re-ran the same command → **7 passed (7)** (was 6 before this row's new case).
+
+**A blessed assertion changed, and it had to travel in this commit.** `val-199`'s BF-6 case degrades
+both routes AFTER a healthy paint with the selection unchanged — that is precisely the (K) arm, so
+the last-known `.run-summary` now correctly SURVIVES and the old `expect(after).toBeNull()` asserts
+the erase this repair removes. Restated as the invariant:
+`const after = await page.$$eval('.run-summary', (els) => els.map((e) => e.textContent));
+expect(after).toEqual([before]);` — `$$eval`, not `$`, because `page.$()` returns an ElementHandle
+with no `textContent` property, so `after?.textContent` would be `undefined` and the assertion red on
+every path. The case title changed with it ("drops the run-summary line" → "keeps the last-known
+run-summary line", BF-6 → BF-6, BF-7). The old form is RED at pre-fix HEAD, so landing it separately
+would have put a red test on master. **BF-5 and BF-6 stay closed**: their finding was the literal
+text 「undefined」, which the two `not.toContain('undefined')` assertions still pin, untouched.
+
+**IMPL-281's closing sentence corrected in the same edit.** 「the sweep is clean now, all 16 sites are
+guarded」 is the claim this finding falsifies — the sweep asked "is a guard present", and
+`workflow.js:326` answered yes. See that row's own `[v27m]` paragraph.
+
+**Scope held.** The guard is keyed on `dagRes.status` ONLY, exactly as the finding mandates.
+`run.js:513`/`:502`, `workflow.js:359` and `agent-panel.js:234-241` are recorded debt in DES-206's
+disclosure table with their fix shapes (split the legend subtree; skip-whole for the rebuilt
+composite; DES-205's lane for the panel) and are NOT repaired here — widening a send-back repair is
+the behaviour this round exists to stop. `app.js:379`'s dropped statuses (`D3-3`, `D3-5`) stay out.
+
+**Post-fix measurement of the class the tripwire will guard** (the adversarial lens's regex, comments
+stripped): `grep -rnE "([Rr]es\.(body|status))" src/dashboard/ui/*.js | grep -E "(\|\||: )[[:space:]]*[\{\[]"`
+→ **3 hits, 0 comment lines** (was 5 raw / 4 after stripping): `agent-panel.js:234`, `run.js:502`,
+`workflow.js:359` — each one an allowlisted debt row in DES-206's table. The tripwire test itself is
+recorded as OWED in DES-206's `tests:` line, not written here: `dashboard-diagram-render.test.ts` is
+a file this finding does not name.
+
+**One guard the repair tripped, recorded because it is the reason a comment was reworded.** The first
+draft of the paint-memory comment used the C3 word (the retired UI term ADR-022/REQ-105 deleted) to
+paraphrase the design clause's own sentence, and `tests/unit/no-skeleton-surface.test.ts` (UT-115)
+went red on `src/dashboard/ui/workflow.js` in the full-suite run. Reworded to "an empty shell is not
+a paint", with a note in the comment itself that the clause's wording may not appear under `src/**`.
+The clause in `04-design.md` keeps its own wording — the guard is scoped to `src/**`.
+
+**Full verification (this round, real):**
+- `npx tsc --noEmit` → exit 0.
+- `RWE_REQUIRE_BROWSER=1 PUPPETEER_EXECUTABLE_PATH=…` (real Chromium 152.0.7977.75, NOT a silent
+  `itReal` skip) `npx vitest run tests/acceptance/val-199-workflow-detail.test.ts` →
+  **7 passed / 0 failed** (was 6).
+- `RWE_REQUIRE_BROWSER=1 … npx vitest run` over the five dashboard acceptance files
+  (`val-198`, `val-199`, `val-200`, `val-201`, `val-202`) → **38 passed / 0 failed** (5 files; was 37).
+- `npx vitest run` (full suite, no `RWE_REQUIRE_BROWSER`) → **403 files passed / 1 skipped; 2839 passed / 26 skipped / 0 failed** (+1 over the pre-round 2838 baseline — this row's own new case).
+- `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → **1667 items / 35 gaps**
+  (item count +1 over the pre-round 1666 baseline — this IMPL-282 heading is the one new work item;
+  it traces to existing TASK-209 / REQ-133 / REQ-134 / ARCH-125 / DES-206 and mints no other id).
+  The gap SET was diffed line-for-line against a baseline captured BEFORE this round's first edit
+  (`sh .sdlc/trace … --check > <scratch>/trace-baseline.txt`, never by checking the ledger backwards
+  in place — CLAUDE.md) → **identical**: zero new gaps, zero new orphans, zero broken links.

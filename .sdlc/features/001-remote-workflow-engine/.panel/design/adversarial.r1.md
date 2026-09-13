@@ -1,48 +1,43 @@
-# Design panel — Adversarial group (interface-contract · boundary/error · testability), round 1
-
-- **stage:** Design (Gate 3/4), acting on the **v27 Gate 8 RE-REVIEW #2 send-back** (`07-review.md:7`, `send_back = ["impl","design"]`). I label this round **v27L** for reference only; the synthesizer coins the real id.
-- **round:** 1 — independent proposal, written **without** reading this round's `quality-dimensions.r1.md`.
-- **scope as I read it.** The send-back's design half is **BF-3** (`07-review.md:246-258`). It was **already closed by the implementer** in the v27k run (`b124430`, `state.yaml gates.design.note`: 「BF-3 — dispatched alongside the impl-owned BF-1/BF-2 rather than a separate designer pass」). So this gate's honest job is **not** to re-do BF-3; it is to re-open it at file:line and run the **induced-drift sweep on the row it touched** — which is exactly the job §10 of the same review says was skipped one round earlier (「the repair scope should be the grep, not the line」). I did that, and it found things.
-- **supersedes:** this path held the v27j round-1 proposal. Preserved at `git show 8d3584b:.sdlc/features/001-remote-workflow-engine/.panel/design/adversarial.r1.md` (verified: `git log -1 -- <path>` → `8d3584b`, no later touch, so that sha reproduces the exact bytes I replaced). Never `git checkout` / `git restore` / `git stash` — CLAUDE.md.
-- **two stale prompt clauses, flagged so the synthesizer is not misled:**
-  1. 「`03-tasks.md` does NOT exist yet」 — it does: 240 KB, `TASK-216` at `:1846`. Anything I propose is an **amendment to a living file**, never a first authoring. (The v27j round-1 proposal flagged the same clause; it is a template artefact, not new information.)
-  2. The dispatch implies the design half is unstarted. It is not: `04-design.md:6818` already carries the BF-3 amendment at `iter: v27k`.
-- **I did not touch `04-design.md`, `03-tasks.md`, `src/` or `tests/`.** Round 1 writes only this file. Every edit below is a **proposal with exact text**, for the synthesizer to land or refuse.
-- **everything numeric below was measured**, at HEAD `57ad237`, by the commands in §9 — no claim is inferred from prose.
-
+---
+stage: design (Gate 3/4), acting on the **v27 Gate 8 RE-REVIEW #4 send-back** (`07-review.md:7`, `send_back = ["design","impl"]`) — the design half is **BF-8**.
+lens: adversarial group — (a) interface-contract · (b) boundary/error · (c) testability, with Karpathy simplicity-first as the tie-break.
+round: 1 — independent proposal. Written WITHOUT reading this round's `quality-dimensions.r1.md` (the file at that path is still the v27l round's, mtime 12:44 vs this session at 17:36; I did not open it).
+head: `2a738bd`. Every number, line and grep below was MEASURED at that sha by the commands in §10 — nothing is inferred from prose.
+supersedes_on_disk: the v27l round-1 proposal held this path. Preserved at `git show 24797c5:.sdlc/features/001-remote-workflow-engine/.panel/design/adversarial.r1.md` (`git log -1 -- <path>` → `24797c5`, no later touch). Read history with `git show` — never `checkout` / `restore` / `stash` (CLAUDE.md).
+touched: this file only. `04-design.md`, `03-tasks.md`, `src/`, `tests/` are untouched by me.
 ---
 
-## §0 Altitude judgement — which system is this, and does my lens read differently?
+# Adversarial — round 1: BF-8's rule is right, and BF-8's own wording of it is not landable as written
 
-`state.yaml tech_stack`: Node 22.6 / TypeScript strict ESM / vitest / better-sqlite3 / hand-rolled JSON-RPC-over-HTTP MCP server / **two `GatewayClient` implementations driving real LLM sessions** (LiteLLM proxy + `@anthropic-ai/claude-agent-sdk`) / `node:vm` + `child_process` sandbox / ajv retry-on-mismatch.
+## §0 Two stale prompt clauses, and one altitude judgement
 
-**The project is both altitudes.** It is a conventional server *and* an AI-agent system: agents are the thing it runs, and replaceability-of-model / self-sustainability-of-loop are live quality questions elsewhere in this ledger.
+**Stale clause 1.** The dispatch says 「`03-tasks.md` does NOT exist yet — the design synthesizer writes it」. It exists: 246 KB, `TASK-216` at `:1846`. Everything below is an **amendment to living rows**, never a first authoring. (The v27j and v27l round-1 proposals flagged the same clause; it is a template artefact.)
 
-**This round's delta is single-altitude, and it is the conventional-system one.** Everything in scope is the dashboard client: one pure reducer (`src/dashboard/lib/connection.js`, 49 lines), the `ui/` layer's poll seam, and the design rows that describe them. No model reads these bytes, no agent is replaced by them, no loop sustains itself on them. Forcing an agent-altitude reading here (「model replaceability」, 「loop self-sustainability」) would be the irrelevant altitude, and I do not apply it.
+**Stale clause 2.** Nothing in this round is a decomposition question, so 「where task-splitting affects your lens」 has one answer and it is a refusal: **BF-8 forbids a new TASK id and I do not propose one.** The v27l panel conceded to mint `TASK-217` and it never landed (`grep -n 'TASK-217' 03-tasks.md` → 0 hits) — the synthesizer was right to refuse and I am not re-litigating it. §8 gives the landing path for the one piece of test code I propose, without a task row.
 
-**One hop out, the agent altitude does enter — as observability, and it is why BF-1/BF-2/BF-3 were blocking at all.** The nav tag is the operator's only continuously-visible answer to 「is what I am looking at true right now」 while long agent runs are in flight. A tag that says 「連線中」 over a stale or empty view is the `degrade, never pretend` stance (REQ-131's owner ruling, `02-architecture.md:3365`) failing in the one widget whose entire job is to hold it. Every severity call I make below is anchored to that, not to tidiness.
+**Altitude.** `state.yaml tech_stack`: Node 22.6 / TS strict ESM / vitest / better-sqlite3 / hand-rolled JSON-RPC-over-HTTP MCP / **two `GatewayClient`s driving real LLM sessions** / `node:vm` + `child_process` sandbox. The project is **both** a conventional system and an AI-agent system. **This round's delta is single-altitude and it is the conventional one**: six client `.js` files, one design row, zero model bytes, zero agent loop. Forcing the agent altitude here (「model replaceability」, 「loop self-sustainability」) would be the irrelevant reading and I do not apply it.
+
+One hop out the agent altitude *does* enter, as **observability**, and it is why this class has been ruled blocking three times: the dashboard is the operator's only continuously-visible answer to 「is what I am looking at true right now」 while multi-hour agent runs are in flight. Every severity call below is anchored to that, not to tidiness.
 
 ---
 
 ## §1 Summary
 
-**BF-3 holds for the two lines it names, and is incomplete for the row it lives in.** I re-opened `04-design.md:6815` (`boundary:`) and `:6816` (`tests:`) against the repaired tree: both now describe `src/dashboard/lib/connection.js:34-39` correctly, and `tests/unit/dashboard-lib-connection.test.js:49-58` asserts the stated case. The DEBT-C flip at `:6817` and `:7274` is real and reads SETTLED. **Nothing BF-3 was asked to do is unfinished.**
+**I agree with BF-8 completely on the diagnosis and on the routing.** ARCH-125 states only the negative; no row states the positive; four incompatible behaviours ship for one fault; a sweep has nothing to grep for. Stating the positive rule on DES-206 is the correct and minimal repair, and it is worth the round.
 
-What the sweep finds is that **the line above the two it repaired is still false, and in the same way**:
+**What I am here to report is that BF-8's own required shape, typed verbatim into DES-206, does not land.** Three findings, each re-derived at `file:line` at `2a738bd`:
 
-> `04-design.md:6814` — DES-202's `signature:` — declares **`worstOf(perRoute) → 'live'|'degraded'|'fail'`**.
-> Measured: `worstOf` returns **`'ok'|'degraded'|'fail'`**. `'live'` is **never** returned; `'ok'` is not declared.
-> An implementer who types that signature writes a function whose output makes `connection.js:27`'s `worst === 'ok'` **permanently false** — the tag then never reaches `live` at all.
+1. **BF-8(b) — 「poll tick → no DOM write at all」 — is violated at HEAD by three of the four sites this same gate blessed, not by zero.** `system.js:78-82` clears the panel and paints 無法取樣 on **every** degraded tick (BF-4's own shape); `models.js:55-56` does the same; `issues.js:102-104` repaints both lists with the server's raw exception text on the degraded arm and writes nothing on the `fail` arm. A clause the tree violates the day it lands is the **BF-3 class** — the exact defect this row was sent back for one round ago. It must ship WITH the compliance table (§4), or it ships false.
 
-That is the identical 「an implementer reading it verbatim re-introduces the defect」 shape BF-3 itself invokes, one line higher in the same row, and it is the one item I would ship even if this round were cut to a single edit.
+2. **BF-8(b)'s other half — 「first paint → clear + the Unavailable component」 — is violated by `home.js:231` and `run.js:475`, and at `home` the consequence is a fabricated NUMBER on the product's primary page.** `app.js:429` first-paints Workflows as `renderHome(panel, { cards: [], lang })`; `home.js:153-159` turns that into the segment tabs 「全部 (0) · 執行中 (0) · 已註冊 (0)」. If `/api/home` is degraded or failing, `home.js:231` bails on **every** tick, so those three zeros stand indefinitely beside a truthful 降級 tag, for a tab that may have twelve workflows. That is **the same predicate BF-7 is blocking on** — 「a fabricated quantity in the same sentence and styling as the real ones」 (`07-review.md` §8) — on a bigger surface, and the review's own population table (§8) records `home.js:231` as 「**clean** (BF-2)」. It is clean on the tick arm only. **Rated MID / blocking-candidate**, with the honesty caveat that I have no browser in this session: this is derived at `file:line`, not measured in Chromium. §6 gives the six-line case that settles it either way.
 
-Three more, in descending confidence, all design-lane:
+3. **BF-7's prescribed fix, landed as written, turns `val-199-workflow-detail.test.ts:294-295` RED, and the send-back does not say so.** BF-7 requires `if (dagRes.status !== 'ok') return {…};` ahead of `workflow.js:328`. BF-6's own lock (`val-199:272-299`) degrades `/api/runs/:id` **and** `/api/runs/:id/dag` together, then asserts `expect(await page.$('.run-summary')).toBeNull()`. With BF-7's guard in place the bail happens **before** `renderLegend`, so the previous summary survives and `after` is not null. The implementer then either weakens the new guard to keep the old assertion green — re-opening BF-7 — or edits the old case without a mandate. One sentence in the row prevents a whole round.
 
-- **The renderability decision is computed by `lib/`, discarded by `app.js`, and then re-derived by hand in three `ui/` files.** `getJSON` (`poll.js:51`) already runs `classifyResponse` and returns `{status, body}`; `app.js:375-376` keeps `results[url]` **and** `bodies[url]`, then hands the view **only `bodies`** (`:379`). So the BF-2 repair had to re-detect, in `home.js:231`, `run.js:475` and `workflow.js:350`, a fact the pure layer had already established and thrown away. DES-206's own boundary forbids this in as many words (`:6849`: 「it may **not decide anything a pure function could decide**」). The fix needs **zero new exports** — it is a seam change in `app.js`, and design's deliverable is one amendment plus **one** task row.
-- **`nextConnection` is fail-OPEN on a tick that observed nothing.** Measured: `nextConnection({status:'offline',consecutiveFails:5,…}, {results:{}})` → **`{status:'live', consecutiveFails:0}`**. Zero routes answered, tag says 連線中. It is unreachable at HEAD — and only because of `app.js:382`'s `if (Object.keys(results).length > 0)`, a guard that appears in **no** design or architecture row (grepped both; 0 hits) and lives in the one layer that by DES-206's own `tests:` line has **no unit tier by construction**. DES-202's boundary explicitly reserves this seam for REQ-142 (「a reserved slot」) — i.e. the next planned change adds the input that reaches it.
-- **Two LOW prose deviations** in the same neighbourhood (`classifyResponse`'s key-presence test vs the 「a `degraded` **string**」 prose; and no row saying which views bail vs which render the degraded component).
+**The rule I propose (§3)** is BF-8's rule with the two gaps closed and one refinement: **a composed element may OMIT a member whole, but never SUBSTITUTE a value for it.** That single distinction is what separates the three shipped repairs this gate blessed (`run.js:512`, `workflow.js:329` — omission, correct) from the three it condemned or recorded (`workflow.js:326`, `run.js:502`/`workflow.js:327`, `agent-panel.js:234-241` — substitution, wrong). Without it the rule either re-opens BF-5/BF-6 or fails to reach `run.js:502`.
 
-**The tie-break discipline, stated once.** Every fix below is the smallest edit that makes a false sentence true or moves an existing decision to where it already belongs. I refuse, explicitly, in §6: a new `lib/` predicate export, a fourth tag state, a JSDoc/`satisfies` type lock on the client, and any per-view task split.
+**The testability half (§6–§8), which is my lens's real contribution.** This class has no unit tier by construction (ADR-049 refuses jsdom), and the three acceptance cases that pin it cover **one arm each, at one site each, and no case covers the other arm anywhere**. On top of the per-arm cases, I propose the one mechanical oracle this class can have: a **substitute-literal tripwire over `clientCorpus()`**. Measured at `2a738bd` it matches **exactly four lines** — `workflow.js:326` (this round's blocker) and `workflow.js:327`, `run.js:502`, `agent-panel.js:234` (the three recorded-debt substitutes) — and nothing else. That is the written inventory the loop has been missing: the thing a sweep can grep FOR.
+
+**Tie-break discipline, stated once.** Every proposal below is either a sentence that makes a false row true, or a rule that moves a decision to where it already belongs. §9 lists what I refuse, by name: no `renderable()` predicate in `lib/`, no `okBody(res, fallback)` helper, no new DES/TASK/ADR id, no ARCH edit, no fourth connection state, no per-surface stale badge, no seam change to `app.js:379`.
 
 ---
 
@@ -50,246 +45,186 @@ Three more, in descending confidence, all design-lane:
 
 | id | lens | sev | routing | one line |
 |---|---|---|---|---|
-| **AD-1** | interface-contract | **MID — blocking candidate** | **design** (this gate) | `04-design.md:6814` declares `worstOf → 'live'\|'degraded'\|'fail'`; it returns `'ok'\|'degraded'\|'fail'`, and the row's own `boundary:`/`tests:` lines and UT-244:78 all contradict the signature. |
-| **AD-2** | boundary/error + testability | MID — non-blocking (latent) | **design** decl. + 1 impl line, **inside E6** | `nextConnection` returns `live` for `{results:{}}` from **any** prior state. Held back only by `app.js:382`, a guard in no design row, in a layer with no unit tier. |
-| **AD-3** | boundary/error | LOW — rider on AD-2 | impl 1 token | An unrecognised status token is ranked as `ok`: `worstOf({a:'bogus'})` → `'ok'` → `live`. Unreachable at HEAD; fail-open direction. |
-| **AD-4** | interface-contract + testability + simplicity | MID — non-blocking | **design** amendment + **one** TASK row | The classification `poll.js:51` computes is dropped at `app.js:379`, forcing three hand-rolled guards in `ui/` — against DES-206:6849's own invariant, and into the layer that has no unit tier. |
-| **AD-5** | interface-contract | LOW | design prose | `classifyResponse` tests key **presence** (`'degraded' in body`); DES-202:6815 and ARCH-124's `api:` both say 「a 200 whose body carries a `degraded` **string**」. `{degraded:null}` → `'degraded'`. Fail-**closed**, so prose moves, not code. |
-| **AD-6** | interface-contract (consumability) | LOW | design prose | ARCH-125's 「never rendered as data」 now has **two** sanctioned realizations — bail (`home`/`run`/`workflow`) and render-the-degraded-component (`issues.js:102-104`, DES-207:6857) — and no row says which view takes which, or why. |
+| **A-1** | interface-contract | **MID — blocking candidate** | **impl (BF-7's own commit)** | `home.js:231` + `app.js:429` + `home.js:153-159`: a degraded/failed `/api/home` leaves 「全部 (0) · 執行中 (0) · 已註冊 (0)」 standing indefinitely on the primary page — a fabricated count, the same predicate BF-7 blocks on. The review's §8 table calls this site 「clean」; it is clean on the tick arm only. |
+| **A-2** | testability | **MID — blocking for BF-7's commit** | **impl (BF-7) + a design sentence** | BF-7's required guard turns `val-199:294-295` (`expect(after).toBeNull()`, BF-6's own lock) RED, because that case degrades BOTH routes and the new bail precedes `renderLegend`. Not named in the send-back. |
+| **A-3** | interface-contract | **MID** | **design (this gate)** | BF-8(b) verbatim is violated at HEAD by `system.js:78`, `models.js:55`, `issues.js:102` (tick arm) and by `home.js:231`, `run.js:475` (first-paint arm). Landing the clause without the compliance table reproduces the BF-3 defect inside the row that exists to end it. |
+| **A-4** | interface-contract + simplicity | MID | **design (this gate)** | The rule needs the **omit ≠ substitute** distinction or it cannot both ratify `run.js:512`/`workflow.js:329` (blessed, pinned) and condemn `run.js:502`/`workflow.js:327` (recorded debt). BF-8's text has neither clause. |
+| **A-5** | interface-contract (consumability) | LOW | **design prose, repairs are debt** | BF-8(e) says 「the only such component in the tree today is `system.js:79`」. Measured: **five** instances — `system.js:79` (zh-only), `models.js:56` (en-only), `issues.js:103-104` (the raw wire text), `app.js:198` and `:414`. Two of them are a live **REQ-131 acceptance** breach (「畫面不得散落字面值」), not merely `QD-R3` debt. |
+| **A-6** | testability | MID (method, not code) | **design `tests:` line** | The three pins cover one arm each and no case covers the other arm at any site: `val-198:262`/`val-200:215` establish a healthy paint then degrade (KEEP arm); `val-202:130` degrades from load (UNAVAILABLE arm). No test at HEAD can distinguish 「clears once」 from 「clears every tick」 at `system.js`, or 「keeps」 from 「never painted」 at `home.js`. |
+| **A-7** | boundary/error | LOW | design decl. + 1 impl line, inside BF-7 | `workflow.js:367`'s `onPick` calls `paintSelected(...)` without `await` and **discards its return**, so a degrade observed on a run-switch never reaches `nextConnection`; same at `system.js:90`, `models.js:68`, `issues.js:119` (`render()` discards `onTick`'s statuses). The tag lags the fault by up to one tick on exactly the path BF-8 says needs the UNAVAILABLE arm. |
+| **A-8** | boundary/error | LOW | design prose | `models.js:55` and `issues.js:80`/`:102` re-derive the verdict from the body's shape while `res.status` is in hand two lines above. Fail-open in one direction: a **non-2xx** body carrying `degraded` is `fail` at `connection.js:46` but takes `issues.js:102`'s degraded branch and renders the wire text as if it were a sanctioned degrade. |
+| **A-9** | boundary/error | LOW | recorded, not proposed | `app.js:386` stamps 「Updated HH:MM:SS」 on **every** tick, including one where every route failed and no view wrote a pixel. Not a `getJSON` consumer, so out of this rule's population — named so the synthesizer can see I considered and declined it (the remedy interacts with `app.js:146`'s pre-tick stamp and is not worth a clause this round). |
 
-**Not re-litigated here** (recorded LOW in `07-review.md:§9`, unchanged by anything I found): F-2 (`clampHue` mirror), F-3 (the closed-enumeration `api:` rows, incl. ARCH-124's 「Five files」 against **8** on disk), QD2-O2 (the ported tabs' double fetch), QD-R3 (the string table). I cite F-3 and QD2-O2 below only where they change the cost of another finding.
-
----
-
-## §3 The findings, with what was measured
-
-### AD-1 — DES-202's `signature:` line declares a function that does not exist, and could not work
-
-**Claim in the ledger** (`04-design.md:6814`, verbatim):
-
-> `worstOf(perRoute) → 'live'|'degraded'|'fail'` (the nav tag reads THIS)
-
-**Tree at HEAD** (`src/dashboard/lib/connection.js:6-15`): `RANK = { ok: 0, degraded: 1, fail: 2 }`; `worstOf` initialises `let worst = 'ok'` and returns a `RANK` key. Measured:
-
-```
-worstOf({a:'ok',b:'degraded',c:'fail'}) → 'fail'
-worstOf({a:'ok'})                       → 'ok'      ← not in the declared union
-worstOf({})                             → 'ok'
-'live' is never returned on any input.
-```
-
-**Three independent witnesses in the ledger already agree with the code and against the signature:**
-
-1. the row's own `boundary:` (`:6815`) — 「`worst === 'ok'` → `live`」 — which only type-checks if `worstOf` returns `'ok'`;
-2. the code's only caller, `connection.js:27` — `if (worst === 'ok')`;
-3. **the unit test BF-3's own `tests:` line points at** — `tests/unit/dashboard-lib-connection.test.js:78`: `expect(worstOf({ a: 'ok' })).toBe('ok')`.
-
-**Why this is the blocking-shaped one.** BF-3's stated standard is 「an implementer reading it verbatim re-introduces the defect」. Apply it literally here: an implementer who writes `worstOf` to the signature returns `'live'` for a healthy tick, `connection.js:27`'s `worst === 'ok'` is then **never** true, and the tag can never report `live` at all — a strictly worse failure than the one BF-1 repaired, produced by reading the row's **first** line instead of its third. The two lines the review named were repaired exactly as instructed; this is §10's own lesson (「the grep, not the line」) applied to the **row** rather than to the finding.
-
-**The parenthetical is false too, and separately.** 「(the nav tag reads THIS)」 — the tag reads `connectionState.status` (`app.js:115-121`: `textContent = L(prefs.lang, connectionState.status)`), which is `nextConnection`'s output, not `worstOf`'s. For the all-fail arm the two now differ by construction (`worstOf` → `'fail'`, status → `'degraded'` or `'offline'`) — **that divergence is precisely what BF-1 installed**, so BF-1 made this parenthetical false at the same moment it made `:6815` false, and only one of the two was repaired.
-
-**Proposed edit — `04-design.md:6814`, in-place, no new DES id** (the ledger's `amended (…)` house style; strike-through the old, state the new):
-
-> `worstOf(perRoute) → 'ok'|'degraded'|'fail'` (the reducer's input, not the tag's value: `nextConnection` maps `'ok'` → `live` and, since BF-1, an all-`fail` tick → `degraded`/`offline` by streak — the tag reads `State.status`, `app.js:115`)
-
-**Rider, ARCH's lane — note, do not fix here.** `02-architecture.md:3361`'s `api:` carries the looser form of both errors (`worstOf(perRoute) → status`, and 「The tag is **`worstOf(perRoute)`**」). `status` is vague rather than false, so it is not a contradiction; the 「tag is worstOf」 sentence has the same post-BF-1 divergence. A panel may not amend an ARCH row (`02-architecture.md:3365`'s own precedent), so this is recorded for the architect, at LOW, and design states the precise version in its own row without contradicting ARCH.
+Not re-litigated: `A4-2` (the raw exception on the wire — architect's lane, correctly recorded as debt), `D3-5`/`QD3-R1` (the `app.js:379` seam — the review ruled it out of scope and I agree, see §5), `F-3`, `QD-R3`, `DEBT-A/B`, `TOOL-FORK`.
 
 ---
 
-### AD-2 — a tick that observed nothing reports `live`, and the only thing stopping it is undocumented and untestable
+## §3 The proposal — exact text for the DES-206 amendment
 
-**Measured** (`node --input-type=module`, HEAD, §9):
+Append as one `amended (…)` bullet in the row's house style, `iter: v27m`. **No new DES id, no new TASK id, no trace-link change, no ARCH edit, no code.**
 
-| input | output |
-|---|---|
-| `nextConnection({status:'live',consecutiveFails:0}, {results:{}})` | `{status:'live', consecutiveFails:0, perRoute:{}}` |
-| `nextConnection({status:'offline',consecutiveFails:5}, {results:{}})` | **`{status:'live', consecutiveFails:0, perRoute:{}}`** |
-
-An `offline` page with a five-tick failure streak is restored to 「連線中 / Live」 by a tick in which **zero routes were consulted**. The path is `worstOf({})` → `'ok'` (the seed value survives an empty loop) → `connection.js:27`'s early return. Note the author *did* think about emptiness one branch later — `:31`'s `values.length > 0 && values.every(...)` — so the all-fail arm is guarded and the healthy arm is not.
-
-**Reachability, stated honestly.** Not reachable at HEAD. `app.js:382` wraps the reducer call in `if (Object.keys(results).length > 0)`. I checked the two ways `results` could be empty: `endpointsFor` returns `[]` only for a view name absent from `ROUTES` (`poll.js:35-38`), and all six names `app.js` mounts (`:177`, `:185`, `:408`, `:416`) are present. So AD-2 is **latent**, in the F-2 sense.
-
-**Why it still outranks F-2 — the distinguishing factor, offered before the other panel asks for it.** F-2 is two copies of a formula that agree today. AD-2 is a **fail-open default in the one function whose entire job is not to overstate health**, and three things make its latency thin:
-
-1. **The guard is in the wrong layer and is written down nowhere.** `grep` for `Object.keys(results)` / `results).length` over `04-design.md` and `02-architecture.md` → **0 hits, both files**. DES-206's boundary enumerates 「five invariants it may not lose」 (`:6849`) and this is not among them. An invariant that is neither stated nor tested is not an invariant; it is a line someone can delete during a refactor with a green suite.
-2. **It cannot be tested where it lives.** DES-206's `tests:` line (`:6850`) says the `ui/` layer 「has NO unit tier by construction (ADR-049 refuses jsdom)」. So the property 「an empty tick never paints Live」 has coverage at **zero** tiers today, while the reducer 12 lines away has a full literal-fixture transition table.
-3. **The next planned change adds the input that reaches it.** DES-202's own boundary (`:6815`) reserves this exact seam: 「REQ-142's visibility gate and REQ-143's demo flag attach later as one more input」. A visibility gate is, by definition, a mechanism for producing ticks that observed nothing.
-
-**Proposed shape — relocation, not behaviour change.** Identity-on-empty in the reducer produces *exactly* what `app.js:382` produces today (no state change, no repaint), so there is **no compatibility cost and no new state**:
-
-```js
-// connection.js, before the worstOf line
-if (values.length === 0) return { ...prev, perRoute: tick.results };  // no observation → no claim
-```
-
-`app.js:382`'s guard then becomes redundant rather than load-bearing, and two cases join the UT that already imports the module.
-
-**Two things I must not let this claim overreach.**
-- **It does not fix the freeze.** With either the guard or the identity return, a view that polls nothing leaves the tag frozen at its last value — 「連線中」 forever, which is the BF-1 lie in slow motion. I am not proposing the reducer invent a status to cover that: a view with zero endpoints is a **routing** bug, caught by `endpointsFor`'s own per-view UT (DES-206:6850), not by the state machine. Saying otherwise would be scope creep dressed as safety.
-- **It makes one freshly-written BF-3 sentence false, and I name the re-wording rather than let the synthesizer discover it.** `:6815` now says 「`status` is never carried forward from `prev`」. Identity-on-empty *is* carrying it forward. The clause must read 「**on a tick that observed at least one route**, `status` is never carried forward from `prev`」 — the same edit, in the same sentence, or this proposal re-opens BF-3 by accident.
-
----
-
-### AD-3 — unrecognised status token ranks as `ok` (rider on AD-2, one token)
-
-Measured: `worstOf({a:'bogus'})` → `'ok'`; `nextConnection(live, {results:{a:undefined}})` → `{status:'live'}`. Cause: `RANK[status]` is `undefined`, and `undefined > 0` is `false`, so the seed `'ok'` survives.
-
-Unreachable at HEAD — every value entering `results` comes from `classifyResponse` (`poll.js:51`) or from an `onTick`'s `extra`, which is itself a `getJSON` status (`run.js:487`, `issues.js:109`). ARCH-124's `api:` nonetheless states these exports are 「pure and **total**」, and total-in-the-fail-open-direction is the one reading a health widget must not take.
-
-One token, fail-closed: `const r = RANK[status] ?? RANK.fail;`. **This one IS a behaviour change** (open → closed) on an unreachable input, unlike AD-2's relocation. I offer it as a rider and do not fight for it: if the synthesizer wants a zero-behaviour-change round, drop AD-3 and keep AD-2.
-
----
-
-### AD-4 — the pure layer decides renderability, `app.js` throws the answer away, and three `ui/` files re-derive it by hand
-
-**The seam, measured at file:line.**
-
-| where | what happens |
-|---|---|
-| `poll.js:51` | `return { status: classifyResponse(res.status, body), body }` — the decision is **already made**, by the pure module DES-202 owns. |
-| `app.js:375-376` | `results[url] = res.status; bodies[url] = res.body;` — both kept. |
-| `app.js:379` | `await view.onTick(view.container, bodies, view.ctx)` — **only `bodies` crosses the seam.** The status is retained solely to feed `nextConnection` at `:383`. |
-| `home.js:231` | `if (!body \|\| body.degraded \|\| !Array.isArray(body.running)) return;` |
-| `run.js:475` | `if (!dagBody \|\| dagBody.degraded \|\| !Array.isArray(dagBody.cells)) return {};` |
-| `workflow.js:350` | `if (!describe \|\| describe.degraded \|\| !Array.isArray(bodies[runsUrl])) return {};` |
-
-**This is not a new decision that needs a new home — it is an existing decision discarded one line before it is needed.** That reframing matters, because it kills the tempting answer (「add an `isRenderable()` export to `lib/connection.js`」): a new pure export would be a **second** implementation of what `classifyResponse` already computes, i.e. the mirror-pair class ARCH-124's note exists to shrink. Zero new exports is on the table; a new predicate is not the Karpathy answer here.
-
-**The invariant it contradicts is DES-206's own** (`:6849`, verbatim): 「This layer may read the DOM and call `fetch`; it may **not decide anything a pure function could decide** — that is what keeps the mirror-pair class from growing.」 Three shipped call sites now take exactly such a decision.
-
-**What it cost, in the tier it pushed the property into.** Because the decision sits in `ui/`, which has no unit tier (DES-206:6850), the falsifying evidence had to be written at the real-Chromium tier: `val-198-shell-and-home.test.ts:262` and `val-200-swimlane.test.ts:215`, both `itReal`, which **skips silently without Chromium**. (The v27k implementer did run them and recorded the runs in `57ad237` — this is a statement about *tier*, not about diligence.) The same property expressed at the seam is one `.js` UT.
-
-**Two candidate shapes. I argue (a), and price (b) honestly.**
-
-- **(a) `app.js` passes the statuses alongside the bodies** — `onTick(container, bodies, ctx, statuses)`, or the one-argument form `onTick(container, { bodies, statuses }, ctx)`. Each guard collapses to `if (statuses[url] !== 'ok') return;` plus its **own** shape check. Nothing is deleted; the answer that already exists simply crosses the seam. Cost: DES-206's `signature:` line changes (it specifies `onTick`), and six `onTick` implementations must accept the argument — three of which (`models`/`system`/`issues`) ignore `bodies` today anyway (QD2-O2).
-- **(b) `app.js` omits non-`ok` bodies from `bodies`** — each guard collapses to `if (!body) return;` with no signature change at all. Cheaper, and tempting. **But it breaks DES-207 in principle**: `issues.js:102-104` renders the degraded **string** to the operator (`replaceChildren(el('div','degraded', data.degraded))`) — it *needs* the degraded body. It survives (b) today only because it re-fetches its own route (QD2-O2) instead of reading `bodies`; i.e. it is protected by a defect the same review recorded as debt. Building on that is exactly the 「protected by accident」 pattern this ledger keeps paying for.
-
-**So: (a).** It is larger by one parameter and smaller by one hidden coupling.
-
-**Be precise about what 「3 → 1」 means.** The **shared** part of the three guards is `!body || body.degraded` — that moves. The `Array.isArray(body.running)` / `.cells` / `bodies[runsUrl]` halves are genuine **per-view preconditions** and stay in their views. Three copies of a decision become one; three shape checks remain three. Claiming otherwise would overstate the win.
-
-**Design's deliverable this round is not the code.** It is (i) DES-206's `signature:`/`boundary:` amendment naming the seam and re-stating the invariant it lost, (ii) DES-202's `signature:` noting that `classifyResponse`'s answer is the renderability answer and is not to be re-derived, and (iii) **one** task row. §5.
+> **amended (2026-09-13, v27 Gate 8 RE-REVIEW #4 — BF-8): the POSITIVE rule for a non-`ok` result, over the whole `getJSON`-consumer population.**
+> This row carried ARCH-125's negative only (「never rendered as data」). Ten sites consume a `getJSON` result and **four** incompatible positive behaviours ship for one fault, so six repairs each fixed the named line and the seventh survived by letter. The rule below is total over `classifyResponse`'s three outcomes and is stated over the whole population; the table at the end names every HEAD site that does not yet satisfy it, so no sentence here is silently false.
+>
+> **(V) The verdict is `res.status`, never the body's shape.** A consumer holding the `{status, body}` pair decides on `status !== 'ok'` and does not re-derive the classification at the call site (`!body`, `body.degraded`, `!Array.isArray(…)`). Re-derivation is the habit that produced every instance of this class and it is wrong in **both** directions: a 200 `{degraded:null}` is `degraded` at `connection.js:48` but falsy at a call site, and a **non-2xx** body carrying a `degraded` key is `fail` at `:46` yet takes a 「degraded」 branch written against the body. Shape guards on an **`ok`** body are unaffected — they run after the verdict, never instead of it. Where the body crosses `app.js`'s tick seam **without** its status (`app.js:373-379` builds `results` and `bodies` and passes only `bodies` — `D3-5`, deliberately out of scope), the stand-in is a **positive test of the declared success shape** (`Array.isArray(body.running)`), which is fail-closed for `degraded` and `fail` alike; the `body.degraded` sniff beside it is redundant and a positive-shape test alone is the form to write.
+>
+> **(K)/(U) What the consumer does is decided by ONE question: does this surface already hold a successful paint of the CURRENT identity?** A surface's identity is (view, route params, and the selection the surface is keyed to — `state.selectedRunId` for the workflow page's figure, `agentId` for the agent panel).
+> &nbsp;&nbsp;**yes → KEEP.** No DOM write derived from the non-`ok` resource: no `replaceChildren`, no `textContent`, no style, no further fetch. The last-known render stays, and the nav tag is the surface that reports the fault (ARCH-124).
+> &nbsp;&nbsp;**no → UNAVAILABLE.** Clear the part of the surface derived from that resource and paint the one Unavailable component in its place. **This arm is mandatory, not an optimisation.** A view that bails on a first paint leaves whatever its `render()` skeleton wrote, and that skeleton is itself a constructed payload: `app.js:429` first-paints Workflows as `renderHome(panel, { cards: [], lang })`, which `home.js:153-159` renders as 「全部 (0) · 執行中 (0) · 已註冊 (0)」 — three fabricated counts that stand for as long as the degrade lasts, because `home.js:231` bails on every subsequent tick. A blank surface is the least this arm may produce; a **zero is not blank**.
+> &nbsp;&nbsp;Never the previous identity's content under a new identity: a bail on the tick after a run-switch leaves the previous run's graph under the newly-selected chip, which is a worse lie than a blank.
+>
+> **(O) A COMPOSED part may OMIT a member whole; it may never SUBSTITUTE a value for one.** Where one element is built from several resources — `run.js:352`'s legend is the `/dag` warnings plus the `/api/runs/:id` summary — the members sourced from the non-`ok` resource are omitted **whole** and the `ok`-sourced members repaint. `renderLegend(…, viewRes.status === 'ok' ? viewRes.body : null, …)` (`run.js:512`, `workflow.js:329`) **is** that form and is correct. Omission is permitted only where the member's absence states nothing; a **count, a total, a state word or a money figure** may not be omitted and re-derived — those take KEEP or UNAVAILABLE. **(O) reaches only a genuinely composed element.** The legend repaints because its warnings come from the still-`ok` `/dag`; `#run-usage` (`run.js:513`) has **no** `ok` input — it is whole-sourced from `/api/runs/:id` — so it falls under (K) and is not touched at all, never cleared.
+>
+> **(N) A consumer may never construct a payload, record or row and hand it to a render function, a `lib/` projection, or a geometry function.** The prohibited shape, by name: `dagRes.status === 'ok' ? dagRes.body : { cells: [], edges: [], warnings: [], lanes: [], current: null }` (`workflow.js:326`) — `paintSwimlane` erases before it appends (`run.js:219`/`:222`), so the fabricated payload wipes the live figure, and `renderLegend` computes `nodeCount` from the invented `cells` (`run.js:361`) and prints 「0 個節點」 for a run that has one (`:367`). A substitute **value** is the same prohibition: `((viewRes.body && viewRes.body.agents) || [])` (`run.js:502`, `workflow.js:327`) silently swaps every node's APPLIED model for the DECLARED default, and `res.body || {}` → `body.record || { …, tokens:{input:0,output:0} }` (`agent-panel.js:234-241`) paints six stat cards of zeros under DES-205's own 「no confident wrong statement」 rule. **No helper of the `okBody(res, fallback)` kind may be introduced**: its natural call at any of these sites is byte-for-byte the defect.
+>
+> **(S) One component, one string source.** The Unavailable component is `el('div', 'empty', t(lang, 'unavailable'))` — the `.empty` hook DES-209's STYLE_HOOKS already declares (shell/ported row), and **one** key added to `lib/strings.js` in both languages. Never a per-file literal, and **never the server's own `degraded` text**: that value is an unformatted exception message on an unauthenticated wire (`server.ts:616`), written for the log line beside it, not for the operator. REQ-131's acceptance is explicit — 「兩種語言的字串同源於單一字串表,畫面不得散落字面值」 — and the tree carries **five** instances of this component under other names, listed in the table below.
+> &nbsp;&nbsp;**The zh value is `'無法取樣'`, verbatim** — it is MOVED out of `system.js:29`, not chosen anew: `val-202:154` asserts `expect(panelText).toContain('無法取樣')` on the BF-4 lock, so a key minted with any other zh string turns a blessed test red and invites someone to edit it. The `en` value is the implementer's, and `system.js:29`'s `UNAVAILABLE` const is deleted in favour of `t(lang,'unavailable')` when that site is repaired (LOW, below) — not before, or the two diverge.
+>
+> **(R) Every status observed reaches the reducer.** A KEEP or UNAVAILABLE disposition still returns the statuses of the fetches it already made (`return { [dagUrl]: dagRes.status, [viewUrl]: viewRes.status };`), or the tick under-reports and, with `app.js:382`'s `Object.keys(results).length > 0` guard, a tick that observed only failures can produce no observation at all. A caller that invokes a paint outside the tick (`workflow.js:367`'s `onPick`, `system.js:90`/`models.js:68`/`issues.js:119`'s `render()`) discards that return today; until it folds it, the tag lags such a fault by at most one tick.
+>
+> **DES-205 inherits this rule verbatim.** `openAgentPanel` is not an `onTick` view, and every open is a **first paint of a new identity**, so the UNAVAILABLE arm always applies: the panel renders the component, not a record of zeros. **DES-207 inherits it** for the three ported tabs; its own sentence 「a `degraded` section renders the ONE 「無法取樣」 component … instead of reaching a render function as data」 is this rule's UNAVAILABLE arm, unchanged in substance and now carrying (V), (K) and (S).
+>
+> **What HEAD does not yet satisfy** (so this clause is not silently false — every row is a DECLARED debt item with an owner, not a drift row a later gate discovers):
+>
+> | site | arm | rule | HEAD | disposition |
+> |---|---|---|---|---|
+> | `workflow.js:326` | any | (N) | synthesizes the empty DAG payload | **BF-7, blocking, this round** |
+> | `home.js:231` + `app.js:429` | first paint | (U) | bails → 「全部 (0)」 stands indefinitely | **MID** — nominated for BF-7's commit |
+> | `run.js:475` | first paint | (U) | bails → empty `#dag-graph` | LOW |
+> | `workflow.js:357` | first paint | (U) | bails → unbuilt header/chips | LOW |
+> | `system.js:78` | tick | (K) | clears + repaints the component every tick | LOW, declared deviation (note below) |
+> | `models.js:55` | tick + (V) + (S) | (K),(V),(S) | clears every tick, decides on `!Array.isArray`, `'(unavailable)'` en-only | LOW ×3, declared deviation |
+> | `issues.js:102` | tick + (V) + (S) | (K),(V),(S) | repaints both lists with the raw wire text | LOW ×3, declared deviation |
+> | `issues.js:80` | identity change | (U) | hides the detail box silently | LOW |
+> | `run.js:513` | tick | (K) | `renderUsageBox(usage, viewRes.body && viewRes.body.usage)` clears `#run-usage` on every degraded tick — the box is WHOLE-sourced from `/api/runs/:id`, so KEEP applies and the call is simply not made | LOW (`QD3-O2`), declared deviation |
+> | `run.js:502`, `workflow.js:327` | any | (N) | APPLIED model silently replaced by DECLARED | LOW (`QD3-O2`), declared deviation |
+> | `agent-panel.js:234-241` | first paint | (U),(N) | synthesizes a zeroed record | **MID** (`QD-O5`, DES-205's lane) |
+> | `system.js:29`/`:79`, `models.js:56`, `issues.js:103-104`, `app.js:198`/`:414` | — | (S) | five per-file literals, two of them single-language | LOW, REQ-131 acceptance |
+> | `app.js:379` | — | (V) | drops the statuses at the seam | LOW (`D3-5`) |
+>
+> **One declared DEVIATION — owed, not granted:** the three ported tabs (DES-207) replace their panel on **every** degraded tick rather than keeping the last-known table. This contradicts (K). The rule does **not** carve an exception for them; the deviation is recorded LOW and left standing *for this round only*, because it is BF-4's just-landed shape, pinned by `val-202:130-166`, and re-opening it inside a send-back round would be this gate churning its own repairs. Whoever closes it closes `system.js:78`, `models.js:55` and `issues.js:102` in one edit.
 
 ---
 
-### AD-5 — `classifyResponse` tests key presence; both documents say 「a `degraded` **string**」 (LOW)
+## §4 Why the compliance table is part of the amendment, not of this panel file (A-3)
 
-`connection.js:48`: `if (typeof body === 'object' && 'degraded' in body) return 'degraded';`. Measured: `classifyResponse(200, {degraded:null})` → `'degraded'`; `classifyResponse(200, 'oops')` → `'ok'` (a string body is not `typeof 'object'`).
+The v27l repair was sent back one round earlier for **exactly** this: a row whose prose an implementer could type verbatim and thereby write the defect. BF-8's clause has the same property in the other direction — an implementer who reads 「poll tick → no DOM write at all」 and greps for violations finds **five** at sites the same document's §8 table calls 「clean」, and has no way to tell 「this is debt the row knows about」 from 「this is drift I must fix now」. Two outcomes, both bad: scope explodes into four closed BFs, or the sweep is skipped and the clause is decorative.
 
-`04-design.md:6815` and `02-architecture.md:3361` both say 「a 200 whose body **carries a `degraded` string**」. The deviation is **fail-closed** (a malformed degrade is still treated as degraded), and `server.ts:616`'s catch-all always writes a string, so the divergence is unreachable and harmless in the safe direction. **Move the prose, not the code** — 「a 200 whose body carries a `degraded` **key**」 — and say why in one clause: presence, not type, so a malformed degrade cannot be rendered as data. Tightening the code to `typeof … === 'string'` would convert a fail-closed deviation into a fail-open one, which is the wrong trade in this row of all rows.
-
----
-
-### AD-6 — 「never rendered as data」 has two sanctioned realizations and no row says which view gets which (LOW)
-
-- **Bail, keep last-known render:** `home.js:231`, `run.js:475`, `workflow.js:350` — the shape BF-2's required text specified.
-- **Render a degraded component:** `issues.js:102-104` (the string, in a `.degraded` div) and `system.js:27-29` (「DES-207's ONE degraded-section component — every field this tab cannot sample renders THIS」).
-
-Both satisfy ARCH-125's 「never rendered as data」; they are opposite answers to 「what does the operator see」. DES-207's `boundary:` (`:6857`) states the component rule for the three ported tabs; nothing states the bail rule as the *other* branch, or the reason (a ported tab has no prior render to keep; a polled view does). One sentence in DES-206's boundary, beside the five invariants, closes it. LOW because no shipped behaviour is wrong — only the next implementer's coin-flip is.
+The table costs twelve lines and closes both. It is also the deliverable BF-8(d) actually asks for — 「stated over the WHOLE population … so the three non-blocking sites have a rule to be measured against even though they are debt this round」. The three sites BF-8 names are `run.js:513`/`:502` and `agent-panel.js:234`; the honest population is thirteen arms, and I measured them rather than accepting the count.
 
 ---
 
-## §4 The design-lane edits, in full, as I would land them
+## §5 The one place BF-8(a) is not satisfiable, said out loud
 
-Round 2 may trim; nothing below invents an id, moves a trace link, or edits `src/`.
+BF-8(a) requires the rule 「in terms of `res.status`, never of the body's shape」. **Three consumers structurally cannot see `res.status`**: `home.js:231`, `run.js:475` and `workflow.js:357` are fed `bodies` by `app.js:379`, which keeps `results` for itself. Closing that is `D3-5`/`QD3-R1`, and the review rules it out of scope by name (§8: 「`app.js:379`'s unguarded `await` and dropped statuses stay out of scope」).
 
-| # | file:line | edit | id cost |
-|---|---|---|---|
-| **E1** | `04-design.md:6814` | `worstOf` return union `'live'…` → `'ok'|'degraded'|'fail'`; parenthetical re-stated (the tag reads `State.status`, `app.js:115`). | 0 new DES |
-| **E2** | `04-design.md:6815` | 「`status` is never carried forward from `prev`」 → 「**on a tick that observed ≥ 1 route**, `status` is never carried forward from `prev`」; add the empty-tick clause (identity: no observation → no claim) and, if AD-3 is taken, the unrecognised-token clause (ranked as `fail`). **These two clauses describe the TARGET reducer, not HEAD** — they go false unless E6's one-line change lands with them, which is why both ride the same row (§5). | 0 new DES |
-| **E3** | `04-design.md:6816` | `tests:` gains two cases: an empty `results` from `offline` stays `offline`; (AD-3) an unrecognised token ranks `fail`. Same literal-fixture oracle rule the line already states. **Both are RED at HEAD** — §9 measures the first one returning `live` today — i.e. these are the test-first cases E6's impl turns green, not a description of the current tree. | 0 new DES |
-| **E4** | `04-design.md:6815` | AD-5: 「a `degraded` **string**」 → 「a `degraded` **key** (presence, not type — a malformed degrade must not become data)」. | 0 new DES |
-| **E5** | `04-design.md:6848-6849` (DES-206) | AD-4: `onTick`'s signature gains the per-url statuses; the boundary re-states the lost invariant with the seam named — 「the renderability decision is `classifyResponse`'s, made once in `poll.js`; a view may check its own **shape** precondition and nothing else」. AD-6's one sentence lands here too. | 0 new DES |
-| **E6** | `03-tasks.md` (after `:1846`) | **One** task row carrying **all** the impl this round declares: AD-4's `app.js` seam + the three call-site collapses + one `.js` UT, **and** AD-2's one-line identity return in `connection.js` with E3's two RED cases (**and** AD-3's `?? RANK.fail` token if the synthesizer takes the rider). `status: draft`, traces `DES-206, DES-202, ARCH-125, REQ-131`. One row, not two: the reducer line and the seam are both consequences of the same 「the pure layer decides, the DOM layer obeys」 contract, and §5's argument against splitting adjacent edits applies to them as much as to the prose. | 1 new TASK |
-| **E7** | `04-design.md:6818` | One `amended (…)` line recording E1–E5 with the measured evidence, per house style. | 0 new DES |
+So (V) is written in two halves — the verdict where it is in hand, and a **positive success-shape test** as the declared stand-in where it is not. This is not a weakening: `Array.isArray(body.running)` is fail-closed for `degraded` (no `running` key) **and** for `fail` (body `null`), which the negative sniff `body.degraded` alone is not. When the seam is eventually closed the stand-in collapses into the primary form and **nothing else in the rule moves** — which is the argument for stating it this way now rather than waiting for the seam.
 
-**Trace impact, predicted and falsifiable:** E6 adds exactly **one** `TASK 未實作` LOW row (the TASK-215/216 precedent, `07-review.md:§3`), taking the gap count 35 → 36 with **zero** new 漂移 rows, because every amended row's `iter:` advances in the same commit as its text. If a re-run shows anything else, this prediction is wrong and the round should say so rather than re-baseline.
+**I refuse to propose the seam change this round**, and I want the reason on the record because the v27l panel proposed it and withdrew it: a seam change fixes the three views that already work and cannot reach `workflow.js:326`, `agent-panel.js:234` or `system.js:72`, all of which call `getJSON` themselves and already hold the verdict. The defect is not upstream of the check; it is in what is written after the check passes.
 
 ---
 
-## §5 Where task-splitting touches my lens — say it now, because the split is the defect
+## §6 Testability — the three pins cover one arm each, and nothing covers the cross (A-6)
 
-The brief asks me to flag this, and here it is load-bearing rather than procedural.
+Measured, not read:
 
-**AD-4's impl is ONE row, not three.** The review's own §10 retro says the lesson of QD2-O1 is that 「IMPL-271 fixed the view the finding named and left the two sibling call sites of the identical pattern untouched」. A per-view split (`home`, `run`, `workflow`) reproduces that exact failure mode **by construction**: three rows, three dispatches, three chances for two to land and one to rot — on a guard whose whole point is that all copies agree. The seam change in `app.js` is also indivisible: it cannot half-land.
-
-**Corollary for the synthesizer:** if capacity forces exactly one row to be deferred this round, defer **E6 entirely** (the code stays as it is, correct-but-triplicated, with the design row naming the debt) rather than landing part of it. A half-collapsed guard set is strictly worse than three consistent copies.
-
-**And if E6 is deferred, E2/E3 must be deferred with it — or written as declared-and-owed, never as fact.** E2's empty-tick clause and E3's two cases describe the reducer E6 builds, not the reducer at HEAD (§9 measures the difference). Landing them as plain statements while the code stays put manufactures a fresh 「the row describes a function that does not exist」 defect — this round's own AD-1, by this round's own hand. The ledger already has the correct form for this: `ARCH-122`/`ADR-049`'s 「the property is UNGUARDED until TASK-B lands」, with `TASK-215`/`TASK-216` carrying the owed work and surfacing mechanically as LOW 未實作 rows. Use that phrasing verbatim, naming E6's row id. **E1, E4, E5 and E7 are unconditional** — they are true of HEAD today and land either way.
-
-**AD-1's edit must not be split from AD-2's.** They are three adjacent lines of one row; splitting them means a second `amended (…)` entry on `:6818` within the same day, which is how the four-way amendment pile-up on DES-200 happened.
-
----
-
-## §6 Where my own three lenses disagree — and the Karpathy tie-break
-
-The brief demands these be explicit, not smoothed over. There are four, and one of them changed my recommendation.
-
-**(1) Interface-contract wants types; simplicity refuses them.** The full interface-contract answer to AD-1 is 「stop writing unions in prose — put `@typedef`/JSDoc on the client and let `checkJs` verify」. ARCH-124's note already anticipates this and answers it: types are **relocated** to `tests/fixtures/dashboard-wire.ts`'s `satisfies` lock, deliberately, because a `.ts` client needs a build step and a build step reintroduces the 「did you rebuild?」 drift class (ADR-049). **Tie-break: simplicity wins, decisively.** The minimum edit that makes AD-1 true is four characters of prose. Proposing a type layer to catch a typo is the needless-flexibility move.
-
-**(2) Boundary/error wanted a new state; interface-contract and the owner both forbid it.** My first instinct on AD-2 was a `'unknown'` status — honest, and it makes the empty tick unrepresentable-as-live. It is **wrong here for a reason already adjudicated**: ARCH-124's `owner_decision` (`:3365`) records that a three-state option was 「offered to the owner and **declined**」 because the vendored handoff defines exactly three source tags and 「a fourth would step outside the fidelity oracle DES-209 established」. A `'unknown'` state is that fourth tag with a different name. **Tie-break: the settled decision wins**, and identity-on-empty gets the same safety with zero new states.
-
-**(3) Testability and boundary/error agree, which is itself the argument.** Normally testability pushes toward moving code and simplicity pushes back. Here they point the same way twice: AD-2's invariant is untestable *because* it sits in the layer ADR-049 left without a unit tier, and AD-4's guard needed `itReal` Chromium tests *for the same reason*. Both fixes move a property **into** the tier that already has a test file, deleting duplication on the way. **Tie-break: unnecessary — when both lenses and the line count agree, take it.** I record the dissent I would have made if AD-4 had been **one** call site rather than three: I would have left it alone, because moving code to make a single call site testable is the tail wagging the dog.
-
-**(4) Boundary/error vs. the ledger's own freshly-written words.** AD-2's clause makes BF-3's brand-new 「never carried forward from `prev`」 sentence false (§3). A weaker version of me would drop AD-2 to avoid touching a sentence the review just blessed. **Tie-break: the sentence is a means, the property is the end.** BF-1's property is 「a tick with evidence of failure may not report `live`」; an empty tick has no evidence at all, and the absolutist phrasing over-reaches. State it precisely in the same edit, and say so out loud to the synthesizer — which §3 does.
-
----
-
-## §7 Risks
-
-| # | risk | likelihood | what it costs | pre-emption |
+| case | fault injected | when | arm it pins | arm it cannot see |
 |---|---|---|---|---|
-| **R1** | **AD-2's edit is read as re-opening BF-3.** A reviewer sees 「`status` is never carried forward」 modified one round after BF-3 installed it and reads it as a regression. | med | a spurious re-review round | §3 and §6(4) name the re-wording explicitly and give the property-vs-phrasing reason. The `amended (…)` line (E7) must repeat it in the ledger, not just here. |
-| **R2** | **AD-4 grows.** 「While we are in `app.js`, let us also fix QD2-O2 / add a status-aware render component / unify the degraded UI.」 | **high** — it sits one line from both | the send-back loop gains a round | E6 is one row with a stated boundary: the seam, three call-site collapses, one UT. QD2-O2 and AD-6 are named as **out**. |
-| **R3** | **E6 lands as design-only and the code stays triplicated**, joining TASK-215/216 as a third unlanded follow-up. | med | +1 LOW 未實作 row; the `ui/` invariant stays contradicted; **and, if E2/E3 land unconditionally beside it, a brand-new false design clause** | Priced, not hidden: §5 says defer-whole-or-land-whole, requires E2/E3 to take the declared-and-owed phrasing whenever E6 slips, and the row is honest debt either way. If exactly one of the three open follow-ups is dispatched, I rank **E6 above TASK-216 and below TASK-215**. |
-| **R4** | **AD-1 is judged cosmetic** (「nobody re-implements a shipped function from a design row」). | med | a false contract survives in a row two send-backs have already touched | The consequence is measured, not asserted: reading it verbatim makes `worst === 'ok'` permanently false. That is BF-3's own standard, applied one line up. |
-| **R5** | **My empty-tick claim is dismissed as unreachable**, per the F-2 precedent. | med-high | AD-2 drops to LOW debt | I concede reachability up front and argue the three distinguishers (undocumented cross-layer guard · zero test tiers · REQ-142 plans the input that reaches it). If the synthesizer still rules LOW, the **E2/E3 prose** should land anyway — it is free and it is true. |
-| **R6** | **Two rounds of amendments pile on DES-202** (`:6817`, `:6818`, plus mine) until the row is unreadable. | med | consumability of the row itself | E7 is **one** consolidated `amended (…)` line for all of E1–E5. If round 2 wants a rewrite of `:6814-6816` with the amendment history compacted, I support it — but that is a separate decision, not a side effect. |
-| **R7** | **I am wrong about the `issues.js` coupling in AD-4(b)** — if the synthesizer prefers (b) and re-points `issues.js` at `bodies`, the degraded string disappears from that tab. | low | a silent DES-207 regression | Stated in §3 with the file:line. Whoever takes (b) owes `issues.js` an explicit path for the degraded body. |
+| `val-198:262` | `/api/home` → 200 `{runs:[],degraded}` | **after** a healthy card grid (`:272-275` waits for `val198-running`) | KEEP at `home.js` | first paint — the 「全部 (0)」 case (A-1) |
+| `val-200:215` | `/api/runs/:id/dag` | **after** `before = $$eval(…).length > 0` | KEEP at `run.js` | first paint |
+| `val-202:130` | `/api/system` | **from page load** (`setRequestInterception` before `goto`) | UNAVAILABLE at `system.js` | tick — cannot distinguish 「clears once」 from 「clears every tick」 |
+| `val-199:272` | `/api/runs/:id` **and** `/dag` together | after a healthy `.run-summary` | omission at `workflow.js:329` | the asymmetric fault; and it is what A-2 turns red |
+
+Two consequences the `tests:` line must state.
+
+**(1) An assertion in this class must be an invariant ACROSS the fault.** `expect(after).toBe(before)` on a counted DOM property, never a bare `toBeNull()` / 「non-zero」. `val-199`'s BF-6 case is the proof: its own comment at `:268-270` concedes 「an empty repaint either way」, and it passes over a blanked graph because degrading both routes makes `view` null and drops the element the assertion looks for. BF-7's new case must assert the `[data-node-cell]` count **unchanged** and the `.run-summary` node count **still true** — which the send-back already says, and which should be stated once as the rule rather than per case.
+
+**(2) A new case must target the arm its site does not already pin.** Writing a fourth 「healthy then degrade」 case adds nothing. The missing cases, in severity order: `home` first-paint degrade (A-1, six lines — move `setRequestInterception` before `goto` in a copy of `val-198:262` and assert the segment tabs do **not** read `(0)`); `system` tick (flip `val-202`'s handler behind a boolean so the first load succeeds, assert `.sys-table tr` ≥ 1, then degrade and assert the disposition the row DECLARES); `run`/`workflow` first paint.
 
 ---
 
-## §8 Expected disagreements with the quality-dimensions lens
+## §7 The one mechanical oracle this class can have
 
-I have not read `quality-dimensions.r1.md` this round. Predicted, from that lens's standing positions in `07-review.md:§9` and from the last two rounds' scoreboards:
+BF-8's own diagnosis is 「without a positive rule there is nothing to grep FOR, only crashes — and this class does not crash」. A rule in prose does not fix that; a rule plus an inventory does.
 
-1. **QD will nominate QD-R3 (the string table: five keys plus 17 `lang === 'zh'` copy sites) as this gate's headline** — the review itself calls it 「the strongest candidate for the next closure's first task」. **I disagree on routing, not on merit.** It is *closure* work, not *induced-drift* work: nothing in this send-back made it false. Opening 17 call sites inside a Gate 8 send-back loop is how a re-review becomes a re-implementation. Take it first in the next closure; not here. If QD produces a measurement showing it is smaller than I think, I concede — it is a count, and counts settle arguments.
-2. **QD will likely want a new DES id for AD-4's seam** (its usual replaceability reading: a named contract is easier to swap). **I want zero new DES ids.** DES-206 already *is* the `ui/` layer contract and already states the invariant AD-4 restores; a new id splits one contract across two rows and adds trace links to re-verify. House style is amendment-in-place, and v27j/v27k both used it.
-3. **QD may propose a fourth tag or an explicit `unknown`/`stale` state** for AD-2, on observability grounds — it is the more *informative* answer. **I pre-empt:** the owner declined a fourth source tag on the record (`02-architecture.md:3365`), and DES-209's fidelity oracle bounds it. Identity-on-empty buys the safety with zero new states. If QD wants the operator to *see* 「no data this tick」, that is REQ-142/143 content, not this round's.
-4. **QD will probably rank AD-5/AD-6 above AD-1** (prose completeness and consumability are its native metrics; a wrong type union in a document reads as a typo). **I disagree on severity ordering:** AD-1 is the only one of the three where reading the line verbatim produces broken code, and this ledger has twice ruled that shape blocking (v27j on DES-202's `tests:` line; BF-3 on its `boundary:`). AD-5/AD-6 are true LOWs and I rank them there myself.
-5. **QD may ask for AD-4's guard to be verified at the real tier as well as the unit tier** (「it is a rendering property」). **I half-agree:** `val-198:262` and `val-200:215` already exist and should be **kept, not replaced** — the UT proves the decision, the acceptance test proves the paint. What I refuse is a *third* `itReal` case for `workflow.js` to make the set symmetric; symmetry is not evidence, and `itReal` skips silently without Chromium.
-6. **Where I expect to concede in advance:** if QD's sweep finds design rows outside DES-202/206/207 that BF-1/BF-2 made false — I bounded my grep to the reducer, the poll seam and the three views — its breadth beats my depth, exactly as it did on D-5 in the last round's scoreboard. I will take its row set and re-verify each at file:line rather than re-argue.
+**The tripwire.** Every line in `src/dashboard/ui/**/*.js` matching **both** `/[Rr]es\.(body|status)/` and `/(\|\||: )\s*[{[]/`, **with comment lines stripped by the test itself**, must appear in a closed allowlist keyed on **(file, matched line text)** — never on a line number, which every repair shifts. Two mechanics the spec must name or it is not implementable as written: `clientCorpus()` (`tests/helpers/client-corpus.ts:27-31`) concatenates raw file text and is **not** comment-stripped, so the test strips comments itself; and the concatenation loses file boundaries, so the allowlist's `(file, text)` key needs the per-file walk — `clientFile(rel)` over the same `listJsFiles` enumeration, with `clientCorpus()` kept beside it only as DES-208's anti-vacuity anchor. At `2a738bd` no comment line matches, so the four-hit measurement below is unaffected either way. Measured at `2a738bd`:
+
+```
+src/dashboard/ui/agent-panel.js:234:  const body = res.body || {};
+src/dashboard/ui/workflow.js:326:  const payload = dagRes.status === 'ok' ? dagRes.body : { cells: [], edges: [], warnings: [], lanes: [], current: null };
+src/dashboard/ui/workflow.js:327:  const agentsById = new Map(((viewRes.body && viewRes.body.agents) || []).map((a) => [a.agentId, a]));
+src/dashboard/ui/run.js:502:  const agentsById = new Map(((viewRes.body && viewRes.body.agents) || []).map((a) => [a.agentId, a]));
+```
+
+Four hits: **this round's blocker, and the three substitutes already recorded as debt.** Zero false positives. After BF-7 lands the allowlist is three entries, each carrying its debt id, and it may only shrink — `toBe(3)` on the count, with DES-208's mandatory positive anchor beside it (`expect(clientCorpus().length).toBeGreaterThan(5000)`), because a negative grep with no positive anchor is this ledger's named vacuous-survivor class.
+
+**Stated honestly: it is a tripwire, not a proof.** `const EMPTY_DAG = {…}` at module scope evades it; so does a fallback built in a helper. That is precisely why (N) is stated as a rule and the allowlist is stated as its inventory — the grep's job is to make the class *visible*, not to decide it. It is also the only UT-tier evidence this layer can have at all (ADR-049 leaves `ui/` no unit tier), and the precedent already exists in the same corpus: `dashboard-diagram-render.test.ts:114` runs three corpus-wide negatives with exactly this discipline.
 
 ---
 
-## §9 What was actually run (reproducible, HEAD `57ad237`)
+## §8 Landing path (no new task row)
+
+BF-8 forbids a new TASK id and forbids the design gate touching code. The tripwire is test code. Three options, in my order of preference:
+
+1. **It rides BF-7's impl dispatch.** BF-7 already adds a `val-199` case and edits test files, and the send-back already says 「If BF-8's DES-206 clause lands first and differs in any detail, the clause wins and this row is its application.」 The tripwire is one `it()` in `dashboard-diagram-render.test.ts`'s existing corpus block, ~12 lines, and it is the falsification BF-7's own guard is otherwise unprotected by after the next repair moves the line.
+2. If the orchestrator will not widen BF-7's commit by one test: the `tests:` line names the tripwire **as owed**, in the 未實作 form, with the owner and the measured four-line hit set inline, so the next Gate 5 dispatch has the spec. It must NOT be written as if it exists — DES-208's own 「dangerous green」.
+3. What I will not accept: dropping it and leaving the `tests:` line as the current 「no unit tier by construction」 sentence alone. That sentence is why six rounds of repair produced six greps of six different things.
+
+**Same commit, same edit, per BF-8:** DES-205 gains the inheriting sentence; DES-207 gains (V)/(K)/(S) and keeps its own declared UNAVAILABLE-always disposition; `IMPL-281`'s 「all 16 sites are guarded」 is corrected by the population table (the review already requires this on the impl side — the design row should not restate it).
+
+---
+
+## §9 What I refuse, and why (Karpathy tie-break)
+
+| refused | why |
+|---|---|
+| a pure `renderable(res)` / `okBody(res, fallback)` in `lib/` | It answers 「is this ok?」, which `classifyResponse` already answered and `res.status` already carries. Its natural call at `workflow.js:326` **is** the defect (the review reaches the same conclusion independently; `IMPL-281` proposed it). A helper cannot fix a site whose bug is the fallback it returns. |
+| a new DES id for the degrade contract | DES-206 is the `ui/` layer contract. A second row describing the same layer is the mirror-pair class this repo shrinks on principle. |
+| a new TASK id (`TASK-217` redux) | BF-8 forbids it; the v27l concession never landed; §8 gives the landing path without one. |
+| any ARCH edit | `02-architecture.md:3361`'s looser `worstOf`/「degraded string」 forms are `D3-6`, the architect's lane. A design row may not amend an ARCH row and I do not. |
+| a fourth connection state, or a per-surface 「stale」 badge | The owner ruled on exactly this on 2026-09-13 (`ARCH-124 owner_decision`): three source tags only, a fourth steps outside DES-209's fidelity oracle. The KEEP arm's staleness is reported by the tag that exists. |
+| closing the `app.js:379` seam | §5. Out of scope by the review's ruling, and it cannot reach the three sites that matter. |
+| touching `run.js:512` / `workflow.js:329` | They are the (O) omission form and they are **correct**. Re-opening two freshly-pinned repairs to satisfy a stricter reading of (K) is churn, and §3's (O) clause exists to say so in writing. |
+| a per-view split of the rule | 「Four incompatible behaviours」 is the disease. One rule, one declared exception (DES-207's tabs), priced in the table. |
+
+---
+
+## §10 Verification — every command run, at `2a738bd`
 
 ```
-git log -1 --oneline -- .../.panel/design/adversarial.r1.md      → 8d3584b  (supersedes sha, no later touch)
-git show --stat b124430                                          → the v27k BF-1/BF-2/BF-3 commit, 3 test files touched
-
-node --input-type=module -e "import {nextConnection,worstOf,classifyResponse} from './src/dashboard/lib/connection.js'; …"
-  empty tick from live       → {"status":"live","consecutiveFails":0,"perRoute":{}}
-  empty tick from offline(5) → {"status":"live","consecutiveFails":0,"perRoute":{}}
-  worstOf({})                → ok
-  worstOf({a:'bogus'})       → ok        nextConnection(live,{results:{a:'bogus'}})  → status live
-  nextConnection(live,{results:{a:undefined}})                                       → status live
-  classifyResponse(200,'oops')      → ok
-  classifyResponse(200,['degraded'])→ ok
-  classifyResponse(200,{degraded:null}) → degraded        (AD-5, fail-closed)
-
-grep -rn "worstOf" src/ tests/        → 4 hits in src/ (all connection.js), 4 in the UT; no other consumer
-grep -n  "mountLazy(\|TAB_MODULES" src/dashboard/ui/app.js
-                                      → :151 {models,system,issues} · :440 'workflow' · :445 'run' · :177 'home'
-                                        = the six view names mounted, ALL present in poll.js's ROUTES → `results`
-                                        cannot be empty at HEAD (the reachability claim R5 hinges on)
-grep -n  "results).length\|Object.keys(results)" 04-design.md 02-architecture.md   → 0 hits, both files  (AD-2)
-grep -n  "degraded" src/dashboard/ui/{models,system,issues}.js                      → issues.js:102-104 renders the string (AD-6)
-ls src/dashboard/lib/                 → 8 files (ARCH-124's api: says "Five files" — F-3, already recorded LOW)
-sed -n on: connection.js:1-49 · poll.js:1-56 · app.js:364-385,113-121,160-200,396-420 ·
-           home.js:215-235 · run.js:463-510 · workflow.js:340-365 · issues.js:75-110 ·
-           04-design.md:6811-6819,6845-6859 · 02-architecture.md:3356-3365 · 01-requirements.md:1716-1745 ·
-           07-review.md:7-305 · tests/unit/dashboard-lib-connection.test.js:1-90
+git rev-parse --short HEAD                                  -> 2a738bd
+git log -1 --format=%h -- .panel/design/adversarial.r1.md   -> 24797c5   (supersedes line)
+grep -rn "getJSON(" src/dashboard/ --include=*.js           -> 13 hits: 1 def (poll.js:42), 2 comments, 10 consumption sites
+grep -rn "\.status !== 'ok'\|\.status === 'ok'" src/dashboard --include=*.js
+                                                            -> 4 code hits: system.js:78, run.js:512, workflow.js:326, :329
+grep -rnE "([Rr]es\.(body|status))" src/dashboard/ui/*.js | grep -E "(\|\||: )[[:space:]]*[\{\[]"
+                                                            -> 4 hits (§7, verbatim)
+grep -rn "el('div'" src/dashboard/ui/*.js                   -> issues.js:24,:103,:104  models.js:56,:58  system.js:79
+grep -rn "unavailable|無法" src/dashboard/{ui,lib}/*.js      -> app.js:198,:414  models.js:56  system.js:29  strings.js:26
+grep -n "TASK-217" 03-tasks.md                              -> 0 hits
 ```
 
-**What I did not do:** run the full suite (no `src/`/`tests/` edit is proposed by this round), regenerate the dashboard, or read `quality-dimensions.r1.md`. The trace prediction in §4 is stated so that the synthesizer's own re-run can falsify it.
+Read at `file:line` (not summarised from a gate note): `poll.js:15-55`, `lib/connection.js:1-50`, `app.js:111-160`, `:185-200`, `:360-419`, `:429`, `home.js:120-235`, `run.js:195-235`, `:350-369`, `:460-515`, `workflow.js:255-374`, `system.js:20-91`, `models.js:45-69`, `issues.js:70-120`, `agent-panel.js:215-267`, `lib/strings.js:1-71`, `dashboard.css:136-137`, `val-198:250-293`, `val-199:262-300`, `val-200:205-284`, `val-202:125-167`, `04-design.md:6811-6821` (DES-202), `:6838-6845` (DES-205), `:6846-6861` (DES-206/207), `:6862-6870` (DES-208), `:6871+` (DES-209 STYLE_HOOKS), `02-architecture.md:3355-3380` (ARCH-124/125), `01-requirements.md:1716-1744` (REQ-131), `07-review.md` §0-§9.
+
+**Not measured, and I say so:** no browser tool in this session. A-1's user-visible consequence is derived from `app.js:429` + `home.js:153-159` + `home.js:231`, not observed in Chromium. §6 gives the case that settles it; if the synthesizer can run it, that evidence outranks my derivation in either direction.
+
+---
+
+## §11 Risks in my own proposal
+
+1. **The rule declares ~13 non-compliant arms at once.** A later reviewer could read the row as 13 new deviations. This is the price of a uniform rule and I judge it worth paying — the alternative (a rule parameterised per site) is the disease. Mitigation is the table: every arm is declared, severity-rated and owned, so `trace`'s drift detector and the next reviewer both see a ledger entry, not a discovery. **If the synthesizer lands only part of my proposal, land the table.**
+2. **A-1 may be wrong about severity.** If `/api/home` degrades only transiently, the zeros are a sub-second flash. The blocking-candidate rating assumes a sustained degrade, which is the condition every other finding in this loop was rated under (`val-198`'s own case waits 7 s). If the browser case shows the counts are repainted from some path I did not find, A-1 drops to LOW and nothing else in §3 moves.
+3. **A-2 is the finding most likely to be actioned wrongly.** The correct response is to strengthen `val-199:294-295` into the invariant form (`expect(after?.textContent).toBe(before)`), **not** to soften BF-7's guard. If the synthesizer passes this to impl, pass the remedy with it.
+4. **The tripwire's regex is mine, not a standard.** It is tuned to a four-line hit set I measured; a differently-written substitute evades it. It buys visibility, not proof, and §7 says so. If the synthesizer thinks the false-negative rate makes it worse than nothing, drop it and keep §3 — but then the `tests:` line owes a different mechanical oracle, because 「no unit tier by construction」 alone is how this loop got here.
+5. **I did not re-verify the nine `INV-V27-*` invariants or the server side.** Out of this round's delta; the review did it at `18b9c03` and nothing since touches `src/*.ts`.
+
+---
+
+## §12 Expected disagreements with the other lens (quality-dimensions), stated before I read it
+
+1. **The `app.js:379` seam.** QD has carried it as `QD3-R1`/`D3-5` for three rounds and observability is its lens; I expect it to propose closing it now, as the 「real」 root cause. **My position:** §5. Out of scope by the review's explicit ruling, and structurally unable to reach the three sites that hold their own verdict. If QD's argument is 「the rule is ugly in two halves」, I concede the aesthetics and hold the scope. Prediction: we converge on 「stated in two halves now, collapses to one when the seam closes」.
+2. **A per-surface staleness affordance.** Consumability will want the operator to see *which* panel is frozen, not just a nav tag. I expect a 「stale」 badge or a dimmed surface. **My position:** refused (§9) — the owner ruled three source tags on 2026-09-13 and a fourth affordance steps outside DES-209's fidelity oracle. This is the disagreement most likely to need the synthesizer rather than us.
+3. **`agent-panel.js` (QD-O5) severity.** QD upgraded it to MID this round and owns it; I expect it to argue for repairing it inside BF-8's edit. **My position:** the RULE must cover it (my §3 makes DES-205 inherit, and the UNAVAILABLE arm always applies there), the REPAIR is debt — it changes the panel's rendering shape, which is a DES-205 dispatch, not a clause. Expect to converge on 「specified now, repaired next」.
+4. **The string table.** QD carries `QD-R3` as debt. I am raising two of its instances to a **REQ-131 acceptance** breach (A-5), which is a promotion QD may resist as scope. **My position:** the promotion is textual — the clause is one key — and I am not dispatching the other four sites.
+5. **The tripwire.** I expect QD to prefer a `lib/` predicate with real unit tests (it proposed `renderable()` last round) over a source grep. **My position:** §9's first row. Both of us refused the predicate last round for different reasons; if QD proposes it again, the refusal is that the defect is downstream of the check, not in it.
+6. **Where I expect to be told I am wrong:** A-1's severity (see §11.2), and possibly A-3 — QD may argue the compliance table belongs in this panel file rather than in the design row, to keep the row short. I would concede a shortened table (site + arm + severity, no prose) but not its removal: a clause HEAD violates silently is the BF-3 class, and that is the one thing this round exists to stop repeating.
