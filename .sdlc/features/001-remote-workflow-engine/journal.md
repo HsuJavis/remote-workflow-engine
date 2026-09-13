@@ -5207,3 +5207,71 @@ row, which arm was checked and whether by reading or by executing.
 pass, `D4-2` (the owed test population `DES-206` now names, tripwire included) and `D4-3` (UT-244's
 RED record is stale; its file is 9/9 green). `arch_consistent` stays **NO** with three owned MIDs;
 it is not flipped to tidy the close. `.panel/` removed per the contract's task 6.
+
+## 2026-09-14 — v28 Gate 2 (architect): Sprint B decomposed — one seam, a parked poller, a dataset that says it is fake, and a single server literal
+
+The five v27 requirements Sprint A deliberately left outside its closure (REQ-137 Models tab,
+REQ-138 System tab, REQ-139 Issues tab re-themed, REQ-142 `kind:nfr` pause polling when hidden,
+REQ-143 `kind:nfr` self-labelled demo data) are now architected as the **v28** iteration. The panel
+had already run; this pass read all four rounds, reconciled what was left, and wrote
+`02-architecture.md`'s new **v28 slice** section.
+
+**The decisions that cost something.** (1) *One seam*: the three ported tabs stop re-fetching what
+`tick()` already fetched (2 GETs per 3 s each today, and the nav tag reads the second one), and the
+view contract gains ONE additive parameter — `onTick(container, bodies, ctx, tick)` with
+`tick = {results, source}` — because `tick()` hands only BODIES, which is exactly why `home.js:229`
+and `workflow.js:397` still guard a primary route on body shape. Additive, so no working view is
+touched. (2) *REQ-138's counts card*: the two lenses **cross-conceded** between rounds, so this
+synthesis decided — the client folds two routes the engine already serves (`/api/workflows`,
+`/api/runs`), because `/api/runs` IS the same unsliced `listSummaries()` fold the run history shows,
+so the card cannot disagree with the tab beside it, and because the server shape needs a store
+accessor that does not exist. (3) *Demo mode*: engages only when the reducer says `offline` AND
+nothing was reached — the adversarial lens's cheaper 「engage at `offline`」 was refuted by its own
+round-2 measurement (a stale `/dashboard/<runId>` link answers 404, which folds to `fail`, which
+reaches `offline` in ~6 s on a HEALTHY engine). Substitution happens once per tick over the whole
+body set or not at all, which is the quality lens's own partition rule applied to its own per-URL
+proposal. (4) *REQ-142*: a pure `lib/` decision table, because `scheduleTick`'s `finally` re-arms
+after an in-flight tick even if the page went hidden while that tick was in the air — a real leak a
+request count taken 30 s later cannot see.
+
+**What was refused, on facts rather than taste:** a `/api/models/status` route and a per-row
+`catalogSource` (no acceptance clause; escalated instead), `supported_parameters` back on the wire
+(reverses a recorded v26 rule and grows every `models_list` reply), typed-but-absent
+`latency`/`benchmarks`, a `?topN=` query knob (dissolved by one measurement — the sampler applies
+`topN` at shape time per call, so a constant per caller is free), a `lib/views.js` registry (the
+lesson it cites is already a closed-both-ways unit test), a third `data-conn` stamp, and the
+`demoEnabled` config key v27 had promised — REQ-143's exit is DELETION, so a flag would be one more
+thing describing something scheduled for removal.
+
+**Shape of the delta, and one thing measured mid-gate.** ARCH-123/124/125/130 are amended IN PLACE
+at `iter: v28`; the five REQs trace to four NEW rows (ARCH-132 the dataset, ARCH-133 `ui` at v28,
+ARCH-134 `lib` at v28, ARCH-135 the server's whole footprint) plus ADR-057..060 and INV-V28-1..4.
+The first attempt appended the new REQs to the amended rows' `traces:` — and `trace.py`, which
+computes 「implemented / verified」 as the transitive upstream closure of every IMPL and test,
+promptly reported the five REQs as implemented-but-mock-only (**5 new HIGH gaps**) because v27's
+implementations reach ARCH-125. That is a dangerous green for code that does not exist, so the REQ
+traces moved to new rows — which is also this ledger's own established shape (four rows already
+share `src/server.ts`). Final: gap set **byte-identical to the pre-gate baseline (35 → 35, zero
+new)**, `solid_check` 0 mid / 10 low pre-existing, `dashboard_check` flags none of the three new
+mermaid blocks.
+
+**One correction made during the gate's own review.** The first draft of the seam invariant said
+「`getJSON` has no importer but `poll.js`/`app.js`」 while ARCH-125's amendment said `run.js` /
+`workflow.js` / `agent-panel.js` are not touched — and those three import `getJSON` today
+(`run.js:83`, `workflow.js:36`, `agent-panel.js:35`), so the invariant's own guard would have been
+red on files the same row promised not to open. It also let a substituted secondary report `ok`
+into the reducer, which oscillates demo on and off every other tick. Resolved: `getViewJSON` is the
+ONE demo-aware entry point and answers from the map with no network call while the console is in
+demo, extras do not reach the reducer on a demo tick, and the one-line import swap in those three
+files is declared as REQ-143 work rather than a rewrite — without it the swimlane and the agent
+panel are Unavailable in demo, which defeats the owner's 「看有缺什麼」.
+
+**Open, and it blocks Gate 8:** ADR-060 carries one `owner_decision: pending` — with both remote
+providers refusing, the Models tab shows 4 static rows with a fresh `catalogFetchedAt` under a
+「連線中」 tag and nothing says a provider returned nothing. REQ-137's acceptance has no clause for
+it, so architecture took the minimum and the owner gets the question with its consequence attached.
+
+`gates.architecture.passed` stays `true` with a v28 note, `iteration` becomes `v28`, `current_stage`
+becomes `design` — and the state note says out loud that every downstream gate flag is STALE v27 and
+must be re-run for this closure. Per the SPRINT B CARRY-FORWARD note, the design gate is dispatched
+as its OWN invocation.
