@@ -321,7 +321,14 @@ which applies when; (c) **forbid a view constructing a payload of its own and ha
 function** — name `workflow.js:326`'s literal as the prohibited shape, since a helper of the
 `okBody(res, fallback)` kind would re-express it; (d) be stated over the WHOLE population enumerated
 above, so the three non-blocking sites (`run.js:513`/`:502`, `agent-panel.js:234`) have a rule to be
-measured against even though they are debt this round. Do **not** amend any ARCH row (`D3-6` is the
+measured against even though they are debt this round; **`agent-panel.js`'s `openAgentPanel` is not an
+`onTick` view — it is DES-205's row, so amend DES-206 and have DES-205 INHERIT the same rule in the same
+edit**, or the clause bounces as out-of-row at the one site whose rating this pass raised; and (e) state
+that the Unavailable component's TEXT comes through `t(lang, key)` from `lib/strings.js` (add the key if
+absent), **never a per-file literal** — the only such component in the tree today is `system.js:79` using
+`UNAVAILABLE = '無法取樣'` declared at `system.js:29`, a zh-only literal outside the string table that
+`QD-R3` already counts as debt, so without this clause `BF-7` mints a second instance of it while fixing
+`BF-7`'s own defect. Do **not** amend any ARCH row (`D3-6` is the
 architect's lane and stays debt), do not re-decompose, do not add a module or a config key, and do not
 touch code — this is the design gate.
 
@@ -342,14 +349,21 @@ control under the identical fault (2→0 svg children, 3→0 cells, 「1 個節�
 on **both** a whole-route degrade and a plain dropped request. Violates **ARCH-125 `api:`**
 (`02-architecture.md:3373`), **ARCH-124 `api:`** (`:3361`, the `classifyResponse` clause) and REQ-134.
 
-Required shape — **implement DES-206's new clause (`BF-8`) at `:326`, do not invent a local answer.**
-Concretely, per the rule: replace the synthesized literal with the poll-tick behaviour
-(`if (dagRes.status !== 'ok') return { [dagUrl]: dagRes.status, [viewUrl]: viewRes.status };` placed
-ahead of `:328`, so the last-known figure and summary stay and the statuses still reach
-`nextConnection`), **plus** the selection-change branch the clause requires — when `state.selectedRunId`
-changed since the last successful paint, clear and paint the explicit Unavailable component instead of
-keeping the previous run's graph. Do **not** write `dagRes.body || {…}`, and do **not** introduce an
-`okBody(res, fallback)` helper: the natural call at this site is byte-for-byte the defect.
+Required shape — **stated in full here, not by pointer**, because design and impl may be dispatched in
+either order and a dangling reference to `BF-8` costs another round. Two branches, both mandatory:
+**(a) poll tick, `state.selectedRunId` unchanged since the last successful paint** → bail before any DOM
+write: `if (dagRes.status !== 'ok') return { [dagUrl]: dagRes.status, [viewUrl]: viewRes.status };`
+placed ahead of `:328`, so the last-known figure and summary stay on screen and both statuses still
+reach `nextConnection`. **(b) the selection changed, or there is no prior successful paint** → clear the
+svg, the cell layer and the legend and paint the **explicit Unavailable component**, never the previous
+run's graph under a newly selected chip (that is a worse lie than a blank, and it is why a bare copy of
+`run.js:475` is wrong here — `run.js` renders one run for the life of the page and has no selection).
+That component's text must come through `t(lang, key)` from `lib/strings.js`, **not** a per-file literal:
+`system.js:29`'s `UNAVAILABLE = '無法取樣'` is zh-only and outside the string table (`QD-R3`), so copying
+it here would mint a second instance of recorded debt. Do **not** write `dagRes.body || {…}`, and do
+**not** introduce an `okBody(res, fallback)` helper: the natural call at this site is byte-for-byte the
+defect. If `BF-8`'s DES-206 clause lands first and differs in any detail, the clause wins and this row
+is its application.
 
 **Plus the falsifying test the guard is worthless without.** Add a case to
 `tests/acceptance/val-199-workflow-detail.test.ts` using the `setRequestInterception` recipe already in
