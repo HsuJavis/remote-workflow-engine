@@ -6692,3 +6692,107 @@ at the first failure). Restored via `Edit` → post-commit run: `git diff --stat
   the only case-count mention ("new, 3 cases") is inside a paragraph the row's own text labels
   history/RED-narrative, already disclaimed as "not a current description of the code" — no new
   drift from this change.
+
+### IMPL-280 — BF-5: `run.js`'s swimlane no longer renders "undefined" for a degraded `/api/runs/:id` (the fourth site of the same defect class)
+
+- **status:** done
+- **traces:** TASK-210, REQ-134, ARCH-125
+- **greens:** new case in `tests/acceptance/val-200-swimlane.test.ts` — "a degraded /api/runs/:id
+  drops the run-summary line rather than rendering \"undefined\" (BF-5)"
+- **files:** src/dashboard/ui/run.js, tests/acceptance/val-200-swimlane.test.ts
+- **commit:** 86617d7
+- **iter:** v27
+
+**The defect (IMPL-279/BF-4's own "one adjacent candidate noted but NOT fixed", now closed).**
+`run.js:466`'s `onTick` makes a second fetch at `:477` (`/api/runs/:id` → `viewRes`) and passed
+`viewRes.body` unguarded to `renderLegend(state.shell.legend, payload, viewRes.body, state.lang)`
+at `:506`. `renderLegend`'s own guard (`:360`, `if (!view) return`) is false for a truthy
+`{runs:[], degraded:'…'}` body — the SAME `server.ts:1104` catch-all BF-2/BF-4 were raised
+against — so `view.status` rendered as the literal string `"undefined"` in the `.run-summary` line.
+Not a crash (`usage`/`agentsById` at the same call site are already shape-guarded, per BF-4's own
+note), which is exactly why it survived three prior sweeps.
+
+**Fix is the idiom `system.js:78` established (BF-4), not a fourth guard shape.** `viewRes` at
+`:477` already holds `classifyResponse`'s verdict (`viewRes.status`, `poll.js:51`) for this exact
+fetch — the verdict IS in scope at `:506` (unlike `home.js`/`run.js`'s `dagBody` guard, where the
+whole-tick bail happens before a status is ever computed for that fetch). `:506` now reads
+`renderLegend(state.shell.legend, payload, viewRes.status === 'ok' ? viewRes.body : null,
+state.lang)` — testing the classifier's verdict directly, matching `system.js:78`'s `res.status
+!== 'ok'` rather than re-deriving "is this ok?" from `view`'s shape.
+
+**Behavioural note (differs from BF-2's "last-known stays", by construction, not by choice).**
+`renderLegend` unconditionally `legendEl.replaceChildren()`s (`:354`) before its `!view` guard —
+unlike `home.js`/`run.js`'s `onTick`-top bails, which skip the WHOLE tick before any DOM write.
+Nulling `view` here means the `.run-summary` span is simply not appended for a degraded tick (the
+DAG-sourced warnings above it keep repainting fresh, since `payload` is unaffected) — still
+fail-closed per ARCH-125 ("never rendered as data"), just "no summary" rather than "old summary
+retained". The falsifying test asserts this actual behaviour, not an inherited "last-known" shape
+that does not fit this call site.
+
+**`07-review.md` §5 contradiction, for the re-reviewer to correct in its own text (not edited
+here):** `07-review.md:185` states **"`system.js` is the only view at HEAD that passes a non-`ok`
+body to a render function"**. That was false at the time it was written — `run.js:506` (this row)
+was a second one, reported by IMPL-279 itself two paragraphs above that exact claim in the same
+document (`07-review.md`'s own §8 "one adjacent candidate" note references the same `run.js:506`
+line). The two statements sit in the same review, contradicting each other; this row now closes the
+`run.js:506` half, and the re-reviewer's next pass should correct §5's "only view" wording rather
+than re-asserting it against this closed row.
+
+**Sweep, re-verified independently (own grep, not inherited from IMPL-279's report) — every
+`src/dashboard/ui/*.js` and `lib/*.js` site that consumes a fetch/poll result:**
+
+| file:line | consumes | guard |
+|---|---|---|
+| `run.js:475` | `dagBody` (bodies map) | shape: `!dagBody \|\| dagBody.degraded \|\| !Array.isArray(dagBody.cells)` |
+| `run.js:488` | `runsRes.body` | shape: `Array.isArray(runsRes.body)` |
+| `run.js:495` | `describeRes.body` | shape: chained `.params.agents` truthy check |
+| `run.js:502` | `viewRes.body.agents` | shape: `(viewRes.body && viewRes.body.agents) \|\| []` |
+| `run.js:506` | `viewRes.body` → `renderLegend` | **was none — THIS row's fix**: verdict, `viewRes.status === 'ok'` |
+| `run.js:507` | `viewRes.body.usage` | shape: `viewRes.body && viewRes.body.usage` |
+| `home.js:231` | `body` (bodies map) | shape: `!body \|\| body.degraded \|\| !Array.isArray(body.running)` (BF-2) |
+| `system.js:78` | `res` | verdict: `res.status !== 'ok'` (BF-4) |
+| `issues.js:80` | `res.body` (detail) | shape: `!data \|\| data.degraded` |
+| `issues.js:102` | `res.body` (list) | shape: `data && data.degraded` |
+| `models.js:56` | `res.body` | shape: `!entries \|\| !Array.isArray(entries)` |
+| `agent-panel.js:233` | `res.body` | shape: destructure-with-defaults (`body.record \|\| {...}`) |
+| `workflow.js:350` | `describe`/`bodies[runsUrl]` | shape: `!describe \|\| describe.degraded \|\| !Array.isArray(...)` (AC-4) |
+| `workflow.js:319` | `dagRes.body` → `payload` | **NOT guarded** — `dagRes.body \|\| {defaults}` does not fire for a truthy `{degraded:'…'}` body (same `\|\|`-fallback bug BF-2 fixed elsewhere, unfixed here) |
+| `workflow.js:322` | `viewRes.body` → `renderLegend` | **NOT guarded** — identical to this row's own defect, same call, different file |
+
+`lib/*.js` (`agent.js`, `connection.js`, `model.js`, `runlist.js`, `status.js`, `strings.js`,
+`swimlane.js`, `theme.js`): zero `getJSON`/`fetch` call sites (`grep -n "getJSON\|fetch(" src/
+dashboard/lib/*.js` → no hits) — none apply.
+
+**The sweep is NOT clean: a fifth and sixth site exist, in `ui/workflow.js`'s `paintSelected`
+(the selected-run branch of its `onTick`, lines 316-322) — the exact same `Promise.all([getJSON(
+dagUrl), getJSON(viewUrl)])` pattern as `run.js`, with neither result guarded before use.
+`workflow.js:322`'s `renderLegend(shell.legend, payload, viewRes.body, lang)` is the identical
+defect to this row's own fix, in a second file. `workflow.js:319`'s `payload = dagRes.body ||
+{...}` is a distinct but related defect (the `||`-fallback idiom BF-2 already proved doesn't
+discriminate a truthy degraded body). Per the implementer contract's exit-gate item 3 and this
+dispatch's own scope (`run.js:506` only), these are reported here, file:line, and NOT fixed in this
+row — widening the repair here is the same over-reach the last several rounds were warned against.**
+
+**Falsification (measured, `Edit` only, never `git checkout`/`restore`/`stash`):** reverted `:506`
+to `renderLegend(state.shell.legend, payload, viewRes.body, state.lang)` → re-ran
+`val-200-swimlane.test.ts -t BF-5` → **1 failed / 6 skipped**, `AssertionError: expected { Object
+(isolatedHandle, handle) } to be null` at the `.run-summary` element-absence assertion (the element
+was still present, carrying the "undefined" text the fix removes). Restored via `Edit` →
+`git diff --stat` → **empty** → re-ran full `val-200-swimlane.test.ts` → **7/7 passed** (was 6/6
+before this row's new case).
+
+**Full verification (this round, real):**
+- `npx tsc --noEmit` → exit 0.
+- `PUPPETEER_EXECUTABLE_PATH=<cached chrome> RWE_REQUIRE_BROWSER=1 npx vitest run` (full suite) →
+  **2837 passed / 26 skipped / 0 failed** (403 files + 1 skipped) — +1 over the pre-round 2836
+  baseline (this row's own new BF-5 case).
+- `PUPPETEER_EXECUTABLE_PATH=<cached chrome> RWE_REQUIRE_BROWSER=1 npx vitest run
+  tests/acceptance/val-198-shell-and-home.test.ts tests/acceptance/val-199-workflow-detail.test.ts
+  tests/acceptance/val-200-swimlane.test.ts tests/acceptance/val-201-agent-panel.test.ts
+  tests/acceptance/val-202-ported-tabs.test.ts` → **36 passed / 0 failed** (5 files; was 35).
+- `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → **1665 items / 35 gaps**
+  (item count +1 for this row; gap SET identical to the pre-round baseline — the five parked REQs'
+  `未實作`/`未驗證` pairs, 22 pre-existing `漂移` LOWs, 4 pre-existing `未實作` TASK LOWs) — zero new
+  gaps, zero new orphans/broken links.
+- `git diff --stat` against `HEAD` (`86617d7`) after the falsification round → empty (byte-identical
+  restore).
