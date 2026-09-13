@@ -4788,3 +4788,66 @@ ruling should update every `owner_decision:` marker that asked the question in t
 ## 2026-09-13 — ARCH-124 `owner_decision` flipped (reviewer): the last Gate 8 blocker, closed
 
 `02-architecture.md:3365`'s `owner_decision` moves from `pending` to `answered 2026-09-13`, transcribing the ruling already on disk in `state.yaml`'s `pending[]` (「v27h OWNER RULING (2026-09-13)」) and `01-requirements.md:1732`'s `[AMENDED v27h]` block — KEEP THE NARROWING, cited to `29eb8a0`. Two other sentences in the same file still framed the question as open and were struck with a `[RESOLVED 2026-09-13]` marker rather than rewritten: `:3364`'s "if the literal reading wins…" conditional, and `:3819`'s "an owner ruling that is still pending" in the v27h Decision rationale. `owner_decision:** pending` count is now 0/0 across `02-architecture.md`/`04-design.md`; `sh .sdlc/trace --check` reports the same 1661/35 with a byte-identical gap set (diffed row-for-row against the pre-edit baseline) — this closure touches no trace-tracked link. `04-design.md`'s DES-202 note (the DEBT-C item above) still inherits the old wording and is left alone, out of this file's scope.
+
+## 2026-09-13 — v27 GATE 8 RE-REVIEW #2 (reviewer): OWN-1 closed, three NEW blocking MID take its place
+
+**`send_back = ["impl", "design"]`, 0 HIGH, 3 blocking MID.** Full record: `07-review.md` §「v27 GATE 8 RE-REVIEW #2」.
+Tree at review `ced73ff`; RE-REVIEW #1's section is marked SUPERSEDED and kept for history. `.panel/` stays
+in place — cleanup happens only on a closing pass.
+
+**RE-REVIEW #1's sole blocker is closed.** `02-architecture.md:3365` now reads `- **owner_decision:**
+answered 2026-09-13 … Nothing is outstanding on this row.` — read at the line, with the ruling transcribed
+and cited to `29eb8a0`. The owner-deferral sweep on the fixed metadata key finds **0 live `pending`** in the
+ledger; the remaining hits are historical records, journal/panel narration, or prose citations of ARCH-124's
+marker inside backticks (`04-design.md:6817`, `:7274`). No unmarked deferral in ADR-049..056.
+
+**The mechanical sweeps are clean and were run, not assumed.** `analyze()` called directly → 1661 items /
+**35 gaps (0 high / 10 mid / 25 low)**; the 10 MID are the five parked REQs' two rows each, the 21 漂移 rows
+are all pre-v27 (the newest lags IMPL-208, v26) so **four gates editing six ledger docs induced zero new
+drift**, and the 4 TASK 未實作 include TASK-215/216, the priced follow-ups. `solid_check` → **0 mid / 10 low**,
+68 modules, no cycle. `module_check` dormant (no `build:`). `dashboard_check` → 7 mid, **all seven falsified
+again by a real headless-Chromium render: 43 mermaid blocks → 43 `<svg>`, 0 errors** (the tabs must be clicked
+— the dashboard renders diagrams lazily, and measuring without the clicks reports a misleading 0). Five SoT
+links hand-resolved to their own headings. `npx tsc --noEmit` → exit 0; `git diff 29eb8a0..HEAD -- src/ tests/`
+is empty, so RE-REVIEW #1's full-suite green still describes this tree.
+
+**Gate 7.5 re-confirmed:** no `未真實驗證` row anywhere, `08-validation.md` present with v27 evidence from
+`./deploy.sh --background` scratch boots, README/DEPLOY current-state and history-free with the 一鍵部署
+command leading DEPLOY §0 and a single `§1b 設定總表`. Neither manual documents the connection debounce, so
+the blocking repair below makes **no manual sentence stale** — `validation` is not in `send_back`.
+
+**What blocks, and why it is not prose.** The two re-run architecture panels agree the tree is NOT consistent,
+and the two findings I re-opened on disk are both cases where **the page tells the operator something untrue**:
+
+- **BF-1 — `src/dashboard/lib/connection.js:35`.** On the FIRST unanimous-`fail` tick the reducer returns
+  `prev.status`, so the nav tag keeps reading 「連線中 / Live」 for a full 3 s while **zero** routes answered.
+  That contradicts ARCH-124's `api:` **as amended this round** (「`live` only when EVERY one of them is `ok`」)
+  and REQ-131's owner-amended acceptance — the same lie the owner outlawed 12 hours earlier, in its strictly
+  worse form. The debounce clause governs the transition to `offline` (the RED tag), not the retention of
+  `live`, and the machine already has `degraded`. Fix: `consecutiveFails >= 2 ? 'offline' : 'degraded'`, flip
+  `tests/unit/dashboard-lib-connection.test.js:49-54`, keep `:57-60` and `:64-67` passing.
+- **BF-2 — `src/dashboard/ui/home.js:226` + `src/dashboard/ui/run.js:495`.** ARCH-125's `api:` says a
+  `degraded` classification is 「never rendered as data」; the AC-4 repair applied that in **one view of three**.
+  A degraded `{runs:[],degraded:'…'}` is truthy, so home paints 「全部 (0)」 and run repaints an EMPTY swimlane
+  over the live one with `#run-usage` cleared. Fix: `workflow.js:350`'s guard at the top of both `onTick`s
+  plus one falsifying real-browser case per view.
+- **BF-3 — `04-design.md:6815-6816` (DES-202's `boundary:` and `tests:`).** They state 「status stays `prev.status`
+  at 1」 and 「`live→live` on ONE all-fail tick」 — true today, **false the moment BF-1 lands**, which is the exact
+  shape v27j called blocking when it struck this row's previous text. Re-stated as part of the same loop rather
+  than left for a fourth re-review; `impl` runs first, but the target behaviour is written out in §8 so the design
+  repair does not depend on reading the repaired tree. In the same edit, `:6817` and `:7274`'s 「inherits ARCH-124's
+  `owner_decision: pending`」 sentences are closed — that marker has read `answered 2026-09-13` since `7604c90`
+  (this was DEBT-C, now false rather than stale-soon).
+
+**The retro line that matters:** RE-REVIEW #1's own retro said 「the repair scope should be the grep, not the
+line」 — **BF-2 is that lesson unapplied one round later**, and BF-1 is its mirror in prose: an amendment that
+reasoned about the mixed tick, installed a universally-quantified clause, and never re-read the unanimous-fail
+arm against the clause it had just written. When a finding names a line, close it with the grep; when an
+amendment installs a 「only when EVERY…」 clause, enumerate the states it now forbids and check each.
+
+**Recorded, not blocking:** 10 MID (the parked REQs) and 53 LOW — the 11 carried panel findings, 25 trace rows,
+10 `solid_check` 未認領, TOOL-FORK/DOC-H, DEBT-A/B (DEBT-C is folded into BF-3 instead: it is now *false*, not
+merely stale), plus **3 new** — F-2 (a second, unpinned `clampHue` in
+`ui/theme-init.js` under a comment claiming a test that does not exist), F-3 (ARCH-123/ARCH-125 `api:` enumerate
+18 and 7 files against the tree's 26 and 12; the property is locked by `static-assets.test.ts`, only the prose is
+stale), QD2-O2 (the three ported tabs re-fetch inside `onTick`, doubling the stated polling budget).
