@@ -503,7 +503,13 @@ export async function onTick(container, bodies, ctx) {
   paintSwimlane(state.shell.svgEl, payload, {
     lang: state.lang, onSelectAgent: state.handlers.onSelectAgent, agentsById, pAgents: state.pAgents,
   });
-  renderLegend(state.shell.legend, payload, viewRes.body, state.lang);
+  // [BF-5 Gate 8 repair] `:478`'s `viewRes` already holds `classifyResponse`'s verdict
+  // (`viewRes.status`, `poll.js:51`) for this exact fetch — a whole-route degrade is HTTP 200
+  // `{degraded:'…'}` (server.ts's catch-all), truthy, so `renderLegend`'s own `if (!view) return`
+  // (`:360`) let it through and rendered `view.status` as the literal string `"undefined"` in the
+  // run-summary line. Same idiom as `system.js:78`'s `res.status !== 'ok'` — the verdict IS in
+  // scope here, so it is tested directly rather than re-deriving "is this ok?" from `view`'s shape.
+  renderLegend(state.shell.legend, payload, viewRes.status === 'ok' ? viewRes.body : null, state.lang);
   renderUsageBox(state.shell.usage, viewRes.body && viewRes.body.usage, state.lang);
   return extra;
 }

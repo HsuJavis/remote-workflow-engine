@@ -241,6 +241,48 @@ describe('the swimlane run graph, real Chromium (VAL-200, REQ-134)', () => {
     }
   }, 20000);
 
+  // [BF-5 Gate 8 repair] the falsifying test the review named: a degraded `/api/runs/:id` (the
+  // second fetch `onTick` makes, NOT the `/dag` one BF-2 covered) was passed unguarded to
+  // `renderLegend` as its `view` argument. `renderLegend`'s own `if (!view) return` (`run.js:360`)
+  // does not catch a truthy `{runs:[], degraded:'...'}` body, so `view.status` rendered as the
+  // literal string "undefined" in the `.run-summary` line — no page error, no empty element, which
+  // is exactly why nothing else caught it. Unlike BF-2's dagBody guard (which bails the WHOLE tick
+  // before any DOM write, so the previous paint stays), `renderLegend` unconditionally
+  // `replaceChildren()`s the legend every tick (`:354`) before its `if (!view) return` — so the
+  // fixed behaviour here is not "last-known text stays" but "no `.run-summary` span is appended for
+  // a degraded tick" (still fail-closed, never a wrong/stale number, per ARCH-125's clause), while
+  // the DAG-sourced warnings above it keep repainting fresh since `payload` is unaffected.
+  itReal('a degraded /api/runs/:id drops the run-summary line rather than rendering "undefined" (BF-5)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      const pageErrors: string[] = [];
+      page.on('pageerror', (err) => pageErrors.push(String(err)));
+      await page.goto(`${baseUrl}/dashboard/${runId}`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await page.waitForSelector('.run-summary', { timeout: 3000 });
+      const before = await page.$eval('.run-summary', (el) => el.textContent);
+      expect(before).not.toContain('undefined');
+      await page.setRequestInterception(true);
+      page.on('request', (req) => {
+        if (new URL(req.url()).pathname === `/api/runs/${runId}`) {
+          req.respond({ status: 200, contentType: 'application/json', body: JSON.stringify({ runs: [], degraded: 'val200 injected degrade' }) });
+          return;
+        }
+        req.continue();
+      });
+      // One poll tick is ~3s (app.js); wait past two to be sure a degraded tick actually landed.
+      await new Promise((r) => setTimeout(r, 7000));
+      const after = await page.$('.run-summary');
+      expect(after).toBeNull();
+      const legendText = await page.$eval('[data-legend]', (el) => el.textContent);
+      expect(legendText).not.toContain('undefined');
+      expect(pageErrors).toEqual([]);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
   // [v27c] DES-209's own promised oracle (ADR-053 「規格逐條核」): every SPEC_ROWS row for the
   // 'run' view, checked under BOTH data-theme values and once more after a hue-slider move. A row
   // whose anchor matches no element FAILS (never skips) — see spec-rows.ts.
