@@ -50,6 +50,7 @@ throwIfBrowserRequired(chrome);
 let server: Server;
 let baseUrl: string;
 let tmpDir: string;
+let detailRunId: string;
 
 // v27b (Round v27b owner ruling, ADR-051): a SECOND, auth-ENABLED server proving the predicted
 // overlay is visible there too — the reversal's whole point. Same `mintBearer` pattern as
@@ -98,6 +99,7 @@ beforeAll(async () => {
   baseUrl = `http://127.0.0.1:${server.port}`;
   await registerPublishedVia(mcpCall, 'val199-detail', `phase('one'); await agent('a', { prompt: 'p' }); return 'ok';`);
   const run = await mcpCall('run_start', { name: 'val199-detail' });
+  detailRunId = run.runId;
   const deadline = Date.now() + 20000;
   while (Date.now() < deadline) {
     const s = await mcpCall('run_status', { runId: run.runId });
@@ -250,6 +252,49 @@ describe('workflow detail page, real Chromium (VAL-199, REQ-133)', () => {
       );
       const status = await page.$eval('.rwe-connection', (el) => el.getAttribute('data-status'));
       expect(status).toBe('degraded');
+      expect(pageErrors).toEqual([]);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
+  // [BF-6 Gate 8 repair] the falsifying test the review named: a degraded whole-route response on
+  // `/api/runs/:id` (and its sibling `/api/runs/:id/dag` — the SAME `{runs:[], degraded:'...'}`
+  // catch-all shape server.ts's try/catch returns for either, `paintSelected`'s `Promise.all` fetches
+  // both together) was passed unguarded into `ui/workflow.js`'s `paintSelected`: `dagRes.body ||
+  // {defaults}` (`:319`, pre-fix) never fires on a truthy degraded body, and `renderLegend(shell.legend,
+  // payload, viewRes.body, lang)` (`:322`, pre-fix) is identical in shape to the bug just fixed at
+  // `run.js:506` (BF-5) — `view.status` renders as the literal string "undefined" in the
+  // `.run-summary` line, with no page error to flag it. `paintSwimlane`'s own internal
+  // `Array.isArray` guards already neutralize `:319`'s malformed `payload` for the swimlane itself
+  // (an empty repaint either way), so the one assertion that actually falsifies is `:322`'s
+  // `.run-summary` text — the same "no page error, no empty element" trap BF-5's own comment names.
+  itReal('a degraded /api/runs/:id (+ its /dag sibling) drops the run-summary line rather than rendering "undefined" (BF-6)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      const pageErrors: string[] = [];
+      page.on('pageerror', (err) => pageErrors.push(String(err)));
+      await page.goto(`${baseUrl}/dashboard/workflow/val199-detail`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await page.waitForSelector('.run-summary', { timeout: 3000 });
+      const before = await page.$eval('.run-summary', (el) => el.textContent);
+      expect(before).not.toContain('undefined');
+      await page.setRequestInterception(true);
+      page.on('request', (req) => {
+        const p = new URL(req.url()).pathname;
+        if (p === `/api/runs/${detailRunId}` || p === `/api/runs/${detailRunId}/dag`) {
+          req.respond({ status: 200, contentType: 'application/json', body: JSON.stringify({ runs: [], degraded: 'val199 injected degrade' }) });
+          return;
+        }
+        req.continue();
+      });
+      // One poll tick is ~3s (app.js); wait past two to be sure a degraded tick actually landed.
+      await new Promise((r) => setTimeout(r, 7000));
+      const after = await page.$('.run-summary');
+      expect(after).toBeNull();
+      const legendText = await page.$eval('[data-legend]', (el) => el.textContent);
+      expect(legendText).not.toContain('undefined');
       expect(pageErrors).toEqual([]);
     } finally {
       await browser.close();

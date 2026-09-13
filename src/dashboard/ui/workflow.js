@@ -316,10 +316,17 @@ async function paintSelected(state, runs, describe, lang) {
   const dagUrl = '/api/runs/' + encodeURIComponent(state.selectedRunId) + '/dag';
   const viewUrl = '/api/runs/' + encodeURIComponent(state.selectedRunId);
   const [dagRes, viewRes] = await Promise.all([getJSON(dagUrl), getJSON(viewUrl)]);
-  const payload = dagRes.body || { cells: [], edges: [], warnings: [], lanes: [], current: null };
+  // [BF-6 Gate 8 repair] `dagRes.status`/`viewRes.status` (`classifyResponse`'s verdict, `poll.js:51`)
+  // are already in scope for these two fetches — a whole-route degrade is HTTP 200 `{degraded:'…'}`
+  // (server.ts's catch-all), truthy, so `dagRes.body || {defaults}` let a degraded dag body through
+  // as `payload` and `renderLegend` below rendered `view.status` as the literal string "undefined".
+  // Same bug shape, same fix idiom as `run.js:506`'s BF-5 (`viewRes.status === 'ok' ? ... : ...`)
+  // and `system.js:78`'s `res.status !== 'ok'` — the verdict is tested directly, never re-derived
+  // from the body's shape.
+  const payload = dagRes.status === 'ok' ? dagRes.body : { cells: [], edges: [], warnings: [], lanes: [], current: null };
   const agentsById = new Map(((viewRes.body && viewRes.body.agents) || []).map((a) => [a.agentId, a]));
   paintSwimlane(shell.svgEl, payload, { lang, pAgents, agentsById, onSelectAgent });
-  renderLegend(shell.legend, payload, viewRes.body, lang);
+  renderLegend(shell.legend, payload, viewRes.status === 'ok' ? viewRes.body : null, lang);
   return { [dagUrl]: dagRes.status, [viewUrl]: viewRes.status };
 }
 
