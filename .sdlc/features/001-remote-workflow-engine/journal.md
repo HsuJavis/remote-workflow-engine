@@ -5147,3 +5147,23 @@ full suite **2840 passed / 26 skipped / 0 failed** · trace **1667 items / 35 ga
 line-for-line identical against a baseline captured BEFORE the first edit (never by checking the ledger
 backwards in place). `current_stage` stays `review`: a Gate 8 send-back returns to the reviewer, it does
 not rewind the workflow to Gate 5 — the same routing the v27l design send-back used.
+
+## 2026-09-14 — v27m Gate 8 RE-REVIEW #4 SEND-BACK REPAIR (implementer) — `gates.impl` catches up to the pass above
+
+The BF-7 code, its two test arms, and IMPL-282 already landed in the pass this file just recorded
+(`db12573`, `8f6eb2f`, `cf06b6f`, `d7aa533`) — that pass wrote its record into `gates.design.note` only,
+since it also carried BF-8. This entry is the missing mirror on the impl side, same shape as the v27k
+precedent (an implementer pass that also touched a DES row wrote a short cross-referencing line into
+`gates.design.note` rather than a second full narrative). Nothing in `src/`, `04-design.md`, or
+`06-impl-log.md` was touched by this pass — re-editing an already-falsified, already-committed fix buys
+nothing and risks drift between two descriptions of the same guard.
+
+Re-ran the evidence independently rather than trusting the log: `npx tsc --noEmit` → exit 0;
+`RWE_REQUIRE_BROWSER=1 PUPPETEER_EXECUTABLE_PATH=…/linux-152.0.7977.75/chrome-linux64/chrome npx vitest
+run tests/acceptance/val-199-workflow-detail.test.ts` → **8/8**; the five dashboard acceptance files
+(val-198..202) → **39/39**; full `npx vitest run` → **403 files / 1 skipped, 2840 passed / 26 skipped / 0
+failed**, exit 0; `sh .sdlc/trace --check` → **1667 items / 35 gaps**, unchanged from the pass above; a
+sweep for a live `- **owner_decision:** pending` marker across the ledger → **0 hits**. `gates.impl.note`
+gains a brief v27m entry (old text preserved as `| PRIOR:`); `current_stage` is left at `review` — this is
+a Gate 8 send-back repair, not a fresh Gate 6 pass, so it routes back to the reviewer, never forward
+through Gate 6.5+7.
