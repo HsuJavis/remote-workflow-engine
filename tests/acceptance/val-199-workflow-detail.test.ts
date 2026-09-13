@@ -367,4 +367,49 @@ describe('workflow detail page, real Chromium (VAL-199, REQ-133)', () => {
       await browser.close();
     }
   }, 30000);
+
+  // [BF-7 Gate 8 repair] The SECOND of the two mandatory branches. The case above pins the KEEP arm
+  // (a degrade AFTER a healthy paint, selection unchanged); nothing pins the UNAVAILABLE arm, and a
+  // mandatory branch that has never executed in a browser is exactly the shape this finding is about
+  // — `paintFigureUnavailable` and the `t(lang,'unavailable')` key would otherwise ship unrun (`.js`,
+  // so `tsc` sees none of it). The interception is installed BEFORE `goto`, so the view never has a
+  // successful paint of this run and `state.paintedRunId` stays null: DES-206's (U) arm.
+  //
+  // The pre-fix code passes the SYNTHESIZED empty payload to `paintSwimlane` here too, which renders
+  // an empty graph with no marker at all — indistinguishable from "still loading" for an operator —
+  // so the `.empty` assertion is what falsifies this arm, and the string comes from the table
+  // (`t('zh','unavailable')`), never a per-file literal.
+  itReal('a degraded /api/runs/:id/dag from LOAD: the figure region paints the ONE Unavailable component, not an empty graph (BF-7)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      const pageErrors: string[] = [];
+      page.on('pageerror', (err) => pageErrors.push(String(err)));
+      await page.setRequestInterception(true);
+      page.on('request', (req) => {
+        if (new URL(req.url()).pathname === `/api/runs/${detailRunId}/dag`) {
+          req.respond({ status: 200, contentType: 'application/json', body: JSON.stringify({ runs: [], degraded: 'val199 injected first-paint degrade' }) });
+          return;
+        }
+        req.continue();
+      });
+      await page.goto(`${baseUrl}/dashboard/workflow/val199-detail`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await page.waitForSelector('[data-legend] .empty', { timeout: 8000 });
+      // The marker's text is the string table's zh value (the page's default lang), not a literal
+      // copied into `ui/workflow.js` — `ui/system.js:29`'s zh-only const is the debt this must not
+      // duplicate. A missing key would render the literal string "undefined" here (`t()` has no
+      // fallback), which is why the text is asserted rather than just the element's presence.
+      const markerText = await page.$eval('[data-legend] .empty', (el) => el.textContent);
+      expect(markerText).toBe('無法取樣');
+      // Cleared, not painted-over: no cells, no svg children, and no run-summary fabricated beside
+      // a graph that was never drawn.
+      expect(await page.$$eval('[data-node-cell]', (els) => els.length)).toBe(0);
+      expect(await page.$$eval('.workflow-view svg', (els) => els.map((e) => e.children.length))).toEqual([0]);
+      expect(await page.$$eval('.run-summary', (els) => els.length)).toBe(0);
+      expect(pageErrors).toEqual([]);
+    } finally {
+      await browser.close();
+    }
+  }, 30000);
 });
