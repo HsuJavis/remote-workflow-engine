@@ -6626,11 +6626,12 @@ no `pageerror` in either new case.
 (`src/server.ts:611-616`, the SAME one BF-2 was raised against) answers ANY unexpected fault on
 ANY dashboard route with **HTTP 200** `{runs:[], degraded:'…'}` — truthy, so the guard let it
 through to `buildTable(res.body)` (`:77`), whose first statement `String(data.cpu.cores)` (`:49`)
-threw `TypeError: Cannot read properties of undefined (reading 'cores')`. Measured before the fix
-(reverted for falsification, below): the System panel stayed empty (`''`, not the Unavailable
-text) — the render call itself never completed — and the connection tag never reached
-`degraded` (`nextConnection` is never invoked when the render throws mid-tick, ARCH-124's own
-clause).
+threw `TypeError: Cannot read properties of undefined (reading 'cores')`. Panel-cited measurement
+(`07-review.md` §8, quality-dimensions r1, real Chromium, two ticks, NOT re-measured directly by
+this IMPL — this round's own falsification below stopped at the first failing assertion, panel
+text): 0 rows, 3 `pageerror`, nav tag frozen `live`. This round's OWN measurement (falsification,
+below) independently confirms the render-side half: the panel text is `''`, not the Unavailable
+string.
 
 **Fix is the one token both Gate 8 design-panel lenses converged on**: `:74` now reads
 `if (res.status !== 'ok')`. `:72`'s `res` already carries `classifyResponse`'s verdict
@@ -6661,23 +6662,33 @@ call site). This is a different call site than BF-4 named (a render-function arg
 `systemInfo.get()` one BF-4 fixed. Reported to the orchestrator per the implementer contract's
 exit-gate item 3 rather than fixed here.
 
-**Falsification (measured, this round, per the required-shape instruction):** reverted `:74` to
-`if (!res.body)` via `Edit` → re-ran `val-202-ported-tabs.test.ts` → **4 passed / 1 failed**,
-`AssertionError: expected '' to contain '無法取樣'` at the new BF-4 case. Restored via `Edit`
-(`git diff -- src/dashboard/ui/system.js` after restore matches the intended fix exactly, no
-artifacts from the revert/restore cycle) → re-ran → **5/5 passed**.
+**Falsification, run TWICE (pre-commit and again post-commit `2552230`, so "restored" is checked
+against the actual committed bytes, not just this session's own edit):** reverted `:74` to
+`if (!res.body)` via `Edit` → re-ran `val-202-ported-tabs.test.ts` → **4 passed / 1 failed** both
+times, identical `AssertionError: expected '' to contain '無法取樣'` at the new BF-4 case (`:154`,
+the panel-text assertion — the tag/pageerror assertions after it never ran, since the test aborts
+at the first failure). Restored via `Edit` → post-commit run: `git diff --stat` against `HEAD`
+(`2552230`) → **empty** (byte-identical to the committed fix) → re-ran → **5/5 passed**.
 
 **Full verification (this round, real):**
 - `npx tsc --noEmit` → exit 0.
-- `npx vitest run tests/unit tests/integration` → **2471 passed / 1 skipped / 0 failed** (328 files).
+- `RWE_REQUIRE_BROWSER=1 PUPPETEER_EXECUTABLE_PATH=<cached chrome> npx vitest run` (full suite, all
+  tiers) → **2836 passed / 26 skipped / 0 failed** (403 files + 1 skipped) — +1 over the pre-round
+  2835 baseline (`val-202` net +1 case: the old System case was replaced by two — the
+  non-regression half plus the new BF-4 falsifying case).
 - `RWE_REQUIRE_BROWSER=1 PUPPETEER_EXECUTABLE_PATH=<cached chrome> npx vitest run
   tests/acceptance/val-198-shell-and-home.test.ts tests/acceptance/val-199-workflow-detail.test.ts
   tests/acceptance/val-200-swimlane.test.ts tests/acceptance/val-201-agent-panel.test.ts
   tests/acceptance/val-202-ported-tabs.test.ts` → **35 passed / 0 failed** (5 files; `val-202` now
   5/5, was 4/5 pre-repair since the new BF-4 case did not exist yet).
-- `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → **1663 items / 35 gaps**,
-  identical set to the RE-REVIEW #3 baseline (the five parked REQs' `未實作`/`未驗證` pairs +
-  pre-existing `漂移`/`未實作` LOWs) — zero new gaps, zero new orphans/broken links.
+- `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → **1664 items / 35 gaps**
+  (item count +1 for this very IMPL row; gap SET identical to the RE-REVIEW #3 baseline — the five
+  parked REQs' `未實作`/`未驗證` pairs + pre-existing `漂移`/`未實作` LOWs) — zero new gaps, zero
+  new orphans/broken links.
 - `tests/unit/dashboard-page-source.test.ts` (C1 pinned literals) → 9/9 unaffected.
 - `grep -rl skeleton src/` → unchanged set (`skeleton-graph.ts`, `workflow-meta.ts`,
   `workflow-catalog.ts`, `dashboard.ts`, `server.ts`); `system.js`/the test file introduce none (C3).
+- `05-tests.md:12647` checked for VAL-210/val-202 title or case-count drift from this test's edit:
+  the only case-count mention ("new, 3 cases") is inside a paragraph the row's own text labels
+  history/RED-narrative, already disclaimed as "not a current description of the code" — no new
+  drift from this change.
