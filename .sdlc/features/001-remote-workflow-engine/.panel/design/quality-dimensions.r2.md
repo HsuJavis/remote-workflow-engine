@@ -1,405 +1,208 @@
 ---
 stage: design
 lens: quality-dimensions
-iteration: v27 — Round v27b delta (scoped run: gates architecture+design+tests, impactIds REQ-133 / REQ-134 / REQ-140)
-round: 2 (responses to the adversarial design r1 + final position)
-responds_to: .panel/design/adversarial.r1.md (A-1..A-6, B-1..B-5, C-1..C-6, §2d, §6)
-builds_on: .panel/design/quality-dimensions.r1.md (O-1..O-8, R-1..R-6, C-1..C-7, S-1..S-7, §5 order, risks QD-Δ-D1..D11). The architecture is settled (.panel/architecture/{quality-dimensions,adversarial}.r2.md) and is CITED, not reopened.
-verified_this_round (file:line, all re-read at the working tree, HEAD 07266be): src/server.ts :325-338 (params; `authEnabled = false` :334), :488-552 (resolve chain :497-508 — inner catch assigns `skeletonScript = ''` at :504-506 and FALLS THROUGH; `expectedGraph` initialised `{lanes:[],slots:[],edges:[]}` unconditionally at :519; `if (!authEnabled)` :520; ternary :538; catch :540-542; payload :546-551), :1068 (the one call site); src/dashboard.ts :237-252 (`LayoutCell` — `label?` :243 has no doc comment; the :247-250 comment is on `tokens`/`costUSD`), :331 (inert cell "no agentId/state"), :339-345, :393-397, :425 (`placeCell(lane.index, { id: `__skel_${s.index}__`, kind: 'agent', laneSpan: 1 })` — NO label); src/dashboard-page.ts :581 (`c.label||c.kind||''`), :601-607; src/skeleton-graph.ts :25-45 (`ExpectedSlot.labels: string[]`), :149-155, :164 (a parallel group pushes EVERY label into ONE slot), :175; src/run-guard.ts :197-208 (`nextAgentId` → `agent-${n}`); src/agent-executor.ts :248-262 (`markQueued` → `queued`, `markRunning` → `running`); src/run-manager.ts :893-909, :1075; src/workflow-view.ts :26/:51/:109 (`owner: string | null`), :193 (`phases` from registered metadata); src/mcp-facade.ts :590; tests/integration/dag-masking-auth.test.ts :1-140 (never-resolving gateway :28-31, `SCRIPT` :33-38, harness :46-64, `mintBearer` :76-84); tests/integration/dashboard-disclosure.test.ts :35-44 (key-set row asserted "against the fixture itself"); tests/fixtures/dashboard-wire.ts :1-13, :73-90 (`DagPayloadFixture` is a LOCAL interface; `DAG_PAYLOAD_OPEN` :84; row label :112); tests/unit/dashboard-derive-lanes.test.ts :1-70; tests/unit/dashboard-metrics.test.ts :14-49 (UT-239: `predictedLanes` yields `bySlotLane.get(lane.index) ?? []`); tests/unit/layout-graph-phase.test.ts :102-109; tests/integration/dashboard-http.test.ts :200-218; tests/integration/diagram-contract-grandfather.test.ts :96-101, :149-153; `grep -rn "__skel_" tests/` → 13 hits, 0 assert `label`; `grep -rn laneSpan tests/` → typeof/literal assertions only, no deep-equal on a predicted cell; 01-requirements.md REQ-134 :1748-1771 (queued/pending = dashed border, opacity .65, hollow dot :1763; owner ruling :1769-1770); 02-architecture.md ARCH-125 :3359-3369 (v27b amendment puts the split/map in `ui/run.js`), ARCH-126 :3370-3378, ARCH-130 :3407-3416, ARCH-131 :3417-3426, ADR-055 :3470-3477; 03-tasks.md TASK-206 :1735-1743 (string table key `predictedLayout`), TASK-209 :1762-1770 (dod still says "when the overlay is masked"), TASK-210 :1771-1779; 05-tests.md IT-169 :11812-11823, UT-244 :11887-11896
+iteration: v27 — Gate 8 SEND-BACK REPAIR, the DESIGN half (v27j)
+round: 2 (responses to the adversarial lens's r1 + final position)
+responds_to: `.panel/design/adversarial.r1.md` (this round's, dated 2026-09-13 — NOT the v27c CSS-ownership r1 it replaced on disk)
+supersedes_on_disk: the file previously at this path was the **v27b delta round's** r2 (`git show c7447d0:.sdlc/features/001-remote-workflow-engine/.panel/design/quality-dimensions.r2.md`); same for `adversarial.r2.md`. Read history with `git show`, never `checkout` / `restore` / `stash` (CLAUDE.md).
+builds_on: my r1 at `quality-dimensions.r1.md` (HEAD `586dafd`). Everything it settled that this round does not name stands unchanged; this file records only what moved after reading the adversarial r1 and what round 2 measured.
+verified_this_round (HEAD `586dafd` unchanged; `src/`+`tests/` byte-identical to `eb387a1`): `05-tests.md:12062` (UT-240 = `static-assets.test.ts`) and `:12075` (UT-241 = the `dashboard-page-source.test.ts` v27 extension); `04-design.md:6856` (DES-208's STAYS bucket names `draggable="false"`, and its `[v27c]` sentence 「`draggable="false"` is markup and stays」), `:3399-3417` (DES-111's signature block: `register(name, script, defaults?, principal?) … // signature unchanged`, `deregister(...): Promise<{ removed: boolean }>`), `:3329` (the `Scheduler` one-liner — the adversarial's `:3328` is off by one), `:4908` (a second one-line class body in a later block); `src/workflow-catalog.ts:649-656` (the positional-form throw naming ADR-035 / DES-148) and `:664` (`deregister` → `{removed, claimedTriggers}`); `grep -rn WorkflowRow src/` → 0; `tests/unit/dashboard-page-source.test.ts:43` (UT-224 re-pointed), `:51` (the `UT-240` mislabel), `:95` (UT-241's live `draggable` pin over `DASHBOARD_HTML`); `03-tasks.md:124-128` (TASK-018: **no** `des:`), `:1214-1221` (TASK-153: `des: DES-138, DES-142`), `:1620` (header `TASK-196..213`), `:1626-1645` (the preamble's ordering rules — no `des:` rule); `.sdlc/trace.py:108-109` (only `traces:`/`trace:` becomes an edge — `des:` is never read), `:256-258` (TASK 未實作 = no IMPL reaches it); `02-architecture.md:3827` (「beside the `.sdlc/` tooling」) vs `:3841` (`scripts/mermaid-parse-check.mjs`); `06-impl-log.md:6338` (IMPL-270 cites `app.js:427`; the live body-level `replaceChildren` is `:455`); `src/diagram-render.ts:134-138, 154-179` (the engine's own `mmdc` wrapper); `node_modules/mermaid/dist/chunks/mermaid.esm/chunk-AHS5MEEA.mjs:7412-7444` (`parseGenericTypes` / `shouldCombineSets` / `processSet`), `chunk-AEUN2JU2.mjs:1125` (`methodRegEx`).
+measured_this_round: **the adversarial lens's own pipeline** — `node_modules/.bin/mmdc` 11.17.0 over mermaid 11.17.2, the cached Chrome, `-p` carrying the engine's puppeteer args — so the two r1s finally share a basis. Rendered: the control, my entity form, their option C, the `Scheduler` one-liner, and ten root-cause probes; each candidate also re-rendered under `trace.py:687`'s exact `{theme:'dark', securityLevel:'loose'}`. SVG text extracted and counted (verbatim `~` / raw `#nn;` / literal `%%`). `mmdc` without `-p` was run twice (with and without stdin from `/dev/null`).
 ---
-# Quality-dimensions — v27b DESIGN r2: converged on the adversarial's three load-bearing corrections; three of my own r1 claims retracted at file:line; what is left is two refinements and one stale DoD clause nobody had named
+# Quality-dimensions — v27j DESIGN r2: converged on the repair, the coupling, the oracle and the two tasks; both round-1 root causes were wrong and are replaced by a measured one; the only live disagreement left is the spelling of three members — and it is not blocking either way
 
 ## summary
 
-**Converged, and not worth a third round.** The adversarial r1's three load-bearing items are all correct
-on the source and I take them whole: **(1)** the disclosure key-set control is fixture-only
-(`dashboard-disclosure.test.ts:36` — "against the fixture itself") and IT-168 must feed both LIVE DAG
-payloads through the same `ALLOWED/REQUIRED` check (their C-1); **(2)** the predicted cell has no
-`label` (`dashboard.ts:425`) and the legacy painter renders the literal word `agent` for it
-(`dashboard-page.ts:581`) — after the reversal that is every unreached node on the deployment the owner
-runs, so the cell gains a `label` (their A-4, with one refinement in §1); **(3)** the token→text mapping
-belongs in `lib/strings.js` as a pure `warningText(lang, raw)`, not in `ui/run.js` where ADR-049 leaves
-no unit tier (their C-3 — the same thing my O-1 proposed, now with their argument order).
+**Where the two r1s disagreed on facts, round 2 measured them through the adversarial lens's own `mmdc` pipeline, and the result corrects both of us.** Their reason for rejecting entities inside the generic — 「entity + comma together is what breaks」 — is refuted by a direct probe (`Promise~#123;a,b#125;~` renders `Promise<{a,b}>`); my r1 rule (b) — 「a `,` inside `~…~` disables the conversion」 — is over-broad (`Promise~A,B~` renders `Promise<A,B>`). The mechanism is in the vendored source: `parseGenericTypes` splits the return type on every literal `,` and re-joins **exactly one** pair whose halves each carry one `~`; a third part leaves the tildes verbatim. So the rule is *two or more literal commas inside one `~…~`*, and `#44;` — which they did not test — never enters the split. My form therefore renders `Promise<{version}>`, `Promise<{channel, version, from}>`, `Promise<{removed}>` through their pipeline, under both mmdc's default config and `trace.py`'s dark+loose, with 0 verbatim tildes, 0 raw entities, 0 `%%`. Their option C renders `Promise of {…}` under the same conditions with the same zeros. **Both are correct repairs; I hold on mine for fidelity (the render is the author's notation and the same angle-bracket form as the block's five other generics), and I state plainly that C is an acceptable fallback whose only cost — their own R-2, losing the generic notation — is the cost my form does not pay.**
 
-**Where I retract my own r1, explicitly (§0):** `expected: ExpectedGraph | undefined` — the route
-initialises the empty object unconditionally at `server.ts:519` and the `:540` catch leaves it, so
-`undefined` cannot arrive post-reversal; "a live `AgentRecord` carries a random agentId" — it is
-`agent-${n}` (`run-guard.ts:208`), which makes their stabilization predicate strictly better than my
-precondition; O-7's FALLBACK greying — REQ-134 already paints predicted/pending cells dashed at .65, so
-it was a no-op; and the `dagWarning()` formatter — conceded, the fixture literal plus an exact-equality
-assertion is the lock, not a function.
+**Conceded and integrated from the adversarial r1 (with reasons in §1):** the `Scheduler` collapsed row (one-line split, same edit); **DES-208** as the third row carrying the dead `draggable` clause (I missed it — the amendment now has two halves, MOVES for UT-224's pin already re-pointed at v27g and RETIRES for UT-241's `:95` duplicate under TASK-215); the coupling framing (Rider A's clause edit and TASK-215 are one repair — it is my QD-R7 stated better); no **new** DES rows for either task, and `des:` is optional (trace.py never reads it; TASK-018 has none) — so my DES-191 sentence drops from MUST to SHOULD and TASK-216 is no longer conditional on it; the stale positional `register` signature as a SHOULD-ranked DES-111 marker rather than a member rewrite — into which I fold two more stale facts they and I each half-saw (`deregister`'s `claimedTriggers`, and the phantom `WorkflowRow` the block already names, which was a hole in my own R-3 principle); the oracle's placement (`.sdlc/`), its rename (`mermaid-render-check`), and that it is never a Gate 6 blocker.
 
-**Where I hold (all unopposed, all with a reason):** the reused-pin blind spot and the pin-HIGH FALLBACK
-recipe (S-4 — now `requested=v2 resolved=v1`); the cohort transition (C-2 — consistent with their B-3);
-`SCRIPT_PHASED` for a LANE anchor beside their CELL anchor, because REQ-134's ruling text names the
-unreached-lane join, not the cell; and one const for the `PREDICTED_OVERLAY_UNAVAILABLE` token in
-`server.ts` itself, because arm (iv) has no producer and its spelling is vouched for only if it shares
-the reachable arm's identifier.
+**Held with evidence:** UT-**241**, not UT-240, is the page-source extension (`05-tests.md:12062/12075`); every place the adversarial text says 「UT-240」 for the `:95` case must read UT-241, and TASK-215 fixes the `:51` comment in the same commit. Held on reasons: the six-row design/task sweep (each a contradiction the tree makes, none a caveat; the architect applied the identical rule to `02` at v27h) and the pre-boot literal (unaddressed by their r1; the `…` fallback stays recorded with its cost).
 
-**New this round, named by neither r1:** TASK-209's `dod:` still says 「(or lanes-only plus 「尚無執行」
-when the overlay is masked)」 (`03-tasks.md:1768`) — a mask sentence in a DoD is the same class of stump
-as the `server.ts` comments both lenses listed for deletion. And A-4's `labels[0]` under-reports a
-`parallel` slot (`skeleton-graph.ts:164` pushes every label of the group into ONE slot; `layoutGraph`
-emits one cell per slot) — `labels.join(' / ')` is honest with no branch.
-
-**Their §6 predictions of me that did not happen — record as unanimous, not resolved:** structured
-`{token, params}` warning objects; a nested key-set row for `describe.phases[]` now; building the
-dedupe `Set`; a surviving `masked` knob; a new `lib/warnings.js`. My r1 proposed none of them.
+**Not reproduced, reported honestly:** `mmdc` without `-p` exits **1** on this box (browser launch failure, no SVG) under both stdin shapes — not 0. Their box may differ; the oracle spec is exit-code-independent either way (assert the SVG exists and every expected member string is in its text).
 
 ## Altitude call
 
-Unchanged from r1: predominantly **system**-altitude (what an anonymous `GET /api/runs/:id/dag` and a
-`workflow_describe` serialize), with the **agent**-altitude reading supplying the reason the owner
-ranked it (the run page is the only surface that joins an agent workflow's *plan* to its *progress*,
-and after this delta the surface where "the plan shown is not the plan that ran" is stated). Memory
-metabolism, tool liveness and prompt calibration have no seam in this closure; each dimension says so
-in one line.
+Unchanged from r1 and in agreement with the adversarial §0: this round's artifacts are ledger rows, a server-emitted shell, and tooling — **system altitude throughout**. The agent altitude enters at exactly one hop (the ledger's consumers are agents) and is otherwise marked N/A per dimension rather than manufactured.
 
 ---
 
-## 0. Corrections to my own r1 — stated before anything else
+## 0. Round-2 measurement — the shared basis
 
-| # | r1 claim | Verified this round | Correction |
+### 0.1 Candidates, through `mmdc` (default config) and again under `trace.py`'s `{theme:'dark', securityLevel:'loose'}`
+
+| Form | default config | dark + loose | SVG member text (identical under both) |
 |---|---|---|---|
-| X-1 | **R-2:** `expected: ExpectedGraph \| undefined` stays; "`undefined` means the derivation failed" | `server.ts:519` — `let expectedGraph: ExpectedGraph = { lanes: [], slots: [], edges: [] }` before any branch; the `:540-542` catch does not reassign it | **Retracted.** `undefined` cannot arrive from production. Their A-1: non-optional TYPE, garbage-tolerant BODY (`Array.isArray(expected?.lanes)`, matching `layoutGraph` at `:345`). UT-238's `undefined` case survives only behind `@ts-expect-error`. DES-196's `:519-520` sentence is rewritten to what ARCH-126's v27b note already says: EMPTY, for exactly one reason. |
-| X-2 | **S-1:** "a live `AgentRecord` carries a runtime `agentId`… a random string", hence the precondition `cells.every(c => c.agentId === undefined)` | `run-guard.ts:197-208` — `nextAgentId()` returns `agent-${this._agentsIssued}`; deterministic per run | **Retracted.** Live cells are parity-comparable (`agent-1`, its label, its state). Their C-2 predicate — poll until ≥1 predicted cell AND exactly one live agent cell in `running` — is the never-resolving gateway's steady state (`markQueued` → `markRunning`, `agent-executor.ts:248-262`, then the promise never settles); my precondition was a transient the GET may already have missed. Consequence: `current` is `0` after the predicate holds, not `∈ {null, 0}` (C-5 tightened). |
-| X-3 | **O-7:** a FALLBACK entry ALSO greys the predicted cells | REQ-134 `:1763` — queued/pending are ALREADY dashed border, opacity .65, hollow dot; a predicted cell has no `state` (`dashboard.ts:331`), and the rebuilt painter TAKES the pending style for it — the rule DES-206 now states (§5), not one REQ-134 already implies — regardless of any warning | **Withdrawn.** The legend text is the only FALLBACK marker; no extra class, no extra decision in `ui/`. This also removes the reason to export `parseDagWarning` separately — one export, `warningText`, is enough (their C-3). |
-| X-4 | **O-1:** `dagWarning(token, detail)` formatter in `dashboard.ts`; route spells no token | — | **Conceded** as machinery. The lock is the fixture literal + IT-169's exact-bytes assertion on the filtered token entries of the two reachable producers (the recipe's versions are known: `requested=v2 resolved=v1`; `reason=catalog-resolve-failed`). What I keep is ONE identifier for the UNAVAILABLE token in `server.ts` (§2.1 O-2'), for the arm no test can reach. |
-| X-5 | **O-1:** the three example strings live INSIDE `DAG_PAYLOAD.warnings` | — | **Refined.** A payload literal that carries two mutually exclusive arms at once pins a shape no route can serve. `DAG_PAYLOAD.warnings` stays `[]` (the healthy shape); the vocabulary is its own export `DAG_WARNING_EXAMPLES` in the same file. `DAG_WARNING_TOKENS` is dropped — the examples ARE the tokens. |
+| Control (`Promise~{version}~` …) | **parse FAIL** line 3, `OPEN_IN_STRUCT` | same | — (the finding, reproduced byte-for-byte) |
+| **QD entity-in-generic** `Promise~#123;version#125;~` · `Promise~#123;channel#44; version#44; from#125;~` · `Promise~#123;removed#125;~` + own-line `%%` key + `Scheduler` split | ok | ok | `Promise<{version}>` · `Promise<{channel, version, from}>` · `Promise<{removed}>`; all 8 members; `Scheduler` two rows; **0 `~` · 0 raw `#nn;` · 0 `%%`** |
+| **ADV option C** `Promise of #123;version#125;` · `Promise of #123;channel, version, from#125;` · `Promise of #123;removed#125;` + `Scheduler` split | ok | ok | `Promise of {version}` · `Promise of {channel, version, from}` · `Promise of {removed}`; all 8 members; **0 · 0 · 0** |
+| `class Scheduler { +markFired() +markFailed() }` (`:3329`, as-is) | ok | ok | **one** row `+markFired() +markFailed()` — the adversarial KP-3 finding, confirmed |
+
+Both candidate forms leave every untouched member (`string[]`, `WorkflowRow[]`, the three `«pure fn»` stereotypes, all edges and labels) byte-identical in the SVG. **The config axis of the adversarial's R-1 is discharged**: neither `theme` nor `securityLevel` changes a single character of either candidate's render. The **version** axis (`trace.py:623` loads a floating `mermaid@11` from jsDelivr; egress is blackholed from this sandbox) stays open — §1 A-10.
+
+### 0.2 Root-cause probes (mmdc default config)
+
+| Member as written | Rendered | What it decides |
+|---|---|---|
+| `Promise~A,B~` | `Promise<A,B>` | one comma is fine — **my r1 rule (b) was over-broad** |
+| `Promise~A,B,C~` | `Promise~A,B,C~` verbatim | two commas break it |
+| `Promise~#123;a,b#125;~` | `Promise<{a,b}>` | **entity + one comma renders — refutes the adversarial's 「entity + comma together」** |
+| `Promise~#123;a,b,c#125;~` | `Promise~{a,b,c}~` verbatim | their option-B failure, reproduced — it was the second comma, not the entity |
+| `Promise~#123;a#44; b#44; c#125;~` | `Promise<{a, b, c}>` | `#44;` never enters the split — the form I proposed |
+| `Result~A, B~` | `Result<A, B>` | space after the comma survives |
+| `Promise~(version)~` | member renders as `+a() Promise~(version) : ~` | the `(` is re-parsed as the method's parameter list — my r1's 「parens break the member」, now with its mechanism |
+| `Promise~#40;version#41;~` | `Promise<(version)>` | `#40;`/`#41;` is the escape |
+| `Promise~Map~K,V~~` | `Promise<Map>K,V<>` | nested generics are not supported by mermaid — not this block's case, named so nobody tries it |
+
+**Mechanism, cited not inferred:** `chunk-AHS5MEEA.mjs:7412-7444` — `parseGenericTypes` does `input.split(/(,)/)`, and at each `,` calls `shouldCombineSets(prev, next)`, which is true only when **both** neighbours contain exactly one `~`; a combined pair is pushed once, and `processSet` returns any set with ≤ 1 tilde **unchanged** (`:7441-7443`). With three parts the first `,` sees `Promise~#123;channel` (1 tilde) beside `version` (0 tildes), refuses to combine, and every part keeps its tildes. `chunk-AEUN2JU2.mjs:1125` — `methodRegEx = /([#+~-])?(.+)\((.*)\)([\s$*])?(.*)([$*])?/`: the greedy `(.+)\(` matches up to the **last** `(` on the line, so any parenthesis in the return type becomes the parameter list.
+
+### 0.3 The corrected classDiagram authoring rules (replace r1 §0 rule (b) and the adversarial KP-1 discriminator; belong beside v27h's sequenceDiagram rule at `02-architecture.md:3782+`, Gate 2's to record)
+
+*(a) Inside a class member, `{` opens a struct and `}` closes it — a literal brace is `#123;` / `#125;`. (b) Inside one `~…~` generic, **two or more literal commas** defeat the angle-bracket conversion and the tildes render verbatim (parse-clean); one comma is fine; a literal comma that must not split is `#44;`. (c) A `(` anywhere after the method's own parameter list is re-parsed as that list — a literal parenthesis is `#40;` / `#41;`. (d) A class body written on one line renders as one member row. The falsifier for all four is the same: parse, render, then read the member text out of the SVG.*
+
+### 0.4 Three facts that change positions taken in the r1s
+
+- **`.sdlc/trace.py` never reads `des:`** (`:108-109` — only `traces:`/`trace:` produce edges; no gap type mentions a design parent). TASK-018 (`03-tasks.md:124-128`) has no `des:`; TASK-153 (`:1214-1221`) has one. The v27 preamble (`:1626-1645`) mandates **ordering**, not `des:`. So `des:` is a human-facing field, optional at both the tool and the convention level → §1 A-6.
+- **`mmdc` without `-p` exits 1 here** (`Failed to launch the browser process … No usable sandbox`), no SVG written, under both stdin shapes → §1 A-9.
+- **The engine already wraps `mmdc`:** `src/diagram-render.ts:167` `renderWithMmdc()` writes the same puppeteer args the adversarial used (`:138`), a hard-coded `MERMAID_CONFIG = { htmlLabels:false, securityLevel:'strict' }` (`:134`), and returns a **typed** `RENDERER_MISSING` / `RENDER_FAILED` outcome — the loud-failure shape the oracle wants. Its config is the product's, not the trace dashboard's, and `MmdcOpts` exposes no override → §1 A-9 says what to take from it and what not to.
 
 ---
 
-## 1. Rebut / concede / hold — one row per adversarial item
+## 1. Responses to the adversarial lens — rebut / concede / hold
 
-| # | Their item | Verdict | Engineering reason (file:line) |
-|---|---|---|---|
-| A-1 | `expected` non-optional; garbage-tolerant body | **Concede** | X-1. |
-| A-2 | DES-196's seven-member `current` table stands; ARCH-126's `status === 'running'` clause is corrected one altitude up | **Agree** | Same as my R-2's second half; the correction is routed in §4. |
-| A-3 | `lanes` DENSE and ordered, `lanes[k].index === k`; `current ∈ null ∪ [0, lanes.length)`; non-contiguous `expected.lanes` re-indexed on append | **Concede** | `layoutGraph` lays out `col = lane.index + 1` (`:363`) and the client joins by ordinal; a hole makes position and `index` disagree. Nothing produces one (L1 pushes `index: lanes.length`, `skeleton-graph.ts:112/:133`) — defensive, one UT row, cheapest in the delta. |
-| A-4 | the predicted cell gains `label` from `ExpectedSlot.labels[0]` | **Concede from consumability, with one refinement and one correction** | Consumability reaches it first: a wire consumer that receives `{id:'__skel_2__', kind:'agent'}` learns nothing, and the run view's fetch set is `/dag` only. Disclosure is unchanged — ADR-055 already serves the same labels as `describe.phases[].agents` to every caller. **Refinement:** `label: s.labels.join(' / ')` when `s.labels.length > 0`, else absent — `skeleton-graph.ts:164` pushes every label of a `parallel([...])` group into ONE slot and `layoutGraph:425` emits ONE cell per slot, so `labels[0]` would show one name for a three-agent parallel; `join` is the identity for `single` and needs no branch on `kind`. **Correction:** the "fifth site" is not at `dashboard.ts:250` — that comment (`:247-250`) is on `tokens`/`costUSD` and stays true; `label?` (`:243`) has no doc comment to amend. The `:331` comment ("no agentId/state") also stays true. Blast radius re-checked: 13 `__skel_` hits, 0 assert `label`; no `laneSpan` deep-equal on a predicted cell anywhere in `tests/`. |
-| A-5 | `__skel_` stays on the wire; one sentence says why | **Agree** | Never rendered, not the forbidden word, pinned by three test files; the client keys on `agentId === undefined` (my C-4, their arch r2 item 10). |
-| A-6 | `pinned=` → `requested=`; uniform `k=v` grammar with keys `{requested, resolved, reason}` | **Concede** | When a substitution exists, (i) asks for `legacySubstitution.resolved`, so `pinned=` would carry the substitute — the lie the string exists to prevent. And one grammar means one parser: UNAVAILABLE becomes `reason=<enum>` rather than my bare token. Final grammar in §2.1. |
-| B-1 | the four deletions verified; the `:331-334`/`:1064` comments are part of the deletion | **Agree** | My R-4 / W-4, same lines. |
-| B-2 | the pushes happen INSIDE the catches — the inner catch assigns `skeletonScript = ''` and falls through (`:504-506`), so nothing downstream throws | **Concede — load-bearing** | Verified at `:497-508`. My R-3 ("a `??` inside an expression that already exists, no helper") still stands for the RESOLVE; their table stands for the PUSH sites. An implementer who pushes after `layoutGraph` pushes nothing, forever, green. Adopted verbatim into DES-198 with `requested=` (§2.1 O-2'). |
-| B-3 | `dashboard_api_degraded.reason` is a closed kebab set `{catalog-resolve-failed, derivation-failed, internal}`; free text rides `detail`; FALLBACK is not logged | **Concede** | My O-5 constrained only the two UNAVAILABLE arms (`reason` = the warning's detail verbatim); their `internal` covers the two generic catches (`:582-585`, `:1067-1071`) I left unnamed. One operator `grep`, one vocabulary. |
-| B-4 | `describe.phases[].agents`: join by ordinal against `full.phases`; absent = could not derive; `[]` = derivable but no static labels; derived lanes beyond `phases.length` dropped | **Concede, with a precision** | `workflow-view.ts:193` builds `phases` from registered metadata; `predictedLanes` re-derives from the script. The `[]`/absent split needs NO special-casing: UT-239 (`dashboard-metrics.test.ts:41-47`) already pins `predictedLanes` to yield `bySlotLane.get(lane.index) ?? []` — a dynamic lane contributes no static slot (`skeleton-graph.ts:149-155`) and naturally yields `[]`. Absent is the only shape the facade must PRODUCE deliberately (derivation failed / no derived lane at that ordinal). The consumer is TASK-209's `ui/workflow.js` (§2.3 C-3'). |
-| B-5 | `current` may legally exceed the predicted lane count; say so or it gets clamped | **Agree** | My S-3 row (iii) is the same case (`run-manager.ts:1075` vs `skeleton-graph.ts:111-112`); the DES-196 sentence now names `current` explicitly, not only `lanes`. |
-| C-1 | feed both LIVE DAG payloads through `keys ⊆ ALLOWED_DAG_KEYS && REQUIRED_DAG_KEYS ⊆ keys` in IT-168 | **Concede and integrate** | `dashboard-disclosure.test.ts:36-44` is fixture-only; `DagPayloadFixture` is a local interface (`dashboard-wire.ts:73-84`), so `tsc` sees no server-side addition. My S-1 parity's exclusion list was already written against the fixture tuple; C-1 is the missing half. If only one of {C-1, a nested key-set row} lands, C-1 — I agree with their ranking. |
-| C-2 (1) | stabilization predicate: poll until ≥1 predicted cell ∧ exactly one live agent cell in `running`; then compare | **Concede** | X-2. |
-| C-2 (2) | `PARITY_EXCLUDED = ['runId', 'terminalAt'] as const`, with the note that `runId` is not a DAG key today | **Agree** | My W-6/S-1 said the same; a named constant is where the disclosure decision lives. |
-| C-2 (3) | describe parity scoped to `phases` exactly, never the whole payload | **Concede** | `workflow-view.ts:26/:109` — `owner: string \| null` legitimately differs by deployment (the registering principal vs none). A whole-payload compare fails on the first run and gets "fixed" by widening the shared exclusion list, which weakens the DAG half. My S-1 did not say which; theirs is right. |
-| C-3 | `warningText(lang, raw)` pure in `lib/strings.js`; `ui/run.js` calls it and nothing else; four UT cases | **Concede the argument order and the single export** | Matches `t(lang, key)`'s order in the same module. With X-3, no separate parser export is needed. Keys converged on TASK-206's existing naming: `predictedLayout` (exists), `predictedLayoutUnavailable`, `predictedLayoutFromFallback` (takes `resolved`), plus my `laneUntitled`. |
-| C-4 | UT-238 visibly non-relaxing: 14 cases intact, the cast disappears, the `undefined` case behind `@ts-expect-error`, plus A-3's density row | **Agree** | My S-3, with X-1 applied. |
-| C-5 | IT-092's sentinel is a COMMENT in the fixture script, asserted absent on `res.text()`; filename kept, header rewritten | **Concede the comment form** | My const-string form works, but a label-based sentinel would be a false red the day A-4 lands, and a comment cannot legitimately reach any projection. Same file, same `res.text()`, same REQ-100 re-trace (my S-2). |
-| C-6 | `DAG_PAYLOAD_OPEN` → `DAG_PAYLOAD`; row label without "(open)" | **Agree** | My O-6, same two identifiers. |
-| §2d | `superseded_in_part` markers on DES-114 / DES-115 | **Agree** | Housekeeping in the house style; marker, not rewrite. |
-| §4 | task ordering: TASK-203 before the view; TASK-206 before/with the view; TASK-201's `label` before VAL-199/204 | **Agree, with one correction** | The warnings render is **TASK-210** (`ui/run.js`, `03-tasks.md:1771`), not 208/209. TASK-209 (`ui/workflow.js`, `:1762`) is the `describe.phases[].agents` consumer — which is where B-4's absent/`[]` rule lands. Merged order in §2.2 R-6'. |
-| §5.5 | refuse the memo before the p95 is measured | **Agree** | My S-5 said the same: bounded, pre-approved on the number, not built before it. |
+**A-1 · DASH-2's spelling — HOLD (entity-in-generic with `#44;`), with C recorded as an acceptable fallback.** Their KP-1 rejected 「escape inside the generic」 on the strength of option B (`Promise~#123;channel,version,from#125;~` → raw). §0.2 shows B failed on its **second comma**, not on the entity, and that `#44;` — untested in their table — renders `Promise<{channel, version, from}>` exactly. With that, the discriminator between the two surviving forms is fidelity: mine renders the author's own notation and the same `Promise<…>` shape as the block's five other generics; C renders prose for three members and generics for five, and their R-2 already concedes the loss. Both parse, both render under both configs, both invent nothing, both cost four lines. If the synthesis prefers C, I do not contest it — but the reason to pay R-2 is gone. Either way the falsifier is identical (§0.3) and the `%%` key line names whichever entities are used.
+
+**A-2 · The root cause — CONCEDE-IN-PART on both sides.** Their 「entity + comma together」 is refuted by probe three; my 「a `,` or `(` inside `~…~` disables the conversion」 is over-broad on the comma and mechanism-free on the parenthesis. §0.3 is the joint replacement and cites the source. I would ask the synthesis to record the rule in that form and neither r1's.
+
+**A-3 · `Scheduler`'s collapsed row (KP-3) — CONCEDE, integrated.** Confirmed at `:3329` (their `:3328` is one line off — the edit map below carries the right line). One-line split, same block, same edit, zero semantic content. Their 「not a licence to sweep the other 44 blocks」 — agreed; but the sweep for *this* class is one grep, and it finds a second instance at `04-design.md:4908` (`class Scheduler { +claim(id,wf) +release(id,wf) +ownerOf(id) +markRefused(f,reason) }`, a later slice). Named for the next touch of that block, the way `02-architecture.md:3845` names the eight `%%` literals; not taken here.
+
+**A-4 · DES-208 as the third row (KP-4) — CONCEDE, integrated; the disposition has two halves.** I attributed the `draggable` clauses to DES-200 and TASK-205 only; `04-design.md:6856`'s STAYS bucket lists `draggable="false"` and its `[v27c]` sentence says 「is markup and stays」 outright. But 「STAYS → MOVES」 alone leaves `:95` undisposed, because two assertions carried the pin: UT-224's (**already MOVED** to `clientFile('ui/workflow.js')` at v27g, IMPL-270, `:43`) and UT-241's duplicate at `:95` (**RETIRES** under TASK-215, ARCH-122's v27h disposition). The DES-208 amendment must say both — one moved sentence and one retired sentence — or the row still authorises a green over dead bytes.
+
+**A-5 · UT-240 vs UT-241 — HOLD; this is a fact, not a stance.** `05-tests.md:12062`: UT-240 is `static-assets.test.ts` (traces DES-199 / TASK-204). `:12075`: UT-241 is the `dashboard-page-source.test.ts` v27 extension. The adversarial r1 says 「UT-240's `draggable` case」 throughout, copied — as ARCH-122 `:3343` was — from the test file's own mislabel at `:51`. Every integration below reads UT-241; TASK-215's DoD fixes `:51` in its commit; ARCH-122's two 「UT-240」 are named for Gate 2's next touch. Both ids exist, so `sh .sdlc/trace` will never see this — which is why it has to be written down.
+
+**A-6 · No DES rows for the two tasks; `des:` optional (KP-5) — CONCEDE, and it moves my R-1.** We already agreed no **new** DES row. The residual claim in my r1 — 「a TASK's `des:` must resolve」 — was true only *if present*: `trace.py` never reads the field (§0.4) and TASK-018 ships without one. Their precedent is half a precedent (TASK-153 **does** carry `des:`), but half is enough. So: TASK-216 may be minted with `traces: ADR-049, ARCH-124, REQ-131, REQ-134` and no `des:`, and is **no longer conditional** on the DES-191 sentence. The sentence itself I keep as **SHOULD** for a design-quality reason, not a chain reason: DES-191 is the guard tier, the server/client compile boundary is one more guard of that tier, and a guard with no design sentence is the shape a later 「simplification」 collapses first (R-1 in r1, unchanged). One sentence, additive, no new id.
+
+**A-7 · The coupling and the ordering (KP-4 / R-3) — CONCEDE the framing; converge on one commit.** 「Rider A removes the authority, TASK-A removes the line; taking A alone is strictly worse than leaving both」 is my QD-R7 said better, and I adopt their words. On ordering we differed only in emphasis (they: mint the task first; I: amend the `des:` parents first). Both land in **one batch**; within one commit the order is moot. The one thing we both require — and I would ask the synthesis to make explicit — is the fallback if the orchestrator declines TASK-215: every amended clause carries a 「pending TASK-215」 sentence in ARCH-124's 「UNGUARDED until TASK-B lands」 shape, so no row silently disagrees with the tree. My r1's DES-200 clause 「until TASK-215 lands the fossil body stands and is not a test subject」 is that sentence; DES-208 and TASK-205 get its twin.
+
+**A-8 · The stale positional signature (§3 conflict 1) — CONCEDE theirs is the larger finding; integrate mine into one marker.** I noted only `deregister`'s missing `claimedTriggers` (COULD). They found `register(name, script, defaults, principal)` is the form `workflow-catalog.ts:653` **throws on by name** (retired by ADR-035 / DES-148), and that DES-111 twelve lines below carries the identical stale pair — so the diagram is consistent with its slice and the pair is stale together. Their disposition is right: **one dated marker on DES-111**, SHOULD, member texts untouched, recorded even if deferred (their R-4). I add one fact they measured and I under-weighted: `grep -rn WorkflowRow src/` → 0 — the block **already** names a type the interface does not have, which is a hole in my own R-3 principle (「a diagram that is the interface view may only name what the interface names」). I do not apply that principle to `WorkflowRow` in a render-only edit either; consistency says it goes in the same DES-111 marker. **One marker, three stale facts:** positional `register` retired (ADR-035 / DES-148, `:649-656`); `deregister` returns `{removed, claimedTriggers}` (`:664`); `list()`'s `WorkflowRow` names no `src/` type. Take it or defer it — but write it in the rationale, because `07-review.md:247` has read past it once already.
+
+**A-9 · The render oracle (KP-6, R-5) — CONVERGE on everything, with two additions and one non-reproduction.** Agreed: it lives beside `.sdlc/` (`:3827`'s wording wins over `:3841`'s `scripts/` — the subject is a ledger `.md`, and `scripts/` is a product directory); it is renamed `mermaid-render-check` (a parse-only oracle would have passed option B); the assertion is the render **then the SVG text**; it is human-invoked until the plugin's `dashboard_check` grows a render arm (TOOL-FORK's owner), never a Gate 6 blocker, never coupled to the lexical `dashboard_check` (one property, one script); loud skip when no browser launches. Additions from this round: (i) **for a `classDiagram`, assert no verbatim `~` in member text** — §0.2's parse-clean failure, which no parse step sees; (ii) **render with `htmlLabels:false`** so label text is SVG `<text>`, not a `<foreignObject>` HTML blob, and extraction is deterministic — stated as a **deliberate deviation** from the dashboard's config, not as that config: for `classDiagram` it changes nothing (member labels are SVG text in mermaid 11 either way, which is why §0.1's results are identical), but for the flowchart blocks in the sweep it moves labels out of `<foreignObject>`, so the oracle is checking *text fidelity*, not pixel parity with the dashboard; (iii) **do not trust exit codes at all** — assert the output SVG exists and that every member string the block declares appears in its text. On R-5: `mmdc` without `-p` **exits 1 on this box, no SVG** (§0.4) — reported as not reproduced, not as wrong; (iii) covers both boxes. On `src/diagram-render.ts`: the seam exists and its typed `RENDERER_MISSING` is exactly the loud-failure shape; but its config is hard-coded to the product's `strict` / `htmlLabels:false` with no `MmdcOpts` override, and adding one is a `src/` change Gate 4 cannot make. So the oracle **calls `mmdc -c` with `trace.py`'s config directly** (§0.1 shows the two configs agree for this class; the oracle should still render the dashboard's, since that is where `圖渲染失敗` appears) and borrows the engine's puppeteer args verbatim from `:138`. Named in the §9 row so a later reader knows the seam was seen and why it was not reused.
+
+**A-10 · R-1's two-environment skew — CONCEDE the discharge check; half discharged this round.** The **config** axis is closed by §0.1 (dark+loose renders both candidates identically). The **version** axis — jsDelivr's floating `mermaid@11` — cannot be checked from this sandbox (egress blackholed) and stays the Gate 8 reviewer's check on a `git archive HEAD | tar -x -C <scratch>` copy, never in place; pinning the CDN is `trace.py`'s owner's (TOOL-FORK), not this gate's. Agreed and recorded, not closed.
+
+**A-11 · Their §5 expected disagreements with my lens — three did not materialise, stated so the synthesis does not hunt for them.** (i) 「Rider A is documentation drift, MID at most」 — I rank it exactly as they do (a live green over dead bytes is a guard that stopped guarding), and I went the other way on breadth, not depth. (ii) 「The oracle should gate `dashboard_check`'s 7 MIDs」 — never proposed; r1 S-1 says the lexical count cannot see a render failure, which is the argument *against* coupling. (iii) 「Consumability wants the current signature in the diagram」 — r1 R-3 said name it for the next v22-slice touch, not rewrite; A-8 is where we land together.
+
+**A-12 · Breadth of the design/task sweep — HOLD (six rows, now seven places).** Their r1 took three rows (DES-200, DES-208, TASK-205); mine took DES-202, DES-199, DES-200, TASK-205, TASK-206 and now DES-208. Each of the three they did not take is a sentence the tree contradicts, not a caveat: DES-202 `:6808` 「any `ok` in the tick → `live`」 is the very clause ARCH-124 struck at v27h — leaving it makes design, architecture and code disagree three ways **during** the pending owner decision that asks which reading holds; DES-202 `:6809` names a test case (`live→live` on degraded-plus-ok) that UT-245 `:30-35` now asserts the opposite of; DES-199 `:6783`'s `cache` literal is the DES mirror of the ARCH-123 drift v27h already repaired; TASK-206 `:1761` repeats DES-202's struck clause in a DoD. The architect applied this exact rule to `02`; leaving `04`/`03` unswept is the asymmetry the re-review files next. They have not yet objected — their r1 did not sweep — so this is 「unreconciled」 rather than 「contested」; if they object on scope in synthesis, the answer is the one-clause size of each edit and the fact that none adds a caveat.
+
+**A-13 · The pre-boot literal — HOLD; unaddressed by their r1.** v27h assigned it to Gate 4 by name. r1 O-2's bilingual diagnostic (names `/static/dashboard/ui/app.js` and the three ways a client dies before `app.js:455`) stands, in the `.empty` hook, no `id`, no timer, no `<noscript>`, outside the string table by construction. The `…` fallback stays recorded with its cost (a dead client is a blank page with one glyph). If they raise REQ-131's 「散落字面值」 in synthesis, the scope answer is in r1 O-2 and R-5 and I will not repeat it here.
+
+**A-14 · Two small notes of theirs, accepted:** IMPL-270's `app.js:427` is stale by 28 lines (`:455` is the body-level `replaceChildren`) — Gate 6's to correct at the next touch of that entry, COULD; and their KP-7 Karpathy line — no new module, no new parser, no vitest over a `.md`, no type minted to satisfy a diagram — is a constraint I accept for the whole edit map below.
 
 ---
 
-## 2. The four dimensions — final position
+## 2. Final position — the four dimensions
 
 ### 2.1 Observability
 
-**O-1' — The lock (final).** `tests/fixtures/dashboard-wire.ts` exports
-`DAG_WARNING_EXAMPLES = { fallback: 'PREDICTED_FROM_FALLBACK_VERSION: requested=v2 resolved=v1',
-unavailable: 'PREDICTED_OVERLAY_UNAVAILABLE: reason=catalog-resolve-failed',
-prose: 'lane 2 (review) is dynamic: agents cannot be statically slotted' } as const` (the third is
-`dashboard.ts:393`'s format verbatim, and it contains `': '` — that is the point). `DAG_PAYLOAD.warnings`
-stays `[]`. Three readers, one literal: **IT-169** asserts, for each of the two reachable producers (O-4'),
-`warnings.filter(w => /^PREDICTED_/.test(w))` deep-equals `[<the fixture literal>]` — exact bytes, exactly
-one token entry, prose siblings tolerated. Not `toEqual` on the whole array: `layout.warnings` may well be
-non-empty in the deregister case (zero predicted lanes and a live agent at `phase.index 0` make
-`dashboard.ts:432-434` append it WITH a warning), so a whole-array equality goes red for the wrong reason,
-and a bare `toContain` cannot say "exactly one". **UT-244** (`.js`) maps each through `warningText` — FALLBACK →
-「預測結構來自替代版本 v2」/`predicted layout from substitute version v2`, UNAVAILABLE → 「預測結構不可用」/
-`predicted layout unavailable`, prose → the RAW string unchanged; and `tsc --noEmit` on the fixture is
-unchanged. The grammar, merged from their A-6 and my O-2:
+**System altitude.**
+- **O-1 (the render oracle) — converged, spec as amended in A-9.** Inputs: every ```mermaid fence in `01`–`05` (`trace.py:301-330`'s regex; cite `file:line` as fence + 1). Per block: `mmdc -i … -o … -c <trace.py's config + htmlLabels:false> -p <the engine's args from diagram-render.ts:138>`; then read the SVG: FAIL if it does not exist, if any declared member string is absent, if `/%%/` matches, or (classDiagram) if member text contains a verbatim `~`. One `FAIL <file>:<line> …` line per failure, a one-line summary, exit 1 on any FAIL, **exit 2 with `SKIP: no Chromium`** when the browser cannot launch — never 0. Placement `.sdlc/mermaid-render-check.mjs`; §9 row says 「manual until upstream `dashboard_check` renders」. Measured reference: r1's puppeteer-direct run (one browser launch, 7 renders, 2.1 s wall). Round 2's `mmdc` runs were **not timed**, and `mmdc` launches a fresh Chrome per input file — so if wall time over 40 blocks matters, the oracle should batch every block through one launch (r1's shape) rather than shell out per block.
+- **O-2 (the pre-boot literal) — unchanged from r1** (A-13).
+- **O-3 (DES-202's transition table) — unchanged from r1**; it is the observability defect QD-O1 named (a 連線中 tag over a degraded table), closed in code at v27g, still open in the design text. Written as one overturnable sentence inheriting ARCH-124's `owner_decision: pending` (R-2 below).
+- **O-4 (stale pointers) — unchanged**: DES-200 `server.ts:1251-1257` → `:1334`; plus, integrated from A-14, IMPL-270's `:427` named for Gate 6.
+- **New this round — the corrected authoring rules (§0.3)** are themselves an observability control: a rule that names the wrong discriminator (either r1's) makes the next author escape the wrong thing and ship a parse-green/render-wrong member.
 
-> `WARNING := TOKEN (': ' DETAIL)?` — `TOKEN` ∈ {`PREDICTED_OVERLAY_UNAVAILABLE`, `PREDICTED_FROM_FALLBACK_VERSION`},
-> else the string is `layoutGraph` prose and carries no token. `DETAIL := k=v (' ' k=v)*`, keys
-> `{requested, resolved, reason}`, values `[A-Za-z0-9._-]+`. FALLBACK carries `requested` and `resolved`
-> (both `/^v\d+$/`, `workflow-catalog.ts:621`'s shape); UNAVAILABLE carries `reason` ∈
-> `{catalog-resolve-failed, derivation-failed}`. Client rule: split on the FIRST `': '`; an unknown head,
-> a missing `=`, or a known token with a malformed detail → return `raw` (never `undefined`, never the
-> detail half — for a prose line that would drop its subject). `/skeleton/i` asserted absent on the
-> served bytes once, in IT-169.
-
-**O-2' — The pushes at their sites (their B-2, adopted; `requested=` applied).**
-
-| arm | site (`server.ts`) | push into `routeWarnings` |
-|---|---|---|
-| (i) `resolve(spec.name, { version: view.legacySubstitution?.resolved ?? view.scriptVersion })` succeeds | `:500` | nothing |
-| (ii) first `catch` → `resolve(spec.name, {})` succeeds | inside that catch, BEFORE the fall-through | `PREDICTED_FROM_FALLBACK_VERSION: requested=<what (i) asked for> resolved=<release.version>` |
-| (iii) second `catch` (`:504-506`) | inside that catch — nothing downstream throws | `PREDICTED_OVERLAY_UNAVAILABLE: reason=catalog-resolve-failed` |
-| (iv) derivation `catch` (`:540`) or the FALSE arm of `v1.ok ?` (`:538`) | those two sites only — never the `else` at `:534` | `PREDICTED_OVERLAY_UNAVAILABLE: reason=derivation-failed` |
-
-Standing negatives: no `spec.name` (inline script) → nothing; the `:534` v1 path → nothing
-(`diagram-contract-grandfather.test.ts:101`, `dag-warnings-empty.test.ts:37` stay green). `warnings:
-[...layout.warnings, ...routeWarnings]`; `layoutGraph` stays pure. **One identifier for the UNAVAILABLE
-token, in `server.ts` itself** (`const PREDICTED_OVERLAY_UNAVAILABLE = 'PREDICTED_OVERLAY_UNAVAILABLE'`
-beside the route): arm (iv) has no producer with a registered script (registration ran the SAME derivation,
-INV-V26-3; `contract:'v1'` never refuses) and O-4 refuses an injection seam for it — so the only thing
-that vouches for arm (iv)'s spelling is that it shares arm (iii)'s identifier, which IT-169 does reach.
-Not a formatter, not a `dashboard.ts` export, not a grep guard: one `const` in the file that uses it twice.
-
-**O-3' — Journal ↔ payload.** On arms (iii)/(iv): `console.warn(JSON.stringify({event:'dashboard_api_degraded',
-route:'dag', runId, reason}))` with `reason` byte-equal to the warning's `reason=` value. The two generic
-catches (`:582-585`, `:1067-1071`) emit `reason:'internal'` and put the message under `detail` (their
-B-3). IT-169's deregister case spies `console.warn`, parses exactly one line, and asserts
-`parsed.reason === warning.split(': ')[1].slice('reason='.length)`. FALLBACK is NOT logged (a state;
-its durable record is `legacySubstitution`, `run-manager.ts:909`). The dedupe shape (`runId + ':' +
-reason`, per-process `Set`) is documented in DES-198 and not built (unanimous).
-
-**O-4' — Producers per arm, and the recipe that is not vacuous.** (iii): the deregister case
-`dashboard-http.test.ts:205-218` already builds — extend it. (ii): `registerPublishedVia` ×2 (release =
-`v2`) → `run_start` (pin `v2`) → `workflow_deregister` → `registerPublishedVia` ×1 (lineage `v1`) → GET →
-`requested=v2 resolved=v1`. The pin must outnumber the re-registered lineage (S-4): the natural recipe
-(pin `v1`, re-register once) makes arm (i) FIND the new `v1`, push nothing, and IT-169's exact-equality
-assertion goes red for a reason the author will not expect — and the likely "fix" is to weaken the
-assertion. (iv): defensive — covered by `deriveLanes` never throwing and the kept `try/catch`; no seam.
-
-**O-5' — The render.** TASK-210's `ui/run.js` renders `warningText(lang, w)` per entry via `textContent`
-(D5), replacing `N warning(s)` (`dashboard-page.ts:601-607`). The legend text is the only FALLBACK
-marker (X-3); predicted cells take REQ-134's pending style (DES-206's rule) whatever the warnings say.
-
-**Agent altitude.** Three states an operator watching agents can now tell apart on every deployment:
-not yet dispatched (inert cell, `agentId === undefined`, and — after A-4 — with the NAME of the agent
-expected there), not in the plan (no cell), and the plan shown is not the plan that ran (FALLBACK
-legend). A cold model reading `warnings[]` parses the same two-token grammar. Chain-of-thought, token and
-tool-call inspection (REQ-135/140/141) are untouched.
+**Agent altitude.** N/A for this round's edits. The one hop that matters: `src/diagram-render.ts` already treats an author's render failure as a **typed outcome** (`RENDER_FAILED` with detail) — the product holds its own diagrams to a standard the ledger tooling does not yet meet, which is the whole case for O-1. The agent panel's swallowed error (QD-O5) stays §9.
 
 ### 2.2 Replaceability
 
-**R-1 — C-4 withdrawn.** Unchanged from r1 (W-1): DES-197 loses the `maskPredictedOverlay` signature
-clause, the fail-closed paragraph and the UT line; one cited sentence on the synthetic principal +
-INV-V27-9 replaces them. Unanimous across both stages.
+**System altitude.**
+- **R-1 (TASK-216 / the second `tsc` program) — the design sentence moves from MUST to SHOULD (A-6); the property does not move.** *The server tree is a complete program without the client tree and without DOM*, proven by `tsconfig.server.json` on every `build`, with one UT pinning both script strings so the two programs cannot be collapsed to one. If DES-191 gains the sentence, TASK-216 carries `des: DES-191`; if not, TASK-216 carries `traces:` only, trace-neutral, and the property lives in ADR-049 `:3444` alone.
+- **R-2 (DES-202's flip set) — unchanged**: one sentence, one owner decision, four places that flip together (ARCH-124's sentence, DES-202's, `connection.js:26-31`, UT-245 `:30-42`).
+- **R-3 (the interface view names only what the interface has) — applied consistently after A-8.** The render-only edit invents nothing (both surviving forms). The three facts where the v22 block *already* diverges from `src/` — positional `register`, `{removed}` without `claimedTriggers`, and `WorkflowRow` — go together into one dated DES-111 marker, SHOULD; the member texts stay v22's, because rewriting a dated slice to the v24 shape destroys the record of what v22 decided (the adversarial's boundary argument, which I accept).
+- **R-4 (DES-199's `cache` literal) and R-5 (the literal is outside the string table by construction) — unchanged.**
 
-**R-2' — `deriveLanes(phases: PhaseView[], expected: ExpectedGraph, opts: { status: RunStatus })`.**
-Non-optional (X-1). Body tolerant (`Array.isArray(expected?.lanes)`), the tolerance a body property,
-not a type property. DES-196's stale `:519-520` sentence becomes: *`expected` may arrive EMPTY for
-exactly one reason — the derivation failed; a later reader must not restore the auth reading from the
-type.* The seven-member `current` table stands (A-2); `lanes` is dense and ordered (A-3); `current` may
-exceed `expected.lanes.length` and is never clamped (B-5).
-
-**R-3' — The resolve chain stays in the route; the pushes move into the catches.** No helper (a unit
-tier only for the arm O-4 declines), no `derive` parameter, no `dashboard.ts` I/O. The `??` is the
-whole change to the resolve; B-2's table is the whole change to the pushes.
-
-**R-4 / R-5 — unchanged.** The four deletions by line (`:520`, `:334` + default, `:1068`, comments
-`:331-334`/`:350`/`:1064`; `:819` stays); `authAnnounce` stays; no config key; a future withholding
-policy is a principal-aware projection, never a knob (unanimous).
-
-**R-6' — A stump neither r1 named: TASK-209's `dod:`.** `03-tasks.md:1768` reads 「a never-run workflow
-renders its predicted lanes with agent labels from `describe.phases[].agents` (or lanes-only plus
-「尚無執行」 when the overlay is masked)」. Delete the parenthetical's condition: the lanes-only arm is
-keyed on `agents` ABSENT (B-4) and its text is 「預測結構不可用」 — the SAME string-table key as the DAG
-warning (one key, two surfaces, §2.3). Whether 「尚無執行」 survives as the run-chip empty state is
-DES-204's business, not this delta's. Merged task order (theirs + mine): **TASK-197** (fixture) →
-**TASK-201** (`deriveLanes` signature, density, `label` on the predicted cell) → **TASK-203** (route:
-deletions, `??`, pushes in the catches, the one const, the log line) → **TASK-202** (facade: `agents`
-unconditional, absent/`[]` rule) → **TASK-206** (`warningText` + three keys) → **TASK-209** (describe
-consumer) and **TASK-210** (warnings as text) → VAL-199/204 judged only after 201's `label` has landed,
-or the Chromium screenshot photographs blank boxes and becomes the baseline.
-
-**Agent altitude.** Provider, transport and model seams do not move; the overlay is script-derived
-and provider-agnostic. One line.
+**Agent altitude.** N/A: no gateway, model or tool seam is touched.
 
 ### 2.3 Consumability
 
-**C-1' — Contract sentences (final).** `GET /api/runs/:id/dag`: *gains `lanes` (dense, ordered: the
-observed phases extended by every unreached expected lane — regardless of auth, Round v27b) and
-`current`; a predicted cell carries `label` (the agent label(s) expected in that slot, `' / '`-joined
-for a parallel group) and no `agentId`/`state`; `warnings[]` may carry `PREDICTED_OVERLAY_UNAVAILABLE:
-reason=<catalog-resolve-failed|derivation-failed>` (lanes observed-only) or
-`PREDICTED_FROM_FALLBACK_VERSION: requested=vN resolved=vM` (overlay derived from a substitute
-version).* `describe.phases[]`: *`agents?: string[]` — the predicted lane membership, served to every
-caller regardless of auth; `[]` when the lane is derivable but has no static labels; absent only when
-the engine could not derive the predicted layout for this version.* TASK-202's `dod:` loses "with its
-masking sentence"; README `:312-313` is unchanged and still true.
+**System altitude.**
+- **C-1 — the ledger's consumers are agents; three id/pointer defects, one of them now shared with the adversarial text.** UT-240 → UT-241 (A-5), `server.ts:1251-1257` → `:1334`, and a block that renders `圖渲染失敗` twice in the shipped dashboard (their measurement: `grep -c "Promise~{version}~" dashboard.html` → 2). All cheap to fix, expensive to leave.
+- **C-2 — TASK-215's DoD as TASK-213's STAYS / MOVES / RETIRES table — unchanged from r1, with the `:95` row now reading 「UT-241's duplicate — RETIRES (UT-224's re-pointed case at `:43` already guards the element)」 and the row's `des:` naming **DES-200 and DES-208** (DES-208 owns the disposition table; A-4).**
+- **C-3 — TASK-216's DoD verbatim from ADR-049 `:3444` — unchanged.**
+- **C-4 — the entity form's source-readability cost is paid by the own-line `%%` key** (measured invisible in the render, §0.1). If C is chosen, the key line names `#123;`/`#125;` only. Either way the line is what stops a later reader from 「cleaning up」 the entities back into braces (QD-R10).
+- **C-5 — the §0.3 rules are the consumable artifact of this round for the next author**: four rules, one falsifier, and — new — the source lines that make them mechanisms rather than folklore.
 
-**C-2 — The cohort transition (hold; consistent with their B-3).** `legacySubstitution` is written only
-on RESUME (`run-manager.ts:903-909`); a run whose pin was purged after it started carries the FALLBACK
-warning on every DAG read and NO field — until a resume records the substitution, after which arm (i)
-reads `resolved` and the warning disappears. The DAG warning is the authority for THIS read; the field is
-the durable record that an EXECUTION resumed on a substitute. No test may assert the warning persists.
-
-**C-3' — Two consumers of `describe.phases[].agents`, one vocabulary.** The MCP caller: additive field;
-`tool-specs.ts:332`'s description gains "and the predicted lane membership (`phases[].agents`)". The
-page: TASK-209's `ui/workflow.js` renders, per phase, the `agents` labels as predicted cells; `[]` → a
-lane with no cells; absent on EVERY phase → lanes-only plus `t(lang, 'predictedLayoutUnavailable')`.
-That the never-run view and the run view say 「預測結構不可用」 through the same key is the reuse
-REQ-131 asks for — one string, one meaning, two surfaces.
-
-**C-4' — Inert-cell detection unchanged; the cell now has a name.** The client detects a predicted cell
-by `agentId === undefined`, never by the id prefix; it renders `label` when present and falls back to
-nothing rather than to the kind word. Engine tests may keep keying on `__skel_` where the id is
-produced (IT-092, IT-168's cell anchor); NEW assertions should prefer the contract predicate
-(`kind === 'agent' && agentId === undefined`) so the test and the client read the same fact.
-
-**C-5' — Timing.** After the stabilization predicate holds, `phase('one')` has necessarily fired, so
-`current === 0` exactly (X-2). `lanes.map(l => l.title)` and `describe.phases[].agents` are
-timing-independent as before.
-
-**C-6 — `laneUntitled`.** Unchanged: `lanes[].title: string | null` is on the wire; one key
-(「未命名 lane」/`untitled lane`) or `ui/run.js` renders the literal `null`.
-
-**Agent altitude.** A cold model calling `workflow_describe` gets one shape on every deployment,
-can tell "no static agents" (`[]`) from "could not derive" (absent), and can draw the predicted layout
-without parsing `mermaid` — which is what makes the field a reusable asset rather than a page detail.
+**Agent altitude.** N/A: no MCP/HTTP surface changes (QD-C2/C3 stay §9).
 
 ### 2.4 Self-sustainability
 
-**S-1' — The parity oracle, as a test row (final).** In `dag-masking-auth.test.ts`: register the same
-script on both servers, `run_start` on both, poll both `/api/runs/:id/dag` anonymously until each has
-≥1 predicted cell and exactly one live agent cell in `running` (their predicate), then: **(a)** both
-live payloads pass `keys ⊆ ALLOWED_DAG_KEYS && REQUIRED_DAG_KEYS ⊆ keys` imported from the fixture
-(their C-1); **(b)** deep-equal the two payloads minus `PARITY_EXCLUDED = ['runId', 'terminalAt'] as
-const` — written against the fixture's key tuple so a new key is compared by default; **(c)** describe
-parity over anonymous HTTP on both servers, scoped to `phases` exactly (their C-2.3 — `owner` differs);
-**(d)** the positive anchors ON THE AUTH SERVER, two of them: `cells.some(isPredictedCell)` (their cell
-anchor — the exact assertion IT-092 inverts today) **and** `lanes.map(l => l.title)` `===`
-`['one','two','three']` with `current === 0` (my lane anchor). The lane anchor needs a script with ≥2
-phases: `registerPublishedVia` wraps IT-092's phase-less `SCRIPT` in a single synthesized `main` lane
-(`workflow-fixtures.ts:139-143`) on which no lane is ever unreached, so `SCRIPT_PHASED` is a second
-`const` in the same test file — not a new fixture module. The reason the lane anchor is not optional:
-REQ-134's ruling text (`01-requirements.md:1769-1770`) says 「不得因 auth 而退化成只顯示已走到的 lane」 —
-the unreached-LANE join is what the owner named; a same-lane predicted cell existed on the open server
-before this delta.
+**System altitude.**
+- **S-1 — without O-1 the class recurs**: three recurrences, 45 rendered blocks, a lexical `dashboard_check` byte-identical before and after DASH-1's repair. Converged with the adversarial on the control; the §9 row must say 「manual until upstream」 so no one records it as closed-loop.
+- **S-2 — TASK-216 re-proves the boundary with no human in the loop** (`deploy/rwe-update.sh:147` reverts a failed `build`), and the pinning UT keeps the two programs from being simplified into one — unchanged.
+- **S-3 — the pending owner decision must not stall the loop and no design row may pre-empt it** — unchanged; DES-202 is written for either outcome.
+- **S-4 — the micro-dispatch before the re-review; the cost of declining** — converged with the adversarial: **+2 LOW `未實作`**, ADR-049's 「UNGUARDED until」 stands into Gate 8, `:95` keeps guarding dead bytes, and every amended clause carries its 「pending TASK-215」 sentence (A-7). If exactly one task is taken, take TASK-215 — the adversarial's KP-5 reason (only TASK-216 has a red window between the ADR amendment and its landing, and that window is already disclosed in-tree) is correct and I adopt it.
+- **S-5 — unchanged, out of scope, named**: DES-200's read-once island, F-7/QD-S2 listener release, REQ-142's single timer.
 
-**S-2 — Red versus guard, labelled.** Unchanged in substance: IT-168's flipped cases and the parity case
-are RED today; IT-092 is re-traced to REQ-100 as a GREEN guard with a COMMENT sentinel
-(`// RWE-IT092-SCRIPT-BYTES-DO-NOT-LEAK`, their C-5) asserted absent on `await res.text()`; the
-`['__trigger__']` assertion is deleted; the file's header (`:1-15`) and the IT-168 block comment
-(`:130-139`) are rewritten with the tests; the filename stays.
-
-**S-3 — UT-238 after this delta.** 7 × 2 for `current` (14 cases, same oracle, the `:34` cast gone —
-its disappearance IS the evidence); join rows: (i) unreached expected lanes extend the observed list;
-(ii) `expected: undefined` behind `@ts-expect-error` never throws; (iii) observed longer than expected →
-`lanes` IS the observed list, `current === phases.length - 1` even beyond `expected.lanes.length`, no
-conflict output; (iv) A-3's density row (`expected.lanes` = `[0,1,3]` → `lanes[k].index === k`).
-
-**S-4 — The reused-pin blind spot (hold).** `register()` mints `v<max+1>` over the name's OWN rows
-(`workflow-catalog.ts:583, :621`); deregister → re-register restarts at `v1`; a run pinned to the OLD
-`v1` resolves the NEW `v1` on arm (i) — no throw, no warning, a wrong overlay, and `legacySubstitution`
-never set (resume resolves the same way, `run-manager.ts:899-901`). The FALLBACK arm witnesses an ABSENT
-pin, never a REUSED one. DES-198's boundary states it in one sentence and names the v28 check
-(`workflow_versions.createdAt > run.createdAt` ⇒ reused) as a catalog-lineage item OUT of this closure.
-The in-closure consequence is O-4's recipe.
-
-**S-5 — Gate 7.5 rows.** VAL-199 gains one Chromium case with `auth.enabled:true`: a never-run workflow
-renders its predicted lanes WITH agent names (A-4 — the screenshot must show a name, not `agent`), the
-`mintBearer` trap named (registration needs the bearer; the page and `/api/*` GETs need none). VAL-204:
-the VAL-side p95 loop (200 sequential `GET /api/runs/:id/dag`, auth on, the largest corpus script); the
-bounded memo pre-approved on the number and not built before it (unanimous). The real-tier table rows
-for REQ-133/140 gain "on the auth-enabled engine" / "the unreached predicted lanes and
-`describe.phases[].agents` present in BOTH".
-
-**S-6 — Self-healing unchanged.** Every fault still degrades to an empty overlay and a 200; the two
-fault-arm log lines close the loop; the dedupe is a documented shape.
-
-**Agent altitude.** No memory to metabolize (the overlay is derived from stored script text on every
-read until a measured number says otherwise), no tool probed, no prompt calibrated. One line, honestly.
+**Agent altitude.** N/A: memory metabolism, tool-liveness probing and prompt calibration are gateway/executor concerns; nothing here touches `src/gateway/` or `src/agent-executor.ts`.
 
 ---
 
-## 3. Remaining disagreements — none blocking
+## 3. Consolidated edit map (r2 — supersedes r1 §6; integrations marked ⊕)
 
-| # | Item | My position | Why it may still be contested | Cost of either outcome |
-|---|---|---|---|---|
-| D-1 | `SCRIPT_PHASED` as a second `const` in `dag-masking-auth.test.ts` for the LANE anchor | **Hold** | Their §4/§7 say "no new fixture". I read that as no new fixture MODULE; a script constant in the test file is not one. If they mean no second script at all, the unreached-lane join — the clause the ruling names — is witnessed on no server. | One `const`; zero files. |
-| D-2 | One `const` for the UNAVAILABLE token in `server.ts` | **Hold (weak)** | They may call it machinery. It is one line in the file that uses it twice, and it is the only thing that vouches for arm (iv)'s spelling. | One line. |
-| D-3 | `label: labels.join(' / ')` rather than `labels[0]` | **Refinement of their A-4** | Expected accepted: no branch on `kind`, identity for `single`. | One expression. |
-| D-4 | Test-side predicate: `__skel_` regex vs `agentId === undefined` | **Not a dispute** | Either is correct where the id is produced; new lines should read the contract fact. | None. |
-
-Everything else in both r1s is agreed or retracted above.
-
----
-
-## 4. ARCH text corrections routed to the synthesizer — one list, wire strings against amended rows
-
-1. **ARCH-130 (ii):** `pinned=` → `requested=`. **(iii)/(iv):** `PREDICTED_OVERLAY_UNAVAILABLE: reason=<enum>`
-   (k=v form, one parser). **(2):** the three pushes happen INSIDE the catches at `:500-506` / `:538` /
-   `:540`, never after `layoutGraph` (B-2).
-2. **ARCH-126 `api:`:** 「while `status === 'running'`」 → 「while the run is live (`running | suspended |
-   interrupted`)」 (A-2; DES-196's table stands).
-3. **ARCH-125 v27b amendment:** the split/map/fallback lives in `lib/strings.js` as `warningText(lang,
-   raw)`; `ui/run.js` calls it and does nothing else with warnings (C-3).
-4. **TASK-209 `dod:`** (`:1768`): delete "when the overlay is masked"; lanes-only is keyed on `agents`
-   absent and reads `predictedLayoutUnavailable` (R-6').
-
----
-
-## 5. Ledger edit map — converged (supersedes r1's table)
-
-| Item | Edit |
+| Where | Edit |
 |---|---|
-| DES-196 | signature `deriveLanes(phases, expected: ExpectedGraph, { status })` — non-optional, body tolerant; the `:519-520` sentence → "EMPTY for exactly one reason: derivation failed"; `lanes` dense and ordered; `current` seven-member rule STANDS and may exceed the predicted count; predicted cell gains `label: labels.join(' / ')` (absent when no labels); tests: 14 + join rows (i)–(iv) |
-| DES-197 | DELETE the `maskPredictedOverlay` clause, paragraph and UT line; `phases[].agents` unconditional, `[]` = no static labels, absent ⇔ not derivable / no derived lane at that ordinal, derived lanes beyond `phases.length` dropped; one cited sentence on the synthetic principal + INV-V27-9 |
-| DES-198 | (2) `deriveLanes(view.phases, expectedGraph, { status: view.status })`; four deletions by line; resolution (i)–(iv) with the `??`; the pushes INSIDE the catches per O-2'; one `const` for the UNAVAILABLE token; grammar per O-1'; (4) `{event, route:'dag', runId, reason}` on (iii)/(iv) with `reason` = the `reason=` value verbatim, `internal` + `detail` on the generic catches; dedupe shape documented; boundary: cohort transition (C-2), reused-pin limit + v28 check (S-4), `derivation-failed` defensive (O-4), `__skel_` stays (A-5), no config key |
-| DES-201 | `lib/strings.js` gains `warningText(lang, raw)` and keys `predictedLayoutUnavailable`, `predictedLayoutFromFallback` (takes `resolved`), `laneUntitled`; key parity covers them |
-| DES-206 | `ui/run.js` renders `warningText(lang, w)` per entry as TEXT; `ui/workflow.js` renders `agents` per phase, `[]` → no cells, all-absent → lanes-only + the same key; a predicted cell (`agentId === undefined`, no `state`) TAKES REQ-134's queued/pending style — a rule this row states, since REQ-134 names states and a predicted cell has none; detection by `agentId === undefined` |
-| DES-114 / DES-115 | `superseded_in_part` marker bullets (their §2d), `iter:` stays v22 |
-| TASK-197 | `DAG_PAYLOAD_OPEN` → `DAG_PAYLOAD`; row label without "(open)"; `DAG_WARNING_EXAMPLES` (three literals); `DAG_PAYLOAD.warnings` stays `[]` |
-| TASK-201 / 202 / 203 / 206 / 209 / 210 `dod:` | per §2.2 R-6' order; TASK-209 loses "when the overlay is masked"; TASK-203 enumerates the four deletions by line, the two producer cases, the one const |
-| UT-238 | `masked` out; 7×2; join rows (i)–(iv); the cast disappears; `undefined` behind `@ts-expect-error` |
-| UT-244 | + the map over `DAG_WARNING_EXAMPLES` (both languages, prose passthrough, malformed → raw); + the three keys in parity |
-| IT-168 | flipped positive on both servers; stabilization predicate; live key-set check on both payloads; `PARITY_EXCLUDED`; describe parity scoped to `phases`; cell anchor + lane anchor (`SCRIPT_PHASED`, `current === 0`) on the auth server; header comments rewritten |
-| IT-169 | deregister case gains `warnings.filter(w => /^PREDICTED_/.test(w))` deep-equals `[DAG_WARNING_EXAMPLES.unavailable]` + the parsed log line; new FALLBACK case with the pin-HIGH recipe, the same filtered shape deep-equals `[DAG_WARNING_EXAMPLES.fallback]` + no log line; `/skeleton/i` absent on served bytes; a predicted cell carries `label` |
-| IT-092 | re-traced to REQ-100 as a green GUARD: comment sentinel absent on `res.text()`; `['__trigger__']` assertion deleted |
-| VAL-199 / VAL-204 | one auth-ON Chromium never-run case showing agent NAMES with the `mintBearer` trap named; VAL-side p95; memo pre-approved on the number |
-| Real-tier table (04-design.md:6849) | REQ-133 row + "on the auth-enabled engine"; REQ-140 row + "the unreached predicted lanes and `describe.phases[].agents` present in BOTH" |
-| README `:368-375`, `tool-specs.ts:332` | the two C-1' sentences; the describe row WITHOUT a masking sentence; the tool description names `phases[].agents` |
-| ARCH-125 / ARCH-126 / ARCH-130 | the four corrections in §4 |
-| REQ-105 `:1070` | orchestrator: `[PARTIALLY SUPERSEDED v27b, Round v27b]` on the auth-gate clause only (unanimous, both stages) |
+| `04-design.md:3306` block | new line after `classDiagram`: `%% #123; #125; #44; are { } , — a classDiagram member cannot carry them literally (DASH-2, v27j)`; `:3308` `Promise~{version}~` → `Promise~#123;version#125;~`; `:3309` `Promise~{channel,version,from}~` → `Promise~#123;channel#44; version#44; from#125;~`; `:3315` `Promise~{removed}~` → `Promise~#123;removed#125;~`; ⊕ `:3329` `class Scheduler { +markFired() +markFailed() }` → a three-line body. **Fallback if the synthesis prefers C:** the three members become `Promise of #123;version#125;` / `Promise of #123;channel, version, from#125;` / `Promise of #123;removed#125;` and the key line drops `#44;`. Falsify by render, then SVG text (§0.1). |
+| ⊕ DES-111 (`:3399`) | `amended (v27j, SHOULD — record even if deferred)`: one dated marker — the positional `register` form is retired (ADR-035 / DES-148; `workflow-catalog.ts:653` throws on it), `deregister` returns `{removed, claimedTriggers}` (`:664`), `list()`'s `WorkflowRow` names no `src/` type; the v22 member texts above and in the diagram are left as the slice wrote them. |
+| DES-202 `:6808-6809` | `amended (v27j)`: strike 「any `ok` … → `live`」; O-3's `worstOf` rule; the tests-line case flipped to `live→degraded` (UT-245 `:30-35`, `:37-42`); R-2's four-place flip set naming ARCH-124's `owner_decision: pending`. |
+| DES-199 `:6783` | `amended (v27j)`: `cache:` literal → `'public, max-age=31536000, immutable' \| 'no-store'` (`static-assets.ts:33`). |
+| DES-200 `:6791-6793` | `amended (v27j)`: `server.ts:1251-1257` → `:1334`; strike 「markup and CSS only」 and 「`draggable="false"` … stays on `DASHBOARD_HTML`」 (IMPL-270; UT-224 at `:43`); Layer-1 shape per ARCH-122's amended `api:` + `<main class="empty">` + O-2's literal (fallback `…` recorded with its cost); R-5's why-outside-the-table clause; tests line gains the UT-241 positive; 「until TASK-215 lands, the fossil body stands and is not a test subject」. |
+| ⊕ DES-208 `:6856` | `amended (v27j)`: `draggable="false"` leaves STAYS — **MOVED** for UT-224 (done at v27g, `clientFile('ui/workflow.js')`, IMPL-270) and **RETIRES** for UT-241's duplicate at `dashboard-page-source.test.ts:95` (TASK-215); the `[v27c]` sentence 「`draggable="false"` is markup and stays」 struck with the reason; 「pending TASK-215」 sentence. |
+| DES-191 `:6719-6722` (SHOULD, A-6) | `amended (v27j)`: R-1's second-program sentence, its two planted-violation falsifiers, the accepted in-editor limit. |
+| TASK-205 `:1752` | `[v27j]` strike 「and `DASHBOARD_HTML` still contains `draggable="false"`」 (same strike style as its `[v27c]`); 「pending TASK-215」 sentence. |
+| TASK-206 `:1761` | `[v27j]` 「any `ok` → `live`」 → O-3's rule. |
+| TASK-215 (new, after `:1835`) | `status: draft`, `iter: v27j`, `estimate: S`; `traces: ARCH-122, ADR-049, REQ-131`; `files:` `src/dashboard-page.ts`, the five page-source suites; ⊕ `des: DES-200, DES-208`; `dod:` r1 C-2's table with the `:95` row as UT-**241**; same commit deletes `dashboard-page.ts:92-152`, strikes ARCH-122's two tree-state clauses and DES-200/DES-208/TASK-205's 「pending」 sentences, fixes `dashboard-page-source.test.ts:51` `UT-240` → `UT-241`; F-pattern clause (red on the new UT-241 positive first). |
+| TASK-216 (new) | `status: draft`, `iter: v27j`, `estimate: S`; `traces: ADR-049, ARCH-124, REQ-131, REQ-134`; `files: tsconfig.server.json (new), package.json, tests/unit/tsconfig-server-program.test.ts (new, next free UT id)`; `des: DES-191` **if** the sentence lands, else omitted (trace-neutral); `dod:` r1 C-3 (both exit codes, the three planted violations, the script-string pin; strike ADR-049's 「has NOT landed」 and ARCH-124's 「UNGUARDED until」). |
+| `03-tasks.md:1620` | header `TASK-196..213` → `..216`. |
+| `04-design.md` end (after `:7141`'s section) | `## Decision rationale — v27j (Gate 8 send-back repair, design half; who conceded, and why)` — including A-8's marker decision either way. |
+| `07-review.md` §9 (orchestrator / next Gate 8 pass) | new row beside TOOL-FORK: `.sdlc/mermaid-render-check.mjs`, the A-9 spec, 「manual until upstream `dashboard_check` renders」, the `diagram-render.ts` seam seen and not reused (config is hard-coded to the product's), the CDN version axis as the reviewer's check. |
+| `02-architecture.md:3782+` (Gate 2's, recorded not taken) | §0.3's four classDiagram rules beside the sequenceDiagram rule; ARCH-122 `:3343` `UT-240` ×2 → `UT-241`; `:3841` `scripts/mermaid-parse-check.mjs` → `.sdlc/mermaid-render-check.mjs`. |
+| COULD (one token each) | TASK-204 `:1743` / DES-198 `:6777` 「`immutable`」 → the directive; DES-200 tests line names `val-198:287`; IMPL-270 `app.js:427` → `:455` (Gate 6); the second one-line class body at `04-design.md:4908` (next touch of that block). |
+
+---
+
+## 4. Remaining disagreements (honest)
+
+1. **The spelling of three members** — entity-in-generic (`Promise<{…}>`) vs `Promise of {…}`. Both measured correct under both configs. I hold on fidelity; the adversarial's stated reason for preferring C (B's comma failure) is dissolved by `#44;`, but they have not yet seen that measurement. **Not blocking either way**; the synthesis picks one and the falsifier is identical.
+2. **Breadth of the design/task sweep** (three rows vs seven places) — unreconciled rather than contested; my reasons in A-12, each edit one clause, none a caveat.
+3. **The DES-191 sentence** — I now say SHOULD; if the adversarial reads any amendment sentence as 「a DES for TASK-B」 and refuses it as duplication, the disagreement is one additive sentence and I would not hold the task hostage to it.
+4. **The pre-boot literal** — not yet argued by the adversarial this round; the `…` fallback is on the table with its cost.
+
+Everything else — the render-only principle, the coupling, one commit, no new DES rows, the two-row split of the tasks, the oracle's shape and placement, the DES-111 marker, the CDN axis as the reviewer's check — is converged.
+
+---
+
+## 5. Risks — delta from r1's table (ids continue; r1's QD-R1..R11 stand except as noted)
+
+| # | Risk | Severity | Note |
+|---|---|---|---|
+| QD-R1 (r1) | closed with the finding's `Promise~VersionResult~` | HIGH | unchanged — both lenses now refuse it on the same ground (phantom types; `WorkflowRow` shows the block already has one) |
+| QD-R3 (r1) | TASK-215 cites UT-240 | HIGH | **raised in likelihood**: the adversarial r1 carries the mislabel in every mention; if their text is synthesised verbatim the wrong id lands in the ledger |
+| QD-R4 (r1) | TASK-216 with a dangling/invented `des:` | ~~MID~~ → LOW | `des:` is optional (A-6); the risk collapses to 「omit it or point it at an amended DES-191」 |
+| QD-R12 (new) | **the authoring rule is recorded from either r1** — 「entity + comma」 or 「any comma」 — and the next author escapes the wrong thing | MID | §0.3 is the only version with a cited mechanism; ask the synthesis to record that one |
+| QD-R13 (new) | DES-208 is amended 「STAYS → MOVES」 only, leaving `:95` with no disposition | MID | A-4 — the amendment has two halves |
+| QD-R14 (new) | the oracle is built on `renderWithMmdc` for convenience and inherits the product's `strict`/`htmlLabels:false` config instead of the dashboard's | LOW | A-9 — §0.1 shows no difference for this class, but the target is the dashboard; call `mmdc -c` with `trace.py`'s config and borrow only the puppeteer args |
+| QD-R15 (new) | the adversarial's 「`mmdc` without `-p` exits 0」 is built into the oracle as its motivating assumption and turns out box-specific | LOW | irrelevant once the oracle asserts SVG existence + member text (A-9 iii) |
 
 ---
 
 ## key_points
 
-1. **Three load-bearing adversarial items conceded on the source:** live key-set check in IT-168 (C-1,
-   `dashboard-disclosure.test.ts:36`); `label` on the predicted cell (A-4, `dashboard.ts:425`,
-   `dashboard-page.ts:581`); `warningText(lang, raw)` pure in `lib/strings.js` (C-3).
-2. **Three of my r1 claims retracted at file:line:** `| undefined` on `expected` (`server.ts:519`);
-   "random agentId" (`run-guard.ts:208`); O-7's redundant greying (REQ-134 `:1763`). The
-   `dagWarning()` formatter is conceded; the fixture literal + exact bytes on the filtered token entry
-   (`warnings.filter(/^PREDICTED_/)` deep-equals `[literal]`) is the lock.
-3. **Grammar final (A-6 + O-2 merged):** `TOKEN: k=v k=v`; FALLBACK `requested=vN resolved=vM`;
-   UNAVAILABLE `reason=<catalog-resolve-failed|derivation-failed>`; split on the first `': '`; anything
-   unparseable → raw; `/skeleton/i` absent on served bytes once.
-4. **Pushes INSIDE the catches (B-2)** — `:504-506` falls through with `''`; a downstream push is
-   silent forever. One `const` for the UNAVAILABLE token in `server.ts`, for the arm no test reaches.
-5. **Journal `reason` = the warning's `reason=` value, verbatim; `internal` + `detail` on the generic
-   catches (B-3);** FALLBACK never logged; dedupe documented, not built.
-6. **`describe.phases[].agents`: `[]` = derivable, no static labels; absent = not derivable (B-4)** —
-   falls out of UT-239's existing `?? []`; the consumer is TASK-209, and its `dod:` loses a stale mask
-   clause (R-6').
-7. **Parity (S-1'):** their stabilization predicate; live key-set on both payloads; `PARITY_EXCLUDED`;
-   describe scoped to `phases` (`owner` differs); cell anchor AND lane anchor on the auth server —
-   the lane anchor needs `SCRIPT_PHASED` because the ruling names the unreached-lane join.
-8. **`deriveLanes(phases, expected, { status })`** non-optional, tolerant body; dense `lanes`;
-   `current` unclamped; UT-238 = 14 cases + four join rows, the cast gone.
-9. **Cohort transition (C-2) and reused-pin limit (S-4) held, unopposed;** the FALLBACK recipe pins
-   HIGH (`requested=v2 resolved=v1`) or IT-169 goes red for a reason the author will misattribute.
-10. **Parallel-slot label:** `labels.join(' / ')`, not `labels[0]` (`skeleton-graph.ts:164`); the
-    `dashboard.ts:250` comment is about `tokens` and needs no amendment.
-11. **Order:** 197 → 201 → 203 → 202 → 206 → 209/210 → VAL; `label` lands before any screenshot.
-12. **Unanimous, not resolved:** four deletions; no knob; no structured warning objects; no
-    `lib/warnings.js`; no nested key-set row now; no memo or dedupe before a measurement; REQ-105 marker.
-
-## risks
-
-| # | Risk | Severity | Where it lands |
-|---|---|---|---|
-| QD-Δ-D1' | **The two spellings drift with CI green** — the fixture literal, the route's string and the client's map are three files; only IT-169's exact bytes on the filtered token entry (not `startsWith`, not `toContain`) and UT-244's map over the same literal hold them together. | HIGH | O-1', IT-169, UT-244 |
-| QD-Δ-D2' | **Arm (iii) implemented after `layoutGraph`** — pushes nothing, forever, every test green. The single most likely silent failure (their risk 3, my concession). | HIGH | O-2', TASK-203 `dod:` |
-| QD-Δ-D3' | **The FALLBACK case uses the natural recipe (pin `v1`)** → arm (i) finds the new `v1` → red for an unexpected reason → the assertion gets weakened. | HIGH | O-4', S-4 |
-| QD-Δ-D4' | **Parity written without the stabilization predicate** → `cells[].state` flakes across `acquireSlot()` → quarantined → INV-V27-9 has no empirical control. | HIGH | S-1' |
-| QD-Δ-D5' | **A-4 ruled out of closure and REQ-134 not amended** → every unreached node on the auth deployment reads `agent`; Gate 7.5 finds it by screenshot. | MID | A-4, S-5 |
-| QD-Δ-D6' | **Describe parity compared whole** → fails on `owner` → "fixed" by widening the shared exclusion list → the DAG half weakens. | MID | S-1' (c) |
-| QD-Δ-D7' | **TASK-209's mask clause survives** → the never-run view keeps a "masked" arm that no engine state produces, and a Gate 6 reader restores the branch from the DoD. | MID | R-6' |
-| QD-Δ-D8' | **A test asserts the FALLBACK warning persists across a resume** — it disappears by design. | MID | C-2 |
-| QD-Δ-D9' | **`labels[0]` on a parallel slot** → a three-agent parallel group shows one name; the operator counts wrong. | LOW | D-3 |
-| QD-Δ-D10' | **`derivation-failed` grows an injection seam** to become unit-testable — the class this delta deletes. | LOW | O-4', R-3' |
-| QD-Δ-D11' | **The reused-pin blind spot surfaces at Gate 7.5 as "the overlay is wrong under auth"** and is misattributed to the reversal. | LOW (cost) / MID (confusion) | S-4 |
+1. **Both round-1 root causes were wrong; the replacement is measured and cited.** Two or more literal commas inside one `~…~` defeat mermaid's generic conversion (`parseGenericTypes` re-joins exactly one pair); one comma is fine; `#44;` never enters the split; a `(` in the return type is eaten by the greedy `methodRegEx`. Four rules, one falsifier — §0.3.
+2. **DASH-2 has two correct repairs and one live preference.** Entity-in-generic renders `Promise<{version}>` / `Promise<{channel, version, from}>` / `Promise<{removed}>` through the adversarial's own `mmdc`, under both mmdc's default and `trace.py`'s dark+loose; option C renders `Promise of {…}` under the same. I hold on fidelity; C is an acceptable fallback; not blocking.
+3. **Conceded and integrated:** the `Scheduler` split (`:3329`); DES-208 as the third `draggable` row, with a **two-half** disposition (MOVED for UT-224, RETIRES for UT-241's `:95`); the coupling framing (one commit, 「pending TASK-215」 sentences if declined); `des:` optional — DES-191's sentence is SHOULD and TASK-216 no longer waits on it; the DES-111 marker (positional `register`, `claimedTriggers`, `WorkflowRow`) as SHOULD with members untouched; oracle at `.sdlc/mermaid-render-check.mjs`, never a Gate 6 blocker, never coupled to `dashboard_check`.
+4. **Held on evidence: UT-241, not UT-240** (`05-tests.md:12062/12075`) — every adversarial 「UT-240」 for the `:95` case must be re-read; TASK-215 fixes the `:51` comment.
+5. **Held on reasons:** the seven-place sweep (each a contradiction; the architect's own rule, applied symmetrically) and the pre-boot diagnostic literal (fallback `…` recorded with its cost).
+6. **The oracle spec gained three lines from this round:** classDiagram member text must contain no verbatim `~`; render with `htmlLabels:false`; trust the SVG's existence and text, never an exit code — `mmdc` without `-p` exited 1 here, not 0, and the spec must not depend on which.
+7. **R-1's config axis is discharged; its version axis is the Gate 8 reviewer's** (floating CDN `mermaid@11`, unreachable from here), owner TOOL-FORK.
+8. **The seam that was seen and not reused:** `src/diagram-render.ts` already wraps `mmdc` with the right puppeteer args and a typed loud failure, but its config is the product's and un-overridable from outside `src/` — borrow the args, not the function.
+9. **Take TASK-215 if only one task is taken**; the cost of declining both is the same +2 LOW `未實作` both r1s priced, plus a `pending` sentence in every amended clause so the ledger never contradicts the tree while it waits.

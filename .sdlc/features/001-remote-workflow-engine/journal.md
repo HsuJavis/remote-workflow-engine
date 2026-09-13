@@ -4662,3 +4662,64 @@ owner_decision (REQ-131's 任一-success-to-Live acceptance vs the shipped `wors
 still PENDING and still blocks Gate 8, not this stage.
 
 **Next**: design's DASH-2, then the Gate 8 re-review.
+
+## 2026-09-13 — v27j Gate 3+4 SEND-BACK REPAIR (designer) — DASH-2 closed by a real render, the two owed task rows minted, and six ledger rows that still described the pre-repair tree
+
+**Scope.** The last design-owned half of the v27 Gate 8 send-back. The twelve enumerated findings were
+closed by their owning gates (impl v27g, architecture v27h, validation v27i); what remained for Gate 3/4
+is the architect's own handoff at `02-architecture.md:3835`(1) and `:3845`(2)(7): **DASH-2**, the two
+follow-up impl items owed an id and a TASK row, and the design/task rows the earlier repairs made false.
+No re-decomposition, no re-partitioning, no `src/` or `tests/` file touched. Synthesized from the panel
+already on disk (`.panel/design/{adversarial,quality-dimensions}.r{1,2}.md`, round 2 = convergence).
+
+**DASH-2 — closed by measurement, not by assertion.** `04-design.md:3306`'s v22 `classDiagram` was
+extracted from the file and rendered with `mmdc` (mermaid 11.17.2 from `node_modules`, the repo's cached
+headless Chromium, `-p` puppeteer args) under **trace.py's own config** (`{theme:'dark',
+securityLevel:'loose'}`). Control: the block as it stood fails (`OPEN_IN_STRUCT`, no SVG written) — the
+finding reproduced. After the edit: **32 member/label rows, 0 verbatim `~`, 0 raw `#nn;`, 0 literal
+`%%`**, rendering `Promise<{version}>`, `Promise<{channel,version,from}>`, `Promise<{removed}>` and
+`+markFired()` / `+markFailed()` as two rows. The fix is three entity-coded members (`#123;`/`#125;`/
+`#44;`), one own-line `%%` key explaining them, and the one-line `Scheduler` body split across three
+lines — a defect that *parses* and renders as ONE member row, which is why no parse-only check saw it.
+
+**Two task rows minted, no new DES ids.** TASK-215 (ARCH-122: delete `dashboard-page.ts:92-152`, emit one
+mount element, disposition the five dead page-source pins, add UT-241's positive) and TASK-216 (ADR-049:
+`tsconfig.server.json` + both script strings + the pinning UT), both `draft`/`S`/`iter: v27j` with
+verbatim DoDs and a red-first clause, since this loop has no tests gate. DES-191 gains **one sentence**
+so TASK-216 has a real design parent; the config shape is cited to ADR-049 `:3444` rather than copied a
+third time.
+
+**Eight rows that still described the pre-repair tree, amended in place at `iter: v27j`.** DES-202 (the
+worst one: its `tests:` line named the exact case the AC-4 repair inverted, i.e. it instructed an
+implementer to re-introduce the bug), DES-200, DES-208, DES-199, DES-198, TASK-204, TASK-205, TASK-206 —
+the panel's sweep found six of them, and this synthesis found the seventh and eighth: DES-198 carries BOTH
+the AC-8 cache-header mirror AND a `tests:` justification (「the disclosure budget is currently checked by
+a test that only goes red when someone edits the fixture」) that the v27g AC-1 repair made false, plus
+TASK-204's own DoD token. Checked and NOT stale: the AC-9 (`usage-live-equals-fold`) and AC-5
+(`endpointsFor`) design rows — they omit a caveat at worst, and this round repairs contradictions. Every clause describing the post-TASK-215 tree carries an explicit 「pending TASK-215」 sentence,
+so no row silently disagrees with the tree while the task is unlanded.
+
+**Gate self-check.** `sh .sdlc/trace --check` → **1661 items / 35 gaps** against a 1659/33 baseline
+captured before the first edit; the full gap-set diff is **exactly the two `未實作 | low` rows for
+TASK-215/216** — the architecture's own priced cost of declining the impl micro-dispatch. 0 broken links,
+0 orphans, no drift row moved (`iter_num` reads the leading integer, so v27→v27j is drift-neutral).
+**One finding of my own, recorded because it is this round's defect class:** adding `TASK-215`/`TASK-216`
+to their DES rows' `traces:` lines was written first and reverted — `trace.py`'s `implemented` set is the
+closure reachable from the IMPL rows, so an edge from an already-implemented DES made the unlanded tasks
+count as implemented and both gaps vanished. Hiding the priced cost is what the price exists to prevent;
+the human link survives in the tasks' own `des:` fields, which `trace.py:108-109` does not read.
+
+`current_stage` stays `review` — Gate 8 owns this loop, same as v27g/v27h/v27i. Every named finding is
+now closed, so the next step is the **re-review**, not a rewind. The `ARCH-124` owner_decision (REQ-131's
+任一-success-to-Live acceptance vs the shipped `worstOf` narrowing) is still PENDING and still blocks
+Gate 8; DES-202's narrowing inherits it rather than minting a second marker for the same question.
+
+**Handoffs recorded, not taken** (all in `04-design.md`'s file-end `## Decision rationale — v27j`): DES-111's
+three stale v22 facts (the retired positional `register`, `deregister`'s `claimedTriggers`, the phantom
+`WorkflowRow`) — stale together, SHOULD, for the next touch of that block; the `.sdlc/mermaid-render-check.mjs`
+oracle spec for the review's §9 beside TOOL-FORK, manual until the plugin's `dashboard_check` renders;
+Gate 2's four `classDiagram` authoring rules, ARCH-122 `:3343`'s two `UT-240` → UT-241, ARCH-122's
+`note:` 「plus `<noscript>`」 (design landed on no `<noscript>` — one sentence covers both failure modes),
+and `:3841`'s `scripts/mermaid-parse-check.mjs` → the render-check name.
+
+**Next**: the Gate 8 re-review (optionally a v27j impl micro-dispatch first — TASK-215 before TASK-216).
