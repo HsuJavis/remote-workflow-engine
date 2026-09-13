@@ -6801,9 +6801,11 @@ before this row's new case).
 
 - **status:** done
 - **traces:** TASK-209, REQ-133, ARCH-125
-- **greens:** new case in `tests/acceptance/val-199-workflow-detail.test.ts` — "a degraded
-  /api/runs/:id (+ its /dag sibling) drops the run-summary line rather than rendering \"undefined\"
-  (BF-6)"
+- **greens:** new case in `tests/acceptance/val-199-workflow-detail.test.ts` — at v27 titled "a
+  degraded /api/runs/:id (+ its /dag sibling) drops the run-summary line rather than rendering
+  \"undefined\" (BF-6)"; **[v27m] retitled and restated by IMPL-282** to "…keeps the last-known
+  run-summary line… (BF-6, BF-7)", because BF-7's guard makes that case the KEEP arm and the summary
+  correctly survives. This row's own pin — `not.toContain('undefined')` — is untouched
 - **files:** src/dashboard/ui/workflow.js, tests/acceptance/val-199-workflow-detail.test.ts
 - **commit:** 35e00fc
 - **iter:** v27m
@@ -6928,12 +6930,14 @@ instruction) — recorded here for the next design touch.
 
 - **status:** done
 - **traces:** TASK-209, REQ-133, REQ-134, ARCH-125, DES-206
-- **greens:** two cases in `tests/acceptance/val-199-workflow-detail.test.ts` — the new "a degraded
+- **greens:** three cases in `tests/acceptance/val-199-workflow-detail.test.ts` — the new "a degraded
   /api/runs/:id/dag ALONE: the live figure and the true node count survive, never an empty graph
-  and「0 個節點」(BF-7)", and the restated "a degraded /api/runs/:id (+ its /dag sibling) keeps the
-  last-known run-summary line rather than rendering \"undefined\" (BF-6, BF-7)"
+  and「0 個節點」(BF-7)" (the KEEP arm), the new "a degraded /api/runs/:id/dag from LOAD: the figure
+  region paints the ONE Unavailable component, not an empty graph (BF-7)" (the UNAVAILABLE arm), and
+  the restated "a degraded /api/runs/:id (+ its /dag sibling) keeps the last-known run-summary line
+  rather than rendering \"undefined\" (BF-6, BF-7)"
 - **files:** src/dashboard/ui/workflow.js, src/dashboard/lib/strings.js, tests/acceptance/val-199-workflow-detail.test.ts
-- **commit:** db12573
+- **commit:** db12573 (code + the two first cases), 8f6eb2f (the UNAVAILABLE-arm case)
 - **iter:** v27m
 
 **The defect.** BF-6's own fix stopped the degraded BODY reaching the painters and then handed them a
@@ -6994,23 +6998,38 @@ vacuously on `0 === 0`); the `.run-summary` text is `toEqual([beforeSummary])` a
 `not.toMatch(/(^|[^\d])0 (個節點|nodes)/)` (asserting the element is ABSENT cannot catch this — on
 this tick it is present and wrong); and `pageerror` is empty across two poll ticks (7 s).
 
+**The SECOND arm needed its own case, because nothing in the tree had ever executed it.** Both cases
+above degrade AFTER a healthy paint, so both take the KEEP arm — `paintFigureUnavailable`, the `el`
+import and the `t(lang,'unavailable')` lookup would have shipped never having run in a browser, and
+`tsc` type-checks none of it (`.js`). BF-7's text says 「TWO branches, both mandatory」 and 「an
+unrecorded run is indistinguishable from no run」, so the third case installs the interception BEFORE
+`goto`: the view never has a successful paint of this run, `state.paintedRunId` stays `null`, and the
+UNAVAILABLE arm is what executes. It asserts the marker's TEXT (`[data-legend] .empty` is
+`'無法取樣'`, the table's zh value — a missing key would render the literal string `undefined` here,
+which is why presence alone is not asserted), zero `[data-node-cell]`, zero svg children, and no
+fabricated `.run-summary` beside a graph that was never drawn.
+
 **Falsification (measured, `Edit` only — never `git checkout` / `restore` / `stash`, CLAUDE.md).**
 Reverted the two arms to the pre-fix one-liner
 (`const payload = dagRes.status === 'ok' ? dagRes.body : { cells: [], … }`) and re-ran
 `RWE_REQUIRE_BROWSER=1 PUPPETEER_EXECUTABLE_PATH=…/linux-152.0.7977.75/chrome-linux64/chrome
 npx vitest run tests/acceptance/val-199-workflow-detail.test.ts` →
-**2 failed | 5 passed (7)**, verbatim:
+**3 failed | 5 passed (8)**, verbatim:
 
 ```
 FAIL … > a degraded /api/runs/:id (+ its /dag sibling) keeps the last-known run-summary line … (BF-6, BF-7)
 AssertionError: expected [] to deeply equal [ 'completed · 1 個節點 · 0 tok · $0.00' ]
 FAIL … > a degraded /api/runs/:id/dag ALONE: the live figure and the true node count survive … (BF-7)
 AssertionError: expected +0 to be 1 // Object.is equality
+FAIL … > a degraded /api/runs/:id/dag from LOAD: the figure region paints the ONE Unavailable component … (BF-7)
+TimeoutError: Waiting for selector `[data-legend] .empty` failed
 ```
 
-Both halves of the defect are in those two lines: the summary erased (`[]` where the true
-`completed · 1 個節點 · 0 tok · $0.00` had been) and the figure erased (`[data-node-cell]` 1 → 0).
-Restored via `Edit`, re-ran the same command → **7 passed (7)** (was 6 before this row's new case).
+All three failure modes of the one defect are in those lines: the summary erased (`[]` where the true
+`completed · 1 個節點 · 0 tok · $0.00` had been), the figure erased (`[data-node-cell]` 1 → 0), and —
+on a first paint — an empty graph with **no marker at all**, indistinguishable from 「still loading」
+for an operator. Restored via `Edit`; `git diff --stat` against the restored file is empty
+(byte-identical). Re-ran the same command → **8 passed (8)** (was 6 before this row's cases).
 
 **A blessed assertion changed, and it had to travel in this commit.** `val-199`'s BF-6 case degrades
 both routes AFTER a healthy paint with the selection unchanged — that is precisely the (K) arm, so
@@ -7052,10 +7071,10 @@ The clause in `04-design.md` keeps its own wording — the guard is scoped to `s
 - `npx tsc --noEmit` → exit 0.
 - `RWE_REQUIRE_BROWSER=1 PUPPETEER_EXECUTABLE_PATH=…` (real Chromium 152.0.7977.75, NOT a silent
   `itReal` skip) `npx vitest run tests/acceptance/val-199-workflow-detail.test.ts` →
-  **7 passed / 0 failed** (was 6).
+  **8 passed / 0 failed** (was 6).
 - `RWE_REQUIRE_BROWSER=1 … npx vitest run` over the five dashboard acceptance files
-  (`val-198`, `val-199`, `val-200`, `val-201`, `val-202`) → **38 passed / 0 failed** (5 files; was 37).
-- `npx vitest run` (full suite, no `RWE_REQUIRE_BROWSER`) → **403 files passed / 1 skipped; 2839 passed / 26 skipped / 0 failed** (+1 over the pre-round 2838 baseline — this row's own new case).
+  (`val-198`, `val-199`, `val-200`, `val-201`, `val-202`) → **39 passed / 0 failed** (5 files; was 37).
+- `npx vitest run` (full suite, no `RWE_REQUIRE_BROWSER`) → **403 files passed / 1 skipped; 2840 passed / 26 skipped / 0 failed** (+2 over the pre-round 2838 baseline — this row's own two new cases).
 - `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → **1667 items / 35 gaps**
   (item count +1 over the pre-round 1666 baseline — this IMPL-282 heading is the one new work item;
   it traces to existing TASK-209 / REQ-133 / REQ-134 / ARCH-125 / DES-206 and mints no other id).

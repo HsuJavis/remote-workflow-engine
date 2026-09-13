@@ -5118,23 +5118,32 @@ ElementHandle with no `textContent`, so the obvious form would be red on every p
 HEAD, so landing it separately would have put a red test on master. BF-5/BF-6 stay closed: their subject
 was the literal text 「undefined」, which the two `not.toContain` assertions still pin, untouched.
 
-**The new case exists because the old one cannot see this defect.** BF-6's case degrades `/dag` AND
+**Both arms are pinned, and the second one is why this took a third case.** The first two cases
+degrade AFTER a healthy paint, so both take the KEEP arm — `paintFigureUnavailable`, the `el` import
+and the `t(lang,'unavailable')` lookup would have shipped having run in zero browsers, and `tsc`
+type-checks none of it (`.js`). The third installs the interception BEFORE `goto`, so paint memory is
+never set and the UNAVAILABLE arm is what executes; it asserts the marker's TEXT (`無法取樣`, from the
+table), not merely that an element exists — a one-language key would render the literal string
+`undefined` right there. A mandatory branch with no case is a branch nobody has run.
+
+**The new cases exist because the old one cannot see this defect.** BF-6's case degrades `/dag` AND
 `/api/runs/:id` together, which nulls `view`, drops the summary element and lets an absence assertion pass
 over a BLANKED graph — its own comment concedes it. The new case degrades `/dag` **ALONE** and asserts
 invariants: `[data-node-cell]` count UNCHANGED (with a `> 0` precondition, or 「unchanged」 passes vacuously
 on `0 === 0`), the `.run-summary` still reporting the TRUE node count, `pageerror` empty across two ticks.
-Falsified by reverting the guard: `expected [] to deeply equal [ 'completed · 1 個節點 · 0 tok · $0.00' ]`
-and `expected +0 to be 1` — both halves of the defect, the erased summary and the erased figure, in two
-lines.
+Falsified by reverting the guard — 3 failed: `expected [] to deeply equal [ 'completed · 1 個節點 · 0 tok
+· $0.00' ]`, `expected +0 to be 1`, and `TimeoutError: Waiting for selector [data-legend] .empty failed`
+— the erased summary, the erased figure, and an empty graph with no marker at all on a first paint,
+which for an operator is indistinguishable from 「still loading」. Restored byte-identical.
 
 **One guard caught the repair itself.** The first draft of the paint-memory comment paraphrased the
 clause using the C3 word, and `no-skeleton-surface.test.ts` (UT-115) went red on `src/dashboard/ui/workflow.js`
 in the full-suite run — the mechanical guard doing exactly the job review discipline had failed at nine
 times. Reworded; the clause in `04-design.md` keeps its own wording, since the guard is scoped to `src/**`.
 
-**Verification:** `tsc` exit 0 · val-199 **7/7** in real Chromium 152.0.7977.75 with
-`RWE_REQUIRE_BROWSER=1` (not a silent `itReal` skip) · the five dashboard acceptance files **38/38** ·
-full suite **2839 passed / 26 skipped / 0 failed** · trace **1667 items / 35 gaps**, gap SET diffed
+**Verification:** `tsc` exit 0 · val-199 **8/8** in real Chromium 152.0.7977.75 with
+`RWE_REQUIRE_BROWSER=1` (not a silent `itReal` skip) · the five dashboard acceptance files **39/39** ·
+full suite **2840 passed / 26 skipped / 0 failed** · trace **1667 items / 35 gaps**, gap SET diffed
 line-for-line identical against a baseline captured BEFORE the first edit (never by checking the ledger
 backwards in place). `current_stage` stays `review`: a Gate 8 send-back returns to the reviewer, it does
 not rewind the workflow to Gate 5 — the same routing the v27l design send-back used.
