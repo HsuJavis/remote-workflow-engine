@@ -4908,10 +4908,15 @@ BF-1's UT-245 rename is a like-for-like replacement, not a net-new case. `sh .sd
 .sdlc/features/001-remote-workflow-engine` → **1663 items / 35 gaps** (was 1661/35 at RE-REVIEW #2;
 +2 items for IMPL-277/278, gap SET unchanged — re-verified by calling `analyze()` directly: 0
 high/orphan/broken-link/mock-only, 10 mid = the same recorded REQ-137/138/139/142/143 pair, 25 low =
-21 pre-existing drift + 4 TASK 未實作). Every fix was independently falsified before being counted
-done: reverted (via `Edit`, restoring the exact prior text — never `git checkout`/`git stash`, per
-this repo's CLAUDE.md), the amended test/case confirmed red for the reason the finding measured,
-then restored and re-confirmed green.
+21 pre-existing drift + 4 TASK 未實作). **Every fix was independently falsified (measured, run after
+`b124430`/`e098b6f` landed, in this same session — see the follow-up `docs(v27k)` commit and the
+amended IMPL-277/278 falsification paragraphs for the exact assertions observed):** each guard was
+reverted in turn via `Edit` (never `git checkout`/`git stash`, per this repo's CLAUDE.md) — BF-1's
+`prev.status` revert failed exactly the renamed UT-245 case (`expected 'live' to be 'degraded'`),
+BF-2's `home.js`/`run.js` reverts each failed exactly their own new acceptance case
+(`stillShowsRunning` false; node-cell count `0` not `9`) — confirmed `git diff --stat` was empty
+after each restore, then re-ran green (`dashboard-lib-connection.test.js` 12/12, `val-198` 13/13,
+`val-200` 6/6).
 
 **Not touched, by design:** the 10 MID parked-REQ rows, the 53 LOW recorded debt items (F-2/F-3/
 QD2-O2, the carried panel findings, the trace/`solid_check` rows, TOOL-FORK/DOC-H) — none was named

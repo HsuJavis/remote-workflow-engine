@@ -6549,12 +6549,12 @@ exactly as before (`offline` unchanged at `>= 2`), but `status` now reads `conse
 'offline' : 'degraded'` — never `prev.status`. No `prev.status === 'live'` carve-out was added (a
 first-tick all-fail landing on `degraded` from `checking` is correct and intended, per the finding).
 
-**Falsified both ways:** reverted to `prev.status`, confirmed the amended UT-245 case goes red
-(`expected 'live' to equal 'degraded'`... i.e. the OLD code produces `live`, which the NEW assertion
-rejects); restored, re-ran — 12/12 green in `dashboard-lib-connection.test.js`. The two neighboring
-cases ("-> offline on the SECOND consecutive all-fail tick", "offline -> live on a single recovery")
-were re-run unchanged and still pass, because they assert on `consecutiveFails`/the `ok`-recovery
-branch, neither of which this fix touches.
+**Falsified both ways (measured, run after this commit landed — see the follow-up docs commit):**
+reverted line 39 to `prev.status`, ran `dashboard-lib-connection.test.js` — exactly 1 of 12 failed,
+the renamed case, `AssertionError: expected 'live' to be 'degraded'` (Object.is, via `toBe`); the two
+neighboring cases ("-> offline on the SECOND consecutive all-fail tick", "offline -> live on a single
+recovery") passed unchanged, confirming the fix is isolated to the one clause. Restored via `Edit`
+(`git diff --stat` empty after), re-ran — 12/12 green.
 
 ### IMPL-278 — BF-2: a degraded body is never rendered as data on the Workflows home or a run's swimlane
 - **status:** done
@@ -6604,5 +6604,9 @@ no `pageerror` in either new case.
 - `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` → re-run after IMPL-277/278 landed;
   see `state.yaml`'s `gates.impl.note` for the exact item/gap counts against the RE-REVIEW #2
   baseline (1661/35).
-- Both fixes were independently falsified (reverted, confirmed the new case goes red for the
-  reason the finding measured, restored, confirmed green) before being counted done.
+- Both fixes were independently falsified (measured, run after this commit landed — see the
+  follow-up docs commit): `home.js`'s guard reverted to `if (!body) return;` — the BF-2 case failed
+  alone (12 passed / 1 failed), `AssertionError: expected false to be true` at `stillShowsRunning`;
+  `run.js`'s guard reverted to `if (!dagBody) return {};` — the BF-2 case failed alone (5 passed / 1
+  failed), `AssertionError: expected +0 to be 9` (`after` vs `before`). Both restored via `Edit`
+  (`git diff --stat` empty after each), re-ran — `val-198` 13/13 and `val-200` 6/6 green.
