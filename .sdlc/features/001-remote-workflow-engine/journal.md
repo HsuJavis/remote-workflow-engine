@@ -5846,3 +5846,58 @@ production code touched (test-first: only `tests/unit/dashboard-lib-strings.test
 `tests/unit/dashboard-seam.test.ts`, `tests/unit/demo-surface.test.ts`,
 `tests/acceptance/val-207-demo-data.test.ts`, and the ledger). Next: Gate 6 (implementation) for
 TASK-226 only.
+
+- 2026-09-18 — **v28b GATE 3+4 REVISIT (design widening; designer, LEAN tier) — the owner answered
+DES-220's carried `owner_decision`, and widened it past either option offered.** Verified on disk
+before writing: `state.yaml`'s `pending:` list carries the 「v28b OWNER RULING (2026-09-18)」 entry,
+and `01-requirements.md:1957`'s `[REFINED v28b, owner ruling 2026-09-18]` block matches it — the
+ruling itself landed at `87eee96` (docs only: it recorded the widened text in requirements/state.yaml
+but did not touch code or 04-design.md, which is the gap this entry closes).
+
+**Written.** `04-design.md`: **DES-220** flipped `owner_decision` from `pending` to `answered
+2026-09-18`, in ARCH-124/ADR-060's own resolved-marker shape (original question kept for the record,
+the ruling quoted, the ledger citation, then what is/isn't landed yet). Title, `traces:` (+DES-215,
+DES-216), `signature:`, `boundary:` and `tests:` all WIDENED to the ruled behaviour: `noDemoData`
+changes from a complete sentence to a colon-terminated PREFIX in both languages, and all THREE call
+sites now append their own literal route (`/api/workflows/:name/describe`, `/api/issues`,
+`/api/workflows`) — the last one new, in `ui/system.js`, whose `paintCountsUnavailable` gains a `text`
+parameter and ONE `tick.source === 'demo'` branch in its sole caller. New **(B7)**: the counts card's
+demo/live split is (B3)'s wording-only rule a third time; DES-215/216's per-card independence and the
+three host cards are untouched. `03-tasks.md`: **TASK-226** widened the same way — `files:` gains
+`src/dashboard/ui/system.js`, `dod:` gains the third acceptance case and the widened allowlist/prefix
+detail. **No new TASK/DES id minted** — the third arm is one file, one parameter, one branch, reusing
+TASK-226's existing test files end to end (val-207, demo-surface, dashboard-seam), so stretching a
+second card over it would cost a second `des:`/`files:`/`dod:` to say the same thing DES-220 (4)
+already pins to the byte; recorded here rather than assumed.
+
+**Swept for prose still describing this as open (this ledger's most-repeated defect class), all in
+`04-design.md`, all in v28b's own delta section:** DES-216's `amended (2026-09-18 — REQ-143's third
+named route)` line (`:7633` before this edit) said "DES-220 covers only the other two routes... that
+divergence is NOT decided here" — struck, resolved, notes the counts card IS now touched. The `##
+Decision rationale — v28b` section carried TWO more: the interface-contract lens's "Second conflict"
+paragraph ("two wordings for one ruling... it is not taken here") and the Karpathy check's closing
+line ("no touching `ui/system.js`... the single question handed back to the owner") — both struck,
+both resolved with a pointer to DES-220's widened rows. A literal-substring check
+(`grep -c 'owner_decision:\*\* pending' 0*.md`) caught a FOURTH: the struck "Second conflict"
+paragraph itself quoted the old field syntax verbatim, which survives strikethrough markup as plain
+text — reworded so the check reads 0 across every ledger doc (07-review.md's own historical hits are
+a past gate's resolved finding about ARCH-124, not a live marker, and are untouched). DES-215 and
+DES-217 checked clean — no stale deferral language in either.
+
+**Two implementer-reported items, both verified, one struck, one confirmed and left for the verifier
+(out of a designer's files):** `04-design.md:6726` (DES-191) — "TASK-216 is the impl item; until it
+lands the property is UNGUARDED" — TASK-216 landed at `7c71b2b` (`tsconfig.server.json` +
+`tsconfig-server-program.test.ts`); re-ran `npx vitest run tests/unit/tsconfig-server-program.test.ts`
+here → 3/3 green; ADR-049's own row already carries the matching "Landed (TASK-216)" measurement.
+Struck, same `~~…~~ **[RESOLVED …]**` shape as the four already-struck "until TASK-215" siblings.
+`tests/unit/tsconfig-server-program.test.ts` has NO `UT-*` entry in `05-tests.md` — confirmed by grep
+(no hit), NOT written there (05-tests.md is the verifier's file); reported for the next gate that owns
+it.
+
+**Gate self-check.** `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → **1724
+items / 26 gaps**, exit 1 — IDENTICAL to the v28b Gate 3+4 baseline above, by ID and count (diffed the
+full sorted gap list before/after this session's edits: zero change). No new TASK/DES id, no `iter`
+bump (DES-220 stays `v28`, matching DES-216/217's own convention of dated `amended` lines over iter
+churn), so no new drift is possible from this pass. `grep -c 'owner_decision:\*\* pending' 0*.md` is 0
+for every `0*.md` file. No code, test, `state.yaml` or `01-requirements.md` file touched — design-only,
+as scoped. Next: Gate 6 rebuilds TASK-226 against the widened card (all three arms, one commit).
