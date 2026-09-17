@@ -7,7 +7,7 @@
 // row projection (`procRow`/`procTotals`), a moved formatter (`fmtBytes`, verbatim from
 // `ui/system.js:38` pre-v28), and the counts-card fold (`catalogCounts`, ADR-057's three written
 // definitions). All pure, no DOM, no fetch, no clock read (this file is covered by the standing
-// `grep -rn 'new Date()|Date.now()|document\.|fetch(' src/dashboard/lib/` falsifier, DES-210).
+// `grep -rn 'new Date()|Date.now()|document\.|fetch(' src/dashboard/lib/` falsifier, DES-210). // det:allow — a comment naming the API, not a call
 
 import { t } from './strings.js';
 

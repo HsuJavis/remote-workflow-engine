@@ -5550,3 +5550,79 @@ ledger backwards in place, CLAUDE.md) — see this session's own report for the 
 whether the gap SET moved. This session touched only `03-tasks.md`, `06-impl-log.md`, `04-design.md`
 and this `journal.md`, per the dispatch's file partition; `tests/**`, `src/**` and `state.yaml` were
 read for verification only, never edited.
+
+## v28 Gate 6.5+7 (2026-09-18, verifier) — PASSED
+
+Simplify (Gate 6.5, merged): scope `git diff 4431a9c..91bde2e -- src` (the 20 files TASK-217..225
+landed). `/simplify`'s spirit applied single-pass inline (Agent fan-out unavailable, stated not
+glossed, same disposition IMPL-248 recorded). One real fix: `currentLang()` was duplicated
+byte-identically in `ui/models.js` and `ui/system.js` (both new this iteration), each with its own
+comment explaining why it wasn't cross-imported from the OTHER new file — neither considered
+`ui/dom.js`, already imported by both for `el()` with zero cycle risk. Hoisted, following the exact
+`el()` precedent (IMPL-248). Two candidates named and rejected (a shared bar-fill helper — different
+null-handling contracts, one-time reuse; hoisting the zh/en label tables into `lib/strings.js` — a
+shape change verified only at the browser tier, out of proportion). IMPL-294.
+
+Regression closeout found and closed a real Gate 6 gap that a prior orchestrator ruling (commit
+9e1045315, before this Gate 6 session even started) had already named but the implementation never
+landed: `.stat-bar` had no `right:`/`width`, so — independent of the ruling's own `transform-origin`
+diagnosis — the box itself shrink-fit to 0px, making every progress bar this iteration ships
+(System's four stat cards, its process-table CPU bars, Models' benchmark bars) invisible regardless
+of the underlying percentage. Measured with a real throwaway Chromium probe before and after fixing,
+not assumed from CSS spec reading alone; closed with both a unit-tier CSS-string assertion and a
+browser-tier `offsetWidth` regression case deliberately immune to this host's own CPU% happening to
+read 0 at sample time. Two acceptance oracles (`val-018`, `val-080`) went stale in the SAME commit
+that correctly retired the fossil server-rendered shell body and correctly re-pointed a THIRD test
+(`UT-200`) for the identical reason — re-pointed the same way, not silently left red or fudged.
+`solid_check`'s one HIGH (`ARCH-125` never declared the new `ARCH-132` dependency TASK-220 wired,
+even though the v28 amendment layer `ARCH-133` already had it — `solid_check`'s own longest-prefix
+module resolution only consults the FIRST-declared ARCH row at a shared path) closed with a dated
+architecture amendment, not by deleting the dependency. `determinism_check`'s 3 findings were 2
+comment-text false positives (a banner quoting its own grep pattern) and 1 legitimate real-time
+display (the footer clock) — annotated `det:allow` per this tree's own established convention, 0
+new clock-injection seams needed. IMPL-295.
+
+Coverage gate: 85.17% raw (`src/dashboard/ui/*.js`'s ten browser-DOM-only files, unreachable under
+Node — IMPL-249's own v27 exclusion, extended by one file, `dom.js`, this iteration's own hoist
+target); 95.84% excluding them, after closing three real per-function gaps that WERE in scope (all
+inside TASK-217..225's own diff, none pre-existing): `lib/model.js`'s `modelRow` had ZERO unit
+coverage despite being pure/Node-testable (only the browser tier exercised it); `lib/system.js`'s
+`statCard`'s `memory|disk` OK arm (the actual byte-formatting arithmetic) was never given a real
+section value in a unit case; `poll.js`'s `setDemoBodies`/`getViewJSON` (both new, DES-210) had zero
+unit coverage. All three closed with tests, not excused. `src/dashboard/lib` and the in-scope half
+of `src/dashboard/ui` (`poll.js`/`clock.js`) now sit at 100% lines. IMPL-296.
+
+Full regression: 414/415 files, 2958/26 skipped, 0 failed (whole tree, no filter); TZ-shift
+(`Pacific/Kiritimati`) byte-identical, no time bombs. One genuine flake — `IT-171`'s process-count
+case measured 0 once while racing TWO of this session's own concurrent background full-suite runs
+against `system-info.ts`'s pre-existing 150ms `/proc`-enumeration deadline — root-caused (not
+silently re-run past): isolated re-run and the file's own full run both clean, recorded as an
+environment-sensitivity note rather than glossed over. `sh .sdlc/trace --check`: 1717 items / 30 gaps
+before this session's own 4 new IMPL entries, 1721/30 after — the 30-gap SET byte-identical to
+baseline throughout (verified by diffing `trace.analyze()`'s own gap list against a
+`git archive HEAD`-extracted copy, CLAUDE.md's mandated method, never by reading the ledger
+backwards in place): 0 new, 0 closed, all 30 the expected `未真實驗證` markers Gate 7.5 owns.
+
+**One ledger-integrity incident, caught by this session's own verification discipline before it
+could propagate:** an `Edit` on `05-tests.md`'s `VAL-214` note (adding the `.stat-bar` finding above)
+accidentally merged the FOLLOWING `### VAL-215` heading onto the edit's own last line, silently
+dropping the `###` prefix — the prose still read coherently, so a normal proofread would not have
+caught it. `trace.py`'s item count moved 1717→1716 with the SAME 30-gap set (a dropped VAL item with
+no dependents produces no new gap), so `--check`'s own exit code would not have flagged it either —
+only an explicit `git archive`-baseline item-SET diff did (`old_ids - new_ids == {'VAL-215'}`).
+Repaired by restoring the heading; the same diff method re-run afterward shows 0 removed / 0 added.
+Recorded here because CLAUDE.md's own incident log (`SDLC agent 清空 ledger 事故`) exists precisely
+so this class of near-miss gets named rather than quietly fixed and forgotten.
+
+Seam wiring: this iteration's one new production seam is `poll.js`'s `setDemoBodies`/`getViewJSON`
+pair — both call sites of `setDemoBodies` are in `app.js`'s real composition root (`mountApp()`'s
+boot-time dataset import, `tick()`'s demo/live branch), never only a test file. Real-dependency
+smoke: no new external integration this Sprint — GitHub's own change is a zero-wire-change type
+export, already proven real at a prior Gate 7.5 round; `system-info.ts` (the one real host
+dependency this Sprint's `topN` change touches) is exercised for real by existing integration tests
+and by `IT-171`/`VAL-214` themselves. Module gate dormant (0 `build:` declarations).
+
+State: `gates.verification.passed=true`, `current_stage: validation`, `updated: 2026-09-18`.
+`gates.impl` was also caught up — its own note had been left at a stale v27m pass since the v28 Gate
+6 session never re-stamped it; a dated catch-up note was added (precedent: `ad879c8`) rather than
+left silently stale into Gate 7.5. Next gate is 7.5 (validator).

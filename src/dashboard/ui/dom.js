@@ -10,3 +10,14 @@ export function el(tag, className, text) {
   if (text !== undefined) e.textContent = text;
   return e;
 }
+
+// [v28 Gate 6.5+7 (verifier, simplify)] `currentLang()` was defined byte-identically in
+// `ui/models.js` and `ui/system.js` (both new this iteration), each with its own comment
+// explaining why it wasn't cross-imported from the OTHER new file (a `ui/` cycle) — neither
+// considered this file, already imported by both for `el()` with no cycle risk. `agent-panel.js`/
+// `run.js`/`workflow.js` keep their own pre-existing copies (out of this iteration's diff, not
+// touched here — `run.js`'s is exported and imported by `workflow.js`, a distinct third
+// definition).
+export function currentLang() {
+  return document.documentElement.lang === 'en' ? 'en' : 'zh';
+}

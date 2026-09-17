@@ -178,6 +178,18 @@ describe('value anchors — v28 Models/System families (DES-219, TASK-221, READM
     expect(ruleBody(CSS, '.stat-bar')).toContain('height:4px');
   });
 
+  // [v28 Gate 6.5+7, verifier] closes the 9e10453 orchestrator ruling ("`.stat-bar` gets
+  // `transform-origin:left`... without this the bar grows from its centre") that never reached
+  // this file. Measured with a real Chromium page before this test existed: `left:0` alone (no
+  // `right`/`width`) shrink-fits an EMPTY absolutely-positioned box to 0px regardless of
+  // `transform-origin` — `right:0` (spanning the track) is equally load-bearing and not implied by
+  // the ruling's own wording, so both are asserted here rather than the origin alone.
+  it('.stat-bar spans its track (right:0) and scales from the left edge, not the centre', () => {
+    const body = ruleBody(CSS, '.stat-bar');
+    expect(body).toContain('right:0');
+    expect(body).toMatch(/transform-origin:\s*left\b/);
+  });
+
   it('.model-panel is 560px wide (README §4: "right slide-in panel (560 px)")', () => {
     expect(ruleBody(CSS, '.model-panel')).toContain('560px');
   });

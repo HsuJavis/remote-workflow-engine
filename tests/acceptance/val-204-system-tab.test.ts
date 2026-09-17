@@ -71,6 +71,22 @@ describe('System tab: four stat cards, process table, engine dl (VAL-214, REQ-13
       expect(cardCount).toBe(4);
       await page.waitForSelector('[data-proc-table] tbody tr', { timeout: 5000 });
       await page.waitForSelector('[data-engine-dl]', { timeout: 3000 });
+      // [v28 Gate 6.5+7, verifier] the 9e10453 orchestrator ruling on `.stat-bar` (transform-
+      // origin:left) turned out to guard a bigger hole, measured directly against a throwaway
+      // Chromium page before this assertion existed: `left:0` with no `right`/`width` shrink-fits
+      // an empty absolutely-positioned box to 0px REGARDLESS of transform-origin, so the fill bar's
+      // own box (not merely its scaleX'd paint) never spanned its track. `offsetWidth` reads the
+      // LAYOUT box, unaffected by the `scaleX()` transform `ui/system.js`'s `setBarPct` writes at
+      // runtime (`getBoundingClientRect()` would, and this real host's own CPU sample legitimately
+      // reads 0% at times — an environment-dependent value this assertion must not depend on).
+      // Measured directly against the pre-fix CSS: 0; against the fix: matches `.stat-track`'s own
+      // width. This is the underlying-box regression the ruling names, independent of any card's
+      // percentage value.
+      const cpuBarBoxWidth = await page.$eval(
+        '[data-sys-stat-card][data-card="cpu"] .stat-bar',
+        (elm) => (elm as HTMLElement).offsetWidth,
+      );
+      expect(cpuBarBoxWidth).toBeGreaterThan(0);
     } finally {
       await browser.close();
     }

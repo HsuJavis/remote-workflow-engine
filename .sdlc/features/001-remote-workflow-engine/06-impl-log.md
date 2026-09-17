@@ -7336,3 +7336,298 @@ line citing this entry and IMPL-292. Full regression unaffected: `npx tsc --noEm
 ledger ID, so it cannot move the gap count) — REQ-137 still shows `未真實驗證` in that set, which is
 correct: this closes TASK-222's `dod:`, not Gate 7.5's real-run flip of `VAL-213`'s `real:` field,
 which stays this iteration's validator's job, not mine.
+
+### IMPL-294 — Gate 6.5 simplify: `currentLang()` de-duplicated into `ui/dom.js`, following the exact `el()` precedent (IMPL-248)
+
+- **status:** done
+- **traces:** TASK-217, TASK-222, TASK-223, DES-213, DES-215, DES-216, REQ-137, REQ-138
+- **files:** src/dashboard/ui/dom.js, src/dashboard/ui/models.js, src/dashboard/ui/system.js
+- **commit:** (this session)
+- **iter:** v28
+
+Scope: `git diff 4431a9c..91bde2e -- src` (the 20 files TASK-217..225 landed this iteration).
+Skill `/simplify` invoked; the Agent fan-out is unavailable in this context so it was a single-pass
+inline review across reuse/simplification/efficiency/altitude, stated not glossed (same disposition
+IMPL-248 recorded for the same reason).
+
+**One real fix, named and applied.** `ui/models.js` and `ui/system.js` — both NEW this iteration —
+each defined a byte-identical `currentLang()` (2 lines), each carrying its OWN comment explaining
+why it was NOT cross-imported from the OTHER new file ("a cross-import here would be [the only
+cycle/one of the few cycles] in `ui/`"). Neither comment considered `ui/dom.js`, which BOTH files
+already import for `el()` with zero cycle risk — the exact shape IMPL-248 hoisted `el()` for
+(triplicated across models/system/issues.js at v27 Gate 6.5). Hoisted `currentLang()` into
+`dom.js`, re-exported from both call sites, removed the two local copies and their now-moot
+cross-import comments. `ui/dom.js` is already in `ASSET_KEYS` (static-assets.ts) — no registration
+change needed.
+
+**Deliberately NOT touched (surgical scope):** `agent-panel.js:42` and `run.js:92` (exported,
+imported by `workflow.js:34`) keep their OWN pre-existing copies of the same two lines — both files
+predate this iteration's diff (untouched by TASK-217..225), so unifying them would be adjacent-code
+improvement outside this pass's remit, not a fix for something this iteration introduced. The tree
+goes from 5 definitions of `currentLang()` to 3, not to 1 — stated, not hidden.
+
+**Candidates named and rejected:**
+1. **`setBarPct`-style bar-fill unification** (`ui/system.js`'s `setBarPct(barEl, pct)`, a full
+   function with a `pct == null → 0` guard and `Math.max(0, Math.min(1, ...))` clamp, vs.
+   `ui/models.js:219`'s one-line `bar.style.transform = \`scaleX(${pct / 100})\`` inside a loop
+   where `pct` is already clamped to `[0,100]` and never null by construction, per `modelPanel`'s
+   own `Math.max(0, Math.min(100, value))`). Different contracts (one handles an absent value, one
+   never sees one) — extracting a shared function would mean either adding an unneeded null-check
+   to the models call site or dropping the null-guard from the shared one, i.e. real
+   flexibility/complexity added for one-time reuse. Rejected per Karpathy #2 (no abstraction for
+   code used once, no needless flexibility).
+2. **`CARD_LABELS`/`PROC_HEAD_LABELS`/`ENGINE_DL_LABELS` (`ui/system.js`) and `COLUMNS`'s zh/en
+   pairs (`ui/models.js`) into `lib/strings.js`'s `STR` table** — both files' own comments already
+   name the reason they stayed local: `strings.js` was outside TASK-206/220's file partition when
+   these were authored, and moving them now is a shape change (nested per-column/per-card label
+   objects vs. `STR`'s flat `{key: string}` map) whose only verification is the browser tier
+   (val-203/val-204) — a bigger, riskier move for a cosmetic win. Rejected as out of proportion to
+   this closure.
+3. **`DES-215`'s `statCard('memory'|'disk', ...)` arithmetic vs. a hypothetical shared "byte-range
+   card" helper** — the four `kind` arms (`counts`/`unavailable`/`cpu`/`memory|disk`) already share
+   ONE function and ONE signature (`statCard`'s own point, DES-215's note); splitting the
+   memory/disk arm out further would be decomposition with no duplicate to remove. Not a
+   candidate, named only to record it was considered.
+
+Re-ran affected tests after the hoist (per contract: revert on red — not needed, both green):
+`npx vitest run tests/unit/dashboard-client-corpus.test.ts tests/unit/dashboard-no-design-values.test.ts tests/unit/dashboard-class-contract.test.ts`
+→ 34/34. `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-203-models-tab.test.ts tests/acceptance/val-204-system-tab.test.ts`
+→ 9/9 (these two files have ZERO Node-side coverage per IMPL-249's own exclusion, so the Node suite
+alone proves nothing about an import breaking under real `document`/`fetch` — the browser-tier
+re-run is the actual proof this hoist didn't break either tab). `npx tsc --noEmit` exit 0.
+
+### IMPL-295 — Gate 6.5+7: a Gate 6 defect the 9e10453 ruling named but never landed, two acceptance oracles gone stale under it, one undeclared cross-module dep, and three determinism_check false positives
+
+- **status:** done
+- **traces:** TASK-217, TASK-220, TASK-221, TASK-223, DES-212, DES-216, DES-219, ARCH-125, ARCH-132, REQ-137, REQ-138, REQ-143
+- **files:** src/dashboard/dashboard.css, tests/unit/dashboard-class-contract.test.ts, tests/acceptance/val-204-system-tab.test.ts, tests/acceptance/val-018-dashboard-browser-ui.test.ts, tests/acceptance/val-080-graph-view.test.ts, .sdlc/features/001-remote-workflow-engine/02-architecture.md, src/dashboard/ui/clock.js, src/dashboard/lib/system.js, src/dashboard/ui/app.js
+- **commit:** (this session)
+- **iter:** v28
+
+**(1) `.stat-bar` — a real, measured visual defect, not a style nit.** Commit `9e1045315` recorded
+an explicit orchestrator ruling: "`.stat-bar` gets `transform-origin:left` (the guard rightly
+forbids `.style.width`, `scaleX()` is the legal form, and without this the bar grows from its
+centre)" — but the ruling never reached `dashboard.css`; grep confirms `transform-origin` appears
+nowhere near `.stat-bar` on HEAD before this fix. Measured directly against a throwaway Chromium
+page (probe HTML linking the real `dashboard.css`) BEFORE assuming the ruling's own diagnosis was
+complete: the actual defect is bigger than "grows from centre" — `.stat-bar{position:absolute;
+left:0; ...}` with no `right`/`width` shrink-fits an EMPTY box to **0px**, so every bar (System's
+four stat cards, the process table's CPU bars, Models' benchmark bars — all three surfaces share
+this ONE class) rendered with **zero width, invisible**, regardless of `transform-origin`. Fixed:
+`right:0` (spans the track — the actual missing piece) + `transform-origin:left` (the ruling's own
+fix, still needed so `scaleX()` pivots from the left edge, not the centre) + `transition:transform`
+replacing the dead `transition:width` (nothing ever wrote `.style.width`; the guard forbids it).
+Re-measured with the same probe: 0px → matches the track's own width, `scaleX()` now visibly fills
+from the left. Confirmed against the REAL served page too (`[data-sys-stat-card][data-card="cpu"]
+.stat-bar`'s `offsetWidth`): 0 before, 179 (matching `.stat-track`) after — independent of this
+host's own CPU% (which happened to sample 0% at the time, `scaleX(0)`, a legitimate value this
+finding's own assertion had to be written to not depend on: `offsetWidth` reads the untransformed
+layout box, `getBoundingClientRect().width` would have been fooled by a genuine 0%). Two regression
+tests added: `dashboard-class-contract.test.ts` (`.stat-bar` carries `right:0` and
+`transform-origin:left`, unit tier) and `val-204-system-tab.test.ts` (the CPU card's `.stat-bar`
+`offsetWidth` > 0, browser tier, real Chromium).
+
+**(2) Two acceptance oracles went stale in the SAME commit that fixed a DIFFERENT one (UT-200) for
+the SAME root cause.** `git diff 4431a9c..91bde2e` includes `7c71b2b`, which lands TASK-215's own
+work: deleting the fossil server-rendered shell body (`dashboard-page.ts:92-152` — header/nav/every
+`#id`-anchored section from the pre-v27 architecture), because that markup is "discarded before
+first paint" (`app.js:455`) and never rendered — `ui/run.js`/`ui/system.js`/etc. build the real DOM
+client-side. `dashboard-zoom-source.test.ts` (UT-200) was updated IN THE SAME COMMIT to stop
+checking that fossil and check the real served `ui/run.js` bytes instead — its own comment cites
+the exact `dashboard-page.ts:92-152` range "deleted by this task". `val-018-dashboard-browser-ui.
+test.ts`'s own last case and `val-080-graph-view.test.ts`'s HTML-container case were NOT swept
+along: both still asserted against the (now three-line) static shell body and went red
+(`val-018`: `expected shell to match /zoomable/`; `val-080`: `expected ... to match /graph|svg|
+canvas/i`) — full regression measured this, not assumed. Re-pointed BOTH the same way UT-200
+already was, to the real served `/static/dashboard/ui/run.js` (`.zoomable`/`viewBox`/the literal
+`svg` `createElementNS` call), same guarantee, only re-pointed. `val-018`'s `iter:` and `val-080`'s
+`iter:` bumped to v28 (genuinely touched this iteration); full detail in each item's own dated note
+in `05-tests.md`. These are val-018/val-080's own stale ORACLES, not this closure's own tests — not
+listed under `test_defects` (this gate is not the implementation stage the schema restricts that
+field to), fixed directly per the same judgment call this ledger's prior verifiers have made for
+the identical class of defect (v27's own "[Gate 5 oracle fix]" entries in this same file).
+
+**(3) `solid_check` HIGH: `ARCH-125`'s `deps:` never gained `ARCH-132`.** TASK-220 wired `app.js`'s
+boot-time `import('../demo/dataset.js')` (DES-212) into `src/dashboard/ui` this iteration — a real,
+wanted cross-module edge (REQ-143) that `solid_check` measured undeclared. Root cause, not just the
+missing line: `ARCH-133` (the v28 amendment layer, SAME `module: src/dashboard/ui` path) already
+lists `ARCH-132` in its own `deps:`, but `solid_check.py`'s `module_of()` resolves every file under
+a directory to whichever ARCH row at that path was scanned FIRST (`len(p) > best_len`, strict
+`>`, never overwritten by a later row of the same path length) — `ARCH-125` is declared earlier in
+`02-architecture.md`, so it is the row actually enforced, and `ARCH-133`'s own correct declaration
+was never consulted. Fixed by adding `ARCH-132` to `ARCH-125`'s own `deps:` line, with a dated
+amendment recording why (`02-architecture.md`). Re-run: 0 high / 0 mid / 10 low (pre-existing
+unclaimed-file set, unchanged) — was 1 high / 0 mid / 10 low.
+
+**(4) `determinism_check.py`: 3 findings, 0 real production wall-clock decisions.** Two were
+comment-text false positives — `ui/clock.js`'s own module banner and `lib/system.js`'s own banner
+each quote the literal grep pattern (`Date\.now()\|new Date()` / `'new Date()|Date.now()|...'`) as
+PROSE describing a falsifier, on a physical line that does not itself contain the word "clock" (the
+tool's own documented seam exemption — `SEAM.search(line)` — checks the flagged line's raw text,
+and the word "clock" happens to sit on a DIFFERENT line of the same paragraph). Annotated both with
+`// det:allow — a comment naming the API, not a call`, the exact phrase already used for the same
+class of false positive elsewhere in this tree (`scheduler-engine.ts:5`, four sites in
+`sandbox/guards.ts`) — not a new convention. The third, `app.js:168`'s `updateFooterClock()`
+(pre-existing, v27, untouched by this iteration's diff — still had to clear this iteration's gate,
+which requires exit 0 regardless of which iteration introduced a finding), is a genuine real-time
+display ("Updated HH:MM:SS", README "Header / chrome") — not a decision, the exact class this
+project's own `det:allow` precedent already covers (`clock.ts:21-22`, `audited-read.ts:39`).
+Annotated, not routed to Gate 5 for a clock-injection seam, because the footer's job IS to show
+wall-clock time, not to decide anything from it. `determinism_check.py src --check` → clean (was 3
+findings).
+
+### IMPL-296 — Gate 6.5+7 coverage gate: three real per-function gaps closed with tests (all in TASK-217..225's own diff); the `--coverage.exclude` CLI form corrected mid-measurement
+
+- **status:** done
+- **traces:** TASK-217, TASK-222, TASK-223, DES-213, DES-215, REQ-137, REQ-138
+- **greens:** UT-257 (extended, 29→33), UT-262 (extended, 16→18), UT-249 (extended, 8→12)
+- **files:** tests/unit/dashboard-lib-model.test.js, tests/unit/dashboard-lib-system.test.js, tests/unit/dashboard-client-corpus.test.ts
+- **commit:** (this session)
+- **iter:** v28
+
+`npx vitest run tests/unit tests/integration --coverage --coverage.include='src/**'` (IMPL-249's own
+command) measured **85.17% overall lines** — below the 90% floor, for the SAME reason IMPL-249
+found and disposed of at v27: `src/dashboard/ui/{agent-panel,app,dom,home,issues,models,run,system,
+theme-init,workflow}.js` never execute under Node (real-browser-only client code; the coverage-gate
+scope decision-rationale below reuses IMPL-249's own reasoning verbatim rather than re-litigating
+it — `dom.js` is a new addition to that already-excluded set, carrying only the DOM-touching
+`currentLang()`/`el()` helpers this closure's own IMPL-294 hoisted, no server-testable logic of its
+own either). **First attempt at excluding them via one comma-joined `--coverage.exclude=a,b,c` flag
+silently did nothing** (measured: identical 85.17% before and "after") — vitest 1.6's CLI array
+options need the flag REPEATED once per value, not comma-joined; corrected and re-measured.
+
+**Decision-rationale (coverage-gate scope, same exclusion IMPL-249 made, extended by one file):**
+the same ten `ui/*.js` files IMPL-249 excluded (now including `dom.js`, this iteration's own new
+hoist target) are excluded from the UT/IT line-coverage denominator; `poll.js` and `clock.js` stay
+IN (both carry real pure/Node-testable logic — `poll.js`'s `endpointsFor`/`getJSON`/`getViewJSON`,
+`clock.js`'s `clockNow` seam). Excluding the ten: **95.84% overall** (`npx vitest run tests/unit
+tests/integration --coverage --coverage.include='src/**' --coverage.exclude='src/dashboard/ui/
+{agent-panel,app,dom,home,issues,models,run,system,theme-init,workflow}.js'` — one `--coverage.
+exclude=` flag per file in the actual invocation) — clear of the 90% floor with margin. `src/
+dashboard/lib` and the in-scope half of `src/dashboard/ui` (`poll.js`/`clock.js`) both land at
+**100% lines** after the three gaps below close; `src/dashboard/demo/dataset.js` was already 100%
+(UT-259/260's own type-lock tests exercise every key).
+
+**Three real per-function gaps, found by name and closed with tests (not excused) — all three sit
+inside TASK-217..225's OWN diff, none pre-existing:**
+1. **`lib/model.js`'s `modelRow(entry, lang)`** (0% — the ENTIRE exported function, lines
+   151-168, plus `fmtBenchmarks` at 130-135) had no unit case at all: `dashboard-lib-model.test.js`
+   imports it but never calls it, only `ui/models.js:renderRows` (browser-only) does. This is
+   server-testable pure logic (no DOM), so per the coverage gate it may not be left to the browser
+   tier alone (VAL-213 exercises it for real, but that is not a substitute — the same class of gap
+   IMPL-249's own rule distinguishes: `ui/*.js` genuinely CANNOT be unit-tested without re-
+   implementing the browser proof or mocking the SUT boundary; `lib/*.js` has no such excuse).
+   Added 4 cases to `dashboard-lib-model.test.js`: a RICH row's full 12-cell shape + `sortKeys`;
+   `declared:false` → `✕` vs `declared:'unknown'` → `—` (never the same glyph, the two-value-set
+   this file's own `fmtDeclared` distinguishes); absent aliases/latency/benchmarks → `—`, never a
+   throw; a two-score benchmark average (72.5) to hit `fmtBenchmarks`'s `.toFixed(1)` branch (every
+   existing fixture's own single-value benchmarks average to an INTEGER, `78`/`60`/`70`, so that
+   branch had never fired even incidentally). `model.js`: 88.23% → **100%** lines.
+2. **`lib/system.js`'s `statCard`'s `'memory' | 'disk'` OK arm** (lines 76-81) — the three existing
+   `statCard` cases cover `cpu` (ok), `counts`, and `memory` (`unavailable`), but never `memory`/
+   `disk` with a REAL section value — the arithmetic (`Math.round(v.usedPct)`, the `fmtBytes(...)
+   of fmtBytes(...) · fmtBytes(...) free` meta line, disk's `kicker`) had zero unit coverage,
+   exercised only indirectly at the browser tier (VAL-214, which cannot assert the exact string
+   format the way a unit case can). Added 2 cases: a memory section (rounds `usedPct`, formats the
+   meta line exactly, no kicker) and a disk section (same arithmetic, plus `kicker` = `path`).
+   `system.js`: 95.38% → **100%** lines.
+3. **`ui/poll.js`'s `setDemoBodies`/`getViewJSON`** (0% — both entirely new this iteration, DES-210,
+   TASK-217) had zero unit coverage, exercised only at the browser tier (VAL-216/VAL-217's real
+   Chromium demo-mode runs). Both are pure/Node-testable — `getViewJSON` makes NO network call
+   while a map is installed, so no `fetch` stub is even needed for that arm. Added 4 cases to
+   `dashboard-client-corpus.test.ts` (with an `afterEach` clearing the installed map — `poll.js`'s
+   module-level `demoBodies` singleton is shared across every `it()` in the same test FILE via
+   Node's import cache, so a leaked map would silently change a LATER case's fetch behaviour): no
+   map installed → delegates to a real `fetch` (`source:'live'`); a map hit → `{status:'ok',
+   reached:true, source:'demo'}` with the mapped body, asserting `fetch` itself throws if called
+   (a stronger guarantee than merely not checking call count); a map miss → `{status:'fail',
+   body:null, reached:true, source:'demo'}` — `reached:true` because the PAGE was reached, only
+   this one URL is absent from the fiction (DES-210's own distinction from a real network drop);
+   `setDemoBodies(null)` genuinely clears the map. `poll.js`: 89.77% → **100%** lines/funcs.
+
+**Not touched (pre-existing, unrelated to this closure, confirmed by line number not assumed):**
+`server.ts` (89.23%) — the two v28-touched lines (`systemInfo.get({topN:20})` at `:375`,
+`const payload: IssuesListView = ...` at `:475`) are BOTH inside the covered range; the file's own
+shortfall is elsewhere, pre-existing, unchanged by this diff. `src/harness-defaults.ts` (0%),
+`src/mcp-probe.ts` (58.33%), `src/main.ts` (79.36%/33.33% funcs), `src/sandbox/child-entry.ts` (0%,
+runs only as a real spawned child process, never imported directly) — all pre-existing, all outside
+TASK-217..225's file list, all already named by `solid_check`'s own "未認領檔案" warnings as
+pre-existing architecture-doc drift unrelated to this Sprint.
+
+Full regression re-run after all three fixes: `npx vitest run tests/unit tests/integration
+--coverage --coverage.include='src/**' --coverage.exclude=<the ten ui/*.js files, one flag each>` →
+**335 files / 2578 passed / 1 skipped / 0 failed**, **95.84% overall lines** (up from 85.17%
+unexcluded / 95.69% before the three per-function fixes). `npx tsc --noEmit` exit 0.
+
+### IMPL-297 — Gate 6.5+7 closeout: full regression, trace/solid_check/determinism_check, TZ-shift, seam wiring, real-dependency smoke — a genuine flake root-caused, not silenced
+
+- **status:** done
+- **traces:** REQ-137, REQ-138, REQ-139, REQ-142, REQ-143
+- **commit:** (this session)
+- **iter:** v28
+
+**Regression:** `npx vitest run` (whole tree, no filter) → **414 files / 1 skipped, 2958 passed / 26
+skipped, 0 failed** (415/2984 total; the 26 skips are the standing credential/browser-gated set this
+ledger has carried across iterations). `RWE_REQUIRE_BROWSER=1 npx vitest run` over the nine v28
+acceptance files individually (val-018, val-080, val-203, val-204, val-205, val-206, val-207, plus
+the two dashboard-http/dashboard-class-contract unit files) → all green, real Chromium, no fakes at
+the SUT boundary. `npx tsc --noEmit` exit 0.
+
+**One genuine flake, root-caused rather than silently re-run until green:** `IT-171`'s case (1)
+(`process.topN.length` > 5) measured `0`, not merely `≤5`, ONE time — while running concurrently
+with two of this session's OWN heavy background `vitest run` full-suite jobs. Traced to
+`system-info.ts`'s `sampleProcesses`'s hardcoded 150ms `/proc`-enumeration deadline (`:265`,
+pre-existing, untouched by this iteration's `topN:5→20` change, which only affects the SLICE taken
+after enumeration, never the enumeration cost) racing genuine host contention this session itself
+created. Re-run in isolation (`-t "process.topN.length..."`) and as the file's own full run: both
+clean, 15/15. Recorded as an environment-sensitivity note in `05-tests.md`'s own IT-171 entry, not
+silently re-run past — a stated gap beats an implied one, this ledger's own standing rule.
+
+**`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`:** **1717 items / 30 gaps**,
+the SAME 30-gap ID set as the pre-session baseline (verified by diffing `analyze()`'s own gap list
+against a `git archive HEAD`-extracted copy, per CLAUDE.md's mandated method — never by reading the
+ledger backwards in place) — 0 new gaps, 0 closed (the 30 are the expected `未真實驗證` set, Gate
+7.5's job to flip). **One item-count regression was caught and fixed before this run, not left in
+the ledger:** an earlier `Edit` on `05-tests.md`'s `VAL-214` entry (this same session, the `.stat-
+bar` note above) dropped the following `### VAL-215` heading's `###` prefix by merging it onto the
+prior paragraph's last line — invisible to a casual read (the prose still made sense) but it
+dropped `VAL-215` out of `trace.py`'s scan entirely (1717→1716 items, same 30 gaps, so `--check`
+alone would NOT have caught it — only the explicit `git archive` item-set diff did). Repaired by
+restoring the heading; the same diff method re-run afterward shows 0 removed / 0 added against
+baseline.
+
+**`solid_check.py`** (plugin 2.4.3, run directly per this repo's own precedent — `trace.py` predates
+the `--tool` dispatcher): **0 high / 0 mid / 10 low**, 72 modules (was 1 high mid-session, closed by
+IMPL-295 item 3; the 10 low pre-existing unclaimed-file warnings unchanged).
+
+**`determinism_check.py src --check`:** clean, 0 findings (was 3 mid-session, closed by IMPL-295
+item 4 — 2 comment false positives, 1 legitimate footer-clock display annotated).
+
+**Time-travel re-run** (`TZ='Pacific/Kiritimati' npx vitest run`, install-free fallback — no
+`libfaketime` in this environment): **414 files / 1 skipped, 2958 passed / 26 skipped, 0 failed** —
+byte-identical pass/skip counts to the untimezoned run above (the +10 tests over the pre-session
+baseline are this closure's own three new coverage-gate cases, `4+2+4`). No test flipped red under
+the shift — no time bombs found.
+
+**Seam wiring:** this iteration's one genuine production seam is `poll.js`'s `setDemoBodies`
+(installed/cleared) / `getViewJSON` (reads it) pair (DES-210). `grep -rn "setDemoBodies" src/
+tests/` (excluding `*.test.*`) shows exactly two call sites, BOTH in `app.js` — the real composition
+root (`mountApp()`'s boot-time `import('../demo/dataset.js')` feeds the REAL `DEMO` map into
+`setDemoBodies(DEMO)` when `demoEngages` fires, and `setDemoBodies(null)` otherwise) — never only a
+test file. No seam this iteration is mocked-in-tests-but-unwired-in-production.
+
+**Real-dependency smoke:** no NEW external integration is introduced this Sprint. `src/github/
+issue-reporter.ts`'s own change is a zero-wire-change type export (`IssuesListView`, DES-218) — the
+GitHub dependency itself is unchanged and was already proven real at a prior Gate 7.5 round (`gh
+auth token`, per `08-validation.md`'s own record), so no fresh smoke is owed by this closure.
+`src/system-info.ts` (the one real host dependency this Sprint's `topN:5→20` and `IT-171` touch) is
+exercised for real (no stub) by `tests/integration/system-info-http.test.ts` (real `/proc` reads)
+and by `IT-171`/`VAL-214` (real host, real Chromium). The demo dataset (`src/dashboard/demo/
+dataset.js`) is BY DESIGN a pure client-side fiction with no real dependency of its own (no network,
+no I/O) — nothing to smoke there. No integration remains mock-only as a new, unverified risk this
+iteration.
+
+**Coverage gate:** see IMPL-296 — 95.84% overall (excluded-scope), 100% for every file this
+iteration actually touched (`src/dashboard/lib/*`, `src/dashboard/demo/dataset.js`, the in-scope
+half of `src/dashboard/ui`). **Module gate (item 1c):** dormant — `grep -c '\*\*build:\*\*'
+02-architecture.md` → 0; no ARCH declares a `build:` contract this closure or any prior one.

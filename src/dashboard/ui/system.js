@@ -22,13 +22,7 @@
 // while the other three keep rendering live numbers from the still-healthy `/api/system` route.
 import { sectionState, cpuUtilState, statCard, procRow, procTotals, fmtBytes, catalogCounts } from '../lib/system.js';
 import { t } from '../lib/strings.js';
-import { el } from './dom.js';
-
-// Not imported from `./models.js` (which duplicates the same two lines for the same reason, its
-// own file banner): a cross-import here would be one of `ui/`'s few cycles.
-function currentLang() {
-  return document.documentElement.lang === 'en' ? 'en' : 'zh';
-}
+import { el, currentLang } from './dom.js';
 
 const CARD_LABELS = {
   zh: { cpu: 'CPU 使用率', memory: '記憶體使用率', disk: '磁碟使用率', counts: '已儲存工作流程' },

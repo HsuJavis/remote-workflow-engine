@@ -94,10 +94,21 @@ describe('VAL-080: graph view returns GraphPayload (REQ-071)', () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toMatch(/<html/i);
-    // Page must include a graph container element (the n8n-style SVG graph lives here)
-    // and must NOT force horizontal scroll on the body.
-    expect(html).toMatch(/graph|svg|canvas/i);
+    // must NOT force horizontal scroll on the body (no inline <style> ever carried this rule,
+    // before or after the v28 shell cleanup below — kept as a standing negative).
     expect(html).not.toMatch(/body[^}]*overflow-x\s*:\s*scroll/i);
+    // [v28 Gate 6.5+7, verifier oracle fix — same move val-018 already made 2026-09-12, applied
+    // here too] Since DES-200/DES-206 (v27 client rewrite) the graph container/SVG is built by
+    // `ui/run.js` at render time (`createElementNS(NS, 'svg')`, `run.js:423-424`), never present in
+    // the static shell HTML; TASK-215 (landed this iteration, `dashboard-page.ts:92-152` — the same
+    // lines UT-200's own comment cites) removed the fossil markup that used to contain a literal
+    // "svg"/"graph" byte and made this assertion vacuously true. Re-pointed to the real served
+    // client file the shell actually loads, same guarantee (a graph container exists), same file
+    // `val-018`'s own `.zoomable`/`viewBox` case already checks.
+    const runJsRes = await fetch(`http://127.0.0.1:${server.port}/static/dashboard/ui/run.js`);
+    expect(runJsRes.status).toBe(200);
+    const runJs = await runJsRes.text();
+    expect(runJs).toMatch(/graph|svg|canvas/i);
   });
 
   it.skipIf(!HAS_PROVIDER)('REQ-071 agent+edge render (LLM-gated — deferred to Gate 7.5 real-run) [UNVERIFIED here: no provider configured — set ANTHROPIC_API_KEY or OLLAMA_BASE_URL]', async () => {

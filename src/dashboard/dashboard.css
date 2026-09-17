@@ -346,7 +346,14 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 /* README §5/§4: shared 2px-track/4px-bar meter, reused by both the stat cards and the Models
    benchmark rows/process CPU bars — one visual language, one pair of rules. */
 .stat-track{height:2px;background:var(--color-line);position:relative}
-.stat-bar{position:absolute;left:0;top:-1px;height:4px;background:var(--color-accent);transition:width .6s}
+/* [v28 Gate 6.5+7, verifier — closes the 9e10453 orchestrator ruling that never reached this file]
+   `right:0` is load-bearing, not decoration: an absolutely-positioned box with only `left` set and
+   `width`/`right` both `auto` shrink-to-fits to its (empty) content, i.e. 0px wide, regardless of
+   `transform-origin` — measured with a real Chromium page before this fix (0px) and after (spans
+   the track, scales from the left edge as `.style.transform=scaleX(pct/100)` intends). `transform`,
+   not `width`, is what changes at runtime (the guard forbids `.style.width`), so that is what
+   transitions. */
+.stat-bar{position:absolute;left:0;right:0;top:-1px;height:4px;background:var(--color-accent);transform-origin:left;transition:transform .6s}
 /* README §5: "Processes .table: PID · Name (mono) · CPU % bar · Memory", the engine's own row
    marked ★ with an accent bar (.proc-self). Columns fixed by ui/system.js's own row order. */
 .proc-table td:first-child{opacity:.74}

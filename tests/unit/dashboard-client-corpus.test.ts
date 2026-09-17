@@ -111,3 +111,66 @@ describe('poll.js: getJSON(url) always resolves {status, body, reached, source},
     await expect(getJSON('/x')).resolves.toEqual({ status: 'fail', body: null, reached: false, source: 'live' });
   });
 });
+
+// [v28 Gate 6.5+7, verifier — coverage gate] `setDemoBodies`/`getViewJSON` (DES-210, TASK-217) had
+// zero unit coverage — only exercised indirectly at the browser tier (VAL-216/VAL-217). Both are
+// pure/Node-testable (no DOM; `getViewJSON` makes no network call while a demo map is installed),
+// so per the coverage gate they must be unit-tested directly.
+describe('poll.js: getViewJSON(url) answers from an installed demo map with NO network call; otherwise IS getJSON (UT-249, DES-210)', () => {
+  afterEach(async () => {
+    const { setDemoBodies } = await import('../../src/dashboard/ui/poll.js');
+    setDemoBodies(null); // never leak the installed map into a later test/file.
+  });
+
+  it('with no map installed, getViewJSON delegates to a real fetch (source:live)', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ status: 200, json: async () => ({ a: 1 }) }) as unknown as Response;
+    try {
+      const { getViewJSON } = await import('../../src/dashboard/ui/poll.js');
+      const r = await getViewJSON('/api/system');
+      expect(r).toEqual({ status: 'ok', body: { a: 1 }, reached: true, source: 'live' });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('a map hit resolves ok/reached/source:demo with the mapped body, no fetch call', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('must not be called while a demo map is installed'); };
+    try {
+      const { getViewJSON, setDemoBodies } = await import('../../src/dashboard/ui/poll.js');
+      setDemoBodies(new Map([['/api/system', { fake: true }]]));
+      const r = await getViewJSON('/api/system');
+      expect(r).toEqual({ status: 'ok', body: { fake: true }, reached: true, source: 'demo' });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('a map miss resolves fail/body:null but reached:true (the page WAS reached, just not this url), no fetch call', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('must not be called while a demo map is installed'); };
+    try {
+      const { getViewJSON, setDemoBodies } = await import('../../src/dashboard/ui/poll.js');
+      setDemoBodies(new Map([['/api/system', {}]])); // installed, but '/api/issues' is not a key
+      const r = await getViewJSON('/api/issues');
+      expect(r).toEqual({ status: 'fail', body: null, reached: true, source: 'demo' });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('setDemoBodies(null) clears the map — getViewJSON falls back to a real fetch again', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ status: 200, json: async () => ({ real: true }) }) as unknown as Response;
+    try {
+      const { getViewJSON, setDemoBodies } = await import('../../src/dashboard/ui/poll.js');
+      setDemoBodies(new Map([['/api/system', { fake: true }]]));
+      setDemoBodies(null);
+      const r = await getViewJSON('/api/system');
+      expect(r).toEqual({ status: 'ok', body: { real: true }, reached: true, source: 'live' });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});

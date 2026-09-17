@@ -59,6 +59,24 @@ describe('lib/system.js: statCard(kind, input, lang) — the four cards, one WIT
     const card = statCard('memory', { kind: 'unavailable', reason: 'timeout' }, 'en');
     expect(card.pct).toBe(undefined);
   });
+
+  // [v28 Gate 6.5+7, verifier — coverage gate] the 'memory' | 'disk' ok arm (statCard's own
+  // arithmetic + fmtBytes meta line + disk's kicker) had no unit case — only exercised indirectly
+  // at the browser tier (VAL-214). Covers `statCard.ts`'s real usedPct rounding, the "X of Y · Z
+  // free" meta format, and disk-only `kicker`.
+  it('a real memory section renders the rounded usedPct, a byte-formatted meta line, and no kicker', () => {
+    const card = statCard('memory', { kind: 'ok', value: { totalBytes: 1e9, usedBytes: 6e8, freeBytes: 4e8, usedPct: 60 } }, 'en');
+    expect(card.value).toBe('60%');
+    expect(card.pct).toBe(60);
+    expect(card.meta).toBe('600.0 MB of 1.0 GB · 400.0 MB free');
+    expect(card.kicker).toBe(undefined);
+  });
+
+  it('a real disk section additionally carries its path as the kicker', () => {
+    const card = statCard('disk', { kind: 'ok', value: { totalBytes: 1e9, usedBytes: 2e8, freeBytes: 8e8, usedPct: 20, path: '/data' } }, 'en');
+    expect(card.value).toBe('20%');
+    expect(card.kicker).toBe('/data');
+  });
 });
 
 describe('lib/system.js: procRow/procTotals (UT-262, DES-215)', () => {

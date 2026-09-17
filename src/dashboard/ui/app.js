@@ -165,7 +165,7 @@ let footerUpdatedEl = null;
 // `location.origin` IS the API base here (every `fetch()` in `poll.js` is same-origin relative).
 function updateFooterClock() {
   if (!footerUpdatedEl) return;
-  const d = new Date();
+  const d = new Date(); // det:allow — the footer's own "Updated HH:MM:SS" IS a live wall-clock display, not a decision
   footerUpdatedEl.textContent = `${L(prefs.lang, 'updated')} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }
 

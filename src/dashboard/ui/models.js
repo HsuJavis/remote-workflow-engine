@@ -19,13 +19,7 @@
 import { matchModels, sortKeyOf, modelRow, modelPanel } from '../lib/model.js';
 import { sortRows } from '../lib/runlist.js';
 import { t } from '../lib/strings.js';
-import { el } from './dom.js';
-
-// Not imported from `./agent-panel.js` (which duplicates the same two lines for the same reason,
-// its own file banner): a cross-import here would be the only cycle in `ui/`.
-function currentLang() {
-  return document.documentElement.lang === 'en' ? 'en' : 'zh';
-}
+import { el, currentLang } from './dom.js';
 
 // Columns, in REQ-137's order (DES-213) — the header row's own labels; `key` must match a
 // `sortKeyOf`/`modelRow` column name.

@@ -116,24 +116,27 @@ describe('GET /dashboard — real browser-renderable HTML page on the same port 
   // container and support zoom/pan/fit, via a `viewBox` + `.zoomable` wrapper this real-tier
   // readability clause depends on.
   //
-  // [Gate 5 oracle fix, 2026-09-12] `.zoomable` IS still a literal class on the STATIC `/dashboard`
-  // shell (measured in this same file's other cases' output: `<div id="dag-zoom" class="zoomable">`
-  // / `<div id="diagram-zoom" class="zoomable" ...>`) — DES-200/DES-206 did not move that marker
-  // client-side, and UT-200 (`dashboard-zoom-source.test.ts:18-19`) already pins it there to stay,
-  // so that half of the original assertion is kept as-is. `viewBox`, however, is NOT in the shell —
-  // `<svg id="dag-graph" ...></svg>` ships with no `viewBox` attribute; `ui/run.js:186` sets it
-  // programmatically (`svgEl.setAttribute('viewBox', ...)`) only after a run is selected and the
-  // graph is built, so a static GET can never contain it even given a correct implementation. Only
-  // that half is re-pointed to the real server's own `/static/dashboard/ui/run.js` response (the
-  // same file `ui/app.js` loads into the browser and the same route IT-170 exercises, real HTTP, no
-  // fakes) — REQ-129's guarantee (the SVG carries a viewBox) is unchanged, only WHERE it is
-  // observable moved.
-  it('the served page carries the .zoomable marker, and the served client code carries the viewBox it sets at render time (REQ-129)', async () => {
-    const shell = await (await fetch(`${baseUrl}/dashboard`)).text();
-    expect(shell).toMatch(/zoomable/);
+  // [Gate 5 oracle fix, 2026-09-12] `.zoomable` was a literal class on the STATIC `/dashboard`
+  // shell at the time this comment was written, kept as the one half of the original assertion
+  // this file did not yet re-point. [v28 Gate 6.5+7, verifier oracle fix] That premise is now
+  // stale: TASK-215 (landed this iteration) deleted the fossil shell body
+  // (`dashboard-page.ts:92-152`, the exact lines UT-200's own comment at
+  // `dashboard-zoom-source.test.ts` cites as "deleted by this task") because it was "discarded
+  // before first paint" and never rendered — the same move UT-200 itself already made, re-pointing
+  // its own `.zoomable` pin to `clientFile('ui/run.js')` (`run.js:416`,
+  // `zoom.className = 'zoomable'`). This case now makes the SAME move for both halves: `viewBox`
+  // is NOT in the shell — `<svg id="dag-graph" ...></svg>` ships with no `viewBox` attribute;
+  // `ui/run.js:186` sets it programmatically (`svgEl.setAttribute('viewBox', ...)`) only after a
+  // run is selected and the graph is built, so a static GET can never contain it even given a
+  // correct implementation. Both are re-pointed to the real server's own
+  // `/static/dashboard/ui/run.js` response (the same file `ui/app.js` loads into the browser and
+  // the same route IT-170 exercises, real HTTP, no fakes) — REQ-129's guarantee (a `.zoomable`
+  // wrapper exists and the SVG carries a viewBox) is unchanged, only WHERE it is observable moved.
+  it('the served client code carries the .zoomable marker and the viewBox it sets at render time (REQ-129)', async () => {
     const res = await fetch(`${baseUrl}/static/dashboard/ui/run.js`);
     expect(res.status).toBe(200);
     const runJs = await res.text();
+    expect(runJs).toMatch(/zoomable/);
     expect(runJs).toMatch(/viewBox/);
   });
 });

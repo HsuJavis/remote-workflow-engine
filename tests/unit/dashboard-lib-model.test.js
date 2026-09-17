@@ -207,6 +207,48 @@ describe('lib/model.js: costDots(level) — a 5-dot scale over the 0-10 integer 
   });
 });
 
+// [v28 Gate 6.5+7, verifier — coverage gate] `modelRow` (exported, `ui/models.js:renderRows`'s ONLY
+// caller) had zero unit coverage — only exercised indirectly at the browser tier (VAL-213). It is
+// server-testable pure logic, so per the coverage gate it must be unit-tested directly, not left to
+// the browser tier alone.
+describe('lib/model.js: modelRow(entry, lang) — the twelve REQ-137 cells, in column order (UT-257, DES-213)', () => {
+  it('a RICH row renders every cell as a real, non-dash string, and sortKeys carries all twelve columns', () => {
+    const { cells, sortKeys } = modelRow(RICH, 'en');
+    expect(cells).toHaveLength(12);
+    expect(cells[0]).toBe(RICH.model);
+    expect(cells[1]).toBe(RICH.provider);
+    expect(cells[2]).toBe('a1, a2'); // aliases joined
+    expect(cells[5]).toBe('✓ upstream'); // tools declared true
+    expect(cells[6]).toBe('✓ upstream'); // effort declared true
+    expect(cells[8]).toBe('TTFT 900ms · p50 6.8s'); // fmtLatency
+    expect(cells[10]).toBe('78 avg'); // fmtBenchmarks, single value is an integer average
+    expect(sortKeys).toHaveProperty('model', RICH.model);
+    expect(Object.keys(sortKeys)).toHaveLength(12);
+  });
+
+  it('declared:false renders "✕", declared:"unknown" renders "—" — never the same glyph', () => {
+    const { cells } = modelRow(FREE, 'en'); // FREE: toolUseDeclared:false, effortDeclared:false
+    expect(cells[5]).toBe('✕');
+    expect(cells[6]).toBe('✕');
+    const { cells: absentCells } = modelRow(ABSENT, 'en'); // ABSENT: both 'unknown'
+    expect(absentCells[5]).toBe('—');
+    expect(absentCells[6]).toBe('—');
+  });
+
+  it('an entry with no aliases/latency/benchmarks renders "—" for each, never throws', () => {
+    const { cells } = modelRow(ABSENT, 'en');
+    expect(cells[2]).toBe('—'); // aliases
+    expect(cells[8]).toBe('—'); // latency
+    expect(cells[10]).toBe('—'); // benchmarks
+  });
+
+  it('a non-integer benchmark average renders one decimal place, not a fabricated whole number', () => {
+    const twoScores = { ...RICH, benchmarks: { mmlu: 70, gpqa: 75 } }; // avg 72.5
+    const { cells } = modelRow(twoScores, 'en');
+    expect(cells[10]).toBe('72.5 avg');
+  });
+});
+
 describe('lib/model.js: modelPanel(entry, lang) — the 560px slide-in projection (UT-257, DES-213)', () => {
   it('returns the definition-list/benchmarks/tags shape the slide-in renders', () => {
     const panel = modelPanel(RICH, 'en');
