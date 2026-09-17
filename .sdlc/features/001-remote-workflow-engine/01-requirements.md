@@ -1946,6 +1946,14 @@ to asserting the overlay is served):
   有缺什麼」),且 nav 的來源 tag 顯示「示範資料 / Demo data」。
   **Given** 示範資料模式 **Then** 該 tag 不得與「連線中 / Live」同時出現;且每個 tab 的可見區域都能看出
   處於示範模式,不是只有 nav 一處。
+  **[AMENDED v28, owner ruling 2026-09-17]** 「每個 tab 都看得出來」**包含**「此路由無示範資料」這種明說。
+  三個畫面的示範資料無法提供,原因各自具體且經量測:`/api/workflows`(裸)與 `/api/workflows/:name/describe`
+  在 `tests/fixtures/dashboard-wire.ts` 沒有任何 key-set 預言,硬寫示範內容就是未經測試的實作(違反 Gate 6
+  出口條件);`/api/issues` 有型別預言,但真實 `IssueSummary.url` 是 `https://github.com/…`,而 UT-231
+  (REQ-131)禁止 `src/dashboard/**` 出現任何 `https?://` 位元組 —— 兩個約束無法同時滿足。
+  擁有者裁定:那三處顯示「此路由無示範資料」,**不偽造內容、不放寬守衛**。這比填假資料更符合本條初衷
+  (擁有者原話:「因為我要看有缺什麼」)——使用者不只看得出在示範模式,還看得出哪一塊沒有資料。
+  退化為該路由的「取不到」標記,絕不崩潰。這是**經過裁決的範圍**,不是未發現的缺陷。
   **Given** 引擎 API 恢復可達 **Then** 下一次輪詢即切回真實資料並改顯示「連線中 / Live」。
   **退場條件(登記於此,擁有者原話「如果可以正式上線 再拿掉就好」):** 正式上線前移除示範資料集;
   移除時必須同步退役本 REQ、其測試與所有畫面文案 —— 本 ledger 記錄最多次的缺陷類型正是

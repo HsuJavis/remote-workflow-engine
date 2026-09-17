@@ -35,7 +35,7 @@ import { deriveExpectedGraph } from './skeleton-graph.js';
 import { tick, RealTicker, type Ticker } from './scheduler-engine.js';
 import { AssetSyncService, defaultAssetRoot, globalAssetRoot, migrateLegacyGlobalAssets, resolveMcp, type AssetCatalogPort, type AssetCatalogRow, type AssetKind } from './asset-sync.js';
 import { RealMcpProbe, type McpProbe } from './mcp-probe.js';
-import { IssueReporter, resolveEngineVersion, type IssueReportInput, type IssueListFilter } from './github/issue-reporter.js';
+import { IssueReporter, resolveEngineVersion, type IssueReportInput, type IssueListFilter, type IssuesListView } from './github/issue-reporter.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
 import { buildCatalog, filterCatalog, enrichModelEntry, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
 import { ModelBook } from './models/model-book.js';
@@ -366,8 +366,13 @@ async function handleDashboardRequest(
       return;
     }
     // v12 (REQ-076/077, DES-073): host system info — bare SystemInfoView (no MCP envelope wrapper).
+    // [v28, DES-218, TASK-225, ARCH-135] topN raised 5 -> 20 for the dashboard's process table
+    // (REQ-138); the MCP system_info tool keeps its own default of 5 (tool-specs.ts:999-1004). A
+    // literal, never a value derived from the URL — no query-string knob (DES-218's own refusal:
+    // SystemInfoSampler.get() applies topN at SHAPE time over the cached snapshot, so a different
+    // constant per caller is free — and a knob on this unauthenticated route would widen recon).
     if (path === '/api/system') {
-      const view = await systemInfo.get({ topN: 5 });
+      const view = await systemInfo.get({ topN: 20 });
       // v24 (DES-141): auth = {enabled, principalsCount, defaultRole} (ARCH-090).
       sendJson(res, 200, { ...view, auth: authAnnounce });
       return;
@@ -465,7 +470,10 @@ async function handleDashboardRequest(
       }
       const open = result.issues.filter((s) => s.state === 'open');
       const resolved = result.issues.filter((s) => s.state !== 'open');
-      sendJson(res, 200, { open, resolved });
+      // v28 (DES-218, TASK-219, REQ-139): named against IssuesListView — zero wire change, the
+      // shape already served.
+      const payload: IssuesListView = { open, resolved };
+      sendJson(res, 200, payload);
       return;
     }
     // v11 (REQ-067): GET /api/issues/:number — full IssueView or 404 on not-found; token-missing → 200 degraded.

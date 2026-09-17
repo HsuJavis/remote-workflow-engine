@@ -48,3 +48,24 @@ export function classifyResponse(status, body) {
   if (typeof body === 'object' && 'degraded' in body) return 'degraded';
   return 'ok';
 }
+
+// [v28, DES-211, TASK-218, REQ-142] "切回立即輪詢一次,並恢復 3 秒節奏" — a resume must start the
+// consecutive-fail streak clean (so ONE more fail after a pause reads `degraded`, not a leftover
+// count away from `offline`), but never at the cost of forgetting a verdict `nextConnection` already
+// DECLARED: `offline` is returned unchanged, by reference, so a page hidden for an hour cannot paint
+// "連線中" over a genuinely dead engine the moment it is re-shown.
+export function resumeReset(prev) {
+  if (prev.status === 'offline') return prev;
+  return { ...prev, consecutiveFails: 0 };
+}
+
+// [v28, DES-212, TASK-220, REQ-143, ADR-058] demo mode's all-or-nothing entry gate — engages ONLY
+// when the connection verdict already reads `offline` (a real, declared verdict, never a preview
+// this tick alone would produce) AND every one of the visible view's own routes was UNREACHED this
+// tick (a network drop, `poll.js`'s `reached: false` — never a real 4xx/5xx, which still "reached" a
+// server and is REQ-131's Offline case, not this one) AND the demo dataset has actually resolved.
+// `reachedFlags.length > 0` guards the same vacuous-`every` hazard `nextConnection:30` already
+// needed once: a view with NO endpoints of its own must never engage demo on its very first tick.
+export function demoEngages(verdict, reachedFlags, datasetLoaded) {
+  return verdict === 'offline' && reachedFlags.length > 0 && reachedFlags.every((r) => r === false) && datasetLoaded === true;
+}

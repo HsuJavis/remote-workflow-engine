@@ -701,6 +701,12 @@ port 直接暴露在公開網路上。**
 > （`RESERVED_PREFIX`），防止推送的資產冒充引擎內建的技能。`gateway:"direct-fetch"` 從不帶資產，
 > 這條路徑不受影響。
 
+**`GET /api/system`（Dashboard 的儀表板端點，不需要認證）自 v28 起一次回傳最多 20 筆主機 process
+列（原本 5 筆），`bind:"0.0.0.0"` 時任何能連到這台主機的人都看得到——每筆只有 `comm`（process
+名稱）這一個欄位，絕不含 argv、cwd、環境變數或 uid，但仍是主機上跑了哪些程式的資訊揭露。跟前一段
+的 `workspace_push` 風險一樣的緩解方式：啟用 auth，或把這個 port 限制在 SSH 通道／VPN／loopback
+內，不要直接暴露在公開網路上。
+
 ## 3. 健康檢查（怎麼確認起來了）
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8787/mcp \

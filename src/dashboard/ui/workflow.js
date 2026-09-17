@@ -33,7 +33,7 @@
 // forwards them synchronously — see its own banner).
 import { paintSwimlane, renderLegend, initZoomable, currentLang } from './run.js';
 import { openAgentPanel } from './agent-panel.js';
-import { endpointsFor, getJSON } from './poll.js';
+import { endpointsFor, getViewJSON } from './poll.js';
 import { el } from './dom.js';
 import { historyRow } from '../lib/runlist.js';
 import { t } from '../lib/strings.js';
@@ -330,7 +330,7 @@ async function paintSelected(state, runs, describe, lang) {
   resolveSelectedRunId(state, runs);
   const dagUrl = '/api/runs/' + encodeURIComponent(state.selectedRunId) + '/dag';
   const viewUrl = '/api/runs/' + encodeURIComponent(state.selectedRunId);
-  const [dagRes, viewRes] = await Promise.all([getJSON(dagUrl), getJSON(viewUrl)]);
+  const [dagRes, viewRes] = await Promise.all([getViewJSON(dagUrl), getViewJSON(viewUrl)]);
   const statuses = { [dagUrl]: dagRes.status, [viewUrl]: viewRes.status };
   // [BF-7 Gate 8 repair — DES-206's (V)/(K)/(U)/(N) clause, v27m] BF-6's own fix stopped the
   // degraded BODY reaching the painters and then handed them a SYNTHESIZED one instead

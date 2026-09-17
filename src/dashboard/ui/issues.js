@@ -11,11 +11,13 @@
 // repeated fetch. `app.js`'s tab strip (`activateTab`) mounts this module via `render()` only, so
 // `render()` builds the static chrome once (the two group headers, the detail box — a per-container
 // state, `home.js`'s own pattern, so a re-render never rebuilds a click handler's closure mid-use)
-// and calls `onTick()` itself for first paint; `poll.js`'s `issues` route already names this view's
-// endpoint for whenever the tab strip's own poll wiring joins it to the app-wide tick.
+// and calls `onTick()` itself for first paint. `poll.js`'s `issues` route names this view's
+// endpoint for the app-wide tick, and [v28, DES-217] `onTick` now paints from that tick's own
+// `bodies['/api/issues']` rather than fetching it again itself.
 
-import { getJSON } from './poll.js';
+import { getViewJSON } from './poll.js';
 import { el } from './dom.js';
+import { safeIssueHref } from '../lib/issues.js';
 
 // v11 (REQ-067): render a list of issue summaries in a container (XSS-safe: textContent only).
 function renderIssueList(issues, container, onSelect) {
@@ -75,14 +77,24 @@ function buildChrome(container) {
   );
 
   async function loadIssueDetail(number) {
-    const res = await getJSON('/api/issues/' + number);
+    const res = await getViewJSON('/api/issues/' + number);
     const data = res.body;
     if (!data || data.degraded) {
       detailBox.style.display = 'none';
       return;
     }
     detailMeta.textContent = '#' + data.number + ' · ' + data.state + ' · ' + data.commentCount + ' comment(s)';
-    detailLink.setAttribute('href', data.url || '#');
+    // DES-217: an issue URL is attacker-influenceable content on an unauthenticated page —
+    // `safeIssueHref` is the one gate before it becomes a live href; `null` hides the link
+    // entirely so the detail box renders as text only, never a `javascript:`/`data:` href.
+    const href = safeIssueHref(data.url);
+    if (href) {
+      detailLink.setAttribute('href', href);
+      detailLinkP.style.display = '';
+    } else {
+      detailLink.removeAttribute('href');
+      detailLinkP.style.display = 'none';
+    }
     detailBody.textContent = data.body || '(no body)';
     detailBox.style.display = 'block';
   }
@@ -90,15 +102,16 @@ function buildChrome(container) {
   return { openEl, resolvedEl, loadIssueDetail };
 }
 
-/** [v27c] DES-206's uniform view contract, poll half — fetches `/api/issues` and paints; returns
- *  the endpoint's status so a caller folding it into `nextConnection` can do so like every other
- *  view. Assumes `render()` already built the chrome (bails otherwise, `home.js`'s own guard). */
-export async function onTick(container, _bodies, _ctx) {
+/** [v28] DES-217: paints from `bodies['/api/issues']` instead of re-fetching — `tick()` already
+ *  fetched every endpoint `endpointsFor('issues')` names (`poll.js`) before calling this, so a
+ *  second independent `getViewJSON` here was a redundant round-trip racing that same paint (the
+ *  cold-mount path fires `render()`'s placeholder call and `app.js`'s first real tick close
+ *  together; a self-fetch made the SECOND paint land an extra round-trip later than it needed to).
+ *  Assumes `render()` already built the chrome (bails otherwise, `home.js`'s own guard). */
+export async function onTick(container, bodies, _ctx) {
   const state = stateByContainer.get(container);
   if (!state || !container.isConnected) return undefined;
-  const res = await getJSON('/api/issues');
-  if (!container.isConnected) return undefined;
-  const data = res.body;
+  const data = bodies ? bodies['/api/issues'] : undefined;
   if (data && data.degraded) {
     state.openEl.replaceChildren(el('div', 'degraded', data.degraded));
     state.resolvedEl.replaceChildren(el('div', 'degraded', data.degraded));
@@ -106,7 +119,7 @@ export async function onTick(container, _bodies, _ctx) {
     renderIssueList(data.open || [], state.openEl, state.loadIssueDetail);
     renderIssueList(data.resolved || [], state.resolvedEl, state.loadIssueDetail);
   }
-  return { '/api/issues': res.status };
+  return undefined;
 }
 
 /** DES-206's uniform view contract — `vm`/`handlers` are unused; builds the chrome once, then calls

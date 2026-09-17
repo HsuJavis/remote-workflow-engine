@@ -129,7 +129,15 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 .nav{display:flex;align-items:center;gap:16px;padding:10px 20px;border-bottom:1px solid var(--color-line)}
 .hr{height:1px;background:var(--color-line);border:0;margin:0}
 .sys-table td:first-child{color:var(--color-muted);font-size:11px;width:140px}
-.models-table th{white-space:nowrap}
+/* [v28, DES-219, TASK-221, REQ-137] README §4: ".table min 960 px, horizontally scrollable" — the
+   modifier carries its own min-width (the class-lock's own value-anchor test reads this exact
+   rule's body); the panel that hosts it (`[data-tab-panel="models"]`, built by app.js for every
+   tab) is the scroll boundary, so no extra wrapper class is needed. */
+.models-table{min-width:960px}
+.models-table th{white-space:nowrap;cursor:pointer;user-select:none}
+/* the active sort header (README §4: "active header colored accent-700 with ▲/▼"). */
+.models-table th.sort-active{color:var(--accent-700)}
+[data-tab-panel="models"]{overflow-x:auto}
 .issue-row{display:flex;align-items:baseline;gap:8px;padding:6px 0;border-bottom:1px solid var(--color-line);font-size:13px;cursor:pointer}
 .issue-row:hover{color:var(--color-link)}
 .issue-detail{background:var(--color-panel2);border:1px solid var(--color-line);border-radius:var(--radius-md);padding:12px;margin-top:10px;font-size:13px}
@@ -313,6 +321,48 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 .event-kind.is-message{background:var(--color-panel2);color:var(--color-ink);border-color:transparent}
 .event-kind.is-log{border-color:oklch(0.55 0.16 25);color:oklch(0.45 0.16 25)}
 .detail-block{margin:0;padding:10px 12px;border:1px solid oklch(0.55 0.16 25);border-radius:var(--radius-md);font-size:13px;color:oklch(0.45 0.16 25)}
+
+/* == v28 Models (REQ-137, DES-219, TASK-221) — README §4 == */
+.model-filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.model-filters .input[type="search"]{max-width:280px}
+.model-filters select.input{max-width:200px}
+/* README §4: "right slide-in panel (560 px)" — same recipe as .agent-panel (REQ-135), narrower. */
+.model-panel{position:fixed;top:0;bottom:0;right:0;z-index:21;width:min(560px,100vw);background:var(--color-bg);color:var(--color-ink);border-left:1px solid var(--color-line);box-shadow:var(--shadow-lg);overflow:auto;padding:20px;box-sizing:border-box;display:flex;flex-direction:column;gap:20px;animation:rweSlideIn .28s cubic-bezier(.2,.7,.2,1)}
+.model-panel dl{margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px 16px;font-size:13px;font-variant-numeric:tabular-nums}
+.model-panel dt{opacity:.74}
+.model-panel dd{margin:0}
+/* README §4: cost level renders as accent dots (●●●○○) — the fixed 5th definition row per DES-213's
+   own defs order (capability, modalities, context, price, cost level, latency, stability, tools,
+   effort); scoped to that one row only, the rest of the list stays the default ink colour. */
+.model-panel dd:nth-of-type(5){letter-spacing:2px;color:var(--color-accent)}
+/* README §4: "Benchmarks ... grid `140px 1fr 48px`" — the label/track/score row; the track/bar
+   themselves reuse .stat-track/.stat-bar (System's own family, same 2px/4px visual language). */
+.bench-row{display:grid;grid-template-columns:140px 1fr 48px;gap:12px;align-items:center;font-size:13px;font-variant-numeric:tabular-nums}
+.bench-row .stat-track{margin:0}
+
+/* == v28 System (REQ-138, DES-219, TASK-221) — README §5 == */
+/* README §5: "34 px / 500 figure" — the big number itself carries this class. */
+.stat-card{font-weight:500;font-size:34px;line-height:1;font-variant-numeric:tabular-nums}
+/* README §5/§4: shared 2px-track/4px-bar meter, reused by both the stat cards and the Models
+   benchmark rows/process CPU bars — one visual language, one pair of rules. */
+.stat-track{height:2px;background:var(--color-line);position:relative}
+.stat-bar{position:absolute;left:0;top:-1px;height:4px;background:var(--color-accent);transition:width .6s}
+/* README §5: "Processes .table: PID · Name (mono) · CPU % bar · Memory", the engine's own row
+   marked ★ with an accent bar (.proc-self). Columns fixed by ui/system.js's own row order. */
+.proc-table td:first-child{opacity:.74}
+.proc-table td:nth-child(2){font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;font-size:12.5px}
+.proc-table td:nth-child(3){width:40%;display:flex;align-items:center;gap:10px}
+.proc-table td:nth-child(3) .stat-track{flex:1}
+.proc-self td{color:var(--color-accent);font-weight:600}
+/* README §5: "Engine process <dl> in a bordered box". */
+.engine-dl{margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px 18px;font-size:14px;font-variant-numeric:tabular-nums;padding:12px;border:1px solid var(--color-line);border-radius:var(--radius-md)}
+.engine-dl dt{opacity:.74}
+.engine-dl dd{margin:0}
+
+/* == v28 demo (REQ-143, DES-219, TASK-221) == */
+/* README "Header / chrome": source tag's third state, "`Demo data` outline" — same outline
+   convention as .is-degraded/.is-offline (border + text colour, no fill). */
+.rwe-connection.is-demo{border-color:var(--color-muted);color:var(--color-muted)}
 
 /* == @keyframes ==
    The first four names and all seven durations/easings come from REQ-132/134/135's own acceptance

@@ -80,7 +80,7 @@ import { SWIMLANE_BOX, cellRect, svgBox, edgePath } from '../lib/swimlane.js';
 import { sumTokens, fmtCost, fmtTok } from '../lib/runlist.js';
 import { t, warningText } from '../lib/strings.js';
 import { shortModel } from '../lib/model.js';
-import { endpointsFor, getJSON } from './poll.js';
+import { endpointsFor, getViewJSON } from './poll.js';
 import { openAgentPanel } from './agent-panel.js';
 // `ui/home.js`'s own duration formatter (README "1. Workflows home" avg-duration meta line) — a
 // SECOND private copy of `lib/runlist.js`'s `${m}m ${s}s` core; reused here rather than adding a
@@ -474,7 +474,7 @@ export async function onTick(container, bodies, ctx) {
   // never an empty swimlane drawn over a live one. Same guard shape as `ui/workflow.js`'s onTick.
   if (!dagBody || dagBody.degraded || !Array.isArray(dagBody.cells)) return {};
   const viewUrl = '/api/runs/' + encodeURIComponent(state.runId);
-  const viewRes = await getJSON(viewUrl);
+  const viewRes = await getViewJSON(viewUrl);
   if (!state.shell.root.isConnected) return { [viewUrl]: viewRes.status };
   const extra = { [viewUrl]: viewRes.status };
 
@@ -483,14 +483,14 @@ export async function onTick(container, bodies, ctx) {
   // EXISTING `/api/runs` list (never a new field on either wire shape).
   if (!state.name) {
     const runsUrl = '/api/runs';
-    const runsRes = await getJSON(runsUrl);
+    const runsRes = await getViewJSON(runsUrl);
     extra[runsUrl] = runsRes.status;
     const match = Array.isArray(runsRes.body) ? runsRes.body.find((r) => r.runId === state.runId) : null;
     if (match && match.name) state.name = match.name;
   }
   if (state.name && state.describeFor !== state.name) {
     const describeUrl = '/api/workflows/' + encodeURIComponent(state.name) + '/describe';
-    const describeRes = await getJSON(describeUrl);
+    const describeRes = await getViewJSON(describeUrl);
     extra[describeUrl] = describeRes.status;
     if (describeRes.body && describeRes.body.params && describeRes.body.params.agents) {
       state.pAgents = describeRes.body.params.agents;

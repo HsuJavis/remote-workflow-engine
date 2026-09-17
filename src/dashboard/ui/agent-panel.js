@@ -32,7 +32,7 @@
 import { panelSide } from '../lib/swimlane.js';
 import { panelModel, clipText } from '../lib/agent.js';
 import { clockNow } from './clock.js';
-import { getJSON } from './poll.js';
+import { getViewJSON } from './poll.js';
 
 const EVENT_CLIP = 2048;
 
@@ -230,7 +230,7 @@ export function render(container, vm, handlers) {
  *  `panelModel` (DES-205) and mounts on `document.body`. */
 export async function openAgentPanel(runId, agentId, label, opts) {
   const lang = (opts && opts.lang) || currentLang();
-  const res = await getJSON(`/api/runs/${encodeURIComponent(runId)}/agents/${encodeURIComponent(agentId)}?limit=500`);
+  const res = await getViewJSON(`/api/runs/${encodeURIComponent(runId)}/agents/${encodeURIComponent(agentId)}?limit=500`);
   const body = res.body || {};
   // `state: ''` on the not-found/degraded path, never a guessed real state (DES-205 §6's rule
   // against a confident-but-wrong statement applies here too: "queued" would claim liveness this

@@ -1,91 +1,290 @@
 // src/dashboard/ui/system.js
-// DES-207, ARCH-125, ARCH-123, TASK-212 (REQ-076/077) — the System tab, PORTED from the pre-v27
-// `loadSystem()` (dashboard-page.ts:392-407): same endpoint (`/api/system`), same rows (cpu cores,
-// load avg, cpu util, memory, disk, sampled at). REQ-077's process metrics were never rendered on
-// the pre-v27 panel either (`system_info`-only) — this port ships nothing new, per DES-207's "no
-// resource bars" boundary.
+// [v28] DES-216, ARCH-133, ARCH-125, ARCH-123, TASK-223, REQ-138 — the System tab REWRITTEN from
+// the pre-v28 flat key/value `.sys-table` to four stat cards, a process table (up to 20 rows,
+// ARCH-135) and the engine's own `<dl>`. The pure projections (`sectionState`/`cpuUtilState`/
+// `statCard`/`procRow`/`procTotals`/`fmtBytes`/`catalogCounts`) come from `lib/system.js`
+// (DES-215, TASK-223) — this layer only builds/updates DOM and decides nothing a pure function
+// could decide (ARCH-125's own boundary, same split as `ui/models.js`/DES-213-214).
 //
-// The ONE behaviour that DOES change (DES-207's own stated contract, not a redesign): a field that
-// could not be sampled (`cpu.utilizationDegraded`, or `memory`/`disk` shaped as `{reason}` per
-// REQ-076's degrade rule) renders the SAME `UNAVAILABLE` component instead of a confident '—' or a
-// thrown render — the same defect class as a confident $0.00 (DES-204).
+// `render(container, vm, handlers)` builds the four card shells, the process `<table>` and the
+// engine `<dl>` ONCE — unlike `ui/models.js`'s lazily-built chrome, this shell is fully static (no
+// data-dependent columns/labels), so there is no "whole container replaced by the ONE Unavailable
+// component" swap for this view: each card independently shows its own value/Unavailable text
+// (DES-215's own warning against a single `if (worst !== 'ok')` blanking three good cards).
 //
-// [v27c] DES-206's "one timer" completion: this view exports `onTick(container, bodies, ctx)` per
-// the same uniform view contract as `home.js`/`workflow.js`/`run.js`, instead of scheduling its own
-// repeated fetch. `app.js`'s tab strip (`activateTab`) mounts this module via `render()` only, so
-// `render()` calls `onTick()` once itself for first paint; `poll.js`'s `system` route already names
-// this view's endpoint for whenever the tab strip's own poll wiring joins it to the app-wide tick.
-
-import { getJSON } from './poll.js';
+// The ONE genuine route-level V/K/U split (DES-206 rule (V)/(K)/(U), DES-216) is scoped to the
+// THREE host cards + process table + engine `<dl>` — all four sourced from `/api/system` alone:
+// before that route has EVER answered `ok` (`state.systemPainted === false`), those parts show the
+// Unavailable marker; once it has, a later route failure KEEPS the last-known values (no flicker on
+// a transient miss). The counts card is the opposite of "keep" ON PURPOSE — ADR-057's fold reads
+// `/api/workflows` + `/api/runs` independently of `/api/system`, and the decisive acceptance case
+// (val-204) is exactly that ONE of those two failing must blank ONLY the counts card, immediately,
+// while the other three keep rendering live numbers from the still-healthy `/api/system` route.
+import { sectionState, cpuUtilState, statCard, procRow, procTotals, fmtBytes, catalogCounts } from '../lib/system.js';
+import { t } from '../lib/strings.js';
 import { el } from './dom.js';
 
-// system-info.ts's own UTIL_PCT_CONVENTION ('host-aggregate-0-100') — a fixed string, not a runtime
-// value, so it is duplicated here rather than imported (a `.js` client module cannot import a
-// server `.ts` module, DES-206's mock policy).
-const UTIL_PCT_CONVENTION = 'host-aggregate-0-100';
+// Not imported from `./models.js` (which duplicates the same two lines for the same reason, its
+// own file banner): a cross-import here would be one of `ui/`'s few cycles.
+function currentLang() {
+  return document.documentElement.lang === 'en' ? 'en' : 'zh';
+}
 
-// DES-207's ONE degraded-section component — every field this tab cannot sample renders THIS,
-// never a fabricated 0/'—' number.
-const UNAVAILABLE = '無法取樣';
+const CARD_LABELS = {
+  zh: { cpu: 'CPU 使用率', memory: '記憶體使用率', disk: '磁碟使用率', counts: '已儲存工作流程' },
+  en: { cpu: 'CPU %', memory: 'Memory %', disk: 'Disk %', counts: 'Workflows stored' },
+};
 
-function sysRow(k, v) {
+const PROC_HEAD_LABELS = {
+  zh: ['PID', '名稱', 'CPU %', '記憶體'],
+  en: ['PID', 'Name', 'CPU %', 'Memory'],
+};
+
+const ENGINE_DL_LABELS = {
+  zh: ['PID', '運行時間', 'CPU %', '記憶體', '執行緒', '檔案描述符'],
+  en: ['PID', 'Uptime', 'CPU %', 'Memory', 'Threads', 'File descriptors'],
+};
+
+function fmtUptime(sec) {
+  const total = Math.max(0, Math.floor(sec));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function fmtCpuPct(cpuPct) {
+  return cpuPct == null ? '—' : `${cpuPct.toFixed(1)}%`;
+}
+
+// The one fill mechanism the "no design values in JS" guard allows (`.style.transform` only, DES-
+// 208/209) — same recipe `ui/models.js:219`'s benchmark bar uses. `pct === undefined` (INV-V28-4:
+// the counts card has no denominator, an unavailable section has no number) renders `scaleX(0)`, an
+// explicit ABSENT state — never a fabricated full bar, and never left to whatever a missing
+// transform would default to.
+function setBarPct(barEl, pct) {
+  const frac = pct == null ? 0 : Math.max(0, Math.min(1, pct / 100));
+  barEl.style.transform = `scaleX(${frac})`;
+}
+
+function buildCard(kind, lang) {
+  const root = document.createElement('div');
+  root.setAttribute('data-sys-stat-card', '');
+  root.dataset.card = kind;
+  root.appendChild(el('span', 'stat-label', CARD_LABELS[lang][kind]));
+  const kicker = kind === 'disk' ? el('span', 'kicker', '') : null;
+  if (kicker) root.appendChild(kicker);
+  // `.stat-card` (34px/500, README §5) + `.stat-value` (the STYLE_HOOKS/TEST_ANCHORS emitter
+  // anchor SPEC_ROWS key on, `[data-sys-stat-card] .stat-value`) on the SAME element: both classes
+  // are single-class selectors of equal specificity, so the cascade's normal tie-break (source
+  // order) applies — `.stat-card` is declared AFTER `.stat-value` in `dashboard.css` (the pre-
+  // existing 18px/600 agent-panel figure, README §「REQ-135 agent panel」), so this figure renders
+  // at 34px/500 while still matching the `.stat-value` selector every SPEC_ROW anchor here keys on.
+  const value = el('div', 'stat-card stat-value', '—');
+  root.appendChild(value);
+  const track = el('div', 'stat-track');
+  const bar = el('div', 'stat-bar');
+  track.appendChild(bar);
+  root.appendChild(track);
+  const meta = el('div', 'meta', '');
+  root.appendChild(meta);
+  return { root, kicker, value, track, bar, meta };
+}
+
+function paintCard(card, vm) {
+  card.value.textContent = vm.value;
+  card.meta.textContent = vm.meta != null ? vm.meta : '';
+  if (card.kicker) card.kicker.textContent = vm.kicker != null ? vm.kicker : '';
+  setBarPct(card.bar, vm.pct);
+}
+
+function buildProcRowEls() {
   const tr = document.createElement('tr');
-  tr.appendChild(el('td', undefined, k));
-  tr.appendChild(el('td', undefined, v));
-  return tr;
+  const tdPid = el('td', undefined, '');
+  const tdName = el('td', undefined, '');
+  const tdCpu = document.createElement('td');
+  const track = el('div', 'stat-track');
+  const bar = el('div', 'stat-bar');
+  track.appendChild(bar);
+  const cpuText = el('span', 'mono', '');
+  tdCpu.append(track, cpuText);
+  const tdMem = el('td', undefined, '');
+  tr.append(tdPid, tdName, tdCpu, tdMem);
+  return { tr, tdPid, tdName, tdMem, bar, cpuText };
 }
 
-function fmtBytes(b) {
-  if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB';
-  if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB';
-  if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB';
-  return b + ' B';
+function paintProcRow(rowEls, row) {
+  rowEls.tdPid.textContent = String(row.pid);
+  // README §5: "the engine's own pid marked ★" — text content (the accent bar is `.proc-self`'s
+  // own CSS, applied via the class below).
+  rowEls.tdName.textContent = row.isSelf ? `★ ${row.name}` : row.name;
+  setBarPct(rowEls.bar, row.cpuPct);
+  rowEls.cpuText.textContent = fmtCpuPct(row.cpuPct);
+  rowEls.tdMem.textContent = fmtBytes(row.memBytes);
+  rowEls.tr.classList.toggle('proc-self', row.isSelf);
 }
 
-function buildTable(data) {
-  const t = document.createElement('table');
-  t.className = 'table sys-table'; // DES-209 STYLE_HOOKS: .table (component layer) + the ported
-                                    // .sys-table modifier (DES-209 boundary clause 5).
-  t.appendChild(sysRow('cpu cores', String(data.cpu.cores)));
-  t.appendChild(sysRow('load avg 1m/5m/15m', data.cpu.loadAvg.map((v) => v.toFixed(2)).join(' / ')));
-  const utilStr = data.cpu.utilizationPct != null ? data.cpu.utilizationPct.toFixed(1) + '%' : UNAVAILABLE;
-  t.appendChild(sysRow('cpu util (' + UTIL_PCT_CONVENTION + ')', utilStr));
-  if (data.memory && !('reason' in data.memory)) {
-    t.appendChild(sysRow('memory', fmtBytes(data.memory.usedBytes) + ' / ' + fmtBytes(data.memory.totalBytes) + ' (' + data.memory.usedPct.toFixed(1) + '%)'));
-  } else {
-    t.appendChild(sysRow('memory', UNAVAILABLE));
+/** Reconciles `tbodyEl` against `topN` KEYED BY PID (DES-216: "a tick reorders rather than
+ *  rebuilds") — an existing row's cells are updated in place and `appendChild`ed into its new
+ *  position (which MOVES an already-attached node rather than duplicating it); a pid no longer
+ *  present is removed from both the DOM and `procRows`. */
+function paintProcTable(state, topN, selfPid) {
+  const seen = new Set();
+  for (const proc of topN) {
+    const row = procRow(proc, selfPid);
+    let rowEls = state.procRows.get(row.pid);
+    if (!rowEls) {
+      rowEls = buildProcRowEls();
+      state.procRows.set(row.pid, rowEls);
+    }
+    paintProcRow(rowEls, row);
+    state.tbodyEl.appendChild(rowEls.tr);
+    seen.add(row.pid);
   }
-  if (data.disk && !('reason' in data.disk)) {
-    t.appendChild(sysRow('disk ' + data.disk.path, fmtBytes(data.disk.usedBytes) + ' / ' + fmtBytes(data.disk.totalBytes) + ' (' + data.disk.usedPct.toFixed(1) + '%)'));
-  } else {
-    t.appendChild(sysRow('disk', UNAVAILABLE));
+  for (const [pid, rowEls] of state.procRows) {
+    if (!seen.has(pid)) {
+      rowEls.tr.remove();
+      state.procRows.delete(pid);
+    }
   }
-  t.appendChild(sysRow('sampled at', data.sampledAt));
-  return t;
 }
 
-/** [v27c] DES-206's uniform view contract, poll half — fetches `/api/system` and paints (the ONE
- *  degraded-section swap, DES-207's own stated behaviour change); returns the endpoint's status so
- *  a caller folding it into `nextConnection` can do so like every other view. */
-export async function onTick(container, _bodies, _ctx) {
+function paintEngineDl(dlEl, self, lang) {
+  const labels = ENGINE_DL_LABELS[lang];
+  const values = [
+    String(self.pid),
+    fmtUptime(self.uptimeSec),
+    fmtCpuPct(self.cpuPct),
+    fmtBytes(self.rssBytes),
+    self.threads == null ? '—' : String(self.threads),
+    self.fdCount == null ? '—' : String(self.fdCount),
+  ];
+  dlEl.replaceChildren();
+  for (let i = 0; i < labels.length; i++) {
+    dlEl.appendChild(el('dt', undefined, labels[i]));
+    dlEl.appendChild(el('dd', undefined, values[i]));
+  }
+}
+
+function buildShell(container, lang) {
+  container.replaceChildren();
+
+  const cardsWrap = el('div', 'stat-cards');
+  const cards = {};
+  for (const kind of ['cpu', 'memory', 'disk', 'counts']) {
+    const card = buildCard(kind, lang);
+    cards[kind] = card;
+    cardsWrap.appendChild(card.root);
+  }
+  container.appendChild(cardsWrap);
+
+  const procSummary = el('p', 'meta', '');
+  container.appendChild(procSummary);
+
+  const table = document.createElement('table');
+  table.className = 'table proc-table';
+  table.setAttribute('data-proc-table', '');
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  for (const label of PROC_HEAD_LABELS[lang]) headRow.appendChild(el('th', undefined, label));
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+  const tbody = document.createElement('tbody');
+  table.appendChild(tbody);
+  container.appendChild(table);
+
+  const dl = document.createElement('dl');
+  dl.className = 'engine-dl';
+  dl.setAttribute('data-engine-dl', '');
+  container.appendChild(dl);
+
+  return {
+    lang, cards, procSummaryEl: procSummary, tbodyEl: tbody, engineDlEl: dl,
+    procRows: new Map(), systemPainted: false,
+  };
+}
+
+function paintHostUnavailable(state) {
+  const lang = state.lang;
+  for (const kind of ['cpu', 'memory', 'disk']) {
+    paintCard(state.cards[kind], { value: t(lang, 'unavailable'), pct: undefined, meta: undefined });
+  }
+  state.procSummaryEl.textContent = t(lang, 'unavailable');
+  state.tbodyEl.replaceChildren();
+  state.procRows.clear();
+  state.engineDlEl.replaceChildren();
+}
+
+function paintHost(state, body) {
+  const lang = state.lang;
+  const cpuState = cpuUtilState(body.cpu);
+  paintCard(state.cards.cpu, statCard('cpu', { ...cpuState, cores: body.cpu.cores, loadAvg: body.cpu.loadAvg }, lang));
+  paintCard(state.cards.memory, statCard('memory', sectionState(body.memory), lang));
+  paintCard(state.cards.disk, statCard('disk', sectionState(body.disk), lang));
+
+  const sysState = sectionState(body.process.system);
+  state.procSummaryEl.textContent = sysState.kind === 'ok' ? procTotals(sysState.value, lang) : t(lang, 'unavailable');
+
+  paintProcTable(state, body.process.topN, body.process.self.pid);
+  paintEngineDl(state.engineDlEl, body.process.self, lang);
+}
+
+function paintCountsUnavailable(state) {
+  paintCard(state.cards.counts, { value: t(state.lang, 'unavailable'), pct: undefined, meta: undefined });
+}
+
+function paintCounts(state, counts) {
+  paintCard(state.cards.counts, statCard('counts', counts, state.lang));
+}
+
+const stateByContainer = new WeakMap();
+
+/** [v28] DES-206's uniform view contract, poll half — `bodies`/`tick.results` are keyed by
+ *  `poll.js`'s `endpointsFor('system')`: `/api/system`, `/api/workflows`, `/api/runs` (ADR-057's
+ *  client fold needs the latter two with NO new server route). Returns all three verdicts so a
+ *  caller folding them into `nextConnection` can do so like every other view (redundant with
+ *  `app.js`'s own `transportResults` for these three urls, same as `ui/models.js`'s own return). */
+export async function onTick(container, bodies, _ctx, tick) {
   if (!container.isConnected) return undefined;
-  const res = await getJSON('/api/system');
-  if (!container.isConnected) return undefined;
-  // [BF-4 Gate 8 repair] `:72` already holds `classifyResponse`'s verdict — a whole-route degrade
-  // is HTTP 200 `{degraded:'…'}` (server.ts's catch-all), which is truthy, so `!res.body` let it
-  // through to `buildTable`, which threw on `data.cpu.cores` (ARCH-125's "never rendered as data").
-  // `res.status !== 'ok'` subsumes that arm without re-deriving the classification at the call site.
-  if (res.status !== 'ok') {
-    container.replaceChildren(el('div', 'empty', UNAVAILABLE));
-  } else {
-    container.replaceChildren(buildTable(res.body));
+  let state = stateByContainer.get(container);
+  if (!state) {
+    state = buildShell(container, currentLang());
+    stateByContainer.set(container, state);
   }
-  return { '/api/system': res.status };
+
+  const results = (tick && tick.results) || {};
+  const systemVerdict = results['/api/system'];
+  const systemBody = bodies ? bodies['/api/system'] : undefined;
+  if (systemVerdict === 'ok' && systemBody) {
+    paintHost(state, systemBody);
+    state.systemPainted = true;
+  } else if (!state.systemPainted) {
+    paintHostUnavailable(state);
+  }
+  // else: KEEP — a transient miss after a real paint leaves the last-known host numbers on screen.
+
+  const workflowsVerdict = results['/api/workflows'];
+  const runsVerdict = results['/api/runs'];
+  const workflowsBody = bodies ? bodies['/api/workflows'] : undefined;
+  const runsBody = bodies ? bodies['/api/runs'] : undefined;
+  if (workflowsVerdict === 'ok' && runsVerdict === 'ok' && Array.isArray(workflowsBody) && Array.isArray(runsBody)) {
+    paintCounts(state, catalogCounts(workflowsBody, runsBody));
+  } else {
+    // No "keep" here, ON PURPOSE (DES-215/216's decisive case): the counts card's own two routes
+    // are independent of `/api/system`'s health, so a fault on either flips it immediately.
+    paintCountsUnavailable(state);
+  }
+
+  return { '/api/system': systemVerdict, '/api/workflows': workflowsVerdict, '/api/runs': runsVerdict };
 }
 
-/** DES-206's uniform view contract — `vm`/`handlers` are unused; `onTick` owns the actual fetch and
- *  paint, called once here for first paint since nothing else calls it yet. */
+/** DES-206's uniform view contract — `vm`/`handlers` are unused (`app.js`'s `activateTab` mounts
+ *  every tab module the same way, `mod.render(panel, {}, {})`); the shell is fully static, built
+ *  here, and `onTick` owns the actual fetch verdict and value paint, called once here for first
+ *  paint since nothing else has yet. */
 export function render(container, _vm, _handlers) {
   container.id = 'system-panel';
-  onTick(container, {}, {});
+  onTick(container, {}, {}, { results: {} });
 }

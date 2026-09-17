@@ -27,6 +27,12 @@ export const STR = {
     // repaired, not before, or the two diverge.
     unavailable: '無法取樣',
     brand: '工作流引擎 / Workflow Engine',
+    // [v28, DES-212, TASK-220, REQ-143] `demoData` is the nav tag's text while demo mode is
+    // engaged (`ui/app.js`'s `demoEngages` arm); `demoBanner` is the shell banner painted OUTSIDE
+    // `mountLazy`'s per-route `replaceChildren()` reach, so it survives every tab/route switch for
+    // as long as demo mode stays engaged.
+    demoData: '示範資料',
+    demoBanner: '示範資料 — 引擎目前無法連線,以下畫面為示範內容',
   },
   en: {
     predictedLayout: 'predicted layout',
@@ -35,6 +41,8 @@ export const STR = {
     laneUntitled: 'untitled lane',
     unavailable: 'Unavailable',
     brand: '工作流引擎 / Workflow Engine',
+    demoData: 'Demo data',
+    demoBanner: 'Demo data — the engine is unreachable; this view is showing demo content',
   },
 };
 

@@ -92,6 +92,15 @@ export interface IssueSummary {
   url: string;
 }
 
+/** v28 (DES-218, TASK-219, REQ-139): the shape GET /api/issues already serves, now named — zero
+ *  wire change. `degraded` is present only on the token-missing arm (server.ts's own `{ open: [],
+ *  resolved: [], degraded: 'GitHub not configured' }`). */
+export interface IssuesListView {
+  open: IssueSummary[];
+  resolved: IssueSummary[];
+  degraded?: string;
+}
+
 /** REQ-033: one comment in an issue's conversation. */
 export interface CommentView {
   id: number;

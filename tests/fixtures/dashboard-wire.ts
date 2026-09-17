@@ -21,6 +21,7 @@ import type { AgentLogView, RunSummary, HarnessDescriptor, AgentRecord, Transcri
 import type { HomeView } from '../../src/dashboard.js';
 import type { SystemInfoView } from '../../src/system-info.js';
 import type { EnrichedModelEntry } from '../../src/models/model-catalog.js';
+import type { IssuesListView, IssueSummary } from '../../src/github/issue-reporter.js';
 
 // ---- run_agent_log / GET /api/runs/:id/agents/:agentId ----
 
@@ -175,14 +176,11 @@ export const REQUIRED_MODEL_ENTRY_KEYS = [
 ] as const;
 
 // ---- GET /api/issues (v28, DES-218, TASK-219, REQ-139) ----
-// [v28 Gate 5, deliberately NOT authored here] DES-218 mints `IssuesListView` in
-// `src/github/issue-reporter.ts` (a PRODUCTION file) so this fixture's literal can `satisfies` it —
-// that type does not exist yet (TASK-219's own job, ordering rule 1: it lands before every other
-// v28 Gate-6 task). Authoring an `ISSUES_OK` literal against a LOCAL structural copy here would be
-// exactly the "three subtly-different copies of the same fixture" defect class DES-218's own
-// boundary warns against, so the row is named as owed rather than faked: TASK-219 adds
-// `ISSUES_OK: IssuesListView`, `ALLOWED_ISSUES_KEYS`, `REQUIRED_ISSUES_KEYS`, and the
-// `GET /api/issues (ok)` `DISCLOSURE_TABLE` row in the SAME commit that mints the type.
+const ISSUE_SUMMARY_OPEN: IssueSummary = { number: 1, title: 'example open issue', state: 'open', labels: ['agent-reported'], url: 'https://github.com/example/repo/issues/1' };
+const ISSUE_SUMMARY_RESOLVED: IssueSummary = { number: 2, title: 'example resolved issue', state: 'closed', labels: ['agent-reported'], url: 'https://github.com/example/repo/issues/2' };
+export const ISSUES_OK: IssuesListView = { open: [ISSUE_SUMMARY_OPEN], resolved: [ISSUE_SUMMARY_RESOLVED] };
+export const ALLOWED_ISSUES_KEYS = ['open', 'resolved', 'degraded'] as const;
+export const REQUIRED_ISSUES_KEYS = ['open', 'resolved'] as const;
 
 // ---- (endpoint x outcome) table DES-192/ADR-054 requires ----
 
@@ -205,9 +203,9 @@ export const DISCLOSURE_TABLE: DisclosureRow[] = [
   { route: 'GET /api/home', outcome: 'ok', body: HOME_VIEW_EXAMPLE as unknown as Record<string, unknown>, allowed: ALLOWED_HOME_KEYS, required: REQUIRED_HOME_KEYS },
   { route: 'GET /api/runs/:id/agents/:agentId (http, ok)', outcome: 'ok', body: AGENT_LOG_OK as unknown as Record<string, unknown>, allowed: ALLOWED_AGENT_LOG_OK_KEYS, required: REQUIRED_AGENT_LOG_OK_KEYS },
   // v28 (DES-218, TASK-219, INV-V27-7 pattern extended, REQ-137/138/139): the four disclosure rows
-  // this iteration owes. `GET /api/issues (ok)` is deliberately NOT here yet — see the
-  // `ISSUES_OK` housekeeping note above; TASK-219 adds that ONE row in the same commit as the type.
+  // this iteration owes.
   { route: 'GET /api/system (ok)', outcome: 'ok', body: SYSTEM_OK as unknown as Record<string, unknown>, allowed: ALLOWED_SYSTEM_KEYS, required: REQUIRED_SYSTEM_KEYS },
   { route: 'GET /api/system (per-section degraded)', outcome: 'ok', body: SYSTEM_SECTION_DEGRADED as unknown as Record<string, unknown>, allowed: ALLOWED_SYSTEM_KEYS, required: REQUIRED_SYSTEM_KEYS },
   { route: 'GET /api/models[i] (ok)', outcome: 'ok', body: MODEL_ENTRY_OK as unknown as Record<string, unknown>, allowed: ALLOWED_MODEL_ENTRY_KEYS, required: REQUIRED_MODEL_ENTRY_KEYS },
+  { route: 'GET /api/issues (ok)', outcome: 'ok', body: ISSUES_OK as unknown as Record<string, unknown>, allowed: ALLOWED_ISSUES_KEYS, required: REQUIRED_ISSUES_KEYS },
 ];

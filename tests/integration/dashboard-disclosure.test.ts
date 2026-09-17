@@ -14,15 +14,17 @@
 // one genuinely un-runnable third-party network boundary (the model provider) — same technique as
 // IT-016/agent-type-composition-root.test.ts.
 //
-// [v28 Gate 5, DES-218, TASK-219, REQ-137/138] IT-165 gains three rows this iteration: `GET
+// [v28 Gate 5/6, DES-218, TASK-219, REQ-137/138/139] IT-165 gains four rows this iteration: `GET
 // /api/system (ok)` and `(per-section degraded)` (`SYSTEM_OK`/`SYSTEM_SECTION_DEGRADED`,
-// `tests/fixtures/dashboard-wire.ts`) and `GET /api/models[i] (ok)` (`MODEL_ENTRY_OK`) — all THREE
-// real bodies fetched in `beforeAll` above (no mock: `/api/system`/`/api/models` already exist and
-// serve real data). These three rows are GREEN today (the routes and their key sets are unchanged
-// by v28 — ARCH-135's only change is the `topN` COUNT, tested in `dashboard-http.test.ts`
-// separately) — recorded as Mode-C green-by-construction, not forced red: the row exists to LOCK
-// the v28 key-set contract in place, and it is already true. `GET /api/issues (ok)` is
-// deliberately NOT added (owed to TASK-219, see `dashboard-wire.ts`'s own note).
+// `tests/fixtures/dashboard-wire.ts`), `GET /api/models[i] (ok)` (`MODEL_ENTRY_OK`), and `GET
+// /api/issues (ok)` (`ISSUES_OK`) — all FOUR real bodies fetched in `beforeAll` above (`/api/system`
+// and `/api/models` need no mock at all; `/api/issues` needs only the fake GitHub client boundary,
+// `FAKE_ISSUE_CLIENT` above, the same convention as `FAKE_GATEWAY`). The system/models rows are
+// GREEN today (the routes and their key sets are unchanged by v28 — ARCH-135's only change is the
+// `topN` COUNT, tested in `dashboard-http.test.ts` separately) — recorded as Mode-C
+// green-by-construction, not forced red: the row exists to LOCK the v28 key-set contract in place,
+// and it is already true. `GET /api/issues (ok)` is genuinely new (TASK-219 mints `IssuesListView`
+// in the same commit).
 //
 // Red reason (measured): `AgentLogView` does not exist in src/types.ts (whole-file import failure —
 // `tests/fixtures/dashboard-wire.ts` fails `tsc --noEmit` on the missing export, which is DES-192's
@@ -40,6 +42,8 @@ import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server, ServerConfig } from '../../src/server.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
+import { IssueReporter, type GithubIssueClient } from '../../src/github/issue-reporter.js';
+import type { SecretSource } from '../../src/secret-resolver.js';
 import { runScriptVia, registerPublishedVia } from '../helpers/workflow-fixtures.js';
 import { DISCLOSURE_TABLE } from '../fixtures/dashboard-wire.js';
 
@@ -53,6 +57,25 @@ import { DISCLOSURE_TABLE } from '../fixtures/dashboard-wire.js';
 // other participant (server, store, MCP, HTTP) is real.
 const FAKE_GATEWAY: GatewayClient = {
   invoke: async () => ({ ok: true, provider: 'anthropic', model: 'claude-3-5-sonnet-20241022', tokens: { input: 10, output: 4 }, content: 'x' }),
+};
+
+// v28 (DES-218, TASK-219, REQ-139): GET /api/issues (ok) needs a real `ok:true` listIssues() call,
+// which needs a resolvable token — `FAKE_ISSUE_CLIENT` stands in only for the third-party GitHub API
+// boundary (same convention as FAKE_GATEWAY above and tests/integration/issue-ops-http.test.ts's
+// `dashClient`); the partition into open/resolved (server.ts's own filter) is real.
+const srcWith = (m: Record<string, string>): SecretSource => ({ resolve: (h) => m[h], names: () => Object.keys(m) });
+const FAKE_ISSUE_CLIENT: GithubIssueClient = {
+  async createIssue() { return { number: 1, url: 'https://x/1' }; },
+  async getIssue() { return null; },
+  async listIssues() {
+    return [
+      { number: 20, title: 'example open issue', state: 'open', labels: ['agent-reported'], url: 'https://x/20' },
+      { number: 21, title: 'example resolved issue', state: 'closed', labels: ['agent-reported'], url: 'https://x/21' },
+    ];
+  },
+  async getComments() { return null; },
+  async createComment() { return null; },
+  async findOpenByFingerprint() { return null; },
 };
 
 describe('dashboard disclosure key-set table (IT-165, ADR-054, DES-192)', () => {
@@ -84,7 +107,8 @@ describe('dashboard disclosure key-set table (IT-165, ADR-054, DES-192)', () => 
 
   beforeAll(async () => {
     discTmpDir = mkdtempSync(join(tmpdir(), 'rwe-it165-disclosure-'));
-    discServer = await createServer({ port: 0, bind: '127.0.0.1', workRoot: discTmpDir, gateway: FAKE_GATEWAY });
+    const issueReporter = new IssueReporter({ secretSource: srcWith({ GITHUB_TOKEN: 'tkn' }), clientImpl: FAKE_ISSUE_CLIENT });
+    discServer = await createServer({ port: 0, bind: '127.0.0.1', workRoot: discTmpDir, gateway: FAKE_GATEWAY, issueReporter });
     const base = `http://127.0.0.1:${discServer.port}`;
 
     // ---- v28 (DES-218, TASK-219, REQ-138): GET /api/system, TWO real calls. `SystemInfoSampler`'s
@@ -134,6 +158,12 @@ describe('dashboard disclosure key-set table (IT-165, ADR-054, DES-192)', () => 
     const modelsList = (await modelsRes.json()) as Array<Record<string, unknown>>;
     realBodies['GET /api/models[i] (ok)'] = modelsList[0]!;
 
+    // v28 (DES-218, TASK-219, REQ-139): GET /api/issues — `issueReporter` above resolves a token and
+    // a fake client, so `listIssues` returns `ok:true` and server.ts's own open/closed partition runs
+    // for real over that list.
+    const issuesRes = await fetch(`${base}/api/issues`);
+    realBodies['GET /api/issues (ok)'] = await issuesRes.json();
+
     // Reachable-producer for the shared degrade path (server.ts:342-356/611-617): a malformed
     // %-encoded describe segment throws `URIError` inside handleDashboardRequest's own try, caught
     // by its own catch — the SAME "any /api/*" degrade shape every route falls back to on a fault
@@ -157,6 +187,17 @@ describe('dashboard disclosure key-set table (IT-165, ADR-054, DES-192)', () => 
       const missingRequired = row.required.filter((k) => !keys.includes(k));
       expect(missingRequired, `${row.route}/${row.outcome}: missing required key(s)`).toEqual([]);
     }
+  });
+
+  // v28 (DES-218, TASK-219, REQ-139): the key-set loop above cannot tell `GET /api/issues (ok)`
+  // apart from the token-missing degraded arm — both satisfy the SAME allowed/required sets
+  // (`degraded` is optional). This is the discriminating check: the `issueReporter` wired into
+  // `discServer` above must have actually returned `ok:true`, not silently fallen back.
+  it('GET /api/issues (ok) is the real ok arm, not the token-missing degraded arm', () => {
+    const body = realBodies['GET /api/issues (ok)'] as { open: unknown[]; resolved: unknown[]; degraded?: string };
+    expect(body).not.toHaveProperty('degraded');
+    expect(body.open).toHaveLength(1);
+    expect(body.resolved).toHaveLength(1);
   });
 });
 
