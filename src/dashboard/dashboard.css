@@ -354,6 +354,7 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 .proc-table td:nth-child(3){width:40%;display:flex;align-items:center;gap:10px}
 .proc-table td:nth-child(3) .stat-track{flex:1}
 .proc-self td{color:var(--color-accent);font-weight:600}
+.proc-self{border-left:2px solid var(--color-accent)}
 /* README §5: "Engine process <dl> in a bordered box". */
 .engine-dl{margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px 18px;font-size:14px;font-variant-numeric:tabular-nums;padding:12px;border:1px solid var(--color-line);border-radius:var(--radius-md)}
 .engine-dl dt{opacity:.74}
