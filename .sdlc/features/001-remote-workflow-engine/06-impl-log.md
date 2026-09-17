@@ -7638,7 +7638,7 @@ half of `src/dashboard/ui`). **Module gate (item 1c):** dormant — `grep -c '\*
 - **traces:** REQ-138, DES-216, TASK-223
 - **greens:** VAL-214 (extended, 4/4 → 5/5)
 - **files:** tests/acceptance/val-204-system-tab.test.ts, 05-tests.md
-- **commit:** (see 05-tests.md's own VAL-214 entry for the exact command; committed alongside this entry)
+- **commit:** 1d5e729
 - **iter:** v28
 
 DES-216's own v28 amendment (`02-architecture.md`) discloses, not hides, that "no acceptance case
