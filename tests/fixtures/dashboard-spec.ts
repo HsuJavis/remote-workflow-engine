@@ -56,6 +56,8 @@
 // RED, BEFORE `dashboard.css`'s v28 families exist (carry-forward lesson 3: a row copied from
 // shipped CSS, or passing by sort-order coincidence, or encoding the very bug it should catch, are
 // all worse than a missing row — this table is never read off the built CSS).
+import type { EnrichedModelEntry } from '../../src/models/model-catalog.js';
+
 export type SpecReq = 'REQ-131' | 'REQ-132' | 'REQ-133' | 'REQ-134' | 'REQ-135' | 'REQ-137' | 'REQ-138';
 export type SpecView = 'home' | 'workflow' | 'run' | 'panel' | 'models' | 'system';
 export type SpecExpect =
@@ -281,10 +283,9 @@ export const SPEC_ROWS: ReadonlyArray<SpecRow> = [
   { req: 'REQ-137', view: 'models', anchor: '[data-model-table] th.sort-active', prop: 'color', expect: { token: 'accent-700' } },
   // "Row click -> right slide-in panel (560 px)".
   { req: 'REQ-137', view: 'models', anchor: 'data-model-panel', prop: 'width', expect: { literal: '560px' } },
-  // "Benchmarks with 2 px track / 4 px accent bar per score (grid `140px 1fr 48px`)".
-  { req: 'REQ-137', view: 'models', anchor: '.bench-row', prop: 'grid-template-columns', expect: { literal: '140px 1fr 48px' } },
-  { req: 'REQ-137', view: 'models', anchor: '.bench-row .stat-track', prop: 'height', expect: { literal: '2px' } },
-  { req: 'REQ-137', view: 'models', anchor: '.bench-row .stat-bar', prop: 'height', expect: { literal: '4px' } },
+  // "Benchmarks with 2 px track / 4 px accent bar per score (grid `140px 1fr 48px`)" — PARKED, see
+  // PARKED_SPEC_ROWS below (Won't-have D2 / ADR-060): no real `/api/models` reply can ever paint a
+  // `.bench-row`, so these three stay out of the active SPEC_ROWS set this iteration.
 
   // -- REQ-138 System (view: system), authored from README §5 --
   // "Four stat cards ... 34 px / 500 figure, 2 px track with 4 px accent bar".
@@ -297,3 +298,35 @@ export const SPEC_ROWS: ReadonlyArray<SpecRow> = [
   // half; the ★ glyph is text content, checked at val-204.
   { req: 'REQ-138', view: 'system', anchor: '[data-proc-table] .proc-self', prop: 'border-left-color', expect: { token: 'color-accent' } },
 ] as const;
+
+// [v28, IMPL-292/IMPL-293] PARKED, not deleted, not left permanently red: the three REQ-137
+// `.bench-row` rows that used to live in SPEC_ROWS above (grid-template-columns, `.stat-track`
+// height, `.stat-bar` height — README §4's "Benchmarks with 2px track / 4px accent bar per score").
+// `EnrichedModelEntry` (`src/models/model-catalog.ts:341`) carries no `benchmarks` field this
+// iteration and `enrichModelEntry` (`:419`) never emits one — this is `01-requirements.md`'s
+// Won't-have **D2** ("models 的 latency 量測管線與 benchmark 資料源...本輪不做"), and
+// `02-architecture.md`'s **ADR-060** independently confirms the Models tab ships wire-neutral, with
+// "typed-but-absent `latency`/`benchmarks`" never emitted on the wire. So no real `/api/models`
+// reply can ever paint a `.bench-row` — a case asserting one would either stay red forever (which
+// teaches everyone to ignore red) or only pass by faking the catalog, which `val-203-models-tab.
+// test.ts:4`'s own "no mock catalog" mock-policy banner already forbids (considered and rejected in
+// IMPL-292's investigation). Restore these three rows to SPEC_ROWS's `view: 'models'` set the day D2
+// is lifted (`benchmarks` lands on `EnrichedModelEntry` and `enrichModelEntry` emits it for a real
+// row) — do NOT rewrite them to assert the absence instead (that would encode Won't-have D2 as a
+// permanent pass and go green forever even after D2 lifts; ADR-060's own housekeeping note (iv)
+// names this exact trap for the honesty-column tests and it applies here too).
+export const PARKED_SPEC_ROWS: ReadonlyArray<SpecRow> = [
+  { req: 'REQ-137', view: 'models', anchor: '.bench-row', prop: 'grid-template-columns', expect: { literal: '140px 1fr 48px' } },
+  { req: 'REQ-137', view: 'models', anchor: '.bench-row .stat-track', prop: 'height', expect: { literal: '2px' } },
+  { req: 'REQ-137', view: 'models', anchor: '.bench-row .stat-bar', prop: 'height', expect: { literal: '4px' } },
+] as const;
+
+// Anti-rot tripwire, not a test: `npx tsc --noEmit` already runs on every gate, so wire the parking
+// decision straight to the type it depends on rather than trusting a future reader to re-find this
+// comment. While `EnrichedModelEntry` has no `benchmarks` key, `_D2StillHolds` is `true` and the
+// assignment below compiles. The day someone adds `benchmarks` to that interface (D2 lifted),
+// `_D2StillHolds` becomes `never`, `_d2Guard`'s assignment stops compiling, and the resulting
+// `tsc --noEmit` error points straight at this file and PARKED_SPEC_ROWS above.
+type _D2StillHolds = 'benchmarks' extends keyof EnrichedModelEntry ? never : true;
+const _d2Guard: _D2StillHolds = true;
+void _d2Guard;
