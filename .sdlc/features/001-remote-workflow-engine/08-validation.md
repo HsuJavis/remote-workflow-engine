@@ -10683,3 +10683,187 @@ exactly `07-review.md:338-349`, nothing broader).
 DELIBERATELY LEFT AT `review` (unchanged) — Gate 8 owns this send-back loop, and design's DASH-2
 (`04-design.md:3306`) is the one remaining named finding before the re-review, out of this gate's
 scope.
+
+## v28 GATE 7.5 (2026-09-18, validator) — REQ-137/138/139/142/143
+
+**Boot (documented steps only, no undocumented manual fix):** `./deploy.sh --background` per
+DEPLOY.md §0's own second-instance form, twice over the course of this gate (instance A on
+`RWE_PORT=8943` for REQ-137/138/139/142, then a second run for REQ-143's own kill/restart
+maneuver), each with `RWE_CONFIG_PATH=<scratch>/rwe.config.json RWE_WORK_ROOT=<scratch>/work
+RWE_BIND=127.0.0.1`; `RWE_SECRET_GITHUB_TOKEN=$(gh auth token)` exported for the REQ-139 instance
+(real GitHub PAT via the already-authenticated `gh` CLI, no mock). Every run passed step 5's own
+healthcheck first try — `{"agentSemaphore":{...},"version":"0.1.0 (v0.20.0-371-ge7bd2db)"}` — no
+step the docs did not already name. Production `rwe.service` confirmed untouched before/after every
+boot: `MainPID=2713463`, `ActiveEnterTimestamp=Fri 2026-09-11 11:47:25`, `NRestarts=0` throughout.
+All scratch node processes killed and ports freed at the end of this gate.
+
+### VAL-213 — REQ-137: Models tab — twelve sortable columns, three filters, a 560px slide-in
+- **status:** green
+- **traces:** REQ-137, DES-213, DES-214, TASK-222
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v28
+- **evidence:** Real Chromium (Puppeteer, `~/.cache/puppeteer/chrome`) driven over HTTP against the
+  deployed instance (`http://127.0.0.1:8943/dashboard`) — no `createServer()` in-process harness, a
+  genuine external client hitting the documented boot. `/api/models` on this instance serves the
+  FULL production-shaped catalog (100 real rows: anthropic static + a live OpenRouter fetch +
+  2 local Ollama entries), not the 9-row design-mockup fixture the acceptance test's
+  `DEFAULT_ALIASES` uses — a stronger proof the columns/sort/filter are genuinely data-driven, not
+  fixture-shaped. Cold load + `[data-tab="models"]` click → `[data-model-table] thead th` count =
+  **12** (模型/供應商/別名/上下文/價格/工具/推理/模態/延遲/穩定性/基準/位置). A header click on the
+  active column toggled `模型 ▲` → `模型 ▼` (`th.sort-active`), confirming the asc/desc toggle.
+  **Honesty rule (Won't-have D2), checked over ALL 100 real rows, not a sample:** every row's
+  延遲(latency) and 基準(benchmark) cell reads exactly `—`, never `0` or blank — real confirmation
+  that `EnrichedModelEntry` genuinely carries no `latency`/`benchmarks` field on this deployment.
+  Search box scoped to `.model-filters input[search]`, typed `claude` → row count **100 → 8**,
+  counter text **`8 / 100`** (the 8 real claude-named rows: `claude-sonnet-5`, `claude-opus-4-8`,
+  `claude-haiku-4-5-20251001`, `claude-fable-5`, `anthropic/claude-opus-5[:batch]`,
+  `anthropic/claude-fable-5.1[:batch]` — hand-verified against the raw `/api/models` list, all 8
+  correct, 0 false positive/negative). Row click → `[data-model-panel]` present with nonzero
+  `getBoundingClientRect().width` (slide-in rendered, not merely mounted hidden).
+  **Supporting (same-tree, real Chromium, real `createServer()`):**
+  `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-203-models-tab.test.ts` → 5/5 pass
+  (9410ms), covering the SPEC_ROWS/theme/hue cases this HTTP-level pass did not re-drive.
+
+### VAL-214 — REQ-138: System tab — four stat cards, a 20-row process table, the engine dl, the decisive per-card degrade split
+- **status:** green
+- **traces:** REQ-138, DES-215, DES-216, TASK-223
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v28
+- **evidence:** Same deployed instance, real host. `[data-tab="system"]` click →
+  `[data-sys-stat-card]` count = **4**; `[data-proc-table] tbody tr` count = **20** (real
+  confirmation of TASK-225's `topN:5→20`, this host genuinely has ≥20 processes); `[data-engine-dl]`
+  present. **IMPL-295's `.stat-bar` regression, re-measured live** (not merely re-trusted): all four
+  cards' `.stat-bar.offsetWidth` = **179px**, identical to the sibling `.stat-track.offsetWidth`
+  (179px) — the bar's LAYOUT box spans the full track on the real running CSS, confirming the
+  `right:0`/`width` fix (previously 0px pre-fix, per Gate 6.5+7's own measurement) holds on a fresh
+  deploy, not only in the test harness. Real live values observed: CPU 使用率 2% (16 cores, load
+  0.33/0.41/0), 記憶體使用率 29% (9.3 GB / 32.5 GB, 23.2 GB free), 磁碟使用率 (this scratch
+  workRoot's own mount), 已儲存工作流程 0 versions/0 run records (fresh scratch workRoot, honest
+  zero — not a hidden failure).
+  **Supporting (real `createServer()`, real Chromium, includes the decisive
+  `/api/workflows`-only-degraded split and the `/api/system`-500 mirror case IMPL-298 added):**
+  `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-204-system-tab.test.ts` → 5/5 pass
+  (9795ms).
+
+### VAL-215 — REQ-139/REQ-067: Issues tab in v28 clothes; the real `safeIssueHref` wiring
+- **status:** green
+- **traces:** REQ-139, REQ-067, DES-217, TASK-224
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v28
+- **evidence:** Real GitHub REST API, real PAT (`gh auth token`, scopes `gist,read:org,repo,
+  workflow`), the SUT's own `issue-reporter.ts` un-mocked, targeting this repo's own real issue
+  tracker (`HsuJavis/remote-workflow-engine`). `curl /api/issues` on the token-bearing instance →
+  real `open`/`resolved` arrays (issue **#73** open, 29 resolved incl. **#76**). Browser: cold load,
+  `[data-tab="issues"]` click, poll to `#issues-open .issue-row` — **open=1, resolved=29** (matches
+  the raw API exactly). Row click on `#73` → `#issue-detail` visible, `#issue-detail-meta` reads
+  `#73 · open · 1 comment(s)`, `#issue-detail-link` href = the REAL
+  `https://github.com/HsuJavis/remote-workflow-engine/issues/73` (safe `https:` URL passed through
+  `safeIssueHref` unchanged). **REQ-067 non-regression, checked on a SECOND scratch instance with NO
+  `RWE_SECRET_GITHUB_TOKEN` set** (the un-configured case): `curl /api/issues` → real 200
+  `{"open":[],"resolved":[],"degraded":"GitHub not configured"}` (never 500, never blank); browser
+  render of `[data-tab-panel="issues"]` textContent → `"OpenGitHub not configuredResolvedGitHub not
+  configuredOpen on GitHub ↗"` — the degraded TEXT renders in both Open and Resolved sections, never
+  a blank panel. Second scratch instance stopped after this check.
+  **Supporting (the one genuinely un-runnable third-party arm — a live malicious `javascript:`/
+  `data:` GitHub issue cannot be created against the real tracker for this check — covered by an
+  injected `issueReporter` stub per this file's own established convention, same shape as
+  `FAKE_GATEWAY` in `dashboard-disclosure.test.ts`; server routing/rendering never mocked):**
+  `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-205-issues-tab.test.ts` → 4/4 pass
+  (7420ms), including the malicious-URL-never-reaches-a-live-href security case.
+
+### VAL-216 — REQ-142: pause polling when hidden — real Chromium, 0 requests over a 30s hidden window
+- **status:** green
+- **traces:** REQ-142, DES-211, TASK-218
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v28
+- **evidence:** Real Chromium, two real pages against the deployed instance (no CDP override, no
+  patched `visibilityState` — the same rung-1 finding DES-211's oracle ladder already established:
+  a real HTTP-origin page participates in Chromium's occlusion tracking). Page A on `/dashboard`;
+  a real second page (B) brought to front backgrounds A (`document.visibilityState === 'hidden'`
+  confirmed on A as a precondition). Over the following real 30-second wall-clock window, network
+  requests to `${BASE}/api/*` from page A were counted via Puppeteer's own `request` event (browser
+  layer instrumentation, not a SUT-boundary mock): **0 requests**. Bringing A back to front → **1**
+  `/api/*` request observed within the following 2 seconds (immediate resume + restored 3s cadence).
+  **Supporting (real `createServer()`, real Chromium, the acceptance file's own 30s case):**
+  `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-206-visibility-pause.test.ts` → 1/1
+  pass (32771ms real wall-clock).
+
+### VAL-217 — REQ-143: demo data self-labels, engages on a STOPPED engine, retires on recovery
+- **status:** green
+- **traces:** REQ-143, DES-212, TASK-220
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v28
+- **evidence:** Self-contained real-process run (not `server.close()` in-process — a genuine
+  `SIGKILL` of the OS process group running the documented start command, `node node_modules/tsx/
+  dist/cli.mjs src/main.ts`, the exact line DEPLOY.md §0/deploy.sh step 4 runs): (1) engine spawned,
+  healthcheck passed; real Chromium page loaded `/dashboard` fresh — exactly **1** GET of
+  `/static/dashboard/demo/dataset.js` observed, nav tag `{"text":"連線中","classes":"rwe-connection
+  is-live"}` (no demo tag while live); (2) the engine process GROUP was `SIGKILL`ed under the
+  already-open page (a stopped-engine fault, never an HTTP-error storm — REQ-131's Offline case,
+  val-198's, is deliberately the other shape and was not conflated with this one); after a real
+  16-second wait (≥2 poll ticks at the 3s cadence plus the demo-engage margin) the SAME page's nav
+  tag read `{"text":"示範資料","classes":"rwe-connection is-offline is-demo"}` — `is-live` and
+  `is-demo` never co-occur — and the page BODY's `[data-demo-banner]` became visible with text
+  `示範資料 — 引擎目前無法連線,以下畫面為示範內容` (REQ-143's "visible outside the nav too" clause,
+  satisfied on a genuinely killed process, not a simulated fetch failure); `data-source` attribute
+  read `demo`; (3) a NEW engine process was spawned on the SAME port (8943) — after a real 6-second
+  wait the SAME page's nav tag flipped back to `{"text":"連線中","classes":"rwe-connection
+  is-live"}`, `data-source: live`. Both spawned processes killed for cleanup at the end of the run.
+  **Supporting (real `createServer()`/real Chromium, the acceptance file's own two cases incl. the
+  `server.close()` + re-`createServer()` same-port recovery):**
+  `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-207-demo-data.test.ts` → 2/2 pass
+  (15730ms).
+
+### Configuration — no drift found
+`git log --oneline 9f45a78..HEAD -- rwe.config.example.json` → empty; `git diff 9f45a78..HEAD --stat`
+over `rwe.config.example.json`/`.env*`/`wrangler*`/`docker-compose*`/`*.yaml`/`*.yml` (excluding the
+`.sdlc/` ledger) touches nothing. This closure (REQ-137/138/139/142/143) is entirely client-side
+dashboard rewrite + one server-side literal (`topN:5→20`, already a plain constant per ARCH-135's
+own refusal of a `?topN=` config/query knob, DEPLOY.md's consequence line predates this gate — see
+the current-state fix below) — no new/changed/removed env var, secret, port, or feature flag. DEPLOY
+§1 設定總表 requires no new row, no edited row, no deleted row this iteration.
+
+### Docs — current-state fixes made this gate
+- **DEPLOY.md (history tell-tale found and fixed):** the topN consequence line read "自 v28 起一次
+  回傳最多 20 筆主機 process 列（原本 5 筆）" — a version-conditional "previously X" pair, forbidden
+  by the manuals' history-free rule. Rewritten to current-state only: "GET /api/system … 一次回傳
+  最多 20 筆主機 process 列" (the "原本 5/自 v28 起" phrasing removed; the security consequence
+  itself — `bind:"0.0.0.0"` exposure, `comm`-only fields — is unchanged and kept).
+- **README.md (stale pre-v28 Models/System descriptions, §"儀表板"):** rewrote the 模型/系統 tab
+  bullets from the old flat "目錄表…不支援排序、篩選" / "資源表格…沒有卡片版面" prose to the current
+  v28 behavior (12-column sortable/filterable table + 560px slide-in for Models; four stat cards +
+  process table + engine `<dl>` for System), added a one-line mention of the hidden-tab poll pause
+  (REQ-142) beside the existing 3-second cadence claim, and added a one-line mention of the demo-data
+  fallback (REQ-143) so the manual matches what a user actually sees when the engine is unreachable.
+  ASCII tree (§"儀表板") updated to name the sortable/filterable Models tab and the stat-card System
+  tab instead of the retired flat tables. `grep -n "舊版\|原本\|以前\|previously\|變更紀錄\|
+  Changelog\|自 v[0-9]\+ 起"` re-run over both manuals after the edits above → 0 hits (the DEPLOY.md
+  hit above is the only one found, now fixed; the `iter` column values in DEPLOY §1's own config
+  table and the upgrade-migration/rollback/troubleshooting prose are legitimate current-state
+  operational content, not doc history, per the contract's own carve-out for those sections).
+
+### Gate self-check (v28, 2026-09-18, validator)
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` (baseline captured before any
+edit this gate, via `python3 -c "import trace as t; ..."` since `--check` alone prints only counts):
+baseline **1722 items / 30 gaps** — 5 HIGH `未真實驗證` (exactly REQ-137/138/139/142/143, this
+gate's own closure) + 20 LOW `漂移` (pre-existing, unrelated design/test/impl iter-lag, untouched by
+this closure) + 4 MID `未實作` (TASK-018 blocked/v3, TASK-153 external-repo-owned, TASK-215/TASK-216
+tracing to REQ-131/134 — v27's closure, already Gate-8-passed, out of this delta's scope). After
+this gate's five `real:true` flips above: re-scan shows **0 `未真實驗證`, 0 `未驗證`** for every REQ
+in this closure (REQ-137/138/139/142/143 all now reach `verified_real`) — the mandatory bar this
+gate owns. The pre-existing 20 `漂移` + 4 `未實作` are UNCHANGED (same IDs, same count) and are
+explicitly OUT of this delta iteration's impact closure per the dispatch's own scope rule — carried
+forward as known debt, not silently fixed and not silently hidden. **Exit code: 1** (non-zero),
+reported honestly per this ledger's own established convention (every prior Gate 7.5 round with
+pre-existing out-of-scope debt reported the same way): the residual gaps are the pre-existing LOW
+drift + MID unimplemented-external/v27 items, not this closure's REQs. `--rtm` regenerated below.
