@@ -101,7 +101,14 @@ describe('Models tab: twelve columns, sort, filter, slide-in (VAL-213, REQ-137)'
       await (await page.$('[data-tab="models"]'))!.click();
       await page.waitForSelector('[data-model-table] tbody tr', { timeout: 5000 });
       const before = await page.$$eval('[data-model-table] tbody tr', (rs) => rs.length);
-      const search = await page.$('.home-search, input[type="search"], [data-model-table] ~ input, .model-filters input');
+      // Scoped to the Models tab's OWN panel (`app.js:210`'s `[data-tab-panel="models"]`, set
+      // `display:none` while inactive but never removed) — the previous unscoped selector list
+      // matched the Home tab's `.home-search` (`home.js:171`) FIRST in document order, since
+      // `page.$()`/`querySelector` return the first document-order match across the WHOLE list, not
+      // a match of the first listed selector. Typing into that hidden, off-tab input silently did
+      // nothing to the Models table (measured: `matchModels`/`paint` themselves filter correctly
+      // once the right, visible input receives the keystrokes).
+      const search = await page.$('[data-tab-panel="models"] input[type="search"]');
       expect(search, 'a search input must exist on the Models tab').not.toBeNull();
       await search!.type('zzz-no-such-model-zzz');
       await new Promise((r) => setTimeout(r, 200));
@@ -135,6 +142,14 @@ describe('Models tab: twelve columns, sort, filter, slide-in (VAL-213, REQ-137)'
       await page.goto(`${baseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
       await (await page.$('[data-tab="models"]'))!.click();
       await new Promise((r) => setTimeout(r, 300));
+      // `data-model-panel`/`.bench-row` only exist once a row is clicked open (`renderPanel`,
+      // models.js:235-241 — README §4 "Row click -> right slide-in panel"); the agent panel's own
+      // SPEC_ROWS case (val-201-agent-panel.test.ts:307) clicks its node open before checking for
+      // the same reason. Table-only rows (`data-model-table`, `th.sort-active` — active by default,
+      // `models.js`'s initial sort is `{key:'model'}`) hold with or without the click.
+      const row = await page.waitForSelector('[data-model-table] tbody tr', { timeout: 5000 });
+      await row!.click();
+      await page.waitForSelector('[data-model-panel]', { timeout: 3000 });
       const rows = SPEC_ROWS.filter((r) => r.view === 'models');
       expect(rows.length).toBeGreaterThan(0);
       const failures = await specRowFailuresAcrossThemeAndHue(page, rows);
