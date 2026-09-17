@@ -113,7 +113,13 @@ describe('Issues tab: v28 clothes + the real safeIssueHref wiring (VAL-215, REQ-
       await new Promise((r) => setTimeout(r, 300));
       const bodyText = await page.evaluate(() => document.body.textContent ?? '');
       expect(bodyText).not.toBe('');
-      expect(bodyText.toLowerCase()).toMatch(/degraded|not configured|github/);
+      // Tightened (was `/degraded|not configured|github/`, which the chrome's own unconditional
+      // "Open on GitHub ↗" detail-link text — issues.js:63, built once by buildChrome() regardless
+      // of degraded state — satisfies via its bare "github" alternative even when this arm never
+      // ran). Assert the server's actual degraded literal (server.ts:468/488's
+      // `degraded: 'GitHub not configured'`, painted verbatim by issues.js:116-117's
+      // `el('div','degraded', data.degraded)`), which only exists in the DOM on this arm.
+      expect(bodyText.toLowerCase()).toContain('github not configured');
     } finally {
       await browser.close();
     }
