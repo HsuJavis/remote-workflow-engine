@@ -89,67 +89,7 @@ function shell(init: ShellInit): string {
 <script src="/static/dashboard/ui/theme-init.js"></script>
 </head>
 <body>
-<header>
-  <h1>Remote Workflow Engine — Live Dashboard</h1>
-  <a href="/dashboard">Runs</a>
-  <a href="/dashboard/issues">Issues</a>
-</header>
-<main>
-  <section id="home">
-    <h2>Running</h2>
-    <div id="home-running" class="cards"></div>
-    <h2>Registered</h2>
-    <div id="home-registered" class="cards"></div>
-    <h2>Other</h2>
-    <div id="home-other" class="cards"></div>
-    <h2>System</h2>
-    <div id="system-panel"></div>
-    <h2>Models</h2>
-    <div id="models-panel"></div>
-  </section>
-  <section id="detail" style="display:none">
-    <p><a class="back" href="/dashboard">&larr; all runs</a></p>
-    <h2>Run <span id="detail-runid"></span> <span id="detail-status" class="pill"></span></h2>
-    <div id="phases"></div>
-    <div id="run-usage"></div>
-    <div id="graph-container" style="overflow:hidden;height:420px;margin:10px 0">
-      <button type="button" id="dag-fit" class="fit-btn">Fit</button>
-      <div id="dag-zoom" class="zoomable">
-        <svg id="dag-graph" xmlns="http://www.w3.org/2000/svg" style="display:block"></svg>
-      </div>
-    </div>
-    <div id="tree"></div>
-    <!-- The diagram figure has no separate clipping ancestor (unlike #graph-container above): a
-         zoomed-in author SVG may spill past this pane's edge — accepted, Gate 7.5 tracks it. -->
-    <div id="diagram-zoom" class="zoomable" style="display:none">
-      <!-- v26 Gate 7.5 round 3 (defect D10, REQ-129): draggable="false" is REQUIRED for the pan —
-           a default-draggable <img> hands a real press-and-move to the browser's own image drag
-           instead of the .zoomable pan handler (VAL-189). -->
-      <img id="diagram-img" alt="workflow diagram" draggable="false">
-    </div>
-    <button type="button" id="diagram-fit" class="fit-btn" style="display:none">Fit</button>
-    <pre id="diagram" style="display:none"></pre>
-    <p id="mermaidNote" style="display:none"></p>
-    <div id="harness-table-section" style="display:none">
-      <h2>Agents</h2>
-      <div id="harness-table"></div>
-    </div>
-    <h2>Transcript <span id="tr-agent" class="mdl"></span></h2>
-    <pre id="transcript">Select an agent node above.</pre>
-  </section>
-  <section id="issues" style="display:none">
-    <p><a class="back" href="/dashboard">&larr; runs</a></p>
-    <h2>Open</h2>
-    <div id="issues-open"></div>
-    <h2>Resolved</h2>
-    <div id="issues-resolved"></div>
-    <div id="issue-detail" style="display:none" class="issue-detail">
-      <p id="issue-detail-meta"></p>
-      <p><a id="issue-detail-link" href="#" target="_blank" rel="noopener noreferrer">Open on GitHub ↗</a></p>
-      <pre id="issue-detail-body"></pre>
-    </div>
-  </section>
-</main>
+<main class="empty">儀表板用戶端未啟動,請檢查 /static/dashboard/ui/app.js · Dashboard client did not start; check /static/dashboard/ui/app.js</main>
 <script type="application/json" id="rwe-init">${islandJson}</script>
 <script type="module" src="/static/dashboard/ui/app.js"></script>
 </body>

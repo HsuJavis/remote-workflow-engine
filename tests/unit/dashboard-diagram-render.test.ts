@@ -15,7 +15,9 @@
 // static assertion over the served page's own source text. The full DOM behavior is additionally
 // proven at real-tier by VAL-113/VAL-116's Playwright-driven acceptance path.
 import { describe, it, expect } from 'vitest';
-import { DASHBOARD_HTML } from '../../src/dashboard-page.js';
+// [v27j, TASK-215] DASHBOARD_HTML is no longer imported: the one remaining assertion that used to
+// grep it re-points to clientFile()/clientCorpus() (dynamically imported below, same convention
+// this file already uses) once the fossil body is deleted (see the disposition comment below).
 
 // v27 disposition (DES-208, TASK-213): every assertion in this describe block was a grep over the
 // OLD inline JS SOURCE TEXT embedded in DASHBOARD_HTML — the describe/mermaid fetch, the
@@ -54,12 +56,20 @@ import { DASHBOARD_HTML } from '../../src/dashboard-page.js';
 // embedded `<script>` STRING with no jsdom harness in this repo, so these are source-level
 // assertions over the served page. The behavioural proof is VAL-169 (a real engine, a real render).
 // v27 disposition (DES-208): the fetch-literal and "no Mermaid library" negatives MOVE below (the
-// same class as UT-158's). `<img>`/never-`<object>`/never-`<embed>` is a markup fact and STAYS.
+// same class as UT-158's).
+//
+// [v27j, TASK-215] `<img>`/never-`<object>`/never-`<embed>` MOVES too: this was a grep over the
+// fossil body (`dashboard-page.ts:92-152`, deleted by this task), which `app.js:455` discarded
+// before first paint — a pin whose subject the browser never renders (ARCH-122's own pin rule). The
+// element is actually built by `ui/workflow.js:152-153` (`document.createElement('img')` /
+// `img.id = 'diagram-img'`); the never-`<object>`/never-`<embed>` guarantee is a "never CREATE
+// this element" fact, so its JS-idiomatic form over `clientCorpus()` is a `createElement` grep, not
+// a markup-string grep with nothing left to scan (DES-208's vacuous-green class).
 describe('v25: the dashboard loads the rendered diagram as an image (UT-169, REQ-119, DES-166)', () => {
-  it('renders it in an <img> — never <object>/<embed>, which execute script inside an SVG', () => {
-    expect(DASHBOARD_HTML).toContain('id="diagram-img"');
-    expect(DASHBOARD_HTML).not.toContain('<object');
-    expect(DASHBOARD_HTML).not.toContain('<embed');
+  it('renders it via an <img> element — never <object>/<embed>, which execute script inside an SVG', async () => {
+    const { clientFile, clientCorpus } = await import('../helpers/client-corpus.js');
+    expect(clientFile('ui/workflow.js')).toMatch(/createElement\('img'\)[\s\S]*?img\.id = 'diagram-img';/);
+    expect(clientCorpus()).not.toMatch(/createElement\(['"](object|embed)['"]\)/);
   });
 });
 
@@ -107,7 +117,15 @@ describe('v27 disposition anchor: the diagram createObjectURL/revokeObjectURL pa
     // has no workflow name of its own, so it resolves one via `/api/runs` and fetches `describe`
     // to read `params.agents[].effort.default`). The anti-duplication INTENT stays: a third site
     // added later must justify itself here, same as these two do.
-    expect((corpus.match(/\/describe/g) ?? []).length).toBe(2);
+    // [v27j, TASK-215] `demo/dataset.js`'s own file banner (TASK-220) contains the SUBSTRING
+    // "/describe" inside a comment describing which routes it does NOT cover — not a call site.
+    // A bare corpus match counts it as a third, which is exactly the false positive this
+    // anti-duplication tripwire must not raise; strip comments first (same precedent as
+    // `dashboard-no-external-host.test.ts`'s/`dashboard-no-design-values.test.ts`'s own
+    // `stripComments`), for the COUNT only — the other assertions in this file stay on the raw
+    // corpus.
+    const stripComments = (text: string): string => text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+    expect((stripComments(corpus).match(/\/describe/g) ?? []).length).toBe(2);
     expect(corpus.length).toBeGreaterThan(5000);
   });
 

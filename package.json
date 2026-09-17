@@ -5,10 +5,10 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
     "start": "tsx src/main.ts",
     "check-config": "tsx src/main.ts --check-config",
-    "build": "tsc --noEmit",
+    "build": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
     "gen:authoring": "tsx scripts/gen-authoring-md.ts"
   },
   "devDependencies": {

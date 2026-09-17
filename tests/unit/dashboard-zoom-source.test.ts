@@ -4,23 +4,30 @@
 // wrapper, never on rebuilt SVG children the 3s `renderGraph` destroys). Written test-first (Gate 5,
 // RED): `dashboard-page.ts:394-403` still sets an absolute pixel `width`/`height` and there is no
 // `.zoomable` class anywhere in the page.
-// Mock policy (unit): page-source text assertion over the exported DASHBOARD_HTML.
+// Mock policy (unit): page-source text assertion; [v27j, TASK-215] the `.zoomable`/`fit` markup
+// facts moved off DASHBOARD_HTML onto the served client file that actually builds them.
 import { describe, it, expect } from 'vitest';
-import { DASHBOARD_HTML } from '../../src/dashboard-page.js';
+import { clientFile } from '../helpers/client-corpus.js';
 
 // v27 disposition (DES-208, TASK-213): `viewBox`/`preserveAspectRatio` and the no-absolute-`width`
 // negative RETIRE from a direct DASHBOARD_HTML check — both were greps over the OLD inline JS
 // SOURCE TEXT embedded in the exported string; ARCH-122 empties the shell of that text entirely, so
 // the positive would simply go red and the negative would pass VACUOUSLY (DES-208's "dangerous
 // green"). They MOVE into the UT-253 disposition anchor below, under the same id, against the real
-// `ui/run.js` bytes once TASK-210 lands. `.zoomable`/`fit` are markup/CSS facts and STAY.
+// `ui/run.js` bytes once TASK-210 lands.
+//
+// [v27j, TASK-215] `.zoomable`/`fit` were markup/CSS facts pinned on the fossil body
+// (`dashboard-page.ts:92-152`, deleted by this task) — that fossil is discarded before first paint
+// (`app.js:455`), so a pin against `DASHBOARD_HTML` proved a string the browser never renders
+// (ARCH-122's own pin rule). They MOVE to `clientFile('ui/run.js')`, where `.zoomable`/`.fit-btn`
+// are actually built (`run.js:410,416`).
 describe('the run DAG and author SVG scale via viewBox + one .zoomable wrapper (UT-200, DES-186)', () => {
   it('a .zoomable wrapper class exists in the page', () => {
-    expect(DASHBOARD_HTML).toMatch(/zoomable/);
+    expect(clientFile('ui/run.js')).toMatch(/className = 'zoomable'/);
   });
 
   it('a fit button/control exists', () => {
-    expect(DASHBOARD_HTML).toMatch(/fit/i);
+    expect(clientFile('ui/run.js')).toMatch(/className = 'fit-btn'/);
   });
 });
 

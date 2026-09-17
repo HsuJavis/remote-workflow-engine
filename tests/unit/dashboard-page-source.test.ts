@@ -48,15 +48,18 @@ describe("the author's diagram can be drag-panned: no native image drag (UT-224,
   });
 });
 
-// v27 (UT-240, DES-200/201, ARCH-122, TASK-205, REQ-131): the served page becomes a SHELL — markup
+// v27 (UT-241, DES-200/201, ARCH-122, TASK-205, REQ-131): the served page becomes a SHELL — markup
 // + tokens CSS + a JSON data island + one module script; ZERO inline executable JS. `DASHBOARD_HTML`
 // keeps its export name (it stays the subject of page-source tests) but now holds markup/CSS only.
+// [UT-240 is a different item — `static-assets.test.ts`, 05-tests.md:12086 — this file's comment
+// named the wrong id; fixed under TASK-215 so `sh .sdlc/trace` (which cannot see this class of typo,
+// since both ids resolve) is not the only place it is caught.]
 //
 // Red reason (measured): today's `DASHBOARD_HTML` has NO `data-theme` attribute, links no
 // `/static/dashboard/*` asset, and its one `<script>` is the executable inline panel script (no
 // `type="application/json"` data island at all) — every assertion below fails against the current
 // template literal.
-describe('the v27 shell: markup + tokens CSS + a JSON data island, zero inline executable JS (UT-240, DES-200)', () => {
+describe('the v27 shell: markup + tokens CSS + a JSON data island, zero inline executable JS (UT-241, DES-200)', () => {
   it('the root element carries the dark default theme and zh-Hant language', () => {
     expect(DASHBOARD_HTML).toMatch(/<html[^>]*data-theme="dark"[^>]*lang="zh-Hant"/);
   });
@@ -89,9 +92,33 @@ describe('the v27 shell: markup + tokens CSS + a JSON data island, zero inline e
     expect(css).toMatch(/oklch\([^)]*var\(--rwe-hue\)\)/);
   });
 
-  it('the C1 page-source pins (CSS/markup, not behaviour) survive the rebuild', () => {
-    // [v27c] the CSS-rule pin re-points to `dashboard.css` bytes; the markup pin stays on DASHBOARD_HTML.
+  it('the C1 CSS pin survives the rebuild', () => {
+    // [v27c] re-points to `dashboard.css` bytes. [v27j/TASK-215] the sibling markup pin
+    // (`draggable="false"` on DASHBOARD_HTML) RETIRES here: UT-224's v27g re-pointed case
+    // (`:43` above, `clientFile('ui/workflow.js')`) already guards the real element, and this
+    // pin's own subject (the fossil body) is deleted by this task — see DES-208's disposition.
     expect(clientFile('dashboard.css')).toMatch(/\.fit-btn\{position:relative;z-index:1;/);
-    expect(DASHBOARD_HTML).toMatch(/draggable="false"/);
+  });
+
+  // v27j (UT-241's new positive, DES-200/ARCH-122, TASK-215): the F-pattern proof that the fossil
+  // body is actually gone — this is the ONE assertion that goes red if `dashboard-page.ts:92-152`
+  // ever comes back. RED reason at HEAD (measured): the pre-v27 body still stands between `<body>`
+  // and the island, so it contains `<header`/`<section` and no `<main class="empty">`.
+  it('the <body> holds ONE mount element — no <section>/<header> fossil, the island, and the module script', () => {
+    const bodyMatch = /<body>([\s\S]*)<\/body>/.exec(DASHBOARD_HTML);
+    expect(bodyMatch).not.toBeNull();
+    const body = bodyMatch![1] ?? '';
+    expect(body).toMatch(/<main class="empty">/);
+    expect(body).not.toMatch(/<section/);
+    expect(body).not.toMatch(/<header/);
+    expect(body).toContain('id="rwe-init"');
+    const moduleSrcMatch = /<script type="module" src="([^"]+)">/.exec(body);
+    expect(moduleSrcMatch).not.toBeNull();
+    const assetPath = moduleSrcMatch![1] ?? '';
+    // the pre-boot literal names the SAME asset path the module script emits — two copies of one
+    // path, one of them unguarded, is how the diagnostic starts lying (DES-200's own reasoning).
+    const mainMatch = /<main class="empty">([\s\S]*?)<\/main>/.exec(body);
+    expect(mainMatch).not.toBeNull();
+    expect(mainMatch![1] ?? '').toContain(assetPath);
   });
 });
