@@ -7245,3 +7245,48 @@ tool keeps its own default of 5, 1-50 range (`tool-specs.ts:999-1004`, unchanged
 `bind:"0.0.0.0"` deployment now exposes 20 host process names instead of 5, `comm` only) rather than
 hiding it — a plain-English `grep` for the topic came up empty on first pass; confirmed present via
 `git show 9e10453 -- DEPLOY.md`. Full DoD re-run: **15 passed (15)**.
+
+### IMPL-292 — TASK-222's two owed val-203 findings closed: search-selector collision (test), panel click before SPEC_ROWS (test) — one residual gap reported, not fabricated
+- **status:** done
+- **traces:** TASK-222, DES-213, DES-214, ARCH-134, ARCH-133, ADR-060, REQ-137
+- **greens:** `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-203-models-tab.test.ts` — 3p|2f → **4 passed | 1 failed (5)**
+- **files:** tests/acceptance/val-203-models-tab.test.ts
+- **commit:** 1b9f40b
+- **iter:** v28
+
+Both of IMPL-288's two open findings investigated to a root cause, not assumed. (1) **The reviewer's
+selector-collision hypothesis was CONFIRMED**, and it is a test defect, not a `models.js` filtering
+defect: a standalone diagnostic (typed directly into `.model-filters input[type="search"]`,
+bypassing the test's own selector) showed the row count going 100 → 0 — `matchModels`/`paint`
+already filter correctly. The grouped selector `.home-search, input[type="search"], …` resolves via
+document order across the WHOLE list; `app.js:199` keeps every `[data-tab-panel]` mounted
+(`display:none`, never removed), and the Home tab's `.home-search` (`home.js:171`) sits earlier in
+the DOM than the Models tab's own input, so `page.$()` silently grabbed the wrong, hidden element.
+Fixed by scoping to `[data-tab-panel="models"] input[type="search"]` — test-only, zero `src/`
+change. (2) **The design/precedent side was right, not the code**: README §4 states "Row click →
+right slide-in panel" and `renderPanel` (`ui/models.js:235-241`) correctly gates
+`[data-model-panel]` on `state.selected`; `val-201-agent-panel.test.ts:307` already established the
+click-before-panel-SPEC_ROWS pattern for the agent panel's own case. Added the same
+`waitForSelector('[data-model-table] tbody tr')` → `click()` →
+`waitForSelector('[data-model-panel]')` sequence; `data-model-panel width` now resolves.
+
+**Residual, reported rather than hidden: the three `.bench-row`/`.bench-row .stat-track`/`.bench-row
+.stat-bar` SPEC_ROWS (`dashboard-spec.ts:285-287`) stay red (9 of the original 12 failures, ×3
+theme/hue) — unreachable at the acceptance tier THIS ITERATION, independent of clicking.** No real
+`/api/models` entry can ever carry `benchmarks`: `EnrichedModelEntry` (`model-catalog.ts:341`) has
+no such field and `enrichModelEntry` (`:419`) never emits one — this is ADR-060's Won't-have D2.
+Making a `bench-row` render by intercepting `/api/models` with a fabricated body was considered
+and rejected: `val-203-models-tab.test.ts:4`'s own banner states the file's mock policy
+as "real createServer() (DEFAULT_ALIASES, no mock catalog)", and a fault-injection intercept (the
+technique val-204 uses) tests a reachable production state, whereas a success body carrying
+`benchmarks` is not a state the server can produce — a different category the file's policy already
+forecloses. This is a Gate 5 fixture question (hold the three rows pending D2's lift, or amend the
+file's mock policy), not an implementer-tier call — reported, not resolved here.
+
+Both fixes falsified per contract: reverted each with Edit, reproduced the ORIGINAL failure text
+exactly (`expected 100 to be less than 100`; the 12-anchor array with `data-model-panel` back in
+it), restored with Edit, confirmed `git diff --stat` clean, re-ran green at 4p|1f before committing.
+
+**TASK-222's `dod:` does NOT pass in full.** Unit tier: 29/29 (unchanged, IMPL-288). Browser tier:
+4 passed | 1 failed (was 3|2) — the `.bench-row` residual is a real, unclosed gap. Left `draft`;
+orchestrator routes the status per the reporting rule (an agent should not flip its own work).
