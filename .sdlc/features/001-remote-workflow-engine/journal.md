@@ -5740,3 +5740,109 @@ touches their shared surface. **Recommended next gate is 3+4 (design)**: DES-212
 need an amendment naming the disclosure mechanism for `workflow.js`'s describe-miss arm and
 `issues.js`'s data-miss arm (mirroring the existing `paintFigureUnavailable` pattern), then Gate 5
 (a new case in `val-207-demo-data.test.ts`), Gate 6, Gate 7, back to 7.5 for REQ-143 only.
+
+- 2026-09-18 — **v28b GATE 3+4 (tasks + detailed design, merged; designer, LEAN tier per the owner's
+2026-09-17 Sprint-B ruling) PASSED** — the design half of the Gate 7.5 REQ-143 send-back, and nothing
+else. Impact closure: REQ-143 only; REQ-137/138/139/142's real-tier evidence (VAL-213..216) is
+untouched and is not re-run.
+
+**Written.** `04-design.md`: **DES-220** (new, lean) — 「此路由無示範資料」, the half of the owner's
+2026-09-17 ruling that TASK-220 never built. Three pinned signatures (`lib/strings.js` gains
+`noDemoData` in BOTH languages; `paintFigureUnavailable(shell, lang)` → `(shell, text)`;
+`ui/workflow.js` and `ui/issues.js` each take DES-210's 4th `tick` parameter and gain ONE arm that
+fires only when `tick.source === 'demo'`), plus an 8-line `paintRouteUnfounded` that clears children
+and keeps nodes. Six boundary clauses, two of which are traps no test would have caught by accident:
+**(B1)** `state.paintedRunId = null` — without it `paintSelected`'s (K) arm keeps the demo disclosure
+on screen under a **Live** tag after recovery, so the rule is stated once and generally: *keep-last-
+known is valid only WITHIN one source*; **(B2)** `container.replaceChildren(...)` (models.js's (U)
+form) is FORBIDDEN in both files — it detaches the shell `workflow.js`'s `onTick` guards on and
+orphans `issues.js`'s WeakMap chrome, killing the view permanently even after the engine returns.
+FOUR existing rows amended in place at iter v28 with dated lines: **DES-210** (its 「`tick.source` …
+never a render decision」 clause NARROWED, not evaded — a view may pick a disclosure's WORDING from
+the source, never data/body/verdict), **DES-212** (it shipped half the ruling; the painting half is
+DES-220; its retirement allowlist grows by `ui/workflow.js` + `ui/issues.js`, designed growth of the
+retirement checklist rather than leak-hiding), **DES-216** (bare `/api/workflows` needs NO code — its
+counts card already degrades honestly, measured VAL-214/VAL-217), **DES-217** (its `onTick` had two
+arms and no third). The v28 real-tier-path table row for REQ-143 and the v28 seam-consistency section
+were amended too — `ui/home.js` and `ui/run.js` are NAMED as the two remaining 4th-parameter
+non-adopters with the reason each is harmless today, because an asymmetric seam recorded is a seam
+someone can re-check. `03-tasks.md`: **TASK-226** (estimate S, `des:` DES-220, one runnable DoD,
+an explicit `git diff --stat` file list). Rationale with all THREE adversarial lenses and all FOUR
+quality dimensions written out: `04-design.md`'s `## Decision rationale — v28b`.
+
+**ONE owner_decision is PENDING (issue #15, both channels).** REQ-143's amendment names THREE routes
+for 「此路由無示範資料」; DES-220 gives that exact sentence to two of them, but the third (bare
+`/api/workflows`) keeps saying 「無法取樣 / Unavailable」 — the pre-existing per-card degrade that
+VAL-217 measured real this round. Whether to re-open `ui/system.js` for literal compliance with the
+owner's own sentence is a product/wording call, so it is recorded as `- **owner_decision:** pending`
+on DES-220 and in this gate's report rather than decided here.
+
+**Refused, with the cost written down** (Karpathy rule 3, surgical): making the new arms
+source-agnostic (paint Unavailable on ANY route miss) is a smaller diff and would have left DES-210
+untouched — but it rewrites verified LIVE behaviour (DES-206 (K), REQ-067's degrade clause) inside a
+REQ-143 fix. Both live arms are therefore byte-identical; the new arm is reachable only from
+`demoEngages`. Also refused: a `lib/demo.js` predicate module (DES-212 refused that shape by name),
+hiding the `'demo'` literal behind a helper to dodge UT-260's tripwire, eager tab-module preloading,
+and any touch of `dashboard.css`/`src/server.ts`/the `DEMO` map.
+
+**Out of closure, recorded not taken:** `/dashboard/<a real run id>` under demo (`ui/run.js` freezes
+the same way — not one of the owner's three routes, and DES-210's boundary already dispositioned it),
+and a tab never opened before the engine died (it cannot `import()` its module and paints
+`app.js`'s `${tab} unavailable` — honest, and already in README as a current-state limitation).
+
+**Gate self-check.** `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → **1724
+items / 26 gaps**, exit 1. Baseline captured BEFORE any edit (into this session's scratch dir, never
+by checking the ledger backwards — CLAUDE.md) was 1722/25; the diff is exactly **+2 items (DES-220,
+TASK-226) and +1 LOW `未實作` (TASK-226, closed by Gate 6)**. Zero new 斷鏈/孤兒/漂移; the 25
+pre-existing LOW gaps are byte-identical in ID and count. `state.yaml`: `gates.tasks.passed`/
+`gates.design.passed` stay `true` with v28b notes; `current_stage: validation → tests`;
+`gates.tests`/`gates.impl`/`gates.verification` flipped to `false` with SCOPED notes and their v28
+text preserved behind `PRIOR:` (the v26→v27 precedent for a send-back) — each note says the re-run is
+TASK-226/DES-220 only and that TASK-217..225's evidence must not be re-run or rewritten. No code,
+no test and no config file touched by this gate (design gate: docs only).
+
+- 2026-09-18 — **v28b GATE 5 (test-first RED, verifier) PASSED** — scoped strictly to DES-220/
+  TASK-226 (the REQ-143 send-back's own closure), per state.yaml's own narrow Gate-5 scope note.
+  TASK-217..225's existing v28 Gate 5 evidence is untouched, not re-run.
+
+**Four items amended in place at iter v28** (05-tests.md, dated re-stamps): **UT-244**
+(`dashboard-lib-strings.test.js`) gains one new case pinning `STR.zh.noDemoData ===
+'此路由無示範資料'` / `STR.en.noDemoData === 'No demo data for this route'` in both directions of
+`t(lang, key)` — RED (measured): both are `undefined` today. **UT-261** (`dashboard-seam.test.ts`)
+gains a SIXTH source tripwire (title updated five→six) — `clientFile('ui/workflow.js')` and
+`clientFile('ui/issues.js')` must each contain the substring `noDemoData` — RED (measured): 0 hits in
+either file. **UT-260** (`demo-surface.test.ts`) — `PRODUCTION_ALLOWLIST` grows by `ui/workflow.js` +
+`ui/issues.js`, GREEN BY CONSTRUCTION (Mode C, same convention as UT-261's own one-timer case):
+neither file mentions "demo" yet, so this is forward bookkeeping against a false "leak" the moment
+TASK-226 lands, not a forced-red case. **VAL-217** (`val-207-demo-data.test.ts`) gains TWO new
+self-contained cases (own `createServer()`/tmpDir/port each, independent of the file's shared
+module-scope server whose lifecycle the two pre-existing cases already fully spend): the **describe
+arm** (registers+publishes one real workflow via `registerPublishedVia`, opens
+`/dashboard/workflow/<name>` live, kills the engine, asserts `[data-legend]` reads the exact
+disclosure sentence with every figure field cleared, then a same-port recovery must clear the
+sentence — DES-220's own (B1) paint-memory regression oracle) and the **issues arm** (opens
+`/dashboard`, clicks the Issues tab live — no GitHub token, matching the real Gate-7.5 finding with
+no extra setup — kills the engine, asserts `#issues-open`/`#issues-resolved` both read the sentence
+with the stale "GitHub not configured" text GONE, then a same-port recovery must reproduce that SAME
+degrade, proving a genuine re-fetch). `page.setRequestInterception` used in neither (DES-212's
+binding constraint — this REQ's fault is a stopped process, never an HTTP-error storm). Both new
+cases RED for the right reason, measured: `RWE_REQUIRE_BROWSER=1 npx vitest run
+tests/acceptance/val-207-demo-data.test.ts` → 4 total, 2 failed (the two new cases — the describe arm
+shows `[data-legend]` staying `''`, the issues arm shows `#issues-open` frozen on `'GitHub not
+configured'`, the EXACT confirmed real defect from the Gate-7.5 round-3 investigation), 2 passed
+(the two pre-existing cases, unchanged).
+
+**No owner_decision created this gate.** DES-220's own pending `owner_decision` (bare `/api/workflows`
+wording) is carried forward unresolved — it is not this gate's call, and it does not block either of
+the two named files this closure tests.
+
+**Gate self-check.** `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → **1724
+items / 26 gaps**, exit 1 — identical to the v28b Gate 3+4 baseline (0 new gaps from this Gate 5
+pass); the sole in-closure gap is TASK-226's own `未實作` (not yet implemented), expected at this
+stage, closed at Gate 6. `state.yaml`: `gates.tests.passed: true`, `current_stage: tests → impl`
+(prior text preserved behind `PRIOR:`, kept short this round to avoid an unbounded quoted-string
+blob in a genuine YAML flow-map field — full history remains in git log / this journal). No
+production code touched (test-first: only `tests/unit/dashboard-lib-strings.test.js`,
+`tests/unit/dashboard-seam.test.ts`, `tests/unit/demo-surface.test.ts`,
+`tests/acceptance/val-207-demo-data.test.ts`, and the ledger). Next: Gate 6 (implementation) for
+TASK-226 only.

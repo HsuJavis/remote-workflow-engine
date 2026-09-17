@@ -32,7 +32,16 @@ const CLIENT_ROOT = join(__dirname, '..', '..', 'src', 'dashboard');
 const DATASET_FILE = join(CLIENT_ROOT, 'demo', 'dataset.js');
 
 // Relative to `src/dashboard/`.
-const PRODUCTION_ALLOWLIST = new Set(['demo/dataset.js', 'lib/connection.js', 'lib/strings.js', 'ui/app.js', 'ui/poll.js', 'dashboard.css']);
+//
+// [v28b, DES-220, TASK-226, REQ-143] `ui/workflow.js` + `ui/issues.js` grow the list here — DESIGNED
+// growth, not leak-hiding: DES-220 opens both files to paint the 「此路由無示範資料」disclosure, a
+// `tick.source === 'demo'` branch that matches this guard's own `/\bdemo\b/i` pattern, so REQ-143's
+// own registered retirement (「刪掉了卻還有東西在描述它」) must clean these two up too — this
+// allowlist IS that retirement checklist. GREEN BY CONSTRUCTION today (Mode C, like UT-261's
+// one-timer case): neither file mentions "demo" yet, so half 2 already passes without this growth;
+// it is added now so half 2 does NOT go red the moment TASK-226 lands the disclosure, which would be
+// a false "leak" on a designed, tracked mention.
+const PRODUCTION_ALLOWLIST = new Set(['demo/dataset.js', 'lib/connection.js', 'lib/strings.js', 'ui/app.js', 'ui/poll.js', 'ui/workflow.js', 'ui/issues.js', 'dashboard.css']);
 
 function listAllFiles(dir: string): string[] {
   const out: string[] = [];

@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { throwIfBrowserRequired } from '../helpers/require-browser.js';
+import { registerPublishedVia, uniqueWorkflowName } from '../helpers/workflow-fixtures.js';
 
 function findChrome(): string | null {
   const explicit = process.env['PUPPETEER_EXECUTABLE_PATH'];
@@ -54,6 +55,22 @@ afterAll(async () => {
 const itReal = (name: string, fn: () => Promise<void>, timeout?: number): void => {
   it(name, async (ctx) => { if (reason) ctx.skip(); await fn(); }, timeout);
 };
+
+// [v28b, DES-220, TASK-226, REQ-143 amended clause] the two new cases below each need their OWN
+// `workflow_register`/`workflow_publish` real MCP round-trip — same `${baseUrl}/mcp` shape every
+// other acceptance file hand-rolls (val-199's own `mcpCall`), parameterized on a port because each
+// case boots its OWN server/tmpDir rather than sharing the two cases above's module-scope one (a
+// shared server's lifecycle is already fully spent by the second case above: it closes `server`,
+// opens `recovered` on the same port, then closes `recovered` too in its own `finally` — reusing
+// that state here would race against whichever case runs first).
+async function mcpCallOn(basePort: number, name: string, args: unknown): Promise<any> {
+  const res = await fetch(`http://127.0.0.1:${basePort}/mcp`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: Math.random(), method: 'tools/call', params: { name, arguments: args } }),
+  });
+  const body = (await res.json()) as { result?: { content: Array<{ text: string }> } };
+  return JSON.parse(body.result!.content[0]!.text);
+}
 
 describe('REQ-143: demo data self-labels, engages on a STOPPED engine, retires on recovery (VAL-217, DES-212)', () => {
   itReal('boot: exactly ONE GET of /static/dashboard/demo/dataset.js per page load, on a LIVE engine', async () => {
@@ -114,4 +131,116 @@ describe('REQ-143: demo data self-labels, engages on a STOPPED engine, retires o
       // test's own responsibility to close, never afterAll's (it never reads that variable).
     }
   }, 20000);
+
+  // [v28b, DES-220, TASK-226] the AMENDED clause's `/api/workflows/:name/describe` arm — the owner's
+  // 2026-09-17 ruling names this route as one of three with no demo entry (deliberately, DES-212),
+  // so `workflow.js`'s `onTick` must paint the 「此路由無示範資料」disclosure on a demo miss instead
+  // of doing nothing (today's "last-known render stays", confirmed at Gate 7.5 round 3 to freeze the
+  // page with no indication anything changed). Own server/tmpDir/port (see `mcpCallOn`'s banner).
+  //
+  // Red reason (measured): `ui/workflow.js:396`'s describe-miss guard is `if (!describe || ...)
+  // return {};` with no `tick` parameter at all — a demo miss simply skips the repaint, so
+  // `[data-legend]` never reads the disclosure sentence and every other field stays whatever the
+  // last LIVE tick painted, not cleared.
+  itReal('the /api/workflows/:name/describe arm: a STOPPED engine on the workflow detail page paints 此路由無示範資料 and clears the figure, never lets a Live tag keep it after recovery (DES-220 B1)', async () => {
+    const localTmp = mkdtempSync(join(tmpdir(), 'rwe-val207d-'));
+    const localServer = await createServer({ port: 0, bind: '127.0.0.1', workRoot: localTmp });
+    const localPort = localServer.port;
+    const name = uniqueWorkflowName('val207wf');
+    await registerPublishedVia((n, a) => mcpCallOn(localPort, n, a), name, `phase('one'); await agent('a', { prompt: 'p' }); return 'ok';`);
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    let recovered: Server | undefined;
+    try {
+      const page = await browser.newPage();
+      await page.goto(`http://127.0.0.1:${localPort}/dashboard/workflow/${encodeURIComponent(name)}`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await new Promise((r) => setTimeout(r, 300));
+      const predictedLive = await page.evaluate(() => document.querySelector('[data-predicted-label]')?.textContent ?? '');
+      expect(predictedLive.length, 'sanity: the live predicted-layout label is non-empty before the fault').toBeGreaterThan(0);
+
+      await localServer.close();
+      await new Promise((r) => setTimeout(r, 8000)); // same >=2-tick + demo-margin wait as the case above
+
+      const legend = await page.evaluate(() => document.querySelector('[data-legend]')?.textContent ?? '');
+      expect(legend, 'DES-220: the legend must read the exact disclosure sentence').toBe('此路由無示範資料');
+      const triggers = await page.evaluate(() => document.querySelector('[data-triggers]')?.textContent ?? '');
+      expect(triggers).toBe('');
+      const desc = await page.evaluate(() => document.querySelector('.wf-desc')?.textContent ?? '');
+      expect(desc).toBe('');
+      const predictedDemo = await page.evaluate(() => document.querySelector('[data-predicted-label]')?.textContent ?? '');
+      expect(predictedDemo).toBe('');
+      const historyRows = await page.evaluate(() => document.querySelectorAll('[data-history-table] tbody tr').length);
+      expect(historyRows).toBe(0);
+      const navText = await page.evaluate(() => document.querySelector('.rwe-connection')?.textContent ?? '');
+      expect(navText, 'the nav tag must show the demo/示範 label').toMatch(/示範|Demo/);
+      expect(navText, 'Demo and Live must never both appear').not.toMatch(/連線中|Live/);
+
+      // Recovery: a NEW engine on the SAME port + same workRoot (the catalog persists on disk).
+      recovered = await createServer({ port: localPort, bind: '127.0.0.1', workRoot: localTmp });
+      await new Promise((r) => setTimeout(r, 4000));
+      const legendAfter = await page.evaluate(() => document.querySelector('[data-legend]')?.textContent ?? '');
+      expect(legendAfter, 'DES-220 (B1): a Live tag must never keep the demo disclosure on screen').not.toBe('此路由無示範資料');
+    } finally {
+      await browser.close();
+      await localServer.close().catch(() => {});
+      await recovered?.close().catch(() => {});
+      rmSync(localTmp, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  // [v28b, DES-220, TASK-226] the AMENDED clause's `/api/issues` arm — measured at Gate 7.5 round 3
+  // to FREEZE a previously-visited Issues tab on its stale pre-crash "GitHub not configured" text
+  // through the entire demo window, with nothing distinguishing "live but degraded" from "frozen
+  // because the engine died". `issues.js`'s `onTick` must gain a THIRD arm painting the disclosure
+  // on a demo miss. Own server/tmpDir/port, no GitHub token configured (the default — matches the
+  // real Gate 7.5 finding exactly, no extra config needed).
+  //
+  // Red reason (measured): `ui/issues.js:111`'s `onTick(container, bodies, _ctx)` has two arms
+  // (`data.degraded` / `data`) and no `else` — a demo map-miss (`data` is `undefined`) hits neither,
+  // so the stale degrade text painted by the last LIVE tick never changes.
+  itReal('the /api/issues arm: a STOPPED engine on the Issues tab paints 此路由無示範資料 on both groups, replacing the stale pre-crash degrade text, and clears on recovery', async () => {
+    const localTmp = mkdtempSync(join(tmpdir(), 'rwe-val207e-'));
+    const localServer = await createServer({ port: 0, bind: '127.0.0.1', workRoot: localTmp });
+    const localPort = localServer.port;
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    let recovered: Server | undefined;
+    try {
+      const page = await browser.newPage();
+      await page.goto(`http://127.0.0.1:${localPort}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await page.click('[data-tab="issues"]');
+      await new Promise((r) => setTimeout(r, 500)); // the tab module's lazy import() + its first onTick
+
+      const openLive = await page.evaluate(() => document.querySelector('#issues-open')?.textContent ?? '');
+      expect(openLive, 'sanity: no GitHub token on this instance -> the pre-crash degrade text is showing').toContain('GitHub not configured');
+
+      await localServer.close();
+      await new Promise((r) => setTimeout(r, 8000));
+
+      const openDemo = await page.evaluate(() => document.querySelector('#issues-open')?.textContent ?? '');
+      const resolvedDemo = await page.evaluate(() => document.querySelector('#issues-resolved')?.textContent ?? '');
+      expect(openDemo, 'DES-220: #issues-open must read the exact disclosure sentence').toBe('此路由無示範資料');
+      expect(resolvedDemo, 'DES-220: #issues-resolved must read the exact disclosure sentence').toBe('此路由無示範資料');
+      expect(openDemo, 'the stale pre-crash text must be GONE, not merely still present alongside the disclosure').not.toContain('GitHub not configured');
+      const navText = await page.evaluate(() => document.querySelector('.rwe-connection')?.textContent ?? '');
+      expect(navText).toMatch(/示範|Demo/);
+      expect(navText).not.toMatch(/連線中|Live/);
+
+      // Recovery: a NEW engine on the SAME port — same token-less config, so a genuine re-fetch
+      // reproduces the SAME "GitHub not configured" degrade, proving this is a live re-fetch and
+      // not the demo sentence merely lingering (DES-220's own B1 note: this view keeps no paint
+      // memory, so the only way the sentence could outlive demo is a live tick with NO JSON body at
+      // all, which never happens on a reachable server).
+      recovered = await createServer({ port: localPort, bind: '127.0.0.1', workRoot: localTmp });
+      await new Promise((r) => setTimeout(r, 4000));
+      const openAfter = await page.evaluate(() => document.querySelector('#issues-open')?.textContent ?? '');
+      expect(openAfter).not.toBe('此路由無示範資料');
+      expect(openAfter).toContain('GitHub not configured');
+    } finally {
+      await browser.close();
+      await localServer.close().catch(() => {});
+      await recovered?.close().catch(() => {});
+      rmSync(localTmp, { recursive: true, force: true });
+    }
+  }, 30000);
 });

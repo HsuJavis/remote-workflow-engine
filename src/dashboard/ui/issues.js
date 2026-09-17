@@ -14,10 +14,13 @@
 // and calls `onTick()` itself for first paint. `poll.js`'s `issues` route names this view's
 // endpoint for the app-wide tick, and [v28, DES-217] `onTick` now paints from that tick's own
 // `bodies['/api/issues']` rather than fetching it again itself.
+// [v28b, DES-220] `onTick` gains DES-210's 4th `tick` parameter — a demo tick with no `/api/issues`
+// body paints the `noDemoData` disclosure on both groups (a third arm, not a repoint of the degrade one).
 
 import { getViewJSON } from './poll.js';
-import { el } from './dom.js';
+import { el, currentLang } from './dom.js';
 import { safeIssueHref } from '../lib/issues.js';
+import { t } from '../lib/strings.js';
 
 // v11 (REQ-067): render a list of issue summaries in a container (XSS-safe: textContent only).
 function renderIssueList(issues, container, onSelect) {
@@ -108,7 +111,7 @@ function buildChrome(container) {
  *  cold-mount path fires `render()`'s placeholder call and `app.js`'s first real tick close
  *  together; a self-fetch made the SECOND paint land an extra round-trip later than it needed to).
  *  Assumes `render()` already built the chrome (bails otherwise, `home.js`'s own guard). */
-export async function onTick(container, bodies, _ctx) {
+export async function onTick(container, bodies, _ctx, tick) {
   const state = stateByContainer.get(container);
   if (!state || !container.isConnected) return undefined;
   const data = bodies ? bodies['/api/issues'] : undefined;
@@ -118,6 +121,12 @@ export async function onTick(container, bodies, _ctx) {
   } else if (data) {
     renderIssueList(data.open || [], state.openEl, state.loadIssueDetail);
     renderIssueList(data.resolved || [], state.resolvedEl, state.loadIssueDetail);
+  } else if (tick && tick.source === 'demo') {
+    // [v28b, DES-220] `/api/issues` has no DEMO map entry (DES-212) — a demo tick's `data` is
+    // undefined here, never `degraded`, so this is a third arm, not a repoint of the one above.
+    const m = t(currentLang(), 'noDemoData');
+    state.openEl.replaceChildren(el('div', 'empty', m));
+    state.resolvedEl.replaceChildren(el('div', 'empty', m));
   }
   return undefined;
 }

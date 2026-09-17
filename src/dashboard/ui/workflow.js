@@ -13,6 +13,8 @@
 // bodies here every ~3s; the selected run's own `/dag` + `/api/runs/:id` fetch is state-dependent
 // (which run is selected lives in THIS view, not in `ctx`), so it is made here via `getJSON` and its
 // statuses are returned for `app.js` to fold into the connection reducer.
+// [v28b, DES-220] `onTick` gains DES-210's 4th `tick` parameter — a demo-tick describe miss paints
+// the `noDemoData` disclosure (`paintRouteUnfounded`) instead of leaving the last LIVE render frozen.
 //
 // [v27 seam closure] `buildShell`'s graph container now carries the `.graph-frame` class
 // (`dashboard.css`/`dashboard-classes.ts`, DES-209 boundary (2)) instead of setting its sizing as
@@ -294,14 +296,35 @@ async function loadDiagram(state, describe, lang) {
  *  of the surfaces the `/dag` route feeds (the svg, the cell layer, the legend) and keeps their
  *  NODES: `[data-legend]` is a DES-209 TEST_ANCHOR and `.cell-layer` carries `ensureCellLayer`'s
  *  delegated click listener, so replacing either element would regress an anchor or the REQ-135
- *  click wiring. The text comes from the string table (`t(lang, 'unavailable')`), never a per-file
- *  literal — `ui/system.js:29`'s zh-only const is the debt this must not duplicate (QD-R3). */
-function paintFigureUnavailable(shell, lang) {
+ *  click wiring. The text comes from the string table, never a per-file literal — `ui/system.js:29`'s
+ *  zh-only const is the debt this must not duplicate (QD-R3). [v28b, DES-220] takes the rendered
+ *  `text` directly (was `lang`) so `paintRouteUnfounded` can reuse it with a different string key. */
+function paintFigureUnavailable(shell, text) {
   shell.svgEl.replaceChildren();
   const wrap = shell.svgEl.parentElement;
   const layer = wrap && wrap.querySelector(':scope > .cell-layer');
   if (layer) layer.replaceChildren();
-  shell.legend.replaceChildren(el('div', 'empty', t(lang, 'unavailable')));
+  shell.legend.replaceChildren(el('div', 'empty', text));
+}
+
+/** [v28b, DES-220] the per-route disclosure for a demo tick on a route with no DEMO map entry
+ *  (DES-212) — a STOPPED engine must not leave this view's LIVE render frozen on screen forever.
+ *  Clears every surface `describe`/`/api/runs` feed (keeps NODES, per `paintFigureUnavailable`'s own
+ *  rule) and resets `paintedRunId` so a later recovery tick cannot mistake this for a kept paint of
+ *  the current run (B1). `shell.nameEl` is left alone — the workflow name is the page's subject from
+ *  the URL, not route data. */
+function paintRouteUnfounded(state, text) {
+  const shell = state.shell;
+  shell.versionTag.textContent = '';
+  shell.execTag.textContent = '';
+  shell.desc.textContent = '';
+  shell.triggers.replaceChildren();
+  shell.predictedLabel.textContent = '';
+  shell.chips.replaceChildren();
+  shell.tbody.replaceChildren();
+  hideDiagram(state);
+  paintFigureUnavailable(shell, text);
+  state.paintedRunId = null;
 }
 
 /** Paints the selected (or predicted) figure; returns the state-dependent fetch statuses (the
@@ -352,7 +375,7 @@ async function paintSelected(state, runs, describe, lang) {
     // the PREVIOUS run's graph under a newly selected chip is a worse lie than a blank, which is
     // why a bare copy of `run.js:475`'s bail is wrong here (that view renders ONE run for the life
     // of the page and has no selection).
-    paintFigureUnavailable(shell, lang);
+    paintFigureUnavailable(shell, t(lang, 'unavailable'));
     return statuses;
   }
   const payload = dagRes.body;
@@ -381,7 +404,7 @@ export function render(container, vm, handlers) {
  *  freshly-fetched bodies (describe + `/api/runs`); the selected run's own `/dag` + `/api/runs/:id`
  *  fetch is made here (state-dependent — which run is selected lives in this view) and its statuses
  *  are returned for the caller to fold in. */
-export async function onTick(container, bodies, ctx) {
+export async function onTick(container, bodies, ctx, tick) {
   const state = stateByContainer.get(container);
   if (!state || !state.shell.root.isConnected) return {};
   const lang = state.lang;
@@ -393,7 +416,10 @@ export async function onTick(container, bodies, ctx) {
   // means skipping this tick's repaint (last-known render stays), not painting an empty/predicted
   // state over a transient degrade. Without the `Array.isArray` guard, `nameFilteredRuns` fed that
   // object threw `TypeError: allRuns.filter is not a function` (ARCH-124's api, AC-4).
-  if (!describe || describe.degraded || !Array.isArray(bodies[runsUrl])) return {};
+  if (!describe || describe.degraded || !Array.isArray(bodies[runsUrl])) {
+    if (tick && tick.source === 'demo') paintRouteUnfounded(state, t(lang, 'noDemoData'));
+    return {};
+  }
   const runs = nameFilteredRuns(bodies[runsUrl], state.name);
   renderHeader(state.shell, describe, lang);
   // Resolve the default selection BEFORE the first chip/table render — otherwise tick 1 paints

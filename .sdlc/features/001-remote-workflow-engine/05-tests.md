@@ -12167,12 +12167,23 @@ widened `include` actually collects it). RED (measured): whole-file import failu
 `src/dashboard/lib/theme.js` does not exist.
 
 ### UT-244 — `dashboard-lib-strings.test.js`: `STR`/`t()` — key parity, no forbidden word; `warningText(lang, raw)`
-- **status:** green
-- **traces:** DES-201, DES-206, ARCH-124, TASK-206, REQ-131, REQ-133, REQ-134
+- **status:** red
+- **traces:** DES-201, DES-206, DES-220, ARCH-124, TASK-206, TASK-226, REQ-131, REQ-133, REQ-134, REQ-143
 - **tier:** unit
 - **real:** false
-- **result:** pass
+- **result:** fail
 - **iter:** v28
+
+**Re-stamped (2026-09-18, v28b Gate 5, verifier):** one new case added for DES-220/TASK-226's
+`noDemoData` key (REQ-143's v28-AMENDED clause) — pins `STR.zh.noDemoData === '此路由無示範資料'`
+and `STR.en.noDemoData === 'No demo data for this route'`, plus both directions of `t(lang,
+'noDemoData')`. The pre-existing key-parity case (below) already guards a one-language landing by
+construction; this is the positive pin DES-220's own `tests:` clause asks for. Red (measured): `npx
+vitest run tests/unit/dashboard-lib-strings.test.js` → 9 pass, 1 fail — `STR.zh.noDemoData` /
+`STR.en.noDemoData` are both `undefined` (the key does not exist in `src/dashboard/lib/strings.js`
+yet). `status`/`result` above flipped to `red`/`fail` to reflect this file's TRUE current state
+(unlike the two Mode-A-does-not-flip re-stamps below, which found no new case owed) — will flip back
+once TASK-226 lands the key.
 
 **Re-stamped (2026-09-17, v28 Gate 5, verifier):** DES-206 was amended in place at iter v28 (the
 `ui/` view contract gains an additive 4th `tick` parameter, DES-210's own INV-V28-1/getViewJSON
@@ -12972,7 +12983,7 @@ module).
 
 ### UT-260 — `demo-surface.test.ts`: the retirement tripwire, closed BOTH ways over `src/dashboard/**`
 - **status:** green
-- **traces:** DES-212, ARCH-132, TASK-220, REQ-143
+- **traces:** DES-212, DES-220, ARCH-132, TASK-220, TASK-226, REQ-143
 - **tier:** unit
 - **real:** false
 - **result:** pass
@@ -12993,13 +13004,33 @@ to add a real `.is-demo`-style selector to the SAME file for this SAME feature. 
 tests/unit/demo-surface.test.ts` → 2 total, 1 failed (half 1), 1 passed (half 2, Mode-C
 green-by-construction: zero unlisted mentions exist today).
 
-### UT-261 — `dashboard-seam.test.ts`: five source tripwires over the v28 seam (INV-V28-1, the route table, the two timers, the two stamps)
-- **status:** green
-- **traces:** DES-210, ARCH-133, ARCH-125, ARCH-124, ADR-057, ADR-058, ADR-059, TASK-217, REQ-137, REQ-138, REQ-139, REQ-142, REQ-143
+**Re-stamped (2026-09-18, v28b Gate 5, verifier):** `PRODUCTION_ALLOWLIST` grows by `ui/workflow.js`
++ `ui/issues.js` (DES-220's own `tests:` clause) — DESIGNED growth, not leak-hiding: DES-220 opens
+both files to paint the 「此路由無示範資料」disclosure, a `tick.source === 'demo'` branch that
+matches this guard's own `/\bdemo\b/i` pattern, so REQ-143's own registered retirement must clean
+these two up too. GREEN BY CONSTRUCTION today (Mode C, same as UT-261's case 3): neither file
+mentions "demo" yet, so half 2 already passes without this growth — it is added now, test-first, so
+half 2 does not go red the moment TASK-226 lands the disclosure (which would be a false "leak" on a
+designed, tracked mention). `npx vitest run tests/unit/demo-surface.test.ts` → 2/2 pass (half 1 is
+GREEN now — `demo/dataset.js` exists on disk since TASK-220 landed at v28 Gate 6, unrelated to this
+gate's own change; half 2 unchanged, still green). `status`/`result` unchanged — no case here goes
+red.
+
+### UT-261 — `dashboard-seam.test.ts`: six source tripwires over the v28 seam (INV-V28-1, the route table, the two timers, the two stamps, the DES-220 disclosure)
+- **status:** red
+- **traces:** DES-210, DES-220, ARCH-133, ARCH-125, ARCH-124, ADR-057, ADR-058, ADR-059, TASK-217, TASK-226, REQ-137, REQ-138, REQ-139, REQ-142, REQ-143
 - **tier:** unit
 - **real:** false
-- **result:** pass
+- **result:** fail
 - **iter:** v28
+
+**Re-stamped (2026-09-18, v28b Gate 5, verifier):** a SIXTH tripwire added for DES-220/TASK-226 —
+`clientFile('ui/workflow.js')` and `clientFile('ui/issues.js')` must each contain the substring
+`noDemoData`. Not a proof of behaviour (a tripwire cannot see what a call DOES), same limitation as
+the other five — the real behaviour proof is `val-207-demo-data.test.ts`'s two new cases. Red
+(measured): `npx vitest run tests/unit/dashboard-seam.test.ts` → 5 pass, 1 fail — neither file
+contains `noDemoData` today. Title/`status`/`result` above updated (five→six, green→red) to reflect
+this file's TRUE current state.
 
 Five tripwires, not a proof of behaviour — each closes a failure mode invisible to every other
 oracle in this ledger (DES-210's own numbering). (1) INV-V28-1: only `ui/app.js`/`poll.js` may
@@ -13014,8 +13045,12 @@ recorded green, not forced red, and exists to catch a REGRESSION. (4) the one-co
 today (`:383`); the anchor is deliberately the CONJUNCTION, not the bare `connectionState =` form,
 which already matches twice once TASK-218 adds its own assignment and would pass vacuously post-
 Gate-6 even with the bug. (5) `data-poll`/`data-source` each `setAttribute`'d exactly once; RED — 0
-hits today. `npx vitest run tests/unit/dashboard-seam.test.ts` → 5 total, 4 failed, 1 passed (case
-3, Mode C).
+hits today. **[v28b, DES-220, TASK-226 addition]** (6) `ui/workflow.js` and `ui/issues.js` each
+reference `noDemoData`; RED — measured 0 hits in either file today. `npx vitest run
+tests/unit/dashboard-seam.test.ts` → 6 total, 1 failed, 5 passed (cases 1/2/4/5 went green at v28
+Gate 6, case 3 stays Mode C green-by-construction; only the new case 6 is red — the "5 failed"
+figure above is this file's ORIGINAL v28 Gate 5 measurement, before TASK-217..219 implemented
+anything, kept as history, not re-measured here).
 
 ### UT-262 — `dashboard-lib-system.test.js`: `sectionState`/`cpuUtilState`/`statCard`/`procRow`/`procTotals`/`fmtBytes`/`catalogCounts`
 - **status:** green
@@ -13190,11 +13225,11 @@ window. `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-206-visibilit
 1/1 fail (34s real wall-clock run).
 
 ### VAL-217 — REQ-143: demo data self-labels, engages on a STOPPED engine, retires on recovery
-- **status:** green
-- **traces:** REQ-143, DES-212, TASK-220
+- **status:** red
+- **traces:** REQ-143, DES-212, DES-220, TASK-220, TASK-226
 - **tier:** acceptance
 - **real:** false
-- **result:** pass
+- **result:** fail
 - **iter:** v28
 
 File: `tests/acceptance/val-207-demo-data.test.ts` (new, real `createServer()`/real Chromium; a REAL
@@ -13211,3 +13246,50 @@ server on the SAME port then flips the next poll back to Live. Red (measured): 0
 key today (`app.js` never imports `../demo/dataset.js`); after `server.close()` the nav reads `離線`
 (Offline), not a demo label — no demo body, no demo tag, ever. `RWE_REQUIRE_BROWSER=1 npx vitest run
 tests/acceptance/val-207-demo-data.test.ts` → 2/2 fail (~12s real wall-clock run).
+
+**Re-stamped (2026-09-18, v28b Gate 5, verifier) — TWO new cases for DES-220/TASK-226's amended
+clause.** These are the Gate-7.5-round-3 confirmed real defect's own regression tests: the owner's
+2026-09-17 ruling names THREE routes needing a 「此路由無示範資料」disclosure; the bare
+`/api/workflows` case already passes through the pre-existing System-tab degrade (no new test owed,
+DES-220's own `owner_decision`), but `/api/workflows/:name/describe` and `/api/issues` do nothing on
+a demo miss today — confirmed a PROCESS gap (the owner's ruling landed mid-Gate-6, never cycled back
+through a Gate 5 RED case before now). Each new case boots its OWN `createServer()`/tmpDir/port
+(not the file's shared module-scope `server`, whose lifecycle the two cases above already fully
+spend) and its own real Chromium page — `page.setRequestInterception` is FORBIDDEN in both, matching
+DES-212's binding constraint (this REQ's fault is a stopped process, never an HTTP-error storm).
+
+(3) **the describe arm**: `registerPublishedVia` registers+publishes one real workflow (no run
+needed — the `runs.length === 0` predicted-layout branch is what `paintSelected` always takes, so
+the describe-miss guard is exercised regardless of run history), opens
+`/dashboard/workflow/<name>` live (sanity-checks the predicted-layout label is non-empty), stops the
+engine, waits the same ≥2-tick+margin window as case (2), then asserts `[data-legend]` reads the
+exact sentence with `[data-triggers]`/`.wf-desc`/`[data-predicted-label]`/`[data-history-table]
+tbody` all cleared, the nav tag shows 示範/Demo never with Live/連線中; then a new engine on the SAME
+port + same on-disk workRoot (the catalog persists) and `[data-legend]` must no longer carry the
+sentence — this asserts the disclosure clears on recovery, the OUTCOME (B1) protects, but registers
+no run (`runs.length === 0` never reaches `paintSelected`'s `paintedRunId`/(K) arm at all) and forces
+no fault on the recovered `/dag` fetch (that would need `page.setRequestInterception`, forbidden by
+DES-212 for this file) — **(B1)'s specific race (a transient non-`ok` FIRST recovery `/dag` tick
+keeping the disclosure under a `paintedRunId` match) is therefore not deterministically forced or
+provably exercised here**; a missing `state.paintedRunId = null` in the eventual implementation could
+pass this assertion by luck (an instant localhost fetch rarely lands non-`ok`) rather than by
+correctness. Red (measured): `[data-legend]` stayed `''` (the last-known-empty predicted legend from
+the live tick — `workflow.js:396`'s guard has no `tick` parameter at all, so a demo miss simply skips
+the repaint rather than clearing or disclosing anything).
+
+(4) **the issues arm**: opens `/dashboard`, clicks `[data-tab="issues"]` live (sanity-checks the
+pre-existing "GitHub not configured" degrade text is showing — no GitHub token configured, the
+default, matching the exact real Gate 7.5 finding with no extra setup), stops the engine, waits, then
+asserts `#issues-open` and `#issues-resolved` BOTH read the exact sentence with the stale
+"GitHub not configured" text GONE, the nav tag shows demo never with Live; then a new engine on the
+SAME port (same token-less config) and both groups must revert to the SAME "GitHub not configured"
+degrade (proving a genuine live re-fetch, not the demo sentence merely lingering — `issues.js` keeps
+no paint memory at all, DES-220's own (B1) note for this file). Red (measured, and this is the
+EXACT confirmed real defect from Gate 7.5 round 3): `#issues-open` stayed frozen on `'GitHub not
+configured'` through the whole demo window — `issues.js:111`'s `onTick` has two arms
+(`data.degraded`/`data`) and no `else`, so a demo map-miss (`data` is `undefined`) hits neither.
+
+`RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-207-demo-data.test.ts` → 4 total, 2
+failed (cases 3 and 4, both new), 2 passed (cases 1 and 2, pre-existing, unchanged, ~37s real
+wall-clock run). `status`/`result` above flipped to `red`/`fail` to reflect this file's TRUE current
+state.

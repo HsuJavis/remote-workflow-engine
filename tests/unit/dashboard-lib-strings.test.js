@@ -88,3 +88,20 @@ describe('lib/strings.js: warningText(lang, raw) (UT-244, DES-201, Round v27b)',
     expect(STR.en).toHaveProperty('laneUntitled');
   });
 });
+
+// [v28b, DES-220, TASK-226, REQ-143 amended clause] `noDemoData` — the「此路由無示範資料」disclosure
+// the owner's 2026-09-17 ruling names for the three routes with no demo entry. The key-parity case
+// above already guards it against a one-language landing by construction; this pins the two exact
+// literals, so a typo in either language is caught here rather than only downstream in the
+// acceptance run.
+//
+// Red reason (measured): `STR.zh.noDemoData`/`STR.en.noDemoData` are both `undefined` — the key
+// does not exist in `src/dashboard/lib/strings.js` yet.
+describe('lib/strings.js: noDemoData (UT-244, DES-220, v28b)', () => {
+  it('pins both languages\' exact literal', () => {
+    expect(STR.zh.noDemoData).toBe('此路由無示範資料');
+    expect(STR.en.noDemoData).toBe('No demo data for this route');
+    expect(t('zh', 'noDemoData')).toBe(STR.zh.noDemoData);
+    expect(t('en', 'noDemoData')).toBe(STR.en.noDemoData);
+  });
+});

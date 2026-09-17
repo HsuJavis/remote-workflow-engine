@@ -2001,3 +2001,14 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
 - **estimate:** S
 - **iter:** v28
 - **closeout (2026-09-18, missing-IMPL-trail sweep):** covered by IMPL-291; DoD re-run green today: `npx vitest run tests/integration/dashboard-http.test.ts` → 15/15; `grep -n "topN" src/server.ts` shows one literal (`:375`); `DEPLOY.md`'s consequence line confirmed present (`git show 9e10453 -- DEPLOY.md`).
+
+## v28b — the Gate 7.5 send-back slice (REQ-143's per-route disclosure · ARCH-132) — TASK-226
+
+### TASK-226 — the 「此路由無示範資料」 disclosure: one string key, two view arms, one painter parameter
+- **status:** draft
+- **traces:** ARCH-132, ARCH-123, REQ-143
+- **files:** src/dashboard/lib/strings.js, src/dashboard/ui/workflow.js, src/dashboard/ui/issues.js, tests/unit/demo-surface.test.ts, tests/unit/dashboard-seam.test.ts, tests/unit/dashboard-lib-strings.test.js, tests/acceptance/val-207-demo-data.test.ts
+- **des:** DES-220
+- **dod:** `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-207-demo-data.test.ts tests/unit/demo-surface.test.ts tests/unit/dashboard-seam.test.ts tests/unit/dashboard-lib-strings.test.js` → green on all four, INCLUDING Gate 5's two new demo-miss acceptance cases (the `/api/workflows/:name/describe` arm and the `/api/issues` arm) and the recovery case that proves the disclosure does NOT survive under a Live tag. The fault must stay the file's existing REAL one (`server.close()` + re-`listen()` on the same port); `page.setRequestInterception` is forbidden in this file (DES-212 — an HTTP-error storm is REQ-131's Offline case, val-198's). Also in this commit: `PRODUCTION_ALLOWLIST` in `demo-surface.test.ts` grows by `ui/workflow.js` + `ui/issues.js` (DES-220's `tests:` clause says why this is designed growth, not leak-hiding). Nothing in `src/dashboard/dashboard.css`, `src/server.ts`, `src/dashboard/demo/dataset.js` or any config file is touched — `git diff --stat` must show exactly the files above.
+- **estimate:** S
+- **iter:** v28
