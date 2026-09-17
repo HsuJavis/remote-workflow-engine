@@ -55,7 +55,23 @@ describe('lib/model.js: shortModel (UT-257, REQ-134 row 2)', () => {
 // absent on every REAL row this iteration too — INV-V28-4 says the RULE must hold generically, not
 // only for today's always-absent case, so `RICH` below carries real `latency`/`benchmarks` values
 // a future D2-lift would populate).
-const COLUMNS = ['model', 'provider', 'aliases', 'context', 'price', 'tools', 'effort', 'modalities', 'latency', 'stability', 'benchmarks', 'location'];
+//
+// [Gate 6.5 fix, orchestrator ruling] INV-V28-4 does NOT hold for `model`/`provider`/`stability`/
+// `location` — narrowed here rather than bending `ABSENT` to fake a value it cannot honestly carry.
+// Evidence is `sortKeyOf` itself (above): every ABSENTABLE column below routes through `isAbsent()`
+// or an emptiness check before reaching `sortRows`, but `case 'model'`/`'provider'`/`'stability'`/
+// `'location'` return `entry.<field>` RAW, with no normalisation — because the domain type
+// (`ModelEntry`, 04-design.md:1443) declares `model`/`provider`/`location` as required non-null
+// fields (`location` closed to `"local"|"remote"`, no `"unknown"` variant, unlike `price`/`toolUse`
+// which the same line explicitly allows), and `Stability` (04-design.md:1996) is a closed
+// `'stable'|'variable'|'best-effort'` enum `classifyStability` always returns one of. A catalog
+// entry with no model id, no provider, or an out-of-enum stability/location is not a representable
+// domain value — the ABSENT fixture giving all four real values wasn't a fixture bug, it was
+// (correctly) unable to do otherwise. The "sorts last" claim is real coverage where `sortKeyOf` can
+// actually produce `undefined`; asserted below only for those 8 columns. The 4 excluded columns get
+// their own (non-absence) coverage in the following block.
+const ABSENTABLE_COLUMNS = ['aliases', 'context', 'price', 'tools', 'effort', 'modalities', 'latency', 'benchmarks'];
+const NEVER_ABSENT_COLUMNS = ['model', 'provider', 'stability', 'location'];
 
 const ABSENT = {
   model: 'z-absent-model', provider: 'zprov', aliases: undefined, description: '', modalities: { in: [], out: [] },
@@ -87,8 +103,8 @@ const MID_B = {
 };
 const FIVE_ROWS = [RICH, FREE, MID_A, MID_B, ABSENT];
 
-describe('lib/model.js: sortKeyOf + sortRows — the absent row sorts LAST in BOTH directions, for EVERY column (UT-257, DES-213, INV-V28-4)', () => {
-  for (const col of COLUMNS) {
+describe('lib/model.js: sortKeyOf + sortRows — the absent row sorts LAST in BOTH directions, for every column where absence is representable (UT-257, DES-213, INV-V28-4)', () => {
+  for (const col of ABSENTABLE_COLUMNS) {
     it(`column "${col}"`, () => {
       const keyed = FIVE_ROWS.map((entry) => ({ model: entry.model, key: sortKeyOf(entry, col) }));
       const asc = sortRows(keyed, 'key', 'asc');
@@ -97,6 +113,27 @@ describe('lib/model.js: sortKeyOf + sortRows — the absent row sorts LAST in BO
       expect(desc[desc.length - 1].model, `desc, column ${col}`).toBe(ABSENT.model);
     });
   }
+
+  // [Gate 6.5 fix] `model`/`provider`/`stability`/`location` are excluded above because they
+  // cannot be domain-absent (see the ABSENTABLE_COLUMNS comment) — covered here instead for what
+  // they actually do: `sortKeyOf` passes the field through UNCHANGED (never `undefined`) and
+  // `sortRows` orders every row, including ABSENT, by that real value like any other row.
+  it('columns that can never be domain-absent (model, provider, stability, location) pass through raw and sort by real value, never "last by construction"', () => {
+    for (const col of NEVER_ABSENT_COLUMNS) {
+      for (const entry of FIVE_ROWS) {
+        expect(sortKeyOf(entry, col), `${col} of ${entry.model}`).toBe(entry[col]);
+      }
+    }
+    // model/provider both happen to be alphabetically a<b<c<d<z across these fixtures, so ABSENT
+    // ('z-...'/'zprov') legitimately sorts last ascending — a consequence of its chosen id, not of
+    // sortRows treating it as absent; descending must put it FIRST, the opposite of the invariant
+    // this block replaces.
+    for (const col of ['model', 'provider']) {
+      const keyed = FIVE_ROWS.map((entry) => ({ model: entry.model, key: sortKeyOf(entry, col) }));
+      const desc = sortRows(keyed, 'key', 'desc');
+      expect(desc[0].model, `desc, column ${col}`).toBe(ABSENT.model);
+    }
+  });
 
   it('an unknown column name is TOTAL — degrades to "unsorted, absent last", never throws', () => {
     expect(() => sortKeyOf(RICH, 'not-a-real-column')).not.toThrow();

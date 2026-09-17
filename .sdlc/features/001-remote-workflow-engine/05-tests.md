@@ -12320,6 +12320,16 @@ job, per precedent — see IMPL-240/241's notes on UT-233/235/236); not silently
 
 **Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
+**[v28, 2026-09-18, verifier, orchestrator ruling]:** the `/describe` corpus count went red at 3
+(measured) — the 3rd hit is `src/dashboard/demo/dataset.js:10`'s file-banner PROSE ("...`/api/
+workflows/:name/describe`...`"), not a call site. Ruling applied: strip comments from the corpus
+before counting (consistent with this same file's and `dashboard-no-external-host.test.ts`'s/
+`dashboard-no-design-values.test.ts`'s own `stripComments` precedent), keep the count exact (`toBe(2)`,
+not loosened), name both real call sites in the comment (`ui/poll.js:22`, `ui/run.js:442`) and why
+prose is excluded. Found already applied in the working tree (concurrent TASK-215 edit landed the
+identical fix independently); verified rather than re-done. `npx vitest run tests/unit/dashboard-
+diagram-render.test.ts` -> 3/3 pass.
+
 File: `tests/unit/dashboard-diagram-render.test.ts` (extended, 1 new case; all 20 pre-existing cases
 re-run and stay green). Positive anchor on `clientCorpus()` beside the file's existing negatives —
 anti-vacuity per adjudication (v23) #4. RED (measured): `clientCorpus()` throws (client not built).
@@ -12419,11 +12429,11 @@ missing either the `// rwe-allow-style: svgBox` marker or a class (TASK-210/211/
 scope). The other 4 cases (hex/oklch/rgba/cssText/setAttribute-literal guards) are already green.
 
 ### UT-257 — `dashboard-lib-model.test.js`: `shortModel(model)` — the REQ-134 row-2 formatter (VAL-208 fix pass); `sortKeyOf`/`matchModels`/`modelRow`/`costDots`/`modelPanel` (v28, DES-213)
-- **status:** red
+- **status:** green
 - **traces:** DES-206, DES-213, ADR-060, TASK-210, TASK-222, REQ-134, REQ-137
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v28
 
 Written at Gate 6 (2026-09-12), not Gate 5: a prior implementer flagged this exact gap (no
@@ -12456,6 +12466,26 @@ D2-default empty-benchmarks case. Red reason (measured): none of the five names 
 `src/dashboard/lib/model.js` today — every case fails with `TypeError: <name> is not a function` at
 its own call site. `npx vitest run tests/unit/dashboard-lib-model.test.js` → 32 total, 26 failed, 6
 pre-existing `shortModel` cases pass unchanged (0 regression).
+
+**[v28 Gate 6.5+7 fix, 2026-09-18, verifier, orchestrator ruling]:** after implementation landed,
+the `sortKeyOf`/`sortRows` half stayed 4 red — exactly the `model`(desc)/`provider`(desc)/
+`stability`(asc)/`location`(asc) cases where the `ABSENT` fixture happens to carry a real,
+non-null value. Measured: `sortKeyOf` (`src/dashboard/lib/model.js`) never routes these four
+through `isAbsent()`/an emptiness check the way the other 8 columns do — `case 'model'`/
+`'provider'`/`'stability'`/`'location'` return `entry.<field>` raw. That is a domain fact, not a
+gap: `ModelEntry` (04-design.md:1443) declares `model`/`provider`/`location` required and non-null
+(`location` closed to `"local"|"remote"`, no `"unknown"` variant, unlike `price`/`toolUse` on the
+same line), and `Stability` (04-design.md:1996) is a closed `'stable'|'variable'|'best-effort'`
+enum `classifyStability` always returns. None of the four is representable as domain-absent, so
+`ABSENT` giving all four real values was not a fixture bug — INV-V28-4's "for EVERY column" claim
+was simply wrong for these four. Fix: narrowed the invariant loop to the 8 columns where
+`sortKeyOf` can actually produce `undefined` (renamed `COLUMNS` → `ABSENTABLE_COLUMNS`), and added
+one replacement case asserting the excluded 4 pass through raw and sort by real value (including
+the descending case, which the retired invariant got backwards for `model`/`provider` — ABSENT's
+alphabetically-late id sorts FIRST descending, not last). No assertion was loosened; the exact
+`toBe`/count-style checks are unchanged in kind. `npx vitest run tests/unit/dashboard-lib-model.test.js`
+→ 29/29 pass (32 total minus the 4 retired loop cases plus 1 replacement case). `npx tsc --noEmit`
+→ exit 0.
 
 ### VAL-206 — real Chromium: the v27 shell (theme/lang/hue/connection) and the Workflows home
 - **status:** green
