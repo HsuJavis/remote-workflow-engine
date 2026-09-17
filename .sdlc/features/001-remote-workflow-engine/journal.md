@@ -5418,11 +5418,13 @@ nothing was checked out, stashed, or restored to inspect it; `git show`/`git sta
    and `npx vitest run tests/unit/dashboard-lib-connection.test.js` → **26/26 pass**. Flipped
    `status: red`→`green`, `result: fail`→`pass`, with a dated re-measurement note; the RED narrative
    kept as history per this ledger's own convention (UT-098/IT-081/IT-083 v21, UT-247 v27 precedent).
-   **Caught mid-edit**: a concurrent process wrote to this SAME file while this session held it open
+   **Caught mid-edit**: a concurrent agent wrote to this SAME file while this session held it open
    (Edit's "modified on disk" warning) — the diff showed it independently flipped **UT-257** (`status:
-   red`→`green`) for the same reason (implementation landed, re-measured 29/29). Confirmed no
-   clobbering (targeted string-replace, not overwrite); UT-257's flip was not authored by this session
-   but is left in place since it is evidenced in its own note.
+   red`→`green`) for the same reason (implementation landed). Confirmed no clobbering (Edit is a
+   targeted string-replace, not an overwrite; `git show c8ba91a -- 05-tests.md` carries only this
+   session's UT-245 hunk). That agent committed its own change separately as `b9ad277` before this
+   session's commit landed; UT-257's claimed 29/29 was independently spot-verified here too
+   (`npx vitest run tests/unit/dashboard-lib-model.test.js` → 29/29 pass).
 2. **DES-191** (`04-design.md:6726`) — "`TASK-216` is the impl item; until it lands the property is
    UNGUARDED and ADR-049 says so." Checked: TASK-216's files are uncommitted (see above), so it has
    **not landed** at HEAD. The sentence is still TRUE. Left unstruck, per instruction — not edited.
@@ -5444,13 +5446,16 @@ independently re-derive its truth value rather than trust the label; treat "foun
 for something else" as a signal, not noise.** Direct answer: **yes, `05-tests.md`'s own
 `status`/`result` pair, and it is not a two-item problem.** Applying exactly the method used for
 UT-245 to four more `status: red` rows already sitting in this same file — UT-244, UT-249, UT-255,
-UT-258 — all four are **currently green** (`npx vitest run` on their four files: 45/45 pass). Combined
-with UT-257's independent concurrent flip caught above, that is **6 of 16** currently-red-labelled
-rows in `05-tests.md` confirmed stale within one sitting, with zero rows confirmed still-genuinely-red
-among the ones checked. This session did **not** sweep the remaining 10 (UT-259..263, IT-171,
-VAL-208, VAL-213..217) — out of the dispatched scope, and this same file is being concurrently edited
-by at least one other live agent (the UT-257 catch, plus the untracked v28 Sprint B implementation
-work above), so a wider edit here risks exactly the multi-writer collision CLAUDE.md warns about.
+UT-258 — all four are **currently green** (`npx vitest run` on their four files: 45/45 pass). Counted
+against the 16-row red list this session first found (before UT-245/UT-257 were flipped, 18 rows were
+red): **6 of those 18 — UT-244/249/255/258 found here, plus UT-245 (this session) and UT-257 (a
+concurrent agent's own commit, `b9ad277`, spot-verified 29/29 independently) — are now confirmed
+stale**, with zero rows confirmed still-genuinely-red among the ones checked. This session did **not**
+sweep the remaining 12 (UT-259..263, IT-171, VAL-208, VAL-213..217) — out of the dispatched scope, and
+this same file received a live commit from another agent mid-session (`b9ad277`, UT-257), so a wider
+edit here risks exactly the multi-writer collision CLAUDE.md warns about — and confirms the dispatch's
+file-partition assumption ("05-tests.md is this agent's file") did not hold in practice, the same way
+the `status:` partition that triggered this whole sweep did not hold.
 **A second, structural finding, not a field but a mechanism**: `sh .sdlc/trace --check`'s own gap
 analysis (`analyze()` in `trace.py`) does **not read the TASK `status:` field at all** for its
 「未實作」(not-implemented) check — it walks `IMPL.traces → TASK` links independently. That is *why*
