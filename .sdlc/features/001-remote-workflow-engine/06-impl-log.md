@@ -7290,3 +7290,49 @@ it), restored with Edit, confirmed `git diff --stat` clean, re-ran green at 4p|1
 **TASK-222's `dod:` does NOT pass in full.** Unit tier: 29/29 (unchanged, IMPL-288). Browser tier:
 4 passed | 1 failed (was 3|2) — the `.bench-row` residual is a real, unclosed gap. Left `draft`;
 orchestrator routes the status per the reporting rule (an agent should not flip its own work).
+
+### IMPL-293 — IMPL-292's residual closed by PARKING, not faking or leaving red; TASK-222 flips to done
+- **status:** done
+- **traces:** TASK-222, DES-213, DES-214, ARCH-134, ARCH-133, ADR-060, REQ-137
+- **greens:** `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-203-models-tab.test.ts` — **5 passed | 0 failed (5)**; `npx vitest run tests/unit/dashboard-lib-model.test.js` — 29 passed; the five other SPEC_ROWS-consuming acceptance files re-run clean (`val-198`/`val-199`/`val-200`/`val-201`/`val-204` — 5 files, 38 tests, 0 failed) to confirm the `SPEC_ROWS.length` shrink caused no cross-file break
+- **files:** tests/fixtures/dashboard-spec.ts
+- **iter:** v28
+- **commit:** 03804bb
+
+Orchestrator ruling carried out: IMPL-292's three `.bench-row`/`.bench-row .stat-track`/`.bench-row
+.stat-bar` rows (`dashboard-spec.ts:284-287`, old numbering) are **parked**, not deleted and not
+left red. Moved into a new `PARKED_SPEC_ROWS` export in the same file, right after `SPEC_ROWS`'s
+closing `] as const;`, with a comment citing `01-requirements.md`'s Won't-have **D2** and
+`02-architecture.md`'s **ADR-060** by name, restating why (no real `/api/models` reply can ever
+carry `benchmarks` — `EnrichedModelEntry` `model-catalog.ts:341` has no such field,
+`enrichModelEntry` `:419` never emits one) and explicitly forbidding the ADR-060 housekeeping-note
+(iv) trap of rewriting the rows to assert the absence instead, which would encode D2 as a permanent
+pass that survives D2 being lifted.
+
+**Anti-rot mechanism, not just a comment:** a type-level tripwire immediately after
+`PARKED_SPEC_ROWS` — `type _D2StillHolds = 'benchmarks' extends keyof EnrichedModelEntry ? never :
+true;` then `const _d2Guard: _D2StillHolds = true;` — type-only-imports `EnrichedModelEntry` from
+`src/models/model-catalog.ts` (precedent: `tests/fixtures/dashboard-wire.ts:23` already does this
+type-only import from the same fixtures directory, so this is not a new coupling shape). While
+`benchmarks` is absent the assignment compiles; the day someone adds a real `benchmarks` field to
+`EnrichedModelEntry`, `_D2StillHolds` becomes `never` and the assignment fails `tsc --noEmit` with
+the error pointing at this exact file/line — verified by injecting a throwaway `benchmarks: number`
+field into a scratch interface and confirming `tsc --noEmit` produces exactly `TS2322: Type 'true'
+is not assignable to type 'never'` on that line, then confirming the real file still compiles clean
+with the field genuinely absent. This rides `npx tsc --noEmit`, already one of every gate's
+standing checks — no new tooling, no new test to remember to run; confirmed the project's
+`tsconfig.json` `include` actually covers this file (`["src", "tests", "vitest.config.ts"]`, not
+`src`-only) via `npx tsc --noEmit --listFiles | grep dashboard-spec` before relying on this claim —
+otherwise the tripwire would be dead code no run ever type-checks.
+
+**TASK-222's `dod:` now passes in full, verbatim from its card:** unit tier
+`npx vitest run tests/unit/dashboard-lib-model.test.js` → 29/29 (unchanged); browser tier
+`RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-203-models-tab.test.ts` → **5/5**, the
+first time this file has gone fully green. Flipped `done` in `03-tasks.md` with a dated closeout
+line citing this entry and IMPL-292. Full regression unaffected: `npx tsc --noEmit` exit 0;
+`npx vitest run tests/unit tests/integration` → 335 files / 2567 passed / 1 skipped / 0 failed
+(byte-identical to the pre-change baseline); `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine
+--check` → 1716 items / 30 gaps, the same set as before this change (`PARKED_SPEC_ROWS` traces no
+ledger ID, so it cannot move the gap count) — REQ-137 still shows `未真實驗證` in that set, which is
+correct: this closes TASK-222's `dod:`, not Gate 7.5's real-run flip of `VAL-213`'s `real:` field,
+which stays this iteration's validator's job, not mine.
