@@ -5379,3 +5379,105 @@ individually re-run afterward with zero unrelated case flipped.
 Next gate is 6 (implementer). TASK-217 first — the seam, one task, not split by file, per
 03-tasks.md's own ordering rule 2. TASK-219 second — it mints the wire fixture rows and the
 `IssuesListView` type every later task's oracle imports.
+
+## 2026-09-18 — Gate 6 partitioner stale-`status` sweep (reviewer): 25 rows flipped with cited IMPL evidence, 12 genuine drafts classified, three bookkeeping items checked before acting, one systemic finding
+
+The orchestrator measured 38 `status: draft` TASK rows, 25 of them (TASK-171..195, the whole v26
+slice) already carrying a covering IMPL entry — a 32-agent, 2.7M-token Gate 6 dispatch had just
+re-implemented work that was already green. Verified rather than trusted: for each of the 25, the
+covering IMPL id(s) were pulled from `06-impl-log.md`'s own `traces:` lines (grep, not the
+orchestrator's count), and every DoD test file the TASK names was re-run — `npx vitest run` across
+the 50 distinct files these 25 TASKs' `dod:` lines name → **416 passed, 0 failed, 5 skipped** (the 5
+are TASK-195's credential-gated GitHub rows, `it.skip`'d and documented in `v24-tool-surface.md`
+since before v26 — a pre-existing accepted gap, not a new one). Two grep-based DoD clauses were also
+independently checked: `PRICE_UNKNOWN` (TASK-194) greps to 2 hits, both the guard test's own
+name/comment asserting the string is GONE from product code, not a live usage. All 25 flipped to
+`status: done` in `03-tasks.md` with a dated closeout bullet citing its IMPL id(s) (several TASKs —
+178/179/183/187/191 — were touched by more than one IMPL row across the v26/v27 fix passes; all
+citing IMPLs are listed, not just the first).
+
+**The 12 genuinely-pending drafts, one line each.** TASK-153 (v24, EXTERNAL client-plugin repo,
+owner-scheduled, explicitly "not Gate 6") is the oldest — pre-dates this whole iteration and blocks
+only the REQ-117 probe precondition. TASK-215/216 (v27j) are prerequisite work for the v28 tree split
+and page-shell cleanup. TASK-217..225 (v28 Sprint B) are the current sprint's own work, correctly
+still open. `sh .sdlc/trace --check` independently lists 13 `未實作` TASK rows (not 12): the extra one
+is TASK-018 (`status: blocked`, v3 OIDC seam, unrelated old debt — never counted in the orchestrator's
+38 because its status field is `blocked`, not `draft`).
+
+**A live discovery, not hypothetical: TASK-215/216 are mid-flight RIGHT NOW.** `git status` shows
+`tsconfig.server.json` and `tests/unit/tsconfig-server-program.test.ts` untracked, and
+`src/dashboard-page.ts` plus four dashboard test files modified — all **uncommitted** — matching
+TASK-216's tsconfig-split DoD and TASK-215's fossil-body deletion DoD almost exactly. This is why the
+dispatch fenced `src/**`/`tests/**` off from this agent: another agent is implementing these two
+RIGHT NOW. Neither was touched or flipped — uncommitted work is not "landed", and per CLAUDE.md
+nothing was checked out, stashed, or restored to inspect it; `git show`/`git status` only.
+
+**Three bookkeeping items, each verified before acting.**
+1. **UT-245** (`05-tests.md:12196`) — `resumeReset`/`demoEngages` confirmed landed in commit
+   `9e10453` (`git show 9e10453 -- src/dashboard/lib/connection.js`, an ancestor of HEAD, +21 lines)
+   and `npx vitest run tests/unit/dashboard-lib-connection.test.js` → **26/26 pass**. Flipped
+   `status: red`→`green`, `result: fail`→`pass`, with a dated re-measurement note; the RED narrative
+   kept as history per this ledger's own convention (UT-098/IT-081/IT-083 v21, UT-247 v27 precedent).
+   **Caught mid-edit**: a concurrent process wrote to this SAME file while this session held it open
+   (Edit's "modified on disk" warning) — the diff showed it independently flipped **UT-257** (`status:
+   red`→`green`) for the same reason (implementation landed, re-measured 29/29). Confirmed no
+   clobbering (targeted string-replace, not overwrite); UT-257's flip was not authored by this session
+   but is left in place since it is evidenced in its own note.
+2. **DES-191** (`04-design.md:6726`) — "`TASK-216` is the impl item; until it lands the property is
+   UNGUARDED and ADR-049 says so." Checked: TASK-216's files are uncommitted (see above), so it has
+   **not landed** at HEAD. The sentence is still TRUE. Left unstruck, per instruction — not edited.
+3. **DES-199/DES-202 attribution** — code-level: `src/static-assets.ts:2`/`src/dashboard/lib/
+   connection.js:2`/`strings.js:2` correctly carry the FILE-owning task (TASK-204/TASK-206) in their
+   header banners; the v28 additions inside those same files (`connection.js:52,62`, `strings.js:30`)
+   are commented TASK-218/TASK-220 because those tasks' OWN `files:` lists in `03-tasks.md` explicitly
+   include `src/dashboard/lib/connection.js` and `lib/strings.js` — this is the same multi-owner
+   pattern the ledger already uses (TASK-171/179's "shared file merged, not overwritten"). The risk is
+   prospective, not present: **no IMPL entry for TASK-218 or TASK-220 exists yet** (`grep -n
+   "TASK-218\|TASK-220" 06-impl-log.md` → empty). Recorded here, not fixed, per instruction: when
+   those IMPL entries are written, their `files:` line must name `src/static-assets.ts`,
+   `src/dashboard/lib/connection.js` and `lib/strings.js` explicitly (not just the files each task
+   adds elsewhere), so this doesn't repeat the TASK-214/`dashboard.css` under-count (IMPL-221 vs
+   IMPL-243).
+
+**Item 4 — is any other control-state field stale the same way? Method: grep the field, then
+independently re-derive its truth value rather than trust the label; treat "found once while looking
+for something else" as a signal, not noise.** Direct answer: **yes, `05-tests.md`'s own
+`status`/`result` pair, and it is not a two-item problem.** Applying exactly the method used for
+UT-245 to four more `status: red` rows already sitting in this same file — UT-244, UT-249, UT-255,
+UT-258 — all four are **currently green** (`npx vitest run` on their four files: 45/45 pass). Combined
+with UT-257's independent concurrent flip caught above, that is **6 of 16** currently-red-labelled
+rows in `05-tests.md` confirmed stale within one sitting, with zero rows confirmed still-genuinely-red
+among the ones checked. This session did **not** sweep the remaining 10 (UT-259..263, IT-171,
+VAL-208, VAL-213..217) — out of the dispatched scope, and this same file is being concurrently edited
+by at least one other live agent (the UT-257 catch, plus the untracked v28 Sprint B implementation
+work above), so a wider edit here risks exactly the multi-writer collision CLAUDE.md warns about.
+**A second, structural finding, not a field but a mechanism**: `sh .sdlc/trace --check`'s own gap
+analysis (`analyze()` in `trace.py`) does **not read the TASK `status:` field at all** for its
+「未實作」(not-implemented) check — it walks `IMPL.traces → TASK` links independently. That is *why*
+the 25-row incident produced zero trace gaps before OR after this fix (verified: gap set byte-
+identical, 1706 items / 44 gaps, before extracting a clean `git archive HEAD` snapshot into scratch
+per CLAUDE.md's safe-baseline method vs. the current tree) — `trace --check` was silent on the very
+staleness that cost 2.7M tokens, because the Gate 6 partitioner and `trace.py` read two DIFFERENT
+signals (the TASK's own `status:` field vs. its inbound IMPL trace links) that can and did disagree.
+Any control-state field a workflow stage reads DIRECTLY off a row, rather than deriving from trace
+links the way `trace.py` does, is exposed to this class: candidates not checked this session —
+`05-tests.md`'s `real:` flag (feeds the Gate 7.5 mock-hard-rule and 未真實驗證 gap, but is
+self-reported, not derived), and `06-impl-log.md`'s `files:` field (Gate 8 uses it directly to SCOPE
+which files the architecture-consistency experts read — a stale `files:` line silently narrows or
+widens that review with no gap signal, exactly as `files:` already went stale once before, TASK-160's
+"corrected at v21 Gate 6 integrator closeout" note, `03-tasks.md:727`). **Blind spot of this method**:
+it only samples fields already suspected; it does not prove absence of staleness elsewhere, and the
+6/16 hit rate on the one sample drawn argues for a dedicated full sweep of `05-tests.md`'s
+`status`/`result` pair (the same "two known instances should always prompt a full-range grep" lesson
+this ledger already recorded for the `commit:` field, v27 Gate 8 precheck above) rather than trusting
+this partial one.
+
+**Verified**: `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → 1706 items / 44
+gaps, both BEFORE (clean `git archive HEAD` extract, per CLAUDE.md's forbidden-checkout workaround)
+and AFTER this session's edits — gap SET re-extracted via `trace.analyze()` directly and confirmed
+byte-identical (0 gaps resolved, 0 new), which is expected: none of `status`/`result`/closeout-note
+edits touch a `traces`/`kind`/`iter` field `analyze()` reads. This session wrote only
+`03-tasks.md`/`05-tests.md` and this `journal.md` entry — `04-design.md` was read and cross-checked
+(DES-191, DES-199, DES-202) but deliberately NOT edited, per instruction, since none of its checked
+sentences turned out false; its concurrent dirty state in `git status` (DES-200's own "Until
+TASK-215 lands" strike) is the live TASK-215 implementer's edit, not this session's.

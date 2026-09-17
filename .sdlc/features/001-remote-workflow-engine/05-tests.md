@@ -12194,12 +12194,19 @@ ledger's own Mode-A-does-not-flip-status convention (same precedent as VAL-208's
 flagged for whoever next runs the regression closeout to correct the header.
 
 ### UT-245 — `dashboard-lib-connection.test.js`: `nextConnection`/`worstOf`/`classifyResponse`/`resumeReset`/`demoEngages`
-- **status:** red
+- **status:** green
 - **traces:** DES-202, DES-211, DES-212, ARCH-124, ARCH-125, ARCH-130, ARCH-134, ADR-058, ADR-059, TASK-206, TASK-218, TASK-220, REQ-131, REQ-142, REQ-143
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v28
+
+**Re-measured (2026-09-18, Gate 6 partitioner stale-status sweep):** `resumeReset`/`demoEngages`
+landed in commit `9e10453` (`src/dashboard/lib/connection.js` +21 lines, confirmed by `git show
+9e10453 -- src/dashboard/lib/connection.js`), which is an ancestor of HEAD. `npx vitest run
+tests/unit/dashboard-lib-connection.test.js` → **26 total, 26 passed, 0 failed** (the RED narrative's
+own predicted case count). Header flipped from the v28-amendment RED to green on this evidence; the
+RED narrative below is preserved as history of the test-first measurement, not a current description.
 
 **[v28 amendment, 2026-09-17, Gate 5, DES-211/DES-212, TASK-218/220, REQ-142/143]:** two pure
 additions to this SAME file, beside `nextConnection`/`worstOf`/`classifyResponse` (byte-unchanged

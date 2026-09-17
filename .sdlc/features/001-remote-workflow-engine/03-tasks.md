@@ -1393,229 +1393,254 @@ recorded `unpriced: true`; there is no admission refusal and no `PRICE_UNKNOWN`;
 - **iter:** v26
 
 ### TASK-171 — `providers.ts`: a closed three-member union, one capability table, `validateAliases`, `resolveAlias`
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-112, ADR-041, ADR-045, REQ-123
 - **files:** src/providers.ts, src/default-aliases.ts, src/main.ts, src/types.ts, tests/unit/providers.test.ts, tests/unit/providers-totality.test.ts
 - **des:** DES-172
 - **dod:** `npx vitest run tests/unit/providers.test.ts tests/unit/providers-totality.test.ts` → green, including a four-offender `validateAliases` message that names ALL FOUR aliases plus the allowed list interpolated from `PROVIDERS`, `resolveAlias` returning `{provider, model, proxyModel?}` (or `undefined`), and a `SITES` loop proving every provider-keyed site answers for all three members without reaching its `never` arm.
 - **estimate:** M
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-203 (06-impl-log.md, `traces:` cites TASK-171); DoD re-run green today: `npx vitest run tests/unit/providers.test.ts tests/unit/providers-totality.test.ts`.
 
 ### TASK-172 — `--check-config` before the restart, and `configCheck` all the way to the banner
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-112, ADR-042, REQ-123, REQ-070
 - **files:** src/main.ts, src/update-types.ts, src/server.ts, src/dashboard-page.ts, deploy/rwe-update.sh, DEPLOY.md, package.json, tests/integration/check-config-cli.test.ts, tests/unit/update-outcome-config-check.test.ts
 - **des:** DES-172
 - **dod:** `npx vitest run tests/integration/check-config-cli.test.ts tests/unit/update-outcome-config-check.test.ts` → exit 0 on a clean temp config and exit 1 naming a `gpt41` row, with NO port bound and NO proxy spawned in either case (a post-call port probe asserts it); and an update-result file with `configCheck` `passed`/`skipped`/`failed` — and one written by an older updater without the key — each render the banner correctly, `skipped` visibly.
 - **estimate:** M
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-204 (06-impl-log.md, `traces:` cites TASK-172); DoD re-run green today: `npx vitest run tests/integration/check-config-cli.test.ts tests/unit/update-outcome-config-check.test.ts`.
 
 ### TASK-173 — re-point every test that names the retired surface (BEFORE the deletion)
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-112, ADR-041, ADR-045, REQ-123
 - **files:** tests/unit/no-retired-surface.test.ts, plus every file the dod grep enumerates (v25 count: the `curateToolsForProvider` / `EFFORT_PROFILES` / `thinkingFor` / `sumUsageTokens` families)
 - **des:** DES-173
 - **dod:** `grep -rln "curateToolsForProvider\|NON_ANTHROPIC_EXCLUDED_TOOLS\|EFFORT_PROFILES\|thinkingFor\|mapEffort\|profileFor\|STATIC_OPENAI\|ProviderEffortProfile\|effortMapping\|sumUsageTokens" tests/` → the enumerated list is pasted in the commit message and every file on it either asserts the REPLACEMENT behaviour or is deleted with its REQ trace re-pointed in the same commit; `npx vitest run` stays green with the old source still present.
 - **estimate:** M
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-204 (06-impl-log.md, `traces:` cites TASK-173); DoD re-run green today: `npx vitest run tests/unit/no-retired-surface.test.ts`.
 
 ### TASK-174 — the deletion: `openai`, `gemini`, tool curation and three effort tables leave the tree
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-112, ADR-041, ADR-045, REQ-123
 - **files:** src/gateway/client.ts, src/gateway/claude-agent-sdk-client.ts, src/gateway/litellm-proxy.ts, src/models/model-catalog.ts, src/params/resolve.ts, src/session-options-builder.ts, src/default-aliases.ts, DEPLOY.md, README.md, rwe.env.example, rwe.config.example.json, tests/unit/no-retired-surface.test.ts, tests/unit/litellm-config-generate.test.ts, tests/integration/ollama-tools-verbatim.test.ts
 - **des:** DES-173
 - **dod:** `npx vitest run tests/unit/no-retired-surface.test.ts tests/unit/litellm-config-generate.test.ts tests/integration/ollama-tools-verbatim.test.ts` → the grep guard is green over 10 identifiers, the two provider literals and the three env names (comment-stripped for `src/`, raw for docs), `generateLiteLLMConfig` emits no `openai` route on a three-provider config, and an **ollama** `agent({allowedTools:['Read','Bash']})` reaches the session with `Read` present and nothing added — the paired behavioural assertion, without which the grep proves only that a name is gone.
 - **estimate:** L
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-204 (06-impl-log.md, `traces:` cites TASK-174); DoD re-run green today: `npx vitest run tests/unit/no-retired-surface.test.ts tests/unit/litellm-config-generate.test.ts tests/integration/ollama-tools-verbatim.test.ts`.
 
 ### TASK-175 — `validateSeedSpec`: one door for `INVALID_SEED_SPEC`, before the first byte
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-110, ADR-046, REQ-121
 - **files:** src/workspace-seed.ts, src/run-manager.ts, src/tool-specs.ts, src/errors.ts, tests/unit/workspace-seed-spec.test.ts, tests/unit/tool-specs.test.ts, tests/integration/run-start-seed-refusal.test.ts
 - **des:** DES-170
 - **dod:** `npx vitest run tests/unit/workspace-seed-spec.test.ts tests/integration/run-start-seed-refusal.test.ts` → ≥12 table rows green and `run_start({seed:[{path:'a.txt',sha256:'…'}]})` over the real facade refuses `INVALID_SEED_SPEC` naming `a.txt`, pointing at `seedManifest`, carrying `see:'workflow_authoring_guide'` — while `readdirSync(<workspace>)` throws ENOENT (a filesystem oracle, never a spy on `mkdirSync`).
 - **estimate:** M
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-204, IMPL-207 (06-impl-log.md, `traces:` cites TASK-175); DoD re-run green today: `npx vitest run tests/unit/workspace-seed-spec.test.ts tests/integration/run-start-seed-refusal.test.ts`.
 
 ### TASK-176 — provider errors end the attempt: `classifyApiError`, the `api_retry` arms, the always-created controller
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-111, ADR-040, ADR-046, REQ-122
 - **files:** src/gateway/claude-agent-sdk-client.ts, src/gateway/client.ts, src/types.ts, src/agent-executor.ts, tests/unit/classify-api-error.test.ts, tests/unit/sdk-drain-api-retry.test.ts, tests/integration/gateway-terminal-no-retry.test.ts
 - **des:** DES-171
 - **dod:** `npx vitest run tests/unit/classify-api-error.test.ts tests/unit/sdk-drain-api-retry.test.ts tests/integration/gateway-terminal-no-retry.test.ts` → a fake session emitting `api_retry(401)` and never a `result` settles `{ok:false, reason:'terminal', retryable:false}` within 1 s of FAKE-clock time with exactly ONE error event (streamed **or** accumulated, never both), `queryImpl` invoked once under a configured timeout, `abort()` observed with NO timeout configured, and a 14-row classifier table including a garbage kind string.
 - **estimate:** L
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-203 (06-impl-log.md, `traces:` cites TASK-176); DoD re-run green today: `npx vitest run tests/unit/classify-api-error.test.ts tests/unit/sdk-drain-api-retry.test.ts tests/integration/gateway-terminal-no-retry.test.ts`.
 
 ### TASK-177 — the terminal record keeps what the harness resolved; `transport` is a new field
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-115, ADR-046, REQ-125
 - **files:** src/gateway/claude-agent-sdk-client.ts, src/gateway/client.ts, src/agent-executor.ts, src/types.ts, tests/unit/agent-record-resolution.test.ts
 - **des:** DES-177
 - **dod:** `npx vitest run tests/unit/agent-record-resolution.test.ts` → `markHarness('openrouter','google/gemini-3.8-flash')` then `markDone({provider:'claude-agent-sdk', model:'gem'})` leaves `provider:'openrouter'`, `model:'google/gemini-3.8-flash'`, `transport:'claude-agent-sdk'`; `harness ≡ record ≡ usage-event` for provider AND model on both gateways (asserted with a resolved provider that is NOT the transport name); a pre-harness terminal takes the gateway's value without crashing on `prev === undefined`.
 - **estimate:** M
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-200, IMPL-209 (06-impl-log.md, `traces:` cites TASK-177); DoD re-run green today: `npx vitest run tests/unit/agent-record-resolution.test.ts`.
 
 ### TASK-178 — `ModelBook`, `reachableModels`, and the pin written in `RunManager.start()`
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-116, ADR-038, REQ-127, REQ-126
 - **files:** src/models/model-book.ts, src/models/model-catalog.ts, src/run-manager.ts, src/store/sqlite-run-store.ts, src/types.ts, src/main.ts, src/server.ts, tests/unit/model-book.test.ts, tests/unit/max-price-per-m.test.ts, tests/integration/price-book-pinned-by-trigger.test.ts
 - **des:** DES-178
 - **dod:** `npx vitest run tests/unit/model-book.test.ts tests/unit/max-price-per-m.test.ts tests/integration/price-book-pinned-by-trigger.test.ts` → 24 concurrent `snapshot()` calls invoke `source` ONCE (single-flight), the TTL/last-good/static rows are green on a FAKE clock and a FAKE source, `lookup` prices ollama at all-zero (never `null`) and an unlisted model at `null`, `maxPricePerMOf` reads `FourRates` (not the display string), and a run started through the **webhook** path has a non-null `runs.price_book`.
 - **estimate:** L
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-197, IMPL-199, IMPL-211, IMPL-214, IMPL-216, IMPL-217 (06-impl-log.md, `traces:` cites TASK-178); DoD re-run green today: `npx vitest run tests/unit/model-book.test.ts tests/unit/max-price-per-m.test.ts tests/integration/price-book-pinned-by-trigger.test.ts`.
 
 ### TASK-179 — `wireEffort` is the single writer of `thinking`/`effort`; `models_list` declares per row
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-117, ADR-045, REQ-126
 - **files:** src/gateway/client.ts, src/gateway/claude-agent-sdk-client.ts, src/providers.ts, src/models/model-catalog.ts, src/tool-specs.ts, src/agent-executor.ts, tests/unit/wire-effort.test.ts, tests/unit/models-list-declared.test.ts
 - **des:** DES-179
 - **dod:** `npx vitest run tests/unit/wire-effort.test.ts tests/unit/models-list-declared.test.ts` → an 8-row `wireEffort` table green (anthropic keeps `output_config.effort`; openrouter with `caps.reasoning === true` gets `thinking.budgetTokens`; the two distinct non-reasoning reasons; ollama and `provider === undefined` both land on `{type:'disabled'}`), `applied` present on EVERY arm, UT-101's anthropic request composition still byte-identical, and every `models_list` row carrying `toolUseDeclared`/`effortDeclared`/`declaredSource`/`catalogFetchedAt` with the input filter renamed in the same commit.
 - **estimate:** M
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-199, IMPL-205, IMPL-213 (06-impl-log.md, `traces:` cites TASK-179); DoD re-run green today: `npx vitest run tests/unit/wire-effort.test.ts tests/unit/models-list-declared.test.ts`.
 
 ### TASK-180 — four-column `Tokens`, `priceCall`, and the `costUSD`/`unpriced` collapse at the one capture site
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-118, ADR-046, REQ-127
 - **files:** src/types.ts, src/gateway/claude-agent-sdk-client.ts, src/gateway/client.ts, src/agent-executor.ts, src/run-guard.ts, src/dashboard.ts, src/dashboard-page.ts, tests/unit/price-call.test.ts, tests/unit/token-extraction.test.ts, tests/unit/dashboard-page-source.test.ts
 - **des:** DES-180
 - **dod:** `npx vitest run tests/unit/price-call.test.ts tests/unit/token-extraction.test.ts tests/unit/dashboard-page-source.test.ts` → four columns extracted from `result.usage` AND from the camelCase `modelUsage[*]` fallback, `priceCall(t, null) → null` collapsing at capture into `{costUSD: 0, unpriced: true}`, an ollama zero-rate call yielding `costUSD: 0, unpriced: false`, 1000 calls of ~1e-3 USD summing correct to 2dp, and the DAG cell rendering `sumTokens()` + `$0.0000` + an `(unpriced)` badge — never `300 tok`, never `[object Object] tok`.
 - **estimate:** L
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-204 (06-impl-log.md, `traces:` cites TASK-180); DoD re-run green today: `npx vitest run tests/unit/price-call.test.ts tests/unit/token-extraction.test.ts tests/unit/dashboard-page-source.test.ts`.
 
 ### TASK-181 — `parseBudget`, a schema that still accepts `null`, `RunGuard`'s two limits, the migration answer ahead of ajv
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-118, ADR-037, REQ-127, REQ-120
 - **files:** src/run-guard.ts, src/run-manager.ts, src/tool-specs.ts, src/call-tool.ts, src/types.ts, tests/unit/parse-budget.test.ts, tests/unit/run-guard-two-limits.test.ts, tests/unit/call-tool-budget-migration.test.ts
 - **des:** DES-181
 - **dod:** `npx vitest run tests/unit/parse-budget.test.ts tests/unit/run-guard-two-limits.test.ts tests/unit/call-tool-budget-migration.test.ts` → `run_start({budget: null})` is ACCEPTED and unbounded, `{}` is refused by `minProperties`, a wire `budget: 200000` is refused AHEAD of ajv with a message naming the old token meaning and `detail.migration.tokens`, a STORED legacy number rehydrates as `{tokens: n}`, `addUsage` accumulates with BOTH limits absent (the negative test), and the two-limit matrix names which limit the `BudgetExceededError` carries.
 - **estimate:** M
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-198 (06-impl-log.md, `traces:` cites TASK-181); DoD re-run green today: `npx vitest run tests/unit/parse-budget.test.ts tests/unit/run-guard-two-limits.test.ts tests/unit/call-tool-budget-migration.test.ts`.
 
 ### TASK-182 — the sandbox budget wire: three IPC fields, both hosts, the script-visible accessors
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-118, ARCH-114, REQ-127, REQ-120, REQ-001
 - **files:** src/sandbox/host.ts, src/sandbox/child-entry.ts, src/sandbox/guards.ts, src/run-manager.ts, src/types.ts, tests/unit/sandbox-budget-api.test.ts, tests/integration/nested-frame-budget.test.ts
 - **des:** DES-182
 - **dod:** `npx vitest run tests/unit/sandbox-budget-api.test.ts tests/integration/nested-frame-budget.test.ts` → inside a nested `workflow()` frame `budget.spent()` reports the parent run's real USD spend (0 forever today), `limits`/`total`/`remaining()` are `null` when no USD limit exists while `limits.tokens` is a number, `tokens().sum` equals the four columns, and `Object.keys(createSandboxContext(...))` still deep-equals `SANDBOX_GLOBALS`. No new local value import may enter `guards.ts`/`child-entry.ts` (the sandbox child does not resolve `.js`→`.ts` value imports).
 - **estimate:** M
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-203 (06-impl-log.md, `traces:` cites TASK-182); DoD re-run green today: `npx vitest run tests/unit/sandbox-budget-api.test.ts tests/integration/nested-frame-budget.test.ts`.
 
 ### TASK-183 — the run's usage read path: `RunUsage`, three producers, an unconditional fold, `run_result.meta`
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-118, ADR-046, ADR-047, REQ-127
 - **files:** src/run-manager.ts, src/run-store.ts, src/store/sqlite-run-store.ts, src/types.ts, src/mcp-facade.ts, src/tool-specs.ts, src/dashboard-page.ts, tests/integration/usage-live-equals-fold.test.ts, tests/integration/run-result-meta.test.ts
 - **des:** DES-183
 - **dod:** `npx vitest run tests/integration/usage-live-equals-fold.test.ts tests/integration/run-result-meta.test.ts` → live ≡ fold ≡ snapshot on a completed run AND on an **unbudgeted, resumed** run (the `if (spec.budget …)` gate at `run-manager.ts:840` deleted), `run_result.meta.usage` / `unpricedCalls` / `unmappedMessages` / `budgetEnforceable` present after a restart with no live guard, and the run page rendering the two counters and the lower-bound qualifier.
 - **estimate:** L
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-198, IMPL-212, IMPL-220 (06-impl-log.md, `traces:` cites TASK-183); DoD re-run green today: `npx vitest run tests/integration/usage-live-equals-fold.test.ts tests/integration/run-result-meta.test.ts`.
 
 ### TASK-184 — `AgentCallScan` learns three facts, and the shared `(script, expectedGraph)` corpus ships with it
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-113, ADR-039, REQ-128, REQ-124
 - **files:** src/workflow-meta.ts, src/scan-agent-calls.ts, tests/fixtures/expected-graph-fixtures.ts, tests/unit/agent-call-scan.test.ts
 - **des:** DES-174
 - **dod:** `npx vitest run tests/unit/agent-call-scan.test.ts` → `calls[]` carries `allowedTools` (the literal array, or `'absent'`), the regex match `index`, and `group:{kind:'parallel'|'alt', id}` for both arms of one ternary; the 14 fixtures are HAND-WRITTEN literals in one exported module (never produced by running the function and pasting its output).
 - **estimate:** M
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-204 (06-impl-log.md, `traces:` cites TASK-184); DoD re-run green today: `npx vitest run tests/unit/agent-call-scan.test.ts`.
 
 ### TASK-185 — `deriveExpectedGraph`: total, discriminated, two consumers, one derivation
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-113, ADR-039, REQ-128, REQ-124
 - **files:** src/skeleton-graph.ts, src/types.ts, tests/unit/skeleton-graph.test.ts
 - **des:** DES-174
 - **dod:** `npx vitest run tests/unit/skeleton-graph.test.ts` → every fixture produces its literal `ExpectedGraph`, an `agent()` before the first `phase()` returns `{ok:false, rule:'AGENT_BEFORE_PHASE', line}`, two identically-labelled calls in different phases land in different slots (the character-offset join, not the label), and no input — `null`, empty, truncated — throws.
 - **estimate:** M
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-204, IMPL-206 (06-impl-log.md, `traces:` cites TASK-185); DoD re-run green today: `npx vitest run tests/unit/skeleton-graph.test.ts`.
 
 ### TASK-186 — the phase stamp: read at IPC receipt, on both hosts, never in the replay key
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-114, REQ-124, REQ-008
 - **files:** src/sandbox/host.ts, src/run-manager.ts, src/agent-executor.ts, src/types.ts, tests/unit/phase-stamp-ordering.test.ts, tests/integration/call-key-byte-identity.test.ts, tests/e2e/nested-frame-phase.test.ts
 - **des:** DES-175
 - **dod:** `npx vitest run tests/unit/phase-stamp-ordering.test.ts tests/integration/call-key-byte-identity.test.ts tests/e2e/nested-frame-phase.test.ts` → an `{agent}` and a `{phase}` message delivered in ONE IPC chunk stamp the EARLIER phase; a nested frame with no `phase()` inherits `{title,index}`; a nested frame that DOES call `phase()` records it on its own `WorkflowNodeView.phases[]` and leaves the parent lanes unchanged with zero warnings; and a stored v25 journal replays under v26 with ZERO cache misses (`CallKey` byte-identical).
 - **estimate:** L
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-202 (06-impl-log.md, `traces:` cites TASK-186); DoD re-run green today: `npx vitest run tests/unit/phase-stamp-ordering.test.ts tests/integration/call-key-byte-identity.test.ts tests/e2e/nested-frame-phase.test.ts`.
 
 ### TASK-187 — `layoutGraph` joins by lane ordinal; `inferPhase` repairs pre-v26 snapshots at read
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-114, ARCH-113, REQ-124, REQ-008
 - **files:** src/dashboard.ts, src/server.ts, tests/unit/layout-graph-phase.test.ts, tests/fixtures/pre-v26-terminal-snapshot.json, tests/integration/dag-warnings-empty.test.ts
 - **des:** DES-176
 - **dod:** `npx vitest run tests/unit/layout-graph-phase.test.ts tests/integration/dag-warnings-empty.test.ts` → the shared corpus places every agent in its true lane (duplicate titles resolved by ordinal, `alt` consuming one agent, `parallel` up to its member count), each warning branch asserted BY BRANCH, and a REAL pre-v26 terminal snapshot copied into `tests/fixtures/` (redacted) yields `warnings: []` — copy it at Gate 5, so a missing `startedAt`/`phases[]` is a design fact, not a Gate 7.5 surprise.
 - **estimate:** M
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-204, IMPL-205, IMPL-206 (06-impl-log.md, `traces:` cites TASK-187); DoD re-run green today: `npx vitest run tests/unit/layout-graph-phase.test.ts tests/integration/dag-warnings-empty.test.ts`.
 
 ### TASK-188 — the restart-reconstruction seam: `deriveAgentRecords` carries the whole record, and a refusal is journaled
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-114, ARCH-115, ARCH-118, ARCH-111, ADR-046, REQ-124, REQ-125, REQ-127, REQ-120
 - **files:** src/run-store.ts, src/agent-executor.ts, src/run-manager.ts, src/types.ts, tests/unit/derive-agent-records.test.ts, tests/integration/derived-equals-snapshot.test.ts, tests/integration/refused-survives-restart.test.ts, tests/acceptance/val-007-observability.test.ts
 - **des:** DES-188
 - **dod:** `npx vitest run tests/unit/derive-agent-records.test.ts tests/integration/derived-equals-snapshot.test.ts tests/integration/refused-survives-restart.test.ts` → `deriveAgentRecords(allTranscripts)` deep-equals the terminal snapshot's `agents` minus `lastActivityAt` for a run with one done, one failed and one budget-refused call; a refused call read back from a FRESH store over the same SQLite file with no snapshot still shows `state:'refused'` with its `reasonCode`, phase and `phaseIndex`; and `val-007`'s transcript-kind list is extended to `['message','tool_call','tool_result','usage','harness','refused']` in the SAME commit as the union member.
 - **estimate:** L
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-204 (06-impl-log.md, `traces:` cites TASK-188); DoD re-run green today: `npx vitest run tests/unit/derive-agent-records.test.ts tests/integration/derived-equals-snapshot.test.ts tests/integration/refused-survives-restart.test.ts`.
 
 ### TASK-189 — `checkMermaid` v2, the total `RULE_CODE` map, four catalog rows, and `diagram_contract`
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-119, ADR-043, ADR-039, REQ-128, REQ-116
 - **files:** src/check-mermaid.ts, src/workflow-catalog.ts, src/errors.ts, src/types.ts, src/mcp-facade.ts, src/store/sqlite-run-store.ts, tests/unit/check-mermaid-v2.test.ts, tests/unit/rule-code-map.test.ts, tests/integration/diagram-contract-grandfather.test.ts
 - **des:** DES-184
 - **dod:** `npx vitest run tests/unit/check-mermaid-v2.test.ts tests/unit/rule-code-map.test.ts tests/integration/diagram-contract-grandfather.test.ts` → one negative fixture per v2 code (`DIAGRAM_DIRECTION` / `LANE_MISMATCH` / `TOOLS_MISMATCH` / `EDGE_MISMATCH`), each refusal carrying `{rule, line, expected}` and `see:'workflow_authoring_guide'` from a REAL `ERROR_CATALOG` row; `RULE_CODE` total over every rule the file emits with a `never` check; a `tools: default` slot never compared; and a pre-v26 `graph TD` row still rendering and re-serving untouched with `diagramContract:'v1'`.
 - **estimate:** L
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-201, IMPL-203 (06-impl-log.md, `traces:` cites TASK-189); DoD re-run green today: `npx vitest run tests/unit/check-mermaid-v2.test.ts tests/unit/rule-code-map.test.ts tests/integration/diagram-contract-grandfather.test.ts`.
 
 ### TASK-190 — the guide examples become the v2 conformance corpus (LR swimlanes that register green)
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-119, ARCH-107, ADR-039, REQ-128, REQ-116, REQ-117
 - **files:** src/authoring-guide.ts, docs/AUTHORING.md, tests/integration/guide-examples-register.test.ts
 - **des:** DES-185
 - **dod:** `npx vitest run tests/integration/guide-examples-register.test.ts` → every `GUIDE_EXAMPLE` registers against a booted engine with NO refusal, and the corpus covers phase lane, `parallel` slot, `alt` slot, `tools: none`, `tools: default`, a dynamic title, a nested `workflow()` rectangle and the five ADR-039 constructs in their LEGAL rewritten form; no negative fixture is present in the guide.
 - **estimate:** M
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-204 (06-impl-log.md, `traces:` cites TASK-190); DoD re-run green today: `npx vitest run tests/integration/guide-examples-register.test.ts`.
 
 ### TASK-191 — the run DAG scales with its container, and both figures zoom / pan / fit
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-120, ADR-044, REQ-129, REQ-119
 - **files:** src/dashboard.ts, src/dashboard-page.ts, tests/unit/dag-box.test.ts, tests/unit/dashboard-zoom-source.test.ts, tests/acceptance/val-018-dashboard-browser-ui.test.ts
 - **des:** DES-186
 - **dod:** `npx vitest run tests/unit/dag-box.test.ts tests/unit/dashboard-zoom-source.test.ts` → `dagBox` returns a non-zero minimum box for empty cells and the right extent for a 9-agent 5-phase layout; the emitted page sets `viewBox` + `width="100%"` + `preserveAspectRatio` with NO absolute `width=`; and calling `renderGraph` twice leaves the `.zoomable` WRAPPER transform untouched (the 3-second poll must not reset a user's zoom).
 - **estimate:** M
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-204, IMPL-212, IMPL-215 (06-impl-log.md, `traces:` cites TASK-191); DoD re-run green today: `npx vitest run tests/unit/dag-box.test.ts tests/unit/dashboard-zoom-source.test.ts`.
 
 ### TASK-192 — the workflow page's per-agent harness table
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-119, REQ-128, REQ-110
 - **files:** src/dashboard-page.ts, src/dashboard.ts, tests/unit/workflow-page-harness-table.test.ts
 - **des:** DES-184
 - **dod:** `npx vitest run tests/unit/workflow-page-harness-table.test.ts` → one row per `params.agents.<label>` — label / declared model → resolved model / effort / timeoutMs / tools — every cell written with `textContent`, no `innerHTML` on any run- or author-derived string.
 - **estimate:** S
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-201, IMPL-202 (06-impl-log.md, `traces:` cites TASK-192); DoD re-run green today: `npx vitest run tests/unit/workflow-page-harness-table.test.ts`.
 
 ### TASK-193 — the guide's five gaps rendered from exported constants, with drift locks that EXECUTE
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-121, REQ-130, REQ-121, REQ-127, REQ-001
 - **files:** src/sandbox/guards.ts, src/authoring-guide.ts, src/tool-specs.ts, docs/AUTHORING.md, scripts/gen-authoring-md.ts, tests/unit/authoring-guide.test.ts, tests/unit/sandbox-globals-lock.test.ts, tests/unit/authoring-md-generated.test.ts
 - **des:** DES-187
 - **dod:** `npx vitest run tests/unit/authoring-guide.test.ts tests/unit/sandbox-globals-lock.test.ts tests/unit/authoring-md-generated.test.ts` → the served guide contains `DETERMINISM_GUARD` and `seedManifest`; `Object.keys(createSandboxContext(...))` deep-equals `SANDBOX_GLOBALS`; every `DETERMINISM_GUARDED.call` really throws `DETERMINISM_GUARD` in a REAL `vm` context; the alias table is generated from `aliases × PROVIDER_CAPS`; `docs/AUTHORING.md` is byte-identical to the builder output; and `buildGuide()` stays under its byte ceiling.
 - **estimate:** M
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-204, IMPL-208 (06-impl-log.md, `traces:` cites TASK-193); DoD re-run green today: `npx vitest run tests/unit/authoring-guide.test.ts tests/unit/sandbox-globals-lock.test.ts tests/unit/authoring-md-generated.test.ts`.
 
 ### TASK-194 — the public shapes pinned as literal fixtures, the cross-repo check, and the migration note
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-110, ARCH-115, ARCH-118, ARCH-117, REQ-121, REQ-125, REQ-126, REQ-127
 - **files:** tests/fixtures/v26-public-shapes.ts, tests/integration/public-shapes-pin.test.ts, tests/unit/no-retired-surface.test.ts, DEPLOY.md, README.md
 - **des:** DES-189
 - **dod:** `npx vitest run tests/integration/public-shapes-pin.test.ts tests/unit/no-retired-surface.test.ts` → the LITERAL expected JSON of `run_status.agents[]`, `run_result.meta`, the usage transcript event, the `INVALID_SEED_SPEC` envelope and one v2 diagram refusal envelope deep-equal after a scripted run; `grep -rn "PRICE_UNKNOWN" src tests docs` → 0 hits; and DEPLOY.md carries the three-line migration note (budget object · `toolUse`→`toolUseDeclared` · two→four token columns). The cross-repo read of the plugin's `push_workspace.py` is recorded in the commit message and DECIDES whether `additionalProperties:false` ships on `seed.items`.
 - **estimate:** M
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-203 (06-impl-log.md, `traces:` cites TASK-194); DoD re-run green today: `npx vitest run tests/integration/public-shapes-pin.test.ts tests/unit/no-retired-surface.test.ts`.
 
 ### TASK-195 — the v26 tool-surface table and the cold-model probe runbook
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-108, ARCH-119, ARCH-121, REQ-128, REQ-130, REQ-117, REQ-118
 - **files:** tests/acceptance/v24-tool-surface.test.ts, .sdlc/features/001-remote-workflow-engine/v24-tool-surface.md, .sdlc/features/001-remote-workflow-engine/08-validation.md
 - **des:** DES-189
 - **dod:** `npx vitest run tests/acceptance/v24-tool-surface.test.ts` → every `TOOL_SPECS` row exercised once including its error path, with the v26 rows updated (`run_start.seed`/`seedManifest`/`seedManifestRef` item shapes, `run_start.budget` object + `null`, `models_list` declared columns, `workflow_describe.diagramContract`) and the regenerated table committed; the REQ-117/128/130 cold-model runbook names the guide + `tools/list` as the ONLY inputs and a first-try failure as a DOCUMENTATION defect.
 - **estimate:** M
 - **iter:** v26
+- **closeout (2026-09-18, Gate 6 partitioner stale-`status` sweep):** already implemented — covered by IMPL-204 (06-impl-log.md, `traces:` cites TASK-195); DoD re-run green today: `npx vitest run tests/acceptance/v24-tool-surface.test.ts` (5 credential-gated rows remain `it.skip`'d — pre-existing, documented in `v24-tool-surface.md` since before v26, not a new gap).
 
 ## v27 tasks (REQ-131..136, REQ-140, REQ-141 / ARCH-120, ARCH-122..131 / ADR-049..056) — TASK-196..216
 
@@ -1749,7 +1774,7 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
 - **traces:** ARCH-122, ARCH-120, ADR-049, REQ-131, REQ-070
 - **files:** src/dashboard-page.ts, src/dashboard/lib/status.js, tests/unit/dashboard-page-source.test.ts, tests/unit/update-outcome-config-check.test.ts
 - **des:** DES-200, DES-201
-- **dod:** `npx vitest run tests/unit/dashboard-page-source.test.ts tests/unit/update-outcome-config-check.test.ts` → `buildDashboardHtml()` keeps its signature and its one caller; the emitted HTML contains `data-theme="dark"`, the three asset `<link>`/`<script>` references, exactly ONE inline `<script>` and it is `type="application/json" id="rwe-init"` (a grep for `<script>` without `type=` returns 0); the island round-trips `{version,lastUpdate,interruptedRuns}` through `JSON.parse` with `<` escaped; ~~`DASHBOARD_HTML` still contains `.fit-btn{position:relative;z-index:1;` and the `#diagram-img{…-webkit-user-drag:none}` rule~~ **[v27c: `clientFile('dashboard.css')` is now the subject of those two CSS pins — see below]** and ~~`DASHBOARD_HTML` still contains `draggable="false"`~~ **[v27j: STRUCK — `draggable="false"` was never markup; `src/dashboard/ui/workflow.js:151-154` sets `img.draggable = false` and UT-224 has pinned it there since v27g (IMPL-270). Pending TASK-215, the fossil body at `dashboard-page.ts:92-152` still stands and is not a test subject]**; and `dashboard.css` declares `--color-bg:#18191b` under `[data-theme="dark"]`, `#eef2f1` under `[data-theme="light"]`, and every accent token as an `oklch(L C var(--rwe-hue))` literal. **[v27c] This task no longer WRITES `dashboard.css` — TASK-214 is its one author** (the routed defect was two owners on one file; two writers is the same defect). The two `dashboard.css` clauses above stay as ASSERTIONS over TASK-214's output, and one of them is corrected: the accent ramp must satisfy DES-201's corrected DIRECTION — dark `--accent-100…900` L **ascends**, light **descends**. What this task still OWNS, in `src/dashboard-page.ts`, is DES-200's one-delivery-path rule: the `readFileSync`, the `DASHBOARD_CSS` const and the `<style>${DASHBOARD_CSS}</style>` tag are DELETED so the `<link>` is the only path, and in the SAME commit the `.fit-btn` and `#diagram-img` CSS pins take `clientFile('dashboard.css')` as their subject rather than `DASHBOARD_HTML` (DES-208's STAYS option; `draggable="false"` is markup and stays on `DASHBOARD_HTML`). These two v27c clauses are a RE-RUN of an already-landed task (IMPL exists) and land in the SAME batch as TASK-214, never before it — between the deletion and the re-point those two pins are red.
+- **dod:** `npx vitest run tests/unit/dashboard-page-source.test.ts tests/unit/update-outcome-config-check.test.ts` → `buildDashboardHtml()` keeps its signature and its one caller; the emitted HTML contains `data-theme="dark"`, the three asset `<link>`/`<script>` references, exactly ONE inline `<script>` and it is `type="application/json" id="rwe-init"` (a grep for `<script>` without `type=` returns 0); the island round-trips `{version,lastUpdate,interruptedRuns}` through `JSON.parse` with `<` escaped; ~~`DASHBOARD_HTML` still contains `.fit-btn{position:relative;z-index:1;` and the `#diagram-img{…-webkit-user-drag:none}` rule~~ **[v27c: `clientFile('dashboard.css')` is now the subject of those two CSS pins — see below]** and ~~`DASHBOARD_HTML` still contains `draggable="false"`~~ **[v27j: STRUCK — `draggable="false"` was never markup; `src/dashboard/ui/workflow.js:151-154` sets `img.draggable = false` and UT-224 has pinned it there since v27g (IMPL-270). ~~Pending TASK-215, the fossil body at `dashboard-page.ts:92-152` still stands and is not a test subject~~ **[v28, TASK-215 landed — the fossil body is deleted]**]**; and `dashboard.css` declares `--color-bg:#18191b` under `[data-theme="dark"]`, `#eef2f1` under `[data-theme="light"]`, and every accent token as an `oklch(L C var(--rwe-hue))` literal. **[v27c] This task no longer WRITES `dashboard.css` — TASK-214 is its one author** (the routed defect was two owners on one file; two writers is the same defect). The two `dashboard.css` clauses above stay as ASSERTIONS over TASK-214's output, and one of them is corrected: the accent ramp must satisfy DES-201's corrected DIRECTION — dark `--accent-100…900` L **ascends**, light **descends**. What this task still OWNS, in `src/dashboard-page.ts`, is DES-200's one-delivery-path rule: the `readFileSync`, the `DASHBOARD_CSS` const and the `<style>${DASHBOARD_CSS}</style>` tag are DELETED so the `<link>` is the only path, and in the SAME commit the `.fit-btn` and `#diagram-img` CSS pins take `clientFile('dashboard.css')` as their subject rather than `DASHBOARD_HTML` (DES-208's STAYS option; `draggable="false"` is markup and stays on `DASHBOARD_HTML`). These two v27c clauses are a RE-RUN of an already-landed task (IMPL exists) and land in the SAME batch as TASK-214, never before it — between the deletion and the re-point those two pins are red.
 - **estimate:** L
 - **iter:** v27j
 
