@@ -7081,3 +7081,167 @@ The clause in `04-design.md` keeps its own wording — the guard is scoped to `s
   The gap SET was diffed line-for-line against a baseline captured BEFORE this round's first edit
   (`sh .sdlc/trace … --check > <scratch>/trace-baseline.txt`, never by checking the ledger backwards
   in place — CLAUDE.md) → **identical**: zero new gaps, zero new orphans, zero broken links.
+
+### IMPL-283 — TASK-217: the v28 seam lands — ONE result type, INV-V28-1 closed, tab activation
+- **status:** done
+- **traces:** TASK-217, DES-210, ARCH-133, ARCH-125, ARCH-124, ADR-057, ADR-058, ADR-059, REQ-142, REQ-143, REQ-137, REQ-138, REQ-139
+- **greens:** `tests/unit/dashboard-seam.test.ts` (5/5), `tests/unit/dashboard-client-corpus.test.ts` (8/8)
+- **files:** src/dashboard/ui/poll.js, src/dashboard/ui/app.js, src/dashboard/ui/run.js, src/dashboard/ui/workflow.js, src/dashboard/ui/agent-panel.js, src/dashboard/ui/models.js, src/dashboard/ui/system.js, src/dashboard/ui/issues.js, tests/unit/dashboard-seam.test.ts
+- **commit:** 9e10453 (RED written earlier at 4431a9c)
+- **iter:** v28
+
+Written up after the fact — this row and IMPL-284..291 below record work that landed with **zero
+`iter: v28` IMPL trail**: `9e10453` is titled `docs(v28): settle the demo-data gap…` but its diff is
+27 files / +1469 / -224, 19 of them under `src/`, the whole Sprint B implementation swept in by a
+`git add -A` alongside the docs it was actually about (see `journal.md`'s dated entry on the
+mislabel). Each entry below is derived from `git show --stat 9e10453` and `git show 9e10453 --
+<path>` per file, not from the commit message, and each `dod:` command was independently re-run
+before its TASK row was flipped.
+
+INV-V28-1 confirmed by measurement, not by trust of the commit message: `grep -rn "getJSON" src/
+dashboard/ui/*.js | grep -v getViewJSON` → only `app.js:32` (import) and `app.js:448` (the one call
+site) plus comments in `agent-panel.js:25`/`workflow.js:14`/`run.js:12` that name `getJSON` in prose
+without importing it — the six non-primary modules (`run.js`, `workflow.js`, `agent-panel.js`,
+`models.js`, `system.js`, `issues.js`) import `getViewJSON` only. `poll.js:51` exports `getJSON`,
+`:81` exports `getViewJSON` (same result shape, demo-map redirect per `:72`'s `setDemoBodies`),
+`:41` exports `endpointsFor`. Full DoD re-run: `npx vitest run tests/unit/dashboard-seam.test.ts
+tests/unit/dashboard-client-corpus.test.ts` → **13 passed (13)**.
+
+### IMPL-284 — TASK-218: `lib/scheduler.js`'s `nextPoll`, `connection.js`'s `resumeReset`, REQ-142's wiring
+- **status:** done
+- **traces:** TASK-218, DES-211, ARCH-134, ARCH-133, ARCH-123, ADR-059, REQ-142
+- **greens:** `tests/unit/dashboard-lib-scheduler.test.js` (10/10), `tests/unit/dashboard-lib-connection.test.js` (26/26), `tests/unit/static-assets.test.ts` (5/5)
+- **files:** src/dashboard/lib/scheduler.js, src/dashboard/lib/connection.js, src/dashboard/ui/app.js, src/static-assets.ts
+- **commit:** 9e10453
+- **iter:** v28
+
+`nextPoll` at `lib/scheduler.js:10`, `resumeReset` at `lib/connection.js:57`. `files:` names
+`src/dashboard/lib/connection.js` and `src/static-assets.ts` explicitly even though TASK-220 also
+owns them (multi-owner, the same pattern as TASK-171/179) — the prior session's journal entry flagged
+that this row's `files:` line had to do this or repeat the TASK-214/`dashboard.css` under-count
+(IMPL-221 vs IMPL-243). Full DoD re-run: **41 passed (41)**, 3 files.
+
+### IMPL-285 — TASK-219: the three wire fixture rows, `IssuesListView`, and the four owed disclosure rows
+- **status:** done
+- **traces:** TASK-219, DES-218, ARCH-130, ARCH-135, ADR-054, REQ-137, REQ-138, REQ-139
+- **greens:** `tests/integration/dashboard-disclosure.test.ts` (3/3)
+- **files:** tests/fixtures/dashboard-wire.ts, src/github/issue-reporter.ts, src/server.ts, tests/integration/dashboard-disclosure.test.ts
+- **commit:** 9e10453
+- **iter:** v28
+
+`export interface IssuesListView` minted at `src/github/issue-reporter.ts:98`, imported by
+`tests/fixtures/dashboard-wire.ts:24` and consumed as the `ISSUES_OK` fixture at `:181`;
+`src/server.ts:475`'s payload (`const payload: IssuesListView = { open, resolved };`) is annotated
+against it — zero wire byte changed, confirmed by reading both sites. Full DoD re-run: **3 passed
+(3)**.
+
+### IMPL-286 — TASK-220: `demo/dataset.js`, `demoEngages`, the retirement tripwire, and the three surfaces the owner ruled out
+- **status:** done
+- **traces:** TASK-220, DES-212, ARCH-132, ARCH-123, ARCH-133, ADR-058, REQ-143
+- **greens:** `tests/unit/demo-surface.test.ts` (2/2), `tests/unit/demo-dataset-types.test.ts` (9/9), `tests/unit/dashboard-lib-connection.test.js` (26/26), `tests/unit/static-assets.test.ts` (5/5)
+- **files:** src/dashboard/demo/dataset.js, src/dashboard/lib/connection.js, src/dashboard/lib/strings.js, src/dashboard/ui/app.js, src/static-assets.ts
+- **commit:** 9e10453
+- **iter:** v28
+
+`export const DEMO` at `demo/dataset.js:55`; `demoEngages` at `lib/connection.js:69`. `files:` names
+`lib/connection.js`/`lib/strings.js`/`static-assets.ts` explicitly per the same multi-owner note as
+IMPL-284 (TASK-218 shares all three). The commit body records an owner ruling this entry does not
+re-litigate: `/api/workflows`, `/api/workflows/:name/describe` and `/api/issues` ship **no demo
+data** (no key-set oracle for the first two; `IssueSummary.url`'s real `https://...` value would
+trip UT-231's guard for the third) — `01-requirements.md` gained +8 lines in this same commit
+amending REQ-143's acceptance to state that showing the absence satisfies the "every tab shows demo
+mode" clause. Full DoD re-run: **42 passed (42)**, 4 files.
+
+### IMPL-287 — TASK-221: `dashboard.css` v28 — the three tabs' component families and their STYLE_HOOKS
+- **status:** done
+- **traces:** TASK-221, DES-219, ARCH-133, ARCH-125, REQ-137, REQ-138, REQ-139, REQ-143
+- **greens:** `tests/unit/dashboard-class-contract.test.ts` (18/18); `tests/unit/dashboard-no-design-values.test.ts` (7/7 — the slice's own final green per ordering rule 4, closed once IMPL-289/290 below landed, not by this row alone)
+- **files:** src/dashboard/dashboard.css, tests/fixtures/dashboard-classes.ts
+- **commit:** 9e10453 (the families), 78b4658 (`.proc-self` gains `border-left-color`, orchestrator ruling recorded in `9e10453`'s own commit body, landed one commit later)
+- **iter:** v28
+
+`78b4658` is a one-line CSS addition needed to turn TASK-223's own acceptance test fully green
+(`.proc-self` was already a declared `STYLE_HOOKS` entry; only its `border-left-color` value was
+missing) — cited here because the byte lives in this task's file, not TASK-223's, the same
+cross-file-ownership shape the prior session's journal flagged for TASK-218/220. Full DoD re-run:
+**18 passed (18)**.
+
+### IMPL-288 — TASK-222: `lib/model.js`'s projections land at the unit tier; the browser-tier acceptance does NOT — TASK-222 stays draft
+- **status:** done
+- **traces:** TASK-222, DES-213, DES-214, ARCH-134, ARCH-133, ADR-060, REQ-137
+- **greens:** `tests/unit/dashboard-lib-model.test.js` (29/29, includes `b9ad277`'s narrowed absence invariant)
+- **files:** src/dashboard/lib/model.js, src/dashboard/ui/models.js, tests/unit/dashboard-lib-model.test.js, tests/acceptance/val-203-models-tab.test.ts
+- **commit:** 9e10453 (lib/model.js + ui/models.js), b9ad277 (test-only: narrowed INV-V28-4 to the 8 columns where absence is real, `05-tests.md` UT-257 flipped, no `src/` byte touched)
+- **iter:** v28
+
+**This entry does NOT overstate: TASK-222's own `dod:` also requires the browser-tier acceptance run,
+and that run is RED.** `sortKeyOf` (`lib/model.js:30`), `matchModels` (`:78`), `costDots` (`:94`),
+shared `sortRows` (`lib/runlist.js:42`) — all unit-tier green, 29/29. Then
+`RWE_REQUIRE_BROWSER=1 PUPPETEER_EXECUTABLE_PATH=…/linux-152.0.7977.75/chrome-linux64/chrome
+npx vitest run tests/acceptance/val-203-models-tab.test.ts` → **3 passed | 2 failed (5)**:
+(1) *"the search box narrows the row count…"* — `expected 100 to be less than 100`: typing
+`zzz-no-such-model-zzz` into the input `page.$('.home-search, input[type="search"], …')` resolves
+left the row count unchanged. `.home-search` (`ui/home.js:171`) and the Models tab's own search
+input (`ui/models.js:86`, also `type="search"`) both exist simultaneously in the DOM (`app.js:199`
+keeps every `[data-tab-panel]` mounted, toggling `hidden`, never removing) — the selector list is
+ambiguous and may be resolving to the wrong tab's (hidden) input; not root-caused further, since
+`tests/**` is outside this session's file scope. (2) *"SPEC_ROWS … hold under both themes…"* — 12
+anchors (`data-model-panel` width, three `.bench-row` anchors, ×3 theme/hue conditions) all
+"matched no element": `renderPanel` (`ui/models.js:235-241`) only appends `[data-model-panel]` when
+`state.selected` is set by a row click, and `val-203-models-tab.test.ts:129-142`'s SPEC_ROWS case
+never clicks a row before checking. Left as a measured, cited gap for the next dispatch — **TASK-222
+in `03-tasks.md` is NOT flipped to `done`.**
+
+### IMPL-289 — TASK-223: System (REQ-138) — `lib/system.js`'s projections, the rewritten `ui/system.js`, the per-card degrade split
+- **status:** done
+- **traces:** TASK-223, DES-215, DES-216, ARCH-134, ARCH-133, ARCH-123, ADR-057, REQ-138
+- **greens:** `tests/unit/dashboard-lib-system.test.js` (16/16), `tests/unit/static-assets.test.ts` (5/5); `RWE_REQUIRE_BROWSER=1` `tests/acceptance/val-204-system-tab.test.ts` (4/4, real Chromium)
+- **files:** src/dashboard/lib/system.js, src/dashboard/ui/system.js, src/static-assets.ts
+- **commit:** 9e10453, 78b4658 (see IMPL-287 — the one-line CSS fix this task's own val-204 needed)
+- **iter:** v28
+
+`sectionState`/`cpuUtilState`/`statCard`/`procTotals`/`catalogCounts` all in `lib/system.js`, unit
+DoD 21/21 across the two files. Browser DoD: `RWE_REQUIRE_BROWSER=1
+PUPPETEER_EXECUTABLE_PATH=…/linux-152.0.7977.75/chrome-linux64/chrome npx vitest run
+tests/acceptance/val-204-system-tab.test.ts` → **4 passed (4)**, including the decisive per-card case
+("intercepting ONLY `/api/workflows` blanks the counts card while CPU/memory/disk keep rendering live
+numbers, and the nav tag reads degraded"). **A design/code tension an implementer reported is
+addressed separately in this same session's `04-design.md` amendment to DES-216** — `system.js:
+209-218`'s `paintHostUnavailable` writes the "無法取樣" marker into each of the three host cards' own
+value slot (three separate `paintCard` calls) plus the process-summary text, and clears the table/dl,
+rather than swapping in ONE literal component for the whole panel; DES-216's boundary text had echoed
+DES-206 rule (U)'s "the ONE Unavailable component" phrasing unqualified. See the DES-216 amendment
+for the verified reading. Note: neither `val-204` nor any other test in this session's run exercises
+a whole-route `/api/system`-unavailable case directly (only the `/api/workflows`-degrades-the-
+counts-card path is covered) — `paintHostUnavailable`'s own behavior is therefore unverified at the
+acceptance tier, a gap recorded here rather than assumed covered.
+
+### IMPL-290 — TASK-224: Issues (REQ-139) — `lib/issues.js`'s `safeIssueHref`, the re-themed `ui/issues.js`
+- **status:** done
+- **traces:** TASK-224, DES-217, ARCH-134, ARCH-133, ARCH-123, REQ-139, REQ-067
+- **greens:** `tests/unit/dashboard-lib-issues.test.js` (6/6), `tests/unit/static-assets.test.ts` (5/5); `RWE_REQUIRE_BROWSER=1` `tests/acceptance/val-205-issues-tab.test.ts` (4/4, real Chromium)
+- **files:** src/dashboard/lib/issues.js, src/dashboard/ui/issues.js, src/static-assets.ts
+- **commit:** 9e10453
+- **iter:** v28
+
+`safeIssueHref` (`lib/issues.js:10`) — `https:`-only via `new URL` in a `try`, total. Unit DoD 11/11
+across the two files. Browser DoD: `RWE_REQUIRE_BROWSER=1
+PUPPETEER_EXECUTABLE_PATH=…/linux-152.0.7977.75/chrome-linux64/chrome npx vitest run
+tests/acceptance/val-205-issues-tab.test.ts` → **4 passed (4)**, including the REQ-067
+non-regression case (the token-missing 200 `{degraded}` still renders its TEXT, never blank).
+
+### IMPL-291 — TASK-225: the server's whole v28 footprint — the `topN: 20` literal, and the DEPLOY consequence
+- **status:** done
+- **traces:** TASK-225, DES-218, ARCH-135, ADR-057, REQ-138
+- **greens:** `tests/integration/dashboard-http.test.ts` (15/15)
+- **files:** src/server.ts, DEPLOY.md
+- **commit:** 9e10453
+- **iter:** v28
+
+`grep -n "topN" src/server.ts` → one literal, `src/server.ts:375` (`const view = await
+systemInfo.get({ topN: 20 });`) — no `?topN=` derivation anywhere in the file. The MCP `system_info`
+tool keeps its own default of 5, 1-50 range (`tool-specs.ts:999-1004`, unchanged). `DEPLOY.md` gained
+6 lines in `9e10453` stating the consequence in Traditional Chinese (an unauthenticated
+`bind:"0.0.0.0"` deployment now exposes 20 host process names instead of 5, `comm` only) rather than
+hiding it — a plain-English `grep` for the topic came up empty on first pass; confirmed present via
+`git show 9e10453 -- DEPLOY.md`. Full DoD re-run: **15 passed (15)**.

@@ -5486,3 +5486,67 @@ edits touch a `traces`/`kind`/`iter` field `analyze()` reads. This session wrote
 (DES-191, DES-199, DES-202) but deliberately NOT edited, per instruction, since none of its checked
 sentences turned out false; its concurrent dirty state in `git status` (DES-200's own "Until
 TASK-215 lands" strike) is the live TASK-215 implementer's edit, not this session's.
+
+## 2026-09-18 — v28's missing IMPL trail closed (reviewer): `9e10453` mislabelled, TASK-217..225 dispositioned, DES-216 amended
+
+**The mislabel, stated plainly so a commit-prefix audit is not misled by it.** `9e10453` is titled
+`docs(v28): settle the demo-data gap and three implementer questions before resuming Gate 6` — a
+`docs` commit by its own message, which describes an owner ruling and three orchestrator decisions.
+Its actual diff is **27 files, +1469/-224 lines, 19 of them under `src/`**: the whole TASK-217..225
+Sprint B implementation (`lib/scheduler.js`, `lib/system.js`, `lib/issues.js`, `lib/model.js`,
+`demo/dataset.js`, all eight `ui/*.js` view modules, `server.ts`, `issue-reporter.ts`,
+`static-assets.ts`, `dashboard.css`) landed in the SAME commit as the docs it was actually about, a
+`git add -A` sweep that also picked up whatever an earlier Gate 6 run had left uncommitted. This is
+the identical pattern this ledger already named at IMPL-141/142 and again at `7c71b2b` (TASK-171..195):
+a commit's title governs neither what it contains nor whether `06-impl-log.md` gets a matching row —
+before this session, `grep -c "iter: v28" 06-impl-log.md` was **0** despite a landed, working,
+mostly-green sprint. History is not rewritten here; `9e10453` stands as committed. IMPL-283..291
+(`06-impl-log.md`) now carry the trail, each derived from `git show --stat 9e10453` / `git show
+9e10453 -- <path>` per file rather than from the commit's own prose, per-task DoD re-run before any
+`03-tasks.md` row was flipped.
+
+**Two more v28 commits also carried un-logged work, found by grepping `git log --oneline --all |
+grep v28` rather than trusting the dispatch's named list of three:** `78b4658` (`.proc-self` gains
+`border-left-color`, an orchestrator ruling for DES-219, needed to turn TASK-223's own val-204
+acceptance test 4/4 — cited in IMPL-287/289) and `b9ad277` (`dashboard-lib-model.test.js`/`05-tests.md`
+only, UT-257's absence invariant narrowed to the 8 columns where absence is domain-real — cited in
+IMPL-288, no `src/` byte). `c8ba91a`/`f1b6c52`/`7c71b2b` were checked and hold none of TASK-217..225's
+own work (confirmed: `7c71b2b`'s own commit body explicitly left TASK-217..225 as the 9 genuine
+drafts after its 25-row sweep).
+
+**Disposition: 8 of 9 flipped to `done`, 1 correctly left `draft`.** TASK-217/218/219/220/221/223/224/225
+each had their OWN `dod:` command re-run fresh this session (not assumed from the commit message) and
+all came back green — see each task's dated closeout line in `03-tasks.md` for the exact command and
+count. **TASK-222 is NOT flipped.** `lib/model.js` + `ui/models.js` are real and their unit tier is
+genuinely green (29/29, including `b9ad277`'s fix), but TASK-222's card also requires the browser-tier
+`val-203-models-tab.test.ts`, which is RED: 3 passed / 2 failed. One failure (the search box not
+narrowing the row count) is possibly a TEST-locator ambiguity — `.home-search` (`ui/home.js:171`) and
+the Models tab's own search input both satisfy the test's OR'd selector and both sit in the DOM
+simultaneously (`app.js` keeps every `[data-tab-panel]` mounted, toggling `hidden`, never removing) —
+but this was not root-caused further or fixed, since it touches `tests/**`, outside this session's
+file scope. The other failure is unambiguous: the SPEC_ROWS case checks `[data-model-panel]`/
+`.bench-row` anchors without ever clicking a row to open the panel, so `renderPanel`'s early return
+(`ui/models.js:235-241`, no `state.selected`) makes all twelve anchors unmatchable by construction.
+Full evidence in IMPL-288. An entry that overstated TASK-222 as done would have hidden a real, cited
+gap; this one names it instead.
+
+**DES-216 amended, verified by reading `system.js:209-218` against DES-215/DES-206 rather than taking
+the dispatch's framing on faith.** The claim as given was that DES-216's boundary describes the
+`/api/system` non-ok case as DES-206 rule (V) (the models-tab single-swap) while the code does a
+per-card write. On inspection the boundary text actually cites rule (V)/(K)/(U) together and the
+tension is narrower and real: it borrows (U)'s literal phrase "the ONE Unavailable component" from
+Models' one-node-swap implementation, which System's OWN `signature:` (shell built once, `onTick`
+updates values in place) cannot literally do. The amendment states the per-card/per-subtree reading
+explicitly, cites the exact lines (`:211-213` cards, `:214` summary, `:215-217` table/dl) and DES-215's
+own "per card" sentence and val-204's actual assertion as support — and separately flags, so it is not
+silently assumed, that no acceptance case today drives `/api/system` itself to non-`ok` (val-204 only
+intercepts `/api/workflows`), so `paintHostUnavailable`'s per-card behavior is unverified at the
+browser tier. This is disclosure, matching this ledger's own standing rule that a stated gap beats an
+implied one.
+
+**Verify:** `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` run before and after
+this session's edits (baseline via `git archive HEAD | tar -x -C <scratch>`, never by reading the
+ledger backwards in place, CLAUDE.md) — see this session's own report for the item/gap counts and
+whether the gap SET moved. This session touched only `03-tasks.md`, `06-impl-log.md`, `04-design.md`
+and this `journal.md`, per the dispatch's file partition; `tests/**`, `src/**` and `state.yaml` were
+read for verification only, never edited.

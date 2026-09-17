@@ -1911,49 +1911,54 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
    two are sequential with each other even though neither blocks anything else.
 
 ### TASK-217 — the v28 seam: ONE result type, the tick sequence, the two stamps, and tab activation
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-133, ARCH-125, ARCH-124, ADR-057, ADR-058, ADR-059, REQ-142, REQ-143, REQ-137, REQ-138, REQ-139
 - **files:** src/dashboard/ui/poll.js, src/dashboard/ui/app.js, src/dashboard/ui/run.js, src/dashboard/ui/workflow.js, src/dashboard/ui/agent-panel.js, src/dashboard/ui/models.js, src/dashboard/ui/system.js, src/dashboard/ui/issues.js, tests/unit/dashboard-seam.test.ts
 - **des:** DES-210
 - **dod:** `npx vitest run tests/unit/dashboard-seam.test.ts tests/unit/dashboard-client-corpus.test.ts` → green, and RED beforehand on the INV-V28-1 case (write it first and run it against HEAD, where six `ui/` modules import `getJSON`). The test carries five cases, all over `clientCorpus()`/`clientFile()`: (1) **INV-V28-1** — the only files importing `getJSON` from `./poll.js` are `ui/app.js` and `ui/poll.js`; every other `ui/` module that fetches imports `getViewJSON`; (2) `poll.js` exports `getViewJSON` and `setDemoBodies`, and `endpointsFor('system')` deep-equals `['/api/system', '/api/workflows', '/api/runs']` (ADR-057); (3) **the one-timer tripwire** — `setTimeout(` occurs exactly once in `clientFile('ui/app.js')`; (4) **the one-commit tripwire (K2)** — `nextConnection(` occurs exactly twice in `app.js` while the string `connectionState = nextConnection(` occurs exactly ONCE, so the preview cannot be committed (measured at the design gate: `connectionState =` alone already matches twice today — `app.js:112`'s declaration and `:383` — and TASK-218 adds `connectionState = resumeReset(…)`, so the bare form is the wrong anchor); (5) `documentElement.setAttribute('data-poll'` and `'data-source'` each occur exactly once. **SIX files take one import line each and nothing else** — `run.js`, `workflow.js` and `agent-panel.js` (not rewritten this sprint) **and** `models.js`, `system.js`, `issues.js` (rewritten later by TASK-222/223/224, but they still self-fetch until then, so leaving them out would make case (1) red the moment this task lands). A diff touching any other line of those six files fails this task's review.
 - **estimate:** L
 - **iter:** v28
+- **closeout (2026-09-18, missing-IMPL-trail sweep):** covered by IMPL-283; DoD re-run green today: `npx vitest run tests/unit/dashboard-seam.test.ts tests/unit/dashboard-client-corpus.test.ts` → 13/13.
 
 ### TASK-218 — `lib/scheduler.js`, `resumeReset`, and REQ-142's wiring
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-134, ARCH-133, ARCH-123, ADR-059, REQ-142
 - **files:** src/dashboard/lib/scheduler.js, src/dashboard/lib/connection.js, src/dashboard/ui/app.js, src/static-assets.ts, tests/unit/dashboard-lib-scheduler.test.js, tests/unit/dashboard-lib-connection.test.js
 - **des:** DES-211
 - **dod:** `npx vitest run tests/unit/dashboard-lib-scheduler.test.js tests/unit/dashboard-lib-connection.test.js tests/unit/static-assets.test.ts` → green on the full decision table plus the five named cases a browser cannot see: `hidden` arriving between `fire` and `settled` ⇒ `park` (never `arm`); `visible` ⇒ `fire` then `arm`; `view-changed` ⇒ `fire`; `settled` while `parked` ⇒ `park`; and for `resumeReset` — `fail → pause → fail` ⇒ `degraded`, `fail → fail → pause → fail` ⇒ `offline`, `fail → fail → pause → ok` ⇒ `live`, and a `status:'offline'` input returns the SAME object (`status` is never touched). `static-assets.test.ts` is in the command because `lib/scheduler.js`'s `ASSET_KEYS` entry lands in this same commit (ordering rule 3).
 - **estimate:** M
 - **iter:** v28
+- **closeout (2026-09-18, missing-IMPL-trail sweep):** covered by IMPL-284; DoD re-run green today: `npx vitest run tests/unit/dashboard-lib-scheduler.test.js tests/unit/dashboard-lib-connection.test.js tests/unit/static-assets.test.ts` → 41/41.
 
 ### TASK-219 — the three wire fixture rows, `IssuesListView`, and the four owed disclosure rows
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-130, ARCH-135, ADR-054, REQ-137, REQ-138, REQ-139
 - **files:** tests/fixtures/dashboard-wire.ts, src/github/issue-reporter.ts, src/server.ts, tests/integration/dashboard-disclosure.test.ts
 - **des:** DES-218
 - **dod:** `npx vitest run tests/integration/dashboard-disclosure.test.ts` → green with `DISCLOSURE_TABLE` carrying **four new rows** — `GET /api/system (ok)`, `GET /api/system (per-section degraded)`, `GET /api/models[i] (ok)`, `GET /api/issues (ok)` — beside the existing `any /api/* (degraded)` row that already covers `/api/issues`'s token-missing arm and `/api/workflows[i]`'s catch-all, each with its own `ALLOWED_*`/`REQUIRED_*` key set and its body typed against the PRODUCTION type (`SystemInfoView & { auth: unknown }`, `EnrichedModelEntry`, `IssuesListView`). `export interface IssuesListView { open: IssueSummary[]; resolved: IssueSummary[]; degraded?: string }` is minted in `src/github/issue-reporter.ts` beside the types it composes and `server.ts:466`'s `sendJson` payload is annotated against it — **zero wire change**, it names a shape that already ships. No `DISCLOSURE_TABLE` row may be authored from a live response: each body is a literal typed by `satisfies`, which is what makes it simultaneously the type oracle for TASK-220, the key-set lock here, and the input literal for TASK-222/223/224's UTs.
 - **estimate:** M
 - **iter:** v28
+- **closeout (2026-09-18, missing-IMPL-trail sweep):** covered by IMPL-285; DoD re-run green today: `npx vitest run tests/integration/dashboard-disclosure.test.ts` → 3/3.
 
 ### TASK-220 — `demo/dataset.js`, `demoEngages`, and the retirement tripwire
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-132, ARCH-123, ARCH-133, ADR-058, REQ-143
 - **files:** src/dashboard/demo/dataset.js, src/dashboard/lib/connection.js, src/dashboard/lib/strings.js, src/dashboard/ui/app.js, src/static-assets.ts, tests/unit/demo-surface.test.ts, tests/unit/demo-dataset-types.test.ts, tests/unit/dashboard-lib-connection.test.js
 - **des:** DES-212
 - **dod:** `npx vitest run tests/unit/demo-surface.test.ts tests/unit/demo-dataset-types.test.ts tests/unit/dashboard-lib-connection.test.js tests/unit/static-assets.test.ts` → green on all four halves: (1) **the type lock** — every `DEMO` body `satisfies` the matching type from `tests/fixtures/dashboard-wire.ts` (TASK-219's rows), so the fiction cannot drift from the wire it imitates; (2) **the id charset** — every parametric key in `DEMO` round-trips `encodeURIComponent(id) === id` (`/^[A-Za-z0-9._~-]+$/`), and every workflow name starts `demo-`, every run id `demo0001`, every agent id `demo-agent-`, every issue title `[DEMO]`, every process pid is in `99000-99999`; (3) **the tripwire, closed BOTH ways** — an allowlist of the files permitted to contain `demo`/`示範` (`src/dashboard/demo/dataset.js`, `lib/connection.js`'s `demoEngages`, `lib/strings.js`'s two keys, `ui/app.js`'s one arm, `ui/poll.js`'s `getViewJSON`/`setDemoBodies`, and the VAL/UT files), where *listed ⇒ present on disk* and *mentioned ⇒ listed*; (4) `demoEngages` over its 2³ corners **plus** the one that bites — `reachedFlags === []` returns `false`, never vacuously `true`. `static-assets.test.ts` is in the command for `demo/dataset.js`'s key (ordering rule 3). Also in this commit: the two `lib/strings.js` keys (`demoData`, `demoBanner`) in BOTH languages.
 - **estimate:** M
 - **iter:** v28
+- **closeout (2026-09-18, missing-IMPL-trail sweep):** covered by IMPL-286; DoD re-run green today: `npx vitest run tests/unit/demo-surface.test.ts tests/unit/demo-dataset-types.test.ts tests/unit/dashboard-lib-connection.test.js tests/unit/static-assets.test.ts` → 42/42.
 
 ### TASK-221 — `dashboard.css` v28: the three tabs' component families and the STYLE_HOOKS they declare
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-133, ARCH-125, REQ-137, REQ-138, REQ-139, REQ-143
 - **files:** src/dashboard/dashboard.css, tests/fixtures/dashboard-classes.ts
 - **des:** DES-219
 - **dod:** `npx vitest run tests/unit/dashboard-class-contract.test.ts` → green on BOTH halves of the class lock (every new `STYLE_HOOKS` entry is a selector in `clientFile('dashboard.css')`, every class selector in the stylesheet is in `STYLE_HOOKS`) and on the value anchors DES-219 names, with `STYLE_HOOKS.length` risen by the v28 families. **This task's green is deliberately partial:** `tests/unit/dashboard-no-design-values.test.ts`'s emitter half stays RED until TASK-222/223/224 land and is the SLICE's final green (ordering rule 4) — do not "fix" it here by trimming a hook. This task owns **no `.js`**, writes **no `SPEC_ROW`** (ordering rule 6), and adds no colour/typography literal outside the existing token layer.
 - **estimate:** L
 - **iter:** v28
+- **closeout (2026-09-18, missing-IMPL-trail sweep):** covered by IMPL-287 (`9e10453` + `78b4658`, the latter a one-line `.proc-self` value TASK-223's own acceptance test needed); DoD re-run green today: `npx vitest run tests/unit/dashboard-class-contract.test.ts` → 18/18.
 
 ### TASK-222 — Models (REQ-137): `lib/model.js`'s projections and the rewritten `ui/models.js`
 - **status:** draft
@@ -1963,30 +1968,34 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
 - **dod:** `npx vitest run tests/unit/dashboard-lib-model.test.js` → green on the **12 × 2 sort table** (every column, both directions, over a fixture of five `EnrichedModelEntry` rows one of which is all-absent: the absent row is LAST in BOTH directions for EVERY column) plus the honesty rule stated as a RULE and never as this iteration's absence — one fixture row WITHOUT `latency`/`benchmarks` renders `—`, one WITH them renders `TTFT 900ms · p50 6.8s` and `78 avg`, both required (ADR-060: a test pinning 「the latency cell is `—`」 encodes Won't-have D2 and goes green forever the day D2 is lifted) — plus `costLevel === 0` ⇒ the zero-dot form and sort key `0`, `costLevel === null` ⇒ `—` and sorts last (R4: `ZERO_RATES` is a fact, not an absence). Then `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-203-models-tab.test.ts` → from a COLD `/dashboard`, clicking `[data-tab="models"]` paints the twelve columns, a header click sorts and re-sorts with ▲/▼ on the active header only, the counter reads `9` then `4 / 9` under a filter, and a row click opens the 560 px slide-in — with `notClipped` on every text cell of the table (`getComputedStyle` cannot see a flex-shrink clip).
 - **estimate:** L
 - **iter:** v28
+- **closeout (2026-09-18, missing-IMPL-trail sweep — NOT flipped):** `lib/model.js` + `ui/models.js` landed at `9e10453` and the unit half is genuinely green (IMPL-288, `dashboard-lib-model.test.js` 29/29), but this card's OWN `dod:` also requires the browser-tier run, which is RED today: `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-203-models-tab.test.ts` → **3 passed | 2 failed (5)** — the search box does not narrow the row count (`before`/`after` both 100), and the SPEC_ROWS case finds no `[data-model-panel]`/`.bench-row` anchors (the panel only renders after a row click, which that case never performs). See IMPL-288 for the full evidence. Left `draft`.
 
 ### TASK-223 — System (REQ-138): `lib/system.js`'s projections and the rewritten `ui/system.js`
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-134, ARCH-133, ARCH-123, ADR-057, REQ-138
 - **files:** src/dashboard/lib/system.js, src/dashboard/ui/system.js, src/static-assets.ts, tests/unit/dashboard-lib-system.test.js, tests/acceptance/val-204-system-tab.test.ts
 - **des:** DES-215, DES-216
 - **dod:** `npx vitest run tests/unit/dashboard-lib-system.test.js tests/unit/static-assets.test.ts` → green on: `sectionState` over each of the five `Reason` values of `system-info.ts:24-30` (and the three that are NOT faults — `awaiting-second-sample`, `unsupported-platform`, `sample-window-too-short` — carry their reason out as the card's secondary text, so 「wait one tick」 is distinguishable from 「this host cannot report it」); `cpuUtilState` over the sibling-key case (`utilizationPct: null` + `utilizationDegraded`); `statCard` returning `pct: undefined` for the counts card so the bar has an ABSENT state of its own (INV-V28-4), never `pct: 100`; `procTotals` over a `byState` map containing a letter no fixture anticipated (the `/proc` key set is OPEN — render the top states by count with a stable tiebreak, never a hard-coded S/R pair, never a throw); `catalogCounts` over ADR-057's three definitions. Then `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-204-system-tab.test.ts` → the four stat cards, the process table with the engine's own row marked, the engine `<dl>`, and **the per-card degrade split**: with ONLY `/api/workflows` intercepted, the counts card reads Unavailable while CPU/memory/disk keep rendering live host numbers and the nav tag reads 降級.
 - **estimate:** L
 - **iter:** v28
+- **closeout (2026-09-18, missing-IMPL-trail sweep):** covered by IMPL-289 (`9e10453` + `78b4658`); DoD re-run green today: `npx vitest run tests/unit/dashboard-lib-system.test.js tests/unit/static-assets.test.ts` → 21/21, then `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-204-system-tab.test.ts` → 4/4.
 
 ### TASK-224 — Issues (REQ-139): `lib/issues.js` and the re-themed `ui/issues.js`
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-134, ARCH-133, ARCH-123, REQ-139, REQ-067
 - **files:** src/dashboard/lib/issues.js, src/dashboard/ui/issues.js, src/static-assets.ts, tests/unit/dashboard-lib-issues.test.js, tests/acceptance/val-205-issues-tab.test.ts
 - **des:** DES-217
 - **dod:** `npx vitest run tests/unit/dashboard-lib-issues.test.js tests/unit/static-assets.test.ts` → `safeIssueHref` returns `null` for `javascript:alert(1)`, `data:text/html,…`, `http://evil.example/` and a relative path, and returns the string unchanged for `https://github.com/…` (`https:` ONLY, parsed via `new URL` inside a try, total — never throws). Then `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-205-issues-tab.test.ts` → REQ-067 does not regress (`/api/issues` answering its token-missing 200 `{degraded}` still shows the degraded TEXT, not a blank), Open/Resolved still partition, a row still expands and still links out, and the tab's tag/list/detail use the v27 component classes with no visual gap against the other three tabs in BOTH `data-theme` values (two screenshots recorded as REQ-139's own evidence, since this tab has no design page).
 - **estimate:** M
 - **iter:** v28
+- **closeout (2026-09-18, missing-IMPL-trail sweep):** covered by IMPL-290; DoD re-run green today: `npx vitest run tests/unit/dashboard-lib-issues.test.js tests/unit/static-assets.test.ts` → 11/11, then `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-205-issues-tab.test.ts` → 4/4.
 
 ### TASK-225 — the server's whole v28 footprint: one literal, and the DEPLOY line that owns its consequence
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-135, ADR-057, REQ-138
 - **files:** src/server.ts, DEPLOY.md, tests/integration/dashboard-http.test.ts
 - **des:** DES-218
 - **dod:** `npx vitest run tests/integration/dashboard-http.test.ts` → green with `GET /api/system` returning up to **20** `process.topN` rows (was 5) while the MCP `system_info` tool keeps its own default of 5 and its 1-50 argument (`tool-specs.ts:999-1004`), and `grep -n "topN" src/server.ts` shows **literals only** — no value derived from the URL, no `?topN=` (ARCH-135's refusal: `SystemInfoSampler.get()` applies `topN` at SHAPE time over the cached snapshot, `system-info.ts:256-290`, so a different constant per caller is free). One DEPLOY.md line lands in the same commit stating the consequence rather than hiding it: with `bind: 0.0.0.0` this unauthenticated route now publishes 20 host process rows instead of 5, bounded to `comm` only — never argv, cwd, env or uid.
 - **estimate:** S
 - **iter:** v28
+- **closeout (2026-09-18, missing-IMPL-trail sweep):** covered by IMPL-291; DoD re-run green today: `npx vitest run tests/integration/dashboard-http.test.ts` → 15/15; `grep -n "topN" src/server.ts` shows one literal (`:375`); `DEPLOY.md`'s consequence line confirmed present (`git show 9e10453 -- DEPLOY.md`).
