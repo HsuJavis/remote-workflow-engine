@@ -10684,7 +10684,7 @@ DELIBERATELY LEFT AT `review` (unchanged) — Gate 8 owns this send-back loop, a
 (`04-design.md:3306`) is the one remaining named finding before the re-review, out of this gate's
 scope.
 
-## v28 GATE 7.5 (2026-09-18, validator) — REQ-137/138/139/142/143
+## v28 GATE 7.5 (2026-09-18, validator) — REQ-137/138/139/142/143 — NOT PASSED (4/5 real:true/pass; REQ-143 confirmed real fail on its own AMENDED clause, sent back to Gate 3+4)
 
 **Boot (documented steps only, no undocumented manual fix):** `./deploy.sh --background` per
 DEPLOY.md §0's own second-instance form, twice over the course of this gate (instance A on
@@ -10797,32 +10797,72 @@ All scratch node processes killed and ports freed at the end of this gate.
   pass (32771ms real wall-clock).
 
 ### VAL-217 — REQ-143: demo data self-labels, engages on a STOPPED engine, retires on recovery
-- **status:** green
+- **status:** red
 - **traces:** REQ-143, DES-212, TASK-220
 - **tier:** acceptance
 - **real:** true
-- **result:** pass
+- **result:** fail
 - **iter:** v28
-- **evidence:** Self-contained real-process run (not `server.close()` in-process — a genuine
-  `SIGKILL` of the OS process group running the documented start command, `node node_modules/tsx/
-  dist/cli.mjs src/main.ts`, the exact line DEPLOY.md §0/deploy.sh step 4 runs): (1) engine spawned,
-  healthcheck passed; real Chromium page loaded `/dashboard` fresh — exactly **1** GET of
-  `/static/dashboard/demo/dataset.js` observed, nav tag `{"text":"連線中","classes":"rwe-connection
-  is-live"}` (no demo tag while live); (2) the engine process GROUP was `SIGKILL`ed under the
-  already-open page (a stopped-engine fault, never an HTTP-error storm — REQ-131's Offline case,
-  val-198's, is deliberately the other shape and was not conflated with this one); after a real
-  16-second wait (≥2 poll ticks at the 3s cadence plus the demo-engage margin) the SAME page's nav
-  tag read `{"text":"示範資料","classes":"rwe-connection is-offline is-demo"}` — `is-live` and
-  `is-demo` never co-occur — and the page BODY's `[data-demo-banner]` became visible with text
-  `示範資料 — 引擎目前無法連線,以下畫面為示範內容` (REQ-143's "visible outside the nav too" clause,
-  satisfied on a genuinely killed process, not a simulated fetch failure); `data-source` attribute
-  read `demo`; (3) a NEW engine process was spawned on the SAME port (8943) — after a real 6-second
-  wait the SAME page's nav tag flipped back to `{"text":"連線中","classes":"rwe-connection
-  is-live"}`, `data-source: live`. Both spawned processes killed for cleanup at the end of the run.
-  **Supporting (real `createServer()`/real Chromium, the acceptance file's own two cases incl. the
-  `server.close()` + re-`createServer()` same-port recovery):**
+- **evidence (base mechanism — real, PASSES):** Self-contained real-process run (not `server.close()`
+  in-process — a genuine `SIGKILL` of the OS process group running the documented start command,
+  `node node_modules/tsx/dist/cli.mjs src/main.ts`, the exact line DEPLOY.md §0/deploy.sh step 4
+  runs): (1) engine spawned, healthcheck passed; real Chromium page loaded `/dashboard` fresh —
+  exactly **1** GET of `/static/dashboard/demo/dataset.js` observed, nav tag
+  `{"text":"連線中","classes":"rwe-connection is-live"}` (no demo tag while live); (2) the engine
+  process GROUP was `SIGKILL`ed under the already-open page (a stopped-engine fault, never an
+  HTTP-error storm — REQ-131's Offline case, val-198's, is deliberately the other shape and was not
+  conflated with this one); after a real 16-second wait (≥2 poll ticks at the 3s cadence plus the
+  demo-engage margin) the SAME page's nav tag read
+  `{"text":"示範資料","classes":"rwe-connection is-offline is-demo"}` — `is-live` and `is-demo`
+  never co-occur — and the page BODY's `[data-demo-banner]` became visible with text `示範資料 —
+  引擎目前無法連線,以下畫面為示範內容`; `data-source` attribute read `demo`; (3) a NEW engine
+  process was spawned on the SAME port — after a real 6-second wait the SAME page's nav tag flipped
+  back to `{"text":"連線中","classes":"rwe-connection is-live"}`, `data-source: live`. Both spawned
+  processes killed for cleanup. **Supporting (real `createServer()`/real Chromium, the acceptance
+  file's own two cases incl. the `server.close()` + re-`createServer()` same-port recovery):**
   `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-207-demo-data.test.ts` → 2/2 pass
   (15730ms).
+- **CONFIRMED REAL DEFECT — the v28-AMENDED clause fails** (found by driving the per-tab content in
+  demo mode, which no existing test at any gate exercises — `val-207` only asserts the nav tag +
+  ONE generic body marker, never a per-route disclosure): REQ-143's own text says the amendment's
+  「此路由無示範資料」("this route has no demo data") disclosure applies to THREE named routes —
+  bare `/api/workflows`, `/api/workflows/:name/describe`, `/api/issues` — none of which `demo/
+  dataset.js`'s `DEMO` map carries an entry for (deliberately, per the amendment's own stated
+  reasons). Driven for real on the same kind of SIGKILL'd instance, **with each tab's module
+  pre-warmed while the engine was still alive** (the realistic flow — a cold, never-visited tab
+  fails to even IMPORT its JS module once the engine is dead, a separate, more basic problem noted
+  below): (1) **bare `/api/workflows`** feeds ONLY `system.js`'s counts stat card (ADR-057) — this
+  ONE case is fine: the card reads `無法取樣`/`Unavailable`, DES-215/216's pre-existing "degrade,
+  never pretend" mechanism already satisfies the amendment's INTENT here (a real, honest
+  "can't-tell" signal), even though the exact string differs from the requirement's literal
+  「此路由無示範資料」. (2) **`/api/workflows/:name/describe`** — `ui/workflow.js:396`'s `onTick`
+  guard (`if (!describe || ...) return {};`) does NOTHING on a demo-miss; the panel simply KEEPS
+  whatever it last rendered (the code's own comment: "last-known render stays") — no disclosure, no
+  indication the content is now frozen/demo. (3) **`/api/issues`** — `ui/issues.js:112`'s `onTick`
+  (`if (data && data.degraded) {...} else if (data) {...}`, no `else`) does NOTHING on a demo-miss
+  either; measured directly: with the Issues tab visited once live (pre-crash real fetch returned
+  `{degraded:"GitHub not configured"}` on this token-less instance) then the engine killed, the tab
+  FROZE showing the STALE pre-crash "GitHub not configured" text through the entire demo window —
+  never a `此路由無示範資料`-shaped string, and (more generally) nothing distinguishes "this is
+  live-but-degraded" from "this is now frozen because the engine died," which is exactly what the
+  base (non-amended) REQ-143 clause ("每個 tab 的可見區域都能看出處於示範模式") also asks for. **Root
+  cause is a design gap, not a coding slip:** `04-design.md`'s DES-212 (traces REQ-143) names the
+  mechanism for exactly ONE no-demo-data case (`workflow.js`'s `diagram.svg` → `paintFigureUnavailable`)
+  and is silent on the other two routes the SAME requirement names; no DES clause assigns a
+  disclosure behavior to `workflow.js`'s describe-miss arm or `issues.js`'s data-miss arm. This
+  flowed through Gate 5 (val-207 never wrote a case for it), Gate 6 (nothing to build against) and
+  Gate 7 (nothing to verify) unnoticed, and was only caught here by driving the real per-tab UI in
+  demo mode — never by "current tests pass". **Secondary, smaller finding (same investigation):** a
+  tab whose module was NEVER visited before the engine died fails to even `import()` its own JS file
+  (network error, dead server) and paints the generic `app.js:235` `` `${tab} unavailable` `` string
+  instead of any demo content — a real gap in the "engine died mid-session" story for a tab a user
+  had not yet opened, separate from the amendment's named-route gap above.
+- **pending:** owner_decision NOT required — the owner already ruled what should happen (the exact
+  disclosure text); this is an UNIMPLEMENTED design+code gap, to be closed by a Gate 3+4 design
+  amendment (naming the disclosure mechanism for `workflow.js`'s describe-miss and `issues.js`'s
+  data-miss arms, mirroring `paintFigureUnavailable`'s existing pattern) followed by Gate 5/6/7,
+  then re-validated here. **Gate 7.5 is NOT closed for REQ-143 this round** — see the Gate self-check
+  section and `rtm.md`'s REQ-143 row (⚠️, not ✅).
 
 ### Configuration — no drift found
 `git log --oneline 9f45a78..HEAD -- rwe.config.example.json` → empty; `git diff 9f45a78..HEAD --stat`
@@ -10860,10 +10900,23 @@ gate's own closure) + 20 LOW `漂移` (pre-existing, unrelated design/test/impl 
 this closure) + 4 MID `未實作` (TASK-018 blocked/v3, TASK-153 external-repo-owned, TASK-215/TASK-216
 tracing to REQ-131/134 — v27's closure, already Gate-8-passed, out of this delta's scope). After
 this gate's five `real:true` flips above: re-scan shows **0 `未真實驗證`, 0 `未驗證`** for every REQ
-in this closure (REQ-137/138/139/142/143 all now reach `verified_real`) — the mandatory bar this
-gate owns. The pre-existing 20 `漂移` + 4 `未實作` are UNCHANGED (same IDs, same count) and are
-explicitly OUT of this delta iteration's impact closure per the dispatch's own scope rule — carried
-forward as known debt, not silently fixed and not silently hidden. **Exit code: 1** (non-zero),
-reported honestly per this ledger's own established convention (every prior Gate 7.5 round with
-pre-existing out-of-scope debt reported the same way): the residual gaps are the pre-existing LOW
-drift + MID unimplemented-external/v27 items, not this closure's REQs. `--rtm` regenerated below.
+in this closure (REQ-137/138/139/142/143 all now reach `verified_real`) — but `trace.py`'s
+`verified_real` only requires ANY ONE `real:true` item per REQ, never checking `result:`, so it
+CANNOT see VAL-217's confirmed real failure on REQ-143 (the exact mechanical blind spot this ledger
+already named for REQ-134/REQ-135 in the v27 RTM legend). **Read this note, VAL-217, and `rtm.md`'s
+REQ-143 row — not the gap/verified-real count — as the source of truth for REQ-143.** The pre-
+existing 20 `漂移` + 4 `未實作` are UNCHANGED (same IDs, same count) and are explicitly OUT of this
+delta iteration's impact closure per the dispatch's own scope rule — carried forward as known debt,
+not silently fixed and not silently hidden. **Exit code: 1** (non-zero), reported honestly per this
+ledger's own established convention. `--rtm` regenerated below.
+
+**Overall verdict for this round: NOT PASSED.** REQ-137/138/139/142 are genuinely closed
+(real:true/pass, VAL-213/214/215/216) and their evidence stands — no need to re-run them once
+REQ-143 is fixed, unless a later commit touches their shared surface (this ledger's own established
+re-scope rule from prior sends-back). **REQ-143 is sent back** — recommended target is Gate 3+4
+(design): DES-212/DES-216/DES-217 need an amendment naming the disclosure mechanism for
+`workflow.js`'s describe-miss arm and `issues.js`'s data-miss arm (mirroring the existing
+`paintFigureUnavailable` pattern DES-212 already uses for the ONE case it does cover), which then
+flows through Gate 5 (a new SPEC_ROW/case in `val-207-demo-data.test.ts` that val-207 never had),
+Gate 6, Gate 7, and back here for re-validation. `current_stage` is left at `validation` (not
+advanced to `review`); `gates.validation.passed` stays `false` until the re-run.

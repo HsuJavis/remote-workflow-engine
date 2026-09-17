@@ -5700,3 +5700,36 @@ gains a new "v28 GATE 7.5" section (VAL-213..217, same IDs as `05-tests.md`'s Ga
 `real:true` flips per this ledger's own dict-overwrite convention). `state.yaml`:
 `gates.validation.passed=true` (note replaced with this gate's own record, chained `| PRIOR:`),
 `current_stage` → `review`. Next gate is 8 (reviewer).
+
+## 2026-09-18 — v28 Gate 7.5 CORRECTION (validator, same session) — REQ-143 flips to NOT PASSED after an advisor-prompted deeper check; 4/5 REQs stand
+The prior entry above ("v28 Gate 7.5 (validator) — PASSED") was written before a deeper check of
+REQ-143's own v28-AMENDED clause, prompted by an advisor review taken before declaring the gate
+done (this role's own standing discipline). Driving the real per-tab UI in demo mode (something no
+existing test at any gate exercises — `val-207-demo-data.test.ts` only asserts the nav tag + one
+generic body marker) found that the owner's 2026-09-17 ruling — three named no-demo-data routes
+(bare `/api/workflows`, `/api/workflows/:name/describe`, `/api/issues`) must show an explicit
+「此路由無示範資料」disclosure — is unimplemented for two of the three routes: `ui/workflow.js`'s
+describe-miss arm and `ui/issues.js`'s data-miss arm both do nothing on a demo-map-miss (their own
+code comments say "last-known render stays"), so the content freezes with no disclosure at all
+(measured concretely: a token-less Issues tab froze on its stale pre-crash "GitHub not configured"
+text through the entire demo window). The bare `/api/workflows` case is fine — the System tab's
+counts card already shows `無法取樣`/`Unavailable` via the pre-existing degrade mechanism, which
+satisfies the ruling's intent even if the literal string differs. Root cause is a DESIGN gap:
+`04-design.md`'s DES-212 (traces REQ-143) names a disclosure mechanism for exactly ONE no-demo-data
+case (`workflow.js`'s `diagram.svg` → `paintFigureUnavailable`) and is silent on the other two
+routes the SAME requirement names — this flowed through Gate 5/6/7 unnoticed because `val-207` never
+wrote a case for it.
+
+Correction made (not silently overwritten — this entry states it): `08-validation.md`'s VAL-217 is
+now `real:true`/`result:fail` (evidence for BOTH the passing base mechanism and the confirmed
+defect, in the same item, per this ledger's own established practice for a real:true-but-red item —
+same as REQ-134/REQ-135 in v27). `rtm.md`'s REQ-143 row flips ✅ → ⚠️ (the same manual-override
+mechanism REQ-134/135 used, since `trace.py`'s `verified_real` only requires ANY real:true item per
+REQ and cannot see a confirmed real failure). `state.yaml`: `gates.validation.passed` corrected to
+`false`, `current_stage` corrected back to `validation` (not advanced to `review`) — this is a
+send-back, not a pass. REQ-137/138/139/142 are UNCHANGED and genuinely closed (real:true/pass,
+VAL-213/214/215/216) — their evidence stands and does not need re-running unless a later commit
+touches their shared surface. **Recommended next gate is 3+4 (design)**: DES-212/DES-216/DES-217
+need an amendment naming the disclosure mechanism for `workflow.js`'s describe-miss arm and
+`issues.js`'s data-miss arm (mirroring the existing `paintFigureUnavailable` pattern), then Gate 5
+(a new case in `val-207-demo-data.test.ts`), Gate 6, Gate 7, back to 7.5 for REQ-143 only.

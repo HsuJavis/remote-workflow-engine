@@ -46,13 +46,20 @@ and `UT-257`, which the 2026-09-12/13 fidelity-sweep and REQ-135-fix commits add
 file is hand-regenerated from `scan()`/`build_matrix()` each round, not auto-refreshed). All 8
 closure REQs are ✅. REQ-137/138/139/142/143 stay ❌, unchanged, out of this closure.
 
-**v28 GATE 7.5 update (2026-09-18, validator) — REQ-137/138/139/142/143 flip ❌ → ✅, closing this
-delta iteration's own impact closure.** Regenerated the same way (`scan()`/`build_matrix()` called
-directly, this repo's `trace.py` still has no `--rtm` flag). Each row's `Real-verified` ✅ is backed
-by a `real:true`/`result:pass` VAL item in `08-validation.md`'s "v28 GATE 7.5" section (VAL-213
-REQ-137, VAL-214 REQ-138, VAL-215 REQ-139, VAL-216 REQ-142, VAL-217 REQ-143), each measured against
-a `deploy.sh`-booted scratch instance and a real client (Chromium/curl) — not the in-process
-acceptance-test harness alone. No other REQ's row changed this pass.
+**v28 GATE 7.5 update (2026-09-18, validator) — REQ-137/138/139/142 flip ❌ → ✅; REQ-143 flips
+❌ → ⚠️.** Regenerated the same way (`scan()`/`build_matrix()` called directly, this repo's
+`trace.py` still has no `--rtm` flag). REQ-137/138/139/142's `Real-verified` ✅ is backed by a
+`real:true`/`result:pass` VAL item in `08-validation.md`'s "v28 GATE 7.5" section (VAL-213/214/215/
+216), each measured against a `deploy.sh`-booted scratch instance and a real client (Chromium/curl)
+— not the in-process acceptance-test harness alone. **REQ-143's ⚠️ is the SAME manual-override
+mechanism REQ-134/REQ-135 used above**: its own real-tier item (VAL-217) DIRECTLY traces REQ-143 and
+IS RED — `trace.py`'s `is_real_test`/`verified_real` only checks `real:true`, never `result:`, so
+the mechanical scan reads REQ-143 as fully covered when it is not. The base demo-engage/nav-tag/
+recovery mechanism is genuinely real:true/pass; the v28-AMENDED "此路由無示範資料" disclosure clause
+for `workflow.js`'s describe-miss arm and `issues.js`'s data-miss arm is UNIMPLEMENTED (confirmed by
+driving the real per-tab UI in demo mode — no existing test at any gate exercised this clause). See
+`08-validation.md` VAL-217 for the full defect record and the recommended Gate 3+4 send-back. No
+other REQ's row changed this pass.
 
 | REQ | Title | ARCH | DES | TASK | IMPL | VERIFICATION | Real-verified |
 |---|---|---|---|---|---|---|---|
@@ -198,4 +205,4 @@ acceptance-test harness alone. No other REQ's row changed this pass.
 | REQ-140 | 兩處小型 API 補齊:`dag.lanes` 與 agent 明細的 `record` | ARCH-126, ARCH-130, ARCH-131 | DES-192, DES-196, DES-197, DES-198, DES-202, DES-204, DES-205, DES-206, DES-209 | TASK-197, TASK-201, TASK-202, TASK-203, TASK-209, TASK-211 | IMPL-224, IMPL-225, IMPL-226, IMPL-227, IMPL-228, IMPL-230, IMPL-232, IMPL-233, IMPL-234, IMPL-235, IMPL-236, IMPL-242, IMPL-243, IMPL-244, IMPL-245, IMPL-246, IMPL-247, IMPL-248, IMPL-249, IMPL-250, IMPL-251, IMPL-252, IMPL-253, IMPL-254, IMPL-255, IMPL-256, IMPL-257, IMPL-258, IMPL-259, IMPL-260, IMPL-261, IMPL-262, IMPL-263, IMPL-264, IMPL-265, IMPL-266, IMPL-267, IMPL-268 | IT-165, IT-168, IT-169, IT-170, UT-238, UT-239, UT-244, UT-245, UT-247, UT-248, UT-249, UT-255, UT-256, UT-257, VAL-212 | ✅ |
 | REQ-141 | `RunSummary` 帶 `costUSD`,且與單筆 run 的 fold 一致 | ARCH-127, ARCH-128 | DES-192, DES-193, DES-194, DES-204 | TASK-197, TASK-198, TASK-199 | IMPL-231, IMPL-233, IMPL-236, IMPL-240, IMPL-244, IMPL-249 | IT-165, IT-166, IT-167, UT-233, UT-234, UT-247, VAL-205 | ✅ |
 | REQ-142 | (nfr) 頁面隱藏時暫停輪詢 | ARCH-133, ARCH-134 | DES-210, DES-211, DES-212, DES-213, DES-214, DES-215, DES-216, DES-217, DES-219 | TASK-217, TASK-218, TASK-220, TASK-221, TASK-222, TASK-223, TASK-224 | IMPL-283, IMPL-284, IMPL-286, IMPL-287, IMPL-288, IMPL-289, IMPL-290, IMPL-292, IMPL-293, IMPL-294, IMPL-295, IMPL-296, IMPL-297, IMPL-298 | UT-245, UT-249, UT-255, UT-257, UT-258, UT-259, UT-260, UT-261, UT-262, UT-263, VAL-213, VAL-214, VAL-215, VAL-216, VAL-217 | ✅ |
-| REQ-143 | (nfr) 示範資料必須自我標示,並登記退場條件 | ARCH-132, ARCH-133 | DES-210, DES-211, DES-212, DES-213, DES-214, DES-215, DES-216, DES-217, DES-219 | TASK-217, TASK-218, TASK-220, TASK-221, TASK-222, TASK-223, TASK-224 | IMPL-283, IMPL-284, IMPL-286, IMPL-287, IMPL-288, IMPL-289, IMPL-290, IMPL-292, IMPL-293, IMPL-294, IMPL-295, IMPL-296, IMPL-297, IMPL-298 | UT-245, UT-249, UT-255, UT-257, UT-258, UT-259, UT-260, UT-261, UT-262, UT-263, VAL-213, VAL-214, VAL-215, VAL-216, VAL-217 | ✅ |
+| REQ-143 | (nfr) 示範資料必須自我標示,並登記退場條件 | ARCH-132, ARCH-133 | DES-210, DES-211, DES-212, DES-213, DES-214, DES-215, DES-216, DES-217, DES-219 | TASK-217, TASK-218, TASK-220, TASK-221, TASK-222, TASK-223, TASK-224 | IMPL-283, IMPL-284, IMPL-286, IMPL-287, IMPL-288, IMPL-289, IMPL-290, IMPL-292, IMPL-293, IMPL-294, IMPL-295, IMPL-296, IMPL-297, IMPL-298 | UT-245, UT-249, UT-255, UT-257, UT-258, UT-259, UT-260, UT-261, UT-262, UT-263, VAL-213, VAL-214, VAL-215, VAL-216, VAL-217 | ⚠️ |
