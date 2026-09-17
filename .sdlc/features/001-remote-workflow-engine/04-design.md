@@ -6789,7 +6789,8 @@ mapping location, ARCH-126's `current` status domain, ARCH-130's `pinned=` key a
 - **boundary:** This is the engine's FIRST static-file route, i.e. its first path-traversal surface, and the smallest correct answer is a fixed map: no `join`, no `normalize`, no decode, no `..` check needed **because no caller-supplied string ever reaches the filesystem** — the URL is a key, not a path, so no encoding trick can defeat it. The prefix is `/static/` because both alternatives are taken (`/dashboard/*` is the SPA catch-all that answers HTML for every sub-path; `/assets/*` is the auth-gated upload namespace). The cache split is deliberate: font bytes never change under a name, while a cached old client running against a new `/api/*` is precisely the version skew REQ-140/141's shape deltas would bite on. The map must be closed in BOTH directions or it is half a seam: a module renamed on disk but not in the map 404s in production while path-importing unit tests stay green — "did you register the asset" is this design's replacement for "did you rebuild". A listed key whose file is missing at boot logs `{event:'dashboard_asset_missing', key}` ONCE (never per request — a font is fetched on every page load) and 404s thereafter; a missing woff2 degrades to the CSS fallback stack (`font-display: swap` + a system stack on every `@font-face`), never a boot failure and never a blank page. Fonts ship as FILES beside `SOURCE.md` (upstream URL + sha256 + subset) and `OFL.txt` — both families are SIL OFL and the licence must travel with the binaries; base64 data: URIs are refused (they inflate every page-source test's subject, are re-sent on every load, and defeat caching). Not built: content-hashed filenames, ETag/304, compression, a build step.
 - **tests:** UT — closed both ways (every listed key resolves to a file; every `.js`/`.css`/`.woff2` under `src/dashboard/` is listed — one `readdirSync` diff, which is also the typo-catcher); the traversal table `../../etc/passwd`, `%2e%2e%2f`, `ui/../lib/theme.js`, `ui/app.js%00.png`, `//etc/passwd` → every one `null`; a source grep that the module contains no `join(`/`normalize(`/`decodeURI`; cache policy by extension asserted on the **exact header value**, never a substring (`toBe`, not `toContain` — the assertion that let the bare token through); `SOURCE.md`'s recorded sha256 matches each woff2 and `OFL.txt` exists; a deleted file logs once and then 404s.
 - **amended (2026-09-13, v27j Gate 8 send-back — the AC-8 mirror):** the `cache` type literal above read `'immutable' | 'no-store'`, which the AC-8 repair made false (`static-assets.ts:33`). One token, two places; the `tests:` line gains the exact-value clause because a `toContain` is what made the drift invisible.
-- **iter:** v27j
+- **amended (2026-09-17, v28 Gate 3+4 — Sprint B's four new keys):** `ASSET_KEYS` gains `lib/scheduler.js`, `lib/system.js`, `lib/issues.js` (DES-211/215/217) and `demo/dataset.js` (DES-212) — and with the last one the key list grows a THIRD directory prefix (`demo/`), which needs no code change at all, because a key is a key and never a path (this row's whole point). Policy unchanged, and the dataset takes the `.js` arm deliberately: **`no-store`**, because a demo body cached across a self-update restart is a stale fiction served under a 示範資料 tag. **Each key lands in the SAME commit as its file** — the `readdirSync` diff (`tests/unit/static-assets.test.ts:50-71`) is closed both ways, so either half alone turns that test red for every other implementer on the shared tree (03-tasks.md ordering rule 3, CLAUDE.md's recorded hazard).
+- **iter:** v28
 
 ### DES-200 — the shell: markup + tokens + a data island, and the update panel that would otherwise vanish
 - **status:** draft
@@ -6817,7 +6818,8 @@ mapping location, ARCH-126's `current` status domain, ARCH-130's `pinned=` key a
 - **amended (2026-09-13, v27j Gate 8 send-back — design half):** this row described the PRE-v27g reducer, and its `tests:` line named the exact case the AC-4 repair inverted, so an implementer reading it verbatim re-introduces the defect (連線中 over a degraded visible table). Struck and re-stated from `src/dashboard/lib/connection.js:9-36`. ~~This narrowing is overturnable and inherits ARCH-124's `owner_decision: pending` (`02-architecture.md:3365`) — it is not re-asked here. If the owner rules that any `ok` outranks a degraded sibling, exactly four places flip together: ARCH-124's sentence, this row's boundary + tests lines, `connection.js:26-31`, and `dashboard-lib-connection.test.js:30-42` (UT-245).~~ **[SETTLED 2026-09-13, v27 Gate 8 RE-REVIEW #2, DEBT-C closed]** `02-architecture.md:3365` has read `answered 2026-09-13` since commit `7604c90` — the owner ruled KEEP THE NARROWING. None of the four enumerated places flips.
 - **amended (2026-09-13, v27 Gate 8 RE-REVIEW #2 — BF-3):** the `boundary:` and `tests:` lines above described the reducer BF-1 replaces — 「status stays `prev.status` at 1」 and a `tests:` case named `live→live` on ONE all-fail tick — true of the pre-repair tree and false the moment BF-1 lands (an implementer reading either verbatim re-introduces the defect, the identical shape this row itself called out one round earlier). Both lines are re-stated in place: a unanimous-`fail` tick still only advances `consecutiveFails` (`offline` unchanged at **≥ 2**), but `status` now reports **`degraded`** at 1, never `prev.status` — a page that was `live` must not keep claiming it through a whole 3 s interval where every route failed (ARCH-124's `api:` as amended: `live` only when EVERY route is `ok`). No new DES id, no trace-link change. Verified by `src/dashboard/lib/connection.js:34-39` and `tests/unit/dashboard-lib-connection.test.js:49-58`.
 - **amended (2026-09-13, v27l Gate 3+4 send-back — the row sweep BF-3 owed):** BF-3's two lines were re-stated correctly (verified at `connection.js:34-40`, UT `:49-59`), and the sweep of the SAME row was not done — three clauses still contradicted the tree, each of the 「an implementer reading it verbatim re-introduces a defect」 class BF-3 exists for. All three re-stated above, no new DES id, no trace-link change, no behaviour change: **(1) `signature:`** typed `worstOf → 'live'|…`; the function returns a `RANK` key and `'live'` on no input (`connection.js:6-15`, caller `:27` `worst === 'ok'`, UT `:78`) — an implementer writing to the old union makes `:27` permanently false and the tag can never reach `live`, strictly worse than what BF-1 repaired, from the row's FIRST line. Its parenthetical 「the nav tag reads THIS」 was false in the same way and separately: the tag reads `connectionState.status` (`app.js:115`), which BF-1 made diverge from `worstOf` on the all-`fail` arm. **(2) `tests:`** named a route pair no tick fetches together (`poll.js:16, 20-23`); the case that exists is the workflow view's. **(3) `boundary:`** said a `degraded` **string** where the code tests key presence (`connection.js:48`) — the deviation is fail-CLOSED (`{degraded:null}` never becomes data), so the prose moves and the code does not. `02-architecture.md:3361` carries the looser form of (1) and (3); a design row may not amend an ARCH row, so that is recorded for the architect at LOW in the rationale, not fixed here.
-- **iter:** v27l
+- **amended (2026-09-17, v28 Gate 3+4):** this module gains TWO pure exports and loses nothing — `resumeReset(prev)` (DES-211, REQ-142) and `demoEngages(verdict, reachedFlags, datasetLoaded)` (DES-212, REQ-143). `nextConnection`, `worstOf` and `classifyResponse` are **byte-unchanged**, so REQ-131's three-tag oracle and every test pinning it stand. Two consequences are recorded here because they bind CALLERS rather than this file: (1) `nextConnection` is **not idempotent** (`connection.js:35` returns `prev.consecutiveFails + 1`), so DES-210's tick computes a PREVIEW and commits at most one result, both against the SAME `prev` — committing the preview makes `offline` arrive after one all-fail tick instead of two, breaking REQ-131's >=2-tick rule invisibly to any request-count oracle; (2) `demoEngages` lives here rather than in a `lib/demo.js` because a file whose entire content is one predicate is a second describer of a dataset whose registered exit is DELETION — the cost being one line on REQ-143's retirement checklist and one entry on `demo-surface.test.ts`'s allowlist, which is cheaper than the describer.
+- **iter:** v28
 
 ### DES-203 — `lib/swimlane.js`: the geometry, and the panel side
 - **status:** draft
@@ -6833,7 +6835,8 @@ mapping location, ARCH-126's `current` status domain, ARCH-130's `pinned=` key a
 - **signature:** `matchCards(cards, query)`; `segmentCounts(cards) → { all, running, registered }`; `sortRows(rows, key, dir)`; `historyRow(summary, now, lang) → string[]` (REQ-133's nine columns); `fmtCost(costUSD: number | undefined, unpricedCalls: number | undefined, lang) → string`; `sumTokens(tokens) → number` (the one four-column client sum).
 - **boundary:** **`fmtCost` is the single place the ledger's five-times-closed 「confident $0.00」 defect can regress:** absent → `—`; `unpricedCalls > 0` → `≥ $0.42 · 2 未定價`; else `$0.42`. It is used by `historyRow`'s 費用 column, the swimlane node's third row and the home meta line (where `avgCostUSD === null` renders `—` and `unpricedRuns > 0` appends the count) — one formatter, one fixture table. `sortRows` puts absent values **LAST in BOTH directions**, never as `0`. `historyRow` renders `4m 12s 進行中` for a live run (hence `now` is a PARAMETER, never `Date.now()`) and `—` for every figure the summary omits — which is the whole point of DES-194's omit-together rule reaching the page intact.
 - **tests:** UT (`.js`) — `fmtCost` over the three branches × both languages; `sortRows` ascending and descending with `undefined` values present, asserting they land last both times; `historyRow` over a live run, a terminal priced run and a terminal run with all four fields absent; `matchCards`/`segmentCounts` over a fixture with name-only and description-only hits.
-- **iter:** v27
+- **amended (2026-09-17, v28 Gate 3+4 — by REFERENCE only, no behaviour change):** `sortRows` is REUSED by the Models tab (REQ-137) and stays **byte-unchanged**. Measured at this gate (`node -e "…sortRows([{k:5},{k:null},{k:1},{k:undefined}],'k','asc')"` -> `[{"k":null},{"k":1},{"k":5},{}]`): it treats only `undefined` as absent, so `null` sorts FIRST ascending and mid-pack descending — and `EnrichedModelEntry` uses `null`, not `undefined`, for exactly the honest-absence fields (`contextWindow`, `costLevel`, `ratesPerM`). Widening THIS comparator's notion of absence would reorder REQ-133's shipped history table, so the normalisation happens at the PROJECTION instead: DES-213's `sortKeyOf` makes `undefined` the only absent token this function ever sees. Recorded here so the next reader of 「absent values sort LAST」 knows exactly what that guarantee does and does not cover.
+- **iter:** v28
 
 ### DES-205 — `lib/agent.js`: the panel is a projection of the RECORD, not a reconstruction from the DOM
 - **status:** draft
@@ -6892,7 +6895,14 @@ mapping location, ARCH-126's `current` status domain, ARCH-130's `pinned=` key a
 | `app.js:386` | — | — | stamps 「Updated HH:MM:SS」 on a tick (K) designs to skip | LOW — `D3-4`, now KNOWINGLY false rather than incidentally so; stated rather than pretended |
 
   **Not changed by this amendment:** the `signature:` contract (`render`/`onTick`/`endpointsFor`/`getJSON`), `poll.js`'s `ROUTES`, `nextConnection`, the `app.js` seam (`D3-5`), and ARCH-125 itself — `D3-6` stays the architect's debt, and that row should later carry a one-line POINTER to this clause, never a second copy. No new DES id, no new TASK id, no trace-link change. When the disclosed sites are dispatched they are ONE task per LANE (this row's `ui/` sweep; DES-205's panel), DoD = the greps reaching their expected counts plus one real-browser case per arm — never one task per site, which is the scoping that let six sites survive by letter across six rounds.
-- **iter:** v27m
+- **amended (2026-09-17, v28 Gate 3+4 — the seam gains ONE parameter, and rule (R) gains its ONE exception):** the view contract becomes **`onTick(container, bodies, ctx, tick)`** with `tick = { results, source }` — ADDITIVE, so `home.js` / `run.js` / `workflow.js` keep their arity and are not rewritten. The measured reason it was needed at all: `tick()` handed only BODIES (`app.js:370-376`), which is why rule **(V)**'s positive `res.status` test was literally UNREACHABLE for a primary route and `home.js:231` / `workflow.js:397` still guard on body shape. `poll.js`'s result becomes ONE declared shape used by BOTH fetchers — `{ status, body, reached, source }`, every field always present — and `getJSON` is imported by `ui/poll.js` and `ui/app.js` only (INV-V28-1); every other `ui/` module that fetches imports `getViewJSON`. Full specification in **DES-210**; only the clauses that change THIS row's standing rules are written here.
+
+  **`getViewJSON` is NOT the `okBody(res, fallback)` helper (N) forbids by name, and the distinction is stated here so a reviewer does not re-derive it as a defect.** That helper RE-DERIVED the verdict from body shape and handed the caller a fallback that ERASED the failure. `getViewJSON` never inspects a body, takes no verdict from any response, and answers from a map only while the WHOLE PAGE is already in demo — a state set from the transport's own `reached` bits at the one substitution point. Its `status:'ok'` on a map hit is honest because a demo body IS a complete typed body; the fake-ness is carried by the nav tag, the shell banner and the `demo-` ids in the data.
+
+  **(R) exception — demo ticks ONLY.** On a tick where `source === 'demo'`, the extras' statuses are discarded AT THE SEAM (`app.js`, DES-210 step 6) and never merged, because a `getViewJSON` map answer is `ok` by construction and would report a health nothing observed — which would take the reducer to `degraded`, flip demo off on the next tick, and oscillate the console every other tick. The primaries' REAL statuses still reach the reducer, and they are all `fail` by the demo predicate, so the tick is fully reported rather than under-reported. **The discard happens at the seam; view modules keep returning their statuses unchanged**, so (R) binds every view exactly as before — which is what lets all SIX current `getJSON` importers — `run.js`, `workflow.js`, `agent-panel.js`, and the three ported tabs that TASK-222/223/224 rewrite later — take ONE import line each and nothing else.
+
+  **Rows of the 「Known non-conforming at v27m」 table that CLOSE on evidence when TASK-222/223/224 land** (stated so the shrink is verifiable rather than assumed, and so nobody re-reports them): the `(K)` row for `system.js:78` / `models.js:55` / `issues.js:102` (each rewritten tab gets a `painted` flag and the KEEP arm); the `(V)` x3 row for `models.js:55` / `issues.js:80` / `:102` (the verdict now arrives as `tick.results[url]` and is never re-derived); the `(S)` row's two single-language literals `system.js:29` and `models.js:56` (this row's (S) says they move onto `t(lang,'unavailable')` 「when THAT site is repaired」 — Sprint B rewrites both files, so the condition is met); and the `(R)` row for `system.js:90` / `models.js:68` / `issues.js:119`. **NOT closed by this amendment:** `home.js:231` + `app.js:429` (MID, still bails to 「全部 (0)」 on a first-paint degrade — the one-line fix is now AVAILABLE and its shape is recorded in DES-210's boundary, for the day that file is next opened), `agent-panel.js:234`/`:238`, the `run.js` / `workflow.js` rows, `app.js:198`/`:414`'s literal families, and `D3-4` (the footer clock stamping a tick (K) designs to skip) — INV-V28-3 adds only that a PARKED poller cannot advance it at all. `D3-5` (the seam dropping statuses) closes for the three tabs this sprint rewrites and stays open for the three views it does not.
+- **iter:** v28
 
 ### DES-207 — the three shipped tabs are PORTED: a mechanical move, no redesign, no new endpoint
 - **status:** draft
@@ -6900,7 +6910,8 @@ mapping location, ARCH-126's `current` status domain, ARCH-130's `pinned=` key a
 - **signature:** `ui/models.js`, `ui/system.js`, `ui/issues.js` — the existing `renderModels` (`dashboard-page.ts:410-415`), `renderSystem` (`:390-394`) and `renderIssueList`/`loadIssues` (`:643-676`) moved into three modules with their three `STATIC_ASSETS` keys, re-themed only by inheriting the new tokens and component classes.
 - **boundary:** ARCH-122 empties `DASHBOARD_HTML` of executable JS, and that single inline `<script>` (`dashboard-page.ts:241`) is what renders Models, System and Issues. No ARCH row rehomes them, so the closure as scoped would DELETE three shipped surfaces and regress REQ-067/076/077/078 — which REQ-139 forbids in as many words. This row is the non-regression obligation of the rebuild, and it is deliberately the SMALLEST form of it: **no sorting, no filtering, no slide-in, no resource bars, no new route** — those are REQ-137/138/139's content and stay out of closure. The three tabs therefore look v27 and behave v12 for one iteration, which is a stated interim state, not an accident. One behaviour does change, because it is the rebuild's own contract rather than a feature: a `degraded` section renders the ONE 「無法取樣」 component (DES-202's classifier) instead of reaching a render function as data and throwing.
 - **tests:** Acceptance (real Chromium) — each tab still renders from its existing endpoint after the rebuild, and a degraded `/api/system` section renders the Unavailable component rather than an empty panel. The existing tests for REQ-067/076/077/078 keep their ids and are re-pointed at the corpus per DES-208. The evidence that the move was MECHANICAL is a diff of the three modules against the retired functions, recorded in the commit message.
-- **iter:** v27
+- **amended (2026-09-17, v28 Gate 3+4 — SUPERSEDED by Sprint B, and saying so rather than standing beside three rewritten files):** this row's boundary — 「no sorting, no filtering, no slide-in, no resource bars, no new route … the three tabs therefore look v27 and behave v12 for one iteration, which is a stated interim state」 — was an explicitly STATED interim, and v28 is the iteration that ends it. Models is now **DES-213/214** (REQ-137), System **DES-215/216** (REQ-138), Issues **DES-217** (REQ-139); the 「one behaviour that DOES change」 sentence is superseded by DES-206's (V)/(K)/(U) rule as amended above. **What SURVIVES from this row and is not re-litigated:** the non-regression obligation itself — REQ-067/076/077/078 may not regress — with its evidence moving from `tests/acceptance/val-202-ported-tabs.test.ts` to val-203 / val-204 / val-205, under which **val-202 RETIRES with its reason recorded, never silently deleted** (the v28 rationale's constraint 4, and ADR-053's standing rule for a retired anchor).
+- **iter:** v28
 
 ### DES-208 — `clientCorpus()`: re-point every source-grep, and make a vacuous green impossible
 - **status:** draft
@@ -6929,7 +6940,8 @@ mapping location, ARCH-126's `current` status domain, ARCH-130's `pinned=` key a
 - **boundary:** **(1) Substrate — REQ-134's node is not deliverable on pure SVG, so decide it here rather than in the middle of Gate 6.** Row ① wants `text-overflow: ellipsis`, row ② wants a `.tag-neutral` *component* inside the node, and the running node wants `--shadow-md` (`box-shadow`); an SVG `<text>`/`<rect>` has none of the three. `#dag-graph` therefore keeps the lane hairlines and the edges ONLY (SVG, `viewBox` + `width=100%` + `preserveAspectRatio` + the 1-unit-is-1-px native scale unchanged — UT-253's pins and val-193's fit/zoom proof are untouched), and a SIBLING `<div class="cell-layer">` inside `#dag-zoom` carries the lane headers, the trigger, one `<div class="cell …" data-node-cell>` per agent cell and the legend/summary row, absolutely positioned from the SAME `laneX`/`cellRect` px. Built with `createElement` + `textContent` (D5, ADR-044's property survives whole: box math server-side, DOM client-side, no `innerHTML`), delegated click on the layer (DES-206). The wrapper transform scales both layers together, so INV-V27-6/D6 hold. Runner-up recorded and refused: `foreignObject` (the same HTML wrapped per node, with Chromium transform/z-order quirks and nothing gained). **ARCH-125's `api:` clause 「built with `createElementNS` + `textContent` inside `#dag-graph`」 is amended by this row** in the house style DES-201 used for ARCH-124's `accentVars` and DES-206 for ARCH-125's `setInterval` — no ARCH edit this gate. The two test edits that MUST travel in TASK-210's commit: `val-200`'s `'#dag-graph [data-node-cell]'` → `'#dag-zoom [data-node-cell]'`, and its `[class*="lane-head"]` alternate dropped. **(2) No design value in `ui/` or `lib/`.** A client module may write exactly `style.display`, `style.transform` on `#dag-zoom`/`#diagram-zoom`, `setProperty('--rwe-hue', h)`, and the graph wrapper's `width`/`height` from `svgBox` (geometry from DATA, `run.js:89`, carried by a `// rwe-allow-style: svgBox` marker that is the guard's SOLE `width|height` exception). Everything else — fill, stroke, stroke-width, dasharray, font-size/weight, letter-spacing, opacity, cursor, `cssText`, the container heights, the `float`, the `maxWidth`, `.toUpperCase()` — is a class. **`setAttribute` is included**: REQ-134's edge paint is a class on the `<path>`, not three `setAttribute` calls. Geometry attributes (`x y width height d cx cy r rx viewBox transform points`) stay attributes — they are data from `lib/swimlane.js`, not design. This is DES-206's 「may not decide anything a pure function could decide」 extended one word: **and may not decide anything the stylesheet declares.** **(3) The ported block is RE-MAPPED, not extended.** `dashboard.css:73-77` defines `.cards{minmax(210px,1fr);gap:10px}` / `.card{border-radius:10px;padding:11px 13px}` / `.card .t{monospace;word-break:break-all}` at the v26 values; REQ-132's own acceptance requires `repeat(auto-fill, minmax(280px,1fr))`, gap 16px and a 5–6% accent hover — those three are binding here. `--radius-md 3px`, the no-fill surface and `text-wrap: pretty` on the workflow-NAME title are **delivery-README values, not REQ text**, and resolve with this row's `owner_decision`; they are named so the implementer knows which is which, and only the REQ three are anchored by a test. `.tag` is set by the client and has no rule at all (the pre-v27 page used `.pill`). **(4) Spec of record.** `design_handoff_workflow_dashboard/` is not in this checkout (`find` measured), so the only spec a TASK-214 implementer can read is REQ-131..135's own enumerated constants — those ARE the acceptance for everything they list, and `SPEC_ROWS` is seeded from them. Everything they do NOT enumerate (the nav/tab/table/input/segmented-control look, row heights, paddings, the legend's typography) rests on the owner's Q10 side-by-side until the README is vendored. **(5) The component layer is written ONCE, for the surfaces in THIS closure that already need it** — `.card` (REQ-132's grid), `.tag`/`.tag-outline`/`.tag-accent`/`.tag-neutral` (REQ-133's version and trigger tags, REQ-134's effort tag, REQ-135's three tag columns), `.btn` (REQ-133's run chips), `.table` (REQ-133's nine-column history table and TASK-212's ported `.sys-table`/`.models-table`), `.seg`/`.input` (REQ-132's segment filter and search box), `.nav`/`.hr` (REQ-131's shell) and the panel shell (REQ-135). It is written as one component section rather than duplicated per view because four view-shaped copies is the vocabulary fragmentation this row exists to prevent — **not** because Sprint B will want them. That Sprint B (REQ-137/138/139, out of closure) can then attach as view sections is a consequence, not a licence: this row builds **no** sorting, **no** filtering, **no** Models/System slide-in, **no** resource bars, **no** new route, and DES-207's stated interim state for the three ported tabs stands unchanged. **(6) Ownership boundary, so the partitioner cannot batch two writers onto one file.** TASK-214 owns `dashboard.css`, the two fixtures and the two lock tests and **nothing else** — it edits no `src/dashboard/{ui,lib}/*.js` and no `src/dashboard-page.ts`. The view modules' hook edits and literal relocation are each view task's own (TASK-208/209/210/211/212); the shell's `<style>`-copy deletion and the two C1 pin re-points are TASK-205's, since it owns `dashboard-page.ts` and DES-200 — and `src/dashboard/dashboard.css` is struck from TASK-205's `files:` in the same edit, so the stylesheet has exactly ONE task that writes it (TASK-205 asserts the token facts; TASK-214 authors every byte). Those two TASK-205 clauses are a re-run and must land in the SAME batch as TASK-214: between the deletion and the re-point the two pins are red. The cost is that the `is set by clientCorpus()` half of the class lock and the no-design-values guard are RED until the last view task lands — which is **exactly** ordering rule 4's existing shape for TASK-204's `listed ⇒ on disk` half, re-run as TASK-212's last check, and is expected rather than a defect. **(7) Struck, with the reason, so silence is not the record:** `prefers-reduced-motion` (four infinite animations on a page left open all day; no REQ asks for it — a backlog line, not a smuggled DES clause) and the handoff's hue-driven `oklch(.21 .006 h)` page background (**REQ-131's tested `#18191b`/`#eef2f1` literals win** — they are the gate-passed, ADR-053-quoted clause, and the neutral/text ramps paired with the OKLCH bg are fixed hex anyway).
 - **owner_decision:** answered (commit `7039586`, "docs(v27): vendor the design handoff as the fidelity oracle (owner decision, DES-209)") — **vendor the handoff.** `.sdlc/design-handoff/README.md` (the handoff spec, verbatim), `Workflow Dashboard.dc.html` (byte-identical to the source, never retyped) and `PROVENANCE.md` (source project id, fetch date, the Classical-is-only-the-class-layer note) are now in the repository, one directory up from this feature's own ledger rather than under `.sdlc/features/001-remote-workflow-engine/design-handoff/` as this row's question proposed — a path detail, not a reversal, since it is the only vendored copy either way. The README is the fidelity oracle for REQ-131..139; `rwe-data.js`/`support.js` were deliberately NOT vendored (reference implementation, not spec). Original question kept for the record: whether the oracle is the vendored README or REQ-131..135's own enumerated `SPEC_ROWS` (this row's seed). **What the decision changed in practice, because that is the point of taking it:** the first three audits run against the vendored file (`f5ee006`, `3091398`, `1a1746a`) found four spec items nobody had built (the footer, the bilingual nav brand, the Running section's pulsing dot, and `aria-current` tabs — all "did not exist"), nine value divergences the hand-copied `SPEC_ROWS` had missed or gotten wrong (`.cell-usage`/`.cell-model` opacity, the hue slider's missing gradient/thumb/degrees-readout, the right-cluster order, the theme-segment order, the home card's LAST RUN kicker, the Live source tag, `.card`'s fill, and node row 3's missing duration), and three `SPEC_ROWS` that had encoded the BUILD rather than the design instead of catching it — `.card`'s background copied from the (wrong) implementation, `[data-run-chip]` passing only by an unrelated coincidence of chip sort order, and the agent panel's `animation-name` reading green only because a bug forced one slide direction every time (`0673f22`). None of those four gaps or twelve wrong/absent oracle rows were reachable under the enumerated-`SPEC_ROWS` alternative, since that fixture was itself the artifact that had absorbed the drift.
 - **tests:** UT (`.ts`) **class lock** — every `STYLE_HOOKS` entry is a selector in `clientFile('dashboard.css')` AND is set by `clientCorpus()` or `DASHBOARD_HTML`; every class selector in the stylesheet is in `STYLE_HOOKS` (the anti-rot half: deleting a surface deletes its CSS — REQ-105/ADR-048; its first act is authorised HERE, so the implementer does not have to guess — the ported rules whose emitters retired with `dashboard-page.ts`'s inline script (`.pill .st-* .grp .node .phase .ph-lbl .usage-* #tree`) are DELETED, not grandfathered). `STYLE_HOOKS.length ≥ 60`. **Split across two files, because the two directions green at different times:** `dashboard-class-contract.test.ts` holds the halves that depend only on the stylesheet and the declared list (TASK-214's own green); `dashboard-no-design-values.test.ts` holds the two that depend on the emitters — every `STYLE_HOOKS`/`TEST_ANCHORS` entry actually set by `clientCorpus()` or `DASHBOARD_HTML`, and the guard below — and is the SLICE's final green, re-run as TASK-212's last check (ordering rule 4's existing shape). The list is DECLARED, never re-derived by regex over `ui/*.js` — a regex cannot see `home.js:66`'s `'card' + ' running'` or any SVG attribute, and a lock that under-counts is the vacuous green it exists to prevent. UT (`.ts`) **anti-vacuity value anchors** on the load-bearing rules only (60 empty rules must not pass): the seven `@keyframes` by name; `.cell` `216px`/`74px`/radius `3px`; `.cell.is-failed` `oklch(0.55 0.16 25)`; `.cell.is-queued` dashed + `opacity:.65`; `.lane-head` `13px`/`600`/`.04em`/`uppercase`; `.card-grid` `minmax(280px,1fr)` gap `16px`; `.agent-panel` resolving wide enough for THREE columns of REQ-135's `auto-fit minmax(150px,1fr)` stat grid (**≥ 500px**, derived from REQ-135's own numbers — the README's `min(760px,100vw)` is the target value and resolves with the `owner_decision`, so it is not the anchor); and the ramp direction of DES-201. UT (`.ts`) **no design values in JS** — over `clientCorpus()`, zero matches for `#[0-9a-fA-F]{3,6}` / `oklch(` / `rgba(` / `cssText` / `setAttribute('fill'|'stroke'|'stroke-width'|'stroke-dasharray'|'font-size'|'font-weight'|'opacity'|'style'` / `.style.` outside the four allowed forms, WITH a positive anchor (`expect(clientCorpus()).toContain('style.transform')`) beside the negatives (DES-208's rule). Acceptance (real Chromium, `RWE_REQUIRE_BROWSER=1`) — val-198/199/200/201/202 each iterate `SPEC_ROWS` for their view under BOTH `data-theme` values and once more after a hue-slider move; a row whose `anchor` matches no element FAILS (never skips), and `SPEC_ROWS.length ≥ 40`. **Row kinds, because three kinds of value exist:** `literal` → `getComputedStyle(el)[prop] === expect.literal` (sizes, timings, `'uppercase'`, `'ellipsis'`, `'0.65'`, and the REQ's own `oklch(0.55 0.16 25)`); `token` → compare the element's computed value to the computed value of a probe element styled `color: var(--<token>)` **on the same page** — never a literal `oklch(...)` string, which is true for hue 236 only and hard-codes Chromium's serialization; `animation` → `animationName` / `animationDuration`.
-- **iter:** v27c
+- **amended (2026-09-17, v28 Gate 3+4 — the v28 families, and who may author a SPEC_ROW):** `STYLE_HOOKS` grows by the four families **DES-219** names (models filter row / sortable header / slide-in / benchmark grid; system stat cards / process table / engine `<dl>`; issues re-themed on existing hooks; the demo banner and the nav tag's third state), each declared in the SAME commit as the rule that defines it — this row's class lock is closed both ways and is unchanged. `SpecReq` widens to include `'REQ-137' | 'REQ-138'` and `SpecView` to include `'models' | 'system'`; **Issues gets no SPEC_ROW** (no design page ships for it, so DES-217's acceptance is 「same tokens and component classes as the other three tabs, in both themes」 and the 99 % clause does not apply). **The rows themselves are authored by Gate 5 from `.sdlc/design-handoff/README.md` §4/§5, RED, before the stylesheet exists — never read off the built CSS**, and `tests/fixtures/dashboard-spec.ts` is deliberately in NO v28 task's `files:` (carry-forward lesson 3: three poisoned rows were found this ledger-year, one copied from shipped CSS, one passing by coincidence of sort order plus default selection, one encoding the very bug it was meant to catch — a poisoned row goes green forever and looks like coverage). **Every 「text fits its box」 clause in the two new tables uses the `notClipped` kind**: `getComputedStyle` echoes a correct property value back while the text is crushed to a sliver of glyph tops, which is exactly how VAL-208 shipped. TASK-221's green is the class lock ONLY; the EMITTER half (`dashboard-no-design-values.test.ts`) stays red until the three view tasks land and is the slice's final green — the TASK-214 precedent, deliberately repeated.
+- **iter:** v28
 
 ### Real-tier validation path (v27) — one named path per in-closure REQ
 
@@ -7474,3 +7486,455 @@ named amendments. This section records only the places where a lens moved, and t
 
 **Karpathy check.** One clause on one row, inherited by one sibling; one guard, one 11-line helper and one string key in code; two acceptance assertions (one new case, one restated); zero new ids, zero trace-link changes,
 zero ARCH edits, zero abstractions, and a written reason for every proposal the panel made that this round did not take. Everything the two lenses agreed on that the tree already satisfies was left alone.
+
+## v28 design entries (REQ-137/138/139/142/143 — ARCH-132..135, ADR-057..060, the v28 amendments to ARCH-123/124/125/130) — DES-210..219
+
+**How this section was decided.** Gate 3+4 ran at the **lean tier** by the owner's 2026-09-17 ruling
+(`state.yaml pending:`) — no panel was spawned; the grouped lenses were self-applied as a checklist
+and every one of them is answered by name in **Decision rationale — v28** at the end of this file.
+One panel file DID already exist from a killed Sprint-B attempt —
+`.panel/design/adversarial.r1.md` (2026-09-14, interface-contract × boundary/error × testability,
+Karpathy tie-break) — and per the contract it was **synthesized from rather than re-spawned**; its
+findings K0–K12 and conflicts C1–C4 are adopted, amended or refused explicitly in the rationale. The
+quality-dimensions group has no file and was carried by this gate as four headed sections there.
+**Three of its findings were independently re-measured before being acted on** (the one-process
+static/API handler, `sortRows` over `null`, the fixture's four-of-seven type coverage); the measured
+commands are in the rationale.
+
+**Scope.** Everything below is inside REQ-137/138/139/142/143. Two things are recorded and NOT
+taken: `home.js:229` / `workflow.js:397`'s body-shape degrade (the positive rule becomes reachable
+here — the one-line shape of the fix is recorded in DES-210's boundary so the day either file is
+next opened it is a copy, not a re-derivation), and ADR-060's provider blindness (owner-ruled,
+Won't-have D5, closed — a later gate re-reporting it spends a round on a settled question).
+
+```mermaid
+classDiagram
+  class poll_js {
+    +endpointsFor(view, ctx) urlList
+    +getJSON(url) FetchResult
+    +getViewJSON(url) FetchResult
+    +setDemoBodies(map) void
+  }
+  class FetchResult {
+    +status ok_degraded_fail
+    +body unknown_or_null
+    +reached boolean
+    +source live_or_demo
+  }
+  class app_js {
+    -transportResults Record
+    -viewResults Record
+    -connectionState ConnectionState
+    -DEMO_AVAILABLE boolean
+    -tick() void
+    -scheduleTick() void
+  }
+  class scheduler_js {
+    +nextPoll(state, event) StateAndAction
+  }
+  class connection_js {
+    +nextConnection(prev, tick) ConnectionState
+    +worstOf(perRoute) Verdict
+    +classifyResponse(status, body) Verdict
+    +resumeReset(prev) ConnectionState
+    +demoEngages(verdict, reachedFlags, loaded) boolean
+  }
+  class model_js {
+    +shortModel(model) string
+    +sortKeyOf(entry, column) scalar_or_undefined
+    +matchModels(entries, filter) entries
+    +modelRow(entry, lang) Row
+    +costDots(level) string
+    +modelPanel(entry, lang) PanelVM
+  }
+  class system_js {
+    +sectionState(value) SectionState
+    +cpuUtilState(cpu) SectionState
+    +statCard(kind, input, lang) Card
+    +procRow(proc, selfPid) Row
+    +procTotals(system, lang) string
+    +fmtBytes(n) string
+    +catalogCounts(workflows, runs) Counts
+  }
+  class issues_js {
+    +safeIssueHref(url) string_or_null
+  }
+  class dataset_js {
+    +DEMO ReadonlyMap
+  }
+  app_js --> poll_js
+  app_js --> scheduler_js
+  app_js --> connection_js
+  app_js ..> dataset_js : boot import once
+  poll_js --> connection_js
+  poll_js ..> FetchResult
+  model_js <-- ui_models_js
+  system_js <-- ui_system_js
+  issues_js <-- ui_issues_js
+```
+
+### DES-210 — the v28 seam: ONE result type, TWO verdict maps, a seven-step tick, and the two stamps
+- **status:** draft
+- **traces:** ARCH-133, ARCH-125, ARCH-124, ADR-057, ADR-058, ADR-059, TASK-217, REQ-137, REQ-138, REQ-139, REQ-142, REQ-143
+- **signature:** `src/dashboard/ui/poll.js` — ONE result shape, every field always present, returned by BOTH functions: `{ status: 'ok'|'degraded'|'fail', body: unknown|null, reached: boolean, source: 'live'|'demo' }`. `getJSON(url)` unchanged except that `reached` is `false` in its outer `catch` (`poll.js:52-54`) and `true` for every HTTP response of any status, `source:'live'` always. `getViewJSON(url)` **is** `getJSON` unless a demo map is installed; while installed it makes **no network call**: map hit → `{status:'ok', body: DEMO.get(url), reached:true, source:'demo'}`, map miss → `{status:'fail', body:null, reached:true, source:'demo'}`. `setDemoBodies(map | null)` is the ONE installer (`null` clears). `ROUTES.system` becomes `['/api/system', '/api/workflows', '/api/runs']` (ADR-057); `ROUTES.models` / `ROUTES.issues` unchanged. `src/dashboard/ui/app.js` — the view contract gains an additive 4th parameter: `onTick(container, bodies, ctx, tick)` with `tick = { results: Record<url, Verdict>, source: 'live'|'demo' }`. **`tick()`'s seven steps, in this order, because two of them are not commutative:** (1) fetch every url of `endpointsFor(view.name, view.ctx)` → `transportResults`, `realBodies`, per-url `reached`; (2) `preview = nextConnection(connectionState, { results: transportResults })` — **computed, never assigned**; (3) `demoTick = demoEngages(preview.status, urls.map(u => reached[u]), DEMO_AVAILABLE)`; (4) if `demoTick`: `setDemoBodies(DEMO)`, `source='demo'`, and per url `bodies[u] = DEMO.get(u)` with `viewResults[u] = DEMO.has(u) ? 'ok' : 'fail'` — else `setDemoBodies(null)`, `bodies = realBodies`, `viewResults = transportResults`, `source='live'`; (5) `extra = await view.onTick(container, bodies, ctx, { results: viewResults, source })`; (6) `merged = demoTick ? transportResults : { ...transportResults, ...extra }`; (7) `connectionState = nextConnection(connectionState, { results: merged })` — **the ONE assignment, from the SAME `connectionState` step 2 read** — then the tag, then the footer clock. `DEMO_AVAILABLE` is set once at boot (DES-212), never awaited inside a tick. Two `documentElement.setAttribute` calls, one each: `data-poll` (`active|parked`) and `data-source` (`live|demo`). `activateTab` (`app.js:163-201`) ends with `scheduleTick()`, and the cold path calls it again inside `import().then(...)` once `onTick` is mounted.
+- **boundary:** **`transportResults` and `tick.results` are two maps with two meanings and must be named separately in code.** `transportResults` is what happened on the wire, is PRIVATE to `app.js`, and is the only input `nextConnection` ever sees; `tick.results` is what the VIEW should render and equals `transportResults` on every live tick. Collapsing them paints 「無法取樣」 over every demo body (the demo predicate makes every primary `fail` by construction) — REQ-143 inert under a vacuously-satisfied INV-V28-2. A view therefore needs **no demo branch at all**: it reads `tick.results[url]` and `bodies[url]` and is source-agnostic, which is what keeps the dataset deletable in one commit. `tick.source` feeds the banner and the stamp, never a render decision. **`nextConnection` is not idempotent** (`connection.js:35` returns `prev.consecutiveFails + 1`): it is called at most twice per tick, always against the SAME `prev`, and only step 7's result is assigned — committing step 2 makes `offline` (and therefore demo) arrive after ONE all-fail tick instead of two, breaking REQ-131's ≥2-tick rule and ADR-058's own entry mitigation, invisibly to any request-count oracle. **Step 4's `DEMO.has(u)` is not blanket-`ok`:** mid-session on `/dashboard/<a real run id>` the map holds `demo0001…` and not that id, so the route must read `fail` under a Demo tag rather than `ok` with an `undefined` body — INV-V28-2's fabricated-body failure arriving through the back door. **Step 6 is DES-206 rule (R)'s named exception** (see that row's v28 amendment): on a demo tick the extras' statuses are discarded AT THE SEAM because a `getViewJSON` map answer is `ok` by construction and would report a health nothing observed; the primaries' REAL statuses still reach the reducer, all `fail` by the predicate, so the tick is fully reported. View modules keep returning their statuses unchanged, so (R) binds every view exactly as before — which is what lets all SIX unrewritten-or-later-rewritten fetchers (`run.js`, `workflow.js`, `agent-panel.js`, and the three ported tabs until TASK-222/223/224 replace them) take ONE import line and nothing else. **`getViewJSON` is NOT the `okBody(res, fallback)` helper rule (N) forbids by name:** that helper RE-DERIVED a verdict from body shape and returned a fallback that erased the failure; `getViewJSON` never inspects a body, takes no verdict from any response, and answers from the map only while the whole page is ALREADY in demo — a state set from the transport's own `reached` bits. **Entry and exit are ONE `if/else` on `demoTick`, never an entry branch here and an exit branch there** — an asymmetric pair is how a console stays stuck in fiction after the engine returns, the one failure REQ-143 cannot tolerate. **Adding a tab is four lines and they must travel together:** a `ROUTES` entry, a `TAB_MODULES` entry, an `ASSET_KEYS` entry, and `onTick`. **Recorded, not taken:** `home.js:231` and `workflow.js:397` still guard a PRIMARY route on body shape; with `tick.results` in hand the fix is `if (tick.results['/api/home'] !== 'ok') return …` in place of the shape sniff — one line each, for the day either file is next opened.
+- **tests:** No unit tier by construction (ADR-049 refuses jsdom). Its oracle is (a) `tests/unit/dashboard-seam.test.ts`'s five source tripwires over `clientCorpus()`/`clientFile()` — INV-V28-1, the `getViewJSON`/`setDemoBodies`/`ROUTES.system` shape, `setTimeout(` exactly once in `app.js` (measured: it is exactly once today, at `:396`), `nextConnection(` exactly twice with `connectionState = nextConnection(` exactly ONCE — the bare `connectionState =` is the wrong anchor, it already matches twice today (`:112` declaration, `:383`) and TASK-218 adds a third — and one `setAttribute` per stamp — and (b) the real-browser acceptance tier: val-203/204/205 (each tab, from a COLD `/dashboard` and CLICKING `[data-tab=…]`), val-206 (REQ-142) and val-207 (REQ-143). A tripwire is not a proof and is labelled as one; it exists because the race and the double-commit are invisible to every count-based oracle.
+- **iter:** v28
+
+### DES-211 — `lib/scheduler.js`: `nextPoll`, and `connection.js`'s `resumeReset`
+- **status:** draft
+- **traces:** ARCH-134, ARCH-133, ADR-059, TASK-218, REQ-142, REQ-131
+- **signature:** `src/dashboard/lib/scheduler.js` (new, pure, no timer / no DOM / no fetch / no import): `nextPoll(state, event) → { state, action }` where `state = { parked: boolean }` and nothing else, `event ∈ {'settled','hidden','visible','view-changed'}`, `action ∈ {'fire','arm','park'}`. Table, total over all 8 combinations: `hidden` → `{parked:true}, 'park'`; `visible` → `{parked:false}, 'fire'`; `view-changed` → `{parked:false}, 'fire'`; `settled` → `parked ? ('park') : ('arm')`. `src/dashboard/lib/connection.js` gains `resumeReset(prev)` = `prev.status === 'offline' ? prev : { ...prev, consecutiveFails: 0 }`. `nextConnection`, `worstOf` and `classifyResponse` are byte-unchanged. Wiring (`ui/app.js`, DES-210's file): the `visibilitychange` listener, a `visibility()` getter defaulting to `() => document.visibilityState`, the single timer, `viewGeneration`, and applying `resumeReset` to `connectionState` BEFORE the tick `fire` starts.
+- **boundary:** **`park` is the ABSENCE of a timer, not a suppressed tick** — nothing is armed, so 「0 requests over the hidden window」 holds by construction rather than by a guard that can fail open, the AD-2 empty-tick hazard is unreachable, and 「Updated HH:MM:SS」 cannot advance over a parked poller. The race this exists for: `scheduleTick`'s `tick().finally(() => setTimeout(loop, 3000))` (`app.js:394-396`) re-arms after an in-flight tick even if the page went hidden while that tick was in the air — `'settled'` must therefore consult `parked`, and `hidden` arriving between `fire` and `settled` yields `park`. `resumeReset` may never touch `status`: resetting it to `checking` paints 「連線中…」 — one ellipsis from 「連線中」 (`app.js:31/36`) — over a dead engine. The machine owns NOTHING else: not `viewGeneration`, not the demo predicate, not a fetch. **`visibility()` is a one-line indirection, NOT a test seam** — conflict C4 already concluded that nothing can inject into `app.js` under ADR-049 (no jsdom), so calling it injectable would be a claim no oracle can cash; it exists so the ONE environment read in the wiring has one name and one call site. Every other seam in this layer (clock, storage) is already injected or absent, and no `lib/` export reads time — the standing falsifier `grep -rn 'new Date()|Date.now()|document\.|fetch(' src/dashboard/lib/` must stay at 0 hits including `scheduler.js`.
+- **tests:** UT (`tests/unit/dashboard-lib-scheduler.test.js`, `dashboard-lib-connection.test.js`) — the full 2×4 table; `hidden` between `fire` and `settled` ⇒ `park`; `visible` ⇒ `fire` then `arm`; and for `resumeReset`, `fail→pause→fail` ⇒ `degraded`, `fail→fail→pause→fail` ⇒ `offline`, `fail→fail→pause→ok` ⇒ `live`, `offline` in ⇒ the same object out. **The browser oracle is a LADDER, decided here so Gate 5's measurement has a pre-agreed consequence** (REQ-142's acceptance forbids the source-grep escape hatch by name): **(1)** two REAL pages — `browser.newPage()` + `bringToFront()` — counting `/api/*` on the backgrounded page over 30 s ⇒ `0`, and the first `/api/*` within ~300 ms of re-show; **(2)** if headless Chromium does not fire `visibilitychange` on the backgrounded page, drive visibility through CDP on the existing session — a platform-level override is still the platform; **(3)** if neither exists, REQ-142's browser clause is recorded as UNVERIFIED in this harness and raised to the owner — never downgraded to the source grep the REQ itself names as insufficient. `Page.setWebLifecycleState({state:'frozen'})` (stops JS, passes vacuously) and `Object.defineProperty(document,'visibilityState',…)` (fakes the platform) are FORBIDDEN. `data-poll` may appear only as a conjunct (`requests === 0 && data-poll === 'parked'`), never as the sole assertion — a stamp written by the code under test passes vacuously.
+- **iter:** v28
+
+### DES-212 — `demo/dataset.js`, `demoEngages`, and a retirement that is one commit
+- **status:** draft
+- **traces:** ARCH-132, ARCH-123, ARCH-133, ADR-058, TASK-220, REQ-143
+- **signature:** `src/dashboard/demo/dataset.js` exports `DEMO: ReadonlyMap<string, unknown>` and **nothing else** — no function, no fetch, no DOM, no import. Keys are the EXACT URLs `endpointsFor` produces, plus the parametric routes for the dataset's OWN ids only; lookup is `Map.get`, never a parse or a path build. `src/dashboard/lib/connection.js` gains `demoEngages(verdict, reachedFlags, datasetLoaded) → boolean` = `verdict === 'offline' && reachedFlags.length > 0 && reachedFlags.every(r => r === false) && datasetLoaded === true`. `src/dashboard/ui/app.js` fires **one** `import('../demo/dataset.js')` at `mountApp()` — fire-and-forget, `.then(m => { DEMO = m.DEMO; DEMO_AVAILABLE = true; })`, `.catch(() => {})` — and nothing else ever imports the module. Two `lib/strings.js` keys in BOTH languages in the same edit: `demoData` (「示範資料 / Demo data」, the nav tag) and `demoBanner` (the shell banner, painted OUTSIDE `mountLazy`'s `replaceChildren()` reach at `app.js:404`).
+- **boundary:** **The load is at BOOT, not on the first demo tick, and that is a correction of ARCH-132's `api:` clause rather than a preference** (amended in place at `02-architecture.md` with the measurement, 2026-09-17). Measured: `/static/dashboard/*` (`server.ts:1288`) and the `/api/*` dispatch (`server.ts:1362-1370`) are arms of ONE request handler of ONE `createServer`; ARCH-123's v28 amendment serves this key `no-store`; ADR-058's only real trigger is mid-session engine loss. So a first-demo-tick `import()` issues a GET to the process that just died, with the HTTP cache ruled out by `no-store` and the module map ruled out by 「never statically」 — **the dataset is unreachable at exactly and only the moment it is needed, and it fails silently into the Offline tag, which is demo's correct-looking neighbour.** A boot-time dynamic `import()` fixes it while keeping every property ARCH-132 claims: ONE import site, `no-store` fresh bytes per load, `DEMO_AVAILABLE` still 「an import resolving, never a setting」, and a retirement that stays mechanical — `rm -r src/dashboard/demo` makes the boot import REJECT into its own `.catch`, so the console keeps working live while `demo-surface.test.ts` goes red until every describer retires. A STATIC top-level `import` was considered and refused for that last reason: it would take the whole bundle down with the directory. **Two clauses of ARCH-132 are withdrawn explicitly, not quietly:** 「a Live deployment never fetches the bytes」 is unachievable, and REQ-143's positive browser observable becomes 「exactly one GET of `/static/dashboard/demo/dataset.js` per page load」 — still positive, still falsifiable, but a DIFFERENT assertion Gate 5 must be told before it writes the test. Gate 6 states the byte size in the commit message; if it lands large that is an argument for trimming the fixture, not for reinstating a lazy load. **`demoEngages` lives in `lib/connection.js`, beside the two functions it reasons about** — not in a `lib/demo.js`, because a file whose whole content is one predicate is a second describer of a dataset whose registered exit is deletion, which is the defect class REQ-143 itself names. Its `reachedFlags.length > 0` guard is the same one `nextConnection:30` already needed: an empty route set must be `false`, never vacuously `true`. **Self-labelling lives in the DATA, not only the chrome** (a banner crops out of a screenshot; a run id pasted into an issue does not): `demo-…` workflow names, `demo0001…` run ids, `demo-agent-…` agent ids, `[DEMO] …` issue titles, PIDs in a fixed `99xxx` band — and every parametric id must satisfy `encodeURIComponent(id) === id`, because `poll.js:19,22` encodes and a single escaped character produces a key that never matches, failing SILENTLY into a correct-looking Unavailable. `diagram.svg` is a fetch-to-blob (`workflow.js:269-276`) and is deliberately NOT in the map: demo shows `paintFigureUnavailable`. **Not built:** a generator, a seeded RNG, a per-language dataset, a config key (ADR-058 refuses the flag by name).
+- **tests:** UT — the **type lock** (`tests/unit/demo-dataset-types.test.ts`): every body `satisfies` its type from `tests/fixtures/dashboard-wire.ts` (DES-218's rows), so the fiction cannot drift from the wire; the **id charset** round-trip over every parametric key; the **tripwire** (`tests/unit/demo-surface.test.ts`), an allowlist closed BOTH ways — *listed ⇒ present on disk* (deletion goes red until every describer retires) and *mentioned ⇒ listed* (a leak anywhere else goes red), same mechanism as `static-assets.test.ts:50-71`; and `demoEngages` over its 2³ corners plus `reachedFlags === []`. Acceptance — val-207, and its fault must be a **STOPPED engine under an already-open page**, never an HTTP-error storm (that is REQ-131's Offline case, val-198's). Build either as the other and one of them silently stops testing anything.
+- **iter:** v28
+
+### DES-213 — `lib/model.js` at v28: one sort-key projection, one matcher, one row, one panel
+- **status:** draft
+- **traces:** ARCH-134, ADR-060, TASK-222, REQ-137
+- **signature:** `src/dashboard/lib/model.js` (extends the existing file — a second `lib/models.js` would be two near-homonym `ASSET_KEYS`): `sortKeyOf(entry, column) → number | string | undefined`; `matchModels(entries, { query, provider, loc }) → EnrichedModelEntry[]`; `modelRow(entry, lang) → { cells: string[12], sortKeys: Record<column, scalar|undefined> }`; `costDots(level) → '●●●○○'`; `modelPanel(entry, lang) → { kicker, title, aliases, description, defs: [label, value][], benchmarks: [name, value, pct][], tags: string[] }`. `shortModel` unchanged. Columns, in REQ-137's order: `model · provider · aliases · context · price · tools · effort · modalities · latency · stability · benchmarks · location`.
+- **boundary:** **`sortRows` (`runlist.js:42`) is REUSED byte-unchanged and the absence normalisation happens at the PROJECTION.** Measured (`node -e` over `runlist.js`): `sortRows` treats only `undefined` as absent, so `null` sorts FIRST ascending (`[{k:null},{k:1},{k:5},…]`) and mid-pack descending — and `EnrichedModelEntry` uses `null`, not `undefined`, for exactly the honest-absence fields (`contextWindow`, `costLevel`, `ratesPerM`, `catalogFetchedAt`). Widening `runlist.js`'s notion of absence would reorder REQ-133's shipped history table, so instead: **`undefined` is the ONLY absent token `sortRows` ever sees.** `sortKeyOf` normalises `null`, `'unknown'`, and a missing nested path to `undefined`; it is TOTAL (an unknown column returns `undefined`, so a typo degrades to 「unsorted, absent last」 rather than a blank tab); and it returns a COMPARABLE SCALAR where the cell renders a string — price sorts on `ratesPerM.out` (numeric) while the cell renders `price` (`{in,out} | 'free' | 'unknown'`), context sorts on the number, modalities on a stable rendered token. **`'free'` on the price column is the number `0`, a fact, not an absence** — the same ruling as `ZERO_RATES` (`model-catalog.ts:96-99`); likewise `costLevel === 0` renders the zero-dot form and sorts as `0` while `costLevel === null` renders `—` and sorts last. Getting that backwards makes every local model look unpriced, which is a correctness failure on the one surface an operator uses to decide which model backs an alias. **The `—` rule is a rule over PRESENCE, never a literal pinned to this iteration's absence** (INV-V28-4): `latency` and `benchmarks` are always absent today (Won't-have D2), and their intended shapes — `latency: {ttftMs, p50Ms}` → `TTFT 900ms · p50 6.8s`, `benchmarks: Record<string, number>` → `78 avg` plus the per-score bars — are recorded in ADR-060, not typed onto `EnrichedModelEntry`. **Wire-neutral per ADR-060:** no status route, no `catalogSource`, no `supportedParameters`; REQ-137's 「支援參數以 neutral tag 列出」 renders the engine's OWN projection with its provenance (`tools ✓ upstream`, `reasoning ✓ static`) — a named deviation from the handoff drawing, recorded there with a pre-stated bounded escape hatch.
+- **tests:** UT (`dashboard-lib-model.test.js`) — the **12 × 2 table**: five fixture rows, one of them all-absent, asserting the absent row is LAST in BOTH directions for EVERY column (24 assertions, one literal fixture, the cheapest test in the sprint and the one that pins INV-V28-4 mechanically). `matchModels` over query/provider/segment including the empty-filter identity and the `4 / 9` count. `costDots` over `0`, a mid level, `10` and `null`. The honesty rule as a RULE: one fixture row WITHOUT `latency`/`benchmarks` ⇒ `—`, one WITH ⇒ the formatted value; **both required**, because a test pinning only the absence encodes D2 and goes green forever the day D2 is lifted.
+- **iter:** v28
+
+### DES-214 — `ui/models.js` rewritten: twelve columns, three filters, one slide-in
+- **status:** draft
+- **traces:** ARCH-133, ARCH-125, DES-213, TASK-222, REQ-137
+- **signature:** `render(container, vm, handlers)` builds the chrome ONCE (filter row: search `input` max 280, provider `<select>`, the All/Remote/Local `.seg`, the count readout, the sort hint) and `onTick(container, bodies, ctx, tick)` paints `bodies['/api/models']` through `matchModels` → `sortRows` → `modelRow`. Per-container state in a `WeakMap` (`home.js:199-217`'s pattern): `{ query, provider, loc, sort: {key, dir}, selected, fingerprint, painted }`. Row click → the 560 px slide-in from `modelPanel`. Delegated listeners on the stable `thead` and `tbody` wrappers.
+- **boundary:** **Repaint is fingerprint-gated:** `catalogFetchedAt` + row count + `sort` + the three filter values + `selected`. 100 rows × 12 columns rebuilt every 3 s is ~1 200 nodes of churn against a catalog with a 1-hour TTL, and a blind repaint closes the operator's open panel and resets their sort every tick. Sort direction, active filter and the open panel live in the per-container state, never in the DOM. **Degrade is DES-206 rule (V)/(K)/(U) with no carve-out:** the verdict is `tick.results['/api/models']`, never the body's shape; first paint (`painted === false`) ⇒ the ONE Unavailable component `el('div','empty', t(lang,'unavailable'))`; after a successful paint ⇒ KEEP, no DOM write derived from the failed resource. **`models.js:56`'s per-file literal retires in this rewrite** — DES-206 (S) said it moves onto the key 「when THAT site is repaired」, and this is that repair. `textContent` only; `—` for every absent cell; the active header carries ▲/▼ and the accent class, the inactive ones carry neither.
+- **tests:** Acceptance val-203 (real Chromium), starting from a COLD `/dashboard` and CLICKING `[data-tab="models"]` — carry-forward 5: val-201 was green for weeks while the route users open was broken. Every 「text fits its box」 clause uses the `notClipped` `SpecExpect` kind; `getComputedStyle` cannot see a flex-shrink clip. The 12-column layout, the sort toggle, the `4 / 9` counter and the slide-in are asserted on screen, not in source.
+- **iter:** v28
+
+### DES-215 — `lib/system.js`: two state readers, four cards, and an OPEN process-state key set
+- **status:** draft
+- **traces:** ARCH-134, ADR-057, TASK-223, REQ-138
+- **signature:** `src/dashboard/lib/system.js` (new, pure): `sectionState(value) → {kind:'ok', value} | {kind:'unavailable', reason}` for the three DISCRIMINATED-UNION sections (`memory`, `disk`, `process.system`); `cpuUtilState(cpu) → same shape` for the ONE sibling-key section (`utilizationPct: number|null` beside `utilizationDegraded?: Degraded`); `statCard(kind, input, lang) → { value, pct: number|undefined, meta, kicker? }`; `procRow(proc, selfPid) → { pid, name, cpuPct, memBytes, isSelf }`; `procTotals(system, lang) → string`; `fmtBytes(n) → string` (MOVED verbatim out of `ui/system.js:38`); `catalogCounts(workflows, runs) → { workflows, versions, runRecords }`.
+- **boundary:** **One signature cannot serve all four cards, and pretending it can is how three good cards get blanked.** `SystemInfoView` is not uniform (`system-info.ts:77-100`): `cpu` carries its degrade in a SIBLING key while `cores`/`loadAvg` stay real; `memory`/`disk`/`process.system` are discriminated unions; and the fourth card is **not in `SystemInfoView` at all** — it is ADR-057's client fold of `/api/workflows` + `/api/runs`. So: **the counts card's state is a ROUTE verdict, not a section reason** — `tick.results['/api/workflows']` and `['/api/runs']` — and when either is not `ok` THAT card alone renders Unavailable while the other three keep rendering live host numbers. The nav tag is tab-wide (`worstOf` over all three routes, ARCH-124's narrowing); the Unavailable component is **per card**. Without this split the natural `if (worst !== 'ok')` at the top of the view blanks three cards holding perfect data — 「degrade, never pretend」 failing in the opposite direction. **Three of the five `Reason` values are NOT faults** (`awaiting-second-sample` is the expected first tick after boot, `unsupported-platform` is permanent, `sample-window-too-short` is a fast double-poll), so the reason travels out and renders as the card's secondary text: 「wait one tick」 must be distinguishable from 「this host cannot report it」 without opening the journal. **`statCard` returns `pct: number | undefined` and the counts card returns `undefined`** — it has no denominator, and INV-V28-4 says the BAR has an absent state of its own, not only the number; `pct: 100` would ship a full bar that means nothing. **`process.system.byState`'s key set is OPEN** — `system-info.ts:323-326` counts `p.state` verbatim from `/proc` — so `procTotals` renders the top states by count with a stable tiebreak (REQ-138's own header ends in 「…」), never a hard-coded S/R pair and never a throw on a letter nobody has seen. `catalogCounts` per ADR-057's written definitions: `workflows` = `entries.length`, `versions` = the SUM of each entry's `versions.length`, `runRecords` = `/api/runs`.length.
+- **tests:** UT (`dashboard-lib-system.test.js`) — `sectionState` and `cpuUtilState` over all five `Reason` values and the ok arm; `statCard` for each of the four kinds, asserting `pct === undefined` for counts; `procTotals` over a `byState` containing an unanticipated letter; `procRow` marking `isSelf` on the engine pid only; `catalogCounts` over the three definitions; `fmtBytes` at the three unit boundaries.
+- **iter:** v28
+
+### DES-216 — `ui/system.js` rewritten: four stat cards, the process table, the engine `<dl>`
+- **status:** draft
+- **traces:** ARCH-133, ARCH-125, DES-215, ADR-057, TASK-223, REQ-138
+- **signature:** `render(container, vm, handlers)` sets `container.id = 'system-panel'` (the C2-class anchor the ported tab already carries) and builds the four card shells, the process `<table>` and the engine `<dl>` ONCE; `onTick(container, bodies, ctx, tick)` updates VALUES IN PLACE from `bodies['/api/system']`, `bodies['/api/workflows']` and `bodies['/api/runs']`, with process rows keyed by `pid` so a tick reorders rather than rebuilds. Cards: CPU % · Memory % · Disk % (path in the kicker) · stored workflows — 34 px/weight-500 figure, a 2 px track with a 4 px accent bar, and the meta line REQ-138 spells out.
+- **boundary:** Per-card degrade exactly as DES-215 splits it — three cards on `/api/system`'s section states, the counts card on the other two routes' verdicts. Route-level non-`ok` for `/api/system` is DES-206 (V)/(K)/(U): first paint ⇒ the ONE Unavailable component, after a paint ⇒ KEEP. **A degraded SECTION inside an `ok` body is NOT the route rule** — it is a normal repaint with that card carrying its own marker; conflating the two is what scoped BF-4 wrong. **`system.js:29`'s zh-only `UNAVAILABLE` const retires in this rewrite** onto `t(lang,'unavailable')` (already in both languages, `strings.js:26,35`) — DES-206 (S)'s condition 「when THAT site is repaired」 is met here. 20 process rows arrive now (ARCH-135); the row shape stays `comm` only — never argv, cwd, env or uid — and that is an asserted invariant, not a habit.
+- **tests:** Acceptance val-204 from a COLD `/dashboard` + a click on `[data-tab="system"]`; the decisive case is the **per-card split**: intercept ONLY `/api/workflows` and assert the counts card reads Unavailable while CPU/memory/disk still render live numbers and the tag reads 降級. `notClipped` on the process table's text cells. val-202's REQ-076/077 clauses are re-proven here; val-202 itself RETIRES under this id with its reason recorded, never silently deleted.
+- **iter:** v28
+
+### DES-217 — Issues (REQ-139): `safeIssueHref`, and the same tab in v28 clothes
+- **status:** draft
+- **traces:** ARCH-134, ARCH-133, TASK-224, REQ-139, REQ-067
+- **signature:** `src/dashboard/lib/issues.js` (new, pure, ONE export): `safeIssueHref(url) → string | null` — `new URL(url)` inside a `try`, `https:` protocol only, else `null`; total, never throws. `src/dashboard/ui/issues.js` keeps its endpoints, its Open/Resolved partition, its per-container chrome state and its click-through detail box; the detail loader's `getJSON` becomes `getViewJSON` (it is state-dependent, not primary); the list paints from `bodies['/api/issues']` instead of re-fetching.
+- **boundary:** **REQ-067 may not regress and its degrade text is the wire's, not the marker's.** `/api/issues` has TWO 200-with-`degraded` bodies — the token-missing arm (`server.ts:463`) and the catch-all — and `classifyResponse` maps both to `degraded`, so the wording is read INSIDE the non-`ok` branch and rendered via `textContent`: that is exactly what preserves 「未設定 GitHub 時顯示 degraded 而非空白」. The ONE Unavailable component is for the route being unreachable; the server's own `degraded` string is the secondary text where the body carries one. `safeIssueHref` returning `null` renders the row as TEXT with no link — an issue title and URL are attacker-influenceable content on an unauthenticated page, and this is the slice's one such `href`. **This tab has NO design page** (the handoff ships three tabs; Issues is the owner's fourth), so its visual acceptance is 「same tokens and component classes as the other three, in both themes」 — the 99 % similarity clause does not apply and no SPEC_ROW is authored for it.
+- **tests:** UT (`dashboard-lib-issues.test.js`) — `safeIssueHref` over `javascript:alert(1)`, `data:text/html,…`, `http://evil.example/`, a relative path and a malformed string (all `null`), and `https://github.com/…` (unchanged). Acceptance val-205 — the token-missing 200 `{degraded}` still shows its TEXT, Open/Resolved still partition, a row still expands and links out, plus two screenshots (dark + light) as REQ-139's own evidence. val-202's REQ-067 clause is re-proven here.
+- **iter:** v28
+
+### DES-218 — the wire's v28 delta: one server literal, one named type, four disclosure rows
+- **status:** draft
+- **traces:** ARCH-135, ARCH-130, ADR-054, ADR-057, TASK-219, TASK-225, REQ-138, REQ-137, REQ-139
+- **signature:** `src/server.ts:370` — `systemInfo.get({ topN: 20 })`, a literal constant, never a value derived from the URL; body shape unchanged (`{ ...view, auth }`); the MCP `system_info` tool keeps its own default of 5 and its 1-50 argument (`tool-specs.ts:999-1004`); the dashboard dispatch condition (`server.ts:1361-1370`) byte-identical. `src/github/issue-reporter.ts` mints `export interface IssuesListView { open: IssueSummary[]; resolved: IssueSummary[]; degraded?: string }` beside the types it composes, and `server.ts:466`'s payload is annotated against it — **zero wire change**, it names a shape that already ships. `tests/fixtures/dashboard-wire.ts` gains `SYSTEM_OK: SystemInfoView & { auth: unknown }`, `SYSTEM_SECTION_DEGRADED`, `MODEL_ENTRY_OK: EnrichedModelEntry`, `ISSUES_OK: IssuesListView`, each with its `ALLOWED_*`/`REQUIRED_*` key set, and `DISCLOSURE_TABLE` gains the four rows INV-V27-7 owes: `GET /api/system (ok)`, `GET /api/system (per-section degraded)`, `GET /api/models[i] (ok)`, `GET /api/issues (ok)`.
+- **boundary:** **No `?topN=` knob.** `SystemInfoSampler.get()` caches the RAW snapshot and applies `topN` at SHAPE time on every call (`system-info.ts:256-290`), so a different constant per caller is free and correct inside one TTL — which removes the only argument for a knob, and a knob on an unauthenticated route would be both a recon-widening and a per-request cost control. The check is `grep -n "topN" src/server.ts` showing literals only. **The recon consequence is recorded, not fixed:** with `bind: 0.0.0.0` this unauthenticated route now publishes 20 host process rows instead of 5. Won't-have D1 (no per-principal dashboard authz) and the v24 H-1 adjudication (the auth gate in this family was REMOVED because an unauthenticated browser client got a 401 and the pane went blank) both forbid re-gating it this iteration, so the honest controls are the BOUNDED CONTENT (`comm` only — never argv, cwd, env or uid, `system-info.ts:46`), the disclosure rows, and one DEPLOY line. The full disk `path` stays visible: it is already on the wire, and hiding it in the UI while the API serves it is theatre. **Every disclosure body is a LITERAL typed by `satisfies`, never captured from a live response** — that is what lets one authoring cost serve three obligations (the key-set lock here, DES-212's type oracle, and DES-213/215's UT input literals) and what stops three subtly-different copies of 「the same」 fixture reaching disk, this ledger's most expensive defect class.
+- **tests:** Integration — `tests/integration/dashboard-disclosure.test.ts` over the widened `DISCLOSURE_TABLE` (a key present on the wire and absent from the row's `allowed` set is a red, in both directions); `tests/integration/dashboard-http.test.ts` for the 20-row body and the unchanged shape. No new production code beyond the literal and the type annotation, so there is no new unit tier to own.
+- **iter:** v28
+
+### DES-219 — `dashboard.css` at v28: the three tabs' component families, and the rule that keeps their SPEC_ROWS honest
+- **status:** draft
+- **traces:** ARCH-133, ARCH-125, TASK-221, REQ-137, REQ-138, REQ-139, REQ-143
+- **signature:** `src/dashboard/dashboard.css` gains four families, each declared in `tests/fixtures/dashboard-classes.ts`'s `STYLE_HOOKS` in the SAME commit (the class lock is closed both ways): **models** — the filter row, the 12-column `.table` at min 960 px with horizontal scroll, the sortable header with its active/▲▼ state, the 560 px slide-in, the cost dots, the benchmark grid `140px 1fr 48px` with its 2 px track and 4 px bar; **system** — the four stat cards (34 px/500 figure, 2 px track, 4 px accent bar, kicker, meta), the process table with the engine's ★ row, the engine `<dl>` box; **issues** — no new family, the existing `.issue-row`/`.issue-detail`/`.tag` re-themed by inheriting the token layer; **demo** — the shell banner and the nav tag's third state. Values come from `.sdlc/design-handoff/README.md` §4/§5 and §「Design tokens」; no new colour or type literal outside the existing OKLCH ramp.
+- **boundary:** **This row owns no `.js` and writes no `SPEC_ROW`.** The rows for REQ-137/138 are authored by Gate 5 from the handoff README's own lines, RED, **before this stylesheet exists** — carry-forward lesson 3: three poisoned rows were found this ledger-year, one copied from shipped CSS, one passing by coincidence of sort order plus default selection, one encoding the bug it was meant to catch, and a poisoned row is worse than a missing one because it goes green forever and looks like coverage. Only the mechanical part is pre-agreed here: `SpecReq` widens to include `'REQ-137' | 'REQ-138'` and `SpecView` to include `'models' | 'system'`, and **every 「text fits its box」 clause in the two new tables uses the `notClipped` kind** — `getComputedStyle` echoes a correct property value back while the text is crushed to a sliver of glyph tops, which is how VAL-208 shipped. Issues gets no SPEC_ROW (DES-217: no design page, no 99 % clause). **This task's green is partial by design**: the class lock passes with it, the EMITTER half (`dashboard-no-design-values.test.ts`) stays red until the three view tasks land and is the slice's final green.
+- **tests:** UT — `dashboard-class-contract.test.ts` both halves plus the value anchors; `dashboard-no-design-values.test.ts` as the slice's closing green. Acceptance — val-203/204/205 iterate `SPEC_ROWS` under BOTH `data-theme` values and once more after a hue move, via the existing `tests/helpers/spec-rows.ts`.
+- **iter:** v28
+
+### v28 real-tier validation paths, and the per-tier mock policy
+
+**Per-tier mock policy (unchanged in kind, restated because the verifier writes against it).**
+**Unit** may mock freely — every `lib/` module here is pure and total, so its UTs take literal
+fixtures and need no mocking at all. **Integration** uses real adjacent components: the disclosure
+and HTTP tests boot a real `createServer` over a real SQLite `RunStore` and a real
+`SystemInfoSampler` (its `SystemProbe` is the ONE injectable OS boundary and is the only thing a
+`StubSystemProbe` may replace). **E2E / acceptance must NOT mock the SUT's own boundaries** — every
+val-* case below runs against a real engine process in real Chromium via the existing puppeteer
+harness with `RWE_REQUIRE_BROWSER=1`; the only sanctioned intervention is
+`page.setRequestInterception` used to INDUCE a fault on a route (that is the fault injection, not a
+mock of the system under test), and for REQ-143 not even that.
+
+| REQ | real entrypoint the validator opens | real wiring | the action that proves it |
+|---|---|---|---|
+| REQ-137 | `deploy.sh` scratch instance → `http://…/dashboard` → click `[data-tab="models"]` | real `/api/models` off the real `ModelBook` snapshot (Anthropic static rows at minimum; Ollama if the local daemon is up) | twelve columns paint; a header click sorts and re-sorts with ▲/▼ on the active header only; the counter goes `N` → `M / N` under a filter; a row click opens the 560 px panel with the cost dots; every absent cell is `—`, never `0` |
+| REQ-138 | same instance → `[data-tab="system"]` | real `/api/system` (real `SystemProbe` on this host), real `/api/workflows`, real `/api/runs` | four cards with live host numbers and their bars; the process table lists real PIDs with the engine's own row marked ★; the engine `<dl>` reports this process; then intercept ONLY `/api/workflows` and watch the counts card alone go Unavailable while the other three keep live numbers |
+| REQ-139 | same instance → `[data-tab="issues"]` | real `/api/issues` through the real `IssueReporter` — with a real GitHub token AND once without it | issues list and partition with a token; without one, the degraded TEXT shows (never a blank); a row expands and its link opens; two screenshots, dark and light, beside the other tabs |
+| REQ-142 | same instance, page open on any tab | the real `visibilitychange` platform event on a genuinely backgrounded page | `browser.newPage()` + `bringToFront()`, then `page.on('request')` counts `/api/*` over a 30 s hidden window ⇒ **0**, and the first `/api/*` lands within ~300 ms of re-show. DES-211's ladder governs if the harness cannot background a page — rung 3 records the clause UNVERIFIED rather than downgrading it |
+| REQ-143 | same instance, page ALREADY OPEN, then `kill` the engine process | no interception at all — the engine is genuinely gone | two ticks later the nav tag reads 示範資料, the shell banner is up, every tab shows demo content with `demo-`/`demo0001` ids, and `data-source="demo"`; restart the engine and the NEXT tick returns to 連線中 with real data. **This fault is a stopped process, never an HTTP-error storm** — that is REQ-131's Offline case, and building either as the other silently stops testing one of them |
+
+### v28 seam consistency (exit-gate 5)
+
+One timer, one fetcher, one clock, one visibility read. **`ui/app.js` owns the ONLY `setTimeout` in
+the client tree** (asserted, DES-210) and the only `visibility()` read, which is INJECTED so a test
+can supply it; `nextPoll` owns the decision and no timer. **No `lib/` module reads time or the DOM**
+— `scheduler.js`, `system.js`, `issues.js` and `model.js`'s additions are all covered by the
+standing falsifier `grep -rn 'new Date()|Date.now()|document\.|fetch(' src/dashboard/lib/` at 0
+hits, and `demoEngages` takes its verdict and its `reached` flags as arguments rather than reading
+them. **Every method that consumes a fetch result takes it from the same `FetchResult` shape** —
+`getJSON` and `getViewJSON` return the identical four fields, so no consumer needs to know which one
+it called; there is no asymmetric pair like 「`getJSON` carries `reached` but `getViewJSON` does
+not」, which is exactly the shape that plants a `undefined`-vs-`false` bug in the five modules this
+sprint does not rewrite.
+
+## Decision rationale — v28 (DES-210..219 + six amendments; lean tier, lenses self-applied)
+
+**Why there is no panel transcript for this gate.** The owner ruled Sprint B `tier: lean` on
+2026-09-17 after the design gate died on the session limit four consecutive times and on the weekly
+limit once, always in panel round-2 + decide. The trade is recorded in `state.yaml pending:` as a
+deliberate rigor trade: Gates 2/4 skip the grouped-expert debate, Gate 5 RED → Gate 6 GREEN →
+Gate 6.5+7 regression → Gate 7.5 real-run do NOT scale down. **One asymmetry worth naming:** an
+adversarial round-1 file from a killed attempt survived on disk
+(`.panel/design/adversarial.r1.md`, 2026-09-14), so the three adversarial lenses below are argued
+from a REAL independent proposal while the four quality dimensions are this gate's own reading.
+Three of that file's load-bearing measurements were **independently re-run here before being
+acted on**, because adopting an unverified finding is how a settled question becomes a defect:
+`grep -n "createServer\|/static/dashboard/\|dispatchDashboard" src/server.ts` (one handler, one
+listener — K0 stands), `node -e "…sortRows([{k:5},{k:null},{k:1},{k:undefined}],'k','asc')"`
+→ `[{"k":null},{"k":1},{"k":5},{}]` (K4 stands: `null` sorts FIRST ascending), and
+`grep -n "export const" tests/fixtures/dashboard-wire.ts` (four of the seven promised types exist —
+K8 stands).
+
+### Adversarial lens (a) — interface-contract
+
+**Satisfied by:** one declared `FetchResult` shape with every field always present (DES-210), an
+ADDITIVE 4th `onTick` parameter so the five view modules this sprint does not rewrite keep their
+arity, and one named type for a shape that already ships (`IssuesListView`, DES-218) so the
+disclosure lock and the demo type-lock can both reference it.
+
+**The finding this lens forced:** `tick.results` had two incompatible meanings. ARCH-133(1) tells
+views to select Unavailable on `tick.results[url] !== 'ok'`; ADR-058 says the reducer runs on the
+REAL results, which on a demo tick are `fail` for EVERY primary by construction — that IS the demo
+predicate. Read literally, every tab paints 「無法取樣」 on top of a perfectly good demo body,
+REQ-143 is inert and INV-V28-2 is satisfied vacuously. Fixed by naming the two maps separately
+(`transportResults` private to `app.js`, `tick.results` view-facing), which is a clarification of
+ARCH's own other sentence rather than an override: ARCH-133(5) already defines `getViewJSON`'s demo
+arm as `{status:'ok', …}`.
+
+**Refused by this lens:** having views branch on `tick.source === 'demo'`. It puts a demo branch in
+three rewritten views plus every future one, and `demo-surface.test.ts`'s allowlist would grow three
+files — the opposite of ARCH-132's mechanical retirement. One map adjusted once, at the one
+substitution point that already exists.
+
+### Adversarial lens (b) — boundary / error
+
+**Satisfied by:** DES-212's boot-load correction, DES-213's absent-token normalisation, DES-215's
+per-card degrade split and OPEN `/proc` key set, DES-217's `https:`-only `href`, and the id-charset
+round-trip that turns a silent map miss into a red test.
+
+**The blocking finding, and the one place this gate corrected an ARCH `api:` clause.** ARCH-132
+loads the dataset by `await import('../demo/dataset.js')` 「on the FIRST demo tick and never
+statically」; ADR-058 says the only real trigger is mid-session engine loss; ARCH-123 serves the key
+`no-store`. Re-measured here: `/static/dashboard/*` (`server.ts:1288`) and the `/api/*` dispatch
+(`server.ts:1362-1370`) are arms of ONE handler of ONE `createServer`. So the import fires a GET at
+the process that just died — cache ruled out by `no-store`, module map ruled out by 「never
+statically」 — and REQ-143's whole mechanism fails, silently, into the Offline tag, which is demo's
+correct-looking neighbour. **ARCH-132 was amended in place (2026-09-17) with that measurement
+attached** rather than bounced to the architect lane: the fix is a boot-time dynamic `import()`,
+which preserves every property the row claims (one import site, `no-store`, `DEMO_AVAILABLE` as 「an
+import resolving, never a setting」, mechanical retirement) and withdraws exactly two clauses, both
+named in DES-212. **A static top-level `import` was the panel's recommendation and is refused here**
+on the retirement property the panel treated as a bonus: a static import takes the whole bundle down
+with the directory, so the commit that deletes `src/dashboard/demo/` blanks the dashboard until
+`app.js` is edited too. A boot `import()` that catches its own rejection degrades to 「no demo
+mode」 and leaves the console working — for a feature whose registered exit is DELETION, that is the
+difference that decides it.
+
+**Second finding: `reachedFlags === []`.** The predicate's `every()` is vacuously true over an empty
+route set, so a view with an empty `ROUTES` entry would engage demo on a healthy engine. Guarded
+explicitly (`reachedFlags.length > 0`) — the same guard `nextConnection:30` already needed, and the
+exact shape of the AD-2 empty-tick hazard.
+
+**Third: absence rendered as a position.** `sortRows` puts `null` FIRST ascending (measured), and
+`EnrichedModelEntry` uses `null` for exactly the honest-absence fields. Four of REQ-137's twelve
+columns have no comparable scalar at all (price is `{in,out} | 'free' | 'unknown'`). Normalised at
+the projection, not the comparator — see conflict C2 below.
+
+### Adversarial lens (c) — testability
+
+**Satisfied by:** every new decision is a pure, total `lib/` export with a named UT — `nextPoll`,
+`resumeReset`, `demoEngages`, `sortKeyOf`, `sectionState`, `cpuUtilState`, `statCard`, `procTotals`,
+`catalogCounts`, `safeIssueHref` — plus a pre-decided oracle ladder for the one clause a browser may
+not be able to prove (DES-211), and an anti-poison rule for the two new tables' SPEC_ROWS (DES-219).
+
+**The finding this lens forced:** `nextConnection` is not idempotent, and ADR-058 needs its verdict
+BEFORE `onTick` while the single existing call site is AFTER. Any implementation that commits the
+preview and reduces again double-increments the streak, so `offline` (and therefore demo) arrives
+after ONE all-fail tick instead of two — breaking both REQ-131's ≥2-tick rule and ADR-058's own
+entry mitigation, and **invisible to a request-count oracle taken 30 s later**. DES-210 writes the
+seven steps as a numbered sequence a reviewer can read the file against, and names the failure so it
+can be grepped for: `nextConnection(` exactly twice, `connectionState =` exactly once.
+
+**Where this lens accepted weaker coverage, explicitly.** The REQ-142 race lives in the WIRING
+(`app.js`'s `tick().finally(setTimeout)`), not in `nextPoll`, so the pure UT proves the decision
+table and leaves the actual defect unproven. The tempting fix — injecting
+`{setTimeout, clearTimeout, visibility, tick}` and driving the loop from node — is a framework seam
+in a layer whose whole constitution is 「no abstraction」. Refused; bought instead with two cheap
+instruments (the real-browser count, and `setTimeout(` occurring once in `app.js`) and the weakness
+is recorded rather than papered over. **If Gate 5's measurement kills ladder rungs 1 AND 2, this
+reopens and injection becomes the least-bad option** — said now so reopening is cheap.
+
+### Internal conflicts between the three adversarial lenses, and the tie-breaks
+
+- **C1 — testability wants the demo predicate extracted; simplicity refuses a new file.** An
+  untested three-term boolean at the seam is QD-R2 repeating itself and ADR-059 set the precedent
+  one requirement earlier; but a `lib/demo.js` holding one predicate is a second describer of a
+  dataset whose registered exit is deletion — the very class REQ-143 names. **Tie-break: testability
+  wins the extraction, simplicity wins the location.** `demoEngages` goes in `lib/connection.js`
+  beside the two functions it reasons about. Cost: one line on the retirement checklist and one
+  allowlist entry on the tripwire. Adopted from the panel.
+- **C2 — boundary wants `sortRows` to understand `null`; interface wants `runlist.js` untouched;
+  simplicity refuses a second comparator.** `runlist.js` is v27-closed and REQ-133's history table
+  depends on its exact behaviour. **Tie-break: normalise at the projection.** `sortKeyOf` makes
+  `undefined` the ONLY absent token `sortRows` ever sees; the comparator is byte-unchanged and
+  ARCH-134's 「no second comparator」 survives intact. Adopted from the panel.
+- **C3 — interface wants one result type; boundary says `reached` is meaningless on a map answer.**
+  Boundary is right that nothing was reached over the network. Interface is more right that an
+  optional field on a union consumed by six modules is how a `undefined`-vs-`false` bug enters, and
+  five of those modules are not being rewritten. **Tie-break: interface wins, with the field's
+  meaning redefined rather than fudged** — `reached` means 「a response was obtained」, not 「a
+  socket was opened」 — and it is never read on a `getViewJSON` result anyway, because the extras
+  are discarded at the seam on demo ticks. Definition stated in DES-210 so nobody re-derives it as a
+  bug. Adopted from the panel.
+- **C4 — boundary wants the retirement to fail LOUD; boundary also wants the retirement to be
+  SAFE.** This is the one conflict the panel did not have, because it recommended the static import.
+  Loud says: a static import means deleting the directory breaks the build immediately. Safe says:
+  the retirement commit then blanks the dashboard for anyone who pulls it half-applied, and this
+  ledger's most-recorded defect is 「deleted but something still describes it」, which the tripwire
+  already catches loudly at CI. **Tie-break: safe wins, because the loudness is not lost** — the
+  both-ways tripwire is red the moment the directory goes, which is the same signal one gate
+  earlier, without taking the product down to deliver it.
+- **C5 — testability wants the `data-*` stamps asserted; interface says a stamp is vacuous.**
+  **Tie-break: both, in different roles, said in those words.** They are a PRODUCT requirement
+  (REQ-143's 「每個 tab 的可見區域都能看出處於示範模式」) and a SECONDARY test signal admissible
+  only as a conjunct beside a request count or a painted body — never alone, because a stamp written
+  by the code under test passes vacuously, the same trap as a patched `visibilityState`.
+
+### Quality dimension (1) — Observability
+
+**System altitude.** The slice's observable surface is deliberately small and entirely on the
+client: the nav tag (three states, `worstOf` over the visible tab's whole route set), the footer
+clock, and two `data-*` stamps on `documentElement`. The load-bearing rule is INV-V28-3's corollary
+— **a parked poller cannot advance the footer clock**, so 「the console is not polling」 is visible
+on screen rather than inferable only from devtools. Server side: nothing is added; ARCH-130's
+`dashboard_degraded_read` line already exists and this slice creates no new server state to observe.
+**The new blind spot this slice creates, named rather than discovered later:** demo mode and offline
+mode look alike from outside, and if the boot import fails (a retired directory, a 404 on the
+registered key) the console silently shows Offline forever. Two answers, and the third was refused:
+`demo-surface.test.ts` is the CI-side observable (a missing file with a live key is red), and a
+failed GET of a registered asset key is visible in the network panel — while a third
+`data-demo="unavailable"` stamp was REFUSED, because ARCH-133 already dropped `data-conn` on the
+rule that a stamp must not become a second name for a fact the page states in words.
+**Agent altitude — applied where it is real and not manufactured.** Nothing in this slice touches an
+agent's reasoning trace, token accounting or tool-call sequence (that was Sprint A's REQ-135/136 and
+is not re-litigated). The one genuinely agent-facing loop is `/api/issues`, which lists
+`agent-reported` issues (`server.ts:461`) — agents filing defects about themselves for a human to
+triage. A regression there severs that loop silently, which is precisely why REQ-139 restates
+REQ-067's 「degraded, not blank」 clause and why DES-217 makes the wire's own `degraded` wording the
+rendered text rather than a generic marker.
+
+### Quality dimension (2) — Replaceability
+
+**System altitude.** The decoupling this slice buys is real and measurable: every decision moves out
+of `ui/` into pure `lib/` modules that node imports directly (that is the whole reason ADR-049's
+missing unit tier keeps being cited), each tab is a lazily-imported module addressable by three
+table entries, and the entire demo fiction sits behind ONE substitution point so it is removable in
+one commit. `SystemProbe` remains the single injectable OS boundary and the slice adds no second
+one — ADR-057 refused counts inside `SystemInfoSampler` for exactly that reason (a catalog
+dependency inside a probe is the coupling the module split exists to prevent).
+**Refused:** a `lib/views.js` registry unifying `TAB_MODULES` + `ROUTES` + `ASSET_KEYS`. Its whole
+justification is carry-forward lesson 6, and `static-assets.test.ts:50-71` is already closed both
+ways, so the lesson is already red-on-failure; what remained was a refactor of `poll.js`'s own
+documented extension point during the one sprint that rewrites three of its consumers. The
+four-line 「how to add a tab」 checklist in DES-210 buys the same legibility for no risk.
+**Agent altitude — this is the one place it genuinely binds.** The Models tab IS the replaceability
+surface: `provider`, `location`, `toolUseDeclared`, `effortDeclared` and `declaredSource` are the
+facts an operator reads to decide which model backs an alias (REQ-004 / REQ-078), and the engine's
+LLM backend is a config change precisely because that table is honest. So 「`—`, never `0`」 is a
+CORRECTNESS property here, not cosmetics — which is why DES-213's absent-token normalisation and its
+`costLevel === 0` vs `null` distinction are blocking-grade rather than polish. The one acknowledged
+hole in this surface — a provider that contributed ZERO rows cannot be reported by any per-row
+field — is owner-ruled (ADR-060, Won't-have D5) and is NOT re-raised here.
+
+### Quality dimension (3) — Consumability
+
+**System altitude.** The slice's best consumability decision is a refusal: **no new route, no new
+wire field, no new config key**, so every existing caller — the MCP `models_list` / `system_info`
+tools, `tests/integration/dashboard-http.test.ts`, any operator script — is byte-unaffected. The
+alternative (a `catalogSource` per row, or `supported_parameters` re-exported) would have grown
+EVERY `models_list` reply for every agent, to serve a slide-in panel — and would have made the
+dashboard show a fact the MCP caller cannot get, which is consumability parity broken in the name of
+consumability. What the slice DOES owe and pays: **four `DISCLOSURE_TABLE` rows** (`/api/system` ok
+and per-section degraded, `/api/models[i]`, `/api/issues`), which is this repo's standing substitute
+for generated API docs — a machine-checked, closed key set per (endpoint × outcome) that fails red
+when the wire grows a field nobody declared. And **`IssuesListView`**, minted beside the types it
+composes: a shape that already ships gets a name, at zero wire cost, so three separate obligations
+can reference one declaration instead of three hand-copies.
+**Agent altitude.** `/api/issues` is how an agent's self-reported defect reaches a human; the typed
+`IssuesListView` and the `https:`-only `href` are what keep that path structured and safe to click.
+Nothing else in this slice is an agent-facing interface.
+
+### Quality dimension (4) — Self-sustainability
+
+**System altitude.** REQ-142 IS the self-sustainability requirement of this slice, read correctly: a
+console left open on a wall display polls 28 800 times a day, and parking the timer when nobody is
+looking is the closed-loop behaviour that makes a long-lived tab survivable. The other three
+long-lived-tab rules are in the same family and are contract, not nicety — fingerprint-gated
+repaint (100 rows × 12 columns every 3 s against a 1-hour-TTL catalog), process rows keyed by pid so
+a tick reorders rather than rebuilds, and per-container UI state so a tick never closes an operator's
+open panel or resets their sort. **Graceful degradation** is the per-card / per-section split
+(DES-215): one bad route degrades one card, not the tab. **Lifecycle management is the part this
+ledger keeps failing**, so it is mechanised rather than promised: REQ-143 registers its own exit
+(the owner's 「正式上線再拿掉就好」) and `demo-surface.test.ts` is closed BOTH ways, so the
+retirement commit is red until every describer retires with the directory, and a mention leaking
+anywhere else is red immediately. That is the answer to 「刪掉了卻還有東西在描述它」 — the ledger's
+most-recorded defect class, and the reason C4 above chose the safe import over the loud one.
+**Refused as out of altitude:** autoscaling, self-healing restarts and circuit breakers. This slice
+persists nothing, starts nothing on the server, and adds one integer literal to one route; inventing
+a health endpoint or a limiter here would be checklist-completion, and the honest statement is that
+the engine's own self-update/restart path (ARCH-039/040) already owns that concern — with the one
+consequence this slice adds to it recorded in ADR-058: every self-update restart now paints demo
+data for its duration to whoever is watching, which is the owner's Q8 choice and is mitigated
+structurally (three-layer marking, ≥2-tick entry) rather than argued away.
+
+### Karpathy simplicity check, per decision
+
+Four wire deltas refused at Gate 2 stay refused. This gate added **no module the architecture did not
+already name** (`demoEngages` went into an existing file rather than a new one; `sortKeyOf` into an
+existing file rather than a new comparator), refused a `lib/views.js` registry, refused a
+`?topN=` knob, refused a `demoEnabled` flag, refused a per-URL substitution, refused an injected
+timer harness, and refused a third `data-*` stamp. The two things it ADDED beyond ARCH's text are
+both corrections of measured impossibilities, not features: the boot-time load (K0) and
+`sortKeyOf` (K4). The slice's entire server footprint remains a single literal. A senior engineer
+asked 「is this overcomplicated?」 should be able to answer by reading DES-210's seven numbered steps
+and finding no branch that a pure function could have taken.
+
+### Housekeeping recorded for the orchestrator (ledger consistency, not decisions)
+
+(i) **ARCH-132's `api:` was amended in place at 2026-09-17** by this gate, with the measurement
+attached, because a design row may not be written against an unsatisfiable clause and a bounce would
+have cost a full gate. If the architect lane prefers to own that edit, the text to move is the one
+`- **amended (2026-09-17, v28 Gate 3+4 …)**` paragraph on that row — nothing else in
+02-architecture.md was touched. (ii) `val-202-ported-tabs.test.ts` RETIRES under val-203/204/205
+with its reason recorded, never silently deleted (rationale constraint 4). (iii) `app.js:198` and
+`app.js:414`'s literal families stay open — `app.js` is edited by this slice but those two sites are
+not in the closure; `LABELS` (`app.js:31-36`, the `連線中…` / `連線中` one-ellipsis legibility bug,
+QD-R3) is likewise NOT moved to `lib/strings.js` here: moving ten keys mid-sprint would put the
+sprint's own new `demoData` key in one table and its three siblings in another for the duration, and
+the honest fix is one task that moves all of them, owed to whichever gate next opens that file for
+its own reason. (iv) DES-206's v27m 「Known non-conforming」 table loses three rows on EVIDENCE when
+TASK-222/223/224 land (the `(K)`, `(V)` and `(S)` rows for `system.js` / `models.js` / `issues.js`)
+— the amendment on that row says so, so the shrink is verifiable rather than assumed. (v) The
+vendored `.sdlc/trace.py` still does not parse `owner_decision`, unchanged from Gate 2's note; this
+gate defers no product call, so nothing is pending on that axis.
