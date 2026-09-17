@@ -5626,3 +5626,24 @@ State: `gates.verification.passed=true`, `current_stage: validation`, `updated: 
 `gates.impl` was also caught up — its own note had been left at a stale v27m pass since the v28 Gate
 6 session never re-stamped it; a dated catch-up note was added (precedent: `ad879c8`) rather than
 left silently stale into Gate 7.5. Next gate is 7.5 (validator).
+
+## v28 Gate 6.5+7 follow-up (2026-09-18, verifier, same session) — advisor review before declaring done
+
+A pre-declare `advisor()` call (this role's own required checkpoint) flagged three things: (1) a
+real remaining gap — `DES-216`'s own amendment already discloses that no acceptance case drives
+`/api/system` itself to non-`ok`, leaving `paintHostUnavailable`'s per-card behavior unverified at
+the browser tier, exactly the "implied gap" this ledger's standing rule forbids; (2) four new
+`06-impl-log.md` entries (IMPL-294..297) carried `commit: (this session)` placeholders instead of
+the landed SHA (`e696cf2`); (3) the `gates.impl` catch-up note's own `IMPL-260..293` range was an
+approximation, not verified against the actual headings — the real range for TASK-217..225's own
+work is `IMPL-283..293` (`IMPL-260..282` are v27's own README-fidelity/BF-repair entries).
+
+All three closed rather than deferred. (1): added the mirror case to `val-204-system-tab.test.ts` —
+intercepting ONLY `/api/system` on a cold load asserts the three host cards read Unavailable while
+the counts card (independent, ADR-057's fold) keeps a real number — falsified before trusting it
+green (reverted `ui/system.js`'s `!state.systemPainted` arm, confirmed the new case alone went red
+with the real diagnostic, restored, re-confirmed 5/5). IMPL-298; `05-tests.md`'s `VAL-214` entry
+extended. (2)/(3): `06-impl-log.md`'s four `commit:` fields corrected to `e696cf2`; `state.yaml`'s
+`gates.impl` note corrected to `IMPL-283..293`, stated as a correction rather than silently
+overwritten. `trace --check`: 1717→1722 items (5 new IMPL entries total this session), 30-gap SET
+byte-identical throughout (verified again via the same `git archive`-baseline diff method).

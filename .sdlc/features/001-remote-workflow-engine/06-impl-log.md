@@ -7342,7 +7342,7 @@ which stays this iteration's validator's job, not mine.
 - **status:** done
 - **traces:** TASK-217, TASK-222, TASK-223, DES-213, DES-215, DES-216, REQ-137, REQ-138
 - **files:** src/dashboard/ui/dom.js, src/dashboard/ui/models.js, src/dashboard/ui/system.js
-- **commit:** (this session)
+- **commit:** e696cf2
 - **iter:** v28
 
 Scope: `git diff 4431a9c..91bde2e -- src` (the 20 files TASK-217..225 landed this iteration).
@@ -7401,7 +7401,7 @@ re-run is the actual proof this hoist didn't break either tab). `npx tsc --noEmi
 - **status:** done
 - **traces:** TASK-217, TASK-220, TASK-221, TASK-223, DES-212, DES-216, DES-219, ARCH-125, ARCH-132, REQ-137, REQ-138, REQ-143
 - **files:** src/dashboard/dashboard.css, tests/unit/dashboard-class-contract.test.ts, tests/acceptance/val-204-system-tab.test.ts, tests/acceptance/val-018-dashboard-browser-ui.test.ts, tests/acceptance/val-080-graph-view.test.ts, .sdlc/features/001-remote-workflow-engine/02-architecture.md, src/dashboard/ui/clock.js, src/dashboard/lib/system.js, src/dashboard/ui/app.js
-- **commit:** (this session)
+- **commit:** e696cf2
 - **iter:** v28
 
 **(1) `.stat-bar` — a real, measured visual defect, not a style nit.** Commit `9e1045315` recorded
@@ -7482,7 +7482,7 @@ findings).
 - **traces:** TASK-217, TASK-222, TASK-223, DES-213, DES-215, REQ-137, REQ-138
 - **greens:** UT-257 (extended, 29→33), UT-262 (extended, 16→18), UT-249 (extended, 8→12)
 - **files:** tests/unit/dashboard-lib-model.test.js, tests/unit/dashboard-lib-system.test.js, tests/unit/dashboard-client-corpus.test.ts
-- **commit:** (this session)
+- **commit:** e696cf2
 - **iter:** v28
 
 `npx vitest run tests/unit tests/integration --coverage --coverage.include='src/**'` (IMPL-249's own
@@ -7563,7 +7563,7 @@ unexcluded / 95.69% before the three per-function fixes). `npx tsc --noEmit` exi
 
 - **status:** done
 - **traces:** REQ-137, REQ-138, REQ-139, REQ-142, REQ-143
-- **commit:** (this session)
+- **commit:** e696cf2
 - **iter:** v28
 
 **Regression:** `npx vitest run` (whole tree, no filter) → **414 files / 1 skipped, 2958 passed / 26
@@ -7631,3 +7631,33 @@ iteration.
 iteration actually touched (`src/dashboard/lib/*`, `src/dashboard/demo/dataset.js`, the in-scope
 half of `src/dashboard/ui`). **Module gate (item 1c):** dormant — `grep -c '\*\*build:\*\*'
 02-architecture.md` → 0; no ARCH declares a `build:` contract this closure or any prior one.
+
+### IMPL-298 — Gate 6.5+7 Mode B item 2: `paintHostUnavailable`'s per-card behavior, the ONE case DES-216's own amendment named as unverified, closed with a falsified-before-trusted browser-tier case
+
+- **status:** done
+- **traces:** REQ-138, DES-216, TASK-223
+- **greens:** VAL-214 (extended, 4/4 → 5/5)
+- **files:** tests/acceptance/val-204-system-tab.test.ts, 05-tests.md
+- **commit:** (see 05-tests.md's own VAL-214 entry for the exact command; committed alongside this entry)
+- **iter:** v28
+
+DES-216's own v28 amendment (`02-architecture.md`) discloses, not hides, that "no acceptance case
+today drives `/api/system` itself to non-`ok`" — only `/api/workflows` (VAL-214's existing decisive
+case). Left as a stated-but-uncashed gap, this is exactly the "implied gap" this ledger's own
+standing rule forbids at a verification gate, and Mode B's own task 2 ("add system-level IT-*/VAL-*
+only writable after implementation, for full coverage") is the contract clause that owns closing it.
+
+Added the mirror case to `val-204-system-tab.test.ts`: intercepts ONLY `/api/system` (CDP, `500`)
+on a COLD page load and asserts `cpu`/`memory`/`disk` each read `無法取樣`/`Unavailable` (the
+`!state.systemPainted` arm) while the counts card — independent of `/api/system`, ADR-057's fold
+over the still-healthy `/api/workflows`/`/api/runs` — keeps a real number. The exact opposite
+pairing from the existing decisive case (which breaks `/api/workflows` and expects the counts card
+alone to blank).
+
+**Falsified before trusted, not assumed green because it typechecked:** reverted `ui/system.js`'s
+`else if (!state.systemPainted) { paintHostUnavailable(state); }` arm to a no-op, confirmed the NEW
+case (and only the new case) went red with the real diagnostic (`expected 'CPU 使用率—' to match
+/無法取樣|Unavailable/i` — the CPU card's label rendered but its value stayed the shell's initial
+`—`, never swapped to Unavailable), then restored the source verbatim (`git diff --stat` empty
+against the pre-falsification commit) and re-confirmed 5/5.
+`RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-204-system-tab.test.ts` → 5/5 pass.

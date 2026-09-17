@@ -133,6 +133,43 @@ describe('System tab: four stat cards, process table, engine dl (VAL-214, REQ-13
     }
   }, 20000);
 
+  // [v28 Gate 6.5+7, verifier] DES-216's own amendment names this as unverified at the browser
+  // tier: no case before this one ever drove `/api/system` ITSELF to non-ok (only `/api/workflows`,
+  // above). The mirror case — the opposite route breaks — is the other half of the decisive split:
+  // a fault on the HOST route must blank the three host-observable cards on a cold page (this
+  // container's own `state.systemPainted === false` arm, `ui/system.js`), while the counts card
+  // (whose two routes, `/api/workflows`/`/api/runs`, are independent and healthy) keeps rendering a
+  // real number — the exact opposite pairing from the case above, proving `paintHostUnavailable`'s
+  // per-card behavior for real rather than leaving it an implied gap.
+  itReal('intercepting ONLY /api/system on a cold load blanks CPU/memory/disk while the counts card keeps rendering a live number (DES-216)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.setRequestInterception(true);
+      page.on('request', (req) => {
+        if (new URL(req.url()).pathname === '/api/system') req.respond({ status: 500, body: 'boom' });
+        else req.continue();
+      });
+      await page.goto(`${baseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await (await page.$('[data-tab="system"]'))!.click();
+      await page.waitForSelector('[data-sys-stat-card]', { timeout: 5000 });
+      await new Promise((r) => setTimeout(r, 500)); // let at least one tick reach the counts card
+      const hostText = async (kind: string) =>
+        page.$eval(`[data-sys-stat-card][data-card="${kind}"]`, (e) => e.textContent ?? '');
+      const cpuText = await hostText('cpu');
+      const memText = await hostText('memory');
+      const diskText = await hostText('disk');
+      const countsText = await hostText('counts');
+      expect(cpuText, 'cpu card must show Unavailable while /api/system is broken').toMatch(/無法取樣|Unavailable/i);
+      expect(memText, 'memory card must show Unavailable while /api/system is broken').toMatch(/無法取樣|Unavailable/i);
+      expect(diskText, 'disk card must show Unavailable while /api/system is broken').toMatch(/無法取樣|Unavailable/i);
+      expect(countsText, 'the counts card is independent of /api/system and must keep rendering a real number').not.toMatch(/無法取樣|Unavailable/i);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
   itReal('SPEC_ROWS (system view, REQ-138) hold under both themes and a hue move', async () => {
     const puppeteer = (await import('puppeteer')).default;
     const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });

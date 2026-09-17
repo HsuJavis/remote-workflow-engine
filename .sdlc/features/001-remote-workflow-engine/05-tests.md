@@ -13128,6 +13128,19 @@ Added a case-1 assertion reading `.stat-bar`'s `offsetWidth` (the untransformed 
 the runtime `scaleX()` and to this host's own CPU% happening to read 0 at sample time) — measured
 `0` against the pre-fix CSS, non-zero (matches `.stat-track`) against the fix. 4/4 still green.
 
+**[v28 Gate 6.5+7, verifier — closes an implied gap DES-216's own amendment already disclosed]:**
+DES-216's amendment states plainly that "no acceptance case today drives `/api/system` itself to
+non-`ok`" (only `/api/workflows`, the case above), leaving `paintHostUnavailable`'s per-card
+behavior unverified at the browser tier — Mode B's own "system-level VAL/IT only writable after
+implementation" duty. Added the mirror case: intercepting ONLY `/api/system` on a cold load (CDP,
+`500` response) asserts `cpu`/`memory`/`disk` each show `無法取樣`/`Unavailable` while the counts
+card — independent of `/api/system`, per ADR-057's fold over the still-healthy `/api/workflows`/
+`/api/runs` — keeps rendering a real number, the exact opposite pairing from the existing decisive
+case. Falsified before trusting it green: reverted `ui/system.js`'s `!state.systemPainted` arm to a
+no-op, confirmed the new case (and only the new case) goes red with the real diagnostic ("expected
+'CPU 使用率—' to match /無法取樣|Unavailable/i"), then restored the source and re-confirmed 5/5.
+5/5 green (was 4/4).
+
 ### VAL-215 — REQ-139/REQ-067: Issues tab in v28 clothes; the real `safeIssueHref` wiring
 - **status:** green
 - **traces:** REQ-139, REQ-067, DES-217, TASK-224
