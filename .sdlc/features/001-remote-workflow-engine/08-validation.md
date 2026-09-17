@@ -10845,24 +10845,42 @@ All scratch node processes killed and ports freed at the end of this gate.
   FROZE showing the STALE pre-crash "GitHub not configured" text through the entire demo window —
   never a `此路由無示範資料`-shaped string, and (more generally) nothing distinguishes "this is
   live-but-degraded" from "this is now frozen because the engine died," which is exactly what the
-  base (non-amended) REQ-143 clause ("每個 tab 的可見區域都能看出處於示範模式") also asks for. **Root
-  cause is a design gap, not a coding slip:** `04-design.md`'s DES-212 (traces REQ-143) names the
-  mechanism for exactly ONE no-demo-data case (`workflow.js`'s `diagram.svg` → `paintFigureUnavailable`)
-  and is silent on the other two routes the SAME requirement names; no DES clause assigns a
-  disclosure behavior to `workflow.js`'s describe-miss arm or `issues.js`'s data-miss arm. This
-  flowed through Gate 5 (val-207 never wrote a case for it), Gate 6 (nothing to build against) and
-  Gate 7 (nothing to verify) unnoticed, and was only caught here by driving the real per-tab UI in
-  demo mode — never by "current tests pass". **Secondary, smaller finding (same investigation):** a
-  tab whose module was NEVER visited before the engine died fails to even `import()` its own JS file
-  (network error, dead server) and paints the generic `app.js:235` `` `${tab} unavailable` `` string
-  instead of any demo content — a real gap in the "engine died mid-session" story for a tab a user
-  had not yet opened, separate from the amendment's named-route gap above.
-- **pending:** owner_decision NOT required — the owner already ruled what should happen (the exact
-  disclosure text); this is an UNIMPLEMENTED design+code gap, to be closed by a Gate 3+4 design
-  amendment (naming the disclosure mechanism for `workflow.js`'s describe-miss and `issues.js`'s
-  data-miss arms, mirroring `paintFigureUnavailable`'s existing pattern) followed by Gate 5/6/7,
-  then re-validated here. **Gate 7.5 is NOT closed for REQ-143 this round** — see the Gate self-check
-  section and `rtm.md`'s REQ-143 row (⚠️, not ✅).
+  base (non-amended) REQ-143 clause ("每個 tab 的可見區域都能看出處於示範模式") also asks for.
+  **Root cause, checked precisely (not assumed): a PROCESS gap, not a designer's oversight.**
+  `git log -S"AMENDED v28" -- 01-requirements.md` dates the amendment's landing to commit `9e10453`
+  (2026-09-17 20:47:58) — its own message says "Sprint B's design gate passed [15:58:15]... the
+  impl gate stopped with eight raised items... Owner ruling: [this exact three-route disclosure
+  text]... before resuming Gate 6." **The ruling was made mid-Gate-6 (implementation), captured only
+  in the requirements-doc amendment and the commit message, and never cycled back through a Gate 3+4
+  design amendment or a Gate 5 RED test case before Gate 6 resumed.** `04-design.md`'s DES-210 (the
+  v28 seam, written BEFORE this ruling existed — Gate 3+4 landed at 15:58:15, the ruling at 20:47:58)
+  even separately flags `workflow.js:397`/`home.js:231`'s body-shape guards as "Recorded, not taken"
+  for an UNRELATED robustness reason (replacing a shape-sniff with `tick.results`-based detection) —
+  a coincidence that shows the designer inspected this exact code path and still had no occasion to
+  attach the disclosure requirement to it, because that requirement did not exist yet at design time.
+  The net result: TASK-220 correctly implemented HALF the ruling (the `DEMO` map genuinely has no
+  entry for any of the three named routes, confirmed) but the OTHER half — actually painting "this
+  route has no demo data" in `workflow.js`'s describe-view and `issues.js`'s issues-view — was never
+  assigned to any DES clause, never written as a Gate 5 case, and so never built or verified, only
+  caught here by driving the real per-tab UI in demo mode (something no gate before 7.5 exercised).
+  **The bare `/api/workflows` case is the exception**: it already reads through the PRE-EXISTING
+  DES-215/216 "degrade, never pretend" mechanism (the System counts card), which happened to already
+  satisfy the ruling's intent for that one route without any new code.
+  **Secondary, smaller finding (same investigation, unrelated to the amendment):** a tab whose
+  module was NEVER opened before the engine died fails to even `import()` its own JS file (network
+  error, dead server) and paints the generic `app.js:235` `` `${tab} unavailable` `` string instead
+  of any demo content — a real gap in the "engine died mid-session" story for a tab a user has not
+  yet opened. Folded into README.md's new demo-mode paragraph as a stated current-state limitation
+  (see the Docs section below) rather than left undocumented.
+- **routing (what is owed, by which gate):** NOT an owner_decision — the owner already ruled the
+  exact disclosure text; what is missing is engineering follow-through on half of that ruling. Owed:
+  (1) Gate 3+4 — a short DES amendment (to DES-212, or a new DES beside DES-216/DES-217) naming the
+  disclosure mechanism for `workflow.js`'s describe-miss arm and `issues.js`'s data-miss arm,
+  mirroring the existing `paintFigureUnavailable` pattern; (2) Gate 5 — a new RED case in
+  `val-207-demo-data.test.ts` (or a new VAL) covering these two arms, which val-207 never had; (3)
+  Gate 6/7 — build and verify; (4) Gate 7.5 — re-validate REQ-143 only (REQ-137/138/139/142's
+  evidence stands unchanged). **Gate 7.5 is NOT closed for REQ-143 this round** — see the Gate
+  self-check section and `rtm.md`'s REQ-143 row (⚠️, not ✅).
 
 ### Configuration — no drift found
 `git log --oneline 9f45a78..HEAD -- rwe.config.example.json` → empty; `git diff 9f45a78..HEAD --stat`

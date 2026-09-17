@@ -5714,11 +5714,18 @@ code comments say "last-known render stays"), so the content freezes with no dis
 (measured concretely: a token-less Issues tab froze on its stale pre-crash "GitHub not configured"
 text through the entire demo window). The bare `/api/workflows` case is fine — the System tab's
 counts card already shows `無法取樣`/`Unavailable` via the pre-existing degrade mechanism, which
-satisfies the ruling's intent even if the literal string differs. Root cause is a DESIGN gap:
-`04-design.md`'s DES-212 (traces REQ-143) names a disclosure mechanism for exactly ONE no-demo-data
-case (`workflow.js`'s `diagram.svg` → `paintFigureUnavailable`) and is silent on the other two
-routes the SAME requirement names — this flowed through Gate 5/6/7 unnoticed because `val-207` never
-wrote a case for it.
+satisfies the ruling's intent even if the literal string differs. Root cause, checked precisely (not
+assumed): a PROCESS gap, not a designer's oversight — `git log -S"AMENDED v28" --
+01-requirements.md` dates the amendment's landing to commit `9e10453` (2026-09-17 20:47:58), MID-
+Gate-6, AFTER Gate 3+4 (15:58:15) and Gate 5 RED (15:58:32) had already passed; the ruling is
+captured only in the requirements-doc amendment and the commit message, never cycled back through a
+design amendment or a Gate 5 RED case before Gate 6 resumed. `04-design.md`'s DES-210, written
+BEFORE this ruling existed, separately flags `workflow.js:397`/`home.js:231`'s body-shape guards as
+"Recorded, not taken" for an unrelated robustness reason — the designer inspected this exact code
+path and had no occasion to attach the disclosure requirement to it, because the requirement did not
+exist yet. TASK-220 built HALF the ruling (the `DEMO` map correctly omits all three named routes);
+the disclosure-painting half was never assigned to any DES clause, never written as a test case, and
+so never built — this flowed through Gate 6/7 unnoticed because `val-207` never had a case for it.
 
 Correction made (not silently overwritten — this entry states it): `08-validation.md`'s VAL-217 is
 now `real:true`/`result:fail` (evidence for BOTH the passing base mechanism and the confirmed
