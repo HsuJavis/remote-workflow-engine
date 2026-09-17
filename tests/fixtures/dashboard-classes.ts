@@ -72,6 +72,17 @@ export const STYLE_HOOKS: readonly string[] = [
   'agent-backdrop', 'agent-panel', 'from-left', 'stat-cards', 'stat-label',
   'stat-value', 'prompt-pre', 'tag-columns', 'event-list', 'event-row', 'event-kind', 'is-tool',
   'is-message', 'is-log', 'detail-block',
+
+  // -- v28 Models (REQ-137) / System (REQ-138) / demo (REQ-143) families --
+  // [v28 Gate 5 note] DES-219 leaves the exact class NAMES to TASK-221 (the CSS class name in
+  // STYLE_HOOKS is renamable-in-the-same-commit by design, per this file's own header rule — only
+  // TEST_ANCHORS below is frozen); these are Gate 5's PROPOSED names, given to Gate 6 as one
+  // concrete target rather than an implementer's own unconstrained guess, exactly why DES-209 named
+  // `.cell`/`.lane-head` ahead of TASK-208..212. TASK-221 may rename any of these as long as the
+  // CSS edit and this array travel in the SAME commit (`dashboard-class-contract.test.ts`'s own
+  // both-ways lock is what enforces that).
+  'model-filters', 'sort-active', 'model-panel', 'bench-row', 'stat-card', 'stat-track', 'stat-bar',
+  'proc-table', 'proc-self', 'engine-dl', 'is-demo',
 ] as const;
 
 /** `data-*` attributes and C2 ids — FROZEN, belongs to the tests, never renamed by a CSS edit. */
@@ -103,4 +114,9 @@ export const TEST_ANCHORS: readonly string[] = [
   // `.rwe-connection` block stays true), this is only how the "Live" ROW below finds the element —
   // same `[data-x] .is-y` split as `[data-node-cell].is-failed`.
   'data-status',
+  // [v28 Gate 5, DES-213/214/215/216/212] Models/System/demo anchors this iteration's SPEC_ROWS
+  // and VAL-213/214/217 key on — FROZEN (unlike the STYLE_HOOKS names above, these belong to the
+  // tests and travel with no CSS edit).
+  'data-model-table', 'data-model-panel', 'data-sys-stat-card', 'data-proc-table', 'data-engine-dl',
+  'data-demo-banner',
 ] as const;

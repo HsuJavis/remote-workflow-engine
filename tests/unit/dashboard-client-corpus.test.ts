@@ -14,6 +14,12 @@
 // anti-vacuity GUARANTEE is a property of `clientCorpus()` given *any* empty directory, not a fact
 // about today's `src/dashboard/` — re-pointed to a real, disposable empty temp dir so it stays true
 // regardless of how large the real client tree grows.
+//
+// [v28 Gate 5, DES-210, ADR-057, TASK-217, REQ-137/138/139/142/143] two of this file's EXISTING
+// cases are amended in place rather than superseded: `endpointsFor('system')` grows from one route
+// to three (ADR-057) and `getJSON`'s result shape widens from `{status, body}` to `{status, body,
+// reached, source}` (DES-210 — the ONE shape `getViewJSON` must also answer). Both are genuinely
+// red against HEAD (measured below, at each case).
 import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -53,40 +59,55 @@ describe("poll.js: endpointsFor(view) is the VISIBLE view's fetch set only (UT-2
     expect(eps).toContain('/api/runs');
   });
 
-  it("the three ported tabs (issues/models/system) each fetch their own single endpoint", async () => {
+  it("issues/models each fetch their own single endpoint; system fetches THREE (ADR-057's client fold, v28)", async () => {
     const { endpointsFor } = await import('../../src/dashboard/ui/poll.js');
     expect(endpointsFor('issues')).toEqual(['/api/issues']);
     expect(endpointsFor('models')).toEqual(['/api/models']);
-    expect(endpointsFor('system')).toEqual(['/api/system']);
+    // [v28 Gate 5, DES-210, ADR-057, TASK-217, REQ-138] `ROUTES.system` grows from one route to
+    // three so the System tab's counts card (「9 個版本 · 13 次執行記錄」) can fold `/api/workflows`
+    // + `/api/runs` client-side with NO new server route (ADR-057's decision (b), the SAME fold
+    // `/api/runs`'s own run-history table already reads, so the two can never disagree). Red reason
+    // (measured against HEAD, `src/dashboard/ui/poll.js:23`): `ROUTES.system` is still
+    // `() => ['/api/system']` today.
+    expect(endpointsFor('system')).toEqual(['/api/system', '/api/workflows', '/api/runs']);
   });
 });
 
 // v27 Gate 6.5+7 (verifier, coverage gate): `getJSON` executes under Node whenever `poll.js` is
 // imported (UT-249 already does) — its three branches (ok/degraded body, unparseable JSON body,
 // `fetch` itself rejecting) had no case before this pass.
-describe('poll.js: getJSON(url) always resolves {status, body}, never throws (UT-249, DES-202)', () => {
+//
+// [v28 Gate 5, DES-210, TASK-217, REQ-142/143] `getJSON`'s result widens from `{status, body}` to
+// `{status, body, reached, source}` — every field always present (DES-210's ONE result shape used
+// by both `getJSON` and `getViewJSON`). `reached` is what `demoEngages` (UT-245, DES-212) reasons
+// over: `false` ONLY in the outer network-failure `catch` (a real drop, never a 4xx/5xx — those
+// still "reached" a server), `source` is always `'live'` for this function (`getViewJSON` is the
+// one that can answer `'demo'`). Red reason (measured against HEAD, `src/dashboard/ui/poll.js:42-
+// 53`): `getJSON` returns exactly `{status, body}` today — a `toEqual` against the widened shape
+// fails on the two missing keys in all three cases below.
+describe('poll.js: getJSON(url) always resolves {status, body, reached, source}, never throws (UT-249, DES-202/DES-210)', () => {
   const originalFetch = globalThis.fetch;
   afterEach(() => {
     globalThis.fetch = originalFetch;
   });
 
-  it('a 200 with a normal JSON body classifies ok', async () => {
+  it('a 200 with a normal JSON body classifies ok, reached:true, source:live', async () => {
     globalThis.fetch = async () => ({ status: 200, json: async () => ({ a: 1 }) }) as unknown as Response;
     const { getJSON } = await import('../../src/dashboard/ui/poll.js');
     const r = await getJSON('/x');
-    expect(r).toEqual({ status: 'ok', body: { a: 1 } });
+    expect(r).toEqual({ status: 'ok', body: { a: 1 }, reached: true, source: 'live' });
   });
 
-  it('a 200 whose body is not valid JSON resolves body:null, never throws', async () => {
+  it('a 200 whose body is not valid JSON resolves body:null, reached:true (the SERVER answered, just not with JSON) — never throws', async () => {
     globalThis.fetch = async () => ({ status: 200, json: async () => { throw new Error('bad json'); } }) as unknown as Response;
     const { getJSON } = await import('../../src/dashboard/ui/poll.js');
     const r = await getJSON('/x');
-    expect(r).toEqual({ status: 'fail', body: null });
+    expect(r).toEqual({ status: 'fail', body: null, reached: true, source: 'live' });
   });
 
-  it('fetch() itself rejecting (network error) resolves {status:"fail", body:null}, never rejects', async () => {
+  it('fetch() itself rejecting (network error) resolves {status:"fail", body:null, reached:false} — the ONLY reached:false arm — never rejects', async () => {
     globalThis.fetch = async () => { throw new Error('network down'); };
     const { getJSON } = await import('../../src/dashboard/ui/poll.js');
-    await expect(getJSON('/x')).resolves.toEqual({ status: 'fail', body: null });
+    await expect(getJSON('/x')).resolves.toEqual({ status: 'fail', body: null, reached: false, source: 'live' });
   });
 });

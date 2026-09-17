@@ -48,8 +48,16 @@
 // `getBoundingClientRect().height` against its OWN `font-size`×`line-height` (read via
 // `getComputedStyle` on the SAME element) — see `tests/helpers/spec-rows.ts`.
 
-export type SpecReq = 'REQ-131' | 'REQ-132' | 'REQ-133' | 'REQ-134' | 'REQ-135';
-export type SpecView = 'home' | 'workflow' | 'run' | 'panel';
+// [v28 Gate 5, DES-219, TASK-221] `SpecReq`/`SpecView` widen for the two new tabs with a design
+// page (Models/System). Issues gets NEITHER a `SpecReq` member NOR a `SpecView` member — DES-217:
+// the handoff ships no design page for it, so its visual acceptance is "same tokens/classes as the
+// other three tabs" (val-205), not a per-line 規格逐條核 table, and the 99% fidelity clause does not
+// apply. These rows are authored from `.sdlc/design-handoff/README.md` §4 (Models) / §5 (System),
+// RED, BEFORE `dashboard.css`'s v28 families exist (carry-forward lesson 3: a row copied from
+// shipped CSS, or passing by sort-order coincidence, or encoding the very bug it should catch, are
+// all worse than a missing row — this table is never read off the built CSS).
+export type SpecReq = 'REQ-131' | 'REQ-132' | 'REQ-133' | 'REQ-134' | 'REQ-135' | 'REQ-137' | 'REQ-138';
+export type SpecView = 'home' | 'workflow' | 'run' | 'panel' | 'models' | 'system';
 export type SpecExpect =
   | { literal: string }
   | { token: string }
@@ -262,4 +270,30 @@ export const SPEC_ROWS: ReadonlyArray<SpecRow> = [
   // and checked against THAT run, never against `runId`'s plain ollama-stub run.
   { req: 'REQ-135', view: 'panel', anchor: '[data-agent-panel] .event-kind.is-tool', prop: 'background-color', expect: { token: 'accent-100' } },
   { req: 'REQ-135', view: 'panel', anchor: '[data-agent-panel] .event-kind.is-message', prop: 'background-color', expect: { token: 'color-panel2' } },
+
+  // -- REQ-137 Models (view: models), authored from README §4 --
+  // "`.table` min 960 px, horizontally scrollable" — a fixed viewport CANNOT prove "scrollable"
+  // (that needs a real overflow probe, not getComputedStyle), so this row asserts only the
+  // computed min-width floor, the provable half.
+  { req: 'REQ-137', view: 'models', anchor: 'data-model-table', prop: 'min-width', expect: { literal: '960px' } },
+  // "active header colored accent-700 with ▲/▼" — the ▲/▼ glyph is TEXT CONTENT (checked at the
+  // acceptance layer directly, val-203), the COLOR is this row.
+  { req: 'REQ-137', view: 'models', anchor: '[data-model-table] th.sort-active', prop: 'color', expect: { token: 'accent-700' } },
+  // "Row click -> right slide-in panel (560 px)".
+  { req: 'REQ-137', view: 'models', anchor: 'data-model-panel', prop: 'width', expect: { literal: '560px' } },
+  // "Benchmarks with 2 px track / 4 px accent bar per score (grid `140px 1fr 48px`)".
+  { req: 'REQ-137', view: 'models', anchor: '.bench-row', prop: 'grid-template-columns', expect: { literal: '140px 1fr 48px' } },
+  { req: 'REQ-137', view: 'models', anchor: '.bench-row .stat-track', prop: 'height', expect: { literal: '2px' } },
+  { req: 'REQ-137', view: 'models', anchor: '.bench-row .stat-bar', prop: 'height', expect: { literal: '4px' } },
+
+  // -- REQ-138 System (view: system), authored from README §5 --
+  // "Four stat cards ... 34 px / 500 figure, 2 px track with 4 px accent bar".
+  { req: 'REQ-138', view: 'system', anchor: '[data-sys-stat-card] .stat-value', prop: 'font-size', expect: { literal: '34px' } },
+  { req: 'REQ-138', view: 'system', anchor: '[data-sys-stat-card] .stat-value', prop: 'font-weight', expect: { literal: '500' } },
+  { req: 'REQ-138', view: 'system', anchor: '[data-sys-stat-card] .stat-track', prop: 'height', expect: { literal: '2px' } },
+  { req: 'REQ-138', view: 'system', anchor: '[data-sys-stat-card] .stat-bar', prop: 'height', expect: { literal: '4px' } },
+  { req: 'REQ-138', view: 'system', anchor: '[data-sys-stat-card] .stat-bar', prop: 'background-color', expect: { token: 'color-accent' } },
+  // "engine's own row marked ★ and accent bar" — the accent bar is the provable computed-style
+  // half; the ★ glyph is text content, checked at val-204.
+  { req: 'REQ-138', view: 'system', anchor: '[data-proc-table] .proc-self', prop: 'border-left-color', expect: { token: 'color-accent' } },
 ] as const;

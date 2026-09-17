@@ -159,3 +159,37 @@ describe('value anchors — anti-vacuity (DES-209, 60 empty rules must not pass)
     for (let i = 1; i < ls.length; i++) expect(ls[i]).toBeLessThan(ls[i - 1]!);
   });
 });
+
+// [v28 Gate 5, DES-219, TASK-221, REQ-137/138] value anchors for the two new families the handoff
+// README pins numerically (§4 Models, §5 System) — the class NAMES are Gate 5's proposed ones
+// (`dashboard-classes.ts`'s own v28 note); Gate 6 may rename them as long as STYLE_HOOKS + this
+// test travel together. `STYLE_HOOKS.length` already rose in the fixture edit above, so
+// `.rule not found` is this section's own genuine red today (dashboard.css has none of these
+// selectors yet), distinct from the pre-existing `.length >= 60` check above.
+describe('value anchors — v28 Models/System families (DES-219, TASK-221, README §4/§5)', () => {
+  it('.stat-card figure is 34px / weight 500 (README §5: "34 px / 500 figure")', () => {
+    const body = ruleBody(CSS, '.stat-card');
+    expect(body).toContain('font-size:34px');
+    expect(body).toMatch(/font-weight:500\b/);
+  });
+
+  it('.stat-track is a 2px track; .stat-bar is a 4px accent bar (README §5)', () => {
+    expect(ruleBody(CSS, '.stat-track')).toContain('height:2px');
+    expect(ruleBody(CSS, '.stat-bar')).toContain('height:4px');
+  });
+
+  it('.model-panel is 560px wide (README §4: "right slide-in panel (560 px)")', () => {
+    expect(ruleBody(CSS, '.model-panel')).toContain('560px');
+  });
+
+  it('.bench-row is the benchmark grid 140px 1fr 48px (README §4)', () => {
+    const body = ruleBody(CSS, '.bench-row');
+    expect(body).toContain('140px 1fr 48px');
+  });
+
+  it('.models-table (reused, README §4: "min 960 px, horizontally scrollable") resolves at least 960px wide', () => {
+    const body = ruleBody(CSS, '.models-table');
+    const px = [...body.matchAll(/(\d+)px/g)].map((m) => Number(m[1]));
+    expect(px.some((n) => n >= 960)).toBe(true);
+  });
+});

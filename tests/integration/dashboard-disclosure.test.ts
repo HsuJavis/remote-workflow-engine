@@ -14,6 +14,16 @@
 // one genuinely un-runnable third-party network boundary (the model provider) — same technique as
 // IT-016/agent-type-composition-root.test.ts.
 //
+// [v28 Gate 5, DES-218, TASK-219, REQ-137/138] IT-165 gains three rows this iteration: `GET
+// /api/system (ok)` and `(per-section degraded)` (`SYSTEM_OK`/`SYSTEM_SECTION_DEGRADED`,
+// `tests/fixtures/dashboard-wire.ts`) and `GET /api/models[i] (ok)` (`MODEL_ENTRY_OK`) — all THREE
+// real bodies fetched in `beforeAll` above (no mock: `/api/system`/`/api/models` already exist and
+// serve real data). These three rows are GREEN today (the routes and their key sets are unchanged
+// by v28 — ARCH-135's only change is the `topN` COUNT, tested in `dashboard-http.test.ts`
+// separately) — recorded as Mode-C green-by-construction, not forced red: the row exists to LOCK
+// the v28 key-set contract in place, and it is already true. `GET /api/issues (ok)` is
+// deliberately NOT added (owed to TASK-219, see `dashboard-wire.ts`'s own note).
+//
 // Red reason (measured): `AgentLogView` does not exist in src/types.ts (whole-file import failure —
 // `tests/fixtures/dashboard-wire.ts` fails `tsc --noEmit` on the missing export, which is DES-192's
 // own "first test"); vitest/esbuild does not type-check so the runtime table below still executes,
@@ -77,6 +87,18 @@ describe('dashboard disclosure key-set table (IT-165, ADR-054, DES-192)', () => 
     discServer = await createServer({ port: 0, bind: '127.0.0.1', workRoot: discTmpDir, gateway: FAKE_GATEWAY });
     const base = `http://127.0.0.1:${discServer.port}`;
 
+    // ---- v28 (DES-218, TASK-219, REQ-138): GET /api/system, TWO real calls. `SystemInfoSampler`'s
+    // `prev` sample is null on the FIRST call after boot (`system-info.ts:136-138`), which is a
+    // REAL, naturally-occurring `cpu.utilizationDegraded:{reason:'awaiting-second-sample'}` — no
+    // fault injection needed. The sampler caches for `ttlMs` (1500ms, `server.ts:892`), so the
+    // SECOND call must wait past that TTL to force a genuinely fresh sample with a resolved
+    // `utilizationPct`, never the cached first reading.
+    const systemDegradedRes = await fetch(`${base}/api/system`);
+    realBodies['GET /api/system (per-section degraded)'] = await systemDegradedRes.json();
+    await new Promise((r) => setTimeout(r, 1700));
+    const systemOkRes = await fetch(`${base}/api/system`);
+    realBodies['GET /api/system (ok)'] = await systemOkRes.json();
+
     // ---- run with ONE agent() call: feeds run_agent_log (ok/facade-error), the HTTP agent-detail
     // row, the "priced" RunSummary row (ADR-052's four usage fields appear TOGETHER once ≥1 record
     // exists — the row's name is about key PRESENCE, not the dollar value) and the DAG row.
@@ -104,6 +126,13 @@ describe('dashboard disclosure key-set table (IT-165, ADR-054, DES-192)', () => 
 
     const homeRes = await fetch(`${base}/api/home`);
     realBodies['GET /api/home'] = await homeRes.json();
+
+    // v28 (DES-218, TASK-219, REQ-137): GET /api/models — real DEFAULT_ALIASES catalog (no
+    // `aliases` override passed to `createServer` above), so this is a genuinely non-empty,
+    // non-mocked `EnrichedModelEntry[]`.
+    const modelsRes = await fetch(`${base}/api/models`);
+    const modelsList = (await modelsRes.json()) as Array<Record<string, unknown>>;
+    realBodies['GET /api/models[i] (ok)'] = modelsList[0]!;
 
     // Reachable-producer for the shared degrade path (server.ts:342-356/611-617): a malformed
     // %-encoded describe segment throws `URIError` inside handleDashboardRequest's own try, caught

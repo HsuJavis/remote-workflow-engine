@@ -331,3 +331,32 @@ describe('Dashboard read-only HTTP endpoints (DES-018, ARCH-011)', () => {
     expect(csp).toContain("default-src 'none'");
   });
 });
+
+// IT-171 (ARCH-135, DES-218, TASK-225, REQ-138): `GET /api/system` calls `systemInfo.get({topN:20})`
+// — a literal, never a value derived from the URL (ARCH-135's own refusal of a `?topN=` knob: a
+// knob on an unauthenticated route is both a recon-widening AND a per-request-cost control).
+//
+// Mock policy (integration): real createServer() + real HTTP — `SystemInfoSampler`'s topN slice is
+// applied over the REAL host process table (`system-info.ts:199-221`), so this asserts the actual
+// served row count, not a stub's.
+//
+// Red reason (measured): `server.ts:370` calls `systemInfo.get({ topN: 5 })` today — this host has
+// well over 20 processes in any CI/dev container, so the served `process.topN` array length is 5,
+// never up to 20.
+describe('v28: GET /api/system serves up to 20 process rows, not 5 (IT-171, ARCH-135)', () => {
+  it('process.topN.length can exceed 5 (bounded at 20), and the source carries no ?topN= derivation', async () => {
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/system`);
+    const body = await res.json() as { process: { topN: unknown[] } };
+    expect(body.process.topN.length).toBeLessThanOrEqual(20);
+    // This host must genuinely have more than 5 processes for the assertion above to be
+    // non-vacuous — true of any real dev/CI machine (measured: this environment reports 300+).
+    expect(body.process.topN.length).toBeGreaterThan(5);
+  });
+
+  it('src/server.ts names the topN value as a LITERAL, never a URL-derived value (ARCH-135\'s own check)', async () => {
+    const src = await import('node:fs').then((fs) => fs.promises.readFile('src/server.ts', 'utf8'));
+    const topNLines = src.split('\n').filter((l) => l.includes('topN'));
+    expect(topNLines.some((l) => /topN:\s*20/.test(l))).toBe(true);
+    expect(topNLines.some((l) => l.includes('req.url') || l.includes('searchParams') || l.includes('?topN'))).toBe(false);
+  });
+});

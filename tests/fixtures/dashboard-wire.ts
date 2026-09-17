@@ -19,6 +19,8 @@
 // change.
 import type { AgentLogView, RunSummary, HarnessDescriptor, AgentRecord, TranscriptEvent } from '../../src/types.js';
 import type { HomeView } from '../../src/dashboard.js';
+import type { SystemInfoView } from '../../src/system-info.js';
+import type { EnrichedModelEntry } from '../../src/models/model-catalog.js';
 
 // ---- run_agent_log / GET /api/runs/:id/agents/:agentId ----
 
@@ -124,6 +126,64 @@ export const HOME_VIEW_EXAMPLE: HomeView = { running: [], registered: [], other:
 export const ALLOWED_HOME_KEYS = ['running', 'registered', 'other'] as const;
 export const REQUIRED_HOME_KEYS = ['running', 'registered', 'other'] as const;
 
+// ---- GET /api/system (v28, DES-218, TASK-219, REQ-138) ----
+// [v28 Gate 5] two literals — the healthy shape and a per-SECTION degraded shape (`memory` timed
+// out; `cpu`/`disk`/`process` stay real) — because DES-215's own split rule (the counts card's
+// state is a ROUTE verdict, the other three cards' state is a SECTION reason) needs a fixture that
+// can fail ONE section without failing the whole route.
+export const SYSTEM_OK: SystemInfoView & { auth: unknown } = {
+  cpu: { cores: 8, loadAvg: [1.2, 1.1, 0.9], utilizationPct: 42 },
+  memory: { totalBytes: 17179869184, usedBytes: 8589934592, freeBytes: 8589934592, usedPct: 50 },
+  disk: { path: '/', totalBytes: 500000000000, usedBytes: 250000000000, freeBytes: 250000000000, usedPct: 50 },
+  process: {
+    self: { pid: 99001, uptimeSec: 3600, rssBytes: 104857600, cpuPct: 1.2, threads: 8, fdCount: 32 },
+    topN: [{ pid: 99001, name: 'node', cpuPct: 1.2, memBytes: 104857600 }],
+    system: { total: 200, byState: { S: 190, R: 10 } },
+  },
+  sampledAt: '2026-09-17T00:00:00.000Z',
+  windowMs: 3000,
+  auth: undefined,
+};
+export const ALLOWED_SYSTEM_KEYS = ['cpu', 'memory', 'disk', 'process', 'sampledAt', 'windowMs', 'auth'] as const;
+export const REQUIRED_SYSTEM_KEYS = ['cpu', 'memory', 'disk', 'process', 'sampledAt', 'windowMs'] as const;
+
+// [v28 Gate 5] `cpu` degrades via a SIBLING key (`system-info.ts:133-138`), never a replaced
+// union — REACHABLE FOR REAL on the very FIRST sample after boot (`prev === null` ⇒
+// `awaiting-second-sample`, no fault injection needed), which is exactly the IT-172 real producer.
+export const SYSTEM_SECTION_DEGRADED: SystemInfoView & { auth: unknown } = {
+  ...SYSTEM_OK,
+  cpu: { ...SYSTEM_OK.cpu, utilizationPct: null, utilizationDegraded: { reason: 'awaiting-second-sample' } },
+};
+
+// ---- GET /api/models[i] (v28, DES-218, TASK-219, REQ-137) ----
+export const MODEL_ENTRY_OK: EnrichedModelEntry = {
+  provider: 'anthropic', model: 'claude-3-5-sonnet-20241022', aliases: ['sonnet'],
+  description: 'a capable general-purpose model', modalities: { in: ['text'], out: ['text'] },
+  contextWindow: 200000, price: { in: '3', out: '15' }, toolUseDeclared: true,
+  location: 'remote', ref: 'sonnet', ratesPerM: { in: 3, out: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  effortDeclared: true, declaredSource: 'static', capability: 'general-purpose reasoning and tool use',
+  stability: 'stable', costLevel: 8, catalogFetchedAt: '2026-09-17T00:00:00.000Z',
+};
+export const ALLOWED_MODEL_ENTRY_KEYS = [
+  'provider', 'model', 'aliases', 'description', 'modalities', 'contextWindow', 'price',
+  'toolUseDeclared', 'location', 'ref', 'besteffort', 'ratesPerM', 'effortDeclared', 'declaredSource',
+  'capability', 'stability', 'costLevel', 'catalogFetchedAt',
+] as const;
+export const REQUIRED_MODEL_ENTRY_KEYS = [
+  'provider', 'model', 'description', 'modalities', 'contextWindow', 'price', 'toolUseDeclared',
+  'location', 'capability', 'stability', 'costLevel', 'catalogFetchedAt',
+] as const;
+
+// ---- GET /api/issues (v28, DES-218, TASK-219, REQ-139) ----
+// [v28 Gate 5, deliberately NOT authored here] DES-218 mints `IssuesListView` in
+// `src/github/issue-reporter.ts` (a PRODUCTION file) so this fixture's literal can `satisfies` it —
+// that type does not exist yet (TASK-219's own job, ordering rule 1: it lands before every other
+// v28 Gate-6 task). Authoring an `ISSUES_OK` literal against a LOCAL structural copy here would be
+// exactly the "three subtly-different copies of the same fixture" defect class DES-218's own
+// boundary warns against, so the row is named as owed rather than faked: TASK-219 adds
+// `ISSUES_OK: IssuesListView`, `ALLOWED_ISSUES_KEYS`, `REQUIRED_ISSUES_KEYS`, and the
+// `GET /api/issues (ok)` `DISCLOSURE_TABLE` row in the SAME commit that mints the type.
+
 // ---- (endpoint x outcome) table DES-192/ADR-054 requires ----
 
 export interface DisclosureRow {
@@ -144,4 +204,10 @@ export const DISCLOSURE_TABLE: DisclosureRow[] = [
   // v27c AC-1 repair: the two endpoints this delta widened with no prior row (ADR-054, INV-V27-7).
   { route: 'GET /api/home', outcome: 'ok', body: HOME_VIEW_EXAMPLE as unknown as Record<string, unknown>, allowed: ALLOWED_HOME_KEYS, required: REQUIRED_HOME_KEYS },
   { route: 'GET /api/runs/:id/agents/:agentId (http, ok)', outcome: 'ok', body: AGENT_LOG_OK as unknown as Record<string, unknown>, allowed: ALLOWED_AGENT_LOG_OK_KEYS, required: REQUIRED_AGENT_LOG_OK_KEYS },
+  // v28 (DES-218, TASK-219, INV-V27-7 pattern extended, REQ-137/138/139): the four disclosure rows
+  // this iteration owes. `GET /api/issues (ok)` is deliberately NOT here yet — see the
+  // `ISSUES_OK` housekeeping note above; TASK-219 adds that ONE row in the same commit as the type.
+  { route: 'GET /api/system (ok)', outcome: 'ok', body: SYSTEM_OK as unknown as Record<string, unknown>, allowed: ALLOWED_SYSTEM_KEYS, required: REQUIRED_SYSTEM_KEYS },
+  { route: 'GET /api/system (per-section degraded)', outcome: 'ok', body: SYSTEM_SECTION_DEGRADED as unknown as Record<string, unknown>, allowed: ALLOWED_SYSTEM_KEYS, required: REQUIRED_SYSTEM_KEYS },
+  { route: 'GET /api/models[i] (ok)', outcome: 'ok', body: MODEL_ENTRY_OK as unknown as Record<string, unknown>, allowed: ALLOWED_MODEL_ENTRY_KEYS, required: REQUIRED_MODEL_ENTRY_KEYS },
 ];

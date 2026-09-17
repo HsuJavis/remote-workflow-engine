@@ -5279,3 +5279,103 @@ as its OWN invocation.
 ## 2026-09-14 — ADR-060 `owner_decision` flipped (reviewer): the Gate 8 blocker, closed
 
 `02-architecture.md:3932`'s `owner_decision` moves from `pending` to `answered 2026-09-14`, transcribing the ruling already on disk in `state.yaml`'s `pending[]` (「v28 OWNER RULING (2026-09-14)」) and `01-requirements.md:1678`'s Won't-have **D5** — ACCEPT THE BLINDNESS this iteration: the architect's minimum honest alternative (a status arm on the existing `/api/models` dispatch prefix, closed reason tokens only, never the upstream error string, which can carry the LiteLLM base URL or a key-bearing query) was costed and is declined for this iteration, not rejected on merit, given the measured recipe (`model-catalog.ts:303-304`'s `.catch(() => [])` swallowing both provider failures). It is now a decided blind spot, not an undiscovered defect — a later gate re-reporting it spends a round on a settled question. Two other sentences in the same file still framed the question as open and were struck with a `[RESOLVED 2026-09-14]` marker rather than rewritten: the "Scope of THIS dispatch" note's "(ADR-060 — escalated, not decided here)" and the Decision-rationale bullet's "and the question goes to the owner with its consequence attached"; a third, the housekeeping note (ix) describing "ADR-060's `pending` marker" and "the pending question is carried in `state.yaml`'s…", was corrected the same way. `owner_decision:** pending` count is now 0 across all nine `0*.md` gate docs except `07-review.md`, whose 6 hits are verbatim historical quotes from the ARCH-124/v27h repair narrative (a past, already-closed item), not a live marker. `sh .sdlc/trace --check` reports the same 1675/35, and the 「缺口」(gaps) tab of `dashboard.html` is byte-identical before and after this edit — this closure touches no trace-tracked link. Cited to `a888c4a`.
+
+## 2026-09-17 — v28 Gate 3+4 (tasks + detailed design), LEAN tier — PASSED
+
+Sprint B's nine tasks (TASK-217..225) and ten design rows (DES-210..219) are on disk, six existing
+DES rows are amended in place at iter v28, and one ARCH row was corrected in place with its
+measurement attached.
+
+**The find that justified the gate.** ARCH-132 loaded the demo dataset by `await import()` on the
+FIRST demo tick; ADR-058 says the only real trigger is mid-session engine loss; ARCH-123 serves that
+key `no-store`. Re-measured here: `/static/dashboard/*` (`server.ts:1288`) and the `/api/*` dispatch
+(`server.ts:1362-1370`) are arms of ONE request handler of ONE `createServer`. So the import fired a
+GET at the process that had just died — cache ruled out by `no-store`, module map ruled out by
+「never statically」 — and REQ-143's entire mechanism could never fire, failing silently into the
+Offline tag, which is demo mode's correct-looking neighbour. Corrected to a fire-and-forget boot
+`import()` in `mountApp()`. A static top-level import was the alternative and was refused: it takes
+the whole served bundle down with the directory on the retirement commit, and REQ-143's registered
+exit IS deletion.
+
+Two further measured corrections, both in the same class — a row that is correct alone and
+unsatisfiable beside its neighbour. `tick.results` carried two meanings on a demo tick (every tab
+would paint 「無法取樣」 over a good demo body), so the transport map and the view-facing map are
+named separately. `sortRows` puts `null` FIRST ascending — re-run at this gate — while
+`EnrichedModelEntry` uses `null` for exactly the honest-absence fields, so absence is normalised at
+the projection (`sortKeyOf`) and the v27-closed comparator stays byte-unchanged.
+
+`nextConnection` is not idempotent, so DES-210 writes the tick as seven numbered steps with ONE
+preview and ONE commit against the SAME `prev`: committing the preview makes `offline` — and
+therefore demo — arrive after one all-fail tick instead of two, invisibly to any request-count
+oracle.
+
+**On the lean tier.** No panel was spawned (owner ruling, 2026-09-17). One adversarial round-1 file
+from a killed attempt survived on disk and was synthesized from rather than re-spawned, per the
+contract; three of its load-bearing measurements were independently re-run before being acted on.
+The four quality dimensions and the three adversarial lenses are seven separately headed sections of
+「Decision rationale — v28」, with five internal conflicts (C1–C5) and their tie-breaks written out —
+C4 is this gate's own, and it is the one that chose the safe import over the loud one.
+
+Trace: 1694 items / 53 gaps against the 1675 / 35 baseline captured before the gate. The whole delta
+is nine low 「no implementation yet」 rows for the new tasks and nine low iteration-drift rows on the
+v27 tests that verify the six amended DES rows. Zero broken links, zero orphans. No owner decision
+was deferred: ADR-060 is answered and ARCH-135's recon consequence is already recorded against
+Won't-have D1 and the v24 H-1 adjudication.
+
+Next gate is 5 (test-first RED), and it must be told three things before it writes a line — they are
+in `state.yaml`'s `current_stage` note.
+
+## 2026-09-17 — v28 Gate 5 (test-first RED, verifier) — PASSED: twelve new items, ten amended, and two things measurement corrected rather than assumed
+
+Twelve new work items — UT-258..263, IT-171, VAL-213..217 — were written test-first against every
+in-closure DES-210..219, before TASK-217..225 touch a single production file. Ten existing items
+were amended in place for the six v27 DES rows Gate 3+4 amended (DES-199/202/204/206/207/209) plus
+the two new rows (DES-210, DES-218) that reach back into files Sprint A already shipped: IT-165,
+IT-170, UT-240, UT-244, UT-245, UT-247, UT-249, UT-255, UT-256, UT-257. Most amendments are
+mechanical iter re-stamps with no content change, re-confirmed still green; four are real —
+UT-245 gains `resumeReset`/`demoEngages`, UT-249 gains the widened `endpointsFor('system')`/`getJSON`
+shape, UT-255 gains five v28 CSS value anchors, UT-257 gains the twenty-six-case Models projection
+suite. IT-165 gains three new disclosure rows that are green today by construction, not forced red —
+the routes and their key sets are unchanged by v28, so the row's whole job is to lock the contract in
+place before TASK-225's one-literal change and TASK-222/223's rewrites can drift it.
+
+Two things this gate measured rather than assumed, because assuming either would have shipped a
+quieter defect than a plain red test. First, REQ-142's browser oracle: DES-211's own ladder asked for
+a rung-0 measurement before a line of test code was written, and the first attempt — two `data:` URL
+pages, `bringToFront()`, watch for `visibilitychange` — fired nothing, under every launch-flag
+combination tried, in both headless modes. That result would have justified an `owner_decision`
+asking whether to accept the clause unverified in this harness. It was wrong. Re-measured against a
+real HTTP-origin page — this feature's own `/dashboard`, exactly what the acceptance test actually
+opens — with a `data:` sibling brought to front, the event fires both ways, confirmed twice. The
+`data:` scheme, not the platform, was refusing to participate in Chromium's occlusion tracking. The
+corrected measurement is written into VAL-216's own header rather than silently substituted, because
+the wrong first answer is exactly the kind of thing a later reader benefits from seeing was caught.
+No `owner_decision` was needed after all.
+
+Second, a name collision this gate almost shipped: the System tab's four cards needed a frozen
+`data-*` anchor, and `data-stat-card` read as the obvious choice — until `dashboard-no-design-values
+.test.ts`'s own emitter check reported it as already satisfied, on a tree with no System-tab code at
+all. `agent-panel.js:61` already sets `data-stat-card` on REQ-135's own stat cards, three requirements
+and one Sprint earlier. Reusing it would have let VAL-214's per-card assertions pass against whichever
+panel happened to be in the DOM, never provably the System tab's own. Renamed to `data-sys-stat-card`
+before it reached a single test file.
+
+One deliberate deferral, not a gap: `ISSUES_OK`/`IssuesListView` are named as owed to TASK-219 rather
+than authored here, because `IssuesListView` does not exist in `src/github/issue-reporter.ts` yet and
+minting it is a production-type decision the ordering rules already assign to that task, landing
+before every other v28 Gate-6 task per rule 1. `GET /api/issues (ok)` is the one `DISCLOSURE_TABLE`
+row this gate leaves for TASK-219 to add in the same commit as the type.
+
+Zero production files were touched (`git status` confirms every edit lives under `tests/` or
+`tests/fixtures/`). `sh .sdlc/trace`: 1694/53 → 1706/44 — the five REQ-137..143 「no test at all」 gaps
+clear (each now has a VAL) and are replaced by the 「not yet real:true」 gaps every REQ in this ledger
+carries until Gate 7.5 runs it against a real deployment; the nine DES-amendment drift rows clear;
+nine new 「no implementation yet」 rows for TASK-217..225 are expected and are Gate 6's job to close;
+the remaining twenty-one drift rows and four pre-existing task rows are byte-identical to the
+pre-gate baseline. Zero new broken links, zero new orphans. Full `tests/unit`+`tests/integration`
+regression run clean before this gate's edits landed; each touched shared fixture file was
+individually re-run afterward with zero unrelated case flipped.
+
+Next gate is 6 (implementer). TASK-217 first — the seam, one task, not split by file, per
+03-tasks.md's own ordering rule 2. TASK-219 second — it mints the wire fixture rows and the
+`IssuesListView` type every later task's oracle imports.

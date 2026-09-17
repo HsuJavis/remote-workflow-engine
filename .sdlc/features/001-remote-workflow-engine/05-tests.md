@@ -11760,6 +11760,23 @@ contains(scriptPrompt)`. RED (measured): the real response body contains the mar
 (`"prompt":"RWE-V27-SYSTEMPROMPT-MARKER-DO-NOT-LEAK\n\nsummarize the ticket..."`) — today's
 composed prompt is persisted and returned unstripped.
 
+**[v28 amendment, 2026-09-17, Gate 5, DES-218, TASK-219, REQ-137/138]:** three rows added to
+`DISCLOSURE_TABLE` (`tests/fixtures/dashboard-wire.ts`) — `GET /api/system (ok)`, `GET /api/system
+(per-section degraded)`, `GET /api/models[i] (ok)` — each with new `SYSTEM_OK`/`SYSTEM_SECTION_
+DEGRADED`/`MODEL_ENTRY_OK` literals, `satisfies`-typed against `SystemInfoView`/`EnrichedModelEntry`.
+`beforeAll` fetches all three REAL: `/api/system` TWICE (`SystemInfoSampler`'s `prev` sample is
+`null` on the very first call after boot — `system-info.ts:136-138` — so the "per-section degraded"
+row is a NATURALLY-OCCURRING `cpu.utilizationDegraded:{reason:'awaiting-second-sample'}`, no fault
+injection; a second call after the sampler's 1500ms TTL gets a genuinely fresh, resolved sample) and
+`/api/models` once (the real `DEFAULT_ALIASES` catalog, no mock). `GET /api/issues (ok)` is
+deliberately NOT added — `IssuesListView` doesn't exist in `src/github/issue-reporter.ts` yet
+(TASK-219's own job to mint, per ordering rule 1; see `dashboard-wire.ts`'s own note). Measured
+(2026-09-17): all three new rows are GREEN today — the routes and key sets are unchanged by v28
+(ARCH-135's only change is the `topN` COUNT, covered separately by IT-171) — recorded Mode-C
+green-by-construction, not forced red: the row LOCKS the v28 key-set contract in place, and it is
+already true. `npx vitest run tests/integration/dashboard-disclosure.test.ts` → 2/2 pass (both
+describe blocks, unchanged pass count — the new assertions are inside the existing loop).
+
 ### UT-233 — `sqlite-run-store-usage-projection.test.ts`: the at-rest usage projection + `backfillUsage`
 - **status:** green
 - **traces:** DES-193, ARCH-128, TASK-198, REQ-141
@@ -12035,7 +12052,14 @@ entry (`[]`, not `[DAG_WARNING_EXAMPLES.fallback]`).
 - **tier:** integration
 - **real:** false
 - **result:** pass
-- **iter:** v27
+- **iter:** v28
+
+**Re-stamped (2026-09-17, v28 Gate 5, verifier):** DES-199 was amended in place at iter v28 (four
+new `ASSET_KEYS` entries for `lib/scheduler.js`/`lib/system.js`/`lib/issues.js`/`demo/dataset.js`,
+policy unchanged). This item's own case (route ORDER, registered before the SPA catch-all) is about
+the route's position, not the key list, so it is unaffected — re-run and confirmed still green
+(`npx vitest run tests/integration/static-assets-route.test.ts` → 5/5 pass). iter bumped to
+acknowledge the amended design was read, not because this item's own behaviour changed.
 
 **Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history, not a current description of the code.
 
@@ -12065,7 +12089,13 @@ report). Re-run: `npx vitest run tests/integration/static-assets-route.test.ts` 
 - **tier:** unit
 - **real:** false
 - **result:** pass
-- **iter:** v27
+- **iter:** v28
+
+**Re-stamped (2026-09-17, v28 Gate 5, verifier):** DES-199's amendment (four new `ASSET_KEYS`
+entries, `demo/`'s `no-store` policy) needs NO new case here — this item's own "closed BOTH ways"
+check (`readdirSync` diff) is generic over whatever `STATIC_ASSETS`/the real tree hold, so it will
+catch each v28 key/file pair automatically once TASK-217..225 land them (03-tasks.md ordering rule
+3). Re-run and confirmed still green (`npx vitest run tests/unit/static-assets.test.ts` → 5/5 pass).
 
 **Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
@@ -12121,7 +12151,14 @@ widened `include` actually collects it). RED (measured): whole-file import failu
 - **tier:** unit
 - **real:** false
 - **result:** fail
-- **iter:** v27b
+- **iter:** v28
+
+**Re-stamped (2026-09-17, v28 Gate 5, verifier):** DES-206 was amended in place at iter v28 (the
+`ui/` view contract gains an additive 4th `tick` parameter, DES-210's own INV-V28-1/getViewJSON
+seam) — `lib/strings.js`'s `STR`/`t()`/`warningText` are untouched by that change (the seam lives in
+`poll.js`/`app.js`, not the string table), so no new case is owed here. Re-confirmed at HEAD (`npx
+vitest run tests/unit/dashboard-lib-strings.test.js` → 9/9 pass, matching the "Gate 5 re-run" note
+below); `status`/`result` left as the original bookkeeping per this ledger's Mode-A convention.
 
 File: `tests/unit/dashboard-lib-strings.test.js` (3 pre-existing cases + 6 new). RED (measured):
 whole-file import failure — `src/dashboard/lib/strings.js` does not exist — same reason for every
@@ -12156,13 +12193,31 @@ got one — a miss in that pass's bookkeeping, not a current defect. Left unflip
 ledger's own Mode-A-does-not-flip-status convention (same precedent as VAL-208's history below);
 flagged for whoever next runs the regression closeout to correct the header.
 
-### UT-245 — `dashboard-lib-connection.test.js`: `nextConnection`/`worstOf`/`classifyResponse`
-- **status:** green
-- **traces:** DES-202, ARCH-124, ARCH-125, ARCH-130, TASK-206, REQ-131
+### UT-245 — `dashboard-lib-connection.test.js`: `nextConnection`/`worstOf`/`classifyResponse`/`resumeReset`/`demoEngages`
+- **status:** red
+- **traces:** DES-202, DES-211, DES-212, ARCH-124, ARCH-125, ARCH-130, ARCH-134, ADR-058, ADR-059, TASK-206, TASK-218, TASK-220, REQ-131, REQ-142, REQ-143
 - **tier:** unit
 - **real:** false
-- **result:** pass
-- **iter:** v27
+- **result:** fail
+- **iter:** v28
+
+**[v28 amendment, 2026-09-17, Gate 5, DES-211/DES-212, TASK-218/220, REQ-142/143]:** two pure
+additions to this SAME file, beside `nextConnection`/`worstOf`/`classifyResponse` (byte-unchanged
+per DES-211's own boundary clause, re-run and confirmed still green): `resumeReset(prev)` — REQ-
+142's "切回立即輪詢一次" needs the RESUMED streak to start clean but never at the cost of forgetting
+a DECLARED offline verdict; 5 new cases drive the three named sequences (`fail→pause→fail` ⇒
+degraded, `fail→fail→pause→fail` ⇒ offline — a pause does not un-declare it, `fail→fail→pause→ok` ⇒
+live) through the REAL `nextConnection` plus the two direct cases (an `offline` input returns the
+SAME object by reference; a non-offline input resets `consecutiveFails` only). `demoEngages(verdict,
+reachedFlags, datasetLoaded)` — ADR-058's all-or-nothing entry gate; 9 new cases cover the full 2³
+corner set plus the `reachedFlags === []` vacuous-`every` hazard TASK-220's own dod names. Red
+reason (measured): neither export exists on `src/dashboard/lib/connection.js` today —
+vitest/esbuild resolves the missing names to `undefined` at import time, so each new case fails with
+`TypeError: resumeReset is not a function` / `TypeError: demoEngages is not a function` at its own
+call site. `npx vitest run tests/unit/dashboard-lib-connection.test.js` → 26 total, 14 failed
+(exactly the 5 + 9 new cases), 12 pre-existing pass unchanged (0 regression). Housekeeping in the
+same edit: the file's own header comment carried the SAME copy-paste-off-by-one UT-244's history
+already records once (said "UT-244", matching the sibling file) — corrected to "UT-245" throughout.
 
 **Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
@@ -12189,7 +12244,13 @@ import failure — `src/dashboard/lib/swimlane.js` does not exist.
 - **tier:** unit
 - **real:** false
 - **result:** pass
-- **iter:** v27
+- **iter:** v28
+
+**Re-stamped (2026-09-17, v28 Gate 5, verifier):** DES-204 was amended in place at iter v28 "by
+REFERENCE only, no behaviour change" — `sortRows` is now ALSO reused by the Models tab (DES-213),
+staying byte-unchanged. No new case is owed here (the absence-normalisation this reuse needs lives
+at DES-213's own `sortKeyOf` projection, tested by UT-257). Re-confirmed still green (`npx vitest run
+tests/unit/dashboard-lib-runlist.test.js` → all cases pass).
 
 **Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
@@ -12209,13 +12270,26 @@ import failure — `src/dashboard/lib/runlist.js` does not exist.
 File: `tests/unit/dashboard-lib-agent.test.js` (new, `.js`, 10 cases over the four record-state
 fixtures). RED (measured): whole-file import failure — `src/dashboard/lib/agent.js` does not exist.
 
-### UT-249 — `dashboard-client-corpus.test.ts`: `endpointsFor(view)` + `clientCorpus()`'s own anti-vacuity floor
-- **status:** green
-- **traces:** DES-206, DES-208, ARCH-125, TASK-208, REQ-131, REQ-132, REQ-133, REQ-134, REQ-135
+### UT-249 — `dashboard-client-corpus.test.ts`: `endpointsFor(view)` + `clientCorpus()`'s own anti-vacuity floor + `getJSON`'s v28 shape
+- **status:** red
+- **traces:** DES-206, DES-208, DES-210, ARCH-125, ADR-057, TASK-208, TASK-217, REQ-131, REQ-132, REQ-133, REQ-134, REQ-135, REQ-137, REQ-138, REQ-139, REQ-142, REQ-143
 - **tier:** unit
 - **real:** false
-- **result:** pass
-- **iter:** v27
+- **result:** fail
+- **iter:** v28
+
+**[v28 amendment, 2026-09-17, Gate 5, DES-210, ADR-057, TASK-217]:** two of this item's EXISTING
+cases are amended in place (not superseded): (1) `endpointsFor('system')` grows from `['/api/system']`
+to `['/api/system', '/api/workflows', '/api/runs']` (ADR-057's client fold of the System tab's
+counts card, the SAME rows the run-history table already reads, so the two can never disagree);
+(2) `getJSON`'s result widens from `{status, body}` to `{status, body, reached, source}` (DES-210's
+ONE result shape shared with `getViewJSON` — `reached` is `false` ONLY in the outer network-failure
+catch, `source` is always `'live'` for this function). Red reason (measured against HEAD, `src/
+dashboard/ui/poll.js:23,42-53`): `ROUTES.system` is still the one-route array and `getJSON` still
+returns exactly `{status, body}` — 4 of this file's cases now fail (the widened `endpointsFor`
+assertion plus all three `getJSON` `toEqual` cases), the other 4 (home/run/workflow endpoints,
+issues/models routes, the anti-vacuity floor) are unaffected and stay green. `npx vitest run
+tests/unit/dashboard-client-corpus.test.ts` → 8 total, 4 failed, 4 passed.
 
 **Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
@@ -12276,13 +12350,13 @@ re-run and stay green). RED (measured): `clientCorpus()` throws.
 File: `tests/unit/workflow-page-harness-table.test.ts` (extended, 1 new case; both pre-existing cases
 re-run and stay green). RED (measured): `clientCorpus()` throws.
 
-### UT-255 — `dashboard-class-contract.test.ts`: TASK-214's own green — the class lock + anti-vacuity value anchors (DES-209)
-- **status:** green
-- **traces:** DES-209, TASK-214
+### UT-255 — `dashboard-class-contract.test.ts`: TASK-214's own green — the class lock + anti-vacuity value anchors (DES-209/DES-219)
+- **status:** red
+- **traces:** DES-209, DES-219, TASK-214, TASK-221, REQ-137, REQ-138
 - **tier:** unit
 - **real:** false
-- **result:** pass
-- **iter:** v27c
+- **result:** fail
+- **iter:** v28
 
 **F-pattern note (not a Gate-5-before-impl violation):** TASK-214's `dod` explicitly has "no Gate 5
 of its own" in this invocation (`gates:[design,impl,verify,validation,review]` skips `tests`) — its
@@ -12296,13 +12370,38 @@ File: `tests/unit/dashboard-class-contract.test.ts` (new, 13 cases). GREEN (meas
 `@keyframes`, `.cell` box + failed/queued state, `.lane-head` typography, `.card-grid`/`.agent-panel`
 sizing, both accent-ramp directions) all hold against the landed `dashboard.css`.
 
+**[v28 amendment, 2026-09-17, Gate 5, DES-219, TASK-221, REQ-137/138]:** `dashboard-classes.ts`'s
+`STYLE_HOOKS` gains 11 v28 entries (`model-filters`/`sort-active`/`model-panel`/`bench-row`/
+`stat-card`/`stat-track`/`stat-bar`/`proc-table`/`proc-self`/`engine-dl`/`is-demo`) and `TEST_ANCHORS`
+gains 6 (`data-model-table`/`data-model-panel`/`data-sys-stat-card`/`data-proc-table`/
+`data-engine-dl`/`data-demo-banner`) — Gate 5's PROPOSED names (the class NAMES are renamable by
+TASK-221 in the same commit as the CSS, per this fixture's own STYLE_HOOKS/TEST_ANCHORS rule; the
+`data-*` names are FROZEN). A new describe block adds 5 value-anchor cases from README §4/§5:
+`.stat-card` 34px/weight-500, `.stat-track`/`.stat-bar` 2px/4px, `.model-panel` 560px, `.bench-row`
+`140px 1fr 48px`, `.models-table` (reused) ≥960px. Red reason (measured): none of these selectors
+exists in `dashboard.css` yet — all 5 new cases fail with "rule not found", and the PRE-EXISTING
+"every STYLE_HOOKS entry appears as a selector" case ALSO now fails (the 11 new hooks are unemitted)
+— a genuine, automatic extension of that case's own red, not new test code. `npx vitest run
+tests/unit/dashboard-class-contract.test.ts` → 18 total, 6 failed, 12 passed (the 12 pre-existing
+v27c cases are unaffected).
+
 ### UT-256 — `dashboard-no-design-values.test.ts`: the SLICE's final green — emitter half of the class lock + the no-design-values guard (DES-209)
 - **status:** green
 - **traces:** DES-209, TASK-214
 - **tier:** unit
 - **real:** false
 - **result:** pass
-- **iter:** v27c
+- **iter:** v28
+
+**Re-stamped (2026-09-17, v28 Gate 5, verifier):** no new test code needed — this item iterates
+`STYLE_HOOKS`/`TEST_ANCHORS` generically, so my v28 additions to `dashboard-classes.ts` (UT-255's own
+amendment) extend its EXISTING two cases' own red set automatically: `every STYLE_HOOKS entry is
+emitted` and `every TEST_ANCHORS entry is emitted` each now also list the 11/6 new v28 names as
+missing (measured: `data-model-table`, `data-model-panel`, `data-proc-table`, `data-engine-dl`,
+`data-demo-banner` — `data-sys-stat-card` after the rename that avoided a real collision with the
+PRE-EXISTING `data-stat-card` `agent-panel.js:61` already emits for REQ-135's own stat cards). This
+is the SLICE's own final green (ordering rule 4/DES-209) — expected to stay red until TASK-221..224
+land, same disposition as v27c, just a wider red set now.
 
 **Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
@@ -12319,13 +12418,13 @@ allowlist guard* — 10 hits, all container-geometry literals (`wrap.style.width
 missing either the `// rwe-allow-style: svgBox` marker or a class (TASK-210/211/212's remaining
 scope). The other 4 cases (hex/oklch/rgba/cssText/setAttribute-literal guards) are already green.
 
-### UT-257 — `dashboard-lib-model.test.js`: `shortModel(model)` — the REQ-134 row-2 formatter (VAL-208 fix pass)
-- **status:** green
-- **traces:** DES-206, TASK-210, REQ-134
+### UT-257 — `dashboard-lib-model.test.js`: `shortModel(model)` — the REQ-134 row-2 formatter (VAL-208 fix pass); `sortKeyOf`/`matchModels`/`modelRow`/`costDots`/`modelPanel` (v28, DES-213)
+- **status:** red
+- **traces:** DES-206, DES-213, ADR-060, TASK-210, TASK-222, REQ-134, REQ-137
 - **tier:** unit
 - **real:** false
-- **result:** pass
-- **iter:** v27
+- **result:** fail
+- **iter:** v28
 
 Written at Gate 6 (2026-09-12), not Gate 5: a prior implementer flagged this exact gap (no
 `shortModel`-style formatter existed anywhere in `lib/`, and writing one with no Gate 5 oracle would
@@ -12341,6 +12440,22 @@ pass): `npx vitest run tests/unit/dashboard-lib-model.test.js` -> 6/6 pass. Regi
 `src/static-assets.ts`'s `ASSET_KEYS` in the same commit (the `lib/clock.js` near-miss this ledger
 already recorded once, IMPL-247, is the exact trap this registration avoids) and wired into
 `ui/run.js`'s swimlane row 2 (`modelEl.textContent = model ? shortModel(model) : '—'`).
+
+**[v28 amendment, 2026-09-17, Gate 5, DES-213, ADR-060, TASK-222, REQ-137]:** the SAME file (`lib/
+model.js` is EXTENDED, never a second `lib/models.js` — DES-213's own boundary against two
+near-homonym `ASSET_KEYS`) gains `sortKeyOf(entry, column)`, `matchModels(entries, {query,provider,
+loc})`, `modelRow(entry, lang)`, `costDots(level)`, `modelPanel(entry, lang)`. Cases (26 new, local
+fixture literals per this gate's own choice — `MODEL_ENTRY_OK` in `tests/fixtures/dashboard-wire.ts`
+is TASK-219's to mint, ordering rule 1): a 12-column × 2-direction sort table over 5 fixture rows
+(one all-absent) via the REAL `sortRows` (`lib/runlist.js`, byte-unchanged) — asserting the absent
+row sorts LAST in both directions for every column, INV-V28-4 pinned mechanically; `sortKeyOf`'s
+totality on an unknown column; price `'free'` as the number `0` (sorts before a mid-priced row, R4);
+`costLevel` 0 vs `null` distinctness; `matchModels`'s empty-filter identity, query/provider/segment
+narrowing; `costDots` at 0/mid/10/null; `modelPanel`'s def-list/benchmarks/tags shape, including the
+D2-default empty-benchmarks case. Red reason (measured): none of the five names is exported by
+`src/dashboard/lib/model.js` today — every case fails with `TypeError: <name> is not a function` at
+its own call site. `npx vitest run tests/unit/dashboard-lib-model.test.js` → 32 total, 26 failed, 6
+pre-existing `shortModel` cases pass unchanged (0 regression).
 
 ### VAL-206 — real Chromium: the v27 shell (theme/lang/hue/connection) and the Workflows home
 - **status:** green
@@ -12739,3 +12854,263 @@ Real-tier path per 04-design.md's own table: backed by `tests/integration/usage-
 (ADR-052's N=1000 measurement obligation) is NOT written at this gate — it is a Gate-7.5-only
 measurement script, not a test-first RED item (no red/green state to confirm; it records a number).
 RED (measured): see IT-167.
+
+## v28 Gate 5 (2026-09-17, verifier, test-first RED) — Sprint B (REQ-137/138/139/142/143)
+
+New items UT-258..263, IT-171, VAL-213..217, written test-first against DES-210..219 (the ten new
+v28 design rows), before TASK-217..225 implement anything. Nine existing items amended in place
+above (IT-165, IT-170, UT-240, UT-244, UT-245, UT-247, UT-249, UT-255, UT-256, UT-257 — ten,
+counting IT-165) per the six amended v27 DES rows (DES-199/202/204/206/207/209) plus the two new
+wire/seam rows (DES-210, DES-218) that reach back into pre-existing files. Per-tier mock policy
+held throughout: unit tier mocks freely (pure functions, no DOM); integration boots a real
+`createServer()` with only the third-party model provider doubled; acceptance/VAL never mocks the
+SUT's own boundary — every VAL below drives a real Chromium against a real booted server (or a real
+`server.close()`/re-`listen()` for REQ-143's fault).
+
+### UT-258 — `dashboard-lib-scheduler.test.js`: `nextPoll(state, event)` — the full 2x4 decision table
+- **status:** red
+- **traces:** DES-211, ARCH-134, ARCH-133, ADR-059, TASK-218, REQ-142, REQ-131
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v28
+
+`src/dashboard/lib/scheduler.js` (new, pure, no timer/DOM/fetch/import) does not exist. Ten cases:
+the full 2×4 table (`hidden`/`visible`/`view-changed`/`settled` × `{parked:true|false}`) plus the
+named race DES-211 states explicitly — a tick fired, then `hidden` arriving before it `settled`,
+must `park` on settle (never `arm`), because `app.js`'s current `tick().finally(() => setTimeout(loop,
+3000))` (`app.js:389-397`, measured) re-arms unconditionally today, the exact leak REQ-142's "0
+requests over the hidden window" guarantee needs closed by construction (an absent timer), not by a
+guard that can fail open. Red (measured): whole-file import failure (`Failed to resolve import`).
+`npx vitest run tests/unit/dashboard-lib-scheduler.test.js` → 0 collected, suite failure.
+
+### UT-259 — `demo-dataset-types.test.ts`: `DEMO` is type-locked to the real wire shapes; every parametric id round-trips
+- **status:** red
+- **traces:** DES-212, ARCH-132, TASK-220, REQ-143
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v28
+
+`src/dashboard/demo/dataset.js` does not exist — DES-212's own "first test" (same convention as
+`dashboard-wire.ts`'s header: importing before it exists is deliberate). Reuses the SAME
+`ALLOWED_*`/`REQUIRED_*` key-set tables `dashboard-disclosure.test.ts` (IT-165) checks REAL served
+bodies against, rather than a compile-time `satisfies` cast on a value pulled out of a
+`ReadonlyMap<string, unknown>` (which cannot see the actual runtime shape) — one shape description,
+three consumers, per DES-212's own stated economy. 9 cases: `DEMO` is a `Map` and exports nothing
+else; `/api/home`/`/api/runs`/`/api/system`/`/api/models`/`/api/runs/demo0001/dag` each match their
+real key set (process pids in the 99000-99999 band asserted inline); every parametric id round-trips
+`encodeURIComponent`; every run id starts `demo0001` and every workflow name starts `demo-`
+(self-labelling in the DATA, ARCH-132). Red (measured): whole-file import failure. `npx vitest run
+tests/unit/demo-dataset-types.test.ts` → 9/9 fail (all `Failed to load url` on the same missing
+module).
+
+### UT-260 — `demo-surface.test.ts`: the retirement tripwire, closed BOTH ways over `src/dashboard/**`
+- **status:** red
+- **traces:** DES-212, ARCH-132, TASK-220, REQ-143
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v28
+
+Same mechanism as `static-assets.test.ts:50-71`/`no-skeleton-surface.test.ts`, scoped to
+`src/dashboard/**` only (a repo-wide grep would flag PRE-EXISTING, unrelated "demo" fixture names —
+measured: `tests/unit/meta-literal.test.ts`, `tests/acceptance/v24-tool-surface.test.ts`,
+`tests/integration/catalog-v24.test.ts`, `tests/integration/asset-mcp-config-wiring.test.ts`,
+`src/tool-specs.ts` all use "demo" as a generic example name, unrelated to REQ-143 — flagging those
+would be the exact "poisoned oracle" class this ledger's carry-forward lessons warn against). Two
+halves: (1) `demo/dataset.js` PRESENT ON DISK (the retirement-commit direction — RED today, the file
+does not exist); (2) every "demo"/"示範" mention under `src/dashboard/**` is in the 6-file
+allowlist (the leak direction). Measured finding folded into the allowlist: `dashboard.css:166`
+ALREADY quotes the README's "`Demo data` outline" verbatim in a [v27 README-fidelity closure]
+comment, predating this task — allowlisted rather than treated as a leak, since TASK-221 is expected
+to add a real `.is-demo`-style selector to the SAME file for this SAME feature. `npx vitest run
+tests/unit/demo-surface.test.ts` → 2 total, 1 failed (half 1), 1 passed (half 2, Mode-C
+green-by-construction: zero unlisted mentions exist today).
+
+### UT-261 — `dashboard-seam.test.ts`: five source tripwires over the v28 seam (INV-V28-1, the route table, the two timers, the two stamps)
+- **status:** red
+- **traces:** DES-210, ARCH-133, ARCH-125, ARCH-124, ADR-057, ADR-058, ADR-059, TASK-217, REQ-137, REQ-138, REQ-139, REQ-142, REQ-143
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v28
+
+Five tripwires, not a proof of behaviour — each closes a failure mode invisible to every other
+oracle in this ledger (DES-210's own numbering). (1) INV-V28-1: only `ui/app.js`/`poll.js` may
+import `getJSON`; measured RED — `run.js`, `workflow.js`, `agent-panel.js`, `issues.js`, `models.js`,
+`system.js` ALL import it today (6 offenders). (2) `poll.js` exports `getViewJSON`/`setDemoBodies`
+and `ROUTES.system` is the 3-url ADR-057 fold; RED — neither export exists, `ROUTES.system` is
+still 1 route. (3) `setTimeout(` occurs exactly once in `app.js`; **GREEN BY CONSTRUCTION (Mode C)**
+— measured true today (`:396`) and DES-210's seven-step tick adds no second timer, so this case is
+recorded green, not forced red, and exists to catch a REGRESSION. (4) the one-commit tripwire (K2):
+`nextConnection(` occurs exactly TWICE (the uncommitted preview + the one commit) while
+`connectionState = nextConnection(` occurs exactly ONCE; RED — `nextConnection(` occurs only once
+today (`:383`); the anchor is deliberately the CONJUNCTION, not the bare `connectionState =` form,
+which already matches twice once TASK-218 adds its own assignment and would pass vacuously post-
+Gate-6 even with the bug. (5) `data-poll`/`data-source` each `setAttribute`'d exactly once; RED — 0
+hits today. `npx vitest run tests/unit/dashboard-seam.test.ts` → 5 total, 4 failed, 1 passed (case
+3, Mode C).
+
+### UT-262 — `dashboard-lib-system.test.js`: `sectionState`/`cpuUtilState`/`statCard`/`procRow`/`procTotals`/`fmtBytes`/`catalogCounts`
+- **status:** red
+- **traces:** DES-215, ARCH-134, ADR-057, TASK-223, REQ-138
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v28
+
+`src/dashboard/lib/system.js` does not exist. Cases: `sectionState` over a real value and all five
+`system-info.ts:24-30` `Reason` values (three of which are NOT faults per DES-215's boundary —
+`awaiting-second-sample`/`unsupported-platform`/`sample-window-too-short` — rendered as informative
+secondary text, not an error); `cpuUtilState`'s SIBLING-key shape (distinct from the discriminated-
+union sections); `statCard` returning `pct:undefined` for the counts card (INV-V28-4: the bar has an
+absent state of its own, never a fabricated full bar); `procRow` marking `isSelf` on the engine pid
+only; `procTotals` over an UNANTICIPATED `/proc` state letter (the key set is OPEN, never a
+hard-coded S/R pair, never a throw); `fmtBytes` at the three unit boundaries (moved verbatim from
+`ui/system.js:38`); `catalogCounts` over ADR-057's three written definitions. Red (measured):
+whole-file import failure. `npx vitest run tests/unit/dashboard-lib-system.test.js` → 0 collected,
+suite failure.
+
+### UT-263 — `dashboard-lib-issues.test.js`: `safeIssueHref(url)` — https: only, total, never throws
+- **status:** red
+- **traces:** DES-217, ARCH-134, ARCH-133, TASK-224, REQ-139, REQ-067
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v28
+
+`src/dashboard/lib/issues.js` does not exist. An issue title/URL is attacker-influenceable content
+on an UNAUTHENTICATED page (anyone can open a GitHub issue), and `ui/issues.js:85` sets
+`detailLink.setAttribute('href', data.url || '#')` with NO safety check today. 6 cases:
+`javascript:`/`data:`/plain-`http:`/relative-path/malformed URLs all return `null` (never throw); a
+real `https://github.com/...` URL passes through unchanged. Red (measured): whole-file import
+failure. `npx vitest run tests/unit/dashboard-lib-issues.test.js` → 0 collected, suite failure.
+
+### IT-171 — `dashboard-http.test.ts` extended: `GET /api/system` serves up to 20 process rows (ARCH-135)
+- **status:** red
+- **traces:** ARCH-135, DES-218, TASK-225, REQ-138
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v28
+
+Real `createServer()` + real HTTP, over the REAL host process table (no stub). Two cases: (1)
+`process.topN.length` can exceed 5, bounded at 20 (this host has 300+ real processes, measured, so
+the assertion is non-vacuous); (2) `src/server.ts`'s own `topN` lines are literals only — no
+`?topN=`/`req.url`/`searchParams` derivation (ARCH-135's own refusal of a knob: a per-caller
+constant is free and correct inside `SystemInfoSampler`'s one TTL, `system-info.ts:256-290`, and a
+knob on an unauthenticated route would be a recon-widening). Red (measured): `server.ts:370` still
+calls `systemInfo.get({ topN: 5 })` — case (1) gets exactly 5 rows (fails `> 5`), case (2) finds no
+`topN: 20` literal. `npx vitest run tests/integration/dashboard-http.test.ts -t "v28: GET /api/system"`
+→ 2/2 fail; full-file regression unaffected (13 pre-existing cases skipped by the filter, confirmed
+green in the full run below).
+
+### VAL-213 — REQ-137: Models tab — twelve sortable columns, three filters, a 560px slide-in
+- **status:** red
+- **traces:** REQ-137, DES-213, DES-214, TASK-222
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v28
+
+File: `tests/acceptance/val-203-models-tab.test.ts` (new, real `createServer()` with `DEFAULT_ALIASES`,
+real Chromium). 5 cases: a cold `/dashboard` + `[data-tab="models"]` click paints `[data-model-table]`
+with 12 `<th>`s; a header click sorts and toggles asc/desc, marking `th.sort-active`; the search box
+narrows the row count; a row click opens `[data-model-panel]`; `SPEC_ROWS` (view `models`, 6 rows
+authored from README §4, RED before `dashboard.css`'s v28 families exist) hold under both themes and
+a hue move. Red (measured): none of `[data-model-table]`/`[data-model-panel]`/`.sort-active` exist —
+today's `.models-table` is the old flat 6-column port. `RWE_REQUIRE_BROWSER=1 npx vitest run
+tests/acceptance/val-203-models-tab.test.ts` → 5/5 fail (4 timeouts waiting for the new anchors, 1
+SPEC_ROWS assertion listing all 6 rows' "anchor matched no element").
+
+### VAL-214 — REQ-138: System tab — four stat cards, a 20-row process table, the engine dl, the decisive per-card degrade split
+- **status:** red
+- **traces:** REQ-138, DES-215, DES-216, TASK-223
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v28
+
+File: `tests/acceptance/val-204-system-tab.test.ts` (new, real `createServer()`, real Chromium; ONE
+`/api/workflows` request intercepted via CDP for the decisive case — the SUT's own real HTTP route
+is never mocked, only the browser's network layer for that one probe). 4 cases: a cold `/dashboard`
++ tab click paints 4 `[data-sys-stat-card]` + a `[data-proc-table]` + a `[data-engine-dl]`; the
+process table serves > 5 rows (this host's real process count); intercepting ONLY `/api/workflows`
+blanks the counts card while CPU/memory/disk keep rendering live numbers (DES-215/216's decisive
+per-card split — a route-level fault must not blank three cards holding perfect data); `SPEC_ROWS`
+(view `system`, 6 rows from README §5) hold under both themes and a hue move. Red (measured): none
+of the new anchors exist — today's whole-route degrade blanks the ENTIRE tab
+(`system.js:72-78`), so a per-card split does not exist even conceptually. `RWE_REQUIRE_BROWSER=1
+npx vitest run tests/acceptance/val-204-system-tab.test.ts` → 4/4 fail.
+
+### VAL-215 — REQ-139/REQ-067: Issues tab in v28 clothes; the real `safeIssueHref` wiring
+- **status:** red
+- **traces:** REQ-139, REQ-067, DES-217, TASK-224
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v28
+
+File: `tests/acceptance/val-205-issues-tab.test.ts` (new, real `createServer()` with an INJECTED
+`issueReporter` stub standing in for the one genuinely un-runnable third-party boundary — a real
+GitHub API call — same convention as `FAKE_GATEWAY` in `dashboard-disclosure.test.ts`; the server
+routing and rendering are never mocked). This tab ships with NO design page (DES-217), so its bar is
+"same tokens/classes as the others" plus the one real security property — 4 cases: a malicious
+(`javascript:`) issue URL must never reach the DOM as a live `href`; REQ-067 non-regression
+(GitHub-not-configured still shows degraded text); Open/Resolved partition + row-expand still work;
+dark/light screenshots captured as REQ-139's own visual evidence (`.sdlc/features/
+001-remote-workflow-engine/evidence/v28/val215-issues-{dark,light}.png`). Measured (2026-09-17): 3
+of 4 already GREEN (Mode C — REQ-067/partition/expand/screenshot-capture already work, unaffected by
+v28) — the genuinely red case is the security one: `ui/issues.js:85` sets `detailLink.setAttribute
+('href', data.url || '#')` with no check, so the malicious URL DOES reach a live `href` today.
+`RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-205-issues-tab.test.ts` → 4 total, 1
+failed, 3 passed.
+
+### VAL-216 — REQ-142: pause polling when hidden — real Chromium, 0 requests over a 30s hidden window
+- **status:** red
+- **traces:** REQ-142, DES-211, TASK-218
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v28
+
+File: `tests/acceptance/val-206-visibility-pause.test.ts` (new). DES-211's oracle ladder, walked for
+real before writing this file: **rung 0 measurement** — a first probe using `data:` URL pages on
+BOTH sides showed zero `visibilitychange` events under any launch flag combination; re-measured
+against a real `http://127.0.0.1:<port>/` page (this file's own subject) with a `data:` sibling
+brought to front, `visibilitychange` fires correctly (`hidden` then `visible`), confirmed twice —
+the FIRST probe's methodology, not the platform, was the confound (`data:` pages do not participate
+in Chromium's occlusion tracking the way an HTTP-origin page does). **Rung 1 therefore works in this
+harness** — no CDP override, no owner escalation needed (recorded as a correction, not silently
+fixed, per this ledger's "measure, don't assume" discipline). One case: a real second page brought
+to front backgrounds the dashboard (`document.visibilityState === 'hidden'`, asserted as a
+precondition sanity check); 0 `/api/*` requests must reach the server over the following 30s; a
+request must fire within ~1s of bringing the dashboard back to front. Red (measured): `app.js` has
+no `visibilitychange` listener at all (`grep -c visibilitychange src/dashboard/ui/app.js` = 0) — its
+poll loop is an unconditional 3s `setTimeout`, so this run measured 10 requests over the 30s hidden
+window. `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-206-visibility-pause.test.ts` →
+1/1 fail (34s real wall-clock run).
+
+### VAL-217 — REQ-143: demo data self-labels, engages on a STOPPED engine, retires on recovery
+- **status:** red
+- **traces:** REQ-143, DES-212, TASK-220
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v28
+
+File: `tests/acceptance/val-207-demo-data.test.ts` (new, real `createServer()`/real Chromium; a REAL
+`server.close()` then re-`createServer({port})` on the SAME port is the fault/recovery mechanism —
+per DES-212's own binding constraint, this REQ's fault must be a STOPPED engine under an
+already-open page, never an HTTP-error storm, which is REQ-131's Offline case (val-198's); building
+either as the other silently stops testing anything). 2 cases: (1) on a LIVE engine, a fresh page
+load issues exactly ONE GET of `/static/dashboard/demo/dataset.js` (REQ-143's positive observable,
+corrected by the ARCH-132/DES-212 amendment to "per page load", not "per first demo tick") and the
+nav tag shows neither 示範/Demo; (2) `server.close()` under an already-open page, wait past
+REQ-131's ≥2-tick offline rule, and the nav tag must show 示範資料/Demo data (never simultaneously
+with Live/連線中), with the demo marker visible in the page BODY too (not only the nav); a NEW
+server on the SAME port then flips the next poll back to Live. Red (measured): 0 GETs of the dataset
+key today (`app.js` never imports `../demo/dataset.js`); after `server.close()` the nav reads `離線`
+(Offline), not a demo label — no demo body, no demo tag, ever. `RWE_REQUIRE_BROWSER=1 npx vitest run
+tests/acceptance/val-207-demo-data.test.ts` → 2/2 fail (~12s real wall-clock run).
