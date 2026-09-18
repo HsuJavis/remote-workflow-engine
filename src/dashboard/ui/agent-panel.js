@@ -30,6 +30,7 @@
 // file's `ui/run.js` sibling. A caller that supplies neither field still gets the safe 'right'
 // default.
 import { panelSide } from '../lib/swimlane.js';
+import { kindLabel, stateLabel } from '../lib/strings.js';
 import { panelModel, clipText } from '../lib/agent.js';
 import { clockNow } from './clock.js';
 import { getViewJSON } from './poll.js';
@@ -79,10 +80,12 @@ function eventKindCategory(kind) {
   return 'log';
 }
 
-function buildEventKindTag(kind) {
+function buildEventKindTag(kind, lang) {
   const span = document.createElement('span');
+  // [v29, REQ-150] The CSS CATEGORY still comes from the raw wire `kind` (three looks for six
+  // values); only the visible text is translated.
   span.className = `event-kind is-${eventKindCategory(kind)}`;
-  span.textContent = kind;
+  span.textContent = kindLabel(lang, kind);
   return span;
 }
 
@@ -92,7 +95,7 @@ function buildEventRow(ev, lang) {
   const clock = document.createElement('span');
   clock.textContent = fmtClock(ev.ts);
   row.appendChild(clock);
-  row.appendChild(buildEventKindTag(ev.kind));
+  row.appendChild(buildEventKindTag(ev.kind, lang));
   const raw = typeof ev.data === 'string' ? ev.data : JSON.stringify(ev.data ?? {});
   const { shown, clipped } = clipText(raw, EVENT_CLIP);
   const content = document.createElement('code');
@@ -154,7 +157,8 @@ export function render(container, vm, handlers) {
   h2.textContent = vm.label || vm.agentId || '';
   header.appendChild(h2);
 
-  if (vm.state) header.appendChild(buildTag(vm.state));
+  // [v29, REQ-150] the state tag read the raw wire word (`done`) in the zh panel.
+  if (vm.state) header.appendChild(buildTag(stateLabel(lang, vm.state)));
   if (vm.phase) header.appendChild(buildTag(vm.phase));
   if (vm.reasonCode) header.appendChild(buildTag(vm.reasonCode));
 

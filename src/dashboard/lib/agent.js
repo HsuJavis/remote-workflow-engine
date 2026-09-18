@@ -3,6 +3,7 @@
 // the RECORD (and its HarnessDescriptor), never a reconstruction from the DOM. Pure: `now` is a
 // parameter, cost goes through `fmtCost` (DES-204).
 import { fmtCost } from './runlist.js';
+import { t } from './strings.js';
 
 function withCommas(n) {
   return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
@@ -70,13 +71,14 @@ function systemPromptNote(harness, lang) {
 }
 
 export function panelModel(record, harness, events, hasMore, now, lang) {
+  // [v29, REQ-150] The six labels were English literals in both languages.
   const stats = [
-    { label: 'Model', value: modelLine(record, harness) },
-    { label: 'Tokens', value: tokenCols(record.tokens) },
-    { label: 'Cost', value: fmtCost(record.costUSD, record.unpriced ? 1 : undefined, lang) },
-    { label: 'Timeout', value: fmtTimeout(harness?.timeoutMs) },
-    { label: 'Effort', value: effortText(harness?.effortApplied) },
-    { label: 'Activity', value: activityText(record, now, lang) },
+    { label: t(lang, 'model'), value: modelLine(record, harness) },
+    { label: t(lang, 'tokens'), value: tokenCols(record.tokens) },
+    { label: t(lang, 'cost'), value: fmtCost(record.costUSD, record.unpriced ? 1 : undefined, lang) },
+    { label: t(lang, 'timeout'), value: fmtTimeout(harness?.timeoutMs) },
+    { label: t(lang, 'effort'), value: effortText(harness?.effortApplied) },
+    { label: t(lang, 'activity'), value: activityText(record, now, lang) },
   ];
   return {
     stats,

@@ -78,7 +78,7 @@
 // dod item for real (`agent-panel.js`'s own banner covers its side of the fix).
 import { SWIMLANE_BOX, cellRect, svgBox, edgePath } from '../lib/swimlane.js';
 import { sumTokens, fmtCost, fmtTok } from '../lib/runlist.js';
-import { t, warningText } from '../lib/strings.js';
+import { t, warningText, stateLabel } from '../lib/strings.js';
 import { shortModel } from '../lib/model.js';
 import { endpointsFor, getViewJSON } from './poll.js';
 import { openAgentPanel } from './agent-panel.js';
@@ -364,7 +364,10 @@ export function renderLegend(legendEl, payload, view, lang) {
   const cost = usage ? fmtCost(usage.costUSD, usage.unpricedCalls, lang) : '—';
   const summary = document.createElement('span');
   summary.className = 'run-summary';
-  summary.textContent = view.status + ' · ' + nodeCount + (lang === 'zh' ? ' 個節點 · ' : ' nodes · ') + tok + ' tok · ' + cost;
+  // [v29, REQ-150] `view.status` went to the page as the raw wire word (`completed`) in both
+  // languages. `stateLabel` is TOTAL — an unrecognised status passes through unchanged rather
+  // than rendering `undefined`, which this very line shipped once before (see :509).
+  summary.textContent = stateLabel(lang, view.status) + ' · ' + nodeCount + (lang === 'zh' ? ' 個節點 · ' : ' nodes · ') + tok + ' tok · ' + cost;
   legendEl.appendChild(summary);
 }
 

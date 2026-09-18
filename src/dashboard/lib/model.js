@@ -1,3 +1,4 @@
+import { t } from './strings.js';
 // src/dashboard/lib/model.js
 // DES-206, TASK-210, REQ-134 row 2 — `shortModel(model)`: strips wire-format routing prefixes so
 // the swimlane's model column shows what an operator recognizes, not the raw routed id. Mirrors
@@ -104,8 +105,9 @@ function fmtContext(contextWindow) {
   return unit === 1 ? String(contextWindow) : (contextWindow / unit).toFixed(1).replace(/\.0$/, '') + suffix;
 }
 
-function fmtPrice(price) {
-  if (price === 'free') return 'Free';
+function fmtPrice(price, lang) {
+  // [v29, REQ-150] beyond the enumerated token list, same defect class on the same table.
+  if (price === 'free') return t(lang, 'free');
   if (isAbsent(price)) return '—';
   return `${price.in} / ${price.out}`;
 }
@@ -145,22 +147,35 @@ function fmtDeclared(value, source) {
 
 /** `modelRow(entry, lang) → { cells: string[12], sortKeys }` — the twelve REQ-137 cells, in
  *  column order, plus each column's own `sortKeyOf` value (so a caller holding an already-sorted
- *  row never needs to re-derive a key from the raw entry). `lang` is accepted per DES-213's
- *  signature for a future locale-varying cell; every current cell format is locale-invariant. */
-export function modelRow(entry, _lang) {
+ *  row never needs to re-derive a key from the raw entry).
+ *
+ *  [v29, REQ-150] `lang` was accepted "for a FUTURE locale-varying cell"; two of the twelve are
+ *  locale-varying and shipped showing the raw wire words (`stable`, `remote`) in the zh table.
+ *  Only the DISPLAYED cell is translated — `sortKeys` keeps the raw value, so switching language
+ *  never reorders the table. An unrecognised wire value passes through unchanged rather than
+ *  rendering the literal string `undefined` (the BF-5/BF-6 class). */
+const STABILITY_KEY = { stable: 'stable', variable: 'variable', 'best-effort': 'bestEffort' };
+const LOCATION_KEY = { remote: 'remote', local: 'local' };
+function word(map, raw, lang) {
+  if (raw === undefined || raw === null || raw === '') return '—';
+  const key = map[String(raw)];
+  return key ? t(lang, key) : String(raw);
+}
+
+export function modelRow(entry, lang) {
   const cells = [
     entry.model,
     entry.provider,
     Array.isArray(entry.aliases) && entry.aliases.length ? entry.aliases.join(', ') : '—',
     fmtContext(entry.contextWindow),
-    fmtPrice(entry.price),
+    fmtPrice(entry.price, lang),
     fmtDeclared(entry.toolUseDeclared, entry.declaredSource),
     fmtDeclared(entry.effortDeclared, entry.declaredSource),
     fmtModalities(entry.modalities),
     fmtLatency(entry.latency),
-    entry.stability,
+    word(STABILITY_KEY, entry.stability, lang),
     fmtBenchmarks(entry.benchmarks),
-    entry.location,
+    word(LOCATION_KEY, entry.location, lang),
   ];
   const sortKeys = {};
   for (const col of COLUMNS) sortKeys[col] = sortKeyOf(entry, col);
@@ -182,7 +197,7 @@ export function modelPanel(entry, lang) {
     entry.capability,
     fmtModalities(entry.modalities),
     fmtContext(entry.contextWindow),
-    fmtPrice(entry.price),
+    fmtPrice(entry.price, lang),
     costDots(entry.costLevel),
     fmtLatency(entry.latency),
     entry.stability,

@@ -101,3 +101,21 @@ describe('lib/agent.js: eventListModel / clipText (UT-247, DES-205)', () => {
     expect(clipText('a'.repeat(2049), 2048).clipped).toBe(true);
   });
 });
+
+describe('lib/agent.js: the panel’s six stat labels render in the viewer’s language (UT-267, v29, REQ-150)', () => {
+  const rec = { agentId: 'a-1', label: 'triage', state: 'done', provider: 'anthropic', model: 'haiku', tokens: { input: 392, output: 4987 } };
+  it('zh labels carry no English', () => {
+    const vm = panelModel(rec, undefined, [], false, Date.now(), 'zh');
+    const labels = vm.stats.map((s) => s.label);
+    // `Tokens` is deliberately NOT in this set: the handoff's own STR.zh keeps it in Latin
+    // (`tokens: 'Tokens'`), and the running reference renders 「TOKENS」 in its zh panel. Asserting
+    // it away would be translating past the design.
+    expect(labels.some((l) => /^(Model|Cost|Timeout|Effort|Activity)$/.test(l))).toBe(false);
+    expect(labels).toContain('Tokens');
+    expect(labels).toContain('模型');
+  });
+  it('en labels are unchanged — a missing translation, not a relocation', () => {
+    const vm = panelModel(rec, undefined, [], false, Date.now(), 'en');
+    expect(vm.stats.map((s) => s.label)).toEqual(['Model', 'Tokens', 'Cost', 'Timeout', 'Effort', 'Activity']);
+  });
+});

@@ -49,14 +49,15 @@ export function cpuUtilState(cpu) {
  *    never a fabricated full bar (INV-V28-4). */
 export function statCard(kind, input, lang) {
   if (kind === 'counts') {
-    // README §5's own literal (`9 versions · 13 run records`) — locale-invariant like DES-213's
-    // `fmtLatency`/`fmtBenchmarks` ("TTFT 900ms · p50 6.8s", "78 avg"): mostly numeric, reads fine
-    // unchanged in either language, and `strings.js` is out of this task's file scope (TASK-206/220
-    // own it) — `lang` is accepted for signature parity with the other three kinds, unused here.
+    // [v29, REQ-150] Was English under a "locale-invariant" note. That note also stated its own
+    // real reason — "`strings.js` is out of this task's file scope (TASK-206/220 own it) — `lang`
+    // is accepted for signature parity ..., unused here" — a partitioning constraint, not a ruling
+    // (the word appears nowhere in the ledger), and the handoff's own STR table translates every
+    // one of these (`versionsStored`, `runsStored`). The en values are byte-identical to before.
     return {
       value: String(input.workflows),
       pct: undefined,
-      meta: `${input.versions} versions · ${input.runRecords} run records`,
+      meta: `${input.versions} ${t(lang, 'versionsStored')} · ${input.runRecords} ${t(lang, 'runsStored')}`,
     };
   }
   if (input.kind === 'unavailable') {
@@ -69,7 +70,7 @@ export function statCard(kind, input, lang) {
   if (kind === 'cpu') {
     const pct = input.value;
     const meta = input.cores != null && input.loadAvg
-      ? `${input.cores} cores · Load ${input.loadAvg.map((v) => v.toFixed(2)).join(' / ')}`
+      ? `${input.cores} ${t(lang, 'cores')} · ${t(lang, 'load')} ${input.loadAvg.map((v) => v.toFixed(2)).join(' / ')}`
       : undefined;
     return { value: `${Math.round(pct)}%`, pct, meta };
   }
@@ -78,7 +79,7 @@ export function statCard(kind, input, lang) {
   return {
     value: `${Math.round(v.usedPct)}%`,
     pct: v.usedPct,
-    meta: `${fmtBytes(v.usedBytes)} of ${fmtBytes(v.totalBytes)} · ${fmtBytes(v.freeBytes)} free`,
+    meta: `${fmtBytes(v.usedBytes)} ${t(lang, 'of')} ${fmtBytes(v.totalBytes)} · ${fmtBytes(v.freeBytes)} ${t(lang, 'avail')}`,
     kicker: kind === 'disk' ? v.path : undefined,
   };
 }
@@ -97,15 +98,15 @@ export function procRow(proc, selfPid) {
  *  relative order) — never a hard-coded S/R pair, never a throw on a letter nobody has seen. The
  *  header ends in "…" (README §5: `Total processes 312 · S 298 · R 7 …`) because the key set stays
  *  open even when every state this tick happens to hold got listed. */
-export function procTotals(system, _lang) {
+export function procTotals(system, lang) {
   const top = Object.entries(system.byState)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 2)
     .map(([state, count]) => `${state} ${count}`)
     .join(' · ');
-  // README §5's own literal ("Total processes 312 · S 298 · R 7 …") — locale-invariant, same
-  // rationale as `statCard`'s `counts`/`memory`/`disk` meta lines above.
-  return `Total processes ${system.total}${top ? ' · ' + top : ''} …`;
+  // [v29, REQ-150] `lang` was `_lang` here — accepted and unused, the same tell as `statCard`'s
+  // counts branch. The state codes (S/R/I/Z) stay verbatim: they come from /proc and are not words.
+  return `${t(lang, 'totalProcs')} ${system.total}${top ? ' · ' + top : ''} …`;
 }
 
 /** `fmtBytes(n) → string` — MOVED verbatim from `ui/system.js:38` (pre-v28). */

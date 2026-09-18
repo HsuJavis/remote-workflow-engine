@@ -8037,3 +8037,74 @@ oracle 重算的第一版把色階比對寫成**字串**比對,於是 CSS 的 `0
 比到的是排版而不是數值。已改為 `String(Number(v))` 的數值比對。
 這不是放寬斷言:`0.30`、`.30`、`.3` 在 CSS 裡是同一個數,原本那版會讓任何合法的寫法變動
 誤報成色階錯誤。
+
+---
+
+## v29 c3 — REQ-150(中文介面不得出現未翻譯的英文)
+
+### IMPL-308 — 一個「有紀錄的決定」其實不是決定
+- **traces:** REQ-150
+- **files:** `src/dashboard/lib/system.js`
+
+`statCard` 的 counts 分支與 `procTotals` 的英文帶著這樣的註解:
+
+> README §5's own literal (`9 versions · 13 run records`) — **locale-invariant** like DES-213's
+> `fmtLatency`/`fmtBenchmarks` …reads fine unchanged in either language, **and `strings.js` is out
+> of this task's file scope (TASK-206/220 own it) — `lang` is accepted for signature parity with
+> the other three kinds, unused here.**
+
+兩點讓這個說法站不住:
+
+1. **「locale-invariant」這個詞在整份帳本裡不存在。** 它不是 DES-213 的條款,是實作者在程式碼裡
+   自己寫下的說法。同一段註解已經交代了真正的理由 —— **檔案分工**。c3 擁有 `strings.js`,
+   那個限制消失了。
+2. **「兩種語言下都讀得通」被它引用的設計本身推翻。** 交付稿的 `STR.zh` 對每一個字都有翻譯
+   (`cores: '核心'`、`versionsStored: '個版本'`、`totalProcs: '總處理程序'`),
+   而參考稿跑起來顯示的就是「16 核心 · 負載 …」。
+
+`lang` 被接進來卻標成 `_lang` 沒用 —— 那就是線索。英文值逐字未變(UT-266 有一例專門鎖住這點:
+這是補翻譯,不是搬字串)。
+
+### IMPL-309 — 六個面板標籤、兩個模型欄、三個事件種類、一條摘要行
+- **traces:** REQ-150
+- **files:** `src/dashboard/lib/agent.js`, `src/dashboard/lib/model.js`, `src/dashboard/lib/strings.js`,
+  `src/dashboard/ui/agent-panel.js`, `src/dashboard/ui/issues.js`, `src/dashboard/ui/run.js`,
+  `src/dashboard/lib/runlist.js`
+
+`modelRow(entry, _lang)` 的文件寫著 lang 是「for a **future** locale-varying cell; every current
+cell format is locale-invariant」—— 十二欄裡有兩欄是,而且就是畫面上的 `stable` / `remote`。
+**只翻譯顯示值,`sortKeys` 保留線上原值**,所以切換語言不會讓表格重新排序(UT-268 鎖住)。
+
+`ui/run.js:367` 的泳道摘要行把 `view.status` 原樣輸出。同一行在 `:509` 的註解記著它曾經
+輸出字面字串 `"undefined"` —— 所以新的 `stateLabel` 是**全函式**:不認得的值原樣通過。
+
+**順帶消除一份重複:** c1 把狀態/觸發對照表放在 `runlist.js` 的私有作用域;agent panel 需要
+同一套詞彙,再抄一份就是兩個畫面日後分岔的起點。三張對照表(狀態、觸發、事件種類)
+集中到 `lib/strings.js`,`runlist.js` 改為引用。
+
+**超出列舉清單的一項,標記而非默默做:** 模型表價格欄的 `Free`。它不在稽核量到的那組
+token 裡(大小寫不同),但它是同一張表、同一個缺陷類別;留著會讓 REQ-150 的鎖看起來綠,
+而中文的模型表仍寫著 Free。
+
+### 真跑掃描(每個畫面用全新頁面載入,避免前一個畫面的 DOM 殘留)
+
+| 畫面 | 禁用 token |
+|---|---|
+| 首頁 | 無 |
+| 工作流明細 | 無 |
+| Agent 面板 | 無 |
+| 系統 | 無 |
+| 模型 | `free` —— **模型識別碼** `…-0731:free`,非文案 |
+| 問題 | `stable` `usage` `of` —— **GitHub issue 標題**,使用者撰寫的內容 |
+
+**剩下的兩處不能翻,翻了才是錯的。** 這也是為什麼 REQ-150 的鎖寫在單元層
+(UT-266/267/268,針對純函式)而不是對整頁做正則掃描:一個掃全頁的鎖必須不斷為
+「內容」與「識別碼」開例外,最後會變成它自己的維護負擔。
+
+### 兩個我自己造成、被真跑抓出來的錯
+
+1. **`ui/issues.js` 的 `t(lang, …)` 在沒有 `lang` 的作用域裡。** `buildChrome(container)` 沒有這個
+   參數,而 `tsc` 沒抓到 —— client 的 `.js` 不在型別檢查範圍。該檔第 21 行早就 import 了
+   `currentLang` 卻沒用過。若只跑單元測試,這三行會在瀏覽器裡丟 ReferenceError 而測試全綠。
+2. **`ui/run.js` 一度重複 import 同一個模組兩次**,`lib/agent.js` 的 import 被插在檔案中段。
+   兩者皆已收攏。

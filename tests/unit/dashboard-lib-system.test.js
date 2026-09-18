@@ -115,3 +115,45 @@ describe('lib/system.js: catalogCounts(workflows, runs) — ADR-057\'s three wri
     expect(catalogCounts([], [])).toEqual({ workflows: 0, versions: 0, runRecords: 0 });
   });
 });
+
+describe('lib/system.js: the meta lines render in the viewer’s language (UT-266, v29, REQ-150)', () => {
+  // These four lines shipped in English under a comment calling them "locale-invariant like
+  // DES-213's fmtLatency/fmtBenchmarks". Two things make that reading wrong. First, the same
+  // comment states the actual reason: "`strings.js` is out of this task's file scope (TASK-206/220
+  // own it) — `lang` is accepted for signature parity with the other three kinds, unused here" —
+  // a partitioning constraint, not a design ruling, and the word "locale-invariant" appears
+  // NOWHERE in the ledger. Second, the delivery handoff's own string table translates every one of
+  // them (`cores: '核心'`, `versionsStored: '個版本'`, `totalProcs: '總處理程序'`), so
+  // "reads fine unchanged in either language" is contradicted by the design it cites.
+  const NO_ASCII_WORDS = /\b(cores|Load|of|free|versions|run records|Total processes)\b/;
+
+  it('the counts card meta carries no English under zh', () => {
+    const out = statCard('counts', { workflows: 5, versions: 18, runRecords: 30 }, 'zh');
+    expect(out.meta).not.toMatch(NO_ASCII_WORDS);
+    expect(out.meta).toContain('18');
+    expect(out.meta).toContain('30');
+  });
+
+  it('the cpu card meta carries no English under zh', () => {
+    const out = statCard('cpu', { kind: 'ok', value: 4, cores: 16, loadAvg: [0.5, 0.4, 0.3] }, 'zh');
+    expect(out.meta).not.toMatch(NO_ASCII_WORDS);
+    expect(out.meta).toContain('16');
+  });
+
+  it('the memory card meta carries no English under zh', () => {
+    const out = statCard('memory', { kind: 'ok', value: { usedPct: 33, usedBytes: 10 * 1024 ** 3, totalBytes: 32 * 1024 ** 3, freeBytes: 22 * 1024 ** 3 } }, 'zh');
+    expect(out.meta).not.toMatch(NO_ASCII_WORDS);
+  });
+
+  it('the process header carries no English under zh', () => {
+    const out = procTotals({ total: 480, byState: { S: 333, I: 133 } }, 'zh');
+    expect(out).not.toMatch(NO_ASCII_WORDS);
+    expect(out).toContain('480');
+  });
+
+  it('en is unchanged — this is a missing translation, not a relocation', () => {
+    expect(statCard('counts', { workflows: 5, versions: 18, runRecords: 30 }, 'en').meta)
+      .toBe('18 versions · 30 run records');
+    expect(procTotals({ total: 480, byState: { S: 333 } }, 'en')).toContain('Total processes 480');
+  });
+});

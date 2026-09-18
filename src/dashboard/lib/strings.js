@@ -46,6 +46,16 @@ export const STR = {
     stStopped: '停止', stSuspended: '暫停', stInterrupted: '中斷', stRefused: '拒絕',
     byType_client: '客戶端', byType_webhook: 'Webhook', byType_schedule: '排程',
     byType_chain: '鏈結', byType_unknown: '未知',
+    // [v29, REQ-150] The set the side-by-side audit measured as untranslated in the zh UI.
+    // Key names follow the delivery handoff's own STR table wherever it has one.
+    cores: '核心', load: '負載', of: '/', avail: '可用',
+    versionsStored: '個版本', runsStored: '次執行記錄', totalProcs: '總處理程序',
+    model: '模型', tokens: 'Tokens', cost: '費用', timeout: '逾時', effort: '努力程度', activity: '活動',
+    stable: '穩定', variable: '變動', bestEffort: '盡力', remote: '遠端', local: '本機', free: '免費',
+    issuesOpen: '未解決', issuesResolved: '已解決', openOnGitHub: '在 GitHub 開啟 ↗',
+    stDone: '完成',
+    kind_message: '訊息', kind_tool_call: '工具呼叫', kind_tool_result: '工具結果',
+    kind_usage: '用量', kind_harness: '設定', kind_log: '日誌', kind_refused: '拒絕',
   },
   en: {
     predictedLayout: 'predicted layout',
@@ -61,6 +71,14 @@ export const STR = {
     stStopped: 'Stopped', stSuspended: 'Suspended', stInterrupted: 'Interrupted', stRefused: 'Refused',
     byType_client: 'client', byType_webhook: 'webhook', byType_schedule: 'schedule',
     byType_chain: 'chain', byType_unknown: 'unknown',
+    cores: 'cores', load: 'Load', of: 'of', avail: 'free',
+    versionsStored: 'versions', runsStored: 'run records', totalProcs: 'Total processes',
+    model: 'Model', tokens: 'Tokens', cost: 'Cost', timeout: 'Timeout', effort: 'Effort', activity: 'Activity',
+    stable: 'Stable', variable: 'Variable', bestEffort: 'Best effort', remote: 'Remote', local: 'Local', free: 'Free',
+    issuesOpen: 'Open', issuesResolved: 'Resolved', openOnGitHub: 'Open on GitHub \u2197',
+    stDone: 'Done',
+    kind_message: 'message', kind_tool_call: 'tool call', kind_tool_result: 'tool result',
+    kind_usage: 'usage', kind_harness: 'harness', kind_log: 'log', kind_refused: 'refused',
   },
 };
 
@@ -103,3 +121,33 @@ export function warningText(lang, raw) {
   }
   return t(lang, key);
 }
+
+// [v29, REQ-150] One home for the three wire-vocabulary -> label maps. `lib/runlist.js` held a
+// private copy of the first two (v29 c1); `ui/agent-panel.js` needed the same two plus the event
+// kinds, and a second copy is how two surfaces drift apart. Each is TOTAL over the wire: an
+// unrecognised value passes through UNCHANGED rather than rendering the literal string
+// `undefined` — `t()` has no fallback, which is the BF-5/BF-6 defect class this repo has closed
+// before.
+const STATE_KEY = {
+  queued: 'stQueued', running: 'stRunning', completed: 'stCompleted', done: 'stDone',
+  failed: 'stFailed', stopped: 'stStopped', suspended: 'stSuspended',
+  interrupted: 'stInterrupted', refused: 'stRefused',
+};
+const TRIGGER_KEY = {
+  client: 'byType_client', webhook: 'byType_webhook', schedule: 'byType_schedule',
+  chain: 'byType_chain', unknown: 'byType_unknown',
+};
+const KIND_KEY = {
+  message: 'kind_message', tool_call: 'kind_tool_call', tool_result: 'kind_tool_result',
+  usage: 'kind_usage', harness: 'kind_harness', log: 'kind_log', refused: 'kind_refused',
+};
+
+function lookup(map, lang, raw) {
+  if (raw === undefined || raw === null || raw === '') return '—';
+  const key = map[String(raw)];
+  return key ? t(lang, key) : String(raw);
+}
+
+export const stateLabel = (lang, raw) => lookup(STATE_KEY, lang, raw);
+export const triggerLabel = (lang, raw) => lookup(TRIGGER_KEY, lang, raw);
+export const kindLabel = (lang, raw) => lookup(KIND_KEY, lang, raw);

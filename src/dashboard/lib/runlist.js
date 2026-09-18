@@ -3,7 +3,7 @@
 // ONE money formatter. `fmtCost` is the single place the ledger's five-times-closed "confident
 // $0.00" defect can regress; `historyRow`/the swimlane node/the home meta line all go through it.
 // Pure: `now` is a parameter everywhere — never read from the system clock directly.
-import { t } from './strings.js';
+import { stateLabel, triggerLabel } from './strings.js';
 
 // A costUSD that rounds to "$0.00" at 2dp is still a REAL nonzero cost (e.g. a single cheap
 // call) — showing "$0.00" there is the exact confident-zero defect this function exists to kill,
@@ -84,28 +84,17 @@ export function shortId(runId) {
 // [v29, REQ-148] `status` and `startedBy.type` arrived on the wire in English and went straight to
 // the page. `t()` has no fallback by design, so an unknown value must pass through UNCHANGED
 // rather than render the literal string `undefined` (the BF-5/BF-6 defect class).
-const STATUS_KEY = {
-  queued: 'stQueued', running: 'stRunning', completed: 'stCompleted', failed: 'stFailed',
-  stopped: 'stStopped', suspended: 'stSuspended', interrupted: 'stInterrupted', refused: 'stRefused',
-};
-const TRIGGER_KEY = {
-  client: 'byType_client', webhook: 'byType_webhook', schedule: 'byType_schedule',
-  chain: 'byType_chain', unknown: 'byType_unknown',
-};
-function label(map, raw, lang) {
-  if (raw === undefined || raw === null || raw === '') return '—';
-  const key = map[String(raw)];
-  return key ? t(lang, key) : String(raw);
-}
+// [v29 c3] The two maps this file defined in c1 moved to `lib/strings.js` — `ui/agent-panel.js`
+// needs the same vocabulary, and a second copy is how two surfaces drift apart.
 
 // REQ-133's nine history-table columns, in order.
 export function historyRow(summary, now, lang) {
   const live = summary.status === 'running' || summary.status === 'queued';
   return [
     shortId(summary.runId),
-    label(STATUS_KEY, summary.status, lang),
+    stateLabel(lang, summary.status),
     summary.scriptVersion ?? '—',
-    label(TRIGGER_KEY, summary.startedBy?.type, lang),
+    triggerLabel(lang, summary.startedBy?.type),
     fmtStartedAt(summary.createdAt),
     summary.createdAt ? fmtDuration(summary.createdAt, summary.terminalAt, now, live, lang) : '—',
     summary.agentCount === undefined ? '—' : String(summary.agentCount),

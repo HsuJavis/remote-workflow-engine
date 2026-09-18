@@ -48,6 +48,11 @@ function renderIssueList(issues, container, onSelect) {
 const stateByContainer = new WeakMap();
 
 function buildChrome(container) {
+  // [v29, REQ-150] `currentLang()` was already imported and unused here. This view's chrome is
+  // built once per container, and `ui/app.js`'s language switch remounts the whole app (a fresh
+  // container), so reading it at build time is correct — there is no second path that re-labels
+  // an existing chrome in place.
+  const lang = currentLang();
   const openEl = el('div');
   openEl.id = 'issues-open';
   const resolvedEl = el('div');
@@ -63,7 +68,7 @@ function buildChrome(container) {
   detailLink.id = 'issue-detail-link';
   detailLink.target = '_blank';
   detailLink.rel = 'noopener noreferrer';
-  detailLink.textContent = 'Open on GitHub ↗';
+  detailLink.textContent = t(lang, 'openOnGitHub');
   detailLinkP.appendChild(detailLink);
   const detailBody = document.createElement('pre');
   detailBody.id = 'issue-detail-body';
@@ -72,9 +77,9 @@ function buildChrome(container) {
   detailBox.appendChild(detailBody);
 
   container.replaceChildren(
-    el('h2', undefined, 'Open'),
+    el('h2', undefined, t(lang, 'issuesOpen')),
     openEl,
-    el('h2', undefined, 'Resolved'),
+    el('h2', undefined, t(lang, 'issuesResolved')),
     resolvedEl,
     detailBox,
   );

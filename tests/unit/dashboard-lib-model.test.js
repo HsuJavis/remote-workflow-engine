@@ -267,3 +267,24 @@ describe('lib/model.js: modelPanel(entry, lang) — the 560px slide-in projectio
     expect(panel.benchmarks).toEqual([]);
   });
 });
+
+describe('lib/model.js: stability and location render in the viewer’s language (UT-268, v29, REQ-150)', () => {
+  // `modelRow`'s own doc said `lang` is "accepted per DES-213's signature for a FUTURE
+  // locale-varying cell; every current cell format is locale-invariant". Two of the twelve are
+  // locale-varying — the zh table showed `stable` and `remote` verbatim from the wire.
+  const entry = { model: 'x/y', provider: 'openrouter', stability: 'stable', location: 'remote', contextWindow: 1e6 };
+  it('zh translates the two word-valued cells', () => {
+    const { cells } = modelRow(entry, 'zh');
+    expect(cells).not.toContain('stable');
+    expect(cells).not.toContain('remote');
+    expect(cells).toContain('穩定');
+    expect(cells).toContain('遠端');
+  });
+  it('en is unchanged in meaning and the SORT key stays the raw wire value', () => {
+    const { cells, sortKeys } = modelRow(entry, 'en');
+    expect(cells.some((c) => /stable/i.test(String(c)))).toBe(true);
+    // Sorting must not reorder when the viewer switches language.
+    expect(sortKeys.stability).toBe('stable');
+    expect(sortKeys.location).toBe('remote');
+  });
+});
