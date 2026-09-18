@@ -124,8 +124,15 @@ describe('v27 disposition anchor: the diagram createObjectURL/revokeObjectURL pa
     // `dashboard-no-external-host.test.ts`'s/`dashboard-no-design-values.test.ts`'s own
     // `stripComments`), for the COUNT only — the other assertions in this file stay on the raw
     // corpus.
+    // [v28b, TASK-226, DES-220 — Gate 6.5+7 re-stamp] a THIRD occurrence is now architecturally
+    // required, same as the two above: `ui/workflow.js:420`'s demo-miss disclosure builds the
+    // literal route-name string `'/api/workflows/:name/describe'` (a user-facing label naming
+    // which route has no data, with a literal `:name` placeholder — never fetched) via
+    // `t(lang, 'noDemoData') + '/api/workflows/:name/describe'`. It is not a fetch call and not a
+    // duplicate of the two real call sites above, so it does not weaken the anti-duplication intent
+    // — a FOURTH occurrence added later must still justify itself here, same as these three do.
     const stripComments = (text: string): string => text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
-    expect((stripComments(corpus).match(/\/describe/g) ?? []).length).toBe(2);
+    expect((stripComments(corpus).match(/\/describe/g) ?? []).length).toBe(3);
     expect(corpus.length).toBeGreaterThan(5000);
   });
 

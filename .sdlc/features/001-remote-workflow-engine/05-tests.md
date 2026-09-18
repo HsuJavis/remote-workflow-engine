@@ -12167,12 +12167,12 @@ widened `include` actually collects it). RED (measured): whole-file import failu
 `src/dashboard/lib/theme.js` does not exist.
 
 ### UT-244 — `dashboard-lib-strings.test.js`: `STR`/`t()` — key parity, no forbidden word; `warningText(lang, raw)`
-- **status:** red
+- **status:** green
 - **traces:** DES-201, DES-206, DES-220, ARCH-124, TASK-206, TASK-226, REQ-131, REQ-133, REQ-134, REQ-143
 - **tier:** unit
 - **real:** false
-- **result:** fail
-- **iter:** v28
+- **result:** pass
+- **iter:** v28b
 
 **Re-stamped (2026-09-18, v28b Gate 5 widened re-run, verifier):** the owner widened DES-220's
 ruling the same day (「v28b OWNER RULING (2026-09-18)」, `state.yaml pending:`) to name the missing
@@ -12197,6 +12197,13 @@ vitest run tests/unit/dashboard-lib-strings.test.js` → 9 pass, 1 fail — `STR
 yet). `status`/`result` above flipped to `red`/`fail` to reflect this file's TRUE current state
 (unlike the two Mode-A-does-not-flip re-stamps below, which found no new case owed) — will flip back
 once TASK-226 lands the key.
+
+**Confirmed green (2026-09-18, v28b Gate 6.5+7, verifier):** TASK-226's `bdf36f4` lands
+`STR.zh.noDemoData === '此路由無示範資料:'` / `STR.en.noDemoData === 'No demo data for this
+route: '` (`lib/strings.js:40,51`). `npx vitest run tests/unit/dashboard-lib-strings.test.js` →
+10/10 pass. Coverage re-measured (`--coverage --coverage.include='src/**'`, the established
+exclusion set): `lib/strings.js` 100% lines / 100% functions (one uncovered branch, line 70,
+pre-existing and outside this closure's diff).
 
 **Re-stamped (2026-09-17, v28 Gate 5, verifier):** DES-206 was amended in place at iter v28 (the
 `ui/` view contract gains an additive 4th `tick` parameter, DES-210's own INV-V28-1/getViewJSON
@@ -12364,11 +12371,11 @@ job, per precedent — see IMPL-240/241's notes on UT-233/235/236); not silently
 
 ### UT-252 — `dashboard-diagram-render.test.ts` disposition anchor: `createObjectURL`/`revokeObjectURL` re-point to `ui/workflow.js`
 - **status:** green
-- **traces:** DES-208, ARCH-124, ARCH-122, TASK-213, REQ-129, REQ-119
+- **traces:** DES-208, ARCH-124, ARCH-122, TASK-213, TASK-226, DES-220, REQ-129, REQ-119, REQ-143
 - **tier:** unit
 - **real:** false
 - **result:** pass
-- **iter:** v27
+- **iter:** v28b
 
 **Re-measured (v27 Gate 6.5+7, 2026-09-12, verifier):** `npx vitest run tests/unit tests/integration` -> 326 files, 2452 passed, 0 failed, 1 skipped (full regression, not a narrow subset). This item's own case(s) are green at current HEAD. The RED narrative below is preserved as history of the original test-first measurement, not a current description of the code.
 
@@ -12385,6 +12392,22 @@ diagram-render.test.ts` -> 3/3 pass.
 File: `tests/unit/dashboard-diagram-render.test.ts` (extended, 1 new case; all 20 pre-existing cases
 re-run and stay green). Positive anchor on `clientCorpus()` beside the file's existing negatives —
 anti-vacuity per adjudication (v23) #4. RED (measured): `clientCorpus()` throws (client not built).
+
+**[v28b, 2026-09-18, verifier, Gate 6.5+7 regression]:** TASK-226's `bdf36f4` landed
+`ui/workflow.js:420`'s demo-miss disclosure, `t(lang, 'noDemoData') + '/api/workflows/:name/describe'`
+— a full-suite regression run (`RWE_REQUIRE_BROWSER=1 npx vitest run`, 2963 passed / 1 failed / 26
+skipped over 415 files) caught the ONE failure this introduced: the stripped-comment `/describe`
+corpus count went from 2 to 3 (measured), because the disclosure literal contains the substring but
+is not a call site — the same false-collision CLASS the v28 re-stamp above already named for
+`demo/dataset.js`'s banner PROSE, this time from real code, so stripping comments alone does not
+absorb it. Judged as the test's oracle needing to widen, not a code defect: DES-220's disclosure
+string is a user-facing route NAME, literal `:name` placeholder and all, never fetched — it duplicates
+no network call and the anti-duplication intent (a fourth, unjustified site would still be caught)
+is unweakened. Fix applied directly (not a test_defect at this stage — Mode B verifier owns test
+oracles): pinned count bumped `toBe(2)` -> `toBe(3)`, comment above it names the third occurrence
+(`ui/workflow.js:420`, DES-220) beside the two pre-existing call sites. Re-run in isolation: `npx
+vitest run tests/unit/dashboard-diagram-render.test.ts` -> 3/3 pass. Full suite re-run after the fix:
+2964 passed / 0 failed / 26 skipped, 415 files, exit 0.
 
 ### UT-253 — `dashboard-zoom-source.test.ts` disposition anchor: `viewBox`/`preserveAspectRatio` re-point to `ui/run.js`
 - **status:** green
@@ -13038,12 +13061,12 @@ gate's own change; half 2 unchanged, still green). `status`/`result` unchanged �
 red.
 
 ### UT-261 — `dashboard-seam.test.ts`: six source tripwires over the v28 seam (INV-V28-1, the route table, the two timers, the two stamps, the DES-220 disclosure)
-- **status:** red
+- **status:** green
 - **traces:** DES-210, DES-220, ARCH-133, ARCH-125, ARCH-124, ADR-057, ADR-058, ADR-059, TASK-217, TASK-226, REQ-137, REQ-138, REQ-139, REQ-142, REQ-143
 - **tier:** unit
 - **real:** false
-- **result:** fail
-- **iter:** v28
+- **result:** pass
+- **iter:** v28b
 
 **Re-stamped (2026-09-18, v28b Gate 5 widened re-run, verifier):** the owner's same-day widened
 ruling adds `ui/system.js` as a third file the SIXTH tripwire checks (`clientFile('ui/system.js')`
@@ -13051,6 +13074,10 @@ must also contain `noDemoData`) — amended in place on the same case, not a sev
 (measured): `npx vitest run tests/unit/dashboard-seam.test.ts` → 5 pass, 1 fail — `ui/workflow.js`
 and `ui/issues.js` already contain `noDemoData` (landed at `87eee96`, for the pre-widened sentence);
 `ui/system.js` does not. `status`/`result` unchanged (still red, now for the widened reason).
+
+**Confirmed green (2026-09-18, v28b Gate 6.5+7, verifier):** TASK-226's `bdf36f4` lands `noDemoData`
+in `ui/system.js` too (the `paintCountsUnavailable` call site). `npx vitest run
+tests/unit/dashboard-seam.test.ts` → 6/6 pass.
 
 **Re-stamped (2026-09-18, v28b Gate 5, verifier):** a SIXTH tripwire added for DES-220/TASK-226 —
 `clientFile('ui/workflow.js')` and `clientFile('ui/issues.js')` must each contain the substring
@@ -13253,12 +13280,12 @@ window. `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-206-visibilit
 1/1 fail (34s real wall-clock run).
 
 ### VAL-217 — REQ-143: demo data self-labels, engages on a STOPPED engine, retires on recovery
-- **status:** red
+- **status:** green
 - **traces:** REQ-143, DES-212, DES-220, TASK-220, TASK-226
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
-- **iter:** v28
+- **result:** pass
+- **iter:** v28b
 
 File: `tests/acceptance/val-207-demo-data.test.ts` (new, real `createServer()`/real Chromium; a REAL
 `server.close()` then re-`createServer({port})` on the SAME port is the fault/recovery mechanism —
@@ -13353,3 +13380,15 @@ sentence.
 failed (cases 3, 4 — now red for the widened reason instead of the original one — and the new case
 5), 2 passed (cases 1 and 2, pre-existing, unchanged, ~47s real wall-clock run, real Chromium, real
 `createServer`/`server.close()`/re-`listen()`). `status`/`result` unchanged — still `red`/`fail`.
+
+**Confirmed green (2026-09-18, v28b Gate 6.5+7, verifier).** TASK-226's `bdf36f4` landed all three
+call sites named above (`workflow.js:420`, `issues.js:127`, `system.js:232/278-279`). Re-run
+verbatim as TASK-226's own `dod:` invocation, not a narrower one: `RWE_REQUIRE_BROWSER=1
+PUPPETEER_EXECUTABLE_PATH=.../linux-152.0.7977.75/chrome-linux64/chrome npx vitest run
+tests/acceptance/val-207-demo-data.test.ts tests/unit/demo-surface.test.ts
+tests/unit/dashboard-seam.test.ts tests/unit/dashboard-lib-strings.test.js` → 4 files, 23/23 pass,
+61.98s wall clock, including case 5 (the System counts card). Re-run again under
+`TZ='Pacific/Kiritimati'` (install-free time-travel fallback, no `libfaketime` in this environment):
+5/5 pass, byte-identical — no time bomb. Full regression (`npx vitest run`, whole tree): 2964
+passed / 0 failed / 26 skipped over 415 files (415/415, 1 skipped), 0 failures anywhere outside this
+item's own scope.

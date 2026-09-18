@@ -7769,3 +7769,101 @@ all three of `ui/workflow.js` + `ui/issues.js` + `ui/system.js` today, but `bdf3
 adds `ui/system.js` — the other two were added at `87eee96`, the prior commit that landed the
 pre-widened two-arm sentence. TASK-226's `dod:` describes the allowlist's FINAL state (all three),
 which holds; it does not require all three to land in one commit, and they did not.
+
+### IMPL-302 — Gate 6.5+7 closeout on the TASK-226 widened delta: simplify pass (no change owed), full regression, one genuine test-oracle collision found and fixed, trace/solid_check/determinism_check/TZ-shift/seam/coverage re-confirmed
+
+- **status:** done
+- **traces:** TASK-226, DES-220, REQ-137, REQ-138, REQ-139, REQ-142, REQ-143
+- **greens:** VAL-217, UT-244, UT-261, UT-252 (amended)
+- **files:** tests/unit/dashboard-diagram-render.test.ts
+- **commit:** uncommitted at report time
+- **iter:** v28b
+
+**Scope.** This closeout picks up where IMPL-297 (the whole-Sprint-B Gate 6.5+7 pass, commit
+`e696cf2`, BEFORE Gate 7.5 caught the REQ-143 counts-card gap) left off: TASK-226's widened
+three-arm delta (`bdf36f4`) is the only product code to land since. IMPL-297's own full-tree
+findings (the `.stat-bar` fix, the two stale acceptance oracles, the `ARCH-125` deps line, the three
+`determinism_check` false positives, the coverage gate's three per-function fixes, the TZ-shift/
+seam/smoke record) are NOT re-litigated here — nothing in this delta touches any of that ground.
+
+**0. Simplify pass (Mode B step 0).** Read `bdf36f4`'s full diff (`lib/strings.js`'s prefix-form
+`noDemoData` key, `workflow.js:420`/`issues.js:127`/`system.js:232,278-279`'s three call sites).
+Found no reuse/simplification/efficiency/altitude opportunity worth taking: the three call sites
+each concatenate `t(lang, 'noDemoData') + '<own literal route>'` — three near-identical one-liners
+across three files, but DES-220's own signature requires each call site to own its literal route
+text, and factoring three one-line concatenations behind a shared helper across three files would
+trade three inline lines for one more indirection with no complexity reduction (Karpathy: no
+abstraction for code this small, used this few times). No code changed by this step; no `IMPL-*`
+amendment owed by the step's own rule ("if code changed, update...").
+
+**1. Regression.** `RWE_REQUIRE_BROWSER=1 PUPPETEER_EXECUTABLE_PATH=.../linux-152.0.7977.75/
+chrome-linux64/chrome npx vitest run` (whole tree, no filter) → **first run: 414 files / 1 skipped,
+2963 passed / 26 skipped, 1 failed.** The one failure is a genuine regression this delta caused, not
+a flake: `tests/unit/dashboard-diagram-render.test.ts`'s UT-252 anti-duplication tripwire counts
+stripped-comment `/describe` occurrences in the client corpus and was pinned at exactly 2 (the two
+real fetch call sites, `ui/poll.js:25` and `ui/run.js:492`); `workflow.js:420`'s new disclosure
+literal `'/api/workflows/:name/describe'` is a THIRD occurrence — a user-facing route name with a
+literal `:name` placeholder, never fetched, not a duplicate call. Judged as the test's oracle
+needing to widen (same class this file's own comment already documents for the two real call
+sites, and the SAME false-collision class this exact item's `05-tests.md` entry already closed once
+this iteration for `demo/dataset.js`'s banner PROSE) — not a `test_defect` at this stage (Mode B
+verifier owns test oracles) and not a code defect (the anti-duplication INTENT is unweakened: a
+fourth, unjustified occurrence would still fail). Fixed directly: pinned count `toBe(2)` →
+`toBe(3)`, comment extended to name the third occurrence beside the two pre-existing ones. Re-run in
+isolation: `npx vitest run tests/unit/dashboard-diagram-render.test.ts` → 3/3 pass. **Second full
+run after the fix: 414 files / 1 skipped, 2964 passed / 26 skipped, 0 failed.** `npx tsc --noEmit`
+and `npx tsc --noEmit -p tsconfig.server.json` both exit 0.
+
+**2. `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`:** 1727 items / 26 gaps —
+same 26-gap SET as the pre-session baseline (measured directly via `trace.analyze()`, not assumed):
+24 `漂移` (iter-drift false positives, all pre-existing) + 2 `未實作` (`TASK-018`, `TASK-153`, both
+pre-existing accepted debt — `TASK-153` is the external client plugin). 0 high, 0 斷鏈/孤兒, 0
+mock-only. `REQ-137`/`138`/`139`/`142`/`143` all confirmed in `trace.analyze()`'s own `verified` set
+after `VAL-217`/`UT-244`/`UT-261` flip green (below) — the module gate (item 1c) stays dormant,
+`grep -c '\*\*build:\*\*' 02-architecture.md` → 0.
+
+**3. `solid_check.py .sdlc/features/001-remote-workflow-engine`** (plugin 2.4.3, run directly —
+`trace.py` predates the `--tool` dispatcher, same precedent as IMPL-297): **0 high / 0 mid / 10
+low**, 72 modules — byte-identical to IMPL-297's own count, no new unclaimed file.
+
+**4. `determinism_check.py src --check`:** clean, 0 findings — TASK-226's diff introduces no
+wall-clock/randomness read (confirmed both statically here and by the TZ-shift re-run below).
+
+**5. Time-travel re-run** (`TZ='Pacific/Kiritimati'`, install-free fallback, no `libfaketime` in
+this environment): scoped to the delta rather than re-running the whole tree a third time this
+closeout (IMPL-297 already TZ-shifted the whole tree with 0 flips earlier this same iteration, and
+nothing outside this delta's four files changed since) — `tests/unit/demo-surface.test.ts
+dashboard-seam.test.ts dashboard-lib-strings.test.js dashboard-diagram-render.test.ts` → 21/21 pass;
+`RWE_REQUIRE_BROWSER=1 ... tests/acceptance/val-207-demo-data.test.ts` → 5/5 pass. Byte-identical to
+the untimezoned counts above — no time bomb.
+
+**6. Seam wiring:** TASK-226 adds no new seam — it reuses DES-210's existing `tick.source==='demo'`
+signal, already reaching every `onTick` through the same real composition root IMPL-297 verified
+(`app.js`'s boot-time `import('../demo/dataset.js')` → `setDemoBodies(DEMO)`). Re-confirmed: `grep
+-rn "setDemoBodies" src/` (excluding `*.test.*`) still shows exactly the same two call sites, both
+in `app.js`.
+
+**7. Real-dependency smoke:** no new external integration — TASK-226 is pure client-side string
+composition over an already-installed demo map, no network/IO of its own.
+
+**Coverage gate:** `@vitest/coverage-v8@1.6.1` installed transiently (`npm install --no-save`, not
+persisted to `package.json`/lockfile — matching IMPL-296/297's own precedent, which measured
+`--coverage` the same way without adding it as a tracked dependency). `npx vitest run tests/unit
+tests/integration --coverage --coverage.include='src/**' --coverage.exclude='src/dashboard/ui/
+{agent-panel,app,dom,home,issues,models,run,system,theme-init,workflow}.js'` (IMPL-296's own
+established exclusion — `ui/workflow.js`/`ui/issues.js`/`ui/system.js` are three of the ten
+browser-only files that never execute under Node, so the touched `ui/*.js` half of this delta is
+excluded from the denominator by the SAME rule, not a new carve-out; behavioural coverage for those
+three files is `VAL-217`'s real-Chromium proof, not Node line coverage) → **335 files, 2580 passed /
+1 skipped / 0 failed, 95.84% overall lines** — byte-identical to IMPL-296's own number, because the
+only in-scope file this delta touches (`lib/strings.js`) was already fully exercised: **100% lines,
+100% functions** (one branch, line 70, pre-existing and outside this delta's diff). No new
+per-function offender. Worst pre-existing offenders (unchanged, all outside this closure's own
+diff, named by IMPL-296 and re-confirmed unchanged here): `src/harness-defaults.ts` (0%),
+`src/sandbox/child-entry.ts` (0%, real spawned-child-only), `src/mcp-probe.ts` (58.33%), `src/
+main.ts` (79.36% lines / 33.33% funcs).
+
+**05-tests.md flips:** `VAL-217`, `UT-244`, `UT-261` → `green`/`pass`, `iter: v28b`, each with a
+dated Gate 6.5+7 confirmation note citing the measurement above. `UT-252` amended in place (the
+fix above) with its own dated note; `iter` bumped to v28b, `TASK-226`/`DES-220`/`REQ-143` added to
+its `traces`.

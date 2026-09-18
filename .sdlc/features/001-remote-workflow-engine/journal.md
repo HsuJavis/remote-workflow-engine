@@ -6070,3 +6070,54 @@ only that the graph and the `status:` field agree). It is also a single snapshot
 it says nothing about a row that goes stale five minutes after this check runs. And it covers TASK
 rows only, per the dispatch's own scope — REQ/DES/other stages' status-vs-coverage consistency was
 not swept here.
+
+## 2026-09-18 — v28b Gate 6.5+7 (verifier) — PASSED: TASK-226's widened three-arm delta verified, one genuine test-oracle collision found and fixed
+
+Picked up where the whole-Sprint-B Gate 6.5+7 pass (IMPL-297, commit `e696cf2`) left off before
+Gate 7.5 caught the REQ-143 counts-card gap: the only product code to land since is TASK-226's
+widened delta (`bdf36f4`, three call sites over `lib/strings.js`/`ui/workflow.js`/`ui/issues.js`/
+`ui/system.js`), already confirmed `status: done` by the reviewer's ledger-honesty sweep (IMPL-301,
+commit `4bb1c15`).
+
+**Simplify (Mode B step 0):** read the full diff; found nothing worth changing. The three call
+sites each concatenate `t(lang, 'noDemoData') + '<own literal route>'` — near-identical one-liners
+across three files, but DES-220's own signature requires each call site to own its literal route
+text, and a shared helper would trade three inline lines for one more indirection with no real
+complexity reduction. No code touched by this step.
+
+**Regression:** first full run (`RWE_REQUIRE_BROWSER=1 npx vitest run`, whole tree) surfaced ONE
+genuine regression, not a flake: `tests/unit/dashboard-diagram-render.test.ts`'s UT-252
+anti-duplication tripwire pins the stripped-comment `/describe` corpus count at exactly 2 (the two
+real fetch call sites); `workflow.js:420`'s new disclosure literal is a third occurrence — a
+user-facing route name, never fetched, not a duplicate call. Same false-collision CLASS this file's
+own comment already documents (and that `05-tests.md`'s UT-252 entry already closed once this
+iteration for `demo/dataset.js`'s banner prose) — judged a test-oracle gap, not a code defect: fixed
+by widening the pin to 3 with a comment naming the third occurrence, matching the file's own
+convention for justifying each site. Re-run clean; full suite then closes at **414 files / 2964
+passed / 26 skipped / 0 failed**. `npx tsc --noEmit` and the server config both exit 0.
+
+**Full Mode B checklist**, scoped to the delta (IMPL-297 already covered the whole tree this same
+iteration with 0 findings left open): `trace --check` 1727 items / 26 gaps, byte-identical SET (24
+漂移 + 2 未實作, both pre-existing accepted debt), REQ-137/138/139/142/143 all confirmed in
+`trace.analyze()`'s own verified set; `solid_check.py` 0 high / 0 mid / 10 low, unchanged;
+`determinism_check.py src --check` clean; TZ-shift re-run (`TZ=Pacific/Kiritimati`, install-free
+fallback) of the delta's own test files — 21 unit + 5 real-Chromium acceptance, all green, no time
+bomb; seam wiring unchanged (`setDemoBodies`/`getViewJSON` still wired only through `app.js`'s real
+composition root — no new seam this delta); no new external integration to smoke. Coverage gate
+(`@vitest/coverage-v8@1.6.1` installed transiently, `--no-save`, matching IMPL-296/297's own
+precedent of not persisting it to `package.json`): **95.84% overall**, unchanged from IMPL-296's own
+number — `lib/strings.js` (the one in-scope file this delta touches) is **100% lines / 100%
+functions**; `ui/workflow.js`/`issues.js`/`system.js` stay excluded from the Node denominator
+(browser-only, the same ten-file exclusion IMPL-296 established), their behaviour proven instead by
+VAL-217's real Chromium run.
+
+**05-tests.md:** `VAL-217`, `UT-244`, `UT-261` flipped `green`/`pass`, `iter: v28b`, each with a
+dated Gate 6.5+7 confirmation citing the re-run above; `UT-252` amended in place with the fix and
+its own dated note, `traces` gains `TASK-226`/`DES-220`/`REQ-143`.
+
+Full record: `06-impl-log.md` IMPL-302. `state.yaml`: `gates.impl.passed` and
+`gates.verification.passed` both flip `true` (this ledger's own convention — the Gate 6.5+7
+verifier flips `gates.impl` once every closure REQ has a green VAL and the regression + coverage
+gate both pass); `current_stage` -> `validation`. No live `- **owner_decision:** pending` marker
+anywhere in the ledger (swept). Next: Gate 7.5 (validator) re-confirms REQ-143 real on the widened
+three-surface form.
