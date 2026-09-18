@@ -7661,3 +7661,53 @@ case (and only the new case) went red with the real diagnostic (`expected 'CPU �
 `—`, never swapped to Unavailable), then restored the source verbatim (`git diff --stat` empty
 against the pre-falsification commit) and re-confirmed 5/5.
 `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-204-system-tab.test.ts` → 5/5 pass.
+
+### IMPL-299 — TASK-215: the fossil server-rendered shell body is deleted; five page-source pins dispositioned; UT-241's new positive lands
+
+- **status:** done
+- **traces:** TASK-215, ARCH-122, ADR-049, REQ-131, DES-200, DES-208
+- **files:** src/dashboard-page.ts, tests/unit/dashboard-page-source.test.ts, tests/unit/dashboard-zoom-source.test.ts, tests/unit/workflow-page-harness-table.test.ts, tests/unit/dashboard-diagram-render.test.ts
+- **commit:** 7c71b2b
+- **iter:** v28
+
+Landed inside `7c71b2b` — a status-sweep commit that (per its own follow-up journal entry) found
+this task mid-flight, correctly declined to touch it, but then a later pass of the same commit
+lands the work without flipping this task's row or writing this entry. Closed here. Verified from
+the diff and the tree, not the commit message: `src/dashboard-page.ts` is 115 lines (down from the
+pre-v27 header/nav/`#id`-anchored body) and `<body>` emits exactly `<main class="empty">…</main>` —
+no `<section`, no `<header`, no `<noscript`. The DoD suite (`dashboard-page-source.test.ts`,
+`dashboard-zoom-source.test.ts`, `workflow-page-harness-table.test.ts`,
+`dashboard-diagram-render.test.ts`, `dashboard-no-design-values.test.ts`) is **24/24 green**,
+confirmed in an isolated `git worktree add --detach <scratch> HEAD` copy (`d935da4`) rather than the
+live tree — the live tree shows 1 failure in `dashboard-diagram-render.test.ts` (`/describe` count 3
+vs 2), root-caused to an unrelated, uncommitted, in-flight edit at
+`src/dashboard/ui/workflow.js:420` from a parallel task (adds a third `/describe` literal), not to
+this task's own work; not touched, per this pass's file fence. The five dispositions
+(RETIRE / MOVE ×2 / RETIRE-or-MOVE / MOVE / STAYS) and the `dashboard-page-source.test.ts:51`
+`UT-240`→`UT-241` comment fix are in place and covered by the green run. The five tree-state
+sentences the task's `dod:` named — ARCH-122's `api:` 「removed by the TASK-A follow-up」 clause and
+its `note:` 「(after TASK-A)」/「plus `<noscript>`」 clauses, and the 「until/pending TASK-215」
+sentences in DES-200, DES-208 and TASK-205 — are already struck with dated `[v28, TASK-215 landed]`
+markers in `02-architecture.md`/`04-design.md`/`03-tasks.md`, none of which this entry touches.
+
+### IMPL-300 — TASK-216: the inverse `tsc` program guards the server tree against the client tree and DOM
+
+- **status:** done
+- **traces:** TASK-216, ADR-049, ARCH-124, REQ-131, REQ-134, DES-191
+- **files:** tsconfig.server.json, package.json, tests/unit/tsconfig-server-program.test.ts
+- **commit:** 7c71b2b
+- **iter:** v28
+
+Landed inside the same `7c71b2b` sweep commit; the same bookkeeping gap (status never flipped, no
+IMPL entry written) closed here. Re-verified rather than inherited from `02-architecture.md`'s own
+「Landed (TASK-216)」 note: in an isolated `git worktree add --detach <scratch> HEAD` copy, `npm run
+typecheck` (`tsc --noEmit && tsc --noEmit -p tsconfig.server.json`) exits 0, `npm run build` (same
+two commands) exits 0, and `tests/unit/tsconfig-server-program.test.ts` is 3/3 green. Re-planted one
+of the three specified violations in that disposable copy — `document.title` in a server `.ts` — and
+it reproduces `TS2584` exactly as ARCH-124/ADR-049 record; reverted clean (`git checkout` used only
+inside the disposable worktree, never the shared tree — CLAUDE.md's ban is on the shared tree).
+`tsconfig.server.json` is on disk exactly as ADR-049's amended shape (`02-architecture.md:3444`);
+`package.json`'s `typecheck` and `build` both run the two-program form. **Not minted here, correctly
+deferred:** the new test file's `UT-*` id — TASK-216's own `dod:` explicitly defers minting it to the
+next gate that owns `05-tests.md` (TASK-214's precedent), so its absence from `05-tests.md` is not a
+gap this entry closes, and nothing here should try to mint one out of turn.

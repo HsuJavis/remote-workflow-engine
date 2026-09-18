@@ -5901,3 +5901,113 @@ bump (DES-220 stays `v28`, matching DES-216/217's own convention of dated `amend
 churn), so no new drift is possible from this pass. `grep -c 'owner_decision:\*\* pending' 0*.md` is 0
 for every `0*.md` file. No code, test, `state.yaml` or `01-requirements.md` file touched — design-only,
 as scoped. Next: Gate 6 rebuilds TASK-226 against the widened card (all three arms, one commit).
+
+## 2026-09-18 — v28b Gate 5 widened re-run (verifier) — PASSED: the same-day owner widening re-opens four already-red items, plus a ledger sync fix
+
+The prior entry above (Gate 3+4) landed DES-220's widened ruling — name the missing route on all
+three surfaces, including the System tab's counts card — but its own journal note said "Next: Gate 6"
+(implementation), skipping this gate. TDD discipline says otherwise: the widening changed pinned
+literals and added a whole new arm, so the RED half owed a re-run before Gate 6 touches code. This
+dispatch is that re-run, scoped to DES-220/TASK-226 only.
+
+**Four items amended in place, on top of the pre-widening Gate 5 stamp (no new IDs):**
+- **UT-244** (`dashboard-lib-strings.test.js`) — the pinned `noDemoData` literal changes from the bare
+  sentence to the colon-terminated PREFIX (`'此路由無示範資料:'` / `'No demo data for this route: '`).
+  Red (measured): the current implementation (landed at `87eee96`, before the widening) still holds
+  the bare sentence — `expected '此路由無示範資料' to be '此路由無示範資料:'`.
+- **UT-261** (`dashboard-seam.test.ts`) — the 6th source tripwire widens to also check
+  `clientFile('ui/system.js').toContain('noDemoData')`. Red (measured): `ui/workflow.js`/`ui/issues.js`
+  already contain it; `ui/system.js` does not — `paintCountsUnavailable` there takes no `text` param.
+- **UT-260** (`demo-surface.test.ts`) — `PRODUCTION_ALLOWLIST` grows by `ui/system.js`. Green by
+  construction (Mode C, matching UT-261's own case 3 precedent): measured — `ui/system.js` does not
+  mention "demo" yet, so this growth changes nothing today; added test-first so it will not go red the
+  moment TASK-226 lands there.
+- **VAL-217** (`val-207-demo-data.test.ts`) — cases (3)/(4)'s pinned sentences amended to the FULL
+  prefixed-and-routed form (`此路由無示範資料:/api/workflows/:name/describe`,
+  `此路由無示範資料:/api/issues`), and ONE new case (5) added for the System tab counts card
+  (DES-220 (B7)): pre-warms `[data-tab="system"]` live, kills the engine, asserts the counts card
+  reads `此路由無示範資料:/api/workflows` while CPU/memory/disk keep painting the exact demo numbers
+  (`12%`/`25%`/`20%`) from `demo/dataset.js`'s own `/api/system` entry — DES-215/216's per-card
+  independence, re-proven under the new wording — then asserts recovery within one tick. No workflow
+  registration needed; own server/tmpDir/port; no `page.setRequestInterception` (DES-212). Real run:
+  `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-207-demo-data.test.ts` → 5 total, 3 failed
+  (cases 3/4 now red for the widened reason, case 5 new), 2 passed (cases 1/2, pre-existing,
+  unchanged), ~47s real wall-clock, real Chromium, real `createServer`/`server.close()`/re-`listen()`.
+
+**A genuine ledger defect found and fixed, same CLASS as the v27 VAL-198..204 collision already
+resolved once:** `08-validation.md`'s own `VAL-217` entry (written at Gate 7.5, `b0fb176`, before
+DES-220/TASK-226 existed) still traced only to `REQ-143, DES-212, TASK-220` — never synced once
+DES-220/TASK-226 were minted. `trace.py`'s `scan()` processes files in sorted order and the
+later-sorted file wins an ID collision (`08-validation.md` > `05-tests.md`), so this stale copy was
+silently shadowing `05-tests.md`'s own up-to-date `VAL-217` in the trace graph — measured before the
+fix: `sh .sdlc/trace … --impact TASK-226` listed no `VAL-217` downstream at all. Fixed by syncing
+`08-validation.md`'s `traces:` line to match `05-tests.md`'s (`REQ-143, DES-212, DES-220, TASK-220,
+TASK-226`), leaving the Gate 7.5 evidence prose untouched, with a dated one-line marker explaining the
+sync. Confirmed after: `--impact TASK-226` and `--impact DES-220` both list `VAL-217` downstream.
+
+**Gate self-check.** Baseline measured the CLAUDE.md-mandated way (never by checking the ledger
+backwards in place) — `git archive HEAD | tar -x -C <scratchpad>/baseline`, then
+`sh .sdlc/trace <scratchpad>/baseline/.../001-remote-workflow-engine --check` → **1724 items / 26
+gaps**. Post-edit (working tree, after all edits above): `sh .sdlc/trace
+.sdlc/features/001-remote-workflow-engine --check` → **1724 items / 26 gaps** — byte-identical item
+and gap count (0 new IDs minted — every change amends an existing item; 0 new gaps; 0 high; 0
+斷鏈/孤兒 in the gap list; the sole in-closure gap is `TASK-226`'s own not-yet-implemented row,
+expected at this stage — the other 25 are pre-existing, unrelated drift/未實作 rows from v11..v26).
+`state.yaml`'s `current_stage` comment and `gates.tests.note` both updated in place (head replaced
+with today's widened re-run, prior text demoted to `PRIOR:`); `gates.tests.passed` stays `true`
+(this gate's own RED confirmation passed); `gates.impl.passed` stays `false` (unchanged — TASK-226
+still not implemented, and now needs its already-landed two arms redone to the widened form too).
+No `state.yaml`/`01-requirements.md`/`04-design.md`/`03-tasks.md` content touched beyond the two noted
+bookkeeping lines. Next: Gate 6 (implementation) for TASK-226, all three arms.
+
+## 2026-09-18 — TASK-215/216 flipped `done` (reviewer): the third occurrence of this pathology, this one caused by the orchestrator itself
+
+`7c71b2b` ("land TASK-215/216 and sweep 25 stale task rows") did exactly what its title says for the
+work, but never flipped these two rows' `status:` or wrote their `IMPL-*` entries — the same class of
+gap the commit itself was repairing, one level up. Established what landed from the diff, not the
+message: `git show --stat 7c71b2b` plus per-file `git show 7c71b2b -- <path>` confirms `dashboard-page.ts`
+(115 lines, `<body>` = one `<main class="empty">`, no `<section`/`<header`/`<noscript`),
+`tsconfig.server.json` + `package.json`'s two-program `typecheck`/`build`, and the design-side strikes
+in `02-architecture.md`/`04-design.md` (already committed, across `7c71b2b`/`d935da4` — none of it
+mine, only read for evidence). Both cards' `dod:` re-run **verbatim, in an isolated
+`git worktree add --detach <scratch> HEAD` copy**, not the shared tree: TASK-215's five test files
+24/24 green (the live tree shows 1 unrelated failure — a parallel task's uncommitted edit at
+`src/dashboard/ui/workflow.js:420` adds a third `/describe` literal, not this task's doing); TASK-216's
+`typecheck`/`build` exit 0, `tsconfig-server-program.test.ts` 3/3, and one of the three planted
+violations (`document.title` in a server `.ts`) re-planted and reverted in that disposable copy only,
+reproducing `TS2584` exactly as documented — `git checkout` used there is a throwaway worktree, not
+the shared tree CLAUDE.md's ban protects. Both flipped `status: done` in `03-tasks.md` with a dated
+closeout citing `7c71b2b`; `IMPL-299`/`IMPL-300` written with real `traces:`/`files:`/`commit:`,
+`iter: v28` (the landing commit's own self-label, matching `02-architecture.md`'s "Landed (TASK-216)"
+annotation — not defaulted, TASK-215/216's own `iter:` stays `v27j`, they were minted then and merely
+landed late). TASK-216's new test file's `UT-*` id is correctly left unminted — its own `dod:` defers
+that to the next `05-tests.md`-owning gate (TASK-214's precedent); not touched here.
+
+**Gate self-check, and the SET moved, not just the count.** `sh .sdlc/trace
+.sdlc/features/001-remote-workflow-engine --check` → **1726 items / 27 gaps** (was 1724/26 — +2 items
+for the two new IMPL entries). Diffed the full sorted gap list, not just the number: the two
+`未實作 TASK-215`/`TASK-216` rows are gone (the reason for this pass), but three NEW low `漂移` rows
+appear — `DES-191`, `DES-200`, `DES-208` — because `IMPL-299`/`300` (`iter: v28`) now trace to those
+three design rows, which still carry `iter: v27j` even though their prose already carries dated
+`[v28, TASK-215/216 landed]` annotations (visible in the diffs read above). This is a genuine, if
+low-severity, drift: the content was updated, the `iter:` stamp at the bottom of each row was not.
+`04-design.md` is not this pass's file, so it is reported, not fixed — net change is 26→27 (−2/+3),
+one row per touched DES id, not a regression in this pass's own work.
+
+**The guard this pathology has now earned, three times over.** `trace.py`'s `analyze()` (`.sdlc/trace.py:196-259`)
+never reads a TASK's `status:` field — "implemented" is derived purely from `reachable_from("build",
+items)`, i.e. whether any `IMPL.traces:` line names the TASK. That is *why* a stale `status: draft`
+next to a real covering IMPL produces **zero** trace gaps: the scanner already considers the task
+implemented and has no code path that also checks what the partitioner reads. Concrete proposal,
+sized to fit the same function: add one more comparison inside the existing `for iid, it in
+sorted(items.items())` loop at `.sdlc/trace.py:236` (right where the current "任務未實作" check already
+computes `iid in implemented`) — the **inverse** case, `it["stage"] == "tasks" and it["status"] ==
+"draft" and iid in implemented`, emitting a new gap type (`"狀態未同步"` / status-desync, `sev: "mid"` —
+this is what burns whole Gate-6 dispatches, one severity above the `"未實作"` row it mirrors) with a
+message naming the covering IMPL id(s) so the fix is a one-line status flip, not a re-investigation.
+Cost: the `implemented` set and the loop already exist; this is one `if` and one dict lookup, no new
+pass over the ledger, no new file read. It lives in the one place all three instances (19 rows v27,
+25 rows v26, 2 rows v28 here) share — `trace.py`'s existing `--check`, run at every dispatch precheck
+and every Gate 8 — so it fires automatically with no new invocation point, and would have caught all
+three at the moment the covering IMPL first landed, not one-to-several gates later when an agent
+burns a dispatch re-doing closed work. Not built this pass, per the dispatch's own instruction.
