@@ -8108,3 +8108,63 @@ token 裡(大小寫不同),但它是同一張表、同一個缺陷類別;留著�
    `currentLang` 卻沒用過。若只跑單元測試,這三行會在瀏覽器裡丟 ReferenceError 而測試全綠。
 2. **`ui/run.js` 一度重複 import 同一個模組兩次**,`lib/agent.js` 的 import 被插在檔案中段。
    兩者皆已收攏。
+
+---
+
+## v29 c4 — REQ-151(移除工作流明細頁的流程圖顯示面)
+
+### IMPL-310 — 刪除,並且刪乾淨
+- **traces:** REQ-151
+- **files:** `src/dashboard/ui/workflow.js`, `src/dashboard/ui/run.js`, `src/dashboard/dashboard.css`,
+  `tests/fixtures/dashboard-classes.ts`, `tests/unit/dashboard-page-source.test.ts`,
+  `tests/unit/dashboard-diagram-render.test.ts`, `tests/acceptance/val-200-swimlane.test.ts`,
+  **刪除** `tests/acceptance/val-197-diagram-drag-pan.test.ts`
+- **tests:** UT-269(新檔 `dashboard-diagram-surface-retired.test.ts`,3 例,2 紅 1 綠)
+
+那 1 例一開始就綠是刻意的:**`.fit-btn` 必須存活**。它是本次最容易造成的附帶損害。
+
+### 計畫裡的兩個錯,由實作階段抓出
+
+**一、`.fit-btn` 是共用的。** 計畫寫「刪三組 CSS 規則」,但 `ui/run.js:413` 用 `.fit-btn` 做泳道的
+Fit 鈕。真跑確認:run 檢視上仍有 1 個「Fit」,`position:relative` / `z-index:1`(C1 釘子成立)。
+只刪了 `#diagram-img` 一條。
+
+**二、val-169 不打 dashboard。** 計畫寫「退役 val-169 與 val-197」。val-169 用 puppeteer 只是為了
+讓 mmdc 產圖,測的是惡意 payload 必須以逸出文字回來 —— 路由與渲染器的安全性質,與顯示面無關。
+只有 val-197 導航到 `/dashboard` 並拖曳該元素。
+
+### 一條測試拆開,而不是整條退役
+
+`UT-169` 有兩個斷言。第一條釘 `createElement('img')` … `img.id` —— 退。
+第二條「client 任何地方都不得 `createElement('object'|'embed')`」—— **留**。
+`<object>` / `<embed>` 會執行 SVG 內的 script,這個性質與畫的是什麼無關。
+**讓一個安全守衛因為「當初促成它的元素被刪了」而陪葬,是把安全檢查當成外觀改動的附帶損害。**
+補了一條非空斷言(corpus 真的載入且真的在 createElement),免得它變成空綠。
+
+### 退路也一起拆
+
+`<pre id="diagram">` 與 `#mermaidNote` 是「沒有 mermaid 時」的替代顯示。留著它們等於:
+圖沒了,卻還有一段文字在解釋為什麼沒有圖 —— REQ-105 / ADR-048 要防的正是這個。
+
+### 註解裡不得出現它剛移除的那些 id
+
+第一版的移除說明把 `#diagram-zoom` / `#diagram-img` 等 id 寫進註解裡,於是 UT-269 對 corpus 的
+grep 直接被自己的說明打紅。改寫成不指名的敘述。**這是本 ledger 第六次踩到「文字裡帶著自己要禁的字」。**
+
+### 五處指向已刪 val-197 的 prose
+
+指向「現存覆蓋」的三處已改(`dashboard-page-source.test.ts` 的前言整段刪除 —— 它描述的元素
+已不存在;`val-200` 的標頭;`ui/workflow.js:91` 的歷史註解標明「已退役」)。
+
+### 真跑驗證
+
+| 項目 | 結果 |
+|---|---|
+| 明細頁的五個元素 | 全數不存在 |
+| 明細頁的 `<img>` | 0 個 |
+| 頁高 | 1100+ → 859 |
+| run 檢視的 `.fit-btn` | 1 個「Fit」,`position:relative` / `z-index:1`,32px |
+| `#dag-zoom` | 仍在 |
+| `GET /api/workflows/gp-runner/diagram.svg` | **200 · image/svg+xml · 352583B** |
+
+最後一列是重點:**REQ-102 沒有被退役**,引擎仍然產圖並服務它。走的只是儀表板的顯示面。

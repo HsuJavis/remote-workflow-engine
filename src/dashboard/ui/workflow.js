@@ -4,9 +4,15 @@
 // (`historyRow`, DES-204), a row/chip click switching the figure above to that run, and — for a
 // workflow with no runs at all — the PREDICTED layout (never the retired word; `t(lang,
 // 'predictedLayout'/'predictedLayoutUnavailable')`, DES-201/206), reusing `ui/run.js`'s swimlane
-// painter (DES-206: "the swimlane painter... reused by TASK-209") for BOTH figures. The author's
-// diagram (`createObjectURL`/`revokeObjectURL`, memoized per (name,version)) is ported verbatim
-// from the pre-v27 inline script's `renderDiagram`/`hideDiagram` pair.
+// painter (DES-206: "the swimlane painter... reused by TASK-209") for BOTH figures.
+//
+// [v29 c4, REQ-151, owner ruling V29-Q2] The author-diagram surface — its zoom box, its image, its
+// fit button, and the `<pre>`/note fallback that only ever existed to explain a MISSING one — is
+// REMOVED. The handoff's workflow-detail screen has no such element; the engine's mermaid SVG
+// rendered white-on-dark against every other surface on the page. REQ-102 itself is untouched:
+// the engine still renders and serves it, and `src/diagram-render.ts` is unchanged. The element
+// ids are deliberately NOT spelled out here — UT-269 greps this corpus for them, and prose that
+// names the thing it just removed is the defect this ledger has closed five times.
 //
 // [v27c] `onTick(container, bodies, ctx)` (DES-206) replaces this view's own `setTimeout` loop:
 // `app.js`'s one timer fetches `endpointsFor('workflow', ctx)` (describe + /api/runs) and hands the
@@ -82,9 +88,10 @@ function buildShell(container) {
   const root = document.createElement('div');
   root.className = 'workflow-view';
 
-  // v27c fix (REQ-129/VAL-197): the name + its two badges are ONE flex-column item, not three —
+  // v27c fix (REQ-129, found by the since-retired VAL-197): the name + its two badges are ONE
+  // flex-column item, not three —
   // `.workflow-view`'s `gap:20px` (dashboard.css:184) gave each of `h2`/`versionTag`/`execTag` its
-  // own row, pushing everything below (including `#diagram-zoom`) ~80px further down the page than
+  // own row, pushing everything below ~80px further down the page than
   // the pre-v27 single-line "Run <id> <status>" header ever did. `nameEl` carries the name text so
   // `renderHeader`'s per-tick write can't wipe the tags the way `h2.textContent = ...` would.
   const h2 = document.createElement('h2');
@@ -147,36 +154,9 @@ function buildShell(container) {
   table.appendChild(tbody);
   root.appendChild(table);
 
-  // The author's diagram — ported verbatim (DOM order + ids) from the pre-v27 shell/script pair.
-  const diagramZoom = document.createElement('div');
-  diagramZoom.id = 'diagram-zoom';
-  diagramZoom.className = 'zoomable';
-  diagramZoom.style.display = 'none';
-  const img = document.createElement('img');
-  img.id = 'diagram-img';
-  img.alt = 'workflow diagram';
-  img.draggable = false;
-  diagramZoom.appendChild(img);
-  root.appendChild(diagramZoom);
-  const diagramFit = document.createElement('button');
-  diagramFit.type = 'button';
-  diagramFit.id = 'diagram-fit';
-  diagramFit.className = 'fit-btn';
-  diagramFit.style.display = 'none';
-  diagramFit.textContent = 'Fit';
-  root.appendChild(diagramFit);
-  const pre = document.createElement('pre');
-  pre.id = 'diagram';
-  pre.style.display = 'none';
-  root.appendChild(pre);
-  const note = document.createElement('p');
-  note.id = 'mermaidNote';
-  note.style.display = 'none';
-  root.appendChild(note);
-  initZoomable(diagramZoom, diagramFit);
 
   container.replaceChildren(root);
-  return { root, h2, nameEl, versionTag, execTag, desc, triggers, predictedLabel, svgEl, legend, chips, tbody, diagramZoom, img, diagramFit, pre, note };
+  return { root, h2, nameEl, versionTag, execTag, desc, triggers, predictedLabel, svgEl, legend, chips, tbody };
 }
 
 function renderHeader(shell, describe, lang) {
@@ -245,56 +225,6 @@ function resolveSelectedRunId(state, runs) {
 
 const stateByContainer = new WeakMap();
 
-function hideDiagram(state) {
-  const shell = state.shell;
-  state.diagramKey = null;
-  shell.img.removeAttribute('src');
-  shell.diagramZoom.style.display = 'none';
-  shell.diagramFit.style.display = 'none';
-  if (state.diagramUrl) { URL.revokeObjectURL(state.diagramUrl); state.diagramUrl = null; }
-  shell.pre.style.display = 'none';
-  shell.note.style.display = 'none';
-}
-
-async function loadDiagram(state, describe, lang) {
-  const shell = state.shell;
-  if (!describe.mermaid) {
-    hideDiagram(state);
-    shell.pre.style.display = 'block';
-    shell.pre.textContent = describe.description || '';
-    shell.note.style.display = 'block';
-    shell.note.textContent = describe.mermaidNote || '';
-    return;
-  }
-  const key = describe.name + '@' + describe.version;
-  if (state.diagramKey === key) return; // fetched once per (name, version) — never once per tick.
-  state.diagramKey = key;
-  let res = null;
-  try {
-    res = await fetch('/api/workflows/' + encodeURIComponent(describe.name) + '/diagram.svg?version=' + encodeURIComponent(describe.version));
-  } catch {
-    res = null;
-  }
-  if (res && res.ok) {
-    const blob = await res.blob();
-    if (state.diagramUrl) URL.revokeObjectURL(state.diagramUrl);
-    state.diagramUrl = URL.createObjectURL(blob);
-    shell.img.src = state.diagramUrl;
-    shell.diagramZoom.style.display = 'block';
-    shell.diagramFit.style.display = 'inline-block';
-    shell.pre.style.display = 'none';
-    shell.note.style.display = 'none';
-    return;
-  }
-  shell.img.removeAttribute('src');
-  shell.diagramZoom.style.display = 'none';
-  shell.diagramFit.style.display = 'none';
-  shell.pre.style.display = 'block';
-  shell.pre.textContent = describe.description || '';
-  shell.note.style.display = 'block';
-  shell.note.textContent = t(lang, 'predictedLayoutUnavailable');
-}
-
 /** DES-206 (U) [v27m] — the ONE Unavailable component for this view's figure. Clears the CHILDREN
  *  of the surfaces the `/dag` route feeds (the svg, the cell layer, the legend) and keeps their
  *  NODES: `[data-legend]` is a DES-209 TEST_ANCHOR and `.cell-layer` carries `ensureCellLayer`'s
@@ -325,7 +255,6 @@ function paintRouteUnfounded(state, text) {
   shell.predictedLabel.textContent = '';
   shell.chips.replaceChildren();
   shell.tbody.replaceChildren();
-  hideDiagram(state);
   paintFigureUnavailable(shell, text);
   state.paintedRunId = null;
 }
@@ -400,7 +329,7 @@ export function render(container, vm, handlers) {
   if (!name) return;
   // `paintedRunId` is DES-206's paint memory: null here because `render()` paints an EMPTY SHELL,
   // and an empty shell is not a paint — only `paintSelected`'s `ok` branch may write it.
-  stateByContainer.set(container, { shell, name, lang, handlers: handlers || {}, selectedRunId: null, paintedRunId: null, diagramKey: null, diagramUrl: null });
+  stateByContainer.set(container, { shell, name, lang, handlers: handlers || {}, selectedRunId: null, paintedRunId: null });
 }
 
 /** DES-206 [v27c] — `app.js`'s one timer calls this every ~3s with `endpointsFor('workflow', ctx)`'s
@@ -437,6 +366,5 @@ export async function onTick(container, bodies, ctx, tick) {
   renderChipsAndTable(state.shell, runs, state.selectedRunId, lang, onPick);
   const extra = await paintSelected(state, runs, describe, lang);
   if (!state.shell.root.isConnected) return extra;
-  await loadDiagram(state, describe, lang);
   return extra;
 }

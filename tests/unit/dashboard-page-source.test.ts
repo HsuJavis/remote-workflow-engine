@@ -9,7 +9,8 @@
 // fact, not behaviour) STAYS below.
 //
 // UT-224's "mousedown preventDefault" RETIRES the same way — the zoom/pan handler moves into
-// `ui/run.js` (DES-206) and is re-proven by the real-mouse Chromium tests val-193/val-197 (per
+// `ui/run.js` (DES-206) and is re-proven by the real-mouse Chromium test val-193 (val-197 was
+// its author-diagram sibling and retired with that surface in v29 c4 / REQ-151) (per
 // DES-208's own explicit disposition for this exact literal). Its two markup/CSS pins STAY.
 //
 // Mock policy (unit): page-source text assertion over the exported DASHBOARD_HTML, except the two
@@ -33,20 +34,17 @@ describe('the run page keeps Fit clickable (UT-222, D8/REQ-129)', () => {
 // UT-224 (v26 Gate 7.5 round 3, defect D10) — the two markup/CSS facts STAY; the "mousedown
 // preventDefault" JS behaviour pin RETIRES (see the file banner above). [v27c] the CSS-rule half
 // re-points to `dashboard.css` bytes. [v27c AC-3b Gate 8 repair]: the markup half re-points to
-// `ui/workflow.js` too — `app.js:427`'s `replaceChildren` deletes DASHBOARD_HTML's pre-v27 body
-// before first paint (ARCH-122), so the `<img id="diagram-img" ... draggable="false">` this pin
-// asserted on DASHBOARD_HTML was guarding dead bytes no browser renders; the element is actually
-// built by `workflow.js`'s `img.id = 'diagram-img'` / `img.draggable = false` (real-tier coverage
-// unchanged: val-197-diagram-drag-pan.test.ts:119-123).
-describe("the author's diagram can be drag-panned: no native image drag (UT-224, D10/REQ-129)", () => {
-  it('the diagram <img> is explicitly non-draggable', () => {
-    expect(clientFile('ui/workflow.js')).toMatch(/img\.id = 'diagram-img';[\s\S]*?img\.draggable = false;/);
-  });
-
-  it('#diagram-img also disables the webkit image drag and text selection', () => {
-    expect(clientFile('dashboard.css')).toMatch(/#diagram-img\{[^}]*-webkit-user-drag:none;user-select:none\}/);
-  });
-});
+// [v29 c4, REQ-151 — RETIRED with its surface] UT-224 pinned two facts about the author-diagram
+// `<img>`: that it set `draggable = false`, and that the stylesheet disabled the webkit image drag
+// and text selection on it. Owner ruling V29-Q2 removed that element, so both pins now describe
+// something that does not exist. REQ-105 / ADR-048: deleting a surface deletes its tests, it does
+// not grandfather them into a permanent green over nothing.
+//
+// What still covers REQ-102 (the engine side, NOT retired): the route's own integration suite
+// `tests/integration/diagram-svg-route.test.ts` (IT-134) and `src/diagram-render.ts`'s unit
+// coverage. What the surface's removal is locked by: UT-269
+// (`dashboard-diagram-surface-retired.test.ts`), which also keeps `.fit-btn` alive — that class
+// belongs to the swimlane's zoom control, not to the deleted one.
 
 // v27 (UT-241, DES-200/201, ARCH-122, TASK-205, REQ-131): the served page becomes a SHELL — markup
 // + tokens CSS + a JSON data island + one module script; ZERO inline executable JS. `DASHBOARD_HTML`

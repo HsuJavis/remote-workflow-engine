@@ -2085,10 +2085,26 @@ boundary ④ 記載了做這個判斷時的處境:`design_handoff_workflow_dashb
 - **REQ-151 — 移除工作流明細頁的流程圖顯示面** `[修訂 C1 / C2]`
   **來源:** B27 + V29-Q2。交付稿的明細頁沒有這個元素;現行實作把引擎產的 mermaid SVG 以
   `<img src=blob:>` 貼在頁尾,白底淺黃,在深色頁面上與其餘一切不協調。
-  **刪除範圍:** `ui/workflow.js` 的 img / zoom / fit 控制 / fetch / `createObjectURL` 記憶化 / `revokeObjectURL`、
-  `ui/run.js` 與 `demo/dataset.js` 的相關參照、`dashboard.css` 的 `#diagram-img` / `#diagram-zoom` / `.fit-btn`
-  三組規則、`tests/fixtures/dashboard-classes.ts` 的 TEST_ANCHORS 條目、
-  `tests/unit/dashboard-page-source.test.ts` 的兩條 C1 字面值 pin、val-169 與 val-197。
+  **刪除範圍 [CORRECTED v29 c4 — 原文兩處寫錯]:** `ui/workflow.js` 的 img / zoom / fit 控制 /
+  fetch / `createObjectURL` 記憶化 / `revokeObjectURL`,**以及 `<pre id="diagram">` 與 `#mermaidNote`**
+  (「沒有圖時」的退路;留著等於圖沒了卻還有文字解釋為什麼沒有圖)、`ui/run.js` 的註解參照、
+  `tests/fixtures/dashboard-classes.ts` 的兩條 TEST_ANCHORS、
+  `tests/unit/dashboard-page-source.test.ts` 的 UT-224、`tests/unit/dashboard-diagram-render.test.ts`
+  的 UT-252 client 半邊與 UT-169 的第一條斷言、**val-197**。
+
+  **更正一:`.fit-btn` 不可刪。** 原文寫「刪 `#diagram-img` / `#diagram-zoom` / `.fit-btn` 三組規則」——
+  `.fit-btn` 是共用的,`ui/run.js:413` 用它做泳道的 Fit 鈕,刪掉會弄壞另一個畫面。
+  只刪 `#diagram-img` 一條規則;`.zoomable` 也保留(它的三個消費者退了一個,另兩個還在)。
+  UT-269 為此加了一條**正向錨點**:`.fit-btn` 的 C1 釘子必須仍然存在。
+
+  **更正二:val-169 不可退。** 原文寫「退役 val-169(渲染)與 val-197」—— val-169 **根本不打
+  dashboard**,它用 puppeteer 只是為了讓 mmdc 產圖,測的是「惡意 payload 必須以逸出文字回來」,
+  是路由與渲染器的安全性質。只有 val-197 導航到 `/dashboard` 並拖曳該元素,該退的只有它。
+
+  **UT-169 拆開而非整條退役。** 斷言一(`createElement('img')` … `img.id`)退;
+  斷言二(client 任何地方都不得 `createElement('object'|'embed')`)**留** ——
+  `<object>`/`<embed>` 會執行 SVG 內的 script,不論在畫什麼都成立。讓一個安全守衛因為
+  「當初促成它的元素被刪了」而陪葬,是把安全檢查當成外觀改動的附帶損害。
   **保留:** `src/server.ts` 的路由、`src/diagram-render.ts`、`tests/integration/diagram-svg-route.test.ts`。
   **驗收:** 明細頁不含任何 `#diagram-*` 元素;`/api/workflows/:name/diagram.svg` 仍回 200。
   依 REQ-105 / ADR-048 的反腐條款,刪面即刪其 CSS 與其描述 —— 不得留下孤立的規則或註解。

@@ -176,14 +176,13 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
    re-pointed pin (DES-200/208) — this exact substring is asserted against THIS file's bytes now. */
 .fit-btn{position:relative;z-index:1;font-size:11px;padding:2px 9px;border-radius:100px;border:1px solid var(--color-line);background:var(--color-panel);color:var(--color-ink);cursor:pointer;margin:4px 0}
 .fit-btn:hover{border-color:var(--color-link)}
-/* v26 (DES-186, ARCH-120, ADR-044, TASK-191): one .zoomable wrapper serves the run DAG svg, the
-   swimlane's HTML cell-layer, and the author's diagram img — the wheel/drag transform lives HERE,
-   never on rebuilt children. */
+/* v26 (DES-186, ARCH-120, ADR-044, TASK-191): one .zoomable wrapper serves the run DAG svg and the
+   swimlane's HTML cell-layer — the wheel/drag transform lives HERE, never on rebuilt children.
+   [v29 c4, REQ-151] The third consumer retired with its surface; the rule stays for the other two.
+   The `-webkit-user-drag`/`user-select` rule that sat below this one went with it — REQ-105 /
+   ADR-048: deleting a surface deletes its CSS. `.fit-btn` above is NOT part of that deletion;
+   `ui/run.js` sets it for the swimlane's own zoom control. */
 .zoomable{transform-origin:0 0;touch-action:none}
-/* v26 Gate 7.5 round 3 (defect D10, REQ-129): -webkit-user-drag:none is load-bearing, not styling —
-   see the draggable="false" note on the <img> itself in dashboard-page.ts. user-select:none stops a
-   drag across the figure from painting a text selection instead of panning. [v27c] re-pointed pin. */
-#diagram-img{max-width:100%;background:var(--color-panel);border:1px solid var(--color-line);border-radius:8px;padding:8px;margin:6px 0;-webkit-user-drag:none;user-select:none}
 
 /* == REQ-131 shell == */
 .rwe-nav{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:10px 20px;border-bottom:1px solid var(--color-line);position:sticky;top:0;background:var(--color-bg);z-index:5}

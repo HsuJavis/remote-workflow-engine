@@ -65,11 +65,19 @@ import { describe, it, expect } from 'vitest';
 // `img.id = 'diagram-img'`); the never-`<object>`/never-`<embed>` guarantee is a "never CREATE
 // this element" fact, so its JS-idiomatic form over `clientCorpus()` is a `createElement` grep, not
 // a markup-string grep with nothing left to scan (DES-208's vacuous-green class).
-describe('v25: the dashboard loads the rendered diagram as an image (UT-169, REQ-119, DES-166)', () => {
-  it('renders it via an <img> element — never <object>/<embed>, which execute script inside an SVG', async () => {
-    const { clientFile, clientCorpus } = await import('../helpers/client-corpus.js');
-    expect(clientFile('ui/workflow.js')).toMatch(/createElement\('img'\)[\s\S]*?img\.id = 'diagram-img';/);
-    expect(clientCorpus()).not.toMatch(/createElement\(['"](object|embed)['"]\)/);
+// [v29 c4, REQ-151] UT-169 is SPLIT rather than retired whole. Its first assertion pinned the
+// author-diagram `<img>`, whose surface the owner removed (V29-Q2) — that half goes. Its second is
+// a live security invariant with nothing to do with the diagram: `<object>`/`<embed>` execute
+// script inside an SVG, and the client must never create either, whatever it is rendering. Letting
+// that guard die because the element that motivated it was deleted would be throwing away a
+// security check as collateral damage of a cosmetic change.
+describe('the client never creates <object>/<embed> (UT-169, REQ-119, DES-166)', () => {
+  it('no client module can create an element that executes script inside an SVG', async () => {
+    const { clientCorpus } = await import('../helpers/client-corpus.js');
+    const corpus = clientCorpus();
+    expect(corpus).not.toMatch(/createElement\(['"](object|embed)['"]\)/);
+    // not vacuous: the corpus really is loaded and really does create elements
+    expect(corpus).toContain('createElement(');
   });
 });
 
@@ -102,47 +110,12 @@ describe('v25: the dashboard loads the rendered diagram as an image (UT-169, REQ
 // defect. `clientCorpus()` itself does not throw: `src/dashboard/lib/*.js` already exists (a
 // sibling task's completed work), so the corpus is non-empty today, and the three negatives are
 // already green against it.
-describe('v27 disposition anchor: the diagram createObjectURL/revokeObjectURL pair re-points to ui/workflow.js (UT-252, DES-208)', () => {
-  it('the client corpus (once built) carries the createObjectURL/revokeObjectURL pair, the versioned diagram fetch, and is not vacuously tiny', async () => {
-    const { clientCorpus } = await import('../helpers/client-corpus.js');
-    const corpus = clientCorpus();
-    expect(corpus).toContain('createObjectURL');
-    expect(corpus).toContain('revokeObjectURL');
-    expect(corpus).toContain('/diagram.svg');
-    expect(corpus).toMatch(/version=/);
-    // v27 (REQ-134 join, state.yaml pending "v27 ORCHESTRATOR CORRECTION"): TWO call sites are
-    // architecturally required, not a duplication regression — `ui/poll.js:22` (`endpointsFor`'s
-    // 'workflow' route, the pre-existing workflow-detail-page describe fetch `ui/workflow.js`
-    // polls through) and `ui/run.js:442` (REQ-134 row 2's declared-effort join: the swimlane view
-    // has no workflow name of its own, so it resolves one via `/api/runs` and fetches `describe`
-    // to read `params.agents[].effort.default`). The anti-duplication INTENT stays: a third site
-    // added later must justify itself here, same as these two do.
-    // [v27j, TASK-215] `demo/dataset.js`'s own file banner (TASK-220) contains the SUBSTRING
-    // "/describe" inside a comment describing which routes it does NOT cover — not a call site.
-    // A bare corpus match counts it as a third, which is exactly the false positive this
-    // anti-duplication tripwire must not raise; strip comments first (same precedent as
-    // `dashboard-no-external-host.test.ts`'s/`dashboard-no-design-values.test.ts`'s own
-    // `stripComments`), for the COUNT only — the other assertions in this file stay on the raw
-    // corpus.
-    // [v28b, TASK-226, DES-220 — Gate 6.5+7 re-stamp] a THIRD occurrence is now architecturally
-    // required, same as the two above: `ui/workflow.js:420`'s demo-miss disclosure builds the
-    // literal route-name string `'/api/workflows/:name/describe'` (a user-facing label naming
-    // which route has no data, with a literal `:name` placeholder — never fetched) via
-    // `t(lang, 'noDemoData') + '/api/workflows/:name/describe'`. It is not a fetch call and not a
-    // duplicate of the two real call sites above, so it does not weaken the anti-duplication intent
-    // — a FOURTH occurrence added later must still justify itself here, same as these three do.
-    const stripComments = (text: string): string => text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
-    expect((stripComments(corpus).match(/\/describe/g) ?? []).length).toBe(3);
-    expect(corpus.length).toBeGreaterThan(5000);
-  });
-
-  it('the client corpus never writes via innerHTML, never imports/CDNs Mermaid, and never reintroduces the retired diagramStatus/diagramNote fields', async () => {
-    const { clientCorpus } = await import('../helpers/client-corpus.js');
-    const corpus = clientCorpus();
-    expect(corpus).not.toContain('innerHTML');
-    expect(corpus).not.toMatch(/from ['"]mermaid['"]/);
-    expect(corpus.toLowerCase()).not.toMatch(/mermaid\.min\.js|cdn.*mermaid/);
-    expect(corpus).not.toMatch(/diagramStatus/);
-    expect(corpus).not.toMatch(/diagramNote/);
-  });
-});
+// [v29 c4, REQ-151 — RETIRED with its surface] UT-252's disposition anchor asserted that the
+// client corpus still carried `createObjectURL`/`revokeObjectURL`, the versioned `/diagram.svg`
+// fetch, and two call sites for it. Owner ruling V29-Q2 removed the surface that did all four, so
+// the anchor now asserts the presence of code that was deliberately deleted — a test that would
+// force the very thing the requirement removes.
+//
+// The blob-URL pair is gone from `src/dashboard/**` entirely (measured), which is the point: the
+// client no longer fetches the diagram at all. The ROUTE is untouched and still covered by
+// `tests/integration/diagram-svg-route.test.ts` (IT-134); the removal itself is locked by UT-269.

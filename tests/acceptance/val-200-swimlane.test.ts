@@ -1,6 +1,7 @@
 // VAL-200 (REQ-134, REQ-129; DES-203/206; 04-design.md's own v27 real-tier path): real Chromium —
 // a real 5-lane/9-agent run painted as a swimlane (lane headers, béziers, 216x74 nodes, legend),
-// plus the existing zoom/pan/fit contract re-proven (val-193/val-197 re-run separately, unchanged).
+// plus the existing zoom/pan/fit contract re-proven (val-193 re-run separately, unchanged;
+// val-197 was the author-diagram sibling and retired with that surface in v29 c4 / REQ-151).
 //
 // Mock policy (acceptance): real createServer(), real MCP HTTP, real Chromium; a fake gateway
 // completes 9 agent calls fast (no real provider network).

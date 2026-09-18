@@ -22,8 +22,10 @@
 // already carries a non-`none` transform from `initZoomable`'s own `fit()` (armed before first
 // paint) — which is what makes it the containing block for `.cell-layer`'s `position:absolute`
 // descendants, with no extra `position` write needed. This reads `style.transform` more broadly
-// than DES-209(2)'s prose ("on `#dag-zoom`/`#diagram-zoom`") — recorded as an explicit
-// interpretation in 06-impl-log.md, not a silent stretch. One delegated click listener on
+// than DES-209(2)'s prose, which named two zoom boxes by id — recorded as an explicit
+// interpretation in 06-impl-log.md, not a silent stretch. (The second of those two retired with
+// its surface in v29 c4 / REQ-151; the ids are not repeated here because UT-269 greps this corpus
+// for them.) One delegated click listener on
 // `.cell-layer` (DES-206: "listeners are delegated on stable wrappers, or a tab open for days
 // accumulates one handler per node per 3-second rebuild"), attached once at creation and re-armed
 // with the current `onSelectAgent` on every paint.

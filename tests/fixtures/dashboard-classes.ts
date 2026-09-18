@@ -99,7 +99,8 @@ export const TEST_ANCHORS: readonly string[] = [
   // brand text, the footer, and the Running section's pulsing dot (see the STYLE_HOOKS comments
   // above for which README lines each closes).
   'data-nav-brand', 'data-footer', 'data-running-dot',
-  '#dag-fit', '#dag-graph', '#dag-zoom', '#run-usage', '#diagram-img', '#diagram-zoom',
+  // [v29 c4, REQ-151] the two author-diagram anchors retired with their surface.
+  '#dag-fit', '#dag-graph', '#dag-zoom', '#run-usage',
   '.card', '.t',
   // [v27 README-fidelity closure] the hue slider's degrees readout — TEXT CONTENT, not a style
   // fact, so no SPEC_ROW keys on it (SpecExpect is getComputedStyle-shaped only); checked directly
