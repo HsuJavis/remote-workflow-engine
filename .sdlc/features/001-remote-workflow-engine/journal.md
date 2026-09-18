@@ -6143,3 +6143,65 @@ not marked previously-X-now-Y); no config drift. `sh .sdlc/trace --check`: 1728 
 same pre-existing 24 漂移 + 2 未實作 set (0 high/未真實驗證/未驗證/斷鏈/孤兒; exit 1, expected — LOW
 pre-existing debt only, not this closure's). `gates.validation.passed` -> `true`; `current_stage` ->
 `review`. Next: Gate 8 (review).
+
+## 2026-09-18 — v28 Gate 8 (reviewer) — PASSED / CLOSE, send_back=[], 0 HIGH / 0 blocking
+Sprint B's closing review at `6ef9b71` (working tree clean on entry; the only file this gate dirtied
+is the regenerated `dashboard.html`). **LEAN tier** by the owner's 2026-09-17 ruling, so no pre-run
+architecture experts exist (`.panel/review/` correctly absent) and the architecture-consistency check
+is the reviewer's own, scoped to the `files:` union over IMPL-283..302 (45 paths, all on disk) plus
+the module boundaries they reference — the contract's v1.23 right-sizing, not the degraded fallback.
+
+**Re-run by the reviewer, not read:** `sh .sdlc/trace` → 1728 items / 26 gaps; `--check` exit **1**
+on 24 漂移 + 2 未實作, **all LOW** (0 high/mid, 0 斷鏈/孤兒/未真實驗證/未驗證/待業主決策), and
+**all 143/143 REQs are in `analyze()`'s own `verified` set**. `dashboard_check` → exit 1, 0 high /
+7 mid / 1 low; the 7 「括號不平衡」 mids were **re-measured** rather than inherited — real headless
+Chromium 152.0.7977.75 over `file://…/dashboard.html`, clicking all 8 tabs, returned
+`{"total":47,"svg":47,"err":0,"blank":0,"links":1774,"pageerrors":0,"consoleErrors":0}` (43 blocks at
+v27, so the v28 diagrams rendered too). `solid_check` → exit 0, 72 modules, 0/0/10. `module_check`
+→ dormant. `npx tsc --noEmit` **and** `-p tsconfig.server.json` both exit 0. Full regression
+**414 files passed | 1 skipped; 2964 passed | 26 skipped | 0 failed** (616.9 s), reproducing
+IMPL-302's figures exactly; `val-207-demo-data` **5/5** in real Chromium; the six v28 delta unit
+files 34/34. `git show bdf36f4/9899c7c --stat` reproduce IMPL-301/302's own `files:` lines exactly.
+
+**Architecture: `arch_consistent: YES` for v28.** Every v28 decision was re-derived from the tree:
+INV-V28-1 (`getJSON` imported by `app.js:32` alone; every other view on `getViewJSON`), INV-V28-2
+(`connection.js:69` requires `offline` **and** all-unreached **and** dataset-loaded, with the
+`length > 0` vacuity guard), INV-V28-3 (`scheduler.js`'s `park` is the absence of a timer, and the
+`settled`-while-parked arm closes the in-flight race; `app.js:493/508/512/537`), INV-V28-4 (`—` from
+`isAbsent` rules, `model.js:95-124`), ARCH-132 (exact-match `DEMO` Map, self-labelled in the DATA,
+retirement tripwire green), ARCH-133 (`setDemoBodies` called from `app.js:459/468` only),
+ARCH-134 (four `lib/` modules, four unit files), ARCH-135/ADR-057 (one `topN: 20` literal at
+`server.ts:375`, no `countRuns`, the counts card is the CLIENT fold so it cannot disagree with the
+tab beside it), ARCH-123 (`ASSET_KEYS` **exactly** equals the on-disk client tree — no unregistered
+module), ARCH-124 (`lib/` pure: the one `document.`/`fetch(` hit is a comment), ARCH-125 (**zero**
+`innerHTML` anywhere in `ui/`), and DES-220 (all three arms keyed on `bodies[url]` absence +
+`tick.source === 'demo'`; `workflow.js:420`'s `/describe` literal is display text, not a call site,
+so UT-252's 2 → 3 widening was a test-oracle fix and not a silenced defect). `arch_violations`
+carries **only** the three v27 MIDs, re-confirmed open and **not minted by v28**: `A4-2`
+(`server.ts:624` raw exception on the unauthenticated wire), `QD-O5 ≡ A4-3` (`agent-panel.js:234`'s
+`res.body || {}`), `D4-1` (`home.js:153`'s first-paint fabricated counts — v28 does not mask it,
+because `demoEngages` cannot fire on a route that was reached).
+
+**Owner deferrals: 0 pending**, reconciled on the fixed metadata key across every file including
+`journal.md`/`state.yaml`/`.panel/`. ADR-060 reads `answered 2026-09-14`, DES-220 `answered
+2026-09-18`. The single 「not taken here」 hit (`04-design.md:8018`) is struck through and marked
+RESOLVED — no unmarked deferral.
+
+**Validation/handover confirmed.** `08-validation.md`'s v28c RE-RUN (a `deploy.sh --background`
+scratch instance, a real `kill -9` of the engine's OS process group, production `rwe.service`
+untouched); `README.md` + `DEPLOY.md` at `layout.readme`/`layout.deploy`; `DEPLOY.md:23` leads with
+the one-command deploy Gate 7.5 actually ran; config keys deduplicated at `DEPLOY.md:409` §1b only
+(0 key hits in README); IMPL-291's `topN` recon disclosure landed at `DEPLOY.md:704`. No `CLAUDE.md`
+/ `AGENTS.md` / `SKILL.md` touched this iteration, so no special-file review is triggered.
+
+**Recorded debt: 3 MID / 68 LOW, all in 07-review.md §9.** Closed since v27: `D4-3`, TASK-215,
+TASK-216, and the ten parked-REQ MID rows. New LOW this pass: `R28-1` (ARCH-130 cites
+`server.ts:370`, code at `:375`), `R28-2` (VAL-208 exists as two disagreeing rows of one id — the
+`05-tests.md` copy discloses in place why it is unflipped; `rtm.md`'s REQ-143 row also omits
+IMPL-301), `R28-3` (`README.md:450-452` carries a version-history rationale clause in a history-free
+manual), `R28-4` (`metrics.jsonl`'s single stray point; the 趨勢 tab cannot draw), `R28-5`
+(DES-200/208/191 amended in place at v28 without an `iter:` bump — the three new 漂移 rows; the prose
+is **current** in all three, checked one by one rather than inherited as 「pre-existing」).
+
+`gates.review.passed` → `true`; `current_stage: review`; `.panel/` removed per contract task 6.
+**Iteration v28 is CLOSED.**

@@ -1,10 +1,442 @@
 ---
 stage: review
-status: passed   # v27 Gate 8 RE-REVIEW #5 (2026-09-14): CLOSE. Both blocking findings of RE-REVIEW #4 are closed and re-verified on disk and by execution — BF-8 (design): DES-206 carries the POSITIVE degrade rule (V)/(K)/(U)/(O)/(N)/(S)/(R) at iter v27m with a 15-row disclosure table, DES-205 inherits it in its own amendment; BF-7 (impl): ui/workflow.js:346-356 no longer synthesizes a DAG payload — two arms, paint memory, string-table text — pinned by two new real-Chromium cases (val-199, 8/8) plus tsc exit 0 and the full suite 2840 passed / 0 failed. 0 HIGH / 13 MID / 62 LOW, all recorded debt; arch_consistent=NO with every deviation recorded. send_back=[].
+status: passed   # v28 Gate 8 REVIEW (2026-09-18): CLOSE, send_back=[], blocking_findings=[]. Sprint B (REQ-137/138/139/142/143) closes with all 143/143 REQs real-verified — VAL-213..216 green/real:true at iter v28, VAL-217 green/real:true at iter v28c after the owner-widened DES-220 three-surface disclosure. 0 HIGH / 3 MID / 68 LOW, every row recorded debt in the v28 section below; all three MIDs are v27 carry-forwards (A4-2, QD-O5, D4-1) and v28 minted none. arch_consistent=YES for v28 (ARCH-132..135, INV-V28-1..4, ADR-057..060 each re-derived from the tree at file:line, LEAN tier per the owner's 2026-09-17 ruling — no pre-run experts, the check is the reviewer's own). Verified by execution: trace 1728/26, dashboard 47/47 mermaid -> <svg> in real Chromium, solid_check 0 high/0 mid/10 low, both tsc programs exit 0, full suite 414 files / 2964 passed / 0 failed, val-207 5/5 real Chromium. owner_decisions=[].
 ---
 # 07 Review & Retro — Gate 8
 
-## v27 GATE 8 RE-REVIEW #5 (2026-09-14, CURRENT / AUTHORITATIVE — **CLOSE**, `send_back = []`, 0 HIGH / 0 blocking)
+## v28 GATE 8 REVIEW (2026-09-18, CURRENT / AUTHORITATIVE — **CLOSE**, `send_back = []`, 0 HIGH / 0 blocking)
+
+> Sprint B's closing review: **REQ-137** (Models tab) / **REQ-138** (System tab) / **REQ-139** (Issues
+> tab) / **REQ-142** (nfr, pause polling when hidden) / **REQ-143** (nfr, self-labelled demo data).
+> Tree at review: **`6ef9b71`**; working tree clean at entry (`git status --porcelain` empty), and the
+> only file I dirtied is the regenerated `dashboard.html`.
+>
+> **Tier: LEAN** — by the owner's explicit 2026-09-17 ruling recorded in `state.yaml`'s `pending:`
+> list (「v28 OWNER RULING (2026-09-17) — Sprint B runs at `tier: lean` … a DELIBERATE RIGOR TRADE
+> recorded so Gate 8 reads it as a decision rather than a lapse」). Consequence for THIS gate, per
+> `contracts/reviewer.md` task 3 「Lean tier (v1.23)」: **no pre-run architecture experts exist**
+> (`.panel/review/` is absent, correctly), so §5's architecture-consistency check is **mine**, done
+> myself and scoped to this iteration's touched files — the `files:` union over IMPL-283..302 in
+> `06-impl-log.md` (45 real paths, all present on disk) plus the module boundaries they directly
+> reference. This is the contract's right-sizing, NOT the degraded no-Agent fallback, and it is
+> recorded as the reason this section cites fewer lenses than v27's did.
+>
+> **Verdict: `send_back = []` — the iteration closes.** 0 HIGH, 3 MID, 68 LOW, **every row recorded
+> debt in §9**, and every MID is a v27 carry-forward with a written fix shape, none of them minted by
+> this delta. `arch_consistent: YES` for the v28 architecture — every ARCH-132..135 clause and all
+> four `INV-V28-*` invariants were re-derived by me from the tree (§5), and the three carried MIDs
+> are pre-v28 rows in ARCH-125/ARCH-130's older lanes, listed in `arch_violations` so the flag is not
+> made true by downgrading them.
+
+### §0 Gap tally
+
+**HIGH 0 · MID 3 · LOW 68.** Nothing blocking; every row is recorded debt in §9.
+
+| Sev | Count | Composition |
+|-----|-------|-------------|
+| HIGH | 0 | No `未真實驗證`, no `未驗證`, no `斷鏈`, no `孤兒`, no `待業主決策`. `owner_decisions: []` — §6. |
+| MID | 3 | All three are **v27 carry-forwards, re-confirmed still open at `6ef9b71` by me** (§5): `A4-2` (raw exception message on the unauthenticated wire, `server.ts:624`) · `QD-O5 ≡ A4-3` (`agent-panel.js:234`'s `res.body \|\| {}`) · `D4-1` (`home.js`'s first-paint fabricated counts). **Zero new MID minted by v28.** |
+| LOW | 68 | 26 trace gaps (24 漂移 + 2 TASK 未實作) · 10 `solid_check` 未認領檔案 · 1 `dashboard_check` offline-fallback · 27 carried panel/ledger rows from RE-REVIEW #5 §9 (`D4-3` now CLOSED) · **4 new this pass** (`R28-1`…`R28-4`, §9). §9 lists **five** new IDs: `R28-5` is the *name* for three rows already inside the 26 trace gaps, not a sixty-ninth row — 26 + 10 + 1 + 27 + 4 = **68**. |
+
+**Delta vs v27 RE-REVIEW #5 (`ad879c8`, 1667 items / 35 gaps):** items **1667 → 1728**, gaps
+**35 → 26**. **MID 13 → 3**: the ten parked-REQ rows (REQ-137/138/139/142/143 × 未實作 + 未驗證) are
+**closed for real**, not reclassified — all five REQs now carry a `real: true` green VAL (§7). LOW
+62 → 68, composition in §9. The dashboard_check mermaid mids (7) are excluded from the MID tally on
+the same ground as every prior pass and, this time, on a **fresh real render** (§3), not on
+inheritance.
+
+---
+
+### §1 What I verified by execution (not read)
+
+A Gate 8 that only re-reads the gate below it is a rubber stamp. Everything in this table I ran myself
+in this session, on this tree:
+
+| Check | Command | Result |
+|---|---|---|
+| Trace + dashboard regen | `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` | **1728 items / 26 gaps**, `dashboard.html` rewritten |
+| Trace gate | `sh .sdlc/trace … --check` (no pipe — the true exit code) | **exit 1** on the 26 LOW gaps, as expected; enumerated in §2 |
+| Dashboard QA | `python3 …/scripts/dashboard_check.py <ledger>` | **exit 1** — 0 high / **7 mid** / 1 low, all dispositioned in §3 |
+| Dashboard render | real Chromium 152.0.7977.75 over `file://…/dashboard.html`, clicking all 8 tabs | `{"total":47,"svg":47,"err":0,"blank":0,"links":1774,"tabs":8,"pageerrors":0,"consoleErrors":0}` |
+| Module boundary | `python3 …/scripts/solid_check.py <ledger>` | **exit 0** — 72 modules, 0 high / 0 mid / 10 low |
+| Module build | `python3 …/scripts/module_check.py <ledger>` | **exit 0**, **dormant** (no ARCH declares `build:`) |
+| Type programs | `npx tsc --noEmit` **and** `npx tsc --noEmit -p tsconfig.server.json` | **exit 0** on BOTH — TASK-216's inverse program really guards the server tree |
+| v28 delta unit tier | `npx vitest run` over the 6 delta test files | **6 files / 34 tests passed / 0 failed** |
+| REQ-143 real tier | `RWE_REQUIRE_BROWSER=1 PUPPETEER_EXECUTABLE_PATH=… npx vitest run tests/acceptance/val-207-demo-data.test.ts` | **1 file / 5 tests passed / 0 failed**, 58.9 s — real Chromium, all three DES-220 arms |
+| Full regression | `RWE_REQUIRE_BROWSER=1 … npx vitest run` (whole tree) | **414 files passed | 1 skipped (415); 2964 passed | 26 skipped | 0 failed**, 616.9 s, exit 0 — IMPL-302's figures reproduce exactly |
+| Commit claims | `git show bdf36f4 --stat -- src/ tests/`, `git show 9899c7c --stat -- src/ tests/` | Exactly the 8 files IMPL-301's `files:` names, and exactly the 1 file IMPL-302's does — **the impl log's own arithmetic reproduces** |
+
+**One side effect of that full run, disclosed rather than tidied away:** `val-215-issues-tab`'s
+acceptance case re-captures its own screenshots, so
+`evidence/v28/val215-issues-{dark,light}.png` are byte-different from the validator's copies
+(31041 → 31294 and 30745 → 30879 bytes). They are the **same test's fresh captures**, not different
+evidence, and they are left as re-captured — restoring them would mean `git checkout -- <path>` over
+a shared working tree, which this repo's `CLAUDE.md` forbids outright. The orchestrator should expect
+those two files in the closing commit.
+
+---
+
+### §2 Traceability consistency and doc↔code drift
+
+`sh .sdlc/trace … --check` → **1728 items / 26 gaps**, exit 1. The fork's CLI prints only totals, so I
+enumerated by calling its own `scan()`/`analyze()` directly:
+
+| Type | Sev | Count | IDs / disposition |
+|---|---|---|---|
+| 漂移 (test behind design) | low | 7 | UT-010, IT-011, UT-058, UT-064, IT-057, UT-094, UT-095 — all pre-v27. Carried debt, unchanged. |
+| 漂移 (design behind impl) | low | 17 | DES-022/064/066×2/088×2/094/099×2/100/112/141/149/157 (pre-v27, carried) **+ DES-200, DES-208 (vs IMPL-299) and DES-191 (vs IMPL-300) — NEW this iteration**, opened and disposed below. |
+| TASK 未實作 | low | 2 | TASK-018 (deferred by the requirements gate itself since v2), TASK-153. Carried debt; TASK-215/216 are **no longer** on this list — both landed at `7c71b2b`, which is why the count fell 4 → 2. |
+| 斷鏈 / 孤兒 / 未真實驗證 / 未驗證 / TDD / 待業主決策 | — | **0** | **Checked, clean.** All **143/143** REQs are in `analyze()`'s own `verified` set. |
+
+**The three NEW 漂移 rows are `iter:` bookkeeping, not stale documentation — I opened all three
+rather than inheriting the 「pre-existing」 label the gates below applied to the whole set:**
+
+- **DES-200** (`04-design.md:6795`, `iter: v27j`) vs **IMPL-299** (v28): the row is **current**. Its
+  `signature:` carries `~~Until TASK-215 lands the pre-v27 body at dashboard-page.ts:92-152 still
+  stands…~~` **struck**, followed by `**[v28, TASK-215 landed — the fossil body is deleted; the shell
+  emits ONE mount element.]**`, and its `tests:` line carries the matching `[v28, TASK-215 landed]`
+  on UT-241's new positive. The prose describes the tree as it is.
+- **DES-208** (`04-design.md:6916`, `iter: v27j`) vs **IMPL-299**: same shape —
+  `**[v28, TASK-215 landed — the pin is deleted; the fossil it asserted no longer exists.]**`.
+- **DES-191** (`04-design.md:6720`, `iter: v27j`) vs **IMPL-300**: same shape — its amendment's
+  `~~until TASK-216 lands the property is UNGUARDED~~` is struck and replaced by
+  `**[RESOLVED — TASK-216 landed at 7c71b2b: tsconfig.server.json is on disk, package.json's
+  typecheck/build both run the two-program form…]**`. I re-proved that clause myself: **both `tsc`
+  programs exit 0** (§1).
+
+So the drift verdict is: **no doc↔code contradiction, in any of the three.** What was not done is the
+`iter:` bump on the row after amending it in place, which is the ONLY thing `trace.py`'s drift
+detector can see. Recorded as **`R28-5`** in §9 (LOW), routed to the next design touch, with the
+convention question named rather than papered over: this ledger amends rows in place and bumps
+`iter:` only sometimes, and until it is consistent the 漂移 column will keep reporting rows whose
+prose is current.
+
+**A drift class the fork structurally cannot raise, checked by hand (carried from RE-REVIEW #5 §2).**
+`trace.py`'s `iter_num()` is `re.search(r"\d+", s)`, so `v28`, `v28b` and `v28c` all read as `28` — a
+sub-iteration amendment can never raise a 漂移 row against its own downstream. The v28b/v28c
+amendments (DES-220 widened, VAL-217 re-validated, UT-244/UT-252/UT-260/UT-261 amended) were
+therefore checked manually: all four test rows are `green`/`pass` at `iter: v28b`, VAL-217 is
+`green`/`real: true` at `iter: v28c`, and I re-ran all of them (§1).
+
+**Duplicate-ID row collisions, swept deliberately** (this ledger's own repeat defect class: the v27
+VAL-198..204 collision, and the VAL-217 `traces:` collision v28b fixed). Scanning `05-tests.md` for
+`red`/`fail` rows returns exactly **one**: `VAL-208` (`05-tests.md:12693`, `red`/`fail`/`real: false`)
+— while `08-validation.md:10072`'s VAL-208 reads `green`/`pass`/`real: true`, and that is the copy
+`trace.py` resolves (later file wins), which is why no `未真實驗證` gap appears and REQ-134 is
+genuinely verified. This is **disclosed, not hidden**: the 05-tests row states in place 「`status`/
+`result`/`real` left as this item's own Gate 6.5+7 measurement above, **unflipped here per
+precedent** — Gate 7.5/the validator is what confirms a real deployed re-run」, and the fix landed at
+IMPL-250/251/252 with a measured before/after (clip ratio 0.33/0.30 → 0.999/0.909). Recorded as
+**`R28-2`** (LOW) so the next Gate 5 touch gives it the dated flip `UT-244` already got, rather than
+leaving two rows of one ID disagreeing.
+
+**Clean, one line each:** no broken link · no orphan REQ · no orphan ARCH/DES/TASK · every v28 IMPL
+(283..302) carries `status: done`, a `commit:` field and a `traces:` chain that resolves.
+
+---
+
+### §3 Dashboard QA — regenerated, and it renders (measured, not assumed)
+
+`dashboard_check.py` → **exit 1**, 0 high / **7 mid** / 1 low.
+
+- **The 7 mids are the same 「括號不平衡」 lexical heuristic** over `02-architecture.md`'s mermaid
+  blocks (`:934`, `:1201`, `:1648`, `:2531`, `:2603`, `:3094`, `:3631`) — the checker does not model
+  `erDiagram`'s `||--o{` cardinality tokens or quoted labels. **This pass does not inherit that
+  verdict, it re-measured it**: a real headless Chromium 152.0.7977.75 opened
+  `file://…/dashboard.html`, clicked **all 8** `nav button` tabs (the dashboard renders diagrams
+  lazily per tab — measuring without the clicks reports 0 SVG and is a measurement artefact) and
+  reported
+  > **`{"total":47,"svg":47,"err":0,"blank":0,"links":1774,"tabs":8,"pageerrors":0,"consoleErrors":0}`**
+
+  **47/47** mermaid blocks rendered to `<svg>`; zero mermaid error text, zero forever-blank blocks,
+  zero page errors, zero console errors. That is **4 more blocks than v27's 43** — the v28 diagrams
+  are among the ones that rendered, so the false-positive ruling covers this iteration's own
+  diagrams, not just inherited ones.
+- **Every SoT `file:line` link target resolves** (the checker's link pass is green over all 1774
+  `.md` links). Spot-checked by hand against the items' own headings, all six landing exactly on
+  their `### ` line: `IMPL-302 → 06-impl-log.md:7773`, `IMPL-301 → 06-impl-log.md:7715`,
+  `DES-220 → 04-design.md:7661`, `VAL-217 → 08-validation.md:10799`,
+  `ARCH-135 → 02-architecture.md:3900`, `TASK-226 → 03-tasks.md:2009`.
+- **The one `[low]`**: `dashboard.html` has no mermaid **offline fallback** — a property of the
+  project-local fork of `trace.py`, not of this iteration. Carried as `TOOL-FORK` (§9).
+
+**Playwright browser tools are not present in this session — degraded mode, noted**, and the headless
+real-Chromium run above is the equivalent the contract permits, with its raw measurement pasted
+rather than summarised.
+
+**趨勢 tab (task 4d, soft).** `metrics.jsonl` holds **one** line (`2026-09-14`, `gaps: 541`), written
+by the *plugin's* `trace.py` on a single stray invocation; the project-local fork does not append to
+it, so the trend panel cannot draw (it needs ≥2 points) and the one point that exists does not match
+any count this ledger has ever measured. No trend direction can be read, up or down. Recorded as
+**`R28-4`** (LOW, `TOOL-FORK` family). `diagrams/*.json` do not exist, so the archify IR↔ARCH delta
+is not applicable.
+
+---
+
+### §4 Module boundary (SOLID) and module build
+
+`solid_check.py` → **exit 0**: **72 modules**, scan `javascript×110, shell×3` — **no undeclared
+cross-module dependency, no dependency cycle, no deep-internal import bypassing a public surface, no
+god-module.** 0 high / 0 mid / **10 low**.
+
+Worth naming, because it is the gate below doing its job: the one real boundary violation this
+iteration created — `app.js`'s boot-time `import('../demo/dataset.js')` (TASK-220/DES-212) crossing
+from ARCH-125's module into ARCH-132's — was caught by `solid_check` **at Gate 6.5+7** and closed the
+right way, by **declaring** the edge (`ARCH-125`'s `- **amended (2026-09-18, v28 Gate 6.5+7 —
+verifier, solid_check HIGH):** `deps:` gains `ARCH-132`」), not by hiding the import. I re-ran the
+check at `6ef9b71` and the declaration holds.
+
+The 10 lows are the unchanged pre-existing 未認領檔案 set — `src/harness-defaults.ts`,
+`src/self-update.ts`, `src/agent-semaphore.ts`, `src/mcp-probe.ts`, `src/scan-agent-calls.ts`,
+`src/net-guard.ts`, `src/workspace-artifacts.ts`, `src/clock.ts`, `src/agent-definitions.ts`,
+`src/owner-lookup.ts` — none of them touched by v28. Carried debt.
+
+`module_check.py` → **exit 0, dormant**: no `ARCH-*` declares `- **build:**`. Not a finding (the tool
+is opt-in by design).
+
+---
+
+### §5 Architecture consistency — **CONSISTENT for v28** (0 HIGH, 3 carried MID, none minted here)
+
+**Method (lean tier, per the dispatch and `contracts/reviewer.md` task 3's v1.23 clause).** No
+pre-run experts; `.panel/review/` does not exist. I built the scope mechanically — the `files:` union
+over `06-impl-log.md`'s IMPL-283..302 (45 paths, every one present on disk) — read those files plus
+the module boundaries they directly reference, and compared against `02-architecture.md`'s v28
+decisions: **ARCH-132/133/134/135** (new), the **in-place v28 amendments to ARCH-123/124/125/130**,
+**INV-V28-1..4**, and **ADR-057/058/059/060**. I did **not** scan the whole `src/` tree. Each row
+below is a check I ran, with its command and its answer.
+
+| Decision | Check I ran | Result |
+|---|---|---|
+| **INV-V28-1** — one fetcher, one timer | `grep -rn "getJSON" src/dashboard/ui/*.js` | **HOLDS.** `getJSON` is exported by `poll.js:51` and imported by **`app.js:32` alone**; every other `ui/` module imports `getViewJSON` (`agent-panel.js:35`, `issues.js:20`, `workflow.js:38`, `run.js:83`). The remaining hits are comments. The three importers INV-V28-1 itself named as 「red TODAY」 (`run.js`, `workflow.js`, `agent-panel.js`) are converted. |
+| **INV-V28-2** — Demo and Live never co-occur; demo never runs over a reachable engine | read `lib/connection.js:69` | **HOLDS by construction.** `demoEngages(verdict, reachedFlags, datasetLoaded)` requires `verdict === 'offline'` **AND** `reachedFlags.length > 0` **AND** `reachedFlags.every(r => r === false)` **AND** `datasetLoaded === true`. The `length > 0` guard closes the vacuous-`every` hazard the row itself names. |
+| **INV-V28-3** — a parked poller has no timer | read `lib/scheduler.js:10-18` + `ui/app.js:493/508/512/532-537` | **HOLDS.** `nextPoll` returns `action: 'park'` for `hidden`, and for `settled` **while `state.parked`** — the in-flight-tick race the ADR-059 concession was bought for. `app.js` is what turns `park` into `clearTimeout` and `arm` into `setTimeout(loop, 3000)`; `resumeReset` runs **before** the visible fire (`app.js:537`). Absence of a timer, not a suppressed tick. |
+| **INV-V28-4** — absence is rendered as absence | read `lib/model.js:95-124`, `ui/system.js:268-281` | **HOLDS.** Every `—` comes from an `isAbsent(...)` rule over the datum's presence (`fmtLevel`/`fmtContext`/`fmtPrice`/`fmtModalities`/`fmtLatency`), never a literal pinned to this iteration's absence. The counts card's unavailable arm is chosen by a verdict + `Array.isArray` presence test, never a `0`. |
+| **ARCH-132** — `src/dashboard/demo` as ONE lazy exact-match map, marked in its own data, retired by a tripwire | read `demo/dataset.js`, ran `tests/unit/demo-surface.test.ts` | **HOLDS.** `export const DEMO = new Map([...])` keyed on exact URLs, `Map.get` lookup, never a parse or path build. Self-labelling is **in the data** (`demo-` name prefix, run id `demo0001`, pids in the fixed `99xxx` band), not only in the chrome. The retirement tripwire (`demo-surface.test.ts`, PRODUCTION_ALLOWLIST) is green. The three routes deliberately NOT faked are documented in the file's own header **with their reasons** (no key-set oracle in `dashboard-wire.ts`; `safeIssueHref`'s `https:` rule vs UT-231's no-external-host guard) — which is what made REQ-143's disclosure necessary in the first place. |
+| **ARCH-133** — ONE seam the three tabs join; the single place demo bodies may be substituted | `grep -rn "setDemoBodies\|demoEngages" src/dashboard/` | **HOLDS.** `setDemoBodies` is defined at `poll.js:72` and called from **`app.js:459`/`:468` only**; `demoEngages` is imported at `app.js:26` and called at `app.js:454` only. One entry point for the fiction, exactly as the ARCH row states. |
+| **ARCH-134** — four pure additions, each with a unit tier | `ls tests/unit/dashboard-lib-*` | **HOLDS.** `lib/scheduler.js`, `lib/system.js`, `lib/issues.js`, `lib/model.js` each have their own `tests/unit/dashboard-lib-*.test.js`. |
+| **ARCH-135 / ADR-057** — the server's whole v28 footprint is ONE literal | `grep -n "topN" src/server.ts`; `grep -rn "countRuns" src/` | **HOLDS.** Exactly one occurrence, `server.ts:375` `const view = await systemInfo.get({ topN: 20 });` — no `?topN=` derivation anywhere. `countRuns` does not exist: the counts card is the **client** fold (`lib/system.js:124 catalogCounts`), so it cannot diverge from the tab beside it. That is ADR-057's stated reason, and it holds in the code. |
+| **ARCH-123 (amended v28)** — exact-match asset map, never a path join | read `static-assets.ts:18-67`; diffed `ASSET_KEYS` against `find src/dashboard -name '*.js' -o -name '*.css'` | **HOLDS, exactly.** `ASSET_KEYS` lists 24 `.js` + `dashboard.css` + 5 woff2; the on-disk client tree is **exactly** those 24 `.js` + `dashboard.css` — no unregistered module (carry-forward lesson 6's failure mode: an unregistered module breaks the served bundle with every unit test green) and no registered-but-missing key. Lookup is `STATIC_ASSETS.get(urlPath)`, `path.join` appears nowhere. |
+| **ARCH-124 (amended v28)** — `lib/` is pure | `grep -rn "document\.\|window\.\|fetch(" src/dashboard/lib/` | **HOLDS.** One hit, and it is a **comment** in `lib/system.js:10` naming the falsifier regex. No DOM, no fetch, no timer in `lib/`. |
+| **ARCH-125 (amended v28)** — `ui/` is the thin DOM layer, `textContent` only | `grep -rn "innerHTML\|insertAdjacentHTML\|outerHTML" src/dashboard/ui/` | **HOLDS.** **Zero hits** across the whole `ui/` tree. |
+| **ARCH-130 (amended v28)** — one wire line changes and nothing else | read `server.ts:368-376` | **HOLDS behaviourally** (the single `topN` literal, no new route, no new field). One cite defect: the amendment says `server.ts:370`, which is now inside the explanatory comment block — the code is at `:375`. LOW, `R28-1` in §9. |
+| **DES-220 (owner-widened)** — the disclosure names its route, on all three surfaces, keyed on `tick.source` | read `lib/strings.js:40/51`, `ui/workflow.js:420`, `ui/issues.js:127`, `ui/system.js:278` | **HOLDS, and the UT-252 2→3 widening is legitimate.** All three arms build the sentence as `t(lang,'noDemoData') + '<route>'` — ONE string key, both languages, per-call route suffix — and each is entered from a **`bodies[url]` absence plus `tick.source === 'demo'`**, never from a fetch. I checked the one thing the verifier's own judgement rests on: `workflow.js:420`'s `/api/workflows/:name/describe` is **display text**, not a call site (`workflow.js`'s only fetches are the two `getViewJSON` calls at `:356`), so widening UT-252's `/describe` corpus tripwire 2 → 3 was a test-oracle correction, not a silenced defect. `system.js:278` keeps the LIVE wording byte-identical (`unavailable`) and only the DEMO arm names the route — DES-215/216's per-card independence is not disturbed. |
+
+**Three carried MID deviations keep `arch_violations` non-empty — all three are v27 rows,
+re-confirmed open by me at `6ef9b71`, none of them minted or widened by v28:**
+
+1. **`A4-2` (MID, architect's lane)** — `src/server.ts:624` still assigns `(err as Error).message`
+   into `buildDashboardModel(...)`'s `degraded` field, so a raw exception string reaches an
+   unauthenticated wire (`GET /api/workflows/%/describe → 200 {"runs":[],"degraded":"URI malformed"}`).
+   The **log** line beside it (`:623`) is correct per ARCH-130's closed-set/`detail` clause; it is the
+   **wire value** that has no format pin. v2-era code (`b6f5659`), untouched by v28. Ruling unchanged.
+2. **`QD-O5 ≡ A4-3` (MID, DES-205's lane)** — `ui/agent-panel.js:234` is still
+   `const body = res.body || {};` and never reads `res.status`, so a degraded agent-detail fetch
+   paints confident zeros. It now has a **written specification** (DES-205's v27m amendment) and an
+   owed val-201 case. Untouched by v28.
+3. **`D4-1` (MID, `ui/home.js` + `app.js`'s first paint)** — `home.js:153 updateCounts` still renders
+   `${L(lang,seg)} (${counts[seg]})` unconditionally, so a `/api/home` degraded **from load** paints
+   「全部 (0) · 執行中 (0) · 已註冊 (0)」 under a truthful `degraded` tag. **v28 does not mask this**:
+   demo mode cannot engage on this path, because `demoEngages` requires every route *unreached*, and a
+   degraded-but-answered `/api/home` was reached. Fix shape unchanged (a `painted` flag; until set,
+   render the label without the parenthetical).
+
+**Why the flag reads `arch_consistent: YES` this time** where v27's read `NO`: v27's `NO` was carried
+by `A4-1` — a live ARCH-125 `api:` violation (a view rendering a degraded body as data) — which
+`BF-7` closed. The three rows above are pre-v28 debt in older lanes with written fix shapes and
+owners; **no v28 decision (ARCH-132..135, INV-V28-1..4, ADR-057..060) is violated by the v28
+implementation**, which is the question this gate asks of this iteration. They are listed in
+`arch_violations` anyway, so the flag is not bought by deleting them from the record.
+
+**The two owner rulings that shape this delta are decisions, not findings**, and are read as such:
+**ADR-060** (2026-09-14 — 「ACCEPT THE BLINDNESS」: the Models tab ships wire-neutral, the two honesty
+columns always `—`, `/api/models/status` not built) and the **lean-tier rigor trade** (2026-09-17).
+Both are in `state.yaml`'s `pending:` list with their rationale. I checked the consequence ADR-060
+warns about: REQ-137's acceptance says the honesty columns are always `—` this iteration and that this
+must NOT become a test pinning the absence — `lib/model.js:95-124` renders `—` from an `isAbsent`
+rule over the datum, so the absence is a *rule*, and the day a latency arrives it formats (`fmtLatency`
+has both arms). The architecture's own escape hatch is real, not rhetorical.
+
+---
+
+### §6 Owner-deferral sweep (issue #15) — **0 pending**
+
+Reconciled **mechanically on the FIXED metadata key**, never on prose:
+
+> `grep -rnE "^[[:space:]]*-?[[:space:]]*\*{0,2}owner_decision\*{0,2}:\*{0,2}[[:space:]]*pending" .sdlc/features/001-remote-workflow-engine`
+> → **0 hits**, in every document including `journal.md`, `state.yaml` and `.panel/`.
+
+The looser substring sweep (`owner_decision:** pending` anywhere on a line) returns 13 hits — all in
+`07-review.md`, `journal.md` — and each was opened: every one narrates a marker's *history* (「0 live
+… markers anywhere in the ledger」, 「the owner ALREADY RULED」), never a live marker. The two markers
+this iteration minted are both **answered on the row**: `02-architecture.md:3934` (ADR-060) reads
+`answered 2026-09-14`, and `04-design.md:7664` (DES-220) reads `answered 2026-09-18` with the owner's
+widened ruling transcribed and cross-referenced to `state.yaml`'s `pending[0]` and
+`01-requirements.md:1957`. `owner_decisions: []`.
+
+**ADR hedging spot-check — no unmarked deferral.** Grepping `02-architecture.md` + `04-design.md` for
+decision-shaped hedging without the marker (`not taken here` / `product decision` / `產品決策` /
+`留給業主` / `由擁有者決定`) returns one live-looking hit, `04-design.md:8018` 「**This is a product
+call about the owner's own sentence, so it is not taken here**」 — and it is **struck through** and
+followed by `**[RESOLVED 2026-09-18 — the owner ruled on this exact question: name the route on all
+three surfaces, the counts card included…]**`. That is a dated historical record inside a gate note,
+not a live deferral. The v28b design gate **did** mint the marker for that exact question at the
+time, escalated it, and the owner ruled the same day — the producer contract worked as written.
+
+---
+
+### §7 Validation & handover (Gate 7.5) — confirmed, and re-derived
+
+- **No mock-only REQ.** `analyze()` reports **0 `未真實驗證` and 0 `未驗證`**, and **all 143/143**
+  REQs are in its `verified` set. The five closure REQs each reach a `real: true` green:
+  **VAL-213** (REQ-137), **VAL-214** (REQ-138), **VAL-215** (REQ-139), **VAL-216** (REQ-142) all
+  `green`/`real: true`/`pass` at `iter: v28`, and **VAL-217** (REQ-143) `green`/`real: true`/`pass`
+  at `iter: v28c`.
+- **`08-validation.md` present** with the v28c Gate 7.5 RE-RUN section: a `deploy.sh --background`-
+  booted scratch instance, a real workflow registered over MCP HTTP, three concurrent real Chromium
+  pages, and a genuine `kill -9` of the engine's **OS process group** (never `server.close()`),
+  followed by a same-port restart. Production `rwe.service` confirmed untouched (`MainPID=2713463`,
+  `NRestarts=0`). I re-ran that item's own acceptance file myself: **5/5 pass** in real Chromium (§1).
+- **Handover docs present, step-by-step, 淺白繁中.** `README.md` (44 KB) + `DEPLOY.md` (93 KB) at the
+  product root, matching `state.yaml`'s `layout.readme`/`layout.deploy`.
+- **一鍵部署 leads DEPLOY.md and Gate 7.5 really ran it.** `DEPLOY.md:23` is `## §0 一鍵部署
+  One-command Deploy`, and the first code block is
+  `set -a; . ~/.config/rwe.env; set +a` + `./deploy.sh --background`, followed by the **real captured
+  five-step output**. That is the same command the v28c validator booted its scratch instance with.
+- **Single deduplicated 設定總表.** `DEPLOY.md:409` `## 1b. 設定總表 Configuration Reference` is the
+  only place config keys are documented; `DEPLOY.md:403` states the rule in the manual itself
+  (「每一個都只在 §1b 設定總表列出一次,請直接查表」), and `README.md:183`/`:220` point there rather
+  than restating keys — grep for `RWE_WORK_ROOT`/`RWE_CONFIG_PATH`/`RWE_BIND`/`RWE_PORT` in
+  `README.md` returns **0 hits**.
+- **Current-state, history-free — with one row recorded.** Grep for changelog/版本差異/遷移/升級
+  headings → **0 hits**; `DEPLOY.md:3` states the rule in the document itself. README's demo-mode
+  paragraph (`:127-131`) and 已知限制 (`:474`) were rewritten by the v28c validator and read as
+  current state — the now-resolved two-blank-tab limitation is **deleted outright**, not marked
+  「previously X now Y」. The one row: `README.md:450-452`'s upgrade note carries a version-history
+  rationale clause (「`schedules` 資料表在早期版本把 `workflow` 欄位設成「不可為空」…」) inside a
+  history-free manual. It is a **current-state instruction** (「不需要任何手動步驟」) and predates v28
+  (`767ceea`, 2026-09-09), so it is recorded as **`R28-3`** (LOW), not a send-back.
+- **This iteration's own manual consequence landed.** IMPL-291 owed DEPLOY a disclosure that
+  `topN: 5 → 20` widens what an unauthenticated `bind:"0.0.0.0"` deployment exposes; it is on disk at
+  `DEPLOY.md:704-705` (「一次回傳最多 20 筆主機 process 列 … 每筆只有 `comm`」). **Disclosed, not
+  hidden** — which is the ADR's own stated bargain.
+
+`send_back` does **not** include `validation`.
+
+### §7b Special-file reviews (task 3b) — **N/A this iteration, verified mechanically**
+
+`git log --since=2026-09-14 --name-only -- "*CLAUDE.md" "*AGENTS.md" "*SKILL.md"` returns **nothing**,
+and no v28 IMPL `files:` line (IMPL-283..302) names any of them. Neither the **claude-md-improver**
+nor the **skill-creator** review is triggered. `README.md`/`DEPLOY.md` are reviewed as handover docs
+in §7, not as special files.
+
+---
+
+### §8 BLOCKING findings — **none**
+
+`send_back = []`, `blocking_findings = []`. Every row this pass found or carried is in §9 with a
+severity, an owner lane and a fix shape.
+
+---
+
+### §9 Recorded tech debt (not blocking)
+
+**Carried from RE-REVIEW #5 §9, unchanged at `6ef9b71`** (26 LOW rows): **F-2**, **F-3**, **F-4**,
+**F-5**, **F-6**, **F-7 ≡ QD-S2**, **QD-O4**, **QD-R2**, **QD-R3**, **QD-R4**, **QD-C2**, **QD-C3**,
+**QD2-O2**, **DEBT-A**, **DEBT-B**, **TOOL-FORK** (§2/§3/§9), **DOC-H**, **DOC-UT245**, **D3-1**,
+**D3-2**, **D3-3 ≡ QD-D3-3**, **D3-4**, **D3-5 ≡ QD3-R1**, **D3-6**, **QD3-O2**, **DOC-R3-185**; plus
+**D4-2** (the owed test population DES-206 names in writing). Carried MID with their rulings intact:
+**`A4-2`**, **`QD-O5 ≡ A4-3`**, **`D4-1`** — all three re-derived at `file:line` in §5.
+
+**CLOSED since RE-REVIEW #5** — named so the list shrinks honestly: **`D4-3`** (UT-244's stale RED
+record) is **closed**: `05-tests.md` UT-244 now reads `green`/`pass` at `iter: v28b`, and I re-ran
+`tests/unit/dashboard-lib-strings.test.js` → **10/10**. Also closed by this iteration's own work:
+**TASK-215** and **TASK-216** (both `status: done`, landed at `7c71b2b`, the two-`tsc`-program guard
+re-proved by me at §1), and the ten parked-REQ MID rows (§0).
+
+**New this pass (4 LOW, no MID, no HIGH):**
+
+- **`R28-1` — LOW — `ARCH-130`'s v28 amendment cites `server.ts:370`; the code is at `:375`.** The
+  cite lands inside the explanatory comment block for the same change, so a reader still arrives at
+  the right place, but the `file:line` no longer names the line it describes (IMPL-291's own 6-line
+  comment pushed it down). Fix: re-cite `:375` at the next architecture touch. Owner: architect.
+- **`R28-2` — LOW — `VAL-208` exists as two rows of one ID that disagree.** `05-tests.md:12693` is
+  `red`/`fail`/`real: false`; `08-validation.md:10072` is `green`/`pass`/`real: true` and is the copy
+  `trace.py` resolves. The 05-tests row **discloses in place** that it is deliberately unflipped「per
+  precedent」, so this is a convention artefact, not a hidden failure — but it is the same
+  duplicate-ID class that twice cost this ledger real link loss (v27 VAL-198..204; v28b's VAL-217
+  `traces:` collision). Fix: give it the dated flip UT-244 got, at the next Gate 5 touch. Owner: tests.
+- **`R28-3` — LOW — `README.md:450-452` carries a version-history rationale clause** in a manual the
+  ledger requires to be history-free. Fix: restate it as pure current state (「引擎啟動時會自動重建
+  `schedules` 表,升級不需要任何手動步驟」) and drop the 「早期版本…」 clause. Owner: Gate 7.5's manual pass.
+- **`R28-4` — LOW — `metrics.jsonl` holds one stray, unreproducible point** (`2026-09-14`,
+  `gaps: 541`) written by the plugin's `trace.py`; the project-local fork never appends, so the
+  dashboard's 趨勢 tab can draw nothing and no trend direction is readable. Fix: adopt the plugin's
+  `trace.py` (see `TOOL-FORK`) or have the fork append one line per run. Owner: tooling.
+- **`R28-5` — LOW — three DES rows were amended in place at v28 without an `iter:` bump**
+  (DES-200, DES-208, DES-191), which is the whole content of the three new 漂移 gaps. The prose is
+  **current** in all three (§2). Fix: bump `iter:` when amending, or state the convention once in the
+  ledger so the 漂移 column means something. Owner: design.
+
+**`TOOL-FORK`, restated because three rows above depend on it.** The project-local `.sdlc/trace.py`
+is a fork frozen at 2026-08-01: no `--tool` dispatch (so the plugin's `dashboard_check.py` /
+`solid_check.py` / `module_check.py` were invoked directly — the contract's own fallback method), no
+`待業主決策` gap type, no `--rtm`/`--json`/`--sarif`, no mermaid offline fallback, and no
+`metrics.jsonl` append. The plugin's `trace.py` was deliberately **not** run over this ledger: it
+rewrites `dashboard.html` in a fork-incompatible render. One consequence worth stating plainly: **the
+fork cannot mechanically flag an unanswered `owner_decision`**, so §6's sweep is the only thing
+standing between this ledger and issue #15 — which is why it is done on the fixed key, by hand, every
+pass.
+
+**One more, recorded rather than discovered later:** `rtm.md`'s REQ-143 row lists IMPL-283..298 and
+IMPL-302 but **not IMPL-301**, the item that actually landed TASK-226's three arms (`bdf36f4`).
+`rtm.md` is hand-maintained (the fork has no `--rtm`), and `trace.py`'s own matrix — the authoritative
+one, and the one the dashboard renders — has the link. Folded into `R28-2`'s owner lane; not a
+separate gap, because nothing downstream reads `rtm.md`.
+
+---
+
+### §10 Retro
+
+**What went well — the gate below caught its own boundary violation.** The single most valuable event
+in this iteration was not a review finding: `solid_check` at Gate 6.5+7 flagged `app.js`'s
+`import('../demo/dataset.js')` as an undeclared cross-module edge, and the verifier closed it by
+**amending `ARCH-125`'s `deps:` to declare ARCH-132** — recording the new coupling rather than
+deleting the import or suppressing the check. That is the mechanical-check loop working as intended:
+the tool found a real architectural fact, and the fix was to make the architecture say what the code
+does. By the time this gate ran, there was nothing left for it to find at the module boundary.
+
+**What went well — the owner_decision channel terminated in one day.** The v28b design gate hit a
+genuine product ambiguity (does the third surface say 「無法取樣」 or name its route?), refused to
+decide it silently, minted the marker, escalated it — and the owner not only answered but **widened**
+the question, which then propagated cleanly through Gate 5 (four test rows amended and re-RED'd),
+Gate 6 (three arms, two of them re-done to the widened form), Gate 6.5+7 and Gate 7.5. Compare v27,
+where an *unflipped* marker on an already-answered question was the sole HIGH blocker of an entire
+re-review round. The lesson that stuck: **the marker is cheap, the unflipped marker is expensive.**
+
+**What to change — stop letting the 漂移 column drift into noise.** Three of this pass's 26 gaps are
+rows whose prose is *current* and whose `iter:` was simply not bumped when they were amended in place
+(§2, `R28-5`). That is now 3 of the 24 漂移 rows on a detector whose whole job is to tell a reviewer
+「the doc did not follow the code」. Every false row in that column costs the next reviewer the same
+three file-opens it cost me, and trains the gate to say 「pre-existing」 without looking — which is
+exactly what happened here: two gates below called this set 「the same pre-existing 24」 when three of
+them were minted by this iteration. Concretely, for the next iteration: **when you amend a row in
+place with a `[v<iter>]` marker, bump `iter:` in the same edit** — the marker and the field are the
+same claim, and letting them disagree is how a detector becomes wallpaper.
+
+**What to change — verify carried labels, don't inherit them.** Related and more general: the phrase
+「same pre-existing set」 appeared in `gates.verification.note`, `gates.validation.note` and the
+journal for a gap set that had changed. It was harmless this time (the three new rows are benign).
+The habit is not: a byte-identical *count* is not a byte-identical *set*, and the only way to know is
+to diff the IDs. This review diffed them.
+
+**Known tech debt** is §9 — 3 MID, 68 LOW, each with an owner lane. All three MIDs are v27
+carry-forwards with written specifications to repair against; **v28 minted none.**
+
+---
+
+
+## v27 GATE 8 RE-REVIEW #5 (2026-09-14, **SUPERSEDED** by the v28 GATE 8 REVIEW above — kept for history; was **CLOSE**, `send_back = []`, 0 HIGH / 0 blocking. Its carried debt is re-confirmed, shrunk (D4-3, TASK-215/216 and the ten parked-REQ MID rows closed) and re-listed in the v28 section's §9.)
 
 > Fifth and closing pass, after the workflow's ONE automatic re-run of RE-REVIEW #4's
 > `send_back = ["design","impl"]`. Tree at review: **`ad879c8`**, working tree **clean** (`git status
