@@ -7776,7 +7776,7 @@ which holds; it does not require all three to land in one commit, and they did n
 - **traces:** TASK-226, DES-220, REQ-137, REQ-138, REQ-139, REQ-142, REQ-143
 - **greens:** VAL-217, UT-244, UT-261, UT-252 (amended)
 - **files:** tests/unit/dashboard-diagram-render.test.ts
-- **commit:** uncommitted at report time
+- **commit:** 9899c7c
 - **iter:** v28b
 
 **Scope.** This closeout picks up where IMPL-297 (the whole-Sprint-B Gate 6.5+7 pass, commit
@@ -7867,3 +7867,19 @@ main.ts` (79.36% lines / 33.33% funcs).
 dated Gate 6.5+7 confirmation note citing the measurement above. `UT-252` amended in place (the
 fix above) with its own dated note; `iter` bumped to v28b, `TASK-226`/`DES-220`/`REQ-143` added to
 its `traces`.
+
+**Named, not silently left implicit: `VAL-217` is a two-file split, same defect CLASS as the v27
+`VAL-198..204` collision.** `05-tests.md`'s `VAL-217` (this pass's own, now `green`/`real:false`) is
+the Gate 6.5+7/dev-tier record. `08-validation.md` carries its OWN separate `### VAL-217` block —
+the Gate 7.5 validator's real-run record, still `status: red`/`result: fail`/`real: true` (the last
+REAL attempt, against the pre-widened implementation, genuinely failed; nothing has re-run it since).
+`trace.py`'s `scan()` does `items[it["id"]] = it` per file in alphabetical order, so `08-validation.md`
+(sorted after `05-tests.md`) is the copy `trace.analyze()` actually sees for `VAL-217` — this pass's
+green flip is invisible to `--check`/the dashboard until Gate 7.5 re-runs and updates ITS OWN copy.
+This is NOT touched here (same restraint the prior `v28b Gate 5` sync used — 08-validation.md's
+`status`/`result`/`real`/evidence prose are the validator's lane, not the verifier's); flagged
+explicitly so the next reader does not mistake the dashboard's still-red `VAL-217` for a Gate 6.5+7
+regression. `REQ-137`/`138`/`139`/`142` have NO such split — their `08-validation.md` copies already
+read `green`/`real: true`/`pass` (Gate 7.5 validated them for real at `b0fb176`); `REQ-143` is the
+sole holdout, exactly the REQ this whole TASK-226 delta exists to close, and Gate 7.5's re-run is the
+next step this closure hands off to.
