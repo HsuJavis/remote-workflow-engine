@@ -6121,3 +6121,25 @@ verifier flips `gates.impl` once every closure REQ has a green VAL and the regre
 gate both pass); `current_stage` -> `validation`. No live `- **owner_decision:** pending` marker
 anywhere in the ledger (swept). Next: Gate 7.5 (validator) re-confirms REQ-143 real on the widened
 three-surface form.
+
+## 2026-09-18 — v28c Gate 7.5 (validator) — RE-RUN PASSED, REQ-137/138/139/142/143 all closed for real
+REQ-143 re-validated for real on the widened three-surface form (DES-220, `bdf36f4`/`9899c7c`,
+TASK-226 `status: done`, Gate 6.5+7/IMPL-302 verified). Booted a scratch instance via `deploy.sh
+--background` (DEPLOY.md §0's own second-instance form); production `rwe.service` confirmed
+untouched throughout (`MainPID=2713463`, `NRestarts=0`). Registered a real workflow over MCP HTTP,
+then drove three concurrent real Chromium pages against the same instance (workflow detail, Issues
+tab, System tab). A genuine `kill -9` of the engine's own OS process group (the documented start
+command, never `server.close()`) engaged demo mode on all three: `[data-legend]` read
+`此路由無示範資料:/api/workflows/:name/describe`, `#issues-open`/`#issues-resolved` read
+`此路由無示範資料:/api/issues` (the stale pre-crash `GitHub not configured` text genuinely gone), and
+the System counts card read `此路由無示範資料:/api/workflows` while CPU/memory/disk kept the real demo
+numbers (12%/25%/20% — DES-215/216's per-card independence holds). A same-port restart cleared all
+three within one real tick, nav tags flipping back to 連線中. This incidentally re-confirmed
+REQ-138/VAL-214's shared `ui/system.js` surface is unregressed. Supporting:
+`tests/acceptance/val-207-demo-data.test.ts` -> 5/5 pass. `VAL-217` flips `red`/`fail` ->
+`green`/`pass`, `iter: v28c`; `rtm.md` REQ-143 flips ⚠️ -> ✅. README.md's demo-mode paragraph and
+已知限制 section rewritten current-state (the now-resolved two-blank-tab limitation deleted outright,
+not marked previously-X-now-Y); no config drift. `sh .sdlc/trace --check`: 1728 items / 26 gaps,
+same pre-existing 24 漂移 + 2 未實作 set (0 high/未真實驗證/未驗證/斷鏈/孤兒; exit 1, expected — LOW
+pre-existing debt only, not this closure's). `gates.validation.passed` -> `true`; `current_stage` ->
+`review`. Next: Gate 8 (review).

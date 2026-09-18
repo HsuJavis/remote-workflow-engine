@@ -10797,12 +10797,92 @@ All scratch node processes killed and ports freed at the end of this gate.
   pass (32771ms real wall-clock).
 
 ### VAL-217 — REQ-143: demo data self-labels, engages on a STOPPED engine, retires on recovery
-- **status:** red
+- **status:** green
 - **traces:** REQ-143, DES-212, DES-220, TASK-220, TASK-226
 - **tier:** acceptance
 - **real:** true
-- **result:** fail
-- **iter:** v28
+- **result:** pass
+- **iter:** v28c
+
+**[v28c GATE 7.5 RE-RUN, 2026-09-18, validator — REAL RE-CONFIRMATION, PASSED.]** The AMENDED
+clause's widened three-arm form (DES-220, landed at `bdf36f4`/`9899c7c`, TASK-226 `status: done`,
+verified at Gate 6.5+7/IMPL-302) was driven for real, independently of the acceptance file below —
+own scratch instance, own Chromium session, own registered workflow, no reuse of any prior
+transcript. **Boot (documented steps only):** `RWE_CONFIG_PATH=<scratch>/rwe.config.json
+RWE_BIND=127.0.0.1 RWE_PORT=8951 ./deploy.sh --background` (DEPLOY.md §0's second-instance form) —
+healthcheck passed first try, `{"agentSemaphore":{...},"version":"0.1.0 (v0.20.0-383-g8a4a595)"}`.
+Production `rwe.service` confirmed untouched before/after (`MainPID=2713463`,
+`ActiveEnterTimestamp=Fri 2026-09-11 11:47:25`, `NRestarts=0`). A real workflow
+(`val217wf-7e21e68a`) was registered+published over real MCP HTTP (`workflow_register` →
+`workflow_publish`, no run needed — the describe route only needs a registered version). Three real
+Chromium pages opened concurrently against the SAME instance: page A on
+`/dashboard/workflow/val217wf-7e21e68a`, page B on `/dashboard` with the Issues tab pre-warmed
+(no GitHub token on this scratch config — the real REQ-067 degraded-text precondition), page C on
+`/dashboard` with the System tab pre-warmed. **Live sanity (all three, before the fault):**
+predicted-label 14 chars non-empty (A); `#issues-open` reads `GitHub not configured` (B, real
+REQ-067 degrade, not blank); counts card reads `1` (C, a real number, not a disclosure/Unavailable —
+this incidentally re-confirms REQ-138/VAL-214's shared `ui/system.js` surface is unregressed by this
+delta's touch to `paintCountsUnavailable`). **Fault — a genuine `kill -9` of the OS process GROUP
+running the documented start command** (`node node_modules/tsx/dist/cli.mjs src/main.ts`, PGID
+resolved via `ps -o pgid=`, matching the prior round's own `SIGKILL`-of-process-group mechanism, no
+`server.close()` in-process, no HTTP-error interception). After a real ≥9s wait (≥2 poll ticks +
+demo-engage margin), measured on the SAME three already-open pages:
+- Page A (`[data-legend]`): `"此路由無示範資料:/api/workflows/:name/describe"` — exact match.
+  `[data-triggers]`/`.wf-desc`/`[data-predicted-label]` all `""`; `[data-history-table] tbody tr`
+  count `0`; nav tag `"示範資料"`, never co-occurring with `連線中`/`Live`.
+- Page B: `#issues-open` and `#issues-resolved` both `"此路由無示範資料:/api/issues"` — the stale
+  pre-crash `GitHub not configured` text genuinely GONE, not merely joined by the disclosure; nav
+  tag `"示範資料"`.
+- Page C: counts card `"此路由無示範資料:/api/workflows"`; CPU/memory/disk cards read `"12%"` /
+  `"25%"` / `"20%"` — DES-215/216's per-card independence holds under the new wording, real demo
+  numbers keep painting on the untouched cards; nav tag `"示範資料"`.
+
+**Recovery** — a NEW engine process started on the SAME port + SAME `workRoot` via the identical
+documented `./deploy.sh --background` command (the catalog/workRoot persisted to disk, matching a
+real crash-and-restart, not a fresh install). After a real ~5s wait (one tick): Page A's
+`[data-legend]` no longer reads the demo sentence (`""` — legitimately empty: this workflow has
+`runs.length === 0`, so `renderLegend` takes the `view:null` predicted-path arm, which paints only
+warning spans and this script produced none — confirmed by reading `src/dashboard/ui/run.js:352`'s
+`renderLegend`, not assumed) and the nav tag reads `"連線中"` — DES-220 (B1)'s regression oracle
+holds, no Live tag ever kept the demo disclosure on screen. Page B's `#issues-open` returns to the
+real live degrade text `"GitHub not configured"` (a genuine live re-fetch reproducing the SAME
+token-less degrade, not the demo sentence lingering — DES-220's own B1 note on why this is decisive
+for a view with no paint memory). Page C's counts card returns to `"1"`, no longer the disclosure.
+All scratch node/litellm processes and the scratch instance's process group killed for cleanup after
+the run; `.rwe.pid`/`.rwe.log` at the repo root (this checkout's own convention) belong to this
+scratch run only, not production.
+
+**Supporting (real `createServer()`, real Chromium, the acceptance file's own five cases, the same
+mechanism as above run through vitest instead of a hand-driven script):**
+`PUPPETEER_EXECUTABLE_PATH=.../linux-152.0.7977.75/chrome-linux64/chrome RWE_REQUIRE_BROWSER=1 npx
+vitest run tests/acceptance/val-207-demo-data.test.ts` → **5/5 pass** (58862ms), covering the same
+three amended-clause arms plus the base boot/engage/recover mechanism this hand-driven pass did not
+separately re-derive.
+
+**REQ-138 shared-surface branch this hand-run did not exercise, closed separately.** The hand-driven
+pass above only measured `ui/system.js`'s counts card on the LIVE-ok path (`"1"`) and the DEMO-miss
+path (the new disclosure) — not the pre-existing LIVE-DEGRADE path (`無法取樣`, a real `/api/workflows`
+failure while the engine stays up), which is the exact branch DES-220 (B7) promises stays
+byte-identical. Rather than rest that on Gate 6.5+7's verifier-tier regression alone,
+`PUPPETEER_EXECUTABLE_PATH=... RWE_REQUIRE_BROWSER=1 npx vitest run
+tests/acceptance/val-204-system-tab.test.ts` → **5/5 pass** (9849ms), including its own
+`/api/workflows`-only-degraded-split case — confirms the live-degrade branch is unregressed by this
+delta's touch to `paintCountsUnavailable`'s signature.
+
+**Routing — CLOSED.** All four steps the v28 round named as owed are now done: (1) Gate 3+4 —
+DES-220 amendment landed and widened to the owner's 2026-09-18 three-surface ruling; (2) Gate 5 — RED
+cases added and widened in `val-207-demo-data.test.ts`; (3) Gate 6/6.5+7 — built (`bdf36f4`,
+`9899c7c`) and verified (IMPL-302: full regression 414 files/2964 passed/0 failed, tsc clean, trace/
+solid_check/determinism_check/TZ-shift/seam/coverage all re-confirmed); (4) Gate 7.5 — re-validated
+above, for real, on the widened three-surface form. `rtm.md`'s REQ-143 row is regenerated ✅ below.
+REQ-137/138/139/142's own evidence (VAL-213/214/215/216) stands unchanged from the v28 round — no
+shared-surface regression found (the one shared file, `ui/system.js`, was re-confirmed live-correct
+above, and Gate 6.5+7's own full regression already covered `val-204-system-tab.test.ts`).
+
+---
+
+**[HISTORICAL — v28 round, 2026-09-18, superseded by the v28c re-run above. Retained as the record of
+what was found and why DES-220/TASK-226 exist; the defect described below is FIXED, not current.]**
 
 **[traces synced 2026-09-18, v28b Gate 5, verifier]** `DES-220`/`TASK-226` added to match
 `05-tests.md`'s own VAL-217 entry (the Gate-5 test-writer's copy already carried both — this file's
@@ -10948,3 +11028,81 @@ re-scope rule from prior sends-back). **REQ-143 is sent back** — recommended t
 flows through Gate 5 (a new SPEC_ROW/case in `val-207-demo-data.test.ts` that val-207 never had),
 Gate 6, Gate 7, and back here for re-validation. `current_stage` is left at `validation` (not
 advanced to `review`); `gates.validation.passed` stays `false` until the re-run.
+
+## v28c GATE 7.5 RE-RUN (2026-09-18, validator) — REQ-137/138/139/142/143 — PASSED
+
+**This supersedes the "NOT PASSED" verdict immediately above.** Between that round and this one, the
+send-back cycle it recommended ran to completion (all on `state.yaml`'s own record, not re-litigated
+here): Gate 3+4 minted DES-220, then the SAME-DAY owner ruling widened the closure to name the route
+on all THREE surfaces including the System tab's counts card (`state.yaml pending:` 「v28b OWNER
+RULING (2026-09-18)」, DES-220's `owner_decision` now `answered`); Gate 5 wrote/widened the RED cases
+in `val-207-demo-data.test.ts`; Gate 6 built the widened three-arm delta (`bdf36f4`); Gate 6.5+7
+(IMPL-302) ran the full closeout — regression 414 files/2964 passed/0 failed (one genuine test-oracle
+widening, not a code defect), `tsc` clean both configs, `solid_check` 0 high/0 mid/10 low, coverage
+95.84% unchanged, `lib/strings.js` 100% lines, no time bomb, no new seam. This gate re-validates
+REQ-143 for real on that widened form; REQ-137/139/142 are NOT re-run (their own v28-round evidence,
+VAL-213/215/216, stands unchanged, no shared surface touched). REQ-138's own row (VAL-214) also
+stands unchanged, but its evidence's shared surface — `ui/system.js`, touched by this delta via
+`paintCountsUnavailable`'s new `text` parameter — IS covered by the re-scope rule, so it is
+re-confirmed here rather than only inspected: the hand-run below drives the LIVE-ok and DEMO-miss
+branches directly, and the supporting `val-204-system-tab.test.ts` re-run (5/5 pass, cited under
+VAL-217 below) drives the one branch the hand-run does not — the LIVE-DEGRADE (`無法取樣`) split —
+confirming DES-220 (B7)'s "byte-identical on a live degrade" claim for real, not by inspection alone.
+
+**Boot (documented steps only, no undocumented manual fix):** `RWE_CONFIG_PATH=<scratch>/
+rwe.config.json RWE_BIND=127.0.0.1 RWE_PORT=8951 ./deploy.sh --background` — DEPLOY.md §0's own
+second-instance form, run twice (once for the fault, once for the same-port recovery), each passing
+step 5's healthcheck first try. Full evidence, per-arm measurements, and the recovery leg are
+recorded on `VAL-217` above (not duplicated here) — see its `[v28c GATE 7.5 RE-RUN...]` block.
+Production `rwe.service` confirmed untouched throughout (`MainPID=2713463`,
+`ActiveEnterTimestamp=Fri 2026-09-11 11:47:25`, `NRestarts=0`). All scratch node/litellm processes
+and ports freed at the end of this gate.
+
+### Configuration — no drift found (re-confirmed)
+Unchanged since the v28 round's own check: this closure (including the widened three-arm delta) is
+entirely client-side string composition (`lib/strings.js`, `ui/workflow.js`, `ui/issues.js`,
+`ui/system.js`) — no new/changed/removed env var, secret, port, feature flag, or config file. DEPLOY
+§1 設定總表 requires no new row, no edited row, no deleted row.
+
+### Docs — current-state fixes made this gate
+`README.md`'s 「儀表板」demo-mode paragraph and 「已知限制」section had gone stale the moment
+TASK-226 landed: they described the OLD (pre-widening) behaviour — "工作流程詳情頁、問題分頁" freeze
+on their last-known render with no disclosure — which is no longer true. Rewritten to current-state:
+the demo-mode paragraph now names all three no-demo-data surfaces (workflow detail page, Issues tab,
+and the System tab's counts card) and describes the actual `此路由無示範資料:<route>` sentence they
+show; the 「已知限制」bullet that documented the old gap ("示範模式下兩個分頁沒有示範內容") is REMOVED
+outright (current-state rule: a resolved limitation is deleted, not marked "previously X, now Y").
+The adjacent, still-true limitation ("斷線前沒點過的分頁，斷線後打不開" — DES-220 (B5)(b), a tab never
+opened before the crash still cannot even `import()` its module) is left untouched, since this
+closure's own DES-220 explicitly leaves it out of scope. `grep -n "舊版\|原本\|以前\|previously\|
+變更紀錄\|Changelog\|自 v[0-9]\+ 起"` re-run over both manuals after the edit → the 4 hits found are
+all pre-existing, legitimate migration/rollback/troubleshooting content the v28 round's own gate
+self-check already carved out (README.md:450's `workRoot` upgrade note; DEPLOY.md's `maxWorkflowVersions`
+config-table row, its rollback-section old/new data-format note, and its `run_resume` troubleshooting
+row) — none is a version-conditional CURRENT-operation instruction, none touches this closure's own
+surface, 0 new hits introduced. DEPLOY.md needed no change (no config drift, confirmed above).
+
+### Gate self-check (v28c, 2026-09-18, validator)
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: **1728 items / 26 gaps** — the
+SAME 26-gap SET as the pre-round baseline, confirmed by direct `analyze()` call: 24 `漂移`
+(pre-existing iter-drift, unrelated to this closure) + 2 `未實作` (`TASK-018` blocked/v3, `TASK-153`
+external-repo-owned) — **0 high, 0 `未真實驗證`, 0 `未驗證`, 0 斷鏈/孤兒.** The item count is +1 over
+IMPL-302's own stated 1727 baseline; this gate's own diff adds ZERO new `### <ID>` headings (checked
+directly: `git diff HEAD -- 08-validation.md | grep -E '^\+### [A-Z]+-[0-9]+'` → empty), so the +1
+predates this round and is not chased further here — the gap SET is byte-identical regardless, which
+is the property that matters. `REQ-137/138/139/142/143` all confirmed `verified` AND `implemented` in
+`analyze()`'s own sets. Unlike the v28 round, this is no longer a mechanical false-positive read:
+`VAL-217` (the item directly tracing REQ-143) is now genuinely `real:true`/`result:pass`,
+hand-verified above — there is no red real-tier item left on REQ-143 for `--check`'s blind spot to
+hide. `rtm.md` regenerated (`scan()`/`build_matrix()` called directly, this repo's `trace.py` still
+has no `--rtm` flag): REQ-143's row flips ⚠️ → ✅; REQ-137/138/139/142 stay ✅ unchanged. **Exit code:
+1** (non-zero) — reported honestly per this ledger's own established convention (every prior v26/v27/
+v28 round exits 1 the same way): the 26 remaining gaps are pre-existing LOW-severity debt (drift +
+2 blocked/external tasks), explicitly out of this closure's impact scope, not silently fixed and not
+silently hidden. **0 HIGH, 0 `未真實驗證` (mock-only), 0 `未驗證` (unverified) — the substantive
+condition the exit gate actually requires — holds.**
+
+**Overall verdict for this round: PASSED.** All five REQs in this closure (REQ-137, REQ-138, REQ-139,
+REQ-142, REQ-143) now carry a genuine `real:true`/`result:pass` VAL/E2E item with no unresolved red
+real-tier item on the same REQ. `current_stage` advances to `review`; `gates.validation.passed` is
+set to `true` in `state.yaml`.
