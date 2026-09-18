@@ -1968,3 +1968,142 @@ to asserting the overlay is served):
   「刪掉了卻還有東西在描述它」(REQ-105 / ADR-048 / UT-115 的由來)。
   **紅測:** 現行畫面在 API 失敗時為空白,無示範資料也無標示 → 期望有。
 - **iter:** v27
+
+---
+
+## Iteration v29 — 設計一致性稽核的八條高影響修正
+
+**來源:** 2026-09-18 的並排稽核。把 Design project 38fc8181 的交付稿還原成一個會跑的頁面
+(補回 repo 未 vendor 的 `support.js` / `rwe-data.js` / `_ds/styles.css` / `_ds/_ds_bundle.js`),
+把它的 `/api/*` 代理到正式引擎(8899),兩邊因此渲染**同一份資料**,再以 Chrome for Testing
+逐項點按、拖曳、量測 computed style。結果:29 項不一致、11 項行為完全一致、5 項屬已裁決差異。
+本迭代只處理其中 8 條高影響;其餘 21 條由擁有者在下一階段排序。
+
+### 釐清紀錄(Clarification log)
+
+| # | 問題 | 裁決 |
+|---|---|---|
+| V29-Q1 | B5 地面色(bg/panel/line)要不要改成跟著色相走?這會推翻 DES-209 boundary ⑦ 明文駁回、且已過閘的條款 | **改成跟色相走。** 採用 README 的 `oklch(.21 .006 h)` / `oklch(.955 .008 h)`;連帶修改 SPEC_ROWS 與 VAL-208 釘住的 `#18191b`/`#eef2f1` |
+| V29-Q2 | B27 底部 mermaid 流程圖如何配合深色主題 | **移除底部流程圖。** 不做內嵌 SVG 重新上色;只拆儀表板顯示面,REQ-102 的引擎側產圖與唯讀服務保留 |
+
+**V29-Q1 為什麼可以推翻一個已過閘的條款 —— 前提變了,不是結論變了。**
+DES-209 boundary ⑦ 當時的原話是「REQ-131 已測的 `#18191b`/`#eef2f1` 字面值勝出」,而同一個 row 的
+boundary ④ 記載了做這個判斷時的處境:`design_handoff_workflow_dashboard/` **不在 checkout 裡**
+(原文「`find` measured」),所以沒有人能實際看到交付稿跑起來是什麼樣子,判斷只能建立在推論上。
+當時的推論是「色相驅動的背景與固定 hex 的中性色階搭配會不協調」。本次稽核把交付稿真的跑起來,
+證明設計本來就是這個搭配,而且在 19°/180°/321° 三個色相下都成立 —— 該推論不成立。
+**駁回的理由被證偽,所以條款重開;這不是重新審一次同一個問題。**
+
+**V29-Q2 的已知後果,登記於此以免日後被當成退化。**
+儀表板的流程圖顯示面源自擁有者自己 2026-08-31 的 D16 裁決(REQ-102,收掉 GitHub issue #32)。
+移除顯示面會一併退役 val-169(渲染)與 val-197(拖曳平移)兩條驗收,以及 C1 釘住的
+`#diagram-img{…-webkit-user-drag:none;user-select:none}` 字面值與 C2 的 `#diagram-img` /
+`#diagram-zoom` 選擇器錨點。**保留**:`src/server.ts` 的 `/api/workflows/:name/diagram.svg` 路由、
+`src/diagram-render.ts`、`tests/integration/diagram-svg-route.test.ts`。REQ-102 本身不退役。
+
+### 先決工作:驗收 oracle 已被實作污染,必須先重算
+
+`tests/fixtures/dashboard-spec.ts` 的 SPEC_ROWS 與 VAL-208 目前釘著 `#18191b` / `#eef2f1`。
+這兩個值不是從交付稿來的 —— 它們是 `.dc.html` **靜態 fallback 區塊**的快照,而 DES-201 自己就寫著
+那個區塊「is a snapshot of ONE hue and is never copied anywhere」。也就是說,oracle 抄的是實作,
+不是設計。DES-209 的 v28 修訂已經把這個類別命名為本 ledger 年度發現三次的缺陷型態
+(「a poisoned row goes green forever and looks like coverage」)。
+
+**因此 c2 的順序不可顛倒:先從 `.sdlc/design-handoff/README.md` §Design tokens 重算每一條釘住
+地面或色階字面值的 SPEC_ROW/VAL,單獨成一個 commit 並在訊息中點名污染來源,再改 CSS。**
+反過來做,Gate 7.5 量到的是自己抄自己。
+
+範圍限制:README 只對應 `bg / surface / divider / text / accent / accent-100..900` 與一組固定中性色階。
+`--color-panel2` / `--color-muted` / `--color-link` / `--color-ink` 沒有 1:1 的 README token,
+**本迭代不動**,留給 21 條那一輪。
+
+### 需求
+
+- **REQ-144 — 強調色九階採用交付 README 的 L/C 序列**
+  **來源:** B6。DES-201 只裁決了「方向」(深色由 100→900 遞增),並明文把序列本身留給
+  「REQ-131 的 `依交付 README 的 L/C 序列`,由 DES-209 的 `owner_decision` 承載」。
+  該 `owner_decision` 已於 commit `7039586` **answered**(README 即 REQ-131..139 的 fidelity oracle),
+  但 `dashboard.css:31-38` 仍寫著「README's own L/C sequence is still pending in-repo」——
+  那是 README 進 repo **之前**的陳舊註解,序列至今仍是 DES-201 的暫代值(淺色曲線逐位反轉)。
+  **驗收:** 深色 `--accent-100..900` 的 L 為 `.30 .37 .45 .55 .65 .72 .80 .87 .93`、
+  C 為 `.035 .045 .055 .06 .065 .065 .06 .05 .035`;淺色為 README 的淺色序列。
+  同時刪除 `dashboard.css` 那段陳舊註解 —— 本 ledger 最常見的缺陷是「刪掉了卻還有東西在描述它」。
+  **紅測:** 現行九階彩度單調遞減,README 為中段鼓起的拱形;九階中僅兩階亮度吻合。
+
+- **REQ-145 — 地面色(bg / surface / divider)隨色相推導** `[推翻 DES-209 boundary ⑦]`
+  **來源:** B5 + V29-Q1。**驗收:** 深色 `--color-bg: oklch(.21 .006 var(--rwe-hue))`、
+  `--color-panel: oklch(.25 .007 var(--rwe-hue))`、`--color-line: oklch(.36 .01 var(--rwe-hue))`;
+  淺色為 README 的 `.955/.008`、`.985/.005`、`.82/.012`。拖動色相滑桿時整頁地面的色溫隨之改變。
+  **REQ-131 的 `#18191b`/`#eef2f1` 條款於此標記 `[AMENDED v29]`。**
+  **紅測:** 三個不同色相下 `--color-bg` 的 computed 值相同 → 期望相異。
+
+- **REQ-146 — 工作流卡片標題使用標題字**
+  **來源:** B4。`dashboard.css:112` 現為 `.card .t{font-weight:600;font-family:'JetBrains Mono'…;word-break:break-all}`。
+  交付稿的 `.card-title` 是 Archivo 17px/600;等寬字在設計稿中專屬於 run id、PID、工具呼叫。
+  **驗收:** `.card .t` 解析為 Archivo 17px 600。
+  **`word-break:break-all` 一併移除** —— 它是為等寬字加的,留著會讓 Archivo 把
+  `hypothesis-researcher` 從字中切斷。`.card .t` 的**選擇器**是 C2 錨點,保持不變,只換宣告。
+
+- **REQ-147 — agent 面板的六張統計卡要是卡片**
+  **來源:** B14。`ui/agent-panel.js:59-70` 已經正確產出 `[data-stat-card]` + `.stat-label` + `.stat-value`,
+  `.stat-cards` 也已是 `auto-fit minmax(150px,1fr)` 的 grid ——
+  **缺的只有樣式:`[data-stat-card]` 目前沒有任何一條規則**,而 `.stat-label`/`.stat-value` 是相鄰的
+  inline `<span>`,於是渲染成 `MODELhaiku — claude-agent-sdk · —` 這樣的跑版文字。
+  **驗收:** 每張卡有 `--color-line` 外框、`--radius-md`、內距;標籤為 block 且與數值有垂直間距。
+  **不得更動 `dashboard.css:345` 的 `.stat-card`** —— 那是系統頁 34px 數字的類別,同名不同物。
+
+- **REQ-148 — 執行歷史九欄的格式化**
+  **來源:** B12。`lib/runlist.js:65 historyRow()` 九欄中有五欄是原始值直通:
+  `runId` 未取前 8 碼、`status` 為未翻譯純文字、`startedBy.type` 未翻譯、
+  `fmtStartedAt(iso){ return iso ?? '—' }` **是一個 stub,直接回傳 ISO 字串**、
+  `tokensTotal` 用 `String(n)` 而非人性化。
+  **驗收:** `431df640 │ 完成 │ 客戶端 │ 9/7 18:25:26 │ 19.4k`。
+  runId 取前 8 碼**重用 `ui/workflow.js:209` 既有的 `slice(0, 8)`**,不得另寫一份。
+
+- **REQ-149 — 版本字串的前綴與遺失**
+  **來源:** B1 + B2。兩處皆多補一個 `v`:`ui/workflow.js:183` 的
+  `(lang === 'zh' ? '版本 v' : 'v') + describe.version` 讓已含 `v` 的版本變成 `vv4`;
+  `ui/app.js:102` 的 `` `v${vm.version}` `` 在 `vm.version` 為 undefined 時印出 `vundefined`。
+  **B2 是資料遺失,不是字串問題** —— 切換語言後連 `v0.20.0: applied` 也一起消失,
+  表示重建導覽列時整個 island vm 沒有被帶入,而不只是 `version` 這個欄位。
+  **在 `app.js:102` 加 undefined 防護會把病徵蓋掉**;要修的是語言處理器重建導覽列時遺失
+  `readIsland()` 結果的那個位置。**驗收:** 切 EN 再切回中文,兩個版本字串與切換前逐字相同。
+
+- **REQ-150 — 中文介面不得出現未翻譯的英文狀態、單位與事件種類**
+  **來源:** B16。本次探針量到的字面值集合:
+  `done` `completed` `stopped` `stable` `remote` `message` `usage` `Open` `Resolved`
+  `cores` `Load` `of` `free` `versions` `run records` `Total processes` `System`。
+  **驗收:** 以 `lang='zh'` 渲染四個分頁與兩個滑入面板後,上列 ASCII token 一個都不出現。
+  **範圍上限:** 只修這一組。**不移植交付稿 `rwe-data.js` 完整的 ~90 key `STR` 表** ——
+  那是 21 條那一輪的擴張,不是本迭代的修正。
+
+- **REQ-151 — 移除工作流明細頁的流程圖顯示面** `[修訂 C1 / C2]`
+  **來源:** B27 + V29-Q2。交付稿的明細頁沒有這個元素;現行實作把引擎產的 mermaid SVG 以
+  `<img src=blob:>` 貼在頁尾,白底淺黃,在深色頁面上與其餘一切不協調。
+  **刪除範圍:** `ui/workflow.js` 的 img / zoom / fit 控制 / fetch / `createObjectURL` 記憶化 / `revokeObjectURL`、
+  `ui/run.js` 與 `demo/dataset.js` 的相關參照、`dashboard.css` 的 `#diagram-img` / `#diagram-zoom` / `.fit-btn`
+  三組規則、`tests/fixtures/dashboard-classes.ts` 的 TEST_ANCHORS 條目、
+  `tests/unit/dashboard-page-source.test.ts` 的兩條 C1 字面值 pin、val-169 與 val-197。
+  **保留:** `src/server.ts` 的路由、`src/diagram-render.ts`、`tests/integration/diagram-svg-route.test.ts`。
+  **驗收:** 明細頁不含任何 `#diagram-*` 元素;`/api/workflows/:name/diagram.svg` 仍回 200。
+  依 REQ-105 / ADR-048 的反腐條款,刪面即刪其 CSS 與其描述 —— 不得留下孤立的規則或註解。
+
+### 約束
+
+- **C5(順序)** REQ-145/144 的 oracle 重算必須先於 CSS 修改,且獨立成一個 commit。
+- **C6(Gate 7.5)** VAL-208 讀的是**執行中**節點的 `--accent-100` 底色。目前引擎沒有進行中的 run,
+  若不先真跑一個 workflow,該條只會是 mock-only —— 依本專案硬規則等同未驗證。
+- **C7** 不得擴張到 21 條清單:`--color-panel2/-muted/-link/-ink`、完整 STR 表、
+  導覽列多餘的版本字串(B25)、麵包屑(B3)、泳道結構(B7/B8/B10/B11/B13)皆不在本迭代。
+
+### 交付順序
+
+| commit | 內容 | 動到 oracle |
+|---|---|---|
+| c1 | REQ-149 · REQ-148 · REQ-146 · REQ-147 | 否 —— 純函式 + 三段 CSS,最快的 RED→GREEN |
+| c2 | oracle 重算 → REQ-144 · REQ-145 | **是**,且必須是兩個 commit |
+| c3 | REQ-150 | 否 |
+| c4 | REQ-151 | 退役 val-169 / val-197 / 兩條 C1 pin |
+
+**落地後:** `systemctl --user restart rwe.service`(先確認 `inUse=0`;已知優雅關閉會停滯約 55 秒
+才被 SIGKILL 收尾 —— 該缺陷本身在 21 條之外,另行登記)。
