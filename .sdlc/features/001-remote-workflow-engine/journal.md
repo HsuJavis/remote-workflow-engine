@@ -6011,3 +6011,62 @@ pass over the ledger, no new file read. It lives in the one place all three inst
 and every Gate 8 — so it fires automatically with no new invocation point, and would have caught all
 three at the moment the covering IMPL first landed, not one-to-several gates later when an agent
 burns a dispatch re-doing closed work. Not built this pass, per the dispatch's own instruction.
+
+## 2026-09-18 — TASK-226 flipped `done` (reviewer): the fourth occurrence, plus a whole-ledger sweep for both directions
+
+`bdf36f4` ("REQ-143's demo disclosure names the route, on all three surfaces") landed the code and
+quoted real evidence in its own commit message, but — same class of gap as TASK-215/216 one pass
+ago — never flipped TASK-226's `status:` or wrote its `IMPL-*` entry. Did not take the orchestrator's
+numbers as sufficient: re-ran the card's `dod:` **verbatim, as the one vitest invocation the card
+specifies** (the orchestrator's report ran the acceptance file and the three unit files as two
+separate commands) —
+`RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-207-demo-data.test.ts
+tests/unit/demo-surface.test.ts tests/unit/dashboard-seam.test.ts
+tests/unit/dashboard-lib-strings.test.js` → 4 files / 23 tests, all green, 61.98s wall clock,
+including the widened THIRD case (System tab counts card, DES-220 B7) and both recovery assertions.
+Read the code directly rather than trust the commit message for which DES a given call site
+implements: `src/dashboard/lib/strings.js:40,51`'s `noDemoData` is the exact colon-terminated prefix
+in both languages; `workflow.js:420`, `issues.js:127`, and `system.js:278-279` each append their own
+literal route (`git show bdf36f4 -- src/dashboard/ui/system.js` confirms exactly one new parameter
+and one new branch, the other three cards untouched); `git show bdf36f4 --stat -- src/ tests/` lists
+exactly the 8 files on the card's `files:` line, nothing else; `npx tsc --noEmit` exits 0. Full DoD
+PASSES — flipped `status: done` with a dated closeout citing `bdf36f4`; `IMPL-301` written with real
+`traces:`/`files:`/`commit:`, `iter: v28b` (the card's own iter). Noted in the entry, per the
+dispatch's instruction, why DES-220 and this row both carry three arms where the original design had
+two: the System-tab arm was a same-day owner widening (`04-design.md` DES-220 `owner_decision:
+answered 2026-09-18`), not implementer scope creep.
+
+**Gate self-check, and the SET moved, not just the count.** `sh .sdlc/trace
+.sdlc/features/001-remote-workflow-engine --check` → **1727 items / 26 gaps** (was 1726/27). Diffed
+the full sorted gap list, not just the number: the only change is the `未實作 TASK-226` row gone; the
+other 26 low-severity rows (24 `漂移`, `TASK-018`, `TASK-153`) are byte-identical before/after — no
+new drift introduced by IMPL-301's `iter: v28b` against DES-220 (also `v28b`, so no iteration-lag
+row was created).
+
+**The whole-ledger sweep the dispatch asked for, both directions.** Method: imported `trace.py` as a
+module (`sys.path.insert(0, '.sdlc'); import trace as t`) rather than re-implementing its graph walk
+— `t.scan(sdlc_dir)` for every item's `stage`/`status`, `t.reachable_from("build", items)` for the
+exact "implemented" set `analyze()` itself uses (the full upstream-`traces:` closure from every
+IMPL, not merely "does some IMPL name this TASK directly" — a TASK reached only transitively through
+a DES/ARCH hop still counts, matching the tool's own semantics exactly). Two checks over all 226 TASK
+rows: **(A)** `status != done` AND `iid in implemented` — the exact TASK-215/216/226 pattern (code
+landed, row not flipped); **(B)** `status == done` AND `iid not in implemented` — the inverse,
+"closed over nothing," which `--check`'s existing `未實作` row would ALSO have caught on its own
+(it does not gate on `status` at all, only on graph reachability), so this direction was never as
+blind as (A). **Result: 0 and 0**, both before and after this pass's own edit (before: TASK-226 was
+the only member of neither list, because no IMPL yet named it at all, so it surfaced as the ordinary
+`未實作` gap `--check` already shows, not as a hidden inconsistency — the hidden-inconsistency window
+only opens once an IMPL lands without the status flip, which this pass closes in the same edit that
+opens it). The two remaining `未實作` rows, `TASK-018`/`TASK-153`, are legitimate: `TASK-018` is
+`status: blocked` (v3 OIDC scope, out of this iteration), `TASK-153` is `status: draft` and
+explicitly self-documented as an EXTERNAL-repo, owner-scheduled dependency that blocks only the
+REQ-117 probe, not Gate 6 — both known, recorded debt, not instances of this pathology.
+
+**Blind spots of this method, named rather than assumed away.** It trusts every `traces:` edge's
+honesty — an IMPL that claims a trace it does not actually fulfil would falsely mark the traced TASK
+"covered" under this same closure, and the closure computes structural reachability only, not
+content correctness (nothing here re-verifies that every one of the 226 tasks' own DoD still passes,
+only that the graph and the `status:` field agree). It is also a single snapshot at HEAD `bdf36f4`;
+it says nothing about a row that goes stale five minutes after this check runs. And it covers TASK
+rows only, per the dispatch's own scope — REQ/DES/other stages' status-vs-coverage consistency was
+not swept here.

@@ -7711,3 +7711,61 @@ inside the disposable worktree, never the shared tree — CLAUDE.md's ban is on 
 deferred:** the new test file's `UT-*` id — TASK-216's own `dod:` explicitly defers minting it to the
 next gate that owns `05-tests.md` (TASK-214's precedent), so its absence from `05-tests.md` is not a
 gap this entry closes, and nothing here should try to mint one out of turn.
+
+### IMPL-301 — TASK-226: the 「此路由無示範資料」 disclosure lands on all three surfaces, DES-220's widened signature
+
+- **status:** done
+- **traces:** TASK-226, DES-220, ARCH-132, ARCH-123, REQ-143
+- **greens:** VAL-217, UT-244, UT-260, UT-261
+- **files:** src/dashboard/lib/strings.js, src/dashboard/ui/workflow.js, src/dashboard/ui/issues.js, src/dashboard/ui/system.js, tests/unit/demo-surface.test.ts, tests/unit/dashboard-seam.test.ts, tests/unit/dashboard-lib-strings.test.js, tests/acceptance/val-207-demo-data.test.ts
+- **commit:** bdf36f4
+- **iter:** v28b
+
+Same bookkeeping gap as IMPL-299/300, a fourth time: the code landed in `bdf36f4` ("REQ-143's demo
+disclosure names the route, on all three surfaces") with a real commit message and real evidence
+quoted in it, but the commit never flipped TASK-226's `status:` or wrote this entry. Re-verified
+here rather than inherited from the commit message: TASK-226's own `dod:` re-run **verbatim, as one
+vitest invocation** (the orchestrator's report ran the acceptance and unit files as two separate
+commands, which is weaker than the card's actual command) —
+`RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-207-demo-data.test.ts
+tests/unit/demo-surface.test.ts tests/unit/dashboard-seam.test.ts
+tests/unit/dashboard-lib-strings.test.js` → 4 files, 23/23 pass, 61.98s wall clock, including the
+widened THIRD case (`the System tab counts card … (DES-220 B7)`, val-207 case 5) and both recovery
+assertions (the describe arm and the issues arm each prove the disclosure clears under a Live tag).
+
+`noDemoData` (`lib/strings.js:40,51`) is the exact colon-terminated PREFIX in both languages
+(`'此路由無示範資料:'` / `'No demo data for this route: '`), not a complete sentence. Each of the
+three call sites appends its own literal route, confirmed by reading the code directly (not the
+commit message): `workflow.js:420` → `t(lang, 'noDemoData') + '/api/workflows/:name/describe'`
+inside the existing describe-bail's new `tick.source === 'demo'` arm; `issues.js:127` →
+`t(currentLang(), 'noDemoData') + '/api/issues'`, the third arm on the existing two-arm `data`
+check; `system.js:278-279` → `paintCountsUnavailable`'s ONE caller computes
+`(tick && tick.source === 'demo') ? t(state.lang, 'noDemoData') + '/api/workflows' :
+t(state.lang, 'unavailable')` and passes it as the new `text` parameter (`system.js:232`) —
+`git show bdf36f4 -- src/dashboard/ui/system.js` confirms exactly one new parameter and one new
+branch, the other three cards (CPU/memory/disk) untouched. `val-207-demo-data.test.ts`'s three
+acceptance cases assert the FULL prefixed-and-routed sentence at `[data-legend]`, `#issues-open`/
+`#issues-resolved`, and the counts-card value — never the bare prefix — on the file's existing REAL
+fault (`server.close()` + re-`listen()` on the same port); `page.setRequestInterception` does not
+appear anywhere in the file (`grep -c setRequestInterception` finds only the comment naming it
+forbidden).
+
+`git show bdf36f4 --stat -- src/ tests/` lists exactly the 8 files on this card's `files:` line —
+`src/dashboard/lib/strings.js`, `ui/issues.js`, `ui/system.js`, `ui/workflow.js`, and the four test
+files — nothing in `dashboard.css`, `server.ts`, `demo/dataset.js`, or any config file. `npx tsc
+--noEmit` exits 0.
+
+**DES-220's third arm, noted for a future reader.** DES-220 as originally scoped covered two view
+arms (`workflow.js`, `issues.js`); the System tab's counts card (`system.js`) was added by the
+owner's same-day v28b widening (`04-design.md`'s DES-220 `owner_decision: answered 2026-09-18` —
+asked whether the bare `/api/workflows` route should keep its existing 「無法取樣」 degrade or gain
+the named-route sentence, the owner declined both offered options and ruled to name the route on
+all three surfaces). That is why this row and DES-220 both carry three arms where the task's
+original framing had two — the third is a design amendment landed in the same slice, not scope
+creep by the implementer.
+
+**PRODUCTION_ALLOWLIST, a two-commit trail worth naming.** `demo-surface.test.ts`'s allowlist holds
+all three of `ui/workflow.js` + `ui/issues.js` + `ui/system.js` today, but `bdf36f4`'s own diff only
+adds `ui/system.js` — the other two were added at `87eee96`, the prior commit that landed the
+pre-widened two-arm sentence. TASK-226's `dod:` describes the allowlist's FINAL state (all three),
+which holds; it does not require all three to land in one commit, and they did not.

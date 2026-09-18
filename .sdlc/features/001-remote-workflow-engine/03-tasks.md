@@ -2007,7 +2007,8 @@ it adds no sorting, no filtering, no slide-in, no demo data. See `04-design.md`'
 ## v28b — the Gate 7.5 send-back slice (REQ-143's per-route disclosure · ARCH-132) — TASK-226
 
 ### TASK-226 — the 「此路由無示範資料」 disclosure: one string key, three view arms, each naming its own route
-- **status:** draft
+- **status:** done
+- **closeout (2026-09-18, missing-IMPL-trail sweep, 4th occurrence):** covered by IMPL-301; DoD re-run VERBATIM, in one invocation as written (not the orchestrator's split runs): `RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-207-demo-data.test.ts tests/unit/demo-surface.test.ts tests/unit/dashboard-seam.test.ts tests/unit/dashboard-lib-strings.test.js` → 4 files / 23 tests, all green (61.98s wall clock), including the widened THIRD case (System tab counts card, DES-220 B7) and both recovery cases. `src/dashboard/lib/strings.js:40,51` — `noDemoData` is the exact colon-terminated prefix in both languages. Each call site verified appending its OWN literal route: `workflow.js:420` → `/api/workflows/:name/describe`, `issues.js:127` → `/api/issues`, `system.js:278-279` → `/api/workflows` gated on `tick.source === 'demo'` inside `paintCountsUnavailable`'s one caller (`system.js:232` gains the one `text` parameter). `git show bdf36f4 --stat -- src/ tests/` shows exactly the 8 files on this card's `files:` line, nothing else (`dashboard.css`/`server.ts`/`demo/dataset.js`/config untouched). `npx tsc --noEmit` exit 0. Full DoD PASSES.
 - **traces:** ARCH-132, ARCH-123, REQ-143
 - **files:** src/dashboard/lib/strings.js, src/dashboard/ui/workflow.js, src/dashboard/ui/issues.js, src/dashboard/ui/system.js, tests/unit/demo-surface.test.ts, tests/unit/dashboard-seam.test.ts, tests/unit/dashboard-lib-strings.test.js, tests/acceptance/val-207-demo-data.test.ts
 - **des:** DES-220
