@@ -10657,3 +10657,35 @@ test.** "Low and max produce different bytes" passes when both are wrong. "The w
 when the wrapping is forgeable. `not.toContain(wholeString)` passes when a fragment leaks. A comment
 asserting a guarantee is not a control. **Where a clause names an external contract or a security
 property, assert against that property — never derive the expectation from the implementation.**
+
+---
+
+## R29-A1 — `once` 排程在負載下產生兩個 run(新發現,非 v29 引入)
+
+- **severity:** mid — 觀測到一次,尚未確認可重現
+- **發現於:** 2026-09-18,v29 c2 的全回歸
+- **失敗點:** `tests/integration/unclaimed-trigger-create.test.ts:156`
+- **owner:** 未指派
+
+```
+expect((await runsOf(WF)).length, 'the schedule never fired …').toBe(1)
+AssertionError: expected 2 to be 1
+```
+
+**斷言訊息會誤導讀者。** 它寫的是「the schedule never fired」,那是為結果 0 的情形寫的;
+實際收到的是 **2** —— 一個 `kind: 'once'` 的排程產生了兩個 run。測試的迴圈在出現第一個 run
+時就跳出,隨即斷言恰好為 1,所以這不是「多等到了一個」,而是**在那個瞬間已經存在兩個**。
+
+**不是 v29 引入的:**
+- c2 在 `src/` 只改 `dashboard.css`(`git diff --stat` 確認),排程器完全未觸及
+- 同一支測試在 c1 的全回歸(2979 通過 / 0 失敗)中為綠
+- 單獨重跑 7/7 綠 —— 只在整套回歸的負載下出現
+
+**排除掉的解釋:** 當下的 scratch 引擎(8951)沒有觸發任何排程(log 中 0 筆),
+系統 load average 1.12 —— 以「資源競爭」作結並不誠實。
+
+**懷疑的機制(未驗證,勿當結論):** 排程器的 tick 在「已觸發」標記持久化之前跑了第二次。
+若成立,這在正式環境的後果是一次性排程可能跑兩次,而不只是測試紅一次。
+
+**下一步:** 在負載下重複跑該測試以判定可重現性;若可重現,從 `schedules.db` 的
+已觸發標記寫入點與 tick 的間隔關係查起。**不在 v29 範圍**,登記於此以免被當成偶發忽略。
