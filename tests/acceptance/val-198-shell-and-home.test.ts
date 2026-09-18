@@ -87,7 +87,12 @@ const itReal = (name: string, fn: () => Promise<void>, timeout?: number): void =
 };
 
 describe('the v27 dashboard shell + Workflows home, real Chromium (VAL-198, REQ-131/132)', () => {
-  itReal('first load: dark by default, --color-bg computes to #18191b', async () => {
+  // [v29 REQ-145 — ORACLE RE-DERIVED] This assertion pinned `#18191b`. That hex is not a design
+  // value: measured, it is L .213 / C .004 — i.e. the README's own `oklch(.21 .006 h)` frozen at
+  // ONE hue, which is exactly what DES-201 says the `.dc.html` static block is ("a snapshot of ONE
+  // hue and is never copied anywhere"). The oracle had absorbed the snapshot, so it could only ever
+  // confirm the copy. Re-derived from `.sdlc/design-handoff/README.md:83`.
+  itReal('first load: dark by default, --color-bg is the hue-driven ground, not a frozen hex', async () => {
     const puppeteer = (await import('puppeteer')).default;
     const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
     try {
@@ -96,13 +101,14 @@ describe('the v27 dashboard shell + Workflows home, real Chromium (VAL-198, REQ-
       const theme = await page.$eval('html', (el) => el.getAttribute('data-theme'));
       expect(theme).toBe('dark');
       const bg = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--color-bg').trim());
-      expect(bg).toBe('#18191b');
+      expect(bg).toBe('oklch(0.21 0.006 236)');
     } finally {
       await browser.close();
     }
   }, 20000);
 
-  itReal('switching to light persists across a reload (localStorage)', async () => {
+  // [v29 REQ-145] `#eef2f1` measured L .958 / C .004 — the README's `oklch(.955 .008 h)` at one hue.
+  itReal('switching to light persists across a reload (localStorage), on the hue-driven ground', async () => {
     const puppeteer = (await import('puppeteer')).default;
     const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
     try {
@@ -113,7 +119,32 @@ describe('the v27 dashboard shell + Workflows home, real Chromium (VAL-198, REQ-
       const theme = await page.$eval('html', (el) => el.getAttribute('data-theme'));
       expect(theme).toBe('light');
       const bg = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--color-bg').trim());
-      expect(bg).toBe('#eef2f1');
+      expect(bg).toBe('oklch(0.955 0.008 236)');
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
+  // [v29 REQ-145] The accent already moved with the hue before this pass; the GROUND did not.
+  // Without this case the change is unproven — a stylesheet can carry an `oklch()` formula and
+  // still be pinned to one hue by an upstream literal.
+  itReal('moving the hue slider recomputes the GROUND too, not only the accent (REQ-145)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+      const read = () => page.evaluate(() => {
+        const cs = getComputedStyle(document.documentElement);
+        return ['--color-bg', '--color-panel', '--color-line'].map((n) => cs.getPropertyValue(n).trim());
+      });
+      const at236 = await read();
+      await page.evaluate(() => { document.documentElement.style.setProperty('--rwe-hue', '30'); });
+      const at30 = await read();
+      for (let i = 0; i < at236.length; i += 1) {
+        expect(at30[i]).not.toBe(at236[i]);
+        expect(at30[i]).toContain('30');
+      }
     } finally {
       await browser.close();
     }

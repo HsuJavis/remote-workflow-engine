@@ -246,3 +246,53 @@ describe('v29 — the two rules the side-by-side audit measured wrong (REQ-146/1
     expect(body).toContain('font-size:34px');
   });
 });
+
+// ── v29 ramp + ground anchors (REQ-144, REQ-145) ────────────────────────────────────────────
+// Direction was already anchored (DES-201). These pin the VALUES, which DES-201 explicitly left
+// to `.sdlc/design-handoff/README.md` via DES-209's owner_decision — answered at 7039586.
+describe('v29 — the ramp and the ground come from the README, not from a one-hue snapshot', () => {
+  const DARK_L = ['.3', '.37', '.45', '.55', '.65', '.72', '.8', '.87', '.93'];
+  const DARK_C = ['.035', '.045', '.055', '.06', '.065', '.065', '.06', '.05', '.035'];
+  const LIGHT_L = ['.93', '.87', '.79', '.68', '.56', '.48', '.4', '.33', '.26'];
+  const LIGHT_C = ['.03', '.045', '.06', '.07', '.075', '.07', '.06', '.05', '.04'];
+  const norm = (v: string) => v.replace(/^0(?=\.)/, '');
+
+  function ramp(theme: string): Array<[string, string]> {
+    const body = ruleBody(CSS, `:root[data-theme="${theme}"]`);
+    return [100, 200, 300, 400, 500, 600, 700, 800, 900].map((n) => {
+      const m = new RegExp(`--accent-${n}:\\s*oklch\\(([^ ]+) ([^ ]+) `).exec(body);
+      if (!m) throw new Error(`--accent-${n} not found under ${theme}`);
+      return [norm(m[1]!), norm(m[2]!)] as [string, string];
+    });
+  }
+
+  it('the dark ramp is the README\u2019s L/C sequence (REQ-144)', () => {
+    const r = ramp('dark');
+    expect(r.map((x) => x[0])).toEqual(DARK_L);
+    expect(r.map((x) => x[1])).toEqual(DARK_C);
+  });
+
+  it('the light ramp is the README\u2019s L/C sequence (REQ-144)', () => {
+    const r = ramp('light');
+    expect(r.map((x) => x[0])).toEqual(LIGHT_L);
+    expect(r.map((x) => x[1])).toEqual(LIGHT_C);
+  });
+
+  it('bg / panel / line are formulas over --rwe-hue, never frozen hexes (REQ-145)', () => {
+    for (const theme of ['dark', 'light']) {
+      const body = ruleBody(CSS, `:root[data-theme="${theme}"]`);
+      for (const tok of ['--color-bg', '--color-panel', '--color-panel2', '--color-line']) {
+        const m = new RegExp(`${tok}:\\s*([^;]+);`).exec(body);
+        expect(m, `${tok} missing under ${theme}`).toBeTruthy();
+        expect(m![1]).toContain('var(--rwe-hue)');
+        expect(m![1]).not.toMatch(/#[0-9a-fA-F]{3,6}/);
+      }
+    }
+  });
+
+  it('the stale "pending in-repo" note is gone — the decision was answered at 7039586 (REQ-144)', () => {
+    // This ledger's most repeated defect is deleting a thing and leaving prose that still
+    // describes it (REQ-105 / ADR-048).
+    expect(CSS).not.toMatch(/still pending in-repo/);
+  });
+});
