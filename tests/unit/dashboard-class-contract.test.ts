@@ -251,11 +251,13 @@ describe('v29 — the two rules the side-by-side audit measured wrong (REQ-146/1
 // Direction was already anchored (DES-201). These pin the VALUES, which DES-201 explicitly left
 // to `.sdlc/design-handoff/README.md` via DES-209's owner_decision — answered at 7039586.
 describe('v29 — the ramp and the ground come from the README, not from a one-hue snapshot', () => {
-  const DARK_L = ['.3', '.37', '.45', '.55', '.65', '.72', '.8', '.87', '.93'];
-  const DARK_C = ['.035', '.045', '.055', '.06', '.065', '.065', '.06', '.05', '.035'];
-  const LIGHT_L = ['.93', '.87', '.79', '.68', '.56', '.48', '.4', '.33', '.26'];
-  const LIGHT_C = ['.03', '.045', '.06', '.07', '.075', '.07', '.06', '.05', '.04'];
-  const norm = (v: string) => v.replace(/^0(?=\.)/, '');
+  const DARK_L = ['0.3', '0.37', '0.45', '0.55', '0.65', '0.72', '0.8', '0.87', '0.93'];
+  const DARK_C = ['0.035', '0.045', '0.055', '0.06', '0.065', '0.065', '0.06', '0.05', '0.035'];
+  const LIGHT_L = ['0.93', '0.87', '0.79', '0.68', '0.56', '0.48', '0.4', '0.33', '0.26'];
+  const LIGHT_C = ['0.03', '0.045', '0.06', '0.07', '0.075', '0.07', '0.06', '0.05', '0.04'];
+  // Compare the VALUE, not its typography: CSS `0.30`, `.30` and `.3` are the same number, and
+  // the README writes the sequence with trailing zeros for readability.
+  const norm = (v: string) => String(Number(v));
 
   function ramp(theme: string): Array<[string, string]> {
     const body = ruleBody(CSS, `:root[data-theme="${theme}"]`);

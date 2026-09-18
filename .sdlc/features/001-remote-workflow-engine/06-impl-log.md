@@ -7950,3 +7950,90 @@ span,`.stat-cards` 也早已是交付稿的 `auto-fit minmax(150px,1fr)` grid �
 | REQ-149b | 切 EN 再切回中文,`v0.1.0 (v0.20.0-386-g23c6956) v0.20.0: applied` 逐字不變 |
 
 費用欄與交付稿的 `$0.0000` 不同,是 ADR-046「絕不顯示有信心的 $0.00」的既有裁決,非本次缺陷。
+
+---
+
+## v29 c2 — REQ-144/145(先重算 oracle,再改 CSS)
+
+### 為什麼 oracle 必須先改:量測到的污染證據
+
+| token | 目前釘在 oracle 裡的 hex | 量測其 OKLCH | README 的公式 |
+|---|---|---|---|
+| dark bg | `#18191b` | L .213 C .004 | `oklch(.21 .006 h)` |
+| dark surface | `#212226` | L .253 C .008 | `oklch(.25 .007 h)` |
+| light bg | `#eef2f1` | L .958 C .004 | `oklch(.955 .008 h)` |
+
+**那些 hex 就是 README 的公式凍結在單一色相的結果。** DES-201 自己對 `.dc.html` 靜態區塊的描述
+是「a snapshot of ONE hue and is never copied anywhere」—— 而驗收表抄的正是那個快照。
+oracle 吸收了實作,於是它只能確認那份拷貝。這是本 ledger 年度第五例(前四例見 DES-209 v28 修訂
+與 v29 c1 的 `.t word-break` 那一列)。
+
+### IMPL-306 — 驗收 oracle 重算(獨立 commit,C5)
+- **traces:** REQ-144, REQ-145
+- **files:** `tests/acceptance/val-198-shell-and-home.test.ts`, `tests/unit/dashboard-class-contract.test.ts`
+- **不含任何 `src/` 變更。**
+
+val-198 的兩條字面值斷言(`#18191b` / `#eef2f1`)改為 README 推導出的 `oklch(...)`。
+class-contract 新增三組錨點:深色九階 L/C 序列、淺色九階 L/C 序列、
+以及「bg/panel/panel2/line 必須是 `var(--rwe-hue)` 的公式而非 hex」。
+
+**新增一條 val-198 案例,它才是 REQ-145 真正買到的行為:** 移動色相後
+`--color-bg` / `--color-panel` / `--color-line` 三者都必須改變且含新色相值。
+沒有這一條,樣式表裡寫著 `oklch()` 公式卻被上游字面值釘死在單一色相,整套測試照樣全綠。
+
+**同時新增一條反腐斷言:** `dashboard.css` 不得再含 "still pending in-repo" ——
+該 `owner_decision` 已於 `7039586` answered,留著那句陳舊註解正是本 ledger 最常犯的
+「刪掉了卻還有東西在描述它」(REQ-105 / ADR-048)。
+
+### IMPL-307 — 地面色與兩條色階改為 README 的公式
+- **traces:** REQ-144, REQ-145
+- **files:** `src/dashboard/dashboard.css`
+
+**推翻 DES-209 boundary ⑦,理由記於 CSS 註解與此處。** 該條款駁回交付稿的色相驅動背景,
+理由是「REQ-131 已測的字面值勝出」,而同一個 row 的 boundary ④ 記著做此判斷時
+`design_handoff_workflow_dashboard/` 不在 checkout 裡(原文 `find` measured)。
+被駁回的推論是「色相地面與固定中性色階不協調」;本輪把交付稿真的跑起來,
+在 19°/180°/321° 三個色相下都成立,推論不成立。擁有者裁決 V29-Q1,2026-09-18。
+
+**`--color-panel2` 的處理已標記,不是默默選的。** README 只定義一層 `surface`,
+`--color-panel2` 沒有 1:1 對應。它以**自己量到的亮度**(深 L .286 → `0.29`,淺 L .936)
+帶進色相系統 —— 從既有值推導,不是新造設計值。若放著不動,拖到 30° 時它周圍每一塊表面
+都轉暖而只有它維持中性灰,等於用這次修正製造一個新的不一致。
+
+**`--color-ink` / `--color-muted` / `--color-link` 不動。** README 自己的文字色與中性色階
+(README:85,「Neutrals (zinc-teal base, **fixed**)」)本來就是固定 hex,不屬於色相化範圍。
+**更正 v29 需求區塊先前的措辭:`--color-ink` 並非「沒有 1:1 對應」(README 的 `text` 就是它),
+而是「README 自己也把它定為固定值」—— 結論相同,理由不同。**
+
+### 色階安全性檢查(數值,非目測)
+
+DES-201 當初修的缺陷是深色主題下 `--accent-100` 為 L .93、在 L .933 的 `--color-ink` 文字下
+變成近白配近白。新序列在 0°/30°/120°/236°/300° 五個色相下量測:
+
+| | accent-100 對 ink | accent-100 對 bg |
+|---|---|---|
+| 深色 | 11.1 – 11.4 : 1 | 1.28 – 1.31 : 1 |
+| 淺色 | 12.2 – 12.4 : 1 | 1.07 – 1.09 : 1 |
+
+文字對比全數遠高於 AA 的 4.5:1;節點底相對頁面底維持「看得出是一塊」而不刺眼。
+淺色的 `--accent-100` 仍是 L .93,但淺色的 `--color-ink` 是 L .267 —— 同一個數字在另一個主題
+裡是安全的,這正是 DES-201「依 subtlety 而非絕對亮度索引」的意思。
+
+### c2 的真跑實證(Chrome for Testing 149,`RWE_PORT=8951`)
+
+| 色相 / 主題 | `--color-bg` | `--color-panel` | `--color-line` | body 實際繪製 |
+|---|---|---|---|---|
+| 236° 深 | `oklch(0.21 0.006 236)` | `oklch(0.25 0.007 236)` | `oklch(0.36 0.01 236)` | 同 bg |
+| 30° 深 | `oklch(0.21 0.006 30)` | `oklch(0.25 0.007 30)` | `oklch(0.36 0.01 30)` | 同 bg |
+| 150° 深 | `oklch(0.21 0.006 150)` | `oklch(0.25 0.007 150)` | `oklch(0.36 0.01 150)` | 同 bg |
+| 30° 淺 | `oklch(0.955 0.008 30)` | `oklch(0.985 0.005 30)` | `oklch(0.82 0.012 30)` | 同 bg |
+
+三個色相、兩個主題下地面全數跟著走,且 `body` 的實際繪製色與 token 一致
+(公式寫在樣式表裡但被上游字面值釘死的情況,這一欄才看得出來)。
+
+### 一個屬於我自己的錯誤,記錄而非修掉就算
+
+oracle 重算的第一版把色階比對寫成**字串**比對,於是 CSS 的 `0.30` 與期望的 `.3` 被判為不同 ——
+比到的是排版而不是數值。已改為 `String(Number(v))` 的數值比對。
+這不是放寬斷言:`0.30`、`.30`、`.3` 在 CSS 裡是同一個數,原本那版會讓任何合法的寫法變動
+誤報成色階錯誤。

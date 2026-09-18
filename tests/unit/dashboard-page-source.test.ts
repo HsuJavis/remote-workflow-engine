@@ -87,8 +87,14 @@ describe('the v27 shell: markup + tokens CSS + a JSON data island, zero inline e
     // [v27c] re-pointed to `dashboard.css` bytes: the shell no longer inlines a <style> copy
     // (DES-200), so these token facts are only assertable against the served file directly.
     const css = clientFile('dashboard.css');
-    expect(css).toMatch(/\[data-theme="dark"\][^}]*--color-bg:\s*#18191b/);
-    expect(css).toMatch(/\[data-theme="light"\][^}]*--color-bg:\s*#eef2f1/);
+    // [v29 REQ-145 — ORACLE RE-DERIVED, third site] This pinned `#18191b` / `#eef2f1`. Measured,
+    // those are L .213/C .004 and L .958/C .004 — the README's own `oklch(.21 .006 h)` and
+    // `oklch(.955 .008 h)` frozen at ONE hue, i.e. the `.dc.html` static-block snapshot DES-201
+    // says is "never copied anywhere". Two sibling sites were re-derived in a85bad1; this one was
+    // missed because that sweep searched `tests/acceptance/` only. Asserting the FORMULA is also
+    // strictly stronger: a hex can only ever be right at one hue.
+    expect(css).toMatch(/\[data-theme="dark"\][^}]*--color-bg:\s*oklch\([^)]*var\(--rwe-hue\)\)/);
+    expect(css).toMatch(/\[data-theme="light"\][^}]*--color-bg:\s*oklch\([^)]*var\(--rwe-hue\)\)/);
     expect(css).toMatch(/oklch\([^)]*var\(--rwe-hue\)\)/);
   });
 

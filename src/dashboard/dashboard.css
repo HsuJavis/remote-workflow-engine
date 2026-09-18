@@ -27,55 +27,76 @@
   --row-selected-bg: color-mix(in srgb, var(--color-accent) 7%, transparent);
 }
 
-/* Dark is the no-preference default (REQ-131). [v27c] The accent ramp direction is corrected: DES-
-   201 rules the ramp is indexed by SUBTLETY against the theme's own --color-bg, not by absolute
-   lightness — --accent-100 is the subtlest step, --accent-900 the strongest, so under a dark bg the
-   L sequence ASCENDS 100->900 (the pre-v27c ramp here descended, the same shape as light, which made
-   --accent-100 a near-white fill under near-white --color-ink text on REQ-134's running node — the
-   defect DES-201 repairs). The delivery README's own L/C sequence is still pending in-repo (DES-209
-   owner_decision); until then this mirrors the light ramp's existing curve REVERSED, position for
-   position, which is DES-201's stated fallback. */
+/* Dark is the no-preference default (REQ-131). The ramp is indexed by SUBTLETY against the theme's
+   own --color-bg, not by absolute lightness (DES-201) — --accent-100 is the subtlest step,
+   --accent-900 the strongest, so the L sequence ASCENDS 100->900 under dark and DESCENDS under
+   light.
+
+   [v29, REQ-144] The L/C values are now the delivery README's own sequence
+   (.sdlc/design-handoff/README.md:83-84). DES-201 decided only the DIRECTION and left the sequence
+   to "REQ-131's deferral to the README, carried as DES-209's owner_decision" — that decision was
+   ANSWERED at 7039586 (the README is the fidelity oracle for REQ-131..139), so the interim fallback
+   it authorised (the light curve reversed, position for position) has served its purpose and is
+   replaced here.
+
+   [v29, REQ-145] bg / panel / panel2 / line are formulas over --rwe-hue rather than fixed hexes.
+   The hexes they replace were NOT design values: measured, #18191b is L .213 / C .004 and #eef2f1
+   is L .958 / C .004 — the README's own oklch(.21 .006 h) and oklch(.955 .008 h) frozen at ONE hue,
+   which is precisely what DES-201 says the .dc.html static block is ("a snapshot of ONE hue and is
+   never copied anywhere"). This OVERTURNS DES-209 boundary (7), which struck the hue-driven ground
+   on the grounds that the tested literals won; that clause was written while
+   design_handoff_workflow_dashboard/ was not in the checkout (its own boundary (4) records the
+   `find`), so its premise — that a hue-driven ground would not sit with the fixed neutral ramp —
+   could not be checked. It has since been checked against the running reference and does not hold.
+   Owner ruling V29-Q1, 2026-09-18.
+
+   --color-panel2 has no 1:1 README token (the README names one `surface` level). It is carried into
+   the hue system at its OWN measured lightness (dark L .286, light L .936) so the second surface
+   does not stay neutral while every surface around it takes the hue — a derivation from the value
+   already shipping, not a new design value. Flagged rather than silently chosen.
+   --color-ink / --color-muted / --color-link stay fixed: the README's own text and neutral ramps
+   are fixed hex too (README:85), so they are not part of this change. */
 :root[data-theme="dark"] {
-  --color-bg: #18191b;
-  --color-panel: #212226;
-  --color-panel2: #292a2f;
-  --color-line: #34363c;
+  --color-bg: oklch(0.21 0.006 var(--rwe-hue));
+  --color-panel: oklch(0.25 0.007 var(--rwe-hue));
+  --color-panel2: oklch(0.29 0.008 var(--rwe-hue));
+  --color-line: oklch(0.36 0.01 var(--rwe-hue));
   --color-ink: #e7e9ec;
   --color-muted: #8e97a3;
   --color-link: #9fb8d6;
   --color-accent: oklch(0.72 0.065 var(--rwe-hue));
-  --accent-100: oklch(0.26 0.045 var(--rwe-hue));
-  --accent-200: oklch(0.37 0.06 var(--rwe-hue));
-  --accent-300: oklch(0.47 0.07 var(--rwe-hue));
-  --accent-400: oklch(0.56 0.065 var(--rwe-hue));
-  --accent-500: oklch(0.63 0.06 var(--rwe-hue));
-  --accent-600: oklch(0.72 0.05 var(--rwe-hue));
-  --accent-700: oklch(0.82 0.04 var(--rwe-hue));
-  --accent-800: oklch(0.9 0.025 var(--rwe-hue));
-  --accent-900: oklch(0.96 0.015 var(--rwe-hue));
+  --accent-100: oklch(0.30 0.035 var(--rwe-hue));
+  --accent-200: oklch(0.37 0.045 var(--rwe-hue));
+  --accent-300: oklch(0.45 0.055 var(--rwe-hue));
+  --accent-400: oklch(0.55 0.06 var(--rwe-hue));
+  --accent-500: oklch(0.65 0.065 var(--rwe-hue));
+  --accent-600: oklch(0.72 0.065 var(--rwe-hue));
+  --accent-700: oklch(0.80 0.06 var(--rwe-hue));
+  --accent-800: oklch(0.87 0.05 var(--rwe-hue));
+  --accent-900: oklch(0.93 0.035 var(--rwe-hue));
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, .5);
   --shadow-md: 0 3px 10px rgba(0, 0, 0, .55);
   --shadow-lg: 0 16px 40px rgba(0, 0, 0, .65);
 }
 
 :root[data-theme="light"] {
-  --color-bg: #eef2f1;
-  --color-panel: #ffffff;
-  --color-panel2: #e6ebe9;
-  --color-line: #cfd7d4;
+  --color-bg: oklch(0.955 0.008 var(--rwe-hue));
+  --color-panel: oklch(0.985 0.005 var(--rwe-hue));
+  --color-panel2: oklch(0.936 0.006 var(--rwe-hue));
+  --color-line: oklch(0.82 0.012 var(--rwe-hue));
   --color-ink: #23262a;
   --color-muted: #6c7379;
   --color-link: #3f6488;
   --color-accent: oklch(0.56 0.065 var(--rwe-hue));
-  --accent-100: oklch(0.96 0.015 var(--rwe-hue));
-  --accent-200: oklch(0.9 0.025 var(--rwe-hue));
-  --accent-300: oklch(0.82 0.04 var(--rwe-hue));
-  --accent-400: oklch(0.72 0.05 var(--rwe-hue));
-  --accent-500: oklch(0.63 0.06 var(--rwe-hue));
-  --accent-600: oklch(0.56 0.065 var(--rwe-hue));
-  --accent-700: oklch(0.47 0.07 var(--rwe-hue));
-  --accent-800: oklch(0.37 0.06 var(--rwe-hue));
-  --accent-900: oklch(0.26 0.045 var(--rwe-hue));
+  --accent-100: oklch(0.93 0.03 var(--rwe-hue));
+  --accent-200: oklch(0.87 0.045 var(--rwe-hue));
+  --accent-300: oklch(0.79 0.06 var(--rwe-hue));
+  --accent-400: oklch(0.68 0.07 var(--rwe-hue));
+  --accent-500: oklch(0.56 0.075 var(--rwe-hue));
+  --accent-600: oklch(0.48 0.07 var(--rwe-hue));
+  --accent-700: oklch(0.40 0.06 var(--rwe-hue));
+  --accent-800: oklch(0.33 0.05 var(--rwe-hue));
+  --accent-900: oklch(0.26 0.04 var(--rwe-hue));
   --shadow-sm: 0 1px 2px rgba(20, 25, 35, .12);
   --shadow-md: 0 4px 12px rgba(20, 25, 35, .14);
   --shadow-lg: 0 16px 40px rgba(20, 25, 35, .22);
