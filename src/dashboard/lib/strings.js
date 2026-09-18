@@ -35,7 +35,9 @@ export const STR = {
     demoBanner: '示範資料 — 引擎目前無法連線,以下畫面為示範內容',
     // [v28b, DES-220, TASK-226, REQ-143 amended clause] the per-route disclosure for a route with
     // no DEMO map entry (DES-212) — shown instead of a frozen/synthesized paint on a demo tick.
-    noDemoData: '此路由無示範資料',
+    // [widened v28b, owner ruling 2026-09-18] a colon-terminated PREFIX, not a complete sentence:
+    // every call site appends its OWN literal route string directly after this value.
+    noDemoData: '此路由無示範資料:',
   },
   en: {
     predictedLayout: 'predicted layout',
@@ -46,7 +48,7 @@ export const STR = {
     brand: '工作流引擎 / Workflow Engine',
     demoData: 'Demo data',
     demoBanner: 'Demo data — the engine is unreachable; this view is showing demo content',
-    noDemoData: 'No demo data for this route',
+    noDemoData: 'No demo data for this route: ',
   },
 };
 

@@ -41,7 +41,13 @@ const DATASET_FILE = join(CLIENT_ROOT, 'demo', 'dataset.js');
 // one-timer case): neither file mentions "demo" yet, so half 2 already passes without this growth;
 // it is added now so half 2 does NOT go red the moment TASK-226 lands the disclosure, which would be
 // a false "leak" on a designed, tracked mention.
-const PRODUCTION_ALLOWLIST = new Set(['demo/dataset.js', 'lib/connection.js', 'lib/strings.js', 'ui/app.js', 'ui/poll.js', 'ui/workflow.js', 'ui/issues.js', 'dashboard.css']);
+//
+// [widened v28b, owner ruling 2026-09-18] `ui/system.js` joins the same growth for the same reason:
+// the owner widened the ruling to the System tab's counts card too, so `paintCountsUnavailable`'s
+// new `tick.source === 'demo'` branch lands in that file next. GREEN BY CONSTRUCTION today, same as
+// the other two: measured — `ui/system.js` does not mention "demo" yet, so half 2 passes without
+// this growth either; added test-first so it does not go red the moment TASK-226 lands there.
+const PRODUCTION_ALLOWLIST = new Set(['demo/dataset.js', 'lib/connection.js', 'lib/strings.js', 'ui/app.js', 'ui/poll.js', 'ui/workflow.js', 'ui/issues.js', 'ui/system.js', 'dashboard.css']);
 
 function listAllFiles(dir: string): string[] {
   const out: string[] = [];

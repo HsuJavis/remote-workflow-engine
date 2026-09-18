@@ -162,7 +162,9 @@ describe('REQ-143: demo data self-labels, engages on a STOPPED engine, retires o
       await new Promise((r) => setTimeout(r, 8000)); // same >=2-tick + demo-margin wait as the case above
 
       const legend = await page.evaluate(() => document.querySelector('[data-legend]')?.textContent ?? '');
-      expect(legend, 'DES-220: the legend must read the exact disclosure sentence').toBe('此路由無示範資料');
+      // [widened v28b, owner ruling 2026-09-18] the disclosure names its own route — a
+      // colon-terminated prefix plus the literal route string, not the bare sentence.
+      expect(legend, 'DES-220: the legend must read the exact named-route disclosure sentence').toBe('此路由無示範資料:/api/workflows/:name/describe');
       const triggers = await page.evaluate(() => document.querySelector('[data-triggers]')?.textContent ?? '');
       expect(triggers).toBe('');
       const desc = await page.evaluate(() => document.querySelector('.wf-desc')?.textContent ?? '');
@@ -179,7 +181,7 @@ describe('REQ-143: demo data self-labels, engages on a STOPPED engine, retires o
       recovered = await createServer({ port: localPort, bind: '127.0.0.1', workRoot: localTmp });
       await new Promise((r) => setTimeout(r, 4000));
       const legendAfter = await page.evaluate(() => document.querySelector('[data-legend]')?.textContent ?? '');
-      expect(legendAfter, 'DES-220 (B1): a Live tag must never keep the demo disclosure on screen').not.toBe('此路由無示範資料');
+      expect(legendAfter, 'DES-220 (B1): a Live tag must never keep the demo disclosure on screen').not.toBe('此路由無示範資料:/api/workflows/:name/describe');
     } finally {
       await browser.close();
       await localServer.close().catch(() => {});
@@ -219,8 +221,9 @@ describe('REQ-143: demo data self-labels, engages on a STOPPED engine, retires o
 
       const openDemo = await page.evaluate(() => document.querySelector('#issues-open')?.textContent ?? '');
       const resolvedDemo = await page.evaluate(() => document.querySelector('#issues-resolved')?.textContent ?? '');
-      expect(openDemo, 'DES-220: #issues-open must read the exact disclosure sentence').toBe('此路由無示範資料');
-      expect(resolvedDemo, 'DES-220: #issues-resolved must read the exact disclosure sentence').toBe('此路由無示範資料');
+      // [widened v28b, owner ruling 2026-09-18] named-route disclosure, same prefix+route shape.
+      expect(openDemo, 'DES-220: #issues-open must read the exact named-route disclosure sentence').toBe('此路由無示範資料:/api/issues');
+      expect(resolvedDemo, 'DES-220: #issues-resolved must read the exact named-route disclosure sentence').toBe('此路由無示範資料:/api/issues');
       expect(openDemo, 'the stale pre-crash text must be GONE, not merely still present alongside the disclosure').not.toContain('GitHub not configured');
       const navText = await page.evaluate(() => document.querySelector('.rwe-connection')?.textContent ?? '');
       expect(navText).toMatch(/示範|Demo/);
@@ -234,8 +237,71 @@ describe('REQ-143: demo data self-labels, engages on a STOPPED engine, retires o
       recovered = await createServer({ port: localPort, bind: '127.0.0.1', workRoot: localTmp });
       await new Promise((r) => setTimeout(r, 4000));
       const openAfter = await page.evaluate(() => document.querySelector('#issues-open')?.textContent ?? '');
-      expect(openAfter).not.toBe('此路由無示範資料');
+      expect(openAfter).not.toBe('此路由無示範資料:/api/issues');
       expect(openAfter).toContain('GitHub not configured');
+    } finally {
+      await browser.close();
+      await localServer.close().catch(() => {});
+      await recovered?.close().catch(() => {});
+      rmSync(localTmp, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  // [v28b, DES-220, TASK-226, REQ-143 amended clause, owner ruling 2026-09-18] the THIRD, WIDENED
+  // surface — the System tab's counts card (`ui/system.js`). Offered a choice between keeping
+  // 無法取樣 on this card or switching it to the bare disclosure sentence, the owner declined both
+  // and widened the ruling to name the route here too: `此路由無示範資料:/api/workflows`. Per DES-220
+  // (B7) a LIVE degrade on this SAME card is UNCHANGED (still 無法取樣) — only a DEMO tick's version
+  // of the miss gains the route name, so this case also re-proves DES-215/216's per-card
+  // independence (CPU/memory/disk keep painting `/api/system`'s own real DEMO numbers) under the
+  // new wording. No workflow registration needed (this arm never opens a workflow detail page); own
+  // server/tmpDir/port, same real stopped-engine fault mechanism as the two cases above —
+  // `page.setRequestInterception` is FORBIDDEN here too (DES-212).
+  //
+  // Red reason (measured): `ui/system.js:228`'s `paintCountsUnavailable(state)` takes no `text`
+  // parameter and its one caller always passes `t(lang, 'unavailable')` regardless of
+  // `tick.source` — a demo miss on `/api/workflows` reads 無法取樣, identically to a live one, never
+  // the named-route sentence.
+  itReal('the System tab counts card: a STOPPED engine paints 此路由無示範資料:/api/workflows on the counts card ONLY, while CPU/memory/disk keep live demo numbers, and recovers within one tick (DES-220 B7)', async () => {
+    const localTmp = mkdtempSync(join(tmpdir(), 'rwe-val207f-'));
+    const localServer = await createServer({ port: 0, bind: '127.0.0.1', workRoot: localTmp });
+    const localPort = localServer.port;
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    let recovered: Server | undefined;
+    try {
+      const page = await browser.newPage();
+      await page.goto(`http://127.0.0.1:${localPort}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await (await page.$('[data-tab="system"]'))!.click(); // pre-warm the tab module WHILE the engine is alive (DES-220 B5(b))
+      await page.waitForSelector('[data-sys-stat-card]', { timeout: 5000 });
+      await new Promise((r) => setTimeout(r, 500));
+
+      const countsLive = await page.$eval('[data-sys-stat-card][data-card="counts"] .stat-value', (e) => e.textContent ?? '');
+      expect(countsLive, 'sanity: the live counts card shows a real number before the fault').not.toMatch(/無法取樣|示範|Unavailable/i);
+
+      await localServer.close();
+      await new Promise((r) => setTimeout(r, 8000)); // same >=2-tick + demo-margin wait as the cases above
+
+      const countsDemo = await page.$eval('[data-sys-stat-card][data-card="counts"] .stat-value', (e) => e.textContent ?? '');
+      expect(countsDemo, 'DES-220 (B7): the counts card must read the exact named-route disclosure').toBe('此路由無示範資料:/api/workflows');
+      // DES-215/216 per-card independence, re-proven under the named-route wording: CPU/memory/disk
+      // are pinned to the exact real numbers `src/dashboard/demo/dataset.js`'s `/api/system` entry
+      // carries (utilizationPct 12, usedPct 25, usedPct 20) — a live re-derivation, not a leftover.
+      const cpuDemo = await page.$eval('[data-sys-stat-card][data-card="cpu"] .stat-value', (e) => e.textContent ?? '');
+      const memoryDemo = await page.$eval('[data-sys-stat-card][data-card="memory"] .stat-value', (e) => e.textContent ?? '');
+      const diskDemo = await page.$eval('[data-sys-stat-card][data-card="disk"] .stat-value', (e) => e.textContent ?? '');
+      expect(cpuDemo, 'the cpu card must keep painting the LIVE demo number, never the counts card disclosure').toBe('12%');
+      expect(memoryDemo, 'the memory card must keep painting the LIVE demo number, never the counts card disclosure').toBe('25%');
+      expect(diskDemo, 'the disk card must keep painting the LIVE demo number, never the counts card disclosure').toBe('20%');
+      const navText = await page.evaluate(() => document.querySelector('.rwe-connection')?.textContent ?? '');
+      expect(navText).toMatch(/示範|Demo/);
+      expect(navText).not.toMatch(/連線中|Live/);
+
+      // Recovery: a NEW engine on the SAME port — the next tick must return a real number.
+      recovered = await createServer({ port: localPort, bind: '127.0.0.1', workRoot: localTmp });
+      await new Promise((r) => setTimeout(r, 4000));
+      const countsAfter = await page.$eval('[data-sys-stat-card][data-card="counts"] .stat-value', (e) => e.textContent ?? '');
+      expect(countsAfter, 'DES-220: recovery must clear the disclosure within one tick').not.toBe('此路由無示範資料:/api/workflows');
     } finally {
       await browser.close();
       await localServer.close().catch(() => {});

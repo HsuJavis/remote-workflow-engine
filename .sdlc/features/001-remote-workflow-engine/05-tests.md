@@ -12174,6 +12174,19 @@ widened `include` actually collects it). RED (measured): whole-file import failu
 - **result:** fail
 - **iter:** v28
 
+**Re-stamped (2026-09-18, v28b Gate 5 widened re-run, verifier):** the owner widened DES-220's
+ruling the same day (「v28b OWNER RULING (2026-09-18)」, `state.yaml pending:`) to name the missing
+ROUTE on all three surfaces — `noDemoData` becomes a colon-terminated PREFIX
+(`'此路由無示範資料:'` / `'No demo data for this route: '`), not the complete sentence the case
+below originally pinned; the per-call concatenated sentence (prefix + literal route) is asserted at
+the acceptance tier (VAL-217), not here. The existing case's two `toBe(...)` literals were amended
+in place to the widened prefix form — no new case, no new ID. Red (measured): `npx vitest run
+tests/unit/dashboard-lib-strings.test.js` → 9 pass, 1 fail — `STR.zh.noDemoData` is
+`'此路由無示範資料'` (no trailing colon, the pre-widened value landed at `87eee96`) and
+`STR.en.noDemoData` is `'No demo data for this route'` (no trailing space); both are missing exactly
+the suffix the widened ruling requires. `status`/`result` stay `red`/`fail` (unchanged from the prior
+stamp below, still red, now for the widened reason).
+
 **Re-stamped (2026-09-18, v28b Gate 5, verifier):** one new case added for DES-220/TASK-226's
 `noDemoData` key (REQ-143's v28-AMENDED clause) — pins `STR.zh.noDemoData === '此路由無示範資料'`
 and `STR.en.noDemoData === 'No demo data for this route'`, plus both directions of `t(lang,
@@ -13004,6 +13017,14 @@ to add a real `.is-demo`-style selector to the SAME file for this SAME feature. 
 tests/unit/demo-surface.test.ts` → 2 total, 1 failed (half 1), 1 passed (half 2, Mode-C
 green-by-construction: zero unlisted mentions exist today).
 
+**Re-stamped (2026-09-18, v28b Gate 5 widened re-run, verifier):** the owner's same-day widened
+ruling adds `ui/system.js` as a THIRD file DES-220 opens (the System tab's counts card gains the
+same `tick.source === 'demo'` branch) — `PRODUCTION_ALLOWLIST` grows by `ui/system.js` on top of the
+prior stamp's `ui/workflow.js` + `ui/issues.js`. GREEN BY CONSTRUCTION today, same as the other two:
+measured — `ui/system.js` does not mention "demo" yet, so half 2 passes without this growth either.
+`npx vitest run tests/unit/demo-surface.test.ts` → 2/2 pass (unchanged). `status`/`result` unchanged
+— no case here goes red.
+
 **Re-stamped (2026-09-18, v28b Gate 5, verifier):** `PRODUCTION_ALLOWLIST` grows by `ui/workflow.js`
 + `ui/issues.js` (DES-220's own `tests:` clause) — DESIGNED growth, not leak-hiding: DES-220 opens
 both files to paint the 「此路由無示範資料」disclosure, a `tick.source === 'demo'` branch that
@@ -13023,6 +13044,13 @@ red.
 - **real:** false
 - **result:** fail
 - **iter:** v28
+
+**Re-stamped (2026-09-18, v28b Gate 5 widened re-run, verifier):** the owner's same-day widened
+ruling adds `ui/system.js` as a third file the SIXTH tripwire checks (`clientFile('ui/system.js')`
+must also contain `noDemoData`) — amended in place on the same case, not a seventh tripwire. Red
+(measured): `npx vitest run tests/unit/dashboard-seam.test.ts` → 5 pass, 1 fail — `ui/workflow.js`
+and `ui/issues.js` already contain `noDemoData` (landed at `87eee96`, for the pre-widened sentence);
+`ui/system.js` does not. `status`/`result` unchanged (still red, now for the widened reason).
 
 **Re-stamped (2026-09-18, v28b Gate 5, verifier):** a SIXTH tripwire added for DES-220/TASK-226 —
 `clientFile('ui/workflow.js')` and `clientFile('ui/issues.js')` must each contain the substring
@@ -13293,3 +13321,35 @@ configured'` through the whole demo window — `issues.js:111`'s `onTick` has tw
 failed (cases 3 and 4, both new), 2 passed (cases 1 and 2, pre-existing, unchanged, ~37s real
 wall-clock run). `status`/`result` above flipped to `red`/`fail` to reflect this file's TRUE current
 state.
+
+**Re-stamped (2026-09-18, v28b Gate 5 widened re-run, verifier) — the owner widened the ruling the
+SAME DAY, after the stamp above, to name the missing route on all three surfaces (not just two).**
+`state.yaml pending:`'s 「v28b OWNER RULING (2026-09-18)」records it; `04-design.md`'s DES-220
+carries the full rationale and its `owner_decision` marker is answered (commit `d935da4`). Two
+changes: (a) cases (3)/(4)'s pinned sentence is amended in place — `noDemoData` is now a
+colon-terminated PREFIX, so each assertion becomes the FULL prefixed-and-routed string
+(`此路由無示範資料:/api/workflows/:name/describe` for case 3's `[data-legend]`,
+`此路由無示範資料:/api/issues` for case 4's `#issues-open`/`#issues-resolved`, and their matching
+recovery `.not.toBe(...)` negatives) rather than the bare sentence; (b) ONE new case (5), same file,
+same real fault mechanism, for the widened THIRD surface — `ui/system.js`'s counts card.
+
+(5) **the System tab counts card arm**: pre-warms `[data-tab="system"]` while the engine is alive
+(sanity-checks the live counts card shows a real number, not 無法取樣/示範/Unavailable), stops the
+engine, waits the same ≥2-tick+margin window as cases (3)/(4), then asserts (i)
+`[data-sys-stat-card][data-card="counts"] .stat-value` reads the exact
+`此路由無示範資料:/api/workflows` sentence, (ii) the CPU/memory/disk cards keep painting the exact
+LIVE demo numbers `src/dashboard/demo/dataset.js`'s `/api/system` entry carries (`12%`/`25%`/`20%`)
+— DES-215/216's per-card independence, re-proven under the named-route wording, since this card's
+own two routes (`/api/workflows`+`/api/runs`) are independent of `/api/system`'s health — (iii) the
+nav tag shows demo never with Live; then a new engine on the SAME port and the counts card must
+return a real number within one tick. No workflow registration needed (never opens a workflow detail
+page); own server/tmpDir/port, no `page.setRequestInterception` (DES-212's binding constraint, same
+as cases 3/4). Red (measured): `ui/system.js:228`'s `paintCountsUnavailable(state)` takes no `text`
+parameter and its one caller always passes `t(lang, 'unavailable')` regardless of `tick.source` — a
+demo miss on `/api/workflows` reads `無法取樣`, identically to a live one, never the named-route
+sentence.
+
+`RWE_REQUIRE_BROWSER=1 npx vitest run tests/acceptance/val-207-demo-data.test.ts` → 5 total, 3
+failed (cases 3, 4 — now red for the widened reason instead of the original one — and the new case
+5), 2 passed (cases 1 and 2, pre-existing, unchanged, ~47s real wall-clock run, real Chromium, real
+`createServer`/`server.close()`/re-`listen()`). `status`/`result` unchanged — still `red`/`fail`.

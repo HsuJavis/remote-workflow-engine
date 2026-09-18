@@ -417,7 +417,7 @@ export async function onTick(container, bodies, ctx, tick) {
   // state over a transient degrade. Without the `Array.isArray` guard, `nameFilteredRuns` fed that
   // object threw `TypeError: allRuns.filter is not a function` (ARCH-124's api, AC-4).
   if (!describe || describe.degraded || !Array.isArray(bodies[runsUrl])) {
-    if (tick && tick.source === 'demo') paintRouteUnfounded(state, t(lang, 'noDemoData'));
+    if (tick && tick.source === 'demo') paintRouteUnfounded(state, t(lang, 'noDemoData') + '/api/workflows/:name/describe');
     return {};
   }
   const runs = nameFilteredRuns(bodies[runsUrl], state.name);

@@ -10798,11 +10798,21 @@ All scratch node processes killed and ports freed at the end of this gate.
 
 ### VAL-217 — REQ-143: demo data self-labels, engages on a STOPPED engine, retires on recovery
 - **status:** red
-- **traces:** REQ-143, DES-212, TASK-220
+- **traces:** REQ-143, DES-212, DES-220, TASK-220, TASK-226
 - **tier:** acceptance
 - **real:** true
 - **result:** fail
 - **iter:** v28
+
+**[traces synced 2026-09-18, v28b Gate 5, verifier]** `DES-220`/`TASK-226` added to match
+`05-tests.md`'s own VAL-217 entry (the Gate-5 test-writer's copy already carried both — this file's
+copy was written at Gate 7.5, `b0fb176`, before DES-220/TASK-226 existed, and was never synced once
+they were minted). Same defect CLASS as the v27 VAL-198..204 collision this ledger already fixed
+once (`state.yaml pending:`): `trace.py`'s `scan()` processes files in sorted order and the LATER
+file wins on an ID collision (`08-validation.md` sorts after `05-tests.md`), so the stale traces here
+were silently hiding the DES-220→VAL-217 and TASK-226→VAL-217 links from `--impact` — measured:
+`sh .sdlc/trace … --impact TASK-226` listed no VAL-217 downstream before this edit. Evidence prose
+below is untouched (Gate 7.5's own record, not this gate's to rewrite).
 - **evidence (base mechanism — real, PASSES):** Self-contained real-process run (not `server.close()`
   in-process — a genuine `SIGKILL` of the OS process group running the documented start command,
   `node node_modules/tsx/dist/cli.mjs src/main.ts`, the exact line DEPLOY.md §0/deploy.sh step 4

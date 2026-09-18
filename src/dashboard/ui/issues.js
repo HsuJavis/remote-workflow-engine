@@ -124,7 +124,7 @@ export async function onTick(container, bodies, _ctx, tick) {
   } else if (tick && tick.source === 'demo') {
     // [v28b, DES-220] `/api/issues` has no DEMO map entry (DES-212) — a demo tick's `data` is
     // undefined here, never `degraded`, so this is a third arm, not a repoint of the one above.
-    const m = t(currentLang(), 'noDemoData');
+    const m = t(currentLang(), 'noDemoData') + '/api/issues';
     state.openEl.replaceChildren(el('div', 'empty', m));
     state.resolvedEl.replaceChildren(el('div', 'empty', m));
   }

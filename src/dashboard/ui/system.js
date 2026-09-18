@@ -225,8 +225,12 @@ function paintHost(state, body) {
   paintEngineDl(state.engineDlEl, body.process.self, lang);
 }
 
-function paintCountsUnavailable(state) {
-  paintCard(state.cards.counts, { value: t(state.lang, 'unavailable'), pct: undefined, meta: undefined });
+// [v28b, DES-220 (B7), TASK-226 widened] takes the rendered `text` directly — a LIVE degrade keeps
+// the existing 「無法取樣」 wording byte-identical, a DEMO tick's version names its own route
+// (`onTick`'s one caller below computes which, per `tick.source`); the return shape stays
+// `{value, pct: undefined, meta: undefined}` unchanged.
+function paintCountsUnavailable(state, text) {
+  paintCard(state.cards.counts, { value: text, pct: undefined, meta: undefined });
 }
 
 function paintCounts(state, counts) {
@@ -268,7 +272,11 @@ export async function onTick(container, bodies, _ctx, tick) {
   } else {
     // No "keep" here, ON PURPOSE (DES-215/216's decisive case): the counts card's own two routes
     // are independent of `/api/system`'s health, so a fault on either flips it immediately.
-    paintCountsUnavailable(state);
+    // [v28b, DES-220 (B7)] a DEMO tick's miss names its own route; a LIVE miss keeps DES-215/216's
+    // existing wording byte-identical — the route was tried and failed, the opposite of demo's
+    // out-of-scope-by-design.
+    const text = (tick && tick.source === 'demo') ? t(state.lang, 'noDemoData') + '/api/workflows' : t(state.lang, 'unavailable');
+    paintCountsUnavailable(state, text);
   }
 
   return { '/api/system': systemVerdict, '/api/workflows': workflowsVerdict, '/api/runs': runsVerdict };

@@ -83,14 +83,18 @@ describe('the v28 seam — five source tripwires (UT-261, DES-210)', () => {
   });
 
   // [v28b, DES-220, TASK-226, REQ-143] (6) a SOURCE tripwire, not a proof of behaviour: `ui/
-  // workflow.js` and `ui/issues.js` are the two view files DES-220 opens to paint the
-  // 「此路由無示範資料」disclosure, and this is how a view with NO unit tier at all (ADR-049 refuses
-  // jsdom) gets a unit-tier anchor for that work — it can only see that the string LITERAL is
-  // present, never that it is painted correctly (the real behaviour is val-207's job).
+  // workflow.js`, `ui/issues.js` and, **[widened v28b, owner ruling 2026-09-18]** `ui/system.js`,
+  // are the three view files DES-220 opens to paint the 「此路由無示範資料」disclosure, and this is
+  // how a view with NO unit tier at all (ADR-049 refuses jsdom) gets a unit-tier anchor for that
+  // work — it can only see that the string LITERAL is present, never that it is painted correctly
+  // (the real behaviour is val-207's job).
   //
-  // Red reason (measured): neither file contains the substring `noDemoData` today.
-  it('DES-220: ui/workflow.js and ui/issues.js each reference noDemoData (a tripwire, not a proof)', () => {
+  // Red reason (measured, widened v28b): `ui/workflow.js` and `ui/issues.js` already contain
+  // `noDemoData` (landed at 87eee96, for the pre-widened sentence); `ui/system.js` does not —
+  // `paintCountsUnavailable` there still takes no `text` parameter and never references the key.
+  it('DES-220: ui/workflow.js, ui/issues.js and ui/system.js each reference noDemoData (a tripwire, not a proof)', () => {
     expect(clientFile('ui/workflow.js')).toContain('noDemoData');
     expect(clientFile('ui/issues.js')).toContain('noDemoData');
+    expect(clientFile('ui/system.js')).toContain('noDemoData');
   });
 });

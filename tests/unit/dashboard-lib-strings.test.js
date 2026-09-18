@@ -95,12 +95,19 @@ describe('lib/strings.js: warningText(lang, raw) (UT-244, DES-201, Round v27b)',
 // literals, so a typo in either language is caught here rather than only downstream in the
 // acceptance run.
 //
-// Red reason (measured): `STR.zh.noDemoData`/`STR.en.noDemoData` are both `undefined` — the key
-// does not exist in `src/dashboard/lib/strings.js` yet.
+// [widened v28b, owner ruling 2026-09-18] the owner declined to just flag "nothing here" and asked
+// for the missing ROUTE itself to be shown, on all three surfaces. `noDemoData` becomes a
+// colon-terminated PREFIX, not a complete sentence — each of the three call sites appends its OWN
+// literal route right after it (asserted at the acceptance tier, not here).
+//
+// Red reason (measured, widened v28b): `STR.zh.noDemoData` is `'此路由無示範資料'` (no trailing
+// colon) and `STR.en.noDemoData` is `'No demo data for this route'` (no trailing space) — the key
+// exists (landed at 87eee96 for the pre-widened sentence) but is missing exactly the suffix the
+// widened ruling requires.
 describe('lib/strings.js: noDemoData (UT-244, DES-220, v28b)', () => {
-  it('pins both languages\' exact literal', () => {
-    expect(STR.zh.noDemoData).toBe('此路由無示範資料');
-    expect(STR.en.noDemoData).toBe('No demo data for this route');
+  it('pins both languages\' exact literal — a colon-terminated PREFIX (widened v28b), not a complete sentence', () => {
+    expect(STR.zh.noDemoData).toBe('此路由無示範資料:');
+    expect(STR.en.noDemoData).toBe('No demo data for this route: ');
     expect(t('zh', 'noDemoData')).toBe(STR.zh.noDemoData);
     expect(t('en', 'noDemoData')).toBe(STR.en.noDemoData);
   });
