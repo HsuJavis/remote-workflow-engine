@@ -7883,3 +7883,70 @@ regression. `REQ-137`/`138`/`139`/`142` have NO such split — their `08-validat
 read `green`/`real: true`/`pass` (Gate 7.5 validated them for real at `b0fb176`); `REQ-143` is the
 sole holdout, exactly the REQ this whole TASK-226 delta exists to close, and Gate 7.5's re-run is the
 next step this closure hands off to.
+
+---
+
+## v29 c1 — REQ-146/147/148/149(不動驗收 oracle 的那一批)
+
+### IMPL-303 — `lib/status.js` 收下兩個 view 原本自己做、而且做錯的決定
+- **traces:** REQ-149
+- **files:** `src/dashboard/lib/status.js`, `src/dashboard/ui/app.js`, `src/dashboard/ui/workflow.js`
+- **tests:** UT-264(新檔 `tests/unit/dashboard-lib-status.test.js`,5 例,先紅後綠)
+
+`makeIslandReader(read)`:工廠而非模組層變數,兩個 reader 不會互相污染。
+`versionTagText(lang, version)`:值已自帶 `v` 就不再補,缺值回空字串而不是一個講不出版本的標籤。
+
+**根因(量測,非推論):** `ui/app.js:595` 的 `document.body.replaceChildren(...)` 會銷毀
+`<script id="rwe-init">` —— 那個 island 就在 `<body>` 裡(`dashboard-page.ts:93`)。首次掛載在
+銷毀之前讀到;語言切換再次呼叫 `mountApp()` 時節點已不存在,`readIsland()` 回 `{}`,於是導覽列
+印出 `vundefined` 並且整個更新面板無聲消失,重載才會回來。
+
+**沒有選擇的修法,記錄於此:** 在 `app.js:102` 對 `vm.version` 加 undefined 防護。那會讓
+`vundefined` 消失、讓測試變綠,而更新面板仍然是空的 —— 蓋住病徵,留下病。
+
+**為什麼純函式放在 `lib/`:** vitest 跑 `environment: 'node'`,任何在 import 時就碰 `document`
+的 `ui/*.js` 都不可能被單元測試 import(ADR-049 已有結論)。放 `lib/` 是這兩個決定唯一能被
+測到的位置,也符合 DES-206「純函式能決定的,view 不得自己決定」。
+
+### IMPL-304 — `historyRow()` 九欄裡的五欄原本是原始線上值直通
+- **traces:** REQ-148
+- **files:** `src/dashboard/lib/runlist.js`, `src/dashboard/lib/strings.js`, `src/dashboard/ui/workflow.js`
+- **tests:** UT-265(`dashboard-lib-runlist.test.js` 新增 5 例,4 紅 1 綠)
+
+`fmtStartedAt` 原本是 `return iso ?? '—'` —— 一個 stub,直接把 ISO 字串放上畫面。
+新增 `shortId()` 並**取代** `ui/workflow.js:209` 既有的 inline `.slice(0, 8)`:同一個長度原本
+有兩份定義,run chip 用 8 碼而它旁邊的表格印完整 36 碼 UUID。現在一個名字、一個長度。
+`label(map, raw, lang)` 對未知值**原樣通過**,不回 `undefined` —— 那是本 ledger 的 BF-5/BF-6 類別。
+
+`strings.js` 只增加歷史表真的會渲染的鍵(`stQueued`…`stRefused`、`byType_client`…`byType_unknown`),
+鍵名沿用交付稿 STR 表自己的命名,讓 oracle 與實作共用一套詞彙。**REQ-150 的其餘掃蕩不在本 commit。**
+
+### IMPL-305 — 兩條 CSS 規則:一條用錯字體,一條根本不存在
+- **traces:** REQ-146, REQ-147
+- **files:** `src/dashboard/dashboard.css`
+- **tests:** `dashboard-class-contract.test.ts` 新增 5 例值錨點(4 紅 1 綠)
+
+`.card .t` 原為 JetBrains Mono + `word-break:break-all`。交付稿把等寬字保留給 run id / PID /
+工具呼叫,工作流名稱是標題(`.card-title` 17px/600)。`word-break:break-all` 一併換成交付稿
+自己的 `text-wrap:pretty` —— 不是單純刪掉:它留著會讓 17px 的 Archivo 把
+`hypothesis-researcher` 從字中切斷。
+
+`[data-stat-card]` **原本一條規則都沒有**。`ui/agent-panel.js:59-70` 早已正確產出該屬性與兩個
+span,`.stat-cards` 也早已是交付稿的 `auto-fit minmax(150px,1fr)` grid —— 缺的只有卡片本身的
+外框、圓角與內距,於是六張統計卡渲染成 `MODELhaiku — claude-agent-sdk · —` 這樣的相鄰行內文字。
+**這不是重寫,是補上一條缺席的規則。**
+
+那 1 例一開始就綠的錨點是刻意的:斷言 `dashboard.css:345` 的 `.stat-card`(系統頁 34px 數字)
+**不被波及** —— 同名不同物,是這次修改最容易造成的附帶損害。
+
+### 真跑驗證(Chrome for Testing 149,對 `RWE_PORT=8951` 的實例,真實資料快照)
+
+| REQ | 量到的值 |
+|---|---|
+| REQ-146 | `gp-runner` → Archivo / 17px / 600 / `word-break: normal` |
+| REQ-147 | 6 張卡 · `1px solid` · radius 3px · padding 10px · `.stat-label` `display:block` · 171×98 |
+| REQ-148 | `431df640 │ 完成 │ v2 │ 客戶端 │ 9/7 18:25:26 │ 2m 59s │ 4 │ 19.4k │ ≥ $0.00 · 4 未定價` |
+| REQ-149a | `版本 v4`(原 `版本 vv4`) |
+| REQ-149b | 切 EN 再切回中文,`v0.1.0 (v0.20.0-386-g23c6956) v0.20.0: applied` 逐字不變 |
+
+費用欄與交付稿的 `$0.0000` 不同,是 ADR-046「絕不顯示有信心的 $0.00」的既有裁決,非本次缺陷。

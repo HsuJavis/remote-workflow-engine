@@ -205,3 +205,44 @@ describe('value anchors — v28 Models/System families (DES-219, TASK-221, READM
     expect(px.some((n) => n >= 960)).toBe(true);
   });
 });
+
+// ── v29 value anchors (REQ-146, REQ-147) ─────────────────────────────────────────────────────
+// Authored from `.sdlc/design-handoff/README.md`, never read off the built CSS — DES-209's v28
+// amendment, after three poisoned rows in one ledger year.
+describe('v29 — the two rules the side-by-side audit measured wrong (REQ-146/147)', () => {
+  it('.card .t is the HEADING face, not the mono one (README §1: title = workflow name, .card-title 17px)', () => {
+    const body = ruleBody(CSS, '.card .t');
+    // README reserves JetBrains Mono for ids, PIDs and tool calls; the workflow NAME is a title.
+    expect(body).not.toMatch(/JetBrains Mono/);
+    expect(body).toMatch(/font-family:\s*'Archivo'/);
+    expect(body).toContain('font-size:17px');
+    expect(body).toContain('font-weight:600');
+  });
+
+  it('.card .t drops word-break:break-all — it was there for the mono face and splits Archivo mid-word', () => {
+    // `hypothesis-researcher` broke between glyphs at 13px mono; at 17px Archivo the same rule
+    // would cut a real word in half. README gives the title `text-wrap: pretty`, not break-all.
+    expect(ruleBody(CSS, '.card .t')).not.toContain('word-break:break-all');
+  });
+
+  it('[data-stat-card] is a CARD — README §3 gives the agent panel six bordered stat cards', () => {
+    // The DOM was already right (`ui/agent-panel.js:59-70` emits the attribute and both spans);
+    // this selector simply had NO rule, so label and value rendered as adjacent inline text
+    // ("MODELhaiku — claude-agent-sdk · —") inside an otherwise-correct grid.
+    const body = ruleBody(CSS, '[data-stat-card]');
+    expect(body).toMatch(/border:\s*1px solid var\(--color-line\)/);
+    expect(body).toContain('border-radius:var(--radius-md)');
+    expect(body).toMatch(/padding:/);
+  });
+
+  it('.stat-label is a block, so the label sits ABOVE its value instead of against it', () => {
+    expect(ruleBody(CSS, '.stat-label')).toContain('display:block');
+  });
+
+  it('the System page’s .stat-card is untouched — same word, different component', () => {
+    // dashboard.css:345 is the System tab's 34px figure. It is NOT the agent panel's stat card and
+    // must not be collateral damage of the rule above.
+    const body = ruleBody(CSS, '.stat-card');
+    expect(body).toContain('font-size:34px');
+  });
+});

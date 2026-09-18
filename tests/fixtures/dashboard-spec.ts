@@ -129,7 +129,17 @@ export const SPEC_ROWS: ReadonlyArray<SpecRow> = [
   { req: 'REQ-132', view: 'home', anchor: '.card', prop: 'border-radius', expect: { literal: '3px' } },
   { req: 'REQ-132', view: 'home', anchor: '.card', prop: 'cursor', expect: { literal: 'pointer' } },
   { req: 'REQ-132', view: 'home', anchor: '.t', prop: 'font-weight', expect: { literal: '600' } },
-  { req: 'REQ-132', view: 'home', anchor: '.t', prop: 'word-break', expect: { literal: 'break-all' } },
+  // [v29 REQ-146 — POISONED ROW REPLACED] This row asserted `word-break: break-all` on the card
+  // title. That value is nowhere in `.sdlc/design-handoff/README.md`; it existed only because the
+  // implementation had it — the exact class DES-209's v28 amendment names ("a poisoned row goes
+  // green forever and looks like coverage"), and the fourth instance found in this ledger year.
+  // README §1 gives the card title the HEADING face at 17px with `text-wrap: pretty`; the three
+  // rows below are re-derived from that sentence, not from the stylesheet.
+  // Chromium serializes a quoted family with DOUBLE quotes regardless of the source rule's quote
+  // style — measured on the running page, same note as the `.mono` row below.
+  { req: 'REQ-132', view: 'home', anchor: '.t', prop: 'font-family', expect: { literal: 'Archivo, -apple-system, "Segoe UI", sans-serif' } },
+  { req: 'REQ-132', view: 'home', anchor: '.t', prop: 'font-size', expect: { literal: '17px' } },
+  { req: 'REQ-132', view: 'home', anchor: '.t', prop: 'text-wrap', expect: { literal: 'pretty' } },
   { req: 'REQ-132', view: 'home', anchor: 'data-section', prop: 'display', expect: { literal: 'flex' } },
   { req: 'REQ-132', view: 'home', anchor: '[data-section] .cards', prop: 'gap', expect: { literal: '16px' } },
   // [v27 README-fidelity closure, third audit sweep] this row was hand-copied from what shipped

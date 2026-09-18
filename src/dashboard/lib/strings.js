@@ -38,6 +38,14 @@ export const STR = {
     // [widened v28b, owner ruling 2026-09-18] a colon-terminated PREFIX, not a complete sentence:
     // every call site appends its OWN literal route string directly after this value.
     noDemoData: '此路由無示範資料:',
+    // [v29, REQ-148] run status + trigger type, for the history table's two untranslated columns.
+    // Key names follow the delivery handoff's own STR table (`stCompleted`, `byType_client`) so the
+    // oracle and the implementation use one vocabulary. Only the values the history table can
+    // actually render land here — the rest of REQ-150's sweep is c3, not this commit.
+    stQueued: '排隊', stRunning: '執行中', stCompleted: '完成', stFailed: '失敗',
+    stStopped: '停止', stSuspended: '暫停', stInterrupted: '中斷', stRefused: '拒絕',
+    byType_client: '客戶端', byType_webhook: 'Webhook', byType_schedule: '排程',
+    byType_chain: '鏈結', byType_unknown: '未知',
   },
   en: {
     predictedLayout: 'predicted layout',
@@ -49,6 +57,10 @@ export const STR = {
     demoData: 'Demo data',
     demoBanner: 'Demo data — the engine is unreachable; this view is showing demo content',
     noDemoData: 'No demo data for this route: ',
+    stQueued: 'Queued', stRunning: 'Running', stCompleted: 'Completed', stFailed: 'Failed',
+    stStopped: 'Stopped', stSuspended: 'Suspended', stInterrupted: 'Interrupted', stRefused: 'Refused',
+    byType_client: 'client', byType_webhook: 'webhook', byType_schedule: 'schedule',
+    byType_chain: 'chain', byType_unknown: 'unknown',
   },
 };
 

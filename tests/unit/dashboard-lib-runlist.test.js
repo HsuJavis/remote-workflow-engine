@@ -97,3 +97,56 @@ describe('lib/runlist.js: fmtTok (v27 README-fidelity closure, REQ-134)', () => 
     expect(fmtTok(3000000)).toBe('3M');
   });
 });
+
+describe('lib/runlist.js: historyRow column formatting (UT-265, v29, REQ-148)', () => {
+  // Five of the nine columns were raw wire values on the page: the full 36-char UUID, an
+  // untranslated `completed`, an untranslated `client`, the raw ISO string (`fmtStartedAt` was a
+  // `return iso ?? '—'` stub), and `String(19426)`. The delivery README's own history table reads
+  // `431df640 │ 完成 │ 客戶端 │ 9/7 18:25:26 │ 19.4k`.
+  const summary = {
+    runId: '431df640-129e-46b6-a53d-b168116b5739',
+    status: 'completed',
+    scriptVersion: 'v2',
+    startedBy: { type: 'client' },
+    createdAt: '2026-09-07T10:25:26.314Z',
+    terminalAt: '2026-09-07T10:28:25.000Z',
+    agentCount: 4,
+    tokensTotal: 19426,
+    costUSD: 0,
+  };
+  const NOW = '2026-09-07T11:00:00.000Z';
+
+  it('the run id column is the first 8 characters, never the whole UUID', () => {
+    const row = historyRow(summary, NOW, 'zh');
+    expect(row).toContain('431df640');
+    expect(row.some((c) => String(c).includes('-129e-'))).toBe(false);
+  });
+
+  it('status and trigger read in the viewer\u2019s language', () => {
+    const zh = historyRow(summary, NOW, 'zh');
+    expect(zh).toContain('\u5b8c\u6210');
+    expect(zh).toContain('\u5ba2\u6236\u7aef');
+    expect(zh.some((c) => c === 'completed' || c === 'client')).toBe(false);
+    const en = historyRow(summary, NOW, 'en');
+    expect(en.some((c) => /completed/i.test(String(c)))).toBe(true);
+  });
+
+  it('the started-at column is a local clock reading, never the ISO string', () => {
+    const row = historyRow(summary, NOW, 'zh');
+    expect(row.some((c) => String(c).includes('T10:25:26.314Z'))).toBe(false);
+    expect(row.some((c) => /\d{1,2}\/\d{1,2} \d{2}:\d{2}:\d{2}/.test(String(c)))).toBe(true);
+  });
+
+  it('the token column is humanised the same way every other token figure on the page is', () => {
+    const row = historyRow(summary, NOW, 'zh');
+    expect(row).toContain(fmtTok(19426));
+    expect(row.some((c) => c === '19426')).toBe(false);
+  });
+
+  it('an absent figure is still \u2014, never a formatted zero', () => {
+    const bare = { runId: 'abcdef0123456789', status: 'queued', createdAt: '2026-09-07T10:00:00.000Z' };
+    const row = historyRow(bare, NOW, 'zh');
+    expect(row.filter((c) => c === '\u2014').length).toBeGreaterThanOrEqual(3);
+    expect(row.some((c) => c === '0')).toBe(false);
+  });
+});

@@ -3,6 +3,7 @@
 // ONE money formatter. `fmtCost` is the single place the ledger's five-times-closed "confident
 // $0.00" defect can regress; `historyRow`/the swimlane node/the home meta line all go through it.
 // Pure: `now` is a parameter everywhere — never read from the system clock directly.
+import { t } from './strings.js';
 
 // A costUSD that rounds to "$0.00" at 2dp is still a REAL nonzero cost (e.g. a single cheap
 // call) — showing "$0.00" there is the exact confident-zero defect this function exists to kill,
@@ -62,22 +63,53 @@ function fmtDuration(startedAt, endedAt, now, live, lang) {
   return lang === 'zh' ? `${base} 進行中` : `${base} running`;
 }
 
+// [v29, REQ-148] Was `return iso ?? '—'` — a stub that put the raw ISO string on the page
+// (`2026-09-07T10:25:26.314Z`). The handoff's history table reads `9/7 18:25:26`, a LOCAL clock
+// reading, which is also the only form that lines up with the run chips beside it.
 function fmtStartedAt(iso) {
-  return iso ?? '—';
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso; // an unparseable wire value is shown, never swallowed
+  const p2 = (n) => String(n).padStart(2, '0');
+  return `${d.getMonth() + 1}/${d.getDate()} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
+}
+
+// [v29, REQ-148] The 8-character run id the whole UI already uses — `ui/workflow.js` had this as an
+// inline `.slice(0, 8)` for the run chips while the table beside it printed the full 36-char UUID.
+// One name, one length, both surfaces.
+export function shortId(runId) {
+  return String(runId ?? '').slice(0, 8);
+}
+
+// [v29, REQ-148] `status` and `startedBy.type` arrived on the wire in English and went straight to
+// the page. `t()` has no fallback by design, so an unknown value must pass through UNCHANGED
+// rather than render the literal string `undefined` (the BF-5/BF-6 defect class).
+const STATUS_KEY = {
+  queued: 'stQueued', running: 'stRunning', completed: 'stCompleted', failed: 'stFailed',
+  stopped: 'stStopped', suspended: 'stSuspended', interrupted: 'stInterrupted', refused: 'stRefused',
+};
+const TRIGGER_KEY = {
+  client: 'byType_client', webhook: 'byType_webhook', schedule: 'byType_schedule',
+  chain: 'byType_chain', unknown: 'byType_unknown',
+};
+function label(map, raw, lang) {
+  if (raw === undefined || raw === null || raw === '') return '—';
+  const key = map[String(raw)];
+  return key ? t(lang, key) : String(raw);
 }
 
 // REQ-133's nine history-table columns, in order.
 export function historyRow(summary, now, lang) {
   const live = summary.status === 'running' || summary.status === 'queued';
   return [
-    summary.runId,
-    summary.status,
+    shortId(summary.runId),
+    label(STATUS_KEY, summary.status, lang),
     summary.scriptVersion ?? '—',
-    summary.startedBy?.type ?? '—',
+    label(TRIGGER_KEY, summary.startedBy?.type, lang),
     fmtStartedAt(summary.createdAt),
     summary.createdAt ? fmtDuration(summary.createdAt, summary.terminalAt, now, live, lang) : '—',
     summary.agentCount === undefined ? '—' : String(summary.agentCount),
-    summary.tokensTotal === undefined ? '—' : String(summary.tokensTotal),
+    summary.tokensTotal === undefined ? '—' : fmtTok(summary.tokensTotal),
     fmtCost(summary.costUSD, summary.unpricedCalls, lang),
   ];
 }

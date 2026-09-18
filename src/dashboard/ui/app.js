@@ -19,7 +19,7 @@
 // route/tab is opened, never at load — Gate 6's tasks land independently on the same tree.
 
 import { PREF_KEYS, clampHue, prefsFromStorage } from '../lib/theme.js';
-import { updatePanelModel } from '../lib/status.js';
+import { updatePanelModel, makeIslandReader } from '../lib/status.js';
 // [v28, DES-210/DES-212, TASK-217] `demoEngages` is DES-212's predicate (TASK-220 adds it to
 // `connection.js`, landing after this task per the v28 ordering rules) — the seam's own tick()
 // already calls it so the demo path is wired in ONE commit, not bolted on later.
@@ -83,7 +83,13 @@ function applyTheme() {
   root.style.setProperty('--rwe-hue', String(prefs.hue));
 }
 
-function readIsland() {
+// [v29, REQ-149] Memoized, because `mountApp()` below calls `document.body.replaceChildren(...)`
+// and the server-rendered island is IN the body (`dashboard-page.ts:93`). The first mount reads it
+// before that wipe; a language switch calls `mountApp()` again and would otherwise read a document
+// with no `#rwe-init` left — which is how the nav came to paint `vundefined` and lose the whole
+// update panel until a reload. The memo lives in `lib/status.js` so it is unit-testable: vitest
+// runs `environment: 'node'`, so nothing in this file is reachable from a unit test.
+const readIsland = makeIslandReader(() => {
   const el = document.getElementById('rwe-init');
   if (!el) return {};
   try {
@@ -91,7 +97,7 @@ function readIsland() {
   } catch {
     return {};
   }
-}
+});
 
 function buildUpdatePanel(island, lang) {
   const vm = updatePanelModel(island, lang);

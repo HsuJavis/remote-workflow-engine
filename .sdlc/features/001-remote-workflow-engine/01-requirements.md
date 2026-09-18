@@ -2061,13 +2061,18 @@ boundary ④ 記載了做這個判斷時的處境:`design_handoff_workflow_dashb
   runId 取前 8 碼**重用 `ui/workflow.js:209` 既有的 `slice(0, 8)`**,不得另寫一份。
 
 - **REQ-149 — 版本字串的前綴與遺失**
-  **來源:** B1 + B2。兩處皆多補一個 `v`:`ui/workflow.js:183` 的
-  `(lang === 'zh' ? '版本 v' : 'v') + describe.version` 讓已含 `v` 的版本變成 `vv4`;
-  `ui/app.js:102` 的 `` `v${vm.version}` `` 在 `vm.version` 為 undefined 時印出 `vundefined`。
-  **B2 是資料遺失,不是字串問題** —— 切換語言後連 `v0.20.0: applied` 也一起消失,
-  表示重建導覽列時整個 island vm 沒有被帶入,而不只是 `version` 這個欄位。
-  **在 `app.js:102` 加 undefined 防護會把病徵蓋掉**;要修的是語言處理器重建導覽列時遺失
-  `readIsland()` 結果的那個位置。**驗收:** 切 EN 再切回中文,兩個版本字串與切換前逐字相同。
+  **來源:** B1 + B2。**[CORRECTED v29 c1 — 兩處的性質相反,原文寫成同一種是錯的]**
+  `ui/workflow.js:183` 的 `(lang === 'zh' ? '版本 v' : 'v') + describe.version` 確實多補了一個 `v`:
+  該路由回傳的就是 `version: 'v4'`(已量測),所以畫面讀成 `版本 vv4`。
+  但 `ui/app.js:102` 的 `` `v${vm.version}` `` **前綴是對的** —— `/api/status` 回的是
+  `'0.1.0 (v0.20.0-…)'`,沒有自帶 `v`。那裡唯一的錯是 `vm.version` 變成 undefined。
+  **B2 的根因是資料被銷毀,不是字串問題,也不在語言處理器裡:**
+  `ui/app.js:595` 的 `document.body.replaceChildren(nav, routeMount, buildFooter())` 會把
+  `<script id="rwe-init">` 一起清掉 —— 那個 island 就在 `<body>` 內(`dashboard-page.ts:93`)。
+  首次掛載在清除**之前**讀到它;語言切換再次呼叫 `mountApp()` 時,文件裡已經沒有這個節點,
+  於是整個 vm 變成 `{}`,版本字串與更新面板一起消失。
+  **在 `app.js:102` 加 undefined 防護會把病徵蓋掉**,要修的是「只讀一次並記住」。
+  **驗收:** 切 EN 再切回中文,兩個版本字串與切換前逐字相同。
 
 - **REQ-150 — 中文介面不得出現未翻譯的英文狀態、單位與事件種類**
   **來源:** B16。本次探針量到的字面值集合:

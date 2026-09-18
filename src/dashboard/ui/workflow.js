@@ -37,7 +37,8 @@ import { paintSwimlane, renderLegend, initZoomable, currentLang } from './run.js
 import { openAgentPanel } from './agent-panel.js';
 import { endpointsFor, getViewJSON } from './poll.js';
 import { el } from './dom.js';
-import { historyRow } from '../lib/runlist.js';
+import { historyRow, shortId } from '../lib/runlist.js';
+import { versionTagText } from '../lib/status.js';
 import { t } from '../lib/strings.js';
 import { clockNow } from './clock.js';
 
@@ -180,7 +181,9 @@ function buildShell(container) {
 
 function renderHeader(shell, describe, lang) {
   shell.nameEl.textContent = describe.name;
-  shell.versionTag.textContent = (lang === 'zh' ? '版本 v' : 'v') + describe.version;
+  // [v29, REQ-149] `describe.version` is already `'v4'` on the wire — the old literal `v` here
+  // made the tag read 「版本 vv4」.
+  shell.versionTag.textContent = versionTagText(lang, describe.version);
   shell.execTag.textContent = describe.runnable
     ? (lang === 'zh' ? '可執行' : 'executable')
     : (lang === 'zh' ? '不可執行' : 'not executable') + (describe.runnableReason ? ' · ' + describe.runnableReason : '');
@@ -206,7 +209,7 @@ function renderChipsAndTable(shell, runs, selectedRunId, lang, onPick) {
     dot.textContent = '●';
     dot.className = 'status-dot'; // DES-209 STYLE_HOOKS — the 7px size moves to the stylesheet.
     chip.appendChild(dot);
-    chip.appendChild(document.createTextNode(' ' + r.runId.slice(0, 8)));
+    chip.appendChild(document.createTextNode(' ' + shortId(r.runId)));
     chip.addEventListener('click', () => onPick(r.runId));
     shell.chips.appendChild(chip);
   }

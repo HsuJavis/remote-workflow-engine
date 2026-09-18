@@ -13392,3 +13392,48 @@ tests/unit/dashboard-seam.test.ts tests/unit/dashboard-lib-strings.test.js` → 
 5/5 pass, byte-identical — no time bomb. Full regression (`npx vitest run`, whole tree): 2964
 passed / 0 failed / 26 skipped over 415 files (415/415, 1 skipped), 0 failures anywhere outside this
 item's own scope.
+
+### UT-264 — `dashboard-lib-status.test.js`: `makeIslandReader` 讀一次就記住,`versionTagText` 不重複前綴
+- **status:** green
+- **traces:** REQ-149, IMPL-303
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v29
+
+紅的理由(量測):`makeIslandReader` / `versionTagText` 未被 `src/dashboard/lib/status.js` 匯出
+(named-import 失敗),5 例全紅。
+
+兩個決定放在 `lib/` 而非 view 裡,是因為 vitest 跑 `environment: 'node'` —— 任何在 import 時就
+碰 `document` 的 `ui/*.js` 都不可能被單元測試載入(ADR-049 已有結論)。這是它們唯一能被測到的位置。
+
+關鍵案例是「來源消失之後仍供應同一個值」:它直接編碼了缺陷的機制 ——
+`body.replaceChildren()` 會銷毀 island,而不是「version 這個欄位恰好變 undefined」。
+第二例(兩個 reader 互不影響)存在的理由是:若改用模組層變數,同一個分頁載入第二個頁面時
+會拿到前一頁的 island。
+
+### UT-265 — `dashboard-lib-runlist.test.js`: 執行歷史九欄的格式化
+- **status:** green
+- **traces:** REQ-148, IMPL-304
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v29
+
+新增 5 例,**4 紅 1 綠**。那 1 例(「缺值仍是 —,不是格式化過的零」)一開始就綠是刻意的:
+它是這次改動最可能造成的回歸 —— 把五欄接上格式化函式時,最容易讓 `undefined` 變成 `$0.00`
+或 `0`,正是本 ledger 關了五次的那個缺陷類別。
+
+### SPEC-ROW 更正(REQ-146,`tests/fixtures/dashboard-spec.ts`)
+
+`{ anchor: '.t', prop: 'word-break', expect: { literal: 'break-all' } }` **已移除並重新推導**。
+`break-all` 不存在於 `.sdlc/design-handoff/README.md` 任何一處 —— 它只因為實作當初是
+`break-all` 才存在,是 DES-209 v28 修訂點名的污染類別(「a poisoned row goes green forever and
+looks like coverage」)在本 ledger 年度的**第四例**。
+
+依 README §1(卡片標題 = 標題字、17px、`text-wrap: pretty`)重新推導出三列:
+`font-family` / `font-size` / `text-wrap`。val-198 在真 Chromium 上、深淺兩個主題各一次、
+移動色相後再一次,13/13 通過。
+
+**這只是 c1 範圍內撞到的那一列;SPEC_ROWS 與 VAL-208 的地面色與色階重算是 c2 的獨立 commit
+(C5),不在此處。**

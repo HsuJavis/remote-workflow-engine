@@ -37,3 +37,29 @@ export function updatePanelModel(init, lang) {
     cta,
   };
 }
+
+// [v29, REQ-149] The server-rendered island (`<script id="rwe-init">`) lives in the BODY
+// (`dashboard-page.ts:93`), and `ui/app.js`'s `mountApp()` calls `document.body.replaceChildren(...)`.
+// The first mount reads the island before that wipe; EVERY later mount — a language switch calls
+// `mountApp()` again — reads a document that no longer contains the node, so the whole view-model
+// came back empty and the nav painted `vundefined` with the update panel silently gone. The repair
+// is to read once and keep it: the island is server-rendered per page load and never changes.
+// A factory rather than module-level state, so two readers cannot poison each other.
+export function makeIslandReader(read) {
+  let cached = null;
+  return () => {
+    if (cached === null) cached = read();
+    return cached;
+  };
+}
+
+// [v29, REQ-149] `/api/workflows/:name/describe` returns `version: 'v4'` — the value carries its
+// own `v`. `ui/workflow.js` prefixed a second one and the detail page read 「版本 vv4」. Note the
+// asymmetry with the nav's own version string, which is `'0.1.0 (…)'` and DOES want a `v` added:
+// the prefix is not wrong in general, only when the value already has one.
+export function versionTagText(lang, version) {
+  if (version === undefined || version === null || version === '') return '';
+  const v = String(version);
+  const numbered = /^v/i.test(v) ? v : 'v' + v;
+  return lang === 'zh' ? '版本 ' + numbered : numbered;
+}

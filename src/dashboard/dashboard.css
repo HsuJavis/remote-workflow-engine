@@ -109,7 +109,12 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 /* [v27 README-fidelity closure] README "1. Workflows home": "Hover: 5–6% accent tint" — the
    REGISTERED/OTHER card's own 5% (the running card's separate 6% is `.card.running:hover` below). */
 .card:hover{border-color:var(--color-link);background:color-mix(in srgb, var(--color-accent) 5%, transparent)}
-.card .t{font-weight:600;font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;word-break:break-all}
+/* [v29, REQ-146] The workflow NAME is a title, not an identifier. README §1 gives `.card-title`
+   the heading face at 17px/600; the mono family is reserved there for run ids, PIDs and tool
+   calls. `word-break:break-all` went with the mono face — at 17px Archivo it splits a real
+   word (`hypothesis-researcher`) mid-glyph, so it is replaced by the README's own
+   `text-wrap:pretty`, not merely deleted. */
+.card .t{font-weight:600;font-family:'Archivo',-apple-system,'Segoe UI',sans-serif;font-size:17px;line-height:1.2;text-wrap:pretty}
 .card .s{color:var(--color-muted);font-size:11.5px}
 .mono{font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;font-size:12.5px}
 .tag{display:inline-block;padding:1px 8px;border-radius:100px;font-size:11px;border:1px solid var(--color-line);color:var(--color-muted)}
@@ -310,7 +315,12 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 .agent-panel{position:fixed;top:0;bottom:0;right:0;z-index:21;width:min(760px,100vw);background:var(--color-bg);color:var(--color-ink);border-left:1px solid var(--color-line);box-shadow:var(--shadow-lg);overflow:auto;padding:20px;box-sizing:border-box;display:flex;flex-direction:column;gap:20px;animation:rweSlideIn .28s cubic-bezier(.2,.7,.2,1)}
 .agent-panel.from-left{right:auto;left:0;border-left:0;border-right:1px solid var(--color-line);animation:rweSlideInL .28s cubic-bezier(.2,.7,.2,1)}
 .stat-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
-.stat-label{color:var(--color-muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+/* [v29, REQ-147] `ui/agent-panel.js:59-70` already emitted `[data-stat-card]` with both spans,
+   and `.stat-cards` was already the README's `auto-fit minmax(150px,1fr)` grid — the attribute
+   selector simply had NO rule, so each cell rendered as two adjacent inline spans
+   (`MODELhaiku — claude-agent-sdk · —`) instead of README §3's six bordered stat cards. */
+[data-stat-card]{border:1px solid var(--color-line);border-radius:var(--radius-md);padding:10px 12px;display:flex;flex-direction:column;gap:4px;min-width:0}
+.stat-label{display:block;color:var(--color-muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
 .stat-value{font-weight:600;font-size:18px}
 .prompt-pre{margin:0;padding:12px;border:1px solid var(--color-line);border-radius:var(--radius-md);font-size:13.5px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto}
 .tag-columns{display:flex;flex-wrap:wrap;gap:6px}
