@@ -65,10 +65,12 @@ describe('lib/system.js: statCard(kind, input, lang) — the four cards, one WIT
   // at the browser tier (VAL-214). Covers `statCard.ts`'s real usedPct rounding, the "X of Y · Z
   // free" meta format, and disk-only `kicker`.
   it('a real memory section renders the rounded usedPct, a byte-formatted meta line, and no kicker', () => {
-    const card = statCard('memory', { kind: 'ok', value: { totalBytes: 1e9, usedBytes: 6e8, freeBytes: 4e8, usedPct: 60 } }, 'en');
+    // [v29d, REQ-159] inputs restated in BINARY units so the expectation reads as real hardware
+    // (a 1 GiB section), not as whatever the decimal formatter happened to print.
+    const card = statCard('memory', { kind: 'ok', value: { totalBytes: 1024 ** 3, usedBytes: 0.6 * 1024 ** 3, freeBytes: 0.4 * 1024 ** 3, usedPct: 60 } }, 'en');
     expect(card.value).toBe('60%');
     expect(card.pct).toBe(60);
-    expect(card.meta).toBe('600.0 MB of 1.0 GB · 400.0 MB free');
+    expect(card.meta).toBe('614 MB of 1.0 GB · 410 MB free');
     expect(card.kicker).toBe(undefined);
   });
 
@@ -96,12 +98,18 @@ describe('lib/system.js: procRow/procTotals (UT-262, DES-215)', () => {
   });
 });
 
-describe('lib/system.js: fmtBytes(n) — MOVED verbatim from ui/system.js:38 (UT-262, DES-215)', () => {
-  it('the three unit boundaries', () => {
+// [v29d, REQ-159] These four assertions were written to describe what the moved code DID — the
+// describe title said so: "MOVED verbatim from ui/system.js:38". They encoded a decimal base that
+// appears nowhere in `.sdlc/design-handoff/README.md`, whose own `fmtBytes` divides by 1024. Same
+// shape as the ground-colour rows re-derived in v29 c2: an oracle copied from the implementation
+// can only ever confirm the implementation. Re-derived here, in BINARY, from the handoff.
+describe('lib/system.js: fmtBytes(n) — the unit boundaries, binary (UT-262, REQ-159)', () => {
+  it('the four unit boundaries', () => {
     expect(fmtBytes(500)).toBe('500 B');
-    expect(fmtBytes(1500)).toBe('1.5 KB');
-    expect(fmtBytes(1500000)).toBe('1.5 MB');
-    expect(fmtBytes(1500000000)).toBe('1.5 GB');
+    expect(fmtBytes(1536)).toBe('2 KB');
+    expect(fmtBytes(1.5 * 1024 ** 2)).toBe('2 MB');
+    expect(fmtBytes(1.5 * 1024 ** 3)).toBe('1.5 GB');
+    expect(fmtBytes(1.5 * 1024 ** 4)).toBe('1.5 TB');
   });
 });
 
@@ -155,5 +163,32 @@ describe('lib/system.js: the meta lines render in the viewer’s language (UT-26
     expect(statCard('counts', { workflows: 5, versions: 18, runRecords: 30 }, 'en').meta)
       .toBe('18 versions · 30 run records');
     expect(procTotals({ total: 480, byState: { S: 333 } }, 'en')).toContain('Total processes 480');
+  });
+});
+
+describe('lib/system.js: fmtBytes (UT-271, v29d, REQ-159)', () => {
+  // The audit recorded one difference (1000 vs 1024). Measuring found four, and the second is not
+  // a cosmetic one: an absent byte count rendered the literal words `null`/`undefined`/`NaN` onto
+  // the page — the BF-5/BF-6 class this ledger keeps closing.
+  it('an absent or non-finite value is "—", never the literal word', () => {
+    for (const v of [null, undefined, NaN, Infinity]) {
+      expect(fmtBytes(v), `fmtBytes(${String(v)})`).toBe('—');
+    }
+  });
+
+  it('binary base: 1 GiB reads 1 GB, not 1.1', () => {
+    expect(fmtBytes(1024 ** 3)).toBe('1.0 GB');
+    expect(fmtBytes(10 * 1024 ** 3)).toBe('10.0 GB');
+  });
+
+  it('TB exists — a 1.8 TB disk is not reported as 1979 GB', () => {
+    expect(fmtBytes(1.8 * 1024 ** 4)).toBe('1.8 TB');
+  });
+
+  it('below GB the figure is whole — 1.5 KiB reads 2 KB, not 1.5 KB', () => {
+    // The handoff's own formatter rounds under GB and keeps one decimal at GB and above.
+    expect(fmtBytes(1536)).toBe('2 KB');
+    expect(fmtBytes(512)).toBe('512 B');
+    expect(fmtBytes(0)).toBe('0 B');
   });
 });

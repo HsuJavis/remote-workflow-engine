@@ -17,7 +17,7 @@
 // repaint of a 12-column table every ~3s would close the operator's open panel and reset their
 // sort/search every tick.
 import { matchModels, sortKeyOf, modelRow, modelPanel } from '../lib/model.js';
-import { sortRows } from '../lib/runlist.js';
+import { sortRows, fmtClock } from '../lib/runlist.js';
 import { t } from '../lib/strings.js';
 import { el, currentLang } from './dom.js';
 
@@ -72,6 +72,9 @@ function fmtCount(filtered, total) {
 
 function buildChrome(container, state) {
   container.replaceChildren();
+  // [v29d, REQ-156] README §4 titles this screen.
+  const title = el('h6', 'section-head', t(state.lang, 'modelsTitle'));
+  container.appendChild(title);
 
   const filters = document.createElement('div');
   filters.className = 'model-filters';
@@ -118,6 +121,16 @@ function buildChrome(container, state) {
   const count = el('span', 'mono', '');
   filters.appendChild(count);
   state.countEl = count;
+
+  // [v29d, REQ-156] README §4's header row: a title, the count WITH its unit, when the catalog was
+  // fetched, and the sort hint. Only the bare number shipped — `catalogFetchedAt` was already read
+  // (for the repaint digest) and never shown.
+  const hint = el('span', 'muted', t(state.lang, 'sortHint'));
+  filters.appendChild(hint);
+  const fetched = el('span', 'muted', '');
+  fetched.setAttribute('data-catalog-fetched', '');
+  filters.appendChild(fetched);
+  state.fetchedEl = fetched;
 
   container.appendChild(filters);
 
@@ -232,6 +245,18 @@ function renderPanel(container, state) {
   if (!state.selected) return;
   const entry = state.entries.find((e) => e.model === state.selected);
   if (!entry) return;
+  // [v29d, REQ-158] The backdrop the agent panel has had all along. Two slide-in panels in one
+  // build behaving differently is the inconsistency here, not the absence of a design clause:
+  // without it a click outside the panel lands on the table underneath and silently re-sorts or
+  // re-selects while the panel is still open.
+  const backdrop = document.createElement('div');
+  backdrop.setAttribute('data-model-panel-backdrop', '');
+  backdrop.className = 'model-backdrop';
+  backdrop.addEventListener('click', () => {
+    state.selected = null;
+    paint(container, state, true);
+  });
+  container.appendChild(backdrop);
   container.appendChild(buildPanel(container, state, entry));
 }
 
@@ -257,7 +282,11 @@ function paint(container, state, force) {
 
   renderRows(state.tbodyEl, sorted, state.lang);
   updateHeaderSort(state.theadEl, state);
-  state.countEl.textContent = fmtCount(filtered.length, state.entries.length);
+  state.countEl.textContent = fmtCount(filtered.length, state.entries.length) + ' ' + t(state.lang, 'modelCount');
+  if (state.fetchedEl) {
+    const at = state.entries[0] ? state.entries[0].catalogFetchedAt : null;
+    state.fetchedEl.textContent = at ? t(state.lang, 'catalogFetched') + ' ' + fmtClock(at) : '';
+  }
   renderPanel(container, state);
   state.painted = true;
 }

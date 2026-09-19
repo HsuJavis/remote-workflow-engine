@@ -63,6 +63,17 @@ function fmtDuration(startedAt, endedAt, now, live, lang) {
   return lang === 'zh' ? `${base} 進行中` : `${base} running`;
 }
 
+// [v29d, REQ-156/157] ONE clock formatter. Before this there were two private copies (this file's
+// own `p2` and `ui/app.js:166`'s `pad2`), and the models/system headers would have made a third.
+// `null` in, `'—'` out — never the literal word (the BF-5/BF-6 class).
+export function fmtClock(iso) {
+  if (!iso) return '—';
+  const d = iso instanceof Date ? iso : new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  const p2 = (n) => String(n).padStart(2, '0');
+  return `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
+}
+
 // [v29, REQ-148] Was `return iso ?? '—'` — a stub that put the raw ISO string on the page
 // (`2026-09-07T10:25:26.314Z`). The handoff's history table reads `9/7 18:25:26`, a LOCAL clock
 // reading, which is also the only form that lines up with the run chips beside it.

@@ -110,11 +110,22 @@ export function procTotals(system, lang) {
 }
 
 /** `fmtBytes(n) → string` — MOVED verbatim from `ui/system.js:38` (pre-v28). */
+/** [v29d, REQ-159] Four corrections, only one of which the audit had recorded:
+ *  - BINARY base. The wire's byte counts come from the OS, which reports GiB; dividing by 1e9 made
+ *    a 32 GiB machine read "34.4 GB".
+ *  - An absent or non-finite value is `'—'`. It used to fall through to `b + ' B'`, so a degraded
+ *    section painted the literal words `null B` / `undefined B` / `NaN B` — the BF-5/BF-6 class
+ *    (「renders the literal string `undefined`」) this ledger has closed repeatedly elsewhere.
+ *    This one is a correctness defect, not a unit preference.
+ *  - TB exists: a 1.8 TB disk was reported as `1979.1 GB`.
+ *  - Whole figures below GB, one decimal at GB and above — the handoff's own rounding. */
 export function fmtBytes(b) {
-  if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB';
-  if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB';
-  if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB';
-  return b + ' B';
+  if (b == null || !Number.isFinite(b)) return '—';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  let v = b;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+  return (i >= 3 ? v.toFixed(1) : String(Math.round(v))) + ' ' + units[i];
 }
 
 /** `catalogCounts(workflows, runs) → { workflows, versions, runRecords }` — ADR-057's three written

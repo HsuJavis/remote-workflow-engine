@@ -29,6 +29,8 @@ export const STYLE_HOOKS: readonly string[] = [
   // [v29c, REQ-153/154/155] the workflow-detail structural layer: breadcrumb, the section headings,
   // the triggers column, the lane index + its three-state header, and the legend's status key.
   'breadcrumb', 'section-head', 'triggers-col', 'muted', 'wf-header', 'wf-header-main',
+  // [v29d, REQ-157/158] the system page's title row and the model panel's backdrop.
+  'page-head', 'model-backdrop',
   'lane-index', 'lane-current-tag', 'is-unreached',
   'legend-item', 'legend-dot',
 

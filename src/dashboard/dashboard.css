@@ -203,6 +203,12 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
    figure was an empty `[data-predicted-label]` plus two 20px gaps (v29c, REQ-154 / B26). */
 [data-predicted-label]:empty{display:none}
 .muted{color:var(--color-muted)}
+/* [v29d, REQ-157] the system page's title row: heading and the sample's timestamp on one line. */
+.page-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.page-head .section-head{margin:0}
+/* [v29d, REQ-158] The model panel had no backdrop while the agent panel did — two slide-in panels
+   in the same build behaving differently. Same element and same keyframe as the agent one. */
+.model-backdrop{position:fixed;inset:0;background:rgba(8,12,9,.5);animation:rweFadeIn .2s ease-out;z-index:8}
 
 /* == REQ-131 shell == */
 .rwe-nav{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:10px 20px;border-bottom:1px solid var(--color-line);position:sticky;top:0;background:var(--color-bg);z-index:5}

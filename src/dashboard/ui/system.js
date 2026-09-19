@@ -21,6 +21,7 @@
 // (val-204) is exactly that ONE of those two failing must blank ONLY the counts card, immediately,
 // while the other three keep rendering live numbers from the still-healthy `/api/system` route.
 import { sectionState, cpuUtilState, statCard, procRow, procTotals, fmtBytes, catalogCounts } from '../lib/system.js';
+import { fmtClock } from '../lib/runlist.js';
 import { t } from '../lib/strings.js';
 import { el, currentLang } from './dom.js';
 
@@ -165,6 +166,15 @@ function paintEngineDl(dlEl, self, lang) {
 function buildShell(container, lang) {
   container.replaceChildren();
 
+  // [v29d, REQ-157] README §5 titles this screen and stamps when the sample was taken — the page
+  // polls every 3 s, so "what am I looking at" needs a timestamp, not just fresh-looking numbers.
+  const head = el('div', 'page-head');
+  head.appendChild(el('h6', 'section-head', t(lang, 'systemTitle')));
+  const sampled = el('span', 'muted', '');
+  sampled.setAttribute('data-sampled-at', '');
+  head.appendChild(sampled);
+  container.appendChild(head);
+
   const cardsWrap = el('div', 'stat-cards');
   const cards = {};
   for (const kind of ['cpu', 'memory', 'disk', 'counts']) {
@@ -196,6 +206,7 @@ function buildShell(container, lang) {
 
   return {
     lang, cards, procSummaryEl: procSummary, tbodyEl: tbody, engineDlEl: dl,
+    sampledEl: sampled,
     procRows: new Map(), systemPainted: false,
   };
 }
@@ -214,6 +225,10 @@ function paintHostUnavailable(state) {
 function paintHost(state, body) {
   const lang = state.lang;
   const cpuState = cpuUtilState(body.cpu);
+  // [v29d, REQ-157] the sample's own timestamp, from the wire — not the page's clock.
+  if (state.sampledEl) {
+    state.sampledEl.textContent = body.sampledAt ? t(lang, 'sampledAt') + ' ' + fmtClock(body.sampledAt) : '';
+  }
   paintCard(state.cards.cpu, statCard('cpu', { ...cpuState, cores: body.cpu.cores, loadAvg: body.cpu.loadAvg }, lang));
   paintCard(state.cards.memory, statCard('memory', sectionState(body.memory), lang));
   paintCard(state.cards.disk, statCard('disk', sectionState(body.disk), lang));

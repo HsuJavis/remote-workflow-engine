@@ -19,6 +19,7 @@
 // route/tab is opened, never at load — Gate 6's tasks land independently on the same tree.
 
 import { PREF_KEYS, clampHue, prefsFromStorage } from '../lib/theme.js';
+import { fmtClock } from '../lib/runlist.js';
 import { updatePanelModel, makeIslandReader } from '../lib/status.js';
 // [v28, DES-210/DES-212, TASK-217] `demoEngages` is DES-212's predicate (TASK-220 adds it to
 // `connection.js`, landing after this task per the v28 ordering rules) — the seam's own tick()
@@ -162,17 +163,14 @@ function stampPoll(state) {
   document.documentElement.setAttribute('data-poll', state);
 }
 
-function pad2(n) {
-  return String(n).padStart(2, '0');
-}
-
 let footerUpdatedEl = null;
 // README "Header / chrome": "Footer: API base left, `Updated HH:MM:SS` right, 11.5 px 50 %" —
 // `location.origin` IS the API base here (every `fetch()` in `poll.js` is same-origin relative).
 function updateFooterClock() {
   if (!footerUpdatedEl) return;
   const d = new Date(); // det:allow — the footer's own "Updated HH:MM:SS" IS a live wall-clock display, not a decision
-  footerUpdatedEl.textContent = `${L(prefs.lang, 'updated')} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  // [v29d] one shared clock formatter (`lib/runlist.js`), not a third private copy.
+  footerUpdatedEl.textContent = `${L(prefs.lang, 'updated')} ${fmtClock(d)}`;
 }
 
 function buildFooter() {

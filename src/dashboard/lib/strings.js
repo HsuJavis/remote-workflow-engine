@@ -57,6 +57,9 @@ export const STR = {
     // [v29c, REQ-153/154/155] the detail page's structural strings. Key names follow the delivery
     // handoff's own STR table (`home`, `triggers`, `graph`, `selectRun`, `history`, `none`).
     home: '總覽', triggers: '觸發器', graph: '工作流圖', selectRun: '檢視執行',
+    // [v29d, REQ-156/157] the models/system page headers.
+    modelsTitle: '模型清單', modelCount: '個模型', catalogFetched: '目錄更新',
+    sortHint: '點欄位排序', systemTitle: '系統資源', sampledAt: '取樣於',
     history: '執行歷史', none: '(無)', stPending: '待執行', legend: '圖例',
     kind_message: '訊息', kind_tool_call: '工具呼叫', kind_tool_result: '工具結果',
     kind_usage: '用量', kind_harness: '設定', kind_log: '日誌', kind_refused: '拒絕',
@@ -82,6 +85,8 @@ export const STR = {
     issuesOpen: 'Open', issuesResolved: 'Resolved', openOnGitHub: 'Open on GitHub \u2197',
     stDone: 'Done',
     home: 'Overview', triggers: 'Triggers', graph: 'Workflow graph', selectRun: 'Viewing run',
+    modelsTitle: 'Model catalog', modelCount: 'models', catalogFetched: 'Catalog fetched',
+    sortHint: 'Click a column to sort', systemTitle: 'System resources', sampledAt: 'Sampled',
     history: 'Run history', none: '(none)', stPending: 'Pending', legend: 'Legend',
     kind_message: 'message', kind_tool_call: 'tool call', kind_tool_result: 'tool result',
     kind_usage: 'usage', kind_harness: 'harness', kind_log: 'log', kind_refused: 'refused',

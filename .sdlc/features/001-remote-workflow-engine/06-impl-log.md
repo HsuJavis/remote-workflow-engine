@@ -8303,3 +8303,57 @@ hit stack: ["span#.stat-value","div#.","div#.stat-cards","aside#.agent-panel fro
 - `lane-title` 類別沒有任何 CSS,直接刪掉而不是登記進 `STYLE_HOOKS` —— 死類別。
 
 類別鎖抓到 11 個新類別未登記,全部補進 `STYLE_HOOKS`。
+
+---
+
+## v29d 第二群 — REQ-156/157/158/159(模型頁與系統頁)
+
+### IMPL-315 — `fmtBytes` 有四個缺陷,稽核只記了一個
+- **traces:** REQ-159
+- **files:** `src/dashboard/lib/system.js`
+- **tests:** UT-271(4 例)+ UT-262 的兩條舊斷言重新推導
+
+| | 現況 | 修正後 |
+|---|---|---|
+| 進位 | 1000 | 1024 |
+| 缺值 | `null B` / `undefined B` / `NaN B` | `—` |
+| 單位 | 最大 GB(1.8 TB → `1979.1 GB`) | 到 TB |
+| 精度 | 一律一位小數 | GB 以下取整 |
+
+**第二列不是外觀差異,是本 ledger 反覆關掉的那個類別**(BF-5/BF-6:字面 `undefined` 上畫面)。
+稽核記的是進位,量測才看到其餘三個。
+
+**兩條既有測試釘著舊合約,而它們的 describe 標題自己就說了原因:**
+`lib/system.js: fmtBytes(n) — **MOVED verbatim from ui/system.js:38**`。
+斷言是照著搬過來的程式碼寫的,不是照規格;`1500 → '1.5 KB'` 這種十進位假設在
+`.sdlc/design-handoff/README.md` 裡找不到,交付稿的 `fmtBytes` 除以 1024。
+**與 v29 c2 的地面色是同一個形狀 —— oracle 抄自實作,只能確認實作。** 已重新推導成二進位。
+
+真跑確認:記憶體從 `12.8 GB / 32.5 GB` 變成 `11.9 GB / 30.3 GB`,
+**`30.3 GB` 與參考稿量到的數字完全一致** —— 這條改對了的獨立確認。
+
+### IMPL-316 — 模型頁與系統頁的標頭
+- **traces:** REQ-156, REQ-157
+- **files:** `src/dashboard/ui/models.js`, `src/dashboard/ui/system.js`,
+  `src/dashboard/lib/strings.js`, `src/dashboard/lib/runlist.js`, `src/dashboard/ui/app.js`
+
+模型頁補標題、計數單位、目錄更新時間與排序提示。`catalogFetchedAt` **早就被讀了**
+(`ui/models.js:239` 用它做重繪 digest),只是從未顯示過。
+
+**沒有再加第三份時鐘格式化。** 兩個新標頭都需要 `HH:MM:SS`,而 `ui/app.js:166` 與
+`lib/runlist.js:73` 各有一份私有的 `pad2`。抽出 `fmtClock(iso)` 放在 `lib/runlist.js`
+(該檔實際上就是格式化模組),三個呼叫點共用;`app.js` 的 `pad2` 隨即成為死碼,刪掉。
+`fmtClock(null)` 回 `—`,不回字面字串。
+
+**一個我自己造出來又收掉的做法:** `sampledEl` 一度被隨手掛成 `container.__sampledEl`。
+該檔本來就有 per-container 的 state 物件,改走它。
+
+### IMPL-317 — 模型面板的遮罩
+- **traces:** REQ-158
+- **files:** `src/dashboard/ui/models.js`, `src/dashboard/dashboard.css`
+
+**理由不只是「設計稿有」:** 沒有遮罩時,點面板外面會直接落在底下的表格上,
+**在面板還開著的時候默默重新排序或改選取**。同一份實作的 agent 面板一直有遮罩 ——
+這是兩個滑入面板彼此不一致,不是缺一條設計條款。用同一個 `rweFadeIn`。
+
+真跑:遮罩存在、動畫名 `rweFadeIn`、覆蓋 1440px。
