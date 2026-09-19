@@ -409,6 +409,42 @@ export class SqliteSchedulerPort {
    *  REQ-015 clause 2); `cron` recomputes a fresh future `nextFire` from `clock.now()` (fire-once-
    *  on-catch-up-then-resume, DES-017 — never re-fires the same instant, never backfills). Also
    *  records the scheduleId->runId join (D-V2a) so `originOf()` reports it, same as `trigger()`. */
+  /** [v29, REQ-152, R29-A1] CLAIMS a due firing SYNCHRONOUSLY, before the driver awaits anything.
+   *  Returns `false` when another tick already took it.
+   *
+   *  The defect this closes: `markFired` was the only writer that made a fired schedule stop being
+   *  due, and the driver called it inside a `.then()` — after `runManager.start()` resolved. With a
+   *  500 ms `RealTicker`, any dispatch slower than one tick left the row still `enabled = 1` with an
+   *  unchanged `nextFire`, so the next tick returned the SAME firing and started a SECOND run.
+   *  Observed twice in v29's full regressions, always exactly two runs, never three.
+   *
+   *  The guards are the ones `markRefused` already uses for its own "two ticks racing the same
+   *  instant" trap — `enabled = 1` in the WHERE for `once`, a pre-update `nextFire` still-due check
+   *  for `cron`. What changes is WHEN they run: at the moment the firing leaves `tick()`, not after
+   *  the work it authorises has finished.
+   *
+   *  Accepted trade-off, stated rather than discovered later: a crash between the claim and the
+   *  dispatch consumes a `once` schedule without running it. That is strictly better than the
+   *  behaviour it replaces — running an arbitrary workflow twice — and matches what `markFailed`
+   *  and `markRefused` already do to a `once` row whose dispatch never produced a run. */
+  claimFiring(firing: { id: string; kind: Schedule['kind'] }): boolean {
+    if (firing.kind === 'once') {
+      const res = this._db
+        .prepare('UPDATE schedules SET enabled = 0 WHERE id = ? AND enabled = 1')
+        .run(firing.id);
+      return res.changes === 1;
+    }
+    const row = this._db.prepare('SELECT cron, tz, nextFire FROM schedules WHERE id = ?').get(firing.id) as
+      | { cron: string; tz: string | null; nextFire: number | null }
+      | undefined;
+    if (row == null) return false;
+    // already advanced past this due instant by a racing tick
+    if (row.nextFire != null && row.nextFire > this._clock.now()) return false;
+    const nextFire = computeNextFire(row.cron, row.tz ?? undefined, this._clock.now());
+    this._db.prepare('UPDATE schedules SET nextFire = ? WHERE id = ?').run(nextFire, firing.id);
+    return true;
+  }
+
   markFired(firing: { id: string; kind: Schedule['kind'] }, runId: string): void {
     const ts = this._clock.isoNow();
     // v24 (DES-150, TASK-141): a successful fire resets the consecutive-refusal counter — the field
@@ -416,11 +452,11 @@ export class SqliteSchedulerPort {
     if (firing.kind === 'once') {
       this._db.prepare('UPDATE schedules SET lastFire = ?, lastRunId = ?, enabled = 0, refusalCount = 0 WHERE id = ?').run(ts, runId, firing.id);
     } else {
-      const row = this._db.prepare('SELECT cron, tz FROM schedules WHERE id = ?').get(firing.id) as
-        | { cron: string; tz: string | null }
-        | undefined;
-      const nextFire = row ? computeNextFire(row.cron, row.tz ?? undefined, this._clock.now()) : null;
-      this._db.prepare('UPDATE schedules SET lastFire = ?, lastRunId = ?, nextFire = ?, refusalCount = 0 WHERE id = ?').run(ts, runId, nextFire, firing.id);
+      // [v29, REQ-152] `nextFire` is NOT recomputed here any more — `claimFiring()` advanced it at
+      // the moment this firing left `tick()`. Advancing again would skip one whole occurrence per
+      // fire, which is the regression a naive fix introduces (UT-270 pins it). This method now
+      // records only WHAT HAPPENED; the schedule's future belongs to the claim.
+      this._db.prepare('UPDATE schedules SET lastFire = ?, lastRunId = ?, refusalCount = 0 WHERE id = ?').run(ts, runId, firing.id);
     }
     this._db
       .prepare('INSERT OR REPLACE INTO run_origins (runId, scheduleId, kind) VALUES (?, ?, ?)')
@@ -436,25 +472,24 @@ export class SqliteSchedulerPort {
    *  dispatch", never both for one firing. */
   markRefused(firing: { id: string; kind: Schedule['kind'] }, reason: RefusalReason): void {
     const ts = this._clock.isoNow();
+    // [v29, REQ-152] BOTH tight-loop traps are REMOVED, because the trap MOVED — and leaving them
+    // here made this method silently stop recording. The `once` guard was `AND enabled = 1`; the
+    // `cron` guard was an early return when `nextFire` had already advanced. Both asked "am I the
+    // one who consumed this firing?" — true when a refusal was the first writer, false the moment
+    // `claimFiring()` consumes it BEFORE dispatch. The result was a refusal that took effect but
+    // left `lastRefusalReason` empty (caught by val-016 and IT-093, not by this file's own tests).
+    //
+    // `claimFiring()` is now the single at-most-once gate: two ticks can no longer both reach
+    // dispatch for one due instant, so these writers are called at most once per firing and need
+    // no race guard of their own. They record WHAT HAPPENED; the schedule's future is the claim's.
     if (firing.kind === 'once') {
-      // Tight-loop trap: once this row is disabled by a refusal, a second refusal call for the
-      // same due firing (two ticks racing the same instant) must not double-count — `enabled = 1`
-      // in the WHERE makes the UPDATE a no-op for that second call.
       this._db
-        .prepare('UPDATE schedules SET enabled = 0, refusalCount = refusalCount + 1, lastRefusedAt = ?, lastRefusalReason = ? WHERE id = ? AND enabled = 1')
+        .prepare('UPDATE schedules SET enabled = 0, refusalCount = refusalCount + 1, lastRefusedAt = ?, lastRefusalReason = ? WHERE id = ?')
         .run(ts, reason, firing.id);
     } else {
-      const row = this._db.prepare('SELECT cron, tz, nextFire FROM schedules WHERE id = ?').get(firing.id) as
-        | { cron: string; tz: string | null; nextFire: number | null }
-        | undefined;
-      // Same trap for `cron`: once the first refusal has advanced `nextFire` past `now`, a second
-      // refusal call at the same instant is a no-op (guarded on the PRE-update `nextFire` still
-      // being due) rather than advancing it again and double-counting.
-      if (row == null || (row.nextFire != null && row.nextFire > this._clock.now())) return;
-      const nextFire = computeNextFire(row.cron, row.tz ?? undefined, this._clock.now());
       this._db
-        .prepare('UPDATE schedules SET nextFire = ?, refusalCount = refusalCount + 1, lastRefusedAt = ?, lastRefusalReason = ? WHERE id = ?')
-        .run(nextFire, ts, reason, firing.id);
+        .prepare('UPDATE schedules SET refusalCount = refusalCount + 1, lastRefusedAt = ?, lastRefusalReason = ? WHERE id = ?')
+        .run(ts, reason, firing.id);
     }
   }
 
@@ -510,11 +545,8 @@ export class SqliteSchedulerPort {
     if (firing.kind === 'once') {
       this._db.prepare('UPDATE schedules SET enabled = 0, lastError = ? WHERE id = ?').run(lastError, firing.id);
     } else {
-      const row = this._db.prepare('SELECT cron, tz FROM schedules WHERE id = ?').get(firing.id) as
-        | { cron: string; tz: string | null }
-        | undefined;
-      const nextFire = row ? computeNextFire(row.cron, row.tz ?? undefined, this._clock.now()) : null;
-      this._db.prepare('UPDATE schedules SET nextFire = ?, lastError = ? WHERE id = ?').run(nextFire, lastError, firing.id);
+      // [v29, REQ-152] `nextFire` belongs to `claimFiring()` now — see `markFired`.
+      this._db.prepare('UPDATE schedules SET lastError = ? WHERE id = ?').run(lastError, firing.id);
     }
   }
 

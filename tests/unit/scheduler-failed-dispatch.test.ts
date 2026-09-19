@@ -36,9 +36,19 @@ const OK_CATALOG = { exists: vi.fn().mockResolvedValue(true), resolve: vi.fn().m
 
 /** Mirrors the real driver loop's body (server.ts:1294-1309) exactly, so this test drives the same
  *  shape the fix must land in production, not a re-invented one. */
+// [v29, REQ-152] This helper is the test's MODEL of `server.ts`'s driver loop, so it gains the same
+// first step the real one did: claim the firing synchronously before dispatching it. Without that
+// the model no longer describes production — `claimFiring()` is what advances/disables the row now,
+// and `markFailed`/`markFired` only record.
+//
+// Worth stating, because it explains why R29-A1 lived here undetected: this helper `await`s
+// `runManager.start()`, and the real driver does NOT. The model was strictly more sequential than
+// the thing modelled, so the window between dispatch and mark — the whole defect — could not exist
+// in it. The three-tick cases below passed for a reason that was never true in production.
 async function driveOneTick(port: SqliteSchedulerPort, runManager: { start: (spec: unknown) => Promise<string> }, now: number): Promise<void> {
   const due = tick(port.all(), now);
   for (const firing of due) {
+    if (!port.claimFiring(firing)) continue;
     await runManager.start({ name: firing.workflow, args: firing.args, startedBy: { type: 'schedule', id: firing.workflow } })
       .then((runId: string) => port.markFired(firing, runId))
       .catch((err: unknown) => port.markFailed(firing, (err as { code?: string }).code ?? 'DISPATCH_FAILED'));

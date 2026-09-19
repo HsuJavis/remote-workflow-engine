@@ -2128,3 +2128,29 @@ boundary ④ 記載了做這個判斷時的處境:`design_handoff_workflow_dashb
 
 **落地後:** `systemctl --user restart rwe.service`(先確認 `inUse=0`;已知優雅關閉會停滯約 55 秒
 才被 SIGKILL 收尾 —— 該缺陷本身在 21 條之外,另行登記)。
+
+---
+
+## Iteration v29b — R29-A1:一次性排程觸發兩次
+
+- **REQ-152 — 到期的排程必須在派工之前被同步認領**
+  **來源:** R29-A1。v29 的五次全回歸中兩次紅在
+  `tests/integration/unclaimed-trigger-create.test.ts:156`,同一個斷言、**值恆為 2**。
+
+  **機制(從程式碼讀出,非推論):**
+  `server.ts:945` 的驅動迴圈同步讀出到期清單,然後 `void resolveScheduleTarget(...)` 進入非同步;
+  `scheduler.markFired()` —— **唯一會把 `once` 設成 `enabled = 0` 的寫入** —— 要等
+  `runManager.start()` resolve 之後才執行。ticker 是 `RealTicker(500)`。
+  派工慢於 500ms,下一次 tick 就再看到同一筆(`enabled` 仍為 1、`nextFire` 未變)並**再派一次**。
+  第三次 tick 時第一筆通常已落地,所以值永遠是 2、從來不是 3。
+
+  **這個 race 早就被認知過。** `markRefused` 裡有一段名為「Tight-loop trap」的守衛,
+  註解寫著「two ticks racing the same instant」—— 但它只防住**拒絕路徑的重複計數**;
+  成功路徑沒有守衛,而它的 race 產物不是多算一次,是**多跑一個 workflow**。
+
+  **驗收:** 認領在任何 `await` 之前同步發生;第二次 tick 取不到同一筆;
+  `cron` 的 `nextFire` 只被推進一次(二次推進會讓每次觸發跳過一整個週期)。
+
+  **接受的取捨,登記於此:** 認領與派工之間崩潰,會消耗掉一個 `once` 排程而沒有跑。
+  這嚴格優於它取代的行為(把任意 workflow 跑兩遍),且與 `markFailed` / `markRefused`
+  對「派工未產生 run」的 `once` 本來就做的事一致。

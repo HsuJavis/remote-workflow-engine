@@ -16,6 +16,7 @@
 // touches `nextFire` on a refusal).
 import { describe, it, expect } from 'vitest';
 import { SqliteSchedulerPort } from '../../src/scheduler.js';
+import { tick } from '../../src/scheduler-engine.js';
 import { FixedClock } from '../../src/clock.js';
 import type { RefusalReason } from '../../src/types.js';
 
@@ -33,14 +34,21 @@ describe('scheduler refusal accounting (UT-151, DES-150)', () => {
     const clock = new FixedClock(new Date('2026-01-01T00:00:00Z'));
     const port = makePort(clock);
     const created = await port.create({ kind: 'once', workflow: 'wf-a', at: '2026-01-01T00:00:00Z', enabled: true });
-    const firing = { kind: 'once' as const, id: (created as { result: { id: string } }).result.id };
-    port.markRefused(firing, 'UNCLAIMED');
-    port.markRefused(firing, 'UNCLAIMED');
-    const status = (await port.list()).find((s: { id: string }) => s.id === firing.id);
-    // once's advance is enabled=0 alone (DES-150) — a disabled row excludes it from tick()'s own
-    // SELECT (`enabled = 1`), which is the once-specific anti-refire mechanism; nextFire is never
-    // touched. The idempotency guard is what stops the SECOND direct markRefused call (this test
-    // bypasses tick()'s filtering to call it twice) from double-counting.
+    const id = (created as { result: { id: string } }).result.id;
+    // [v29, REQ-152] The INVARIANT is unchanged — two ticks at one due instant must produce ONE
+    // refusal. What changed is where it is enforced, so this test now drives the real two-tick
+    // path instead of calling the writer twice directly. The old form bypassed `tick()` on purpose
+    // to exercise an in-writer guard (`AND enabled = 1`); that guard has been removed because it
+    // asked "am I the one who consumed this firing?" — false once `claimFiring()` consumes it
+    // before dispatch, which made the writer silently stop recording the refusal at all.
+    // Driving both ticks is strictly the stronger test: it exercises the path production takes.
+    for (let t = 0; t < 2; t += 1) {
+      for (const f of tick(port.all(), clock.now())) {
+        if (!port.claimFiring(f)) continue;
+        port.markRefused(f, 'UNCLAIMED');
+      }
+    }
+    const status = (await port.list()).find((s: { id: string }) => s.id === id);
     expect(status?.refusalCount).toBe(1);
     expect(status?.enabled).toBe(false);
   });
@@ -49,11 +57,16 @@ describe('scheduler refusal accounting (UT-151, DES-150)', () => {
     const clock = new FixedClock(new Date('2026-01-01T00:00:00Z'));
     const port = makePort(clock);
     const created = await port.create({ kind: 'cron', workflow: 'wf-a', cron: '0 0 * * *', enabled: true });
-    const firing = { kind: 'cron' as const, id: (created as { result: { id: string } }).result.id };
-    port.markRefused(firing, 'UNCLAIMED');
-    port.markRefused(firing, 'UNCLAIMED');
-    const status = (await port.list()).find((s: { id: string }) => s.id === firing.id);
+    const id = (created as { result: { id: string } }).result.id;
+    for (let t = 0; t < 2; t += 1) {
+      for (const f of tick(port.all(), clock.now())) {
+        if (!port.claimFiring(f)) continue;
+        port.markRefused(f, 'UNCLAIMED');
+      }
+    }
+    const status = (await port.list()).find((s: { id: string }) => s.id === id);
     expect(status?.refusalCount).toBe(1);
+    // the advance is the CLAIM's now, not the refusal's — the observable fact is unchanged
     expect(new Date(status!.nextFire!).getTime()).toBeGreaterThan(clock.now());
   });
 

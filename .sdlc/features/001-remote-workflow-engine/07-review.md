@@ -10662,7 +10662,7 @@ property, assert against that property — never derive the expectation from the
 
 ## R29-A1 — `once` 排程在負載下產生兩個 run(新發現,非 v29 引入)
 
-- **severity:** mid → **可重現**(四次全回歸中兩次,值恆為 2,從不是 3)
+- **severity:** mid → **可重現** → **已修(v29b,REQ-152)**;機制已定調,非時序運氣
 - **發現於:** 2026-09-18,v29 c2 的全回歸
 - **失敗點:** `tests/integration/unclaimed-trigger-create.test.ts:156`
 - **owner:** 未指派
@@ -10708,3 +10708,18 @@ c3 與此無關:該 commit 只動 `src/dashboard/` 底下八個 client 檔,排�
 
 **尚未做、且不應省略的一步:** 這四次觀測都是副作用,不是實驗。要定調需要一個**針對性的
 重現**:在受控的並行負載下重複跑該測試 N 次並記錄命中率,而不是繼續從全回歸的殘骸裡讀。
+
+### 結案 2026-09-19(v29b,REQ-152)
+
+機制從程式碼讀出後即確定,不需要更多次觀測:`markFired` 是唯一讓 `once` 停止到期的寫入,
+而它在 `await` 之後;ticker 500ms。修法是把守衛移到 `tick()` 的出口同步認領。
+
+**我第一版的修法壞了三處,那個壞法本身值得記下來。** `claimFiring` 先把 `once` 設成
+`enabled = 0`,於是 `markRefused` 的 `WHERE … AND enabled = 1` 變成 no-op —— 拒絕生效了,
+但 `lastRefusalReason` 是空的。那兩個 tight-loop 守衛問的是「**是不是我消耗掉這筆的?**」,
+當拒絕是第一個寫入者時為真,一旦認領搶在派工之前就永遠為假。
+**抓到它的不是 scheduler 自己的單元測試,是 val-016 與 IT-093。**
+
+**負載實驗是弱證據,不作為結論。** 修後在人工負載下連跑 5 次全綠,但負載只到 2.4~5,
+遠低於整套回歸;而修前那支測試在五次回歸裡本來也有三次是綠的 —— 這個實驗無法區分兩者。
+結論建立在機制與 UT-270 的確定性證明上,不建立在那 5 次上。

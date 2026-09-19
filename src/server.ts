@@ -945,6 +945,13 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   ticker.start(() => {
     const due = tick(scheduler.all(), clock.now());
     for (const firing of due) {
+      // [v29, REQ-152, R29-A1] CLAIM FIRST, synchronously, before anything is awaited. `markFired`
+      // below lands only after `runManager.start()` resolves; with a 500 ms ticker, a dispatch
+      // slower than one tick used to leave this row still due and start a SECOND run for the same
+      // firing. `markRefused` already named this race ("two ticks racing the same instant") and
+      // guarded its own counter against it — the success path had no guard and lost a whole run to
+      // it. A `false` here means another tick already took this firing.
+      if (!scheduler.claimFiring(firing)) continue;
       void resolveScheduleTarget(firing).then((target) => {
       if ('refused' in target) {
         scheduler.markRefused(firing, target.refused);
