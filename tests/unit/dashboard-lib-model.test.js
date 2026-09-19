@@ -288,3 +288,21 @@ describe('lib/model.js: stability and location render in the viewer’s language
     expect(sortKeys.location).toBe('remote');
   });
 });
+
+describe('lib/model.js: the two cell formats REQ-137 spells out (UT-272, v29f, REQ-162)', () => {
+  // REQ-137's own acceptance text writes the modalities cell as `text+image → text`. The build
+  // joined with a comma, so this diverged from THIS repo's requirement, not only from the handoff.
+  it('modalities join with + , as the requirement spells it', () => {
+    const { cells } = modelRow({ model: 'm', provider: 'p', modalities: { in: ['text', 'image'], out: ['text'] } }, 'zh');
+    expect(cells).toContain('text+image → text');
+  });
+
+  it('a context window keeps its decimal — 1,048,576 is not printed as 1M', () => {
+    // Stripping the trailing `.0` made a 1 MiB window and a 1,000,000 window render identically.
+    const a = modelRow({ model: 'm', provider: 'p', contextWindow: 1048576 }, 'zh').cells;
+    const b = modelRow({ model: 'm', provider: 'p', contextWindow: 1000000 }, 'zh').cells;
+    expect(a).toContain('1.0M');
+    expect(b).toContain('1.0M');
+    expect(modelRow({ model: 'm', provider: 'p', contextWindow: 1300000 }, 'zh').cells).toContain('1.3M');
+  });
+});

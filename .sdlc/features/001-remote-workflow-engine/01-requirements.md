@@ -2256,3 +2256,37 @@ README「Header / chrome」:`.nav` 的組成是「brand + source tag」,然後�
 
 **順帶:** 這也讓 v29 c1 修掉的 `vundefined` 那個欄位離開了導覽列 ——
 該缺陷的根因(island 被 `replaceChildren` 銷毀)已在 c1 修復,這裡不是靠搬家迴避它。
+
+---
+
+## Iteration v29f — 第四群:八條低影響,其中三條不是缺陷
+
+### 查證後不列為缺陷的三條(登記理由,以免下一輪又被當成新發現)
+
+- **B17 的品牌那半。** README「Header / chrome」的字面就是
+  「brand "工作流引擎 / Workflow Engine"」,`lib/strings.js` 還留著記錄這個決定的註解
+  (「the design shows zh/en side by side always, it does not swap on the lang toggle」)。
+  參考**實作**會隨語言切換,但 DES-209 裁定 README 是 fidelity oracle,不是參考實作。
+  **只有主題標籤 `System` → `Auto` 是真的**(交付稿 `STR.en.themeSystem: 'Auto'`),
+  而且 `System` 當主題標籤會和它上一行的 `System` 分頁名撞字。
+- **B29 色相滑桿上限 359 vs 360。** README 只寫「hue slider (150 px, gradient track…)」,
+  沒有規定 max。`clampHue` 的合約是 `0..359` 且有單元測試釘著,而 360 ≡ 0。
+  參考稿的 360 是它自己的實作細節,不是規格。
+- **B31 工具欄的 `✓ upstream`。** README 只說有「工具」欄。而 `declaredSource` 是
+  v26 DES-179 的刻意決定 ——「`models_list`'s flags are **declarations** with `declaredSource`
+  and `catalogFetchedAt`」,並明文「labelled *declared, not probed*」。
+  壓成「是 / 否」會刪掉一個刻意做的可觀測性決定,而不是修一個缺陷。
+
+### REQ-162 — 五條字串與格式修正
+
+| 項 | 現況 | 應為 | 依據 |
+|---|---|---|---|
+| B28 | 分頁「工作流程」 | 「工作流」 | 交付稿 `STR.zh.tabWorkflows` |
+| B17 | 主題「System」 | 「Auto」 | 交付稿 `STR.en.themeSystem` |
+| B23 | 位置篩選「本地」 | 「本機」 | **REQ-137 自己的驗收文字**「全部 / 遠端 / 本機」 |
+| B19 | 推理 / 穩定性 / 基準 / 價格 | 努力程度 / 穩定度 / 基準分數 / 價格 / M tokens | REQ-137 已寫穩定度與基準分數;「推理」兩邊都不符 |
+| B30 | `text,image → text` | `text+image → text` | **REQ-137 自己的驗收文字**逐字如此 |
+| B32 | 上下文 `1M`、欄名「執行ID / 節點數」 | `1.0M`、「執行 ID / 節點」 | 交付稿;`.replace(/\.0$/,'')` 讓 1,048,576 與 1,000,000 印成同一個字 |
+
+**B23 與 B30 偏離的不只是設計稿,是這個 repo 自己的 REQ-137。** 稽核把它們記成
+「與設計稿的差異」,查帳本才看到需求文字本來就這樣寫。

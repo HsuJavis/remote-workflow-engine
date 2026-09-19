@@ -8394,3 +8394,37 @@ footer  http://127.0.0.1:8951  v0.1.0 (…)  v0.20.0: applied  更新於 13:08:3
 ```
 
 導覽列文字不含 `v\d+\.\d+\.\d+`、不含 `applied`;標記的 x 介於品牌與第一個分頁之間。
+
+---
+
+## v29f 第四群 — REQ-162(八條低影響,五條實作、三條不列為缺陷)
+
+### IMPL-319 — 五條字串與格式
+- **traces:** REQ-162
+- **files:** `src/dashboard/ui/app.js`, `src/dashboard/ui/models.js`,
+  `src/dashboard/lib/model.js`, `src/dashboard/ui/workflow.js`
+- **tests:** UT-272(2 例,`lib/model.js` 的兩個純函式格式)
+
+**B23 與 B30 偏離的不只是設計稿,是本 repo 自己的 REQ-137。** 它的驗收文字逐字寫著
+「模態(`text+image → text`)」與「全部 / 遠端 / **本機**」。稽核把兩者記成「與設計稿的差異」,
+查帳本才看到需求本來就這麼寫 —— 實作同時偏離了需求與設計。
+
+**B32 的上下文格式不是排版問題。** `fmtContext` 的 `.replace(/\.0$/, '')` 讓
+1,048,576 與 1,000,000 印出同一個字串 `1M` —— 兩個不同的上下文長度變得無法區分。
+
+`System` 作為主題標籤另有一個獨立理由:它和同一份 `LABELS` 裡上一行的 `System` **分頁名**撞字。
+
+### 三條查證後不列為缺陷(理由登記,以免下一輪重新調查)
+
+- **B17 品牌半。** README 字面即「brand "工作流引擎 / Workflow Engine"」,
+  `lib/strings.js` 留著記錄該決定的註解。參考**實作**會隨語言切換,
+  但 DES-209 裁定 oracle 是 README,不是參考實作。
+- **B29 滑桿上限。** README 未規定 max;`clampHue` 合約為 `0..359` 且有測試釘著,360 ≡ 0。
+- **B31 `✓ upstream`。** `declaredSource` 是 v26 DES-179 的刻意決定
+  (「declarations with `declaredSource`」「labelled *declared, not probed*」)。
+  壓成「是 / 否」是刪掉一個可觀測性決定。
+
+### 過程上的一個偏差,記錄而非略過
+
+**這一群我先改後測**,與 v29 其餘各群的紅先行相反。事後補了 UT-272 鎖住兩個純函式格式,
+但「先看到紅」這一步沒有發生 —— 對純字串替換風險低,仍是流程上的偏差。

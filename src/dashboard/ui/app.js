@@ -41,16 +41,18 @@ import { render as renderHome, onTick as onTickHome } from './home.js';
 let DEMO = null;
 let DEMO_AVAILABLE = false;
 
+// [v29f, REQ-162] `工作流` (not `工作流程`) and `Auto` (not `System`) — the handoff's own STR
+// table. `System` as a THEME label also collides with the `System` TAB one line above it.
 const LABELS = {
   zh: {
-    workflows: '工作流程', models: '模型', system: '系統', issues: '問題',
+    workflows: '工作流', models: '模型', system: '系統', issues: '問題',
     live: '連線中', offline: '離線', degraded: '部分異常', checking: '連線中…',
     dark: '深', light: '淺', system_theme: '系統', updated: '更新於',
   },
   en: {
     workflows: 'Workflows', models: 'Models', system: 'System', issues: 'Issues',
     live: 'Live', offline: 'Offline', degraded: 'Degraded', checking: 'Connecting…',
-    dark: 'Dark', light: 'Light', system_theme: 'System', updated: 'Updated',
+    dark: 'Dark', light: 'Light', system_theme: 'Auto', updated: 'Updated',
   },
 };
 function L(lang, key) {

@@ -102,7 +102,9 @@ function fmtContext(contextWindow) {
   if (isAbsent(contextWindow)) return '—';
   const unit = contextWindow >= 1e6 ? 1e6 : contextWindow >= 1e3 ? 1e3 : 1;
   const suffix = contextWindow >= 1e6 ? 'M' : contextWindow >= 1e3 ? 'k' : '';
-  return unit === 1 ? String(contextWindow) : (contextWindow / unit).toFixed(1).replace(/\.0$/, '') + suffix;
+  // [v29f, REQ-162] the trailing `.0` stays: the handoff prints `1.0M`, and stripping it made a
+  // 1,048,576-token window read `1M` — the same figure a 1,000,000 one would.
+  return unit === 1 ? String(contextWindow) : (contextWindow / unit).toFixed(1) + suffix;
 }
 
 function fmtPrice(price, lang) {
@@ -116,7 +118,9 @@ function fmtModalities(modalities) {
   const ins = modalities && Array.isArray(modalities.in) ? modalities.in : [];
   const outs = modalities && Array.isArray(modalities.out) ? modalities.out : [];
   if (!ins.length && !outs.length) return '—';
-  return `${ins.join(',')} → ${outs.join(',')}`;
+  // [v29f, REQ-162] `+`, not `,` — REQ-137's OWN acceptance text spells the cell as
+  // `text+image → text`, so this diverged from this repo's requirement, not only the handoff.
+  return `${ins.join('+')} → ${outs.join('+')}`;
 }
 
 // `TTFT 900ms · p50 6.8s` (TASK-222's own pinned literal) — `latency`/`benchmarks` are always

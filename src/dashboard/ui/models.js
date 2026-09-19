@@ -23,23 +23,25 @@ import { el, currentLang } from './dom.js';
 
 // Columns, in REQ-137's order (DES-213) — the header row's own labels; `key` must match a
 // `sortKeyOf`/`modelRow` column name.
+// [v29f, REQ-162] Column names from the handoff's own STR table. REQ-137's own acceptance text
+// already said 穩定度 and 基準分數; 推理 matched neither it nor the design.
 const COLUMNS = [
   { key: 'model', zh: '模型', en: 'Model' },
   { key: 'provider', zh: '供應商', en: 'Provider' },
   { key: 'aliases', zh: '別名', en: 'Aliases' },
   { key: 'context', zh: '上下文', en: 'Context' },
-  { key: 'price', zh: '價格', en: 'Price' },
+  { key: 'price', zh: '價格 / M tokens', en: 'Price / M tokens' },
   { key: 'tools', zh: '工具', en: 'Tools' },
-  { key: 'effort', zh: '推理', en: 'Effort' },
+  { key: 'effort', zh: '努力程度', en: 'Effort' },
   { key: 'modalities', zh: '模態', en: 'Modalities' },
   { key: 'latency', zh: '延遲', en: 'Latency' },
-  { key: 'stability', zh: '穩定性', en: 'Stability' },
-  { key: 'benchmarks', zh: '基準', en: 'Benchmarks' },
+  { key: 'stability', zh: '穩定度', en: 'Stability' },
+  { key: 'benchmarks', zh: '基準分數', en: 'Benchmarks' },
   { key: 'location', zh: '位置', en: 'Location' },
 ];
 
 const LABELS = {
-  zh: { search: '搜尋模型…', allProviders: '全部供應商', all: '全部', remote: '遠端', local: '本地' },
+  zh: { search: '搜尋模型…', allProviders: '全部供應商', all: '全部', remote: '遠端', local: '本機' },
   en: { search: 'Search models…', allProviders: 'All providers', all: 'All', remote: 'Remote', local: 'Local' },
 };
 

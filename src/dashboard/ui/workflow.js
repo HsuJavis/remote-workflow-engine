@@ -50,7 +50,7 @@ import { clockNow } from './clock.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const COLUMNS = {
-  zh: ['執行ID', '狀態', '版本', '觸發者', '開始時間', '耗時', '節點數', 'Tokens', '費用'],
+  zh: ['執行 ID', '狀態', '版本', '觸發者', '開始時間', '耗時', '節點', 'Tokens', '費用'],
   en: ['Run ID', 'Status', 'Version', 'Triggered by', 'Started', 'Duration', 'Agents', 'Tokens', 'Cost'],
 };
 
