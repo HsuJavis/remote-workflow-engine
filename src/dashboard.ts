@@ -26,7 +26,10 @@ export interface DagAgentNode {
   // the `Tokens` object itself. Widening this field to the object would compile here but silently
   // break the client's `(a.tokens||0)+' tok'` render into `[object Object] tok` (see DES-180's own
   // boundary note); the client renders the breakdown via costUSD/unpriced below instead.
-  tokens: number;
+  // [v31, REQ-186, R30-A1] OPTIONAL: absent while the call is still in flight. The client's
+  // `fmtTok` gained an absent branch in the same commit and renders `—`; before that it had none
+  // at all and `String(undefined)` would have printed the literal word.
+  tokens?: number;
   /** v26 (DES-180, DES-188): USD cost of this call (absent on a pre-v26 record — never re-priced). */
   costUSD?: number;
   /** v26 (DES-180, DES-188): true iff costUSD could not be priced — see AgentRecord's own doc. */
@@ -66,7 +69,11 @@ export function buildDagModel(view: RunStatusView): DagNode {
     const durationMs = a.startedAt && a.endedAt ? Math.max(0, Date.parse(a.endedAt) - Date.parse(a.startedAt)) : undefined;
     // v26 (DES-180): the four-column sum, not the pre-v26 two-column `input+output` (which silently
     // dropped >97% of a cache-heavy call's real usage).
-    const tokens = sumTokens({ input: a.tokens.input, output: a.tokens.output, cacheRead: a.tokens.cacheRead ?? 0, cacheWrite: a.tokens.cacheWrite ?? 0 });
+    // [v31, REQ-186] `tokens` is absent on a not-yet-measured call; it contributes nothing to the
+    // sum, and the per-agent figure stays absent rather than becoming a zero here.
+    const tokens = a.tokens
+      ? sumTokens({ input: a.tokens.input, output: a.tokens.output, cacheRead: a.tokens.cacheRead ?? 0, cacheWrite: a.tokens.cacheWrite ?? 0 })
+      : undefined;
     target.agents.push({ agentId: a.agentId, label: a.label, state: a.state, model: a.model, tokens, costUSD: a.costUSD, unpriced: a.unpriced, startedAt: a.startedAt, endedAt: a.endedAt, durationMs });
   }
   return root;

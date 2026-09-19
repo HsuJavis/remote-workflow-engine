@@ -86,9 +86,11 @@ function durationText(record, now, lang) {
 // total was absent, so the one figure a reader actually compares between agents was not on the
 // card at all.
 function tokenTotalAndCols(tokens) {
+  // [v31, REQ-186] An absent tokens object is `—`, not a zero total with a zero-filled breakdown:
+  // a running agent has no usage event yet.
   const total = sumTokens(tokens);
-  const cols = tokenCols(tokens);
-  return total ? `${fmtTok(total)} · ${cols}` : cols;
+  if (total === undefined) return '—';
+  return `${fmtTok(total)} · ${tokenCols(tokens)}`;
 }
 
 export function panelModel(record, harness, events, hasMore, now, lang) {

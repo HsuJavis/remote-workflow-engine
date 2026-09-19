@@ -240,7 +240,12 @@ export interface AgentRecord {
   /** v26 (DES-180, DES-188): `cacheRead`/`cacheWrite` are optional so a pre-v26 record (persisted
    *  before the four-column split) keeps type-checking with only `input`/`output` — a legacy
    *  two-column usage event derives BOTH to `0` (a KNOWN zero, not an absence). */
-  tokens: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
+  /** [v31, REQ-186, R30-A1] OPTIONAL: a call that has not reported usage yet has NO figure. It was
+   *  required and zero-filled on the `queued`/`running` branches, so an agent still in flight was
+   *  reported as having measurably used zero — three dashboard surfaces printed `0 tok` for an
+   *  agent that finished at 2861. `failed` and `refused` keep their zeros on purpose (DES-188: a
+   *  failed call moves no counter, and both are TERMINAL — nobody is waiting for the figure). */
+  tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
   /** v26 (DES-180, DES-188, ADR-046): USD cost of this call, derived via `priceCall`; OPTIONAL —
    *  absence means "pre-v26 record" (never re-priced against today's catalog), never "free". */
   costUSD?: number;

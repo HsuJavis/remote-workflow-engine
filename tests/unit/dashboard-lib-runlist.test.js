@@ -185,3 +185,25 @@ describe('lib/runlist.js: segmentCounts (UT-275, v30b, REQ-170)', () => {
     expect(segmentCounts(matchCards(cards, 'zzzz')).all).toBe(0);
   });
 });
+
+describe('lib/runlist.js: fmtTok is total over an absent figure (UT-276, v31, REQ-186)', () => {
+  // R30-A1's client half. A running agent has no usage event yet, so its token figure is ABSENT.
+  // `fmtTok` had no absent branch at all: `fmtTok(undefined)` fell through to `String(undefined)`
+  // and would have printed the literal word — the same class this ledger keeps closing, latent
+  // only because every caller happened to hand it a zero-filled object.
+  it('absent renders —, never 0 and never the literal word', () => {
+    expect(fmtTok(undefined)).toBe('—');
+    expect(fmtTok(null)).toBe('—');
+    expect(fmtTok(NaN)).toBe('—');
+  });
+
+  it('a real zero still reads 0 — a failed call that moved no counter is a MEASURED zero', () => {
+    expect(fmtTok(0)).toBe('0');
+  });
+
+  it('sumTokens says ABSENT for an absent object, and 0 for a zero-filled one', () => {
+    expect(sumTokens(undefined)).toBe(undefined);
+    expect(sumTokens({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 })).toBe(0);
+    expect(sumTokens({ input: 2, output: 3 })).toBe(5);
+  });
+});

@@ -245,10 +245,12 @@ function foldUsageFromRecords(records: AgentRecord[]): RunUsage {
   let unpricedCalls = 0;
   const unmappedMessages: Record<string, number> = {};
   for (const r of records) {
-    tokens.input += r.tokens.input;
-    tokens.output += r.tokens.output;
-    tokens.cacheRead += r.tokens.cacheRead ?? 0;
-    tokens.cacheWrite += r.tokens.cacheWrite ?? 0;
+    // [v31, REQ-186] a not-yet-measured call has no `tokens` and adds nothing — the RUN total is
+    // still a real sum of what HAS been measured, which is what a live total means.
+    tokens.input += r.tokens?.input ?? 0;
+    tokens.output += r.tokens?.output ?? 0;
+    tokens.cacheRead += r.tokens?.cacheRead ?? 0;
+    tokens.cacheWrite += r.tokens?.cacheWrite ?? 0;
     costUSD += r.costUSD ?? 0;
     if (r.state === 'done' && r.unpriced === true) unpricedCalls += 1;
     for (const name of r.unmapped ?? []) {

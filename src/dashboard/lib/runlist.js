@@ -25,15 +25,24 @@ export function fmtCost(costUSD, unpricedCalls, lang) {
   return amount;
 }
 
+// [v31, REQ-186, R30-A1] An ABSENT tokens object answers `undefined`, not `0`. It used to answer
+// `0`, so a running agent — which has no usage event yet, and therefore no tokens object — was
+// reported on three surfaces as having measurably used zero. The distinction the callers need is
+// "not measured yet" vs "measured, and it was zero"; a failed call that moved no counter is the
+// second kind and still reads `0`.
 export function sumTokens(tokens) {
-  if (!tokens) return 0;
+  if (!tokens) return undefined;
   return (tokens.input || 0) + (tokens.output || 0) + (tokens.cacheRead || 0) + (tokens.cacheWrite || 0);
 }
 
 // v27 README-fidelity closure: node-cell row 3 (`52k tok · $0.31 · 2m 10s`) shipped the raw sum
 // unabbreviated. Below 1000 the plain count stands; above it, one decimal place with a trailing
 // ".0" stripped, so a round number (52000) reads exactly as the README's own example does (52k).
+// [v31, REQ-186] Total over an absent figure. Before this it had no absent branch at all, so
+// `fmtTok(undefined)` fell through to `String(undefined)` and would have printed the literal word —
+// latent only because every caller happened to hand it a zero-filled object.
 export function fmtTok(n) {
+  if (n == null || !Number.isFinite(n)) return '—';
   const unit = n >= 1e6 ? 1e6 : n >= 1e3 ? 1e3 : 1;
   const suffix = n >= 1e6 ? 'M' : n >= 1e3 ? 'k' : '';
   return unit === 1 ? String(n) : (n / unit).toFixed(1).replace(/\.0$/, '') + suffix;

@@ -251,7 +251,9 @@ export class AgentTranscriptSink {
       // v26 (DES-180, DES-188): a queued call never dispatched — the SAME three zeros
       // `deriveAgentRecords`'s harness-only/refused branches derive, so a restart-reconstructed
       // record is byte-identical to this live one (DES-188's own boundary).
-      state: 'queued', provider: '', model: '', tokens: ZERO_TOKENS, costUSD: 0, unpriced: false,
+      // [v31, REQ-186] no `tokens`: a queued call has not been measured. Mirrors `run-store.ts`'s
+      // harness-only branch, which changed in the same commit.
+      state: 'queued', provider: '', model: '', costUSD: 0, unpriced: false,
     });
   }
 
@@ -259,7 +261,7 @@ export class AgentTranscriptSink {
    *  genuinely dispatched to the gateway — still observable in workflow_status while in flight. */
   markRunning(agentId: string, startedAt?: string): void {
     const existing = this._records.get(agentId);
-    this._records.set(agentId, { ...(existing ?? { agentId, provider: '', model: '', tokens: ZERO_TOKENS, costUSD: 0, unpriced: false }), agentId, state: 'running', startedAt: startedAt ?? existing?.startedAt });
+    this._records.set(agentId, { ...(existing ?? { agentId, provider: '', model: '', costUSD: 0, unpriced: false }), agentId, state: 'running', startedAt: startedAt ?? existing?.startedAt });
   }
 
   /** v25 (DES-167, REQ-120, issue #61): records a call the ENGINE refused to dispatch — terminal,

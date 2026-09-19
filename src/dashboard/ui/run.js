@@ -426,7 +426,7 @@ export function renderLegend(legendEl, payload, view, lang) {
   if (!view) return;
   const nodeCount = (payload.cells || []).filter((c) => c.kind === 'agent' && c.agentId !== undefined).length;
   const usage = view.usage;
-  const tok = usage ? sumTokens(usage.tokens) : 0;
+  const tok = usage ? sumTokens(usage.tokens) : undefined;
   const cost = usage ? fmtCost(usage.costUSD, usage.unpricedCalls, lang) : '—';
   const summary = document.createElement('span');
   summary.className = 'run-summary';
@@ -445,7 +445,9 @@ export function renderUsageBox(usageEl, runUsage, lang) {
   usageEl.replaceChildren();
   if (!runUsage) return;
   const total = document.createElement('span');
-  total.textContent = sumTokens(runUsage.tokens) + ' tok';
+  // [v31, REQ-186] through `fmtTok`: `sumTokens` now answers `undefined` for an absent object, and
+  // string-concatenating that prints the literal word.
+  total.textContent = fmtTok(sumTokens(runUsage.tokens)) + ' tok';
   usageEl.appendChild(total);
   const tk = runUsage.tokens || {};
   const cols = document.createElement('span');

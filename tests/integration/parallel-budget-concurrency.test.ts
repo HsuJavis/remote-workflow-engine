@@ -107,7 +107,10 @@ describe('RunGuard budget accounting under concurrent parallel() dispatch (IT-03
     expect(gateway.invoke).toHaveBeenCalledTimes(CONCURRENCY);
     const spentFromRecords = view.agents
       .filter((a) => a.state === 'done')
-      .reduce((sum, a) => sum + a.tokens.input + a.tokens.output, 0);
+      // [v31, REQ-186] `tokens` is optional now — absent until a call reports usage. This reduce
+      // already filters to `done`, so every record here HAS one; `?? 0` keeps tsc satisfied
+      // without weakening what the case measures.
+      .reduce((sum, a) => sum + (a.tokens?.input ?? 0) + (a.tokens?.output ?? 0), 0);
     expect(spentFromRecords).toBeLessThanOrEqual(BUDGET + CONCURRENCY * TOKENS_PER_CALL);
 
     // Every refused call is visible with its reason instead of vanishing (issue #61).

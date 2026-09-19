@@ -29,9 +29,10 @@ const ZERO_TOKENS = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
  *      own.
  *  (3) refused — a `kind:'refused'` event (DES-188/TASK-188's own journal row); a refused call never
  *      has a harness event, so label/frame/phase/phaseIndex come from the event's OWN data.
- *  (4) harness-only — 'running' on an in-process parent, 'queued' on interrupted/suspended; the SAME
- *      ZERO_TOKENS/costUSD:0/unpriced:false triple `AgentTranscriptSink.markQueued` initialises live,
- *      so a harness-only record is byte-identical on both producers.
+ *  (4) harness-only — 'running' on an in-process parent, 'queued' on interrupted/suspended; NO
+ *      `tokens` (v31/REQ-186: not measured yet, so not reported as zero) plus the costUSD:0/
+ *      unpriced:false pair `AgentTranscriptSink.markQueued` initialises live, so a harness-only
+ *      record is byte-identical on both producers.
  *  Neither usage, refused, nor harness → never dispatched, omit.
  *  Latest-wins dedupe: multiple harness events for the same agentId → the last one wins.
  *
@@ -146,9 +147,14 @@ export function deriveAgentRecords(
         // transcripts (no descriptor.provider) still fall back to 'unknown'.
         provider: harnessDescriptor?.provider ?? 'unknown',
         model: harnessDescriptor?.model ?? '',
-        // v26 (DES-188): the SAME three `markQueued` initialises live, so a restart-reconstructed
-        // harness-only record is byte-identical to its live counterpart.
-        tokens: ZERO_TOKENS, costUSD: 0, unpriced: false,
+        // v26 (DES-188): the SAME initialisation `markQueued` uses live, so a restart-reconstructed
+        // harness-only record is byte-identical to its live counterpart — BOTH producers changed
+        // together in v31, or they would disagree on this column.
+        // [v31, REQ-186, R30-A1] `tokens` is OMITTED: this branch is `running`/`queued`, i.e. the
+        // call has not reported usage yet. Zero-filling it asserted a measurement that had not
+        // happened. `costUSD`/`unpriced` stay as they are — those two are already optional in the
+        // type and their zeros are read through `fmtCost`, which has its own absent branch.
+        costUSD: 0, unpriced: false,
         ...(firstHarnessTs !== undefined ? { startedAt: firstHarnessTs } : {}),
       }, harnessCommon));
     }

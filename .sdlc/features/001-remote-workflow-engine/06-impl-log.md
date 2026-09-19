@@ -8501,3 +8501,31 @@ chips 246 → graph 333 → legend 693 → table 764
 三欄 可用工具 0 (無) · MCP 伺服器 0 (無) · 技能 0 (無)
 日誌 18:26:24(與歷史表 18:25:26 同時區)
 ```
+
+---
+
+## v31 — REQ-186(R30-A1)
+
+### IMPL-323 — 未量到的用量改為缺席
+- **traces:** REQ-186, R30-A1
+- **files:** `src/types.ts`, `src/run-store.ts`, `src/agent-executor.ts`, `src/dashboard.ts`,
+  `src/run-manager.ts`, `src/dashboard/lib/runlist.js`, `src/dashboard/lib/agent.js`,
+  `src/dashboard/ui/run.js`
+- **tests:** UT-277(引擎側 4 例)、UT-276(客戶端 3 例)
+
+**這個缺陷躲過五次「有信心的零」的清理,原因很單純:沒有人渲染過執行中的狀態。**
+前五次都發生在終端狀態上,而終端狀態的零是測量結果。
+
+**我登記 R30-A1 時對修法的判斷是錯的,查證後更正:** 我寫「只要改引擎,客戶端對
+`undefined` 早就顯示 `—`」。實際上 `sumTokens(undefined)` 回 `0`,而 `fmtTok` **根本沒有
+缺席分支** —— `fmtTok(undefined)` 會走到 `String(undefined)` 印出字面字。
+**只改引擎會把 `0 tok` 變成 `undefined tok`。**
+
+**邊界:** queued/running 缺席;failed/refused 保留零(DES-188 的既有裁決 + 終端狀態);
+done 不變。UT-277 兩紅兩綠正好把這條線釘住,而不是斷言一條通則。
+
+**兩個產生器同批改。** `run-store.ts` 分支 (4) 的註解明寫它與 `markQueued`「byte-identical」;
+只改一邊會讓重啟前後的同一筆紀錄分岔 —— 這個 ledger 已經為這類分岔付過代價。
+
+**型別收窄當作搜尋工具。** `tokens` 改選填後,tsc 列出四個未處理缺席的讀者;
+比人工 grep 可靠,而且其中一個(`DagAgentNode.tokens`)是我不會想到要看的 view 型別。
