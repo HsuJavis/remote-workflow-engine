@@ -201,10 +201,12 @@ function buildPanel(container, state, entry) {
     paint(container, state, true);
   });
   header.appendChild(closeBtn);
-  header.appendChild(el('h2', undefined, vm.title));
   panel.appendChild(header);
-
+  // [v30b, REQ-182] README §4's order is: kicker (provider · location), THEN the h2 model name.
+  // The build appended the kicker after the h2, so the panel opened with the model's name and
+  // explained where it came from underneath it. The close button keeps its own row above both.
   if (vm.kicker) panel.appendChild(el('div', 'kicker', vm.kicker));
+  panel.appendChild(el('h2', undefined, vm.title));
   if (vm.aliases && vm.aliases.length) panel.appendChild(el('p', 'mono', vm.aliases.join(', ')));
   if (vm.description) panel.appendChild(el('p', undefined, vm.description));
 
@@ -217,6 +219,12 @@ function buildPanel(container, state, entry) {
 
   // `vm.benchmarks` is `[]` for every real entry this iteration (Won't-have D2, ADR-060) — this
   // loop renders nothing on a real page today, never a fabricated row (UT-257's own rule).
+  // [v30b, REQ-184] The section shows with its count even when empty. Hidden-when-empty left the
+  // panel ending after the definition list, so a reader could not tell "this model has no
+  // benchmarks" from "this panel stopped rendering" — and `vm.benchmarks` is `[]` for EVERY real
+  // entry this iteration (Won't-have D2 / ADR-060), so the empty case is the only case they see.
+  panel.appendChild(el('h6', 'section-head', (state.lang === 'zh' ? '基準分數 ' : 'Benchmarks ') + vm.benchmarks.length));
+  if (!vm.benchmarks.length) panel.appendChild(el('span', 'muted', state.lang === 'zh' ? '(無)' : '(none)'));
   for (const [name, value, pct] of vm.benchmarks) {
     const row = document.createElement('div');
     row.className = 'bench-row';

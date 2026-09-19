@@ -120,10 +120,13 @@ export function matchCards(cards, query) {
   return cards.filter((c) => (c.name ?? '').toLowerCase().includes(q) || (c.description ?? '').toLowerCase().includes(q));
 }
 
+// [v30b, REQ-170] `all` is running + registered, matching the design's own home builder — the
+// `other` group (runs whose workflow is no longer registered) is shown under 全部 but not counted,
+// because the count answers "how many workflows do I have", not "how many rows are on screen".
+// The caller passes the QUERY-FILTERED list: counts that ignore the search box describe a set the
+// viewer is not looking at.
 export function segmentCounts(cards) {
-  return {
-    all: cards.length,
-    running: cards.filter((c) => c.group === 'running').length,
-    registered: cards.filter((c) => c.group === 'registered').length,
-  };
+  const running = cards.filter((c) => c.group === 'running').length;
+  const registered = cards.filter((c) => c.group === 'registered').length;
+  return { all: running + registered, running, registered };
 }

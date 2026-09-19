@@ -187,7 +187,9 @@ export function modelRow(entry, lang) {
 }
 
 const DEF_LABELS = {
-  zh: ['能力', '模態', '上下文', '價格', '成本', '延遲', '穩定性', '工具', '推理'],
+  // [v30b, REQ-182] 穩定度 / 努力程度 / 成本等級 — the same words the TABLE uses (v29f REQ-162).
+  // The panel and the table were naming the same fields differently on the same screen.
+  zh: ['能力', '模態', '上下文', '價格 / M tokens', '成本等級', '延遲', '穩定度', '工具', '努力程度'],
   en: ['Capability', 'Modalities', 'Context', 'Price', 'Cost', 'Latency', 'Stability', 'Tools', 'Effort'],
 };
 
@@ -204,7 +206,7 @@ export function modelPanel(entry, lang) {
     fmtPrice(entry.price, lang),
     costDots(entry.costLevel),
     fmtLatency(entry.latency),
-    entry.stability,
+    word(STABILITY_KEY, entry.stability, lang),
     fmtDeclared(entry.toolUseDeclared, entry.declaredSource),
     fmtDeclared(entry.effortDeclared, entry.declaredSource),
   ];
@@ -212,7 +214,10 @@ export function modelPanel(entry, lang) {
     ? Object.entries(entry.benchmarks).map(([name, value]) => [name, value, Math.max(0, Math.min(100, value))])
     : [];
   return {
-    kicker: entry.provider,
+    // [v30b, REQ-182] README §4: "kicker provider · location". Location was missing, and the two
+    // word-valued fields below went to the zh panel as the raw wire words while the TABLE beside
+    // them localised the same values (v29f).
+    kicker: entry.location ? `${entry.provider} · ${word(LOCATION_KEY, entry.location, lang)}` : entry.provider,
     title: entry.model,
     aliases: entry.aliases,
     description: entry.description,

@@ -57,6 +57,7 @@ export const STR = {
     stDone: '完成',
     // [v29c, REQ-153/154/155] the detail page's structural strings. Key names follow the delivery
     // handoff's own STR table (`home`, `triggers`, `graph`, `selectRun`, `history`, `none`).
+    noResults: '沒有符合的工作流', trigger: '觸發',
     home: '總覽', triggers: '觸發器', graph: '工作流圖', selectRun: '檢視執行',
     // [v29d, REQ-156/157] the models/system page headers.
     modelsTitle: '模型清單', modelCount: '個模型', catalogFetched: '目錄更新',
@@ -86,6 +87,7 @@ export const STR = {
     stable: 'Stable', variable: 'Variable', bestEffort: 'Best effort', remote: 'Remote', local: 'Local', free: 'Free',
     issuesOpen: 'Open', issuesResolved: 'Resolved', openOnGitHub: 'Open on GitHub \u2197',
     stDone: 'Done',
+    noResults: 'No workflows match', trigger: 'Trigger',
     home: 'Overview', triggers: 'Triggers', graph: 'Workflow graph', selectRun: 'Viewing run',
     modelsTitle: 'Model catalog', modelCount: 'models', catalogFetched: 'Catalog fetched',
     sortHint: 'Click a column to sort', systemTitle: 'System resources', sampledAt: 'Sampled',

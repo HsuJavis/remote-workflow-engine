@@ -66,7 +66,11 @@ describe('lib/runlist.js: matchCards / segmentCounts (UT-246, DES-204, REQ-132)'
   });
 
   it('segmentCounts reports all/running/registered', () => {
-    expect(segmentCounts(cards)).toEqual({ all: 3, running: 1, registered: 1 });
+    // [v30b, REQ-170 — ORACLE RE-DERIVED] `all: 3` was `cards.length`, i.e. the implementation's
+    // own definition including the `other` group. The design computes `all = running + registered`
+    // — the count answers "how many workflows do I have", and an `other` row is a run whose
+    // workflow is gone. Re-derived from the handoff's home builder.
+    expect(segmentCounts(cards)).toEqual({ all: 2, running: 1, registered: 1 });
   });
 });
 
@@ -148,5 +152,36 @@ describe('lib/runlist.js: historyRow column formatting (UT-265, v29, REQ-148)', 
     const row = historyRow(bare, NOW, 'zh');
     expect(row.filter((c) => c === '\u2014').length).toBeGreaterThanOrEqual(3);
     expect(row.some((c) => c === '0')).toBe(false);
+  });
+});
+
+describe('lib/runlist.js: segmentCounts (UT-275, v30b, REQ-170)', () => {
+  // The design computes `countAll = countRunning + countRegistered` (its own home builder), and
+  // recomputes every count against the CURRENT query. The build counted every card including the
+  // `other` group and ignored the search box entirely, so 「全部 (10)」 stayed put while four cards
+  // matched — a count that describes a set the viewer is not looking at.
+  const cards = [
+    { name: 'a', group: 'running' },
+    { name: 'b', group: 'registered' },
+    { name: 'probe-c', group: 'registered' },
+    { name: 'probe-d', group: 'other' },
+    { name: 'e', group: 'other' },
+  ];
+
+  it('all = running + registered — the `other` group is not counted', () => {
+    const c = segmentCounts(cards);
+    expect(c.running).toBe(1);
+    expect(c.registered).toBe(2);
+    expect(c.all).toBe(3);
+  });
+
+  it('the counts describe the CURRENT query, not the whole catalogue', () => {
+    const c = segmentCounts(matchCards(cards, 'probe'));
+    expect(c.registered).toBe(1);
+    expect(c.all).toBe(1);
+  });
+
+  it('a query nothing matches counts zero rather than freezing at the catalogue size', () => {
+    expect(segmentCounts(matchCards(cards, 'zzzz')).all).toBe(0);
   });
 });

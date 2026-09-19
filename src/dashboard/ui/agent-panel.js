@@ -174,6 +174,14 @@ export function render(container, vm, handlers) {
   for (const s of vm.stats || []) statsWrap.appendChild(buildStatCard(s.label, s.value));
   panel.appendChild(statsWrap);
 
+  // [v30b, REQ-181] README §3 names this block and the log below it. Without headings the prompt
+  // begins abruptly after the stat cards and the event list after it, with nothing saying what
+  // either is.
+  const promptHead = document.createElement('h6');
+  promptHead.className = 'section-head';
+  promptHead.textContent = lang === 'zh' ? '使用者提示詞' : 'User prompt';
+  panel.appendChild(promptHead);
+
   const promptPre = document.createElement('pre');
   promptPre.className = 'prompt-pre';
   promptPre.setAttribute('data-agent-prompt', '');
@@ -234,6 +242,11 @@ export function render(container, vm, handlers) {
     detailBlock.textContent = vm.detail;
     panel.appendChild(detailBlock);
   }
+
+  const logHead = document.createElement('h6');
+  logHead.className = 'section-head';
+  logHead.textContent = (lang === 'zh' ? '節點輸出 ' : 'Agent output ') + ((vm.rows || []).length);
+  panel.appendChild(logHead);
 
   const eventsWrap = document.createElement('div');
   eventsWrap.className = 'event-list';

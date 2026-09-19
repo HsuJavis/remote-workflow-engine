@@ -80,7 +80,7 @@
 // dod item for real (`agent-panel.js`'s own banner covers its side of the fix).
 import { SWIMLANE_BOX, cellRect, svgBox, edgePath, laneX } from '../lib/swimlane.js';
 import { sumTokens, fmtCost, fmtTok } from '../lib/runlist.js';
-import { t, warningText, stateLabel } from '../lib/strings.js';
+import { t, warningText, stateLabel, triggerLabel } from '../lib/strings.js';
 import { shortModel } from '../lib/model.js';
 import { endpointsFor, getViewJSON } from './poll.js';
 import { openAgentPanel } from './agent-panel.js';
@@ -226,6 +226,18 @@ export function paintSwimlane(svgEl, payload, opts) {
   const rectOf = new Map();
   for (const c of cells) rectOf.set(c.id, c.kind === 'trigger' ? triggerRect(box) : cellRect(toSwimlaneCell(c), box));
 
+  // [v30b, REQ-179] the trigger column gets a header too, so the left-most column is labelled
+  // rather than an unexplained box. The reference renders one; README's lane-header spec does not
+  // forbid it and names no alternative.
+  if (layer) {
+    const th = document.createElement('div');
+    th.className = 'lane-head is-trigger';
+    th.setAttribute('data-lane-header-trigger', '');
+    th.style.transform = 'translateX(' + box.PAD + 'px)';
+    th.textContent = t(lang, 'trigger');
+    layer.appendChild(th);
+  }
+
   // Lane headers (HTML, `.cell-layer`) and one vertical hairline per lane (SVG, `#dag-graph`).
   for (let i = 0; i < laneCount; i++) {
     const laneMeta = lanes[i];
@@ -299,7 +311,9 @@ export function paintSwimlane(svgEl, payload, opts) {
         cellEl.style.transform = 'translate(' + r.x + 'px,' + r.y + 'px)';
         const label = document.createElement('span');
         label.className = 'cell-label';
-        label.textContent = c.label || '';
+        // [v30b, REQ-179] the trigger's own type, localised — the history table beside it already
+        // renders the same value as 觸發者 客戶端.
+        label.textContent = c.label ? triggerLabel(lang, c.label) : '';
         cellEl.appendChild(label);
         layer.appendChild(cellEl);
         continue;
@@ -362,7 +376,13 @@ export function paintSwimlane(svgEl, payload, opts) {
         // fabricated "—" for a call still in flight, same convention row 3's own tokens/cost gate
         // already follows above.
         const duration = c.durationMs === undefined ? '' : ' · ' + formatDuration(c.durationMs);
-        usageLine.textContent = fmtTok(sumTokens(c.tokens)) + ' tok · ' + fmtCost(c.costUSD, c.unpriced ? 1 : 0, lang) + duration;
+        // [v30b, REQ-179] An absent cost is DROPPED, not rendered as `—`. README's row 3 is
+        // `52k tok · $0.31 · 2m 10s`; the design omits the segment it has no figure for, the same
+        // convention the duration above already follows. A lone `—` between two real figures reads
+        // as a value rather than an absence.
+        const costPart = (c.costUSD === undefined || c.costUSD === null)
+          ? '' : ' · ' + fmtCost(c.costUSD, c.unpriced ? 1 : 0, lang);
+        usageLine.textContent = fmtTok(sumTokens(c.tokens)) + ' tok' + costPart + duration;
         cellEl.appendChild(usageLine);
       }
 
@@ -413,7 +433,9 @@ export function renderLegend(legendEl, payload, view, lang) {
   // [v29, REQ-150] `view.status` went to the page as the raw wire word (`completed`) in both
   // languages. `stateLabel` is TOTAL — an unrecognised status passes through unchanged rather
   // than rendering `undefined`, which this very line shipped once before (see :509).
-  summary.textContent = stateLabel(lang, view.status) + ' · ' + nodeCount + (lang === 'zh' ? ' 個節點 · ' : ' nodes · ') + tok + ' tok · ' + cost;
+  // [v30b, REQ-179] `fmtTok`, the same compaction the history table beside it already uses —
+  // `19426 tok` was the only raw figure left on the page.
+  summary.textContent = stateLabel(lang, view.status) + ' · ' + nodeCount + (lang === 'zh' ? ' 個節點 · ' : ' nodes · ') + fmtTok(tok) + ' tok · ' + cost;
   legendEl.appendChild(summary);
 }
 

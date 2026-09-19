@@ -61,7 +61,10 @@
   --color-panel: oklch(0.25 0.007 var(--rwe-hue));
   --color-panel2: oklch(0.29 0.008 var(--rwe-hue));
   --color-line: oklch(0.36 0.01 var(--rwe-hue));
-  --color-ink: #e7e9ec;
+  /* [v30b, REQ-173] README:83 gives the dark text colour as #e2e6e5. v29 c2's note here justified
+     keeping ink hue-INDEPENDENT; it never justified this particular hex, which appears nowhere in
+     the handoff. */
+  --color-ink: #e2e6e5;
   /* [v30, REQ-169] Secondary text is the design's own derivation — the text colour at 70% — not a
      separate hex. `#8e97a3` appears nowhere in the handoff; it made every kicker, description,
      meta row and table header colder and darker than the design's. README:85 also gives a fixed
@@ -90,7 +93,7 @@
   --color-panel: oklch(0.985 0.005 var(--rwe-hue));
   --color-panel2: oklch(0.936 0.006 var(--rwe-hue));
   --color-line: oklch(0.82 0.012 var(--rwe-hue));
-  --color-ink: #23262a;
+  --color-ink: #1e2523;
   --color-muted: color-mix(in srgb, var(--color-ink) 70%, transparent);
   --neutral-500: #737b71;
   --color-link: #3f6488;
@@ -120,7 +123,10 @@
 @font-face { font-family: 'JetBrains Mono'; src: url('/static/dashboard/fonts/jetbrains-mono-400.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
 @font-face { font-family: 'JetBrains Mono'; src: url('/static/dashboard/fonts/jetbrains-mono-500.woff2') format('woff2'); font-weight: 500; font-style: normal; font-display: swap; }
 
-body{font-family:'Archivo',-apple-system,'Segoe UI',sans-serif;margin:0;background:var(--color-bg);color:var(--color-ink)}
+/* [v30b, REQ-174] README tokens: "Body 14 px / 1.55". The page inherited the browser's 16px with
+   `line-height: normal`, so the chrome (nav, segments, inputs) ran a size large throughout while
+   the card interiors had their own explicit sizes and looked right. */
+body{font-family:'Archivo',-apple-system,'Segoe UI',sans-serif;margin:0;background:var(--color-bg);color:var(--color-ink);font-size:14px;line-height:1.55}
 h1{font-size:18px;margin:0}
 h2{font-size:20px;margin:0}
 h3{font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:var(--color-muted);margin:0}
@@ -143,15 +149,20 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
    word (`hypothesis-researcher`) mid-glyph, so it is replaced by the README's own
    `text-wrap:pretty`, not merely deleted. */
 .card .t{font-weight:600;font-family:'Archivo',-apple-system,'Segoe UI',sans-serif;font-size:17px;line-height:1.2;text-wrap:pretty}
-.card .s{color:var(--color-muted);font-size:11.5px}
+/* [v30b, REQ-178] README §1 gives the card description the body size (13 px at 1.55 in the
+   reference) and `text-wrap: pretty`. It shipped at 11.5 px with `line-height:normal` in the muted
+   colour — smaller and greyer than the design, and ragged. */
+.card .s{font-size:13px;line-height:1.55;opacity:.8;text-wrap:pretty}
 .mono{font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;font-size:12.5px}
-.tag{display:inline-block;padding:1px 8px;border-radius:100px;font-size:11px;border:1px solid var(--color-line);color:var(--color-muted)}
+/* [v30b, REQ-175] The handoff names only `--radius-md 3px` / `--radius-sm 2px`; a 100px pill
+   appears nowhere in it. */
+.tag{display:inline-block;padding:1px 8px;border-radius:var(--radius-sm);font-size:11px;border:1px solid var(--color-line);color:var(--color-muted)}
 .tag-outline{background:none;border:1px solid var(--color-line)}
 .tag-accent{background:var(--accent-100);color:var(--accent-800);border-color:transparent}
 .tag-neutral{background:var(--color-panel2);color:var(--color-muted);border-color:transparent}
-.btn{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:100px;border:1px solid var(--color-line);background:var(--color-panel);color:var(--color-ink);font:inherit;cursor:pointer}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:var(--radius-md);border:1px solid var(--color-line);background:var(--color-panel);color:var(--color-ink);font:inherit;cursor:pointer}
 .btn:hover{border-color:var(--color-link)}
-.btn-icon{width:32px;height:32px;padding:0;font-size:18px;line-height:1;border-radius:50%}
+.btn-icon{width:32px;height:32px;padding:0;font-size:18px;line-height:1;border-radius:var(--radius-md)}
 .table{width:100%;border-collapse:collapse;font-size:12.5px}
 .table td,.table th{padding:4px 8px;border-bottom:1px solid var(--color-line);text-align:left;vertical-align:top}
 .table th{color:var(--color-muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
@@ -166,6 +177,8 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
    modifier carries its own min-width (the class-lock's own value-anchor test reads this exact
    rule's body); the panel that hosts it (`[data-tab-panel="models"]`, built by app.js for every
    tab) is the scroll boundary, so no extra wrapper class is needed. */
+/* [v30b, REQ-177] README §2: run history `.table` is min 720 px, horizontally scrollable. */
+[data-history-table]{min-width:720px}
 .models-table{min-width:960px}
 .models-table th{white-space:nowrap;cursor:pointer;user-select:none}
 /* the active sort header (README §4: "active header colored accent-700 with ▲/▼"). */
@@ -181,7 +194,7 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
    transformed .zoomable sibling paints in the positioned layer above an in-flow button that merely
    precedes it in the source, so a drag-pan could otherwise cover this control (VAL-189). [v27c]
    re-pointed pin (DES-200/208) — this exact substring is asserted against THIS file's bytes now. */
-.fit-btn{position:relative;z-index:1;font-size:11px;padding:2px 9px;border-radius:100px;border:1px solid var(--color-line);background:var(--color-panel);color:var(--color-ink);cursor:pointer;margin:4px 0}
+.fit-btn{position:relative;z-index:1;font-size:11px;padding:2px 9px;border-radius:var(--radius-md);border:1px solid var(--color-line);background:var(--color-panel);color:var(--color-ink);cursor:pointer;margin:4px 0}
 .fit-btn:hover{border-color:var(--color-link)}
 /* v26 (DES-186, ARCH-120, ADR-044, TASK-191): one .zoomable wrapper serves the run DAG svg and the
    swimlane's HTML cell-layer — the wheel/drag transform lives HERE, never on rebuilt children.
@@ -230,7 +243,9 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 .rwe-tabs a{padding:6px 4px;color:var(--color-muted);font:inherit;text-decoration:none;cursor:pointer}
 .rwe-tabs a[aria-current="page"]{color:var(--accent-700);text-decoration:underline;text-decoration-color:var(--color-accent)}
 .rwe-tab-panels{padding:16px 24px;max-width:1440px;margin:0 auto}
-.rwe-connection{font-size:11px;padding:1px 8px;border-radius:100px;border:1px solid var(--color-line);color:var(--color-muted)}
+/* [v30b, REQ-175] tag-shaped, so it takes the tag radius; the DOTS below keep `50%` — README
+   names them as dots ("pulsing 8 px accent dot"), which is a shape, not a radius token. */
+.rwe-connection{font-size:11px;padding:1px 8px;border-radius:var(--radius-sm);border:1px solid var(--color-line);color:var(--color-muted)}
 /* [v27 README-fidelity closure] README "Header / chrome": "source tag (`Live` accent tint ·
    `Offline` red outline · `Demo data` outline)" — `Live` is a TINT (no border), same convention as
    `.tag-accent`; `is-degraded`/`is-offline` below stay outlines, unchanged. Was border-only. */
@@ -268,7 +283,11 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 .card-grid{display:flex;flex-direction:column;gap:24px}
 .card-section{display:flex;flex-direction:column;gap:10px}
 .card-section.other{opacity:.75}
-.card-section h3{margin:0;font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:var(--color-muted);display:flex;align-items:center;gap:6px}
+/* [v30b, REQ-178] README §1: "(tabular figures, `white-space:nowrap` on the success item)". The
+   meta ran as one wrapping text node and took two lines in a 336px card. */
+.card .meta{font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* [v30b, REQ-171] the group headings are `h6` now (README §1); this rule follows them. */
+.card-section h6{margin:0;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--color-muted);display:flex;align-items:center;gap:6px}
 /* README "1. Workflows home": the Running section's own heading carries a pulsing 8px accent dot. */
 .running-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--color-accent);animation:rwePulse 1.6s ease-in-out infinite}
 /* REQ-132's own acceptance numbers (the auto-fill grid, the 16px gap) land on .cards — the actual
@@ -283,7 +302,11 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 .kicker{color:var(--color-muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
 .meta{color:var(--color-muted);font-size:11.5px;margin-top:2px}
 .home-toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:16px}
-.home-search{max-width:320px}
+/* [v30b, REQ-183] README §1 gives the search box `max-width 320`; it rendered 200px at the
+   inherited 16px. The base type fix (REQ-174) settles the size; this restores the width. */
+/* [v30b, REQ-183] `max-width` alone leaves the input at the UA's default size (~20 characters),
+   which measured 200px — the cap never bound. README §1 gives it max-width 320. */
+.home-search{width:100%;max-width:320px}
 .segment-tabs{display:inline-flex;border:1px solid var(--color-line);border-radius:var(--radius-md);overflow:hidden}
 .segment-tabs button{background:none;border:0;padding:4px 12px;color:var(--color-muted);font:inherit;cursor:pointer}
 .segment-tabs button.active{color:var(--color-ink);background:var(--color-panel2)}
@@ -300,7 +323,7 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 .workflow-view{display:flex;flex-direction:column;gap:8px;padding:16px 24px;max-width:1440px;margin:0 auto}
 .run-view{display:flex;flex-direction:column;gap:12px;padding:16px 24px;max-width:1440px;margin:0 auto}
 .wf-desc{max-width:720px;margin:0;opacity:.85}
-.run-chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:100px;border:1px solid var(--color-line);background:none;color:var(--color-ink);font:inherit;font-size:12px;cursor:pointer}
+.run-chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:var(--radius-md);border:1px solid var(--color-line);background:none;color:var(--color-ink);font:inherit;font-size:12px;cursor:pointer}
 .run-chip:hover{background:color-mix(in srgb, var(--color-accent) 10%, transparent)}
 .run-chip.is-selected{border-color:var(--color-accent);background:var(--accent-100)}
 .status-dot{font-size:7px;color:var(--color-muted)}
@@ -393,13 +416,20 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
    token in BOTH themes (never an invented value), giving the chip real contrast against the cell. */
 .cell-effort{padding:1px 7px;font-size:10px;flex:none;background:var(--color-panel);border-color:var(--color-line)}
 .cell-usage{font-size:10.5px;opacity:.55;font-variant-numeric:tabular-nums;white-space:nowrap;flex:none}
-.cell-trigger{width:112px;height:40px}
+/* [v30b, REQ-179] README §2: "Trigger cell: 112x40, TRANSPARENT". It carried the cell fill. */
+.cell-trigger{width:112px;height:40px;background:transparent}
+.lane-head.is-trigger{width:112px;color:var(--color-muted)}
 .legend{display:flex;flex-wrap:wrap;gap:16px;font-size:11.5px;color:var(--color-muted);align-items:center}
 .run-summary{margin-left:auto;font-variant-numeric:tabular-nums}
 
 /* == REQ-135 agent panel == */
 .agent-backdrop{position:fixed;inset:0;z-index:20;background:rgba(8,12,9,.5);animation:rweFadeIn .2s ease-out}
-.agent-panel{position:fixed;top:0;bottom:0;right:0;z-index:21;width:min(760px,100vw);background:var(--color-bg);color:var(--color-ink);border-left:1px solid var(--color-line);box-shadow:var(--shadow-lg);overflow:auto;padding:20px;box-sizing:border-box;display:flex;flex-direction:column;gap:20px;animation:rweSlideIn .28s cubic-bezier(.2,.7,.2,1)}
+/* [v30b, REQ-180] README §3: the header is "× , h2 label, state tag, phase tag, mono agentId
+   right-aligned". It was `display:block`, so the id ran straight on from the state tag
+   (`完成agent-1`) with 624 px of slack to its right. */
+.agent-panel > header{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.agent-panel > header code{margin-left:auto;font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;font-size:12px}
+.agent-panel{position:fixed;top:0;bottom:0;right:0;z-index:21;width:min(760px,100vw);background:var(--color-bg);color:var(--color-ink);border-left:1px solid var(--color-line);box-shadow:var(--shadow-lg);overflow:auto;padding:16px;box-sizing:border-box;display:flex;flex-direction:column;gap:16px;animation:rweSlideIn .28s cubic-bezier(.2,.7,.2,1)}
 .agent-panel.from-left{right:auto;left:0;border-left:0;border-right:1px solid var(--color-line);animation:rweSlideInL .28s cubic-bezier(.2,.7,.2,1)}
 .stat-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
 /* [v29, REQ-147] `ui/agent-panel.js:59-70` already emitted `[data-stat-card]` with both spans,
@@ -409,11 +439,13 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 [data-stat-card]{border:1px solid var(--color-line);border-radius:var(--radius-md);padding:10px 12px;display:flex;flex-direction:column;gap:4px;min-width:0}
 .stat-label{display:block;color:var(--color-muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
 .stat-value{font-weight:600;font-size:18px}
-.prompt-pre{margin:0;padding:12px;border:1px solid var(--color-line);border-radius:var(--radius-md);font-size:13.5px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto}
+/* [v30b, REQ-176] README §3: "User prompt in <pre> (BODY font 13.5 px / 1.6)". A bare `pre` takes
+   the UA monospace, so the one block that is prose rendered as code. */
+.prompt-pre{margin:0;padding:12px;border:1px solid var(--color-line);border-radius:var(--radius-md);font-family:'Archivo',-apple-system,'Segoe UI',sans-serif;font-size:13.5px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto}
 .tag-columns{display:flex;flex-wrap:wrap;gap:6px}
 .event-list{border:1px solid var(--color-line);border-radius:var(--radius-md);max-height:420px;overflow:auto;font-size:13px}
 .event-row{display:grid;grid-template-columns:64px 84px minmax(0,1fr);gap:10px;padding:8px 12px;border-bottom:1px solid var(--color-line);align-items:baseline}
-.event-kind{font-size:11px;padding:1px 8px;border-radius:100px;border:1px solid var(--color-line)}
+.event-kind{font-size:11px;padding:1px 8px;border-radius:var(--radius-sm);border:1px solid var(--color-line)}
 .event-kind.is-tool{background:var(--accent-100);color:var(--accent-800);border-color:transparent}
 .event-kind.is-message{background:var(--color-panel2);color:var(--color-ink);border-color:transparent}
 .event-kind.is-log{border-color:oklch(0.55 0.16 25);color:oklch(0.45 0.16 25)}

@@ -12,10 +12,12 @@
 // clean) tracks whether the chrome already exists.
 
 import { matchCards, segmentCounts, fmtCost } from '../lib/runlist.js';
+import { t } from '../lib/strings.js';
 
 const LABELS = {
   zh: {
-    searchPlaceholder: '搜尋 workflow…',
+    // [v30b, REQ-183] the handoff's own zh string; the shipped one mixed scripts mid-phrase.
+    searchPlaceholder: '搜尋工作流…',
     all: '全部',
     running: '執行中',
     registered: '已註冊',
@@ -70,7 +72,9 @@ function metaLine(card, lang) {
   const runs = m.terminalCount + (card.activeRunId ? 1 : 0);
   return lang === 'zh'
     ? `成功率 ${rateText} (${completed}/${m.terminalCount}) · 平均耗時 ${dur} · 平均費用 ${cost} · ${runs} 次執行`
-    : `success ${rateText} (${completed}/${m.terminalCount}) · avg ${dur} · avg cost ${cost} · ${runs} runs`;
+    // [v30b, REQ-185] README §1's own wording: `Success 67% (2/3) · Avg duration 12m 4s ·
+    // Avg cost $0.42 · 5 runs` — capitalised, and "Avg duration", not a bare "avg".
+    : `Success ${rateText} (${completed}/${m.terminalCount}) · Avg duration ${dur} · Avg cost ${cost} · ${runs} runs`;
 }
 
 function buildCard(card, lang, handlers) {
@@ -131,7 +135,8 @@ function renderGrid(container, state, handlers) {
     const section = document.createElement('section');
     section.className = 'card-section' + (g === 'other' ? ' other' : '');
     section.setAttribute('data-section', '');
-    const h = document.createElement('h3');
+    // [v30b, REQ-171] README §1 gives these headings `h6`; the comment below already said so.
+    const h = document.createElement('h6');
     // README "1. Workflows home": "Running (h6 with pulsing 8 px accent dot)" — the Running
     // group's own heading only; Registered/Other get no dot.
     if (g === 'running') {
@@ -148,10 +153,21 @@ function renderGrid(container, state, handlers) {
     section.appendChild(cardsEl);
     grid.appendChild(section);
   }
+  // [v30b, REQ-172] A search that matches nothing rendered an empty page — indistinguishable from
+  // a failed load. The design says so in words (`STR.noResults`).
+  if (!grid.childElementCount) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.setAttribute('data-empty-state', '');
+    empty.textContent = t(state.lang, 'noResults');
+    grid.appendChild(empty);
+  }
 }
 
 function updateCounts(container, state) {
-  const counts = segmentCounts(state.cards);
+  // [v30b, REQ-170] against the QUERY-filtered cards: 「全部 (10)」 used to sit still while four
+  // cards matched `probe`, so the number described a set the viewer was not looking at.
+  const counts = segmentCounts(matchCards(state.cards, state.query));
   container.querySelectorAll('.segment-tabs button').forEach((btn) => {
     const seg = btn.dataset.segment;
     btn.textContent = `${L(state.lang, seg)} (${counts[seg]})`;

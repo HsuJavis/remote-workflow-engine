@@ -33,6 +33,8 @@ export const STYLE_HOOKS: readonly string[] = [
   'page-head', 'model-backdrop',
   // [v30, REQ-167] the agent panel's three listed columns.
   'tag-column', 'tag-column-head',
+  // [v30b, REQ-179] the trigger column's own lane header.
+  'is-trigger',
   'lane-index', 'lane-current-tag', 'is-unreached',
   'legend-item', 'legend-dot',
 

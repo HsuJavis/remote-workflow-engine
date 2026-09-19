@@ -160,7 +160,12 @@ export const SPEC_ROWS: ReadonlyArray<SpecRow> = [
   { req: 'REQ-132', view: 'home', anchor: 'data-running-dot', prop: 'animation-name', expect: { animation: ['rwePulse', '1.6s'] } },
 
   // -- REQ-133 workflow detail (view: workflow) --
-  { req: 'REQ-133', view: 'workflow', anchor: 'data-run-chip', prop: 'border-radius', expect: { literal: '100px' } },
+    // [v30b, REQ-175 — POISONED ROW RE-DERIVED] This pinned `100px`, a pill. That value appears
+  // nowhere in `.sdlc/design-handoff/README.md`, whose tokens name only `--radius-md 3px` and
+  // `--radius-sm 2px`; README §2 calls the run chips "outlined `.btn`s", so they take the button
+  // radius. The eighth row this round found to have been written from the build rather than the
+  // handoff.
+  { req: 'REQ-133', view: 'workflow', anchor: 'data-run-chip', prop: 'border-radius', expect: { literal: '3px' } },
   { req: 'REQ-133', view: 'workflow', anchor: 'data-run-chip', prop: 'font-size', expect: { literal: '12px' } },
   // [Gate 5 re-run, v27 3rd-sweep audit] narrowed from bare `data-run-chip` — the accent-100 fill is
   // `.run-chip.is-selected` only (`dashboard.css:225`); the bare anchor passed by COINCIDENCE
