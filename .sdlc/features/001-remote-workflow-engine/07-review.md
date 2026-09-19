@@ -10723,3 +10723,61 @@ c3 與此無關:該 commit 只動 `src/dashboard/` 底下八個 client 檔,排�
 **負載實驗是弱證據,不作為結論。** 修後在人工負載下連跑 5 次全綠,但負載只到 2.4~5,
 遠低於整套回歸;而修前那支測試在五次回歸裡本來也有三次是綠的 —— 這個實驗無法區分兩者。
 結論建立在機制與 UT-270 的確定性證明上,不建立在那 5 次上。
+
+---
+
+## R30-A1 — 執行中的節點回報「量到了 0」而非「還不知道」(引擎側)
+
+- **severity:** mid
+- **發現於:** 2026-09-20,兩次稽核共同標記的覆蓋率缺口所做的真跑驗證
+- **owner:** 未指派 —— 在引擎的 `RunStatusView`,不在儀表板
+
+### 怎麼發現的
+
+AUDIT-v29 與我自己的第一次稽核**都**在「限制」一節寫了同一句話:這台引擎沒有進行中的
+工作流,所以四個動畫、執行中節點底色、「目前」lane 與 `ACTIVE ·` kicker 只驗到 CSSOM。
+於是註冊一個三階段、跑在本地 ollama 上的 `live-probe` 工作流,真的跑一次。
+
+**那些狀態全部驗過且正確**(見下)。但真跑本身暴露了一個兩次稽核都看不到的東西。
+
+### 證據
+
+執行中,`GET /api/runs/:id` 對尚未回報用量的節點回傳:
+
+```
+triage  running  tokens={input:0,output:0,cacheRead:0,cacheWrite:0}  costUSD=0  unpriced=false
+```
+
+畫面三處據此顯示 `0 tok · $0.00`:節點列、圖例右側摘要、執行歷史。
+
+跑完之後同一個節點是 `2861 tok` —— **所以那個 0 的意思是「還沒量」,不是「量到 0」**。
+
+### 為什麼這是缺陷,以及它不在儀表板
+
+**儀表板沒有說謊,它忠實畫出了線上說的話。** 是線上說的話本身在斷言
+「這個 agent 用了 0 個 token」,而它其實是「這次呼叫還沒回來」。
+這是本 ledger 關過五次的「有信心的零」類別(ADR-046 / DES-194 的
+「absent, never zero」),**而前五次都沒碰到它,因為沒有人渲染過執行中的狀態**。
+
+**費用的 0 不在此列:** 本地 ollama 呼叫的成本真的是 0,`unpricedCalls: 0` 也正確。
+只有 `tokens` 是把缺席寫成了測量值。
+
+### 修法形狀(未實作)
+
+`RunStatusView` 在第一個 usage 事件到達前,該讓 `tokens` 缺席(`undefined`)而非零填充 ——
+儀表板既有的 `sumTokens`/`fmtTok` 路徑對 `undefined` 已經會顯示 `—`(v29 REQ-148 的既有行為),
+所以客戶端不需要改。**這一步沒有做:它在 run store / usage fold,是另一個子系統。**
+
+### 同一次真跑確認正確的狀態(兩次稽核都只驗到 CSSOM)
+
+| 狀態 | 量到的值 |
+|---|---|
+| 首頁 kicker | `ACTIVE · 56E8FDC9` |
+| 卡片掃光 | `::before` → `rweSweep 2.4s`,邊框 `oklch(.72 .065 236)` |
+| 執行中區段的點 | `rwePulse 1.6s` |
+| 目前 lane | `01 ROUTE 目前` · `is-current` · accent 色 + accent 底線 |
+| 執行中節點 | `is-running` · 底色 `oklch(.3 .035 236)` = `--accent-100` · `rweGlow 1.8s` · dot `rweRing 1.3s` |
+| 未開始節點 | `is-predicted` · 空心點 · 虛線連線 |
+| 完成後 | 三條 lane 全部 `is-walked`,摘要 `完成 · 3 個節點 · 8.6k tok` |
+
+**v29c 的 `is-walked` / `is-unreached` / `is-current` 三態,這是第一次三種都在同一次執行裡被看到。**
