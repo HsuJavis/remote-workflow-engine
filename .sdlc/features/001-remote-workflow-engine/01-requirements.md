@@ -2229,3 +2229,30 @@ agent 面板有遮罩(`rweFadeIn`),模型面板沒有 —— **同一份實作�
 
 ### 約束
 - **C10** 不碰導覽列(B24/B25)—— 那是第三群。
+
+---
+
+## Iteration v29e — 第三群:導覽列(B24 / B25)
+
+擁有者裁決「照設計稿」。但 B25 撞到一條設計稿無法裁決的需求,處理方式登記於此。
+
+### REQ-160 — 連線標記緊接在品牌之後(B24)
+README「Header / chrome」:`.nav` 的組成是「brand + source tag」,然後是分頁,最後才是右側叢集
+(色相滑桿 / 語言 / 主題)。實作把標記放在整列最右端。
+- **驗收:** `.rwe-connection` 的 x 大於 `.nav-brand`、小於第一個 `[data-tab]`。
+
+### REQ-161 — 導覽列不放版本與更新字串,但它們不得消失(B25)
+- **B25 的字面修法會退掉一條需求。** `01-requirements.md:717`(REQ-070)明文要求
+  「The applied version and the last-update outcome (success/failure + tag + time) are
+  **observable on the dashboard**」,其 observable 條款直接點名
+  「the dashboard's **update panel** shows the failed outcome for that tag」。
+- **設計稿無法裁決這件事:** README §1–§5 從頭到尾沒有自我更新這個功能。
+  它能裁決的是**導覽列長什麼樣**,不是「一個它沒看過的功能要不要存在」。
+- **因此:** 導覽列依 README 清空;版本 / 更新結果 / 中斷執行的 CTA **移到頁尾** ——
+  頁尾是設計稿有定義的面(「API base left, `Updated HH:MM:SS` right」),
+  在那裡多一項,比在導覽列硬塞一個設計稿沒有槽位的叢集偏離更小。
+- **驗收:** 導覽列文字不含 `v\d+\.\d+\.\d+` 也不含 `applied`;
+  `.rwe-version` / `.rwe-update-outcome` / `.rwe-update-cta` 仍存在且內容正確(val-198 既有案例)。
+
+**順帶:** 這也讓 v29 c1 修掉的 `vundefined` 那個欄位離開了導覽列 ——
+該缺陷的根因(island 被 `replaceChildren` 銷毀)已在 c1 修復,這裡不是靠搬家迴避它。

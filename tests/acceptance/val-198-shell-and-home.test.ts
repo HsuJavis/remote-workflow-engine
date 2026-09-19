@@ -353,7 +353,42 @@ describe('the v27 dashboard shell + Workflows home, real Chromium (VAL-198, REQ-
   // `#rwe-init`'s raw text. A SEPARATE server/workRoot is needed (not the shared `server` above):
   // an `interruptedRuns` > 0 count and an `applied` `lastUpdate` (the CTA's own two-conjunct
   // condition, `lib/status.js`) both come from real boot-time state a running dashboard never has.
-  itReal('the update panel is reachable in the rendered nav: version, outcome, and the interrupted-runs CTA (AC-6, INV-V27-5)', async () => {
+  // [v29e, REQ-160/161] The nav follows README "Header / chrome" exactly: brand, the source tag
+  // next to it, the tabs, then the right cluster. Two version strings the design has no slot for
+  // sat between the brand and the tabs, and the source tag sat at the far right instead.
+  itReal('the nav is brand -> source tag -> tabs -> right cluster, with no version text (REQ-160/161)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await new Promise((r) => setTimeout(r, 900));
+      const nav = await page.evaluate(() => {
+        const n = document.querySelector('.rwe-nav')!;
+        const x = (sel: string) => {
+          const e = n.querySelector(sel);
+          return e ? Math.round((e as HTMLElement).getBoundingClientRect().x) : -1;
+        };
+        return {
+          text: (n as HTMLElement).innerText.replace(/\s+/g, ' ').trim(),
+          brandX: x('.nav-brand'),
+          tagX: x('.rwe-connection'),
+          firstTabX: x('[data-tab]'),
+        };
+      });
+      // the engine's own version/update strings are not nav chrome (README has no slot for them)
+      expect(nav.text, 'a version string is still in the nav').not.toMatch(/v\d+\.\d+\.\d+/);
+      expect(nav.text).not.toContain('applied');
+      // README: "brand ... + source tag", then the tabs
+      expect(nav.brandX).toBeGreaterThanOrEqual(0);
+      expect(nav.tagX, 'the source tag is not beside the brand').toBeGreaterThan(nav.brandX);
+      expect(nav.tagX, 'the source tag is not before the tabs').toBeLessThan(nav.firstTabX);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
+  itReal('the update panel is reachable: version, outcome, and the interrupted-runs CTA (AC-6, INV-V27-5, moved to the footer in v29e)', async () => {
     const crashDir = mkdtempSync(join(tmpdir(), 'rwe-val198-crash-'));
     const resultDir = mkdtempSync(join(tmpdir(), 'rwe-val198-result-'));
     let crashServer: Server | undefined;

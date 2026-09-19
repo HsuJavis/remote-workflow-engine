@@ -173,13 +173,20 @@ function updateFooterClock() {
   footerUpdatedEl.textContent = `${L(prefs.lang, 'updated')} ${fmtClock(d)}`;
 }
 
-function buildFooter() {
+function buildFooter(island, lang) {
   const footer = document.createElement('footer');
   footer.className = 'rwe-footer';
   footer.setAttribute('data-footer', '');
   const api = document.createElement('span');
   api.textContent = location.origin;
   footer.appendChild(api);
+  // [v29e, REQ-161] The engine's version + last-update outcome + interrupted-runs CTA live here
+  // now. README "Header / chrome" gives the nav brand, source tag and tabs and nothing else, so
+  // the cluster had no slot there — but REQ-070 requires this information to stay observable on
+  // the dashboard, and the handoff never covered the self-update feature, so it cannot rule that
+  // requirement away. The footer is the surface the design DOES define for engine-side facts
+  // (API base left, clock right); this joins it rather than disappearing.
+  footer.appendChild(buildUpdatePanel(island, lang));
   footerUpdatedEl = document.createElement('span');
   footer.appendChild(footerUpdatedEl);
   updateFooterClock();
@@ -266,8 +273,16 @@ function buildChrome(island) {
   brand.setAttribute('data-nav-brand', '');
   brand.textContent = tStr(prefs.lang, 'brand');
   nav.appendChild(brand);
-
-  nav.appendChild(buildUpdatePanel(island, prefs.lang));
+  // [v29e, REQ-160] README "Header / chrome": the source tag sits NEXT TO the brand, not at the far
+  // right of the cluster. [REQ-161] The engine's version/update strings used to sit here; the
+  // design's nav has no slot for them and they are not chrome — they move to the footer, which the
+  // design does define. They are NOT deleted: REQ-070 requires the applied version and the
+  // last-update outcome to stay observable on the dashboard, and the design handoff never covered
+  // the self-update feature at all, so it cannot rule that requirement away.
+  connectionTagEl = document.createElement('span');
+  connectionTagEl.className = 'rwe-connection';
+  connectionTagEl.setAttribute('data-connection-tag', '');
+  nav.appendChild(connectionTagEl);
 
   const tabStrip = document.createElement('div');
   tabStrip.className = 'rwe-tabs';
@@ -368,9 +383,6 @@ function buildChrome(island) {
   }
   nav.appendChild(themeGroup);
 
-  connectionTagEl = document.createElement('span');
-  connectionTagEl.className = 'rwe-connection';
-  nav.appendChild(connectionTagEl);
 
   // [v28, DES-212, TASK-220, REQ-143] the shell banner — a child of `nav`, so it is OUTSIDE
   // `mountLazy`'s per-route `container.replaceChildren()` reach and survives every tab/route
@@ -597,7 +609,7 @@ function mountApp() {
   const island = readIsland();
   applyTheme();
   const { nav, routeMount } = buildChrome(island);
-  document.body.replaceChildren(nav, routeMount, buildFooter());
+  document.body.replaceChildren(nav, routeMount, buildFooter(island, prefs.lang));
   mountRoute();
   // [v28, DES-212, TASK-220, REQ-143] the ONE boot-time load of the demo fiction — `no-store`
   // fresh bytes per load (ARCH-123's v28 amendment), fire-and-forget, never statically imported (a

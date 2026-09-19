@@ -8357,3 +8357,40 @@ hit stack: ["span#.stat-value","div#.","div#.stat-cards","aside#.agent-panel fro
 這是兩個滑入面板彼此不一致,不是缺一條設計條款。用同一個 `rweFadeIn`。
 
 真跑:遮罩存在、動畫名 `rweFadeIn`、覆蓋 1440px。
+
+---
+
+## v29e 第三群 — REQ-160/161(導覽列)
+
+### IMPL-318 — 連線標記移到品牌旁,版本叢集移到頁尾
+- **traces:** REQ-160, REQ-161
+- **files:** `src/dashboard/ui/app.js`, `src/dashboard/dashboard.css`
+- **tests:** val-198 新增導覽列形狀案例;既有的更新面板案例改標題
+
+**擁有者裁決「照設計稿」,但 B25 的字面執行會退掉一條需求,所以沒有直接刪。**
+
+`01-requirements.md:717`(REQ-070)明文要求「The applied version and the last-update outcome
+(success/failure + tag + time) are **observable on the dashboard**」,observable 條款直接點名
+「the dashboard's **update panel** shows the failed outcome for that tag」。
+
+**而 README §1–§5 沒有自我更新這個功能。** 設計稿能裁決的是導覽列長什麼樣,
+不是「一個它沒看過的功能要不要存在」。因此:導覽列依 README 清空,叢集移到**頁尾** ——
+頁尾是設計稿有定義的面,在那裡多一項比在導覽列硬塞一個沒有槽位的叢集偏離更小。
+
+**既有驗收案例為什麼還是綠的,以及我為什麼仍然改了它:** 它只斷言
+`.rwe-version` / `.rwe-update-outcome` / `.rwe-update-cta` 存在且文字正確,
+**沒有斷言位置**,所以搬家後自動通過。但它的標題寫著「in the rendered nav」——
+**標題說謊比斷言失效更難發現**,已改為註明 v29e 移至頁尾。
+
+**順手移除 `.rwe-update-panel` 的 `margin-left:auto`。** 那是導覽列時代用來把叢集推到
+列尾的;在 `space-between` 的頁尾裡它與版面規則打架。理由消失,規則就該消失。
+
+### 真跑
+
+```
+nav     工作流引擎 / Workflow Engine  連線中  工作流程 模型 系統 問題  236° 中 EN 系統 淺 深
+        brand=20 → tag=251 → firstTab=318 → hue=557
+footer  http://127.0.0.1:8951  v0.1.0 (…)  v0.20.0: applied  更新於 13:08:37
+```
+
+導覽列文字不含 `v\d+\.\d+\.\d+`、不含 `applied`;標記的 x 介於品牌與第一個分頁之間。
