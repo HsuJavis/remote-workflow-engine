@@ -31,6 +31,8 @@ export const STYLE_HOOKS: readonly string[] = [
   'breadcrumb', 'section-head', 'triggers-col', 'muted', 'wf-header', 'wf-header-main',
   // [v29d, REQ-157/158] the system page's title row and the model panel's backdrop.
   'page-head', 'model-backdrop',
+  // [v30, REQ-167] the agent panel's three listed columns.
+  'tag-column', 'tag-column-head',
   'lane-index', 'lane-current-tag', 'is-unreached',
   'legend-item', 'legend-dot',
 

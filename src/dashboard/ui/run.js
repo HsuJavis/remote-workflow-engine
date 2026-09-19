@@ -78,7 +78,7 @@
 // `onSelectAgent(id, label, {nodeCenterX, graphWidth})` argument; this file's own default
 // `onSelectAgent` forwards them into `openAgentPanel`'s `opts`, closing REQ-135's slide-by-position
 // dod item for real (`agent-panel.js`'s own banner covers its side of the fix).
-import { SWIMLANE_BOX, cellRect, svgBox, edgePath } from '../lib/swimlane.js';
+import { SWIMLANE_BOX, cellRect, svgBox, edgePath, laneX } from '../lib/swimlane.js';
 import { sumTokens, fmtCost, fmtTok } from '../lib/runlist.js';
 import { t, warningText, stateLabel } from '../lib/strings.js';
 import { shortModel } from '../lib/model.js';
@@ -229,7 +229,11 @@ export function paintSwimlane(svgEl, payload, opts) {
   // Lane headers (HTML, `.cell-layer`) and one vertical hairline per lane (SVG, `#dag-graph`).
   for (let i = 0; i < laneCount; i++) {
     const laneMeta = lanes[i];
-    const x = box.PAD + box.TRIG_W + i * (box.LANE_W + box.LANE_GAP);
+    // [v30, REQ-163] `laneX(i, box)`, not a second copy of its formula. This line held its own
+    // transcription of it, so when `lib/swimlane.js` gained the missing LANE_GAP the CELLS moved
+    // (they go through `cellRect` → `laneX`) and the headers and hairlines did not — 40 px of
+    // misalignment that no unit test could see, because neither surface is reachable from one.
+    const x = laneX(i, box);
     const isCurrent = i === current;
 
     const line = document.createElementNS(NS, 'line');

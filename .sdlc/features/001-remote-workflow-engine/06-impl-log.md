@@ -8428,3 +8428,76 @@ footer  http://127.0.0.1:8951  v0.1.0 (…)  v0.20.0: applied  更新於 13:08:3
 
 **這一群我先改後測**,與 v29 其餘各群的紅先行相反。事後補了 UT-272 鎖住兩個純函式格式,
 但「先看到紅」這一步沒有發生 —— 對純字串替換風險低,仍是流程上的偏差。
+
+---
+
+## v30 — REQ-163..169(獨立稽核 AUDIT-v29 的七條 mid)
+
+### IMPL-320 — 泳道幾何:觸發欄與第一條 lane 之間缺了 `LANE_GAP`
+- **traces:** REQ-163
+- **files:** `src/dashboard/lib/swimlane.js`, `src/dashboard/ui/run.js`
+- **tests:** UT-273(3 例)、UT-274(重複守衛)、`dashboard-lib-swimlane.test.js:44` 的 oracle 重新推導
+
+`laneX(i) = PAD + TRIG_W + i*(LANE_W+LANE_GAP)` 在 `i=0` 時沒有 `LANE_GAP`,觸發格緊貼第一條 lane,
+**觸發→第一個節點的貝茲曲線是零長度**(`M128,101 C128,101 128,101 128,101`)—— 每個 tick 都畫,而且看不見。
+`dashboard-lib-swimlane.test.js:44` 釘的正是那條錯的公式,又一個從實作寫回去的 oracle。
+
+**修完之後沒有生效,原因是同一個形狀第三次出現。** `ui/run.js:232` 自己抄了一份同樣的公式,
+於是改了 `lib/swimlane.js` 之後**節點移了**(走 `cellRect` → `laneX`)、**lane 標題與垂直細線沒移** ——
+量到 157/413/… vs 197/453/…,錯開 40px。**而那 40px 沒有任何單元測試看得到**:
+vitest 跑 `node` 環境,兩個畫面都不可能被載入。
+
+已加 **UT-274** 擋住這個形狀:`ui/*.js` 不得出現 `TRIG_W +`,view 一律呼叫 `laneX`。
+(第一版門檻訂成「整個 corpus 只能出現一次」是錯的 —— `lib/swimlane.js` 的 `laneX` 與 `svgBox`
+都正當地需要它;規則是**沒有 view 可以自己推導**。)
+
+### IMPL-321 — agent 面板:卡的集合、三欄的內容、時間的時區
+- **traces:** REQ-166, REQ-167, REQ-168
+- **files:** `src/dashboard/lib/agent.js`, `src/dashboard/ui/agent-panel.js`, `src/dashboard/lib/strings.js`
+
+**F4:** 六張卡是 模型 / Tokens / 費用 / 逾時 / 努力程度 / **活動**,缺「耗時(開始→結束)」且 Tokens 無總數。
+REQ-135 的驗收文字逐字指定另一組與另一個順序。REQ-147(v29 c1)只管這些卡的**樣式** ——
+**我修了它們長什麼樣,沒有檢查是不是對的六張。** `activityText` 沒有刪除,它成為耗時卡在
+run 仍進行中時的退路,不編造結束時間。
+
+**F5:** `lib/agent.js:88` 的註解早就寫著規則 ——「a capture with no reader is not observability …
+**never just their counts**」—— 而且該模組對 `mcpUnresolved`/`unmapped` 確實照做了。
+**三個 curated-surface 清單是它停手的地方**,於是 view 只有計數可畫。不是缺一個決定,是決定沒被執行。
+
+**F6:** `agent-panel.js` 有**自己的** `fmtClock`,用 `toISOString()` → UTC,
+而同一頁的歷史表是本地時間。**這個矛盾是 v29 c1 造成的**(把一邊在地化、另一邊沒動)。
+那是這個格式化函式在 client 的**第四份**副本,已刪。
+
+**我自己造的一個錯,只有真跑抓得到:** 加 `import { fmtClock }` 時沒發現該檔已有同名私有函式,
+造成重複宣告 + 無限遞迴,整個明細頁掛掉顯示「workflow view unavailable」。
+**單元層 190 檔全綠** —— 沒有任何單元測試能載入 `ui/*.js`。
+
+**還有一條我自己寫的 oracle 被推翻:** v29 c3 的
+`expect(labels).toEqual(['Model','Tokens','Cost','Timeout','Effort','Activity'])`
+照著實作列出那六張。同一個形狀,這次是我犯的。
+
+### IMPL-322 — 節點底色、chip 列位置、次要文字色
+- **traces:** REQ-164, REQ-165, REQ-169
+- **files:** `src/dashboard/dashboard.css`, `src/dashboard/ui/workflow.js`
+
+**F2:** 節點格用 `--color-panel2`;README §2 說 "surface fill",而 README 的 surface 就是
+`oklch(.25 .007 h)` —— **實作自己的 `--color-panel`**。`--color-panel2` 屬於下沉區塊(`pre`),不是圖的格子。
+
+**F3:** README §2 的順序是 Header → Run chips → Swimlane → Legend → History。
+實作把 chip 列放在圖**與**圖例之後 —— **選哪一次 run 的控制項,落在它所控制的圖下面**。
+
+**F7:** `--color-muted: #8e97a3` 在交付稿裡找不到。改為設計自己的推導 `ink@70%`。
+README:85 另有一組固定中性色階,**本輪刻意不整套引入** —— 只加 README 以角色命名用到的那一步
+(`neutral-500`,走過的連線)。整套引入會改動每個畫面的每一段灰字,超出本群範圍。
+**已登記:參考實作在這一點上也偏離 README,兩者不一致時以 README 為準。**
+
+### 真跑
+
+```
+觸發格結束 157 · lane 197 → 間距 40 · 標題與節點對齊 · 零長度連線 0
+節點底色 oklch(0.25 0.007 236)   次要文字 ink@70%   走過連線 rgb(133,139,133)
+chips 246 → graph 333 → legend 693 → table 764
+卡片 模型 / 努力程度 / 逾時 / 耗時 59s / TOKENS 5.4k · 四欄 / 費用
+三欄 可用工具 0 (無) · MCP 伺服器 0 (無) · 技能 0 (無)
+日誌 18:26:24(與歷史表 18:25:26 同時區)
+```

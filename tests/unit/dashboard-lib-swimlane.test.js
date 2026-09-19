@@ -41,8 +41,13 @@ describe('lib/swimlane.js (UT-245, DES-203, REQ-134)', () => {
   });
 
   it('laneX/cellRect over the fixture join by lane ORDINAL', () => {
-    expect(laneX(0, SWIMLANE_BOX)).toBe(SWIMLANE_BOX.PAD + SWIMLANE_BOX.TRIG_W);
-    expect(laneX(1, SWIMLANE_BOX)).toBe(SWIMLANE_BOX.PAD + SWIMLANE_BOX.TRIG_W + SWIMLANE_BOX.LANE_W + SWIMLANE_BOX.LANE_GAP);
+    // [v30, REQ-163 — ORACLE RE-DERIVED] This pinned `laneX(0) === PAD + TRIG_W`, i.e. the
+    // implementation's own formula. It left the trigger column (which ENDS at PAD + TRIG_W) flush
+    // against lane 0, so the trigger→first-node edge was a zero-length, invisible curve. The
+    // handoff's own `xFor(col)` inserts LANE_GAP before the first lane exactly as it does between
+    // lanes; README pins `LANE_GAP 40`.
+    expect(laneX(0, SWIMLANE_BOX)).toBe(SWIMLANE_BOX.PAD + SWIMLANE_BOX.TRIG_W + SWIMLANE_BOX.LANE_GAP);
+    expect(laneX(1, SWIMLANE_BOX)).toBe(SWIMLANE_BOX.PAD + SWIMLANE_BOX.TRIG_W + SWIMLANE_BOX.LANE_GAP + SWIMLANE_BOX.LANE_W + SWIMLANE_BOX.LANE_GAP);
     const rect = cellRect({ lane: 1, slot: 0 }, SWIMLANE_BOX);
     expect(rect.x).toBe(laneX(1, SWIMLANE_BOX));
     expect(rect.w).toBe(SWIMLANE_BOX.LANE_W);
@@ -56,5 +61,30 @@ describe('lib/swimlane.js (UT-245, DES-203, REQ-134)', () => {
     expect(panelSide(width / 2, width)).toBe('left');
     expect(panelSide(width / 2 + 1, width)).toBe('left');
     expect(panelSide(width, width)).toBe('left');
+  });
+});
+
+describe('lib/swimlane.js: the trigger column is not flush against lane 0 (UT-273, v30, REQ-163)', () => {
+  it('the gap before the first lane equals the gap between lanes', () => {
+    const triggerRight = SWIMLANE_BOX.PAD + SWIMLANE_BOX.TRIG_W;
+    const betweenLanes = laneX(1, SWIMLANE_BOX) - (laneX(0, SWIMLANE_BOX) + SWIMLANE_BOX.LANE_W);
+    expect(laneX(0, SWIMLANE_BOX) - triggerRight).toBe(betweenLanes);
+    expect(betweenLanes).toBe(SWIMLANE_BOX.LANE_GAP);
+  });
+
+  it('the trigger -> first-node edge has real length, not a zero-length curve', () => {
+    // The defect as an executable fact: with the old formula both endpoints were x=128 and the
+    // whole path collapsed to `M128,101 C128,101 128,101 128,101` — drawn, and invisible.
+    const from = { x: SWIMLANE_BOX.PAD, y: 80, w: SWIMLANE_BOX.TRIG_W, h: 40 };
+    const to = cellRect({ lane: 0, slot: 0 }, SWIMLANE_BOX);
+    const d = edgePath(from, to);
+    const xs = [...d.matchAll(/[ML,C]?(-?\d+(?:\.\d+)?),/g)].map((m) => Number(m[1]));
+    expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThanOrEqual(SWIMLANE_BOX.LANE_GAP);
+  });
+
+  it('svgBox widens by the same gap, so the right-most lane is not clipped', () => {
+    const w = svgBox([{ lane: 4, slot: 0 }], 5, SWIMLANE_BOX).width;
+    expect(w).toBe(SWIMLANE_BOX.PAD * 2 + SWIMLANE_BOX.TRIG_W + SWIMLANE_BOX.LANE_GAP
+      + 5 * SWIMLANE_BOX.LANE_W + 4 * SWIMLANE_BOX.LANE_GAP);
   });
 });

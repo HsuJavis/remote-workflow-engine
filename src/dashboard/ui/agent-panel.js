@@ -30,6 +30,13 @@
 // file's `ui/run.js` sibling. A caller that supplies neither field still gets the safe 'right'
 // default.
 import { panelSide } from '../lib/swimlane.js';
+// [v30, REQ-168] This file had its OWN `fmtClock`, which formatted with `toISOString()` — UTC —
+// while the history table on the same page renders local time. That contradiction was created in
+// v29 c1 by localising one surface and not the other; nothing in the ledger ever ruled these
+// timestamps UTC. The private copy is deleted rather than patched: it was the FOURTH copy of this
+// formatter in the client (app.js's `pad2`, runlist's `p2`, this one, and the models/system
+// headers that would have made a fifth).
+import { fmtClock } from '../lib/runlist.js';
 import { kindLabel, stateLabel } from '../lib/strings.js';
 import { panelModel, clipText } from '../lib/agent.js';
 import { clockNow } from './clock.js';
@@ -44,11 +51,6 @@ function currentLang() {
   return document.documentElement.lang === 'en' ? 'en' : 'zh';
 }
 
-function fmtClock(ts) {
-  const d = new Date(ts);
-  if (Number.isNaN(d.getTime())) return '—';
-  return d.toISOString().slice(11, 19);
-}
 
 function buildTag(text, variant) {
   const span = document.createElement('span');
@@ -187,11 +189,34 @@ export function render(container, vm, handlers) {
   // no reader is not observability, same rule as the mcpUnresolved/unmapped tags below. REQ-135's
   // own acceptance text pins one variant per column: 允許工具 `.tag-neutral`, MCP 伺服器
   // `.tag-accent`, 技能 `.tag-outline`.
+  // [v30, REQ-167] Three COLUMNS that list their contents, each with its count — REQ-135's own
+  // wording (三欄列出…各帶數量) and README §3's. What shipped was three bare count tags, so the
+  // one question the panel exists to answer — WHICH tools did this agent have — was unanswerable.
+  // Order is README's: tools → MCP servers → skills. The per-column tag variant is unchanged.
   const tagCols = document.createElement('div');
   tagCols.className = 'tag-columns';
-  tagCols.appendChild(buildTag((lang === 'zh' ? '工具 ' : 'tools ') + (vm.toolsCount ?? 0), 'tag-neutral'));
-  tagCols.appendChild(buildTag((lang === 'zh' ? '技能 ' : 'skills ') + (vm.skillsCount ?? 0), 'tag-outline'));
-  tagCols.appendChild(buildTag('MCP ' + (vm.mcpCount ?? 0), 'tag-accent'));
+  const COLS = [
+    { items: vm.tools, count: vm.toolsCount, variant: 'tag-neutral', zh: '可用工具', en: 'Allowed tools' },
+    { items: vm.mcpServers, count: vm.mcpCount, variant: 'tag-accent', zh: 'MCP 伺服器', en: 'MCP servers' },
+    { items: vm.skills, count: vm.skillsCount, variant: 'tag-outline', zh: '技能', en: 'Skills' },
+  ];
+  for (const col of COLS) {
+    const wrap = document.createElement('div');
+    wrap.className = 'tag-column';
+    const head = document.createElement('div');
+    head.className = 'tag-column-head';
+    head.textContent = (lang === 'zh' ? col.zh : col.en) + ' ' + (col.count ?? 0);
+    wrap.appendChild(head);
+    const items = Array.isArray(col.items) ? col.items : [];
+    if (!items.length) {
+      const none = document.createElement('span');
+      none.className = 'muted';
+      none.textContent = lang === 'zh' ? '(無)' : '(none)';
+      wrap.appendChild(none);
+    }
+    for (const it of items) wrap.appendChild(buildTag(String(it), col.variant));
+    tagCols.appendChild(wrap);
+  }
   panel.appendChild(tagCols);
 
   if ((vm.mcpUnresolved || []).length || (vm.unmapped || []).length) {

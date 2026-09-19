@@ -62,7 +62,13 @@
   --color-panel2: oklch(0.29 0.008 var(--rwe-hue));
   --color-line: oklch(0.36 0.01 var(--rwe-hue));
   --color-ink: #e7e9ec;
-  --color-muted: #8e97a3;
+  /* [v30, REQ-169] Secondary text is the design's own derivation — the text colour at 70% — not a
+     separate hex. `#8e97a3` appears nowhere in the handoff; it made every kicker, description,
+     meta row and table header colder and darker than the design's. README:85 also gives a fixed
+     zinc-teal NEUTRAL ramp, which this pass deliberately does NOT import wholesale: only the one
+     step README actually names by role (neutral-500, the traversed edge) is added below. */
+  --color-muted: color-mix(in srgb, var(--color-ink) 70%, transparent);
+  --neutral-500: #858b85;
   --color-link: #9fb8d6;
   --color-accent: oklch(0.72 0.065 var(--rwe-hue));
   --accent-100: oklch(0.30 0.035 var(--rwe-hue));
@@ -85,7 +91,8 @@
   --color-panel2: oklch(0.936 0.006 var(--rwe-hue));
   --color-line: oklch(0.82 0.012 var(--rwe-hue));
   --color-ink: #23262a;
-  --color-muted: #6c7379;
+  --color-muted: color-mix(in srgb, var(--color-ink) 70%, transparent);
+  --neutral-500: #737b71;
   --color-link: #3f6488;
   --color-accent: oklch(0.56 0.065 var(--rwe-hue));
   --accent-100: oklch(0.93 0.03 var(--rwe-hue));
@@ -205,6 +212,9 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 .muted{color:var(--color-muted)}
 /* [v29d, REQ-157] the system page's title row: heading and the sample's timestamp on one line. */
 .page-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+/* [v30, REQ-167] each column lists its own items under a counted heading. */
+.tag-column{display:flex;flex-direction:column;gap:4px;align-items:flex-start;min-width:0}
+.tag-column-head{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--color-muted)}
 .page-head .section-head{margin:0}
 /* [v29d, REQ-158] The model panel had no backdrop while the agent panel did — two slide-in panels
    in the same build behaving differently. Same element and same keyframe as the agent one. */
@@ -339,9 +349,13 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 .lane-hairline{stroke:var(--color-line);stroke-width:1}
 .edge{fill:none;stroke:var(--color-line);stroke-width:1.2}
 .edge.is-active{stroke:var(--color-accent)}
-.edge.is-walked{stroke:var(--color-muted)}
+/* [v30, REQ-169] README §2 names this edge's colour by role: "neutral-500 when traversed". */
+.edge.is-walked{stroke:var(--neutral-500)}
 .edge.is-pending{stroke-dasharray:4 4}
-.cell{position:absolute;box-sizing:border-box;width:216px;height:74px;border:1px solid var(--color-line);border-radius:3px;background:var(--color-panel2);padding:8px 12px;display:flex;flex-direction:column;justify-content:center;gap:3px;cursor:default}
+/* [v30, REQ-164] README §2 gives the node cell the SURFACE fill, and README's surface is
+   `oklch(.25 .007 h)` — which is this build's own `--color-panel`. `--color-panel2` is one step
+   lighter and belongs to sunken blocks (`pre`), not to the figure's cells. */
+.cell{position:absolute;box-sizing:border-box;width:216px;height:74px;border:1px solid var(--color-line);border-radius:3px;background:var(--color-panel);padding:8px 12px;display:flex;flex-direction:column;justify-content:center;gap:3px;cursor:default}
 .cell:hover{border-color:var(--color-accent)}
 .cell.is-running{border-color:var(--accent-600);background:var(--accent-100);animation:rweGlow 1.8s ease-in-out infinite;cursor:pointer}
 .cell.is-done{cursor:pointer}

@@ -8,7 +8,11 @@ export const SWIMLANE_BOX = { PAD: 16, TRIG_W: 112, LANE_W: 216, LANE_GAP: 40, H
 // Lanes sit right of the trigger column, joined by ORDINAL (the same integer `layoutGraph` lays
 // out) rather than by re-matching a title string.
 export function laneX(index, box) {
-  return box.PAD + box.TRIG_W + index * (box.LANE_W + box.LANE_GAP);
+  // [v30, REQ-163] `LANE_GAP` before the FIRST lane too. Without it the trigger column — which
+  // ends at `PAD + TRIG_W` — sat flush against lane 0, and the trigger→first-node edge collapsed
+  // to a zero-length curve: drawn every tick, and invisible. The handoff's own `xFor(col)` inserts
+  // the gap here exactly as it does between lanes.
+  return box.PAD + box.TRIG_W + box.LANE_GAP + index * (box.LANE_W + box.LANE_GAP);
 }
 
 export function cellRect(cell, box) {
@@ -34,7 +38,8 @@ export function edgePath(from, to) {
 // cells/lanes, or the SVG vanishes.
 export function svgBox(cells, laneCount, box) {
   const lanesWidth = laneCount > 0 ? laneCount * box.LANE_W + (laneCount - 1) * box.LANE_GAP : 0;
-  const width = box.PAD * 2 + box.TRIG_W + lanesWidth;
+  // [v30, REQ-163] + LANE_GAP: the same gap `laneX` now inserts before lane 0.
+  const width = box.PAD * 2 + box.TRIG_W + box.LANE_GAP + lanesWidth;
   const maxSlot = cells.reduce((max, c) => Math.max(max, c.slot ?? 0), -1);
   const rows = Math.max(maxSlot + 1, 1);
   const height = box.PAD * 2 + box.HEAD_H + rows * box.CELL_H + (rows - 1) * box.GAP_Y;

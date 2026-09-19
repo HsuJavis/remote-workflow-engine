@@ -126,3 +126,21 @@ describe('the v27 shell: markup + tokens CSS + a JSON data island, zero inline e
     expect(mainMatch![1] ?? '').toContain(assetPath);
   });
 });
+
+// [v30, REQ-163] A guard for the shape that made this defect survive its own fix: `ui/run.js` held
+// a second transcription of `laneX`'s formula, so correcting `lib/swimlane.js` moved the cells and
+// left the lane headers and hairlines 40 px behind. Neither surface is reachable from a unit test
+// (vitest runs `environment: 'node'`), so nothing but a real browser could see the misalignment —
+// which is exactly why the duplicate is worth forbidding at source.
+describe('the lane-x formula has ONE home (UT-274, REQ-163)', () => {
+  it('no client module re-derives it from the box constants', async () => {
+    const { clientFile } = await import('../helpers/client-corpus.js');
+    // `lib/swimlane.js` legitimately uses the term twice — `laneX` and `svgBox` both need it.
+    // The rule is that no VIEW re-derives it: views call `laneX`.
+    for (const view of ['ui/run.js', 'ui/workflow.js']) {
+      expect(clientFile(view), `${view} re-derives the lane x from the box constants`).not.toMatch(/TRIG_W\s*\+/);
+    }
+    expect(clientFile('lib/swimlane.js')).toContain('box.PAD + box.TRIG_W + box.LANE_GAP');
+    expect(clientFile('ui/run.js')).toContain('laneX(i, box)');
+  });
+});

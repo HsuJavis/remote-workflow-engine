@@ -2,7 +2,7 @@
 // DES-205, ARCH-124/131/129, TASK-207, REQ-135/136 — the agent slide-in panel is a projection of
 // the RECORD (and its HarnessDescriptor), never a reconstruction from the DOM. Pure: `now` is a
 // parameter, cost goes through `fmtCost` (DES-204).
-import { fmtCost } from './runlist.js';
+import { fmtCost, sumTokens, fmtTok } from './runlist.js';
 import { t } from './strings.js';
 
 function withCommas(n) {
@@ -70,15 +70,42 @@ function systemPromptNote(harness, lang) {
   return lang === 'zh' ? '無 system prompt 紀錄' : 'no system-prompt record';
 }
 
+// [v30, REQ-166] README §3's duration card: "Duration (start → end)". A run still in flight has no
+// `endedAt`, so it falls back to what `activityText` already said — never a fabricated end time.
+function durationText(record, now, lang) {
+  const start = record.startedAt ? Date.parse(record.startedAt) : NaN;
+  const end = record.endedAt ? Date.parse(record.endedAt) : NaN;
+  if (Number.isNaN(start)) return activityText(record, now, lang);
+  if (Number.isNaN(end)) return activityText(record, now, lang);
+  const s = Math.max(0, Math.round((end - start) / 1000));
+  const m = Math.floor(s / 60);
+  return (m > 0 ? `${m}m ${s % 60}s` : `${s}s`);
+}
+
+// [v30, REQ-166] README §3: "Tokens (total + `Input · Output · Cache read · Cache write`)". The
+// total was absent, so the one figure a reader actually compares between agents was not on the
+// card at all.
+function tokenTotalAndCols(tokens) {
+  const total = sumTokens(tokens);
+  const cols = tokenCols(tokens);
+  return total ? `${fmtTok(total)} · ${cols}` : cols;
+}
+
 export function panelModel(record, harness, events, hasMore, now, lang) {
   // [v29, REQ-150] The six labels were English literals in both languages.
+  // [v30, REQ-166] The SET and the ORDER are REQ-135's own acceptance text, restated verbatim from
+  // README §3: 模型 / 努力程度 / 逾時 / 耗時(開始→結束)/ Tokens(總數 + 四欄)/ 費用.
+  // What shipped had `活動` where `耗時` belongs and a Tokens card with no total. REQ-147 governs
+  // how these cards LOOK; nothing ruled on which six they are, so this was unruled drift.
+  // `activityText` is not deleted — it moves onto the duration card as its secondary line, where a
+  // frozen or freshly-started agent still reads as such.
   const stats = [
     { label: t(lang, 'model'), value: modelLine(record, harness) },
-    { label: t(lang, 'tokens'), value: tokenCols(record.tokens) },
-    { label: t(lang, 'cost'), value: fmtCost(record.costUSD, record.unpriced ? 1 : undefined, lang) },
-    { label: t(lang, 'timeout'), value: fmtTimeout(harness?.timeoutMs) },
     { label: t(lang, 'effort'), value: effortText(harness?.effortApplied) },
-    { label: t(lang, 'activity'), value: activityText(record, now, lang) },
+    { label: t(lang, 'timeout'), value: fmtTimeout(harness?.timeoutMs) },
+    { label: t(lang, 'duration'), value: durationText(record, now, lang) },
+    { label: t(lang, 'tokens'), value: tokenTotalAndCols(record.tokens) },
+    { label: t(lang, 'cost'), value: fmtCost(record.costUSD, record.unpriced ? 1 : undefined, lang) },
   ];
   return {
     stats,
@@ -87,6 +114,13 @@ export function panelModel(record, harness, events, hasMore, now, lang) {
     systemPromptNote: systemPromptNote(harness, lang),
     // (5) a capture with no reader is not observability — pass the raw lists through, never just
     // their counts, so the panel can render both the tags and how many there are.
+    // [v30, REQ-167] The LISTS, not only their counts. The rule was already written four lines
+    // above — "a capture with no reader is not observability … never just their counts" — and
+    // this module already honoured it for `mcpUnresolved`/`unmapped`; the three curated-surface
+    // lists were the ones it stopped short on, so the view had only counts to render.
+    tools: harness?.tools ?? [],
+    mcpServers: harness?.mcpServers ?? [],
+    skills: harness?.skills ?? [],
     mcpUnresolved: harness?.mcpUnresolved ?? [],
     unmapped: record.unmapped ?? [],
     ...eventListModel(events, hasMore),

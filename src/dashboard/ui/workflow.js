@@ -147,6 +147,18 @@ function buildShell(container) {
   predictedLabel.setAttribute('data-predicted-label', '');
   root.appendChild(predictedLabel);
 
+  // [v30, REQ-165] README §2's block order is Header -> Run chips -> Swimlane -> Legend+summary ->
+  // Run history. The chips shipped AFTER the graph and after the legend, so the control that picks
+  // which run the figure shows sat below the figure it controls.
+  const chipsHead = document.createElement('h6');
+  chipsHead.className = 'section-head';
+  chipsHead.textContent = t(currentLang(), 'selectRun');
+  root.appendChild(chipsHead);
+
+  const chips = document.createElement('div');
+  chips.setAttribute('data-run-chips', '');
+  root.appendChild(chips);
+
   // [v29c, REQ-153] README §2 section heading for the figure.
   const graphHead = document.createElement('h6');
   graphHead.className = 'section-head';
@@ -171,16 +183,6 @@ function buildShell(container) {
   const legend = document.createElement('div');
   legend.setAttribute('data-legend', '');
   root.appendChild(legend);
-
-  // [v29c, REQ-153] README §2 labels the run-chip row.
-  const chipsHead = document.createElement('h6');
-  chipsHead.className = 'section-head';
-  chipsHead.textContent = t(currentLang(), 'selectRun');
-  root.appendChild(chipsHead);
-
-  const chips = document.createElement('div');
-  chips.setAttribute('data-run-chips', '');
-  root.appendChild(chips);
 
   // [v29c, REQ-153] README §2: "Run history" heading above the nine-column table.
   const historyHead = document.createElement('h6');

@@ -2290,3 +2290,53 @@ README「Header / chrome」:`.nav` 的組成是「brand + source tag」,然後�
 
 **B23 與 B30 偏離的不只是設計稿,是這個 repo 自己的 REQ-137。** 稽核把它們記成
 「與設計稿的差異」,查帳本才看到需求文字本來就這樣寫。
+
+---
+
+## Iteration v30 — 獨立稽核 AUDIT-v29 的七條 mid
+
+來源:2026-09-19 由獨立 reviewer 對實機與設計稿所做的第二次稽核(`scratchpad/AUDIT-v29.md`)。
+該稽核不知道前一輪的結論,因此它找到的是 v29 修完之後**仍然存在**的差異。
+
+### REQ-163 — 觸發欄與第一條 lane 之間必須有 `LANE_GAP`(F1)
+`lib/swimlane.js:11` 的 `laneX(i) = PAD + TRIG_W + i*(LANE_W + LANE_GAP)` 在 `i=0` 時沒有 `LANE_GAP`,
+於是觸發格(結束於 `PAD+TRIG_W`)與第一條 lane 緊貼,**間距為 0**;
+觸發→第一個節點的貝茲曲線因此是 `M128,101 C128,101 128,101 128,101` —— **一條長度為零、看不見的線**。
+交付稿的 `xFor(col) = col===0 ? PAD : PAD + TRIG_W + LANE_GAP + (col-1)*(LANE_W+LANE_GAP)`。
+- **驗收:** `laneX(0) === PAD + TRIG_W + LANE_GAP`;`svgBox().width` 同步加上 `LANE_GAP`;
+  觸發→lane-0 的 `d` 長度非零。
+- **注意:** `dashboard-lib-swimlane.test.js:44` 目前釘著錯的公式 —— 又一個從實作寫回去的 oracle,
+  必須先重新推導。
+
+### REQ-164 — 節點格的底色是 surface(F2)
+實作用 `--color-panel2`(`oklch(.29 .008 h)`),README §2 說 "surface fill",而 README 的 surface 是
+`oklch(.25 .007 h)` —— **正是實作自己的 `--color-panel`**。參考稿量到的也是 `.25`。
+
+### REQ-165 — 執行 chip 列在泳道之前(F3)
+README §2 的順序是 Header → Run chips → Swimlane → Legend+summary → Run history。
+實作把 chip 列放在圖**與**圖例**之後**。REQ-153 只規定「檢視執行」標題要在 chip 之前,沒有規定區塊順序。
+
+### REQ-166 — agent 面板的六張卡是 REQ-135 指定的那六張(F4)
+實作為 模型 / Tokens / 費用 / 逾時 / 努力程度 / **活動**;缺「耗時(開始→結束)」,Tokens 無總數。
+**REQ-135 的驗收文字逐字寫著**「模型 / 努力程度 / 逾時 / **耗時(開始→結束)** / Tokens(**總數** + 四欄)/ 費用」。
+REQ-147 只管這些卡的**樣式**,不管卡的集合 —— v29 c1 修了外觀,沒有檢查是不是對的六張。
+
+### REQ-167 — 工具 / MCP / 技能三欄要**列出**內容(F5)
+實作只有三個計數 tag(`工具 6 / 技能 0 / MCP 0`)。
+REQ-135:「三欄**列出**…各帶數量」;README §3:"Three columns: Allowed tools, MCP servers, Skills, each with count"。
+順序亦應為 tools → MCP → skills。
+
+### REQ-168 — 面板日誌的時間與頁面其餘部分同一個時區(F6)
+`ui/agent-panel.js:50` 用 `d.toISOString().slice(11,19)` → **UTC**,
+而同一頁的歷史表是本地時間。帳本與設計文件裡**沒有任何** UTC 的裁決。
+**這個矛盾是 v29 c1 造成的:** 在那之前兩邊都是原始 ISO(一致但都不對),c1 把歷史表改成本地,面板沒跟著改。
+
+### REQ-169 — 次要文字的顏色依 README 推導(F7)
+實作的 `--color-muted: #8e97a3` 在 README 裡找不到。設計把次要文字推導為 `color-mix(text 70%)`。
+README:85 另有一組固定的中性色階,本迭代**只取 README 命名用到的那一處**(走過的連線 = `neutral-500`),
+不整套引入 —— 整套引入會改動每一個畫面的每一段灰字,超出本群範圍。
+- **已知且登記:** 參考**實作**在這一點上也偏離 README(它自己的色階是 `#242527…`),兩者不一致時以 README 為準。
+
+### 約束
+- **C11** 不動 `SWIMLANE_BOX` 的七個常數值 —— 錯的是用它們的公式,不是它們本身。
+- **C12** 24 條 low 不在本迭代;依前例,逐條查證後約有三分之一不會是缺陷。

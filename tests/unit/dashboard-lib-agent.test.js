@@ -112,10 +112,17 @@ describe('lib/agent.js: the panel’s six stat labels render in the viewer’s l
     // it away would be translating past the design.
     expect(labels.some((l) => /^(Model|Cost|Timeout|Effort|Activity)$/.test(l))).toBe(false);
     expect(labels).toContain('Tokens');
+    // REQ-135: the Tokens card carries the TOTAL as well as the four-column breakdown.
+    expect(vm.stats.find((x) => x.label === 'Tokens').value).toMatch(/^\d/);
     expect(labels).toContain('模型');
   });
   it('en labels are unchanged — a missing translation, not a relocation', () => {
     const vm = panelModel(rec, undefined, [], false, Date.now(), 'en');
-    expect(vm.stats.map((s) => s.label)).toEqual(['Model', 'Tokens', 'Cost', 'Timeout', 'Effort', 'Activity']);
+    // [v30, REQ-166 — ORACLE RE-DERIVED] This listed the six cards the implementation happened to
+    // build, in its order. REQ-135's acceptance (and README §3, which it restates verbatim) names
+    // a different set AND order: Model / Effort / Timeout / Duration / Tokens / Cost — no
+    // `Activity` card, and `Duration` was missing entirely. Written in v29 c3 by me, from the
+    // build; the same shape as the ground-colour and fmtBytes rows re-derived earlier this round.
+    expect(vm.stats.map((s) => s.label)).toEqual(['Model', 'Effort', 'Timeout', 'Duration', 'Tokens', 'Cost']);
   });
 });
