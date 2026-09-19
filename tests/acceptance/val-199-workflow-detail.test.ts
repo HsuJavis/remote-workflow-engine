@@ -221,6 +221,62 @@ describe('workflow detail page, real Chromium (VAL-199, REQ-133)', () => {
     }
   }, 20000);
 
+  // [v29c, REQ-153/154/155] The structural half of the side-by-side audit's first group. These are
+  // DOM/text facts, not `getComputedStyle` facts, so SPEC_ROWS cannot carry them (DES-209's
+  // SpecExpect is style-shaped only) — asserted directly here, the same convention as val-198's
+  // right-cluster ordering case.
+  //
+  // Measured against the restored reference (design project 38fc8181 served locally with its
+  // `/api/*` proxied to a real engine): it has all four strings, the numbered lane headers, the
+  // five-key legend and a bordered graph box. This build had none of them.
+  itReal('the detail page carries its breadcrumb, triggers column, three section headings and legend (REQ-153/155)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/dashboard/workflow/val199-detail`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await new Promise((r) => setTimeout(r, 1200));
+      const txt = await page.evaluate(() => (document.body.innerText || '').replace(/\s+/g, ' '));
+      for (const word of ['總覽', '觸發器', '工作流圖', '檢視執行', '執行歷史']) {
+        expect(txt, `missing section/structure string: ${word}`).toContain(word);
+      }
+      // REQ-155: the legend's five status keys, not just the right-aligned run summary
+      for (const key of ['執行中', '完成', '失敗', '排隊', '待執行']) {
+        expect(txt, `missing legend key: ${key}`).toContain(key);
+      }
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
+  itReal('lane headers are numbered, and a traversed lane is not painted the same as an unreached one (REQ-154)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/dashboard/workflow/val199-detail`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await new Promise((r) => setTimeout(r, 1200));
+      const heads = await page.evaluate(() =>
+        [...document.querySelectorAll('[data-lane-header]')].map((e) => ({
+          txt: (e as HTMLElement).innerText.replace(/\s+/g, ' ').trim(),
+          color: getComputedStyle(e).color,
+          index: (e.querySelector('[data-lane-index]') as HTMLElement | null)?.innerText.trim() ?? null,
+        })));
+      expect(heads.length, 'no lane headers rendered at all').toBeGreaterThan(0);
+      // every lane carries its own two-digit index as its OWN element (the reference's shape),
+      // never a number folded into the title string
+      expect(heads.map((h) => h.index)).toEqual(heads.map((_, i) => String(i + 1).padStart(2, '0')));
+      // the graph box is inset, so the trigger cell at x = PAD is not flush against the viewport
+      const boxX = await page.evaluate(() => {
+        const el = document.querySelector('[data-graph-box]');
+        return el ? Math.round(el.getBoundingClientRect().x) : -1;
+      });
+      expect(boxX, 'the swimlane box is missing or flush to the viewport edge').toBeGreaterThan(0);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
   // [v27c AC-4 Gate 8 repair] the falsifying test the review named: "describe ok + runs degraded ->
   // tag degraded, no throw". `ui/workflow.js` has no unit tier (ADR-049/ARCH-124: no DOM outside a
   // real browser), so this is the only tier that can witness it. ONE network response is faked at

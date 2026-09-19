@@ -26,6 +26,11 @@ export const STYLE_HOOKS: readonly string[] = [
   'card', 't', 's', 'mono', 'tag', 'tag-outline', 'tag-accent', 'tag-neutral', 'btn', 'btn-icon',
   'table', 'seg', 'input', 'nav', 'hr', 'sys-table', 'models-table', 'issue-row', 'issue-detail',
   'degraded', 'empty', 'back', 'fit-btn', 'zoomable',
+  // [v29c, REQ-153/154/155] the workflow-detail structural layer: breadcrumb, the section headings,
+  // the triggers column, the lane index + its three-state header, and the legend's status key.
+  'breadcrumb', 'section-head', 'triggers-col', 'muted', 'wf-header', 'wf-header-main',
+  'lane-index', 'lane-current-tag', 'is-unreached',
+  'legend-item', 'legend-dot',
 
   // -- REQ-131 shell --
   'rwe-nav', 'rwe-tabs', 'rwe-tab-panels', 'rwe-connection', 'is-live', 'is-degraded', 'is-offline',

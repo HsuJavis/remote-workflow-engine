@@ -54,6 +54,10 @@ export const STR = {
     stable: '穩定', variable: '變動', bestEffort: '盡力', remote: '遠端', local: '本機', free: '免費',
     issuesOpen: '未解決', issuesResolved: '已解決', openOnGitHub: '在 GitHub 開啟 ↗',
     stDone: '完成',
+    // [v29c, REQ-153/154/155] the detail page's structural strings. Key names follow the delivery
+    // handoff's own STR table (`home`, `triggers`, `graph`, `selectRun`, `history`, `none`).
+    home: '總覽', triggers: '觸發器', graph: '工作流圖', selectRun: '檢視執行',
+    history: '執行歷史', none: '(無)', stPending: '待執行', legend: '圖例',
     kind_message: '訊息', kind_tool_call: '工具呼叫', kind_tool_result: '工具結果',
     kind_usage: '用量', kind_harness: '設定', kind_log: '日誌', kind_refused: '拒絕',
   },
@@ -77,6 +81,8 @@ export const STR = {
     stable: 'Stable', variable: 'Variable', bestEffort: 'Best effort', remote: 'Remote', local: 'Local', free: 'Free',
     issuesOpen: 'Open', issuesResolved: 'Resolved', openOnGitHub: 'Open on GitHub \u2197',
     stDone: 'Done',
+    home: 'Overview', triggers: 'Triggers', graph: 'Workflow graph', selectRun: 'Viewing run',
+    history: 'Run history', none: '(none)', stPending: 'Pending', legend: 'Legend',
     kind_message: 'message', kind_tool_call: 'tool call', kind_tool_result: 'tool result',
     kind_usage: 'usage', kind_harness: 'harness', kind_log: 'log', kind_refused: 'refused',
   },

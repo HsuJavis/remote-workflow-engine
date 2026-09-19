@@ -184,6 +184,26 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
    `ui/run.js` sets it for the swimlane's own zoom control. */
 .zoomable{transform-origin:0 0;touch-action:none}
 
+/* [v29c, REQ-153/154] the detail page's structural layer.
+   README §2 gives the swimlane a real box: "scrollable box, border 1 px divider, radius 3 px".
+   That box is also what insets the figure — `triggerRect()` puts the trigger cell at x = PAD, but
+   with the frame flush to the viewport that padding had nothing to sit inside, which is how the
+   trigger came to sit against the window edge. */
+[data-graph-box]{border:1px solid var(--color-line);border-radius:var(--radius-md);padding:0 4px;overflow:auto;margin:4px 0 8px}
+.section-head{margin:14px 0 6px;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--color-muted);font-weight:600}
+.breadcrumb{font-size:12px;color:var(--color-muted);margin-bottom:2px}
+.breadcrumb a{color:var(--color-link);text-decoration:none}
+.breadcrumb a:hover{text-decoration:underline}
+.wf-header{display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap}
+.wf-header-main{flex:1 1 420px;min-width:0}
+.triggers-col{flex:0 0 auto;min-width:140px}
+.triggers-col .section-head{margin-top:0}
+.triggers-col [data-triggers]{display:flex;flex-direction:column;gap:4px;align-items:flex-start}
+/* An empty element must not hold a `gap` slot open — the band between the description and the
+   figure was an empty `[data-predicted-label]` plus two 20px gaps (v29c, REQ-154 / B26). */
+[data-predicted-label]:empty{display:none}
+.muted{color:var(--color-muted)}
+
 /* == REQ-131 shell == */
 .rwe-nav{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:10px 20px;border-bottom:1px solid var(--color-line);position:sticky;top:0;background:var(--color-bg);z-index:5}
 /* README "Header / chrome": brand text next to the source tag. */
@@ -250,8 +270,16 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 .segment-tabs button.active{color:var(--color-ink);background:var(--color-panel2)}
 
 /* == REQ-133 workflow detail == */
-.workflow-view{display:flex;flex-direction:column;gap:20px}
-.run-view{display:flex;flex-direction:column;gap:12px}
+/* [v29c, REQ-153/154] The detail/run views mount at `#app-view`, NOT inside `.rwe-tab-panels`
+   (`padding:16px 24px`), which is why they alone sat flush against the viewport. The gutter goes
+   on the two views rather than on `#app-view` — the home route mounts the tab panels INSIDE that
+   same node, so padding it there would double the home page's gutter to 48px.
+
+   `gap` drops from 20px to 8px: every child was separated by 20px, which is where the ~100px band
+   between the description and the figure came from, and the section headings added in this pass
+   carry their own margins. */
+.workflow-view{display:flex;flex-direction:column;gap:8px;padding:16px 24px;max-width:1440px;margin:0 auto}
+.run-view{display:flex;flex-direction:column;gap:12px;padding:16px 24px;max-width:1440px;margin:0 auto}
 .wf-desc{max-width:720px;margin:0;opacity:.85}
 .run-chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:100px;border:1px solid var(--color-line);background:none;color:var(--color-ink);font:inherit;font-size:12px;cursor:pointer}
 .run-chip:hover{background:color-mix(in srgb, var(--color-accent) 10%, transparent)}
@@ -283,6 +311,22 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 .cell-layer .cell{pointer-events:auto}
 .lane-head{position:absolute;top:0;display:flex;align-items:center;gap:8px;height:48px;padding:0 14px;box-sizing:border-box;border-bottom:1px solid var(--color-line);color:var(--color-muted);font-weight:600;font-size:13px;letter-spacing:.04em;text-transform:uppercase;white-space:nowrap}
 .lane-head.is-current{border-color:var(--color-accent);color:var(--color-accent)}
+/* [v29c, REQ-154] Three lane states, not two. A COMPLETED run has no current lane, so before this
+   every header fell through to `.lane-head`'s own muted colour and the figure said nothing about
+   how far the run got. `is-walked` = the run reached this lane; `is-unreached` = it never did. */
+.lane-head.is-walked{color:var(--color-ink)}
+.lane-head.is-unreached{color:var(--color-muted);opacity:.62}
+.lane-index{font-variant-numeric:tabular-nums;color:var(--color-muted);font-weight:500;margin-right:2px}
+.lane-head.is-current .lane-index{color:var(--color-accent)}
+.lane-current-tag{font-size:10px;padding:1px 6px}
+/* [v29c, REQ-155] the status key that explains the cells' filled/hollow/dashed dots. */
+.legend-item{display:inline-flex;align-items:center;gap:6px}
+.legend-dot{width:9px;height:9px;border-radius:50%;flex:none;border:1px solid transparent}
+.legend-dot.is-running{background:var(--color-accent)}
+.legend-dot.is-done{background:var(--color-ink)}
+.legend-dot.is-failed{background:oklch(0.55 0.16 25)}
+.legend-dot.is-queued{background:transparent;border-color:var(--color-muted)}
+.legend-dot.is-pending{background:transparent;border-color:var(--color-muted);border-style:dashed}
 .lane-hairline{stroke:var(--color-line);stroke-width:1}
 .edge{fill:none;stroke:var(--color-line);stroke-width:1.2}
 .edge.is-active{stroke:var(--color-accent)}

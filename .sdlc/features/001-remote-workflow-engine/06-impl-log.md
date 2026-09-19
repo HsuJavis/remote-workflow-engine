@@ -8232,3 +8232,74 @@ grep 直接被自己的說明打紅。改寫成不指名的敘述。**這是本 
 - **人工負載下連跑 5 次全綠** —— **弱證據,不作為結論**。負載只到 2.4~5,遠低於整套回歸,
   而修前那支測試在五次回歸裡本來也有三次是綠的;這個實驗無法區分兩者。
 - **全回歸** —— 416 檔 / 2996 通過 / 0 失敗。
+
+---
+
+## v29c 第一群 — REQ-153/154/155(工作流明細頁的七條)
+
+### IMPL-312 — 結構要件:麵包屑、觸發器右欄、三個區塊標題
+- **traces:** REQ-153
+- **files:** `src/dashboard/ui/workflow.js`, `src/dashboard/lib/strings.js`, `src/dashboard/dashboard.css`
+
+`data-triggers` 的容器原本就存在,缺的是標題、空值文案與版面位置。README §2 把它放在 header 的
+**右欄**,所以 `h2` + 說明併入 `.wf-header-main`,與 `.triggers-col` 成為一列。
+無觸發器時顯示「(無)」—— 空白欄位讀起來像渲染失敗,那是本 ledger 反覆處理的「有信心的沉默」。
+
+### IMPL-313 — 泳道:外框、lane 編號、三種 lane 狀態
+- **traces:** REQ-154
+- **files:** `src/dashboard/ui/run.js`, `src/dashboard/dashboard.css`
+
+**量測更正了稽核報告的兩條,實作前就先改掉:**
+
+1. **B7 不是「目前欄沒有強調色」。** `.lane-head.is-current` 的 CSS 與 `run.js:243` 的 class
+   設定都早就存在。稽核量到「五欄同一個灰」,是因為那次 run 已 **completed** —— 沒有目前欄。
+   真正缺的是「**已走過**(`--color-ink`)/**未走到**(muted + `.62`)」的區別,以及 `01`/`02` 編號。
+   新的 `is-walked` 由 `cells.some(c => c.col === i+1 && c.agentId !== undefined)` 推導。
+   量測結果與參考稿逐項吻合,**連 JUDGE 的 0.62 不透明度都一樣** —— 那不是挑的數字,是量回來的。
+2. **B8 的觸發節點不是自己被切掉。** `triggerRect()` 一直回傳 `x = PAD = 16`。
+   被切的是**整個明細檢視沒有左右間距**:它掛在 `#app-view`,而首頁的 24px 來自 `.rwe-tab-panels`。
+
+編號是**獨立子元素**(`.lane-index`),不是併進標題字串 —— 併進去會被 `.lane-head` 的
+`text-transform:uppercase` 一起處理,且無法單獨設樣式。
+
+**間距(B26)有兩個來源:** `.workflow-view` 的 `gap:20px` 讓每個子元素都隔開,
+加上一個**空的 `[data-predicted-label]` 仍佔著一個 gap 位**。gap 降 8px + 空元素 `display:none`。
+
+**沒有採用的修法:** 把間距加在 `#app-view`。首頁的分頁面板掛在同一個節點裡,
+那會讓首頁的 gutter 疊成 48px。
+
+### IMPL-314 — 圖例列
+- **traces:** REQ-155
+- **files:** `src/dashboard/ui/run.js`, `src/dashboard/dashboard.css`
+
+`renderLegend()` 原本只畫警告與右側摘要。補上五個狀態鍵,各帶對應的圓點樣式
+(實心 / 空心 / 虛線),讓節點上那些圓點有解釋。
+
+### 唯一一條回歸紅,以及它教的事
+
+`val-193-dag-fit-and-columns` 失敗於 `expected 'span#' to be 'button#dag-fit'`。
+
+**我依序推論了三個原因,全部錯:** 節點遮擋 → 圖例把版面推下去 → 堆疊順序。
+把診斷寫進測試之後一行就有答案:
+
+```
+hit stack: ["span#.stat-value","div#.","div#.stat-cards","aside#.agent-panel from-left"]
+```
+
+**agent 面板開著,蓋住了 Fit 鈕。** 測試的拖曳用寫死的視窗座標 `(600,400) → (400,300)`;
+`.run-view` 補上 16/24 間距後,那個起點落到節點上,按下-移動-放開觸發了點擊。
+
+**這不是產品缺陷,是測試 fixture 的脆弱性被一次合法的版面改動照出來** ——
+而且它的失敗訊息看起來**像**一個 z-order 回歸,完全不是。
+
+兩處都改成更強而非遷就:
+- `hit` 從 `tag#id` 擴成含 class 與整個 hit stack。原本的 `span#` 說不出是哪個 span。
+- 拖曳起點改為**從 `.graph-frame` 的版面算出**一個不在任何節點上的可拖曳點。
+  一個寫死的座標把一次 24px 位移變成了假的 z-order 回歸。
+
+### 順手清掉的兩個自己造的問題
+
+- 間距修法一度產生兩條 `.run-view` 規則 —— 同一選擇器兩條規則正是該避免的串接碰撞,已合併。
+- `lane-title` 類別沒有任何 CSS,直接刪掉而不是登記進 `STYLE_HOOKS` —— 死類別。
+
+類別鎖抓到 11 個新類別未登記,全部補進 `STYLE_HOOKS`。

@@ -2154,3 +2154,46 @@ boundary ④ 記載了做這個判斷時的處境:`design_handoff_workflow_dashb
   **接受的取捨,登記於此:** 認領與派工之間崩潰,會消耗掉一個 `once` 排程而沒有跑。
   這嚴格優於它取代的行為(把任意 workflow 跑兩遍),且與 `markFailed` / `markRefused`
   對「派工未產生 run」的 `once` 本來就做的事一致。
+
+---
+
+## Iteration v29c — 第一群:工作流明細頁的七條中影響
+
+來源:2026-09-18 稽核的 B3 / B7 / B8 / B10 / B11 / B13 / B26。七條全在同一個畫面、
+同一批檔案,一次做完比分三次便宜。這也是「一眼看出卡在哪個 lane」的主畫面。
+
+**量測更正(兩處,原報告寫錯):**
+
+1. **B7 不是「目前欄沒有用強調色」。** `.lane-head.is-current{border-color:accent;color:accent}`
+   的 CSS 早就存在,`ui/run.js:243` 也已經在設那個 class。稽核量到「五欄同一個灰」,
+   是因為 gp-runner 的那次 run 已 **completed** —— 已完成的 run 沒有「目前」欄。
+   真正的差別是:**參考稿的已走過 lane 用 `--color-text`(亮),實作全部用 `--color-muted`(灰)**,
+   而且實作沒有 `01`/`02` 編號。
+2. **B8 的觸發節點不是自己被切掉。** `triggerRect()` 回傳 `x = PAD = 16`,位置是對的;
+   被切的是**整個泳道盒**貼齊視窗左緣(量到 `x:0`、無外框、無內距)。
+
+### REQ-153 — 明細頁的三個結構要件
+- **麵包屑**(README §1「Click card → workflow detail (breadcrumb `Overview › name`)」):
+  「總覽 › gp-runner」,「總覽」可點回首頁。
+- **觸發器欄**(README §2「right column "TRIGGERS" list of outline tags」):
+  右欄標題 + `.tag-outline` 列表;無觸發器時顯示「(無)」。
+- **三個區塊標題**(README §2):「工作流圖」、「檢視執行」(在 run chips 之前)、「執行歷史」。
+- **驗收:** 以 zh 渲染明細頁,四個字串皆出現;參考稿四者俱全,實作目前一個都沒有(已量測)。
+
+### REQ-154 — 泳道的外框、lane 編號與已走過/未走到的區別
+- **外框盒**(README §2「scrollable box, border 1 px divider, radius 3 px」):
+  `1px solid var(--color-line)`、`--radius-md`,且左右有內距,使 `x = PAD` 的觸發節點不貼視窗邊緣。
+- **lane 編號**:`01`、`02`…,獨立於標題文字的子元素(參考稿即如此),不是把數字併進同一段文字。
+- **已走過的 lane** 用 `--color-ink`;**未走到的** 淡出;**目前的**(若有)維持既有的強調色規則。
+- **B26 的空白**:說明文字與泳道之間約 100px 的空隙一併收掉。
+- **驗收:** 真 Chromium 下量 lane header 的 `color`,已走過與未走到必須不同;泳道盒有框且 `x > 0`。
+
+### REQ-155 — 圖例列
+- README §2「Legend row + right-aligned run summary」。目前 `renderLegend()` 只畫警告與右側摘要,
+  **沒有狀態圖例**。補上五項:執行中 / 完成 / 失敗 / 排隊 / 待執行,各帶對應的圓點樣式。
+- **驗收:** 以 zh 渲染,五個詞皆出現;右側摘要位置不變。
+
+### 約束
+- **C8** 不得動 `SWIMLANE_BOX` 的七個常數 —— 它們與 README 逐字相符,且 `val-193`/`val-200`
+  的幾何斷言建立在其上。
+- **C9** 本群不碰模型頁、系統頁、導覽列(B18/B20/B21/B22/B24/B25),那是第二、三群。

@@ -240,12 +240,33 @@ export function paintSwimlane(svgEl, payload, opts) {
 
     if (layer) {
       const head = document.createElement('div');
-      head.className = isCurrent ? 'lane-head is-current' : 'lane-head';
+      // [v29c, REQ-154] Three states, not two. `is-current` already existed and works — but a
+      // COMPLETED run has no current lane, which is why the audit measured all five headers the
+      // same: they were all falling through to the base rule. The reference distinguishes lanes a
+      // run actually reached (full text colour) from ones it never did (dimmed).
+      const walked = cells.some((c) => c.kind === 'agent' && c.col === i + 1 && c.agentId !== undefined);
+      head.className = 'lane-head' + (isCurrent ? ' is-current' : walked ? ' is-walked' : ' is-unreached');
       head.setAttribute('data-lane-header', '');
       head.style.transform = 'translateX(' + x + 'px)';
+      // [v29c, REQ-154] The two-digit index is its OWN element, as in the reference — folding it
+      // into the title string would put it through `.lane-head`'s `text-transform:uppercase` and
+      // make it unstyleable and unreadable as a separate datum.
+      const idx = document.createElement('span');
+      idx.className = 'lane-index';
+      idx.setAttribute('data-lane-index', '');
+      idx.textContent = String(i + 1).padStart(2, '0');
+      head.appendChild(idx);
       // `.lane-head`'s own `text-transform:uppercase` does the case fold — never `.toUpperCase()`.
       const title = (laneMeta && laneMeta.title) || t(lang, 'laneUntitled');
-      head.textContent = isCurrent ? title + ' · ' + (lang === 'zh' ? '目前' : 'current') : title;
+      const titleEl = document.createElement('span');
+      titleEl.textContent = title;
+      head.appendChild(titleEl);
+      if (isCurrent) {
+        const cur = document.createElement('span');
+        cur.className = 'tag tag-accent lane-current-tag';
+        cur.textContent = lang === 'zh' ? '目前' : 'Current';
+        head.appendChild(cur);
+      }
       layer.appendChild(head);
     }
   }
@@ -351,9 +372,28 @@ export function paintSwimlane(svgEl, payload, opts) {
  *  body (status + usage) — absent for a never-run workflow's predicted overlay, which renders no
  *  summary. Sets its own `.legend` class on `legendEl` (idempotent) so `ui/workflow.js`'s own
  *  legend div — built without the class, out of this file's `files:` — gets it too. */
+const LEGEND_KEYS = [
+  ['is-running', 'stRunning'],
+  ['is-done', 'stCompleted'],
+  ['is-failed', 'stFailed'],
+  ['is-queued', 'stQueued'],
+  ['is-pending', 'stPending'],
+];
+
 export function renderLegend(legendEl, payload, view, lang) {
   legendEl.className = 'legend';
   legendEl.replaceChildren();
+  // [v29c, REQ-155] README §2: "Legend row + right-aligned run summary". Only the summary shipped,
+  // so the hollow/filled/dashed dots on the cells had nothing explaining them.
+  for (const [hook, key] of LEGEND_KEYS) {
+    const item = document.createElement('span');
+    item.className = 'legend-item';
+    const dot = document.createElement('span');
+    dot.className = 'legend-dot ' + hook;
+    item.appendChild(dot);
+    item.appendChild(document.createTextNode(t(lang, key)));
+    legendEl.appendChild(item);
+  }
   for (const w of (payload.warnings || [])) {
     const span = document.createElement('span');
     span.textContent = warningText(lang, w);

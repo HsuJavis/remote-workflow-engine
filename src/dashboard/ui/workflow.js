@@ -94,6 +94,19 @@ function buildShell(container) {
   // own row, pushing everything below ~80px further down the page than
   // the pre-v27 single-line "Run <id> <status>" header ever did. `nameEl` carries the name text so
   // `renderHeader`'s per-tick write can't wipe the tags the way `h2.textContent = ...` would.
+  // [v29c, REQ-153] README §1: "Click card -> workflow detail (breadcrumb `Overview > name`)".
+  const crumb = document.createElement('nav');
+  crumb.setAttribute('data-breadcrumb', '');
+  crumb.className = 'breadcrumb';
+  const crumbHome = document.createElement('a');
+  crumbHome.href = '/dashboard';
+  crumbHome.textContent = t(currentLang(), 'home');
+  crumb.appendChild(crumbHome);
+  crumb.appendChild(document.createTextNode(' \u203a '));
+  const crumbName = document.createElement('span');
+  crumb.appendChild(crumbName);
+  root.appendChild(crumb);
+
   const h2 = document.createElement('h2');
   const nameEl = document.createElement('span');
   h2.appendChild(nameEl);
@@ -105,21 +118,47 @@ function buildShell(container) {
   const execTag = document.createElement('span');
   execTag.className = 'tag';
   h2.appendChild(execTag);
-  root.appendChild(h2);
+  // [v29c, REQ-153] README §2 puts the name/tags/description and the TRIGGERS list side by side:
+  // "Header: h2 name, tag Version, tag Runnable, description (max 720 px); right column TRIGGERS".
+  const headerRow = document.createElement('div');
+  headerRow.className = 'wf-header';
+  const headerMain = document.createElement('div');
+  headerMain.className = 'wf-header-main';
+  headerMain.appendChild(h2);
   const desc = document.createElement('p');
   desc.className = 'wf-desc'; // DES-209 STYLE_HOOKS — `max-width:720px` moves to the stylesheet.
-  root.appendChild(desc);
+  headerMain.appendChild(desc);
+  headerRow.appendChild(headerMain);
 
+  // [v29c, REQ-153] README §2: right column "TRIGGERS" list of outline tags.
+  const triggersWrap = document.createElement('div');
+  triggersWrap.className = 'triggers-col';
+  const triggersHead = document.createElement('h6');
+  triggersHead.className = 'section-head';
+  triggersHead.textContent = t(currentLang(), 'triggers');
+  triggersWrap.appendChild(triggersHead);
   const triggers = document.createElement('div');
   triggers.setAttribute('data-triggers', '');
-  root.appendChild(triggers);
+  triggersWrap.appendChild(triggers);
+  headerRow.appendChild(triggersWrap);
+  root.appendChild(headerRow);
 
   const predictedLabel = document.createElement('p');
   predictedLabel.setAttribute('data-predicted-label', '');
   root.appendChild(predictedLabel);
 
+  // [v29c, REQ-153] README §2 section heading for the figure.
+  const graphHead = document.createElement('h6');
+  graphHead.className = 'section-head';
+  graphHead.textContent = t(currentLang(), 'graph');
+  root.appendChild(graphHead);
+
   const graphContainer = document.createElement('div');
   graphContainer.className = 'graph-frame'; // DES-209 boundary (2) — sizing lives in dashboard.css.
+  // [v29c, REQ-154] README §2: "Swimlane graph (scrollable box, border 1 px divider, radius 3 px)".
+  // The box is also what insets the figure — `triggerRect()` already places the trigger cell at
+  // x = PAD, but with the frame flush to the viewport that padding had nothing to sit inside.
+  graphContainer.setAttribute('data-graph-box', '');
   const zoom = document.createElement('div');
   zoom.className = 'zoomable'; // see run.js's own comment: keeps the pan hit-area filling the
                                 // visible container even when the painted graph is short.
@@ -133,9 +172,21 @@ function buildShell(container) {
   legend.setAttribute('data-legend', '');
   root.appendChild(legend);
 
+  // [v29c, REQ-153] README §2 labels the run-chip row.
+  const chipsHead = document.createElement('h6');
+  chipsHead.className = 'section-head';
+  chipsHead.textContent = t(currentLang(), 'selectRun');
+  root.appendChild(chipsHead);
+
   const chips = document.createElement('div');
   chips.setAttribute('data-run-chips', '');
   root.appendChild(chips);
+
+  // [v29c, REQ-153] README §2: "Run history" heading above the nine-column table.
+  const historyHead = document.createElement('h6');
+  historyHead.className = 'section-head';
+  historyHead.textContent = t(currentLang(), 'history');
+  root.appendChild(historyHead);
 
   const table = document.createElement('table');
   table.className = 'table'; // DES-209 STYLE_HOOKS component layer.
@@ -156,7 +207,7 @@ function buildShell(container) {
 
 
   container.replaceChildren(root);
-  return { root, h2, nameEl, versionTag, execTag, desc, triggers, predictedLabel, svgEl, legend, chips, tbody };
+  return { root, crumbName, h2, nameEl, versionTag, execTag, desc, triggers, predictedLabel, svgEl, legend, chips, tbody };
 }
 
 function renderHeader(shell, describe, lang) {
@@ -168,7 +219,16 @@ function renderHeader(shell, describe, lang) {
     ? (lang === 'zh' ? '可執行' : 'executable')
     : (lang === 'zh' ? '不可執行' : 'not executable') + (describe.runnableReason ? ' · ' + describe.runnableReason : '');
   shell.desc.textContent = describe.description || '';
+  if (shell.crumbName) shell.crumbName.textContent = describe.name || '';
   shell.triggers.replaceChildren();
+  // [v29c, REQ-153] an empty list renders「(無)」rather than nothing — a blank column reads as a
+  // rendering failure, which is the confident-silence class this ledger keeps closing.
+  if (!(describe.triggers || []).length) {
+    const empty = document.createElement('span');
+    empty.className = 'muted';
+    empty.textContent = t(lang, 'none');
+    shell.triggers.appendChild(empty);
+  }
   for (const tr of describe.triggers || []) {
     const tag = document.createElement('span');
     tag.className = 'tag tag-outline'; // DES-209 STYLE_HOOKS — the "TRIGGERS outline tags".

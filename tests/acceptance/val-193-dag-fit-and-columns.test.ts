@@ -122,9 +122,29 @@ describe('the run DAG: Fit survives a pan, and the four token columns are readab
       });
 
       // A REAL drag-pan: press inside the graph, move up-left, release.
-      await page.mouse.move(600, 400);
+      //
+      // [v29c] The press point is DERIVED, not hard-coded. It used to be the literal (600, 400),
+      // which silently assumed one page layout: when v29c gave `.run-view` the same 16/24 gutter
+      // every other view has, that fixed point landed on a node cell instead of empty graph space,
+      // the press-move-release opened the agent panel, and the panel then covered `#dag-fit` — so
+      // this case failed with `span#.stat-value` on top, which reads like a z-order regression and
+      // is nothing of the kind. Deriving the point keeps the test measuring what it is for.
+      const press = await page.evaluate(() => {
+        const doc = (globalThis as any).document;
+        const frame = doc.querySelector('.graph-frame').getBoundingClientRect();
+        for (let x = Math.round(frame.right) - 24; x > frame.left + 8; x -= 12) {
+          for (let y = Math.round(frame.bottom) - 24; y > frame.top + 8; y -= 12) {
+            const stack = doc.elementsFromPoint(x, y);
+            const onChrome = stack.some((e: any) => e.closest?.('[data-node-cell]') || e.id === 'dag-fit');
+            if (!onChrome && stack.some((e: any) => e.id === 'dag-zoom')) return { x, y };
+          }
+        }
+        return null;
+      });
+      expect(press, 'no empty pannable point inside the graph frame').not.toBeNull();
+      await page.mouse.move(press!.x, press!.y);
       await page.mouse.down();
-      await page.mouse.move(400, 300, { steps: 12 });
+      await page.mouse.move(press!.x - 200, press!.y - 100, { steps: 12 });
       await page.mouse.up();
       // Chromium normalizes the inline transform it re-serializes, so compare with spaces stripped.
       const norm = (t: string): string => t.replace(/\s+/g, '');
@@ -133,11 +153,22 @@ describe('the run DAG: Fit survives a pan, and the four token columns are readab
 
       // The control must still be the topmost element at its own centre.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const hit = await page.evaluate(({ cx, cy }: { cx: number; cy: number }) => {
-        const el = (globalThis as any).document.elementFromPoint(cx, cy);
-        return el ? `${el.tagName.toLowerCase()}#${el.id}` : 'none';
+      // [v29c] The identifier now carries the class and the top of the hit stack: when this fails,
+      // `span#` alone does not say WHICH span, and the answer costs a full re-investigation.
+      const probe = await page.evaluate(({ cx, cy }: { cx: number; cy: number }) => {
+        const doc = (globalThis as any).document;
+        const stack = doc.elementsFromPoint(cx, cy).slice(0, 4)
+          .map((e: any) => `${e.tagName.toLowerCase()}#${e.id}.${String(e.className || '').slice(0, 24)}`);
+        const el = doc.elementFromPoint(cx, cy);
+        const fit = doc.getElementById('dag-fit');
+        const r = fit ? fit.getBoundingClientRect() : null;
+        return {
+          hit: el ? `${el.tagName.toLowerCase()}#${el.id}` : 'none',
+          stack,
+          fitNow: r ? { x: Math.round(r.x), y: Math.round(r.y) } : null,
+        };
       }, box);
-      expect(hit).toBe('button#dag-fit');
+      expect(probe.hit, `hit stack: ${JSON.stringify(probe.stack)}; fit now at ${JSON.stringify(probe.fitNow)}, probed at ${JSON.stringify(box)}`).toBe('button#dag-fit');
 
       // A REAL mouse click — never `.click()`, which reset even while the bug was live.
       await page.mouse.click(box.cx, box.cy);
