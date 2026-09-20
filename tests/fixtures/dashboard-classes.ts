@@ -62,6 +62,9 @@ export const STYLE_HOOKS: readonly string[] = [
 
   // -- REQ-133 workflow detail --
   'workflow-view', 'run-view', 'wf-desc', 'run-chip', 'is-selected', 'status-dot',
+  // [v32, REQ-191] README §4 marks one table column right-aligned ("Context (right)"); this is
+  // the hook `models.js` sets on that column's th AND td, both keyed off the COLUMNS entry.
+  'is-right',
   'usage-cols', 'usage-lowerbound', 'usage-row',
 
   // -- REQ-134 swimlane (DES-209 boundary (1) substrate — declared ahead of TASK-210's re-run) --

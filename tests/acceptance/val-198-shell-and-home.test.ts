@@ -510,4 +510,36 @@ describe('the v27 dashboard shell + Workflows home, real Chromium (VAL-198, REQ-
       await browser.close();
     }
   }, 20000);
+  // [v32, REQ-192, F6] README's token block: "Headings cap at 600". `dashboard.css` never writes 700
+  // anywhere — it simply never writes a weight for `h2`/`h6` either (`h2{font-size:20px;margin:0}`),
+  // so those elements take the UA default `bold`. The repair is to ADD 600, not to change a 700.
+  //
+  // Checked as a global rule across every tab rather than as per-anchor spec rows: the README line is
+  // itself global, and a per-anchor list is exactly the shape that lets the next new heading ship
+  // uncapped. h2's 20px is NOT asserted here — the audit did not fault the size, and re-deriving an
+  // unrelated value while fixing this one is how REQ-178 became REQ-187.
+  itReal('no rendered heading exceeds the README weight cap of 600, on any tab (REQ-192)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+      const offenders: unknown[] = [];
+      for (const tab of ['workflows', 'models', 'system', 'issues']) {
+        const target = await page.$(`[data-tab="${tab}"]`);
+        if (target) {
+          await target.click();
+          await new Promise((r) => setTimeout(r, 600));
+        }
+        const bad = await page.evaluate((tabName) => Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'))
+          .filter((h) => (h as HTMLElement).offsetParent !== null)
+          .map((h) => ({ tab: tabName, tag: h.tagName, text: (h as HTMLElement).innerText.trim().slice(0, 24), weight: getComputedStyle(h).fontWeight }))
+          .filter((r) => Number(r.weight) > 600), tab);
+        offenders.push(...bad);
+      }
+      expect(offenders).toEqual([]);
+    } finally {
+      await browser.close();
+    }
+  }, 30000);
 });

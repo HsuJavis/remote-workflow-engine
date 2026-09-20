@@ -468,4 +468,27 @@ describe('workflow detail page, real Chromium (VAL-199, REQ-133)', () => {
       await browser.close();
     }
   }, 30000);
+  // [v32, REQ-190, F4] README §2's run-history column list: "Run ID (mono) · **Status tag** · Version
+  // · …". Column 0 already gets its `mono` hook from the same loop; column 1 is rendered as a bare
+  // text node, so the one column README describes as a TAG is the one with no tag.
+  itReal('the run-history Status cell is a tag, as README §2 names it (REQ-190)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await page.click('.card');
+      await page.waitForSelector('[data-history-table] tbody tr td', { timeout: 5000 });
+      const cell = await page.evaluate(() => {
+        const td = document.querySelector('[data-history-table] tbody tr')?.children[1] as HTMLElement | undefined;
+        if (!td) return null;
+        const tag = td.querySelector('.tag') as HTMLElement | null;
+        return { cellText: td.innerText.trim(), hasTag: !!tag, tagText: tag?.innerText.trim() ?? null };
+      });
+      expect(cell).not.toBeNull();
+      expect({ hasTag: cell!.hasTag, tagText: cell!.tagText }).toEqual({ hasTag: true, tagText: cell!.cellText });
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
 });

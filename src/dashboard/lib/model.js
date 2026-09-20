@@ -223,6 +223,12 @@ export function modelPanel(entry, lang) {
     description: entry.description,
     defs: labels.map((label, i) => [label, values[i]]),
     benchmarks,
-    tags: [entry.location, entry.stability].filter(Boolean),
+    // [v32, REQ-194] `[entry.location, entry.stability]` used to land here — raw wire words
+    // (`remote`, `stable`) rendered untranslated in a zh UI, and both already appear LOCALIZED in
+    // this same panel (the kicker's `供應商 · 位置`, and the 穩定度 row). README §4 assigns this slot
+    // to "supported parameters as neutral tags"; that payload is deliberately dropped upstream
+    // (`model-catalog.ts:427`, ruled), so the slot has no content — which makes filling it with
+    // untranslated duplicates the defect. There is nothing to translate; the tags go.
+    tags: [],
   };
 }

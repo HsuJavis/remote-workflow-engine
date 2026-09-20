@@ -8565,3 +8565,27 @@ present `0` 永遠走不到那裡。這正是 R30-A1 同一個錯誤的第二次
 讀者全數查過:`run-guard.ts:68-69`、`run-manager.ts:254-255` 用 `?? 0` / 限定 `done`;
 `dashboard.ts:176` 先 `!== undefined` 過濾;`run-manager.ts:840` 的 `row` 是 run 層 summary
 不是 `AgentRecord`,且已被 `!TERMINAL.includes(row.status)` 短路。
+
+## IMPL-327..331 — REQ-190..194:README 有明文的五條
+
+| REQ | 落點 | 備註 |
+|---|---|---|
+| 190 | `ui/workflow.js:266` 第 1 欄包 `<span class="tag">` | 與第 0 欄的 `mono` 同一個迴圈;README §2 只點名這兩欄的呈現 |
+| 191 | `ui/models.js` `COLUMNS` 加 `align:'right'`,th/td 共用 `is-right` | 對齊從 `COLUMNS` 推導而非寫死索引,表頭與儲存格取同一來源 |
+| 192 | `dashboard.css` `h1,h2,h3,h4,h5,h6{font-weight:600}` | **不是把 700 改成 600** —— 檔裡誰都沒寫過權重,吃的是 UA 預設 bold |
+| 193 | `dashboard.css` 模型搜尋框補 `width:100%` | 與已裁定的 REQ-183(首頁搜尋框)同因同修 |
+| 194 | `lib/model.js:230` `tags: []` | 移除,不是翻譯 —— 見下 |
+
+**REQ-192 的判準刻意寫成全域規則**:走訪四個分頁、斷言沒有任何可見標題的
+`font-weight > 600`。README 那句話本身就是全域的;逐錨點列表正是會讓下一個新標題
+再次漏網的形狀。**h2 的 20px 沒有一起改** —— 稽核沒有指控字級,而「修這條時順手重推
+另一個無關的值」正是 REQ-178 變成 REQ-187 的成因。
+
+**REQ-194 為什麼是移除而不是在地化:** 那兩個 tag(`remote`/`stable`)在同一個面板裡
+上方已經各有在地化的呈現(kicker 的 `供應商 · 位置`、`穩定度` 列),不帶任何新資訊;
+而 README §4 指派給那個位置的「支援參數」已裁定為上游蓄意丟棄
+(`model-catalog.ts:427`)。位置本來就該是空的,用未在地化的重複內容去填才是缺陷。
+
+**類別鎖擋了一次:** `is-right` 是新 class,`dashboard-class-contract` 立刻紅
+(「every class selector dashboard.css defines is in STYLE_HOOKS」),補登記
+`tests/fixtures/dashboard-classes.ts` 後綠。這正是那道鎖存在的理由。

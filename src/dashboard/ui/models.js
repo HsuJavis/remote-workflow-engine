@@ -29,7 +29,8 @@ const COLUMNS = [
   { key: 'model', zh: '模型', en: 'Model' },
   { key: 'provider', zh: '供應商', en: 'Provider' },
   { key: 'aliases', zh: '別名', en: 'Aliases' },
-  { key: 'context', zh: '上下文', en: 'Context' },
+  // [v32, REQ-191] the one column README §4 marks as right-aligned.
+  { key: 'context', zh: '上下文', en: 'Context', align: 'right' },
   { key: 'price', zh: '價格 / M tokens', en: 'Price / M tokens' },
   { key: 'tools', zh: '工具', en: 'Tools' },
   { key: 'effort', zh: '努力程度', en: 'Effort' },
@@ -147,6 +148,7 @@ function buildChrome(container, state) {
     th.dataset.col = col.key;
     th.dataset.label = label;
     th.textContent = label;
+    if (col.align === 'right') th.className = 'is-right'; // [v32, REQ-191]
     headRow.appendChild(th);
   }
   thead.addEventListener('click', (ev) => {
@@ -180,7 +182,12 @@ function renderRows(tbodyEl, entries, lang) {
     const { cells } = modelRow(entry, lang);
     const tr = document.createElement('tr');
     tr.dataset.model = entry.model;
-    cells.forEach((c) => tr.appendChild(el('td', undefined, c != null ? String(c) : '—')));
+    // [v32, REQ-191] README §4 marks exactly one column: "Context (right)". The cell takes the
+    // same `is-right` hook the header does, keyed off COLUMNS so the two cannot drift apart.
+    cells.forEach((c, i) => {
+      const td = el('td', COLUMNS[i]?.align === 'right' ? 'is-right' : undefined, c != null ? String(c) : '—');
+      tr.appendChild(td);
+    });
     tbodyEl.appendChild(tr);
   }
 }

@@ -264,7 +264,16 @@ function renderChipsAndTable(shell, runs, selectedRunId, lang, onPick) {
     historyRow(r, now, lang).forEach((cell, i) => {
       const td = document.createElement('td');
       if (i === 0) td.className = 'mono'; // DES-209 STYLE_HOOKS — column 0 is `historyRow`'s runId.
-      td.textContent = cell;
+      if (i === 1) {
+        // [v32, REQ-190] README §2: "Run ID (mono) · Status tag · Version · …" — column 1 is the
+        // one README calls a TAG, and it was the one rendered as a bare text node.
+        const tag = document.createElement('span');
+        tag.className = 'tag';
+        tag.textContent = cell;
+        td.appendChild(tag);
+      } else {
+        td.textContent = cell;
+      }
       tr.appendChild(td);
     });
     tr.addEventListener('click', () => onPick(r.runId));

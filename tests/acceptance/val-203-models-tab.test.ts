@@ -158,4 +158,75 @@ describe('Models tab: twelve columns, sort, filter, slide-in (VAL-213, REQ-137)'
       await browser.close();
     }
   }, 20000);
+  // [v32, REQ-191, F5] README §4 lists the columns and marks exactly one of them: "Context **(right)**".
+  // `.table td,.table th` sets `text-align:left` for every cell and nothing narrows it back, so the
+  // one column README singles out is the one rendered like all the others.
+  itReal('the Context column is right-aligned — the one alignment README names (REQ-191)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await page.click('[data-tab="models"]');
+      await page.waitForSelector('[data-model-table] tbody tr', { timeout: 5000 });
+      const align = await page.evaluate(() => {
+        const ths = Array.from(document.querySelectorAll('[data-model-table] thead th'));
+        const i = ths.findIndex((th) => (th as HTMLElement).dataset.col === 'context');
+        if (i < 0) return null;
+        const firstRow = document.querySelector('[data-model-table] tbody tr');
+        const td = firstRow?.children[i];
+        return {
+          header: getComputedStyle(ths[i]!).textAlign,
+          cell: td ? getComputedStyle(td).textAlign : null,
+        };
+      });
+      expect(align).toEqual({ header: 'right', cell: 'right' });
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
+  // [v32, REQ-193, F7] README §4 gives the search box "max 280". The rule sets `max-width:280px` but
+  // no `width`, so the input falls back to its intrinsic size and never reaches it — measured 178px.
+  // Identical to the already-ruled REQ-183 repair on the HOME search (`max-width 320`, same cause).
+  itReal('the models search box actually reaches its README width, not just its max-width (REQ-193)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.setViewport({ width: 1500, height: 900 });
+      await page.goto(`${baseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await page.click('[data-tab="models"]');
+      await page.waitForSelector('.model-filters .input[type="search"]', { timeout: 5000 });
+      const width = await page.$eval('.model-filters .input[type="search"]', (el) => el.getBoundingClientRect().width);
+      expect(Math.round(width)).toBe(280);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
+  // [v32, REQ-194, F8] the panel tail renders `<span class="tag">remote</span><span class="tag">stable</span>`
+  // — raw wire words in a zh UI, and both already appear LOCALIZED higher up the same panel (the
+  // kicker `OPENROUTER · 遠端`, and the `穩定度 穩定` row). README §4 assigns that slot to "supported
+  // parameters as neutral tags"; that payload is deliberately dropped upstream (`model-catalog.ts:427`,
+  // ruled), so the slot has no content — which makes filling it with untranslated duplicates of data
+  // shown elsewhere the defect. Nothing to translate; the tags go.
+  itReal('the model panel carries no raw wire words duplicating its own localized rows (REQ-194)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await page.click('[data-tab="models"]');
+      await page.waitForSelector('[data-model-table] tbody tr', { timeout: 5000 });
+      await page.click('[data-model-table] tbody tr');
+      await page.waitForSelector('[data-model-panel]', { timeout: 5000 });
+      const rawTags = await page.evaluate(() => Array.from(document.querySelectorAll('[data-model-panel] .tag'))
+        .map((el) => (el as HTMLElement).innerText.trim())
+        .filter((t) => /^(remote|local|stable|beta|experimental|deprecated)$/i.test(t)));
+      expect(rawTags).toEqual([]);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
 });

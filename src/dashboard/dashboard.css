@@ -128,6 +128,11 @@
    the card interiors had their own explicit sizes and looked right. */
 body{font-family:'Archivo',-apple-system,'Segoe UI',sans-serif;margin:0;background:var(--color-bg);color:var(--color-ink);font-size:14px;line-height:1.55}
 h1{font-size:18px;margin:0}
+/* [v32, REQ-192] README tokens: "Headings cap at 600". Nothing here ever wrote 700 — nothing
+   wrote a weight at all, so every heading element took the UA default `bold`. The cap is
+   declared once, on the elements, rather than per-component where the next new heading
+   would ship uncapped. Sizes are untouched. */
+h1,h2,h3,h4,h5,h6{font-weight:600}
 h2{font-size:20px;margin:0}
 h3{font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:var(--color-muted);margin:0}
 h6{font-size:13px;margin:0;text-transform:uppercase;letter-spacing:.05em;color:var(--color-muted)}
@@ -165,6 +170,9 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 .btn-icon{width:32px;height:32px;padding:0;font-size:18px;line-height:1;border-radius:var(--radius-md)}
 .table{width:100%;border-collapse:collapse;font-size:12.5px}
 .table td,.table th{padding:4px 8px;border-bottom:1px solid var(--color-line);text-align:left;vertical-align:top}
+/* [v32, REQ-191] README §4 marks one column right-aligned ("Context (right)"); the hook is set
+   from COLUMNS on both the th and the td, so header and cell cannot drift apart. */
+.table td.is-right,.table th.is-right{text-align:right}
 .table th{color:var(--color-muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
 .seg{display:inline-flex;border:1px solid var(--color-line);border-radius:var(--radius-md);overflow:hidden}
 .seg button{background:none;border:0;padding:4px 12px;color:var(--color-muted);font:inherit;cursor:pointer}
@@ -456,7 +464,10 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 
 /* == v28 Models (REQ-137, DES-219, TASK-221) — README §4 == */
 .model-filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-.model-filters .input[type="search"]{max-width:280px}
+/* [v32, REQ-193] README §4 "search (max 280)": `max-width` alone never reaches 280 — the input
+   falls back to its intrinsic size (measured 178px). Same cause and same repair as the ruled
+   REQ-183 fix on the home search. */
+.model-filters .input[type="search"]{width:100%;max-width:280px}
 .model-filters select.input{max-width:200px}
 /* README §4: "right slide-in panel (560 px)" — same recipe as .agent-panel (REQ-135), narrower. */
 .model-panel{position:fixed;top:0;bottom:0;right:0;z-index:21;width:min(560px,100vw);background:var(--color-bg);color:var(--color-ink);border-left:1px solid var(--color-line);box-shadow:var(--shadow-lg);overflow:auto;padding:20px;box-sizing:border-box;display:flex;flex-direction:column;gap:20px;animation:rweSlideIn .28s cubic-bezier(.2,.7,.2,1)}
