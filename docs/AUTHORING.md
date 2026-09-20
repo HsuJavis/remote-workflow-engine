@@ -46,7 +46,7 @@ export const meta = {
 
 The engine-owned keys are never written inside an `agent()` call's options literal — `model`, `effort`, `timeoutMs`, `appendPrompt` there are refused `SCAN_VIOLATION`, naming the key and the `meta.params.agents.<label>.<key>.default` it belongs in instead.
 
-The options object is closed. An `agent()` option key that is not one of `prompt`, `label`, `phase`, `schema`, `isolation`, `agentType`, `mcp`, `allowedTools` is refused `SCAN_VIOLATION: PARAM_UNKNOWN` at registration, naming the key you wrote and listing the ones that are accepted. It is never silently dropped — before v25 it was, and an author who reached for a plausible-sounding name got a run that looked correct and ignored the option.
+The options object is closed. An `agent()` option key that is not one of `prompt`, `label`, `phase`, `schema`, `isolation`, `mcp`, `allowedTools` is refused `SCAN_VIOLATION: PARAM_UNKNOWN` at registration, naming the key you wrote and listing the ones that are accepted. It is never silently dropped — before v25 it was, and an author who reached for a plausible-sounding name got a run that looked correct and ignored the option.
 
 ## The agent's tool surface
 
@@ -57,9 +57,13 @@ const verdict = await agent('judge', { prompt: 'Answer with one word: PASS or FA
 const editor  = await agent('editor', { prompt: 'Fix the typo in README.md.', allowedTools: ['Read', 'Edit'] });
 ```
 
-Three layers set it, and the first one present wins: the per-call `allowedTools` above, then the `tools` field in an `agentType` definition's frontmatter (selected with the `agentType` option), then this deployment's configured `defaultAllowedTools`. Only the first is settable from a script, and it is the only one of the three names that goes inside an `agent()` call.
+Two layers set it, on the tool-calling (SDK gateway) path, and the first one present wins: the per-call `allowedTools` above, then this deployment's configured `defaultAllowedTools`. Only the first is settable from a script. (The direct-fetch transport has no tool surface at all — this section does not apply to it.)
 
 `allowedTools: []` means no tools at all, and for a prose-only task that is usually what you want — especially on a smaller model. A smaller model handed a working tool surface tends to answer with a tool call rather than with prose: ask it to produce a summary while it holds `Write`, and the reply can come back as a tool-call envelope your script then has to unwrap. Emptying the surface removes the option and the model answers in text. It also makes the call markedly cheaper — the tool definitions are prompt tokens on every turn (measured on this engine: 162 input tokens with an empty surface against 1722 with the default one, for the same prompt).
+
+## Prompt layering
+
+After v34 there are exactly two author/caller segments in the prompt a model receives: the script's own `prompt` argument to `agent()`, then a caller-supplied `appendPrompt` override, framed inline as `<user-instructions untrusted="true">…</user-instructions>`. The engine adds only its own scaffolding around them (a schema suffix and a retry nudge) — it does not decide whether the appended segment is an authorized override or a foreign injection. An author who wants the appended segment to carry override force has to write the adoption rule into their OWN prompt; the engine draws no such line on the author's behalf.
 
 ## Locked vs. tunable
 

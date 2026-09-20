@@ -224,16 +224,19 @@ describe('src/main.ts composition-root wiring-completeness (IT-021, D-F10a/b)', 
     expect(typeof composeConfig).toBe('function');
 
     const workRoot = mkdtempSync(join(tmpdir(), 'rwe-it021c-'));
-    const config = await (composeConfig as (fc: unknown, deps: unknown) => Promise<{ gateway?: GatewayClient; agentDefinitionsDir?: string }>)(
-      { bind: '127.0.0.1', port: 0, workRoot, aliases: ALIASES, gateway: 'direct-fetch', agentDefinitionsDir: '/nonexistent-on-purpose' },
+    // v34 (DES-227, ARCH-139, TASK-229, REQ-203): `agentDefinitionsDir` — this case's original
+    // "forwarded regardless of gateway choice" probe — retired WITH the agentType composition root
+    // (`main.ts` no longer forwards it at all; a stale value now warns-and-boots via
+    // `RETIRED_CONFIG_KEYS`, covered by `compose-config-v2-wiring.test.ts`'s UT-274). `schedulerDbPath`
+    // is the same "forwarded regardless of gateway" convention (DES-022, TASK-023) and stands in.
+    const config = await (composeConfig as (fc: unknown, deps: unknown) => Promise<{ gateway?: GatewayClient; schedulerDbPath?: string }>)(
+      { bind: '127.0.0.1', port: 0, workRoot, aliases: ALIASES, gateway: 'direct-fetch', schedulerDbPath: '/nonexistent-on-purpose' },
       {},
     );
 
     // gateway selection: 'direct-fetch' must NOT construct a ClaudeAgentSdkGatewayClient.
     expect(config.gateway).toBeUndefined();
-    // D-F10(b): agentDefinitionsDir must reach the returned ServerConfig regardless of gateway choice
-    // — today's main.ts drops this field entirely (confirmed by reading the source: the literal
-    // `config` object in `main()` never mentions `agentDefinitionsDir` at all).
-    expect(config.agentDefinitionsDir).toBe('/nonexistent-on-purpose');
+    // D-F10(b): schedulerDbPath must reach the returned ServerConfig regardless of gateway choice.
+    expect(config.schedulerDbPath).toBe('/nonexistent-on-purpose');
   }, 10000);
 });

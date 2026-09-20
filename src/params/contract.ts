@@ -14,11 +14,12 @@ import type { ErrorCode } from '../errors.js';
 
 // v25 (issue #55, adjudication #9 I-1.2): the second member was spelled `tools` while the pipeline
 // that curates an agent's tool surface reads `allowedTools` at every rung (per-call opts >
-// agentType frontmatter > `defaultAllowedTools`). `allowedTools` is the name that MOVED here,
-// because it is the one that already works: it is what `AgentOpts` now declares, what
-// `agent-executor.ts` resolves and what `claude-agent-sdk-client.ts` puts on the session. Renaming
-// the pipeline instead would have had to move the agentType frontmatter key and the whole
-// precedence chain to satisfy a list that reaches nothing. This list is PUBLIC — it renders into
+// `defaultAllowedTools`; v25 also had a per-definition frontmatter rung in between, retired at
+// v34). `allowedTools` is the name that MOVED here, because it is the one that already works: it
+// is what `AgentOpts` now declares, what `agent-executor.ts` resolves and what
+// `claude-agent-sdk-client.ts` puts on the session. Renaming the pipeline instead would have had to
+// move that frontmatter key (since deleted) and the whole precedence chain to satisfy a list that
+// reaches nothing. This list is PUBLIC — it renders into
 // `workflow_authoring_guide`, `run_start.overrides`'s schema description and
 // `workflow_describe.lockedKeys` — so the name in it must be the name an author would write.
 export const LOCKED_KEYS = ['prompt', 'allowedTools', 'skills', 'mcp', 'workdir', 'cwd'] as const;
@@ -48,8 +49,8 @@ export interface ParamSpec {
 
 /** v24 (DES-144): one script agent() label's declared contract. `model`/`effort`/`timeoutMs` are
  *  REQUIRED, each with a `.default` — there is no implicit engine default per agent any more
- *  (that is what made the old 5-rung ladder's `'agentType'`/`'call'` rungs unreachable/deleted,
- *  TASK-137). `skills`/`mcp` are author-declared name arrays whose EXISTENCE is not checked here
+ *  (that is what made the old 5-rung ladder's per-definition and call-level rungs
+ *  unreachable/deleted, TASK-137). `skills`/`mcp` are author-declared name arrays whose EXISTENCE is not checked here
  *  (ARCH-094) — a name unresolved at dispatch is a materialization-time concern, not a contract
  *  one. */
 export interface AgentParamSpec {
@@ -556,8 +557,12 @@ function validateOneAgentOverride(
         return {
           ok: false,
           code: 'PARAM_OUT_OF_RANGE',
-          message: 'appendPrompt exceeds the byte ceiling',
-          detail: { param: 'appendPrompt', agent: label, suppliedBytes: bytes, maxBytes: spec.max },
+          // DES-223: mirrors the generic branch above — the ceiling-vs-author-range direction
+          // must be readable from the message itself, not just `detail.ceiling`.
+          message: spec.ceilingKey !== undefined
+            ? `appendPrompt exceeds the engine ceiling ${spec.ceilingKey} ${spec.max}`
+            : `appendPrompt exceeds the maximum of ${spec.max}`,
+          detail: { param: 'appendPrompt', agent: label, suppliedBytes: bytes, maxBytes: spec.max, ...(spec.ceilingKey !== undefined ? { ceiling: spec.ceilingKey } : {}) },
         };
       }
     }

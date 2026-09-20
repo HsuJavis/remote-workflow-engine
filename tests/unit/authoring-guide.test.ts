@@ -329,3 +329,40 @@ describe('the Registration and versioning section opens with the normal loop (UT
     expect(sec).toMatch(/shared across every version/i);
   });
 });
+
+// UT-276 (DES-229, ARCH-107, ADR-032, TASK-230, REQ-202/REQ-203): the guide gains a
+// "prompt layering" section naming exactly two author/caller segments plus the engine's own
+// scaffolding, and the tool-surface section's THREE layers ("per-call allowedTools, then the
+// agentType frontmatter tools field, then defaultAllowedTools") collapse to TWO. The word
+// `agentType` disappears from the built guide entirely — a mechanism-teaching sentence surviving
+// its own retirement is worse than no sentence.
+//
+// Red reason: today's guide has no "prompt layering"/"Prompt layering" heading at all, the tool
+// section still names THREE layers including the `agentType` frontmatter `tools` field
+// (`authoring-guide.ts:530-532`), and `agentType` appears in the built guide text (confirmed
+// above at :531).
+describe('the guide teaches v34 prompt layering and the two-layer tool surface (DES-229, UT-276)', () => {
+  const text = buildAuthoringGuide(CEILINGS);
+
+  it('has a prompt-layering section naming exactly two author/caller segments (script prompt, framed appendPrompt) plus engine scaffolding', () => {
+    expect(text).toMatch(/prompt layering/i);
+    expect(text).toMatch(/appendPrompt/);
+    // The engine does not decide the "authorized override" vs "foreign injection" line for the author.
+    expect(text).toMatch(/authorized override/i);
+    expect(text).toMatch(/foreign injection/i);
+  });
+
+  it('the tool surface section now states TWO layers (per-call allowedTools, then defaultAllowedTools), scoped to the SDK gateway path', () => {
+    const start = text.indexOf("The agent's tool surface");
+    expect(start, 'the tool surface section is missing').toBeGreaterThanOrEqual(0);
+    const next = text.indexOf('\n## ', start + 1);
+    const section = text.slice(start, next === -1 ? text.length : next);
+    expect(section).toMatch(/two layers/i);
+    expect(section).toContain('defaultAllowedTools');
+    expect(section).not.toContain('agentType');
+  });
+
+  it('agentType does not appear anywhere in the built guide (the retired mechanism leaves no trace)', () => {
+    expect(text).not.toContain('agentType');
+  });
+});

@@ -36,6 +36,16 @@ const V24_PARAMS = {
 
 const LEGACY_PARAMS = { knobs: {} };
 
+// UT-268 (DES-223): a minimal agent spec, overridable per key, for the unit/ceiling asymmetry rows.
+function baseSpecWithAppend(overrides: Record<string, unknown> = {}) {
+  return {
+    model: { type: 'string' as const, default: 'claude' },
+    effort: { type: 'enum' as const, default: 'medium', enum: ['low', 'medium', 'high'] },
+    timeoutMs: { type: 'number' as const, default: 60_000 },
+    ...overrides,
+  };
+}
+
 function fixture(overrides: Partial<WorkflowOwnerView> = {}): WorkflowOwnerView {
   return {
     name: 'describe-fixture', version: 'v3',
@@ -133,6 +143,53 @@ describe('projectWorkflowDescribe — params.agents.<label> = author ∩ ceiling
   it('an absent ceilings ctx defaults to DEFAULT_CEILINGS rather than throwing', () => {
     expect(() => projectWorkflowDescribe(fixture(), { triggers: [] })).not.toThrow();
   });
+});
+
+// UT-268 (DES-223, ARCH-136, TASK-228, REQ-202): `DescribeAgentParamKey` stops discarding the
+// `unit`/`ceiling` attribution `effectiveAgentBounds` already computes. Red reason:
+// `projectAgentParams` (`workflow-view.ts:145-165`) only ever emits {type, default, range} today —
+// neither field exists on any projected key yet.
+describe('projectWorkflowDescribe — params.agents.<label> unit + ceiling (DES-223, UT-268)', () => {
+  it('appendPrompt carries unit:"bytes"; model/effort/timeoutMs never carry unit (the deliberate asymmetry)', () => {
+    const params = {
+      agents: {
+        reviewer: baseSpecWithAppend({ appendPrompt: { type: 'string' as const, default: '' } }),
+      },
+      args: {},
+    };
+    const view = projectWorkflowDescribe(fixture({ params: params as unknown as WorkflowOwnerView['params'] }), { triggers: [], ceilings: CEILINGS });
+    const reviewer = view.params.agents['reviewer']!;
+    expect((reviewer['appendPrompt'] as unknown as { unit?: string })['unit']).toBe('bytes');
+    // REQ-202's own headline scenario (ARCH-136 scenario i): an unbounded declared appendPrompt is
+    // ALSO the case where the engine ceiling wins, so this one fixture must carry BOTH `unit` and
+    // `ceiling` together — a cold client reads the bound's unit and its attribution off one key.
+    expect((reviewer['appendPrompt'] as unknown as { ceiling?: string })['ceiling']).toBe('maxAppendPromptBytes');
+    expect('unit' in reviewer['model']!).toBe(false);
+    expect('unit' in reviewer['effort']!).toBe(false);
+    expect('unit' in reviewer['timeoutMs']!).toBe(false);
+  });
+
+  // Five `boundMax` rows (DES-223 boundary) fixing `ceiling`'s presence on `timeoutMs`.
+  const rows: Array<{ label: string; authorMax: number | undefined | 'poisoned'; ceilingWon: boolean }> = [
+    { label: '(a) author max < ceiling → no ceiling', authorMax: 100_000, ceilingWon: false },
+    { label: '(b) author max > ceiling → ceiling present', authorMax: 900_000, ceilingWon: true },
+    { label: '(c) author max === ceiling exactly → ceiling STILL present', authorMax: CEILINGS.maxTimeoutMs, ceilingWon: true },
+    { label: '(d) author declares no max → ceiling present', authorMax: undefined, ceilingWon: true },
+    { label: '(e) a stored non-number max → same as (d), ceiling present', authorMax: 'poisoned', ceilingWon: true },
+  ];
+
+  for (const row of rows) {
+    it(`ceiling generic on timeoutMs — ${row.label}`, () => {
+      const timeoutMs = row.authorMax === undefined
+        ? { type: 'number' as const, default: 60_000 }
+        : { type: 'number' as const, default: 60_000, max: row.authorMax === 'poisoned' ? ('nope' as unknown as number) : row.authorMax };
+      const params = { agents: { reviewer: baseSpecWithAppend({ timeoutMs }) }, args: {} };
+      const view = projectWorkflowDescribe(fixture({ params: params as unknown as WorkflowOwnerView['params'] }), { triggers: [], ceilings: CEILINGS });
+      const key = view.params.agents['reviewer']!['timeoutMs'] as unknown as { ceiling?: string };
+      expect('ceiling' in key).toBe(row.ceilingWon);
+      if (row.ceilingWon) expect(key.ceiling).toBe('maxTimeoutMs');
+    });
+  }
 });
 
 // DES-156: "a ≥6-row runnable truth table (release set × legacy)" — release channel / beta

@@ -879,3 +879,54 @@ describe('parseParamContract — the per-key validators, refusal side (UT-146, D
     expect(serialized).not.toContain(oversize);
   });
 });
+
+// UT-269 (DES-223, ARCH-136, TASK-228, REQ-202): the appendPrompt over-size refusal mirrors the
+// GENERIC branch's ceiling-vs-author wording (checkValueAgainstSpec, `contract.ts:486-489`) instead
+// of the hardcoded "exceeds the byte ceiling" it says unconditionally today — on the one parameter
+// REQ-202 is about, a caller must be able to tell an engine ceiling from an author's own range.
+// Red reason: `validateOneAgentOverride`'s appendPrompt branch (`contract.ts:555-560`) always
+// returns the literal message 'appendPrompt exceeds the byte ceiling' and never sets `detail.ceiling`
+// — both assertions below are false against today's code.
+describe('validateUserOverrides() — appendPrompt over-size message names the SAME ceiling word as detail.ceiling (DES-223, UT-269)', () => {
+  it('author-declared max (tighter than the ceiling): message says "exceeds the maximum of N", no detail.ceiling', () => {
+    const contract: ParamContract = {
+      agents: { plan: baseAgentSpec({ appendPrompt: { type: 'string', default: '', max: 100 } }) },
+      args: {},
+    };
+    const r = validateUserOverrides(contract, { agents: { plan: { appendPrompt: 'x'.repeat(150) } } }, ALIASES, CEILINGS);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.message).toBe('appendPrompt exceeds the maximum of 100');
+      expect('ceiling' in r.detail).toBe(false);
+    }
+  });
+
+  it('no author max declared (the engine ceiling wins): message names the ceiling key, detail.ceiling matches it', () => {
+    const contract: ParamContract = {
+      agents: { plan: baseAgentSpec({ appendPrompt: { type: 'string', default: '' } }) },
+      args: {},
+    };
+    const oversize = 'x'.repeat(CEILINGS.maxAppendPromptBytes + 1);
+    const r = validateUserOverrides(contract, { agents: { plan: { appendPrompt: oversize } } }, ALIASES, CEILINGS);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.message).toBe(`appendPrompt exceeds the engine ceiling maxAppendPromptBytes ${CEILINGS.maxAppendPromptBytes}`);
+      expect(r.detail['ceiling']).toBe('maxAppendPromptBytes');
+    }
+  });
+
+  it('the word "ceiling" appears in the message IFF detail.ceiling is present (one assertion locking both together)', () => {
+    const withCeiling: ParamContract = { agents: { plan: baseAgentSpec({ appendPrompt: { type: 'string', default: '' } }) }, args: {} };
+    const withoutCeiling: ParamContract = { agents: { plan: baseAgentSpec({ appendPrompt: { type: 'string', default: '', max: 50 } }) }, args: {} };
+    const rWith = validateUserOverrides(withCeiling, { agents: { plan: { appendPrompt: 'x'.repeat(CEILINGS.maxAppendPromptBytes + 1) } } }, ALIASES, CEILINGS);
+    const rWithout = validateUserOverrides(withoutCeiling, { agents: { plan: { appendPrompt: 'x'.repeat(60) } } }, ALIASES, CEILINGS);
+    expect(rWith.ok).toBe(false);
+    expect(rWithout.ok).toBe(false);
+    if (!rWith.ok && !rWithout.ok) {
+      expect(rWith.message.includes('ceiling')).toBe('ceiling' in rWith.detail);
+      expect(rWithout.message.includes('ceiling')).toBe('ceiling' in rWithout.detail);
+      expect('ceiling' in rWith.detail).toBe(true);
+      expect('ceiling' in rWithout.detail).toBe(false);
+    }
+  });
+});

@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import { scanAgentCalls } from '../../src/scan-agent-calls.js';
 import { GUIDE_EXAMPLES } from '../../src/authoring-guide.js';
+import { RETIRED_AGENT_OPT_KEYS } from '../../src/workflow-meta.js';
 
 describe('scanAgentCalls (UT-145, DES-143)', () => {
   it('agent(prompt) with no label ⇒ AGENT_LABEL_REQUIRED at the call\'s line', () => {
@@ -201,5 +202,43 @@ describe('scanAgentCalls (UT-145, DES-143)', () => {
       const { violations } = scanAgentCalls(ex.script);
       expect(violations, `example "${ex.title}" should scan clean`).toEqual([]);
     }
+  });
+});
+
+// UT-270 (DES-224, ARCH-138, TASK-229, REQ-203): `agentType:` retires — a script still writing it
+// must be refused `AGENT_OPT_RETIRED`, not silently accepted (it is still IN `AGENT_OPT_KEYS`
+// today, so the current scan waves it through with ZERO violations).
+describe('scanAgentCalls — agentType retirement (DES-224, UT-270)', () => {
+  it('agentType: in the options literal ⇒ AGENT_OPT_RETIRED, naming the key and pointing at the guide', () => {
+    const src = 'agent("plan", { agentType: "reviewer" });';
+    const { violations } = scanAgentCalls(src);
+    expect(violations).toContainEqual(expect.objectContaining({ code: 'AGENT_OPT_RETIRED', key: 'agentType' }));
+  });
+
+  it('the AGENT_OPT_RETIRED hint names v34 and points at workflow_authoring_guide, not silence', () => {
+    const src = 'agent("plan", { agentType: "reviewer" });';
+    const { violations } = scanAgentCalls(src);
+    const v = violations.find((x) => x.code === ('AGENT_OPT_RETIRED' as unknown));
+    expect(String(v?.hint)).toMatch(/v34/);
+    expect(String(v?.hint)).toMatch(/workflow_authoring_guide/);
+  });
+
+  it('an unrelated unknown key is UNAFFECTED — still PARAM_UNKNOWN, the retired map is consulted first, not instead', () => {
+    const src = 'agent("plan", { unrelatedKey: "note" });';
+    const { violations } = scanAgentCalls(src);
+    expect(violations).toContainEqual(expect.objectContaining({ code: 'PARAM_UNKNOWN', key: 'unrelatedKey' }));
+  });
+
+  it('the system/systemPrompt near-miss hints no longer name agentType (re-pointed at the guide\'s prompt-layering section)', () => {
+    for (const key of ['system', 'systemPrompt']) {
+      const { violations } = scanAgentCalls(`agent("plan", { ${key}: "x" });`);
+      const v = violations.find((x) => x.key === key);
+      expect(v?.hint).toBeDefined();
+      expect(v!.hint).not.toContain('agentType');
+    }
+  });
+
+  it('RETIRED_AGENT_OPT_KEYS is exported and carries an agentType entry naming v34', () => {
+    expect(String((RETIRED_AGENT_OPT_KEYS as unknown as Record<string, string> | undefined)?.['agentType'])).toMatch(/v34/);
   });
 });

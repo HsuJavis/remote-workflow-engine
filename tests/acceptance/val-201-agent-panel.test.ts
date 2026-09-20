@@ -1,10 +1,12 @@
 // VAL-201 (REQ-135, REQ-136; DES-205/206; 04-design.md's own v27 real-tier path): real Chromium —
 // clicking a real agent node opens the slide-in panel: six stat cards, the user prompt in a
-// `<pre>`, the three tag columns, the event list, Esc/backdrop close — and REQ-136's own proof that
-// the prompt shown is the SCRIPT prompt, never the agentType systemPrompt.
+// `<pre>`, the three tag columns, the event list, Esc/backdrop close.
 //
-// Mock policy (acceptance): real createServer(), real MCP HTTP, real Chromium, a real agentType
-// composition root with a distinctive systemPrompt marker (same technique as IT-165). The
+// v34 (DES-225, ARCH-137, ADR-061, TASK-229, REQ-203): REQ-136's own "never the agentType
+// systemPrompt" proof retired WITH the agentType composition root it needed — 隨機制消失, see the
+// retirement note above the (now-removed) itReal case, below.
+//
+// Mock policy (acceptance): real createServer(), real MCP HTTP, real Chromium. The
 // `.event-kind.is-tool`/`.is-message` SPEC_ROWS below need one more real thing this file did not
 // have before: a real `ClaudeAgentSdkGatewayClient` session (only the third-party
 // `@anthropic-ai/claude-agent-sdk` `query` export is faked — same seam IT-027 already uses) on a
@@ -24,8 +26,8 @@
 // follows the clicked node, a clause this file never asserted before (see `agent-panel.js`'s own
 // banner: the previous side computation read `window.event` after an `await`, always `undefined`).
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { existsSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { existsSync, readdirSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createServer as createHttpServer, type Server as HttpServer } from 'node:http';
 import { createServer } from '../../src/server.js';
@@ -87,7 +89,6 @@ const reason = chrome ? null : 'SKIPPED: no puppeteer Chrome found (set PUPPETEE
 throwIfBrowserRequired(chrome);
 
 const STUB_PORT = 38201;
-const MARKER = 'RWE-V27-VAL201-MARKER';
 // [v27c gate 6] a prompt carrying this token gets a real 404 from the stub — `terminalHttpFailure`
 // (`src/gateway/client.ts:257/361`) classifies a 404 as `reason:'terminal', retryable:false` and
 // stamps `AgentRecord.detail = "404 Not Found"`, which is the ONLY way `agent.js`'s `panelModel`
@@ -157,21 +158,17 @@ async function waitTerminal(base: string, id: string): Promise<void> {
 
 beforeAll(async () => {
   if (reason) { console.log(`[val-201] ${reason}`); return; }
-  const workRoot = mkdtempSync(join(tmpdir(), 'rwe-val201-'));
-  const definitionsDir = join(workRoot, 'agents');
-  mkdirSync(definitionsDir, { recursive: true });
-  writeFileSync(join(definitionsDir, 'marked.md'), ['---', 'name: marked', 'model: marked-alias', '---', MARKER, ''].join('\n'), 'utf8');
   stub = startStubOllamaServer();
   await new Promise<void>((resolve) => stub.listen(STUB_PORT, '127.0.0.1', resolve));
   process.env['OLLAMA_BASE_URL'] = `http://127.0.0.1:${STUB_PORT}`;
   server = await createServer({
-    port: 0, bind: '127.0.0.1', useLiteLLMProxy: false, agentDefinitionsDir: definitionsDir,
-    aliases: { default: { provider: 'ollama', model: 'default-model' }, 'marked-alias': { provider: 'ollama', model: 'marked-model' } },
+    port: 0, bind: '127.0.0.1', useLiteLLMProxy: false,
+    aliases: { default: { provider: 'ollama', model: 'default-model' } },
     graphAnalyzer: { enabled: false },
-  } as ServerConfig & { agentDefinitionsDir: string });
+  } as ServerConfig);
   baseUrl = `http://127.0.0.1:${server.port}`;
   const caller = makeCaller(baseUrl);
-  const run = await runScriptVia(caller, `return agent('panel-agent', { agentType: 'marked', prompt: 'the visible script prompt' });`);
+  const run = await runScriptVia(caller, `return agent('panel-agent', { prompt: 'the visible script prompt' });`);
   runId = run.runId as string;
   await waitTerminal(baseUrl, runId);
   // A failed `agent()` call resolves to `null` and the SCRIPT keeps going (same rule as
@@ -240,24 +237,12 @@ describe('the agent slide-in panel, real Chromium (VAL-201, REQ-135/136)', () =>
     }
   }, 20000);
 
-  itReal('the panel <pre> prompt contains the script prompt but NEVER the agentType systemPrompt marker (REQ-136)', async () => {
-    const puppeteer = (await import('puppeteer')).default;
-    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
-    try {
-      const page = await browser.newPage();
-      await page.goto(`${baseUrl}/dashboard/${runId}`, { waitUntil: 'networkidle0', timeout: 10000 });
-      await page.waitForSelector('#dag-graph', { timeout: 3000 });
-      const node = await page.$('#dag-zoom [data-node-cell]');
-      expect(node).not.toBeNull();
-      if (node) await node.click();
-      await page.waitForSelector('[data-agent-panel] pre', { timeout: 3000 });
-      const promptText = await page.$eval('[data-agent-panel] pre', (el) => el.textContent ?? '');
-      expect(promptText).toContain('the visible script prompt');
-      expect(promptText).not.toContain(MARKER);
-    } finally {
-      await browser.close();
-    }
-  }, 20000);
+  // v34 (DES-225, ARCH-137, ADR-061, TASK-229, REQ-203): the REQ-136 "never the agentType
+  // systemPrompt marker" case that used to stand here retires WITH the composition root it needed
+  // (`agentDefinitionsDir`) — 隨機制消失, not a regression: with no agentType mechanism left to leak
+  // from, `descriptor.prompt` is simply the gateway's verbatim echo of the whole prompt (ADR-061).
+  // The surviving assertion (the panel <pre> shows the script prompt) is already covered by the
+  // six-stat-cards case above, which opens the SAME run and does not need its own `itReal`.
 
   itReal('Esc closes the panel', async () => {
     const puppeteer = (await import('puppeteer')).default;

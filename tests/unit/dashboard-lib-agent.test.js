@@ -27,8 +27,10 @@ const RECORD_REFUSED = {
   agentId: 'a4', state: 'refused', provider: '', model: '', tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, reasonCode: 'BUDGET_EXCEEDED',
 };
 
+// v34 (DES-225 rationale item 9): kept carrying `systemPrompt` on purpose — it IS the genuine
+// pre-v34 legacy shape IT-175 below needs as input, a shape this version of the engine can no
+// longer WRITE but must still READ without crashing (INV-V34-3).
 const HARNESS_APPLIED = { model: 'm', provider: 'p', prompt: 'user prompt', tools: [], skills: [], mcpServers: [], surfaceType: 'none', timeoutMs: 900000, effortApplied: { param: 'reasoning_effort', value: 'high' }, systemPrompt: { agentType: 'researcher', bytes: 512 } };
-const HARNESS_NO_SYSTEM_PROMPT = { ...HARNESS_APPLIED, systemPrompt: undefined };
 
 describe('lib/agent.js: panelModel over four record states (UT-247, DES-205)', () => {
   it('running with advancing activity: six stat cards including timeout shown TWICE and four token columns', () => {
@@ -70,15 +72,27 @@ describe('lib/agent.js: panelModel over four record states (UT-247, DES-205)', (
     expect(vm.reasonCode).toBe('BUDGET_EXCEEDED');
   });
 
-  it('systemPrompt PRESENT: the sentence says "applied" and names bytes, never the content', () => {
+  // v34 (DES-225, ARCH-137, ADR-061, TASK-229, REQ-203): this pair of cases pinned the retired
+  // `systemPromptNote` sentence ("applied…N bytes" / "no record") on both cohorts — 隨機制消失,
+  // superseded by IT-175 below, which pins the field's total ABSENCE instead. Not deleted silently:
+  // reported as an additional retirement in this task's report (05-tests.md's own v34 retirement
+  // register named the two NEW cases it expected here but not this pair's removal).
+
+  // IT-175 (DES-225, ARCH-137, ADR-061, TASK-229, REQ-203): the disclosure surface retires WITH its
+  // mechanism (「隨機制消失」) — a legacy pre-v34 row (still carrying `systemPrompt`, read TOTAL per
+  // INV-V34-3) renders with NO `systemPromptNote` field at all, never "applied" and never "no
+  // record" (both of those sentences describe a mechanism that no longer exists post-cut). This
+  // file is `allowJs` without `checkJs` (DES-225 rationale item 10) — `tsc` cannot pin this
+  // deletion, so the assertion is the checklist. Red reason: today's `panelModel` sets
+  // `vm.systemPromptNote` on BOTH cohorts (present → "applied…N bytes", absent → "no record") — the
+  // field always exists today.
+  it('v34: a legacy row carrying systemPrompt renders NO systemPromptNote field at all (retired with its mechanism, not a regression)', () => {
     const vm = panelModel(RECORD_DONE_UNPRICED, HARNESS_APPLIED, [], false, '2026-09-11T00:01:00.000Z', 'en');
-    expect(vm.systemPromptNote).toMatch(/512/);
-    expect(vm.systemPromptNote).not.toContain('You are a researcher');
+    expect('systemPromptNote' in vm).toBe(false);
   });
 
-  it('systemPrompt ABSENT: the sentence says "no record" — NEVER "not applied" (pre-v27 cohort is UNKNOWN, not "no")', () => {
-    const vm = panelModel(RECORD_DONE_UNPRICED, HARNESS_NO_SYSTEM_PROMPT, [], false, '2026-09-11T00:01:00.000Z', 'en');
-    expect(vm.systemPromptNote.toLowerCase()).not.toContain('not applied');
+  it('v34: panelModel does not crash on a legacy row (no-crash totality over a pre-v34 shape)', () => {
+    expect(() => panelModel(RECORD_DONE_UNPRICED, HARNESS_APPLIED, [], false, '2026-09-11T00:01:00.000Z', 'en')).not.toThrow();
   });
 
   it('mcpUnresolved and record.unmapped counts render as tags', () => {

@@ -156,13 +156,18 @@ export type AgentCallViolationCode =
   /** v25 (#55, adjudication #9 I-1.4): an options key that is neither an `AgentOpts` field nor a
    *  tunable — same ruling `meta.params` has enforced since v21, now on the side that had it
    *  ZERO times. A key that reads as accepted and reaches nothing is the defect. */
-  | 'PARAM_UNKNOWN';
+  | 'PARAM_UNKNOWN'
+  /** v34 (DES-224, ARCH-138, TASK-229, REQ-203): an options key that USED to be a live `AgentOpts`
+   *  field and no longer is — `RETIRED_AGENT_OPT_KEYS`. Distinct from `PARAM_UNKNOWN` (which never
+   *  worked) so a client can branch on "this used to work" vs "this never did". */
+  | 'AGENT_OPT_RETIRED';
 
 export interface AgentCallViolation {
   line: number;
   code: AgentCallViolationCode;
-  /** The offending option key. Closed to the tunables for `PARAM_IN_SCRIPT`; free-form for
-   *  `PARAM_UNKNOWN`, whose whole job is to hand back the name the author actually wrote. */
+  /** The offending option key. Closed to the tunables for `PARAM_IN_SCRIPT`; closed to
+   *  `keyof typeof RETIRED_AGENT_OPT_KEYS` for `AGENT_OPT_RETIRED`; free-form for `PARAM_UNKNOWN`,
+   *  whose whole job is to hand back the name the author actually wrote. */
   key?: string;
   hint: string;
 }
@@ -204,7 +209,16 @@ const LOCKED_PARAM_KEYS = new Set<string>(TUNABLE_KEYS);
  *  reason: this ledger has now recorded one-directional vocabulary drift four times. */
 const AGENT_OPT_KEYS: Record<keyof AgentOpts | 'prompt', true> = {
   prompt: true, label: true, phase: true, schema: true, model: true, effort: true,
-  timeoutMs: true, isolation: true, agentType: true, mcp: true, allowedTools: true,
+  timeoutMs: true, isolation: true, mcp: true, allowedTools: true,
+};
+
+/** v34 (DES-224, ARCH-138, TASK-229, REQ-203): agent() options keys that USED to work and now
+ *  refuse instead of being silently accepted — `AGENT_OPT_KEYS` above cannot admit them any more
+ *  (the compiler forces this pair to move in the same commit `AgentOpts.agentType` is deleted), so
+ *  without this map the key would fall through to the generic `PARAM_UNKNOWN` unknown-key branch
+ *  with no signal that it once worked. Consulted BEFORE the unknown-key check, never instead of it. */
+export const RETIRED_AGENT_OPT_KEYS: Record<string, string> = {
+  agentType: "retired at v34 — the server-side agent-definition mechanism is gone; put the system prompt in your script's own prompt (workflow_authoring_guide → prompt layering)",
 };
 
 /** The keys an author may actually write, in the refusal message: the closed set MINUS the tunables,
@@ -218,8 +232,8 @@ const AGENT_OPT_NEAR_MISSES: Record<string, string> = {
   tools: 'allowedTools',
   allowed_tools: 'allowedTools',
   tool: 'allowedTools',
-  system: 'agentType',
-  systemPrompt: 'agentType',
+  system: "your script's own prompt — see workflow_authoring_guide → prompt layering",
+  systemPrompt: "your script's own prompt — see workflow_authoring_guide → prompt layering",
   name: 'label',
   timeout: 'timeoutMs',
   // `skills` is advertised in `LOCKED_KEYS` but is not an `agent()` option — it is declared per
@@ -486,6 +500,10 @@ export function scanAgentCalls(script: string): AgentCallScan {
             key,
             hint: `move '${key}' to meta.params.agents.${label}.${key}.default`,
           });
+        } else if (Object.hasOwn(RETIRED_AGENT_OPT_KEYS, key)) {
+          // v34 (DES-224): consulted BEFORE the unknown-key branch, not instead of it — a key that
+          // used to work gets a different code than one that never did.
+          violations.push({ line, key, code: 'AGENT_OPT_RETIRED', hint: `'${key}' was ${RETIRED_AGENT_OPT_KEYS[key]}.` });
         } else if (!Object.hasOwn(AGENT_OPT_KEYS, key)) {
           // v25 (#55, adjudication #9 I-1.4). `Object.hasOwn`, not `key in` — `constructor` and
           // `toString` are `in` every object literal and would be waved through.

@@ -1,6 +1,7 @@
 // src/params/resolve.ts (DES-102, ARCH-065, TASK-098): pure two-moment merge of the tunable
 // parameter contract — admission-time snapshot (RunParams) and dispatch-time per-call resolution
-// (EffectiveCallParams) — plus five-segment prompt composition and provider effort mapping.
+// (EffectiveCallParams) — plus two-segment prompt composition (v34, DES-225) and provider effort
+// mapping.
 //
 // Pure throughout: no I/O, no clock, no VM, no randomness. Provenance is emitted by the function
 // that computes the value (one pass, {value, rung} per key) — never inferred afterwards by
@@ -40,14 +41,15 @@ export interface RunParams {
   effort?: Effort;
   timeoutMs?: number;
   appendPrompt?: string;
-  // author-only pair (REQ-092 close; UserOverrides cannot spell them). `skills` is NOT a
-  // RunParams field (B-3): skills are server-side assets, every stored skill is materialized
-  // into every run workspace regardless of workflow, and HarnessDescriptor.skills is derived
-  // from the filesystem (readSkillNames(assetRoot)) — unrelated to this snapshot. REQ-092's
+  // `skills` is NOT a RunParams field (B-3): skills are server-side assets, every stored skill is
+  // materialized into every run workspace regardless of workflow, and HarnessDescriptor.skills is
+  // derived from the filesystem (readSkillNames(assetRoot)) — unrelated to this snapshot. REQ-092's
   // lock on `skills` is satisfied because a caller naming it in overrides gets PARAM_LOCKED
-  // (contract.ts), not because this type carries it.
-  prompt?: string;
-  tools?: string[];
+  // (contract.ts), not because this type carries it. `prompt`/`tools` (the workflow-registered
+  // `HarnessDefaults` pair) were RETIRED at v34 (REQ-204, ADR-064, DES-228) — every live producer
+  // already passed `defaults: undefined`, so dropping them is dead-code removal, not a behaviour
+  // change; a stored snapshot that somehow still carries either key is refused LEGACY_REREGISTER
+  // on resume rather than silently accepted (run-manager.ts).
   provenance: Record<'model' | 'effort' | 'timeoutMs' | 'appendPrompt', 'override' | 'default' | 'engine'>;
   /** v24 (DES-146, TASK-158): the pinned run snapshot's per-agent-label slice — one
    *  `resolveAgentParams` result per declared `agents.<label>`, so a caller's `overrides.agents.
@@ -83,8 +85,6 @@ export function defaultRunParams(
     effort: defaults?.effort,
     timeoutMs: defaults?.timeoutMs,
     appendPrompt: defaults?.appendPrompt,
-    prompt: defaults?.prompt,
-    tools: defaults?.tools,
     provenance: {
       model: defaults?.model !== undefined ? 'default' : 'engine',
       effort: defaults?.effort !== undefined ? 'default' : 'engine',
@@ -167,35 +167,15 @@ export function resolveAgentParams(
 export const USER_INSTRUCTIONS_OPEN = '\n\n<user-instructions untrusted="true">\n';
 export const USER_INSTRUCTIONS_CLOSE = '\n</user-instructions>';
 
-/** Five-segment composition (REQ-094, DES-102): [agent-type systemPrompt] + [defaults.prompt] +
- *  [script prompt] + [framed appendPrompt]. The engine's protocol scaffolding is appended AFTER
- *  this by the executor as a non-author non-user fifth segment — not this function's concern.
- *  Byte-identical to today's `${systemPrompt}\n\n${prompt}` / bare `prompt` when authorPrompt and
- *  appendPrompt are both absent. */
-export function composePrompt(
-  systemPrompt: string | undefined,
-  authorPrompt: string | undefined,
-  scriptPrompt: string,
-  appendPrompt?: string,
-): string {
-  const segments = [systemPrompt, authorPrompt, scriptPrompt].filter((s): s is string => s !== undefined && s !== '');
-  const body = segments.join('\n\n');
+/** Two-segment composition (REQ-094/REQ-203/REQ-204, DES-225; v34 cut of the old five-segment
+ *  ladder): [script prompt] + [framed appendPrompt]. The `agentType` systemPrompt and
+ *  `defaults.prompt` segments are RETIRED — the server-side agent-definition mechanism and
+ *  `RunParams.prompt` are both gone (DES-224/DES-228). The engine's own protocol scaffolding
+ *  (schema suffix, retry nudge) is appended AFTER this by the executor as a non-author non-user
+ *  segment — not this function's concern. Byte-identical to before when `appendPrompt` is absent
+ *  (bare `scriptPrompt`); the empty-`scriptPrompt` case is PINNED, not fixed (DES-225 golden 5). */
+export function composePrompt(scriptPrompt: string, appendPrompt?: string): string {
   return appendPrompt !== undefined
-    ? `${body}${USER_INSTRUCTIONS_OPEN}${appendPrompt}${USER_INSTRUCTIONS_CLOSE}`
-    : body;
-}
-
-/** `composePrompt`'s inverse (REQ-136, DES-195): strips the leading `sys + '\n\n'` segment a
- *  gateway echoed back verbatim on `descriptor.prompt`, so the systemPrompt text never reaches
- *  the persisted transcript. Total over six cases — fails CLOSED (never returns `composed`
- *  unstripped) when the expected prefix is absent, because that means the gateway did not echo
- *  what it was given and the safe assumption is that nothing here is verified. `sys` undefined or
- *  `''` both mean "no systemPrompt was applied" (same as `composePrompt`'s own undefined-segment
- *  filter), so neither is stripped. */
-export function stripFirstSegment(composed: string, sys: string | undefined): { prompt: string; stripped: boolean } {
-  if (sys === undefined || sys === '') return { prompt: composed, stripped: false };
-  if (composed === sys) return { prompt: '', stripped: true };
-  const prefix = `${sys}\n\n`;
-  if (composed.startsWith(prefix)) return { prompt: composed.slice(prefix.length), stripped: true };
-  return { prompt: '', stripped: false };
+    ? `${scriptPrompt}${USER_INSTRUCTIONS_OPEN}${appendPrompt}${USER_INSTRUCTIONS_CLOSE}`
+    : scriptPrompt;
 }

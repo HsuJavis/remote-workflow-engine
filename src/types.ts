@@ -190,7 +190,6 @@ export interface AgentOpts {
    *  (non-positive / non-finite / non-number) is ignored and the gateway default applies. */
   timeoutMs?: number;
   isolation?: 'worktree';
-  agentType?: string;
   /** REQ-017 (D-V3M-1): names of server-side-provisioned MCP servers this agent references
    *  (`agent(prompt, {mcp:['name']})`). Resolved by the SDK gateway against the MCP Provisioning
    *  Registry at session-build time (McpRegistry.resolveInjected) — ONLY these explicitly-named
@@ -200,9 +199,9 @@ export interface AgentOpts {
   /** v25 (issue #55, adjudication #9 I-1.1): the tool surface handed to THIS agent —
    *  `agent('a', {prompt, allowedTools: []})` gives it no tools at all, which is what a prose-only
    *  task on a small model needs (a model holding Write/Edit/Bash answers with a tool-call envelope
-   *  instead of prose). Precedence, unchanged and now declared rather than inferred: this per-call
-   *  value > the agentType definition's `tools` frontmatter > the gateway's configured
-   *  `defaultAllowedTools` (agent-executor.ts, claude-agent-sdk-client.ts).
+   *  instead of prose). Precedence, declared rather than inferred: this per-call value > the
+   *  gateway's configured `defaultAllowedTools` (agent-executor.ts, claude-agent-sdk-client.ts) —
+   *  the per-definition frontmatter rung that used to sit between the two was retired at v34.
    *
    *  The field is not new — the whole pipeline has honoured it since v21 — but it was reached
    *  through `(req.opts as AgentOpts & {allowedTools?: string[]})` at both consumers, so it existed
@@ -548,11 +547,6 @@ export interface HarnessDescriptor {
    *  `surfaceType:'none'` dispatch materializes nothing (DES-154), so its `skills`/`mcp` are empty
    *  and every declared name is `missing`. Absent for every pre-v24 record. */
   materialized?: { skills: string[]; mcp: string[]; missing: string[] };
-  /** v27 (DES-195, ARCH-129, TASK-200, REQ-136): present iff a non-empty agentType systemPrompt
-   *  was applied at the one decoration site — `bytes` is the stripped segment's length, never its
-   *  content, so REQ-136's confidentiality guarantee holds even on this descriptor. Absent when no
-   *  agentType systemPrompt applied (script-only prompt, or none). */
-  systemPrompt?: { agentType: string; bytes: number };
 }
 
 export interface TranscriptEvent {

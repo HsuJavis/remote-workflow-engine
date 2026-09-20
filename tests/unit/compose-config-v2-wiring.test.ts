@@ -20,7 +20,7 @@ import type { ClaudeAgentSdkGatewayConfig } from '../../src/gateway/claude-agent
 // Neutralize main.ts's boot side-effects (same pattern as IT-021/IT-022).
 vi.mock('node:child_process', () => ({ spawn: vi.fn(() => ({ on: vi.fn(), kill: vi.fn(), pid: 99 })) }));
 process.exit = vi.fn() as unknown as typeof process.exit;
-import { composeConfig, KNOWN_FILE_CONFIG_KEYS } from '../../src/main.js';
+import { composeConfig, KNOWN_FILE_CONFIG_KEYS, RETIRED_CONFIG_KEYS } from '../../src/main.js';
 
 // Fake deps that neutralize all real subprocess/network boundaries.
 // queryImpl is typed against the REAL seam (ClaudeAgentSdkGatewayConfig['queryImpl'] = typeof
@@ -237,6 +237,45 @@ describe('composeConfig() v2 key wiring (DES-022, standing rule 1)', () => {
 // forwarded it, so booting with `"agentSlots": 7` still reported `agentSemaphore.total 32` on
 // `/api/status`. A one-off fix invites a fourth, so the sweep below is mechanical over the key list
 // itself rather than one more hand-written case.
+// UT-274 (DES-227, ARCH-139, TASK-229, REQ-203): `RETIRED_CONFIG_KEYS` replaces the hardcoded
+// `graphAnalyzerNote` `if` — a stale `agentDefinitionsDir` in `rwe.config.json` gets the SAME
+// retirement-note treatment `graphAnalyzer` already gets, and the engine still BOOTS (no fail-fast,
+// owner ruling). Red reason: `agentDefinitionsDir` is still IN `KNOWN_FILE_CONFIG_KEYS` today (a
+// forwarded, live key) — composeConfig neither warns about it nor treats it as retired, and
+// `RETIRED_CONFIG_KEYS` does not exist yet (`undefined` above).
+describe('composeConfig — RETIRED_CONFIG_KEYS (DES-227, UT-274)', () => {
+  it('graphAnalyzer + agentDefinitionsDir + a typo: exactly ONE console.warn naming all three, retirement note on the two retired keys only, engine boots', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cfg = await composeConfig(
+      { graphAnalyzer: { enabled: true }, agentDefinitionsDir: '/var/rwe/agents', typo: 1, gateway: 'direct-fetch' } as any,
+      FAKE_DEPS,
+    );
+    expect(cfg).toBeDefined();
+    expect(warnSpy.mock.calls.length).toBe(1);
+    const message = String(warnSpy.mock.calls[0]?.[0]);
+    expect(message).toContain('graphAnalyzer');
+    expect(message).toContain('agentDefinitionsDir');
+    expect(message).toContain('typo');
+    expect(message).toMatch(/retired/i);
+    // Exactly ONE retirement note per retired key (graphAnalyzer, agentDefinitionsDir) — the typo
+    // key gets NONE (it never existed, unlike a key that USED to work). Counted rather than
+    // position-sliced: the note may be appended per-key inline (not necessarily trailing the whole
+    // key list), so a fixed-offset slice after "typo" would false-red a faithful DES-227
+    // implementation that orders the note differently.
+    expect((message.match(/retired/gi) ?? []).length).toBe(2);
+    expect(message).not.toMatch(/typo[^.;]*retired/i);
+    warnSpy.mockRestore();
+  });
+
+  it('RETIRED_CONFIG_KEYS and KNOWN_FILE_CONFIG_KEYS share no key (a retired key cannot also be a currently-forwarded one)', () => {
+    const retired = Object.keys((RETIRED_CONFIG_KEYS as unknown as Record<string, string> | undefined) ?? {});
+    const known = Object.keys(KNOWN_FILE_CONFIG_KEYS);
+    const overlap = retired.filter((k) => known.includes(k));
+    expect(overlap).toEqual([]);
+    expect(retired.length).toBeGreaterThan(0);
+  });
+});
+
 describe('agentSlots is wired (UT-218, defect D7)', () => {
   it('agentSlots is forwarded from FileConfig into the returned ServerConfig', async () => {
     const cfg = await composeConfig({ agentSlots: 7, gateway: 'direct-fetch' } as any, FAKE_DEPS);
@@ -282,7 +321,6 @@ const PROBES: Record<string, unknown> = {
   retries: 3,
   useLiteLLMProxy: false,
   litellmPort: 4099,
-  agentDefinitionsDir: '/var/rwe/agents',
   schedulerDbPath: '/var/rwe/sched.db',
   assetRoot: '/var/rwe/assets',
   agentSlots: 7,

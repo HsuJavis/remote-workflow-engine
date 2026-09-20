@@ -195,11 +195,6 @@ export function render(container, vm, handlers) {
   promptPre.textContent = vm.prompt || '';
   panel.appendChild(promptPre);
 
-  const spNote = document.createElement('p');
-  spNote.setAttribute('data-system-prompt-note', '');
-  spNote.textContent = vm.systemPromptNote || '';
-  panel.appendChild(spNote);
-
   // The three tag columns (ARCH-125): the curated session surface's own counts — a capture with
   // no reader is not observability, same rule as the mcpUnresolved/unmapped tags below. REQ-135's
   // own acceptance text pins one variant per column: 允許工具 `.tag-neutral`, MCP 伺服器

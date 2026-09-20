@@ -30,7 +30,7 @@ import { SystemClock } from './clock.js';
 import { RunGuard, parseBudget, foldUsage, sumTokens } from './run-guard.js';
 import { createSemaphore, type Semaphore, type SemaphoreGauge } from './agent-semaphore.js';
 import { SandboxHost } from './sandbox/host.js';
-import type { AgentSpawner, AgentTypeDef } from './agent-executor.js';
+import type { AgentSpawner } from './agent-executor.js';
 import { AgentExecutor } from './agent-executor.js';
 import { redact, hasSecretMarker } from './secret-resolver.js';
 import type { SecretValueProvider } from './secret-resolver.js';
@@ -72,9 +72,6 @@ export interface RunManagerDeps {
    *  `AssetSyncService` and the GC sweep use (`asset-sync.ts`), never re-spelt here. */
   assetRoot?: string;
   globalAssetRoot?: string;
-  /** Server-side agent-type registry (D-F2), forwarded unchanged into every AgentExecutor this
-   *  manager constructs — populated at the composition root (createServer()) from agents/*.md. */
-  agentTypes?: Record<string, AgentTypeDef>;
   /** D-V3M-2 (REQ-020 / D-DOS, TASK-035/DES-027/ARCH-002): the ONE process-global agent-slot
    *  semaphore rationing SDK-CLI subprocess spawns across ALL runs — built at the composition root
    *  (createServer) and observed via `GET /api/status`. Omitted (bare/test callers) -> an
@@ -296,7 +293,6 @@ export class RunManager {
   private readonly _workRoot: string;
   private readonly _assetRoot: string;
   private readonly _globalAssetRoot: string;
-  private readonly _agentTypes: Record<string, AgentTypeDef>;
   private readonly _semaphore: Semaphore;
   private readonly _maxWorkflowDepth: number;
   private readonly _maxWorkflowDescendants: number;
@@ -349,7 +345,6 @@ export class RunManager {
     this._assetRoot = deps.assetRoot ?? defaultAssetRoot(this._workRoot);
     this._globalAssetRoot = deps.globalAssetRoot ?? globalAssetRoot(this._workRoot);
     this._catalog = deps.catalog ?? new WorkflowCatalog(this._workRoot, this._clock);
-    this._agentTypes = deps.agentTypes ?? {};
     // D-V3M-2: unbounded local default (1024 ≫ the 1000-agent lifetime cap) preserves the exact
     // prior behavior for every direct RunManager caller; the real DOS cap is injected by createServer.
     this._semaphore = deps.semaphore ?? createSemaphore(1024);
@@ -712,7 +707,7 @@ export class RunManager {
     // must actually REACH the capture site, or every call is `unpriced:true` with `costUSD: 0` and
     // REQ-127 is inert in production while every unit test stays green (the composeConfig() wiring
     // bug class). This is the `start()` half; `_requireLive` reads the same pin back from the row.
-    const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, agentTypes: this._agentTypes, secretValueProvider: this._secretValueProvider, priceBook, aliases: this._aliasMap });
+    const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, secretValueProvider: this._secretValueProvider, priceBook, aliases: this._aliasMap });
     const entry: RunEntry = {
       script,
       args: spec.args,
@@ -1036,7 +1031,12 @@ export class RunManager {
     // design assigns ("this version predates the v24 contract and cannot run; re-register it") and
     // it is already what `workflow_describe`/`workflow_list` report as `runnableReason`, so the
     // refusal a caller meets here matches what the read surfaces already told it.
-    if (storedParams !== null && storedParams.agents === undefined) {
+    // v34 (DES-228, ARCH-140, ADR-064 baseline (A), TASK-229, REQ-204): a snapshot carrying a
+    // `tools` key (the retired `RunParams.tools` rung) is refused the SAME way as one missing
+    // `.agents` — the two halves fail differently (missing `.agents` loses content visibly;
+    // resuming with a legacy `tools` key would silently WIDEN this run's tool surface, a
+    // security-relevant capability expansion) but share one guard and one code.
+    if (storedParams !== null && (storedParams.agents === undefined || Object.hasOwn(storedParams, 'prompt') || Object.hasOwn(storedParams, 'tools'))) {
       throw codedError(
         'LEGACY_REREGISTER',
         `LEGACY_REREGISTER: run ${runId} was admitted before the v24 per-agent parameter contract and cannot be resumed; re-register the workflow and start a new run`,
@@ -1074,7 +1074,7 @@ export class RunManager {
     // reads just above), never re-resolved from today's catalog. `null` for a pre-v26 row leaves
     // the sink unpriced, which is its documented "we never looked" state.
     const persistedPriceBook = await this._store.getPriceBook(runId);
-    const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, agentTypes: this._agentTypes, secretValueProvider: this._secretValueProvider, aliases: this._aliasMap, ...(persistedPriceBook !== null ? { priceBook: persistedPriceBook } : {}) });
+    const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, secretValueProvider: this._secretValueProvider, aliases: this._aliasMap, ...(persistedPriceBook !== null ? { priceBook: persistedPriceBook } : {}) });
     const entry: RunEntry = {
       script,
       args: spec.args,

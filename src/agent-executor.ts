@@ -8,7 +8,7 @@ import { ZERO_TOKENS, priceCall } from './run-guard.js';
 import type { RunStore } from './run-store.js';
 import { redact } from './secret-resolver.js';
 import type { SecretValueProvider } from './secret-resolver.js';
-import { composePrompt, stripFirstSegment, type RunParams, type EffectiveCallParams } from './params/resolve.js';
+import { composePrompt, type RunParams, type EffectiveCallParams } from './params/resolve.js';
 import { isEffort } from './params/contract.js';
 import { codedError } from './errors.js';
 import type { ErrorCode } from './errors.js';
@@ -96,17 +96,6 @@ export function redactHarness(resolved: {
 // schemas are per-call plain objects (JSON Schema draft-07-ish subset), not compiled/cached ahead
 // of time since agent() schemas are arbitrary and one-shot.
 const ajv = new Ajv({ allErrors: false, strict: false });
-
-/** Server-side agent-type definition (D-V5/D-F2): resolved by name against
- *  AgentExecutorDeps.agentTypes. `model` (an alias name, resolved the same way opts.model already
- *  is) is optional — loaded from `agents/*.md` frontmatter's `model:` key when present. `tools`
- *  (D-F11) is the frontmatter `tools:` list — the authoritative curated set applied to the outbound
- *  opts.allowedTools when the caller didn't already set one of their own. */
-export interface AgentTypeDef {
-  systemPrompt: string;
-  model?: string;
-  tools?: string[];
-}
 
 /** Parses a gateway result's `content` into a schema-validatable value. Tolerant of how real LLMs
  *  (esp. OpenAI models after a tool loop) actually emit JSON: a raw object string, JSON wrapped in a
@@ -461,8 +450,6 @@ export interface AgentExecutorDeps {
   guard?: RunGuard;
   store?: RunStore;
   clock?: { isoNow(): string };
-  /** Server-side agent-type registry (D-V5): known opts.agentType values apply their systemPrompt. */
-  agentTypes?: Record<string, AgentTypeDef>;
   /** DES-088 (TASK-082): inject to enable redact-at-capture on all transcript persist sinks. */
   secretValueProvider?: SecretValueProvider;
   /** v26 (DES-180, ARCH-118, TASK-180): this run's admission-time price/capability pin — see
@@ -493,7 +480,6 @@ export class AgentExecutor implements AgentSpawner {
   private readonly _sink: AgentTranscriptSink;
   private readonly _store?: RunStore;
   private readonly _clock: { isoNow(): string };
-  private readonly _agentTypes: Record<string, AgentTypeDef>;
   private readonly _secretValueProvider?: SecretValueProvider;
   private readonly _priceBook?: PriceBook;
   private readonly _aliases?: Record<string, { provider: string; model: string; proxyModel?: string }>;
@@ -504,7 +490,6 @@ export class AgentExecutor implements AgentSpawner {
     this._sink = new AgentTranscriptSink(deps.guard, deps.store, deps.secretValueProvider, deps.priceBook);
     this._store = deps.store;
     this._clock = deps.clock ?? { isoNow: () => new Date().toISOString() }; // det:allow — transcript timestamp, not a decision
-    this._agentTypes = deps.agentTypes ?? {};
     this._priceBook = deps.priceBook;
     this._aliases = deps.aliases;
   }
@@ -540,14 +525,26 @@ export class AgentExecutor implements AgentSpawner {
       throw codedError('PARAM_OUT_OF_RANGE', detail);
     }
 
-    // D-V5/D-F2: resolve agentType against the server-side registry before any gateway dispatch —
-    // a known type's systemPrompt is applied to the outbound prompt (and its `model`, when given,
-    // routes the call the same way an explicit opts.model would, unless the caller already set
-    // one); an unknown type is a reported error (rejects), never a silent no-op and never a hang.
-    let def: AgentTypeDef | undefined;
-    if (req.opts.agentType !== undefined) {
-      def = this._agentTypes[req.opts.agentType];
-      if (!def) throw new Error(`Unknown agentType: ${req.opts.agentType}`);
+    // v34 (DES-226, ADR-063, TASK-229, REQ-203/096): `agentType` was retired with the server-side
+    // agent-definition mechanism (DES-224/DES-225) — a script (or a pinned pre-v34 version)
+    // dispatching one is RECORDED then THROWN, mirroring the effort guard above: inside parallel()
+    // a bare throw is swallowed into `null` (sandbox/guards.ts), so without the capture the
+    // refusal would be invisible in workflow_status. `Object.hasOwn`, not a typed field read —
+    // `AgentOpts` no longer declares `agentType`, but neither the sandbox boundary (opaque) nor the
+    // run-manager IPC hop (a cast) strips an unknown key, so a pre-v34-shaped call can still carry
+    // one at runtime; the marker is the SAME `detail.violation` DES-224 mints at registration, so a
+    // client writes one branch for both halves.
+    if (Object.hasOwn(req.opts, 'agentType')) {
+      const detail = "PARAM_UNKNOWN: 'agentType' was retired at v34 — the server-side agent-definition "
+        + "mechanism is gone; put the system prompt in your script's own prompt. "
+        + "See workflow_authoring_guide, 'prompt layering'.";
+      await this._sink.capture(
+        req.runId,
+        { agentId: req.agentId, label: req.opts.label },
+        { ok: false, provider: '', reason: 'terminal', detail },
+        this._clock.isoNow(),
+      );
+      throw codedError('PARAM_UNKNOWN', detail, { param: 'agentType', agent: req.opts.label, violation: 'AGENT_OPT_RETIRED' });
     }
 
     // v24 (ARCH-095/DES-146, TASK-145): the 'call' and 'agentType' rungs are RETIRED — an agent()
@@ -558,31 +555,20 @@ export class AgentExecutor implements AgentSpawner {
     // params directly; `resolveCallParams`'s former per-call/agentType merge is gone with it.
     const eff: EffectiveCallParams = { ...req.runParams };
 
-    let effectiveOpts: AgentOpts = {
+    // v25 (#55, adjudication #9 I-1.1): read as a DECLARED field, an explicit per-call
+    // opts.allowedTools (already carried by the `...req.opts` spread below). v34 (DES-225/DES-228):
+    // the agentType-frontmatter `tools` rung and the `defaults.tools` rung below it are both gone —
+    // the tool surface is exactly per-call `allowedTools` > the gateway's `defaultAllowedTools`.
+    const effectiveOpts: AgentOpts = {
       ...req.opts,
       model: eff.model,
       effort: eff.effort,
       timeoutMs: eff.timeoutMs,
     };
-    // v25 (#55, adjudication #9 I-1.1): read as a DECLARED field. The `as AgentOpts & {allowedTools}`
-    // cast that stood here made the option invisible to the compiler and to anyone reading
-    // `AgentOpts` — which is how a shipped capability came to have no author-facing name.
-    const callerAllowedTools = req.opts.allowedTools;
-    // D-F11: the agentType definition's own `tools` frontmatter field is authoritative for the
-    // outbound opts.allowedTools — but only when the caller didn't already set one of their own
-    // (an explicit per-call opts.allowedTools always wins, same precedence rule `model` follows).
-    if (def?.tools !== undefined && callerAllowedTools === undefined) {
-      effectiveOpts = { ...effectiveOpts, allowedTools: def.tools };
-    } else if (eff.tools !== undefined && callerAllowedTools === undefined) {
-      // v21 (DES-102 note): defaults.tools sits directly BELOW agentType in the tool surface —
-      // per-call allowedTools > agentType tools > defaults.tools.
-      effectiveOpts = { ...effectiveOpts, allowedTools: eff.tools };
-    }
 
-    // v21 (REQ-094, DES-102): five-segment composition — [agentType systemPrompt] +
-    // [defaults.prompt] + [script prompt] + [framed appendPrompt]. Byte-identical to the prior
-    // `${systemPrompt}\n\n${prompt}` / bare `prompt` when defaults.prompt/appendPrompt are absent.
-    const effectivePrompt = composePrompt(def?.systemPrompt, req.runParams.prompt, req.prompt, req.runParams.appendPrompt);
+    // v34 (DES-225, REQ-094/202/203/204): two-segment composition — [script prompt] +
+    // [framed appendPrompt]. Byte-identical to the prior bare `prompt` when appendPrompt is absent.
+    const effectivePrompt = composePrompt(req.prompt, req.runParams.appendPrompt);
 
     // D-V4: schema present → real JSON-schema validation with bounded retry-on-mismatch
     // (never a type-cast passthrough). No schema → single attempt, final text.
@@ -603,7 +589,7 @@ export class AgentExecutor implements AgentSpawner {
         attempt === 0
           ? schemaPrompt
           : `${schemaPrompt}\n\n(Your previous reply did not parse as JSON matching the schema above. Reply with ONLY the JSON value — nothing else.)`;
-      const outcome = await this._invokeOnce(req, prompt, effectiveOpts, eff, def?.systemPrompt);
+      const outcome = await this._invokeOnce(req, prompt, effectiveOpts, eff);
       if (outcome === 'aborted') return { kind: 'null', aborted: true };
       const result = outcome;
 
@@ -619,7 +605,7 @@ export class AgentExecutor implements AgentSpawner {
     return { kind: 'null' };
   }
 
-  private async _invokeOnce(req: AgentReq, prompt: string, opts: AgentOpts, eff: EffectiveCallParams, sys?: string): Promise<GatewayResult | 'aborted'> {
+  private async _invokeOnce(req: AgentReq, prompt: string, opts: AgentOpts, eff: EffectiveCallParams): Promise<GatewayResult | 'aborted'> {
     // D-V2V-1: forward the run's own workspace — only ClaudeAgentSdkGatewayClient consumes it
     // (per-call cwd re-scoping + asset materialization); other gateways ignore the extra field.
     // DES-066 (TASK-069): onHarness closure — appends a kind:'harness' transcript event when the
@@ -648,18 +634,12 @@ export class AgentExecutor implements AgentSpawner {
       // the same reason — `deriveAgentRecords` reads the harness event to rebuild a record after a
       // restart, and without this the lane existed only in this process's memory.
       const queued = sink.getRecord(req.agentId);
-      // v27 (REQ-136, DES-195, TASK-200): `descriptor.prompt` is whatever the gateway echoed back
-      // (both real gateways echo `req.prompt` verbatim) — strip the agentType systemPrompt segment
-      // BEFORE persisting so it never reaches the transcript. Fails closed: a gateway that echoes
-      // something other than what it was given yields `prompt: ''` plus one warning line, never the
-      // untouched composed string.
-      const stripResult = stripFirstSegment(descriptor.prompt, sys);
-      if (sys !== undefined && sys !== '' && !stripResult.stripped) {
-        console.warn(JSON.stringify({ event: 'harness_prompt_prefix_mismatch', agentId: req.agentId, agentType: req.opts.agentType }));
-      }
+      // v34 (DES-225): `descriptor.prompt` is DEFINED as the exact string this dispatch handed the
+      // gateway — both real gateways echo `req.prompt` verbatim, and this site no longer takes
+      // ownership of it (the retired agentType-systemPrompt strip + the `harness_prompt_prefix_
+      // mismatch` fail-closed that verified the echo went with it, ADR-063 rationale item 1).
       const decorated: HarnessDescriptor = {
         ...descriptor,
-        prompt: stripResult.prompt,
         effort: eff.effort,
         timeoutMs: eff.timeoutMs,
         provenance: eff.provenance,
@@ -668,7 +648,6 @@ export class AgentExecutor implements AgentSpawner {
         ...(queued?.phaseIndex !== undefined ? { phaseIndex: queued.phaseIndex } : {}),
         materialized: descriptor.materialized ?? { skills: [], mcp: [], missing: declaredNames },
         ...(applied !== undefined ? { effortApplied: applied.applied ? { param: applied.param, value: applied.value } : { reason: applied.reason } } : {}),
-        ...(sys !== undefined && sys !== '' ? { systemPrompt: { agentType: req.opts.agentType!, bytes: Buffer.byteLength(sys, 'utf8') } } : {}),
       };
       // #20: surface model/provider on the LIVE agent record the moment the session is built (before
       // the first token) so workflow_status shows WHICH backend a still-running agent is waiting on,

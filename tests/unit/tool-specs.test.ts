@@ -140,3 +140,46 @@ describe('workflow_register/run_start descriptions teach the version loop (UT-26
     expect(text).toMatch(/run_result/);
   });
 });
+
+// UT-275 (DES-229, ARCH-087, ADR-032, TASK-230, REQ-202/REQ-203): `run_start.overrides`' advertised
+// description states the three appendPrompt rules a COLD client needs BEFORE its first call, and
+// `run_agent_log`'s harness sentence stops advertising a mechanism that no longer exists.
+//
+// Red reason: `overrides`'s description today says only "{agents: {'<label>': {model?, effort?,
+// timeoutMs?, appendPrompt?}}}. There are no workflow-wide override fields… LOCKED_KEYS are
+// author-locked" — none of the three appendPrompt rules (declare-or-PARAM_UNKNOWN, untrusted
+// framing, byte ceiling + no frame-close) are present. `run_agent_log`'s description still says
+// "An agentType's system prompt is never in harness.prompt; harness.systemPrompt:{agentType,bytes}
+// records only that one was applied" — the sentence TASK-230 rewrites.
+describe('tools/list advertises the v34 appendPrompt rules and the two-segment harness truth (DES-229, UT-275)', () => {
+  function overridesDescription(): string {
+    const projected = projectToolsList().find((t) => t.name === 'run_start')!;
+    const props = (projected.inputSchema as { properties?: Record<string, { description?: string }> }).properties;
+    return props?.['overrides']?.description ?? '';
+  }
+
+  it('states the key must be declared in meta.params.agents.<label> or the call is refused PARAM_UNKNOWN', () => {
+    const text = overridesDescription();
+    expect(text).toMatch(/meta\.params\.agents/);
+    expect(text).toMatch(/PARAM_UNKNOWN/);
+  });
+
+  it('states appendPrompt is wrapped in <user-instructions untrusted="true"> and the model is told it is untrusted', () => {
+    const text = overridesDescription();
+    expect(text).toContain('<user-instructions untrusted="true">');
+    expect(text).toMatch(/untrusted/i);
+  });
+
+  it('states the effective bound is min(author, maxAppendPromptBytes) in BYTES and the frame-close delimiter is refused', () => {
+    const text = overridesDescription();
+    expect(text).toMatch(/maxAppendPromptBytes/);
+    expect(text).toMatch(/bytes?/i);
+    expect(text).toMatch(/PARAM_OUT_OF_RANGE|frame.?close/i);
+  });
+
+  it('run_agent_log no longer advertises the retired agentType/systemPrompt harness sentence', () => {
+    const text = projectToolsList().find((t) => t.name === 'run_agent_log')!.description;
+    expect(text).not.toContain('agentType');
+    expect(text).not.toContain('systemPrompt');
+  });
+});

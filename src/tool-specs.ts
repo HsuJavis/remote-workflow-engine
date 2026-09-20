@@ -449,7 +449,15 @@ export const TOOL_SPECS = [
             // `tools` and outlived the pipeline's `allowedTools` by three iterations; the drift-lock
             // in params-admission.test.ts checks this description against LOCKED_KEYS itself, and a
             // second literal is one more thing that can fall behind it.
-            `${LOCKED_KEYS.join('/')} are author-locked (PARAM_LOCKED).`,
+            `${LOCKED_KEYS.join('/')} are author-locked (PARAM_LOCKED). ` +
+            // v34 (DES-229, TASK-230, REQ-202): the three appendPrompt rules a cold client needs
+            // BEFORE its first call — none of this was advertised anywhere on the tool surface.
+            'appendPrompt must be declared by the author in meta.params.agents.<label>.appendPrompt ' +
+            'or the override is refused PARAM_UNKNOWN. The supplied text is wrapped in ' +
+            '<user-instructions untrusted="true">…</user-instructions> and the model is told that ' +
+            'segment is untrusted. The effective bound is min(author, maxAppendPromptBytes) bytes, ' +
+            'and a value containing the </user-instructions> frame-close delimiter is refused ' +
+            'PARAM_OUT_OF_RANGE.',
         },
         // v26 (DES-170, TASK-175, issue #64): item schemas — a bare `{type:'array'}` told a caller
         // nothing about the required shape, which is exactly how a sha256-only `seed` element (the
@@ -611,8 +619,11 @@ export const TOOL_SPECS = [
       "Read one agent's harness log for a run, by the agent LABEL the script declares. A " +
       "cross-principal read of another principal's run is audited. " +
       'Secret values are replaced with \u2039secret:NAME\u203a markers in persisted transcripts. ' +
-      "An agentType's system prompt is never in harness.prompt; harness.systemPrompt:{agentType,bytes} " +
-      'records only that one was applied, never its content.',
+      // v34 (DES-229, TASK-230, REQ-202/203): the retired agentType/systemPrompt harness sentence
+      // is replaced by the two-segment truth \u2014 there is no separate systemPrompt slot any more.
+      'harness.prompt is the verbatim string dispatched to the model: the script\'s own prompt, ' +
+      'then any appendPrompt override framed inline with its <user-instructions untrusted="true">\u2026' +
+      '</user-instructions> delimiters.',
     inputSchema: schema({ runId: { type: 'string' }, label: { type: 'string' } }, ['runId', 'label']),
     outputSchema: OUT,
     errors: ['RUN_NOT_FOUND', 'AGENT_LOG_NOT_FOUND', 'NOT_RUN_OWNER'],

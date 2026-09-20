@@ -6506,3 +6506,210 @@ ARCH-087/091/107 認領);`dashboard_check` 0/7/1,**與基線逐字相同**(7 個
 
 未 commit:整棵樹留給 orchestrator(我只動了 `07-review.md` / `state.yaml` / `journal.md`,外加
 `trace` 重跑產生的 `dashboard.html`;`evidence/v28/val215-issues-{dark,light}.png` 進場時就是髒的)。
+
+---
+
+## 2026-09-20 — v34 Gate 2(架構,architect):PASSED
+
+REQ-202/203/204 的架構決策落盤。Panel(adversarial / quality-dimensions)兩輪都已存在於
+`.panel/architecture/`,本回合只做**綜合與裁決**,沒有再開 panel。第二輪是必要的:品質面一開場主張
+「刪掉 systemPrompt 揭露面 = 可觀測性淨損」,對抗面則證明**刪掉 `stripFirstSegment` 反而讓
+`descriptor.prompt` 變回模型真正看到的逐字內容**(今天存的是被 strip 過的字串,而
+`systemPrompt:{agentType,bytes}` 只是那次塗改的收據)——品質面在 r2 認了實質,並把要求換成一條
+「把刪除後的值釘住」的整合測試,我採納為 ADR-061 的義務。
+
+**落盤形狀**:五條新 ARCH 承擔三條 REQ —— ARCH-136(`src/workflow-view.ts`:`unit`/`ceiling` 不再被
+投影丟掉)、ARCH-137(`src/agent-executor.ts`:機制整組刪除 + 舊列讀取全域可讀)、ARCH-138
+(`src/workflow-meta.ts`:`AGENT_OPT_RETIRED` + `detail.violation`)、ARCH-139(`src/main.ts`:
+`RETIRED_CONFIG_KEYS` 取代 `graphAnalyzer` 的特例 if,warn 不 fail-fast)、ARCH-140
+(`src/params/resolve.ts`:`composePrompt` 收到兩參數、seam 留著、`DEFAULTS_RETIRED` 留著);
+加上 ADR-061..064 與 INV-V34-1..4。ARCH-004 / ARCH-087 / ARCH-107 / ARCH-129 / ADR-032 就地補
+v34 amendment 並 bump `iter`,**`traces:` 一律不動**。
+
+**為什麼是新列而不是把新 REQ 掛進舊列的 traces**(v28 已量過一次):`trace.py` 的
+implemented/verified 是每條 IMPL/測試的遞移上游閉包,把 REQ-202 掛上 ARCH-087 會讓 v24–v33 所有
+實作都「實作了」它——對還沒寫的程式碼發假綠燈。
+
+**與 panel 收斂結論的一處刻意分歧**(寫進 Decision rationale):舊版 pinned script 仍帶 `agentType`
+時,我把 dispatch 端的拒絕定為**無條件**(ADR-063),catalog 掃描降級成 Gate 7.5 的佐證,而不是
+panel 的「掃到非零才加拒絕」條件式設計。理由:在今天 `Unknown agentType` 那個 throw 的同一個位置放
+三行 `Object.hasOwn`,是**保住既有的 fail-closed**,不是新機制;把設計條件化在掃描結果上,正是
+「預設走快樂路徑」的出貨方式。
+
+**一條 owner_decision 掛著**:ADR-064 `defaults.tools` —— REQ-203 廣告「工具只剩兩層」,REQ-204 卻只
+退役 `runParams.prompt`,`RunParams.tools` 還活著並仍是 executor 的一階(`agent-executor.ts:576-580`),
+舊 params 快照因此是三層,指南裡那句話對它是假的。兩個出口都改到需求文字,所以交給擁有者;架構的
+建議是 (A) 兩半一起退役,並已把 ARCH-140 寫成兩種答案都能套。
+
+**Trace**:1781 → 1790 項(正好九個新 id),83 → 83 缺口,缺口清單與進場基線 **byte-identical**
+(基線在動筆前就先存進 scratch 檔;全程沒有 `git checkout`/`restore`/`stash` —— CLAUDE.md)。
+0 斷鏈、0 孤兒。REQ-202/203/204 仍掛「未實作/未驗證」,那是 Gate 5/6 的事,進場時就已在基線裡。
+
+未 commit:只動了 `02-architecture.md` / `state.yaml` / `journal.md`,外加 `trace` 重跑產生的
+`dashboard.html`;整棵樹留給 orchestrator。
+
+---
+
+## 2026-09-20 · v34 GATE 3+4(tasks + detailed design,合併)PASSED — designer 綜合(panel 由 workflow 先跑完,未再 spawn)
+
+**輸入**:`.panel/design/adversarial.r1.md`(interface-contract / boundary-error / testability)與
+`.panel/design/quality-dimensions.r1.md`(observability / replaceability / consumability /
+self-sustainability)。兩份 headline 是**互補**不是衝突(對抗組挑出三個設計層缺陷與五個簽章細節,
+品質組挑出三個「ARCH 說了但沒綁到任務」的落點),所以不需要第二輪;直接綜合。
+
+**三個 TASK,切法是 `tsc` 逼出來的,不是口味**:TASK-228(S,ARCH-136,獨立)`workflow-view.ts` +
+`contract.ts`;TASK-229(L,ARCH-137/138/139/140)**一個 commit 完成整刀**——
+`composePrompt(def?.systemPrompt, req.runParams.prompt, …)` 這一行同時點名 ARCH-137 的 `def` 與
+ARCH-140 的 `RunParams.prompt`;`AGENT_OPT_KEYS` 是 `Record<keyof AgentOpts|'prompt', true>`,所以刪
+`AgentOpts.agentType` 會直接把 `workflow-meta.ts` 變紅;`composeConfig` 又把 `agentDefinitionsDir`
+轉發進 `ServerConfig`。任何切法都會留下兩邊皆紅的中間狀態,而這個專案把 `tsc` 當第一個測試。
+TASK-230(M,ARCH-087/107 + ADR-032)是 byte-locked 的文字三件組,緊接在 TASK-229 之後落地。
+
+**七個 DES(DES-223..229),刻意寫薄**:每列只有簽章/結構/邊界,長論證全部收在檔末單一
+`## Decision rationale — v34`——下游 implementer 是 grep TASK id 只讀對應 DES,肥設計每次都要重付幾萬 token。
+
+**三處綜合者自己加的東西(panel 兩組都沒寫)**:
+1. **dispatch 端的拒絕必須「先記錄再拋」**。兩組的 snippet 都只有 `throw codedError(...)`,但同一個函式
+   往上七行的 effort guard 是 `capture(...)` 然後 `throw`,註解也寫明理由:在 `parallel()` 裡裸拋會被
+   `sandbox/guards.ts` 吞成 `null`。只拋不記,「被拒絕而非被靜默忽略」對 run 為真、對 client 為假——
+   正是 ADR-063 要防的那個缺陷,換個門進來而已。
+2. **Gate-5 constraint 2 照字面寫會是紅的,而且會被改斷言「修好」**。`descriptor.prompt` 是
+   `schemaPrompt`(或帶 retry nudge 的版本),只有在沒有 `schema` 且第 0 次就成功時才等於
+   `composePrompt()` 的輸出。DES-225 因此把這個欄位**定義**成「這次 dispatch 實際交給 gateway 的字串」,
+   並把測試拆成兩例(無 schema 逐位元組相等 / 有 schema 用 `startsWith`)。
+3. **五條 golden 以字面值寫進設計**(我實際執行 `a98b469` 的舊 4-arg 函式算出來的,不是讀出來的),
+   因此架構原本「必須在動刀前擷取」的**順序約束消失**了:刀後的 2-arg 函式無論何時寫,都得重現這五串位元組。
+   第五例(`scriptPrompt` 為空 → 開頭多一組 `\n\n`)是**釘住、不修**:位元組同一性就是這次的全部迴歸面,
+   在刪除裡夾帶一個 `trimStart()` 是沒宣告的行為改變。
+
+**一處推翻架構的刪除清單**:ARCH-137 叫人刪掉 `tests/fixtures/dashboard-wire.ts:31,36-37`,但那幾行**就是**
+Gate-5 constraint 3 需要的「真的 pre-v34 persisted row」。改成**改名留用**(`HARNESS_LEGACY_PRE_V34`)。
+同一件事的另一半:`src/dashboard/lib/agent.js` 有 `allowJs` 但沒有 `checkJs`,ARCH-137 的「absence 由型別
+系統釘住」對兩個 `Record<keyof T, true>` 為真、對這個檔為假——所以後端型別刪除與 dashboard 面刪除被綁進
+**同一個** TASK,而不是只同一列 ARCH。
+
+**`iter:` 沒有跟著 bump,這是刻意的,而且量過**。dispatch 要求 amended 列 bump iter;本帳本自己的
+Decision rationale item 22 寫的是「`iter:` 記的是**起源**不是最後觸及」,v33 的 F6-1 已經量過一次
+(1 清 7 生)。這次動筆前先量:把 DES-007/102/195 提到 v34 會生出 **14** 條漂移(DES-007 下 10 條 verify
+子項在 v1、DES-102 下 1、DES-195 下 3),沒有一條描述真實落後——測試釘的正是修訂後的那些話。退役改記在
+三列的 amendment 文字與 02-architecture.md 的退役登記表裡,那才是稽核真正會看的地方。要 bump 也行,
+一個 sed 加 14 條要解釋的缺口。
+
+**Trace**:1790 → 1800 項(正好是三個 TASK + 七個 DES),83 → 86 缺口,**新增的三條就是
+TASK-228/229/230 的「未實作」(low)**,Gate 6 落地即清;0 新增斷鏈/孤兒/漂移/未驗證。基線在動筆前
+就先跑進 scratch 檔比對,全程沒有 `git checkout`/`restore`/`stash`(CLAUDE.md)。
+
+**owner_decision 仍掛著一條**:ADR-064(現在也重複掛在 DES-228 上,因為那才是會被改到的設計列)。
+設計以 (A) 為基準跑,(B) 的差異只有一行(保留 `RunParams.tools` 與那一階,指南改口說舊列是三層),
+所以**沒有任何 TASK 卡在這個答案上**——Gate 6 不必停。
+
+未 commit:只動了 `03-tasks.md` / `04-design.md` / `state.yaml` / `journal.md`,外加 `trace` 重跑產生的
+`dashboard.html`;整棵樹留給 orchestrator。
+
+---
+
+## v34 Gate 5 (test-first RED) — verifier, 2026-09-20
+
+PASSED. Impact closure {REQ-202, REQ-203, REQ-204, REQ-094, REQ-136, REQ-116, REQ-117, ARCH-004,
+ARCH-087, ARCH-107, ARCH-129, ADR-032, DES-007, DES-102, DES-195}. Wrote 17 new RED work items
+into `05-tests.md` (UT-268..276, IT-173..177, VAL-222..224 — VAL numbering starts at 222, not 219,
+because VAL-219/220 already exist in `08-validation.md` for an unrelated REQ-201 closure; caught
+by re-running `--impact` after the first draft and confirming the collision before finalizing),
+each tracing to the seven new DES-223..229 rows / ARCH-136..140 / ADR-061..063 and REQ-202/203/204,
+into 11 EXISTING test files (touched, not replaced):
+
+- `tests/unit/params-contract.test.ts` (UT-269): the appendPrompt over-size refusal message names
+  the same ceiling word `detail.ceiling` carries, mirroring the generic branch's existing
+  ceiling-vs-author wording — today it unconditionally says "exceeds the byte ceiling."
+- `tests/unit/workflow-describe-projection.test.ts` (UT-268): `unit`/`ceiling` on the describe
+  projection — the appendPrompt/timeoutMs asymmetry plus the five `boundMax` presence rows.
+- `tests/unit/scan-agent-calls.test.ts` (UT-270): `agentType:` → `AGENT_OPT_RETIRED`, the near-miss
+  re-pointing, `RETIRED_AGENT_OPT_KEYS`'s own content.
+- `tests/integration/registration-enforcement.test.ts` (IT-173): a real `workflow_register` refuses
+  `agentType:` with `detail.violation`/`detail.key` — today it registers CLEAN.
+- `tests/unit/params-resolve.test.ts` (UT-271/UT-272): the five `composePrompt` v34 goldens at two
+  arguments (computed by EXECUTING the pre-cut 4-arg function, per Gate-5 constraint 1 — all five
+  verified to match DES-225's table before being pinned) + `defaultRunParams` never carrying
+  `prompt`/`tools` (DES-228 baseline A).
+- `tests/integration/agent-log-harness-shape.test.ts` (IT-174): persisted `descriptor.prompt`
+  byte-for-byte, no-schema-equals / with-schema-startsWith. **RED not observed** (recorded, same
+  convention as this ledger's own IT-085 case): no fresh registration can carry the retiring
+  segments (`DEFAULTS_RETIRED` since v24), so today's 4-arg composition already equals the future
+  2-arg one for this fixture — pinned now so TASK-229's cut cannot silently change it.
+- `tests/unit/dashboard-lib-agent.test.js` + `tests/fixtures/dashboard-wire.ts` (IT-175): a legacy
+  row's disclosure line is ABSENT, not "applied"/"no record" — 隨機制消失, not a regression. The
+  fixture gains `HARNESS_LEGACY_PRE_V34` as an ALIAS of the existing `HARNESS_APPLIED` row (DES-225
+  rationale item 9 overrides ARCH-137's deletion line for this fixture specifically — it IS the
+  genuine legacy input the totality test needs).
+- `tests/unit/agent-executor-params.test.ts` (UT-273): `agentType` in `req.opts` is recorded-then-
+  thrown `PARAM_UNKNOWN`/`AGENT_OPT_RETIRED` — same shape as the adjacent effort-guard case, today a
+  plain uncoded `Error`.
+- `tests/integration/resume-legacy-params.test.ts` (IT-176/IT-177): a pre-v34 pinned script carrying
+  `agentType` is refused at DISPATCH, observable through `workflow_status` (not merely a unit-level
+  throw — TASK-229's own DoD names this distinction), fixtured by writing the pre-v34 script text
+  directly into `catalog.db` (same "no current code path can produce this row" technique
+  `LEGACY_FLAT_PARAMS` already uses in this file); + a legacy `.agents`-present-AND-`tools`-key row
+  refuses `LEGACY_REREGISTER` (DES-228 baseline A).
+- `tests/unit/compose-config-v2-wiring.test.ts` (UT-274): `RETIRED_CONFIG_KEYS`, one warn naming all
+  three keys with a retirement note on the two retired ones only, engine boots. Deliberately did
+  NOT touch the file's `PROBES`/`EXCLUDED` totality sweep — moving `agentDefinitionsDir` there is
+  TASK-229's same-commit job (Gate-5 constraint 5), not this gate's.
+- `tests/unit/tool-specs.test.ts` + `tests/unit/authoring-guide.test.ts` (UT-275/UT-276): the three
+  advertised appendPrompt rules on `run_start.overrides`; the harness sentence drops
+  `agentType`/`systemPrompt`; a new prompt-layering section; the tool-surface section states TWO
+  layers, scoped to the SDK gateway path; `agentType` appears nowhere in the built guide.
+
+**Measured, not asserted, RED confirmation**: ran all 11 touched files together
+(`npx vitest run <files>`) → 360 tests, 32 new failures, 328 passes — matches the per-file count
+computed by hand before running (3+5+4+1+6+0+1+1+2+2+4+3 = 32). Zero pre-existing case in any
+touched file flipped. Two IT-174 sub-cases are the only "red not observed" pair, named as such
+rather than implied.
+
+**tsc stays green throughout.** Every reference to a not-yet-existing export/field
+(`RETIRED_AGENT_OPT_KEYS`, `RETIRED_CONFIG_KEYS`, `DescribeAgentParamKey.unit`/`.ceiling`, the
+2-arg `composePrompt` call) is either a namespace-style import (resolves to `undefined` at runtime
+without crashing sibling tests — verified empirically with a throwaway scratch test before writing
+any real one) or carries `// @ts-expect-error TASK-229: …`, the same convention this repo's own
+`scan-agent-calls.test.ts` already established for a symbol Gate 6 later provides.
+
+**Trace**: 1800 → 1817 items (exactly the 17 new UT/IT/VAL rows), gap count unchanged at 86 — zero
+new 斷鏈/孤兒/漂移. Confirmed via `--impact REQ-202/203/204` that every new item's `traces:` line
+resolves into the correct downstream closure.
+
+**One ID collision caught and fixed before finalizing**: my first draft numbered the three new VAL
+rows 219/220/221 by scanning only `05-tests.md`'s own `### VAL-` headings; `08-validation.md`
+already owns VAL-219/220 for an unrelated REQ-201 closure (VAL and UT/IT do not share a namespace
+split the same way — VAL ids are shared across `05-tests.md` and `08-validation.md`). Re-numbered
+to VAL-222/223/224 after `--impact` showed the new rows silently missing from their REQ's downstream
+closure — the tell that something was wrong, not a parse error.
+
+**ADR-064/DES-228's `owner_decision` is NOT re-minted here.** UT-272/IT-177 state their
+baseline-(A) dependency in prose (their design item already carries the fixed-format marker); if
+the owner answers (B), both become `test_defects` for Gate 6 to re-target — DES-228's own text says
+no task is blocked on the answer, so Gate 6 does not wait either.
+
+**No src/, docs/, or 01-requirements.md edits** (REQ-094/136's retirement is Gate 1's, not this
+gate's). `state.yaml`'s `tech_stack` paragraph is left alone per the architecture's own note (owed
+to whichever gate lands the code). `current_stage` → `impl`; `gates.tests.passed = true`.
+
+Not committed: `05-tests.md`, `state.yaml`, `journal.md`, the 12 touched test files + 1 touched
+fixture file, plus `dashboard.html` regenerated by `trace`. Left for the orchestrator.
+
+**Post-review corrections (advisor pass, before finalizing).** Two assertions were wrong against
+DES-226/DES-227's own signatures, both would have driven a faithful Gate 6 implementer to weaken
+the test rather than fix the code — the exact failure mode DES-225's own rationale item 2 warns
+about: (1) IT-176 asserted `AGENT_OPT_RETIRED` on the per-agent record's `detail` STRING, but
+DES-226's signature never puts that word in the string (it lives only in the THROWN error's
+`.detail` OBJECT, which `run-manager.ts`'s `toErr()` drops before `workflow_status` ever sees it) —
+corrected to match DES-226's actual message text, and the `toErr`/observability tension is flagged
+as a question for the implementer, not silently resolved either way. (2) UT-274's "no retirement
+note on the typo key" check sliced 40 fixed characters after the word "typo", which breaks the
+moment DES-227's note is emitted in a different order than assumed — replaced with an
+order-independent count. Also: spot-checked the live dashboard gap list to confirm REQ-202/203/204
+still carry both their 未實作 and 未真實驗證 rows unchanged (IT-174 being green did not wrongly
+promote any of the three — the specific risk a REQ-tracing green test inside a mixed-red closure
+raises); added the appendPrompt-ceiling case UT-268 was missing (REQ-202's own headline scenario);
+named DES-226's "parallel() arm" requirement as satisfied by an existing generic test
+(`sandbox-refusal-error-code.test.ts`) rather than duplicating it; named two touched files sitting
+outside every TASK's `files:` list as a heads-up, not a violation. Full test suite re-run after
+every fix: still exactly 32/360 red, 328 pass, zero regressions; tsc and trace unchanged.

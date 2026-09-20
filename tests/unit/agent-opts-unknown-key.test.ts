@@ -38,7 +38,7 @@ describe('unknown agent() option keys are refused at scan time (UT-165, #55)', (
   it('the hint LISTS the accepted keys — a refusal that does not say what IS accepted just moves the guessing', () => {
     const { violations } = scanAgentCalls('agent("plan", { nosuchknob: 1 });');
     const hint = violations.find((x) => x.code === 'PARAM_UNKNOWN')?.hint ?? '';
-    for (const accepted of ['prompt', 'label', 'phase', 'schema', 'isolation', 'agentType', 'mcp', 'allowedTools']) {
+    for (const accepted of ['prompt', 'label', 'phase', 'schema', 'isolation', 'mcp', 'allowedTools']) {
       expect(hint, `accepted key ${accepted} not listed`).toContain(accepted);
     }
   });
@@ -57,7 +57,7 @@ describe('unknown agent() option keys are refused at scan time (UT-165, #55)', (
   });
 
   it('every other declared AgentOpts key is accepted (no false refusal of the documented surface)', () => {
-    const src = 'agent("plan", { prompt: "p", label: "plan", phase: "one", schema: { type: "object" }, isolation: "worktree", agentType: "reviewer", mcp: ["fs"], allowedTools: ["Read"] });';
+    const src = 'agent("plan", { prompt: "p", label: "plan", phase: "one", schema: { type: "object" }, isolation: "worktree", mcp: ["fs"], allowedTools: ["Read"] });';
     expect(scanAgentCalls(src).violations).toEqual([]);
   });
 

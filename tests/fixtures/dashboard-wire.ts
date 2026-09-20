@@ -25,7 +25,12 @@ import type { IssuesListView, IssueSummary } from '../../src/github/issue-report
 
 // ---- run_agent_log / GET /api/runs/:id/agents/:agentId ----
 
-const HARNESS_APPLIED: HarnessDescriptor = {
+// v34 (DES-225 rationale item 9, ARCH-137, ADR-061, TASK-229): `systemPrompt` is retired from
+// `HarnessDescriptor` at the type level, but this fixture keeps the property deliberately — it IS
+// the genuine pre-v34 shape the retirement's totality tests need as input (a writer this version
+// of the engine can no longer produce, but a reader must still handle without crashing). Cast at
+// the fixture boundary so `tsc` accepts a property the type no longer declares.
+const HARNESS_APPLIED = {
   model: 'claude-3-5-sonnet-20241022',
   provider: 'anthropic',
   prompt: 'the user-visible prompt only — never the agentType systemPrompt',
@@ -33,9 +38,8 @@ const HARNESS_APPLIED: HarnessDescriptor = {
   skills: [],
   mcpServers: [],
   surfaceType: 'curated',
-  // v27 (DES-195, ARCH-129): present iff a non-empty agentType systemPrompt was applied.
   systemPrompt: { agentType: 'researcher', bytes: 42 },
-};
+} as unknown as HarnessDescriptor;
 
 const AGENT_RECORD: AgentRecord = {
   agentId: 'a1',
@@ -47,6 +51,13 @@ const AGENT_RECORD: AgentRecord = {
 };
 
 const EVENTS: TranscriptEvent[] = [{ ts: '2026-09-11T00:00:00.000Z', kind: 'message', data: {} }];
+
+// v34 (DES-225 rationale item 9, ARCH-137, ADR-061, TASK-229, REQ-203): this row IS the genuine
+// pre-v34 legacy harness shape the retirement's IT/UT need as input — ARCH-137's deletion table
+// names these exact lines for removal, and DES-225 overrides that for this fixture specifically:
+// deleting it and hand-building a legacy row in the test would be testing a straw man. Exported as
+// an ALIAS (not a rename) so this file's existing `HARNESS_APPLIED` importers are untouched.
+export const HARNESS_LEGACY_PRE_V34: HarnessDescriptor = HARNESS_APPLIED;
 
 export const AGENT_LOG_OK: AgentLogView = {
   runId: 'r1', status: 'completed', result: EVENTS,

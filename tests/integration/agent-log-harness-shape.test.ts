@@ -218,4 +218,68 @@ describe('run_agent_log harness provenance (IT-066 v21, DES-105)', () => {
     expect(harness?.label).toBe('plan');
     expect(harness?.materialized).toBeDefined();
   }, 10_000);
+
+  // IT-174 (DES-225, ARCH-140, ADR-061, TASK-229, REQ-203/REQ-204, Gate-5 constraint 2): the
+  // executable replacement for the deleted `harness_prompt_prefix_mismatch` warn — pins that the
+  // PERSISTED `descriptor.prompt` is the dispatched string: `composePrompt(scriptPrompt,
+  // appendPrompt)`, plus the OUTPUT FORMAT suffix (+ retry nudge) when `opts.schema` is set.
+  //
+  // RED WAS NOT OBSERVED for this fixture (recorded honestly, same convention as IT-085's
+  // agent()-option wire-confirmation case above): this run declares no `agentType` and no
+  // `defaults.prompt` (v24 already refuses `defaults` at registration — DEFAULTS_RETIRED — so no
+  // FRESH registration can exercise the retiring segments at all), so today's 4-arg
+  // `composePrompt(undefined, undefined, script, append)` already equals the future 2-arg
+  // `composePrompt(script, append)` byte-for-byte — there is no live producer of a divergent
+  // composition for a fresh dispatch. The value of pinning it NOW is that TASK-229's cut (deleting
+  // `stripFirstSegment` and the `systemPrompt` spread) must not accidentally change this byte
+  // sequence for the ordinary (no-agentType) case, which is by far the common one post-cut.
+  it('persisted descriptor.prompt (no schema) equals the script prompt + framed appendPrompt, byte-for-byte', async () => {
+    const script =
+      `export const meta = { params: { agents: { say: { ` +
+      `model: { type: 'string', default: 'default' }, ` +
+      `effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, ` +
+      `timeoutMs: { type: 'number', default: 60000 }, ` +
+      `appendPrompt: { type: 'string', default: '' } } } } };\n` +
+      `phase('Work');\n` +
+      `return await agent('say', { prompt: 'SCRIPT PROMPT' });`;
+    const sub = await runScriptVia(
+      provCallTool,
+      script,
+      { overrides: { agents: { say: { appendPrompt: 'USER TEXT' } } } },
+    ) as { runId?: string };
+    const runId = sub.runId!;
+    const label = 'say';
+    let harness: { prompt?: string } | undefined;
+    for (let i = 0; i < 60 && !harness?.prompt; i++) {
+      const log = await provCallTool('run_agent_log', { runId, label }) as { harness?: { prompt?: string } };
+      harness = log.harness ?? undefined;
+      if (!harness?.prompt) await new Promise((r) => setTimeout(r, 100));
+    }
+    const expected = 'SCRIPT PROMPT\n\n<user-instructions untrusted="true">\nUSER TEXT\n</user-instructions>';
+    expect(harness?.prompt).toBe(expected);
+  }, 10_000);
+
+  // IT-175 companion case: WITH a schema, `descriptor.prompt` STARTS WITH the composed string and
+  // carries the OUTPUT FORMAT suffix — the literal-equality oracle above would be a false red here
+  // (Gate-5 constraint 2 / design rationale item 2), so this is a startsWith assertion, not equals.
+  it('persisted descriptor.prompt WITH a schema starts with the composed prompt and carries the OUTPUT FORMAT suffix', async () => {
+    const script =
+      `export const meta = { params: { agents: { say: { ` +
+      `model: { type: 'string', default: 'default' }, ` +
+      `effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, ` +
+      `timeoutMs: { type: 'number', default: 60000 } } } } };\n` +
+      `phase('Work');\n` +
+      `return await agent('say', { prompt: 'SCRIPT PROMPT', schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] } });`;
+    const sub = await runScriptVia(provCallTool, script) as { runId?: string };
+    const runId = sub.runId!;
+    const label = 'say';
+    let harness: { prompt?: string } | undefined;
+    for (let i = 0; i < 60 && !harness?.prompt; i++) {
+      const log = await provCallTool('run_agent_log', { runId, label }) as { harness?: { prompt?: string } };
+      harness = log.harness ?? undefined;
+      if (!harness?.prompt) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(harness?.prompt?.startsWith('SCRIPT PROMPT')).toBe(true);
+    expect(harness?.prompt).toContain('OUTPUT FORMAT');
+  }, 10_000);
 });

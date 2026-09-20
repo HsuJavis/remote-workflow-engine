@@ -75,33 +75,18 @@ describe('AgentExecutor + RunParams — required dispatch wiring (UT-100, DES-10
     expect(harnessEvent?.data?.descriptor?.provenance?.['model']).toBe('default');
   });
 
-  // v21 Gate 5 addendum Part 2 (DES-102 boundary condition — clause-coverage sweep): "defaults.tools
-  // sits directly BELOW agentType in the tool surface: per-call allowedTools > agentType tools >
-  // defaults.tools." mergeRunParams folding `tools` into the snapshot is covered by UT-099, but the
-  // dispatch-time LADDER (registered defaults.tools reaching opts.allowedTools when neither the
-  // caller nor an agentType supplied one) was never exercised end to end.
-  it('registered defaults.tools reaches the outbound opts.allowedTools when neither the caller nor an agentType set one', async () => {
+  // v34 (DES-228, ARCH-140, ADR-064 baseline (A), TASK-229, REQ-203/204): the `defaults.tools`
+  // dispatch-time ladder this pair of cases pinned retires WHOLE with `RunParams.tools` — the tool
+  // surface is now exactly per-call `allowedTools` > deployment `defaultAllowedTools` (no
+  // `RunParams` rung at all), so a case asserting a `RunParams.tools` value reaches
+  // `opts.allowedTools` pins a field that no longer exists (`tsc` error, not merely a red test).
+  // 隨機制消失 — no successor id; the surviving two-layer claim is DES-229's guide text, not a
+  // dispatch-wiring unit test (there is no third rung left to race against the other two).
+
+  it('a caller-supplied opts.allowedTools is forwarded to the gateway unchanged (no RunParams rung to compete with, v34)', async () => {
     const gw: GatewayClient = { invoke: vi.fn().mockResolvedValue(OK_RESULT) };
     const executor = new AgentExecutor({ gateway: gw });
     const runParams: RunParams = {
-      tools: ['Read', 'Grep'],
-      provenance: { model: 'engine', effort: 'engine', timeoutMs: 'engine', appendPrompt: 'engine' },
-    };
-
-    await executor.run({
-      runId: 'r-tools-1', agentId: 'a-tools-1', prompt: 'hi', opts: {},
-      workspace: '/tmp/ws', signal: new AbortController().signal,
-      runParams,
-    } as Parameters<typeof executor.run>[0]);
-
-    expect(gw.invoke).toHaveBeenCalledWith(expect.objectContaining({ opts: expect.objectContaining({ allowedTools: ['Read', 'Grep'] }) }));
-  });
-
-  it('a caller-supplied opts.allowedTools wins over registered defaults.tools', async () => {
-    const gw: GatewayClient = { invoke: vi.fn().mockResolvedValue(OK_RESULT) };
-    const executor = new AgentExecutor({ gateway: gw });
-    const runParams: RunParams = {
-      tools: ['Read', 'Grep'],
       provenance: { model: 'engine', effort: 'engine', timeoutMs: 'engine', appendPrompt: 'engine' },
     };
 
@@ -154,6 +139,36 @@ describe('AgentExecutor + RunParams — required dispatch wiring (UT-100, DES-10
     // The gateway must never have been dispatched for a call that fails pre-dispatch validation.
     expect(gw.invoke).not.toHaveBeenCalled();
     // A terminal-failure record lands in the journal (never an untyped/absent record).
+    expect(appendSpy).toHaveBeenCalled();
+  });
+
+  // UT-273 (DES-226, ARCH-137, ADR-063, TASK-229, REQ-203/REQ-096): the SAME "record then throw"
+  // shape as the effort guard above, at the site the `Unknown agentType` throw stands today — a
+  // pre-v34 pinned script carrying `agentType` in its options literal must be refused at DISPATCH
+  // (Object.hasOwn(req.opts, 'agentType')), not silently accepted. Red reason: today `agentType` is
+  // resolved against `this._agentTypes` (empty here) and throws a PLAIN `Error` with no `.code` at
+  // all ('Unknown agentType: reviewer') — `.rejects.toMatchObject({code:'PARAM_UNKNOWN', …})` fails
+  // because `err.code` is undefined.
+  it('req.opts carrying agentType (a stored pre-v34 script re-run): record a terminal failure THEN throw PARAM_UNKNOWN/AGENT_OPT_RETIRED (never a silent null via parallel())', async () => {
+    const store = new InMemoryRunStore(CLOCK);
+    const appendSpy = vi.spyOn(store, 'appendTranscript');
+    const gw: GatewayClient = { invoke: vi.fn().mockResolvedValue(OK_RESULT) };
+    const executor = new AgentExecutor({ gateway: gw, store });
+    const runParams: RunParams = { provenance: { model: 'engine', effort: 'engine', timeoutMs: 'engine', appendPrompt: 'engine' } };
+
+    await expect(
+      executor.run({
+        runId: 'r-5', agentId: 'a-5', prompt: 'hi',
+        opts: { agentType: 'reviewer' } as unknown as Parameters<typeof executor.run>[0]['opts'],
+        workspace: '/tmp/ws', signal: new AbortController().signal,
+        runParams,
+      } as Parameters<typeof executor.run>[0]),
+    ).rejects.toMatchObject({ code: 'PARAM_UNKNOWN', detail: { violation: 'AGENT_OPT_RETIRED', param: 'agentType' } });
+
+    // The gateway must never have been dispatched for a call refused pre-dispatch.
+    expect(gw.invoke).not.toHaveBeenCalled();
+    // A terminal-failure record lands in the journal — this is what makes the refusal observable
+    // through workflow_status/run_agent_log rather than a bare unswallowable throw inside parallel().
     expect(appendSpy).toHaveBeenCalled();
   });
 });

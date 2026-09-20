@@ -57,9 +57,9 @@ interface FileConfig extends Partial<Omit<ServerConfig, 'gateway' | 'principals'
   principals?: Record<string, { role: string }>;
   /** D-F11: the configurable default core tool set (e.g. `["Read","Write","Bash"]`) forwarded to
    *  ClaudeAgentSdkGatewayConfig.defaultAllowedTools — applied to every call that doesn't carry its
-   *  own agentType-derived opts.allowedTools. Only meaningful when `gateway` is "sdk" (the
-   *  default); has no effect on the "direct-fetch" path. Omitted -> ClaudeAgentSdkGatewayClient's
-   *  own built-in minimal core set applies (never an uncurated full tool surface). */
+   *  own per-call opts.allowedTools. Only meaningful when `gateway` is "sdk" (the default); has no
+   *  effect on the "direct-fetch" path. Omitted -> ClaudeAgentSdkGatewayClient's own built-in
+   *  minimal core set applies (never an uncurated full tool surface). */
   defaultAllowedTools?: string[];
   /** REQ-037: the REAL Anthropic API base the provider-native (LiteLLM-bypassed) path dispatches an
    *  `anthropic`-provider alias to. Omitted -> `https://api.anthropic.com`. */
@@ -84,7 +84,7 @@ interface FileConfig extends Partial<Omit<ServerConfig, 'gateway' | 'principals'
 export const KNOWN_FILE_CONFIG_KEYS: Record<keyof FileConfig, true> = {
   bind: true, port: true, allowedHosts: true, workRoot: true, aliases: true, timeoutMs: true,
   retries: true, useLiteLLMProxy: true, proxyManager: true, litellmPort: true,
-  agentDefinitionsDir: true, gateway: true, issueReporter: true, mcpProbe: true,
+  gateway: true, issueReporter: true, mcpProbe: true,
   schedulerDbPath: true, assetRoot: true, agentSlots: true, runConcurrency: true, workspaceTtlMs: true,
   modelCatalogFetchers: true, modelCatalog: true, maxWorkflowDepth: true,
   maxWorkflowDescendants: true, maxConcurrentRuns: true, seedRefAllowlist: true,
@@ -93,6 +93,16 @@ export const KNOWN_FILE_CONFIG_KEYS: Record<keyof FileConfig, true> = {
   auth: true, maxTimeoutMs: true, maxAppendPromptBytes: true, maxEffort: true,
   maxWorkflowVersions: true, principals: true, mcpEgressAllowlist: true,
   defaultAllowedTools: true, anthropicBaseUrl: true, anthropicAuth: true,
+};
+
+// v34 (DES-227, ARCH-139, TASK-229, REQ-203): keys that USED to be forwarded by composeConfig and
+// no longer are — an operator's stale `rwe.config.json` entry gets a retirement note instead of
+// the plain "unrecognized" treatment a typo gets. Cannot be compile-pinned the way
+// `KNOWN_FILE_CONFIG_KEYS` is (a retired key is by definition not `keyof FileConfig` any more); the
+// one contradiction worth guarding is that no key appears in both maps (see the wiring UT).
+export const RETIRED_CONFIG_KEYS: Record<string, string> = {
+  graphAnalyzer: 'at v24 (ADR-025) — diagrams are author-drawn `mermaid` supplied to `workflow_register`; no replacement, remove the key',
+  agentDefinitionsDir: 'at v34 — the server-side agentType mechanism is gone; see workflow_authoring_guide → prompt layering',
 };
 
 /** v24 (ARCH-090, DES-141): validates a raw `FileConfig.principals` role map into
@@ -142,16 +152,19 @@ interface ComposeConfigDeps {
 // this is what makes a wiring gap here catchable by a unit/integration-tier test that boots the
 // way main.ts itself does, not only by a real-run validation round (ORCH D-F10 structural rule).
 export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigDeps = {}): Promise<ServerConfig> {
-  // v24 (ARCH-090, DES-141): an unrecognized top-level key (a typo, or a retired block an operator
-  // never removed — e.g. `graphAnalyzer`, dropped this iteration with the LLM-drawn-diagram analyzer
-  // it configured) gets ONE visible warning naming all of them, rather than being silently ignored.
+  // v24 (ARCH-090, DES-141) / v34 (DES-227, ARCH-139, TASK-229, REQ-203): an unrecognized top-level
+  // key — a typo, or a key that USED to be forwarded and was retired (`graphAnalyzer`,
+  // `agentDefinitionsDir`) — gets ONE visible warning naming all of them, with a retirement note
+  // inline next to each RETIRED key only (a typo never had a mechanism to retire, so it gets none).
+  // No fail-fast either way: the engine still boots.
   const unknownKeys = Object.keys(fileConfig).filter((k) => !(k in KNOWN_FILE_CONFIG_KEYS));
   if (unknownKeys.length > 0) {
-    const graphAnalyzerNote = unknownKeys.includes('graphAnalyzer')
-      ? ' (ADR-025: diagrams are now author-drawn `mermaid` supplied to `workflow_register`, not analyzed by an LLM — `graphAnalyzer` has no replacement and can be removed from rwe.config.json.)'
-      : '';
+    const named = unknownKeys.map((k) => {
+      const note = RETIRED_CONFIG_KEYS[k];
+      return note !== undefined ? `${k} (retired ${note})` : k;
+    });
     // eslint-disable-next-line no-console
-    console.warn(`[remote-workflow-engine] unrecognized config key(s) in rwe.config.json, ignored: ${unknownKeys.join(', ')}.${graphAnalyzerNote}`);
+    console.warn(`[remote-workflow-engine] unrecognized config key(s) in rwe.config.json, ignored: ${named.join(', ')}.`);
   }
 
   // v24 (ARCH-090, DES-141, ADR-028): boot REFUSES on a malformed role — never a silent 'user'.
@@ -206,11 +219,8 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // indefinitely, contradicting decision D-G (user-reconfirmed 2026-07-03).
     timeoutMs: fileConfig.timeoutMs ?? 15000,
     retries: fileConfig.retries,
-    // D-F10(b): forwarded regardless of gateway choice — the agentType composition-root loader
-    // (D-F2) is independent of which GatewayClient the run ends up dispatching through.
-    agentDefinitionsDir: fileConfig.agentDefinitionsDir,
-    // TASK-027: forwarded regardless of gateway choice, same convention as agentDefinitionsDir
-    // above — the "sdk" branch below consumes it directly when constructing its own
+    // TASK-027: forwarded regardless of gateway choice — the "sdk" branch below consumes it
+    // directly when constructing its own
     // LiteLLMProxyManager; a "direct-fetch" caller's own ServerConfig.litellmPort reaches
     // server.ts's LiteLLMGatewayClient construction unchanged.
     litellmPort: fileConfig.litellmPort,

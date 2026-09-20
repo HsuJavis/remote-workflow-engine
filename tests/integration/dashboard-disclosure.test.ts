@@ -35,8 +35,7 @@
 // systemPrompt as segment 1 and puts it verbatim on `HarnessDescriptor.prompt`, which both
 // transports return unchanged.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { createServer as createHttpServer, type Server as HttpServer } from 'node:http';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
@@ -44,7 +43,7 @@ import type { Server, ServerConfig } from '../../src/server.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
 import { IssueReporter, type GithubIssueClient } from '../../src/github/issue-reporter.js';
 import type { SecretSource } from '../../src/secret-resolver.js';
-import { runScriptVia, registerPublishedVia } from '../helpers/workflow-fixtures.js';
+import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 import { DISCLOSURE_TABLE } from '../fixtures/dashboard-wire.js';
 
 // v27c AC-1 repair (Gate 8 send-back): the pre-repair version of this test asserted
@@ -201,94 +200,16 @@ describe('dashboard disclosure key-set table (IT-165, ADR-054, DES-192)', () => 
   });
 });
 
-const STUB_PORT = 38199;
-const MARKER = 'RWE-V27-SYSTEMPROMPT-MARKER-DO-NOT-LEAK';
-const SCRIPT_PROMPT = 'summarize the ticket, script-supplied prompt';
+// v34 (DES-225, ARCH-137, ADR-061, TASK-229, REQ-203): the `REQ-136 (real run, both transports)`
+// describe block that used to stand here — booting a real server with `agentDefinitionsDir` and
+// dispatching `agent('r', { agentType: 'marked', ... })` — retires WITH the composition root it
+// boots (`src/agent-definitions.ts`, `ServerConfig.agentDefinitionsDir`); neither compiles any
+// more. 隨機制消失: REQ-136's own disclosure PROPERTY survives (the panel improves — with nothing to
+// strip, `descriptor.prompt` is the gateway's verbatim echo of the whole prompt), re-verified by
+// IT-175 (`tests/unit/dashboard-lib-agent.test.js`) against a legacy row instead of a live
+// agentType run. **Named risk, not this task's to resolve** (per the v34 retirement register,
+// 05-tests.md): VAL-211 was `real:true` Gate 7.5 evidence riding this exact block — its real-tier
+// evidence cannot be re-run as specified once `agentType` is gone, so whoever next touches
+// REQ-136/VAL-211 (Gate 1 or Gate 7.5) needs a new `real:true` path, most likely IT-175's
+// legacy-row scenario read back off a genuinely upgraded deployment.
 
-function startStubOllamaServer(): { server: HttpServer; requests: Array<{ prompt: string }> } {
-  const requests: Array<{ prompt: string }> = [];
-  const server = createHttpServer((req, res) => {
-    if ((req.url ?? '').startsWith('/api/tags')) {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ models: [] }));
-      return;
-    }
-    let raw = '';
-    req.on('data', (c) => (raw += c));
-    req.on('end', () => {
-      const body = JSON.parse(raw || '{}') as { prompt?: string };
-      requests.push({ prompt: body.prompt ?? '' });
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ response: 'ack', prompt_eval_count: 1, eval_count: 1 }));
-    });
-  });
-  return { server, requests };
-}
-
-describe('REQ-136 (real run, both transports): the online agent-detail response never carries the agentType systemPrompt', () => {
-  let server: Server | undefined;
-  let stub: ReturnType<typeof startStubOllamaServer>;
-  let definitionsDir: string;
-  const ORIGINAL_OLLAMA_BASE_URL = process.env['OLLAMA_BASE_URL'];
-
-  beforeAll(async () => {
-    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-it165-'));
-    definitionsDir = join(workRoot, 'agents');
-    mkdirSync(definitionsDir, { recursive: true });
-    writeFileSync(
-      join(definitionsDir, 'marked.md'),
-      ['---', 'name: marked', 'model: marked-alias', '---', MARKER, ''].join('\n'),
-      'utf8',
-    );
-    stub = startStubOllamaServer();
-    await new Promise<void>((resolve) => stub.server.listen(STUB_PORT, '127.0.0.1', resolve));
-    process.env['OLLAMA_BASE_URL'] = `http://127.0.0.1:${STUB_PORT}`;
-    server = await createServer({
-      port: 0, bind: '127.0.0.1',
-      aliases: { default: { provider: 'ollama', model: 'default-model' }, 'marked-alias': { provider: 'ollama', model: 'marked-model' } },
-      useLiteLLMProxy: false,
-      agentDefinitionsDir: definitionsDir,
-      graphAnalyzer: { enabled: false },
-    } as ServerConfig & { agentDefinitionsDir: string });
-  });
-
-  afterAll(async () => {
-    await server?.close();
-    await new Promise<void>((resolve) => stub.server.close(() => resolve()));
-    if (ORIGINAL_OLLAMA_BASE_URL === undefined) delete process.env['OLLAMA_BASE_URL'];
-    else process.env['OLLAMA_BASE_URL'] = ORIGINAL_OLLAMA_BASE_URL;
-  });
-
-  async function mcpCall(name: string, args: Record<string, unknown>) {
-    const res = await fetch(`http://127.0.0.1:${server!.port}/mcp`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
-    });
-    const body = (await res.json()) as { result?: { content: Array<{ text: string }> } };
-    return JSON.parse(body.result!.content[0]!.text);
-  }
-
-  it('neither the HTTP nor the MCP agent-detail body contains the systemPrompt, and BOTH still contain the script prompt', async () => {
-    const run = await runScriptVia((tool, args) => mcpCall(tool, args as Record<string, unknown>), `return agent('r', { agentType: 'marked', prompt: '${SCRIPT_PROMPT}' });`);
-    const runId = run.runId as string;
-    const deadline = Date.now() + 20000;
-    let status = await mcpCall('run_status', { runId });
-    while (Date.now() < deadline && ['running', 'queued'].includes(status.status)) {
-      await new Promise((r) => setTimeout(r, 200));
-      status = await mcpCall('run_status', { runId });
-    }
-    expect(status.status).toBe('completed');
-    const agentId = (status.result.agents as Array<{ agentId: string }>)[0]!.agentId;
-
-    // run_agent_log's ADVERTISED schema takes {runId, label} (a cold model has no way to learn an
-    // engine-minted agentId) — 'r' is the script's own agent() label.
-    const mcpBody = JSON.stringify(await mcpCall('run_agent_log', { runId, label: 'r' }));
-    const httpRes = await fetch(`http://127.0.0.1:${server!.port}/api/runs/${runId}/agents/${agentId}`);
-    const httpBody = JSON.stringify(await httpRes.json());
-
-    for (const [label, body] of [['MCP run_agent_log', mcpBody], ['HTTP agent detail', httpBody]] as const) {
-      expect(body, `${label}: must not carry the systemPrompt bytes`).not.toContain(MARKER);
-      expect(body, `${label}: must still carry the script-supplied prompt`).toContain(SCRIPT_PROMPT);
-    }
-  }, 30000);
-});

@@ -23,7 +23,6 @@ import { ClaudeAgentSdkGatewayClient } from './gateway/claude-agent-sdk-client.j
 import { DEFAULT_ALIASES } from './default-aliases.js';
 import type { GatewayClient } from './gateway/client.js';
 import type { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
-import { loadAgentDefinitions } from './agent-definitions.js';
 import { SqliteSchedulerPort, type Schedule, type NewSchedule } from './scheduler.js';
 import type { RefusalReason } from './types.js';
 import { WebhookRegistry } from './webhook-registry.js';
@@ -89,10 +88,6 @@ export interface ServerConfig {
   // TASK-027: overrides the managed LiteLLM proxy's hard-coded default port (4000) — closes the
   // repeatedly-Gate-7.5-reproduced port-clash hazard when something else already owns 4000.
   litellmPort?: number;
-  // D-F2: a directory of `agents/*.md` frontmatter files (compat-spec §5) loaded ONCE at startup
-  // into the agentType registry AgentExecutor resolves opts.agentType against. Omitted -> empty
-  // registry (every agentType is "unknown", same as before this field existed).
-  agentDefinitionsDir?: string;
   // D-F1: additive composition-root override — lets a caller (e.g. the product entrypoint,
   // src/main.ts) supply a fully custom GatewayClient (e.g. a real
   // ClaudeAgentSdkGatewayClient session) instead of the aliases-driven LiteLLMGatewayClient built
@@ -728,8 +723,6 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
           litellmPort: config?.litellmPort,
         })
       : undefined);
-  // D-F2: agentType composition-root loader — populated ONCE at startup from agents/*.md frontmatter.
-  const agentTypes = config?.agentDefinitionsDir ? loadAgentDefinitions(config.agentDefinitionsDir) : undefined;
   // D-V3M-2 (REQ-020 D-DOS): the ONE process-global agent-slot semaphore, shared by reference into
   // the RunManager (rations every SDK-CLI dispatch) and surfaced read-only via GET /api/status.
   const agentSemaphore = createSemaphore(config?.agentSlots ?? 32);
@@ -777,7 +770,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v26 (DES-178, ARCH-116, TASK-178): one TTL'd, single-flight snapshot shared by every run's
   // admission-time pin — never one fetch per run, let alone per agent() call.
   const modelBook = new ModelBook(buildModelCatalog, { clock });
-  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, agentTypes, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, aliasNames, modelBook, aliasMap });
+  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, aliasNames, modelBook, aliasMap });
   // v8 Defer B (REQ-057/058): durable webhook ingress registry, same workRoot convention.
   const webhooks = new WebhookRegistry({ clock, runManager, catalog, dbPath: config?.webhookDbPath ?? join(workRoot, 'webhooks.db') });
   // v22 (DES-113, TASK-108) SHRINK: SubmissionValidatorDeps is now `{catalog}` — the alias/MCP-name/

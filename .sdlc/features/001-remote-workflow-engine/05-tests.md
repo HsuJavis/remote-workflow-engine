@@ -13512,3 +13512,379 @@ UT-160 的 byte lock 未轉紅)。三者本次(F4)全綠,見上方各項紀錄�
 讀回,確認 UT-266/UT-267 斷言的三段文字在真正上線的伺服器上也看得到(不只是建置產物裡)。那一輪
 real-tier 證據會落在 `08-validation.md` 的新 VAL 項(F5 的工作,本項的 `real` 屆時仍維持 `false`,
 如 VAL-151 的慣例)。
+
+---
+
+## v34 slice — Gate 5 (RED): REQ-202/203/204, ARCH-136..140, ADR-061..064, DES-223..229
+
+Test-first, before implementation. Every item below is confirmed RED once (or, for the two items
+explicitly marked "RED not observed", confirmed to already hold and pinned as a regression guard —
+same convention this ledger already uses at IT-085's `#55` wire-confirmation case). Full self-check
+commands and per-file pass/fail counts are in this gate's report; summarized per item below.
+
+### UT-268 — `workflow-describe-projection.test.ts`: `DescribeAgentParamKey` gains `unit`/`ceiling`
+- **status:** red
+- **traces:** DES-223, ARCH-136, TASK-228, REQ-202
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v34
+
+Mock policy (unit): pure `projectWorkflowDescribe`/`projectAgentParams`, hand-built
+`WorkflowOwnerView` fixtures, no I/O.
+
+Red reason (measured, `npx vitest run tests/unit/workflow-describe-projection.test.ts`): 5/24 fail.
+`projectAgentParams` (`workflow-view.ts:145-165`) emits only `{type, default, range}` today — the
+asymmetry case (`unit:'bytes'` on `appendPrompt` only) and all four `boundMax` ceiling-presence
+rows on `timeoutMs` fail on `undefined`/`false`. The 19 pre-existing cases in the file are
+unaffected.
+
+### UT-269 — `params-contract.test.ts`: appendPrompt over-size message names the SAME ceiling word as `detail.ceiling`
+- **status:** red
+- **traces:** DES-223, ARCH-136, TASK-228, REQ-202
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v34
+
+Mock policy (unit): pure `validateUserOverrides`, no I/O.
+
+Red reason (measured): `validateOneAgentOverride`'s appendPrompt branch (`contract.ts:555-560`)
+unconditionally returns the literal `'appendPrompt exceeds the byte ceiling'` and never sets
+`detail.ceiling` — 3/3 new cases fail (author-bound message wording, engine-ceiling message
+wording + `detail.ceiling`, and the "word iff field" invariant). 98 pre-existing cases in the file
+pass unchanged.
+
+### UT-270 — `scan-agent-calls.test.ts`: `agentType:` is refused `AGENT_OPT_RETIRED`, not silently accepted
+- **status:** red
+- **traces:** DES-224, ARCH-138, TASK-229, REQ-203
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v34
+
+Mock policy (unit): pure `scanAgentCalls`, no I/O.
+
+Red reason (measured): `agentType` is still IN `AGENT_OPT_KEYS` (`workflow-meta.ts:205-208`) today,
+so a script writing it scans CLEAN (zero violations) — 4/5 new cases fail (the violation itself, its
+hint text, the near-miss re-pointing, and `RETIRED_AGENT_OPT_KEYS`'s own existence/content); the
+"an unrelated unknown key is unaffected" case is a regression guard and already passes. 28
+pre-existing cases in the file pass unchanged.
+
+### IT-173 — `registration-enforcement.test.ts`: a REAL `workflow_register` refuses `agentType:` with a coded, machine-parseable marker
+- **status:** red
+- **traces:** DES-224, ARCH-138, TASK-229, REQ-203
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v34
+
+Mock policy (integration): real `WorkflowCatalog` + real SQLite under a tmp workRoot, no SUT
+boundary mocked.
+
+Red reason (measured): an otherwise-fully-declared script whose only defect is `agentType:` in the
+options literal registers CLEAN today (`err` is `undefined`) — `agentType` has not yet reached the
+scan-refusal path at all.
+
+### UT-271 — `params-resolve.test.ts`: `composePrompt` at TWO arguments, the five v34 goldens byte-for-byte
+- **status:** red
+- **traces:** DES-225, ARCH-140, ADR-061, TASK-229, REQ-203, REQ-204
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v34
+
+Mock policy (unit): pure `composePrompt`, no I/O. Goldens computed by EXECUTING the pre-cut 4-arg
+function at `a98b469` (Gate 5 constraint 1) — all five bytes verified to match DES-225's table
+exactly before being pinned as literals (see this gate's report).
+
+Red reason (measured): `composePrompt` is still 4-ary today. A 2-arg CALL against the old
+positional signature reinterprets `scriptPrompt`/`appendPrompt` as the OLD `systemPrompt`/
+`authorPrompt` slots — a genuine functional mismatch, not a type-only trick. 5/6 new cases fail
+(goldens 2-5 plus the arity pin); golden 1 (no appendPrompt) already passes because the old
+segment-filter is byte-identical to the new definition when only one segment is present — exactly
+the "byte-identical when both retired segments are absent" property DES-225 states. 25 pre-existing
+cases in the file pass unchanged.
+
+### UT-272 — `params-resolve.test.ts`: `defaultRunParams` never carries `prompt`/`tools` (DES-228 baseline A)
+- **status:** red
+- **traces:** DES-228, ARCH-140, TASK-229, REQ-204
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v34
+
+Mock policy (unit): pure `defaultRunParams`, no I/O.
+
+Red reason (measured): `defaultRunParams` still reads `defaults?.prompt`/`defaults?.tools` onto the
+returned snapshot (`resolve.ts:86-87`) — both keys are present on the result today.
+
+Note (not a new deferral — the `owner_decision` marker already lives on ADR-064/DES-228, not
+re-minted here per this ledger's own "one place per decision" convention): this item's shape
+follows ADR-064/DES-228's stated baseline (A). If the owner instead answers (B), this UT (and
+IT-177 below) become `test_defects` for the implementer to re-target at Gate 6 — DES-228's own text
+is explicit that "no task is blocked on the answer."
+
+### IT-174 — `agent-log-harness-shape.test.ts`: persisted `descriptor.prompt` pinned byte-for-byte (no-schema equals, with-schema startsWith)
+- **status:** green
+- **traces:** DES-225, ARCH-140, ADR-061, TASK-229, REQ-203, REQ-204
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v34
+
+Mock policy (integration): real `createServer()` + real dispatch through a `qwen2.5:7b`/ollama
+alias (never reached — the harness fires at session-build time, before the outbound fetch); no SUT
+boundary mocked.
+
+**RED NOT OBSERVED (recorded honestly, same convention as IT-085's `#55` wire-confirmation case).**
+This fixture declares no `agentType` and no `defaults.prompt` — v24 already refuses `defaults` at
+ANY fresh registration (`DEFAULTS_RETIRED`), so no live producer of the two retiring segments exists
+for a fresh dispatch, and today's 4-arg `composePrompt(undefined, undefined, script, append)`
+already equals the future 2-arg `composePrompt(script, append)` byte-for-byte for this case. Both
+new cases (no-schema equals, with-schema startsWith + OUTPUT FORMAT suffix present) pass today
+(measured: `npx vitest run tests/integration/agent-log-harness-shape.test.ts` → 9/9 pass, 7
+pre-existing + 2 new). The value of pinning it now: TASK-229's cut (deleting `stripFirstSegment`
+and the `systemPrompt` spread) must not change this byte sequence for the ordinary (no-agentType)
+case, which is the common one post-cut.
+
+### IT-175 — `dashboard-lib-agent.test.js`: a legacy row's disclosure line is ABSENT, not "applied"/"no record" (隨機制消失)
+- **status:** red
+- **traces:** DES-225, ARCH-137, ADR-061, TASK-229, REQ-203
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v34
+
+Mock policy (unit, `.js`, `allowJs` without `checkJs` per ADR-049/DES-225 rationale item 10):
+literal-fixture oracle, no I/O.
+
+Red reason (measured): `panelModel` sets `vm.systemPromptNote` on BOTH cohorts today (present →
+"applied…N bytes", absent → "no record") — the field always exists; 1/2 new cases fails (the
+field-absence assertion); the no-crash companion case already passes (regression guard). 20
+pre-existing cases in the file pass unchanged.
+
+Companion fixture change (non-test, additive): `tests/fixtures/dashboard-wire.ts` gains
+`HARNESS_LEGACY_PRE_V34` as an ALIAS export of the existing `HARNESS_APPLIED` row (per DES-225
+rationale item 9, overriding ARCH-137's deletion line for that fixture specifically — it IS the
+genuine pre-v34 legacy shape the retirement's tests need as input) — no rename, no existing
+importer touched.
+
+### UT-273 — `agent-executor-params.test.ts`: `agentType` in `req.opts` is recorded-then-thrown `PARAM_UNKNOWN`/`AGENT_OPT_RETIRED`
+- **status:** red
+- **traces:** DES-226, ARCH-137, ADR-063, TASK-229, REQ-203, REQ-096
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v34
+
+Mock policy (unit): fake `GatewayClient` (no network), `InMemoryRunStore` spy — same shape as the
+adjacent effort-guard case this test is modeled on.
+
+Red reason (measured): today `agentType` resolves against `this._agentTypes` (empty in this
+fixture) and throws a PLAIN `Error('Unknown agentType: reviewer')` with no `.code`/`.detail` at
+all — `.rejects.toMatchObject({code:'PARAM_UNKNOWN', detail:{violation:'AGENT_OPT_RETIRED', …}})`
+fails. 6 pre-existing cases in the file pass unchanged.
+
+**DES-226's "one UT for the `parallel()` arm" is satisfied by an EXISTING generic test, not
+re-proven here**: `tests/integration/sandbox-refusal-error-code.test.ts`'s "a parallel() refusal —
+the shape the owner actually hit — carries code AND name" case already pins that a coded throw from
+inside a REAL dispatch survives `parallel()`'s re-throw (`sandbox/guards.ts`) rather than being
+swallowed to `null` — that mechanism is generic to any coded throw from `AgentExecutor.run()`,
+unchanged by v34, and not worth a second, agentType-specific copy. This UT's `appendSpy` assertion
+proves the NEW half specific to this defect: that the refusal is RECORDED (observable via
+`workflow_status`/`run_agent_log`) BEFORE it throws — the same reasoning the adjacent effort-guard
+case above already relies on for the identical shape.
+
+### IT-176 — `resume-legacy-params.test.ts`: a pre-v34 pinned script carrying `agentType` is refused at DISPATCH, observable through `workflow_status`
+- **status:** red
+- **traces:** DES-226, ARCH-137, ADR-063, TASK-229, REQ-203, REQ-096
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v34
+
+Mock policy (integration): real `RunManager` + real `AgentExecutor` + real `SqliteRunStore`; the
+gateway is a fake that THROWS if ever invoked (proving the refusal is pre-dispatch); the legacy row
+is produced by writing the pre-v34 script text directly into `catalog.db` — the same "no current
+code path can produce this row" technique `LEGACY_FLAT_PARAMS` already uses in this file, because a
+fresh v34+ `workflow_register` now refuses `agentType:` at registration (DES-224).
+
+Red reason (measured): the run DOES reach a `failed` terminal state today (not itself red — a plain
+uncoded `Error` still fails the run), but the agent record's `detail` string is
+`"SCRIPT_ERROR: Unknown agentType: reviewer"` — it never contains `AGENT_OPT_RETIRED`, because that
+marker does not exist yet. This is the "not merely a unit-level throw" half TASK-229's own DoD
+names.
+
+### UT-274 — `compose-config-v2-wiring.test.ts`: `RETIRED_CONFIG_KEYS`, one warn naming all three keys, engine boots
+- **status:** red
+- **traces:** DES-227, ARCH-139, TASK-229, REQ-203
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v34
+
+Mock policy (unit): fakes neutralize the spawned proxy manager and `queryImpl` (same `FAKE_DEPS` as
+every other case in this file); `{listen:false}`.
+
+Red reason (measured): `agentDefinitionsDir` is still IN `KNOWN_FILE_CONFIG_KEYS` today (a live,
+forwarded key) — the single `console.warn` names only `graphAnalyzer`/`typo`, never
+`agentDefinitionsDir`; `RETIRED_CONFIG_KEYS` does not exist yet (imports as `undefined`, per the
+`@ts-expect-error` seam), so its own length assertion also fails. 2/2 new cases fail. 59
+pre-existing cases in the file pass unchanged (the `PROBES`/`EXCLUDED` totality sweep is
+deliberately UNTOUCHED here — dropping `agentDefinitionsDir` from `PROBES` into `EXCLUDED` is
+TASK-229's same-commit job, per Gate-5 constraint 5, not this gate's).
+
+### IT-177 — `resume-legacy-params.test.ts`: a legacy `.agents`-present-AND-`tools`-key row refuses `LEGACY_REREGISTER` (DES-228 baseline A)
+- **status:** red
+- **traces:** DES-228, ARCH-140, TASK-229, REQ-204
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v34
+
+Mock policy (integration): real `RunManager` + real `SqliteRunStore`; the legacy row is produced by
+writing the widened `effective_params` JSON directly (same technique as the two existing cases in
+this file).
+
+Note (see UT-272 above — same "owner_decision lives on ADR-064/DES-228, not re-minted per test row"
+convention): follows the design's stated baseline (A); becomes a `test_defect` if the owner answers
+(B).
+
+Red reason (measured): today's resume guard (`run-manager.ts:1038`) discriminates purely on
+`.agents` presence — a `tools` key alongside a present `.agents` resumes normally
+(`resolves.not.toThrow()` where the new assertion expects `.rejects`). The two pre-existing cases in
+this file are unaffected.
+
+### UT-275 — `tool-specs.test.ts`: `run_start.overrides` teaches the three appendPrompt rules; `run_agent_log`'s harness sentence drops `agentType`/`systemPrompt`
+- **status:** red
+- **traces:** DES-229, ARCH-087, ADR-032, TASK-230, REQ-202, REQ-203
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v34
+
+Mock policy (unit): pure data assertion over `projectToolsList()`'s served projection, no I/O.
+
+Red reason (measured): `overrides`'s description (`tool-specs.ts:439-446`) states only the shape
+and the locked-keys sentence — none of the three appendPrompt rules (declare-or-`PARAM_UNKNOWN`,
+untrusted framing, byte ceiling + no frame-close) are present; `run_agent_log`'s description
+(`tool-specs.ts:614`) still states the retired `agentType`/`harness.systemPrompt` sentence
+verbatim. 4/4 new cases fail. 11 pre-existing cases in the file pass unchanged.
+
+### UT-276 — `authoring-guide.test.ts`: the guide teaches v34 prompt layering and the two-layer tool surface
+- **status:** red
+- **traces:** DES-229, ARCH-107, ADR-032, TASK-230, REQ-202, REQ-203
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v34
+
+Mock policy (unit): pure `buildAuthoringGuide()` text assertions, no I/O.
+
+Red reason (measured): the guide has no "prompt layering" heading at all; the tool-surface section
+(`authoring-guide.ts:530-533`) still names THREE layers including the `agentType` frontmatter
+`tools` field; the string `agentType` appears in the built guide (confirmed at
+`authoring-guide.ts:531`). 3/3 new cases fail. 44 pre-existing cases in the file pass unchanged.
+
+### VAL-222 — REQ-202: a cold caller learns the appendPrompt bound and its ceiling attribution before/without a failed call
+- **status:** red
+- **traces:** REQ-202, DES-223
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v34
+
+Proven by (the real-tier validation path DES-223 itself names): UT-268 (`workflow_describe`'s
+`params.agents.<label>.appendPrompt` carries `unit`/`ceiling`) + UT-269 (the refusal message names
+the same ceiling `detail.ceiling` carries). Both red today (see above) — `real:false` per the
+VAL-151/VAL-218 convention; Gate 7.5 exercises the live `workflow_describe` + `run_start` round trip
+against a booted engine.
+
+### VAL-223 — REQ-203: the agentType mechanism is retired at every layer (script, registration, dispatch, config, disclosure) and the ledger reads it as 隨機制消失
+- **status:** red
+- **traces:** REQ-203, DES-224, DES-225, DES-226, DES-227, DES-229
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v34
+
+Proven by: UT-270 + IT-173 (registration refuses `agentType:` with a coded marker) + UT-273 + IT-176
+(a pre-v34 pinned script is refused at DISPATCH, observable through `workflow_status`, not silently
+degraded) + UT-274 (a stale `agentDefinitionsDir` warns-and-boots, never fails closed) + IT-175 (the
+dashboard disclosure line is ABSENT on a legacy row, not a regression) + UT-275/UT-276 (the
+advertised text no longer teaches a retired mechanism). All red today (see above); `real:false` per
+convention — Gate 7.5's own text-sweep protocol (ADR-063) is the real-tier evidence this VAL points
+at.
+
+### VAL-224 — REQ-204: `composePrompt` shrinks to two arguments, `defaults.prompt`/`.tools` leave the run snapshot, `DEFAULTS_RETIRED` outlives its pipeline
+- **status:** red
+- **traces:** REQ-204, DES-225, DES-228
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v34
+
+Proven by: UT-271 (the five composePrompt goldens byte-for-byte at 2 arguments) + IT-174 (the
+persisted `descriptor.prompt` pin — RED NOT OBSERVED, see above, and pinned as a regression guard
+regardless) + UT-272 + IT-177 (`RunParams.prompt`/`.tools` leave the snapshot; a legacy row carrying
+either is refused `LEGACY_REREGISTER` rather than silently degraded — ADR-064 baseline (A)). Red
+today except IT-174 (already-true, pinned); `real:false` per convention.
+
+### v34 retirement register (bookkeeping — file deletion is TASK-229's job, not this gate's)
+
+Six test files/cases retire WITH the `agentType` mechanism they pin (ARCH's own v28-precedent form:
+re-authored under their own id where the surviving behaviour still needs a pin, never silently
+deleted). Named here now so a later Gate does not read their disappearance as an unexplained gap:
+
+| Retiring (ledger id) | Where | Reads as | Owed to |
+|---|---|---|---|
+| `tests/unit/strip-first-segment.test.ts` = **UT-235** (whole file) | retires with `stripFirstSegment` (ARCH-137/DES-225) | 隨機制消失 — the byte-identity property it pinned is re-pinned by UT-271's goldens under a new id | Gate 6 (implementer), TASK-229 |
+| `tests/unit/agent-executor-agent-type.test.ts` = **UT-017** (whole file) | retires with the `agentType` registry (ARCH-137) | 隨機制消失 — the dispatch refusal it pinned (known type applies / unknown type reported) is superseded by UT-273/IT-176 | Gate 6, TASK-229 |
+| `tests/integration/agent-type-composition-root.test.ts` = **IT-016** (whole file) | retires with `src/agent-definitions.ts` (ARCH-137) | 隨機制消失 — no successor: 0 of 22 registered versions ever used the composition root in production | Gate 6, TASK-229 |
+| `tests/integration/main-composition-root-agent-types.test.ts` = **IT-022** (whole file) | retires with `ServerConfig.agentDefinitionsDir` (ARCH-139) | 隨機制消失 — superseded by UT-274 | Gate 6, TASK-229 |
+| the `agentType` cases inside `tests/integration/dashboard-disclosure.test.ts` (REQ-136 real-run block, lines ~228-291 — this block is **VAL-211**'s `real:true` Gate 7.5 evidence today) | retires with the composition root the block boots (agents/*.md frontmatter) | 隨機制消失 — REQ-136's own disclosure PROPERTY survives (the panel names it "does not regress"), re-verified by IT-175 against a legacy row instead of a live agentType run. **Named risk, not this gate's to resolve** (REQ-136's retirement is Gate 1's per the architecture's own register): VAL-211 is currently `real:true` on a mechanism this iteration deletes — its Gate 7.5 evidence cannot be re-run as-is once `agentType` is gone, so whoever next touches REQ-136/VAL-211 (Gate 1 or Gate 7.5) needs a new `real:true` path, most likely IT-175's legacy-row scenario read back off a genuinely upgraded deployment | Gate 1 (requirements) for the REQ; Gate 7.5 (validator) for VAL-211's evidence |
+| the `agentType` cases inside `tests/unit/agent-executor-harness-descriptor.test.ts` / `tests/integration/agent-log-harness-shape.test.ts` / `tests/integration/redact-sweep.test.ts` (per ARCH-137's deletion table) | retires with `def?.tools`/`systemPrompt` decoration | 隨機制消失 — non-agentType coverage in the same files is UNTOUCHED and stays green (confirmed: agent-log-harness-shape.test.ts's 7 pre-existing cases including the provenance/materialized ones pass unchanged after this gate's additions) | Gate 6, TASK-229 |
+
+Also retiring (named at Gate 1/requirements level per the architecture's own retirement register, not
+this gate's to touch): REQ-094's five-segment composition clause and REQ-136's disclosure-surface
+clause in `01-requirements.md` — both 隨機制消失, not this gate's file.
+
+### Exit-gate self-check (Mode A)
+
+1. **Each key DES has a UT; each REQ has a VAL.** DES-223→UT-268/UT-269; DES-224→UT-270/IT-173;
+   DES-225→UT-271/IT-174/IT-175; DES-226→UT-273/IT-176; DES-227→UT-274; DES-228→UT-272/IT-177;
+   DES-229→UT-275/UT-276. REQ-202→VAL-222; REQ-203→VAL-223; REQ-204→VAL-224.
+2. **Tests are all red for the right reason** (measured, not asserted): running the 12 touched
+   files together gives 360 tests, 32 new failures, 328 passes — matching the sum computed by hand
+   per file (3+5+4+1+6+0+1+1+2+2+4+3=32) — and zero pre-existing case in any touched file flipped
+   (params-contract.test.ts 98→98+3red, workflow-describe-projection.test.ts 19→19+5red,
+   scan-agent-calls.test.ts 28→28+1green+4red, registration-enforcement.test.ts 7→7+1red,
+   params-resolve.test.ts 25→25+1green+6red(5 of the 6 red), agent-log-harness-shape.test.ts
+   7→7+2green, dashboard-lib-agent.test.js 20→20+1green+1red, agent-executor-params.test.ts
+   6→6+1red, resume-legacy-params.test.ts 2→2+2red, compose-config-v2-wiring.test.ts 59→59+2red,
+   tool-specs.test.ts 11→11+4red, authoring-guide.test.ts 44→44+3red). The 2 not-red cases
+   (IT-174's two sub-cases) are recorded with a measured reason, not implied, per this ledger's own
+   IT-085 precedent.
+3. **`traces` has no broken links; gap set unchanged, per-REQ spot check.** `sh .sdlc/trace --check`:
+   1817 items / 86 gaps, same 86 as the pre-gate baseline (1800/86) — every new `traces:` id
+   (DES-223..229, ARCH-136..140, ADR-061..064, TASK-228..230, REQ-202/203/204) already exists from
+   this iteration's Architecture/Tasks+Design gates, confirmed via `--impact REQ-202/203/204`
+   resolving every new UT/IT/VAL into the correct downstream closure. Specifically checked (the risk
+   IT-174's own direct `traces: REQ-203, REQ-204` line raises, per this ledger's own "a green test
+   inside a REQ's closure can flip it to verified for code that doesn't exist" caution): the
+   dashboard's gap list still carries BOTH `REQ-202`/`REQ-203`/`REQ-204` 未實作 ("沒有任何實作 (IMPL)
+   追溯到它", sev:mid) AND 未真實驗證 ("僅由 mock/非真實層測試覆蓋…", sev:high) rows, unchanged from the
+   Gate 3+4 baseline's own prediction ("REQ-202/203/204 still showing 未實作+未驗證 — they close at
+   Gates 6/5") — IT-174 being green did not wrongly promote any of the three.
+4. **`files:` amendment owed to the orchestrator (not this gate's to fix):** two touched files sit
+   outside every TASK-228/229/230 `files:` list — `tests/unit/scan-agent-calls.test.ts` (UT-270,
+   carries a `@ts-expect-error` on `RETIRED_AGENT_OPT_KEYS` that becomes a real `tsc` error the
+   moment TASK-229 adds the export, so the implementer must edit this file to drop the directive)
+   and `tests/integration/registration-enforcement.test.ts` (IT-173, needs no post-cut edit, just
+   unlisted). Neither is a DoD violation (no task claims an exact-files clause), but both are
+   real files the implementer will touch; naming them now avoids a "why is this file dirty" surprise
+   at Gate 6.
+5. **Hermetic (no time bombs).** No new test reads the wall clock or compares an absolute date
+   literal against "now" — every fixture uses `FixedClock`/literal ISO strings already frozen in
+   the past (`2024-01-01`, `2026-01-01`), same convention as the files they were added to.

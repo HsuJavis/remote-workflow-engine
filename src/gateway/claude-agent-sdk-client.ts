@@ -47,7 +47,7 @@ export interface ClaudeAgentSdkGatewayConfig {
   /** Extra attempts after the first, only meaningful when timeoutMs is set. Defaults to 0. */
   retries?: number;
   /** D-F11: the configurable default core tool set applied to `options.allowedTools` when a call
-   *  carries no `req.opts.allowedTools` of its own (an agentType-derived curation, see
+   *  carries no `req.opts.allowedTools` of its own (the caller's own per-call value, see
    *  agent-executor.ts, always wins when present). Config key: `defaultAllowedTools` in
    *  rwe.config.json (forwarded by src/main.ts's composeConfig()). Falls back to a built-in
    *  minimal core set (BUILT_IN_CORE_TOOLS below) when this is also omitted — invoke() never
@@ -185,8 +185,8 @@ export async function materializeAssets(
  *  PreToolUse hook (a Bash command's own `blockedPath`, a Read/Write/Edit `file_path`), and cwd is
  *  re-scoped to the run workspace — so Bash here is confined to that workspace, exactly the "bash
  *  跑在固定工作目錄下" the user asked for. Web egress (WebFetch/WebSearch) and sub-agent spawning
- *  (Task/Agent) stay OUT of the default (opt-in per agentType) — they break workspace confinement /
- *  the engine's own orchestration+DOS model respectively. */
+ *  (Task/Agent) stay OUT of the default (opt-in via an explicit per-call `allowedTools`) — they
+ *  break workspace confinement / the engine's own orchestration+DOS model respectively. */
 const BUILT_IN_CORE_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'];
 
 /** REQ-038 passthrough: a model already in `openrouter/<id>` form is NOT a configured alias — its
@@ -244,8 +244,8 @@ function isInsideWorkspace(candidate: string, root: string): boolean {
 // — an agent could Glob/Grep/read a notebook OUTSIDE the workspace through those un-inspected fields.
 // Every known path-bearing tool argument is now extracted and checked; a call is denied if ANY of
 // them escapes. (Bash beyond its SDK-computed `blockedPath` remains best-effort — arbitrary shell
-// isn't statically parseable — so Bash stays opt-in per agentType, never in the default surface for
-// untrusted work.)
+// isn't statically parseable — so Bash stays opt-in via an explicit per-call `allowedTools`, never
+// in the default surface for untrusted work.)
 const PATH_ARG_FIELDS = ['file_path', 'path', 'notebook_path'] as const;
 
 function extractCandidatePaths(input: Record<string, unknown>, blockedPath?: string): string[] {
@@ -475,7 +475,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
    *  message (SECRET_MISSING / SECRET_HANDLE_INVALID) — REQ-018's fail-loud contract: the run
    *  surfaces a clear error rather than silently running a tool with no credential or (worse)
    *  smuggling the literal handle through as a value. The throw propagates up as that agent()'s
-   *  failure (same shape as an unknown agentType/MCP name). */
+   *  failure (same shape as an unknown MCP name). */
   private async _resolveMcpConfigs(workflow: string, names: string[]): Promise<{ configs: Record<string, McpServerConfig>; missing: string[] }> {
     if (this._config.resolveMcp === undefined || names.length === 0) return { configs: {}, missing: names };
     const resolved = await this._config.resolveMcp(workflow, names);
@@ -536,8 +536,8 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     const onExternalAbort = () => controller.abort();
     req.signal?.addEventListener('abort', onExternalAbort, { once: true });
 
-    // D-F11: caller-supplied (agentType-derived) curation wins; else the configured default core
-    // set; else a built-in minimal core set — never left unset (see BUILT_IN_CORE_TOOLS above).
+    // D-F11: caller-supplied opts.allowedTools wins; else the configured default core set; else a
+    // built-in minimal core set — never left unset (see BUILT_IN_CORE_TOOLS above).
     // v25 (#55): declared field, not a cast — the SECOND site the work order did not name and the
     // one that decides what the session actually gets. `[]` is honoured (`??`, not `||`): an empty
     // surface is a real answer, not an absent one.

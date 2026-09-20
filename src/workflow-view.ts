@@ -89,6 +89,8 @@ export interface DescribeAgentParamKey {
   type: ParamSpec['type'];
   default: unknown;
   range?: unknown[] | { min?: number; max?: number };
+  unit?: 'bytes';                                  // appendPrompt ONLY — see boundary in DES-223
+  ceiling?: NonNullable<ParamSpec['ceilingKey']>;  // 'maxTimeoutMs'|'maxAppendPromptBytes'|'maxEffort'
 }
 
 // v24 (DES-156, ARCH-105/106, TASK-149): the ONE `workflow_describe` response — every principal
@@ -157,6 +159,8 @@ function projectAgentParams(
         type: s.type,
         default: s.default,
         ...(s.enum !== undefined ? { range: s.enum } : s.min !== undefined || s.max !== undefined ? { range: { min: s.min, max: s.max } } : {}),
+        ...(key === 'appendPrompt' ? { unit: 'bytes' as const } : {}),
+        ...(s.ceilingKey !== undefined ? { ceiling: s.ceilingKey } : {}),
       };
     }
     out[label] = projected;

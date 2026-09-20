@@ -139,3 +139,33 @@ describe('an unaccepted agent() option key is refused by a REAL registration, no
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+// IT-173 (DES-224, ARCH-138, TASK-229, REQ-203): a script still carrying `agentType:` is refused by
+// a REAL registration with a machine-parseable `detail.violation` marker, not just a scanner-level
+// UT. Red reason: `agentType` is still IN `AGENT_OPT_KEYS` today — this registers CLEAN and
+// `err` is `null`, so `err?.code`/`err?.detail` are both `undefined`.
+describe('workflow_register refuses agentType: with a coded, machine-parseable marker (DES-224, IT-173)', () => {
+  it("agent('a', {agentType:'reviewer'}) ⇒ SCAN_VIOLATION with detail.violation:'AGENT_OPT_RETIRED' and detail.key:'agentType'", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-it173-'));
+    try {
+      const catalog = makeCatalog(dir);
+      // Otherwise-clean, fully-declared contract (same shape as the "clean script" case above) —
+      // isolates the assertion to the `agentType` key alone. Today `agentType` is still IN
+      // `AGENT_OPT_KEYS`, so this registers CLEAN with no error at all (`err` is `null`).
+      const script =
+        `export const meta = { params: { agents: { a: { ` +
+        `model: { type: 'string', default: 'sonnet' }, ` +
+        `effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, ` +
+        `timeoutMs: { type: 'number', default: 60000 } } } } };\n` +
+        `phase('Work');\n` +
+        `await agent('a', { agentType: 'reviewer' });`;
+      const err = await catalog
+        .register({ name: 'v34-agenttype', script, mermaid: 'graph LR\nsubgraph "Work"\nn0(["a"])\nend' })
+        .then(() => null, (e: Error & { code?: string; detail?: Record<string, unknown> }) => e);
+      expect(err?.code).toBe('SCAN_VIOLATION');
+      expect(err?.detail?.['violation']).toBe('AGENT_OPT_RETIRED');
+      expect(err?.detail?.['key']).toBe('agentType');
+      expect(await catalog.exists('v34-agenttype')).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});

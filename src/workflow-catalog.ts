@@ -487,7 +487,7 @@ export class WorkflowCatalog {
     const scan = scanAgentCalls(script);
     if (scan.violations.length > 0) {
       const v = scan.violations[0]!;
-      throw codedError('SCAN_VIOLATION', `${v.code}: ${v.hint} (line ${v.line})`, { line: v.line, key: v.key });
+      throw codedError('SCAN_VIOLATION', `${v.code}: ${v.hint} (line ${v.line})`, { line: v.line, key: v.key, violation: v.code });
     }
 
     // DES-144 (TASK-136): the per-agent parameter contract — AGENT_UNDECLARED etc.

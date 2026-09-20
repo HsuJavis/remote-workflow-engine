@@ -97,12 +97,22 @@ describe('VAL-003: real agent execution via Claude Agent SDK (REQ-003)', () => {
   }, 120000);
 
   it.skipIf(!HAS_PROVIDER)('terminal API error resolves to null (agent() never rejects)' + NO_PROVIDER, async () => {
-    // Use an unknown agentType that produces a reported error but not a hang
-    const r = await runAndWait(withAgent('probe', `
-      const result = await agent('probe', { prompt: 'test', agentType: 'unknown-type-xyz' });
-      return result === null ? 'got-null' : 'got-value';
-    `));
-    // Either completed (unknown agentType rejected at submission) or the agent resolved null
+    // v34 (TASK-229): the `agentType:'unknown-type-xyz'` trigger this case used to force a
+    // terminal, non-hanging error is retired — a script literal carrying `agentType` is now
+    // refused AGENT_OPT_RETIRED at REGISTRATION (DES-224), before this run could even start. An
+    // unresolvable model alias is the direct substitute: same property (a reported terminal error,
+    // never a hang), with no live account/network dependency either way.
+    const script = [
+      `export const meta = { params: { agents: { probe: {`,
+      "  model: { type: 'string', default: 'definitely-unresolvable-alias-xyz' },",
+      "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
+      '  timeoutMs: { type: \'number\', default: 120000 },',
+      '} } } };',
+      `const result = await agent('probe', { prompt: 'test' });`,
+      `return result === null ? 'got-null' : 'got-value';`,
+    ].join('\n');
+    const r = await runAndWait(script);
+    // Either completed (unresolvable alias rejected at submission) or the agent resolved null
     if (r.status === 'completed') {
       expect(['got-null', 'got-value']).toContain(r.result);
     }

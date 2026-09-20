@@ -70,19 +70,6 @@ function activityText(record, now, lang) {
   return lang === 'zh' ? '進行中' : 'progressing';
 }
 
-// (6) the sentence must be TRUE on both cohorts: present -> "applied, N bytes, not shown" (never
-// the content itself); ABSENT -> "no system-prompt record", never "not applied" (a pre-v27 record's
-// absence means UNKNOWN, not "no" — the same defect class as a confident $0.00).
-function systemPromptNote(harness, lang) {
-  const sp = harness?.systemPrompt;
-  if (sp) {
-    return lang === 'zh'
-      ? `系統提示詞:已套用(agentType ${sp.agentType},${sp.bytes} bytes)— 不顯示`
-      : `system prompt: applied (agentType ${sp.agentType}, ${sp.bytes} bytes) — not shown`;
-  }
-  return lang === 'zh' ? '無 system prompt 紀錄' : 'no system-prompt record';
-}
-
 // [v30, REQ-166] README §3's duration card: "Duration (start → end)". A run still in flight has no
 // `endedAt`, so it falls back to what `activityText` already said — never a fabricated end time.
 function durationText(record, now, lang) {
@@ -136,7 +123,6 @@ export function panelModel(record, harness, events, hasMore, now, lang) {
     stats,
     detail: record.detail,
     reasonCode: record.reasonCode,
-    systemPromptNote: systemPromptNote(harness, lang),
     // (5) a capture with no reader is not observability — pass the raw lists through, never just
     // their counts, so the panel can render both the tags and how many there are.
     // [v30, REQ-167] The LISTS, not only their counts. The rule was already written four lines
