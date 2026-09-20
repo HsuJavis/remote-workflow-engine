@@ -7265,3 +7265,75 @@ Production instance (port 8899) was never touched — only two disposable scratc
 booted and stopped by the PID `deploy.sh` printed. `.rwe.pid`/`.rwe.log` (gitignored) were
 overwritten by the scratch boots per the already-documented DEPLOY.md §0 doc-gap warning; no
 working-tree pollution.
+
+---
+
+## 2026-09-21 — v34 Gate 8:關閉確認回合 → **送回 Gate 7.5**(reviewer)
+
+**任務性質**:不是重審整輪,而是覆核「上一輪 Gate 8 送回的四條 blocking finding 是否真的修好」。
+**每一條都打開產物本身看,沒有採信任何 gate 的自述報告。**
+
+**關閉 3 條 / 4 條。**
+- **AC-1 ✅** — `src/authoring-guide.ts:541-547` 已是架構裁定的 Remedy-A 原文,點名內建核心集及其
+  六個工具;`docs/AUTHORING.md:60` 逐字相同(byte lock 完好);六個工具與
+  `src/gateway/claude-agent-sdk-client.ts:190` 的 `BUILT_IN_CORE_TOOLS` 逐項對得上;UT-276 新增的
+  那顆實跑綠。`DEPLOY.md:641` 的一字 fold-in(「只有兩層**可設定**的優先序」)也在。
+- **AC-2 ✅** — INV-V34-1 與 ARCH-137 note 都改成「deployment-set default…not a floor and not a
+  ceiling」,並引 `claude-agent-sdk-client.ts:544-547`。我另行讀了那段程式碼確認是 `??`(覆寫,
+  不是交集),新文字與程式碼相符、舊文字確實不符。純文字、不 bump `iter`、零 trace delta,符合裁定。
+- **QD#1 ✅** — UT-283(`tests/unit/workflow-describe-facade.test.ts:105-143`)完全照 Gate-5
+  constraint 9 的更正版規格寫:一條 `UPDATE` 同時植入 `script`/`params`(NULL)/`defaults`
+  (`{"tools":["WebFetch"]}`),三條斷言齊備(`runnable:false` + `LEGACY_REREGISTER`、`toolSurface`
+  deep-equal、回應不含 `WebFetch`),登記於 `05-tests.md:13888`,實跑綠。
+
+**沒關閉 1 條 → F1(送回 validation)。** DEPLOY.md 的**機制沿革那一半確實刪乾淨了**,但同一段在
+`f1b44be` 長出 17 行**實跑沿革**(`DEPLOY.md:167-183`),而且那次新增**晚於 `2bff4e4` 的全檔散文
+重掃**,所以上一輪 validator 的「whole-file 掃描找不到歷史敘述」並沒有涵蓋到它。其中一句以現在式
+讀是**假的**:「下面第3步印出來的 mermaid 原文對不上這台引擎的 v26 diagram contract」——我把
+DEPLOY.md 第 3 步現印的 mermaid 與 `evidence/v34/deploy-recipe-e2e-2026-09-21.md`「第三次…成功」
+那份逐字比對,**是同一份**。冷操作者照字面讀會得到相反的結論。另加 runId/耗時遙測與一個指回
+ledger 失敗史的指標,而手冊開頭明寫歷史只在 `.sdlc/` 內。
+
+**另找到 F2(同樣送回 validation)。** `rtm.md:195-196` 的 REQ-116/REQ-117 兩列從未收錄本輪新增的
+`VAL-230`/`VAL-231`,而 VAL-231 自己寫著「本列取代 VAL-190/192 作為 REQ-117 的現行證據」。
+`trace.py` 走各文件的 `traces:` 欄而不是 `rtm.md`,所以**沒有任何機械檢查會抓到**——上一輪
+validator 補了 REQ-202/203/204 三列卻漏了這兩列,正是這個結構的必然結果。
+
+**兩條 carry-forward:都判定真的被解除。**
+REQ-117 我先讀該條**驗收原文**再判,不是讀 VAL-231 的自述:冷主體 84 次 `tools/call` 零引擎拒絕碼、
+一次註冊成功、跑到終態讀回結果;第一次三個 agent 全逾時(D1)是 scratch 部署的 alias 指向連不上的
+本機模型,不是主體誤讀介面,且四個坑全部依 REQ-117 自己的條文登記成文件缺陷排進 v35/v36。
+DEPLOY 配方則由真跑證成(`runId fc374235-…`、`completed`、約 336.9 秒),**而且那次真跑自己抓到
+文件印的範例是壞的**(先 `TOOLS_MISMATCH` 再 `EDGE_MISMATCH`)。
+
+**鏈路守衛(用 `git archive` 取乾淨樹,repo 外 scratch,全程沒動 checkout/restore/stash)**:
+v33 收尾 `1ac057d` = **1778 items / 77 gaps** → v34 HEAD `f1b44be` = **1830 items / 77 gaps**,
+**gap 集合逐條 diff 為空(byte-identical)**——v34 加了 52 個工作項、**0 個缺口**。
+`未真實驗證` = 0。`dashboard_check` 0/7/1、`solid_check` 0/0/10(78 模組),皆與基線逐字相同。
+`owner_decision` 31 欄 0 pending。
+
+**要給 orchestrator 的警告**:覆核期間**另一個 agent 把 106 行未 commit 的 v35 需求草稿
+(REQ-205..210)寫進 `01-requirements.md`**,所以工作樹內直接跑 trace 會讀到 **1836/89**,不是
+v34 的 1830/77;那 12 條多出來的缺口已逐條證明就是這六條 REQ 的 `未實作`+`未驗證`。收尾 commit
+請只納入審查產物,不要順手把那個改動一起 commit。
+
+**記下一條教訓(07-review.md §8)**:直接 import `scanAgentCalls`/`parseMetaParams`/`checkMermaid`
+跑出「0 violations, mermaid OK」**不等於** `workflow_register` 會收——根因已查實:
+`checkMermaid()` 第五個參數 `v2` 是**可選的**,`TOOLS_MISMATCH`/`EDGE_MISMATCH` 等規則 (10)-(13)
+全關在 `check-mermaid.ts:285-300` 的 `if (v2)` 裡,而真正的註冊路徑 `workflow-catalog.ts:548` 一律
+傳 `{ expected: derived.graph }`。少傳那個參數拿到的綠燈,在結構上就不可能發現那兩條規則。
+以後只有真的打一次 `workflow_register` 才算數。
+
+**`.panel/` 本輪不刪**:契約只允許在最後一關刪,而 `send_back` 非空,重審會需要 `.panel/review/*.md`。
+待 F1/F2 修好、Gate 8 判 PASS 的那一輪,再連同收尾 commit 一起刪除(沿襲 v22/v26/v27/v28 先例)。
+
+`state.yaml`:`gates.review.passed: false`,note 換成 v34(舊 v33 note 以 `PRIOR:` 接在後面);
+`current_stage → validation`。正式服務(8899)與 scratch 引擎(8793)全程未動。
+
+**本輪自己跑回歸撞出的一條低度債(F5)**:`npm test` **全綠**(412 files / 3062 tests passed,
+0 失敗,629s),但跑完工作樹多出兩個髒檔——`evidence/v28/val215-issues-{dark,light}.png` 被
+`tests/acceptance/val-205-issues-tab.test.ts` 覆寫。驗收測試把截圖寫回已入版控的證據目錄,
+正是 CLAUDE.md 點名該 gitignore 或改寫到 scratch 的那個形狀。**本輪不自行還原**(還原要動
+`git checkout`,明文禁止),兩檔留在工作樹,收尾者請勿 commit。同理,本輪依契約重跑的
+`dashboard.html` 是在被 v35 草稿污染的樹上產生的(1836/89),也**不要** commit,留給關閉那一輪
+在乾淨樹上重新產生。

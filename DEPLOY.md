@@ -166,20 +166,15 @@ curl -s http://localhost:8787/api/models | python3 -c \
 
 > 目標：讓 `agent()` 呼叫走**完整 Claude harness**（工具迴圈 + MCP），模型可以是本機 Ollama 或雲端
 > OpenRouter，能跑真正的 iso-agile-sdlc `sdlc-run`（每個 gate 換一顆角色/一顆模型）。步驟 0/1/2/5
-> 都經本機端對端實測；步驟 3/4（把角色提示詞內文貼進腳本 `prompt` 參數）其中的範例腳本，已於
-> 2026-09-21 對一顆 scratch engine（`http://127.0.0.1:8793/mcp`，`auth.enabled:false`，workRoot 在
-> repo 外）跑過真的 `workflow_register` → `run_start` → `run_result` 端對端：兩個角色都用 `run_start`
-> 的 `overrides:{agents:{architect:{model:'haiku'},implementer:{model:'haiku'}}}` 蓋掉別名，實際換成
-> `claude-haiku-4-5-20251001` 回應（預設 `default` 別名指的本機 Ollama `qwen2.5:7b` 這台機器連不上，
-> 同日稍早一次試跑已因此燒過一整輪，見 evidence/v34/req117-cold-subject-2026-09-20.md D1；也見步驟1
-> 「模型能力提醒」）；`runId fc374235-0300-4f18-a92b-e98a406aede4` 跑到 `completed`，總耗時約 337 秒
-> （`run_status` 的 `startedAt`→`terminalAt`，約 5m37s，幾乎全落在 architect 那步；implementer 只花
-> 11 秒）。
-> **這條路通了，但下面第3步印出來的 mermaid 原文對不上這台引擎的 v26 diagram contract**：逐字照抄
-> 先撞 `TOOLS_MISMATCH`（stadium 節點宣告了 `allowedTools` 卻沒帶第三段 `tools: …`），補上之後又撞
-> `EDGE_MISMATCH`（`architect`/`implementer` 分屬兩個 `subgraph`，兩者之間缺一條顯式邊）——下面第3步
-> 的範例已經改成實測跑贏的版本；兩次撞錯的完整 request/response 與最終 `run_result` 記在
-> `.sdlc/features/001-remote-workflow-engine/evidence/v34/deploy-recipe-e2e-2026-09-21.md`。
+> 都經本機端對端實測，步驟 3/4（把角色提示詞內文貼進腳本 `prompt` 參數）也一樣：下面印出來的
+> 範例腳本與 mermaid 是照著抄就能通過 `workflow_register`、`run_start` 跑到 `completed` 的版本。
+> 兩個角色請用 `run_start` 的 `overrides:{agents:{architect:{model:'haiku'},implementer:{model:'haiku'}}}`
+> 指定模型——預設 `default` 別名指向本機 Ollama，沒跑 Ollama 的機器上那次 run 會整輪逾時（見步驟 0
+> 「模型能力提醒」）。
+>
+> **改這張圖的時候有兩條規則會咬人**：stadium 節點只要對應的 `agent()` 宣告了 `allowedTools`，
+> 節點就必須帶第三段 `tools: …`（否則 `TOOLS_MISMATCH`）；分屬不同 `subgraph` 的兩個 agent 之間
+> 必須有一條顯式的邊（否則 `EDGE_MISMATCH`）。完整規則見 `workflow_authoring_guide`。
 >
 > **伺服器端沒有可設定的系統提示詞層**：傳 `agentType` 給 `agent()` 在**註冊時**被
 > `SCAN_VIOLATION`（detail 帶 `violation:'AGENT_OPT_RETIRED'`）拒絕、在**dispatch 時**被

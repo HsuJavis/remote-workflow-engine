@@ -2728,3 +2728,115 @@ system prompt」時確認了三件事:(1) 每個 agent 的系統提示只有一�
   **Then** 照舊被拒 `DEFAULTS_RETIRED` —— 拿掉拒絕碼會讓舊呼叫端回到「靜默接受、實際不生效」,
   那正是當初廢掉它的原因。
 - **iter:** v34
+
+---
+
+## 迭代 v35 — 2026-09-21:失敗與陷阱都是靜默的
+
+**來源:兩份彼此獨立的實機證據。** (1) 2026-09-20 的遠端實機測試(另一台電腦經 OAuth 連上
+production engine);(2) 同日為 REQ-117 執行的冷主體實驗(未受污染的全新 agent,只給 scratch 引擎
+URL、禁讀本機任何檔案)。兩者各自撞到的問題收斂成同一句話:**這具引擎失敗的時候不出聲**。
+第六條則來自 v34 改寫 DEPLOY.md 配方時實跑掃描器重現出來的註冊誤判。
+
+### REQ-205 — 失敗的 run 必須在磁碟上留下可診斷的原因
+
+- **status:** draft
+- **traces:** REQ-005, REQ-055, REQ-117
+- **acceptance:**
+  **Given** 一個因腳本拋錯而失敗的 run(實機證據:run `bb151ba2`,queued→running→failed 共 132ms)
+  **Then** `runs` 表有**獨立的 error 欄**記下 code 與 message ——
+  不得塞進 `result` 欄,因為那是腳本回傳值,`run_result` 的 `{ok:false}` 形狀必須保持可辨;
+  **And** 引擎重啟後 `run_result` 仍答得出同一個原因(現況:只活在 run-manager 記憶體的
+  `entry.resultError`,`sqlite-run-store.ts:233` 的 `recordResult` 只持久化成功值,重啟即失)。
+  **Given** 同一個失敗的 run **Then** 它的 run 目錄至少有一行 `journal.jsonl` 記下終態與原因
+  (現況:目錄完全空,snapshot 0 agents,磁碟上沒有任何東西可查)。
+  **Given** `run_status` / `run_list` / dashboard **Then** 失敗原因是可見欄位,不必翻 sqlite。
+  **Given** v34 路由過來的那條:`run-manager.ts` 的 `toErr()` 目前丟掉 `.detail` 物件
+  **Then** 結構化標記(例如 `violation: AGENT_OPT_RETIRED`)能從 run 層的錯誤封包讀到,
+  且此變更有自己的測試 —— v34 刻意不偷渡、在此正式處理。
+- **iter:** v35
+
+### REQ-206 — 省略 args 不得讓腳本收到 null,宣告的 args 預設值要真的套用
+
+- **status:** draft
+- **traces:** REQ-001, REQ-090, REQ-117
+- **acceptance:**
+  **Given** `run_start` 沒帶 `args`(含排程與 webhook 觸發,它們天生不帶)
+  **Then** 腳本看到的是 `{}`,不是 `null`/`undefined`
+  (實機證據:`runs.args` 對每個 bare `run_start({name})` 都是 `'null'`,
+  jev-haiku v2 因 `args.url` 打在 null 上而死,v3 只好自己寫 `const a = args || {}` 繞過)。
+  **Given** 腳本在 `meta.params.args.<k>` 宣告了 `default`
+  **Then** 該預設值 materialize 進既有的 `runs.effective_params`,並成為腳本讀到的值。
+  **Given** `params/contract.ts:428` 現行**禁止**宣告 `args.<k>.default`(訊息:"never applied")
+  **Then** 此禁令正式翻案並記錄理由:Gate 8 P6-3 當初禁它是因為「served but never applied
+  是無聲的謊」,補上套用之後那個理由就消失了 —— 這是**有因的翻案**,不是遺忘舊裁定。
+  **Given** `run_start` 的 `args` 說明 **Then** 明寫省略時的形狀與預設值來源。
+- **iter:** v35
+
+### REQ-207 — agent 失敗的語意要說出口,run 的頂層狀態不得掩蓋它
+
+- **status:** draft
+- **traces:** REQ-117, REQ-116, REQ-005
+- **acceptance:**
+  **Given** 一個 run 的每一個 `agent()` 都失敗(冷主體實測:三個 agent 全逾時)
+  **Then** 頂層狀態不得只是 `completed`、`result:null` 而不帶任何訊號 ——
+  run 層要能讓呼叫端一眼看出「裡面全垮了」(例如失敗 agent 數/比例,或一個明確的健康欄位),
+  現況需要呼叫端自己去讀 `agents[]` 才發現,介面上沒有一句話說這是可能的。
+  **Given** `workflow_authoring_guide`
+  **Then** 明說:失敗的 sequential `await agent()` **回 `null` 而不拋例外**
+  (`types.ts:189` 早已是刻意設計,但 guide 只講了 `parallel()` 的 thunk 失敗給 null)——
+  冷主體因此讓 `null` 被字串化接進下一個 prompt(`"Critique this draft in one sentence: null"`),
+  資料靜默損毀;guide 要同時給出作者該怎麼自保的寫法。
+  **Given** 宣告的 `timeoutMs`
+  **Then** 廣告介面明說它界定的是**單次嘗試**而非整個呼叫,且部署的 `retries` 會讓實際等待時間倍增
+  (冷主體宣告 60000ms、實測 120000ms 才失敗,根因是 `retries: 1`);
+  `workflow_describe` 或 guide 要讓呼叫端算得出最壞等待時間。
+- **iter:** v35
+
+### REQ-208 — 註冊掃描器不得把字串內容誤判為程式碼
+
+- **status:** draft
+- **traces:** REQ-106, REQ-117, REQ-203
+- **acceptance:**
+  **Given** 一個腳本把角色系統提示內嵌進 `agent()` 的 `prompt` 字串(**這正是 v34 退役 agentType 後
+  官方指定的替代路徑**),而該提示文字中含有 `agent (` 這類子字串
+  (真實素材:iso-agile-sdlc plugin 的 `sdlc-verifier.md` 裡「...sdlc-verifier agent (mode A)...」)
+  **Then** 註冊**不得**因此噴出 `AGENT_LABEL_REQUIRED` —— 現況 `scanAgentCalls` 的正規式掃的是
+  原始碼文字、不辨識字串常值,已用真掃描器重現。
+  **And** 修正後,掃描器對真正違規的偵測能力不得下降(既有的 SCAN_VIOLATION 測試全數維持綠)。
+- **iter:** v35
+
+### REQ-209 — 文件裡印出來的範例必須是真的註冊得過的
+
+- **status:** draft
+- **traces:** REQ-116, REQ-117, REQ-111
+- **acceptance:**
+  **Given** DEPLOY.md / README / guide 裡任何一段「讀者會照抄」的腳本+mermaid
+  **Then** 它必須通過**真的 `workflow_register`**,而不是只通過直接呼叫
+  `scanAgentCalls`/`checkMermaid` 的靜態檢查 ——
+  v34 實證:靜態檢查回報「0 violations」的同一份 bytes,真註冊連續被 `TOOLS_MISMATCH`、
+  `EDGE_MISMATCH` 拒絕兩次,讀者照抄會連撞兩次牆。
+  **And** 這個檢查要有自動化守衛(例如既有的 `guide-examples-register.test.ts` 擴及 DEPLOY.md/README
+  的範例區塊),否則下一次文件修改又會靜默退化。
+  **Given** `checkMermaid()` 的第五個參數是**選填**,而 `DIAGRAM_DIRECTION`/`LANE_MISMATCH`/
+  `TOOLS_MISMATCH`/`EDGE_MISMATCH` 四條規則被 `src/check-mermaid.ts:285-300` 的 `if (v2)` 擋著
+  (真註冊一定會傳 —— `workflow-catalog.ts:548`;直接呼叫的人不傳就拿到一個**結構上不可能發現
+  那兩條**的綠燈,這就是 v34 那個假綠燈的根因)
+  **Then** 這個 API 不得再能被無聲地降級使用:要嘛該參數變成必填、要嘛省略時 fail-closed 或明確標示
+  「本次檢查未涵蓋 v2 規則」—— 讓呼叫端不可能誤以為自己驗過了全部。
+- **iter:** v35
+
+### REQ-210 — 回應的包裝與體積要讓冷客端吞得下
+
+- **status:** draft
+- **traces:** REQ-117, REQ-107
+- **acceptance:**
+  **Given** 任一工具回應 **Then** `content[0].text` 是雙重 JSON 編碼這件事在廣告介面上有明說
+  (冷主體必須自行檢查才發現)。
+  **Given** `workflow_authoring_guide` 約 39.5KB **Then** 呼叫端在送出前知道它會這麼大
+  (例如描述中標示概略體積,或提供分段/摘要取用方式)—— 冷主體的輸出被截斷兩次才拿到全文。
+- **iter:** v35
+
+**路徑**:REQ-205..210 共六條,全部是既有行為的修正或說明補齊,無新外部整合、無新能力、
+safety_class 維持 QM → 走 `/sdlc-fix` 的 F1–F6。REQ-208/209 觸及註冊路徑與文件守衛,
+其餘四條觸及 run 生命週期與廣告介面。

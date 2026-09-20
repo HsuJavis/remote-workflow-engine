@@ -11205,3 +11205,295 @@ blocking_findings:
   - "DEPLOY.md §情境配方 (165-250行，尤其165/169/173/182-190/233/236行，含小標題「(v34 機制)」): 段落反覆用『v34 之後…』『以前 agentType…會被 stripFirstSegment 剝掉,不會回顯；v34 把這個機制整個拿掉了,現在…』這類版本差異敘述,牴觸 DEPLOY.md 自己開頭聲明的『不是變更歷程』與 Gate 7.5 手冊必須 history-free 的要求 → 修好的樣子：整段改寫成純現況——刪掉所有『v34/以前/現在』的對比框架與機制沿革,只保留操作上必要的現況事實一句：角色提示詞會原樣出現在 run_agent_log 的 harness.prompt 裡,不要放不想曝光的內容;配方步驟本身（0/1/2/5 已測、3/4 的新寫法）照留,只是敘述方式改成直接講現在怎麼做,不講以前怎麼做"
 owner_decisions: []
 ```
+
+---
+
+## v34 GATE 8 — 關閉確認回合 / closure confirmation (2026-09-21, reviewer)
+
+**本段性質。** 這不是重開一輪完整審查,而是對「上一輪 Gate 8 送回的四條 blocking finding 是否真的
+被修好」做獨立覆核。上一輪(本檔 `## v34 GATE 8 — Consistency review (2026-09-20, reviewer)`)
+判 `send_back: ["architecture","impl","tests","validation"]`,四條修復分別落在 `4b881fc`、
+`52f6a13`、`2bff4e4`、`f4166da`、`f1b44be`。**逐條都是打開產物本身看,不採信任何 gate 的自述報告。**
+
+### 0. 覆核前提:工作樹不等於 HEAD(必須先講,否則所有數字都會被誤讀)
+
+覆核期間 `git status` 出現 ` M 01-requirements.md`——**106 行未 commit 的 v35 需求草稿
+(REQ-205..210)**,是另一個 agent 在本 session 進行中寫進共用工作樹的,不屬於 v34。
+因此本段所有鏈路數字一律用 CLAUDE.md 規定的安全法取乾淨樹測量:
+`git archive <sha> | tar -x -C <repo 外的 scratch 目錄>`,**全程沒有動過 `git checkout`/
+`git restore`/`git stash`**。工作樹內直接跑 trace 會讀到 1836/89,那 12 條多出來的缺口已逐條證明
+就是 REQ-205..210 的 `未實作`+`未驗證`(6×2),見下 §1 的三方 diff。
+
+### 1. 鏈路守衛(chain guard)——v34 淨新增缺口 = 0,且 gap 集合 byte-identical
+
+| 量測點 | items | gaps | 取法 |
+|---|---|---|---|
+| v33 收尾 `1ac057d`(v34 前基線) | **1778** | **77** | `git archive 1ac057d` → scratch → `sh .sdlc/trace` |
+| v34 HEAD `f1b44be`(乾淨樹) | **1830** | **77** | `git archive f1b44be` → scratch → `sh .sdlc/trace` |
+| 現行工作樹(含未 commit 的 v35 草稿) | 1836 | 89 | 僅供對照,**不是 v34 的數字** |
+
+- **gap 集合逐條 diff = 空**。以 `trace.py` 的 `scan()`+`analyze()` 直接取出 gap 清單
+  (`sev|type|id|msg` 排序後比對),`1ac057d` 與 `f1b44be` 兩份 **完全一致,沒有任何一條新增、
+  沒有任何一條消失**。v34 在鏈上加了 **52 個工作項,新增 0 個缺口** —— 這正是 02-architecture.md
+  §「v34 retirement register」把退場記成「predicted diff」時所承諾的性質。
+- **分佈**:`high=15`(全為 `斷鏈`)、`mid=36`(`未驗證` 17 + `TDD` 19)、`low=26`(`未實作` 2 +
+  `漂移` 24)。與 v33 §6 的既有債基線同分佈、同集合。
+- **`未真實驗證` = 0**。沒有任何 REQ 靠 mock-only 收尾(契約 Exit Gate 4 成立)。
+- 工作樹 vs HEAD 的 diff 只有 12 行,全部是
+  `mid|未實作|REQ-205..210` 與 `mid|未驗證|REQ-205..210`,**零 v34 貢獻**,已證明。
+- `--check` 在乾淨樹上仍 exit 1(77 條既有債);依業主 2026-09-20 裁示,這 77 條是**已受理的債**,
+  不是本輪 blocker(見 §5)。
+
+### 1b. Dashboard QA
+直接呼叫外掛 2.4.3 的 `scripts/dashboard_check.py`(本 repo 的 `.sdlc/trace.py` 仍是舊版,不認得
+契約寫的 `--tool` 分派語法,已於上一輪記為降級)→ **0 high / 7 mid / 1 low**,與基線逐字相同:
+7 條全是 `02-architecture.md` v21–v27 的 `erDiagram`/`stateDiagram` 括號不平衡**誤報**(本 ledger
+已重複診斷六次以上),1 條是 `dashboard.html` 無 mermaid 離線 fallback。**v34 未新增任何一條。**
+SoT file:line 連結無 finding。本 session 無 playwright,未做開瀏覽器的像素級渲染確認——**記為降級,
+非 blocking**(歷次 iteration 相同)。
+`diagrams/*.json` 不存在 → 契約 4d(archify 架構 delta / 趨勢)**不適用**,明確聲明而非略過。
+
+### 1c. 模組界線(SOLID)
+`scripts/solid_check.py` → **通過**,78 個模組,`0 high / 0 mid / 10 low`。10 條 low 全是未被任何
+ARCH `module:` 認領的檔案(`harness-defaults.ts`、`self-update.ts`、`agent-semaphore.ts`、
+`mcp-probe.ts`、`scan-agent-calls.ts`、`net-guard.ts`、`workspace-artifacts.ts`、`clock.ts`、
+`owner-lookup.ts`、`workroot-guard.ts`),與基線逐字相同,**0 新增**。`module_check.py` 休眠
+(無 ARCH 宣告 `build:`),符合預期。
+
+### 1d. 全回歸(自己跑,不看報告)
+`npm test` → **412 test files passed / 1 skipped(413)**、**3062 tests passed / 26 skipped(3088)**、
+**0 失敗**,耗時 629.43s。修復回合動過的是共用文字面(byte lock、near-miss 表、`tool-specs.ts`),
+這種改動的守衛就是整套跑一次,所以本輪沒有只跑受影響的幾檔就了事。
+
+### 1e. `dashboard.html` 的狀態(收尾者必讀)
+本輪依契約重跑了 `sh .sdlc/trace`,**但那是在被 v35 草稿污染的工作樹上跑的**,所以現在工作樹裡的
+`dashboard.html` 反映的是 1836/89,不是 v34 的 1830/77。**請勿把這份 `dashboard.html` 連同
+`01-requirements.md` 的未 commit 改動一起 commit**;F1/F2 修好、v35 草稿的歸屬釐清之後,由關閉那
+一輪重新產生一份乾淨的再入版控。
+
+### 2. 四條 blocking finding 的逐條覆核(打開產物,不看報告)
+
+| # | 上一輪的 finding | 覆核結論 | 我親自看到的證據 |
+|---|---|---|---|
+| **AC-1** | guide 只講兩層工具面,沒提兩者皆缺時套用的 `BUILT_IN_CORE_TOOLS` | **✅ 關閉** | `src/authoring-guide.ts:541-547` 已是架構裁定的 Remedy-A 原文(「Two layers are **settable**… If the deployment configures neither, the engine applies a built-in core set — `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`…」);`docs/AUTHORING.md:60` 逐字相同(byte lock 完好);清單與 `src/gateway/claude-agent-sdk-client.ts:190` 的 `BUILT_IN_CORE_TOOLS = ['Read','Write','Edit','Glob','Grep','Bash']` **逐項對得上,六個都在**;UT-276 新增的那顆(`tests/unit/authoring-guide.test.ts`「names the built-in core-tool fallback and its six tools (Gate 8 AC-1)」)實跑綠。`DEPLOY.md:641` 的同形句也補上了「只有兩層**可設定**的優先序」的限定詞,架構要求的一字 fold-in 已落地 |
+| **AC-2** | INV-V34-1 / ARCH-137 note 把 `defaultAllowedTools` 說成 floor,與 `??` 的覆寫語意矛盾 | **✅ 關閉(文字,無程式碼變更,符合裁定)** | `02-architecture.md` INV-V34-1 現文:「a **deployment-set default** for the case where a call supplies no `allowedTools` of its own — **not a floor and not a ceiling**」,並引 `claude-agent-sdk-client.ts:544-547` 的 `??`;ARCH-137 note 現文:「overridable upward by any script(`claude-agent-sdk-client.ts:544-547` resolves with `??`, never an intersection), and therefore ***not* an operator-owned restriction layer**」。兩處都帶 `[v34 send-back repair, Gate 8 AC-2]` 標記。**我另行覆核程式碼本身**:`:544-547` 確為 `req.opts.allowedTools ?? defaultAllowedTools ?? BUILT_IN_CORE_TOOLS`,新文字與程式碼相符,舊文字確實不符 |
+| **QD #1** | ADR-064 要求的兩顆測試只落地一顆,第二顆(describe 讀取面)從未寫也從未記為 descope | **✅ 關閉,且照 Gate-5 constraint 9 的更正版規格寫** | `tests/unit/workflow-describe-facade.test.ts:105-143` = UT-283。逐項核對 constraint 9:(a) 用 raw SQL 一條 `UPDATE` **同時**寫 `script`/`params`/`defaults` 三欄,`params` 設 NULL(legacy 形狀,否則案例空轉)、`defaults` 放 `{"tools":["WebFetch"]}`(選 `WebFetch` 因為它不在 `BUILT_IN_CORE_TOOLS`、也不在任何在架版本);(b) 三條斷言全在——`runnable === false`、`runnableReason === 'LEGACY_REREGISTER'`、`toolSurface` deep-equal `{withTools:['Edit','Read'], bare:'default'}`、`JSON.stringify(resp)` 不含 `'WebFetch'`;(c) 已登記於 `05-tests.md:13888` UT-283,`traces: DES-228, ARCH-137, ADR-064, TASK-229, REQ-203`。**實跑綠**(`vitest run` 3 檔 61 passed / 1 skipped)。規格明講「No fourth assertion 比對 guide 散文」,確實沒有 |
+| **DEPLOY.md §情境配方** | 段落帶 `v34/以前/現在` 版本差異敘述,違反手冊自己開頭的「不是變更歷程」 | **⚠️ 只關閉一半 —— 見下方 F1,這是本輪唯一的 blocker** | 機制沿革那一半**確實關掉了**:`stripFirstSegment`/「(v34 機制)」小標題/「v34 把這個機制整個拿掉了,現在…」全部消失,現文改成純現況(「伺服器端沒有可設定的系統提示詞層」、註冊時 `SCAN_VIOLATION` / dispatch 時 `PARAM_UNKNOWN`,都是現在式事實)。**但同一段在 `f1b44be` 長出了一段 17 行的「實跑歷程」引言區塊**,詳見 F1 |
+
+上一輪一併點名的兩個遊離刪除也已入帳:`agents/researcher.md`、`agents/writer.md` 在 HEAD 已刪且
+記在 `06-impl-log.md` IMPL-341 的 `files:` 行(`agents/researcher.md (deleted), agents/writer.md
+(deleted)`),`ls agents/` 已不存在,工作樹無遊離刪除。
+
+### 3. 兩條 validation carry-forward 的判定
+
+兩條都是「主體不合格,做不到」型的自述限制。**兩條我都判定為已被真實證據解除**,理由如下:
+
+**(a) REQ-117 冷主體 —— 解除,判定乾淨。**
+我先讀 REQ-117 的驗收原文(`01-requirements.md`),而不是讀 VAL-231 的自我宣稱。原文的判準是:
+全新實例、只給 `tools/list` 與 `workflow_authoring_guide`,**authors → registers → publishes →
+runs → reads back a correct result,on the first attempt, with no trial and error**;任何一步做錯
+「that is recorded as a DEFECT IN THE DOCUMENTATION」;且看過本專案開發對話的人(含 orchestrator
+與 advisor)一律喪失主體資格。
+`VAL-231`(`08-validation.md`,`real:true`/`result:pass`)+ `evidence/v34/req117-cold-subject-2026-09-20.md`
+記載:orchestrator 另起 scratch 引擎(8793、auth 關閉、workRoot 在 repo 外),**只交出 URL**,
+主體未繼承任何對話脈絡且被明文禁止讀取本機任何檔案與 git repo;主體自行寫出雙 agent 協作腳本
+連同泳道圖**一次註冊成功**,發布、啟動、輪詢到終態、讀回結果全部完成,**84 次 `tools/call` 零
+JSON-RPC error、零引擎拒絕碼**。
+**關鍵判斷**:主體第一次跑時三個 agent 全部逾時(D1)。這**不**削弱本列——REQ-117 的判準是
+「介面與文件能否讓冷主體一次做對」,逾時的根因是 scratch 部署的 `default` 別名指向連不上的本機
+`qwen2.5:7b`(部署環境問題),不是主體誤讀了廣告介面;而且主體踩到的四個坑
+(D1 全 agent 失敗仍報 `completed`、D2 宣告 timeout 與實際兩倍、D3 失敗 `agent()` 回 `null` 不拋、
+D4 雙重 JSON 編碼+39.5KB guide)**全部依 REQ-117 自己的條文登記為文件/介面缺陷並排進 v35/v36**,
+這正是該條要求的處置方式。**判定:carry-forward 解除,REQ-117 由這次真跑證成。**
+
+**(b) DEPLOY.md §情境配方 step-3 範例的端對端真跑 —— 解除,而且它自己抓到了東西。**
+`evidence/v34/deploy-recipe-e2e-2026-09-21.md` 記錄真的 `workflow_register` → `run_start` →
+`run_status` → `run_result`:`runId fc374235-0300-4f18-a92b-e98a406aede4`、`completed`、
+`startedAt 17:20:58.709Z` → `terminalAt 17:26:35.640Z` ≈ **336.9 秒**、兩個 agent 都實際解析成
+`claude-haiku-4-5-20251001`。**它證明了文件當時印的範例是壞的**:逐字照抄先撞 `TOOLS_MISMATCH`
+(stadium 節點宣告了 `allowedTools` 卻沒帶第三段 `tools: …`),補上後再撞 `EDGE_MISMATCH`
+(兩個 `subgraph` 之間沒有顯式邊),第三次才過。
+**我另行核對「文件現在印的」與「實際跑贏的位元組」是否同一份**:`DEPLOY.md` 第 3 步現印的 mermaid
+(`graph LR` / 兩個 `subgraph` / 兩個帶 `<br/>model · effort · timeout<br/>tools: …` 的 stadium 節點 /
+`architect --> implementer`)與證據檔「第三次(補上 `architect --> implementer` 一行)— 成功」
+那一份**逐字相同**。**判定:carry-forward 解除,配方已由真跑證成。**
+(同時這也是 F1 的依據:既然現印的範例就是跑贏的那份,引言裡「下面第3步印出來的 mermaid 原文
+對不上這台引擎的 v26 diagram contract」這句,以現在式讀就是**假的**。)
+
+### 4. 本輪 finding
+
+#### F1(**MED,blocking,送回 Gate 7.5 / validation**)— DEPLOY.md §情境配方:機制沿革刪掉了,卻換成一段實跑沿革,其中一句以現在式讀是假的
+
+`DEPLOY.md:167-183` 的引言區塊(`f1b44be` 加入,**晚於 `2bff4e4` 那次全檔散文重掃**,所以上一輪
+validator 的自述「whole-file 掃描找不到歷史敘述」並沒有涵蓋到它):
+
+1. **一句以現在式讀為假的陳述**:「**這條路通了,但下面第3步印出來的 mermaid 原文對不上這台引擎的
+   v26 diagram contract**:逐字照抄先撞 `TOOLS_MISMATCH`…補上之後又撞 `EDGE_MISMATCH`——下面第3步
+   的範例已經改成實測跑贏的版本」。如 §3(b) 所證,**第 3 步現在印的就是跑贏的那一份**。一個冷操作
+   者照字面讀,會得到「下面那張圖不能照抄」的結論,而事實相反。後半句「已經改成…」更是**直接敘述
+   這份文件自己的改版史**。這正是本迭代整輪的論文母題——不要出貨一句產物不支持的話。
+2. **驗證歷程進了手冊**:`runId fc374235-…`、「約 337 秒」「implementer 只花 11 秒」、
+   「已於 2026-09-21 對一顆 scratch engine…跑過」——這些是 Gate 7.5 的證據,不是部署指示。
+3. **手冊反向連進 ledger 的失敗史**:「同日稍早一次試跑已因此燒過一整輪,見
+   `evidence/v34/req117-cold-subject-2026-09-20.md` D1」——手冊開頭明寫「歷史紀錄只在 `.sdlc/`
+   追溯帳本內…不在這份手冊裡」。
+
+**為什麼這不能降級成債**:上一輪 blocking finding 的指定修法逐字是「整段改寫成純現況…**只保留
+操作上必要的現況事實一句**」。要把它記成債,就必須寫出「實跑沿革可以豁免,機制沿革不行」的理由
+——這個理由不存在,兩者違反的是同一條規則、同一個手冊開頭的同一句話。而且**操作上必要的內容早已
+在第 3 步本文裡用現在式講完了**(第 3 步已明說第三段 `tools:` 必填、跨 subgraph 要有顯式邊,並附
+跑贏的圖),引言那 17 行是重複,加上一句假話。
+**修好的樣子**:把該引言區塊收斂成一句現況(例:「步驟 0–5 皆經本機端對端實測,證據見
+`.sdlc/.../08-validation.md`」),刪掉 runId/耗時/兩次撞錯的敘事/指向 `evidence/…D1` 的指標/
+「已經改成實測跑贏的版本」這句;**保留**「角色提示詞會原樣出現在 `run_agent_log` 的 `harness.prompt`」
+這段操作警告與 `agentType` 兩處拒絕碼的現況事實(那些是現在式事實,正確)。約 15 行的刪除。
+
+#### F2(**MED,blocking,送回 Gate 7.5 / validation**)— `rtm.md` 的 REQ-116/REQ-117 列沒有收錄本輪新增的 VAL-230/VAL-231
+
+`rtm.md:195-196`:REQ-116 與 REQ-117 兩列的驗證欄**都不含 `VAL-230`,也不含 `VAL-231`**。
+而 `VAL-231` 自己明文寫「**本列取代 VAL-190/192 作為 REQ-117 的現行證據**」。結果是:ledger 的
+人類可讀追溯矩陣,在「證據剛剛被取代」的那兩條 REQ 上,仍然只指向已被宣告過時的舊列。
+`trace.py` 的鏈是走各文件的 `traces:` 欄而不是 `rtm.md`,所以這**不會**產生缺口——正因為如此它
+不會被任何機械檢查抓到,只能靠人看。上一輪 validator 已經發現並補上 REQ-202/203/204 三列,卻漏了
+這兩列。**修好的樣子**:把 `VAL-230`、`VAL-231` 加進 `rtm.md` REQ-116/REQ-117 兩列的驗證欄。
+
+#### F3(LOW,非 blocking,記為債)— `DEPLOY.md:527` 設定總表的 `defaultAllowedTools` 列未跟上 AC-1 的限定詞
+該列寫「只有兩層優先序…(省略此鍵才落到內建預設)」。括號裡**已經把內建後援講出來了,所以不是假話**,
+但「只有兩層」這個句型正是 AC-1 修掉的那個。`DEPLOY.md:641` 已改成「只有兩層**可設定**的優先序」,
+同一份文件兩處句型不一致。記為低度文件衛生債,下次觸及該表時順手統一。
+
+#### F4(LOW,非 blocking,記為債)— `tool-specs.ts` 的 `'default'` 哨兵仍未在被服務的介面上定義
+上一輪兩組 panel 專家都收斂到這條,架構明文「deliberately NOT carried this round」並記下同意的修法。
+本輪覆核確認它仍未落地(合乎裁定,不是回歸)。**債保留**:下次觸及 `tool-specs.ts` 的
+`workflow_describe` 說明時補一句——`'default'` 表示本部署設定的 `defaultAllowedTools`,若未設則為
+內建核心集;且**不得**在投影上把哨兵解析成真實清單(那會越過 `mcp-facade.ts:492` 自述的邊界)。
+
+#### F5(LOW,非 blocking,記為債;本輪自己撞出來的)— `npm test` 會覆寫 ledger 裡已入版控的 v28 證據截圖
+本輪跑完整回歸之後,`git status` 多出兩個修改:
+`evidence/v28/val215-issues-dark.png`(28070 → 27916 bytes)與
+`evidence/v28/val215-issues-light.png`(27945 → 27776 bytes)。來源是
+`tests/acceptance/val-205-issues-tab.test.ts`——**驗收測試把截圖直接寫回 ledger 的證據目錄**,
+所以任何人跑一次 `npm test`,工作樹就會髒兩個二進位檔,而且內容每次都不完全一樣(PNG 編碼差異)。
+這正是 CLAUDE.md 點名的那個形狀:「如果某個產生出來的檔案一直顯示為髒,就把它 gitignore 或寫到
+scratch 目錄——不要為了整理工作樹去 checkout」。**處置建議(下次觸及該測試時)**:讓它寫進
+`tmp/`/scratch,或把該路徑 gitignore;證據截圖若要留存,應該是當初那一輪手動存檔的成品,不應該是
+每次回歸都被覆寫的輸出。**本輪不自行還原**(還原要動 `git checkout`,CLAUDE.md 明文禁止),
+兩個檔留在工作樹裡,收尾者**請勿把它們 commit 進去**。
+
+### 5. 已受理的債(業主裁示,本輪不追)
+
+- **77 條 out-of-closure 缺口**(15 high 斷鏈指向解析不到標題的 REQ-144..152/186、17 未驗證的
+  REQ-153..169、19 條 TDD 債、24 條漂移),全屬 v29–v32 年代。業主 2026-09-20 裁示:v34 依本 ledger
+  自身先例(「觸及的 REQ 0 缺口 + 債有記錄」)收尾,專門的清理迭代排在**下一輪之後**。
+  `trace --check` 因這 77 條 exit 1,**不是本輪 blocker**。本輪已證明 v34 對這 77 條**一條都沒加**。
+- `dashboard_check` 的 7 mid(v21–v27 mermaid 括號誤報)+ 1 low(無離線 fallback);`solid_check`
+  的 10 low(未認領檔案)——皆與基線逐字相同。
+- 無 playwright → 未做瀏覽器渲染確認(**降級聲明**);`.sdlc/trace.py` 舊版不支援 `--tool` 分派,
+  改直接呼叫外掛腳本(**降級聲明**,沿襲上一輪)。
+- 散文層面仍有三處「字面寫著 pending」但欄位早已 answered 的陳舊敘述(`04-design.md:6822`、
+  `05-tests.md:11693`、`08-validation.md` round 6/7),上一輪已記,本輪未再擴大。
+
+### 6. 業主決策掃描(契約 4c)
+以固定 metadata key `^\s*-\s*\*\*owner_decision:\*\*` 重掃全 ledger:**31 個欄位,0 個 `pending`**
+(值皆為 `answered(...)`/`DECIDED …`/模板預設的 `—`)。**`owner_decisions: []`。**
+ADR 語氣掃描:本輪修復觸及的段落沒有未加 marker 的裁決型 hedging。
+
+### 7. 契約適用性聲明
+- **4b(特殊檔審查)不適用**:`git log a98b469..f1b44be --name-only` 顯示 v34 未觸及任何
+  `CLAUDE.md` / `AGENTS.md` / `SKILL.md`。
+- **4d(archify 架構 delta / 趨勢)不適用**:`diagrams/` 不存在。
+- `metrics.jsonl` 最後一筆停在 v28,v29–v33 各輪皆未續寫,本輪照既成慣例不新增(非 finding)。
+
+### 8. 本輪要寫進 ledger 的教訓 —— 「靜態掃描器跑綠,不等於註冊會收」
+
+這條必須留名,因為它差點讓一份壞掉的配方當成驗過的出貨。
+
+**發生了什麼。** 在端對端真跑之前,有一個 agent 以 **直接 import `scanAgentCalls` /
+`parseMetaParams` / `checkMermaid`** 的方式驗過 DEPLOY.md 第 3 步的範例,回報
+**「0 violations, mermaid OK」**。隨後真的 `workflow_register` 對**同一份位元組**連續拒絕兩次:
+先 `TOOLS_MISMATCH`,補好後再 `EDGE_MISMATCH`。
+
+**根因已查實,不是「原因不明」。** `src/check-mermaid.ts:134-142` 的 `checkMermaid()` 第五個參數
+`v2?: { expected: ExpectedGraph }` 是**可選**的,而註解自己寫著「steps (10)-(13) below run ONLY
+when present — a v1 caller passes nothing and gets exactly the pre-v26 checks」。
+`DIAGRAM_DIRECTION` / `LANE_MISMATCH` / `TOOLS_MISMATCH` / `EDGE_MISMATCH` 四條規則全部關在
+`if (v2) { … }`(`:285-300`)裡面。真正的註冊路徑 `src/workflow-catalog.ts:548` 一律傳
+`{ expected: derived.graph }`;**少傳那個參數的呼叫端,拿到的綠燈在結構上就不可能發現那兩條規則**。
+換句話說:那三個可 import 的檢查器各自只驗**單一產物**,註冊另外還驗**腳本與圖之間的契約**,
+而那層契約是靠一個可選參數開啟的。
+
+**給後續 gate 的結論(這才是要記住的部分):**
+1. **那個綠燈以後一律不得採信。** 「我 import 了掃描器,跑出 0 violations」**不是** `workflow_register`
+   會接受的證據,連弱證據都不是——它可能連相關的規則都沒執行。
+2. **唯一算數的是真的打一次 `workflow_register`**(scratch 引擎即可,本輪用 8793 那台就夠),
+   把回應貼進證據檔。凡是要寫進 README/DEPLOY/guide 給人照抄的腳本或圖,**印出來的位元組必須是
+   註冊真的收下的那一份**,而且要另行核對「文件現在印的」與「當時跑贏的」是同一份
+   (本輪 §3(b) 就是這麼核的)。
+3. **這個坑有一般形:可選參數控制的檢查深度。** 任何「同一個檢查函式,測試端與正式端傳不同參數」
+   的設計,測試端的綠燈都只覆蓋它自己走到的那個分支。下次看到 gate 報告寫「直接呼叫內部檢查器
+   驗過」,先問**它傳了哪些參數、正式路徑傳的是不是同一組**。
+
+### 9. Retro
+
+**做得好。**
+- 四條送回裡有三條(AC-1 / AC-2 / QD#1)修得**精準且不多做**:AC-2 是純文字更正且刻意不 bump `iter`
+  (避免 v33 F6-1 那種「為文字鑄造假 trace delta」的已量測傷害);QD#1 不是硬寫原始那條寫不出來的
+  規格,而是先在 Gate-5 constraint 9 把規格改成**可寫的**(點名 home、fixture 漏掉的 `params` 欄、
+  三條斷言),再照著寫——這是正確的處理順序;AC-1 走 Remedy A(文字)而非 Remedy B(改預設值),
+  理由(刪掉 gateway 的 `?? BUILT_IN_CORE_TOOLS` 會替單元層與 `server.ts` 重新武裝 VAL-003)經得起覆核。
+- **兩條 carry-forward 真的被做掉,而不是再延一輪**,而且做掉它的那次真跑**抓到了一個真缺陷**
+  (配方範例是壞的)。這是「真跑 > 宣稱」最乾淨的一次示範:如果照舊只做靜態檢查,DEPLOY.md 會帶著
+  一份註冊不進去的範例出貨。
+- 鏈路守衛的紀律:退場前先把 predicted diff 寫下來,收尾時用乾淨樹量測對照,**gap 集合 byte-identical**
+  不是估計而是逐條 diff 出來的。
+
+**要改。**
+- **同一條規則在同一輪裡被違反第三次。** 「手冊只講現況」這條:第一次是機制沿革(上一輪送回),
+  修掉之後,**修復本身**又在同一段塞進實跑沿革(F1),而且那次新增發生在 validator 剛做完全檔散文
+  重掃之後。教訓不是「validator 不用心」,而是**修完要重掃的是「修完之後的檔案」,不是「修之前掃過
+  就算數」**——建議在 validator 的自我檢查清單加一條:凡在 send-back 回合改過手冊,重掃必須是該回合
+  最後一個動作。
+- **RTM 不在任何機械檢查的路徑上**(F2)。`trace.py` 走 `traces:` 欄,`rtm.md` 是人手維護的平行副本;
+  它過時不會有任何紅燈。上一輪 validator 補了三列卻漏了兩列,正是這個結構的必然結果。值得考慮讓
+  `trace.py` 把 `rtm.md` 與 `traces:` 欄做一次一致性比對,或乾脆改成生成物。
+- **panel 的順序**(上一輪已記,本輪仍成立):本輪 order 是 impl→verify→validate→panel 事後才跑,
+  所以 panel 的 finding 只能送回,不能在原地免費修掉。
+- **共用工作樹的併行寫入**:覆核期間另一個 agent 把 v35 草稿寫進 `01-requirements.md`,導致工作樹內
+  的 trace 讀數(1836/89)與 v34 的真實讀數(1830/77)不同。所有收尾量測都必須走
+  `git archive <sha>` 取乾淨樹——本段已照做,也建議寫成常規。
+
+### 10. `.panel/` 清理:**本輪不刪**
+契約第 6 條要求在最後一關「寫完 07-review.md 之後」`rm -rf .panel`,且本 ledger 的先例確實是在
+每次 Gate 8 收尾的那個 commit 裡刪掉(`fc4989b` v28、`cdb3e1a` v27、`d8d5ef9` v26、`3b20209` v22)。
+**但本輪 `send_back` 非空**,契約同條明寫「Only do this at the very end; a mid-run resume relies on
+those files」,而重審回合會需要 `.panel/review/*.md`。因此 `.panel/architecture/`(4 檔)、
+`.panel/design/`(2 檔)、`.panel/review/`(2 檔)**原樣保留**,待 F1/F2 修好、Gate 8 判 PASS 的
+那一輪再一次刪除並入收尾 commit。
+
+```
+Gaps: high=15 mid=36 low=26（乾淨樹 HEAD f1b44be = 1830 items / 77 gaps；v33 基線 1ac057d =
+      1778 items / 77 gaps；gap 集合逐條 diff 為空 —— v34 新增 52 個工作項、0 個缺口。
+      77 條全為業主已受理的 v29–v32 年代既有債，全部記錄於 §5。
+      工作樹讀到的 1836/89 是未 commit 的 v35 草稿 REQ-205..210 造成，非 v34）
+Drift: 既有 24 條 low 漂移，同基線，無新增；另記 F2（rtm.md REQ-116/117 未收錄 VAL-230/231，
+      doc↔doc drift，機械檢查看不到）
+Architecture consistent: yes — AC-1 / AC-2 / QD#1 三條逐條在產物上確認關閉（authoring-guide.ts:541-547
+      + docs/AUTHORING.md:60 + claude-agent-sdk-client.ts:190 六工具對齊；INV-V34-1 與 ARCH-137 note
+      改為與 `??` 相符的敘述；UT-283 三條斷言齊備且實跑綠）
+Validation: real-tier all-green? yes（0 個 未真實驗證 缺口；VAL-231 冷主體真跑 84 次 tools/call 零拒絕碼，
+      REQ-117 carry-forward 解除；DEPLOY.md 配方 runId fc374235 端對端 completed，carry-forward 解除，
+      且文件現印的 mermaid 與跑贏的位元組逐字相同）
+      · README+DEPLOY present? yes（§0 一鍵部署在、§1b 單一設定總表在）
+      · 但 DEPLOY.md §情境配方 引言在 f1b44be 新增了 17 行實跑沿革，含一句以現在式讀為假的陳述 → F1
+Conclusion: send back — validation（Gate 7.5）只此一關，兩條都是分鐘級的編輯：
+      F1 刪掉約 15 行引言沿革並收斂成一句現況；F2 把 VAL-230/231 補進 rtm.md 兩列。
+      其餘三條送回（AC-1 / AC-2 / QD#1）已確認關閉，不需重做；鏈路守衛 0 新增缺口，v34 的實質內容
+      已經可以關了 —— 卡住它的是手冊裡的一段敘事，不是引擎。
+```
+
+send_back: ["validation"]
+blocking_findings:
+  - "F1 — DEPLOY.md:167-183（§情境配方 引言區塊，f1b44be 新增，晚於 2bff4e4 的全檔重掃）: 上一輪送回要求『整段改寫成純現況，只保留操作上必要的現況事實一句』，機制沿革那一半已照做，但同一段換成了 17 行實跑沿革——(1) 一句以現在式讀為假的陳述『這條路通了，但下面第3步印出來的 mermaid 原文對不上這台引擎的 v26 diagram contract…逐字照抄先撞 TOOLS_MISMATCH…下面第3步的範例已經改成實測跑贏的版本』，事實上第 3 步現在印的就是跑贏的那一份（已逐字比對 evidence/v34/deploy-recipe-e2e-2026-09-21.md 第三次成功的那份），冷操作者照字面讀會得到相反結論；(2) runId fc374235-0300-4f18-a92b-e98a406aede4、約 337 秒、implementer 只花 11 秒等驗證歷程寫進手冊；(3) 反向連進 ledger 失敗史『同日稍早一次試跑已因此燒過一整輪，見 evidence/v34/req117-cold-subject-2026-09-20.md D1』，而手冊開頭明寫歷史只在 .sdlc/ 內 → 修好的樣子：把該引言區塊收斂成一句現況（例『步驟 0–5 皆經本機端對端實測，證據見 08-validation.md』），刪掉 runId/耗時/兩次撞錯的敘事/指向 evidence 的指標/『已經改成實測跑贏的版本』這句；保留『角色提示詞會原樣出現在 run_agent_log 的 harness.prompt，不要放不想曝光的內容』與 agentType 兩處拒絕碼的現況事實；操作上必要的圖規則（第三段 tools: 必填、跨 subgraph 要有顯式邊）已在第 3 步本文用現在式講完，不必在引言重複。約 15 行的刪除。**第 3 步的規則陳述與範例位元組本身不要動**（那份 mermaid 是實測跑贏的位元組，改它就要重跑）；但第 3 步本文裡同屬先後順序敘事的用語——「**實測跑贏的版本**」與「缺了就是 EDGE_MISMATCH **之前先撞的** TOOLS_MISMATCH」——可以順手拿掉，改成直接陳述規則（第三段 tools: 必填、跨 subgraph 要有顯式邊），免得下一輪重審又為同一類用語再送回一次"
+  - "F2 — rtm.md:195-196（REQ-116 與 REQ-117 兩列的驗證欄）: 兩列都不含本輪新增的 VAL-230 與 VAL-231，而 VAL-231 自己明文『本列取代 VAL-190/192 作為 REQ-117 的現行證據』，所以 ledger 的人類可讀追溯矩陣在證據剛被取代的那兩條 REQ 上仍只指向已宣告過時的舊列；trace.py 走各文件的 traces: 欄而非 rtm.md，因此這條不會產生缺口、也沒有任何機械檢查會抓到（上一輪 validator 補了 REQ-202/203/204 三列卻漏了這兩列，正是這個結構的必然結果）→ 修好的樣子：把 VAL-230、VAL-231 加進 rtm.md REQ-116 與 REQ-117 兩列的驗證欄，兩格編輯"
+owner_decisions: []
+```
