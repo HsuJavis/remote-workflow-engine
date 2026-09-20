@@ -10781,3 +10781,259 @@ triage  running  tokens={input:0,output:0,cacheRead:0,cacheWrite:0}  costUSD=0  
 | 完成後 | 三條 lane 全部 `is-walked`,摘要 `完成 · 3 個節點 · 8.6k tok` |
 
 **v29c 的 `is-walked` / `is-unreached` / `is-current` 三態,這是第一次三種都在同一次執行裡被看到。**
+
+---
+
+## v33 — F6 review-lite(2026-09-20 15:45 +08,REQ-201)— **結論:PASS,但附一條 MID「送回設計、一行可改」**
+
+> fix-mode 的第六段,依 `contracts/reviewer.md` 縮放到 review-lite 三件事:**鏈路守門(chain
+> guard)+ 本輪觸檔的架構自查 + retro**。F1–F5 的工作不重做。
+> 審查時的樹:`e388718`(REQ 本身在 `eb0593c`);進場時工作區只有 v28 兩張 evidence PNG 是髒的
+> (`evidence/v28/val215-issues-{dark,light}.png`,非本輪產物),我另外弄髒的只有 `trace` 重跑
+> 產生的 `dashboard.html`。`.panel/` 不存在(F1 走 lean、無 panel,正確)。
+
+### §1 鏈路守門 — 本輪是否「零新增」?**否。量到 +6 個 `漂移`(low),全部來自同一行。**
+
+基線取法遵守本 repo 的 CLAUDE.md:**不用 `git checkout`/`git restore`/`git stash`**,而是
+`git archive c48fe08 | tar -x -C <scratch>` 解到 repo 外,再對兩棵樹各跑一次 `trace.scan()` +
+`trace.analyze()`。
+
+| | 基線 `c48fe08`(v32 收尾) | 現在 `e388718`(v33) | Δ |
+|---|---|---|---|
+| 工作項 | 1768 | 1778 | **+10**(= REQ-201 / DES-222 / TASK-227 / IMPL-338 / UT-266 / UT-267 / IT-172 / VAL-218 / VAL-219 / VAL-220,不多不少) |
+| 缺口總數 | 77 | 83 | **+6** |
+| 斷鏈 high | 15 | 15 | 0(逐列 diff **完全相同**) |
+| 未驗證 mid | 17 | 17 | 0(逐列 diff **完全相同**) |
+| TDD mid | 19 | 19 | 0(同上) |
+| 未實作 low | 2 | 2 | 0(同上) |
+| 孤兒 | 0 | 0 | — |
+| **漂移 low** | **24** | **30** | **+6** |
+
+那 +6 的逐列組成(`diff` 出來的全部內容,沒有別的):
+
+- **消失 1 條:** `DES-157(設計 v24)落後於實作 IMPL-208(v26)`
+- **新增 7 條:** `IT-118 / UT-159 / UT-160 / UT-215 / UT-221 / VAL-139 / VAL-161(測試 v24–v26)落後於設計 DES-157(v33)`
+
+唯一成因是 `04-design.md:5114` 把 DES-157 的 `- **iter:** v24` 改成 `v33`(v33 amendment 那段文字
+本身沒有問題)。其餘 v33 對 ARCH-087 / ARCH-091 / ARCH-107 / ADR-032 的 `iter:` 提升**不進**
+`trace.py` 的漂移判斷(它只看 build→design 與 test→design 兩個方向),所以不計數,但屬同一類
+(見 F6-2)。
+
+**REQ-201 這條鏈本身:0 缺口。** 以 `grep -E "REQ-201|DES-222|TASK-227|IMPL-338|UT-266|UT-267|IT-172|VAL-218|VAL-219|VAL-220"` 掃全部 83 條缺口 → **無命中**。
+
+### §2 本輪觸檔的架構自查(lean tier,自己做,只讀本輪 `files:`)
+
+`src/mcp-facade.ts` / `src/tool-specs.ts` / `src/authoring-guide.ts` + `docs/AUTHORING.md`
+(IMPL-338 的 `files:`),對照 Gate 2 的 ARCH-087 / ARCH-091 / ARCH-107 / ADR-032:
+
+| 決策 | 這次實作有沒有違反 | 證據 |
+|---|---|---|
+| ARCH-087「純資料 + 一個投影,`imports nothing from src/`」 | 沒有。只改 description 字串,`inputSchema`/`errors`/`authz`/`fixture`/`outputSchema` 一個沒動 | `src/tool-specs.ts:216,395` 的 diff 只有兩行文字 |
+| ARCH-091 / ADR-026 的註冊序列 `validateRegistration → claim → insertVersion → 拋則補償釋放` | 沒有。新增的讀在 `insertVersion` 之後、補償 `try/catch` **之外**,補償語意未變 | `src/mcp-facade.ts:349-363` |
+| ARCH-075 的 script 遮罩(註冊回應不得成為 script 揭露面) | 沒有。`const { versions, channels } = await catalog.resolveDetail(...)` 只解構兩個鍵,`WorkflowDetail.script` 在解構處就被丟掉 | `src/mcp-facade.ts:362` |
+| ADR-032「guide 只有一個來源,`AUTHORING.md` 由 builder 生成並 byte-lock」 | 沒有。文字寫在 `authoring-guide.ts`,`docs/AUTHORING.md` 同 commit 重生,UT-160 綠 | `src/authoring-guide.ts:757-762`;`docs/AUTHORING.md:175` |
+| REQ-097「註冊不移動 channel 指標」 | 沒有,而且現在被回應直接證明 | IT-172 第二例:`channels.release` 仍為 `v1` |
+
+`solid_check`(外掛 2.4.3 的腳本):**通過**,72 個模組、`0 high / 0 mid / 10 low`,兩棵樹同樣
+是 10 low(「未認領檔案」警告,腳本固定只印前 10 筆,兩邊列出的檔名不同純粹是走訪順序差異,
+不是 v33 改變)。**本輪三個觸檔全部被 ARCH 認領**(ARCH-087/091/107 的 `module:`),不在未認領清單裡。
+
+一條方法上的坦白:`RegistrationCatalog` 是用 `this.runManager.catalog as unknown as
+RegistrationCatalog`(`src/mcp-facade.ts:342`)取得的,**`as unknown as` 會關掉編譯期核對**——
+所以「型別上加一個 `resolveDetail`」並不是 `tsc` 幫我們確認 `WorkflowCatalog` 真的有它,真正的
+保證是 IT-172 走真 HTTP + 真 catalog。這次沒事(`workflow-catalog.ts:749` 確實有),但這個 cast
+本來就在,只是 v33 第一次讓它承擔新成員。記為 F6-6(資訊性)。
+
+### §3 工具檢查
+
+- `sh .sdlc/trace <ledger> --check` → exit 1,1778 / 83(數字見 §1)。
+- `dashboard_check.py`:`0 high / 7 mid / 1 low`。**與基線逐字相同**(同樣 0/7/1)。7 個 mid 全是
+  `02-architecture.md` 的 v21–v27 mermaid 圖括號不平衡,v33 一張都沒碰;1 個 low 是「本 repo 內
+  vendored 的舊版 `trace.py` 產出的 dashboard 沒有 mermaid 離線 fallback」。
+- **降級聲明:** 角色契約寫的 `sh .sdlc/trace --tool dashboard_check|solid_check <dir>` 形式,本
+  repo `.sdlc/trace.py`(vendored,落後 plugin 2.4.3)**不認得這個參數**,會直接 usage error。我
+  改為直接呼叫 plugin 的 `scripts/dashboard_check.py` / `scripts/solid_check.py`。本 session 沒有
+  playwright,**沒有**在真瀏覽器開 dashboard 逐頁確認 `<svg>`——v28 那一輪做過真 Chromium 47/47,
+  這輪沿用該結論並在此標明是沿用,不是我量的。
+- `owner_decision` 掃描(固定 metadata key,不掃 prose):活的 `- **owner_decision:** pending`
+  標記 **0 個**;`state.yaml` 的 `pending:` 清單裡沒有 v33 的項目。→ `owner_decisions: []`。
+- 獨立重跑(不採信報告):`npx tsc --noEmit` exit 0;`tests/unit/tool-specs.test.ts` +
+  `tests/unit/authoring-guide.test.ts` + `tests/integration/register-version-loop.test.ts`
+  → **3 檔 / 58 例全綠**。
+
+### §4 發現(依嚴重度)
+
+#### F6-1 — MID(**唯一一條建議在 orchestrator commit 前改掉的**,一行)
+
+**DES-157 的 `iter:` 從 v24 提升到 v33,違反本帳本自己記過兩次的決定,並量到 +6 個 low 缺口。**
+
+- 證據:`04-design.md:5114`。同一列的 **v26 amendment 句子今天還寫著**「`iter:` stays v24;see
+  Decision rationale item 22」——這一列現在自相矛盾。
+- Decision rationale item 22(`04-design.md:6659-6674`)(a)「`iter:` 記的是**起源**迭代,不是最後
+  一次改動;amendment 加一個子句,不會讓那一列重新起源」,(b) 漂移檢查是**雙向**的,提升 `iter:`
+  只是把缺口從設計側換到驗證側,(c) **點名 DES-157**,量過是 1 換 5,「Declined again here」。
+  這次實測是 **1 換 7**(UT-215/UT-221 是 v26 之後才長出來的),item 22 的模型仍然成立。
+- v33 amendment 的文字自己就寫「the section order is the delta;DES-222 carries the signature」
+  ——那正是 amendment 的定義,不是 re-origination。
+- **修法(不是預測,是量出來的):** 把 `04-design.md:5114` 的 `- **iter:** v33` 改回
+  `- **iter:** v24`,v33 amendment 段落**原文保留**(照 v26 amendment 的寫法補一句「`iter:` stays
+  v24;see Decision rationale item 22」)。我把帳本複製到 scratch、只改這一行、重跑 analyze:
+  **1778 items / 77 gaps,缺口集合與 `c48fe08` 基線 byte-identical(`diff` 空)**。
+- 沒有任何程式碼影響;不需要重跑測試。
+
+#### F6-2 — LOW(同類,無 trace 影響,設計者的權限)
+
+ARCH-087 / ARCH-091 / ARCH-107 / ADR-032 的 `iter:` 也一起從 v24 提到 v33。`trace.py` 的漂移只看
+build→design 與 test→design,architecture/decision 兩個 stage 不入檢查,所以**一個缺口都沒多**。
+但依 item 22(a) 的同一條家規,這四列也是 amendment 而非 re-origination。要嘛跟 F6-1 一起改回、
+要嘛在 Decision rationale 裡明寫「v33 起 ARCH/ADR 列改採 last-touched 語意」——現在是兩套語意
+並存,下一個 reviewer 會再問一次。
+
+#### F6-3 — LOW(債,見 §5 裁決)
+
+`workflowRegister` 在 `insertVersion` 已提交之後、`resolveDetail` 失敗時,整通呼叫會被外層 catch
+轉成 `status:'failed'`,但版本其實已建立。詳見 §5。
+
+#### F6-4 — LOW(SoT 仍有一句過時斷言)
+
+ARCH-087 的 `note:` 至今寫著「a unit test asserts the row contains both sentences」(指 `run_start`
+的兩句 first-try trap)。DES-222 在設計時 grep 量過**那個測試從來沒被寫出來**,並把這件事寫進
+`tests:` 欄。v33 之後 UT-266 讓它**半真**(no-result trap 那句有被釘;publish-first 那句已被改寫)。
+v33 的 amendment 沒有回頭更正這句。建議下次動到 ARCH-087 時,把 note 改成指向 UT-266 的實際斷言。
+
+#### F6-5 — LOW(帳本衛生,v29 起累積,不是 v33 引入)
+
+`07-review.md` 的 front-matter `status:` 仍然描述 v28 Gate 8 為「CURRENT / AUTHORITATIVE」,而
+v29/v30 的發現段與本段都是**追加在檔尾**。同一個檔案因此有兩個「最新」入口。v29–v32 都沒有處理;
+本輪照前例不動它,登記為債。
+
+#### F6-6 — LOW(資訊性,見 §2 末段)
+
+`as unknown as RegistrationCatalog` 讓新增的 `resolveDetail` 成員不受 `tsc` 核對;實際保證來自
+IT-172 的真 catalog 路徑。
+
+#### 查過、乾淨的(逐條一句)
+
+- **斷鏈 / 孤兒 / 未驗證 / TDD / 未實作:零新增**,四類的缺口列表與基線 `diff` 完全相同(§1)。
+- **REQ-201 鏈路本身零缺口**,且 `VAL-219` 是 `real:true`(真 MCP HTTP + 真 SQLite,deploy.sh 起的
+  8791 scratch 實例,production 8899 未動);`VAL-218` 留 `real:false` 是 VAL-151/VAL-128 的既有
+  慣例(in-process 樓層),不是 mock-only 結案。
+- **交接文件齊備且是現況寫法:** `README.md` / `DEPLOY.md` / `docs/AUTHORING.md` 都在,DEPLOY.md 第
+  30 行就是一鍵 `./deploy.sh --background`;v33 對 README 的 5 行改動是把 `workflow_register` 範例
+  換成 VAL-219 真的抓到的輸出(連 `runId` 這個 v33 之前就漏掉的欄位一起補),**沒有**帶進任何
+  changelog / 版本差異敘述。
+- **`docs/AUTHORING.md` 與 builder 同步**(UT-160 byte lock 在本輪重跑中綠)。
+- **測試分層與 mock policy 一致:** UT-266/267 純函式無 I/O;IT-172 真 HTTP、真 SQLite、註冊/發佈
+  路徑上沒有 SUT 邊界 mock(我讀過整個檔案,確認沒有 stub catalog)。
+- **`.panel/` 不存在**,無需清理。
+
+### §5 裁決:`resolveDetail` 在 insert 已提交之後失敗 → 假 `failed`
+
+**判定:(b) 記為 LOW 債,寫好修法,本輪不改。** 理由分四層,都是讀出來的、不是估的:
+
+1. **這條路在邏輯上沒有失敗分支。** `insertVersion` 提交後,同一個 better-sqlite3 連線上緊接著的
+   `resolveDetail` 會:`_requireName` 找到 name 列 → `_listVersions` 非空 →
+   `resolveVersionRequest({version})` 對剛插入的版本必然解析成功 → 版本列 SELECT 必中。
+   (`src/workflow-catalog.ts:689-760`)能讓它拋的只剩**兩個同步語句之間的真 I/O 故障**。
+2. **唯一的實際交錯不是說謊。** 兩個 `await` 之間 event loop 可以插進一次
+   `workflow_deregister(name)`,那時 `_requireName` 丟 `CatalogNotFoundError`——但那一刻版本**真的
+   沒了**,回 `failed` 反而是誠實的。
+3. **真的踩到時的代價,正好是 REQ-201 自己定義為「不破壞」的那一類:** 客端重註冊 → 多疊一個
+   version,append-only,不覆蓋、不刪除;而且 trigger claim 依 DES-222 的邊界**不會**被釋放
+   (補償 catch 沒有包住這個讀),所以不會出現「已生效的 trigger 被放掉」這種真傷害。
+4. **這是設計時就決定過的,不是漏想。** DES-222 的 boundary 明寫「It stays inside the outer `try`,
+   so any throw still becomes the typed `{status:'failed', …}` envelope」。它沒有權衡到的只有一件
+   事:**客端看到 `failed` 的反射動作是重註冊**——也就是 REQ-201 要治的那個行為。這是把它記成債
+   而不是丟掉的理由。
+
+**沒有任何測試釘住這條路。** IT-172 的三例都不碰它;`tests/` 裡三處 `resolveDetail` 都是 catalog
+層的;`tests/unit/facade-refusal-arms.test.ts` 刻意用**真** `WorkflowCatalog`(檔頭自己寫「a
+hand-mocked catalog cannot exercise the genuine arms」),所以連一個能注入失敗的 facade 替身都不
+存在。
+
+**為什麼不是 (c) 現在就改:** 提議的修法會讓 `versions`/`channels` 在 `completed` 回應上變成
+**可選鍵**,而 REQ-201 的驗收文字與 DES-222 的 boundary 目前都把它們寫成「成功必有、`null` 而非
+省略」。把保證從「必有」降成「通常有」,是設計層的決定,不該在 review 裡順手做掉——尤其它要動
+REQ 驗收、DES-222 boundary、README 的字面範例,再重跑一次 real-tier。
+
+**留給未來迭代的修法與測試(寫在這裡,不要再推導一次):**
+- 修法:只把 `await catalog.resolveDetail(...)` 那一行包起來 `try/catch`,catch 裡**不做任何補償**
+  (trigger 一律不釋放)、記一筆 log,然後回
+  `{ runId:'', status:'completed', version: versionNum, result: { name, version } }`——兩個鍵省略而
+  非填假值。同時把 DES-222 的 boundary 與 REQ-201 驗收補上這個 sub-case。
+- 測試:facade 層 UT,用 stub `RegistrationCatalog`(`insertVersion` resolve、`resolveDetail`
+  reject),斷言 ① `status === 'completed'` ② `result.name`/`result.version` 在 ③ `versions`/
+  `channels` 兩個鍵不存在 ④ 這次呼叫 claim 的 trigger **仍然被持有**(沒有被釋放)。
+- 升級條件:哪天註冊與這個讀跨了行程或跨了交易邊界(例如 catalog 變成遠端),視窗會變寬,這條
+  就從 LOW 升到 MID。
+
+### §6 業主已裁決、照單記為債的既有缺口(**不重審**)
+
+83 條裡的 **77 條**是 v29–v32 的既有債,v33 一條都沒增加也沒減少:
+
+- **15 條 `斷鏈` (high)** — 我自己列過一次,**不是**照轉業主的摘要:掛在 IMPL-303..311 / IMPL-323 /
+  UT-264 / UT-265 上,訊息一律是「追溯到不存在的 REQ-144/145/146/147/148/149/150/151/152/186」——
+  也就是那十個 REQ 的標題 `trace.py` 解析不到,於是所有指向它們的連結全部懸空。與業主的裁示一致
+  (實際懸空的目標是 REQ-144..152 與 REQ-186,不是整個 186..200 區間)。
+  **對照組:REQ-201 自己的標題解析得到**(它不在這 15 條裡,`--impact` 也走得通)——F1 修過它的
+  標題格式,這是 v33 相對於那批債的一個小改善,值得記一行。
+- **17 條 `未驗證` (mid)** — REQ-153..169 沒有真跑證據。
+- **19 條 `TDD` (mid)** — IMPL-305..(v31/v32 一批)沒有測試覆蓋列。
+- **2 條 `未實作` (low)** + **24 條 `漂移` (low)** — 更早的既有項。
+
+業主裁示:v33 以本帳本自己的前例(v26 round 6、v28、v28c:「觸及的 REQ 零缺口 + 債有記錄」)
+判 **PASSED**,REQ-144..200 的標題正規化與證據回填排成 **v34 之後**的獨立清理迭代。本段照裁示
+登記,不追、不以此擋門。
+另記 `dashboard_check` 的 7 mid(v21–v27 mermaid 括號)與 1 low、`solid_check` 的 10 low
+(未認領檔案),同為既有債,與基線逐字相同。
+
+### §7 Retro
+
+**做得好的三件事**
+
+1. **這一輪的根因抓得準。** 缺陷是「機制對、廣告沒說」,F1 沒有去動版本機制,而是同時修**回應**
+   (機器讀)與**兩段 description + guide 段落**(模型讀)。ARCH-087 自己的規則「description
+   *is* the API」被當成規則用,不是被引用而已。
+2. **紅是量出來的,不是宣稱的。** UT-266 的紅理由寫著 `index 111 < 142`(publish 出現在 `{version}`
+   之前)這種可複驗的數字,IT-172 的紅理由指到 `mcp-facade.ts:350`。F6 只要重跑就能確認,不必相信
+   任何一段報告。
+3. **邊界想清楚才動手。** 那個讀刻意放在補償 `try/catch` 之外,而且 DES-222 把理由寫進 boundary
+   欄——這正是 §5 能在五分鐘內裁決而不是重開設計辯論的原因。
+
+**下次要改的三件事**
+
+1. **`iter:` 的家規要在 F1 就被讀到。** F6-1 是這一輪唯一的實質退步,而它的答案早就寫在同一個檔案
+   的 Decision rationale item 22、甚至就寫在被改的那一列的上一行。**動任何一列的 `iter:` 之前,先
+   grep 那一列自己有沒有寫過「stays vNN」。**
+2. **fix-mode 也該在 F1/F4 量一次 gap 基線。** 這輪的 +6 是 F6 才發現的;`trace --check` 只回總數,
+   77→83 這種變化在 83 這個大數字裡看不出來。建議 fix 模式把「F1 之前存一份 gap 清單到 scratch」
+   寫成固定動作(CLAUDE.md 已經指出正確作法是**事先存檔**,不要事後 checkout 回去算)。
+3. **契約與 vendored 工具的版本差要修在上游。** 契約叫的 `trace --tool <check>` 在本 repo 的
+   `trace.py` 不存在(這也是那條 offline-fallback low 的來源)。每一輪 reviewer 都要重新發現一次,
+   該把 `.sdlc/trace.py` 更到 plugin 2.4.3,而不是每輪在報告裡註明降級。
+
+### §8 Report
+
+```
+Gaps: high=15 mid=36 low=32 (合計 83;全部已記錄 —— 77 條為業主已裁決的既有債,6 條為 F6-1)
+      high=15 斷鏈 · mid=19 TDD + 17 未驗證 · low=30 漂移 + 2 未實作
+Delta vs c48fe08: items +10 (剛好是 v33 的十個 id), gaps +6 (全為 漂移-low,單一成因 DES-157 iter)
+Drift: F6-1 —— DES-157 `iter:` v24→v33 造成 7 條測試側漂移、消掉 1 條設計側,淨 +6(一行可回復,已量測)
+Architecture consistent: yes (ARCH-087 / ARCH-091 / ARCH-107 / ADR-032 / ARCH-075 / REQ-097 逐條對到 file:line;solid_check 0 high/0 mid)
+Validation: real-tier all-green? yes (REQ-201 → VAL-219 real:true;REQ-116/117 → VAL-220 smoke 再確認) · README+DEPLOY present? yes
+Conclusion: iteration can close。F6-1(一行,`04-design.md:5114`)是 MID 債、修法已量測 ——
+            建議在收尾的那個 commit 裡順手改掉:改了,v33 就是「零新增漂移」(1778/77,缺口集合與
+            c48fe08 byte-identical);不改,那 +6 條 low 漂移就以本段為紀錄,成為 v33 自造的債。
+send_back: []          # 沒有 gate 需要重跑;orchestrator 本輪就在 commit,一行由他改比路由回設計閘便宜
+blocking_findings: []  # 契約:send_back 空則此欄必空。F6-1 的完整修法留在 §4,不因為不擋門就縮水
+owner_decisions: []
+```
+
+#### F6-1 / F6-2 — orchestrator 收尾時已套用(2026-09-20 15:4x CST)
+
+五列 `iter:` 依 Decision rationale item 22 的家規(`iter:` 是**起源**,不是最後觸及)改回 `v24`:
+`02-architecture.md` 的 ARCH-087 / ARCH-091 / ARCH-107 / ADR-032,與 `04-design.md:5114` 的 DES-157。
+DES-222 是 v33 新生項目,`iter: v33` 正確,不動。
+
+套用後實測:`sh .sdlc/trace` → **1778 個工作項 / 77 個缺口**,與基線 c48fe08 的 77 相同 ——
+v33 的新增漂移歸零,F6-1 所述的「零新增漂移」成立,不留自造的債。

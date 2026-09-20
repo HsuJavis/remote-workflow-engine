@@ -6451,3 +6451,58 @@ trace 段落。Exit code 1,依這份 ledger 一貫的慣例(v26/v27/v28/v28c 每
 **狀態更新。** `state.yaml`:`gates.validation.passed: true`(補上完整 v33 F5 note)、
 `current_stage: review`(從 `validation` 前進)、`updated: 2026-09-20`。**下一步:**Gate 8
 (review)。**擁有者待決:0 條。**
+
+## 2026-09-20 — v33 / F6(review-lite,reviewer):鏈路守門量到 +6,是一行造成的
+
+**結論:PASS。** REQ-201 的產品改動本身乾淨、real-tier 綠、架構一致;唯一的實質發現是一條
+**MID 的帳本退步,一行可改,而且我把改完的結果量出來了**。
+
+**鏈路守門(不用 `git checkout`/`restore`/`stash`——用 `git archive c48fe08 | tar -x` 解到 repo 外
+的 scratch,兩棵樹各跑一次 `trace.scan()`+`analyze()`):**
+
+- 工作項 **1768 → 1778**,`+10` 正好是 v33 的十個 id(REQ-201 / DES-222 / TASK-227 / IMPL-338 /
+  UT-266 / UT-267 / IT-172 / VAL-218 / VAL-219 / VAL-220),沒有多餘。
+- 缺口 **77 → 83**。逐類 diff:`斷鏈` 15→15、`未驗證` 17→17、`TDD` 19→19、`未實作` 2→2、
+  `孤兒` 0→0——**這四類的清單逐列完全相同**,零新增斷鏈、零新增孤兒。
+- 差的 6 條全在 `漂移`(low,24→30),而且成因只有一個:`04-design.md:5114` 把 DES-157 的
+  `iter:` 從 v24 提到 v33。它消掉 1 條(DES-157 落後 IMPL-208)、長出 7 條(IT-118 / UT-159 /
+  UT-160 / UT-215 / UT-221 / VAL-139 / VAL-161 落後 DES-157)。
+- **REQ-201 這條鏈自己:0 缺口。**
+
+**F6-1(MID):** Decision rationale item 22 就寫在同一個檔案(`04-design.md:6659`):`iter:` 記的
+是**起源**不是最後一次改動;它還**點名量過 DES-157 這一次提升**是 1 換 5,兩次都 declined。更直白
+的是——DES-157 自己的 v26 amendment 句子今天還寫著「`iter:` stays v24;see Decision rationale
+item 22」,這一列現在自相矛盾。我把帳本複製到 scratch、只改這一行回 `v24`、重跑 analyze:
+**1778 / 77,缺口集合與 `c48fe08` 基線 byte-identical**。沒有程式碼影響、不用重跑測試。
+(同類但無 trace 影響:ARCH-087/091/107 + ADR-032 的 `iter:` 也一起被提升——`trace.py` 的漂移只看
+build→design 與 test→design,所以不計數,記為 F6-2。)
+
+**`resolveDetail` 的裁決(orchestrator 指定要判的):(b) LOW 債,本輪不改。** insert 提交後同一條
+better-sqlite3 連線上的那個讀,**邏輯上沒有失敗分支**(`_requireName` 命中、剛插入的版本必在
+`_listVersions` 裡、版本列 SELECT 必中),能讓它拋的只剩兩個同步語句之間的真 I/O 故障;唯一實際的
+交錯(兩個 `await` 之間插進 `workflow_deregister`)回 `failed` 反而誠實;真踩到的代價是客端重註冊
+多疊一個版本,正是 REQ-201 自己定義為不破壞的那一類,而且 trigger claim 依 DES-222 的邊界不會被
+釋放。**沒有任何測試釘住這條路**(IT-172 不碰;`facade-refusal-arms.test.ts` 刻意用真 catalog,所以
+連可注入的替身都沒有)。不現在改的理由:提議的修法會把 `versions`/`channels` 從「成功必有」降成
+「可選」,而 REQ-201 驗收與 DES-222 boundary 都寫成必有——那是設計層決定。修法與測試形狀已寫進
+`07-review.md` §5,留給未來迭代照抄。
+
+**工具與獨立複驗:** `solid_check` 通過(72 模組,0 high / 0 mid / 10 low,兩側同數,三個觸檔全被
+ARCH-087/091/107 認領);`dashboard_check` 0/7/1,**與基線逐字相同**(7 個 mid 是 v21–v27 的 mermaid
+括號,v33 一張沒碰)。不採信報告、自己重跑:`tsc --noEmit` exit 0,三個觸檔測試 **3 檔 / 58 例全綠**。
+活的 `owner_decision: pending` 標記 **0 個**。
+
+**降級聲明兩條:** 契約寫的 `sh .sdlc/trace --tool <check>` 在本 repo 的 vendored `trace.py` 不存在
+(直接 usage error),改為直接呼叫 plugin 2.4.3 的 `dashboard_check.py`/`solid_check.py`;本 session
+沒有 playwright,mermaid 的 47/47 真 Chromium 渲染是**沿用 v28** 的結論,不是我量的。
+
+**既有債照業主裁示登記、不追:** 77 條既有缺口(15 斷鏈 = REQ-144..152/186..200 的標題 `trace.py`
+解析不到、17 未驗證 = REQ-153..169、19 TDD、2 未實作、24 漂移)維持不動,REQ-144..200 的標題正規化
+與證據回填排在 v34 之後的獨立清理迭代。
+
+**retro 最該記住的一句:** 這一輪唯一的退步,答案早就寫在被改的那一列的**上一行**。動任何一列的
+`iter:` 之前,先 grep 那一列自己有沒有寫過「stays vNN」;另外 fix 模式應該在 F1 之前就把 gap 清單
+存一份到 scratch——77→83 這種變化,藏在 `--check` 只回的那個總數裡是看不出來的。
+
+未 commit:整棵樹留給 orchestrator(我只動了 `07-review.md` / `state.yaml` / `journal.md`,外加
+`trace` 重跑產生的 `dashboard.html`;`evidence/v28/val215-issues-{dark,light}.png` 進場時就是髒的)。
