@@ -138,8 +138,9 @@
   3 秒自動更新一次，已經做好的縮放/平移不會被重設。
 
   **agent 細節面板**：顯示這個 agent 的模型 / 努力程度 / 逾時 / token 用量（含快取讀寫）/ 費用，
-  以及**使用者自己寫的提示詞全文**——但看不到 agentType 檔案裡預先寫好的 system prompt，那一段
-  線上永遠不會送出來，不是前端刻意隱藏，是伺服器根本沒回傳（見下方「已知限制」之前的權限段落）。
+  以及**這次呼叫實際送給模型的完整提示詞**（腳本自帶的 `prompt`，加上有覆寫時框住的
+  `appendPrompt`）——伺服器端沒有另一層看不到的系統提示詞會被剔除，`harness.prompt` 就是原始
+  字串本身（見下方「已知限制」之前的權限段落）。
   按 Esc 或點背景可以關閉面板。**不論是工作流程詳情頁的泳道圖，還是某次 run 的專屬網址
   `/dashboard/<runId>`，點任一個節點都會打開這個面板**；面板固定從節點所在那一側的對面滑入
   （點左半邊的節點，面板從右邊滑入；點右半邊的節點，面板從左邊滑入）。
@@ -471,7 +472,8 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 10. **腳本本文只有一個出口，且對非擁有者遮蔽**：能回傳腳本本文的工具只有 `workflow_source`（需要 `author` 角色）。啟用 auth 後，它對非擁有者回傳 `scriptWithheld:true`、不含腳本本文；擁有者/admin 仍可看到完整腳本。`workflow_describe`／`workflow_list`／`/api/workflows*`／儀表板**在設計上就不含**腳本本文，不論身份。`auth.enabled:false`（單人本機部署的預設）沒有「非擁有者」這個概念——任何人都能透過 `workflow_source` 看到完整腳本。
 11. **SSRF-safe seedRef**：`seedRef:{repoUrl,sha}` 由 `HardenedSeedRefFetcher` 拉取；URL 必須匹配 `seedRefAllowlist`，否則 `SEEDREF_EGRESS_DENIED`；省略 allowlist 則全部 `SEEDREF_DISABLED`（fail-closed）；hardened git subprocess，不轉 shell。
 12. **角色（`principals`）fail-closed**：`rwe.config.json` 的 `principals` 角色字串打錯（不是 `admin`/`author`/`user`）→ 開機直接拒絕啟動，不會靜默退回 `user`；整個鍵省略時，`auth.enabled:true` 下每個已驗證呼叫者一律 `user`，且開機那行 `auth:` log 如實顯示（ADR-028）。`workspace_push({kind:"mcp"})` 的 `http` transport 同理受 `mcpEgressAllowlist` fail-closed：省略/不匹配 → `EGRESS_DENIED`，探測次數為零；`stdio` transport（`config.type:"stdio"`）與 `scope:'global'` 的推送都需要 `admin`，其他角色一律 `FORBIDDEN_ROLE`、不會探測也不會啟動任何子行程。
-13. **agentType 的 system prompt 不進逐字稿**：v27 起，`agent()` 呼叫套用了 `agentType` 的 system prompt 時，`run_agent_log`／`GET /api/runs/:id/agents/:agentId` 回傳的 `harness.prompt` 只保留腳本自帶的提示與使用者附加指令，system prompt 本文在寫入前被切掉（前綴不符時 fail closed 成空字串，絕不原樣回傳）；`harness.systemPrompt:{agentType,bytes}` 只記錄「套用了哪個 agentType、幾個 byte」這個事實，從不記錄內容本身——內容本來就在引擎主機的 `agents/<type>.md`。沒有套用 agentType（或該 agentType 的 system prompt 是空字串）時，這個欄位整個不存在。（v27 之前寫入的紀錄仍是合成後的整段，不會回頭修。）
+13. **`harness.prompt` 就是這次呼叫實際送出的原始字串，沒有隱藏的伺服器端系統提示詞**：`agent()` 沒有任何伺服器端可套用的 system prompt 層——`harness.prompt`＝腳本自帶的 `prompt`，有覆寫時再接上框住的 `appendPrompt`（`<user-instructions untrusted="true">…</user-instructions>`），沒有任何東西會在寫入逐字稿前被剔除。這一段線上回應（MCP `run_agent_log` 與 `GET /api/runs/:id/agents/:agentId` 皆同）任何人（含擁有者）都看得到完整內容，因為根本沒有需要遮蔽的東西。實測（本機模型 `qwen2.5:7b`，appendPrompt 覆寫 `"Also mention the word BANANA."`）：`harness.prompt` 回傳
+   `"Say hello in one short sentence.\n\n<user-instructions untrusted=\"true\">\nAlso mention the word BANANA.\n</user-instructions>"`，`harness` 物件裡沒有 `systemPrompt` 這個鍵。作者若要為某個 agent 準備固定的系統提示詞，寫進腳本自己的 `prompt` 參數即可（見 `workflow_authoring_guide` 的「Prompt layering」一節）。
 
 ## 已知限制
 

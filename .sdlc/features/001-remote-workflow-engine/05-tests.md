@@ -11809,6 +11809,21 @@ green-by-construction, not forced red: the row LOCKS the v28 key-set contract in
 already true. `npx vitest run tests/integration/dashboard-disclosure.test.ts` → 2/2 pass (both
 describe blocks, unchanged pass count — the new assertions are inside the existing loop).
 
+**[v34 amendment, Gate 6.5+7, 2026-09-20]:** this file's SECOND describe block — REQ-136's real-run
+oracle (a real `agentType` with a distinctive systemPrompt marker, both transports asserted
+`¬contains(marker) ∧ contains(scriptPrompt)`) — retired WHOLE with the `agentType` composition root
+it booted (`src/agent-definitions.ts`, `ServerConfig.agentDefinitionsDir`, both deleted in `21ad773`
+per TASK-229/ARCH-137/ADR-061). The file now has exactly ONE describe block (the key-set table);
+`traces:` above is kept as-is for history, not narrowed — this item's `real:136`-relevant half is
+what retired, not the item's identity. Measured (2026-09-20): `npx vitest run tests/integration/
+dashboard-disclosure.test.ts` → 1 file/2 tests (both from the surviving key-set-table block), 0
+failed. REQ-136's own disclosure PROPERTY survives the mechanism it used to protect — with no
+server-side system prompt left to leak, `descriptor.prompt` is simply the gateway's verbatim echo —
+re-covered by `IT-175`/`IT-282` (a legacy pre-v34 row read through the real dashboard projection,
+disclosure line absent, no crash) rather than by a live `agentType` dispatch. See `VAL-211`'s own
+amendment below for the real-tier evidence consequence, and the v34 retirement register further
+down this file for the routing decision (Gate 1 or Gate 7.5, not this gate).
+
 ### UT-233 — `sqlite-run-store-usage-projection.test.ts`: the at-rest usage projection + `backfillUsage`
 - **status:** green
 - **traces:** DES-193, ARCH-128, TASK-198, REQ-141
@@ -12910,6 +12925,25 @@ Real-tier path per 04-design.md's own table: backed by `tests/integration/dashbo
 REQ-136 block (IT-165) — a real run, both transports, asserted on the real response body. RED
 (measured): see IT-165.
 
+**[v34 amendment, Gate 6.5+7, 2026-09-20]:** this item's real-tier evidence path — the
+`dashboard-disclosure.test.ts` REQ-136 block named above (IT-165) — no longer exists; it retired
+whole with the `agentType` composition root it booted (TASK-229, `21ad773`; see IT-165's own v34
+amendment). `status`/`real`/`result` above are left untouched by this gate (flipping `real:true`
+back to `false` on evidence that once genuinely ran, or forward-inventing a new real-tier proof, are
+both outside a Gate 6.5+7 verifier's remit — the mock-hard-rule flip belongs to Gate 7.5). Recorded
+here so the next reader does not have to reconstruct why: REQ-136's real-tier evidence needs a NEW
+path before its next Gate 7.5 round, most likely `IT-175`'s legacy-pre-v34-row scenario (dashboard-
+lib-agent.test.js) read back against a genuinely upgraded deployment, per the v34 retirement register
+further down this file. Routing (Gate 1 vs Gate 7.5) and the actual re-verification are both
+carried forward, not resolved here.
+
+**[v34 amendment, Gate 7.5, 2026-09-20]:** re-verified. A real dispatched `agent()` run on a
+genuinely upgraded (v34) deployment — no `agentType` mechanism exists any more — shows, on BOTH
+`run_agent_log` (MCP) and `GET /api/runs/:id/agents/:agentId` (dashboard HTTP route), a `harness`
+object with **no `systemPrompt` key at all**. Full evidence: `08-validation.md` `VAL-228`. This
+item's `status:green`/`real:true`/`result:pass` now rest on `VAL-228`, not on the deleted
+`dashboard-disclosure.test.ts` block named above.
+
 ### VAL-212 — REQ-140/REQ-134: `dag.lanes` + the predicted overlay unconditional (Round v27b: PROVE visible, not "record what degrades"); agent detail carries `record`
 - **status:** green
 - **traces:** REQ-140, REQ-134
@@ -13534,11 +13568,11 @@ same convention this ledger already uses at IT-085's `#55` wire-confirmation cas
 commands and per-file pass/fail counts are in this gate's report; summarized per item below.
 
 ### UT-268 — `workflow-describe-projection.test.ts`: `DescribeAgentParamKey` gains `unit`/`ceiling`
-- **status:** red
+- **status:** green
 - **traces:** DES-223, ARCH-136, TASK-228, REQ-202
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v34
 
 Mock policy (unit): pure `projectWorkflowDescribe`/`projectAgentParams`, hand-built
@@ -13551,11 +13585,11 @@ rows on `timeoutMs` fail on `undefined`/`false`. The 19 pre-existing cases in th
 unaffected.
 
 ### UT-269 — `params-contract.test.ts`: appendPrompt over-size message names the SAME ceiling word as `detail.ceiling`
-- **status:** red
+- **status:** green
 - **traces:** DES-223, ARCH-136, TASK-228, REQ-202
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v34
 
 Mock policy (unit): pure `validateUserOverrides`, no I/O.
@@ -13567,11 +13601,11 @@ wording + `detail.ceiling`, and the "word iff field" invariant). 98 pre-existing
 pass unchanged.
 
 ### UT-270 — `scan-agent-calls.test.ts`: `agentType:` is refused `AGENT_OPT_RETIRED`, not silently accepted
-- **status:** red
+- **status:** green
 - **traces:** DES-224, ARCH-138, TASK-229, REQ-203
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v34
 
 Mock policy (unit): pure `scanAgentCalls`, no I/O.
@@ -13583,11 +13617,11 @@ hint text, the near-miss re-pointing, and `RETIRED_AGENT_OPT_KEYS`'s own existen
 pre-existing cases in the file pass unchanged.
 
 ### IT-173 — `registration-enforcement.test.ts`: a REAL `workflow_register` refuses `agentType:` with a coded, machine-parseable marker
-- **status:** red
+- **status:** green
 - **traces:** DES-224, ARCH-138, TASK-229, REQ-203
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v34
 
 Mock policy (integration): real `WorkflowCatalog` + real SQLite under a tmp workRoot, no SUT
@@ -13598,11 +13632,11 @@ options literal registers CLEAN today (`err` is `undefined`) — `agentType` has
 scan-refusal path at all.
 
 ### UT-271 — `params-resolve.test.ts`: `composePrompt` at TWO arguments, the five v34 goldens byte-for-byte
-- **status:** red
+- **status:** green
 - **traces:** DES-225, ARCH-140, ADR-061, TASK-229, REQ-203, REQ-204
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v34
 
 Mock policy (unit): pure `composePrompt`, no I/O. Goldens computed by EXECUTING the pre-cut 4-arg
@@ -13618,11 +13652,11 @@ the "byte-identical when both retired segments are absent" property DES-225 stat
 cases in the file pass unchanged.
 
 ### UT-272 — `params-resolve.test.ts`: `defaultRunParams` never carries `prompt`/`tools` (DES-228 baseline A)
-- **status:** red
+- **status:** green
 - **traces:** DES-228, ARCH-140, TASK-229, REQ-204
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v34
 
 Mock policy (unit): pure `defaultRunParams`, no I/O.
@@ -13660,11 +13694,11 @@ and the `systemPrompt` spread) must not change this byte sequence for the ordina
 case, which is the common one post-cut.
 
 ### IT-175 — `dashboard-lib-agent.test.js`: a legacy row's disclosure line is ABSENT, not "applied"/"no record" (隨機制消失)
-- **status:** red
+- **status:** green
 - **traces:** DES-225, ARCH-137, ADR-061, TASK-229, REQ-203
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v34
 
 Mock policy (unit, `.js`, `allowJs` without `checkJs` per ADR-049/DES-225 rationale item 10):
@@ -13726,11 +13760,11 @@ green immediately). `npx tsc --noEmit` → exit 0 (the `.ts` import resolves; th
 outside `checkJs`).
 
 ### UT-273 — `agent-executor-params.test.ts`: `agentType` in `req.opts` is recorded-then-thrown `PARAM_UNKNOWN`/`AGENT_OPT_RETIRED`
-- **status:** red
+- **status:** green
 - **traces:** DES-226, ARCH-137, ADR-063, TASK-229, REQ-203, REQ-096
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v34
 
 Mock policy (unit): fake `GatewayClient` (no network), `InMemoryRunStore` spy — same shape as the
@@ -13752,11 +13786,11 @@ proves the NEW half specific to this defect: that the refusal is RECORDED (obser
 case above already relies on for the identical shape.
 
 ### IT-176 — `resume-legacy-params.test.ts`: a pre-v34 pinned script carrying `agentType` is refused at DISPATCH, observable through `workflow_status`
-- **status:** red
+- **status:** green
 - **traces:** DES-226, ARCH-137, ADR-063, TASK-229, REQ-203, REQ-096
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v34
 
 Mock policy (integration): real `RunManager` + real `AgentExecutor` + real `SqliteRunStore`; the
@@ -13772,11 +13806,11 @@ marker does not exist yet. This is the "not merely a unit-level throw" half TASK
 names.
 
 ### UT-274 — `compose-config-v2-wiring.test.ts`: `RETIRED_CONFIG_KEYS`, one warn naming all three keys, engine boots
-- **status:** red
+- **status:** green
 - **traces:** DES-227, ARCH-139, TASK-229, REQ-203
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v34
 
 Mock policy (unit): fakes neutralize the spawned proxy manager and `queryImpl` (same `FAKE_DEPS` as
@@ -13791,11 +13825,11 @@ deliberately UNTOUCHED here — dropping `agentDefinitionsDir` from `PROBES` int
 TASK-229's same-commit job, per Gate-5 constraint 5, not this gate's).
 
 ### IT-177 — `resume-legacy-params.test.ts`: a legacy `.agents`-present-AND-`tools`-key row refuses `LEGACY_REREGISTER` (DES-228 baseline A)
-- **status:** red
+- **status:** green
 - **traces:** DES-228, ARCH-140, TASK-229, REQ-204
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v34
 
 Mock policy (integration): real `RunManager` + real `SqliteRunStore`; the legacy row is produced by
@@ -13812,11 +13846,11 @@ Red reason (measured): today's resume guard (`run-manager.ts:1038`) discriminate
 this file are unaffected.
 
 ### UT-275 — `tool-specs.test.ts`: `run_start.overrides` teaches the three appendPrompt rules; `run_agent_log`'s harness sentence drops `agentType`/`systemPrompt`
-- **status:** red
+- **status:** green
 - **traces:** DES-229, ARCH-087, ADR-032, TASK-230, REQ-202, REQ-203
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v34
 
 Mock policy (unit): pure data assertion over `projectToolsList()`'s served projection, no I/O.
@@ -13828,11 +13862,11 @@ untrusted framing, byte ceiling + no frame-close) are present; `run_agent_log`'s
 verbatim. 4/4 new cases fail. 11 pre-existing cases in the file pass unchanged.
 
 ### UT-276 — `authoring-guide.test.ts`: the guide teaches v34 prompt layering and the two-layer tool surface
-- **status:** red
+- **status:** green
 - **traces:** DES-229, ARCH-107, ADR-032, TASK-230, REQ-202, REQ-203
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v34
 
 Mock policy (unit): pure `buildAuthoringGuide()` text assertions, no I/O.
@@ -13843,11 +13877,11 @@ Red reason (measured): the guide has no "prompt layering" heading at all; the to
 `authoring-guide.ts:531`). 3/3 new cases fail. 44 pre-existing cases in the file pass unchanged.
 
 ### VAL-222 — REQ-202: a cold caller learns the appendPrompt bound and its ceiling attribution before/without a failed call
-- **status:** red
+- **status:** green
 - **traces:** REQ-202, DES-223
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v34
 
 Proven by (the real-tier validation path DES-223 itself names): UT-268 (`workflow_describe`'s
@@ -13857,11 +13891,11 @@ VAL-151/VAL-218 convention; Gate 7.5 exercises the live `workflow_describe` + `r
 against a booted engine.
 
 ### VAL-223 — REQ-203: the agentType mechanism is retired at every layer (script, registration, dispatch, config, disclosure) and the ledger reads it as 隨機制消失
-- **status:** red
+- **status:** green
 - **traces:** REQ-203, DES-224, DES-225, DES-226, DES-227, DES-229
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v34
 
 Proven by: UT-270 + IT-173 (registration refuses `agentType:` with a coded marker) + UT-273 + IT-176
@@ -13874,11 +13908,11 @@ convention — Gate 7.5's own text-sweep protocol (ADR-063) is the real-tier evi
 at.
 
 ### VAL-224 — REQ-204: `composePrompt` shrinks to two arguments, `defaults.prompt`/`.tools` leave the run snapshot, `DEFAULTS_RETIRED` outlives its pipeline
-- **status:** red
+- **status:** green
 - **traces:** REQ-204, DES-225, DES-228
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v34
 
 Proven by: UT-271 (the five composePrompt goldens byte-for-byte at 2 arguments) + IT-174 (the

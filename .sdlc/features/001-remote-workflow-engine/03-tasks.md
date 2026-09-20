@@ -2040,7 +2040,7 @@ on both sides of the seam, and this project treats `tsc` as the first test (DES-
 the byte-locked text trio and lands immediately after TASK-229.
 
 ### TASK-228 — `workflow_describe` publishes the bound it already computes, and the appendPrompt refusal names the same word
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-136
 - **files:** src/workflow-view.ts, src/params/contract.ts, tests/unit/workflow-describe-projection.test.ts, tests/unit/params-contract.test.ts
 - **des:** DES-223
@@ -2049,7 +2049,7 @@ the byte-locked text trio and lands immediately after TASK-229.
 - **iter:** v34
 
 ### TASK-229 — the cut: one commit deletes the `agentType` mechanism, `defaults.prompt`/`tools`, and the config key, and keeps two fail-closed properties
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-137, ARCH-138, ARCH-139, ARCH-140
 - **files:** src/agent-definitions.ts (deleted), src/agent-executor.ts, src/params/resolve.ts, src/types.ts, src/run-manager.ts, src/server.ts, src/main.ts, src/workflow-meta.ts, src/workflow-catalog.ts, src/gateway/claude-agent-sdk-client.ts (comments only), src/dashboard/lib/agent.js, src/dashboard/ui/agent-panel.js, tests/fixtures/dashboard-wire.ts, tests/unit/compose-config-v2-wiring.test.ts, tests/unit/dashboard-lib-agent.test.js, tests/unit/strip-first-segment.test.ts (deleted), tests/unit/agent-executor-agent-type.test.ts (deleted), tests/integration/agent-type-composition-root.test.ts (deleted), tests/integration/main-composition-root-agent-types.test.ts (deleted), tests/unit/agent-executor-harness-descriptor.test.ts, tests/unit/agent-opts-unknown-key.test.ts, tests/unit/params-resolve.test.ts, tests/unit/agent-executor-params.test.ts, tests/unit/agent-executor-allowed-tools.test.ts, tests/integration/agent-log-harness-shape.test.ts, tests/integration/dashboard-disclosure.test.ts, tests/integration/resume-legacy-params.test.ts, tests/integration/redact-sweep.test.ts, tests/acceptance/val-003-agent.test.ts, tests/acceptance/val-100-param-contract.test.ts, tests/acceptance/val-201-agent-panel.test.ts
 - **des:** DES-224, DES-225, DES-226, DES-227, DES-228
@@ -2058,7 +2058,7 @@ the byte-locked text trio and lands immediately after TASK-229.
 - **iter:** v34
 
 ### TASK-230 — the advertised text: three sites and the regenerated guide, byte-locked in one commit
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-087, ARCH-107, ADR-032
 - **files:** src/tool-specs.ts, src/authoring-guide.ts, docs/AUTHORING.md, tests/unit/tool-specs.test.ts, tests/unit/authoring-guide.test.ts
 - **des:** DES-229

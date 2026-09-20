@@ -6795,3 +6795,185 @@ no `src/` change); touched-file numbers above plus `npx tsc --noEmit` (exit 0) a
 personally observed. Not committed: `tests/unit/authoring-guide.test.ts`,
 `tests/unit/dashboard-lib-agent.test.js`, `05-tests.md`, `03-tasks.md`, `state.yaml`, `journal.md`.
 Left for the orchestrator.
+
+## v34 Gate 6.5+7 (verifier, 2026-09-20)
+
+Impact closure: REQ-202, REQ-203, REQ-204, REQ-094, REQ-136, REQ-116, REQ-117, ARCH-004, ARCH-087,
+ARCH-107, ARCH-129, ADR-032, DES-007, DES-102, DES-195. Started from a resumed state: TASK-228/229/230
+were already landed (implementer commit `21ad773`) and the one known test defect (UT-166) plus three
+other deferred items had already been closed by a prior tests-gate pass (commit `addfe36`). This gate
+did the Mode B work proper: simplify, full regression, coverage, module/solid checks, determinism,
+time-travel, seam wiring, real-dependency smoke — plus closed a real Gate-6 process gap found along
+the way.
+
+**(0) Simplify.** `/simplify` invoked; the Agent tool's fan-out is unavailable in this context, so it
+ran single-pass inline over all four angles (reuse/simplification/efficiency/altitude) against
+`git diff a98b469..HEAD -- src docs/AUTHORING.md` (17 files, +189/-240). Zero fixes applied — the
+diff is a clean, deletion-heavy retirement of one mechanism (`composePrompt` 5-arg → 2-arg, the
+`agentType` loader+registry gone whole, the `systemPrompt` disclosure field gone whole). Every
+surviving `agentType` string left in the tree is either a deliberate historical/legacy-read
+reference (`types.ts`'s stored-shape `provenance` union, INV-V34-3) or the `AGENT_OPT_RETIRED`
+rejection text itself — removing either would be a behaviour change, not cleanup, and explicitly out
+of this pass's mandate.
+
+**(1) Regression + a real Gate-6 omission found and closed.** `npx vitest run` → 412 files/1 skipped
+(413), 3060 passed/26 skipped (3086), 0 failed. `npx tsc --noEmit` both configs clean. Before running
+the suite I checked whether Gate 6 had written its `06-impl-log.md` rows (a resumed-session
+discipline, not paranoia) — it had not: `grep -c "iter:** v34" 06-impl-log.md` was 0, and
+`gates.impl.note` was still v33-dated, even though TASK-228/229/230 were fully landed and green.
+Wrote **IMPL-339** (TASK-228, `workflow_describe` publishes the appendPrompt bound), **IMPL-340**
+(TASK-229, the `agentType` cut — the largest of the three, records the DES-224..228 mechanics, the
+ADR-064/DES-228 pending-marker answer landing in the SAME commit per the implementer's own note, and
+the known-red-at-commit-time UT-166 routing), **IMPL-341** (TASK-230, the advertised text). Flipped
+TASK-228/229/230 `draft` → `done` in `03-tasks.md`. Flipped the 16 Gate-5 RED items still sitting
+`red`/`fail` in `05-tests.md` to `green`/`pass` (UT-268, UT-269, UT-270, UT-271, UT-272, UT-273,
+UT-274, UT-275, UT-276, IT-173, IT-175, IT-176, IT-177, VAL-222, VAL-223, VAL-224 — IT-174 and IT-282
+were already green from the prior tests-gate closeout) — confirmed by the same full-regression run,
+not asserted from the task description.
+
+**(1b) Coverage.** Installed `@vitest/coverage-v8@1.6.1` (`npm install --no-save`, matching the
+project's pinned vitest version). `npx vitest run tests/unit tests/integration --coverage
+--coverage.include='src/**' --coverage.exclude=<the same ten `ui/*.js` browser-only files IMPL-296
+excluded at v28, one flag each>` → 334 files/2663 passed/1 skipped, **95.87% overall lines** — clear
+of the 90% floor. Read `coverage/coverage-final.json`'s `fnMap`/`statementMap` directly (not just the
+summary %) for every function in every file this diff touched (`agent-executor.ts`,
+`params/resolve.ts`, `params/contract.ts`, `main.ts`, `run-manager.ts`, `server.ts`, `tool-specs.ts`,
+`workflow-meta.ts`, `workflow-catalog.ts`, `workflow-view.ts`, `gateway/claude-agent-sdk-client.ts`,
+`authoring-guide.ts`, `dashboard/lib/agent.js`): `composePrompt`, `projectAgentParams`,
+`scanAgentCalls`'s `AGENT_OPT_RETIRED` branch, `validateOneAgentOverride`, `panelModel`,
+`AgentExecutor.run`/`_invokeOnce`, and `composeConfig`'s `RETIRED_CONFIG_KEYS` branch are every one
+at 100% or fully exercised. Every function found below the 95% per-function floor was checked
+line-by-line against the diff and confirmed OUTSIDE it — `main.ts`'s CLI-only `loadFileConfig`/
+`main`/`runCheckConfig`/`onSupervisionEvent` (never exercised by vitest, only by a real process
+boot), `composeConfig`'s own untouched alias-validation-error and LiteLLM-proxy-supervision branches,
+`tool-specs.ts`'s pre-existing `isFixtureRef`/`resolveFixture`/`pushMode`/`listMode`/`deleteMode`
+helpers (the SAME files IMPL-296 already named as pre-existing at v28), `workflow-catalog.ts`'s dead
+diagram-pending API, `server.ts`'s giant pre-existing `createServer`. No new gap, nothing to write.
+
+**(1c) module_check**: dormant, no ARCH declares `build:`.
+
+**(2) No remaining red.**
+
+**(3) `sh .sdlc/trace --check`: 1821 items / 80 gaps** (18 high/36 mid/26 low). Rather than trust a
+raw before/after count, extracted a clean baseline via `git archive HEAD | tar -x` into scratch (the
+CLAUDE.md-mandated safe method — never checkout/restore/stash in place on a shared ledger) and
+diffed the two gap SETS by (type, id, sev): **zero new gaps**, six closed — `REQ-202`/`REQ-203`/
+`REQ-204`'s `未實作` (mid, now have IMPL-339/340/341) and `TASK-228`/`TASK-229`/`TASK-230`'s own
+`未實作` (low, same fix). `REQ-202`/`REQ-203`/`REQ-204` correctly RETAIN their `未真實驗證` (high)
+row — `real:true` is Gate 7.5's job, not this gate's, and nothing here should promote it early.
+
+**(3b) solid_check**: 78 modules, 0 high / 0 mid / 10 low — unchanged from the pre-existing baseline.
+Specifically checked for a new "claimed-but-missing-file" warning from `src/agent-definitions.ts`'s
+deletion — none appeared.
+
+**(4) determinism_check**: clean, no un-allowed wall-clock read.
+
+**(5) Time-travel**: `TZ='Pacific/Kiritimati'` (UTC+14) over the 16 test files TASK-228/229/230
+touched (per each task's own `files:` list) → 373 passed / 4 skipped, 0 flips. No time bomb.
+
+**(6) Seam wiring**: no new seam — this diff retires one, it does not add one. Confirmed by reading
+(not assuming) both real `AgentExecutor` construction sites (`run-manager.ts:710` and `:1077`) and
+the real `RunManager` construction site (`server.ts:773`): none carry an `agentTypes` field any more,
+matching the type deletion exactly — no orphaned half-wired seam. `RETIRED_CONFIG_KEYS`'s forwarding
+is covered by UT-274 (unit) and by the real-dependency smoke below (a live boot).
+
+**(7) Real-dependency smoke — the highest-value check this gate ran.** `npm run check-config` against
+the ACTUAL deployed `rwe.config.json` (not a fixture, not a mock) confirmed the real boot path
+behaves exactly per DES-227's fail-open design: `[remote-workflow-engine] unrecognized config key(s)
+in rwe.config.json, ignored: agentDefinitionsDir (retired at v34 — ...)` followed by
+`--check-config: OK`. Running this smoke surfaced three stale surfaces this iteration's diff had not
+touched, all found and two fixed:
+- **Fixed**: `rwe.config.example.json` — the shipped template DEPLOY.md's own `cp` step bootstraps
+  every new deployment from — still carried the retired `agentDefinitionsDir` key. Removed (a
+  one-line mechanical deletion, not a design decision).
+- **Fixed**: `README.md`'s security-invariant list item #13 described the deleted
+  agentType-system-prompt-strip behaviour as a CURRENT invariant. Rewritten to state the v34
+  retirement as fact and point at `workflow_authoring_guide`'s "Prompt layering" section.
+- **Flagged, not fixed** (an owner decision, not a doc-sync one — see the structured report):
+  `DEPLOY.md`'s `## 情境配方：gateway:sdk + LiteLLM 前置「本機/雲端模型」跑完整 sdlc-run` recipe
+  (its §1/§3/§4) still documents dispatching each `sdlc-run` gate to a different SDLC-role agent via
+  the now-deleted `agentDefinitionsDir`/`agentType` mechanism. The replacement — each role's system
+  prompt inlined into the caller script's own `prompt`, per the new "Prompt layering" guide — is a
+  redesign of the iso-agile-sdlc PLUGIN's own dispatch convention (a separate repo, no SDLC ledger
+  here per memory), not a fact this repo's docs can be mechanically corrected to. Added a warning
+  banner at the top of the section naming exactly which steps are stale and why, without inventing
+  the replacement recipe.
+
+**Carried forward, not this gate's to resolve** (already registered in `05-tests.md`'s own v34
+retirement register, written at Gate 5): `REQ-136`/`VAL-211`'s `real:true` evidence rode the exact
+`agentType` composition-root block this iteration deleted (`dashboard-disclosure.test.ts`'s old
+REQ-136 describe block). `VAL-211` still reads `status: green, real: true` in the ledger, but that
+evidence path no longer compiles. The register already names the fix (Gate 1 or Gate 7.5, most
+likely `IT-175`'s legacy-row scenario against a genuinely upgraded deployment) — this gate did not
+re-litigate that routing, only confirmed it is still accurately described and reported it forward.
+
+**state.yaml**: `current_stage` → `validation` (new v34 note prepended, old note kept as `PRIOR:`);
+`gates.impl.note` and `gates.verification.note` both prepended with this gate's own record, same
+convention; `updated:` bumped. Re-parsed with `python3 -c "import yaml; yaml.safe_load(...)"` after
+every edit — all four edits were to YAML **comments** (current_stage's trailing `#...` text) or to
+already-double-quoted `note:` strings built with backticks/single-quotes only, never an embedded
+literal `"`, per this ledger's own CLAUDE.md-documented past corruption. Parses clean throughout.
+
+Not committed by this pass: left for the orchestrator, per this ledger's own convention.
+
+## v34 — Gate 7.5 (validator), 2026-09-20
+
+**PASSED.** Impact closure {REQ-202, REQ-203, REQ-204, REQ-094, REQ-136, REQ-116, REQ-117} — the
+seven REQs from the dispatch's full closure list; Gate 7.5's exit gate is REQ-scoped, so the
+dispatch's ARCH-004/ARCH-087/ARCH-107/ARCH-129/ADR-032/DES-007/DES-102/DES-195 are not separately
+validated here: ARCH-004/DES-007/DES-102 are foundational docs amended in place at Gate 3+4 (no
+iter bump, "item 22") and are exercised indirectly through VAL-227/VAL-228's real runtime evidence;
+the rest are traced directly by VAL-226/VAL-228/VAL-229 (see 08-validation.md's v34 section for the
+full breakdown). Booted a
+second scratch instance using only documented steps (`deploy.sh` §0 second-instance form:
+`RWE_CONFIG_PATH=<scratch>/rwe.val34.config.json RWE_BIND=127.0.0.1 RWE_PORT=8931
+./deploy.sh --background`), deliberately keeping `agentDefinitionsDir` in the scratch config to
+exercise DES-227's warn-and-boot on real wiring — confirmed live in `.rwe.log`. Production
+(port 8899) was never stopped, restarted, or written to (one read-only `sqlite3 ?mode=ro` query
+against the real `catalog.db` for the ADR-063 text sweep).
+
+Real evidence closed all three `未真實驗證` gaps: `VAL-225` (REQ-202 — `workflow_describe`'s
+unit/ceiling projection and all three appendPrompt refusal shapes, live), `VAL-226` (REQ-203 — the
+`agentType` registration refusal, the config warn-boot, and the advertised guide/tool-spec text,
+all live; plus the ADR-063 sweep: 27 stored production versions, 0 `agentType:` hits), `VAL-227`
+(REQ-204 — `DEFAULTS_RETIRED` still refused live; `composePrompt`'s two-argument shape confirmed
+via a live dispatched `harness.prompt`), `VAL-228` (REQ-094/REQ-136 — one real `agent()` dispatch
+through `gateway:sdk` to local `ollama/qwen2.5:7b`: the appended text reached the model
+observably ["Hello, banana time!"], and the `harness` object returned by BOTH `run_agent_log`
+(MCP) and `GET /api/runs/:id/agents/:agentId` (dashboard HTTP) carries no `systemPrompt` key at
+all — this re-grounds `VAL-211`'s stale evidence, amended in both `05-tests.md` and
+`08-validation.md`), and `VAL-229` (REQ-116 — the guide's own rewritten "three-stage pipeline"
+example, copied verbatim from the live-served guide text, registered and accepted on the first
+try; REQ-117's fresh-cold-model protocol explicitly NOT re-run — this validator is a disqualified
+subject per the requirement's own text, named as a limitation rather than silently passed).
+
+`sh .sdlc/trace --check`: 1826 items / 77 gaps (was 1821/80 at session start) — direct gap-set diff
+(not just the count) confirms exactly the 3 target `未真實驗證` rows closed and zero new gaps. The
+remaining 77 are the same pre-existing, out-of-closure debt every round since v26 has carried
+(17 未驗證 REQ-153..169, 15 斷鏈 to non-existent REQ-144..152/186, 19 TDD, 2 未實作, 24 漂移).
+Exit code 1, reported per this ledger's established convention.
+
+**Docs rewritten to current-state (exit-gate 3b/3c):** README.md's agent-panel description and
+item 13 rewritten from a v27→v34 history narrative into pure current-state prose, using the exact
+live `harness.prompt` string captured above as the worked example. DEPLOY.md's `情境配方` section
+had its warning banner and dead `agentType`/`agentDefinitionsDir`/`agentPrefix` steps (1/3/4)
+deleted outright — not a product decision, since both branches of the still-open IMPL-340
+`owner_decision` (rewrite vs. retire the plugin-side per-gate dispatch recipe) require removing
+these dead steps first; only the replacement design remains undecided and is carried forward
+unchanged, mirrored in this gate's report. §1b's `agentDefinitionsDir` row deleted (retired keys
+get no row, matching the pre-existing `graphAnalyzer` precedent); `defaultAllowedTools`'s row and
+the §2(b) prose collapsed from three tool-surface layers to the real two. Dead
+`agents/researcher.md`/`agents/writer.md` fixture (orphaned by this iteration's own cut, referenced
+nowhere) deleted. New doc gap found and folded into DEPLOY.md rather than silently worked around:
+`deploy.sh` writes `.rwe.pid`/`.rwe.log` to the repo root regardless of `RWE_CONFIG_PATH`, so a
+second instance clobbers the first's control files — a warning + correct workaround (kill the PID
+number `deploy.sh` printed) added to §0's second-instance paragraph.
+
+**state.yaml**: `current_stage` → `review` (new v34 Gate 7.5 note prepended, prior GATE 6.5+7 note
+kept as `PRIOR:`); `gates.validation.note` rewritten with this gate's own v34 record (prior v33
+note kept as `PRIOR:`), `passed` already `true`; `updated:` bumped. Re-parsed with
+`python3 -c "import yaml; yaml.safe_load(open(...))"` after every edit — clean throughout, no
+literal `"` introduced (all edits used backticks/single-quotes inside the double-quoted `note:`
+strings, per this ledger's own CLAUDE.md-documented past corruption).
+
+Not committed by this pass: left for the orchestrator, per this ledger's own convention.

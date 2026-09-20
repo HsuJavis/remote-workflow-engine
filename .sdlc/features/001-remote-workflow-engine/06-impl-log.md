@@ -8678,3 +8678,92 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   refactor 本身(不是先寫進內層再搬出來兩步),因為 DES-222 的邊界（讀取失敗不得誤放行 trigger）
   一開始就決定了 try/catch 的形狀,不存在「先求綠、再搬」的中間態需要再跑一次測試確認。四處
   文字類改動（兩個 description、一段 guide 開場）沒有重複或可抽取的結構,檢視後沒有東西要再動。
+
+### IMPL-339 — TASK-228: `workflow_describe` publishes the appendPrompt bound it already computes
+
+- **status:** done
+- **traces:** TASK-228, DES-223, ARCH-136, REQ-202
+- **greens:** UT-268, UT-269, VAL-222
+- **files:** src/workflow-view.ts, src/params/contract.ts, tests/unit/workflow-describe-projection.test.ts, tests/unit/params-contract.test.ts
+- **commit:** 21ad773
+- **iter:** v34
+- **note:** `projectAgentParams` (workflow-view.ts) gains two optional projected fields —
+  `unit:'bytes'` on the `appendPrompt` key only, and `ceiling` mirroring whichever `ParamSpec`
+  carries a `ceilingKey` (generic, not gated to one key name, so `timeoutMs` gets it too when the
+  engine ceiling wins over the author's declared range). `params/contract.ts`'s appendPrompt
+  over-size refusal message now names the engine ceiling word (`exceeds the engine ceiling
+  maxAppendPromptBytes N`) iff `detail.ceiling` is present, else the existing generic phrasing —
+  one assertion locks message and detail together so they can't drift apart again. Three stale
+  `agentType`-era comment lines in `contract.ts` corrected in the same commit (this task owns the
+  file). No file outside TASK-228's `files:` list touched.
+- **refactor:** reviewed at Gate 6.5+7 (this gate) as part of the wider v34 diff — no
+  reuse/simplification/efficiency/altitude issue found in this task's slice; see the gate's own
+  simplify note in state.yaml `gates.verification`.
+
+### IMPL-340 — TASK-229: the cut — `agentType` mechanism, `defaults.prompt`/`.tools`, and the config key retired in one commit
+
+- **status:** done
+- **traces:** TASK-229, DES-224, DES-225, DES-226, DES-227, DES-228, ARCH-137, ARCH-138, ARCH-139, ARCH-140, REQ-203, REQ-204, REQ-094, REQ-136, REQ-116, REQ-117
+- **greens:** UT-270, UT-271, UT-272, UT-273, UT-274, UT-275, UT-276, IT-173, IT-174, IT-175, IT-176, IT-177, IT-282, VAL-223, VAL-224
+- **files:** src/agent-definitions.ts (deleted), src/agent-executor.ts, src/params/resolve.ts, src/types.ts, src/run-manager.ts, src/server.ts, src/main.ts, src/workflow-meta.ts, src/workflow-catalog.ts, src/gateway/claude-agent-sdk-client.ts (comments only), src/dashboard/lib/agent.js, src/dashboard/ui/agent-panel.js, plus the test files named in TASK-229's own `files:` list (03-tasks.md)
+- **commit:** 21ad773 (implementation) + addfe36 (Gate-5 closeout: IT-282 written, UT-166 rewritten in `tests/unit/authoring-guide.test.ts`, retirement register corrected, this task's own DoD item (4) corrected to fact)
+- **iter:** v34
+- **owner_decision:** pending — DEPLOY.md's `## 情境配方：gateway:sdk + LiteLLM 前置「本機/雲端模型」跑完整 sdlc-run` recipe (its steps 1/3/4) documents dispatching each `sdlc-run` gate to a different SDLC-role agent via the now-deleted `agentDefinitionsDir`/`agentType` mechanism, and no longer works. Should the recipe be rewritten with each role's system prompt inlined into the caller script's own `prompt` (per this same commit's new `workflow_authoring_guide` "Prompt layering" section) — a redesign of the iso-agile-sdlc plugin's own dispatch convention — or should the recipe simply be retired/removed from DEPLOY.md? Flagged with a warning banner in place (Gate 6.5+7, 2026-09-20) rather than answered here, since it is a product/technical call on a separate plugin's convention, not a doc-sync fact.
+- **note:** `src/agent-definitions.ts` deleted whole (the frontmatter-loader composition root, D-F2);
+  `AgentTypeDef` and `AgentExecutorDeps.agentTypes`/`RunManagerDeps.agentTypes`/
+  `ServerConfig.agentDefinitionsDir` all removed — 0 production callers left after the cut.
+  `composePrompt` shrinks from the five-segment ladder (`params/resolve.ts`) to two arguments
+  (`scriptPrompt`, `appendPrompt`); its inverse `stripFirstSegment` and the descriptor's
+  `systemPrompt:{agentType,bytes}` disclosure field are both deleted — `descriptor.prompt` is now
+  DEFINED as the gateway's verbatim echo, nothing decorates or strips it (REQ-136's disclosure
+  surface retires with the mechanism it protected, per the v34 retirement register in
+  `05-tests.md`). A script (or a pre-v34-pinned resume) that still carries `opts.agentType` is
+  RECORDED (via `_sink.capture`, so it is visible through `run_agent_log`/the dashboard even though
+  `run-manager.ts`'s `toErr()` does not forward `.detail` at run-level — see TASK-229's own
+  corrected DoD item (4), routed to v35) then THROWN `PARAM_UNKNOWN`/`detail.violation:
+  'AGENT_OPT_RETIRED'` (DES-226); `workflow_register`-time scan gets the same marker via
+  `RETIRED_AGENT_OPT_KEYS` in `workflow-meta.ts` (DES-224). `main.ts`'s `composeConfig` drops
+  `agentDefinitionsDir` forwarding and warns once, by name, on any retired top-level config key via
+  the new `RETIRED_CONFIG_KEYS` map (DES-227) — the engine still boots. `run-manager.ts`'s resume
+  guard now also refuses `LEGACY_REREGISTER` on a stored snapshot carrying a `prompt` or `tools`
+  key (DES-228) — **owner decision (ADR-064/DES-228 pending marker) answered in place this commit:
+  baseline (A), retire `RunParams.tools` alongside `.prompt` rather than keep it as a live rung; 0
+  pending markers remain.** Dashboard: `systemPromptNote`/the agent-panel disclosure line removed
+  (`src/dashboard/lib/agent.js`, `src/dashboard/ui/agent-panel.js`) — a legacy pre-v34 harness row
+  reads back through `deriveAgentRecords` + the projection with no crash and the line simply absent
+  (IT-175/IT-282). `tsc --noEmit` clean both configs. Known-red left for the next gate at commit
+  time: `authoring-guide.test.ts`'s UT-166 still asserted the retired `agentType` word — deliberately
+  not self-fixed (test-authorship boundary); closed by the Gate-5 closeout commit above.
+- **refactor:** reviewed at Gate 6.5+7 (this gate, single-pass `/simplify` inline, Agent fan-out
+  unavailable) over `git diff a98b469..HEAD -- src docs/AUTHORING.md` — zero fixes applied. The
+  diff is a deletion-heavy retirement of one mechanism (composePrompt 5→2 segments, one registry
+  and its loader gone, one disclosure field gone); every remaining `agentType` string is either a
+  deliberate historical/legacy-read reference (`types.ts` provenance union, INV-V34-3) or the
+  `AGENT_OPT_RETIRED` rejection text itself — removing either would be a behaviour change, not
+  cleanup, and is explicitly out of this pass's mandate. No new duplication, no wasted I/O, no
+  special-case bandaid: the cut lands at the same depth the mechanism was introduced at.
+
+### IMPL-341 — TASK-230: the advertised text — three sites and the regenerated guide, byte-locked in one commit
+
+- **status:** done
+- **traces:** TASK-230, DES-229, ARCH-087, ARCH-107, ADR-032, REQ-202, REQ-203
+- **greens:** UT-275, UT-276
+- **files:** src/tool-specs.ts, src/authoring-guide.ts, docs/AUTHORING.md, tests/unit/tool-specs.test.ts, tests/unit/authoring-guide.test.ts
+- **commit:** 21ad773
+- **iter:** v34
+- **note:** `tool-specs.ts`'s `run_start.overrides` description gains the three appendPrompt rules a
+  cold client needs before its first call (declare-or-`PARAM_UNKNOWN`, the
+  `<user-instructions untrusted="true">` framing, the `min(author, maxAppendPromptBytes)` bytes
+  bound and the frame-close-delimiter refusal); `run_agent_log`'s description drops the retired
+  `harness.systemPrompt:{agentType,bytes}` sentence and states the two-segment truth instead.
+  `authoring-guide.ts` gains a new "Prompt layering" section (exactly two author/caller segments +
+  engine scaffolding, and who owns the override-vs-injection line) and the tool-surface section is
+  rewritten to two layers, scoped to the SDK-gateway (tool-calling) path only — `surfaceType:'none'`
+  (direct-fetch) is named explicitly as out of scope so a cold client on that transport is not told
+  about a curated-tool promise that does not apply to it. `docs/AUTHORING.md` regenerated
+  (`npm run gen:authoring`) in the same commit, byte-equal to the builder output (UT-160's lock).
+  Landed immediately after TASK-229 per the ordering the task itself names (a one-commit doc window
+  otherwise advertises a field the type no longer has).
+- **refactor:** reviewed at Gate 6.5+7 (this gate) as part of the wider v34 diff — no
+  reuse/simplification/efficiency/altitude issue found in this task's slice (pure prose/description
+  edits, no logic).

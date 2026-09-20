@@ -10342,6 +10342,16 @@ limitation (DEPLOY.md §6), not a new one.
   ungated) `http 200 promptHasMarker:true sysPromptLeaked:false`. Command:
   `node .sdlc/features/001-remote-workflow-engine/evidence/v27e/auth-on-check.mjs`.
 
+**[v34 amendment, Gate 7.5, 2026-09-20]:** the `agentType` mechanism this item's evidence dispatched
+through (`echoer`, `agents/echoer.md`, `harness.systemPrompt:{agentType,bytes}`) was deleted whole
+at v34 (`21ad773`) — that exact evidence path no longer compiles/exists. Re-verified on a genuinely
+upgraded (v34) deployment instead: a real dispatched `agent()` run's `harness` object, read back
+through BOTH `run_agent_log` (MCP) and `GET /api/runs/:id/agents/:agentId` (dashboard HTTP route),
+has **no `systemPrompt` key at all** — the property this item pins (no system-prompt content
+reaches either online surface) now holds by construction, not by a strip-at-write-time decorator.
+Full evidence: `VAL-228` (this file, v34 section). `status:green`/`real:true`/`result:pass` above
+now rest on `VAL-228`, not on the deleted `echoer`/`agentType` run.
+
 ### VAL-212 — REQ-140/REQ-134: `dag.lanes` + `record`, and the predicted overlay unconditional under auth
 - **status:** green
 - **traces:** REQ-140, REQ-134
@@ -11275,3 +11285,322 @@ SUT-boundary mock. REQ-116/REQ-117 (impact-closure members, behavior untouched) 
 live smoke (VAL-220); their standing real:true evidence from prior rounds stands. The 83 pre-existing
 gaps above (none newly introduced, none on REQ-201/116/117) are reported, not silently closed.
 `current_stage` advances to `review`; `gates.validation.passed` set to `true` in `state.yaml`.
+
+---
+
+## v34 — Gate 7.5: REQ-202/203/204 (and the REQ-094/136/116/117 members of the same impact closure)
+
+**Scope note on the dispatch's full closure list.** The dispatch named
+`{REQ-202, REQ-203, REQ-204, REQ-094, REQ-136, REQ-116, REQ-117, ARCH-004, ARCH-087, ARCH-107,
+ARCH-129, ADR-032, DES-007, DES-102, DES-195}`. Gate 7.5's exit gate is REQ-scoped (trace.py's
+`未真實驗證`/`未驗證` checks run over `stage: requirements` nodes only) — the seven REQs above are
+this gate's actual validation targets, all seven closed with fresh `real:true` evidence below.
+`ARCH-004`/`DES-007`/`DES-102` are the FOUNDATIONAL v1-era architecture/design rows describing the
+now-retired five-segment `composePrompt`/`agentType` composition; they were amended in place at
+Gate 3+4 (designer, no iter bump — `state.yaml` `gates.tasks`/`gates.design` notes, "item 22") to
+describe the v34 shape, and are validated INDIRECTLY here: `VAL-227`/`VAL-228` exercise the exact
+runtime behavior (`composePrompt`'s two-argument shape, the harness's disclosure-free prompt) those
+docs now describe, over real wiring. `ARCH-087`/`ARCH-107`/`ADR-032`/`DES-195` are traced directly
+by `VAL-226`/`VAL-228`/`VAL-229` below. No ARCH/DES/ADR id needs its own `real:true` row — that
+requirement applies to REQs only.
+
+**Boot (documented steps only).** Second-instance form per DEPLOY.md §0: a scratch config copied
+from `rwe.config.example.json` (`port:8931`, `workRoot` under a scratch dir, `auth.enabled:false`),
+deliberately **keeping** `agentDefinitionsDir` in the JSON to exercise DES-227's warn-and-boot on
+real wiring:
+```
+set -a; . ~/.config/rwe.env; set +a
+RWE_CONFIG_PATH=<scratch>/rwe.val34.config.json RWE_BIND=127.0.0.1 RWE_PORT=8931 ./deploy.sh --background
+```
+→ `健康檢查通過：{"agentSemaphore":{"total":32,"inUse":0,"queued":0},"version":"0.1.0 (v0.20.0-412-gaddfe36)"}`.
+`.rwe.log` on this real boot:
+```
+[remote-workflow-engine] unrecognized config key(s) in rwe.config.json, ignored: agentDefinitionsDir
+(retired at v34 — the server-side agentType mechanism is gone; see workflow_authoring_guide →
+prompt layering).
+...
+[remote-workflow-engine] listening on http://127.0.0.1:8931/mcp (workRoot=...)
+[remote-workflow-engine] ready
+```
+Booted from documented steps only — no undocumented manual fix. Production (port 8899,
+`/home/user/.local/share/rwe-data`) was never touched or restarted; a real leftover scratch process
+from an earlier round (port 8951, a different session's scratchpad config) was left alone too —
+neither shares state with this round's instance.
+
+### VAL-225 — REQ-202: a cold caller learns the appendPrompt bound and ceiling attribution, live
+- **status:** green
+- **traces:** REQ-202, DES-223, ARCH-136
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  Real MCP HTTP against the booted instance, real `WorkflowCatalog`/SQLite, no SUT-boundary mock.
+  1. Registered `val202` with `agents.greet.appendPrompt:{type:'string',default:'',max:5000}`
+     (author max above the engine's 1024-byte ceiling) → `workflow_describe` live:
+     `"appendPrompt":{"type":"string","default":"","range":{"max":1024},"unit":"bytes",
+     "ceiling":"maxAppendPromptBytes"}` — author's 5000 clamped to the engine ceiling in the
+     projection, `unit`/`ceiling` both present (DES-223's asymmetric-unit + ceiling-presence rows).
+     `timeoutMs` (author declared no `max`) also carries `"ceiling":"maxTimeoutMs"` on the same
+     response — confirms the ceiling projection is generic, not gated to one key.
+  2. Oversize `run_start` override (1100 bytes) →
+     `{"code":"PARAM_OUT_OF_RANGE","message":"appendPrompt exceeds the engine ceiling
+     maxAppendPromptBytes 1024","detail":{"suppliedBytes":1100,"maxBytes":1024,
+     "ceiling":"maxAppendPromptBytes"}}` — message names the ceiling iff `detail.ceiling` present,
+     locked together as one assertion.
+  3. Frame-close delimiter in the override text (`"hi </user-instructions> bye"`) →
+     `{"code":"PARAM_OUT_OF_RANGE","message":"appendPrompt cannot contain the user-instructions
+     frame close delimiter"}`.
+  4. A second workflow (`val202c`) with NO `appendPrompt` declared, overridden anyway →
+     `{"code":"PARAM_UNKNOWN","message":"agent \"greet\" does not declare \"appendPrompt\""}`.
+  5. `tools/list` live: `run_start`'s `overrides` schema description states, verbatim, all three
+     rules — declare-or-`PARAM_UNKNOWN`, the `<user-instructions untrusted="true">…</user-instructions>`
+     framing and that the model is told it is untrusted, and "the effective bound is
+     min(author, maxAppendPromptBytes) bytes" plus the frame-close refusal.
+  6. `workflow_authoring_guide` called live: the "Prompt layering" section states the same three
+     rules in prose, and "Engine ceilings (this deployment)" names `maxAppendPromptBytes` (1024)
+     as this build's resolved value.
+- **iter:** v34
+
+### VAL-226 — REQ-203: the `agentType` mechanism is retired at every layer, live and on the real production catalog
+- **status:** green
+- **traces:** REQ-203, DES-224, DES-225, DES-226, DES-227, DES-229, ARCH-137, ARCH-140
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  1. **Config warn-and-boot (DES-227), live**: see the boot log above — a scratch config carrying
+     `agentDefinitionsDir` warns by name and names the v34 retirement, and the engine reaches
+     `ready` — never fail-closed on a stale key.
+  2. **Registration refusal (DES-224), live**: `workflow_register` of a script whose only defect is
+     `agent('greet', {prompt:'hi', agentType:'reviewer'})` →
+     `{"code":"SCAN_VIOLATION","message":"AGENT_OPT_RETIRED: 'agentType' was retired at v34 — the
+     server-side agent-definition mechanism is gone; put the system prompt in your script's own
+     prompt (workflow_authoring_guide → prompt layering). (line 6)","detail":{"line":6,
+     "key":"agentType","violation":"AGENT_OPT_RETIRED"}}`.
+  3. **ADR-063's text-sweep protocol, run for real against the PRODUCTION catalog** (read-only
+     `sqlite3` connection, `file:/home/user/.local/share/rwe-data/catalog.db?mode=ro`, production
+     instance never stopped or touched): `SELECT name, version, script FROM workflow_versions` over
+     all stored rows, regex `/\bagentType\s*:/` — **27 stored versions, 0 hits**. Per ADR-063 this
+     is evidence, not machinery: recorded here as the Gate 7.5 sweep it names.
+  4. **Advertised text, live**: `workflow_authoring_guide`'s tool-surface section says "Two layers
+     set it… the per-call `allowedTools`… then this deployment's configured `defaultAllowedTools`"
+     (`agentType` count in the full served guide text: **0**). `tools/list`'s `run_agent_log`
+     description no longer states the retired `harness.systemPrompt:{agentType,bytes}` sentence.
+  5. **Dispatch-time disclosure absence, live** — see VAL-228 below: a real dispatched run's
+     `harness` object (both MCP `run_agent_log` and the dashboard's HTTP route) carries no
+     `systemPrompt` key at all; the mechanism the disclosure surface protected no longer exists, so
+     there is nothing to disclose (隨機制消失, not a disclosure regression — REQ-136's own
+     precondition is unsatisfiable by construction now, confirmed live).
+- **iter:** v34
+
+### VAL-227 — REQ-204: `defaults.prompt` pipeline is gone; `DEFAULTS_RETIRED` outlives it, live
+- **status:** green
+- **traces:** REQ-204, DES-225, DES-228, ARCH-140
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  1. `workflow_register` of a script carrying `meta.defaults:{prompt:"leftover pipeline"}` (the
+     retired knobs shape) → still refused live:
+     `{"code":"DEFAULTS_RETIRED","message":"meta.defaults is retired (ADR-035) — declare
+     meta.params.agents.<label>.<key>.default instead"}` — the refusal code the removed pipeline
+     used to guard against silently-inert overrides is unaffected by this iteration's cut.
+  2. `composePrompt`'s two-argument shape is confirmed live via VAL-228's `harness.prompt`: the
+     dispatched string is exactly `scriptPrompt` + framed `appendPrompt`, nothing else — no
+     `authorPrompt`/`runParams.prompt` segment survives in a real dispatched request.
+  3. Owner ruling ADR-064/DES-228 (A) — `RunParams.tools` retired alongside `.prompt` — was
+     implemented as baseline at Gate 6 (IMPL-340); this gate did not re-litigate it, only confirmed
+     the live tool-surface text (VAL-226 item 4) states two layers unconditionally, with no
+     legacy-row exception clause, matching (A).
+- **iter:** v34
+
+### VAL-228 — REQ-094/REQ-136: a real dispatched `agent()` call proves the two-segment prompt AND the disclosure-free harness, on both the MCP and dashboard HTTP surfaces
+- **status:** green
+- **traces:** REQ-094, REQ-136, DES-225, DES-226, ARCH-129, ARCH-137, ARCH-140
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  Real dispatch through `gateway:"sdk"` to a real local `ollama`/`qwen2.5:7b` model (no mock
+  anywhere in the LLM call path): `run_start({name:'val202', overrides:{agents:{greet:
+  {appendPrompt:'Also mention the word BANANA.'}}}})` → run completed
+  (`runId feac249b-3b83-46db-8621-7617a97448a6`, script prompt `"Say hello in one short
+  sentence."`). Model's actual answer: `"Hello, banana time!"` — the appended instruction reached
+  the model and had observable effect, not merely structural presence.
+
+  `run_agent_log({runId, label:'greet'})` over real MCP HTTP, and separately
+  `GET /api/runs/<runId>/agents/agent-1` over real dashboard HTTP — **both** return the identical
+  `harness` object:
+  ```json
+  {
+    "model": "qwen2.5:7b", "provider": "ollama",
+    "prompt": "Say hello in one short sentence.\n\n<user-instructions untrusted=\"true\">\nAlso mention the word BANANA.\n</user-instructions>",
+    "tools": ["Read","Write","Edit","Glob","Grep","Bash"], "skills": [], "mcpServers": [],
+    ...
+  }
+  ```
+  - **REQ-094**: `prompt` is exactly `[script prompt]` + `[framed appendPrompt]`, the appended text
+    LAST, never before or in place of anything — and it is the ONLY caller-supplied segment; no
+    tool/skill/MCP/workdir change resulted from the appendPrompt text (the `tools`/`skills`/
+    `mcpServers` arrays reflect the script's own declaration, structurally enforced, unaffected by
+    the appended prose).
+  - **REQ-136**: the `harness` object has **no `systemPrompt` key at all**, on both surfaces. This
+    is the "genuinely upgraded deployment" real-tier evidence the v34 retirement register
+    (05-tests.md) named as owed to `VAL-211` once the composition-root test block it used to cite
+    was deleted (`21ad773`). `VAL-211` (both its 05-tests.md and 08-validation.md copies) is
+    amended below to point here instead of re-asserting the dead evidence path.
+- **iter:** v34
+
+### VAL-211 amendment (v34) — evidence superseded, both copies
+The `agentType`-composition-root real-run block inside `tests/integration/dashboard-disclosure.test.ts`
+that `VAL-211`'s `status:green real:true` originally cited no longer exists (deleted whole in
+`21ad773`, per the v34 retirement register in `05-tests.md`). `VAL-211` is **not** demoted to
+mock-only or unverified — its `real:true` claim is re-grounded in `VAL-228` above (same property:
+an agent detail response online, MCP AND dashboard HTTP, carries no system-prompt content), which
+is real wiring against a genuinely upgraded (v34) deployment, exactly the successor path the
+register named. This note is added to both places `### VAL-211` appears (`05-tests.md:12904`,
+`08-validation.md:10316`) so neither copy is left citing a test file that no longer compiles.
+
+### VAL-229 — REQ-116/REQ-117: guide content re-verified live after a MATERIAL rewrite (not a pure-text-only iteration like v33)
+- **status:** green
+- **traces:** REQ-116, REQ-117, DES-229, ARCH-087, ARCH-107, ADR-032
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  Unlike VAL-220 (v33, "pure description/guide-text edit... behavior untouched"), v34 materially
+  rewrote the guide (new "Prompt layering" section, tool-surface collapsed from three layers to
+  two, `agentType` language removed entirely) — so REQ-116's own acceptance clause ("every example
+  the guide hands out is REGISTERED against the real engine") is re-run for real, not merely
+  smoke-reaffirmed:
+  1. `workflow_authoring_guide` called live over real MCP HTTP → "Prompt layering" section present
+     verbatim (see VAL-225/226 quotes above); tool-surface section states "Two layers... on the
+     tool-calling (SDK gateway) path" and explicitly scopes the claim away from `gateway:
+     "direct-fetch"` (`surfaceType:'none'`); zero occurrences of `agentType` anywhere in the
+     39,431-byte served guide text.
+  2. The guide's own **"three-stage pipeline"** registered example (a genuinely MULTI-AGENT
+     collaborating script: `draft` → `edit` → `final`, each an `agent()` call) copied VERBATIM from
+     the served guide text and submitted to `workflow_register` on the live instance →
+     `{"status":"completed","version":1,"result":{"name":"guide-three-stage-pipeline","version":
+     "v1",...}}` — accepted first try, closing REQ-116's "a test REGISTERS it against the real
+     engine and asserts it is accepted" clause for the guide's own rewritten content.
+  3. **REQ-117's fresh-cold-model protocol was NOT re-run this gate.** REQ-117's own text
+     disqualifies "anyone who has seen this project's development conversation — including the
+     orchestrator and any advisor" as a subject; this validator session has read the full ledger
+     and is disqualified by the same clause, so a claimed "fresh model, first try" run here would
+     be fabricated evidence, which the task's own hard rule forbids. The standing real:true
+     evidence (`VAL-190`/`VAL-192`, disqualified-subject protocol, prior iterations) exercised a
+     guide whose "Prompt layering" section and two-layer tool-surface text **did not exist yet** —
+     v34 added/changed exactly the content REQ-117 cares about ("gets it right the first time" on
+     what the guide teaches). Item 2 above is the closest real substitute available in this
+     environment (the rewritten content is at least accepted by the real engine), but it does not
+     discharge REQ-117's own explicit fresh-subject requirement. **Recorded verbatim in
+     `needs_clarification`, not silently passed.**
+- **iter:** v34
+
+### Config-file sync check (4b)
+`rwe.config.example.json` was already fixed at Gate 6.5+7 (verifier) — `agentDefinitionsDir` removed.
+Round-trip re-confirmed this gate: `Object.keys(require('./rwe.config.example.json'))` has **zero**
+keys outside `src/main.ts`'s `KNOWN_FILE_CONFIG_KEYS`. `RETIRED_CONFIG_KEYS` (`src/main.ts:103`)
+carries `agentDefinitionsDir` with the same retirement note the live boot log prints (VAL-226 item 1)
+— code and doc agree. `docker-compose`/k8s/systemd unit files: none exist in this repo (the systemd
+example lives inline in DEPLOY.md §2, unaffected by this closure). No other config file needed a
+change.
+
+### README.md / DEPLOY.md current-state fixes (this gate, exit-gate 3b/3c)
+Gate 6.5+7 (verifier) had already fixed `rwe.config.example.json` and flagged (not fixed) the
+DEPLOY.md recipe section with a warning banner — but the banner itself, and README's item 13, still
+read as a version-diff narrative ("v27～v33 曾有…v34 把…v33 以前寫入的紀錄…", "⚠️ v34 起本節…已過
+期"), which is exactly the superseded-instruction/history content the manuals must not carry. Fixed
+this gate:
+- **README.md** — the agent-panel description (near "agent 細節面板") asserted a still-existing
+  "agentType 檔案裡預先寫好的 system prompt" that the panel supposedly cannot see; rewritten to
+  state, as fact, that no such hidden layer exists. Item 13 rewritten from a v27→v34 history
+  narrative into a pure current-state statement using the exact live `harness.prompt` string
+  captured in VAL-228 as its example.
+- **DEPLOY.md's `## 情境配方` section** — deleted the warning banner and steps 1/3/4's
+  `agentType`/`agentDefinitionsDir`/`agentPrefix` content outright (dead instructions that cannot
+  be followed against the current engine — not a product decision: BOTH branches of the still-open
+  IMPL-340 `owner_decision`, "rewrite" and "retire", require removing these steps first; only
+  *what replaces them for the plugin's per-gate dispatch* is the owner's undecided call, which
+  remains **unanswered** and is carried forward verbatim, mirrored in this report's
+  `owner_decisions`). Step 1's config example no longer shows the dead key; step 5 renumbered to
+  step 3. Section retitled (dropped the now-false "跑完整 sdlc-run" promise) and gained one
+  current-state sentence pointing at the guide's "Prompt layering" section for per-agent system
+  prompts — a fact, not the plugin recipe.
+- **DEPLOY.md §1b 設定總表** — deleted the `agentDefinitionsDir` row (retired keys get no row, same
+  treatment as the pre-existing `graphAnalyzer` precedent in §5); rewrote the `defaultAllowedTools`
+  row's priority description from three layers to two.
+- **DEPLOY.md §2(b)** (`gateway:"sdk"` 預設工具面 prose) — same three-to-two-layer rewrite, two
+  occurrences.
+- **Dead artifact removed**: `agents/researcher.md` / `agents/writer.md` (the repo-root directory
+  the now-deleted `agentDefinitionsDir` loader used to read) — orphaned by this iteration's own
+  cut, referenced nowhere in `src/`/`tests/`/README/DEPLOY; deleted whole rather than left as an
+  inert fixture nobody points at.
+- **Doc gap found and documented (not silently fixed in code — this is a script/doc gap, folded
+  into the doc)**: `deploy.sh` writes `.rwe.pid`/`.rwe.log` to the repo root unconditionally,
+  regardless of `RWE_CONFIG_PATH` — running a second instance (as this gate did) silently
+  overwrites the first instance's PID/log files. Confirmed live: this gate's own second-instance
+  boot overwrote a stale `.rwe.pid`/`.rwe.log` left by the prior gate's smoke run; production
+  (8899, a separately-managed process, not tracked via `.rwe.pid`) was unaffected. DEPLOY.md §0's
+  second-instance paragraph now carries an explicit warning + the correct workaround (kill the PID
+  number `deploy.sh` printed, not `$(cat .rwe.pid)`).
+- Grep sweep for leftover history tell-tales (`舊版`/`原本`/`以前`/`previously`/`變更紀錄`/
+  `Changelog`/`已過期`/`退役`/`隨機制消失`) across README.md + DEPLOY.md: the only remaining hits
+  describe CURRENT self-healing migration behavior (e.g. "從舊版本一路升級上來的 workRoot 不需要
+  任何手動步驟") — a present-tense capability statement, not history narration — and one unrelated
+  pre-existing `maxWorkflowVersions` row; none are v34 residue.
+
+### Cleanup
+Scratch instance stopped by PID (`kill 303978`, the number `deploy.sh` printed — NOT
+`$(cat .rwe.pid)`, per the doc gap just found) and its scratch `workRoot`/config under the session
+scratchpad removed. Production (port 8899) was never stopped, restarted, or read from except via a
+read-only `sqlite3 ?mode=ro` connection to `catalog.db` for the ADR-063 text sweep (VAL-226 item 3)
+— no write, no lock contention, confirmed by the live instance staying up throughout and after.
+
+### `sh .sdlc/trace --check`
+**Baseline = this gate's own first scan of the working tree at session start** (before any edit by
+this gate): **1821 items / 80 gaps** — `Counter({漂移:24, TDD:19, 未驗證:17, 斷鏈:15, 未真實驗證:3,
+未實作:2})`. This is the correct baseline for a delta gate on an uncommitted ledger (per this
+ledger's own established practice — see the v27/v28/v33 rounds' identical treatment): Gate 6.5+7
+(verifier)'s own edits to `state.yaml`/`03-tasks.md`/`05-tests.md`/`06-impl-log.md` were already
+uncommitted in the working tree when this gate started, so they are already reflected in 1821/80.
+**Correction, checked explicitly so a Gate 8 reviewer does not read it as fabricated**: a
+`git archive addfe36 | tar -x` extraction of the last COMMIT (rather than the working tree) gives
+**1818 items / 86 gaps** — different, because Gate 6.5+7's work was still uncommitted at that sha.
+The CLAUDE.md-mandated `git archive` method is for diffing against a specific commit without
+touching the shared working tree; it is not this gate's own true "before" state, which this gate
+had already captured directly by scanning the working tree first, before making any edit.
+
+After this gate's `05-tests.md`/`08-validation.md` edits (no `src/` changes — this gate is
+documentation + real-run evidence only): **1826 items / 77 gaps** —
+`Counter({漂移:24, TDD:19, 未驗證:17, 斷鏈:15, 未實作:2})` (未真實驗證 now absent/0). Per-type counts
+identical on every bucket except `未真實驗證` (3→0); confirmed by an explicit gap-SET diff (not just
+counts) that no gap anywhere in the current 77 mentions any of the five new ids
+(`VAL-225`..`VAL-229`), and that none of `REQ-202`/`REQ-203`/`REQ-204`/`REQ-094`/`REQ-136`/
+`REQ-116`/`REQ-117` appear in the remaining gap list at all — **zero new gaps, exactly the three
+target `未真實驗證` rows closed**, via `VAL-225`/`VAL-226`/`VAL-227` reaching REQ-202/203/204
+through `DES-223`/`DES-224..229`/`ARCH-136/137/140`, and `VAL-228`/`VAL-229` giving REQ-094/136/
+116/117 FRESH v34 `real:true` evidence in place of the stale/deleted evidence paths the retirement
+register had flagged as a named risk.
+
+The remaining 77 gaps are the same pre-existing, out-of-closure debt every round since v26 has
+carried forward unchanged (17 未驗證 mid = REQ-153..169 parked v29-era backlog; 15 斷鏈 high =
+broken links to REQ-144..152/186, non-existent IDs from the same v29-era slice; 19 TDD mid + 2
+未實作 low, unchanged; 26 漂移 low, iter-lag notes) — none touch REQ-202/203/204/094/116/117/136,
+none newly introduced by this gate. Exit code 1 (non-zero), reported per this ledger's established
+convention (every prior v26/v27/v28/v33 round exits 1 the same way when only pre-existing,
+out-of-closure debt remains); the literal-vs-practice reading of exit gate #4 is carried to
+`needs_clarification` again, unchanged from prior rounds.
+
+### Verdict
+**PASSED** (for this iteration's closure: REQ-202, REQ-203, REQ-204, with REQ-094/REQ-116/REQ-117/
+REQ-136 — the impact-closure members named in the dispatch — given FRESH v34 real:true evidence,
+not merely re-asserted). All seven carry a genuine `real:true`/`result:pass` VAL item observed
+against a really-booted instance over real MCP HTTP + real dashboard HTTP + a real local LLM
+dispatch + a read-only sweep of the real production SQLite catalog — no SUT-boundary mock anywhere
+in this closure's evidence. One limitation is explicitly NOT papered over: REQ-117's own
+fresh-cold-model protocol could not be re-run by a disqualified subject (see `VAL-229`); this is
+named, not silently passed. The 77 pre-existing gaps above (none newly introduced, none on this
+closure's REQs) are reported, not silently closed. `current_stage` advances to `review`;
+`gates.validation.passed` set to `true` in `state.yaml`.

@@ -61,6 +61,12 @@ RWE_CONFIG_PATH=/path/to/another/rwe.config.json RWE_BIND=127.0.0.1 RWE_PORT=879
 `rwe.config.example.json` 建立、並在訊息裡印出它的完整路徑；repo 根目錄的 `rwe.config.json`
 不會被檢查、建立或提及。路徑所在的目錄要先存在，否則腳本會在步驟 2 停下來。
 
+⚠️ **PID／log 檔不跟著 `RWE_CONFIG_PATH` 走**：不論設定檔指到哪裡，`deploy.sh` 一律把 PID 寫進
+repo 根目錄的 `.rwe.pid`、log 寫進 `.rwe.log`——兩個實例會互相覆蓋對方的這兩個檔案（不影響已經
+在跑的行程本身，只影響你事後用 `.rwe.pid` 去 `kill` 的對象）。同機器跑第二個實例時，直接記下
+步驟 4 印出的那個 PID 數字（例如 `啟動中，PID=12345`），要停的時候用 `kill 12345`，不要相信
+`.rwe.pid` 這個檔。
+
 系統概觀：
 
 ```
@@ -156,10 +162,13 @@ curl -s http://localhost:8787/api/models | python3 -c \
 # 預期：models: N / first: ollama/...（或 anthropic/...，依 aliases）
 ```
 
-## 情境配方：gateway:sdk + LiteLLM 前置「本機/雲端模型」跑完整 sdlc-run
+## 情境配方：gateway:sdk + LiteLLM 前置「本機/雲端模型」
+
+> 目標：讓 `agent()` 呼叫走**完整 Claude harness**（工具迴圈 + MCP），模型可以是本機 Ollama 或雲端
+> OpenRouter。以下每一步都經本機端對端實測。
 >
-> 目標：讓遠端 agent 走**完整 Claude harness**（工具迴圈 + agentType + MCP），能跑真正的
-> iso-agile-sdlc `sdlc-run`。以下每一步都經本機端對端實測。
+> 要讓不同 `agent()` 帶不同的系統提示詞，把提示詞寫進腳本自己的 `prompt` 參數即可——引擎沒有
+> 伺服器端可設定的系統提示詞層，見 `workflow_authoring_guide` 的「Prompt layering」一節。
 >
 > ### 0) 模型從哪裡來：本機用 Ollama，雲端用 OpenRouter
 > `provider` 只認 `anthropic`、`openrouter`、`ollama` 三種；`rwe.config.json` 的 `aliases` 只要出現
@@ -175,23 +184,20 @@ curl -s http://localhost:8787/api/models | python3 -c \
 >   "bind": "127.0.0.1", "port": 8787,
 >   "workRoot": "/var/lib/remote-workflow-engine",   ⟵ 必須在任何 .git/CLAUDE.md 祖先之外（見 §1b workRoot 行）
 >   "timeoutMs": 300000, "gateway": "sdk",
->   "agentDefinitionsDir": "/opt/rwe-sdlc-agents",   ⟵ 見第3步：放 iso-agile-sdlc 的 sdlc-*.md
 >   "defaultAllowedTools": ["Read","Write","Edit","Glob","Grep","Bash"],
 >   "aliases": {
->     "default":           { "provider": "ollama", "model": "<你 Ollama 伺服器上的某個模型 tag>" },
->     "claude-opus-4-8":   { "provider": "openrouter", "model": "<最強的那顆，給架構/設計決策 gate>" },
->     "claude-sonnet-4-6": { "provider": "openrouter", "model": "<中階，給實作/驗證/審查>" },
->     "haiku":             { "provider": "ollama", "model": "<便宜快的，給 precheck/referee>" }
+>     "default":  { "provider": "ollama", "model": "<你 Ollama 伺服器上的某個模型 tag>" },
+>     "opus":     { "provider": "openrouter", "model": "<最強的那顆，給決策/複雜任務>" },
+>     "sonnet":   { "provider": "openrouter", "model": "<中階，給一般任務>" },
+>     "haiku":    { "provider": "ollama", "model": "<便宜快的，給簡單任務>" }
 >   }
 > }
 > ```
-> 別名右邊的 `model` 就是**你 Ollama `/api/tags` 或 OpenRouter `/api/v1/models` 看到的那些 id**。
-> `sdlc-run` 內部用 `claude-opus-4-8`/`claude-sonnet-4-6`/`haiku` 這三個別名選 tier（角色→tier
-> 對照見 iso-agile-sdlc 的 SKILL.md §2.5 表），所以**這三個別名一定要在 aliases 表裡**、指向你環境
-> 裡實際存在的模型（哪個 provider 不拘，三選一）。
-> **模型能力提醒**：架構/設計是「決策 + 產生可追溯文件 + 工具呼叫」的 gate，**別用太小的模型**
-> （7B 級的原生 tool-use 不穩、且當 synthesizer 會亂丟 `request-panel` 無限升級）；決策 gate 請挑
-> 你環境裡最能穩定做 native tool-use 的那顆（實測 OpenRouter 上的旗艦模型可、本機 qwen2.5:7b 不行）。
+> 別名右邊的 `model` 就是**你 Ollama `/api/tags` 或 OpenRouter `/api/v1/models` 看到的那些 id**；別名
+> 名稱本身隨你的腳本怎麼宣告 `meta.params.agents.<label>.model.default`／`.enum` 而定，不是引擎固定的。
+> **模型能力提醒**：需要「決策 + 工具呼叫」的任務**別用太小的模型**（7B 級的原生 tool-use 不穩）；
+> 這類任務請挑你環境裡最能穩定做 native tool-use 的那顆（實測 OpenRouter 上的旗艦模型可、本機
+> qwen2.5:7b 不行）。
 >
 > ### 2) 憑證環境變數
 > ```bash
@@ -205,40 +211,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 > ⚠️ **PATH**：`gateway:sdk` 開機會 `spawn('litellm')`，systemd/啟動 unit 的 `PATH` 必須含 litellm
 > venv 的 `bin/`（見 §1a 前置條件），否則 `ENOENT`。
 >
-> ### 3) 放 sdlc 角色 agent 定義（跑 sdlc-run 必要）
-> `sdlc-run` 每個 gate 用 `agentType` 分派到 `sdlc-architect`/`sdlc-designer`/`sdlc-verifier`/
-> `sdlc-implementer`/`sdlc-validator`/`sdlc-reviewer`/`sdlc-task-planner`。把 iso-agile-sdlc plugin 的
-> `agents/sdlc-*.md` 複製進 `agentDefinitionsDir`：
-> ```bash
-> mkdir -p /opt/rwe-sdlc-agents
-> cp <plugin>/skills/iso-agile-sdlc/agents/sdlc-*.md /opt/rwe-sdlc-agents/
-> ```
-> loader 用檔案 frontmatter 的 `name:`（**裸名**，如 `sdlc-architect`）當註冊鍵。各 agent frontmatter 的
-> `model:` 值（`claude-opus-4-8` 等）必須對應到你 aliases 表裡的別名（第1步已備妥）。
->
-> ### 4) 實際跑 sdlc-run（透過 rwe-plugin 或直接 `run_start`）
-> 關鍵參數 **`args.agentPrefix: ""`（必填）**：`AT()` 預設會加 `iso-agile-sdlc:` 前綴，但引擎註冊的是
-> 裸名 → 不加空前綴會 `Unknown agentType: iso-agile-sdlc:sdlc-architect` 讓整個 run 失敗。範例 args：
-> ```json
-> { "feature":"NNN-slug", "sdlcDir":".sdlc/features/NNN-slug", "skillDir":"_skillref",
->   "mode":"new", "safetyClass":"QM", "agentPrefix":"", "tier":"lean" }
-> ```
-> - **seed**：把 skill 目錄（放 `_skillref/`，**不要**放 `.claude/skills/` 以免被 CLI 當 project skill 載入）
->   + `.sdlc/features/NNN/{01-requirements.md,state.yaml}` + `.sdlc/trace(.py)` 一起用 `run_start` 的
->   `seed:[{path,contentB64}]` 帶上（Gate 1 需求要先在本地備好，state.yaml 的 `gates.requirements.passed=true`）。
-> - **git baseline 自動**：引擎會在 seed 落地後自動 `git init`+baseline commit（REQ-027），precheck 的
->   `git rev-parse --is-inside-work-tree` 會通過——**你不用手動 seed `.git`**（materializeSeed 本來就會擋）。
-> - **model shorthand 自動處理**：`haiku`/`sonnet`/`opus` 被 CLI 展開成 Anthropic id 的老問題已由
->   `proxyModelName` 前綴根治，你不需做任何事。
-> - **budget**：sdlc 全流程**吃 input token 很兇**（每個 agent 重讀 seed/docs，實作階段還會裝 venv 撐大
->   context）。`budget` 是物件（裸數字回 `INVALID_ARGUMENT`）：設
->   `budget:{tokens:<數量>}` 當硬上限；實測一次 lean 全流程到 Gate 6 約 ~3M token。撞上限會在
->   當前 gate 停（非 bug），可用 `resumeFromRunId` 續跑或調高 `tokens`。
-> - **拉回產物**：完成後用 plugin 的 `pull_workspace`（引擎側是 `workspace_list` 遞迴列檔 +
->   `workspace_pull` 分塊取回）把
->   `src/`、`tests/`、`.sdlc/*.md` 拉回本地；`.git/` 與 venv 不會列進 artifact（引擎已排除 `.git/`）。
->
-> ### 5) 驗證這條路通了（花錢前先確認）
+> ### 3) 驗證這條路通了（花錢前先確認）
 > ```bash
 > # A. 我方 LiteLLM 真的把 ollama/<model>（或 openrouter/<model>）導到你的端點：
 > LPORT=$(pgrep -af '[l]itellm --config' | grep -oE 'port [0-9]+' | awk '{print $2}')
@@ -421,8 +394,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `retries` | `agent()` 呼叫失敗重試次數 | `number` / `1` | 否 | v1 |
 | `rwe.config.json` → `gateway` | `"sdk"`（預設，真正的 `@anthropic-ai/claude-agent-sdk` headless session，有工具迴圈）或 `"direct-fetch"`（回退到直接對各供應商 `fetch()`，或搭配 `useLiteLLMProxy:true` 走 LiteLLM 代理；本來就不具備工具迴圈能力，適合純本機/內網不需要工具迴圈的部署） | `"sdk"｜"direct-fetch"` / `"sdk"` | 否 | v1 |
 | `rwe.config.json` → `useLiteLLMProxy` | `direct-fetch` 路徑是否額外走 LiteLLM 代理（`false` 時 ollama 走原生直連 `localhost:11434`，完全不碰 LiteLLM，免依賴部署常用） | `boolean` / `true` | 否 | v1 |
-| `rwe.config.json` → `agentDefinitionsDir` | `agentType` composition-root loader 讀取 `*.md` 定義的目錄（`name`/`model`/`tools` frontmatter + 內文即 systemPrompt）；省略時 agentType 註冊表為空 | `string` / — | 否 | v1 |
-| `rwe.config.json` → `defaultAllowedTools` | `gateway:"sdk"` 路徑下，`agent()` 呼叫沒帶 `opts.allowedTools`（且 `agentType` 無 `tools:` frontmatter）時套用的預設工具清單；優先序：呼叫端 `opts.allowedTools` > `agentType` 的 `tools:` > 此鍵 > 內建預設 | `string[]` / `["Read","Write","Edit","Glob","Grep","Bash"]` | 否 | v3 |
+| `rwe.config.json` → `defaultAllowedTools` | `gateway:"sdk"` 路徑下，`agent()` 呼叫沒帶 `opts.allowedTools` 時套用的預設工具清單；只有兩層優先序：呼叫端 `opts.allowedTools` > 此鍵（省略此鍵才落到內建預設） | `string[]` / `["Read","Write","Edit","Glob","Grep","Bash"]` | 否 | v34 |
 | `rwe.config.json` → `aliases` | 模型別名 → `{provider,model}` 對照表；`provider` 僅 `"anthropic"｜"openrouter"｜"ollama"`（三選一；出現第四種一律開機拒絕，見§情境配方 0）；省略時內建預設等同拿掉 `local` 那份（全指向 anthropic）。**同一個模型可以掛多個別名**（例如 `haiku` 與 `claude-haiku-4-5` 同時指向同一個模型）——價格表以 `provider/model` 為鍵，有價格的那筆永遠不會被沒有價格的那筆蓋掉，花費照記；`models_list`／`GET /api/models` 每個模型只回一列，該列的 `aliases` 會列出所有指向它的別名 | `object` / 見 `rwe.config.example.json` | 否 | v26 |
 | `rwe.config.json` → `allowedHosts` | `bind:"0.0.0.0"` 時額外允許的 Host/Origin authority（LAN IP、代理主機名）清單，供 Host/Origin 白名單（§6）核對 | `string[]` / `[]` | 否（`0.0.0.0` bind 時建議設定） | v11 |
 | `rwe.config.json` → `anthropicBaseUrl` | `anthropic` provider 直連（LiteLLM-bypassed）路徑打的真實 Anthropic API base | `string` / `'https://api.anthropic.com'` | 否 | v7 |
@@ -536,15 +508,14 @@ curl -s http://localhost:8787/api/models | python3 -c \
 `null`/pending。
 
 **(b) 預設工具面 = 受限的檔案+搜尋+shell 集**：
-`gateway:"sdk"` 路徑下，一次 `agent()` 呼叫若沒有自帶 `opts.allowedTools`（且對應 `agentType`
-定義也沒有 `tools:` frontmatter）、也沒有設定 `defaultAllowedTools`，套用的內建預設工具清單是
+`gateway:"sdk"` 路徑下，工具面只有兩層優先序：一次 `agent()` 呼叫自帶的 `opts.allowedTools`，
+否則落到部署設定的 `defaultAllowedTools`（省略時的內建預設是
 **`["Read","Write","Edit","Glob","Grep","Bash"]`**——與真實 dynamic-workflow agent 的工作工具面
-對齊。**`Bash` 在預設集裡，但被 (d) 的工作目錄邊界封閉**（`cwd`=該次 run 工作目錄 + 每次呼叫
+對齊）。**`Bash` 在預設集裡，但被 (d) 的工作目錄邊界封閉**（`cwd`=該次 run 工作目錄 + 每次呼叫
 的 realpath 路徑檢查；一個試圖逃出工作目錄的 Bash 指令會被 `deny`）。
 **仍不在預設、需明確 opt-in 的**：`WebFetch`/`WebSearch`（對外網連線，破壞工作目錄封閉性）與
-`Task`/`Agent`（在 agent 內再生子 agent，繞過引擎自己的 orchestration+DOS 追蹤模型）——所有工具
-仍可透過 `agentType` 的 `tools:` frontmatter 或呼叫端 `opts.allowedTools` 明確啟用，只是預設集不
-含它們。
+`Task`/`Agent`（在 agent 內再生子 agent，繞過引擎自己的 orchestration+DOS 追蹤模型）——這些工具
+只能靠呼叫端 `opts.allowedTools` 明確啟用，預設集不含它們。
 
 **(c) 供應商 API 金鑰的存放位置**：真實的供應商金鑰（`ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY`/...）
 只存在於「啟動這個伺服器的那個 process 自己的環境變數」與「伺服器內部管理的 LiteLLM 代理子行程
