@@ -192,3 +192,36 @@ describe('lib/system.js: fmtBytes (UT-271, v29d, REQ-159)', () => {
     expect(fmtBytes(0)).toBe('0 B');
   });
 });
+
+// UT-281 (v32, REQ-198, F12): a degraded CPU sample must not take the cores/load line down with it.
+//
+// `statCard`'s `kind === 'unavailable'` branch is shared by all four cards and returns before the
+// `cpu` branch that builds `16 核心 · 負載 …`, so a first-tick `awaiting-second-sample` replaces the
+// meta line entirely. `lib/system.js`'s own docstring is explicit that `cores`/`loadAvg` "stay real
+// even while `utilizationPct` is degraded", and the caller drops them anyway.
+//
+// Owner ruling 2026-09-20: show BOTH. DES-215 ("the reason travels out and renders as the card's
+// secondary text") is satisfied by a meta line that CONTAINS the reason; it never said the reason
+// should replace other secondary text that is still true.
+describe('lib/system.js: a degraded CPU keeps the facts it still has (UT-281, v32, REQ-198)', () => {
+  it('the meta line carries cores, load AND the reason', () => {
+    const card = statCard('cpu', {
+      kind: 'unavailable', reason: 'awaiting-second-sample',
+      cores: 16, loadAvg: [0.34, 2.62, 3.27],
+    }, 'zh');
+    expect(card.meta).toContain('16');
+    expect(card.meta).toContain('0.34');
+    expect(card.meta, 'DES-215: the reason still renders').toContain('awaiting-second-sample');
+    expect(card.pct).toBeUndefined(); // no fabricated number in the value slot
+  });
+
+  it('with no cores/load to show, the reason alone is still the meta line', () => {
+    const card = statCard('cpu', { kind: 'unavailable', reason: 'sampler-unavailable' }, 'zh');
+    expect(card.meta).toBe('sampler-unavailable');
+  });
+
+  it('the other card families are untouched by this — they carry no cores/load', () => {
+    const card = statCard('memory', { kind: 'unavailable', reason: 'sampler-unavailable' }, 'zh');
+    expect(card.meta).toBe('sampler-unavailable');
+  });
+});

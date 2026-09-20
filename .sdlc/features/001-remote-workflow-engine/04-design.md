@@ -8150,3 +8150,25 @@ and that is the single question handed back to the owner rather than answered he
 — the owner answered it: all three DO say the same (prefixed, route-named) sentence. The cost stays this
 small in kind, one card larger: one more `tick.source` branch, reusing the existing `paintCard` shape and
 adding no module — see DES-220 (4)/(B7).]**
+
+## DES-221 — DES-215 的釐清修訂:「呈現理由」不等於「用理由取代其他為真的次要文字」
+
+**不翻 DES-215。** 該裁定寫的是「the reason travels out and renders as the card's secondary text」,
+本修訂只釐清它**沒有**說的那一半。
+
+`lib/system.js` 的 `kind === 'unavailable'` 分支由四張卡共用,且在 `cpu` 分支之前返回,
+於是首次取樣降級時 `meta` 只剩理由字串,把**仍然為真**的 `16 核心 · 負載 …` 一併蓋掉。
+而這個檔自己的註解(`:27-31`)明寫 `cores`/`loadAvg`「在 `utilizationPct` 降級時仍然真實
+…… 呼叫端可自行附到 meta 行」—— 呼叫端沒有附。
+
+**擁有者裁決(2026-09-20):併陳。** meta 行同時攜帶已知事實與降級理由:
+
+```
+16 核心 · 負載 0.34 / 2.62 / 3.27 · awaiting-second-sample
+```
+
+理由仍然呈現,DES-215 成立;其他仍然為真的次要文字不因此消失。沒有 `cores`/`loadAvg`
+可附時(其餘三張卡,或 CPU 本身也取不到核心數),meta 行就只有理由 —— 與改動前相同。
+`value` 一律不填造假數字(`pct: undefined` 不變)。
+
+判準:UT-281 三例,含「其他卡片家族不受影響」那一例。

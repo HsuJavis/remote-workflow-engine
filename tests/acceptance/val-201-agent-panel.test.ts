@@ -406,4 +406,32 @@ describe('the agent slide-in panel, real Chromium (VAL-201, REQ-135/136)', () =>
       await browser.close();
     }
   }, 20000);
+  // [v32, REQ-199, F13] the unit tier can assert `stats[i].meta` exists; only a browser can say the
+  // panel actually paints it. README §3: "Duration (start → end)".
+  itReal('the Duration card paints its start → end sub-line (REQ-199)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/dashboard/${runId}`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await page.waitForSelector('#dag-graph', { timeout: 3000 });
+      const node = await page.$('#dag-zoom [data-node-cell]');
+      expect(node).not.toBeNull();
+      if (node) await node.click();
+      await page.waitForSelector('[data-agent-panel] [data-stat-card]', { timeout: 3000 });
+      const durationCard = await page.evaluate(() => {
+        const cards = Array.from(document.querySelectorAll('[data-agent-panel] [data-stat-card]'));
+        const card = cards.find((c) => /耗時|Duration/.test((c.querySelector('.stat-label') as HTMLElement)?.innerText ?? ''));
+        if (!card) return null;
+        return {
+          value: (card.querySelector('.stat-value') as HTMLElement)?.innerText ?? null,
+          meta: (card.querySelector('.stat-meta') as HTMLElement)?.innerText ?? null,
+        };
+      });
+      expect(durationCard).not.toBeNull();
+      expect(durationCard!.meta, 'README §3: "Duration (start → end)"').toMatch(/\d+\/\d+ \d{2}:\d{2}:\d{2} → \d+\/\d+ \d{2}:\d{2}:\d{2}/);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
 });

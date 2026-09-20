@@ -8615,3 +8615,31 @@ v30b 的 REQ-170 早就把計算改成對查詢後的卡片算,而**唯一會改
 落判準前寫了一支掃描器找同類問題(`t(lang, …)` 出現在沒有 `lang` 的作用域),回報
 `workflow.js` 三處 —— **查證後是誤報**:真正的外層是 `async function paintSelected(state,
 runs, describe, lang)`,我的正則沒吃 `async function`。全域只有我自己剛製造的那一個是真的。
+
+## IMPL-335..337 — REQ-197/198/199:三條裁決
+
+**REQ-197 發現的比稽核說的更嚴重。** 舊判斷式是 `noActivity = !advancing && stale`,而
+`lastActivityAt` 缺席時會退場成 `startedAt`,於是它**與自己的用途相反**:
+
+```
+從沒回報過   -> lastMs === startMs -> advancing false -> 60 秒後必為「無活動」   誤報
+回報過後凍結 -> lastMs >   startMs -> advancing true  -> 永遠是「進行中」        漏報
+```
+
+兩種都實測到:健康的 ollama 呼叫在 t+67s 讀作「無活動」、一路跑到 3m38s 才結束;
+而寫判準時量到「回報一次後凍結四分鐘」讀作「進行中」。**它只抓得到健康的,抓不到真卡住的。**
+
+改為:非 running → `—`;沒有 `lastActivityAt` → `尚無回報`(新 key);
+有但超過 60 秒 → `無活動`;否則 `進行中`。60 秒門檻不動。
+「缺席即未知」與 R30-A1「未量到的用量是缺席不是零」是同一個類別,移到時間軸上。
+
+**REQ-198** 見 DES-221。共用的 `unavailable` 分支現在會在 `kind === 'cpu'` 且核心/負載
+拿得到時,把已知事實接在理由前面;拿不到就只有理由,與改動前相同。
+
+**REQ-199** `runlist.js` 的 `fmtStartedAt` 改為匯出(格式正是參考實作的 `9/7 18:25:26`;
+另寫一份就是兩種格式開始漂移的起點)。耗時卡在 `startedAt` **與** `endedAt` 都在時附
+`meta`;執行中的呼叫沒有結束時間,**不拿 `now` 充數** —— 那正是 R30-A1 裁定過的捏造。
+`buildStatCard` 加第三個可選 span `.stat-meta`(已登記 STYLE_HOOKS),逾時卡維持單行(已裁定)。
+
+判準分兩層:單元層斷言 `stats[i].meta` 的存在與缺席,瀏覽器層斷言它真的畫出來 ——
+F13 本質上是渲染問題,單元層看不到 DOM。

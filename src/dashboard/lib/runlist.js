@@ -86,7 +86,9 @@ export function fmtClock(iso) {
 // [v29, REQ-148] Was `return iso ?? '—'` — a stub that put the raw ISO string on the page
 // (`2026-09-07T10:25:26.314Z`). The handoff's history table reads `9/7 18:25:26`, a LOCAL clock
 // reading, which is also the only form that lines up with the run chips beside it.
-function fmtStartedAt(iso) {
+// [v32, REQ-199] exported: the agent panel's Duration card needs this exact `M/D HH:MM:SS` shape
+// for its `start → end` sub-line (README §3), and a second copy is how two formats drift apart.
+export function fmtStartedAt(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso; // an unparseable wire value is shown, never swallowed

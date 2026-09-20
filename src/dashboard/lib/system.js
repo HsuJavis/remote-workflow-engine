@@ -65,7 +65,16 @@ export function statCard(kind, input, lang) {
     // token IS that text (no separate i18n table exists for the five values, and each is already a
     // distinct, self-describing string), never a fabricated number in `value`/`pct`. `unavailable`
     // is the one key this card family shares with every other view (`strings.js:28,42`).
-    return { value: t(lang, 'unavailable'), pct: undefined, meta: input.reason };
+    // [v32, REQ-198, F12] the reason renders — and so does whatever else is still TRUE. `cores` and
+    // `loadAvg` survive a degraded `utilizationPct` (this file's own docstring says so), and this
+    // shared branch used to return before the `cpu` branch could attach them, so a first-tick
+    // `awaiting-second-sample` blanked the whole meta line. Owner ruling 2026-09-20: show both.
+    // DES-215 ("the reason travels out and renders as the card's secondary text") is satisfied by a
+    // meta line that CONTAINS the reason; it never said the reason should replace other true text.
+    const known = kind === 'cpu' && input.cores != null && input.loadAvg
+      ? `${input.cores} ${t(lang, 'cores')} · ${t(lang, 'load')} ${input.loadAvg.map((v) => v.toFixed(2)).join(' / ')}`
+      : undefined;
+    return { value: t(lang, 'unavailable'), pct: undefined, meta: known ? `${known} · ${input.reason}` : input.reason };
   }
   if (kind === 'cpu') {
     const pct = input.value;

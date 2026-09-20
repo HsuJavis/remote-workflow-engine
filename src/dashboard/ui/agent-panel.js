@@ -59,7 +59,7 @@ function buildTag(text, variant) {
   return span;
 }
 
-function buildStatCard(label, value) {
+function buildStatCard(label, value, meta) {
   const card = document.createElement('div');
   card.setAttribute('data-stat-card', '');
   const l = document.createElement('span');
@@ -69,6 +69,13 @@ function buildStatCard(label, value) {
   v.className = 'stat-value';
   v.textContent = value;
   card.append(l, v);
+  // [v32, REQ-199] optional third line — only the Duration card supplies one today (its start → end).
+  if (meta) {
+    const m = document.createElement('span');
+    m.className = 'stat-meta';
+    m.textContent = meta;
+    card.appendChild(m);
+  }
   return card;
 }
 
@@ -171,7 +178,7 @@ export function render(container, vm, handlers) {
 
   const statsWrap = document.createElement('div');
   statsWrap.className = 'stat-cards';
-  for (const s of vm.stats || []) statsWrap.appendChild(buildStatCard(s.label, s.value));
+  for (const s of vm.stats || []) statsWrap.appendChild(buildStatCard(s.label, s.value, s.meta));
   panel.appendChild(statsWrap);
 
   // [v30b, REQ-181] README §3 names this block and the log below it. Without headings the prompt

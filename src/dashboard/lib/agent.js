@@ -2,7 +2,7 @@
 // DES-205, ARCH-124/131/129, TASK-207, REQ-135/136 — the agent slide-in panel is a projection of
 // the RECORD (and its HarnessDescriptor), never a reconstruction from the DOM. Pure: `now` is a
 // parameter, cost goes through `fmtCost` (DES-204).
-import { fmtCost, sumTokens, fmtTok } from './runlist.js';
+import { fmtCost, sumTokens, fmtTok, fmtStartedAt } from './runlist.js';
 import { t } from './strings.js';
 
 function withCommas(n) {
@@ -46,18 +46,27 @@ function effortText(effortApplied, lang) {
   return `${t(lang, 'effortNotApplied')}: ${effortApplied.reason}`;
 }
 
-// (4) issue #20's hung-vs-progressing signal: only meaningful while `running`. Advancing past
-// `startedAt` (or freshly started, < 60s stale) reads as progressing; frozen/absent for > 60s
-// reads as no activity.
+// (4) issue #20's hung-vs-progressing signal: only meaningful while `running`.
+//
+// [v32, REQ-197, F11] Rewritten. The old predicate was `!advancing && stale`, with `lastActivityAt`
+// falling back to `startedAt` when absent — which made it the opposite of its own purpose:
+//
+//   never reported   -> lastMs === startMs -> advancing false -> 無活動 after 60s   (FALSE ALARM)
+//   reported, froze  -> lastMs >   startMs -> advancing true  -> 進行中 forever     (MISSED HANG)
+//
+// Both were measured. A healthy ollama call read 無活動 at t+67s and finished at 3m38s (a provider
+// that does not stream mid-call has nothing to report until it returns); and a call that reported
+// once and then froze for four minutes read 進行中 the whole time.
+//
+// Owner ruling 2026-09-20: absence is UNKNOWN, not frozen — the same class as R30-A1 ("an
+// un-measured figure is absent, not zero") on the time axis. "No activity" is reserved for a call
+// that reported and then went quiet, which is the only case the signal can honestly claim. The 60s
+// threshold is unchanged.
 function activityText(record, now, lang) {
   if (record.state !== 'running') return '—';
-  const nowMs = Date.parse(now);
-  const startMs = record.startedAt ? Date.parse(record.startedAt) : nowMs;
-  const lastMs = record.lastActivityAt ? Date.parse(record.lastActivityAt) : startMs;
-  const advancing = lastMs > startMs;
-  const stale = nowMs - lastMs > 60000;
-  const noActivity = !advancing && stale;
-  if (noActivity) return lang === 'zh' ? '無活動' : 'no activity';
+  if (!record.lastActivityAt) return t(lang, 'noReportYet');
+  const stale = Date.parse(now) - Date.parse(record.lastActivityAt) > 60000;
+  if (stale) return lang === 'zh' ? '無活動' : 'no activity';
   return lang === 'zh' ? '進行中' : 'progressing';
 }
 
@@ -109,7 +118,17 @@ export function panelModel(record, harness, events, hasMore, now, lang) {
     { label: t(lang, 'model'), value: modelLine(record, harness) },
     { label: t(lang, 'effort'), value: effortText(harness?.effortApplied, lang) },
     { label: t(lang, 'timeout'), value: fmtTimeout(harness?.timeoutMs) },
-    { label: t(lang, 'duration'), value: durationText(record, now, lang) },
+    // [v32, REQ-199] README §3 names this card "Duration (start → end)". The sub-line appears only
+    // when BOTH stamps exist — a running call has no end, and inventing `now` as one would be the
+    // same fabrication R30-A1 ruled against. `meta` is optional; the other five cards omit it, and
+    // the single-line Timeout card stays single-line (ruled, `agent.js:12-19`).
+    {
+      label: t(lang, 'duration'),
+      value: durationText(record, now, lang),
+      ...(record.startedAt && record.endedAt
+        ? { meta: `${fmtStartedAt(record.startedAt)} → ${fmtStartedAt(record.endedAt)}` }
+        : {}),
+    },
     { label: t(lang, 'tokens'), value: tokenTotalAndCols(record.tokens, lang) },
     { label: t(lang, 'cost'), value: fmtCost(record.costUSD, record.unpriced ? 1 : undefined, lang) },
   ];

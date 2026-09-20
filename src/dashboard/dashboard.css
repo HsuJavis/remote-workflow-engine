@@ -450,6 +450,9 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 [data-stat-card]{border:1px solid var(--color-line);border-radius:var(--radius-md);padding:10px 12px;display:flex;flex-direction:column;gap:4px;min-width:0}
 .stat-label{display:block;color:var(--color-muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
 .stat-value{font-weight:600;font-size:18px}
+/* [v32, REQ-199] README §3 renders each stat card as kicker + value + a sub-line; only the
+   Duration card supplies one today (its start → end stamps). Quieter than the value it sits under. */
+.stat-meta{font-size:11px;color:var(--color-muted);font-variant-numeric:tabular-nums}
 /* [v30b, REQ-176] README §3: "User prompt in <pre> (BODY font 13.5 px / 1.6)". A bare `pre` takes
    the UA monospace, so the one block that is prose rendered as code. */
 .prompt-pre{margin:0;padding:12px;border:1px solid var(--color-line);border-radius:var(--radius-md);font-family:'Archivo',-apple-system,'Segoe UI',sans-serif;font-size:13.5px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto}

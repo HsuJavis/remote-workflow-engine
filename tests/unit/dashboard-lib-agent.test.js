@@ -126,3 +126,66 @@ describe('lib/agent.js: the panel’s six stat labels render in the viewer’s l
     expect(vm.stats.map((s) => s.label)).toEqual(['Model', 'Effort', 'Timeout', 'Duration', 'Tokens', 'Cost']);
   });
 });
+
+// UT-279 (v32, REQ-197, F11): an absent `lastActivityAt` means NOBODY HAS REPORTED YET — not frozen.
+//
+// Measured on a real run: a healthy ollama call read 「無活動」 at t+67s and went on to finish at
+// 3m38s. Its record carried `startedAt` and no `lastActivityAt`, because the gateway emitted its
+// first event 3m38s in — a provider that does not stream mid-call has nothing to report until it
+// returns. `lastMs` fell back to `startMs`, so `advancing` was false by construction and the 60s
+// staleness test did the rest.
+//
+// Owner ruling 2026-09-20: absence is "unknown". Same class as R30-A1 (an un-measured figure is
+// absent, not zero) moved to the time axis. "No activity" is reserved for a call that DID advance
+// and then froze. The 60s threshold itself is unchanged.
+describe('lib/agent.js: never-reported activity is unknown, not frozen (UT-279, v32, REQ-197)', () => {
+  const base = { agentId: 'a-1', label: 'triage', state: 'running', provider: 'ollama', model: 'qwen2.5:7b' };
+  const start = '2026-09-20T10:00:00.000Z';
+  // a running call has no `endedAt`, so `durationText` hands off to `activityText` (REQ-166's ruled
+  // fallback) — the 耗時 card IS where this signal surfaces, which is where the audit measured it.
+  const durationOf = (rec, now) => panelModel(rec, null, [], false, now, 'zh').stats.find((x) => x.label === '耗時').value;
+
+  it('a running call that has never reported, well past the threshold, is not called inactive', () => {
+    const value = durationOf({ ...base, startedAt: start }, '2026-09-20T10:05:00.000Z');
+    expect(value, 'a healthy non-streaming call was labelled frozen').not.toBe('無活動');
+  });
+
+  it('it says so: never reported is its own answer, not silence and not progress', () => {
+    expect(durationOf({ ...base, startedAt: start }, '2026-09-20T10:05:00.000Z')).toBe('尚無回報');
+  });
+
+  it('a call that advanced and then froze past the threshold IS inactive — the distinction stands', () => {
+    const rec = { ...base, startedAt: start, lastActivityAt: '2026-09-20T10:00:30.000Z' };
+    expect(durationOf(rec, '2026-09-20T10:05:00.000Z')).toBe('無活動');
+  });
+
+  it('a call that reported recently is progressing', () => {
+    const rec = { ...base, startedAt: start, lastActivityAt: '2026-09-20T10:04:50.000Z' };
+    expect(durationOf(rec, '2026-09-20T10:05:00.000Z')).toBe('進行中');
+  });
+});
+
+// UT-280 (v32, REQ-199, F13): README §3 names the Duration card "Duration (start → end)". The six
+// cards are flat `{label, value}` pairs, so the timestamps have nowhere to go. Only the DURATION
+// card's pair is in scope — the single-line Timeout is ruled (`agent.js:12-19`).
+describe('lib/agent.js: the Duration card carries its start → end (UT-280, v32, REQ-199)', () => {
+  const rec = {
+    agentId: 'a-1', label: 'triage', state: 'done', provider: 'anthropic', model: 'haiku',
+    startedAt: '2026-09-07T18:25:26.000Z', endedAt: '2026-09-07T18:26:25.000Z',
+    tokens: { input: 392, output: 4987 },
+  };
+
+  it('a finished call shows both timestamps under the duration value', () => {
+    const vm = panelModel(rec, null, [], false, '2026-09-07T18:30:00.000Z', 'zh');
+    const dur = vm.stats.find((x) => x.label === '耗時');
+    expect(dur.value).toMatch(/\d/);
+    expect(dur.meta, 'README §3: "Duration (start → end)"').toMatch(/→/);
+  });
+
+  it('a call with no end timestamp claims no end — absent, not a fabricated now', () => {
+    const running = { ...rec, state: 'running', endedAt: undefined };
+    const vm = panelModel(running, null, [], false, '2026-09-07T18:30:00.000Z', 'zh');
+    const dur = vm.stats.find((x) => x.label === '耗時');
+    expect(dur.meta ?? '').not.toMatch(/→\s*\d/);
+  });
+});
