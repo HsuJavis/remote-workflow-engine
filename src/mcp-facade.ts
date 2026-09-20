@@ -84,6 +84,9 @@ const NEVER_CLAIMS: TriggerClaimStore = {
 interface RegistrationCatalog {
   validateRegistration(req: { name: string; script: string; mermaid: string; principal?: string | null }): Promise<{ params: ParamContract }>;
   insertVersion(req: { name: string; script: string; mermaid: string; triggers?: string[]; params: ParamContract; principal?: string | null }): Promise<{ version: string }>;
+  /** v33 (DES-222, REQ-201): the v22 read (DES-111) — type-only addition, no new catalog method or
+   *  behaviour. Read AFTER insertVersion so the register response shows the version loop. */
+  resolveDetail(name: string, sel: { version?: string }): Promise<{ versions: string[]; channels: { release: string | null; beta: string | null } }>;
 }
 
 export interface McpFacadeDeps {
@@ -344,14 +347,20 @@ export class McpFacade {
         for (const rid of [...claimedThisCall].reverse()) this._storeFor(rid).release(rid, a.name);
         throw codedError(outcome === 'NOT_FOUND' ? 'TRIGGER_NOT_FOUND' : 'TRIGGER_ALREADY_CLAIMED', `${outcome}: ${id}`);
       }
+      let version: string;
       try {
-        const { version } = await catalog.insertVersion({ name: a.name, script: a.script, mermaid: a.mermaid, triggers, params, principal: attributionWithArg(principal, a) });
-        const versionNum = Number(version.replace(/^v/, '')) || 1;
-        return { runId: '', status: 'completed', version: versionNum, result: { name: a.name, version } };
+        ({ version } = await catalog.insertVersion({ name: a.name, script: a.script, mermaid: a.mermaid, triggers, params, principal: attributionWithArg(principal, a) }));
       } catch (err) {
         for (const id of [...claimedThisCall].reverse()) this._storeFor(id).release(id, a.name);
         throw err;
       }
+      const versionNum = Number(version.replace(/^v/, '')) || 1;
+      // v33 (DES-222, REQ-201): one additional read, OUTSIDE the compensating try/catch above — a
+      // read failure after a committed insert must never release a working trigger (DES-222's
+      // boundary). Only `versions`/`channels` are lifted off the detail; the rest of WorkflowDetail
+      // (notably `script`) is discarded here, never on the envelope.
+      const { versions, channels } = await catalog.resolveDetail(a.name, { version });
+      return { runId: '', status: 'completed', version: versionNum, result: { name: a.name, version, versions, channels } };
     } catch (err) {
       const e = toErrEnvelope(err);
       return { runId: '', status: 'failed', code: e.code, error: e };

@@ -213,7 +213,7 @@ export const TOOL_SPECS = [
   // ---- workflow (7) ----
   {
     name: 'workflow_register', entity: 'workflow', key: null,
-    description: 'Register a new workflow version under a name; the caller becomes its owner.',
+    description: 'Register a new workflow version under a name; the caller becomes its owner. Registering the same name again appends a new version (v2, v3…) and overwrites nothing; use a different name only for a different purpose.',
     inputSchema: schema({
       name: { type: 'string' },
       script: { type: 'string' },
@@ -392,7 +392,7 @@ export const TOOL_SPECS = [
   // ---- run (8) ----
   {
     name: 'run_start', entity: 'run', key: null,
-    description: "Start a run of a workflow's current release. First-try traps: a just-registered workflow has no release — call workflow_publish first or pass {version} — and starting a run returns no result; poll run_status until terminal, then call run_result.",
+    description: "Start a run of a workflow's current release. First-try traps: a just-registered workflow has no release yet — pass {version} to run the version workflow_register just returned, to iterate, and call workflow_publish to move it to release once it is stable — and starting a run returns no result; poll run_status until terminal, then call run_result.",
     // v24 adjudication #2 A-2: seed/seedManifest/seedRef/seedManifestRef are RESTORED here — only
     // seedNamespace was meant to drop (ADR-028 derives it from the principal). Omitting them left the
     // TASK-153 plugin doc advertising run_start({seedManifestRef}) against an engine that rejected it.

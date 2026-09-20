@@ -6,7 +6,7 @@
 // `seedManifestRef`.
 // Mock policy (unit): pure data assertion over TOOL_SPECS, no I/O.
 import { describe, it, expect } from 'vitest';
-import { TOOL_SPECS } from '../../src/tool-specs.js';
+import { TOOL_SPECS, projectToolsList } from '../../src/tool-specs.js';
 
 function runStartSchema() {
   const spec = TOOL_SPECS.find((s) => s.name === 'run_start');
@@ -94,5 +94,49 @@ describe('every array-typed property in TOOL_SPECS declares items (UT-213, defec
     expect(props('workspace_delete').paths.items.type).toBe('string');
     const pushModeB = (TOOL_SPECS.find((s) => s.name === 'workspace_push')!.inputSchema as any).oneOf[1];
     expect(pushModeB.properties.files.items.required).toEqual(expect.arrayContaining(['path', 'contentB64']));
+  });
+});
+
+// UT-266 (v33, REQ-201, TASK-227, DES-222, ARCH-087/091): two SERVED descriptions must teach the
+// version loop, because ARCH-087's own rule is "the description text *is* the API" — a cold client
+// registered four names in 45 minutes and published every one to `release` within seconds because
+// nothing on the tool surface said re-registering a name STACKS a version, and `run_start`'s row
+// taught `workflow_publish` first with `{version}` as the fallback (the opposite of the loop a
+// just-registered author actually wants). Written test-first (Gate 5, RED): today
+// `workflow_register`'s description is "Register a new workflow version under a name; the caller
+// becomes its owner." (no "append"/"overwrite" wording) and `run_start`'s description has
+// `workflow_publish` BEFORE `{version}` — confirmed by reading src/tool-specs.ts:216,395.
+// Mock policy (unit): pure data assertion over projectToolsList()'s SERVED projection, no I/O.
+describe('workflow_register/run_start descriptions teach the version loop (UT-266, DES-222, REQ-201)', () => {
+  const desc = (name: string) => projectToolsList().find((t) => t.name === name)!.description;
+
+  it('workflow_register states that registering the SAME name appends a version and overwrites nothing', () => {
+    // Loose on phrasing deliberately: DES-222 (2) says "registering the SAME name appends a NEW
+    // version… overwrites nothing" (no "re-"); ARCH-087/TASK-227 say "re-registering". Pinning the
+    // "re-" prefix would fail an implementation that follows DES-222's own wording verbatim.
+    const text = desc('workflow_register');
+    expect(text).toMatch(/same name/i);
+    expect(text).toMatch(/append/i);
+    expect(text).toMatch(/overwrite/i);
+  });
+
+  it('the derived "See also: workflow_authoring_guide" pointer survives the rewrite (regression guard, not re-typed)', () => {
+    expect(desc('workflow_register')).toContain('workflow_authoring_guide');
+  });
+
+  it('run_start mentions {version} at a LOWER index than workflow_publish (order, not presence — today both are present in the wrong order)', () => {
+    const text = desc('run_start');
+    const versionIdx = text.indexOf('{version}');
+    const publishIdx = text.indexOf('workflow_publish');
+    expect(versionIdx).toBeGreaterThanOrEqual(0);
+    expect(publishIdx).toBeGreaterThanOrEqual(0);
+    expect(versionIdx).toBeLessThan(publishIdx);
+  });
+
+  it('run_start still carries the no-result trap sentence (regression guard)', () => {
+    const text = desc('run_start');
+    expect(text).toMatch(/returns no result/i);
+    expect(text).toMatch(/run_status/);
+    expect(text).toMatch(/run_result/);
   });
 });

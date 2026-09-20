@@ -220,3 +220,21 @@ in the same re-run — no regression on REQ-138's counts card).
 | REQ-141 | `RunSummary` 帶 `costUSD`,且與單筆 run 的 fold 一致 | ARCH-127, ARCH-128 | DES-192, DES-193, DES-194, DES-204 | TASK-197, TASK-198, TASK-199 | IMPL-231, IMPL-233, IMPL-236, IMPL-240, IMPL-244, IMPL-249 | IT-165, IT-166, IT-167, UT-233, UT-234, UT-247, VAL-205 | ✅ |
 | REQ-142 | (nfr) 頁面隱藏時暫停輪詢 | ARCH-133, ARCH-134 | DES-210, DES-211, DES-212, DES-213, DES-214, DES-215, DES-216, DES-217, DES-219 | TASK-217, TASK-218, TASK-220, TASK-221, TASK-222, TASK-223, TASK-224 | IMPL-283, IMPL-284, IMPL-286, IMPL-287, IMPL-288, IMPL-289, IMPL-290, IMPL-292, IMPL-293, IMPL-294, IMPL-295, IMPL-296, IMPL-297, IMPL-298 | UT-245, UT-249, UT-255, UT-257, UT-258, UT-259, UT-260, UT-261, UT-262, UT-263, VAL-213, VAL-214, VAL-215, VAL-216, VAL-217 | ✅ |
 | REQ-143 | (nfr) 示範資料必須自我標示,並登記退場條件 | ARCH-132, ARCH-133 | DES-210, DES-211, DES-212, DES-213, DES-214, DES-215, DES-216, DES-217, DES-219, DES-220 | TASK-217, TASK-218, TASK-220, TASK-221, TASK-222, TASK-223, TASK-224, TASK-226 | IMPL-283, IMPL-284, IMPL-286, IMPL-287, IMPL-288, IMPL-289, IMPL-290, IMPL-292, IMPL-293, IMPL-294, IMPL-295, IMPL-296, IMPL-297, IMPL-298, IMPL-302 | UT-245, UT-249, UT-255, UT-257, UT-258, UT-259, UT-260, UT-261, UT-262, UT-263, VAL-213, VAL-214, VAL-215, VAL-216, VAL-217 | ✅ |
+| REQ-201 | 註冊的回應與說明要讓冷客端看見版本迴圈 (v33) | ARCH-087, ARCH-091, ARCH-107 | DES-137, DES-138, DES-140, DES-149, DES-151, DES-152, DES-155, DES-157, DES-159, DES-162, DES-163, DES-164, DES-185, DES-222 | TASK-131, TASK-132, TASK-148, TASK-150, TASK-152, TASK-155, TASK-162, TASK-163, TASK-164, TASK-190, TASK-227 | IMPL-178, IMPL-180, IMPL-181, IMPL-184, IMPL-186, IMPL-187, IMPL-188, IMPL-189, IMPL-190, IMPL-204, IMPL-208, IMPL-218, IMPL-338 | IT-172, UT-266, UT-267, VAL-218, VAL-219 | ✅ |
+
+## v33 Gate 7.5 update (2026-09-20, validator, fix-mode)
+
+REQ-201's row added above (✅ — `real:true` via VAL-219, all its acceptance clauses observed against
+a live `deploy.sh`-booted instance over real MCP HTTP; see 08-validation.md's 'v33 GATE 7.5'
+section). REQ-116/REQ-117's rows (added at an earlier round) still read ✅ (`build_matrix()`/
+`is_real_test()` re-run directly confirms `real: True` for both); their standing real:true evidence
+(VAL-190/VAL-192) is untouched by this iteration's description/guide-text-only change and was
+re-affirmed by live smoke this round (VAL-220), not re-derived here.
+
+**Pre-existing gap flagged, not silently shipped as complete**: this matrix's table stops at
+REQ-143 — **REQ-144 through REQ-200 (58 REQs, a parked v29/v30/v31/v32 dashboard-audit backlog,
+including the REQ-153..169 `未驗證` set and the REQ-144..152/`REQ-186` IDs that `01-requirements.md`
+does not even define, both already reported in 08-validation.md's trace section above) have no row
+in this matrix at all.** This predates v33 and is out of this fix-mode iteration's scope (REQ-201/
+REQ-116/REQ-117 only) — recorded here rather than silently leaving the matrix looking complete for a
+range it never covered.

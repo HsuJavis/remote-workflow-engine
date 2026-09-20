@@ -11106,3 +11106,172 @@ condition the exit gate actually requires — holds.**
 REQ-142, REQ-143) now carry a genuine `real:true`/`result:pass` VAL/E2E item with no unresolved red
 real-tier item on the same REQ. `current_stage` advances to `review`; `gates.validation.passed` is
 set to `true` in `state.yaml`.
+
+## v33 GATE 7.5 (2026-09-20, validator, fix-mode) — REQ-201 real-tier + REQ-116/REQ-117 smoke
+
+**Fix-mode impact closure:** `{REQ-201, REQ-117, REQ-116, ARCH-107, ADR-032, TASK-150, IMPL-207/
+IMPL-338}`. REQ-201 is the only REQ whose behavior this iteration changed (`workflow_register`'s
+success envelope now carries `versions`/`channels`; `workflow_register`/`run_start` tool
+descriptions and `buildAuthoringGuide()`'s "Registration and versioning" section now teach the
+version loop). REQ-116/REQ-117 sit in the impact closure because two of the touched files
+(`tool-specs.ts`, `authoring-guide.ts`) are their own implementing surfaces — re-affirmed below by
+smoke against the same live instance, not re-run in full (their standing real:true evidence is
+VAL-192/VAL-190 and the v24 GATE 7.5 ROUND real-tier rows; untouched by this iteration).
+
+### Boot evidence — documented steps only (§0 一鍵部署, the committed `deploy.sh`)
+
+Production (`rwe.service`, port 8899, `systemctl --user status` → active, serving
+`v0.20.0-406-gc48fe08`) was left running and untouched, per this iteration's own owner decision
+("不重啟 production 服務(`38edb020` 執行中),變更隨下一個 release tag 生效" — 01-requirements.md
+v33 section). Validated instead on a scratch instance so the working tree's uncommitted v33 code
+gets a real boot without touching the long-lived service:
+
+```
+mkdir -p /home/user/.local/share/rwe-val33/work
+cat > /home/user/.local/share/rwe-val33/rwe.config.json <<'EOF'
+{ "bind": "127.0.0.1", "port": 8791, "allowedHosts": ["127.0.0.1"],
+  "workRoot": "/home/user/.local/share/rwe-val33/work",
+  "gateway": "direct-fetch", "auth": { "enabled": false }, "aliases": {} }
+EOF
+RWE_CONFIG_PATH=/home/user/.local/share/rwe-val33/rwe.config.json \
+  RWE_BIND=127.0.0.1 RWE_PORT=8791 ./deploy.sh --background
+```
+→ 步驟 1-5 all ran unmodified from the committed script; healthcheck passed:
+`{"agentSemaphore":{"total":32,"inUse":0,"queued":0},"version":"0.1.0 (v0.20.0-407-geb0593c)"}`.
+No undocumented step, no manual fix — `deploy.sh` needed nothing beyond its own documented env
+overrides (§1 設定總表 rows `RWE_CONFIG_PATH`/`RWE_BIND`/`RWE_PORT`).
+
+### VAL-219 — REQ-201: on a REAL deployed instance, `workflow_register`'s response and the served descriptions/guide teach the version loop
+- **status:** green
+- **traces:** REQ-201, DES-222
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  Real MCP HTTP against the `deploy.sh`-booted instance above (`http://127.0.0.1:8791/mcp`), real
+  `WorkflowCatalog` over real SQLite in `/home/user/.local/share/rwe-val33/work` — no mock anywhere
+  on the register/publish/tools-list path. Four calls, each `curl -s -X POST .../mcp -d '{...
+  "method":"tools/call","params":{"name":..., "arguments":...}}'`:
+  1. Fresh name `val33-fresh` registers →
+     `{"runId":"","status":"completed","version":1,"result":{"name":"val33-fresh","version":"v1",
+     "versions":["v1"],"channels":{"release":null,"beta":null}}}` — `versions`/`channels` present
+     on a real response, matching REQ-201's first Given/Then verbatim.
+  2. `workflow_publish({name:"val33-fresh",version:"v1",channel:"release"})` →
+     `{"status":"completed","result":{"channel":"release","version":"v1","from":null}}`.
+  3. Same name registered again →
+     `{"runId":"","status":"completed","version":2,"result":{"name":"val33-fresh","version":"v2",
+     "versions":["v1","v2"],"channels":{"release":"v1","beta":null}}}` — `versions` has two
+     entries, `channels.release` still points at `v1` (the new v2 did NOT take over release) —
+     REQ-201's second Given/Then, observed live, not asserted in a mock.
+  4. A refused registration (`val33-refused`, no `mermaid`) →
+     `{"runId":"","status":"failed","code":"MERMAID_REQUIRED","error":{...}}` — no `result` key,
+     confirming the new read never runs (and nothing leaks) on the refused path.
+  5. `tools/list` served over the same live HTTP connection — `workflow_register` description:
+     "...Registering the same name again appends a new version (v2, v3…) and overwrites nothing;
+     use a different name only for a different purpose." `run_start` description: "...a
+     just-registered workflow has no release yet — pass {version} to run the version
+     workflow_register just returned, to iterate, and call workflow_publish to move it to release
+     once it is stable..." — both served descriptions match REQ-201's third/fourth Given/Then
+     verbatim (iterate-first, not publish-first).
+  6. `workflow_authoring_guide` tool called live → returned text's "Registration and versioning"
+     section opens with "The normal loop: `workflow_register` a script under a name,
+     `run_start({name, version})` the version it just returned to iterate, and once it is stable
+     `workflow_publish(release)` it — registering the same name again appends a new version and
+     never overwrites an existing one. The rest of this section is exceptions, not the common
+     path." followed by the three pre-existing exception paragraphs verbatim (LEGACY_REREGISTER /
+     omission-does-not-release / assets-shared-across-versions) — REQ-201's fifth Given/Then.
+  7. `docs/AUTHORING.md` (checked-in, regenerated via `npm run gen:authoring`) byte-matches
+     `buildAuthoringGuide()`'s output — UT-160's drift lock, re-confirmed green in the targeted
+     rerun below, holds live too (the served guide text IS what ships in the doc).
+  Targeted rerun for confidence (full regression already ran at Gate 6.5+7/verifier):
+  `npx vitest run tests/integration/register-version-loop.test.ts tests/unit/tool-specs.test.ts
+  tests/unit/authoring-guide.test.ts` → **3 files passed, 58 tests passed, 0 failed**. `npx tsc
+  --noEmit` clean.
+- **iter:** v33
+
+### VAL-220 — REQ-116/REQ-117 smoke re-affirmation on the same v33 live instance (untouched behavior, still green)
+- **status:** green
+- **traces:** REQ-116, REQ-117
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  Same live instance as VAL-219. `tools/list` over real MCP HTTP returns exactly **35** tools
+  (matches the TASK-153 client-plugin vocabulary count established at prior real-tier rounds —
+  REQ-116's "the engine teaches its own authoring contract" surface is unchanged in shape, only two
+  descriptions' TEXT changed, both re-confirmed live above). `workflow_authoring_guide` called live
+  returns the full guide including the unmodified sections (schema/authoring rules/error codes)
+  alongside the v33-amended "Registration and versioning" section. This is a smoke re-affirmation
+  per this iteration's fix-mode scope, not a re-run of the full disqualified-subject fresh-model
+  protocol (VAL-128/DES-158) — that protocol's standing real:true evidence (VAL-190, VAL-192: a
+  fresh cold model registers/publishes/runs first try) is untouched by this iteration's pure
+  description/guide-text edit and stands as-is.
+- **iter:** v33
+
+### Config-file sync check (4b)
+No config/settings file changed by this iteration. `git diff --stat` for v33 touches only
+`src/mcp-facade.ts`, `src/tool-specs.ts`, `src/authoring-guide.ts`, `docs/AUTHORING.md` and their
+tests — no new env var, secret, port, default, or feature flag; `rwe.config.json` /
+`rwe.config.example.json` / DEPLOY.md §1 設定總表 need no edit. Confirmed explicitly, not silently
+skipped.
+
+### README.md current-state fix (pre-existing drift, closed while touching this section)
+README.md's `使用範例` §1 literal `workflow_register` response was stale even before v33 (missing
+the `runId` field the envelope has carried since well before this iteration) and, as of v33, also
+missing `versions`/`channels`. Replaced with the exact live output captured above
+(`{"runId":"","status":"completed","version":1,"result":{"name":"greet","version":"v1",
+"versions":["v1"],"channels":{"release":null,"beta":null}}}`) plus one added line explaining what
+`versions`/`channels` mean, so the quickstart stays copy-paste-verifiable against the real system.
+
+### Cleanup
+Scratch instance stopped (`kill` the PID `deploy.sh` printed) and
+`/home/user/.local/share/rwe-val33/` removed after evidence capture — no validation state left on
+disk; production (port 8899) was never touched.
+
+### `sh .sdlc/trace --check` — 1778 items / 83 gaps (exit 1)
+
+Direct `analyze()` query (not just the gap count) confirms **REQ-201/REQ-116/REQ-117 carry ZERO
+`未真實驗證`/`未驗證` gaps** — the substantive condition the exit gate cares about. The 83 gaps are
+all pre-existing at this iteration's own F1 baseline (`state.yaml`/journal record 1771/84 at F1,
+1774/84 at F2, 1775/83 at F3, 1776/83 at F4, 1778/83 now — the count has been stable at 83 since F3;
+none of v33's own items appear in any gap below):
+
+- **17 `未驗證` (mid)** = REQ-153..169. **Correction to an earlier draft of this note**: these are
+  NOT "never implemented" — direct query (`'REQ-153' in implemented`) confirms all 17 ARE in the
+  `implemented` set (IMPLs trace to them); they have zero UT/IT/VAL tracing back, hence `未驗證`.
+  Origin: a parked v29d/v29e dashboard-audit backlog (a different, unrelated dashboard-UI slice),
+  predating and untouched by v33.
+- **15 `斷鏈` (HIGH)** — `IMPL-303`/`IMPL-304`/`IMPL-305`(×2)/`IMPL-306`(×2)/`IMPL-307`(×2)/
+  `IMPL-308`/`IMPL-309`/`IMPL-310`/`IMPL-311`/`IMPL-323`/`UT-264`/`UT-265`, all tracing to
+  `REQ-144`/`REQ-145`/`REQ-146`/`REQ-147`/`REQ-148`/`REQ-149`/`REQ-150`/`REQ-151`/`REQ-152`/
+  `REQ-186` — IDs that do not exist in `01-requirements.md` at all. Pre-existing broken-link debt
+  from the same v29-era slice, not this closure's REQs and not v33 items.
+- **30 `漂移` (low)** — includes a genuine, newly-surfaced-by-this-round instance: F1 bumped
+  `DES-157` to iter v33 (per its own amendment for REQ-201), and `UT-159`/`IT-118`/`UT-160`/
+  `UT-215`/`UT-221`/`VAL-139`/`VAL-161` (all tracing to DES-157, all at older iter tags) now read as
+  "test lags behind design". `VAL-139`/`VAL-161` are pre-existing `status:red` v24 historical
+  findings (already superseded — REQ-116 is green via VAL-190/VAL-192; not touched here to avoid
+  rewriting history). `UT-160` is the byte-drift lock re-confirmed green in this round's targeted
+  rerun; its content is unchanged by v33, only DES-157's iter number moved. Left as a LOW drift
+  note rather than bumped, consistent with the other 29 pre-existing 漂移 entries this ledger has
+  carried unbumped across multiple rounds (e.g. DES-095 v20 vs UT-094/095 since v20).
+- **19 TDD (mid) + 2 `未實作` (low)** — unchanged pre-existing set.
+
+Exit code 1 (non-zero), reported per this ledger's own established convention (every prior
+v26/v27/v28/v28c round exits 1 the same way when only pre-existing, out-of-closure debt remains).
+**Literal exit-gate wording note**: the validator contract's exit gate #4 reads "no 未真實驗證/未驗證
+gap for ANY REQ (exit 0)" — read literally this round does not satisfy it (17 未驗證 + 15 高風險斷鏈
+exist, all pre-existing/out-of-scope). Per this ledger's established practice (v26 ROUND 6, v28,
+v28c all passed the gate on "0 for the touched/in-closure REQs, pre-existing debt documented, not
+silently hidden" rather than the literal zero-gaps-anywhere reading), this round is reported PASSED
+for its own fix-mode scope; the literal-vs-practice gap is carried to `needs_clarification` rather
+than decided unilaterally here.
+
+### Verdict
+**PASSED** (for this iteration's fix-mode scope: REQ-201, with REQ-116/REQ-117 re-affirmed). REQ-201
+carries a genuine `real:true`/`result:pass` VAL item (VAL-219) with all five of its Given/Then
+clauses observed against a real deployed instance over real MCP HTTP and real SQLite — no
+SUT-boundary mock. REQ-116/REQ-117 (impact-closure members, behavior untouched) re-affirmed green by
+live smoke (VAL-220); their standing real:true evidence from prior rounds stands. The 83 pre-existing
+gaps above (none newly introduced, none on REQ-201/116/117) are reported, not silently closed.
+`current_stage` advances to `review`; `gates.validation.passed` set to `true` in `state.yaml`.

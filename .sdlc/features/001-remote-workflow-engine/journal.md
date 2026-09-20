@@ -6205,3 +6205,249 @@ is **current** in all three, checked one by one rather than inherited as 「pre-
 
 `gates.review.passed` → `true`; `current_stage: review`; `.panel/` removed per contract task 6.
 **Iteration v28 is CLOSED.**
+
+## 2026-09-20 — v33 / F1(設計增量):REQ-201 的版本迴圈要在回應與說明裡看得見
+
+**Gate 3+4(fix mode,LEAN tier,無專家團)PASSED。** 產出 **TASK-227**(M)與 **DES-222**:
+`workflow_register` 的成功回應在 `result` 加 `versions`(該名稱目前所有版本,依版本「數字」升冪)
+與 `channels`(`{release, beta}`,未發布為 `null`),來源是 catalog 早就有的 `resolveDetail`
+(DES-111)——**不新增 catalog 方法、不改 catalog 行為**(REQ-201 自己的不在範圍內清單),
+且只取這兩個 key,`WorkflowDetail` 其餘欄位(尤其 `script`)在解構處就丟掉。另外三處純文字:
+`workflow_register` 說明寫明「同名再註冊=疊新版本、不覆蓋」;`run_start` 說明把 `{version}`
+排到 `workflow_publish` **前面**(現行文字兩者都有,缺的是順序——測試因此斷言 index 而非包含);
+`buildAuthoringGuide` 的 `Registration and versioning` 段落改以正常迴圈開頭,原本那三段例外
+(legacy / omission-does-not-release / assets 共用)原文保留在後,並在同一個 commit 重跑
+`npm run gen:authoring`,讓 UT-160 的 byte lock 維持綠。
+
+**兩件必須揭露的事。**(1)派工給的影響閉包是 `{REQ-201, REQ-117, REQ-116, ARCH-107, ADR-032,
+TASK-150, IMPL-207}`,但 REQ-201 的驗收明文點名 `mcp-facade` 的回應與 `tool-specs` 的兩段說明,
+所以另外就地修改並 bump 到 v33 的有 **ARCH-087**(兩段說明)與 **ARCH-091**(註冊回應形狀);
+這是閉包列舉不足,不是改動超出 fix 尺度(沒有 draft 頻道、沒有 catalog 行為變更),因此沒有升級成
+完整 /sdlc-run。(2)`01-requirements.md:2639` 的標題原本是「### REQ-201 (v33) — …」,
+**trace.py 的 ITEM_RE 解析不到**(REQ-187..200 同病,本次不動),等於整條需求對追溯鏈隱形;
+把 `(v33)` 移到標題尾端後才解析得出來。
+
+**trace:** 1771 項 / 84 缺口(基線 1768 / 77)。新增 7 條 **漂移**(所有追溯 DES-157 的測試:
+IT-118、UT-159、UT-160、UT-215、UT-221、VAL-139、VAL-161)——這正是要給 F2 的訊號,因為指南文字變了;
+新增 1 條 TASK-227「未實作」(F3 關閉);消失 1 條(DES-157 不再落後 IMPL-208)。**零**新增斷鏈/孤兒。
+**留給 F5 的提醒:** trace.py 現在把 REQ-201 算成「已實作/已驗證/已真實驗證」,純粹是因為
+ARCH-087/091/107 追溯到它而那些 ARCH 下游有綠測試——那是可達性不是證據;REQ-201 仍然欠自己的
+UT/IT(F2)與真實層 VAL(F5)。`state.yaml`:`iteration: v33`、`current_stage: tests`、
+gates.tasks/design 皆 `passed: true`。**擁有者待決:0 條。**
+
+## 2026-09-20 — v33 / F2(test-first RED):REQ-201 的三個新測試,量測到的紅
+
+**Gate 5(test-first RED)PASSED。** 派工影響閉包不變:`{REQ-201, REQ-117, REQ-116, ARCH-107,
+ADR-032, TASK-150, IMPL-207}`。新增 3 項,全部量測到「因為功能還沒做」而紅,不是語法/設定錯誤:
+
+**UT-266**(`tests/unit/tool-specs.test.ts`,追溯 DES-222/ARCH-087/ARCH-091/REQ-201)—— 4 例、
+2 紅 2 綠。紅:`workflow_register` 的 SERVED description(`projectToolsList()` 的投影,不是原始
+`spec.description`)今天是「Register a new workflow version under a name; the caller becomes its
+owner.」,沒有 append/overwrite 字樣;`run_start` 的 SERVED description 裡 `workflow_publish`
+出現在 `{version}` **之前**(量得 index 111 < 142),教的是「先 publish」而非「先跑剛註冊的版本」。
+綠(回歸守門,本次不動):`See also: workflow_authoring_guide` 這個衍生指標,以及 `run_start`
+既有的「啟動一個 run 不回結果、要輪詢 run_status 再叫 run_result」陷阱句——兩句都已經是對的,
+留著不改。**斷言刻意放寬**:第一例原本釘死「re-register」這個字首,但 DES-222 本文的原話是
+「registering the SAME name」(沒有 re-),與 ARCH-087/TASK-227 的「re-registering」用字不同;
+若照抄 DES-222 的字面實作,原本的正則會被誤判為未過而非「測試本身釘錯字」,已改為只斷言
+`/same name/i`、`/append/i`、`/overwrite/i` 三個事實,兩種寫法的實作都能通過。
+
+**UT-267**(`tests/unit/authoring-guide.test.ts`,追溯 DES-222/ARCH-107/ADR-032/TASK-150/REQ-201)
+—— 2 例、1 紅 1 綠。紅:`buildAuthoringGuide()` 的「Registration and versioning」段落今天**直接**
+以 `LEGACY_REREGISTER` 那句開頭,量到 `workflow_register`/`run_start({name, version})`/
+`workflow_publish(release)` 三個迴圈記號在段落裡完全找不到(`indexOf` 全部 -1)。綠(回歸守門):
+既有三段例外句(LEGACY_REREGISTER、omission-does-not-release、assets-shared-across-versions)
+逐字保留這一個 assertion 本來就過——F3 只能在段落**前面**插入開場,不能刪或改後面的例外文字。
+
+**IT-172**(`tests/integration/register-version-loop.test.ts`,新檔案,追溯 DES-222/ARCH-091/
+TASK-227/REQ-201)—— 真的 MCP HTTP 打真的 `createServer()`(專屬 workRoot,不共用 os.tmpdir()
+的目錄,避免跟其他測試檔的 catalog 撞名)、真的 `WorkflowCatalog` over 真 SQLite,註冊/發佈這條路
+上沒有任何 SUT 邊界的 mock(DES-222 自己點名的真實層驗證路徑)。3 例、2 紅 1 綠。紅:量到
+`McpFacade.workflowRegister`(`src/mcp-facade.ts:350`)今天回 `result: { name, version }`,完全
+沒有 `versions`/`channels` 鍵——第一例斷言全新名稱回 `versions:['v1']` + `channels:{release:null,
+beta:null}`,第二例斷言同名字第二次註冊(中間插一次 `workflow_publish` 到 release)回
+`versions:['v1','v2']` 且 `channels.release` 仍是 `'v1'`(新版本沒有接管 release,REQ-097)——
+兩例都因 `result.versions`/`result.channels` 是 `undefined` 而斷言失敗。綠(回歸守門,本次不動):
+拒絕的註冊(復用 `tool-specs.ts` 自己宣告的 `MERMAID_REQUIRED` fixture,`v24-tool-surface.test.ts`
+早就把它釘綠)今天已經正確回 `{status:'failed', code:'MERMAID_REQUIRED'}`、沒有 `result` 鍵。
+
+**trace.py:** 1774 項 / 84 缺口——跟 F1 留下的基線(1771/84)**缺口數字一致**,而且不只是數字
+巧合:`--impact REQ-201` 把三個新項目都列進 REQ-201 的關聯清單,`dashboard.html` 自己的
+「一致性檢查結果」表(87 列)逐列檢查過,UT-266/UT-267/IT-172 一列都沒出現在裡面——三個新項目
+是**集合意義上**零新增斷鏈/孤兒/漂移,不只是總數沒變。
+
+**全迴歸 + tsc。** `npx tsc --noEmit` 乾淨無輸出。`npx vitest run`(全樹,419 個檔案):419 個檔案
+中 3 個檔案失敗、415 個過、1 個略過;3078 個測試中 **5 個失敗、3047 個過、26 個略過**——失敗的
+剛好就是本次新寫的 5 個紅斷言(UT-266 兩例、UT-267 一例、IT-172 兩例),**沒有任何既有測試被本次
+改動連帶弄紅**;略過數(26)跟 v28 收尾時的既有略過數一致,不是本次新增的略過。全程 640 秒,
+單獨重跑過 `tests/unit/tool-specs.test.ts` 確認放寬正則後那兩例仍然為同一個未實作原因紅(不是
+語法錯誤)。
+
+**REQ-201 目前仍然沒有屬於自己的 VAL。** 這是刻意的,不是漏了:依 DES-222 自己點名的「real-tier
+validation path」,IT-172 這條 integration test 本身就是這個 REQ 的真實層路徑之一(真 MCP HTTP、
+真 catalog、真 SQLite),剩下的是 Gate 7.5 驗證者對已部署引擎的 `tools/list`/`workflow_
+authoring_guide` 活體回讀——那是 F5 的工作,不在本次 test-first 範圍內。**沿用 F1 的提醒繼續往下
+傳:** `trace.py` 現在把 REQ-201 算成「已實作/已驗證/已真實驗證」,純粹是因為 ARCH-087/091/107
+追溯到它而那些 ARCH 下游(既有的)有綠測試——那仍然是**可達性,不是證據**;REQ-201 自己的紅
+測試(UT-266/UT-267/IT-172,本次新增)現在都還是紅,要等 F3(implementation)才會轉綠,F5 才會
+把 `real:` 從 `false` 翻成 `true`。
+
+`state.yaml`:`gates.tests.passed: true`(已是,本次補上 v33 F2 的完整 note)、
+`current_stage: impl`(從 `tests` 前進)、`updated: 2026-09-20`。**擁有者待決:0 條。**
+
+## 2026-09-20 — v33 / F3(GREEN→REFACTOR):REQ-201 的三個紅測試轉綠
+
+**Gate 6(implementation,fix mode)PASSED。** 派工影響閉包不變:`{REQ-201, REQ-117, REQ-116,
+ARCH-107, ADR-032, TASK-150, IMPL-207}`。依 DES-222 的簽名寫最小實作,一次到位轉綠 F2 的三個紅:
+
+**IMPL-338**——四處改動:(1) `McpFacade.workflowRegister`(`src/mcp-facade.ts`)在 `insertVersion`
+成功之後加一次 `catalog.resolveDetail(name, {version})`,只解構 `versions`/`channels` 兩個 key
+放進 `result`,`WorkflowDetail` 其餘欄位(尤其 `script`)在解構處就丟棄。這個讀取刻意放在補償用
+的內層 `try/catch`**外面**——原設計是「`insertVersion` 失敗就釋放剛 claim 的 trigger」,若新讀取
+包在同一個 catch 裡,一次讀取失敗會把已提交的 insert 誤判成要放行 trigger(DES-222 明文的邊界);
+改法是 `insertVersion` 的回傳先落地到外層變數,catch 只包 `insertVersion` 本身,`resolveDetail`
+移到 catch 之後、仍在整體的外層 try 內,失敗一樣走既有的 `{status:'failed', code, error}` 信封。
+`RegistrationCatalog` 這個既有結構化 port 只加一個型別簽名,`WorkflowCatalog` 本體零改動
+(REQ-201 自己的不在範圍內清單)。(2)/(3) `tool-specs.ts` 純文字:`workflow_register` 說明加
+「同名再註冊=疊新版本(v2、v3…)、不覆蓋;不同用途才換名稱」;`run_start` 說明把 `{version}`
+(剛註冊、要迭代)搬到 `workflow_publish`(穩定後)前面,既有陷阱句原文保留。(4)
+`authoring-guide.ts` 的 `Registration and versioning` 段落開頭插入新的正常迴圈叙述,原本三段
+例外逐字保留在後;同一改動下跑 `npm run gen:authoring` 重新產生 `docs/AUTHORING.md`,UT-160 的
+byte lock 保持綠。
+
+**測試結果。** `npx vitest run tests/integration/register-version-loop.test.ts tests/unit/
+tool-specs.test.ts tests/unit/authoring-guide.test.ts tests/unit/authoring-md-generated.test.ts
+tests/unit/tool-schema-drift.test.ts tests/integration/guide-examples-register.test.ts` → 6 檔
+78 例全綠。`npx tsc --noEmit` 乾淨無輸出。`git diff --stat` 只列 TASK-227 `files:` 清單裡的
+六個檔案(`tests/integration/register-version-loop.test.ts` 是 F2 已建立的新檔,本次未再改動)
+——符合 TASK-227 dod 的「不動清單外的檔案」要求。**全迴歸**:`npx vitest run`(全樹 419 個檔案)
+418 個檔案過、1 個略過,3052 個測試過、26 個略過,耗時 634 秒——略過數與 F2 收尾時逐位元組一致,
+零新增略過,零既有測試被本次改動連帶弄紅。
+
+**trace.py:** 1775 項 / 83 缺口(F2 基線 1774/84)——少一個缺口,是 TASK-227 狀態從 draft 翻成
+done、`IMPL-338` 補上後,「TASK-227 未實作」那條缺口關閉;逐項核對(`python3 trace.py --impact
+REQ-201` 的關聯清單 + 直接呼叫 `analyze()` 篩選 IMPL-338/TASK-227/DES-222/REQ-201/UT-266/UT-267/
+IT-172 七個 id)確認這七項一個都沒出現在缺口列表裡——零新增斷鏈/孤兒/漂移,REQ-201 的收斂閉包
+乾淨。
+
+**沿用 F1/F2 的提醒繼續往下傳(未關閉,留給後續階段):** REQ-201 自己的真實層驗證
+(Gate 7.5 對已部署引擎的 `tools/list`/`workflow_authoring_guide` 活體回讀)還沒跑,`08-validation.md`
+還沒有 REQ-201 自己的 VAL 列——這是 F5 的工作,本次(F3)只到「三個紅測試轉綠」。
+
+`state.yaml`:`gates.impl.passed: true`(本次補上 v33 F3 完整 note)、`current_stage: verification`
+(從 `impl` 前進——F4 全迴歸已在本次 GREEN 收尾一併跑過,結果併入上面的全迴歸段落)、
+`updated: 2026-09-20`。TASK-227 `status: draft` → `done`。**擁有者待決:0 條。**
+
+## 2026-09-20 — v33 / F4(Gate 6.5+7,verifier,fix-mode):simplify + 全迴歸收尾
+
+**Gate 6.5+7(verifier)PASSED。** 影響閉包不變:`{REQ-201, REQ-117, REQ-116, ARCH-107, ADR-032,
+TASK-150, IMPL-207/IMPL-338}`。
+
+**(0) Simplify。** 用 Skill 呼叫 `/simplify`;Agent fan-out 在這個 context 不可用,單一輪內就四個
+角度(reuse/simplification/efficiency/altitude)過一遍 F1~F3 的完整 diff(`src/mcp-facade.ts` 的
+`resolveDetail` 讀取+信封組裝、`src/tool-specs.ts`/`src/authoring-guide.ts` 的說明文字)。**結論:
+零修改,誠實的結果**——`resolveDetail` 重用既有 DES-111 方法(同檔已有兩處呼叫點,非新造);
+`let version` 提升到 try 外面是讓讀取留在補償用 try/catch 之外的最小寫法;沒有多餘 I/O;
+DES-222 的邊界(commit 之後的讀取失敗不得釋放已 claim 的 trigger)落在正確的深度。`versionNum`
+的字串解析重複(這裡 + `run-manager.ts` 兩處)是本次改動之前就有的,不在這次的 blast radius 內。
+沒有動 `06-impl-log.md` 的任何 `IMPL-*`(沒有程式碼變動)。
+
+**(1) 全迴歸。** `npx vitest run`(全樹 419 個檔案,未帶任何測試篩選旗標)→ **418 個檔案過、1 個略過
+(419)、3052 個測試過、26 個略過(3078)、0 個失敗**——跟 F3 GREEN 收尾自己的數字逐位元組一致,
+F1→F4 全程零回歸。`npx tsc --noEmit` 乾淨。單獨重跑 `register-version-loop.test.ts` +
+`tool-specs.test.ts` + `authoring-guide.test.ts` + `authoring-md-generated.test.ts`(59 例全綠)後,
+把 `05-tests.md` 的 **UT-266/UT-267/IT-172** 從 `red/fail` 翻成 `green/pass`。**新增 VAL-218**
+(traces REQ-201/DES-222,tier acceptance,`real: false`)——DES-222 自己在「real-tier validation
+path」欄點名 IT-172 就是 REQ-201 的真實層路徑,Gate 7.5 對已部署引擎的活體 `tools/list` +
+`workflow_authoring_guide` 讀回是 F5 的工作;沿用 VAL-151/VAL-128(REQ-116/REQ-117)同一慣例——
+這裡是 in-process vitest 的樓層,`08-validation.md` 的新 VAL 項才是 real-tier 證據的落點。
+
+**(1b) 覆蓋率。** 用 `npm install --no-save @vitest/coverage-v8@1.6.1`(`coverage/` 已在
+`.gitignore`)。`npx vitest run tests/unit tests/integration --coverage --coverage.include='src/**'`
+加上 IMPL-296 自己訂的十個瀏覽器限定 `ui/*.js` 排除旗標(逐檔一個 `--coverage.exclude=`)→
+**95.87% overall lines**(較 F3 前基準的 95.84% 持平微升),遠高於 90% 門檻。三個本次觸碰的檔案:
+`mcp-facade.ts` 95.64%(未覆蓋的 785/801/820-839 是既有的 `workspaceDelete`/`workspaceList` 分支,
+離本次改的 `workflowRegister`(約 341-364 行)很遠)、`tool-specs.ts` 97.81%(未覆蓋的 202-210 是
+既有的 `listMode`/`deleteMode` 輔助函式,不是本次改的說明字串)、`authoring-guide.ts` 99.62%
+(未覆蓋的 353-355 行,既有、無關)。沒有新增任何 per-function 缺口。module_check:dormant
+(沒有任何 ARCH 宣告 `build:`)。
+
+**(2) 沒有殘留紅。(3)** `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`:
+**1776 項 / 83 缺口**(F3 是 1775/83)——多的那一項就是新增的 VAL-218,缺口數沒有增加(逐一過濾
+`analyze()` 的缺口清單找 VAL-218/DES-222/UT-266/UT-267/IT-172,零命中,確認 0 新增斷鏈/孤兒/
+漂移)。缺口嚴重度分佈:**15 HIGH / 36 MID / 32 LOW**。15 個 HIGH 全是斷鏈——`IMPL-303..311/323`
+與 `UT-264/265` 追溯到 `01-requirements.md` 裡不存在的 `REQ-144..152/186`,在 v33 F1 之前就存在
+(F1/F2 自己的紀錄已經說「0 新增斷鏈」),跟 REQ-201/DES-222 無關,不在本次修復的影響閉包內,本次
+不動。另外照 v28/v28b「兩個 tsc 設定都要跑」的先例補跑 `npx tsc --noEmit -p tsconfig.server.json`
+——乾淨。VAL-218 也對 `08-validation.md` 查過 id 是否撞號(那邊最大是 VAL-217)——沒有撞。**(3b)** `solid_check`:72 個模組,**0 HIGH / 0 mid / 10 low**,跟既有的
+未認領檔案警告數一致,沒有變。**(4)** `determinism_check src --check`:exit 0,乾淨。**(5)**
+`TZ='Pacific/Kiritimati'` 重跑本次delta的 4 個測試檔(59/59 全綠、0 個翻紅)——依 v27c/v28b 的
+先例,小範圍 fix-mode 迭代且沒有新的時鐘/亂數 seam 時,時間旅行檢查可以只跑 delta 範圍。
+**(6)** 沒有新 seam——`resolveDetail` 讀的是 `this.runManager.catalog`(轉型成結構化的
+`RegistrationCatalog` port),跟 `insertVersion`/`validateRegistration` 已經在用的同一個真實
+catalog 實例;`new McpFacade(...)` 在生產碼裡只有一個建構site(`server.ts:832`),而且就是真的
+`WorkflowCatalog` over 真 SQLite,IT-172 透過真的 `createServer()` 端到端走過這條路。**(7)**
+IT-172 本身就是這次改動的 real-dependency smoke——真 MCP HTTP 打真 `createServer()`、真
+`WorkflowCatalog` over 真 SQLite,註冊/發佈這條路徑上沒有任何 SUT 邊界的 mock;本次改動沒有碰到
+其他外部整合。
+
+`state.yaml`:`gates.verification.passed: true`(本次補上 v33 F4 完整 note)、
+`current_stage: validation`(從 `verification` 前進)、`updated: 2026-09-20`。**下一步:**F5
+(對 REQ-201 做真實驗證——Gate 7.5 對已部署引擎的活體 `tools/list`/`workflow_authoring_guide`
+讀回)再 F6(review-lite)。**擁有者待決:0 條。**
+
+## 2026-09-20 — v33 / F5(Gate 7.5,validator,fix-mode):REQ-201 真實驗證,通過
+
+**Gate 7.5(validator)PASSED。** 影響閉包不變:`{REQ-201, REQ-117, REQ-116, ARCH-107, ADR-032,
+TASK-150, IMPL-207/IMPL-338}`;本次真正改行為的只有 REQ-201。
+
+**開機。** 用文件化的一鍵部署啟動一個 scratch 實例(不動 production——production 的
+`rwe.service`(port 8899,跑 `v0.20.0-406-gc48fe08`)全程確認未動,依本迭代自己的擁有者裁決
+「不重啟 production 服務」):
+```
+RWE_CONFIG_PATH=/home/user/.local/share/rwe-val33/rwe.config.json \
+  RWE_BIND=127.0.0.1 RWE_PORT=8791 ./deploy.sh --background
+```
+步驟 1-5 皆原樣跑完,健康檢查一次過。
+
+**REQ-201 真實層證據(VAL-219,real:true,pass)。** 真 MCP HTTP 打這個部署好的實例、真
+`WorkflowCatalog` over 真 SQLite,沒有 mock 任何 SUT 邊界:
+- 全新名稱註冊 → `versions:["v1"]`/`channels:{release:null,beta:null}`;
+- 發布 v1 到 release 後、同名再註冊 → `versions:["v1","v2"]`、`channels.release` 仍是 `"v1"`
+  (新版本沒有接管 release);
+- 缺 mermaid 的註冊被拒(`MERMAID_REQUIRED`),回應沒有 `result` 鍵。
+- 活體 `tools/list` 的 `workflow_register`/`run_start` 說明、活體 `workflow_authoring_guide`
+  回傳的「Registration and versioning」開場段,逐字對上 REQ-201 五組 Given/Then。
+針對性重跑 `register-version-loop.test.ts`+`tool-specs.test.ts`+`authoring-guide.test.ts`
+(3 檔/58 例全綠);`npx tsc --noEmit` 乾淨(全迴歸已在 F4 跑過,不重跑)。
+
+**REQ-116/REQ-117 煙霧再確認(VAL-220,real:true)。** 兩者列進閉包只因
+`tool-specs.ts`/`authoring-guide.ts` 是它們的實作面;同一個活體實例上確認 `tools/list` 仍是
+35 個工具、guide 完整可讀——既有 real:true 證據(VAL-190/VAL-192,冷模型第一次就註冊/發布/
+執行成功)未被這次純文字改動觸及,原樣有效,不重跑完整協議。
+
+**設定檔同步檢查。** 本迭代沒有改任何 config/settings 檔(雙向確認);`rwe.config.json`/
+`.example`/DEPLOY §1 設定總表都不需要動。
+
+**文件現況修正。** README.md「使用範例」§1 的 `workflow_register` 回應字面早在 v33 之前就已
+過時(缺 `runId`),v33 之後又多缺 `versions`/`channels`——改成這次活體實測的真實輸出,並加一
+行說明這兩個新欄位的意思;沒有留下「以前 X / 現在 Y」的對照,也沒有在 DEPLOY.md 找到需要同動
+的另一處。
+
+**trace --check。** 1778 個項目/83 個缺口;直接查 `analyze()` 確認 REQ-201/REQ-116/REQ-117
+三者的 `未真實驗證`/`未驗證` 缺口數皆為零。83 個缺口從本次 F1 基準(1771/84)就已穩定,
+F3 起數字沒再變過(1775/83)。修正:17 個 `未驗證`(REQ-153..169)直接查 `analyze()` 確認
+都在 `implemented` 集合裡——不是「從未實作」,是有 IMPL 但沒有任何 UT/IT/VAL 追溯回去;
+來源是 v29d/v29e 那組儀表板稽核待辦(另一條無關的功能線,跟本次無關)。15 個 `斷鏈`(HIGH)
+是 `IMPL-303..311/323`+`UT-264/265` 追溯到 `REQ-144..152/186`——這些編號在 `01-requirements.md`
+裡根本不存在,同樣是 v29 那個年代留下的斷鏈債務。其餘(30 漂移含一個本輪才浮現的
+`DES-157`→v33 落後訊號,涉及 7 個既有測試項、皆非本輪新增項目;+19 TDD+2 未實作)
+是延續多輪的既有債務,起源 v29–v32,非本輪(v33)引入。完整分解見 08-validation.md 新增的
+trace 段落。Exit code 1,依這份 ledger 一貫的慣例(v26/v27/v28/v28c 每一輪在只剩既有債務時
+都是這樣收)。**字面上**驗收契約的 Exit Gate #4(「任何 REQ 都不得有 未真實驗證/未驗證 缺口」)
+沒有被滿足——這批既有/範圍外缺口原文照登進 needs_clarification,不在此自行裁定,跟前幾輪
+(v26/v28/v28c)遇到同一張力時的處理方式一致。scratch 實例與其 workRoot 已清除,production 全程未動。
+
+**狀態更新。** `state.yaml`:`gates.validation.passed: true`(補上完整 v33 F5 note)、
+`current_stage: review`(從 `validation` 前進)、`updated: 2026-09-20`。**下一步:**Gate 8
+(review)。**擁有者待決:0 條。**

@@ -172,6 +172,8 @@ Every `seed`/`seedManifest`/`seedManifestRef` element that does not match its de
 
 ## Registration and versioning
 
+The normal loop: `workflow_register` a script under a name, `run_start({name, version})` the version it just returned to iterate, and once it is stable `workflow_publish(release)` it — registering the same name again appends a new version and never overwrites an existing one. The rest of this section is exceptions, not the common path.
+
 Registering a script that predates the v24 contract (or was never migrated) resolves `runnable:false` with `runnableReason: LEGACY_REREGISTER` — re-register it under the current contract; there is no legacy-resolution ladder. Omitting a currently-registered trigger from a new version does not release it (omission does not release) — deregister the trigger explicitly if you mean to stop it. A `once` trigger is consumed on its firing attempt — whether that attempt succeeds or is refused — and will not fire again; a refused `cron` firing instead gets a fresh future `nextFire` and tries again next time. Assets (skills/mcp) registered under an owner are shared across every version of that workflow name, not pinned to the version that first declared them.
 
 ## Authoring rules this engine enforces (refused with this code)

@@ -13437,3 +13437,78 @@ looks like coverage」)在本 ledger 年度的**第四例**。
 
 **這只是 c1 範圍內撞到的那一列;SPEC_ROWS 與 VAL-208 的地面色與色階重算是 c2 的獨立 commit
 (C5),不在此處。**
+
+### UT-266 — `tool-specs.test.ts`: `workflow_register`/`run_start` 的 SERVED description 要教版本迴圈
+- **status:** green
+- **traces:** DES-222, ARCH-087, ARCH-091, REQ-201
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v33
+
+Mock policy(unit):對 `projectToolsList()` 的純資料斷言,無 I/O。
+
+紅的理由(量測,`src/tool-specs.ts:216,395`):`workflow_register` 的 description 今天是
+「Register a new workflow version under a name; the caller becomes its owner.」——沒有
+append/overwrite 字樣;`run_start` 的 description 裡 `workflow_publish` 出現在 `{version}`
+**之前**(index 111 < 142),教的是「先 publish」而不是「先跑剛註冊的版本」。4 個新斷言,
+2 紅 2 綠(「See also: workflow_authoring_guide」的衍生指標與 `run_start` 既有的
+no-result trap 句子——這兩句本來就在,是回歸守門,不是本次要修的紅)。
+
+### UT-267 — `authoring-guide.test.ts`: `Registration and versioning` 段落要以正常迴圈開頭
+- **status:** green
+- **traces:** DES-222, ARCH-107, ADR-032, TASK-150, REQ-201
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v33
+
+Mock policy(unit):對 `buildAuthoringGuide()` 純函式輸出的文字斷言,無 I/O。
+
+紅的理由(量測,`src/authoring-guide.ts:757-767`):該段落今天直接以 `LEGACY_REREGISTER`
+那句開頭——`workflow_register`/`run_start({name, version})`/`workflow_publish(release)` 三個
+迴圈記號在段落裡完全找不到(`indexOf` 回傳 -1)。第二個 it(既有三段例外句逐字保留)
+本來就綠,是回歸守門:F3 只能在段落**前面**插入開場,不能刪掉或改寫後面的例外文字。
+
+### IT-172 — `register-version-loop.test.ts`:`workflow_register` 的成功回應帶 `versions`/`channels`
+- **status:** green
+- **traces:** DES-222, ARCH-091, TASK-227, REQ-201
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v33
+
+Mock policy(integration,DES-222 自己點名的真實層驗證路徑):真的 MCP HTTP 打真的
+`createServer()`(專屬 workRoot),真的 `WorkflowCatalog` over 真 SQLite——註冊/發佈這條路徑上
+沒有任何 SUT 邊界的 mock。
+
+紅的理由(量測,`src/mcp-facade.ts:350`):`McpFacade.workflowRegister` 今天回
+`result: { name, version }`,沒有 `versions`、沒有 `channels` 鍵。3 個案例,2 紅 1 綠——
+「拒絕的註冊(MERMAID_REQUIRED)仍答 `{status:'failed', code}`、沒有 `result` 鍵」這條本來就綠
+(既有行為,不在本次修改範圍內,是回歸守門而非本次要修的紅)。
+
+**F4(verifier,v33)綠的理由:** F3 落地 IMPL-338 後重跑本檔,3 例全綠(`npx vitest run
+tests/integration/register-version-loop.test.ts` → 3/3 pass);本次全迴歸(419 個測試檔,見
+`gates.verification.note`)重新確認同一結果,沒有連帶弄紅其他既有案例。
+
+### VAL-218 — REQ-201: 冷客端從回應與說明看見版本迴圈,不必讀 prose
+- **status:** green
+- **traces:** REQ-201, DES-222
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v33
+
+Proven by(DES-222 自己點名的 real-tier validation path,見該項「real-tier validation path」欄):
+IT-172(真 MCP HTTP 打真 `createServer()`、真 `WorkflowCatalog` over 真 SQLite——`workflow_register`
+成功回應帶 `versions`/`channels`,同名再註冊疊版本且 `channels.release` 不被新版本接管)+ UT-266
+(`tools/list` 裡 `workflow_register`/`run_start` 的 SERVED description 教版本迴圈)+ UT-267
+(`buildAuthoringGuide()` 的 `Registration and versioning` 段落以正常迴圈開頭,既有三段例外原文保留,
+UT-160 的 byte lock 未轉紅)。三者本次(F4)全綠,見上方各項紀錄與這次全迴歸(419 檔/3078 例,
+0 新增失敗)。
+
+`real:` 留 `false` ——這裡是 in-process vitest 的樓層,跟 VAL-151/VAL-128(REQ-116/REQ-117)同一
+慣例:DES-222 自己點名 Gate 7.5 要對**已部署引擎**做一次活體 `tools/list` + `workflow_authoring_guide`
+讀回,確認 UT-266/UT-267 斷言的三段文字在真正上線的伺服器上也看得到(不只是建置產物裡)。那一輪
+real-tier 證據會落在 `08-validation.md` 的新 VAL 項(F5 的工作,本項的 `real` 屆時仍維持 `false`,
+如 VAL-151 的慣例)。

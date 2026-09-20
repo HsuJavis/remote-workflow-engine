@@ -230,8 +230,10 @@ export ANTHROPIC_API_KEY=sk-ant-...                  # 用 API key 時
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_register","arguments":{"name":"greet","script":"return {answer:42,tags:[\"a\",\"b\"]}","mermaid":"graph LR;\nout[\"return a fixed result\"]"}}}'
-# -> {"result":{"content":[{"type":"text","text":"{\"status\":\"completed\",\"version\":1,\"result\":{\"name\":\"greet\",\"version\":\"v1\"}}"}]}}
-# 每次 workflow_register 都是新版本（v1、v2、…），既有版本不會被覆蓋或刪除。
+# -> {"result":{"content":[{"type":"text","text":"{\"runId\":\"\",\"status\":\"completed\",\"version\":1,\"result\":{\"name\":\"greet\",\"version\":\"v1\",\"versions\":[\"v1\"],\"channels\":{\"release\":null,\"beta\":null}}}"}]}}
+# 每次 workflow_register 都是新版本（v1、v2、…），既有版本不會被覆蓋或刪除；
+# result.versions 是這個名稱目前所有版本、result.channels 是各頻道（release/beta）目前指到哪個版本
+# （未發布過的頻道是 null）——第二次用同一個名稱註冊時，這兩個欄位就是「疊版本、不覆蓋」的直接證據。
 
 # 第二步：把該版本發布到 release 頻道（沒發布過的頻道跑不了，見下方 CHANNEL_UNPUBLISHED）
 curl -s -X POST http://127.0.0.1:8787/mcp \

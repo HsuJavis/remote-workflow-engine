@@ -2636,7 +2636,7 @@ AUTHORING.md「Registration and versioning」      ← 只講 legacy / trigger /
 四處都指向 REQ-117(冷模型只讀 schema 與 guide 就要第一次做對)——按 REQ-117 自己的驗收文字,
 「客端做錯的每一步都記為**文件缺陷**,不是模型的失敗」。本條就是那個缺陷的登記。
 
-### REQ-201 (v33) — 註冊的回應與說明要讓冷客端看見版本迴圈
+### REQ-201 — 註冊的回應與說明要讓冷客端看見版本迴圈 (v33)
 
 - **status:** draft
 - **traces:** REQ-117, REQ-116, REQ-096, REQ-097

@@ -8643,3 +8643,38 @@ runs, describe, lang)`,我的正則沒吃 `async function`。全域只有我自�
 
 判準分兩層:單元層斷言 `stats[i].meta` 的存在與缺席,瀏覽器層斷言它真的畫出來 ——
 F13 本質上是渲染問題,單元層看不到 DOM。
+
+### IMPL-338 — REQ-201:註冊回應帶 `versions`/`channels`;兩段說明與 guide 段落教版本迴圈
+
+- **status:** done
+- **traces:** TASK-227, DES-222, ARCH-091, ARCH-087, ARCH-107, ADR-032, REQ-201
+- **greens:** UT-266, UT-267, IT-172
+- **files:** src/mcp-facade.ts, src/tool-specs.ts, src/authoring-guide.ts, docs/AUTHORING.md
+- **commit:** pending (working tree, uncommitted per dispatch — 05-tests.md's UT-266/UT-267/IT-172 status/result left `red`/`fail` as F2 wrote them; per v28b's convention this ledger's verifier flips test status at Gate 6.5+7, not the implementer)
+- **iter:** v33
+- **note:** 四處最小改動,逐一對應 DES-222 的簽名:(1) `McpFacade.workflowRegister`——
+  `insertVersion` 成功「之後」加一次 `catalog.resolveDetail(name, {version})` 讀取,只解構
+  `versions`/`channels` 兩個 key(`WorkflowDetail` 其餘欄位、尤其 `script`,在解構處就丟棄);
+  這個讀取刻意放在補償用的內層 `try/catch` **外面**——原本 `insertVersion` 那個 catch 是「失敗
+  就釋放剛 claim 的 trigger」,若把新讀取包在裡面,一次讀取失敗會誤放行已提交的 trigger
+  claim(DES-222 明文的邊界),改法是把 `insertVersion` 的回傳先落地到外層變數,catch 只包
+  `insertVersion` 本身,`resolveDetail` 移到 catch 之後、仍在整體的外層 try 內,失敗一樣走
+  既有的 `{status:'failed', code, error}` 信封。`RegistrationCatalog` 這個既有的結構化 port
+  只加一個型別簽名,`WorkflowCatalog` 本體零改動(REQ-201 自己的不在範圍內清單)。
+  (2)/(3) `tool-specs.ts` 純文字:`workflow_register` 說明加一句「同名再註冊=疊新版本
+  (v2、v3…)、不覆蓋;不同用途才換名稱」;`run_start` 說明把 `{version}`(剛註冊、要迭代)搬到
+  `workflow_publish`(穩定後)前面,原有的「啟動不回結果、要輪詢 run_status 再叫 run_result」
+  陷阱句原文保留。(4) `authoring-guide.ts` 的 `Registration and versioning` 段落開頭插入
+  一段新的正常迴圈叙述(`workflow_register` → `run_start({name, version})` → 迭代 →
+  `workflow_publish(release)`),原本三段例外(`LEGACY_REREGISTER`、omission-does-not-release、
+  assets-shared-across-versions)逐字保留在後;同一改動下跑 `npm run gen:authoring` 重新產生
+  `docs/AUTHORING.md`,UT-160 的 byte lock 保持綠。
+  `git diff --stat` 只有 TASK-227 `files:` 清單裡的檔案改動(加上 F2 已寫入的三個測試檔本身
+  不動,`tests/integration/register-version-loop.test.ts` 是新檔早已存在於工作樹)。
+  `npx tsc --noEmit` 乾淨;`npx vitest run`(全樹 419 個檔案):418 過 + 1 略過,3052 個測試過、
+  26 個略過——與 F2 收尾時的略過數一致,零新增略過、零既有測試被牽連轉紅。
+- **refactor:** GREEN 之後檢視過 diff——`insertVersion` 的回傳先落地到外層 `let version` 變數、
+  補償 `try/catch` 只包 `insertVersion` 本身、`resolveDetail` 移到 catch 之後,這個重排「就是」
+  refactor 本身(不是先寫進內層再搬出來兩步),因為 DES-222 的邊界（讀取失敗不得誤放行 trigger）
+  一開始就決定了 try/catch 的形狀,不存在「先求綠、再搬」的中間態需要再跑一次測試確認。四處
+  文字類改動（兩個 description、一段 guide 開場）沒有重複或可抽取的結構,檢視後沒有東西要再動。

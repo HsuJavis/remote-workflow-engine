@@ -289,3 +289,43 @@ describe('the guide states the cache-write multiplier it bills (UT-221, defect D
     expect(text).toMatch(/upper bound/i);
   });
 });
+
+// UT-267 (v33, REQ-201, TASK-227, DES-222, ARCH-107, ADR-032, TASK-150/DES-157): the "Registration
+// and versioning" section taught ONLY the three exceptions (LEGACY_REREGISTER, omission-does-not-
+// release, assets-shared-across-versions) and never the normal loop, so a cold client that had read
+// the whole guide still treated `release` as the only way to run what it had just registered. The
+// section must now OPEN with the loop — `workflow_register` → `run_start({name, version})` →
+// iterate → `workflow_publish(release)` — with the three exception paragraphs kept VERBATIM after
+// it. Written test-first (Gate 5, RED): today the section opens directly with the
+// `LEGACY_REREGISTER` sentence — confirmed by reading src/authoring-guide.ts:757-767.
+describe('the Registration and versioning section opens with the normal loop (UT-267, DES-222)', () => {
+  const text = buildAuthoringGuide(CEILINGS);
+
+  function section(): string {
+    const start = text.indexOf('## Registration and versioning');
+    expect(start, 'the "Registration and versioning" section is missing entirely').toBeGreaterThanOrEqual(0);
+    const next = text.indexOf('\n## ', start + 1);
+    return text.slice(start, next === -1 ? text.length : next);
+  }
+
+  it('opens with the four-step loop, in order, before the LEGACY_REREGISTER exception paragraph', () => {
+    const sec = section();
+    const legacyIdx = sec.indexOf('LEGACY_REREGISTER');
+    expect(legacyIdx, 'LEGACY_REREGISTER sentence missing — it must be kept, not deleted').toBeGreaterThan(0);
+    const loopTokens = ['workflow_register', 'run_start({name, version})', 'workflow_publish(release)'];
+    let cursor = -1;
+    for (const token of loopTokens) {
+      const idx = sec.indexOf(token);
+      expect(idx, `"${token}" missing from the opening of the Registration and versioning section`).toBeGreaterThan(cursor);
+      expect(idx, `"${token}" must appear BEFORE the LEGACY_REREGISTER exception paragraph (the loop is the opening, not an afterthought)`).toBeLessThan(legacyIdx);
+      cursor = idx;
+    }
+  });
+
+  it('the three exception sentences remain, verbatim, after the loop (regression guard — nothing deleted)', () => {
+    const sec = section();
+    expect(sec).toMatch(/LEGACY_REREGISTER/);
+    expect(sec).toMatch(/omission does not release/i);
+    expect(sec).toMatch(/shared across every version/i);
+  });
+});

@@ -755,7 +755,11 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
   parts.push(
     section(
       'Registration and versioning',
-      'Registering a script that predates the v24 contract (or was never migrated) resolves ' +
+      'The normal loop: `workflow_register` a script under a name, `run_start({name, version})` the ' +
+        'version it just returned to iterate, and once it is stable `workflow_publish(release)` it — ' +
+        'registering the same name again appends a new version and never overwrites an existing one. ' +
+        'The rest of this section is exceptions, not the common path.\n\n' +
+        'Registering a script that predates the v24 contract (or was never migrated) resolves ' +
         '`runnable:false` with `runnableReason: LEGACY_REREGISTER` — re-register it under the current ' +
         'contract; there is no legacy-resolution ladder. Omitting a currently-registered trigger from a ' +
         'new version does not release it (omission does not release) — deregister the trigger ' +
