@@ -11497,3 +11497,140 @@ blocking_findings:
   - "F2 — rtm.md:195-196（REQ-116 與 REQ-117 兩列的驗證欄）: 兩列都不含本輪新增的 VAL-230 與 VAL-231，而 VAL-231 自己明文『本列取代 VAL-190/192 作為 REQ-117 的現行證據』，所以 ledger 的人類可讀追溯矩陣在證據剛被取代的那兩條 REQ 上仍只指向已宣告過時的舊列；trace.py 走各文件的 traces: 欄而非 rtm.md，因此這條不會產生缺口、也沒有任何機械檢查會抓到（上一輪 validator 補了 REQ-202/203/204 三列卻漏了這兩列，正是這個結構的必然結果）→ 修好的樣子：把 VAL-230、VAL-231 加進 rtm.md REQ-116 與 REQ-117 兩列的驗證欄，兩格編輯"
 owner_decisions: []
 ```
+
+---
+
+## v34 GATE 8 — 重審並關閉 / RE-REVIEW AND CLOSE (2026-09-21, reviewer)
+
+**判定:`passed: true`,`send_back: []`,v34 關閉。**
+上一段(關閉確認回合)送回 validation 的兩條 MED 已於 `088bd23` 修復,**兩條都重新在產物上獨立覆核
+通過**,且該 commit **沒有在鏈上鑄造任何東西**(下 §C 逐條證明)。
+
+### A. F1 — DEPLOY.md 回到現在式:**關閉**
+
+`DEPLOY.md:165-183` 現文已無我上一輪點名的三項:
+
+| 上一輪的問題 | 現況 |
+|---|---|
+| 一句以現在式讀為假的陳述(「下面第3步印出來的 mermaid 原文對不上…」) | **消失**。現文是正向的現在式事實:「下面印出來的範例腳本與 mermaid 是照著抄就能通過 `workflow_register`、`run_start` 跑到 `completed` 的版本」——與事實相符(第 3 步印的就是註冊收下的那份,上一段已逐字比對) |
+| runId / 337 秒 / implementer 11 秒等驗證遙測 | **消失**。`grep` 全檔:無 `runId`、無 `337`、無 `燒過`、無 `evidence/` 指標 |
+| 反向連進 ledger 失敗史(「同日稍早一次試跑…見 evidence/…D1」) | **消失**,改寫成純操作事實:「預設 `default` 別名指向本機 Ollama,沒跑 Ollama 的機器上那次 run 會整輪逾時」——這是讀者現在會遇到的狀況,不是某次試跑的往事 |
+
+全檔重掃 `v34 之後`/`v34 機制`/`以前…現在`/`已經改成`:**零命中**。
+
+**回答 orchestrator 的提問:保留的那兩句規則陳述,我不讀成歷史,它們應該留下。**
+> 改這張圖的時候有兩條規則會咬人:stadium 節點只要對應的 `agent()` 宣告了 `allowedTools`,節點就
+> 必須帶第三段 `tools: …`(否則 `TOOLS_MISMATCH`);分屬不同 `subgraph` 的兩個 agent 之間必須有
+> 一條顯式的邊(否則 `EDGE_MISMATCH`)。
+
+判準是**這句話描述的是什麼的狀態**:描述「引擎現在怎麼判斷」的是規則,描述「這份文件/某次試跑
+曾經發生什麼」的是歷史。這兩句是條件句 + 現在式 + 引擎現行拒絕碼,**沒有任何時間指涉、沒有提到
+任何一次過去的嘗試、也沒有說這份文件改過**;拿掉它們,下一個改圖的人就得靠撞牆重新學一次。
+手冊該有的正是這種內容。**留。**
+
+### B. F2 — rtm.md 欄位歸位:**關閉(我自己拆欄驗的,不是讀那句話)**
+
+依 orchestrator 的提醒,**沒有採信「已修正歸位」這句陳述**,而是把表格照 `|` 拆欄、對齊第 78 行的
+真表頭 `['REQ','Title','ARCH','DES','TASK','IMPL','VERIFICATION','Real-verified']` 逐格檢查:
+
+| 列 | 欄數 | VAL-229 | VAL-230 | VAL-231 | `Real-verified` 欄 |
+|---|---|---|---|---|---|
+| REQ-116(`rtm.md:195`) | 8(= 表頭 8) | ✅ 在 VERIFICATION 欄 | ✅ 在 VERIFICATION 欄 | —(不適用) | `✅`,乾淨 |
+| REQ-117(`rtm.md:196`) | 8(= 表頭 8) | —(見下) | ✅ 在 VERIFICATION 欄 | ✅ 在 VERIFICATION 欄 | `✅`,乾淨 |
+
+**機械斷言:兩列的 `Real-verified` 欄都不含任何 `VAL-` 字串**——第一次那個「接在 `✅` 後面」的
+錯位確實已經修好,不是靠自述,是拆欄拆出來的。REQ-117 未列 VAL-229 是**正確的**:VAL-229 正是那列
+自承無法滿足 REQ-117 的 carry-forward,取代它的是 VAL-231。
+
+### C. `088bd23` 在鏈上鑄造了什麼:**除了 v35 自己的六條 REQ,什麼都沒有**
+
+乾淨樹量測(`git archive 088bd23` → repo 外 scratch;全程未動 checkout/restore/stash):
+
+| 量測點 | items | gaps |
+|---|---|---|
+| v33 收尾 `1ac057d` | 1778 | 77 |
+| v34 內容 `f1b44be` | 1830 | 77 |
+| ledger 現頭 `088bd23` | **1836** | **89** |
+
+`f1b44be` → `088bd23` 的 gap 集合逐條 diff,**整個差異只有 12 行**:
+`mid|未實作|REQ-205..210` 六條 + `mid|未驗證|REQ-205..210` 六條。**F1/F2/REQ-209 三項修復本身
+鑄造了 0 個工作項、0 個缺口**(DEPLOY.md 不在 ledger 掃描範圍;rtm.md 不產生工作項;REQ-209 是
+既有 v35 列的原地擴充)。
+
+**那 12 條缺口的正確歸屬(寫在這裡,免得未來的稽核把它讀成 v34 的債)**:
+REQ-205..210 是 **v35 的 Gate 1 產出**,剛澄清完的需求本來就還沒有 IMPL、也還沒有測試,
+`未實作`+`未驗證` 正是一條 Gate 1 需求在 Gate 2 之前**應該**呈現的樣子。它們會在 v35 自己的
+Gate 2→7.5 關掉。**不是 v34 引入的缺口,也不是債。**
+
+### D. 裁決:orchestrator 沒有照我建議做的兩件事
+
+上一輪我把三個工作樹髒檔標成「請勿 commit」。orchestrator commit 了其中兩項並要求我裁決。
+
+1. **v35 草稿(REQ-205..210)入版控 —— 我撤回原建議,orchestrator 的判斷是對的,而且更安全。**
+   我當時標「請勿 commit」的理由是**我分不出那是有意的產出還是誤寫**——一個審查者看到共用工作樹上
+   憑空多出 106 行 ledger 內容,預設就該當成未知來源。既然它是 v35 Gate 1 的有意產出,那麼把它留在
+   工作樹上未 commit 才是**更大的風險**:本 repo 的 CLAUDE.md 整份就是為「未 commit 的 ledger 工作
+   在多 agent 共用樹上被毀掉」這件事寫的(2026-08-31 事故)。**commit 是正解。**
+   代價只有一個,已在 §C 處理掉:ledger 現頭從 77 變 89 條缺口,必須寫清楚那 12 條屬於 v35 Gate 1,
+   否則下一輪稽核會誤記成 v34 沒收乾淨。
+2. **`dashboard.html` 入版控 —— 原反對意見已失效,無異議。**
+   我反對的理由是「它是在被未 commit 內容污染的樹上產生的」。既然那些內容現在**就是** HEAD,
+   這份 dashboard 反映的 1836/89 與 HEAD 一致,不再有落差。`dashboard_check` 本輪也**沒有**回報
+   任何 staleness finding。(本段寫完後我會再重跑一次 trace,讓 dashboard 不比這段新的 07-review.md 舊。)
+3. **兩張 v28 PNG(F5):正確地沒有還原。** 還原要動 `git checkout`,CLAUDE.md 明文禁止;
+   `088bd23` 把被覆寫的版本一起 commit 掉,是這個情況下唯一不違規的收法。**債不變**(見 F5):
+   驗收測試不該把輸出寫回已入版控的證據目錄。
+
+### E. REQ-209 —— 教訓已經升級成需求,比我原本寫的更強
+
+我在上一段 §8 記的教訓,orchestrator 把它擴進 `01-requirements.md` 的 **REQ-209**,而且**拉高了**:
+原本是「文件裡的範例必須真的註冊過」(行為要求),現在多了一條 **API 要求**——
+`checkMermaid()` 第五個參數選填、四條 v2 規則被 `check-mermaid.ts:285-300` 的 `if (v2)` 擋著,
+所以「這個 API 不得再能被無聲地降級使用:要嘛該參數變成必填、要嘛省略時 fail-closed 或明確標示
+『本次檢查未涵蓋 v2 規則』」。
+**這是正確的升級方向**:我的版本只治症狀(叫人以後記得跑真的),REQ-209 治的是**讓誤用成為可能的
+那個介面設計**。教訓從「下次小心」變成「下次不可能犯」,這才是該進 ledger 的形狀。
+v34 不動它(它是 v35 的 REQ,`iter: v35`),此處只記錄審查認可。
+
+### F6(LOW,非 blocking,記為債)— 第 3 步本文仍留兩處先後順序用語
+
+`DEPLOY.md` 第 3 步本文仍有「——**實測跑贏的版本**」與「缺了就是 `EDGE_MISMATCH` **之前先撞的**
+`TOOLS_MISMATCH`」。同屬先後順序敘事的語氣。**我明確不為此再送回一次**:上一輪我把這兩處寫成
+「可以順手拿掉」的建議而非要求,拿它當新 blocker 就是改判準;而且它們不像 F1 那句會**誤導**讀者
+(規則本身陳述正確,範例位元組也正確)。下次觸及該段時改成直接陳述規則即可。
+
+### 收尾動作
+- **`.panel/` 已刪除**(`.panel/architecture/` 4 檔、`.panel/design/` 2 檔、`.panel/review/` 2 檔)。
+  上一輪因 `send_back` 非空而依契約第 6 條保留;本輪 `send_back: []`、判 PASS,**這就是「the very
+  end」**,依契約與本 ledger 先例(`fc4989b` v28、`cdb3e1a` v27、`d8d5ef9` v26、`3b20209` v22
+  都在收尾 commit 裡刪掉)一併刪除。決策已烘焙進 02-architecture.md / 04-design.md / 本檔。
+- `dashboard.html` 於本段寫完後重跑 `sh .sdlc/trace` 重新產生。
+
+```
+Gaps: high=15 mid=48 low=26 —— ledger 現頭 088bd23 = 1836 items / 89 gaps。
+      其中 77 條是業主 2026-09-20 裁示受理的 v29–v32 年代既有債（15 high 斷鏈 / 17 未驗證 /
+      19 TDD / 2 未實作 / 24 漂移），另 12 條是 v35 Gate 1 剛產出的 REQ-205..210 的
+      未實作+未驗證（正常的 Gate 1 狀態，v35 自己的 Gate 2→7.5 會關掉）。
+      **v34 本身的鏈路守衛：1ac057d 1778/77 → f1b44be 1830/77，gap 集合逐條 diff 為空，
+      新增 52 個工作項、0 個缺口**；F1/F2 修復（088bd23）再鑄造 0 個。未真實驗證 = 0。
+Drift: 既有 24 條 low 漂移，同基線，無新增。F2 的 doc↔doc drift 已關閉（rtm.md 欄位拆欄驗證）。
+Architecture consistent: yes —— AC-1 / AC-2 / QD#1 三條皆在產物上逐條確認關閉
+      （authoring-guide.ts:541-547 + docs/AUTHORING.md:60 + claude-agent-sdk-client.ts:190 六工具對齊；
+      INV-V34-1 與 ARCH-137 note 與 `??` 語意相符；UT-283 三條斷言齊備且綠）。
+      solid_check 0 high / 0 mid / 10 low（78 模組）、dashboard_check 0 high / 7 mid / 1 low，
+      兩者皆與基線逐字相同、0 新增，且無 staleness finding。
+Validation: real-tier all-green? yes（0 個 未真實驗證）。兩條 carry-forward 皆以真跑解除：
+      VAL-231 冷主體 84 次 tools/call 零引擎拒絕碼（依 REQ-117 自身驗收原文判定，非依 VAL 列自述）；
+      DEPLOY.md 配方 runId fc374235 端對端 completed，且文件現印位元組與跑贏的逐字相同。
+      · README + DEPLOY present? yes（§0 一鍵部署、§1b 單一設定總表）
+      · DEPLOY.md 已回到 history-free 的現在式（F1 關閉）。
+      全回歸由審查者自行跑過：412 files / 3062 tests passed，0 失敗。
+Conclusion: **iteration can close** —— v34 關閉。send_back = []，0 HIGH，殘留 4 條 LOW 全部記為債
+      （F3 DEPLOY.md:527 句型、F4 'default' 哨兵未定義（架構刻意遞延）、F5 npm test 覆寫 v28 證據截圖、
+      F6 第 3 步兩處先後順序用語）。
+```
+
+send_back: []
+blocking_findings: []
+owner_decisions: []
+```
