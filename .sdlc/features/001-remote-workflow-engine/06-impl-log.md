@@ -8749,7 +8749,7 @@ F13 本質上是渲染問題,單元層看不到 DOM。
 - **traces:** TASK-230, DES-229, ARCH-087, ARCH-107, ADR-032, REQ-202, REQ-203
 - **greens:** UT-275, UT-276
 - **files:** src/tool-specs.ts, src/authoring-guide.ts, docs/AUTHORING.md, tests/unit/tool-specs.test.ts, tests/unit/authoring-guide.test.ts, agents/researcher.md (deleted), agents/writer.md (deleted)
-- **commit:** 21ad773 (implementation) + <this send-back commit> (Gate 8 AC-1 repair below)
+- **commit:** 21ad773 (implementation) + 4b881fc (Gate 8 AC-1 repair below)
 - **iter:** v34
 - **note:** `tool-specs.ts`'s `run_start.overrides` description gains the three appendPrompt rules a
   cold client needs before its first call (declare-or-`PARAM_UNKNOWN`, the
@@ -8792,7 +8792,7 @@ F13 本質上是渲染問題,單元層看不到 DOM。
 - **traces:** TASK-229, DES-228, ARCH-137, ADR-064, REQ-203
 - **greens:** UT-283
 - **files:** tests/unit/workflow-describe-facade.test.ts, .sdlc/features/001-remote-workflow-engine/04-design.md, .sdlc/features/001-remote-workflow-engine/05-tests.md
-- **commit:** <this send-back commit>
+- **commit:** 4b881fc
 - **iter:** v34
 - **note:** **v34 send-back repair (Gate 8 quality-dimensions #1).** IMPL-340 landed IT-177 (the
   resume-time refusal half of ADR-064/DES-228's pair) but the read-boundary half — proving the
