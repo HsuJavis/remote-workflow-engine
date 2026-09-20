@@ -229,16 +229,16 @@ in the same re-run — no regression on REQ-138's counts card).
 
 **Pre-existing gap found and closed by this update**: this file's table stopped at REQ-201 despite
 `state.yaml` recording v34's first Gate 7.5 pass (2026-09-20) as PASSED with REQ-202/203/204 in its
-closure — the rows were never actually appended to this matrix. Added the three missing rows above
-(`build_matrix()`/`is_real_test()` re-run directly against the current working tree, using the
-correct stage keys `impl`/`verification` — the omission traces to a prior write-up's stage-key
-typo, `build`/`verify`, which silently produced empty cells; re-checked with the module's own
-`MATRIX_COLS` keys this time). All three are ✅ (`real:true` reachable via `VAL-225`/`VAL-226`/
-`VAL-227`, re-confirmed live this round by `VAL-230`/`VAL-231` in `08-validation.md`). REQ-094's and
-REQ-136's rows (lines above, added at an earlier round — see `08-validation.md` `VAL-228`) also
-remain ✅; REQ-211's superseded-evidence note (`08-validation.md` "VAL-211 amendment") does not
-change their status, only which item the `real:true` claim is grounded in. REQ-116/REQ-117 remain
-✅, re-grounded this round in `VAL-230` (AC-1's fix, both served-text and live-dispatch tiers) on
+closure — the rows were never actually appended to this matrix (this file has no `--rtm` CLI path;
+it is written by hand from the module's `build_matrix()`/`is_real_test()` output, and that step was
+evidently skipped or lost the prior round). Added the three missing rows above using the correct
+`MATRIX_COLS` stage keys `impl`/`verification`. All three are ✅ (`real:true` reachable via
+`VAL-225`/`VAL-226`/`VAL-227`, re-confirmed live this round by `VAL-230` in `08-validation.md`).
+REQ-094's and REQ-136's rows (lines above, added at an earlier round — see `08-validation.md`
+`VAL-228`) also remain ✅; REQ-211's superseded-evidence note (`08-validation.md` "VAL-211
+amendment") does not change their status, only which item the `real:true` claim is grounded in.
+REQ-116/REQ-117 remain ✅, re-grounded this round in `VAL-230` (AC-1's fix, both served-text and
+live-dispatch tiers) on
 top of the standing `VAL-229` evidence — no regression, no new gap.
 
 ## v33 Gate 7.5 update (2026-09-20, validator, fix-mode)

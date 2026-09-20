@@ -11675,28 +11675,38 @@ rounds' convention) was never touched.
      evidence — but it is recorded honestly rather than silently omitted.
 - **iter:** v34
 
-### VAL-231 — DEPLOY.md §情境配方 rewrite: re-confirmed current-state and history-free, whole-file sweep (not section-scoped)
-- **status:** green
-- **traces:** REQ-116, REQ-117
-- **tier:** acceptance
-- **real:** true
-- **result:** pass
-- **evidence:** A prior verifier pass grepped only inside the `## 情境配方` section for
-  `v34|以前|現在|機制變了` and found nothing. This round re-ran the grep across the WHOLE of
-  `README.md` and `DEPLOY.md` for a wider tell-tale set:
-  `grep -nE '舊版|原本|以前|previously|變更紀錄|Changelog|已過期|退役|隨機制消失|v3[0-9]|機制變了'
-  README.md DEPLOY.md` → every hit inspected in context is a present-tense capability/fact
-  statement, not history narration: `README.md:453` "從舊版本一路升級上來的 workRoot 不需要任何手動
-  步驟" (a present-tense self-healing-migration guarantee, unchanged from the prior round's same
-  finding); `DEPLOY.md:289` names a real plugin version number (`1.25.0`) as part of a reproducible
-  test recipe about a THIRD-PARTY plugin's file naming, not this engine's own history; `DEPLOY.md:520`
-  `v22` is a §1b 設定總表 "iter last touched" column value (the format the exit gate's own §1
-  requirement calls for, not prose history); `DEPLOY.md:837` describes a present, still-true display
-  quirk ("原本被中止那次呼叫的紀錄一直卡在 running") not a version-diff. Zero v34/以前/現在
-  comparison-framing hits anywhere in either manual. `DEPLOY.md:510`/`:624` (the two
-  `defaultAllowedTools` priority sentences) both now carry the same "可設定"/"settable" qualifier as
-  the fixed guide sentence (VAL-230 item 1) — no doc-vs-doc split answer for the same fact.
-- **iter:** v34
+### DEPLOY.md §情境配方 rewrite — whole-file history-tell-tale sweep re-confirmation (this round, prose only, NOT a VAL item)
+This is deliberately **not** given a VAL-ID / `real:true`: a text grep over two markdown files is
+not real wiring against the running system (the contract's `real:true` bar), and minting a
+`real:true` item off doc-grep evidence would be exactly the kind of inflation Gate 8 sent this
+iteration back for. Recorded here as supporting narrative for exit-gate 3b/3c instead.
+
+A prior verifier pass grepped only inside the `## 情境配方` section for `v34|以前|現在|機制變了` and
+found nothing. This round re-ran the grep across the WHOLE of `README.md` and `DEPLOY.md` for a
+wider tell-tale set:
+`grep -nE '舊版|原本|以前|previously|變更紀錄|Changelog|已過期|退役|隨機制消失|v3[0-9]|機制變了'
+README.md DEPLOY.md` → every hit inspected in context is a present-tense capability/fact statement,
+not history narration: `README.md:453` "從舊版本一路升級上來的 workRoot 不需要任何手動步驟" (a
+present-tense self-healing-migration guarantee, unchanged from the prior round's same finding);
+`DEPLOY.md:289` names a real plugin version number (`1.25.0`) as part of a reproducible test recipe
+about a THIRD-PARTY plugin's file naming, not this engine's own history; `DEPLOY.md:520` `v22` is a
+§1b 設定總表 "iter last touched" column value (the format the exit gate's own §1 requirement calls
+for, not prose history); `DEPLOY.md:837` describes a present, still-true display quirk ("原本被中止
+那次呼叫的紀錄一直卡在 running") not a version-diff. Zero v34/以前/現在 comparison-framing hits
+anywhere in either manual. `DEPLOY.md:510`/`:624` (the two `defaultAllowedTools` priority sentences)
+both now carry the same "可設定"/"settable" qualifier as the fixed guide sentence (`VAL-230` item 1)
+— no doc-vs-doc split answer for the same fact.
+
+**§情境配方 steps 3/4 — attempted, not re-run this round, named not silently skipped**: the finding
+this section closed instructed keeping "0/1/2/5 already tested, 3/4's new approach" as-is; DEPLOY.md
+itself already states steps 3/4 (per-gate role-prompt inlining + the full `sdlc-run` plugin recipe)
+were validated only by the registration scanner, never by an actual `workflow_register`→`run_start`
+end-to-end pass, because doing so needs another engine instance running the iso-agile-sdlc plugin's
+own multi-gate recipe. This round did not attempt that either, for the same reason `VAL-229` already
+gives for REQ-117's fresh-cold-model protocol: this validator has read the full ledger/plugin
+context and is a disqualified subject for a "does a cold caller succeed first try" claim, and
+running it anyway would not produce independent evidence. Carried forward unchanged in
+`needs_clarification`, grouped with REQ-117's existing limitation rather than opened as a second one.
 
 ### Config-file sync check (this round)
 `rwe.config.example.json` round-tripped again against `src/main.ts`'s `KNOWN_FILE_CONFIG_KEYS`
@@ -11709,17 +11719,26 @@ commit). No config file needed a further change this round.
 ### `sh .sdlc/trace --check` (this round)
 Baseline at this round's own session start (working tree scan, not a `git checkout`): **1828 items /
 77 gaps** — identical to the count the send-back repair round's journal entry already recorded (no
-drift introduced between that commit and this round's start). After adding `VAL-230`/`VAL-231`
-above: **1830 items / 77 gaps** — gap count unchanged, 2 new items both render clean (confirmed by
-gap-set diff, not count alone: neither new ID appears in any gap, and no REQ in this closure appears
-in the remaining gap list).
+drift introduced between that commit and this round's start). After adding `VAL-230` (the DEPLOY.md
+sweep above is deliberately prose, not a work item, so it does not add to the count) plus the three
+missing `rtm.md` rows (`rtm.md` is not scanned by `trace.py`, so those add no items either):
+**1829 items / 77 gaps** — gap count unchanged, the one new item renders clean (confirmed by gap-set
+diff, not count alone: `VAL-230` does not appear in any gap, and no REQ in this closure appears in
+the remaining gap list).
 
 ### Verdict (this round)
 **PASSED.** AC-1's fix is proven at the real tier on BOTH axes the finding named (served guide text
 AND actual dispatch-time tool resolution when neither layer is configured) — closing the gap between
 "the guide was fixed" and "the guide's claim is true against the running engine." The DEPLOY.md
-rewrite is re-confirmed history-free on a whole-file sweep, not just the section a prior gate
-touched. No REQ in the impact closure regressed; REQ-117's fresh-cold-model limitation (VAL-229)
-still stands, unchanged, still named in `needs_clarification`. `current_stage` advances to `review`
-(Gate 8 re-review is the next step — the four blocking findings are now closed at every gate that
-owed a piece of the repair, including this one).
+rewrite is re-confirmed history-free on a whole-file sweep (recorded as prose, not inflated into a
+`real:true` claim a doc-grep can't support), not just the section a prior gate touched. No REQ in
+the impact closure regressed. Two limitations are named, not silently passed: REQ-117's
+fresh-cold-model protocol (`VAL-229`) and §情境配方 steps 3/4's end-to-end plugin recipe (above) both
+require a subject that has not read this ledger, which this validator is not — both carried into
+`needs_clarification`. **IMPL-340's `owner_decision`** (the plugin-side dispatch-replacement
+question the first v34 Gate 7.5 round carried as unanswered) is now resolved — commit `48f90b4`'s
+message records the owner's ruling ("裁決:改寫不退役" — rewrite, don't retire the section) and no
+`owner_decision: pending` marker remains anywhere in the ledger (grep-confirmed); reported here so
+Gate 8 does not read its disappearance as silent. `current_stage` advances to `review` (Gate 8
+re-review is the next step — the four blocking findings are now closed at every gate that owed a
+piece of the repair, including this one).

@@ -7225,29 +7225,39 @@ built-in-core fallback AC-1 added.
   `canUseTool`-shadowed startup warning naming the same six tools. The model call itself timed out
   (shared-host Ollama contention, unrelated to tool-surface resolution which happens before the
   model call) — reported honestly, not hidden, and does not weaken the harness-capture evidence.
-- **VAL-231 (new)**: DEPLOY.md's §情境配方 rewrite re-swept for history-narrative tell-tales across
-  the WHOLE of README.md + DEPLOY.md (the prior verifier pass had only grepped inside the touched
-  section) — zero v34/以前/現在 comparison-framing hits anywhere in either manual; every remaining
-  hit for the wider tell-tale set is a present-tense fact statement (self-healing migration
-  guarantee, a §1b iter-column value, a third-party plugin version number in a repro recipe, a
-  still-true display quirk), not this engine's own history.
+- **DEPLOY.md history-sweep re-confirmation (prose, NOT a VAL item)**: a text grep is not real
+  wiring, so this is deliberately not minted as a `real:true` VAL item — that would be exactly the
+  evidence-inflation Gate 8 sent this iteration back for. Re-swept for history-narrative tell-tales
+  across the WHOLE of README.md + DEPLOY.md (the prior verifier pass had only grepped inside the
+  touched section) — zero v34/以前/現在 comparison-framing hits anywhere in either manual; every
+  remaining hit for the wider tell-tale set is a present-tense fact statement (self-healing
+  migration guarantee, a §1b iter-column value, a third-party plugin version number in a repro
+  recipe, a still-true display quirk), not this engine's own history.
 - **Gap found and fixed (not part of the four findings, but found while regenerating the RTM per
   this gate's own exit-gate step)**: `rtm.md` had never actually gained rows for REQ-202/203/204,
-  despite the FIRST v34 Gate 7.5 round's `state.yaml` note claiming them closed — traced to a
-  stage-key typo in that round's ad-hoc query (`build`/`verify` instead of the trace.py module's
-  real `impl`/`verification` keys), which silently produced empty cells that were never caught.
-  Added the three rows this round (all ✅, `build_matrix()`/`is_real_test()` re-run with the correct
-  keys) plus a `## v34 Gate 7.5 update` section documenting the fix, matching this ledger's existing
-  per-round RTM-update convention.
+  despite the FIRST v34 Gate 7.5 round's `state.yaml` note claiming them closed (this file has no
+  `--rtm` CLI path — it is hand-written from the module's `build_matrix()`/`is_real_test()` output,
+  and that step evidently didn't happen or was lost). Added the three rows this round (all ✅,
+  `build_matrix()`/`is_real_test()` re-run with the correct `MATRIX_COLS` keys `impl`/
+  `verification`) plus a `## v34 Gate 7.5 update` section documenting the fix, matching this
+  ledger's existing per-round RTM-update convention.
+- **IMPL-340's `owner_decision` (plugin-side dispatch replacement)**: the first v34 Gate 7.5 round
+  carried this as unanswered. It is resolved — commit `48f90b4`'s message records the owner's ruling
+  ("裁決:改寫不退役" — rewrite the section, don't retire it) — and a ledger-wide grep finds zero
+  `owner_decision: pending` markers. Reported explicitly so Gate 8 does not read the marker's
+  disappearance as silently dropped.
 
-`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` → 1828→1830 items / 77 gaps — 2 new items
-(`VAL-230`, `VAL-231`), 0 new gaps (confirmed by gap-set diff via `trace.analyze()` directly, not
-count alone: `Counter({漂移:24, TDD:19, 未驗證:17, 斷鏈:15, 未實作:2})`, zero `未真實驗證`, and no ID
-in this closure — REQ-202/203/204/094/136/116/117, ARCH-004/087/107/129, ADR-032, DES-007/102/195 —
-appears in any remaining gap). Config-file sync re-checked: `rwe.config.example.json` still
-round-trips clean against `KNOWN_FILE_CONFIG_KEYS`, no change needed. `owner_decisions: []` — none
-newly deferred; REQ-117's standing fresh-cold-model limitation (`VAL-229`) is unchanged and still
-named. `state.yaml`: `gates.validation.passed` stays `true` (its note updated with this round's
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` → 1828→1829 items / 77 gaps — 1 new item
+(`VAL-230`; the history-sweep above and the `rtm.md` rows add no scanned items — `rtm.md` isn't
+`trace.py`-scanned and the sweep isn't a work item), 0 new gaps (confirmed by gap-set diff via
+`trace.analyze()` directly, not count alone: `Counter({漂移:24, TDD:19, 未驗證:17, 斷鏈:15,
+未實作:2})`, zero `未真實驗證`, and no ID in this closure — REQ-202/203/204/094/136/116/117,
+ARCH-004/087/107/129, ADR-032, DES-007/102/195 — appears in any remaining gap). Config-file sync
+re-checked: `rwe.config.example.json` still round-trips clean against `KNOWN_FILE_CONFIG_KEYS`, no
+change needed. `owner_decisions: []` — none newly deferred; REQ-117's standing fresh-cold-model
+limitation (`VAL-229`) is unchanged and still named, and §情境配方 steps 3/4's end-to-end plugin
+recipe is named alongside it in `08-validation.md` (same disqualified-subject reason, not attempted
+this round either). `state.yaml`: `gates.validation.passed` stays `true` (its note updated with this round's
 detail, chained onto the prior note as `PRIOR:`); `current_stage → review` — Gate 8 re-review is the
 next step, all four send-back findings now closed at every gate that owed a piece of the repair.
 
