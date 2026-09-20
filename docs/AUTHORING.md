@@ -40,7 +40,7 @@ export const meta = {
 };
 ```
 
-`meta.params.args` declares the run-time inputs the script reads off `args.<name>` — `{type, enum?, min?, max?}`, no `.default` (a declared args default is refused: it is advertised but never applied). `type` is one of `string | number | enum` (an `enum` type requires the `enum` array of legal values).
+`meta.params.args` declares the run-time inputs the script reads off `args.<name>` — `{type, enum?, min?, max?, default?}`. A declared `.default` fills in the key when the caller omits it (or a run_start call omits `args` entirely); an explicit caller-supplied value always wins, including an explicit `undefined`. `type` is one of `string | number | enum` (an `enum` type requires the `enum` array of legal values).
 
 `meta.params.knobs` and `meta.defaults` are retired — a script that declares either is refused `DEFAULTS_RETIRED`, naming `meta.params.agents.<label>.<key>.default` as the replacement.
 
@@ -173,6 +173,22 @@ A run's workspace can be pre-populated three ways on `run_start`, mutually exclu
 - `workspace_push` — Push content: a CAS blob into the caller's own pool, or a workflow-owned asset (skill/mcp). Any runId argument is refused — see workflow_authoring_guide.
 
 Every `seed`/`seedManifest`/`seedManifestRef` element that does not match its declared shape is refused `INVALID_SEED_SPEC` before a single byte is written — a `seed` element missing `contentB64` (or carrying only a `sha256`) does NOT silently materialize a 0-byte file; the refusal names the offending `path` and points at `seedManifest` instead. Content referenced only by hash (`seedManifest`, `seedManifestRef`) must already exist in the CAS — push it first with `workspace_push`.
+
+## Three things a cold author gets wrong
+
+A **sequential** `await agent(label, options)` call that fails or times out resolves to `null` for that reason — it does not throw. (An ENGINE refusal, e.g. `BUDGET_EXCEEDED`, is a different case and still propagates as a thrown error — see "Budget, concurrency" above.) Guard every sequential call the same way `parallel()`'s own thunks already are:
+
+```js
+const out = await agent('reviewer', { prompt: 'Review the draft' });
+if (out === null) {
+  // the agent failed or timed out — there is no result to read here
+  return;
+}
+```
+
+`timeoutMs` bounds ONE attempt, never the whole call: this deployment retries a failed attempt, and the deployed retry count multiplies the single-attempt bound into the actual worst-case wait — `workflow_describe` reports the multiplied figure as that agent's `timeoutMs.worstCaseMs`, next to the single-attempt `timeoutMs.default`.
+
+Every tool result — including this guide's own — arrives as a JSON string inside `content[0].text`, never as a structured object: parse it again to reach the actual payload.
 
 ## Registration and versioning
 

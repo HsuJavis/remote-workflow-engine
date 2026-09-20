@@ -81,6 +81,10 @@ export class SqliteRunStore implements RunStore {
     // pin. A pre-v26 row reads back NULL; every downstream reader treats that as "unpinned", never
     // a crash (DES-178's own "a pre-v26 run row has no pin" boundary).
     try { this._db.exec('ALTER TABLE runs ADD COLUMN price_book TEXT'); } catch { /* already exists */ }
+    // v35 (DES-231, ARCH-143, TASK-235): additive migration — the failure reason. A pre-v35 row
+    // reads back NULL = "no recorded reason", never a crash (same idempotent idiom as the columns
+    // above).
+    try { this._db.exec('ALTER TABLE runs ADD COLUMN error TEXT'); } catch { /* already exists */ }
     // v24 (DES-152, TASK-140): the one query-plan the filtered run_list projection needs — leading
     // column `name` so a workflow-only filter still uses it (SQLite can use a prefix of a composite
     // index), status/createdAt narrow/order the rest.
@@ -243,11 +247,28 @@ export class SqliteRunStore implements RunStore {
     return { value: JSON.parse(row.result) };
   }
 
+  /** v35 (DES-231): ONE method, two surfaces, in THIS order — the `runs.error` column write
+   *  THEN the `{type:'error',...err}` journal.jsonl line (same D-I2 audit-trail convention as
+   *  recordResult). If the column write throws, the journal line is never appended. */
+  async recordError(runId: string, err: { code: string; message: string }): Promise<void> {
+    this._db.prepare('UPDATE runs SET error = ? WHERE runId = ?').run(JSON.stringify(err), runId);
+    mkdirSync(this._runDir(runId), { recursive: true });
+    appendFileSync(join(this._runDir(runId), 'journal.jsonl'), JSON.stringify({ type: 'error', ...err }) + '\n');
+  }
+
+  /** v35 (DES-231): the raw column read-back — ungated; `null` for an unknown runId or a run with
+   *  no recorded error. */
+  async getError(runId: string): Promise<{ code: string; message: string } | null> {
+    const row = this._db.prepare('SELECT error FROM runs WHERE runId = ?').get(runId) as { error: string | null } | undefined;
+    if (!row || row.error === null) return null;
+    return JSON.parse(row.error) as { code: string; message: string };
+  }
+
   private _rowToSummary(row: {
     runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string;
-    started_by?: string | null; terminalAt?: string | null;
+    started_by?: string | null; terminalAt?: string | null; error?: string | null;
     usagePresentRaw?: number | null; costUSD?: number | null; unpricedCalls?: number | null;
-    tokensTotal?: number | null; agentCount?: number | null;
+    tokensTotal?: number | null; agentCount?: number | null; failedAgentCount?: number | null;
   }): RunSummary {
     const summary: RunSummary = {
       runId: row.runId,
@@ -258,6 +279,9 @@ export class SqliteRunStore implements RunStore {
       startedBy: row.started_by ? (JSON.parse(row.started_by) as RunSummary['startedBy']) : { type: 'unknown' },
     };
     if (row.terminalAt) summary.terminalAt = row.terminalAt;
+    // v35 (DES-231): gated on status === 'failed' — a stale column (crash-window row later
+    // reclassified) is never served.
+    if (row.status === 'failed' && row.error) summary.error = JSON.parse(row.error) as RunSummary['error'];
     // v27 (DES-193, ARCH-128, TASK-198): presence keyed on `usage IS NOT NULL AND
     // COALESCE(agentCount,1) > 0`, never on the arithmetic — a run with zero agent() calls must
     // not surface costUSD:0.
@@ -268,12 +292,17 @@ export class SqliteRunStore implements RunStore {
       if (row.tokensTotal !== null && row.tokensTotal !== undefined) summary.tokensTotal = row.tokensTotal;
       if (row.agentCount !== null && row.agentCount !== undefined) summary.agentCount = row.agentCount;
     }
+    // v35 (DES-231 boundary (b), TASK-235): `agentCount != null && > 0` — NOT `(agentCount ?? 1) >
+    // 0` — so a no-snapshot/{usage}-only/zero-agent run OMITS rather than reading a confident 0.
+    if (row.agentCount != null && row.agentCount > 0) {
+      summary.failedAgentCount = row.failedAgentCount ?? 0;
+    }
     return summary;
   }
 
   async getRun(runId: string): Promise<RunStatusView | null> {
     const row = this._db.prepare('SELECT * FROM runs WHERE runId = ?').get(runId) as
-      | { runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string; started_by?: string | null; principal?: string | null; legacy_substitution?: string | null }
+      | { runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string; started_by?: string | null; principal?: string | null; legacy_substitution?: string | null; error?: string | null }
       | undefined;
     if (!row) return null;
     // v8 Slice 2c: a persisted terminal snapshot restores the full DAG (frames/phases/timing) after a
@@ -297,6 +326,9 @@ export class SqliteRunStore implements RunStore {
       ...(row.principal ? { principal: row.principal } : {}),
       // v22 (DES-113): omit when absent, same conditional-spread convention.
       ...(row.legacy_substitution ? { legacySubstitution: JSON.parse(row.legacy_substitution) as RunStatusView['legacySubstitution'] } : {}),
+      // v35 (DES-231): gated on status === 'failed' — a stale column (crash-window row later
+      // reclassified interrupted/completed) is never served.
+      ...(row.status === 'failed' && row.error ? { error: JSON.parse(row.error) as RunStatusView['error'] } : {}),
     };
   }
 
@@ -335,11 +367,13 @@ export class SqliteRunStore implements RunStore {
                + COALESCE(json_extract(s.json, '$.usage.tokens.output'), 0)
                + COALESCE(json_extract(s.json, '$.usage.tokens.cacheRead'), 0)
                + COALESCE(json_extract(s.json, '$.usage.tokens.cacheWrite'), 0) AS tokensTotal,
-             json_array_length(s.json, '$.agents') AS agentCount`;
+             json_array_length(s.json, '$.agents') AS agentCount,
+             (SELECT COUNT(*) FROM json_each(s.json, '$.agents')
+                WHERE json_extract(value, '$.state') IN ('failed', 'refused')) AS failedAgentCount`;
 
   async listRuns(): Promise<RunSummary[]> {
     const rows = this._db.prepare(`
-      SELECT r.runId, r.name, r.status, r.scriptVersion, r.createdAt, r.started_by,
+      SELECT r.runId, r.name, r.status, r.scriptVersion, r.createdAt, r.started_by, r.error,
              (SELECT MIN(t.ts) FROM transitions t
               WHERE t.runId = r.runId
                 AND t.to_status IN ('completed', 'failed', 'stopped')) AS terminalAt,
@@ -347,8 +381,8 @@ export class SqliteRunStore implements RunStore {
       FROM runs r
       LEFT JOIN run_snapshots s ON s.runId = r.runId
     `).all() as Array<{
-      runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string; started_by?: string | null; terminalAt?: string | null;
-      usagePresentRaw?: number | null; costUSD?: number | null; unpricedCalls?: number | null; tokensTotal?: number | null; agentCount?: number | null;
+      runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string; started_by?: string | null; terminalAt?: string | null; error?: string | null;
+      usagePresentRaw?: number | null; costUSD?: number | null; unpricedCalls?: number | null; tokensTotal?: number | null; agentCount?: number | null; failedAgentCount?: number | null;
     }>;
     return rows.map((r) => this._rowToSummary(r));
   }
@@ -366,7 +400,7 @@ export class SqliteRunStore implements RunStore {
     const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
     const limit = Math.min(filter.limit ?? 50, 500);
     const rows = this._db.prepare(`
-      SELECT r.runId, r.name, r.status, r.scriptVersion, r.createdAt, r.started_by,
+      SELECT r.runId, r.name, r.status, r.scriptVersion, r.createdAt, r.started_by, r.error,
              (SELECT MIN(t.ts) FROM transitions t
               WHERE t.runId = r.runId
                 AND t.to_status IN ('completed', 'failed', 'stopped')) AS terminalAt,
@@ -377,8 +411,8 @@ export class SqliteRunStore implements RunStore {
       ORDER BY r.createdAt DESC
       LIMIT ?
     `).all(...params, limit) as Array<{
-      runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string; started_by?: string | null; terminalAt?: string | null;
-      usagePresentRaw?: number | null; costUSD?: number | null; unpricedCalls?: number | null; tokensTotal?: number | null; agentCount?: number | null;
+      runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string; started_by?: string | null; terminalAt?: string | null; error?: string | null;
+      usagePresentRaw?: number | null; costUSD?: number | null; unpricedCalls?: number | null; tokensTotal?: number | null; agentCount?: number | null; failedAgentCount?: number | null;
     }>;
     return rows.map((r) => this._rowToSummary(r));
   }

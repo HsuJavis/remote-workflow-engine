@@ -13,6 +13,12 @@ import { LOCKED_KEYS } from './params/contract.js';
 // (run-manager.ts, via workspace-seed.ts) can never drift apart. Pure (no I/O), no cycle.
 import { SEED_ITEM_HINT } from './workspace-seed.js';
 
+// v35 (DES-239, ARCH-152/154, TASK-237, REQ-210): ONE exported constant, stating the double-JSON
+// envelope every tool result arrives in — consumed by BOTH the `initialize` handshake (server.ts)
+// and (transitively, via workflow_authoring_guide) this module, so the wording is stated once.
+export const ENVELOPE_NOTE =
+  'Every tool result arrives as a JSON string inside content[0].text — parse it again to reach the actual payload.';
+
 /** Declared here (not authz.ts) so the dependency between the two files stays one-directional —
  *  authz.ts imports Role from this module (ARCH-088). */
 export type Role = 'admin' | 'author' | 'user';
@@ -408,7 +414,7 @@ export const TOOL_SPECS = [
         // `McpFacade.runStart`, and `args` is the run-argument channel the authoring guide's own
         // `meta.params.args` example teaches — so the engine advertised a workflow API it then
         // refused to be called with.
-        args: { description: "Run arguments, shaped by the script's own `meta.params.args` declaration and read in-script as `args.<key>`." },
+        args: { description: "Run arguments, shaped by the script's own `meta.params.args` declaration and read in-script as `args.<key>`. Omitted entirely, the script receives `{}`; a key with a declared `meta.params.args.<key>.default` is filled in from that default when the caller omits it." },
         // v26 (DES-181, ARCH-118, ADR-037, TASK-181, REQ-127/REQ-120): a bare number was the v25
         // shape (a token-only limit) — no longer advertised, and refused ahead of ajv (call-tool.ts)
         // with a migration message, the same precedent as the retired `{script}` door (call-tool.ts). `null`
@@ -529,7 +535,7 @@ export const TOOL_SPECS = [
   },
   {
     name: 'run_status', entity: 'run', key: 'runId' as const,
-    description: "Poll a run's status; terminal states carry the final outcome. The owner's response also lists any cross-principal reads of this run's workspace or logs.",
+    description: "Poll a run's status; terminal states carry the final outcome. `failedAgentCount` counts terminal non-success agents; it is omitted (never 0) when the run has no agent records yet — absence is not health, poll again once agents exist, and read it against the `agentCount` this same row already returns. The owner's response also lists any cross-principal reads of this run's workspace or logs.",
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
     errors: ['RUN_NOT_FOUND', 'NOT_RUN_OWNER'],
@@ -543,7 +549,7 @@ export const TOOL_SPECS = [
     // specialised outputSchema — see DES-183's own boundary) — `meta.usage` is this run's token/USD
     // total plus `unpricedCalls`/`unmappedMessages`; `meta.budgetEnforceable` names which limits can
     // actually bind given the models this run can reach, and which of those have no known price.
-    description: "Fetch a terminal run's result payload. The response also carries `meta.usage` (tokens, USD cost, unpriced-call count) and `meta.budgetEnforceable` (which limits can bind, and which reachable models have no known price).",
+    description: "Fetch a terminal run's result payload. On a failed run, `result.error` is `{code, message}`. The response also carries `meta.usage` (tokens, USD cost, unpriced-call count) and `meta.budgetEnforceable` (which limits can bind, and which reachable models have no known price).",
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
     errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'NOT_RUN_OWNER', 'NESTING_DEPTH_EXCEEDED', 'NESTING_CYCLE', 'DESCENDANT_CAP_EXCEEDED'],
@@ -639,7 +645,7 @@ export const TOOL_SPECS = [
   },
   {
     name: 'run_list', entity: 'run', key: null,
-    description: "List runs, filtered to the caller's own rows; unfiltered for the operator role.",
+    description: "List runs, filtered to the caller's own rows; unfiltered for the operator role. `failedAgentCount` is terminal-only — a live run's row omits it (absent, never 0); poll run_status for a live count, and read it against each row's own `agentCount`.",
     inputSchema: schema({ workflow: { type: 'string' }, status: { type: 'string' }, limit: { type: 'number' } }),
     outputSchema: OUT,
     errors: [] as ErrorCode[],

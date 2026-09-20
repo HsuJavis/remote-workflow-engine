@@ -426,11 +426,13 @@ export function parseParamContract(
   for (const [key, spec] of Object.entries(argsIn)) {
     const shapeErr = validateSpecShape(`args.${key}`, spec);
     if (shapeErr) return shapeErr;
-    // v21 Gate 8 RE-REVIEW #6 (P6-3): a declared args.<k>.default is parsed and served on
-    // workflow_get, but nothing ever reads or applies a per-arg default — so it is silent
-    // `undefined` to the script, advertised but never enforced. Reject the declaration outright.
+    // v35 (DES-235, TASK-231, REQ-206): the v21 P6-3 ban (below, deleted) is REVERSED FOR CAUSE —
+    // `materializeArgDefaults` (below) now genuinely applies a declared default, so the premise
+    // that a default was "advertised but never enforced" no longer holds. A declared default is
+    // validated the same way any other value is, via the EXISTING checkValueAgainstSpec path.
     if (spec.default !== undefined) {
-      return invalid(`args.${key}`, 'args spec cannot declare a default (never applied)');
+      const defaultErr = checkValueAgainstSpec(`args.${key}.default`, spec.default, spec);
+      if (!defaultErr.ok) return invalid(`args.${key}`, defaultErr.message);
     }
     if (spec.enum !== undefined && spec.enum.length > MAX_ENUM_MEMBERS) {
       return invalid(`args.${key}`, `enum has more than ${MAX_ENUM_MEMBERS} members`);
@@ -439,6 +441,23 @@ export function parseParamContract(
   }
 
   return { ok: true, value: { agents, args } };
+}
+
+/** v35 (DES-235, ARCH-145, TASK-231, REQ-206): fills declared-but-absent `args` keys from their
+ *  `.default`; a caller-supplied value (including an explicit `undefined`) always wins. Pure — no
+ *  mutation of either input — so the admission site stays a caller and needs no engine to test. */
+export function materializeArgDefaults(
+  args: Record<string, unknown>,
+  specs?: Record<string, ParamSpec>,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...args };
+  if (specs) {
+    for (const [key, spec] of Object.entries(specs)) {
+      if (spec.default === undefined) continue;
+      if (result[key] === undefined) result[key] = spec.default;
+    }
+  }
+  return result;
 }
 
 /** v21 adjudication #6 (F-2): the single bounds predicate shared with `workflow-catalog.ts`'s

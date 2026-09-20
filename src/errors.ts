@@ -248,3 +248,40 @@ export class WorkspaceEscapeError extends Error {
   }
 }
 
+// v35 (DES-230, ARCH-141, TASK-236, REQ-205): `toErr` moved VERBATIM from `run-manager.ts:150`
+// (behaviour byte-identical) and exported, so both of `run-manager.ts`'s call sites (the dispatch
+// outcome and the nested-`workflow()` outcome) import the SAME function instead of each keeping a
+// private copy. Deliberately gains no `detail` forwarding and no bound of its own — see
+// DES-230's `owner_decision` (REQ-205's 4th acceptance criterion is out of scope this iteration).
+export function toErr(err: unknown): { code: string; message: string } {
+  if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
+    return { code: String((err as { code: unknown }).code), message: String((err as { message: unknown }).message) };
+  }
+  if (err instanceof Error) return { code: err.name || 'SCRIPT_ERROR', message: err.message };
+  return { code: 'SCRIPT_ERROR', message: String(err) };
+}
+
+/** v35 (DES-230): the pre-eval bound moved off `toErr` (which stays total/unbounded) onto the
+ *  SERIALIZED envelope that is actually persisted — `message` is `String(err.message)` off a
+ *  script-thrown value and is the one unbounded, script-controlled string this slice newly writes
+ *  to disk (`code` is bounded by construction: it comes from `toErrorCode`/the IPC wire, never
+ *  from script text). */
+export const MAX_ERROR_ENVELOPE_BYTES = 4096;
+
+/** Bounds `e.message` to `MAX_ERROR_ENVELOPE_BYTES`. MUST run AFTER `redact()`, never before: a
+ *  substring cut applied to the RAW message first can split a secret so `redact()`'s value-exact
+ *  match finds neither half (R-G9, `agent-executor.ts:662-671`, INV-V26-5). Identity when under
+ *  bound; `code` is never truncated. The cut is utf8-safe — it never splits a multi-byte
+ *  character. */
+export function capErrorEnvelope(e: { code: string; message: string }): { code: string; message: string } {
+  const buf = Buffer.from(e.message, 'utf8');
+  if (buf.length <= MAX_ERROR_ENVELOPE_BYTES) return e;
+  let cut = MAX_ERROR_ENVELOPE_BYTES;
+  // back off while `cut` sits inside a multi-byte sequence — a UTF-8 continuation byte's top two
+  // bits are `10`.
+  while (cut > 0 && (buf[cut]! & 0xc0) === 0x80) cut--;
+  const head = buf.subarray(0, cut).toString('utf8');
+  const omitted = buf.length - cut;
+  return { code: e.code, message: `${head}… [truncated: ${omitted} bytes omitted]` };
+}
+

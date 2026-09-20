@@ -183,3 +183,36 @@ describe('tools/list advertises the v34 appendPrompt rules and the two-segment h
     expect(text).not.toContain('systemPrompt');
   });
 });
+
+// v35 (DES-239, ARCH-152/154, TASK-237, REQ-210): `ENVELOPE_NOTE` — ONE exported constant, stating
+// the double-JSON envelope, consumed by BOTH the `initialize` handshake and (transitively) this
+// module. Written test-first (Gate 5, RED) — `src/tool-specs.ts` exports no such name today.
+describe('ENVELOPE_NOTE (DES-239, v35, REQ-210)', () => {
+  it('is exported and states the double-JSON-encoding envelope', async () => {
+    const mod = await import('../../src/tool-specs.js');
+    expect(typeof (mod as unknown as { ENVELOPE_NOTE?: string }).ENVELOPE_NOTE).toBe('string');
+    expect((mod as unknown as { ENVELOPE_NOTE: string }).ENVELOPE_NOTE).toMatch(/content\[0\]\.text/i);
+  });
+});
+
+// v35 (DES-239, ARCH-154, TASK-237, REQ-206/207): `run_start.args`, `run_result`/`run_status`/
+// `run_list` descriptions state the omission semantics a cold caller got wrong (REQ-206/210's own
+// evidence: `args:'null'`/an undisclosed `failedAgentCount` omission rule). Written test-first
+// (Gate 5, RED) — none of today's descriptions mention it.
+describe('advertised tool descriptions state the v35 omission semantics (DES-239, REQ-206/207)', () => {
+  it('run_start.args states {} on omission and that a declared default is applied', () => {
+    const argsSchema = (TOOL_SPECS.find((t) => t.name === 'run_start')!.inputSchema as unknown as { properties: Record<string, { description?: string }> }).properties['args'];
+    expect(argsSchema?.description).toMatch(/\{\}/);
+    expect(argsSchema?.description).toMatch(/default/i);
+  });
+
+  it('run_result/run_status/run_list describe error:{code,message} and the failedAgentCount omission rule (absent ≠ healthy; run_list is terminal-only)', () => {
+    const runResult = projectToolsList().find((t) => t.name === 'run_result')!.description;
+    const runStatus = projectToolsList().find((t) => t.name === 'run_status')!.description;
+    const runList = projectToolsList().find((t) => t.name === 'run_list')!.description;
+    expect(runResult).toMatch(/error/i);
+    expect(runResult).toMatch(/code/i);
+    expect(`${runStatus} ${runList}`).toMatch(/failedAgentCount/);
+    expect(`${runStatus} ${runList}`).toMatch(/omit|absent/i);
+  });
+});

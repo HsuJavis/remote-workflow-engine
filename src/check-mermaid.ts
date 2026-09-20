@@ -136,9 +136,9 @@ export function checkMermaid(
   scriptLabels: string[],
   agentDefaults: Record<string, { model?: string; effort?: string; timeoutMs?: number }>,
   limits: { maxBytes: number; maxLines: number },
-  // v26 (DES-184, ARCH-119, TASK-189): steps (10)-(13) below run ONLY when present — a v1 caller
-  // (every pre-v26 call site) passes nothing and gets exactly the pre-v26 checks.
-  v2?: { expected: ExpectedGraph },
+  // v35 (DES-238, ARCH-150, ADR-069, TASK-234): required — there is no runtime path that skips
+  // the v2 rules (an opt-out is the degraded mode with a name on it).
+  v2: { expected: ExpectedGraph },
 ): CheckMermaidResult {
   // (1) normalize + size — checked before anything else touches the text.
   const normalized = src.replace(/\r\n/g, '\n');
@@ -281,23 +281,21 @@ export function checkMermaid(
   const cycleErr = checkCycleLabels(directed);
   if (cycleErr) return cycleErr;
 
-  // (10)-(13) v26 (DES-184): only when the caller supplies `v2` — the script's derived expected
+  // (10)-(13) v26 (DES-184), unconditional since v35 (DES-238): the script's derived expected
   // lane/slot/edge shape. Order pinned by DES-184's boundary: direction FIRST (a TD diagram's
   // lanes are meaningless, so a LANE_MISMATCH would send the author to the wrong fix).
-  if (v2) {
-    const headerLine = rawLines[0]?.trim() ?? '';
-    const directionErr = checkDirection(headerLine);
-    if (directionErr) return directionErr;
+  const headerLine = rawLines[0]?.trim() ?? '';
+  const directionErr = checkDirection(headerLine);
+  if (directionErr) return directionErr;
 
-    const laneErr = checkLanes(v2.expected, subgraphBlocks, labelToNodes);
-    if (laneErr) return laneErr;
+  const laneErr = checkLanes(v2.expected, subgraphBlocks, labelToNodes);
+  if (laneErr) return laneErr;
 
-    const toolsErr = checkTools(v2.expected, subgraphBlocks, labelToNodes);
-    if (toolsErr) return toolsErr;
+  const toolsErr = checkTools(v2.expected, subgraphBlocks, labelToNodes);
+  if (toolsErr) return toolsErr;
 
-    const edgeErr = checkEdges(v2.expected, nodes, edges, subgraphBlocks, labelToNodes);
-    if (edgeErr) return edgeErr;
-  }
+  const edgeErr = checkEdges(v2.expected, nodes, edges, subgraphBlocks, labelToNodes);
+  if (edgeErr) return edgeErr;
 
   return { ok: true };
 }

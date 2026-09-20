@@ -12,7 +12,7 @@ import type { CasStore } from './cas-store.js';
 import { casNamespaceFor } from './cas-store.js';
 import { initGitBaseline } from './workspace-git.js';
 import { listArtifacts, type ArtifactEntry } from './workspace-artifacts.js';
-import { IllegalTransitionError, codedError, toErrorCode } from './errors.js';
+import { IllegalTransitionError, codedError, toErrorCode, toErr, capErrorEnvelope } from './errors.js';
 import { isEgressAllowed, normalizeSeedRefAllowlist } from './seedref-egress.js';
 import type { SeedRefFetcher } from './seedref-fetcher.js';
 import { HardenedSeedRefFetcher } from './seedref-fetcher.js';
@@ -40,7 +40,7 @@ import { assetRootsFor, defaultAssetRoot, globalAssetRoot } from './asset-sync.j
 import type { GatewayClient, GatewayConfig, AliasMap } from './gateway/client.js';
 import { LiteLLMGatewayClient } from './gateway/client.js';
 import { DEFAULT_ALIASES } from './default-aliases.js';
-import { validateUserOverrides, validateDeclaredArgs, isKnownAlias, FRAME_CLOSE_FORGERY, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type Err as ParamErr } from './params/contract.js';
+import { validateUserOverrides, validateDeclaredArgs, materializeArgDefaults, isKnownAlias, FRAME_CLOSE_FORGERY, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type Err as ParamErr } from './params/contract.js';
 import { defaultRunParams, mergeRunParams, type RunParams } from './params/resolve.js';
 import { resolveAlias } from './providers.js';
 import { ModelBook, reachableModels } from './models/model-book.js';
@@ -146,14 +146,6 @@ function paramCodedError(err: ParamErr): Error {
   return Object.assign(codedError(err.code, err.message), { detail: err.detail });
 }
 
-
-function toErr(err: unknown): { code: string; message: string } {
-  if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
-    return { code: String((err as { code: unknown }).code), message: String((err as { message: unknown }).message) };
-  }
-  if (err instanceof Error) return { code: err.name || 'SCRIPT_ERROR', message: err.message };
-  return { code: 'SCRIPT_ERROR', message: String(err) };
-}
 
 interface RunEntry {
   script: string;
@@ -569,6 +561,18 @@ export class RunManager {
     // real per-agent `{agents:{...}}}` shape (DES-145) — the merge below (TASK-158) is what folds
     // that validated per-label result into the admission snapshot's `.agents` slice.
     const contract = registeredContract ?? ({ agents: {}, args: {} } as ParamContract);
+    // v35 (DES-233, ARCH-144, ADR-071, TASK-236, REQ-206): fill declared-but-absent `args` keys
+    // from their `.default` ONCE at admission, before `validateDeclaredArgs` — so a declared
+    // default is validated by the EXISTING checker (which skips absent keys) and `runs.args`
+    // persists the RESOLVED record, never the caller's bare `null`/omission. A non-record `args`
+    // (a caller CAN send `args: "hello"` today — `run_start`'s schema declares no type on it) is
+    // passed through untouched: materializing over it would spread a string into index keys.
+    const rawArgs = spec.args;
+    const isRecordArgs = rawArgs !== null && typeof rawArgs === 'object' && !Array.isArray(rawArgs);
+    const resolvedArgs = (rawArgs === undefined || rawArgs === null || isRecordArgs)
+      ? materializeArgDefaults((rawArgs ?? {}) as Record<string, unknown>, contract.args)
+      : undefined;
+    if (resolvedArgs) spec = { ...spec, args: resolvedArgs };
     const overridesResult = validateUserOverrides(contract, overrides, this._aliasNames, this._ceilings);
     if (!overridesResult.ok) throw paramCodedError(overridesResult);
     const argsResult = validateDeclaredArgs(contract, spec.args);
@@ -620,6 +624,11 @@ export class RunManager {
         });
       }
     }
+    // v35 (DES-233): the materialized args RECORD, folded into the admission snapshot BEFORE the
+    // redact fork below — `effective_params.args` records it (readable, e.g. by `workflow_describe`
+    // fixtures), but stays the redacted ADMISSION record; it is never promoted to a dispatch source
+    // (INV-V35-2 — `runs.args`/`entry.args`, set on `spec` above, is the only dispatch source).
+    if (resolvedArgs) effectiveParams.args = resolvedArgs;
     // DES-088/ARCH-056 (REQ-083 sink-completeness sweep): this is a NEW persist sink — redact
     // BEFORE the durable write, same convention as the journal/snapshot sinks below. The live
     // RunEntry (below) keeps the unredacted value (dispatch never sees a redaction marker).
@@ -710,7 +719,11 @@ export class RunManager {
     const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, secretValueProvider: this._secretValueProvider, priceBook, aliases: this._aliasMap });
     const entry: RunEntry = {
       script,
-      args: spec.args,
+      // v35 (DES-233(d)): `spec.args ?? {}` — no `storedParams?.args` middle term. `runs.args`
+      // (this line, and its resume-rehydrate twin below) is the ONLY dispatch source; promoting
+      // the redacted `effective_params.args` admission record here is exactly what INV-V35-2
+      // forbids (a hard-crash resume would otherwise hand the script a redaction marker as data).
+      args: spec.args ?? {},
       name: spec.name,
       status: 'queued',
       guard,
@@ -763,7 +776,13 @@ export class RunManager {
     // marker (see comment there) — any rehydrated snapshot that still carries one is refused typed,
     // never dispatched, so a resumed run is always either byte-identical to admission or a typed
     // refusal, never a silent secret-marker substitution.
-    if (hasSecretMarker(entry.effectiveParams)) {
+    // v35 (DES-233(b)): the scan is scoped to the DISPATCHED fields — `args` is excluded. `args` is
+    // dispatched from `runs.args` (never from this redacted `effectiveParams.args` admission
+    // record, INV-V35-2), so a marker surviving only in `effectiveParams.args` is inert; without
+    // this exclusion a run whose arg carried a provisioned secret value would become PERMANENTLY
+    // unresumable (the snapshot is run-immutable).
+    const { args: _recordedArgs, ...dispatchedParams } = entry.effectiveParams;
+    if (hasSecretMarker(dispatchedParams)) {
       throw codedError('PARAM_SECRET_UNAVAILABLE', `Run ${runId}'s admission-time parameters carry a redaction marker that resume never restores (ARCH-066 inv-5 forbids dispatching it)`);
     }
     // v21 Gate 8 RE-REVIEW #5 (review §S7 F2, durable half): `validateUserOverrides` (contract.ts)
@@ -808,7 +827,14 @@ export class RunManager {
     const view = await this._store.getRun(runId);
     if (!view) throw new IllegalTransitionError('unknown', 'status');
     await this._checkTerminalHasTransition(runId, view);
-    return this._mergeLive(runId, view);
+    const merged = this._mergeLive(runId, view);
+    // v35 (DES-234, ARCH-146, ADR-067, TASK-236, REQ-207): one predicate, over the SAME agents
+    // array `_mergeLive` just resolved (the live overlay OR the restored/store view) — so a
+    // RUNNING run with one already-failed agent reports it immediately, before any snapshot row
+    // exists (the designed asymmetry vs `run_list`, DES-234's case iii). Omitted (never `0`) for a
+    // run with no agent records at all, so a script with no agent() calls never reads as unhealthy.
+    const failed = merged.agents.filter((a) => a.state === 'failed' || a.state === 'refused').length;
+    return { ...merged, ...(merged.agents.length > 0 ? { failedAgentCount: failed } : {}) };
   }
 
   /** v27 (DES-194, ARCH-127, ADR-052, TASK-199, REQ-141): the ONE accessor `/api/runs` and
@@ -948,6 +974,15 @@ export class RunManager {
     const stored = await this._store.getResult(runId);
     if (stored) return { ok: true, value: stored.value };
     const view = await this._store.getRun(runId);
+    // v35 (DES-232, ARCH-142, TASK-236, REQ-205): GATED — `getError` is read only when the STORED
+    // status is `failed`. Ungated, this would answer `{ok:false, error}` for a run `run_status`
+    // reports `interrupted` (a crash between the column write and the transition, then REQ-060's
+    // boot reclassification) — two surfaces contradicting on one run, the defect this slice removes.
+    if (view?.status === 'failed') {
+      const storedError = await this._store.getError(runId);
+      if (storedError) return { ok: false, error: storedError };
+      return { ok: false, error: { code: 'RUN_FAILED', message: `Run ${runId} failed; no reason was recorded (admitted before v35)` } };
+    }
     return { ok: false, error: { code: 'RUN_NOT_TERMINAL', message: `Run ${runId} has not completed (status: ${view?.status ?? 'unknown'})` } };
   }
 
@@ -1077,7 +1112,11 @@ export class RunManager {
     const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, secretValueProvider: this._secretValueProvider, aliases: this._aliasMap, ...(persistedPriceBook !== null ? { priceBook: persistedPriceBook } : {}) });
     const entry: RunEntry = {
       script,
-      args: spec.args,
+      // v35 (DES-233(d)): `spec.args ?? {}` — no `storedParams?.args` middle term. `runs.args`
+      // (this line, and its resume-rehydrate twin below) is the ONLY dispatch source; promoting
+      // the redacted `effective_params.args` admission record here is exactly what INV-V35-2
+      // forbids (a hard-crash resume would otherwise hand the script a redaction marker as data).
+      args: spec.args ?? {},
       name: spec.name,
       status: view.status,
       guard,
@@ -1222,10 +1261,24 @@ export class RunManager {
           await this._store.recordResult(runId, outcome.result);
           await this._transition(runId, entry, 'completed');
         } else {
-          entry.resultError = toErr(outcome.error);
-          await this._transition(runId, entry, 'failed');
+          // v35 (DES-232, ARCH-142, TASK-236, REQ-205): redact BEFORE bounding (R-G9, INV-V26-5 —
+          // a substring cut applied first can split a secret so redact()'s value-exact match finds
+          // neither half), and persist the reason (`recordError`) STRICTLY BEFORE flipping the
+          // status to `failed` (INV-V35-1) — `try/finally` so a throwing `recordError` (disk full,
+          // EACCES) still lets the run reach `failed` rather than hang `running` forever.
+          const captured = this._secretValueProvider
+            ? (redact(toErr(outcome.error), this._secretValueProvider.entries()) as { code: string; message: string })
+            : toErr(outcome.error);
+          entry.resultError = capErrorEnvelope(captured);
+          try { await this._store.recordError(runId, entry.resultError); }
+          finally { await this._transition(runId, entry, 'failed'); }
         }
-      });
+      })
+      // v35 (DES-232): a backstop covering EITHER branch above (recordResult/recordTransition can
+      // also throw, same as recordError) — same precedent as `usage_backfill_failed` (run-manager.ts
+      // engine-log convention), not an EngineWarning (`EngineWarning.kind`'s required
+      // `terminalState` does not exist for a settle failure).
+      .catch((e) => { console.log(JSON.stringify({ event: 'run_settle_failed', runId, error: String(e) })); });
   }
 
   /** Handles one child workflow(name|{scriptPath}) call: resolves the named script from the catalog

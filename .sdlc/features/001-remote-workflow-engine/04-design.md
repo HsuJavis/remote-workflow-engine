@@ -8413,3 +8413,379 @@ gets an `iter:` bump — see Decision rationale item 13.
 13. **`iter:` is NOT bumped on DES-007 / DES-102 / DES-195 — the v33 F6-1 house rule, re-measured.** The dispatch asked for an `iter:` bump on amended rows; this ledger's own Decision rationale item 22 says `iter:` records ORIGIN, not last touch, and v33's F6-1 measured a bump at 1 gap cleared for 7 phantom test-lag rows minted. Measured here before writing: bumping these three to v34 would mint **14** new 漂移 rows (10 verify children under DES-007 at v1, 1 under DES-102, 3 under DES-195), none of which describes a real lag — the tests still pin exactly what the amended rows now say. The retirement is recorded in the amendment prose above and in 02-architecture.md's retirement register instead, which is where an auditor actually looks. If the owner wants the bump anyway, it is one sed and 14 explained gaps.
 14. **Declined, with the reason stated rather than left silent: a durable "retired keys present at last boot" signal.** The quality lens's self-sustainability dimension notes that a retired config key's only channel is a transient `console.warn` at boot, so a long-running server can carry an inert key for iterations with no ongoing signal. True, and PRE-EXISTING (the `graphAnalyzer` precedent has had this property since v24); v34 adds a second key to the same channel rather than opening a new gap. Building a queryable deployment surface for it is out of this slice's scope — this slice deletes a layer, it does not add operator surfaces. Recorded as a declined scope call with its trigger: an operator reports an inert retired key surviving an upgrade.
 15. **No inventory test for "did we remove everything?".** `AGENT_OPT_KEYS` and `KNOWN_FILE_CONFIG_KEYS` are `Record<keyof T, true>` — a type cannot be forgotten into, and an inventory test duplicates the compiler while going stale on its own. Where the compiler genuinely cannot see (prose, comments, `allowJs` files), the answer is `grep -rn agentType src/ docs/` pasted into TASK-229's DoD as EVIDENCE, plus the one untyped file bound into the same task (item 10). The quality lens asked for the inventory test and conceded on the compile pin; the grep-as-DoD is the half the adversarial lens conceded back.
+
+## v35 design entries (REQ-205..210 — ARCH-141..154, ADR-065..071) — DES-230..240
+
+Panel: two groups, two full rounds (`.panel/design/{adversarial,quality-dimensions}.{r1,r2}.md`),
+pre-run by the workflow and synthesized here (no re-spawn). Round 2 converged on almost everything;
+the deltas this design takes from the debate over the architecture as written are listed at the file
+end under **Decision rationale — v35**. Existing DES rows are **not** amended and **no** `iter:` is
+bumped on them (the v33 F6-1 house rule — a bumped design parent fires drift on every IMPL/UT
+beneath it); DES-088's sink registry is cross-referenced in prose from DES-232 instead.
+
+```mermaid
+classDiagram
+  class errors_ts {
+    +toErr(err) ErrEnvelopeLite
+    +capErrorEnvelope(e) ErrEnvelopeLite
+    +MAX_ERROR_ENVELOPE_BYTES
+  }
+  class RunStore {
+    <<port>>
+    +recordError(runId, err) Promise
+    +getError(runId) Promise
+    +recordResult(runId, value) Promise
+  }
+  class RunManager {
+    -_runLive() capture→persist→transition
+    +result(runId) gated on status==failed
+    +status(runId) failedAgentCount fold
+  }
+  class script_spans_ts {
+    +nonCodeSpans(script) OracleResult
+  }
+  class workflow_meta_ts {
+    +scanAgentCalls(script) AgentCallScan
+  }
+  RunManager ..> errors_ts : toErr + cap AFTER redact
+  RunManager ..> RunStore : recordError before _transition
+  RunStore <|.. SqliteRunStore
+  RunStore <|.. InMemoryRunStore
+  workflow_meta_ts ..> script_spans_ts : offset predicate, fail-closed
+```
+
+### DES-230 — `src/errors.ts`: `toErr` is moved and stays total; the byte bound moves to the field that actually arrives
+- **status:** draft
+- **traces:** ARCH-141, TASK-236, REQ-205
+- **signature:**
+  ```ts
+  // src/errors.ts — moved VERBATIM from run-manager.ts:150 (behaviour byte-identical), now exported
+  export function toErr(err: unknown): { code: string; message: string };   // pure, total, UNBOUNDED
+  export const MAX_ERROR_ENVELOPE_BYTES = 4096;
+  /** Bounds the SERIALIZED envelope. Applied at the single persist site, AFTER redact(). */
+  export function capErrorEnvelope(e: { code: string; message: string }): { code: string; message: string };
+  // over-bound result: { code, message: `${head}… [truncated: ${n} bytes omitted]` } where `head` is
+  // a utf8-safe cut of the already-REDACTED message; `code` is never truncated.
+  ```
+- **boundary:** `toErr` gains **no** `detail` forwarding and no bound — see the `owner_decision` below and the rationale item 1. `capErrorEnvelope` runs **after** `redact()`, never before: it makes a substring cut, and a cut applied first can split a secret so `redact()`'s value-exact match finds neither half (R-G9, `agent-executor.ts:662-671`, INV-V26-5). The cut is utf8-safe (never splits a multi-byte char). `code` is bounded by construction (it comes from `toErrorCode`/the IPC wire, never from script text); `message` is `String(err.message)` off a script-thrown value and is the one unbounded, script-controlled, newly-persisted string in this slice — `MAX_SCRIPT_BYTES` bounds the *source*, not what the source throws. `run-manager.ts` has **two** `toErr` callers (`:1225` dispatch outcome, `:1306` nested-`workflow()` outcome); both import from here.
+- **tests:** (verifier owns ids) UT: `toErr` goldens for the three input shapes (coded object / `Error` / primitive) proving the move is byte-identical; `capErrorEnvelope` on an under-bound value returns it unchanged (identity), on an over-bound value returns the marker with `code` intact; **the ordering test** — a secret whose value straddles the cut point, composed as `capErrorEnvelope(redact(toErr(e)))`, yields the redaction marker and no half-secret substring (this test fails if an implementer swaps the composition).
+- **owner_decision:** pending — REQ-205 的第四條驗收(結構化標記如 `violation: AGENT_OPT_RETIRED` 要能從 run 層錯誤封包讀到)在 v35 **不實作**,理由是設計 panel 實測:標記在抵達 `toErr` 之前已被丟棄三次(`sandbox/guards.ts:322-335` 把每個失敗重建成兩欄 `{code,message}`、`sandbox/host.ts:147/166` 中繼同樣重建、`child-entry.ts:36` 的線上型別根本沒有這個欄位),而且 REQ-205 自己舉的例子連 **code** 都在 `guards.ts:334` 被壓平成 `SCRIPT_ERROR`(`ENGINE_REFUSAL_CODES` 只收 `BUDGET_EXCEEDED`)。照 ARCH-141 原文實作會得到一段永遠收不到輸入的死碼與一個永遠不會失敗的單元測試 —— 正是本次迭代要消滅的假綠燈。要真的關掉它,需要改 4 個檔的 IPC 契約、裁決「哪些引擎拒絕碼可以穿過 sandbox catch」、並接受腳本可控物件寫進磁碟的新通道。請裁決:(A) 接受把這條驗收延到 v36(附上述行號),v35 交付其餘三條;或 (B) 現在就把它拉進 v35,另開一張 IPC 卡(4 檔 + sandbox 真實層測試 + `SCRIPT_ERROR` 壓平的裁決)。
+- **iter:** v35
+
+### DES-231 — `RunStore.recordError`/`getError`, the `runs.error` column, and the health count on the projection that already reads the snapshot
+- **status:** draft
+- **traces:** ARCH-143, TASK-235, REQ-205, REQ-207
+- **signature:**
+  ```ts
+  // src/run-store.ts (port) — beside recordResult/getResult
+  recordError(runId: string, err: { code: string; message: string }): Promise<void>;
+  getError(runId: string): Promise<{ code: string; message: string } | null>;
+  // src/types.ts
+  interface RunSummary    { …; error?: { code: string; message: string }; failedAgentCount?: number }
+  interface RunStatusView { …; error?: { code: string; message: string }; failedAgentCount?: number }
+  // src/store/sqlite-run-store.ts
+  try { db.exec('ALTER TABLE runs ADD COLUMN error TEXT'); } catch { /* idempotent idiom, :70-83 */ }
+  async recordError(runId, err) {               // ONE method, two surfaces, in THIS order
+    db.prepare('UPDATE runs SET error = ? WHERE runId = ?').run(JSON.stringify(err), runId);
+    mkdirSync(runDir, {recursive:true});
+    appendFileSync(join(runDir,'journal.jsonl'), JSON.stringify({type:'error', ...err}) + '\n');
+  }
+  // _USAGE_PROJECTION gains:
+  (SELECT COUNT(*) FROM json_each(s.json,'$.agents')
+     WHERE json_extract(value,'$.state') IN ('failed','refused')) AS failedAgentCount
+  ```
+- **boundary:** **(a) Read gating.** `error` is surfaced **only when `status === 'failed'`**. The crash window is real: the column is written, the process dies before `_transition`, REQ-060's boot recovery reclassifies the row to `interrupted`, it is resumed and may then *complete* — a non-NULL `error` on a non-`failed` row is stale and inert, never served. Same rule at all four sites. **(b) The `failedAgentCount` guard is `row.agentCount != null && row.agentCount > 0`** — NOT `(row.agentCount ?? 1) > 0`. Measured: `saveSnapshot`'s only production call site is inside `_transition` under `TERMINAL`, so every non-terminal run has no `run_snapshots` row; `json_each` over a NULL document returns **0**, not NULL, so the `?? 1` form emits a confident `0` ("nothing has failed") for the whole life of a run — exactly REQ-207's defect, relocated. The field is **omitted, never `0`**, when there is no snapshot, when the snapshot is `backfillUsage`'s `{usage}`-only row, and when the run has zero agents (`usagePresent`'s zero-agent guard, copied). **(c) Four read sites, enumerated because TypeScript cannot see a forgotten `SELECT` column:** `listRuns()` (`:342`) and `list()` (`:369`) each enumerate columns explicitly and each needs `r.error` plus the `_rowToSummary` row type; `getRun()` (`:274`) is `SELECT *` so the column arrives for free but still needs the row type and one conditional spread; `getError()` is new. **(d)** `runs_name_status_created` is untouched (nothing filters or sorts on `error`); a pre-v35 row reads `NULL` = 「no recorded reason」, never a crash. **(e) Authority:** `runs.error` is authoritative (it is what `getError`/`run_result` read); the journal line is the audit trail — the same D-I2 wording `recordResult` already carries.
+- **tests:** (verifier owns ids) UT over `InMemoryRunStore` + `SqliteRunStore`: one `recordError` call → column and journal line carry the byte-identical value; column-before-journal order. IT: one failed run read back through `listRuns`/`list`/`getRun`/`getError` in ONE test (the wiring-gap class); the stale-column row (`error` non-NULL, status `interrupted`) surfaces nothing; the five `failedAgentCount` cases of DES-234.
+- **iter:** v35
+
+### DES-232 — the failure path: redact at capture, bound, persist, then flip — and `result()` stops contradicting the status
+- **status:** draft
+- **traces:** ARCH-142, TASK-236, REQ-205
+- **signature:**
+  ```ts
+  // src/run-manager.ts — the dispatch continuation (:1216-1227), error branch
+  } else {
+    const captured = this._secretValueProvider
+      ? redact(toErr(outcome.error), this._secretValueProvider.entries()) as {code:string;message:string}
+      : toErr(outcome.error);
+    entry.resultError = capErrorEnvelope(captured);              // cap AFTER redact — DES-230
+    try { await this._store.recordError(runId, entry.resultError); }
+    finally { await this._transition(runId, entry, 'failed'); }  // INV-V35-1: reason before status
+  }
+  // …and ONE backstop on the continuation itself (covers BOTH branches). NOT an EngineWarning:
+  // `EngineWarning.kind` is a closed union in src/types.ts (TASK-235's file) whose required
+  // `terminalState` does not exist for a settle failure — this uses the engine-log precedent at
+  // run-manager.ts:877 (`usage_backfill_failed`), same file, no cross-card type edit.
+  .catch((e) => console.log(JSON.stringify({ event: 'run_settle_failed', runId, error: String(e) })));
+
+  // result() — the view is fetched FIRST, and the new step is GATED like its neighbour
+  const view = await this._store.getRun(runId);
+  if (view?.status === 'failed') {
+    const stored = await this._store.getError(runId);
+    if (stored) return { ok: false, error: stored };
+    return { ok: false, error: { code: 'RUN_FAILED',
+      message: `Run ${runId} failed; no reason was recorded (admitted before v35)` } };
+  }
+  return { ok: false, error: { code: 'RUN_NOT_TERMINAL', message: `Run ${runId} has not completed (status: ${view?.status ?? 'unknown'})` } };
+  ```
+- **boundary:** **(a) Gating is load-bearing, not tidiness.** An ungated `getError` makes `run_result` answer `{ok:false, error}` for a run `run_status` calls `interrupted` (crash between the column write and the transition, then REQ-060 reclassification) — two surfaces contradicting on one run, which is the defect class this slice exists to remove. **(b) Redaction deviates from `:626`'s convention deliberately** (persist redacted, keep the live value clear): `effectiveParams` is *dispatched*, `resultError` is only ever *served*, so the live copy is redacted too and there is exactly one call site and no fan-out (ADR-066; this is REQ-083's sink #5, cross-referenced to DES-088's registry — **not** an amendment to it). **(c) `try/finally`**: `recordError` touches the filesystem, so it can throw (disk full, EACCES); without the `finally` the run stays `running` forever — not even `interrupted`, so nothing resumes it. The reason may be lost; the run may not. **(d)** The `.catch` backstop covers the success branch's identical shape (`recordResult` at `:1222`) without restructuring it — surgical. **(e)** `JSON.stringify` at the store cannot throw on this value: it is a two-string object by construction (DES-230).
+- **tests:** (verifier owns ids) UT with an `InMemoryRunStore` spy: `recordError` strictly precedes `recordTransition(…,'failed')`; a throwing `recordError` still reaches `failed` and leaves no unhandled rejection. IT with a real injected `_secretValueProvider` and a real seeded secret: the **marker is present** in `runs.error` and in `journal.jsonl`, the raw value absent from both (assert presence — absence alone passes vacuously when no provider was injected). IT restart: a SECOND `RunManager` over the same SQLite file; stored reason returned; pre-v35 NULL-error row → `RUN_FAILED`; `interrupted` row with a stale column → `RUN_NOT_TERMINAL`.
+- **iter:** v35
+
+### DES-233 — `args`: resolved once at admission, dispatched from `runs.args`, recorded in `effective_params.args`
+- **status:** draft
+- **traces:** ARCH-144, ADR-071, TASK-236, REQ-206
+- **signature:**
+  ```ts
+  // src/run-manager.ts start(), right after `contract` is built (:571) and BEFORE validateDeclaredArgs(:574)
+  const raw = spec.args;
+  const isRecord = raw !== null && typeof raw === 'object' && !Array.isArray(raw);
+  const resolvedArgs = (raw === undefined || raw === null || isRecord)
+    ? materializeArgDefaults((raw ?? {}) as Record<string, unknown>, contract.args)
+    : undefined;                                     // non-record args: passthrough, see boundary (f)
+  if (resolvedArgs) spec = { ...spec, args: resolvedArgs };   // runs.args stores the RESOLVED record, not 'null'
+  const argsResult = validateDeclaredArgs(contract, spec.args);   // unchanged call, now sees the defaults
+  …
+  if (resolvedArgs) effectiveParams.args = resolvedArgs;  // BEFORE the redact fork at :626 — the RECORD
+  // entry construction, both sites:
+  args: spec.args ?? {},        // :713 idempotent after the above; :1080 (resume) is the load-bearing one
+  // resume(), the marker scan — scoped to the DISPATCHED fields
+  const { args: _recordedArgs, ...dispatched } = entry.effectiveParams;
+  if (hasSecretMarker(dispatched)) throw codedError('PARAM_SECRET_UNAVAILABLE', …);
+  ```
+- **boundary:** **(a) INV-V35-2**: `runs.args`/`entry.args` is the dispatch source on both paths; `effective_params.args` is the redacted admission **record** and is **never** promoted to the dispatch source (a hard-crash resume would otherwise hand the script a redaction marker as data — DES-088 invariant (c)'s caveat). **(b) The marker scan must exclude `args`** or a run whose arg carried a provisioned secret becomes **permanently** unresumable (`hasSecretMarker` is a blunt `JSON.stringify(...).includes(MARKER_PREFIX)` whole-object scan, and the snapshot is run-immutable). Excluding it is consistent with why the check exists: it guards what will be *dispatched*. **(c)** Materializing **before** `validateDeclaredArgs` is what makes a declared `default` validated by the *existing* `checkValueAgainstSpec` path (`validateDeclaredArgs` skips absent keys) — no second validator, and the admission error a caller sees is the one that already exists. **(d)** The resume expression is `spec.args ?? {}` — no `storedParams?.args` middle term: promoting the snapshot copy is exactly what (a) forbids, so a term that would only ever fire when `runs.args` is absent is dead on both row generations. **(e)** A pre-v35 row persisted as `'null'` parses to `null` in `getSubmission` and is coerced at the resume entry construction. **(f) Non-record `args` — measured, not assumed:** `run_start`'s schema declares `args` with a **description only, no type** (`tool-specs.ts:411`) and `validateDeclaredArgs` casts (`contract.ts:665`, `(args ?? {}) as Record<…>`), so a caller CAN send `args: "hello"` or an array today and the script receives it. Materializing over that would spread a string into index keys — silent corruption introduced by the fix. Rule: defaults are materialized only when `spec.args` is **nullish or a plain object**; a non-record `args` is passed through **untouched**, no defaults, and `effective_params.args` is omitted for that run. v35 adds no arg-shape or arg-name validation — that is new enforcement, not a fix, and REQ-206 is about `null`/omitted. **(g) Untouched on purpose:** the nested `workflow(name, args)` call at `:1304` passes the script's own argument straight through — REQ-046's path, outside this closure, and it never reads `runs.args`.
+- **tests:** (verifier owns ids) IT (the acceptance is on the RESUME path, not `start()`): bare `run_start` → script sees `{}`; declared `args.url.default` → script sees it AND `runs.effective_params.args` records it; suspend→resume and restart-rehydrate→resume both hand over the same args; a planted `args='null'` legacy row (raw SQL, the `resume-legacy-params.test.ts:172-173` precedent) resumes to `{}`; an arg containing a provisioned secret value survives suspend→resume with the script receiving the RAW value.
+- **iter:** v35
+
+### DES-234 — `failedAgentCount`: one predicate, two read models, and exactly what the agreement test asserts
+- **status:** draft
+- **traces:** ARCH-146, ADR-067, TASK-236, REQ-207
+- **signature:**
+  ```ts
+  // src/run-manager.ts — status(), on the agents array _mergeLive already resolved (live OR restored)
+  const failed = agents.filter((a) => a.state === 'failed' || a.state === 'refused').length;
+  return { ...view, …, ...(agents.length > 0 ? { failedAgentCount: failed } : {}) };
+  ```
+- **boundary:** Omitted (never `0`) when the run has no agent records at all — `usagePresent`'s zero-agent guard, so a script with no `agent()` calls never reads as unhealthy for having none to fail. Counts **terminal non-success** only (`failed`/`refused`; `refused` = the engine declined to dispatch, equally 「no result came back」). A **count, never narrative text** — the run-level surfaces get numbers; per-agent detail already exists and is unchanged by v35 (`AgentRecord.detail`, redacted and capped at 1024B, `types.ts:269-287`, v26 INV-V26-5), so REQ-207 is not answered twice at two depths. **The agreement matrix is five cases and only three of them assert equality** — write it this way or the verifier writes equality everywhere and case (iii) fails for the wrong reason: (i) terminal, mixed pass/fail → both surfaces present and **equal**, non-zero; (ii) terminal, zero agents → both **omit**; (iii) **running, one agent already failed** → `run_list` **omits** (no snapshot yet), `run_status` reports `1` — the designed asymmetry, and the case that makes the test worth writing; (iv) a pre-v35 row with no snapshot → both omit, no crash; (v) terminal with a `{usage}`-only snapshot → both omit. Case (iii) is why the advertised surface must say absence-is-not-health (DES-239).
+- **tests:** (verifier owns ids) IT: the five cases above, with (iii) exercised against a genuinely running run and (iv) against a planted pre-v35 row; plus the **restored** path (agents from `run_snapshots` after a restart, not only the live `_mergeLive` overlay).
+- **iter:** v35
+
+### DES-235 — `materializeArgDefaults`, the reversed P6-3 ban, and the two type slots
+- **status:** draft
+- **traces:** ARCH-145, TASK-231, REQ-206
+- **signature:**
+  ```ts
+  // src/params/contract.ts — pure, beside the (deleted) ban at :428-431
+  export function materializeArgDefaults(
+    args: Record<string, unknown>,
+    specs?: Record<string, ParamSpec>,
+  ): Record<string, unknown>;      // { ...defaults-for-absent-keys, ...args } — caller always wins
+  // in the registration loop where the ban is deleted, one line replaces it:
+  if (spec.default !== undefined) checkValueAgainstSpec(`args.${key}.default`, spec.default, spec);
+  // src/params/resolve.ts
+  export interface RunParams { …; args?: Record<string, unknown> }
+  export interface EffectiveCallParams extends Omit<RunParams, 'provenance' | 'args'> { … }
+  ```
+- **boundary:** Only keys **absent** from `args` are filled; a caller-supplied `undefined` for a declared key is treated as absent and filled (that is what the word "default" means — stated because it is the one reading a caller could dispute). A spec with no `default` key contributes nothing; a declared `default: undefined` is not a default. Unknown caller keys pass through untouched. Pure — no mutation of either input, so the admission site stays a caller and the unit test needs no engine. **`EffectiveCallParams` must omit `args`** or every `.agents.<label>` entry in `workflow_describe` and in the admission snapshot silently grows a copy of the run's args (Gate-2 constraint 2); expect the public-shape pins over `RunParams`/`RunSummary`/`RunStatusView` to be updated in the same commit — a pin edited after the fact stops being a pin. Registration-time validation of `.default` is taken (failing at register beats failing at every run) and costs one line on the **existing** validator, not a new one.
+- **tests:** (verifier owns ids) UT: caller-wins, absent-filled, unknown-key-passthrough, purity; a bad declared default (`{type:'number', default:'abc'}`) refused at registration while a good one is accepted; the `describe` projection carries no `args` key.
+- **iter:** v35
+
+### DES-236 — `nonCodeSpans`: the acorn span oracle, fail-closed, no masking
+- **status:** draft
+- **traces:** ARCH-148, ADR-068, TASK-232, REQ-208
+- **signature:**
+  ```ts
+  // src/script-spans.ts — the only new module in v35, ~30 lines, deps: acorn only
+  export function nonCodeSpans(script: string):
+    | { ok: true; spans: Array<[number, number]> }      // half-open [start,end), input coordinates
+    | { ok: false; reason: string };
+  // acorn.parse(script, { ecmaVersion: 'latest', sourceType: 'script',
+  //                       allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true,
+  //                       onComment: (block, text, start, end) => spans.push([start, end]) })
+  // collected: string Literal, regex Literal, TemplateElement quasis, comments.
+  ```
+- **boundary:** **`sourceType:'script'`, not `'module'`** — `guards.ts` executes the body through `new vm.Script`, a classic script, so module mode is a strict-mode **subset** that rejects `var let = 1;` / legacy octal `010` which V8 accepts (measured at Gate 2). `${…}` expressions between quasis are **CODE** and must not be spanned. Returns spans, **not masked text** — masking would blank the label literal and make every real call report `AGENT_LABEL_NOT_LITERAL`. A parse failure returns `{ok:false}` and **never** a partial span set (INV-V35-4). Pure, no I/O, no cache — one parse per registration, off the run path. `acorn` is pinned to an **exact** version in `dependencies` (a caret range makes the grammar an accident; the fail-closed valve catches the residual acorn↔V8 drift).
+- **tests:** (verifier owns ids) UT: regex literal, template substitution, escaped quote, both comment forms, sloppy-mode-only body (`{ok:true}`), unparseable body (`{ok:false}`, no spans); offsets asserted as numbers against a fixture, not merely "some span exists".
+- **iter:** v35
+
+### DES-237 — `scanAgentCalls`: one predicate added, extractor byte-identical, and the valve reaches the callers that cannot refuse
+- **status:** draft
+- **traces:** ARCH-149, TASK-233, REQ-208
+- **signature:**
+  ```ts
+  // src/workflow-meta.ts — scanAgentCalls (:434)
+  const meta = checkMeta(script);                                  // already imported at :5
+  const probe = meta.span ? script.replace(meta.span, meta.span.replace(/[^\n]/g, ' ')) : null;
+  const oracle = probe === null ? null : nonCodeSpans(probe);      // no span ⇒ do NOT invoke the oracle
+  if (oracle && !oracle.ok) return { labels: [], calls: [], violations: [{ code:'SCRIPT_UNSCANNABLE', line:1 }], unscannable: true };
+  const inNonCode = (idx: number) => !!oracle?.ok && oracle.spans.some(([s,e]) => idx >= s && idx < e);
+  // inside the AGENT_CALL_RE loop, beside the existing guard:
+  if (inNestedWorkflow(m.index)) continue;
+  if (inNonCode(m.index)) continue;
+  // src/workflow-meta.ts — the scan result type
+  export interface AgentCallScan { …; unscannable?: true }
+  ```
+- **boundary:** **The blank is character-preserving** (`/[^\n]/g → ' '`), NOT `script-checks.ts:59`'s `blankLines` — the latter preserves line count but not character count and would shift every offset below it. The extractor, `AGENT_CALL_RE`, `matchDelimiter`, label/`allowedTools` extraction and group attribution are **untouched** and keep reading the ORIGINAL source, so DES-174's published `index` join key and `lineAt()`'s real line numbers are unchanged by construction. **Ordering (D11):** when `checkMeta` yields no `span` (meta absent, not a pure literal, not an object literal) the oracle is **not invoked** — otherwise the surviving `export const meta =` fails a classic-script parse and today's specific refusal degrades into a vaguer `SCRIPT_UNSCANNABLE`. **Reach (D4):** `scanAgentCalls` has **five** production callers, not one — `workflow-catalog.ts:487` (the gate, refuses loudly), plus `workflow-meta.ts:57`, `dashboard.ts:301`, `server.ts:540`, `mcp-facade.ts:494`, none of which look at `violations`. `unscannable?: true` is one optional field that breaks no existing consumer, and each of the four read callers surfaces it as a visible marker instead of rendering an empty graph / zero agents. A guard that cannot tell you it ran is not a guard — one level out. (TASK-233 owns the field and two of the callers; `server.ts`/`mcp-facade.ts` ride TASK-237 for file-ownership reasons.)
+- **tests:** (verifier owns ids) the six red-first REQ-208 cases through the REAL `workflow_register`; every existing `SCAN_VIOLATION` test unchanged and green; `index` byte-identical on a fixture; a forced oracle failure → one `SCRIPT_UNSCANNABLE` violation + `unscannable:true` readable by a non-refusing consumer; a no-meta-span script keeps today's refusal wording.
+- **iter:** v35
+
+### DES-238 — `checkMermaid`'s fifth parameter is required; there is no runtime path that skips the v2 rules
+- **status:** draft
+- **traces:** ARCH-150, ADR-069, TASK-234, REQ-209
+- **signature:**
+  ```ts
+  // src/check-mermaid.ts:141 — the `?` is deleted; :285-300's `if (v2)` becomes unconditional
+  export function checkMermaid(
+    src: string, scriptLabels: string[],
+    agentDefaults: Record<string, { model?: string; effort?: string; timeoutMs?: number }>,
+    limits: { maxBytes: number; maxLines: number },
+    v2: { expected: ExpectedGraph },
+  ): CheckMermaidResult;
+  ```
+- **boundary:** No opt-out flag, no 「v2 not covered」 marker, no runtime branch — an opt-out **is** the degraded mode with a name on it, and the current optional parameter already *was* the explicit form that ~15 call sites took. One production caller (`workflow-catalog.ts:548`) already passes five. The break is confined to `tests/unit/check-mermaid.test.ts`; `check-mermaid-v2.test.ts` is already 5-arg; the three other `src/` importers import `SHAPES`/`EDGE_FORMS`, not the function. **The conversion trap (R6):** ~15 compiling `expected` objects reproduce the false green wearing a required parameter as a hat — at least one converted case must assert a v2 rule **firing** on a diagram that is v1-clean, and one `@ts-expect-error` 4-argument call keeps the compile-time guarantee executable.
+- **tests:** (verifier owns ids) as in the boundary: the `@ts-expect-error` arity pin, the firing case, and every existing v1 assertion preserved (the conversion adds an argument; it must not weaken an assertion).
+- **iter:** v35
+
+### DES-239 — the advertised surface: computed `attempts`/`worstCaseMs`, `initialize.instructions`, `ENVELOPE_NOTE`, and the omission semantics
+- **status:** draft
+- **traces:** ARCH-147, ARCH-151, ARCH-152, ARCH-154, ARCH-143, TASK-237, REQ-206, REQ-207, REQ-209, REQ-210
+- **signature:**
+  ```ts
+  // src/workflow-view.ts — projectAgentParams' timeoutMs entry, beside unit/ceiling/range/default
+  timeoutMs: { …, attempts: number, worstCaseMs: number }        // worstCaseMs = timeoutMs * attempts
+  export function projectWorkflowDescribe(row, ctx: { triggers: unknown[]; ceilings?: Ceilings; attempts?: number })
+  // wiring (the composeConfig forwarding class): server.ts:719's `config?.retries ?? 1` is ALSO passed
+  // to `new McpFacade({ …, gatewayAttempts: 1 + Math.max(0, config?.retries ?? 1) })` at server.ts:825,
+  // and the facade forwards it into ctx.attempts. Default when unwired: 1 + 1 (the deployed default).
+  // src/tool-specs.ts
+  export const ENVELOPE_NOTE = '…every tool result arrives as a JSON string inside content[0].text — parse it again…';
+  // src/server.ts — BOTH initialize results (:1240 and :1482)
+  instructions: `${ENVELOPE_NOTE} workflow_authoring_guide is ~${Buffer.byteLength(JSON.stringify(<the tool-result object a caller receives>))} bytes.`
+  ```
+- **boundary:** **(a) Computed, never transcribed** — a literal size or a hard-coded 「120000ms」 is the v34-class false green. The advertised size measures the **stringified tool result** the caller actually receives (`{content:[{type:'text',text:JSON.stringify(guide)}]}`), not the bare guide object, and it is computed **per `initialize`** — no module-scope memo (a cross-test singleton for one ~40KB `JSON.stringify` per *connection* is a testability cost bought with no measured benefit). **(b) `attempts = 1 + max(0, retries)`, stated WITHOUT the SDK-only untimed exception**: the two gateways disagree exactly there (`gateway/client.ts:515` is unconditional; `claude-agent-sdk-client.ts:507` gives `1` when no effective timeout is set), both ship, and a guide sentence that is confidently wrong for the deployed half is worse than one that is silent about it — the guide states the multiplication rule and points at `workflow_describe` for the number. **(c) Omission semantics are load-bearing, not decoration** (they are what makes DES-234 case (iii) safe): `run_status`/`run_list` descriptions must say `failedAgentCount` counts terminal non-success agents, is **omitted, never `0`**, when the run has no agent records, is **terminal-only on `run_list`**, and that **absence is not health** — poll `run_status` for a live count; read it against the `agentCount` the same row already returns. `run_result`'s description states `error:{code,message}` on a failed run. This is prose on existing tool descriptions — no schema change, no `errors[]` change, no new tool, and no REQ-079 trace edge is minted. **(d)** `ENVELOPE_NOTE` is ONE exported constant consumed by the handshake and the guide — one wording, not two chances to drift. **(e) The doc-example extraction rule** (REQ-209's guard, `guide-examples-register.test.ts` extended), stated so the verifier does not invent one: strip a leading `> ` blockquote prefix from every line; a **script block** is the body of a ```` ```js ````/```` ```javascript ```` fence or of a `<<'JS' … JS` heredoc; a **mermaid block** is the body of a fence or `<<'MMD' … MMD` heredoc whose first non-blank line matches `/^(graph|flowchart)\s+LR\b/`; pair each script block with the next mermaid block after it in document order; register every pair through the REAL `workflow_register` under a unique name. Each source file declares a **minimum pair count** (`docs/AUTHORING.md`, `DEPLOY.md`, `README.md`) and the test fails when the extractor finds fewer — a silently-empty extractor is this guard's only failure mode. **(f) `structuredContent` is NOT the v35 fix** (ADR-070, v36 with its line numbers).
+- **tests:** (verifier owns ids) UT: `worstCaseMs === timeoutMs * attempts` with `attempts` derived from an injected config, and a changed `retries` changing the advertised number (the wiring sweep in `compose-config-v2-wiring.test.ts`); the three tool-description assertions; the guide's three facts. IT: both `initialize` sites carry `instructions` with a size **equal to a value the test computes itself**; every extracted doc pair registers green.
+- **iter:** v35
+
+### DES-240 — the dashboard renders the reason next to the status it already renders
+- **status:** draft
+- **traces:** ARCH-153, TASK-238, REQ-205
+- **signature:** run **detail** view: when `status === 'failed'` and `error` is present, render `error.code` + `error.message` next to the terminal status; run **list**: render `error.code` on a `failed` row. Both read fields `/api/runs` and `/api/runs/:id` already carry once DES-231 lands — **no new endpoint, no new fetch, no client-side computation**. New i18n keys only, through `src/dashboard/lib/strings.js` (zh-TW + en).
+- **boundary:** Absent `error` (a pre-v35 `failed` row, or any non-`failed` status) renders the status alone — never an empty block, never `undefined`. **Named consequence, corrected from ARCH-153's note:** `/api/runs*` are the unauthenticated dashboard reads, and this puts script-authored error text on them; that is accepted because the value is redacted at capture and bounded (DES-230/232) and REQ-205 names the dashboard explicitly. ARCH-153's closing sentence 「per-agent narrative error text stays on the per-agent surfaces」 is **factually wrong and must not be quoted as an exposure guarantee**: `RunStatusView.agents: AgentRecord[]` (`types.ts:318-321`) carries `AgentRecord.detail` (provider-authored, redacted, capped 1024B) and `toPublicRunView` (`run-view.ts:11-14`) strips only `principal`, so per-agent detail has crossed this route since v26. What is true and supports the same decision: **v35 adds no new text channel at the run level** — `failedAgentCount` is a count. **`failedAgentCount` is deliberately NOT rendered** (see rationale item 9).
+- **tests:** (verifier owns ids) acceptance over a real browser against a real failed run: detail + list render code and message; a `completed` run and a pre-v35 reasonless `failed` run render no error block; both strings resolve in both languages.
+- **iter:** v35
+
+### v35 real-tier validation paths + per-tier mock policy
+
+**Per-tier mock policy (whole slice).** *Unit* may mock freely — `toErr`/`capErrorEnvelope`/
+`materializeArgDefaults`/`nonCodeSpans`/`checkMermaid` are pure and need nothing, and
+`InMemoryRunStore` is a real implementation of the port, not a mock of it. *Integration* uses the
+real adjacent components — real SQLite file, real catalog, real MCP HTTP against a booted
+`createServer()`, real sandbox — and mocks only third-party **network**, of which every v35 path has
+none except `agent()` dispatch (out of scope here). *E2E/acceptance must NOT mock the SUT's own
+boundaries*: no stubbed `scanAgentCalls`, no hand-built `RunStatusView`, no direct `checkMermaid`
+call standing in for `workflow_register`, no fake store. A test that forgets to inject
+`_secretValueProvider` passes vacuously (`redact()` is opt-in) — inject a real one and assert the
+marker is **present**.
+
+| REQ | Real-tier path (the real user-facing action a validator runs) |
+|---|---|
+| REQ-205 | Boot a real engine, register + start a workflow whose script throws; read `run_status`/`run_list`/`GET /api/runs/:id` and the dashboard for `error.code/message`; `cat` the run's `journal.jsonl` for the `{type:'error'}` line; `sqlite3` the `runs.error` column; then **restart the process** (a second `RunManager` over the same file is the IT-tier form) and call `run_result` — the same reason, never `RUN_NOT_TERMINAL`. Re-proves REQ-005/REQ-055 (state durability) and REQ-117 (cold-caller legibility). |
+| REQ-206 | Real `workflow_register` of a script declaring `meta.params.args.url.default`, then a **bare** `run_start({name})` over real MCP HTTP: the script reads `{}`/the default; `runs.effective_params.args` records it; suspend → `resume` → same args. Re-proves REQ-001 (run lifecycle) and REQ-090 (parameter contract). |
+| REQ-207 | A real run whose every `agent()` fails (real gateway, real timeout): `run_status.failedAgentCount === agentCount` and `run_list` agrees for the same terminal run; `workflow_describe` shows `attempts`/`worstCaseMs` matching the deployed `retries`; `workflow_authoring_guide` states the `null`-on-failure rule. Re-proves REQ-116/REQ-117. |
+| REQ-208 | Real `workflow_register` of the DEPLOY.md role-prompt recipe (a prompt string containing `…verifier agent (mode A)…`) — accepted; and a genuinely unlabeled `agent(` — still refused with its real line number. Re-proves REQ-106 (registration admission). |
+| REQ-209 | Run the doc-example guard against a booted engine (every extracted pair through the real `workflow_register`), then copy one DEPLOY.md recipe by hand into a live `curl` and watch it register + run. Re-proves REQ-111/REQ-116. |
+| REQ-210 | A cold MCP client `initialize` against the real server: `instructions` states the double-JSON envelope and a guide size the client can compare against the bytes it then receives from `workflow_authoring_guide`. Re-proves REQ-107/REQ-117. |
+
+## Decision rationale — v35 (DES-230..240; two panel groups, two rounds, synthesized here)
+
+**How the panel moved** (r1 → r2 → here). The two groups' r1 findings were orthogonal, not opposed;
+round 2 was mostly convergence, and the quality lens opened it by conceding that two of its four r1
+gaps were shallow next to what the adversarial lens's line-level tracing found underneath the same
+rows. Every contested point below names who conceded.
+
+1. **REQ-205's `.detail` forwarding — deleted from the design, deferred to the owner.** The
+   adversarial lens traced that nothing with a `.detail` can reach `toErr` (three rebuilds at
+   `guards.ts:322-335`, `host.ts:147/166`, `child-entry.ts:36`) and that REQ-205's own example loses
+   its *code* at `guards.ts:334`; the quality lens conceded and **corrected its own r1 praise** of
+   ARCH-141, adding the obligation that the `SCRIPT_ERROR`-flattening loss be named in the same
+   deferral. Both lenses landed on option (2): keep the file move, delete the forwarding and its
+   bound, state the deferral with its line numbers. This design implements (2) **and refuses to take
+   the scope call itself** — DES-230 carries `owner_decision: pending` because deferring a written
+   acceptance criterion (whose own text says v34 routed it here to be 「正式處理」) is a product call,
+   not an engineering one. ARCH-141's file move is kept on its own merit (a pure, unit-testable
+   export) and this design states plainly that **the move does not discharge REQ-205's fourth
+   criterion** — the difference between a green row and a fixed defect.
+2. **The byte bound moves to the field that arrives.** ARCH-141's `MAX_ERROR_DETAIL_BYTES` guards an
+   input that cannot occur, while `message` — `String(err.message)` off a script-thrown value — is
+   unbounded, newly written to disk and served on an unauthenticated route. Taken as
+   `capErrorEnvelope`/`MAX_ERROR_ENVELOPE_BYTES` at the single persist site, **after** `redact()`,
+   because the cut is now a real substring cut and R-G9's split-secret failure is live. Net code is
+   the same size as the row it replaces; it is the same discipline pointed at the real target.
+3. **`failedAgentCount` is omitted, never `0` — and the guard is `!= null && > 0`.** The contract
+   lens preferred an always-present field (stable schema); the boundary lens showed `0` is a
+   measurable lie for the whole non-terminal life of every run (`json_each` over a NULL snapshot
+   returns 0 and `(agentCount ?? 1) > 0` passes). **Karpathy tie-break: correctness at equal cost.**
+   The quality lens elevated this above its own r1 dashboard ask and adopted the fix in full.
+4. **The agreement test asserts asymmetry, not equality, in case (iii).** ADR-067's 「one run, both
+   surfaces, same number」 is discharged by a test that cannot fail if it only runs terminal cases.
+   Five cases, written into DES-234 with the expected answer per surface.
+5. **`args` stays in `effective_params`, and the secret scan is scoped instead.** Both lenses reached
+   this from different directions (audit-record loss vs. permanently-stuck states); the adversarial
+   lens expected to be argued into ADR-071 option (c) and was not — the quality lens never held it.
+   ADR-071's decision (a) survives intact; the defect it did not name (a secret in `args` making a
+   run permanently unresumable) is closed by excluding the non-dispatched field from the marker scan.
+6. **`result()`'s new step is gated on `status === 'failed'`, and the read sites gate too.** Raised
+   in r2 as the crash-window consequence of QD-1: ungated, `run_result` reports a terminal failure
+   for a run `run_status` calls `interrupted`. One condition, `view` already fetched. The
+   kill-between-writes test QD-1 asked for is **declined** in favour of the cheaper assertion the
+   claim actually makes (one `recordError` call, two surfaces, same value) — with `getError` gated,
+   no served surface can distinguish the two write orders, and process-level fault injection for a
+   microsecond window on the diagnostic path is not the Karpathy trade. The ordering itself is
+   stated (column first, journal second, as `recordResult`) and the authority named (column
+   authoritative, journal audit).
+7. **`SCRIPT_UNSCANNABLE` reaches the four callers that cannot refuse.** ARCH-148's 「registration
+   path only」 is false — five production callers, four of which read `.calls`/`.labels` and would
+   render an empty graph under grammar drift. One optional field, one line per consumer; cheaper
+   than either 「refuse everywhere」 (a dashboard cannot) or accepting silent degradation. The quality
+   lens agreed on the fix while rebutting the dimension the adversarial lens predicted it would
+   argue from — it is observability, not replaceability.
+8. **`attempts` is read from the effective gateway and the guide drops the SDK-only exception.** The
+   quality lens elevated this from 「prose wrong for one gateway」 to 「one port, two implementations,
+   divergent observable retry semantics」; the cheap fix (advertise correctly) is taken for v35 and
+   the deeper unification is filed for v36. Same fix, stronger reason.
+9. **Declined: a dashboard surface for `failedAgentCount`.** The quality lens asked twice. REQ-205
+   names the dashboard in as many words (hence DES-240); **REQ-207 does not** — its acceptance is
+   written about 呼叫端, and on the dashboard the per-agent records with their `state` are already
+   rendered for a human to see. If a later iteration takes it, it belongs on the run **detail** pane
+   (which reads `run_status` → `_mergeLive`), never on the list row, where DES-231's terminal-only
+   fold would leave it blank for exactly the run an operator is watching.
+10. **Taken from the quality lens over the adversarial lens's own first instinct: the tool
+    descriptions must state the omission semantics.** The adversarial lens recorded that it was
+    going to call this scope creep and changed position for a reason — its own agent-altitude rule
+    ("the advertised surface states the failure mode before the caller can hit it") decides it
+    against that objection, and the sentence is the *carrier* of the D3 fix: an omission nobody
+    advertised is read as a zero, which is REQ-207's defect exactly. Delivered as prose on existing
+    descriptions (DES-239), not as a new ARCH row and not as a REQ-079 trace edge.
+11. **ARCH-153's note is corrected here rather than left to fail its own audit** (D13): per-agent
+    narrative error text has crossed `/api/runs/:id` since v26 (`AgentRecord.detail`, redacted,
+    capped 1024B). The accepted exposure is unchanged; the premise that justified it is replaced
+    with one that survives the next audit (DES-240 boundary).
+12. **Filed for v36, with evidence attached, NOT actioned:** per-agent failure **taxonomy** (a
+    `failed` record carries no `code`, and `detail` is absent when the gateway reported none —
+    `types.ts:269-287`; closing it means a new closed `ErrorCode` set plus a redaction/sweep
+    obligation per code, i.e. new advertised surface, and it would need its own REQ trace edge);
+    unifying the two gateways' untimed-attempt behaviour (item 8); the authoring guide's monotonic
+    size growth as an **agent-memory-metabolism** concern rather than only a 「segmented accessor」
+    nice-to-have — the v36 filing should carry the number ARCH-152 now computes at runtime and a
+    declared budget, so the trigger is 「the computed size crossed the budget」 rather than 「it feels
+    big」; plus ADR-070's `structuredContent` + per-tool `outputSchema` and the v36 items the
+    architecture already filed.
+13. **Task splitting is file ownership, and it is a safety rule, not an aesthetic one.** ~20
+    implementers share one working tree. `run-manager.ts` (four ARCH rows) is one card;
+    `server.ts` + `mcp-facade.ts` (ARCH-147's forwarding, ARCH-152's handshake, two of ARCH-149's
+    read-caller markers) is one card even though the work is two kinds; the `acorn` dependency ships
+    in the same card as its only consumer and before the card that calls it. The three hard edges
+    are stated on the cards themselves.
+14. **`iter:` is NOT bumped on any existing DES row** (the v33 F6-1 house rule, re-applied): a
+    bumped design-stage parent fires `trace.py`'s drift check on every IMPL/UT beneath it, and this
+    gate cannot close those. DES-088's registry is cross-referenced from DES-232 in prose instead.

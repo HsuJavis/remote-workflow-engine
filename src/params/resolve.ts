@@ -59,9 +59,14 @@ export interface RunParams {
    *  carry the registered workflow-level `defaults` (`prompt`/`tools`/legacy `HarnessDefaults`), and
    *  `agents` is absent when the caller supplied no `contract` (e.g. no registered agents). */
   agents?: Record<string, EffectiveCallParams>;
+  /** v35 (DES-235, TASK-231, REQ-206): the run's materialized args (caller args + declared
+   *  defaults filled in — see `contract.ts`'s `materializeArgDefaults`). Deliberately excluded
+   *  from `EffectiveCallParams` below so a per-agent `.agents.<label>` slice — and therefore the
+   *  `workflow_describe` projection built from it — never grows a copy of the run's args. */
+  args?: Record<string, unknown>;
 }
 
-export interface EffectiveCallParams extends Omit<RunParams, 'provenance'> {
+export interface EffectiveCallParams extends Omit<RunParams, 'provenance' | 'args'> {
   provenance: Record<'model' | 'effort' | 'timeoutMs' | 'appendPrompt', Rung>;
 }
 

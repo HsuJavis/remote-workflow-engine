@@ -59,7 +59,7 @@ import type { RunStore } from './run-store.js';
 // authz dispatcher, `tools/list` as a pure projection, and the ungated-route identity strip.
 import { callTool, type ToolDeps } from './call-tool.js';
 import { toPublicRunView } from './run-view.js';
-import { projectToolsList } from './tool-specs.js';
+import { projectToolsList, ENVELOPE_NOTE } from './tool-specs.js';
 import { resolveRole, type Principal } from './authz.js';
 import { createOwnerLookup } from './owner-lookup.js';
 import { DiagramRenderer, renderWithMmdc, type DiagramRendererOpts } from './diagram-render.js';
@@ -538,6 +538,13 @@ async function handleDashboardRequest(
       try {
         const nodes = parseWorkflowSkeleton(skeletonScript);
         const scan = scanAgentCalls(skeletonScript);
+        // v35 (DES-239, ARCH-151, TASK-237, REQ-209): this route cannot refuse (it is a dashboard
+        // read, not the registration gate) — `scan.unscannable` is surfaced as a visible marker so
+        // an oracle parse failure is distinguishable from a script that genuinely has no agent()
+        // calls, instead of silently rendering an empty overlay.
+        if (scan.unscannable) {
+          routeWarnings.push(`${PREDICTED_OVERLAY_UNAVAILABLE}: reason=script-unscannable`);
+        }
         const derived = deriveExpectedGraph(nodes, scan);
         // v26 integration (DES-176 boundary): a REFUSAL here does not mean "no overlay" — at
         // layout it means "this is a v1-contract script" (typically: it has no `phase()` at
@@ -822,7 +829,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v25 (REQ-119, DES-166, TASK-166): one renderer/cache per engine. The default render function is
   // the real mmdc child process; `config.diagramRender.render` replaces it in tests.
   const diagrams = new DiagramRenderer({ render: renderWithMmdc, ...config?.diagramRender });
-  const facade = new McpFacade({ clock, store, runManager, validator, ceilings, cas, schedulerClaims: scheduler, webhookClaims: webhooks, aliasNames, diagramCache: diagrams, runConcurrency: config?.runConcurrency });
+  // v35 (DES-239, ARCH-147/154, TASK-237, REQ-207): the deployed gateway's worst-case attempt count
+  // — forwarded so `workflow_describe`'s advertised `timeoutMs.attempts`/`worstCaseMs` reflect what
+  // THIS deployment actually retries (the composeConfig wiring class, twice bitten).
+  const gatewayAttempts = 1 + Math.max(0, config?.retries ?? 1);
+  const facade = new McpFacade({ clock, store, runManager, validator, ceilings, cas, schedulerClaims: scheduler, webhookClaims: webhooks, aliasNames, diagramCache: diagrams, runConcurrency: config?.runConcurrency, gatewayAttempts });
 
   // v24 (DES-139, ARCH-088, TASK-147): authorize()'s OwnerLookup is SYNC (a pure decision
   // function), while RunStore/WorkflowCatalog are async ports — a second connection to each
@@ -847,6 +858,15 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // `bindAssetSync` runs sees the real instance.
   function buildToolDeps(webhookBaseUrl: string): ToolDeps {
     return { facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, modelBook, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store };
+  }
+  // v35 (DES-239b, ARCH-152, TASK-237, REQ-210): BOTH `initialize` results carry `instructions`
+  // with `ENVELOPE_NOTE` and a guide-size figure COMPUTED per call from the SAME stringified
+  // tool-result object a caller actually receives (no literal, no module-scope memo — DES-239's own
+  // boundary (a)).
+  async function buildInitializeInstructions(webhookBaseUrl: string, principal: Principal): Promise<string> {
+    const guideResult = await callTool(buildToolDeps(webhookBaseUrl), 'workflow_authoring_guide', {}, principal);
+    const bytes = Buffer.byteLength(JSON.stringify({ content: [{ type: 'text', text: JSON.stringify(guideResult) }] }));
+    return `${ENVELOPE_NOTE} workflow_authoring_guide is ~${bytes} bytes.`;
   }
   // v24 (DES-140, ARCH-089): `Principal` built ONCE per request from `resolvePrincipal` +
   // `authEnabled` + `isLoopbackPeer` — the three shapes ARCH-088 defines.
@@ -1237,7 +1257,9 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
             try {
               if (rpc.method === 'initialize') {
                 const clientProto = (rpc.params as { protocolVersion?: string } | undefined)?.protocolVersion;
-                sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { protocolVersion: clientProto ?? '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'remote-workflow-engine', version: ENGINE_VERSION } } });
+                const webhookBaseUrl = `http://${req.headers.host ?? `${bind}:${boundPort}`}`;
+                const instructions = await buildInitializeInstructions(webhookBaseUrl, principalFor(p.principal));
+                sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { protocolVersion: clientProto ?? '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'remote-workflow-engine', version: ENGINE_VERSION }, instructions } });
                 return;
               }
               if (rpc.method === 'notifications/initialized' || rpc.method?.startsWith('notifications/')) {
@@ -1475,6 +1497,9 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         // MCP lifecycle handshake (spec-required before a compliant client will call tools).
         if (rpc.method === 'initialize') {
           const clientProto = (rpc.params as { protocolVersion?: string } | undefined)?.protocolVersion;
+          const initWebhookBaseUrl = `http://${req.headers.host ?? `${bind}:${boundPort}`}`;
+          const initPrincipal: Principal = authCfg ? { kind: 'loopback-exempt' } : { kind: 'auth-disabled' };
+          const instructions = await buildInitializeInstructions(initWebhookBaseUrl, initPrincipal);
           sendJson(res, 200, {
             jsonrpc: '2.0',
             id: rpc.id,
@@ -1482,6 +1507,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
               protocolVersion: clientProto ?? '2025-06-18',
               capabilities: { tools: {} },
               serverInfo: { name: 'remote-workflow-engine', version: ENGINE_VERSION },
+              instructions,
             },
           });
           return;

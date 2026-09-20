@@ -329,6 +329,14 @@ export interface RunStatusView {
   /** v11 Sprint 3 (TASK-067 / DES-064): ISO timestamp of the first terminal transition (completed/failed/stopped);
    *  absent while the run is still running, so clients can stop polling once truthy. */
   terminalAt?: string;
+  /** v35 (DES-231, TASK-235, REQ-205): the failure reason, surfaced only when `status === 'failed'`
+   *  — a non-NULL `error` on a non-failed row (the crash-window: written, then reclassified
+   *  `interrupted` by REQ-060 boot recovery before the terminal transition) is stale and never
+   *  served. */
+  error?: { code: string; message: string };
+  /** v35 (DES-234, TASK-236, REQ-207): count of `failed`/`refused` agents; OMITTED (never `0`)
+   *  when the run has no agent records at all. */
+  failedAgentCount?: number;
   /** v13 (REQ-080 / DES-083): engine-pull seedRef outcome — the resolved sha, bytes, latency, when it
    *  was fetched, any dropped symlink/gitlink paths, and (on failure) the typed failCode/failDetail.
    *  Absent unless the run used a seedRef. */
@@ -377,6 +385,13 @@ export interface RunSummary {
   unpricedCalls?: number;
   tokensTotal?: number;
   agentCount?: number;
+  /** v35 (DES-231, TASK-235, REQ-205): same gating as `RunStatusView.error` — surfaced only when
+   *  `status === 'failed'`. */
+  error?: { code: string; message: string };
+  /** v35 (DES-231/234, TASK-235, REQ-207): the `_USAGE_PROJECTION` read-surface count — omitted
+   *  (never `0`) when there is no snapshot, a `{usage}`-only snapshot, or zero agents; present and
+   *  0 for a terminal run whose agents all succeeded. */
+  failedAgentCount?: number;
 }
 
 /** v24 (DES-151, TASK-155): the four tool names whose read surfaces an admin cross-owner read

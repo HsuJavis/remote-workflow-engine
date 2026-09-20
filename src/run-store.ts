@@ -209,6 +209,14 @@ export interface RunStore {
    *  returns the script return value, not the RunStatusView). */
   recordResult(runId: string, result: unknown): Promise<void>;
   getResult(runId: string): Promise<{ value: unknown } | null>;
+  /** v35 (DES-231, TASK-235, REQ-205): ONE method, two surfaces — writes the `runs.error` column
+   *  THEN appends a `{type:'error',...err}` journal line (same order/D-I2 wording as
+   *  recordResult), so the column and the journal line can never drift. */
+  recordError(runId: string, err: { code: string; message: string }): Promise<void>;
+  /** v35 (DES-231): the raw column read-back — ungated (the crash-window gate on `status ===
+   *  'failed'` is applied by the higher-level read surfaces: `getRun`/`listRuns`/`list`, and by
+   *  `RunManager.result()`, DES-232). `null` for an unknown runId or a run with no recorded error. */
+  getError(runId: string): Promise<{ code: string; message: string } | null>;
   /** The original submission (name/script/args/budget) — lets RunManager rebuild a live RunEntry
    *  for a suspended/stopped run after a process restart (REQ-006 resume survives restart). */
   getSpec(runId: string): Promise<RunSpec | null>;
@@ -263,6 +271,7 @@ interface StoredRun {
   transitions: StateTransition[];
   result?: unknown;
   hasResult: boolean;
+  error?: { code: string; message: string }; // v35 (DES-231): raw column equivalent
   snapshot?: RunDagSnapshot; // v8 Slice 2c: DAG detail captured at terminal
   effectiveParams?: RunParams; // v21 (DES-104): run-immutable admission snapshot
   legacySubstitution?: { pinned: string; resolved: string }; // v22 (DES-113)
@@ -320,6 +329,18 @@ export class InMemoryRunStore implements RunStore {
     return { value: run.result };
   }
 
+  /** v35 (DES-231): mirrors recordResult's shape (sets the field; no on-disk journal.jsonl exists
+   *  for this in-memory fake, so there is no second surface to write here). */
+  async recordError(runId: string, err: { code: string; message: string }): Promise<void> {
+    const run = this._runs.get(runId);
+    if (!run) return;
+    run.error = err;
+  }
+
+  async getError(runId: string): Promise<{ code: string; message: string } | null> {
+    return this._runs.get(runId)?.error ?? null;
+  }
+
   async appendJournal(runId: string, entry: JournalEntry): Promise<void> {
     const run = this._runs.get(runId);
     if (!run) return;
@@ -368,6 +389,9 @@ export class InMemoryRunStore implements RunStore {
       ...(run.spec.principal ? { principal: run.spec.principal } : {}),
       // v22 (DES-113): omit when absent, same conditional-spread convention.
       ...(run.legacySubstitution ? { legacySubstitution: run.legacySubstitution } : {}),
+      // v35 (DES-231): gated on status === 'failed' — a stale column (crash-window row later
+      // reclassified interrupted/completed) is never served.
+      ...(run.status === 'failed' && run.error ? { error: run.error } : {}),
     };
   }
 
@@ -424,6 +448,8 @@ export class InMemoryRunStore implements RunStore {
       createdAt: r.createdAt,
       startedBy: r.spec.startedBy ?? { type: 'unknown' },
       ...(terminalTransition ? { terminalAt: terminalTransition.ts } : {}),
+      // v35 (DES-231): same status==='failed' gate as getRun.
+      ...(r.status === 'failed' && r.error ? { error: r.error } : {}),
     };
     // v27 (DES-193, ARCH-128, TASK-198): the SAME projection/presence rule as SqliteRunStore's
     // `_rowToSummary` — keyed on usage-present AND non-empty agents, never on the arithmetic (a

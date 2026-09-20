@@ -106,6 +106,12 @@ export interface McpFacadeDeps {
    *  `workflow_authoring_guide` states the REAL fan-out width instead of a literal. Same
    *  "resolved, never hard-coded" rule as `ceilings`/`aliasNames` above. */
   runConcurrency?: number;
+  /** v35 (DES-239, ARCH-147/154, TASK-237, REQ-207): the deployed gateway's worst-case attempt
+   *  count — `1 + max(0, config?.retries ?? 1)`, forwarded from server.ts's composition root — so
+   *  `workflow_describe`'s `timeoutMs.attempts`/`worstCaseMs` are COMPUTED from what this deployment
+   *  actually retries, never a hard-coded number. Absent (unit construction) defaults inside
+   *  `projectWorkflowDescribe` itself to the deployed default (1 + 1 = 2). */
+  gatewayAttempts?: number;
   cas?: CasStore;
   assetSync?: AssetSyncService;
   /** v24 (DES-149): the two trigger-claim stores the register/deregister sequence calls into.
@@ -240,6 +246,7 @@ export class McpFacade {
   private readonly ceilings: Ceilings;
   private readonly aliasNames: Set<string>;
   private readonly runConcurrency: number;
+  private readonly gatewayAttempts?: number;
   private readonly cas?: CasStore;
   // Not readonly: `AssetSyncService` needs the server's bound port for `selfBind` (server.ts
   // constructs it AFTER `http.listen()`, well after the facade). `bindAssetSync` lets the
@@ -260,6 +267,7 @@ export class McpFacade {
     this.ceilings = deps.ceilings ?? DEFAULT_CEILINGS;
     this.aliasNames = deps.aliasNames ?? new Set();
     this.runConcurrency = deps.runConcurrency ?? DEFAULT_RUN_CONCURRENCY;
+    this.gatewayAttempts = deps.gatewayAttempts;
     this.cas = deps.cas;
     this.assetSync = deps.assetSync;
     this.diagramCache = deps.diagramCache;
@@ -478,7 +486,7 @@ export class McpFacade {
     // (`scheduler.get(id) ?? webhooks.get(id)`) from the RESOLVED VERSION's own `triggers` column —
     // never by workflow, because `listByWorkflow` was retired with `trigger-bindings.ts` and
     // because a claim belongs to a version, not to a name.
-    const view = projectWorkflowDescribe(ownerView, { ceilings: this.ceilings, triggers: this._resolveTriggers(full.name, full.triggers ?? []) });
+    const view = projectWorkflowDescribe(ownerView, { ceilings: this.ceilings, triggers: this._resolveTriggers(full.name, full.triggers ?? []), attempts: this.gatewayAttempts });
     // v26 (DES-184, ARCH-119, TASK-189): `diagramContract` — added here rather than threading
     // through `WorkflowOwnerView`/`WorkflowDescribeView` (workflow-view.ts, no v26 task's file
     // list): `full.diagramContract` ('v1'/'v2', catalog-computed) is exactly the resolved version's
@@ -491,12 +499,16 @@ export class McpFacade {
     // checker and `deriveExpectedGraph` use, so the dashboard's tools column and the diagram's
     // `tools:` segment can never disagree. Names only — never a resolved list, never prompt text.
     const toolSurface: Record<string, string[] | 'default'> = {};
-    for (const call of scanAgentCalls(full.script).calls) {
+    const toolScan = scanAgentCalls(full.script);
+    for (const call of toolScan.calls) {
       if (call.label === '') continue;
       toolSurface[call.label] = call.allowedTools === undefined || call.allowedTools === 'absent'
         ? 'default'
         : [...call.allowedTools].sort();
     }
+    // v35 (DES-239, ARCH-151, TASK-237, REQ-209): this per-call projection cannot refuse either —
+    // `scan.unscannable` is surfaced as a visible marker rather than an indistinguishable empty
+    // `toolSurface` (a truly agent()-less script vs. an oracle parse failure).
     // v27b (DES-197, ARCH-131, TASK-202, ADR-051): `phases[].agents` — predicted per-lane agent
     // labels, joined by lane ORDINAL against `view.phases` (the author-declared, registered
     // metadata). Served UNCONDITIONALLY to every caller; no masking predicate. A phase ordinal
@@ -509,7 +521,10 @@ export class McpFacade {
       const lane = lanes.find((l) => l.index === i);
       return lane ? { ...p, agents: lane.agents } : p;
     });
-    return { runId: '', status: 'completed', result: { ...view, phases, diagramContract: full.diagramContract, toolSurface } };
+    return {
+      runId: '', status: 'completed',
+      result: { ...view, phases, diagramContract: full.diagramContract, toolSurface, ...(toolScan.unscannable ? { toolSurfaceUnscannable: true as const } : {}) },
+    };
   }
 
   /** v24 rename of `workflow_get` (ARCH-091: "the former workflow_get") — owner/admin full,

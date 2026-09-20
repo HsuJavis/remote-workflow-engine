@@ -26,6 +26,7 @@ import {
   checkValueAgainstSpec,
   isEffort,
   DEFAULT_CEILINGS,
+  materializeArgDefaults,
 } from '../../src/params/contract.js';
 import type { ParamContract, AgentParamSpec, Ceilings } from '../../src/params/contract.js';
 
@@ -601,19 +602,74 @@ describe('validateUserOverrides() — FRAME_CLOSE_FORGERY must catch case/whites
   }
 });
 
-// v21 Gate 8 RE-REVIEW #6 (P6-3, LOW): a declared `args.<k>.default` is never applied — reject the
-// declaration outright at registration rather than ship a dead advertised field. Args are
-// unaffected by the v24 agents/knobs split.
-describe('parseParamContract() — a `default` on an `args` spec is rejected at registration, not silently accepted (v21 Gate 8 RE-REVIEW #6, P6-3)', () => {
-  it('a declared args spec carrying a `default` is rejected, nothing stored', () => {
+// v35 (DES-235, ARCH-145, TASK-231, REQ-206): the v21 P6-3 ban is REVERSED FOR CAUSE — v21 rejected
+// a declared `args.<k>.default` because nothing ever APPLIED it (served but never applied is a
+// silent lie); v35 adds `materializeArgDefaults` (below) so the default genuinely reaches the
+// script and `runs.effective_params.args`, which discharges P6-3's own premise. A declared default
+// is now validated the same way any other value is — via the EXISTING `checkValueAgainstSpec` path
+// (one line at the registration loop), not a bespoke door. Written test-first (Gate 5, RED):
+// `contract.ts:428-431` still hard-refuses every `default` unconditionally today.
+describe('parseParamContract() — a `default` on an `args` spec is validated (not banned) at registration (v35 reversal of P6-3, DES-235, REQ-206)', () => {
+  it('a WELL-TYPED declared default (string default on a string spec) is ACCEPTED, not rejected', () => {
     const r = parseParamContract({ args: { region: { type: 'string', default: 'us-east-1' } } }, [], ALIASES);
+    expect(r.ok).toBe(true);
+  });
+
+  it('a BADLY-TYPED declared default (a number default on a `type:"number"` spec expecting a numeric string like "abc") is refused PARAM_CONTRACT_INVALID via the EXISTING checkValueAgainstSpec path', () => {
+    const r = parseParamContract({ args: { n: { type: 'number', default: 'abc' } } }, [], ALIASES);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe('PARAM_CONTRACT_INVALID');
+  });
+
+  it('a well-typed numeric default (7 on a `type:"number"` spec) is accepted', () => {
+    const r = parseParamContract({ args: { n: { type: 'number', default: 7 } } }, [], ALIASES);
+    expect(r.ok).toBe(true);
   });
 
   it('regression pin: an args spec with no `default` still registers fine', () => {
     const r = parseParamContract({ args: { region: { type: 'string' } } }, [], ALIASES);
     expect(r.ok).toBe(true);
+  });
+});
+
+// v35 (DES-235, TASK-231, REQ-206): `materializeArgDefaults` — pure, caller-always-wins, absent
+// declared keys filled from `.default`. Written test-first (Gate 5, RED) — the function does not
+// exist yet (`contract.ts` exports no such name today).
+describe('materializeArgDefaults (DES-235, v35, REQ-206)', () => {
+  const SPECS = { url: { type: 'string' as const, default: 'https://x' }, n: { type: 'number' as const, default: 5 } };
+
+  it('an absent declared key is filled from its default', () => {
+    expect(materializeArgDefaults({}, SPECS)).toEqual({ url: 'https://x', n: 5 });
+  });
+
+  it('a caller-supplied value for a declared key WINS over the default', () => {
+    expect(materializeArgDefaults({ url: 'https://caller' }, SPECS)).toEqual({ url: 'https://caller', n: 5 });
+  });
+
+  it('a caller-supplied `undefined` for a declared key is treated as absent and filled', () => {
+    expect(materializeArgDefaults({ url: undefined }, SPECS)).toEqual({ url: 'https://x', n: 5 });
+  });
+
+  it('an unknown caller key passes through untouched', () => {
+    expect(materializeArgDefaults({ extra: 'zzz' }, SPECS)).toEqual({ url: 'https://x', n: 5, extra: 'zzz' });
+  });
+
+  it('a spec with no `default` key contributes nothing', () => {
+    expect(materializeArgDefaults({}, { region: { type: 'string' as const } })).toEqual({});
+  });
+
+  it('is pure — neither input object is mutated', () => {
+    const args = { url: 'https://caller' };
+    const specs = { ...SPECS };
+    const result = materializeArgDefaults(args, specs);
+    expect(args).toEqual({ url: 'https://caller' });
+    expect(specs).toEqual(SPECS);
+    expect(result).not.toBe(args);
+  });
+
+  it('with no specs at all (undefined), returns args unchanged (a new object, not the same reference)', () => {
+    const args = { a: 1 };
+    expect(materializeArgDefaults(args)).toEqual({ a: 1 });
   });
 });
 

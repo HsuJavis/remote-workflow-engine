@@ -91,7 +91,12 @@ export interface DescribeAgentParamKey {
   range?: unknown[] | { min?: number; max?: number };
   unit?: 'bytes';                                  // appendPrompt ONLY — see boundary in DES-223
   ceiling?: NonNullable<ParamSpec['ceilingKey']>;  // 'maxTimeoutMs'|'maxAppendPromptBytes'|'maxEffort'
+  attempts?: number;                               // timeoutMs ONLY (DES-239) — 1 + max(0, deployed retries)
+  worstCaseMs?: number;                            // timeoutMs ONLY (DES-239) — default * attempts
 }
+
+// DES-239: the deployed default when a caller's ctx carries no attempts — 1 + max(0, retries:1).
+const DEFAULT_ATTEMPTS = 2;
 
 // v24 (DES-156, ARCH-105/106, TASK-149): the ONE `workflow_describe` response — every principal
 // gets the SAME shape (no `viewerIsOwner` parameter). No `script` field exists on the type at
@@ -147,6 +152,7 @@ function isLegacyParamsShape(params: unknown): boolean {
 function projectAgentParams(
   agents: Record<string, AgentParamSpec>,
   ceilings: Ceilings,
+  attempts: number,
 ): Record<string, Record<string, DescribeAgentParamKey>> {
   const out: Record<string, Record<string, DescribeAgentParamKey>> = {};
   for (const [label, spec] of Object.entries(agents)) {
@@ -161,6 +167,9 @@ function projectAgentParams(
         ...(s.enum !== undefined ? { range: s.enum } : s.min !== undefined || s.max !== undefined ? { range: { min: s.min, max: s.max } } : {}),
         ...(key === 'appendPrompt' ? { unit: 'bytes' as const } : {}),
         ...(s.ceilingKey !== undefined ? { ceiling: s.ceilingKey } : {}),
+        ...(key === 'timeoutMs' && typeof s.default === 'number'
+          ? { attempts, worstCaseMs: s.default * attempts }
+          : {}),
       };
     }
     out[label] = projected;
@@ -174,9 +183,10 @@ function projectAgentParams(
  *  when the caller has no operator override to pass. */
 export function projectWorkflowDescribe(
   full: WorkflowOwnerView,
-  ctx: { triggers: unknown[]; ceilings?: Ceilings },
+  ctx: { triggers: unknown[]; ceilings?: Ceilings; attempts?: number },
 ): WorkflowDescribeView {
   const ceilings = ctx.ceilings ?? DEFAULT_CEILINGS;
+  const attempts = ctx.attempts ?? DEFAULT_ATTEMPTS;
   const paramsRaw = full.params as { agents?: Record<string, AgentParamSpec>; args?: Record<string, ParamSpec> } | undefined;
   const legacy = isLegacyParamsShape(full.params);
   const published = full.channels['release'] != null || full.channels['beta'] != null;
@@ -196,7 +206,7 @@ export function projectWorkflowDescribe(
     description: full.description ?? '',
     phases: (full.phases as Array<{ title: string }> | undefined) ?? [],
     params: {
-      agents: !legacy && paramsRaw?.agents ? projectAgentParams(paramsRaw.agents, ceilings) : {},
+      agents: !legacy && paramsRaw?.agents ? projectAgentParams(paramsRaw.agents, ceilings, attempts) : {},
       args: (!legacy && paramsRaw?.args) || {},
     },
     lockedKeys: LOCKED_KEYS,

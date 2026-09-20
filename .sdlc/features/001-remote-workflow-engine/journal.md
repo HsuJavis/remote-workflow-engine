@@ -7393,3 +7393,139 @@ orchestrator 把它擴進 **REQ-209** 時加了一條**介面要求**:`checkMerm
 review 2 共 8 檔)——上一輪因 `send_back` 非空依契約保留,本輪 `send_back: []`,這就是「the very
 end」,沿襲 v22/v26/v27/v28 在收尾 commit 裡刪掉的先例。`dashboard.html` 於本段寫完後重跑產生。
 正式服務(8899)與 scratch 引擎(8793)全程未動。**v34 關閉;下一個迭代是 v35。**
+
+## 2026-09-21 — v35 Gate 2(架構,architect)PASSED → 下一站 design
+
+REQ-205..210(「這具引擎失敗的時候不出聲」六條)分解為 **ARCH-141..154 + ADR-065..071**,
+並就地修訂十列既有項目(ARCH-056/064/066/087/092/096/107/119 + ADR-032/039)——`traces:` 一律不動、
+只加 `v35 amendment` 段落並 bump `iter:`,沿用 v28/v34 的量測理由(把新 REQ 掛進舊列的 traces,
+會讓該列底下每一筆舊實作都讀成「已實作新 REQ」)。Panel 提案由 orchestrator 預先跑完
+(`.panel/architecture/{adversarial,quality-dimensions}.{r1,r2}.md`),本 gate 只做綜合裁決,未再 spawn。
+
+**形狀:不新增子系統。** 一個新的 30 行模組(`src/script-spans.ts`)、一個附加欄位(`runs.error`)、
+一種新的 journal 行、一個讀時推導的計數、一個必填參數、一個 production 依賴,其餘是誠實的文字。
+
+**有爭議的裁決(都在此定案,並記下敗方):**
+ADR-068 REQ-208 用 **acorn 當 span oracle**(spans 當述詞、extractor 一個位元組都不動、DES-174 的 `index`
+接點原封不動),而非手寫詞法遮罩——兩個 lens 在 round 2 互換立場,而說服 quality lens 讓步的那個論點,
+已被提出它的 adversarial lens 自行驗證為假(`validateScriptEntry` 早就先用 `vm.Script` 解析過)。
+本 gate **重跑了 spike**,結果讓設計改了兩次:直接以 module 模式解析原文(免 wrapper、免位移換算,R10 消失)、
+以及用 spans 當述詞而非遮罩文字(遮罩會把 label 字串常值一起抹掉,導致每個真呼叫報 `AGENT_LABEL_NOT_LITERAL`
+——兩份 panel 文件都沒走到這一步)。
+ADR-066 錯誤通道在 **capture 當下** `redact()` 並留下可見標記(panel 共同的 HIGH,也是六條 REQ 都沒要求的那一項);
+ADR-067 run 健康訊號永遠讀時推導、SQL 與 TS 兩個 read model 以一致性測試釘住(v31 `costUSD` 前例);
+ADR-065 獨立 `error` 欄(非 `result`、非側表);ADR-069 `checkMermaid` 第五參數改必填、**沒有** opt-out;
+ADR-070 REQ-210 只做說明,`structuredContent`+`outputSchema` 附上 `server.ts:1262`/`:1515` 留給 v36;
+ADR-071 `runs.args` 負責派工、`effective_params.args` 負責留底(兩個 lens 都沒注意到 `RunParams` 根本沒有 `args` 欄位)。
+
+**本 gate 另外自己挖到、兩份 panel 文件都沒寫的一條:** `result()` 對重啟後 rehydrate 的 `failed` run
+會回 `RUN_NOT_TERMINAL`(「has not completed」)——那是**答錯**而不是答不出來,已列為 REQ-205 的指定測試。
+
+**Trace:** 基線 1836 項 / 89 缺口 → **1857 / 89,缺口集合逐位元組相同**(新增 21 列規格、零新缺口、零斷鏈)。
+基線依 CLAUDE.md 先寫進 scratch 檔再比對,全程未用 `git checkout`/`restore`/`stash`。
+`state.yaml`:`gates.architecture.passed=true`、`current_stage: design`、`iteration: v34 → v35`(REQ 早已是 `iter: v35`,
+這個欄位落後會被 Gate 8 的 canary 讀成不一致)。**owner_decision:無**——本輪沒有任何一條被延到擁有者身上。
+archify IR 刻意略過:34 個迭代下來沒有 `diagrams/` 樹,而 dashboard_check 會雙向比對 IR 節點與 ARCH,
+只放 v35 的 IR 會憑空製造 140 個假不一致(soft dependency,不阻擋)。`.panel/` 依契約留給 Gate 8 收尾刪除。
+
+**v35 Gate 2 自我複核後的四處修正(同一輪內完成,未動 trace 數字):**
+(1) **ARCH-148/ADR-068 的 acorn 設定改為 `sourceType: 'script'`**——模組一律 strict,而沙箱是
+`new vm.Script('(async () => {…})')`,是 **classic script(sloppy)**;實測 `var let = 1;` / 八進位 `010`
+V8 收、module 模式解析直接噴 `The keyword 'let' is reserved`,也就是說 module 模式是被執行文法的**子集**,
+會把一批本來合法的舊腳本變成 fail-closed 拒絕。改用 script 模式 + 把 `export const meta` 區段做
+**等長空白**(不是 `blankLines`,那只保行數不保字元數)後重跑 spike:解析過、spans 正確、位移與行號全保。
+順帶把 valve 的說法從「幾乎不可能觸發」降級為「只剩 acorn↔V8 版本漂移」——誠實的弱主張。
+(2) **ARCH-142 補 v35 前的舊 `failed` 列**:`getError` 在舊列上必然 miss,若只補新列,舊 run 重啟後仍會收到
+「has not completed」這句錯答;改為先回 `RUN_FAILED`(「沒有記到原因」),兩個 case 都列為指定測試。
+(3) **ARCH-152 的體積改量 `JSON.stringify(...)` 後的字串**——呼叫端真正吃到的是 `content[0].text`(JSON 轉義後約大 2%),
+廣告小的那個數字等於把 REQ-210 自己的毛病再犯一次。
+(4) **ARCH-144 的 `RunParams.args` 不得漏進 per-agent slice**(`EffectiveCallParams extends Omit<RunParams,'provenance'>`),
+與 public-shape pin 同一個 commit 更新,列入 Gate 3/4/5 約束(約束條目因此從 10 條變 11 條)。
+另外覆核 ADR-069 的成本論據:`grep checkMermaid( src/` 實測確實只有 `workflow-catalog.ts:548` 一個 production 呼叫端。
+
+## 2026-09-21 — v35 Gate 3+4(TASKS + DESIGN,合併派工,designer)PASSED
+
+Panel 由 workflow 預跑(`.panel/design/{adversarial,quality-dimensions}.{r1,r2}.md`,兩組各兩輪),
+本 gate 只做綜整、裁決與落檔,沒有再 spawn。**TASK-231..238 八張卡蓋掉全部 ARCH-141..154;
+DES-230..240 十一列精簡設計。** 切法是**檔案所有權**而不是美感:~20 個 implementer 共用一棵工作樹,
+所以 `src/run-manager.ts`(ARCH-141 caller/142/144/146)必須是一張卡,`src/server.ts` +
+`src/mcp-facade.ts`(ARCH-147 轉發、ARCH-152 handshake、ARCH-149 四個 read caller 裡的兩個)也是一張。
+硬順序三條:231→236、235→236、233→237,寫在卡片自己身上。
+
+**設計相對於架構原文的實質改動(都在 04-design 檔末 Decision rationale,誰讓步、為什麼):**
+(1) ARCH-141 的 `.detail` 轉發與 `MAX_ERROR_DETAIL_BYTES` **刪除**——panel 實地追到 `.detail` 根本到不了
+`toErr`(`guards.ts:322-335`、`host.ts:147/166`、`child-entry.ts:36` 三處各自重建成兩欄 `{code,message}`),
+連 REQ-205 自己舉的例子都在 `guards.ts:334` 被壓平成 `SCRIPT_ERROR`;照原文實作會得到死碼 + 永遠不會失敗的
+單元測試,正是本迭代要殺的假綠燈。檔案搬移保留(純函式可單測),但**明寫它不等於結案 REQ-205 第四條**,
+並把「延到 v36 還是現在開 IPC 卡」掛成 DES-230 的 `owner_decision: pending`(這是產品裁決,不是我的)。
+(2) 位元上限改綁真正會到的 `message`(`capErrorEnvelope`,且**在 `redact()` 之後**才切——R-G9 的斷頭密鑰順序)。
+(3) `failedAgentCount` 的 guard 是 `agentCount != null && > 0`,**省略而非 0**(原文的 `?? 1` 寫法會對每個
+非終態 run 自信地回報 0,就是 REQ-207 的病灶搬家)。(4) `result()` 新增的 `getError` 必須**gate 在
+`status === 'failed'`**,否則 crash window + REQ-060 重分類後 `run_result` 會和 `run_status` 互相打臉。
+(5) resume 的 `hasSecretMarker` 縮到**被派發的欄位**,否則 args 帶過 secret 的 run 會永久不能 resume。
+(6) `try/finally` + 一個 `.catch` 兜底。(7) `AgentCallScan` 加 `unscannable?: true`,四個不能拒絕的
+scan caller 各一行把它說出來。(8) `attempts` 讀實際部署的 gateway,guide 不寫 SDK-only 例外;
+guide 體積不要 module-scope memo。(9) `run_result`/`run_status`/`run_list` 的說明帶**省略語意**
+(「沒有這欄不等於健康」)——純文字,不開 REQ-079 邊。(10) ARCH-153 的「per-agent 敘述文字不會外流到
+run 層」自 v26 起就是**假的**(`AgentRecord.detail` 走同一條未授權路由),在 DES-240 更正:結論不變,
+換一個經得起稽核的前提。
+
+**明白婉拒並寫下理由**:dashboard 的 `failedAgentCount`(REQ-207 的驗收是寫給呼叫端的;真要做也是
+detail pane,絕不是 list row);kill-between-writes 崩潰測試(getError gate 好之後兩種寫入順序在對外
+surface 上不可區分,改買「一次呼叫、兩個 surface、同一個值」的 UT)。**v36 歸檔**:per-agent 失敗碼
+taxonomy、兩個 gateway untimed attempts 統一、authoring guide 體積當 memory-metabolism(帶上
+ARCH-152 現在會算出來的數字與一個宣告預算)。
+
+**Trace**:1857/89 → **1876/97**,增量剛好是八張新 TASK 的 未實作 列(8→16,Gate 6 關);
+漂移24/未驗證23/TDD19/斷鏈15 逐項不變,零斷鏈。既有 DES 一列未改、`iter:` 一個未 bump(v33 F6-1 家規:
+bump 設計父節點會讓底下每個 IMPL/UT 冒 漂移,本 gate 關不掉)。state.yaml:gates.tasks/design 都 passed,
+current_stage → tests。**待裁決 1 件**(DES-230,擋 Gate 8 不擋本 gate)。
+
+## 2026-09-21 — v35 Gate 5(TEST-FIRST RED,verifier)PASSED
+
+依每條 DES-230..240 自己的 `- **tests:**` 條目寫(那是本 gate 的規格;TASK-231..238 的 DoD 編號清單是
+implementer Gate 6 的 GREEN checklist,重疊約八成,DoD 有、DES `tests:` 沒有的項目——例如
+`AgentCallScan.index` 逐位元組固定的那個 fixture——算加分而非本 gate 硬指標)。24 個新增/擴充帳本項:
+UT-284..294(11 個 UT,對到 DES-230/231/232/235/236/237/238/239×4/240)、IT-283..289(7 個 IT,對到
+DES-231/232/233/234/237/239×2)、VAL-232..237(REQ-205..210 各一)。22 項紅、2 項誠實綠(IT-289 文件範例
+守衛擴充、VAL-236——DEPLOY.md 那份角色提示 recipe 與 README 的兩個 heredoc 範例在 v34(commit
+f1b44be)就已端到端修好,這次新增的是「自動化守衛」本身而非新缺陷;REQ-209 真正紅的一半是
+DES-238 的 `checkMermaid` 第五參數必填 pin(UT-290),因為第五參數今天仍是選填,vitest 本身跑不出紅,
+紅是靠 `npx tsc --noEmit` 抓到的 `TS2578`(未使用的 `@ts-expect-error` 指令)——已直接跑過驗證,寫進
+05-tests.md 該列的 evidence)。
+
+**紅的原因逐檔量測過,不是假設**(細節見 05-tests.md 每列 evidence):`errors-to-err.test.ts` 7/7、
+`script-spans.test.ts` 全檔載入失敗(模組不存在,9 案未收集)、`run-store-error.test.ts` 5/5、
+`run-error-read-sites.test.ts` 4/8(另 4 是「欄位還不存在所以省略」的合法迴歸釘)、
+`workflow-meta-scan.test.ts` 4/10(案 1/2/3/6 今天本來就不會踩到那個 regex bug,量測過不是假設)、
+`params-contract.test.ts` 9 個新紅(P6-3 區塊就地**翻案**而非刪除,附「有因翻案」註解引 REQ-206;
+`materializeArgDefaults` 7 案全紅)、`check-mermaid.test.ts` vitest 15/15 綠(紅是 tsc-only,已驗證)、
+`run-manager-error-capture.test.ts` 2/2(真 RunManager+真 sandbox 腳本真的 throw,`store.order` 明確斷言
+`recordError` 有被呼叫過,避免「方法沒接線所以永遠不丟」的假綠)、`run-error-restart.test.ts` 4/4、
+`run-args-resume.test.ts` 6/7(1 個合法綠:同進程首次派發的 `entry.args` 早就是 `?? {}`,REQ-206 的
+缺陷專在**持久化**的 `runs.args` 欄位)、`run-health-count.test.ts` 3/5、`register-scan-spans.test.ts`
+4/7、`initialize-instructions.test.ts` 4/4、`workflow-describe-projection.test.ts` 3/4、
+`tool-specs.test.ts` 3/3、`authoring-guide.test.ts` 3/3、`dashboard-lib-strings.test.js` 1/1、
+`guide-examples-register.test.ts` 擴充後 35/35 全綠(誠實揭露,非造假)。VAL 六份:VAL-232 5/6、
+VAL-233 1/1、VAL-234 3/3、VAL-235 2/2、VAL-236 2/2 全綠(誠實揭露)、VAL-237 1/1。合計 83 個
+vitest 可觀察新紅 + 1 個 tsc-only 紅,零既有案例被翻動。
+
+**doc-example 抽取規則**(REQ-209,`tests/helpers/doc-examples.ts`,DES-239(e))實測踩過兩個坑:
+①外層 \`\`\`bash 圍住的 heredoc 起先被整包吞掉不再逐行掃,改成不吞未辨識語言的 fence 內容;②「配對
+下一個 mermaid」若不限制「緊接著的下一個」,會把 docs/AUTHORING.md 裡純示範單一語法的**片段**(無
+`return`、非完整腳本)誤配到後面某個無關範例的圖——改用「含 `return` 才算腳本區塊」+「緊接著的下一個
+辨識區塊」兩條規則後,13 個 AUTHORING.md 配對全部正確、零誤配。
+
+**Trace**:1876/97 → **1900/97**(+24 剛好是新列數,缺口數不變)。用 `dashboard.html` 內嵌的
+`gaps[]` JSON 直接核對——97 個缺口逐條比對仍是 Gate 3+4 就有的同一批 REQ-205..210(未實作/未真實驗證)
+與 TASK-231..238(未實作),零新缺口、零斷鏈,不是只看數字巧合。基線依 CLAUDE.md 規定在動任何檔案前
+先存進 scratch,全程未用 `git checkout`/`restore`/`stash`。`tsc --noEmit`:除 5 個刻意的
+missing-export/missing-module(`toErr`/`capErrorEnvelope`/`MAX_ERROR_ENVELOPE_BYTES`/
+`materializeArgDefaults`/`script-spans.ts`)與 1 個刻意的 arity-pin `TS2578` 外全乾淨。
+DES-230 的 `owner_decision`(REQ-205 第四條,Gate 3+4 就已延擱)原樣扛著,擋 Gate 8、不擋本 gate,本
+verifier 沒有新延擱任何一條。state.yaml:`gates.tests.passed=true`、`current_stage: impl`。
+
+**全套件回歸確認**(`npx vitest run`,全 repo,648 秒):430 檔(21 敗/408 過/1 skip)、3202 案
+(74 敗/3102 過/26 skip)。21 個失敗檔逐一核對**正好就是**本 gate 這 21 個新紅檔(`script-spans.test.ts`
+因整檔載入失敗——模組不存在,`it()` 從未被收集——算 1 個失敗檔而非 9 個失敗案例,83 個逐案累計數
+減去這 9 個未收集案例正好是 74,跟套件自己回報的數字完全對上);既有的三千多案沒有任何一個被動到。

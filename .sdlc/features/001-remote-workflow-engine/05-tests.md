@@ -14030,3 +14030,407 @@ clause in `01-requirements.md` — both 隨機制消失, not this gate's file.
 5. **Hermetic (no time bombs).** No new test reads the wall clock or compares an absolute date
    literal against "now" — every fixture uses `FixedClock`/literal ISO strings already frozen in
    the past (`2024-01-01`, `2026-01-01`), same convention as the files they were added to.
+
+## v35 — REQ-205..210 (Gate 5, test-first RED)
+
+Covers TASK-231..238 / DES-230..240, per DES's own `- **tests:**` bullets (the designer's list is
+the gate; the TASK DoD numbered lists are the implementer's GREEN checklist and overlap ~80% —
+where a DoD item isn't in a DES `tests:` bullet it is a nice-to-have, not pinned here). Mock policy
+per file matches the v35 design note: unit mocks freely (pure functions / `InMemoryRunStore`);
+integration uses real adjacent components (`SqliteRunStore`, real sandbox, real `WorkflowCatalog`,
+real booted `createServer()`), a fake `GatewayClient` only for the one third-party network boundary
+(agent dispatch); acceptance/VAL never mocks the SUT boundary.
+
+### UT-284 — `toErr`/`capErrorEnvelope` (DES-230)
+- **status:** red
+- **traces:** DES-230, REQ-205
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/unit/errors-to-err.test.ts` — 7/7 fail: `toErr`/`capErrorEnvelope`/
+  `MAX_ERROR_ENVELOPE_BYTES` are not exported by `src/errors.ts` today (`toErr` is a private,
+  unexported function inside `run-manager.ts`). Includes the ordering pin (`capErrorEnvelope(redact(
+  toErr(e)))` — marker present, no half-secret substring) and a utf8-safe-cut case.
+  **Scope note (DES-230 `owner_decision: pending`):** REQ-205's fourth acceptance criterion
+  (a structured `violation`/`detail` marker reaching `toErr`) is deliberately NOT tested — the
+  design traced that nothing upstream (`sandbox/guards.ts:322-335`, `host.ts:147/166`,
+  `child-entry.ts:36`) ever forwards `.detail` this far, and a test for it would be the dead-code
+  false-green this iteration exists to remove.
+- **iter:** v35
+
+### UT-285 — `RunStore.recordError`/`getError` (DES-231)
+- **status:** red
+- **traces:** DES-231, REQ-205, REQ-207
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/unit/run-store-error.test.ts` — 5/5 fail on both `InMemoryRunStore` and
+  `SqliteRunStore`: `recordError is not a function`. Covers byte-identical column+journal value and
+  "column before journal" (a throwing column write leaves no journal line).
+- **iter:** v35
+
+### UT-286 — run-manager failure-path ordering (DES-232)
+- **status:** red
+- **traces:** DES-232, REQ-205
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/unit/run-manager-error-capture.test.ts` — 2/2 fail, driven through a REAL
+  `RunManager` + real sandbox (a script that genuinely throws) against a `RunStore` spy wrapping
+  `InMemoryRunStore` (the only way to reach the private `_runLive` continuation this DES pins):
+  `recordError` is never called at all today, so it neither precedes `recordTransition(...,
+  'failed')` nor throws-and-still-reaches-failed. The second case explicitly asserts
+  `store.order` contains `'recordError'` so an unwired method cannot pass this row vacuously.
+- **iter:** v35
+
+### UT-287 — `materializeArgDefaults` + the P6-3 reversal (DES-235)
+- **status:** red
+- **traces:** DES-235, REQ-206
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/unit/params-contract.test.ts` extended — file 88→97 `it()` sites (dynamic
+  `for`-loop cases make an exact runtime delta non-trivial to hand-verify; vitest run shows 9 new
+  fail / 101 total pass on this file). The pre-existing P6-3 describe block is INVERTED (not
+  deleted) with a for-cause comment citing REQ-206: `{type:'string', default:'us-east-1'}` must now
+  be ACCEPTED (fails today — still hard-refused) and `{type:'number', default:'abc'}` must be
+  refused via the EXISTING `checkValueAgainstSpec` path (passes today vacuously — everything is
+  refused unconditionally, so this is a legitimate not-yet-red regression pin, not a fudge). The new
+  `materializeArgDefaults` describe block (7 cases: absent-filled, caller-wins, `undefined`-treated-
+  as-absent, unknown-key-passthrough, no-default-contributes-nothing, purity, no-specs-passthrough)
+  is 7/7 fail — the function does not exist (`materializeArgDefaults is not a function`).
+- **iter:** v35
+
+### UT-288 — `nonCodeSpans` span oracle (DES-236)
+- **status:** red
+- **traces:** DES-236, REQ-208
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/unit/script-spans.test.ts` — whole-file load failure (`Cannot find module
+  '../../src/script-spans.js'`), 9 cases uncollected — correct red (the module does not exist;
+  TASK-232 is its only production dependency, `acorn`, which this test does NOT install). Covers
+  string/template-quasi/escaped-quote/both-comment-forms/regex/sloppy-mode/unparseable-fail-closed/
+  the real DEPLOY.md prose case.
+- **iter:** v35
+
+### UT-289 — `scanAgentCalls` oracle filtering (DES-237)
+- **status:** red
+- **traces:** DES-237, REQ-208
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/unit/workflow-meta-scan.test.ts` — 4/10 fail (6 pass legitimately: cases 1/2/3/6
+  of the six REQ-208 cases don't trip today's regex bug at all — measured, not assumed; e.g. a
+  regex literal's `\(` never matches `AGENT_CALL_RE`'s `\s*\(` requirement). Red: case 4 (comment
+  apostrophe), case 5 (the real DEPLOY.md role-prompt shape), and the fail-closed
+  `SCRIPT_UNSCANNABLE`+`unscannable:true` case. A regression pin confirms a genuine unlabeled
+  `agent(` after a literal-heavy prelude still reports (today, by chance) `AGENT_LABEL_REQUIRED` at
+  line 1 instead of its real line 3 — the register-scan-spans.test.ts IT below pins line 3 as the
+  post-fix expectation, so this is not a masked defect, just this file's narrower scope.
+- **iter:** v35
+
+### UT-290 — `checkMermaid`'s 5th parameter becomes required (DES-238)
+- **status:** red
+- **traces:** DES-238, REQ-209
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/unit/check-mermaid.test.ts` extended (14→15 `it()` sites) — the new
+  `@ts-expect-error` 4-argument arity pin is a **`tsc`-only red**: `npx vitest run
+  tests/unit/check-mermaid.test.ts` is 15/15 GREEN (the call still type-checks and runs fine today,
+  since the 5th param is optional and this case ignores its return value), but `npx tsc --noEmit`
+  reports `TS2578: Unused '@ts-expect-error' directive` at that line — confirmed directly. Once
+  DES-238 lands (5th param required), the same call becomes a genuine type error, the directive is
+  consumed, and `tsc` goes green. Per DES-238's boundary, the ~15 existing 4-arg call-site
+  conversions in this file are NOT done here (implementer's Gate-6 GREEN work, TASK-234's own file)
+  — converting them now would add coverage but introduce no redness, since the checker already runs
+  v2 rules whenever a 5th arg IS supplied.
+- **iter:** v35
+
+### UT-291 — `workflow_describe` `timeoutMs.attempts`/`worstCaseMs`, and the `args`-no-leak pin (DES-239, DES-235)
+- **status:** red
+- **traces:** DES-239, DES-235, REQ-207, REQ-206
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/unit/workflow-describe-projection.test.ts` extended (15→19 `it()` sites) —
+  3/4 new cases fail: `worstCaseMs === timeoutMs * attempts` from an injected `ctx.attempts`, a
+  different injected `attempts` changing the number, and the deployed-default (`attempts:2`) case
+  all fail (`timeoutMs.attempts`/`worstCaseMs` do not exist on the projection today). The
+  `args`-no-leak regression pin (an `agents.<label>` value carrying a future `args` key must not
+  surface in the projection) passes today — legitimate, since `projectAgentParams`'s key loop is
+  hard-coded and does not yet know `args` exists at all.
+- **iter:** v35
+
+### UT-292 — `ENVELOPE_NOTE` and the advertised omission semantics (DES-239)
+- **status:** red
+- **traces:** DES-239, REQ-206, REQ-207, REQ-210
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/unit/tool-specs.test.ts` extended (15→18 `it()` sites) — 3/3 fail:
+  `ENVELOPE_NOTE` is not exported by `src/tool-specs.ts`; `run_start.args`'s description does not
+  state the `{}`-on-omission/default rule; `run_result`/`run_status`/`run_list`'s descriptions do
+  not mention `failedAgentCount`'s omission semantics.
+- **iter:** v35
+
+### UT-293 — the guide's three v35 facts (DES-239)
+- **status:** red
+- **traces:** DES-239, REQ-207, REQ-210
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/unit/authoring-guide.test.ts` extended (36→39 `it()` sites) — 3/3 fail: the
+  guide states `parallel()`'s thunk-failure null semantics but not sequential `await agent()`'s
+  identical null-not-throw rule (with the `if (out === null)` self-protection pattern); does not
+  state that `timeoutMs` bounds one attempt and the deployed `retries` multiplies the wait; does not
+  state the `content[0].text` double-JSON-encoding envelope.
+- **iter:** v35
+
+### UT-294 — dashboard `failureReason` i18n key (DES-240)
+- **status:** red
+- **traces:** DES-240, REQ-205
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/unit/dashboard-lib-strings.test.js` extended (10→11 `it()` sites) — 1/1 fail:
+  `STR.zh.failureReason`/`STR.en.failureReason` do not exist. (The actual DOM rendering — detail
+  pane + list-row error code — is proven at the acceptance tier, VAL-232, per TASK-238's own DoD
+  command list; this unit test is only the i18n-key floor.)
+- **iter:** v35
+
+### IT-283 — the four `error` read sites + the `failedAgentCount` SQL-projection cases (DES-231)
+- **status:** red
+- **traces:** DES-231, DES-234, REQ-205, REQ-207
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/integration/run-error-read-sites.test.ts` (new, 8 cases, real `SqliteRunStore`
+  over a real temp file) — 4/8 fail: a failed run's `error` is absent from `listRuns`/`list`/
+  `getRun`/`getError` (one test, all four sites); the four `failedAgentCount` SQL-projection cases
+  (i/mixed, ii/zero-agents, iv/no-snapshot, v/`{usage}`-only) that are testable at the store level
+  without a live `RunManager`. 4/8 pass legitimately (the crash-window/omission cases are vacuously
+  true while the field doesn't exist at all — regression pins for post-fix behavior, not fudged).
+  Case (iii) ("running") needs a LIVE run and is IT-286's, not this file's.
+- **iter:** v35
+
+### IT-284 — restart survives + redact-at-capture with a real secret (DES-232)
+- **status:** red
+- **traces:** DES-232, REQ-205
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/integration/run-error-restart.test.ts` (new, 4 cases, real `SqliteRunStore` +
+  real `RunManager` + real sandbox) — 4/4 fail: a SECOND `RunManager` over the same file answers
+  `RUN_NOT_TERMINAL` instead of the stored reason for a genuinely `failed` run (today's exact bug —
+  `result()` never checks `view.status==='failed'` on the restart-fallback path); a pre-v35 NULL-
+  error row does not yet answer `RUN_FAILED`; a stale-column `interrupted` row correctly still
+  answers `RUN_NOT_TERMINAL` (this ONE case's assertion already matches intended behavior at both
+  ends, but is listed red because `recordError` — needed to plant the stale column — doesn't exist
+  yet, so the test cannot even set up its fixture); redact-at-capture with a real injected
+  `_secretValueProvider` — the marker is not present anywhere (the whole capture path is unwired).
+- **iter:** v35
+
+### IT-285 — args resolution: bare/default/override + suspend-resume/restart-resume/legacy-null/secret survival (DES-233)
+- **status:** red
+- **traces:** DES-233, REQ-206
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/integration/run-args-resume.test.ts` (new, 7 cases, real `SqliteRunStore` +
+  real `RunManager` + real sandbox, trivial spawner) — 6/7 fail: a declared `args.url.default`
+  reaches the script AND `runs.effective_params.args` (fails — registration itself is refused
+  `PARAM_CONTRACT_INVALID`, the P6-3 ban); caller-override-wins (same reason); suspend→resume,
+  restart-rehydrate→resume, and the secret-survives-resume case all fail for the same registration-
+  time reason. 1/7 passes legitimately: a bare `run_start` already gives the LIVE script `{}` today
+  (`entry.args = spec.args ?? {}` already exists at the dispatch site) — REQ-206's defect is
+  specifically the PERSISTED `runs.args` column (`'null'` literal) read back on resume, which the
+  legacy-args-null case (red) pins directly.
+- **iter:** v35
+
+### IT-286 — `failedAgentCount` on the LIVE run-manager fold + the restored-after-restart path (DES-234)
+- **status:** red
+- **traces:** DES-234, REQ-207
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/integration/run-health-count.test.ts` (new, 5 cases, real `RunManager` + real
+  sandbox, a fake `GatewayClient` — the one third-party network boundary — with one call failing
+  immediately and a second `new Promise(() => {})` that never resolves within the test's lifetime,
+  the `dag-masking-auth.test.ts` precedent for proving a run is genuinely still `running`) — 3/5
+  fail: case (iii) (`running`, one agent already failed) — `run_status.failedAgentCount` is
+  `undefined` where it must read `1`; case (i) (terminal mixed pass/fail) — `run_status` and
+  `run_list` must agree, non-zero; the restored-after-restart case (a second `RunManager` reading a
+  persisted snapshot) must also read `1`. 2/5 pass legitimately (terminal-zero-agents and pre-v35-
+  no-snapshot are vacuously omitted today).
+- **iter:** v35
+
+### IT-287 — the six REQ-208 cases register clean through the REAL `workflow_register` (DES-237)
+- **status:** red
+- **traces:** DES-237, REQ-208
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/integration/register-scan-spans.test.ts` (new, 7 cases, real SQLite-backed
+  `WorkflowCatalog`) — 4/7 fail (matching UT-289's own split: cases 1/2/6 don't trip today's bug);
+  RED: case 4 (comment apostrophe), case 5 (the real DEPLOY.md role-prompt shape), case 3 (escaped
+  quote — this file's script differs slightly from UT-289's and DOES trip it here), and the
+  regression case (a genuine violation must be reported at its real line 4, not today's mis-detected
+  line 1 via the false match inside the prelude string).
+- **iter:** v35
+
+### IT-288 — `workflow_describe`'s computed `attempts`/`worstCaseMs` wiring + both `initialize` sites (DES-239)
+- **status:** red
+- **traces:** DES-239, REQ-206, REQ-207, REQ-209, REQ-210
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/integration/initialize-instructions.test.ts` (new, 4 cases, real
+  `createServer()` + real MCP HTTP) — 4/4 fail: a deployed `retries:3` does not change
+  `workflow_describe`'s advertised `timeoutMs.attempts`/`worstCaseMs` (the field doesn't exist);
+  the default-deployment case likewise; BOTH `initialize` sites (the auth-gated `/mcp` handler,
+  reached at the default loopback `bind:'127.0.0.1'`, and the D-BIND-exempt handler, reached via
+  `bind:'0.0.0.0'` + a loopback caller — `net-guard-bind-integration.test.ts`'s own precedent for
+  exercising the second code path) carry no `instructions` field at all today.
+- **iter:** v35
+
+### IT-289 — doc-example guard extended to docs/AUTHORING.md, DEPLOY.md, README.md (DES-239e)
+- **status:** green
+- **traces:** DES-239, REQ-209
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **evidence:** `tests/integration/guide-examples-register.test.ts` extended (real `createServer()` +
+  real MCP HTTP) — the DES-239(e) extraction rule is implemented in `tests/helpers/doc-examples.ts`
+  (strip `> ` blockquote prefix; a script block needs a `return` statement, to exclude inline
+  illustrative prose fragments that were never meant to be copied whole — measured against
+  docs/AUTHORING.md: filtering by "contains `return`" cleanly excludes 3 fragments a naive
+  "next-mermaid-anywhere" pairing mis-paired with an unrelated later diagram; a mermaid block is a
+  fence/heredoc whose first line matches `graph|flowchart LR`; a pair is a script + the
+  IMMEDIATELY-NEXT recognized block). **35/35 GREEN — an honest regression lock, not a
+  manufactured red**: DEPLOY.md's recipe was already fixed end-to-end at v34 (commit f1b44be) and
+  README's two heredoc examples already register clean today. What this row newly adds is the
+  AUTOMATED guard itself (13 docs/AUTHORING.md pairs + 1 DEPLOY.md + 2 README.md, each independently
+  re-registered through the real `workflow_register`, plus a minimum-pair-count assertion per file
+  so a silently-empty extractor fails loudly) — nothing enforced this before v35, so a future doc
+  edit reintroducing the v34 defect had nothing to catch it. REQ-209's genuinely red half is
+  DES-238's `checkMermaid` arity pin (UT-290).
+- **iter:** v35
+
+### VAL-232 — REQ-205: a failed run leaves a diagnosable reason everywhere
+- **status:** red
+- **traces:** REQ-205
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/acceptance/val-232-run-error.test.ts` (real `createServer()`, real MCP HTTP,
+  real Chromium via puppeteer — `PUPPETEER_EXECUTABLE_PATH`/`~/.cache/puppeteer` auto-detected,
+  found and used in this run) — 5/6 fail: `run_status`/`run_result` carry no `error`; `run_list`
+  agrees (absent); `GET /api/runs/:id` carries no `error`; the run's `journal.jsonl` does not even
+  exist (script threw with no `agent()` calls, so nothing today writes to the run directory at all —
+  matches REQ-205's own evidence, "目錄完全空"); the dashboard workflow page renders no
+  `SCRIPT_ERROR` text. 1/6 passes legitimately (a completed run with no error renders no error
+  block/no `undefined` — already true, a stated regression pin). Criterion 4 (a structured
+  `violation` marker) is excluded per DES-230's `owner_decision: pending`.
+- **iter:** v35
+
+### VAL-233 — REQ-206: a declared args default reaches a bare run_start over real MCP HTTP
+- **status:** red
+- **traces:** REQ-206
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/acceptance/val-233-args-default.test.ts` (real `createServer()`, real MCP
+  HTTP) — 1/1 fail: `workflow_register` itself refuses `PARAM_CONTRACT_INVALID: args spec cannot
+  declare a default (never applied)` — the P6-3 ban blocks the whole scenario at the first step.
+- **iter:** v35
+
+### VAL-234 — REQ-207: every agent() fails — run-level health visible without reading agents[]
+- **status:** red
+- **traces:** REQ-207
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/acceptance/val-234-agent-failure-health.test.ts` (real `createServer()`, real
+  MCP HTTP; the real dependency is the GATEWAY — `useLiteLLMProxy:false`, alias resolved to
+  `ollama`'s default `http://localhost:11434` with `OLLAMA_BASE_URL` unset, a genuine connection-
+  refused failure in this sandbox, never a stubbed `GatewayClient`) — 3/3 fail: `failedAgentCount`
+  is absent from both `run_status` and `run_list` for the real terminal run; `workflow_describe`
+  advertises no `attempts`/`worstCaseMs`; `workflow_authoring_guide`'s real served text does not
+  state the sequential-null rule.
+- **iter:** v35
+
+### VAL-235 — REQ-208: a role-prompt string containing "agent (" registers clean
+- **status:** red
+- **traces:** REQ-208
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/acceptance/val-235-scan-oracle.test.ts` (real `createServer()`, real MCP
+  HTTP) — 2/2 fail: the DEPLOY.md role-prompt recipe shape is refused `SCAN_VIOLATION:
+  AGENT_LABEL_REQUIRED (line 2)` over real MCP HTTP today; a genuine unlabeled `agent(` is refused
+  (correct verdict) but at the wrong line (1, via the false in-string match, not its real line 3).
+- **iter:** v35
+
+### VAL-236 — REQ-209: the doc examples a reader would copy really register + run
+- **status:** green
+- **traces:** REQ-209
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **evidence:** `tests/acceptance/val-236-doc-examples-real.test.ts` (real `createServer()`, real MCP
+  HTTP) — 2/2 GREEN, honestly: every extracted DEPLOY.md pair registers, and the recipe registers +
+  publishes + starts a real run (copy-by-hand end to end). Same v34-already-fixed disclosure as
+  IT-289 — this VAL is the acceptance-tier regression lock for that fix, not a fabricated red;
+  REQ-209's red half is DES-238's arity pin (UT-290).
+- **iter:** v35
+
+### VAL-237 — REQ-210: a cold client's initialize discloses the envelope + a comparable guide size
+- **status:** red
+- **traces:** REQ-210
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/acceptance/val-237-envelope-note.test.ts` (real `createServer()`, real MCP
+  HTTP) — 1/1 fail: `initialize`'s result carries no `instructions` field at all, so neither the
+  envelope statement nor a comparable byte figure is present.
+- **iter:** v35
+
+### v35 Exit-gate self-check (Mode A)
+
+1. **Each key DES has a UT; each REQ has a VAL.** DES-230→UT-284; DES-231→UT-285/IT-283;
+   DES-232→UT-286/IT-284; DES-233→IT-285; DES-234→IT-283/IT-286; DES-235→UT-287/UT-291;
+   DES-236→UT-288; DES-237→UT-289/IT-287; DES-238→UT-290; DES-239→UT-291/UT-292/UT-293/IT-288/
+   IT-289; DES-240→UT-294/VAL-232. REQ-205→VAL-232; REQ-206→VAL-233; REQ-207→VAL-234;
+   REQ-208→VAL-235; REQ-209→VAL-236; REQ-210→VAL-237.
+2. **Tests are all red for the right reason** (measured per file above, not asserted): 24 new/
+   extended ledger rows; 22 red + 2 honestly green (IT-289, VAL-236 — both disclosed regression
+   locks, not fudges, per each row's own evidence). Total new vitest-observable red assertions
+   across every touched/new file: 83 (7+9+5+4+4+9+0+2+4+6+3+4+4+3+3+3+1+0+5+1+3+2+0+1, one term per
+   ledger row above in the same order) plus ONE `tsc`-only red (UT-290's arity pin, confirmed via
+   `npx tsc --noEmit` reporting `TS2578` at that exact line, since the call itself still type-checks
+   fine under vitest's esbuild transform). Zero pre-existing case in any touched file flipped —
+   every extended file's pre-existing test count is unchanged (confirmed per-file above); the two
+   brand-new-file-but-green rows (IT-289/VAL-236) are net-new coverage, not a regression of
+   anything that used to be red.
+   **Full-suite confirmation (`npx vitest run`, whole repo, 648s):** 430 files (21 failed / 408
+   passed / 1 skipped), 3202 tests (74 failed / 3102 passed / 26 skipped). The 21 failed files are
+   EXACTLY the 21 new-red files above (script-spans.test.ts reports as `0 test`/1 failed FILE rather
+   than 9 failed cases, since its whole suite fails to load — module-not-found — before any `it()`
+   is collected; 83 individual-test tally − 9 uncounted-because-uncollected = 74, matching the
+   suite's own reported number exactly). No file outside this gate's own 24-row list appears in the
+   failed list; the pre-existing suite (≈3100 tests across ≈408 files) is untouched.
+3. **`traces` has no broken links; gap set diff = exactly the new unimplemented rows.** Baseline
+   captured to scratch BEFORE any edit (`sh .sdlc/trace <ledger>` → 1876 items / 97 gaps, matching
+   the Gate 3+4 handoff number exactly) per CLAUDE.md's rule (no `git checkout`/`restore`/`stash`
+   used anywhere in this gate). Post-edit `sh .sdlc/trace --check` result and gap-set diff recorded
+   in this gate's `gate_check` report field.
+4. **Hermetic (no time bombs).** Every new/extended test uses `FixedClock` with a literal
+   already-past ISO timestamp (`2026-09-21T00:00:00.000Z` throughout the run-manager/run-store
+   suites) or no clock at all (pure functions, real-HTTP acceptance tests with no date comparison).
+   No absolute future date literal is compared against the real clock anywhere in this gate's work.
+5. **Owner-deferral carried forward, not newly introduced.** DES-230's `owner_decision: pending`
+   (REQ-205 criterion 4, deferred at Gate 3+4/design, not by this gate) blocks Gate 8, not Gate 5 —
+   named here so the workflow does not lose track of it between gates. This verifier deferred
+   nothing new (`owner_decisions: []` in the report).

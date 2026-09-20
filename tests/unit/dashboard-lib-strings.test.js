@@ -112,3 +112,18 @@ describe('lib/strings.js: noDemoData (UT-244, DES-220, v28b)', () => {
     expect(t('en', 'noDemoData')).toBe(STR.en.noDemoData);
   });
 });
+
+// v35 (DES-240, ARCH-153, TASK-238, REQ-205): a new i18n key for the failure-reason label rendered
+// next to a failed run's status (detail view + list row) — no literal in a view file (`workflow.js`/
+// `run.js` read this key through `t()`), both languages present in the SAME edit. Written
+// test-first (Gate 5, RED) — no such key exists in `STR` today.
+describe('lib/strings.js: failureReason (UT, DES-240, v35, REQ-205)', () => {
+  it('both languages define a failureReason label, through t()', () => {
+    expect(typeof STR.zh.failureReason).toBe('string');
+    expect(STR.zh.failureReason.length).toBeGreaterThan(0);
+    expect(typeof STR.en.failureReason).toBe('string');
+    expect(STR.en.failureReason.length).toBeGreaterThan(0);
+    expect(t('zh', 'failureReason')).toBe(STR.zh.failureReason);
+    expect(t('en', 'failureReason')).toBe(STR.en.failureReason);
+  });
+});

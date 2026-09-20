@@ -71,6 +71,9 @@ export const STR = {
     history: '執行歷史', none: '(無)', stPending: '待執行', legend: '圖例',
     kind_message: '訊息', kind_tool_call: '工具呼叫', kind_tool_result: '工具結果',
     kind_usage: '用量', kind_harness: '設定', kind_log: '日誌', kind_refused: '拒絕',
+    // [v35, DES-240, TASK-238, REQ-205] the failure-reason label rendered next to a failed run's
+    // status (detail view + list row), beside error.code/error.message.
+    failureReason: '失敗原因',
   },
   en: {
     predictedLayout: 'predicted layout',
@@ -103,6 +106,7 @@ export const STR = {
     history: 'Run history', none: '(none)', stPending: 'Pending', legend: 'Legend',
     kind_message: 'message', kind_tool_call: 'tool call', kind_tool_result: 'tool result',
     kind_usage: 'usage', kind_harness: 'harness', kind_log: 'log', kind_refused: 'refused',
+    failureReason: 'Failure reason',
   },
 };
 

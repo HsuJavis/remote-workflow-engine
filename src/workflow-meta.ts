@@ -3,6 +3,7 @@
 // register), the workflow_get MCP tool, and the dashboard's workflow-card drill-in.
 import { runInNewContext } from 'node:vm';
 import { checkMeta } from './sandbox/guards.js';
+import { nonCodeSpans } from './script-spans.js';
 import { parseParamContract, retiredDefaults, TUNABLE_KEYS, type ParamContract, type Err as ParamContractErr } from './params/contract.js';
 // v25 (#55): the scanner's accepted-key set is derived from the AgentOpts TYPE, so the two
 // cannot drift apart (see AGENT_OPT_KEYS below).
@@ -160,7 +161,11 @@ export type AgentCallViolationCode =
   /** v34 (DES-224, ARCH-138, TASK-229, REQ-203): an options key that USED to be a live `AgentOpts`
    *  field and no longer is — `RETIRED_AGENT_OPT_KEYS`. Distinct from `PARAM_UNKNOWN` (which never
    *  worked) so a client can branch on "this used to work" vs "this never did". */
-  | 'AGENT_OPT_RETIRED';
+  | 'AGENT_OPT_RETIRED'
+  /** v35 (DES-236/237, ARCH-149, TASK-233, REQ-208): the `nonCodeSpans` acorn oracle failed to
+   *  parse the script — fail CLOSED (no partial scan) rather than risk a literal-heavy string
+   *  ("...agent (mode A)...") being misread as a real call, or vice versa. */
+  | 'SCRIPT_UNSCANNABLE';
 
 export interface AgentCallViolation {
   line: number;
@@ -189,6 +194,11 @@ export interface AgentCallScan {
     group?: { kind: 'parallel' | 'alt'; id: number };
   }>;
   violations: AgentCallViolation[];
+  /** v35 (DES-237, TASK-233): present (and `true`) only when the `nonCodeSpans` oracle could not
+   *  parse the script — `labels`/`calls` are empty and `violations` carries the one
+   *  `SCRIPT_UNSCANNABLE` entry. A consumer that cannot refuse (a render, not a registration gate)
+   *  reads this instead of mistaking the empty result for "no agent() calls". */
+  unscannable?: true;
 }
 
 const AGENT_CALL_RE = /(?<!\.)\bagent\s*\(/g;
@@ -428,10 +438,46 @@ function altSpans(script: string): AltSpan[] {
  *  matched with the same string-aware `matchDelimiter` used by `parseWorkflowSkeleton` plus a
  *  key/value scan — no JS parser dependency (a template/variable label or a non-literal options
  *  object cannot be checked statically, so both are refused rather than silently accepted).
- *  `x.agent(`/`agentFoo(` are not calls (the regex requires a preceding non-word/non-dot boundary);
- *  a commented-out `agent(` IS matched (accepted — the refusal names the line). Duplicate labels are
+ *  `x.agent(`/`agentFoo(` are not calls (the regex requires a preceding non-word/non-dot boundary).
+ *  v35 (DES-236/237): a commented-out `agent(` is now EXCLUDED via the `nonCodeOracle` span check
+ *  below — superseding the pre-v35 "IS matched, accepted, the refusal names the line" decision,
+ *  since REQ-208 requires comment text to never be misread as a real call. Duplicate labels are
  *  legal: `labels` is de-duplicated, `calls` is not. */
+/** v35 (DES-237, D11 ordering): the non-code-span oracle shared by `scanAgentCalls` AND
+ *  `parseWorkflowSkeleton` — both run their own independent `agent(`-shaped regex over the SAME
+ *  script, and `skeleton-graph.ts`'s `deriveExpectedGraph` joins their outputs POSITIONALLY (DES-174:
+ *  "the only join available is positional"); if only one of the two excluded a literal-heavy
+ *  false-positive match, the two scans would fall out of lockstep and misattribute every call after
+ *  it. A script with a balanced `export const meta = {…}` gets that span blanked
+ *  CHARACTER-PRESERVINGLY (`/[^\n]/g`, not `script-checks.ts`'s line-preserving `blankLines`) before
+ *  the oracle runs — the surviving `export` keyword is invalid in the oracle's `sourceType:'script'`
+ *  classic-script parse, and character-preserving blanking keeps every offset below the meta block
+ *  unshifted. A script with NO meta declaration at all has no `export` keyword to trip the parse, so
+ *  the oracle runs directly on it. Only the narrow in-between case — `checkMeta` found
+ *  `export const meta =` text but could not extract a clean span (not an object literal / unbalanced
+ *  braces) — skips the oracle (`null`): the raw `export` text is still present and unsafe to hand to
+ *  a classic-script parse, and that malformed meta already has its own specific refusal elsewhere,
+ *  which a vaguer SCRIPT_UNSCANNABLE here would only obscure. */
+function nonCodeOracle(script: string): ReturnType<typeof nonCodeSpans> | null {
+  const meta = checkMeta(script);
+  const probe = meta.span
+    ? script.replace(meta.span, meta.span.replace(/[^\n]/g, ' '))
+    : meta.found ? null : script;
+  return probe === null ? null : nonCodeSpans(probe);
+}
+
 export function scanAgentCalls(script: string): AgentCallScan {
+  const oracle = nonCodeOracle(script);
+  if (oracle && !oracle.ok) {
+    return {
+      labels: [],
+      calls: [],
+      violations: [{ code: 'SCRIPT_UNSCANNABLE', line: 1, hint: oracle.reason }],
+      unscannable: true,
+    };
+  }
+  const inNonCode = (idx: number): boolean => !!oracle?.ok && oracle.spans.some(([s, e]) => idx >= s && idx < e);
+
   const labels: string[] = [];
   const calls: AgentCallScan['calls'] = [];
   const violations: AgentCallViolation[] = [];
@@ -453,6 +499,7 @@ export function scanAgentCalls(script: string): AgentCallScan {
   let m: RegExpExecArray | null;
   while ((m = AGENT_CALL_RE.exec(script)) !== null) {
     if (inNestedWorkflow(m.index)) continue;
+    if (inNonCode(m.index)) continue;
     const index = m.index;
     const line = lineAt(index);
     const group = groupFor(index);
@@ -538,6 +585,12 @@ export function parseWorkflowSkeleton(script: string): SkeletonNode[] {
   const nodes: SkeletonNode[] = [];
   const dyn = dynamicRanges(script);
   const inDynamic = (idx: number): boolean => dyn.some(([s, e]) => idx >= s && idx < e);
+  // v35 (DES-237): same oracle as `scanAgentCalls` — see `nonCodeOracle`'s own comment for why a
+  // string/comment/regex-literal false positive must be excluded here too, not only there. `null`
+  // (oracle not invoked) or `{ok:false}` (fails open here — refusal is `scanAgentCalls`'s job, this
+  // function never throws) both leave `inNonCode` always false, i.e. today's unfiltered behaviour.
+  const oracle = nonCodeOracle(script);
+  const inNonCode = (idx: number): boolean => !!oracle?.ok && oracle.spans.some(([s, e]) => idx >= s && idx < e);
   // parallel spans: [start,end) of each parallel(...) call, with a group id.
   const parallelSpans: Array<{ id: number; start: number; end: number }> = [];
   let groupSeq = 0;
@@ -545,6 +598,7 @@ export function parseWorkflowSkeleton(script: string): SkeletonNode[] {
   CALL_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = CALL_RE.exec(script)) !== null) {
+    if (inNonCode(m.index)) continue;
     const kind = m[1] as 'phase' | 'agent' | 'parallel' | 'workflow';
     const callAt = m.index;
     const openParen = script.indexOf('(', callAt);

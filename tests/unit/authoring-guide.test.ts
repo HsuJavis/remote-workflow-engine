@@ -381,3 +381,31 @@ describe('the guide teaches v34 prompt layering and the two-layer tool surface (
     expect(text).not.toContain('agentType');
   });
 });
+
+// v35 (DES-239, ARCH-151, TASK-237, REQ-207/210): the three facts a cold author got wrong —
+// (1) a failed SEQUENTIAL `await agent()` returns `null` (does NOT throw) — today the guide only
+// states this for `parallel()`'s thunks; (2) `timeoutMs` bounds ONE attempt and the deployed
+// `retries` multiplies the actual wait, stated WITHOUT the SDK-only untimed exception (the two
+// gateways disagree there); (3) every tool result arrives as a JSON string inside
+// `content[0].text` (the double-encoding envelope). Written test-first (Gate 5, RED).
+describe('buildAuthoringGuide — the three v35 facts a cold author got wrong (DES-239, REQ-207/210)', () => {
+  const text = buildAuthoringGuide(CEILINGS);
+
+  it('states that a failed SEQUENTIAL await agent() returns null and does NOT throw, with a self-protection pattern', () => {
+    expect(text).toMatch(/await agent\([^)]*\)[^.]*\bnull\b/is);
+    expect(text).toMatch(/does not throw|never throws|no exception/i);
+    expect(text).toMatch(/if\s*\(\s*\w+\s*===\s*null\s*\)/); // the `if (out === null)` self-protection pattern
+  });
+
+  it('states timeoutMs bounds ONE attempt and the deployed retries multiplies the actual wait', () => {
+    expect(text).toMatch(/timeoutMs/);
+    expect(text).toMatch(/one attempt|single attempt/i);
+    expect(text).toMatch(/retries|retry/i);
+    expect(text).toMatch(/multipl/i);
+  });
+
+  it('states every tool result arrives as a JSON string inside content[0].text (the double-encoding envelope)', () => {
+    expect(text).toMatch(/content\[0\]\.text/i);
+    expect(text).toMatch(/JSON/i);
+  });
+});

@@ -269,7 +269,10 @@ function renderChipsAndTable(shell, runs, selectedRunId, lang, onPick) {
         // one README calls a TAG, and it was the one rendered as a bare text node.
         const tag = document.createElement('span');
         tag.className = 'tag';
-        tag.textContent = cell;
+        // [v35, DES-240, TASK-238, REQ-205] a failed row also carries its error.code, right in the
+        // status tag it already renders — absent `r.error` (a pre-v35 failed row) leaves the tag
+        // unchanged, never an empty suffix, never "undefined".
+        tag.textContent = r.status === 'failed' && r.error ? cell + ' · ' + r.error.code : cell;
         td.appendChild(tag);
       } else {
         td.textContent = cell;

@@ -437,6 +437,15 @@ export function renderLegend(legendEl, payload, view, lang) {
   // `19426 tok` was the only raw figure left on the page.
   summary.textContent = stateLabel(lang, view.status) + ' · ' + nodeCount + (lang === 'zh' ? ' 個節點 · ' : ' nodes · ') + fmtTok(tok) + ' tok · ' + cost;
   legendEl.appendChild(summary);
+  // [v35, DES-240, TASK-238, REQ-205] the failure reason, next to the terminal status this line
+  // already renders — absent `view.error` (a pre-v35 failed row, or any non-failed status) renders
+  // nothing here, never an empty block, never the literal string "undefined".
+  if (view.status === 'failed' && view.error) {
+    const errEl = document.createElement('span');
+    errEl.className = 'run-error';
+    errEl.textContent = t(lang, 'failureReason') + ': ' + view.error.code + ' — ' + view.error.message;
+    legendEl.appendChild(errEl);
+  }
 }
 
 /** The `#run-usage` line: the four-column token breakdown (never just the sum, D8/REQ-127) plus

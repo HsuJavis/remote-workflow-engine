@@ -496,9 +496,10 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '};\n' +
         '```\n\n' +
         '`meta.params.args` declares the run-time inputs the script reads off `args.<name>` — `{type, ' +
-        'enum?, min?, max?}`, no `.default` (a declared args default is refused: it is advertised but ' +
-        "never applied). `type` is one of `string | number | enum` (an `enum` type requires the " +
-        '`enum` array of legal values).\n\n' +
+        'enum?, min?, max?, default?}`. A declared `.default` fills in the key when the caller omits ' +
+        "it (or a run_start call omits `args` entirely); an explicit caller-supplied value always " +
+        "wins, including an explicit `undefined`. `type` is one of `string | number | enum` (an " +
+        '`enum` type requires the `enum` array of legal values).\n\n' +
         `\`meta.params.knobs\` and \`meta.defaults\` are retired — a script that declares either is ` +
         `refused \`DEFAULTS_RETIRED\`, naming \`meta.params.agents.<label>.<key>.default\` as the ` +
         `replacement.\n\n` +
@@ -779,6 +780,33 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'file; the refusal names the offending `path` and points at `seedManifest` instead. Content ' +
         'referenced only by hash (`seedManifest`, `seedManifestRef`) must already exist in the CAS ' +
         '— push it first with `workspace_push`.',
+    ),
+  );
+
+  // v35 (DES-239, ARCH-151, TASK-237, REQ-207/210): three facts a cold author got wrong that
+  // nothing else in the guide states this plainly — a failed SEQUENTIAL agent() call, the meaning
+  // of timeoutMs once retries are deployed, and the double-JSON envelope every tool result arrives
+  // in (including this guide's own).
+  parts.push(
+    section(
+      'Three things a cold author gets wrong',
+      'A **sequential** `await agent(label, options)` call that fails or times out resolves to ' +
+        '`null` for that reason — it does not throw. (An ENGINE refusal, e.g. `BUDGET_EXCEEDED`, is ' +
+        'a different case and still propagates as a thrown error — see "Budget, concurrency" above.) ' +
+        "Guard every sequential call the same way `parallel()`'s own thunks already are:\n\n" +
+        '```js\n' +
+        "const out = await agent('reviewer', { prompt: 'Review the draft' });\n" +
+        'if (out === null) {\n' +
+        '  // the agent failed or timed out — there is no result to read here\n' +
+        '  return;\n' +
+        '}\n' +
+        '```\n\n' +
+        '`timeoutMs` bounds ONE attempt, never the whole call: this deployment retries a failed ' +
+        'attempt, and the deployed retry count multiplies the single-attempt bound into the actual ' +
+        "worst-case wait — `workflow_describe` reports the multiplied figure as that agent's " +
+        '`timeoutMs.worstCaseMs`, next to the single-attempt `timeoutMs.default`.\n\n' +
+        'Every tool result — including this guide\'s own — arrives as a JSON string inside ' +
+        '`content[0].text`, never as a structured object: parse it again to reach the actual payload.',
     ),
   );
 

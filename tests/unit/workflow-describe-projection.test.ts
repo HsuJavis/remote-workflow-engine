@@ -216,3 +216,55 @@ describe('projectWorkflowDescribe — runnable/runnableReason truth table (DES-1
     });
   }
 });
+
+// v35 (DES-239, ARCH-147, TASK-237, REQ-207): `timeoutMs` gains `attempts`/`worstCaseMs` —
+// COMPUTED from an injected `ctx.attempts` (the deployed gateway's `1 + max(0,retries)`), never a
+// hard-coded number. Written test-first (Gate 5, RED) — `projectAgentParams`'s `timeoutMs` entry
+// carries no `attempts`/`worstCaseMs` field today, and `projectWorkflowDescribe`'s `ctx` type has
+// no `attempts` slot to accept one.
+describe('projectWorkflowDescribe — timeoutMs.attempts/worstCaseMs (DES-239, v35, REQ-207)', () => {
+  it('worstCaseMs === timeoutMs * attempts, with attempts taken from the injected ctx', () => {
+    const view = projectWorkflowDescribe(fixture(), { triggers: [], ceilings: CEILINGS, attempts: 3 } as never);
+    const timeoutMs = view.params.agents['reviewer']!['timeoutMs'] as unknown as { attempts?: number; worstCaseMs?: number; default: number };
+    expect(timeoutMs.attempts).toBe(3);
+    expect(timeoutMs.worstCaseMs).toBe(timeoutMs.default * 3);
+  });
+
+  it('a DIFFERENT injected attempts changes worstCaseMs — proves it is computed, not transcribed', () => {
+    const view1 = projectWorkflowDescribe(fixture(), { triggers: [], ceilings: CEILINGS, attempts: 1 } as never);
+    const view2 = projectWorkflowDescribe(fixture(), { triggers: [], ceilings: CEILINGS, attempts: 4 } as never);
+    const t1 = view1.params.agents['reviewer']!['timeoutMs'] as unknown as { worstCaseMs?: number };
+    const t2 = view2.params.agents['reviewer']!['timeoutMs'] as unknown as { worstCaseMs?: number };
+    expect(t1.worstCaseMs).not.toBe(t2.worstCaseMs);
+  });
+
+  it('an absent ctx.attempts defaults to the deployed default (1 + 1 = 2) rather than throwing or omitting the field', () => {
+    const view = projectWorkflowDescribe(fixture(), { triggers: [], ceilings: CEILINGS });
+    const timeoutMs = view.params.agents['reviewer']!['timeoutMs'] as unknown as { attempts?: number };
+    expect(timeoutMs.attempts).toBe(2);
+  });
+});
+
+// v35 (DES-235, ARCH-145, TASK-231, REQ-206): `EffectiveCallParams` must OMIT `args` — the
+// describe projection must NEVER grow an `args` key inside a `params.agents.<label>` entry (Gate-2
+// constraint 2's leak). Regression pin: even if a future `agents.<label>` value structurally
+// carries an `args` key (a future EffectiveCallParams shape), the projection must not surface it —
+// `projectAgentParams`'s hard-coded key loop (`['model','effort','timeoutMs','appendPrompt']`)
+// must never be silently widened to include it.
+describe('projectWorkflowDescribe — params.agents.<label> never leaks an `args` key (DES-235, v35, REQ-206)', () => {
+  it('an agents.<label> value carrying an (illegal, future-shaped) args field is NOT surfaced in the projection', () => {
+    const params = {
+      agents: {
+        reviewer: {
+          model: { type: 'string' as const, default: 'claude' },
+          effort: { type: 'enum' as const, default: 'medium' },
+          timeoutMs: { type: 'number' as const, default: 60_000 },
+          args: { url: { type: 'string' as const, default: 'https://x' } },
+        },
+      },
+      args: {},
+    };
+    const view = projectWorkflowDescribe(fixture({ params: params as unknown as WorkflowOwnerView['params'] }), { triggers: [] });
+    expect(Object.keys(view.params.agents['reviewer']!)).not.toContain('args');
+  });
+});
