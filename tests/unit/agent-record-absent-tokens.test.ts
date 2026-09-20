@@ -53,3 +53,45 @@ describe('deriveAgentRecords: an un-measured call has no token figure (UT-277, R
     expect(rec!.tokens).toMatchObject({ input: 2, output: 3 });
   });
 });
+
+// UT-278 (v32, REQ-189, F3): the same rule for the COST figure. REQ-186 moved `tokens` to absent
+// and left `costUSD: 0, unpriced: false` sitting beside it, so the running panel read `TOKENS —`
+// next to `費用 $0.00` — a confident zero on a call that has not returned. `unpriced: false` is
+// the same claim in another field: "this call was priced" is also something nobody has measured
+// yet. Both follow `tokens` into absence on the two non-terminal states, and both keep their
+// values on the terminal ones, for the reason DES-188 already gives.
+describe('deriveAgentRecords: an un-measured call has no cost figure either (UT-278, REQ-189)', () => {
+  it('a running record omits costUSD and unpriced, not just tokens', () => {
+    const [rec] = deriveAgentRecords(one([harness('triage')]), 'running');
+    expect(rec!.state).toBe('running');
+    expect(rec!.costUSD, 'a running agent claimed a measured $0.00').toBeUndefined();
+    expect(rec!.unpriced, 'a running agent claimed it had been priced').toBeUndefined();
+  });
+
+  it('a queued record likewise', () => {
+    const [rec] = deriveAgentRecords(one([harness('triage')]), 'interrupted');
+    expect(rec!.state).toBe('queued');
+    expect(rec!.costUSD).toBeUndefined();
+    expect(rec!.unpriced).toBeUndefined();
+  });
+
+  it('a FAILED call keeps costUSD 0 — terminal, and the zero is the measurement', () => {
+    const events = [
+      harness('triage'),
+      { kind: 'usage', data: { failed: true, provider: 'ollama' } } as unknown as TranscriptEvent,
+    ];
+    const [rec] = deriveAgentRecords(one(events), 'running');
+    expect(rec!.state).toBe('failed');
+    expect(rec!.costUSD).toBe(0);
+  });
+
+  it('a done call keeps its real cost', () => {
+    const events = [
+      harness('triage'),
+      { kind: 'usage', data: { tokens: { input: 2, output: 3 }, costUSD: 0.004, model: 'qwen2.5:7b', provider: 'ollama' } } as unknown as TranscriptEvent,
+    ];
+    const [rec] = deriveAgentRecords(one(events), 'running');
+    expect(rec!.state).toBe('done');
+    expect(rec!.costUSD).toBe(0.004);
+  });
+});

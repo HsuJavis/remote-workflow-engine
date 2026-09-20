@@ -432,4 +432,82 @@ describe('the v27 dashboard shell + Workflows home, real Chromium (VAL-198, REQ-
       rmSync(resultDir, { recursive: true, force: true });
     }
   }, 20000);
+  // [v32, REQ-187, F1] README "1. Workflows home" puts `white-space:nowrap` **on the success item**,
+  // not on the meta row. v29f's REQ-178 read the same line and applied it to the whole `.card .meta`
+  // plus `overflow:hidden`, so the row clips: at the design's own card width two of the four figures
+  // README names for this row (`平均費用 …` and the run count) are unreadable.
+  //
+  // This asserts the RESULT, not the property. v29f's verification measured `white-space:nowrap`,
+  // 18px, one line — the property it had just changed — and called it done. The property was exactly
+  // what it claimed to be; the text was still cut off. `innerText` does not reflect `overflow:hidden`
+  // either, so the only honest oracle is the geometry plus the trailing token being inside the box.
+  itReal('the card meta row is fully readable at the design card width — no clipping (REQ-187)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.setViewport({ width: 1500, height: 900 });
+      await page.goto(`${baseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await page.waitForSelector('.card .meta', { timeout: 3000 });
+      // (a) README's actual clause: nowrap belongs to the SUCCESS ITEM, so a success item has to
+      // exist as its own element. A single text node has nothing to hang it on — which is how v29f
+      // ended up hanging it on the whole row.
+      const successItem = await page.evaluate(() => {
+        const meta = document.querySelector('.card .meta');
+        const el = meta?.querySelector('[data-meta-success]');
+        if (!el) return null;
+        return { text: (el as HTMLElement).innerText, whiteSpace: getComputedStyle(el).whiteSpace };
+      });
+      expect(successItem?.whiteSpace).toBe('nowrap');
+      expect(successItem?.text ?? '').toMatch(/\d+%|—/);
+
+      // (b) the row must hold the content README itself specifies for it. The live fixture's metrics
+      // are short enough to fit either way, so measuring only them would re-pass on the broken CSS;
+      // this re-lays README §1's own example string in a clone of the real row, in the real card, and
+      // asks whether it survives. `innerText` cannot answer that — it returns the full string whether
+      // or not `overflow:hidden` ate half of it — so the oracle is geometry.
+      const readmeRow = await page.evaluate(() => {
+        const meta = document.querySelector('.card .meta') as HTMLElement | null;
+        if (!meta) return null;
+        const probe = meta.cloneNode(false) as HTMLElement;
+        probe.textContent = 'Success 67% (2/3) · Avg duration 12m 4s · Avg cost $0.42 · 5 runs';
+        meta.parentElement!.insertBefore(probe, meta.nextSibling);
+        const r = { scrollWidth: probe.scrollWidth, clientWidth: probe.clientWidth };
+        probe.remove();
+        return r;
+      });
+      expect(readmeRow).not.toBeNull();
+      expect({ clipped: readmeRow!.scrollWidth > readmeRow!.clientWidth, ...readmeRow! })
+        .toEqual({ clipped: false, ...readmeRow! });
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
+  // [v32, REQ-188, F2] the primary drill-in is a plain `<div>` (`role=null tabindex=null`) — reachable
+  // by mouse only. The REFERENCE uses `role="button" tabindex="0" onClick` but carries NO keydown
+  // handler, so copying it verbatim would produce something worse than a div: focusable, announced as
+  // a button, inert on Enter. Take the reference's role/tabindex AND make the key actually work.
+  itReal('a home card is a real keyboard control: role, tabindex, and Enter activates it (REQ-188)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await page.waitForSelector('.card', { timeout: 3000 });
+      const attrs = await page.evaluate(() => {
+        const card = document.querySelector('.card');
+        return { role: card?.getAttribute('role') ?? null, tabindex: card?.getAttribute('tabindex') ?? null };
+      });
+      expect(attrs).toEqual({ role: 'button', tabindex: '0' });
+
+      const before = page.url();
+      await page.evaluate(() => (document.querySelector('.card') as HTMLElement).focus());
+      await page.keyboard.press('Enter');
+      await new Promise((r) => setTimeout(r, 400));
+      expect(page.url()).not.toBe(before);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
 });

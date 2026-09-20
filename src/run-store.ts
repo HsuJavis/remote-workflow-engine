@@ -152,9 +152,13 @@ export function deriveAgentRecords(
         // together in v31, or they would disagree on this column.
         // [v31, REQ-186, R30-A1] `tokens` is OMITTED: this branch is `running`/`queued`, i.e. the
         // call has not reported usage yet. Zero-filling it asserted a measurement that had not
-        // happened. `costUSD`/`unpriced` stay as they are — those two are already optional in the
-        // type and their zeros are read through `fmtCost`, which has its own absent branch.
-        costUSD: 0, unpriced: false,
+        // happened.
+        // [v32, REQ-189, F3] `costUSD`/`unpriced` are omitted for the SAME reason, and v31's
+        // argument for keeping them ("their zeros are read through `fmtCost`, which has its own
+        // absent branch") was wrong in the way that matters: a present `0` never reaches that
+        // branch, so the panel read `TOKENS —` beside `費用 $0.00`. `unpriced: false` is the same
+        // unmeasured claim in another field — "this call was priced" is not yet known either.
+        // Terminal states keep their zeros (DES-188): there, the zero IS the measurement.
         ...(firstHarnessTs !== undefined ? { startedAt: firstHarnessTs } : {}),
       }, harnessCommon));
     }

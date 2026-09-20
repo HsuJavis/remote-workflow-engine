@@ -253,7 +253,9 @@ export class AgentTranscriptSink {
       // record is byte-identical to this live one (DES-188's own boundary).
       // [v31, REQ-186] no `tokens`: a queued call has not been measured. Mirrors `run-store.ts`'s
       // harness-only branch, which changed in the same commit.
-      state: 'queued', provider: '', model: '', costUSD: 0, unpriced: false,
+      // [v32, REQ-189] and no `costUSD`/`unpriced`, for the same reason — v31 changed one field of
+      // the three and left the other two asserting a measured $0.00 on an undispatched call.
+      state: 'queued', provider: '', model: '',
     });
   }
 
@@ -261,7 +263,8 @@ export class AgentTranscriptSink {
    *  genuinely dispatched to the gateway — still observable in workflow_status while in flight. */
   markRunning(agentId: string, startedAt?: string): void {
     const existing = this._records.get(agentId);
-    this._records.set(agentId, { ...(existing ?? { agentId, provider: '', model: '', costUSD: 0, unpriced: false }), agentId, state: 'running', startedAt: startedAt ?? existing?.startedAt });
+    // [v32, REQ-189] the fallback seed carries no cost either — see markQueued above.
+    this._records.set(agentId, { ...(existing ?? { agentId, provider: '', model: '' }), agentId, state: 'running', startedAt: startedAt ?? existing?.startedAt });
   }
 
   /** v25 (DES-167, REQ-120, issue #61): records a call the ENGINE refused to dispatch — terminal,

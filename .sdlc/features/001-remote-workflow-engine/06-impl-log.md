@@ -8529,3 +8529,39 @@ done 不變。UT-277 兩紅兩綠正好把這條線釘住,而不是斷言一條�
 
 **型別收窄當作搜尋工具。** `tokens` 改選填後,tsc 列出四個未處理缺席的讀者;
 比人工 grep 可靠,而且其中一個(`DagAgentNode.tokens`)是我不會想到要看的 view 型別。
+
+## IMPL-324 — REQ-187:`.card .meta` 的 nowrap 收回到「成功率那一項」
+
+`ui/home.js` 的 `metaLine()`(回傳單一字串、被丟進 `meta.textContent`)改為 `metaParts()`,
+回傳四段;呼叫端以 span 包每一段、` · ` 用**文字節點**串接 —— 所以元素的 `textContent`
+與改動前逐位元組相同,既有以文字為準的判準不會被牽連。成功率那一段掛 `[data-meta-success]`。
+
+`dashboard.css` 把 `white-space:nowrap;overflow:hidden;text-overflow:ellipsis` 從 `.card .meta`
+移除(`font-variant-numeric:tabular-nums` 留著),改掛 `.card .meta [data-meta-success]`。
+
+**判準為什麼要量兩件事:** 測試夾具的 metrics 太短(`成功率 — (0/0) · …`),在壞掉的 CSS 上
+照樣不截字 —— 只量夾具會再綠一次。所以 VAL-198 新增的列改為把 **README §1 自己給的那行範例**
+(`Success 67% (2/3) · Avg duration 12m 4s · Avg cost $0.42 · 5 runs`)重鋪進真實卡片裡的
+真實 `.meta` 克隆節點再量幾何。落判準前先對正式站驗過它咬得住:`scrollWidth 335 > 318`。
+
+`grep REQ-178 tests/` 是零命中 —— 我 v29f 那次改動**完全沒有驗收列**,所以它截字也沒人喊。
+
+## IMPL-325 — REQ-188:首頁卡片是真的鍵盤控制項
+
+`role="button"` + `tabindex="0"` 取自參考實作;Enter/Space 的 `keydown` 是**參考實作沒有的**。
+照抄參考會得到比 `div` 更糟的結果:焦點進得去、被宣告成按鈕、按 Enter 沒反應。
+Space 一併 `preventDefault()`,否則頁面會在啟動的同時捲走。
+
+## IMPL-326 — REQ-189:未量到的費用與計價狀態一併缺席
+
+`run-store.ts` 分支 (4) 與 `agent-executor.ts` 的 `markQueued`/`markRunning` 停止填
+`costUSD: 0, unpriced: false`。終端的 `failed`/`refused` 兩個分支**不動**(DES-188:零就是
+測量結果)。型別本來就是 `costUSD?` / `unpriced?`,tsc 無新錯。
+
+v31 我為「保留那兩個零」寫的理由是錯的,已在原處改寫:
+「零會經由 `fmtCost` 的缺席分支讀出」—— `fmtCost` 確實有缺席分支,但**沒有人遞缺席給它**,
+present `0` 永遠走不到那裡。這正是 R30-A1 同一個錯誤的第二次發作,只是換一個欄位。
+
+讀者全數查過:`run-guard.ts:68-69`、`run-manager.ts:254-255` 用 `?? 0` / 限定 `done`;
+`dashboard.ts:176` 先 `!== undefined` 過濾;`run-manager.ts:840` 的 `row` 是 run 層 summary
+不是 `AgentRecord`,且已被 `!TERMINAL.includes(row.status)` 短路。

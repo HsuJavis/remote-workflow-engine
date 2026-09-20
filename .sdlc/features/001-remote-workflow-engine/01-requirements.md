@@ -2417,3 +2417,198 @@ fmtTok(undefined)    → "undefined"  它根本沒有缺席分支
 `AgentRecord.tokens` 與 `DagAgentNode.tokens` 改為選填;tsc 因此列出四個沒處理缺席的讀者
 (`dashboard.ts`、`run-manager.ts`、一個 view 型別、一個整合測試)。
 執行中的 run 總和仍是「**已量到的**真實總和」—— 那才是即時總計的意思。
+
+## Iteration v32 — REQ-187..REQ-200(第三次獨立稽核的 14 條;3 中 11 低)
+
+**來源:** AUDIT-v31,對 8899(`v0.20.0-402-g879befe`)與設計 handoff 的第三次獨立比對。
+該次稽核的總評是「BUILD 是 handoff 的高保真實作,數處比還在跑的參考實作更忠於設計稿」,
+並獨立確認了執行中樣式全部正確、REQ-186 的 run 總和行為**如裁定**。以下 14 條是其差異清單。
+
+**14 條我都對原始碼/正式站逐條查證過,沒有採信稽核的說法。** 其中 F9 的根因比稽核所述更
+精確(見 REQ-195),F6 的機制也不同於稽核所述(不是有人寫了 700,是沒人寫 600)。
+
+### 三條中影響裡有兩條是我自己造成的
+
+| id | 誰造成的 | 性質 |
+|---|---|---|
+| REQ-187 (F1) | **我**,v29f REQ-178 | 把 README 寫在「成功率那一項」上的 nowrap 套到整列 |
+| REQ-188 (F2) | 既有 | 首頁卡片鍵盤進不去 |
+| REQ-189 (F3) | **我**,v31 REQ-186 | 只讓 `tokens` 缺席,`costUSD: 0` 原封不動 |
+
+---
+
+### REQ-187 (F1) — `.card .meta` 不得截字
+
+README §1 原文:`tabular figures, white-space:nowrap **on the success item**`。
+我 v29f 讀了同一行,套到整個 `.meta` 列,還加了 `overflow:hidden; text-overflow:ellipsis`。
+
+正式站實測(1500px 視窗、348px 卡、306px 內容框):
+
+```
+scrollWidth 320~327  >  clientWidth 306    三張卡全部截字
+看不到的尾端:「$0.00 · 3 次執行」
+```
+
+README 為這一列指名了四個數字,其中兩個在設計自己的卡寬下讀不到。
+
+**我 v29f 的驗證量到「nowrap、18px、單行」就收工 —— 量了我改的那個屬性,沒量我要的那個
+結果。** 本條的驗收必須斷言**結果**:在設計的卡寬下 `scrollWidth <= clientWidth`,且
+「次執行」這個字落在框內。屬性斷言一律不算數。
+
+**做法:** `ui/home.js:112` 目前是 `meta.textContent = metaLine(card, lang)`,整列是**單一
+文字節點** —— 所以根本不存在「成功率那一項」可以掛 nowrap。metaLine 必須拆成 span,
+` · ` 保留為文字節點(既有以 `textContent` 為準的判準才不會一起紅)。整列回到可換行。
+
+### REQ-188 (F2) — 首頁卡片必須能用鍵盤啟動
+
+BUILD:`<div class="card running">`,`role=null tabindex=null`。主要下鑽動作只能用滑鼠。
+參考實作:`role="button" tabindex="0" onClick` —— **但沒有 keydown**。
+
+**照抄參考會得到比 `div` 更糟的東西**:對輔助技術宣稱自己是按鈕、焦點進得去、Enter 按不動。
+本條取參考的 `role`/`tabindex`,並補上 Enter/Space 處理。README 對此靜默,這是在
+「參考實作決定」之上補一個參考實作自己的缺陷。
+
+### REQ-189 (F3) — 未量到的費用也是缺席,不是零
+
+REQ-186 讓未量到的 `tokens` 缺席,`costUSD: 0` 沒動。所以執行中的面板讀作
+`TOKENS —` 旁邊 `費用 $0.00`。這次 ollama 跑真的是 0 不痛不癢,同一條路徑服務計價 provider。
+
+**範圍嚴格照 REQ-186 自己那張表,不得過度套用**(F1 就是過度套用出來的):
+
+| 位置 | 狀態 | `costUSD` |
+|---|---|---|
+| `run-store.ts` 分支 (4) | `queued`/`running` | **缺席** |
+| `agent-executor.ts` `markQueued`/`markRunning` | `queued`/`running` | **缺席** |
+| `run-store.ts:111` | `failed` | 零,不動(DES-188:失敗是**測量結果**) |
+| `run-store.ts:132` | `refused` | 零,不動 |
+
+`unpriced` 一併裁定:呼叫還沒回來時,「這通呼叫沒有計價」同樣是一個還沒有人量過的斷言,
+因此 `unpriced` 在這兩個分支也缺席 —— 留 `false` 就是 REQ-186 漏掉 `costUSD` 的同一個錯誤,
+只是換一個欄位。`fmtCost` 早有缺席分支(`runlist.js:19`),客戶端不用動。
+
+---
+
+### 五條:README 有明文的
+
+| id | 差異 | README 依據 |
+|---|---|---|
+| REQ-190 (F4) | 歷史 Status 欄是裸文字節點 | §2「Run ID (mono) · **Status tag** · Version」 |
+| REQ-191 (F5) | Context 欄靠左 | §4「Context **(right)**」 |
+| REQ-192 (F6) | `h2`/`h6` 用 700 | tokens「**Headings cap at 600**」 |
+| REQ-193 (F7) | 模型搜尋框實際 178px | §4「search (max 280)」 |
+| REQ-194 (F8) | 模型面板尾端 `remote`/`stable` 生詞 | §4「supported parameters as neutral tags」 |
+
+REQ-192 的機制要說清楚:`dashboard.css` 裡**沒有任何人寫 700**;`h2{font-size:20px;margin:0}`
+與 `h6{font-size:13px;…}` 都沒有 `font-weight`,吃的是瀏覽器對標題元素的預設 `bold`。
+所以修法是補 600,不是改 700。**h2 的 20px 不動** —— 稽核沒有指控字級,不順手改。
+
+REQ-193 與已裁定的 REQ-183 是同一類:`max-width` 有了、`width:100%` 沒有,所以永遠撐不到。
+
+REQ-194 的邊界:handoff 那個「支援參數」區塊**不存在是已裁定的**
+(`model-catalog.ts:427` 蓄意丟棄 `supported_parameters`)。本條只處理「拿未在地化的生詞
+去填那個位置,還跟上方已在地化的 kicker 重複」這件事。
+
+---
+
+### 三條:佈線與在地化
+
+**REQ-195 (F9) — 分段計數在查詢時不更新(佈線,不是計算)**
+
+稽核記的是「計數沒有跟著查詢收斂」。查證後根因更精確 —— 計算是對的,**佈線漏了**:
+
+```
+ui/home.js:190  search 'input' handler ──> renderGrid()                 ← 缺 updateCounts
+ui/home.js:203  segment 按鈕            ──> renderGrid() + updateCounts()
+ui/home.js:233  初次掛載                ──> renderGrid() + updateCounts()
+ui/home.js:250  資料更新                ──> renderGrid() + updateCounts()
+```
+
+`updateCounts` 內部早就是 `segmentCounts(matchCards(state.cards, state.query))`(v30b REQ-170
+親手改的),但**唯一會改變 query 的那條路徑沒呼叫它**。修了計算、漏了佈線 ——
+與 `composeConfig` 那個佈線 bug class 同型:功能正確、靜默失效。
+
+**驗收必須是瀏覽器層。** REQ-170 的純函式測試至今是綠的,這正是它出不了聲的原因:
+往搜尋框打字、斷言分段按鈕的文字。純函式再測一次只會再綠一次。
+
+**REQ-196 (F10) — 可排序 `th` 缺 `aria-sort`**
+
+排序本身會動,但全域 `grep aria-sort` 零命中。參考實作有 `aria-sort="ascending"/"none"`。
+沒有它,排序狀態對輔助技術是隱形的。
+
+**REQ-200 (F14) — 中文介面裡的英文硬字串**
+
+`agent.js:22-24` 的 token 子標籤 `in / out / cache read / cache write`(兩種語言都寫死)、
+`agent.js:41` 的 `not applied:` 前綴(其後的 `reason` 是 wire,不動)、
+`ui/run.js:484` 的 `Fit`。參考實作把同一組子標籤在地化為
+`輸入 · 輸出 · 快取讀取 · 快取寫入`。
+
+**與 REQ-150 完全同類,只是漏了下一層**:v29 REQ-150 修的是「六個標籤在兩種語言都是英文
+字面」,子標籤沒跟著修。`Fit` 這個控制項本身是已裁定的(REQ-129),只有它的標籤未裁定;
+已確認測試只釘 `#dag-fit` 選擇器、沒有斷言 `'Fit'` 字面。
+
+---
+
+### 三條:需要裁決的(已裁決,見下)
+
+**REQ-197 (F11) — 缺席的活動時間是「未知」,不是「凍結」**
+
+實測:健康的呼叫在 t+67s 讀作**「無活動」**,而它一路跑到 3m38s 才結束。當下紀錄
+`startedAt 23:47:24.401`、**沒有 `lastActivityAt`**,閘道的第一個事件遲至 23:51:02 才發出。
+
+```
+lib/agent.js:52-56
+  lastMs    = record.lastActivityAt ? … : startMs   ← 缺席被映成 startedAt
+  advancing = lastMs > startMs                      ← 於是永遠 false
+  stale     = now - lastMs > 60000
+  noActivity = !advancing && stale                  ← 60 秒後必定成立
+```
+
+**機制是已裁定的**(issue #20;duration→activity 的退場由 REQ-166 裁定),但那個 60 秒門檻
+對任何不在呼叫中途串流的 provider 都會誤報。
+
+**擁有者裁決(2026-09-20):缺席即「未知」。** 從沒收到過任何事件 ≠ 凍結 —— 這與 R30-A1
+「未量到的用量是缺席,不是零」是同一個類別,只是換到時間欄位。只有「曾經前進過、之後
+凍結超過 60 秒」才算無活動;從未回報過的顯示未知。門檻值不動。
+
+**REQ-198 (F12) — 降級理由不得蓋掉仍然真實的核心/負載**
+
+```
+lib/system.js:68   kind === 'unavailable' ──> { value: 無法取樣, meta: input.reason }   ← 先返回
+lib/system.js:70+  kind === 'cpu'         ──> meta: `16 核心 · 負載 …`                  ← 到不了
+```
+
+`unavailable` 分支由四張卡共用,先行返回,CPU 那支永遠走不到。而
+`lib/system.js:27-31` 自己的註解明寫 `cores`/`loadAvg`「在 `utilizationPct` 降級時仍然真實
+…… 呼叫端可自行附到 meta 行」—— 呼叫端沒有附。
+
+**擁有者裁決(2026-09-20):兩者併陳。** meta 行同時放真實的核心/負載與降級理由,例如
+`16 核心 · 負載 0.34 / 2.62 / 3.27 · awaiting-second-sample`。
+**不翻 DES-215** —— 該裁定說「理由要當作次要文字呈現」,併陳完全滿足它;本條以 DES 修訂案
+記錄,釐清「呈現理由」不等於「用理由取代其他仍然為真的次要文字」。
+
+實機驗證已確認這是瞬態:下一個 3 秒 tick 即完全恢復(連續 6 個 tick 量到
+`3% / 16 核心 · 負載 0.34 / 2.62 / 3.27`,每行程百分比與 `★` 列皆正確)。
+
+**REQ-199 (F13) — 耗時卡要有 `start → end`**
+
+README §3 明列「Duration (**start → end**)」。BUILD 的六張卡都是扁平的
+`{label, value}` 一行(`lib/agent.js:105-110`),耗時卡完全沒有時間戳。
+參考實作每張卡是 kicker + 值 + `.card-meta` 子行:`耗時 / 59s / 9/7 18:25:26 → 9/7 18:26:25`。
+
+**範圍只有耗時卡的 start → end。** 逾時卡的單行呈現是已裁定的(`agent.js:12-19`),不動。
+已確認 `AgentRecord.endedAt`(`types.ts:286`)存在,值拿得到。
+改 `{label, value}` 為可選帶 `meta` 會再碰到 v29 c3 那張判準表 —— 那張表我上次就寫錯過
+一次(從建置抄而非從 REQ-135 的驗收文字推導),這次先改判準再改實作。
+
+---
+
+### 分四個 commit
+
+| commit | 內容 |
+|---|---|
+| c1 | REQ-187..189 — 三條中影響(我的兩條回歸優先) |
+| c2 | REQ-190..194 — README 有明文的五條 |
+| c3 | REQ-195/196/200 — 佈線、`aria-sort`、在地化 |
+| c4 | REQ-197..199 — 三條裁決 |
+
+每個 commit 一律判準先行:先把驗收列從 README/裁決重新推導、蓄意跑紅,再改實作。

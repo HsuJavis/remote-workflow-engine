@@ -285,7 +285,10 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
 .card-section.other{opacity:.75}
 /* [v30b, REQ-178] README §1: "(tabular figures, `white-space:nowrap` on the success item)". The
    meta ran as one wrapping text node and took two lines in a 336px card. */
-.card .meta{font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* [v32, REQ-187] README §1: nowrap on the SUCCESS ITEM. v29f applied it to the whole row (plus
+   overflow:hidden), which clipped `平均費用 … · N 次執行` off every card at the design width. */
+.card .meta{font-variant-numeric:tabular-nums}
+.card .meta [data-meta-success]{white-space:nowrap}
 /* [v30b, REQ-171] the group headings are `h6` now (README §1); this rule follows them. */
 .card-section h6{margin:0;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--color-muted);display:flex;align-items:center;gap:6px}
 /* README "1. Workflows home": the Running section's own heading carries a pulsing 8px accent dot. */

@@ -61,7 +61,13 @@ function fmtLastRunAt(iso) {
   return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function metaLine(card, lang) {
+// [v32, REQ-187] README §1 hangs `white-space:nowrap` on the SUCCESS ITEM, so the row has to be
+// made of items. It used to be one string dropped into `textContent`, which left nothing to hang
+// it on — and v29f duly hung it on the whole row, with `overflow:hidden`, so the row clipped and
+// README's own last two figures (avg cost, run count) became unreadable at the design card width.
+// The caller joins these with ` · ` TEXT nodes, so the element's `textContent` is byte-identical
+// to the string this function used to return.
+function metaParts(card, lang) {
   const m = card.metrics;
   const rateText = m.successRate === null ? '—' : `${Math.round(m.successRate * 100)}%`;
   const completed = m.successRate === null ? 0 : Math.round(m.successRate * m.terminalCount);
@@ -71,10 +77,10 @@ function metaLine(card, lang) {
   // counted here from `activeRunId`'s presence, the only other run-count signal on the card.
   const runs = m.terminalCount + (card.activeRunId ? 1 : 0);
   return lang === 'zh'
-    ? `成功率 ${rateText} (${completed}/${m.terminalCount}) · 平均耗時 ${dur} · 平均費用 ${cost} · ${runs} 次執行`
+    ? [`成功率 ${rateText} (${completed}/${m.terminalCount})`, `平均耗時 ${dur}`, `平均費用 ${cost}`, `${runs} 次執行`]
     // [v30b, REQ-185] README §1's own wording: `Success 67% (2/3) · Avg duration 12m 4s ·
     // Avg cost $0.42 · 5 runs` — capitalised, and "Avg duration", not a bare "avg".
-    : `Success ${rateText} (${completed}/${m.terminalCount}) · Avg duration ${dur} · Avg cost ${cost} · ${runs} runs`;
+    : [`Success ${rateText} (${completed}/${m.terminalCount})`, `Avg duration ${dur}`, `Avg cost ${cost}`, `${runs} runs`];
 }
 
 function buildCard(card, lang, handlers) {
@@ -109,11 +115,30 @@ function buildCard(card, lang, handlers) {
 
   const meta = document.createElement('div');
   meta.className = 'meta';
-  meta.textContent = metaLine(card, lang);
+  metaParts(card, lang).forEach((text, i) => {
+    if (i) meta.appendChild(document.createTextNode(' · '));
+    const item = document.createElement('span');
+    // the success item is the one README names; it is the only one that must not break
+    if (i === 0) item.setAttribute('data-meta-success', '');
+    item.textContent = text;
+    meta.appendChild(item);
+  });
   el.appendChild(meta);
 
-  el.addEventListener('click', () => {
+  // [v32, REQ-188] the card IS the primary drill-in, so it has to be operable without a mouse.
+  // The reference marks it `role="button" tabindex="0"` but wires only `onClick` — focusable and
+  // announced as a button, yet inert on Enter, which is worse than leaving it a plain div. Take the
+  // reference's role/tabindex and make the key actually do what the role promises.
+  el.setAttribute('role', 'button');
+  el.setAttribute('tabindex', '0');
+  const activate = () => {
     if (handlers.onSelect) handlers.onSelect(card);
+  };
+  el.addEventListener('click', activate);
+  el.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Enter' && ev.key !== ' ') return;
+    ev.preventDefault(); // Space would otherwise scroll the page out from under the activation
+    activate();
   });
   return el;
 }
