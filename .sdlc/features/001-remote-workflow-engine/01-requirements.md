@@ -2612,3 +2612,54 @@ README §3 明列「Duration (**start → end**)」。BUILD 的六張卡都是�
 | c4 | REQ-197..199 — 三條裁決 |
 
 每個 commit 一律判準先行:先把驗收列從 README/裁決重新推導、蓄意跑紅,再改實作。
+
+---
+
+## 迭代 v33 — 2026-09-20:註冊介面沒有教會冷客端「同名迭代 = 新版本」
+
+**來源:遠端實機測試。** 另一台電腦經 OAuth 以 `hsuhungjung@gmail.com` 連上 production engine,
+45 分鐘內註冊了四個名稱(`jev-haiku-probe` / `jev-haiku-bootstrap` / `jev-haiku-e2e` / `jev-haiku`),
+每一個都在註冊後數秒內 `workflow_publish` 到 `release`,一次性探針因此進了正式目錄。
+
+**這不是能力缺口。** 版本機制是通的 —— `jev-haiku-e2e` v1→v2→v3、`jev-haiku` v1→v2→v3,
+`catalog.publish` 逐次把 release 指標往前移;`resolveVersionRequest`(`workflow-catalog.ts:112`)
+也明確允許 `run_start({name, version})` 跑未發布的版本。缺的是**廣告出去的介面沒有把這個迴圈說出來**:
+
+```
+workflow_register 回應 {name, version}          ← 看不出「這是同一個工作流程的第 3 版」
+workflow_register 說明「Register a new workflow version under a name」  ← 沒說同名不覆蓋
+run_start 說明「…has no release — call workflow_publish first or pass {version}」
+                                                ← 先教 publish,{version} 被寫成備案
+AUTHORING.md「Registration and versioning」      ← 只講 legacy / trigger / assets 三個例外,沒有正常迴圈
+```
+
+四處都指向 REQ-117(冷模型只讀 schema 與 guide 就要第一次做對)——按 REQ-117 自己的驗收文字,
+「客端做錯的每一步都記為**文件缺陷**,不是模型的失敗」。本條就是那個缺陷的登記。
+
+### REQ-201 (v33) — 註冊的回應與說明要讓冷客端看見版本迴圈
+
+- **status:** draft
+- **traces:** REQ-117, REQ-116, REQ-096, REQ-097
+- **acceptance:**
+  **Given** `workflow_register` 成功
+  **Then** `result` 除了既有的 `{name, version}`,還要帶 `versions`(該名稱目前**所有**版本,含這次建立的)
+  與 `channels`(`{release, beta}`,未發布的頻道為 `null`);
+  **Given** 以**同一個名稱**第二次註冊
+  **Then** `versions` 至少兩項、且 `channels.release` **仍指向原本那一版**(新版本不會自動接管 release)——
+  冷客端因此在回應裡直接看到「同名 = 疊版本、不覆蓋」。
+  **Given** `tools/list` 裡 `workflow_register` 的 `description`
+  **Then** 它明說「同名再註冊會追加新版本(v2、v3…),既有版本不會被覆蓋;只有不同用途才開新名稱」。
+  **Given** `tools/list` 裡 `run_start` 的 `description`
+  **Then** 它**先**教「剛註冊的版本用 `{version}` 就能直接跑來迭代」,把 `workflow_publish` 到 `release`
+  描述成「穩定之後」的動作;不得再以「先 publish」作為第一個指示。
+  **Given** `workflow_authoring_guide` 與由同一個 builder 生成的 `docs/AUTHORING.md`
+  **Then** `Registration and versioning` 段落的**開頭**是正常迭代循環
+  `workflow_register` → `run_start({name, version})` → 迭代 → `workflow_publish(release)`,
+  既有的 legacy / trigger / assets 三個例外段落原文保留在其後;
+  **And** `docs/AUTHORING.md` 與 `buildAuthoringGuide()` 的輸出仍然 byte-equal(UT-160 的 drift lock 不得轉紅)。
+- **iter:** v33
+
+**明確不在範圍內(擁有者 2026-09-20 裁決)**:不引入 `draft` 頻道或草稿命名空間——`{version}`
+本來就是草稿機制,介面沒說而已;不改 catalog 的任何行為(版本疊加、channel 解析一律照舊);
+不做單版本 deregister 與 `workflow_list` 的 lastRunAt(那是另外兩條發現,排在本條之後);
+不重啟 production 服務(`38edb020` 執行中),變更隨下一個 release tag 生效。
