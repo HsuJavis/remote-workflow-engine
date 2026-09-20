@@ -221,6 +221,25 @@ in the same re-run — no regression on REQ-138's counts card).
 | REQ-142 | (nfr) 頁面隱藏時暫停輪詢 | ARCH-133, ARCH-134 | DES-210, DES-211, DES-212, DES-213, DES-214, DES-215, DES-216, DES-217, DES-219 | TASK-217, TASK-218, TASK-220, TASK-221, TASK-222, TASK-223, TASK-224 | IMPL-283, IMPL-284, IMPL-286, IMPL-287, IMPL-288, IMPL-289, IMPL-290, IMPL-292, IMPL-293, IMPL-294, IMPL-295, IMPL-296, IMPL-297, IMPL-298 | UT-245, UT-249, UT-255, UT-257, UT-258, UT-259, UT-260, UT-261, UT-262, UT-263, VAL-213, VAL-214, VAL-215, VAL-216, VAL-217 | ✅ |
 | REQ-143 | (nfr) 示範資料必須自我標示,並登記退場條件 | ARCH-132, ARCH-133 | DES-210, DES-211, DES-212, DES-213, DES-214, DES-215, DES-216, DES-217, DES-219, DES-220 | TASK-217, TASK-218, TASK-220, TASK-221, TASK-222, TASK-223, TASK-224, TASK-226 | IMPL-283, IMPL-284, IMPL-286, IMPL-287, IMPL-288, IMPL-289, IMPL-290, IMPL-292, IMPL-293, IMPL-294, IMPL-295, IMPL-296, IMPL-297, IMPL-298, IMPL-302 | UT-245, UT-249, UT-255, UT-257, UT-258, UT-259, UT-260, UT-261, UT-262, UT-263, VAL-213, VAL-214, VAL-215, VAL-216, VAL-217 | ✅ |
 | REQ-201 | 註冊的回應與說明要讓冷客端看見版本迴圈 (v33) | ARCH-087, ARCH-091, ARCH-107 | DES-137, DES-138, DES-140, DES-149, DES-151, DES-152, DES-155, DES-157, DES-159, DES-162, DES-163, DES-164, DES-185, DES-222 | TASK-131, TASK-132, TASK-148, TASK-150, TASK-152, TASK-155, TASK-162, TASK-163, TASK-164, TASK-190, TASK-227 | IMPL-178, IMPL-180, IMPL-181, IMPL-184, IMPL-186, IMPL-187, IMPL-188, IMPL-189, IMPL-190, IMPL-204, IMPL-208, IMPL-218, IMPL-338 | IT-172, UT-266, UT-267, VAL-218, VAL-219 | ✅ |
+| REQ-202 | appendPrompt 的用法要在廣告介面上完整,呼叫端不必試錯 (v34) | ARCH-136 | DES-223, DES-229 | TASK-228 | IMPL-339, IMPL-341 | UT-268, UT-269, UT-275, UT-276, VAL-222, VAL-223, VAL-225, VAL-226, VAL-229 | ✅ |
+| REQ-203 | 遠端作者寫不到的提示/模型/工具層不得影響執行結果:移除 agentType (v34) | ARCH-137, ARCH-138, ARCH-139 | DES-224, DES-225, DES-226, DES-227, DES-228, DES-229 | TASK-229 | IMPL-340, IMPL-341, IMPL-342 | IT-173, IT-174, IT-175, IT-176, IT-177, IT-282, UT-270, UT-271, UT-272, UT-273, UT-274, UT-275, UT-276, UT-283, VAL-223, VAL-224, VAL-226, VAL-227, VAL-228, VAL-229, VAL-230 | ✅ |
+| REQ-204 | `defaults.prompt` 的管線清除,但拒絕碼留著 (v34) | ARCH-140 | DES-224, DES-225, DES-226, DES-227, DES-228 | TASK-229 | IMPL-340, IMPL-342 | IT-173, IT-174, IT-175, IT-176, IT-177, IT-282, UT-270, UT-271, UT-272, UT-273, UT-274, UT-283, VAL-223, VAL-224, VAL-226, VAL-227, VAL-228, VAL-230 | ✅ |
+
+## v34 Gate 7.5 update (2026-09-21, validator — send-back re-validation round)
+
+**Pre-existing gap found and closed by this update**: this file's table stopped at REQ-201 despite
+`state.yaml` recording v34's first Gate 7.5 pass (2026-09-20) as PASSED with REQ-202/203/204 in its
+closure — the rows were never actually appended to this matrix. Added the three missing rows above
+(`build_matrix()`/`is_real_test()` re-run directly against the current working tree, using the
+correct stage keys `impl`/`verification` — the omission traces to a prior write-up's stage-key
+typo, `build`/`verify`, which silently produced empty cells; re-checked with the module's own
+`MATRIX_COLS` keys this time). All three are ✅ (`real:true` reachable via `VAL-225`/`VAL-226`/
+`VAL-227`, re-confirmed live this round by `VAL-230`/`VAL-231` in `08-validation.md`). REQ-094's and
+REQ-136's rows (lines above, added at an earlier round — see `08-validation.md` `VAL-228`) also
+remain ✅; REQ-211's superseded-evidence note (`08-validation.md` "VAL-211 amendment") does not
+change their status, only which item the `real:true` claim is grounded in. REQ-116/REQ-117 remain
+✅, re-grounded this round in `VAL-230` (AC-1's fix, both served-text and live-dispatch tiers) on
+top of the standing `VAL-229` evidence — no regression, no new gap.
 
 ## v33 Gate 7.5 update (2026-09-20, validator, fix-mode)
 

@@ -11604,3 +11604,122 @@ fresh-cold-model protocol could not be re-run by a disqualified subject (see `VA
 named, not silently passed. The 77 pre-existing gaps above (none newly introduced, none on this
 closure's REQs) are reported, not silently closed. `current_stage` advances to `review`;
 `gates.validation.passed` set to `true` in `state.yaml`.
+
+## v34 GATE 7.5 — SEND-BACK RE-VALIDATION ROUND (2026-09-21, validator)
+
+Gate 8 sent back four blocking findings (AC-1, AC-2, quality-dimensions#1, DEPLOY.md §情境配方).
+Architect closed AC-2 (doc-text-only, `02-architecture.md` INV-V34-1/ARCH-137, uncommitted at the
+time of this round — left untouched, not this stage's file). Implementer closed AC-1,
+quality-dimensions#1 (new `UT-283`) and DEPLOY.md, committed at `4b881fc`/`52f6a13`. A verifier
+pass already re-confirmed the regression suite and grepped the DEPLOY.md section for version-diff
+language (see journal.md). **This round's job**: AC-1 and the DEPLOY.md rewrite both change served
+text/behavior that the earlier v34 validation round (`VAL-225`..`VAL-229` above) evidenced BEFORE
+the repair — that evidence is now stale for the specific sentences the repair touched. Re-run for
+real against the CURRENT working tree, not re-assert the old evidence.
+
+### Boot (documented steps only, this round's own commands)
+Two second-instance boots, both via the documented §0 second-instance form, both against a
+freshly-created scratch config (not the pre-existing `rwe.config.json`, so no stale process could
+be mistaken for current-tree evidence):
+```bash
+set -a; . ~/.config/rwe.env; set +a
+RWE_CONFIG_PATH=<scratch>/rwe.val34b.config.json RWE_BIND=127.0.0.1 RWE_PORT=8940 ./deploy.sh --background
+# -> 健康檢查通過: {"agentSemaphore":{...},"version":"0.1.0 (v0.20.0-416-g52f6a13)"}
+```
+`g52f6a13` in the reported version IS this session's `HEAD` (`docs(v34): 06-impl-log.md 記回 Gate 8
+送回修復的實際 commit sha`) — the booted process is running the post-repair working tree, not a
+stale process. A second instance on port 8941 was booted from a config that **omits
+`defaultAllowedTools` entirely** (deliberately, to exercise the built-in-core fallback AC-1 added —
+see VAL-230 below). Both instances booted clean with no undocumented manual step; the only quirk
+needed was already-documented (doc gap: `.rwe.pid`/`.rwe.log` always land at the repo root
+regardless of `RWE_CONFIG_PATH` — DEPLOY.md §0 already carries this warning from the prior round,
+re-confirmed still accurate). Both scratch instances stopped by the PID `deploy.sh` printed
+(448023, 448222) once evidence was captured; production (port 8899, `.rwe.pid`-untracked, per prior
+rounds' convention) was never touched.
+
+### VAL-230 — REQ-116: AC-1's built-in tool-surface fallback, live on served guide text AND live at real dispatch time
+- **status:** green
+- **traces:** REQ-116, ARCH-137, ADR-064
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  1. **Served guide text, port 8940 instance, real MCP HTTP**:
+     `tools/call workflow_authoring_guide{}` → tool-surface section reads (verbatim substring):
+     `"Two layers are **settable**, on the tool-calling (SDK gateway) path, and the first one present
+     wins: the per-call \`allowedTools\` above, then this deployment's configured
+     \`defaultAllowedTools\`. Only the first is settable from a script. If the deployment configures
+     neither, the engine applies a built-in core set — \`Read\`, \`Write\`, \`Edit\`, \`Glob\`,
+     \`Grep\`, \`Bash\` — so a session is never handed the CLI's full uncurated tool list."` —
+     `agentType` occurrences in the full 40,357-byte served text: **0**. This is the exact sentence
+     AC-1's remedy added to `src/authoring-guide.ts`; confirmed served over the real MCP wire, not
+     merely present in the source file.
+  2. **Runtime behavior, port 8941 instance (config has NO `defaultAllowedTools` key at all)**:
+     registered `val34c-fallback-probe` (one `agent('probe', {prompt:'say ROUTED'})` call, no
+     `allowedTools` override) → `workflow_publish` → `run_start`. `.rwe.log` on dispatch printed
+     the SDK's own warning naming the resolved tool set:
+     `[CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: Read, Write,
+     Edit, Glob, Grep, Bash.` — the SDK only names tools that are actually IN the resolved
+     `allowedTools` array it was given, so this independently confirms the resolved set.
+     `run_agent_log({runId,label:'probe'})` over real MCP HTTP then returned
+     `"harness":{...,"tools":["Read","Write","Edit","Glob","Grep","Bash"],...}` — exactly
+     `BUILT_IN_CORE_TOOLS` (`claude-agent-sdk-client.ts:190`), applied live when BOTH the per-call
+     and the deployment layers are absent, precisely the case AC-1 said the guide previously failed
+     to disclose.
+  3. **Caveat, reported not hidden**: the dispatched call itself ended `state:"failed"`,
+     `detail:"no response from model \"rwe-proxy-default\" (provider \"ollama\") — timeout"` — a
+     shared-host Ollama contention issue (many other litellm/ollama child processes were already
+     running on this machine from unrelated prior sessions), unrelated to the tool-surface
+     resolution being tested. The `harness` object (including the `tools` array under test) is
+     captured at dispatch time, before the model call, so the timeout does not weaken this item's
+     evidence — but it is recorded honestly rather than silently omitted.
+- **iter:** v34
+
+### VAL-231 — DEPLOY.md §情境配方 rewrite: re-confirmed current-state and history-free, whole-file sweep (not section-scoped)
+- **status:** green
+- **traces:** REQ-116, REQ-117
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** A prior verifier pass grepped only inside the `## 情境配方` section for
+  `v34|以前|現在|機制變了` and found nothing. This round re-ran the grep across the WHOLE of
+  `README.md` and `DEPLOY.md` for a wider tell-tale set:
+  `grep -nE '舊版|原本|以前|previously|變更紀錄|Changelog|已過期|退役|隨機制消失|v3[0-9]|機制變了'
+  README.md DEPLOY.md` → every hit inspected in context is a present-tense capability/fact
+  statement, not history narration: `README.md:453` "從舊版本一路升級上來的 workRoot 不需要任何手動
+  步驟" (a present-tense self-healing-migration guarantee, unchanged from the prior round's same
+  finding); `DEPLOY.md:289` names a real plugin version number (`1.25.0`) as part of a reproducible
+  test recipe about a THIRD-PARTY plugin's file naming, not this engine's own history; `DEPLOY.md:520`
+  `v22` is a §1b 設定總表 "iter last touched" column value (the format the exit gate's own §1
+  requirement calls for, not prose history); `DEPLOY.md:837` describes a present, still-true display
+  quirk ("原本被中止那次呼叫的紀錄一直卡在 running") not a version-diff. Zero v34/以前/現在
+  comparison-framing hits anywhere in either manual. `DEPLOY.md:510`/`:624` (the two
+  `defaultAllowedTools` priority sentences) both now carry the same "可設定"/"settable" qualifier as
+  the fixed guide sentence (VAL-230 item 1) — no doc-vs-doc split answer for the same fact.
+- **iter:** v34
+
+### Config-file sync check (this round)
+`rwe.config.example.json` round-tripped again against `src/main.ts`'s `KNOWN_FILE_CONFIG_KEYS`
+(`node -e "console.log(Object.keys(require('./rwe.config.example.json')))"`) — 19 keys, all present
+in `KNOWN_FILE_CONFIG_KEYS`, none is `agentDefinitionsDir`. `RETIRED_CONFIG_KEYS['agentDefinitionsDir']`
+still carries the v34 retirement note. DEPLOY.md §1b's `defaultAllowedTools` row already reflects the
+two-layer/settable wording (no edit needed this round — already correct from the implementer's
+commit). No config file needed a further change this round.
+
+### `sh .sdlc/trace --check` (this round)
+Baseline at this round's own session start (working tree scan, not a `git checkout`): **1828 items /
+77 gaps** — identical to the count the send-back repair round's journal entry already recorded (no
+drift introduced between that commit and this round's start). After adding `VAL-230`/`VAL-231`
+above: **1830 items / 77 gaps** — gap count unchanged, 2 new items both render clean (confirmed by
+gap-set diff, not count alone: neither new ID appears in any gap, and no REQ in this closure appears
+in the remaining gap list).
+
+### Verdict (this round)
+**PASSED.** AC-1's fix is proven at the real tier on BOTH axes the finding named (served guide text
+AND actual dispatch-time tool resolution when neither layer is configured) — closing the gap between
+"the guide was fixed" and "the guide's claim is true against the running engine." The DEPLOY.md
+rewrite is re-confirmed history-free on a whole-file sweep, not just the section a prior gate
+touched. No REQ in the impact closure regressed; REQ-117's fresh-cold-model limitation (VAL-229)
+still stands, unchanged, still named in `needs_clarification`. `current_stage` advances to `review`
+(Gate 8 re-review is the next step — the four blocking findings are now closed at every gate that
+owed a piece of the repair, including this one).

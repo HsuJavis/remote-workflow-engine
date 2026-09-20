@@ -7178,3 +7178,80 @@ quality-dimensions #1／DEPLOY.md）全部關掉，範圍嚴格按 `02-architect
 正常渲染、無斷鏈），缺口數不變。`owner_decisions: []`——本輪沒有新的裁決留白。state.yaml：
 `gates.impl.passed` 維持 true 並補記本輪、`current_stage → verification`（Gate 8 送回的四項
 blocking findings至此全部關閉，下一步是 Gate 8 re-review）。
+
+v34 send-back repair — independent verifier re-confirmation (2026-09-21, verifier, no code/doc
+changes). Dispatched with the same four Gate 8 blocking findings (AC-1/AC-2/quality-dimensions
+#1/DEPLOY.md); found all four already closed by a prior/concurrent pass: AC-1, quality-dimensions
+#1 (UT-283) and DEPLOY.md were committed at `4b881fc`/`52f6a13`; AC-2's architecture text
+(INV-V34-1 / ARCH-137 note, `02-architecture.md`) is present in the working tree, not yet
+committed — left untouched (another agent's file per CLAUDE.md's shared-tree rule; not re-edited
+or committed by this run). Re-ran and confirmed rather than redone: `npx vitest run
+tests/unit/workflow-describe-facade.test.ts tests/unit/authoring-guide.test.ts
+tests/unit/authoring-md-generated.test.ts` → 58 passed/1 skipped, 0 failed; UT-283/UT-276 ledger
+entries carry all six required keys, `iter: v34`, correct `traces`, and DES-228/04-design.md's
+cross-reference matches; UT-283's only date literal is a `FixedClock` anchor (hermetic, not
+compared against a live clock — contract-exempt). DEPLOY.md's `## 情境配方` section: grep for
+`v34`/`以前`/`現在`/`機制變了` inside that section returns nothing — no version-diff framing.
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` → 1828 items / 77 gaps, unchanged from
+the post-repair baseline this file already recorded (no new gaps). No `gates.*` key changed:
+`verification.passed` was already `true` and its content already covers this repair; this
+schema has no separate `tests`/`impl` gate key to flip. `current_stage` left at `verification`
+(Gate 8 re-review is still the next step, per the entry above — advancing the pointer here would
+be premature). `owner_decisions: []` — nothing new deferred.
+
+## v34 — Gate 7.5 send-back re-validation (validator, 2026-09-21)
+
+Gate 8's four blocking findings were closed piecemeal by architecture (AC-2, uncommitted doc text),
+implementation (AC-1 / quality-dimensions#1 / DEPLOY.md, `4b881fc`/`52f6a13`) and re-confirmed by a
+verifier pass. This dispatch's job: two of those findings (AC-1, DEPLOY.md) changed served
+text/runtime behavior that the FIRST v34 Gate 7.5 round (`VAL-225`..`VAL-229`, 2026-09-20) had
+already evidenced BEFORE the repair — that evidence was stale for the exact sentences the repair
+touched. Re-ran for real against the current working tree instead of re-asserting it.
+
+Booted two fresh scratch instances via the documented §0 second-instance form (neither reused the
+pre-existing `rwe.config.json`), both reporting `version":"0.1.0 (v0.20.0-416-g52f6a13)"` — `HEAD`
+at dispatch time, confirming the running process is the post-repair code, not a stale one. One
+instance kept `defaultAllowedTools` configured; the other omitted it entirely, to exercise the
+built-in-core fallback AC-1 added.
+
+- **VAL-230 (new)**: AC-1's fix confirmed live on BOTH axes the finding named. (1) served text:
+  `workflow_authoring_guide` over real MCP HTTP now reads "Two layers are **settable**… If the
+  deployment configures neither, the engine applies a built-in core set — Read, Write, Edit, Glob,
+  Grep, Bash…" — the exact sentence added to `src/authoring-guide.ts`. (2) runtime: registered and
+  ran a workflow with an `agent()` call carrying no `allowedTools`, on the instance with no
+  `defaultAllowedTools` configured either — `run_agent_log`'s `harness.tools` came back
+  `["Read","Write","Edit","Glob","Grep","Bash"]`, exactly `BUILT_IN_CORE_TOOLS`
+  (`claude-agent-sdk-client.ts:190`), independently corroborated by the Claude Agent SDK's own
+  `canUseTool`-shadowed startup warning naming the same six tools. The model call itself timed out
+  (shared-host Ollama contention, unrelated to tool-surface resolution which happens before the
+  model call) — reported honestly, not hidden, and does not weaken the harness-capture evidence.
+- **VAL-231 (new)**: DEPLOY.md's §情境配方 rewrite re-swept for history-narrative tell-tales across
+  the WHOLE of README.md + DEPLOY.md (the prior verifier pass had only grepped inside the touched
+  section) — zero v34/以前/現在 comparison-framing hits anywhere in either manual; every remaining
+  hit for the wider tell-tale set is a present-tense fact statement (self-healing migration
+  guarantee, a §1b iter-column value, a third-party plugin version number in a repro recipe, a
+  still-true display quirk), not this engine's own history.
+- **Gap found and fixed (not part of the four findings, but found while regenerating the RTM per
+  this gate's own exit-gate step)**: `rtm.md` had never actually gained rows for REQ-202/203/204,
+  despite the FIRST v34 Gate 7.5 round's `state.yaml` note claiming them closed — traced to a
+  stage-key typo in that round's ad-hoc query (`build`/`verify` instead of the trace.py module's
+  real `impl`/`verification` keys), which silently produced empty cells that were never caught.
+  Added the three rows this round (all ✅, `build_matrix()`/`is_real_test()` re-run with the correct
+  keys) plus a `## v34 Gate 7.5 update` section documenting the fix, matching this ledger's existing
+  per-round RTM-update convention.
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` → 1828→1830 items / 77 gaps — 2 new items
+(`VAL-230`, `VAL-231`), 0 new gaps (confirmed by gap-set diff via `trace.analyze()` directly, not
+count alone: `Counter({漂移:24, TDD:19, 未驗證:17, 斷鏈:15, 未實作:2})`, zero `未真實驗證`, and no ID
+in this closure — REQ-202/203/204/094/136/116/117, ARCH-004/087/107/129, ADR-032, DES-007/102/195 —
+appears in any remaining gap). Config-file sync re-checked: `rwe.config.example.json` still
+round-trips clean against `KNOWN_FILE_CONFIG_KEYS`, no change needed. `owner_decisions: []` — none
+newly deferred; REQ-117's standing fresh-cold-model limitation (`VAL-229`) is unchanged and still
+named. `state.yaml`: `gates.validation.passed` stays `true` (its note updated with this round's
+detail, chained onto the prior note as `PRIOR:`); `current_stage → review` — Gate 8 re-review is the
+next step, all four send-back findings now closed at every gate that owed a piece of the repair.
+
+Production instance (port 8899) was never touched — only two disposable scratch instances were
+booted and stopped by the PID `deploy.sh` printed. `.rwe.pid`/`.rwe.log` (gitignored) were
+overwritten by the scratch boots per the already-documented DEPLOY.md §0 doc-gap warning; no
+working-tree pollution.
