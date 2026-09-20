@@ -11742,3 +11742,39 @@ message records the owner's ruling ("裁決:改寫不退役" — rewrite, don't 
 Gate 8 does not read its disappearance as silent. `current_stage` advances to `review` (Gate 8
 re-review is the next step — the four blocking findings are now closed at every gate that owed a
 piece of the repair, including this one).
+
+### VAL-231 — REQ-117: v34 之後的冷主體真跑(orchestrator 執行,主體為未受污染的全新實例)
+
+- **status:** green
+- **traces:** REQ-117, REQ-116, REQ-201, ARCH-087, ARCH-107, ADR-032
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  VAL-229 誠實記下它無法自行滿足 REQ-117(驗證者讀過 ledger,依 REQ-117 自身條文即喪失資格),
+  並把這件事列為 carry-forward。本列是**實際把它做掉**的紀錄,不是再一次的延期。
+
+  **協定**:orchestrator 另起 scratch 引擎(port 8793、auth 關閉、workRoot 在 repo 外,
+  以 `rwe.config.json` 為底去掉 auth/principals/agentDefinitionsDir),只把 URL 交給一個
+  **未繼承本次對話任何脈絡**的獨立 agent,並明文禁止它讀取本機任何檔案與 git repo ——
+  資訊來源僅限 `tools/list` 與各工具自身回應。完整實驗紀錄與主體逐條回報:
+  `evidence/v34/req117-cold-subject-2026-09-20.md`。
+
+  **結果:通過。** 主體自行寫出雙 agent 協作腳本(writer 起草 → critic 評論 → writer 修訂)
+  連同泳道圖**一次註冊成功**,發布、啟動、輪詢到終態、讀回結果全部完成;
+  **84 次 `tools/call` 中零 JSON-RPC error、零引擎拒絕碼**(無 SCAN_VIOLATION/DIAGRAM_MISMATCH/
+  LANE_MISMATCH/EDGE_MISMATCH/PARAM_*)。主體主動指名 v33(REQ-201)改寫的 `run_start` 說明
+  ——「剛註冊的沒有 release,用 {version} 跑」與「run_start 不回結果,要輪詢再 run_result」——
+  是它「照字面做就對」的四處之一,這正是 REQ-201 當初要改掉的那個誘因。
+
+  **主體踩到的四個坑,依 REQ-117 自身條文全部登記為缺陷(而非模型的失敗)**:
+  D1 全部 agent 失敗但 run 仍報 `completed`、`result:null`;
+  D2 宣告 `timeoutMs:60000` 實際 120000ms 才失敗(根因:`types.ts:189` 的「after retries」+
+  部署 `retries:1`,宣告值只界定**單次嘗試**,介面未說);
+  D3 失敗的 sequential `await agent()` 回 `null` 不拋例外,`null` 被字串化接進下一個 prompt
+  (`types.ts:189` 明文刻意設計,但 guide 只說了 `parallel()` 的情況);
+  D4 每個回應的 `content[0].text` 是雙重 JSON 編碼且 guide 約 39.5KB,主體輸出被截斷兩次。
+  D1/D2/D3 已排入 v35(與「失敗 run 不留痕跡」同族:失敗是靜默的),D4 排入 v36。
+
+  **本列取代 VAL-190/192 作為 REQ-117 的現行證據** —— 那兩列早於 v34 對 guide 的實質改寫。
+- **iter:** v34

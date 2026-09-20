@@ -1,422 +1,459 @@
 # Architecture panel — Adversarial (security / scalability / testability), round 1
 
-**Iteration:** v34 — REQ-202 / REQ-203 / REQ-204 (移除遠端寫不到卻會影響執行結果的提示層)
+**Iteration:** v34, **re-opened architecture stage** after the Gate 8 send-back
+(`07-review.md` tail: `send_back: ["architecture","impl","tests","validation"]`).
+**This file supersedes the pre-send-back round 1** written at 16:02 on 2026-09-20; that version is
+still recoverable with `git show HEAD:.sdlc/features/001-remote-workflow-engine/.panel/architecture/adversarial.r1.md`
+(committed at `21ad773`; the only dirty state on that path is this write itself — verified with
+`git log -1 --oneline -- <path>` and `git status --porcelain`), and a byte copy of all four pre-send-back panel files was taken to the
+session scratchpad before this write.
 **Lens:** three internal lenses in tension — (a) security, (b) scalability/performance,
 (c) testability — with Karpathy simplicity-first as the tie-breaker.
-**Round:** 1, independent. Every claim below is anchored at `file:line` in the working tree at
-`a98b469`; nothing here was read from a sibling panel file.
+**Round:** 1, independent. Every claim is anchored at `file:line` in the working tree at `48f90b4`
+(plus uncommitted `07-review.md`); nothing here was read from a sibling panel file.
 
 ---
 
-## 0. Altitude call (asked for before anything else)
+## 0. What is actually open (scope discipline)
 
-**This project is BOTH, and the two altitudes split cleanly across this iteration's three REQs.**
+The Gate 8 reviewer accepted INV-V34-2/3/4, the ADR-061..064 rulings, the deletion set, and the
+fail-closed refusal sites. **I do not re-argue any of them.** Re-litigating settled rows in a
+send-back round is how a 33 KB document buries the one sentence that has to change.
 
-- *System altitude*: the engine is an ordinary long-lived service — hand-rolled JSON-RPC-over-HTTP
-  MCP server (`src/server.ts`), SQLite via better-sqlite3 (RunStore + WorkflowCatalog), Node 22.6
-  ESM/TS strict, vitest (state.yaml `tech_stack`, lines 12–51). Ordinary system properties apply:
-  config wiring, persisted-row compatibility, boot-time I/O.
-- *Agent altitude*: the thing being changed is **what text reaches a model and who wrote it**.
-  `composePrompt()` (`src/params/resolve.ts:175`), the untrusted frame constants at
-  `resolve.ts:167-168`, `FRAME_CLOSE_FORGERY` (`src/params/contract.ts:141`), the harness
-  descriptor's `systemPrompt:{agentType,bytes}` disclosure (`src/agent-executor.ts:671`).
+Open to *this* stage, from the review's own `blocking_findings`:
 
-Mapping to the four quality dimensions, at the altitude that actually applies:
-
-| dimension | altitude that bites in v34 | what v34 does to it |
+| id | what the review sent back to architecture | my verdict after re-deriving it |
 |---|---|---|
-| consumability | **agent** | REQ-202: a cold MCP client must learn appendPrompt's admission rule, framing and byte ceiling from `tools/list` + `workflow_describe` alone, before its first call. |
-| observability | **agent** | REQ-203: the harness `systemPrompt` disclosure surface *disappears with its mechanism*. Not a regression — see §4.3, this distinction must be written down or Gate 8 will misread it. |
-| replaceability | **system** | REQ-203 deletes a whole composition-root module (`src/agent-definitions.ts`) and its config key. |
-| self-sustainability | **system** | REQ-204 keeps the `DEFAULTS_RETIRED` refusal code alive after the pipeline behind it is gone — the refusal outlives the feature on purpose. |
+| **AC-2** | `INV-V34-1` (`02-architecture.md:4190`) and the `ARCH-137` **note** (`:4079`) call `defaultAllowedTools` an "operator-owned restriction layer" / "tool floor" while `claude-agent-sdk-client.ts:544-547` uses `??` (override, never intersection). | **Confirmed, and worse than the review states** — see §2.1. Text-only fix, exact wording in §2.2. |
+| **AC-1** | `authoring-guide.ts:534-537` / `docs/AUTHORING.md:60` advertise **two** layers; the applied-when-both-absent `BUILT_IN_CORE_TOOLS` (`claude-agent-sdk-client.ts:190`, **contains `Bash`**) is a third and is unmentioned. | **Confirmed.** Belongs to impl, but the *choice between the two remedies the review offered* is an architecture call, and I rule against the code remedy — §3. |
 
-I do **not** force the conventional-system reading onto REQ-202/203; and I do not invent an
-agent-altitude story for the config wiring. Both are real here.
+Two things the send-back did **not** say that this round has to record — §2.3 (there is no operator
+ceiling on an author's tool surface, at all) and §4.1 (nothing in the suite pins the
+override-vs-intersection semantics, so the corrected sentence has no guard in code).
 
-## 0.1 Honest translation of my own lens
+## 0.1 Altitude call (asked for before anything else)
 
-The lens text I carry names "brute force, JWT forgery, timing attacks, concurrency & consistency
-of failure counting". **None of those exist in this iteration and I will not manufacture them.**
-Translated to what is actually on the table:
+**Both, and the split is clean for the open items.**
 
-- **(a) Security** → *prompt-layer provenance*: which principal can write each byte the model sees,
-  and whether the engine's own labels about that provenance are honest. This is the entire
-  substance of v34 and where my lens has the most to say.
-- **(b) Scalability/performance** → **essentially nothing**, and I say so rather than fake a
-  finding: v34 deletes one boot-time `readdirSync` (`src/agent-definitions.ts:34`) and one
-  registry lookup + string concat per `agent()` dispatch. There is exactly **one** genuine
-  (b)-class argument in this iteration and it is not about speed — it is about *node-local state*
-  (§3). Everywhere else, (b) yields to the tie-breaker.
-- **(c) Testability** → module boundaries and injectable seams. v34 is a *deletion* iteration, so
-  the testability question inverts: not "can we test the new thing" but **"what pins the absence,
-  and what pins the byte-identity of what survives"**.
+- *System altitude*: config forwarding through `composeConfig()` (`main.ts:354`), a constructor
+  default in one gateway module, test placement. Ordinary service plumbing.
+- *Agent altitude*: the subject is **what capability a model actually holds in a session, and who
+  can read that before the call** — `options.allowedTools` (`claude-agent-sdk-client.ts:544-547`),
+  the `canUseTool` arbiter (`:638`) and the `PreToolUse` realpath jail (`:670`), the post-hoc
+  `HarnessDescriptor.tools` (`types.ts:506`, **non-optional** — verified, ARCH-137's post-hoc prong
+  really is carried by a required field).
+
+Per dimension, at the altitude that bites:
+
+| dimension | altitude | what is open |
+|---|---|---|
+| consumability | **agent** | AC-1: an author reading the guide is told two layers; the deployment manual (`DEPLOY.md:517,632`) correctly says three. One fact, two surfaces, two different answers. |
+| observability | **agent** | `HarnessDescriptor.tools` already records what won. Post-hoc is fine; *pre-hoc* is the residual (§5.1). |
+| replaceability | system | untouched this round. |
+| self-sustainability | **system** | AC-2 is a ledger sentence that a future audit will read as a security property the code does not have. That is exactly the debt class v34 opened to remove. |
+
+I do not force a conventional-system reading onto the tool-surface question, and I invent no
+agent-altitude story for `composeConfig` forwarding.
+
+## 0.2 Honest translation of my own lens text
+
+My lens names "brute force, JWT forgery, timing attacks, concurrency & consistency of failure
+counting". **None of those is on the table in this send-back and I will not manufacture them.**
+The engine's auth surface (`auth-tokens.db`, principals, REQ-087/REQ-015) is untouched by every
+open item here. Translated to what is real:
+
+- *authn/authz correctness* → **who may widen a session's capability, and can a deployment-side
+  actor stop them** (§2.3).
+- *secret protection* → what the advertised surface tells an author about what is exposed
+  (`harness.prompt` echo, already handled by the validation-side send-back — not mine).
+- *attack surface* → the tool set handed to the model, and the two jail seams that actually bound
+  it (`canUseTool` / `PreToolUse`).
+- *concurrency / failure counting* → **nothing. Stated, not invented** (§2.4).
 
 ---
 
 ## 1. Summary
 
-v34 is a **subtractive** architecture change and should be designed as one: the correct output is
-*less* engine, not a new mechanism with a deprecation framework bolted on. The owner's ruling
-(remove `agentType` whole, rather than only its prompt layer) is architecturally right for a
-reason the requirement states only in passing and that I want promoted to a named, testable
-invariant — see §2.
+The architecture-side send-back is **one sentence in two rows, and I agree it is text-only** — but
+the reviewer's framing undersells it. `defaultAllowedTools` is not a weakened floor; it is **not a
+restriction mechanism of any kind**. It is a *default for the absent case*, its documented purpose
+is operational (stop a 7B local model drowning in the SDK CLI's uncurated surface —
+`claude-agent-sdk-client.ts:51-56`, `08-validation.md` round-5 VAL-003), not defensive, and a
+read-only scan of the live catalog shows **it is currently reached by zero registered calls**.
+Calling it a "tool floor" in `INV-V34-1` does two kinds of damage: it books a security property the
+engine does not have, and it supplies a false reason ("removing it would be a security regression")
+for keeping a residual that has a perfectly good true reason (the absent case is real, and an unset
+`options.allowedTools` is the VAL-003 footgun).
 
-My position in one line: **adopt all three REQs, implement them with zero new machinery by
-extending three mechanisms that already exist in the tree, and fix one inter-REQ gap
-(`defaults.tools`) that would otherwise leave REQ-203's headline claim literally false.**
+Fix: replace the wording in both rows with what the code does (§2.2), and **record, without
+building, the consequence** — this deployment has **no operator-side ceiling** on an author's tool
+surface; `LOCKED_KEYS` (`contract.ts:25`) locks `allowedTools` against *users*, not against
+*authors*, and no `disallowedTools` exists anywhere in `src/` (verified: zero hits). Containment is
+the jail, not the list.
 
-Three concrete design claims, each already grounded in existing code:
+On AC-1 I rule **text, not code**: copy the already-correct three-layer sentence from `DEPLOY.md`
+into `authoring-guide.ts`. The code remedy the reviewer floated (default `defaultAllowedTools` to
+`BUILT_IN_CORE_TOOLS` in `composeConfig`) only makes "two layers" true if the gateway's own `??`
+fallback is *also* deleted, which re-arms the exact VAL-003 failure for every direct construction of
+the client — more change, new hazard, same sentence needed anyway.
 
-1. REQ-202's missing facts are *already computed and then discarded* at the projection boundary.
-   `effectiveAgentBounds()` computes `ceilingKey` (`contract.ts:178-184`) and
-   `projectAgentParams()` drops it (`workflow-view.ts:153-162`, projecting only `{type, default,
-   range}` per `DescribeAgentParamKey`, `workflow-view.ts:88-92`). The minimum fix is two optional
-   fields on one interface, not a new disclosure subsystem.
-2. REQ-203's two "must say it was removed in v34" messages both have an existing precedent to
-   extend: the script-side `AGENT_OPT_NEAR_MISSES` table (`workflow-meta.ts:219-232`) and the
-   config-side `graphAnalyzerNote` special case (`main.ts:150-152`). One tiny retired-names map on
-   each side; on the config side this *removes* an ad-hoc `if` rather than adding one.
-3. Both "closed set" types — `AGENT_OPT_KEYS: Record<keyof AgentOpts|'prompt', true>`
-   (`workflow-meta.ts:205-208`) and `KNOWN_FILE_CONFIG_KEYS: Record<keyof FileConfig, true>`
-   (`main.ts:84-97`) — make the deletion **compile-enforced**. Removing `agentType` from
-   `AgentOpts` and `agentDefinitionsDir` from `FileConfig` cannot leave a stale admission entry or
-   a stale config key behind: `tsc` fails until both maps are updated. That is the single best
-   testability property available in this iteration and the design should lean on it instead of
-   writing "did we remove everything?" checklist tests.
+Testability adds exactly **one** ask, and I hold it to one: no test in the tree pins
+*per-call replaces the configured default* (§4.1). The corrected architecture sentence deserves one
+unit test so it cannot drift back into "floor" the way the prose drifted in the first place.
 
----
+## 2. Key points
 
-## 2. The invariant this iteration is really about (and the trap in stating it naively)
+### 2.1 AC-2 confirmed, and sharper than the review put it
 
-The requirement's own principle is *"遠端作者寫不到、卻會改變執行結果"* — a layer the remote
-principal cannot write but which changes the outcome. **Stated that literally, the invariant is
-violated by things v34 deliberately keeps**, and an implementer who takes it literally will either
-over-delete or quietly declare the invariant satisfied when it is not. After `agentType` is gone,
-the following are still server-side, remote-unwritable and execution-determining:
+Code, verbatim (`src/gateway/claude-agent-sdk-client.ts:544-547`):
 
-- `defaultAllowedTools` (`main.ts:63`, `claude-agent-sdk-client.ts:546`)
-- the model alias table (`aliases`, `isKnownAlias` at `contract.ts:146`)
-- the three ceilings `maxTimeoutMs` / `maxAppendPromptBytes` / `maxEffort` (`contract.ts:88`)
-- the gateway choice `sdk` | `direct-fetch` (`main.ts`, state.yaml tech_stack lines 22–24)
-
-**The distinction that actually separates the legitimate from the illegitimate is not
-writability — it is `additive` vs `restrictive`, plus readability.** I propose the architecture
-doc state it as a named invariant so future features are tested against it:
-
-> **INV-NOADD ("no invisible determinants").** A deployment-side input to a run may only
-> *restrict* (lower a ceiling, narrow a tool set, refuse an alias) and must be *readable* by the
-> calling principal through `workflow_describe` / `workflow_authoring_guide`. It may never *add*
-> content the model sees, nor *expand or redirect* capability, invisibly.
-
-Under INV-NOADD, `agentType` fails on all three of its layers — `systemPrompt` added content,
-`model` redirected capability, `tools` (`agent-executor.ts:571-575`) could *expand* the tool set —
-which is exactly why the owner's "remove all three layers, not just the prompt" ruling is correct
-and not merely tidy.
-
-Note the invariant has **two prongs, and a survivor need satisfy only one**: *restrictive*, or
-*visibly recorded*. The three ceilings pass on the first (they can only lower a bound, and are
-already readable — `authoring-guide.ts:559-560`). The **alias table passes on the second, not the
-first**, and I state that explicitly because a round-2 opponent will otherwise point out — 
-correctly — that an alias *redirects* (`sonnet` → whatever the deployment maps it to), which is
-structurally the same move `agentType.model` made. The difference is that the alias resolution is
-**recorded**: the gateway's own `descriptor.model`/`provider` is the record of what was actually
-dispatched and the one-descriptor-decoration site never overwrites it (`agent-executor.ts`, the
-`onHarness` comment at :~660), and the alias table is queryable. `agentType`'s redirect left no
-such record. A determinant that redirects is acceptable **iff** the redirect's outcome is
-persisted where the principal can read it.
-
-**Adversarial finding (security, MID):** under INV-NOADD, `defaultAllowedTools` is the **last
-remaining violator**, and it survives v34. It is *additive* — when a call carries no
-`allowedTools`, the deployment's configured list becomes the agent's tool set
-(`claude-agent-sdk-client.ts:546`), which can grant tools the caller never asked for and whose
-value a cold client cannot read anywhere. I am **not** proposing to remove or project it in v34
-(Karpathy: out of scope, no incident, and removing it would be a security *regression* — the
-floor exists for a reason). I propose it be recorded as the named residual under INV-NOADD so the
-next audit reads it as *known and bounded*, not as a miss. This is the item I most expect a
-consumability-purist lens to want to escalate into v34; see §6.
-
----
-
-## 3. Lens (b): the one real scalability argument — deleting node-local state
-
-`agentDefinitionsDir` was **hidden node-local state on the execution-determining path**. A run's
-output depended on the contents of a directory on the filesystem of whichever engine instance
-happened to serve it, loaded once at `createServer()` boot (`agent-definitions.ts:33-49`,
-`main.ts:209-211`). Two consequences a purely "cleanup" framing misses:
-
-- **Undeclared node affinity.** Horizontally scaling the engine required every instance to be
-  deployed with a byte-identical `agentDefinitionsDir`, or the same registered workflow produced
-  different prompts/models/tools per instance — with nothing in the registration, the contract, or
-  `workflow_describe` recording which definition set was in play. There is no versioning,
-  checksum or run-time capture of that directory anywhere.
-- **Boot-time-pinned, never reloaded.** The registry is read once at startup; editing a definition
-  file mid-life changes nothing until restart, so two instances started at different times diverge
-  silently.
-
-After v34 a run's behavior is a pure function of `(registered script, param contract, run
-overrides, deployment ceilings/alias table)` — all of which are either stored in the SQLite catalog
-or readable through the advertised surface. **That is the multi-instance property worth having,
-and v34 gets it by deletion rather than by adding a sync mechanism.** This is the only place where
-lens (b) has an opinion, and it agrees with (a) and with the tie-breaker. Cost side is a rounding
-error: one fewer sync `readdirSync` at boot, one fewer map lookup and one fewer segment join per
-dispatch. No storage, concurrency or consistency dimension is touched.
-
----
-
-## 4. Key points (the proposal proper)
-
-### 4.1 REQ-202 — stop discarding facts the engine already computed
-
-Current state, verified: `projectAgentParams` (`workflow-view.ts:145-165`) calls
-`effectiveAgentBounds(spec, ceilings)` — which already bounds `appendPrompt.max` to
-`min(author, maxAppendPromptBytes)` and tags `ceilingKey:'maxAppendPromptBytes'` **only when the
-engine ceiling is the bound that actually won** (`contract.ts:178-184`, and that conditional is
-itself a good honesty control: it refuses to blame an engine ceiling the caller could not have
-hit). The projection then emits `{type, default, range}` and throws `ceilingKey` away. So today a
-cold client sees a bare number `max: 1024` with **no unit** and no way to tell whether it is the
-author's bound or the engine's.
-
-**Proposal A1 (minimal):** widen `DescribeAgentParamKey` (`workflow-view.ts:88-92`) by two optional
-fields and stop dropping what is already computed:
-
-```
-unit?: 'bytes';        // set for appendPrompt only
-boundBy?: 'engine';    // set iff eff.appendPrompt.ceilingKey is present
+```ts
+const baseTools =
+  req.opts.allowedTools ??
+  this._config.defaultAllowedTools ??
+  BUILT_IN_CORE_TOOLS;
 ```
 
-Nothing else changes; no new computation, no new call, no new module. REQ-202's "單位(bytes)與
-有效上限是明寫的,不是靠 `range` 的裸數字猜" is then satisfied by a projection that stopped
-losing information.
+Three properties follow, none of them compatible with the word *floor*:
 
-**Proposal A2:** REQ-202(a) and (c)'s *rules* (must be declared → `PARAM_UNKNOWN`; framed as
-untrusted; must not contain the frame-close delimiter → `PARAM_OUT_OF_RANGE`) belong in
-`tool-specs.ts`'s `run_start.overrides` description (`tool-specs.ts:439-446`, which already names
-`PARAM_LOCKED`/`PARAM_UNKNOWN`/`UNKNOWN_AGENT_LABEL` for exactly this reason) — i.e. on
-`tools/list`, reachable with **zero** workflow-specific calls. Per-workflow *values* go on
-`workflow_describe` (A1). This split matters: a cold client reads `tools/list` first.
-Verified: `PARAM_UNKNOWN` is the real code on the override path (`contract.ts:517/527/627`), and
-the script-scan path has its own `SCAN_VIOLATION: PARAM_UNKNOWN` (`workflow-meta.ts:498`,
-`authoring-guide.ts:512`) — the two must not be conflated in the advertised text.
+1. **Override, not intersection.** A per-call list replaces the operator's list wholesale. A call
+   asking for `['WebFetch']` gets `['WebFetch']` even where the operator configured
+   `['Read','Grep']`. `??` is deliberate for `[]` (an empty surface is an answer, not an absence) —
+   that part is right and should stay.
+2. **Additive, not restrictive.** The per-call rung can name tools the operator's list never
+   contained. There is no clamp anywhere. Swept all eleven files in
+   `grep -rln allowedTools src/` (`main.ts`, `types.ts`, `errors.ts`, `workflow-meta.ts`,
+   `tool-specs.ts`, `authoring-guide.ts`, `skeleton-graph.ts`, `mcp-facade.ts`,
+   `params/contract.ts`, `agent-executor.ts`, `gateway/claude-agent-sdk-client.ts`; `run-manager.ts`
+   and `server.ts` return **zero** hits) — `workflow-meta.ts:481-493` records the literal array
+   verbatim at registration and validates the *key*, never the *values*; `skeleton-graph.ts:66` and
+   `mcp-facade.ts:493-498` only *project* it; `params/contract.ts:25` locks the key against callers.
+   The one registration-time check that touches tool names, `TOOLS_MISMATCH` (`errors.ts:63`),
+   compares the diagram's `tools:` line against the script's own `allowedTools` — a self-consistency
+   check between two author-written artifacts, with no deployment-side list on either side of the
+   comparison. And `grep -rn disallowedTools src/` → **zero hits**.
+3. **Currently unreached.** Read-only scan of a *copy* of the live catalog
+   (`<workRoot>/catalog.db` + its WAL copied to the session scratchpad; the live DB and the running
+   engine were not touched): **27 versions, 166 `agent(` source matches, 166 `allowedTools:` keys,
+   0 versions where any call omits the key.** Tool names actually requested across 112 literal
+   arrays: `Bash` 48, `Read` 39, `Glob` 9, `Grep` 7, `Write` 7, `Edit` 2 — a strict subset of
+   `BUILT_IN_CORE_TOOLS`. Zero `WebFetch`/`WebSearch`/`Task`/`Agent`. Zero `agentType`.
+   *Caveat, stated once*: this is a source-text regex scan with the same known limitation as the
+   engine's own `scanAgentCalls` (`AGENT_CALL_RE` has no string-literal awareness, per the
+   DEPLOY.md landmine already on record). The equality 166/166 is a strong signal, not a parse.
 
-**Proposal A3 (security, and this is the interesting one):** the guide's new "prompt layering"
-section must describe the frame *as what it is*. After v34 the composed prompt is still delivered
-**as a single user message** — there is no protocol-level system prompt anywhere in this engine
-(that is fact (2) in the requirement's own source narrative). Therefore
-`<user-instructions untrusted="true">` is an **advisory label inside a text stream, not an
-enforcement boundary**. The one thing the engine genuinely enforces is that the caller cannot
-*close* the frame early (`FRAME_CLOSE_FORGERY`, `contract.ts:141`, widened at v21 Gate 8 RE-REVIEW
-#6 to tolerate case and whitespace around the `/`). The caller can still write a plausible-looking
-*opening* tag, a fake trailer, or ordinary prose that argues with the author's instructions.
-REQ-202's own third Given already says the right thing — 引擎不會替作者決定「授權覆寫」與
-「外來注入」的分界 — and my lens wants that sentence to be **normative and duplicated into the
-`workflow_describe` projection note**, not left only in the guide, because the guide is what an
-author reads and `describe` is what a *caller* reads.
+So the residual `INV-V34-1` names is **smaller than the row claims** (nothing reaches it today) and
+**differently shaped** (a default for an absent case, not a restriction). Both halves of the
+sentence — "operator's tool floor" and "removing it would be a security regression" — are false,
+and the second one is the dangerous half: it is a *security justification* for a *usability
+mechanism*, and the next audit will either trust it (and under-defend) or catch it (and re-open the
+whole row).
 
-### 4.2 REQ-203 — deletion chain, and the two messages that need a home
+### 2.2 Exact replacement wording (this is what a send-back round owes)
 
-**Deletion set (each verified present; this is also the ledger retirement list, see §4.3):**
+**`INV-V34-1`, `02-architecture.md:4190` — replace the final "single named residual" sentence with:**
 
-| site | what goes |
-|---|---|
-| `src/agent-definitions.ts` | whole module (`loadAgentDefinitions`, `parseFrontmatter`) |
-| `src/agent-executor.ts:464-465, 496, 507, 543-552` | `AgentTypeDef`, `agentTypes` dep, registry resolution + `Unknown agentType` throw |
-| `src/agent-executor.ts:571-575` | the `def?.tools` tool rung |
-| `src/agent-executor.ts:582-585` | segment 1 of the composition |
-| `src/agent-executor.ts:652-658, 671` | `stripFirstSegment` call, `harness_prompt_prefix_mismatch` warn, `systemPrompt:{agentType,bytes}` |
-| `src/params/resolve.ts:188-205` | `stripFirstSegment` + `tests/unit/strip-first-segment.test.ts` |
-| `src/run-manager.ts:77, 299, 352, 715, 1077` | `agentTypes` plumbing (both construction sites) |
-| `src/types.ts:193, 204-205, 551` | `AgentOpts.agentType`, its precedence comment, `HarnessDescriptor.systemPrompt` |
-| `src/workflow-meta.ts:207` | `AGENT_OPT_KEYS.agentType` |
-| `src/main.ts:87, 209-211` | `agentDefinitionsDir` in `KNOWN_FILE_CONFIG_KEYS` + its `composeConfig` forwarding |
-| `src/main.ts:60` | comment-only: the `defaultAllowedTools` docstring's "its own agentType-derived opts.allowedTools" clause — stale prose, separate from the config-key deletion |
-| `src/dashboard/lib/agent.js:76-81, 139` + `src/dashboard/ui/agent-panel.js:200` | `systemPromptNote()` (both zh/en strings), its view-model field and the panel line that renders it — **this is the disclosure surface REQ-203 says 「隨機制消失」** |
-| `tests/fixtures/dashboard-wire.ts:31, 36-37` + `tests/unit/dashboard-lib-agent.test.js` | the fixture's `systemPrompt:{agentType,bytes}` row and its assertions |
-| `src/harness-defaults.ts:17, 20, 39, 68-72, 96-97` | see D2 — `HarnessDefaults.prompt` **and** `.tools`, their `KNOWN_KEYS` entries and shape guards, are the same retired object |
-| `src/server.ts:95, 732` | `ServerConfig.agentDefinitionsDir` and **the one `loadAgentDefinitions()` call site** (`const agentTypes = config?.agentDefinitionsDir ? … : undefined`) — the composition root that makes the whole chain live |
-| `src/tool-specs.ts:614`, `src/authoring-guide.ts:531-532` | advertised text (three tool layers → two) |
-| tests | `agent-type-composition-root`, `main-composition-root-agent-types`, `strip-first-segment`, plus the `agentType` cases inside `dashboard-disclosure` / `agent-executor-harness-descriptor` / `agent-log-harness-shape` |
+> **The single named residual:** `defaultAllowedTools` is *additive* and not readable pre-hoc; it
+> survives v34 as a known, bounded residual — NOT a miss. It is a **deployment-set default for the
+> case where a call supplies no `allowedTools` of its own**, not a floor and not a ceiling:
+> `claude-agent-sdk-client.ts:544-547` resolves `req.opts.allowedTools ?? defaultAllowedTools ??
+> BUILT_IN_CORE_TOOLS`, so a per-call list *replaces* it wholesale and may name tools it never
+> contained. It is kept because the absent case is real and an unset `options.allowedTools` hands
+> the SDK CLI's full uncurated surface to the model (VAL-003) — an operational failure, not because
+> it restricts anyone. Its post-hoc prong is satisfied by `HarnessDescriptor.tools`
+> (`types.ts:506`, non-optional). What bounds an agent's capability is not this list but the
+> per-call arbitration seams: `permissionMode:'default'` plus `canUseTool`
+> (`claude-agent-sdk-client.ts:638`) and the `PreToolUse` realpath workspace jail (`:670`).
 
-**Proposal B1 — lean on the compile-closed sets, do not write inventory tests.**
-`AGENT_OPT_KEYS` is deliberately typed `Record<keyof AgentOpts | 'prompt', true>` with a comment
-explaining that this exact trick exists because "this ledger has now recorded one-directional
-vocabulary drift four times" (`workflow-meta.ts:199-208`). `KNOWN_FILE_CONFIG_KEYS` is
-`Record<keyof FileConfig, true>` for the same reason (`main.ts:80-97`). Deleting the fields from
-the two interfaces makes every stale reference a `tsc` error. **Testability payoff: absence is
-pinned by the type system, which no test can be forgotten into.** Corollary the implementer will
-hit: `tests/unit/compose-config-v2-wiring.test.ts` sweeps `KNOWN_FILE_CONFIG_KEYS` mechanically
-(main.ts:80-83 says so explicitly) — its exclusion list must lose `agentDefinitionsDir` in the
-same commit or the sweep fails on a key that no longer exists.
+**`ARCH-137` note, `02-architecture.md:4079` — replace the "Accepted, named tradeoff" sentence's
+first clause with:**
 
-**Proposal B2 — one retired-names idea, two call sites, ~10 lines total.**
-REQ-203 needs two *specific* messages that the generic paths cannot produce:
-- script side: `agentType` must be refused with "removed at v34 → see `workflow_authoring_guide`",
-  not the generic unknown-key refusal. Add a `RETIRED_AGENT_OPT_KEYS: Record<string,string>`
-  beside `AGENT_OPT_NEAR_MISSES` (`workflow-meta.ts:219-232`), consulted on the same refusal path.
-- config side: `agentDefinitionsDir` must warn-and-boot (owner ruled: **not** fail-fast) with a
-  retirement note. `composeConfig` already hardcodes exactly one such note for `graphAnalyzer`
-  (`main.ts:150-152`). Replace that `if` with a `RETIRED_CONFIG_KEYS` map holding both entries —
-  this **deletes a special case** while satisfying the new requirement.
+> **Accepted, named tradeoff (not a miss):** per-agent-type tool granularity within one deployment
+> is lost deliberately. What survives is a deployment-wide **default**, `defaultAllowedTools` —
+> applied only to calls that carry no `allowedTools` of their own, overridable upward by any script,
+> and therefore *not* an operator-owned restriction layer. It is the single named `INV-V34-1`
+> residual (additive, `claude-agent-sdk-client.ts:546`, not readable pre-hoc by a cold caller),
+> explicitly NOT removed and NOT projected in v34: removing it would re-arm VAL-003's uncurated
+> surface for the absent case, and projecting it is scope nobody asked for.
 
-**Proposal B3 — the dangling near-miss pointers (this is the one an implementer will miss).**
-`AGENT_OPT_NEAR_MISSES` currently maps `system → 'agentType'` and `systemPrompt → 'agentType'`
-(`workflow-meta.ts:221-222`). After v34 those point an author at a key that no longer exists —
-a helpful message that teaches a removed feature, which is worse than no message. They must be
-**re-pointed at REQ-202's new prompt-layering section of the guide**, not merely deleted: the
-author writing `systemPrompt:` in an options literal has a real need, and the true answer after
-v34 is "put it in your script's own `prompt`". REQ-203 does not name this; I am raising it as a
-required design item.
+Both edits are prose inside rows already carrying `iter: v34`; no new ARCH row, no ADR, no
+`traces:` change. Per the v34 retirement-register precedent (and v33's F6-1 measured lesson), a text
+correction inside an existing row mints no trace delta.
 
-**Proposal B4 — removal is forward-only; the read path stays TOTAL over pre-v34 rows.** This is my
-main *security/correctness* objection to a naive implementation:
-- `HarnessDescriptor.systemPrompt` (`types.ts:551`) is **persisted**, and `deriveAgentRecords`
-  rebuilds agent records from persisted harness events after a restart (the mechanism is described
-  at `agent-executor.ts:~600` for the `markQueued` lane, same reason). Rows written before v34
-  carry the field. Deleting it from the type is fine for writers; the **dashboard and the record
-  rebuild must not crash or mis-render on a legacy row**.
-- `RunParams.provenance` is typed `Record<..., 'override'|'default'|'engine'>` at `resolve.ts:51`
-  but `types.ts:530` still carries the wider `'call'|'agentType'|'override'|'default'|'engine'`
-  union for the persisted shape. Pre-v24 stored rows can hold `'agentType'`. Narrowing that union
-  without a read-side tolerance is precisely the failure class this codebase has already guarded
-  twice — `boundMax`/`boundEffort` both carry comments about "a stored row that predates the
-  parser's shape guard" staying TOTAL (`contract.ts:174-184`, :186-). Same discipline applies here.
-- **Required test shape (testability lens):** one integration test that feeds a *pre-v34 persisted
-  run row* (carrying `systemPrompt` on the harness event and/or `provenance:'agentType'`) through
-  the record-rebuild + dashboard projection and asserts a clean render. Without it, "we removed the
-  field" ships as "the engine cannot read its own history".
+### 2.3 The consequence the send-back did not state — name it, do not build it
 
-### 4.3 REQ-203's ledger clause — treat it as a *predictable diff*, not prose
+Once "floor" becomes "default", the missing control is visible: **no deployment-side actor can cap
+what tools a registered workflow's agents may hold.** The author can opt into `WebFetch`,
+`WebSearch`, `Task`/`Agent` — the three the built-in default deliberately excludes
+(`claude-agent-sdk-client.ts:180-190`) — simply by writing them into a per-call array.
 
-REQ-203 requires that REQ-136/ARCH-129/DES-195's disclosure surface be recorded as
-**「隨機制消失」** (disappeared with its mechanism) rather than **「揭露回歸」** (a disclosure
-regression), "否則下一輪稽核會把它讀成回歸". My lens wants this made mechanical, because this
-ledger has a *measured* precedent for exactly how cheaply trace bookkeeping goes wrong: at v33
-F6-1, **one line** bumping `DES-157`'s iter from v24 to v33 cleared one design-lag row and minted
-**seven phantom test-lag rows** (state.yaml, `current_stage` note). Prose in a doc does not stop
-that; a predicted number does.
+*Security lens position*: this is the one real finding under my (a) lens, and it is **currently
+theoretical** (0/166 calls escalate). The trust model is coherent as-is: an author is an
+authenticated owning principal who is already trusted to run arbitrary JS in a per-run sandbox; the
+enforcement boundary is the jail + `permissionMode:'default'` arbitration, both of which apply to
+`WebFetch` and `Task` exactly as to `Bash`. Therefore:
 
-**Proposal C1:** the architecture doc must enumerate the retiring ids up front — ARCH-004,
-DES-007, DES-102 (the five-segment composition), REQ-094's composition clause, ARCH-129/DES-195
-(the strip/disclosure pair), REQ-136's disclosure surface, plus the named retiring tests — and
-state the **expected `sh .sdlc/trace` item/gap deltas before Gate 8 runs**. A retirement that
-lands on the predicted numbers is a retirement; one that does not is a regression, and nobody has
-to argue about which it was. (Baseline must be captured per CLAUDE.md: `git archive HEAD | tar -x`
-into a scratch dir, or captured earlier into a file — never `git checkout`/`restore`/`stash`.)
+- **Record it** in `INV-V34-1`'s wording (done above — "not a floor and not a ceiling") and stop
+  there for v34.
+- **Do not build a ceiling this round.** A real ceiling is `effective = intersect(perCall,
+  operatorCeiling)` plus decisions this round has no mandate for: is `[]` the empty set or "absent";
+  does the built-in set participate; does an over-asking script get refused at *registration*
+  (observable, fail-closed, breaks nothing today) or silently trimmed at *dispatch* (invisible
+  capability loss — the exact defect class REQ-203 was opened to delete); what does
+  `workflow_describe` then advertise. That is a new REQ with a config surface, not a send-back fix.
+- **Cheap for later, if wanted**: 0/166 means an intersection would break **nothing in the current
+  catalog**, and registration-time refusal is reachable — `workflow-meta.ts:481-493` already parses
+  every literal array at registration. Worth one sentence in the ledger as a revisit trigger
+  ("if a registered version ever requests a tool outside the deployment default, the ceiling
+  question is live"), not worth a mechanism now. The seam is already there and already runs at
+  registration — `TOOLS_MISMATCH` (`errors.ts:63`) proves the registration path can reason about
+  tool names and refuse — so the future work is a comparison target, not new plumbing.
 
-### 4.4 REQ-204 — and the inter-REQ gap that makes REQ-203's headline false
+### 2.4 Scalability / performance: nothing. Stated, not invented.
 
-REQ-204 removes the `authorPrompt` segment, `runParams.prompt`, and the wiring — while **keeping**
-the `DEFAULTS_RETIRED` refusal code (`contract.ts:212-217`), because dropping the code would
-return old callers to "silently accepted, silently inert", which is the original defect. I agree
-without reservation: **a refusal code should outlive the feature it refuses.** That is a
-self-sustainability property, and it costs ~6 lines.
+Every open item is prose, one guide string, and one unit test. No state storage, no shared counter,
+no concurrency primitive, no new per-dispatch work (the three-rung `??` chain is already the
+cheapest thing in `invoke()` and stays byte-identical). The `sqlite`/`better-sqlite3` RunStore and
+WorkflowCatalog are untouched. Horizontal scaling, consistency of failure counting, contention:
+**not applicable to this send-back**, and I decline to manufacture a paragraph.
 
-**Proposal D1 — keep `composePrompt` as a named seam even when it shrinks to two arguments.**
-After v34 it is `body + optional framed segment` — three lines. Pure simplicity says inline it into
-the executor. I argue against, and this is a genuine (a)+(c) vs Karpathy conflict resolved *against*
-inlining: the untrusted-frame constants (`USER_INSTRUCTIONS_OPEN`/`_CLOSE`, `resolve.ts:167-168`)
-are the exact strings `FRAME_CLOSE_FORGERY` defends, and the seam is the only reason the framing
-invariant is unit-testable today without booting a gateway. Inlining converts a unit test into an
-integration test and scatters a security-relevant constant. The seam is *not* speculative — it has
-tests now. Keep it; delete the two dead parameters.
+One measured non-finding worth a line, because a future round will ask: the guide text is built by
+`buildAuthoringGuide(CEILINGS)` per call and is a byte-lock source for `docs/AUTHORING.md`; adding a
+clause costs bytes on `tools/list`/`workflow_authoring_guide` responses, on the order of ~120 bytes
+against a multi-KB document. Irrelevant.
 
-**Proposal D2 — GAP (HIGH): `defaults.tools` is left alive and contradicts REQ-203's
-"只剩兩層".** Verified: `RunParams.tools?: string[]` exists at `resolve.ts:50`, populated from
-`defaults?.tools` at `resolve.ts:87`, and consumed as a tool rung at `agent-executor.ts:576-580`
-("defaults.tools sits directly BELOW agentType"). REQ-204 names **only** `runParams.prompt`;
-REQ-203's tool-surface clause claims that after removing `agentType` the surface is exactly
-`per-call allowedTools → defaultAllowedTools`. **Both cannot be true.** With `agentType` gone the
-live surface for any run whose params snapshot carries a legacy `HarnessDefaults` is *three*
-layers, not two. Reachability is legacy-only (new registrations carrying `defaults` are refused
-`DEFAULTS_RETIRED`), which is precisely why it will not show up in a smoke test and precisely how
-it survives an iteration. `prompt` and `tools` are the **same author-only pair on the same
-retired object**: `HarnessDefaults` declares both side by side (`harness-defaults.ts:17` and `:20`),
-both sit in the same `KNOWN_KEYS` set (`:39`) and get adjacent shape guards (`:68-72`), and
-`RunParams` carries both off that one object (`resolve.ts:43-50`, populated at `:85-87`).
-Removing one and keeping the other is arbitrary — it splits a type down the middle and leaves
-half a retired feature wired to the executor.
-**Recommendation:** extend REQ-204 to retire `RunParams.tools` with `RunParams.prompt` — one
-requirement edit, same commit, same test — or, if the owner prefers to keep the legacy rung,
-amend REQ-203's text to say *three* layers for legacy rows. Silence here is how REQ-203 ships with
-a documented claim its own code contradicts. Existing `tests/integration/resume-legacy-params.test.ts`
-is the place this is pinned.
+## 3. AC-1: text, not code — and why that is the architecture call
 
-**Proposal D3 (byte-identity guard).** The evidence base for "this changes nothing real" is strong
-— 22 registered catalog versions, **0** using `agentType`; `defaults` already refused at
-registration. Pin it with **one** cheap unit test rather than a suite — but note the
-obvious phrasing is unimplementable: you cannot assert "new 2-arg ≡ old 4-arg" *after* the 4-arg
-function is deleted. The executable form is a **golden-string** test: run today's
-`composePrompt(undefined, undefined, p, a)` over the case matrix (script prompt only / with
-appendPrompt / empty-string appendPrompt / appendPrompt containing newlines) **before** the cut,
-freeze the outputs as literals in the test file, and have the post-cut 2-arg function reproduce
-them byte-for-byte. Capture the goldens as the test-first (Gate 5) step, not afterwards. That is
-the entire regression surface of the prompt change, and it is ~15 lines.
+The review offered two remedies. They are not equivalent.
 
----
+**Remedy A (text).** Add one clause to `authoring-guide.ts:534-537` naming the built-in fallback and
+its contents. `DEPLOY.md:517` and `:632` **already state it correctly** ("省略此鍵才落到內建預設",
+and the literal `["Read","Write","Edit","Glob","Grep","Bash"]` with the `Bash`-is-jailed note). The
+author-facing guide is the only surface that lies. Copying a sentence the operator manual already
+got right is the minimum change that makes ARCH-137's own boundary claim — *three audiences, three
+surfaces, **one set of facts*** — true.
+
+Proposed clause (drop-in for the "Two layers" sentence):
+
+> Two layers are settable, on the tool-calling (SDK gateway) path, and the first one present wins:
+> the per-call `allowedTools` above, then this deployment's configured `defaultAllowedTools`. Only
+> the first is settable from a script. If the deployment configures neither, the engine applies a
+> built-in core set — `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash` — so a session is never handed
+> the CLI's full uncurated tool list. (The direct-fetch transport has no tool surface at all — this
+> section does not apply to it.)
+
+**Remedy B (code): rejected.** Defaulting `defaultAllowedTools` to `BUILT_IN_CORE_TOOLS` inside
+`composeConfig()` (`main.ts:354`) does **not** collapse the runtime to two layers unless the
+client's own `?? BUILT_IN_CORE_TOOLS` is deleted too — and that fallback exists precisely for
+constructions that do not come through `main.ts` (every unit-tier `new ClaudeAgentSdkGatewayClient({baseUrl})`,
+and `server.ts`'s own composition root). Deleting it re-arms VAL-003 for exactly those paths. Keeping
+both means the constant is now duplicated across a module boundary — `main.ts` importing a gateway
+internal, or a copy that drifts. Karpathy: **B is more change, with a new hazard, and still needs
+A's sentence** (a cold author cannot see `rwe.config.json`). Also relevant: this repo's own
+`composeConfig` forwarding bug class (guarded by `tests/unit/compose-config-v2-wiring.test.ts`,
+which already carries a `defaultAllowedTools` row at `:307`) says every new forwarding default is a
+place the wiring can silently go missing. Do not add one to fix a documentation defect.
+
+Supporting fact for either remedy: the **live** `rwe.config.json` sets
+`defaultAllowedTools: ["Read","Write","Edit","Glob","Grep","Bash"]` — byte-identical to
+`BUILT_IN_CORE_TOOLS`. So in *this* deployment the third rung is unreached as well, and Remedy B
+would change no observable behaviour anywhere while costing a cross-module constant. (Same file
+still carries the retired `agentDefinitionsDir` key — live confirmation that REQ-203's
+unrecognized-key warning path, not fail-fast, is the one that runs.)
+
+## 4. Testability
+
+### 4.1 The one ask: pin the semantics, not the prose
+
+`tests/unit/claude-agent-sdk-gateway-allowed-tools.test.ts` covers three cases — per-call forwarded
+(`:57`), configured default applied when the call is bare (`:79`), built-in fallback when both are
+absent (`:94`). **But the per-call case constructs the client with no `defaultAllowedTools` at all**
+(`:59`), so nothing in the suite asserts that a per-call list *replaces* a configured one, and
+nothing asserts that a per-call list may name a tool the configured list omits. The precise property
+the corrected `INV-V34-1` sentence asserts is the one property untested.
+
+Minimal guard (one `it`, same file, next to UT-024):
+
+```ts
+it('a per-call allowedTools REPLACES the configured default wholesale — it is a default, not a floor', async () => {
+  const client = new ClaudeAgentSdkGatewayClient({
+    baseUrl: 'http://127.0.0.1:4000',
+    defaultAllowedTools: ['Read', 'Grep'],
+  } as ClaudeAgentSdkGatewayConfig & { defaultAllowedTools?: string[] });
+  await client.invoke({ prompt: 'hi', opts: { allowedTools: ['Bash'] }, runId: 'r1', agentId: 'a4' });
+  const [[call]] = queryMock.mock.calls as [[{ options?: { allowedTools?: string[] } }]];
+  expect(call.options?.allowedTools).toEqual(['Bash']); // NOT ['Read','Grep'], NOT an intersection ([])
+});
+```
+
+This is architecture's *own* guard: if someone later "hardens" the rung into an intersection, the
+test fails and the ledger sentence gets revisited deliberately instead of silently. Cost: 8 lines,
+no new fixture, no new seam. I hold the testability lens to this one test — see §6.2 for where I
+refuse to let it grow.
+
+### 4.2 Two drift observations, recorded not escalated
+
+- `tests/unit/authoring-guide.test.ts:357` asserts the guide *"states TWO layers"*
+  (`toMatch(/two layers/i)`) — a green test today pinning a sentence AC-1 says is incomplete, while
+  the gateway suite in the same run proves three rungs exist. Note the assertion does **not** block
+  the fix: §3's clause still opens "Two layers are settable", so it stays green and **nothing goes
+  red on its own**. That is exactly the point — **a prose assertion guards against drift, never
+  against falsehood.** The TDD-correct move is to *strengthen* UT-276 first (add
+  `expect(section).toMatch(/built-in core set/i)` and an assertion naming the six tools), which is
+  red until the clause lands and green when it does.
+- `tests/unit/claude-agent-sdk-gateway-allowed-tools.test.ts:57` still titles the per-call rung
+  *"(agentType-derived curation)"* — stale after v34. One-word title fix; same defect class as AC-1
+  (a sentence outliving its mechanism), zero behaviour. Debt, sweep with the next touch of that
+  file.
+
+### 4.3 Module boundaries: no change asked
+
+The seam that matters is already injectable and already exercised: `queryImpl` is a constructor
+dependency, the tool-resolution rung is three lines inside `invoke()`, and `HarnessDescriptor.tools`
+gives every assertion a post-hoc anchor without booting anything. Nothing about the open items
+justifies a new port, a new module, or a refactor. Anyone proposing one in round 2 is proposing
+speculative architecture.
 
 ## 5. Risks
 
-| # | risk | lens | sev | mitigation |
-|---|---|---|---|---|
-| R1 | `defaults.tools` left alive → REQ-203's advertised "two layers" is false for legacy rows; the guide teaches a model of the system that the code contradicts. | (a) + consumability | **HIGH** | D2: retire `RunParams.tools` with `.prompt`, or amend REQ-203's text. Decide in round 2; do not let it pass silently. |
-| R2 | Deleting the persisted `systemPrompt` field / narrowing the `provenance` union breaks the read path for pre-v34 rows (`deriveAgentRecords`, dashboard). | (a) correctness + (c) | **HIGH** | B4: read path stays TOTAL over legacy shapes; one integration test feeding a genuine pre-v34 row. |
-| R3 | `AGENT_OPT_NEAR_MISSES.system/systemPrompt` keep pointing at the removed `agentType` — the engine teaches a deleted feature. | consumability | MID | B3: re-point at the guide's new prompt-layering section. |
-| R4 | The ledger retirement is read as a disclosure **regression** at Gate 8 (REQ-136/ARCH-129/DES-195). v33 F6-1 is the measured precedent: one iter-line change minted 7 phantom gaps. | self-sustainability | MID | C1: enumerate retiring ids and **predict the trace deltas** before Gate 8; baseline via `git archive`, never checkout/restore/stash (CLAUDE.md). |
-| R5 | `defaultAllowedTools` remains an *additive*, unreadable deployment-side determinant — the last INV-NOADD violator, surviving an iteration whose stated principle condemns it. | (a) | MID | §2: record as a **named, bounded residual**, not a miss. Do **not** remove in v34 (removal would be a security regression; projection is scope creep). |
-| R6 | `compose-config-v2-wiring.test.ts` sweeps `KNOWN_FILE_CONFIG_KEYS`; dropping `agentDefinitionsDir` without updating its exclusion list breaks the suite on a key that no longer exists. | (c) | LOW | Same commit. Named here so it is not discovered at Gate 6. |
-| R7 | Over-correction: someone reads "remove what remote authors can't write" literally and proposes removing ceilings / alias table / `defaultAllowedTools`. | (a) | LOW | INV-NOADD's additive-vs-restrictive wording exists to make this argument un-winnable. |
-| R8 | REQ-202's disclosure is written as a *guarantee* ("模型會被告知那一段不可信") and a caller relies on the frame as an enforcement boundary. | (a) agent-altitude | MID | A3: advertise it as an advisory label + one enforced property (no early frame close). The author owns the adoption rule. |
-| R9 | Deletion sprawl: `types.ts:530`'s dead `'call'|'agentType'` provenance rungs invite an opportunistic cleanup that widens the diff and the trace delta. | Karpathy | LOW | Delete **only** if that union is being touched for R2 anyway; otherwise leave it and say so. |
+**R1 — the correction gets read as a capability regression (MED).** "It is not a floor" can be
+misfiled by the next audit as *"v34 removed the operator's tool floor"*. It removed nothing; the
+floor never existed. Mitigation: the §2.2 wording says *what it is* before saying what it is not,
+and `ARCH-137`'s note already has the "隨機制消失 vs 回歸" distinction machinery for exactly this
+misread — reuse the same phrasing discipline.
+
+**R2 — the recorded gap (§2.3) turns into an un-owned open item (MED).** A sentence saying "no
+operator ceiling exists" with no revisit trigger is how a finding becomes permanent. Mitigation: the
+trigger is measurable and cheap — *any* registered version requesting a tool outside the deployment
+default (today: 0 of 27). Write the trigger, not a promise.
+
+**R3 — scope creep into a ceiling mechanism this round (MED→HIGH if it happens).** The intersection
+looks like a two-character change (`??` → intersect) and is not: `[]` semantics, the built-in rung's
+participation, refuse-at-registration vs trim-at-dispatch, and the describe projection all follow.
+Trimming at dispatch would silently narrow capability — the precise defect class v34 exists to
+delete. Mitigation: Karpathy tie-break, §6.1.
+
+**R4 — the AC-1 sentence lands only in `authoring-guide.ts` and `docs/AUTHORING.md` drifts (LOW).**
+The `.md` is a byte-lock output of the builder; the regeneration must run in the same commit or the
+byte-lock test goes red (a real guard here — it will catch this).
+
+**R5 — `DEPLOY.md:632`'s own phrasing is half-muddled (LOW).** It says "工具面只有兩層優先序" and
+then names the built-in fallback in the same sentence. All the facts are present; what is missing is
+the qualifier that makes the count true. §3's clause has the **same shape** and is saved only by one
+word ("Two layers are **settable**") — so the fix here is that identical word
+(「只有兩層**可設定**的優先序」), not a change to the count. Fold it into the validation-side
+DEPLOY.md rewrite already sent back; do not open a separate item. If a reviewer rejects my clause's
+shape it must reject this one too — same sentence, same remedy.
+
+**R6 — the catalog scan is regex-based (LOW).** 166/166 rests on the same source-text matcher whose
+prose-false-positive landmine is already on record. It supports "no registered call currently omits
+`allowedTools`" as a strong signal; it must not be cited as a parse-verified invariant. Worded that
+way in §2.1 on purpose.
+
+## 6. Where my three lenses actually conflict (the part the lens brief demands)
+
+### 6.1 Security vs Karpathy — the real fight, and Karpathy wins **this round**
+
+Security's honest position: a deployment-side *default* that any author can override upward is not a
+control, and an engine that hands out `Bash` by default and cannot say "never `WebFetch` on this
+host" has a missing knob. Intersection is ~5 lines, and 0/166 proves it would break nothing today.
+
+Karpathy's answer, and my tie-break: the knob has **no demand** (zero escalating scripts, zero
+operator request in `01-requirements.md`), the threat it addresses is **already contained** by a
+seam that arbitrates every single call regardless of the list (`canUseTool` + `PreToolUse` jail,
+`permissionMode:'default'`), and the *review* asked for a sentence. Building a ceiling here would
+mean shipping a mechanism to make a sentence true instead of making the sentence true — which is
+the inverted version of v34's own thesis. **Verdict: correct the words, record the gap with a
+measurable revisit trigger, build nothing.** I state plainly that if the trigger ever fires,
+security wins the rematch and the refusal should be at *registration*, not a silent dispatch trim.
+
+### 6.2 Testability vs Karpathy — I side against my own lens on the second test
+
+Testability's natural ask is two tests: the override-semantics UT (§4.1) **and** an inventory test
+that the guide text matches the code's rung count. I take the first and refuse the second: a
+prose-matching test is what produced `authoring-guide.test.ts:357`, a green assertion pinning a
+false claim. More prose tests generate more of that. `INV-V34-4`'s discipline already applies —
+**absence and shape belong to the compiler, behaviour belongs to a behaviour test, and prose belongs
+to a human reading it once.** One test.
+
+### 6.3 Security vs Testability — mild, resolvable
+
+Security would prefer the new UT also assert that `WebFetch` reaches `options.allowedTools`
+unfiltered (proving "no ceiling" positively). Testability objects that this pins a *deficiency* as a
+contract and makes the future ceiling work fail a test whose message says nothing about why.
+Resolution: keep `['Bash']` (already in the built-in set, so the assertion is purely about the
+*replace* semantics), and let the no-ceiling fact live in the ledger sentence where a revisit can
+read its reasoning. If the ceiling REQ ever lands, this test changes deliberately with it.
+
+### 6.4 Scalability vs everyone — abstains
+
+Nothing to trade. Recorded in §2.4 rather than padded.
+
+## 7. Expected disagreements with the other lens (quality-dimensions)
+
+**D1 — "project the effective default into `tools/list` / `workflow_describe`" (consumability,
+agent altitude). Expected, and I partly resist.**
+Their case is real and I want its anchors exact, because a wrong citation loses an argument on
+form: `INV-V34-1` itself concedes the residual is *not readable pre-hoc*, and `workflow_describe`
+really does emit the sentinel — `mcp-facade.ts:493-498` computes a `toolSurface` map (per label: the
+sorted literal array, or the **string `'default'`** when the call declares none) and serves it on the
+result at `:512`. The same sentinel is the diagram's `tools:` node-label convention
+(`skeleton-graph.ts:65-67`, documented for authors at `authoring-guide.ts:68-69` and `:737-738`).
+So `'default'` is a *served value* with no definition anywhere on the caller's surface. Their fix:
+resolve it to the actual list.
+My counter: (i) a **caller cannot act on it** — `allowedTools` is in `LOCKED_KEYS`
+(`contract.ts:25`), so pre-hoc knowledge changes no decision a caller can make; (ii) the **author**
+who *can* act on it reads the guide, which AC-1 is already fixing with the real list in it;
+(iii) empirically **0 of 166 registered calls** produce `default` at all, so the projection would
+render a value nothing uses; (iv) post-hoc `HarnessDescriptor.tools` (non-optional) already tells
+any principal what actually ran. Landing zone I will accept in round 2, conceded early rather than defended into a stalemate:
+keep it a **named residual** with honest wording, and *define the sentinel where it is served* — one
+clause in `tool-specs.ts`'s `workflow_describe` description saying `'default'` means "this
+deployment's configured `defaultAllowedTools`, else the built-in core set", the same fact AC-1's
+guide clause already states. **Defining a word costs one sentence; resolving a value adds a
+config-dependent field to a script-derived projection** that says of itself "Names only — never a
+resolved list" (`mcp-facade.ts:492`), so resolving it there crosses the projection's own stated
+boundary. Not a new projection field.
+
+**D2 — "deleting `defaultAllowedTools` outright is the truly simple answer" (a Karpathy-flavoured
+move I expect *from* them, not from me). I oppose.**
+0/166 argues it is *unreached*, not *useless*: the absent case is real for any future author who
+omits the key, and an unset `options.allowedTools` is precisely VAL-003's uncurated surface. The
+built-in fallback would still have to exist, so deletion removes the operator's ability to tune the
+absent case while removing no code path. Simplicity means *fewest mechanisms that solve the
+problem*, not fewest config keys.
+
+**D3 — "REQ-203's disclosure loss should be revisited now that we are reopening these rows"
+(observability). I oppose on process grounds.** The Gate 8 reviewer accepted the 「隨機制消失」
+register. A send-back round is not a second bite at settled rows; re-opening it re-mints a trace
+delta for zero code change. If they genuinely dispute it, it is a new REQ, not an amendment.
+
+**D4 — the `toErr()`/`.detail` loss and the `harness-defaults.ts` dead writer half (AC-3).
+No disagreement — both are already routed to v35** (`07-review.md` §2 disclosed list, IMPL-340,
+TASK-229 DoD item 4). I will object if round 2 re-counts them as this round's findings; double
+counting a routed item is how a "12 findings" headline gets manufactured out of four.
+
+**D5 — "add a compile-time inventory test that the guide's layer count matches the code".**
+Expected from a self-sustainability angle. I refuse per §6.2, and the counter-evidence is in the
+tree: `authoring-guide.test.ts:357` is exactly that test, currently green, currently guarding a
+false sentence.
 
 ---
 
-## 6. Expected disagreements with the other lenses
+## 8. Concrete handoff list (what this round asks Gate 3+ to carry)
 
-1. **vs an observability lens — the `systemPrompt` tombstone.** I expect a proposal to keep
-   `systemPrompt: null` (or a `retired` marker) on the harness descriptor for audit continuity.
-   **I argue no.** A field that is *always* null on every future row is noise that every reader
-   must learn to ignore, and it keeps a removed mechanism's vocabulary alive in a persisted schema
-   — the precise opposite of "隨機制消失". The audit continuity belongs in the **ledger**
-   (C1), which is durable and is where an auditor actually looks; not in every run row forever.
-   I *do* concede the half of their concern that matters: R2's legacy-row read path must stay
-   total, and that is a real obligation I am accepting, not dismissing.
+1. `02-architecture.md:4190` (`INV-V34-1`) — replace the residual sentence with §2.2's text.
+2. `02-architecture.md:4079` (`ARCH-137` note) — replace the tradeoff clause with §2.2's text, and
+   add the §2.3 revisit trigger (one sentence: *no operator ceiling exists; trigger = any registered
+   version requesting a tool outside the deployment default; today 0 of 27*).
+3. `src/authoring-guide.ts:534-537` — §3's clause; regenerate `docs/AUTHORING.md` in the same commit
+   (byte-lock).
+4. `tests/unit/authoring-guide.test.ts:357` — **strengthen** UT-276 (assert the section names the
+   built-in core set and its six tools). Written first it is red until item 3 lands; the existing
+   `/two layers/i` assertion stays green throughout and is not the guard.
+5. `tests/unit/claude-agent-sdk-gateway-allowed-tools.test.ts` — add §4.1's single `it`.
+6. Debt, not this round: the stale `(agentType-derived curation)` test title (§4.2);
+   `DEPLOY.md:632`'s "只有兩層" counting word (R5, fold into the validation send-back).
 
-2. **vs an ops/robustness lens — fail-fast on `agentDefinitionsDir`.** I expect "a stale config key
-   that used to change model and tools should refuse to boot, not warn". The argument has force
-   (the key's *former* effect was capability-granting). **The owner has already ruled: warn, don't
-   fail-fast**, consistent with the existing `graphAnalyzer` precedent, and I support it — after
-   v34 the key is *inert*, so booting with it present is not a security state, it is a tidiness
-   state, and fail-fast would turn a doc-lag into an outage on upgrade. My B2 note text is the
-   concession: the warning must say *retired at v34*, not merely *unrecognized*.
-
-3. **vs a DX/consumability lens — how much to advertise.** I expect a push for `unit` on *every*
-   numeric param (`timeoutMs: 'ms'`), a projected `defaultAllowedTools`, and a fuller
-   disclosure block. **Karpathy tie-break: minimal.** `unit:'bytes'` on `appendPrompt` is
-   required by REQ-202 and closes a measured confusion (a naked `1024` that could be ms, chars or
-   tokens). `unit:'ms'` on `timeoutMs` is *consistent* but nothing reports anyone getting it wrong
-   — `timeoutMs`'s own name carries the unit. I name the inconsistency openly rather than hide it:
-   I am choosing "do what the requirement asked and no more" over symmetry, and if round 2 shows a
-   real caller confused by `timeoutMs`, it is a two-character change then.
-
-4. **vs a security-purist lens — obscurity of the frame tag.** I expect "REQ-202(b) publishes the
-   exact string `<user-instructions untrusted="true">`, handing an attacker the tag to forge".
-   **I argue disclosure wins, decisively.** `FRAME_CLOSE_FORGERY` (`contract.ts:141`) already
-   refuses a forged close at *admission*, case-insensitively and tolerant of whitespace around the
-   `/` — the control does not depend on the caller not knowing the string, and a caller who cannot
-   learn the constraint just discovers it as an opaque `PARAM_OUT_OF_RANGE`. Obscurity buys
-   nothing here and costs the cold client its first call.
-
-5. **vs a scope-discipline lens — my D2.** I expect "`defaults.tools` is not in REQ-203/204's
-   text; file it as a finding for a later iteration". **I argue it must be settled *in this
-   round*,** because it is not an unrelated defect: it makes a sentence this iteration is
-   *writing into the advertised guide* untrue. Shipping documentation that contradicts the code is
-   the exact failure class v34 exists to remove. Settling it can legitimately mean amending
-   REQ-203's wording rather than expanding REQ-204 — but it cannot mean silence.
-
-6. **Where I expect no disagreement:** deleting the mechanism rather than only its prompt layer;
-   keeping `DEFAULTS_RETIRED` after its pipeline is gone; leaning on the two compile-closed key
-   sets. If a lens argues for a general-purpose deprecation/plugin framework to replace
-   `agentType` ("authors should be able to *upload* agent definitions"), I oppose it outright for
-   v34: that is a new remote-write surface with its own authz, storage and injection questions,
-   the evidence says **0 of 22** registered versions ever used the feature being removed, and the
-   requirement's own scope note already forecloses speculative additions. Remove first; if demand
-   is real it will arrive as a requirement with a user behind it.
+No new ARCH row, no new ADR, no new config key, no new module. **Six edits, five of them one
+sentence long.**

@@ -166,10 +166,20 @@ curl -s http://localhost:8787/api/models | python3 -c \
 
 > 目標：讓 `agent()` 呼叫走**完整 Claude harness**（工具迴圈 + MCP），模型可以是本機 Ollama 或雲端
 > OpenRouter，能跑真正的 iso-agile-sdlc `sdlc-run`（每個 gate 換一顆角色/一顆模型）。步驟 0/1/2/5
-> 都經本機端對端實測；步驟 3/4（把角色提示詞內文貼進腳本 `prompt` 參數）其中的範例腳本經這台引擎
-> 自己的註冊掃描器（`scanAgentCalls`/`parseMetaParams`/`checkMermaid`）靜態驗過零違規，**沒有**
-> 經過真的 `workflow_register`／`run_start` 端對端跑一次——這台機器上沒有為了寫這份文件另外起一顆
-> engine。
+> 都經本機端對端實測；步驟 3/4（把角色提示詞內文貼進腳本 `prompt` 參數）其中的範例腳本，已於
+> 2026-09-21 對一顆 scratch engine（`http://127.0.0.1:8793/mcp`，`auth.enabled:false`，workRoot 在
+> repo 外）跑過真的 `workflow_register` → `run_start` → `run_result` 端對端：兩個角色都用 `run_start`
+> 的 `overrides:{agents:{architect:{model:'haiku'},implementer:{model:'haiku'}}}` 蓋掉別名，實際換成
+> `claude-haiku-4-5-20251001` 回應（預設 `default` 別名指的本機 Ollama `qwen2.5:7b` 這台機器連不上，
+> 同日稍早一次試跑已因此燒過一整輪，見 evidence/v34/req117-cold-subject-2026-09-20.md D1；也見步驟1
+> 「模型能力提醒」）；`runId fc374235-0300-4f18-a92b-e98a406aede4` 跑到 `completed`，總耗時約 337 秒
+> （`run_status` 的 `startedAt`→`terminalAt`，約 5m37s，幾乎全落在 architect 那步；implementer 只花
+> 11 秒）。
+> **這條路通了，但下面第3步印出來的 mermaid 原文對不上這台引擎的 v26 diagram contract**：逐字照抄
+> 先撞 `TOOLS_MISMATCH`（stadium 節點宣告了 `allowedTools` 卻沒帶第三段 `tools: …`），補上之後又撞
+> `EDGE_MISMATCH`（`architect`/`implementer` 分屬兩個 `subgraph`，兩者之間缺一條顯式邊）——下面第3步
+> 的範例已經改成實測跑贏的版本；兩次撞錯的完整 request/response 與最終 `run_result` 記在
+> `.sdlc/features/001-remote-workflow-engine/evidence/v34/deploy-recipe-e2e-2026-09-21.md`。
 >
 > **伺服器端沒有可設定的系統提示詞層**：傳 `agentType` 給 `agent()` 在**註冊時**被
 > `SCAN_VIOLATION`（detail 帶 `violation:'AGENT_OPT_RETIRED'`）拒絕、在**dispatch 時**被
@@ -268,15 +278,22 @@ curl -s http://localhost:8787/api/models | python3 -c \
 > return { arch, impl };
 > ```
 > 對應的 mermaid（`workflow_register` 要求 stadium 節點跟 `agent()` label 雙向對上、每個 `phase()`
-> 對一個 `subgraph`，見 `docs/AUTHORING.md`）：
+> 對一個 `subgraph`，見 `docs/AUTHORING.md`）——**實測跑贏的版本**，比裸的 `label` 節點多兩件事：
+> 每個 stadium 節點帶上 `<br/>model · effort · timeout<br/>tools: …`（因為兩個 `agent()` 呼叫都宣告
+> 了 `allowedTools`，第三段 `tools:` 是必填，缺了就是 `EDGE_MISMATCH` 之前先撞的
+> `TOOLS_MISMATCH`；值照抄 `meta.params.agents.<label>` 的 `default`，`tools:` 後面照抄該次呼叫的
+> `allowedTools`，逗號分隔、按字母排序），以及兩個 `subgraph` 之間一條顯式的
+> `architect --> implementer` 邊（跨 lane 的兩個連續 `agent()` 呼叫，圖上不畫邊就是
+> `EDGE_MISMATCH`）：
 > ```
 > graph LR
 > subgraph "architecture"
-> architect(["architect"])
+> architect(["architect<br/>opus · high · 300000<br/>tools: Edit, Glob, Grep, Read, Write"])
 > end
 > subgraph "implementation"
-> implementer(["implementer"])
+> implementer(["implementer<br/>sonnet · medium · 300000<br/>tools: Bash, Edit, Glob, Grep, Read, Write"])
 > end
+> architect --> implementer
 > ```
 > `prompt` 的值不必是單一字串字面值——如上例用 `+` 串接常數與 `args`/前一步結果都是合法寫法（`agent()`
 > 的限制只在於**呼叫本身的 options 物件**要寫成字面量 `{ … }`，不能是變數或 spread；物件裡每個鍵的

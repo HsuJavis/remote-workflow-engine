@@ -11037,3 +11037,171 @@ DES-222 是 v33 新生項目,`iter: v33` 正確,不動。
 
 套用後實測:`sh .sdlc/trace` → **1778 個工作項 / 77 個缺口**,與基線 c48fe08 的 77 相同 ——
 v33 的新增漂移歸零,F6-1 所述的「零新增漂移」成立,不留自造的債。
+
+---
+
+## v34 GATE 8 — Consistency review (2026-09-20, reviewer)
+
+**Scope.** Impact closure {REQ-202, REQ-203, REQ-204, REQ-094, REQ-136, REQ-116, REQ-117} —
+移除 `agentType` 整個機制、`appendPrompt` 搬上廣告介面。Gate 7.5 已於本輪稍早 PASSED（見
+`08-validation.md` VAL-225..229，state.yaml `gates.validation`）。兩組架構專家已先跑完，本輪只
+consolidate，不重跑（`.panel/review/adversarial.md`、`.panel/review/quality-dimensions.md`）。
+
+### 1. Traceability / dashboard 一致性
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` → **1826 items / 77 gaps**（15 high 斷鏈
+/ 36 mid（17 未驗證 + 19 TDD）/ 26 low（2 未實作 + 24 漂移）——逐條比對 v33 §6 記錄的既有債基線
+（77 條、同分佈），**gap 集合與上一輪 byte-identical，v34 本身 0 新增缺口**。15 條 high 斷鏈全部
+是 IMPL-303..311/323、UT-264/265 指向解析不到標題的 REQ-144..152/186（業主已於 v33 裁示 PASSED，
+清理排到 v34 之後獨立迭代）——不是 v34 引入的。Doc↔code drift：24 條既有 `漂移(low)`，同上，無新增。
+
+### 1b. Dashboard QA
+`python3 <plugin>/scripts/dashboard_check.py`（本 repo 的 `.sdlc/trace.py` 未跟上 2.4.3 的 `--tool`
+分派語法，直接呼叫底層腳本）→ **0 high / 7 mid / 1 low**：7 條 mermaid 括號不平衡誤報
+（02-architecture.md v21–v27 既有 `erDiagram`/`stateDiagram` 假陽性，本 ledger 已重複診斷過六次）
++ 1 條「無 mermaid 離線 fallback」，與 v33 §6 記錄的基線逐字相同，v34 未新增。SoT file:line 連結
+全部有效（無此類 finding）。Playwright 工具本次 session 不可用，未做像素級開瀏覽器驗證，僅靜態
+QA——記為 degraded，非 blocking（歷次 iteration 皆同）。
+
+### 1c. Module-boundary（SOLID）
+`solid_check.py` → **0 mid / 10 low**（10 個未認領檔案：`harness-defaults.ts`、`self-update.ts`、
+`agent-semaphore.ts`、`mcp-probe.ts`、`scan-agent-calls.ts`、`net-guard.ts`、
+`workspace-artifacts.ts`、`clock.ts`、`owner-lookup.ts`、`workroot-guard.ts`），與基線逐字相同，
+0 新增。`module_check.py` 休眠（沒有 ARCH-* 宣告 `build:`），符合預期，非 finding。
+
+### 2. 架構一致性（consolidate 自兩份專家報告）
+
+**結論：NOT fully consistent — 2 個 MED 待修（送回），4 個 LOW 已記為債。**
+
+兩組專家（adversarial：security/scalability/testability；quality-dimensions：observability/
+replaceability/consumability/self-sustainability）都只讀 IMPL-338..341 的 `files:` 清單 + 直接
+引用的模組邊界，範圍正確。
+
+**送回（blocking）：**
+- **AC-1（adversarial，MED，security+simplicity）**：`src/authoring-guide.ts:534-537` 與
+  `docs/AUTHORING.md` 宣稱工具面剩「兩層」，但完全沒提第三層——兩者都省略時套用的
+  `BUILT_IN_CORE_TOOLS`（`src/gateway/claude-agent-sdk-client.ts:190`，含 `Bash`）。**Reviewer 已獨
+  立覆核**：`authoring-guide.ts:534` 原文逐字確認「the first one present wins」，確實沒有第三句
+  講「兩者皆無時」的內容；DEPLOY.md `defaultAllowedTools` 設定總表列雖然把預設值標成
+  `["Read","Write","Edit","Glob","Grep","Bash"]`（`iter: v34`），但那是**營運者**看的部署文件，不
+  是**遠端腳本作者**會讀的介面（guide/`tools/list`/`workflow_describe`）——兩個 finding 不互相抵
+  銷，DEPLOY.md 那行反而佐證預設清單本來就該被講清楚。
+- **AC-2（adversarial，MED，security）**：`02-architecture.md` INV-V34-1（4190 行）與 ARCH-137 note
+  （4079 行）把 `defaultAllowedTools` 同一句話裡先叫「operator-owned restriction layer / tool
+  floor」又叫「additive」——**Reviewer 逐字核對兩處原文，確認矛盾成立**：
+  `src/gateway/claude-agent-sdk-client.ts:544-547` 用 `??`（覆蓋，不是交集），per-call
+  `allowedTools` 出現時完全取代 operator 設定，從未與之相交，所以它只可能是「預設值」，不可能是
+  「地板」。INV-V34-1 該殘留項的正當性論述目前建立在一個程式碼沒有的性質上。
+- **quality-dimensions #1（MEDIUM，consumability，undisclosed）**：ADR-064 與 Gate-5 constraint 9
+  都要求兩顆測試——`tests/integration/resume-legacy-params.test.ts`（IT-177，已落地，只證 resume
+  時拒絕遺留 `tools` 鍵）**加上**一顆從 `workflow_describe`/`projectWorkflowDescribe` 讀某個遺留
+  形狀的已註冊 row，斷言解出來的層數真的是二層——第二顆從未寫,`05-tests.md`/`06-impl-log.md`/
+  `journal.md` 全部 grep 不到 "describe-side"/"constraint 9" 的處置紀錄,不是被記成債,是單純漏掉
+  且沒人發現。
+
+**記為既有債，非本輪擋門（disclosed / 已有去處）：**
+- AC-3（LOW/MED）：`src/harness-defaults.ts` 的 reader 半邊（`RunParams.tools/.prompt`）已隨 ADR-064
+  退乾淨，但 writer 半邊（`tools?:`/`prompt?:` 型別、`KNOWN_KEYS`、`validateHarnessDefaults`——
+  `grep -rn validateHarnessDefaults src/` 零呼叫點）沒有編譯器釘住，是活的死碼。ADR-064 owner
+  ruling 原文是「一併退休、退乾淨」，這個檔案技術上不在本次 IMPL 的 `files:` 清單裡所以逃過
+  `/simplify`。排到 v35 `/simplify` 處理，本輪只記錄。
+- AC-4（LOW）：`src/agent-executor.ts:637-640` 這輪新寫的註解講錯 `descriptor.prompt` 的語意（講成
+  engine-says-it-sent，DES-225 裁定的其實是 gateway-echo）且引錯 ADR（寫 ADR-063，應為 ADR-061）。
+  兩行註解修正，無行為改變，記債待下次觸碰該檔時一併修。
+- AC-5（LOW）：`workflow-meta.ts` 的 near-miss 建議字串把整句話塞進「你是不是想打某鍵」的位置——
+  DES-224 明確指定這個字串，屬設計層已出貨的缺陷,非本輪引入,adversarial 鏡頭主動提出因為defect
+  class 相同(教一個不存在的鍵),記債。
+- AC-6（LOW）：`src/main.ts:160/163` 用 `key in obj` 而非 `Object.hasOwn`（同一 commit 的
+  `workflow-meta.ts:503/507-509` 用對了）——`constructor`/`toString` 等原型鍵會被誤判成「已知」而
+  不警告。無人會把設定鍵取名 `constructor`，risk 低，記債，順手可修（一字之差）。
+- quality-dimensions #2（LOW，observability）：`run-manager.ts` 的 `toErr()` 丟掉 `.detail`，
+  `AGENT_OPT_RETIRED` 只在字串裡看得到——**已經**記在 `06-impl-log.md`（IMPL-340）與 TASK-229 DoD
+  item (4)，明確 routed to v35，不是本輪未揭露項，不再重複計入。
+
+**INV-V34-1..4 現況（adversarial panel 附表，reviewer 認可）：** INV-V34-2/3/4 held；INV-V34-1
+在「已刪除的機制」半邊 held，在「存活的殘留項」半邊因 AC-1/AC-2 未 held。
+
+### 3. Validation / handover
+- Gate 7.5：`08-validation.md` VAL-225..229 皆 `real:true` + `result:pass`，三個原本的
+  `未真實驗證` 缺口（REQ-202/203/204）全部關閉；`trace --check` 掃描結果裡沒有任何 `未真實驗證`
+  類型的 gap（本輪掃到的 77 條缺口類型只有 斷鏈/未驗證/TDD/未實作/漂移，`未驗證` 那 17 條是舊迭代
+  遺留、從未帶真跑證據宣稱過，不是 mock-only 降級）。REQ-153..169 這 17 條「未驗證」是 v29–v32 的
+  既有債，業主已裁示 PASSED、排到 v34 之後清理,本輪未新增亦未觸碰。
+- `README.md`（511 行）/`DEPLOY.md`（1165 行）都在（`state.yaml` layout.readme/deploy）。DEPLOY.md
+  §0 開頭就是一鍵部署指令加上這輪 Gate 7.5 真的跑出來的輸出貼在文件裡（"實際跑過的輸出" 區塊）。
+  設定總表（§1b 單一表格）含這輪新增的 `defaultAllowedTools` 行,標 `iter: v34`,無重複表。逐項掃
+  `舊版|以前|曾經|deprecated|changelog` 找到：(a) `LEGACY_NO_DIAGRAM`/`LEGACY_REREGISTER` 這類
+  **現在系統怎麼處理舊資料**的即時事實（合法,不是變更歷程）,(b) `auth.googleBase` 標 deprecated
+  並指向替代鍵（合法,是現在的欄位狀態,不是刪掉的歷史）——**但 (c) `情境配方` 段落（DEPLOY.md
+  165-250 行）不合格,是本輪真正的 blocking finding，不是可接受的邊界情形**：165/169/173/182-190/
+  233/236 行反覆出現版本差異敘述——「步驟 3/4 是 v34 拿掉 agentType 後的新寫法」「v34 之後這條路
+  的機制變了,能力沒有少」「以前 agentType 那段系統提示詞…會被 stripFirstSegment 剝掉,不會回顯；
+  v34 把這個機制整個拿掉了,現在…」,標題本身還寫「（v34 機制）」。這正是 Gate 7.5 契約明文禁止
+  的「no changelog/version-diff content at all」,不因為主題是「幫外部 iso-agile-sdlc plugin 舊慣
+  例遷移」而豁免——手冊本身要求的是現況文件，不是遷移敘事。真正需要的現況事實只有一句：「角色提
+  示詞會原樣出現在 `run_agent_log` 的 `harness.prompt` 裡,不要放不想曝光的內容」,不需要任何
+  「v34/以前/現在」的對比框架。
+- 一鍵部署：`./deploy.sh --background`，Gate 7.5 這輪确实跑過（VAL-225..229 的第二顆 scratch 實
+  例,§0 的「第二實例」表單）。
+
+### 3b. Special-file review
+本輪 IMPL-339..341 的 `files:` 未觸及任何 `CLAUDE.md`/`AGENTS.md`/`SKILL.md`——不適用，跳過。
+
+### 3c. Owner-deferral ledger sweep（issue #15）
+`grep -rn "owner_decision"` 對整個 ledger 掃出 223 處字面命中，**逐一用 metadata key
+`^\s*-\s*\*\*owner_decision:\*\*` 這個固定格式重新篩選**（不用散文比對，因為散文裡到處引用歷史
+狀態的字面「pending」，多半是舊句子沒跟著後面才補上的裁決同步更新）：篩出的每一顆欄位值都是
+`answered(...)`/`DECIDED ...`/或模板預設的 `—`（不適用），**目前 0 個真正的 pending 欄位**——
+包含本輪自己的 ADR-064（`02-architecture.md:4130`，answered 2026-09-20）與 IMPL-340 的
+DEPLOY.md 配方裁決（`06-impl-log.md:8711`，answered 2026-09-20，orchestrator 裁決「改寫,不退役」）
+都已落地。與 `state.yaml` `pending:` 清單頂端「0 pending markers remain」的自述一致。
+**owner_decisions（本欄）：[]。**
+
+散文層面確實有幾處「字面寫著 pending」但欄位本身已 answered 的**陳舊敘述**（`04-design.md:6822`
+的 DES-196 段落引用 ADR-051、`05-tests.md:11693` 同樣引用 ADR-051、`08-validation.md` round
+6/7 段落引用 VAL-186/187）——ADR-051 已於 `02-architecture.md:3474` answered(2026-09-11)、
+VAL-186/187 已於各自欄位 DECIDED(2026-09-10)，這些散文只是寫作當下的時序快照沒有回頭補淨。記為
+低度文件衛生債，非 blocking，不影響 4c 的機械判定。
+
+ADR 語氣掃描（未加 marker 卻讀起來像業主裁決的 hedging）：本輪新增/修改的 ADR-061..064 段落都有
+正確的 `owner_decision:` 欄位（含空的 `—`），沒有發現未加 marker 的裁決型 hedging。
+
+### 4. 已知未解 / 帳本衛生
+- `git status`：`agents/researcher.md`、`agents/writer.md` 已刪除但**未 commit**，不在任何 IMPL 的
+  `files:` 行上（adversarial panel 附帶發現）。這是 `src/agent-definitions.ts` 退場後失去讀者的樣
+  板 frontmatter 檔，刪除方向正確，只是缺一行 ledger 記錄。建議收尾 commit 時把這兩個刪除跟一個
+  IMPL 註記綁在一起，而不是留一筆遊離在工作樹裡的刪除。
+
+### Retro（簡）
+做得好：Gate 7.5 這輪把三個 `未真實驗證` 缺口用真跑證據（第二 scratch 實例、真 MCP HTTP、真
+Ollama 派工、對正式 catalog.db 的唯讀文字掃描）關乾淨，而不是宣稱；ADR-064 的業主裁決當天就落地
+到兩個文件的欄位。要改：兩個 MED 級架構專家 finding（AC-1/AC-2）加上 DEPLOY.md §情境配方的
+history-carrying 問題，點出的正是這一輪自己的論文母題——「不要出貨一句程式碼不支持的話 / 手冊只
+講現況」——在同一輪內又發生了兩次，且四項送回都是很小的修法（一句話/一個 `??`→交集/一顆測試/一段
+改寫），下一輪 Gate 6.5 收尾前，architecture 專家報告應該在 impl 落地**之前**先過一輪（本輪的
+order 是 impl→verify→validate→panel 事後才跑，panel 的 finding 因而只能送回而不能在原地免費修
+掉）；DEPLOY.md 的 history-carrying 問題則是 Gate 7.5 自己這輪新寫的段落沒有回頭核對「不是變更歷
+程」這條自己文件開頭就寫的規則，值得在 validator 的自我檢查清單加一條。
+
+```
+Gaps: high=15 mid=36 low=26（全部與 v33 §6 基線逐字相同，v34 淨新增 0；15 high 斷鏈/17 未驗證/
+      19 TDD 均為 v29-v32 既有債，業主已裁示 PASSED 排入未來清理迭代）
+Drift: 既有 24 條 low 漂移，同基線，無新增
+Architecture consistent: no — AC-1 (authoring-guide.ts/docs/AUTHORING.md 未揭露 BUILT_IN_CORE_TOOLS
+      第三層)、AC-2 (INV-V34-1/ARCH-137 對 defaultAllowedTools 的「floor」敘述與 `??` 覆蓋語意矛盾)
+Validation: real-tier all-green? yes（VAL-225..229 皆 real:true+result:pass，0 個 未真實驗證 缺口）
+      · README+DEPLOY present? yes，但 DEPLOY.md §情境配方 帶版本差異敘述（history-carrying），
+      違反手冊「無變更歷程」的要求 → 送回 Gate 7.5 改寫
+Conclusion: send back — architecture（AC-2 文字修正）+ impl（AC-1 文字/預設值修正）+
+      tests（quality-dimensions #1 補 workflow_describe-side 測試）+ validation（DEPLOY.md §情境配方
+      改寫成純現況文字）；四項修法都是量測過的最小改動（一句話/一個 `??`→交集/一顆測試/一段改寫），
+      無需重開設計辯論
+```
+
+send_back: ["architecture", "impl", "tests", "validation"]
+blocking_findings:
+  - "AC-1 (src/authoring-guide.ts:534-537, docs/AUTHORING.md:60): 廣告文字宣稱工具面只有兩層（per-call allowedTools → defaultAllowedTools），但兩者皆缺時實際套用的 BUILT_IN_CORE_TOOLS（含 Bash，claude-agent-sdk-client.ts:190）完全沒被提到 → 修好的樣子：在 authoring-guide.ts（docs/AUTHORING.md 是其 byte-lock 產出，同步重跑）補一句點名這個內建後援清單及其內容（純文件修正），或讓 composeConfig 在組態時把 defaultAllowedTools 預設成 BUILT_IN_CORE_TOOLS，使『只有兩層』對程式碼也成立；順手把 git status 顯示已刪除但未 commit 的 agents/researcher.md、agents/writer.md 補進這次 IMPL 的 files: 行一併 commit,不要留一筆遊離在工作樹裡的刪除"
+  - "AC-2 (02-architecture.md INV-V34-1 第4190行 / ARCH-137 note 第4079行): 同一句話裡把 defaultAllowedTools 叫『operator-owned restriction layer / tool floor』又叫『additive』，兩者矛盾；claude-agent-sdk-client.ts:544-547 用 `??`（覆蓋而非交集），per-call allowedTools 出現時直接取代 operator 設定，從未與之相交，因此它只是預設值，不是地板 → 修好的樣子：修正 INV-V34-1 與 ARCH-137 note 的文字，改為陳述真實性質（一個可被腳本向上覆蓋的預設值；其 post-hoc 稽核靠 HarnessDescriptor.tools 滿足，不是靠 pre-hoc 限制），不需要改程式碼"
+  - "quality-dimensions finding #1 (ADR-064 / 02-architecture.md 第4220行「ADR-064's test is legacy-row-shaped」): 要求的兩顆測試只落地一顆——tests/integration/resume-legacy-params.test.ts（IT-177,只證 resume 時拒絕遺留 tools 鍵）；另一顆『從 workflow_describe/projectWorkflowDescribe 讀一個遺留形狀的已註冊 row,斷言解出來的工具層數確實是二層』從未寫,且 05-tests.md/06-impl-log.md/journal.md 都沒有把它記成已知的 descope → 修好的樣子：補寫這顆 UT/IT,登記進 05-tests.md 對應 DES-228,跑綠後由 verify 重新確認回歸"
+  - "DEPLOY.md §情境配方 (165-250行，尤其165/169/173/182-190/233/236行，含小標題「(v34 機制)」): 段落反覆用『v34 之後…』『以前 agentType…會被 stripFirstSegment 剝掉,不會回顯；v34 把這個機制整個拿掉了,現在…』這類版本差異敘述,牴觸 DEPLOY.md 自己開頭聲明的『不是變更歷程』與 Gate 7.5 手冊必須 history-free 的要求 → 修好的樣子：整段改寫成純現況——刪掉所有『v34/以前/現在』的對比框架與機制沿革,只保留操作上必要的現況事實一句：角色提示詞會原樣出現在 run_agent_log 的 harness.prompt 裡,不要放不想曝光的內容;配方步驟本身（0/1/2/5 已測、3/4 的新寫法）照留,只是敘述方式改成直接講現在怎麼做,不講以前怎麼做"
+owner_decisions: []
+```

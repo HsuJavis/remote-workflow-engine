@@ -1,310 +1,236 @@
-# Quality-dimensions expert — Architecture round 2
+# Quality-dimensions expert — Architecture round 2 (post send-back)
 
-Round 1 (mine) covered the four dimensions independently. I have now read
-`adversarial.r1.md` in full. It is materially stronger on two fronts I under-specified: a named,
-testable invariant for what v34 is actually retiring (INV-NOADD), and one concrete inter-REQ gap
-(`defaults.tools`) that makes REQ-203's own advertised claim false for legacy rows. I integrate
-both. In exchange I bring one thing neither round-1 doc caught: a **dispatch-time silent-degradation
-path for old pinned catalog versions**, verified against the same scan code adversarial cited, which
-belongs under Self-sustainability and Observability together.
+**This file supersedes the pre-send-back round 2** written at 16:12 on 2026-09-20; that version is
+still recoverable with `git show 21ad773:.sdlc/features/001-remote-workflow-engine/.panel/architecture/quality-dimensions.r2.md`
+(committed; the only dirty state on this path before this write was this write itself, verified
+with `git status --porcelain -- <path>`).
 
----
+**Context this round inherits, stated once so the four sections below don't repeat it.** This is
+not a continuation of the original v34 round 2 debate (my prior `quality-dimensions.r2.md`, written
+16:12 today, and `adversarial.r2.md`, 16:11 — both from the pass Gate 8 already reviewed and
+accepted, per `07-review.md`'s INV-V34-2/3/4 + ADR-061..064 acceptance). Gate 8 sent architecture
+back for exactly two MED findings — `AC-1` and `AC-2` — and `adversarial.r1.md` was rewritten at
+23:33 to scope to them alone, superseding its pre-send-back text. I adopt the same scope
+discipline: I do not re-argue INV-V34-2/3/4, the deletion set, or the fail-closed refusal sites.
+I also do not re-count `AC-3` (`harness-defaults.ts` writer half) or the `toErr()`/`.detail` gap
+(quality-dimensions finding #2 from the separate Gate-8 review-lens report,
+`.panel/review/quality-dimensions.md`) — both are already disclosed and routed to v35
+(`06-impl-log.md` IMPL-340, TASK-229 DoD item 4). Re-opening either here to inflate this round's
+finding count would be the exact double-counting `adversarial.r1.md` §D4 correctly refuses.
 
-## Responses to `adversarial.r1.md`
+One more scope note, because it's easy to conflate: the *other* quality-dimensions MEDIUM from Gate
+8 (`.panel/review/quality-dimensions.md` finding #1 — ADR-064's missing `workflow_describe`-side
+legacy-row test) is real and is mine, but `07-review.md`'s `send_back` routes it to **tests**, not
+architecture. Nothing in `02-architecture.md`/ARCH-137/ARCH-140 needs to change to fix it — the gap
+is a missing test file, not a wrong architecture sentence. I flag it here only so a reader of this
+round doesn't wonder why I dropped it; it is carried, just not by this document.
 
-### 1. INV-NOADD ("no invisible determinants") — **concede, and adopt across my own dimensions**
-
-Adversarial's §2 names the real invariant better than either of us had it: a deployment-side
-determinant survives iff it is *restrictive* (narrows, never adds/redirects) **or** *readable* by
-the calling principal. I was circling this in r1 (Consumability: "an author's `agent()` call plus
-the registered param contract is now the complete, portable description of what runs") but never
-made it a named, two-pronged test. I adopt INV-NOADD as the frame for round 2 and map it onto my
-own four dimensions rather than treating it as a security-only artifact:
-
-- **Observability** owns the *readable* prong — a determinant that isn't restrictive must be
-  disclosed somewhere a principal can read it (`workflow_describe`, the guide, or — my addition
-  below — the run's own harness record).
-- **Replaceability** owns the *restrictive* prong — a determinant that can only narrow a ceiling or
-  tool set is exactly the "swap without rewrite" property this dimension names one layer down from
-  provider swapping: an author's script is portable across any deployment that shares the same
-  advertised ceilings, because the deployment cannot silently redirect or expand what the author
-  wrote.
-
-This is a genuine strengthening of my r1 position, not a restatement — r1 asserted the two-layer
-tool resolution is "more replaceable" without a test for *why*; INV-NOADD gives the test.
-
-### 2. `defaultAllowedTools` as the last INV-NOADD violator (§2, R5) — **concede fully (self-correction below)**
-
-I initially drafted a proposal here arguing the executed tool set is never recorded post-hoc,
-symmetric to how `systemPrompt:{agentType,bytes}` used to record the prompt case, and asked for a
-new `allowedTools` field on `HarnessDescriptor`. **That claim was wrong and I am retracting it
-before it goes to round 3**, not softening it: I first searched with
-`grep -n "tools" src/types.ts | grep -i harness`, which only matches lines containing *both*
-substrings — an interface field like `tools: string[]` has no line containing "harness," so the
-grep returning nothing proved nothing. Reading the actual interface:
-
-```
-src/types.ts:488  export interface HarnessDescriptor {
-src/types.ts:506    tools: string[];
-```
-
-— non-optional, always present — and tracing where it's populated,
-`src/gateway/claude-agent-sdk-client.ts` builds the descriptor literal at the session-build-time
-`onHarness` call with `curatedTools` (the resolved `req.opts.allowedTools ?? this._config.
-defaultAllowedTools ?? …` result) assigned directly onto it. **The post-hoc, this-run half of
-Observability I was asking for already exists and already covers `defaultAllowedTools`**: whichever
-value won at dispatch — per-call, the (pre-v34) `agentType.tools` rung, or the deployment default —
-lands in `descriptor.tools`, persisted the same way `systemPrompt` was, reachable through the same
-`workflow_agent_log` / harness-detail panel REQ-073 already built. There is no gap here, before or
-after v34.
-
-This sharpens rather than weakens adversarial's R5: the *readable* prong of INV-NOADD for
-`defaultAllowedTools` is fully satisfied **post-hoc**, for the run's own owner, today. What remains
-genuinely absent — and what R5 correctly declines to fix in v34 — is only the **pre-hoc** half:
-`workflow_describe` doesn't let a cold caller learn the deployment's tool floor *before* their first
-call the way REQ-202 makes it learn the `appendPrompt` ceiling before its first call. I agree with
-adversarial's Karpathy tie-break that closing that pre-hoc gap is out of scope for v34 (no incident,
-and it would hand every caller the exact floor value, which is a bigger disclosure than anyone has
-asked for) — so on the substance, R5's "named, bounded residual, not a miss" stands as written, and
-I no longer have anything to add to it. I'm leaving the retraction visible rather than quietly
-deleting the wrong draft, since catching my own unverified claim before it entered the debate is
-exactly the discipline this ledger's CLAUDE.md exists to enforce elsewhere (verify against the
-working tree, not against a search that only looks like it checked).
-
-### 3. D2 — `defaults.tools` survives and contradicts REQ-203's "只剩兩層" (HIGH) — **concede fully**
-
-Verified independently:
-
-```
-agent-executor.ts:578-579   // per-call allowedTools > agentType tools > defaults.tools.
-                             effectiveOpts = { ...effectiveOpts, allowedTools: eff.tools };
-```
-
-and the requirements text itself, `01-requirements.md:2705-2707`:
-
-> **Given** 工具解析 **Then** 只剩兩層:per-call `allowedTools` → 部署 `defaultAllowedTools`
-
-with REQ-204 (`:2720-2730`) naming only `runParams.prompt`/`authorPrompt` for removal, silent on
-`defaults.tools`. Adversarial is right that this is not a hypothetical: `HarnessDefaults` declares
-`prompt` and `tools` side by side (`harness-defaults.ts:17,20`, same `KNOWN_KEYS` set at `:39`), so
-retiring one and not the other splits one retired object down the middle. Under my own charter this
-is a **Consumability defect of the worst kind for this dimension**: it is exactly the "docs/schema
-drift nobody notices until a cold client hits it" risk I flagged generically in r1 about the
-`UT-160` AUTHORING.md lock, except adversarial found a *specific, load-bearing instance of it* —
-the guide's own new "only two layers" sentence would be false for any run whose params snapshot
-still carries a legacy `HarnessDefaults.tools`. I add one requirement to adversarial's two options
-(retire `RunParams.tools` with `.prompt` in the same commit, or amend REQ-203's text to say three
-layers for legacy rows): **whichever is chosen, `workflow_describe`'s advertised claim and the
-guide's prose must be the single source and must be tested for the legacy-row case specifically**,
-not just the new-registration case — `tests/integration/resume-legacy-params.test.ts` (already cited
-by adversarial) is the right anchor; I'd add a `workflow_describe`-side assertion alongside it so
-the *advertised* text is checked against a legacy row's actual resolved layer count, not only the
-dispatch behavior.
-
-### 4. B4 — legacy-row read path must stay TOTAL — **concede the "must not crash" half; the "must still render the old field" half is my own amendment proposal, not agreement, and it conflicts with REQ-203's own text**
-
-Agree without qualification on the narrower claim: the record-rebuild + dashboard must not crash on
-a pre-v34 row carrying `systemPrompt` or `provenance:'agentType'`. That part is uncontested.
-
-I then want more — "renders something a human can place in time," specifically that a legacy row
-with a non-empty stored `systemPrompt` keep showing its byte count/agentType label — and I need to
-be honest that this is **not** just a bar-raise on B4, it is in direct tension with REQ-203's own
-acceptance text (`01-requirements.md:2710`): "harness descriptor 不再有 `systemPrompt` 欄位,
-**dashboard 不再有對應的揭露面**" — no legacy exception stated. Adversarial's own deletion list
-(`agent.js:76-81,139` / `agent-panel.js:200`, the `systemPromptNote()` viewer) removes exactly the
-rendering code my ask would need to keep, *because the requirement says to*. If I ask for the
-viewer to survive for legacy rows, I am proposing an amendment to REQ-203's dashboard clause, not
-interpreting it — and I say so explicitly rather than let it read as a quiet agreement with B4 while
-actually disputing the requirement text underneath it. My reasoning for wanting the amendment: a
-bare disappearance of the line on old rows reads as "this old run apparently had no system prompt,"
-a **false** historical statement, versus a neutral absence — and REQ-203 itself asks the *ledger* to
-preserve exactly this distinction ("隨機制消失" vs. "回歸", §4.3/C1); I want the **dashboard**, not
-only the ledger, to preserve it for a human looking at one old run. But this is a requirements-level
-disagreement I'm surfacing for the design stage / requirements owner to adjudicate, not something an
-architecture round gets to overrule by fiat — see "Remaining disagreements" item 1 below for the two
-concrete options.
-
-### 5. B2/B3 — retirement messaging via `RETIRED_AGENT_OPT_KEYS` / `RETIRED_CONFIG_KEYS` maps — **concede the mechanism, synthesize on the code question**
-
-Config-side (`agentDefinitionsDir` warn-and-boot via a `RETIRED_CONFIG_KEYS` map replacing the
-`graphAnalyzer` ad-hoc `if`): this fully satisfies my r1 ask ("the log line must name the key and
-say retired in v34, see guide") — no remaining disagreement, and it's a strict improvement (deletes
-a special case instead of adding one).
-
-Script-side (`agentType` refused via the existing `SCAN_VIOLATION: PARAM_UNKNOWN` code plus a
-near-miss hint, verified at `workflow-meta.ts:489-501` and `authoring-guide.ts:512` — the whole
-`tools`/`system`/`systemPrompt`/`timeout` family already rides this one code): my r1 asked for a
-*distinct typed code* (`AGENTTYPE_RETIRED`) so a cold client could distinguish "removed feature"
-from "malformed script" **programmatically**, not by parsing a hint string. Adversarial's proposal
-is more consistent with the codebase's existing convention — every other rename/retirement in
-`AGENT_OPT_NEAR_MISSES` already shares one code, and minting a new code for exactly one entry breaks
-that symmetry for no structural reason. I don't think either position should simply win: **the
-consumability requirement I actually care about is "machine-parseable," not "a distinct top-level
-code."** Synthesis: keep `SCAN_VIOLATION: PARAM_UNKNOWN` (adversarial's consistency point stands),
-but the refusal's `detail` object should carry a structured marker for the retired case specifically
-— e.g. `detail: { param: 'agentType', reason, retired: true }` — so a cold client can branch on
-`detail.retired` without string-matching the hint. This costs nothing extra over B2/B3's map lookup
-(the map already knows which keys are retired vs. merely renamed) and gives me the machine-actionable
-signal without adding a code to the closed `AUTHZ_ERROR_CODES`-style set. I consider this converged,
-not a live dispute — flagging the exact shape for the design stage to pick up.
-
-### 6. C1 — enumerate retiring ids and predict `sh .sdlc/trace` deltas before Gate 8 — **concede fully, this operationalizes my own Risk item**
-
-My r1 Risks section named the same failure mode in the abstract ("docs/schema drift risk," citing
-the F6-1 iter-bump precedent) without a mechanism. C1's proposal — state the expected item/gap
-delta for ARCH-004/DES-007/DES-102/REQ-094/ARCH-129/DES-195/REQ-136 *before* running Gate 8, using
-a `git archive HEAD | tar -x` baseline per CLAUDE.md (never `git checkout`/`restore`/`stash` on the
-ledger, which is the exact incident CLAUDE.md documents) — is the concrete version of what I was
-gesturing at. No disagreement; I'd only add that the predicted-delta note should live next to the
-architecture doc's retirement list itself (not only in a Gate-8 runbook comment), since that's what
-a reviewer six months from now will actually open.
-
-### 7. D1 (keep `composePrompt` as a named seam) / D3 (golden-string byte-identity test) — **hold, no objection, outside my lens's center of mass**
-
-Both are testability/simplicity calls I have no dimension-specific stake in disputing. D1's
-reasoning (the seam is where `FRAME_CLOSE_FORGERY`'s constants live and is unit-testable without a
-gateway) is sound and I'd only note it also serves Observability indirectly: a named seam is what
-makes the *composition* step traceable in a stack trace / test failure, versus an inlined three-liner
-that fails only inside a full gateway invocation.
-
-### 8. §6.1 tombstone strawman — **clarify, not actually a disagreement**
-
-Adversarial pre-rebuts "keep `systemPrompt: null` on every future row for audit continuity." That
-was never my r1 position — I asked for the two **surviving** segments (`harness.prompt`,
-`harness.appendPrompt`) to stay visible going forward, not for a permanently-null ghost field marking
-the deleted one. On the actual overlap (legacy rows must render truthfully, not crash or lie), we
-already agree per §4 above. No open disagreement here; I'm noting it so round 3 doesn't spend time
-on a fight neither side is having.
+**What is actually open here, restated from my own read of `07-review.md:11200-11205`:**
+`AC-2` (`02-architecture.md` `INV-V34-1`/`ARCH-137` note — architecture's own file, mine to fix in
+substance even though `adversarial.r1.md` drafted the wording) and `AC-1`
+(`src/authoring-guide.ts`/`docs/AUTHORING.md` — an impl-owned file, but the *choice* between the
+review's two offered remedies is an architecture call adversarial already made and I now review).
 
 ---
 
-## New contribution: dispatch-time silent degradation for old pinned catalog versions
+## Responses to `adversarial.r1.md` (rebut / concede / hold)
 
-Neither r1 document fully closes this, and it's a genuine gap under **Self-sustainability +
-Observability together**, not just the abstract "0/22 is a one-time hand-check" concern I raised in
-r1. I traced where `AGENT_OPT_KEYS` is actually consulted:
+### AC-2's corrected wording (§2.2) — **concede in full, one integration note**
+
+The contradiction is real and I verified it independently before reading their fix: `INV-V34-1`
+(`02-architecture.md:4190`) says `defaultAllowedTools` "survives v34... because removing an
+operator's tool floor would be a security regression," and `ARCH-137`'s note (`:4079`) calls it
+"the surviving operator-owned restriction layer" — both read `??` as an operator-side floor, and
+`claude-agent-sdk-client.ts:544-547` is unambiguous that it is not one:
 
 ```
-grep -n "AGENT_OPT_KEYS\b" src/*.ts
-  workflow-meta.ts:205   (definition)
-  workflow-meta.ts:489   if (!Object.hasOwn(AGENT_OPT_KEYS, key)) { … }   ← the ONLY call site
+const baseTools = req.opts.allowedTools ?? this._config.defaultAllowedTools ?? BUILT_IN_CORE_TOOLS;
 ```
 
-That call site is inside the **static script scan** run at `workflow_register` time
-(`workflow-meta.ts`'s scan function, the same one producing `SCAN_VIOLATION`). It is **not**
-consulted at dispatch. That means: a workflow version registered *before* v34, whose stored script
-text calls `agent(label, prompt, { agentType: 'reviewer', ... })`, was accepted once, at
-registration, under the pre-v34 `AGENT_OPT_KEYS` that included `agentType`. After v34 ships, if that
-exact pinned version is later `run_start`'ed by version or channel (REQ-096 keeps version history;
-this is a supported, expected path, not an edge case someone invented), the sandbox executes the
-*stored* script text verbatim. It calls `agent()` with an options object that — at runtime, in
-plain JS — still has an `agentType` property. Nothing re-validates that object against the (now
-`agentType`-less) `AGENT_OPT_KEYS` at dispatch time; TypeScript's compile-time narrowing of
-`AgentOpts` protects only newly-authored/newly-registered code, not a previously-accepted stored
-script executing against the new binary. I checked both crossings this property passes through
-rather than assume: the sandbox boundary types the whole parameter opaquely
-(`src/sandbox/guards.ts:71`, `agent(prompt: string, opts?: unknown)` — no field-level allowlist), and
-the far side of the IPC hop only casts it (`run-manager.ts:1330`,
-`(opts ?? {}) as AgentOpts & { prompt?: unknown }` — a type assertion, not a runtime filter). Neither
-crossing strips unknown keys. With `agentTypes`/`AgentTypeDef` resolution deleted (adversarial's own
-deletion list, `agent-executor.ts:464-465,496,507,543-552`), the `agentType` property survives both
-crossings and is simply an inert extra field on the options object by the time it would have been
-read — **no error, no warning, just a different result**: the run silently gets plain per-call
-params instead of whatever `systemPrompt`/`model`/`tools` override the operator's `agents/*.md`
-frontmatter used to apply.
+A per-call array replaces the operator's value wholesale; there is no intersection anywhere in the
+resolution chain and (confirmed by adversarial's `grep -rn disallowedTools src/` → zero hits, which
+I re-ran and got the same empty result) no clamp exists at any other point either. §2.2's
+replacement text is correct and I have nothing to add to its substance.
 
-This is precisely the silent-degradation shape both experts' dimensions independently warn against
-— my Observability ("a silent/opaque failure is a design defect") and adversarial's own INV-NOADD
-("must be readable," restated for *change over time* rather than a single point in time). It is
-evidence-bounded today (0/22 current catalog versions use `agentType`, per the iteration's own
-audit), which is exactly why r1 called it "an assertion, not a monitored invariant" — this trace
-confirms there is no code path that would catch a stale pinned version reintroducing the pattern,
-now or after future re-registrations under a different key name.
+**Integration note, offered, not insisted on — I talked myself out of half of it while checking it.**
+`INV-V34-1` is my own dimension's invariant as much as security's — it is the joint one we named
+`INV-NOADD` in the pre-send-back round and the owner promoted into `02-architecture.md` as
+`INV-V34-1`'s own parenthetical. My first instinct was to add a clause naming which prong
+(*restrictive* / *readable*) `defaultAllowedTools` satisfies, on the theory that a "residual" needs
+to say why it's exempt from the rule everything else in the paragraph follows. Checking that against
+`INV-V34-1`'s own text before proposing it: the alias table, two sentences earlier in the same
+invariant, "passes on the readable prong... because the redirect's outcome is persisted as
+`descriptor.model`/`provider`" — which is *also* a post-hoc-only readable prong, exactly like
+`HarnessDescriptor.tools` for tools, and it is not called a residual anywhere. So a prong-attribution
+clause on `defaultAllowedTools` alone would invite a question the send-back never asked and
+`INV-V34-1` doesn't currently answer for its own other example: why is post-hoc-readable enough to
+avoid "residual" status for one entry and not the other. I don't have a clean answer, and manufacturing
+one now, under a two-finding send-back, is exactly the scope creep adversarial's §6.1 tie-break
+argues against. So: **optional, not part of what I'm asking Gate 3+ to carry.** If a future round
+wants the general "what counts as readable enough" question answered, that's a `INV-V34-1` design
+question in its own right, not a rider on this fix.
 
-**Decision needed at design stage (I don't resolve it here, per my own r1 caution against
-overreaching from requirements text alone):**
-- (a) dispatch-time fail-closed: if the marshaled call options carry an `agentType` key at all
-  (structural check, not type-level — `Object.hasOwn(opts, 'agentType')`), refuse the call with a
-  typed error rather than silently dropping the field, or
-- (b) a startup/periodic scan of the *stored* catalog (not just new registrations) for scripts whose
-  text still references `agentType`, surfaced the same way the config-key retirement is surfaced.
+### §2.3's revisit trigger ("no operator ceiling exists, today 0 of 27") — **concede "build nothing," add one self-sustainability clause**
 
-(a) is cheaper and catches the failure at the exact moment it would occur; (b) is closer to what
-REQ-203's `agentDefinitionsDir` warn-and-boot path already does for the config case and gives an
-operator advance notice before anyone hits `run_start`. Either is acceptable under INV-NOADD and
-under my own Self-sustainability dimension; **silence is not**, because it ships REQ-203 with an
-implicit claim ("agentType is gone") that is false for exactly the population of rows this
-dimension exists to protect: the ones nobody is looking at because they aren't new.
+Security's real finding, Karpathy's tie-break to record-not-build (§6.1): I agree with the
+conclusion for the reason my own dimension would reach it independently. Self-sustainability's test
+for a *recorded* gap is that the record be honest about what actually re-checks it — and here I have
+to correct myself before this ships, not after: `workflow-meta.ts:481-493` parses every literal
+`allowedTools` array at registration, but that parse never compares the result against
+`defaultAllowedTools` (server-side deployment config, not visible to a pure script-source parse) —
+nothing fires today, and the values it produces just sit there until a human reads them. That is
+*exactly* the defect class my r1 named under Self-sustainability for the other one-time hand-check
+this iteration made ("catalog 目前 22 個版本,0 個使用 agentType" — an assertion, not a monitored
+invariant), and I nearly reintroduced the same defect with different wording by calling this trigger
+"self-checking" when it is not. Corrected ask, one clause, still text-only:
+
+> …trigger = any future workflow registration whose parsed `allowedTools` (already computed at
+> `workflow-meta.ts:481-493`) requests a tool outside the deployment default. The values needed for
+> this comparison already exist at registration time; the comparison itself is not performed today,
+> so until someone adds the one-line check, this remains a periodic hand-check, not an automatic
+> one — recorded as such rather than overstated.
+
+This is honestly weaker than what I first drafted, and I'd rather ship the honest version: it names
+where the future work is cheapest (the inputs already exist) without claiming a mechanism runs that
+doesn't.
+
+### D1 (project the resolved tool list into `workflow_describe`) — **concede their landing zone in full**
+
+This was going to be my ask, and their pre-emptive rebuttal is the correct one, not a compromise I'm
+grudgingly accepting. The decisive point is (i): `allowedTools` is in `LOCKED_KEYS`
+(`params/contract.ts:25`), so a caller reading a resolved value cannot act on it — no branch, no
+retry, no different call shape follows from knowing it. My dimension's actual test for a
+consumability defect is *not* "is a fact hidden," it's "does hiding it cost the caller a decision
+they could otherwise make correctly." A caller here has no decision to make either way; an author
+does, and AC-1 already puts the real list in front of them. Verified independently:
+`mcp-facade.ts:492` states the field's own contract ("Names only — never a resolved list, never
+prompt text") before adversarial's argument even needs it — resolving `'default'` there doesn't just
+add a field, it contradicts a boundary the projection already states about itself. I'll take their
+compromise as stated: define the sentinel in `tool-specs.ts`'s `workflow_describe` description
+(one sentence: `'default'` means this deployment's `defaultAllowedTools`, else `BUILT_IN_CORE_TOOLS`
+— the same fact AC-1's guide clause states for authors). That sentence is genuinely mine to ask for
+under this dimension even though I'm conceding the bigger ask: a served sentinel with no definition
+anywhere on the served surface is a real, small consumability gap on its own, independent of whether
+the resolved value would ever be actionable.
+
+### D2 (delete `defaultAllowedTools` outright) — **not my position; concur it's wrong**
+
+I didn't propose this in r1 and don't now. Adversarial is rebutting a Karpathy-flavored move they
+expect from *someone*, not from me — my r1's Replaceability section argued the opposite direction
+(collapsing three tool-resolution layers to two is a replaceability *gain*, precisely because the
+absent-default case stays real and configurable). No disagreement to resolve here.
+
+### D3 (reopen REQ-203's disclosure-loss register) — **not my position; concur on process grounds**
+
+Same: my r1 asked the *design pass* (pre-Gate-8) to confirm the two-segment `prompt`/`appendPrompt`
+view stays visible after `systemPrompt` is deleted — a request Gate 8 already checked and accepted
+(`INV-V34-3`'s totality property, the retirement register's predicted-diff framing). I'm not asking
+to reopen an accepted row in a send-back round any more than adversarial is; re-litigating it now
+would mint a trace delta for zero code change, the same objection I'd raise against anyone else
+doing it.
+
+### D4 (`toErr()`/`.detail`, AC-3) — **concur, already routed, not re-counted here**
+
+Covered in the scope note above. Same disposition adversarial gives it; no daylight between us.
+
+### D5 (compile-time inventory test: guide layer-count == code rung-count) — **concede, and I want to be on record for why**
+
+I want to concede this cleanly rather than hedge, because the counter-evidence is embarrassing to
+my own dimension's instincts and adversarial names it precisely:
+`tests/unit/authoring-guide.test.ts:357` already *is* that class of test
+(`toMatch(/two layers/i)`) and it is green today while pinning the exact sentence `AC-1` proves
+false. A prose-matching test doesn't catch drift, it certifies whatever prose existed when it was
+written — the false confidence is the defect, not the missing coverage. Self-sustainability's
+proper tool for "does this fact stay true as the system evolves" is a structural guard
+(`INV-V34-4`'s compiler-pinned key sets are the right shape: absence a `tsc` error can't be
+forgotten into) or a behavior test against the actual resolution code
+(§4.1's `it`, which I also don't need to add anything to). A sentence about a sentence is neither.
+Filed as a self-correction, not a hold: if I'd been asked in r1 whether an inventory test belongs
+under Self-sustainability, I'd have said yes; I now think that instinct was wrong, and
+`authoring-guide.test.ts:357`'s own history is the proof.
 
 ---
 
-## Updated final position, per dimension
+## The four dimensions, current state (short — most of the substance is already above)
 
-### Observability
+### 1. Observability
+`AC-2`'s fix is squarely mine to own the correctness of, not just adversarial's: the corrected
+`INV-V34-1` sentence is *itself* an observability artifact — the promise a future auditor reads to
+know what's checkable and how. Getting it right this round matters more than the original wording
+being wrong did: `07-review.md`'s own retro names "shipped a sentence the code doesn't support" as
+this iteration's recurring pattern, hit twice in the same pass (AC-1/AC-2, and separately the
+DEPLOY.md history-carrying finding). A second wrong version of the same `INV-V34-1` sentence,
+caught only at a third Gate 8 pass, would be that pattern a third time in one iteration — reason
+enough to get the correction itself right rather than fast.
 
-Converged with adversarial: two-segment prompt disclosure survives going forward (no dispute);
-the retired-key refusal needs a machine-parseable marker, achieved via `detail.retired` without a
-new top-level code (§5, synthesis); the executed tool set is already fully recorded post-hoc via
-`HarnessDescriptor.tools` (§2 — my initial claim that it wasn't was wrong and I retracted it after
-reading the actual interface, not just grepping it), so `defaultAllowedTools` needs no new v34
-observability work. The one place I raise the bar past round 1: legacy rows must render
-*truthfully*, not just avoid crashing (§4) — see the explicit REQ-203 tension called out below,
-which I'm not allowed to paper over as a quiet agreement.
+No other observability item is open this round. `HarnessDescriptor.tools`'s post-hoc coverage
+(non-optional field, `types.ts:506`) is unchanged by either fix and remains the right seam for
+"what actually ran" — nothing here asks it to do more.
 
-### Replaceability
+### 2. Replaceability
+Unaffected in mechanism — no `GatewayClient` change, no new config key, no new module (I re-confirm
+adversarial's §2.4 count: prose, one guide string, one unit test). `INV-V34-1`'s two-prong test
+(*restrictive* or *readable*) is still what makes an author's script portable across deployments
+sharing an advertised ceiling, and that property is untouched by AC-2's wording fix either way —
+the code doesn't change, only the sentence describing it does. I raised, then withdrew, a request to
+make the corrected sentence name which prong each residual satisfies (see the AC-2 response above);
+withdrawing it means Replaceability has no separate ask this round beyond confirming the mechanism
+itself is unaffected.
 
-Converged: INV-NOADD's restrictive/readable split is the right test, and I now use it explicitly
-rather than the looser "no single point of undeclared coupling" language from r1.
-`defaultAllowedTools` is the one accepted residual violator, correctly not touched in v34, and its
-readable prong is already satisfied post-hoc (see Observability above).
+### 3. Consumability
+`AC-1`: I concur with Remedy A (text) over Remedy B (default `defaultAllowedTools` to
+`BUILT_IN_CORE_TOOLS` inside `composeConfig`) — the `composeConfig` forwarding-bug class and the
+`compose-config-v2-wiring` guard are adversarial's §3 citation, not mine, and I'm not going to
+launder it into a false self-citation to make my agreement look more independent than it is. What
+*is* mine from r1: the byte-lock discipline (`docs/AUTHORING.md`/`buildAuthoringGuide()`, UT-160)
+is the one hard constraint on landing Remedy A, already flagged there as a hard constraint on this
+exact surface, now directly load-bearing for this fix's execution rather than background risk. On
+the merits I agree with adversarial's reasoning as given — Remedy B adds a new forwarding default to
+a config-composition path this project has a standing guard against precisely because that class of
+default has gone missing silently before; Remedy A touches zero config plumbing and needs only the
+byte-lock regeneration to land clean.
 
-### Consumability
+D1's landing zone (sentinel definition in `tool-specs.ts`) is this round's other Consumability item,
+conceded above.
 
-Sharpened by conceding D2 in full: REQ-203's "only two layers" claim is currently false for legacy
-rows carrying `defaults.tools`, and this must be settled this round (design-stage decision, not
-deferred) — a guide that contradicts the code it describes is the exact failure class REQ-202/203
-exist to eliminate. Everything else from r1 stands: the projection-boundary fix (`unit`/`boundBy`
-on `DescribeAgentParamKey`) is unopposed and cheap (adversarial's own A1 proposal, which I did not
-have specifics for in r1 and now adopt as the concrete shape).
+### 4. Self-sustainability
+Two items: §2.3's revisit trigger gets one clause naming what data already exists for the future
+comparison, stated honestly as a hand-check until someone adds the one-line comparison (not
+"self-checking" — I overclaimed that once above and corrected it); and D5's inventory-test ask is
+withdrawn on my own dimension's authority, not just deferred to Karpathy. Nothing else in this
+iteration's touched surface bears on memory metabolism, tool-liveness, or prompt self-calibration —
+the engine has no per-agent long-term memory to metabolize and this send-back changes no
+periodic-sweep code, same as I found in r1.
 
-### Self-sustainability
+---
 
-Strengthened, not just re-asserted: r1's "0/22 is an assertion, not a monitored invariant" now has
-a traced mechanism showing exactly how it would fail silently (dispatch never re-validates a stored
-script's options against the current `AGENT_OPT_KEYS` — the only call site is the registration-time
-static scan, `workflow-meta.ts:489`; `run-manager.ts:1330`'s `(opts ?? {}) as AgentOpts &
-{prompt?: unknown}` is a type-cast, not a runtime whitelist, so an old script's `agentType` property
-is neither validated nor stripped at dispatch — it is carried inert, and nothing downstream reads
-or reports it once the resolution code is deleted). This is the strongest unresolved item I'm
-carrying into round 3/design — stronger than my r1 framing because it's no longer
-hypothetical-shaped, it's grep-verified.
+## Remaining disagreements
 
-## Remaining disagreements / open decisions for design stage (not resolved here on purpose)
+None that block. The prong-attribution clause (AC-2 integration note) is offered, not asked for —
+I found a reason against it (the alias table's own symmetric case) while checking it, and I'm
+leaving that as a question for whoever next touches `INV-V34-1`'s general wording, not a rider on
+this send-back.
 
-1. **§4, and this is a real amendment to REQ-203's text, not a quiet gloss on B4:** REQ-203's own
-   acceptance says "dashboard 不再有對應的揭露面" (the dashboard disclosure surface goes away with
-   the mechanism) — full stop, no legacy carve-out. My §4 ask (a pre-v34 row should still render a
-   truthful history, e.g. a byte count / agentType label, not silently show nothing) is in tension
-   with that sentence as written, not a mere elaboration of adversarial's B4 (which only requires
-   "doesn't crash," and is silent on what a legacy row *shows*). I am not going to pretend this is
-   settled: either (a) REQ-203's dashboard clause is amended to read "no disclosure surface for new
-   rows; a legacy row keeps a minimal, generic marker (e.g. a 'fields retired at v34' note, not the
-   full retired viewer)," which stays inside the spirit of "隨機制消失" while not lying to a viewer
-   of an old run, or (b) REQ-203's text is left as-is and I concede the dashboard shows nothing for
-   legacy rows too, accepting that a viewer of a six-month-old run sees an unexplained gap rather
-   than a mislabeled absence. I lean (a) but I'm flagging this as an open amendment proposal for the
-   design stage / requirements owner, not something I can resolve unilaterally in an architecture
-   round.
-2. D2's remedy choice — retire `RunParams.tools` alongside `.prompt` in this same iteration, vs.
-   amend REQ-203's text to say three layers for legacy rows. Both experts agree it must be decided
-   *in this round*; neither has picked one, and I don't think requirements text alone settles it —
-   it's a design-stage call between "smaller diff, textually accurate" and "fully closes the
-   retirement now."
-3. The old-pinned-version dispatch gap (new, this round): fail-closed at dispatch vs. catalog scan
-   at startup/registration-adjacent time. Both acceptable under INV-NOADD; needs an explicit pick,
-   not a default.
+## Handoff (delta on top of `adversarial.r1.md` §8)
 
-Everything else raised across both round-1 documents — INV-NOADD itself, the `RETIRED_CONFIG_KEYS`/
-`RETIRED_AGENT_OPT_KEYS` mechanism, the predicted-trace-delta discipline (C1), the legacy-row
-TOTAL-read-path requirement (B4), keeping `composePrompt` as a seam (D1), and the golden-string test
-(D3) — I consider converged.
+1. `02-architecture.md:4190` (`INV-V34-1`) — adversarial's §2.2 text, unchanged. (Optional, not
+   requested: the prong-attribution clause discussed above, if a future round wants it.)
+2. `02-architecture.md:4079` (`ARCH-137` note) — adversarial's §2.2 text, **plus** the corrected
+   revisit-trigger clause above (names `workflow-meta.ts:481-493` as where the comparison's inputs
+   already exist, and states plainly that the comparison itself does not run today).
+3. `src/tool-specs.ts` (`workflow_describe` tool description) — **new, one sentence**: define the
+   `'default'` sentinel `mcp-facade.ts:493-498` serves in `toolSurface` (this deployment's
+   `defaultAllowedTools`, else `BUILT_IN_CORE_TOOLS`). Not a resolved-value field; a definition of
+   the word already on the wire.
+4. `src/authoring-guide.ts:534-537` / `docs/AUTHORING.md` — adversarial's §3 Remedy A clause,
+   regenerated in the same commit (UT-160 byte-lock).
+5. `tests/unit/authoring-guide.test.ts:357` — strengthen per adversarial's §4.2/item 4 (assert the
+   built-in core set and its six tools by name); the existing `/two layers/i` match is not the
+   guard and stays as-is.
+6. `tests/unit/claude-agent-sdk-gateway-allowed-tools.test.ts` — adversarial's §4.1 single `it`.
+
+No new ARCH row, no new ADR, no new config key, no new module, no inventory test. Six edits total —
+adversarial's five (items 1, 2, 4, 5, 6 above) plus one new one (item 3, the sentinel definition),
+none of them behavior changes. Converged.
+
+ARCHCHECK: lens=quality-dimensions, file=/home/user/Documents/remote-workflow/.sdlc/features/001-remote-workflow-engine/.panel/architecture/quality-dimensions.r2.md, round=2
