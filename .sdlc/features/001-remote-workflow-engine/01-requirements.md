@@ -2663,3 +2663,68 @@ AUTHORING.md「Registration and versioning」      ← 只講 legacy / trigger /
 本來就是草稿機制,介面沒說而已;不改 catalog 的任何行為(版本疊加、channel 解析一律照舊);
 不做單版本 deregister 與 `workflow_list` 的 lastRunAt(那是另外兩條發現,排在本條之後);
 不重啟 production 服務(`38edb020` 執行中),變更隨下一個 release tag 生效。
+
+---
+
+## 迭代 v34 — 2026-09-20:移除遠端寫不到卻會影響執行結果的提示層
+
+**來源:同一次遠端實機測試的延伸追問(擁有者,2026-09-20)。** 追查「為什麼新開的 workflow 都沒有
+system prompt」時確認了三件事:(1) 每個 agent 的系統提示只有一個來源 —— `agentType` 指向的伺服器端
+`agentDefinitionsDir/*.md`,遠端作者沒有任何 MCP 工具能建立或上傳它;(2) 即使用了,它也只是
+`composePrompt()` 串出來的第一段,最終仍以單一 user 訊息送出,不是協定層的 system prompt;
+(3) `defaults.prompt` 那一段早已 `DEFAULTS_RETIRED`,管線卻還留著。
+
+**擁有者裁決:整個 agentType 機制移除。** 理由是它的三層(systemPrompt / model / tools)都同樣
+「遠端作者寫不到、卻會改變執行結果」——只拿掉提示那一層,等於留著同一個問題的小版本。
+證據面:catalog 目前 22 個版本,**0 個**使用 `agentType`,移除不會弄壞任何已註冊的工作流程。
+
+### REQ-202 — appendPrompt 的用法要在廣告介面上完整,呼叫端不必試錯
+
+- **status:** draft
+- **traces:** REQ-094, REQ-117, REQ-116, REQ-107
+- **acceptance:**
+  **Given** 一個只讀 `tools/list` 與 `workflow_describe` 的冷 MCP client
+  **Then** 它在送出第一個 `appendPrompt` 之前就知道三件事:(a) 這個鍵必須由作者先在
+  `meta.params.agents.<label>` 宣告才會被接受,未宣告回 `PARAM_UNKNOWN`;(b) 送進去的文字會被
+  包進 `<user-instructions untrusted="true">…</user-instructions>`,模型會被告知那一段不可信;
+  (c) 有效上限是 min(作者宣告, 引擎 `maxAppendPromptBytes`) **位元組**,且不得含框尾分隔符
+  (`PARAM_OUT_OF_RANGE`)。
+  **Given** `workflow_describe` 逐 agent 的參數投影
+  **Then** `appendPrompt` 那一欄的單位(bytes)與有效上限是明寫的,不是靠 `range` 的裸數字猜。
+  **Given** `workflow_authoring_guide`
+  **Then** 有一節說明提示分層:v34 之後只剩「腳本 prompt」與「框住的 appendPrompt」兩段,
+  並教作者若要讓附加段落具備覆寫效力,必須在自己的 prompt 裡明寫採納規則
+  ——引擎不會替作者決定「授權覆寫」與「外來注入」的分界。
+- **iter:** v34
+
+### REQ-203 — 遠端作者寫不到的提示/模型/工具層不得影響執行結果:移除 agentType
+
+- **status:** draft
+- **traces:** REQ-094, REQ-136, REQ-088, REQ-117
+- **acceptance:**
+  **Given** 一個帶 `agentType` 的腳本送進 `workflow_register`
+  **Then** 被拒,訊息指出此選項鍵已於 v34 移除,並指向 `workflow_authoring_guide`。
+  **Given** 引擎啟動時 `rwe.config.json` 仍留著 `agentDefinitionsDir`
+  **Then** 走現行的 unrecognized-key 警告路徑照常啟動(不 fail-fast),訊息說明該鍵已退役。
+  **Given** 任何一次 `agent()` 呼叫
+  **Then** `composePrompt()` 只剩兩段(腳本 prompt + 框住的 appendPrompt);
+  harness descriptor 不再有 `systemPrompt` 欄位,dashboard 不再有對應的揭露面,
+  `stripFirstSegment` 及其測試隨機制一起移除。
+  **Given** 工具解析
+  **Then** 只剩兩層:per-call `allowedTools` → 部署 `defaultAllowedTools`;guide 裡的三層敘述同步改寫。
+  **Given** ledger
+  **Then** REQ-094/DES-102 的五段組合正式退役登記,REQ-136/ARCH-129/DES-195 的揭露面記為
+  **「隨機制消失」**而非揭露回歸 —— 這個區別必須寫在文件裡,否則下一輪稽核會把它讀成回歸。
+- **iter:** v34
+
+### REQ-204 — `defaults.prompt` 的管線清除,但拒絕碼留著
+
+- **status:** draft
+- **traces:** REQ-088, REQ-090
+- **acceptance:**
+  **Given** `composePrompt()` 與其呼叫端
+  **Then** `authorPrompt` 那一段、`runParams.prompt` 型別與相關佈線全部移除。
+  **Given** 一個仍帶 `defaults` 的 `workflow_register`
+  **Then** 照舊被拒 `DEFAULTS_RETIRED` —— 拿掉拒絕碼會讓舊呼叫端回到「靜默接受、實際不生效」,
+  那正是當初廢掉它的原因。
+- **iter:** v34
