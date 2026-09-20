@@ -6977,3 +6977,123 @@ literal `"` introduced (all edits used backticks/single-quotes inside the double
 strings, per this ledger's own CLAUDE.md-documented past corruption).
 
 Not committed by this pass: left for the orchestrator, per this ledger's own convention.
+
+## v34 — DEPLOY.md recipe rewrite + IMPL-340 owner_decision ruling (orchestrator, 2026-09-20)
+
+IMPL-340's `owner_decision` asked whether DEPLOY.md's `## 情境配方：gateway:sdk + LiteLLM 前置
+「本機/雲端模型」跑完整 sdlc-run` recipe (steps 1/3/4 — dispatching each SDLC gate to a role agent
+via the now-retired `agentType`/`agentDefinitionsDir` mechanism) should be REWRITTEN onto v34's
+Prompt layering replacement, or RETIRED outright; the Gate 6.5+7 verifier left it flagged with a
+warning banner rather than answering it, correctly treating it as a product/technical call on a
+separate plugin's dispatch convention rather than a doc-sync fact.
+
+**Ruling: REWRITE.** Retiring would delete a documented capability (running the full multi-role
+`sdlc-run` through this engine, one model/role per gate) that v34's own `workflow_authoring_guide`
+"Prompt layering" section explicitly provides a replacement path for — nothing about the
+capability is actually gone, only how a caller supplies each gate's role text changed. Recorded as
+a `v34 ORCHESTRATOR RULING (2026-09-20)` entry appended to `state.yaml`'s `pending:` list (full
+text there), naming both options weighed and why rewrite won.
+
+**What changed in DEPLOY.md:** the warning banner is gone; the recipe's heading and intro are
+restored to name `sdlc-run` explicitly again. New step 3 replaces the deleted
+`agentDefinitionsDir`-copy instructions with the v34-shaped equivalent: each role's system-prompt
+text (still sourced from the iso-agile-sdlc plugin's `agents/sdlc-*.md` files) is pasted as the
+first segment of that role's own `agent()` call's `prompt` argument in the calling script, with a
+worked 2-role example (`meta.params.agents` declarations, `phase()`/`agent()` calls, matching
+mermaid) that a cold reader can copy. New step 4 drops the retired `args.agentPrefix` convention
+(confirmed via `src/tool-specs.ts` that `run_start`'s input schema never had this key — it was a
+script-side `args` convention built on top of the now-gone `agentType`, not an engine schema
+field) and corrects a pre-existing inaccuracy found along the way: there is no `resumeFromRunId` —
+`run_start` never had one and `run_resume({runId})` only applies to a `run_suspend`-ed run, not a
+budget-exhausted one; a `BUDGET_EXCEEDED` run either gets caught in-script or fails, and continuing
+past it means a new `run_start` with a higher `budget.tokens` and the prior run's output re-seeded,
+not resuming the same run. Steps 0/1/2/5 (model routing, config, credentials, LiteLLM smoke test)
+were already correct and untouched.
+
+**Transcript-visibility consequence — stated as fact in the recipe, not a footnote:** the old
+`agentType` system-prompt body was stripped from persisted transcripts by `stripFirstSegment`,
+which v34 deleted along with `agentType` itself (confirmed: zero remaining references anywhere in
+`src/`). `descriptor.prompt` is now defined as the gateway's verbatim echo of what was dispatched
+(`src/agent-executor.ts` `_invokeOnce` comment, DES-225), and `run_agent_log`'s tool description
+(`src/tool-specs.ts`) states `harness.prompt` IS that verbatim string. So the inlined role text now
+travels in every registered version of the script and is visible to anyone who can read that run's
+agent log — same-principal callers, or an admin with cross-read authority — with only a 4KB
+head+tail cap on the persisted copy of very long prompts (`agent-executor.ts`'s `capPrompt`,
+unrelated to what is actually sent to the model). This is a real regression from the old
+mechanism's opacity, and the recipe says so up front rather than burying it.
+
+**Verification performed (read-only, against `src/` on this HEAD):**
+- `AGENT_OPT_RETIRED`/`PARAM_UNKNOWN` codes and message text for a stray `agentType` key: confirmed
+  in `src/workflow-meta.ts` (`RETIRED_AGENT_OPT_KEYS`, registration-time, surfaces as top-level
+  `SCAN_VIOLATION` with `detail.violation:'AGENT_OPT_RETIRED'`) and `src/agent-executor.ts`
+  (dispatch-time, top-level `PARAM_UNKNOWN` with the same `violation` tag).
+- The closed `agent()` options key set (`prompt`, `label`, `phase`, `schema`, `isolation`, `mcp`,
+  `allowedTools`) used in the worked example: confirmed against `AGENT_OPT_KEYS`/
+  `WRITABLE_AGENT_OPT_KEYS` in `src/workflow-meta.ts`, matching `docs/AUTHORING.md`'s own statement.
+- `agentDefinitionsDir`'s boot-time behavior (accepted, warned by name, no effect): confirmed in
+  `src/main.ts`'s `RETIRED_CONFIG_KEYS` map and `composeConfig()`.
+- Every tool name the rewritten steps reference (`workflow_register`, `workflow_publish`,
+  `run_start`, `run_resume`, `run_agent_log`, `workspace_list`, `workspace_pull`, `models_list`):
+  confirmed present with matching argument shapes in `src/tool-specs.ts`'s `TOOL_SPECS`.
+  `run_start`'s schema confirmed to carry no `agentPrefix` key.
+  `run_resume`'s schema confirmed to take only `{runId}` and to be unrelated to budget.
+- `proxyModelName`/`rwe-proxy-*` cloaking (the "model shorthand" bullet): confirmed still present
+  and wired in `src/gateway/litellm-proxy.ts` / `claude-agent-sdk-client.ts` — untouched by v34.
+- The worked example's registrability against `src/workflow-meta.ts`'s `scanAgentCalls`: each
+  `agent()` call sits inside its own `phase()` (avoids `AGENT_BEFORE_PHASE`), uses only writable
+  option keys, and both labels' mermaid stadium nodes/subgraph lanes match in both direction and
+  call order per the rules in `docs/AUTHORING.md` "Diagrams". **Not run through the live engine's
+  `workflow_register`** (no server was started or touched, per this pass's scope restriction to a
+  read-only `src/` check) — this is a static read of the same scanner the engine runs, not an
+  executed registration.
+
+**Correction made after an advisor pass caught it, before this was reported done:** the recipe's
+intro originally kept the pre-existing "以下每一步都經本機端對端實測" (every step end-to-end
+tested) claim, which was never true for the new steps 3/4 — no server was started this pass. Fixed
+to say plainly that steps 0/1/2/5 are end-to-end tested and steps 3/4 are validated only by a
+static run of this engine's own registration scanner. That static run was then actually performed
+(not just asserted): a scratch `tsx` script (`node --experimental-transform-types` cannot resolve
+this repo's `.js`→`.ts` specifiers, per this project's own `v3-litellm-cli-model-quirks` memory
+note) imported `scanAgentCalls`/`parseMetaParams` from `src/workflow-meta.ts` and `checkMermaid`
+from `src/check-mermaid.ts` directly (no port touched, no server started) and ran them against the
+recipe's exact worked-example script and mermaid text, byte-for-byte extracted from the committed
+DEPLOY.md: `scanAgentCalls` → 0 violations, 2 labels; `parseMetaParams` → `ok:true`; `checkMermaid`
+→ `ok:true`.
+
+That same pass surfaced a real, previously undiscovered landmine in the recipe as originally
+drafted, found by pasting a REAL sentence from an actually-installed copy of the iso-agile-sdlc
+plugin's role file (`~/.claude/plugins/cache/iso-agile-sdlc/iso-agile-sdlc/1.25.0/agents/
+sdlc-verifier.md`: "...sdlc-verifier agent (mode A)...") into the `ARCHITECT_ROLE` constant and
+re-running `scanAgentCalls`: it produced a spurious `AGENT_LABEL_REQUIRED` violation, because
+`scanAgentCalls`'s `AGENT_CALL_RE = /(?<!\.)\bagent\s*\(/g` scans the raw script SOURCE TEXT with
+no string-literal awareness, and `agent (mode A)` inside an ordinary English sentence matches it.
+Confirmed with two isolated repro scripts (one minimal, one using the exact plugin sentence) before
+writing the fix. Added to DEPLOY.md as a stated, evidence-backed caveat (grep pattern to scrub
+`agent(`/`phase(`/`workflow(`/`parallel(`/`Date.now()`/`Math.random()`/`new Date()` out of pasted
+role text before pasting it), not a hypothetical warning. Also fixed: the `ARCHITECT_ROLE`/
+`IMPLEMENTER_ROLE` constants now use backtick template literals instead of single-quoted strings —
+a real multi-line `.md` file's content cannot fit in a single-quoted JS string literal without a
+`PARSE_ERROR` — and the recipe no longer asserts one fixed plugin file path/naming scheme
+(`agents/sdlc-*.md`) as settled fact, after checking the actually-installed plugin marketplace copy
+on this machine and finding the per-gate role file naming has already changed across plugin
+versions (older cache: `sdlc-architect.md` etc.; current marketplace copy: generic
+`executor.md`/`explorer.md`/`researcher.md`/`reviewer.md`, no `sdlc-` prefix) — a fact outside this
+task's `src/` scope but directly relevant to a claim this recipe was about to make, so it is now
+phrased as "use whichever files your installed plugin version actually ships" instead.
+
+**Not touched:** `src/`, tests, `06-impl-log.md` (IMPL-340's `owner_decision` marker itself is left
+`pending` there — this ruling answers it, but flipping that marker to `resolved` is a Gate 6.5+7 or
+Gate 8 bookkeeping action on a different stage doc, out of this pass's scope). `state.yaml`
+re-parsed clean with `python3 -c "import yaml; yaml.safe_load(open('state.yaml'))"` after every
+edit (39 `pending:` items, final check after the corrections above too). No commit made — left for
+the orchestrator.
+
+**One more correction of record:** this task's own framing said the Gate 6.5+7 verifier "put a
+warning banner" on the recipe still in place at HEAD; on inspection HEAD (098c4dd) already shows
+that verifier pass had deleted the banner AND steps 1/3/4 outright (see this same file's own
+"Docs rewritten to current-state (exit-gate 3b/3c)" entry above, and IMPL-340's `owner_decision`
+text), leaving `sdlc-run` dropped from the recipe heading and no banner to remove. What this pass
+did was restore the `sdlc-run` framing and rewrite the deleted steps onto Prompt layering — the
+correct action per the ruling regardless, but the "remove the warning banner" instruction had
+nothing left on disk to act on. Flagging so the orchestrator isn't surprised the diff shows no
+banner removal.

@@ -162,13 +162,32 @@ curl -s http://localhost:8787/api/models | python3 -c \
 # 預期：models: N / first: ollama/...（或 anthropic/...，依 aliases）
 ```
 
-## 情境配方：gateway:sdk + LiteLLM 前置「本機/雲端模型」
+## 情境配方：gateway:sdk + LiteLLM 前置「本機/雲端模型」跑完整 sdlc-run
 
 > 目標：讓 `agent()` 呼叫走**完整 Claude harness**（工具迴圈 + MCP），模型可以是本機 Ollama 或雲端
-> OpenRouter。以下每一步都經本機端對端實測。
+> OpenRouter，能跑真正的 iso-agile-sdlc `sdlc-run`（每個 gate 換一顆角色/一顆模型）。步驟 0/1/2/5
+> 都經本機端對端實測；步驟 3/4 是 v34 拿掉 `agentType` 後的新寫法，其中的範例腳本經這台引擎自己的
+> 註冊掃描器（`scanAgentCalls`/`parseMetaParams`/`checkMermaid`）靜態驗過零違規，**沒有**經過真的
+> `workflow_register`／`run_start` 端對端跑一次——這台機器上沒有為了寫這份文件另外起一顆 engine。
 >
-> 要讓不同 `agent()` 帶不同的系統提示詞，把提示詞寫進腳本自己的 `prompt` 參數即可——引擎沒有
-> 伺服器端可設定的系統提示詞層，見 `workflow_authoring_guide` 的「Prompt layering」一節。
+> **v34 之後這條路的機制變了，能力沒有少**：伺服器端已經沒有可設定的系統提示詞層了——
+> `agentType`／`agentDefinitionsDir` 整套移除（傳 `agentType` 給 `agent()` 在**註冊時**被
+> `SCAN_VIOLATION`（detail 帶 `violation:'AGENT_OPT_RETIRED'`）拒絕、在**dispatch 時**被
+> `PARAM_UNKNOWN`（同樣帶 `violation:'AGENT_OPT_RETIRED'`）拒絕；`agentDefinitionsDir` 寫在
+> `rwe.config.json` 裡仍會被接受，但開機只印一行點名的警告、完全不生效）。
+>
+> 要讓不同 gate 帶不同的角色提示詞，改成把那段文字寫進**腳本自己那次 `agent()` 呼叫的
+> `prompt` 參數最前面**——見 `workflow_authoring_guide` 的「Prompt layering」一節，第3步有完整示範。
+>
+> ⚠️ **這個機制轉換帶一個必須知道的副作用，不是可以忽略的細節**：以前 `agentType` 那段系統提示詞
+> 在 transcript 裡會被 `stripFirstSegment` 剝掉，不會回顯；v34 把這個機制整個拿掉了，現在
+> `agent()` 送給模型的字串是「原樣」記錄的——`run_agent_log` 回的 `harness.prompt`
+> 就是「送給模型的逐字字串：腳本自己的 prompt，接著任何 appendPrompt override」，不再有另一段
+> systemPrompt 欄位替你藏起來。也就是說：**角色提示詞現在會跟著這個腳本每一個註冊版本一起，被任何
+> 讀得到這次 run 的 agent log 的人看到**（同一 principal，或有 cross-read 權限的 admin）。不要把
+> 你不想曝光的內容寫進角色提示詞——它不再是伺服器端的秘密。（單一例外：非常長的提示詞，持久化的
+> `harness.prompt` 會截到 4KB，頭 2048 字元 + 尾 2048 字元，中段省略；但實際送給模型的呼叫本身不受
+> 這個截斷影響，只有記錄下來給你事後看的那份被截。）
 >
 > ### 0) 模型從哪裡來：本機用 Ollama，雲端用 OpenRouter
 > `provider` 只認 `anthropic`、`openrouter`、`ollama` 三種；`rwe.config.json` 的 `aliases` 只要出現
@@ -211,7 +230,108 @@ curl -s http://localhost:8787/api/models | python3 -c \
 > ⚠️ **PATH**：`gateway:sdk` 開機會 `spawn('litellm')`，systemd/啟動 unit 的 `PATH` 必須含 litellm
 > venv 的 `bin/`（見 §1a 前置條件），否則 `ENOENT`。
 >
-> ### 3) 驗證這條路通了（花錢前先確認）
+> ### 3) 幫每個 sdlc gate 帶上它自己的角色提示詞（v34 機制）
+> `sdlc-run` 每個 gate 過去用 `agentType` 分派到一批角色（早期版本叫 `sdlc-architect`/`sdlc-
+> designer`/`sdlc-verifier`/...，這幾個名字本身也隨 plugin 版本換過，**不要把任何特定檔名寫死當
+> 事實**），系統提示詞由引擎從 `agentDefinitionsDir` 讀檔案。v34 把這一層拿掉了——現在的作法是把
+> 那個角色的完整提示詞內文（來源看你裝的是哪個版本的 iso-agile-sdlc plugin：可能是
+> `agents/sdlc-<role>.md`，也可能是後續版本改用的別的檔名/角色切法；用你自己那份裝好的 plugin
+> 現有的檔案為準），**貼進腳本裡「那個 gate 對應的那次 `agent()` 呼叫」的 `prompt` 參數最前面**，
+> 接上這次真正要做的任務指示。每個角色仍然是一個獨立的 `meta.params.agents.<label>` 宣告（各自的
+> `model`/`effort`/`timeoutMs` 對應第1步準備好的 tier 別名），只是「角色是誰」從一個 server 端檔案
+> 查找鍵，變成腳本裡的一段字面字串。示意（完整幾個角色同理，這裡只示範 2 個）：
+> ```js
+> export const meta = {
+>   description: 'v34-shaped sdlc gate pass',
+>   params: {
+>     args: { feature: { type: 'string' } },
+>     agents: {
+>       architect:   { model: { type: 'string', default: 'opus' },   effort: { type: 'enum', enum: ['low','medium','high'], default: 'high' },   timeoutMs: { type: 'number', default: 300000 } },
+>       implementer: { model: { type: 'string', default: 'sonnet' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'medium' }, timeoutMs: { type: 'number', default: 300000 } },
+>     },
+>   },
+> };
+>
+> // 把你那份角色定義檔的全文分別貼進這兩個常數——用反引號（template literal），不要用單/雙引號：
+> // 一份 .md 檔天生有換行，單引號字串裝不下換行會直接 PARSE_ERROR；反引號才是多行安全的字面值。
+> const ARCHITECT_ROLE = `<角色定義檔全文，逐字貼>`;
+> const IMPLEMENTER_ROLE = `<角色定義檔全文，逐字貼>`;
+>
+> phase('architecture');
+> const arch = await agent('architect', {
+>   prompt: ARCHITECT_ROLE + '\n\n<task>Decompose ' + args.feature + ' into ARCH/ADR docs.</task>',
+>   allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep'],
+> });
+>
+> phase('implementation');
+> const impl = await agent('implementer', {
+>   prompt: IMPLEMENTER_ROLE + '\n\n<task>Implement the TASKs from:\n' + arch + '</task>',
+>   allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'],
+> });
+>
+> return { arch, impl };
+> ```
+> 對應的 mermaid（`workflow_register` 要求 stadium 節點跟 `agent()` label 雙向對上、每個 `phase()`
+> 對一個 `subgraph`，見 `docs/AUTHORING.md`）：
+> ```
+> graph LR
+> subgraph "architecture"
+> architect(["architect"])
+> end
+> subgraph "implementation"
+> implementer(["implementer"])
+> end
+> ```
+> `prompt` 的值不必是單一字串字面值——如上例用 `+` 串接常數與 `args`/前一步結果都是合法寫法（`agent()`
+> 的限制只在於**呼叫本身的 options 物件**要寫成字面量 `{ … }`，不能是變數或 spread；物件裡每個鍵的
+> 值可以是任何表達式）。`allowedTools` 才是唯一在註冊時會被解析成字面陣列的鍵。
+>
+> ⚠️ **貼進去的角色全文本身不能撞到掃描器的關鍵字——這是實測撞到過的真坑，不是假設**：
+> `workflow_register` 的掃描器（`scanAgentCalls`）是對**整份腳本原始碼**跑正則
+> `/(?<!\.)\bagent\s*\(/g`，不分辨這段文字是不是在字串字面值裡面；同一份腳本裡另外幾個關鍵字
+> （`phase(`、`workflow(`、`parallel(`）跟 `Date.now()`/`Math.random()`/`new Date()`（沒帶參數的）
+> 也是同樣對原始碼逐字掃描。實測：把 iso-agile-sdlc plugin 舊版（1.25.0）`sdlc-verifier.md` 正文裡
+> 本來就有的一句「...sdlc-verifier agent (mode A)...」貼進 `ARCHITECT_ROLE` 常數（哪怕正確包在合法
+> 字串字面值裡），`scanAgentCalls` 就會在那一行多抓出一次不完整的 `agent(` 呼叫，整個腳本被
+> `AGENT_LABEL_REQUIRED` 拒絕註冊——即使腳本語法完全正確。貼之前先對你要貼的那份角色全文跑一次
+> `grep -nE '\bagent\s*\(|\bphase\s*\(|\bworkflow\s*\(|\bparallel\s*\(|Date\.now\(\)|Math\.random\(\)|new Date\(\)'`，
+> 撞到的詞改寫掉（例如把「agent (mode A)」改成「agent role (mode A)」或拿掉那個空格）再貼。
+>
+> ### 4) 實際跑起來（透過 rwe-plugin 或直接 `run_start`）
+> 舊版腳本會在 `args` 裡帶一個 `agentPrefix` 慣例值，供腳本自己組出 `agentType:'iso-agile-sdlc:sdlc-
+> architect'` 這種帶命名空間前綴的字串——這不是 `run_start` 本身的 schema 欄位（`run_start` 的
+> input schema 從來沒有這個鍵，見 `src/tool-specs.ts`），只是那支舊腳本自訂的一個 `args` 慣例。
+> 既然 `agentType` 整個機制都不在了，這個慣例也就沒有東西可餵——新腳本不需要、也不該再宣告
+> `meta.params.args.agentPrefix`。跑法就是一般的 `workflow_register` → `workflow_publish` →
+> `run_start({name, version 或省略吃 release, args, budget, seed/seedManifest})`：
+> ```json
+> { "feature":"NNN-slug", "sdlcDir":".sdlc/features/NNN-slug", "skillDir":"_skillref",
+>   "mode":"new", "safetyClass":"QM", "tier":"lean" }
+> ```
+> （這是 iso-agile-sdlc plugin 那支**完整 sdlc-run 腳本**會用的 `args` 形狀，不是第3步那個
+> 2-角色示範腳本的——示範腳本只宣告了 `args.feature` 一個鍵。`args` 的實際鍵一律由你註冊的那支
+> 腳本自己的 `meta.params.args` 決定，這裡兩個例子分屬不同腳本，不要混著抄。）
+> - **seed**：把 skill 目錄（放 `_skillref/`，**不要**放 `.claude/skills/` 以免被 CLI 當 project skill 載入）
+>   + `.sdlc/features/NNN/{01-requirements.md,state.yaml}` + `.sdlc/trace(.py)` 一起用 `run_start` 的
+>   `seed:[{path,contentB64}]` 帶上（Gate 1 需求要先在本地備好，state.yaml 的 `gates.requirements.passed=true`）。
+> - **git baseline 自動**：引擎會在 seed 落地後自動 `git init`+baseline commit（REQ-027），precheck 的
+>   `git rev-parse --is-inside-work-tree` 會通過——**你不用手動 seed `.git`**（materializeSeed 本來就會擋）。
+> - **model shorthand 自動處理**：`haiku`/`sonnet`/`opus` 被 CLI 展開成 Anthropic id 的老問題已由
+>   `proxyModelName` 前綴根治，你不需做任何事。
+> - **budget**：sdlc 全流程**吃 input token 很兇**（每個 agent 重讀 seed/docs，實作階段還會裝 venv 撐大
+>   context）。`budget` 是物件（裸數字回 `INVALID_ARGUMENT`）：設 `budget:{tokens:<數量>}` 當硬上限；
+>   實測一次 lean 全流程到 Gate 6 約 ~3M token。**撞上限這件事本身沒有「調高後原地續跑」這個按鈕**——
+>   引擎的 budget 是「拒絕再派工」訊號：那次 `agent()` 呼叫被拒 `BUDGET_EXCEEDED`，腳本沒接住的話整個
+>   run 就以這個代碼結束（`run_status.agents` 裡那次呼叫會是 `state:'refused'`,
+>   `reasonCode:'BUDGET_EXCEEDED'`）。要接著做，是拿已完成 phase 的產物（`run_result`/已落地的
+>   workspace 檔案）當下一次 `run_start` 的 `seed`，用更高的 `budget.tokens` 開一個新 run 續做剩下的
+>   gate——不是同一個 run 續命（`run_resume({runId})` 只用在 `run_suspend` 過的 run，跟 budget 用盡
+>   無關）。
+> - **拉回產物**：完成後用 plugin 的 `pull_workspace`（引擎側是 `workspace_list` 遞迴列檔 +
+>   `workspace_pull` 分塊取回）把
+>   `src/`、`tests/`、`.sdlc/*.md` 拉回本地；`.git/` 與 venv 不會列進 artifact（引擎已排除 `.git/`）。
+>
+> ### 5) 驗證這條路通了（花錢前先確認）
 > ```bash
 > # A. 我方 LiteLLM 真的把 ollama/<model>（或 openrouter/<model>）導到你的端點：
 > LPORT=$(pgrep -af '[l]itellm --config' | grep -oE 'port [0-9]+' | awk '{print $2}')
