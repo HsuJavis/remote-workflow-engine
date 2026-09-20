@@ -7529,3 +7529,67 @@ verifier 沒有新延擱任何一條。state.yaml:`gates.tests.passed=true`、`c
 (74 敗/3102 過/26 skip)。21 個失敗檔逐一核對**正好就是**本 gate 這 21 個新紅檔(`script-spans.test.ts`
 因整檔載入失敗——模組不存在,`it()` 從未被收集——算 1 個失敗檔而非 9 個失敗案例,83 個逐案累計數
 減去這 9 個未收集案例正好是 74,跟套件自己回報的數字完全對上);既有的三千多案沒有任何一個被動到。
+
+## 2026-09-21 — v35 Gate 8 送回七項全數關閉(implementer)
+
+平行實作 Gate 送回的七項全部照裁決執行,無一是待裁決的開放問題。
+
+**(1) InMemoryRunStore 補 `failedAgentCount`**——`SqliteRunStore._rowToSummary`/
+`_USAGE_PROJECTION` 早有此欄,`InMemoryRunStore._toSummary` 沒有,兩個 store 對同一欄位不一致,而且
+套件多半跑 in-memory store、production 跑 SQLite,原本這個落差對綠燈不可見。先確認紅(`memRow`
+讀 `undefined`、`sqlRow` 讀 `2`,同一混合成敗情境),再補上與 DES-231 boundary (b) 相同的
+`agentCount != null && agentCount > 0` 判斷式(掛在 agent 存在與否,不掛在 usage 上),兩個 store
+永遠不能再各說各話。`tests/integration/run-store-parity.test.ts` 新增 2 案,同一情境跑兩個 store。
+
+**(2) TASK-235 dod (6) 真的建一份 pre-v35 落地 fixture**——原本「ALTER TABLE 手法跟前五次加欄一樣」
+的結構論證,正是本輪自己 REQ-209 缺陷的同一種推理形狀(檢查本質上驗證不了它宣稱驗證的東西)。改成
+手刻一份 pre-v35 schema 的真實 SQLite 檔(沒有 `error` 欄)、raw SQL 塞一列,再用現行
+`SqliteRunStore` 開啟讓真的 migration 跑,斷言四個讀取點都乾淨讀回 `error` NULL/省略。一次過,不是
+掃五次舊 migration。`tests/integration/run-error-read-sites.test.ts` 新增 1 案,首跑即綠——遷移邏輯
+本來就是對的,缺的只是這份 fixture 證據。
+
+**(3) DES-237 D11 改寫**——實作者窄化過的語意才是對的:meta 文字有找到但抽不出乾淨的 span 就跳過
+oracle;完全沒有 meta 宣告就直接對原始腳本跑 oracle。字面上的 D11(「沒有 meta span 就不呼叫
+oracle」)過不了 Gate 5 自己的測試(`workflow-meta-scan.test.ts` 案例 3/4/5 與
+`register-scan-spans.test.ts` 的裸 `catalog.register()` 回歸案)。已在 `04-design.md` 改寫,並註明
+標題叫「…oracle not invoked」的那條 UT 在自己的 fixture 上兩種讀法都會過,不能拿來當字面規則的證據。
+
+**(4) DES-237 記錄 `parseWorkflowSkeleton` 耦合規則**——`skeleton-graph.ts` 的 `deriveExpectedGraph`
+用**位置**對齊 `parseWorkflowSkeleton` 的節點跟 `scanAgentCalls` 的呼叫,兩邊若排除的假陽性
+`agent(` 不一致就會對位錯亂(v35 實作期間在 `register-scan-spans.test.ts` 案例 3/4 上實測產出過假
+`AGENT_BEFORE_PHASE`)。已在 `04-design.md` 新增 D12 條款明文:兩個掃描器必須套用完全相同的排除
+規則,否則位置對齊會說謊。
+
+**(5) `predictedLanes` 補 marker,附加式**——`src/dashboard.ts` 的 `predictedLanes` 原本在 oracle
+解析失敗時默默回傳空/錯置標籤的陣列,跟「腳本本來就沒有可預測的 lane」無法區分。先紅
+(`.unscannable` 讀 `undefined`),再補上附加、向下相容的 `.unscannable?: true`,直接掛在回傳的陣列
+物件上(陣列多一個屬性,對唯一的呼叫端 `mcp-facade.ts:519` 的 `.find()`/`.map()` 完全無感)。
+`tests/unit/dashboard-metrics.test.ts` 新增 2 案。
+
+**(6) `toolSurfaceUnscannable` 與 `PREDICTED_OVERLAY_UNAVAILABLE` 補齊整合測試**——兩個 marker 原始碼
+裡都已存在,但完全沒有測試逼過它們。新檔 `tests/integration/scan-unscannable-markers.test.ts`:
+先正常註冊一個能過掃描的姊妹腳本(過關所有註冊閘門),再用直接寫 SQL 的手法(跟
+`diagram-contract-grandfather.test.ts` 的 v1-grandfather 案同一招)把已存的
+`workflow_versions.script` 改寫成 oracle 解析不了的腳本——因為 `workflow_register` 本身在
+`scan.violations.length > 0` 就會拒絕收 unscannable 腳本,唯一會踩到這兩個讀取端 marker 的族群就是
+「oracle 出現之前就已經寫入的版本列」。同一支腳本上斷言 `workflow_describe` 的
+`toolSurfaceUnscannable:true` 跟 `/api/runs/:id/dag` 的 `PREDICTED_OVERLAY_UNAVAILABLE:
+reason=script-unscannable` 兩個 marker 同時成立。首跑即綠;另外手動把兩個 marker 各自關掉一次,
+確認對應斷言真的會紅(不是空跑綠),再改回來,`git diff` 乾淨。
+
+**(7) authoring guide 的 args-default 更正補上可追溯測試**——實作者已經把
+`src/authoring-guide.ts` 教錯的 v21 舊規則(「宣告的 default 只是廣告,從不套用」)改成跟
+`tool-specs.ts` 一致的正確講法(「宣告的 `.default` 在呼叫端省略時會補上」),但沒有測試逼著這句話。
+`tests/unit/authoring-guide.test.ts` 新增 1 案,對照 `tool-specs.test.ts` 既有的同一事實斷言。首跑
+即綠;手動把句子改回退休舊講法確認會紅,再改回來,`git diff` 乾淨。
+
+**紅綠盤點**:(1)(5) 是貨真價實的先紅後綠(生產碼真的改了);(2)(6)(7) 首跑即綠——production
+碼本來就是對的,缺的是測試證據,已用手動破壞—確認紅—還原的方式驗證這些測試不是空跑；(3)(4) 是純
+文件修訂,不涉及紅綠。
+
+**測試數字(本人實跑)**:`run-store-parity.test.ts` 4/4、`run-error-read-sites.test.ts` 9/9、
+`run-health-count.test.ts` 5/5、`dashboard-metrics.test.ts` 6/6、
+`scan-unscannable-markers.test.ts`(新檔)1/1、`authoring-guide.test.ts` 52/52,全綠。
+`npx tsc --noEmit` 乾淨。全程未使用 `git checkout`/`restore`/`stash`,未 commit(依指示交由後續步驟
+處理)。`state.yaml`:`gates.impl.note` 追加本輪紀錄,`python3 -c "import yaml; yaml.safe_load(...)"`
+重新解析通過。

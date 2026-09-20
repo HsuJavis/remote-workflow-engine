@@ -50,6 +50,28 @@ describe('predictedLanes (UT-239, DES-196, ADR-055)', () => {
   });
 });
 
+// v35 (item 5 of the Gate 8 return, DES-234-adjacent): `predictedLanes` must surface
+// `scan.unscannable` as an additive, backward-compatible property on the returned array — never a
+// silently empty/garbled result indistinguishable from "no lanes to predict". `.unscannable` is
+// set directly on the array object so existing `.map`/`.find` consumers (mcp-facade.ts) are
+// unaffected.
+//
+// Red reason (measured): `predictedLanes` returns a bare array today with no `unscannable`
+// property at all — `lanes.unscannable` reads `undefined` even on an oracle parse failure.
+describe('predictedLanes surfaces scan.unscannable additively (item 5, Gate 8 return)', () => {
+  it('an oracle parse failure marks the returned array `.unscannable === true`', () => {
+    const src = "export const meta = {};\nphase('main'); agent('a', {});\nconst x = ((((;";
+    const lanes = predictedLanes(src) as ReturnType<typeof predictedLanes> & { unscannable?: true };
+    expect(lanes.unscannable).toBe(true);
+  });
+
+  it('a normal, cleanly-derivable script never sets `.unscannable` (backward-compatible: no new property)', () => {
+    const lanes = predictedLanes(SCRIPT) as ReturnType<typeof predictedLanes> & { unscannable?: true };
+    expect(lanes.unscannable).toBeUndefined();
+    expect(lanes.length).toBe(5); // still a plain array to every existing consumer
+  });
+});
+
 describe('computeWorkflowMetrics gains avgCostUSD/unpricedRuns (UT-239, DES-196)', () => {
   const baseRun = (over: Partial<RunSummary & { costUSD?: number }>): RunSummary => ({
     runId: over.runId ?? 'r', status: 'completed', scriptVersion: 'v1', createdAt: '2026-09-11T00:00:00.000Z', terminalAt: '2026-09-11T00:01:00.000Z', name: 'wf', ...over,

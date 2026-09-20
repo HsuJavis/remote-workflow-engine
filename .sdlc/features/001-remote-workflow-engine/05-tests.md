@@ -14434,3 +14434,96 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
    (REQ-205 criterion 4, deferred at Gate 3+4/design, not by this gate) blocks Gate 8, not Gate 5 —
    named here so the workflow does not lose track of it between gates. This verifier deferred
    nothing new (`owner_decisions: []` in the report).
+
+### v35 Gate 8 return — five new tests closing items 1/2/5/6/7 (2026-09-21)
+
+### IT-290 — `InMemoryRunStore` and `SqliteRunStore` AGREE on `failedAgentCount` (item 1, DES-231 boundary (b))
+
+- **status:** was red, now green
+- **traces:** DES-231, REQ-207
+- **tier:** integration
+- **real:** true (both are real `RunStore` implementations, no mock of either)
+- **result:** pass
+- **evidence:** `tests/integration/run-store-parity.test.ts` (extended, 2 new cases) — RED reason
+  measured: `memRow.failedAgentCount` read `undefined` on the mixed pass/fail case while
+  `sqlRow.failedAgentCount` read `2`, before `InMemoryRunStore._toSummary` gained the field. Now
+  GREEN: 2 failed/refused of 3 agents → `failedAgentCount:2` on BOTH stores for the same scenario;
+  a zero-agent terminal run OMITS it on both (never `0`). Closes the exact gap the Gate 8 return
+  named: SqliteRunStore emitted the field, InMemoryRunStore did not, and every other suite runs
+  against the in-memory store while production runs SQLite.
+- **iter:** v35
+
+### IT-291 — a GENUINE pre-v35 on-disk fixture migrates cleanly (item 2, TASK-235 dod (6))
+
+- **status:** green (no production code change — replaces a structural argument with a real fixture)
+- **traces:** DES-231, TASK-235, REQ-205, REQ-207
+- **tier:** integration
+- **real:** true (real `better-sqlite3` file built by hand with the pre-v35 schema, then opened by
+  the current `SqliteRunStore` so the real `ALTER TABLE` migration runs)
+- **result:** pass
+- **evidence:** `tests/integration/run-error-read-sites.test.ts` (extended, 1 new case) — replaces
+  the retired claim "the ALTER TABLE idiom matches five prior additive columns" (the same reasoning
+  shape that produced REQ-209's own defect: a check that structurally cannot detect the thing it
+  claims to verify) with a fixture built with the exact pre-v35 CREATE/ALTER statements (no `error`
+  column), one row inserted with raw SQL, then opened by the CURRENT store. All four read sites
+  (`listRuns`, `list`, `getRun`, `getError`) return cleanly with `error` NULL/omitted; the row's
+  other fields (`status`, `runId`) survive the migration unharmed. Passed on first run — the
+  migration code itself was already correct; only the fixture evidence was missing.
+- **iter:** v35
+
+### UT-295 — `predictedLanes` surfaces `scan.unscannable` additively (item 5, DES-234-adjacent)
+
+- **status:** was red, now green
+- **traces:** ARCH-149, REQ-208
+- **tier:** unit
+- **real:** false (pure function)
+- **result:** pass
+- **evidence:** `tests/unit/dashboard-metrics.test.ts` (extended, 2 new cases) — RED reason
+  measured: `predictedLanes(...)` returned a bare array with `.unscannable` reading `undefined` on
+  an oracle parse failure (`export const meta = {};\nphase('main'); agent('a', {});\nconst x =
+  ((((;`), indistinguishable from a script that genuinely predicts zero/garbled lanes. Now GREEN:
+  the returned array carries `.unscannable === true` on a parse failure, additively — a normal,
+  cleanly-derivable script never gains the property (`lanes.unscannable` stays `undefined`,
+  `lanes.length` unaffected) — backward-compatible with its one consumer, `mcp-facade.ts:519`'s
+  `.find()`/`.map()` calls.
+- **iter:** v35
+
+### IT-292 — both `SCRIPT_UNSCANNABLE` read-side markers fire together on a real grandfathered script (item 6, DES-239 dod (7))
+
+- **status:** green (both markers pre-existed in source; this is the missing red-capable test)
+- **traces:** DES-237, DES-239, ARCH-149, ARCH-151, REQ-208, REQ-209
+- **tier:** integration
+- **real:** true (real `createServer()`, real MCP HTTP, real SQLite catalog)
+- **result:** pass
+- **evidence:** new file `tests/integration/scan-unscannable-markers.test.ts` — registers a normal
+  scannable sibling script (passes every registration gate), then rewrites the stored
+  `workflow_versions.script` to a script the `nonCodeSpans` oracle cannot parse via a direct SQLite
+  write (the same "a version row is immutable to the ENGINE" technique
+  `diagram-contract-grandfather.test.ts`'s v1-grandfather case already uses — a registered workflow
+  can never carry an unscannable script through `workflow_register` itself, since
+  `scan.violations.length > 0` refuses it at the gate; this is the cohort that predates the oracle).
+  Asserts BOTH `workflow_describe`'s `toolSurfaceUnscannable:true` (`mcp-facade.ts:494`) AND
+  `GET /api/runs/:id/dag`'s `warnings` containing `PREDICTED_OVERLAY_UNAVAILABLE:
+  reason=script-unscannable` (`server.ts:540`) on the SAME script in one test. Non-vacuity verified
+  by hand: toggling each marker's guard to `false` independently reproduces the corresponding
+  assertion failure (`expected undefined to be true` / `expected [] to include '...'`), then both
+  reverted with a clean `git diff` before this report.
+- **iter:** v35
+
+### UT-296 — the authoring guide states declared `args` defaults ARE applied (item 7, REQ-206)
+
+- **status:** green (production text already fixed by the implementer; this is the missing test)
+- **traces:** DES-239, REQ-206
+- **tier:** unit
+- **real:** false (pure function)
+- **result:** pass
+- **evidence:** `tests/unit/authoring-guide.test.ts` (extended, 1 new case) — asserts the guide's
+  `meta.params.args` section states "A declared `.default` fills in the key when the caller omits
+  it" and never the retired v21 claim ("advertised but never applied"), matching
+  `tests/unit/tool-specs.test.ts`'s existing "`run_start.args` states {} on omission and that a
+  declared default is applied" assertion on `tool-specs.ts`'s own description — the guide and the
+  tool schema must not contradict each other on this fact (the REQ-202/REQ-209 defect class).
+  Non-vacuity verified by hand: temporarily reverting the sentence to the retired wording flips this
+  test red (`expected section to match /A declared \`.default\` fills in.../`), then restored with a
+  clean `git diff` before this report.
+- **iter:** v35

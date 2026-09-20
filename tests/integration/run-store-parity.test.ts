@@ -7,9 +7,14 @@
 //
 // Red reason (measured): `InMemoryRunStore.listRuns()` builds a `RunSummary` with none of the four
 // v27 fields, and `backfillUsage` does not exist on it either.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { InMemoryRunStore } from '../../src/run-store.js';
+import { SqliteRunStore } from '../../src/store/sqlite-run-store.js';
 import { FixedClock } from '../../src/clock.js';
+import type { RunStore } from '../../src/run-store.js';
 import type { RunSummary, RunUsage } from '../../src/types.js';
 
 type ProjectedSummary = RunSummary & { costUSD?: number; unpricedCalls?: number; tokensTotal?: number; agentCount?: number };
@@ -47,5 +52,77 @@ describe('InMemoryRunStore matches the SAME usage projection as SqliteRunStore (
     await (store as unknown as { backfillUsage(runId: string, usage: RunUsage): Promise<void> }).backfillUsage(runId, FULL_USAGE);
     const [row] = (await store.listRuns()) as ProjectedSummary[];
     expect(row?.costUSD).toBe(0.5);
+  });
+});
+
+// v35 (item 1 of the Gate 8 return): SqliteRunStore's `_rowToSummary`/`_USAGE_PROJECTION` emit
+// `failedAgentCount` (DES-231 boundary (b)); InMemoryRunStore's `_toSummary` did not — two stores
+// disagreeing on a field is exactly the silent-divergence class v35 exists to remove, and tests
+// run against the in-memory store while production runs SQLite, so a gap here is invisible to a
+// green in-memory-only suite. This runs the IDENTICAL scenario through BOTH stores and asserts
+// they report the SAME value for the SAME run.
+//
+// Red reason (measured): InMemoryRunStore's RunSummary carries no `failedAgentCount` field —
+// `dirs`-scoped SqliteRunStore uses a real on-disk db (SqliteRunStore requires a directory).
+type FailedCountSummary = RunSummary & { failedAgentCount?: number };
+
+const dirs: string[] = [];
+afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
+
+function agentRecord(agentId: string, state: 'done' | 'failed' | 'refused') {
+  return { agentId, state, provider: 'anthropic', model: 'claude-3-5-sonnet-20241022', tokens: { input: 0, output: 0 } };
+}
+
+async function seedMixedRun(store: RunStore): Promise<string> {
+  const runId = await store.createRun({ name: 'mixed', args: {} });
+  await store.recordTransition(runId, 'running', 'completed', '2026-09-11T00:01:00.000Z');
+  await store.saveSnapshot(runId, {
+    phases: [],
+    agents: [agentRecord('a', 'done'), agentRecord('b', 'failed'), agentRecord('c', 'refused')],
+    workflowNodes: [],
+  });
+  return runId;
+}
+
+async function seedZeroAgentRun(store: RunStore): Promise<string> {
+  const runId = await store.createRun({ name: 'zero', args: {} });
+  await store.recordTransition(runId, 'running', 'completed', '2026-09-11T00:01:00.000Z');
+  return runId;
+}
+
+describe('failedAgentCount: InMemoryRunStore and SqliteRunStore AGREE on the same scenario (item 1, DES-231 boundary (b))', () => {
+  it('a terminal run with 2 failed/refused of 3 agents reports failedAgentCount:2 on BOTH stores', async () => {
+    const clock = new FixedClock(new Date('2026-09-11T00:00:00.000Z'));
+    const memStore = new InMemoryRunStore(clock);
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-parity-failed-'));
+    dirs.push(dir);
+    const sqlStore = new SqliteRunStore(dir, clock);
+
+    const memRunId = await seedMixedRun(memStore);
+    const sqlRunId = await seedMixedRun(sqlStore);
+
+    const memRow = (await memStore.listRuns()).find((r) => r.runId === memRunId) as FailedCountSummary;
+    const sqlRow = (await sqlStore.listRuns()).find((r) => r.runId === sqlRunId) as FailedCountSummary;
+
+    expect(memRow.failedAgentCount).toBe(2);
+    expect(sqlRow.failedAgentCount).toBe(2);
+    expect(memRow.failedAgentCount).toBe(sqlRow.failedAgentCount);
+  });
+
+  it('a terminal run with zero agents OMITS failedAgentCount on BOTH stores (never 0)', async () => {
+    const clock = new FixedClock(new Date('2026-09-11T00:00:00.000Z'));
+    const memStore = new InMemoryRunStore(clock);
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-parity-failed-'));
+    dirs.push(dir);
+    const sqlStore = new SqliteRunStore(dir, clock);
+
+    const memRunId = await seedZeroAgentRun(memStore);
+    const sqlRunId = await seedZeroAgentRun(sqlStore);
+
+    const memRow = (await memStore.listRuns()).find((r) => r.runId === memRunId) as FailedCountSummary;
+    const sqlRow = (await sqlStore.listRuns()).find((r) => r.runId === sqlRunId) as FailedCountSummary;
+
+    expect(memRow.failedAgentCount).toBeUndefined();
+    expect(sqlRow.failedAgentCount).toBeUndefined();
   });
 });

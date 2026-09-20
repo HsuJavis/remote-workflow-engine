@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { SqliteRunStore } from '../../src/store/sqlite-run-store.js';
 import { FixedClock } from '../../src/clock.js';
 import type { RunSummary, RunStatusView } from '../../src/types.js';
@@ -132,5 +133,88 @@ describe('failedAgentCount on the _USAGE_PROJECTION read surface (DES-234 cases 
     writeSnapshot(store, runId, { phases: [], agents: [{ state: 'done' }, { state: 'done' }], workflowNodes: [] });
     const rows = (await store.listRuns()) as Array<RunSummary & { failedAgentCount?: number }>;
     expect(rows.find((r) => r.runId === runId)?.failedAgentCount).toBe(0);
+  });
+});
+
+// v35 (item 2 of the Gate 8 return, TASK-235 dod (6)): a GENUINE pre-v35 on-disk fixture, not the
+// structural argument ("the ALTER TABLE idiom matches five prior additive columns") that carried
+// this claim before — that argument is exactly the reasoning shape that produced REQ-209's own
+// defect (a check that structurally cannot detect the thing it claims to verify). Built by hand
+// with raw SQL matching the schema as it stood immediately before v35 (every column/table the
+// constructor creates EXCEPT the `error` ALTER), one row inserted directly (no `error` column
+// exists yet), then opened with the CURRENT SqliteRunStore so the real migration runs. Asserts
+// all four read sites (`listRuns`, `list`, `getRun`, `getError`) return cleanly with `error`
+// NULL/omitted — never a crash, never a stale value invented from nothing.
+describe('a genuine pre-v35 on-disk fixture migrates cleanly (TASK-235 dod (6))', () => {
+  let dir: string;
+  let fixtureRunId: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'rwe-it-pre-v35-fixture-'));
+    // Build the OLD schema by hand — the exact statements SqliteRunStore's constructor ran up
+    // through v26, MINUS v35's `error` column (which does not exist in this file yet).
+    const raw = new Database(join(dir, 'index.db'));
+    raw.exec(`
+      CREATE TABLE runs (
+        runId TEXT PRIMARY KEY,
+        name TEXT,
+        status TEXT NOT NULL,
+        scriptVersion TEXT NOT NULL,
+        createdAt TEXT NOT NULL,
+        result TEXT,
+        script TEXT,
+        args TEXT,
+        budget TEXT
+      );
+    `);
+    raw.exec(`
+      CREATE TABLE transitions (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        runId TEXT NOT NULL,
+        from_status TEXT,
+        to_status TEXT NOT NULL,
+        ts TEXT NOT NULL
+      );
+    `);
+    raw.exec(`
+      CREATE TABLE run_snapshots (
+        runId TEXT PRIMARY KEY,
+        json TEXT NOT NULL
+      );
+    `);
+    raw.exec('ALTER TABLE runs ADD COLUMN started_by TEXT');
+    raw.exec('ALTER TABLE runs ADD COLUMN principal TEXT');
+    raw.exec('ALTER TABLE runs ADD COLUMN effective_params TEXT');
+    raw.exec('ALTER TABLE runs ADD COLUMN legacy_substitution TEXT');
+    raw.exec('ALTER TABLE runs ADD COLUMN price_book TEXT');
+    // NOTE: no `error` column — this file predates v35/DES-231.
+    fixtureRunId = 'pre-v35-fixture-run';
+    raw
+      .prepare('INSERT INTO runs (runId, name, status, scriptVersion, createdAt, script, args, budget) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(fixtureRunId, 'pre-v35-workflow', 'failed', 'v1', '2026-01-01T00:00:00.000Z', 'return 1;', 'null', 'null');
+    raw.close();
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('the current SqliteRunStore opens the old file, migrates it, and all four read sites are clean', async () => {
+    // Opening with the CURRENT store is the migration itself — the constructor's
+    // `ALTER TABLE runs ADD COLUMN error TEXT` runs for real against this old file.
+    const store = new SqliteRunStore(dir, CLOCK) as StoreWithError;
+
+    const fromList = (await store.listRuns()) as ProjectedSummary[];
+    const fromFilteredList = (await store.list()) as ProjectedSummary[];
+    const fromGetRun = (await store.getRun(fixtureRunId)) as ProjectedView | null;
+    const fromGetError = await store.getError(fixtureRunId);
+
+    const listRow = fromList.find((r) => r.runId === fixtureRunId) as unknown as { error?: unknown } | undefined;
+    const filteredListRow = fromFilteredList.find((r) => r.runId === fixtureRunId) as unknown as { error?: unknown } | undefined;
+
+    expect(listRow?.error).toBeUndefined();
+    expect(filteredListRow?.error).toBeUndefined();
+    expect((fromGetRun as unknown as { error?: unknown } | null)?.error).toBeUndefined();
+    expect(fromGetError).toBeNull();
+    // and the row is otherwise readable — the migration did not corrupt anything else on it.
+    expect(fromGetRun?.status).toBe('failed');
+    expect(fromGetRun?.runId).toBe(fixtureRunId);
   });
 });

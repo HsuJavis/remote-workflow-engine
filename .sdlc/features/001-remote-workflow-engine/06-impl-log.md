@@ -8813,3 +8813,75 @@ F13 本質上是渲染問題,單元層看不到 DOM。
 - **refactor:** n/a — one new test file addition, no logic touched; reviewed against the Karpathy
   "surgical" bar (one describe block, one assertion set, no changes to `mcp-facade.ts`/
   `workflow-view.ts`/`workflow-catalog.ts`).
+
+### IMPL-343 — v35 Gate 8 return, item 1: `InMemoryRunStore._toSummary` gains `failedAgentCount`
+
+- **status:** done
+- **traces:** DES-231, REQ-207
+- **greens:** IT-290
+- **files:** src/run-store.ts, tests/integration/run-store-parity.test.ts
+- **commit:** (uncommitted at report time)
+- **iter:** v35
+- **note:** **v35 Gate 8 return (item 1).** `SqliteRunStore._rowToSummary`/`_USAGE_PROJECTION`
+  emitted `failedAgentCount`; `InMemoryRunStore._toSummary` did not — two `RunStore`
+  implementations disagreeing on a field, invisible to any suite that runs only against the
+  in-memory store while production runs SQLite. Red confirmed first (`memRow.failedAgentCount`
+  read `undefined` while `sqlRow.failedAgentCount` read `2` on the identical mixed pass/fail
+  scenario). Fix: the SAME `agentCount != null && agentCount > 0` guard as DES-231 boundary (b) —
+  gated on agent presence alone, never on `usage` — counting agents whose `state` is `failed` or
+  `refused`. `tests/integration/run-store-parity.test.ts` extended with a new describe block that
+  runs the identical scenario through BOTH stores so they can never silently drift again.
+- **refactor:** surgical — one `if` block added after the existing usage-projection block in
+  `_toSummary`; no other logic in `run-store.ts` touched.
+
+### IMPL-344 — v35 Gate 8 return, item 5: `predictedLanes` surfaces `scan.unscannable` additively
+
+- **status:** done
+- **traces:** ARCH-149, REQ-208
+- **greens:** UT-295
+- **files:** src/dashboard.ts, tests/unit/dashboard-metrics.test.ts
+- **commit:** (uncommitted at report time)
+- **iter:** v35
+- **note:** **v35 Gate 8 return (item 5).** `predictedLanes` (`src/dashboard.ts:301`) returned a
+  silently empty or fallback-labelled array on an oracle parse failure, indistinguishable from a
+  script that genuinely predicts no/garbled lanes. Red confirmed first (`.unscannable` read
+  `undefined` on a script with valid-looking meta but unparseable code after it). Fix: an additive,
+  backward-compatible `.unscannable?: true` property set directly on the returned array (both on
+  the early `!derived.ok` empty-array return and on the normal lanes-map return) whenever
+  `scanAgentCalls`'s own `scan.unscannable` is true — an array with an extra property is still a
+  plain array to its one consumer, `mcp-facade.ts:519`'s `.find()`. A normal, cleanly-derivable
+  script never gains the property.
+- **refactor:** surgical — the function's existing two return points each gained one conditional
+  property assignment; the return type signature widened by an intersection type; no other logic
+  touched.
+
+### IMPL-345 — v35 Gate 8 return, items 2/6/7: test-only closures, no production code change
+
+- **status:** done
+- **traces:** DES-231, DES-237, DES-239, TASK-235, TASK-237, REQ-205, REQ-206, REQ-207, REQ-209
+- **greens:** IT-291, IT-292, UT-296
+- **files:** tests/integration/run-error-read-sites.test.ts, tests/integration/scan-unscannable-markers.test.ts (new), tests/unit/authoring-guide.test.ts
+- **commit:** (uncommitted at report time)
+- **iter:** v35
+- **note:** **v35 Gate 8 return (items 2, 6, 7) — no production code changed for any of the three.**
+  (2) TASK-235 dod (6)'s "a pre-v35 row reads back cleanly" claim was carried by a structural
+  argument ("the ALTER TABLE idiom matches five prior additive columns") — the same reasoning shape
+  that produced REQ-209's own defect. Replaced with a genuine pre-v35 on-disk SQLite file, hand-built
+  with the exact pre-v35 schema (no `error` column), one row inserted via raw SQL, then opened by the
+  CURRENT `SqliteRunStore` so the real migration runs; all four read sites assert clean. (6) DES-239
+  dod (7) required an integration test proving `toolSurfaceUnscannable` (`mcp-facade.ts:494`) AND
+  `PREDICTED_OVERLAY_UNAVAILABLE: reason=script-unscannable` (`server.ts:540`) both fire on a real
+  unscannable script — neither had one. New file
+  `tests/integration/scan-unscannable-markers.test.ts` reaches the grandfathered cohort (a version
+  row written before the oracle existed) the same way `diagram-contract-grandfather.test.ts`'s
+  v1-grandfather case does: register a scannable sibling, then rewrite the stored script in place
+  via direct SQL. (7) The implementer's fix to `src/authoring-guide.ts` (retiring the v21
+  "advertised but never applied" claim in favour of "a declared `.default` fills in the key when
+  the caller omits it") had no test forcing the sentence — added, mirroring
+  `tests/unit/tool-specs.test.ts`'s existing assertion on the SAME fact for `tool-specs.ts`'s
+  `run_start.args` description, so the guide and the tool schema cannot silently re-diverge.
+  Non-vacuity for (6) and (7) verified by hand (each marker/sentence toggled off independently,
+  confirmed the corresponding assertion fails for the right reason, then reverted with a clean
+  `git diff`) before this log entry was written.
+- **refactor:** n/a — pure test additions; no `src/` logic touched by this IMPL (item 1 and item 5's
+  `src/` changes are IMPL-343/IMPL-344 respectively).

@@ -41,6 +41,23 @@ describe('buildAuthoringGuide (UT-159, DES-157)', () => {
     expect(text).toMatch(/LEGACY_REREGISTER/);
   });
 
+  // v35 (item 7 of the Gate 8 return, REQ-206): the guide used to teach the retired v21 rule — "a
+  // declared args default is refused: advertised but never applied" — while `tool-specs.ts`'s own
+  // `run_start.args` description (asserted by tests/unit/tool-specs.test.ts's
+  // "states {} on omission and that a declared default is applied") says defaults ARE applied. A
+  // self-contradicting advertised surface between the human guide and the tool schema is exactly
+  // the defect class REQ-202/REQ-209 exist to prevent. Written test-first for THIS assertion (the
+  // sentence itself was already fixed by the implementer; no test forced it until now).
+  //
+  // Red reason (measured): before this test existed, nothing in the suite read this sentence at
+  // all — a regression back to the retired wording would pass every other test in this file.
+  it('the guide states a declared meta.params.args default IS applied on omission (matches tool-specs.ts, never the retired "advertised but never applied" claim)', () => {
+    const text = buildAuthoringGuide(CEILINGS);
+    const section = text.slice(text.indexOf('`meta.params.args` declares'));
+    expect(section).toMatch(/A declared `\.default` fills in the key when the caller omits it/);
+    expect(section).not.toMatch(/never applied/i);
+  });
+
   // v25 (DES-168, REQ-120, issue #61): the limit an author had NO way to learn. The owner's 3-wide
   // parallel() ran 2 branches in production and the guide said nothing about budget, fan-out width,
   // or their interaction — REQ-120 makes teaching it acceptance, not a nicety.

@@ -296,16 +296,25 @@ export function deriveLanes(
  *  from a legitimately empty graph; DES-197's facade contract is to emit no `agents` key on the
  *  phase in either case, never `[]` standing in for "unavailable" (that signal is the DAG route's
  *  own `PREDICTED_OVERLAY_UNAVAILABLE` warning, DES-198, a different call site). */
-export function predictedLanes(script: string): Array<{ index: number; title: string | null; agents: string[] }> {
+export function predictedLanes(script: string): Array<{ index: number; title: string | null; agents: string[] }> & { unscannable?: true } {
   const nodes = parseWorkflowSkeleton(script);
   const scan = scanAgentCalls(script);
   const derived = deriveExpectedGraph(nodes, scan);
-  if (!derived.ok) return [];
+  if (!derived.ok) {
+    // v35 (item 5, Gate 8 return): additive, backward-compatible — an array with an extra property
+    // is still a plain array to every existing `.map`/`.find` consumer (mcp-facade.ts:519).
+    const empty: Array<{ index: number; title: string | null; agents: string[] }> & { unscannable?: true } = [];
+    if (scan.unscannable) empty.unscannable = true;
+    return empty;
+  }
   const bySlotLane = new Map<number, string[]>();
   for (const slot of derived.graph.slots) {
     bySlotLane.set(slot.lane, [...(bySlotLane.get(slot.lane) ?? []), ...slot.labels]);
   }
-  return derived.graph.lanes.map((lane) => ({ index: lane.index, title: lane.title, agents: bySlotLane.get(lane.index) ?? [] }));
+  const result: Array<{ index: number; title: string | null; agents: string[] }> & { unscannable?: true } =
+    derived.graph.lanes.map((lane) => ({ index: lane.index, title: lane.title, agents: bySlotLane.get(lane.index) ?? [] }));
+  if (scan.unscannable) result.unscannable = true;
+  return result;
 }
 
 /** Logical grid cell — NO pixel coords (no x/y/width/height). Stable id across re-layout calls. */

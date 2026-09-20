@@ -462,6 +462,12 @@ export class InMemoryRunStore implements RunStore {
       summary.tokensTotal = usage.tokens.input + usage.tokens.output + usage.tokens.cacheRead + usage.tokens.cacheWrite;
       if (agents !== undefined) summary.agentCount = agents.length;
     }
+    // v35 (DES-231 boundary (b), item 1 of the Gate 8 return): the SAME `agentCount != null &&
+    // agentCount > 0` guard as SqliteRunStore's `_rowToSummary` — gated on agent presence alone,
+    // NOT on `usage` — so the two stores can never disagree on this field for the same run.
+    if (agents !== undefined && agents.length > 0) {
+      summary.failedAgentCount = agents.filter((a) => a.state === 'failed' || a.state === 'refused').length;
+    }
     return summary;
   }
 
