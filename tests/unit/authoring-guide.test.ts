@@ -207,10 +207,12 @@ describe('the guide teaches the per-agent tool surface and why to empty it (UT-1
     expect(text).toMatch(/tool call/i);
   });
 
-  it('disambiguates the three layers by their real names, since guessing between them is the defect', () => {
-    // per-call `allowedTools` > agentType frontmatter `tools` > config `defaultAllowedTools`
+  it('disambiguates the two layers by their real names, since guessing between them is the defect', () => {
+    // v34 (REQ-203): the agentType frontmatter `tools` layer is retired; only two layers remain —
+    // per-call `allowedTools` > config `defaultAllowedTools`. See UT-276 for the section-level
+    // assertion that `agentType` leaves no trace in the built guide at all.
+    expect(text).toMatch(/allowedTools/);
     expect(text).toMatch(/defaultAllowedTools/);
-    expect(text).toMatch(/agentType/);
   });
 
   it('warns that an unknown agent() option key is refused, not ignored', () => {

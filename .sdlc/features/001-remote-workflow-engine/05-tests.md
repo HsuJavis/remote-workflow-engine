@@ -9662,11 +9662,22 @@ and the KNOWLEDGE — a small model handed Write/Edit/Bash answers with a tool-c
 of prose — the cold subject had to derive from a failing run. REQ-117's standing rule is that
 knowledge a cold model had to derive belongs on the surface. The cases assert the guide names
 `allowedTools`, shows the `allowedTools: []` spelling verbatim, states the small-model lesson, and
-disambiguates the three layers by their real names (`allowedTools` / `agentType` frontmatter
-`tools` / `defaultAllowedTools`) — guessing between those three is the whole defect.
+disambiguates the layers by their real names — guessing between them is the whole defect.
 `docs/AUTHORING.md` is regenerated from the same builder, so UT-160's byte-lock covers the prose.
 Red before the fix: 4 of 5 (the fifth, `PARAM_UNKNOWN`, was already in the guide's error table —
 recorded as NOT observed red, rather than implied).
+
+**v34 amendment (2026-09-20, tests gate, REQ-203/UT-276):** at v25 the layers disambiguated here
+were THREE (`allowedTools` / `agentType` frontmatter `tools` / `defaultAllowedTools`); v34 retires
+the `agentType` frontmatter layer whole (ARCH-137/DES-225) and UT-276 (same file) now asserts
+`agentType` appears NOWHERE in the built guide. The title/body above is left as this row's own
+historical record of what v25 shipped; the LIVE assertion in `tests/unit/authoring-guide.test.ts`
+was rewritten this pass to disambiguate the surviving TWO layers (`allowedTools` /
+`defaultAllowedTools`) instead — see this file's own v34 section (IT-282's neighbourhood) and
+`state.yaml`'s `gates.tests` FOLLOW-UP note for the corrected wording and the reason (the case at
+`authoring-guide.test.ts:210-214` was the ONE red in the reported 3057/1 baseline). `iter:` stays
+v25 on this row per house convention (a corrected assertion inside an existing UT does not bump the
+row's own `iter:`; TASK-229/UT-276 carry the v34 `iter:` for the retirement itself).
 
 ### IT-133 — a terminal state that leaves live work behind, and a terminal status with no transition row, are both recorded (#53)
 - **status:** green
@@ -13670,6 +13681,50 @@ rationale item 9, overriding ARCH-137's deletion line for that fixture specifica
 genuine pre-v34 legacy shape the retirement's tests need as input) — no rename, no existing
 importer touched.
 
+### IT-282 — `dashboard-lib-agent.test.js`: the OTHER half of DES-225's totality claim — `deriveAgentRecords` + the dashboard projection over a legacy row
+- **status:** green
+- **traces:** DES-225, ARCH-137, ADR-061, TASK-229, REQ-203
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v34
+
+Mode B (Gate 5 closeout, written after Gate 6/7 already landed): DES-225 states the legacy fixture
+must be read "through `deriveAgentRecords` + the dashboard projection → clean render, disclosure
+line absent, no crash" — IT-175 above only ever proved the projection half (a hand-built record
+fed straight into `panelModel`). This test drives the SAME two-step pipeline
+`McpFacade.runAgentLog` uses in production (`src/mcp-facade.ts:688-717`): a `harness` transcript
+event carrying `HARNESS_APPLIED` (the same literal IT-175 and DES-225 rationale item 9 name as the
+genuine pre-v34 legacy shape) goes through `deriveAgentRecords(transcripts, 'running')` to derive
+the `AgentRecord`, and the harness descriptor is read independently (as production does) rather
+than through `deriveAgentRecords` — which itself only ever lifts `model`/`provider`/`label`/
+`phase`/`phaseIndex` off the descriptor and never touches `systemPrompt`, so it is read-total over
+the legacy shape by construction (INV-V34-3); the crash risk actually worth pinning lives in
+`panelModel`, which IT-175 already covers and this test re-covers from upstream of the real
+pipeline. Two cases: (1) `deriveAgentRecords` derives a `running` record with the descriptor's
+model/provider, no throw; (2) `panelModel(record, HARNESS_LEGACY_PRE_V34, …)` does not throw, has no
+`systemPromptNote` key, and renders all six stat cards with the model line naming the record's own
+model/provider — "clean render" per the design's own words, not merely "did not throw".
+
+Mock policy (unit, `.js`, `allowJs` without `checkJs` per ADR-049/DES-225 rationale item 10):
+literal-fixture oracle, no I/O; two `.ts` imports with explicit extensions (the bare `.js` specifier
+this repo's other cross-extension imports use does not resolve from a plain `.js` test file under
+this project's Vite config): `deriveAgentRecords` from `../../src/run-store.ts`, and
+`HARNESS_LEGACY_PRE_V34` — DES-225's own named fixture, not a lookalike local literal — from
+`../fixtures/dashboard-wire.ts`; the `.ts`-fixture precedent this file's own header already
+documents, `dashboard-lib-strings.test.js:28`, uses the same explicit-extension form for the same
+reason.
+
+**GREEN ON FIRST RUN, not red-then-green (honest — not a TDD violation).** Written at Gate 5
+closeout after TASK-229's Gate 6/7 implementation already landed; DES-225's read path was already
+required to be TOTAL (INV-V34-3) and `panelModel`'s legacy-shape totality was already fixed in the
+same commit that IT-175 proves. There is no remaining defect for this test to catch red — it is a
+regression lock on a property the implementation already delivers, which is the expected outcome
+for a Gate-5-shaped test written after Gate 7 rather than before it. Measured:
+`npx vitest run tests/unit/dashboard-lib-agent.test.js` → 21/21 pass (19 pre-existing + 2 new, both
+green immediately). `npx tsc --noEmit` → exit 0 (the `.ts` import resolves; this file itself stays
+outside `checkJs`).
+
 ### UT-273 — `agent-executor-params.test.ts`: `agentType` in `req.opts` is recorded-then-thrown `PARAM_UNKNOWN`/`AGENT_OPT_RETIRED`
 - **status:** red
 - **traces:** DES-226, ARCH-137, ADR-063, TASK-229, REQ-203, REQ-096
@@ -13811,8 +13866,9 @@ against a booted engine.
 
 Proven by: UT-270 + IT-173 (registration refuses `agentType:` with a coded marker) + UT-273 + IT-176
 (a pre-v34 pinned script is refused at DISPATCH, observable through `workflow_status`, not silently
-degraded) + UT-274 (a stale `agentDefinitionsDir` warns-and-boots, never fails closed) + IT-175 (the
-dashboard disclosure line is ABSENT on a legacy row, not a regression) + UT-275/UT-276 (the
+degraded) + UT-274 (a stale `agentDefinitionsDir` warns-and-boots, never fails closed) + IT-175/
+IT-282 (the dashboard disclosure line is ABSENT on a legacy row read through both the projection and
+the derive+projection pipeline, not a regression) + UT-275/UT-276 (the
 advertised text no longer teaches a retired mechanism). All red today (see above); `real:false` per
 convention — Gate 7.5's own text-sweep protocol (ADR-063) is the real-tier evidence this VAL points
 at.
@@ -13833,9 +13889,12 @@ today except IT-174 (already-true, pinned); `real:false` per convention.
 
 ### v34 retirement register (bookkeeping — file deletion is TASK-229's job, not this gate's)
 
-Six test files/cases retire WITH the `agentType` mechanism they pin (ARCH's own v28-precedent form:
-re-authored under their own id where the surviving behaviour still needs a pin, never silently
-deleted). Named here now so a later Gate does not read their disappearance as an unexplained gap:
+Eight test files/cases retire WITH the `agentType` mechanism they pin (ARCH's own v28-precedent
+form: re-authored under their own id where the surviving behaviour still needs a pin, never
+silently deleted; count corrected 2026-09-20 from an earlier "six" that undercounted by combining
+two whole-file retirements — UT-236, UT-025 — into one row, and left UT-025 unnamed entirely — see
+those two rows' own correction notes below). Named here now so a later Gate does not read their
+disappearance as an unexplained gap:
 
 | Retiring (ledger id) | Where | Reads as | Owed to |
 |---|---|---|---|
@@ -13844,7 +13903,9 @@ deleted). Named here now so a later Gate does not read their disappearance as an
 | `tests/integration/agent-type-composition-root.test.ts` = **IT-016** (whole file) | retires with `src/agent-definitions.ts` (ARCH-137) | 隨機制消失 — no successor: 0 of 22 registered versions ever used the composition root in production | Gate 6, TASK-229 |
 | `tests/integration/main-composition-root-agent-types.test.ts` = **IT-022** (whole file) | retires with `ServerConfig.agentDefinitionsDir` (ARCH-139) | 隨機制消失 — superseded by UT-274 | Gate 6, TASK-229 |
 | the `agentType` cases inside `tests/integration/dashboard-disclosure.test.ts` (REQ-136 real-run block, lines ~228-291 — this block is **VAL-211**'s `real:true` Gate 7.5 evidence today) | retires with the composition root the block boots (agents/*.md frontmatter) | 隨機制消失 — REQ-136's own disclosure PROPERTY survives (the panel names it "does not regress"), re-verified by IT-175 against a legacy row instead of a live agentType run. **Named risk, not this gate's to resolve** (REQ-136's retirement is Gate 1's per the architecture's own register): VAL-211 is currently `real:true` on a mechanism this iteration deletes — its Gate 7.5 evidence cannot be re-run as-is once `agentType` is gone, so whoever next touches REQ-136/VAL-211 (Gate 1 or Gate 7.5) needs a new `real:true` path, most likely IT-175's legacy-row scenario read back off a genuinely upgraded deployment | Gate 1 (requirements) for the REQ; Gate 7.5 (validator) for VAL-211's evidence |
-| the `agentType` cases inside `tests/unit/agent-executor-harness-descriptor.test.ts` / `tests/integration/agent-log-harness-shape.test.ts` / `tests/integration/redact-sweep.test.ts` (per ARCH-137's deletion table) | retires with `def?.tools`/`systemPrompt` decoration | 隨機制消失 — non-agentType coverage in the same files is UNTOUCHED and stays green (confirmed: agent-log-harness-shape.test.ts's 7 pre-existing cases including the provenance/materialized ones pass unchanged after this gate's additions) | Gate 6, TASK-229 |
+| `tests/unit/agent-executor-harness-descriptor.test.ts` = **UT-236** (whole file) | retires with `AgentTypeDef`/the ONE decoration site's `systemPrompt` strip it pinned (ARCH-137/DES-225) | 隨機制消失 — **corrected 2026-09-20 (this gate; found wrong at TASK-229 implementation time)**: an earlier draft of this register bundled UT-236 into the same row as `agent-log-harness-shape.test.ts`/`redact-sweep.test.ts` (now the LAST row in this table) and claimed it had surviving non-`agentType` cases that stay green. It does not — the whole file imports `AgentTypeDef` from `agent-executor.js` (`import { AgentExecutor, type AgentTypeDef } from '../../src/agent-executor.js'`), a type TASK-229 deleted along with `src/agent-definitions.ts`, so every case in the file is agentType-shaped and the file cannot compile at all post-cut, let alone partially survive. Confirmed on disk: the file no longer exists (`git log --diff-filter=D` shows it deleted whole in `21ad773`) and `agent-executor.ts` no longer exports `AgentTypeDef`. The `descriptor.prompt`/`systemPrompt` property UT-236 used to pin is superseded by IT-174's pin under the 2-arg `composePrompt` regime | Gate 6, TASK-229; register corrected Gate 5 (this gate) |
+| `tests/unit/agent-executor-allowed-tools.test.ts` = **UT-025** (whole file) | retires with `AgentTypeDef.tools`/the frontmatter-`tools`-into-`opts.allowedTools` threading it pinned (ARCH-137/DES-225, D-F11) | 隨機制消失 — **not named in any earlier draft of this register at all (found missing at TASK-229 implementation time, added by this gate)**: the whole file imports `AgentTypeDef` from `agent-executor.js`, the same type UT-236's row above names as deleted, so it retires for the identical reason and cannot survive partially. Confirmed on disk: the file no longer exists (`git log --diff-filter=D` shows it deleted whole in `21ad773`). No successor test is owed — the two-layer tool surface (`allowedTools` → `defaultAllowedTools`) this file's frontmatter-threading step fed into no longer has an `agentType` frontmatter layer to thread FROM | Gate 6, TASK-229; register corrected Gate 5 (this gate) |
+| the `agentType` cases inside `tests/integration/agent-log-harness-shape.test.ts` / `tests/integration/redact-sweep.test.ts` (per ARCH-137's deletion table) | retires with `def?.tools`/`systemPrompt` decoration | 隨機制消失 — non-agentType coverage in the same files is UNTOUCHED and stays green (confirmed: agent-log-harness-shape.test.ts's 7 pre-existing cases including the provenance/materialized ones pass unchanged after this gate's additions; neither file was fully deleted — both retain their `provenance` union's `'agentType'` string literal deliberately, per INV-V34-3, which is a stored-shape READ admission, not a live agentType CASE, and is not itself something to retire) | Gate 6, TASK-229 |
 
 Also retiring (named at Gate 1/requirements level per the architecture's own retirement register, not
 this gate's to touch): REQ-094's five-segment composition clause and REQ-136's disclosure-surface
@@ -13853,7 +13914,7 @@ clause in `01-requirements.md` — both 隨機制消失, not this gate's file.
 ### Exit-gate self-check (Mode A)
 
 1. **Each key DES has a UT; each REQ has a VAL.** DES-223→UT-268/UT-269; DES-224→UT-270/IT-173;
-   DES-225→UT-271/IT-174/IT-175; DES-226→UT-273/IT-176; DES-227→UT-274; DES-228→UT-272/IT-177;
+   DES-225→UT-271/IT-174/IT-175/IT-282; DES-226→UT-273/IT-176; DES-227→UT-274; DES-228→UT-272/IT-177;
    DES-229→UT-275/UT-276. REQ-202→VAL-222; REQ-203→VAL-223; REQ-204→VAL-224.
 2. **Tests are all red for the right reason** (measured, not asserted): running the 12 touched
    files together gives 360 tests, 32 new failures, 328 passes — matching the sum computed by hand

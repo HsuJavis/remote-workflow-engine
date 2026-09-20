@@ -6713,3 +6713,85 @@ named DES-226's "parallel() arm" requirement as satisfied by an existing generic
 (`sandbox-refusal-error-code.test.ts`) rather than duplicating it; named two touched files sitting
 outside every TASK's `files:` list as a heads-up, not a violation. Full test suite re-run after
 every fix: still exactly 32/360 red, 328 pass, zero regressions; tsc and trace unchanged.
+
+## v34 Gate 5 closeout — four deferred items (2026-09-20, tests gate)
+
+Gate 6 (TASK-228..230) landed the `agentType` retirement and left four items explicitly deferred to
+the tests gate (an implementer must not edit tests). All four closed this pass; nothing in `src/`
+touched.
+
+**(1) UT-166 corrected, not weakened.** `tests/unit/authoring-guide.test.ts:210-214`'s
+"disambiguates the three layers by their real names" case asserted `agentType` appears in the built
+guide — the one red in the reported 3057/1 baseline, because UT-276 (also in this file, v34) now
+asserts the opposite: `agentType` must NOT appear anywhere in the built guide, and it doesn't
+(confirmed: `grep -n agentType src/authoring-guide.ts` finds only the two-layer boundary comment,
+never guide OUTPUT text). Rewrote the case and its comment to pin the two-layer truth
+(`allowedTools`/`defaultAllowedTools`) instead, leaving the rest of UT-166 (the tool-surface
+teaching, the empty-surface spelling, the small-model lesson, the `PARAM_UNKNOWN` warning) exactly
+as it was — that's the part of UT-166 the v34 retirement note at :336-341 already says survives.
+Verified: `npx vitest run tests/unit/authoring-guide.test.ts` → 47/47 pass.
+
+**(2) DES-225's missing totality half written as IT-282.** DES-225 states
+`HARNESS_LEGACY_PRE_V34` must be read "through `deriveAgentRecords` + the dashboard projection →
+clean render, disclosure line absent, no crash"; IT-175 only ever proved the projection half (a
+hand-built record fed straight into `panelModel`). IT-282 (added to
+`tests/unit/dashboard-lib-agent.test.js`) drives the actual two-step pipeline
+`McpFacade.runAgentLog` uses in production (`src/mcp-facade.ts:688-717`): a `harness` transcript
+event carrying `HARNESS_LEGACY_PRE_V34` — DES-225's own named fixture export
+(`tests/fixtures/dashboard-wire.ts:60`), imported by explicit `.ts` extension, not this test file's
+local `HARNESS_APPLIED` lookalike — goes through
+`deriveAgentRecords(transcripts, 'running')` to derive the `AgentRecord`, and the harness descriptor
+is read independently (as production does), then both go into `panelModel`. Two cases: derive
+does not crash and produces a `running` record with the descriptor's model/provider; `panelModel`
+does not crash, has no `systemPromptNote` key, and renders all six stat cards with the model line
+naming the record's own model/provider. Needed an explicit `.ts` extension on the
+`deriveAgentRecords` import (`../../src/run-store.ts`) — a bare `.js` specifier does not resolve
+from a plain `.js` test file under this project's Vite config (the `.ts`-fixture precedent this
+file's own header already documents, `dashboard-lib-strings.test.js:28`, uses the same
+explicit-extension form). **Green on first run, not red-then-green** — honestly reported as such,
+not a TDD violation: this is Gate-5-shaped work written AFTER Gate 6/7 already landed, DES-225's
+read path was already required to be TOTAL (INV-V34-3), and `panelModel`'s legacy-shape totality
+was already fixed in the same commit IT-175 proves. There was no remaining defect for this test to
+catch red; it is a regression lock on a property the implementation already delivers. Registered in
+`05-tests.md` (status: green, result: pass) with its `traces:`, cross-referenced into DES-225's
+exit-gate line and VAL-223's proven-by list. Verified:
+`npx vitest run tests/unit/dashboard-lib-agent.test.js` → 21/21 pass (19 pre-existing + 2 new).
+
+**(3) v34 retirement register corrected.** Confirmed on disk (both files absent,
+`git log --diff-filter=D` shows both deleted whole in `21ad773`, both imported the now-deleted
+`AgentTypeDef` type from `agent-executor.js` so neither could have partially survived a type-check):
+`tests/unit/agent-executor-allowed-tools.test.ts` (UT-025) was not named anywhere in the register;
+`tests/unit/agent-executor-harness-descriptor.test.ts` (UT-236) was bundled into a combined row with
+`agent-log-harness-shape.test.ts`/`redact-sweep.test.ts` and credited with surviving non-agentType
+cases it does not have. Split the combined row into three: UT-236 alone (retires whole, corrected),
+UT-025 alone (retires whole, newly named), and the remaining two files (which genuinely do retain
+non-agentType coverage — confirmed by reading them: `agent-log-harness-shape.test.ts`'s only
+`agentType` reference is the untouched `provenance` union literal, `redact-sweep.test.ts`'s is a
+comment). Register's item count corrected 6→8 with a note explaining the undercount.
+
+**(4) TASK-229 DoD item (4) corrected.** It claimed the dispatch-time `AGENT_OPT_RETIRED` refusal's
+`detail.violation` marker is "observable through `workflow_status`". Read `run-manager.ts`'s
+`toErr()` (:150-156): it keeps only `{code, message}` off a caught error and drops the thrown
+error's `.detail` object entirely, so the structured marker never reaches `mgr.status()`'s run-level
+`error`. What IT-176 actually asserts and passes (confirmed by reading it, including its own inline
+NOTE at :138-146 which had already flagged this exact gap for Gate 6) is the per-agent record's
+`detail` STRING, set by `_sink.capture` before the throw. Rewrote the DoD clause to state that truth
+and added the sentence routing `toErr()` widening to v35 (failed-run error observability), per
+`state.yaml pending[1]`'s own routing decision — not smuggled into this task untested.
+
+**state.yaml**: `gates.tests` note appended (not replaced) with a FOLLOW-UP paragraph naming all
+four closures and the verified numbers; `updated:` bumped to `2026-09-20 20:46 Asia/Taipei`; the
+`pending[1]` ORCHESTRATOR ROUTING entry marked RESOLVED in place (kept verbatim below the mark, per
+this file's own convention of amending rather than deleting a decided marker). Re-parsed with
+`python3 -c "import yaml; yaml.safe_load(open(...))"` after editing — parses clean, no unescaped
+`"` or invalid `\'` introduced.
+
+**Contradiction found, reported not silently fixed**: none — all four items matched the dispatch
+prompt's description once checked against the files on disk; no additional defect surfaced beyond
+what was already named.
+
+Full regression not re-run in full this pass (scope is four narrow, independent doc/test edits with
+no `src/` change); touched-file numbers above plus `npx tsc --noEmit` (exit 0) are what was
+personally observed. Not committed: `tests/unit/authoring-guide.test.ts`,
+`tests/unit/dashboard-lib-agent.test.js`, `05-tests.md`, `03-tasks.md`, `state.yaml`, `journal.md`.
+Left for the orchestrator.

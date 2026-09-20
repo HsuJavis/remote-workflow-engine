@@ -11,6 +11,14 @@
 // Red reason (measured): `src/dashboard/lib/agent.js` does not exist (whole-file import failure).
 import { describe, it, expect } from 'vitest';
 import { panelModel, eventListModel, clipText } from '../../src/dashboard/lib/agent.js';
+// IT-282 (DES-225, ARCH-137, ADR-061, TASK-229, REQ-203): deriveAgentRecords is the other half of
+// DES-225's own totality claim ("HARNESS_LEGACY_PRE_V34 must be read through `deriveAgentRecords` +
+// the dashboard projection"); IT-175 above only ever fed the fixture straight into `panelModel`.
+import { deriveAgentRecords } from '../../src/run-store.ts';
+// IT-282 uses the fixture DES-225 names BY NAME (`HARNESS_LEGACY_PRE_V34`, not the local
+// `HARNESS_APPLIED` literal below) — explicit `.ts` extension, same precedent as
+// `dashboard-lib-strings.test.js:28`'s `DAG_WARNING_EXAMPLES` import.
+import { HARNESS_LEGACY_PRE_V34 } from '../fixtures/dashboard-wire.ts';
 
 const RECORD_RUNNING = {
   agentId: 'a1', state: 'running', provider: 'anthropic', model: 'claude-3-5-sonnet-20241022',
@@ -99,6 +107,53 @@ describe('lib/agent.js: panelModel over four record states (UT-247, DES-205)', (
     const vm = panelModel({ ...RECORD_RUNNING, unmapped: ['thinking_delta'] }, { ...HARNESS_APPLIED, mcpUnresolved: ['missing-server'] }, [], false, '2026-09-11T00:01:00.000Z', 'en');
     expect(JSON.stringify(vm)).toMatch(/missing-server/);
     expect(JSON.stringify(vm)).toMatch(/thinking_delta/);
+  });
+});
+
+// IT-282 (DES-225, ARCH-137, ADR-061, TASK-229, REQ-203): DES-225 states the legacy fixture "must be
+// read through `deriveAgentRecords` + the dashboard projection → clean render, disclosure line
+// absent, no crash" — IT-175 above proves only the projection half (a hand-built record fed
+// straight into `panelModel`). This describe drives the SAME two-step pipeline
+// `McpFacade.runAgentLog` actually uses in production (`src/mcp-facade.ts:688-717`): the agent
+// RECORD comes from `deriveAgentRecords(transcripts, status)` over the persisted transcript, and the
+// HARNESS descriptor comes from that same transcript's last `harness` event's `descriptor` field
+// (read independently, never through `deriveAgentRecords` — `deriveAgentRecords` itself only ever
+// lifts `model`/`provider`/`label`/`phase`/`phaseIndex` off that descriptor, never `systemPrompt`,
+// so it is read-total over the legacy shape by construction; the crash risk this test actually rules
+// out lives entirely in `panelModel`, the same place IT-175 covers). Uses `HARNESS_LEGACY_PRE_V34`
+// BY NAME, the exact export DES-225 itself names (`tests/fixtures/dashboard-wire.ts:60`, an alias of
+// that file's own `HARNESS_APPLIED`) — not this file's local `HARNESS_APPLIED` literal, so the test
+// literally exercises the fixture the design points at, not a lookalike. It still carries
+// `systemPrompt`, a field this version of the engine can no longer WRITE but must still READ without
+// crashing (INV-V34-3).
+//
+// Tier: unit (per IT-175's own house convention — an `IT-` id whose test is a pure literal-fixture
+// oracle, no I/O; `deriveAgentRecords` is pure over its `Map`/`RunStatus` arguments).
+describe('lib/agent.js + run-store.js: a legacy pre-v34 harness record survives the real derive+projection pipeline (IT-282, DES-225)', () => {
+  const legacyTranscripts = new Map([
+    ['a5', [{ ts: '2026-09-11T00:00:00.000Z', kind: 'harness', data: { agentId: 'a5', descriptor: HARNESS_LEGACY_PRE_V34 } }]],
+  ]);
+
+  it('deriveAgentRecords does not crash reading the legacy descriptor and derives a running record', () => {
+    const records = deriveAgentRecords(legacyTranscripts, 'running');
+    expect(records).toHaveLength(1);
+    expect(records[0].agentId).toBe('a5');
+    expect(records[0].state).toBe('running');
+    expect(records[0].model).toBe(HARNESS_LEGACY_PRE_V34.model);
+  });
+
+  it('panelModel over the derived record + the legacy harness descriptor: clean render, no crash, disclosure line absent', () => {
+    const [record] = deriveAgentRecords(legacyTranscripts, 'running');
+    expect(() => panelModel(record, HARNESS_LEGACY_PRE_V34, [], false, '2026-09-11T00:01:00.000Z', 'en')).not.toThrow();
+    const vm = panelModel(record, HARNESS_LEGACY_PRE_V34, [], false, '2026-09-11T00:01:00.000Z', 'en');
+    expect('systemPromptNote' in vm).toBe(false);
+    // "clean render": the panel's core stat cards are populated (six cards, REQ-135) and the model
+    // line names the record's own model/provider (both multi-character, non-vacuous values on this
+    // fixture — 'claude-3-5-sonnet-20241022' · 'anthropic'), not blank/undefined — over a record this
+    // pipeline just reconstructed from a legacy transcript.
+    expect(vm.stats.length).toBe(6);
+    const modelStat = vm.stats.find((s) => s.label === 'Model');
+    expect(modelStat.value).toBe(`${HARNESS_LEGACY_PRE_V34.model} — ${HARNESS_LEGACY_PRE_V34.provider} · —`);
   });
 });
 
