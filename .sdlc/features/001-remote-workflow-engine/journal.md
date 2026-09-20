@@ -7097,3 +7097,84 @@ did was restore the `sdlc-run` framing and rewrite the deleted steps onto Prompt
 correct action per the ruling regardless, but the "remove the warning banner" instruction had
 nothing left on disk to act on. Flagging so the orchestrator isn't surprised the diff shows no
 banner removal.
+
+## v34 — Gate 2 送回修復（architect，2026-09-20 23:55）
+
+Gate 8 送回四項 blocking findings（`send_back: ["architecture","impl","tests","validation"]`）。本輪
+**只做架構自己那一半，而且是純文字**：不重新拆解、不新開 ARCH/ADR/REQ、不動 `traces:`、不 bump
+`iter:`（被改的列本來就是 `iter: v34`，就是這一輪；照 v33 F6-1 的量測教訓，行內文字修正不鑄新的
+trace delta）。panel 已由 workflow 在送回後重跑（`.panel/architecture/adversarial.r1.md` 23:33、
+`adversarial.r2.md` / `quality-dimensions.r2.md` 23:44），本輪只綜整，未再 spawn。
+
+- **AC-2（做完）**：`INV-V34-1` 的「single named residual」句與 `ARCH-137` note 的「Accepted, named
+  tradeoff」句不再把 `defaultAllowedTools` 說成 operator 的 tool floor／restriction layer。改成程式
+  真正的行為（`claude-agent-sdk-client.ts:544-547` 用 `??`：per-call `allowedTools` 整包取代，永不相
+  交，所以它只是「呼叫端沒給時」的部署預設值，可被腳本向上覆蓋），post-hoc 稽核歸屬寫明是
+  `HarnessDescriptor.tools`，並把「這個部署沒有任何工具面天花板」當成**記錄下來但不建造**的結果，附
+  可量測的 revisit trigger——且照 quality lens 的自我更正，明講那個比較「今天沒有在跑」，是人工定期
+  檢查而不是自動機制。
+- **quality-dimensions #1（架構那一半做完，測試那一半交棒 Gate 5）**：ADR-064 要求的兩顆測試只落地
+  一顆（IT-177），另一顆從未寫也從未記成 descope——缺口照單承認。但它的**規格本身寫不出來**：
+  `projectAgentParams`（`workflow-view.ts:147-169`）只投影 model/effort/timeoutMs/appendPrompt，
+  `toolSurface`（`mcp-facade.ts:493-498`）只給腳本字面名稱或 `'default'` 哨兵，describe 根本不解析
+  任何工具層，所以「從 describe 讀出層數」沒有指涉對象。Gate 5 constraint 9 改寫成可寫的版本：
+  home（UT-114 檔）、fixture（含舊規格漏掉的 `params` 欄位——不一起寫成 legacy 形狀，整個案例就會
+  vacuous）、三條斷言（`LEGACY_REREGISTER` / `toolSurface` deep-equal / 回應裡不得出現 `WebFetch`），
+  並指定登記到 `05-tests.md` 的 DES-228 底下。
+- **AC-1（裁決做完，程式碼交棒 Gate 6）**：判 Remedy A（文件文字）勝過 Remedy B（`composeConfig`
+  預設值）——B 要同時刪掉 gateway 自己的 `?? BUILT_IN_CORE_TOOLS` 才會讓「只有兩層」為真，等於替所有
+  不經 `main.ts` 的建構重新武裝 VAL-003；不刪則把常數複製過模組邊界，正好落進這個 repo 已經有專門
+  回歸測試在守的 composeConfig 轉發 bug class。drop-in 句子、UT-160 byte-lock、UT-276 先加強（先紅後
+  綠）、以及把工作樹裡懸空的 `agents/researcher.md`／`agents/writer.md` 刪除併進同一個 commit 並記到
+  owning IMPL 的 `files:` 行，全部寫進 `02-architecture.md` §v34 send-back repair 的交棒表。
+- **DEPLOY.md §情境配方（交棒 Gate 7.5）**：整段改寫成純現況（提示詞原樣出現在 `run_agent_log` 的
+  `harness.prompt`，別放不想曝光的內容），不留任何 v34／以前／現在 的對比框架；順手併入 `:631`
+  「只有兩層優先序」→「只有兩層**可設定**的優先序」這一個字，否則 guide 修好了、手冊又變成同一事實
+  兩個答案。
+- **刻意不做**：兩個 lens 都同意的 `tool-specs.ts` `'default'` 哨兵定義句——不是四項 blocking
+  findings 之一，記在交棒段裡給下次碰那個檔案的人，不在送回輪裡加廣告文字。
+
+trace：1826 items / 77 gaps，缺口集合與修改前 baseline **逐字相同**（以 dashboard 的 gaps 陣列 diff
+驗證，非估計）。`owner_decisions: []`——ADR-064 維持 2026-09-20 已裁決 (A)。state.yaml：
+`gates.architecture.passed` 維持 true 並補記本輪、`current_stage → design`。
+
+## v34 — Gate 6 送回修復（implementer，2026-09-21）
+
+Gate 2 那一輪只做完架構自己那一半（AC-2）；本輪一次把剩下三項 Gate 8 blocking findings（AC-1／
+quality-dimensions #1／DEPLOY.md）全部關掉，範圍嚴格按 `02-architecture.md` §v34 send-back repair
+的交棒表執行，不重新拆解、不動別的東西。
+
+- **AC-1（做完）**：`authoring-guide.ts`「Two layers…」那句改用架構給的 Remedy A drop-in 句——
+  「Two layers are **settable**…若部署兩層都沒設，引擎套用內建核心集：Read/Write/Edit/Glob/Grep/
+  Bash」。`UT-276`（`authoring-guide.test.ts:357` 那個 describe block）先加強斷言（要求出現
+  "built-in" 與六個工具名），確認先紅——再讓程式碼補上句子後轉綠；`docs/AUTHORING.md` 同一 commit
+  重新產生（`npm run gen:authoring`），byte lock（`authoring-md-generated.test.ts`）維持綠。順手把
+  工作樹裡懸空的 `agents/researcher.md`／`agents/writer.md`（IMPL-340 拿掉 `agent-definitions.ts`
+  後孤立的舊 agent 定義檔，`src/`／`tests/` 已無任何引用）併進同一次修改，記到 IMPL-341 的 `files:`
+  行——不是新開一條 IMPL，因為這兩個檔案本來就是 IMPL-341 那次文字工作理應一併帶走的清理。
+- **quality-dimensions #1（做完）**：ADR-064／DES-228 這對測試欠的另一半，寫成新的 `UT-283`
+  （`tests/unit/workflow-describe-facade.test.ts`）。做法照架構重寫過的可寫規格：正常註冊一支兩個
+  label 的腳本（一個宣告 `allowedTools`、一個不宣告），再用跟 `resume-legacy-params.test.ts:172-173`
+  同一招直接對 `catalog.db` 下 raw SQL，把 `script`／`params`／`defaults` 三欄一次改成 legacy 形狀
+  （`params` 設 NULL、`defaults` 帶 `{"tools":["WebFetch"]}`——`WebFetch` 刻意選一個不在
+  `BUILT_IN_CORE_TOOLS`、也不在任何現存目錄版本裡的工具，命中就代表「一個非腳本來源的工具值漏到
+  了讀取面」）。三條斷言：`runnable:false`／`runnableReason:'LEGACY_REREGISTER'`；`toolSurface`
+  deep-equal `{withTools:['Edit','Read'], bare:'default'}`（純腳本推導，'default' 哨兵值本身也不算
+  漏工具值，只是没有值可推導）；`JSON.stringify(response)` 不含 `'WebFetch'`。**沒有動任何production
+  程式碼**——`toolSurface` 本來就只從 `scanAgentCalls(full.script)` 算，`resolveDetail` 的 SELECT
+  本來就不選 `defaults` 欄，這條測試是把已經成立的事實釘住，不是修 bug。登記到 `05-tests.md` 的
+  DES-228 底下，並在 `04-design.md` 該列的 `tests:` 補上交叉引用。新增 `IMPL-342` 記錄這次測試新增
+  （traces TASK-229/DES-228/ARCH-137/ADR-064）。
+- **DEPLOY.md §情境配方（做完）**：整段（`## 情境配方` 到下一個 `##` 之間）重寫成純現況陳述——拿掉
+  「v34 之後這條路的機制變了」「以前…不會回顯；v34 把這個機制整個拿掉了，現在…」「（v34 機制）」
+  這類對比／機制史敘事，只留操作步驟本身（0/1/2/5 已端對端實測、3/4 把角色提示詞貼進 `prompt`
+  參數的寫法）與必須知道的現況事實（角色提示詞會原樣出現在 `run_agent_log` 的 `harness.prompt`，
+  不要把不想曝光的內容寫進去）。順手把 `:627`「工具面只有兩層優先序」補上跟 guide 同一個字——
+  「只有兩層**可設定**的優先序」——避免 guide 修好了、手冊上還留著同一件事的另一個答案。
+
+驗證：`npx vitest run` → 412 files / 3062 passed / 26 skipped / 0 failed；`npx tsc --noEmit`
+兩份 tsconfig 皆乾淨。`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` → 1828 items /
+77 gaps——比送回前 baseline（1826/77）多 2 個項目（`IMPL-342`、`UT-283`，兩者在 dashboard 裡都
+正常渲染、無斷鏈），缺口數不變。`owner_decisions: []`——本輪沒有新的裁決留白。state.yaml：
+`gates.impl.passed` 維持 true 並補記本輪、`current_stage → verification`（Gate 8 送回的四項
+blocking findings至此全部關閉，下一步是 Gate 8 re-review）。

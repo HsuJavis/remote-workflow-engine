@@ -528,13 +528,23 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "const editor  = await agent('editor', { prompt: 'Fix the typo in README.md.', allowedTools: ['Read', 'Edit'] });\n" +
         '```\n\n' +
         // v34 (DES-229, TASK-230, REQ-202/203): the retired `agentType` frontmatter rung is gone —
-        // two layers, and the claim is scoped to the tool-calling (SDK gateway) path, because the
-        // direct-fetch transport has no tool surface at all (surfaceType:'none') and a cold client
-        // choosing it must not read a curated-tool promise that does not apply.
-        'Two layers set it, on the tool-calling (SDK gateway) path, and the first one present wins: ' +
-        "the per-call `allowedTools` above, then this deployment's configured `defaultAllowedTools`. " +
-        'Only the first is settable from a script. (The direct-fetch transport has no tool surface at ' +
-        'all — this section does not apply to it.)\n\n' +
+        // two SETTABLE layers, and the claim is scoped to the tool-calling (SDK gateway) path,
+        // because the direct-fetch transport has no tool surface at all (surfaceType:'none') and a
+        // cold client choosing it must not read a curated-tool promise that does not apply.
+        // v34 send-back repair (Gate 8 AC-1): the guide named only the two settable layers and
+        // omitted the built-in core-tool fallback (BUILT_IN_CORE_TOOLS,
+        // claude-agent-sdk-client.ts:190/544-547) that applies when a deployment configures
+        // neither — silent to a script author but not to the model, which never receives an
+        // unset tool surface. Named here rather than built by defaulting `defaultAllowedTools`
+        // in composeConfig (that would still need this sentence, since a cold author cannot read
+        // rwe.config.json, and it would duplicate BUILT_IN_CORE_TOOLS across a module boundary).
+        'Two layers are **settable**, on the tool-calling (SDK gateway) path, and the first one ' +
+        "present wins: the per-call `allowedTools` above, then this deployment's configured " +
+        '`defaultAllowedTools`. Only the first is settable from a script. If the deployment ' +
+        'configures neither, the engine applies a built-in core set — `Read`, `Write`, `Edit`, ' +
+        '`Glob`, `Grep`, `Bash` — so a session is never handed the CLI\'s full uncurated tool ' +
+        'list. (The direct-fetch transport has no tool surface at all — this section does not ' +
+        'apply to it.)\n\n' +
         '`allowedTools: []` means no tools at all, and for a prose-only task that is usually what you ' +
         'want — especially on a smaller model. A smaller model handed a working tool surface tends to ' +
         'answer with a tool call rather than with prose: ask it to produce a summary while it holds ' +

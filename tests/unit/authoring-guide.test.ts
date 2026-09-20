@@ -364,6 +364,19 @@ describe('the guide teaches v34 prompt layering and the two-layer tool surface (
     expect(section).not.toContain('agentType');
   });
 
+  // Gate 8 send-back AC-1: the guide advertised exactly two layers and never named the built-in
+  // core-tool fallback (BUILT_IN_CORE_TOOLS, claude-agent-sdk-client.ts:190) that applies when a
+  // deployment configures neither layer. Red until the section names it and its six tools.
+  it('the tool surface section names the built-in core-tool fallback and its six tools (Gate 8 AC-1)', () => {
+    const start = text.indexOf("The agent's tool surface");
+    const next = text.indexOf('\n## ', start + 1);
+    const section = text.slice(start, next === -1 ? text.length : next);
+    expect(section).toMatch(/built-in/i);
+    for (const tool of ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash']) {
+      expect(section).toContain(tool);
+    }
+  });
+
   it('agentType does not appear anywhere in the built guide (the retired mechanism leaves no trace)', () => {
     expect(text).not.toContain('agentType');
   });

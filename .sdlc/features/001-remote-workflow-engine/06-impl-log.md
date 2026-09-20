@@ -8748,8 +8748,8 @@ F13 本質上是渲染問題,單元層看不到 DOM。
 - **status:** done
 - **traces:** TASK-230, DES-229, ARCH-087, ARCH-107, ADR-032, REQ-202, REQ-203
 - **greens:** UT-275, UT-276
-- **files:** src/tool-specs.ts, src/authoring-guide.ts, docs/AUTHORING.md, tests/unit/tool-specs.test.ts, tests/unit/authoring-guide.test.ts
-- **commit:** 21ad773
+- **files:** src/tool-specs.ts, src/authoring-guide.ts, docs/AUTHORING.md, tests/unit/tool-specs.test.ts, tests/unit/authoring-guide.test.ts, agents/researcher.md (deleted), agents/writer.md (deleted)
+- **commit:** 21ad773 (implementation) + <this send-back commit> (Gate 8 AC-1 repair below)
 - **iter:** v34
 - **note:** `tool-specs.ts`'s `run_start.overrides` description gains the three appendPrompt rules a
   cold client needs before its first call (declare-or-`PARAM_UNKNOWN`, the
@@ -8764,6 +8764,52 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   (`npm run gen:authoring`) in the same commit, byte-equal to the builder output (UT-160's lock).
   Landed immediately after TASK-229 per the ordering the task itself names (a one-commit doc window
   otherwise advertises a field the type no longer has).
+  **v34 send-back repair (Gate 8 AC-1, `02-architecture.md` §v34 send-back repair, Remedy A):** the
+  "Two layers…" sentence named only the two *settable* layers (`allowedTools`, `defaultAllowedTools`)
+  and never disclosed the built-in fallback (`BUILT_IN_CORE_TOOLS`,
+  `claude-agent-sdk-client.ts:190/544-547` — `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`) that a
+  session actually gets when a deployment configures neither. Fixed with the architecture's drop-in
+  clause (text only, per Remedy A — Remedy B, defaulting `defaultAllowedTools` to
+  `BUILT_IN_CORE_TOOLS` in `composeConfig`, was rejected there because the gateway's own `??
+  BUILT_IN_CORE_TOOLS` guards constructions that never pass through `main.ts`, e.g. the unit-tier
+  `new ClaudeAgentSdkGatewayClient({baseUrl})` and `server.ts`'s composition root — deleting it would
+  re-arm VAL-003 for those paths, and keeping both would duplicate the constant across the
+  `compose-config-v2-wiring.test.ts`-guarded module boundary). `UT-276`
+  (`tests/unit/authoring-guide.test.ts:357` block) strengthened FIRST to assert the section names
+  "built-in" and all six tools — confirmed red, then green after the clause landed; `docs/AUTHORING.md`
+  regenerated in the same commit (byte lock intact, `authoring-md-generated.test.ts` green). Folded
+  into this same commit: the two working-tree deletions orphaned by IMPL-340's `agent-definitions.ts`
+  removal (`agents/researcher.md`, `agents/writer.md` — no remaining reference in `src/`/`tests/`,
+  `grep -rln` clean) so no deletion sat loose in the tree.
 - **refactor:** reviewed at Gate 6.5+7 (this gate) as part of the wider v34 diff — no
   reuse/simplification/efficiency/altitude issue found in this task's slice (pure prose/description
-  edits, no logic).
+  edits, no logic). Send-back repair pass: surgical, one clause + one strengthened assertion, no
+  adjacent code touched.
+
+### IMPL-342 — TASK-229: the owed read-boundary test for ADR-064/DES-228 (Gate 8 quality-dimensions #1), written and green — no production code change
+
+- **status:** done
+- **traces:** TASK-229, DES-228, ARCH-137, ADR-064, REQ-203
+- **greens:** UT-283
+- **files:** tests/unit/workflow-describe-facade.test.ts, .sdlc/features/001-remote-workflow-engine/04-design.md, .sdlc/features/001-remote-workflow-engine/05-tests.md
+- **commit:** <this send-back commit>
+- **iter:** v34
+- **note:** **v34 send-back repair (Gate 8 quality-dimensions #1).** IMPL-340 landed IT-177 (the
+  resume-time refusal half of ADR-064/DES-228's pair) but the read-boundary half — proving the
+  "exactly two tool layers" claim through `workflow_describe` for a legacy-shaped row — was never
+  written and never disclosed as descoped (`05-tests.md`/`06-impl-log.md`/`journal.md` all grep-empty
+  for it before this commit). `02-architecture.md`'s send-back repair section corrected the
+  original spec ("assert the resolved layer count through `workflow_describe`") to a writable claim,
+  since `projectAgentParams` (`workflow-view.ts:147-169`) never projects a `tools` key and
+  `resolveDetail`'s SELECT (`workflow-catalog.ts:721-728`) never reads the `defaults` column — there
+  is no field a layer-count assertion could target. **No production code changed**: this is a pure
+  test addition proving behaviour that already holds (`toolSurface` was already, and remains,
+  computed only from `scanAgentCalls(full.script)` — never from the stored `defaults` column). Added
+  to `tests/unit/workflow-describe-facade.test.ts` (UT-114's home, same real-catalog-in-a-tmpdir
+  convention) rather than `advertised-surface-truth.test.ts` (IT-130) — DES-228's own text accepts
+  either. Registered under DES-228 in `05-tests.md` (UT-283) and cross-referenced from DES-228's
+  `tests:` line in `04-design.md`, per the architecture's instruction to record it as the second half
+  of the pair rather than a bare new row.
+- **refactor:** n/a — one new test file addition, no logic touched; reviewed against the Karpathy
+  "surgical" bar (one describe block, one assertion set, no changes to `mcp-facade.ts`/
+  `workflow-view.ts`/`workflow-catalog.ts`).

@@ -57,7 +57,7 @@ const verdict = await agent('judge', { prompt: 'Answer with one word: PASS or FA
 const editor  = await agent('editor', { prompt: 'Fix the typo in README.md.', allowedTools: ['Read', 'Edit'] });
 ```
 
-Two layers set it, on the tool-calling (SDK gateway) path, and the first one present wins: the per-call `allowedTools` above, then this deployment's configured `defaultAllowedTools`. Only the first is settable from a script. (The direct-fetch transport has no tool surface at all — this section does not apply to it.)
+Two layers are **settable**, on the tool-calling (SDK gateway) path, and the first one present wins: the per-call `allowedTools` above, then this deployment's configured `defaultAllowedTools`. Only the first is settable from a script. If the deployment configures neither, the engine applies a built-in core set — `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash` — so a session is never handed the CLI's full uncurated tool list. (The direct-fetch transport has no tool surface at all — this section does not apply to it.)
 
 `allowedTools: []` means no tools at all, and for a prose-only task that is usually what you want — especially on a smaller model. A smaller model handed a working tool surface tends to answer with a tool call rather than with prose: ask it to produce a summary while it holds `Write`, and the reply can come back as a tool-call envelope your script then has to unwrap. Emptying the surface removes the option and the model answers in text. It also makes the call markedly cheaper — the tool definitions are prompt tokens on every turn (measured on this engine: 162 input tokens with an empty surface against 1722 with the default one, for the same prompt).
 

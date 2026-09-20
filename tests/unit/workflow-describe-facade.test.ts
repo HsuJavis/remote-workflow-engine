@@ -16,11 +16,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { FixedClock } from '../../src/clock.js';
 import { WorkflowCatalog, resolveVersionRequest, type Channels } from '../../src/workflow-catalog.js';
 import { RunManager } from '../../src/run-manager.js';
 import { McpFacade } from '../../src/mcp-facade.js';
 import type { Principal } from '../../src/authz.js';
+import { synthesizeMermaid } from '../helpers/workflow-fixtures.js';
 
 const CLOCK = new FixedClock(new Date('2026-09-02T10:00:00.000Z'));
 const CTX: Principal = { kind: 'auth-disabled' };
@@ -85,4 +87,58 @@ describe('workflow_describe — resolve table-driven parity with run-admission (
 // registry); flagged as a test_defect in the Gate 6 PARIMPL report rather than silently dropped.
 describe.skip('workflow_regenerate_diagram — RETIRED v24 (ARCH-089, TASK-139): tool + port deleted, no replacement in this ledger', () => {
   it('placeholder — see test_defect UT-114 in the Gate 6 report', () => {});
+});
+
+// v34 send-back repair (Gate 8 quality-dimensions #1, ADR-064/DES-228 — the read-boundary half of
+// the pair; IT-177 already pins the resume-time refusal half). `projectAgentParams` never projects
+// a `tools` key and `resolveDetail`'s SELECT (workflow-catalog.ts:721-728) never reads the
+// `defaults` column at all, so the "exactly two tool layers" claim can only be tested by proving NO
+// deployment-side or legacy-side tool value reaches `workflow_describe` for a legacy-shaped row —
+// not by counting a layer that the read surface structurally cannot produce.
+//
+// Red reason: before this fix nothing asserted `toolSurface`/`runnableReason` together against a
+// row whose `defaults` column carries a retired `tools` value — `grep -rn toolSurface tests/`
+// returned zero hits.
+describe('workflow_describe over a legacy-shaped row never surfaces a tools value (DES-228, Gate 8 QD#1)', () => {
+  it('runnable:false/LEGACY_REREGISTER, toolSurface stays script-derived names only, and no tool value from `defaults` reaches the response', async () => {
+    const name = 'legacy-tools-describe';
+    // Registered with a BARE contract (no literal `allowedTools`) so a normal `register()` accepts
+    // it without needing a v2 mermaid tools value-triple. The declaring label's `allowedTools` is
+    // planted directly onto the `script` column below, alongside `params`/`defaults` — a v34+
+    // `register()` refuses a mermaid/script mismatch, but `workflow_describe`'s read path never
+    // re-validates one against the other (only `scanAgentCalls(full.script)` for `toolSurface`).
+    const bareScript =
+      "export const meta = { params: { agents: { " +
+      "withTools: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, " +
+      "bare: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } } };\n" +
+      "phase('Work');\n" +
+      "await agent('withTools', { prompt: 'x' });\n" +
+      "return await agent('bare', { prompt: 'y' });";
+    const legacyScript = bareScript.replace("agent('withTools', { prompt: 'x' })", "agent('withTools', { prompt: 'x', allowedTools: ['Read', 'Edit'] })");
+    const mermaid = synthesizeMermaid(bareScript);
+    const { version } = await catalog.register({ name, script: bareScript, mermaid });
+    await catalog.publish(name, version, 'release', null);
+
+    // Plant the legacy shape directly in `catalog.db` (same raw-SQL technique as
+    // resume-legacy-params.test.ts:172-173) — no v34 registration path can produce this row any
+    // more, so writing the columns directly is the only honest fixture. All three columns in ONE
+    // statement: `script` gains the declaring label's `allowedTools`, `params` goes legacy-shaped
+    // (NULL — no `agents` key) and `defaults` carries a tool value (`WebFetch`, in no
+    // `BUILT_IN_CORE_TOOLS` and in no live catalog version, so a hit means precisely "a non-script
+    // tool value reached the read surface").
+    const catalogDb = new Database(join(workRoot, 'catalog.db'));
+    catalogDb
+      .prepare('UPDATE workflow_versions SET script = ?, params = ?, defaults = ? WHERE name = ? AND version = ?')
+      .run(legacyScript, null, JSON.stringify({ tools: ['WebFetch'] }), name, version);
+    catalogDb.close();
+
+    const resp = await facade.workflowDescribe({ name }, CTX) as {
+      result?: { runnable?: boolean; runnableReason?: string | null; toolSurface?: Record<string, string[] | 'default'> };
+    };
+
+    expect(resp.result?.runnable).toBe(false);
+    expect(resp.result?.runnableReason).toBe('LEGACY_REREGISTER');
+    expect(resp.result?.toolSurface).toEqual({ withTools: ['Edit', 'Read'], bare: 'default' });
+    expect(JSON.stringify(resp)).not.toContain('WebFetch');
+  });
 });

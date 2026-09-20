@@ -13876,6 +13876,53 @@ Red reason (measured): the guide has no "prompt layering" heading at all; the to
 `tools` field; the string `agentType` appears in the built guide (confirmed at
 `authoring-guide.ts:531`). 3/3 new cases fail. 44 pre-existing cases in the file pass unchanged.
 
+**v34 send-back repair (Gate 8 AC-1) — strengthened in place, same test id:** a fourth case added to
+this describe block asserts the tool-surface section names "built-in" and all six
+`BUILT_IN_CORE_TOOLS` (`Read`/`Write`/`Edit`/`Glob`/`Grep`/`Bash`) — the guide named only the two
+*settable* layers and omitted the built-in fallback a session actually gets when a deployment
+configures neither. Confirmed red first (`expect(section).toMatch(/built-in/i)` failed against the
+pre-repair text), green after `authoring-guide.ts`'s "Two layers…" sentence gained the architecture's
+Remedy-A drop-in clause; `docs/AUTHORING.md` regenerated in the same commit (`authoring-md-
+generated.test.ts` byte lock stays green).
+
+### UT-283 — `workflow-describe-facade.test.ts`: a legacy-shaped registered row never surfaces a tools value through `workflow_describe` (DES-228, Gate 8 QD#1)
+- **status:** green
+- **traces:** DES-228, ARCH-137, ADR-064, TASK-229, REQ-203
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v34
+
+Mock policy (unit, DES-119 convention — same as UT-114): a REAL `WorkflowCatalog` (on-disk sqlite
+under a tmpdir) wired through a REAL `RunManager`; the legacy row is produced by writing the
+`script`/`params`/`defaults` columns directly into `catalog.db` in one `UPDATE` (same raw-SQL
+technique as `resume-legacy-params.test.ts:172-173`) — no v34 registration path can produce a row
+carrying a `defaults.tools` value any more.
+
+**v34 send-back repair (Gate 8 quality-dimensions #1) — the missing half of ADR-064/DES-228's pair.**
+`IT-177` (above) already pins the resume-time refusal half (a legacy snapshot with a `tools` key
+refuses `LEGACY_REREGISTER` rather than silently degrading). This is the READ-boundary half, owed
+since TASK-229 landed and never written or disclosed as descoped — `02-architecture.md`'s send-back
+repair section corrected the literal spec ("assert the resolved layer count through
+`workflow_describe`") to a writable one, since `projectAgentParams` never projects a `tools` key and
+`resolveDetail`'s SELECT (`workflow-catalog.ts:721-728`) never reads the `defaults` column at all: a
+layer-count assertion has no field to assert against. Written instead as a NEGATIVE proof: plant a
+legacy-shaped row (`params` NULL, `defaults:{"tools":["WebFetch"]}`, `WebFetch` chosen because it is
+in no `BUILT_IN_CORE_TOOLS` and in no live catalog version) whose script declares `allowedTools` on
+one label and omits it on another, then assert (i) `runnable:false` /
+`runnableReason:'LEGACY_REREGISTER'` — the population that could exhibit a third tool layer is
+exactly the population that can never execute; (ii) `toolSurface` deep-equals `{withTools:
+['Edit','Read'], bare:'default'}` — script-derived names plus the sentinel, nothing from `defaults`;
+(iii) `JSON.stringify(result)` does not contain `'WebFetch'` — the actual guard, failing the day
+`resolveDetail` starts selecting `defaults` or the facade starts resolving a tool value.
+
+Immediate green by design, same class as IT-102/IT-103's "legitimate immediate green" precedent in
+this file — not a red-because-unimplemented item. This is a PIN of behaviour that already holds
+(`toolSurface` was already, and remains, computed only from `scanAgentCalls(full.script)`), specified
+as such by `02-architecture.md`'s send-back repair (constraint 9(b)): the coverage gap was that no
+test asserted it, not that the behaviour was wrong. Measured before writing: `grep -rn toolSurface
+tests/` returned zero hits — the field `workflow_describe` serves for tool facts had no test at all.
+
 ### VAL-222 — REQ-202: a cold caller learns the appendPrompt bound and its ceiling attribution before/without a failed call
 - **status:** green
 - **traces:** REQ-202, DES-223

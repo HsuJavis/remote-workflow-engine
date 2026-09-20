@@ -166,28 +166,26 @@ curl -s http://localhost:8787/api/models | python3 -c \
 
 > 目標：讓 `agent()` 呼叫走**完整 Claude harness**（工具迴圈 + MCP），模型可以是本機 Ollama 或雲端
 > OpenRouter，能跑真正的 iso-agile-sdlc `sdlc-run`（每個 gate 換一顆角色/一顆模型）。步驟 0/1/2/5
-> 都經本機端對端實測；步驟 3/4 是 v34 拿掉 `agentType` 後的新寫法，其中的範例腳本經這台引擎自己的
-> 註冊掃描器（`scanAgentCalls`/`parseMetaParams`/`checkMermaid`）靜態驗過零違規，**沒有**經過真的
-> `workflow_register`／`run_start` 端對端跑一次——這台機器上沒有為了寫這份文件另外起一顆 engine。
+> 都經本機端對端實測；步驟 3/4（把角色提示詞內文貼進腳本 `prompt` 參數）其中的範例腳本經這台引擎
+> 自己的註冊掃描器（`scanAgentCalls`/`parseMetaParams`/`checkMermaid`）靜態驗過零違規，**沒有**
+> 經過真的 `workflow_register`／`run_start` 端對端跑一次——這台機器上沒有為了寫這份文件另外起一顆
+> engine。
 >
-> **v34 之後這條路的機制變了，能力沒有少**：伺服器端已經沒有可設定的系統提示詞層了——
-> `agentType`／`agentDefinitionsDir` 整套移除（傳 `agentType` 給 `agent()` 在**註冊時**被
+> **伺服器端沒有可設定的系統提示詞層**：傳 `agentType` 給 `agent()` 在**註冊時**被
 > `SCAN_VIOLATION`（detail 帶 `violation:'AGENT_OPT_RETIRED'`）拒絕、在**dispatch 時**被
 > `PARAM_UNKNOWN`（同樣帶 `violation:'AGENT_OPT_RETIRED'`）拒絕；`agentDefinitionsDir` 寫在
-> `rwe.config.json` 裡仍會被接受，但開機只印一行點名的警告、完全不生效）。
+> `rwe.config.json` 裡仍會被接受，但開機只印一行點名的警告、完全不生效。
 >
-> 要讓不同 gate 帶不同的角色提示詞，改成把那段文字寫進**腳本自己那次 `agent()` 呼叫的
+> 要讓不同 gate 帶不同的角色提示詞，把那段文字寫進**腳本自己那次 `agent()` 呼叫的
 > `prompt` 參數最前面**——見 `workflow_authoring_guide` 的「Prompt layering」一節，第3步有完整示範。
 >
-> ⚠️ **這個機制轉換帶一個必須知道的副作用，不是可以忽略的細節**：以前 `agentType` 那段系統提示詞
-> 在 transcript 裡會被 `stripFirstSegment` 剝掉，不會回顯；v34 把這個機制整個拿掉了，現在
-> `agent()` 送給模型的字串是「原樣」記錄的——`run_agent_log` 回的 `harness.prompt`
-> 就是「送給模型的逐字字串：腳本自己的 prompt，接著任何 appendPrompt override」，不再有另一段
-> systemPrompt 欄位替你藏起來。也就是說：**角色提示詞現在會跟著這個腳本每一個註冊版本一起，被任何
-> 讀得到這次 run 的 agent log 的人看到**（同一 principal，或有 cross-read 權限的 admin）。不要把
-> 你不想曝光的內容寫進角色提示詞——它不再是伺服器端的秘密。（單一例外：非常長的提示詞，持久化的
-> `harness.prompt` 會截到 4KB，頭 2048 字元 + 尾 2048 字元，中段省略；但實際送給模型的呼叫本身不受
-> 這個截斷影響，只有記錄下來給你事後看的那份被截。）
+> ⚠️ **角色提示詞不是伺服器端的秘密，這是必須知道的事實，不是可以忽略的細節**：`agent()` 送給模型
+> 的字串是「原樣」記錄的——`run_agent_log` 回的 `harness.prompt` 就是「送給模型的逐字字串：腳本自己
+> 的 prompt，接著任何 appendPrompt override」，沒有另一段欄位替你藏起來。也就是說：**角色提示詞會
+> 跟著這個腳本每一個註冊版本一起，被任何讀得到這次 run 的 agent log 的人看到**（同一 principal，
+> 或有 cross-read 權限的 admin）。不要把你不想曝光的內容寫進角色提示詞。（單一例外：非常長的
+> 提示詞，持久化的 `harness.prompt` 會截到 4KB，頭 2048 字元 + 尾 2048 字元，中段省略；但實際送給
+> 模型的呼叫本身不受這個截斷影響，只有記錄下來給你事後看的那份被截。）
 >
 > ### 0) 模型從哪裡來：本機用 Ollama，雲端用 OpenRouter
 > `provider` 只認 `anthropic`、`openrouter`、`ollama` 三種；`rwe.config.json` 的 `aliases` 只要出現
@@ -230,19 +228,17 @@ curl -s http://localhost:8787/api/models | python3 -c \
 > ⚠️ **PATH**：`gateway:sdk` 開機會 `spawn('litellm')`，systemd/啟動 unit 的 `PATH` 必須含 litellm
 > venv 的 `bin/`（見 §1a 前置條件），否則 `ENOENT`。
 >
-> ### 3) 幫每個 sdlc gate 帶上它自己的角色提示詞（v34 機制）
-> `sdlc-run` 每個 gate 過去用 `agentType` 分派到一批角色（早期版本叫 `sdlc-architect`/`sdlc-
-> designer`/`sdlc-verifier`/...，這幾個名字本身也隨 plugin 版本換過，**不要把任何特定檔名寫死當
-> 事實**），系統提示詞由引擎從 `agentDefinitionsDir` 讀檔案。v34 把這一層拿掉了——現在的作法是把
-> 那個角色的完整提示詞內文（來源看你裝的是哪個版本的 iso-agile-sdlc plugin：可能是
-> `agents/sdlc-<role>.md`，也可能是後續版本改用的別的檔名/角色切法；用你自己那份裝好的 plugin
-> 現有的檔案為準），**貼進腳本裡「那個 gate 對應的那次 `agent()` 呼叫」的 `prompt` 參數最前面**，
-> 接上這次真正要做的任務指示。每個角色仍然是一個獨立的 `meta.params.agents.<label>` 宣告（各自的
-> `model`/`effort`/`timeoutMs` 對應第1步準備好的 tier 別名），只是「角色是誰」從一個 server 端檔案
-> 查找鍵，變成腳本裡的一段字面字串。示意（完整幾個角色同理，這裡只示範 2 個）：
+> ### 3) 幫每個 sdlc gate 帶上它自己的角色提示詞
+> 要讓 `sdlc-run` 的不同 gate 用不同角色，把該角色的完整提示詞內文（來源看你裝的是哪個版本的
+> iso-agile-sdlc plugin：可能是 `agents/sdlc-<role>.md`，也可能是別的檔名/角色切法——**不要把任何
+> 特定檔名寫死當事實**，用你自己那份裝好的 plugin 現有的檔案為準），**貼進腳本裡「那個 gate 對應的
+> 那次 `agent()` 呼叫」的 `prompt` 參數最前面**，接上這次真正要做的任務指示。每個角色是一個獨立的
+> `meta.params.agents.<label>` 宣告（各自的 `model`/`effort`/`timeoutMs` 對應第1步準備好的 tier
+> 別名），角色文字是腳本裡的一段字面字串，不是伺服器端檔案查找鍵。示意（完整幾個角色同理，這裡只
+> 示範 2 個）：
 > ```js
 > export const meta = {
->   description: 'v34-shaped sdlc gate pass',
+>   description: 'sdlc gate pass with inlined role prompts',
 >   params: {
 >     args: { feature: { type: 'string' } },
 >     agents: {
@@ -298,12 +294,9 @@ curl -s http://localhost:8787/api/models | python3 -c \
 > 撞到的詞改寫掉（例如把「agent (mode A)」改成「agent role (mode A)」或拿掉那個空格）再貼。
 >
 > ### 4) 實際跑起來（透過 rwe-plugin 或直接 `run_start`）
-> 舊版腳本會在 `args` 裡帶一個 `agentPrefix` 慣例值，供腳本自己組出 `agentType:'iso-agile-sdlc:sdlc-
-> architect'` 這種帶命名空間前綴的字串——這不是 `run_start` 本身的 schema 欄位（`run_start` 的
-> input schema 從來沒有這個鍵，見 `src/tool-specs.ts`），只是那支舊腳本自訂的一個 `args` 慣例。
-> 既然 `agentType` 整個機制都不在了，這個慣例也就沒有東西可餵——新腳本不需要、也不該再宣告
-> `meta.params.args.agentPrefix`。跑法就是一般的 `workflow_register` → `workflow_publish` →
-> `run_start({name, version 或省略吃 release, args, budget, seed/seedManifest})`：
+> `run_start` 的 input schema 沒有 `agentPrefix` 這個鍵（見 `src/tool-specs.ts`）；新腳本不需要、
+> 也不該宣告 `meta.params.args.agentPrefix`。跑法就是一般的 `workflow_register` → `workflow_publish`
+> → `run_start({name, version 或省略吃 release, args, budget, seed/seedManifest})`：
 > ```json
 > { "feature":"NNN-slug", "sdlcDir":".sdlc/features/NNN-slug", "skillDir":"_skillref",
 >   "mode":"new", "safetyClass":"QM", "tier":"lean" }
@@ -628,7 +621,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 `null`/pending。
 
 **(b) 預設工具面 = 受限的檔案+搜尋+shell 集**：
-`gateway:"sdk"` 路徑下，工具面只有兩層優先序：一次 `agent()` 呼叫自帶的 `opts.allowedTools`，
+`gateway:"sdk"` 路徑下，工具面只有兩層**可設定**的優先序：一次 `agent()` 呼叫自帶的 `opts.allowedTools`，
 否則落到部署設定的 `defaultAllowedTools`（省略時的內建預設是
 **`["Read","Write","Edit","Glob","Grep","Bash"]`**——與真實 dynamic-workflow agent 的工作工具面
 對齊）。**`Bash` 在預設集裡，但被 (d) 的工作目錄邊界封閉**（`cwd`=該次 run 工作目錄 + 每次呼叫
