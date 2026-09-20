@@ -52,6 +52,10 @@ export const STR = {
     versionsStored: '個版本', runsStored: '次執行記錄', totalProcs: '總處理程序',
     model: '模型', tokens: 'Tokens', cost: '費用', timeout: '逾時', effort: '努力程度', activity: '活動',
     duration: '耗時',
+    // [v32, REQ-200] REQ-150 localized the six CARD labels and stopped there; these are the sub-labels
+    // under them, hardcoded identically for both languages. Wording follows the reference build.
+    tokIn: '輸入', tokOut: '輸出', tokCacheRead: '快取讀取', tokCacheWrite: '快取寫入',
+    effortNotApplied: '未套用', fit: '適應畫面',
     stable: '穩定', variable: '變動', bestEffort: '盡力', remote: '遠端', local: '本機', free: '免費',
     issuesOpen: '未解決', issuesResolved: '已解決', openOnGitHub: '在 GitHub 開啟 ↗',
     stDone: '完成',
@@ -84,6 +88,8 @@ export const STR = {
     versionsStored: 'versions', runsStored: 'run records', totalProcs: 'Total processes',
     model: 'Model', tokens: 'Tokens', cost: 'Cost', timeout: 'Timeout', effort: 'Effort', activity: 'Activity',
     duration: 'Duration',
+    tokIn: 'in', tokOut: 'out', tokCacheRead: 'cache read', tokCacheWrite: 'cache write',
+    effortNotApplied: 'not applied', fit: 'Fit',
     stable: 'Stable', variable: 'Variable', bestEffort: 'Best effort', remote: 'Remote', local: 'Local', free: 'Free',
     issuesOpen: 'Open', issuesResolved: 'Resolved', openOnGitHub: 'Open on GitHub \u2197',
     stDone: 'Done',

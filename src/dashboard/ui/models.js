@@ -51,6 +51,10 @@ function updateHeaderSort(theadEl, state) {
     const active = th.dataset.col === state.sort.key;
     th.classList.toggle('sort-active', active);
     th.textContent = active ? `${th.dataset.label} ${state.sort.dir === 'asc' ? '▲' : '▼'}` : th.dataset.label;
+    // [v32, REQ-196] the ▲/▼ says it to a sighted reader; `aria-sort` says the same thing to everyone
+    // else. Set on EVERY sortable header (`none` on the inactive ones), which is what tells assistive
+    // tech the column is sortable at all — not only that this one happens to be sorted.
+    th.setAttribute('aria-sort', active ? (state.sort.dir === 'asc' ? 'ascending' : 'descending') : 'none');
   });
 }
 

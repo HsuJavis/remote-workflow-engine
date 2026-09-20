@@ -382,4 +382,28 @@ describe('the agent slide-in panel, real Chromium (VAL-201, REQ-135/136)', () =>
       await browser.close();
     }
   }, 20000);
+  // [v32, REQ-200, F14] REQ-150 already fixed this class one level up ("the six labels were English
+  // literals in both languages") and stopped there: the token breakdown UNDER the Tokens card is
+  // still `in N · out N · cache read N · cache write N`, hardcoded identically for both languages
+  // (`lib/agent.js:22-24`), and the effort card still prefixes `not applied:` (`:41` — the `reason`
+  // that follows it IS wire text and stays). The reference renders the same breakdown as
+  // `輸入 · 輸出 · 快取讀取 · 快取寫入`.
+  itReal('the zh agent panel carries no English UI literals in its token/effort cards (REQ-200)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/dashboard/${runId}`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await page.waitForSelector('#dag-graph', { timeout: 3000 });
+      const node = await page.$('#dag-zoom [data-node-cell]');
+      expect(node).not.toBeNull();
+      if (node) await node.click();
+      await page.waitForSelector('[data-agent-panel]', { timeout: 3000 });
+      const text = await page.$eval('[data-agent-panel]', (el) => (el as HTMLElement).innerText);
+      const leaks = ['in ', 'out ', 'cache read', 'cache write', 'not applied:'].filter((w) => text.includes(w));
+      expect(leaks).toEqual([]);
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
 });

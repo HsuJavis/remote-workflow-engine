@@ -8589,3 +8589,29 @@ present `0` 永遠走不到那裡。這正是 R30-A1 同一個錯誤的第二次
 **類別鎖擋了一次:** `is-right` 是新 class,`dashboard-class-contract` 立刻紅
 (「every class selector dashboard.css defines is in STYLE_HOOKS」),補登記
 `tests/fixtures/dashboard-classes.ts` 後綠。這正是那道鎖存在的理由。
+
+## IMPL-332..334 — REQ-195/196/200:佈線、`aria-sort`、在地化
+
+**REQ-195 是一行。** `ui/home.js:190` 的搜尋 `input` handler 補上 `updateCounts(container, state)`。
+v30b 的 REQ-170 早就把計算改成對查詢後的卡片算,而**唯一會改變查詢的那條路徑沒呼叫它**;
+其餘三個呼叫端(分段按鈕、初次掛載、資料更新)一直都是成對的。修了計算、漏了佈線。
+
+判準只能是瀏覽器層:REQ-170 的純函式測試至今是綠的 —— 那正是它出不了聲的原因。
+
+**REQ-196** 在 `ui/models.js:49-53` 既有的表頭重繪迴圈裡設 `aria-sort`,**每一個**可排序表頭
+都設(非作用中的設 `none`)—— 這才是告訴輔助技術「這一欄可以排序」,而不只是「這一欄
+剛好被排了」。歷史表**不納入**:它是固定倒序、沒有排序互動,README §2 也從未稱它可排序
+(稽核把範圍寫成「模型/歷史」是過寬的)。
+
+**REQ-200** 新增六個 key(`tokIn`/`tokOut`/`tokCacheRead`/`tokCacheWrite`/`effortNotApplied`/`fit`);
+`tokenCols`、`tokenTotalAndCols`、`effortText` 都加上 `lang` 參數。
+`not applied:` 只有**前綴**是 UI 文字,其後的 `reason` 是 wire 文字,原樣不動。
+
+**差點重蹈 `ui/issues.js` 的覆轍:** `Fit` 所在的 `buildShell(container)` **沒有 `lang` 參數** ——
+`t(lang, 'fit')` 會是 ReferenceError,而 tsc 看不到(客戶端 `.js` 不做型別檢查)、單元測試
+也全綠,只有真瀏覽器會炸。改為 `buildShell(container, lang)`,由唯一呼叫端 `render()` 傳入
+(它本來就每次重算 lang),所以按鈕會跟著語言切換走。
+
+落判準前寫了一支掃描器找同類問題(`t(lang, …)` 出現在沒有 `lang` 的作用域),回報
+`workflow.js` 三處 —— **查證後是誤報**:真正的外層是 `async function paintSelected(state,
+runs, describe, lang)`,我的正則沒吃 `async function`。全域只有我自己剛製造的那一個是真的。

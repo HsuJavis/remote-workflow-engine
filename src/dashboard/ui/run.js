@@ -465,7 +465,10 @@ export function renderUsageBox(usageEl, runUsage, lang) {
   }
 }
 
-function buildShell(container) {
+// [v32, REQ-200] takes `lang` because the Fit label is now localized — `buildShell` had no
+// language in scope, and `render` (its only caller) already computes one per render, so the
+// button follows a language toggle like every other string.
+function buildShell(container, lang) {
   const root = document.createElement('div');
   root.className = 'run-view';
 
@@ -481,7 +484,7 @@ function buildShell(container) {
   fitBtn.type = 'button';
   fitBtn.id = 'dag-fit';
   fitBtn.className = 'fit-btn';
-  fitBtn.textContent = 'Fit';
+  fitBtn.textContent = t(lang, 'fit'); // [v32, REQ-200] the control is ruled (REQ-129); its label was not
   graphContainer.appendChild(fitBtn);
 
   const zoom = document.createElement('div');
@@ -522,7 +525,7 @@ const stateByContainer = new WeakMap();
 export function render(container, vm, handlers) {
   const runId = (vm && vm.runId) || null;
   const lang = currentLang();
-  const shell = buildShell(container);
+  const shell = buildShell(container, lang);
   if (!runId) return;
   const onSelectAgent = (handlers && handlers.onSelectAgent) || ((id, lbl, extra) => openAgentPanel(runId, id, lbl, { lang, ...(extra || {}) }));
   stateByContainer.set(container, {

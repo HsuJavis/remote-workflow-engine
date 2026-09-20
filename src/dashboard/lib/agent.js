@@ -19,9 +19,12 @@ function fmtTimeout(ms) {
   return `${m}m ${s}s (${withCommas(ms)} ms)`;
 }
 
-function tokenCols(tokens) {
+// [v32, REQ-200] these four were English literals in BOTH languages — REQ-150 localized the six card
+// labels one level up and never reached the sub-labels under them.
+function tokenCols(tokens, lang) {
   if (!tokens) return '—';
-  return `in ${tokens.input ?? 0} · out ${tokens.output ?? 0} · cache read ${tokens.cacheRead ?? 0} · cache write ${tokens.cacheWrite ?? 0}`;
+  return `${t(lang, 'tokIn')} ${tokens.input ?? 0} · ${t(lang, 'tokOut')} ${tokens.output ?? 0}`
+    + ` · ${t(lang, 'tokCacheRead')} ${tokens.cacheRead ?? 0} · ${t(lang, 'tokCacheWrite')} ${tokens.cacheWrite ?? 0}`;
 }
 
 // (1) the model card's second line — REQ-125's provider/transport/proxyModel triple, so "which of
@@ -36,10 +39,11 @@ function modelLine(record, harness) {
 
 // (2) effortApplied renders on BOTH branches — the applied `{param,value}` and the honest
 // not-applied `{reason}` — never only the happy one.
-function effortText(effortApplied) {
+function effortText(effortApplied, lang) {
   if (!effortApplied) return '—';
   if ('value' in effortApplied) return `${effortApplied.param} = ${effortApplied.value}`;
-  return `not applied: ${effortApplied.reason}`;
+  // [v32, REQ-200] the PREFIX is UI text; `reason` is wire text and stays exactly as it arrived.
+  return `${t(lang, 'effortNotApplied')}: ${effortApplied.reason}`;
 }
 
 // (4) issue #20's hung-vs-progressing signal: only meaningful while `running`. Advancing past
@@ -85,12 +89,12 @@ function durationText(record, now, lang) {
 // [v30, REQ-166] README §3: "Tokens (total + `Input · Output · Cache read · Cache write`)". The
 // total was absent, so the one figure a reader actually compares between agents was not on the
 // card at all.
-function tokenTotalAndCols(tokens) {
+function tokenTotalAndCols(tokens, lang) {
   // [v31, REQ-186] An absent tokens object is `—`, not a zero total with a zero-filled breakdown:
   // a running agent has no usage event yet.
   const total = sumTokens(tokens);
   if (total === undefined) return '—';
-  return `${fmtTok(total)} · ${tokenCols(tokens)}`;
+  return `${fmtTok(total)} · ${tokenCols(tokens, lang)}`;
 }
 
 export function panelModel(record, harness, events, hasMore, now, lang) {
@@ -103,10 +107,10 @@ export function panelModel(record, harness, events, hasMore, now, lang) {
   // frozen or freshly-started agent still reads as such.
   const stats = [
     { label: t(lang, 'model'), value: modelLine(record, harness) },
-    { label: t(lang, 'effort'), value: effortText(harness?.effortApplied) },
+    { label: t(lang, 'effort'), value: effortText(harness?.effortApplied, lang) },
     { label: t(lang, 'timeout'), value: fmtTimeout(harness?.timeoutMs) },
     { label: t(lang, 'duration'), value: durationText(record, now, lang) },
-    { label: t(lang, 'tokens'), value: tokenTotalAndCols(record.tokens) },
+    { label: t(lang, 'tokens'), value: tokenTotalAndCols(record.tokens, lang) },
     { label: t(lang, 'cost'), value: fmtCost(record.costUSD, record.unpriced ? 1 : undefined, lang) },
   ];
   return {

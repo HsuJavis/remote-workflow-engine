@@ -542,4 +542,37 @@ describe('the v27 dashboard shell + Workflows home, real Chromium (VAL-198, REQ-
       await browser.close();
     }
   }, 30000);
+  // [v32, REQ-195, F9] v30b's REQ-170 made `updateCounts` compute against the QUERY-FILTERED cards,
+  // and its unit test has been green ever since. It is still green. The counts still do not move when
+  // you type, because the search handler (`home.js:190`) calls `renderGrid` and nothing else — every
+  // OTHER call site pairs the two. The calculation was fixed and the wiring was not: the same shape
+  // as the composeConfig class, where a feature is correct and silently unreachable.
+  //
+  // So this oracle is browser-tier by necessity. Re-testing the pure function would only re-pass.
+  itReal('typing in the home search moves the segment counts, not just the grid (REQ-195)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await page.waitForSelector('.segment-tabs button', { timeout: 3000 });
+      const read = () => page.$$eval('.segment-tabs button', (bs) => bs.map((b) => (b as HTMLElement).innerText.trim()));
+      const before = await read();
+      const cardsBefore = await page.$$eval('.card', (c) => c.length);
+      expect(cardsBefore).toBeGreaterThan(0);
+
+      await page.type('.home-search', 'zzz-matches-nothing-zzz');
+      await new Promise((r) => setTimeout(r, 400));
+      const cardsAfter = await page.$$eval('.card', (c) => c.length);
+      const after = await read();
+      // the grid really did empty — so the counts beside it are describing a set nobody is looking at
+      expect(cardsAfter).toBe(0);
+      // shaped so a failure prints the labels AND their numbers, not `[…] !== […]`
+      const nums = after.map((t) => ({ label: t, n: Number(/\((\d+)\)/.exec(t)?.[1] ?? -1) }));
+      expect(nums).toEqual(nums.map((r) => ({ label: r.label, n: 0 })));
+      expect(before.join(' ')).not.toBe(after.join(' ')); // they really did change, not merely start at 0
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
 });

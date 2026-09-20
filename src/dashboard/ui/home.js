@@ -213,6 +213,10 @@ function buildChrome(container, state, handlers) {
   search.addEventListener('input', () => {
     state.query = search.value;
     renderGrid(container, state, handlers);
+    // [v32, REQ-195] v30b's REQ-170 made `updateCounts` compute against the query-filtered cards and
+    // this — the ONE path that changes the query — never called it, so the counts sat still while the
+    // grid emptied. Every other call site already pairs the two.
+    updateCounts(container, state);
   });
   toolbar.appendChild(search);
 

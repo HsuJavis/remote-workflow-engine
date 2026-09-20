@@ -229,4 +229,39 @@ describe('Models tab: twelve columns, sort, filter, slide-in (VAL-213, REQ-137)'
       await browser.close();
     }
   }, 20000);
+  // [v32, REQ-196, F10] README §4 is the only place that calls a table sortable ("all sortable, click
+  // toggles asc/desc"), and the sort does work — but `grep aria-sort src/dashboard` is empty, so the
+  // sort state is invisible to assistive tech. The run-history table is deliberately NOT covered: it
+  // is fixed newest-first with no sort interaction, and README §2 never calls it sortable (the audit
+  // scoped this finding to "models / history"; only models is sortable).
+  itReal('the sortable headers announce their sort state through aria-sort (REQ-196)', async () => {
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`${baseUrl}/dashboard`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await page.click('[data-tab="models"]');
+      await page.waitForSelector('[data-model-table] thead th', { timeout: 5000 });
+      const readSort = () => page.$$eval('[data-model-table] thead th', (ths) => ths.map((th) => ({
+        col: (th as HTMLElement).dataset.col, sort: th.getAttribute('aria-sort'),
+      })));
+      const initial = await readSort();
+      // every header declares a state, and exactly one of them is the active direction
+      expect(initial.every((h) => h.sort !== null)).toBe(true);
+      expect(initial.filter((h) => h.sort === 'ascending' || h.sort === 'descending')).toHaveLength(1);
+
+      const target = initial.find((h) => h.sort === 'none')!;
+      await page.click(`[data-model-table] thead th[data-col="${target.col}"]`);
+      await new Promise((r) => setTimeout(r, 300));
+      const clicked = (await readSort()).find((h) => h.col === target.col)!;
+      expect(clicked.sort).toMatch(/^(ascending|descending)$/);
+
+      await page.click(`[data-model-table] thead th[data-col="${target.col}"]`);
+      await new Promise((r) => setTimeout(r, 300));
+      const toggled = (await readSort()).find((h) => h.col === target.col)!;
+      expect(toggled.sort).not.toBe(clicked.sort); // the second click really flips the announced direction
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
 });
