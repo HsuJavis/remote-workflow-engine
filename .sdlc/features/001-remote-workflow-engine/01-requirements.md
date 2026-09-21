@@ -2840,3 +2840,110 @@ URL、禁讀本機任何檔案)。兩者各自撞到的問題收斂成同一句�
 **路徑**:REQ-205..210 共六條,全部是既有行為的修正或說明補齊,無新外部整合、無新能力、
 safety_class 維持 QM → 走 `/sdlc-fix` 的 F1–F6。REQ-208/209 觸及註冊路徑與文件守衛,
 其餘四條觸及 run 生命週期與廣告介面。
+
+---
+
+## 迭代 v36 — 2026-09-21:目錄治理、稽核身分、營運可觀測性,與兩輪審查歸檔的殘留
+
+**來源**:2026-09-20 遠端實機測試盤點裡的 D/E/F 三條、v34 Gate 7.5 發現的控制檔缺陷、
+業主 2026-09-21 裁決延期的 REQ-205 第四條,以及 v35 Gate 8 兩個架構專家小組歸檔的 K1–K8 殘留。
+
+### REQ-211 — 版本可以單獨刪除,錯誤提示不得叫人做工具做不到的事
+
+- **status:** draft
+- **traces:** REQ-096, REQ-097, REQ-087
+- **acceptance:**
+  **Given** `VERSION_CEILING_EXCEEDED` 的提示現在寫「deregister an old one」
+  **Then** 這個動作必須真的存在:`workflow_deregister({name, version})` 只刪該版本,
+  現況 `workflow_deregister` 是整個名稱刪除(`DELETE FROM workflow_versions WHERE name=?`,
+  連同 diagrams/assets/release 指標一起消失),**沒有任何方法刪掉單一版本**。
+  **Given** 要刪的版本正被某個 channel 指向 **Then** 拒絕,並指出要先把該 channel publish 到別版。
+  **And** 整名刪除的既有行為與其錯誤碼不變(既有測試全數維持綠)。
+- **iter:** v36
+
+### REQ-212 — 稽核行記真實身分,繞過擁有權要看得出來
+
+- **status:** draft
+- **traces:** REQ-114, REQ-086, REQ-087
+- **acceptance:**
+  **Given** admin 以繞過擁有權的方式 publish 他人的工作流程
+  **Then** 稽核行記錄**呼叫者的真實身分**,並以獨立欄位標示「以 admin 身分繞過」——
+  現況 `bypassPrincipal()`(`mcp-facade.ts:193-195`)對 admin 回 `null`,於是 `catalog.publish` 的
+  稽核行 principal 永遠是 null(2026-09-20 當天 7 次 publish 全部匿名),而 `workflows.owner`
+  卻正確寫著 email:稽核軌跡與實際擁有權不一致。
+  **And** 繞過行為本身不變(admin 仍可 publish 他人的工作流程)。
+  這與 REQ-114「無痕跡的權限不可審查」是同一條原則。
+- **iter:** v36
+
+### REQ-213 — 目錄看得出哪些該清,引擎說得出自己在做什麼
+
+- **status:** draft
+- **traces:** REQ-014, REQ-095, REQ-107
+- **acceptance:**
+  **Given** `workflow_list` **Then** 每筆帶 `lastRunAt`(從未跑過則明確為 `null`,不是 0 或空字串)
+  與用途摘要 —— 現況 20 個名稱裡混著 9/7 的 i63-probe/i66-probe/probe-env 等一次性探針,
+  欄位只有 name/owner/versions/channels/runnable,**無從判斷哪些可以刪**。
+  **Given** 一次 `workflow_register` 或任何 run 到達終態
+  **Then** 各落一行結構化 log(JSON 一行,含 name/version/principal/outcome)——
+  現況 70 分鐘的遠端測試,journal 只有 7 行 `catalog.publish` 加 SDK 警告,
+  register 與 run 終態完全不落 log,遠端出事只能翻 sqlite。
+  **And** 日誌不得含密鑰(走既有 redact 路徑,並有測試釘住)。
+- **iter:** v36
+
+### REQ-214 — 控制檔要跟著實例走
+
+- **status:** draft
+- **traces:** REQ-107
+- **acceptance:**
+  **Given** 以 `RWE_CONFIG_PATH` 指到另一份設定檔啟動第二個實例(驗證用 scratch instance 是常態)
+  **Then** 它的 PID/log 不得覆蓋第一個實例的 —— 現況 `deploy.sh` 不論設定檔指到哪,
+  一律把 PID 寫進 repo 根目錄的 `.rwe.pid`、log 寫進 `.rwe.log`,兩個實例互相覆蓋;
+  不影響已在跑的行程,但事後 `kill $(cat .rwe.pid)` 會殺錯對象。
+  v34 的 Gate 7.5 只在 DEPLOY.md 補了 workaround(自己記 PID),腳本本身未修。
+  **And** DEPLOY.md 的 workaround 段落改成陳述新行為。
+- **iter:** v36
+
+### REQ-215 — 結構化失敗標記要能穿過 sandbox 抵達 run 層(業主 2026-09-21 裁決自 v35 延期)
+
+- **status:** draft
+- **traces:** REQ-205, REQ-203, REQ-017
+- **acceptance:**
+  **Given** 一個 agent 因引擎拒絕而失敗(例如帶著已退役的 `agentType`,`violation: AGENT_OPT_RETIRED`)
+  **Then** 該結構化標記能從 **run 層**的錯誤封包讀到,而不是只存在於 per-agent 紀錄的 detail 字串。
+  **設計 panel 已實測的現況**(這正是 v35 不實作它的理由,也是本條的起點):標記在抵達 `toErr` 之前
+  被丟棄三次 —— `sandbox/guards.ts:322-335` 把每個失敗重建成兩欄 `{code,message}`、
+  `sandbox/host.ts:147/166` 中繼時同樣重建、`child-entry.ts:36` 的線上型別根本沒有這個欄位;
+  連 `code` 都在 `guards.ts:334` 被壓平成 `SCRIPT_ERROR`(`ENGINE_REFUSAL_CODES` 只收 `BUDGET_EXCEEDED`)。
+  **因此本條必須包含三件事,缺一不可**:
+  (a) 4 個檔的 sandbox IPC 契約修改;
+  (b) **裁決「哪些引擎拒絕碼可以穿過 sandbox catch」**——這是一條策略,不是實作細節;
+  (c) **安全評估**:這等於新增一條「腳本可控物件寫進磁碟」的通道,
+  與 v37 的 Bash 監牢同屬「腳本能把什麼推出沙箱」這個問題,必須一起看。
+  **And** 測試必須在 sandbox 真實層(不是 mock 掉 IPC)證明標記真的穿過去了 ——
+  否則就會做出 v35 拒絕製造的那種「永遠收不到輸入的死碼加永遠不會失敗的測試」。
+- **iter:** v36
+
+### REQ-216 — v35 審查歸檔的八條殘留(K1–K8)逐條結清
+
+- **status:** draft
+- **traces:** REQ-205, REQ-207, REQ-114
+- **acceptance:**
+  v35 Gate 8 的兩個架構專家小組共歸檔 8 條殘留,附檔名行號,明確標為 v36 候選。逐條驗收:
+  **K2(安全,最優先)** `RunStatusView.seedRef.failDetail` 從未被遮蔽 ——
+  它是 C-1 剛修好那條訊息的**未遮蔽孿生兄弟**:同樣內容,一條已遮蔽、另一條沒有。
+  修法順序是先 redact 再切 200 字(順序相反會把標記切碎)。
+  **K1** 把兩處失敗捕捉站收斂成 `src/errors.ts` 裡一個純函式 `captureFailure(err, secrets)`
+  (`redact ∘ toErr` 再 `capErrorEnvelope`)—— 兩處各自演化正是 C-1 那種不一致的溫床。
+  **K3** 給 `capErrorEnvelope` 一個位元組精確的最壞情況案例(256 個多位元組碼元的標記名,
+  斷言組出來的 ≈4.8KB 上限),而不是只掃偏移量。
+  **K4** `run_status` ↔ `run_list` 零 agent 交叉的一個一致性案例(一個案例,不是矩陣)。
+  **K5** `listRuns()` 沒有 LIMIT —— 清單路徑上真實的擴展懸崖;本條要**裁決**要不要加,
+  不得再以「目前沒有需求要求」帶過(v35 就是這樣帶過的,現在它被正式提出)。
+  **K6/K7** `GatewayClient` port 上只留一條 `attempts` 公式、兩個實作一致,
+  並補上 guide 缺的那句「未設逾時的呼叫只跑一次」。
+  **K8** 在 `compose-config-v2-wiring.test.ts` 的掃描裡加一列 `attempts` 探針(約 3 行)——
+  那支測試正是本專案「新 config 區塊忘了在 composeConfig 轉發」這個 bug class 的系統性守衛。
+- **iter:** v36
+
+**路徑**:六條皆為既有行為的修正、說明補齊或已歸檔殘留的結清,無新外部整合,safety_class 維持 QM。
+REQ-215 因含 IPC 契約與安全評估,走完整七閘(含 architecture);其餘可併同一輪。
