@@ -683,10 +683,16 @@ export class RunManager {
         seedRefView = { resolvedSha: r.resolvedSha, bytes: r.bytesTransferred, latencyMs: Math.max(0, this._clock.now() - t0), fetchedAt: this._clock.isoNow(), dropped: r.dropped };
       } catch (err) {
         const code = (err as { code?: string }).code ?? 'SEEDREF_FETCH_FAILED';
-        const message = String((err as { message?: string }).message ?? err).slice(0, 200);
-        seedRefFail = { code, message };
+        // v35 send-back (C-1): the UNSLICED message feeds `seedRefFail` — `capErrorEnvelope` (below,
+        // at the `seedRefFail` handling site) bounds it AFTER `redact()` runs, matching R-G9/
+        // INV-V26-5 (a substring cut applied BEFORE redact() can split a secret so redact()'s
+        // value-exact match finds neither half). `failDetail` (the `seedRefView` surface, pre-
+        // existing and unrelated to this send-back's resultError channel) keeps its own independent
+        // 200-char slice off the same raw message.
+        const rawMessage = String((err as { message?: string }).message ?? err);
+        seedRefFail = { code, message: rawMessage };
         const failCode = (code === 'SEEDREF_SHA_MISMATCH' || code === 'SEEDREF_TOO_LARGE') ? code : 'SEEDREF_FETCH_FAILED';
-        seedRefView = { resolvedSha: spec.seedRef.sha, bytes: 0, latencyMs: Math.max(0, this._clock.now() - t0), fetchedAt: this._clock.isoNow(), dropped: [], failCode, failDetail: message };
+        seedRefView = { resolvedSha: spec.seedRef.sha, bytes: 0, latencyMs: Math.max(0, this._clock.now() - t0), fetchedAt: this._clock.isoNow(), dropped: [], failCode, failDetail: rawMessage.slice(0, 200) };
       }
     }
     // REQ-025 (v2) / REQ-065 (v10): materialize a seed into the workspace BEFORE any agent starts
@@ -749,8 +755,18 @@ export class RunManager {
     if (seedRefFail) {
       // v13 REQ-080: a seedRef fetch failure fails the run typed (never starts the script against an
       // empty/partial tree) via the same resultError channel every other run failure uses.
-      entry.resultError = seedRefFail;
-      await this._transition(runId, entry, 'failed');
+      // v35 send-back (C-1): route through the SAME capture->redact->bound->persist sequence as the
+      // dispatch-continuation failure path (_runLive, below) — `seedRefFail.message` is the raw
+      // caught error text and can carry a secret value (e.g. a credential embedded in a seedRef
+      // URL), so it must not reach `runs.error`/journal.jsonl un-redacted, and it must be recorded
+      // via `recordError` (STRICTLY BEFORE the 'failed' transition, INV-V35-1) like every other
+      // failure.
+      const captured = this._secretValueProvider
+        ? (redact(toErr(seedRefFail), this._secretValueProvider.entries()) as { code: string; message: string })
+        : toErr(seedRefFail);
+      entry.resultError = capErrorEnvelope(captured);
+      try { await this._store.recordError(runId, entry.resultError); }
+      finally { await this._transition(runId, entry, 'failed'); }
       return runId;
     }
     await this._transition(runId, entry, 'running');

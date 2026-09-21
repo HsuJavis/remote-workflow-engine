@@ -11,8 +11,8 @@
 // `.detail` this far, and a test for it would be exactly the dead-code false-green this iteration
 // exists to remove. See DES-230's `owner_decision: pending`.
 import { describe, it, expect } from 'vitest';
-import { toErr, capErrorEnvelope, MAX_ERROR_ENVELOPE_BYTES } from '../../src/errors.js';
-import { redact } from '../../src/secret-resolver.js';
+import { toErr, capErrorEnvelope, MAX_ERROR_ENVELOPE_BYTES, MAX_SECRET_NAME_CHARS } from '../../src/errors.js';
+import { redact, MARKER_PREFIX } from '../../src/secret-resolver.js';
 
 describe('toErr (DES-230) — moved verbatim, now exported, still total', () => {
   it('a coded object {code, message} passes through with both stringified', () => {
@@ -79,5 +79,44 @@ describe('capErrorEnvelope (DES-230) — bounds the SERIALIZED envelope, applied
     const err = new Error(pad + secretValue);
     const composed = capErrorEnvelope(redact(toErr(err), [{ name: secretName, value: secretValue }]) as { code: string; message: string });
     expect(composed.message).toContain(`‹secret:${secretName}›`);
+  });
+
+  // v35 send-back (C-2): the forward extension to complete a marker split by the cut used to be an
+  // UNBOUNDED scan (`e.message.indexOf('›', markerStart)` against the whole rest of a
+  // script-controlled message) — it must now be bounded to `MARKER_PREFIX.length +
+  // MAX_SECRET_NAME_CHARS` past the marker's start. These vary the DISTANCE from the cut to the
+  // closing glyph (not just the cut offset, which the MAX_ERROR_ENVELOPE_BYTES-{10..-2} sweep above
+  // already covers) — the bug class this misses is a closing glyph that exists but sits far away.
+  describe('bounded forward scan (v35 send-back C-2)', () => {
+    // Builds a message whose cut lands mid-prefix (`‹se|cret:...`, same landing point as the test
+    // above) with a fake marker whose NAME is `nameLen` chars long before its closing `›`.
+    function messageWithMarkerAt(nameLen: number): string {
+      const pad = 'p'.repeat(MAX_ERROR_ENVELOPE_BYTES - 5);
+      return `${pad}${MARKER_PREFIX}${'X'.repeat(nameLen)}›TAIL`;
+    }
+
+    it('a closing glyph exactly at the bound (name = MAX_SECRET_NAME_CHARS) still completes the marker', () => {
+      const msg = messageWithMarkerAt(MAX_SECRET_NAME_CHARS);
+      const capped = capErrorEnvelope({ code: 'SCRIPT_ERROR', message: msg });
+      expect(capped.message).toContain(`${MARKER_PREFIX}${'X'.repeat(MAX_SECRET_NAME_CHARS)}›`);
+    });
+
+    it('a closing glyph one char past the bound is NOT reached — the incomplete marker is dropped, not completed', () => {
+      const msg = messageWithMarkerAt(MAX_SECRET_NAME_CHARS + 1);
+      const capped = capErrorEnvelope({ code: 'SCRIPT_ERROR', message: msg });
+      expect(capped.message).not.toContain('›');
+      expect(capped.message).not.toContain('X'.repeat(MAX_SECRET_NAME_CHARS + 1));
+    });
+
+    it('a closing glyph millions of chars away does not balloon the result (demonstrates the fixed unbounded-scan finding)', () => {
+      // Before the fix this reproduced a ~50MB persisted envelope from a single throw; this uses a
+      // smaller multiple to keep the test fast while still exercising "far past any realistic bound".
+      const farMsg = messageWithMarkerAt(2_000_000);
+      const capped = capErrorEnvelope({ code: 'SCRIPT_ERROR', message: farMsg });
+      // Bounded: the result must stay close to MAX_ERROR_ENVELOPE_BYTES, never scale with the
+      // attacker-controlled distance to the far-away '›'.
+      expect(Buffer.byteLength(capped.message, 'utf8')).toBeLessThan(MAX_ERROR_ENVELOPE_BYTES + 200);
+      expect(capped.message).not.toContain('›');
+    });
   });
 });

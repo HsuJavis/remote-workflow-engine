@@ -7899,3 +7899,171 @@ markers anywhere in `01-06`.
    actual iso-agile-sdlc plugin, out of this round's real-effort budget.
 
 `state.yaml`: `gates.validation.passed=true`, `current_stage` → `review`. Gate 8 is next.
+
+## 2026-09-21 — v35 Gate 8 送回七項(C-1..C-6/O-1/O-2/C-10-doc)全數修復(implementer)
+
+**Scope discipline honored**: fixed ONLY the seven named findings, nothing else — no
+re-decomposition, no re-partitioning, no touching work not named blocking.
+
+**C-1** (`src/run-manager.ts`, `start()`'s `seedRefFail` branch): was setting `entry.resultError`
+directly with no `redact()`/`capErrorEnvelope()`/`recordError()`, unlike the dispatch-continuation
+path. Now routes through the identical capture→redact→bound→persist→transition sequence.
+`grep -n "'failed')" src/run-manager.ts` confirms exactly two direct transitions to `failed` in the
+whole file — this one and `_runLive`'s — both now consistent; C-1 closes as a class, not an
+instance. One subtlety the advisor caught before it shipped: the caught message must feed the
+sequence UNSLICED, not through the branch's own pre-existing 200-char `failDetail` slice — slicing
+first would repeat the exact R-G9/INV-V26-5 secret-splitting hazard `capErrorEnvelope`'s own doc
+comment warns against. New UT-085 case: real on-disk `SqliteRunStore`, a secret padded to straddle
+byte 200, asserts the marker is PRESENT (not merely that the raw value is absent, which passes
+vacuously on a half-secret) live, in `journal.jsonl`, and after a simulated restart (fresh store
+instance over the same dir).
+
+**C-2** (`src/errors.ts`, `capErrorEnvelope`): the marker-completing forward scan
+(`e.message.indexOf('›', markerStart)`) was unbounded — scanned the entire remainder of a
+script-controlled message, so a crafted throw could inflate the persisted envelope to ~50MB from one
+call. Bounded to `MARKER_PREFIX.length + MAX_SECRET_NAME_CHARS` (new exported constant, 256) past
+the marker's start; past that, the existing fallback (drop the incomplete marker) fires instead of
+scanning further. Three new UT-284 cases vary the DISTANCE from the cut to the closing glyph (the
+bug class the existing `MAX_ERROR_ENVELOPE_BYTES-{10..-2}` offset sweep cannot see): at the bound,
+one past it, and millions of chars away (result stays bounded, never scales with the
+attacker-controlled distance).
+
+**C-3** (`02-architecture.md` INV-V35-4 + ARCH-149's api line): both stated an absolute fail-closed
+guarantee; the shipped `nonCodeOracle` (`src/workflow-meta.ts:474-491`) is a three-case rule — fails
+closed only on clean-meta+unparseable-body, fails OPEN on no-meta-at-all or meta-without-a-clean-span.
+Both amended in place (dated Gate 8 send-back paragraphs, ARCH-141's own house style), residual
+exposure named openly: an unparseable no-meta script can still trigger a false-positive
+`AGENT_LABEL_REQUIRED`/`AGENT_UNDECLARED` off prose text, but never a missed real call.
+
+**C-4** (interface table's `/api/runs` row + ARCH-143's R8 rationale): claimed the two new fields
+ride both routes "additively"; `src/run-view.ts`'s `toPublicRunSummary` actually strips
+`failedAgentCount` (a count) while letting `error.code`/`error.message` (narrative) through on the
+ungated `/api/runs` list route — the opposite sensitivity direction R8 argued for. Both corrected to
+name the real per-route asymmetry, citing DES-240 rationale item 9 as the actual reasoning; noted
+that the narrative text reaching this route is redacted (ARCH-142) and now properly bounded (C-2).
+
+**C-5/O-1** (ARCH-152's api line + Constraint 10): both said the guide-size figure is "memoized once
+per process"; `src/server.ts:868-872` recomputes it via a full `callTool` dispatch on every MCP
+`initialize` (both handshake sites), per DES-239 boundary (a)'s deliberate reversal — the DESIGN doc
+was already correct; only the ARCHITECTURE doc was stale. Both corrected to match.
+
+**C-6/O-2** (ARCH-143's api line, `failedAgentCount` guard formula): stated `(row.agentCount ?? 1) >
+0`; both stores ship `row.agentCount != null && row.agentCount > 0`
+(`sqlite-run-store.ts:296-298`, `run-store.ts:466-469`) — the CORRECT guard per INV-V35-3 (the wrong
+doc formula would have defeated the zero-agent guard by defaulting a null count to 1). Doc corrected
+to the shipped formula; code left untouched (it was already right).
+
+**C-10-doc** (04-design.md:8723 + 02-architecture.md:4389): both still said "REQ-205's fourth
+acceptance criterion is carried as DES-230's `owner_decision: pending`"; DES-230's own marker
+(`04-design.md:8473`) has read `answered 2026-09-21` since the v35 GREEN-phase amendment. Both
+struck through with a `**[SETTLED 2026-09-21]**` marker citing the ruling, same fix pattern as this
+ledger's own OWN-1/DEBT-C precedent.
+
+**Verification**: full regression `npx vitest run` → 3198 passed / 0 failed / 26 skipped, 431 files
+(one unrelated port-contention flake in `litellm-proxy-hardening.test.ts`, re-run alone → 8/8 green,
+confirmed environmental — that test touches neither file this repair changed); `npm run typecheck`
+clean both configs. `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` → **1928/77, byte-
+identical to the pre-edit baseline** captured into a scratch file before any change — 0 new items, 0
+new gaps.
+
+**Noted, not fixed** (outside this send-back's named scope, flagged for the reviewer rather than
+silently left): `seedRefView.failDetail` is never redacted on any path (pre-existing v13 surface,
+unrelated to C-1's `resultError`/`recordError` channel); `tests/unit/errors-to-err.test.ts:8-12`'s
+scope-note comment still says DES-230's `owner_decision` is pending even though the marker itself
+now reads `answered`; ARCH-153's note still says "per-agent narrative error text stays on the
+per-agent surfaces," which DES-240's own GREEN-phase amendment already flags as factually wrong
+(pre-existing, already self-documented elsewhere, not touched here).
+
+**`current_stage` stays `review`** — this is a Gate 8 send-back repair, not a Gate 6 pass; the
+dispatch's own "do not redo the rest of the gate" rule means `gates.impl`/`current_stage` are not
+re-derived, and `gates.review` is left for the reviewer's own re-review flip (same routing as the
+v27l/v27m precedent). `gates.impl.note` extended in place with the full per-finding record; no new
+IMPL/UT ids minted — UT-085/UT-284 extended with new cases, IMPL-347/IMPL-355 extended with
+send-back paragraphs, DES-230/DES-232 each gained one `amended (...)` sentence. No git
+checkout/restore/stash used; no commit made.
+
+## 2026-09-21 — v35 Gate 2 在 Gate 8 送回迴圈裡重跑（architect，純文件）
+
+**這一輪是什麼**：Gate 8 送回七項 blocking findings，implementer 已按範圍紀律全數修完（見上一則）。
+本輪是架構閘對「自己那一半」的重跑：**不重新拆解、不重新切模組、不新開任何 ARCH/ADR/INV/FLAG id、
+不 bump `iter:`**（這些列本來就是 `iter: v35`，而 v35 就是現行迭代——v33 F6-1 家規：bump 設計母列會
+讓底下每條 IMPL/UT 冒出漂移），而且**本閘沒有動任何 production 程式碼**：送回的規則就是超出指名範圍
+就停下來登記，不要自己擴權去做。
+
+**Panel**：兩組 lens 已由 workflow 預先跑完（`.panel/architecture/{adversarial,quality-dimensions}.r1.md`，
+18:00 / 18:04），依契約只做 synthesize、不再 spawn。**第二輪判定不需要**：兩份 r1 的 headline 是互補而
+非互斥——adversarial 針對「已出貨的送回修復」做文件與程式碼的真偽對帳（K1–K8），quality-dimensions 則
+刻意不讀 `02-architecture.md`、從需求重新推導，四個面向落點都已經在既有列上（observability →
+ARCH-142/143/146 + ADR-065/066;replaceability → ARCH-148/149 + ADR-068、ARCH-150 + ADR-069;
+consumability → ARCH-151/152/154 + ADR-070/071;self-sustainability → 單人 QM 工具，正確地判定多數
+機制不在範圍，並把 REQ-209 的可註冊性守衛點名為本切片唯一真正的自我閉環）。它唯一不在既有列上的貢獻是
+REQ-015 常駐/cron 的 journal 累積問題，已登記為 v36 候選。
+
+**(A) 七項指名發現：逐條對「出貨的程式碼」驗證，不是對說法驗證。** C-1（`run-manager.ts:755-770` 與
+`_runLive` `:1285-1292` 已逐字一致;全檔只有兩個直接 terminal `failed` 轉移，兩個都走
+capture→redact→bound→persist）、C-2（`errors.ts:309-318` 有界掃描 + `MAX_SECRET_NAME_CHARS`;三條新
+UT 變動的是「切點到收尾字元的距離」而不只是切點位移）、C-3（對得上 `workflow-meta.ts:474-491` 的三分支
+規則）、C-4（對得上 `run-view.ts:22-24` 與 `server.ts:385-392` 的逐路投影差異）、C-5/O-1（對得上
+`server.ts:868-872` 每次 `initialize` 重算）、C-6/O-2（對得上兩個 store 的 `!= null && > 0`）、
+C-10-doc（兩處敘述都已標 SETTLED;trace 掃出全帳本 **零**未決 `owner_decision`）。被動到的兩個單元
+測試檔重跑 17/17 綠。
+
+**(B) 重跑 panel 提的八項殘留，全部作裁決、沒有一條被靜默丟掉，且全部只動文件：**
+K6 `ARCH-144` 的 `api` 行就地更正（它還在教人寫 `storedParams?.args` 中項，正是 INV-V35-2／ADR-071
+禁止的「把已 redact 的入場紀錄升格成派工來源」——與 C-6 同一類，而且是八項裡後果／成本比最差的一條）;
+K5 `ADR-067` 被推翻的成本理由就地刪去（決定不變,理由才是資產）;K1 `ADR-066` 的理由收窄成仍然為真的
+那一半（redact 在賦值之前),`captureFailure` 收攏「形狀正確但本輪不做」並登記 v36;K4 INV-V35-3／
+ADR-067 收窄成三處推導、並把活跑中的呈現不對稱寫明是刻意;K3 在 ARCH-141／INV-V35-5 寫出組合後的真實
+上界（約 4.8KB,不是 4096);K2 `seedRef.failDetail` 判為**具名承認的債**（曝光面寫白話、關閉時要照
+ADR-066 的取捨——不是業主裁決,因為原則早已批准,剩下的是排程,屬工程判斷);K7 兩個 GatewayClient 的
+`attempts` 公式分歧 + ARCH-151(b) 承諾卻從未寫進 guide 的那句,點在 ARCH-147 上並裁定 port 是正確歸屬;
+K8 constraint 11 的系統性 sweep 缺一列探針。八條 v36 候選都帶檔名與行號。
+
+**(C) 閘與指標**：`gates.architecture.passed` 維持 `true`、`current_stage` 維持 `review`——Gate 8 送回
+是回到**審查者**,不是把已經過完 Gate 3–7.5 的切片倒帶（本帳本 v34 兩次先例,以及重跑 panel 的 R2;
+倒帶到 design 會把已經全綠的合併設計/測試/實作閘重新派工,並把大量 implementer 放回同一棵工作樹）。
+`sh .sdlc/trace` → **1928 items / 77 gaps**,與編輯前逐字一致:零新增工作項、零新增缺口、孤兒/斷鏈
+分佈不變。`owner_decisions: []`。沒有用任何 git checkout/restore/stash;沒有 commit。
+
+## 2026-09-21 — v35 Gate 8 RE-REVIEW AND CLOSE（reviewer）
+
+**RE-REVIEW，不是重審全域。** 上一輪送回 `["impl","architecture"]`、7 項 blocking findings
+（C-1、C-2、C-3、C-4、C-5/O-1、C-6/O-2、C-10-doc），workflow 已各重跑一次（見上兩則）。本輪只驗證這
+7 項在磁碟上真的修好，不重開追溯／交接稽核。
+
+**逐條驗證，直接讀當下的檔案，不是讀報告。** C-1：`run-manager.ts:755-770` 現在與 `_runLive`
+`:1285-1292` 結構逐字一致（redact → capErrorEnvelope → recordError，`try/finally` 在 `'failed'`
+轉移之前）；新測試 `seedref-run-manager.test.ts:232-295`（真 SqliteRunStore、真 journal.jsonl、真
+重啟重讀）6/6 綠。C-2：`errors.ts:297-320` 掃描已收斂到 `MARKER_PREFIX.length + MAX_SECRET_NAME_CHARS`
+（256）；新測試 `errors-to-err.test.ts:90-119` 三案例掃「到收尾字元的距離」11/11 綠。C-3/C-4/C-5-O-1/
+C-6-O-2/C-10-doc：五項全是文件修正，逐一開檔核對確切行號（`02-architecture.md:4459/4634`、`:4625/
+4409`、`:4491-4492/4652`、`:4406`、`04-design.md:8725`+`02-architecture.md:4389`），**不是只看架構閘
+自己彙整的對照表**——對照表是報告，行號才是證據。額外核對 K6（`ARCH-144` 的 `api` 行）也已就地修正，
+對得上 `run-manager.ts:1114-1119`。
+
+**`.panel/review/` 兩份報告是送回前的舊檔**（mtime 早於所有修復產物），是產生這 7 項發現的**源頭**，
+本輪依 RE-REVIEW 契約當作「送回清單」核對關閉,不是當作修復後的現狀重讀,也沒有重新 spawn。
+
+**全套回歸親自重跑（不是採信 commit message 的數字）：** `npx vitest run` 這次沒有加外部
+`timeout` wrapper（上一輪的 `timeout 590` 在完成前就把管線砍斷,連 tail 緩衝都沒吐出來,誤導成
+「跑不完」)，自然跑完 661 秒：**430 個檔案通過 / 1 skip，3199 個測試通過 / 26 skip，0 敗**（比
+`e9c2dc8` commit message的 3195 多 4，正是本輪新增的 3+... 案例）。`npm run typecheck` 兩個
+tsc 設定都乾淨。`dashboard_check`/`solid_check`/`module_check` 三個工具全跑過，缺口組成與送回前
+基線逐一比對，**零新增**（7 mermaid 括號誤判 + 1 fallback low、10 個 solid_check 未認領檔案、
+module_check 休眠，皆為既有已登記債）。`sh .sdlc/trace` → 1928/77，逐字不變。
+
+**補一項上一輪留在 prose 裡沒有結構化的裁決：** 上一輪結論寫「C-1/C-2 落地後要在 Gate 7.5 重驗」，
+但 `send_back` 陣列沒有真的放 `validation`，所以 workflow 沒有重跑它。本輪裁定**不需要**：新增的
+`seedref-run-manager.test.ts` C-1 案例用真 SqliteRunStore/真磁碟/真重啟重讀，`errors-to-err.test.ts`
+C-2 案例是純函式掃描，都不是 mock-only；REQ-205 本身的 REAL VAL（VAL-238..244）已經是綠的，
+trace --check 對 REQ-205..210 是零 `未真實驗證`/`未驗證`。記錄在案，不是默默略過。
+
+**owner_decision 掃描：** 固定 metadata key `- **owner_decision:** pending` 全帳本零命中；另外
+掃到 9 處鬆散措辭「owner_decision: pending」（`04-design.md` ×2、`02-architecture.md` ×2、
+`01-requirements.md` ×1、`05-tests.md` ×4、`06-impl-log.md` ×1、`errors-to-err.test.ts` ×1）,
+逐條開檔核對,全是已加註 `[SETTLED]`/`[RESOLVED]` 的刪除線歷史文字,或是敘述「那個 gate 跑的當下
+是這樣」的過去式引用——沒有一條是活的標記。`05-tests.md` 四處與測試檔那句列為 LOW 帳本衛生債,
+下次動到就順手更新,不卡關。
+
+**結論：`send_back = []`，iteration CLOSES。** `gates.review.passed = true`；`.panel/` 依契約清除
+（規則：只有在不送回時才清）。

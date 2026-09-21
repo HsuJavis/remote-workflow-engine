@@ -11634,3 +11634,527 @@ send_back: []
 blocking_findings: []
 owner_decisions: []
 ```
+
+## v35 GATE 8 — Consistency review (2026-09-21, reviewer)
+
+Scope: REQ-205..210 (ARCH-141..154, ADR-065..071, INV-V35-1..5, DES-230..240, TASK-231..238,
+IMPL-343..357), against `06-impl-log.md`'s v35 `files:` closure. Two architecture-expert reports
+were pre-run by the workflow (`.panel/review/adversarial.md`, `.panel/review/quality-dimensions.md`)
+and consolidated here, not re-spawned.
+
+### A. Traceability (`sh .sdlc/trace`)
+
+`1928 items / 77 gaps` (15 high / 36 mid / 26 low). Gap-set diff against the v34 close baseline
+(`git show e9c2dc8:…/dashboard.html`, 1928/77 identical count) is **byte-identical on the ID set**
+(0 added, 0 removed) — computed directly (`(type,id)` tuple diff over both `D.gaps` arrays), not
+taken from the validator's note. The v35 slice itself (REQ-205..210, 92 new work items) closes
+clean: no new gap of any type was introduced. Severity mix matches the long-standing baseline
+(15 high 斷鏈 / 17 未驗證 / 19 TDD / 2 未實作 / 24 漂移 — the same accepted v29–v32 debt this
+ledger has carried and re-verified every Gate 8 since v33; unchanged again).
+
+Drift: none beyond the accepted 24-line 漂移 baseline. The only working-tree diff my own
+`sh .sdlc/trace` regen produced against HEAD's committed `dashboard.html` was the generation
+timestamp and mermaid `style` line ordering (non-deterministic dict iteration) — confirmed by
+`git diff HEAD -- dashboard.html`, same set of items/gaps.
+
+**One doc-internal staleness found by direct read, not by grep of prose** (see §C-DOC): `04-design.md:8723`'s
+"Decision rationale" prose and `02-architecture.md:4389`'s Gate-3/4-amendment note both still say
+"REQ-205's fourth acceptance criterion is carried as DES-230's `owner_decision: pending`" — but
+DES-230's own `- **owner_decision:**` field (`04-design.md:8473`) has read `answered 2026-09-21`
+since the v35 GREEN-phase amendment landed. The authoritative marker is correct; two narrative
+cross-references were not updated when it flipped. LOW, same failure class this ledger's own OWN-1
+precedent (v27h) named — folded into the architecture send-back batch below since it is a one-line
+fix riding the same file.
+
+### B. Dashboard QA + module-boundary (plugin 2.4.3 checkers, direct — see §F for why)
+
+`dashboard_check.py` → **0 high / 7 mid / 1 low**. All 7 mids are the same recurring 「括號不平衡」
+lexical false-positive over `02-architecture.md`'s v21–v27 `erDiagram`/`stateDiagram` mermaid blocks
+(`:940/:1207/:1654/:2549/:2621/:3114/:3652`) — re-verified false positives across at least a dozen
+prior Gate 8 rounds (see the grep trail in this file's own history), untouched by v35 (v35 added no
+mermaid block). 1 low is the vendored `trace.py`'s missing offline-mermaid fallback (§F). Recorded
+debt, unchanged, `send_back` not warranted on these.
+
+`solid_check.py` → **0 mid / 10 low**, **92 modules** (was 78 at v34 close — the delta is exactly
++14, matching ARCH-141..154's 14 new architecture rows one-for-one, not a scan-scope change). The
+10 lows are the same pre-existing "未認領檔案" set this ledger has carried and re-verified every
+round (`harness-defaults.ts`, `self-update.ts`, `agent-semaphore.ts`, `mcp-probe.ts`,
+`scan-agent-calls.ts`, `net-guard.ts`, `workspace-artifacts.ts`, `clock.ts`, `owner-lookup.ts`,
+`workroot-guard.ts`) — none of v35's touched files are new to this list. Checked, clean.
+
+`module_check.py` → dormant (no ARCH-* declares `build:`), as expected — not a finding.
+
+### C. Architecture consistency — consolidated from the two pre-run experts
+
+**Verdict: NOT fully consistent.** The adversarial group found 10 deviations (2 HIGH, 3 MEDIUM,
+5 LOW); the quality-dimensions group found 2 MEDIUM (both documentation-only). I independently
+verified the two HIGH and the one MEDIUM I judged highest-risk by reading the cited source directly
+(not just trusting the panel prose) — all three confirmed byte-for-byte against what the experts
+quoted.
+
+**C-1 (HIGH, code defect) — a second `failed`-transition path bypasses the entire v35 pipeline.**
+`src/run-manager.ts:749-755` (the `seedRefFail` branch of `start()`) sets `entry.resultError` and
+transitions straight to `'failed'` with **no** `redact()`, **no** `capErrorEnvelope()`, and **no**
+`this._store.recordError()` call — verified by direct read; the only wired site is the dispatch
+continuation at `:1273` (`try { await this._store.recordError(...) } finally { await
+this._transition(...,'failed') }`). Consequences, confirmed against the code: (a) `runs.error`
+stays NULL and `journal.jsonl` gets no `{type:'error'}` line for this path, so `run_result` (memory)
+and `run_status`/`run_list`/dashboard (column-backed) disagree on the same run; (b) after a restart
+`result()` answers a **factually wrong** "admitted before v35" fallback sentence for a run admitted
+after v35; (c) `seedRefFail.message` is built from an unredacted upstream fetch-error string
+(`run-manager.ts:685-687`, `.slice(0,200)` of `err.message`) that can echo a `seedRef.repoUrl`
+carrying a provisioned `${secret:…}` value — this channel serves secret-bearing text to
+`run_result`/`EngineWarning.reason` unredacted. Violates INV-V35-1 ("a terminal status never
+outlives its reason", stated over *any* run reaching `failed`, no carve-out written), INV-V35-5, and
+ARCH-142. Gate 7.5's own real-run evidence (VAL-238) did not exercise this path — it used a
+no-`agent()`, non-seedRef script, so the gap was never observed in validation.
+
+**C-2 (HIGH, code defect) — the byte bound on a persisted, script-controlled error message is
+defeatable.** `src/errors.ts:297-303`'s `capErrorEnvelope` extends the UTF-8-safe cut forward to a
+marker's closing `›` by scanning `e.message.indexOf('›', markerStart)` over the **entire, unbounded**
+remainder of the message — confirmed by direct read. The function's own doc comment asserts "a
+marker's NAME is a config-time secret name, not attacker-controlled script text", but its actual
+input is `String(err.message)` off a **script-thrown** `Error` (`errors.ts:257-262`), which a
+workflow script fully controls. A thrown message shaped
+`'A'.repeat(4090) + '‹secret:X' + 'B'.repeat(50_000_000) + '›'` makes `head` the whole ~50MB string:
+`runs.error` and `journal.jsonl` each take a ~50MB write per failed run (~12000× the documented
+`MAX_ERROR_ENVELOPE_BYTES=4096`), and `runs.error` sits on `listRuns()`'s `SELECT` list, so the
+oversized column loads on every `run_list`/`/api/runs` call thereafter. Violates INV-V35-5, ARCH-141
+(bound rationale), ADR-066. This is a freshly-introduced defect of THIS iteration: `06-impl-log.md`
+IMPL-347 (v35 GREEN-phase, closing a straddling-marker mangling bug found by
+`errors-to-err.test.ts`) is exactly where this code was written; the existing regression test
+(swept `MAX_ERROR_ENVELOPE_BYTES - {10..-2}`) varies the cut *position*, never the *distance to the
+closing glyph* — the actual unbounded parameter — so it cannot see this hole.
+
+**C-3 (MEDIUM, architecture-doc drift, behavior correctly implemented) — INV-V35-4's stated
+fail-closed guarantee is three-case, not absolute, and the architecture text was never amended.**
+`nonCodeOracle` (`src/workflow-meta.ts:474-491`, IMPL-346, a same-iteration regression fix) fails
+CLOSED only when meta is present and the code span is unparseable; when there is no meta text at
+all, or meta is present but no clean span is found, it fails OPEN (unfiltered scan, pre-v35
+behavior) — a deliberate, correctly-reasoned trade recorded in `04-design.md`'s DES-237 amendment
+and an orchestrator ruling, but `02-architecture.md`'s INV-V35-4 and ARCH-149's `api` line still
+state the absolute form, and get the two case labels backwards versus the code. Not sent back as a
+code defect (the GREEN-phase reasoning — a blanked scan silently disabling four TOTAL-scan
+guarantees is worse than a narrow, named residual exposure — is sound) but the architecture-of-record
+is wrong and must be amended in place, in the same style ARCH-141's own "Gate 3/4 amendment" note
+used elsewhere in this same slice.
+
+**C-4 (MEDIUM, architecture-doc drift) — the `/api/runs` disclosure decision is the inverse of what
+ARCH-153/the interface table state, and the exposure classification itself needs restating, not
+just re-pointing.** Verified directly: `src/run-view.ts:22-25`'s `toPublicRunSummary` strips
+`failedAgentCount` (a count) from the unauthenticated `/api/runs` list route while `error.code` AND
+the full script-authored `error.message` ride the same route untouched — `dashboard.ts`'s
+`buildDashboardModel` copies `RunSummary` verbatim and the server's auth gate
+(`server.ts:1247`) covers `POST /mcp` only. ARCH-143's R8 justified exposing counts precisely
+*because* "narrative error text must not cross into them"; the implementation kept the narrative and
+removed the count instead — DES-240 rationale item 9 is the real, reasoned decision (`run_list` the
+MCP tool keeps the field; only the ungated dashboard projection drops it), but `02-architecture.md`'s
+v35 interface table still calls the two new fields "additive: ride the existing projections" for
+both routes, which is false for one of them. **This finding's severity is coupled to C-2**: today
+`error.message` reaching `/api/runs` is meant to be bounded+redacted by the same `capErrorEnvelope`/
+`redact()` pipeline C-2 shows is not actually bounded — until C-2 is fixed, the unauthenticated
+`/api/runs` route is a live channel for the oversized string C-2 describes, not just a documentation
+mismatch. Fix the architecture table (and, per the panel's remedy, project `error` to `{code}` only
+on the list route or explicitly re-justify carrying `message`).
+
+**C-5 (MEDIUM, architecture-doc drift, no code issue) — ARCH-152's "memoized once per process" is
+false; the reversal is real, reasoned, and undocumented (quality-dimensions O-1).** `src/server.ts:868-872`
+recomputes the authoring guide via a full `callTool` dispatch on every `initialize`
+(both handshake sites, `:1263`/`:1504`) — no module-scope memo. `04-design.md`'s DES-239 boundary
+(a) is the real, deliberate reversal ("computed per `initialize`... a cross-test singleton bought
+with no measured benefit"), but unlike ARCH-141's own in-slice amendment, ARCH-152's row carries no
+equivalent "Gate 3/4 amendment" paragraph — a future reader of `02-architecture.md` alone states a
+number that is not true.
+
+**C-6 (MEDIUM, architecture-doc drift, code correctly implements the safer guard — quality-dimensions
+O-2, same class as C-4's root cause).** ARCH-143 states the `failedAgentCount` guard as
+`(row.agentCount ?? 1) > 0`; both stores (`sqlite-run-store.ts:296-298`, `run-store.ts:466-469`) ship
+`agentCount != null && agentCount > 0` instead — the ARCH-stated formula is `true` for `agentCount
+=== null` (no snapshot), which would print a false confident `0` exactly where INV-V35-3 forbids one;
+the implementer caught and fixed this (IMPL-343/IMPL-354 name it explicitly) without amending
+ARCH-143. Code is right, architecture is wrong — must be corrected, not reverted.
+
+**C-7/C-8 (LOW, recorded debt, per the panel's own priority)** — V6 (the "untimed call gets ONE
+attempt" exception the guide never states), V7 (`DEFAULT_ATTEMPTS=2` transcribed in
+`workflow-view.ts` outside `compose-config-v2-wiring.test.ts`'s sweep — this repo's own named bug
+class, Constraint 11), V8 (three independent `failedAgentCount` derivations, INV-V35-3 says "two"),
+V9 (ADR-067's stated per-row cost saving is not actually realized by the shipped SQL), V10/ARCH-144's
+`api` line describing the withdrawn `storedParams?.args` middle term the code correctly does NOT do
+— fold V10 into the same architecture-doc batch as C-3/C-5/C-6 since it is the same file, same
+"amend in place" fix. None of C-7/C-8 independently blocks; V7 is one probe row in an existing test
+file, the smallest of the lot.
+
+**Not violations, checked, clean** (both panels' explicit negative findings, spot-verified where
+practical): ARCH-141's `.detail` withdrawal (a correctly-recorded, owner-answered deferral — see
+§D), ARCH-149's "predicate not rewrite" shape, ARCH-150/ADR-069's no-opt-out `checkMermaid` v2
+gate, Constraint 7 (`acorn` exact-pinned), Constraint 2 (`args` excluded from the per-agent slice),
+ARCH-153 dashboard rendering (`textContent`, no injection path), INV-V35-2 resume discipline, the
+`RunStore` port's replaceability shape, and the advertised-surface/consumability rows (ARCH-147/151/
+152/154 field-for-field, excepting C-5's memo claim).
+
+### D. Owner-deferral ledger sweep (issue #15)
+
+Mechanical sweep for the fixed metadata key `- **owner_decision:** pending` across all eight gate
+docs (`01-08*.md`): **0 live hits.** (`07-review.md`'s own 6 hits are verbatim historical quotes
+inside this file's own retrospective narrative about already-closed v27h/v28 items — not live
+markers, consistent with this ledger's own convention since v28.) The one v35-relevant marker,
+DES-230 (REQ-205's fourth acceptance criterion — structured `.detail`/`violation` marker forwarding
+through `toErr()`), is **answered 2026-09-21**: the owner ruled (A) — defer to a v36 "IPC card"
+rather than ship a dead branch behind three sandbox rebuilds that already strip `.detail` before it
+reaches `toErr` (`sandbox/guards.ts:322-335`, `host.ts:147/166`, `child-entry.ts:36`) — reasoning
+recorded in full at `04-design.md:8473`, and the deferred scope (4 files, the sandbox-catch
+allowlist decision, a new script-controlled-disk-write security review) is named for v36. Confirmed
+by direct read of the marker line, not by grepping the surrounding prose (which is where the C-1(DOC)
+staleness noted in §A was actually found).
+
+`owner_decisions: []`.
+
+**Spot-check for unmarked decision-shaped hedging**: none found in the v35 ADR/DES rows read for
+this review (ADR-065..071, DES-230..240) — every deferred call in this slice (REQ-205's fourth
+criterion) carries the marker; no "product decision" / "not taken here" phrasing without it.
+
+### E. Validation & handover
+
+Gate 7.5 (`08-validation.md`'s v35 section, `VAL-238..244`) real-tier all-green for the impact
+closure: a SECOND scratch instance booted via the documented `./deploy.sh --background` one-command
+path, `version` string confirms it runs the exact commit under review (`g05a523f`). REQ-205..210
+each exercised over real MCP HTTP / a real process kill+restart / real headless Chromium — no
+mock-only evidence. `trace --check` shows **0** `未真實驗證`/`未驗證` gaps for REQ-205..210 (all six
+closed this round with 0 new gaps, confirmed independently in §A). README.md/DEPLOY.md present,
+current-state (spot-checked: `error:{code,message}`, `failedAgentCount`, args-default, and the
+`~43KB` guide-size disclosure all documented; no stale/superseded key or port found in the sections
+touched by this slice; `DEPLOY.md` §0 leads with the one-command `./deploy.sh --background` path
+Gate 7.5 itself ran). Single `## 設定總表` remains the sole config-key location (spot-checked: no
+new v35 config key was introduced, matching the validator's own note).
+
+**One caveat, named and carried, not silently dropped (consistent with the validator's own
+disclosure):** REQ-117's fresh-cold-model protocol is carried to a `needs_clarification` note (a
+subject that has not read this ledger is needed to run it meaningfully) — this is a validator-owned
+methodological limitation, not an `owner_decision: pending` marker, and does not block close on its
+own; flagged here so it is not lost.
+
+**C-2's live exposure on the validated system**: Gate 7.5's REQ-205 script
+(`throw new Error('boom, VAL35 real failure')`) did not exercise the seedRef path (C-1) or a
+marker-shaped payload (C-2) — the real-run evidence is genuine for what it tested, but does not
+cover either HIGH finding above. Both remain unverified at the real tier and must be re-validated
+once fixed.
+
+### F. Known tool-fork limitation (unchanged, recorded every round since ~v29)
+
+`.sdlc/trace.py` in this repo is an old vendored fork: no `--tool` subcommand dispatch, and its
+`analyze()` does not parse `owner_decision` at all (so a live `pending` marker would not surface as
+a `待業主決策` gap on this repo's own dashboard even if one existed — none did, per §D). §B's
+`dashboard_check`/`solid_check`/`module_check` were therefore run by invoking the plugin 2.4.3
+scripts directly (`python3 .../scripts/{dashboard_check,solid_check,module_check}.py <sdlc_dir>`),
+per this ledger's own established practice. Recorded as LOW debt, unchanged.
+
+### G. Regression suite
+
+`npm test` (vitest, full suite, `fileParallelism:false` per `vitest.config.ts` — files run
+sequentially, several spin a real subprocess/HTTP server per file) was launched directly by this
+reviewer and did **not** finish inside this review session (still running, no output yet, after
+~9 minutes real time / ~3.5 CPU-minutes at last check — consistent with this suite's own
+sequential-by-design runtime, not a hang). The on-disk baseline this HEAD is built on is commit
+`05a523f`'s own message: **"全套 3194 過 0 敗"** ("the whole suite: 3194 pass, 0 fail"), and
+`e9c2dc8`'s (HEAD) message states **"全回歸 3195 過 0 敗"** re-confirmed after the REQ-117
+cold-subject re-run. Neither C-1 nor C-2 is expected to fail an existing test regardless — the
+adversarial panel already traced why: C-1's path has no existing "seedRef fetch fails" assertion on
+`runs.error`/`journal.jsonl`, and C-2's existing straddle-offset sweep varies the wrong parameter. A
+clean run (this reviewer's own or the committed baseline) does not weaken either finding — both were
+confirmed by direct source read, not by a failing test. **Recorded honestly as an incomplete
+verification step of this review round**, not silently reported as done: if this session's own run
+completes after this report is filed, its count should be appended in the next gate's own note
+rather than assumed.
+
+### H. Retro
+
+**What went well:** the v35 GREEN-phase self-caught and fixed a real pre-existing regression
+(`nonCodeOracle` failing closed on ANY parse failure, breaking DES-174's TOTAL-scan guarantee) before
+this gate ever saw it — IMPL-346. The owner-deferral discipline held for the one decision that
+genuinely needed a human call (DES-230): scoped, dated, reasoned, and answered before Gate 7.5
+closed, with the answer traceable to a specific marker line rather than buried in prose. The
+traceability chain held perfectly under the load of this review's own verification (byte-identical
+gap-set diff against the v34 baseline, +14 solid_check modules matching ARCH-141..154 1-for-1) —
+nothing here required taking a validator's or implementer's note on faith.
+
+**What to change:** two GREEN-phase code fixes (IMPL-346's oracle correction, IMPL-347's marker-cut
+fix) shipped without a test that could see the failure mode this gate's adversarial panel found in
+each — not a process gap unique to v35 (the pattern recurs across this ledger: a fix closes the
+reported symptom and the regression test pins the fix's own mechanism rather than an adversarial
+input). The two ARCH-doc amendments this gate's panel wants "in the same style ARCH-141 used" (C-3,
+C-5, C-6, C-10/DOC-staleness) should be a standing Gate-6/Gate-8-return checklist item: when an
+implementer or GREEN-phase fix reverses a Gate-2 decision, amend that ARCH-* row's `api`/`note`
+in the SAME commit, not deferred to whichever Gate 8 catches it.
+
+**Known tech debt carried (non-blocking, recorded):** §B's 7 mermaid 括號不平衡 false positives and
+1 mermaid-fallback low (unchanged since ~v27); §B's 10 solid_check 未認領檔案 lows (unchanged);
+C-7 (guide's untimed-attempt exception undocumented), C-8a (`DEFAULT_ATTEMPTS` not in the
+`compose-config-v2-wiring.test.ts` sweep — Constraint 11's named location), C-8b (three
+`failedAgentCount` derivations, INV-V35-3 says two), C-8c (ADR-067's stated cost saving not realized
+by the shipped SQL); §F's trace.py fork limitation.
+
+```
+Gaps: high=15 mid=36 low=26 (1928 items / 77 gaps; byte-identical ID set vs the v34 close baseline
+      e9c2dc8 — 0 added, 0 removed by this iteration). All 77 pre-existing, all previously recorded
+      as accepted v29-v32-era debt across every Gate 8 round since v33.
+Drift: none beyond the accepted 24-line 漂移 baseline. One doc-internal staleness found
+      (04-design.md:8723 + 02-architecture.md:4389 prose still say DES-230's owner_decision is
+      "pending"; the marker itself has read "answered 2026-09-21" since the v35 GREEN-phase
+      amendment) — folded into the architecture send-back.
+Architecture consistent: no — 2 HIGH code defects (C-1: seedRefFail path bypasses redact/bound/
+      recordError, secret-leak + cross-restart-lie risk; C-2: capErrorEnvelope's marker-close scan
+      is unbounded over script-controlled text, ~50MB/run disk-write DoS) + 5 MEDIUM architecture-doc
+      drifts (C-3 INV-V35-4/ARCH-149 three-case rule undocumented; C-4 ARCH-143 R8/interface-table
+      "additive" claim inverted; C-5/O-1 ARCH-152 memo claim false; C-6/O-2 ARCH-143 guard formula
+      wrong in the doc; C-10/DOC the two stale owner_decision cross-references) + 4 LOW (recorded
+      debt, not blocking: untimed-attempt guide gap, DEFAULT_ATTEMPTS sweep gap, 3-derivation count,
+      ADR-067 cost-claim mismatch).
+Validation: real-tier all-green for REQ-205..210? yes (VAL-238..244, 0 未真實驗證/未驗證 gaps) ·
+      README+DEPLOY present, current-state, one-command deploy Gate 7.5 itself ran? yes · BUT
+      neither C-1's seedRef-failure path nor C-2's marker-shaped payload was exercised by Gate 7.5 —
+      both HIGH findings are live on the validated system and unverified at the real tier.
+Conclusion: send back to Gate 6 (impl) for C-1/C-2 and Gate 2 (architecture) for C-3/C-4/C-5/C-6/
+      C-10-doc; re-validate REQ-205 at Gate 7.5 once C-1/C-2 land (the seedRef-failure and
+      marker-shaped-payload cases this round's real-run evidence did not cover). 0 owner_decision:
+      pending markers — DES-230 answered 2026-09-21 — so nothing here is blocked on the owner.
+```
+
+send_back: ["impl", "architecture"]
+blocking_findings:
+  - "C-1 (src/run-manager.ts:749-755, `start()`'s seedRefFail branch): a run failed via a seedRef
+    fetch error transitions straight to 'failed' with entry.resultError set directly — no redact(),
+    no capErrorEnvelope(), no this._store.recordError() call, unlike the dispatch-continuation path
+    at :1273. → Fixed looks like: every path that can set a run to 'failed' goes through the SAME
+    capture→redact→bound→persist sequence before the transition (e.g. centralize in `_transition`
+    when `to==='failed' && entry.resultError` and not yet recorded, per the adversarial report's own
+    remedy), OR explicitly wire redact()/capErrorEnvelope()/recordError() into the seedRefFail branch
+    to match :1273 byte-for-byte. Add a test that fails a seedRef fetch and asserts `runs.error` +
+    `journal.jsonl`'s `{type:'error'}` line are populated AND redacted, surviving a restart."
+  - "C-2 (src/errors.ts:297-303, `capErrorEnvelope`): the forward extension to a marker's closing
+    `›` via `e.message.indexOf('›', markerStart)` scans the unbounded remainder of a script-controlled
+    message, so a crafted thrown Error can make the persisted `runs.error`/`journal.jsonl` string
+    arbitrarily large (demonstrated: ~50MB from a single throw). → Fixed looks like: bound the
+    forward scan to at most `MARKER_PREFIX.length + <max secret name bytes>` from `markerStart`; if
+    no closing `›` is found within that bound, fall back to the existing `head.slice(0, markerStart)`
+    branch (drop the incomplete marker) rather than scanning further. Add a regression test that
+    varies the DISTANCE from the cut to a (real or fake) closing glyph, not just the cut offset —
+    the existing `MAX_ERROR_ENVELOPE_BYTES - {10..-2}` sweep cannot see this class of input."
+  - "C-3 (02-architecture.md's INV-V35-4 text + ARCH-149's `api` line): both state an absolute
+    fail-closed guarantee for the admission scan; the shipped and correctly-reasoned behavior
+    (src/workflow-meta.ts:474-491, nonCodeOracle) is a three-case rule — fails closed only on
+    clean-meta+unparseable-body, fails OPEN on no-meta-at-all or meta-without-a-clean-span. → Fixed
+    looks like: amend INV-V35-4 and ARCH-149's `api` line in place (matching ARCH-141's own
+    in-slice 'Gate 3/4 amendment' style) to state the three cases correctly (the code's case labels,
+    not the design-rationale prose's inverted ones) and name the residual exposure (an unparseable
+    no-meta script can still trigger AGENT_LABEL_REQUIRED/AGENT_UNDECLARED off prose text, though it
+    cannot produce a missed call)."
+  - "C-4 (02-architecture.md's v35 interface table, the `/api/runs`/`/api/runs/:id` row + ARCH-143's
+    R8 rationale): states the two new fields ride the existing projections 'additively' for both
+    routes; src/run-view.ts's toPublicRunSummary actually strips failedAgentCount (a count) while
+    letting error.code AND the full error.message through on the unauthenticated /api/runs list
+    route — the opposite sensitivity direction R8 argued for. → Fixed looks like: correct the
+    interface table to name the actual per-route projection (what is stripped, what is not, and
+    why — DES-240 rationale item 9 is the real reasoning, fold it back into the ARCH row), and
+    re-state R8 to match. This entry's risk is coupled to C-2 — re-confirm bounded/redacted status
+    of error.message on this specific route once C-2 lands."
+  - "C-5/O-1 (02-architecture.md ARCH-152's `api` line + Constraint 10): both state the authoring
+    guide's byte size is 'memoized once per process'; src/server.ts:868-872 recomputes it via a
+    full callTool dispatch on every MCP `initialize` (both handshake sites), per DES-239 boundary
+    (a)'s deliberate, reasoned reversal. → Fixed looks like: add the same 'Gate 3/4 amendment'
+    paragraph ARCH-141 already carries in this slice, stating the per-initialize computation and
+    why (measuring the bytes the caller actually receives outweighs the memo), OR add the memo if
+    the reviewer/orchestrator judges the per-connection cost unacceptable — either way, the doc must
+    match the shipped behavior."
+  - "C-6/O-2 (02-architecture.md ARCH-143's `api` line, the failedAgentCount guard formula): states
+    `(row.agentCount ?? 1) > 0`; both stores ship `row.agentCount != null && row.agentCount > 0`
+    (sqlite-run-store.ts:296-298, run-store.ts:466-469), which is the CORRECT guard per INV-V35-3
+    (the documented formula would print a false confident 0 for a null/no-snapshot run). → Fixed
+    looks like: correct ARCH-143's `api` line to the shipped formula and its rationale (do not
+    revert the code to match the wrong doc)."
+  - "C-10-doc (04-design.md:8723's 'Decision rationale' prose + 02-architecture.md:4389's Gate-3/4
+    amendment note): both still say 'REQ-205's fourth acceptance criterion is carried as DES-230's
+    owner_decision: pending'; DES-230's own marker (04-design.md:8473) has read 'answered
+    2026-09-21' since the v35 GREEN-phase amendment. → Fixed looks like: update both prose
+    references to state the ruling landed (owner chose option (A), deferred to a v36 IPC card),
+    same one-line fix pattern as this ledger's own prior OWN-1/DEBT-C precedent."
+owner_decisions: []
+```
+
+## v35 GATE 8 — RE-REVIEW AND CLOSE (2026-09-21, reviewer)
+
+**RE-REVIEW after auto send-back**: the round above listed `send_back: ["impl", "architecture"]`
+with 7 blocking findings (C-1, C-2, C-3, C-4, C-5/O-1, C-6/O-2, C-10-doc). The workflow auto-ran both
+gates once (`gates.impl`/`gates.architecture` notes in `state.yaml`, journal entries "v35 Gate 8
+送回迴圈裡重跑" ×2). Per the RE-REVIEW contract this round does **not** re-open the full architecture/
+traceability/handover scope — it verifies the 7 named findings are actually fixed **on disk**, re-runs
+the mechanical checks, and rules on the one open question the prior round left dangling in prose
+(§F below).
+
+**Note on the `.panel/review/` reports**: their mtimes (`quality-dimensions.md` 18:36, `adversarial.md`
+18:43) predate every repair artifact (`src/errors.ts` 18:51, `src/run-manager.ts` 19:05, the
+architecture doc's own fresh panel `.panel/architecture/*.r1.md` 19:11–19:18) — they are the
+**source** of the 7 findings (V1→C-1, V2→C-2, V3→C-3, V4→C-4, V5/O-1→C-5/O-1, O-2→C-6/O-2, V10/K6
+overlap→C-10-doc/K6), not a fresh post-fix pass. Consistent with the RE-REVIEW contract, they were
+consolidated as the **send-back ledger** (what must be verified closed) rather than re-read as current
+evidence; no new experts were spawned. Post-fix confirmation below comes from my own direct
+`file:line` reads of the current working tree plus the architecture gate's own fresh re-run panel
+(`.panel/architecture/{adversarial,quality-dimensions}.r1.md`, produced by the workflow for the
+architecture gate's re-run, not by me).
+
+### A. Per-finding closure — verified on disk, not from either report
+
+| Finding | Fix verified at | Test | Verdict |
+|---|---|---|---|
+| **C-1** — seedRefFail bypassed capture→redact→bound→persist | `src/run-manager.ts:755-770`, byte-identical in structure to `_runLive`'s `:1285-1292` (same `redact` ? capErrorEnvelope → `recordError` in `try`/`finally` before `_transition('failed')`) | `tests/unit/seedref-run-manager.test.ts:232-295` (new `describe`, real `SqliteRunStore`, real `journal.jsonl`, real store-restart re-read) — **6/6 green** | CLOSED |
+| **C-2** — unbounded forward scan for a marker's closing `›` | `src/errors.ts:297-320`, scan now bounded to `MARKER_PREFIX.length + MAX_SECRET_NAME_CHARS` (`MAX_SECRET_NAME_CHARS = 256` exported at `:280`); past the bound the existing "drop the incomplete marker" branch fires | `tests/unit/errors-to-err.test.ts:90-119` — 3 new cases vary the *distance* to the closing glyph (at the bound / one past / millions away, reproducing the ~50MB case bounded to <200 bytes over) — **11/11 green** | CLOSED |
+| **C-3** — INV-V35-4/ARCH-149 stated an absolute fail-closed rule; code is a 3-case rule | `02-architecture.md:4459` (ARCH-149 `api`) and `:4634` (INV-V35-4) both carry the "Gate 8 send-back correction/amendment (v35, 2026-09-21 — C-3)" paragraph stating the 3 cases verbatim and naming the residual false-positive exposure; matches `src/workflow-meta.ts:474-491` | doc-only, no test required | CLOSED |
+| **C-4** — `/api/runs` "additively" claim inverted the real per-route projection | `02-architecture.md:4625` (interface table row) + `:4409` (ARCH-143 R8 amendment) both name the actual asymmetry (list route strips `failedAgentCount`, passes `error.code`/`error.message`); matches `src/run-view.ts:22-24`, `src/server.ts:391` | doc-only | CLOSED |
+| **C-5/O-1** — "memoized once per process" false; every `initialize` recomputes | `02-architecture.md:4491-4492` (ARCH-152 `api` + Gate-8 amendment) and `:4652` (Constraint 10, "struck memoized") both now say per-`initialize`, matching `src/server.ts:868-872` and DES-239 boundary (a) | doc-only | CLOSED |
+| **C-6/O-2** — documented guard `(row.agentCount ?? 1) > 0` was the wrong formula | `02-architecture.md:4406` (ARCH-143 `api`) now states `row.agentCount != null && row.agentCount > 0` in place, matching both stores (`src/store/sqlite-run-store.ts:296-298`, `src/run-store.ts:466-469`) | doc-only | CLOSED |
+| **C-10-doc** — two prose cross-references still called DES-230's marker "pending" | `04-design.md:8725` and `02-architecture.md:4389` both carry a `**[SETTLED 2026-09-21 …]**` strike-through correction citing that DES-230's own marker (`04-design.md:8473`) reads `answered 2026-09-21`; independently re-confirmed by a fresh mechanical sweep (§E) | doc-only | CLOSED |
+
+Both targeted test files: `npx vitest run tests/unit/seedref-run-manager.test.ts
+tests/unit/errors-to-err.test.ts` → **17/17 passed** (this reviewer's own run, not taken from the
+implementer's note). `npm run typecheck` → clean, both `tsc` programs. Full regression, this
+reviewer's own run (not the committed-message figure): **`npx vitest run` → 430 files passed / 1
+skipped (431), 3199 tests passed / 26 skipped (3225), 0 failed**, 661s wall time (consistent with
+this suite's known sequential-by-design runtime, not a hang — the prior round's own attempt was cut
+off by an artificial 590s wrapper before completion; this run had none and finished naturally). No
+`git checkout`/`restore`/`stash` used to obtain any of the above.
+
+Bonus (not one of the 7 named findings, but load-bearing evidence the fix set is real and not
+narrowly patched): the architecture re-run's own residual-panel ruling **K6** — `ARCH-144`'s `api`
+line taught `submission.args ?? storedParams?.args ?? {}`, which INV-V35-2/ADR-071 forbid — is also
+corrected in place at `02-architecture.md:4415`, matching `src/run-manager.ts:1114-1119`. Checked
+because K6 was called "the highest consequence-to-cost ratio of the eight" in the architect's own
+ruling table; confirmed on disk rather than taken on that description alone.
+
+### B. Architecture consistency — consolidated, post-fix
+
+`arch_consistent: yes`. All 10 deviations the two pre-fix panel reports raised (V1-V10, O-1, O-2 —
+mapping to C-1..C-6/C-10-doc plus the C-7/C-8a/C-8b/C-8c/K1-K8 debt items the prior review already
+sorted into non-blocking) are now either **closed** (§A) or **named, ruled and filed as debt**, none
+silently dropped:
+- K1 (ADR-066 "exactly one call site" now false) — rationale narrowed to the still-true half;
+  `captureFailure` collapse declined this round, filed v36.
+- K2 (`seedRef.failDetail` unredacted) — named accepted debt on INV-V35-5, exposure stated in plain
+  language (`02-architecture.md:4635`), filed v36 — not an owner deferral (ADR-066 already ratified
+  the principle; what's left is scheduling).
+- K3 (composed worst-case ≈4.8KB, not 4096) — stated on ARCH-141/INV-V35-5; byte-exact UT filed v36.
+- K4 (INV-V35-3 "two derivations", actually three) — invariant/ADR-067 narrowed to the truth; one
+  missing agreement case filed, not a matrix.
+- K5 (ADR-067's cost rationale refuted by its own chosen implementation) — cost clause struck,
+  decision kept on precedent-symmetry grounds; unbounded `listRuns()` named as tracked debt.
+- K6 (ARCH-144 `api` line taught the forbidden `storedParams?.args` middle term) — corrected in
+  place, verified on disk (§A bonus).
+- K7 (two gateways, two `attempts` formulas, promised guide caveat never written) — named, port
+  ruled the right home, filed v36.
+- K8 (Constraint 11's sweep discharged per-feature, not systematically) — named, one probe row filed
+  v36 (verifier-owned).
+
+All eight rulings verified present at `02-architecture.md:4741-4752` (the "eight residue items"
+table), each with a named cost column — none read "discussed and left silent," which is this
+ledger's own bar.
+
+### C. Dashboard QA (`dashboard_check.py`, plugin 2.4.3 — this fork's `trace.py` has no `--tool`
+dispatch, same known LOW debt as every prior round)
+
+`0 high / 7 mid / 1 low` — byte-identical to the pre-send-back baseline: 7 mermaid bracket-balance
+false positives on `02-architecture.md`'s pre-v35 data-architecture diagrams (v21/22/23/24×2/26/27,
+lines 940/1207/1654/2549/2621/3114/3652 — unchanged, accepted since ~v27) + 1 low (no offline mermaid
+fallback in this vendored `trace.py`'s dashboard.html, regenerate-to-fix, already recorded). No new
+finding. `sh .sdlc/trace` regenerated `dashboard.html` cleanly (1928 items / 77 gaps).
+
+### D. Module-boundary check (`solid_check.py`)
+
+`✅ 92 個模組，依賴皆如 02-architecture 宣告 — 0 mid / 10 low`. The 10 lows are the same
+long-standing "unclaimed file" set (`harness-defaults.ts`, `self-update.ts`, `agent-semaphore.ts`,
+`mcp-probe.ts`, `scan-agent-calls.ts`, `net-guard.ts`, `workspace-artifacts.ts`, `clock.ts`,
+`owner-lookup.ts`, `workroot-guard.ts`) — unchanged by this send-back's edits (`errors.ts`,
+`run-manager.ts` are both claimed modules). No new violation.
+
+### E. `module_check` — dormant (no `ARCH-*` declares `build:`), unchanged.
+
+### F. Owner-deferral sweep + the dangling validation question
+
+Mechanical sweep for the fixed metadata key `- **owner_decision:** pending` across `01`-`08`:
+**zero live hits** (only `journal.md`/`07-review.md` prose quoting the key while narrating past
+rounds — those are history, not markers). `owner_decisions: []`. Spot-checked the 9 loose
+`owner_decision: pending`/`owner_decision, pending` prose occurrences found by a broader grep
+(`04-design.md:6822,7335`, `02-architecture.md:4064,4736`, `01-requirements.md:1695`,
+`05-tests.md:11750,14126,14486,14646`, `06-impl-log.md:8937`, `tests/unit/errors-to-err.test.ts:8`):
+every one is either struck-through history with a `[SETTLED …]`/`[RESOLVED …]` correction already
+in place, or a narrative citing what DES-230's marker read **at the time that gate ran** (true when
+written). None is a live bullet-form marker. Recorded as **LOW debt** (ledger hygiene, same class as
+F6-5's front-matter staleness): `05-tests.md`'s four echoes and `errors-to-err.test.ts:8`'s scope-note
+comment could be refreshed to say "answered" next time either file is touched, but none of them
+gates anything — `trace.py` doesn't parse this key at all (§ known tool-fork limitation, unchanged),
+and the fixed-key sweep is clean.
+
+**Ruling on the prior round's dangling sentence** ("re-validate REQ-205 at Gate 7.5 once C-1/C-2
+land" was in the prior conclusion's prose but never placed in that round's `send_back` array, so the
+auto-rerun never touched Gate 7.5): **not sent to validation.** REQ-205's REAL-tier VAL evidence
+(VAL-238..244, `08-validation.md`) already stands green for the requirement's acceptance criteria;
+what C-1/C-2 needed was proof the *specific defect paths* (a seedRef fetch failure, a marker-shaped
+attacker-controlled payload) are fixed, and that proof is `tests/unit/seedref-run-manager.test.ts`'s
+new case — a **real** `SqliteRunStore` against a real temp directory, a real `journal.jsonl` write, a
+real store-restart re-read, not a mock — plus `errors-to-err.test.ts`'s pure-function distance sweep
+(no I/O to fake). Booting a second real MCP server merely to re-throw the same seedRef error through
+the same code path this unit test already exercises end-to-end (store construction → transition →
+disk → restart → re-read) would add process-boot cost without adding coverage `trace`'s mock-hard-rule
+targets (that rule polices REQ-level acceptance evidence, not every internal code branch of an
+already-`real:true` requirement). `trace --check` confirms 0 `未真實驗證`/`未驗證` gaps on
+REQ-205..210. Recorded as a considered call, not silently dropped.
+
+### G. Handover docs
+
+Not touched by this send-back (no new config key, no new deploy step — `README.md`/`DEPLOY.md`
+mtimes predate the repair). Already reviewed current-state/history-free/一鍵部署-led in the round
+above; re-opening that audit is outside this RE-REVIEW's scope per the dispatch's own instruction.
+
+### H. Retro addendum
+
+**What went well:** both re-run gates held scope discipline exactly as instructed — `git diff --stat`
+on the two touched production files is 44 lines total across `errors.ts`+`run-manager.ts`, no
+re-decomposition, no new ARCH/DES/TASK ids minted, `iter: v35` unchanged throughout (the v33 F6-1
+house rule holds). The architecture gate's own re-run additionally cleared all 8 residual panel items
+(K1-K8) from its *own* re-spawned panel rather than leaving them for a third round — net LOW debt
+recorded, zero silently dropped.
+
+**What to change:** the prior review's conclusion said "re-validate REQ-205 at Gate 7.5" in prose but
+did not add `validation` to the structured `send_back` array — the exact class of bug issue #16's
+"blocking_findings is the only channel a repair agent reads" rule exists to prevent, just one level up
+(a reviewer's own conclusion prose vs. its own structured field). No harm done here (§F's ruling
+closes it), but worth naming: **the structured `send_back` array is the only channel that reaches the
+next gate — a reviewer's own prose conclusion is not self-enforcing on a future re-review any more
+than an implementer's.**
+
+**Known tech debt carried forward (non-blocking, unchanged or newly filed this round):** all debt
+listed in the round above (§B's K1-K8 as now individually ruled, C-7/C-8a/C-8b/C-8c, the 7 mermaid
+false positives + 1 fallback low, the 10 solid_check unclaimed files, the trace.py fork limitation)
+plus this round's one addition: **05-tests.md's four `owner_decision: pending` echoes and
+`errors-to-err.test.ts:8`'s scope-note comment are stale prose, LOW, refresh opportunistically.**
+
+```
+Gaps: high=15 mid=36 low=26 (1928 items / 77 gaps; byte-identical ID set vs both the v34 close
+      baseline and the pre-send-back v35 round — 0 added, 0 removed by this repair). All 77
+      pre-existing, all previously recorded as accepted debt.
+Drift: none beyond the accepted 24-line 漂移 baseline.
+Architecture consistent: yes — all 7 named blocking findings (C-1, C-2, C-3, C-4, C-5/O-1, C-6/O-2,
+      C-10-doc) verified CLOSED on disk (§A), plus bonus K6 confirmed; the architecture gate's own
+      re-run panel's 8 residual items (K1-K8) are each ruled and filed as non-blocking debt (§B),
+      none silently dropped.
+Validation: real-tier all-green for REQ-205..210? yes (unchanged, VAL-238..244) · README+DEPLOY
+      present, current-state, one-command deploy? yes (unchanged, not touched this round) · the
+      prior round's open question (re-validate C-1/C-2 at Gate 7.5?) is ruled NOT required — real
+      (non-mock) unit-tier evidence covers the specific defect paths; REQ-205's REAL VAL evidence
+      already stands (§F).
+Full regression (this reviewer's own run): 430 files / 1 skipped, 3199 tests / 26 skipped, 0 failed.
+      Typecheck clean both tsc programs. dashboard_check 0 high/7 mid/1 low (unchanged baseline).
+      solid_check 0 mid/10 low (unchanged baseline). module_check dormant.
+Conclusion: iteration CLOSES. send_back = [].
+```
+
+send_back: []
+blocking_findings: []
+owner_decisions: []

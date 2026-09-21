@@ -269,6 +269,16 @@ export function toErr(err: unknown): { code: string; message: string } {
  *  from script text). */
 export const MAX_ERROR_ENVELOPE_BYTES = 4096;
 
+/** v35 send-back (C-2): the forward extension below (to complete a marker split by the cut) must
+ *  itself be bounded — a marker's NAME is config-time (set by whoever configures a secret), so it
+ *  is legitimately bounded, but the `›` the old code scanned for was found via
+ *  `e.message.indexOf('›', markerStart)` against the REST of a script-controlled message with no
+ *  end bound: a crafted thrown Error with a `‹secret:` look-alike near the cut and no real `›`
+ *  anywhere close by made the scan (and the resulting persisted string) grow with the ENTIRE
+ *  remainder of the message — unbounded, demonstrated at ~50MB from a single throw. 256 bytes is
+ *  generous for any real secret name (env-var-style identifiers are a few dozen chars at most). */
+export const MAX_SECRET_NAME_CHARS = 256;
+
 /** Bounds `e.message` to `MAX_ERROR_ENVELOPE_BYTES`. MUST run AFTER `redact()`, never before: a
  *  substring cut applied to the RAW message first can split a secret so `redact()`'s value-exact
  *  match finds neither half (R-G9, `agent-executor.ts:662-671`, INV-V26-5). Identity when under
@@ -278,11 +288,13 @@ export const MAX_ERROR_ENVELOPE_BYTES = 4096;
  *  where the caller depends on an INTACT marker surviving (`hasSecretMarker`, and any reader
  *  looking for `‹secret:NAME›` verbatim) (v35 GREEN-phase fix: found via the ordering test,
  *  `errors-to-err.test.ts`). If the UTF-8-safe head opens a marker it does not also close, the cut
- *  extends forward just far enough to include the marker's closing `›` — bounded (a marker's NAME
- *  is a config-time secret name, not attacker-controlled script text), unlike backing off and
- *  dropping the marker, which would satisfy the byte bound while breaking the one thing this
- *  function's caller reads the message FOR. The pathological case (no closing `›` anywhere, which
- *  `redact()` never produces) still backs off, rather than shipping a mangled fragment. */
+ *  extends forward just far enough to include the marker's closing `›` — bounded to at most
+ *  `MARKER_PREFIX.length + MAX_SECRET_NAME_CHARS` past the marker's start (v35 send-back C-2: NOT
+ *  an unbounded scan of the rest of the message), unlike backing off and dropping the marker, which
+ *  would satisfy the byte bound while breaking the one thing this function's caller reads the
+ *  message FOR. Both the pathological case (no closing `›` anywhere, which `redact()` never
+ *  produces) AND the case where `›` exists but only past the bounded window still back off,
+ *  dropping the incomplete marker, rather than shipping a mangled fragment or scanning unbounded. */
 export function capErrorEnvelope(e: { code: string; message: string }): { code: string; message: string } {
   const buf = Buffer.from(e.message, 'utf8');
   if (buf.length <= MAX_ERROR_ENVELOPE_BYTES) return e;
@@ -297,7 +309,12 @@ export function capErrorEnvelope(e: { code: string; message: string }): { code: 
   const glyphStart = head.lastIndexOf('‹');
   const markerStart = glyphStart !== -1 && e.message.startsWith(MARKER_PREFIX, glyphStart) ? glyphStart : -1;
   if (markerStart !== -1 && !head.slice(markerStart).includes('›')) {
-    const closeIdx = e.message.indexOf('›', markerStart);
+    // Bounded forward scan (v35 send-back C-2): look for the closing `›` only within
+    // MARKER_PREFIX.length + MAX_SECRET_NAME_CHARS chars of the marker's start, never further.
+    const scanEnd = markerStart + MARKER_PREFIX.length + MAX_SECRET_NAME_CHARS;
+    const window = e.message.slice(markerStart, scanEnd + 1); // +1 to include the closing glyph itself
+    const relClose = window.indexOf('›');
+    const closeIdx = relClose === -1 ? -1 : markerStart + relClose;
     head = closeIdx === -1 ? head.slice(0, markerStart) : e.message.slice(0, closeIdx + 1);
     cut = Buffer.byteLength(head, 'utf8');
   }

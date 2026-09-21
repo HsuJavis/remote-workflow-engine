@@ -4335,13 +4335,33 @@ File: `tests/unit/seedref-git-invocation.test.ts`. Mock policy (unit): pure func
 
 ### UT-085 — RunManager fake-`SeedRefFetcher` wiring: fetch called, seedRef.resolvedSha visible, typed failures, dropped[], latencyMs from injected Clock (DES-083)
 - **status:** green
-- **traces:** DES-083, ARCH-053, TASK-077, TASK-078
+- **traces:** DES-083, ARCH-053, TASK-077, TASK-078, DES-232, ARCH-142, TASK-236, REQ-205
 - **tier:** unit
 - **real:** false
 - **result:** pass
-- **iter:** v13
+- **iter:** v35
 
 File: `tests/unit/seedref-run-manager.test.ts`. Mock policy (unit — DES-085 explicit): real RunManager + real InMemoryRunStore + real CasStore; fake SeedRefFetcher (inline interface, no network); FixedClock for deterministic latencyMs. 5 cases: (i) success → fetchCalled=true + seedRef.resolvedSha on RunStatusView; (ii) fetcher throws SEEDREF_FETCH_FAILED → run status failed + error.code; (iii) fetcher throws SEEDREF_SHA_MISMATCH → typed fail; (iv) dropped[] from fetcher result → surfaced on seedRef.dropped; (v) latencyMs under FixedClock is non-negative number. Pinned sha: 60ee8954e19fe5eaf2cf498202475c3c6fc9b8a4 (HsuJavis/remote-workflow-plugin master, 2026-08-15). Red reason: RunManager has no `seedFetcher` injection slot → fake not called → fetchCalled=false; RunStatusView has no seedRef field → all seedRef.* assertions fail.
+
+**[Gate 8 send-back repair, v35, 2026-09-21, C-1]:** case (ii)'s failure only asserted `error.code`,
+never `error.message`'s handling — the `seedRefFail` branch (`run-manager.ts` `start()`) set
+`entry.resultError` directly, skipping the SAME redact→bound→persist(`recordError`) sequence every
+other run failure goes through (the dispatch-continuation path, `_runLive`). Fixed: `seedRefFail`
+now feeds through `redact()` (when a `secretValueProvider` is injected) → `capErrorEnvelope()` →
+`this._store.recordError()`, `try/finally` before the `'failed'` transition, byte-for-byte the same
+sequence as `_runLive`'s failure branch. The raw, UNSLICED caught message feeds this sequence — the
+pre-existing 200-char slice for `seedRefView.failDetail` (a separate, unrelated surface) must not
+run first, or a secret straddling char 200 is split before `redact()`'s value-exact match ever sees
+it (R-G9/INV-V26-5). New case (vi), real on-disk `SqliteRunStore` (the only store with a restart to
+survive): a fake fetcher throws with a real secret embedded (padded so it straddles byte 200, the
+regression this ordering fix targets), a `secretValueProvider` is injected, and the test asserts the
+marker `‹secret:NAME›` is PRESENT (not merely that the raw value is absent, which passes vacuously
+on a half-secret) in the live `mgr.result()` view, in `journal.jsonl`'s `{type:'error'}` line, and
+in a FRESH `SqliteRunStore` instance pointed at the same on-disk dir (restart survival). Re-measured:
+`npx vitest run tests/unit/seedref-run-manager.test.ts` → 6/6 pass (5 original + 1 new).
+**Noted, not fixed (outside C-1's scope):** `seedRefView.failDetail` itself is never redacted on
+any path — a pre-existing v13 surface (`RunStatusView.seedRef.failDetail`), unrelated to the
+`resultError`/`recordError` channel this finding names.
 
 ### IT-073 — real `HardenedSeedRefFetcher` + real `CasStore` against a pinned public sha: SEEDREF_TOO_LARGE + real pull (DES-082, ARCH-053)
 - **status:** green
@@ -14126,6 +14146,19 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
   straddle specifically (found via a targeted probe sweep across the straddle window, not
   incidentally). Re-measured: `npx vitest run tests/unit/errors-to-err.test.ts` → 8/8 pass (7
   original + 1 new guard case).
+
+  **[Gate 8 send-back repair, v35, 2026-09-21, C-2]:** `capErrorEnvelope`'s marker-completing
+  forward scan (the `indexOf('›', markerStart)` above) was itself found unbounded — it scanned the
+  ENTIRE remainder of a script-controlled message for the closing glyph, so a crafted thrown Error
+  could inflate the persisted envelope to ~50MB from a single throw. Fixed by bounding the scan to
+  `MARKER_PREFIX.length + MAX_SECRET_NAME_CHARS` (256) past the marker's start; beyond that the
+  incomplete marker is dropped (existing fallback), never scanned further. Three new cases added,
+  varying the DISTANCE from the cut to the closing glyph rather than the cut offset (the existing
+  `MAX_ERROR_ENVELOPE_BYTES-{10..-2}` sweep cannot see this class of bug): closing glyph exactly at
+  the bound (still completes), one char past the bound (dropped, not completed), and millions of
+  chars away (result stays bounded near `MAX_ERROR_ENVELOPE_BYTES`, never scales with the
+  attacker-controlled distance). Re-measured: `npx vitest run tests/unit/errors-to-err.test.ts` →
+  11/11 pass.
 - **iter:** v35
 
 ### UT-285 — `RunStore.recordError`/`getError` (DES-231)

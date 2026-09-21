@@ -15,13 +15,14 @@
 // fake CasStore for putBlob surface; FixedClock from src/clock.ts for deterministic latencyMs.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { RunManager } from '../../src/run-manager.js';
 import { FixedClock } from '../../src/clock.js';
 import { CasStore } from '../../src/cas-store.js';
+import { SqliteRunStore } from '../../src/store/sqlite-run-store.js';
 import { startScript } from '../helpers/workflow-fixtures.js';
 
 // Pinned sha (real HsuJavis/remote-workflow-plugin HEAD, pinned at Gate 5 2026-08-15)
@@ -220,5 +221,81 @@ describe('UT-085: RunManager fake-SeedRefFetcher wiring (DES-083)', () => {
     const latencyMs = (view as any).seedRef?.latencyMs;
     expect(typeof latencyMs).toBe('number');
     expect(latencyMs).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// v35 send-back (C-1, DES-232's redact->bound->persist sequence extended to the seedRefFail
+// branch): a seedRef fetch failure must go through the SAME capture channel as every other run
+// failure — redacted, recorded via `RunStore.recordError` (so `runs.error` AND journal.jsonl carry
+// it), and durable across a store restart. Real SqliteRunStore (on-disk) — the only store that has
+// a restart to survive.
+describe('UT-085 send-back C-1: seedRefFail routes through redact/recordError like every other failure', () => {
+  let storeDir: string;
+  beforeEach(() => { storeDir = mkdtempSync(join(tmpdir(), 'rwe-ut085-c1-')); });
+  afterEach(() => { rmSync(storeDir, { recursive: true, force: true }); });
+
+  const SECRET = { name: 'GIT_TOKEN', value: 'ghp_SUPERSECRETVALUE12345' };
+  const secretValueProvider = { entries: () => [SECRET] };
+
+  it('redacts the secret in the run error AND persists it via recordError, surviving a store restart', async () => {
+    // Padded so SECRET.value straddles byte 200 — the pre-fix code sliced the raw message to 200
+    // chars BEFORE redact() ever saw it (R-G9/INV-V26-5: a cut before redact() can split a secret
+    // so the value-exact match finds neither half). If that regresses, the marker below goes
+    // missing even though `not.toContain(SECRET.value)` would still pass vacuously on the split
+    // remnant — the marker-PRESENT assertion is the one that actually catches it.
+    const pad = 'p'.repeat(190);
+    const fakeFetcher: FakeSeedRefFetcher = {
+      async fetch() {
+        throw Object.assign(
+          new Error(`git clone failed: remote rejected token ${pad}${SECRET.value}`),
+          { code: 'SEEDREF_FETCH_FAILED' },
+        );
+      },
+    };
+
+    const clock = new FixedClock(new Date('2026-09-21T00:00:00.000Z'));
+    const store = new SqliteRunStore(storeDir, clock);
+    const cas = new CasStore(join(storeDir, 'cas'));
+    const mgr = new RunManager({
+      workRoot: storeDir,
+      clock,
+      store,
+      cas,
+      secretValueProvider,
+      seedFetcher: fakeFetcher,
+      seedRefAllowlist: ALLOWLIST,
+    } as any);
+
+    const runId = await startScript(mgr, `return 'seeded';`, {
+      seedRef: { repoUrl: ALLOWLISTED_URL, sha: PINNED_SHA },
+      seedNamespace: '_test',
+    } as any);
+
+    const view = await pollStatus(mgr, runId);
+    expect(view.status).toBe('failed');
+
+    // Live view: message is redacted, never the raw secret.
+    const res = await mgr.result(runId);
+    expect(res.ok).toBe(false);
+    const liveMessage = !res.ok ? (res as any).error?.message : undefined;
+    expect(liveMessage).toBeDefined();
+    expect(liveMessage).not.toContain(SECRET.value);
+    expect(liveMessage).toContain(`‹secret:${SECRET.name}›`);
+
+    // Durable: runs.error column + journal.jsonl {type:'error'} line, both redacted.
+    const runDir = join(storeDir, 'runs', runId);
+    const journalText = readFileSync(join(runDir, 'journal.jsonl'), 'utf8');
+    const journalLines = journalText.trim().split('\n').map((l) => JSON.parse(l));
+    const errorLine = journalLines.find((l) => l.type === 'error');
+    expect(errorLine).toBeDefined();
+    expect(JSON.stringify(errorLine)).not.toContain(SECRET.value);
+    expect(errorLine.message).toContain(`‹secret:${SECRET.name}›`);
+
+    // Restart: a fresh SqliteRunStore reading the SAME on-disk dir sees the same redacted value.
+    const restarted = new SqliteRunStore(storeDir, clock);
+    const persisted = await (restarted as unknown as { getError(runId: string): Promise<{ code: string; message: string } | null> }).getError(runId);
+    expect(persisted).not.toBeNull();
+    expect(persisted!.message).not.toContain(SECRET.value);
+    expect(persisted!.message).toContain(`‹secret:${SECRET.name}›`);
   });
 });

@@ -8953,6 +8953,17 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   string — still failed).
 - **refactor:** surgical — one `export` keyword added in `secret-resolver.ts`; `capErrorEnvelope`
   gained the marker-detection block after its existing cut logic, no other lines changed.
+- **[Gate 8 send-back repair, v35, 2026-09-21, C-2]:** the marker-completing forward extension added
+  above (`e.message.indexOf('›', markerStart)`) was itself unbounded — it scanned the entire
+  remainder of a script-controlled message for the closing glyph, so a crafted thrown Error with no
+  real `›` nearby could inflate the persisted envelope to ~50MB from a single throw. Fixed: the scan
+  is now bounded to `MARKER_PREFIX.length + MAX_SECRET_NAME_CHARS` (256, new exported constant in
+  `src/errors.ts`) characters past the marker's start; beyond that, the existing fallback (drop the
+  incomplete marker) fires instead of scanning further. Three new cases in `errors-to-err.test.ts`
+  vary the DISTANCE from the cut to the closing glyph (not the cut offset, which the existing sweep
+  already covers): exactly at the bound (completes), one past it (dropped), and millions of chars
+  away (result stays bounded, never scales with the attacker-controlled distance). Re-measured:
+  `npx vitest run tests/unit/errors-to-err.test.ts` → 11/11 pass.
 
 ### IMPL-348 — v35 GREEN-phase: `failedAgentCount` stripped off the `/api/runs` dashboard list surface
 
@@ -9131,7 +9142,7 @@ F13 本質上是渲染問題,單元層看不到 DOM。
 
 - **status:** done
 - **traces:** TASK-236, DES-230, DES-232, DES-233, DES-234, ARCH-141, ARCH-142, ARCH-144, ARCH-146, REQ-205, REQ-206, REQ-207
-- **greens:** UT-284, UT-286, IT-284, IT-285, IT-286, VAL-232, VAL-234
+- **greens:** UT-284, UT-286, IT-284, IT-285, IT-286, VAL-232, VAL-234, UT-085
 - **files:** src/errors.ts, src/run-manager.ts
 - **commit:** d4abb60
 - **iter:** v35
@@ -9159,6 +9170,19 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   omitted for a zero-agent run.
 - **refactor:** reviewed at this gate's simplify pass — no issue found; every branch here is
   independently commented with its own INV-tagged rationale.
+- **[Gate 8 send-back repair, v35, 2026-09-21, C-1]:** this capture→redact→bound→persist→transition
+  sequence was NOT the only path that can fail a run — `start()`'s pre-v13 `seedRefFail` branch
+  (a seedRef fetch error, DES-083/TASK-078) set `entry.resultError` directly and called
+  `_transition(..., 'failed')` with no `redact()`, no `capErrorEnvelope()`, no `recordError()`,
+  bypassing this whole discipline for one specific failure cause. Fixed: `seedRefFail` now runs
+  through the SAME sequence, byte-for-byte, as the dispatch-continuation branch above. The caught
+  message feeds the sequence UNSLICED (the pre-existing `seedRefView.failDetail` keeps its own
+  independent 200-char slice) — feeding a pre-sliced message in would repeat the exact R-G9/
+  INV-V26-5 ordering bug this task's own `capErrorEnvelope` doc comment warns against, splitting a
+  secret before `redact()` can match it. Verified in `tests/unit/seedref-run-manager.test.ts`'s new
+  case (UT-085): a real `SqliteRunStore`, a secret padded to straddle byte 200, and a restart
+  (fresh `SqliteRunStore` over the same on-disk dir) all still show the marker rather than the raw
+  value or a half-secret.
 
 ### IMPL-356 — TASK-237: the advertised surface — computed worst-case wait, the envelope at the handshake, the three facts the guide never said
 
