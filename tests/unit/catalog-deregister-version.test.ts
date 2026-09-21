@@ -1,12 +1,15 @@
-// UT-302 (DES-246, ARCH-155, TASK-244, REQ-211/REQ-096): `deregisterVersion(name, version, actor)`
-// — a SIBLING of `deregister()`, never a mode flag — answers six outcomes in a PINNED order
-// (ownership → name-absent → version-not-found → channel-pinned → last-remaining → pinned-by-run),
-// deletes EXACTLY two rows (`workflow_versions`, `workflow_diagrams`) inside one transaction, and
-// leaves `assets`/`workflows` untouched. The whole-name `deregister()` path and every one of its
-// codes stay byte-identical (REQ-211's own regression clause).
+// UT-302 (DES-246, ARCH-155, TASK-244, REQ-211/REQ-096): `deregisterVersion(name, version, actor,
+// pinnedRunId)` — a SIBLING of `deregister()`, never a mode flag — answers six outcomes in a PINNED
+// order (ownership → name-absent → version-not-found → pinned-by-run → channel-pinned →
+// last-remaining), deletes EXACTLY two rows (`workflow_versions`, `workflow_diagrams`) inside one
+// transaction, and leaves `assets`/`workflows` untouched. The whole-name `deregister()` path and
+// every one of its codes stay byte-identical (REQ-211's own regression clause).
 //
-// Red reason: `WorkflowCatalog.prototype.deregisterVersion` does not exist — every call is a
-// TypeError.
+// 2026-09-22 Gate-8 F6 send-back: `pinnedRunId: string | null` is now a REQUIRED 4th parameter —
+// the catalog owns the `VERSION_PINNED_BY_RUN` refusal itself (ladder position 4, after ownership),
+// not the facade. Red reason (this amendment): before this change `deregisterVersion` took only
+// 3 params and never threw VERSION_PINNED_BY_RUN itself, so a call passing a non-null `pinnedRunId`
+// silently resolved `{removed:true, ...}` instead of rejecting.
 //
 // Mock policy (unit): a REAL WorkflowCatalog over a real temp-dir SQLite file (this module's own
 // mock policy note: `InMemoryRunStore` is real, not a mock; the catalog here needs no run store at
@@ -43,32 +46,51 @@ describe('UT-302: deregisterVersion — six outcomes in order, two DELETEs, re-k
   it('1 (ownership, first): a stranger is refused NOT_WORKFLOW_OWNER before anything else is checked', async () => {
     const { cat } = catalog();
     const [v1] = await twoVersions(cat, 'ut302-owner');
-    await expect((cat as any).deregisterVersion('ut302-owner', v1, MALLORY)).rejects.toThrow(/NOT_WORKFLOW_OWNER/);
+    await expect(cat.deregisterVersion('ut302-owner', v1, MALLORY, null)).rejects.toThrow(/NOT_WORKFLOW_OWNER/);
   });
 
   it('2: an absent NAME is {removed:false, remaining:[]}, mirroring deregister() — not an error', async () => {
     const { cat } = catalog();
-    const result = await (cat as any).deregisterVersion('does-not-exist', 'v1', ALICE);
+    const result = await cat.deregisterVersion('does-not-exist', 'v1', ALICE, null);
     expect(result).toEqual(expect.objectContaining({ removed: false, remaining: [] }));
   });
 
   it('3: an absent VERSION on a known name is VERSION_NOT_FOUND', async () => {
     const { cat } = catalog();
     await twoVersions(cat, 'ut302-vnf');
-    await expect((cat as any).deregisterVersion('ut302-vnf', 'v99', ALICE)).rejects.toThrow(/VERSION_NOT_FOUND/);
+    await expect(cat.deregisterVersion('ut302-vnf', 'v99', ALICE, null)).rejects.toThrow(/VERSION_NOT_FOUND/);
   });
 
-  it('4: a channel-pinned version is refused VERSION_PINNED_BY_CHANNEL', async () => {
+  it('4 (F6, new): a version pinned by a non-terminal run is refused VERSION_PINNED_BY_RUN, naming the runId, thrown FROM the pinnedRunId argument — the catalog never re-derives it', async () => {
+    const { cat } = catalog();
+    const [v1] = await twoVersions(cat, 'ut302-pinned');
+    await expect(cat.deregisterVersion('ut302-pinned', v1, ALICE, 'run-abc123')).rejects.toThrow(/VERSION_PINNED_BY_RUN.*run-abc123/);
+  });
+
+  it('4 vs 1 (F6, discriminating): a stranger probing a run-pinned version is still refused NOT_WORKFLOW_OWNER, never VERSION_PINNED_BY_RUN — ownership outranks the pin', async () => {
+    const { cat } = catalog();
+    const [v1] = await twoVersions(cat, 'ut302-pin-owner');
+    await expect(cat.deregisterVersion('ut302-pin-owner', v1, MALLORY, 'run-xyz')).rejects.toThrow(/NOT_WORKFLOW_OWNER/);
+  });
+
+  it('4 vs 5 (F6, discriminating): a version both channel-published AND run-pinned throws VERSION_PINNED_BY_RUN, never VERSION_PINNED_BY_CHANNEL — the pin outranks the channel', async () => {
+    const { cat } = catalog();
+    const [v1] = await twoVersions(cat, 'ut302-pin-chan');
+    await cat.publish('ut302-pin-chan', v1, 'release', 'alice');
+    await expect(cat.deregisterVersion('ut302-pin-chan', v1, ALICE, 'run-pin-chan')).rejects.toThrow(/VERSION_PINNED_BY_RUN/);
+  });
+
+  it('5: a channel-pinned version is refused VERSION_PINNED_BY_CHANNEL', async () => {
     const { cat } = catalog();
     const [v1] = await twoVersions(cat, 'ut302-chan');
     await cat.publish('ut302-chan', v1, 'release', 'alice');
-    await expect((cat as any).deregisterVersion('ut302-chan', v1, ALICE)).rejects.toThrow(/VERSION_PINNED_BY_CHANNEL/);
+    await expect(cat.deregisterVersion('ut302-chan', v1, ALICE, null)).rejects.toThrow(/VERSION_PINNED_BY_CHANNEL/);
   });
 
-  it('5: the LAST remaining version is refused VERSION_LAST_REMAINING, hinting workflow_deregister({name})', async () => {
+  it('6: the LAST remaining version is refused VERSION_LAST_REMAINING, hinting workflow_deregister({name})', async () => {
     const { cat } = catalog();
     const { version } = await cat.insertVersion({ name: 'ut302-last', script: "meta = {description:'x'};\nreturn 1;", mermaid: 'flowchart LR\n', params: undefined as any, principal: 'alice' });
-    await expect((cat as any).deregisterVersion('ut302-last', version, ALICE)).rejects.toThrow(/VERSION_LAST_REMAINING/);
+    await expect(cat.deregisterVersion('ut302-last', version, ALICE, null)).rejects.toThrow(/VERSION_LAST_REMAINING/);
   });
 
   it('success: EXACTLY two DELETEs — workflow_versions/workflow_diagrams gone, assets and the workflows row SURVIVE', async () => {
@@ -77,7 +99,7 @@ describe('UT-302: deregisterVersion — six outcomes in order, two DELETEs, re-k
     cat.putAsset({ workflow: 'ut302-success', kind: 'skill', name: 'a-skill', pushedBy: 'alice', pushedAt: clock.isoNow() });
     cat.putDiagramResult('ut302-success', v1, { status: 'ready', diagram: 'graph', generatedAt: clock.isoNow(), bindingsFp: 'fp' });
 
-    const result = await (cat as any).deregisterVersion('ut302-success', v1, ALICE);
+    const result = await cat.deregisterVersion('ut302-success', v1, ALICE, null);
     expect(result.removed).toBe(true);
 
     const db = new Database(join(dir, 'catalog.db'), { readonly: true });
@@ -95,7 +117,7 @@ describe('UT-302: deregisterVersion — six outcomes in order, two DELETEs, re-k
   it('the re-keyed diagram guard: a putDiagramResult AFTER its version was deleted writes nothing', async () => {
     const { cat } = catalog();
     const [v1] = await twoVersions(cat, 'ut302-guard');
-    await (cat as any).deregisterVersion('ut302-guard', v1, ALICE);
+    await cat.deregisterVersion('ut302-guard', v1, ALICE, null);
     cat.putDiagramResult('ut302-guard', v1, { status: 'ready', diagram: 'late-graph', generatedAt: clock.isoNow(), bindingsFp: 'fp' });
     expect(cat.getDiagram('ut302-guard', v1)).toBeNull();
   });
@@ -104,7 +126,7 @@ describe('UT-302: deregisterVersion — six outcomes in order, two DELETEs, re-k
     const { cat } = catalog();
     const { version: v1 } = await cat.insertVersion({ name: 'ut302-trig', script: "meta = {description:'x'};\nreturn 1;", mermaid: 'flowchart LR\n', params: undefined as any, principal: 'alice', triggers: ['only-in-v1', 'in-both'] });
     await cat.insertVersion({ name: 'ut302-trig', script: "meta = {description:'y'};\nreturn 2;", mermaid: 'flowchart LR\n', params: undefined as any, principal: 'alice', triggers: ['in-both'] });
-    const result = await (cat as any).deregisterVersion('ut302-trig', v1, ALICE);
+    const result = await cat.deregisterVersion('ut302-trig', v1, ALICE, null);
     expect(result.claimedTriggers).toEqual(['only-in-v1']);
     expect(cat.declaredTriggers('ut302-trig').has('in-both')).toBe(true);
   });
@@ -119,7 +141,7 @@ describe('UT-302: deregisterVersion — six outcomes in order, two DELETEs, re-k
   it("an admin (bypass:true) MAY delete another owner's version", async () => {
     const { cat } = catalog();
     const [v1] = await twoVersions(cat, 'ut302-admin');
-    const result = await (cat as any).deregisterVersion('ut302-admin', v1, ADMIN);
+    const result = await cat.deregisterVersion('ut302-admin', v1, ADMIN, null);
     expect(result.removed).toBe(true);
   });
 });

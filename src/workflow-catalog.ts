@@ -735,14 +735,19 @@ export class WorkflowCatalog {
   /** v36 (DES-246, ARCH-155/156, TASK-244): a SIBLING of `deregister()`, never a mode flag on it —
    *  deletes ONE version's rows (`workflow_versions`, `workflow_diagrams`) instead of every version,
    *  the diagrams and the name row. Six outcomes in a PINNED order — see DES-246's signature comment
-   *  for the full table: ownership → name-absent → version-not-found → channel-pinned →
-   *  last-remaining (the sixth, VERSION_PINNED_BY_RUN, is a cross-database check the FACADE makes
-   *  before ever calling this method — see mcp-facade.ts's `workflowDeregister`). `assets` and the
-   *  `workflows` row are untouched: `assets` is shared across versions and the name row carries the
-   *  channels/owner every surviving version still needs. `claimedTriggers` is the before/after
-   *  difference of `declaredTriggers(name)` computed INSIDE the same transaction — a trigger id still
-   *  declared by a surviving version is not released; one only the deleted version declared is. */
-  async deregisterVersion(name: string, version: string, actor: Actor): Promise<{ removed: boolean; remaining: string[]; claimedTriggers: string[] }> {
+   *  for the full table: ownership → name-absent → version-not-found → pinned-by-run →
+   *  channel-pinned → last-remaining. `assets` and the `workflows` row are untouched: `assets` is
+   *  shared across versions and the name row carries the channels/owner every surviving version
+   *  still needs. `claimedTriggers` is the before/after difference of `declaredTriggers(name)`
+   *  computed INSIDE the same transaction — a trigger id still declared by a surviving version is
+   *  not released; one only the deleted version declared is.
+   *  2026-09-22 (Gate-8 F6 send-back): `pinnedRunId: string | null` is a REQUIRED 4th parameter, not
+   *  an optional port — the FACADE gathers the fact (it is the only module holding both database
+   *  handles, ARCH-156) but this method owns the refusal, at ladder position 4, AFTER ownership.
+   *  The prior shape had the facade refuse before ever calling this method, which let a non-owner
+   *  learn a pinned-run fact before `NOT_WORKFLOW_OWNER` fired — ADR-075 amended in place. This
+   *  method neither computes nor verifies `pinnedRunId`; it only throws from it. */
+  async deregisterVersion(name: string, version: string, actor: Actor, pinnedRunId: string | null): Promise<{ removed: boolean; remaining: string[]; claimedTriggers: string[] }> {
     const row = this._db
       .prepare('SELECT owner, release_version, beta_version FROM workflows WHERE name = ?')
       .get(name) as { owner: string | null; release_version: string | null; beta_version: string | null } | undefined;
@@ -761,11 +766,17 @@ export class WorkflowCatalog {
     if (!known.has(version)) {
       throw codedError('VERSION_NOT_FOUND', `VERSION_NOT_FOUND: '${version}' is not a registered version of '${name}'`);
     }
-    // 4: a release/beta channel points at this version — unpublish it there first.
+    // 4 (F6): a non-terminal run pins this version — the FACT was gathered by the FACADE
+    // (ARCH-156, `store.listRuns()` — this catalog holds no run store of its own); this method
+    // only throws from the argument, never re-derives or verifies it.
+    if (pinnedRunId !== null) {
+      throw codedError('VERSION_PINNED_BY_RUN', `VERSION_PINNED_BY_RUN: run ${pinnedRunId} pins version '${version}' of '${name}'`);
+    }
+    // 5: a release/beta channel points at this version — unpublish it there first.
     if (row.release_version === version || row.beta_version === version) {
       throw codedError('VERSION_PINNED_BY_CHANNEL', `VERSION_PINNED_BY_CHANNEL: '${version}' of '${name}' is published to a channel — unpublish it first`);
     }
-    // 5: the only version — whole-name deregister is the honest tool for that.
+    // 6: the only version — whole-name deregister is the honest tool for that.
     if (known.size <= 1) {
       throw codedError('VERSION_LAST_REMAINING', `VERSION_LAST_REMAINING: '${version}' is the only version of '${name}' — use workflow_deregister({name}) to remove the whole workflow`);
     }

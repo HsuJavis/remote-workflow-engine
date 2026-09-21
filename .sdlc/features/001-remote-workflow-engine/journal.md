@@ -8606,3 +8606,55 @@ ARCH-172 owner marker by design). `current_stage` left at `design` (NOT advanced
 overall Gate 8 send-back is not closed while finding 3 is blocked on a design/tasks update this
 gate's scope does not cover. No `git checkout`/`git restore`/`git stash` used; no commit made
 (left for the orchestrator).
+
+## 2026-09-22 — v36 Gate 8 F6 close-out: `pinnedRunId` becomes a required 4th parameter (implementer)
+
+Scope: close Gate 8 finding F6, the one the prior repair round (see entry above) found blocked on a
+design/tasks update it was not in scope to make. Order followed per the send-back's own instruction:
+amend DES-246/TASK-244 first, then write the red test against the new contract, then implement.
+
+1. **DES-246/TASK-244 amended in place** (`04-design.md`, `03-tasks.md`) — signature grows a required
+   4th parameter `pinnedRunId: string | null`; the six-outcome table reordered to ARCH-155's pinned
+   order (ownership → name-absent → version-not-found → **pinned-by-run** → channel → last-remaining);
+   the facade snippet changed from "pinned → refuse; catalog never called" to "gather the fact, mint
+   `actorFor` once, pass both through — the facade does not refuse". Both documents' prior "(b)
+   CORRECTION" notes (which themselves asserted the now-overturned facade-first shape) are kept
+   verbatim and marked superseded by a dated note, per this ledger's amend-in-place house style —
+   nothing was deleted or rewritten silently.
+2. **Call-site count verified by grep, not trusted from the dispatch or the prior journal entry**:
+   11 real calls to `catalog.deregisterVersion(...)` across **3** files, not "4 files, ×10" as both
+   the dispatch and the entry above (inheriting the same count) stated: `src/mcp-facade.ts` (×1),
+   `tests/unit/catalog-deregister-version.test.ts` (×9 — one of its 10 `it()` cases calls
+   `deregister()`, not `deregisterVersion()`), `tests/integration/main-composition-root-events.test.ts`
+   (×1). `src/workflow-catalog.ts` is the method's own definition, not a caller — the "4th file" in
+   the inherited count. All 11 updated to pass the new required argument.
+3. **New test written before implementation, confirmed genuinely red**: three cases added to
+   `tests/unit/catalog-deregister-version.test.ts` (now 13, was 10) — a non-null `pinnedRunId` throws
+   `VERSION_PINNED_BY_RUN` naming the id (red: "promise resolved `{removed:true,...}` instead of
+   rejecting" against the pre-fix 3-parameter method); a channel-published+run-pinned version throws
+   `VERSION_PINNED_BY_RUN` not `VERSION_PINNED_BY_CHANNEL` (red: "expected ... /VERSION_PINNED_BY_RUN/
+   but got 'VERSION_PINNED_BY_CHANNEL: ...'"); a stranger on a run-pinned version is still refused
+   `NOT_WORKFLOW_OWNER` (this one passed even before the fix — it pins the F6 property, it is not
+   itself the defect being fixed, and is reported as such rather than mis-claimed as red). Also
+   dropped the `(cat as any)` casts on the 9 UT-302 calls: they were scaffolding for the original
+   "method does not exist" red phase and, left in place, would have hidden the required-parameter
+   defect from `tsc --noEmit` at exactly the call sites meant to prove the compiler enforces it.
+4. **Implemented**: `src/workflow-catalog.ts`'s `deregisterVersion` gains the 4th parameter and
+   throws `VERSION_PINNED_BY_RUN` at ladder position 4 (already-registered `ERROR_CATALOG` code,
+   `codedError` helper, byte-identical message shape to what the facade used to emit). `src/mcp-
+   facade.ts`'s `workflowDeregister` no longer refuses on its own probe — it mints `actorFor` once
+   above the probe, computes `pinnedRunId = pinned?.runId ?? null`, and forwards both to the catalog.
+   `IT-296`'s two existing cases needed no assertion changes (end-to-end result is unchanged: refused,
+   runId named in the message, the version still resolvable afterwards) — only its header comment and
+   `describe` title, which asserted "enforced at the FACADE", were corrected.
+5. **Verification**: `npx tsc --noEmit` clean. Touched files
+   (`tests/unit/catalog-deregister-version.test.ts`,
+   `tests/integration/deregister-version-pinned-run.test.ts`,
+   `tests/integration/main-composition-root-events.test.ts`,
+   `tests/integration/deregister-version-diagram-cache.test.ts`): 23/23 pass. Full suite: **3278
+   passed, 26 skipped, 0 failed** (446 files passed, 1 skipped) — up from the dispatch's stated
+   baseline of 3274 passed/0 failed by +4 (3 new UT-302 cases account for +3; the remaining +1 was
+   not chased further since the suite is fully green and no failure exists to explain).
+6. IMPL-367 added (`06-impl-log.md`); UT-302/IT-296 rows in `05-tests.md` amended in place with dated
+   notes rather than rewritten. No `git checkout`/`git restore`/`git stash` used; no commit made
+   (left for the orchestrator).

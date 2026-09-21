@@ -2947,3 +2947,21 @@ safety_class 維持 QM → 走 `/sdlc-fix` 的 F1–F6。REQ-208/209 觸及註�
 
 **路徑**:六條皆為既有行為的修正、說明補齊或已歸檔殘留的結清,無新外部整合,safety_class 維持 QM。
 REQ-215 因含 IPC 契約與安全評估,走完整七閘(含 architecture);其餘可併同一輪。
+
+### REQ-217 (v36 追加,業主 2026-09-22 裁決 K5) — 消除清單路徑的擴展懸崖,且不改變數字的語意
+
+- **status:** draft
+- **traces:** REQ-216, REQ-213, REQ-055
+- **acceptance:**
+  **背景**:`/api/runs` 與 `/api/home` 目前掃全表;`/api/home` 的 avgCostUSD 與 successRate
+  是對**全部 run** 計算的。驗證閘提出兩個選項(維持現狀讓懸崖由文件承接 / 全面分頁並接受
+  數字變成「最近 N 筆」),業主**兩個都不選**,裁定第三條:
+  **Given** 清單路徑 **Then** `listSummaries()` 分頁(limit 與上限由設計定,並寫進 port 契約),
+  擴展懸崖真的消失,不是靠文件承接。
+  **And** **Given** 首頁的 avgCostUSD / successRate
+  **Then** 改以資料庫端的聚合查詢(`SELECT AVG()/COUNT()` 之類)計算,**不得**把全表拉進記憶體 ——
+  因此數字仍是**全歷史語意**,儀表板不需要新增任何「範圍說明」文案,使用者看到的「成功率」
+  仍然是這具引擎的成功率,而不是最近 N 筆的成功率。
+  **And** 新增的 store 方法要有自己的測試,並在兩個 store 實作(記憶體/SQLite)上結果一致 ——
+  v36 已經因為兩個 store 不一致吃過一次虧(`failedAgentCount`)。
+- **iter:** v36

@@ -398,10 +398,12 @@ export class McpFacade {
 
   /** DES-149 (ARCH-091): the catalog deletes; the facade releases each claimed trigger and reports
    *  the union as `releasedTriggers`. v36 (DES-246, TASK-244): an optional `version` switches to the
-   *  version-scoped sibling — the pinned-run gate (`VERSION_PINNED_BY_RUN`) sits HERE, not in the
-   *  catalog, because runs and workflows live in two separate SQLite files and this facade is the
-   *  only production caller holding both handles. Absent `version` runs today's whole-name path,
-   *  byte-identical, below. */
+   *  version-scoped sibling. 2026-09-22 (Gate-8 F6 send-back): the pinned-run FACT is still gathered
+   *  HERE — runs and workflows live in two separate SQLite files and this facade is the only
+   *  production caller holding both handles (ARCH-156) — but the REFUSAL no longer is: this facade
+   *  passes the fact down as the catalog's required `pinnedRunId` 4th argument and the catalog
+   *  refuses from its own ladder, after its own ownership check (ARCH-155). Absent `version` runs
+   *  today's whole-name path, byte-identical, below. */
   async workflowDeregister(a: { name: string; version?: string }, principal: Principal): Promise<Record<string, unknown>> {
     try {
       if (a.version !== undefined) {
@@ -410,13 +412,11 @@ export class McpFacade {
         // free TEXT and may legitimately be unprefixed ("3") — an un-normalized compare would make
         // this security gate silently never fire for such a row.
         const norm = (v: string) => String(v).replace(/^v/, '');
+        const actor = actorFor(principal, a, 'bypass'); // minted ONCE, above the probe (F6)
         const runs = await this.store.listRuns();
         const pinned = runs.find((r) => r.name === a.name && norm(r.scriptVersion) === norm(a.version!) && !TERMINAL.has(r.status));
-        if (pinned) {
-          const error: ErrEnvelope = { code: 'VERSION_PINNED_BY_RUN', message: `VERSION_PINNED_BY_RUN: run ${pinned.runId} pins version '${a.version}' of '${a.name}'` };
-          return { runId: '', status: 'failed', code: error.code, error };
-        }
-        const { removed, remaining, claimedTriggers } = await this.runManager.catalog.deregisterVersion(a.name, a.version, actorFor(principal, a, 'bypass'));
+        const pinnedRunId = pinned?.runId ?? null;
+        const { removed, remaining, claimedTriggers } = await this.runManager.catalog.deregisterVersion(a.name, a.version, actor, pinnedRunId);
         // v36 (DES-246 boundary): only the before/after `declaredTriggers` difference is released —
         // NOT the union with `claimedIdsFor()` the whole-name path below also pulls in. A trigger
         // claim binds to the workflow NAME, not a version, and the name row survives a version

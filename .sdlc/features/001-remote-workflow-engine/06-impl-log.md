@@ -9516,3 +9516,50 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   own DoD item, genuinely green, and traces the same code this row documents; every other file in
   this row's `files:` list is unchanged by `b8b1e12`.
 - **refactor:** none — this row documents the original landing; no refactor pass owed here.
+
+### IMPL-367 — Gate-8 F6 send-back: `VERSION_PINNED_BY_RUN` moves from the facade's refusal to the catalog's own ladder
+
+- **status:** done
+- **traces:** TASK-244, DES-246, ARCH-155, ARCH-156, ADR-075, REQ-211, REQ-096
+- **greens:** UT-302, IT-296, IT-299
+- **files:** src/workflow-catalog.ts, src/mcp-facade.ts, tests/unit/catalog-deregister-version.test.ts, tests/integration/deregister-version-pinned-run.test.ts, tests/integration/main-composition-root-events.test.ts
+- **commit:** (uncommitted at report time — see report)
+- **iter:** v36
+- **note:** **Gate 8 F6 send-back, second round (2026-09-22).** The shipped v36 code (IMPL-359 and
+  the original TASK-244 landing) had `McpFacade.workflowDeregister`'s version branch probe
+  `store.listRuns()` and refuse `VERSION_PINNED_BY_RUN` itself, BEFORE ever calling
+  `catalog.deregisterVersion` — on the one reachable input (`auth.enabled:false` plus a mismatched
+  `args.principal`) a stranger who is not the owner learned "a live run pins version X of Y" (plus
+  the runId) before the catalog's own `NOT_WORKFLOW_OWNER` check ever ran, inverting this module's
+  own "ownership first" rule. The architecture ruling (ARCH-155/156, ADR-075 amended in place)
+  rejected the send-back's own one-line summary fix ("mint `actorFor` earlier") as a no-op —
+  `actorFor` is pure, so the refusal order is byte-identical either way — and instead required
+  `pinnedRunId: string | null` as a REQUIRED 4th parameter on `catalog.deregisterVersion`: the
+  catalog now throws `VERSION_PINNED_BY_RUN` itself, at ladder position 4 (after ownership,
+  name-absent, version-not-found; before channel-pinned, last-remaining). `mcp-facade.ts`'s
+  `workflowDeregister` still gathers the FACT (`store.listRuns()`, ARCH-156 — it is the only module
+  holding both database handles) and mints `actorFor(...)` once, above the probe, but no longer
+  refuses; it passes `actor` and `pinnedRunId` straight through as the 4th argument. **Call-site
+  count, verified by grep rather than trusted from the dispatch**: 11 real calls to
+  `catalog.deregisterVersion(...)` across 3 files (not the dispatched "4 files, ×10"): the facade
+  (×1), `tests/unit/catalog-deregister-version.test.ts` (×9, not ×10 — one of its 10 `it()` cases
+  calls `deregister()`, not `deregisterVersion()`), `tests/integration/main-composition-root-events.test.ts`
+  (×1). All 11 updated to pass the new required argument (`null` where no run pins the version); the
+  9 UT-302 calls also had their `(cat as any)` casts dropped since the method has been public and
+  correctly typed since its original landing — the cast was scaffolding for the original "method
+  does not exist" red phase and no longer served a purpose, and keeping it would have hidden this
+  exact class of defect from `tsc --noEmit` (a required parameter is only enforced by the compiler
+  at call sites the compiler actually type-checks). **Red-first, genuinely**: three new UT-302 cases
+  added before this fix — a non-null `pinnedRunId` (red: `promise resolved {removed:true,...} instead
+  of rejecting`), a stranger on a run-pinned version still refused `NOT_WORKFLOW_OWNER` (passed
+  before the fix too — not a red case, the F6 pin rather than the defect fix), and a
+  channel-published+run-pinned version throwing `VERSION_PINNED_BY_RUN` not `VERSION_PINNED_BY_CHANNEL`
+  (red: `expected [Function] to throw ... /VERSION_PINNED_BY_RUN/ but got 'VERSION_PINNED_BY_CHANNEL: ...'`).
+  IT-296's two existing cases needed no assertion changes (they check end-to-end result, not which
+  module refused) — only its header comment and `describe` title, which asserted "enforced at the
+  FACADE", were corrected to describe the new split (fact at the facade, refusal in the catalog).
+  IT-299 (diagram-cache invalidation, IMPL-359) re-confirmed unaffected: its one `deregisterVersion`
+  call path is unchanged in shape (still called on a non-pinned version).
+- **refactor:** none — the ladder's existing five checks are untouched in substance; one `if` block
+  inserted at the position ARCH-155 pins, using the same `codedError` helper and the already
+  `ERROR_CATALOG`-registered `VERSION_PINNED_BY_RUN` code the facade used to throw.

@@ -14961,6 +14961,17 @@ e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
   channel-pinned, last-remaining, the two-DELETE transaction with `assets`/`workflows` read back
   PRESENT, the re-keyed `(name,version)` diagram late-write guard, and the trigger
   release/non-release split (the A7 question DES-246 answers).
+- **note (2026-09-22, Gate 8 F6 send-back):** three cases ADDED, now 13 total, all green:
+  `deregisterVersion` gained a required 4th parameter `pinnedRunId: string | null` and now owns the
+  `VERSION_PINNED_BY_RUN` refusal itself at ladder position 4 (after ownership, before channel) —
+  ARCH-155/ADR-075 amended in place. New cases, genuinely red against the pre-F6 3-parameter method
+  (`promise resolved {removed:true,...} instead of rejecting`): (1) a non-null `pinnedRunId` throws
+  `VERSION_PINNED_BY_RUN` naming the id; (2) discriminating — a stranger (non-owner) on a run-pinned
+  version is still refused `NOT_WORKFLOW_OWNER`, never `VERSION_PINNED_BY_RUN` (position 1 outranks
+  4); (3) discriminating — a version both channel-published AND run-pinned throws
+  `VERSION_PINNED_BY_RUN`, never `VERSION_PINNED_BY_CHANNEL` (position 4 outranks 5). All 9 original
+  `deregisterVersion` calls updated to pass the new required argument (`null` where no run pins the
+  version). `iter:` unchanged (v36); this note documents the amendment rather than a new test id.
 - **iter:** v36
 
 ### IT-296 — `workflow_deregister({name, version})` refuses a version PINNED BY A NON-TERMINAL RUN
@@ -14976,6 +14987,16 @@ e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
   transaction exists), with a genuinely non-terminal run row and the catalog's version stored
   UNPREFIXED (`"3"`) — the normalized-compare case most likely to rot. The whole-name path (case 2)
   legitimately passes (regression pin).
+- **note (2026-09-22, Gate 8 F6 send-back):** "enforced at the FACADE" (above) is superseded, kept
+  visible rather than rewritten: the FACT is still gathered at the facade (`store.listRuns()`,
+  ARCH-156 — the only module holding both database handles) but the REFUSAL now fires inside
+  `catalog.deregisterVersion`'s own ladder (position 4, after its ownership check), reached through
+  the catalog's required `pinnedRunId` 4th parameter — the facade forwards the fact, it does not
+  refuse. Both assertions in case 1 (`VERSION_PINNED_BY_RUN`, runId named in the message, v3 still
+  resolvable afterwards) hold unchanged under the new shape, since they assert the end-to-end result
+  rather than which module performed the refusal; re-run green after the amendment. `describe` title
+  and header comment updated in the test file to match. No new test id; VAL-246's real-tier proof
+  (a real run pinned to v3 refused `VERSION_PINNED_BY_RUN` naming the exact runId) is unaffected.
 - **iter:** v36
 
 ### UT-303 — `lastRunAtByName()`: grouped `MAX(createdAt)`, both stores agree, absent means never-run

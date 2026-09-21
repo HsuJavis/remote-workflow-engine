@@ -1,13 +1,20 @@
-// IT-296 (DES-246, ARCH-156, TASK-244, REQ-211/REQ-096/REQ-097): the pinned-run refusal lives at
-// the FACADE (runs and workflows are two separate SQLite files — no cross-file transaction exists
-// in better-sqlite3), probing `store.listRuns()` for a genuinely non-terminal run BEFORE calling
-// the catalog. Both sides of the version compare are normalized (`String(x).replace(/^v/,'')`) —
-// the run pin is stored NUMERIC/normalized while a catalog row may legitimately be UNPREFIXED
-// ("3"), and an un-normalized compare would make this security gate silently never fire.
+// IT-296 (DES-246, ARCH-155/156, TASK-244, REQ-211/REQ-096/REQ-097): end-to-end, `workflow_deregister`
+// still refuses a version pinned by a non-terminal run naming its runId. 2026-09-22 (Gate-8 F6
+// send-back): the FACT is gathered at the FACADE (runs and workflows are two separate SQLite files
+// — no cross-file transaction exists in better-sqlite3), probing `store.listRuns()` for a genuinely
+// non-terminal run — but the REFUSAL itself now fires inside `catalog.deregisterVersion`'s own
+// ladder (ARCH-155, position 4, after ownership), reached through the catalog's required
+// `pinnedRunId` 4th parameter; the facade no longer refuses on its own. Both sides of the version
+// compare are normalized (`String(x).replace(/^v/,'')`) — the run pin is stored NUMERIC/normalized
+// while a catalog row may legitimately be UNPREFIXED ("3"), and an un-normalized compare would make
+// this security gate silently never fire.
 //
-// Red reason: `McpFacade.workflowDeregister` has no `version` parameter at all (calling it with one
-// is silently ignored — today's whole-name path always fires), so the pinned-run refusal path is
-// entirely unreachable; the version-scoped success path (catalog.deregisterVersion) does not exist.
+// Red reason (original): `McpFacade.workflowDeregister` has no `version` parameter at all (calling
+// it with one is silently ignored — today's whole-name path always fires), so the pinned-run
+// refusal path is entirely unreachable; the version-scoped success path (catalog.deregisterVersion)
+// does not exist. This test's assertions are unchanged by the F6 amendment — it asserts the
+// end-to-end result (refused, runId named, v3 still resolvable), which is identical whether the
+// catalog is never called or is called and refuses before its transaction.
 //
 // Mock policy (integration): a REAL SqliteRunStore with a genuinely non-terminal run row (not a
 // mock), a real WorkflowCatalog, real facade dispatch.
@@ -42,7 +49,7 @@ function boot(dir: string) {
   return { store, catalog, facade };
 }
 
-describe('IT-296: workflow_deregister({name, version}) refuses a version PINNED BY A NON-TERMINAL RUN — enforced at the FACADE', () => {
+describe('IT-296: workflow_deregister({name, version}) refuses a version PINNED BY A NON-TERMINAL RUN — fact gathered by the facade, refusal owned by the catalog (F6)', () => {
   it('a run genuinely non-terminal, catalog row stored UNPREFIXED ("3") — the gate still fires (normalized compare)', async () => {
     const dir = tempDir();
     const { store, catalog, facade } = boot(dir);
@@ -61,7 +68,8 @@ describe('IT-296: workflow_deregister({name, version}) refuses a version PINNED 
     expect(result.error?.code ?? result.code).toBe('VERSION_PINNED_BY_RUN');
     expect(JSON.stringify(result)).toContain(runId);
 
-    // The catalog must NEVER have been called on this branch — v3 must still be fully present.
+    // The catalog's delete transaction must never have run (it refuses at ladder position 4,
+    // before reaching its two DELETEs) — v3 must still be fully present.
     const known = await catalog.resolveDetail('it296-pin', { version: v3 });
     expect(known.version).toBe(v3);
   });

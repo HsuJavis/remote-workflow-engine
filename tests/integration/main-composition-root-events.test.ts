@@ -123,7 +123,7 @@ describe('IT-294: the composition root — one real eventSink wired into Workflo
     const actor = { id: 'alice', bypass: false, idSource: 'authenticated' as const };
     const { version } = await catalog.insertVersion({ name: 'it294-dereg', script: "meta = {description:'x'};\nreturn 1;", mermaid: 'flowchart LR\n', params: undefined, actor } as any);
     await (catalog as any).insertVersion({ name: 'it294-dereg', script: "meta = {description:'y'};\nreturn 2;", mermaid: 'flowchart LR\n', params: undefined, actor });
-    await (catalog as any).deregisterVersion('it294-dereg', version, actor);
+    await (catalog as any).deregisterVersion('it294-dereg', version, actor, null);
 
     const deregLine = lines.map((l) => JSON.parse(l)).find((e) => e.kind === 'catalog.deregister');
     expect(deregLine).toMatchObject({ name: 'it294-dereg', version });
