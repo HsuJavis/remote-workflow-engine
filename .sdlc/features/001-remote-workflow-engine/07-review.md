@@ -12452,3 +12452,59 @@ blocking_findings:
 - "src/mcp-facade.ts:410-419 (workflowDeregister's version-scoped branch, v36/DES-246/TASK-244): the VERSION_PINNED_BY_RUN probe runs and can return BEFORE actorFor(...) mints the actor, inverting ARCH-155's stated refusal order (ownership first, so a stranger cannot enumerate versions by refusal type); reachable when auth.enabled:false and a caller supplies a mismatched args.principal (authz.ts:107's auth-disabled short-circuit plus mcp-facade.ts:236-240's restored ownership check for claimed principals) → mint `actorFor(principal, a, 'bypass')` once above the pinned-run probe and either canMutate-gate the probe or move it after deregisterVersion's ownership check, matching the whole-name branch's existing order."
 owner_decisions:
 - "02-architecture.md:4942 — REQ-216/K5: /api/runs and /api/home's listSummaries()/lastRunAtByName() pagination trade-off — (A) keep full-history semantics with the documented scaling cliff (v36's current shipped behaviour, port contract + docs already carry it) or (B) paginate and accept a dashboard-number semantics change ('most recent N' instead of 'all-time'), requiring new UI copy to disclose the range. No ruling found anywhere in the ledger (state.yaml's pending: list has no K5/分頁 entry) — genuinely unanswered, not a bookkeeping lag."
+
+## v36 — post-REQ-217 follow-up: `activeRunId` regression fixed, two client-side narrowings named as debt (2026-09-22, implementer)
+
+REQ-217 (K5's owner ruling, landed `50cc26a`) paginated `listSummaries()`/`list()` and moved
+`/api/home`'s `avgCostUSD`/`successRate` onto a store-side full-history aggregate
+(`RunStore.workflowMetrics()`), per the explicit rule DES-250 records: *do not change what a number
+means in order to make it scale*. While implementing this follow-up, one place was found still
+breaking that rule — fixed this round (DES-251/TASK-249/IMPL-369, UT-072 amendment + new UT-308) —
+and two more were found and are named here as accepted, non-blocking debt, not fixed.
+
+**Fixed:** `buildHomeView`'s RUNNING group and `activeRunId` used to be derived from the SAME
+paginated `runs` page `/api/runs`' rows come from — so a `suspended`/`interrupted`/`queued` run
+older than the 50 most recent runs system-wide silently moved its workflow from RUNNING to
+REGISTERED and dropped `activeRunId`, the single signal an operator most needs from this page. Per
+DES-251: a new `RunStore.activeRuns()` port method (bounded by concurrency, not history, so it
+cannot reintroduce a cliff) now answers "which runs are currently non-terminal" directly, and
+`buildHomeView` resolves RUNNING/`activeRunId` from that query instead of the page. `latestRunId`/
+`latestRunAt` are deliberately left sourced from the page alone (DES-250's already-accepted,
+documented narrowing for those two fields specifically) — a RUNNING card can now legitimately carry
+an `activeRunId` with no `latestRunId`, asserted as a conscious decision in the new UT-072 case, not
+left as an accident.
+
+**Named debt (not fixed — both guarded/non-crashing, both real, both client-side):**
+
+- **`src/dashboard/ui/workflow.js`'s `onTick`.** `onTick` (line 428) calls `nameFilteredRuns`
+  (defined line 287) to filter the global `/api/runs` 50-row page down to the one workflow currently
+  being viewed; when that filter returns empty, `paintSelected`'s `runs.length === 0` branch
+  (lines 347-353) renders the predicted/never-run layout. **Trigger:** a workflow whose runs are ALL older than the 50-row page (i.e. it
+  has run before, but not recently relative to the rest of the system's traffic). **Consequence:**
+  the panel falls back to its "predicted, never-run" layout — misleading for a workflow that has, in
+  fact, run; an operator reading the per-workflow detail view for a low-traffic workflow on a busy
+  system sees it rendered identically to one that has genuinely never executed. **Mitigations
+  offered:** (a) client-side guard/refetch — detect the zero-rows-for-this-workflow case client-side
+  and issue a second, name-scoped fetch rather than trusting the global page contains this
+  workflow's history; (b) a name-scoped server query — a new endpoint or query parameter that
+  returns a given workflow's own run history directly from the store (unbounded by the global
+  page, bounded instead by that one workflow's own run count), mirroring the shape of this round's
+  `activeRuns()` fix (ask the store the question directly rather than deriving it from an unrelated
+  page).
+- **`src/dashboard/ui/run.js`'s `onTick`, lines 566-571.** Fetches `/api/runs` and resolves the
+  viewed run's workflow name via `runsRes.body.find((r) => r.runId === state.runId)` over that same
+  global page, to then look up that workflow's declared-effort annotations (metadata rendered
+  alongside a run's detail view). **Trigger:** the same — a run older than the 50-row page (most
+  likely reached by a direct link/bookmark to an old run's detail view, or paging back through run
+  history). **Consequence:** the run silently loses its "declared effort" annotations — a real
+  content gap on that run's detail view, not a crash or an error state, so it is easy to miss in
+  review. **Mitigations offered:** the SAME two candidates as `workflow.js` above — (a) client-side
+  guard/refetch when the run's name cannot be resolved from the page, or (b) a name-scoped server
+  query (e.g. resolving a single run's name/effort directly from the store by `runId`, which the
+  store can already do in one row lookup, rather than requiring the run to appear in an unrelated
+  paginated list first).
+
+Both are recorded here as this round's deliverable per dispatch — named, not implemented. Whoever
+next touches the dashboard's per-workflow/per-run detail views should re-read this entry before
+choosing between (a) and (b) for either one; the two are independent (nothing requires the same
+choice for both).

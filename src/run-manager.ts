@@ -968,6 +968,14 @@ export class RunManager {
     return this._store.workflowMetrics();
   }
 
+  /** v36 (REQ-217 follow-up, DES-251, TASK-249): a thin delegate, like `workflowMetrics()` above —
+   *  no live-entry overlay needed. A non-terminal run's usage-projection fields are irrelevant to
+   *  `buildHomeView`'s RUNNING/`activeRunId` decision, the only consumer, so unlike
+   *  `listSummaries()` there is nothing here for an in-process `RunEntry` to overlay. */
+  async activeRuns(): Promise<RunSummary[]> {
+    return this._store.activeRuns();
+  }
+
   /** v25 (issue #53, adjudication #9 I-2, warning 2): the invariant ARCH-006 promises — a terminal
    *  status has a matching row in `transitions`, because `recordTransition` is the single writer of
    *  both and writes them together. Run 3977b82d violated it: `run_status` said `failed`, the trail

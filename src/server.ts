@@ -352,17 +352,21 @@ async function handleDashboardRequest(
   try {
     // v11 F1 (REQ-074/075): home view — 3-way grouped workflow cards with reliability metrics.
     if (path === '/api/home') {
-      const [catalogEntries, runs, metrics] = await Promise.all([
+      const [catalogEntries, runs, metrics, activeRuns] = await Promise.all([
         runManager.catalog.list(),
         // v27 (DES-194, ARCH-127, TASK-199): the usage-projected accessor — same one `/api/runs`
         // reads. v36 (REQ-217): now paginated (`listSummaries()` -> `store.list()`, limit 50/cap
-        // 500) — cards/activeRunId/latestRunId narrow to the most recent runs.
+        // 500) — cards' latestRunId narrows to the most recent runs (DES-250, accepted).
         runManager.listSummaries(),
         // v36 (REQ-217, ARCH-172/ADR-080): the full-history aggregate — successRate/avgCostUSD must
         // NOT narrow with the list above, so they are no longer folded from `runs` here.
         runManager.workflowMetrics(),
+        // v36 (REQ-217 follow-up, DES-251, TASK-249): the currently-non-terminal set, unbounded by
+        // history — RUNNING/activeRunId resolve from THIS, not from the paginated `runs` above, so
+        // a suspended/interrupted run older than the page still keeps its workflow's activeRunId.
+        runManager.activeRuns(),
       ]);
-      sendJson(res, 200, buildHomeView(catalogEntries, runs, metrics));
+      sendJson(res, 200, buildHomeView(catalogEntries, runs, metrics, activeRuns));
       return;
     }
     // v12 (REQ-076/077, DES-073): host system info — bare SystemInfoView (no MCP envelope wrapper).

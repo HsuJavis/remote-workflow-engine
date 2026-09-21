@@ -4096,6 +4096,20 @@ Red reason: case 1 → `workflow_agent_log` returns `{error:{code:'AGENT_NOT_FOU
 
 File: `tests/unit/home-view.test.ts`. Mock policy (unit): pure fixtures — inject `catalog[]`, `RunSummary[]`, and a `Map<string,WorkflowMetrics>` directly; no I/O. 10 cases: (1) catalog workflow with an active run (`status:'running'`) → RUNNING group, not REGISTERED or OTHER; (2) catalog workflow with only a completed run → REGISTERED; (3) catalog workflow with NO runs at all → REGISTERED; (4) run name absent from catalog → OTHER; (5) inline run (`name:undefined`) → OTHER keyed `'(inline)'`; (6) RUNNING wins over REGISTERED — workflow with both active and terminal runs appears in `running` only; (7) empty catalog + no runs → three empty arrays, never throws; (8) `activeRunId` set on RUNNING card; `latestRunId` present when any run exists; (9) card carries `description` from catalog; (10) metrics from map passed through to card.
 Red reason: `buildHomeView` is not exported from `src/dashboard.ts` → `TypeError: buildHomeView is not a function` at test runtime. All 10 cases fail.
+Amended v36 (REQ-217, DES-250): +2 cases pinning `activeRunId`/`latestRunId` order-independence (ascending/descending `createdAt` input, same winner) — see UT-307's own evidence text for the measured red on the descending case. 13 cases total.
+**Amended v36 again (REQ-217 follow-up, DES-251/TASK-249):** `buildHomeView` gained a REQUIRED 4th
+parameter, `activeRuns: RunSummary[]` — the 12 pre-existing cases above now pass their own `runs`
+array as `activeRuns` too (semantics unchanged: `ACTIVE_STATUSES` is still applied internally, just
+against a caller-supplied array instead of the same `runs` implicitly). One NEW, load-bearing case
+added: a workflow whose only active (`suspended`) run is absent from `runs` (an empty page, standing
+in for "aged out of the 50-row page") but present in `activeRuns` still lands in `view.running` with
+`activeRunId` set to that run — and `latestRunId` is asserted `undefined` (DES-250's page-scoped
+narrowing for that field is unchanged, asserted so the asymmetry is a decision, not an accident). 14
+cases total. Red reason (measured against a `git archive HEAD` copy of `50cc26a`, never a
+working-tree checkout — CLAUDE.md): the extra 4th argument is silently ignored at HEAD (vitest/
+esbuild does not type-check), so the new case fails behaviourally — `card` (`view.running.find(...)`)
+is `undefined` (`expected undefined not to be undefined`), since HEAD derives `activeRunId`/RUNNING
+from `runs` alone and this workflow has none there.
 
 ### UT-073 — pure `computeWorkflowMetrics` fold + boundary conditions (REQ-075)
 - **status:** green
@@ -15193,6 +15207,36 @@ e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
   with recency when the input already runs oldest-first), but the descending case fails
   (`expected 'r-old' to be 'r-new'`) — the exact case that would have broken silently the moment
   `listSummaries()` moved onto `list()`'s `DESC` order, caught here instead.
+- **iter:** v36
+
+### UT-308 — `RunStore.activeRuns()`: both stores agree, unbounded, status-filtered (REQ-217 follow-up)
+- **status:** green
+- **traces:** DES-251, TASK-249, REQ-217
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **evidence:** `tests/unit/active-runs-store-agreement.test.ts` (new, 6 cases, plus 1 new
+  load-bearing case in UT-072/`tests/unit/home-view.test.ts`) — measured red by running this file
+  against a `git archive HEAD` copy (`50cc26a`, never a working-tree checkout — CLAUDE.md), before
+  writing the two `activeRuns()` implementations onto that copy: all 6 cases fail, `TypeError:
+  store.activeRuns is not a function` / `sqlite.activeRuns is not a function`. Covers: `SqliteRunStore`
+  and `InMemoryRunStore` each seeded (through the port only — `createRun`/`recordTransition`, never a
+  direct SQL write) with ONE run per `RunStatus` value (all seven) plus one unnamed `running` run —
+  each returns exactly the 5 non-terminal rows (`queued`/`running`/`suspended`/`interrupted`, one of
+  which is unnamed) and excludes all 3 terminal rows; a genuinely empty store → `[]` on both; a
+  both-stores agreement case comparing the `(name, status)` multiset (not `runId` — the two stores
+  mint independent random UUIDs, so runId-set equality is the wrong property) over the identical
+  fixture; and the discriminating, load-bearing case on BOTH stores — a single `suspended` run
+  created FIRST (using a `SteppingClock` for a real, deterministic "oldest" `createdAt`, per
+  `tests/integration/run-list.test.ts`'s own precedent — a `FixedClock` would give every row the
+  identical timestamp and make the pagination cliff untestable) is excluded from `list()`'s 50-row
+  page once 55 newer `completed` runs are seeded after it, but `activeRuns()` still returns it —
+  proof at the STORE level, not only the pure `buildHomeView` level, that this query is bounded by
+  concurrency and not by history. **Load-bearing pure case (amended into UT-072 above):** a
+  workflow whose only active run is absent from `runs` (the page) but present in `activeRuns` still
+  lands in `view.running` with `activeRunId` intact — red message `expected undefined not to be
+  undefined` at HEAD (`view.running.find(...)` finds no card at all, since HEAD derives RUNNING from
+  `runs` alone and this workflow has none there).
 - **iter:** v36
 
 ### IT-300 — `/api/runs` paginates while `/api/home` keeps full-history `avgCostUSD`/`successRate`/`terminalCount` (REQ-217, real end-to-end)

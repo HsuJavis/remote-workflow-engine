@@ -189,11 +189,21 @@ export function computeWorkflowMetrics(runs: RunSummary[]): Map<string | undefin
  * REGISTERED = catalog workflow with no active run.
  * OTHER = run name absent from catalog (inline or deregistered).
  * A workflow appears in exactly ONE group (RUNNING wins). Never throws.
+ *
+ * v36 (REQ-217 follow-up, DES-251, TASK-249): `activeRuns` is `RunStore.activeRuns()`'s own
+ * "currently non-terminal" query — unbounded, bounded by concurrency rather than history — and is
+ * the ONLY source RUNNING/`activeRunId` resolve from. `runs` (the paginated `list()` page) no
+ * longer decides RUNNING at all: a suspended/interrupted run older than the page used to silently
+ * move its workflow to REGISTERED and drop `activeRunId`, the exact regression this closes.
+ * `latestRunId`/`latestRunAt` stay sourced from `runs` alone — DES-250's already-accepted, page-
+ * scoped narrowing for those two fields is unchanged by this fix (a card can legitimately carry an
+ * `activeRunId` with no `latestRunId` when its only run fell outside the page).
  */
 export function buildHomeView(
   catalog: Array<{ name: string; description: string }>,
   runs: RunSummary[],
   metrics: Map<string | undefined, WorkflowMetrics>,
+  activeRuns: RunSummary[],
 ): HomeView {
   const catalogMap = new Map(catalog.map((c) => [c.name, c.description]));
   // Gather active and latest run per named workflow.
@@ -207,13 +217,19 @@ export function buildHomeView(
   const latestRunId = new Map<string, string>();
   const latestRunAt = new Map<string, string>();
   const latestRunCreatedAt = new Map<string, string>(); // the recency KEY; latestRunAt is the DISPLAYED value
-  for (const r of runs) {
+  // v36 (REQ-217 follow-up): activeRunId/RUNNING resolve from `activeRuns`, never from the
+  // paginated `runs` page (see the function doc comment above).
+  for (const r of activeRuns) {
     const name = r.name;
-    if (name === undefined) continue;
-    if (ACTIVE_STATUSES.has(r.status) && (!activeRunAt.has(name) || r.createdAt > activeRunAt.get(name)!)) {
+    if (name === undefined || !ACTIVE_STATUSES.has(r.status)) continue;
+    if (!activeRunAt.has(name) || r.createdAt > activeRunAt.get(name)!) {
       activeRunId.set(name, r.runId);
       activeRunAt.set(name, r.createdAt);
     }
+  }
+  for (const r of runs) {
+    const name = r.name;
+    if (name === undefined) continue;
     if (!latestRunCreatedAt.has(name) || r.createdAt > latestRunCreatedAt.get(name)!) {
       latestRunCreatedAt.set(name, r.createdAt);
       latestRunId.set(name, r.runId);

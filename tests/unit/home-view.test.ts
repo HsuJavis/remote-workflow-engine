@@ -1,6 +1,10 @@
 // UT-072: pure `buildHomeView` 3-way grouping (DES-070, ARCH-046, TASK-072)
+// v36 (REQ-217 follow-up, DES-251/TASK-249) amendment: `buildHomeView` gained a required 4th
+// param, `activeRuns` — RUNNING/`activeRunId` resolve from it, never from the paginated `runs`
+// page (see the last case in this file). Existing cases pass `runs` itself as `activeRuns` too
+// (the function still filters by ACTIVE status internally), preserving their original semantics.
 //
-// `buildHomeView(catalog, runs, metrics) → HomeView` is PURE: no clock, no store, no DOM.
+// `buildHomeView(catalog, runs, metrics, activeRuns) → HomeView` is PURE: no clock, no store, no DOM.
 //   - RUNNING   = catalog workflow with ≥1 run in a non-terminal status (running|queued|suspended|interrupted)
 //   - REGISTERED = catalog workflow with no active (non-terminal) run
 //   - OTHER     = run name absent from catalog (inline-script or deregistered), keyed by name or '(inline)'
@@ -39,7 +43,7 @@ describe('buildHomeView — pure 3-way grouping (UT-072, DES-070)', () => {
   it('catalog workflow with an active run → RUNNING group', () => {
     const catalog = [{ name: 'wf', description: 'desc' }];
     const runs = [run({ runId: 'r1', name: 'wf', status: 'running' })];
-    const view = buildHomeView(catalog, runs, metricsMap());
+    const view = buildHomeView(catalog, runs, metricsMap(), runs);
     expect(view.running.map((c) => c.name)).toContain('wf');
     expect(view.registered.map((c) => c.name)).not.toContain('wf');
     expect(view.other.map((c) => c.name)).not.toContain('wf');
@@ -48,14 +52,14 @@ describe('buildHomeView — pure 3-way grouping (UT-072, DES-070)', () => {
   it('catalog workflow with no active run → REGISTERED group', () => {
     const catalog = [{ name: 'idle', description: 'idle wf' }];
     const runs = [run({ runId: 'r2', name: 'idle', status: 'completed' })];
-    const view = buildHomeView(catalog, runs, metricsMap());
+    const view = buildHomeView(catalog, runs, metricsMap(), runs);
     expect(view.registered.map((c) => c.name)).toContain('idle');
     expect(view.running.map((c) => c.name)).not.toContain('idle');
   });
 
   it('catalog workflow with NO runs at all → REGISTERED group', () => {
     const catalog = [{ name: 'never-run', description: 'not run yet' }];
-    const view = buildHomeView(catalog, [], metricsMap());
+    const view = buildHomeView(catalog, [], metricsMap(), []);
     expect(view.registered.map((c) => c.name)).toContain('never-run');
     expect(view.running).toHaveLength(0);
     expect(view.other).toHaveLength(0);
@@ -64,7 +68,7 @@ describe('buildHomeView — pure 3-way grouping (UT-072, DES-070)', () => {
   it('run whose name is absent from catalog → OTHER group', () => {
     const catalog = [{ name: 'wf', description: 'desc' }];
     const runs = [run({ runId: 'r3', name: 'unknown-wf', status: 'completed' })];
-    const view = buildHomeView(catalog, runs, metricsMap());
+    const view = buildHomeView(catalog, runs, metricsMap(), runs);
     const otherNames = view.other.map((c) => c.name);
     expect(otherNames).toContain('unknown-wf');
     expect(view.running).toHaveLength(0);
@@ -74,7 +78,7 @@ describe('buildHomeView — pure 3-way grouping (UT-072, DES-070)', () => {
   it('inline-script run (no name / undefined) → OTHER group keyed "(inline)"', () => {
     const catalog: { name: string; description: string }[] = [];
     const runs = [run({ runId: 'r4', name: undefined, status: 'completed' })];
-    const view = buildHomeView(catalog, runs, metricsMap());
+    const view = buildHomeView(catalog, runs, metricsMap(), runs);
     const inlineCard = view.other.find((c) => c.name === '(inline)');
     expect(inlineCard).toBeDefined();
   });
@@ -85,7 +89,7 @@ describe('buildHomeView — pure 3-way grouping (UT-072, DES-070)', () => {
       run({ runId: 'r5a', name: 'busy', status: 'completed' }),
       run({ runId: 'r5b', name: 'busy', status: 'running' }),
     ];
-    const view = buildHomeView(catalog, runs, metricsMap());
+    const view = buildHomeView(catalog, runs, metricsMap(), runs);
     const inRunning = view.running.some((c) => c.name === 'busy');
     const inRegistered = view.registered.some((c) => c.name === 'busy');
     expect(inRunning).toBe(true);
@@ -93,8 +97,8 @@ describe('buildHomeView — pure 3-way grouping (UT-072, DES-070)', () => {
   });
 
   it('empty catalog + no runs → three empty groups; never throws', () => {
-    expect(() => buildHomeView([], [], metricsMap())).not.toThrow();
-    const view = buildHomeView([], [], metricsMap());
+    expect(() => buildHomeView([], [], metricsMap(), [])).not.toThrow();
+    const view = buildHomeView([], [], metricsMap(), []);
     expect(view.running).toHaveLength(0);
     expect(view.registered).toHaveLength(0);
     expect(view.other).toHaveLength(0);
@@ -106,7 +110,7 @@ describe('buildHomeView — pure 3-way grouping (UT-072, DES-070)', () => {
       run({ runId: 'r6old', name: 'wf', status: 'completed' }),
       run({ runId: 'r6active', name: 'wf', status: 'running' }),
     ];
-    const view = buildHomeView(catalog, runs, metricsMap());
+    const view = buildHomeView(catalog, runs, metricsMap(), runs);
     const card = view.running.find((c) => c.name === 'wf');
     expect(card?.activeRunId).toBe('r6active');
     expect(card?.latestRunId).toBeDefined();
@@ -124,7 +128,7 @@ describe('buildHomeView — pure 3-way grouping (UT-072, DES-070)', () => {
       run({ runId: 'r-mid', name: 'wf', status: 'running', createdAt: '2026-09-22T00:01:00.000Z' }),
       run({ runId: 'r-new', name: 'wf', status: 'running', createdAt: '2026-09-22T00:02:00.000Z' }),
     ];
-    const view = buildHomeView(catalog, runs, metricsMap());
+    const view = buildHomeView(catalog, runs, metricsMap(), runs);
     const card = view.running.find((c) => c.name === 'wf');
     expect(card?.activeRunId).toBe('r-new');
     expect(card?.latestRunId).toBe('r-new');
@@ -137,7 +141,7 @@ describe('buildHomeView — pure 3-way grouping (UT-072, DES-070)', () => {
       run({ runId: 'r-mid', name: 'wf', status: 'running', createdAt: '2026-09-22T00:01:00.000Z' }),
       run({ runId: 'r-old', name: 'wf', status: 'running', createdAt: '2026-09-22T00:00:00.000Z' }),
     ];
-    const view = buildHomeView(catalog, runs, metricsMap());
+    const view = buildHomeView(catalog, runs, metricsMap(), runs);
     const card = view.running.find((c) => c.name === 'wf');
     expect(card?.activeRunId).toBe('r-new');
     expect(card?.latestRunId).toBe('r-new');
@@ -145,7 +149,7 @@ describe('buildHomeView — pure 3-way grouping (UT-072, DES-070)', () => {
 
   it('card carries description from catalog', () => {
     const catalog = [{ name: 'cs', description: '2-parallel → verify' }];
-    const view = buildHomeView(catalog, [], metricsMap());
+    const view = buildHomeView(catalog, [], metricsMap(), []);
     const card = view.registered.find((c) => c.name === 'cs');
     expect(card?.description).toBe('2-parallel → verify');
   });
@@ -154,9 +158,28 @@ describe('buildHomeView — pure 3-way grouping (UT-072, DES-070)', () => {
     const catalog = [{ name: 'wf', description: '' }];
     const known: WorkflowMetrics = { successRate: 0.8, avgDurationMs: 1000, terminalCount: 5, avgCostUSD: null, unpricedRuns: 0 };
     const m = metricsMap([['wf', known]]);
-    const view = buildHomeView(catalog, [], m);
+    const view = buildHomeView(catalog, [], m, []);
     const card = view.registered.find((c) => c.name === 'wf');
     expect(card?.metrics.successRate).toBe(0.8);
     expect(card?.metrics.terminalCount).toBe(5);
+  });
+
+  // v36 (REQ-217 follow-up regression, DES-251/TASK-249): the actual bug REQ-217's pagination
+  // introduced — `runs` (the `list()` page) carries NONE of 'wf''s runs at all (they all aged out
+  // of the 50-row page), but `activeRuns` (RunStore.activeRuns(), unbounded/status-filtered) still
+  // carries its one suspended run. Before the fix, activeRunId/RUNNING were derived from `runs`
+  // alone, so this workflow silently fell back to REGISTERED with no activeRunId.
+  it('REQ-217 follow-up: a workflow whose only active run is older than the page still lands in RUNNING with activeRunId intact', () => {
+    const catalog = [{ name: 'wf', description: '' }];
+    const runs: RunSummary[] = []; // the page: none of wf's runs made the cut
+    const activeRuns = [run({ runId: 'r-stale-active', name: 'wf', status: 'suspended', createdAt: '2020-01-01T00:00:00.000Z' })];
+    const view = buildHomeView(catalog, runs, metricsMap(), activeRuns);
+    const card = view.running.find((c) => c.name === 'wf');
+    expect(card).toBeDefined();
+    expect(card?.activeRunId).toBe('r-stale-active');
+    expect(view.registered.map((c) => c.name)).not.toContain('wf');
+    // latestRunId stays sourced from `runs` alone (DES-250's already-accepted page-scoped
+    // narrowing, unchanged by this fix) — asserted so the asymmetry is a decision, not an accident.
+    expect(card?.latestRunId).toBeUndefined();
   });
 });

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Clock } from '../clock.js';
 import type { RunStore, RunDagSnapshot } from '../run-store.js';
-import { deriveAgentRecords } from '../run-store.js';
+import { deriveAgentRecords, ACTIVE } from '../run-store.js';
 import { foldUsage } from '../run-guard.js';
 // v36 (REQ-217, DES-250): the shared return shape `RunStore.workflowMetrics()` promises — a
 // type-only import, no runtime cycle (dashboard.ts never imports this file).
@@ -485,6 +485,30 @@ export class SqliteRunStore implements RunStore {
       });
     }
     return out;
+  }
+
+  /** v36 (REQ-217 follow-up, DES-251, TASK-249): the SQL `WHERE ... IN (...)` counterpart to
+   *  `list()`, no `LIMIT` — the same SELECT body / `_rowToSummary` so the agreement test compares
+   *  like-for-like against `InMemoryRunStore.activeRuns()`. The `ACTIVE` set is imported from
+   *  `run-store.ts`, never re-listed here, so the two stores cannot silently diverge on which
+   *  statuses count as "currently active". */
+  async activeRuns(): Promise<RunSummary[]> {
+    const statuses = [...ACTIVE];
+    const placeholders = statuses.map(() => '?').join(', ');
+    const rows = this._db.prepare(`
+      SELECT r.runId, r.name, r.status, r.scriptVersion, r.createdAt, r.started_by, r.error,
+             (SELECT MIN(t.ts) FROM transitions t
+              WHERE t.runId = r.runId
+                AND t.to_status IN ('completed', 'failed', 'stopped')) AS terminalAt,
+             ${SqliteRunStore._USAGE_PROJECTION}
+      FROM runs r
+      LEFT JOIN run_snapshots s ON s.runId = r.runId
+      WHERE r.status IN (${placeholders})
+    `).all(...statuses) as Array<{
+      runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string; started_by?: string | null; terminalAt?: string | null; error?: string | null;
+      usagePresentRaw?: number | null; costUSD?: number | null; unpricedCalls?: number | null; tokensTotal?: number | null; agentCount?: number | null; failedAgentCount?: number | null;
+    }>;
+    return rows.map((r) => this._rowToSummary(r));
   }
 
   /** v24 (DES-151): synchronous append (better-sqlite3) — a throw here must reach the call site

@@ -8749,3 +8749,98 @@ but compute the two averages with a store-side SQL aggregate so they keep full-h
    amendment block (`DES-250→UT-307/IT-300`) rather than folded into the closed Gate 5 summary
    above it. No `git checkout`/`git restore`/`git stash` used; no commit made (left for the
    orchestrator).
+
+## 2026-09-22 — v36 REQ-217 follow-up: `activeRunId`/RUNNING stop deriving from the paginated page (implementer)
+
+Dispatch: fix one regression REQ-217's pagination (`50cc26a`) introduced — `buildHomeView`'s RUNNING
+group and `activeRunId` were still derived from the SAME paginated `runs` page `/api/runs`'s rows
+come from, so a `suspended`/`interrupted` run older than the 50 most recent runs system-wide
+silently moved its workflow to REGISTERED and lost `activeRunId` — and record two related,
+implementer-named client-side narrowings as debt, not fix them.
+
+1. **Status union, read from the code, not assumed.** `src/types.ts:13` —
+   `RunStatus = 'queued' | 'running' | 'suspended' | 'stopped' | 'completed' | 'failed' |
+   'interrupted'`. Non-terminal (the new `ACTIVE` set) is the four NOT already in the pre-existing
+   `TERMINAL` constant: `queued`/`running`/`suspended`/`interrupted`. Matched the dispatch's own
+   guess exactly — nothing corrected here.
+2. **New port method.** `RunStore.activeRuns(): Promise<RunSummary[]>` — no `LIMIT`, bounded by
+   concurrency rather than history. `ACTIVE` exported from `src/run-store.ts` next to `TERMINAL` so
+   both stores read the identical set. `SqliteRunStore.activeRuns()` reuses `list()`'s exact SELECT
+   body with `WHERE r.status IN (...)`, no `LIMIT`; `InMemoryRunStore.activeRuns()` filters
+   `this._runs.values()` by the same `ACTIVE` set through the existing private `_toSummary`.
+   `RunManager.activeRuns()` thin-delegates (mirrors `workflowMetrics()` — no live-entry overlay
+   needed). `server.ts`'s `/api/home` fetches it as a 4th parallel call.
+3. **`buildHomeView` gains a REQUIRED 4th parameter**, `activeRuns: RunSummary[]` — RUNNING/
+   `activeRunId` resolve from it exclusively; `tsc` refuses any call site that omits it (the wiring
+   guard this project's CLAUDE.md/memory names for exactly this bug class — a new path that compiles
+   but is never wired). `latestRunId`/`latestRunAt` are DELIBERATELY left sourced from `runs` (the
+   page) alone — DES-250 already accepted that narrowing on the record for those two fields
+   specifically, and this card does not reopen it. A RUNNING card produced by this fix can now
+   legitimately carry an `activeRunId` with no `latestRunId`; the new UT-072 case asserts both halves
+   of that asymmetry so it is a decision, not an accident.
+4. **`dashboard.ts` keeps its own pre-existing `ACTIVE_STATUSES` constant** rather than importing
+   `run-store.ts`'s new `ACTIVE` — `run-store.ts` already imports `computeWorkflowMetrics`/
+   `WorkflowMetrics` FROM `dashboard.ts`, so the reverse import would create a real runtime cycle.
+   The two four-value sets are a documented, tolerated duplication, same class as `TERMINAL`'s own
+   pre-existing multiple copies (DES-246's note) — not de-duplicated here, out of this card's scope.
+5. **Test-first, red measured against a `git archive HEAD` copy of `50cc26a`** (never a working-tree
+   checkout — CLAUDE.md), for BOTH new/amended test surfaces:
+   - `tests/unit/active-runs-store-agreement.test.ts` (new, UT-308, 6 cases: both stores individually
+     return exactly the 5 active rows out of a 7-status + 1-unnamed fixture; an empty store → `[]` on
+     both; both-stores agreement over the identical fixture (compared on `(name, status)`, NOT
+     `runId` — the two stores mint independent UUIDs, a mistake caught mid-authoring by watching the
+     wrong comparator fail on structurally-identical-but-differently-keyed arrays before fixing it);
+     the discriminating case on both stores — a `suspended` run created FIRST via a `SteppingClock`
+     (real monotonic `createdAt`; a `FixedClock` would make "older than the page" an unspecified
+     tie-break, the exact trap `tests/integration/run-list.test.ts`'s own `SteppingClock` precedent
+     avoids) is excluded from `list()`'s 50-row page by 55 newer terminal rows, yet `activeRuns()`
+     still returns it) — all 6 failed `TypeError: store.activeRuns is not a function` /
+     `sqlite.activeRuns is not a function` before either implementation existed.
+   - `tests/unit/home-view.test.ts` (UT-072, +1 load-bearing case, 12 pre-existing cases amended to
+     the new 4th parameter) — the new case: catalog `[wf]`, `runs` (the page) empty, `activeRuns`
+     carries one `suspended` `wf` run with an old explicit `createdAt`; red at HEAD:
+     `expected undefined not to be undefined` (`view.running.find(...)` found no card — HEAD's
+     3-parameter `buildHomeView` derives RUNNING from `runs` alone and silently ignores the extra
+     4th argument, since vitest/esbuild does not type-check; same observation UT-307's own red-reason
+     note already made for this file).
+6. **Implementation** exactly as designed (DES-251/TASK-249): `src/run-store.ts` (port method +
+   `ACTIVE` constant + `InMemoryRunStore` impl), `src/store/sqlite-run-store.ts` (SQL impl, imports
+   `ACTIVE`), `src/run-manager.ts` (delegate), `src/dashboard.ts` (4th param, loop split — the single
+   loop that used to derive both active-run and latest-run maps from `runs` is now two loops, one per
+   input array), `src/server.ts` (4th parallel fetch + 4th argument).
+7. **Ledger.** `04-design.md`: `DES-251` minted, plus a one-line "v36 amendment" pointer appended to
+   `DES-250`'s boundary bullet correcting its own prior claim that `activeRunId` (not just
+   `latestRunId`) narrows with the page — `DES-250`'s prose is left otherwise byte-identical (this
+   ledger's own precedent: amend with a dated pointer, don't rewrite the historical record).
+   `03-tasks.md`: `TASK-249` minted. `05-tests.md`: `UT-072`'s entry amended in place (2 short
+   trailing paragraphs — the pre-existing v36 order-independence amendment, documented here for the
+   first time, plus this card's own) rather than minting a separate ID for one pure case, per this
+   session's own scoping call; `UT-308` minted as a new entry (both-stores agreement is its own
+   test file, warranting its own id, same as UT-307's precedent). `06-impl-log.md`: `IMPL-369`
+   added, explicitly correcting `IMPL-368`'s own closing note (quoted verbatim, then explained why it
+   was right for `latestRunId` and wrong for `activeRunId`). `07-review.md`: a new dated `##`-level
+   addendum appended AFTER the existing Gate 8 record's parseable `send_back:`/`blocking_findings:`/
+   `owner_decisions:` block (never inside it, per this session's own read of that block as
+   tooling-parsed) — records the fix, then the two named-debt items verified against the actual
+   source (`src/dashboard/ui/workflow.js`'s `nameFilteredRuns` at `:287`/`:428` with the
+   predicted-layout fallback at `paintSelected`'s `:347-353`, and `src/dashboard/ui/run.js`'s
+   `onTick` at `:566-571`) — the dispatch's own approximate line numbers (`~:349`, `~:570`) were
+   close but not exact; corrected to the verified lines rather than copied verbatim. `state.yaml`:
+   `gates.impl`'s note replaced with a new dated note (the prior note demoted to a
+   `# PRIOR impl note:` comment line immediately below, this ledger's own established convention);
+   re-parsed with `python3 -c "import yaml; yaml.safe_load(open('state.yaml'))"` after editing — no
+   error.
+8. **Verification.** `npx tsc --noEmit` clean. Targeted files (home-view, active-runs-store-
+   agreement, workflow-metrics-store-agreement, run-list, req217-pagination-full-history,
+   run-manager-summarize-usage, dashboard-disclosure, val-083-home-cards, home-api) → 58/58 green.
+   Full suite: **3295 passed, 26 skipped, 0 failed** (449 files passed, 1 skipped) — up from the
+   dispatch's stated baseline of **3288 passed / 0 failed** by exactly **+7** (1 new `UT-072` case +
+   6 new `UT-308` cases), no other drift, 0 new failures.
+9. **What in the dispatch turned out wrong when it met the code:** nothing material. The dispatch's
+   status-union guess, the "give the store a query for currently-non-terminal runs" shape, and the
+   both-stores-agreement requirement all matched the code exactly. The only corrections made were
+   the two debt items' line numbers (dispatch said `~:349`/`~:570` — the real trigger sites are
+   `workflow.js:287/428` (filter) + `:347-353` (fallback render) and `run.js:566-571`; close enough
+   that "~" was honest, but the ledger now carries the exact lines instead of the approximation).
+   No `git checkout`/`git restore`/`git stash` used (CLAUDE.md); no commit made (left for the
+   orchestrator).

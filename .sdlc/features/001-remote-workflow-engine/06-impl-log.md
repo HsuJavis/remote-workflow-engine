@@ -9617,3 +9617,103 @@ F13 本質上是渲染問題,單元層看不到 DOM。
 - **refactor:** none — `computeWorkflowMetrics`, `buildDashboardModel`, and every other exported
   `dashboard.ts` function are untouched in substance; `buildHomeView`'s picker is the one behavior
   change, and it fixes a latent order-dependence bug rather than restructuring the function.
+
+### IMPL-369 — TASK-249: `RunStore.activeRuns()` — RUNNING/`activeRunId` stop deriving from the page at all
+
+- **status:** done
+- **traces:** TASK-249, DES-251, DES-250, REQ-217
+- **greens:** UT-308, UT-072 (amended)
+- **files:** src/run-store.ts, src/store/sqlite-run-store.ts, src/run-manager.ts, src/dashboard.ts, src/server.ts, tests/unit/home-view.test.ts, tests/unit/active-runs-store-agreement.test.ts
+- **commit:** (uncommitted at report time — see report)
+- **iter:** v36
+- **note:** IMPL-368's own closing note named the residual narrowing as accepted: "a card's
+  `activeRunId`/`latestRunId` become 'the most recent 50'... Named here, not engineered around."
+  That framing was right for `latestRunId` (a display-only field) but wrong for `activeRunId`:
+  losing `activeRunId` does not just drop a field, it flips `WorkflowCard.group` from RUNNING to
+  REGISTERED for a workflow that genuinely has a live run — the SAME "changed what a number/fact
+  means to make a query scale" defect REQ-217's owner ruling (K5) exists to prevent, just applied to
+  a boolean instead of a numeric field, and `activeRunId` is the one signal an operator most needs
+  from this page. This card closes that gap, per DES-251.
+  **`src/run-store.ts`** gains `export const ACTIVE: ReadonlySet<RunStatus>` (the `RunStatus`
+  union's four non-`TERMINAL` members: `queued`/`running`/`suspended`/`interrupted`) next to the
+  existing `TERMINAL` constant, and a new port method `activeRuns(): Promise<RunSummary[]>` (no
+  `LIMIT`). `InMemoryRunStore.activeRuns()` filters `this._runs.values()` by that same `ACTIVE` set
+  and maps through the existing private `_toSummary`. **`src/store/sqlite-run-store.ts`** imports
+  `ACTIVE` (no re-listing of the four statuses — the two stores read the identical source) and
+  implements `activeRuns()` as `WHERE r.status IN (...)` with no `LIMIT`, reusing `list()`'s exact
+  SELECT body (`_USAGE_PROJECTION`, `_rowToSummary`) so the agreement test compares like-for-like.
+  **`src/run-manager.ts`** adds a thin `activeRuns()` delegate — no live-entry overlay needed
+  (mirrors `workflowMetrics()`'s own reasoning: a non-terminal run's usage-projection fields are
+  irrelevant to the RUNNING/`activeRunId` decision, the only consumer). **`src/server.ts`**'s
+  `/api/home` handler fetches `runManager.activeRuns()` as a 4th parallel call alongside
+  `catalog.list()`/`listSummaries()`/`workflowMetrics()`, and passes it as `buildHomeView`'s 4th
+  argument. **`src/dashboard.ts`**'s `buildHomeView` gains that 4th, REQUIRED parameter,
+  `activeRuns: RunSummary[]`. The single loop that used to derive BOTH `activeRunId`/`activeRunAt`
+  AND `latestRunId`/`latestRunAt` from `runs` is split into two loops: the active-run loop now
+  iterates `activeRuns` (still applying `dashboard.ts`'s own pre-existing `ACTIVE_STATUSES` filter
+  defensively — a caller bug in a future `activeRuns()` implementation cannot silently misclassify
+  a terminal row as active), the latest-run loop is UNCHANGED, still iterating `runs` alone.
+  `dashboard.ts` cannot import `run-store.ts`'s new `ACTIVE` constant to de-duplicate the two status
+  sets — `run-store.ts` already imports `computeWorkflowMetrics`/`WorkflowMetrics` FROM
+  `dashboard.ts`, so the reverse import would create a real runtime cycle; the two sets are a
+  documented, tolerated duplication, same class as `TERMINAL`'s own pre-existing multiple copies
+  (DES-246's note in `04-design.md`).
+  **Why `latestRunId` is deliberately left alone**: DES-250 already accepted, on the record, that
+  `latestRunId`/`latestRunAt` narrow to the page — that acceptance is unchanged by this card. A
+  RUNNING card produced by this fix can now legitimately carry an `activeRunId` with no
+  `latestRunId` (its only run fell outside the page) — a new UT-072 case asserts BOTH halves of that
+  asymmetry (`activeRunId` present, `latestRunId` `undefined`) so it reads as a decision, not a gap
+  nobody noticed.
+  **Red-first, measured** (against a `git archive HEAD` copy of `50cc26a`, never a working-tree
+  checkout — CLAUDE.md): `tests/unit/active-runs-store-agreement.test.ts` (new, UT-308, 6 cases) —
+  all 6 fail, `TypeError: store.activeRuns is not a function` / `sqlite.activeRuns is not a
+  function`, before either `activeRuns()` implementation existed. The load-bearing pure case (folded
+  into `tests/unit/home-view.test.ts`, UT-072) — a workflow whose only active (`suspended`) run is
+  absent from `runs` (an empty page) but present in a separately-supplied `activeRuns` array — fails
+  at HEAD with `expected undefined not to be undefined` (`view.running.find(...)` returns no card at
+  all, since HEAD's `buildHomeView` still takes only 3 parameters and derives RUNNING from `runs`
+  alone; the extra 4th argument is silently ignored by vitest/esbuild's non-type-checked transform,
+  same observation UT-307's own red-reason note already made for this file). All 12 PRE-EXISTING
+  UT-072 cases were then updated to pass their own `runs` array as the new 4th argument too (their
+  semantics are unchanged — `buildHomeView` still filters by `ACTIVE_STATUSES` internally, just
+  against a caller-supplied array instead of an implicit one), verified they still pass unmodified
+  as GREEN oracles before this card's code was written, then re-verified green after.
+  **Both-stores agreement, including the discriminating case**: `tests/unit/active-runs-store-
+  agreement.test.ts` seeds all seven `RunStatus` values (through the port only —
+  `createRun`/`recordTransition`, never a direct SQL write) plus one unnamed running run, on BOTH
+  stores, and asserts they answer the same `(name, status)` multiset (compared without `runId` —
+  the two stores mint independent random UUIDs, so runId-set equality would be the wrong property;
+  caught this exact mistake mid-authoring by first writing the comparison ON `runId` and watching it
+  fail with two structurally-identical-but-differently-UUID'd arrays, then fixing the comparator,
+  not the fixture). The discriminating case (run on BOTH stores): a single `suspended` run created
+  FIRST via a `SteppingClock` (a real, monotonically-increasing `createdAt` — a `FixedClock` would
+  give every row the identical timestamp and make "older than the page" an unspecified tie-break
+  rather than a real property, the same trap `tests/integration/run-list.test.ts`'s own
+  `SteppingClock` precedent exists to avoid) is excluded from `list()`'s 50-row page once 55 newer
+  `completed` runs are seeded after it, yet `activeRuns()` still returns it on both stores — proof at
+  the STORE level, not only the pure `buildHomeView` level, that this query is bounded by
+  concurrency and not by history.
+  **Two narrowings found and named as debt, not fixed** (per this card's dispatch scope — both
+  guarded/non-crashing, both client-side): `src/dashboard/ui/workflow.js`'s `onTick` (`nameFilteredRuns`
+  defined `:287`, called `:428`; the predicted-layout fallback it triggers is `paintSelected`'s
+  `runs.length === 0` branch, `:347-353`) filters the global `/api/runs` page down to one workflow,
+  so a workflow whose runs are all older than the page renders as "never run" even though it has
+  run; `src/dashboard/ui/run.js`'s `onTick` (`:566-571`) resolves a viewed run's workflow name from
+  the same global page via `.find((r) => r.runId === state.runId)`, so a run older than the page
+  silently loses its declared-effort annotation. Both recorded in `07-review.md`'s new v36 debt
+  addendum with file/line, trigger, consequence, and the two mitigation candidates each (client-side
+  guard/refetch vs. a name-scoped server query) — not implemented, per dispatch's explicit "do not
+  implement either" instruction.
+  **Verification**: `npx tsc --noEmit` clean. Targeted files
+  (`tests/unit/home-view.test.ts`, `tests/unit/active-runs-store-agreement.test.ts`,
+  `tests/unit/workflow-metrics-store-agreement.test.ts`, `tests/integration/run-list.test.ts`,
+  `tests/integration/req217-pagination-full-history.test.ts`,
+  `tests/unit/run-manager-summarize-usage.test.ts`, `tests/integration/dashboard-disclosure.test.ts`,
+  `tests/acceptance/val-083-home-cards.test.ts`, `tests/integration/home-api.test.ts`) → 58/58
+  green. Full suite: **3295 passed, 26 skipped, 0 failed** (449 files passed, 1 skipped) — up from
+  the dispatch's stated baseline of 3288 passed/0 failed by exactly +7 (1 new `UT-072` case + 6 new
+  `UT-308` cases), no other drift.
+- **refactor:** none — `computeWorkflowMetrics`, `deriveAgentRecords`, `_rowToSummary`, and every
+  other pre-existing function in the touched files are untouched in substance; the active/latest-run
+  loop split is the one behavior change, and it is a bug fix (a workflow-classification defect), not
+  a restructuring.

@@ -185,6 +185,13 @@ export function deriveAgentRecords(
  *  array-shaped one) are untouched by this export; consolidating them is not this card's job. */
 export const TERMINAL: ReadonlySet<RunStatus> = new Set<RunStatus>(['completed', 'failed', 'stopped']);
 
+/** v36 (REQ-217 follow-up, DES-251, TASK-249): the non-terminal complement of `TERMINAL` — the
+ *  full `RunStatus` union has exactly seven members, so this is the OTHER four, not an
+ *  independently-chosen list. Exported so `SqliteRunStore.activeRuns()`'s SQL `WHERE ... IN (...)`
+ *  and `InMemoryRunStore.activeRuns()`'s filter read the SAME set — the two stores must never
+ *  silently diverge on what "currently active" means. */
+export const ACTIVE: ReadonlySet<RunStatus> = new Set<RunStatus>(['queued', 'running', 'suspended', 'interrupted']);
+
 export interface RunStore {
   /** `scriptVersion` (D-V7) is the resolved catalog version ("v2", ...) actually executed for this
    *  run; defaults to 'v1' when omitted (inline/adhoc scripts, or callers not yet passing it).
@@ -232,6 +239,15 @@ export interface RunStore {
    *  (an `AVG()` over zero priced rows is NULL, not 0). Grouped exactly like `computeWorkflowMetrics`
    *  (a `null`/`undefined` name is ONE group, keyed `undefined`). */
   workflowMetrics(): Promise<Map<string | undefined, WorkflowMetrics>>;
+  /** v36 (REQ-217 follow-up, DES-251, TASK-249): every run CURRENTLY non-terminal
+   *  (`ACTIVE` — queued/running/suspended/interrupted) — no LIMIT, unlike `list()`. This set is
+   *  naturally bounded by concurrency, not by history, so it does not reintroduce the scaling
+   *  cliff `list()`'s pagination (REQ-217) exists to remove. `buildHomeView`'s RUNNING group and
+   *  `activeRunId` resolve from THIS query, not from `list()`'s paginated page — a
+   *  suspended/interrupted run older than the page must still count (the regression this closes:
+   *  deriving a global "is this workflow active" fact from a paginated page silently dropped a
+   *  workflow's `activeRunId` the moment its only active run aged out of the page). */
+  activeRuns(): Promise<RunSummary[]>;
   hydrateAll(): Promise<RunSummary[]>;
   /** Persists the script's return value for a completed run (DES-001/REQ-005: workflow_result
    *  returns the script return value, not the RunStatusView). */
@@ -485,6 +501,12 @@ export class InMemoryRunStore implements RunStore {
     const out = new Map<string | undefined, WorkflowMetrics>();
     for (const [name, m] of all) if (m.terminalCount > 0) out.set(name, m);
     return out;
+  }
+
+  /** v36 (REQ-217 follow-up, DES-251, TASK-249): filters the SAME `ACTIVE` set `SqliteRunStore`'s
+   *  SQL `WHERE` uses — the both-stores agreement test is the guard that would catch a drift. */
+  async activeRuns(): Promise<RunSummary[]> {
+    return [...this._runs.values()].filter((r) => ACTIVE.has(r.status)).map((r) => this._toSummary(r));
   }
 
   private _toSummary(r: StoredRun): RunSummary {

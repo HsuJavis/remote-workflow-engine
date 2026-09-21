@@ -9149,6 +9149,80 @@ classDiagram
   ```
 - **boundary:** **The owner rejected both options ARCH-172 offered** (keep full-history + documented cliff; paginate + accept "last N" semantics) **and ruled a third**: split the ONE thing `listSummaries()` was doing into two paths with different bounding strategies, because they have different correctness requirements. The list path (`/api/runs`' rows, `/api/home`'s `activeRunId`/`latestRunId`) is genuinely a "recent items" view — pagination is the right shape for it, and it reuses `list()`'s existing limit/cap (50/500, DES-152) rather than inventing a second number. The two averages (`avgCostUSD`, `successRate`) are read by the user as "this engine's" numbers, not "this page's" — REQ-217's text is explicit that no new UI copy discloses a narrower range, because the range does not narrow: `workflowMetrics()` computes them with a SQL aggregate that never selects the table into memory, so the cliff `/api/home` used to have on this path is genuinely gone, not merely undocumented. **Why the whole `WorkflowMetrics` shape moved, not just two fields**: `successRate` needs `completedCount`/`terminalCount` as its numerator/denominator, and those had to come from the SAME full-history query or a workflow's "N runs" and "success rate" could disagree by page boundary; `avgDurationMs` rides along as a consequence of returning the whole shape, not because the requirement's text names it — REQ-217 scopes its disclosure exemption to avgCostUSD/successRate only, and this design does not claim more for avgDurationMs than that it is *also* now full-history, incidentally. **`computeWorkflowMetrics` (dashboard.ts) is UNCHANGED** — it is the oracle `InMemoryRunStore.workflowMetrics()` delegates to (a test fake materializing its own rows is not the cliff this design closes) and the SQL aggregate is checked against in the both-stores agreement test; UT-073/UT-239 needed zero edits. **The `avgCostUSD` presence rule is copied verbatim from `_rowToSummary`** (`usagePresentRaw AND COALESCE(agentCount,1) > 0`) — a name whose terminal runs are all zero-agent (present in the snapshot's `usage` key, per `foldUsageFromRecords([])`'s fully-populated zero) must still read `avgCostUSD: null`, not `0`; diverging from that rule would make this query and the list-surface's own `costUSD` field disagree about which runs are "priced" for the SAME rows. **Zero-run precedent (REQ-186)**: `AVG()` over zero priced rows is SQL `NULL`, read back `null`, never coalesced. **A second, unrelated defect fixed in the same change**: `buildHomeView`'s active/latest-run picker used to be a positional "last one wins (list order)" loop, silently assuming `listRuns()`'s (insertion-ordered) sweep. `list()` sorts `DESC`; the old loop would have picked the OLDEST run in the page as "latest" the moment `listSummaries()` moved onto it. Fixed to compare `createdAt` directly — correct under any input order, no contract with the caller needed. **What legitimately narrows, with no new UI copy because the requirement's exemption does not cover it**: the run rows `/api/runs` returns and a card's `activeRunId`/`latestRunId` — a workflow whose last run falls outside the 50-row page shows no `latestRunId` even though its `metrics` are exact.
 - **tests:** (verifier owns ids) UT: both-stores agreement over one fixture covering priced/unpriced/zero-agent/failed/still-running/unnamed runs, plus a name with only active runs (absent) and an empty table (empty map) — mirrors UT-303's convention; `buildHomeView` order-independence (ascending and descending input, same winner); `listSummaries()` capped at `list()`'s default limit even with more rows present. IT: a real SqliteRunStore seeded with more terminal runs than the page size — `/api/runs` returns at most the page, `/api/home`'s card metrics (`terminalCount`/`successRate`/`avgCostUSD`) reflect the full seeded count.
+- **v36 amendment (REQ-217 follow-up, DES-251, TASK-249):** the claim above that a card's
+  `activeRunId`/`latestRunId` BOTH narrow with the page is corrected for `activeRunId` — see
+  DES-251. RUNNING/`activeRunId` are re-derived from `RunStore.activeRuns()` (unbounded,
+  status-filtered), never from the `list()` page; `latestRunId`/`latestRunAt`'s page-scoped
+  narrowing, as described above, is unchanged and still stands.
+- **iter:** v36
+
+### DES-251 — `RunStore.activeRuns()`: the RUNNING/`activeRunId` decision moves off the page entirely
+
+- **status:** draft
+- **traces:** DES-250, REQ-217, TASK-249
+- **signature:**
+  ```ts
+  // src/run-store.ts (port) — both implementations conform
+  export const ACTIVE: ReadonlySet<RunStatus> = new Set(['queued', 'running', 'suspended', 'interrupted']);
+  interface RunStore {
+    activeRuns(): Promise<RunSummary[]>; // no LIMIT — bounded by concurrency, not history
+  }
+  // src/run-store.ts — InMemoryRunStore: filters the SAME ACTIVE set
+  async activeRuns(): Promise<RunSummary[]> {
+    return [...this._runs.values()].filter((r) => ACTIVE.has(r.status)).map((r) => this._toSummary(r));
+  }
+  // src/store/sqlite-run-store.ts — reuses list()'s SELECT body, no LIMIT, WHERE r.status IN (...ACTIVE)
+  // src/run-manager.ts — thin delegate, no live-entry overlay (mirrors workflowMetrics())
+  async activeRuns(): Promise<RunSummary[]> { return this._store.activeRuns(); }
+  // src/dashboard.ts — buildHomeView gains a required 4th param
+  function buildHomeView(catalog, runs, metrics, activeRuns: RunSummary[]): HomeView
+  ```
+- **boundary:** DES-250 shipped REQ-217's K5 ruling (paginate the list path, keep the two
+  full-history averages via a store aggregate) and, in the same change, ALSO characterized a card's
+  `activeRunId`/`latestRunId` as narrowing together with the newly-paginated `runs` page — an
+  accepted trade-off, per that design's own words, because "the requirement's exemption does not
+  cover" them. That characterization is right for `latestRunId` (a display-only "when did this last
+  run" field) but wrong for `activeRunId`: `activeRunId` does not merely go missing when its run
+  ages out of the page — it takes the whole `WorkflowCard.group` decision with it, silently moving a
+  workflow with a genuinely live (suspended/interrupted/queued/running) run from RUNNING to
+  REGISTERED. That is the SAME defect class REQ-217's owner ruling exists to prevent (a number/fact
+  that quietly changes meaning to make a query scale), applied to a boolean-shaped fact
+  ("is this workflow currently active") instead of a numeric one — and `activeRunId` is the single
+  signal an operator most needs from this page. **The fix does not widen the page** (a bigger page
+  is the same bug with a later trigger); it gives the store a query that answers "which runs are
+  CURRENTLY non-terminal" directly. That set is bounded by concurrency (how many runs can be
+  in-flight at once), never by history, so it cannot reintroduce a scaling cliff — the same shape of
+  argument DES-250 already made for `workflowMetrics()`, applied to a status filter instead of an
+  aggregate. **The status set (`ACTIVE`) is the RunStatus union's non-`TERMINAL` complement, exactly
+  four members** (`queued`, `running`, `suspended`, `interrupted`) — not independently re-derived,
+  exported from `run-store.ts` next to the existing `TERMINAL` constant so `SqliteRunStore`'s SQL
+  `WHERE ... IN (...)` and `InMemoryRunStore`'s filter read the identical set; `dashboard.ts` keeps
+  its OWN pre-existing `ACTIVE_STATUSES` constant (it cannot import `run-store.ts`'s `ACTIVE` — that
+  would create a real import cycle, since `run-store.ts` already imports `computeWorkflowMetrics`
+  from `dashboard.ts`) and applies it defensively inside `buildHomeView`'s `activeRuns` loop, same as
+  it always has — a documented, tolerated duplication of the same four-value set, same class as
+  `TERMINAL`'s own multiple pre-existing copies (DES-246's note). **`buildHomeView`'s 4th parameter
+  is REQUIRED, not defaulted** — a default (e.g. falling back to `runs`) would silently reintroduce
+  this exact regression at any call site that forgets to pass the real query, the same
+  composeConfig-wiring bug class this project's own CLAUDE.md names; `tsc` refusing an omitted
+  argument is the wiring guard. **`latestRunId`/`latestRunAt` are deliberately left untouched** —
+  still sourced from `runs` (the page) alone, preserving DES-250's already-accepted, documented
+  narrowing for those two fields; a RUNNING card produced by this fix can legitimately carry an
+  `activeRunId` with no `latestRunId` when its only run fell outside the page. This is a conscious,
+  tested decision (not an accident): the load-bearing UT-072 amendment asserts `latestRunId` is
+  `undefined` on exactly that card. **Two narrowings named as debt, not fixed here** (both
+  guarded/non-crashing, both client-side, both out of this design's scope): `src/dashboard/ui/
+  workflow.js`'s `onTick` (~:349) filters the global page down to one workflow's runs for the
+  per-workflow detail view; `src/dashboard/ui/run.js`'s `onTick` (~:570) resolves a viewed run's
+  workflow name from the same page. Both recorded in `07-review.md`'s debt ledger with file/line,
+  trigger, consequence, and mitigations — not implemented this round.
+- **tests:** (verifier owns ids) UT: both-stores agreement over a fixture covering all seven
+  `RunStatus` values plus an unnamed run (five active, three terminal excluded), an empty-store
+  case, and the discriminating case — a single active run OLDER than every other row in the store is
+  dropped by `list()`'s 50-row page but still returned by `activeRuns()`, on BOTH stores. UT:
+  `buildHomeView` — a workflow whose only active run is older than the (empty, for it) `runs` page
+  still lands in RUNNING with `activeRunId` intact, and `latestRunId` stays `undefined` (asserting
+  the conscious asymmetry above).
 - **iter:** v36
 
 ### v36 real-tier validation paths + per-tier mock policy
