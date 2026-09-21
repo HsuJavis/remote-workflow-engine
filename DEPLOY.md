@@ -42,12 +42,12 @@ set -a; . ~/.config/rwe.env; set +a   # 供應商金鑰 / secret（沒有這個�
 == 步驟 3/5：確認 LiteLLM Python venv (gateway:"sdk" 需要) ==
 litellm 已存在於 ~/.rwe-litellm-venv/bin/litellm，略過建立。
 == 步驟 4/5：啟動服務 (RWE_BIND=127.0.0.1 RWE_PORT=8787) ==
-啟動中，PID=xxxxx，log 在 .rwe.log
+啟動中，PID=xxxxx，log 在 .rwe.rwe.config.log
 == 步驟 5/5：健康檢查 (等待 /api/status 回應) ==
 健康檢查通過：
 {"agentSemaphore":{"total":32,"inUse":0,"queued":0},"version":"0.1.0 (...)"}
 部署完成。服務位址：http://127.0.0.1:8787/mcp
-背景模式：服務持續在背景執行（PID=xxxxx）。停止：kill $(cat .rwe.pid)
+背景模式：服務持續在背景執行（PID=xxxxx）。停止：kill $(cat .rwe.rwe.config.pid)
 ```
 
 同一台機器要跑第二個實例（例如驗證用），用 `RWE_BIND` / `RWE_PORT` / `RWE_CONFIG_PATH` 覆蓋即可，
@@ -61,11 +61,14 @@ RWE_CONFIG_PATH=/path/to/another/rwe.config.json RWE_BIND=127.0.0.1 RWE_PORT=879
 `rwe.config.example.json` 建立、並在訊息裡印出它的完整路徑；repo 根目錄的 `rwe.config.json`
 不會被檢查、建立或提及。路徑所在的目錄要先存在，否則腳本會在步驟 2 停下來。
 
-⚠️ **PID／log 檔不跟著 `RWE_CONFIG_PATH` 走**：不論設定檔指到哪裡，`deploy.sh` 一律把 PID 寫進
-repo 根目錄的 `.rwe.pid`、log 寫進 `.rwe.log`——兩個實例會互相覆蓋對方的這兩個檔案（不影響已經
-在跑的行程本身，只影響你事後用 `.rwe.pid` 去 `kill` 的對象）。同機器跑第二個實例時，直接記下
-步驟 4 印出的那個 PID 數字（例如 `啟動中，PID=12345`），要停的時候用 `kill 12345`，不要相信
-`.rwe.pid` 這個檔。
+**PID／log 檔名跟著 `RWE_CONFIG_PATH` 走**：`deploy.sh` 把兩者命名為
+`<設定檔目錄>/.rwe.<設定檔 basename，不含 .json>.{pid,log}`——例如 `rwe.config.json` 對應
+`.rwe.rwe.config.pid`／`.rwe.rwe.config.log`，`scratch.config.json` 對應
+`.rwe.scratch.config.pid`／`.rwe.scratch.config.log`。兩個實例的設定檔通常就在同一目錄下（預設
+`RWE_CONFIG_PATH` 就是 `$(pwd)/rwe.config.json`），basename 不同就不會互相覆蓋。停止對應實例：
+`kill $(cat .rwe.<instance>.pid)`（`<instance>` 就是那份設定檔的 basename）。**加上
+`--dry-run` 會直接印出這兩個路徑並結束、不裝依賴也不啟動任何東西**——需要先知道路徑時用
+`RWE_CONFIG_PATH=... ./deploy.sh --dry-run`。
 
 系統概觀：
 
@@ -88,12 +91,13 @@ repo 根目錄的 `.rwe.pid`、log 寫進 `.rwe.log`——兩個實例會互相�
 （畫圖發生在第一次瀏覽 dashboard 時,見 §1a 的伺服端渲染）；
 LiteLLM 只服務 `agent()` 這一個消費者。）
 
-停止服務：`kill $(cat .rwe.pid)`。不加 `--background` 則前景執行、Ctrl-C 停止。
+停止服務：`kill $(cat .rwe.<instance>.pid)`（`<instance>` 是該實例設定檔的 basename）。不加
+`--background` 則前景執行、Ctrl-C 停止。
 
-⚠ `.rwe.pid` 與 `.rwe.log` 都寫在 **這個 checkout 的根目錄**：從同一個 checkout 再跑一次
-`./deploy.sh --background`（例如上面的第二個實例）會把前一個實例的 PID 檔與 log **覆蓋掉**。要同時
-跑多個實例，啟動後先把 `.rwe.pid` 複製到別處（`cp .rwe.pid /path/to/instance-A.pid`），停止時用
-那份；log 則各自看 `ps`／process manager 的輸出。
+⚠️ **log 是這個部署現存唯一的稽核紀錄，且帶 PII**：`catalog.register`/`catalog.publish`/
+`catalog.deregister`/`run.terminal` 事件都寫進 `.rwe.<instance>.log`（REQ-212 之後這份 log 會出現
+呼叫者的 email/identity），檔案權限 0600，重啟只會 append 不會截斷。**引擎本身不做 log
+rotation**——這份 log 會無界成長，想要輪替就把你自己的 `logrotate`／supervisor 指向它。
 
 ### 展開版 Quickstart（逐步、每步都有預期輸出）
 

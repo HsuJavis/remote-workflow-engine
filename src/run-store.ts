@@ -176,6 +176,12 @@ export function deriveAgentRecords(
 // the same properties over the same fixtures. Also one of the ten identifiers the v26 retirement
 // grep guard (no-retired-surface.test.ts) requires absent from src/.
 
+/** v36 (DES-246, TASK-244): the terminal-status set, exported so a NEW caller (the facade's
+ *  pinned-run probe, `mcp-facade.ts`) imports it rather than declaring a sixth private copy — the
+ *  five pre-existing ones (this file's own three, `SqliteRunStore`'s one, `RunManager`'s
+ *  array-shaped one) are untouched by this export; consolidating them is not this card's job. */
+export const TERMINAL: ReadonlySet<RunStatus> = new Set<RunStatus>(['completed', 'failed', 'stopped']);
+
 export interface RunStore {
   /** `scriptVersion` (D-V7) is the resolved catalog version ("v2", ...) actually executed for this
    *  run; defaults to 'v1' when omitted (inline/adhoc scripts, or callers not yet passing it).
@@ -198,7 +204,16 @@ export interface RunStore {
    *  for an unknown run. */
   getTransitions(runId: string): Promise<StateTransition[]>;
   getRun(runId: string): Promise<RunStatusView | null>;
+  /** v36 (DES-247, ARCH-162, TASK-245, ADR-079): a deliberately UNBOUNDED sweep API — every caller
+   *  needs every row (boot recovery `server.ts:815`, `hydrateAll`'s stale-`running` reclassification,
+   *  the workspace-reclaim sweep, TASK-244's pinned-version probe). No LIMIT, no signature change —
+   *  a caller wanting a page uses the already-paginated `list()` instead. */
   listRuns(): Promise<RunSummary[]>;
+  /** v36 (DES-247, ARCH-162/163, TASK-245): the most recent run's `createdAt` per workflow name,
+   *  DERIVED (grouped MAX), never denormalized onto the catalog. A name with no runs is ABSENT
+   *  from the map — never present with a `null`/undefined value — so the caller's `?? null`
+   *  alone produces the "never run" sentinel. */
+  lastRunAtByName(): Promise<Map<string, string>>;
   /** v24 (DES-152): filtered/paginated read `run_list` is built on — `workflow`/`status`/`principal`
    *  narrow with SQL WHERE (SqliteRunStore) or an equivalent in-memory filter (InMemoryRunStore,
    *  parity required); a row with no `principal` is excluded whenever the filter supplies one (the
@@ -419,6 +434,16 @@ export class InMemoryRunStore implements RunStore {
 
   async listRuns(): Promise<RunSummary[]> {
     return [...this._runs.values()].map((r) => this._toSummary(r));
+  }
+
+  async lastRunAtByName(): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    for (const r of this._runs.values()) {
+      if (!r.spec.name) continue;
+      const existing = out.get(r.spec.name);
+      if (existing === undefined || r.createdAt > existing) out.set(r.spec.name, r.createdAt);
+    }
+    return out;
   }
 
   async hydrateAll(): Promise<RunSummary[]> {

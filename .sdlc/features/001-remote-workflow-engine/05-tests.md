@@ -14305,32 +14305,50 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
   **[v35 verifier ruling — Gate 6.5+7 regression, 2026-09-21]:** re-ran this item's test file standalone (`npx vitest run <file>`) after the GREEN-phase fixes landed (IMPL-343..348) — green. Confirmed by the full-repo regression this same gate re-ran: 430 files / 3194 tests passed, 0 failed. Flipped from the Gate-5 RED baseline to the actual post-implementation result.
 - **iter:** v35
 
-### UT-292 — `ENVELOPE_NOTE` and the advertised omission semantics (DES-239)
+### UT-292 — `ENVELOPE_NOTE` and the advertised omission semantics (DES-239) [AMENDED v36: +1 case, DES-245/TASK-243]
 - **status:** green
-- **traces:** DES-239, REQ-206, REQ-207, REQ-210
+- **traces:** DES-239, DES-245, REQ-206, REQ-207, REQ-210
 - **tier:** unit
 - **real:** false
 - **result:** pass
-- **evidence:** `tests/unit/tool-specs.test.ts` extended (15→18 `it()` sites) — 3/3 fail:
+- **evidence:** `tests/unit/tool-specs.test.ts` extended (15→18 `it()` sites at v35) — 3/3 fail:
   `ENVELOPE_NOTE` is not exported by `src/tool-specs.ts`; `run_start.args`'s description does not
   state the `{}`-on-omission/default rule; `run_result`/`run_status`/`run_list`'s descriptions do
   not mention `failedAgentCount`'s omission semantics.
   **[v35 verifier ruling — Gate 6.5+7 regression, 2026-09-21]:** re-ran this item's test file standalone (`npx vitest run <file>`) after the GREEN-phase fixes landed (IMPL-343..348) — green. Confirmed by the full-repo regression this same gate re-ran: 430 files / 3194 tests passed, 0 failed. Flipped from the Gate-5 RED baseline to the actual post-implementation result.
-- **iter:** v35
+  **[v36 GATE 5 amendment, DES-245/TASK-243, REQ-213/212]:** `tests/unit/tool-specs.test.ts` extended
+  again (18→19 `it()` sites) — 1 new case, GREEN TODAY (a regression pin, not a Gate-5 red item):
+  `run_start.inputSchema` already has `additionalProperties:false` and declares no `principal`
+  property. This is the guard DES-245's decision rationale item 2 names as the "cheapest substitute"
+  for a uniform `run.terminal` actor shape — if admission ever starts honouring a caller-supplied
+  `principal`, THIS case goes red and forces the event line to grow the field rather than silently
+  becoming a lie. `iter` bumped on this item only; its ORIGINAL trace parent DES-239 stays v35
+  unbumped (v33 F6-1), DES-245 added as the new v36 parent this amendment's content traces to.
+  Verified: `npx vitest run tests/unit/tool-specs.test.ts` → 19/19 pass.
+- **iter:** v36
 
-### UT-293 — the guide's three v35 facts (DES-239)
-- **status:** green
-- **traces:** DES-239, REQ-207, REQ-210
+### UT-293 — the guide's three v35 facts (DES-239) [AMENDED v36: +2 cases, DES-249/TASK-247]
+- **status:** red
+- **traces:** DES-239, DES-249, REQ-207, REQ-210, REQ-216
 - **tier:** unit
 - **real:** false
-- **result:** pass
-- **evidence:** `tests/unit/authoring-guide.test.ts` extended (36→39 `it()` sites) — 3/3 fail: the
+- **result:** fail
+- **evidence:** `tests/unit/authoring-guide.test.ts` extended (36→39 `it()` sites at v35) — 3/3 fail: the
   guide states `parallel()`'s thunk-failure null semantics but not sequential `await agent()`'s
   identical null-not-throw rule (with the `if (out === null)` self-protection pattern); does not
   state that `timeoutMs` bounds one attempt and the deployed `retries` multiplies the wait; does not
   state the `content[0].text` double-JSON-encoding envelope.
   **[v35 verifier ruling — Gate 6.5+7 regression, 2026-09-21]:** re-ran this item's test file standalone (`npx vitest run <file>`) after the GREEN-phase fixes landed (IMPL-343..348) — green. Confirmed by the full-repo regression this same gate re-ran: 430 files / 3194 tests passed, 0 failed. Flipped from the Gate-5 RED baseline to the actual post-implementation result.
-- **iter:** v35
+  **[v36 GATE 5 amendment, DES-249/TASK-247, REQ-216/K7]:** `tests/unit/authoring-guide.test.ts`
+  extended again (54 `it()` sites total) — 2 new v36 cases fail: the guide does not yet state that
+  an `agent()` call with NO `timeoutMs` runs ONCE (K7's missing sentence, ARCH-173), and does not
+  yet state the `refusalRef` attestation-boundary sentence (`refusalRef` is engine-attested;
+  `error.code` is not and never has been — DES-249's own text). The 52 pre-existing cases (v24..v35)
+  stay green — no regression from this amendment. `iter` bumped to v36 on this item only (its ORIGINAL
+  trace parent DES-239 stays v35, unbumped, per the v33 F6-1 house rule — bumping the design parent
+  would fire drift on every UT beneath it that this gate cannot close); DES-249 is added to `traces`
+  as the NEW v36 parent this amendment's new content actually traces to.
+- **iter:** v36
 
 ### UT-294 — dashboard `failureReason` i18n key (DES-240)
 - **status:** green
@@ -14749,3 +14767,387 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
   test red (`expected section to match /A declared \`.default\` fills in.../`), then restored with a
   clean `git diff` before this report.
 - **iter:** v35
+
+## v36 — REQ-211..216 (Gate 5, test-first RED)
+
+Impact closure: REQ-211..216 (new), plus regression-only closure over REQ-014, REQ-086, REQ-087,
+REQ-095, REQ-096, REQ-097, REQ-114, REQ-205, REQ-207 (all "unchanged behaviour, re-proved by the
+REQ-21x real-tier path" per 04-design.md's real-tier table — no new standalone VAL for these; their
+continuity is asserted as explicit regression cases inside the new IT files below and their
+existing VAL items are left untouched, per the v33 F6-1 house rule against bumping an item whose
+CONTENT did not change). New items only: nine UT/IT pairs (one per DES-241..249) + one amendment to
+the pre-existing `authoring-guide.test.ts` (UT-293, DES-249/TASK-247) + six new VAL (one per
+REQ-211..216, acceptance tier, real:false — Gate 7.5 flips to true). Every new item traces the old
+REQs it re-proves via its `traces:` line, not via a new VAL row (mirrors the existing house pattern,
+e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
+
+### UT-297 — `captureFailure`: one pure capture, redact-then-bound, the bound is a parameter (K1/K3)
+- **status:** red
+- **traces:** DES-241, REQ-216, REQ-205
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/unit/errors-capture-failure.test.ts` (new, 7 cases) — 7/7 fail:
+  `captureFailure` is not exported from `src/errors.ts` (`TypeError: captureFailure is not a
+  function`); `capErrorEnvelope`'s defaulted second `maxBytes` parameter does not exist yet (a
+  200-byte narrowing has no effect, `4130 > 995`). Composition-order (redact-before-bound), K3
+  byte-exact arithmetic at both 200 and 4096 (computed from the exported `MARKER_PREFIX`/
+  `MAX_SECRET_NAME_CHARS`/`MAX_ERROR_ENVELOPE_BYTES`, never literals), and purity are all covered.
+- **iter:** v36
+
+### UT-298 — `seedRefView.failDetail`: the unredacted twin dies (K2, highest-priority item)
+- **status:** red
+- **traces:** DES-241, REQ-216, REQ-205
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/unit/run-manager-seedref-redaction.test.ts` (new, 3 cases, via a REAL
+  `SecretValueProvider` — not the vacuous absence-only assertion) — 1/3 fail: `failDetail` is still
+  `rawMessage.slice(0,200)`, so the raw secret value appears verbatim and no `‹secret:NAME›` marker
+  is ever present (case 1). The other two legitimately pass today (regression pins, not vacuous):
+  case 2 only asserts the 200-byte truncation already fires (pre-existing `slice(0,200)` behaviour,
+  not yet the redaction ORDER); `failCode`'s three-value domain (case 3) is untouched by this change
+  and is pinned so a careless envelope substitution during GREEN cannot regress it.
+- **iter:** v36
+
+### IT-293 — `deploy.sh`: control files named after the config that owns them (REQ-214)
+- **status:** red
+- **traces:** DES-242, REQ-214
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/integration/deploy-control-files.test.ts` (new, 7 cases) — suite-level red: a
+  `beforeAll` guard reads the real `deploy.sh` off disk and refuses to spawn it at all until it
+  understands `--dry-run` (an accidental spawn on the unmodified script would run `npm install` and
+  attempt to start a real engine on the shared tree) — `deploy.sh does not implement --dry-run yet
+  (TASK-240 unimplemented) — refusing to spawn it for real`. The collision case (two configs in ONE
+  directory) is the shape asserted; a two-directory variant is deliberately not written (would pass
+  on the broken `dirname`-only design).
+- **iter:** v36
+
+### UT-299 — `src/event-log.ts`: one typed sink, one redaction inside it, an injected clock
+- **status:** red
+- **traces:** DES-243, REQ-213
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/unit/event-log.test.ts` (new, 5 cases + 1 standalone type-only assertion) —
+  suite-level red: `src/event-log.ts` does not exist (`Failed to load url ../../src/event-log.js`).
+  A REAL `SecretValueProvider` proves the marker is PRESENT (not merely that the raw value is
+  absent — the vacuity trap DES-243 names). The `@ts-expect-error` type guarantee (a `kind` missing
+  its required `actor` is a compile error) is checked by `tsc --noEmit`, not vitest, and is kept
+  outside any `it()` for exactly that reason.
+- **iter:** v36
+
+### UT-300 — `canMutate`/`actorFor`: one truthy predicate, `Actor` minted PER CALL SITE (R-1)
+- **status:** red
+- **traces:** DES-244, REQ-212, REQ-114
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/unit/catalog-actor.test.ts` (new, 6 cases) — 6/6 fail: neither `canMutate`
+  (exported from `src/workflow-catalog.ts`) nor `actorFor` (exported from `src/mcp-facade.ts`, the
+  seam this Gate 5 pass establishes for testability) exists yet. The full
+  `(kind × args.principal × gate × owner∈{null,'','alice'})` cross-product table is asserted against
+  the LEGACY expression reproduced inline (not imported), and R-1 (an admin registering over
+  another owner's name is STILL refused) is its own named case — the highest-severity finding this
+  slice makes structural.
+- **iter:** v36
+
+### IT-294 — the composition root: one real `eventSink` wired into `WorkflowCatalog` + `RunManager`
+- **status:** red
+- **traces:** DES-243, DES-244, DES-245, DES-246, REQ-213, REQ-212, REQ-211, REQ-086, REQ-087, REQ-114, REQ-014, REQ-095
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/integration/main-composition-root-events.test.ts` (new, 5 cases) — suite-level
+  red: `src/event-log.ts` doesn't exist. Real `WorkflowCatalog` + real `RunManager` over real SQLite,
+  wired to a real `createEventSink`. Covers TASK-242's register+publish lines and the admin-bypass
+  audit case (re-proving REQ-086/087/114 — a non-admin stranger is still refused
+  `NOT_WORKFLOW_OWNER`), TASK-243's completed+failed `run.terminal` pair, and TASK-244's
+  `catalog.deregister` line. Seam asserted: `WorkflowCatalog`'s constructor opts and `RunManagerDeps`
+  both gain an optional `eventSink` (DES-243's own text names both call sites) — the implementer's
+  seam to build against.
+- **iter:** v36
+
+### UT-301 — `getSpec()` returns `principal` on BOTH stores (ADR-067 SQL/TS-twin guard)
+- **status:** red
+- **traces:** DES-245, REQ-213, REQ-212
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/unit/run-store-getspec-principal.test.ts` (new, 2 cases) — 2/2 fail:
+  `SqliteRunStore.getSpec()`'s SELECT (measured: `'SELECT name, script, args, budget, started_by
+  FROM runs WHERE runId = ?'`) omits `principal`, so `spec.principal` comes back `undefined`; the
+  both-stores agreement case shows `InMemoryRunStore` correctly answers `'alice'` while
+  `SqliteRunStore` answers `undefined` on the SAME spec — exactly the ADR-067 class this item exists
+  to close.
+- **iter:** v36
+
+### IT-295 — `run.terminal` fires at the ONE authoritative terminal writer, `completed` included
+- **status:** red
+- **traces:** DES-245, REQ-213, REQ-212
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/integration/run-terminal-event.test.ts` (new, 2 cases) — suite-level red
+  (`src/event-log.ts` missing). Covers a COMPLETED run emitting the line (not only failures — the
+  reason it lives at `_transition`, never inside a failure-capture function) and a cross-process
+  status READBACK of an already-terminal run's `principal` (depends on UT-301's `getSpec()` fix
+  landing first). **Retitled after advisor review — case 2 does NOT prove a genuinely RESUMED
+  (suspend → resume → second terminal transition) run's `principal`**: the run in that case already
+  reaches `failed` before the second `RunManager` is even constructed, so no live re-dispatch/
+  re-`_transition` occurs and the second `eventSink` never fires; the case is honestly scoped to
+  "the field survives a fresh-process `status()` read", which is UT-301's own gap from the read
+  side. A true suspend→resume→re-terminal proof (TASK-243(4)'s literal R-2 case) is a materially
+  more expensive fixture and is not built in this pass — named for Gate 6, not silently claimed.
+- **iter:** v36
+
+### UT-302 — `deregisterVersion`: six outcomes in a pinned order, two DELETEs, re-keyed diagram guard
+- **status:** red
+- **traces:** DES-246, REQ-211, REQ-096
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/unit/catalog-deregister-version.test.ts` (new, 10 cases) — 9/10 fail
+  (`TypeError: cat.deregisterVersion is not a function`); one case ("every whole-name deregister()
+  test stays green") legitimately passes today (regression pin, REQ-211's own "existing behaviour
+  and codes unchanged" clause). Covers ownership-first ordering, name-absent vs version-not-found,
+  channel-pinned, last-remaining, the two-DELETE transaction with `assets`/`workflows` read back
+  PRESENT, the re-keyed `(name,version)` diagram late-write guard, and the trigger
+  release/non-release split (the A7 question DES-246 answers).
+- **iter:** v36
+
+### IT-296 — `workflow_deregister({name, version})` refuses a version PINNED BY A NON-TERMINAL RUN
+- **status:** red
+- **traces:** DES-246, ARCH-156, REQ-211, REQ-096, REQ-097
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/integration/deregister-version-pinned-run.test.ts` (new, 2 cases) — 1/2 fail:
+  `McpFacade.workflowDeregister` has no `version` parameter today (silently ignored), so a
+  version-scoped delete request actually performs the WHOLE-NAME delete and returns `completed`
+  instead of refusing `VERSION_PINNED_BY_RUN`. Enforced at the FACADE (ADR-075 — no cross-file
+  transaction exists), with a genuinely non-terminal run row and the catalog's version stored
+  UNPREFIXED (`"3"`) — the normalized-compare case most likely to rot. The whole-name path (case 2)
+  legitimately passes (regression pin).
+- **iter:** v36
+
+### UT-303 — `lastRunAtByName()`: grouped `MAX(createdAt)`, both stores agree, absent means never-run
+- **status:** red
+- **traces:** DES-247, REQ-213, REQ-216
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/unit/run-store-last-run-at.test.ts` (new, 3 cases) — 3/3 fail: neither
+  `SqliteRunStore` nor `InMemoryRunStore` implements `lastRunAtByName` (`TypeError: ...
+  lastRunAtByName is not a function`). Covers the later-createdAt case, the never-run-is-ABSENT
+  (not `null`-valued) case, and both-stores agreement.
+- **iter:** v36
+
+### IT-297 — `workflow_list` forwards `description` + `lastRunAt` (「哪些該清」)
+- **status:** red
+- **traces:** DES-247, ARCH-163, REQ-213, REQ-216
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/integration/workflow-list-fields.test.ts` (new, 3 cases) — 2/3 fail:
+  `McpFacade.workflowList`'s projection is `{name,owner,versions,channels,runnable}` — no
+  `description` (already computed by `catalog.list()` since v9, silently dropped by the `.map`), no
+  `lastRunAt`; the "one call per request, not per row" case fails because the method being spied on
+  doesn't exist yet. K4 (zero-agent `run_status`/`run_list` agreement) legitimately passes today —
+  regression pin.
+- **iter:** v36
+
+### UT-304 — sandbox refusal provenance: a `WeakMap` the vm cannot reach, an integer on the wire
+- **status:** red
+- **traces:** DES-248, ARCH-165, REQ-215, REQ-205
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/unit/sandbox-refusal-provenance.test.ts` (new, 6 cases, via the injected
+  `SandboxApi` — no `fork()`) — 5/6 fail: `markEngineRefusal` is not exported from
+  `src/sandbox/guards.ts`; the drift guard fails because `run-manager.ts` exports no
+  `RECORDED_REFUSAL_CODES` yet to compare against `guards.ts`'s (module-private)
+  `ENGINE_REFUSAL_CODES`; the forgery-of-CODE negative (a script forging `name:'PARAM_UNKNOWN'` on a
+  fresh, unmarked error) fails because `PARAM_UNKNOWN` is not yet in `ENGINE_REFUSAL_CODES`, so it
+  still flattens to `SCRIPT_ERROR` instead of surfacing the code with no ref. The fresh-error
+  negative case legitimately passes (an unmarked error already carries no ref today — a true
+  characterization). Positive/forgery-of-REF/parallel()-identity all fail for the
+  unimplemented-provenance reason.
+  **Scope note (corrected after advisor review — the first draft of this note overclaimed):** the
+  `RunEntry` ledger lives on `RunManager`, not reachable from this pure-policy file at all (no
+  `RunManager` is constructed here). IT-298 covers the 8-slot-bound shape (9 refusals in one run
+  must not break the run's ordinary failure reporting — retitled honestly; `refusalsDropped` has NO
+  external read surface anywhere in DES-248's signature, so its exact value is NOT asserted by any
+  test) and the nested-frame negative case, via the real fork it already pays for. The UNKNOWN-REF
+  fallback ("a `refusalRef` this run's ledger does NOT contain falls back to today's flattened
+  envelope") is observable in principle but not reachable by any REAL script: the child mints every
+  `refusalRef` from the SAME `callSeq` the parent gave it, so an "unknown" ref can only arise from a
+  forged/stale child IPC message — exactly the mocked seam REQ-215 forbids constructing. No case
+  exists for it in either file; a design fact worth recording, not a coverage oversight (see the
+  exit-gate self-check list below).
+- **iter:** v36
+
+### IT-298 — a real engine refusal, rethrown in a real forked child, reaches `run_result.error` with a structured marker
+- **status:** red
+- **traces:** DES-248, ARCH-165, ARCH-166, ARCH-167, ARCH-168, REQ-215, REQ-205, REQ-203
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/integration/refusal-marker-real-child.test.ts` (new, 3 cases; the ONE
+  real-child case DES-248 reserves, plus two folded-in ledger-adjacent cases) — the IPC is NOT
+  mocked (a real forked sandbox child, a real `RunManager`, the real `agentType` retirement
+  refusal — which fires before any gateway call, so no model/network access is needed).
+  `registerLegacyPinned` (a new test helper, `catalog.insertVersion` directly, bypassing the
+  registration-time static scan) simulates the ONLY way this refusal is reachable at dispatch: a
+  pinned pre-v34 version already in the catalog before the `agentType` scan rule existed. Case 1
+  (positive): `run_result.error.code` is today `'SCRIPT_ERROR'`, not `'PARAM_UNKNOWN'` — red for the
+  unimplemented `ENGINE_REFUSAL_CODES`/`refusalRef` reason. Case 2 (9 refused `parallel()` branches,
+  past the ledger's 8-slot bound — retitled from an earlier draft that overclaimed observing
+  `refusalsDropped`, which has NO external read surface in DES-248's signature and is NOT asserted):
+  today `parallel()` still swallows every unrecognized-code refusal to `null` (ADR-073's propagation
+  rule isn't wired), so the run COMPLETES instead of failing — red for a STRONGER unimplemented-ness
+  than a mere code mismatch; what it actually proves is that driving the ledger past its bound must
+  not itself break ordinary failure reporting. Case 3 (nested-frame negative, folded in):
+  legitimately passes today — `workflow()`'s nesting re-wrap already fails the run with its own code
+  via `GuardError` independent of `ENGINE_REFUSAL_CODES`, which is the "already true, must stay
+  true" half of the scope-out (regression pin, not a Gate-5 red item).
+  **`real:` corrected to `false` after advisor review** (the first draft wrongly set `real:true` on
+  a `result:fail` item): per the verifier contract, `real:true` is the Gate-7.5 validator's flip
+  after a real run PROVES the property end to end — setting it here, even though this case already
+  drives a genuine forked child with no SUT-boundary mock, pre-closes REQ-215's 未真實驗證 gap on a
+  RED test, which is exactly the false-verified signal the mock hard-rule exists to block. Left
+  `false`; Gate 7.5 makes this call once the implementation is green.
+  **Not built, named rather than silently skipped:** the unknown-ref fallback case (see UT-304's
+  scope note) and no test yet exists for TASK-244(8)'s two `VERSION_CEILING_EXCEEDED` message
+  strings or TASK-245(4)'s `lastRunAt` tool-description sentence — flagged for Gate 6/the exit-gate
+  self-check below, not silently dropped.
+- **iter:** v36
+
+### UT-305 — `attemptsFor`: one formula on the `GatewayClient` port, both conformers call it (K6/K7)
+- **status:** red
+- **traces:** DES-249, ARCH-171, REQ-216, REQ-207
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **evidence:** `tests/unit/gateway-attempts.test.ts` (new, 2 cases) — 2/2 fail: `attemptsFor` is
+  not exported from `src/gateway/client.ts`; `client.ts`'s deviant unconditional-retry formula
+  (`1 + Math.max(0, this._config.retries)`, no `timeoutMs` gate) is still present. The four-quadrant
+  table (timed/untimed × retries 0/N, plus a negative-retries clamp) is pinned as a pure function
+  test; the per-conformer check is source-text (deliberately not a behavioural cross-transport
+  matrix — K7's own stated non-take).
+- **iter:** v36
+
+### VAL-246 — REQ-211: a version can be deregistered on its own; the error text names a real action
+- **status:** red
+- **traces:** REQ-211
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **evidence:** the real-tier path (validator-owned at Gate 7.5, 04-design.md's table row): register
+  three versions, publish `release` to v2, `workflow_deregister({name, version:"v2"})` →
+  `VERSION_PINNED_BY_CHANNEL`; `{version:"v1"}` → removed, `assets`/`workflows` rows still present
+  via `sqlite3 catalog.db`; a long-running run pinned to v3 → `VERSION_PINNED_BY_RUN` naming the
+  runId. Covered pre-real by UT-302/IT-296. `real:true` at Gate 7.5 only.
+- **iter:** v36
+
+### VAL-247 — REQ-212: audit lines carry the caller's real identity; bypass is a visible, separate flag
+- **status:** red
+- **traces:** REQ-212
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **evidence:** real-tier path: with auth ON, an admin publishes another user's workflow through
+  real MCP — the publish succeeds and `.rwe.<instance>.log` carries `catalog.publish` with the
+  admin's OWN id, `bypass:true`, `idSource:'authenticated'`; the same admin's `workflow_register`
+  over that owner's name is still refused `NOT_WORKFLOW_OWNER`; on an auth-disabled instance a
+  caller-supplied `principal` is logged `idSource:'claimed'`. Covered pre-real by UT-300/IT-294.
+- **iter:** v36
+
+### VAL-248 — REQ-213: the directory shows what to clean; the engine says what it is doing
+- **status:** red
+- **traces:** REQ-213
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **evidence:** real-tier path: register/run/fail for real, then `cat .rwe.<instance>.log` — one
+  JSON line per register/publish/run-terminal with name/version/principal/outcome, secrets only as
+  `‹secret:NAME›`; `workflow_list` shows `description` and `lastRunAt` (`null` for a never-run
+  probe). Covered pre-real by UT-299/IT-294/UT-303/IT-297.
+- **iter:** v36
+
+### VAL-249 — REQ-214: two engine instances never clobber each other's control files
+- **status:** red
+- **traces:** REQ-214
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **evidence:** real-tier path: boot a second scratch instance via `./deploy.sh --background` with
+  `RWE_CONFIG_PATH` pointing at a second config IN THE SAME DIRECTORY; `ls -a` shows two
+  `.rwe.<instance>.{pid,log}` pairs; `kill $(cat .rwe.<scratch>.pid)` stops only the scratch engine.
+  Covered pre-real by IT-293's `--dry-run` form (the IT-tier property, not a substitute for this
+  real boot).
+- **iter:** v36
+
+### VAL-250 — REQ-215: a structured engine-refusal marker crosses the sandbox to the run layer
+- **status:** red
+- **traces:** REQ-215
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **evidence:** real-tier path: a real registered script calling `agent()` with a retired
+  `agentType`, caught and rethrown, through the real engine and a real forked child —
+  `run_result.error.code` is the engine's refusal code and the envelope carries the structured
+  marker; the same call inside `parallel()` fails the run instead of yielding `null`; a script
+  forging `name:'PARAM_UNKNOWN'` gets the code and NO marker. Covered pre-real by UT-304/IT-298 (IT-298
+  already drives a real forked child with no SUT-boundary mock, but stays `real:false` per Gate 5's
+  own contract — Gate 7.5 is what flips it, after the implementation is green end to end via MCP).
+- **iter:** v36
+
+### VAL-251 — REQ-216: the eight v35-archived residuals (K1–K8) are closed, one by one
+- **status:** red
+- **traces:** REQ-216
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **evidence:** real-tier path: a real run whose `seedRef` fetch fails against a repo URL carrying a
+  provisioned secret shows `‹secret:NAME›` in `run_status.seedRef.failDetail`, never the raw value,
+  `failCode` still `SEEDREF_FETCH_FAILED` (K1/K2/K3); `workflow_describe`'s advertised `attempts`
+  and a real untimed `agent()` call agree an untimed call runs once (K6/K7), and
+  `workflow_authoring_guide` says so; `run_status`/`run_list` agree on a zero-agent terminal run
+  (K4). K5 is discharged as a RULING (ADR-079, in the port contract), not as code — covered by
+  ARCH-172's `owner_decision: pending` carried forward, not by this VAL. Covered pre-real by
+  UT-297/UT-298/IT-297/UT-305/UT-293.
+- **iter:** v36
+
+### v36 trace summary
+DES-241→UT-297/UT-298; DES-242→IT-293; DES-243→UT-299/IT-294/IT-295; DES-244→UT-300/IT-294;
+DES-245→UT-301/IT-295/UT-292(amended); DES-246→UT-302/IT-296; DES-247→UT-303/IT-297; DES-248→UT-304/IT-298;
+DES-249→UT-305/UT-293(amended). REQ-211→VAL-246; REQ-212→VAL-247; REQ-213→VAL-248; REQ-214→VAL-249;
+REQ-215→VAL-250; REQ-216→VAL-251. REQ-014/086/087/095/096/097/114/205/207: no new VAL (unchanged
+behaviour per 04-design.md's real-tier table); regression continuity asserted inside IT-294/IT-296's
+own cases and traced there. No `owner_decision` newly deferred by this gate — ARCH-172's REQ-216/K5
+pending marker is carried forward unresolved (blocks Gate 8, not this gate, per the architect's own
+note at Gate 2).
+
+**Exit-gate self-check gaps, named for Gate 6 (v34 precedent — a heads-up, not a DoD violation this
+gate owns):**
+- `TASK-241`'s `files:` list is `src/event-log.ts, src/main.ts, src/run-manager.ts,
+  src/workflow-catalog.ts, tests/unit/event-log.test.ts` — it omits `src/server.ts`, but
+  `createServer` (not `main.ts`) is where `new RunManager(...)`/`new WorkflowCatalog(...)` are
+  actually constructed (`server.ts:709`, `:782`); `main.ts` never builds either class directly. The
+  new tests here (IT-294/IT-295) construct `WorkflowCatalog`/`RunManager` directly with an injected
+  `eventSink`, so they do not depend on this wiring — but the implementer cannot wire the REAL
+  composition root (the production path `npm start` actually takes) without touching `server.ts`,
+  which the task card does not list.
+- No test exists yet for `TASK-244(8)`'s two `VERSION_CEILING_EXCEEDED` message rewrites (naming
+  `workflow_deregister({name, version})`) or `TASK-245(4)`'s `workflow_list` tool-description
+  sentence stating `lastRunAt`'s semantics — both are REQ-211/REQ-213's own acceptance text, not
+  built as separate cases in this pass; left for Gate 6 to close alongside the code (or for a
+  follow-up Gate-5 delta if the implementer finds them un-asserted).
+- The RunEntry ledger's UNKNOWN-REF fallback (DES-248's "a `refusalRef` this run's ledger does not
+  contain falls back to today's flattened envelope") has no case anywhere in this gate's new tests
+  (see UT-304's own evidence for why: it can only arise from a forged/stale child IPC message,
+  which REQ-215 forbids constructing as a test fixture) — a design fact, not an oversight, but
+  still an untested branch of DES-248's own signature for Gate 6 to be aware of.

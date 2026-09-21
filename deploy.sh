@@ -4,7 +4,8 @@
 #
 # 用法:
 #   ./deploy.sh                 # 前景啟動 (Ctrl+C 停止；適合第一次跑/除錯)
-#   ./deploy.sh --background    # 背景啟動 (寫 PID 到 .rwe.pid，適合驗證腳本/CI)
+#   ./deploy.sh --background    # 背景啟動 (寫 PID 到 .rwe.<instance>.pid，適合驗證腳本/CI)
+#   ./deploy.sh --dry-run       # 只印出解析到的 PID/log 路徑就結束，不裝依賴也不啟動任何東西
 #
 # 冪等：已存在的設定檔 ($RWE_CONFIG_PATH，預設 repo 根目錄的 rwe.config.json) / litellm venv 不會被覆蓋或重建。
 # 任何無法自動化的步驟，本腳本會停下並印出清楚的下一步指示，而不是猜測。
@@ -14,13 +15,31 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 RWE_PORT="${RWE_PORT:-8787}"
 RWE_BIND="${RWE_BIND:-127.0.0.1}"
 
+# 引擎讀哪一個設定檔由 RWE_CONFIG_PATH 決定（未設定時才是 repo 根目錄的 rwe.config.json）。
+# 這一段必須在步驟 1 之前解析：否則跑第二個實例（RWE_CONFIG_PATH 指到別處）時，步驟 2 會去檢查、
+# 建立、並回報 repo 根目錄那一份「引擎根本不會讀」的檔案（v26 Gate 7.5 round 6 defect D14），而
+# --dry-run 也需要在花時間 npm install 之前就能印出這兩個路徑並結束。
+# PID／log 檔名跟著設定檔走（config 的 basename），而不是固定的 .rwe.pid/.rwe.log：同一目錄下的
+# 第二個實例（RWE_CONFIG_PATH 指到別處，通常就在同一目錄，因為預設值就是 $(pwd)/rwe.config.json）
+# 才不會覆蓋掉第一個實例的控制檔（ADR-078）。
+export RWE_CONFIG_PATH="${RWE_CONFIG_PATH:-$(pwd)/rwe.config.json}"
+RWE_INSTANCE="$(basename "$RWE_CONFIG_PATH" .json)"
+RWE_PID_FILE="$(dirname "$RWE_CONFIG_PATH")/.rwe.${RWE_INSTANCE}.pid"
+RWE_LOG_FILE="$(dirname "$RWE_CONFIG_PATH")/.rwe.${RWE_INSTANCE}.log"
+# umask 必須關在子 shell 裡：擺在最上層會被 nohup 起的引擎行程繼承，變成把每一個 SQLite db、
+# workspace、CAS blob 都變成 0600 的全艦隊權限變更（一個 pid 檔需求夾帶進來的）。log 只 touch、
+# 從不用 `>`／`: >` 截斷——這份 log 是唯一存在的稽核紀錄 (ADR-076)，重啟不能把正在查的事故洗掉。
+(umask 077; touch "$RWE_LOG_FILE")
+chmod 600 "$RWE_LOG_FILE"
+
+if [ "${1:-}" = "--dry-run" ]; then
+  echo "RWE_PID_FILE=$RWE_PID_FILE"
+  echo "RWE_LOG_FILE=$RWE_LOG_FILE"
+  exit 0
+fi
+
 echo "== 步驟 1/5：安裝 Node 依賴 (npm install) =="
 npm install
-
-# 引擎讀哪一個設定檔由 RWE_CONFIG_PATH 決定（未設定時才是 repo 根目錄的 rwe.config.json）。
-# 這一行必須在步驟 2 之前解析：否則跑第二個實例（RWE_CONFIG_PATH 指到別處）時，步驟 2 會去檢查、
-# 建立、並回報 repo 根目錄那一份「引擎根本不會讀」的檔案（v26 Gate 7.5 round 6 defect D14）。
-export RWE_CONFIG_PATH="${RWE_CONFIG_PATH:-$(pwd)/rwe.config.json}"
 
 echo "== 步驟 2/5：確認設定檔 ($RWE_CONFIG_PATH) =="
 if [ ! -f "$RWE_CONFIG_PATH" ]; then
@@ -60,10 +79,10 @@ export RWE_BIND RWE_PORT
 
 start_cmd=(node node_modules/tsx/dist/cli.mjs src/main.ts)
 
-nohup "${start_cmd[@]}" > .rwe.log 2>&1 &
+nohup "${start_cmd[@]}" >> "$RWE_LOG_FILE" 2>&1 &
 RWE_PID=$!
-echo "$RWE_PID" > .rwe.pid
-echo "啟動中，PID=$RWE_PID，log 在 .rwe.log"
+echo "$RWE_PID" > "$RWE_PID_FILE"
+echo "啟動中，PID=$RWE_PID，log 在 $RWE_LOG_FILE"
 
 echo "== 步驟 5/5：健康檢查 (等待 /api/status 回應) =="
 deadline=$((SECONDS + 30))
@@ -82,7 +101,7 @@ fi
 until curl -s -o /dev/null -w '%{http_code}' "http://${HEALTHCHECK_HOST}:${RWE_PORT}/api/status" 2>/dev/null | grep -q 200; do
   if [ $SECONDS -ge $deadline ]; then
     echo "健康檢查逾時 (30s) — 服務未在 http://${HEALTHCHECK_HOST}:${RWE_PORT}/api/status 回應 200。"
-    echo "請查看 log（前景模式看終端輸出；背景模式看 .rwe.log）。"
+    echo "請查看 log（前景模式看終端輸出；背景模式看 $RWE_LOG_FILE）。"
     exit 1
   fi
   sleep 1
@@ -94,8 +113,8 @@ echo
 echo "部署完成。服務位址：http://${RWE_BIND}:${RWE_PORT}/mcp"
 
 if [ "${1:-}" = "--background" ]; then
-  echo "背景模式：服務持續在背景執行（PID=$RWE_PID）。停止：kill \$(cat .rwe.pid)"
+  echo "背景模式：服務持續在背景執行（PID=$RWE_PID）。停止：kill \$(cat $RWE_PID_FILE)"
 else
-  echo "前景模式：Ctrl+C 停止服務（或另開終端機 kill \$(cat .rwe.pid)）。"
+  echo "前景模式：Ctrl+C 停止服務（或另開終端機 kill \$(cat $RWE_PID_FILE)）。"
   wait "$RWE_PID"
 fi

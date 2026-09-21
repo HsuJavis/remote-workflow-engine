@@ -7,9 +7,9 @@ import { readArtifactChunk, type ArtifactEntry, type ChunkResult } from './works
 import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
 import type { RunStore } from './run-store.js';
-import { InMemoryRunStore } from './run-store.js';
+import { InMemoryRunStore, TERMINAL } from './run-store.js';
 import { RunManager, DEFAULT_RUN_CONCURRENCY } from './run-manager.js';
-import { resolveVersionRequest, type WorkflowDetail, type Channel, type VersionSelector } from './workflow-catalog.js';
+import { resolveVersionRequest, type WorkflowDetail, type Channel, type VersionSelector, type Actor } from './workflow-catalog.js';
 import { SubmissionValidator } from './submission-validator.js';
 // v24 Gate 7.5 (D-3): `toErrEnvelope` is IMPORTED, not re-implemented. This file used to carry a
 // private copy whose envelope had no `see` field at all, and since every `workflow_*` handler
@@ -82,8 +82,8 @@ const NEVER_CLAIMS: TriggerClaimStore = {
  *  trigger-claim step in between) — a structural port so this file does not need the concrete
  *  WorkflowCatalog class beyond what's already imported for read-side helpers. */
 interface RegistrationCatalog {
-  validateRegistration(req: { name: string; script: string; mermaid: string; principal?: string | null }): Promise<{ params: ParamContract }>;
-  insertVersion(req: { name: string; script: string; mermaid: string; triggers?: string[]; params: ParamContract; principal?: string | null }): Promise<{ version: string }>;
+  validateRegistration(req: { name: string; script: string; mermaid: string; actor?: Actor }): Promise<{ params: ParamContract }>;
+  insertVersion(req: { name: string; script: string; mermaid: string; triggers?: string[]; params: ParamContract; actor?: Actor }): Promise<{ version: string }>;
   /** v33 (DES-222, REQ-201): the v22 read (DES-111) — type-only addition, no new catalog method or
    *  behaviour. Read AFTER insertVersion so the register response shows the version loop. */
   resolveDetail(name: string, sel: { version?: string }): Promise<{ versions: string[]; channels: { release: string | null; beta: string | null } }>;
@@ -239,6 +239,23 @@ function bypassWithArg(p: Principal, a: unknown): string | null {
   return bypassPrincipal(p);
 }
 
+/** v36 (DES-244, ARCH-157/158/161, TASK-242, REQ-212/REQ-114): `id` is ALWAYS the attribution
+ *  rule's answer (`attributionWithArg`) — even on a `'bypass'`-gated call, so an admin's own id is
+ *  recorded WHILE bypassing, never silently ownerless. `bypass` is true exactly when the
+ *  call-site's OWN gate rule (`gate`) would have answered `null` — `bypass ≡ (today's gate value
+ *  === null)`, which reproduces the pre-v36 ownership-refusal expression exactly, for all four
+ *  principal kinds, at every call site. */
+function idSourceOf(p: Principal, a: unknown): 'authenticated' | 'claimed' | 'none' {
+  const supplied = (a as { principal?: unknown } | null | undefined)?.principal;
+  if (p.kind === 'auth-disabled' && typeof supplied === 'string' && supplied !== '') return 'claimed';
+  return attributionPrincipal(p) === null ? 'none' : 'authenticated';
+}
+type Gate = 'bypass' | 'attribution';
+export function actorFor(p: Principal, a: unknown, gate: Gate): Actor {
+  const gateId = gate === 'bypass' ? bypassWithArg(p, a) : attributionWithArg(p, a);
+  return { id: attributionWithArg(p, a), bypass: gateId === null, idSource: idSourceOf(p, a) };
+}
+
 export class McpFacade {
   private readonly store: RunStore;
   private readonly runManager: RunManager;
@@ -347,7 +364,8 @@ export class McpFacade {
         if (!isAdmin && owner !== actorId) throw codedError('NOT_TRIGGER_OWNER', `NOT_TRIGGER_OWNER: ${id}`);
       }
       const catalog = this.runManager.catalog as unknown as RegistrationCatalog;
-      const { params } = await catalog.validateRegistration({ name: a.name, script: a.script, mermaid: a.mermaid, principal: attributionWithArg(principal, a) });
+      const actor = actorFor(principal, a, 'attribution');
+      const { params } = await catalog.validateRegistration({ name: a.name, script: a.script, mermaid: a.mermaid, actor });
       for (const id of triggers) {
         const outcome = this._storeFor(id).claim(id, a.name);
         if (outcome === 'claimed') { claimedThisCall.push(id); continue; }
@@ -357,7 +375,7 @@ export class McpFacade {
       }
       let version: string;
       try {
-        ({ version } = await catalog.insertVersion({ name: a.name, script: a.script, mermaid: a.mermaid, triggers, params, principal: attributionWithArg(principal, a) }));
+        ({ version } = await catalog.insertVersion({ name: a.name, script: a.script, mermaid: a.mermaid, triggers, params, actor }));
       } catch (err) {
         for (const id of [...claimedThisCall].reverse()) this._storeFor(id).release(id, a.name);
         throw err;
@@ -376,9 +394,38 @@ export class McpFacade {
   }
 
   /** DES-149 (ARCH-091): the catalog deletes; the facade releases each claimed trigger and reports
-   *  the union as `releasedTriggers`. */
-  async workflowDeregister(a: { name: string }, principal: Principal): Promise<Record<string, unknown>> {
+   *  the union as `releasedTriggers`. v36 (DES-246, TASK-244): an optional `version` switches to the
+   *  version-scoped sibling — the pinned-run gate (`VERSION_PINNED_BY_RUN`) sits HERE, not in the
+   *  catalog, because runs and workflows live in two separate SQLite files and this facade is the
+   *  only production caller holding both handles. Absent `version` runs today's whole-name path,
+   *  byte-identical, below. */
+  async workflowDeregister(a: { name: string; version?: string }, principal: Principal): Promise<Record<string, unknown>> {
     try {
+      if (a.version !== undefined) {
+        // Both sides of the compare are normalized: a non-terminal run's pin is stored
+        // NUMERIC/normalized (`Number(version.replace(/^v/,''))`) while a catalog row's version is
+        // free TEXT and may legitimately be unprefixed ("3") — an un-normalized compare would make
+        // this security gate silently never fire for such a row.
+        const norm = (v: string) => String(v).replace(/^v/, '');
+        const runs = await this.store.listRuns();
+        const pinned = runs.find((r) => r.name === a.name && norm(r.scriptVersion) === norm(a.version!) && !TERMINAL.has(r.status));
+        if (pinned) {
+          const error: ErrEnvelope = { code: 'VERSION_PINNED_BY_RUN', message: `VERSION_PINNED_BY_RUN: run ${pinned.runId} pins version '${a.version}' of '${a.name}'` };
+          return { runId: '', status: 'failed', code: error.code, error };
+        }
+        const { removed, remaining, claimedTriggers } = await this.runManager.catalog.deregisterVersion(a.name, a.version, actorFor(principal, a, 'bypass'));
+        // v36 (DES-246 boundary): only the before/after `declaredTriggers` difference is released —
+        // NOT the union with `claimedIdsFor()` the whole-name path below also pulls in. A trigger
+        // claim binds to the workflow NAME, not a version, and the name row survives a version
+        // delete (outcome 5 guarantees it), so a create-time-bound legacy claim is never orphaned by
+        // deleting one version and must not be released just because one was.
+        for (const id of claimedTriggers) this._storeFor(id).release(id, a.name);
+        if (!removed) {
+          const error: ErrEnvelope = { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` };
+          return { runId: '', status: 'failed', code: error.code, error };
+        }
+        return { runId: '', status: 'completed', name: a.name, version: a.version, removed, releasedTriggers: claimedTriggers, result: { name: a.name, version: a.version, removed, releasedTriggers: claimedTriggers, remaining } };
+      }
       // v24 Gate 7.5 (D-1b, REQ-115/ADR-026): the catalog reports the ids the VERSION ROWS declare
       // — the claim door, and since adjudication #8 (H-2, issue #56) the only one a new trigger can
       // use. A trigger bound AT CREATION (`schedule_create({workflow})`, now reachable only as a
@@ -387,7 +434,7 @@ export class McpFacade {
       // real cron fired a run for the new registration 47 s later. `claimedIdsFor()` — the exact
       // reader `workflow_describe` already uses to SHOW both doors — is now consulted here too, so
       // what is released is what was shown.
-      const { removed, claimedTriggers } = await this.runManager.catalog.deregister(a.name, bypassWithArg(principal, a));
+      const { removed, claimedTriggers } = await this.runManager.catalog.deregister(a.name, actorFor(principal, a, 'bypass'));
       const releasedTriggers = [...new Set([
         ...claimedTriggers,
         ...(this.schedulerClaims.claimedIdsFor?.(a.name) ?? []),
@@ -434,7 +481,7 @@ export class McpFacade {
       if (channel !== 'release' && channel !== 'beta') {
         throw codedError('INVALID_CHANNEL', `INVALID_CHANNEL: '${String(channel)}' — the channel must be 'release' or 'beta'`);
       }
-      const result = await this.runManager.catalog.publish(a.name, a.version, channel, bypassWithArg(principal, a));
+      const result = await this.runManager.catalog.publish(a.name, a.version, channel, actorFor(principal, a, 'bypass'));
       return { runId: '', status: 'completed', result };
     } catch (err) {
       const e = toErrEnvelope(err);
@@ -569,13 +616,27 @@ export class McpFacade {
   }
 
   /** v24 (ARCH-091): "workflows only" — the mixed workflow+run listing moves to `run_list`. */
-  async workflowList(a: { onlyRunnable?: boolean }, principal: Principal): Promise<ResultEnvelope<Array<{ name: string; owner: string | null; versions: string[]; channels: Record<string, string>; runnable: boolean }>>> {
+  async workflowList(a: { onlyRunnable?: boolean }, principal: Principal): Promise<ResultEnvelope<Array<{ name: string; owner: string | null; versions: string[]; channels: Record<string, string>; runnable: boolean; description: string; lastRunAt: string | null }>>> {
     const workflows = await this.runManager.catalog.list();
+    // v36 (DES-247, ARCH-163, TASK-245): ONE lookup for the whole request, never one per row — a
+    // name absent from the map has never run, which is what turns `?? null` into the honest
+    // "never run" sentinel rather than a coincidental null timestamp.
+    const lastRuns = await this.store.lastRunAtByName();
     const onlyRunnable = a.onlyRunnable ?? (principal.kind === 'user');
     const rows = workflows
       // v24 adjudication #6 F-4: `w.owner` directly — the `as unknown as {owner?}` cast this line
       // used to carry is what let tsc stay green while `catalog.list()` had no `owner` field at all.
-      .map((w) => ({ name: w.name, owner: w.owner, versions: w.versions, channels: w.channels as unknown as Record<string, string>, runnable: (w.channels as unknown as { release?: string | null })?.release != null }))
+      .map((w) => ({
+        name: w.name,
+        owner: w.owner,
+        versions: w.versions,
+        channels: w.channels as unknown as Record<string, string>,
+        runnable: (w.channels as unknown as { release?: string | null })?.release != null,
+        // v36 (DES-247, ARCH-163): forwarded, never re-parsed — `catalog.list()` already computes
+        // this (v9/REQ-061); this projection's `.map` was silently dropping it.
+        description: w.description,
+        lastRunAt: lastRuns.get(w.name) ?? null,
+      }))
       .filter((w) => !onlyRunnable || w.runnable);
     return { runId: '', status: 'completed', result: rows };
   }

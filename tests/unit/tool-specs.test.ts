@@ -216,3 +216,19 @@ describe('advertised tool descriptions state the v35 omission semantics (DES-239
     expect(`${runStatus} ${runList}`).toMatch(/omit|absent/i);
   });
 });
+
+// v36 (DES-245, TASK-243, REQ-213/212): the guard that keeps `run.terminal`'s omission of
+// `bypass`/`idSource` (DES-243/DES-245's own decision rationale item 2) honest — `run_start` must
+// refuse a caller-supplied `principal` argument. If admission ever starts honouring one, THIS test
+// goes red and forces the event line to grow the field rather than silently becoming a lie. Checked
+// at the schema level (`additionalProperties:false`, no `principal` key) rather than by driving a
+// live call — the cheapest form that still proves the refusal is structural, not incidental.
+// This is a REGRESSION PIN, not a Gate-5 red item: the schema already refuses an unknown property.
+describe('run_start refuses a caller-supplied principal — the guard behind run.terminal (v36, DES-245)', () => {
+  it('run_start.inputSchema has additionalProperties:false and declares no principal property', () => {
+    const spec = TOOL_SPECS.find((s) => s.name === 'run_start')!;
+    const schema = spec.inputSchema as unknown as { additionalProperties?: boolean; properties: Record<string, unknown> };
+    expect(schema.additionalProperties).toBe(false);
+    expect(Object.hasOwn(schema.properties, 'principal')).toBe(false);
+  });
+});

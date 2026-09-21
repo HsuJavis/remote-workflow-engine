@@ -8801,3 +8801,421 @@ rows. Every contested point below names who conceded.
 14. **`iter:` is NOT bumped on any existing DES row** (the v33 F6-1 house rule, re-applied): a
     bumped design-stage parent fires `trace.py`'s drift check on every IMPL/UT beneath it, and this
     gate cannot close those. DES-088's registry is cross-referenced from DES-232 in prose instead.
+
+## v36 design entries (REQ-211..216 — ARCH-155..173, ADR-072..079) — DES-241..249
+
+Panel: two groups, two full rounds (`.panel/design/{adversarial,quality-dimensions}.{r1,r2}.md`),
+pre-run by the workflow and synthesized here (no re-spawn). The two r2 documents crossed in flight
+again; every contested point is ruled at the file end under **Decision rationale — v36**. Existing
+DES rows are **not** amended and **no** `iter:` is bumped on them (the v33 F6-1 house rule, re-applied:
+`trace.py:213-219` fires drift on every IMPL/UT beneath a bumped design parent). DES-230's
+`capErrorEnvelope` and DES-232's capture site are superseded **by cross-reference** from DES-241.
+
+```mermaid
+classDiagram
+  class errors_ts {
+    +captureFailure(err, secrets, maxBytes) ErrEnvelopeLite
+    +capErrorEnvelope(e, maxBytes) ErrEnvelopeLite
+  }
+  class event_log_ts {
+    +createEventSink(deps) EventSink
+    +EngineEvent
+  }
+  class WorkflowCatalog {
+    +deregisterVersion(name, version, actor)
+    +canMutate(owner, actor) bool
+    -_eventSink
+  }
+  class McpFacade {
+    -actorFor(p, a, gate) Actor
+    +workflowDeregister(name, version?)
+    +workflowList() rows with description+lastRunAt
+  }
+  class RunStore {
+    <<port>>
+    +lastRunAtByName() Map
+    +getSpec(runId) RunSpec with principal
+    +listRuns() unbounded sweep
+  }
+  class RunManager {
+    -_transition() emits run.terminal
+    -refusals Map~callSeq, Envelope~
+  }
+  class guards_ts {
+    -refusalRefs WeakMap~object, number~
+    +markEngineRefusal(err, callSeq)
+  }
+  McpFacade ..> WorkflowCatalog : Actor minted per call site
+  WorkflowCatalog ..> event_log_ts : catalog.register/publish/deregister
+  RunManager ..> event_log_ts : run.terminal
+  RunManager ..> errors_ts : captureFailure at every capture site
+  RunManager ..> guards_ts : refusalRef validated against the parent ledger
+  McpFacade ..> RunStore : lastRunAtByName + pinned-run probe
+```
+
+### DES-241 — `captureFailure`: one pure capture, a bound that is a parameter, and the twin that dies
+- **status:** draft
+- **traces:** ARCH-169, ARCH-170, TASK-239, REQ-216, REQ-205
+- **signature:**
+  ```ts
+  // src/errors.ts
+  export function captureFailure(
+    err: unknown,
+    secrets: ReadonlyArray<{ name: string; value: string }>,
+    maxBytes = MAX_ERROR_ENVELOPE_BYTES,
+  ): { code: string; message: string };                  // = capErrorEnvelope(redact(toErr(err), secrets), maxBytes)
+  export function capErrorEnvelope(
+    e: { code: string; message: string },
+    maxBytes = MAX_ERROR_ENVELOPE_BYTES,                 // NEW, defaulted — every existing caller unchanged
+  ): { code: string; message: string };
+  // src/run-manager.ts:695  (K2 — the unredacted twin)
+  failDetail: captureFailure(err, this._secretValueProvider?.entries() ?? [], 200).message
+  // src/run-manager.ts:764-766 and :1285-1288 (K1 — both become two-line callers)
+  entry.resultError = captureFailure(outcome.error, this._secretValueProvider?.entries() ?? []);
+  ```
+- **boundary:** **Order is the whole fix**: redact **then** slice. `failDetail` was `rawMessage.slice(0,200)` off the *same* raw message C-1 now redacts into `runs.error` — one variable, three lines apart, one redacted and one not — and a `seedRef.repoUrl` may legitimately carry a provisioned `${secret:…}` value a fetch error echoes back; slicing first splits a secret so `redact()`'s value-exact match finds neither half (INV-V26-5). **The bound is a parameter, not a constant**, because the two sites never shared one: 4096 **bytes** at the envelope site, 200 **bytes** at the seedRef site — unifying on either silently widens `failDetail` twentyfold or narrows the envelope by the same factor. **Units change and the contract changes with them**: `failDetail` was 200 UTF-16 code units and is now 200 **bytes** (≈66 CJK characters), and `capErrorEnvelope`'s marker-completing forward extension may exceed the bound by at most `(MARKER_PREFIX.length + MAX_SECRET_NAME_CHARS + 1) * 3 = 795` bytes — so the published contract on `RunStatusView.seedRef.failDetail` reads 「redacted, then bounded to 200 bytes; may extend to at most 995 bytes to keep a `‹secret:NAME›` marker intact」. A second, character-counted bound is refused (one diagnostic field, one truncation path). **`captureFailure` supplies the MESSAGE ONLY at the seedRef site**: `failCode` is computed independently (`(err as {code?}).code ?? 'SEEDREF_FETCH_FAILED'`, `:686`) while `toErr` falls back to `err.name`, so an envelope substitution would regress the field's three-value domain to `'TypeError'`/`'FetchError'` for exactly the network errors this path sees. **Secrets argument is pinned as `this._secretValueProvider?.entries() ?? []`** — the seedRef site is inside admission where the provider is optional, and `redact()` on an empty list is a silent no-op. Pure: no clock, no store, no manager; `errors.ts` already imports `redact` from `secret-resolver.js` (`:2`), so no new module edge.
+- **tests:** (verifier owns ids) UT on the pure function: composition order asserted by outcome (a secret straddling the cut yields a marker, never two halves); the K3 byte-exact case at both bounds with the numbers computed from the exported constants; identity below bound. UT at the seedRef site with a REAL injected `SecretValueProvider` (an absence-only assertion passes vacuously) and a message long enough that 200 bytes actually cuts; `failCode` unchanged for a `TypeError`.
+- **iter:** v36
+
+### DES-242 — `deploy.sh`: the instance identity is the config basename, and the seam is above step 1
+- **status:** draft
+- **traces:** ARCH-164, TASK-240, REQ-214
+- **signature:**
+  ```sh
+  # deploy.sh — MOVED above step 1 (was :23), so --dry-run costs no npm install / uv toolchain build
+  export RWE_CONFIG_PATH="${RWE_CONFIG_PATH:-$(pwd)/rwe.config.json}"
+  RWE_INSTANCE="$(basename "$RWE_CONFIG_PATH" .json)"
+  RWE_PID_FILE="$(dirname "$RWE_CONFIG_PATH")/.rwe.${RWE_INSTANCE}.pid"
+  RWE_LOG_FILE="$(dirname "$RWE_CONFIG_PATH")/.rwe.${RWE_INSTANCE}.log"
+  (umask 077; touch "$RWE_LOG_FILE"); chmod 600 "$RWE_LOG_FILE"      # never `>` and never `: >`
+  if [ "${1:-}" = "--dry-run" ]; then
+    echo "RWE_PID_FILE=$RWE_PID_FILE"; echo "RWE_LOG_FILE=$RWE_LOG_FILE"; exit 0   # writes no pid, starts nothing
+  fi
+  # step 4: nohup "${start_cmd[@]}" >> "$RWE_LOG_FILE" 2>&1 &   |   echo "$RWE_PID" > "$RWE_PID_FILE"
+  ```
+- **boundary:** **`dirname` alone is not enough and this is the likely layout, not an edge case**: `RWE_CONFIG_PATH` defaults to `$(pwd)/rwe.config.json`, so a scratch instance's config normally sits in the *same directory* — the basename is the instance identity because it is what the operator already typed, it shows up in the filename they will `cat`, and it needs no engine boot to compute (`workRoot` would require parsing JSON in shell before the engine that owns that config starts; a hash suffix is undebuggable). **`umask 077` MUST be inside the subshell** — a bare one before `nohup` is inherited by the engine and makes every SQLite db, workspace and CAS blob 0600: a fleet-wide permission change smuggled in by a requirement about pid files. `chmod 600` afterwards is idempotent and repairs a pre-existing 0644 log from an older tree. **Append, never truncate**: ADR-076 defers durable audit, so this file is the only register/publish/run-terminal record that exists and a restart-to-investigate must not erase the incident. Unbounded growth is the accepted consequence of ADR-078 (no in-engine rotation) and is disclosed in DEPLOY.md, not engineered. Moving the derivation above step 1 only moves the v26 D14 ordering constraint *earlier*, so it stays satisfied. PID recycling stays out of scope.
+- **tests:** (verifier owns ids) IT: vitest shells out to `deploy.sh --dry-run` (keeps REQ-214 inside the `npm test` surface) twice against two config paths **in one directory** — two distinct pid paths, two distinct log paths, log mode `0600`, a pre-seeded log line surviving the second run; plus source-text assertions that no bare top-level `umask` and no `>`/`: >` on `$RWE_LOG_FILE` remain. A two-directory test would pass on the broken design and must not be written.
+- **iter:** v36
+
+### DES-243 — `src/event-log.ts`: a typed union, one redaction inside the sink, an injected clock
+- **status:** draft
+- **traces:** ARCH-159, TASK-241, REQ-213
+- **signature:**
+  ```ts
+  // src/event-log.ts — the whole module, ~35 lines
+  export type AuditActor = { id: string | null; bypass: boolean; idSource: 'authenticated' | 'claimed' | 'none' };
+  export type EngineEvent =
+    | { kind: 'catalog.register';   name: string; version: string; actor: AuditActor }
+    | { kind: 'catalog.publish';    name: string; version: string; channel: string; fromVersion: string | null; actor: AuditActor }
+    | { kind: 'catalog.deregister'; name: string; version: string; actor: AuditActor }
+    | { kind: 'run.terminal'; runId: string; name: string | null; version: string; outcome: string; principal: string | null; code?: string };
+  export type EventSink = (event: EngineEvent) => void;
+  export function createEventSink(deps: {
+    secrets?: SecretValueProvider; write?: (line: string) => void; now?: () => string;
+  }): EventSink;                       // write ?? console.log ; now ?? (() => new Date().toISOString())
+  // body: write(JSON.stringify(redact({ ...event, at: now() }, secrets?.entries() ?? [])))
+  ```
+- **boundary:** **Redaction lives in the sink, not in the emitters** — two emitters in two modules, and the only way to have ONE audited path is at the boundary they share. INV-V26-5 (redact before any truncation) is trivially satisfied: the sink truncates nothing. **The union is closed on purpose** — exactly the four kinds v36 emits; a v37 kind is a v37 edit, which is the point. **`run.terminal` carries `principal`, not an `AuditActor`**, because on the run path `bypass` has no meaning (no ownership gate runs at run admission) and `idSource:'claimed'` is structurally unreachable (`runStart` mints with `attributionPrincipal`, `mcp-facade.ts:625`, and `run_start`'s schema is `additionalProperties:false`, `:613`; `scheduler.ts:363` and `webhook-registry.ts:305` pass only `startedBy`) — a permanently-`false` `bypass` and a derived-not-observed `idSource` would be fields that *look* attested and are not. The field name differs from the catalog kinds' `actor.id` so no operator reads across them as equivalent. **`version` is a `v<N>` string on every kind** including `run.terminal` (whose entry holds a number), so the two line kinds join. **`now` is injected** — a bare `new Date()` makes every emitted-line assertion either time-blind or flaky, and this repo already owns `Clock`/`FixedClock`; the composition root passes `() => clock.isoNow()`, the SAME clock `_transition` reads, so no site of this concern keeps a private wall clock. **Both constructors default to a bare console sink** (`deps.onWarning ?? console.warn` precedent), so the 53 `new RunManager(...)` / 27 `new WorkflowCatalog(...)` sites compile untouched. No levels, no transports, no correlation ids (`runId`/`name` already correlate), no logger dependency.
+- **tests:** (verifier owns ids) UT: one emitted line per call, `at` exactly the injected value; a REAL `SecretValueProvider` whose value sits in a field → marker present and raw value absent; an `@ts-expect-error` line pinning that a kind missing `actor` does not compile. The wiring guard is **not** a `compose-config-v2-wiring.test.ts` row (`eventSink` is not a `FileConfig` key — `main.ts:84-96` is the closed list; a probe there asserts a key nobody sets or shapes production to fit a test) but the composition-root IT that grows across TASK-242/243/244.
+- **iter:** v36
+
+### DES-244 — `Actor` minted per call site, `canMutate` as a pure predicate, and the audit line written where the write commits
+- **status:** draft
+- **traces:** ARCH-157, ARCH-158, ARCH-161, TASK-242, REQ-212, REQ-114
+- **signature:**
+  ```ts
+  // src/workflow-catalog.ts
+  export interface Actor { id: string | null; bypass: boolean; idSource: 'authenticated' | 'claimed' | 'none' }
+  export function canMutate(owner: string | null, actor: Actor): boolean {
+    return !owner || actor.bypass || owner === actor.id;          // `!owner`, NOT `owner === null`
+  }
+  // register/insertVersion (:573), deregister (:664), publish (:788): `principal: string|null` → `actor: Actor`
+  // each inline gate becomes: if (!canMutate(row.owner, actor)) throw codedError('NOT_WORKFLOW_OWNER', <unchanged text>)
+  // src/mcp-facade.ts — ONE mint function beside bypassPrincipal/attributionPrincipal (:193-243)
+  type Gate = 'bypass' | 'attribution';            // which of the two EXISTING rules gates this call
+  function actorFor(p: Principal, a: unknown, gate: Gate): Actor {
+    const gateId = gate === 'bypass' ? bypassWithArg(p, a) : attributionWithArg(p, a);
+    return { id: attributionWithArg(p, a), bypass: gateId === null, idSource: idSourceOf(p, a) };
+  }
+  // call sites keep today's rule: insertVersion/validateRegistration → 'attribution' (:350,:360);
+  //                               deregister → 'bypass' (:390); publish → 'bypass' (:437)
+  // idSourceOf: auth-disabled WITH args.principal → 'claimed'; id === null → 'none'; else 'authenticated'
+  ```
+- **boundary:** **The mint is per call site, not per `Principal`, and that is a security boundary, not a style choice.** The three mutating methods are fed different identities today: register/insertVersion via `attributionWithArg` (the gate **applies** for an admin — an admin registering over another owner's name is refused) and deregister/publish via `bypassWithArg` (the gate is skipped). A single `kind`-keyed mapping (`admin → bypass:true`) would silently grant admins ownership bypass on the one path that **writes script bytes**, and would open ownership for every no-auth caller who passes an `args.principal`. `bypass ≡ (today's gate value === null)` reproduces `owner && principal !== null && owner !== principal` exactly, for all four principal kinds, at all three call sites — **behaviour-preserving by construction**, and the only genuine addition REQ-212 asks for is that `id` is now the *attribution* rule's answer even where the *bypass* rule gates. **`!owner`, not `owner === null`**: the legacy gate tests `row.owner` for truthiness (`:575,:669,:789`) and `owner === ''` is reachable (the column is plain TEXT; pre-v15 rows were not written through `attributionWithArg`'s `supplied !== ''` guard) — strict equality would refuse where the legacy gate permitted, in the *restrictive* direction, surfacing as a mystery `NOT_WORKFLOW_OWNER` on a legacy install rather than a red test. **`idSource` is what stops the fix from manufacturing false audit integrity**: `bypassWithArg` legitimately reads `a.principal` from tool arguments on an auth-disabled server, so recording that value as 「the real identity」 would attest to a string the caller chose. **No `kind` field** — nothing reads it; the catalog is *told* `bypass`, never infers it. **The audit line is written inside the catalog, where the write commits** (`insertVersion` success path and `publish`), not by an out-of-band facade call that could disagree with the transaction; `` console.log(`catalog.publish: …`) `` is deleted, not duplicated. Durable `appendAudit` is deferred (ADR-076) and the cost is DEPLOY.md-disclosed (DES-242).
+- **tests:** (verifier owns ids) UT: the full `(kind × args.principal × gate × owner ∈ {null,'','alice'})` cross-product table asserting `canMutate(owner, actorFor(...))` equals the legacy expression on the same inputs — the executable form of Gate-2 Constraint 10; the R-1 case named on its own (admin `insertVersion` over another owner's name is refused). IT: the composition-root sink case (real register + real publish → two lines, kinds and actor triple). Every existing ownership test must stay green **unchanged**.
+- **iter:** v36
+
+### DES-245 — `run.terminal` at the one authoritative terminal writer, and the `principal` one store was dropping
+- **status:** draft
+- **traces:** ARCH-160, TASK-243, REQ-213, REQ-212
+- **signature:**
+  ```ts
+  // src/run-manager.ts — RunEntry gains:      principal?: string      // _newEntry from spec.principal; _requireLive() from getSpec()
+  // inside _transition (:1159), after the status write, when TERMINAL.includes(to):
+  this._eventSink({ kind: 'run.terminal', runId, name: entry.name ?? null,
+                    version: `v${entry.scriptVersion}`, outcome: to, principal: entry.principal ?? null,
+                    ...(entry.resultError ? { code: entry.resultError.code } : {}) });
+  // src/store/sqlite-run-store.ts:149 — getSpec()'s SELECT gains the column that was already being written
+  'SELECT name, script, args, budget, started_by, principal FROM runs WHERE runId = ?'   // → RunSpec.principal
+  ```
+- **boundary:** **Not inside a failure-capture function**: REQ-213 says 「任何 run 到達終態」 and a **completed** run never touches one, so half the requirement would be structurally unimplementable there; and `captureFailure`'s purity (DES-241) is the property that makes it testable. `_transition` is already the single authoritative terminal writer ARCH-032's snapshot and ARCH-143's health signal both ride. **No second redaction and no second capture**: `entry.resultError` was redacted at capture and the sink redacts the whole event again on the way out (`redact()` is a value-exact string replace, idempotent). **`getSpec()` is the resume-path rebuild** and it is where the field silently dies today: `sqlite-run-store.ts:115-116` **writes** `principal`, `:305` reads it for the status view, and `:149`'s SELECT omits it — while `InMemoryRunStore` (`run-store.ts:314-317`) returns `run.spec` whole. Left unfixed, a resumed-run identity test written against the in-memory store **passes** while production on SQLite emits `principal: null` — the ADR-067 SQL/TS-twin class, and the resumed half is the half an incident investigation reads. **Not covered, named rather than discovered later**: a crash-killed run reclassified to `interrupted` at boot never passes this choke (the identical gap v35 filed for REQ-205; v37 candidate).
+- **tests:** (verifier owns ids) UT: a both-stores `getSpec` agreement case (one run started with a principal, round-tripped through each store, same `spec.principal` out). IT: a fresh run and a **resumed** run (second `RunManager` over the same SQLite file) emit the same `principal`; a `completed` run emits a line too; the `run_start`-refuses-a-caller-supplied-`principal` guard (if it ever starts honouring one, this goes red and forces `run.terminal` to grow `idSource` rather than silently becoming a lie); the composition-root IT's `run.terminal` assertion.
+- **iter:** v36
+
+### DES-246 — `deregisterVersion`: six outcomes, one order, two DELETEs, and the claim that must be released
+- **status:** draft
+- **traces:** ARCH-155, ARCH-156, ARCH-161, TASK-244, REQ-211, REQ-096
+- **signature:**
+  ```ts
+  // src/workflow-catalog.ts — a SIBLING of deregister(), never a mode flag on it
+  async deregisterVersion(name: string, version: string, actor: Actor):
+    Promise<{ removed: boolean; remaining: string[]; claimedTriggers: string[] }>;
+  // refusal ORDER is part of the contract:
+  //   1 NOT_WORKFLOW_OWNER          !canMutate(row.owner, actor)      (first: a stranger must not enumerate versions)
+  //   2 {removed:false, remaining:[]}  name absent                    (mirrors deregister(); a delete of nothing is not an error)
+  //   3 VERSION_NOT_FOUND           name present, version absent      (existing code, :116)
+  //   4 VERSION_PINNED_BY_CHANNEL   release/beta points at it         (hint: publish that channel elsewhere first)
+  //   5 VERSION_LAST_REMAINING      it is the only version            (hint: workflow_deregister({name}))
+  //   6 VERSION_PINNED_BY_RUN       a non-terminal run pins it        (last: the only cross-database read)
+  // success: ONE this._db.transaction(...).immediate() over EXACTLY two statements
+  //   DELETE FROM workflow_versions WHERE name=? AND version=?
+  //   DELETE FROM workflow_diagrams  WHERE name=? AND version=?
+  //   claimedTriggers = declaredTriggers(name) BEFORE − declaredTriggers(name) AFTER, inside the same transaction
+  // src/mcp-facade.ts — workflow_deregister gains an optional `version` (tool-specs schema + :390 handler)
+  const norm = (v: string) => String(v).replace(/^v/, '');
+  const pinned = (await this.store.listRuns()).find(
+    (r) => r.name === a.name && norm(r.scriptVersion) === norm(a.version) && !TERMINAL.has(r.status));
+  // pinned → VERSION_PINNED_BY_RUN naming pinned.runId; the catalog is never called
+  // then: for (const id of releasedTriggers) this._storeFor(id).release(id, a.name)   // the EXISTING :390-397 loop
+  ```
+- **boundary:** **A sibling method, not a flag** — one optional argument that changes the blast radius from 「one version」 to 「every version, the diagrams, the assets and the name row」 is a footgun and makes the audit line ambiguous about what was destroyed; the whole-name path and every one of its codes stay byte-identical (REQ-211's own regression clause). **Exactly two DELETEs**: `assets` is `(workflow, kind, name)`-keyed and shared across versions (`:295-298`), and the `workflows` row carries the name's channels and owner — both must survive. **`putDiagramResult`'s late-write guard (`:~409`) moves from name-keyed to `(name, version)`-keyed in the same change**, or `enqueue → delete commits → putDiagramResult lands` re-creates the immortal orphan row the guard was written to prevent. **The pinned-run gate sits at the facade**: runs and workflows live in two separate SQLite files, so *no* placement is atomic; the facade already holds both handles and is the single production caller of `catalog.deregister`, while an *optional* injected port on the catalog is a silently-open gate when unwired (this repo's `composeConfig` bug class wearing a security gate's clothes). The residual race (a run admitted between probe and commit) is today's behaviour for a window of microseconds instead of forever. **Both sides of the version compare are normalized**: the run pin is stored normalized (`Number(version.replace(/^v/,''))`, `:533`/`:1145`) and re-rendered as `v<N>` for the view, while the caller's argument is raw and the catalog column is free TEXT — an un-normalized compare makes the security gate silently never fire for a row stored as `"3"`. A `^v[0-9]+$` schema pattern is refused: it locks out deleting a legacy unprefixed row and still leaves the two sides in different shapes; malformed input is answered by `VERSION_NOT_FOUND`, which is the honest refusal. **`TERMINAL` is imported from `run-store.ts`'s exported `Set`** — five private copies exist and a sixth is not written. **The trigger question, answered with line numbers rather than inherited (the panel's A7):** a claim binds a trigger id to a workflow **name**, not a version (`this._storeFor(id).release(id, a.name)`, `mcp-facade.ts:390-397`), and the name row always survives a version delete (refusal 5 guarantees it), so **nothing is orphaned by the delete itself**. But `declaredTriggers(name)` is the UNION over the surviving version rows (`workflow-catalog.ts:316-324`) and the fire path refuses `NOT_IN_RELEASE` only while `declaresTrigger(name, id)` is **true** (`server.ts:957`, `webhook-registry.ts:295`): deleting the only version that declared an id flips that predicate false and turns a **recorded refusal into a live fire of the released version's code**. Hence `claimedTriggers` = the before/after difference, released through the loop that already exists — a create-time-bound legacy claim never enters `declaredTriggers`, so it is never in the difference and is never released.
+- **tests:** (verifier owns ids) UT: the six outcomes in order; the two-DELETE transaction with `assets`/`workflows` read back present; the re-keyed diagram guard. IT: the pinned-run refusal against a **genuinely non-terminal run in a real store** with the catalog row stored **unprefixed** (`"3"`) — the case most likely to rot and the one guarding the HIGH risk; both trigger cases (released / not released); the whole-name path unchanged; the `catalog.deregister` line.
+- **iter:** v36
+
+### DES-247 — `lastRunAtByName()`, the `description` the projection was dropping, and `listRuns()`'s contract
+- **status:** draft
+- **traces:** ARCH-162, ARCH-163, ARCH-172, TASK-245, REQ-213, REQ-216
+- **signature:**
+  ```ts
+  // src/run-store.ts (port) — both implementations conform
+  lastRunAtByName(): Promise<Map<string, string>>;      // never-run names are ABSENT from the map
+  // src/store/sqlite-run-store.ts — one statement, index-ordered (runs(name, status, createdAt DESC) leads with name)
+  'SELECT name, MAX(createdAt) AS lastRunAt FROM runs WHERE name IS NOT NULL GROUP BY name'
+  // src/mcp-facade.ts — workflowList (:572-579): ONE lookup per call, not per row
+  const lastRuns = await this.store.lastRunAtByName();
+  .map((w) => ({ …existing, description: w.description, lastRunAt: lastRuns.get(w.name) ?? null }))
+  // src/run-store.ts — listRuns()'s doc comment states ADR-079: a deliberately UNBOUNDED sweep API.
+  ```
+- **boundary:** **Derived, not denormalized.** A `last_run_at` column on `workflows` would put a catalog write on the run-admission hot path across two SQLite files that share nothing, for a field whose consumer is a human deciding which probe to delete; the usual durability argument for it was checked rather than argued — there is **no `DELETE FROM runs` anywhere** in this codebase (the TTL sweep reclaims *workspaces*, `workspace_purge` deletes workspace bytes, `gcExpired` collects auth tokens), so the derived value is exactly as durable. The tool contract says 「the most recent run **on record**」 so the field stays honest if a retention policy is ever added. **`null` = never run** (REQ-206's sentinel convention, an explicit absence beats `0` or `''`), and it is produced by the facade's `?? null` over a map the never-run name is **absent from** — so `null` can never be confused with 「a run exists with a null timestamp」. **`description` is forwarded, never re-parsed**: `catalog.list()` has produced it since v9/REQ-061 (`workflow-catalog.ts:828`) and this projection's `.map` silently dropped it — the repo's documented 「computed then never forwarded」 bug class; a second meta parser in the facade is a review rejection. **Why this path gets a grouped SQL query while DES-246's delete probe scans `listRuns()`**: this one is per-request on a listing path — exactly the cliff ADR-079 refuses to make worse — while the delete is an administrator action taken seconds apart, where reading every row *is* the point. **`listRuns()` keeps no LIMIT**: all four callers are sweeps (boot recovery `server.ts:815`, `hydrateAll`'s stale-`running` reclassification, the workspace-reclaim sweep, the pinned-version probe) and a LIMIT would make recovery and reclamation silently stop beyond the cutoff — a data-loss bug sold as a scalability fix. The genuine cliff (`listSummaries()` behind `/api/runs` and `/api/home` full-scanning a monotonically growing table) is real, named, and **not** bounded here: it is ARCH-172's pending owner question, and no task in this iteration assumes either branch.
+- **tests:** (verifier owns ids) UT: both-stores agreement over one fixture (two runs on one name → the later `createdAt`; a never-run name absent). IT: `workflow_list` carries `description` + `lastRunAt` for a run workflow and `null` for a never-run one (its own case); exactly one store call per request; K4's single zero-agent case asserting `run_status` and `run_list` agree (`failedAgentCount` omitted on both).
+- **iter:** v36
+
+### DES-248 — `refusalRef`: a WeakMap the vm cannot reach, an integer on the wire, a ledger only the parent can honour
+- **status:** draft
+- **traces:** ARCH-165, ARCH-166, ARCH-167, ARCH-168, TASK-246, REQ-215, REQ-205
+- **signature:**
+  ```ts
+  // src/sandbox/guards.ts — module scope, unreachable from the vm context (:290-309 builds it explicitly)
+  const refusalRefs = new WeakMap<object, number>();
+  export function markEngineRefusal(err: object, callSeq: number): void;
+  const ENGINE_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED', 'PARAM_UNKNOWN']);          // +1, no wildcard
+  // evaluateScript's catch (:322-335), on the {kind:'error'} result:
+  ...(refusalRefs.get(err as object) !== undefined ? { refusalRef: refusalRefs.get(err as object) } : {})
+  // src/sandbox/child-entry.ts — at the agentThrow reject site (:82), BEFORE p.reject(err):
+  markEngineRefusal(err, msg.callSeq);
+  // terminal send (:146):  send({ t:'error', runId, error: result.error, ...(result.refusalRef !== undefined ? { refusalRef: result.refusalRef } : {}) })
+  // AgentThrowMsg (:36) is UNCHANGED — no new inbound field
+  // src/sandbox/host.ts — RunOutcome (:75, unexported) error arm gains `refusalRef?: number`; case 'error':
+  settle({ error: msg.error, ...(typeof msg.refusalRef === 'number' ? { refusalRef: msg.refusalRef } : {}) });
+  // src/run-manager.ts — RunEntry gains:
+  refusals: Map<number, { code: string; message: string }>;   refusalsDropped: number;
+  export const RECORDED_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED', 'PARAM_UNKNOWN']);  // guarded against guards.ts's copy
+  // in _handleAgentRequest's refusal path, ONLY when framePath === '':
+  if (RECORDED_REFUSAL_CODES.has(code)) {
+    if (entry.refusals.size < 8) entry.refusals.set(callSeq, captureFailure(err, secrets));
+    else entry.refusalsDropped++;
+  }
+  // at settle: const hit = outcome.refusalRef !== undefined ? entry.refusals.get(outcome.refusalRef) : undefined;
+  //            entry.resultError = hit ?? captureFailure(outcome.error, secrets);      // unknown ref → today's path
+  ```
+- **boundary:** **A `WeakMap` keyed on the Error object, never a field on it.** The object handed to script land (`child-entry.ts:82`) is an ordinary mutable `Error`, so a membership test would survive `catch (e) { e.detail='…'; throw e }`; keying the *value* means the ref is the engine's, and a script writing `e.refusalRef = 99` changes nothing because that field is never read. The map lives in `guards.ts` because the import graph allows only that direction (`child-entry.ts` value-imports `evaluateScript`; `guards.ts` cannot import back — the same constraint that forces `ENGINE_REFUSAL_CODES` to be inlined). **`ENGINE_REFUSAL_CODES` has two jobs and both are in scope** (ADR-073): an uncaught refusal keeps its code instead of flattening to `SCRIPT_ERROR`, **and** a refusal raised inside `parallel()`/`pipeline()` **propagates instead of returning `null`** (`:207`, `:230`) — without the second, a refused `agent()` inside `parallel()` yields `null`, the run may complete, and there is no terminal error for a ref to ride on at all. That is a deliberate, observable script-semantics change (the v25/REQ-120 precedent; a script using a retired `agentType` is already refused at dispatch by REQ-203, so no working script changes behaviour). The set gates by **code**, never by `violation` — `guards.ts` never sees a detail object. **Scoped to the top-level frame, by name**: the nested `workflow()` boundary re-mints the error (`run-manager.ts:1374-1380` does `toErr` then a fresh `codedError`), so object identity — and with it the ref — is gone by construction, and the nested child stamps its own local `callSeq` against a parent ledger that would be keyed on `frameBase + callSeq`. Recording only at `framePath === ''` also keeps nested entries from consuming the 8 slots. **Bounded at 8 + a visible `refusalsDropped`**, because the map is populated by script-triggered events (a script looping on a retired `agentType` would grow it unbounded within one run; refusals raised before admission never produce an `AgentRecord`, so they do not inherit the ≤1000 agent ceiling) and causality only needs the first refusal — a silent cap is the thing this iteration exists to delete. **An unknown ref is dropped silently**, so the worst a malicious script achieves is re-attributing one of its **own** run's genuine refusals to a different failure in that same run's envelope (INV-V36-1). **The attestation boundary is stated, not implied** (DES-249 carries the sentence): the *ref* cannot be forged, the *code* can and always could — `refusalCode()` matches on `e.code` **or `e.name`** (`guards.ts:183-186`), so `throw Object.assign(new Error('…'), {name:'PARAM_UNKNOWN'})` propagates with that code and **no** marker. That is a v25 inheritance, not a v36 regression, and after ADR-073 it is true for one more code than before. **Never persisted**: the ledger dies with the entry; nothing script-authored and nothing string-shaped is lifted from a child message into a persisted record.
+- **tests:** (verifier owns ids) UT (pure, via the injected `SandboxApi`, no `fork()`): positive / fresh-error negative / forgery (`e.refusalRef = 99` loses to the map) / `parallel()` object-identity survival / the 9th-refusal cap incrementing `refusalsDropped` and evicting nothing / an unknown ref falling back to today's envelope / the nested-frame negative case (code, no marker) / the 3-line source-text drift test between the two refusal sets. IT (exactly ONE, generous timeout, no matrix): a real script rethrowing a real engine refusal in a **real forked child** — the IPC is not mocked, because a mocked seam is the forgery seam — and `run_result.error.code` plus the run-level envelope carry the ledger's entry.
+- **iter:** v36
+
+### DES-249 — one `attempts` formula on the port, and the two sentences the advertised surface never said
+- **status:** draft
+- **traces:** ARCH-171, ARCH-173, TASK-247, REQ-216, REQ-207
+- **signature:**
+  ```ts
+  // src/gateway/client.ts — the port module (interface GatewayClient is declared here, :178)
+  export function attemptsFor(retries: number | undefined, timeoutMs: number | undefined): number {
+    return timeoutMs === undefined ? 1 : 1 + Math.max(0, retries ?? 0);
+  }
+  // client.ts:515                  was: 1 + Math.max(0, this._config.retries)            → attemptsFor(this._config.retries, effTimeout)
+  // claude-agent-sdk-client.ts:507 was: effTimeout !== undefined ? 1 + … : 1             → attemptsFor(this._config.retries, effTimeout)
+  ```
+- **boundary:** **Which implementation is wrong was settled by the product's own promise**: the guide tells authors an untimed call gets ONE attempt, so `client.ts` — which retries an **untimed** call and can therefore double an unbounded wait — is the deviant one. The formula is homed on the port because two implementations with private retry semantics is the divergence class that produced C-1 and K7; the loops themselves are untouched. **The guide gains the missing sentence** (an `agent()` call with no `timeoutMs` runs once; retries apply only to a call that set one) beside ARCH-151's multiplied-worst-case text, and `docs/AUTHORING.md` is regenerated **in the same commit** — a byte-locked pair, and a momentarily-red guide diff on a shared tree is ambiguous between 「known WIP」 and 「someone broke it」. **The second sentence is the attestation boundary** (DES-248): on `workflow_authoring_guide` and the `run_result`/`run_status` descriptions — the run-level structured refusal marker is engine-attested (lifted only against the parent's own ledger); `error.code` is **not**, and never has been. Without it the first reader of the new field reasonably assumes both are attested and the next security review files it as a v36 finding rather than the v25 inheritance it is. **K8 is discharged by these instruments and NOT by the sweep row its requirement names**: there is no `attempts` **config key** (`main.ts:85-86` has `retries`/`timeoutMs`, both already covered by the sweep since v35/TASK-237) and the derived value is not in `ServerConfig`, so a probe row there would assert a key nobody sets. The honest guard is the pure table test plus a per-conformer assertion that each calls the shared export; a **behavioural** cross-conformer test is deliberately not taken — it would mean mocking `fetch` **and** the Agent SDK to prove an import, and the only extra defect it covers (a conformer calling the right function and ignoring its answer) is not the one K6/K7 closes.
+- **tests:** (verifier owns ids) UT: `attemptsFor` over the four quadrants (timed/untimed × retries 0/N, plus a negative `retries`); per-conformer assertion that the shared export produces the number; the guide/`docs/AUTHORING.md` byte-lock; the tool-description text; one negative case — a script forging `name:'PARAM_UNKNOWN'` yields the code and **no** marker.
+- **iter:** v36
+
+### v36 real-tier validation paths + per-tier mock policy
+
+**Per-tier mock policy (whole slice).** *Unit* may mock freely — `captureFailure`, `canMutate`,
+`actorFor`, `attemptsFor` and `createEventSink` are pure or have their I/O injected, and
+`InMemoryRunStore` is a real implementation of the port, not a mock of it. *Integration* uses the
+real adjacent components — a real SQLite file, a real catalog, a real MCP HTTP call against a booted
+`createServer()`, a **real forked sandbox child** — and mocks only third-party network the slice does
+not own. *E2E/acceptance must NOT mock the SUT's own boundaries*: **REQ-215's IPC may not be mocked**
+(a mocked seam is exactly the forgery seam the requirement is about), the `deploy.sh` test runs the
+**real script**, and no hand-built `RunStatusView` or fake store stands in for a read path. Two
+vacuity traps are named because this slice would otherwise walk into both: a redaction test that
+forgets to inject a **real** `SecretValueProvider` passes vacuously (`redact()` with no secrets is a
+no-op — assert the marker is **present**, not only that the raw value is absent), and a two-*directory*
+`deploy.sh` test passes on the broken `dirname`-only design (the collision case is two configs in
+**one** directory).
+
+| REQ | Real-tier path (the real user-facing action a validator runs) |
+|---|---|
+| REQ-211 | On a booted engine: register three versions of one workflow, publish `release` to v2, then `workflow_deregister({name, version:"v2"})` → refused `VERSION_PINNED_BY_CHANNEL`; `{version:"v1"}` → removed, with `sqlite3 catalog.db` showing the `assets` and `workflows` rows still present and `workflow_describe` still answering; start a long run pinned to v3, then try to delete v3 → `VERSION_PINNED_BY_RUN` naming the runId. Re-proves REQ-096/REQ-097 (version history + channel resolution). |
+| REQ-212 | With auth ON, an **admin** publishes another user's workflow through real MCP: the publish succeeds (bypass unchanged) and `.rwe.<instance>.log` carries `catalog.publish` with the admin's **own** id, `bypass:true`, `idSource:'authenticated'`; the same admin's `workflow_register` over that owner's name is still refused `NOT_WORKFLOW_OWNER`. On an auth-disabled instance, a caller-supplied `principal` is logged as `idSource:'claimed'`. Re-proves REQ-086/REQ-087/REQ-114. |
+| REQ-213 | Run the 70-minute-incident shape for real: `workflow_register`, one run to completion and one to failure, then `cat .rwe.<instance>.log` — one JSON line per register/publish/run-terminal with `name`/`version`/`principal`/`outcome`, secrets appearing only as `‹secret:NAME›`; `workflow_list` shows `description` and `lastRunAt` (and `null` for a probe that never ran), so 「哪些該清」 is answerable without opening sqlite. Re-proves REQ-014/REQ-095. |
+| REQ-214 | The validator's own habit is the test: boot a **second** scratch instance via the documented `./deploy.sh --background` with `RWE_CONFIG_PATH` pointing at a second config **in the same directory**, confirm `ls -a` shows two `.rwe.<instance>.{pid,log}` pairs, `kill $(cat .rwe.<scratch>.pid)` stops only the scratch engine, and the primary keeps serving. `--dry-run` is the IT-tier form of the same property, not a substitute for this boot. Re-proves REQ-107. |
+| REQ-215 | A real registered script that calls `agent()` with a retired `agentType`, catches and **rethrows**, run through the real engine and a real forked child: `run_result.error.code` is the engine's refusal code and the envelope carries the structured marker; the same call inside `parallel()` fails the run instead of yielding `null`; a script that forges `name:'PARAM_UNKNOWN'` gets the code and **no** marker. Re-proves REQ-203/REQ-205's fourth criterion. |
+| REQ-216 | A real run whose `seedRef` fetch fails against a repo URL carrying a provisioned secret: `run_status.seedRef.failDetail` shows `‹secret:NAME›` and never the raw value, `failCode` is still `SEEDREF_FETCH_FAILED` (K1/K2/K3); `workflow_describe`'s advertised `attempts` and a real untimed `agent()` call agree that an untimed call runs once (K6/K7), and `workflow_authoring_guide` says so; `run_status`/`run_list` agree on a zero-agent terminal run (K4). K5 is discharged as a **ruling** (ADR-079, written into the port contract), not as code. Re-proves REQ-205/REQ-207. |
+| REQ-014 · REQ-095 | Unchanged behaviour, re-proved by the REQ-213 path above (the listing is the registry's own read surface, and the purpose line is what makes a problem report bindable to the right workflow). |
+| REQ-086 · REQ-087 · REQ-114 | Unchanged behaviour, re-proved by the REQ-212 path above — every existing ownership test stays green and the admin-register refusal is asserted rather than assumed. |
+| REQ-096 · REQ-097 | Unchanged behaviour, re-proved by the REQ-211 path (a per-version delete must not disturb the pin a run already took, nor the channel pointers). |
+| REQ-205 · REQ-207 | Re-proved by the REQ-215 and REQ-216 paths: the failure reason still lands on disk and still answers after a restart, now with the refusal's own code instead of `SCRIPT_ERROR`. |
+
+## Decision rationale — v36 (DES-241..249; two panel groups, two rounds, synthesized here)
+
+**How the panel moved.** Round 2 crossed in flight for the second gate running: quality-dimensions
+read adversarial's r1 and adversarial read quality-dimensions' r1, so neither r2 answers the other's
+final position. Almost everything still converged — where it did not, the ruling is below with who
+conceded. Two findings (D1, D2) were produced by one lens *checking the other's claims* and both
+strengthen the other lens's position; they are taken.
+
+1. **`EngineEvent` becomes a discriminated union — adversarial conceded on its own stated criterion.**
+   Its r1 ruled `Actor` a flat struct and wrote the rule down (「if a second mint site ever appears,
+   the union becomes correct」); events have **four** emit sites across two modules, and the untyped
+   `Record<string, unknown>` had already shipped three independent shape defects *inside the
+   architecture round*, before any code existed (`catalog.deregister` with no actor at all,
+   `run.terminal` reading a field that does not exist, `version` as a number where the catalog kinds
+   emit a string). A test catches today's kinds; the type prevents kind four. Conceded and taken.
+2. **`run.terminal` carries `principal`, not the actor triple — quality-dimensions overruled, on
+   evidence it did not have.** It asked for one uniform `actor` shape on every audit-bearing kind.
+   Adversarial's D2 then verified that on the run path `bypass` can never be true (no ownership gate
+   runs at run admission) and `idSource:'claimed'` is structurally unreachable (`runStart` mints with
+   `attributionPrincipal`; `run_start`'s schema is `additionalProperties:false`; the scheduler and
+   webhook paths pass only `startedBy`). A permanently-`false` `bypass` and a derived-not-observed
+   `idSource` is a field that *looks* attested and is not — the same defect class as the forgeable
+   `error.code` (B3). The asymmetry is made safe rather than merely tolerated by the cheapest
+   possible substitute for the field: a guard test that `run_start` refuses a caller-supplied
+   `principal`, so if admission ever starts honouring one, the line is **forced** to grow `idSource`
+   instead of silently becoming a lie.
+3. **`Actor` is minted per CALL SITE — the highest-severity finding of the slice, and it is a
+   behaviour-preservation ruling, not a feature.** ARCH-158's one-`Actor`-per-`Principal` mapping
+   would have granted admins ownership bypass on `register`/`insertVersion` (gated today by
+   `attributionWithArg`, `:350/:360`, where the gate **applies**) and opened ownership to every
+   no-auth caller passing an `args.principal` — an unrequested privilege expansion on the one path
+   that writes script bytes, shipped by an audit-integrity requirement. `actorFor(p, a, gate)` with
+   `bypass ≡ (today's gate value === null)` reproduces the current predicate exactly at all three
+   sites. The cost of getting this wrong is asymmetric (too strict → a red test; too loose → silence),
+   which is why the full-cross-product table test against the *legacy expression* is the deliverable, not a
+   hand-written expectation table. Uncontested by the other lens, which had not looked at the mint.
+4. **`canMutate` uses `!owner`, not `owner === null`.** The legacy gate tests `row.owner` for
+   truthiness at all three sites; `owner === ''` is reachable on a pre-v15 row and strict equality
+   would refuse where the legacy gate permitted — in the *restrictive* direction, i.e. invisible
+   until a legacy install reports a mystery `NOT_WORKFLOW_OWNER`. `owner ∈ {null, '', 'alice'}` is
+   an axis of the table test for that reason.
+5. **K1/K2's ordering contradiction is resolved as three commits in one task, and ARCH-170's prose
+   loses to its own `api:` line.** Both lenses found the contradiction independently (ARCH-170 says
+   K2 lands first but calls the function K1 introduces) and both proposed the same fix. The tie-break
+   between ARCH-170's two halves is B6: the prose reading (「`seedRefFail`'s `{code,message}` takes
+   the same envelope」) regresses `failCode` from a three-value enum to `err.name` via `toErr`'s
+   fallback, for exactly the network errors that path sees. Message-only substitution, `code`
+   untouched. ARCH-170's *intent* (「reviewable without a refactor wrapped around it」) survives as
+   「its own commit」, which is what it always meant.
+6. **`failDetail`'s unit changes from UTF-16 code units to bytes, and the published contract changes
+   with it.** 200 bytes is ~66 characters for the CJK text this engine actually emits — a real ~3×
+   narrowing of an operator-facing diagnostic, and quality-dimensions conceded this was a miss in its
+   own r1. A second, character-counted bound is refused on the tie-break: one diagnostic field, one
+   truncation path, one contract sentence that states both numbers (200 bytes, ≤995 with a marker
+   completed). This is recorded as an **engineering** call, not an owner deferral — the field is a
+   diagnostic, the security property (redact before slice) is the one the user's posture depends on,
+   and reverting the unit later is a one-line change if anyone ever asks.
+7. **The wiring guard is the composition-root IT, not a row in `compose-config-v2-wiring.test.ts` —
+   the instrument changes, the task boundary does not.** Both ARCH-159 and ARCH-171 name the sweep,
+   and both lenses verified the sweep is a `FileConfig → ServerConfig` forwarding assertion:
+   `eventSink` is composition-root-constructed and not a file config key, and there is no `attempts`
+   config key at all (the keys are `retries`/`timeoutMs`, already swept since v35). A row there
+   either asserts a key nobody sets or shapes production to fit a test. The guard that fails for the
+   right reason is a real boot with an injected `write`. **K8 is therefore discharged by intent, not
+   by its literal wording, and this design says so** so a reviewer does not grep for a missing 3-line
+   probe and file it as an omission.
+8. **D1 — `getSpec()` drops `principal` on SQLite only, and that would have produced a green test
+   over a broken production path.** The column is written (`:115-116`) and read by the status view
+   (`:305`); only `getSpec`'s SELECT omits it, while the in-memory twin returns the spec whole. A
+   resumed-run identity test written against `InMemoryRunStore` passes while production emits
+   `null` — the ADR-067 SQL/TS-twin class. Two lines plus a both-stores agreement test. Found by
+   adversarial while checking quality-dimensions' claim; it strengthens theirs.
+9. **The A7 trigger question is ANSWERED here rather than inherited** (quality-dimensions made this
+   the precondition for calling REQ-211 safe to split, and it was right to). Claims bind to a
+   workflow **name**, and the name row always survives a version delete, so nothing is orphaned by
+   the delete itself. But `declaredTriggers` is the union over *surviving* rows and the fire path's
+   `NOT_IN_RELEASE` refusal is gated on `declaresTrigger` being **true** — so deleting the only
+   version that declared an id silently converts a recorded refusal into a live fire of the released
+   version's code. The fix is the difference set released through the loop that already exists
+   (`mcp-facade.ts:390-397`); a legacy create-time-bound claim never enters `declaredTriggers` and so
+   is never released. This is the one place this synthesis adds behaviour neither lens specified.
+10. **REQ-215 is one card, RED-first, and the security logic is unit-tested off the sandbox path.**
+    Quality-dimensions' task-boundary argument (four files, no independently testable intermediate
+    state, a half-landed IPC field is dead code by construction) and adversarial's test-shape
+    correction (the injected `SandboxApi` makes the provenance policy reachable without `fork()`)
+    compose rather than conflict: four pure unit cases for the policy, exactly **one** real-child
+    integration test for the transport — which is the only thing a mock cannot prove, and the
+    requirement forbids mocking it.
+11. **Nested-frame refusals are scoped OUT by name, with a negative case.** The nested boundary
+    deliberately re-mints errors (`run-manager.ts:1375`), so the WeakMap key is gone by construction;
+    covering it would mean threading refs through a re-throw boundary and a second real-child test
+    with a nested workflow — the most expensive shape in this codebase. Scoped out, pinned by one
+    cheap assertion (a nested refusal fails with its code and **no** marker) so the limit is asserted
+    rather than rediscovered as 「the marker is unreliable」.
+12. **The drift guard between the two refusal sets is kept, against the usual objection to tests that
+    watch constants.** `guards.ts` cannot value-import (the sandbox child does not resolve `.js`→
+    `.ts`), so this duplication is **forced by a platform constraint and can never be refactored
+    away** — the one condition under which a constant-watching test earns its keep. The two sets are
+    load-bearing in opposite directions (what *propagates* vs what is *recordable*), and drift either
+    silently kills the feature for a code or leaves a permanently dead ledger entry.
+13. **`deploy.sh` keeps its `--dry-run` seam, moved above step 1, and the test is vitest shelling
+    out.** Quality-dimensions picked the harness (keeps REQ-214 inside the `npm test` surface);
+    adversarial supplied the precondition (as ARCH-164 placed it, the cheapest invocation of the seam
+    ran `npm install` and possibly a `uv` toolchain build — a second Gate 7.5, not a regression test).
+    B4's two defects ride the same card because they are load-bearing for what the test asserts: the
+    `umask` must be in a **subshell** (a bare one is inherited by the engine and turns every SQLite
+    db, workspace and CAS blob 0600 — a fleet-wide permission change smuggled in by a requirement
+    about pid files), and the log must be **appended**, never truncated, because ADR-076 defers
+    durable audit and a restart-to-investigate would otherwise erase the incident.
+14. **`attemptsFor`'s guard is a pure table test plus a per-conformer import assertion — the one
+    genuinely open disagreement, ruled here.** Quality-dimensions wanted a behavioural cross-conformer
+    test; adversarial refused it because it means mocking `fetch` **and** the Agent SDK to prove an
+    import. Taken: the cheaper pair. The only defect the expensive form adds is 「a conformer calls the
+    right function and then ignores its answer」, which is a different defect from the one K6/K7
+    closes. Recorded as a deliberate non-take on K7's sizing, not a silent fold.
+15. **`iter:` is NOT bumped on any existing DES row** (the v33 F6-1 house rule, third application).
+    The dispatch asks for an `iter:` bump on amended items; measured against `trace.py:213-219`, a
+    bumped design parent fires 漂移 on every IMPL/UT beneath it, and this gate cannot close those.
+    ARCH/ADR rows are `architecture`-stage and were safely bumped at Gate 2; TASK rows are
+    `tasks`-stage and are safe too. Superseded design behaviour is therefore carried by
+    cross-reference (DES-241 supersedes DES-230's `capErrorEnvelope` arity and DES-232's capture
+    composition; DES-247 states the `listRuns()` contract DES-231 never did) rather than by editing
+    v35 rows.
+16. **Declined, with reasons, so the next auditor does not re-litigate them:** a `run.start` line to
+    pair with `run.terminal` (neither lens asked for it in the end — D1's rehydration makes a resumed
+    run auditable without it, and an unrequested event kind is the speculative flexibility the
+    tie-break refuses); widening the per-agent `AgentRecord` with a structured refusal detail
+    (ADR-072's runner-up, a second read surface with its own projections and no requirement); a
+    logger framework, levels, transports or correlation ids (two event kinds, and `runId`/`name`
+    already correlate); log rotation inside the engine (ADR-078 — the stream is a shell redirect, so
+    `logrotate`/systemd is the operator's existing tool; what v36 owes is the disclosure, and
+    DES-242 ships it).

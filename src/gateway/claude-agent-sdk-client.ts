@@ -17,7 +17,7 @@ import { ZERO_TOKENS } from '../run-guard.js';
 import { redactHarness } from '../agent-executor.js';
 import type { McpServerConfig } from '../mcp-probe.js';
 import type { AliasMap, EffortApplied, GatewayClient, GatewayResult } from './client.js';
-import { resolveTimeout, wireEffort, UNKNOWN_CAPS } from './client.js';
+import { resolveTimeout, wireEffort, UNKNOWN_CAPS, attemptsFor } from './client.js';
 import { resolveAlias, type Provider } from '../providers.js';
 import { isPathContained } from '../path-containment.js';
 import { resolveConfig, type SecretSource } from '../secret-resolver.js';
@@ -504,7 +504,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     // even when the gateway has no configured default, so a config-less gateway still bounds+retries
     // a call that asked for a timeout. Must resolve the SAME effective value as _invokeOnce below.
     const effTimeout = resolveTimeout(req.opts.timeoutMs) ?? this._config.timeoutMs;
-    const attempts = effTimeout !== undefined ? 1 + Math.max(0, this._config.retries ?? 0) : 1;
+    const attempts = attemptsFor(this._config.retries, effTimeout);
     let last: GatewayResult = { ok: false, provider: 'claude-agent-sdk', reason: 'terminal' };
     for (let i = 0; i < attempts; i++) {
       last = await this._invokeOnce(req);

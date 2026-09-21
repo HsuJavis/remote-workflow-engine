@@ -63,7 +63,7 @@ export function checkMeta(script: string): MetaCheck {
 export interface ScriptResult {
   kind: 'done' | 'error';
   value?: unknown;
-  error?: { code: string; message: string };
+  error?: { code: string; message: string; refusalRef?: number };
 }
 
 export interface SandboxApi {
@@ -172,7 +172,20 @@ function guardedMath(): typeof Math {
 // error) is still a thunk that threw, and still nulls.
 // Inlined rather than imported from ../errors.js on purpose — this module is loaded by the sandbox
 // CHILD, which does not resolve `.js`→`.ts` for value imports (see the checkMeta note at the top).
-const ENGINE_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED']);
+const ENGINE_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED', 'PARAM_UNKNOWN']);
+
+// v36 (DES-248, ARCH-165/166, TASK-246, REQ-215): a WeakMap keyed on the Error OBJECT, never a
+// field on it — the object handed to script land is an ordinary mutable Error, so a script writing
+// `e.refusalRef = 99` changes nothing (that field is never read; only this map is). Module scope,
+// unreachable from the vm context `evaluateScript` builds below.
+const refusalRefs = new WeakMap<object, number>();
+
+/** Marks `err` as an engine refusal originating from IPC call `callSeq` — called at the
+ *  `child-entry.ts` `agentThrow` reject site, BEFORE the promise rejects, so the ref rides on the
+ *  same object identity the script catches and (possibly) rethrows. */
+export function markEngineRefusal(err: object, callSeq: number): void {
+  refusalRefs.set(err, callSeq);
+}
 
 /** The refusal code carried by `err`, or null when `err` is anything else. `code` is the live field
  *  for both sources since v25 (DES-169, issue #63): child-entry rejects an `agentThrow` with the IPC
@@ -320,8 +333,12 @@ export async function evaluateScript(script: string, api: SandboxApi): Promise<S
     const value = await runScript();
     return { kind: 'done', value };
   } catch (err) {
+    // v36 (DES-248): read the ref FROM THE MAP, never off `err` itself — a script that set
+    // `e.refusalRef = 99` on the caught error changes nothing here.
+    const refusalRef = refusalRefs.get(err as object);
+    const refField = refusalRef !== undefined ? { refusalRef } : {};
     if (err instanceof GuardError) {
-      return { kind: 'error', error: { code: err.code, message: err.message } };
+      return { kind: 'error', error: { code: err.code, message: err.message, ...refField } };
     }
     // v25 (DES-167, REQ-120): an uncaught engine REFUSAL keeps its own code instead of flattening to
     // SCRIPT_ERROR (which run-manager's toErrorCode would then map to INTERNAL_ERROR). This is what
@@ -330,8 +347,8 @@ export async function evaluateScript(script: string, api: SandboxApi): Promise<S
     // the refusal parallel()/pipeline() re-threw above.
     const refusal = refusalCode(err);
     if (refusal !== null) {
-      return { kind: 'error', error: { code: refusal, message: err instanceof Error ? err.message : String(err) } };
+      return { kind: 'error', error: { code: refusal, message: err instanceof Error ? err.message : String(err), ...refField } };
     }
-    return { kind: 'error', error: { code: 'SCRIPT_ERROR', message: err instanceof Error ? err.message : String(err) } };
+    return { kind: 'error', error: { code: 'SCRIPT_ERROR', message: err instanceof Error ? err.message : String(err), ...refField } };
   }
 }

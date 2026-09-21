@@ -72,7 +72,9 @@ export interface SandboxHostConfig {
 
 const DEFAULT_AGENT_RESPONSE = 'stub-response';
 
-type RunOutcome = { result: unknown } | { error: unknown };
+// v36 (DES-248, ARCH-167, TASK-246): `refusalRef`, when the child's terminal error carried one —
+// read from the wire message, never invented here.
+type RunOutcome = { result: unknown } | { error: unknown; refusalRef?: number };
 
 interface ActiveRun {
   child: ChildProcess;
@@ -175,7 +177,7 @@ export class SandboxHost {
             settle({ result: msg.result });
             break;
           case 'error':
-            settle({ error: msg.error });
+            settle({ error: msg.error, ...(typeof msg.refusalRef === 'number' ? { refusalRef: msg.refusalRef } : {}) });
             break;
         }
       });

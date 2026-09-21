@@ -18,3 +18,5 @@ __pycache__/
 
 .rwe.log
 .rwe.pid
+.rwe.*.log
+.rwe.*.pid

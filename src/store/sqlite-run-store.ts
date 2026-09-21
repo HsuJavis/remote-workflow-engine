@@ -146,8 +146,12 @@ export class SqliteRunStore implements RunStore {
   /** Rebuilds the original submission (name/script/args/budget) — lets RunManager reconstruct a
    *  live RunEntry for a suspended/stopped run after a process restart (REQ-006). */
   async getSpec(runId: string): Promise<RunSpec | null> {
-    const row = this._db.prepare('SELECT name, script, args, budget, started_by FROM runs WHERE runId = ?').get(runId) as
-      | { name: string | null; script: string | null; args: string | null; budget: string | null; started_by: string | null }
+    // v36 (DES-245, TASK-243): `principal` gains a column here — it was already WRITTEN (:116) and
+    // read by the status view (:326), but omitted from this resume-path rebuild (the ADR-067
+    // SQL/TS-twin class: a resumed-run identity test against InMemoryRunStore passed while
+    // production on SQLite emitted `principal: null`).
+    const row = this._db.prepare('SELECT name, script, args, budget, started_by, principal FROM runs WHERE runId = ?').get(runId) as
+      | { name: string | null; script: string | null; args: string | null; budget: string | null; started_by: string | null; principal: string | null }
       | undefined;
     if (!row) return null;
     return {
@@ -156,6 +160,7 @@ export class SqliteRunStore implements RunStore {
       args: row.args ? JSON.parse(row.args) : undefined,
       budget: row.budget ? JSON.parse(row.budget) : null,
       startedBy: row.started_by ? (JSON.parse(row.started_by) as RunSpec['startedBy']) : undefined,
+      principal: row.principal ?? undefined,
     };
   }
 
@@ -385,6 +390,16 @@ export class SqliteRunStore implements RunStore {
       usagePresentRaw?: number | null; costUSD?: number | null; unpricedCalls?: number | null; tokensTotal?: number | null; agentCount?: number | null; failedAgentCount?: number | null;
     }>;
     return rows.map((r) => this._rowToSummary(r));
+  }
+
+  /** v36 (DES-247, ARCH-162/163, TASK-245): grouped MAX(createdAt) per name — one statement, no
+   *  N+1. A name with no runs never appears (the WHERE excludes NULL names, GROUP BY yields one
+   *  row per name that has at least one run). */
+  async lastRunAtByName(): Promise<Map<string, string>> {
+    const rows = this._db
+      .prepare('SELECT name, MAX(createdAt) AS lastRunAt FROM runs WHERE name IS NOT NULL GROUP BY name')
+      .all() as Array<{ name: string; lastRunAt: string }>;
+    return new Map(rows.map((r) => [r.name, r.lastRunAt]));
   }
 
   /** v24 (DES-152): filtered/paginated read behind `run_list` — `principal` is set by the FACADE

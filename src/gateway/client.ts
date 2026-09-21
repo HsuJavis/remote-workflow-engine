@@ -175,6 +175,14 @@ export type GatewayResult =
       transport?: 'claude-agent-sdk' | 'direct-fetch';
     };
 
+/** DES-249 (ARCH-171/173, TASK-247, REQ-216/K6+K7, REQ-207): the one `attempts` formula both
+ *  `GatewayClient` conformers call — homed on the port because two implementations with private
+ *  retry semantics is the divergence class that produced C-1/K7. An untimed call always gets
+ *  exactly ONE attempt (the guide's own promise); a timed call gets `1 + retries` (clamped at 0). */
+export function attemptsFor(retries: number | undefined, timeoutMs: number | undefined): number {
+  return timeoutMs === undefined ? 1 : 1 + Math.max(0, retries ?? 0);
+}
+
 export interface GatewayClient {
   /** `signal` (D-F9a): an optional external AbortSignal — RunManager's own per-run
    *  abortController, threaded through AgentExecutor — that a real implementation should honor to
@@ -512,7 +520,7 @@ export class LiteLLMGatewayClient implements GatewayClient {
     const fetchImpl = this._config.fetchImpl ?? fetch;
     // issue #24/#22: a per-call AgentOpts.timeoutMs overrides the configured default (both directions).
     const effTimeout = resolveTimeout(req.opts.timeoutMs) ?? this._config.timeoutMs;
-    const attempts = 1 + Math.max(0, this._config.retries);
+    const attempts = attemptsFor(this._config.retries, effTimeout);
     // v26 (DES-177, TASK-177): this whole class is a `direct-fetch` transport regardless of which
     // branch below fires — a LiteLLM-proxied call is still a raw HTTP fetch, never the SDK. The
     // proxy branch also puts a cloak (`aliasName`, LiteLLM's own resolution target) on the wire,

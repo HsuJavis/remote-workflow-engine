@@ -186,9 +186,11 @@ if (out === null) {
 }
 ```
 
-`timeoutMs` bounds ONE attempt, never the whole call: this deployment retries a failed attempt, and the deployed retry count multiplies the single-attempt bound into the actual worst-case wait — `workflow_describe` reports the multiplied figure as that agent's `timeoutMs.worstCaseMs`, next to the single-attempt `timeoutMs.default`.
+`timeoutMs` bounds ONE attempt, never the whole call: this deployment retries a failed attempt, and the deployed retry count multiplies the single-attempt bound into the actual worst-case wait — `workflow_describe` reports the multiplied figure as that agent's `timeoutMs.worstCaseMs`, next to the single-attempt `timeoutMs.default`. An `agent()` call with no timeoutMs set — neither on the call itself (`timeoutMs`) nor as this deployment's own configured default — runs once: retries apply only to a call that has a bounded timeout in effect.
 
 Every tool result — including this guide's own — arrives as a JSON string inside `content[0].text`, never as a structured object: parse it again to reach the actual payload.
+
+A run's structured refusal marker (`refusalRef`, carried internally from the sandbox to the run's own ledger) is engine-attested — it can only name a refusal this SAME run genuinely raised. `error.code` alone is **not** attested and never has been: a script that catches an error and sets `e.name` before rethrowing it can forge any code, with no marker to back it.
 
 ## Registration and versioning
 

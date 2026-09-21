@@ -426,3 +426,27 @@ describe('buildAuthoringGuide — the three v35 facts a cold author got wrong (D
     expect(text).toMatch(/JSON/i);
   });
 });
+
+// UT-293 amendment, v36 (DES-249, ARCH-171/173, TASK-247, REQ-216/K7, REQ-207): two sentences the
+// v35 guide never stated — (1) an agent() call with NO timeoutMs runs ONCE (retries apply only to
+// a call that set one; v35's ARCH-151 text stated the multiplied-worst-case wait but left out the
+// untimed caveat, which is precisely what let `client.ts` ship the deviant retry-an-untimed-call
+// bug K6/K7 close); (2) the attestation boundary — the run-level structured refusal marker
+// (`refusalRef`) is engine-attested (lifted only against the parent's own ledger), while
+// `error.code` is NOT and never has been (a script can forge `name:'PARAM_UNKNOWN'` and produce the
+// code with no marker) — without this sentence the first reader of the new marker field reasonably
+// assumes both are attested. Written test-first (Gate 5, RED).
+describe('buildAuthoringGuide — v36: the untimed-call caveat and the refusalRef attestation boundary (DES-249, REQ-216/K7)', () => {
+  const text = buildAuthoringGuide(CEILINGS);
+
+  it('states an agent() call with NO timeoutMs runs ONCE — retries apply only to a call that set one', () => {
+    expect(text).toMatch(/no\s+timeoutMs|without\s+(a\s+)?timeoutMs|timeoutMs\s+is\s+(not\s+set|absent|omitted)/i);
+    expect(text).toMatch(/runs\s+once|one\s+attempt|single\s+attempt/i);
+  });
+
+  it('states the refusalRef marker is engine-attested but error.code is NOT (a script can forge the code with no marker)', () => {
+    expect(text).toMatch(/refusalRef/);
+    expect(text).toMatch(/attest/i);
+    expect(text).toMatch(/error\.code|\bcode\b.*forg|forg.*code/i);
+  });
+});

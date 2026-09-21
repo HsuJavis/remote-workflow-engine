@@ -7,7 +7,7 @@
 // NOTE: this file is executed directly by `node --experimental-transform-types` (not through
 // the project's vitest/bundler TS resolution), so — unlike the rest of the codebase — its
 // relative imports use explicit `.ts` extensions, which is what plain Node's loader resolves.
-import { evaluateScript } from './guards.ts';
+import { evaluateScript, markEngineRefusal } from './guards.ts';
 import type { SandboxApi } from './guards.ts';
 import type { SandboxBudget } from '../types.ts';
 
@@ -79,7 +79,12 @@ process.on('message', (msg: InMsg) => {
       // guards.ts reads it. Every refusal a script can catch off this seam is fixed at this one
       // line — BUDGET_EXCEEDED from agent(), and NESTING_DEPTH_EXCEEDED / NESTING_CYCLE /
       // DESCENDANT_CAP_EXCEEDED from workflow() (which additionally re-wrap in a GuardError).
-      p.reject(Object.assign(new Error(msg.error.message), { name: msg.error.code, code: msg.error.code }));
+      // v36 (DES-248, ARCH-165, TASK-246): mark BEFORE reject — the ref rides on THIS object's
+      // identity, so a script that catches and rethrows it (even after forging `e.refusalRef = 99`
+      // on the object) still surfaces the map's answer, never the forgery.
+      const rejectErr = Object.assign(new Error(msg.error.message), { name: msg.error.code, code: msg.error.code });
+      markEngineRefusal(rejectErr, msg.callSeq);
+      p.reject(rejectErr);
       return;
     }
     case 'workflowResult': {
@@ -143,7 +148,10 @@ async function main(msg: StartMsg): Promise<void> {
   if (result.kind === 'done') {
     send({ t: 'done', runId: msg.runId, result: result.value });
   } else {
-    send({ t: 'error', runId: msg.runId, error: result.error });
+    // v36 (DES-248): `refusalRef` hoisted to a SIBLING of `error` on the wire — `host.ts`'s
+    // `RunOutcome` reads `msg.refusalRef`, not a nested field, so the parent ledger lookup at
+    // settle time has a plain number to key on.
+    send({ t: 'error', runId: msg.runId, error: result.error, ...(result.error?.refusalRef !== undefined ? { refusalRef: result.error.refusalRef } : {}) });
   }
   process.exit(0);
 }

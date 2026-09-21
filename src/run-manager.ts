@@ -12,7 +12,7 @@ import type { CasStore } from './cas-store.js';
 import { casNamespaceFor } from './cas-store.js';
 import { initGitBaseline } from './workspace-git.js';
 import { listArtifacts, type ArtifactEntry } from './workspace-artifacts.js';
-import { IllegalTransitionError, codedError, toErrorCode, toErr, capErrorEnvelope } from './errors.js';
+import { IllegalTransitionError, codedError, toErrorCode, toErr, captureFailure } from './errors.js';
 import { isEgressAllowed, normalizeSeedRefAllowlist } from './seedref-egress.js';
 import type { SeedRefFetcher } from './seedref-fetcher.js';
 import { HardenedSeedRefFetcher } from './seedref-fetcher.js';
@@ -44,6 +44,7 @@ import { validateUserOverrides, validateDeclaredArgs, materializeArgDefaults, is
 import { defaultRunParams, mergeRunParams, type RunParams } from './params/resolve.js';
 import { resolveAlias } from './providers.js';
 import { ModelBook, reachableModels } from './models/model-book.js';
+import { createEventSink, type EventSink } from './event-log.js';
 
 // Default gateway config (REQ-004) for the gateway RunManager builds when no GatewayClient is
 // injected — routes through the single-source DEFAULT_ALIASES table (src/default-aliases.ts).
@@ -129,6 +130,9 @@ export interface RunManagerDeps {
    *  this run legally reaches (having already passed the UNKNOWN_ALIAS check) always resolves.
    *  Omitted -> DEFAULT_ALIASES, same fallback as the gateway's own default config. */
   aliasMap?: AliasMap;
+  /** v36 (DES-243, ARCH-159, TASK-241, REQ-213): sink for the `run.terminal` audit line (TASK-243
+   *  adds the actual emit call, at `_transition`). Omitted -> a bare console sink. */
+  eventSink?: EventSink;
 }
 
 /** v25 (DES-168, REQ-120, owner ruling): the default per-run in-flight agent() cap. Explicit and
@@ -195,7 +199,21 @@ interface RunEntry {
    *  never populated at all, which is why DES-154's selective materialization had never fired on a
    *  real dispatch (adjudication #4 C-2). Empty for an unregistered/legacy contract. */
   declaredAssets: Record<string, { skills: string[]; mcp: string[] }>;
+  /** v36 (DES-245, TASK-243): from `spec.principal` at admission, and rehydrated from
+   *  `getSpec()` on resume (`_requireLive`) — carried by the `run.terminal` event. */
+  principal?: string | null;
+  /** v36 (DES-248, ARCH-165/168, TASK-246): the per-run refusal ledger — `captureFailure`'s
+   *  redacted, bounded envelope, keyed by the top-level `callSeq` the refusal happened at.
+   *  Recorded ONLY at `framePath === ''` (_handleAgentRequest); bounded at 8, a 9th evicts nothing
+   *  and increments `refusalsDropped` instead. Never persisted — dies with the entry. */
+  refusals: Map<number, { code: string; message: string }>;
+  refusalsDropped: number;
 }
+
+/** v36 (DES-248, ARCH-165/166, TASK-246): the codes `_handleAgentRequest` records into a run's
+ *  `refusals` ledger — a forced duplicate of `guards.ts`'s `ENGINE_REFUSAL_CODES` (the sandbox
+ *  child cannot value-import this `.ts` file), pinned equal by the drift test. */
+export const RECORDED_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED', 'PARAM_UNKNOWN']);
 
 /** v24 (integrator; REQ-113, DES-154): the author-DECLARED per-label asset names, lifted out of the
  *  registered `ParamContract` at admission so `_handleAgentRequest` can hand the dispatching
@@ -306,6 +324,8 @@ export class RunManager {
   private readonly _modelBook: ModelBook;
   /** v26 (DES-178, TASK-178): resolves a reachable alias/model string to {provider, model} for the pin. */
   private readonly _aliasMap: AliasMap;
+  /** v36 (DES-243, TASK-241): `run.terminal` audit sink; TASK-243 calls it from `_transition`. */
+  private readonly _eventSink: EventSink;
   private readonly _runs = new Map<string, RunEntry>();
   /** v25 (#53): runIds already reported for `terminal_without_transition` — one record per run,
    *  not one per poll (a terminal run is polled until the caller notices it is terminal). */
@@ -365,6 +385,7 @@ export class RunManager {
     // inject a real catalog (e.g. a direct RunManager unit test).
     this._modelBook = deps.modelBook ?? new ModelBook(async () => [], { clock: this._clock });
     this._aliasMap = deps.aliasMap ?? DEFAULT_ALIASES;
+    this._eventSink = deps.eventSink ?? createEventSink({});
   }
 
   /** v8 Slice 4 (REQ-054): count of live (non-terminal) top-level runs in this process — the
@@ -683,16 +704,18 @@ export class RunManager {
         seedRefView = { resolvedSha: r.resolvedSha, bytes: r.bytesTransferred, latencyMs: Math.max(0, this._clock.now() - t0), fetchedAt: this._clock.isoNow(), dropped: r.dropped };
       } catch (err) {
         const code = (err as { code?: string }).code ?? 'SEEDREF_FETCH_FAILED';
-        // v35 send-back (C-1): the UNSLICED message feeds `seedRefFail` — `capErrorEnvelope` (below,
+        // v35 send-back (C-1): the UNSLICED message feeds `seedRefFail` — `captureFailure` (below,
         // at the `seedRefFail` handling site) bounds it AFTER `redact()` runs, matching R-G9/
         // INV-V26-5 (a substring cut applied BEFORE redact() can split a secret so redact()'s
-        // value-exact match finds neither half). `failDetail` (the `seedRefView` surface, pre-
-        // existing and unrelated to this send-back's resultError channel) keeps its own independent
-        // 200-char slice off the same raw message.
+        // value-exact match finds neither half).
         const rawMessage = String((err as { message?: string }).message ?? err);
         seedRefFail = { code, message: rawMessage };
         const failCode = (code === 'SEEDREF_SHA_MISMATCH' || code === 'SEEDREF_TOO_LARGE') ? code : 'SEEDREF_FETCH_FAILED';
-        seedRefView = { resolvedSha: spec.seedRef.sha, bytes: 0, latencyMs: Math.max(0, this._clock.now() - t0), fetchedAt: this._clock.isoNow(), dropped: [], failCode, failDetail: rawMessage.slice(0, 200) };
+        // v36 (DES-241, TASK-239, K2): the unredacted twin dies — `failDetail` now goes through the
+        // SAME redact-then-bound path as `resultError` below, at its own 200-byte bound (the two
+        // sites never shared one; see DES-241's boundary note).
+        const failDetail = captureFailure(err, this._secretValueProvider?.entries() ?? [], 200).message;
+        seedRefView = { resolvedSha: spec.seedRef.sha, bytes: 0, latencyMs: Math.max(0, this._clock.now() - t0), fetchedAt: this._clock.isoNow(), dropped: [], failCode, failDetail };
       }
     }
     // REQ-025 (v2) / REQ-065 (v10): materialize a seed into the workspace BEFORE any agent starts
@@ -748,6 +771,9 @@ export class RunManager {
       workflowNodes: [],
       effectiveParams,
       declaredAssets: declaredAssetsOf(contract),
+      principal: spec.principal,
+      refusals: new Map(),
+      refusalsDropped: 0,
     };
     this._runs.set(runId, entry);
     entry.seedRef = seedRefView; // v13: overlaid onto RunStatusView by _mergeLive (present on success AND failure)
@@ -761,10 +787,7 @@ export class RunManager {
       // URL), so it must not reach `runs.error`/journal.jsonl un-redacted, and it must be recorded
       // via `recordError` (STRICTLY BEFORE the 'failed' transition, INV-V35-1) like every other
       // failure.
-      const captured = this._secretValueProvider
-        ? (redact(toErr(seedRefFail), this._secretValueProvider.entries()) as { code: string; message: string })
-        : toErr(seedRefFail);
-      entry.resultError = capErrorEnvelope(captured);
+      entry.resultError = captureFailure(seedRefFail, this._secretValueProvider?.entries() ?? []);
       try { await this._store.recordError(runId, entry.resultError); }
       finally { await this._transition(runId, entry, 'failed'); }
       return runId;
@@ -1151,6 +1174,9 @@ export class RunManager {
       workflowNodes: [],
       effectiveParams,
       declaredAssets: declaredAssetsOf(registeredContract),
+      principal: spec.principal,
+      refusals: new Map(),
+      refusalsDropped: 0,
     };
     this._runs.set(runId, entry);
     return entry;
@@ -1163,6 +1189,18 @@ export class RunManager {
     // v8 REQ-055: persist a one-shot DAG snapshot at the terminal transition (covers failed/stopped,
     // not only completed) so a composite run's nested tree/phases/agent-frames survive a restart.
     if (TERMINAL.includes(to)) {
+      // v36 (DES-245, TASK-243, REQ-213): `run.terminal` fires at the ONE authoritative terminal
+      // writer, for EVERY terminal outcome including `completed` — not only inside a
+      // failure-capture path, which a `completed` run never touches.
+      this._eventSink({
+        kind: 'run.terminal',
+        runId,
+        name: entry.name ?? null,
+        version: `v${entry.scriptVersion}`,
+        outcome: to,
+        principal: entry.principal ?? null,
+        ...(entry.resultError ? { code: entry.resultError.code } : {}),
+      });
       let agents = entry.spawner instanceof AgentExecutor ? entry.spawner.getAllRecords() : [];
       // DES-088 (TASK-082) sink (2): redact agents array BEFORE saveSnapshot (persist write only).
       if (this._secretValueProvider) {
@@ -1282,10 +1320,12 @@ export class RunManager {
           // neither half), and persist the reason (`recordError`) STRICTLY BEFORE flipping the
           // status to `failed` (INV-V35-1) — `try/finally` so a throwing `recordError` (disk full,
           // EACCES) still lets the run reach `failed` rather than hang `running` forever.
-          const captured = this._secretValueProvider
-            ? (redact(toErr(outcome.error), this._secretValueProvider.entries()) as { code: string; message: string })
-            : toErr(outcome.error);
-          entry.resultError = capErrorEnvelope(captured);
+          // v36 (DES-248, ARCH-165/168, TASK-246): a `refusalRef` this run's ledger actually
+          // contains replaces the flattened envelope with the ledger's own (unflattened, captured
+          // at the real throw site) entry. An UNKNOWN ref — reachable only via a forged/stale
+          // child IPC message, never a real script — falls back to today's path unchanged.
+          const refusalHit = outcome.refusalRef !== undefined ? entry.refusals.get(outcome.refusalRef) : undefined;
+          entry.resultError = refusalHit ?? captureFailure(outcome.error, this._secretValueProvider?.entries() ?? []);
           try { await this._store.recordError(runId, entry.resultError); }
           finally { await this._transition(runId, entry, 'failed'); }
         }
@@ -1518,6 +1558,24 @@ export class RunManager {
         : journalEntry;
       await this._store.appendJournal(runId, journalToStore);
       return value;
+    } catch (err) {
+      // v36 (DES-248, ARCH-165/168, TASK-246): the run-level refusal ledger — captured HERE, on the
+      // parent, BEFORE the error is flattened to `{code,message}` for the IPC `agentThrow` message
+      // (host.ts sends that to the child). Recorded ONLY at the top-level frame (`framePath ===
+      // ''`) — a nested `workflow()` boundary re-mints the error (`_handleWorkflowRequest`), so a
+      // nested entry would be keyed against a callSeq the parent ledger is never asked for. Covers
+      // both this function's own BUDGET_EXCEEDED throw (above) and a PARAM_UNKNOWN thrown deeper
+      // inside `entry.spawner.run()` (agent-executor.ts's retirement check).
+      const e = err as { code?: unknown; name?: unknown } | null | undefined;
+      const code = (typeof e?.code === 'string' && e.code) || (typeof e?.name === 'string' && e.name) || '';
+      if (framePath === '' && RECORDED_REFUSAL_CODES.has(code)) {
+        if (entry.refusals.size < 8) {
+          entry.refusals.set(callSeq, captureFailure(err, this._secretValueProvider?.entries() ?? []));
+        } else {
+          entry.refusalsDropped++;
+        }
+      }
+      throw err;
     } finally {
       release();
     }

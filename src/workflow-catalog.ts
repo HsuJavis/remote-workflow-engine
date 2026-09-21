@@ -28,6 +28,7 @@ import { deriveExpectedGraph } from './skeleton-graph.js';
 import { scanAgentCalls } from './scan-agent-calls.js';
 import { checkMermaid, type Rule } from './check-mermaid.js';
 import type { Clock } from './clock.js';
+import { createEventSink, type EventSink } from './event-log.js';
 import { SystemClock } from './clock.js';
 // v21 Gate 6 adjudication (A-1): type-only import — erases at compile, no runtime edge, and this
 // file is not one the sandbox child loads, so the .js->.ts child-import hazard does not apply.
@@ -148,6 +149,30 @@ export interface WorkflowDetail extends VersionEntry {
   name: string; createdAt: string; owner: string | null; channels: Channels; versions: string[];
 }
 
+// v36 (DES-244, ARCH-157/158/161, TASK-242, REQ-212/REQ-114): `Actor` replaces the overloaded
+// `principal: string|null` on the three mutating methods (validateRegistration/insertVersion,
+// publish) — minted PER CALL SITE by `mcp-facade.ts`'s `actorFor`, never per-Principal, so an
+// admin's ownership bypass on `deregister`/`publish` cannot silently leak onto `register`
+// (R-1). `canMutate` is the TRUTHY form (`!owner`, not `owner === null`) because the legacy gate
+// tests `row.owner` for truthiness and `owner === ''` is reachable on a pre-v15 row.
+export interface Actor { id: string | null; bypass: boolean; idSource: 'authenticated' | 'claimed' | 'none' }
+export function canMutate(owner: string | null, actor: Actor): boolean {
+  return !owner || actor.bypass || owner === actor.id;
+}
+/** A legacy `principal: string|null` caller (every pre-v36 direct test/caller of
+ *  validateRegistration/insertVersion/publish) reproduced as an `Actor`: `null` was ALWAYS a full
+ *  ownership bypass (the gate's `principal !== null` term), a non-null principal was never a
+ *  bypass and compared by identity — `canMutate` on either input is byte-identical to the old
+ *  inline expression. */
+function actorFromPrincipal(principal: string | null): Actor {
+  return principal === null
+    ? { id: null, bypass: true, idSource: 'none' }
+    : { id: principal, bypass: false, idSource: 'authenticated' };
+}
+function isActor(x: unknown): x is Actor {
+  return typeof x === 'object' && x !== null && 'bypass' in x && 'idSource' in x;
+}
+
 export interface WorkflowCatalogOpts {
   /** When set and auth is enabled, backfill NULL-owner rows to this email at construction time. */
   backfillOwner?: boolean;
@@ -166,6 +191,11 @@ export interface WorkflowCatalogOpts {
    *  caller-supplied `defaults.<knob>` alike, instead of registering above a bound admission
    *  enforces. Must be the SAME object forwarded to RunManager/McpFacade (server.ts). */
   ceilings?: Ceilings;
+  /** v36 (DES-243, ARCH-159, TASK-241, REQ-213): sink for `catalog.register`/`catalog.publish`/
+   *  `catalog.deregister` audit lines (TASK-242/244 add the actual emit calls). Omitted -> a bare
+   *  console sink (`createEventSink({})`'s own default), so every existing construction site
+   *  compiles and behaves unchanged. */
+  eventSink?: EventSink;
 }
 
 export class WorkflowCatalog {
@@ -177,6 +207,8 @@ export class WorkflowCatalog {
   private readonly _ceilings?: Ceilings;
   private readonly _mcpLookup: (name: string) => boolean;
   private readonly _openrouterPassthrough: boolean;
+  /** v36 (DES-243, TASK-241): audit-line sink; TASK-242/244 call it. */
+  private readonly _eventSink: EventSink;
 
   constructor(workRoot: string, clock?: Clock, opts?: WorkflowCatalogOpts) {
     this._workRoot = workRoot;
@@ -185,6 +217,7 @@ export class WorkflowCatalog {
     this._ceilings = opts?.ceilings;
     this._mcpLookup = opts?.mcpLookup ?? (() => true);
     this._openrouterPassthrough = opts?.openrouterPassthrough ?? true;
+    this._eventSink = opts?.eventSink ?? createEventSink({});
     mkdirSync(workRoot, { recursive: true });
     this._db = new Database(join(workRoot, 'catalog.db'));
     this._db.pragma('journal_mode = WAL');
@@ -465,8 +498,9 @@ export class WorkflowCatalog {
    *  version-count ceiling → owner gate (read-only). Used directly by `register()` below, and by the
    *  facade's trigger-claim sequence (ARCH-091/DES-149: validate → claim each trigger → insertVersion
    *  → release on throw) — `insertVersion` is a SEPARATE step so a claim can happen in between. */
-  async validateRegistration(req: { name: string; script: string; mermaid: string; principal?: string | null }): Promise<{ params: ParamContract; labels: string[]; agents: Record<string, AgentParamSpec> }> {
-    const { name, script, mermaid, principal = null } = req;
+  async validateRegistration(req: { name: string; script: string; mermaid: string; principal?: string | null; actor?: Actor }): Promise<{ params: ParamContract; labels: string[]; agents: Record<string, AgentParamSpec> }> {
+    const { name, script, mermaid } = req;
+    const actor: Actor = req.actor ?? actorFromPrincipal(req.principal ?? null);
 
     // v22 (DES-111, DES-112, DES-117, TASK-107): validateScriptEntry runs FIRST — DES-148's own
     // pinned order (`validateScriptEntry → scanAgentCalls → parseParamContract → checkMermaid → …`)
@@ -567,12 +601,13 @@ export class WorkflowCatalog {
     if (maxWorkflowVersions !== undefined && count >= maxWorkflowVersions) {
       throw codedError(
         'VERSION_CEILING_EXCEEDED',
-        `VERSION_CEILING_EXCEEDED: workflow '${name}' already has ${count} version(s) (maximum ${maxWorkflowVersions}) — deregister an old version, or raise the engine's maxWorkflowVersions ceiling`,
+        `VERSION_CEILING_EXCEEDED: workflow '${name}' already has ${count} version(s) (maximum ${maxWorkflowVersions}) — deregister an old one with workflow_deregister({name, version}), or raise the engine's maxWorkflowVersions ceiling`,
       );
     }
-    // DES-098: ownership gate (read-only) — only non-null principal is gated; null principal =
-    // auth-disabled (D-AUTH-6). Re-checked (defence in depth) inside insertVersion's transaction.
-    if (existing && existing.owner && principal !== null && existing.owner !== principal) {
+    // DES-098/v36 (DES-244): ownership gate (read-only) — `canMutate` is the truthy form so a
+    // pre-v15 `owner === ''` row is never wrongly refused. Re-checked (defence in depth) inside
+    // insertVersion's transaction.
+    if (existing && !canMutate(existing.owner, actor)) {
       throw codedError('NOT_WORKFLOW_OWNER', `NOT_WORKFLOW_OWNER: workflow '${name}' is owned by ${existing.owner}`);
     }
 
@@ -587,8 +622,9 @@ export class WorkflowCatalog {
    *  REGISTRATION_CONFLICT instead of an untyped 500. Callers (the facade, ARCH-091/DES-149) run any
    *  trigger `claim()` BETWEEN `validateRegistration` and this call — this method itself does not
    *  know about trigger stores. */
-  async insertVersion(req: { name: string; script: string; mermaid: string; triggers?: string[]; params: ParamContract; principal?: string | null }): Promise<{ version: string }> {
-    const { name, script, mermaid, triggers, params, principal = null } = req;
+  async insertVersion(req: { name: string; script: string; mermaid: string; triggers?: string[]; params: ParamContract; principal?: string | null; actor?: Actor }): Promise<{ version: string }> {
+    const { name, script, mermaid, triggers, params } = req;
+    const actor: Actor = req.actor ?? actorFromPrincipal(req.principal ?? null);
     const paramsJson = JSON.stringify(params);
     // v24 Gate 8 (AF-2, TASK-161, adjudication #7 G-2): an EMPTY array is stored as '[]', never as
     // NULL. `NULL` is reserved for pre-v24 rows — rows written before this column existed — which is
@@ -603,7 +639,7 @@ export class WorkflowCatalog {
     try {
       const version = this._db.transaction((): string => {
         const existing = this._db.prepare('SELECT owner FROM workflows WHERE name = ?').get(name) as { owner: string | null } | undefined;
-        if (existing && existing.owner && principal !== null && existing.owner !== principal) {
+        if (existing && !canMutate(existing.owner, actor)) {
           throw codedError('NOT_WORKFLOW_OWNER', `NOT_WORKFLOW_OWNER: workflow '${name}' is owned by ${existing.owner}`);
         }
         const count = (this._db.prepare('SELECT COUNT(*) AS n FROM workflow_versions WHERE name = ?').get(name) as { n: number }).n;
@@ -611,7 +647,7 @@ export class WorkflowCatalog {
         if (maxWorkflowVersions !== undefined && count >= maxWorkflowVersions) {
           throw codedError(
             'VERSION_CEILING_EXCEEDED',
-            `VERSION_CEILING_EXCEEDED: workflow '${name}' already has ${count} version(s) (maximum ${maxWorkflowVersions}) — deregister an old version, or raise the engine's maxWorkflowVersions ceiling`,
+            `VERSION_CEILING_EXCEEDED: workflow '${name}' already has ${count} version(s) (maximum ${maxWorkflowVersions}) — deregister an old one with workflow_deregister({name, version}), or raise the engine's maxWorkflowVersions ceiling`,
           );
         }
         // v22 send-back H3 (07-review.md §4.2, ARCH-071 inv 7): the allocator must be the MAX over
@@ -621,7 +657,7 @@ export class WorkflowCatalog {
           .prepare('SELECT MAX(CAST(SUBSTR(version, 2) AS INTEGER)) AS m FROM workflow_versions WHERE name = ?')
           .get(name) as { m: number | null }).m;
         const v = `v${(maxVersion ?? 0) + 1}`;
-        const owner = existing?.owner ?? principal;
+        const owner = existing?.owner ?? actor.id;
         if (!existing) {
           this._db.prepare('INSERT INTO workflows (name, createdAt, owner) VALUES (?, ?, ?)').run(name, createdAt, owner);
         }
@@ -630,6 +666,9 @@ export class WorkflowCatalog {
           .run(name, v, script, paramsJson, mermaid, triggersJson, createdAt, 'v2');
         return v;
       }).immediate();
+      // v36 (DES-243/244, TASK-242, REQ-213/212): one audit line per successful registration,
+      // AFTER the transaction commits — never inside it (the sink is not part of the SQL unit).
+      this._eventSink({ kind: 'catalog.register', name, version, actor });
       return { version };
     } catch (err) {
       const sqliteCode = (err as { code?: string } | undefined)?.code;
@@ -661,12 +700,13 @@ export class WorkflowCatalog {
    *  name was not present. Name-granular only — no per-version delete in v22 (DES-111, D2). Prior
    *  runs' journals keep their own scriptVersion pin, so this only affects future run-by-name.
    *  v15 (DES-098, TASK-089): ownership gate — non-owner principal → NOT_WORKFLOW_OWNER. */
-  async deregister(name: string, principal: string | null = null): Promise<{ removed: boolean; claimedTriggers: string[] }> {
+  async deregister(name: string, principalOrActor: string | null | Actor = null): Promise<{ removed: boolean; claimedTriggers: string[] }> {
+    const actor: Actor = isActor(principalOrActor) ? principalOrActor : actorFromPrincipal(principalOrActor);
     const existing = this._db.prepare('SELECT owner FROM workflows WHERE name = ?').get(name) as
       | { owner: string | null }
       | undefined;
 
-    if (existing && existing.owner && principal !== null && existing.owner !== principal) {
+    if (existing && !canMutate(existing.owner, actor)) {
       throw codedError('NOT_WORKFLOW_OWNER', `NOT_WORKFLOW_OWNER: workflow '${name}' is owned by ${existing.owner}`);
     }
 
@@ -684,6 +724,57 @@ export class WorkflowCatalog {
       return this._db.prepare('DELETE FROM workflows WHERE name = ?').run(name);
     }).immediate();
     return { removed: info.changes > 0, claimedTriggers: [...claimed] };
+  }
+
+  /** v36 (DES-246, ARCH-155/156, TASK-244): a SIBLING of `deregister()`, never a mode flag on it —
+   *  deletes ONE version's rows (`workflow_versions`, `workflow_diagrams`) instead of every version,
+   *  the diagrams and the name row. Six outcomes in a PINNED order — see DES-246's signature comment
+   *  for the full table: ownership → name-absent → version-not-found → channel-pinned →
+   *  last-remaining (the sixth, VERSION_PINNED_BY_RUN, is a cross-database check the FACADE makes
+   *  before ever calling this method — see mcp-facade.ts's `workflowDeregister`). `assets` and the
+   *  `workflows` row are untouched: `assets` is shared across versions and the name row carries the
+   *  channels/owner every surviving version still needs. `claimedTriggers` is the before/after
+   *  difference of `declaredTriggers(name)` computed INSIDE the same transaction — a trigger id still
+   *  declared by a surviving version is not released; one only the deleted version declared is. */
+  async deregisterVersion(name: string, version: string, actor: Actor): Promise<{ removed: boolean; remaining: string[]; claimedTriggers: string[] }> {
+    const row = this._db
+      .prepare('SELECT owner, release_version, beta_version FROM workflows WHERE name = ?')
+      .get(name) as { owner: string | null; release_version: string | null; beta_version: string | null } | undefined;
+
+    // 1 (first): ownership — so a stranger cannot enumerate versions by refusal type. Only
+    // reachable when the name is registered; an unregistered name falls through to outcome 2 below,
+    // identically for every caller.
+    if (row && !canMutate(row.owner, actor)) {
+      throw codedError('NOT_WORKFLOW_OWNER', `NOT_WORKFLOW_OWNER: workflow '${name}' is owned by ${row.owner}`);
+    }
+    // 2: an absent NAME mirrors deregister() — a delete of nothing is not an error.
+    if (!row) return { removed: false, remaining: [], claimedTriggers: [] };
+
+    const known = new Set(this._listVersions(name));
+    // 3: name present, version absent.
+    if (!known.has(version)) {
+      throw codedError('VERSION_NOT_FOUND', `VERSION_NOT_FOUND: '${version}' is not a registered version of '${name}'`);
+    }
+    // 4: a release/beta channel points at this version — unpublish it there first.
+    if (row.release_version === version || row.beta_version === version) {
+      throw codedError('VERSION_PINNED_BY_CHANNEL', `VERSION_PINNED_BY_CHANNEL: '${version}' of '${name}' is published to a channel — unpublish it first`);
+    }
+    // 5: the only version — whole-name deregister is the honest tool for that.
+    if (known.size <= 1) {
+      throw codedError('VERSION_LAST_REMAINING', `VERSION_LAST_REMAINING: '${version}' is the only version of '${name}' — use workflow_deregister({name}) to remove the whole workflow`);
+    }
+
+    let claimedTriggers: string[] = [];
+    this._db.transaction(() => {
+      const before = this.declaredTriggers(name);
+      this._db.prepare('DELETE FROM workflow_versions WHERE name = ? AND version = ?').run(name, version);
+      this._db.prepare('DELETE FROM workflow_diagrams WHERE name = ? AND version = ?').run(name, version);
+      const after = this.declaredTriggers(name);
+      claimedTriggers = [...before].filter((id) => !after.has(id));
+    }).immediate();
+
+    this._eventSink({ kind: 'catalog.deregister', name, version, actor });
+    return { removed: true, remaining: this._listVersions(name), claimedTriggers };
   }
 
   /** v22 (DES-111): row lookup shared by resolve/resolveDetail/publish — throws CatalogNotFoundError
@@ -784,9 +875,10 @@ export class WorkflowCatalog {
 
   /** v22 (DES-111, REQ-097): moves a named channel pointer to an already-registered version.
    *  Ownership-gated like register/deregister. */
-  async publish(name: string, version: string, channel: Channel, principal: string | null): Promise<{ channel: Channel; version: string; from: string | null }> {
+  async publish(name: string, version: string, channel: Channel, principalOrActor: string | null | Actor): Promise<{ channel: Channel; version: string; from: string | null }> {
+    const actor: Actor = isActor(principalOrActor) ? principalOrActor : actorFromPrincipal(principalOrActor);
     const row = this._requireName(name);
-    if (row.owner && principal !== null && row.owner !== principal) {
+    if (!canMutate(row.owner, actor)) {
       throw codedError('NOT_WORKFLOW_OWNER', `NOT_WORKFLOW_OWNER: workflow '${name}' is owned by ${row.owner}`);
     }
     const known = new Set(this._listVersions(name));
@@ -798,9 +890,9 @@ export class WorkflowCatalog {
     this._db.transaction(() => {
       this._db.prepare(`UPDATE workflows SET ${column} = ? WHERE name = ?`).run(version, name);
     }).immediate();
-    const at = this._clock.isoNow();
-    // DES-111: one structured log line per publish — fields are the documented contract.
-    console.log(`catalog.publish: ${JSON.stringify({ name, channel, fromVersion: from, toVersion: version, principal, at })}`);
+    // v36 (DES-243/244, TASK-242, REQ-213/212): the bare console.log line is GONE, not duplicated
+    // — the same audit line now goes through the injected, redacting `_eventSink`.
+    this._eventSink({ kind: 'catalog.publish', name, version, channel, fromVersion: from, actor });
     return { channel, version, from };
   }
 

@@ -1,5 +1,5 @@
 // Domain error types. Implemented fully — pure value classes, no business logic.
-import { MARKER_PREFIX } from './secret-resolver.js';
+import { MARKER_PREFIX, redact } from './secret-resolver.js';
 //
 // v24 (DES-137, ARCH-087, TASK-131): ERROR_CATALOG is the closed `ErrorCode` union — every coded
 // refusal this engine can throw is a key here, with the `see` pointer (workflow_authoring_guide|null)
@@ -94,6 +94,10 @@ export const ERROR_CATALOG = {
   REGISTRATION_CONFLICT: { see: null, hint: 'a concurrent registration of this name raced this one; retry' },
   VERSION_CEILING_EXCEEDED: { see: null, hint: 'this workflow name already has the configured maxWorkflowVersions; deregister an old one' },
   VERSION_NOT_FOUND: { see: null, hint: 'the requested version is not a registered version of this workflow' },
+  // v36 (DES-246, TASK-244): `workflow_deregister({name, version})`'s three version-scoped refusals.
+  VERSION_PINNED_BY_CHANNEL: { see: null, hint: 'this version is published to a channel (release or beta) — unpublish it first' },
+  VERSION_LAST_REMAINING: { see: null, hint: 'this is the only version of the workflow — use workflow_deregister({name}) to remove the whole workflow' },
+  VERSION_PINNED_BY_RUN: { see: null, hint: 'a non-terminal run is pinned to this version' },
   INVALID_CHANNEL: { see: null, hint: 'the channel value is not "beta" or "release"' },
   CHANNEL_UNPUBLISHED: { see: null, hint: 'the requested channel has no published version' },
   DANGLING_CHANNEL: { see: null, hint: 'the channel points at a version that no longer exists (invariant violation)' },
@@ -295,10 +299,10 @@ export const MAX_SECRET_NAME_CHARS = 256;
  *  message FOR. Both the pathological case (no closing `›` anywhere, which `redact()` never
  *  produces) AND the case where `›` exists but only past the bounded window still back off,
  *  dropping the incomplete marker, rather than shipping a mangled fragment or scanning unbounded. */
-export function capErrorEnvelope(e: { code: string; message: string }): { code: string; message: string } {
+export function capErrorEnvelope(e: { code: string; message: string }, maxBytes: number = MAX_ERROR_ENVELOPE_BYTES): { code: string; message: string } {
   const buf = Buffer.from(e.message, 'utf8');
-  if (buf.length <= MAX_ERROR_ENVELOPE_BYTES) return e;
-  let cut = MAX_ERROR_ENVELOPE_BYTES;
+  if (buf.length <= maxBytes) return e;
+  let cut = maxBytes;
   // back off while `cut` sits inside a multi-byte sequence — a UTF-8 continuation byte's top two
   // bits are `10`.
   while (cut > 0 && (buf[cut]! & 0xc0) === 0x80) cut--;
@@ -320,5 +324,18 @@ export function capErrorEnvelope(e: { code: string; message: string }): { code: 
   }
   const omitted = buf.length - cut;
   return { code: e.code, message: `${head}… [truncated: ${omitted} bytes omitted]` };
+}
+
+/** v36 (DES-241, ARCH-169/170, TASK-239, REQ-216/K2): one pure capture — redact THEN bound, in
+ *  that order (INV-V26-5: a substring cut applied first can split a secret so redact()'s
+ *  value-exact match finds neither half). `maxBytes` is a parameter, not shared constant, because
+ *  the two pre-existing call sites never agreed on one (4096 at the envelope site, 200 at the
+ *  seedRef site) — unifying either would silently widen or narrow the other twentyfold. */
+export function captureFailure(
+  err: unknown,
+  secrets: ReadonlyArray<{ name: string; value: string }>,
+  maxBytes: number = MAX_ERROR_ENVELOPE_BYTES,
+): { code: string; message: string } {
+  return capErrorEnvelope(redact(toErr(err), secrets) as { code: string; message: string }, maxBytes);
 }
 

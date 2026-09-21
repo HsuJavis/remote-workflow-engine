@@ -8067,3 +8067,118 @@ trace --check 對 REQ-205..210 是零 `未真實驗證`/`未驗證`。記錄在�
 
 **結論：`send_back = []`，iteration CLOSES。** `gates.review.passed = true`；`.panel/` 依契約清除
 （規則：只有在不送回時才清）。
+
+## 2026-09-21 — v36 Gate 2（架構）PASSED：REQ-211..216 拆成 ARCH-155..173 + ADR-072..079，14 列就地修訂
+
+- **Panel 已預先跑完兩輪**（`.panel/architecture/{adversarial,quality-dimensions}.{r1,r2}.md`），本關只做綜整,未再 spawn。
+  兩份 r2 **交錯**（各自回應對方的 r1）：quality-dimensions 批准了 adversarial r1 的 payload 設計,而 adversarial r2 同時
+  放棄自己那個設計改走 `refusalRef`。因此 REQ-215 是**裁決**而不是抄錄 —— ADR-072 取 `refusalRef`（線上只走一個整數,
+  parent 端 callSeq ledger,provenance 以 Error 物件識別記在 guards.ts 的 WeakMap）：QD 對 ledger 的「因果不精確」異議
+  針對的是**時序**鍵,而識別鍵已回答它,且贏的那個 diff 更小（少一張 allowlist 表、少一個位元組上限、少一次 redact-then-cap 排序風險）。
+- **其餘裁決**：ADR-073（可穿過的碼 = {BUDGET_EXCEEDED, PARAM_UNKNOWN};且 `parallel()`/`pipeline()` 內的引擎拒絕改為**傳播**而非折成 `null`,
+  對 REQ-120 只做交叉引用不加追溯邊）、ADR-074/075（`deregisterVersion` 為兄弟方法、**三條**拒絕,第三條「有非終態 run 釘住該版本」超出驗收文字仍納入,
+  因為另一半是「執行中的工作流程被靜默換成別的程式碼」;跨 DB 的閘放在 facade,因為沒有任何放法能做到原子性）、ADR-076（4 欄 `Actor` + `canMutate`,
+  `idSource` 區分 claimed/authenticated;durable audit 延到 v37 並把那句不舒服的話寫下來）、ADR-077（`MAX(createdAt) GROUP BY name` 推導 vs 反正規化欄位 —— 
+  全庫沒有 `DELETE FROM runs`,所以推導一樣耐久;一個 EventSink 函式,redact 在 sink 內,不引 logger 框架）、
+  ADR-078（`.rwe.<config-basename>.{pid,log}` 貼著解析後的設定檔,log 0600,引擎不自建輪替,DEPLOY.md 揭露 PII 與無輪替）、
+  ADR-079（K5：`listRuns()` **不加 LIMIT**,理由寫進 port 契約）。
+- **一條 owner_decision（ARCH-172）**：`/api/runs`/`/api/home` 是否分頁 —— 兩行程式,但會把 `/api/home` 的 avgCostUSD/successRate
+  從「全歷史」悄悄變成「最近 N 筆」,那是產品語意,不是工程取捨,所以標記待決而不是自己決定。
+- **追溯**：1934 項/89 缺口 → **1961 項/89 缺口,缺口集合逐字相同**（27 條新列、0 新缺口、0 關閉）。
+  既有 15 條斷鏈（IMPL-303..309 → 已刪的 REQ-144..150）未動,`--check` 仍 exit 1,與 v27 以來相同。
+- `state.yaml`：`iteration: v36`、`gates.architecture.passed=true`、`current_stage: design`。
+
+## 2026-09-21 — v36 Gate 3+4（任務＋詳細設計，合併）PASSED：TASK-239..247、DES-241..249
+
+- **Panel 已預先跑完兩輪**（`.panel/design/{adversarial,quality-dimensions}.{r1,r2}.md`），本關只做綜整,未再 spawn。
+  兩份 r2 **又一次交錯**（各自回應對方的 r1),所以有三點是**裁決**而非抄錄。
+- **任務切法換了**:v35 用「一個檔只屬於一張卡」讓卡可以平行;v36 做不到 —— K1/K2 的捕捉站、REQ-213 的
+  `_transition`、REQ-215 的 ledger 三者都在 `run-manager.ts`,硬套會把「必須最先落地」和「必須最後落地」綁成同一張卡。
+  改以**執行期耦合**切(panel 收斂的規則:沒有可獨立測試的中間狀態就是一張卡),代價是明確的落地序 239→247 與五條硬邊。
+- **三條裁決**:(1) `run.terminal` 只帶 `principal`,不帶 actor 三欄 —— QD 要一致形狀,但對手方 D2 查出 run 路徑上
+  `bypass` 永遠 false、`idSource:'claimed'` **結構上不可達**(`runStart` 用 `attributionPrincipal`、schema 是
+  `additionalProperties:false`),硬加就是「看起來被證實、其實沒有」的欄位;配一條 `run_start` 拒絕呼叫端 `principal`
+  的守衛測試,讓這個推導不會悄悄腐爛。(2) `attemptsFor` 的守衛取純表格測試＋各實作呼叫共用匯出的斷言,不做跨實作行為測試
+  (那要同時 mock `fetch` 與 Agent SDK 只為證明一個 import);記為對 K7 的**刻意不擴張**。(3) K8 依**意圖**結清 ——
+  兩個 lens 都查證 `attempts` 不是 config key(`main.ts:85-86` 只有 `retries`/`timeoutMs`,v35 已掃),
+  在 sweep 加一列會斷言沒人設定的鍵;真正會為正確理由失敗的守衛是 composition-root 整合測試。
+- **本次綜整自己加的行為只有一處**:A7 的觸發器問題**在 DES-246 裡答了**(兩個 lens 都說必須先答)。claim 綁的是
+  workflow **名稱**、名稱列必然存活,所以刪版本不會產生孤兒 claim;但 `declaredTriggers` 是存活列的聯集,而 fire path 的
+  `NOT_IN_RELEASE` 拒絕以 `declaresTrigger` 為**真**為前提(`server.ts:957`),所以刪掉唯一宣告該 id 的版本會把
+  「有紀錄的拒絕」悄悄變成「真的用 release 版的程式碼開跑」。修法是把前後差集當 `claimedTriggers` 回傳,走 facade
+  既有的 `:390-397` release 迴圈;建立時綁定的舊 claim 從不進 `declaredTriggers`,所以永遠不在差集裡。
+- **最高風險的一條是行為保持,不是新功能**:ARCH-158 原文「一個 Principal 一個 Actor」會讓 admin 在 `register`/
+  `insertVersion`(今天由 `attributionWithArg` 把關、**閘門會生效**)上獲得擁有權繞過 —— 由一條稽核需求送出的權限擴張。
+  改成 `actorFor(p, a, gate)` 逐呼叫站鑄造,`bypass ≡ (今天閘門值 === null)`,三個站點行為逐一等價,
+  並以對照 legacy 運算式的 18 列表格測試釘住(這正是 Gate 2 constraint 10 的可執行形式)。
+- **追溯**:1961 項/89 缺口 → **1979 項/98 缺口**;新增 18 項(9 TASK＋9 DES)、新增 9 缺口**全部**是新 TASK 的
+  「未實作」(Gate 6 關閉),其餘缺口 tuple 逐字相同。既有 15 條斷鏈未動,`--check` 仍 exit 1(自 v27 以來相同)。
+- **沒有新的 owner_decision**:ARCH-172(`listSummaries()` 分頁)那條原封不動帶著走,它擋 Gate 8、不擋本關;
+  TASK-245 只把 ADR-079 的裁決寫進 port 契約,沒有任何一張卡假設它的哪一邊。
+- **沒有任何既有 DES 被 bump `iter:`**(v33 F6-1 家規第三次適用,`trace.py:213-219`):被取代的設計以交叉引用承接。
+- `state.yaml`:`gates.tasks.passed=true`、`gates.design.passed=true`、`current_stage: tests`。
+
+## 2026-09-21 — v36 Gate 5（test-first RED）PASSED：UT-297..305、IT-293..298、VAL-246..251
+
+- **範圍**:REQ-211..216(新)+ 對 REQ-014/086/087/095/096/097/114/205/207 的**純回歸**收斂(設計已裁定
+  「行為不變,由 REQ-21x 的真實層路徑一併再驗證」——不開新 VAL,連續性斷言寫進新 IT 檔自己的案例、
+  `traces:` 直接掛上舊 REQ,鏡射既有寫法(如 14166 行 `DES-231, REQ-205, REQ-207`))。九張 DES-241..249
+  各配 ≥1 UT/IT + 六個新 VAL(每個 REQ-211..216 一個,acceptance 層、`real:false`)+ 對既有
+  `authoring-guide.test.ts`(UT-293)就地擴充(K7 兩句 guide 文字),`iter` 只 bump 該測試項本身,
+  其追溯父項 DES-239 維持 v35 不動(v33 F6-1 家規:bump 設計父項會對其下每個 UT 觸發漂移,本關無法一併關閉;
+  新內容改追溯到本輪新增的 DES-249)。
+- **ID 事故與修正**(自己抓到、自己修掉):第一版把六個新 VAL 編成 VAL-238..243,與 `08-validation.md`
+  (validator 在 v35 Gate 7.5 已寫入、追溯完全不同 REQ 的既有 VAL-238..243)**直接撞號**——05-tests.md
+  單檔看起來乾淨(該檔本身最大 VAL 是 237),但 trace.py 掃整個 sdlc 目錄,`08-validation.md` 才是真正的
+  上限(245)。改編成 VAL-246..251。另一個自產缺陷:UT-293 一開始被我在檔尾**新開一個標題**而非「就地修改」
+  既有列,造成同 ID 重複標題;已合併回原列(14321 行起),刪掉檔尾那份複本。兩者都在自我驗證(trace.py 當
+  library 跑 `scan()`/`analyze()` 而非只看列印出的計數)時被抓到,不是靠人工複查。
+- **RED 確認方法**:15 個新測試檔(9 UT 檔 + 6 IT 檔)+ 1 個就地擴充(authoring-guide.test.ts)逐檔
+  `npx vitest run <file>` 個別確認,再全 repo 跑一次完整回歸(`npx vitest run`,678s):446 個檔案
+  (16 failed/429 passed/1 skipped)、3280 個案子(41 failed/3206 passed/26 skipped)——16 個失敗檔案
+  逐一核對,精確等於本關新增/擴充的 16 個檔案,既有 430 檔/3194 案/0 failed 的 v35 基線零回歸;41 個
+  紅案子與逐檔手算總和(7+1+6+9+1+3+2+4+2+2+2,另 4 個 suite-load-failure 檔案貢獻 0 個 test 層級失敗
+  但仍計入 16 個失敗檔案)完全吻合。7 個以上的案子合理綠——「既有行為不變」的回歸釘子,
+  如 UT-302 的整名 deregister 案例、IT-296/IT-297 的既有路徑案例、UT-304 的 fresh-error 負案例。真正
+  花時間的是 IT-298(唯一一個 DES-248 保留的真 fork 案例,REQ-215 明文禁止 mock IPC):`agentType` 退役的
+  拒絕只有「已存在於 catalog、早於 v34 掃描規則的舊版本」路徑會踩到(`register()`/`validateRegistration()`
+  今天在登記時就先擋掉),於是用 `catalog.insertVersion()` 直接寫版本列(繞過掃描,不是繞過待測邏輯本身)
+  模擬那個唯一可達路徑；9-refusal 上限案例的第一版預期整個 run 會 `failed`,但今天 `ENGINE_REFUSAL_CODES`
+  還沒收 `PARAM_UNKNOWN`,`parallel()` 把全部 9 個拒絕吞成 `null`,run 反而 `completed`——改用
+  `waitForTerminal`(等任一終態)讓斷言把真正的「不只是錯 code,連失敗路徑本身都還沒接上」講清楚,而不是
+  卡死等一個永遠不會發生的 `'failed'` 狀態。
+- **`--dry-run` 安全閘**:`deploy.sh` 今天完全沒有 `--dry-run`,IT-293 的 `beforeAll` 先讀原始碼確認
+  字串存在才允許 spawn——避免在共用工作樹上不小心跑出真的 `npm install`/背景引擎。
+- **追溯**:1979 項/98 缺口 → **2000 項/98 缺口**(+21 項,全部本輪新增,0 斷鏈、0 孤兒);缺口淨額 0,
+  組成是 6 個「REQ-211..216 完全沒測試」關閉、6 個「有測試但還沒 real:true」新開(用 `git show
+  HEAD:.../05-tests.md` 疊到目前工作樹的 scratch 副本(未動 CLAUDE.md 禁止的 checkout/restore/stash)
+  重建 Gate 3+4 後、本關之前的基線(1979/98,與 Gate 3+4 自己的 note 逐字相符)才做出這個 diff,
+  不是憑印象比對)。
+- **顧問審查抓到的一個契約違反,自己修掉**:IT-298(唯一真 fork 案例)第一版標成 `real:true`——
+  理由是「反正這個案例已經跑真的 sandbox child,沒 mock SUT 邊界」,但 verifier 合約講得很明白:
+  `real:true` 只有 Gate 7.5 的 validator 在真跑證明後才能標,Gate 5 一律留 `false`。在一個
+  `result:fail` 的紅測試上標 `real:true` 恰好是 mock 硬規則要擋的「假驗證」訊號本身——而且
+  trace.py 的缺口 diff 立刻證明了後果:REQ-215 會因此**直接跳過**「未真實驗證」缺口,不留痕跡。
+  改回 `real:false` 後,REQ-215 與其餘五個 REQ 一樣正常開出「未真實驗證」缺口(上面的 2000/98)。
+  同一輪順便修正另外三處不夠誠實的地方(皆為顧問審查抓到、非自己覆查發現):UT-304 的 scope note
+  誤稱「unknown-ref fallback 由 IT-298 涵蓋」,但 IT-298 三個案例其實沒有這個案子——改成誠實承認
+  這個案子沒做(`RunEntry.refusals` 在 `run-manager.ts` 內沒有任何外部讀取介面,無法從這層驅動);
+  IT-298 案例 2 原標題聲稱驗證 `refusalsDropped` 遞增,但 DES-248 整份簽章裡這個欄位根本沒有讀取
+  介面,斷言其實只測了「9 個拒絕不會弄壞正常的失敗回報」——改標題;IT-295 案例 2 原描述是「RESUMED
+  run 沿用同一 principal」,但 run 在第二個 RunManager 建立前就已經 `failed`,第二個 eventSink 從未
+  觸發——改成誠實描述為「跨行程 status 讀回」,並補一句 TASK-243(4) 真正的 R-2(suspend→resume→
+  第二次 terminal)案例本輪沒做。另補兩個顧問點名、成本低又確實紅的案子:UT-304 加一個「偽造
+  code(非 v36 新問題,是 v25 就有的邊界)」負案例;`tests/unit/tool-specs.test.ts` 加一個
+  `run_start.additionalProperties:false` 且無 `principal` 鍵的守衛(今天已經是綠的,是 DES-245
+  決策理由第 2 點「這個推導不會腐爛」的那把鎖,不是新的紅項目——這個守衛就地擴充既有 UT-292
+  (18→19 個 `it()`,`iter` bump 到 v36、`traces` 加 DES-245,原父項 DES-239 維持 v35 不動,同一條
+  F6-1 家規)。第二輪顧問審查再抓到兩處:UT-304 的 unknown-ref 註記原本只說「不可測」,講得不夠精確——
+  補上真正的原因(`refusalRef` 本來就有可觀察的行為,只是子行程永遠用父行程給的 `callSeq` 自己鑄造,
+  一個「map 裡沒有的 ref」只可能來自偽造/過期的子行程 IPC 訊息,而那正是 REQ-215 禁止的 mock 路徑,
+  不是缺一個讀取介面);兩處未覆蓋(`TASK-244(8)`/`TASK-245(4)` 的訊息文字、unknown-ref fallback)
+  合併進 05-tests.md 同一份 exit-gate self-check 清單,不再散落兩處。
+- **沒有新的 owner_decision**:ARCH-172 的分頁裁決原封不動帶著走,不擋這關。
+- `npx tsc --noEmit`:新檔的型別錯誤全部是「符號尚未匯出/模組尚未存在」(預期中的 unimplemented 訊號);
+  修掉了兩類真正屬於我自己測試碼的瑕疵(`write:` 參數隱式 any、一個因模組未解析而暫時「unused
+  @ts-expect-error」的型別檢查案例,移到獨立於 `it()` 之外的型別斷言,註明原因)。
+- `state.yaml`:`gates.tests.passed=true`、`current_stage: impl`。

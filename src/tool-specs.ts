@@ -290,10 +290,17 @@ export const TOOL_SPECS = [
   },
   {
     name: 'workflow_deregister', entity: 'workflow', key: 'name' as const,
-    description: "Delete a workflow and release every trigger claimed under its name.",
-    inputSchema: schema({ name: { type: 'string' } }, ['name']),
+    // v36 (DES-246, TASK-244): `version` is optional — omitted, this deletes the WHOLE workflow
+    // (every version, its diagrams, its assets, the name row) exactly as before; supplied, it
+    // deletes only that one version's rows and the name/assets/other versions survive.
+    description: "Delete a workflow and release every trigger claimed under its name. Optionally pass `version` to delete only that one version instead of the whole workflow.",
+    inputSchema: schema({ name: { type: 'string' }, version: { type: 'string', description: "Optional. Delete only this version (e.g. 'v1') instead of the whole workflow." } }, ['name']),
     outputSchema: OUT,
-    errors: ['WORKFLOW_NOT_FOUND', 'NOT_WORKFLOW_OWNER', 'FORBIDDEN_ROLE'],
+    errors: [
+      'WORKFLOW_NOT_FOUND', 'NOT_WORKFLOW_OWNER', 'FORBIDDEN_ROLE',
+      // v36 (DES-246, TASK-244): only reachable when `version` is supplied.
+      'VERSION_NOT_FOUND', 'VERSION_PINNED_BY_CHANNEL', 'VERSION_LAST_REMAINING', 'VERSION_PINNED_BY_RUN',
+    ],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'workflow' } as AuthzRow,
     fixture: { happy: { name: ref('workflow') }, errors: { WORKFLOW_NOT_FOUND: { name: ABSENT_WORKFLOW } } },
@@ -376,7 +383,7 @@ export const TOOL_SPECS = [
   },
   {
     name: 'workflow_list', entity: 'workflow', key: null,
-    description: 'List registered workflows; each row carries whether it currently has a runnable release.',
+    description: "List registered workflows; each row carries whether it currently has a runnable release. `lastRunAt` is the most recent run on record; null = never run.",
     inputSchema: schema({ onlyRunnable: { type: 'boolean' } }),
     outputSchema: OUT,
     errors: [] as ErrorCode[],
@@ -535,7 +542,7 @@ export const TOOL_SPECS = [
   },
   {
     name: 'run_status', entity: 'run', key: 'runId' as const,
-    description: "Poll a run's status; terminal states carry the final outcome. `failedAgentCount` counts terminal non-success agents; it is omitted (never 0) when the run has no agent records yet — absence is not health, poll again once agents exist, and read it against the `agentCount` this same row already returns. The owner's response also lists any cross-principal reads of this run's workspace or logs.",
+    description: "Poll a run's status; terminal states carry the final outcome. `failedAgentCount` counts terminal non-success agents; it is omitted (never 0) when the run has no agent records yet — absence is not health, poll again once agents exist, and read it against the `agentCount` this same row already returns. A terminal failure's `error.code` alone is not engine-attested — a script can forge one by setting `e.name` before rethrowing — only this run's own captured refusal ledger is. The owner's response also lists any cross-principal reads of this run's workspace or logs.",
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
     errors: ['RUN_NOT_FOUND', 'NOT_RUN_OWNER'],
@@ -549,7 +556,7 @@ export const TOOL_SPECS = [
     // specialised outputSchema — see DES-183's own boundary) — `meta.usage` is this run's token/USD
     // total plus `unpricedCalls`/`unmappedMessages`; `meta.budgetEnforceable` names which limits can
     // actually bind given the models this run can reach, and which of those have no known price.
-    description: "Fetch a terminal run's result payload. On a failed run, `result.error` is `{code, message}`. The response also carries `meta.usage` (tokens, USD cost, unpriced-call count) and `meta.budgetEnforceable` (which limits can bind, and which reachable models have no known price).",
+    description: "Fetch a terminal run's result payload. On a failed run, `result.error` is `{code, message}`. This run's own refusal ledger — never anything lifted from outside this run — is engine-attested; `error.code` alone is not and never has been (a script can set `e.name` before rethrowing to forge any code). The response also carries `meta.usage` (tokens, USD cost, unpriced-call count) and `meta.budgetEnforceable` (which limits can bind, and which reachable models have no known price).",
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
     errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'NOT_RUN_OWNER', 'NESTING_DEPTH_EXCEEDED', 'NESTING_CYCLE', 'DESCENDANT_CAP_EXCEEDED'],
