@@ -9232,3 +9232,66 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   computation — both fields already arrive on `/api/runs`/`/api/runs/:id` via TASK-235/236.
   `failedAgentCount` is deliberately NOT rendered here (DES-240 rationale item 9).
 - **refactor:** reviewed at this gate's simplify pass — no issue found.
+
+### IMPL-358 — Gate-8 send-back P1 (security blocker): `src/server.ts` wires the real `eventSink`
+
+- **status:** done
+- **traces:** TASK-241, DES-243, REQ-213
+- **greens:** IT-294 (both new cases)
+- **files:** src/server.ts
+- **commit:** (uncommitted at report time — orchestrator owns the commit split, see report)
+- **iter:** v36
+- **note:** **Gate-8 send-back, security blocker, found by the orchestrator's review of the v36
+  parallel-implementation gate.** TASK-239..247 landed `src/event-log.ts`'s `createEventSink` and
+  wired it into `WorkflowCatalog`'s constructor and `RunManagerDeps`, but nothing in `src/server.ts`
+  (the real production composition root — confirmed by reading it: `WorkflowCatalog`/`RunManager`
+  are BOTH constructed inside `createServer()`, not in `main.ts`, which only calls `composeConfig()`
+  then `createServer(config)`) ever called `createEventSink`. `secretValueProvider` was built at
+  the old `:748`, AFTER `catalog` at `:709`, and handed only to `RunManager` at the old `:782` — so
+  both constructors fell back to their own unsecrded `createEventSink({})` default, and production
+  wrote unredacted secret values into the audit log the moment TASK-242/243/244's emitters landed,
+  behind an entirely green test suite (the "composeConfig wiring bug class wearing a security gate's
+  clothes" this project already has a name for). Fix: hoisted `secretSource`/`secretValueProvider`'s
+  construction above `catalog`'s; built ONE `const eventSink = createEventSink({secrets:
+  secretValueProvider, now: () => clock.isoNow()})` (the SAME `SystemClock` instance `RunManager`
+  already receives, not a bare `new Date()`); forwarded that SAME instance into both
+  `WorkflowCatalogOpts` and `RunManagerDeps`. TASK-241 DoD item 6 names `main.ts` as the site that
+  "builds ONE sink … and passes it to both" — that is imprecise: `main.ts` never constructs either
+  class directly, `server.ts`'s `createServer()` does, so the orchestrator's ruling to treat
+  `server.ts` as in-scope for this one-file repair (overriding TASK-241's own `files:` list, which
+  named `src/main.ts` and not `src/server.ts`) matches where the composition genuinely happens.
+  **Guard:** IT-294 (`tests/integration/main-composition-root-events.test.ts`) gained two new cases
+  driving the REAL `createServer()` over real HTTP — one per constructor, so deleting `eventSink`
+  from either call alone goes red (both confirmed independently red-first, then green after the
+  fix; see 05-tests.md's IT-294 row for the full account). DES-243's own `tests:` line rules out a
+  `compose-config-v2-wiring.test.ts` row for this concern (`eventSink` is composition-root
+  constructed, not a `FileConfig` key) and names the composition-root IT as the instrument — the
+  orchestrator's suggested file was the alternative that DES-243 itself had already ruled against;
+  this IT is the "closest equivalent" the ruling anticipated.
+- **refactor:** none — surgical hoist + one new `const`, no restructuring beyond what the fix required.
+
+### IMPL-359 — Gate-8 send-back (d): `workflow_deregister({name, version})` invalidates the diagram cache
+
+- **status:** done
+- **traces:** TASK-244, DES-246, REQ-211, REQ-096
+- **greens:** IT-299
+- **files:** src/mcp-facade.ts
+- **commit:** (uncommitted at report time — see report)
+- **iter:** v36
+- **note:** **Real defect found by the orchestrator's Gate-8 review, not a Gate-5 test-first item.**
+  `insertVersion` allocates `v${MAX+1}` over a workflow's REMAINING `workflow_versions` rows
+  (`workflow-catalog.ts:656-659`), so deleting the HIGHEST version of a name (e.g. `v3` of `v1..v3`)
+  frees `'v3'` for the NEXT registration to reallocate — the exact key `DiagramRenderer`'s cache is
+  keyed on (`name + KEY_SEP + version`, `diagram-render.ts:47`). The whole-name `deregister()` path
+  already calls `this.diagramCache?.invalidate(a.name)` for this reason (`mcp-facade.ts:455`); the
+  version-scoped `workflowDeregister({name, version})` path TASK-244 added (`:402-427`) never did,
+  so a viewer re-opening the SAME `(name, version)` pair after a delete+re-register cycle could be
+  served the DELETED version's stale rendered SVG. Fix: `if (removed)
+  this.diagramCache?.invalidate(a.name)` added to the version-scoped branch, right after the
+  `removed`/`WORKFLOW_NOT_FOUND` check, mirroring the whole-name branch's placement and guard.
+  `invalidate(name)` wipes every version's cache entry for that name (the interface has no
+  per-version method) — over-broad but safe, since the cache is a stated DEFENCE against
+  anonymous-route render-abuse, not an optimization (`diagram-render.ts`'s own file header), so the
+  cost of the over-invalidation is one extra re-render for a surviving sibling version, never a
+  correctness gap.
+- **refactor:** none — one line, no restructuring.

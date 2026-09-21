@@ -8182,3 +8182,75 @@ trace --check 對 REQ-205..210 是零 `未真實驗證`/`未驗證`。記錄在�
   修掉了兩類真正屬於我自己測試碼的瑕疵(`write:` 參數隱式 any、一個因模組未解析而暫時「unused
   @ts-expect-error」的型別檢查案例,移到獨立於 `it()` 之外的型別斷言,註明原因)。
 - `state.yaml`:`gates.tests.passed=true`、`current_stage: impl`。
+
+## 2026-09-22 — v36 Gate 6 送回項目全數關閉（implementer）
+
+七個閘前段落地(a8a7b08)後,orchestrator 對「v36 平行實作閘」的審查回覆 11 條裁決(P1 一條安全阻擋 +
+P2 八條 (a)-(i))。本輪逐條關閉:
+
+- **P1(安全阻擋,先做且獨立做)**:`createEventSink` 從未在 `src/server.ts`/`main.ts` 任何一處被呼叫——
+  `secretValueProvider` 在舊 `:748` 才建構,`WorkflowCatalog`(`:709`)已經蓋過去了,`RunManager`
+  (舊 `:782`)雖然拿到 provider 本身,但兩個建構子都沒收到 `eventSink`,雙雙退回各自不掛密碼的
+  `createEventSink({})` 預設值——production 把未遮蔽的密碼原文寫進稽核日誌,而整套測試維持全綠。
+  修法:把 `secretValueProvider` 的建構搬到 `catalog` 之前,建一個共用的
+  `createEventSink({secrets: secretValueProvider, now: () => clock.isoNow()})`,同一個實例餵給
+  `WorkflowCatalogOpts` 與 `RunManagerDeps` 兩邊。守衛先紅後綠,而且是「兩個建構子各自獨立驗證」——
+  先只加了 `catalog.register` 那個案例過綠,顧問審查點出這樣光拔掉 `RunManager` 那邊的
+  `eventSink` 測試也不會發現,於是補了第二案(一個失敗 run 的 `run.terminal` 行),用「暫時拔掉
+  `eventSink` 引數、確認紅、再還原」各自證明兩案都是真紅。落點依 DES-243 自己的 `tests:` 那行
+  (`eventSink` 是組合根建構出來的,不是 `FileConfig` 鍵,明文排除 `compose-config-v2-wiring.test.ts`
+  這條路)放進既有的 `IT-294`(`tests/integration/main-composition-root-events.test.ts`),而非
+  orchestrator 建議的預設落點——但這是該 DES 早就裁決過的正確落點,不是我自選。TASK-241 DoD(6) 講的是
+  「`main.ts` 建一個 sink 餵給兩邊」,但讀碼確認 `WorkflowCatalog`/`RunManager` 真正的建構site是
+  `server.ts`'s `createServer()`,`main.ts` 只是呼叫 `composeConfig()`+`createServer()`——DoD 文字本身
+  不準,orchestrator 把 `server.ts` 劃入本次修補範圍(覆蓋 TASK-241 原本 `files:` 清單)是對的。
+- **(a) 三段式 commit 邊界**:只回報 hunk 邊界,不自己重現分割(orchestrator 自己管 commit)。
+  `src/errors.ts`「純 captureFailure 新增」是 `git diff 24762d2 a8a7b08` 裡唯一一段純新增的 hunk
+  (`@@ -322,3 +326,16 @@`,目前檔案 328-340 行)——但同一份 diff 裡還混了一段 TASK-244 的
+  `VERSION_PINNED_*` 三個 ERROR_CATALOG 條目(~:97-100)與一段 `capErrorEnvelope(e, maxBytes)` 參數化
+  (~:302-306,`captureFailure` 的依賴,必須跟它一起走)——純新增 commit 需要排除前者、帶走後者。K2 的
+  `failDetail` hunk 在目前檔案 707-718 行(整段是註解改寫+把 `rawMessage.slice(0,200)` 換成
+  `captureFailure(...)`)。兩處 `resultError` hunk 在目前檔案 790 行(seedRefFail 分支)與 1328 行
+  (`_runLive` 失敗分支)——後者這段**與 TASK-246 的 `refusalHit` 交織在同一個 hunk 裡**(diff 顯示
+  `refusalHit`/`captureFailure` 兩行一起新增,無法只取後者不動前者的上下文),乾淨分割需要
+  orchestrator 手動編輯或把整段一起收進第三個 commit。
+- **(b) DES-246 拒絕順序**:確認 IT-296 的 fixture(執行版 oracle)才是對的——facade 在呼叫
+  `catalog.deregisterVersion` 之前就先探測 `store.listRuns()` 並拒絕,`VERSION_PINNED_BY_RUN`
+  其實跑在最前面,不是文件原本寫的「outcome 6,最後」。已改 04-design.md 的訊號列表與 boundary 段,
+  加一句解釋:跨資料庫讀出的拒絕必須在進入變更路徑之前就處理掉,不能跟 catalog 內部五個結果交錯。
+- **(c) DES-248 形狀分歧**:UT-304 斷言 `result.error.refusalRef`(巢狀),DES-248 簽章原本畫成
+  `error` 的手足欄位。確認實作在兩層各自不同且都是刻意的:`evaluateScript` 自己的回傳(guards.ts,
+  UT-304 直接測的那層)把 `refusalRef` 放在 `error` 內部;`child-entry.ts` 的 IPC 終端 `send()`
+  才把它拉到 `error` 的手足位置(因為 `host.ts` 的 `RunOutcome` 型別本來就是扁平信封,不是巢狀的)。
+  已改 04-design.md 的簽章片段配合 UT-304,並補一句說明這是刻意的 wire-boundary hoist,不是意外。
+- **(d) 版本號回收撞到 diagram cache——真缺陷,已修**:`insertVersion` 用 `v${MAX+1}` 在剩餘列上配號,
+  刪掉最高版本後下一次註冊會撞回同一把 key,而全名 deregister 路徑早就為這個理由呼叫
+  `diagramCache?.invalidate(name)`,版本範圍的新路徑沒有。寫了一個用真 `DiagramRenderer`(計數假
+  render)的新案例(`IT-299`)先證明真的會serve舊快取的 SVG(render 次數卡在 1,沒有變成 2),再在
+  `mcp-facade.ts` 的版本範圍分支補上同一句 `invalidate`,案例轉綠。
+- **(e) `VERSION_CEILING_EXCEEDED` 訊息**:讀碼確認兩處 throw 站(`validateRegistration`/
+  `insertVersion` 各一)早就正確寫上 `workflow_deregister({name, version})`,只是沒有測試釘住。
+  在既有 `IT-085` 就地擴充兩個案例(一個走 `register()` 命中第一處,一個直接呼叫
+  `insertVersion()` 繞過 `validateRegistration` 命中第二處)——兩案都是首次執行就綠,
+  用「暫時把預期字串改壞、確認真的紅、再改回來」的變異測試證明非空洞。
+- **(f) run_result/run_status 佐證句**:讀碼確認兩個描述早就有「只有這個 run 自己的拒絕帳本才算
+  engine-attested,`error.code` 本身從來就不算(腳本可以在重拋前偽造 `e.name`)」這句話,只是沒測試
+  釘住。在既有 `UT-292` 就地補一案,首次執行就綠,同樣用變異測試證明非空洞。
+- **(g) R-2(真正的 suspend→resume→第二次 terminal)**:讀碼確認 `_requireLive` 的重建早就有
+  `principal: spec.principal` 這行(K2 已做)。仿 `crash-resume.test.ts` 的 blockingGateway/
+  countingGateway 寫了一個真正 suspend 中途、第二個 RunManager resume 到新終態的案例,補進既有
+  `IT-295`——首次執行就綠,用「暫時把該行改成 `principal: undefined`、確認只有這個新案例變紅、
+  其餘兩案不受影響、再改回來」證明非空洞且精準命中重建路徑。
+- **(h) `actorFromPrincipal` legacy fallback**:接受現狀,在函式加了一段註解,說明這條路徑只有
+  直接/legacy 呼叫者(測試或 pre-v36 形狀的呼叫)才會走到,production facade 路徑
+  (`mcp-facade.ts`'s `actorFor`)一律自己鑄造 `idSource`,不要誤讀成「自稱身分就能製造稽核可信度」。
+- **(i) DoD(3) 前提過期**:`putDiagramResult` 的晚寫入守衛從 v23 寫下來就是 `(name, version)`
+  鍵(`SELECT ... WHERE name = ? AND version = ?` + `ON CONFLICT (name, version)`),從來不是
+  name-keyed,沒有東西要搬。已改 03-tasks.md 的 TASK-244 DoD(3) 文字,順帶指向 (d) 的真缺陷修法
+  (那是另一個、真的需要新增 invalidate 呼叫的快取,不是這個 SQL guard)。
+- **順帶發現、回報但沒動**:整個 v36(TASK-239..247)的程式碼早已進 `a8a7b08` 這個 WIP commit,但
+  06-impl-log.md 完全沒有任何 v36 的 IMPL 列——不在本輪 P1/(a)-(i) 範圍內,列在報告裡讓 orchestrator
+  決定要不要另開一輪補登。TASK-244 DoD(1) 的敘述也帶著跟 DES-246 同一種「pinned-run 排最後」的過期
+  說法,但 orchestrator 只點名修 04-design.md,這處沒動,一併在報告點出。
+- `npx tsc --noEmit` 全程乾淨;本輪新增/修改的 10 個測試檔單獨跑過(118 個案例全綠)。
+- `state.yaml`:`current_stage` 前綴補一段本輪紀錄,`gates.impl.note` 同步更新。

@@ -5940,13 +5940,26 @@ version is refused `UNKNOWN_VERSION`, and the channel is confirmed still unpubli
 refusal happened before any pointer write). Closes the coverage-gate finding for `publish`
 (89.5% → 100%, 17/19 → 19/19 statements).
 
-### IT-085 — registration ENFORCES: `validateScriptEntry` first, the version ceiling second
+### IT-085 — registration ENFORCES: `validateScriptEntry` first, the version ceiling second [AMENDED v36 Gate-8 send-back: +1 case, message-text pin, DES-246/TASK-244]
 - **status:** green
-- **traces:** ARCH-071, ARCH-074, DES-111, DES-112, DES-117, TASK-107
+- **traces:** ARCH-071, ARCH-074, DES-111, DES-112, DES-117, DES-246, TASK-107, TASK-244
 - **tier:** integration
 - **real:** false
 - **result:** pass
-- **iter:** v22
+- **iter:** v36
+
+**[Gate-8 send-back (e), this gate's implementer, iter bumped on this item only — its original
+trace parents DES-111/112/117/TASK-107 stay v22 unbumped, DES-246/TASK-244 added as the v36 parents
+this amendment's content traces to (v33 F6-1 convention)]:** TASK-244 DoD 8 asks that BOTH throw
+sites of `VERSION_CEILING_EXCEEDED` name `workflow_deregister({name, version})` in their message —
+implemented (confirmed by reading `src/workflow-catalog.ts:603-604` and `:649-650`) but nothing
+pinned it. Added a `message: expect.stringContaining(...)` assertion to the existing case (exercises
+the `validateRegistration` copy, reached via `catalog.register()`) plus one NEW case calling
+`catalog.insertVersion()` directly — bypassing `validateRegistration` — to reach the OTHER throw
+site (`insertVersion`'s own defence-in-depth re-check inside its transaction, unreachable via
+`register()` since `validateRegistration` always refuses first). Both GREEN ON FIRST RUN (message
+text already correct); proved non-vacuous by mutation — temporarily appended `, BOGUS}` to the
+expected substring in both cases, both failed with the real (unmatching) message printed, reverted.
 
 File: `tests/integration/registration-enforcement.test.ts`. Mock policy (integration): real
 `WorkflowCatalog` with injected `aliasNames`/`mcpLookup` ports, real SQLite, no network. PARSE_ERROR /
@@ -14305,9 +14318,9 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
   **[v35 verifier ruling — Gate 6.5+7 regression, 2026-09-21]:** re-ran this item's test file standalone (`npx vitest run <file>`) after the GREEN-phase fixes landed (IMPL-343..348) — green. Confirmed by the full-repo regression this same gate re-ran: 430 files / 3194 tests passed, 0 failed. Flipped from the Gate-5 RED baseline to the actual post-implementation result.
 - **iter:** v35
 
-### UT-292 — `ENVELOPE_NOTE` and the advertised omission semantics (DES-239) [AMENDED v36: +1 case, DES-245/TASK-243]
+### UT-292 — `ENVELOPE_NOTE` and the advertised omission semantics (DES-239) [AMENDED v36: +1 case, DES-245/TASK-243; AMENDED v36 Gate-8 send-back: +1 case, DES-249/TASK-247]
 - **status:** green
-- **traces:** DES-239, DES-245, REQ-206, REQ-207, REQ-210
+- **traces:** DES-239, DES-245, DES-249, REQ-206, REQ-207, REQ-210, REQ-215
 - **tier:** unit
 - **real:** false
 - **result:** pass
@@ -14325,6 +14338,15 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
   becoming a lie. `iter` bumped on this item only; its ORIGINAL trace parent DES-239 stays v35
   unbumped (v33 F6-1), DES-245 added as the new v36 parent this amendment's content traces to.
   Verified: `npx vitest run tests/unit/tool-specs.test.ts` → 19/19 pass.
+  **[Gate-8 send-back (f), this gate's implementer]:** `tests/unit/tool-specs.test.ts` extended again
+  (19→20 `it()` sites) — 1 new case, GREEN ON FIRST RUN (TASK-247 DoD 4's attestation-boundary
+  sentence was already implemented on both `run_result`/`run_status` descriptions — `src/tool-specs.ts`
+  ":559"/":545" already state "This run's own refusal ledger … is engine-attested;
+  `error.code` alone is not and never has been (a script can set `e.name` before rethrowing to forge
+  any code)" — but nothing pinned it). Proved non-vacuous by mutation: temporarily changed the
+  case's `/forge/i` match to a nonsense pattern — failed with the real description text printed;
+  reverted, passes again. Same shape as this file's existing description assertions (`desc()`/
+  `projectToolsList()` lookup + `toMatch`).
 - **iter:** v36
 
 ### UT-293 — the guide's three v35 facts (DES-239) [AMENDED v36: +2 cases, DES-249/TASK-247]
@@ -14854,20 +14876,38 @@ e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
   slice makes structural.
 - **iter:** v36
 
-### IT-294 — the composition root: one real `eventSink` wired into `WorkflowCatalog` + `RunManager`
-- **status:** red
+### IT-294 — the composition root: one real `eventSink` wired into `WorkflowCatalog` + `RunManager` [AMENDED v36 Gate-8 send-back: +2 cases, P1 security fix]
+- **status:** green
 - **traces:** DES-243, DES-244, DES-245, DES-246, REQ-213, REQ-212, REQ-211, REQ-086, REQ-087, REQ-114, REQ-014, REQ-095
 - **tier:** integration
 - **real:** false
-- **result:** fail
-- **evidence:** `tests/integration/main-composition-root-events.test.ts` (new, 5 cases) — suite-level
-  red: `src/event-log.ts` doesn't exist. Real `WorkflowCatalog` + real `RunManager` over real SQLite,
-  wired to a real `createEventSink`. Covers TASK-242's register+publish lines and the admin-bypass
-  audit case (re-proving REQ-086/087/114 — a non-admin stranger is still refused
-  `NOT_WORKFLOW_OWNER`), TASK-243's completed+failed `run.terminal` pair, and TASK-244's
-  `catalog.deregister` line. Seam asserted: `WorkflowCatalog`'s constructor opts and `RunManagerDeps`
-  both gain an optional `eventSink` (DES-243's own text names both call sites) — the implementer's
-  seam to build against.
+- **result:** pass
+- **evidence:** `tests/integration/main-composition-root-events.test.ts` (5 cases) — GREEN: the
+  hand-built `boot()` helper's 5 cases (register+publish, admin-bypass audit, completed+failed
+  `run.terminal`, `catalog.deregister`) were already implemented and green at Gate 5's close (code
+  landed, no IMPL row was ever written for TASK-241/242/243/244 — see this gate's IMPL-358 note).
+  **Gate-8 send-back P1 (security blocker, this gate's implementer):** the `boot()` helper above
+  proves `WorkflowCatalog`/`RunManager` correctly USE an injected `eventSink`, but never proves the
+  REAL composition root (`src/server.ts`'s `createServer()`) actually builds and passes one — and it
+  didn't: `createEventSink` was called nowhere in `server.ts`/`main.ts`, so production fell back to
+  BOTH constructors' own unsecrded `createEventSink({})` default and wrote unredacted secret values
+  into the audit log. Two new cases added, both driving the REAL `createServer()` over real HTTP (not
+  the hand-built helper): (1) a `workflow_register` whose workflow NAME carries a real
+  `RWE_SECRET_*` env value — confirmed RED first (raw secret present in the `catalog.register`
+  console line), fixed by hoisting `secretValueProvider`'s construction above `WorkflowCatalog`'s in
+  `server.ts` (was built after, unused by it) and building ONE `createEventSink({secrets:
+  secretValueProvider, now: () => clock.isoNow()})` forwarded into BOTH the `WorkflowCatalogOpts` and
+  `RunManagerDeps`; (2) the SAME probe against a `run.terminal` line (a failed run whose NAME carries
+  the secret) — added after advisor review flagged the first case alone leaves the RunManager
+  constructor uncovered (deleting `eventSink` from ONLY the `RunManager` call would leave case 1
+  green while `run.terminal` still leaks); confirmed this second case is independently RED by
+  temporarily removing `eventSink` from the `RunManager` deps only (case 1 stayed green, case 2 went
+  red exactly as expected), then restored. Placement: DES-243's own `tests:` line rules OUT a
+  `compose-config-v2-wiring.test.ts` row (`eventSink` is composition-root constructed, not a
+  `FileConfig` key) and names this growing composition-root IT as the instrument — both new cases
+  live here, not there. No dedicated `tests/unit/compose-config-v2-wiring.test.ts` guard was added;
+  this IT boots the real `createServer()` itself, which is the stronger guard (it also covers
+  `main.ts`'s own — currently absent — call path, not just a config-forwarding check).
 - **iter:** v36
 
 ### UT-301 — `getSpec()` returns `principal` on BOTH stores (ADR-067 SQL/TS-twin guard)
@@ -14884,23 +14924,28 @@ e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
   to close.
 - **iter:** v36
 
-### IT-295 — `run.terminal` fires at the ONE authoritative terminal writer, `completed` included
-- **status:** red
+### IT-295 — `run.terminal` fires at the ONE authoritative terminal writer, `completed` included [AMENDED v36 Gate-8 send-back: +1 case, the R-2 proof]
+- **status:** green
 - **traces:** DES-245, REQ-213, REQ-212
 - **tier:** integration
 - **real:** false
-- **result:** fail
-- **evidence:** `tests/integration/run-terminal-event.test.ts` (new, 2 cases) — suite-level red
-  (`src/event-log.ts` missing). Covers a COMPLETED run emitting the line (not only failures — the
-  reason it lives at `_transition`, never inside a failure-capture function) and a cross-process
-  status READBACK of an already-terminal run's `principal` (depends on UT-301's `getSpec()` fix
-  landing first). **Retitled after advisor review — case 2 does NOT prove a genuinely RESUMED
-  (suspend → resume → second terminal transition) run's `principal`**: the run in that case already
-  reaches `failed` before the second `RunManager` is even constructed, so no live re-dispatch/
-  re-`_transition` occurs and the second `eventSink` never fires; the case is honestly scoped to
-  "the field survives a fresh-process `status()` read", which is UT-301's own gap from the read
-  side. A true suspend→resume→re-terminal proof (TASK-243(4)'s literal R-2 case) is a materially
-  more expensive fixture and is not built in this pass — named for Gate 6, not silently claimed.
+- **result:** pass
+- **evidence:** `tests/integration/run-terminal-event.test.ts` (3 cases) — GREEN. Original 2 cases:
+  a COMPLETED run emitting the line (not only failures — the reason it lives at `_transition`, never
+  inside a failure-capture function) and a cross-process status READBACK of an already-terminal
+  run's `principal` (UT-301's `getSpec()` fix). Case 2 was honestly scoped as NOT proving a
+  genuinely resumed run's principal (see its own in-file note) — named for Gate 6 rather than
+  silently claimed. **Gate-8 send-back (g), this gate's implementer:** built the real R-2 case —
+  a `blockingGateway`/`countingGateway` pair adapted from `tests/integration/crash-resume.test.ts`
+  (resolves 'A', blocks 'B' forever) catches a run genuinely `running` (not terminal) so `suspend()`
+  is real; a SECOND `RunManager` (own `SqliteRunStore`, own `eventSink2`) then `resume()`s it to a
+  NEW `completed` terminal transition, and the case asserts THAT manager's own emitted
+  `run.terminal` line — not a readback — carries the same `principal`. Green on first run (the
+  one-line `principal: spec.principal` rehydrate `_requireLive` already had, per DES-245/K2), proven
+  non-vacuous by mutation: temporarily changed `run-manager.ts:1177`'s rehydrate to
+  `principal: undefined` — this new case went red (`expected null to be 'carol'`) while the other
+  two cases in the file stayed green (neither touches the resume rehydrate path), confirming the
+  case genuinely exercises that line and only that line; reverted, all 3 green again.
 - **iter:** v36
 
 ### UT-302 — `deregisterVersion`: six outcomes in a pinned order, two DELETEs, re-keyed diagram guard
@@ -15023,6 +15068,30 @@ e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
   scope note) and no test yet exists for TASK-244(8)'s two `VERSION_CEILING_EXCEEDED` message
   strings or TASK-245(4)'s `lastRunAt` tool-description sentence — flagged for Gate 6/the exit-gate
   self-check below, not silently dropped.
+- **iter:** v36
+
+### IT-299 — `workflow_deregister({name, version})` invalidates the diagram cache too (Gate-8 send-back real defect, DES-246, TASK-244)
+- **status:** green
+- **traces:** DES-246, TASK-244, REQ-211, REQ-096
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **evidence:** `tests/integration/deregister-version-diagram-cache.test.ts` (new, 1 case) — a REAL
+  defect this gate's Gate-8 review found (not a Gate-5 test-first item): `insertVersion` allocates
+  `v${MAX+1}` over a workflow's REMAINING rows (`workflow-catalog.ts:656-659`), so deleting the
+  HIGHEST version frees its key for the next registration to reuse — the same staleness reason the
+  whole-name `deregister()` path already calls `diagramCache?.invalidate(name)` for
+  (`mcp-facade.ts:455`). The version-scoped `workflowDeregister({name, version})` path TASK-244
+  added never did. Confirmed RED first: a real `DiagramRenderer` (counting render fake, same
+  convention as UT-167) warms the cache for `(name, 'v3')`, the version is deleted and a new one
+  reallocates the SAME key `'v3'`, and `diagramCache.get(name, 'v3', <new mermaid>)` served the
+  STALE cached SVG from the deleted version (render count stayed at 1 instead of incrementing to 2)
+  — reproduces the staleness itself, not merely a missing spy call. Fixed: `if (removed)
+  this.diagramCache?.invalidate(a.name)` added to the version-scoped branch, mirroring the
+  whole-name branch; `invalidate(name)` is name-wide (the interface has no per-version method),
+  over-broad but safe — the cache is a stated defence against anonymous-route render-abuse, not an
+  optimization (`diagram-render.ts`'s own header), so wiping a surviving sibling version's cached
+  entry just costs one extra re-render, never a correctness gap.
 - **iter:** v36
 
 ### UT-305 — `attemptsFor`: one formula on the `GatewayClient` port, both conformers call it (K6/K7)

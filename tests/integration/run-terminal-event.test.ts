@@ -20,6 +20,31 @@ import { WorkflowCatalog } from '../../src/workflow-catalog.js';
 import { FixedClock } from '../../src/clock.js';
 import { createEventSink } from '../../src/event-log.js';
 import { registerPublished } from '../helpers/workflow-fixtures.js';
+import type { GatewayClient } from '../../src/gateway/client.js';
+
+// R-2 fixture (adapted from tests/integration/crash-resume.test.ts's blockingGateway/countingGateway
+// — same shape, so a genuine suspend catches the run mid-second-call). Process-1 gateway: resolves
+// 'A' immediately, BLOCKS 'B' forever, so `suspend()` lands on a genuinely `running` (not yet
+// terminal) run. Process-2 gateway: resolves everything, so `resume()` drives the run to a NEW
+// terminal transition under the SECOND RunManager.
+function blockingGateway(): { gateway: GatewayClient; bReached: Promise<void> } {
+  let bReachedResolve: () => void = () => {};
+  const bReached = new Promise<void>((r) => { bReachedResolve = r; });
+  const gateway: GatewayClient = {
+    async invoke(req) {
+      if (req.prompt === 'B') { bReachedResolve(); await new Promise<void>(() => {}); }
+      return { ok: true, provider: 'fake', model: 'fake', tokens: { input: 1, output: 1 }, content: req.prompt };
+    },
+  };
+  return { gateway, bReached };
+}
+function countingGateway(): GatewayClient {
+  return {
+    async invoke(req) {
+      return { ok: true, provider: 'fake', model: 'fake', tokens: { input: 1, output: 1 }, content: req.prompt };
+    },
+  };
+}
 
 const clock = new FixedClock(new Date('2026-09-21T00:00:00.000Z'));
 const dirs: string[] = [];
@@ -83,4 +108,35 @@ describe('IT-295: run.terminal fires at the ONE authoritative terminal writer, i
     const view = await mgr2.status(runId);
     expect((view as any).principal ?? (view as any).spec?.principal).toBe('bob');
   });
+
+  // TASK-243(4)'s literal R-2 case (Gate-8 send-back): a GENUINELY suspended run, resumed on a
+  // SECOND RunManager, whose OWN NEW terminal transition (not a readback of an already-terminal
+  // row — the case above) carries the same principal. This is the property REQ-212 exists to
+  // guarantee on the write side, not just the read side.
+  it('R-2: suspend -> resume on a SECOND RunManager -> the NEW terminal transition carries the same principal', async () => {
+    const dir = tempDir();
+    const store1 = new SqliteRunStore(join(dir, 'store'), clock);
+    const catalog1 = new WorkflowCatalog(join(dir, 'catalog'), clock);
+    const g1 = blockingGateway();
+    const mgr1 = new RunManager({ store: store1, clock, catalog: catalog1, workRoot: dir, gateway: g1.gateway } as any);
+    await registerPublished(catalog1, 'it295-r2', `const a = await agent('A', {}); const b = await agent('B', {}); return { a, b };`);
+    const runId = await mgr1.start({ name: 'it295-r2', principal: 'carol' } as any);
+    await g1.bReached; // A journaled, B in flight — genuinely 'running', not terminal
+    await mgr1.suspend(runId);
+
+    // "restart": a SECOND RunManager, its OWN eventSink — the line under test must come from HERE.
+    const store2 = new SqliteRunStore(join(dir, 'store'), clock);
+    await store2.hydrateAll();
+    const catalog2 = new WorkflowCatalog(join(dir, 'catalog'), clock);
+    const lines2: string[] = [];
+    const eventSink2 = createEventSink({ write: (l: string) => lines2.push(l), now: () => clock.isoNow() });
+    const mgr2 = new RunManager({ store: store2, clock, catalog: catalog2, workRoot: dir, gateway: countingGateway(), eventSink: eventSink2 } as any);
+    await mgr2.resume(runId);
+    await waitForStatus(mgr2, runId, 'completed');
+
+    const terminal = lines2.map((l) => JSON.parse(l)).find((e) => e.kind === 'run.terminal' && e.runId === runId);
+    expect(terminal).toBeDefined(); // the SECOND manager's own _transition really fired the line
+    expect(terminal.outcome).toBe('completed');
+    expect(terminal.principal).toBe('carol');
+  }, 30000);
 });

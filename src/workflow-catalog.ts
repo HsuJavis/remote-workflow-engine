@@ -163,7 +163,13 @@ export function canMutate(owner: string | null, actor: Actor): boolean {
  *  validateRegistration/insertVersion/publish) reproduced as an `Actor`: `null` was ALWAYS a full
  *  ownership bypass (the gate's `principal !== null` term), a non-null principal was never a
  *  bypass and compared by identity — `canMutate` on either input is byte-identical to the old
- *  inline expression. */
+ *  inline expression.
+ *  Gate-8 send-back (h): this fallback maps ANY non-null string straight to
+ *  `idSource:'authenticated'` — it is reachable ONLY from direct/legacy callers (a test or a
+ *  pre-v36-shaped caller passing `principal` instead of a minted `Actor`), never from the
+ *  production facade path (`mcp-facade.ts`'s `actorFor` always mints its own `idSource` via
+ *  `idSourceOf`, DES-244). Do not read this as "any self-declared identity is audit-attested" —
+ *  it manufactures no such guarantee; it only reproduces what the pre-v36 `principal` shape meant. */
 function actorFromPrincipal(principal: string | null): Actor {
   return principal === null
     ? { id: null, bypass: true, idSource: 'none' }

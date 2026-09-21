@@ -21,7 +21,7 @@
 //
 // Mock policy (integration): real SQLite-backed WorkflowCatalog + RunManager, real event-log sink;
 // no mock of either SUT boundary.
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -30,7 +30,9 @@ import { RunManager } from '../../src/run-manager.js';
 import { SqliteRunStore } from '../../src/store/sqlite-run-store.js';
 import { FixedClock } from '../../src/clock.js';
 import { createEventSink } from '../../src/event-log.js';
-import { registerPublished } from '../helpers/workflow-fixtures.js';
+import { registerPublished, registerPublishedVia, uniqueWorkflowName } from '../helpers/workflow-fixtures.js';
+import { createServer, type Server } from '../../src/server.js';
+import { FIXTURE_SCRIPT, FIXTURE_MERMAID } from '../../src/tool-specs.js';
 
 const clock = new FixedClock(new Date('2026-09-21T00:00:00.000Z'));
 const dirs: string[] = [];
@@ -125,5 +127,96 @@ describe('IT-294: the composition root — one real eventSink wired into Workflo
 
     const deregLine = lines.map((l) => JSON.parse(l)).find((e) => e.kind === 'catalog.deregister');
     expect(deregLine).toMatchObject({ name: 'it294-dereg', version });
+  });
+});
+
+// P1 (Gate-8 send-back): the ACTUAL production composition root, `src/server.ts`'s `createServer()`,
+// never calls `createEventSink` at all — confirmed by reading the file (no `createEventSink` call
+// site in server.ts or main.ts). `secretValueProvider` is built at server.ts:748 and handed to
+// `RunManager` at :782, but no sink construction ever threads it in, so both `WorkflowCatalog` and
+// `RunManager` fall back to their own `createEventSink({})` default (no secrets) — production writes
+// UNREDACTED secret values into the audit log. The `boot()` helper above bypasses this entirely (it
+// hand-builds an eventSink with a shared instance, the way `src/main.ts` is SUPPOSED to but doesn't);
+// this describe block instead drives the real `createServer()` HTTP entry point, the only way to
+// observe server.ts's own composition-root wiring rather than re-implementing the intended wiring in
+// the test.
+describe('P1: the REAL createServer() composition root wires a secrets-aware sink (Gate-8 send-back)', () => {
+  const SECRET_NAME = 'IT294_P1_GUARD';
+  let server: Server | undefined;
+  let workRoot: string;
+
+  afterEach(async () => {
+    await server?.close();
+    server = undefined;
+    delete process.env[`RWE_SECRET_${SECRET_NAME}`];
+    if (workRoot) rmSync(workRoot, { recursive: true, force: true });
+  });
+
+  it('a workflow_register whose name carries a real env secret never appears raw in the audit log console output', async () => {
+    const secretValue = 'p1guard7f3ac9';
+    process.env[`RWE_SECRET_${SECRET_NAME}`] = secretValue;
+    workRoot = mkdtempSync(join(tmpdir(), 'rwe-it294-p1-'));
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    server = await createServer({ port: 0, bind: '127.0.0.1', workRoot });
+
+    const name = `${uniqueWorkflowName('it294-p1')}-${secretValue}`;
+    const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'tools/call',
+        params: { name: 'workflow_register', arguments: { name, script: FIXTURE_SCRIPT, mermaid: FIXTURE_MERMAID } },
+      }),
+    });
+    expect(res.status).toBe(200);
+
+    const lines = logSpy.mock.calls.map((c) => String(c[0]));
+    logSpy.mockRestore();
+    const registerLine = lines.find((l) => { try { return JSON.parse(l).kind === 'catalog.register'; } catch { return false; } });
+    expect(registerLine).toBeDefined(); // sanity: the audit line was actually emitted
+    expect(registerLine).not.toContain(secretValue); // the raw secret must never reach the audit log
+    expect(registerLine).toContain(`‹secret:${SECRET_NAME}›`); // the sink built here must carry the SAME secretValueProvider RunManager gets
+  });
+
+  // P1 gap (advisor review): the case above alone leaves the OTHER constructor uncovered — deleting
+  // `eventSink` from the `RunManager` deps at server.ts's composition root would leave this case
+  // green while `run.terminal` leaks. This case drives a real failed run through `run_start`/
+  // `run_status` and inspects the `run.terminal` line specifically, so BOTH constructors (DES-243's
+  // "either" requirement) are proven wired to the SAME secrets-aware sink.
+  it('a run.terminal line for a failed run whose NAME carries a real env secret never appears raw either', async () => {
+    const secretValue = 'p1guard-term-9c2e14';
+    process.env[`RWE_SECRET_${SECRET_NAME}`] = secretValue;
+    workRoot = mkdtempSync(join(tmpdir(), 'rwe-it294-p1-term-'));
+    server = await createServer({ port: 0, bind: '127.0.0.1', workRoot });
+
+    const name = `${uniqueWorkflowName('it294-p1-term')}-${secretValue}`;
+    async function mcpCall(method: string, args: Record<string, unknown>): Promise<any> {
+      const res = await fetch(`http://127.0.0.1:${server!.port}/mcp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: method, arguments: args } }),
+      });
+      const json = (await res.json()) as { result?: { content?: Array<{ text?: string }> } };
+      const text = json.result?.content?.[0]?.text;
+      return text !== undefined ? JSON.parse(text) : json;
+    }
+    await registerPublishedVia(mcpCall, name, "throw new Error('boom');");
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const run = await mcpCall('run_start', { name });
+    let status: any;
+    for (let i = 0; i < 60; i++) {
+      status = await mcpCall('run_status', { runId: run.runId });
+      if (['completed', 'failed'].includes(status.status)) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(status.status).toBe('failed');
+
+    const lines = logSpy.mock.calls.map((c) => String(c[0]));
+    logSpy.mockRestore();
+    const terminalLine = lines.find((l) => { try { return JSON.parse(l).kind === 'run.terminal'; } catch { return false; } });
+    expect(terminalLine).toBeDefined(); // sanity: the audit line was actually emitted
+    expect(terminalLine).not.toContain(secretValue); // RunManager's sink must be the SAME secrets-aware instance
+    expect(terminalLine).toContain(`‹secret:${SECRET_NAME}›`);
   });
 });

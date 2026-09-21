@@ -215,6 +215,19 @@ describe('advertised tool descriptions state the v35 omission semantics (DES-239
     expect(`${runStatus} ${runList}`).toMatch(/failedAgentCount/);
     expect(`${runStatus} ${runList}`).toMatch(/omit|absent/i);
   });
+
+  // Gate-8 send-back (TASK-247 DoD 4): the attestation-boundary sentence — a terminal failure's
+  // `error.code` alone is NOT engine-attested (a script can forge one by setting `e.name` before
+  // rethrowing, `refusalCode()`/`guards.ts`); only the run's own captured refusal ledger
+  // (`refusalRef`, TASK-246) is. Implemented on both descriptions already; this pins it.
+  it('run_result/run_status state error.code alone is NOT engine-attested — only this run\'s own refusal ledger is', () => {
+    const runResult = projectToolsList().find((t) => t.name === 'run_result')!.description;
+    const runStatus = projectToolsList().find((t) => t.name === 'run_status')!.description;
+    for (const desc of [runResult, runStatus]) {
+      expect(desc).toMatch(/not.*engine-attested|engine-attested/i);
+      expect(desc).toMatch(/forge/i);
+    }
+  });
 });
 
 // v36 (DES-245, TASK-243, REQ-213/212): the guard that keeps `run.terminal`'s omission of

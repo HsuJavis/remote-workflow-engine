@@ -424,6 +424,13 @@ export class McpFacade {
           const error: ErrEnvelope = { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` };
           return { runId: '', status: 'failed', code: error.code, error };
         }
+        // Gate-8 send-back (real defect): `insertVersion` allocates `v${MAX+1}` over the REMAINING
+        // rows, so deleting the highest version frees its key for the next registration to reuse —
+        // same staleness reason the whole-name path below invalidates for. `invalidate(name)` is
+        // name-wide (the cache has no per-version method), which is over-broad but safe: the cache
+        // is a defence against anonymous-route render abuse, not an optimization (diagram-render.ts
+        // header), so wiping a surviving sibling version's entry just costs one extra re-render.
+        if (removed) this.diagramCache?.invalidate(a.name);
         return { runId: '', status: 'completed', name: a.name, version: a.version, removed, releasedTriggers: claimedTriggers, result: { name: a.name, version: a.version, removed, releasedTriggers: claimedTriggers, remaining } };
       }
       // v24 Gate 7.5 (D-1b, REQ-115/ADR-026): the catalog reports the ids the VERSION ROWS declare

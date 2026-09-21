@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { McpFacade } from './mcp-facade.js';
 import { RunManager } from './run-manager.js';
+import { createEventSink } from './event-log.js';
 import { createSemaphore } from './agent-semaphore.js';
 import { reclaimStaleWorkspaces } from './workspace-gc.js';
 import { SubmissionValidator } from './submission-validator.js';
@@ -705,6 +706,22 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v3 (DES-024/TASK-028/TASK-029): SQLite sibling catalog, same workRoot convention as
   // catalog.db/store/schedules.db — survives restart.
   const mcpProbe: McpProbe = config?.mcpProbe ?? new RealMcpProbe();
+  // v14 (REQ-083, DES-088): SecretValueProvider from env for redact-at-capture wiring. Hoisted
+  // above `catalog` (was built after, at the old ~:748) so the SAME instance can build the v36
+  // (DES-243) audit-line eventSink below, BEFORE WorkflowCatalog's own construction needs it —
+  // Gate-8 send-back P1: without this hoist, `eventSink` never reaches either constructor and
+  // production writes unredacted secret values into the audit log (IT-294's P1 case).
+  const secretSource = loadSecretSourceFromEnv();
+  const secretValueProvider: SecretValueProvider = {
+    entries(): ReadonlyArray<{ name: string; value: string }> {
+      return secretSource.names().map((n) => ({ name: n, value: secretSource.resolve(n) ?? '' })).filter((s) => s.value.length > 0);
+    },
+  };
+  // v36 (DES-243, ARCH-159, TASK-241, REQ-213): the ONE audit-line sink shared by WorkflowCatalog
+  // AND RunManager — same instance, so `catalog.register`/`publish`/`deregister` and `run.terminal`
+  // all redact through the SAME secretValueProvider and share the SAME injected clock `_transition`
+  // reads (DES-243's own composition-root note).
+  const eventSink = createEventSink({ secrets: secretValueProvider, now: () => clock.isoNow() });
   // v15 (DES-098, DES-099, TASK-089): boot backfill + alias-aware validation
   const catalog = new WorkflowCatalog(workRoot, clock, {
     backfillOwner: config?.auth?.enabled ? true : undefined,
@@ -718,6 +735,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // fails", discovered only after the fact).
     aliasNames: new Set(Object.keys(config?.aliases ?? DEFAULT_ALIASES)),
     ceilings,
+    eventSink,
   });
   const gateway =
     config?.gateway ??
@@ -743,13 +761,6 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   const blobMaxBytes = config?.maxBlobBytes !== undefined
     ? Math.max(MIN_BLOB_BYTES, config.maxBlobBytes)
     : DEFAULT_BLOB_BYTES;
-  // v14 (REQ-083, DES-088): SecretValueProvider from env for redact-at-capture wiring.
-  const secretSource = loadSecretSourceFromEnv();
-  const secretValueProvider: SecretValueProvider = {
-    entries(): ReadonlyArray<{ name: string; value: string }> {
-      return secretSource.names().map((n) => ({ name: n, value: secretSource.resolve(n) ?? '' })).filter((s) => s.value.length > 0);
-    },
-  };
   // `ceilings` (ARCH-066 inv-6, DES-104, TASK-100) is defined above, before `catalog`, and forwarded
   // to BOTH RunManager (admission — refuses) and McpFacade (workflow_get/list read-time effective
   // bounds) so a lowered ceiling is honored consistently everywhere, not just at the rung that
@@ -779,7 +790,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v26 (DES-178, ARCH-116, TASK-178): one TTL'd, single-flight snapshot shared by every run's
   // admission-time pin — never one fetch per run, let alone per agent() call.
   const modelBook = new ModelBook(buildModelCatalog, { clock });
-  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, aliasNames, modelBook, aliasMap });
+  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, aliasNames, modelBook, aliasMap, eventSink });
   // v8 Defer B (REQ-057/058): durable webhook ingress registry, same workRoot convention.
   const webhooks = new WebhookRegistry({ clock, runManager, catalog, dbPath: config?.webhookDbPath ?? join(workRoot, 'webhooks.db') });
   // v22 (DES-113, TASK-108) SHRINK: SubmissionValidatorDeps is now `{catalog}` — the alias/MCP-name/

@@ -110,7 +110,33 @@ describe('per-name version ceiling refused before any write, message names both 
         ceilings: { maxTimeoutMs: 600_000, maxAppendPromptBytes: 1024, maxEffort: 'high', maxWorkflowVersions: 1 },
       } as never);
       await catalog.register({ name: 'one-slot', script: `return 1;`, mermaid: 'graph LR' });
-      await expect(catalog.register({ name: 'one-slot', script: `return 2;`, mermaid: 'graph LR' })).rejects.toMatchObject({ code: 'VERSION_CEILING_EXCEEDED' });
+      await expect(catalog.register({ name: 'one-slot', script: `return 2;`, mermaid: 'graph LR' })).rejects.toMatchObject({
+        code: 'VERSION_CEILING_EXCEEDED',
+        // Gate-8 send-back (TASK-244 DoD 8): the message must name the real v36 call shape.
+        message: expect.stringContaining('workflow_deregister({name, version})'),
+      });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  // Gate-8 send-back (TASK-244 DoD 8, "both copies of the message"): the case above exercises
+  // `validateRegistration`'s read-only pre-check (workflow-catalog.ts:~603); `insertVersion`'s OWN
+  // defence-in-depth re-check inside its transaction (workflow-catalog.ts:~649) is a SEPARATE throw
+  // site with its own literal and is unreachable via `register()` (validateRegistration always
+  // refuses first) — called directly, bypassing validateRegistration, the way the facade's
+  // trigger-claim flow does.
+  it('insertVersion()\'s OWN ceiling re-check (called directly, bypassing validateRegistration) names workflow_deregister({name, version}) too', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-it085-insertversion-'));
+    try {
+      const catalog = new WorkflowCatalog(dir, CLOCK, {
+        aliasNames: new Set(['sonnet']),
+        mcpLookup: () => true,
+        ceilings: { maxTimeoutMs: 600_000, maxAppendPromptBytes: 1024, maxEffort: 'high', maxWorkflowVersions: 1 },
+      } as never);
+      await catalog.insertVersion({ name: 'one-slot-direct', script: `return 1;`, mermaid: 'graph LR', params: undefined as never });
+      await expect(catalog.insertVersion({ name: 'one-slot-direct', script: `return 2;`, mermaid: 'graph LR', params: undefined as never })).rejects.toMatchObject({
+        code: 'VERSION_CEILING_EXCEEDED',
+        message: expect.stringContaining('workflow_deregister({name, version})'),
+      });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
