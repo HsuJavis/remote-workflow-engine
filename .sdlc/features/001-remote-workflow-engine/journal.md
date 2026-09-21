@@ -8658,3 +8658,94 @@ amend DES-246/TASK-244 first, then write the red test against the new contract, 
 6. IMPL-367 added (`06-impl-log.md`); UT-302/IT-296 rows in `05-tests.md` amended in place with dated
    notes rather than rewritten. No `git checkout`/`git restore`/`git stash` used; no commit made
    (left for the orchestrator).
+
+## 2026-09-22 — REQ-217: the owner's third option on K5 — paginate the list path, keep the two averages full-history (implementer)
+
+REQ-217 rules on the ONE live `owner_decision` marker this ledger carried into Gate 8
+(`02-architecture.md:4942`, ARCH-172/REQ-216/K5): `/api/runs`/`/api/home`'s `listSummaries()` scans
+the whole `runs` table, and `/api/home`'s `avgCostUSD`/`successRate` are folded over all of it. The
+verify gate had offered two options (keep full-history + documented cliff, or paginate and accept
+"last N" semantics); the owner rejected both and ruled a third — paginate the list path for real,
+but compute the two averages with a store-side SQL aggregate so they keep full-history semantics.
+
+1. **Design decisions, stated before code.** (a) `listSummaries()` moves onto the already-paginated
+   `list()` (limit 50, hard cap 500 — `DES-152`'s existing numbers from v24, reused rather than
+   inventing a second pagination knob; `ADR-079` had already sketched this exact move as "a two-line
+   change"). (b) A NEW `RunStore.workflowMetrics(): Promise<Map<string | undefined, WorkflowMetrics>>`
+   port method computes the full `WorkflowMetrics` shape (not just the two named fields — successRate
+   needs completedCount/terminalCount as its own denominator, which forced the whole shape onto the
+   new method) per workflow name, SQL `AVG()`/`COUNT()`/`SUM()` for `SqliteRunStore`, a thin delegate
+   to the EXISTING `computeWorkflowMetrics` pure fold for `InMemoryRunStore` (zero edits to that
+   function or its own UT-073/UT-239 suite). (c) Zero-run case (REQ-186 precedent applied here,
+   pinned by UT-307): `AVG()` over zero priced rows is SQL `NULL`, read back `null`, never coalesced
+   to `0` — a name whose terminal runs are all zero-agent reads `avgCostUSD: null`, matching the
+   `_rowToSummary` presence rule verbatim (`usagePresentRaw AND COALESCE(agentCount,1) > 0`) so the
+   two read surfaces can never disagree on which runs are "priced".
+2. **A second, unrelated defect found and fixed in the same change, not left for pagination to trip
+   over silently.** `src/dashboard.ts`'s `buildHomeView` picked `activeRunId`/`latestRunId` with a
+   positional "last one wins (list order)" loop, silently assuming `listRuns()`'s (insertion-ordered)
+   sweep. `list()` sorts `ORDER BY createdAt DESC`; read against the pre-change source via `git show
+   HEAD:src/dashboard.ts` (never a working-tree checkout, per this repo's CLAUDE.md), that old loop
+   would have picked the OLDEST run in a descending-order page as "latest" the moment
+   `listSummaries()` moved onto `list()`. Fixed to compare `createdAt` directly — correct under any
+   input order — and pinned with two new `home-view.test.ts` cases (ascending- and descending-order
+   input resolve to the same winner).
+3. **Red-first, genuinely measured — corrected below from an earlier draft of this same entry that
+   only inferred it from `git show`.** The advisor caught that the first pass claimed "measured" for
+   UT-307/IT-300/UT-072's new cases without actually running them against pre-change source — a real
+   gap given the dispatch specifically asked whether the store-agreement test was genuinely red
+   first. Fixed by actually measuring: `git archive HEAD | tar -x -C <scratch dir>` (per this repo's
+   CLAUDE.md, never a working-tree checkout), symlinked `node_modules`, copied the three new/amended
+   test files onto that scratch copy, ran them there. Results: `workflow-metrics-store-agreement.test.ts`
+   (UT-307) — all 6 cases fail, `TypeError: store.workflowMetrics is not a function` /
+   `sqlite.workflowMetrics is not a function`. `req217-pagination-full-history.test.ts` (IT-300) —
+   fails on `expect(thisWorkflow.length).toBeLessThanOrEqual(50)` (`expected 60 to be less than or
+   equal to 50`); its aggregate assertions (`terminalCount`/`successRate`/`avgCostUSD`) already PASS
+   at HEAD, since the old code folded `computeWorkflowMetrics()` over the same unbounded set — not
+   claimed as new red, only re-pinned as regression coverage for the split. `home-view.test.ts`
+   (UT-072)'s two new order-independence cases split: the ascending-order case passes even at HEAD
+   (the old positional "last one wins" loop coincidentally agrees with recency when input is already
+   oldest-first) but the descending-order case fails (`expected 'r-old' to be 'r-new'`) — exactly the
+   case that would have broken silently once `listSummaries()` moved onto `list()`'s `DESC` order.
+   `tests/unit/run-manager-summarize-usage.test.ts` (UT-234, amended): its 4 hand-built fakes stubbed
+   only `listRuns`; running the suite BEFORE retargeting them to `list` (on the actual working tree,
+   since this one only needed the CURRENT source with the OLD fakes) produced `TypeError:
+   this._store.list is not a function` at all 4 — genuinely measured, not inferred. `05-tests.md`'s
+   UT-307/IT-300 rows and `state.yaml`'s gate note were corrected to match this measurement.
+4. **A transient regression caught by the full suite and fixed before reporting.** The new
+   `run-store.ts` import comment used the word "skeleton" in prose (describing `dashboard.ts`'s own
+   import graph) — `tests/unit/no-skeleton-surface.test.ts` (UT-115/ADR-022/REQ-105) forbids that
+   word anywhere in `src/**` outside a 6-file allowlist `run-store.ts` is not on. Reworded the
+   comment to avoid the literal substring; re-ran the guard test green, then re-ran the full suite.
+5. **Two ledger-hygiene defects found while tracing this work, fixed in passing (both pre-existing,
+   neither introduced by this card):** (a) REQ-217's own header in `01-requirements.md` read
+   `### REQ-217 (v36 追加,業主 2026-09-22 裁決 K5) — 消除清單路徑的擴展懸崖…` — a parenthetical
+   between the ID and the em-dash that `trace.py`'s `ITEM_RE` regex cannot parse, so `--impact
+   REQ-217` reported "找不到項目" and every new item citing it in `traces:` showed as a broken link.
+   This slipped in silently at HEAD (`ed7fa2a`, the commit immediately before this dispatch) because
+   nothing had yet traced INTO it. Reordered to `### REQ-217 — 消除清單路徑的擴展懸崖…(v36 追加,業主
+   2026-09-22 裁決 K5)` — matching `REQ-215`'s established trailing-parenthetical convention,
+   content byte-identical, order only. (b) `REQ-186` (cited throughout this ledger in prose as
+   precedent, e.g. `06-impl-log.md`'s `IMPL-323`) has NO `### REQ-186` header anywhere in
+   `01-requirements.md` — it lives only under a `## Iteration v31` section heading, which `trace.py`
+   does not register as an item. `IMPL-323`'s own `traces: REQ-186, R30-A1` already carries this as
+   a pre-existing, tolerated baseline gap; citing REQ-186 in this card's OWN `traces:` fields would
+   have multiplied it into 5 new broken-link gaps. Removed `REQ-186` from `traces:` on all 5
+   new/amended rows (ADR-080, DES-250, TASK-248, UT-307, IMPL-368) — the precedent stays in prose,
+   same as everywhere else in this ledger.
+6. **Verification.** `npx tsc --noEmit` clean. `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine`:
+   77 gaps, confirmed byte-identical (type, id) set to the HEAD `ed7fa2a` baseline — extracted via
+   `git archive HEAD | tar -x -C <scratch dir>` per this repo's CLAUDE.md, never by checking the
+   ledger backwards in place and never by stashing. Full suite: **3288 passed, 26 skipped, 0
+   failed** (448 files passed, 1 skipped) — up from the dispatch's stated baseline of 3278 passed/0
+   failed by exactly +10, matching the 10 new cases added (6 UT-307 + 1 IT-300 + 1 UT-234 amendment
+   + 2 UT-072 amendment) with no other drift.
+7. ARCH-172's `owner_decision` marker flipped `pending` → `answered(2026-09-22)` in place (the
+   surrounding "not answered here" prose is left byte-identical as the historical record of what
+   Gate 2's send-back round and Gate 6.5+7 could and could not resolve); `ADR-080` records the
+   ruling; `ADR-079`'s and `05-tests.md`'s "K5 discharged as a ruling, not as code" lines are each
+   given a one-line "v36 amendment" pointer rather than rewritten. `DES-250`/`TASK-248` minted;
+   `IMPL-368` added; `UT-307`/`IT-300` registered in `05-tests.md`'s v36 trace summary as a new
+   amendment block (`DES-250→UT-307/IT-300`) rather than folded into the closed Gate 5 summary
+   above it. No `git checkout`/`git restore`/`git stash` used; no commit made (left for the
+   orchestrator).

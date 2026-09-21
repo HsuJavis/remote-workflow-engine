@@ -196,16 +196,29 @@ export function buildHomeView(
   metrics: Map<string | undefined, WorkflowMetrics>,
 ): HomeView {
   const catalogMap = new Map(catalog.map((c) => [c.name, c.description]));
-  // Gather active and latest run per named workflow
+  // Gather active and latest run per named workflow.
+  // v36 (REQ-217): compares `createdAt` directly rather than trusting "list order" — `runs` used to
+  // be `listRuns()`'s unordered (effectively insertion-order) sweep, but `listSummaries()` now
+  // builds on `list()`, which is `ORDER BY createdAt DESC`. A position-based "first/last wins" tie-
+  // break would have silently flipped to picking the OLDEST run in the page; comparing the actual
+  // timestamp is correct under ANY input order (and needs no contract with the caller about one).
   const activeRunId = new Map<string, string>();
+  const activeRunAt = new Map<string, string>();
   const latestRunId = new Map<string, string>();
   const latestRunAt = new Map<string, string>();
+  const latestRunCreatedAt = new Map<string, string>(); // the recency KEY; latestRunAt is the DISPLAYED value
   for (const r of runs) {
     const name = r.name;
     if (name === undefined) continue;
-    if (ACTIVE_STATUSES.has(r.status)) activeRunId.set(name, r.runId);
-    latestRunId.set(name, r.runId); // last one wins (list order)
-    latestRunAt.set(name, r.terminalAt ?? r.createdAt); // same run, same "last one wins"
+    if (ACTIVE_STATUSES.has(r.status) && (!activeRunAt.has(name) || r.createdAt > activeRunAt.get(name)!)) {
+      activeRunId.set(name, r.runId);
+      activeRunAt.set(name, r.createdAt);
+    }
+    if (!latestRunCreatedAt.has(name) || r.createdAt > latestRunCreatedAt.get(name)!) {
+      latestRunCreatedAt.set(name, r.createdAt);
+      latestRunId.set(name, r.runId);
+      latestRunAt.set(name, r.terminalAt ?? r.createdAt);
+    }
   }
   const running: WorkflowCard[] = [];
   const registered: WorkflowCard[] = [];

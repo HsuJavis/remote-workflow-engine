@@ -52,7 +52,7 @@ import { DEFAULT_CEILINGS, type Ceilings, type Effort } from './params/contract.
 
 // REQ-066 (v11): engine version from package.json + best-effort git describe, replacing the hardcoded '1.0.0'.
 const ENGINE_VERSION = resolveEngineVersion();
-import { buildDashboardModel, layoutGraph, deriveLanes, buildHomeView, computeWorkflowMetrics, type ExpectedGraph } from './dashboard.js';
+import { buildDashboardModel, layoutGraph, deriveLanes, buildHomeView, type ExpectedGraph } from './dashboard.js';
 import { DASHBOARD_HTML, buildDashboardHtml } from './dashboard-page.js';
 import { lookupStaticAsset, readStaticAsset } from './static-assets.js';
 import type { RunStore } from './run-store.js';
@@ -352,12 +352,16 @@ async function handleDashboardRequest(
   try {
     // v11 F1 (REQ-074/075): home view — 3-way grouped workflow cards with reliability metrics.
     if (path === '/api/home') {
-      const [catalogEntries, runs] = await Promise.all([
+      const [catalogEntries, runs, metrics] = await Promise.all([
         runManager.catalog.list(),
-        // v27 (DES-194, ARCH-127, TASK-199): the usage-projected accessor — same one `/api/runs` reads.
+        // v27 (DES-194, ARCH-127, TASK-199): the usage-projected accessor — same one `/api/runs`
+        // reads. v36 (REQ-217): now paginated (`listSummaries()` -> `store.list()`, limit 50/cap
+        // 500) — cards/activeRunId/latestRunId narrow to the most recent runs.
         runManager.listSummaries(),
+        // v36 (REQ-217, ARCH-172/ADR-080): the full-history aggregate — successRate/avgCostUSD must
+        // NOT narrow with the list above, so they are no longer folded from `runs` here.
+        runManager.workflowMetrics(),
       ]);
-      const metrics = computeWorkflowMetrics(runs);
       sendJson(res, 200, buildHomeView(catalogEntries, runs, metrics));
       return;
     }

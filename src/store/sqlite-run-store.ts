@@ -8,6 +8,9 @@ import type { Clock } from '../clock.js';
 import type { RunStore, RunDagSnapshot } from '../run-store.js';
 import { deriveAgentRecords } from '../run-store.js';
 import { foldUsage } from '../run-guard.js';
+// v36 (REQ-217, DES-250): the shared return shape `RunStore.workflowMetrics()` promises — a
+// type-only import, no runtime cycle (dashboard.ts never imports this file).
+import type { WorkflowMetrics } from '../dashboard.js';
 import type { RunParams } from '../params/resolve.js';
 import type {
   RunSpec,
@@ -430,6 +433,58 @@ export class SqliteRunStore implements RunStore {
       usagePresentRaw?: number | null; costUSD?: number | null; unpricedCalls?: number | null; tokensTotal?: number | null; agentCount?: number | null; failedAgentCount?: number | null;
     }>;
     return rows.map((r) => this._rowToSummary(r));
+  }
+
+  /** v36 (REQ-217, ARCH-172/ADR-080, DES-250): per-workflow-name terminal aggregates computed
+   *  ENTIRELY in SQL (`AVG()`/`COUNT()`/`SUM()`) — never selects the `runs` table into memory, so
+   *  `/api/home`'s `avgCostUSD`/`successRate` keep FULL-HISTORY semantics without reintroducing the
+   *  cliff `listSummaries()` was just paginated to remove (ARCH-172). The `avgCostUSD` presence
+   *  rule mirrors `_rowToSummary`'s exactly (`usagePresentRaw AND COALESCE(agentCount,1) > 0`), or
+   *  this query and that read surface would disagree on which runs are "priced". A name with zero
+   *  terminal rows never appears — the `WHERE` excludes non-terminal statuses before the
+   *  `GROUP BY` — absent, not a zero-valued row (REQ-186's "unmeasured is absent" convention).
+   *  `AVG()` over zero priced rows is SQL NULL, which better-sqlite3 hands back as `null` — read
+   *  straight through, never coalesced to 0 (REQ-217's own zero-run case). */
+  async workflowMetrics(): Promise<Map<string | undefined, WorkflowMetrics>> {
+    const rows = this._db.prepare(`
+      WITH term AS (
+        SELECT r.runId, r.name, r.status, r.createdAt,
+               (SELECT MIN(t.ts) FROM transitions t
+                WHERE t.runId = r.runId
+                  AND t.to_status IN ('completed', 'failed', 'stopped')) AS terminalAt,
+               json_extract(s.json, '$.usage') IS NOT NULL AS usagePresentRaw,
+               json_extract(s.json, '$.usage.costUSD') AS costUSD,
+               json_array_length(s.json, '$.agents') AS agentCount
+        FROM runs r
+        LEFT JOIN run_snapshots s ON s.runId = r.runId
+        WHERE r.status IN ('completed', 'failed', 'stopped')
+      )
+      SELECT
+        name,
+        COUNT(*) AS terminalCount,
+        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completedCount,
+        AVG(CASE WHEN usagePresentRaw AND COALESCE(agentCount, 1) > 0 THEN costUSD END) AS avgCostUSD,
+        SUM(CASE WHEN usagePresentRaw AND COALESCE(agentCount, 1) > 0 THEN 1 ELSE 0 END) AS pricedCount,
+        AVG(CASE WHEN terminalAt IS NOT NULL
+                 THEN MAX(0.0, (julianday(terminalAt) - julianday(createdAt)) * 86400000.0)
+                 END) AS avgDurationMs
+      FROM term
+      GROUP BY name
+    `).all() as Array<{
+      name: string | null; terminalCount: number; completedCount: number;
+      avgCostUSD: number | null; pricedCount: number; avgDurationMs: number | null;
+    }>;
+    const out = new Map<string | undefined, WorkflowMetrics>();
+    for (const r of rows) {
+      out.set(r.name ?? undefined, {
+        successRate: r.completedCount / r.terminalCount,
+        avgDurationMs: r.avgDurationMs,
+        terminalCount: r.terminalCount,
+        avgCostUSD: r.avgCostUSD,
+        unpricedRuns: r.terminalCount - r.pricedCount,
+      });
+    }
+    return out;
   }
 
   /** v24 (DES-151): synchronous append (better-sqlite3) — a throw here must reach the call site

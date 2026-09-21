@@ -10,6 +10,9 @@ import { foldUsage } from './run-guard.js';
 // so this does not create a real runtime cycle with params/resolve.ts's own type-only agent-executor.js import.
 import type { RunParams } from './params/resolve.js';
 import type { ErrorCode } from './errors.js';
+// v36 (REQ-217, DES-250): InMemoryRunStore.workflowMetrics() below IS the existing pure fold — no
+// runtime cycle (dashboard.ts's own imports never lead back to this file; verified by reading them).
+import { computeWorkflowMetrics, type WorkflowMetrics } from './dashboard.js';
 
 /** v26 (DES-180, DES-188): the four-column zero — a call that never dispatched (harness-only /
  *  refused) owes the run's arithmetic a KNOWN zero, never an absence. */
@@ -219,6 +222,16 @@ export interface RunStore {
    *  parity required); a row with no `principal` is excluded whenever the filter supplies one (the
    *  cross-seam agreement with authz's null=ownerless rule). `limit` defaults to 50, capped at 500. */
   list(filter?: RunListFilter): Promise<RunSummary[]>;
+  /** v36 (REQ-217, ARCH-172/ADR-080, DES-250): per-workflow-name terminal aggregates — computed
+   *  BY THE STORE (a real `AVG()`/`COUNT()` for SqliteRunStore, an in-process fold for the
+   *  in-memory fake) so `/api/home`'s `avgCostUSD`/`successRate` keep FULL-HISTORY semantics even
+   *  after `listSummaries()` (built on the already-paginated `list()`, limit 50/cap 500) stops
+   *  materializing the whole `runs` table. A name with ZERO terminal runs is ABSENT from the map —
+   *  never a zero-valued entry — same "unmeasured is absent" convention REQ-186 established;
+   *  `avgCostUSD` is `null` (never `0`) for a name whose terminal runs are all zero-agent/unpriced
+   *  (an `AVG()` over zero priced rows is NULL, not 0). Grouped exactly like `computeWorkflowMetrics`
+   *  (a `null`/`undefined` name is ONE group, keyed `undefined`). */
+  workflowMetrics(): Promise<Map<string | undefined, WorkflowMetrics>>;
   hydrateAll(): Promise<RunSummary[]>;
   /** Persists the script's return value for a completed run (DES-001/REQ-005: workflow_result
    *  returns the script return value, not the RunStatusView). */
@@ -460,6 +473,18 @@ export class InMemoryRunStore implements RunStore {
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
       .slice(0, limit)
       .map((r) => this._toSummary(r));
+  }
+
+  /** v36 (REQ-217, DES-250): the in-memory fake reuses the EXISTING pure fold over every row —
+   *  this store is a test double, never the thing REQ-217's cliff is about, so materializing is
+   *  fine here and makes `computeWorkflowMetrics` the oracle `SqliteRunStore`'s SQL is checked
+   *  against. Zero-terminal-run entries are dropped (never a zero-valued row) to match the SQL
+   *  side, which structurally never emits a GROUP BY row for a name with no terminal status rows. */
+  async workflowMetrics(): Promise<Map<string | undefined, WorkflowMetrics>> {
+    const all = computeWorkflowMetrics(await this.listRuns());
+    const out = new Map<string | undefined, WorkflowMetrics>();
+    for (const [name, m] of all) if (m.terminalCount > 0) out.set(name, m);
+    return out;
   }
 
   private _toSummary(r: StoredRun): RunSummary {

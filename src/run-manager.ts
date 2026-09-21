@@ -25,6 +25,8 @@ const SEEDREF_MAX_FILE_BYTES = 10 * 1024 * 1024;
 import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView, ManifestEntry, EngineWarning, PriceBook, Tokens, RunUsage, RunSummary } from './types.js';
 import type { RunStore } from './run-store.js';
 import { InMemoryRunStore } from './run-store.js';
+// v36 (REQ-217, DES-250): type-only — no runtime cycle (dashboard.ts never imports this file).
+import type { WorkflowMetrics } from './dashboard.js';
 import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
 import { RunGuard, parseBudget, foldUsage, sumTokens } from './run-guard.js';
@@ -879,11 +881,20 @@ export class RunManager {
   /** v27 (DES-194, ARCH-127, ADR-052, TASK-199, REQ-141): the ONE accessor `/api/runs` and
    *  `/api/home` both read for the usage-projected `RunSummary[]` — one precedence chain, not two
    *  routes each guessing at it separately: **(1) live entry → (2) snapshot `usage` (already
-   *  projected by `store.listRuns()`, DES-193) → (3) a one-time backfilled fold → (4) absent.**
+   *  projected by `store.list()`, DES-193) → (3) a one-time backfilled fold → (4) absent.**
    *  Boot recovery and the GC sweep stay on `store.listRuns()` directly — they need every row, not
-   *  the usage projection. */
+   *  the usage projection.
+   *
+   *  v36 (REQ-217, ARCH-172/ADR-080, DES-250): built on the already-paginated `store.list()`
+   *  (limit 50, hard cap 500 — DES-152's existing port contract, reused rather than reinvented) so
+   *  this stops materializing the whole `runs` table per request (the K5 cliff). `/api/home`'s
+   *  `avgCostUSD`/`successRate` no longer come from folding THIS array — they read
+   *  `RunManager.workflowMetrics()` below, which keeps full-history semantics via a store-side SQL
+   *  aggregate. This list itself (and the "recent" run rows/cards it feeds) legitimately becomes
+   *  "the most recent 50" — that narrowing is the accepted, owner-ruled trade for removing the
+   *  cliff on the list path specifically. */
   async listSummaries(): Promise<RunSummary[]> {
-    const rows = await this._store.listRuns();
+    const rows = await this._store.list();
     let backfillBudget = BACKFILL_PER_TICK;
     let healed = 0;
     const out: RunSummary[] = [];
@@ -945,6 +956,16 @@ export class RunManager {
     }
     if (healed > 0) console.log(JSON.stringify({ event: 'usage_backfill', healed }));
     return out;
+  }
+
+  /** v36 (REQ-217, ARCH-172/ADR-080, DES-250): the full-history counterpart to `listSummaries()` —
+   *  `/api/home`'s `avgCostUSD`/`successRate` accessor. A thin delegate, unlike `listSummaries()`:
+   *  there is no in-process `RunEntry` to overlay here. (`_transition` records the terminal status
+   *  BEFORE `saveSnapshot` writes the usage row — the same brief snapshot-less window `list()`'s
+   *  own `usagePresentRaw` gate already tolerates — so a run counted here as terminal can, for one
+   *  instant, still read as unpriced; it self-heals on the very next call, same as today.) */
+  async workflowMetrics(): Promise<Map<string | undefined, WorkflowMetrics>> {
+    return this._store.workflowMetrics();
   }
 
   /** v25 (issue #53, adjudication #9 I-2, warning 2): the invariant ARCH-006 promises — a terminal

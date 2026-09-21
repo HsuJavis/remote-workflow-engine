@@ -15161,6 +15161,59 @@ e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
   tests/unit/compose-config-v2-wiring.test.ts` — 61/61 pass, including this case.
 - **iter:** v36
 
+### UT-307 — `RunStore.workflowMetrics()`: both stores agree, full-history, absent means unmeasured (REQ-217/K5's owner ruling)
+- **status:** green
+- **traces:** DES-250, ADR-080, REQ-217, REQ-216
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **evidence:** `tests/unit/workflow-metrics-store-agreement.test.ts` (new, 6 cases) — measured red
+  by running this file against a `git archive HEAD` copy (`ed7fa2a`, never a working-tree checkout —
+  CLAUDE.md), before writing the two `workflowMetrics()` implementations onto that copy: all 6 cases
+  fail, `TypeError: store.workflowMetrics is not a function` / `sqlite.workflowMetrics is not a
+  function`. Covers: `SqliteRunStore`'s own SQL aggregate over a mixed
+  priced/unpriced/zero-agent/failed/still-running fixture (terminalCount excludes the running row,
+  successRate/avgCostUSD/unpricedRuns computed over the correct subsets); REQ-186's own zero-run
+  case applied here — a name whose terminal runs are ALL zero-agent reads `avgCostUSD: null`,
+  never `0`; a name with only active (non-terminal) runs is ABSENT from the map, never a
+  zero-valued row; an unnamed run groups under the `undefined` key; a genuinely empty `runs` table
+  → an empty map on BOTH stores; and the load-bearing case — `SqliteRunStore` and
+  `InMemoryRunStore`, seeded through the port only (`createRun`/`recordTransition`/`saveSnapshot`,
+  never a direct SQL write), answer the SAME numbers over the SAME fixture (float fields compared
+  within 1ms/1e-6 tolerance — `julianday` vs `Date.parse` arithmetic, not a logic disagreement).
+  Also amended: `tests/unit/run-manager-summarize-usage.test.ts` (UT-234) — `listSummaries()` now
+  calls `store.list()` instead of `store.listRuns()`; its 4 hand-built fakes stubbed only
+  `listRuns`, so all 4 went red (`TypeError: this._store.list is not a function`) the moment the
+  source changed, confirmed by running the suite before retargeting them to `list`; one new case
+  added (a 60-row store still returns exactly 50 from `listSummaries()`). Also amended:
+  `tests/unit/home-view.test.ts` (UT-072) — 2 new cases pinning that `buildHomeView`'s
+  `activeRunId`/`latestRunId` picker resolves to the SAME winner regardless of input array order
+  (ascending and descending `createdAt`) — measured against the SAME `git archive HEAD` copy: the
+  ascending case passes even at HEAD (its old positional "last one wins" loop coincidentally agrees
+  with recency when the input already runs oldest-first), but the descending case fails
+  (`expected 'r-old' to be 'r-new'`) — the exact case that would have broken silently the moment
+  `listSummaries()` moved onto `list()`'s `DESC` order, caught here instead.
+- **iter:** v36
+
+### IT-300 — `/api/runs` paginates while `/api/home` keeps full-history `avgCostUSD`/`successRate`/`terminalCount` (REQ-217, real end-to-end)
+- **status:** green
+- **traces:** DES-250, ADR-080, REQ-217, REQ-216
+- **tier:** integration
+- **real:** true
+- **result:** pass
+- **evidence:** `tests/integration/req217-pagination-full-history.test.ts` (new) — a real
+  `createServer` + real `SqliteRunStore`, seeded with 60 completed runs on ONE workflow name
+  directly through the store port (no real agent dispatch needed for 60 terminal rows). `GET
+  /api/runs` returns AT MOST 50 rows for that name (the list-path cliff genuinely gone — not a
+  documentation-carried limit); `GET /api/home`'s card for that name reports `terminalCount: 60`
+  (not 50), `successRate` and `avgCostUSD` both `≈1.0` — the full-history aggregate is unaffected
+  by the page the list path serves. Measured against the same `git archive HEAD` copy: this test's
+  pagination assertion alone fails at HEAD (`expected 60 to be less than or equal to 50` —
+  `/api/runs` returns all 60 pre-change); the aggregate assertions already pass at HEAD (the old
+  code folded `computeWorkflowMetrics()` over the same unbounded set) and are re-pinned here as
+  regression coverage for the split, not as new red.
+- **iter:** v36
+
 ### VAL-246 — REQ-211: a version can be deregistered on its own; the error text names a real action
 - **status:** green
 - **traces:** REQ-211
@@ -15313,10 +15366,14 @@ e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
   trip (~29s, one shot, no retry) — consistent with `attemptsFor(retries, undefined) === 1`; a live
   `workflow_authoring_guide` call read back the real deployed guide text: *"An `agent()` call with no
   timeoutMs set ... runs once: retries apply only to a call that has a bounded timeout in effect."*
-  **K5**: discharged as a RULING (ADR-079, in the port contract), not as code — the live
-  `- **owner_decision:** pending` marker at `02-architecture.md:4942` (REQ-216/K5 pagination
+  **K5**: at THIS gate, discharged as a RULING (ADR-079, in the port contract), not as code — the
+  live `- **owner_decision:** pending` marker at `02-architecture.md:4942` (REQ-216/K5 pagination
   trade-off) was swept for and confirmed still the ONLY live marker in the ledger; carried forward
-  to this report's `owner_decisions`, not resolved here. **K8**: discharged by **UT-306** — the
+  to this report's `owner_decisions`, not resolved here. **v36 amendment (REQ-217, 2026-09-22)**:
+  the owner answered the relayed marker with a third option neither offered choice named (ADR-080)
+  and it IS discharged as code in this same iteration — see DES-250/TASK-248/UT-307/IT-300; the
+  paragraph above is left byte-identical as the historical record of what Gate 6.5+7 itself could
+  and could not resolve. **K8**: discharged by **UT-306** — the
   `composeConfig({gateway:'sdk', ...})` hop-2 forwarding probe the Gate-8 send-back required (a
   separate `it()` outside the `PROBES` loop, since `attempts` is derived and has no `FileConfig`
   key of its own). This corrects the prior wording, which credited `retries`'s existing `PROBES`
@@ -15337,6 +15394,15 @@ behaviour per 04-design.md's real-tier table); regression continuity asserted in
 own cases and traced there. No `owner_decision` newly deferred by this gate — ARCH-172's REQ-216/K5
 pending marker is carried forward unresolved (blocks Gate 8, not this gate, per the architect's own
 note at Gate 2).
+
+### v36 amendment (REQ-217, 2026-09-22) — ARCH-172's marker answered, discharged as code
+DES-250→UT-307/IT-300. REQ-217→(no separate VAL; discharges via UT-307/IT-300, the latter a real
+`createServer`+`SqliteRunStore` end-to-end proof, same bar as this gate's own VAL rows). Also
+amended: UT-234 (`run-manager-summarize-usage.test.ts`, 4 fakes retargeted `listRuns`→`list`, 1 case
+added) and UT-072 (`home-view.test.ts`, 2 cases added — order-independence). ARCH-172's
+`owner_decision` marker (`02-architecture.md:4942`) flips from `pending` to `answered(2026-09-22)`
+— the ONE live marker this ledger carried into Gate 8 is now resolved; no marker is newly deferred
+by this amendment.
 
 **Exit-gate self-check gaps, named for Gate 6 (v34 precedent — a heads-up, not a DoD violation this
 gate owns):**

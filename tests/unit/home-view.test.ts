@@ -112,6 +112,37 @@ describe('buildHomeView — pure 3-way grouping (UT-072, DES-070)', () => {
     expect(card?.latestRunId).toBeDefined();
   });
 
+  // v36 (REQ-217): `listSummaries()` now builds on `list()` (`ORDER BY createdAt DESC`), so
+  // `buildHomeView` must pick the true latest/active run by comparing `createdAt` — never by
+  // trusting "list order" (the pre-REQ-217 contract, when the input was `listRuns()`'s effectively
+  // insertion-ordered sweep). Feed the runs OLDEST-first here and NEWEST-first in the next case;
+  // both must resolve to the SAME winner.
+  it('activeRunId/latestRunId pick the run with the LATEST createdAt regardless of input array order (oldest-first)', () => {
+    const catalog = [{ name: 'wf', description: '' }];
+    const runs = [
+      run({ runId: 'r-old', name: 'wf', status: 'running', createdAt: '2026-09-22T00:00:00.000Z' }),
+      run({ runId: 'r-mid', name: 'wf', status: 'running', createdAt: '2026-09-22T00:01:00.000Z' }),
+      run({ runId: 'r-new', name: 'wf', status: 'running', createdAt: '2026-09-22T00:02:00.000Z' }),
+    ];
+    const view = buildHomeView(catalog, runs, metricsMap());
+    const card = view.running.find((c) => c.name === 'wf');
+    expect(card?.activeRunId).toBe('r-new');
+    expect(card?.latestRunId).toBe('r-new');
+  });
+
+  it('activeRunId/latestRunId pick the run with the LATEST createdAt regardless of input array order (newest-first, DESC — the real `list()` order post-REQ-217)', () => {
+    const catalog = [{ name: 'wf', description: '' }];
+    const runs = [
+      run({ runId: 'r-new', name: 'wf', status: 'running', createdAt: '2026-09-22T00:02:00.000Z' }),
+      run({ runId: 'r-mid', name: 'wf', status: 'running', createdAt: '2026-09-22T00:01:00.000Z' }),
+      run({ runId: 'r-old', name: 'wf', status: 'running', createdAt: '2026-09-22T00:00:00.000Z' }),
+    ];
+    const view = buildHomeView(catalog, runs, metricsMap());
+    const card = view.running.find((c) => c.name === 'wf');
+    expect(card?.activeRunId).toBe('r-new');
+    expect(card?.latestRunId).toBe('r-new');
+  });
+
   it('card carries description from catalog', () => {
     const catalog = [{ name: 'cs', description: '2-parallel → verify' }];
     const view = buildHomeView(catalog, [], metricsMap());

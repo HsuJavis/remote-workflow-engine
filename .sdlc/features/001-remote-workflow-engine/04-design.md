@@ -9110,6 +9110,47 @@ classDiagram
 - **tests:** (verifier owns ids) UT: `attemptsFor` over the four quadrants (timed/untimed × retries 0/N, plus a negative `retries`); per-conformer assertion that the shared export produces the number; the guide/`docs/AUTHORING.md` byte-lock; the tool-description text; one negative case — a script forging `name:'PARAM_UNKNOWN'` yields the code and **no** marker.
 - **iter:** v36
 
+### DES-250 — REQ-217/K5's owner ruling: paginate the list path, keep the two averages full-history via a store-side aggregate
+- **status:** draft
+- **traces:** ARCH-172, ADR-080, TASK-248, REQ-217, REQ-216
+- **signature:**
+  ```ts
+  // src/run-manager.ts — the list path (no signature change; internal source swap)
+  async listSummaries(): Promise<RunSummary[]> {
+    const rows = await this._store.list();   // was: this._store.listRuns() — limit 50, hard cap 500 (DES-152's existing numbers)
+    …unchanged healing loop…
+  }
+  // NEW: the full-history counterpart /api/home reads instead of folding listSummaries()'s (now paginated) output
+  async workflowMetrics(): Promise<Map<string | undefined, WorkflowMetrics>> {
+    return this._store.workflowMetrics();
+  }
+  // src/run-store.ts (port) — both implementations conform
+  workflowMetrics(): Promise<Map<string | undefined, WorkflowMetrics>>;
+  // src/run-store.ts — InMemoryRunStore: delegates to the EXISTING pure fold, unchanged
+  async workflowMetrics() {
+    const all = computeWorkflowMetrics(await this.listRuns());
+    return new Map([...all].filter(([, m]) => m.terminalCount > 0));
+  }
+  // src/store/sqlite-run-store.ts — a real GROUP BY aggregate, one statement, never selects `runs` into memory
+  WITH term AS (
+    SELECT r.runId, r.name, r.status, r.createdAt, <terminalAt subquery>,
+           json_extract(s.json,'$.usage') IS NOT NULL AS usagePresentRaw,
+           json_extract(s.json,'$.usage.costUSD') AS costUSD,
+           json_array_length(s.json,'$.agents') AS agentCount
+    FROM runs r LEFT JOIN run_snapshots s ON s.runId = r.runId
+    WHERE r.status IN ('completed','failed','stopped')
+  )
+  SELECT name, COUNT(*) terminalCount, SUM(status='completed') completedCount,
+         AVG(CASE WHEN usagePresentRaw AND COALESCE(agentCount,1)>0 THEN costUSD END) avgCostUSD,
+         SUM(CASE WHEN usagePresentRaw AND COALESCE(agentCount,1)>0 THEN 1 ELSE 0 END) pricedCount,
+         AVG(CASE WHEN terminalAt IS NOT NULL THEN MAX(0.0,(julianday(terminalAt)-julianday(createdAt))*86400000.0) END) avgDurationMs
+  FROM term GROUP BY name
+  // src/dashboard.ts — buildHomeView's active/latest-run picker: order-independent (compares createdAt), not "list order"
+  ```
+- **boundary:** **The owner rejected both options ARCH-172 offered** (keep full-history + documented cliff; paginate + accept "last N" semantics) **and ruled a third**: split the ONE thing `listSummaries()` was doing into two paths with different bounding strategies, because they have different correctness requirements. The list path (`/api/runs`' rows, `/api/home`'s `activeRunId`/`latestRunId`) is genuinely a "recent items" view — pagination is the right shape for it, and it reuses `list()`'s existing limit/cap (50/500, DES-152) rather than inventing a second number. The two averages (`avgCostUSD`, `successRate`) are read by the user as "this engine's" numbers, not "this page's" — REQ-217's text is explicit that no new UI copy discloses a narrower range, because the range does not narrow: `workflowMetrics()` computes them with a SQL aggregate that never selects the table into memory, so the cliff `/api/home` used to have on this path is genuinely gone, not merely undocumented. **Why the whole `WorkflowMetrics` shape moved, not just two fields**: `successRate` needs `completedCount`/`terminalCount` as its numerator/denominator, and those had to come from the SAME full-history query or a workflow's "N runs" and "success rate" could disagree by page boundary; `avgDurationMs` rides along as a consequence of returning the whole shape, not because the requirement's text names it — REQ-217 scopes its disclosure exemption to avgCostUSD/successRate only, and this design does not claim more for avgDurationMs than that it is *also* now full-history, incidentally. **`computeWorkflowMetrics` (dashboard.ts) is UNCHANGED** — it is the oracle `InMemoryRunStore.workflowMetrics()` delegates to (a test fake materializing its own rows is not the cliff this design closes) and the SQL aggregate is checked against in the both-stores agreement test; UT-073/UT-239 needed zero edits. **The `avgCostUSD` presence rule is copied verbatim from `_rowToSummary`** (`usagePresentRaw AND COALESCE(agentCount,1) > 0`) — a name whose terminal runs are all zero-agent (present in the snapshot's `usage` key, per `foldUsageFromRecords([])`'s fully-populated zero) must still read `avgCostUSD: null`, not `0`; diverging from that rule would make this query and the list-surface's own `costUSD` field disagree about which runs are "priced" for the SAME rows. **Zero-run precedent (REQ-186)**: `AVG()` over zero priced rows is SQL `NULL`, read back `null`, never coalesced. **A second, unrelated defect fixed in the same change**: `buildHomeView`'s active/latest-run picker used to be a positional "last one wins (list order)" loop, silently assuming `listRuns()`'s (insertion-ordered) sweep. `list()` sorts `DESC`; the old loop would have picked the OLDEST run in the page as "latest" the moment `listSummaries()` moved onto it. Fixed to compare `createdAt` directly — correct under any input order, no contract with the caller needed. **What legitimately narrows, with no new UI copy because the requirement's exemption does not cover it**: the run rows `/api/runs` returns and a card's `activeRunId`/`latestRunId` — a workflow whose last run falls outside the 50-row page shows no `latestRunId` even though its `metrics` are exact.
+- **tests:** (verifier owns ids) UT: both-stores agreement over one fixture covering priced/unpriced/zero-agent/failed/still-running/unnamed runs, plus a name with only active runs (absent) and an empty table (empty map) — mirrors UT-303's convention; `buildHomeView` order-independence (ascending and descending input, same winner); `listSummaries()` capped at `list()`'s default limit even with more rows present. IT: a real SqliteRunStore seeded with more terminal runs than the page size — `/api/runs` returns at most the page, `/api/home`'s card metrics (`terminalCount`/`successRate`/`avgCostUSD`) reflect the full seeded count.
+- **iter:** v36
+
 ### v36 real-tier validation paths + per-tier mock policy
 
 **Per-tier mock policy (whole slice).** *Unit* may mock freely — `captureFailure`, `canMutate`,
@@ -9133,7 +9174,8 @@ no-op — assert the marker is **present**, not only that the raw value is absen
 | REQ-213 | Run the 70-minute-incident shape for real: `workflow_register`, one run to completion and one to failure, then `cat .rwe.<instance>.log` — one JSON line per register/publish/run-terminal with `name`/`version`/`principal`/`outcome`, secrets appearing only as `‹secret:NAME›`; `workflow_list` shows `description` and `lastRunAt` (and `null` for a probe that never ran), so 「哪些該清」 is answerable without opening sqlite. Re-proves REQ-014/REQ-095. |
 | REQ-214 | The validator's own habit is the test: boot a **second** scratch instance via the documented `./deploy.sh --background` with `RWE_CONFIG_PATH` pointing at a second config **in the same directory**, confirm `ls -a` shows two `.rwe.<instance>.{pid,log}` pairs, `kill $(cat .rwe.<scratch>.pid)` stops only the scratch engine, and the primary keeps serving. `--dry-run` is the IT-tier form of the same property, not a substitute for this boot. Re-proves REQ-107. |
 | REQ-215 | A real registered script that calls `agent()` with a retired `agentType`, catches and **rethrows**, run through the real engine and a real forked child: `run_result.error.code` is the engine's refusal code and the envelope carries the structured marker; the same call inside `parallel()` fails the run instead of yielding `null`; a script that forges `name:'PARAM_UNKNOWN'` gets the code and **no** marker. Re-proves REQ-203/REQ-205's fourth criterion. |
-| REQ-216 | A real run whose `seedRef` fetch fails against a repo URL carrying a provisioned secret: `run_status.seedRef.failDetail` shows `‹secret:NAME›` and never the raw value, `failCode` is still `SEEDREF_FETCH_FAILED` (K1/K2/K3); `workflow_describe`'s advertised `attempts` and a real untimed `agent()` call agree that an untimed call runs once (K6/K7), and `workflow_authoring_guide` says so; `run_status`/`run_list` agree on a zero-agent terminal run (K4). K5 is discharged as a **ruling** (ADR-079, written into the port contract), not as code. Re-proves REQ-205/REQ-207. |
+| REQ-216 | A real run whose `seedRef` fetch fails against a repo URL carrying a provisioned secret: `run_status.seedRef.failDetail` shows `‹secret:NAME›` and never the raw value, `failCode` is still `SEEDREF_FETCH_FAILED` (K1/K2/K3); `workflow_describe`'s advertised `attempts` and a real untimed `agent()` call agree that an untimed call runs once (K6/K7), and `workflow_authoring_guide` says so; `run_status`/`run_list` agree on a zero-agent terminal run (K4). K5 is discharged as a **ruling** (ADR-079, written into the port contract), not as code, AT THIS REQUIREMENT'S OWN SCOPE — REQ-217 (below, v36 addendum, ADR-080) is the one that discharges it as code once the owner answered the relayed marker. Re-proves REQ-205/REQ-207. |
+| REQ-217 (v36 addendum) | A real `createServer` + `SqliteRunStore` seeded with more terminal runs than the list page size: `GET /api/runs` returns AT MOST the page (50, `list()`'s existing cap); `GET /api/home`'s card `metrics.terminalCount`/`successRate`/`avgCostUSD` reflect the FULL seeded count, unaffected by the page (IT-300). |
 | REQ-014 · REQ-095 | Unchanged behaviour, re-proved by the REQ-213 path above (the listing is the registry's own read surface, and the purpose line is what makes a problem report bindable to the right workflow). |
 | REQ-086 · REQ-087 · REQ-114 | Unchanged behaviour, re-proved by the REQ-212 path above — every existing ownership test stays green and the admin-register refusal is asserted rather than assumed. |
 | REQ-096 · REQ-097 | Unchanged behaviour, re-proved by the REQ-211 path (a per-version delete must not disturb the pin a run already took, nor the channel pointers). |

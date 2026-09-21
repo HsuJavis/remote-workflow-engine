@@ -9563,3 +9563,57 @@ F13 本質上是渲染問題,單元層看不到 DOM。
 - **refactor:** none — the ladder's existing five checks are untouched in substance; one `if` block
   inserted at the position ARCH-155 pins, using the same `codedError` helper and the already
   `ERROR_CATALOG`-registered `VERSION_PINNED_BY_RUN` code the facade used to throw.
+
+### IMPL-368 — TASK-248: REQ-217/K5's owner ruling — paginate `listSummaries()`, `RunStore.workflowMetrics()` for full-history averages, fix the order-dependent card picker
+
+- **status:** done
+- **traces:** TASK-248, DES-250, ARCH-172, ADR-080, REQ-217, REQ-216
+- **greens:** UT-307, IT-300, UT-234 (amended), UT-072 (amended)
+- **files:** src/run-manager.ts, src/run-store.ts, src/store/sqlite-run-store.ts, src/dashboard.ts, src/server.ts, tests/unit/run-manager-summarize-usage.test.ts, tests/unit/workflow-metrics-store-agreement.test.ts, tests/unit/home-view.test.ts, tests/integration/req217-pagination-full-history.test.ts
+- **commit:** (uncommitted at report time — see report)
+- **iter:** v36
+- **note:** **The owner rejected both options ARCH-172's marker offered and ruled a third** (ADR-080):
+  paginate the list path, keep the two averages full-history via a store-side aggregate. `src/run-manager.ts`'s
+  `listSummaries()` now calls `this._store.list()` (limit 50 / hard cap 500 — DES-152's existing
+  numbers, reused rather than reinvented) instead of the unbounded `listRuns()`; a new
+  `workflowMetrics()` delegate thin-wraps the store (no live-entry overlay needed — a run is only
+  counted here once terminal, and by then `_transition` has always written its snapshot). `src/run-store.ts`
+  gains `RunStore.workflowMetrics(): Promise<Map<string | undefined, WorkflowMetrics>>` on the port;
+  `InMemoryRunStore`'s implementation is a thin delegate to the EXISTING `computeWorkflowMetrics`
+  pure fold over `listRuns()` (zero edits to that function or its own UT-073/UT-239 suite — it is
+  now also the oracle the SQL side is checked against), dropping zero-terminal-count entries to
+  match the SQL side's structural absence. `src/store/sqlite-run-store.ts` implements the same
+  method as a single `WITH term AS (...) SELECT name, COUNT(*), SUM(status='completed'), AVG(...),
+  ... GROUP BY name` statement — never selecting `runs` into memory — with the `avgCostUSD`
+  presence rule (`usagePresentRaw AND COALESCE(agentCount,1) > 0`) copied verbatim from
+  `_rowToSummary` so the two read surfaces can never disagree on which runs are "priced". A name
+  with zero terminal runs is structurally absent from the SQL result (the `WHERE` excludes
+  non-terminal statuses before the `GROUP BY`) and is dropped to match on the in-memory side too.
+  `src/server.ts`'s `/api/home` handler now reads `runManager.workflowMetrics()` instead of folding
+  `computeWorkflowMetrics()` over `listSummaries()`'s (now paginated) output; the now-unused
+  `computeWorkflowMetrics` import was removed from that file (dashboard.ts's own export and its
+  tests are untouched). **A second, unrelated defect surfaced and is fixed in the same change**:
+  `src/dashboard.ts`'s `buildHomeView` picked `activeRunId`/`latestRunId` with a positional "last
+  one wins (list order)" loop that silently assumed `listRuns()`'s (insertion-ordered) sweep;
+  `list()` sorts `DESC`, so the OLD loop would have picked the OLDEST run in the page as "latest"
+  the moment `listSummaries()` moved onto it — confirmed by reading the pre-change loop against a
+  descending fixture (`git show HEAD:src/dashboard.ts`, never a working-tree checkout). Fixed to
+  compare `createdAt` directly, correct under any input order.
+  **Red-first, measured**: UT-307's fixture threw `TypeError: store.workflowMetrics is not a
+  function` on both stores before the port method existed (confirmed neither `run-store.ts` nor
+  `sqlite-run-store.ts` at HEAD `ed7fa2a` defined it, via `git show`). UT-234's four hand-built
+  fakes stubbed only `listRuns`; running the suite before retargeting them to `list` produced
+  `TypeError: this._store.list is not a function` at all four, confirming the amendment was
+  necessary rather than cosmetic.
+  **Zero-run precedent (REQ-186) pinned directly**: `AVG()` over zero priced rows is SQL `NULL`,
+  read back as `avgCostUSD: null`, never coalesced to `0` — the same "unmeasured is absent" reading
+  REQ-186 established for `tokens`, applied here to a workflow whose terminal runs are all
+  zero-agent (UT-307's dedicated case).
+  **What legitimately narrows, with no new UI copy because REQ-217's disclosure exemption does not
+  cover it**: the run rows `/api/runs` returns and a card's `activeRunId`/`latestRunId` become "the
+  most recent 50" — a workflow whose last run falls outside that page shows no `latestRunId` even
+  though its `metrics` (from `workflowMetrics()`) stay exact. Named here, not engineered around,
+  per the same Karpathy tie-break ADR-080 records.
+- **refactor:** none — `computeWorkflowMetrics`, `buildDashboardModel`, and every other exported
+  `dashboard.ts` function are untouched in substance; `buildHomeView`'s picker is the one behavior
+  change, and it fixes a latent order-dependence bug rather than restructuring the function.
