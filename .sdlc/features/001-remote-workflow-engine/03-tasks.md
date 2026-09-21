@@ -2079,7 +2079,7 @@ hard: TASK-231 before TASK-236 (`materializeArgDefaults` is imported), TASK-235 
 must exist before its last two consumers read it). Everything else can float.
 
 ### TASK-231 — `materializeArgDefaults`, the P6-3 reversal, and the two type slots `args` needs
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-145, ARCH-064
 - **files:** src/params/contract.ts, src/params/resolve.ts, tests/unit/params-contract.test.ts, tests/unit/params-resolve.test.ts
 - **des:** DES-235
@@ -2088,7 +2088,7 @@ must exist before its last two consumers read it). Everything else can float.
 - **iter:** v35
 
 ### TASK-232 — the span oracle: `acorn` becomes a production dependency and `src/script-spans.ts` is its only consumer
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-148
 - **files:** package.json, package-lock.json, src/script-spans.ts, tests/unit/script-spans.test.ts
 - **des:** DES-236
@@ -2097,7 +2097,7 @@ must exist before its last two consumers read it). Everything else can float.
 - **iter:** v35
 
 ### TASK-233 — `scanAgentCalls` filters match offsets through the oracle, fails closed, and says so where it cannot refuse
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-149, ARCH-096
 - **files:** src/workflow-meta.ts, src/workflow-catalog.ts, src/dashboard.ts, tests/unit/workflow-meta-scan.test.ts, tests/integration/register-scan-spans.test.ts
 - **des:** DES-237
@@ -2106,7 +2106,7 @@ must exist before its last two consumers read it). Everything else can float.
 - **iter:** v35
 
 ### TASK-234 — `checkMermaid`'s fifth parameter becomes required, and the converted tests must be able to fail
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-150, ARCH-119
 - **files:** src/check-mermaid.ts, tests/unit/check-mermaid.test.ts
 - **des:** DES-238
@@ -2115,7 +2115,7 @@ must exist before its last two consumers read it). Everything else can float.
 - **iter:** v35
 
 ### TASK-235 — the store half: `recordError`/`getError` on the port, one additive column, one journal line kind, four read sites
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-143, ARCH-006, ARCH-092
 - **files:** src/run-store.ts, src/store/sqlite-run-store.ts, src/types.ts, tests/unit/run-store-error.test.ts, tests/integration/run-error-read-sites.test.ts
 - **des:** DES-231
@@ -2124,7 +2124,7 @@ must exist before its last two consumers read it). Everything else can float.
 - **iter:** v35
 
 ### TASK-236 — the run-manager half: capture → bound → persist → transition, `result()` stops lying, and `args` is real
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-141, ARCH-142, ARCH-144, ARCH-146
 - **files:** src/errors.ts, src/run-manager.ts, tests/unit/errors-to-err.test.ts, tests/unit/run-manager-error-capture.test.ts, tests/integration/run-error-restart.test.ts, tests/integration/run-args-resume.test.ts, tests/integration/run-health-count.test.ts
 - **des:** DES-230, DES-232, DES-233, DES-234
@@ -2133,7 +2133,7 @@ must exist before its last two consumers read it). Everything else can float.
 - **iter:** v35
 
 ### TASK-237 — the advertised surface: computed worst-case wait, the envelope at the handshake, the three facts the guide never said
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-147, ARCH-151, ARCH-152, ARCH-154
 - **files:** src/workflow-view.ts, src/mcp-facade.ts, src/server.ts, src/tool-specs.ts, src/authoring-guide.ts, docs/AUTHORING.md, DEPLOY.md, README.md, tests/unit/workflow-describe-projection.test.ts, tests/unit/tool-specs.test.ts, tests/unit/authoring-guide.test.ts, tests/unit/compose-config-v2-wiring.test.ts, tests/integration/initialize-instructions.test.ts, tests/integration/guide-examples-register.test.ts
 - **des:** DES-239
@@ -2142,7 +2142,7 @@ must exist before its last two consumers read it). Everything else can float.
 - **iter:** v35
 
 ### TASK-238 — the failure reason is rendered where an operator already looks for the status
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-153, ARCH-125
 - **files:** src/dashboard/ui/run.js, src/dashboard/ui/workflow.js, src/dashboard/lib/strings.js, tests/unit/dashboard-lib-strings.test.js, tests/acceptance/val-232-run-error.test.ts
 - **des:** DES-240

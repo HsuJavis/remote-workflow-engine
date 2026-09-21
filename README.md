@@ -13,8 +13,17 @@
 **目前功能**：
 
 - **工作流程執行**：`run_start`（一律指名已註冊的工作流程 `{name}`，見下「版本與發布頻道」；
-  含 inline seed + CAS seedManifest + `seedManifestRef` + 每個 agent 各自的 `overrides`）。
+  含 inline seed + CAS seedManifest + `seedManifestRef` + 每個 agent 各自的 `overrides`）。省略
+  `args`（排程/webhook 觸發天生就會省略）時，腳本讀到的是 `{}`，不是 `null`；腳本在
+  `meta.params.args.<k>.default` 宣告的預設值會真的套用（materialize 進 `run_result.result`），
+  不必自己寫 `args || {}` 防呆。
   **`run_start` 只回 `runId`，不回結果**——要拿結果得先 `run_status` 輪詢到終態，再 `run_result`；
+  兩者在 **`status:'failed'`** 時都額外帶 `error:{code,message}`（腳本拋錯/逾時的實際原因，
+  重啟引擎後仍答得出同一個原因，不必翻 sqlite）；`run_status`/`run_result`/`GET /api/runs/:id`
+  三者若這次 run **呼叫過 `agent()` 且有任一個失敗**，也一起帶 `failedAgentCount`（失敗的 agent
+  數，全部成功或尚未執行則省略此欄，不是填 `0`）——不必自己去讀 `agents[]` 逐筆檢查才能發現「這個
+  run 裡面有東西垮了」。失敗的 run 也會在自己的 run 目錄留一行 `journal.jsonl` 記終態與原因，
+  不是空目錄；儀表板的 run 詳情頁與清單列一樣會顯示這個失敗原因。
   另有 `run_suspend`/`run_resume`/`run_stop`、`run_agent_log`（依腳本宣告的 agent label 讀該次 harness
   逐字稿）、`run_list`（每筆可能帶 `costUSD`/`unpricedCalls`/`tokensTotal`/`agentCount` 四個選填欄位，
   若該 run 從未呼叫過 `agent()` 則四者一起省略，不是填 `0`），以及當機可續跑（重啟後
@@ -224,6 +233,16 @@ export ANTHROPIC_API_KEY=sk-ant-...                  # 用 API key 時
 ## 使用範例
 
 ```bash
+# 第零步：MCP 握手（initialize）——冷客端第一眼就看到兩個關鍵事實：
+# 每個工具回應都是「雙重 JSON 編碼」（content[0].text 是字串，要再 parse 一次才是真正的內容），
+# 以及 workflow_authoring_guide 目前的概略大小（送出前先知道會拿到多大，不必自己撞到截斷才發現）。
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"x","version":"1"}}}'
+# -> result.instructions: "Every tool result arrives as a JSON string inside content[0].text —
+#     parse it again to reach the actual payload. workflow_authoring_guide is ~43KB."
+# （位元組數是伺服器每次呼叫當下即時算出來的真實大小，不是寫死的常數，會隨 guide 內容變動）
+
 # 第一步：註冊一個工作流程（一律要先註冊、再指名執行）
 # mermaid 是必填：少了就 MERMAID_REQUIRED。圖的第一行必須是 graph LR（或 flowchart LR）。
 # 這個腳本沒有 agent() 呼叫，所以圖裡只要有一個矩形黑箱節點即可

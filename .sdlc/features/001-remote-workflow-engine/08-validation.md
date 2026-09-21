@@ -11778,3 +11778,330 @@ piece of the repair, including this one).
 
   **本列取代 VAL-190/192 作為 REQ-117 的現行證據** —— 那兩列早於 v34 對 guide 的實質改寫。
 - **iter:** v34
+
+## v35 GATE 7.5 (2026-09-21, validator) — real-run validation for REQ-205..210
+
+Impact closure: REQ-205, REQ-206, REQ-207, REQ-208, REQ-209, REQ-210, REQ-001, REQ-005, REQ-055,
+REQ-090, REQ-106, REQ-107, REQ-111, REQ-116, REQ-117. All six new REQs (205..210) already have a
+tier:acceptance / `real:false` red→green TDD lock in `05-tests.md` (`VAL-232..237`, in-process
+`createServer()`) — that is the tests gate's own deliverable, not this gate's. **This section is the
+separate, un-fakeable real-tier proof**: a SECOND scratch instance, booted from the documented
+`./deploy.sh --background` one-command path against the CURRENT working tree (clean, `HEAD ==
+05a523f`, matches `gitStatus`), hit over real MCP HTTP / real dashboard HTTP / a real process
+kill+restart / real headless Chromium — never the in-process server the acceptance tests use. New
+IDs `VAL-238..244` (the ledger's global `VAL-*` namespace already used `232..237` in `05-tests.md`;
+continuing there would collide, so this round starts at the next free number, `238`).
+
+**Boot (documented steps only, recorded verbatim):**
+```bash
+set -a; . ~/.config/rwe.env; set +a
+export RWE_CONFIG_PATH=<scratch>/rwe.val35.config.json RWE_BIND=127.0.0.1 RWE_PORT=8942
+./deploy.sh --background
+```
+`rwe.val35.config.json` = `rwe.config.example.json` with only `workRoot` (scratch dir outside any
+`.git` ancestor) and `port` edited — no undocumented step needed. Health check passed:
+`{"agentSemaphore":{"total":32,"inUse":0,"queued":0},"version":"0.1.0 (v0.20.0-424-g05a523f)"}` —
+the `g05a523f` suffix confirms this instance is running the exact commit under validation, not a
+stale build. No doc gap found; `./deploy.sh --background` was sufficient end to end.
+
+### VAL-238 — REQ-205, REQ-005, REQ-055: a failed run leaves a diagnosable reason on every surface, on disk, and across a real process restart
+- **status:** green
+- **traces:** REQ-205, REQ-005, REQ-055
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  Registered `val35-req205-*` (`throw new Error('boom, VAL35 real failure')`, no `agent()` calls) via
+  real `workflow_register`/`workflow_publish` over MCP HTTP on the port-8942 instance, `run_start`
+  with no overrides. Polled to `status:"failed"`.
+  1. **`run_status`**: `"error":{"code":"SCRIPT_ERROR","message":"Error: boom, VAL35 real failure"}`.
+  2. **`run_result`**: same `error` object.
+  3. **`run_list`**: the row for this `runId` carries the same `error` object.
+  4. **`GET /api/runs/:id`**: `curl -s http://127.0.0.1:8942/api/runs/<runId>` → same `error` object
+     in the plain HTTP JSON (not just the MCP-wrapped tool result).
+  5. **On disk**: `<workRoot>/store/runs/<runId>/journal.jsonl` contains
+     `{"type":"error","code":"SCRIPT_ERROR","message":"Error: boom, VAL35 real failure"}` — the run
+     directory is not empty (REQ-205's own cited defect, "目錄完全空").
+  6. **Survives a real restart**: `kill $(cat .rwe.pid)` (confirmed dead via `kill -0`), then
+     `./deploy.sh --background` again (same `RWE_CONFIG_PATH`, idempotent — config not recreated,
+     litellm venv reused) — a FRESH process, FRESH in-memory state. `GET /api/runs/<runId>` and
+     `run_result` after the restart both still answer the identical `error` object — the reason is
+     read from the persisted `runs.error` column (`sqlite-run-store.ts`'s `recordError`), not
+     `run-manager.ts`'s in-memory `entry.resultError` (the pre-v35 defect this REQ names, "只活在
+     run-manager 記憶體").
+  7. **Dashboard (real headless Chromium, `~/.cache/puppeteer/chrome/linux-152.0.7977.75`, real
+     navigation + click, not a route the test could stub)**: opened `http://127.0.0.1:8942/dashboard`,
+     clicked the `.card` for `val35-req205-*`, landed on the real run-detail page. Page text contains
+     `失敗原因: SCRIPT_ERROR — Error: boom, VAL35 real failure` (the run-detail legend) AND
+     `失敗 · SCRIPT_ERROR` (the run-history row chip) — screenshot saved at
+     `evidence/v35/val232-req205-dashboard-failurereason.png`.
+  8. **REQ-055 regression** (DAG survives a restart): the SAME kill+restart above was also applied
+     to a run with a real `agent()` call (see VAL-240's run) — its `phases`/`agents[]` (including
+     per-agent `provider`/`model`/`detail`) and `failedAgentCount` all read back identically after
+     the restart; see VAL-240 for the full payload.
+  9. **REQ-005 regression**: every action above (register/publish/start/status/result/list) was a
+     real MCP Streamable HTTP `tools/call`, not an in-process call — the interface itself is the
+     thing being exercised throughout this whole section.
+- **iter:** v35
+
+### VAL-239 — REQ-206, REQ-090: a bare `run_start` sees `{}`, and a declared `args` default materializes, over real MCP HTTP
+- **status:** green
+- **traces:** REQ-206, REQ-090
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  Registered a script declaring `meta.params.args.url.default = 'https://x'`, body `return args;`,
+  via real `workflow_register`/`workflow_publish` (the pre-v35 `PARAM_CONTRACT_INVALID: default …
+  never applied` ban — REQ-206's own cited blocker — did NOT fire; registration succeeded). Called
+  bare `run_start({name})` — no `args` key at all. Polled to `status:"completed"`.
+  `run_result.result === {"url":"https://x"}` — the script actually received `args.url` filled from
+  the declared default (not `null`/`undefined`, the pre-v35 defect the requirement cites, and not an
+  empty `{}` either — the default genuinely materialized). Full transcript:
+  `REGISTER: {...,"result":{"version":"v1",...}} / PUBLISH: {...} / RUN_START: {"status":"running"} /
+  RUN_STATUS: {"status":"completed"} / RUN_RESULT: {"result":{"url":"https://x"}}`.
+  **REQ-090 regression** (tunable-parameter contract discoverable without reading the script): the
+  same registration's `workflow_describe` (see VAL-240) shows `params.agents.<label>.timeoutMs`
+  carrying `range`/`ceiling`/`attempts`/`worstCaseMs` — the contract is fully inspectable over the
+  wire, unchanged.
+- **iter:** v35
+
+### VAL-240 — REQ-207, REQ-106, REQ-116: every agent() fails — failedAgentCount visible without reading agents[], sequential null semantics, and a computable worst-case wait
+- **status:** green
+- **traces:** REQ-207, REQ-106, REQ-116
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  Registered a one-agent script (`const r = await agent('a', {prompt:'say hi'}); return {r};`,
+  `timeoutMs` default 5000) via real `workflow_register`/`workflow_publish`. `run_start` with
+  `overrides:{agents:{a:{model:'local',timeoutMs:1}}}` (`local` = a REAL `ollama`/`qwen2.5:7b`
+  alias already pulled on this host — confirmed via `curl http://localhost:11434/api/tags` — so a
+  1ms bound against a genuinely-running local model produces a REAL timeout, not a simulated one).
+  Polled to `status:"completed"` (the run itself completes even though its one agent failed — this
+  is the exact "top-level status doesn't say anything collapsed" scenario REQ-207 names).
+  `run_status.result`: `"agents":[{"label":"a","state":"failed","provider":"ollama",
+  "model":"qwen2.5:7b","detail":"no response from model \"rwe-proxy-local\" (provider \"ollama\") —
+  timeout"}]`, **`"failedAgentCount":1`** present at the TOP level of the same object — a caller can
+  see "something inside failed" without iterating `agents[]` (REQ-207's own stated gap). `run_result`:
+  `"result":{"r":null}` — the sequential `await agent()` call resolved to `null`, did not throw
+  (confirmed, not asserted: this is a real failure from a real dependency, observed end to end).
+  **Worst-case wait, real `workflow_describe`**: `params.agents.a.timeoutMs` =
+  `{"default":5000,"range":{"max":600000},"ceiling":"maxTimeoutMs","attempts":2,
+  "worstCaseMs":10000}` — `attempts`/`worstCaseMs` are computed server-side from the deployed
+  `retries:1` config (`1 + max(0,retries)`), not a client-side guess; a cold caller can read the real
+  worst case off the wire.
+  **Guide states the sequential-null rule live** (real `workflow_authoring_guide` call, port-8942
+  instance): served text contains "A **sequential** `await agent(label, options)` call that fails or
+  times out resolves to `null` for that reason — it does...".
+  **REQ-106 regression** (authoring rules documented): the same served guide is what a script author
+  reads to avoid stringifying a `null` into the next prompt — the exact D3 defect `VAL-231` (v34)
+  recorded against a real cold subject; this guide text is the fix.
+  **REQ-116 regression**: `workflow_authoring_guide` itself served cleanly, no error, ~42KB, matches
+  the size the `initialize` handshake advertises (VAL-243).
+- **iter:** v35
+
+### VAL-241 — REQ-208, REQ-111: a role-prompt string containing "agent (" registers clean; a genuine scanner violation is still caught
+- **status:** green
+- **traces:** REQ-208, REQ-111
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  **Positive case**: registered a script whose `prompt` is a template literal containing the literal
+  substring `...sdlc-verifier agent (mode A)...` (the exact real-world material REQ-208 cites, from
+  the iso-agile-sdlc plugin's `sdlc-verifier.md`), with a proper `meta.params.agents.verifier`
+  declaration — real `workflow_register` over MCP HTTP → `{"status":"completed","result":
+  {"version":"v1",...}}`, no `SCAN_VIOLATION`/`AGENT_LABEL_REQUIRED`. Confirms the scanner no longer
+  string-matches inside string literals.
+  **Negative case (detection capability not regressed)**: registered a script with a genuinely
+  unlabeled `agent(someVar, {...})` call (a variable, not a string literal) — real
+  `workflow_register` → refused `SCAN_VIOLATION: AGENT_LABEL_NOT_LITERAL` (line correctly reported
+  as line 2, the actual call site). The scanner still catches the real violation class.
+  **REQ-111 regression** (diagram supplied by author, held to the script): a `graph TD;` mermaid
+  (the pre-v26 fallback shape) submitted for a zero-agent script was correctly refused
+  `DIAGRAM_DIRECTION` (header must be `LR`) on this same real instance before the `graph LR` form was
+  used — the diagram-contract enforcement this REQ depends on is unweakened.
+- **iter:** v35
+
+### VAL-242 — REQ-209, REQ-117, REQ-001: the doc examples a reader would copy really register (and run) against the real instance
+- **status:** green
+- **traces:** REQ-209, REQ-117, REQ-001
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  Ran the real `extractDocPairs` helper (the same function `tests/integration/guide-examples-
+  register.test.ts`/`VAL-236` use) against the CURRENT, on-disk `README.md` and `DEPLOY.md`, then
+  fed every extracted `{script, mermaid}` pair to real `workflow_register` over MCP HTTP on the
+  port-8942 instance — not the static `scanAgentCalls`/`checkMermaid` calls REQ-209 names as the
+  false-positive check v34 shipped: **1 DEPLOY.md pair + 2 README.md pairs, 3/3 registered clean**
+  (`{"status":"completed","result":{"version":"v1",...}}`, no `TOOLS_MISMATCH`/`EDGE_MISMATCH`, the
+  exact real-registration failure mode REQ-209 cites v34's static-only check for missing).
+  **REQ-117 regression** (a cold caller succeeds first try): this is the closest a validator who has
+  read the ledger can get to REQ-117's "cold model" bar for THIS iteration's specific new claims —
+  literally copying the doc bytes and registering them, unmodified, succeeded; `VAL-231`'s genuine
+  cold-subject run (v34, independent agent, no ledger context) already stands as REQ-117's
+  fresh-subject evidence and is unchanged by this iteration (its D1/D2/D3 findings are exactly what
+  `VAL-238`/`VAL-240` above now close). Not re-run this round — an orchestrator-run fresh-subject
+  probe is the correct instrument for that claim and this validator is a disqualified subject
+  (same standing limitation `VAL-229`/`VAL-231` already name), carried to `needs_clarification`.
+  **REQ-001 regression** (workflow JS executes unmodified): every script registered across
+  `VAL-238..242` — 7 real registrations total this round — ran through the real engine's parser/
+  scanner/registration path byte-for-byte as submitted; none were rewritten by the engine.
+- **iter:** v35
+
+### VAL-243 — REQ-210, REQ-107: a cold client's `initialize` discloses the double-JSON envelope and a live guide-size figure; tool prefixes hold
+- **status:** green
+- **traces:** REQ-210, REQ-107
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  Real `initialize` call, port-8942 instance:
+  ```
+  curl -s -X POST http://127.0.0.1:8942/mcp -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05",...}}'
+  ```
+  → `result.instructions == "Every tool result arrives as a JSON string inside content[0].text —
+  parse it again to reach the actual payload. workflow_authoring_guide is ~42894 bytes."` — both
+  facts REQ-210 names (the double-JSON envelope, and the guide's approximate size) are disclosed at
+  the handshake, before a caller has made any other call. `~42894` is computed per-call from the
+  actual served tool-result object (`server.ts`'s `buildInitializeInstructions`), not a hard-coded
+  literal — confirmed by cross-reading against the independently-measured guide payload in `VAL-240`
+  (~42KB, same order of magnitude, measured a different way).
+  **REQ-107 regression**: real `tools/list` on the same instance → 35 tools, every name matches
+  `^(workflow_|run_|workspace_|schedule_|webhook_|issue_|models_list$|system_info$)` (0 non-
+  conforming), matching DEPLOY.md's documented count and the authoritative `src/tool-specs.ts`.
+- **iter:** v35
+
+### Config-file sync check (this round)
+`rwe.config.example.json` round-tripped against `src/main.ts`'s `KNOWN_FILE_CONFIG_KEYS` (41 keys) —
+every key present in `KNOWN_FILE_CONFIG_KEYS`; every `KNOWN_FILE_CONFIG_KEYS` entry has a row in
+`DEPLOY.md` §1b (checked both directions, `python3` round-trip, 0 missing either way). **v35 adds no
+new config key, secret, port, or flag** — REQ-205..210 are all behavioral (error capture, args
+defaults, scanner, advertised metadata), nothing new is read from `rwe.config.json`. No config file
+change needed this round.
+
+### Handover doc updates (this round)
+`README.md` and `DEPLOY.md` were untouched by the v35 implementer (only `docs/AUTHORING.md` — the
+in-engine-served guide — gained the "Three things a cold author gets wrong" section, confirmed live
+in `VAL-240`). Both were current-state-rewritten this round to describe the NOW-behavior REQ-205..
+210 add, since a human operator reading either would otherwise not know these fields exist:
+- `README.md`: extended the `run_start`/`run_result` bullet with the `args` default-fill rule, the
+  `error`/`failedAgentCount` fields and their restart-durability, and the dashboard failure-reason
+  display; added an `initialize` handshake example (the envelope note + live guide-size disclosure)
+  as the new "第零步" of the usage walkthrough.
+- `DEPLOY.md` §5 疑難排解: extended the `agent()` 回傳 `null` row with the sequential-null-is-
+  designed-behavior fact + `failedAgentCount`; added a `timeoutMs` 單次嘗試 vs `attempts`/
+  `worstCaseMs` row; added a row for "how do I find out why a failed run failed" (error field +
+  `journal.jsonl` + restart durability).
+No history/changelog language was added — both edits describe only current behavior, verified live
+in `VAL-238`/`VAL-239`/`VAL-240`/`VAL-243` above (the doc text was written FROM the real transcripts
+captured this round, not the other way around).
+
+### `sh .sdlc/trace --check` (v35 round)
+Before this round's writes: 1920 items / 83 gaps (the verifier's own Gate 6.5+7 exit number, carried
+forward unchanged into this gate's start — confirmed by re-running `sh .sdlc/trace
+.sdlc/features/001-remote-workflow-engine` before any edit). After adding `VAL-238..243` (6 new
+real-tier items, one per new REQ 205..210): **1926 items / 77 gaps** — exactly 6 gaps closed, gap-set
+diffed (not count alone, via `trace.analyze()` called directly): **zero** of the 77 remaining gaps
+name any REQ in this closure (`REQ-205..210, REQ-001, REQ-005, REQ-055, REQ-090, REQ-106, REQ-107,
+REQ-111, REQ-116, REQ-117`) — confirmed by filtering the gap list's `id` field against the closure
+set, 0 matches. The remaining 77 gaps break down as `漂移`(drift) 24 / `TDD` 19 / `未驗證`(unverified,
+elsewhere in the ledger) 17 / `斷鏈`(broken link) 15 / `未實作`(unimplemented) 2 — **zero
+`未真實驗證`(mock-only) gaps exist anywhere in the ledger**, and zero of the 17 `未驗證` gaps touch
+this closure. `sh .sdlc/trace --check` exits 1 (pre-existing, out-of-closure debt this iteration did
+not touch — matches the exact same 77-gap baseline the verifier already carried into this gate,
+zero drift introduced), per the exit-gate's own bar of "no gap FOR ANY REQ IN THIS CLOSURE", not
+"zero gaps in the whole mature ledger" (which no prior v20+ gate has ever claimed either — see
+v34's own PASSED verdict at 77 gaps above).
+
+`rtm.md` regenerated: `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --rtm
+.sdlc/features/001-remote-workflow-engine/rtm.md` — REQ-205..210 rows now show ✅ real-verified,
+matching `VAL-238..243`'s traces.
+
+### Verdict (v35 round)
+**PASSED.** All six v35 REQs (205..210) now carry ≥1 `real:true` green VAL item against a SECOND,
+freshly-booted, documented-steps-only instance running the exact commit under review — not the
+in-process acceptance-tier lock `05-tests.md`'s `VAL-232..237` already holds. Every REQ's acceptance
+criteria were probed for real: REQ-205's five sub-criteria (runs.error column, restart-survival,
+journal.jsonl, run_status/run_result/run_list visibility, dashboard rendering) all confirmed live;
+REQ-206's default materialization AND the P6-3 ban's reversal both confirmed live; REQ-207's
+run-level health signal, sequential-null semantics, and computable worst-case wait all confirmed
+live (worst-case wait against a REAL local Ollama timeout, not a synthetic one); REQ-208's
+false-positive fix AND its true-positive floor both confirmed live; REQ-209's doc-examples
+confirmed to really register against the CURRENT README.md/DEPLOY.md bytes; REQ-210's envelope
+disclosure confirmed live at the `initialize` handshake. The nine carried REQs (001/005/055/090/
+106/107/111/116/117) all show clean regression evidence gathered as a byproduct of the same real
+calls — none needed a dedicated fresh probe. `README.md`/`DEPLOY.md` were rewritten (current-state,
+no history language) to describe the new fields/behavior a human operator would otherwise not know
+about, and re-verified against the same live transcripts, not asserted from memory. Two carried
+limitations, both pre-existing and named again rather than silently dropped:
+1. **REQ-117's fresh-cold-model protocol** — this validator has read the ledger and is a
+   disqualified subject for "a cold model succeeds first try"; `VAL-231` (v34) is the standing
+   genuine-fresh-subject evidence and this iteration's own D1/D2/D3 findings from that run are
+   exactly what `VAL-238`/`VAL-240` above close. Whether a NEW fresh-subject re-run is warranted
+   this iteration (v35 changed guide text materially) is an owner call on validation budget, not a
+   silent skip — carried to `needs_clarification`.
+2. **DEPLOY.md §情境配方 steps 3/4** (the full multi-gate `sdlc-run` plugin recipe, end-to-end) —
+   unchanged from v34's own carried limitation, still not independently re-run this round (same
+   reason: needs a second engine instance running the actual iso-agile-sdlc plugin, out of this
+   round's real-effort budget given six REQs already required a fresh boot+7 real registrations+2
+   restarts+1 Chromium session). Not weakened or strengthened by v35; named so Gate 8 does not read
+   the silence as new.
+`current_stage` → `review` (Gate 8 is next).
+
+### VAL-244 — DEPLOY.md §情境配方:引擎側已證,跨 plugin 多閘整合維持具名限制
+
+- **status:** green
+- **traces:** REQ-209, REQ-116, REQ-117
+- **tier:** acceptance
+- **real:** true
+- **result:** pass(範圍內)
+- **evidence:**
+  v35 Gate 7.5 把「DEPLOY.md 的配方從未以第二個 iso-agile-sdlc plugin 實例端對端跑過完整多閘
+  sdlc-run」再次提出。**orchestrator 裁決:維持具名限制,不為此開驗證切片。**
+
+  理由是把已證與未證分清楚。**引擎這一側該證的都證了**:
+  (1) v34 以 scratch 引擎真跑過配方步驟 3 的範例(runId `fc374235`,completed,337 秒),
+  並因此抓到印出來的 mermaid 讀者照抄會連撞 `TOOLS_MISMATCH`、`EDGE_MISMATCH` 兩次,已修
+  (`evidence/v34/deploy-recipe-e2e-2026-09-21.md`);
+  (2) v35 的 VAL-242 再把 README/DEPLOY 裡抽得出來的 3 組範例全部送進**真的** `workflow_register`,
+  全數通過 —— 這正是 REQ-209 要求的自動化守衛,已經涵蓋這份文件。
+
+  **未證的是另一件事**:用第二個 plugin 實例把每個 SDLC 關卡派到這具引擎上跑完一輪完整 sdlc-run。
+  那是 **plugin 側的整合**(角色提示詞如何內嵌、關卡如何串接、預算如何分配),不是本引擎的需求;
+  它的失敗模式屬於 plugin,不屬於 `001-remote-workflow-engine` 的任何一條 REQ。
+  把它掛進 v35 的驗收,等於讓這一輪扛一個不屬於它的證明責任,而且永遠證不完
+  (plugin 版本一動就要重證)。故列為**具名、已接受的限制**,不是遺漏。
+- **iter:** v35
+
+### VAL-245 — REQ-117/207/210:v35 介面的冷主體真跑(第二次,全新主體)
+
+- **status:** green
+- **traces:** REQ-117, REQ-207, REQ-210, REQ-116, REQ-201
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  Gate 7.5 把 REQ-117 標為 `unreachable-dep`(驗證者受污染、無法自供冷主體),並問要不要沿用 VAL-231。
+  **orchestrator 裁決:不沿用,重跑。** v35 實質改寫了 guide(新增「Three things a cold author
+  gets wrong」),VAL-231 是 v34 那一版的證據,拿來充當 v35 的證據就是驗證上的偷工。
+
+  以當前程式碼另起 scratch 引擎(8794、auth 關閉、全新空 workRoot),交出 URL 給一個**與上次不同的**
+  全新獨立實例,禁讀本機任何檔案與 git。完整紀錄:`evidence/v35/req117-cold-subject-2026-09-21.md`。
+
+  **結果:10 次 MCP 呼叫全部第一次就成功、零失敗、零引擎拒絕碼**,雙 agent 協作一次註冊通過
+  (含泳道圖四條規則),run `764c2b42` 完成並取回真實結果。
+
+  **本列同時是 REQ-207 與 REQ-210 最強的外部證據** —— VAL-231 記下的四個坑逐一被驗證為已關閉,
+  而且是由一個看不到程式碼的陌生實例實際用出來的,不是作者自稱「有寫清楚」:
+  D2 → 主體從 `workflow_describe` 讀到 `attempts:2/worstCaseMs:120000`,開跑前就算得出最壞等待;
+  D3 → 主體引用明文的兩層規則(一般失敗回 null 自行檢查、引擎級拒絕才 throw);
+  D1 → 主體用 `failedAgentCount:0` 與「失敗時 result.error 是 {code,message}」判定內部確實成功;
+  D4 → 主體引用 initialize 的雙重編碼揭露,全程零解析錯誤。
+
+  附帶復現 v33 的行為改變:主體註冊後不 publish、直接以 `{version}` 迭代(`release=null`),
+  並指名 `run_start` 的說明是「照字面做就對」的一處 —— 第二個互不相識的冷客端做出同樣選擇。
+- **iter:** v35

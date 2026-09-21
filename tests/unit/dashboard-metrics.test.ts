@@ -70,6 +70,19 @@ describe('predictedLanes surfaces scan.unscannable additively (item 5, Gate 8 re
     expect(lanes.unscannable).toBeUndefined();
     expect(lanes.length).toBe(5); // still a plain array to every existing consumer
   });
+
+  // v35 GATE 6.5+7 (verifier, coverage-gate closure): the sibling early-return branch — an
+  // unscannable script whose regex-detected nodes ALSO fail `deriveExpectedGraph` on its own
+  // grounds (here: an `agent()` node found before any `phase()` node, since the failed oracle
+  // filters nothing — `inNonCode` is always `false` once `oracle.ok` is `false`) hits the
+  // `!derived.ok` early return, not the populated-lanes return above. `dashboard.ts:304-309` (the
+  // `unscannable?: true` set on the EMPTY array) had zero coverage before this case.
+  it('an oracle parse failure with no phase() at all hits the empty-array branch and still marks `.unscannable`', () => {
+    const src = "export const meta = {};\nagent('a', {});\nconst x = ((((;";
+    const lanes = predictedLanes(src) as ReturnType<typeof predictedLanes> & { unscannable?: true };
+    expect(lanes.length).toBe(0);
+    expect(lanes.unscannable).toBe(true);
+  });
 });
 
 describe('computeWorkflowMetrics gains avgCostUSD/unpricedRuns (UT-239, DES-196)', () => {

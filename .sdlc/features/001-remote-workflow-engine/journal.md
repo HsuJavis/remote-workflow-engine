@@ -7711,3 +7711,191 @@ not resolved here」——問 UT-209 的 fixture 是否該反過來被推翻、�
 **全套結果(本人實跑,`npx vitest run`,全 repo)**：430 files passed | 1 skipped (431);
 **3194 tests passed | 26 skipped (3220), 0 failed**——比 GREEN 收尾時的 3191 passed / 3 failed 恰好多
 3 通過、0 紅,吻合派工的目標(0 failures)。耗時 652s。
+
+## 2026-09-21 — v35 GATE 6.5+7 (SIMPLIFY+VERIFICATION merged, verifier)
+
+Dispatch: [merged Gate 6.5+7] simplify the v35 diff, then full regression (Mode B), then the
+coverage gate, then the (dormant) module gate. Impact closure {REQ-205..210, REQ-001, REQ-005,
+REQ-055, REQ-090, REQ-106, REQ-107, REQ-111, REQ-116, REQ-117}.
+
+**(0) SIMPLIFY.** `/simplify` invoked; the Agent tool's fan-out is unavailable in this context, so
+a single-pass inline review ran instead, over `git diff dc652d9..HEAD -- src/` (21 files,
++533/-73) across all four angles (reuse/simplification/efficiency/altitude). ZERO fixes: this diff
+already went through 7 RED→GREEN cycles including 3 test-defect rulings by the prior verifier
+round, so every remaining branch is load-bearing and independently commented with its own
+rationale (e.g. `capErrorEnvelope`'s marker-aware cut, `nonCodeOracle`'s fail-open/fail-closed
+split). `toErr` was already de-duplicated into `errors.ts` (removed the private copy in
+`run-manager.ts`); `checkMermaid`'s `if(v2)` nesting was already flattened once `v2` became
+required. No dead code, no duplicated helper, no efficiency/altitude issue found beyond what the
+implementer had already done.
+
+**(1) REGRESSION.** `npx vitest run` (full repo, twice — once before, once after the coverage-gate
+fix below): 430 files / 1 skipped (431), **3195 tests passed | 26 skipped (3221), 0 failed**
+(the +1 over the prior 3194 is the new coverage-gate test case). `npx tsc --noEmit` clean on both
+configs. Found 18 items still `status: red`/`result: fail` in `05-tests.md` despite the code
+actually being green (the implementer/prior-verifier rounds fixed the code but this ledger flip is
+this gate's own job per the Mode B contract) — flipped UT-285..288, UT-290..294, IT-283..288,
+VAL-232/234/237 to `green`/`pass`, each confirmed by re-running its own test file standalone
+before the flip, not merely asserted from the aggregate count. One pre-existing red left untouched:
+VAL-208 (`iter: v27c`, traces REQ-134) — out of this closure's scope, unrelated to v35.
+
+**(1b) COVERAGE.** Installed `@vitest/coverage-v8@1.6.1` (`npm install --no-save`, `package.json`/
+`package-lock.json` untouched). `npx vitest run tests/unit tests/integration --coverage
+--coverage.include='src/**' --coverage.exclude=<the same ten `ui/*.js` browser-only files excluded
+since v27/IMPL-249, one flag each>` → **95.99% overall lines** (clear of the 90% floor). Per-
+function audit (`coverage/coverage-final.json`'s `fnMap`+`statementMap`, not just the % column) of
+every function touched by the v35 diff found ONE real gap: `dashboard.ts`'s `predictedLanes`
+(IMPL-344) has two return points — the populated-lanes array (already exercised) and a SIBLING
+early-return (an empty array, taken when `deriveExpectedGraph` itself refuses — e.g. an `agent()`
+node the failed oracle's own regex scan still finds sitting before any `phase()` node) — lines
+304-309 (the `if (scan.unscannable) empty.unscannable = true;` block) had ZERO statement hits.
+Closed with one new case in `tests/unit/dashboard-metrics.test.ts` (UT-295 extended, IMPL-349): a
+no-`phase()`, unscannable fixture (`export const meta = {};\nagent('a', {});\nconst x = ((((;`)
+pinning `lanes.length === 0` and `lanes.unscannable === true`. Verified non-vacuous: a scoped
+coverage re-run (`npx vitest run tests/unit/dashboard-metrics.test.ts --coverage
+--coverage.include='src/dashboard.ts'`) shows lines 304-309 with hit counts >0 where they were 0
+before. All other v35-touched functions were already ≥95% (most 100%): `toErr`/`capErrorEnvelope`
+(100%), `materializeArgDefaults`/`params/contract.ts` (100%), `recordError`/`getError` on both
+`RunStore` impls (100%), `nonCodeSpans`/`nonCodeOracle`/`workflow-meta.ts` (99.38%, gaps
+pre-existing/unrelated), `toPublicRunSummary`/`run-view.ts` (100%), `buildInitializeInstructions`
+and both `initialize` handshake call sites/`server.ts` (fully hit), `workflowDescribe`'s
+`toolSurfaceUnscannable` block/`mcp-facade.ts` (no gap). Two pre-existing sub-95% functions in
+touched files (`mcp-facade.ts`'s `workflowRegister`'s duplicate-trigger-id/compensating-release
+arms, and `workflowSource`'s generic catch-all) are separate methods the v35 diff never touched —
+left as known, out-of-closure debt, the same class v34's own Gate 6.5+7 left in place for the same
+reason. `module_check`: dormant (no ARCH row declares `build:`).
+
+**(2)** No remaining red in the v35 closure.
+
+**(3)** `sh .sdlc/trace --check`: **1911/86** pre-edit baseline (captured before any change this
+gate) → **1912/86** after the 18 test-ledger flips + IMPL-349 (+1 item, gap set unchanged) → see
+the addendum below for the second Gate-6 omission (TASK-231/232/234) that took it to **1920/83**.
+Gap-set diff (`git show HEAD:… dashboard.html` vs the regenerated one, both parsed as `(type, id,
+msg)` tuples): **0 new gaps, exactly 3 closed** — `未實作 TASK-231`, `未實作 TASK-232`, `未實作
+TASK-234` (the three tasks that genuinely had zero IMPL rows before this gate; TASK-233/235/236/
+237/238 already had IMPL-343..348 tracing to them). The remaining 83 gaps are pre-existing baseline
+debt (the 15 HIGH are broken links to non-existent `REQ-144..152/186`, unrelated to this closure,
+per the journal's own v33 note) — `--check` exits nonzero on their presence alone, not on anything
+this gate introduced.
+
+**(3b)** `solid_check`: 92 modules, **0 high / 0 mid / 10 low** — the 10 lows are pre-existing
+unclaimed-file warnings, unchanged from before this gate.
+
+**(4)** `determinism_check.py src --check`: clean (0 un-allowed wall-clock/random reads).
+
+**(5)** Time-travel: `TZ='Pacific/Kiritimati'` re-run over the v35 closure's 27 test files (14
+unit + 7 integration + 6 acceptance): 372 tests, 0 flips.
+
+**(6) Seam wiring.** Four v35 seams checked end to end: `gatewayAttempts` (constructed at
+`server.ts:837` from `config?.retries`, itself forwarded from `fileConfig.retries` at
+`main.ts:351` — the SAME config key the real `LiteLLMGatewayClient` construction at
+`server.ts:728` already reads, not a test-only value); `recordError`/`getError` (both `RunStore`
+implementations, called from `RunManager`'s real settle path, `run-manager.ts:1273`/`:982`);
+`materializeArgDefaults` (called from `RunManager`'s real admission path, `run-manager.ts:573`);
+`toPublicRunSummary` (wired at the real `/api/runs` route handler, `server.ts:391`). All four
+confirmed constructed/called by production code, not only by tests.
+
+**(7) Real-dependency smoke.** `npm run check-config` against the actually-deployed
+`rwe.config.json` passes (`--check-config: OK`; one pre-existing, v35-unrelated warning:
+`agentDefinitionsDir` retired at v34). The v35 closure introduces no new LLM/messaging/IoT
+integration; its only "external" dependency, SQLite, is exercised for real throughout
+IT-283..288/VAL-232/234/237 (real `SqliteRunStore`, real `createServer()`, real MCP HTTP, real
+Chromium for VAL-232's dashboard read) — no SUT-boundary mock anywhere in that set (confirmed by
+reading `val-232-run-error.test.ts`'s own scope note).
+
+`state.yaml`: `gates.verification.passed=true`, `current_stage: verification->validation`, full
+record in both `gates.verification.note` and `current_stage`'s own note (same ledger convention as
+prior gates); `python3 -c "import yaml; yaml.safe_load(...)"` re-parsed clean after the edit.
+
+No new `owner_decision: pending` marker introduced or found live anywhere in `01-08*.md` (swept
+`grep -c '^- \*\*owner_decision:\*\* pending'` across all six gate docs: 0). DES-230's own
+`owner_decision` (REQ-205 criterion 4, deferred to a v36 IPC card) was already `answered
+2026-09-21` before this gate started — carried forward, not re-opened.
+
+**Addendum — second Gate-6 omission found while auditing the closure.** Three of the eight v35
+tasks — **TASK-231, TASK-232, TASK-234** — had LITERALLY ZERO `06-impl-log.md` rows (trace.py's own
+`未實作`/"unimplemented" gap type), even though all three landed in the initial `d4abb60` commit
+and are exercised green (UT-287/VAL-233, UT-288, UT-290 respectively) — the same class of finding
+v34's own Gate 6.5+7 closed (IMPL-339/340/341). The other five (TASK-233/235/236/237/238) were
+NOT flagged as gaps — each already had at least one IMPL row from the Gate-8-return/GREEN-phase
+fix rounds (IMPL-343..348) — but those rows document only the FOLLOW-ON fix, not the primary
+initial implementation, so a reader of `06-impl-log.md` alone could not tell what TASK-233 etc.
+originally shipped. Wrote IMPL-350..357 for all eight (each citing `d4abb60`, tracing to its own
+TASK/DES/ARCH/REQ, listing the green tests already established in `05-tests.md`, and — for the
+five non-gap tasks — noting explicitly which later IMPL row amended it) and flipped TASK-231..238
+`draft`→`done` in `03-tasks.md`. `sh .sdlc/trace --check`: 1912/86 → **1920/83** (+8 items, -3
+gaps). Verified with a real gap-set diff, not just the count: `git show HEAD:…/dashboard.html`'s
+embedded gap JSON vs the regenerated one, parsed as `(type, id, msg)` tuples — **0 new gaps
+(now − head), exactly 3 closed (head − now)**: `未實作 TASK-231`, `未實作 TASK-232`, `未實作
+TASK-234`, byte-matching the three tasks named above. No `src/`/test file touched by this
+addendum — documentation-completeness only.
+
+## v35 GATE 7.5 — VALIDATION (2026-09-21, validator)
+
+**PASSED.** Impact closure {REQ-205, REQ-206, REQ-207, REQ-208, REQ-209, REQ-210, REQ-001, REQ-005,
+REQ-055, REQ-090, REQ-106, REQ-107, REQ-111, REQ-116, REQ-117}. Booted a SECOND scratch instance
+from documented steps only — `set -a; . ~/.config/rwe.env; set +a; export
+RWE_CONFIG_PATH=<scratch>/rwe.val35.config.json RWE_BIND=127.0.0.1 RWE_PORT=8942; ./deploy.sh
+--background` — health check confirmed `version":"0.1.0 (v0.20.0-424-g05a523f)"`, the exact commit
+under review, no undocumented step needed. Exercised every new REQ against real MCP HTTP, a real
+process kill+restart, and real headless Chromium (never the in-process `createServer()` the
+`05-tests.md` acceptance lock `VAL-232..237` already uses):
+- **REQ-205**: a real thrown-script run's `runs.error` column/`journal.jsonl`/`run_status`/
+  `run_result`/`run_list`/`GET /api/runs/:id` all carry `{code,message}`; SURVIVES a genuine
+  `kill`+`./deploy.sh --background` restart (fresh process, fresh in-memory state, same answer);
+  real Chromium screenshot of the dashboard shows `失敗原因: SCRIPT_ERROR — Error: boom, VAL35 real
+  failure` (`evidence/v35/val232-req205-dashboard-failurereason.png`).
+- **REQ-206**: bare `run_start` (no `args`) against a script declaring `meta.params.args.url.default`
+  → `run_result.result === {url:"https://x"}` — the P6-3 ban (`PARAM_CONTRACT_INVALID: … never
+  applied`) no longer fires; the default genuinely materializes.
+- **REQ-207**: a REAL 1ms-timeout dispatch against the REAL local `ollama/qwen2.5:7b` (confirmed
+  running via `/api/tags`) produces a genuine timeout; `run_status` carries top-level
+  `failedAgentCount:1`; `run_result.result.r === null` (sequential failure, no throw); real
+  `workflow_describe` shows `timeoutMs:{attempts:2, worstCaseMs:10000}` computed server-side from
+  the deployed `retries:1`; real `workflow_authoring_guide` states the sequential-null rule verbatim.
+- **REQ-208**: a role-prompt template literal containing `agent (` registers clean over real MCP
+  HTTP; a genuinely unlabeled `agent(someVar,…)` is still correctly refused
+  `AGENT_LABEL_NOT_LITERAL` — detection floor unweakened.
+- **REQ-209**: real `extractDocPairs` run against the CURRENT on-disk `README.md`/`DEPLOY.md` (3
+  pairs total) — all 3 register clean via real `workflow_register`, not just the static
+  `scanAgentCalls`/`checkMermaid` check v34 shipped.
+- **REQ-210**: real `initialize` handshake discloses `instructions` naming the double-JSON envelope
+  and a live-computed guide-size figure (~42894 bytes, computed per-call, not a literal); real
+  `tools/list` confirms all 35 tool names still hold the `workflow_*`/`run_*`/`workspace_*`/
+  `schedule_*`/`webhook_*`/`issue_*`/`models_list`/`system_info` prefix convention (REQ-107).
+
+New IDs `VAL-238..243` in `08-validation.md` (the ledger's `VAL-*` namespace already used
+`232..237` in `05-tests.md`'s own acceptance lock, so this round starts at the next free number).
+`sh .sdlc/trace --check`: **1920/83 → 1926/77** (+6 items, −6 gaps) — gap-set diffed, not count
+alone: exactly the six REQ-205..210 `未驗證` gaps closed, zero new gaps, and none of the remaining
+77 gaps (漂移 24 / TDD 19 / 未驗證 17 / 斷鏈 15 / 未實作 2 — **zero `未真實驗證`/mock-only gaps
+anywhere in the ledger**) names any REQ in this closure. `rtm.md` gained six new REQ-205..210 rows
+(this repo's `trace.py` still has no `--rtm` flag — hand-written from `build_matrix()`/
+`is_real_test()` output, same convention as v27/v28/v34), all ✅.
+
+**Handover docs rewritten (current-state, no history language)**: `README.md`'s `run_start`/
+`run_result` bullet extended with the `args` default-fill rule and the `error`/`failedAgentCount`
+fields + their restart-durability + dashboard display; a new "第零步" `initialize` example added
+showing the envelope-note disclosure. `DEPLOY.md` §5 troubleshooting table extended with the
+sequential-null/`failedAgentCount` fact, a `timeoutMs` single-attempt vs `attempts`/`worstCaseMs`
+row, and a "how do I find out why a run failed" row. Neither `README.md` nor `DEPLOY.md` had been
+touched by the v35 implementer (only `docs/AUTHORING.md`, the in-engine-served guide, had). Config-
+file sync check: `rwe.config.example.json` round-trips clean against `KNOWN_FILE_CONFIG_KEYS` (41
+keys, both directions) — v35 adds no new config key/secret/port/flag.
+
+**owner_decisions: none newly deferred.** DES-230's REQ-205 criterion-4 `owner_decision` (structured
+`violation` marker through the run-level error) was already `answered 2026-09-21` (deferred to a
+v36 IPC card) before this gate started. Grep-confirmed zero live `- **owner_decision:** pending`
+markers anywhere in `01-06`.
+
+**Two limitations carried forward, not silently dropped** (`needs_clarification`):
+1. REQ-117's fresh-cold-model protocol — this validator has read the ledger and is a disqualified
+   subject for "a cold model succeeds first try"; `VAL-231` (v34) stands as the genuine fresh-
+   subject evidence, and that run's own D1/D2/D3 findings are exactly what `VAL-238`/`VAL-240` above
+   close. Whether the v35 guide rewrite warrants a NEW fresh-subject re-run is an owner call on
+   validation budget.
+2. `DEPLOY.md` §情境配方 steps 3/4 (the full multi-gate `sdlc-run` plugin recipe, end-to-end) —
+   unchanged from v34's own carried limitation; still needs a second engine instance running the
+   actual iso-agile-sdlc plugin, out of this round's real-effort budget.
+
+`state.yaml`: `gates.validation.passed=true`, `current_stage` → `review`. Gate 8 is next.

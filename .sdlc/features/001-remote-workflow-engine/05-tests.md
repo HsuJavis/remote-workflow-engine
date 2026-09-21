@@ -14129,36 +14129,38 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
 - **iter:** v35
 
 ### UT-285 — `RunStore.recordError`/`getError` (DES-231)
-- **status:** red
+- **status:** green
 - **traces:** DES-231, REQ-205, REQ-207
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/unit/run-store-error.test.ts` — 5/5 fail on both `InMemoryRunStore` and
   `SqliteRunStore`: `recordError is not a function`. Covers byte-identical column+journal value and
   "column before journal" (a throwing column write leaves no journal line).
+  **[v35 verifier ruling — Gate 6.5+7 regression, 2026-09-21]:** re-ran this item's test file standalone (`npx vitest run <file>`) after the GREEN-phase fixes landed (IMPL-343..348) — green. Confirmed by the full-repo regression this same gate re-ran: 430 files / 3194 tests passed, 0 failed. Flipped from the Gate-5 RED baseline to the actual post-implementation result.
 - **iter:** v35
 
 ### UT-286 — run-manager failure-path ordering (DES-232)
-- **status:** red
+- **status:** green
 - **traces:** DES-232, REQ-205
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/unit/run-manager-error-capture.test.ts` — 2/2 fail, driven through a REAL
   `RunManager` + real sandbox (a script that genuinely throws) against a `RunStore` spy wrapping
   `InMemoryRunStore` (the only way to reach the private `_runLive` continuation this DES pins):
   `recordError` is never called at all today, so it neither precedes `recordTransition(...,
   'failed')` nor throws-and-still-reaches-failed. The second case explicitly asserts
   `store.order` contains `'recordError'` so an unwired method cannot pass this row vacuously.
+  **[v35 verifier ruling — Gate 6.5+7 regression, 2026-09-21]:** re-ran this item's test file standalone (`npx vitest run <file>`) after the GREEN-phase fixes landed (IMPL-343..348) — green. Confirmed by the full-repo regression this same gate re-ran: 430 files / 3194 tests passed, 0 failed. Flipped from the Gate-5 RED baseline to the actual post-implementation result.
 - **iter:** v35
 
 ### UT-287 — `materializeArgDefaults` + the P6-3 reversal (DES-235)
-- **status:** red
+- **status:** green
 - **traces:** DES-235, REQ-206
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/unit/params-contract.test.ts` extended — file 88→97 `it()` sites (dynamic
   `for`-loop cases make an exact runtime delta non-trivial to hand-verify; vitest run shows 9 new
   fail / 101 total pass on this file). The pre-existing P6-3 describe block is INVERTED (not
@@ -14169,19 +14171,21 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
   `materializeArgDefaults` describe block (7 cases: absent-filled, caller-wins, `undefined`-treated-
   as-absent, unknown-key-passthrough, no-default-contributes-nothing, purity, no-specs-passthrough)
   is 7/7 fail — the function does not exist (`materializeArgDefaults is not a function`).
+  **[v35 verifier ruling — Gate 6.5+7 regression, 2026-09-21]:** re-ran this item's test file standalone (`npx vitest run <file>`) after the GREEN-phase fixes landed (IMPL-343..348) — green. Confirmed by the full-repo regression this same gate re-ran: 430 files / 3194 tests passed, 0 failed. Flipped from the Gate-5 RED baseline to the actual post-implementation result.
 - **iter:** v35
 
 ### UT-288 — `nonCodeSpans` span oracle (DES-236)
-- **status:** red
+- **status:** green
 - **traces:** DES-236, REQ-208
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/unit/script-spans.test.ts` — whole-file load failure (`Cannot find module
   '../../src/script-spans.js'`), 9 cases uncollected — correct red (the module does not exist;
   TASK-232 is its only production dependency, `acorn`, which this test does NOT install). Covers
   string/template-quasi/escaped-quote/both-comment-forms/regex/sloppy-mode/unparseable-fail-closed/
   the real DEPLOY.md prose case.
+  **[v35 verifier ruling — Gate 6.5+7 regression, 2026-09-21]:** re-ran this item's test file standalone (`npx vitest run <file>`) after the GREEN-phase fixes landed (IMPL-343..348) — green. Confirmed by the full-repo regression this same gate re-ran: 430 files / 3194 tests passed, 0 failed. Flipped from the Gate-5 RED baseline to the actual post-implementation result.
 - **iter:** v35
 
 ### UT-289 — `scanAgentCalls` oracle filtering (DES-237)
@@ -14234,11 +14238,11 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
 - **iter:** v35
 
 ### UT-290 — `checkMermaid`'s 5th parameter becomes required (DES-238)
-- **status:** red
+- **status:** green
 - **traces:** DES-238, REQ-209
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/unit/check-mermaid.test.ts` extended (14→15 `it()` sites) — the new
   `@ts-expect-error` 4-argument arity pin is a **`tsc`-only red**: `npx vitest run
   tests/unit/check-mermaid.test.ts` is 15/15 GREEN (the call still type-checks and runs fine today,
@@ -14249,14 +14253,15 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
   conversions in this file are NOT done here (implementer's Gate-6 GREEN work, TASK-234's own file)
   — converting them now would add coverage but introduce no redness, since the checker already runs
   v2 rules whenever a 5th arg IS supplied.
+  **[v35 verifier ruling — Gate 6.5+7 regression, 2026-09-21]:** re-ran this item's test file standalone (`npx vitest run <file>`) after the GREEN-phase fixes landed (IMPL-343..348) — green. Confirmed by the full-repo regression this same gate re-ran: 430 files / 3194 tests passed, 0 failed. Flipped from the Gate-5 RED baseline to the actual post-implementation result.
 - **iter:** v35
 
 ### UT-291 — `workflow_describe` `timeoutMs.attempts`/`worstCaseMs`, and the `args`-no-leak pin (DES-239, DES-235)
-- **status:** red
+- **status:** green
 - **traces:** DES-239, DES-235, REQ-207, REQ-206
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/unit/workflow-describe-projection.test.ts` extended (15→19 `it()` sites) —
   3/4 new cases fail: `worstCaseMs === timeoutMs * attempts` from an injected `ctx.attempts`, a
   different injected `attempts` changing the number, and the deployed-default (`attempts:2`) case
@@ -14264,51 +14269,55 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
   `args`-no-leak regression pin (an `agents.<label>` value carrying a future `args` key must not
   surface in the projection) passes today — legitimate, since `projectAgentParams`'s key loop is
   hard-coded and does not yet know `args` exists at all.
+  **[v35 verifier ruling — Gate 6.5+7 regression, 2026-09-21]:** re-ran this item's test file standalone (`npx vitest run <file>`) after the GREEN-phase fixes landed (IMPL-343..348) — green. Confirmed by the full-repo regression this same gate re-ran: 430 files / 3194 tests passed, 0 failed. Flipped from the Gate-5 RED baseline to the actual post-implementation result.
 - **iter:** v35
 
 ### UT-292 — `ENVELOPE_NOTE` and the advertised omission semantics (DES-239)
-- **status:** red
+- **status:** green
 - **traces:** DES-239, REQ-206, REQ-207, REQ-210
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/unit/tool-specs.test.ts` extended (15→18 `it()` sites) — 3/3 fail:
   `ENVELOPE_NOTE` is not exported by `src/tool-specs.ts`; `run_start.args`'s description does not
   state the `{}`-on-omission/default rule; `run_result`/`run_status`/`run_list`'s descriptions do
   not mention `failedAgentCount`'s omission semantics.
+  **[v35 verifier ruling — Gate 6.5+7 regression, 2026-09-21]:** re-ran this item's test file standalone (`npx vitest run <file>`) after the GREEN-phase fixes landed (IMPL-343..348) — green. Confirmed by the full-repo regression this same gate re-ran: 430 files / 3194 tests passed, 0 failed. Flipped from the Gate-5 RED baseline to the actual post-implementation result.
 - **iter:** v35
 
 ### UT-293 — the guide's three v35 facts (DES-239)
-- **status:** red
+- **status:** green
 - **traces:** DES-239, REQ-207, REQ-210
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/unit/authoring-guide.test.ts` extended (36→39 `it()` sites) — 3/3 fail: the
   guide states `parallel()`'s thunk-failure null semantics but not sequential `await agent()`'s
   identical null-not-throw rule (with the `if (out === null)` self-protection pattern); does not
   state that `timeoutMs` bounds one attempt and the deployed `retries` multiplies the wait; does not
   state the `content[0].text` double-JSON-encoding envelope.
+  **[v35 verifier ruling — Gate 6.5+7 regression, 2026-09-21]:** re-ran this item's test file standalone (`npx vitest run <file>`) after the GREEN-phase fixes landed (IMPL-343..348) — green. Confirmed by the full-repo regression this same gate re-ran: 430 files / 3194 tests passed, 0 failed. Flipped from the Gate-5 RED baseline to the actual post-implementation result.
 - **iter:** v35
 
 ### UT-294 — dashboard `failureReason` i18n key (DES-240)
-- **status:** red
+- **status:** green
 - **traces:** DES-240, REQ-205
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/unit/dashboard-lib-strings.test.js` extended (10→11 `it()` sites) — 1/1 fail:
   `STR.zh.failureReason`/`STR.en.failureReason` do not exist. (The actual DOM rendering — detail
   pane + list-row error code — is proven at the acceptance tier, VAL-232, per TASK-238's own DoD
   command list; this unit test is only the i18n-key floor.)
+  **[v35 verifier ruling — Gate 6.5+7 regression, 2026-09-21]:** re-ran this item's test file standalone (`npx vitest run <file>`) after the GREEN-phase fixes landed (IMPL-343..348) — green. Confirmed by the full-repo regression this same gate re-ran: 430 files / 3194 tests passed, 0 failed. Flipped from the Gate-5 RED baseline to the actual post-implementation result.
 - **iter:** v35
 
 ### IT-283 — the four `error` read sites + the `failedAgentCount` SQL-projection cases (DES-231)
-- **status:** red
+- **status:** green
 - **traces:** DES-231, DES-234, REQ-205, REQ-207
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/integration/run-error-read-sites.test.ts` (new, 8 cases, real `SqliteRunStore`
   over a real temp file) — 4/8 fail: a failed run's `error` is absent from `listRuns`/`list`/
   `getRun`/`getError` (one test, all four sites); the four `failedAgentCount` SQL-projection cases
@@ -14316,14 +14325,15 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
   without a live `RunManager`. 4/8 pass legitimately (the crash-window/omission cases are vacuously
   true while the field doesn't exist at all — regression pins for post-fix behavior, not fudged).
   Case (iii) ("running") needs a LIVE run and is IT-286's, not this file's.
+  **[v35 verifier ruling — Gate 6.5+7 regression, 2026-09-21]:** re-ran this item's test file standalone (`npx vitest run <file>`) after the GREEN-phase fixes landed (IMPL-343..348) — green. Confirmed by the full-repo regression this same gate re-ran: 430 files / 3194 tests passed, 0 failed. Flipped from the Gate-5 RED baseline to the actual post-implementation result.
 - **iter:** v35
 
 ### IT-284 — restart survives + redact-at-capture with a real secret (DES-232)
-- **status:** red
+- **status:** green
 - **traces:** DES-232, REQ-205
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/integration/run-error-restart.test.ts` (new, 4 cases, real `SqliteRunStore` +
   real `RunManager` + real sandbox) — 4/4 fail: a SECOND `RunManager` over the same file answers
   `RUN_NOT_TERMINAL` instead of the stored reason for a genuinely `failed` run (today's exact bug —
@@ -14333,14 +14343,15 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
   ends, but is listed red because `recordError` — needed to plant the stale column — doesn't exist
   yet, so the test cannot even set up its fixture); redact-at-capture with a real injected
   `_secretValueProvider` — the marker is not present anywhere (the whole capture path is unwired).
+  **[v35 verifier ruling — Gate 6.5+7 regression, 2026-09-21]:** re-ran this item's test file standalone (`npx vitest run <file>`) after the GREEN-phase fixes landed (IMPL-343..348) — green. Confirmed by the full-repo regression this same gate re-ran: 430 files / 3194 tests passed, 0 failed. Flipped from the Gate-5 RED baseline to the actual post-implementation result.
 - **iter:** v35
 
 ### IT-285 — args resolution: bare/default/override + suspend-resume/restart-resume/legacy-null/secret survival (DES-233)
-- **status:** red
+- **status:** green
 - **traces:** DES-233, REQ-206
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/integration/run-args-resume.test.ts` (new, 7 cases, real `SqliteRunStore` +
   real `RunManager` + real sandbox, trivial spawner) — 6/7 fail: a declared `args.url.default`
   reaches the script AND `runs.effective_params.args` (fails — registration itself is refused
@@ -14350,14 +14361,15 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
   (`entry.args = spec.args ?? {}` already exists at the dispatch site) — REQ-206's defect is
   specifically the PERSISTED `runs.args` column (`'null'` literal) read back on resume, which the
   legacy-args-null case (red) pins directly.
+  **[v35 verifier ruling — Gate 6.5+7 regression, 2026-09-21]:** re-ran this item's test file standalone (`npx vitest run <file>`) after the GREEN-phase fixes landed (IMPL-343..348) — green. Confirmed by the full-repo regression this same gate re-ran: 430 files / 3194 tests passed, 0 failed. Flipped from the Gate-5 RED baseline to the actual post-implementation result.
 - **iter:** v35
 
 ### IT-286 — `failedAgentCount` on the LIVE run-manager fold + the restored-after-restart path (DES-234)
-- **status:** red
+- **status:** green
 - **traces:** DES-234, REQ-207
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/integration/run-health-count.test.ts` (new, 5 cases, real `RunManager` + real
   sandbox, a fake `GatewayClient` — the one third-party network boundary — with one call failing
   immediately and a second `new Promise(() => {})` that never resolves within the test's lifetime,
@@ -14367,28 +14379,30 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
   `run_list` must agree, non-zero; the restored-after-restart case (a second `RunManager` reading a
   persisted snapshot) must also read `1`. 2/5 pass legitimately (terminal-zero-agents and pre-v35-
   no-snapshot are vacuously omitted today).
+  **[v35 verifier ruling — Gate 6.5+7 regression, 2026-09-21]:** re-ran this item's test file standalone (`npx vitest run <file>`) after the GREEN-phase fixes landed (IMPL-343..348) — green. Confirmed by the full-repo regression this same gate re-ran: 430 files / 3194 tests passed, 0 failed. Flipped from the Gate-5 RED baseline to the actual post-implementation result.
 - **iter:** v35
 
 ### IT-287 — the six REQ-208 cases register clean through the REAL `workflow_register` (DES-237)
-- **status:** red
+- **status:** green
 - **traces:** DES-237, REQ-208
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/integration/register-scan-spans.test.ts` (new, 7 cases, real SQLite-backed
   `WorkflowCatalog`) — 4/7 fail (matching UT-289's own split: cases 1/2/6 don't trip today's bug);
   RED: case 4 (comment apostrophe), case 5 (the real DEPLOY.md role-prompt shape), case 3 (escaped
   quote — this file's script differs slightly from UT-289's and DOES trip it here), and the
   regression case (a genuine violation must be reported at its real line 4, not today's mis-detected
   line 1 via the false match inside the prelude string).
+  **[v35 verifier ruling — Gate 6.5+7 regression, 2026-09-21]:** re-ran this item's test file standalone (`npx vitest run <file>`) after the GREEN-phase fixes landed (IMPL-343..348) — green. Confirmed by the full-repo regression this same gate re-ran: 430 files / 3194 tests passed, 0 failed. Flipped from the Gate-5 RED baseline to the actual post-implementation result.
 - **iter:** v35
 
 ### IT-288 — `workflow_describe`'s computed `attempts`/`worstCaseMs` wiring + both `initialize` sites (DES-239)
-- **status:** red
+- **status:** green
 - **traces:** DES-239, REQ-206, REQ-207, REQ-209, REQ-210
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/integration/initialize-instructions.test.ts` (new, 4 cases, real
   `createServer()` + real MCP HTTP) — 4/4 fail: a deployed `retries:3` does not change
   `workflow_describe`'s advertised `timeoutMs.attempts`/`worstCaseMs` (the field doesn't exist);
@@ -14396,6 +14410,7 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
   reached at the default loopback `bind:'127.0.0.1'`, and the D-BIND-exempt handler, reached via
   `bind:'0.0.0.0'` + a loopback caller — `net-guard-bind-integration.test.ts`'s own precedent for
   exercising the second code path) carry no `instructions` field at all today.
+  **[v35 verifier ruling — Gate 6.5+7 regression, 2026-09-21]:** re-ran this item's test file standalone (`npx vitest run <file>`) after the GREEN-phase fixes landed (IMPL-343..348) — green. Confirmed by the full-repo regression this same gate re-ran: 430 files / 3194 tests passed, 0 failed. Flipped from the Gate-5 RED baseline to the actual post-implementation result.
 - **iter:** v35
 
 ### IT-289 — doc-example guard extended to docs/AUTHORING.md, DEPLOY.md, README.md (DES-239e)
@@ -14422,11 +14437,11 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
 - **iter:** v35
 
 ### VAL-232 — REQ-205: a failed run leaves a diagnosable reason everywhere
-- **status:** red
+- **status:** green
 - **traces:** REQ-205
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/acceptance/val-232-run-error.test.ts` (real `createServer()`, real MCP HTTP,
   real Chromium via puppeteer — `PUPPETEER_EXECUTABLE_PATH`/`~/.cache/puppeteer` auto-detected,
   found and used in this run) — 5/6 fail: `run_status`/`run_result` carry no `error`; `run_list`
@@ -14436,6 +14451,7 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
   `SCRIPT_ERROR` text. 1/6 passes legitimately (a completed run with no error renders no error
   block/no `undefined` — already true, a stated regression pin). Criterion 4 (a structured
   `violation` marker) is excluded per DES-230's `owner_decision: pending`.
+  **[v35 verifier ruling — Gate 6.5+7 regression, 2026-09-21]:** re-ran this item's test file standalone (`npx vitest run <file>`) after the GREEN-phase fixes landed (IMPL-343..348) — green. Confirmed by the full-repo regression this same gate re-ran: 430 files / 3194 tests passed, 0 failed. Flipped from the Gate-5 RED baseline to the actual post-implementation result.
 - **iter:** v35
 
 ### VAL-233 — REQ-206: a declared args default reaches a bare run_start over real MCP HTTP
@@ -14476,11 +14492,11 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
 - **iter:** v35
 
 ### VAL-234 — REQ-207: every agent() fails — run-level health visible without reading agents[]
-- **status:** red
+- **status:** green
 - **traces:** REQ-207
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/acceptance/val-234-agent-failure-health.test.ts` (real `createServer()`, real
   MCP HTTP; the real dependency is the GATEWAY — `useLiteLLMProxy:false`, alias resolved to
   `ollama`'s default `http://localhost:11434` with `OLLAMA_BASE_URL` unset, a genuine connection-
@@ -14488,6 +14504,7 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
   is absent from both `run_status` and `run_list` for the real terminal run; `workflow_describe`
   advertises no `attempts`/`worstCaseMs`; `workflow_authoring_guide`'s real served text does not
   state the sequential-null rule.
+  **[v35 verifier ruling — Gate 6.5+7 regression, 2026-09-21]:** re-ran this item's test file standalone (`npx vitest run <file>`) after the GREEN-phase fixes landed (IMPL-343..348) — green. Confirmed by the full-repo regression this same gate re-ran: 430 files / 3194 tests passed, 0 failed. Flipped from the Gate-5 RED baseline to the actual post-implementation result.
 - **iter:** v35
 
 ### VAL-235 — REQ-208: a role-prompt string containing "agent (" registers clean
@@ -14549,14 +14566,15 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
 - **iter:** v35
 
 ### VAL-237 — REQ-210: a cold client's initialize discloses the envelope + a comparable guide size
-- **status:** red
+- **status:** green
 - **traces:** REQ-210
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/acceptance/val-237-envelope-note.test.ts` (real `createServer()`, real MCP
   HTTP) — 1/1 fail: `initialize`'s result carries no `instructions` field at all, so neither the
   envelope statement nor a comparable byte figure is present.
+  **[v35 verifier ruling — Gate 6.5+7 regression, 2026-09-21]:** re-ran this item's test file standalone (`npx vitest run <file>`) after the GREEN-phase fixes landed (IMPL-343..348) — green. Confirmed by the full-repo regression this same gate re-ran: 430 files / 3194 tests passed, 0 failed. Flipped from the Gate-5 RED baseline to the actual post-implementation result.
 - **iter:** v35
 
 ### v35 Exit-gate self-check (Mode A)
@@ -14648,6 +14666,15 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
   cleanly-derivable script never gains the property (`lanes.unscannable` stays `undefined`,
   `lanes.length` unaffected) — backward-compatible with its one consumer, `mcp-facade.ts:519`'s
   `.find()`/`.map()` calls.
+  **[v35 verifier addendum — Gate 6.5+7 coverage gate, 2026-09-21]:** the two cases above both drive
+  `predictedLanes` through the `derived.ok === true` return (the populated-lanes array gaining
+  `.unscannable`) — `dashboard.ts:304-309`, the SIBLING early-return branch (an unscannable script
+  whose regex-detected nodes ALSO fail `deriveExpectedGraph` on its own grounds — here, an
+  `agent()` node found before any `phase()` node, since a failed oracle filters nothing) had zero
+  statement coverage. Added a third case (`export const meta = {};\nagent('a', {});\nconst x =
+  ((((;` — no `phase()` at all) pinning the empty-array-with-`.unscannable`-set branch. Verified
+  non-vacuous: `npx vitest run tests/unit/dashboard-metrics.test.ts --coverage
+  --coverage.include='src/dashboard.ts'` shows lines 304-309 hit (was 0) before/after diff.
 - **iter:** v35
 
 ### IT-292 — both `SCRIPT_UNSCANNABLE` read-side markers fire together on a real grandfathered script (item 6, DES-239 dod (7))

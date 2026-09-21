@@ -8978,3 +8978,233 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   neither newly introduced nor newly enforced by this change.
 - **refactor:** n/a — one new small exported function plus a one-line `.map()` at the call site; no
   existing logic altered.
+
+### IMPL-349 — v35 GATE 6.5+7 (verifier): coverage-gate closure — one real per-function gap, no production code change
+
+- **status:** done
+- **traces:** DES-234, ARCH-149, TASK-233, REQ-208
+- **greens:** UT-295 (extended, 2→3 `it()` sites)
+- **files:** tests/unit/dashboard-metrics.test.ts
+- **commit:** (uncommitted at report time)
+- **iter:** v35
+- **note:** Full-repo coverage measurement (`@vitest/coverage-v8@1.6.1`, `npm install --no-save`;
+  `npx vitest run tests/unit tests/integration --coverage --coverage.include='src/**'
+  --coverage.exclude=<the same ten `ui/*.js` browser-only files excluded since v27/IMPL-249>`) —
+  per-function audit (`coverage/coverage-final.json`'s `fnMap`/`statementMap`, not just the %
+  column) of every function inside the v35 `git diff dc652d9..HEAD -- src/` closure found ONE real
+  gap: `dashboard.ts`'s `predictedLanes` (IMPL-344) has two return points — the populated-lanes
+  array (already exercised by UT-295's two existing cases) and a SIBLING early return (an empty
+  array, taken when `deriveExpectedGraph` itself refuses — e.g. an `agent()` node the failed
+  oracle's own regex scan still finds sitting before any `phase()` node) — `dashboard.ts:304-309`
+  (the `if (scan.unscannable) empty.unscannable = true;` block) had ZERO statement hits: no test
+  anywhere drove `predictedLanes` through that branch. Closed with one new case (a no-`phase()`,
+  unscannable fixture) pinning `lanes.length === 0` and `lanes.unscannable === true`; verified
+  non-vacuous via a scoped coverage run (`npx vitest run tests/unit/dashboard-metrics.test.ts
+  --coverage --coverage.include='src/dashboard.ts'`) showing lines 304-309 hit=1 where they were
+  hit=0 before this case. All other functions inside the closure's diff (`toErr`/
+  `capErrorEnvelope`/`errors.ts`, `materializeArgDefaults`/`params/contract.ts`, `recordError`/
+  `getError` on both `RunStore` implementations, `nonCodeSpans`/`nonCodeOracle`/`workflow-meta.ts`,
+  `toPublicRunSummary`/`run-view.ts`, `buildInitializeInstructions`/`server.ts`,
+  `projectAgentParams`'s `attempts` branch/`workflow-view.ts`, `workflowDescribe`'s
+  `toolSurfaceUnscannable`/`mcp-facade.ts`) were already ≥95% (most 100%) — no further gaps in the
+  closure. Two pre-existing, out-of-closure functions in touched files stayed below 95%
+  (`mcp-facade.ts`'s `workflowRegister`'s duplicate-trigger-id/compensating-release arms,
+  `workflowSource`'s generic catch-all) — untouched by the v35 diff, same class of debt v34's own
+  Gate 6.5+7 left in place for the SAME two reasons (`nowhere near this iteration's own diff`,
+  `workflowRegister`/`workflowSource` are separate methods from the touched `workflowDescribe`).
+  Overall: **95.9x% lines** (re-measuring after this fix; see `state.yaml`'s `gates.verification`
+  note for the final figure), clear of the 90% floor.
+- **refactor:** n/a — test-only addition; no `src/` byte changed by this IMPL.
+
+### IMPL-350 — TASK-231: `materializeArgDefaults`, the P6-3 reversal, and the two type slots `args` needs
+
+- **status:** done
+- **traces:** TASK-231, DES-235, ARCH-145, REQ-206
+- **greens:** UT-287, VAL-233
+- **files:** src/params/contract.ts, src/params/resolve.ts, tests/unit/params-contract.test.ts
+- **commit:** d4abb60
+- **iter:** v35
+- **note:** **Gate 6 documentation omission, found and closed at Gate 6.5+7 (verifier)** — the code
+  landed in the initial v35 implementation commit (`d4abb60`) and is exercised green by UT-287/
+  VAL-233 (confirmed again this gate, both standalone and in the full regression), but no IMPL row
+  was ever written for it. `parseParamContract`'s v21 P6-3 ban (`args spec cannot declare a
+  default (never applied)`) is deleted and replaced with validation via the existing
+  `checkValueAgainstSpec` path — a declared default is now checked like any other value, not
+  refused outright. New pure function `materializeArgDefaults(args, specs)` (contract.ts) fills a
+  declared-but-absent key from its `.default`; a caller-supplied value (including an explicit
+  `undefined`) always wins; unknown keys pass through untouched. `RunParams` gains `args?:
+  Record<string, unknown>` (resolve.ts); `EffectiveCallParams` is `Omit<RunParams,
+  'provenance'|'args'>` so the per-agent projection `workflow_describe` builds from it never grows
+  a copy of the run's args (the Gate-2 leak constraint TASK-231's own DoD names).
+- **refactor:** reviewed at this Gate 6.5+7's simplify pass (single-pass inline, Agent fan-out
+  unavailable) as part of the wider `git diff dc652d9..HEAD -- src/` — no issue found.
+
+### IMPL-351 — TASK-232: the span oracle — `acorn` becomes a production dependency and `src/script-spans.ts` is its only consumer
+
+- **status:** done
+- **traces:** TASK-232, DES-236, ARCH-148, REQ-208
+- **greens:** UT-288
+- **files:** package.json, package-lock.json, src/script-spans.ts (new)
+- **commit:** d4abb60
+- **iter:** v35
+- **note:** **Gate 6 documentation omission, found and closed at Gate 6.5+7 (verifier)** — same
+  class as IMPL-350: code landed at `d4abb60`, green (UT-288, 8/8, re-confirmed this gate), no IMPL
+  row existed. New file `src/script-spans.ts`: `nonCodeSpans(script)` parses with `acorn`
+  (`sourceType:'script'`, not `'module'` — `guards.ts` executes the body via `new vm.Script`, a
+  classic script, and module mode's stricter grammar (rejects `var let = 1;`/legacy octal `010`)
+  would disagree with what actually runs) and returns every non-code byte range (string literals,
+  regex literals, template quasis, both comment forms) as `[start,end)` spans in the input's own
+  coordinate system — SPANS, not masked text, so a label literal is never blanked. Returns `{ok:
+  false, reason}` on a parse failure, never a partial span set. `acorn` moved from a transitive dev
+  dependency to an exact-pinned `dependencies` entry (no acorn-walk — a minimal own tree-walk
+  visits every reachable node).
+- **refactor:** reviewed at this gate's simplify pass — no issue found; the hand-rolled `walk()` is
+  the minimum needed (avoids the acorn-walk dev-only transitive dependency TASK-232's own DoD
+  forbids).
+
+### IMPL-352 — TASK-233: `scanAgentCalls` filters match offsets through the oracle, fails closed, and says so where it cannot refuse
+
+- **status:** done
+- **traces:** TASK-233, DES-237, ARCH-149, REQ-208, REQ-209
+- **greens:** UT-289, IT-287, VAL-235, VAL-236
+- **files:** src/workflow-meta.ts, src/dashboard.ts (predictedLanes' `.unscannable` surfacing lands
+  here structurally, though its own IMPL-344 covers the Gate-8-return refinement)
+- **commit:** d4abb60
+- **iter:** v35
+- **note:** **Gate 6 documentation omission, found and closed at Gate 6.5+7 (verifier)** — code
+  landed at `d4abb60`; the initial oracle-wiring shape was later corrected by IMPL-346 (the
+  GREEN-phase fail-open-on-no-meta fix) — this row documents the ORIGINAL wiring IMPL-346 amended,
+  not a duplicate of it. `scanAgentCalls`/`parseWorkflowSkeleton` both gain `nonCodeOracle(script)`
+  — a shared helper (D11/D12, 04-design.md) that blanks a balanced `export const meta = {…}` span
+  character-preservingly before running the span oracle, so a string/comment/regex-literal false
+  positive (`"...agent (mode A)..."`) is excluded from the `agent(`-shaped regex match at the SAME
+  offsets in both scanners (the positional join `deriveExpectedGraph` depends on, DES-174). An
+  oracle parse failure (meta present, code after it unparseable) yields exactly one violation
+  `{code:'SCRIPT_UNSCANNABLE', line:1}` plus `scan.unscannable === true`, readable by a consumer
+  that cannot refuse (dashboard render). The six REQ-208 registration cases (IT-287) and the
+  REQ-209 doc-example round-trip (VAL-236) both register clean through the real
+  `workflow_register`.
+- **refactor:** reviewed at this gate's simplify pass — no issue found (the case-2/case-3 split
+  IMPL-346 later introduced was reviewed as part of that IMPL's own diff, not re-litigated here).
+
+### IMPL-353 — TASK-234: `checkMermaid`'s fifth parameter becomes required, and the converted tests must be able to fail
+
+- **status:** done
+- **traces:** TASK-234, DES-238, ARCH-150, ADR-069, REQ-208
+- **greens:** UT-290
+- **files:** src/check-mermaid.ts
+- **commit:** d4abb60
+- **iter:** v35
+- **note:** **Gate 6 documentation omission, found and closed at Gate 6.5+7 (verifier)** — code
+  landed at `d4abb60`, green (UT-290, 16/16, re-confirmed this gate), no IMPL row existed.
+  `checkMermaid`'s `v2` parameter loses its `?` (required, not optional) and the `if (v2) { … }`
+  guard around steps (10)-(13) (direction/lanes/tools/edges) is deleted — there is no longer a
+  runtime path that skips the v2 rules; an opt-out would be a degraded mode with a name on it,
+  which the design explicitly rejects. `workflow-catalog.ts`'s one production caller already
+  passed five arguments and is untouched.
+- **refactor:** reviewed at this gate's simplify pass — this IS the simplification (removing a
+  conditional branch that could never again be false); no further issue found.
+
+### IMPL-354 — TASK-235: the store half — `recordError`/`getError` on the port, one additive column, one journal line kind, four read sites
+
+- **status:** done
+- **traces:** TASK-235, DES-231, ARCH-143, REQ-205, REQ-207
+- **greens:** UT-285, IT-283
+- **files:** src/run-store.ts, src/store/sqlite-run-store.ts, src/types.ts
+- **commit:** d4abb60
+- **iter:** v35
+- **note:** **Gate 6 documentation omission, found and closed at Gate 6.5+7 (verifier)** — code
+  landed at `d4abb60`, green (UT-285 5/5, IT-283 8/8, re-confirmed this gate), no IMPL row existed;
+  two of this task's own DoD items (item 1's `InMemoryRunStore` parity, item 6's genuine pre-v35
+  fixture) were later strengthened by the Gate-8-return round (IMPL-343/IT-290, IT-291) — this row
+  documents the ORIGINAL store-half implementation those two rows built on. `RunStore` port gains
+  `recordError`/`getError`; `SqliteRunStore` adds one additive `error TEXT` column (idempotent
+  `ALTER TABLE`, same convention as the five prior additive columns) and `recordError` writes the
+  column THEN appends a `{type:'error',...err}` journal line, in that order, so the two surfaces
+  cannot drift. `error` is surfaced on `RunStatusView`/`RunSummary` ONLY when `status === 'failed'`
+  — a crash-window row (written, then reclassified `interrupted`/`completed`) is never served
+  stale. `failedAgentCount` is emitted from `_USAGE_PROJECTION`'s `json_each` count under
+  `agentCount != null && agentCount > 0` — omitted, never `0`, for a non-terminal/no-snapshot run.
+- **refactor:** reviewed at this gate's simplify pass — no issue found.
+
+### IMPL-355 — TASK-236: the run-manager half — capture → bound → persist → transition, `result()` stops lying, and `args` is real
+
+- **status:** done
+- **traces:** TASK-236, DES-230, DES-232, DES-233, DES-234, ARCH-141, ARCH-142, ARCH-144, ARCH-146, REQ-205, REQ-206, REQ-207
+- **greens:** UT-284, UT-286, IT-284, IT-285, IT-286, VAL-232, VAL-234
+- **files:** src/errors.ts, src/run-manager.ts
+- **commit:** d4abb60
+- **iter:** v35
+- **note:** **Gate 6 documentation omission, found and closed at Gate 6.5+7 (verifier)** — code
+  landed at `d4abb60`; two follow-on GREEN-phase fixes (IMPL-346's oracle correction sits in
+  workflow-meta.ts, out of this file's scope; IMPL-347's marker-aware `capErrorEnvelope` cut DOES
+  amend this task's own `src/errors.ts`) were logged separately — this row documents the ORIGINAL
+  implementation those built on, all green in the full regression this gate re-ran. `toErr` moved
+  verbatim from a private `run-manager.ts` copy into the newly-exported `src/errors.ts` (both of
+  `run-manager.ts`'s call sites now import the one function); `capErrorEnvelope` bounds the
+  serialized envelope to `MAX_ERROR_ENVELOPE_BYTES`, applied AFTER `redact()` at the single persist
+  site (R-G9 ordering — a cut before redaction could split a secret so the exact-match redactor
+  finds neither half). `RunManager`'s failure path: capture (`toErr`) → redact → bound
+  (`capErrorEnvelope`) → `recordError` (STRICTLY before `recordTransition(...,'failed')`, a
+  `try/finally` so a throwing `recordError` still reaches `failed`) → a `.catch` backstop logging
+  `run_settle_failed` for either branch. `result()` gates `getError` on `view.status ===
+  'failed'` (never answering `RUN_NOT_TERMINAL` for a genuinely failed, reason-bearing run) and
+  falls back to a named `RUN_FAILED`/"no reason was recorded" for a pre-v35 row. `args` resolution:
+  `materializeArgDefaults` applied ONCE at admission (before `validateDeclaredArgs`); the
+  materialized record folds into `effective_params.args` (admission snapshot, redacted) while
+  `runs.args`/`entry.args` (dispatch) stays `spec.args ?? {}` — the ONLY dispatch source (INV-V35-2
+  — promoting the redacted admission record would hand a resumed script a secret marker as data).
+  The resume-time `hasSecretMarker` scan excludes `args` from the scanned fields for the same
+  reason. `failedAgentCount` folds from `_mergeLive`'s resolved agents array (live OR restored),
+  omitted for a zero-agent run.
+- **refactor:** reviewed at this gate's simplify pass — no issue found; every branch here is
+  independently commented with its own INV-tagged rationale.
+
+### IMPL-356 — TASK-237: the advertised surface — computed worst-case wait, the envelope at the handshake, the three facts the guide never said
+
+- **status:** done
+- **traces:** TASK-237, DES-239, ARCH-147, ARCH-151, ARCH-152, ARCH-154, REQ-207, REQ-209, REQ-210
+- **greens:** UT-291, UT-292, UT-293, IT-288, IT-289, IT-292, UT-296
+- **files:** src/workflow-view.ts, src/mcp-facade.ts, src/server.ts, src/tool-specs.ts, src/authoring-guide.ts, docs/AUTHORING.md
+- **commit:** d4abb60
+- **iter:** v35
+- **note:** **Gate 6 documentation omission, found and closed at Gate 6.5+7 (verifier)** — code
+  landed at `d4abb60`, green (all seven listed tests re-confirmed this gate, standalone and in the
+  full regression), no IMPL row existed. `workflow-view.ts`'s `projectAgentParams` gains
+  `attempts`/`worstCaseMs` on the `timeoutMs` key (`worstCaseMs = default * attempts`), `attempts`
+  forwarded from the composition root (`server.ts`'s `gatewayAttempts = 1 + max(0,
+  config?.retries ?? 1)` → `McpFacadeDeps` → `projectWorkflowDescribe`'s `ctx.attempts`) rather than
+  hard-coded — the `composeConfig` wiring class this ledger has hit twice before. `tool-specs.ts`
+  gains one exported `ENVELOPE_NOTE` constant (the double-JSON-envelope fact, stated once, not two
+  wordings) plus updated `run_start.args`/`run_status`/`run_result`/`run_list` descriptions naming
+  the default-fill/`error`/`failedAgentCount`-omission semantics. `server.ts` gains
+  `buildInitializeInstructions()`, called from BOTH `initialize` handshake sites, computing the
+  guide's serialized byte size PER CALL from the same tool-result object a caller actually
+  receives (no literal, no module-scope memo) and returning it alongside `ENVELOPE_NOTE` as
+  `result.instructions`. `authoring-guide.ts` gains a new "Three things a cold author gets wrong"
+  section (sequential-failure returns `null`/does not throw, `timeoutMs` bounds one attempt only,
+  the double-JSON envelope) and corrects the retired v21 "declared default never applied" sentence.
+  The doc-example guard (IT-289) is extended to `docs/AUTHORING.md`/`DEPLOY.md`/`README.md`.
+- **refactor:** reviewed at this gate's simplify pass — no issue found.
+
+### IMPL-357 — TASK-238: the failure reason is rendered where an operator already looks for the status
+
+- **status:** done
+- **traces:** TASK-238, DES-240, ARCH-153, REQ-205
+- **greens:** UT-294, VAL-232
+- **files:** src/dashboard/ui/run.js, src/dashboard/ui/workflow.js, src/dashboard/lib/strings.js
+- **commit:** d4abb60
+- **iter:** v35
+- **note:** **Gate 6 documentation omission, found and closed at Gate 6.5+7 (verifier)** — code
+  landed at `d4abb60`; the follow-on GREEN-phase fix (IMPL-348, stripping `failedAgentCount` off
+  `/api/runs`) amended `src/run-view.ts`/`src/server.ts`, files outside this task's own `files:`
+  list, and was logged separately — this row documents the ORIGINAL dashboard-render half. New
+  i18n key `failureReason` (zh-TW/en, `strings.js`); the run-detail legend (`run.js`'s
+  `renderLegend`) renders `failureReason: code — message` next to the terminal status ONLY when
+  `view.status === 'failed' && view.error` is present (a pre-v35 reasonless failed row, or any
+  non-failed status, renders nothing — never an empty block, never the literal string
+  `"undefined"`); the run-list chip (`workflow.js`'s `renderChipsAndTable`) appends `· code` to a
+  `failed` row's status tag under the same guard. No new endpoint, no new fetch, no client-side
+  computation — both fields already arrive on `/api/runs`/`/api/runs/:id` via TASK-235/236.
+  `failedAgentCount` is deliberately NOT rendered here (DES-240 rationale item 9).
+- **refactor:** reviewed at this gate's simplify pass — no issue found.

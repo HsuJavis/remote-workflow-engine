@@ -224,6 +224,24 @@ in the same re-run — no regression on REQ-138's counts card).
 | REQ-202 | appendPrompt 的用法要在廣告介面上完整,呼叫端不必試錯 (v34) | ARCH-136 | DES-223, DES-229 | TASK-228 | IMPL-339, IMPL-341 | UT-268, UT-269, UT-275, UT-276, VAL-222, VAL-223, VAL-225, VAL-226, VAL-229 | ✅ |
 | REQ-203 | 遠端作者寫不到的提示/模型/工具層不得影響執行結果:移除 agentType (v34) | ARCH-137, ARCH-138, ARCH-139 | DES-224, DES-225, DES-226, DES-227, DES-228, DES-229 | TASK-229 | IMPL-340, IMPL-341, IMPL-342 | IT-173, IT-174, IT-175, IT-176, IT-177, IT-282, UT-270, UT-271, UT-272, UT-273, UT-274, UT-275, UT-276, UT-283, VAL-223, VAL-224, VAL-226, VAL-227, VAL-228, VAL-229, VAL-230 | ✅ |
 | REQ-204 | `defaults.prompt` 的管線清除,但拒絕碼留著 (v34) | ARCH-140 | DES-224, DES-225, DES-226, DES-227, DES-228 | TASK-229 | IMPL-340, IMPL-342 | IT-173, IT-174, IT-175, IT-176, IT-177, IT-282, UT-270, UT-271, UT-272, UT-273, UT-274, UT-283, VAL-223, VAL-224, VAL-226, VAL-227, VAL-228, VAL-230 | ✅ |
+| REQ-205 | 失敗的 run 必須在磁碟上留下可診斷的原因 (v35) | ARCH-141, ARCH-142, ARCH-143, ARCH-153 | DES-230, DES-231, DES-232, DES-240 | TASK-235, TASK-236, TASK-238 | IMPL-345, IMPL-347, IMPL-354, IMPL-355, IMPL-357 | UT-284, UT-285, UT-286, UT-294, IT-283, IT-284, IT-286, VAL-232, VAL-238 | ✅ |
+| REQ-206 | 省略 args 不得讓腳本收到 null,宣告的 args 預設值要真的套用 (v35) | ARCH-144, ARCH-145, ARCH-147, ARCH-151, ARCH-152, ARCH-154 | DES-233, DES-235, DES-239 | TASK-231, TASK-236, TASK-237 | IMPL-345, IMPL-350, IMPL-355, IMPL-356 | UT-287, UT-291, IT-285, VAL-233, VAL-239 | ✅ |
+| REQ-207 | agent 失敗的語意要說出口,run 的頂層狀態不得掩蓋它 (v35) | ARCH-143, ARCH-146, ARCH-147, ARCH-151 | DES-231, DES-232, DES-234, DES-239 | TASK-235, TASK-236, TASK-237 | IMPL-343, IMPL-345, IMPL-354, IMPL-355, IMPL-356 | UT-291, UT-292, UT-293, IT-283, IT-286, IT-288, IT-289, VAL-234, VAL-240 | ✅ |
+| REQ-208 | 註冊掃描器不得把字串內容誤判為程式碼 (v35) | ARCH-148, ARCH-149 | DES-236, DES-237 | TASK-232, TASK-233, TASK-234 | IMPL-344, IMPL-346, IMPL-349, IMPL-351, IMPL-352, IMPL-353 | UT-288, UT-289, UT-290, IT-287, VAL-235, VAL-241 | ✅ |
+| REQ-209 | 文件裡印出來的範例必須是真的註冊得過的 (v35) | ARCH-150, ARCH-151 | DES-238, DES-239 | TASK-233, TASK-234, TASK-237 | IMPL-345, IMPL-352, IMPL-356 | UT-290, IT-287, IT-288, IT-289, VAL-236, VAL-242 | ✅ |
+| REQ-210 | 回應的包裝與體積要讓冷客端吞得下 (v35) | ARCH-147, ARCH-151, ARCH-152, ARCH-154 | DES-239 | TASK-237 | IMPL-356 | UT-291, UT-292, UT-293, IT-288, IT-289, VAL-237, VAL-243 | ✅ |
+
+## v35 Gate 7.5 update (2026-09-21, validator)
+
+Added the six REQ-205..210 rows above (this file has no `--rtm` CLI path — hand-written from
+`trace.py`'s `build_matrix()`/`is_real_test()` output, same convention as every prior round noted
+below). Each row's last two test-column entries are the pre-existing `05-tests.md` acceptance lock
+(`VAL-232..237`, `real:false`, in-process) followed by THIS gate's own real-tier item
+(`VAL-238..243`, `real:true`, second booted instance) — the row reads ✅ on the real column, not the
+acceptance one. The nine carried rows (REQ-001/005/055/090/106/107/111/116/117 above) are unchanged
+by this update: their existing ✅ already stood on real:true evidence from earlier iterations, and
+this round's regression checks (folded into `VAL-238..243`'s own evidence, see `08-validation.md`)
+confirmed none regressed — no row edit needed for them.
 
 ## v34 Gate 7.5 update (2026-09-21, validator — send-back re-validation round)
 
