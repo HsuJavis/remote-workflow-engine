@@ -1,269 +1,228 @@
-# Quality-dimensions lens — v36 architecture, round 1 (independent proposal)
+# Quality-dimensions expert — round 1 (independent proposal)
 
-## Altitude check (tech_stack + requirements)
+**Gate context**: this is v36, a Gate 8 send-back, not a greenfield architecture gate. Scope is
+REQ-211..216 (ARCH-155..173, ADR-072..079) plus landing the owner ruling on ARCH-172's pending
+marker. This proposal is scoped to that — deltas against existing ARCH IDs, not a re-architecture.
 
-`state.yaml`'s `tech_stack` and `01-requirements.md`'s product line put this project in **both**
-buckets, not one: it is a conventional system (hand-rolled MCP-over-HTTP server, SQLite catalog/run
-store, a shell-scripted deploy/lifecycle layer) whose PAYLOAD is an AI-agent execution engine —
-workflow scripts run inside a sandboxed child process and make `agent()` calls that are dispatched
-through a pluggable `GatewayClient` port (`LiteLLMGatewayClient` direct-fetch vs.
-`ClaudeAgentSdkGatewayClient`, config-selected). v35's own synthesis already applied both altitudes
-per dimension and I do the same here — a dimension is skipped only where a requirement genuinely
-doesn't reach that altitude (none of REQ-211..216 is agent-only or system-only).
+**Altitude verdict**: this project is **both**. The system altitude applies fully — MCP
+Streamable-HTTP server (hand-rolled JSON-RPC, `src/server.ts`), SQLite persistence
+(`better-sqlite3`), process-level sandbox. The agent altitude also applies fully — `agent()` calls
+dispatch through a `GatewayClient` port to the Claude Agent SDK / LiteLLM proxy, with real
+multi-provider routing (Anthropic/OpenAI/Gemini/Ollama). Each dimension below is scored at
+whichever altitude(s) the v36 evidence actually touches; I don't force the other one where v36 has
+nothing to say.
 
-Of the six v36 requirements, **REQ-215 is the only one routed through a full architecture gate**
-(IPC contract change + a named policy decision + a named security assessment); REQ-211..214/216 are
-fix-mode and riding this round only because the orchestrator merged them. This proposal weights
-REQ-215 accordingly — it is roughly half the document below.
+---
+
+## 1. Observability
+
+**System altitude — strong and the direct subject of this gate.** REQ-213 is literally "the engine
+must be able to say what it's doing" and REQ-212 is literally audit-identity observability.
+`src/event-log.ts` (ARCH-159) is one injectable `EventSink`, redaction applied once inside it
+(never in emitters), currently a closed union of exactly 4 event kinds
+(`catalog.register/publish/deregister`, `run.terminal`). ARCH-159's amendment moves `publish`'s
+bare `console.log` (`:803`) onto this sink and adds REQ-212's `bypass`/`idSource` audit fields —
+this is the load-bearing fix for the "7 anonymous publishes on 2026-09-20" defect in REQ-212's
+acceptance text. ARCH-162 adds `lastRunAtByName()` as a read-only grouped query so `workflow_list`
+stops hiding which of 20 registered names are one-off probes worth deleting.
+
+**Gaps recorded as architecture debt, not silently dropped** (state.yaml's own v36 tail names
+these, so I'm not inventing them): `refusalsDropped` has no read surface; three pre-v36 unredacted
+`console.log` lines remain outside the sink (filed v37); the per-run refusal ledger is capped at 8
+entries + a dropped counter (ARCH-168) — a real bound on observability under a pathological run,
+correctly named as a limit rather than hidden.
+
+**Agent altitude — thinner, and the seam is contested, which is REQ-215's whole point.** A
+structured engine-refusal marker (e.g. `AGENT_OPT_RETIRED`) is dropped **three times** crossing the
+sandbox boundary before it reaches `toErr`: `sandbox/guards.ts:322-335` rebuilds every failure into
+a bare `{code,message}` and flattens `code` to `SCRIPT_ERROR`; `sandbox/host.ts:147/166` rebuilds
+again relaying it; `child-entry.ts:36`'s wire type has no field for it at all. REQ-215 is exactly
+"design the observable seam" for this — and it is *not* closed this iteration by architecture alone:
+the acceptance text demands (a) the 4-file IPC contract change, (b) a policy ruling on which engine
+refusal codes may cross the sandbox catch (a security question, not an implementation detail), (c)
+an explicit security assessment, because a refusal code crossing the boundary is a new
+script-controlled-object-reaches-disk channel, grouped with v37's Bash jail work. Separately:
+`claude-agent-sdk-client.ts:435` already passes through SDK session events including
+`compact_boundary` and `status` — whether those reach a durable per-agent record or are silently
+dropped at the sandbox boundary the same way REQ-215's refusal marker is, is unverified and worth
+one line item in tests, since it's the same class of failure REQ-215 documents for a different
+signal.
+
+**Risk to this gate closing**: REQ-215 is scoped as "must go through full Gate 2→8 including
+architecture" specifically *because* of (b)+(c) above — if this round's architecture output settles
+(a) the wire contract without an explicit, owner-visible ruling on (b), the send-back repeats.
+
+## 2. Replaceability
+
+**Agent altitude — real and already built, not aspirational.** `GatewayClient`
+(`src/gateway/client.ts:186`) is a genuine port with two conformers —
+`LiteLLMGatewayClient` (managed `litellm[proxy]` subprocess, ARCH/DES-009) and
+`ClaudeAgentSdkGatewayClient` (`ANTHROPIC_BASE_URL` pointed at the same proxy) — selected by one
+config key (`"gateway":"sdk"|"direct-fetch"`), and D2's design goal (route cheap models to
+mechanical agents, expensive ones to critical agents, no Anthropic billing when routed elsewhere) is
+live infrastructure via LiteLLM, not a stated intent with nothing behind it.
+
+**K6/K7 (ARCH-151, this gate) is a replaceability regression being closed, not opened**: the two
+conformers had *private* retry semantics — `client.ts:515` retried even an untimed call
+(`1 + Math.max(0, retries)` unconditionally) while `claude-agent-sdk-client.ts:507` did not. Two
+implementations of one port disagreeing on retry-under-timeout is exactly the failure mode
+replaceability exists to prevent: a caller can no longer treat the two as interchangeable. ARCH's
+fix — `attemptsFor()` homed on the port, both conformers call it — is the correct place to put it:
+a shared pure function makes "both gateways answer the same" a compile-time fact, and K8's ~3-line
+probe in `compose-config-v2-wiring.test.ts` is this repo's standing guard against exactly this class
+of two-implementations-drift (the same guard class that already caught two prior composeConfig
+wiring bugs per project memory).
+
+**System altitude — mixed, and I want to flag rather than claim.** `RunStore` (`src/run-store.ts:185`)
+is a real interface with `InMemoryRunStore` and a SQLite conformer, so persistence *is* behind a
+port for run storage — that part of D9 held. Two counter-facts temper any broader replaceability
+claim: (1) tech_stack's own history records the MCP transport drifted from the Gate 2/3 sketch —
+hand-rolled JSON-RPC-over-HTTP in `src/server.ts`, not `@modelcontextprotocol/sdk` — functionally
+equivalent but not the originally-designed swap point; (2) `better-sqlite3` is a concrete, synchronous,
+single-process dependency baked into the `RunStore` conformer — the port exists, but nothing in this
+gate's scope exercises "swap SQLite for Postgres" the way D2 exercises "swap Anthropic for Ollama."
+I'm not claiming a gap here since nothing in REQ-211..216 asks for it — just noting the asymmetry:
+this project's replaceability investment is real but concentrated on the LLM-gateway seam, not
+symmetric across every persistence seam.
+
+## 3. Consumability
+
+**Agent altitude — the strongest dimension in this codebase, and largely already shipped, not new
+to v36.** `src/authoring-guide.ts` is a self-describing surface (declared-not-probed capability
+labels, explicit worked examples with generated ASCII diagrams) rather than a caller learning the
+DSL by trial and error — REQ-202 already demanded exactly this ("appendPrompt 的用法要在廣告介面上
+完整,呼叫端不必試錯") and it's a v33 REQ, not new. REQ-201 (cold-client version-loop visibility),
+REQ-209 (printed examples must actually register) and REQ-210 (response wrapping/size sized for a
+cold client) are the standing consumability contract this gate inherits and must not regress.
+
+**ARCH-172's pending owner decision is, at bottom, a consumability trade-off, and I'll take a
+position on it since the gate must land it**: `listSummaries()` behind `/api/runs`/`/api/home`
+currently full-scans an unbounded `runs` table per request. Option A (keep full-history semantics,
+document the scaling cliff in the port contract — ARCH-172's current draft) preserves a caller's
+mental model (`avgCostUSD`/`successRate` mean "all runs, always") at the cost of an unbounded
+response a cold client must be able to consume (REQ-210 territory) as the table grows monotonically
+(no `DELETE FROM runs` anywhere). Option B (paginate `listSummaries()` onto the already-paginated
+`list()`, limit 50/cap 500) bounds the response but **silently redefines the number** — "average
+cost over all runs" becomes "average cost over the last N" with no code-visible marker that the
+semantics changed. From a pure consumability lens I'd favor **A, but only if REQ-210's response-size
+contract is verified against this specific endpoint under a large `runs` table** — an unbounded
+sweep query is exactly the kind of endpoint REQ-210 was written against, and the two REQs currently
+document their bound only as declared, not measured, per K3's own methodology objection elsewhere in
+this same gate (byte-accurate worst case, not offset-scanned). If A ships without that measurement,
+it is a load-bearing assumption undocumented.
+
+**System altitude**: no REST/GraphQL + generated-docs (OpenAPI/Swagger) surface exists or is being
+proposed — the MCP tool surface (with `authoring-guide.ts` as its generated-docs equivalent) *is*
+this project's consumability surface for both a human-driven client and an agent caller, which is
+appropriate for an MCP-first product and not a gap against this gate's scope.
+
+## 4. Self-sustainability
+
+**System altitude — one real self-healing mechanism, correctly scoped.** `main.ts:314-320`: the
+managed LiteLLM proxy subprocess is supervised with auto-restart and a restart budget, and — this is
+the observability tie-in the requirement author clearly intended — a crash+restart is logged rather
+than silent ("gateway is DOWN until restart" is an explicit terminal state, not an inferred one from
+absence of logs). This is the one instance in the codebase of "restart a bad instance" from the task
+framing's system definition, and it predates v36 (not this gate's work, but the standing asset this
+gate should not regress).
+
+**Runtime liveness is registration-time only, not continuous** — worth naming precisely rather than
+generally: `mcp-probe.ts:1-5`'s explicit comment scopes it as "the one network probe for mcp
+transports," exercised when an asset is registered/synced, not a recurring health check against a
+provisioned MCP server while a run is executing. That's a correctly-scoped boundary for what
+REQ-211..216 asks (none of the six REQs asks for runtime tool-liveness), not a defect of this gate —
+flagging only so the panel doesn't read the registration-time probe as more than it is.
+
+**Agent altitude — no memory-metabolism/compaction mechanism exists, and none should be invented in
+this gate.** The only "compaction" I found is presentational, not agent-context management:
+`agent-executor.ts:19-30` truncates a *logged* prompt at a 4KB head+tail cap for the operator-log
+record, and `capErrorEnvelope` bounds an error envelope at ~4096 bytes (K3, this gate). Neither
+touches what a long-running agent's own context window carries turn to turn. No REQ in this ledger
+traces to periodic memory compression/archival or to self-reflection/prompt recalibration against
+environment change — per the architecture stage's own discipline (every ARCH row traces to a REQ),
+inventing that machinery here would be scope the gate cannot justify. **This is the one dimension of
+the four where I'm recording a clean gap rather than grounding a claim in a REQ**: it belongs on the
+v37 candidate list alongside the circuit-breaker gap noted above, explicitly out of scope for v36.
+
+**K8's `attempts` wiring probe (ARCH-151/173, REQ-216/K6-K8) is this gate's concrete
+self-sustainability item**, correctly sized: a shared retry-attempt formula plus a systematic guard
+test against the specific bug class (`composeConfig` forwarding drift) that has already produced two
+prior real incidents in this project per its own memory. It's small, it's the right shape, and per
+this session's advisor review it's also where Gate 8's send-back places a live, unresolved risk (see
+Risks).
+
+---
 
 ## Summary
 
-The six requirements read, dimension by dimension, as: an IPC contract that currently makes an
-agent's structured refusal reason unobservable past three flattening sites (REQ-215, observability +
-security, agent altitude); an audit trail that silently anonymizes exactly the calls that most need
-attribution (REQ-212, observability, system altitude, overloaded with a replaceability defect at the
-same call site); one port (`GatewayClient`) whose two conformers have already drifted on a formula
-its own guide promises is singular (REQ-216/K7, replaceability); a directory and a log stream that
-give an operator no way to tell what's safe to delete or what happened without opening sqlite
-(REQ-213, observability + self-sustainability, system altitude); a multi-instance lifecycle script
-that clobbers PID/log state across instances (REQ-214, self-sustainability); an error message that
-promises an action the tool cannot perform (REQ-211, consumability); and six named-but-deferred
-architecture debts from v35 (REQ-216/K1-K8) that this round either closes or re-files with a reason,
-not silently.
+Both altitudes apply. Observability and consumability are this codebase's strongest dimensions and
+are the direct subject of most of REQ-211..216; the gate's job is landing REQ-215's sandbox seam
+correctly (including its required policy ruling, not just the wire fix) and closing REQ-213's
+audit/log gaps without letting the named debt (refusalsDropped, 3 unredacted lines) silently
+disappear from the record. Replaceability is real and concentrated specifically at the LLM-gateway
+seam (D2/GatewayClient), with K6-K8 closing a real drift between the two conformers rather than
+adding new abstraction; persistence and transport replaceability are present but asymmetric and out
+of this gate's scope. Self-sustainability has one genuine mechanism (LiteLLM proxy supervised
+restart) and one correctly-scoped absence (agent memory metabolism) that should be filed for v37,
+not built here.
 
 ## Key points
 
-### (1) Observability
-
-**REQ-215 — the IPC contract's missing seam, and where the fix actually has to live.**
-The requirement's own three-flattening trace (`guards.ts:322-335` → `host.ts:147/166` → the
-`child-entry.ts` wire type) is accurate but names only the SYMPTOM sites. Two designs close it, and
-they are not equivalent:
-
-- **Design A — widen the wire, trust the child less.** Grow `guards.ts`'s `ENGINE_REFUSAL_CODES`
-  (today just `{BUDGET_EXCEEDED}`) to the policy-approved set, thread it through `child-entry.ts`'s
-  `AgentThrowMsg`/error shape unchanged in kind (still `{code, message}`, just a richer `code`
-  vocabulary), and — this is the part REQ-215(c)'s security ask actually requires — **validate at
-  the PARENT side of the boundary, at receipt**, not just at the child's throw site. `host.ts`'s
-  `case 'error': settle({ error: msg.error })` currently does zero validation of `msg.error.code`;
-  a child-side filter is a courtesy the parent cannot rely on (a compromised or buggy child can put
-  any string on the wire). The guarantee has to be: **parent collapses any code not in the allowlist
-  to `SCRIPT_ERROR` on receipt**, symmetrically for `agentThrow`/`workflowThrow`/`error`. This is the
-  literal shape of REQ-209's precedent (ADR-069: required parameter, fail-closed, no opt-out) applied
-  to an IPC boundary instead of a function signature.
-- **Design B — don't widen the wire at all.** REQ-215's own text says the marker "already lands in
-  the per-agent record's detail string" when the parent's `onAgentRequest` handler throws
-  `AGENT_OPT_RETIRED` — because the PARENT constructs that refusal itself, before it ever crosses
-  into the child via `agentThrow`. If the parent records the refusal host-side, keyed by `callSeq`,
-  and lifts it into the run-level error envelope when the run terminates as failed, (c) dissolves
-  by construction: nothing new crosses the sandbox boundary, because the parent already had the
-  answer. The trade-off is exact-vs-inferred causality: Design A can point at the literal
-  `agent()` call that got refused; Design B can only assert "the run died after this refusal was
-  issued," and a script that catches the throw and fails for an unrelated reason afterward would
-  attribute wrongly under B.
-
-  REQ-215(a) states flatly that "4 個檔的 sandbox IPC 契約修改" is one of the three things the
-  requirement "必須包含,缺一不可" — so Design B does not discharge the requirement as written; I
-  read this as the requirement already having decided A over B, with (c)'s security assessment
-  existing precisely BECAUSE A was chosen. I'm not overriding that reading, but round 1 should say
-  so explicitly for the adversarial lens to confirm or contest, since it's the single highest-value
-  design fork in this round: **if the parent already has exact causality via Design B's mechanism
-  for the one code the requirement's own example uses (`AGENT_OPT_RETIRED`), REQ-215(b)'s "which
-  codes may cross" policy question may have very few members** — every refusal the PARENT itself
-  raises (as opposed to the sandbox VM's own guards, e.g. `BUDGET_EXCEEDED`, `DETERMINISM_GUARD`)
-  doesn't need to cross at all under B, and only the latter class needs A's allowlist widened.
-
-**REQ-212 — audit identity collapsed by an ownership helper doing double duty.**
-`bypassPrincipal()` (`mcp-facade.ts:202`) answers one question — "for OWNERSHIP-COMPARISON purposes,
-does this principal's identity matter, or does it bypass?" — and its `null` return for
-`admin`/`auth-disabled` is then reused, transitively, as if it also answered "what identity does the
-audit row get?" Those are two different contracts sharing one function, and REQ-212's 7-anonymous-
-publishes-in-one-day evidence is what happens when a system conflates them. The request path
-"admin called X" stops being followable at exactly the row that most needs it followable — a bypass
-of ownership is the highest-audit-value case, not a case audit is allowed to skip.
-
-**REQ-213 — the engine doesn't narrate its own terminal events.**
-`workflow_register` and any run reaching a terminal state currently produce nothing structured
-(journal.jsonl carries 7 `catalog.publish` lines across 70 minutes of real testing; register and
-run-terminal are silent). This is the system-altitude form of "internal state observable at any
-time, feeding automated ops" — today it doesn't feed anything, a remote incident can only be
-diagnosed by opening the sqlite file directly. Reuse REQ-205/REQ-142's already-established capture
-seam (redact-at-capture, one line per terminal transition) rather than inventing a second logging
-path — REQ-216/K1's proposed `captureFailure` collapse is the natural place to also emit the journal
-line, since it already sits at the one point every failure funnels through.
-
-**REQ-216/K1, K2 — close them this round, not defer a third time.** K1 (one pure
-`captureFailure(err, secrets)` replacing two independently-evolving capture sites) and K2
-(`seedRef.failDetail` served unredacted, three lines from the message its sibling already redacts)
-were both named at Gate 8 and declined only for being outside that round's strict scope. REQ-216
-explicitly lists K1-K8 as its own acceptance criteria, and REQ-215 already has to touch
-`errors.ts`/`guards.ts`/`host.ts` for the IPC work — landing K1+K2 in the same PR is strictly cheaper
-than a third round that re-opens the same files. K2 in particular is a live redaction gap (a secret
-marker reaching an unredacted field is exactly the failure class ADR-066 exists to close) and should
-not go a second iteration as "named debt."
-
-**Agent altitude, what's already there:** the budget/spend piggyback (`ZERO_SPEND`,
-`onBudgetSnapshot`, the `spent` field on `start`/`agentResult`) is a working observable seam for
-"how much" — REQ-215 is the missing "why," not a duplicate mechanism.
-
-**Out of scope, correctly:** no requirement in this round asks for cross-run correlation IDs beyond
-`runId`/`agentId`, or an OpenAPI surface for `/api/*` — both were filed in v35 and stay filed.
-
-### (2) Replaceability
-
-**The `GatewayClient` port is the project's best example of this dimension done right** — two real
-conformers (`LiteLLMGatewayClient` direct-fetch, `ClaudeAgentSdkGatewayClient`) behind one interface,
-config-selected (`"gateway":"sdk"|"direct-fetch"`), LLM-backend swap as a config change rather than a
-rewrite, exactly the agent-altitude goal this dimension names. **REQ-216/K7 is where that abstraction
-is already leaking**: I traced both formulas —
-
-- `claude-agent-sdk-client.ts:507`: `attempts = effTimeout !== undefined ? 1 + max(0,retries) : 1`
-- `client.ts:515`: `attempts = 1 + Math.max(0, this._config.retries)` — **unconditional**, ignores
-  whether a timeout is even configured.
-
-REQ-216's own text says the promised guide sentence is "an untimed call gets ONE attempt." That
-matches the SDK client and contradicts `client.ts`, which retries an untimed call `1+retries` times
-regardless. **`client.ts:515` is the deviant implementation, not an equally-valid second formula.**
-A port whose two conformers disagree on retry semantics means "swap the gateway" is no longer a pure
-config change — it changes observed retry behavior too, which is exactly the kind of silent
-divergence this dimension exists to prevent. Fix shape: one `attempts(effTimeout, retries)` helper
-homed on the `GatewayClient` port module (not duplicated per client), both call it; ship the missing
-guide sentence in the same change (ARCH-151(b) already named it as missing).
-
-**REQ-215's wire protocol as a replaceability seam in its own right.** The child/parent split exists
-so the VM-based sandbox host is swappable for a different isolation mechanism without touching
-`RunManager` — but only if the wire stays a stable, additive contract. v26 already established the
-right pattern for growing it (the `spent` field added as `?:` optional on `StartMsg`/`AgentResultMsg`
-rather than reshaping the message). REQ-215's error-code widening should follow the same shape:
-additive, not a breaking reshape of the existing `{code, message}` envelope.
-
-**REQ-211, briefly:** the version→channel indirection (a channel points at a version, not a bare
-name) is already a decoupling seam — callers depend on a channel, not a specific version — and the
-acceptance correctly protects it (refuse to delete a version a channel still points at). This
-requirement is mostly a consumability gap (below); flagged here only to confirm it doesn't regress
-the existing seam.
-
-### (3) Consumability
-
-**REQ-211 — the interface's own error message is false.** `VERSION_CEILING_EXCEEDED`'s hint text
-tells a caller to "deregister an old one," and no such call exists — `workflow_deregister` only
-deletes an entire name. This is the textbook failure this dimension flags: structured, well-typed I/O
-is only as trustworthy as the error text riding it, and an error message advertising a capability the
-tool doesn't have is worse than no hint at all, because a caller who trusts it wastes a round trip
-discovering the tool lied.
-
-**REQ-213 — `workflow_list`'s missing decision-relevant fields.** A caller (human or another agent)
-currently cannot tell, from the advertised surface, which of 20 registered names are safe to clean up
-— no `lastRunAt`, no purpose summary, mixed permanent workflows and one-shot probes with identical
-shape. REQ-206's precedent (explicit `null` over an ambiguous `0`/`''` default) is the right sentinel
-convention to reuse here for "never run," and I'd apply it rather than inventing a second convention
-for the same kind of absence.
-
-**REQ-215, agent altitude.** For a workflow author, the engine's reasoning is invoked like a function
-(`agent()`), and today a refusal returns an opaque, generically-worded run-level failure instead of
-the same kind of structured `run_result.error.code` a `BUDGET_EXCEEDED` refusal already provides
-(established at v25/REQ-120, `refusalCode()` in `guards.ts`). REQ-215 is best read as *extending an
-existing consumability pattern* to a second class of engine refusal, not inventing a new one — reuse
-`refusalCode()`'s enum-membership shape for whatever the REQ-215(b) allowlist becomes, so callers
-learn one mechanism, not two.
-
-**REQ-210's already-shipped lesson applies to REQ-213's new log lines too:** don't let the new
-structured journal format become a second surface a cold client has to discover is large or
-double-encoded. Keep each line small (name/version/principal/outcome, as specified) and don't route
-it through the same double-JSON-encoding envelope REQ-210 exists because of.
-
-### (4) Self-sustainability
-
-**Scoping note, stated rather than silently assumed:** v35's synthesis already ruled — correctly,
-and unchanged by anything in v36 — that full autoscaling/circuit-breaker self-healing at the system
-altitude is out of scope for a single-operator QM tool, and that tool-liveness probing between runs
-has no requirement asking for it. I'm not reopening either; no v36 requirement touches them.
-
-**REQ-214 is a genuine self-sustainability defect, not a cosmetic one.** `deploy.sh` writes
-`.rwe.pid`/`.rwe.log` at the repo root regardless of which config `RWE_CONFIG_PATH` points at, so a
-second instance (a scratch verification instance is described as "常態" — the normal case, not an
-edge case) silently shares lifecycle state with the first. `kill $(cat .rwe.pid)` killing the wrong
-process is exactly the graceful-degradation failure this dimension flags: the mechanism meant to let
-an operator manage instances without manual bookkeeping instead requires MORE manual bookkeeping (the
-v34 DEPLOY.md workaround REQ-214 asks to retire). Three candidate homes for the PID/log files, in
-order of preference: **(a) `dirname "$RWE_CONFIG_PATH"`** — the config already defines
-per-instance state (`workRoot`) and colocating PID/log with the config file that identifies the
-instance is the most debuggable (an operator who has the config path has the PID/log path, no lookup
-table needed); (b) a hash of the resolved config path — works, but trades debuggability for a
-filename an operator can't read at a glance; (c) inside `workRoot` itself — plausible since
-`workRoot` is already the instance's own writable area, worth the architecture round confirming which
-of (a)/(c) is intended, since both satisfy the acceptance criterion equally well.
-
-**REQ-213's new journal lines and the ALREADY-FILED rotation gap must not be decided independently.**
-`02-architecture.md`'s v36-candidates list already names `journal.jsonl` compaction/rotation as
-unactioned debt for resident/cron workflows. REQ-213 adds a NEW line kind (register events) on top of
-the existing per-agent traffic, which grows the unbounded-file problem rather than leaving it alone —
-silently proceeding as if "the new lines are small so it's fine" is precisely the failure mode this
-dimension exists to catch (per-line growth is bounded; CUMULATIVE growth across a long-lived resident
-workflow's lifetime is not, and that's the axis rotation was filed against). This round should do one
-of two things explicitly, not drift past the question a second time: state a stated growth bound the
-new line kind stays under (and re-file rotation with that bound recorded as the reason it's still
-tolerable), or pull minimal rotation into REQ-213's scope. I lean toward the former — REQ-213 doesn't
-ask for rotation and growing scope to include it risks the same "no requirement asked for it" problem
-this project's own trade-off discipline elsewhere refuses to do — but the coupling has to be named,
-not left implicit.
-
-**REQ-216/K5 — `listRuns()` has no LIMIT.** REQ-216's acceptance text is explicit that the
-DELIVERABLE here is a ruling ("要裁決要不要加"), not an implementation mandate — I'm not upgrading it.
-My input to that ruling: it's a real, already-identified scaling cliff on a list path a long-running
-deployment will eventually hit, and REQ-213 touches `workflow_list`'s shape in the same round anyway,
-which lowers the marginal cost of also bounding `listRuns()` if the ruling comes out "add it." I'd
-lean toward adding a default LIMIT with an explicit override, but the ruling itself belongs to the
-synthesis, not to one lens.
-
-**Agent altitude — memory metabolism, read narrowly.** The catalog's 20-names/9-probes state (REQ-213
-evidence) is a real instance of "unbounded accumulation with no compress/archive path," but at the
-CATALOG altitude, not the per-agent-context altitude the canonical "memory metabolism" framing names.
-REQ-213 as scoped gives the OBSERVABILITY a future GC would need (lastRunAt as a staleness signal); it
-is not itself a closed self-sustainability loop, and I want that distinction on record so REQ-213
-isn't later read as having closed a loop it only made visible.
+- REQ-215 (sandbox refusal-marker seam) is the one item in this gate that is *architecture-shaped*,
+  not just a wiring fix: it needs an explicit, owner-visible ruling on which engine refusal codes may
+  cross the sandbox catch, plus a written security assessment, before the wire contract change lands.
+- ARCH-172's pending owner_decision is a consumability trade-off (response-bound vs. semantic
+  stability of `avgCostUSD`/`successRate`), not a pure scalability call — recommend Option A (keep
+  unbounded, document the cliff) contingent on verifying REQ-210's response-size contract against
+  this specific endpoint at real table size, not just declaring it.
+- K6-K8's shared `attemptsFor()` + compose-config probe is simultaneously a replaceability fix
+  (closes the two-conformer drift) and a self-sustainability item (systematic guard against a
+  recurring bug class) — worth flagging to the referee as one piece of work serving two dimensions,
+  not double-counted risk.
+- Memory-metabolism / agent-context compaction and runtime tool-liveness / circuit-breaking are both
+  genuinely absent and correctly out of scope for v36 (no REQ traces to either) — recommend filing
+  both explicitly as v37 candidates in this gate's output rather than leaving them undiscoverable.
+- REQ-213's `refusalsDropped`-has-no-read-surface gap and the 3 pre-v36 unredacted `console.log`
+  lines are already-named debt (state.yaml v36 tail) that this proposal does not re-litigate but
+  flags as still-open going into this gate's close.
 
 ## Risks
 
-1. **Attention skew.** Five of six requirements this round are comparatively mechanical (REQ-211,
-   212, 213, 214, and REQ-216's mostly-already-decided K3/K4/K6/K8); REQ-215 is the one item asking
-   for genuine new architectural judgment (a policy ruling plus a security assessment) and is the one
-   the orchestrator itself flagged as needing the full gate. A round that spends even attention across
-   all six under-serves REQ-215 specifically.
-2. **REQ-215 Design A vs. B is a real fork, not a rhetorical one.** If the synthesis picks A without
-   registering that B would satisfy the requirement's INTENT (an observable refusal reason at the run
-   layer) with a smaller security surface for a subset of codes, a later audit may ask why the wire
-   was widened for codes the parent already knew about.
-3. **REQ-213 × rotation coupling**, named above — the risk is proceeding on REQ-213 as if it were
-   independent of the already-filed rotation debt, which would be exactly the kind of silent
-   "it's fine because it's small" reasoning this lens exists to interrupt.
-4. **REQ-212's fix, if implemented as "just stop returning null," could break the ownership-comparison
-   semantics `bypassPrincipal()` also serves** (`:233-239` reuses it for the OWNERSHIP-COMPARISON
-   check, where `null`-means-any is correct and must NOT change). The fix has to add a field, not
-   repurpose the existing return value — conflating "fix the audit gap" with "change what null means"
-   would be a regression risked by an implementer who reads only the requirement text and not the
-   two call sites.
+- **REQ-215 is the highest architectural risk to this gate closing cleanly**: it's the one REQ this
+  round explicitly requires full Gate 2→8 (not the fix-mode path the other five take) because of its
+  IPC contract + policy + security-assessment bundle. If the policy ruling (which refusal codes may
+  cross the sandbox catch) is left implicit or deferred to implementation, the send-back pattern this
+  gate is already in (v35→v36 for the same underlying issue class) is likely to repeat at Gate 8.
+- **ARCH-172's owner_decision is a live blocker**, confirmed genuinely unanswered per state.yaml — if
+  this round proposes a resolution without the actual owner ruling landing in the doc, the gate stays
+  open on this item regardless of what the panel agrees on architecturally.
+- **Asymmetric replaceability claims risk overclaiming**: it would be easy for a round-2 synthesis to
+  generalize "the gateway is pluggable" into "the system is pluggable," which the JSON-RPC-vs-SDK
+  drift and the SQLite-baked `RunStore` conformer don't support. Keep the claim scoped to the LLM
+  gateway seam specifically.
+- **Self-sustainability's clean gap (memory metabolism) is a legitimate v37 filing risk, not a v36
+  defect** — but if another lens's round-1 proposal treats its absence as something this gate must
+  fix, that's a scope disagreement worth surfacing explicitly in round 2 rather than silently
+  resolving either direction.
 
-## Expected disagreements with other lenses
+## Expected disagreements
 
-- **REQ-215 code selection.** I expect an adversarial/security-focused lens to argue for a narrower
-  allowlist than I would (grow `ENGINE_REFUSAL_CODES` one code at a time, each gated by its own
-  fixture, rather than admitting REQ-215's example code `AGENT_OPT_RETIRED` plus whatever else is
-  "policy-approved" in one pass) — similar in shape to v35's REQ-209 convergence (fail-closed,
-  required, no opt-out), but the SET itself is the likely point of friction, not the fail-closed
-  mechanism.
-- **Design A vs. B for REQ-215**, named above under risks — I read REQ-215(a)'s "4 個檔...缺一不可" as
-  having already decided A, but I expect this to be explicitly contested or explicitly ratified in
-  round 2 rather than silently assumed either way.
-- **REQ-214's exact file location** — `dirname($RWE_CONFIG_PATH)` vs. inside `workRoot` vs. a hash —
-  I don't expect disagreement on the PROBLEM, but I do expect a different lens to weight
-  debuggability vs. "keep instance state entirely inside the already-gitignored workRoot" differently
-  than I did.
-- **Whether K1/K2 belong in THIS PR or a follow-up inside the same iteration** — I argue same PR
-  (cheaper, same files); a testability-weighted lens may want the IPC change and the capture-pipeline
-  collapse independently revertable, given REQ-215 explicitly demands real-sandbox-layer tests (not
-  mocked IPC), which is a heavier test surface than K1 alone would need.
-- **REQ-216/K5's ruling** — I lean toward adding a default LIMIT since REQ-213 already touches the
-  same surface this round; a lens weighting "no requirement literally asks for this" more heavily than
-  I do may prefer leaving it filed, consistent with v35's own precedent of declining to design debt
-  items early.
+- **Simplicity/YAGNI lens** will likely resist framing K6-K8's shared `attemptsFor()` port function
+  as anything beyond the minimal fix K7 requires, and may push back on this proposal's suggestion to
+  explicitly file memory-metabolism/circuit-breaking as v37 candidates — arguing that naming future
+  work in a send-back gate's output invites scope creep the gate doesn't need to carry.
+- **Security lens** will likely push back hard on this proposal's observability framing of REQ-215
+  (chain-of-thought/refusal-marker inspectability) — the requirement's own text already flags this as
+  potentially opening "a channel for script-controlled objects to reach disk," grouped with v37's
+  Bash-jail work, and given the REQ-136 system-prompt-leak precedent recorded in project memory, I'd
+  expect security to argue for a narrower allowlist of refusal codes than an observability-first
+  reading would prefer.
+- **Performance/scalability lens** likely sides with this proposal on ARCH-172 (Option A, unbounded
+  with documented cliff) — the existing ARCH-172 note already makes the data-loss argument against a
+  naive LIMIT — but may diverge on how urgently the `listSummaries()` full-scan needs addressing
+  versus deferring further, independent of the consumability semantics question raised here.
+- **A minimalist/traceability-strict lens** may object to this proposal's dimension (2)/(4)
+  discussion of `@modelcontextprotocol/sdk` drift and `RunStore`'s SQLite-coupling as out of this
+  gate's REQ-211..216 scope entirely — my position is that noting an existing asymmetry without
+  proposing new ARCH rows for it is within a quality-dimensions review's mandate, but I expect
+  pushback on including it at all in a send-back round.

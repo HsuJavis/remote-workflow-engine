@@ -9269,6 +9269,13 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   orchestrator's suggested file was the alternative that DES-243 itself had already ruled against;
   this IT is the "closest equivalent" the ruling anticipated.
 - **refactor:** none — surgical hoist + one new `const`, no restructuring beyond what the fix required.
+  **v36 GATE 6.5+7 determinism-lint (2026-09-22, verifier):** `src/event-log.ts`'s `createEventSink`
+  default `now` fallback (`deps.now ?? (() => new Date().toISOString())`) read the wall clock directly
+  with no seam and no `det:allow` — flagged by `determinism_check.py --check`. Confirmed the real
+  composition root (`server.ts`, this row) always passes its own injected `now: () => clock.isoNow()`,
+  so the fallback fires only when a caller omits `now` entirely (never used to decide anything
+  expired/future — it only stamps the audit line's own `at` field) — added a trailing `det:allow`
+  comment with the reason, no behaviour change. `determinism_check.py --check` now exits 0.
 
 ### IMPL-359 — Gate-8 send-back (d): `workflow_deregister({name, version})` invalidates the diagram cache
 
@@ -9369,7 +9376,15 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   `catalog.deregister`) prove this; the file's other 2 cases (driving the REAL `createServer()`) are
   the Gate-8 send-back this gate's implementer already logged as IMPL-358, a different file
   (`server.ts`) outside this task's own `files:` scope.
-- **refactor:** none — this row documents the original landing; no refactor pass owed here.
+- **refactor:** v36 GATE 6.5 SIMPLIFY (2026-09-22, verifier): `actorFor(p, a, gate)` called
+  `attributionWithArg(p, a)` twice (once to compute `gateId` on the `'attribution'` gate, once for
+  `id`) — a pure function of the same two args, so the second call was idle duplicate work on every
+  `workflow_register` call. Hoisted to one `attributionId` local, reused for both; `gateId` on the
+  `'bypass'` gate is unaffected (still its own `bypassWithArg` call). Behavior-identical (both calls
+  were deterministic and side-effect-free). Re-run: `tests/integration/deregister-version-diagram-
+  cache.test.ts`, `deregister-version-pinned-run.test.ts`, `register-trigger-ownership.test.ts`,
+  `register-version-loop.test.ts`, `tests/unit/catalog-actor.test.ts` — 18/18 green; `npx tsc
+  --noEmit` clean.
 
 ### IMPL-363 — TASK-243: the run-terminal line, and the `principal` field that has to exist before it can carry one
 

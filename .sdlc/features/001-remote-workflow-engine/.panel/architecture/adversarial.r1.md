@@ -3,11 +3,17 @@ stage: architecture
 iteration: v36
 panel: architecture
 lens: adversarial (security / scalability-performance / testability, Karpathy simplicity tie-break)
-round: 1 (independent proposal)
-scope: REQ-211..REQ-216
+round: 1 (independent proposal, 2026-09-21) + ADDENDUM §A.0–§A.4 at the tail
+        (2026-09-22, round 1 of the Gate-8 SEND-BACK re-run — §0–§4 below are kept
+        byte-identical because ADR-072/075/077 cite this document by name)
+scope: REQ-211..REQ-216 (original); addendum scope = the send-back's own items only
 ---
 
 # Adversarial architecture group — round 1
+
+> **Send-back re-run readers:** the live proposal is the **ADDENDUM at the tail**
+> (§A.0–§A.4, 2026-09-22). §0–§4 below are the 2026-09-21 record, retained
+> byte-identical because ADR-072/075/077 cite them by name.
 
 ## 0. Altitude judgment (done first, as instructed)
 
@@ -410,3 +416,243 @@ design (§2.4) is a genuine security/simplicity trade with no dominant answer: t
 smaller diff and matches the REQ's literal test clause; the fallback makes clause (c)'s security
 assessment trivially "no new channel" at the cost of a host-side ledger. I have stated a preference;
 I want the panel to decide it explicitly rather than let the smaller diff win by default.
+
+---
+
+# ADDENDUM — round 1 of the Gate-8 SEND-BACK re-run (2026-09-22)
+
+## A.0 Why this is an addendum and not a rewrite
+
+The panel prompt is the templated fresh-Gate-2 brief, but `state.yaml:7` says this architecture
+gate is the **Gate-8 send-back loop**, not a new slice: ARCH-155..173 / ADR-072..079 are ratified,
+the code is shipped, Gate 6.5+7 and Gate 7.5 (two real scratch instances) are green. Re-debating
+REQ-211..216 from zero would (a) destroy a document ADR-072/075/077 cite **by name** as the source
+of a ruling, and (b) be exactly the speculative architecture my own Karpathy tie-break forbids.
+The v35 precedent is on the record (`state.yaml:19`: "Gate 2 re-run in the Gate 8 send-back loop —
+seven named findings verified closed, eight residue items ruled doc-only").
+
+So §0–§4 above are untouched, and this addendum is scoped to what the send-back actually routed to
+architecture: **F6's refusal-order inversion, K8's undelivered probe, ARCH-172's live
+`owner_decision`, plus F7 and my own drift.** Altitude judgment is unchanged from §0 and is not
+re-derived: all three addendum items are **system altitude** (authz ordering, a config-wiring
+guard, a query-cost ruling); the only agent-altitude thread in v36 (the operator log as the remote
+author's sole observability surface) is not in the send-back's architecture scope.
+
+## A.1 summary
+
+1. **The send-back's own headline fix for F6 is a no-op, and if impl ships it literally the
+   send-back closes with the defect open.** `actorFor()` (`mcp-facade.ts:254-260`) is a **pure**
+   function: minting it above the probe changes nothing observable. The review says this twice in
+   two different ways — `07-review.md:12227` ("the fix is one line — mint the actor once above the
+   probe", the text `state.yaml:7` copied) versus `:12452` ("mint … **and either** canMutate-gate
+   the probe **or** move it after `deregisterVersion`'s ownership check"). Only the second is a
+   fix. **This gate must rule which shape ships**, because the first one is what the blocking
+   finding's summary literally asks for.
+2. **K8's acceptance text is structurally unfulfillable as written**, and saying so beats quietly
+   re-aiming it. `tests/unit/compose-config-v2-wiring.test.ts:348-353` asserts
+   `PROBES ∪ EXCLUDED == KNOWN_FILE_CONFIG_KEYS`; `attempts` is a *derived* value, not a FileConfig
+   key, so adding a PROBES row makes that totality case **fail**. The hop K8 is really aimed at is
+   the second one (ServerConfig → gateway), which that test structurally cannot see — and that hop
+   has a **live discrepancy today** (`server.ts:848` is a third `attempts` formula that disagrees
+   with the port's `attemptsFor`). K8 therefore lands as a real RED-able probe, not an ADR reversal.
+3. **ARCH-172's marker is confirmed still unanswered and this panel must not answer it.** Verified
+   independently of the reviewer: `state.yaml`'s `pending:` block contains no K5/分頁 ruling at any
+   date. I give the owner a lens-by-lens reading of A vs B and one datum the question is missing,
+   and stop there. F7's corrected cost sentence is drafted verbatim below (doc-only, same edit).
+4. **Self-correction:** my r1 §2.2 asked for a 4-field `Actor` with `kind`. Three fields shipped;
+   the reviewer checked the omission harmless. **I withdraw the fourth field** — amend ARCH-157 to
+   the shipped shape rather than change code to match a panel sentence.
+
+## A.2 key_points
+
+### A.2.1 — F6: rule the refusal-order fix, because the one named in the send-back is a no-op
+
+**Confirmed, not disputed:** the reviewer's reachability analysis is correct. `authz.ts:107`
+short-circuits `auth-disabled` to `{ok:true}` before any ownership resolution, so on an
+`auth.enabled:false` server the catalog's `canMutate` is the **only** ownership gate; an
+authenticated non-owner is refused upstream, so the leak is reachable on exactly the input the
+reviewer names. The disclosed value is a live `runId` plus "version X of workflow Y is pinned"
+(`mcp-facade.ts:410-418`), crossing a boundary `workflow-catalog.ts:746-755` documents in a code
+comment it wrote for this exact purpose ("so a stranger cannot enumerate versions by refusal type").
+
+**The three shapes, and why the first one is not a fix:**
+
+| | shape | verdict |
+|---|---|---|
+| (i) | mint `actorFor(...)` above the probe, nothing else (`state.yaml:7`, `07-review.md:12227`) | **REJECT — no-op.** `actorFor` is pure (`mcp-facade.ts:254-260`): no throw, no I/O, no refusal. Order of refusals is byte-identical before and after. |
+| (ii) | `deregisterVersion(name, version, actor, pinnedRunId: string \| null)` — the facade computes the fact, the **catalog** throws `VERSION_PINNED_BY_RUN` *after* its `canMutate` step | **PRIMARY** |
+| (iii) | a facade-side `catalog.assertMutable(name, actor)` pre-check before the probe | runner-up |
+
+**Three lenses, and they genuinely conflict here:**
+
+- *Security* wants the ownership gate strictly first and wants exactly **one** evaluation of it —
+  two gate call-sites is the twin-divergence class K1 exists to delete. Prefers (ii).
+- *Scalability* dislikes (ii): the facade runs a full `listRuns()` sweep **before** it knows the
+  caller will be refused, so an unauthorized caller on an auth-disabled box can make the server
+  scan the never-shrinking runs table (ADR-079's own table). Prefers (iii), which refuses first and
+  scans only for a caller who passed the gate.
+- *Testability* strongly prefers (ii): the whole refusal ladder becomes **one ordered unit test on
+  the catalog with no run store at all** — the boundary ADR-075 paid for, finally used. (iii)
+  leaves the ordering distributed across two modules, provable only by an integration test.
+
+**Resolution — (ii), with two constraints that are not optional:**
+
+- The fourth parameter is **required**, never optional. An optional `pinnedRunId` recreates
+  ADR-075's own decisive objection ("an *optional* port that silently no-ops when unwired is this
+  repo's documented `composeConfig` bug class wearing a security gate's clothes") in miniature; a
+  required parameter makes the wiring un-forgettable at compile time.
+- ARCH-155's row must state the **full ladder order**, which "three refusals" never did:
+  `1 ownership → 2 name absent → 3 version absent → 4 pinned-by-run → 5 channel-pinned →
+  6 last-remaining`. Put `pinned-by-run` after "version exists" (a pin implies the version exists)
+  and before the two catalog-intrinsic refusals; any order is defensible, an *unstated* one is not,
+  and this is what the tests gate needs to assert.
+- `VERSION_PINNED_BY_RUN` is **already registered** in `ERROR_CATALOG` (`errors.ts:100`), so the
+  facade's hand-built envelope (`mcp-facade.ts:414`) becomes a plain `codedError` and the
+  `toErrEnvelope` round trip keeps the same wire code — checked, because a code that only exists at
+  one throw site is how (ii) would ship green while silently changing what the caller reads.
+- The scalability objection is answered rather than dismissed: a per-version delete is an
+  administrator action taken seconds apart (ADR-079 already says so for the same call), and on the
+  only reachable path the server is a single-operator no-auth box. If that ever stops being true,
+  the trigger is already written on ADR-075 (a second production caller) and now also covers this.
+
+ADR-075's boundary survives (ii): the catalog receives an **opaque string-or-null**, not a run
+store, not a port and not run knowledge — it can neither compute nor verify the fact, which is
+stated in the row rather than discovered later.
+
+### A.2.2 — K8: the literal probe cannot exist; the probe K8 *means* is RED today
+
+**Evidence that the literal text is unfulfillable**, checked in the file rather than argued:
+`PROBES` (`:314-345`) is keyed by FileConfig keys and `:348-353` asserts
+`[...keys(PROBES), ...keys(EXCLUDED)].sort() === keys(KNOWN_FILE_CONFIG_KEYS).sort()`. `attempts`
+is not a config key — **verified absent** from `KNOWN_FILE_CONFIG_KEYS` and from `FileConfig`
+(`main.ts:85-95`; `grep -n attempts src/main.ts src/types.ts` returns nothing) — it is derived
+(`attemptsFor`, `gateway/client.ts:182-184`). Adding an
+`attempts` PROBES row therefore **breaks** the totality case; adding `attempts` to
+`KNOWN_FILE_CONFIG_KEYS` to make room would invent a config key that does not exist. `retries`
+already has a probe (`:321`) and it covers hop 1 (file → `ServerConfig`) — which is precisely why
+VAL-251's silent credit to that fixture felt plausible enough to slip through.
+
+**The hop K8 is aimed at is hop 2** (ServerConfig → the constructed gateway / the advertised
+figure), and that is where this bug class has already bitten once, in this same file's own words:
+`main.ts:339` — *"D-F10(a): forward aliases/timeoutMs/retries — previously omitted, which silently
+degraded"*. The wiring test pins `gateway: 'direct-fetch'` in every case, so it **cannot** see the
+SDK branch (`main.ts:351`) that is `main.ts`'s default.
+
+**And the probe has a live target.** `server.ts:848` computes
+`const gatewayAttempts = 1 + Math.max(0, config?.retries ?? 1)` — a **third** attempts formula,
+beside the port's `attemptsFor(retries, timeoutMs) = timeoutMs === undefined ? 1 : 1 + max(0,
+retries ?? 0)` that K6/K7 just installed as "the one formula both conformers call". They disagree on the
+unset-`retries` default, and — checked per branch rather than asserted — **the discrepancy is real
+on the default gateway path only**:
+
+- *direct-fetch*: `server.ts:746` constructs the client with `retries: config?.retries ?? 1`, so
+  `attemptsFor(1, timed) = 2` and the advertised 2 is correct.
+- *sdk* (`main.ts:351`, **the product default**): `retries: fileConfig.retries` is forwarded RAW,
+  so unset ⇒ `attemptsFor(undefined, timed) = 1 + max(0, 0) = 1`, while `server.ts:848` advertises
+  `timeoutMs.attempts = 2` and doubles `worstCaseMs` (`workflow-view.ts:155,171`).
+
+So on a zero-config deployment the engine's own advertisement is off by one on the path it actually
+ships, and the two gateway branches disagree with each other about what "no retries configured"
+means — which is K6/K7's literal subject ("one formula, two implementations consistent") still being
+false one hop above the port. Advertisement-only, no execution change, LOW. Found by aiming K8 one
+hop further instead of reverting it, which is the argument for delivering K8's intent rather than
+its unfulfillable letter.
+
+**Ruling for the tests/impl/validation gates:**
+- Tests: a separate `it()` **outside** the PROBES loop asserting hop 2 — `composeConfig({retries:
+  N})` ⇒ the advertised `timeoutMs.attempts` equals `attemptsFor(N, <the timed default>)`. The
+  observable already exists and is public (`workflow_describe`'s projection takes `attempts` as a
+  plain parameter, `workflow-view.ts:155`), so **no new seam is invented for one probe** — the
+  Karpathy constraint on this item.
+- Impl: make `server.ts:848` call `attemptsFor` instead of re-deriving it, **after** confirming no
+  deployment default relies on `?? 1`; if one does, the fix is the port's default, not a second
+  formula.
+- Validation: VAL-251's K8 sentence then cites the new probe. **No ADR reversal** — the reversal
+  branch the review offers is for a probe judged unnecessary, and this one is necessary; it was
+  merely pointed at a key that does not exist.
+
+### A.2.3 — K5 pagination: the live owner marker is still unanswered, and still not this panel's to answer
+
+Verified independently: `state.yaml`'s `pending:` block holds no K5/分頁 ruling at any date, and
+the computed task text that spawned this round carried none either. The marker at
+`02-architecture.md:4942` is live.
+
+Lens reading, offered **to the owner**, not as a decision:
+- *Scalability*: only (B) removes the cliff, and the cliff is real (no `DELETE FROM runs` anywhere,
+  so the table only grows). But nobody has measured it — the honest input to the decision is a row
+  count from the live instance, which the question currently does not carry. **Recommend the
+  orchestrator relay that number with the question.**
+- *Security*: indifferent. Neither option changes an authz surface or what any principal can read.
+- *Testability*: mildly favours (B) — a bounded fold is deterministic; an all-history average is a
+  fixture that grows.
+- *Karpathy tie-break*: (A) today. (B) is two lines that silently redefine a number a human reads;
+  spending an owner-visible semantic change on an unmeasured cliff is the speculative move.
+- **If the owner cannot be reached: (A) stands, the marker stays, and Gate 8 stays open** (issue
+  #15). Closing over it is the one outcome the lenses agree is wrong.
+
+**F7 — the corrected ARCH-162 cost sentence, drafted for the same doc-only edit.** Replace *"one
+row per workflow, one round trip"* with:
+
+> one round trip returning one row per workflow — but the **scan** is over every run row (a
+> group-by riding `runs(name, status, createdAt DESC)`), so its cost tracks **total run count** on
+> the same never-shrinking table ADR-079 describes, not the number of workflows. That is why
+> `lastRunAtByName()` sits on the **same** pagination question as `listSummaries()` (ARCH-172's
+> marker) rather than on a separate one; the choice between the grouped query and the three shapes
+> ARCH-162 rejected is unaffected.
+
+### A.2.4 — my own drift, withdrawn rather than defended
+
+r1 §2.2 proposed `Actor` with four fields (`id`, `kind`, `bypass`, `idSource`). Three shipped. The
+reviewer checked the omission harmless — `idSource` alone already discriminates every
+bypass-capable principal kind that reaches a catalog audit line (`tool-specs.ts:278,305,334` +
+`authz.ts:111-113`). **Withdrawn**: ARCH-157 is amended to the shipped three-field shape. A panel
+sentence is not a reason to change working code, and this is the same discipline ADR-072 applied
+when it withdrew my allowlist line with the design that needed it.
+
+## A.3 risks
+
+- **R-A1 (HIGH, process).** Impl ships (i) literally, `tsc` and the suite stay green because
+  nothing changed, verification sees a clean diff, validation re-credits it — and the send-back
+  closes with F6 open. This is *the same failure mode as blocking finding (1)* (an unrelated
+  green thing credited as evidence), one iteration later, in the same send-back. Mitigation: the
+  ladder order goes into ARCH-155 as an assertable sentence, and the tests gate gets the ordered
+  case (auth-disabled + mismatched `args.principal` + pinned version ⇒ `NOT_WORKFLOW_OWNER`, never
+  `VERSION_PINNED_BY_RUN`). A guard that goes RED on today's code is the only proof (i) is dead.
+- **R-A2 (MEDIUM).** (ii) puts an error code in a module that cannot verify its fact. A future
+  caller could pass a `pinnedRunId` it never computed. Mitigated by the required parameter and by
+  naming it in ARCH-155's row; the migration trigger already exists on ADR-075.
+- **R-A3 (MEDIUM).** The `?? 1` default is load-bearing on the direct-fetch branch
+  (`server.ts:746`), so "just delete it" would change that path's real attempt count from 2 to 1 —
+  a behaviour change nobody asked for, hiding inside a documentation fix. The safe shape is to make
+  **one** default authoritative (the port's) and let both branches read it; impl must not touch
+  `server.ts:746` and `:848` independently.
+- **R-A4 (LOW).** Appending to a document ADR-072/075/077 cite by name. Mitigated: §0–§4 byte-
+  identical, frontmatter names the addendum.
+- **R-A5 (LOW, compounding).** Three of the ~8 non-blocking drift items are security-adjacent
+  (INV-V36-4's surviving unredacted `console.log` paths, filed v37). Filing them is the right call,
+  but the security lens records the pairing: a log that is now **PII-bearing** (REQ-212),
+  **unrotated** (ADR-078) *and* still fed by unredacted paths is one compounding exposure, not
+  three independent LOWs. v37 should schedule them together.
+
+## A.4 expected disagreements with other lenses
+
+- **vs quality-dimensions, on F6's shape.** They will prefer (iii): it keeps the catalog's error
+  vocabulary self-describing (no code raised from a caller-supplied fact) and reads as the smaller
+  conceptual move. I hold (ii) on the testability argument — an ordered ladder that one unit test
+  can walk with no run store — and would concede the moment they produce a second production caller
+  of `deregisterVersion`. **I want this ruled explicitly in round 2, not defaulted to the smaller
+  diff.**
+- **vs a minimal-diff / scope lens, on F6 at all.** "It is LOW, a runId, on a no-auth box — mint
+  the actor, add a comment, move on." Disagree, and this is the sharpest disagreement in the
+  addendum: a LOW closed by a no-op is **worse than an open LOW**, because the ledger then asserts
+  it is fixed and no future gate looks again.
+- **vs the same lens on K8.** "The acceptance text says a PROBES row; deliver what it says." It
+  cannot be delivered — the totality assertion rejects it. The choice is between saying so and
+  quietly re-aiming; a ledger that hides a mis-specified acceptance clause is how VAL-251 happened.
+- **vs a consumability lens on ARCH-172.** They may argue (B) plus one line of UI copy is obviously
+  right. It is the owner's number, and "obviously right" is what a unilateral semantic change always
+  looks like from inside one lens.
+- **Internal conflict I cannot resolve alone (for round 2):** (ii) vs (iii) is a genuine
+  security+testability vs scalability trade with no dominant answer. I have stated a preference and
+  the constraint that makes it safe; I want the panel to decide it rather than let the smaller diff
+  win by default — the same request §4.7 made about REQ-215, which round 2 then answered well.

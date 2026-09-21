@@ -252,8 +252,11 @@ function idSourceOf(p: Principal, a: unknown): 'authenticated' | 'claimed' | 'no
 }
 type Gate = 'bypass' | 'attribution';
 export function actorFor(p: Principal, a: unknown, gate: Gate): Actor {
-  const gateId = gate === 'bypass' ? bypassWithArg(p, a) : attributionWithArg(p, a);
-  return { id: attributionWithArg(p, a), bypass: gateId === null, idSource: idSourceOf(p, a) };
+  // `id` is always the attribution answer (see the comment above) — computed once and reused for
+  // `gateId` on the 'attribution' gate rather than calling the same pure function twice.
+  const attributionId = attributionWithArg(p, a);
+  const gateId = gate === 'bypass' ? bypassWithArg(p, a) : attributionId;
+  return { id: attributionId, bypass: gateId === null, idSource: idSourceOf(p, a) };
 }
 
 export class McpFacade {

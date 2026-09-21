@@ -14350,11 +14350,11 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
 - **iter:** v36
 
 ### UT-293 — the guide's three v35 facts (DES-239) [AMENDED v36: +2 cases, DES-249/TASK-247]
-- **status:** red
+- **status:** green
 - **traces:** DES-239, DES-249, REQ-207, REQ-210, REQ-216
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/unit/authoring-guide.test.ts` extended (36→39 `it()` sites at v35) — 3/3 fail: the
   guide states `parallel()`'s thunk-failure null semantics but not sequential `await agent()`'s
   identical null-not-throw rule (with the `if (out === null)` self-protection pattern); does not
@@ -14804,11 +14804,11 @@ REQs it re-proves via its `traces:` line, not via a new VAL row (mirrors the exi
 e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
 
 ### UT-297 — `captureFailure`: one pure capture, redact-then-bound, the bound is a parameter (K1/K3)
-- **status:** red
+- **status:** green
 - **traces:** DES-241, REQ-216, REQ-205
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/unit/errors-capture-failure.test.ts` (new, 7 cases) — 7/7 fail:
   `captureFailure` is not exported from `src/errors.ts` (`TypeError: captureFailure is not a
   function`); `capErrorEnvelope`'s defaulted second `maxBytes` parameter does not exist yet (a
@@ -14818,11 +14818,11 @@ e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
 - **iter:** v36
 
 ### UT-298 — `seedRefView.failDetail`: the unredacted twin dies (K2, highest-priority item)
-- **status:** red
+- **status:** green
 - **traces:** DES-241, REQ-216, REQ-205
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/unit/run-manager-seedref-redaction.test.ts` (new, 3 cases, via a REAL
   `SecretValueProvider` — not the vacuous absence-only assertion) — 1/3 fail: `failDetail` is still
   `rawMessage.slice(0,200)`, so the raw secret value appears verbatim and no `‹secret:NAME›` marker
@@ -14833,11 +14833,11 @@ e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
 - **iter:** v36
 
 ### IT-293 — `deploy.sh`: control files named after the config that owns them (REQ-214)
-- **status:** red
+- **status:** green
 - **traces:** DES-242, REQ-214
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/integration/deploy-control-files.test.ts` (new, 7 cases) — suite-level red: a
   `beforeAll` guard reads the real `deploy.sh` off disk and refuses to spawn it at all until it
   understands `--dry-run` (an accidental spawn on the unmodified script would run `npm install` and
@@ -14848,11 +14848,11 @@ e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
 - **iter:** v36
 
 ### UT-299 — `src/event-log.ts`: one typed sink, one redaction inside it, an injected clock
-- **status:** red
+- **status:** green
 - **traces:** DES-243, REQ-213
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/unit/event-log.test.ts` (new, 5 cases + 1 standalone type-only assertion) —
   suite-level red: `src/event-log.ts` does not exist (`Failed to load url ../../src/event-log.js`).
   A REAL `SecretValueProvider` proves the marker is PRESENT (not merely that the raw value is
@@ -14862,11 +14862,11 @@ e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
 - **iter:** v36
 
 ### UT-300 — `canMutate`/`actorFor`: one truthy predicate, `Actor` minted PER CALL SITE (R-1)
-- **status:** red
+- **status:** green
 - **traces:** DES-244, REQ-212, REQ-114
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/unit/catalog-actor.test.ts` (new, 6 cases) — 6/6 fail: neither `canMutate`
   (exported from `src/workflow-catalog.ts`) nor `actorFor` (exported from `src/mcp-facade.ts`, the
   seam this Gate 5 pass establishes for testability) exists yet. The full
@@ -14911,11 +14911,11 @@ e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
 - **iter:** v36
 
 ### UT-301 — `getSpec()` returns `principal` on BOTH stores (ADR-067 SQL/TS-twin guard)
-- **status:** red
+- **status:** green
 - **traces:** DES-245, REQ-213, REQ-212
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/unit/run-store-getspec-principal.test.ts` (new, 2 cases) — 2/2 fail:
   `SqliteRunStore.getSpec()`'s SELECT (measured: `'SELECT name, script, args, budget, started_by
   FROM runs WHERE runId = ?'`) omits `principal`, so `spec.principal` comes back `undefined`; the
@@ -14949,11 +14949,11 @@ e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
 - **iter:** v36
 
 ### UT-302 — `deregisterVersion`: six outcomes in a pinned order, two DELETEs, re-keyed diagram guard
-- **status:** red
+- **status:** green
 - **traces:** DES-246, REQ-211, REQ-096
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/unit/catalog-deregister-version.test.ts` (new, 10 cases) — 9/10 fail
   (`TypeError: cat.deregisterVersion is not a function`); one case ("every whole-name deregister()
   test stays green") legitimately passes today (regression pin, REQ-211's own "existing behaviour
@@ -14964,11 +14964,11 @@ e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
 - **iter:** v36
 
 ### IT-296 — `workflow_deregister({name, version})` refuses a version PINNED BY A NON-TERMINAL RUN
-- **status:** red
+- **status:** green
 - **traces:** DES-246, ARCH-156, REQ-211, REQ-096, REQ-097
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/integration/deregister-version-pinned-run.test.ts` (new, 2 cases) — 1/2 fail:
   `McpFacade.workflowDeregister` has no `version` parameter today (silently ignored), so a
   version-scoped delete request actually performs the WHOLE-NAME delete and returns `completed`
@@ -14979,11 +14979,11 @@ e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
 - **iter:** v36
 
 ### UT-303 — `lastRunAtByName()`: grouped `MAX(createdAt)`, both stores agree, absent means never-run
-- **status:** red
+- **status:** green
 - **traces:** DES-247, REQ-213, REQ-216
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/unit/run-store-last-run-at.test.ts` (new, 3 cases) — 3/3 fail: neither
   `SqliteRunStore` nor `InMemoryRunStore` implements `lastRunAtByName` (`TypeError: ...
   lastRunAtByName is not a function`). Covers the later-createdAt case, the never-run-is-ABSENT
@@ -14991,25 +14991,34 @@ e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
 - **iter:** v36
 
 ### IT-297 — `workflow_list` forwards `description` + `lastRunAt` (「哪些該清」)
-- **status:** red
+- **status:** green
 - **traces:** DES-247, ARCH-163, REQ-213, REQ-216
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/integration/workflow-list-fields.test.ts` (new, 3 cases) — 2/3 fail:
   `McpFacade.workflowList`'s projection is `{name,owner,versions,channels,runnable}` — no
   `description` (already computed by `catalog.list()` since v9, silently dropped by the `.map`), no
   `lastRunAt`; the "one call per request, not per row" case fails because the method being spied on
   doesn't exist yet. K4 (zero-agent `run_status`/`run_list` agreement) legitimately passes today —
-  regression pin.
+  regression pin. **RESOLVED (2026-09-22, Gate 6.5+7, verifier)**: the production projection
+  (`mcp-facade.ts`'s `workflowList`) was already correct per DES-247 — the red was the FIXTURE, not
+  the code (commit `967d890`, per the implementer's own diagnosis in `gates.impl.note`): the four
+  fixture scripts' `meta = { description: ... }` literals were missing the mandatory `export const`
+  prefix (`dynamic-workflow-compat-spec.md` §1; `guards.ts`'s `checkMeta` anchors on the literal
+  `export const meta = ` text), so `catalog.list()`'s `parseMeta` correctly returned an empty
+  `description` for a script whose meta declaration the anchor never matched. Fixed at the fixture
+  (four `export const` additions, no `src/` change) — 3/3 green, confirmed both standalone
+  (`npx vitest run tests/integration/workflow-list-fields.test.ts`) and in this gate's full
+  regression.
 - **iter:** v36
 
 ### UT-304 — sandbox refusal provenance: a `WeakMap` the vm cannot reach, an integer on the wire
-- **status:** red
+- **status:** green
 - **traces:** DES-248, ARCH-165, REQ-215, REQ-205
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/unit/sandbox-refusal-provenance.test.ts` (new, 6 cases, via the injected
   `SandboxApi` — no `fork()`) — 5/6 fail: `markEngineRefusal` is not exported from
   `src/sandbox/guards.ts`; the drift guard fails because `run-manager.ts` exports no
@@ -15035,11 +15044,11 @@ e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
 - **iter:** v36
 
 ### IT-298 — a real engine refusal, rethrown in a real forked child, reaches `run_result.error` with a structured marker
-- **status:** red
+- **status:** green
 - **traces:** DES-248, ARCH-165, ARCH-166, ARCH-167, ARCH-168, REQ-215, REQ-205, REQ-203
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/integration/refusal-marker-real-child.test.ts` (new, 3 cases; the ONE
   real-child case DES-248 reserves, plus two folded-in ledger-adjacent cases) — the IPC is NOT
   mocked (a real forked sandbox child, a real `RunManager`, the real `agentType` retirement
@@ -15095,11 +15104,11 @@ e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
 - **iter:** v36
 
 ### UT-305 — `attemptsFor`: one formula on the `GatewayClient` port, both conformers call it (K6/K7)
-- **status:** red
+- **status:** green
 - **traces:** DES-249, ARCH-171, REQ-216, REQ-207
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/unit/gateway-attempts.test.ts` (new, 2 cases) — 2/2 fail: `attemptsFor` is
   not exported from `src/gateway/client.ts`; `client.ts`'s deviant unconditional-retry formula
   (`1 + Math.max(0, this._config.retries)`, no `timeoutMs` gate) is still present. The four-quadrant
@@ -15108,92 +15117,200 @@ e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
   matrix — K7's own stated non-take).
 - **iter:** v36
 
+### UT-306 — `composeConfig()` sdk branch forwards `retries`/`timeoutMs` into the constructed gateway (REQ-216/K8, Gate-8 send-back)
+- **status:** green
+- **traces:** DES-249, ARCH-171, REQ-216, REQ-207
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **evidence:** `tests/unit/compose-config-v2-wiring.test.ts` (new `it()`, outside the `PROBES`
+  loop). Gate-8 send-back ruling on K8: `attempts` is a DERIVED value, absent from
+  `KNOWN_FILE_CONFIG_KEYS`/`FileConfig`, so a `PROBES` row for it would break that describe's own
+  totality assertion (`PROBES ∪ EXCLUDED === KNOWN_FILE_CONFIG_KEYS`) — the acceptance text's
+  literal「加一列 attempts 探針」cannot exist as a `PROBES` row, only as a separate case. This
+  probe is that case, and it is the hop the previous VAL-251 wording mis-credited to `retries`'s
+  existing `PROBES` row: that row only ever locks hop 1 (FileConfig → `ServerConfig`) on
+  `gateway:'direct-fetch'` fixtures; this one locks hop 2 (`ServerConfig` → the CONSTRUCTED
+  `ClaudeAgentSdkGatewayClient`) on `gateway:'sdk'`, the branch `main.ts` defaults to and the one
+  D-F10(a) had to re-fix once already. `composeConfig({gateway:'sdk', retries:3, timeoutMs:5000},
+  FAKE_DEPS)` → the constructed client's own config carries `retries:3, timeoutMs:5000`, and
+  `attemptsFor(3, 5000)` on those forwarded values equals `attemptsFor(3, 5000)` computed directly
+  — green on arrival (a wiring lock per the ruling, not red-first TDD: the forwarding it guards
+  already shipped under D-F10(a)/ARCH-171). Confirmed via `npx vitest run
+  tests/unit/compose-config-v2-wiring.test.ts` — 61/61 pass, including this case.
+- **iter:** v36
+
 ### VAL-246 — REQ-211: a version can be deregistered on its own; the error text names a real action
-- **status:** red
+- **status:** green
 - **traces:** REQ-211
 - **tier:** acceptance
-- **real:** false
-- **result:** fail
-- **evidence:** the real-tier path (validator-owned at Gate 7.5, 04-design.md's table row): register
-  three versions, publish `release` to v2, `workflow_deregister({name, version:"v2"})` →
-  `VERSION_PINNED_BY_CHANNEL`; `{version:"v1"}` → removed, `assets`/`workflows` rows still present
-  via `sqlite3 catalog.db`; a long-running run pinned to v3 → `VERSION_PINNED_BY_RUN` naming the
-  runId. Covered pre-real by UT-302/IT-296. `real:true` at Gate 7.5 only.
+- **real:** true
+- **result:** pass
+- **evidence:** Gate 7.5 (v36 round), scratch instance A (`scratch-a.config.json`, port 8993, booted
+  via documented `./deploy.sh --background`), real MCP over HTTP, no SUT-boundary mock. Registered
+  `v36-req211` v1/v2/v3, published `release`→v2. `workflow_deregister({name:"v36-req211",
+  version:"v2"})` → `{"code":"VERSION_PINNED_BY_CHANNEL", "message":"...is published to a channel —
+  unpublish it first"}`. `{version:"v1"}` → `{"removed":true,"remaining":["v2","v3"]}`
+  (`workflow_describe` still answers v2 afterwards). Separately registered `v36-req211-run` v1/v2/v3
+  where v3 is a real `agent()` call (`model:"local"`→Ollama `qwen2.5:7b`, direct-fetch gateway);
+  `run_start({name:"v36-req211-run", version:"v3"})` → while `run_status` read `"status":"running"`
+  (a genuinely in-flight real LLM dispatch, not a constructed store row), `workflow_deregister({...,
+  version:"v3"})` → `{"code":"VERSION_PINNED_BY_RUN","message":"VERSION_PINNED_BY_RUN: run
+  21837c0a-cd45-4c7d-9345-5badac5e8973 pins version 'v3' of 'v36-req211-run'"}`, naming the exact
+  runId; the run then completed normally to `{"r":"1  \n2  \n...50"}` once polled to terminal,
+  proving the refusal did not corrupt the in-flight run. Re-proves REQ-096/REQ-097 (version history +
+  channel resolution survive a per-version delete). Pre-real coverage: UT-302/IT-296.
 - **iter:** v36
 
 ### VAL-247 — REQ-212: audit lines carry the caller's real identity; bypass is a visible, separate flag
-- **status:** red
+- **status:** green
 - **traces:** REQ-212
 - **tier:** acceptance
-- **real:** false
-- **result:** fail
-- **evidence:** real-tier path: with auth ON, an admin publishes another user's workflow through
-  real MCP — the publish succeeds and `.rwe.<instance>.log` carries `catalog.publish` with the
-  admin's OWN id, `bypass:true`, `idSource:'authenticated'`; the same admin's `workflow_register`
-  over that owner's name is still refused `NOT_WORKFLOW_OWNER`; on an auth-disabled instance a
-  caller-supplied `principal` is logged `idSource:'claimed'`. Covered pre-real by UT-300/IT-294.
+- **real:** true
+- **result:** pass
+- **evidence:** Gate 7.5 (v36 round), scratch instance A (auth.enabled:true, principals
+  alice@example.com:admin / bob@example.com:author). Bearer tokens minted for real via the SUT's own
+  `TokenStore.issue()` (src/auth/token-store.ts, same class the engine constructs) against the
+  engine's real `auth-tokens.db` — no OAuth UI needed since TokenStore.issue is the engine's own
+  post-IdP-exchange step, not a mock of it. bob registers `v36-req212-bob`;
+  `.rwe.scratch-a.config.log` real line: `{"kind":"catalog.register",...,"actor":{"id":
+  "bob@example.com","bypass":false,"idSource":"authenticated"}}`. alice (admin) attempts
+  `workflow_register` over the same name → refused `NOT_WORKFLOW_OWNER: workflow 'v36-req212-bob' is
+  owned by bob@example.com`. alice then `workflow_publish`s bob's workflow (admin bypass) → succeeds;
+  real log line: `{"kind":"catalog.publish",...,"actor":{"id":"alice@example.com","bypass":true,
+  "idSource":"authenticated"}}` — the caller's real identity, not null, with bypass on its own field.
+  On scratch instance B (auth.enabled:false), `workflow_register` with an explicit
+  `{principal:"carol@example.com"}` argument produced the real log line
+  `{"kind":"catalog.register",...,"actor":{"id":"carol@example.com","bypass":false,"idSource":
+  "claimed"}}`. Re-proves REQ-086/REQ-087/REQ-114 (every protected action attributed to a real
+  per-caller principal; ownership refusal still fires). Pre-real coverage: UT-300/IT-294.
 - **iter:** v36
 
 ### VAL-248 — REQ-213: the directory shows what to clean; the engine says what it is doing
-- **status:** red
+- **status:** green
 - **traces:** REQ-213
 - **tier:** acceptance
-- **real:** false
-- **result:** fail
-- **evidence:** real-tier path: register/run/fail for real, then `cat .rwe.<instance>.log` — one
-  JSON line per register/publish/run-terminal with name/version/principal/outcome, secrets only as
-  `‹secret:NAME›`; `workflow_list` shows `description` and `lastRunAt` (`null` for a never-run
-  probe). Covered pre-real by UT-299/IT-294/UT-303/IT-297.
+- **real:** true
+- **result:** pass
+- **evidence:** Gate 7.5 (v36 round), scratch instance A. `workflow_list` immediately after
+  registering `v36-req212-bob` (never run) showed `"lastRunAt":null` (never `0`/`""`) and
+  `"description":""`; after `run_start`+poll-to-`completed`, the same `workflow_list` call showed
+  `"lastRunAt":"2026-09-21T18:30:57.632Z"`. `.rwe.scratch-a.config.log` carries one real JSON line
+  per event: `{"kind":"catalog.register",...}`, `{"kind":"catalog.publish",...}`, and
+  `{"kind":"run.terminal","runId":"8f22e8a5-...","name":"v36-req212-bob","version":"v1",
+  "outcome":"completed","principal":"alice@example.com","at":"..."}` — each with name/version/
+  principal/outcome, answerable by `cat`, no sqlite needed. Secret redaction confirmed on the same
+  mechanism at VAL-251/K2 (`‹secret:REPO_TOKEN›`, never the raw value). Re-proves REQ-014/REQ-095.
+  Pre-real coverage: UT-299/IT-294/UT-303/IT-297.
 - **iter:** v36
 
 ### VAL-249 — REQ-214: two engine instances never clobber each other's control files
-- **status:** red
+- **status:** green
 - **traces:** REQ-214
 - **tier:** acceptance
-- **real:** false
-- **result:** fail
-- **evidence:** real-tier path: boot a second scratch instance via `./deploy.sh --background` with
-  `RWE_CONFIG_PATH` pointing at a second config IN THE SAME DIRECTORY; `ls -a` shows two
-  `.rwe.<instance>.{pid,log}` pairs; `kill $(cat .rwe.<scratch>.pid)` stops only the scratch engine.
-  Covered pre-real by IT-293's `--dry-run` form (the IT-tier property, not a substitute for this
-  real boot).
+- **real:** true
+- **result:** pass
+- **evidence:** Gate 7.5 (v36 round). Booted `scratch-a.config.json` (port 8993) via documented
+  `./deploy.sh --background`, then `scratch-b.config.json` (port 8994) the same way, BOTH in the repo
+  root (same directory as the production `rwe.config.json`, and as each other) while the real
+  systemd `rwe.service` (port 8899, PID 3553536) kept running. `ls -a` showed FOUR independent
+  control-file pairs: `.rwe.scratch-a.config.{pid,log}` (PID 1906051, later restarted to 1906385),
+  `.rwe.scratch-b.config.{pid,log}` (PID 1906116/1908183) — none named `.rwe.pid`/`.rwe.log`, none
+  overwriting another. `kill $(cat .rwe.scratch-b.config.pid)` stopped ONLY instance B
+  (`curl 127.0.0.1:8994/api/status` → connection refused afterwards) while instance A
+  (`curl 127.0.0.1:8993/api/status` → 200) and production (`systemctl --user show rwe.service`:
+  `MainPID=3553536, NRestarts=0, ActiveState=active`, unchanged before/after) kept serving.
+  Re-proves REQ-107. Pre-real coverage: IT-293's `--dry-run` form.
 - **iter:** v36
 
 ### VAL-250 — REQ-215: a structured engine-refusal marker crosses the sandbox to the run layer
-- **status:** red
+- **status:** green
 - **traces:** REQ-215
 - **tier:** acceptance
-- **real:** false
-- **result:** fail
-- **evidence:** real-tier path: a real registered script calling `agent()` with a retired
-  `agentType`, caught and rethrown, through the real engine and a real forked child —
-  `run_result.error.code` is the engine's refusal code and the envelope carries the structured
-  marker; the same call inside `parallel()` fails the run instead of yielding `null`; a script
-  forging `name:'PARAM_UNKNOWN'` gets the code and NO marker. Covered pre-real by UT-304/IT-298 (IT-298
-  already drives a real forked child with no SUT-boundary mock, but stays `real:false` per Gate 5's
-  own contract — Gate 7.5 is what flips it, after the implementation is green end to end via MCP).
+- **real:** true
+- **result:** pass
+- **evidence:** Gate 7.5 (v36 round), scratch instance C (fresh workRoot), real MCP over HTTP, real
+  forked sandbox child, no IPC mock. **Load-bearing case — discriminating evidence, matches the
+  design table's illustrative script exactly**: `agent()` with a retired `agentType`. A NEW
+  `workflow_register` carrying `agentType` is refused at REGISTRATION by the v34 static scan before
+  it ever reaches a script — by IT-298's own header comment, the runtime guard this REQ fixes is
+  reachable in production ONLY via a pre-existing (pre-v34) catalog row, so this round reproduced
+  that real, only-reachable path against the REAL deployed engine rather than substituting a
+  different code path: stopped the freshly-booted scratch instance, used the SUT's OWN
+  `WorkflowCatalog.insertVersion()` class (`src/workflow-catalog.ts`, same class `server.ts`
+  constructs, real `SystemClock`, real on-disk `catalog.db` at the instance's real `workRoot`) to
+  insert a legacy-shaped version whose script does `try { await agent('x',
+  {agentType:'retired-type', prompt:'hi'}) } catch(e) { throw e }`, published it to `release`,
+  then restarted the SAME instance via the documented `./deploy.sh --background` (idempotent,
+  workRoot preserved) — no in-process shortcut, the row now sits in the real DB exactly as a
+  pre-v34 legacy install's would. A real MCP `run_start({name:"v36-req215-legacy"})` against the
+  restarted instance → `run_result.error` = `{"code":"PARAM_UNKNOWN","message":"PARAM_UNKNOWN:
+  'agentType' was retired at v34 — the server-side agent-definition mechanism is gone; put the
+  system prompt in your script's own prompt. See workflow_authoring_guide, 'prompt layering'."}` —
+  BEFORE v36 this same runtime guard's catch would have flattened to `{"code":"SCRIPT_ERROR"}`
+  (REQ-215's own red-reason, `guards.ts`'s pre-fix `ENGINE_REFUSAL_CODES` held only
+  `BUDGET_EXCEEDED`) — so this result discriminates the fix, not merely exercises a mechanism that
+  already worked pre-v36. `parallel()` variant (`v36-req215-legacy-par`, same insertVersion
+  technique): identical `run_result.error` = `{"code":"PARAM_UNKNOWN",...}` — the run FAILED, not
+  swallowed to `null`. Both runs' `.rwe.scratch-c.config.log` carry a real
+  `{"kind":"run.terminal",...,"outcome":"failed","code":"PARAM_UNKNOWN",...}` line (also usable as
+  REQ-213's failed-run log-line evidence). `BUDGET_EXCEEDED` (this round's first attempt, kept as a
+  secondary confirmation the same mechanism generalizes to the OTHER `ENGINE_REFUSAL_CODES` member
+  via a completely ordinary `workflow_register` + `run_start({budget:{tokens:0}})`, zero fixture
+  hacking) is explicitly NOT the load-bearing evidence for this VAL, since `BUDGET_EXCEEDED` already
+  crossed the sandbox with its code intact pre-v36 (IT-140/v25) and does not by itself discriminate
+  the v36 change — recorded only as corroboration, not substituted for the `PARAM_UNKNOWN` case.
+  Negative case (a script forging `e.name='PARAM_UNKNOWN'` getting the code but NO marker) is NOT
+  independently re-probed here: the "marker" is `guards.ts`'s WeakMap keyed on object identity,
+  which is by construction never serialized onto any MCP-observable field — the only place that
+  invariant is checkable is in-process (UT-304/IT-298), not over HTTP. Re-proves REQ-203's
+  dispatch-refusal path and REQ-205's fourth criterion (the reason lands on the run, not just
+  inside a per-agent record). Pre-real coverage: UT-304/IT-298.
 - **iter:** v36
 
 ### VAL-251 — REQ-216: the eight v35-archived residuals (K1–K8) are closed, one by one
-- **status:** red
+- **status:** green
 - **traces:** REQ-216
 - **tier:** acceptance
-- **real:** false
-- **result:** fail
-- **evidence:** real-tier path: a real run whose `seedRef` fetch fails against a repo URL carrying a
-  provisioned secret shows `‹secret:NAME›` in `run_status.seedRef.failDetail`, never the raw value,
-  `failCode` still `SEEDREF_FETCH_FAILED` (K1/K2/K3); `workflow_describe`'s advertised `attempts`
-  and a real untimed `agent()` call agree an untimed call runs once (K6/K7), and
-  `workflow_authoring_guide` says so; `run_status`/`run_list` agree on a zero-agent terminal run
-  (K4). K5 is discharged as a RULING (ADR-079, in the port contract), not as code — covered by
-  ARCH-172's `owner_decision: pending` carried forward, not by this VAL. Covered pre-real by
-  UT-297/UT-298/IT-297/UT-305/UT-293.
+- **real:** true
+- **result:** pass
+- **evidence:** Gate 7.5 (v36 round), scratch instance B (`RWE_SECRET_REPO_TOKEN=sekrit-repo-
+  credential-v36gate75` set in the real engine process's own env — confirmed via
+  `/proc/<pid>/environ` — plus `seedRefAllowlist:["https://github.com/"]`). **K1/K2/K3**: registered
+  a zero-agent workflow, `run_start({seedRef:{repoUrl:"https://github.com/sekrit-repo-credential-
+  v36gate75/v36-nonexistent-repo-xyz.git", sha:"0123...4567"}})` against the REAL `git` binary (a
+  genuine network fetch attempt, real 404/auth failure) → `run_status.seedRef.failDetail` =
+  `"git fetch failed: Command failed: git ... fetch ... https://github.com/‹secret:REPO_TOKEN›/
+  v36-nonexistent-repo-xyz.git 0123456… [truncated: 9 bytes omitted]"` — the marker present, the
+  raw secret value absent everywhere in the payload (including the top-level `run_status.error`,
+  which shares the SAME redacted text — K1's single-`captureFailure` consolidation observably
+  holding across both capture sites), `failCode` still `SEEDREF_FETCH_FAILED`, and the 200-byte bound
+  visibly cutting AFTER redaction (marker intact, not fragmented — K3). **K4**: `run_list({name:...})`
+  on the same terminal run returned the identical `{code,message}` error object `run_status` did — a
+  real zero-agent run, both read surfaces agree. **K6/K7**: on scratch instance A, a real untimed
+  `agent()` dispatch (no per-call `timeoutMs`, `v36-req211-run` v3) completed in one real Ollama round
+  trip (~29s, one shot, no retry) — consistent with `attemptsFor(retries, undefined) === 1`; a live
+  `workflow_authoring_guide` call read back the real deployed guide text: *"An `agent()` call with no
+  timeoutMs set ... runs once: retries apply only to a call that has a bounded timeout in effect."*
+  **K5**: discharged as a RULING (ADR-079, in the port contract), not as code — the live
+  `- **owner_decision:** pending` marker at `02-architecture.md:4942` (REQ-216/K5 pagination
+  trade-off) was swept for and confirmed still the ONLY live marker in the ledger; carried forward
+  to this report's `owner_decisions`, not resolved here. **K8**: discharged by **UT-306** — the
+  `composeConfig({gateway:'sdk', ...})` hop-2 forwarding probe the Gate-8 send-back required (a
+  separate `it()` outside the `PROBES` loop, since `attempts` is derived and has no `FileConfig`
+  key of its own). This corrects the prior wording, which credited `retries`'s existing `PROBES`
+  row (hop 1 only, `gateway:'direct-fetch'` fixtures) for K8's acceptance text; UT-306 is the actual
+  hop-2/`sdk`-branch evidence, green on arrival (a wiring lock, not red-first TDD — the forwarding
+  it guards already shipped under D-F10(a)/ARCH-171). No separate real-tier action applies to a
+  static wiring-lock test. Re-proves REQ-205/REQ-207 (the failure reason lands on disk with the
+  refusal's own code, never a flattened `SCRIPT_ERROR`).
+  Pre-real coverage: UT-297/UT-298/IT-297/UT-305/UT-306/UT-293.
 - **iter:** v36
 
 ### v36 trace summary
 DES-241→UT-297/UT-298; DES-242→IT-293; DES-243→UT-299/IT-294/IT-295; DES-244→UT-300/IT-294;
 DES-245→UT-301/IT-295/UT-292(amended); DES-246→UT-302/IT-296; DES-247→UT-303/IT-297; DES-248→UT-304/IT-298;
-DES-249→UT-305/UT-293(amended). REQ-211→VAL-246; REQ-212→VAL-247; REQ-213→VAL-248; REQ-214→VAL-249;
+DES-249→UT-305/UT-306/UT-293(amended). REQ-211→VAL-246; REQ-212→VAL-247; REQ-213→VAL-248; REQ-214→VAL-249;
 REQ-215→VAL-250; REQ-216→VAL-251. REQ-014/086/087/095/096/097/114/205/207: no new VAL (unchanged
 behaviour per 04-design.md's real-tier table); regression continuity asserted inside IT-294/IT-296's
 own cases and traced there. No `owner_decision` newly deferred by this gate — ARCH-172's REQ-216/K5

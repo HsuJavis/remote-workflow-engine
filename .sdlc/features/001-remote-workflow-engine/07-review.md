@@ -12158,3 +12158,297 @@ Conclusion: iteration CLOSES. send_back = [].
 send_back: []
 blocking_findings: []
 owner_decisions: []
+
+## v36 GATE 8 — Consistency review (2026-09-22, reviewer)
+
+Scope: REQ-211..216 (catalog governance, audit identity, operational logging, per-instance control
+files, the structured refusal marker, and the v35 K1–K8 residue), plus the nine carried REQs
+re-proved as a byproduct. Two architecture-expert panel reports were PRE-RUN by the workflow
+(`.panel/review/adversarial.md`, `.panel/review/quality-dimensions.md`) — consolidated below, not
+re-spawned.
+
+### A. Traceability
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` → 2010 items / 77 gaps, dashboard
+regenerated, not stale vs. any source `.md` (0 files newer than `dashboard.html`). Gap breakdown via
+`trace.analyze()` as a library (not eyeballed): **high=15 / mid=36 / low=26**, types 漂移(drift) 24 /
+TDD 19 / 未驗證(unverified, pre-existing elsewhere in the ledger) 17 / 斷鏈(broken link) 15 /
+未實作(unimplemented) 2. Zero `未真實驗證`(mock-only) gaps anywhere. All 77 are pre-existing
+(REQ-144..152/186 broken links dated v25/v33, and drift/TDD/未實作 rows predating this iteration) —
+filtering against `{REQ-211..216}` returns zero hits, matching the validator's own byte-for-byte
+account in `08-validation.md`/journal.md. **All 15 high-severity gaps are the pre-existing broken-link
+set, none newly introduced.** Doc↔code iteration drift: none beyond the accepted 24-row 漂移 baseline
+(all pre-v36, previously recorded). TASK-245 confirmed `status: done` (the IT-297 fixture fix at
+commit `967d890` closed it; verified: `npx vitest run tests/unit/compose-config-v2-wiring.test.ts
+tests/integration/main-composition-root-events.test.ts tests/unit/gateway-attempts.test.ts` → 69/69
+green, `npx tsc --noEmit` clean).
+
+### B. Architecture consistency (consolidated from the two pre-run panel reports)
+
+**Verdict: NOT fully consistent — 2 findings are blocking, ~8 are non-blocking doc↔code drift
+recorded as debt.** Both panels independently confirm the *code* is correct/defensible in nearly
+every case checked line-by-line (deregisterVersion's six-outcome transaction, the facade-side pinned
+probe boundary, actor minting, the redact-then-bound ordering, the `attemptsFor` single-formula
+port, etc.) — the drift is overwhelmingly Gate 2 prose not amended in place after Gate 3/4 crossed
+it, which this ledger's living-document rule requires closed, not left as a defect class.
+
+**Blocking (send back):**
+
+1. **F2/S-2 — REQ-216/K8's acceptance criterion is unmet, and VAL-251 asserts evidence that isn't on
+   disk.** `01-requirements.md:2926` REQ-216's own acceptance text is explicit and unconditional:
+   「在 `compose-config-v2-wiring.test.ts` 的掃描裡加一列 `attempts` 探針(約 3 行)」. Verified:
+   `git log --oneline a8a7b08^..HEAD -- tests/unit/compose-config-v2-wiring.test.ts` → **empty**, no
+   v36 commit touched the file; `grep -n 'attempts\|gatewayAttempts' tests/unit/compose-config-v2-wiring.test.ts`
+   → only an unrelated pre-existing `retries: 3` fixture value at `:321`. `05-tests.md:15275-15277`
+   (VAL-251, `real:true`, green) reads *「K8: a test-only `compose-config-v2-wiring.test.ts` probe,
+   already green in the Gate 6.5+7 regression run」* — this credits that pre-existing, unrelated
+   fixture row, not the `attempts`/`gatewayAttempts` forwarding probe K8 actually asked for. Unlike
+   the sibling `eventSink` half (DES-243 explicitly reverses it, on the record, with a stated reason:
+   composition-root-constructed, not a `FileConfig` key), **no reversal exists anywhere for
+   `attempts`** — `attemptsFor` has nothing to do with `FileConfig` either, so the same reasoning
+   does not obviously transfer. This is exactly the recurring bug class this project's own CLAUDE.md
+   and 02-architecture.md name (a new forwarding path that compiles but is never wired, caught only
+   by a systematic sweep) — and it is the same class IMPL-358 was sent back as a P1 for, earlier in
+   this very iteration. Cheap fix (~3 lines); routed to `tests` (add the probe) with `validation`
+   (reword VAL-251's K8 sentence to match what's actually proven, once the probe exists — or, if the
+   probe is judged unnecessary, an ADR amendment giving the `attempts` case the same explicit
+   reversal `eventSink` got, not a silent credit to an unrelated fixture).
+
+2. **F6 — the new pinned-run probe (v36, DES-246/TASK-244) fires before the ownership gate,
+   inverting ARCH-155's stated refusal order, on reachable input.** `src/mcp-facade.ts:410-418` —
+   `workflowDeregister`'s version-scoped branch runs the `VERSION_PINNED_BY_RUN` probe and returns
+   before `actorFor(...)` is minted (`:419`); `src/workflow-catalog.ts:750-755`'s `canMutate` gate is
+   checked FIRST with a code comment stating why ("so a stranger cannot enumerate versions by
+   refusal type"). Reachability verified, not assumed: `src/authz.ts:107` — `auth-disabled`
+   principals get `{ok:true}` immediately, before any ownership resolution; combined with
+   `mcp-facade.ts:236-240`'s restored ownership enforcement for a `claimed` principal that doesn't
+   match the row's owner, an `auth.enabled:false` caller supplying a mismatched `args.principal` now
+   learns "a live run `<runId>` pins version X" across the ownership boundary before the refusal that
+   should have fired first. LOW impact (a runId + version disclosure, not a mutation), but it is new
+   v36 code violating a stated v36 rationale, and the fix is one line — mint the actor once above the
+   probe. Routed to `impl`.
+
+**Non-blocking (recorded as tech debt, amend `02-architecture.md` in place next touch):**
+
+- **INV-V36-4 (F1/O-1, MEDIUM/MEDIUM-HIGH)** — claims "no module writes an operational line with
+  `console.log` after this slice"; three survivors remain (`run-manager.ts:1083`, `:1337`,
+  `:366`'s `onWarning` default, plus boot-time lines in `workflow-catalog.ts`/`server.ts`). Verified
+  via `git blame`: `:1083` is from `a54a7945` (2026-09-02, pre-v36/v21-era) and `:1337` is from
+  `d4abb606` (2026-09-21 06:45, a **v35** commit — v36 started at `a8a7b08`, 2026-09-21 23:51). Both
+  confirmed pre-v36; no v36 TASK asked to move either. Two experts' preferred resolution: narrow
+  INV-V36-4's text to the four `EngineEvent` kinds it actually governs, and file the pre-existing
+  `run_settle_failed`/`run.legacySubstitution` unredacted-`console.log` paths as a named v37 security
+  item (the `String(e)`/error-text on `run_settle_failed` can carry the same class of secret-bearing
+  text C-1/K2 were opened to fix in v35).
+- **O-2 (MEDIUM)** — `refusalsDropped` (ARCH-168, added specifically to avoid a silent cap) is
+  written (`run-manager.ts:210,776,1179,1575`) but has no read surface anywhere — not on
+  `run_status`/`run_result`, not on the dashboard, not on the operational log. The implementer's own
+  test comment already flags this (`tests/integration/refusal-marker-real-child.test.ts:108`).
+  Recommend surfacing it on `run.terminal`/`run_status` when non-zero — a one-field addition to the
+  closed `EngineEvent` union; filed v37.
+- **INV-V36-5 (F3, MEDIUM)** — "a delete never silently reroutes a live run" is enforced only on the
+  version-scoped path (`mcp-facade.ts:408-418`); the whole-name path (`:447`) has no pinned-run
+  probe and the pre-existing legacy-substitution reroute (`run-manager.ts:1075-1083`) still applies
+  there. ARCH-155's own note deliberately leaves the whole-name path untouched (REQ-211's
+  「既有行為不變」 clause). Recommend narrowing INV-V36-5 to the version-scoped path it actually
+  covers; the whole-name gap is pre-existing and filed, not new.
+- **RWE_START_CMD (F4/S-1, LOW)** — ARCH-164's test seam is specified but not built (`deploy.sh:80`
+  hardcodes `start_cmd`); harmless today since `--dry-run` alone satisfies Gate 2's own regression
+  ask, and `deploy.sh`'s `touch`+append (vs. ARCH-164's literal truncate) is a documented, reasoned
+  IMPROVEMENT over the stale spec text (ADR-076/078: the log is the only audit record, a restart
+  must not wash it out). Amend ARCH-164 to drop the seam clause and record the append behaviour;
+  do not add the seam.
+- **Five stale Gate-2 API rows (F5/R-1, LOW)** — `Actor` ships 3 fields not 4 (no `kind`; checked
+  harmless — `idSource` alone already distinguishes every bypass-capable principal kind reaching a
+  catalog audit line, per `tool-specs.ts:278,305,334` + `authz.ts:111-113`); `canMutate` is
+  `!owner \|\| …` not `owner === null \|\| …`; `EventSink` is a closed 4-kind union not
+  `Record<string, unknown>` (TASK-241's own deliberate Gate-3 tightening); audit fields are nested
+  `actor: AuditActor` not flat; `version` is a numeric field in ARCH-160's row but a `` `v${n}` ``
+  string in code; `refusalRef` nests inside `error` internally (hoisted to a wire sibling only at
+  `child-entry.ts:154`, matching ARCH-166's contract table). All four DES rows with an explicit
+  ruling (DES-243/244) defend the shipped shape; amend ARCH-157/158/159/161/165/166 in place.
+- **F7 (LOW)** — ARCH-162's "one row per workflow, one round trip" cost sentence describes result
+  cardinality, not scan cost; `lastRunAtByName()`'s grouped query is a full index scan whose cost
+  tracks total run count, on the same table ARCH-172/ADR-079 already proved never shrinks. Not a
+  code defect (SQL is the right choice vs. the alternatives ARCH-163 actually compared against);
+  fold the corrected cost sentence into the live `owner_decision` at `02-architecture.md:4942`
+  (§F below) — `lastRunAtByName()` belongs on the same pagination question as `listSummaries()`.
+- **C-1 (LOW-MEDIUM)** — the operator log's own contract-table row promises one flat shape; the
+  shipped `EngineEvent` union has two (catalog lines nest `actor`, `run.terminal` is flat
+  `principal`). Real ergonomics gap for the log's stated `jq`-by-hand audience; next gate's call
+  whether to flatten or split the contract-table row into two documented shapes.
+- **C-2 (LOW)** — ARCH-168's `RunEntry.refusals` row promises `detail?: unknown`; ADR-072 (same
+  gate) explicitly ruled out ever populating it, and the shipped type has no such field. Drop the
+  stale sub-clause on next touch.
+
+### C. Dashboard QA
+
+The vendored `.sdlc/trace` launcher in this repo has no `--tool` dispatch (a deliberately frozen,
+older `trace.py`, per `02-architecture.md:4064`'s housekeeping note — kept pinned so gap-count
+baselines stay comparable across gates, not accidental). Ran `dashboard_check.py`/`solid_check.py`/
+`module_check.py` directly (plugin 2.4.3).
+
+Running `dashboard_check.py` **paired with the plugin's own bundled (newer) `trace.py`** reported
+5 HIGH: `REQ-211..215`'s SoT link resolving to `evidence/v36/gate75-real-run-2026-09-22.md`
+(basename only, directory lost) instead of `01-requirements.md`. Root-caused, not assumed: that
+evidence file (a raw Gate-7.5 transcript excerpt, not an SoT document) happens to carry section
+headings shaped like `## REQ-211 — per-version deregister` — the *plugin's* newer `trace.py` scans
+those as competing item definitions and the later os.walk hit wins. Re-ran the identical check
+**paired with THIS repo's own vendored `trace.py`** (the one that actually built the shipped
+`dashboard.html`) — its `ITEM_RE` requires an exact 3-`#` heading, so the evidence file's 2-`#`
+headings never match: **0 problems, all REQ-211..216 SoT links resolve to `01-requirements.md` at
+the correct lines.** The 5 HIGH are a tool-version mismatch artifact of my invocation, not a defect
+in the shipped deliverable — confirmed by directly replicating the check logic against the vendored
+scanner (`0 high` from a hand-run of the SoT-resolution loop). **Recorded as LOW debt** for the
+same reason the ledger already tracks the vendored-vs-plugin `trace.py` gap elsewhere: this evidence
+file's ID-shaped headings are a latent hazard if `.sdlc/trace.py` is ever upgraded in place (a
+`sed`/rename of the two-hash headings to prose, e.g. "REQ-211 — evidence excerpt", would remove the
+hazard cheaply; not done here as it's out of this iteration's touched-file scope).
+
+Mermaid lexical check (both `trace.py` variants agree): **7 mid**, all `02-architecture.md`
+`erDiagram` blocks (v21/22/23/24×2/26/27, lines 940/1207/1654/2549/2621/3114/3652) — the checker's
+lexical bracket-balance counter misreads crow's-foot cardinality tokens (`\|\|--o{`) as unbalanced
+`{`. Re-verified this round exactly as every prior round since ~v27: stripping the crow's-foot
+tokens, all blocks balance. Known, accepted, non-blocking false positive, unchanged baseline.
+**1 low**: no `MMD_OK` offline-fallback banner in `dashboard.html` (this vendored `trace.py`
+predates that feature) — known, accepted, unchanged baseline. `__DATA__` placeholder correctly
+substituted (0 residual hits), 0 empty `.mermaid` divs, dashboard not stale vs. any source doc (0
+files newer). No dedicated browser/Playwright MCP tool was available in this session (attempted to
+provision `playwright` via `npx` for a headless render pass; the package wasn't resolvable in this
+sandboxed environment without a fuller install than this review's scope warrants) — degraded mode
+per the contract's fallback, mitigated by the direct static-check replication above, which is
+byte-identical to what a render pass would need to have not-404'd on.
+
+**Net: 0 high / 7 mid (accepted false positive) / 1 low (accepted, unrelated to this iteration) using
+the tool pairing that actually matches the shipped dashboard.html.**
+
+### D. Module-boundary check (`solid_check.py`)
+
+`✅ 111 個模組，依賴皆如 02-architecture 宣告（0 mid / 10 low 警告；掃描 javascript×111, shell×3）`.
+The 10 lows are the same long-standing "unclaimed file" set (`harness-defaults.ts`, `self-update.ts`,
+`agent-semaphore.ts`, `mcp-probe.ts`, `scan-agent-calls.ts`, `net-guard.ts`,
+`workspace-artifacts.ts`, `clock.ts`, `owner-lookup.ts`, `workroot-guard.ts`) — none touched by v36
+(`06-impl-log.md`'s IMPL-358..366 `files:` lists confirmed). No new violation.
+
+### E. `module_check` — dormant
+
+`ℹ module_check 休眠：沒有任何 ARCH-* 宣告 - **build:** <指令>` — by design, S/M-scale modules in
+this ledger don't declare independent `build:` commands (per `02-architecture.md`'s own prose on
+why). Unchanged.
+
+### F. Owner-deferral ledger sweep (issue #15)
+
+Mechanical sweep for the fixed metadata key `^\s*-?\s*\*{0,2}owner_decision\*{0,2}:\*{0,2}\s*pending`
+across `01`-`08`: **exactly ONE live hit** — `02-architecture.md:4942` (ARCH-172/REQ-216/K5):
+
+> `- **owner_decision:** pending` — REQ-216/K5 的分頁取捨：`/api/runs` 與 `/api/home` 目前掃全表，
+> 而 `/api/home` 的 avgCostUSD/successRate 是對「全部 run」計算的；若把 `listSummaries()` 改成分頁
+> (limit 50/cap 500) 以消除擴展懸崖，同一個數字的語意會變成「最近 N 筆」。要 (A) 維持全歷史語意、
+> 擴展懸崖以 port 契約與文件承接（v36 現行做法），還是 (B) 改為分頁並接受儀表板數字語意改變（需要
+> 一條說明數字範圍的 UI 文案）？
+
+Checked whether it's genuinely unanswered or just un-flipped bookkeeping (this ledger's own
+precedent, v27 OWN-1, was the latter): searched `state.yaml`'s `pending:` list for any "K5"/"分頁"/
+"OWNER RULING" entry touching REQ-216 — **none found**. `08-validation.md:12206-12210` and
+`journal.md`'s v36 GATE 7.5 entry both independently confirm this is the ledger's only live marker
+and explicitly carry it forward unresolved, "not decided here...blocking Gate 8 per issue #15's
+rule, not this gate." **This is a genuine unanswered owner decision, not a stale-bookkeeping case —
+the iteration cannot close over it.** `owner_decisions: ["02-architecture.md:4942 — REQ-216/K5:
+/api/runs and /api/home's listSummaries() pagination trade-off — (A) keep full-history semantics
+with the documented scaling cliff (v36's current shipped behaviour) or (B) paginate and accept a
+dashboard-number semantics change requiring new UI copy"]`. This cannot be self-answered by a
+repair-gate agent; **routed to `architecture` for doc-only landing of whichever ruling the orchestrator
+relays from the actual owner** — no code change implied by either option until ruled.
+
+Also spot-checked for decision-shaped hedging WITHOUT the marker ("not taken here"/"product
+decision" in any language, per the contract's ask): none found in this round's new ARCH-155..173/
+ADR-072..079/INV-V36-1..6 rows — every genuine deferral in this slice (K5 above; the whole-name
+`INV-V36-5` scope; the pre-v36 `console.log` survivors) is either the one flagged `owner_decision`
+marker or an explicit "filed for v37" note, not an unmarked hedge.
+
+### G. Validation & handover
+
+`08-validation.md`'s v36 round present (real MCP over HTTP, real forked sandbox child, real `git`
+subprocess, real Ollama round trip, real `TokenStore`, real SQLite — no SUT-boundary mock for any of
+REQ-211..216). All six new VAL items (`VAL-246..251`) carry `real:true`/green in `05-tests.md`.
+**Exception noted in §B.1 above**: VAL-251's K8 sub-claim specifically is not substantiated on disk
+— the requirement's other seven sub-claims (K1-K7) ARE genuinely, discriminatingly proven (the
+REQ-215 `PARAM_UNKNOWN`-vs-`SCRIPT_ERROR` discriminating evidence in particular is a strong real-tier
+proof, not a mechanism exercise). This is a scoped, single-sub-claim finding, not a whole-REQ
+mock-only defect — routed per §B.1, not a blanket Gate 7.5 send-back.
+
+`README.md` + `DEPLOY.md` present at `state.yaml layout.readme`/`layout.deploy` (product root).
+Current-state check: `grep -n "舊版\|原本\|以前\|Changelog\|變更記錄"` over both files returns only
+legitimate present-tense upgrade-path operational guidance (e.g. "an old `workRoot` needs no manual
+step; the `schedules` table self-heals on next boot") — describing what the running system does
+today when it meets old on-disk data, not narrating past version behaviour; no changelog/version-diff
+content. Single deduplicated `## 1b. 設定總表` in `DEPLOY.md` is the only config-key documentation
+site; `README.md` consistently points to it rather than duplicating (spot-checked 6 cross-reference
+sites). `DEPLOY.md` §0 leads with the one-command `./deploy.sh --background` recipe, with the
+**literal terminal output Gate 7.5 actually captured this round** (step 1/5..5/5, health-check JSON)
+pasted in place — matches the contract's bar exactly. The stale pre-REQ-214 `kill $(cat .rwe.pid)`
+stop-command (a real drift the validator caught and fixed this round) is confirmed gone
+(`grep -n '\.rwe\.pid\b\|kill \$(cat' README.md DEPLOY.md` → 0 hits); current text uses the
+per-instance `.rwe.<instance>.pid` form throughout.
+
+### H. Special-file reviews (3b)
+
+`06-impl-log.md`'s IMPL-358..366 `files:` lines + `git status` for this iteration: no `CLAUDE.md`,
+`AGENTS.md`, or `SKILL.md` touched. N/A this round.
+
+### I. Retro
+
+**What went well:** the v36 send-back cycle (P1 security wiring + graph-cache staleness + audit
+identity) landed cleanly with guards proven red-then-green (commit `b8b1e12`), and the orchestrator's
+own IT-297 root-cause correction (fixture bug, not product defect — commit `967d890`) is a clean,
+well-evidenced example of not appeasing a wrong test. Both architecture panels did unusually careful
+reachability analysis (not just textual diffing) before calling anything a real security consequence
+— several candidate findings (Actor.kind's bypass-distinguishing worry, F6's reachability) were
+*checked* against `authz.ts`'s actual gate order rather than assumed, and one (Actor.kind) was
+explicitly ruled harmless on that basis rather than reflexively flagged.
+
+**What to change:** REQ-216/K8's acceptance text was explicit and specific ("加一列...約 3 行") —
+exactly the kind of criterion that should be mechanically checkable at Gate 6/6.5 (a `git diff` on
+the named test file), not caught only by a Gate-8 architecture panel re-reading the requirement text
+against the file. A cheap guard for next time: when a REQ's acceptance criterion names a literal file
+and lines-of-diff estimate, the impl-log DoD checklist should include "confirm via `git log`/`git
+diff` that THIS file was touched," not just "tests pass" — VAL-251 would not have been written
+against a wrong file if that one-line check had run.
+
+**Known tech debt carried forward (non-blocking, recorded this round):** all §B non-blocking items
+(INV-V36-4 narrowing + 3 unredacted `console.log` lines filed v37, `refusalsDropped` no read
+surface, INV-V36-5 narrowing, `RWE_START_CMD` doc-only removal, 5 stale Gate-2 API rows, ARCH-162's
+cost sentence correction folded into the owner_decision, operator-log two-shape consumability gap,
+`RunEntry.detail` stale field); §C's evidence-file heading fragility (cheap rename, not done this
+round, out of touched-file scope); the pre-existing 77-gap baseline (§A) unchanged from every prior
+round's carry-forward; the vendored-vs-plugin `trace.py` version gap (unchanged, deliberate per
+`02-architecture.md:4064`).
+
+```
+Gaps: high=15 mid=36 low=26 (2010 items / 77 gaps; all pre-existing, 0 in the REQ-211..216 closure).
+Drift: none beyond the accepted 24-row 漂移 baseline (all pre-v36).
+Architecture consistent: NO — 2 blocking findings (REQ-216/K8's missing sweep probe + VAL-251's
+      misattributed evidence; F6's refusal-order inversion on v36-new code), ~8 non-blocking
+      doc↔code drift items recorded as debt (§B). The code is correct/defensible in nearly every
+      case the two panels checked; the drift is overwhelmingly stale Gate-2 prose.
+Validation: real-tier all-green for REQ-211..216? yes, with ONE scoped exception (VAL-251's K8
+      sub-claim misattributes evidence — §B.1/§G) · README+DEPLOY present, current-state,
+      one-command deploy actually run this round? yes.
+Owner decisions: 1 unanswered, genuinely pending (not bookkeeping) — 02-architecture.md:4942
+      (REQ-216/K5 pagination trade-off). Cannot close over it (issue #15).
+Conclusion: iteration CANNOT close this round. Send back to architecture (land the owner's K5
+      ruling once relayed — cannot be self-answered by a repair agent), tests (add the ~3-line
+      attempts/gatewayAttempts probe to compose-config-v2-wiring.test.ts per REQ-216/K8's literal
+      text), impl (mint the actor before the pinned-run probe in workflowDeregister's version-scoped
+      branch, mcp-facade.ts:410-419), validation (reword VAL-251's K8 sentence to match what is
+      actually proven once the probe lands, or record an explicit ADR reversal in its place).
+      .panel/ is NOT removed — re-review still needs it. gates.review.passed stays false.
+```
+
+send_back: [architecture, tests, impl, validation]
+blocking_findings:
+- "02-architecture.md:4942 (ARCH-172/REQ-216/K5): live `owner_decision: pending` on the `/api/runs`/`/api/home` `listSummaries()`/`lastRunAtByName()` pagination trade-off, confirmed the ledger's ONLY live marker and genuinely unanswered (no ruling anywhere in state.yaml's pending: list) → orchestrator must relay the question to the owner; once ruled, flip the marker to `answered(<date>) — <ruling>` in place (doc-only edit, no code implied by either option) and fold ARCH-162's cost-sentence correction (F7, §B) into the same edit since it's the same pagination question."
+- "REQ-216/K8 (01-requirements.md:2926) + VAL-251 (05-tests.md:15275-15277): the acceptance text's literal `attempts` probe row in tests/unit/compose-config-v2-wiring.test.ts was never added (git log confirms zero v36 commits to that file), yet VAL-251 (real:true, green) credits an unrelated pre-existing `retries: 3` fixture value as K8's evidence → add the ~3-line `attempts`/`gatewayAttempts` forwarding probe to compose-config-v2-wiring.test.ts's sweep as REQ-216's text literally specifies (tests gate), THEN reword VAL-251's K8 sentence in 05-tests.md to cite the new probe instead of the unrelated fixture row (validation gate) — or, if the probe is judged genuinely unnecessary, land an explicit ADR reversal for `attempts` giving it the same on-the-record exception `eventSink` already has (DES-243), and reword VAL-251 to cite that reversal instead of the unrelated fixture."
+- "src/mcp-facade.ts:410-419 (workflowDeregister's version-scoped branch, v36/DES-246/TASK-244): the VERSION_PINNED_BY_RUN probe runs and can return BEFORE actorFor(...) mints the actor, inverting ARCH-155's stated refusal order (ownership first, so a stranger cannot enumerate versions by refusal type); reachable when auth.enabled:false and a caller supplies a mismatched args.principal (authz.ts:107's auth-disabled short-circuit plus mcp-facade.ts:236-240's restored ownership check for claimed principals) → mint `actorFor(principal, a, 'bypass')` once above the pinned-run probe and either canMutate-gate the probe or move it after deregisterVersion's ownership check, matching the whole-name branch's existing order."
+owner_decisions:
+- "02-architecture.md:4942 — REQ-216/K5: /api/runs and /api/home's listSummaries()/lastRunAtByName() pagination trade-off — (A) keep full-history semantics with the documented scaling cliff (v36's current shipped behaviour, port contract + docs already carry it) or (B) paginate and accept a dashboard-number semantics change ('most recent N' instead of 'all-time'), requiring new UI copy to disclose the range. No ruling found anywhere in the ledger (state.yaml's pending: list has no K5/分頁 entry) — genuinely unanswered, not a bookkeeping lag."

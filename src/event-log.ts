@@ -22,7 +22,10 @@ export function createEventSink(deps: {
   now?: () => string;
 }): EventSink {
   const write = deps.write ?? ((line: string) => console.log(line));
-  const now = deps.now ?? (() => new Date().toISOString());
+  // Timestamps WHEN this audit line was written (never read back for an expired/future decision);
+  // the real composition root (server.ts) always passes its own injected `now: () => clock.isoNow()`,
+  // so this bare wall-clock fallback fires only when a caller omits `now` entirely.
+  const now = deps.now ?? (() => new Date().toISOString()); // det:allow — event-timestamp, not a decision input
   return (event: EngineEvent) => {
     const line = JSON.stringify(redact({ ...event, at: now() }, deps.secrets?.entries() ?? []));
     write(line);

@@ -230,6 +230,25 @@ in the same re-run — no regression on REQ-138's counts card).
 | REQ-208 | 註冊掃描器不得把字串內容誤判為程式碼 (v35) | ARCH-148, ARCH-149 | DES-236, DES-237 | TASK-232, TASK-233, TASK-234 | IMPL-344, IMPL-346, IMPL-349, IMPL-351, IMPL-352, IMPL-353 | UT-288, UT-289, UT-290, IT-287, VAL-235, VAL-241 | ✅ |
 | REQ-209 | 文件裡印出來的範例必須是真的註冊得過的 (v35) | ARCH-150, ARCH-151 | DES-238, DES-239 | TASK-233, TASK-234, TASK-237 | IMPL-345, IMPL-352, IMPL-356 | UT-290, IT-287, IT-288, IT-289, VAL-236, VAL-242 | ✅ |
 | REQ-210 | 回應的包裝與體積要讓冷客端吞得下 (v35) | ARCH-147, ARCH-151, ARCH-152, ARCH-154 | DES-239 | TASK-237 | IMPL-356 | UT-291, UT-292, UT-293, IT-288, IT-289, VAL-237, VAL-243 | ✅ |
+| REQ-211 | 版本可以單獨刪除,錯誤提示不得叫人做工具做不到的事 (v36) | ARCH-155, ARCH-156 | DES-246 | TASK-244 | IMPL-359 | IT-085, IT-294, IT-296, IT-299, UT-302, VAL-246 | ✅ |
+| REQ-212 | 稽核行記真實身分,繞過擁有權要看得出來 (v36) | ARCH-157, ARCH-158, ARCH-161 | DES-244, DES-245, DES-246 | TASK-242, TASK-244 | IMPL-359, IMPL-362, IMPL-363 | IT-085, IT-294, IT-295, IT-296, IT-299, UT-292, UT-300, UT-301, UT-302, VAL-247 | ✅ |
+| REQ-213 | 目錄看得出哪些該清,引擎說得出自己在做什麼 (v36) | ARCH-159, ARCH-160, ARCH-161, ARCH-162, ARCH-163 | DES-243, DES-244, DES-245, DES-246, DES-247 | TASK-241, TASK-242, TASK-243, TASK-244, TASK-245 | IMPL-358, IMPL-359, IMPL-362, IMPL-363, IMPL-364 | IT-085, IT-294, IT-295, IT-296, IT-297, IT-299, UT-292, UT-299, UT-300, UT-301, UT-302, UT-303, VAL-248 | ✅ |
+| REQ-214 | 控制檔要跟著實例走 (v36) | ARCH-164 | DES-242 | TASK-240 | IMPL-361 | IT-293, VAL-249 | ✅ |
+| REQ-215 | 結構化失敗標記要能穿過 sandbox 抵達 run 層 (v36) | ARCH-165, ARCH-166, ARCH-167, ARCH-168 | DES-248 | TASK-246 | IMPL-365 | IT-298, UT-292, UT-304, VAL-250 | ✅ |
+| REQ-216 | v35 審查歸檔的八條殘留(K1–K8)逐條結清 (v36) | ARCH-169, ARCH-170, ARCH-171, ARCH-172, ARCH-173 | DES-241, DES-247, DES-249 | TASK-239, TASK-245, TASK-247 | IMPL-360, IMPL-364, IMPL-366 | IT-297, UT-292, UT-293, UT-297, UT-298, UT-303, UT-305, VAL-251 | ✅ |
+
+## v36 Gate 7.5 update (2026-09-22, validator)
+
+Added the six REQ-211..216 rows above (this file has no `--rtm` CLI path — hand-written from
+`trace.py`'s `build_matrix()`/`is_real_test()` output run directly as a library, same convention as
+every prior round noted below). Each row's last test-column entry (`VAL-246..251`) is flipped
+`real:true` IN PLACE this gate (05-tests.md, no new IDs) against two freshly-booted, documented-
+steps-only scratch instances — see `08-validation.md`'s "v36 round" section for the full command-
+level evidence. `t.reachable_from_pred(is_real_test, ...)` re-confirms all six REQs reachable
+through a `real:true` verify item. The nine carried rows (REQ-014/086/087/095/096/097/114/205/207 —
+REQ-205/207 already have their own rows above) needed no edit: their existing ✅ already stood on
+real:true evidence from earlier iterations, and this round's REQ-211..216 real calls re-proved them
+as a byproduct (04-design.md's v36 real-tier table), confirmed not regressed rather than re-derived.
 
 ## v35 Gate 7.5 update (2026-09-21, validator)
 

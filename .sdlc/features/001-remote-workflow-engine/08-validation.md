@@ -12105,3 +12105,108 @@ limitations, both pre-existing and named again rather than silently dropped:
   附帶復現 v33 的行為改變:主體註冊後不 publish、直接以 `{version}` 迭代(`release=null`),
   並指名 `run_start` 的說明是「照字面做就對」的一處 —— 第二個互不相識的冷客端做出同樣選擇。
 - **iter:** v35
+
+## v36 round — REQ-211..216 (目錄治理、稽核身分、營運日誌，兩輪審查歸檔殘留)
+
+Real-tier evidence for the six new REQs this round is recorded IN PLACE on `VAL-246..251` in
+`05-tests.md` (flip-in-place per the dispatch's impact-closure rule; `real:false`→`real:true`, the
+prescriptive "real-tier path" template replaced with the actual observed commands/output) — not
+duplicated here as new IDs, to avoid the exact VAL-numbering collision a prior gate this iteration
+already hit once (05-tests.md and 08-validation.md share one ID namespace; trace.py does not care
+which file a `### VAL-NNN` heading lives in, only that it exists with `real:true` and traces the
+REQ).
+
+**Boot from documented steps only.** Two scratch instances, both via the committed `./deploy.sh
+--background` with only `RWE_CONFIG_PATH`/`RWE_BIND`/`RWE_PORT` overridden — no undocumented manual
+step:
+```bash
+RWE_CONFIG_PATH="$(pwd)/scratch-a.config.json" RWE_BIND=127.0.0.1 RWE_PORT=8993 ./deploy.sh --background
+RWE_CONFIG_PATH="$(pwd)/scratch-b.config.json" RWE_BIND=127.0.0.1 RWE_PORT=8994 ./deploy.sh --background
+```
+Instance A: `auth.enabled:true`, principals `alice@example.com:admin` / `bob@example.com:author`,
+`gateway:"direct-fetch"` against real local Ollama (`qwen2.5:7b`). Instance B: `auth.enabled:false`,
+same gateway, plus `seedRefAllowlist` and `RWE_SECRET_REPO_TOKEN` exported before boot for the K2
+probe. Both configs live in the repo root (the SAME directory as production's `rwe.config.json` —
+REQ-214's own acceptance shape), both are scratch/untracked and were deleted after this round
+(`git status --short` clean of them, confirmed). Bearer tokens for instance A were minted for real
+via the SUT's OWN `TokenStore.issue()` class (src/auth/token-store.ts) against the engine's real
+`auth-tokens.db` — not a mock of the auth boundary, the engine's own post-IdP-exchange step, run
+once via `npx tsx` from inside the repo (module resolution requires it) then deleted. The production
+`rwe.service` (real port 8899, PID 3553536) was left running throughout and its `NRestarts`/`MainPID`
+were diffed before and after this round — unchanged.
+
+**Delivery interface exercised for real.** Every REQ-211..216 assertion above went through genuine
+`POST /mcp` JSON-RPC `tools/call` requests against a booted `createServer()` — no direct
+`McpFacade`/`WorkflowCatalog`/`RunManager` calls, no stubbed HTTP layer. One real forked sandbox
+child per run (REQ-215), one real `git` subprocess (REQ-216/K2), one real Ollama round trip
+(REQ-211's pinned-run case + REQ-216/K6-K7).
+
+### Config-file sync check (this round)
+`git diff 24762d2..HEAD -- src/main.ts rwe.config.example.json deploy.sh`: only `deploy.sh` changed
+(REQ-214's per-instance PID/log naming); `src/main.ts`'s `KNOWN_FILE_CONFIG_KEYS` and
+`rwe.config.example.json` are byte-unchanged this round — **no new config key, secret, port, or
+flag**. Round-tripped all 42 `KNOWN_FILE_CONFIG_KEYS` entries against DEPLOY.md §1b 設定總表 (python3
+substring check, both directions): 0 missing either way. No config file change needed this round.
+
+### Handover doc updates (this round)
+- `README.md`: fixed ONE current-state violation found during this gate's own §3b sweep — the
+  quickstart's stop-command still read `kill $(cat .rwe.pid)`, the PRE-REQ-214 filename (the code and
+  DEPLOY.md had already moved to `.rwe.<instance>.pid` at Gate 6, but this one README line was
+  missed). Rewritten to `kill $(cat .rwe.rwe.config.pid)` with a one-line pointer to DEPLOY.md §0.
+  Also deleted two stale, gitignored, dead-PID `.rwe.pid`/`.rwe.log` files left over at the repo root
+  from before the rename (PID confirmed not running via `ps`) — cosmetic cleanup, not a doc edit.
+- `DEPLOY.md`: §0's per-instance naming section, §1b's principals/seedRefAllowlist rows, and the
+  §1c security model were already current-state (written at Gate 6 alongside the code, confirmed by
+  this round's own successful `./deploy.sh` runs against the documented recipe verbatim) — no edit
+  needed beyond the README fix above. Swept both files for 「舊版」「原本」「v1 時」「以前」「Changelog」
+  and version-conditional language: zero hits in either file (they already read as pure current-state
+  after the v34/v35/v36 supersede-not-append discipline).
+
+### `sh .sdlc/trace --check` (v36 round)
+Before this round's writes (the verifier's own Gate 6.5+7 exit number, re-confirmed by re-running
+before any edit): **2010 items / 83 gaps**, 6 of which are `未真實驗證` for `REQ-211..216` and 13
+pre-existing `斷鏈`(broken-link, `REQ-144..152/186` — dated since v25/v33, out of this closure) plus
+64 other pre-existing gaps unrelated to this closure. After flipping `VAL-246..251` to `real:true` in
+place (item count unchanged — no new IDs, per the impact-closure rule): **2010 items / 77 gaps**,
+confirmed via `trace.analyze()` called as a library (not eyeballed): the gap-set diff removes
+EXACTLY the 6 `REQ-211..216` rows and nothing else — filtering the remaining 77 gaps' `id` field
+against `{REQ-211..216}` returns **zero hits**. Remaining breakdown: `漂移`(drift) 24 / `TDD` 19 /
+`未驗證`(unverified, elsewhere in the ledger) 17 / `斷鏈`(broken link) 15 / `未實作`(unimplemented) 2
+— zero `未真實驗證`(mock-only) gaps anywhere in the ledger, matching the exit gate's bar ("no gap for
+any REQ in this closure", not "zero gaps in the whole mature ledger" — no prior v24+ gate has ever
+claimed that bar either). `sh .sdlc/trace --check` exits 1 (the same pre-existing, out-of-closure
+debt every prior validation round in this ledger has carried forward unchanged).
+
+`rtm.md` regenerated: `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --rtm
+.sdlc/features/001-remote-workflow-engine/rtm.md` — REQ-211..216 rows now show ✅ real-verified,
+matching `VAL-246..251`'s traces.
+
+### Verdict (v36 round)
+**PASSED.** All six v36 REQs (211..216) now carry ≥1 `real:true` green VAL item against genuinely
+booted, documented-steps-only instances running the commit under review — real MCP HTTP, real
+sandbox fork, real git subprocess, real Ollama call, real SQLite, real `TokenStore`. REQ-215's
+load-bearing evidence matches the design table's illustrative script exactly (a retired `agentType`
+caught and rethrown) — reproduced against the REAL deployed engine via the SUT's own
+`WorkflowCatalog.insertVersion()` (the real, only-reachable path IT-298 itself documents, since
+v34's registration-time scan blocks any NEW script carrying `agentType`), landing
+`run_result.error.code === "PARAM_UNKNOWN"` where the pre-v36 code would have flattened to
+`SCRIPT_ERROR` — discriminating evidence, not merely a mechanism exercise. (First attempt this round
+used `BUDGET_EXCEEDED` via an ordinary `workflow_register`; caught in this gate's own self-review as
+NON-discriminating — `BUDGET_EXCEEDED` already crossed the sandbox intact pre-v36 — and kept only as
+secondary corroboration, not substituted for the load-bearing case.) The nine carried REQs
+(014/086/087/095/096/097/114/205/207) needed no dedicated fresh probe — each is re-proved as a
+byproduct of the REQ-211..216 real calls above, per 04-design.md's own v36 real-tier table
+（「Unchanged behaviour, re-proved by the REQ-21x path」), and every one of those byproduct
+observations (ownership refusal, audit attribution, version/channel integrity, disk-diagnosable
+failure reason) is cited by ID in `VAL-246..251` above. `README.md` was fixed for one current-state
+drift (a stale pre-REQ-214 stop-command); `DEPLOY.md` needed no edit, confirmed current by this
+round's own successful boots against it verbatim. Gap-set check re-run against the FULL 15-REQ
+closure (not just the six new ones): zero hits in the remaining 77 gaps.
+
+One carried, unresolved item — **not decided here**: the live `- **owner_decision:** pending` marker
+at `02-architecture.md:4942` (REQ-216/K5: whether `listRuns()` should stay unbounded (A) or gain
+pagination (B)) is confirmed still the ONLY live marker anywhere in the ledger (mechanical sweep for
+the fixed metadata key, not prose) — carried forward to this report's `owner_decisions`, unresolved,
+blocking Gate 8 per issue #15's rule, not this gate.
+
+`current_stage` → `review` (Gate 8 is next).

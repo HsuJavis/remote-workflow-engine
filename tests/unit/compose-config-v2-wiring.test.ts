@@ -16,6 +16,7 @@ import { describe, it, expect, vi } from 'vitest';
 import type { Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { FixedClock } from '../../src/clock.js';
 import type { ClaudeAgentSdkGatewayConfig } from '../../src/gateway/claude-agent-sdk-client.js';
+import { attemptsFor } from '../../src/gateway/client.js';
 
 // Neutralize main.ts's boot side-effects (same pattern as IT-021/IT-022).
 vi.mock('node:child_process', () => ({ spawn: vi.fn(() => ({ on: vi.fn(), kill: vi.fn(), pid: 99 })) }));
@@ -358,4 +359,21 @@ describe('every KNOWN_FILE_CONFIG_KEYS entry is probed or excluded (UT-219, defe
       expect((cfg as Record<string, unknown>)[key]).toEqual(value);
     });
   }
+
+  // VAL-251/REQ-216/K8 (Gate-8 send-back ruling, ARCH-171): the PROBES sweep above only ever
+  // constructs `gateway:'direct-fetch'` configs, so it locks hop 1 (FileConfig -> ServerConfig)
+  // for `retries`/`timeoutMs` but never exercises hop 2 (ServerConfig -> the CONSTRUCTED gateway)
+  // on the `sdk` branch main.ts defaults to — the branch D-F10(a) fixed and this repo had already
+  // silently regressed once. `attempts` is a DERIVED value, not a FileConfig key: it is
+  // deliberately NOT a PROBES row (a row for it would break the totality assertion above, since
+  // `attempts` is absent from KNOWN_FILE_CONFIG_KEYS) — this is a separate `it()` outside the
+  // PROBES loop, exactly as the ruling specifies. A wiring lock, green on arrival: it fails the
+  // day `retries`/`timeoutMs` stop reaching `ClaudeAgentSdkGatewayClient`'s own config, not before.
+  it('sdk branch: composeConfig() forwards retries/timeoutMs into the constructed ClaudeAgentSdkGatewayClient, matching the shared attemptsFor() (REQ-216/K8)', async () => {
+    const cfg = await composeConfig({ gateway: 'sdk', retries: 3, timeoutMs: 5000 }, FAKE_DEPS);
+    const gwConfig = (cfg.gateway as unknown as { _config: { retries?: number; timeoutMs?: number } })._config;
+    expect(gwConfig.retries).toBe(3);
+    expect(gwConfig.timeoutMs).toBe(5000);
+    expect(attemptsFor(gwConfig.retries, gwConfig.timeoutMs)).toBe(attemptsFor(3, 5000));
+  });
 });

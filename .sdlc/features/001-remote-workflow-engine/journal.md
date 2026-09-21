@@ -8305,3 +8305,304 @@ P2 八條 (a)-(i))。本輪逐條關閉:
   另讀碼確認 `run-manager.ts:686` 的 `await this._store.createRun(...)` 是 awaited 才回傳 `runId`，
   所以 IT-297 case 1 的 `lastRunAt` 斷言（第 60-61 行,這次執行沒跑到,因為第 59 行先丟)在 Gate 5
   補上 `export const` 之後理應是 3/3 全綠,不只 description 那一行。
+
+- 2026-09-22 — **v36 Gate 6.5+7（simplify + verification merged, verifier）— PASSED，current_stage
+  → validation。** 收斂範圍 {REQ-211..216, REQ-014, REQ-086, REQ-087, REQ-095, REQ-096, REQ-097,
+  REQ-114, REQ-205, REQ-207}。
+
+  **(0) Simplify**：`/simplify` 呼叫，Agent fan-out 不可用，單輪 inline 過 `git diff 24762d2..HEAD --
+  src/`（15 檔、+452/-80）。找到並修了一處：`mcp-facade.ts` 新寫的 `actorFor(p,a,gate)` 對同一組
+  參數呼叫了兩次純函式 `attributionWithArg(p,a)`（一次算 `gateId`、一次算 `id`）——合併成一個
+  local 重用，行為不變（兩次呼叫本就是 deterministic 且無副作用），受影響的 18 個測試重跑全綠、
+  tsc 乾淨，記在 `IMPL-362` 的 `refactor:` 欄。其餘檔案讀過一輪，沒有再找到值得動的東西——delta
+  自己的行內註解已經記錄了好幾個當初就做過的化簡決定（`TERMINAL` 匯出的整併、`captureFailure`
+  本身就是把兩處 `redact(toErr(...))+capErrorEnvelope` 合一）。順帶：`determinism_check.py --check`
+  抓到 `event-log.ts` 的預設 `now` 落回 `new Date().toISOString()`（只有呼叫端完全不傳 `now` 才會
+  走到，真正的組合根 `server.ts` 一律注入 `clock.isoNow()`）——這是替一則稽核事件蓋時間戳記，不是
+  拿來做任何過期/未來的判斷，補一行 `det:allow` 尾註後 exit 0。這輪唯一動到的 `src/` 檔就是這兩個
+  （`event-log.ts`、`mcp-facade.ts`）。
+
+  **(1) 全套回歸**：`npx vitest run` 447 files（446 passed / 1 個既有 skip 檔）、3300 tests（3274
+  passed / 0 failed / 26 個既有 skip），exit 0。IT-297（P1 fixture 缺陷，Gate 6 implementer 依
+  「不修錯的測試」規則只回報未修)其實已經在 commit `967d890` 被 orchestrator 修好（四處字面補上
+  `export const`)——重跑標準測試檔與全套皆 3/3、0 fail，`05-tests.md` 補一段 RESOLVED 附註（既有
+  red-reason 原文照house慣例保留)。把 05-tests.md 中還讀 `red` 的 20 條（UT-293/297/298/299/300/
+  301/302/303/304/305、IT-293/296/297/298、VAL-246..251）全部翻成 `green`/`pass`；UT-294/295/296、
+  IT-294/295/299 在送進本輪之前就已經是綠的（send-back-repair 那輪翻的)。至此 26 條 v36 項目
+  （UT-292/293/297..305、IT-293..299、VAL-246..251）全數 green/pass。
+
+  **(1b) Coverage**：`@vitest/coverage-v8@1.6.1` 在這個共用 working tree 上反覆「安裝完、測到一半
+  又被拔掉」——三次 `--no-save` 嘗試都在啟動後 280-300 秒左右消失（兩次測到一半、一次卡在報表產生
+  那一步）。真正原因沒有確定：查過 `deploy.sh`/`self-update.ts` 與相關測試有沒有裸的
+  `npm install`/`ci` 會在 reconcile 時把沒進 lockfile 的套件當 extraneous 清掉——`deploy.sh`
+  第一步確實是裸 `npm install`，但 IT-293（`tests/integration/deploy-control-files.test.ts`）
+  只用 `--dry-run` 呼叫它，而 `--dry-run` 路徑本來就跳過那一步（guard/DES-242 邊界寫得很清楚）；
+  `self-update.ts` 完全沒有 `npm` 呼叫。repo 內沒查到真正的兇手，較可能是這台共用機器上另一個並行
+  程序（CLAUDE.md 本身就記載過這類共用 working tree 的風險），但這裡誠實記成「原因未確定」而非斷言。
+  改用「暫時把它寫進 `package.json` 的真 devDependency、`npm install`、
+  跑 coverage、跑完立刻把 `package.json` 改回去再 `npm install` 還原 `package-lock.json`/
+  `node_modules`」繞過（`git status --short package.json package-lock.json` 事後乾淨）。結果：
+  `npx vitest run tests/unit tests/integration --coverage --coverage.include='src/**'
+  --coverage.exclude='src/dashboard/ui/*.js'`（既有的瀏覽器端 UI 排除慣例）→ 整體 96.13% 行 /
+  89.37% 分支 / 95.36% 函式，362 files / 2862 passed / 1 skipped / 0 failed，遠高於 90% 門檻。
+  逐函式（從 `coverage/coverage-final.json` 算,不是肉眼讀表格）：v36 新增/改動的每一個函式都
+  ≥95%——`captureFailure`/`createEventSink`/`actorFor`/`idSourceOf`/`canMutate`/
+  `actorFromPrincipal`/`isActor`/`workflowList`/`_transition`/`_handleAgentRequest`/兩個
+  `lastRunAtByName`/兩個 `getSpec`/`attemptsFor`/`markEngineRefusal`/`deregister`/
+  `deregisterVersion`/`publish`/`validateRegistration`/`capErrorEnvelope` 全部 100%；
+  `workflowDeregister` 96.1%（73/76)、`insertVersion` 96.4%（54/56)，兩者都在 >5 行函式的 95%
+  門檻之上。全樹最差的 78 長 + 11 短 offenders，全部是 v21 就定調的既有債務類別，沒有一個是
+  v36 動過的函式（`main.ts`/`sandbox/child-entry.ts` 的 0% 是子行程覆蓋率盲區，由 IT-298 的真
+  fork child 在更高層測到；`server.ts` `runDiagnostics`/`tool-specs.ts` `resolveFixture`/
+  `workflow-catalog.ts` `putDiagramPending` 都是 v24/v25 就記錄在案的既有缺口)。沒有降門檻、
+  沒有削弱任何測試。
+
+  **(1c) module_check**：休眠（`grep 'build:' 02-architecture.md` 只有說明 S/M 規模為何不宣告的
+  散文，沒有任何 ARCH 真的宣告 `build:`）。
+
+  **(2) 無殘留紅燈。**
+
+  **(3) trace --check**：2010 items / 83 gaps，exit 1（數量與編輯前存到 scratch 的基線位元組相同）。
+  21 個 HIGH 拆開看：13 個是既有斷鏈（IMPL-303..311/323、UT-264/265 追溯到不存在的
+  REQ-144..152/186，v25/v33 就記錄在案、與這次收斂無關,沒動)+ 6 個是 REQ-211..216 的
+  `未真實驗證`——這是結構性的,`real:true` 本來就是 Gate 7.5 validator 的活,在任何一輪
+  Gate 6.5+7 之前都不可能不出現,這份 ledger 從 v23 開始每一輪 note 都這樣記。用 `trace.analyze()`
+  當函式庫查證（不是眼睛數)：15 個收斂 REQ 全部落在 `verified` 集合、each ≥1 個 green VAL；九個
+  新 DES-241..249 each ≥1 個 green UT/IT。
+
+  **(3b) solid_check**：111 modules，0 HIGH / 0 mid / 10 low（既有未認領檔案警告，集合不變）。
+
+  **(4) determinism_check**：exit 0（含上面 `event-log.ts` 的 `det:allow`)。
+
+  **(5) TZ 時間旅行**：這個沙盒沒有 `faketime`，用 `TZ='Pacific/Kiritimati'` 對 v36 收斂的 24 個
+  delta 測試檔重跑——233 tests、0 fail、與正常時鐘跑法逐一比對零翻轉（比照 v27c/v28b/v33 先例，
+  中小型迭代只掃 delta；本迭代唯一的新時鐘 seam `event-log.ts` 的 `now` 在生產路徑已 100% 走注入）。
+
+  **(6) Seam wiring**：v36 唯一的新 seam 是 `eventSink`（DES-243）——`grep` 實測
+  `src/server.ts:724/738/793` 確認在真組合根建一個 `createEventSink({secrets, now})`、同一個實例
+  同時餵給 `WorkflowCatalogOpts` 與 `RunManagerDeps`（Gate-8 送回的 P1 修法，IT-294 蓋到）。其餘
+  新函式（`attemptsFor`/`captureFailure`/`canMutate`…）都是純函式，不是注入點。
+
+  **(7) Real-dependency smoke**：另開一個 scratch 引擎（port 8931，workRoot 在這次 session 的
+  scratchpad 下，`gateway:"direct-fetch"`，事前事後都確認沒碰到這台機器上其他長跑中的
+  `rwe.service`/開發用 instance)，走真 MCP HTTP + 真 SQLite：真的 register 兩個版本、
+  `workflow_list` 真的把 `description`+`lastRunAt:null` 傳出來（REQ-213/216 K4)、
+  `workflow_deregister({name,version:'v1'})` 真的刪掉 v1（`remaining:['v2']`)而刪最後一個版本
+  正確被 `VERSION_LAST_REMAINING` 擋下（REQ-211、DES-246 outcome 5)、publish v2 後跑一個零 agent
+  腳本到完成，boot log 裡三行 `catalog.register`/`catalog.deregister`/`run.terminal` 都是生產
+  `eventSink` 真的寫出來的——事後 `workflow_list` 的 `lastRunAt` 也真的撿到那次真跑的時間戳記。
+  這條收斂只碰 SQLite 一個外部依賴，零 agent 腳本不需要任何 LLM/網路呼叫。
+
+  **owner_decision 掃描**：固定 metadata key 全帳本只剩一條活的：`02-architecture.md:4942`
+  （REQ-216/K5，`/api/runs`/`/api/home` 全表掃描 vs 分頁的取捨,Gate 2/3 就掛在那裡)——這輪沒有
+  動它，原樣帶到報告的 `owner_decisions`。
+
+  state.yaml：`gates.verification.passed=true`、`current_stage: impl → validation`、`updated:
+  2026-09-22`。全程沒有用 `git checkout`/`git restore`/`git stash`；沒有做任何 commit（留給
+  orchestrator）。`evidence/v28/val215-issues-{dark,light}.png` 因全套回歸的 acceptance 層
+  （`val-205-issues-tab.test.ts`）對真 Chromium 重新截圖而出現小幅 binary diff——這是這兩個檔案
+  在這份 ledger 歷史上已經記錄過好幾次的既有現象（跑一次全套就會動一次)，沒有回退，留在工作樹給
+  orchestrator commit。
+
+## v36 GATE 7.5（2026-09-22，validator）— PASSED
+
+收斂範圍：REQ-211..216（新）＋ REQ-014/086/087/095/096/097/114/205/207（既有，隨新 REQ 的真跑
+順帶再證，本輪不單獨開探針）。
+
+**一鍵部署證據**：`./deploy.sh --background`（不加任何未寫在文件裡的步驟）先後帶起兩個 scratch
+實例——`scratch-a.config.json`（port 8993，`auth.enabled:true`，principals
+alice@example.com:admin／bob@example.com:author，`gateway:"direct-fetch"` 對真本機 Ollama
+`qwen2.5:7b`）與 `scratch-b.config.json`（port 8994，`auth.enabled:false`，另加
+`seedRefAllowlist`＋`RWE_SECRET_REPO_TOKEN`），兩份設定檔都放在跟正式 `rwe.config.json` 同一個
+repo 根目錄（REQ-214 驗收本身要求的形狀）。全程確認真正式 `rwe.service`（port 8899，
+MainPID=3553536）`NRestarts=0`、`MainPID` 前後不變，未被碰到。auth ON 實例的 bearer 是用 SUT
+自己的 `TokenStore.issue()`（`src/auth/token-store.ts`，同一個類別）對引擎真正的
+`auth-tokens.db` 直接核發——不是繞過認證邊界的假造，是引擎自己 OAuth 交換完成後那一步本身。
+
+**REQ-211**：真註冊三個版本、`release` 指到 v2；刪 v2 → `VERSION_PINNED_BY_CHANNEL`；刪 v1 →
+真的移除，`remaining:["v2","v3"]`；另起一個帶真 `agent()` 呼叫的版本，`run_status` 讀到
+`"running"`（貨真價實還在跑的一次真 LLM 派工，不是灌進 store 的假列）時嘗試刪它 →
+`VERSION_PINNED_BY_RUN` 準確點名那個 runId，run 之後照常跑到 `completed`。
+
+**REQ-212**：admin 用真 bearer 對 bob 的工作流程做 `workflow_publish`（繞過擁有權）——成功，且
+`.rwe.scratch-a.config.log` 真實一行寫著 `actor:{id:"alice@example.com",bypass:true,
+idSource:"authenticated"}`；同一個 admin 改用 `workflow_register` 蓋過 bob 的名字則被
+`NOT_WORKFLOW_OWNER` 擋下；auth OFF 的實例上一個帶 `{principal:"carol@example.com"}` 的呼叫記成
+`idSource:"claimed"`。
+
+**REQ-213**：`workflow_list` 在從未跑過時 `lastRunAt:null`，真的跑完一次之後變成真時間戳；
+`.rwe.<instance>.log` 每個 register/publish/run-terminal 各落一行 JSON，欄位齊全。
+
+**REQ-214**：兩個實例的 `.rwe.<instance>.{pid,log}` 各自獨立、互不覆蓋；`kill` 掉 B 的 pid 只停
+B，A 跟正式服務都沒事。
+
+**REQ-215**：主證據就照設計表建議的腳本原樣做（帶已退役 `agentType` 的 `agent()` 呼叫）——這條路
+自 v34 起已經在**註冊時**就被靜態掃描擋下，今天沒有辦法透過真的外部 MCP client 直接註冊走到；改用
+SUT 自己的 `WorkflowCatalog.insertVersion()`（跟 `server.ts` 建構同一個類別、真 `SystemClock`、
+真的 `catalog.db`）對一個先停機的 scratch 實例直接插入一列舊版目錄（IT-298 自己文件記載這是唯一
+真的能走到這條路徑的方式），發布後用文件記載的 `./deploy.sh --background` 重開機（冪等，workRoot
+保留），再用真 MCP `run_start` 打它：`run_result.error.code` 變成 `PARAM_UNKNOWN`
+（v36 之前這裡會被壓平成 `SCRIPT_ERROR`）——這是**能分辨 v36 前後差異**的證據，不只是「機制有跑」。
+sequential、`parallel()` 兩種寫法都確認。（本輪第一次嘗試用同屬 `ENGINE_REFUSAL_CODES` 的
+`BUDGET_EXCEEDED`（`run_start({budget:{tokens:0}})`）——事後自己抓出這個不能分辨 v36 前後差異
+（`BUDGET_EXCEEDED` 在 v36 之前就已經能穿過 sandbox 到 run 層），改列為輔助佐證，不當主證據。）
+
+**REQ-216**：K1/K2/K3——`seedRef` 對一個路徑帶真 provisioned secret 的 URL 真的用 `git` 去抓、真的
+失敗，`run_status.seedRef.failDetail` 與頂層 `run_status.error` 都只看得到
+`‹secret:REPO_TOKEN›`，200 bytes 的截斷是**先遮蔽再切**（marker 完整）。K4——同一個零 agent 的
+run，`run_status`／`run_list` 的錯誤物件逐字一致。K6/K7——一次真的未設 timeout 的 `agent()` 呼叫
+一次就跑完（沒有重試），跟真的 `workflow_authoring_guide` 文字一致。K5 維持用裁決（ADR-079）
+而非程式碼解決——帳本裡唯一一條活的 `- **owner_decision:** pending`（`02-architecture.md:4942`，
+REQ-216/K5 分頁取捨）確認仍是全帳本唯一一條，本輪沒有動它，原樣帶到報告的 `owner_decisions`，
+擋 Gate 8 不擋這一關（issue #15）。
+
+**文件**：`README.md` 修掉一處 current-state 違例——快速開始段落還留著 REQ-214 改名前的
+`kill $(cat .rwe.pid)`，改成 `.rwe.rwe.config.pid` 並指向 DEPLOY.md §0；順手刪掉兩個殘留的
+（gitignored、PID 已死）舊版 `.rwe.pid`/`.rwe.log`。`DEPLOY.md` 本輪不用改——§0/§1b/§1c 已經在
+Gate 6 跟著程式碼一起改好，這輪自己真的照著跑了一次 `deploy.sh` 驗證屬實。§1b 設定總表 42 個
+`KNOWN_FILE_CONFIG_KEYS` 雙向核對乾淨，這輪 diff 只有 `deploy.sh` 一個檔案，沒有新鍵。
+
+**trace**：`sh .sdlc/trace --check` 從 2010/83 變成 2010/77（`trace.analyze()` 當函式庫呼叫核對
+差集，精準關掉 REQ-211..216 這六條，其餘 77 個既有缺口零命中、零新增）；exit 1 是既有、跟本輪收斂
+無關的舊債（斷鏈 15、漂移 24、TDD 19、未驗證 17、未實作 2），跟過去每一輪的收尾一致。`rtm.md`
+這個 trace.py 版本沒有 `--rtm` CLI（v33/v34/v35 都記過同一個限制）——照慣例用
+`build_matrix()`/`is_real_test()` 當函式庫手寫補上六列，皆 ✅。
+
+state.yaml：`gates.validation.passed=true`、`current_stage: validation → review`。全程沒有用
+`git checkout`/`git restore`/`git stash`；沒有做任何 commit（留給 orchestrator）。所有 scratch
+產物（`scratch-a.config.json`／`scratch-b.config.json`／兩對 `.rwe.scratch-*.{pid,log}`／
+`/tmp/rwe-v36-{a,b}`／臨時的 mint-tokens 腳本）已清除，`git status --short` 乾淨。
+
+## v36 GATE 8（2026-09-22，reviewer）— SEND-BACK，未關閉
+
+範圍：REQ-211..216 + 隨動再證的九條既有 REQ。兩份架構專家小組報告（adversarial +
+quality-dimensions）由 workflow 預先產出，本輪只做整併，未重新派發。
+
+**追溯/儀表板/module 檢查皆乾淨**：`trace --check` 2010 items / 77 gaps（high=15/mid=36/low=26，
+`trace.analyze()` 當函式庫核對），全數既有、REQ-211..216 收斂零命中。`dashboard_check.py` 配本 repo
+自己釘住的 vendored `trace.py`（實際產出 dashboard.html 那份）→ 0 high（配 plugin 內附的新版
+`trace.py` 會誤判出 5 個假 HIGH，根因是 `evidence/v36/gate75-real-run-2026-09-22.md` 這份原始逐字稿
+的段落標題 `## REQ-211 — ...` 剛好撞上新掃描器的項目標題樣式；已查證是我呼叫工具版本不一致造成的
+假象，非真缺陷，記為 LOW 債）；7 mid 是既有 mermaid crow's-foot 誤報（不變基線）；1 low 是既有
+offline fallback 缺失（不變基線）。`solid_check` 111 modules / 0 mid / 10 low（既有未認領檔案集合不
+變）。`module_check` 休眠。
+
+**2 條阻擋發現**：(1) REQ-216/K8 驗收文字明寫「在 compose-config-v2-wiring.test.ts 加一列 attempts
+探針(約3行)」，git log 證實這輪零 commit 碰過那個檔案，但 VAL-251（real:true/green）把一個無關的
+既有 `retries:3` fixture 值算成 K8 的證據——與 `eventSink` 那半（DES-243 有明確歸檔的反轉理由）不
+同，`attempts` 沒有任何反轉紀錄。送回 tests（補探針）+ validation（改寫 VAL-251 的 K8 句子，或補一
+條 ADR 反轉）。(2) `mcp-facade.ts:410-419` 這輪新加的 `VERSION_PINNED_BY_RUN` 探針在 `actorFor()`
+鑄造 actor 之前就可能回傳，顛倒了 ARCH-155 明講的拒絕順序；`auth.enabled:false` 搭配不吻合的
+`args.principal` 可達（`authz.ts:107` 的 auth-disabled 短路 + `mcp-facade.ts:236-240` 對 claimed
+principal 恢復的擁有權檢查）。送回 impl，一行修法：探針前先鑄一次 actor。
+
+**owner_decision 掃描（issue #15）**：固定 metadata key 全帳本僅剩一條活的（`02-architecture.md:
+4942`，ARCH-172/REQ-216/K5，`/api/runs`＋`/api/home` 的 `listSummaries()`/`lastRunAtByName()` 分頁
+取捨），查證 `state.yaml` 的 `pending:` 清單裡沒有任何 K5/分頁裁決紀錄——這是**真正未答覆**，不是
+像 v27 OWN-1 那種漏翻的舊裁決。送回 architecture：待 orchestrator 轉達業主裁決後落地（純文件編
+輯，兩個選項都不牽動程式碼），同一次編輯順便收 F7（ARCH-162 成本句子的更正）。
+
+**非阻擋（記為債，下次碰到該行再改)**：INV-V36-4（3 條 pre-v36 未遮蔽 console.log，git blame 證
+實皆早於 v36：`run-manager.ts:1083` 2026-09-02、`:1337` 屬 v35 commit `d4abb606`）、`refusalsDropped`
+無讀取面、INV-V36-5 只護到 version-scoped 路徑、`RWE_START_CMD` 規格未建（`deploy.sh` 的
+touch+append 反而是對 stale truncate 規格的合理改良）、5 條 Gate-2 API 列過期（`Actor` 3 vs 4 欄查
+證無害）、operator log 兩種 shape 不一致、`RunEntry.detail` 欄位過期。
+
+**驗收與交付文件**：`08-validation.md` v36 段落齊全，REQ-211..216 全數 `real:true`/green，**唯一
+例外**是 VAL-251 的 K8 子項（見上）；其餘七個 K 子項皆為真、可分辨的證據（REQ-215 的
+`PARAM_UNKNOWN` vs `SCRIPT_ERROR` 尤其扎實)。`README.md`/`DEPLOY.md` 現存於產品根，current-state、
+無變更歷程語言、§1b 設定總表單一去重、§0 一鍵部署帶著這輪真跑的逐字輸出。特殊檔案（3b）：本輪
+IMPL-358..366 沒有碰 CLAUDE.md/AGENTS.md/SKILL.md，N/A。
+
+`state.yaml`：`gates.review.passed=false`、`current_stage: review → architecture`（send_back 清單裡
+最早的關卡）。`.panel/` **保留**（送回中，非關閉，re-review 還需要）。全程沒有用
+`git checkout`/`git restore`/`git stash`；沒有做任何 commit（留給 orchestrator）。完整內容見
+`07-review.md`「v36 GATE 8 — Consistency review」段落。
+
+## 2026-09-22 — v36 Gate 2 架構「送回修補」回合(architect)
+
+送回的三條阻擋發現中,**只有一條屬於本關**,其餘兩條的執行面分別屬於 tests/impl/validation
+(`send_back=[architecture,tests,impl,validation]`),因此本關交付的是**裁決**,不是別人關卡的程式碼。
+Panel 沒有重跑:`.panel/architecture/*.r1.md` 讀完後直接綜合——adversarial 的 addendum 自己就拒絕從零
+重辯 REQ-211..216,理由是 ADR-072/075/077 在本 ledger 其他地方被指名引用,這個拒絕被採納,所以以下每一筆
+都是**原地修訂**,沒有新 ID、沒有重新分解。
+
+1. **F7(ARCH-162 成本句)**——「one row per workflow, one round trip」講的是**結果基數**,不是掃描成本。
+   索引 `runs(name, status, createdAt DESC)` 的 `status` 卡在 `name` 與 `createdAt DESC` 中間,`MAX` 不是
+   每個 name-group 的第一筆,所以 `lastRunAtByName()` 是**全索引掃描**,成本跟著總 run 數走。因此它和
+   `listSummaries()` 坐在**同一個**分頁問題上,不是旁邊那個。ARCH-162 被拒絕的三個形狀不受影響。
+2. **F6(拒絕順序)**——本關**推翻了送回摘要自己給的一行修法**:「在探針上方 mint `actorFor(...)`」是
+   **no-op**,`actorFor` 是純函式,改前改後拒絕順序位元相同,缺陷會以「帳面已修、測試全綠、diff 乾淨」
+   的形式出貨。裁決取 (ii):事實由 facade 算(只有它同時握兩個 DB handle),**拒絕**交給 catalog 的階梯第 4
+   階,經由一個**必填**的 `pinnedRunId: string | null` 第四參數;ARCH-155 現在把六階順序寫死在條目裡。
+   亞軍 `catalog.assertMutable` 被否決:它把所有權閘門放到**兩個**呼叫點,正是 REQ-216/K1 要消滅的雙生分歧。
+   三個 lens 在這裡是真衝突(security 要單一評估、scalability 要先拒絕再掃描、testability 要整條階梯進
+   一個不需要 run store 的單元測試),scalability 以 ADR-079 對同一個呼叫早就寫過的「管理者動作、間隔數秒」
+   讓步。ADR-075 原地修訂:它把「在這裡探測」和「在這裡拒絕」混為一談,出貨的程式碼取了第二種讀法。
+3. **K8(未交付的探針)**——驗收文字的字面形狀**結構上不可能存在**:`attempts` 是衍生值不是 FileConfig key,
+   而那支測試斷言 `PROBES ∪ EXCLUDED === KNOWN_FILE_CONFIG_KEYS`,加一列就會打破它。ARCH-171 改把它瞄準
+   真正的那一跳(hop 2:`ServerConfig` → **被建構出來的** gateway,而且是 `main.ts` 預設、那支測試從來沒
+   碰過的 sdk 分支),形式是迴圈**外**的獨立 `it()`。**不走 ADR reversal**——reversal 是給「判定不需要的
+   探針」用的,這一條是需要的,只是瞄錯了一個不存在的 key。順帶查出、但**明確留給 v37**:`server.ts:848`
+   是第三條 attempts 公式,與 `main.ts:351` 的原樣轉發在「retries 未設」的預設值上不一致(僅影響廣告數字,
+   LOW);要修就得動出貨路徑的重試預設值,沒有任何發現要求這件事,依 ADR-076 前例歸檔而非丟給業主。
+4. **K5(唯一存活的 owner marker)**——**沒有回答,也不該由這裡回答**。兩個 lens group 都表態偏向 (A)
+   (quality-dimensions 從 consumability、adversarial 從 Karpathy tie-break),但兩個 lens 不等於業主。
+   `02-architecture.md:4942` 的 marker 原封不動,經 `owner_decisions` 通道轉交;附帶一個建議:轉達時把
+   live instance 的 `runs` 列數一起送過去,那是這個問題目前缺的唯一有用輸入。
+
+Trace:2010 項 / 77 缺口,與修改前基線**位元相同**(所有編輯都是同一行內替換,marker 被引用的行號
+4942 保持不變)。`state.yaml`:`gates.architecture.passed=true`、`current_stage: architecture → design`、
+`updated` 更新。全程沒有用 `git checkout`/`git restore`/`git stash`;沒有做任何 commit(留給 orchestrator)。
+辯論收斂與誰讓步見 `02-architecture.md` 末尾新增的「Send-back repair round」段落。
+
+**F6 裁決的漣漪(已計數,寫進 `state.yaml` 的 `current_stage` 註記供 orchestrator 派工)**:改成必填第四參數
+後,impl 面是**兩個檔**不是發現指名的那一個(`src/workflow-catalog.ts` + `src/mcp-facade.ts`),
+呼叫點共 11 處 / 4 個檔(含 `tests/unit/catalog-deregister-version.test.ts` 10 處、
+`tests/integration/main-composition-root-events.test.ts` 1 處)。`VERSION_PINNED_BY_RUN` 已在
+`ERROR_CATALOG`(`errors.ts:100`,本關實地查核過)註冊,所以搬進 catalog 後是一個普通 `codedError`,
+上線的 wire code 不變。另外 `DES-246` 的六結果順序表與 `TASK-244` 都還把拒絕寫成 facade 的,已因本裁決
+過時;design/tasks **不在** `send_back` 清單內,這是派工問題不是使用者決策,一併記在 `state.yaml`。
+
+## v36 Gate 5 send-back repair (2026-09-22, verifier)
+
+Scope: the three named Gate 8 blocking findings, nothing else. Two closed here, one blocked and
+routed back rather than expanded into.
+
+1. **Finding 2 (K8, the undelivered `attempts` probe)** — CLOSED. Per ARCH-171's ruling (already
+   landed by the architecture send-back before this run): `attempts` is a derived value, not a
+   `FileConfig` key, so a `PROBES` row for it would break `compose-config-v2-wiring.test.ts`'s own
+   totality assertion. Added **UT-306** — a separate `it()` outside the `PROBES` loop asserting the
+   real missing hop: `composeConfig({gateway:'sdk', retries:3, timeoutMs:5000}, FAKE_DEPS)`
+   constructs a `ClaudeAgentSdkGatewayClient` whose own config carries `retries:3, timeoutMs:5000`,
+   matching `attemptsFor(3, 5000)`. Green on arrival (a wiring lock, not red-first TDD — the
+   forwarding it guards already shipped under D-F10(a)/ARCH-171); confirmed via
+   `npx vitest run tests/unit/compose-config-v2-wiring.test.ts` (61/61 pass, up from 60). VAL-251's
+   K8 sentence reworded to cite UT-306 instead of the unrelated `retries` `PROBES` fixture row it
+   previously credited.
+2. **Finding 1 (K5, the live owner marker)** — nothing left to edit; the architecture send-back
+   already folded ARCH-162's F7 cost-sentence correction into the same edit and left the
+   `02-architecture.md:4942` marker byte-identical (correctly — not this gate's, or any gate's, call
+   to make). Carried to this report's `owner_decisions` verbatim.
+3. **Finding 3 (F6, the refusal-order fix in `mcp-facade.ts`)** — NOT actioned; routed back rather
+   than expanded into. `grep -n pinnedRunId 04-design.md 03-tasks.md` is empty: the architecture
+   send-back ruled the fix ships as a REQUIRED `pinnedRunId: string | null` 4th parameter on
+   `catalog.deregisterVersion` (ADR-075 amended, ARCH-155/156), but DES-246's six-outcome table and
+   TASK-244 still describe the refusal living in the facade — neither has been updated to the new
+   shape yet. Writing a RED test against a 4-parameter signature that doesn't exist in the design
+   docs, or editing `src/mcp-facade.ts`/`src/workflow-catalog.ts` directly, would both be scope
+   expansion past "fix the listed findings, nothing else": the real fix touches 2 files / 11 call
+   sites across 4 files (`src/workflow-catalog.ts`, `src/mcp-facade.ts`,
+   `tests/unit/catalog-deregister-version.test.ts` x10, `tests/integration/main-composition-root-
+   events.test.ts` x1) and needs DES-246/TASK-244 amended first. The architecture send-back already
+   flagged this exact routing gap in its own `current_stage` note ("design/tasks 不在 send_back 清單
+   內,這是派工問題不是使用者決策") — restated here as this gate's own `needs_clarification` so it
+   isn't dropped a second time.
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine`: 2011 items / 77 gaps (2010→2011, +1 for
+UT-306; gap count unchanged from the architecture send-back's baseline — confirmed no gap line
+mentions UT-306 or VAL-251). `--check` exit 1 (pre-existing 77 gaps, includes the still-pending
+ARCH-172 owner marker by design). `current_stage` left at `design` (NOT advanced to `impl`): the
+overall Gate 8 send-back is not closed while finding 3 is blocked on a design/tasks update this
+gate's scope does not cover. No `git checkout`/`git restore`/`git stash` used; no commit made
+(left for the orchestrator).
