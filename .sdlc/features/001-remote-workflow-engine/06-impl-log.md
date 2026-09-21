@@ -8885,3 +8885,96 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   `git diff`) before this log entry was written.
 - **refactor:** n/a — pure test additions; no `src/` logic touched by this IMPL (item 1 and item 5's
   `src/` changes are IMPL-343/IMPL-344 respectively).
+
+### IMPL-346 — v35 GREEN-phase Priority 1: `nonCodeOracle` fails OPEN on a no-meta parse failure, not blind
+
+- **status:** done
+- **traces:** DES-237, ARCH-149, TASK-233, REQ-208
+- **greens:** UT-289 (workflow-meta-scan.test.ts), UT-209 (agent-call-scan.test.ts)
+- **files:** src/workflow-meta.ts, tests/unit/workflow-meta-scan.test.ts
+- **commit:** (uncommitted at report time)
+- **iter:** v35
+- **note:** **REGRESSION found post-Gate-5, worse than the REQ-208 defect it was meant to fix.**
+  `nonCodeOracle`'s D11 case (2) ("no meta at all → run the oracle directly on the raw script") ran
+  an unconditional `acorn` parse and, on failure, took the SAME `{ok:false}` path as case (3) (meta
+  present, code after it unparseable) — collapsing `scanAgentCalls` to `calls:[]`,
+  `violations:[{SCRIPT_UNSCANNABLE}]` for ANY no-meta script `acorn` cannot parse, including a
+  malformed/truncated ternary with real, unambiguous `agent()` calls in it (DES-174/ARCH-113's
+  pre-existing "TOTAL by design" guarantee, UT-209). Reproduced in isolation first (a standalone
+  `scanAgentCalls()` call on `tests/unit/agent-call-scan.test.ts`'s two UT-209 fixtures, before any
+  fix) — confirmed `calls:[]` where two/one real `agent()` calls exist, no `SCAN_VIOLATION` even
+  thrown at registration (the malformed scripts never reach `workflow-catalog.ts:487` in these unit
+  fixtures) but `scanAgentCalls`'s OWN unit contract broken regardless. Root cause: only case (3)'s
+  parse failure has an addressable non-code region (the meta literal) the design already treats
+  specially; case (2)'s failure has none, and a parse failure alone is not evidence of a hidden
+  string/comment `agent(` false-positive. Fix (`nonCodeOracle`, `src/workflow-meta.ts`): case (2)
+  on parse failure now returns `null` (fail open — unfiltered scan, pre-v35 behaviour) instead of
+  `{ok:false}`; case (3) unaffected. This also restores DES-237 D12 lockstep between
+  `scanAgentCalls` and `parseWorkflowSkeleton` (the latter already failed open on `oracle?.ok`
+  falsy; before this fix a case-2 parse failure desynced the two positionally-joined scans). Added
+  one regression-guard `it()` in `workflow-meta-scan.test.ts` pinning the exact combination (no
+  meta, malformed ternary, two real calls, asserts `calls`/`violations`/`unscannable` all correct)
+  so a future regression here fails loudly instead of silently disabling every scan-dependent
+  registration guard (`AGENT_UNDECLARED`, `AGENT_BEFORE_PHASE`, the diagram contract). See
+  04-design.md's DES-237 v35 amendment for the full D11/D12 analysis, including a flagged tension
+  between DES-174 (TOTAL) and DES-236 INV-V35-4 (fail-closed) left for the verifier to rule on.
+  **Separately, NOT fixed (send-back):** `tests/unit/scan-agent-calls.test.ts`'s "commented-out
+  `agent(` IS matched" case is stale — DES-237's own text explicitly supersedes it; left unchanged
+  per the "do not appease a wrong test" rule, reported in 05-tests.md's UT-145 row.
+- **refactor:** surgical — `nonCodeOracle`'s body restructured from a ternary/ternary chain to
+  three `if`s (same three cases, same order) so the new no-meta branch has somewhere to live;
+  extractor/regex/`matchDelimiter` logic in the rest of the file untouched.
+
+### IMPL-347 — v35 GREEN-phase: `capErrorEnvelope`'s cut no longer mangles a straddling redaction marker
+
+- **status:** done
+- **traces:** DES-230, TASK-236, REQ-205
+- **greens:** UT-284 (errors-to-err.test.ts)
+- **files:** src/errors.ts, src/secret-resolver.ts, tests/unit/errors-to-err.test.ts
+- **commit:** (uncommitted at report time)
+- **iter:** v35
+- **note:** Checked and REJECTED the dispatch's stated premise first: REQ-205's `.detail`
+  forwarding is NOT what this test exercises — `DES-230`'s `owner_decision: pending` and this test
+  file's own scope note both say that forwarding is deliberately out of scope this iteration, and
+  `toErr`'s three non-ordering cases were already green. The actual bug: `capErrorEnvelope`'s
+  utf8-safe byte cut protected multi-byte CHARACTERS (continuation-byte backoff) but not a
+  `redact()` MARKER (`‹secret:NAME›`) whose bytes straddled the cut point — the cut landed inside
+  the marker and the truncation silently replaced the tail of it with ordinary padding, so the
+  composed message no longer contained the marker at all. Fix: exported `MARKER_PREFIX` from
+  `src/secret-resolver.ts` (the file's own doc comment already claimed it was exported; it wasn't).
+  `capErrorEnvelope` now detects a marker opened-but-not-closed in the cut `head` — anchored on the
+  `‹` glyph alone and confirmed against the full prefix (`e.message.startsWith(MARKER_PREFIX, ...)`)
+  so a cut landing MID-PREFIX (e.g. after `‹se`) is also caught, not only a cut landing exactly at
+  the marker's own boundary — and extends the cut forward to the marker's closing `›` instead of
+  backing off and dropping it. Verified with a probe sweeping the straddle offset by single bytes
+  (`MAX_ERROR_ENVELOPE_BYTES - {10..-2}`) to confirm the fix holds across the whole window, not just
+  the test's one chosen offset; added a second guard `it()` in `errors-to-err.test.ts` pinning the
+  mid-prefix case specifically (the offset the original fix attempt — anchoring on the full prefix
+  string — still failed).
+- **refactor:** surgical — one `export` keyword added in `secret-resolver.ts`; `capErrorEnvelope`
+  gained the marker-detection block after its existing cut logic, no other lines changed.
+
+### IMPL-348 — v35 GREEN-phase: `failedAgentCount` stripped off the `/api/runs` dashboard list surface
+
+- **status:** done
+- **traces:** DES-240, ARCH-153, TASK-238, REQ-207
+- **greens:** IT-165 (dashboard-disclosure.test.ts)
+- **files:** src/run-view.ts, src/server.ts
+- **commit:** (uncommitted at report time)
+- **iter:** v35
+- **note:** Deliberate disclosure decision, not a loosened check (04-design.md rationale item 9
+  already rules "Declined: a dashboard surface for `failedAgentCount`" — `run_status`/`run_list`,
+  the MCP tools REQ-207 targets, keep it; the ungated dashboard REST reads do not). `GET /api/runs`
+  served `RunSummary.failedAgentCount` verbatim because `/api/runs` and `run_list` share one
+  `RunSummary[]` accessor (`RunManager.listSummaries()`) with no per-surface projection — the same
+  shape as the existing `principal`-stripping precedent (`toPublicRunView`, DES-162). Added
+  `toPublicRunSummary()` (`src/run-view.ts`) mirroring that precedent; applied ONLY at
+  `/api/runs`'s route handler (`src/server.ts:389`, `runs.map(toPublicRunSummary)`). Verified
+  `run_list`/`run_status` are unaffected: re-ran every test file that asserts `failedAgentCount` is
+  PRESENT on those MCP surfaces (`val-234-agent-failure-health.test.ts`, `run-health-count.test.ts`,
+  `run-store-parity.test.ts`, `run-error-read-sites.test.ts`, `val-232-run-error.test.ts`,
+  `tool-specs.test.ts`) — all still green. `/api/runs/:id` (the detail route) is untouched; there is
+  no golden-key-set row for it in `dashboard-wire.ts` today, so the field's presence there is
+  neither newly introduced nor newly enforced by this change.
+- **refactor:** n/a — one new small exported function plus a one-line `.map()` at the call site; no
+  existing logic altered.

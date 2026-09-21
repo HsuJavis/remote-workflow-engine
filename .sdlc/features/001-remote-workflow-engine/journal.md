@@ -7593,3 +7593,121 @@ reason=script-unscannable` 兩個 marker 同時成立。首跑即綠;另外手�
 `npx tsc --noEmit` 乾淨。全程未使用 `git checkout`/`restore`/`stash`,未 commit(依指示交由後續步驟
 處理)。`state.yaml`:`gates.impl.note` 追加本輪紀錄,`python3 -c "import yaml; yaml.safe_load(...)"`
 重新解析通過。
+
+## 2026-09-21 — v35 GREEN 收尾:7 條紅測試,4 修 3 送回(implementer)
+
+派工:v35 workflow 因七條 clarification 中途停擺,`c39d466` 全部關閉後,有些 GREEN 階段的活從沒做——
+全套 3185 passed / 7 failed。逐一診斷 6 個檔的 7 條紅。
+
+**Priority 1(回歸,先修)——`scanAgentCalls` 對「無 meta 腳本」的 oracle 解析失敗誤判成整體
+unscannable**:`nonCodeOracle`(DES-237)對「完全沒有 `export const meta`」的腳本直接對原始碼跑
+`acorn` 全文解析,解析失敗時走跟「meta 存在但後面程式碼壞掉」同一條 `{ok:false}` → 整個
+`scanAgentCalls` 塌陷成 `calls:[]`——連 DES-174(v26,pre-v35)「掃描器要對畸形三元運算式保持
+TOTAL,絕不能整個變盲」的既有保證都被打破(`tests/unit/agent-call-scan.test.ts` UT-209 兩案)。先
+用獨立探針重現(`scanAgentCalls()` 直接對兩個 UT-209 fixture 呼叫,確認真的回傳 `calls:[]`),確認
+根因後修 `nonCodeOracle`(`src/workflow-meta.ts`):無 meta 腳本解析失敗現在回傳 `null`(失效開放
+——不過濾,退回 pre-v35 行為),meta 存在的解析失敗不受影響、仍回報 `SCRIPT_UNSCANNABLE`。這也順便
+修好 DES-237 D12 講的兩掃描器位置對齊鎖步(`parseWorkflowSkeleton` 本來就對這個 case 失效開放,
+之前是 `scanAgentCalls` 單邊失效關閉造成兩邊不同步)。新增一條回歸釘子測試
+(`workflow-meta-scan.test.ts`)。`tests/unit/scan-agent-calls.test.ts` 裡「註解掉的 `agent(` 仍然
+IS matched」那一案**不是**這次回歸的一部分——DES-237 原文明講 v35 就是刻意推翻這條 pre-v35 決定,
+是舊測試沒跟著design更新,照 implementer 契約「不迎合錯測試」原樣留著,寫進 05-tests.md 送 verifier
+裁決。
+
+**Priority 2 之一——dashboard `failedAgentCount` 揭露**:`04-design.md` rationale item 9 已經裁決
+「declined: no dashboard surface for failedAgentCount」——`run_status`/`run_list` 留著,
+`/api/runs`(dashboard REST list)不留。生產碼還沒接上這條裁決,`/api/runs` 直接把整個共用的
+`RunSummary` 吐出去。仿照既有的 `toPublicRunView`(strip principal)加一個
+`toPublicRunSummary()`(`src/run-view.ts`),只在 `/api/runs` 這個路由套用
+(`src/server.ts:389`)。`run_status`/`run_list` 用到的測試全部重跑確認不受影響。
+
+**Priority 2 之二——`capErrorEnvelope` 截斷吃掉 redaction marker**:先查證派工單講的「REQ-205 forward
+`.detail` 導致」是錯的前提——DES-230 `owner_decision: pending` 跟測試檔自己的 scope note 都講
+`.detail` forwarding 本輪刻意不做,`toErr` 三個非排序案早就綠。真正原因是 `capErrorEnvelope` 的
+utf8-safe 切點只保護多位元組字元,沒保護 `redact()` 蓋章 `‹secret:NAME›` 橫跨切點的情況——切到蓋章
+中間,蓋章被截斷成看不出來的填充字元。修法:匯出 `secret-resolver.ts` 的 `MARKER_PREFIX`(該檔
+doc comment本來就宣稱它有匯出,其實沒有),`capErrorEnvelope` 偵測到切點開了蓋章卻沒關,往前延伸
+切到蓋章的 `›` 為止,而不是往後退掉整個蓋章。用探針掃過整個橫跨區間的每個 byte offset 確認修法在
+邊界都成立(第一版修法只認完整 8 字元前綴,切到前綴中間——例如切在 `‹se` 之後——會漏掉,已改成只
+認 `‹` 這個字符再驗證完整前綴)。新增一條釘住這個 mid-prefix 邊界案的測試。
+
+**Priority 2 之三/VAL-233——REQ-206 本身其實已經work**:用探針直接對真實開機的伺服器跑
+register→bare run_start→輪詢→run_result,確認 declared default 全程正確帶到——`materializeArgDefaults`
+沒有問題。測試本身讀錯欄位名:`run_result` 真正的信封是 `{runId,status,result,meta}`,沒有
+`ok`/`value` 這兩個鍵;`tool-specs.ts` 自己的 description 跟同一輪的姊妹測試
+`val-232-run-error.test.ts`(已綠)都是讀 `result.result`/`result.error`。判定是測試作者手誤,寫進
+05-tests.md 送 verifier 裁決,原樣未動。
+
+**Priority 2 之四/VAL-235——同一句話,兩個不同紅**:「genuinely unlabeled agent(」那案已經被
+Priority 1 的修法帶綠。「DEPLOY.md role-prompt 案例」那案還是紅,但根因跟掃描器完全無關——探針證實
+`scanAgentCalls` 對這支腳本回傳 `labels:['verifier']`,沒瞎。真正原因是腳本完全沒宣告
+`export const meta`,撞上 v24(DES-144)既有規則「每個 `agent()` label 都要有
+`params.agents.<label>` 宣告」——跟 REQ-208/v35 無關。姊妹整合測試靠 `registerPublished()` 這個
+helper 自動合成 meta 才過關,這支 acceptance 測試是打真的 `workflow_register`、沒有合成。用探針驗證
+完整修法:只需要在腳本前面補一段 `export const meta = {...}` 宣告,mermaid 完全不用動(該圖沒有
+`<br/>` 三元組標註,checkMermaid 的 value-triple 檢查是 no-op)。同樣判定是測試缺 boilerplate,寫進
+05-tests.md,原樣未動。
+
+**紅綠盤點**:4 條靠生產碼修好(agent-call-scan.test.ts 2 案、dashboard-disclosure.test.ts 1 案、
+errors-to-err.test.ts 1 案,含各自新增的釘子測試);3 條是測試本身的缺陷(scan-agent-calls.test.ts
+1 案過時被 design 明文推翻、val-235 1 案缺 meta 宣告、val-233 1 案讀錯欄位名),依 implementer 契約
+「不迎合錯測試」全部原樣未動、寫進 05-tests.md 各自的 row 送 verifier 裁決。
+
+**測試數字(本人實跑)**:`tests/unit/scan-agent-calls.test.ts` 31/32、
+`tests/unit/agent-call-scan.test.ts` 12/12、`tests/unit/workflow-meta-scan.test.ts` 11/11、
+`tests/integration/scan-unscannable-markers.test.ts` 1/1、`tests/unit/dashboard-metrics.test.ts`
+6/6、`tests/integration/register-scan-spans.test.ts` 7/7、
+`tests/integration/dashboard-disclosure.test.ts` 2/2、`tests/unit/dashboard-model.test.ts` 6/6、
+`tests/unit/errors-to-err.test.ts` 8/8、`tests/acceptance/val-235-scan-oracle.test.ts` 1/2(送
+verifier 的那案紅)、`tests/acceptance/val-233-args-default.test.ts` 0/1(送 verifier,紅)、外加
+`run_list`/`run_status` 相關迴歸掃過的 6 個檔全綠(`val-234-agent-failure-health`、
+`run-health-count`、`run-store-parity`、`run-error-read-sites`、`val-232-run-error`、
+`tool-specs`)。`npx tsc --noEmit` 乾淨。全程未使用 `git checkout`/`restore`/`stash`,未
+commit(依指示交由後續步驟處理)。`state.yaml`:`gates.impl.note` 追加本輪紀錄,`python3 -c "import
+yaml; yaml.safe_load(...)"` 重新解析通過。
+
+## 2026-09-21 — v35 Gate 5 送回三條測試缺陷,獨立驗證後修復(verifier)
+
+派工:implementer 的 GREEN 收尾把 3185/7 修到 3191/3 通過,診斷剩下 3 條紅是「測試本身的缺陷」、依契約
+原樣未動、寫進 05-tests.md 送 verifier 裁決。逐條**獨立對照程式碼重驗**,不只採信 implementer 的自述。
+
+**(a) UT-145「一個被註解掉的 `agent(` 仍然 IS matched」**:實跑 `tests/unit/scan-agent-calls.test.ts`
+確認確實紅在這一案(`calls` 收到 `[]`,不是 `[{line:1,label:'ghost'}]`)。用 `git show
+d4abb60:04-design.md`(GREEN 階段修訂前的 wip commit)查證 DES-236 的 `onComment` span 收集跟 DES-237
+的 `inNonCode`/`continue` 過濾**在核准的 GREEN 前設計裡就已經在**——不是 implementer 事後找補的自我
+引用。REQ-208 的 Gherkin 字面上只針對字串常值那個情境,但它要求的 `nonCodeOracle` 機制本來就把註解
+跟字串/樣板常值同等看待(DES-236 自己列的 span 清單:「string Literal, regex Literal, TemplateElement
+quasis, comments」),所以這條推翻是設計層級真的推翻,不是巧合。**改法不是機械式反轉**:換了標題、
+斷言 `calls`/`labels`/`violations` 三者皆空(新契約是完全不噴違規,不是「噴違規但報對行號」)、換掉
+過時的 v26 樣板註解,改引 DES-236/237 + REQ-208。
+
+**(b) VAL-235 case 1(DEPLOY.md role-prompt 情境,腳本完全沒有 `export const meta`)**:直接探針呼叫
+`scanAgentCalls` 對這支未修改腳本,確認回傳 `labels:['verifier']`、`violations:[]`——掃描器本身沒瞎,
+implementer 的第一個主張成立。再用真正開機的伺服器探針,把同一段 `withAgent` 風格 meta 宣告
+(`val-003-agent.test.ts:69-73` 的樣式)補在腳本最前面、mermaid 完全不動,確認乾淨完成
+`{status:'completed', result:{version:1,...}}`——implementer 的第二個主張(mermaid 不用改)也成立。
+照此修好 fixture。
+
+**(c) VAL-233(REQ-206 args default 全程 round-trip)**:讀 `src/types.ts:66-77` 的 `ResultEnvelope`
+定義跟 `src/mcp-facade.ts:662-671` 的 `runResult` 實作,確認真正的信封是
+`{runId,status,result?,error?,meta?}`,完全沒有 `ok`/`value` 這兩個鍵。再用獨立探針對真實開機伺服器跑
+register→bare `run_start`→輪詢→`run_result`,確認回傳 `{status:'completed',
+result:{url:'https://x'}}`——REQ-206 的宣告預設值全程確實生效。照 implementer 建議的修法把斷言換成
+`result.status`/`result.result`。
+
+**三案全部維持 implementer 的裁決(測試錯、不是產品錯)**——沒有發現任何一案其實是產品缺陷、需要保持
+紅燈。三個檔案個別重跑全綠,相關聯檔案(`workflow-meta-scan.test.ts`、`agent-call-scan.test.ts`、
+`register-scan-spans.test.ts`、`dashboard-metrics.test.ts`、`scan-unscannable-markers.test.ts`)重跑
+確認無迴歸。`npx tsc --noEmit` 乾淨。全程未使用 `git checkout`/`restore`/`stash`,未觸碰 `src/`,未
+commit。`05-tests.md`:UT-145 保留 `iter: v24` 原樣、附加 `[v35 verifier ruling]` 註記(照 UT-209 的
+既有先例,不覆寫原始 iter);VAL-233/VAL-235 兩條 `iter: v35` 的 row 直接改 `status: green`/
+`result: pass` 並附加驗證註記。`state.yaml`:`gates.tests.note` 前插本輪紀錄、舊 v35 GATE 5 內容移到
+`| PRIOR:`,`python3 -c "import yaml; yaml.safe_load(...)"` 重新解析通過。
+
+**待orchestrator裁決,本輪不擅自處理**:DES-237 的 D11 補述結尾自己寫著「flagged for the verifier,
+not resolved here」——問 UT-209 的 fixture 是否該反過來被推翻、改成永遠 fail-closed 的讀法,這是設計
+層級的取捨,超出這次三條測試的派工範圍,列在此處交回。
+
+**全套結果(本人實跑,`npx vitest run`,全 repo)**：430 files passed | 1 skipped (431);
+**3194 tests passed | 26 skipped (3220), 0 failed**——比 GREEN 收尾時的 3191 passed / 3 failed 恰好多
+3 通過、0 紅,吻合派工的目標(0 failures)。耗時 652s。

@@ -58,7 +58,7 @@ import type { RunStore } from './run-store.js';
 // v24 (DES-140/162, ARCH-089, TASK-147): the new tool surface — one deps object, schema-before-
 // authz dispatcher, `tools/list` as a pure projection, and the ungated-route identity strip.
 import { callTool, type ToolDeps } from './call-tool.js';
-import { toPublicRunView } from './run-view.js';
+import { toPublicRunView, toPublicRunSummary } from './run-view.js';
 import { projectToolsList, ENVELOPE_NOTE } from './tool-specs.js';
 import { resolveRole, type Principal } from './authz.js';
 import { createOwnerLookup } from './owner-lookup.js';
@@ -386,7 +386,9 @@ async function handleDashboardRequest(
       // v27 (DES-194, ARCH-127, TASK-199): the usage-projected accessor — same precedence chain
       // (live -> snapshot -> one-time backfilled fold -> absent) `/api/runs/:id`'s detail route folds.
       const runs = await runManager.listSummaries();
-      sendJson(res, 200, buildDashboardModel(runs).runs);
+      // DES-240 rationale item 9: failedAgentCount is declined on this list surface (run_list, the
+      // MCP tool, keeps it) — stripped here, not off RunSummary itself.
+      sendJson(res, 200, buildDashboardModel(runs.map(toPublicRunSummary)).runs);
       return;
     }
     // v8 Slice 3 (REQ-049): registered-workflow cards for the dashboard home.

@@ -29,7 +29,17 @@ afterAll(async () => { await server?.close(); });
 
 describe('VAL-235 — a role-prompt string containing "agent (" registers clean over real MCP HTTP (REQ-208)', () => {
   it('the DEPLOY.md role-prompt recipe shape registers clean (real workflow_register)', async () => {
-    const script = "phase('main');\nawait agent('verifier', { prompt: \"...sdlc-verifier agent (mode A)...\" });";
+    // The `meta` block declares the `verifier` agent (DES-144, AGENT_UNDECLARED) so the ONLY way
+    // this case can fail is the SCAN_VIOLATION this test targets — a bare script with no meta at
+    // all legitimately hits AGENT_UNDECLARED first (scanAgentCalls runs before parseParamContract,
+    // workflow-catalog.ts:464), which is a different, pre-existing (v24) rule, not this scanner.
+    const script =
+      "export const meta = { params: { agents: { verifier: {\n" +
+      "  model: { type: 'string', default: 'default' },\n" +
+      "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },\n" +
+      "  timeoutMs: { type: 'number', default: 120000 },\n" +
+      "} } } };\n" +
+      "phase('main');\nawait agent('verifier', { prompt: \"...sdlc-verifier agent (mode A)...\" });";
     const { ok, body } = await register('val235-role-prompt', script, 'graph LR\nsubgraph "main"\nverifier(["verifier"])\nend');
     expect(ok, `expected a version, got ${JSON.stringify(body)}`).toBe(true);
   });

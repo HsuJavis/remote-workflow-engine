@@ -158,14 +158,16 @@ describe('scanAgentCalls (UT-145, DES-143)', () => {
     expect(calls).toEqual([]);
   });
 
-  it('a commented-out agent( IS matched (accepted: the refusal names the line, cheaper than a comment stripper)', () => {
+  it('a commented-out agent( is NOT matched — v35 DES-236/237 supersedes the v24 accepted false-positive', () => {
+    // v35 (DES-236/237, REQ-208): `nonCodeOracle` spans comments (via acorn's `onComment`) exactly
+    // like string/template literals, so a commented-out `agent(` is excluded from the scan the same
+    // way a role-prompt string containing "agent (" is (VAL-235). No violation, no call, no label —
+    // this supersedes the pre-v35 "IS matched, refusal names the line" decision.
     const src = '// agent("ghost", {});';
-    const { calls } = scanAgentCalls(src);
-    // v26 (DES-174, TASK-184): `AgentCallScan.calls[]` deliberately gained `index`/`allowedTools`/
-    // `group` — the skeleton<->scan join key and the data `deriveExpectedGraph` needs. The property
-    // this case pins is unchanged (exactly ONE call entry, at this line, with this label), so the
-    // oracle names the two fields it is about instead of the whole widened row.
-    expect(calls).toEqual([expect.objectContaining({ line: 1, label: 'ghost' })]);
+    const { calls, labels, violations } = scanAgentCalls(src);
+    expect(calls).toEqual([]);
+    expect(labels).toEqual([]);
+    expect(violations).toEqual([]);
   });
 
   it('duplicate labels are legal — labels de-duplicated, calls are not', () => {

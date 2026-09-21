@@ -8527,6 +8527,34 @@ File: `tests/unit/scan-agent-calls.test.ts` (10 cases: each violation code, nest
 exclusion, `x.agent(`/`agentFoo(` non-matches, duplicate-label dedup). `src/scan-agent-calls.ts`
 does not exist. Red (measured): whole-file red.
 
+**[v35 GREEN-phase finding — send-back, not a defect in the fix]:** this row's "a commented-out
+`agent( ` IS matched (accepted: the refusal names the line...)" case (line ~161) now fails —
+`calls` is `[]`, not `[{line:1, label:'ghost'}]`. This is NOT part of the v35 regression fixed
+under UT-289/UT-209 above: `04-design.md` DES-237 (the source comment at `src/workflow-meta.ts:
+442-444` quotes it verbatim) states in as many words that v35 **deliberately supersedes** this
+exact pre-v35 decision — "a commented-out `agent(` is now EXCLUDED via the `nonCodeOracle` span
+check ... superseding the pre-v35 'IS matched, accepted, the refusal names the line' decision,
+since REQ-208 requires comment text to never be misread as a real call." The code now does what
+the APPROVED v35 design says; this ONE pre-v35 assertion was never updated to match. Per the
+implementer contract's "do not appease a wrong test" rule, left UNCHANGED and reported here for
+the verifier/Gate-5 owner to update the assertion (expect `calls` empty for this fixture) rather
+than fixed by an implementer. Re-measured: `npx vitest run tests/unit/scan-agent-calls.test.ts` →
+31/32 pass (this one case red, by design decision, not defect).
+
+**[v35 verifier ruling — Gate 5, confirmed independently]:** the implementer's diagnosis is
+correct, verified against the code, not just its own citation. `git show d4abb60:04-design.md`
+(the wip commit BEFORE the GREEN-phase amendment) already carried DES-236's `onComment` span
+collection and DES-237's `if (inNonCode(m.index)) continue;` — the comment-exclusion mechanism was
+part of the approved pre-GREEN design, not invented after the fact to appease this test. REQ-208's
+Gherkin (`01-requirements.md`) targets the string-literal shape specifically, but the mechanism it
+mandates (`nonCodeOracle`) treats comments and string/template literals uniformly by construction
+(DES-236's own span list: "string Literal, regex Literal, TemplateElement quasis, comments") — so
+the design supersession is real, not a same-day reinterpretation. The case was rewritten (not
+merely flipped): new title, asserts `calls`/`labels`/`violations` all `[]` (the new contract is NO
+refusal at all, not "refusal names the line"), stale v26 boilerplate comment replaced with two
+lines citing DES-236/237 + REQ-208. Re-measured: `npx vitest run tests/unit/scan-agent-calls.test.ts`
+→ 32/32 pass.
+
 ### UT-146 — parseParamContract(meta, scriptLabels, aliasNames) v24: agents required
 - **status:** green
 - **traces:** DES-144
@@ -11045,6 +11073,15 @@ malformed/truncated author text — which the `/dag` read path and the registrat
 degrades to "no alt group" instead of throwing or fabricating a span that swallows the rest of the
 file. 4 cases, including that an unterminated arm does not swallow a LATER call into its group.
 
+**[v35 regression + fix, found in this iteration's GREEN phase]:** DES-237's `nonCodeOracle`
+(landed test-first, RED, alongside `nonCodeSpans`/DES-236) briefly REGRESSED this row's first two
+cases when implemented literally — an unconditional whole-script `acorn` parse on a no-meta script
+made these deliberately-malformed ternary fixtures (which are not valid JS) fail closed to
+`SCRIPT_UNSCANNABLE`/`calls:[]`, exactly the "TOTAL by design" collapse this row exists to prevent.
+Fixed in `nonCodeOracle` (`src/workflow-meta.ts`) — see UT-289's own v35 amendment above for the
+root cause and the fix (fail OPEN on a no-meta parse failure). Re-measured: `npx vitest run
+tests/unit/agent-call-scan.test.ts` → 12/12 pass.
+
 ### UT-210 — resolveAlias carries proxyModel only when the row has one
 - **status:** green
 - **traces:** DES-172, DES-177
@@ -11823,6 +11860,21 @@ re-covered by `IT-175`/`IT-282` (a legacy pre-v34 row read through the real dash
 disclosure line absent, no crash) rather than by a live `agentType` dispatch. See `VAL-211`'s own
 amendment below for the real-tier evidence consequence, and the v34 retirement register further
 down this file for the routing decision (Gate 1 or Gate 7.5, not this gate).
+
+**[v35 GREEN-phase fix, DES-234/DES-240 rationale item 9]:** REQ-207 added `RunSummary.
+failedAgentCount` (DES-234) and this row's `ALLOWED_RUN_SUMMARY_KEYS` golden set (`tests/fixtures/
+dashboard-wire.ts:90`) was correctly NOT widened for it — the panel's own ruling (04-design.md
+rationale item 9) declines a dashboard surface for this field: `run_status`/`run_list` (the MCP
+tools) keep it, `/api/runs` (the ungated dashboard REST list) does not. The GREEN-phase RED this
+row showed was the production side not yet honoring that ruling — `GET /api/runs[i] (ok, priced)`
+served `failedAgentCount` verbatim off the shared `RunSummary` object. Fixed by adding
+`toPublicRunSummary()` (`src/run-view.ts`, alongside the existing `toPublicRunView`) and applying it
+at the `/api/runs` route (`src/server.ts:389`) — `run_list`/`run_status` are unaffected (verified:
+`tests/acceptance/val-234-agent-failure-health.test.ts` and `tests/integration/run-health-count.
+test.ts` still see the field on those surfaces). This does NOT fix the golden-key-set check to
+match a wrong disclosure — it fixes the disclosure to match the already-correct check, per this
+gate's own rule against loosening ADR-054's guard. Re-measured: `npx vitest run tests/integration/
+dashboard-disclosure.test.ts tests/unit/dashboard-model.test.ts` → 8/8 pass.
 
 ### UT-233 — `sqlite-run-store-usage-projection.test.ts`: the at-rest usage projection + `backfillUsage`
 - **status:** green
@@ -14042,11 +14094,11 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
 (agent dispatch); acceptance/VAL never mocks the SUT boundary.
 
 ### UT-284 — `toErr`/`capErrorEnvelope` (DES-230)
-- **status:** red
+- **status:** green
 - **traces:** DES-230, REQ-205
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/unit/errors-to-err.test.ts` — 7/7 fail: `toErr`/`capErrorEnvelope`/
   `MAX_ERROR_ENVELOPE_BYTES` are not exported by `src/errors.ts` today (`toErr` is a private,
   unexported function inside `run-manager.ts`). Includes the ordering pin (`capErrorEnvelope(redact(
@@ -14056,6 +14108,24 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
   design traced that nothing upstream (`sandbox/guards.ts:322-335`, `host.ts:147/166`,
   `child-entry.ts:36`) ever forwards `.detail` this far, and a test for it would be the dead-code
   false-green this iteration exists to remove.
+
+  **[v35 GREEN-phase fix]:** `toErr`/`capErrorEnvelope`/`MAX_ERROR_ENVELOPE_BYTES` exported from
+  `src/errors.ts` per the design signature — 6/7 cases green immediately. The ordering case stayed
+  red: `capErrorEnvelope`'s byte-safe cut (correct for a bare UTF-8 continuation byte) did not also
+  protect a `redact()` marker (`‹secret:NAME›`) whose bytes straddled the cut — the naive cut landed
+  inside the marker and silently mangled it into unrecognizable padding, losing the marker the
+  caller depends on (this dispatch's premise that ".detail forwarding" was the cause was checked
+  and is WRONG — DES-230's `.detail` forwarding is still deliberately out of scope per the scope
+  note above; the bug was purely in the cut, not in what `toErr` forwards). Fixed in
+  `capErrorEnvelope` (`src/errors.ts`): if the UTF-8-safe cut opens a marker (detected by the `‹`
+  glyph alone, exported as `secret-resolver.ts`'s `MARKER_PREFIX`, then checked against the full
+  8-char prefix — NOT by `lastIndexOf(MARKER_PREFIX)` alone, which misses a cut landing mid-prefix,
+  e.g. after `‹se`) it does not also close, the cut extends forward to the marker's closing `›`
+  instead of backing off and dropping it — bounded, since a marker's NAME is a config-time secret
+  name, not attacker-controlled script text. Added a second guard case pinning the mid-prefix
+  straddle specifically (found via a targeted probe sweep across the straddle window, not
+  incidentally). Re-measured: `npx vitest run tests/unit/errors-to-err.test.ts` → 8/8 pass (7
+  original + 1 new guard case).
 - **iter:** v35
 
 ### UT-285 — `RunStore.recordError`/`getError` (DES-231)
@@ -14115,11 +14185,11 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
 - **iter:** v35
 
 ### UT-289 — `scanAgentCalls` oracle filtering (DES-237)
-- **status:** red
+- **status:** green
 - **traces:** DES-237, REQ-208
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/unit/workflow-meta-scan.test.ts` — 4/10 fail (6 pass legitimately: cases 1/2/3/6
   of the six REQ-208 cases don't trip today's regex bug at all — measured, not assumed; e.g. a
   regex literal's `\(` never matches `AGENT_CALL_RE`'s `\s*\(` requirement). Red: case 4 (comment
@@ -14128,6 +14198,39 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
   `agent(` after a literal-heavy prelude still reports (today, by chance) `AGENT_LABEL_REQUIRED` at
   line 1 instead of its real line 3 — the register-scan-spans.test.ts IT below pins line 3 as the
   post-fix expectation, so this is not a masked defect, just this file's narrower scope.
+
+  **[v35 GREEN-phase fix + REGRESSION found post-Gate-5]:** implementing `nonCodeOracle` as an
+  unconditional whole-script `acorn` parse (per this row's original RED narrative) turned it green
+  but broke DES-174/ARCH-113's pre-existing "`scanAgentCalls` is TOTAL by design" guarantee (UT-209,
+  `tests/unit/agent-call-scan.test.ts`) for a NO-META script whose classic-script parse `acorn`
+  cannot complete (a malformed/truncated ternary — a live-edit-in-progress shape, not a
+  string/comment false-positive `nonCodeOracle` exists to guard) — `scanAgentCalls` collapsed to
+  `calls:[]`/`violations:[{SCRIPT_UNSCANNABLE}]` even though the real `agent()` calls were present
+  and unambiguous. Root cause: D11's ordering rule treats "no meta at all" and "meta present, code
+  after it unparseable" as the SAME failure outcome, but only the latter has a genuine reason to
+  fail closed (an addressable non-code region, the meta literal, that the design already special-
+  cases) — the three fixtures that actually exercise the intended `SCRIPT_UNSCANNABLE` case
+  (`tests/unit/workflow-meta-scan.test.ts`'s own case above, `tests/unit/dashboard-metrics.test.ts`,
+  `tests/integration/scan-unscannable-markers.test.ts`) ALL carry `export const meta = {}`; none of
+  UT-209's malformed-ternary fixtures declare any meta at all. Fixed in `nonCodeOracle`
+  (`src/workflow-meta.ts`): a no-meta script whose raw-script `acorn` parse fails now returns `null`
+  (fail OPEN — scan unfiltered, exactly as before v35) instead of `{ok:false}` (fail closed);
+  meta-present parse failures are unaffected and still report `SCRIPT_UNSCANNABLE`. This is
+  test-forced by the fixture shapes above, not an independent design principle — see the DES-237
+  D11 amendment note this row's fix also required, below. In practice fail-closed still governs
+  every REGISTRABLE `agent()`-bearing script (AGENT_UNDECLARED forces a meta declaration for any
+  script with a real call); fail-open only reaches zero-agent no-meta scripts (where "no calls" is
+  the correct answer anyway) and grandfathered read-path rows. **This also restores D12 lockstep**:
+  `parseWorkflowSkeleton` (`src/workflow-meta.ts:590`) already failed open (`inNonCode` stays
+  `false`) on `oracle?.ok` being falsy — before this fix, a no-meta parse failure desynced the two
+  positionally-joined scans exactly as D12 warns against; `nonCodeOracle` is shared by both callers,
+  so the fix restores the SAME exclusion on both sides at once. Added ONE regression-guard case (a
+  malformed ternary, no meta, two real `agent()` calls) directly in this file — the guard the
+  Priority-1 fix needed, since none of the existing REQ-208 cases exercised a no-meta PARSE FAILURE
+  path (only meta-present or cleanly-parseable no-meta scripts). Re-measured: `npx vitest run
+  tests/unit/workflow-meta-scan.test.ts tests/unit/agent-call-scan.test.ts tests/unit/
+  dashboard-metrics.test.ts tests/integration/scan-unscannable-markers.test.ts` → 4 files, 30/30
+  pass (11 in this file, up from 10 — the new guard case).
 - **iter:** v35
 
 ### UT-290 — `checkMermaid`'s 5th parameter becomes required (DES-238)
@@ -14336,14 +14439,40 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
 - **iter:** v35
 
 ### VAL-233 — REQ-206: a declared args default reaches a bare run_start over real MCP HTTP
-- **status:** red
+- **status:** green
 - **traces:** REQ-206
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/acceptance/val-233-args-default.test.ts` (real `createServer()`, real MCP
   HTTP) — 1/1 fail: `workflow_register` itself refuses `PARAM_CONTRACT_INVALID: args spec cannot
   declare a default (never applied)` — the P6-3 ban blocks the whole scenario at the first step.
+
+  **[v35 GREEN-phase finding — send-back, REQ-206 itself verified working]:** production is fixed
+  (DES-233/DES-235: registration accepts the declared default, `materializeArgDefaults` fills it,
+  `run_start`/`run_result` round-trip it) — the test still reads `expected undefined to be true` at
+  `result.ok`. Traced end to end with a standalone probe against the real booted server (register →
+  bare `run_start` → poll → `run_result`): the tool's actual response is
+  `{runId, status:'completed', result:{url:'https://x'}, meta:{...}}` — there is no `ok`/`value`
+  field anywhere in this envelope. `src/tool-specs.ts`'s own `run_result` description states the
+  real shape ("On a failed run, `result.error` is `{code, message}`"), and every OTHER acceptance
+  test that reads `run_result` (`val-001-compat.test.ts`, `val-232-run-error.test.ts` — a v35
+  SIBLING test, already green) reads `r.result`/`r.error`, never `r.ok`/`r.value`. This test's
+  assertions (`result.ok`, `result.value`) do not match the tool's real, designed, long-established
+  envelope shape — reported as a test-authoring defect, not fixed by production code per the
+  implementer contract's "do not appease a wrong test" rule. Suggested fix for the verifier:
+  `expect(result.status).toBe('completed'); expect(result.result).toEqual({ url: 'https://x' });`
+  (or equivalently assert `result.error` is absent). Left UNCHANGED. Re-measured: `npx vitest run
+  tests/acceptance/val-233-args-default.test.ts` → 1/1 still fails, for this reason, not REQ-206's.
+
+  **[v35 verifier ruling — Gate 5, confirmed independently]:** confirmed the real envelope shape by
+  reading `ResultEnvelope` (`src/types.ts:66-77`: `{runId, status, result?, error?, principal?,
+  meta?}` — no `ok`/`value` anywhere) and `McpFacade.runResult` (`src/mcp-facade.ts:662-671`, returns
+  `result: o.value` / `error: o.error`, never a bare `ok`/`value` pair). Confirmed REQ-206 genuinely
+  works end to end with an independent probe against a freshly booted real server (register → bare
+  `run_start` → poll → `run_result`): response was `{runId, status:'completed',
+  result:{url:'https://x'}, meta:{...}}`. Applied the implementer's suggested fix exactly. Re-
+  measured: `npx vitest run tests/acceptance/val-233-args-default.test.ts` → 1/1 pass.
 - **iter:** v35
 
 ### VAL-234 — REQ-207: every agent() fails — run-level health visible without reading agents[]
@@ -14362,15 +14491,48 @@ real booted `createServer()`), a fake `GatewayClient` only for the one third-par
 - **iter:** v35
 
 ### VAL-235 — REQ-208: a role-prompt string containing "agent (" registers clean
-- **status:** red
+- **status:** green
 - **traces:** REQ-208
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **evidence:** `tests/acceptance/val-235-scan-oracle.test.ts` (real `createServer()`, real MCP
   HTTP) — 2/2 fail: the DEPLOY.md role-prompt recipe shape is refused `SCAN_VIOLATION:
   AGENT_LABEL_REQUIRED (line 2)` over real MCP HTTP today; a genuine unlabeled `agent(` is refused
   (correct verdict) but at the wrong line (1, via the false in-string match, not its real line 3).
+
+  **[v35 GREEN-phase finding — send-back, NOT the scanner regression]:** case 2 (genuinely unlabeled
+  `agent(`) is now green — the scan-oracle fix (UT-289) fixed it. Case 1 ("the DEPLOY.md role-prompt
+  recipe shape registers clean") is still red, but for an UNRELATED reason: probed directly
+  (`scanAgentCalls` on this exact script returns `labels:['verifier']`, `calls` non-empty, no
+  violations — the scanner is NOT blind here, contradicting this dispatch's premise that it is "the
+  same root cause" as the UT-209 regression). The script has NO `export const meta` block at all,
+  so registration legitimately hits the pre-existing, v24 (DES-144) `AGENT_UNDECLARED` rule ("EVERY
+  script `agent()` label needs a matching `params.agents.<label>` declaration ... no more no-params
+  fallback", `src/params/contract.ts:358-361`) — unrelated to REQ-208/v35. The sibling IT
+  (`tests/integration/register-scan-spans.test.ts` case 5, same script text, already green) passes
+  ONLY because its `registerPublished()` helper auto-synthesizes a `meta.params.agents` block
+  (`tests/helpers/workflow-fixtures.ts`'s `synthesizeMeta`) before calling `catalog.register` — this
+  file calls raw `workflow_register` over MCP with the script exactly as written, no synthesis. The
+  test's own comment block (lines 1-7) describes REQ-208's scan-oracle scenario only; it never
+  accounts for the pre-existing per-agent contract. Verified the complete fix by probe (real booted
+  server): prepending `export const meta = { params: { agents: { verifier: { model:..., effort:...,
+  timeoutMs:... } } } };` to the EXACT unmodified script, registered through raw `workflow_register`
+  with the test's EXACT unmodified mermaid (`'graph LR\nsubgraph "main"\nverifier(["verifier"])\n
+  end'` — no `<br/>` annotation, so `checkMermaid`'s optional value-triple check at (7) is a no-op)
+  — returns `{status:'completed', result:{version:'v1', ...}}` cleanly; the mermaid needs no change.
+  Reported as a test-authoring gap (missing meta boilerplate a real registration always needs), not
+  fixed by production code. Left UNCHANGED. Re-measured: `npx vitest run tests/acceptance/
+  val-235-scan-oracle.test.ts` → 1/2 pass (case 2 fixed by UT-289; case 1 red for the reason above).
+
+  **[v35 verifier ruling — Gate 5, confirmed independently]:** re-probed `scanAgentCalls` on the
+  exact case-1 script — confirmed `labels:['verifier']`, one call entry, `violations:[]` (the
+  scanner is not blind); re-probed a full registration through a real booted server with the meta
+  block prepended and the mermaid UNCHANGED — confirmed a clean `{status:'completed',
+  result:{version:1,...}}`. Both implementer claims hold. Fixed the fixture by prepending the same
+  `withAgent`-shaped meta block used elsewhere in this suite (`val-003-agent.test.ts:69-73`); the
+  mermaid was left untouched as verified. Re-measured: `npx vitest run tests/acceptance/
+  val-235-scan-oracle.test.ts` → 2/2 pass.
 - **iter:** v35
 
 ### VAL-236 — REQ-209: the doc examples a reader would copy really register + run

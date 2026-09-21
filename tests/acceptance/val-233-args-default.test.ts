@@ -37,13 +37,15 @@ describe('VAL-233 — a declared args default reaches a bare run_start over real
     await registerPublishedVia(c, 'val233-default', script);
     const started = (await c('run_start', { name: 'val233-default' })) as { runId: string };
     let status = 'queued';
-    let result: { ok: boolean; value?: unknown } | undefined;
+    let result: { status: string; result?: unknown } | undefined;
     for (let i = 0; i < 100 && status !== 'completed'; i++) {
       await new Promise((r) => setTimeout(r, 40));
       status = ((await c('run_status', { runId: started.runId })) as { status: string }).status;
     }
-    result = (await c('run_result', { runId: started.runId })) as { ok: boolean; value?: unknown };
-    expect(result.ok).toBe(true);
-    expect(result.value).toEqual({ url: 'https://x' });
+    // The real envelope (ResultEnvelope, src/types.ts) is {runId, status, result, meta} — not
+    // {ok, value}. `run_result` on a completed run carries the declared args default at `.result`.
+    result = (await c('run_result', { runId: started.runId })) as { status: string; result?: unknown };
+    expect(result.status).toBe('completed');
+    expect(result.result).toEqual({ url: 'https://x' });
   });
 });

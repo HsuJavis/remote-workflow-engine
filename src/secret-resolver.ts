@@ -92,7 +92,7 @@ export interface SecretValueProvider {
  *  whether a value still carries an unresolved marker (e.g. run-manager.ts's resume-time
  *  `PARAM_SECRET_UNAVAILABLE` guard) shares this grammar with `redact()` instead of re-typing the
  *  glyph — a future marker-format change here must not silently disable that guard. */
-const MARKER_PREFIX = '‹secret:';
+export const MARKER_PREFIX = '‹secret:';
 
 /** PURE — capture-time redaction (DES-088): replaces every occurrence of each secret value
  *  (value-exact, substring match) with the name-keyed marker `‹secret:NAME›`. Empty-value secrets

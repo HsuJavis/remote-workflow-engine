@@ -88,3 +88,20 @@ describe('scanAgentCalls — ordering (D11): no meta span means the oracle is ne
     expect(calls.some((c) => c.label === 'real')).toBe(true);
   });
 });
+
+// v35 GREEN-phase regression guard: a NO-meta script whose classic-script parse the oracle itself
+// cannot complete (a malformed/truncated ternary — DES-174/UT-209's pre-v35 "TOTAL by design"
+// guarantee) must fail OPEN — scan unfiltered, exactly as before v35 — never collapse to an empty
+// `calls`/`labels` scan. A regression here previously made `scanAgentCalls` return `calls: []` for
+// scripts with real `agent()` calls, which silently disabled every registration guard downstream
+// (AGENT_UNDECLARED, AGENT_BEFORE_PHASE, the diagram contract) because none of them had anything
+// left to check against. This must stay red if that ever recurs.
+describe('scanAgentCalls — a no-meta oracle parse failure fails OPEN, not blind (v35 GREEN-phase regression guard)', () => {
+  it('a malformed ternary with no meta still finds every real agent() call, and never reports SCRIPT_UNSCANNABLE', () => {
+    const src = `const v = (x ? agent('a', { prompt: 'p' }));\nawait agent('b', { prompt: 'q' });`;
+    const result = scanAgentCalls(src) as ReturnType<typeof scanAgentCalls> & { unscannable?: true };
+    expect(result.calls.map((c) => c.label)).toEqual(['a', 'b']);
+    expect(result.violations).toEqual([]);
+    expect(result.unscannable).toBeUndefined();
+  });
+});

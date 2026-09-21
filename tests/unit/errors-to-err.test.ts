@@ -66,4 +66,18 @@ describe('capErrorEnvelope (DES-230) — bounds the SERIALIZED envelope, applied
     const half = secretValue.slice(0, secretValue.length / 2);
     expect(composed.message).not.toContain(half);
   });
+
+  // v35 GREEN-phase regression guard: the cut can land INSIDE the marker's own `‹secret:` prefix
+  // (not just at its exact boundary) — a fix that only recognizes the FULL prefix already present
+  // in the truncated head misses this and silently drops the marker instead of completing it.
+  it('the cut landing mid-prefix (not just at the marker boundary) still completes the marker', () => {
+    const secretName = 'UT230_TOKEN';
+    const secretValue = 'ut230-secret-abcdefghijklmnop';
+    // 5 bytes short of the marker's own straddle point — the naive cut lands inside `‹secret:`
+    // itself (after `‹se`), not merely adjacent to it.
+    const pad = 'p'.repeat(MAX_ERROR_ENVELOPE_BYTES - 5);
+    const err = new Error(pad + secretValue);
+    const composed = capErrorEnvelope(redact(toErr(err), [{ name: secretName, value: secretValue }]) as { code: string; message: string });
+    expect(composed.message).toContain(`‹secret:${secretName}›`);
+  });
 });

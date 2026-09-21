@@ -457,13 +457,26 @@ function altSpans(script: string): AltSpan[] {
  *  `export const meta =` text but could not extract a clean span (not an object literal / unbalanced
  *  braces) — skips the oracle (`null`): the raw `export` text is still present and unsafe to hand to
  *  a classic-script parse, and that malformed meta already has its own specific refusal elsewhere,
- *  which a vaguer SCRIPT_UNSCANNABLE here would only obscure. */
+ *  which a vaguer SCRIPT_UNSCANNABLE here would only obscure.
+ *  v35 GREEN-phase fix (regression found post-Gate-5): a NO-META script that fails the oracle's
+ *  classic-script parse is NOT the same case as a `export const meta = {…}` script whose CODE after
+ *  a clean meta span fails to parse. The latter has a real, addressable non-code region (the meta
+ *  literal) and legitimately fails closed to `SCRIPT_UNSCANNABLE` (`workflow-meta-scan.test.ts`'s
+ *  "unparseable script" case, `dashboard-metrics.test.ts`, `scan-unscannable-markers.test.ts` — all
+ *  three fixtures carry `export const meta = {}`). The former has NO meta at all, and DES-174/
+ *  ARCH-113's pre-v35 "`scanAgentCalls` is TOTAL by design" guarantee (UT-209: a truncated/malformed
+ *  ternary, the state live-edited or dashboard-read scripts are commonly caught in, must still find
+ *  every real `agent()` call, never blank the whole scan) still governs it — a classic-script parse
+ *  failure on a plain malformed script is not evidence of a hidden string/comment `agent(`
+ *  false-positive, so failing OPEN (skip the oracle, scan unfiltered as before v35) preserves that
+ *  guarantee instead of silently disabling every registration guard that reads `scanAgentCalls`'s
+ *  output (AGENT_UNDECLARED, AGENT_BEFORE_PHASE, the diagram contract, label checks). */
 function nonCodeOracle(script: string): ReturnType<typeof nonCodeSpans> | null {
   const meta = checkMeta(script);
-  const probe = meta.span
-    ? script.replace(meta.span, meta.span.replace(/[^\n]/g, ' '))
-    : meta.found ? null : script;
-  return probe === null ? null : nonCodeSpans(probe);
+  if (meta.span) return nonCodeSpans(script.replace(meta.span, meta.span.replace(/[^\n]/g, ' ')));
+  if (meta.found) return null;
+  const result = nonCodeSpans(script);
+  return result.ok ? result : null;
 }
 
 export function scanAgentCalls(script: string): AgentCallScan {

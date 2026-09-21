@@ -1,4 +1,5 @@
 // Domain error types. Implemented fully — pure value classes, no business logic.
+import { MARKER_PREFIX } from './secret-resolver.js';
 //
 // v24 (DES-137, ARCH-087, TASK-131): ERROR_CATALOG is the closed `ErrorCode` union — every coded
 // refusal this engine can throw is a key here, with the `see` pointer (workflow_authoring_guide|null)
@@ -272,7 +273,16 @@ export const MAX_ERROR_ENVELOPE_BYTES = 4096;
  *  substring cut applied to the RAW message first can split a secret so `redact()`'s value-exact
  *  match finds neither half (R-G9, `agent-executor.ts:662-671`, INV-V26-5). Identity when under
  *  bound; `code` is never truncated. The cut is utf8-safe — it never splits a multi-byte
- *  character. */
+ *  character, AND it never splits a `redact()` marker (`‹secret:NAME›`) that already survived the
+ *  redaction pass — a naive byte cut landing inside one leaves a mangled, unrecognizable fragment
+ *  where the caller depends on an INTACT marker surviving (`hasSecretMarker`, and any reader
+ *  looking for `‹secret:NAME›` verbatim) (v35 GREEN-phase fix: found via the ordering test,
+ *  `errors-to-err.test.ts`). If the UTF-8-safe head opens a marker it does not also close, the cut
+ *  extends forward just far enough to include the marker's closing `›` — bounded (a marker's NAME
+ *  is a config-time secret name, not attacker-controlled script text), unlike backing off and
+ *  dropping the marker, which would satisfy the byte bound while breaking the one thing this
+ *  function's caller reads the message FOR. The pathological case (no closing `›` anywhere, which
+ *  `redact()` never produces) still backs off, rather than shipping a mangled fragment. */
 export function capErrorEnvelope(e: { code: string; message: string }): { code: string; message: string } {
   const buf = Buffer.from(e.message, 'utf8');
   if (buf.length <= MAX_ERROR_ENVELOPE_BYTES) return e;
@@ -280,7 +290,17 @@ export function capErrorEnvelope(e: { code: string; message: string }): { code: 
   // back off while `cut` sits inside a multi-byte sequence — a UTF-8 continuation byte's top two
   // bits are `10`.
   while (cut > 0 && (buf[cut]! & 0xc0) === 0x80) cut--;
-  const head = buf.subarray(0, cut).toString('utf8');
+  let head = buf.subarray(0, cut).toString('utf8');
+  // Anchor on the marker's opening glyph alone (`‹`), not the 8-char `MARKER_PREFIX` — the cut can
+  // land inside the PREFIX itself (e.g. after `‹se`), and `lastIndexOf(MARKER_PREFIX)` would then
+  // find nothing and silently drop the marker instead of completing it.
+  const glyphStart = head.lastIndexOf('‹');
+  const markerStart = glyphStart !== -1 && e.message.startsWith(MARKER_PREFIX, glyphStart) ? glyphStart : -1;
+  if (markerStart !== -1 && !head.slice(markerStart).includes('›')) {
+    const closeIdx = e.message.indexOf('›', markerStart);
+    head = closeIdx === -1 ? head.slice(0, markerStart) : e.message.slice(0, closeIdx + 1);
+    cut = Buffer.byteLength(head, 'utf8');
+  }
   const omitted = buf.length - cut;
   return { code: e.code, message: `${head}… [truncated: ${omitted} bytes omitted]` };
 }
