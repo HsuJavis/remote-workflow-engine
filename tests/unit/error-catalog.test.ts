@@ -55,4 +55,12 @@ describe('ERROR_CATALOG — closed ErrorCode union (UT-138, DES-137)', () => {
   it('HARNESS_DEFAULTS_INVALID has retired with the `defaults` path — absent from the catalog', () => {
     expect(ERROR_CATALOG).not.toHaveProperty('HARNESS_DEFAULTS_INVALID');
   });
+
+  // P2 (v36, REQ-211): the two VERSION_CEILING_EXCEEDED throw sites (workflow-catalog.ts:610/656)
+  // already name the call shape a caller must make to unblock — `workflow_deregister({name,
+  // version})`, not the bare-noun "deregister an old one" that leaves the shape to guesswork. The
+  // catalog hint was the one surface REQ-211 left un-fixed; pin it here so it cannot regress.
+  it('VERSION_CEILING_EXCEEDED\'s hint names the actual call shape, like its two throw sites', () => {
+    expect(ERROR_CATALOG.VERSION_CEILING_EXCEEDED.hint).toContain('workflow_deregister({name, version})');
+  });
 });

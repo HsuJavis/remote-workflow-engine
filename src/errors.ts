@@ -92,7 +92,7 @@ export const ERROR_CATALOG = {
   WORKFLOW_NOT_FOUND: { see: null, hint: 'no workflow is registered under this name' },
   WORKFLOW_ALREADY_EXISTS: { see: null, hint: 'a workflow with this name is already registered under a different owner' },
   REGISTRATION_CONFLICT: { see: null, hint: 'a concurrent registration of this name raced this one; retry' },
-  VERSION_CEILING_EXCEEDED: { see: null, hint: 'this workflow name already has the configured maxWorkflowVersions; deregister an old one' },
+  VERSION_CEILING_EXCEEDED: { see: null, hint: 'this workflow name already has the configured maxWorkflowVersions; deregister an old one with workflow_deregister({name, version})' },
   VERSION_NOT_FOUND: { see: null, hint: 'the requested version is not a registered version of this workflow' },
   // v36 (DES-246, TASK-244): `workflow_deregister({name, version})`'s three version-scoped refusals.
   VERSION_PINNED_BY_CHANNEL: { see: null, hint: 'this version is published to a channel (release or beta) — unpublish it first' },

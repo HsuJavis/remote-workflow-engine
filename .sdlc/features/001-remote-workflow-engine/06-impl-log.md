@@ -9295,3 +9295,209 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   cost of the over-invalidation is one extra re-render for a surviving sibling version, never a
   correctness gap.
 - **refactor:** none — one line, no restructuring.
+
+### IMPL-360 — TASK-239: K2 first — the unredacted twin dies, both capture sites collapse onto `captureFailure`
+
+- **status:** done
+- **traces:** TASK-239, DES-241, ARCH-170, ARCH-169, REQ-216, REQ-205
+- **greens:** UT-297, UT-298
+- **files:** src/errors.ts, src/run-manager.ts, tests/unit/errors-capture-failure.test.ts, tests/unit/run-manager-seedref-redaction.test.ts
+- **commit:** a8a7b08
+- **iter:** v36
+- **note:** **Gate 6 documentation omission, same class as v35's IMPL-350..357** — code landed at
+  `a8a7b08`, green (UT-297 7/7, UT-298 3/3, re-confirmed standalone and in this gate's full
+  regression), no IMPL row was ever written. `captureFailure(err, secrets, maxBytes =
+  MAX_ERROR_ENVELOPE_BYTES)` exported from `src/errors.ts`, exactly `capErrorEnvelope(redact(toErr(err),
+  secrets), maxBytes)` in that order (redact THEN bound — INV-V26-5); `capErrorEnvelope` gains the
+  defaulted second parameter, every existing caller's behaviour byte-identical. **K2**: `run-manager.ts`'s
+  `seedRefView.failDetail` — the unredacted twin C-1 left standing — now goes through
+  `captureFailure(err, this._secretValueProvider?.entries() ?? [], 200).message` instead of the old
+  `rawMessage.slice(0,200)`; with a real injected `SecretValueProvider`, `failDetail` now carries
+  `‹secret:NAME›`, never the raw value. **K1**: `run-manager.ts`'s two pre-existing capture sites
+  (seedRef-fetch failure → `resultError` at admission, and the dispatch-outcome failure path at
+  `_transition`-adjacent code) collapse onto two-line `captureFailure(...)` callers; no inline
+  `redact(toErr(...))` composition remains in `run-manager.ts` from THIS task's own scope — the one
+  remaining `captureFailure(...)` call site in the file (inside the new refusal-ledger `catch` block)
+  is TASK-246's own addition, not a leftover of this collapse, and is documented under IMPL-365.
+- **refactor:** none — this row documents the original landing; no refactor pass owed here.
+
+### IMPL-361 — TASK-240: control files named after the config that owns them
+
+- **status:** done
+- **traces:** TASK-240, DES-242, ARCH-164, REQ-214
+- **greens:** IT-293
+- **files:** deploy.sh, .gitignore, DEPLOY.md, tests/integration/deploy-control-files.test.ts
+- **commit:** a8a7b08
+- **iter:** v36
+- **note:** **Gate 6 documentation omission** — code landed at `a8a7b08`, green (IT-293 7/7,
+  re-confirmed standalone and in this gate's full regression), no IMPL row existed. The
+  `RWE_CONFIG_PATH` export and the `RWE_INSTANCE`/`RWE_PID_FILE`/`RWE_LOG_FILE` derivation move
+  above step 1 in `deploy.sh`, with `--dry-run` handled immediately after (no `npm install` on a dry
+  run); two `RWE_CONFIG_PATH` values in ONE directory now yield two distinct
+  `.rwe.<config-basename>.{pid,log}` pairs instead of colliding on the old bare `.rwe.{pid,log}`; the
+  log file is created by `(umask 077; touch "$RWE_LOG_FILE")` in a subshell followed by `chmod 600`
+  (no bare top-level `umask` line, which would have been inherited by the engine and turned every
+  SQLite db/workspace/CAS blob `0600`); the start path appends with `>>`, so a pre-seeded log line
+  survives a second `--dry-run`/start (no truncation); `.gitignore` covers `.rwe.*.{pid,log}`;
+  `DEPLOY.md`'s v34 workaround paragraph now states the new behaviour and prints
+  `kill $(cat .rwe.<instance>.pid)`.
+- **refactor:** none — this row documents the original landing; no refactor pass owed here.
+
+### IMPL-362 — TASK-242: identity becomes a struct minted per call site, the catalog's audit lines say who bypassed
+
+- **status:** done
+- **traces:** TASK-242, DES-244, ARCH-157, ARCH-158, ARCH-161, REQ-212, REQ-114
+- **greens:** UT-300, IT-294
+- **files:** src/workflow-catalog.ts, src/mcp-facade.ts, tests/unit/catalog-actor.test.ts, tests/integration/main-composition-root-events.test.ts
+- **commit:** a8a7b08
+- **iter:** v36
+- **note:** **Gate 6 documentation omission** — code landed at `a8a7b08`; `IT-294`'s own evidence
+  note (05-tests.md) already records this explicitly: "code landed, no IMPL row was ever written for
+  TASK-241/242/243/244". This row documents TASK-242's own slice (241/243/244 are covered by
+  IMPL-358/361/363/364, or fall outside this gate's dispatch). `canMutate(owner, actor)` exported
+  from `src/workflow-catalog.ts`, pure, the TRUTHY form (`!owner || actor.bypass || owner ===
+  actor.id`) — required because the legacy gate tested `row.owner` for truthiness and `owner === ''`
+  is reachable on a pre-v15 row. `actorFor(p, a, gate)` exported from `src/mcp-facade.ts`, minting an
+  `Actor {id, bypass, idSource}` PER CALL SITE: `workflowRegister` passes `'attribution'`;
+  `workflowDeregister`/`workflowPublish` pass `'bypass'` — so an admin registering a new version over
+  someone else's name is STILL refused `NOT_WORKFLOW_OWNER` (R-1). `Actor` (replacing the old
+  `principal: string|null` gate expressions) is threaded through `validateRegistration`/
+  `insertVersion`/`deregister`/`publish`; `insertVersion`'s and `publish`'s success paths now emit
+  `catalog.register`/`catalog.publish` through `this._eventSink` with the full actor triple, and the
+  bare `console.log(\`catalog.publish: …\`)` line is gone from `src/`. `IT-294`'s 5 original
+  hand-built-`boot()` cases (register+publish, admin-bypass audit, completed+failed `run.terminal`,
+  `catalog.deregister`) prove this; the file's other 2 cases (driving the REAL `createServer()`) are
+  the Gate-8 send-back this gate's implementer already logged as IMPL-358, a different file
+  (`server.ts`) outside this task's own `files:` scope.
+- **refactor:** none — this row documents the original landing; no refactor pass owed here.
+
+### IMPL-363 — TASK-243: the run-terminal line, and the `principal` field that has to exist before it can carry one
+
+- **status:** done
+- **traces:** TASK-243, DES-245, ARCH-160, REQ-213, REQ-212
+- **greens:** UT-301, IT-295, IT-294
+- **files:** src/run-manager.ts, src/store/sqlite-run-store.ts, tests/unit/run-store-getspec-principal.test.ts, tests/integration/run-terminal-event.test.ts, tests/integration/main-composition-root-events.test.ts (one appended case), tests/unit/tool-specs.test.ts (one appended regression-pin case)
+- **commit:** a8a7b08
+- **iter:** v36
+- **note:** **Gate 6 documentation omission** — code landed at `a8a7b08`, green (UT-301 2/2, IT-295
+  3/3, re-confirmed standalone and in this gate's full regression), no IMPL row existed.
+  `RunEntry.principal?` is assigned in `_newEntry` from `spec.principal`, and rehydrated from
+  `getSpec()` on resume (`_requireLive`). `SqliteRunStore.getSpec()`'s SELECT gains the `principal`
+  column — it was already WRITTEN at admission and read by the status view, but omitted from THIS
+  resume-path rebuild (the ADR-067 SQL/TS-twin class: a resumed-run identity test against
+  `InMemoryRunStore` passed while production on SQLite emitted `principal: null`). `_transition`
+  emits `{kind:'run.terminal', runId, name, version, outcome, principal, ...(resultError ?
+  {code} : {})}` for EVERY terminal outcome including `completed` — at the ONE authoritative terminal
+  writer, not inside a failure-capture path. `tests/unit/tool-specs.test.ts` gains the regression pin
+  that keeps the event's field omission honest: `run_start`'s `inputSchema` refuses a
+  caller-supplied `principal` argument (`additionalProperties:false`), so if admission ever starts
+  honouring one this test goes red first. **Correction against the TASK's own DoD-declared `files:`
+  list**: `src/run-store.ts` carries no hunk tagged to this task in the real diff — `RunSpec.principal`
+  already existed pre-v36 (`src/types.ts`, unchanged here) — so it is dropped here in favour of what
+  `git show a8a7b08` actually shows changed for TASK-243 (its `TERMINAL` export and `listRuns()` doc
+  comment belong to TASK-244; its `lastRunAtByName()` addition belongs to TASK-245 — see IMPL-364).
+- **refactor:** none — this row documents the original landing; no refactor pass owed here.
+
+### IMPL-364 — TASK-245: the catalog listing answers 「哪些該清」, `lastRunAtByName()`, `listRuns()`'s contract
+
+- **status:** done
+- **traces:** TASK-245, DES-247, ARCH-162, ARCH-163, ARCH-172, ARCH-143, REQ-213, REQ-216
+- **greens:** UT-303
+- **files:** src/run-store.ts, src/store/sqlite-run-store.ts, src/mcp-facade.ts, src/tool-specs.ts, tests/unit/run-store-last-run-at.test.ts, tests/integration/workflow-list-fields.test.ts
+- **commit:** a8a7b08
+- **iter:** v36
+- **note:** **Gate 6 documentation omission** — code landed at `a8a7b08`, no IMPL row existed.
+  `lastRunAtByName(): Promise<Map<string,string>>` added to the `RunStore` port; both
+  implementations conform (`SqliteRunStore`: one grouped `SELECT name, MAX(createdAt) … GROUP BY
+  name` statement; `InMemoryRunStore`: an equivalent fold), pinned by UT-303's both-stores-agreement
+  fixture — a never-run name is ABSENT from the map, never present with a `null` value, which is
+  what lets the facade's `?? null` produce the honest "never run" sentinel. `mcp-facade.ts`'s
+  `workflowList` makes exactly ONE `lastRunAtByName()` call per request (not one per row) and now
+  forwards `description` — already computed by `catalog.list()` since v9/REQ-061, silently dropped by
+  the old projection's `.map` — plus `lastRunAt: lastRuns.get(w.name) ?? null`. `tool-specs.ts`'s
+  `workflow_list` description states `lastRunAt`'s semantics. `run-store.ts`'s `listRuns()` gains the
+  ADR-079 doc-comment ruling (deliberately unbounded sweep API, no LIMIT) — `TERMINAL`'s own export in
+  the same file belongs to TASK-244, not this row.
+  **P1 finding, this gate (same session as this IMPL row, code unchanged by it):**
+  `tests/integration/workflow-list-fields.test.ts` (IT-297) is 2/3 green (the one-call-per-request
+  case and the K4 zero-agent agreement case) — its first case (`ran.description` toBe `'runs
+  things'`) fails: `expected '' to be 'runs things'`. Root cause is the TEST FIXTURE, not this task's
+  production code — the fixture scripts at test lines 51/53/66/67 are written
+  `"meta = { description: 'runs things' };\nreturn 1;"`, missing the mandatory `export const` prefix
+  (`dynamic-workflow-compat-spec.md:12`: "Must begin with `export const meta = {...}`";
+  `src/script-checks.ts:91`: "it must be written exactly that way"; `src/sandbox/guards.ts`'s
+  `checkMeta` anchors on `/export\s+const\s+meta\s*=/`). `catalog.list()`'s `parseMeta` (unchanged by
+  this task, a pre-v9 contract) correctly reports `''` for a script whose `meta` is never matched by
+  that anchor — the `mcp-facade.ts`/`workflow-catalog.ts` code this task landed does exactly what
+  DES-247 specifies with the description `catalog.list()` actually computes. Verified empirically
+  (`npx vite-node`, run this gate, not inferred from reading): `parseMeta("meta = {...}")` (no
+  `export const`) returns `description:''`; `parseMeta("export const meta = {...}")` on the same
+  object returns the real string. `run-manager.ts:686`'s `await this._store.createRun(...)` runs
+  before `start()` returns, so IT-297 case 1's `lastRunAt`/never-run lines (60-61, not reached this
+  run because line 59 threw first) should also go green once the fixture is fixed — expected 3/3,
+  not just the `description` line. Per the implementer contract's rule 4 ("do not appease a wrong
+  test"), the test was NOT edited; reported here for Gate 5 to fix (add `export const` to the four
+  fixture strings). **TASK-245 stays `draft`** (not flipped to `done`) in
+  `03-tasks.md` until that fixture fix lands and IT-297 is fully green — see this row's `greens:`
+  deliberately omitting IT-297 while it carries a red case.
+- **refactor:** none — this row documents the original landing; no refactor pass owed here.
+
+### IMPL-365 — TASK-246: `refusalRef` — one integer crosses the seam, provenance stays keyed on the object
+
+- **status:** done
+- **traces:** TASK-246, DES-248, ARCH-165, ARCH-166, ARCH-167, ARCH-168, REQ-215, REQ-205
+- **greens:** UT-304, IT-298
+- **files:** src/sandbox/guards.ts, src/sandbox/child-entry.ts, src/sandbox/host.ts, src/run-manager.ts, tests/unit/sandbox-refusal-provenance.test.ts, tests/integration/refusal-marker-real-child.test.ts
+- **commit:** a8a7b08
+- **iter:** v36
+- **note:** **Gate 6 documentation omission** — code landed at `a8a7b08`, green (UT-304 6/6, IT-298
+  3/3, re-confirmed standalone and in this gate's full regression), no IMPL row existed.
+  `markEngineRefusal(err, callSeq)` plus a module-scope `WeakMap<object, number>` (`refusalRefs`) in
+  `guards.ts`, unreachable from the vm context; `evaluateScript`'s `{kind:'error'}` reads
+  `refusalRef` FROM THE MAP, never off the error object (defeats a script's `e.refusalRef = 99`
+  forgery — the map's answer always wins). `ENGINE_REFUSAL_CODES` gains `'PARAM_UNKNOWN'`: an
+  uncaught one keeps its own code instead of flattening to `SCRIPT_ERROR`, and one raised inside
+  `parallel()`/`pipeline()` now PROPAGATES instead of returning `null` (ADR-073, a deliberate
+  script-semantics change). `child-entry.ts` marks the rejected error BEFORE `p.reject()` (so the ref
+  rides the same object identity a script catches and rethrows) and hoists `refusalRef` to a SIBLING
+  of `error` on the terminal `send()` — `host.ts`'s `RunOutcome` is a flat `{error; refusalRef?}`
+  shape, not nested, so the parent's ledger lookup at settle time reads a plain number off the wire
+  message. `run-manager.ts`: `RunEntry` gains `refusals: Map<number,{code,message}>` +
+  `refusalsDropped`, and an exported `RECORDED_REFUSAL_CODES` (a forced duplicate of `guards.ts`'s
+  module-private set — the sandbox child cannot value-import this `.ts` file — pinned equal by
+  UT-304's drift test); a new `catch` block in the agent-request dispatch path records a refusal
+  ONLY at `framePath === ''`, via `captureFailure(err, secrets)` (TASK-239's function — the same
+  redacted, bounded envelope every other failure surface gets), bounded at 8, a 9th incrementing
+  `refusalsDropped` and evicting nothing. At settle, a `refusalRef` this run's ledger contains
+  replaces the flattened envelope with the ledger's own captured entry; an unknown ref (reachable
+  only via a forged/stale child IPC message, never a real script) falls back to today's path
+  unchanged.
+- **refactor:** none — this row documents the original landing; no refactor pass owed here.
+
+### IMPL-366 — TASK-247: one `attempts` formula on the port, and the two sentences the advertised surface was missing
+
+- **status:** done
+- **traces:** TASK-247, DES-249, ARCH-171, ARCH-173, REQ-216, REQ-207
+- **greens:** UT-305, UT-293, UT-292
+- **files:** src/gateway/client.ts, src/gateway/claude-agent-sdk-client.ts, src/authoring-guide.ts, src/tool-specs.ts, docs/AUTHORING.md, tests/unit/gateway-attempts.test.ts, tests/unit/authoring-guide.test.ts, tests/unit/tool-specs.test.ts (one case, added in `b8b1e12`)
+- **commit:** a8a7b08 (code + UT-305 + UT-293's amendment); b8b1e12 (UT-292's Gate-8 send-back pin, `tests/unit/tool-specs.test.ts`, filed as this task's DoD item 4 in its own comment)
+- **iter:** v36
+- **note:** **Gate 6 documentation omission** — code landed at `a8a7b08`, green (UT-305 2/2, and
+  `tests/unit/authoring-guide.test.ts`'s new v36 describe block, re-confirmed standalone and in this
+  gate's full regression), no IMPL row existed. `attemptsFor(retries, timeoutMs)` exported from the
+  port module `src/gateway/client.ts` (`timeoutMs === undefined ? 1 : 1 + Math.max(0, retries ??
+  0)`), pinned by UT-305's four-quadrant table test; both conformers
+  (`claude-agent-sdk-client.ts:507`, `client.ts:515` — the latter previously retried an UNTIMED call
+  unconditionally, the deviant one) now call the shared export. The guide (`authoring-guide.ts`,
+  byte-locked with `docs/AUTHORING.md` in the same commit) gains the missing sentence — an
+  `agent()` call with no `timeoutMs` set runs ONCE, retries apply only to a call that set one — and
+  the attestation-boundary sentence: the run-level structured refusal marker (`refusalRef`) is
+  engine-attested, `error.code` alone is NOT and never has been (`refusalCode()` matches `e.name`,
+  so a script can forge any code with no marker). `tool-specs.ts` carries the same attestation
+  sentence on the `run_status`/`run_result` tool descriptions (landed at `a8a7b08`); the dedicated
+  pinning case for THAT sentence (`tests/unit/tool-specs.test.ts`'s "run_result/run_status state
+  error.code alone is NOT engine-attested") was added later, in `b8b1e12`, explicitly labelled
+  "Gate-8 send-back (TASK-247 DoD 4)" in its own comment — included here because it is this task's
+  own DoD item, genuinely green, and traces the same code this row documents; every other file in
+  this row's `files:` list is unchanged by `b8b1e12`.
+- **refactor:** none — this row documents the original landing; no refactor pass owed here.

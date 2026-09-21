@@ -2181,7 +2181,7 @@ this list.** REQ-216/K5's actual deliverable is the ruling, and ADR-079 made it 
 the further question.
 
 ### TASK-239 — K2 first: the unredacted twin dies, then both capture sites collapse onto one pure function
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-170, ARCH-169
 - **files:** src/errors.ts, src/run-manager.ts, tests/unit/errors-capture-failure.test.ts, tests/unit/run-manager-seedref-redaction.test.ts
 - **des:** DES-241
@@ -2190,7 +2190,7 @@ the further question.
 - **iter:** v36
 
 ### TASK-240 — control files are named after the config that owns them, and the seam is cheap enough to be a regression test
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-164
 - **files:** deploy.sh, .gitignore, DEPLOY.md, tests/integration/deploy-control-files.test.ts
 - **des:** DES-242
@@ -2201,14 +2201,14 @@ the further question.
 ### TASK-241 — `src/event-log.ts`: one typed sink, one redaction, and the plumbing that makes every later emitter a one-liner
 - **status:** draft
 - **traces:** ARCH-159
-- **files:** src/event-log.ts, src/main.ts, src/run-manager.ts, src/workflow-catalog.ts, tests/unit/event-log.test.ts
+- **files:** src/event-log.ts, src/server.ts, src/run-manager.ts, src/workflow-catalog.ts, tests/unit/event-log.test.ts — **CORRECTION (v36, this gate):** was `src/main.ts`; `createServer()` in `src/server.ts` is where `new WorkflowCatalog(...)`/`new RunManager(...)` are actually constructed (confirmed: those are the only production construction sites), `main.ts` never builds either class directly and only calls `composeConfig()` then `createServer(config)`. 05-tests.md's own v36 exit-gate self-check named this gap at Gate 5; it was closed by the Gate-8 send-back documented as IMPL-358, which wired the real `eventSink` into `server.ts`.
 - **des:** DES-243
 - **dod:** `npx tsc --noEmit && npx vitest run tests/unit/event-log.test.ts tests/unit/compose-config-v2-wiring.test.ts` → green on: (1) `EngineEvent` is a `kind`-keyed discriminated union with exactly the four v36 kinds (DES-243) and `EventSink = (e: EngineEvent) => void`; a missing `actor` or a wrong `version` type is a **compile** error (one `@ts-expect-error` line in the test so the guarantee has an executable statement); (2) `createEventSink({ secrets?, write?, now? })` emits ONE line of `JSON.stringify(redact({ ...event, at: now() }, secrets))`; (3) with a REAL `SecretValueProvider` whose value sits in an event field, the emitted line carries `‹secret:NAME›` and not the raw value; (4) `now` is injectable and the emitted `at` is exactly the injected value (no bare `new Date()`); (5) `RunManagerDeps.eventSink?` and `WorkflowCatalog`'s constructor accept the sink and **default to a bare console sink** (the `deps.onWarning ?? console.warn` precedent) — every existing `new RunManager(...)`/`new WorkflowCatalog(...)` site compiles untouched, which `tsc --noEmit` is the assertion for; (6) `main.ts` builds ONE sink from the same `SecretValueProvider` **and the same `Clock`** the RunManager already receives (`now: () => clock.isoNow()`, never a bare `new Date()` at the composition root — every site that reads time takes the injected clock, not just the testable one) and passes it to both. **This card adds no emitter** — the three call sites are TASK-242/243/244, and the sink lands first so REQ-211's destructive action never ships into a window where it logs nothing. No file outside `files:` is touched.
 - **estimate:** S
 - **iter:** v36
 
 ### TASK-242 — identity becomes a struct minted per call site, and the catalog's audit lines say who bypassed
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-157, ARCH-158, ARCH-161
 - **files:** src/workflow-catalog.ts, src/mcp-facade.ts, tests/unit/catalog-actor.test.ts, tests/integration/main-composition-root-events.test.ts
 - **des:** DES-244
@@ -2217,7 +2217,7 @@ the further question.
 - **iter:** v36
 
 ### TASK-243 — the run-terminal line, and the `principal` field that has to exist before it can carry one
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-160
 - **files:** src/run-manager.ts, src/run-store.ts, src/store/sqlite-run-store.ts, tests/unit/run-store-getspec-principal.test.ts, tests/integration/run-terminal-event.test.ts, tests/integration/main-composition-root-events.test.ts (created by TASK-242 — this card appends ONE case to it)
 - **des:** DES-245
@@ -2230,21 +2230,22 @@ the further question.
 - **traces:** ARCH-155, ARCH-156, ARCH-161
 - **files:** src/workflow-catalog.ts, src/mcp-facade.ts, src/errors.ts, src/tool-specs.ts, src/run-store.ts, tests/unit/catalog-deregister-version.test.ts, tests/integration/deregister-version-pinned-run.test.ts, tests/integration/main-composition-root-events.test.ts (created by TASK-242 — this card appends ONE case to it)
 - **des:** DES-246
-- **dod:** `npx tsc --noEmit && npx vitest run tests/unit/catalog-deregister-version.test.ts tests/integration/deregister-version-pinned-run.test.ts tests/integration/main-composition-root-events.test.ts tests/unit/tool-schema-drift.test.ts tests/integration/deregister-clears-asset-tree.test.ts` → green on: (1) `deregisterVersion(name, version, actor)` answers the **six** outcomes of DES-246 in the pinned refusal order **ownership → not-found → channel → last-remaining → pinned-run** (ownership first so a stranger cannot enumerate versions by refusal type; pinned-run last because it is the only cross-database read); `{removed:false, remaining:[]}` for an absent **name**, `VERSION_NOT_FOUND` for an absent **version**; (2) on success exactly **two** statements in one `.immediate()` transaction — `workflow_versions` and `workflow_diagrams` at `(name, version)` — with the `assets` rows and the `workflows` row read back **present** afterwards; (3) Gate-8 send-back CORRECTION: this item's premise was stale — `putDiagramResult`'s late-write guard has been `(name, version)`-keyed since it was written (v23, see TASK at :845's own dod: `SELECT 1 FROM workflow_versions WHERE name = ? AND version = ?`, and the `workflow_diagrams` insert's own `ON CONFLICT (name, version)`), never name-keyed, so there is no move to make here. What THIS card still owns: a diagram result that lands after its version was deleted writes nothing (the orphan-row bug that guard exists for) — already true unconditionally by inheriting the pre-existing `(name, version)` key, re-confirmed by IT-299's real defect fix (the diagramCache in mcp-facade.ts, a DIFFERENT in-memory cache, DID need a new invalidate() call on this card's version-scoped path — see IT-299); (4) the facade's optional `version` on `workflow_deregister` (schema + handler): absent ⇒ today's whole-name path, byte-identical, every existing code unchanged; (5) the pinned-run probe normalizes **both** sides (`String(x).replace(/^v/,'')`) — a catalog row stored as `"3"` pinned by a genuinely non-terminal run (a real store fixture, not a mock) is refused `VERSION_PINNED_BY_RUN` naming the runId, and the catalog is never called; (6) `TERMINAL` is imported from `run-store.ts`'s newly-exported `Set` — no sixth private copy; (7) **triggers**: `deregisterVersion` returns `claimedTriggers` = the ids declared **only** by the deleted version (`declaredTriggers` before minus after, computed inside the transaction) and the facade releases exactly those through its existing `:390-397` loop — asserted both ways: an id still declared by a surviving version is NOT released, an id only the deleted version declared IS; (8) both copies of `VERSION_CEILING_EXCEEDED`'s message (`:570`, `:614`) name the real call shape `workflow_deregister({name, version})`; (9) the `catalog.deregister` line carries `{name, version, actor}` and the composition-root IT gains its third assertion **in this commit**; (10) every whole-name `deregister` test stays green unchanged. No file outside `files:` is touched.
+- **dod:** `npx tsc --noEmit && npx vitest run tests/unit/catalog-deregister-version.test.ts tests/integration/deregister-version-pinned-run.test.ts tests/integration/main-composition-root-events.test.ts tests/unit/tool-schema-drift.test.ts tests/integration/deregister-clears-asset-tree.test.ts` → green on: (1) **CORRECTION (v36, this gate — the implementer that landed the code already corrected the behaviour; only this DoD sentence was stale, matching DES-246's own "Gate-8 send-back (b) CORRECTION" note in its signature block):** `deregisterVersion(name, version, actor)` itself — the catalog method — answers its **five** own outcomes in the pinned refusal order **ownership → name-absent → version-not-found → channel → last-remaining** (ownership first so a stranger cannot enumerate versions by refusal type). `VERSION_PINNED_BY_RUN` is NOT a sixth outcome inside `deregisterVersion` at all: it is the FACADE's own probe (`mcp-facade.ts`'s `workflowDeregister`, `this.store.listRuns()`), and it runs FIRST, before the catalog mutation path is ever entered — DES-246's own boundary note states this plainly (a cross-database read that refuses must resolve before the mutation path is entered), so the true end-to-end pinned order for a version-scoped `workflow_deregister` call is **pinned-run (facade) → ownership → name-absent → version-not-found → channel → last-remaining (catalog)**, not "ownership → … → pinned-run" as this sentence read before the correction; `{removed:false, remaining:[]}` for an absent **name**, `VERSION_NOT_FOUND` for an absent **version**; (2) on success exactly **two** statements in one `.immediate()` transaction — `workflow_versions` and `workflow_diagrams` at `(name, version)` — with the `assets` rows and the `workflows` row read back **present** afterwards; (3) Gate-8 send-back CORRECTION: this item's premise was stale — `putDiagramResult`'s late-write guard has been `(name, version)`-keyed since it was written (v23, see TASK at :845's own dod: `SELECT 1 FROM workflow_versions WHERE name = ? AND version = ?`, and the `workflow_diagrams` insert's own `ON CONFLICT (name, version)`), never name-keyed, so there is no move to make here. What THIS card still owns: a diagram result that lands after its version was deleted writes nothing (the orphan-row bug that guard exists for) — already true unconditionally by inheriting the pre-existing `(name, version)` key, re-confirmed by IT-299's real defect fix (the diagramCache in mcp-facade.ts, a DIFFERENT in-memory cache, DID need a new invalidate() call on this card's version-scoped path — see IT-299); (4) the facade's optional `version` on `workflow_deregister` (schema + handler): absent ⇒ today's whole-name path, byte-identical, every existing code unchanged; (5) the pinned-run probe normalizes **both** sides (`String(x).replace(/^v/,'')`) — a catalog row stored as `"3"` pinned by a genuinely non-terminal run (a real store fixture, not a mock) is refused `VERSION_PINNED_BY_RUN` naming the runId, and the catalog is never called; (6) `TERMINAL` is imported from `run-store.ts`'s newly-exported `Set` — no sixth private copy; (7) **triggers**: `deregisterVersion` returns `claimedTriggers` = the ids declared **only** by the deleted version (`declaredTriggers` before minus after, computed inside the transaction) and the facade releases exactly those through its existing `:390-397` loop — asserted both ways: an id still declared by a surviving version is NOT released, an id only the deleted version declared IS; (8) both copies of `VERSION_CEILING_EXCEEDED`'s message (`:570`, `:614`) name the real call shape `workflow_deregister({name, version})`; (9) the `catalog.deregister` line carries `{name, version, actor}` and the composition-root IT gains its third assertion **in this commit**; (10) every whole-name `deregister` test stays green unchanged. No file outside `files:` is touched.
 - **estimate:** L
 - **iter:** v36
 
 ### TASK-245 — the catalog listing answers 「哪些該清」, and `listRuns()`'s contract says why it has no LIMIT
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-162, ARCH-163, ARCH-172, ARCH-143
 - **files:** src/run-store.ts, src/store/sqlite-run-store.ts, src/mcp-facade.ts, src/tool-specs.ts, tests/unit/run-store-last-run-at.test.ts, tests/integration/workflow-list-fields.test.ts
 - **des:** DES-247
 - **dod:** `npx tsc --noEmit && npx vitest run tests/unit/run-store-last-run-at.test.ts tests/integration/workflow-list-fields.test.ts tests/unit/tool-specs.test.ts tests/integration/run-list.test.ts tests/integration/run-health-count.test.ts` → green on: (1) `lastRunAtByName(): Promise<Map<string,string>>` on the `RunStore` port with **both** implementations conforming (`SELECT name, MAX(createdAt) … GROUP BY name` vs the in-memory fold), pinned by a both-stores agreement test over one fixture: two runs on one name → the later `createdAt`; a never-run name is **absent from the map**, so the facade's `?? null` is what produces `null` and `null` is not confusable with 「a run exists with a null timestamp」; (2) `workflow_list` rows carry `description` — **forwarded** from `catalog.list()` (`workflow-catalog.ts:828`, already parsed, silently dropped by the projection's `.map`) with no second meta parser anywhere in `mcp-facade.ts` (grep assertion) — and `lastRunAt: lastRuns.get(w.name) ?? null`; a never-run workflow reports `null` as its own named case, not folded into a shape assertion; (3) exactly **one** `lastRunAtByName()` call per `workflow_list`, not one per row; `onlyRunnable`, ordering and every existing field unchanged; (4) the `workflow_list` tool description states `lastRunAt`'s semantics — 「the most recent run **on record**; `null` = never run」; (5) **K4**: one case (not a matrix) asserting `run_status` and `run_list` agree for a **zero-agent terminal** run — `failedAgentCount` omitted on both surfaces; (6) `RunStore.listRuns()`'s doc comment carries ADR-079's ruling — a deliberately unbounded sweep API, every caller needs every row (boot recovery `server.ts:815`, `hydrateAll`'s stale-`running` reclassification, the workspace-reclaim sweep, TASK-244's pinned-version probe), a caller wanting a page uses the already-paginated `list()`; **no signature change, no LIMIT**. Lands after TASK-244 (both touch `run-store.ts`). No file outside `files:` is touched.
 - **estimate:** M
 - **iter:** v36
+- **note (2026-09-22, orchestrator):** IT-297 的紅**不是產品缺陷,是測試 fixture 自己寫錯** —— 它的腳本字面寫成 `"meta = { description: ... }"`,少了強制的 `export const` 前綴,`parseMeta` 因此回空字串。以 `vite-node` 實測兩種寫法對照確認(無前綴→`description:''`,有前綴→真值)。實作者依契約拒絕改測試、只回報,由 orchestrator 修正四處字面;修好後 IT-297 3/3 全綠,與診斷預測一致(不只 description 那一條)。`mcp-facade.ts:626-649` 與 `workflow-catalog.ts:905-931` 的投影本來就照 DES-247 實作正確,不需改動。
 
 ### TASK-246 — `refusalRef`: one integer crosses the seam, provenance stays keyed on the object, and the run envelope is joined from the parent's own ledger
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-165, ARCH-166, ARCH-167, ARCH-168
 - **files:** src/sandbox/guards.ts, src/sandbox/child-entry.ts, src/sandbox/host.ts, src/run-manager.ts, tests/unit/sandbox-refusal-provenance.test.ts, tests/integration/refusal-marker-real-child.test.ts
 - **des:** DES-248
@@ -2253,7 +2254,7 @@ the further question.
 - **iter:** v36
 
 ### TASK-247 — one `attempts` formula on the port, and the two sentences the advertised surface was missing
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-171, ARCH-173
 - **files:** src/gateway/client.ts, src/gateway/claude-agent-sdk-client.ts, src/authoring-guide.ts, src/tool-specs.ts, docs/AUTHORING.md, tests/unit/gateway-attempts.test.ts, tests/unit/authoring-guide.test.ts
 - **des:** DES-249

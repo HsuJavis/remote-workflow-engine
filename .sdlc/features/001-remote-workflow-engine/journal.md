@@ -8254,3 +8254,54 @@ P2 八條 (a)-(i))。本輪逐條關閉:
   說法,但 orchestrator 只點名修 04-design.md,這處沒動,一併在報告點出。
 - `npx tsc --noEmit` 全程乾淨;本輪新增/修改的 10 個測試檔單獨跑過(118 個案例全綠)。
 - `state.yaml`:`current_stage` 前綴補一段本輪紀錄,`gates.impl.note` 同步更新。
+
+## 2026-09-22 — v36 Gate 6 IMPL-log 補登 + P1/P2 修補（implementer）
+
+- **P1（唯一的紅燈）**:`tests/integration/workflow-list-fields.test.ts`（IT-297）在孤立跑時仍紅。
+  讀測試學到的契約：一個從未跑過的 workflow 其 `lastRunAt` 要明確為 `null`；讀碼確認
+  `mcp-facade.ts` 的 `workflowList`（:626-649）與 `workflow-catalog.ts` 的 `list()`（:905-931）
+  兩處程式碼都已經正確——`description`/`lastRunAt` 確實有轉發，`lastRunAtByName()` 也確實一次呼叫。
+  紅的原因是**測試 fixture 本身寫錯**：四行 fixture script（第 51/53/66/67 行）寫
+  `meta = { description: '...' };`，漏了強制的 `export const` 前綴——
+  `dynamic-workflow-compat-spec.md` §1、`script-checks.ts`、`guards.ts` 的 `checkMeta` 都一致要求
+  「必須以 `export const meta = {...}` 開頭，且必須逐字這樣寫」。用 `parseMeta` 對兩種寫法各跑一次
+  實測驗證：無 `export const` 回傳空字串,有則回傳真字串。依 implementer 契約規則 4（不得為了讓錯的
+  測試過而改測試或改程式碼），**沒有動這個測試**，在此回報給 Gate 5 修（四處補上 `export const`）。
+  IT-297 目前 2/3 綠（one-call-per-request、K4 zero-agent 一致性兩案都過),只有 description 那案紅。
+- **P2（`VERSION_CEILING_EXCEEDED` 第三處訊息)**:`src/errors.ts:95` 的 `ERROR_CATALOG` hint 仍寫
+  「deregister an old one」,沒點名呼叫形狀,而兩個 throw 站早在這輪 REQ-211 就改成
+  `workflow_deregister({name, version})`。實測發現 dispatch 對「這個 hint 怎麼傳到呼叫端」的說法
+  不準確——`toErrEnvelope` 目前根本不回傳 `hint` 欄位；`hint` 唯一真的送到呼叫端的路徑是
+  `authoring-guide.ts:339` 的 `authoringErrorRows()`,但它只挑 `see:'workflow_authoring_guide'`
+  的條目,而 `VERSION_CEILING_EXCEEDED` 是 `see:null`,所以連那條路徑今天也沒真的送到任何呼叫端。
+  不影響修法本身:先在 `tests/unit/error-catalog.test.ts` 加一個直接斷言 `ERROR_CATALOG` 內容的案例
+  （先紅,`toContain('workflow_deregister({name, version})')` 失敗)、改 `errors.ts:95` 的 hint 文字、
+  再綠。
+- **P3（七個 TASK 補 IMPL 列)**:`git show 24762d2..a8a7b08 --stat` + 逐檔 `git show` 找出
+  TASK-239/240/242/243/245/246/247 各自真正動到的檔案(多份程式碼被好幾個 TASK 共用同一個檔案,
+  用每段 diff 自帶的 `v36 (DES-..., TASK-...)` 行內註解逐段歸屬,而不是照抄 TASK 卡片自己
+  DoD 宣稱的 `files:` 清單——後者部分是規劃時的猜測)。寫了 IMPL-360..366,`03-tasks.md`
+  六個 TASK（239/240/242/243/246/247）status 從 draft 翻到 done；TASK-245 因 P1 的 fixture
+  缺陷仍留 draft。順帶修了兩處派工點名的既有文字問題:TASK-244 DoD(1) 仍帶著「pinned-run 排最後」
+  的過期敘述(`DES-246` 自己的 boundary 段早就說 `VERSION_PINNED_BY_RUN` 其實在 facade 層最先跑,
+  進 catalog 變更路徑之前就擋掉)——已改;TASK-241 的 `files:` 仍寫 `src/main.ts`,但真正建構
+  `WorkflowCatalog`/`RunManager` 的組合根是 `src/server.ts`（`main.ts` 只呼叫
+  `composeConfig()`+`createServer()`)——已改,且這正是 `05-tests.md` 自己 v36 Gate 5
+  exit-gate self-check 早就點名、後來由 `IMPL-358` 補上的同一個缺口。
+- **回報一處 dispatch 描述有誤**:派工文字說 `gates.impl` 「仍讀 v35 的值」,實際讀碼是它已經是
+  v36（上一輪 send-back-repair 的紀錄),只有 `verification`/`validation`/`review` 三個 gate
+  還停在 v35——這輪沒有動它們(不在派工範圍)。
+- 全程未 `git checkout`/`git restore`/`git stash`;讀舊版一律用 `git show <sha>:<path>`。
+  未進行任何 commit。
+- `npx tsc --noEmit` 全程乾淨。全套件：447 files (445 passed / 1 failed / 1 skipped), 3300 tests (3273 passed / 1 failed / 26 skipped) -- the one failure is IT-297's fixture-defect case (P1 above); baseline before this gate was 3272 passed / 1 failed / 26 skipped across 447 files, so +1 passing test (P2's new pin) and zero regressions。
+- trace 前後對照（`sh .sdlc/trace`，前基線在編輯 `.sdlc/` 之前先用即時掃描存到 scratch，後基線用
+  `git archive b8b1e12` 到 scratch 再用 `trace.py` 當函式庫精算 gap tuple 差集，不是肉眼數數)：
+  2003 → 2010 個項目（+7，正是新寫的 IMPL-360..366)；93 → 83 個缺口，**關閉 10 個、新增 0 個**——
+  `('未實作', TASK-239/240/242/243/245/246/247)` 七個,加上因此連帶關閉的
+  `('未實作', REQ-214/215/216)` 三個(REQ-214→TASK-240、REQ-215→TASK-246、REQ-216 的可達閉包經多個
+  TASK 之一即關閉)；其餘 83 個缺口 tuple 逐一比對與前基線位元組相同,無新斷鏈/孤兒。
+- `parseMeta` 實測（`npx vite-node`，不是憑讀碼推論)：`parseMeta("meta = {...}")`（無 `export const`)
+  回傳 `{description:'', phases:[]}`；`parseMeta("export const meta = {...}")` 同一個物件回傳真字串。
+  另讀碼確認 `run-manager.ts:686` 的 `await this._store.createRun(...)` 是 awaited 才回傳 `runId`，
+  所以 IT-297 case 1 的 `lastRunAt` 斷言（第 60-61 行,這次執行沒跑到,因為第 59 行先丟)在 Gate 5
+  補上 `export const` 之後理應是 3/3 全綠,不只 description 那一行。

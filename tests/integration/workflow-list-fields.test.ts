@@ -48,9 +48,9 @@ async function waitForStatus(mgr: RunManager, runId: string, want: string, maxIt
 describe('IT-297: workflow_list forwards description + lastRunAt', () => {
   it('a run workflow carries its description and lastRunAt; a never-run workflow carries null', async () => {
     const { catalog, runManager, facade } = boot();
-    await registerPublished(catalog, 'it297-ran', "meta = { description: 'runs things' };\nreturn 1;");
+    await registerPublished(catalog, 'it297-ran', "export const meta = { description: 'runs things' };\nreturn 1;");
     await runManager.start({ name: 'it297-ran', principal: 'alice' } as any);
-    await registerPublished(catalog, 'it297-never', "meta = { description: 'never run' };\nreturn 1;");
+    await registerPublished(catalog, 'it297-never', "export const meta = { description: 'never run' };\nreturn 1;");
 
     const result = await (facade as any).workflowList({}, ADMIN);
     const rows: Array<Record<string, unknown>> = result.result;
@@ -63,8 +63,8 @@ describe('IT-297: workflow_list forwards description + lastRunAt', () => {
 
   it('exactly ONE lastRunAtByName() call per workflow_list request, not one per row', async () => {
     const { catalog, facade, store } = boot();
-    await registerPublished(catalog, 'it297-a', "meta = { description: 'a' };\nreturn 1;");
-    await registerPublished(catalog, 'it297-b', "meta = { description: 'b' };\nreturn 1;");
+    await registerPublished(catalog, 'it297-a', "export const meta = { description: 'a' };\nreturn 1;");
+    await registerPublished(catalog, 'it297-b', "export const meta = { description: 'b' };\nreturn 1;");
     let calls = 0;
     const orig = (store as any).lastRunAtByName?.bind(store);
     (store as any).lastRunAtByName = async (...args: unknown[]) => { calls++; return orig ? orig(...args) : new Map(); };
