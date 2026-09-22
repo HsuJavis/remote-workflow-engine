@@ -9514,3 +9514,189 @@ CLI)：REQ-218/REQ-219 兩列翻 ✅,補一段日期化說明。
 
 State.yaml 更新:gates.validation.passed=true,current_stage: review。scratch 設定檔/PID/log/workRoot
 全部在收工前刪除確認乾淨。全程未使用 git checkout/restore/stash。
+
+## 2026-09-22 — v37 Gate 8(reviewer)SEND-BACK，第一輪
+
+consolidate 兩份 pre-run panel report(`.panel/review/adversarial.md`、`quality-dimensions.md`)，
+挑最嚴重三條逐條在原始碼上重新核實（不信報告本身）：
+
+1. **A1（HIGH）**：`call-tool.ts:120` 那道「遠端提交之門」只蓋住 MCP `tools/call` 這一條進場路徑；
+   `webhook-registry.ts:305`、`scheduler.ts:363` 直接呼叫 `RunManager.start()` 起 Bash 能力的
+   run，完全繞過。核對 ADR-083 業主裁決原文——理由(1)講的是「遠端提交」這個一般概念、且明指
+   2026-09-20 那次事故的來源正是「另一台機器送來的工作流程」，不是「MCP tools/call 呼叫」——業主
+   意圖比現在接的線寬，ARCH-181 自己寫的「只有這兩個 tool call 會放行新的 Bash 能力工作」這句話
+   對現在的引擎是假的。
+2. **A2（HIGH）**：`main.ts:252` 無條件算出 `protectedFiles`，但 `:439` 整個 `confinement` 區塊只在
+   `workRoot` 有值時才轉發（型別逼的，`confinement.workRoot` 非 optional）；沒給 `workRoot` 時
+   `denyRead`/`credentials.files` 全變 `[]`。核對 `DEPLOY.md:511-530` §1b 設定總表本身：`workRoot`
+   一欄寫的是必須=否、預設「系統暫存目錄自動建立」——這是文件明講支援的設定，不只是誤填。
+3. **C-1（HIGH，quality-dimensions 那份）**：`CONFINEMENT_UNAVAILABLE` 是真的、遠端可觸發的拒絕，
+   但不在 `errors.ts` 的 `ERROR_CATALOG`，也不在 `run_start`/`run_resume` 兩列的 `errors:` 陣列
+   裡——跟 `error-catalog-closed.test.ts`（UT-164，v24 Gate 8 AF-3）當年專門堵的那個缺陷一模一樣，
+   這次是從 `call-tool.ts` 一個新的前置拒絕點重新打開。
+
+另外把 adversarial 自己標「send-back-with-fix」的三條 MED（A3 `ENGINE_STATE_DENY` 列表不完整又
+不認 operator override、A4 不變式沒隨姿態 C 改成 conditional 且 `rtm.md` REQ-218 那列指錯機制、
+A5 `confinementPosture` hop-2 沒有佈線鎖——跟這個 repo 自己記過的 `composeConfig` 佈線 bug class
+同一類）跟 quality-dimensions 的 O-1（`agent.confinement_denied` 該建但沒建，S4 探針已經測出
+POSITIVE）一起折進 `blocking_findings`——反正 architecture/impl 這兩關本來就要重跑一次。
+
+owner_decision 機械掃描：`01`–`08*.md`/`rtm.md` 零活標記（`02-architecture.md` 那一個命中是表格
+文字引用這個 key 本身，不是活標記）。順手查了 v37 三個新 ADR（082/084/085），都照這本帳本自己的
+Context/Options/Decision/Consequences/Revisit-trigger 格式，沒有沒掛 marker 的業主裁決偽裝。
+
+trace --check：2091 項/77 缺口，全部既有（REQ-144..152/186 斷鏈 + 既有 TDD/漂移/未驗證），對
+REQ-218/REQ-219 本輪 closure 零命中。dashboard_check（本 repo 自己的 trace.py 配對）0 high/7 mid
+（erDiagram 記號誤判，跟 v36 同一個已接受假陽性）/1 low（trace.py 版本較舊沒有離線 fallback，
+同樣接受）。solid_check（plugin 內建 trace.py 配對）0 mid/10 low 不變。module_check 休眠。本次
+session 沒有 playwright 工具，dashboard render 檢查降級為 static-only，已在 07-review.md 明記。
+
+送回：`send_back=[architecture, impl, validation, tests]`。`07-review.md` 已附上完整 v37 Gate 8 段
+落（含每條 finding 的 file:line 證據與獨立重驗）。`state.yaml`：`gates.review.passed=false`，
+`current_stage` 改回 `architecture`（送回鏈最前面那一關）。`.panel/` 保留（送回非空，重跑跟
+re-review 都要用）。未使用 git checkout/restore/stash，未 commit（留給 orchestrator）。
+
+## 2026-09-22 — v37 Gate 2 送回修補(architect;panel 已預跑,四份 r1/r2 全讀,未重開 panel)
+
+只修 Gate 8 點名的七條(A1/A2/C-1/A3/A4/A5/O-1),沒有重新拆解、沒有新 REQ、closure 維持
+{REQ-218, REQ-219, REQ-018, REQ-037, REQ-117}。
+
+- **A1(阻斷級)**:ARCH-181 那句「只有兩個 tool call 會放進 Bash-capable 的 agent() 工作」是
+  假的。`src/` 裡實測四個 `.start()` 呼叫點、其中**三個**真的有入口:`mcp-facade.ts:710`、
+  `webhook-registry.ts:305`、`server.ts:1015`(第二個 ticker dispatcher,兩份 r1 都漏數);
+  `scheduler.ts:363` 的 `Scheduler.trigger()` **完全沒有 production 呼叫者**(沒有 `schedule_trigger`
+  工具,唯一呼叫者是單元測試)—— 兩份 panel 都說它可達,這一關更正,並當 v38 候選歸檔;`'chain'` 只存在
+  於型別與 dashboard 字串,同樣沒有呼叫點。新增 **ARCH-182**:`RunManager.start()` 第一行一個純
+  `admissionRefusal({posture, origin})`,排在 `RUN_ADMISSION_LIMIT` 之前(不可能被收的提交不該吃掉
+  一個 slot,也不該回可重試的錯);`RunSpec.origin` 設為**必填**,由 `webhooks.createdRemote` /
+  `schedules.createdRemote` 兩個冪等欄位(建立時就寫死,`POST /hooks` 的來源 IP 故意不參與判斷)與
+  兩個 tools/call 站的 `isRemoteSubmission` 蓋章。`call-tool.ts` 的門**保留不搬**:`run_resume`
+  沒有 `RunSpec`,搬過去要改簽章又換不到覆蓋率,而且留著才保住 VAL-253 既有的真實證據。
+- **為什麼不採用 panel 最後一輪偏好的 `workflow_versions.origin`(ADR-086)**:兩份 r2 互相交叉讓步、
+  各自倒向對方的 r1,沒有可直接抄的共識。決勝點不是哪一邊論證漂亮,而是 ADR-083 那條**已被業主回答**
+  的裁決「本機發起的 run 仍不受限制」——版本列方案會讓本機啟動、但腳本是遠端註冊的 run 變成拒跑,
+  等於架構閘順手推翻一條產品裁決;而且它仍然擋不住這次真正被送回的那條路(遠端對本機腳本
+  `webhook_create`)。**遠端註冊 + 本機啟動**因此成為 ADR-086 的具名殘留,並掛上一條 pending
+  `owner_decision` 交業主。
+- **A2**:`workRoot` 未設(DEPLOY.md 明載可省略)時 `protectedFiles`/`denyRead` 整包蒸發。改成在
+  `composeConfig()` 內就把 `workRoot` 解出來(`ComposeConfigDeps.workRootDefault`,**傳值不傳
+  callable** —— 多個測試檔全域 mock `node:fs`),`confinement` 區塊無條件轉發,而且同一個值必須也送進
+  `ServerConfig.workRoot`(否則 main 算的 `auth-tokens.db` 跟 server 真正建的 tmpdir 不是同一個目錄)。
+  panel 另外要求刪掉 `server.ts:655` 的 `??` 並把 `ServerConfig.workRoot` 改必填 —— 這半條**婉拒**並
+  寫明理由(它是測試直呼 `createServer()` 的活路徑,不是本次改動變出來的死碼)。
+- **A3**:`ENGINE_STATE_DENY` 砍掉幽靈 `continuations.db`(`src/` 裡根本沒有建構點)、補上
+  `mcp-registry.db`/`self-update.db`/`_global_assets`,六個可被 operator 覆寫的路徑改成從 composed
+  config 拿**解析後的值**,完整性宣告移出常數搬進 INV-V37-4(一個真的會紅的測試,取代
+  `bash-confinement.test.ts:30` 自己比自己)。`DENY_READ_MODE` 這輪**不翻**:S7 在任何量測過的主機上都
+  是 inconclusive,兩位 lens 在 r2 也都讓步到「方向記下、翻牌綁第一台 confined 主機」。
+- **A4**:INV-V37-1/2 改寫成**依姿態成立**,把 unconfined 那條手臂明寫出來(它買到的是「沒有**遠端提交**
+  的 Bash 寫入」,不是「沒有 Bash 寫入」);`rtm.md:240` 補上 ARCH-181/182、DES-261/262、IMPL-375/376,
+  並把兩條未覆蓋的暴露(跨 run 讀取、遠端註冊+本機啟動)寫成文字而不是靠 ✅ 暗示。
+- **C-1 / A5 / O-1**:`CONFINEMENT_UNAVAILABLE` 進 `ERROR_CATALOG` 與兩支工具的 `errors:`、
+  `refusalEnvelope(code: ErrorCode)`(型別比測試小又關掉整類);INV-V37-5 要求 `confinementPosture` 與
+  `isRemoteSubmission` 每一跳都要有接線鎖;ARCH-178 明記 `agent.confinement_denied`**即使 S4 是正面也
+  延到 v38**,觸發條件寫成事件(第一台量到 `confined` 的主機)——在 unconfined 主機上它結構上永遠不會
+  觸發,硬做就是 VAL-255 那個恆空欄位的翻版。
+
+trace:2091/77 → 2093/77(只多兩個新項目,缺口數與基線相同;基線在動筆前先存成檔,未用
+`git checkout/restore/stash`)。`state.yaml`:`gates.architecture.passed=true`、`current_stage=design`。
+
+- **同閘自我複核(2026-09-22,architect,回報前最後一步)**:A3 那條修正自己數錯了一格 ——
+  ARCH-175 修正案原本把 `mcp-registry.db` / `self-update.db` / `_global_assets` 三個都放進「無旋鈕字面值」
+  半邊,並宣稱「三個都沒有 `FileConfig` 鍵」。回頭對 `src/` 實查:`selfUpdateDbPath` **有**鍵
+  (`main.ts:105` 白名單、`main.ts:323` 轉發,`server.ts:672` 是 `config.selfUpdateDbPath ?? join(workRoot,
+  'self-update.db')`),所以它屬於「從 composed config 拿解析值」那半邊(第 3 點本來就已經列了它,整條因此
+  自相矛盾)。`_global_assets` 則確認是掛在 `workRoot` 而不是可覆寫的 `assetRoot` 下,留在字面值半邊正確。
+  已就地更正 ARCH-175 第 1 點並寫明為什麼——在一條「清單不完整」的送回意見裡再分錯一條路徑,就是同一個
+  缺陷再演一次。trace 仍為 2093/77(純文字更正,無新項目)。
+
+## 2026-09-22 — v37 Gate 6 送回修補(implementer)—— PARTIAL,A1 上呈 needs_clarification,未過
+
+同一輪 Gate 8 七條(A1/A2/C-1/A3/A4/A5/O-1)的 impl 面。只動這七條點名的項目,沒有重新拆解、沒有
+新 REQ,closure 維持 {REQ-218, REQ-219, REQ-018, REQ-037, REQ-117}。**這次沒有過 —— A1 仍未關閉**,
+`gates.impl.passed`/`current_stage` 因此不動,理由見下。
+
+**先確認範圍(動筆前)**:`git diff --stat` 顯示這輪只有架構/review/journal/state/dashboard/rtm/panel
+動過,`03-tasks.md`/`04-design.md`/`05-tests.md`/`06-impl-log.md` 全部乾淨 —— 架構師這輪新增的
+**ARCH-182**(`RunManager.start()` 的 admission 判定)是全新一列,不是就地修訂舊列,而且 review 的
+`send_back=[architecture,impl,validation,tests]` 清單裡雖然有 tests,但 05-tests.md 尚未被任何 agent
+動過。也就是說 ARCH-182 目前 Gate 3(tasks+design)/Gate 5(test-first)都是空的。
+
+**A1 —— 停手,列為 needs_clarification,不做**:finding 原文說「fixed looks like: … keyed on
+startedBy-derived remoteness」,但架構師發現 `startedBy` 本身不帶遠端性,因此改設計成
+`RunSpec.origin` **必填**新欄位 + `webhooks.createdRemote`/`schedules.createdRemote` 兩個 DB
+migration + 四個呼叫點的錯誤映射(含幫 `Scheduler.trigger()` 補 try/catch)——這已經超出 finding
+原文描述的範圍,而且完全沒有 DES/TASK/UT 承接。本合約的前提是「Gate 5 測試先紅」、Exit Gate 明文禁止
+「未經測試的行為」,ARCH-182 這個尺寸(一個必填欄位牽動 src/ 與 tests/ 內每一個 `RunSpec` 建構點)不是
+可以在沒有紅測試的情況下由 impl 自行補課的範圍——回報,不擴大範圍、不用 stub 交差。
+
+**A2(main.ts:252/439,ARCH-177 修訂)—— 已修**:`ComposeConfigDeps` 新增 `workRootDefault?: string`
+(傳值不傳 callable,理由與 `confinementProbe` 相同——多個測試檔全域 `vi.mock('node:fs')`)。
+`main()` 真正開機路徑用一次 `mkdtempSync` 算出這個值(只在 operator 完全沒設 workRoot 時才算,避免
+白白建一個沒人用的 tmp 目錄);`--check-config` 傳一個明確標註「未真的建立」的佔位字串,維持該指令
+「無副作用」的承諾。`composeConfig()` 內部 `workRoot = explicitWorkRoot ?? deps.workRootDefault`——
+`explicitWorkRoot`(舊行為)仍然用來擋 `assertWorkRootIsolated()` 與「有 grant 卻沒 workRoot 就拒絕開機」
+這條(一個每次開機都換位置的 tmp 目錄,對 operator 自己宣告的 grant 而言不是有意義的錨點);而
+**帶預設值的** `workRoot` 才是 `ServerConfig.workRoot`/`protectedFiles`/gateway `confinement` 區塊
+共用的那一個值——同一份解析,一個值,兩邊都吃到。`confinement` 區塊改成無條件轉發(刪掉
+`workRoot ? {...} : {}` 這道 guard),連帶把 `ClaudeAgentSdkGatewayConfig.confinement.workRoot`
+的型別從 `string` 放寬成 `string | undefined`(每個既有讀取點早就用 `?.`/`??`,行為不變,純粹解開型別
+限制讓無條件轉發能過編譯)。`server.ts:655` 自己的 `??` tmpdir 後備**留著不動**(直接呼叫
+`createServer()` 的測試仍然吃得到)——finding 允許的「刪掉 + 改必填」那半選項這裡**婉拒**,手術式
+變動原則,理由寫在 IMPL-380。**一處判斷偏離架構文字的地方,記下來**:ARCH-177 修訂案的原文寫
+`workRootDefault: string`(必填),照字面會逼 ~80 個既有 `composeConfig()` 測試呼叫點(光
+`compose-config-v2-wiring.test.ts` 就 49 個)全部補這個參數——這不是 finding 或這條修訂案的本意
+(它自己也說「every existing test call site」是既有慣例),因此實作成**選填**、只在生產呼叫點保證有值,
+安全結論(生產環境 `protectedFiles`/`denyRead` 永遠不會因為沒設 `workRoot` 而蒸發)照樣成立;此偏離
+寫進 IMPL-380 供覆核,不算 needs_clarification(不影響安全語意,是工程折衷)。
+
+**A3(bash-confinement.ts:25-27/56,ARCH-175 修訂)—— 已修**:`ENGINE_STATE_DENY` 從 8 項砍成真正
+「無旋鈕字面值」的 5 項(`store`/`catalog.db`/`auth-tokens.db`/`mcp-registry.db`/`_global_assets`);
+`cas`/`assets`/`webhooks.db`/`schedules.db` 搬出去(它們各自有 `FileConfig` 覆寫鍵,從鍵名重新推導
+正是 INV-V37-4 要擋的那個 bug class);`continuations.db` 當幽靈刪掉(`continuationDbPath` 在
+`src/` 裡零建構點,已存成 v38 候選,這關不修)。`composeConfig()` 新增六個 `resolved*` 區域變數,鏡射
+`server.ts` 各自的預設(如 `fileConfig.casDir ?? (workRoot ? join(workRoot,'cas') : undefined)`),全部
+併進 `protectedFiles`,由既有的 `buildBashConfinement()` 摺進 `denyRead`/`credentials.files`——純函式
+保持純,解析是組裝根的責任。**`bash-confinement.test.ts:30` 那條斷言沒有刪**——它測的是
+`buildBashConfinement()` 自己的 join/concat 邏輯(一個真的會壞的問題),跟「`ENGINE_STATE_DENY` 有沒有
+漏列」是兩件事,後者才是常數比自己複本永遠測不出來的那個坑;INV-V37-4 真正的完整性守門改放在
+`sandbox-config-wiring.test.ts` 的新案例(operator 覆寫 `casDir`/`selfUpdateDbPath` 時,`protectedFiles`
+要含覆寫值、不含預設值)——這條是對「組裝完的 config」斷言,覆寫值一旦在轉發途中掉了就會紅。此判斷
+(「must die」讀成「換一個會紅的守門」而非逐字刪除)記在 IMPL-380,供覆核。
+
+**A5(INV-V37-5)—— 已修**:`confinementPosture` 從 `deps.confinementProbe` 轉發到兩個地方
+(`ServerConfig` 本身、以及 sdk 分支建構出的 gateway)之前完全沒有接線鎖,跟旁邊 `allowHostPaths` 那條
+既有鎖的形狀不對稱。生產程式碼本身沒問題(ARCH-177 前一輪已經接好)——缺的是測試。新增
+`compose-config-v2-wiring.test.ts` 一個 `it()`(緊鄰既有 `allowHostPaths` 鎖),同一次呼叫斷言兩個
+轉發點,任一邊掉了都會紅(新 UT-328)。
+
+**C-1(errors.ts/tool-specs.ts/call-tool.ts)—— 已修**:`CONFINEMENT_UNAVAILABLE` 加進
+`ERROR_CATALOG`(`see: 'workflow_authoring_guide'`,跟門自己的程式碼註解已經援引的
+`INLINE_SCRIPT_CLOSED` 同一個先例)、`run_start`/`run_resume` 的 `errors:` 廣告陣列、以及
+`refusalEnvelope` 的 `code` 參數從 `string` 改型別為 `ErrorCode`——型別關掉一整類(這個函式以後不可能
+再讓未編目代碼溜出去),測試只關掉一個實例。沒有新增專屬測試:既有的通用掃描
+(`error-catalog.test.ts`「每個鍵都有 `see`+`hint`」、`advertised-surface-truth.test.ts`/
+`error-envelope-see-pointer.test.ts` 的廣告-vs-實丟一致性)直接重跑就綠,親自確認過而非假設。
+
+**A4/O-1 —— 這關之前(architect,Gate 2 送回)已經關閉,這輪沒動**:重讀 `02-architecture.md`
+確認 `INV-V37-1`/`INV-V37-2` 已改寫成依姿態成立、`rtm.md:240` 已補 ARCH-181/182 引用、`ARCH-178`
+已明寫 `agent.confinement_denied` 延到 v38 且給了事件化觸發條件——原地驗證,沒有重做。
+
+**自我抓到的缺陷,修過**:`06-impl-log.md`/`05-tests.md` 的 `traces:` 欄位一開始寫了
+`INV-V37-4`/`INV-V37-5`/`INV-V37-1`/`INV-V37-2`,但 `trace.py` 的 ID 正則對「兩段連字號」的
+`INV-V37-N` 形狀會誤解析成裸的 `V37-N`(不存在的 ID)——造成 5 個假的「斷鏈」缺口(77→82)。改成只在
+內文散文提這些不變式(跟整份帳本既有寫法一致,`INV-V37-*` 從來不是機讀 `traces:` 的合法目標),
+trace 缺口數變回 77(2093/77 → 2098/77,純新增 5 項、零新缺口)。
+
+`npx tsc --noEmit -p tsconfig.json`/`-p tsconfig.server.json`:皆乾淨。目標測試檔全綠(102 + 63 +
+6 個相關套件,見 06-impl-log.md IMPL-380..383 逐項)。**全套 `npx vitest run` 這輪背景跑完一次**:
+457 檔通過 / 1 檔跳過(共 458),3353 條測試通過 / 27 條跳過(共 3380),**0 失敗**,682.04s
+(啟動於改動 `docs/AUTHORING.md` 之前,但 `authoring-md-generated.test.ts` 排到晚才跑,吃到已修正版,
+綠;之後又獨立重跑過一次確認,同樣綠)。C-1 順手抓到一個沒列在七條裡的連帶缺陷並已修:
+`CONFINEMENT_UNAVAILABLE` 進 `ERROR_CATALOG` 後,`authoring-guide.ts` 是從 `ERROR_CATALOG` 機械產生
+指南裡的錯誤代碼表(TASK-256/DES-258),連帶讓 `docs/AUTHORING.md` 跟即時產生的內容之間的 byte-lock
+測試變紅——`npm run gen:authoring` 重新產生後轉綠,新增的一行已核對(`git diff docs/AUTHORING.md`)。
+trace baseline 在動筆前先存成 scratch 檔案讀取,未用 `git checkout/restore/stash`。
+`state.yaml`:`gates.impl.passed`/`current_stage` 皆**不動**(這輪沒有整體過關)。
+owner_decisions=[](ADR-086 那條 pending 是架構師的裁決留白,不是這次新掛的,在報告 owner_decisions
+欄位如實回報但不重複標記)。needs_clarification=[A1]。

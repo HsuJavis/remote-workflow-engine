@@ -138,10 +138,40 @@ describe('UT-312 protectedFiles come from the file loadFileConfig() actually rea
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('no config file on disk ⇒ protectedFiles is just the auth DB', async () => {
+  // v37 Gate-8 send-back (finding A3, ARCH-175 amendment): no config file on disk still means
+  // `deps.configPath` contributes nothing, but `protectedFiles` is no longer JUST the auth DB —
+  // every operator-overridable engine path (casDir/assetRoot/webhookDbPath/schedulerDbPath/
+  // selfUpdateDbPath/continuationDbPath) reaches it too, resolved to its own server.ts-matching
+  // default, because `denyRead` may never depend on an override having been EXPLICITLY set
+  // (INV-V37-4).
+  it('no config file on disk ⇒ protectedFiles is the auth DB plus every engine path\'s own default', async () => {
     const workRoot = makeWorkRoot();
     const cfg = await composeConfig({ gateway: 'sdk', workRoot } as any, FAKE_DEPS);
-    expect(gatewayConfinement(cfg)?.protectedFiles).toEqual([join(workRoot, 'auth-tokens.db')]);
+    expect(gatewayConfinement(cfg)?.protectedFiles).toEqual([
+      join(workRoot, 'auth-tokens.db'),
+      join(workRoot, 'cas'),
+      join(workRoot, 'assets'),
+      join(workRoot, 'webhooks.db'),
+      join(workRoot, 'schedules.db'),
+      join(workRoot, 'self-update.db'),
+      join(workRoot, 'continuations.db'),
+    ]);
+    rmSync(workRoot, { recursive: true, force: true });
+  });
+
+  // v37 Gate-8 send-back (finding A3): the OVERRIDE case — an operator-set casDir/assetRoot/etc.
+  // (pointing wherever they like) reaches protectedFiles as the RESOLVED value, never the key name,
+  // so a grant covering it is refused for the first time.
+  it('an operator-overridden casDir/selfUpdateDbPath reaches protectedFiles as the resolved value, not the default', async () => {
+    const workRoot = makeWorkRoot();
+    const customCas = join(workRoot, 'custom-cas');
+    const customSelfUpdate = join(workRoot, 'custom-selfupdate.db');
+    const cfg = await composeConfig({ gateway: 'sdk', workRoot, casDir: customCas, selfUpdateDbPath: customSelfUpdate } as any, FAKE_DEPS);
+    const protectedFiles = gatewayConfinement(cfg)?.protectedFiles ?? [];
+    expect(protectedFiles).toContain(customCas);
+    expect(protectedFiles).toContain(customSelfUpdate);
+    expect(protectedFiles).not.toContain(join(workRoot, 'cas'));
+    expect(protectedFiles).not.toContain(join(workRoot, 'self-update.db'));
     rmSync(workRoot, { recursive: true, force: true });
   });
 });

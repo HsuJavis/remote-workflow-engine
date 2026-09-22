@@ -404,3 +404,461 @@ and works. I would not accept a third.
 - **Supersedes**: ADR-006 / DES-106 (the `session-options-builder` fence).
 - **Open**: C2 (declaration principal).
 - **Blocking evidence required before this ADR is binding**: the §1 spike, on the *remote* host.
+
+---
+---
+
+# ADDENDUM — v37 Gate 8 send-back, debate round 1 (independent)
+
+**Date**: 2026-09-22 · **Round**: send-back r1, independent (I have not read the other group's
+send-back round). **Lens bundle unchanged**: (a) Security · (b) Scalability/performance ·
+(c) Testability, Karpathy simplicity-first as tie-breaker.
+
+**Scope discipline.** This addendum answers ONLY the Gate 8 findings routed to *architecture*
+(A1, A2, A3, A4, O-1) plus the two routed elsewhere that need an architectural sentence to land
+(A5, C-1), plus the LOW items that turn out to be the same object as A3 (A6, A8). Everything above
+this line stands: ADR-082/083/084/085 are cited by name elsewhere in this ledger and I refuse to
+re-debate REQ-218's mechanism choice from zero.
+
+**Explicitly NOT reopened:** ADR-083's `owner_decision` (posture **C**, 不動主機). No posture flip,
+no new config key to select a posture, no re-litigation of (A) vs (C). My whole argument below is
+that the shipped implementation **under-delivers the owner's own ruling**, and my job is to make the
+code mean what 裁決理由 (1) says — 「遠端提交」— not to trade the ruling for something else.
+
+**Altitude call, re-affirmed.** Still both-altitudes, still an *agent-altitude* problem. One
+correction to my own §0 above, which Gate 8's A1 proves I got half wrong: I wrote that
+「forged token / brute force」 is system-altitude and therefore out of scope. A1 shows the system
+altitude re-enters through a side door — **the agent-altitude control was installed on exactly one
+of the system altitude's four admission routes.** The confinement question is agent-altitude; the
+question *"which requests are subject to it"* is a plain authz-surface question and must be argued
+with system-altitude rigour. I under-applied my own lens (a) last round; below I do not.
+
+---
+
+## Summary (addendum)
+
+Seven findings, five rulings, one new finding of my own. In one line each:
+
+- **A1** → the door is at the wrong layer *and* keyed on the wrong fact. One pure predicate at ONE
+  choke point (`RunManager.start`/`resume`), keyed on **provenance** (`RunSpec.origin`) rather than
+  the live socket peer; `call-tool.ts:120` deleted, not duplicated into three more sites.
+- **A2** → do not defend against the `workRoot`-absent state, **delete it**: one owner
+  (`composeConfig()`) resolves the default, `server.ts:655`'s second default goes.
+- **A3 + A6 + A8** → one finding, dissolved by reading the SDK's own schema: flip
+  `DENY_READ_MODE` to `'workroot'` and **delete** `ENGINE_STATE_DENY` and the `'enumerated'` arm.
+  A3's incomplete list stops being incomplete by ceasing to exist; A6's "dead code" is inverted
+  (the shipped arm is the dead one); A8 resolves in ARCH-176's favour.
+- **A9 (NEW, mine)** → the SDK's `filesystem.allowRead` is a **re-allow punch-out of `denyRead`,
+  not an allowlist** (`sdk.d.ts:5863-5865`), so sandbox reads are **default-allow**. Consequence:
+  the third exposure REQ-218's own 風險面 names — 「其他 run 的 workspace」 — is **not covered at
+  all by the `confined` arm we shipped**, and `allowRead: allowPaths` is a no-op under
+  `'enumerated'`. This is the finding that decides A3/A6/A8.
+- **A4 / O-1** → doc-truth repairs: INV-V37-1/2 reworded posture-conditional with the `unconfined`
+  branch stated out loud; `rtm.md:240` re-pointed; ARCH-178 amended to record the
+  `confinement_denied` deferral with an event-shaped trigger.
+- **A5 / C-1** → routed elsewhere; architecture owes one sentence each. ARCH-182 **deletes** one of
+  A5's two silently-insecure hops outright, and C-1's whole class closes by typing
+  `refusalEnvelope(code: ErrorCode, …)` — a type is smaller than a test.
+
+**Headline**: the v37 confinement is installed on one of four doors and keyed on transport instead
+of provenance, and its read side is a no-op — all three are structural, and all three get smaller,
+not bigger, when fixed.
+
+---
+
+## A1 — the door is at the wrong layer AND keyed on the wrong fact
+
+**Security (a).** I accept Gate 8's finding and raise its severity's *reason*. The reviewer frames
+it as "3 of 4 admission sites un-gated". Verified independently this round —
+`grep -rn "\.start({" src/` outside `run-manager.ts` returns exactly four sites:
+`mcp-facade.ts:710` (gated), `webhook-registry.ts:305`, `scheduler.ts:363`, `server.ts:1015`. Note
+the last two: **the scheduler has two dispatchers**, an injected `Scheduler.dispatch` and a second
+ticker driver inlined in `server.ts`. That is this ledger's own K1 twin-divergence class, already
+named in v36. Any fix that adds the predicate *at the call sites* must be written four times and
+will be wrong at three of them within two iterations. This is not an argument about tidiness; it is
+the argument that decides the layer.
+
+**The deeper defect is the key, not the count.** `call-tool.ts:120` keys on
+`isRemoteSubmission = !isLoopbackPeer(req.socket.remoteAddress, headers)` — a fact about the *live
+TCP peer of the request currently on the wire*. ADR-083 裁決理由 (1) says the threat is
+「另一台機器送來的工作流程」 — a fact about **where the work came from**, which is provenance, not
+transport. On three of the four routes those two facts are not the same fact:
+
+| route | live peer at fire time | provenance of the work |
+|---|---|---|
+| `tools/call run_start` | the caller | same — the only route where peer == provenance |
+| `POST /hooks/:id` | whoever holds the HMAC secret | the principal who called `webhook_create` |
+| scheduler tick (×2) | **none — there is no request** | the principal who called `schedule_create` |
+
+So the cheap repair — "thread `isRemoteSubmission` into the webhook path too, it is already computed
+in `server.ts:1168`" — is **wrong in both directions** and I want that on the record before anyone
+proposes it in r2:
+
+- *It leaks.* Remote attacker (authenticated, which the incident's attacker was) calls
+  `webhook_create` — un-gated, it is not `run_start` — receives the secret, then fires
+  `POST /hooks/<id>` from `curl` on the box, or simply waits for the legitimate local integration
+  to fire it. Peer is loopback ⇒ admitted ⇒ unconfined Bash ⇒ `$HOME`. The control is bypassed by
+  one HTTP request from the wrong-but-allowed direction.
+- *It over-refuses.* The operator's own locally-created webhook, fired by GitHub as designed, has a
+  non-loopback peer ⇒ refused. We would break the product's advertised purpose to protect against
+  a threat that route does not carry.
+
+**Ruling (proposed ARCH-182).** One predicate, one choke point, one fact:
+
+1. **Fact**: add `origin: 'local' | 'remote'` to `RunSpec`, stamped at the moment the work is
+   *admitted*, never re-derived downstream.
+2. **Choke point**: evaluate it inside `RunManager.start()` and `RunManager.resume()`. All four
+   `start` sites and the one `resume` site already converge there; `call-tool.ts:120`'s door is
+   then **deleted, not duplicated**. Net call sites carrying the rule: 1, down from 1-of-4.
+3. **Predicate**: one pure exported function
+   `admissionRefusal({posture, origin}): 'CONFINEMENT_UNAVAILABLE' | null`. Pure, two scalar inputs,
+   no clock, no fs — the same discipline `buildBashConfinement()` already earned.
+4. **Provenance for deferred triggers**: stamp at creation, in **both** trigger stores, using the
+   idempotent `ALTER TABLE … ADD COLUMN` idiom that already exists verbatim in both files
+   (`scheduler.ts:193-198`, `webhook-registry.ts`'s own v24 rebuild block). `webhooks.createdRemote`
+   and `schedules.createdRemote`, written from the *creating* `tools/call`'s own
+   `isRemoteSubmission`. Prior art that per-trigger provenance is an accepted shape here:
+   `run_origins` (`scheduler.ts:183`) already exists and already keys runs to their trigger.
+
+**Karpathy check, argued honestly because it is close.** The cheap alternative is one rule + one
+column + a named hole: use the live peer for `tools/call` and webhooks, and stamp only
+`schedules.createdRemote` (the one route with no peer at all). That is genuinely smaller — one
+migration instead of two. **I reject it**, and the reason is not aesthetic: it keeps *two different
+meanings of the word "remote" in one system*, which is precisely the defect that produced A1. The
+webhook leak above is not a corner case; it is the shortest path from the incident's own attacker
+position to the incident's own outcome. Two columns vs. one is the smallest price I know for making
+「遠端提交」 mean one thing. Simplicity-first means the minimum architecture that *solves the
+problem* — a rule that means two things has not solved it.
+
+**Scalability (b).** Neutral-to-positive. The predicate is two scalar comparisons on a path that
+already does `INSERT INTO runs` — unmeasurable. The provenance columns are read once per firing on
+paths that already `SELECT` the trigger row (`webhook-registry.ts:305` and `scheduler.ts:363` both
+have `row`/`target` in hand), so **zero new queries**; I insist the column be read from the row the
+route already fetched, never by a second `SELECT` keyed on id. No index needed: both reads are by
+primary key.
+
+**Testability (c).** Strongly positive and this is the lens that makes the choke point cheap. Today
+the rule is reachable only through `callTool()`, which means testing "does a scheduled firing get
+refused?" requires standing up an HTTP server, a ticker and a clock. With the predicate extracted:
+one pure unit test with a 2×2 truth table, plus one integration test per route asserting the
+`origin` value handed to a fake `RunManager`. Four tiny tests replace one expensive one, and the
+四-site census becomes a mechanical guard: a test that asserts `RunSpec.origin` is required (not
+optional) makes the compiler refuse a fifth admission site that forgets it. **That is the real fix
+for the 4-sites class** — not a lint rule, a required field.
+
+**Residual I am NOT solving, stated rather than glossed** (this is the honest cost of my own pick):
+a *local* principal remains unconstrained by design (ADR-083: 「本機發起的 run 仍不受限制」), so
+anyone who can reach loopback — including any other process on the box, including a compromised
+unrelated service doing SSRF to `127.0.0.1` — can still submit unconfined work. Posture C buys
+「遠端提交動不了 `$HOME`」 and nothing more. DEPLOY.md must not round that up.
+
+**Resume semantics, ruled explicitly** (the reviewer's A1 does not reach this, and `resume(runId)`
+has no origin of its own). Two origins exist at a resume: the **stored** `RunSpec.origin` of the
+original start, and the **resume request's own** remoteness. They can disagree — a run admitted
+remotely while the posture was `confined`, then resumed locally after the posture flips to
+`unconfined`, carries remote-authored Bash into an unconfined session. **Rule: refuse if EITHER is
+`remote`.** Anything else picks one of two true facts and discards the other, which is the A1 defect
+in miniature. For a legacy `runs` row predating the column, resolve to `'remote'` — and note this
+is the *opposite* of R3's ruling for trigger rows, deliberately: a stale suspended run has no
+operational continuity to protect (the operator re-submits), whereas disabling every existing
+schedule is an outage. The asymmetry is a decision, not an inconsistency, and belongs in the ADR
+text.
+
+**One observability clause the R3 mitigation depends on**: `createdRemote` must surface in
+`webhook_list` and `schedule_list` output. The DEPLOY rider asks the operator to 「review existing
+triggers once」 — that is not a performable instruction unless the value is visible on the tool
+surface they already use. One field on two existing projections, no new tool.
+
+---
+
+## A2 — the fix is to delete the optionality, not to defend against it
+
+**Security (a).** Confirmed on disk and it is worse than the reviewer's framing. `main.ts:252`
+computes `protectedFiles` unconditionally, `main.ts:439` forwards the whole `confinement` block only
+`if (workRoot)`, and `claude-agent-sdk-client.ts:120` types `confinement.workRoot` as non-optional —
+so the omission is *forced by the type*, all-or-nothing. On a host with no `workRoot` key (a
+configuration `DEPLOY.md:511-530` documents as supported, 必須=否), the run is not merely "less
+confined": `denyRead` and `credentials.files` both evaporate to `[]`, i.e. the config file with the
+Google client secret and `auth-tokens.db` become readable **by the confined arm itself**. A control
+that is absent is at least honest; a control that reports `enabled: true` with an empty policy is a
+false green, which is the exact class REQ-219 exists to kill *in the same iteration*.
+
+**Ruling (proposed ARCH-183): `workRoot` becomes a resolved `string` before `composeConfig()`
+returns, and there is exactly ONE place it acquires a default.** Today there are two
+(`main.ts:240` reads the explicit value; `server.ts:655` does `?? mkdtempSync(...)`), and that
+two-defaults shape is *the mechanism of this bug* — the downstream consumer defaults independently,
+so upstream can hand on `undefined` without anything looking broken. I rule `composeConfig()` the
+single owner: it resolves the tmpdir default, `ServerConfig.workRoot` becomes required, and
+`server.ts:655`'s `??` is **deleted** rather than left as a convenience. If the test suite relies
+on that convenience, the fix is a test helper that fills it in, not a second production default —
+a default that exists only for tests is a production code path nobody tests.
+
+**Second consequence, which is why this is worth doing properly**: the same absence makes IMPL-377's
+brand-new REQ-021 intra-run re-walk inert (`claude-agent-sdk-client.ts:705`). One `undefined`
+silently disables two different v37 controls. After ARCH-183 neither can be disabled by omission,
+because there is no omission to make.
+
+**Scalability (b).** One `mkdtemp` at boot instead of one `mkdtemp` at boot. Nil.
+
+**Testability (c).** Net simplification: every test that today has to decide whether to pass
+`workRoot` stops deciding. I flag the one real cost — this is a **breaking change to
+`ServerConfig`**, so every `createServer({...})` call site in the suite needs the field. That is a
+large mechanical diff on a tree ~20 implementers share, and it must therefore be ONE task with ONE
+owner and ONE commit, per the same file-ownership rule TASK-253 already applies. Do not let it ride
+inside another card.
+
+---
+
+## A3 + A6 + A8 — these are one finding, and a grep of the SDK's own schema dissolves it
+
+This is my largest contribution this round, and it changes what A3's fix should be.
+
+**The measurement.** `node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts:5849-5870`, the doc
+comments on `filesystem`:
+
+- `denyRead` — *"Additional paths to **deny** reading within the sandbox."*
+- `allowRead` — *"Paths to **re-allow** reading within `denyRead` regions. **Takes precedence over
+  `denyRead`** for matching paths."*
+- `allowManagedReadPathsOnly` — *"When true (**set in managed settings**), only `allowRead` paths
+  from `policySettings` are used."*
+
+**Therefore reads are DEFAULT-ALLOW.** `allowRead` is a punch-out of `denyRead`, not an allowlist.
+Three consequences, all of which land on the shipped code:
+
+1. **A8 is resolved, in ARCH-176's favour** — the CLI's own paths survive confinement, because
+   nothing denies them. ARCH-175's `api` row, which reads as though `allowRead` restricts reads to
+   the workspace and grants, is **factually wrong** and must be corrected. It is currently the only
+   place a reader learns what the read posture is.
+2. **`allowRead: allowPaths` in the shipped builder is a no-op**, not a control. Under
+   `DENY_READ_MODE='enumerated'` the `denyRead` entries are `join(workRoot, <engine dir>)` and the
+   `allowRead` entries are the run workspace + grants — **disjoint sets**, so the punch-out punches
+   nothing out. We ship a field that does nothing, in the module whose stated purpose is that
+   「the posture IS the design」.
+3. **A9 (new this round): REQ-218's own 風險面 is not met by the shipped arm.** The requirement
+   names three read exposures — `rwe.config.json`, `auth-tokens.db`, **「其他 run 的 workspace」**.
+   The first two are covered (`protectedFiles` + `credentials.files`). The third is **not covered at
+   all**. Verified on disk rather than assumed, since ADR-086 stands on it: a run's workspace is
+   `join(workRoot, 'workflows', <name>, 'runs', <runId>)`
+   (`workflow-catalog.ts:944-951`, consumed at `run-manager.ts:689`/`:1151`), so **every run's
+   workspace is a sibling under `workRoot`**; `ENGINE_STATE_DENY` deliberately excludes them
+   (ARCH-175's own note: 「not a stale sibling run-directory list」), and with default-allow reads
+   there is nothing else. The builder's `root` is likewise engine-supplied, not author-supplied —
+   it is `req.workspace ?? cfg.cwd` (`claude-agent-sdk-client.ts:742`) and `req.workspace` is the
+   sandbox host's own `entry.workspace` (`run-manager.ts:1553`), never a value a workflow script
+   chooses — so `denyRead: [workRoot]` + `allowRead: [root]` composes as intended with no extra
+   containment check needed. **Precondition, stated so it cannot silently lapse**: if a future
+   iteration ever lets an author pass a `workspace`, ADR-086 requires that value to be
+   containment-checked against `workRoot` before it reaches the builder. An agent in run A can read run B's workspace — including run B's
+   seeded source, prompts and outputs — under the *confined* arm. Cross-tenant read, in the arm we
+   call the control.
+
+**Ruling (proposed ADR-086): flip `DENY_READ_MODE` to `'workroot'` and delete the `'enumerated'`
+arm together with `ENGINE_STATE_DENY`.** `denyRead = [workRoot, ...protectedFiles]` with
+`allowRead = [this run's workspace, ...grants]` is the composition the SDK schema actually
+implements: deny the whole tree, punch out this run's own workspace. It covers engine state,
+covers sibling workspaces (A9), and needs **no hand-maintained list** — which means:
+
+- **A3 does not get "a completeness invariant" or "an operator-config-driven derivation". A3
+  ceases to exist**, because the enumeration it is about is deleted. This is the Karpathy answer in
+  its strongest form: the finding says "this hand-maintained list is incomplete"; the right move is
+  to notice the list should never have existed.
+- **A6 inverts.** A6 files the `'workroot'` branch as dead code to delete. It is the opposite: it
+  is the only branch that implements the requirement, and the branch that ships is the dead one.
+  Deleting the wrong one would have locked in A9 permanently.
+- **The one residue A3 correctly identifies survives and must be handled explicitly:** operator path
+  overrides (`casDir`, `webhookDbPath`, `schedulerDbPath`, `continuationDbPath`, `assetRoot`,
+  `selfUpdateDbPath`) can point **outside** `workRoot` — verified, `server.ts:812` is
+  `config?.webhookDbPath ?? join(workRoot, 'webhooks.db')`. `denyRead: [workRoot]` does not reach
+  them. So `denyRead` must be `[workRoot, ...enginePathsFromTheComposedConfig, ...protectedFiles]`,
+  where the engine paths are taken as **values off the composed config object**, never re-derived
+  from key names. That is a derivation from one source of truth, not a second list.
+
+**Invariant (proposed INV-V37-4).** *Every config value that names a filesystem path the engine
+itself writes must appear in the confinement's `denyRead`.* Unlike A3's suggestion this is
+**mechanically checkable**: a test enumerates the path-typed keys of the composed config and asserts
+each resolved value is contained in some `denyRead` entry. It fails the day someone adds a seventh
+path key — which is exactly the failure the current tautological test
+(`bash-confinement.test.ts:30`, asserting the constant against itself) can never produce.
+
+**Security (a).** Strictly widens the control; closes a cross-run read the requirement named.
+**Scalability (b).** `denyRead` shrinks from 8+N entries to ~2+N; per-call allocation is smaller.
+Deleting a branch and a constant removes code from a hot-ish path.
+**Testability (c).** Mixed and I will not pretend otherwise: the new invariant test is real work
+(it needs a composed-config fixture), and **none of this is measurable on any host this ledger has
+touched** — the `confined` arm has never executed a real Bash call (S1/S9). I am ruling on schema
+reading, not on a real run. That is a genuine weakness of this ruling and the reason I give it a
+named revisit trigger: *the first host that measures `confined` must re-run the read-side arms
+before anyone treats this as verified.* It is still strictly better than shipping a field the schema
+says does nothing plus a list the requirement says is the wrong list.
+
+---
+
+## A4 — the invariants are false as written; posture-conditional is not a weakening
+
+INV-V37-1 (「No agent Bash write may land outside…」) and INV-V37-2 are written as unconditional
+global truths. Under the owner's own accepted posture C on this host, **every local run violates
+INV-V37-1** — the sandbox is not attempted at all. An invariant that the shipping system violates on
+every run is not an invariant; it is a slogan, and INV-V37-3 (which v37 itself introduced) exists
+precisely to forbid this shape of claim.
+
+**Ruling:** reword both as posture-conditional — *"When the boot probe measures `confined`, …"* —
+and add the second half explicitly: *"When it measures `unconfined`, no filesystem confinement is
+attempted for any run; the only control in force is the admission refusal of remote-origin work
+(ARCH-182)."* Naming the `unconfined` branch is the point. A reader must not have to infer the
+degraded posture from the absence of a sentence.
+
+Same repair on `rtm.md:240`: REQ-218's trace row cites ARCH-175..178 (the arm that does not run) and
+omits ARCH-181/DES-261/262/IMPL-375/376 (the arm that does). Given my A1 ruling, the corrected row
+should cite the **choke-point** rows, so this edit should land after ARCH-182 has an id — not
+before, or it will need a second edit.
+
+**Testability note (c):** an invariant with a stated condition is testable (assert the condition,
+assert the consequence). An unconditional one that is false is not testable at all, which is why
+nothing caught it. This is the same failure mode as the tautological test in A3: both are assertions
+that cannot fail.
+
+---
+
+## O-1 — the architecture row must record what shipped, not what was predicted
+
+ARCH-178 says `agent.confinement_denied` is built *if* spike S4 is positive. S4 was positive. The
+event was not built. IMPL-374 says so honestly; `02-architecture.md` does not, so a reader of the
+architecture alone believes the event exists. Cheap and unambiguous:
+
+**Ruling:** amend ARCH-178 in place to state the deferral, with an event-shaped trigger (*"built when
+the first host measures `confined`, since a denial event on a host that never attempts confinement
+can never fire"* — which is also the honest reason it was deferred, and a good one). No new id, no
+code. **I explicitly agree with Gate 8 that building the event is not required** — on this host it
+would be an event that structurally cannot fire, which is the same defect class as VAL-255's
+always-empty `phases[].agents` field found four commits ago.
+
+---
+
+## A5 and C-1 — routed elsewhere, but each needs one architectural sentence
+
+**A5 (wiring lock, → impl+tests).** Agreed, and I want the reason on the architecture record because
+this repo's own memory names `composeConfig` mis-wiring as its recurring failure mode (twice bitten:
+v11 `updateFlagPath`, v15 auth). The *posture* hop has a property the *grant* hop does not: **both
+of its failure directions are silently insecure.** Drop `main.ts:368` ⇒ the door reads `undefined`
+⇒ every remote submission admitted. Drop `main.ts:443` ⇒ every run ships unconfined. A wiring bug
+here does not degrade to inert, it degrades to open.
+
+**Proposed INV-V37-5:** *any security-relevant field forwarded from `FileConfig` through
+`composeConfig()` carries a hop-level wiring assertion.* Note that ARCH-182 **shrinks** this
+obligation — moving the door to `RunManager` deletes the `main.ts:368` → `ToolDeps` hop entirely, so
+one of the two silently-insecure hops stops existing rather than getting a test. That is the
+tie-breaker rewarding the right structure: the cheapest guard is the hop you deleted.
+
+**C-1 (`CONFINEMENT_UNAVAILABLE` missing from `ERROR_CATALOG`, → impl).** Agreed, no architecture
+decision needed, one structural note: the root cause is that `refusalEnvelope(code: string, …)`
+takes a bare `string`. UT-164 locks catalog↔authz in one direction and cannot see an ad-hoc call
+naming a code in neither list. **Type the parameter as the closed `ErrorCode` union** and the whole
+class stops being a test's responsibility — the compiler refuses the next one. Karpathy: a type is
+smaller than a test.
+
+---
+
+## Key points (condensed)
+
+1. **ARCH-182 (proposed)** — one predicate, one choke point (`RunManager.start`/`resume`), keyed on
+   `RunSpec.origin` provenance, not the live socket peer. Delete `call-tool.ts:120`'s door.
+2. **`origin` stamped at creation in BOTH trigger stores** (`webhooks.createdRemote`,
+   `schedules.createdRemote`), idempotent-ALTER idiom already present in both files; read from the
+   row the route already fetched, zero new queries.
+3. **`RunSpec.origin` required, not optional** — the compiler, not a census, guards admission site #5.
+4. **ARCH-183 (proposed)** — `workRoot` resolved to a `string` in `composeConfig()`, `server.ts:655`'s
+   second default deleted; kills A2 and the inert REQ-021 re-walk with one change.
+5. **ADR-086 (proposed)** — `DENY_READ_MODE='workroot'`; delete the `'enumerated'` arm AND
+   `ENGINE_STATE_DENY`. A3 dissolves; A6 inverts; A8 resolves in ARCH-176's favour.
+6. **A9 (new)** — SDK reads are default-allow; `allowRead` is a punch-out. Sibling run workspaces,
+   named in REQ-218's 風險面, are readable under the *confined* arm today.
+7. **INV-V37-4 (proposed)** — every engine-written config path must appear in `denyRead`;
+   mechanically checkable, replaces a tautological assertion.
+8. **INV-V37-1/2 reworded posture-conditional**, with the `unconfined` branch stated explicitly;
+   `rtm.md:240` re-pointed after ARCH-182 gets an id.
+9. **ARCH-178 amended** to record the `confinement_denied` deferral with an event-shaped trigger.
+10. **`refusalEnvelope(code: ErrorCode, …)`** — a type, not a test, closes C-1's class.
+
+---
+
+## Risks
+
+- **R1 (highest).** The read-side ruling (ADR-086) is derived from the SDK's *doc comments*, not from
+  a real confined Bash call — no host in this ledger can execute one. If the CLI's `denyRead` does
+  not compose with `allowRead` as documented, `'workroot'` mode denies the agent its own workspace
+  and **every run dies** — the exact failure ARCH-175's note feared when it chose `'enumerated'` as
+  the built-in. *Mitigation*: the flip must be gated behind the same spike discipline TASK-250 used —
+  first host that measures `confined` runs the read-side arms before the flip is trusted. I am ruling
+  the *direction*, and the direction is safe to record now because the arm cannot execute today.
+- **R2.** Two schema migrations on live operator databases. Mitigated by the idiom already in both
+  files, but it is still two more `ALTER TABLE` lines in a boot path that has a documented history of
+  rebuild blocks (D13).
+- **R3 (the one I most want recorded).** `createdRemote INTEGER NOT NULL DEFAULT 0` grandfathers
+  every pre-existing trigger row as **local**. On the incident host, any webhook or schedule the
+  2026-09-20 remote submission left behind is whitelisted by exactly the control built to stop it.
+  *Mitigation, not a fix*: a boot WARN naming the count of un-stamped rows, plus a DEPLOY.md rider
+  that the operator reviews existing triggers once. **I am recording this as unresolved-by-design,
+  not as handled.** Fail-closed (`DEFAULT 1`) would silently break every existing operator's
+  schedules on an unconfined host, and I judge a loud-but-open default with a disclosed sweep better
+  than a silent outage — but this is a genuine security concession and the next round should push on
+  it rather than accept it because I wrote it down.
+- **R4.** ARCH-183 is a breaking `ServerConfig` change across a shared tree. Must be one task, one
+  owner, one commit (the TASK-253 rule), or it will collide with ~20 concurrent implementers.
+- **R5.** ARCH-182 deletes a control that has *real-tier evidence* (REQ-218's Gate 7.5 record proves
+  the `tools/call` door). Validation must re-earn that evidence on the new choke point, including at
+  least one webhook-path and one scheduler-path real run. Until it does, REQ-218's green is stale.
+
+---
+
+## Expected disagreements with the other lens group (quality-dimensions)
+
+1. **The two columns (consumability / replaceability).** I expect their sharpest objection here:
+   two `ALTER TABLE`s plus a new required `RunSpec` field is new persisted surface, and their
+   consumability lens will prefer the one-column variant (peer for webhooks, column for schedules)
+   or a derivation from the existing `createdBy` principal. *My pre-answer*: `createdBy` is a
+   principal **id**, and ARCH-181's own note already establishes why identity cannot answer
+   「is this remote」 — on the default loopback+auth config every local caller carries an ordinary
+   id-bearing principal. Provenance is not derivable from anything currently stored. If they
+   produce a stored fact I have missed, I will concede the column.
+2. **`RunSpec.origin` required vs. optional.** Their replaceability lens will likely want it optional
+   for backward compatibility of the `RunManager` port. I will hold: optional re-creates the
+   `undefined`-means-don't-gate failure that A5 identifies and A2 demonstrates. A security field
+   whose absence means "allow" is the bug, not the compatibility story.
+3. **ADR-086 (the read-side flip).** I expect them to resist ruling on an arm no host can execute —
+   their self-sustainability lens is rightly allergic to unmeasured decisions, and R1 is a real
+   objection. *My position*: not flipping is also an unmeasured decision, and it is the one that
+   ships a field the SDK schema says does nothing plus an exposure (A9) the requirement names. Given
+   two unmeasured options, take the one the vendor's own schema supports.
+4. **A3's shape.** They may prefer "complete the enumeration + add an invariant" (incremental, no
+   behaviour change) over "delete the enumeration". I think that is the conflict worth having in r2:
+   completing a list the requirement's own 風險面 says is the wrong list buys a green test and no
+   security.
+5. **Where I expect to agree, and will say so early to save a round**: A4's posture-conditional
+   rewording, O-1's ARCH-178 amendment, C-1's typed `ErrorCode`, and the observation that
+   `agent.confinement_denied` should NOT be built on a host where it cannot fire (their
+   observability lens usually argues for more events; here the event is structurally empty, the same
+   defect as VAL-255's `phases[].agents`, and I expect them to reach the same conclusion by their
+   own route).
+
+---
+
+## Internal conflicts within my own three lenses (surfaced, as required)
+
+- **(a) vs. Karpathy — A1's column count.** Security wants one meaning of 「remote」 (two columns).
+  Karpathy wants the smaller diff (one column, two rules, one named hole). I ruled for security and
+  the reason is narrow and checkable: the hole is not hypothetical, it is a two-request replay of the
+  incident's own attack. *Karpathy conceded to a named attack path, not to caution.*
+- **(a) vs. (c) — R3's default.** Security says `DEFAULT 1` (fail closed). Testability and
+  operability say `DEFAULT 0` with a loud WARN, because fail-closed turns an upgrade into a silent
+  outage of every existing schedule. I ruled for `DEFAULT 0` and marked it **unresolved-by-design** —
+  this is the one place in this addendum where my own security lens lost and I do not think the
+  argument is finished.
+- **(b) vs. (a) — A3's derivation.** Scalability mildly prefers the static constant (allocation-free,
+  no config walk per call). Security requires the operator-override paths. Resolved without conflict:
+  derive once at boot into a frozen array, allocate nothing per call — the composed config is
+  already boot-frozen, so this costs nothing at runtime.
+- **(c) vs. (a) — ADR-086's unmeasurability.** Testability's honest verdict on the read-side flip is
+  「you cannot test this here」. Security's is 「the arm as shipped does not do what the requirement
+  says」. I let security rule the *direction* and testability rule the *trust*: record the decision,
+  gate the trust on the first `confined` host. Neither lens wins outright and the split is
+  deliberate.

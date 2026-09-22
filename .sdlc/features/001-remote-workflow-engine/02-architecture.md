@@ -5380,6 +5380,15 @@ graph TB
 
 ### Data architecture — v37
 
+**Zero DDL — CORRECTED at the v37 Gate-8 send-back (finding A1).** The original claim below was true
+of the confinement itself and is **no longer true of the iteration**: ARCH-182 adds **two columns**,
+`webhooks.createdRemote` and `schedules.createdRemote` (both `INTEGER NOT NULL DEFAULT 0`), through
+this repo's existing idempotent `try { ALTER TABLE … } catch {}` idiom — no table, no index, no
+rebuild, and no backfill (the `DEFAULT 0` legacy cohort is a decision recorded on ARCH-182, not an
+omission). Everything the original paragraph says about the confinement's own statelessness still
+holds, and is kept verbatim below rather than edited into agreement, because the correction is the
+point:
+
 **Zero DDL.** No new table, no new column, no new index, no migration, and no change to any existing
 schema: the confinement is process configuration, not state. The only new bytes that reach disk are the
 two JSON log lines (ARCH-178) on the stream `deploy.sh` already redirects into the per-instance
@@ -5401,6 +5410,10 @@ caller at all, which is the whole of REQ-219's case).
 | event `agent.confinement_denied` | `{kind, runId, agentId, tool, detail}` | ARCH-178, **best-effort and labelled so** — its existence depends on spike S4. |
 | `workflow_authoring_guide` | one new paragraph, rendered from the effective grant list | ARCH-107 amendment (REQ-117). **No new MCP tool, no new tool parameter, no change to any tool schema.** |
 | removed: `raceWithTimeout()`, `buildSessionOptions()`, `ProviderProfile` (the builder's copy) | — | ARCH-179/180. Zero `src/` importers today, so no production caller changes. |
+| `webhooks.createdRemote` / `schedules.createdRemote` | `INTEGER NOT NULL DEFAULT 0` | **ARCH-182 (new, v37 Gate-8 repair).** Written once at `webhook_create`/`schedule_create` from `ToolDeps.isRemoteSubmission`; read at the three trigger dispatch sites. Never updated afterwards — provenance is a fact about creation. |
+| `RunSpec.origin: 'local' \| 'remote'` | **required** field on the run spec | ARCH-182. Required on purpose: the compiler is what stops a fifth admission site from being added without answering the remoteness question. |
+| `admissionRefusal({posture, origin})` | pure function → `'CONFINEMENT_UNAVAILABLE' \| null` | ARCH-182. The single predicate every admission passes, at `RunManager.start()`. |
+| `CONFINEMENT_UNAVAILABLE` | `ERROR_CATALOG` entry (`see: workflow_authoring_guide`) + `run_start`/`run_resume` `errors:` arrays | ARCH-181 amendment (finding C-1). `refusalEnvelope(code: ErrorCode, …)` — the code parameter is typed against the catalog, so a future ad-hoc code cannot slip through uncatalogued. |
 
 ### ARCH-175 — REQ-218: `buildBashConfinement()` — ONE pure function turns a workspace plus an operator grant list into the SDK's own `SandboxSettings`; the kernel does the enforcing
 - **status:** draft
@@ -5409,6 +5422,57 @@ caller at all, which is the whole of REQ-219's case).
 - **deps:** —
 - **api:** `buildBashConfinement(input: { root: string | undefined; grantedHostPaths: readonly string[]; protectedFiles: readonly string[]; workRoot: string | undefined }): SandboxSettings` — pure (no `fs`, no `process`, no `env`, no clock), imports only the SDK's `SandboxSettings` type. Returns, with every field stated here because the posture IS the architecture: `enabled: true`; `failIfUnavailable: true` (ADR-083 — also the SDK's own default under `enabled:true`, `sdk.d.ts:1778-1783`); `autoAllowBashIfSandboxed: true`; `allowUnsandboxedCommands: false`; `filesystem.allowWrite = root ? [root, ...grantedHostPaths] : []`; `filesystem.allowRead = root ? [root, ...grantedHostPaths] : []`; `filesystem.denyRead = [workRoot, ...protectedFiles].filter(isNonEmptyString)` (an unconfigured `workRoot` must never become a literal `undefined` in the list); `filesystem.denyWrite = root ? [join(root, '.claude', 'settings.json'), join(root, '.claude', 'settings.local.json')] : []`; `credentials.files = protectedFiles.map(path => ({ path, mode: 'deny' }))`. `protectedFiles` is supplied by the composition root (ARCH-177) as the resolved absolute paths of `rwe.config.json` and `<workRoot>/auth-tokens.db`. **No `network` block and no `excludedCommands`** — REQ-218 is about the filesystem, `net-guard.ts` already owns egress, and an unrequested network posture is one more thing to be wrong about.
 - **note:** **Why a pure function and not the `WorkspaceConfinement` interface quality-dimensions asked for in r1**: a second implementation would have to spawn Bash itself, which nothing in this engine does — `LiteLLMGatewayClient` has no subprocess and therefore needs nothing, exactly as it already implements no `canUseTool`. An interface with one implementation and a hypothetical second is the premature abstraction the Karpathy tie-break exists to catch, and quality-dimensions conceded the point in r2 using that tie-break against itself. **Why the file is NOT under `src/sandbox/`**: that directory already means *the script sandbox* (`guards.ts`/`host.ts`/`child-entry.ts`, the `node:vm` + child-process seam INV-V36-1 talks about). Two unrelated jails sharing one word in one repo is how the next reader mis-reads both; `src/gateway/` is where this one belongs anyway, because confinement is a property of the SDK gateway and travels with it. **`root === undefined` returns an EMPTY `allowWrite`, not an absent sandbox** — this is ARCH-176's R10 rule applied at the source: `makeCanUseTool` treats 「no workspace known」 as 「nothing to enforce, allow」, and that branch is precisely how a guard whose 「nothing to check」 arm and 「checked and clean」 arm return the same verdict stops being a guard. Production always passes `entry.workspace` (`run-manager.ts:1553`), so the empty-list branch is reachable only from a direct unit-tier `invoke()` with an injected `queryImpl` — i.e. never against a real CLI — and making it the strict end costs nothing and removes a future footgun. **`denyRead` names `workRoot` whole, not a list of sibling run directories**: workspaces are `<workRoot>/workflows/<name>/runs/<runId>` (`workflow-catalog.ts:948`) and are created concurrently, so an enumerated sibling list is stale before it is used; one ancestor deny plus a narrower allow for this run's own workspace is the only expression that is correct under concurrency. **v37 Gate-4 correction (2026-09-22, designer; panel finding B2, both lenses converged — DES-252): the two arms below ship the other way round.** `denyRead: [workRoot, ...]` under a deny-wins precedence does not mean 「cross-run reads stay open」, it means **the agent cannot read its own workspace** — every run dead, discovered in production. So the **enumerated** engine-state list is the built-in posture, `'workroot'` is adopted only on a positive S7, and the losing arm is then DELETED rather than kept. The residual is named either way. Original text follows: **whether a narrower `allowRead`/`allowWrite` actually overrides a broader `denyRead` is spike arm S7, and the fallback is written down rather than assumed**: if deny wins unconditionally, `denyRead` degrades to the enumerated engine-state paths (`<workRoot>/store`, `catalog.db`, `auth-tokens.db`, `cas`, `assets`, `webhooks.db`, `continuations.db`, `schedules.db`) and 「one run's Bash can READ another run's workspace」 becomes a **named residual of v37**, not a silently broken claim — the secret half is unaffected either way, because ARCH-177 refuses any grant that is an ancestor of a protected file. **`denyWrite` on the workspace's own `.claude/settings.json`** answers adversarial r2 §2.3: production passes `settingSources: ['project']` whenever a workspace exists, the agent can create that file, and the `SandboxSettings` schema (`sdk.d.ts:2682-2736`) carries **no** 「project settings ignored」 note on `enabled`/`excludedCommands`/`filesystem` — so until spike S5 says otherwise we assume the confined party could edit its own confinement and we take the one line that closes it. The parent's own asset materialization is unaffected (it writes `.claude/skills/` from the engine process, which is not in the jail).
+- **v37 Gate-8 send-back amendment (2026-09-22, architect; finding A3 — the deny list is
+  hand-maintained, already incomplete, and blind to every path override `DEPLOY.md` documents as
+  supported; its only test is tautological. Panel: adversarial r2 §4 「the interim」 + quality-dimensions
+  r2 §4, converged):** `ENGINE_STATE_DENY` stops being a literal census of engine files and becomes
+  **two disjoint halves, one of them derived**, with the completeness claim moved OUT of the constant
+  and into INV-V37-4, which is a check that can actually fail.
+  1. **Knob-less literals, joined to `workRoot` exactly as today** — `store`, `catalog.db`,
+     `auth-tokens.db`, plus **TWO** of the three the review found missing: `mcp-registry.db`
+     (`workflow-catalog.ts:398` — `join(this._workRoot, 'mcp-registry.db')`) and `_global_assets`
+     (`asset-sync.ts:145` — `globalAssetRoot() = join(workRoot, '_global_assets')`; it hangs off
+     `workRoot`, NOT off the overridable `assetRoot`, which is why it is a literal and `assets` is
+     not). Neither has a `FileConfig` key, so a literal is the honest expression for them, not an
+     oversight.
+     **Correction applied at this same gate (2026-09-22, re-verified against `src/` before
+     reporting — the earlier draft of this row put all three here and claimed 「none of the three has
+     a `FileConfig` key」, which is FALSE for the third):** `self-update.db` is **not** knob-less and
+     belongs to half 3, where it is already listed. `selfUpdateDbPath` IS a `FileConfig` key
+     (`main.ts:105`'s allowlist, forwarded at `main.ts:323`) and `server.ts:672` reads
+     `config.selfUpdateDbPath ?? join(workRoot, 'self-update.db')` — a literal would therefore cover
+     only the default and silently miss every overridden one, which is finding A3's own failure mode
+     reproduced inside A3's fix. A census-accuracy finding is the one place a misclassified path
+     cannot be left standing, so it is corrected here rather than sent downstream.
+  2. **`'continuations.db'` is REMOVED — it is a phantom.** Verified this round: `grep -rn -i
+     continuation src/` finds a `ServerConfig` field, `composeConfig()`'s forward of it and comments,
+     and **no production construction site anywhere**. A hand-list that is simultaneously incomplete
+     AND names a file the engine never creates is the strongest available argument against 「just
+     complete the list」. (The dead `continuationDbPath` forward itself — with
+     `compose-config-v2-wiring.test.ts:166` locking a wire to nowhere — is REQ-219's own bug class
+     found OUTSIDE REQ-219's closure: filed in the v38 candidates below, deliberately not fixed here.)
+  3. **Every operator-overridable path arrives as a RESOLVED VALUE from the composition root, never
+     re-derived from a key name** — `casDir`, `assetRoot`, `webhookDbPath`, `schedulerDbPath`,
+     `selfUpdateDbPath` (and `continuationDbPath` for as long as the key exists) are handed to
+     `buildBashConfinement()` as `protectedFiles`-shaped data, so an override pointing OUTSIDE
+     `workRoot` is denied for the first time. Their literals (`cas`, `assets`, `webhooks.db`,
+     `schedules.db`) therefore LEAVE the constant. The builder stays pure — the resolution is
+     `composeConfig()`'s job (ARCH-177's amendment below, on which this depends: before that fix five
+     of the six are `undefined`), derived once at boot into a frozen array, zero per-call allocation.
+  **`bash-confinement.test.ts:30` is the assertion that must die**: comparing the constant against a
+  copy of itself can never catch an omission. INV-V37-4's check over the COMPOSED CONFIG replaces it.
+  **The constant's header comment must say what it now is** — a bridge, maintained until a positive
+  S7, deleted together with the `'enumerated'` arm at the flip; not a control anyone should extend.
+  **What this amendment deliberately does NOT do**: flip `DENY_READ_MODE` to `'workroot'`.
+  Adversarial r2 §4 argued the flip IS the structural fix (`allowRead` is a *re-allow* punch-out, not
+  an allowlist — `sdk.d.ts:5862-5864`, quoted verbatim by both lenses, so the shipped `'enumerated'`
+  arm never covered sibling run workspaces at all) and quality-dimensions r2 D4 reversed its own r1 to
+  agree; both then conceded the TIMING (r2 §6 D1): S7 is INCONCLUSIVE on every host this ledger has
+  measured, and shipping an unmeasurable security arm is the defect REQ-219 is in this same slice to
+  delete. So the direction stays recorded (a positive S7 flips the constant and deletes the losing arm
+  in the same change, per this row's original text and ARCH-178's amendment trigger, which is the same
+  host), and 「one run's Bash can READ another run's workspace」 stays a NAMED RESIDUAL of v37 — stated
+  in `rtm.md`'s REQ-218 note, not silently green.
 - **iter:** v37
 
 ### ARCH-176 — REQ-218: the wiring is ONE field at the `query()` options assembly, and the two contradictory comments collapse into one true sentence
@@ -5466,6 +5530,37 @@ caller at all, which is the whole of REQ-219's case).
     sent) — this direction was corrected from an earlier `'confined'`-default draft that broke every
     real-CLI-spawning test in the suite (see ARCH-176's own amendment for the full account); only
     `main.ts`'s real boot path ever sets `'confined'`, from a real measurement.
+- **v37 Gate-8 send-back amendment (2026-09-22, architect; finding A2 — BLOCKING —
+  `protectedFiles`/`denyRead` evaporate to `[]` whenever `workRoot` is unset, which `DEPLOY.md:511-530`
+  documents as a SUPPORTED configuration (`必須=否`, auto-created temp dir). Panel: adversarial r2 §3 +
+  quality-dimensions r2 D3, converged):** the `if (workRoot)` guard at `main.ts:439` is DELETED and the
+  `confinement` block is forwarded **unconditionally**, because `workRoot` is resolved to a real value
+  inside `composeConfig()` itself before any consumer reads it:
+  `const workRoot = fileConfig.workRoot ?? deps.workRootDefault`, where **`ComposeConfigDeps` gains
+  `workRootDefault: string` — a PRE-COMPUTED VALUE, never a callable.** (DES-255's seam rule, restated
+  because it has already bitten this file: several suites globally `vi.mock` `node:fs`/
+  `node:child_process`, so a resolver invoked *inside* `composeConfig()` silently returns `undefined` —
+  the same hazard that put `confinementProbe` on the deps object as a value.) `main()` computes it with
+  ONE `mkdtempSync(join(tmpdir(), 'rwe-'))`; `--check-config` passes a clearly-labelled NON-created
+  placeholder, preserving that command's documented 「no side effects」 contract (it constructs no
+  server, and an operator with grants but no `workRoot` is already refused at `main.ts:255`, so the
+  placeholder can never reach grant validation).
+  **The same resolved value MUST also be what `ServerConfig.workRoot` carries**, and that is not
+  tidiness: today, with `workRoot` unset, `main.ts:252` computes `protectedFiles` against *nothing*
+  while `server.ts:655` mints its OWN tmpdir — so even once the block is forwarded, a second
+  resolution would have named a different directory than the one the engine actually writes into. One
+  resolution, one value, both consumers.
+  **`server.ts:655`'s `??` STAYS** (and gains one comment saying why): it is reachable from every
+  `createServer()` test caller that builds a `ServerConfig` by hand, so it is not code this change
+  orphans — and making `ServerConfig.workRoot` required is a breaking change across a tree ~20
+  implementers share, bought for nothing once `main()` always passes a real value. Adversarial r2 §3
+  asked for both the deletion and the required field; that half is DECLINED on surgical-change grounds
+  (Karpathy (3)) and the decline is recorded here rather than left as a silent divergence from the
+  panel.
+  **The rule this installs, so a later edit cannot quietly re-open it**: `protectedFiles`/`denyRead`
+  may never depend on `workRoot` having been EXPLICITLY set in config (INV-V37-4, second clause).
+  IMPL-377's REQ-021 intra-run re-walk rides the same fix — it went inert on exactly the same default,
+  from exactly the same root cause.
 - **iter:** v37
 
 ### ARCH-178 — REQ-218: the policy applied is OUR data and is always logged; the denial is the SDK's and is labelled best-effort
@@ -5490,6 +5585,22 @@ caller at all, which is the whole of REQ-219's case).
     `PostToolUseFailure` hook registration + the second event kind), and this implementer's contract
     forbids implementing ahead of a test. Named here as an open gap for the next test-first pass, not
     silently shipped and not silently dropped from the design.
+- **v37 Gate-8 send-back amendment (2026-09-22, architect; finding O-1 — this row's own conditional
+  says a positive S4 means the event ships, S4 fired POSITIVE (`evidence/v37-spike/S4.md`), and the
+  event is not built):** `agent.confinement_denied` is **DEFERRED TO v38 DESPITE A POSITIVE S4**, and
+  this row says so, because a reader of `02-architecture.md` alone would otherwise believe the event
+  exists. **Why deferred rather than built** (both lenses converged in r2, and agreed with the
+  reviewer): on a host whose measured posture is `unconfined`, `buildBashConfinement()` is never called
+  and the kernel never denies anything, so the event is **structurally unable to fire** — building it
+  would ship precisely the defect VAL-255 found one commit earlier (`workflow_describe.phases[].agents`,
+  an advertised field that is always empty by construction). An event that cannot fire is not
+  observability, it is a claim.
+  **Trigger, event-shaped so it can actually fire**: the FIRST host on which `probeConfinement()`
+  returns `confined` — the first deployment where the `confined` arm executes at all. There the
+  `PostToolUseFailure` hook registration and the second event kind ship together with real-tier
+  evidence, in the same change as ARCH-175's `DENY_READ_MODE` flip, which is gated on the same host.
+  Until then `agent.confinement` (with its `posture` field) is the whole of the confinement read path,
+  and no RTM row may cite the denial event as evidence.
 - **iter:** v37
 
 ### ARCH-179 — REQ-219: `timeout-race.ts` is deleted, both of its guarantees are named where they now live, and its real-tier test is REWRITTEN rather than deleted
@@ -5517,7 +5628,62 @@ caller at all, which is the whole of REQ-219's case).
 - **deps:** src/gateway/bash-confinement.ts (consumes the posture, does not produce it)
 - **api:** `probeConfinement(spawn = spawnSync): { posture: 'confined'|'unconfined'; reason?: string }` — runs the SAME nested `bwrap --unshare-user ... -- bwrap --unshare-user ...` command the owner_decision's own independent re-verification used (`02-architecture.md` ADR-083's owner_decision paragraph: single `bwrap` exit 0, nested `bwrap ... -- bwrap --unshare-user` → `No permissions to create a new namespace`); manually re-run against THIS host while writing this row (`bash -c 'bwrap --unshare-user --unshare-pid --ro-bind / / --tmpfs /tmp -- bwrap --unshare-user --unshare-pid --ro-bind / / --tmpfs /tmp -- /bin/true'` → exit 1, `No permissions to create a new namespace`) — confirms the design input, not merely asserted. Exit 0 ⇒ `confined`; any nonzero exit, a spawn error (no `bwrap` on PATH), or a 5s timeout ⇒ `unconfined`, carrying the probe's own stderr/error text as `reason`. `main()` (`src/main.ts`) calls this ONCE, before `composeConfig()`, and passes the result in as `ComposeConfigDeps.confinementProbe` — a pre-computed VALUE, never a callable `composeConfig()` invokes itself (several existing test files globally `vi.mock('node:child_process', ...)`, which replaces the WHOLE module's exports; a callable seam resolving `spawnSync` at import time inside that mock's scope would silently become `undefined` — the value-not-callable seam sidesteps this entirely, the same reason `configPath`, not a `loadFileConfig` callable, rides the SAME deps object per DES-255). `--check-config` runs the same probe and reports it (read-only, matching that command's own "no side effects" contract). The door: `call-tool.ts`'s `callTool()` refuses `run_start`/`run_resume` BEFORE schema/authz, ahead of the existing `INLINE_SCRIPT_CLOSED` precedent, when `deps.confinementPosture === 'unconfined' && deps.isRemoteSubmission === true` — both fields optional on `ToolDeps`, `undefined` on either side meaning "don't gate" (every one of this file's ~250 other test call sites keeps compiling and behaving unchanged). `isRemoteSubmission` is computed ONCE per HTTP request in `server.ts`, from `!isLoopbackPeer(req.socket?.remoteAddress, req.headers)` — `net-guard.ts`'s existing raw-socket-peer primitive (the SAME one the D-BIND auth exemption already uses), fail-closed on a tunnel/forwarded header exactly as that primitive already is.
 - **note:** **Why this is a SEPARATE module from `bash-confinement.ts`, not a field on it**: `buildBashConfinement()` is declared PURE (no fs, no process, no env, no clock) because its own contract — "the posture IS the design" — must never depend on what one host happens to measure; the posture MEASUREMENT is exactly the opposite kind of fact (host-specific, and TASK-250's own finding is that two hosts can look identical on paper — bwrap present, `unprivileged_userns_clone=1` — and differ only in whether the CLI's nested-userns step is denied). Conflating them would make the pure module's tests host-dependent. **Why "remote" is `isLoopbackPeer`, not `Principal.kind` or `dbindExempt` or `bind`/`allowedHosts`** (found while implementing — the dispatch's own hint pointed near but not at the primitive): a `loopback-exempt` principal only exists on a non-loopback bind with auth enabled — on the DEFAULT config (loopback bind, auth enabled), every local caller gets an ordinary id-bearing principal, so a kind-based rule would refuse the operator's own machine; `dbindExempt` ANDs the peer check with `!isLoopback(bind)`, so it is `false` on a loopback bind even though the peer genuinely IS loopback — wrong signal for "is THIS request remote"; `allowedHosts`/`bind` are deployment-wide DNS-rebinding policy, not a fact about one request's origin. `isLoopbackPeer` is the one primitive that already answers exactly this question, for exactly this reason, at exactly this layer (`server.ts:1147`'s own D-BIND comment). **Why the door is ONE site in `call-tool.ts`, not two copies in `server.ts`**: `server.ts` already has this precedent stated against itself (the file's own comment on the analogous dashboard-dispatch duplication risk) — `isRemoteSubmission` is computed once and threaded through `ToolDeps` at both `tools/call` call sites, and the refusal LOGIC lives once, in the dispatcher both sites already share. **Why `run_resume` is gated alongside `run_start` and nothing else is**: both are the only two tool calls that admit NEW Bash-capable `agent()` work into the engine (a resume replays the pinned parameter snapshot and keeps running); every other tool is a read or a management operation on already-admitted state. **The accepted cost is not hidden by this mechanism**: a LOCAL (loopback-peer) submission on the SAME `unconfined` posture is NOT refused — `buildBashConfinement()` is not even called for ANY run under this posture (see ARCH-176's amendment) — this is ADR-083's owner_decision stated in code, not a gap this row introduces.
+- **v37 Gate-8 send-back amendment (2026-09-22, architect; finding A1 — BLOCKING — this row's own
+  census is FALSE and the door it describes covers ONE of four admissions):** the sentence 「both are
+  the only two tool calls that admit NEW Bash-capable `agent()` work into the engine」 was true about
+  *tool calls* and false about *the engine*. **Corrected census, grep-verified this round**
+  (`_runManager.start(` / `runManager.start(` over `src/`) — **four `.start()` call sites in `src/`, three of them reachable from an ingress**:
+  `mcp-facade.ts:710` (`run_start` — the only one this row's door sees), `webhook-registry.ts:305`
+  (`POST /hooks/:id`), `server.ts:1015` (the inlined ticker dispatcher — a SECOND scheduler driver that
+  neither panel r1 had counted; adversarial r2 §1 corrected both lists) and `scheduler.ts:363`
+  (`Scheduler.trigger()`). **One correction this gate makes to BOTH panels**: `Scheduler.trigger()` has
+  **no production caller at all** — `grep -rn "\.trigger(" src/` is empty, there is no
+  `schedule_trigger` tool in `tool-specs.ts`, and its only caller is
+  `tests/unit/scheduler-port.test.ts`. It is therefore an admission site in the *module* and not an
+  ingress in the *product*, which is REQ-219's own bug class found one row away from REQ-219 (filed in
+  the v38 candidates; deleting it is out of this closure). Both panel rounds described it as
+  reachable; it is not, and ARCH-182 covers it by construction anyway — which is the argument for a
+  choke point rather than per-site checks, stated against a site nobody can currently reach.
+  `'chain'` exists in the `startedBy` union (`types.ts:7`) and in dashboard strings but has **no**
+  production `.start()` call site either, so it is not a fifth. The reviewer's reproduction — remote `workflow_register` → remote `webhook_create` →
+  `POST /hooks/<id>` with a valid HMAC → Bash-capable run on a host measured `unconfined` — walks past
+  this row's door untouched, which is the exact 2026-09-20 incident class ADR-083's posture C exists to
+  intercept.
+  **Where the check now lives: ARCH-182**, one predicate at `RunManager.start()` — the point all four
+  admissions already converge on. **The `call-tool.ts` door is KEPT, not moved** (the finding permits
+  「moved to (or duplicated at)」, and duplication is the cheaper half here for two measured reasons):
+  it is the ONLY ingress for `run_resume` — `mcp-facade.ts:778`'s `resume(runId)` carries no `RunSpec`,
+  so a choke-point check there would need a signature change plus a second remoteness fact for zero new
+  coverage — and keeping it preserves REQ-218's existing Gate 7.5 real-tier evidence and DES-261/DES-262
+  verbatim instead of retiring a control that is demonstrably holding. The two are not redundant: the
+  door answers 「who is pushing the button right now」 for `tools/call`, ARCH-182 answers 「did a remote
+  party cause this admission at all」 for every route.
+  **C-1 (blocking, this row's own file):** `CONFINEMENT_UNAVAILABLE` is a wire-reachable refusal code
+  present in neither `ERROR_CATALOG` nor either tool's advertised `errors:` array, so no cold MCP
+  client can discover it before hitting it (the UT-164 / v24-Gate-8-AF-3 class, reopened through a
+  pre-dispatch door instead of `authorize()`). It joins `src/errors.ts`'s `ERROR_CATALOG` with a `see`
+  pointer — `workflow_authoring_guide`, the `INLINE_SCRIPT_CLOSED` precedent this row's own code
+  comment already invokes — joins `tool-specs.ts:532` (`run_start`) and `:599` (`run_resume`), and
+  **`refusalEnvelope`'s `code` parameter becomes `ErrorCode`, not `string`**: a type closes the class
+  where a test closes one instance. The same code is thrown by ARCH-182, so there is exactly one
+  catalogued code for one refusal, reached from two places.
+  **Validation obligation, recorded here so it cannot be inherited from the old evidence**: REQ-218's
+  real-tier proof must now cover the WEBHOOK ingress and the SCHEDULER ingress, not only `tools/call`.
 - **iter:** v37
+
+### ARCH-182 — REQ-218: every run admission passes ONE predicate at `RunManager.start()`, keyed on a provenance the delivery peer cannot forge
+- **status:** draft
+- **traces:** REQ-218
+- **module:** src/run-manager.ts
+- **deps:** ARCH-066, ARCH-181, ARCH-177
+- **api:** `admissionRefusal(input: { posture: 'confined' | 'unconfined' | undefined; origin: 'local' | 'remote' }): 'CONFINEMENT_UNAVAILABLE' | null` — one pure exported function (no fs, no db, no clock): `'CONFINEMENT_UNAVAILABLE'` iff `posture === 'unconfined' && origin === 'remote'`, `null` otherwise (`undefined` posture means 「never measured」 ⇒ do not gate, the same fail-open-for-the-existing-suite convention `ToolDeps` already uses for this field). Called as the FIRST statement of `RunManager.start()`, **ahead of `RUN_ADMISSION_LIMIT`** (`run-manager.ts:459`): a submission that can never be admitted under this posture must not consume a slot, and must not be answered with the RETRYABLE limit refusal when the true condition is deterministic and permanent. The posture reaches `RunManager` from `ServerConfig.confinementPosture`, which `main.ts:368` already forwards (ARCH-177's amendment; INV-V37-5 locks the hop). `start()` throws `codedError('CONFINEMENT_UNAVAILABLE', …)`; each of the four callers maps it into the idiom it already has — `refusalEnvelope` at the facade, the refusal body at the webhook route, `ScheduleResult.error` at `Scheduler.trigger()`, `markFailed` at the ticker driver (`server.ts:1017-1025` already routes `err.code` there). **`Scheduler.trigger()` (`scheduler.ts:352-370`) has NO try/catch** (read this round): it returns `ScheduleResult`, so a throw from `start()` escapes its own result type as a rejected promise rather than the typed error its signature promises — it needs the same mapping as the other three, even though today its only caller is a unit test.
+  **`RunSpec.origin: 'local' | 'remote'` is REQUIRED, not optional** — the compiler, not a reviewer, is what makes admission site #5 impossible to add silently; an optional security field whose absence means 「admit」 is finding A2 wearing a different field name. Stamped per site: `mcp-facade.ts:710` — the ONE `tools/call`-driven admission — from this request's own `isRemoteSubmission` (threaded as one more parameter, exactly as `runAgentLog(a, principal, crossPrincipalRead, actor)` already threads per-request facts); `webhook-registry.ts:305`, `server.ts:1015` and `scheduler.ts:363` from the STORED provenance of the trigger row each of them already loads — no live peer is consulted on any of the three, and none of them needs a new parameter threaded from the HTTP layer. (Name collision called out so nobody greps the wrong table: `scheduler.ts:183`'s `run_origins` is the scheduler's own runId→schedule map and is unrelated to this field.)
+  **Persisted provenance — two idempotent columns, in this repo's own `try { ALTER TABLE … } catch {}` idiom** (`scheduler.ts:192-199`; the twin exists in `webhook-registry.ts`): `webhooks.createdRemote INTEGER NOT NULL DEFAULT 0` and `schedules.createdRemote INTEGER NOT NULL DEFAULT 0`, written at `webhook_create`/`schedule_create` from the same `ToolDeps.isRemoteSubmission` the door reads — both tools are dispatched inside `call-tool.ts`, which already holds that flag, so no new plumbing to the HTTP layer is needed. Both rows are already loaded at their dispatch sites, so this adds **zero new queries**.
+  **The delivery peer is deliberately NOT part of the predicate for `POST /hooks/:id`**: a webhook exists to be called from another machine, so gating on the hook caller's own socket would refuse every legitimate webhook. The fact that decides is who ATTACHED the trigger, written once, at creation, by the party that created it. `run_start` is the only admission where a live peer exists at all, and there the peer genuinely IS the provenance — which is also why ARCH-181's door, reading the same fact one layer earlier, stays.
+  **Legacy persisted specs read as `'local'`, and this must be done in exactly one place.** `RunSpec` doubles as the persisted-spec read-back type (`types.ts:431-436`'s own comment), so every spec stored before this field existed lacks `origin`; the store's spec rehydration (`getSpec()`, consumed by `_requireLive` at `run-manager.ts:1086`) fills `origin: 'local'` for those rows — same rationale as the `DEFAULT 0` cohort, and harmless because a resume is gated by ARCH-181's door, not by this predicate. The field stays REQUIRED on the type so a new admission path cannot omit it; the one tolerant read is the rehydration, named here so an implementer meeting the compile error does not invent a different answer.
+- **note:** **What this closes** — a remote `webhook_create`/`schedule_create` can no longer start Bash-capable `agent()` work on a host measured `unconfined`; such a run is refused identically to a remote `run_start`, which is what ADR-083's 裁決理由 (1) 「另一台機器送來的工作流程」 asks for and what ARCH-181's door alone did not deliver. **What it does NOT close** — a workflow version REGISTERED remotely and then started LOCALLY by the operator; that is ADR-086's named residual and its `owner_decision`. **Why the key is the trigger row rather than `workflow_versions.origin`** — full trade-off in ADR-086; the short form is that the version-row design (adversarial r2 §1) refuses a LOCAL `run_start` of a remote-authored script, reversing ADR-083's ANSWERED owner ruling 「本機發起的 run 仍不受限制」, and it still admits the remote-`webhook_create`-on-a-local-workflow path this finding is actually about. **Legacy rows are `DEFAULT 0` (read as local) by decision, not by accident**: fail-closed would black out every pre-existing webhook and schedule at upgrade — a silent outage on hosts where nothing was ever confined anyway — and the operator sweep belongs in `DEPLOY.md`, not in a boot WARN seen once and lost. Quality-dimensions r2 §3 proposed a tri-state (`NULL` = unreviewed legacy) surfaced as `originConfirmed` on `webhook_list`/`schedule_list` so the legacy cohort stays queryable forever; **declined on the Karpathy tie-break** — a three-valued column plus two tool-output surfaces bought for a one-time upgrade cohort — and the decline is recorded rather than left silent. **Testability** — a 2×2 truth table over a pure function plus one integration test per route against a fake `RunManager`, instead of an HTTP-server-plus-ticker-plus-clock setup per route. **Performance** — two scalar comparisons on a path that already does `INSERT INTO runs`; unmeasurable.
+- **iter:** v37
+
 
 ### ADR-082 — REQ-218: option (c), implemented as CONFIGURATION of the CLI's own sandbox — not a hand-rolled bwrap wrapper, and not declaration-only
 - **status:** draft
@@ -5583,23 +5749,73 @@ caller at all, which is the whole of REQ-219's case).
 - **note:** **Context** — `src/session-options-builder.ts` (0 `src/` importers, 4 test files) and `src/timeout-race.ts` (0 `src/` importers, 2 test files); REQ-219 permits exactly two endings, wire or delete, and forbids the third. **Options** — (A) wire both; (B) delete both; (C) decide per module against current call sites. **Decision** — (B), **with two riders that ship in the same commit** (ARCH-179's `val-023` rewrite; ARCH-180's DES-031 re-walk wiring + VAL re-point + fence retirement). **Consequences** — the suite stops reporting coverage for code the product never runs; `timeout-race`'s two guarantees are named where they now live; and **REQ-021's intra-run re-walk exists in production for the first time**, which is the opposite of what a naive 「delete the dead module」 reading would have produced. **Why (A) lost on `session-options-builder` specifically** — it is pure and nicely factored, and wiring it would still be a **regression**: its `settingSources` is unconditionally `['project']` where production is conditional on a workspace being known, so REQ-219's own 「prove behaviour unchanged or explain the difference」 clause would have to report a widening of what gets loaded. **Why (C) lost** — quality-dimensions opened with it and withdrew it in r2 once the `findProjectMarkerAncestor` census was in front of it: deciding the two modules independently is exactly how the REQ-021 rider gets dropped, because the rider only becomes visible when 「delete」 is taken seriously for both. **DES-106's own amendment is PRESCRIBED to the design gate as a living-doc edit in the same round** — it traces REQ-093, i.e. outside this closure, so the designer would otherwise never open it and the two documents would disagree in silence. **This ADR explicitly supersedes ADR-006 and DES-106** (「`session-options-builder.ts` stays unwired, guarded by a standing zero-importer assertion that retires when the security-hardening track wires the module deliberately」): this is that track, the module is neither unwired nor wired but gone, and the fence retires with it. ADR-006's own decision — effort mapping lives in `src/params` / `providers.ts`, not in the builder — is **unaffected and stays in force**; only its 「stays unwired」 disposition is superseded. **The ledger entry REQ-219 asks for, per module**, is on ARCH-179 and ARCH-180 respectively: what each was built for, what carries that guarantee now, and why 「keep it for later」 was not available — a module with green tests and no caller does not merely fail to help, it **reports a sensation from a nerve that is not attached to anything**, and this ledger has now paid for that twice.
 - **iter:** v37
 
+### ADR-086 — REQ-218: the admission predicate is keyed on the TRIGGER's stored provenance — not on the workflow version's author, and not on the delivery peer
+- **status:** draft
+- **traces:** REQ-218
+- **note:** **Context** — Gate 8's A1 proved the remote-submission door (ARCH-181) covers one of four admission sites; the architecture question the reviewer sent back is what the other three are keyed on, since `startedBy` alone (`'webhook'`/`'schedule'`) carries no remoteness at all. **Options** — **(A)** treat EVERY webhook/schedule admission as remote (no migration whatsoever); **(B)** persist `workflow_versions.origin` at the single `INSERT INTO workflow_versions` site (`workflow-catalog.ts:671`, grep-verified as the only one) and refuse any run of a remote-authored script (adversarial r2 §1; quality-dimensions r2 D2 conceded to it); **(C)** persist `createdRemote` on the webhook and schedule rows and OR it with the live `isRemoteSubmission` at the two `tools/call`-driven sites (adversarial r1's ruling; quality-dimensions r1 independently asked for the same two-signal model). **Decision** — **(C)**, realised as ARCH-182. **Why (A) lost** — it is the simplest thing that could work and it silently disables every operator's OWN schedules and webhooks on every `unconfined` host; the owner accepted 「本機發起的 run 仍不受限制」, and an operator's own cron is a local submission with a timer in front of it. **Why (B) lost — on an owner ruling, not on engineering** — (B) is cheaper by one migration and genuinely stronger against one path, and the panel's own final round preferred it; but its predicate refuses a LOCAL `run_start` of a remotely-registered workflow, which is exactly the case ADR-083's ANSWERED `owner_decision` says is not refused. An architecture gate does not get to reverse an answered product ruling as a side effect of closing a different finding. (B) also fails to close the finding that was actually sent back: a remote `webhook_create` against a locally-authored workflow still admits under it, because the version row is local. **Debate convergence, recorded** — the two r2 documents CROSSED: adversarial r2 conceded its own r1 (trigger columns) in favour of quality-dimensions' r1 (version row), while quality-dimensions r2 conceded its own r1 in favour of adversarial's r1 addendum (trigger columns). Neither read the other's r2, so there is no converged panel stance to transcribe and this gate ruled it; the tie-breaker was neither lens's argument but ADR-083's answered owner ruling, which only this gate is positioned to weigh. **Consequences** — two columns instead of one, both idempotent, both on stores already running this exact migration idiom; one input to the predicate; the door stays where its real-tier evidence already is; `RunSpec.origin` becomes a required field so a fifth admission site cannot compile without answering the question. **Named residual, not a silent gap** — a remote party able to call `workflow_register` can still have its script executed if the OPERATOR later starts it locally (adversarial r2 §1 correctly calls this the shortest path from the incident's attacker position). Under posture C that path requires a deliberate local human action and sits inside the owner's own accepted cost; closing it means adding (B)'s column ON TOP of (C), which is purely additive and can ship later without re-keying anything. **Revisit trigger, event-shaped** — the `owner_decision` below is answered, or the first workflow registered by a party who is not the operator.
+- **owner_decision:** answered 2026-09-23 —— **業主裁決:不做,維持現狀(門只擋遠端啟動)。** 原問題保留:遠端註冊、但由本機操作者啟動的工作流程,要不要一併拒絕?(方案 B:在 `workflow_versions` 加一個 `origin` 欄位,任何「遠端作者送來的腳本」在 unconfined 主機上一律拒跑,不論是誰按下啟動。代價:這會推翻 ADR-083 裁決裡「本機發起的 run 仍不受限制」那一句 —— 本機發起、但腳本是遠端註冊的 run,會從「可以跑」變成「拒跑」;好處:堵掉 2026-09-20 事故最短的一條攻擊路徑(遠端註冊 → 操作者本機誤啟動)。兩種架構都做得出來、成本都是一個欄位,取捨是「本機可用性 vs 遠端作者腳本的姿態」,屬業主決定,不屬架構閘。)
+  **裁決理由(業主,經 orchestrator 查證後提供的具體代價):** production catalog 現有的工作流程**全部**是遠端註冊的(`owner=hsuhungjung@gmail.com`,含 `jev-haiku` v4 的每小時健康檢查),因此方案 B 會讓這台沙箱不可用的主機上**每一個現有工作流程都停跑**,除非逐一在本機重新註冊或修好主機沙箱。業主選擇承擔殘留風險:別台電腦註冊一份壞腳本、操作者在本機誤按啟動,它仍然跑得了 —— 但這條路徑需要操作者自己動手,不是遠端單方面就能完成,與 ADR-083 裁決理由 (1)「威脅面是遠端提交」一致。**ARCH-182 不受此裁決影響**:它補的是 scheduler/webhook 兩條繞過 `call-tool.ts` 那道門的啟動路徑,而遠端建立的觸發器所啟動的 run **本來就是遠端啟動**,只是延後送達 —— 實作它是執行本裁決,不是推翻它。故 ARCH-182 的 `RunSpec.origin` 與兩個 `createdRemote` 欄位照做,被否決的只有「以**註冊者**是否遠端來拒跑」這一條。
+- **iter:** v37
+
+
 ### Invariants introduced by v37
 
-- **INV-V37-1 (the confinement is enforced, never argued).** No agent Bash write may land outside
-  `{the run workspace} ∪ {the operator-granted host paths}`, and the enforcement is the kernel's — no
-  engine code parses a shell command to reach that conclusion. Any future claim that a tool is
-  「confined」 must name the mechanism that refuses it, not the comment that describes it.
-- **INV-V37-2 (the confined party cannot widen its own confinement).** Nothing writable by an agent —
-  its workspace, its `.claude/`, its settings file — may participate in constructing the policy object
-  that confines it. (Held today by `denyWrite` on the workspace settings files plus, if S5 requires it,
-  the flag-settings carrier; both are ARCH-175/176.)
+- **INV-V37-1 (POSTURE-CONDITIONAL — the confinement is enforced, never argued).** Reworded at the
+  v37 Gate-8 send-back (finding A4): the original wording read as an unconditional global and is
+  **false for every local run under the owner-accepted posture C** — the exact shape of false green
+  INV-V37-3 exists to forbid. It holds per arm, and BOTH arms are written out loud so the degraded one
+  is never inferred from the absence of a sentence:
+  **`confined` arm** (no host in this ledger has yet measured it) — no agent Bash write may land
+  outside `{the run workspace} ∪ {the operator-granted host paths}`, and the enforcement is the
+  kernel's; no engine code parses a shell command to reach that conclusion.
+  **`unconfined` arm (what every measured host actually runs)** — NO filesystem confinement is
+  attempted for ANY run (`options.sandbox = {enabled:false}`); the only control in force is the
+  admission refusal (ARCH-181's door + ARCH-182's predicate), and what it guarantees is 「no
+  **remotely-submitted** run's Bash write」 — never 「no Bash write」. A locally-submitted run's Bash is
+  unconfined, and that is ADR-083's recorded, accepted cost.
+  Any future claim that a tool is 「confined」 must name the mechanism that refuses it **and the posture
+  under which that mechanism runs**.
+- **INV-V37-2 (POSTURE-CONDITIONAL — the confined party cannot widen its own confinement).** Under the
+  `confined` arm: nothing writable by an agent — its workspace, its `.claude/`, its settings file — may
+  participate in constructing the policy object that confines it (held by `denyWrite` on the workspace
+  settings files plus, if S5 requires it, the flag-settings carrier; both ARCH-175/176). Under the
+  `unconfined` arm the invariant is **vacuous, not satisfied**: there is no policy object to widen,
+  which is a strictly weaker statement and must never be reported as the same green.
 - **INV-V37-3 (no requirement's only evidence may run against code with no production caller).** A
   `src/` module with zero production importers may not be the subject of a VAL/real-tier test that an
   RTM row cites as its proof. This is the generalization of what ARCH-180 found, and it is the rule
   that makes 「wire it or delete it」 mean something after this iteration closes.
+- **INV-V37-4 (the deny surface is DERIVED from the composed config, never a literal census standing
+  beside it).** Every operator-overridable engine path (`casDir`, `assetRoot`, `webhookDbPath`,
+  `schedulerDbPath`, `selfUpdateDbPath`, …) must reach `denyRead`/`protectedFiles` as the RESOLVED
+  VALUE `composeConfig()` produced, not as a key name copied into a constant — and
+  `protectedFiles`/`denyRead` may never depend on `workRoot` having been EXPLICITLY set in config. The
+  check that enforces this is a test over the composed config — one that CAN fail — replacing
+  `bash-confinement.test.ts:30`'s assertion of a constant against itself. (ARCH-175 + ARCH-177
+  amendments; findings A3 + A2.)
+- **INV-V37-5 (a security-relevant value forwarded through the composition root carries a hop-level
+  wiring lock).** `confinementPosture` crosses two hops (`main.ts:368` → `ServerConfig` → the door and
+  `RunManager`'s predicate; `main.ts:443` → the gateway) and `isRemoteSubmission` crosses one
+  (`server.ts:1168` → `ToolDeps` → the door and the two trigger-create stamps). Both failure directions
+  are **silently INSECURE, not silently inert** — drop the first and every remote submission is
+  admitted; drop the second and every run ships unconfined — so each hop needs an assertion that fails
+  when the forward is dropped, in the shape of the `allowHostPaths` lock that already exists
+  (`compose-config-v2-wiring.test.ts:318,393`). This repo's memory now names this bug class three times
+  (v11 `updateFlagPath`, v15 auth, v37 A5), and a hop lock is the only thing that has ever caught it.
 
 ### v38 candidates (filed here so the next round starts from evidence, NOT actioned in v37)
 
+- **`continuationDbPath` is forwarded by `composeConfig()` to no production consumer** (found while
+  fixing A3: no `ContinuationStore` construction site exists in `src/`, yet
+  `compose-config-v2-wiring.test.ts:166` asserts the forward — a green test locking a wire to nowhere,
+  REQ-219's own bug class found outside REQ-219's closure). **Trigger**: the next touch of
+  `composeConfig()`'s path block, or the first REQ that revives continuations.
+- **`Scheduler.trigger()` (`scheduler.ts:352-370`) has zero production callers** — no `schedule_trigger`
+  tool exists and only `tests/unit/scheduler-port.test.ts` calls it, so a green unit test stands over a
+  run-admission path the product cannot reach (REQ-219's own bug class, found while re-counting the
+  admission sites for A1). Not deleted in v37: it is outside this iteration's closure and ARCH-182
+  covers it anyway. **Trigger**: the next REQ that touches the scheduler port, or a decision to
+  advertise a manual-trigger tool.
 - **The author-side `allowHostPaths` request contract** (ADR-084's option (C)) — schema in workflow
   `meta`, registration-time refusal naming the path, guide text, and an operator view of pending
   requests. **Trigger**: the first grant requested by someone who is not the operator.

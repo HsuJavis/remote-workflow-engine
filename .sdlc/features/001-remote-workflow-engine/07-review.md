@@ -12978,3 +12978,280 @@ the three items that WERE new/blocking are the ones now closed. Zero `未真實�
 enumerated in §B above, plus **DEBT-D** (§A) — ARCH-174's own "reachable via filters" sentence, now
 measured false by VAL-252, not yet corrected in `02-architecture.md` itself (routed to the next
 architecture touch).
+
+---
+
+## v37 GATE 8 — Consistency review (2026-09-22, reviewer) — SEND-BACK
+
+Scope: REQ-218 (Bash confinement posture C) + REQ-219 (dead-security-module deletion), per
+`06-impl-log.md` IMPL-371..379 `files:` lists. Two architecture-expert panel reports were PRE-RUN
+by the workflow (`.panel/review/adversarial.md`, `.panel/review/quality-dimensions.md`) — read and
+consolidated below, several findings independently re-verified on disk (not log-trusted), NOT
+re-spawned.
+
+### A. Traceability
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` → 2091 items / 77 gaps, dashboard
+regenerated. Gap breakdown via `trace.analyze()` as a library (not eyeballed): **high=15 (斷鏈,
+broken links) / mid=36 (TDD 19 + 未驗證 17) / low=26 (漂移 24 + 未實作 2)**. All 15 high-severity
+gaps are the pre-existing `REQ-144..152`/`REQ-186` broken-link set (dated v25/v33-era IMPL/UT rows);
+filtering against `{REQ-218, REQ-219}` returns **zero hits** — none of this iteration's own work
+items appear in any gap. Zero `未真實驗證` (mock-only) anywhere in the ledger, matching
+`08-validation.md`'s own account (2090/79 → 2090/77 at Gate 7.5, now 2091/77 after VAL-255 landed
+post-validation — item count +1, gap count unchanged, confirmed below). No unrecorded doc↔code
+drift beyond the pre-existing accepted 24-row 漂移 baseline.
+
+**Post-validation commit check:** `9227365` (VAL-255, landed after Gate 7.5's `current_stage →
+review` note) reruns REQ-117's cold-subject acceptance with a genuinely independent third subject
+(Opus 5 1M-context, no access to this session), closing the validator's own earlier
+`needs_clarification` on REQ-117. `real: true`, 16 MCP round-trips, zero server-side refusals.
+It surfaces **three new v38-filed gaps** (not blocking this gate — correctly triaged and recorded,
+not silently dropped): `workflow_describe`'s advertised `phases[].agents` predicted-lane field is
+**structurally always empty** for any newly registered workflow (traced to root:
+`workflow-catalog.ts`'s `resolveDetail` never returns `phases`, confirmed by the commit's own
+message and `08-validation.md:12515` VAL-255 entry), `workflow_register`'s ownership description is
+unconditional, and `worstCaseMs` is a lower bound rather than a precise upper bound. All three carry
+a stated v38 destination — recorded as tech debt below, not a Gate 8 finding.
+
+### B. Dashboard QA (1b)
+
+`dashboard_check.py` (plugin 2.4.3) paired with **this repo's own vendored `trace.py`** in an
+isolated scratch dir (per this ledger's established pairing — the plugin's bundled `trace.py`
+reproduces a known 2-`#`-heading false positive root-caused in an earlier round): **0 high / 7 mid /
+1 low**.
+- 7 mid: `02-architecture.md` erDiagram blocks (v21/v22/v23/v24×2/v26/v27 data architecture) flagged
+  for bracket imbalance — spot-checked `:945` directly: it is crow's-foot notation (`||--o{`), a
+  known lexical-checker false positive on this mermaid diagram type, same accepted reason as v36.
+- 1 low: dashboard.html has no offline-mermaid-CDN fallback — confirmed this repo's own vendored
+  `trace.py` predates that feature (`grep -c "MMD_OK\|offline\|fallback" .sdlc/trace.py` → 0 hits);
+  accepted, same as v36.
+No playwright browser tool was available in this session — pixel-level render verification is
+**degraded to the static check only**; noting this explicitly rather than claiming a render check
+that did not happen.
+
+### C. Module-boundary check (1c)
+
+`solid_check.py` paired with the **plugin's own bundled `trace.py`** (this repo's vendored
+`trace.py` does not parse `module:`/`deps:` at all, so pairing with it leaves the check dormant —
+same reasoning the v36 review recorded): **0 mid / 10 low**, unchanged from v36 — the 10 low
+"unclaimed file" warnings are all pre-existing files (`harness-defaults.ts`, `self-update.ts`,
+`agent-semaphore.ts`, `mcp-probe.ts`, `scan-agent-calls.ts`, `net-guard.ts`,
+`workspace-artifacts.ts`, `clock.ts`, `owner-lookup.ts`, `workroot-guard.ts`), none of them v37's new
+file (`src/gateway/bash-confinement.ts` is correctly claimed under an ARCH module — ARCH-175 names
+it explicitly). `module_check` (1c2): dormant, no `build:` declared on any ARCH-* row — unchanged.
+
+### D. Architecture consistency — consolidated from the two pre-run panel reports
+
+**Verdict: `arch_consistent: false` — 3 HIGH, 4 MED, 4 LOW findings, three independently
+re-verified on disk this round.**
+
+**HIGH — blocking:**
+
+1. **A1 (adversarial) — the remote-submission door (`call-tool.ts:120`) only covers the MCP
+   `tools/call` ingress; `webhook_registry.ts:305` and `scheduler.ts:363` start Bash-capable
+   `agent()` runs directly via `RunManager.start()`, bypassing it entirely.** Independently
+   re-verified: read `call-tool.ts:110-124` (the door, gated on
+   `deps.confinementPosture === 'unconfined' && deps.isRemoteSubmission === true`, only reachable
+   from `callTool()`), `webhook-registry.ts:295-307` (`POST /hooks/:id` → `this._runManager.start(...)`
+   with no `confinementPosture`/`isRemoteSubmission` check anywhere on that path) and
+   `scheduler.ts:355-363` (ticker-fired `this._runManager.start(...)`, same bypass). ARCH-181's own
+   text asserts "both are the only two tool calls that admit NEW Bash-capable `agent()` work into
+   the engine" (`02-architecture.md:5518`) — that factual claim is false for the engine as built (a
+   `grep -rn "_runManager\.start("` census finds four admission sites, two of them un-gated).
+   Read ADR-083's `owner_decision` verbatim (`02-architecture.md:5532-5551`): the ruling's own
+   reason (1) frames the threat generically as **「遠端提交」(remote submission)** and explicitly
+   cites the 2026-09-20 incident as "另一台機器送來的工作流程" (a workflow submitted from another
+   machine) — not "a tools/call from a remote MCP client" specifically. The owner's actual intent is
+   broader than what ARCH-181 implemented; the implementation under-delivers on its own cited
+   rationale, not merely a documentation gap. **Attack path** (posture this host actually measures,
+   `unconfined`): remote `workflow_register` (allowed) → `webhook_create` (allowed, ungated) →
+   `POST /hooks/<id>` with valid HMAC (allowed, not a `tools/call`) → run starts, Bash unconfined,
+   $HOME writable — the exact incident class ADR-083 (C) exists to intercept, through the one door
+   ARCH-181 left unlocked. Send back to **architecture** (correct ARCH-181's false claim + decide
+   where the check belongs — the panel's suggested shape is `RunManager.start()`, keyed on
+   `startedBy`, since all four admissions already converge there) + **impl** (implement the fix) +
+   **validation** (REQ-218's real-tier evidence currently proves only the `tools/call` ingress;
+   needs a webhook/scheduler-path real-run once fixed).
+
+2. **A2 (adversarial) — `protectedFiles`/`denyRead` for `rwe.config.json` and `auth-tokens.db`
+   evaporate to `[]` when `workRoot` is unset, and `workRoot` is DES-documented as optional with an
+   auto-tmpdir default — not merely a hand-edit misconfiguration.** Independently re-verified:
+   `main.ts:252` computes `protectedFiles` unconditionally from `deps.configPath` regardless of
+   `workRoot`; `main.ts:439` forwards the whole `confinement` block **only** `if (workRoot)` (the
+   type at `claude-agent-sdk-client.ts:120` makes `confinement.workRoot` non-optional, forcing
+   all-or-nothing); when omitted, `bash-confinement.ts:53-56,69` yields `denyRead: []` and
+   `credentials.files: []`. Checked against the actual documented default (not taking the panel's
+   `DEPLOY.md:521` citation unread): `DEPLOY.md:511-530`'s own 設定總表 row for `workRoot` states
+   `必須 = 否`（optional）,`type/default: string / 系統暫存目錄自動建立`（auto-created system temp
+   dir） — this is a **documented supported configuration**, not merely what `deploy.sh`'s
+   first-run generator happens to fill in (that script does write an explicit path by default, so
+   the auto-generated config from a first `./deploy.sh --background` run does NOT trip this; an
+   operator who follows the 設定總表 and omits/removes the key, or any deployment path that reaches
+   `server.ts:655`'s own later fallback, does). On such a host, the control ARCH-007's v37 amendment
+   calls REQ-018's "first **enforced** expression" is silently absent, and the same `workRoot`
+   absence also makes IMPL-377's new REQ-021 intra-run re-walk inert
+   (`claude-agent-sdk-client.ts:705`, same root cause). HIGH despite being latent today (the
+   `confined` arm cannot execute on any host this ledger has measured) because ADR-083's own
+   revisit trigger flips the posture with **no re-review required** — a defect that ships
+   pre-installed behind a deliberately review-free switch. Send back to **architecture** (the
+   `confinement.workRoot` type shape needs a decision — optional field vs. resolving a tmpdir
+   default inside `composeConfig()`, the panel's preferred fix) + **impl**.
+
+3. **C-1 (quality-dimensions) — `CONFINEMENT_UNAVAILABLE` is a real, wire-reachable refusal on
+   `run_start`/`run_resume` absent from `ERROR_CATALOG` and both tools' `errors:` arrays —
+   reproduces the exact `UT-164`/v24-Gate-8-AF-3 bug class this codebase already paid to fix once.**
+   Independently re-verified: `grep -n CONFINEMENT_UNAVAILABLE src/errors.ts` → no hit;
+   `tool-specs.ts:532` (`run_start` `errors:`) and `:599` (`run_resume` `errors:`) both omit it;
+   `refusalEnvelope(code: string, …)` takes a bare `string`, not the closed `ErrorCode` type, so the
+   call site is not compiler-checked against the catalog. `error-catalog-closed.test.ts` (UT-164)
+   locks the *other* direction (authz-derived codes against the catalog) but is silent about an
+   ad-hoc `refusalEnvelope()` call naming a code in neither list — the same seam reopened via a
+   pre-dispatch door instead of `authorize()`. A cold MCP client (the exact reader ARCH-051/ARCH-087
+   exist for) has no schema-level way to discover this refusal before hitting it; the human-facing
+   docs (`DEPLOY.md`, `docs/AUTHORING.md`) DO cover it correctly, which is credited but does not
+   substitute for the machine-readable surface. Send back to **impl** (add the catalog entry + both
+   tools' `errors:` arrays + type `refusalEnvelope`'s `code` param, or a scoped local type) — no
+   architecture decision required, this is a closure-discipline gap the existing test class should
+   have caught and didn't because the call site is new.
+
+**MED — send back with fix (per the adversarial panel's own explicit split; folded into the same
+architecture/impl re-run rather than left to prose, since the gate is running anyway):**
+
+4. **A5 (adversarial) — the `confinementPosture` hop-2 forward has no wiring lock, and both failure
+   directions are silently insecure, not silently inert** — the exact `composeConfig` 佈線 bug class
+   this repo's own memory names as its recurring failure mode. Verified: the *grant* hop is locked
+   (`compose-config-v2-wiring.test.ts:318,393`); `grep -n "confinementPosture\|confinementProbe"
+   tests/unit/compose-config-v2-wiring.test.ts tests/unit/sandbox-config-wiring.test.ts` → no match
+   for the *posture* hop. Dropping `main.ts:368` silently admits every remote submission (door reads
+   `undefined` as "don't gate"); dropping `main.ts:443` silently ships every run unconfined. This is
+   the same class v36's F2 was blocking for. Send back to **impl** (add the lock, ARCH-177 already
+   mandates it for the sibling field) + **tests**.
+5. **A3 (adversarial) — `ENGINE_STATE_DENY` is a hand-maintained enumeration, already missing three
+   real engine-state files (`mcp-registry.db`, `self-update.db`, `_global_assets`), and blind to
+   every operator path override `DEPLOY.md` documents as supported** (`casDir`, `webhookDbPath`,
+   `schedulerDbPath`, `continuationDbPath`, `assetRoot`, `selfUpdateDbPath`). The one test asserting
+   the list (`bash-confinement.test.ts:30`) is tautological against the same constant, so it can
+   never catch an omission. Architecture and implementation *agree* here (the arch text names the
+   same eight paths) — this is a review-stage catch of an architecture-quality defect, not an
+   implementer deviation. Send back to **architecture** (name a completeness invariant or switch to
+   an operator-config-driven derivation) + **tests** (the tautological assertion needs a
+   cross-check against actual path config, not a re-derivation of the SUT's own list).
+6. **A4 (adversarial) — INV-V37-1/INV-V37-2 (`02-architecture.md:5588-5595`) are worded as
+   unconditional global invariants, but are false for every local run under the owner-accepted
+   posture C, and REQ-218's `rtm.md:240` trace row cites the mechanism that does NOT run on this
+   host (ARCH-175..178, the `confined` arm) while omitting the one that does (ARCH-181, DES-261/262,
+   the remote-submission door, IMPL-375/376)** — INV-V37-3 exists precisely to prevent this shape of
+   gap. Send back to **architecture** (reword the invariants as posture-conditional; correct the
+   `rtm.md` REQ-218 row's trace set).
+7. **O-1 (quality-dimensions) — `agent.confinement_denied` is architecturally due (ARCH-178's own
+   conditional: "if spike S4 shows the hook fires, this event IS built") and TASK-250's spike S4
+   answered POSITIVE, but the event is not built and ARCH-178's row was never amended to say
+   "deferred despite S4."** IMPL-374 names the gap honestly in the impl log, but the architecture
+   text itself, unedited, still reads as if a positive S4 means the event ships — a reader of
+   `02-architecture.md` alone would believe it exists. Send back to **architecture** (amend
+   ARCH-178's row to state the deferral explicitly, with a trigger) — building the event itself is
+   NOT required by this finding, only the row matching what shipped.
+
+**LOW — recorded as tech debt (cleanup that can ride the next touch, not blocking):**
+
+- **A6** — two spike-blocked arms (`DENY_READ_MODE`'s `'workroot'` branch, `MASK_PROVIDER_ENV`'s
+  `envVars` branch) ship as statically unreachable dead code rather than being deleted per
+  ARCH-175's own stated instruction and REQ-219/ADR-085's own thesis in this same iteration.
+- **A7** — two comments in v37-touched files (`claude-agent-sdk-client.ts:824`, `main.ts:442`)
+  contradict v37 code, in the file REQ-218 exists to de-contradict comments in. The two *big*
+  comments REQ-218 actually named were fixed correctly — credited.
+- **A8** — ARCH-175's `allowRead` (api) and ARCH-176's note disagree about whether the CLI's own
+  paths survive confinement; unverifiable today since the `confined` arm has never executed a real
+  Bash call on any measured host (recorded, not fixed — the panel's own framing: "LOW severity, HIGH
+  value if the posture ever flips").
+- **O-2** — `confinement-probe.ts:17-18`'s own doc comment claims `reason` reaches the
+  `agent.confinement` event; the event schema (`event-log.ts:21`) has no `reason` field — `reason`
+  only reaches the boot-time console log and `--check-config`. Same "comment says X, thing doesn't
+  do X" bug class ARCH-176 fixes elsewhere in this same iteration, recurring in a doc comment.
+- **VAL-255's three v38-filed gaps** (§A above): `workflow_describe.phases[].agents` structurally
+  always empty, `workflow_register` unconditional ownership description, `worstCaseMs` as a lower
+  not upper bound.
+
+**Verified consistent (credited, not just absence of findings):** Replaceability (no
+confinement-related member leaks onto the `GatewayClient` port; `buildBashConfinement()` verified
+pure by import inspection; the `SandboxSettings` shape checked field-by-field against the installed
+SDK's own `sdk.d.ts`) and Self-sustainability (posture measured once at boot by a real subprocess
+probe, independently re-run against this host during the panel's own review and matching ADR-083's
+verbatim measurement; `validateHostPathGrants` fails closed in both containment directions;
+INV-V37-2 holds by construction) — no violations found by either lens, both explicitly checked
+against code, not assumed. Scalability/performance: no violations (bounded one-shot boot cost,
+correct event-emission cadence, pure allocation-only hot path).
+
+### E. Owner-deferral ledger sweep (issue #15)
+
+Mechanical sweep for the fixed metadata key `- **owner_decision:** pending` across `01-08*.md` +
+`rtm.md`: **zero live hits.** (`02-architecture.md` has one string match, but it is a table cell
+*quoting* the key while describing a past sweep's own methodology, at `:4742` — read in context,
+confirmed not a live marker. `05-tests.md`/`08-validation.md` hits are likewise prose describing the
+now-resolved `REQ-216/K5` marker, confirmed `answered(2026-09-22)` at `02-architecture.md:4396` et
+seq.) `owner_decisions: []`.
+
+Spot-checked v37's three new ADRs for decision-shaped hedging without the marker: ADR-082
+(confinement-as-SDK-configuration), ADR-084 (operator-grants-host-paths, author-side surface
+deferred), ADR-085 (delete both dead modules) — all three follow this ledger's standing
+Context/Options/Decision/Consequences/Revisit-trigger ADR shape with an explicit, reasoned decision
+and a named, event-shaped revisit trigger. ADR-084's deferral of the author-request surface (C) is
+an ordinary architect scope call with a stated trigger, not a hedge — no unmarked deferral found.
+ADR-083 (the one that traded security posture) correctly carries the `owner_decision` marker and is
+answered. Clean.
+
+### F. Validation & handover
+
+Gate 7.5 (`08-validation.md`, journal.md's 2026-09-22 v37 Gate 7.5 entry): booted one scratch
+instance via `./deploy.sh --background`. REQ-218's confined-write clause recorded as an explicit
+`unreachable-dep` (this host's own nested-bwrap probe reconfirms the same AppArmor-restricted
+failure) — not mock-passed. REQ-219 verified via grep + real MCP HTTP re-walk trigger. `08-validation.md`
+present. `README.md`/`DEPLOY.md` present, current-state (opening blockquote: "本文件描述系統**目前**
+的部署方式與行為——不是變更歷程"), single deduplicated `DEPLOY.md §1b 設定總表` (verified: `grep -c
+設定總表` → README.md 2 references-only, DEPLOY.md 7 including the one true table header at
+`:511`), §0 leads with the one-command `./deploy.sh --background` invocation Gate 7.5 actually ran.
+No stale port/key/command found on inspection of the diffed sections (`git diff HEAD~5 HEAD --
+DEPLOY.md README.md`), which rewrite the Bash-confinement security-model prose to current fact —
+present-tense mechanism description, not a changelog. **However**: this same prose now needs a
+follow-up edit alongside the A1/A2 fixes above, since it currently describes only the `tools/call`
+remote-submission door and does not warn that webhook/schedule-admitted runs bypass it — noted so
+the eventual repair does not re-close A1 in code while leaving the human doc's claim wider than
+reality again.
+
+No CLAUDE.md/AGENTS.md/SKILL.md touched this iteration (`git diff --stat 645555b HEAD -- CLAUDE.md
+AGENTS.md` → empty; no SKILL.md matches in the same diff) — special-file review N/A, confirmed
+against the full v37 commit range (`645555b`, v36's close, through `HEAD`), not a partial range.
+
+### G. Independently re-run (this round, not trusted from the gate notes)
+
+- `npx tsc --noEmit`: clean, 0 errors.
+- Read `call-tool.ts:110-124`, `webhook-registry.ts:295-307`, `scheduler.ts:355-363`, `main.ts:245-260,435-445`,
+  `errors.ts` (grep), `tool-specs.ts:532,599`, `deploy.sh` (workRoot defaulting), `DEPLOY.md:511-530`
+  (設定總表), ADR-083's `owner_decision` verbatim — all cited findings above independently confirmed
+  on disk, not carried from the panel reports unread.
+
+### H. Verdict
+
+**`send_back = [architecture, impl, validation, tests]`. Iteration DOES NOT CLOSE.**
+
+Three HIGH findings (A1, A2, C-1) are blocking on their own merits — a genuine incident-class
+security gap (A1), a documented-config path that silently drops secret-file protection (A2), and a
+reachable, undocumented-at-the-wire-surface error code reproducing a defect class this codebase
+already paid to fix once (C-1). Four MED findings (A3, A4, A5, O-1) are folded into
+`blocking_findings` per the adversarial panel's own explicit "send-back-with-fix" recommendation —
+the architecture/impl gates are re-running for A1/A2 regardless, and each is cheap, reachable, and
+in the same files. LOW findings (A6, A7, A8, O-2) and VAL-255's three v38-filed gaps are recorded as
+tech debt below, not blocking.
+
+`.panel/` is LEFT IN PLACE (send_back is non-empty) — the re-run gates and re-review need it.
+
+**Known tech debt recorded (not blocking, carried to next touch):**
+- A6 (two dead spike-losing branches not deleted), A7 (one small stale comment beyond the two
+  REQ-218 named and fixed correctly), A8 (unverifiable `allowRead`/CLI-reachability disagreement,
+  latent until posture flips), O-2 (a doc-comment overclaim about `reason` field reach).
+- VAL-255's three v38-filed gaps: `workflow_describe.phases[].agents` structurally empty,
+  `workflow_register` unconditional ownership description, `worstCaseMs` lower-bound-not-upper-bound.
+- All pre-existing 77-gap debt carried unchanged (REQ-144..152/186 broken links; TDD/漂移 rows;
+  REQ-153..169 未驗證) — zero of it new, zero of it touched by v37.
+
+*Reviewer: Gate 8, 2026-09-22, send-back round 1.*

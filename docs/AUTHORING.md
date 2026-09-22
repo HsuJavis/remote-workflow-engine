@@ -236,6 +236,7 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 - `DEFAULTS_RETIRED` — meta.params.knobs / meta.defaults are retired; declare params.agents.<label> instead
 - `LEGACY_REREGISTER` — this version predates the v24 contract and cannot run; re-register it
 - `INLINE_SCRIPT_CLOSED` — inline run-time scripts are closed; register once, then run by name
+- `CONFINEMENT_UNAVAILABLE` — this host could not measure a working Bash sandbox at boot; a remotely-submitted run is refused (a local/loopback submission still runs, unconfined)
 - `NESTING_DEPTH_EXCEEDED` — nested workflow() calls exceed the configured maxWorkflowDepth
 - `NESTING_CYCLE` — a workflow() call would re-enter an ancestor already on this call's chain
 - `DESCENDANT_CAP_EXCEEDED` — nested workflow() calls exceed the configured maxWorkflowDescendants

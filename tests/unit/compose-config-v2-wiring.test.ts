@@ -402,4 +402,19 @@ describe('every KNOWN_FILE_CONFIG_KEYS entry is probed or excluded (UT-219, defe
     rmSync(workRoot, { recursive: true, force: true });
     rmSync(grant, { recursive: true, force: true });
   });
+
+  // v37 Gate-8 send-back (finding A5, INV-V37-5): `confinementPosture` crosses TWO hops from
+  // `deps.confinementProbe` — main.ts:368 onto `ServerConfig.confinementPosture` (the door's own
+  // read in call-tool.ts and RunManager's predicate) and main.ts's sdk-branch gateway construction
+  // onto the constructed `ClaudeAgentSdkGatewayClient`'s own config — and unlike `allowHostPaths`
+  // above, NEITHER hop had a wiring lock: dropping either forward is silently INSECURE (every
+  // remote submission admitted / every run ships unconfined), not silently inert, so a regression
+  // here would never be caught by a "field renders as undefined" style assertion. Mirrors the
+  // `allowHostPaths` lock's shape exactly, one probe result in, both hops checked.
+  it('sdk branch: composeConfig() forwards deps.confinementProbe.posture onto BOTH ServerConfig AND the constructed gateway (REQ-218, INV-V37-5)', async () => {
+    const cfg = await composeConfig({ gateway: 'sdk' }, { ...FAKE_DEPS, confinementProbe: { posture: 'confined' } } as any);
+    expect((cfg as Record<string, unknown>)['confinementPosture']).toBe('confined');
+    const gwConfig = (cfg.gateway as unknown as { _config: { confinementPosture?: string } })._config;
+    expect(gwConfig.confinementPosture).toBe('confined');
+  });
 });

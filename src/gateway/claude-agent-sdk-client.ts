@@ -116,8 +116,12 @@ export interface ClaudeAgentSdkGatewayConfig {
    *  `buildBashConfinement()` is never even called). Set by ONE caller (`main.ts`'s
    *  `composeConfig()`, ARCH-177 — not threaded through `RunManager`, not added to the
    *  `GatewayClient` port; `LiteLLMGatewayClient` has no subprocess and is unconfined BY CATEGORY,
-   *  not by gap). */
-  confinement?: { allowHostPaths: readonly string[]; protectedFiles: readonly string[]; workRoot: string };
+   *  not by gap). v37 Gate-8 send-back (finding A2): `workRoot` is `string | undefined` — since
+   *  `composeConfig()` now forwards this block UNCONDITIONALLY (never gated on `workRoot` having
+   *  been explicitly set), the field itself can no longer promise a non-empty string. Every reader
+   *  already narrows via `?.`/`??` (see `:705`, `:747-749`), so this loosening changes no downstream
+   *  behavior — it only lets the composition root stop omitting the whole block. */
+  confinement?: { allowHostPaths: readonly string[]; protectedFiles: readonly string[]; workRoot: string | undefined };
   /** v37 (ARCH-181, DES-262, TASK-257, REQ-218, ADR-083 owner_decision posture C): this engine's
    *  MEASURED confinement posture (src/gateway/confinement-probe.ts, run once at boot — never a
    *  config key). **Defaults to `'unconfined'` when omitted** — found empirically, not assumed: an

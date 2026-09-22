@@ -15582,6 +15582,18 @@ collected).
 
 **Gate-6 confirmation (2026-09-22, implementer):** green, 16/16 (UT-309+UT-310 share `tests/unit/bash-confinement.test.ts`), `npx vitest run tests/unit/bash-confinement.test.ts`.
 
+**v37 Gate-8 send-back amendment (2026-09-22, implementer; finding A3, ARCH-175):** the
+`denyRead` assertion (against `ENGINE_STATE_DENY`, now 5 knob-less literals —
+`store`/`catalog.db`/`auth-tokens.db`/`mcp-registry.db`/`_global_assets` — `cas`/`assets`/
+`webhooks.db`/`schedules.db` moved to `protectedFiles`, `continuations.db` removed as a phantom)
+stays: it tests `buildBashConfinement()`'s own join/concat MECHANICS, a real question distinct from
+「is `ENGINE_STATE_DENY` complete」, which a constant compared to a copy of itself can never answer.
+The completeness question INV-V37-4 actually cares about now has its own real guard: UT-312's new
+「an operator-overridden casDir/selfUpdateDbPath reaches protectedFiles as the resolved value」 case,
+which fails against the COMPOSED CONFIG if a resolved override silently drops out. `npx vitest run
+tests/unit/bash-confinement.test.ts`: 16/16 pass, no count change (constant + fixture both updated
+together).
+
 ### UT-310 — `validateHostPathGrants()` + `formatGrantRefusals()` — boot refuses a grant that would undo the control
 - **status:** green
 - **traces:** DES-254
@@ -15660,6 +15672,23 @@ field yet).
 
 **Gate-6 confirmation (2026-09-22, implementer):** green, 8/8, `npx vitest run tests/unit/sandbox-config-wiring.test.ts` (UT-311+UT-312 share this file).
 
+**v37 Gate-8 send-back amendment (2026-09-22, implementer; findings A2 + A3, ARCH-177/ARCH-175):**
+two changes to this row's own two cases plus one new case, all in the same file/describe block.
+(1) A2: `deps.workRootDefault` now falls back a real `workRoot` in on `main()`'s own real boot path
+(never inside `composeConfig()`'s own default, so every test call site here — which never sets
+`deps.workRootDefault` — is UNCHANGED; this file's cases all pass an explicit `workRoot` already).
+(2) A3: 「no config file on disk ⇒ protectedFiles is just the auth DB」 is renamed 「… is the auth DB
+plus every engine path's own default」 and its expectation grows from 1 entry to 7
+(auth-tokens.db/cas/assets/webhooks.db/schedules.db/self-update.db/continuations.db) — every
+operator-overridable engine path now reaches `protectedFiles` as ITS OWN resolved default, per
+INV-V37-4. (3) A3's real completeness guard, new: 「an operator-overridden casDir/selfUpdateDbPath
+reaches protectedFiles as the resolved value, not the default」 — sets `casDir`/`selfUpdateDbPath`
+to a non-default path and asserts `protectedFiles` contains the OVERRIDE and NOT the default,
+which fails against the COMPOSED CONFIG (not a copy of a constant) if a resolved override is
+dropped — this is the assertion that replaces `bash-confinement.test.ts:30`'s tautology as
+INV-V37-4's real guard (see UT-309's own amendment). `npx vitest run
+tests/unit/sandbox-config-wiring.test.ts`: 11/11 pass (2 renamed/grown + 1 new case, 0 regressions).
+
 ### UT-327 — `loadFileConfig()` throws naming the path when the config file exists but is not valid JSON (UT-312's missing catch-branch arm)
 - **status:** green
 - **traces:** DES-255, TASK-252
@@ -15699,6 +15728,30 @@ failed / 60 passed — `expect(accounted).toEqual(known)` fails (`sandbox` on on
 (no regression).
 
 **Gate-6 confirmation (2026-09-22, implementer):** green, 62/62, `npx vitest run tests/unit/compose-config-v2-wiring.test.ts` (0 regressions among the 60 pre-existing cases).
+
+### UT-328 — the hop-2 wiring lock: `composeConfig()` forwards `deps.confinementProbe.posture` onto BOTH `ServerConfig` AND the constructed gateway (new, v37 Gate-8 send-back, finding A5, INV-V37-5)
+- **status:** green
+- **traces:** DES-253, ARCH-177, ARCH-181, ARCH-182, TASK-252, REQ-218
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v37
+
+File: `tests/unit/compose-config-v2-wiring.test.ts` (extended, new `it()` beside UT-313's
+`allowHostPaths` hop-2 lock — same shape, same file, the twin this finding says was missing).
+`confinementPosture` crosses TWO hops from `deps.confinementProbe` (`main.ts`'s `ServerConfig`
+literal, and the sdk-branch `ClaudeAgentSdkGatewayClient` construction) and — unlike
+`allowHostPaths` — had NO wiring lock at all before this case: dropping either forward is silently
+INSECURE (every remote submission admitted, or every run ships unconfined), not silently inert, so
+only a probe that actually asserts BOTH hops in one call can catch a regression in either
+direction. Calls `composeConfig({gateway:'sdk'}, {...FAKE_DEPS, confinementProbe:{posture:
+'confined'}})` and asserts `cfg.confinementPosture === 'confined'` AND
+`cfg.gateway._config.confinementPosture === 'confined'` in the same case. Confirmed non-vacuous by
+reading both forward sites (`main.ts`'s `...(deps.confinementProbe ? {confinementPosture:
+deps.confinementProbe.posture} : {})`, present at both the `ServerConfig` literal and the gateway
+constructor call) — a regression dropping either spread would read `undefined` and fail this
+assertion. `npx vitest run tests/unit/compose-config-v2-wiring.test.ts`: 63/63 pass (1 new case, 0
+regressions).
 
 ### UT-314 — `options.sandbox` is the builder's own output, at every construction
 - **status:** green
@@ -15956,6 +16009,24 @@ remote+confined still reaches the facade (the door only closes under the degrade
 remote+fields-omitted (the shape every one of this file's ~250 other test call sites uses) is
 unaffected; `run_resume` is gated the same way; `run_status` (a read) is never gated. Confirmed via
 direct re-run: 6/6 pass.
+
+**v37 Gate-8 send-back amendment (2026-09-22, implementer; finding C-1):** this row proved the
+DOOR fires with `code:'CONFINEMENT_UNAVAILABLE'`; it never proved a COLD client could discover that
+code before hitting it. Closed by three changes, covered by EXISTING generic sweep tests rather
+than a new dedicated case (no new UT id — the sweeps are the guard, same convention as
+`error-catalog.test.ts`'s 「every key carries `see`+`hint`」 covering every future catalog addition
+mechanically): (1) `CONFINEMENT_UNAVAILABLE` joins `src/errors.ts`'s `ERROR_CATALOG` with
+`see:'workflow_authoring_guide'` — swept by `tests/unit/error-catalog.test.ts`'s generic 「every key
+carries `see`+`hint`, never a `message`」 case; (2) it joins `run_start`'s and `run_resume`'s
+`errors:` arrays in `tool-specs.ts` — `tests/integration/advertised-surface-truth.test.ts` and
+`tests/integration/error-envelope-see-pointer.test.ts` re-run green with no changes needed (both
+already sweep advertised-vs-thrown consistency generically); (3) `call-tool.ts`'s `refusalEnvelope`
+`code` parameter is now typed `ErrorCode` (was `string`) — a compile-time closure of the class
+(`npx tsc --noEmit -p tsconfig.json` / `-p tsconfig.server.json`: clean), so a future ad-hoc code at
+this one function can no longer slip through uncatalogued. `npx vitest run
+tests/unit/call-tool-confinement-door.test.ts tests/unit/error-catalog.test.ts
+tests/unit/error-catalog-closed.test.ts tests/integration/advertised-surface-truth.test.ts
+tests/integration/error-envelope-see-pointer.test.ts`: all pass, 0 regressions.
 
 ### VAL-253 — REQ-218: an agent's Bash cannot write outside the run workspace, or the path is a declared operator grant
 - **status:** green

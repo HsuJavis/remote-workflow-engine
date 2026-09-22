@@ -27,6 +27,14 @@ describe('UT-309 buildBashConfinement() — the whole posture as one pure functi
     expect(s.filesystem?.allowWrite).toEqual([ROOT]);
     expect(s.filesystem?.allowRead).toEqual([ROOT]);
     expect(s.filesystem?.denyWrite).toEqual([join(ROOT, '.claude', 'settings.json'), join(ROOT, '.claude', 'settings.local.json')]);
+    // v37 Gate-8 send-back note (finding A3): this assertion tests buildBashConfinement()'s OWN
+    // join/concat MECHANICS (does it correctly fold ENGINE_STATE_DENY + protectedFiles into
+    // denyRead?) — deriving the expectation from the same constant is the right shape for THAT
+    // question. It is deliberately NOT the completeness guard for ENGINE_STATE_DENY itself (a
+    // constant compared to a copy of itself can never catch an omission there); INV-V37-4's real
+    // guard is `sandbox-config-wiring.test.ts`'s "an operator-overridden casDir/selfUpdateDbPath
+    // reaches protectedFiles as the resolved value" case, which fails against the COMPOSED CONFIG
+    // if a resolved override silently drops out.
     expect(s.filesystem?.denyRead).toEqual([...ENGINE_STATE_DENY.map((p: string) => join(WORKROOT, p)), ...PROTECTED]);
     expect(s.credentials?.files).toEqual(PROTECTED.map((path) => ({ path, mode: 'deny' })));
     expect(s.network).toBeUndefined();

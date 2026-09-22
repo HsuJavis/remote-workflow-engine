@@ -10064,3 +10064,153 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   tests/unit/authoring-guide.test.ts`: 62/62 pass. `npm run gen:authoring` re-run in this commit;
   `npx vitest run tests/unit/authoring-md-generated.test.ts`: 1/1 pass (byte-lock holds — the
   regenerated file's `undefined`-posture branch matches). `npx tsc --noEmit` clean.
+
+### IMPL-380 — v37 Gate-8 SEND-BACK REPAIR: `workRoot`'s tmpdir default is resolved inside `composeConfig()` so `protectedFiles`/`denyRead` can never depend on it being explicitly set (finding A2, ARCH-177 amendment) + every operator-overridable engine path reaches `protectedFiles` as its resolved value, and `ENGINE_STATE_DENY` is corrected to the true knob-less census (finding A3, ARCH-175 amendment)
+- **status:** done
+- **traces:** ARCH-177, ARCH-175, DES-255, TASK-252, REQ-218
+- **greens:** UT-312 (amended, 2 cases grown + 1 new), UT-309 (amended note, unchanged pass count)
+- **files:** src/main.ts, src/gateway/bash-confinement.ts, src/gateway/claude-agent-sdk-client.ts,
+  tests/unit/sandbox-config-wiring.test.ts, tests/unit/bash-confinement.test.ts
+- **commit:** (uncommitted at write time)
+- **iter:** v37
+- **note:** **A2** — `ComposeConfigDeps` gains `workRootDefault?: string` (a pre-computed value,
+  never a callable — the same `vi.mock('node:fs')` hazard `configPath`/`confinementProbe` already
+  sidestep). `main.ts`'s own two composeConfig() call sites now always supply one on the production
+  path: the real boot path computes `mkdtempSync(join(tmpdir(), 'rwe-'))` ONCE, only when neither
+  `RWE_WORK_ROOT` nor `fileConfig.workRoot` is set (no spurious tmpdir when the operator DID
+  configure one); `--check-config` passes a clearly-labelled non-created placeholder string,
+  preserving that command's own "no side effects" contract. Inside `composeConfig()`, `workRoot =
+  explicitWorkRoot ?? deps.workRootDefault` — `explicitWorkRoot` (the pre-v37 value) still gates
+  `assertWorkRootIsolated()` and the "grants require an explicit workRoot" refusal (an ephemeral
+  per-boot tmpdir is never a meaningful containment anchor for an operator's own grant), while the
+  DEFAULTED `workRoot` is what `ServerConfig.workRoot`/`protectedFiles`/the gateway's `confinement`
+  block all carry — one resolution, one value, every consumer. The `confinement` field is now
+  forwarded to the constructed gateway UNCONDITIONALLY (the old `workRoot ? {...} : {}` guard at
+  the sdk-branch construction site is deleted); this required loosening
+  `ClaudeAgentSdkGatewayConfig.confinement.workRoot` from `string` to `string | undefined` (every
+  existing reader already narrows via `?.`/`??`, so this changes no downstream behaviour — verified
+  by grep of every read site before the change). `server.ts:655`'s own `??` tmpdir fallback STAYS,
+  for every direct `createServer()` test caller that never goes through `composeConfig()`
+  (Karpathy-(3) surgical-change grounds — declined the alternative of making `ServerConfig.workRoot`
+  required, which would be a breaking change across ~20 implementers' shared tree for a fix that
+  does not need it). **`deps.workRootDefault` is OPTIONAL on `ComposeConfigDeps`, not required** —
+  the architecture row's prose names it `workRootDefault: string`; read literally that would require
+  every one of the ~80 existing `composeConfig()` test call sites (49 in
+  `compose-config-v2-wiring.test.ts` alone) to supply it, which the row's own text never asks for
+  ("every existing test call site" is the established `ComposeConfigDeps` convention this row's
+  neighbour, `confinementProbe`, already documents). Implemented as optional with the production
+  call sites always supplying a real value, so the SECURITY OUTCOME (a real deployment's
+  `protectedFiles`/`denyRead` never depend on an explicit `workRoot`) holds unconditionally while
+  the ~80 test call sites are unaffected — flagged here rather than silently narrowing the
+  architecture's stated type. **A3** — `ENGINE_STATE_DENY` shrinks from 8 entries to the true
+  knob-less census: `store`, `catalog.db`, `auth-tokens.db`, plus the two the review found missing,
+  `mcp-registry.db` (`workflow-catalog.ts:398`) and `_global_assets` (`asset-sync.ts:145`, hangs off
+  `workRoot` not the overridable `assetRoot`). `cas`/`assets`/`webhooks.db`/`schedules.db` move OUT
+  (they have `FileConfig` override keys — `casDir`/`assetRoot`/`webhookDbPath`/`schedulerDbPath` —
+  and re-deriving an override from a key name is exactly the bug INV-V37-4 forbids);
+  `continuations.db` is REMOVED as a phantom (`continuationDbPath` has zero production construction
+  sites, grep-verified — filed as a v38 candidate in `02-architecture.md`, not fixed here, out of
+  this closure). `composeConfig()` now resolves `casDir`/`assetRoot`/`webhookDbPath`/
+  `schedulerDbPath`/`selfUpdateDbPath`/`continuationDbPath` itself (mirroring each field's own
+  `server.ts` default exactly — e.g. `fileConfig.casDir ?? (workRoot ? join(workRoot,'cas') :
+  undefined)`) and adds every resolved value to `protectedFiles`, which `buildBashConfinement()`
+  folds into `denyRead`/`credentials.files` — the pure builder stays pure; the resolution is the
+  composition root's job, exactly as ARCH-175 prescribes. `resolvedAssetRoot` is computed once and
+  reused for `ServerConfig.assetRoot` too (was a duplicate inline expression before this change; a
+  mechanical dedup, not a behaviour change). **`bash-confinement.test.ts:30`'s tautological
+  assertion is NOT deleted** — it tests `buildBashConfinement()`'s own join/concat mechanics (a real,
+  non-tautological question), which is distinct from ENGINE_STATE_DENY's own completeness (which a
+  constant compared to itself can never test); INV-V37-4's real completeness guard is the NEW case
+  in `sandbox-config-wiring.test.ts` ("an operator-overridden casDir/selfUpdateDbPath reaches
+  protectedFiles as the resolved value, not the default"), which fails against the COMPOSED CONFIG
+  if a resolved override silently drops — this judgment call is flagged here rather than silently
+  deciding the finding's "must die" wording meant deletion. `npx tsc --noEmit -p tsconfig.json` /
+  `-p tsconfig.server.json`: clean. Full targeted run: `npx vitest run
+  tests/unit/sandbox-config-wiring.test.ts tests/unit/compose-config-v2-wiring.test.ts
+  tests/unit/bash-confinement.test.ts tests/unit/bash-confinement-wiring.test.ts
+  tests/unit/workroot-rewalk.test.ts`: 102/102 pass, 0 regressions. Broader regression sweep (every
+  file touching `composeConfig()`/confinement/workRoot): `tests/integration/main-composition-root.test.ts
+  tests/integration/main-default-timeout-fallback.test.ts tests/integration/check-config-cli.test.ts
+  tests/integration/deregister-clears-asset-tree.test.ts tests/integration/asset-mcp-config-wiring.test.ts
+  tests/integration/asset-skill-materialization-wiring.test.ts tests/integration/params-admission.test.ts
+  tests/acceptance/val-021-secret-store.test.ts tests/unit/confinement-probe.test.ts
+  tests/unit/agent-executor-pinned-caps.test.ts tests/unit/gateway-client-stop.test.ts
+  tests/acceptance/val-253-bash-confinement.test.ts`: 52 pass + 2 skipped (pre-existing skips), 0
+  regressions. **Full suite** (`npx vitest run`, whole repo, background, 682.04s): 457 files passed
+  / 1 skipped (458), 3353 tests passed / 27 skipped (3380), **0 failed** — includes
+  `tests/unit/authoring-md-generated.test.ts` (see IMPL-382's own note for the mid-run
+  `docs/AUTHORING.md` regen this run picked up).
+
+### IMPL-381 — v37 Gate-8 SEND-BACK REPAIR: `confinementPosture`'s two-hop forward gains a wiring lock, mirroring the existing `allowHostPaths` lock's shape (finding A5, INV-V37-5)
+- **status:** done
+- **traces:** ARCH-177, ARCH-181, ARCH-182, TASK-252, REQ-218
+- **greens:** UT-328 (new)
+- **files:** tests/unit/compose-config-v2-wiring.test.ts
+- **commit:** (uncommitted at write time)
+- **iter:** v37
+- **note:** No production code changed — both forward sites (`main.ts`'s `ServerConfig` literal and
+  the sdk-branch gateway construction) already existed correctly (ARCH-177's earlier Gate-6
+  amendment); the finding was the MISSING TEST, not a code defect. One new `it()` beside UT-313's
+  `allowHostPaths` hop-2 lock, same file, same shape: `composeConfig({gateway:'sdk'},
+  {...FAKE_DEPS, confinementProbe:{posture:'confined'}})` asserts `cfg.confinementPosture ===
+  'confined'` AND `cfg.gateway._config.confinementPosture === 'confined'` in the SAME case, so a
+  regression dropping either of the two `...(deps.confinementProbe ? {confinementPosture:
+  deps.confinementProbe.posture} : {})` spreads fails this test. `npx vitest run
+  tests/unit/compose-config-v2-wiring.test.ts`: 63/63 pass (1 new case, 0 regressions).
+
+### IMPL-382 — v37 Gate-8 SEND-BACK REPAIR: `CONFINEMENT_UNAVAILABLE` joins `ERROR_CATALOG` + both tools' advertised `errors:` arrays; `refusalEnvelope`'s `code` is typed `ErrorCode` (finding C-1, ARCH-181's own row)
+- **status:** done
+- **traces:** ARCH-181, ARCH-182, TASK-257, REQ-218
+- **greens:** UT-324 (amended note; existing generic sweeps — error-catalog.test.ts,
+  error-catalog-closed.test.ts, advertised-surface-truth.test.ts, error-envelope-see-pointer.test.ts
+  — re-run green, no new UT id)
+- **files:** src/errors.ts, src/tool-specs.ts, src/call-tool.ts, docs/AUTHORING.md (regenerated)
+- **commit:** (uncommitted at write time)
+- **iter:** v37
+- **note:** `CONFINEMENT_UNAVAILABLE` was a real, remotely-reachable refusal code
+  (`call-tool.ts`'s remote-submission door, IMPL-376) invisible to any cold MCP client reading
+  `tools/list`/`ERROR_CATALOG` — the UT-164/v24-Gate-8-AF-3 class, reopened through a pre-dispatch
+  door instead of `authorize()`. Three changes, matching the `INLINE_SCRIPT_CLOSED` precedent the
+  door's own code comment already invokes: (1) `ERROR_CATALOG` gains the key, `see:
+  'workflow_authoring_guide'`; (2) `run_start`'s and `run_resume`'s `errors:` arrays in
+  `tool-specs.ts` gain it; (3) `call-tool.ts`'s local `refusalEnvelope(code, message, detail)`
+  function is retyped `code: ErrorCode` (was `string`) — a type closes the class (no future ad-hoc
+  code can slip through this one function uncatalogued) where a test closes one instance; every
+  existing call site (`'INLINE_SCRIPT_CLOSED'`, `'INVALID_ARGUMENT'`, `verdict.code ??
+  'FORBIDDEN_ROLE'` — `AuthzErrorCode` already `satisfies readonly ErrorCode[]`) type-checks
+  unchanged. No new dedicated test: the three changes are swept by EXISTING generic closure tests
+  (`error-catalog.test.ts`'s "every key carries `see`+`hint`", the advertised-vs-thrown consistency
+  checks in `advertised-surface-truth.test.ts`/`error-envelope-see-pointer.test.ts`), confirmed
+  green by direct re-run rather than assumed. `npx tsc --noEmit -p tsconfig.json` / `-p
+  tsconfig.server.json`: clean. `npx vitest run tests/unit/call-tool-confinement-door.test.ts
+  tests/unit/error-catalog.test.ts tests/unit/error-catalog-closed.test.ts
+  tests/integration/advertised-surface-truth.test.ts tests/integration/error-envelope-see-pointer.test.ts`:
+  all pass, 0 regressions. **Found and fixed by running the two dependent test files, not assumed**:
+  `tests/unit/authoring-md-generated.test.ts` (the byte-lock between `docs/AUTHORING.md` and
+  `buildAuthoringGuide()`'s live output) went red — `authoring-guide.ts` renders its error-catalog
+  section MECHANICALLY off `ERROR_CATALOG`'s `see:'workflow_authoring_guide'` slice (TASK-256/DES-258),
+  so the new `CONFINEMENT_UNAVAILABLE` key changed the live output without anyone touching the guide
+  itself. Fixed by regenerating: `npm run gen:authoring` (one line added, the catalog row, confirmed
+  by `git diff docs/AUTHORING.md`). `npx vitest run tests/unit/authoring-md-generated.test.ts
+  tests/unit/authoring-guide.test.ts`: 63/63 pass.
+
+### IMPL-383 — v37 Gate-8 SEND-BACK REPAIR: A4 and O-1 verified already closed at the architecture gate — no code face, no action taken
+- **status:** done
+- **traces:** ARCH-178, REQ-218
+- **greens:** (none — doc/trace verification only)
+- **files:** (none)
+- **commit:** (uncommitted at write time)
+- **iter:** v37
+- **note:** Both findings were fully repaired by the architect at the same Gate-8 send-back, before
+  this implementer dispatch began (`02-architecture.md`'s own "v37 Gate-8 send-back amendment"
+  bullets under `INV-V37-1`/`INV-V37-2` and `ARCH-178`, `rtm.md`'s "v37 Gate 8 send-back repair"
+  section) — re-read in full and confirmed on disk, not re-done. **A4**: `INV-V37-1`/`INV-V37-2` are
+  reworded posture-conditional (the `confined` arm's guarantee stated separately from the
+  `unconfined` arm's — "no REMOTE Bash write", never "no Bash write"); `rtm.md:240`'s REQ-218 row
+  now cites `ARCH-181`/`ARCH-182` alongside `ARCH-175..178`, and the row's own "v37 Gate 8 send-back
+  repair" section (`rtm.md` line ~439) names the two coverage gaps (cross-run reads, ADR-086's
+  remote-registered/locally-started residual) the ✅ does NOT cover. **O-1**: `ARCH-178`'s row now
+  states `agent.confinement_denied` is DEFERRED TO v38 DESPITE S4 firing positive, with a named,
+  event-shaped trigger (the first host on which `probeConfinement()` measures `confined`) — a
+  reader of `02-architecture.md` alone no longer implies the event ships. Nothing in code or tests
+  changed for either finding.

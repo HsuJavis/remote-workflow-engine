@@ -84,6 +84,11 @@ export const ERROR_CATALOG = {
   DEFAULTS_RETIRED: { see: 'workflow_authoring_guide', hint: 'meta.params.knobs / meta.defaults are retired; declare params.agents.<label> instead' },
   LEGACY_REREGISTER: { see: 'workflow_authoring_guide', hint: 'this version predates the v24 contract and cannot run; re-register it' },
   INLINE_SCRIPT_CLOSED: { see: 'workflow_authoring_guide', hint: 'inline run-time scripts are closed; register once, then run by name' },
+  // v37 Gate-8 send-back (finding C-1, ARCH-181/ARCH-182): `call-tool.ts`'s remote-submission door
+  // (ADR-083 owner_decision posture C) throws this code BEFORE schema/authz, same precedent as
+  // INLINE_SCRIPT_CLOSED above — a real, remotely-reachable refusal is uncatalogued (invisible to
+  // any cold MCP client reading `tools/list`/ERROR_CATALOG) unless it is a key here too.
+  CONFINEMENT_UNAVAILABLE: { see: 'workflow_authoring_guide', hint: 'this host could not measure a working Bash sandbox at boot; a remotely-submitted run is refused (a local/loopback submission still runs, unconfined)' },
   NESTING_DEPTH_EXCEEDED: { see: 'workflow_authoring_guide', hint: 'nested workflow() calls exceed the configured maxWorkflowDepth' },
   NESTING_CYCLE: { see: 'workflow_authoring_guide', hint: 'a workflow() call would re-enter an ancestor already on this call\'s chain' },
   DESCENDANT_CAP_EXCEEDED: { see: 'workflow_authoring_guide', hint: 'nested workflow() calls exceed the configured maxWorkflowDescendants' },

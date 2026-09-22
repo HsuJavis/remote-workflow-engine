@@ -18,6 +18,7 @@ import { filterCatalog, enrichModelEntry, type ModelEntry, type CatalogFilter } 
 import type { ModelBook } from './models/model-book.js';
 import type { SystemInfoSampler } from './system-info.js';
 import type { RunStore } from './run-store.js';
+import type { ErrorCode } from './errors.js';
 
 // Ajv instance shared by every validateArgs() call — same construction as agent-executor.ts's
 // schema validation (D-V4): allErrors:false (first failure is enough to refuse), strict:false
@@ -73,7 +74,10 @@ function unknownTool(name: string): UnknownToolResult {
   return { error: { code: -32601, message: `Unknown tool: ${name}` } };
 }
 
-function refusalEnvelope(code: string, message: string, detail?: Record<string, unknown>): Record<string, unknown> {
+// v37 Gate-8 send-back (finding C-1): `code` is `ErrorCode`, not `string` — a type closes the
+// class (an ad-hoc, uncatalogued refusal code can no longer slip through this function) where a
+// test closes one instance.
+function refusalEnvelope(code: ErrorCode, message: string, detail?: Record<string, unknown>): Record<string, unknown> {
   return { runId: '', status: 'failed', code, error: { code, message, ...(detail ? { detail } : {}) } };
 }
 

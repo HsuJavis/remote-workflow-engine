@@ -19,8 +19,9 @@
 // This entrypoint is the ONLY place that decides between the two — server.ts's own default (an
 // undefined `config.gateway` falling through to LiteLLMGatewayClient) stays exactly as it was for
 // every test caller, none of which sets RWE_CONFIG_PATH/goes through main().
-import { readFileSync, existsSync, realpathSync } from 'node:fs';
+import { readFileSync, existsSync, realpathSync, mkdtempSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createServer } from './server.js';
 import type { ServerConfig } from './server.js';
@@ -182,6 +183,18 @@ interface ComposeConfigDeps {
    *  a silent 'unconfined' for a config that never asked the question. `main()`'s real call site is
    *  the ONLY caller that sets this, from a real `probeConfinement()` call before `composeConfig()`. */
   confinementProbe?: ConfinementProbeResult;
+  /** v37 Gate-8 send-back (finding A2, ARCH-177 amendment): a PRE-COMPUTED workRoot value — never a
+   *  callable `composeConfig()` invokes itself (several test files in this suite globally
+   *  `vi.mock('node:fs')`, which would silently null out an internal `mkdtempSync` call — the same
+   *  value-not-callable seam `configPath`/`confinementProbe` already use). `main()`'s real boot path
+   *  computes this with ONE `mkdtempSync(join(tmpdir(), 'rwe-'))` before calling `composeConfig()`;
+   *  `--check-config` passes a clearly-labelled NON-created placeholder (that command's own "no side
+   *  effects" contract — an operator with grants but no `workRoot` is already refused above, before
+   *  this placeholder can reach grant validation). Used ONLY when `fileConfig.workRoot` (and
+   *  `RWE_WORK_ROOT`) are both unset, so `protectedFiles`/`denyRead` never depend on `workRoot`
+   *  having been EXPLICITLY set in config (INV-V37-4). Omitted (every existing test call site) ->
+   *  unchanged pre-v37 behaviour: `workRoot` stays `undefined` when the config doesn't set one. */
+  workRootDefault?: string;
 }
 
 // D-F10(a/b): the FileConfig -> ServerConfig translation main() performs, extracted into an
@@ -237,26 +250,51 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
       );
     }
   }
-  const workRoot = process.env['RWE_WORK_ROOT'] ?? fileConfig.workRoot;
+  const explicitWorkRoot = process.env['RWE_WORK_ROOT'] ?? fileConfig.workRoot;
   // D-V3M-5 (REQ-021): fail-closed if the configured workRoot is inside a Claude Code project — a
   // nested run workspace makes the SDK-gateway agent CLI load that project's CLAUDE.md/auto-memory
   // into the agent context (a session-init confinement leak the tool-jail can't catch). Only the
-  // explicit workRoot is checked; an omitted one falls through to server.ts's tmpdir default (clean).
-  if (workRoot !== undefined) assertWorkRootIsolated(workRoot);
+  // explicit workRoot is checked; an omitted one falls through to `deps.workRootDefault`/server.ts's
+  // own tmpdir default (clean — a freshly `mkdtemp`'d directory is never inside a project).
+  if (explicitWorkRoot !== undefined) assertWorkRootIsolated(explicitWorkRoot);
+  // v37 Gate-8 send-back (finding A2, ARCH-177 amendment): the RESOLVED workRoot — falls back to
+  // `deps.workRootDefault` (a pre-computed value; `main()`'s real boot path always supplies one)
+  // when the operator set none, so `protectedFiles`/`denyRead` below can NEVER depend on `workRoot`
+  // having been explicitly set (INV-V37-4). `ServerConfig.workRoot` (below) carries this SAME
+  // resolved value — one resolution, one value, both consumers (server.ts:655's own `??` fallback
+  // stays, for every direct `createServer()` test caller that never goes through `composeConfig()`).
+  const workRoot = explicitWorkRoot ?? deps.workRootDefault;
 
-  // v37 (ARCH-177, DES-254/255, TASK-252, REQ-218): protectedFiles are the two files REQ-218's own
-  // 風險面 names — the config file the loader actually read (never a second resolve() against
-  // whatever cwd systemd handed the process — DES-255) and this workRoot's auth-tokens.db. Grant
-  // validation runs only when the operator actually asked for a shared path — an absent/empty
-  // `sandbox.allowHostPaths` needs no `workRoot` anchor and stays the strictest posture (`[]`).
-  const protectedFiles = [deps.configPath, workRoot ? join(workRoot, 'auth-tokens.db') : undefined].filter(isNonEmptyString);
+  // v37 (ARCH-177, DES-254/255, TASK-252, REQ-218) / v37 Gate-8 send-back (finding A3, ARCH-175
+  // amendment): protectedFiles are every REQ-218 risk-surface path — the config file the loader
+  // actually read (never a second resolve() against whatever cwd systemd handed the process —
+  // DES-255), this workRoot's auth-tokens.db, and every OPERATOR-OVERRIDABLE engine path
+  // (casDir/assetRoot/webhookDbPath/schedulerDbPath/selfUpdateDbPath/continuationDbPath), resolved
+  // here exactly as server.ts's own per-field default resolves them — never re-derived from a key
+  // name inside bash-confinement.ts, which stays pure (INV-V37-4). `continuationDbPath` rides along
+  // "for as long as the key exists" (ARCH-175's own phrasing — the module it would point at is a
+  // phantom, filed for v38, not fixed here). Grant validation runs only when the operator actually
+  // asked for a shared path — an absent/empty `sandbox.allowHostPaths` needs no `workRoot` anchor
+  // and stays the strictest posture (`[]`).
+  const resolvedAssetRoot = fileConfig.assetRoot ?? (workRoot ? join(workRoot, 'assets') : undefined);
+  const resolvedCasDir = fileConfig.casDir ?? (workRoot ? join(workRoot, 'cas') : undefined);
+  const resolvedWebhookDbPath = fileConfig.webhookDbPath ?? (workRoot ? join(workRoot, 'webhooks.db') : undefined);
+  const resolvedSchedulerDbPath = fileConfig.schedulerDbPath ?? (workRoot ? join(workRoot, 'schedules.db') : undefined);
+  const resolvedSelfUpdateDbPath = fileConfig.selfUpdateDbPath ?? (workRoot ? join(workRoot, 'self-update.db') : undefined);
+  const resolvedContinuationDbPath = fileConfig.continuationDbPath ?? (workRoot ? join(workRoot, 'continuations.db') : undefined);
+  const protectedFiles = [
+    deps.configPath,
+    workRoot ? join(workRoot, 'auth-tokens.db') : undefined,
+    resolvedCasDir, resolvedAssetRoot, resolvedWebhookDbPath, resolvedSchedulerDbPath,
+    resolvedSelfUpdateDbPath, resolvedContinuationDbPath,
+  ].filter(isNonEmptyString);
   const rawGrants = fileConfig.sandbox?.allowHostPaths ?? [];
   let resolvedGrants: string[] = [];
   if (rawGrants.length > 0) {
-    if (workRoot === undefined) {
+    if (explicitWorkRoot === undefined) {
       throw new Error('rwe.config.json: sandbox.allowHostPaths requires workRoot to be set (a grant is validated against workRoot containment) — set workRoot, or remove the grant.');
     }
-    const grantResult = validateHostPathGrants(rawGrants, { workRoot, protectedFiles }, realpathSync);
+    const grantResult = validateHostPathGrants(rawGrants, { workRoot: explicitWorkRoot, protectedFiles }, realpathSync);
     if (!grantResult.ok) {
       throw new Error(`rwe.config.json: invalid sandbox.allowHostPaths entries — refusing to start (ADR-028 fail-closed):\n${formatGrantRefusals(grantResult.refusals)}`);
     }
@@ -292,7 +330,7 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // (`join(workRoot, 'assets')`) — otherwise a zero-config run (no explicit assetRoot key) never
     // forwards asset storage's real on-disk location to the SDK gateway below, silently breaking
     // the REQ-009 wiring for every deployment that doesn't set assetRoot explicitly.
-    assetRoot: fileConfig.assetRoot ?? (workRoot ? join(workRoot, 'assets') : undefined),
+    assetRoot: resolvedAssetRoot,
     // v8 Slice 1 (REQ-041/043): forwarded regardless of gateway choice — RunManager applies its
     // defaults (4 / 256) when omitted and rejects an invalid value at construction (config load).
     maxWorkflowDepth: fileConfig.maxWorkflowDepth,
@@ -431,12 +469,15 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
       // straight to the real Anthropic API with real auth (no tool-schema translation for Claude).
       anthropicBaseUrl: fileConfig.anthropicBaseUrl,
       anthropicAuth: fileConfig.anthropicAuth,
-      // v37 (ARCH-177, DES-253, TASK-252): the grant/protected/workRoot block `buildBashConfinement()`
-      // consumes — omitted (never `workRoot: undefined`) when workRoot itself is unknown at THIS
-      // stage (an operator who set no `workRoot` gets server.ts's own per-boot tmpdir default,
-      // computed later); the gateway's own confinement-absent posture ("workspace-only, still built")
-      // still applies either way. `resolvedGrants`/`protectedFiles` are already validated above.
-      ...(workRoot ? { confinement: { allowHostPaths: resolvedGrants, protectedFiles, workRoot } } : {}),
+      // v37 (ARCH-177, DES-253, TASK-252) / v37 Gate-8 send-back (finding A2): the grant/protected/
+      // workRoot block `buildBashConfinement()` consumes, forwarded UNCONDITIONALLY — the old
+      // `workRoot ? {...} : {}` guard is deleted, because `workRoot` above is now resolved to a real
+      // value (via `deps.workRootDefault`) before any consumer reads it on `main()`'s real boot
+      // path; a test caller that omits `deps.workRootDefault` still compiles and behaves unchanged
+      // (`confinement.workRoot` is simply `undefined`, exactly as every reader of it already treats
+      // via `?.`/`??` — see `claude-agent-sdk-client.ts`'s own note on that field). `resolvedGrants`/
+      // `protectedFiles` are already validated above.
+      confinement: { allowHostPaths: resolvedGrants, protectedFiles, workRoot },
       // v37 (ARCH-181, DES-262): MEASURED posture, independent of the grant block above — set only
       // when the caller supplied a probe result (`main()`'s real boot path); every existing test call
       // site omits it, so the gateway falls back to its OWN 'confined' default unchanged.
@@ -468,7 +509,13 @@ async function runCheckConfig(): Promise<void> {
     // effects") — the nested-bwrap probe is a READ, not a mutation, and reporting the posture here
     // is exactly the "at startup, before any run" visibility REQ-218 asks for.
     const confinementProbe = probeConfinement();
-    await composeConfig(fileConfig, { proxyManager: noopProxyManager, listen: false, configPath, confinementProbe });
+    // v37 Gate-8 send-back (finding A2): a clearly-labelled NON-created placeholder — this command's
+    // own "no side effects" contract forbids a real `mkdtempSync` here. It can never reach grant
+    // validation (that still requires an EXPLICIT `fileConfig.workRoot`/`RWE_WORK_ROOT`, checked
+    // above the default) — it exists only so `protectedFiles`/`denyRead` are computed the same way
+    // a real boot would compute them, for this command's own reporting.
+    const workRootDefault = '<workRoot not set — a temp dir is created at real boot>';
+    await composeConfig(fileConfig, { proxyManager: noopProxyManager, listen: false, configPath, confinementProbe, workRootDefault });
     // eslint-disable-next-line no-console
     console.log(`[remote-workflow-engine] --check-config: OK (confinement posture: ${confinementProbe.posture}${confinementProbe.reason ? ` — ${confinementProbe.reason}` : ''})`);
     process.exit(0);
@@ -490,7 +537,14 @@ async function main(): Promise<void> {
   // test constructs `composeConfig()` directly and omits this (safe default: no door gating, no
   // `confinementPosture` on the gateway — see ComposeConfigDeps.confinementProbe's own doc comment).
   const confinementProbe = probeConfinement();
-  const config = await composeConfig(fileConfig, { configPath, confinementProbe });
+  // v37 Gate-8 send-back (finding A2, ARCH-177 amendment): ONE `mkdtempSync` — the SAME resolved
+  // value `ServerConfig.workRoot` and the confinement block both carry, computed once so a second
+  // resolution (server.ts:655's own `??` fallback, kept for direct `createServer()` test callers)
+  // can never name a different directory than the one this process actually writes into.
+  const workRootDefault = fileConfig.workRoot === undefined && process.env['RWE_WORK_ROOT'] === undefined
+    ? mkdtempSync(join(tmpdir(), 'rwe-'))
+    : undefined;
+  const config = await composeConfig(fileConfig, { configPath, confinementProbe, workRootDefault });
   const server = await createServer(config);
   // eslint-disable-next-line no-console
   console.log(

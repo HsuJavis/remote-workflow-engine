@@ -237,7 +237,7 @@ in the same re-run — no regression on REQ-138's counts card).
 | REQ-215 | 結構化失敗標記要能穿過 sandbox 抵達 run 層 (v36) | ARCH-165, ARCH-166, ARCH-167, ARCH-168 | DES-248 | TASK-246 | IMPL-365 | IT-298, UT-292, UT-304, VAL-250 | ✅ |
 | REQ-216 | v35 審查歸檔的八條殘留(K1–K8)逐條結清 (v36) | ARCH-169, ARCH-170, ARCH-171, ARCH-172, ARCH-173 | DES-241, DES-247, DES-249 | TASK-239, TASK-245, TASK-247 | IMPL-360, IMPL-364, IMPL-366 | IT-297, UT-292, UT-293, UT-297, UT-298, UT-303, UT-305, VAL-251 | ✅ |
 | REQ-217 | 消除清單路徑的擴展懸崖,且不改變數字的語意 (v36 追加,業主裁決 K5) | ARCH-174 | DES-250, DES-251 | TASK-249 | IMPL-368, IMPL-369, IMPL-370 | IT-300, UT-307, UT-308, VAL-252 | ✅ |
-| REQ-218 | agent 的 Bash 必須受工作區約束,或其突破必須是申報過的 (v37) | ARCH-175, ARCH-176, ARCH-177, ARCH-178 | DES-252, DES-253, DES-254, DES-255, DES-256, DES-258, DES-259 | TASK-250, TASK-251, TASK-252, TASK-253, TASK-256 | — | UT-309, UT-310, UT-311, UT-312, UT-313, UT-314, UT-315, UT-322, VAL-253 | ✅ |
+| REQ-218 | agent 的 Bash 必須受工作區約束,或其突破必須是申報過的 (v37) | ARCH-175, ARCH-176, ARCH-177, ARCH-178, ARCH-181, ARCH-182 | DES-252, DES-253, DES-254, DES-255, DES-256, DES-258, DES-259, DES-261, DES-262 | TASK-250, TASK-251, TASK-252, TASK-253, TASK-256 | IMPL-375, IMPL-376 | UT-309, UT-310, UT-311, UT-312, UT-313, UT-314, UT-315, UT-322, VAL-253 | ✅ |
 | REQ-219 | 有綠測試、production 零使用的安全模組,要嘛接線要嘛刪除 (v37) | ARCH-179, ARCH-180 | DES-257, DES-260 | TASK-253, TASK-254, TASK-255 | — | UT-316, UT-317, UT-318, UT-319, UT-320, UT-321, VAL-254, IT-301 | ✅ |
 
 ## v36 Gate 7.5 update (2026-09-22, validator)
@@ -435,3 +435,28 @@ current (added at Gate 6.5+7, untouched by this gate). REQ-018/REQ-037/REQ-117 r
 them, not a behavioural change to their own acceptance criteria; no new cold-subject run was
 performed for REQ-117 this gate (see `08-validation.md`'s own v37 Gate 7.5 section for the
 reasoning and the `needs_clarification` this gate reports for it).
+
+## v37 Gate 8 send-back repair (2026-09-22, architect)
+
+**REQ-218's row above was corrected, not re-scored** (Gate 8 finding A4). The row previously cited
+only `ARCH-175..178` — the `confined` arm, i.e. the mechanism that **does not execute on any host
+this ledger has measured**. It now also cites `ARCH-181` (the boot-time posture probe + the
+remote-submission door), `ARCH-182` (the admission predicate at `RunManager.start()`, added this
+round for finding A1), `DES-261`/`DES-262` and `IMPL-375`/`IMPL-376` — the chain that is actually in
+force on every measured host under ADR-083's posture C. A trace row that cites only the dormant arm
+is the same class of false green `INV-V37-3` was written to forbid.
+
+**Two exposures this row's ✅ does NOT cover, named here rather than implied by a glyph:**
+
+- **Cross-run reads** — 「一個 run 的 Bash 可以讀另一個 run 的 workspace」 remains **UNCOVERED**. The
+  shipped `denyRead` arm (`'enumerated'`) never denied sibling run workspaces, and the SDK's
+  `allowRead` is a *re-allow* punch-out rather than an allowlist (`sdk.d.ts:5862-5864`), so no test on
+  any host can currently close it. It closes with the `DENY_READ_MODE` flip on the first host that
+  measures `confined` (ARCH-175's amendment).
+- **Remote-registered, locally-started workflows** — ARCH-182's predicate keys on the *trigger's*
+  provenance, so a script registered by a remote party and then started by the operator locally is
+  still admitted. That is ADR-086's named residual and carries its `owner_decision`.
+
+**Still owed by validation before this row's ✅ is re-earned for the A1 fix**: a real-tier run through
+the **webhook** ingress and one through the **scheduler** ingress. `VAL-253`'s existing evidence covers
+the `tools/call` ingress only.

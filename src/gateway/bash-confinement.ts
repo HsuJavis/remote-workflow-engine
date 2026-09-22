@@ -22,8 +22,21 @@ export const MASK_PROVIDER_ENV = false;
 
 // v37 (ARCH-175 note): denyRead names workRoot's own engine-state directories, not a stale sibling
 // run-directory list (those are created concurrently and would be stale before use).
+// v37 Gate-8 send-back amendment (finding A3, ARCH-175): this is now HALF of the deny surface, and
+// it is a BRIDGE — maintained until a positive spike S7, deleted together with the 'enumerated' arm
+// at the flip (see DENY_READ_MODE's own comment) — not a control anyone should extend. It holds
+// ONLY the knob-less literals: paths with no `FileConfig` override key, so a literal is the honest
+// expression for them rather than an oversight. `mcp-registry.db` (workflow-catalog.ts:398) and
+// `_global_assets` (asset-sync.ts:145, hangs off workRoot, NOT the overridable assetRoot) were
+// MISSING before this amendment. Every OPERATOR-OVERRIDABLE path (casDir, assetRoot,
+// webhookDbPath, schedulerDbPath, selfUpdateDbPath, continuationDbPath) is deliberately NOT here —
+// re-deriving an override from a key name is exactly the class of bug this amendment exists to
+// close (INV-V37-4); those arrive as RESOLVED VALUES in `protectedFiles` from the composition root
+// (main.ts's composeConfig()) instead. `'continuations.db'` is REMOVED — `continuationDbPath` has
+// no production construction site anywhere (verified: `grep -rn -i continuation src/`), so it was
+// a phantom, not a completeness gap.
 export const ENGINE_STATE_DENY = [
-  'store', 'catalog.db', 'auth-tokens.db', 'cas', 'assets', 'webhooks.db', 'continuations.db', 'schedules.db',
+  'store', 'catalog.db', 'auth-tokens.db', 'mcp-registry.db', '_global_assets',
 ] as const;
 
 export interface ConfinementInput {
