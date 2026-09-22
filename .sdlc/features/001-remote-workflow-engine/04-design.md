@@ -9774,7 +9774,7 @@ keep, not a coincidence to rely on.
   expectRegister}` and the loop asserts *registration* — an `EACCES` occurs inside a tool result the
   workflow script never sees, so an example demonstrating it would teach an invalid example (rule 4).
   `docs/AUTHORING.md` stays byte-equal to the builder output in the same commit.
-- **owner_decision:** pending — 指南要維持這版「靜態段落」(作者讀到機制與申請管道,零佈線),還是要改成「渲染該部署當下的實際 grant 清單」(GuideCeilings 新欄位 + 一個 ServerConfig hop + hop-2 wiring test,並需修正 ARCH-177「不為沒人讀的值開 ServerConfig 欄位」那句)?兩位 lens 在 r2 互換立場、各自讓步給對方,沒有收斂;設計先出簡單且可逆的靜態版,是否升級為即時清單屬於產品面(作者體驗 vs 一條新佈線)的裁決。
+- **owner_decision:** answered 2026-09-22(原問題保留如下,裁決見其後續行)— 指南要維持這版「靜態段落」(作者讀到機制與申請管道,零佈線),還是要改成「渲染該部署當下的實際 grant 清單」(GuideCeilings 新欄位 + 一個 ServerConfig hop + hop-2 wiring test,並需修正 ARCH-177「不為沒人讀的值開 ServerConfig 欄位」那句)?兩位 lens 在 r2 互換立場、各自讓步給對方,沒有收斂;設計先出簡單且可逆的靜態版,是否升級為即時清單屬於產品面(作者體驗 vs 一條新佈線)的裁決。
   **answered 2026-09-22 (owner ruling, closing this marker):** **render the POSTURE live; leave
   the grant list static.** The question this row asked changed shape before it could be answered
   as asked: v37 made confinement posture a fact MEASURED at boot (`confinement-probe.ts`,
