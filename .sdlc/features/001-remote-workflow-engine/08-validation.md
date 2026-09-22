@@ -12539,3 +12539,109 @@ disturbed the tree.
   結構上恆為空(orchestrator 已追到 catalog 根本不存 phases)、`workflow_register` 的
   擁有權說明無條件、`worstCaseMs` 是下限非精確上界。
 - **iter:** v37
+
+### VAL-256 — REQ-218: ARCH-182's two follow-up admission routes (schedule ticker, webhook delivery) refuse a remotely-created trigger and admit a locally-created one, on a genuinely `unconfined` real boot
+
+- **status:** green
+- **traces:** DES-263, TASK-258, IMPL-384, UT-329, UT-330, UT-331, IT-302, IT-303, REQ-218
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  IT-302/IT-303 (05-tests.md) only prove the WIRING against a fake `RunManagerPort` — no real run
+  ever went through either route end to end, and the ADMISSION side of the predicate
+  (`admissionPosture:'unconfined'`) had never been exercised for real on either route either. This
+  item closes that gap with a genuinely booted, genuinely `unconfined` instance.
+
+  **Boot (documented steps only, own scratch instance, port 8791, production 8899 untouched):**
+  ```
+  export RWE_CONFIG_PATH=<scratch>/rwe.scratch.config.json   # own port 8791, own workRoot outside the repo,
+                                                              # gateway:"sdk", auth disabled — copy of
+                                                              # rwe.config.example.json with only port/workRoot changed
+  export RWE_PORT=8791
+  export RWE_BIND=127.0.0.1
+  ./deploy.sh --background
+  ```
+  Boot log (`.rwe.rwe.scratch.config.log`) line 6, confirming the SAME real boot-time probe every
+  other v37 item cites:
+  ```
+  [remote-workflow-engine] Bash confinement: UNCONFINED (bwrap: No permissions to create a new
+  namespace, likely because the kernel does not allow non-privileged user namespaces. ...)
+  — remote run submissions will be refused; local (loopback) runs still proceed, unconfined
+  ```
+  Healthcheck: `curl http://127.0.0.1:8791/api/status` → `200 {"agentSemaphore":...,"version":"0.1.0 (v0.20.0-446-gf24df7a)"}`.
+
+  **Method — how "remote" vs "local" was made true, per DES-262/ADR-086's own rule that the
+  DELIVERY peer is not the test for webhooks:** `isLoopbackPeer()` (`src/net-guard.ts:109`) returns
+  `false` — i.e. `isRemoteSubmission:true` — whenever ANY tunnel header (`x-forwarded-for` etc.) is
+  present on the request, REGARDLESS of the real TCP peer. So a trigger was created with an
+  `X-Forwarded-For` header over the SAME loopback socket to make `createdRemote:true` true without
+  needing an actual second host; the sibling trigger was created with no such header
+  (`createdRemote:false`). Both triggers were then **delivered/fired identically** — plain loopback,
+  zero tunnel headers, at delivery time — proving the outcome tracks *creation* provenance, not
+  delivery peer.
+
+  **Cell 1 — remotely-created schedule fires → refused.** `schedule_create({kind:'once', at:<past>,
+  enabled:false}, headers:{X-Forwarded-For:'203.0.113.7'})` → id `9a4c9d9d-...`; bound via
+  `workflow_register({name:'val256-sched-remote-x0ia0q', script:'return 1;', mermaid:'graph LR',
+  triggers:[id]})` + `workflow_publish(...,channel:'release')`; `schedule_setEnabled({id,
+  enabled:true})`. Real `RealTicker(500ms)` in `src/server.ts` picked it up on its own; polled
+  `schedule_list` until settled:
+  ```
+  { "id":"9a4c9d9d-...", "claimedBy":"val256-sched-remote-x0ia0q", "createdRemote":true,
+    "enabled":false, "lastError":{"code":"CONFINEMENT_UNAVAILABLE","at":"2026-09-22T23:15:52.347Z"},
+    "refusalCount":0 }
+  ```
+  `run_list({})` filtered for this workflow name → `[]` — **zero runs started**, confirming the
+  refusal happened before `RunManager.start()` ever admitted work, exactly as `admissionRefusal()`'s
+  FIRST-statement placement (DES-263) requires.
+
+  **Cell 2 — locally-created schedule fires → proceeds.** Same recipe, `schedule_create` with NO
+  extra headers → `createdRemote:false`. Final `schedule_list` row (re-queried directly, not from
+  the first race-prone poll snapshot):
+  ```
+  { "id":"a21fdc6d-...", "claimedBy":"val256-sched-local-jsetut", "createdRemote":false,
+    "enabled":false, "lastFire":"2026-09-22T23:15:53.197Z",
+    "lastRunId":"2e123921-947e-4d75-9660-63256870dd2c", "refusalCount":0 }
+  ```
+  `run_list({})` confirms `{"runId":"2e123921-...","name":"val256-sched-local-jsetut",
+  "status":"completed", "startedBy":{"type":"schedule","id":"val256-sched-local-jsetut"}}` — a real
+  run, dispatched by the real ticker, completed.
+
+  **Cell 3 — remotely-created webhook, delivered over plain loopback → refused.**
+  `webhook_create({}, headers:{X-Forwarded-For:'203.0.113.7'})` → `webhookId
+  a5af22be-...`, `secret`; bound via `workflow_register({...,triggers:[webhookId]})` +
+  `workflow_publish`. Delivery: `POST http://127.0.0.1:8791/hooks/a5af22be-...` with a correct
+  HMAC-SHA256 `X-RWE-Signature` (loopback socket, **no** `X-Forwarded-For` at delivery — proving
+  delivery-peer-blindness) → **`HTTP 403`**:
+  ```json
+  {"error":"CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time
+  sandbox probe found no working nested user namespace) — this run's trigger was created remotely,
+  so it is refused; a locally-created trigger still runs, unconfined."}
+  ```
+  `run_list({})` filtered for this workflow name → `[]` — zero runs.
+
+  **Cell 4 — locally-created webhook, delivered over plain loopback → proceeds.**
+  `webhook_create({})` with no extra headers → `webhookId 8cb944d3-...`. Identical delivery shape
+  (plain loopback, correct HMAC, no tunnel header) → **`HTTP 202 {"runId":"7baa890f-..."}`**.
+  `run_result({runId:"7baa890f-..."})`:
+  ```json
+  {"runId":"7baa890f-...","status":"completed","result":{"hooked":{"event":"local"}}}
+  ```
+  — the real webhook body (`{"event":"local"}`) really round-tripped through the real `RunManager`
+  into the real completed run's result.
+
+  **What this proves, cell by cell:** the `admissionRefusal()` predicate (DES-263) is not only unit-
+  correct (UT-329) and not only correctly WIRED into the two routes against a fake port (IT-302/
+  IT-303) — it fires for real, on a real `unconfined` boot, through the real `RealTicker` and the
+  real `POST /hooks/:id` HTTP handler, and its true/false outcome tracks `origin` (creation-time
+  provenance) and NOT the delivery/trigger-time peer, exactly as DES-262's own subtlety requires.
+
+  **Script + full raw JSON transcript**: `evidence/v37/val256-admission-routes-real-run.mjs` and
+  `evidence/v37/val256-admission-routes-real-run.log` (this ledger's `evidence/` convention).
+
+  **Cleanup**: scratch instance stopped (`kill $(cat <scratch>/.rwe.rwe.scratch.config.pid)`),
+  scratch `workRoot`/config left under the session scratchpad (outside the repo, never committed).
+  Production instance on port 8899 was never touched — confirmed via `ss -ltnp` before and after
+  showing only 8899's pre-existing PID, unchanged.
+- **iter:** v37

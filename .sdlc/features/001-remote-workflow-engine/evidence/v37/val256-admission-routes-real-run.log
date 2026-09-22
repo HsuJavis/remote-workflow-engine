@@ -1,0 +1,111 @@
+--- SCHEDULE: creating remote-created trigger ---
+{
+  "id": "9ce44d04-bb8e-484d-b8d0-78cc2dc62f85",
+  "wfName": "val256-sched-remote-m7g50q",
+  "row": {
+    "id": "9ce44d04-bb8e-484d-b8d0-78cc2dc62f85",
+    "kind": "once",
+    "claimedBy": "val256-sched-remote-m7g50q",
+    "createdRemote": true,
+    "enabled": false,
+    "at": "2026-09-22T23:17:57.400Z",
+    "nextFire": "2026-09-22T23:17:57.400Z",
+    "lastError": {
+      "code": "CONFINEMENT_UNAVAILABLE",
+      "at": "2026-09-22T23:17:59.512Z"
+    },
+    "refusalCount": 0
+  }
+}
+--- SCHEDULE: creating local-created trigger ---
+{
+  "id": "6a98650d-de0e-451f-b2a3-419dc32a37d4",
+  "wfName": "val256-sched-local-qcnbn8",
+  "row": {
+    "id": "6a98650d-de0e-451f-b2a3-419dc32a37d4",
+    "kind": "once",
+    "claimedBy": "val256-sched-local-qcnbn8",
+    "createdRemote": false,
+    "enabled": false,
+    "at": "2026-09-22T23:17:57.765Z",
+    "nextFire": "2026-09-22T23:17:57.765Z",
+    "lastFire": "2026-09-22T23:18:00.024Z",
+    "lastRunId": "3eb0d2c8-f44d-4730-9b9b-198f55a6b01f",
+    "refusalCount": 0
+  }
+}
+--- WEBHOOK: creating remote-created trigger, delivering over plain loopback ---
+{
+  "webhookId": "431a4f67-5920-49da-84ab-e77505095589",
+  "wfName": "val256-hook-remote-8xy00j",
+  "status": 403,
+  "respBody": {
+    "error": "CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — this run's trigger was created remotely, so it is refused; a locally-created trigger still runs, unconfined."
+  }
+}
+--- WEBHOOK: creating local-created trigger, delivering over plain loopback ---
+{
+  "webhookId": "6e33469f-124f-4741-98fe-a9161f9ab0a3",
+  "wfName": "val256-hook-local-9ei61k",
+  "status": 202,
+  "respBody": {
+    "runId": "45063ff0-19d8-407b-9c2c-1f9fbaf6c03b"
+  }
+}
+=== FULL RESULT ===
+{
+  "schedule": {
+    "remote": {
+      "id": "9ce44d04-bb8e-484d-b8d0-78cc2dc62f85",
+      "wfName": "val256-sched-remote-m7g50q",
+      "row": {
+        "id": "9ce44d04-bb8e-484d-b8d0-78cc2dc62f85",
+        "kind": "once",
+        "claimedBy": "val256-sched-remote-m7g50q",
+        "createdRemote": true,
+        "enabled": false,
+        "at": "2026-09-22T23:17:57.400Z",
+        "nextFire": "2026-09-22T23:17:57.400Z",
+        "lastError": {
+          "code": "CONFINEMENT_UNAVAILABLE",
+          "at": "2026-09-22T23:17:59.512Z"
+        },
+        "refusalCount": 0
+      }
+    },
+    "local": {
+      "id": "6a98650d-de0e-451f-b2a3-419dc32a37d4",
+      "wfName": "val256-sched-local-qcnbn8",
+      "row": {
+        "id": "6a98650d-de0e-451f-b2a3-419dc32a37d4",
+        "kind": "once",
+        "claimedBy": "val256-sched-local-qcnbn8",
+        "createdRemote": false,
+        "enabled": false,
+        "at": "2026-09-22T23:17:57.765Z",
+        "nextFire": "2026-09-22T23:17:57.765Z",
+        "lastFire": "2026-09-22T23:18:00.024Z",
+        "lastRunId": "3eb0d2c8-f44d-4730-9b9b-198f55a6b01f",
+        "refusalCount": 0
+      }
+    }
+  },
+  "webhook": {
+    "remote": {
+      "webhookId": "431a4f67-5920-49da-84ab-e77505095589",
+      "wfName": "val256-hook-remote-8xy00j",
+      "status": 403,
+      "respBody": {
+        "error": "CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — this run's trigger was created remotely, so it is refused; a locally-created trigger still runs, unconfined."
+      }
+    },
+    "local": {
+      "webhookId": "6e33469f-124f-4741-98fe-a9161f9ab0a3",
+      "wfName": "val256-hook-local-9ei61k",
+      "status": 202,
+      "respBody": {
+        "runId": "45063ff0-19d8-407b-9c2c-1f9fbaf6c03b"
+      }
+    }
+  }
+}

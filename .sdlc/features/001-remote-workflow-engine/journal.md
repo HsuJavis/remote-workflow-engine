@@ -9780,3 +9780,56 @@ runManager\.start\("  src/` 覆查過,確認就這兩處 seam,沒有第三個(`w
 `python3 -c "import yaml; yaml.safe_load(open('state.yaml'))"` 重新解析過,通過。owner_decisions=[]
 (ADR-086 那條 pending 已在這次 dispatch 之前由業主答覆,不是這次新掛也不是這次答覆的,如實回報不重複
 標記)。needs_clarification=[]。
+
+## 2026-09-23 — v37 Gate 7.5 follow-up(validator)—— ARCH-182 兩條旁路的 real-tier 補件 + rtm.md REQ-218 引用補齊
+
+上一輪 implementer 的 follow-up(IMPL-384/TASK-258/DES-263)明確點名兩個缺口留給這裡:(1) UT-329..
+IT-303 只到 unit/integration 為止,IT-302/IT-303 是照 DES-263 自己的可測性註記,對著一個**假**
+`RunManagerPort` 測接線,從沒有一個真的 run 走過這兩條 admission 路由;(2) `rtm.md` REQ-218 那一列
+沒有引用這批新項目。兩個缺口都在這裡關掉,沒有動 04/05/06 的任何既有紅/綠狀態。
+
+**真跑(documented steps only,自己的 scratch instance,port 8791,workRoot 在 repo 外,production
+8899 全程未動)**:`RWE_CONFIG_PATH=<scratch>/rwe.scratch.config.json RWE_PORT=8791 RWE_BIND=127.0.0.1
+./deploy.sh --background`——boot log 第 6 行量到跟其餘 v37 項目同一句真探針結果:「Bash confinement:
+UNCONFINED (bwrap: No permissions to create a new namespace...)」,healthcheck 200。
+
+四格全部用真 HTTP/真 SQLite 撐過,不是用假 port 推理:
+1. **遠端建立的 schedule 到期** —— `schedule_create` 帶 `X-Forwarded-For` header(loopback socket 上
+   偽造"遠端",`isLoopbackPeer()` 只要看到任何 tunnel header 就判 false,不看真正 TCP peer)拿到
+   `createdRemote:true` 的 once-schedule,綁定+publish 一個 `return 1;` 的 workflow,交給真的
+   `RealTicker(500ms)` 自己撿起來 → `schedule_list` 顯示 `lastError.code:CONFINEMENT_UNAVAILABLE`,
+   `run_list` 對這個 workflow 名稱查到 `[]`——admission 在 `RunManager.start()` 真的擋在最前面,
+   一個 run 都没起。
+2. **本地建立的 schedule 到期** —— 同樣流程但不帶 header → `createdRemote:false`,真跑完成,
+   `run_list` 查到 `status:"completed"`。
+3. **遠端建立的 webhook 被呼叫** —— `webhook_create` 帶同一個偽造 header 拿 `createdRemote:true`,
+   但**送達**(`POST /hooks/:id`)刻意用純 loopback、零 tunnel header、正確 HMAC 簽章——證明
+   DES-262/ADR-086 講的「決定的是誰掛上這個 trigger,不是誰來送達」——回 `403
+   CONFINEMENT_UNAVAILABLE`,`run_list` 查到 `[]`。
+4. **本地建立的 webhook 被呼叫** —— 同樣送達方式,`createdRemote:false` → `202` 帶 `runId`,
+   `run_result` 讀回 `{"hooked":{"event":"local"}}`,body 真的透過真 `RunManager` 跑完。
+
+腳本重跑兩次(不同 trigger id),四格結果完全一致,沒有偶然。證據腳本+完整 JSON transcript:
+`evidence/v37/val256-admission-routes-real-run.{mjs,log}`。VAL-256 寫入 `08-validation.md`
+(`real:true`, `tier:acceptance`)。
+
+`rtm.md` REQ-218 列**修正,非重新評分**——依這份帳本自己的規則(header 有 8 欄:`REQ | Title | ARCH |
+DES | TASK | IMPL | VERIFICATION | Real-verified`),編輯前後都用 Python 把該列按 `|` 切開對欄位數
+(8/8),避免上一次帳本修復把 id 塞錯欄的覆轍:DES 欄加 `DES-263`,TASK 欄加 `TASK-258`,IMPL 欄加
+`IMPL-384`,VERIFICATION 欄加 `UT-329, UT-330, UT-331, IT-302, IT-303, VAL-253, VAL-256`
+(VAL-253 保留,VAL-256 新增在最後)。`Real-verified` 欄本來就是 ✅,不變——這是把既有 ✅ 的引用補
+完整,不是首次翻線。同一節下方補一段 v37 Gate 7.5 follow-up 說明。
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`:2107 個工作項/77 個缺口——缺口數
+不變(全部是這次收斂範圍外的既有債),`grep` 確認新增/引用的每一個 id(REQ-218、VAL-256、DES-263、
+TASK-258、IMPL-384、UT-329..331、IT-302、IT-303)零命中缺口清單、零「未真實驗證」/「未驗證」。
+
+**清理**:scratch 引擎已 `kill $(cat .../.rwe.rwe.scratch.config.pid)`,`ss -ltnp` 前後確認 port 8791
+已釋放、production port 8899 的 PID 全程未變。scratch config/workRoot 留在 session scratchpad(repo
+外),沒有進 git。
+
+沒有使用 `git checkout`/`restore`/`stash`;沒有建立 commit(留給 orchestrator)。`state.yaml`:
+`gates.validation` 那一行的既有 note 前面串接一段新的(串接手法同 v37 Gate 6 THIRD SLICE 系列),
+`current_stage`/其餘 gates.*.passed 皆**不動**——這是單一缺口的補丁式 follow-up,不是整輪 Gate 7.5
+重跑。已用 `python3 -c "import yaml; yaml.safe_load(open('state.yaml'))"` 重新解析過,通過。
+owner_decisions=[]。needs_clarification=[]。
