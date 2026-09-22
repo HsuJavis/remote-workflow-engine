@@ -5466,6 +5466,29 @@ caller at all, which is the whole of REQ-219's case).
 - **status:** draft
 - **traces:** REQ-218
 - **note:** **Context** — with `enabled:true`, an unavailable sandbox either fails the call or degrades silently; the SDK's own default is to fail (`sdk.d.ts:1778-1783`). **Options** — (A) fail-closed, no configuration; (B) fail-open with a warning; (C) fail-open **plus** a startup refusal of remote submissions (adversarial's C1 compromise). **Decision** — (A). **Consequences** — on a host without bubblewrap the engine refuses to run agents instead of running them unconfined; the deployment target is documented Linux + systemd (`DEPLOY.md`), this host measures clean (S6), and the remote host is measured by the same spike before the ADR binds. The failure is typed and reaches the run, not a stderr line nobody reads (ARCH-178's policy event records `failIfUnavailable` so the posture is visible in the log even when nothing goes wrong). **Why (B) lost** — 「silently degrades」 is precisely how we got here: 70 `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` warnings since 9/20 and no build ever failed. **Why (C) lost, and it lost narrowly** — it is a real compromise and both lenses endorsed it (quality-dimensions reads it as the graceful-degradation half of a circuit breaker), but it is a **second operating mode built for a condition nobody has observed**, and a mode that exists gets used: the same config file that turns it on is edited under time pressure. Karpathy's tie-break applies and (A) is smaller by one mode, one config key and one test matrix. **Revisit trigger, phrased as an event so it can actually fire** — spike S6 reports that the remote host cannot provide bubblewrap (no sudo is a real constraint there per `README.md:510`) **or** an operator reports a run refused for `sandbox unavailable`. At that point the choice between 「fix the host」 and (C) is the **owner's**, not this gate's, because it trades reachable functionality against posture; it is not owner-deferrable *now*, because the measured evidence says the condition does not obtain and a pending marker on a hypothetical would block Gate 8 on a question nobody can answer yet.
+- **owner_decision:** answered 2026-09-22 —— **業主裁決:採 (C),不動主機。** ADR-083 自己寫下的 revisit trigger
+  已因 TASK-250 觸發:S1/S9 實測本機 `sandbox.enabled:true` 時沒有任何 Bash 指令跑得完
+  (bwrap 第一層成功、CLI 的 `apply-seccomp` 需要第二層巢狀 userns,被
+  `/etc/apparmor.d/bwrap-userns-restrict` 擋下;orchestrator 另以兩行指令獨立複驗:
+  單層 `bwrap` exit 0,巢狀 `bwrap ... -- bwrap --unshare-user` 回
+  `No permissions to create a new namespace`)。
+  **裁決理由(四點,記下來是為了讓日後的人能檢驗這個選擇,而不只是知道結果):**
+  (1) 真正的威脅面是遠端提交 —— 本產品的定位就是可遠端操控,而 2026-09-20 那次
+  510MB 寫進 `$HOME` 的來源正是另一台機器送來的工作流程;(C) 擋的位置與事故發生的位置重合。
+  (2) 為繞過一支工具的實作細節而永久放寬整台主機的通用硬化,方向是反的 ——
+  `bwrap-userns-restrict` 保護的是這台機器上所有用 bwrap 的程式,不只本引擎;
+  且 S6 測到 SDK 內建的是 `claude 2.1.199` 而 PATH 上已有 `2.1.278`,
+  上游很可能自己會解決巢狀 userns 這件事。
+  (3) 照出 (A) 不是「姿態乾淨」而是**引擎當場停機**(S9:真實工作流程跑不完),
+  而此時有正在運行的相依工作;安全姿態不該用停機來換。
+  (4) **ADR-083 反對 (C) 的理由,其前提已不成立**:「多一個模式就會被用」與 Karpathy 的
+  tie-break 是在「沙箱能跑」的前提下,比較 (A) 嚴格 vs (C) 降級;沙箱跑不了時,
+  實際選擇是「(C) 部分保護」對上「完全無保護」,少一個模式換不到零保護。
+  **已承認的代價**:本機發起的 run 仍不受限制 —— (C) 買到的是「遠端提交動不了 `$HOME`」,
+  不是全面隔離,文件不得把它寫成後者。
+  **升級路徑**:本 ADR 原有的 revisit trigger 繼續有效 ——
+  上游 CLI 不再需要巢狀 userns、或業主決定改政策時,翻回 (A) 的完整監牢,不需重新辯論。
+
 - **iter:** v37
 
 ### ADR-084 — REQ-218: the OPERATOR grants host paths; the author-side request surface is named, dated and NOT built
