@@ -63,9 +63,15 @@ Two layers are **settable**, on the tool-calling (SDK gateway) path, and the fir
 
 ## Host path grants
 
-`Bash` may write inside the run workspace and nowhere else. A write outside it arrives as an ordinary `EACCES` inside the agent's own tool result, not as an engine refusal — a script that shells out to a global cache sees a failed command, not a special error your script can branch on.
+Whether `Bash` is confined to the run workspace depends on THIS deployment's measured posture, checked once at boot. This generated page is built before any host boots, so it cannot state which one applies to the deployment serving it — it describes both:
+
+**Confined:** `Bash` may write inside the run workspace and nowhere else. A write outside it arrives as an ordinary `EACCES` inside the agent's own tool result, not as an engine refusal — a script that shells out to a global cache sees a failed command, not a special error your script can branch on.
 
 A shared host path is possible but is an **operator grant** in `rwe.config.json`, never something a script requests — the list applied to a given run appears in that run's own `agent.confinement` log line.
+
+**Unconfined:** On this deployment, `Bash` is **not confined**: the boot-time probe found no working sandbox on this host, so `Bash` runs with the same filesystem access as the engine process itself — not limited to the run workspace, and not limited to any operator-granted host path either. A **locally-submitted** run still executes exactly this way; that is the accepted cost of this deployment's posture, not a bug. A **remote submission** is refused before it ever reaches an agent — `run_start`/`run_resume` return a refusal instead of admitting Bash-capable work.
+
+The live `workflow_authoring_guide` tool response states which posture is actually in force on the deployment serving it — check there, not here, before relying on either description.
 
 ## Prompt layering
 

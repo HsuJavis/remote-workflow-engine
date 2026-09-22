@@ -112,6 +112,14 @@ export interface McpFacadeDeps {
    *  actually retries, never a hard-coded number. Absent (unit construction) defaults inside
    *  `projectWorkflowDescribe` itself to the deployed default (1 + 1 = 2). */
   gatewayAttempts?: number;
+  /** v37 (DES-258 owner ruling 2026-09-22, ARCH-181, ADR-083 posture C): this deployment's
+   *  MEASURED Bash-confinement posture, forwarded from `ServerConfig.confinementPosture`
+   *  (server.ts's composition root — the SAME value `main.ts`'s boot probe already set for the
+   *  remote-submission door, ARCH-181/DES-262; not a new `ServerConfig` field). So
+   *  `workflow_authoring_guide` states the posture actually in force instead of leaving a cold
+   *  author to learn it from a refused run. Absent (unit construction, or a deployment where the
+   *  probe never ran) renders the guide's dual-posture generic text rather than asserting either. */
+  confinementPosture?: 'confined' | 'unconfined';
   cas?: CasStore;
   assetSync?: AssetSyncService;
   /** v24 (DES-149): the two trigger-claim stores the register/deregister sequence calls into.
@@ -267,6 +275,7 @@ export class McpFacade {
   private readonly aliasNames: Set<string>;
   private readonly runConcurrency: number;
   private readonly gatewayAttempts?: number;
+  private readonly confinementPosture?: 'confined' | 'unconfined';
   private readonly cas?: CasStore;
   // Not readonly: `AssetSyncService` needs the server's bound port for `selfBind` (server.ts
   // constructs it AFTER `http.listen()`, well after the facade). `bindAssetSync` lets the
@@ -288,6 +297,7 @@ export class McpFacade {
     this.aliasNames = deps.aliasNames ?? new Set();
     this.runConcurrency = deps.runConcurrency ?? DEFAULT_RUN_CONCURRENCY;
     this.gatewayAttempts = deps.gatewayAttempts;
+    this.confinementPosture = deps.confinementPosture;
     this.cas = deps.cas;
     this.assetSync = deps.assetSync;
     this.diagramCache = deps.diagramCache;
@@ -667,7 +677,10 @@ export class McpFacade {
   async workflowAuthoringGuide(): Promise<ResultEnvelope<{ text: string }>> {
     // v24 Gate 7.5 (D-12): the alias names travel with the ceilings — both are "what THIS
     // deployment accepts", and the guide is the only place the surface states either.
-    return { runId: '', status: 'completed', result: { text: buildAuthoringGuide({ ...this.ceilings, aliases: [...this.aliasNames], runConcurrency: this.runConcurrency }) } };
+    // v37 (DES-258 owner ruling, ARCH-181): `confinementPosture` travels the same way — this is
+    // the LIVE tool response, so it states the posture actually measured on THIS deployment,
+    // never the generic dual-posture text the generated static docs/AUTHORING.md falls back to.
+    return { runId: '', status: 'completed', result: { text: buildAuthoringGuide({ ...this.ceilings, aliases: [...this.aliasNames], runConcurrency: this.runConcurrency, confinementPosture: this.confinementPosture }) } };
   }
 
   // ============================================================================================

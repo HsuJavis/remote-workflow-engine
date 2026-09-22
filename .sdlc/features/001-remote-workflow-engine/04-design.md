@@ -9775,6 +9775,34 @@ keep, not a coincidence to rely on.
   workflow script never sees, so an example demonstrating it would teach an invalid example (rule 4).
   `docs/AUTHORING.md` stays byte-equal to the builder output in the same commit.
 - **owner_decision:** pending — 指南要維持這版「靜態段落」(作者讀到機制與申請管道,零佈線),還是要改成「渲染該部署當下的實際 grant 清單」(GuideCeilings 新欄位 + 一個 ServerConfig hop + hop-2 wiring test,並需修正 ARCH-177「不為沒人讀的值開 ServerConfig 欄位」那句)?兩位 lens 在 r2 互換立場、各自讓步給對方,沒有收斂;設計先出簡單且可逆的靜態版,是否升級為即時清單屬於產品面(作者體驗 vs 一條新佈線)的裁決。
+  **answered 2026-09-22 (owner ruling, closing this marker):** **render the POSTURE live; leave
+  the grant list static.** The question this row asked changed shape before it could be answered
+  as asked: v37 made confinement posture a fact MEASURED at boot (`confinement-probe.ts`,
+  ARCH-181), and on this host that measurement is `unconfined` — so the shipped static paragraph
+  had drifted from "an open design choice between two acceptable renderings" into **an active
+  false claim** ("`Bash` may write inside the run workspace and nowhere else", stated
+  unconditionally on a deployment where it is not true). That is a different defect than the one
+  this marker was written to resolve, and it is the one that had to be fixed first. Reasoning, so
+  a later reader can check the choice and not just learn it: (1) the LIE being fixed is narrow —
+  "the document claims Bash is confined when it is not" — and closing it needs only the live
+  posture value, which already exists at runtime (`ServerConfig.confinementPosture`, set once by
+  `main.ts`'s boot probe for the ARCH-181/DES-262 remote-submission door) and needed only a SECOND
+  reader, not a new field; (2) the full grant LIST is the expensive half of this marker's original
+  question — a new `GuideCeilings.grantedHostPaths` field, a new `ServerConfig` hop, a new hop-2
+  wiring test — and nobody has asked for it since this marker was written; ARCH-177's rule against
+  opening a `ServerConfig` field for a value nobody reads therefore **stands, uncorrected**, because
+  this fix opens no such field — it reads one that already exists for another consumer; (3) the two
+  r2 lenses that swapped positions and never converged were debating the grant-list half of the
+  question (consumability vs. a second silently-inert hop) — that debate is UNCHANGED by this
+  ruling and stays open for whoever next asks for the live list. **What shipped**: `buildAuthoringGuide()`'s
+  `GuideCeilings` gained an optional `confinementPosture` field (`src/authoring-guide.ts`); the
+  live `workflow_authoring_guide` MCP tool response (`McpFacade.workflowAuthoringGuide()`, via a new
+  `McpFacadeDeps.confinementPosture` forwarded from `server.ts`'s `config?.confinementPosture`)
+  renders the ACTUAL measured posture; the generated static `docs/AUTHORING.md`
+  (`scripts/gen-authoring-md.ts`, built before any host boots) cannot carry a runtime value, so it
+  now describes BOTH postures rather than asserting either, and points the reader at the live tool
+  for the real answer. See TASK-256's own v37 amendment and `tests/unit/authoring-guide.test.ts`'s
+  new "v37 correction" describe block for the load-bearing proof.
 - **v37 Gate-6 amendment (2026-09-22, implementer; ADR-083 owner_decision posture C, ARCH-181):**
   **fact (a) is no longer unconditionally true and this row must say so before TASK-256 ships text
   from it.** 「`Bash` may write inside the run workspace and nowhere else」 holds only when this
@@ -9796,6 +9824,24 @@ keep, not a coincidence to rely on.
   unresolved `owner_decision` (static vs. live rendering) — threading the posture through is itself
   new wiring deserving its own test-first cycle, not a rushed append to an unrelated dispatch's
   diff. Flagged to the orchestrator as an open, LIVE gap, not a someday-TODO.
+- **v37 Gate-6 amendment (2026-09-22, implementer — CLOSES the `owner_decision` above):** fixed.
+  `hostPathGrantsBody(posture)` (`src/authoring-guide.ts`, beside `section()`) replaces the
+  unconditional static text with three bodies: `HOST_PATH_GRANTS_CONFINED` (the original three
+  facts, unchanged), `HOST_PATH_GRANTS_UNCONFINED` (states plainly Bash is **not confined**, a
+  local run still executes that way, a remote submission is refused — never described as
+  isolation), and the `undefined`-posture fallback that renders BOTH and points at the live tool.
+  `GuideCeilings.confinementPosture?: 'confined'|'unconfined'` is the new input; it is `undefined`
+  for `scripts/gen-authoring-md.ts` (no host measurement exists at doc-generation time — that is
+  WHY `docs/AUTHORING.md` now describes both postures rather than asserting one) and is threaded
+  live for the MCP tool: `McpFacadeDeps.confinementPosture` → `McpFacade.workflowAuthoringGuide()`,
+  forwarded from `server.ts`'s existing `config?.confinementPosture` (the SAME `ServerConfig` field
+  ARCH-181/DES-262's door already reads — no new `ServerConfig` field opened, ARCH-177's rule
+  stands). Load-bearing test (`tests/unit/authoring-guide.test.ts`, "v37 correction" describe
+  block) calls the REAL `probeConfinement()` against this host (same precedent as UT-323b) and
+  asserts the guide text matches whatever it measures; confirmed RED first against the pre-fix
+  text (`expected '...may write inside the run workspace...' to match /\bnot confined\b/i` —
+  failed, this host measures `unconfined`), GREEN after. `npm run gen:authoring` re-run in this
+  commit; `tests/unit/authoring-md-generated.test.ts`'s byte-lock stays green.
 - **iter:** v37
 
 ### DES-259 — the sandbox-unavailable failure surface

@@ -9401,3 +9401,37 @@ Trace:用 `git archive HEAD | tar -x` 抽一份乾淨副本跑基線(CLAUDE.md �
 的 `impl` 筆記改成「第二段」開頭,原本那段完整移到 `| PRIOR:` 後面保留;改完用
 `python3 -c "import yaml; yaml.safe_load(open('state.yaml'))"` 驗證過通過。全程未使用
 `git checkout`/`restore`/`stash`,也沒有 commit(留給 orchestrator)。
+
+## DES-258 owner_decision 收尾:指南段落改成「渲染實測姿態」(2026-09-22, implementer)
+
+`DES-258` 掛在設計閘門的 `owner_decision`(靜態段落 vs. 即時渲染 grant 清單)在等待期間被一個新事實
+超車:v37 把 confinement posture 改成開機時「實測」(`confinement-probe.ts`,ARCH-181),而這台機器
+實測就是 `unconfined`。指南原本無條件寫「`Bash` 只能寫進 run workspace」這句話,因此從「兩個都可接受
+的設計選擇」變成「這台機器上是一句假話」——這是業主這次要先關掉的問題,不是原本 owner_decision 問的
+那個問題。
+
+業主裁決(記在 `DES-258` 本列,原題不動,答案接在後面):**渲染 POSTURE(姿態)本身,grant 清單維持
+靜態。** 理由分兩半:(1) 要修的謊很窄——「文件宣稱 Bash 受限但其實沒有」——只需要 posture 這個已經在
+runtime 存在的值(`ServerConfig.confinementPosture`,`main.ts` 開機探針早就寫好給 ARCH-181/DES-262
+的門用)多一個讀者,不必開新欄位;(2) 完整 grant 清單才是原本問題裡貴的那一半(`GuideCeilings` 新
+欄位 + 一個 `ServerConfig` hop + hop-2 wiring test),沒人現在要,所以 ARCH-177「不為沒人讀的值開
+`ServerConfig` 欄位」那句話**維持不改**——這次沒有開新欄位,只是多讀一個既有欄位。r2 兩個 lens 互換
+立場、沒收斂的那場辯論(清單要不要即時化)原封不動留著,留給日後真的有人要清單時再開。
+
+實作:`authoring-guide.ts` 加 `hostPathGrantsBody(posture)`,三選一——`'confined'` 用原文不動;
+`'unconfined'` 直說「Bash 不受限」+ 本機仍會跑 + 遠端一律在門口被拒(ADR-083 業主已承認的代價,
+不得寫成「隔離」);`undefined`(沒有量測值在場)兩種都講,並指向即時工具。這個值走哪條線最便宜:
+`McpFacadeDeps` 加 `confinementPosture`,`server.ts` 轉發既有的 `config?.confinementPosture`——不
+是新 hop,是既有 hop 多一個讀者;`scripts/gen-authoring-md.ts` 完全不改,所以產生的靜態
+`docs/AUTHORING.md` 走的正是「兩種都講」那條分支,不會對外斷言任何一個姿態。
+
+Load-bearing 測試(`authoring-guide.test.ts` 新增的 describe block 第四個 case)直接呼叫真的
+`probeConfinement()`(不 mock,跟 `UT-323b` 同precedent),斷言指南文字要跟量到的 posture 一致——
+暫時把 production 呼叫點改回舊的無條件文字重跑,紅在:
+`AssertionError: expected 'Host path grants\n\n\`Bash\` may write …' to match /\bnot confined\b/i`
+(這台機器真的量到 `unconfined`,跟 ADR-083 owner_decision 自己的複驗一致),改回來就綠。
+`npm run gen:authoring` 在同一個 commit 重跑;`authoring-md-generated.test.ts` 的 byte-lock 沒動。
+`UT-322`(舊的 4 個 case)跟這次新增的 4 個 case 一起在 `npx vitest run
+tests/unit/authoring-guide.test.ts` 62/62 綠;`npx tsc --noEmit` 乾淨。`UT-322` 自己也掛著一個
+重複的 `owner_decision: pending`(跟 `DES-258` 問一樣的問題),這次一併關掉,答案指回 `DES-258` 本列
+而不是另外裁決一次。全程未使用 `git checkout`/`restore`/`stash`,也沒有 commit(留給 orchestrator)。

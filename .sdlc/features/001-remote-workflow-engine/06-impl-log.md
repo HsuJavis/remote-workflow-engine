@@ -9985,3 +9985,39 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   the checker's own basename from the match count; no assertion weakened.
   `grep -rn "timeout-race|session-options-builder" src tests` (excluding VAL-254's self-reference):
   **0**. `npx tsc --noEmit` clean.
+
+### IMPL-379 — DES-258's `owner_decision` closed (render posture live, grant list static); the guide's "host path grants" section states the MEASURED confinement posture instead of a hardcoded claim
+- **status:** done
+- **traces:** TASK-256, DES-258, ARCH-107, ARCH-181, ADR-083, REQ-117, REQ-218
+- **greens:** UT-322 (4 pre-existing cases, unaffected) + 4 new cases in the same file's second
+  DES-258 describe block (load-bearing case calls the real `probeConfinement()`)
+- **files:** src/authoring-guide.ts, src/mcp-facade.ts, src/server.ts, docs/AUTHORING.md,
+  tests/unit/authoring-guide.test.ts
+- **commit:** (uncommitted at write time)
+- **iter:** v37
+- **note:** Owner ruling (`04-design.md` DES-258's `owner_decision`, answered 2026-09-22): render
+  the posture live, leave the grant list static — ARCH-177's rule against opening a `ServerConfig`
+  field for a value nobody reads stands, uncorrected, because this fix reads a field
+  (`ServerConfig.confinementPosture`) that already has a reader (the ARCH-181/DES-262
+  remote-submission door), it opens none. `hostPathGrantsBody(posture)` in `authoring-guide.ts`
+  replaces the unconditional static paragraph with three bodies keyed on
+  `GuideCeilings.confinementPosture?: 'confined'|'unconfined'`: the original text (`confined`), a
+  new "Bash is **not confined** … a remote submission is refused" text (`unconfined` — the accepted
+  cost from ADR-083's owner_decision, never described as isolation), and a dual-posture description
+  pointing at the live tool when no posture is in scope. Threading: `McpFacadeDeps` gains
+  `confinementPosture`, forwarded by `server.ts`'s facade construction from the ALREADY-EXISTING
+  `config?.confinementPosture` (no new `ServerConfig` hop); `McpFacade.workflowAuthoringGuide()`
+  (the live `workflow_authoring_guide` MCP tool) passes it through. `scripts/gen-authoring-md.ts`
+  is unchanged (still calls `buildAuthoringGuide(DEFAULT_CEILINGS, ...)` with no posture), which is
+  WHY the generated static `docs/AUTHORING.md` renders the dual-posture description rather than
+  asserting one — it is built before any host boots and cannot know which deployment will serve it.
+  **Load-bearing test confirmed RED first**: `authoring-guide.test.ts`'s new "v37 correction"
+  describe block's fourth case calls the REAL `probeConfinement()` against this host (no mock, same
+  precedent as UT-323b) and asserts the guide text matches whichever posture it measures;
+  temporarily reverting `hostPathGrantsBody(...)` to the old unconditional call and re-running
+  produced `AssertionError: expected 'Host path grants\n\n\`Bash\` may write …' to match
+  /\bnot confined\b/i` (this host's probe measures `unconfined`, matching ADR-083's own
+  re-verification) — confirmed the correct red before restoring the fix. `npx vitest run
+  tests/unit/authoring-guide.test.ts`: 62/62 pass. `npm run gen:authoring` re-run in this commit;
+  `npx vitest run tests/unit/authoring-md-generated.test.ts`: 1/1 pass (byte-lock holds — the
+  regenerated file's `undefined`-posture branch matches). `npx tsc --noEmit` clean.

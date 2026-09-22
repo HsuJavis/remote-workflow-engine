@@ -2437,9 +2437,9 @@ No two concurrently-runnable tasks share a `files:` entry.
   patched: this is a Gate-5 fixture bug, not a design/behavior disagreement.
 
 ### TASK-256 — the guide paragraph a cold author cannot infer from the tool schema: what an agent's `Bash` may touch
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-107, REQ-117, ADR-084
-- **files:** src/authoring-guide.ts, docs/AUTHORING.md, tests/unit/authoring-guide.test.ts
+- **files:** src/authoring-guide.ts, docs/AUTHORING.md, tests/unit/authoring-guide.test.ts, src/mcp-facade.ts, src/server.ts
 - **des:** DES-258
 - **dod:** `npm run gen:authoring && npx tsc --noEmit && npx vitest run tests/unit/authoring-guide.test.ts tests/unit/authoring-md-generated.test.ts` → green on: (1) ONE new short section, titled after **host path grants** and never 「sandbox」 (`authoring-guide.ts:432` already owns that word for the `node:vm` script sandbox — the collision ARCH-175 avoided in the filesystem must not reappear in the one document a cold author reads); (2) it states the three facts and nothing else — `Bash` may write inside the run workspace and nowhere else; a write outside it arrives as an **ordinary `EACCES` inside the agent's own tool result**, not as an engine refusal, so a script that shells out to a global cache sees a failed command rather than a typed engine error; a shared host path is possible but is an **operator grant** in `rwe.config.json`, and the list applied to a given run appears in that run's `agent.confinement` log line; (3) **no `GUIDE_EXAMPLES` entry is added** — `GuideExample` is `{title, script, mermaid, expectRegister}` and the loop asserts registration; an `EACCES` happens inside a tool result the workflow script never sees, so an example demonstrating it would be the guide teaching an invalid example (rule 4); (4) `docs/AUTHORING.md` is byte-equal to the regenerated builder output **in this same commit**. Independent of every other v37 task. See DES-258's `owner_decision`.
 - **estimate:** S
@@ -2469,6 +2469,22 @@ No two concurrently-runnable tasks share a `files:` entry.
   re-pointed cases, and TASK-253's own listed test targets (`bash-confinement-wiring.test.ts`,
   `agent-confinement-events.test.ts`, `gateway-attempts.test.ts`) are all green; `npx tsc --noEmit`
   clean. TASK-253 is complete.
+- **v37 Gate-6 amendment (2026-09-22, implementer) — CLOSES this task, DES-258's `owner_decision`
+  answered:** the false-confinement-claim gap flagged by this task's own two notes above is fixed.
+  `hostPathGrantsBody(posture)` picks between the pre-existing static text (`confined`), a new
+  plain "Bash is not confined … a remote submission is refused" text (`unconfined`), or — when no
+  posture is in scope — a dual-posture description pointing at the live tool. `GuideCeilings`
+  gains `confinementPosture?: 'confined'|'unconfined'`. **Two files join this task's `files:` list,
+  not anticipated by the original dod, because the owner's ruling ("render the posture live")
+  requires the LIVE tool response to carry a value the static builder alone cannot supply**:
+  `src/mcp-facade.ts` (`McpFacadeDeps.confinementPosture` → `McpFacade.workflowAuthoringGuide()`)
+  and `src/server.ts` (forwards the ALREADY-EXISTING `config?.confinementPosture` into the facade
+  constructor — no new `ServerConfig` field, ARCH-177's rule against opening one for a value nobody
+  reads is not touched because this value already has a reader, the ARCH-181/DES-262 door).
+  `npm run gen:authoring && npx tsc --noEmit && npx vitest run tests/unit/authoring-guide.test.ts
+  tests/unit/authoring-md-generated.test.ts` → green (62 + 1 tests). DoD item (4) (byte-equal
+  `docs/AUTHORING.md`) holds under the `undefined`-posture (dual-description) branch, which is what
+  `scripts/gen-authoring-md.ts` renders — unchanged from the original dod's own call site.
 
 ### TASK-257 — the boot-time posture probe + the remote-submission door (new row, ARCH-181, ADR-083 owner_decision posture C)
 - **status:** done

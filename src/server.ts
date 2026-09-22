@@ -863,7 +863,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // — forwarded so `workflow_describe`'s advertised `timeoutMs.attempts`/`worstCaseMs` reflect what
   // THIS deployment actually retries (the composeConfig wiring class, twice bitten).
   const gatewayAttempts = 1 + Math.max(0, config?.retries ?? 1);
-  const facade = new McpFacade({ clock, store, runManager, validator, ceilings, cas, schedulerClaims: scheduler, webhookClaims: webhooks, aliasNames, diagramCache: diagrams, runConcurrency: config?.runConcurrency, gatewayAttempts });
+  // v37 (DES-258 owner ruling, ARCH-181): `confinementPosture` rides `config?.confinementPosture`
+  // — the SAME value the `buildToolDeps` door below already reads, set once at boot by `main.ts`'s
+  // real probe; `undefined` on every test/zero-config boot, which the guide already treats as
+  // "render both postures" (authoring-guide.ts's `hostPathGrantsBody`).
+  const facade = new McpFacade({ clock, store, runManager, validator, ceilings, cas, schedulerClaims: scheduler, webhookClaims: webhooks, aliasNames, diagramCache: diagrams, runConcurrency: config?.runConcurrency, gatewayAttempts, confinementPosture: config?.confinementPosture });
 
   // v24 (DES-139, ARCH-088, TASK-147): authorize()'s OwnerLookup is SYNC (a pure decision
   // function), while RunStore/WorkflowCatalog are async ports — a second connection to each

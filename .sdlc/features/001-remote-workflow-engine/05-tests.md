@@ -15788,10 +15788,12 @@ direct re-run: 1 failed / 2 passed.
 
 ### UT-322 — the guide's "host path grants" paragraph
 - **status:** green (CORRECTED 2026-09-22, Gate-6 implementer — found already implemented and live
-  on disk at the start of this dispatch, unrelated to this dispatch's own work; this row's `red`
-  status here was stale. Confirmed via direct re-run: 4/4 pass, `npx vitest run
-  tests/unit/authoring-guide.test.ts`. See DES-258's own v37 amendment: the text is now FALSE on a
-  deployment measured `unconfined` — an open, live gap, not fixed in this dispatch.)
+  on disk at the start of that dispatch, unrelated to that dispatch's own work; this row's `red`
+  status there was stale. Confirmed via direct re-run: 4/4 pass, `npx vitest run
+  tests/unit/authoring-guide.test.ts`. See DES-258's own v37 amendment: the text was FALSE on a
+  deployment measured `unconfined` — flagged then as an open, live gap. **FIXED same iteration, a
+  later dispatch (2026-09-22): the paragraph is now posture-conditional — see this row's own
+  amendment below, 62/62 pass.**)
 - **traces:** DES-258, ARCH-107, TASK-256, REQ-117
 - **tier:** unit
 - **real:** false
@@ -15810,12 +15812,31 @@ workflow script never sees, so an example would teach an invalid one). Confirmed
 section-content cases fail on an empty slice — `text.search(/host path grants/i)` returns `-1`; the
 GUIDE_EXAMPLES case and all 55 pre-existing cases are unaffected).
 
-- **owner_decision:** pending — DES-258's own row (`04-design.md:9708`) already carries this marker
-  (指南要維持靜態段落,還是升級為即時渲染的 grant 清單) from the design gate; it is NOT newly
-  deferred here. Carried forward unresolved — it blocks Gate 8, not this gate. This UT is written
-  against the design's OWN chosen default (the static paragraph), which is what ships regardless of
-  how that marker is later answered; the alternative (a rendered live list) would replace this UT's
-  assertions, not add to them, per DES-258's own note.
+- **owner_decision:** answered 2026-09-22 — DES-258's own row (`04-design.md:9777`) carries the full
+  ruling text (render the posture live, leave the grant list static); this marker is a duplicate of
+  that same question, carried forward from the design gate, and closes the same way rather than
+  being ruled separately. This UT's original four cases are unaffected (the static paragraph still
+  ships as the `confined`/generic text); what changed is that the paragraph is no longer
+  unconditional — see the new describe block below.
+
+- **v37 Gate-6 amendment (2026-09-22, implementer) — CLOSES the `owner_decision` above:** the same
+  test file's `authoring-guide.test.ts` gains a second describe block, still traced to DES-258 (no
+  new UT id — same requirement, same file, the natural continuation of this row): four new cases
+  over `buildAuthoringGuide({ ..., confinementPosture })` — (1) `'confined'` states the unqualified
+  "may write inside the run workspace and nowhere else" text; (2) `'unconfined'` states plainly
+  "not confined", a local run still executes that way, a remote submission is refused, and never
+  says "isolat-"; (3) `undefined` (the generated-docs and unit-construction case) describes BOTH
+  postures and points at the live `workflow_authoring_guide` tool; (4) **[LOAD-BEARING]** calls the
+  REAL `probeConfinement()` against this host (same precedent as UT-323b, no mock) and asserts the
+  guide text matches whatever it measures. Confirmed RED first by temporarily reverting the
+  production code's `hostPathGrantsBody(...)` call to the old unconditional text and re-running:
+  `AssertionError: expected 'Host path grants\n\n\`Bash\` may write …' to match /\bnot confined\b/i`
+  (this host's real probe measures `unconfined`, matching ADR-083's owner_decision's own
+  re-verification). GREEN after `hostPathGrantsBody` was restored. `npx vitest run
+  tests/unit/authoring-guide.test.ts`: 62/62 pass (55 pre-existing + 4 original DES-258 cases + 4
+  new — reconciles the file's total). `npm run gen:authoring` re-run in the same commit;
+  `tests/unit/authoring-md-generated.test.ts` stays green (the regenerated `docs/AUTHORING.md`
+  renders the `undefined`-posture dual-description, matching the byte-lock's own call site).
 
 ### UT-323 — `probeConfinement()` — the boot-time nested-bwrap measurement (new, ARCH-181/DES-261, TASK-257)
 - **status:** green

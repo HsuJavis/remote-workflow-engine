@@ -45,6 +45,18 @@ export interface GuideCeilings {
    *  way to learn it, and issue #61 was reported by an author who could not. Resolved, never a
    *  literal — a deployment that raises it renders its own number. */
   runConcurrency: number;
+  /** v37 (DES-258 owner ruling 2026-09-22, ARCH-181, ADR-083 posture C): this deployment's MEASURED
+   *  Bash-confinement posture (`probeConfinement()`, boot-time, never hardcoded, never a config
+   *  key) — `'confined'` on a host with a working nested sandbox, `'unconfined'` when the boot
+   *  probe found none (this host's own measurement, per ADR-083's owner_decision). `undefined` when
+   *  no measurement is in scope at render time — `scripts/gen-authoring-md.ts` builds
+   *  `docs/AUTHORING.md` before any host boots, so it cannot know which deployment will serve the
+   *  page; the guide then describes BOTH postures rather than asserting one. Forwarded from
+   *  `ServerConfig.confinementPosture` (already set by `main.ts`'s boot probe for the
+   *  remote-submission door, ARCH-181/DES-262) — a second reader of the SAME value, not a new
+   *  `ServerConfig` field (ARCH-177's rule against opening one for a value nobody reads stands,
+   *  uncorrected: this value already has a reader). */
+  confinementPosture?: 'confined' | 'unconfined';
 }
 
 export interface GuideExample {
@@ -331,6 +343,45 @@ function section(title: string, body: string): string {
   return `## ${title}\n\n${body}`;
 }
 
+// v37 (DES-258 owner ruling 2026-09-22, ARCH-181, ADR-083 posture C): the "Host path grants"
+// section used to state fact (a) — "Bash may write inside the run workspace and nowhere else" —
+// unconditionally, which is FALSE on a deployment whose boot probe measures 'unconfined' (this
+// host's own measurement). The owner's ruling was to render the POSTURE live, leaving the grant
+// list itself static (no GuideCeilings.grantedHostPaths, no new ServerConfig hop — that half of
+// DES-258's original question stays unresolved, deliberately). These two bodies are the two
+// truths that can each be actually true on some deployment; `hostPathGrantsBody` below picks one,
+// or (when the posture is not known at render time) states both.
+const HOST_PATH_GRANTS_CONFINED =
+  '`Bash` may write inside the run workspace and nowhere else. A write outside it arrives as ' +
+  "an ordinary `EACCES` inside the agent's own tool result, not as an engine refusal — a " +
+  'script that shells out to a global cache sees a failed command, not a special error your ' +
+  'script can branch on.\n\n' +
+  'A shared host path is possible but is an **operator grant** in `rwe.config.json`, never ' +
+  "something a script requests — the list applied to a given run appears in that run's own " +
+  '`agent.confinement` log line.';
+
+const HOST_PATH_GRANTS_UNCONFINED =
+  'On this deployment, `Bash` is **not confined**: the boot-time probe found no working sandbox ' +
+  'on this host, so `Bash` runs with the same filesystem access as the engine process itself — ' +
+  'not limited to the run workspace, and not limited to any operator-granted host path either. ' +
+  'A **locally-submitted** run still executes exactly this way; that is the accepted cost of this ' +
+  "deployment's posture, not a bug. A **remote submission** is refused before it ever reaches an " +
+  'agent — `run_start`/`run_resume` return a refusal instead of admitting Bash-capable work.';
+
+function hostPathGrantsBody(posture: 'confined' | 'unconfined' | undefined): string {
+  if (posture === 'confined') return HOST_PATH_GRANTS_CONFINED;
+  if (posture === 'unconfined') return HOST_PATH_GRANTS_UNCONFINED;
+  return (
+    "Whether `Bash` is confined to the run workspace depends on THIS deployment's measured " +
+    'posture, checked once at boot. This generated page is built before any host boots, so it ' +
+    'cannot state which one applies to the deployment serving it — it describes both:\n\n' +
+    `**Confined:** ${HOST_PATH_GRANTS_CONFINED}\n\n` +
+    `**Unconfined:** ${HOST_PATH_GRANTS_UNCONFINED}\n\n` +
+    'The live `workflow_authoring_guide` tool response states which posture is actually in force ' +
+    'on the deployment serving it — check there, not here, before relying on either description.'
+  );
+}
+
 /** The `see: 'workflow_authoring_guide'` slice of ERROR_CATALOG, rendered from the SAME table
  *  server.ts's error envelope reads (`toErrEnvelope`) — never a second hand-typed list. */
 function authoringErrorRows(): string {
@@ -560,18 +611,16 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
   parts.push(
     section(
       'Host path grants',
-      // v37 (DES-258, ARCH-107, TASK-256, REQ-117, REQ-218): the fact a cold author cannot infer
-      // from the tool schema alone — what Bash may touch on the host filesystem, what an escape
-      // looks like from inside it, and where a shared path comes from. Static text, three facts,
-      // no GUIDE_EXAMPLES entry (an EACCES happens inside a tool result the workflow script never
-      // sees, so an example demonstrating one would teach an invalid example).
-      '`Bash` may write inside the run workspace and nowhere else. A write outside it arrives as ' +
-        "an ordinary `EACCES` inside the agent's own tool result, not as an engine refusal — a " +
-        'script that shells out to a global cache sees a failed command, not a special error your ' +
-        'script can branch on.\n\n' +
-        'A shared host path is possible but is an **operator grant** in `rwe.config.json`, never ' +
-        "something a script requests — the list applied to a given run appears in that run's own " +
-        '`agent.confinement` log line.',
+      // v37 (DES-258, ARCH-107, TASK-256, REQ-117, REQ-218, ARCH-181, ADR-083 posture C —
+      // corrected 2026-09-22 per the owner's ruling on DES-258's owner_decision): what Bash may
+      // touch on the host filesystem is now POSTURE-CONDITIONAL, not a static claim — the v37 boot
+      // probe (ARCH-181) measures whether Bash is actually confined on THIS deployment, and a
+      // guide that always asserted confinement was a false claim on a host measured 'unconfined'
+      // (this one). The grant LIST itself stays static (no GuideCeilings.grantedHostPaths, no new
+      // ServerConfig hop — the owner left that half of DES-258's question unresolved on purpose).
+      // No GUIDE_EXAMPLES entry either way (an EACCES happens inside a tool result the workflow
+      // script never sees, so an example demonstrating one would teach an invalid example).
+      hostPathGrantsBody(ceilings.confinementPosture),
     ),
   );
 

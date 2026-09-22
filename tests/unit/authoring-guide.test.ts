@@ -5,6 +5,9 @@
 import { describe, it, expect } from 'vitest';
 import { buildAuthoringGuide, GUIDE_EXAMPLES } from '../../src/authoring-guide.js';
 import { SHAPES, EDGE_FORMS } from '../../src/check-mermaid.js';
+// v37 owner ruling on DES-258 (ARCH-181, ADR-083 posture C): the load-bearing correction test
+// below calls the REAL boot probe against THIS host, same precedent as UT-323b.
+import { probeConfinement } from '../../src/gateway/confinement-probe.js';
 
 const CEILINGS = { maxTimeoutMs: 600000, maxAppendPromptBytes: 1024, maxEffort: 'high' as const, aliases: ['default', 'sonnet'], runConcurrency: 24 };
 
@@ -484,5 +487,51 @@ describe('buildAuthoringGuide — v37: the host-path-grants paragraph (DES-258, 
   it('adds NO GUIDE_EXAMPLES entry for this section — an EACCES happens inside a tool result the workflow script never sees', () => {
     const titles = GUIDE_EXAMPLES.map((ex: { title: string }) => ex.title.toLowerCase());
     expect(titles.some((t: string) => t.includes('host path') || t.includes('sandbox') || t.includes('eacces'))).toBe(false);
+  });
+});
+
+// v37 owner ruling on DES-258's owner_decision (2026-09-22): the guide's "host path grants"
+// section used to assert fact (a) — "Bash may write inside the run workspace and nowhere else" —
+// UNCONDITIONALLY, which is FALSE on a deployment whose boot probe (ARCH-181, ADR-083 posture C)
+// measures 'unconfined'. The ruling: render the POSTURE live, leave the grant list itself static.
+// This block is the load-bearing correction — without threading `confinementPosture` through
+// `buildAuthoringGuide()`, it fails against the REAL probe result on THIS host (case below).
+describe('buildAuthoringGuide — v37 correction: the host-path-grants section states the MEASURED posture, not a hardcoded claim (DES-258 owner ruling, ARCH-181)', () => {
+  it('under a "confined" posture, states Bash IS confined to the run workspace (unqualified) and says nothing about being unconfined', () => {
+    const text = buildAuthoringGuide({ ...CEILINGS, confinementPosture: 'confined' });
+    const section = text.slice(text.search(/host path grants/i));
+    expect(section).toMatch(/may write inside the run workspace and nowhere else/i);
+    expect(section).not.toMatch(/not confined/i);
+  });
+
+  it('under an "unconfined" posture, states PLAINLY that Bash is not confined, that a local run still executes that way, and that a remote submission is refused', () => {
+    const text = buildAuthoringGuide({ ...CEILINGS, confinementPosture: 'unconfined' });
+    const section = text.slice(text.search(/host path grants/i));
+    expect(section).toMatch(/\bnot confined\b/i);
+    expect(section).toMatch(/local(ly)?[\s-]?submitted/i);
+    expect(section).toMatch(/remote/i);
+    expect(section).toMatch(/refus/i);
+    // never describe posture (C) as isolation
+    expect(section).not.toMatch(/\bisolat/i);
+  });
+
+  it('with no posture in scope (the generated static docs/AUTHORING.md, built before any host boots), describes BOTH postures and points to the live tool for the real answer — never asserts one', () => {
+    const text = buildAuthoringGuide(CEILINGS);
+    const section = text.slice(text.search(/host path grants/i));
+    expect(section).toMatch(/confined/i);
+    expect(section).toMatch(/\bnot confined\b/i);
+    expect(section).toMatch(/workflow_authoring_guide/);
+  });
+
+  it('LOAD-BEARING: the guide never asserts unconditional confinement when THIS deployment\'s real, unmocked boot probe measures unconfined (fails red if the posture is not threaded through)', () => {
+    const { posture } = probeConfinement();
+    const text = buildAuthoringGuide({ ...CEILINGS, confinementPosture: posture });
+    const section = text.slice(text.search(/host path grants/i));
+    if (posture === 'unconfined') {
+      expect(section).toMatch(/\bnot confined\b/i);
+      expect(section).not.toMatch(/may write inside the run workspace and nowhere else/i);
+    } else {
+      expect(section).toMatch(/may write inside the run workspace and nowhere else/i);
+    }
   });
 });
