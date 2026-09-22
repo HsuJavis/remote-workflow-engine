@@ -12511,3 +12511,31 @@ this round's own doc/ledger edits (or the act of running the targeted real-tier 
 disturbed the tree.
 
 `current_stage` → `review` (Gate 8 is next).
+
+### VAL-255 — REQ-117/DES-258:v37 介面的冷主體真跑(第三次,全新主體)
+
+- **status:** green
+- **traces:** REQ-117, REQ-218, REQ-116, REQ-207
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  Gate 7.5 把 REQ-117 標為 `unreachable-dep` 並指出觸發條件再次成立(DES-258 改了即時 guide 文字),
+  請 orchestrator 裁決沿用 VAL-245 或重跑。**裁決:重跑**,與 v35 同一條理由 ——
+  guide 文字變了,舊證據就是另一個版本的證據。
+
+  以當前程式碼另起 scratch 引擎(8795、auth 關閉、全新 workRoot),交給**與前兩次都不同**的
+  全新實例,禁讀本機檔案。完整紀錄:`evidence/v37/req117-cold-subject-2026-09-22.md`。
+
+  **結果:16 次 MCP 往返、零伺服器端失敗或拒絕**,雙 agent 協作一次註冊通過,run 完成。
+
+  **(1) v37 新增的觀察點成立**:主體開跑前即從 guide 的 Host path grants 段得知
+  「本部署的 Bash 未被關住,開機探針未找到可用沙箱」—— DES-258 的即時渲染教到人了。
+  **(2)(3) v35 的成果在 v36/v37 大改後仍然成立**:主體自建一個 1ms 逾時的工作流程去驗證,
+  事先讀到 `attempts:2/worstCaseMs:2`,事後確認 sequential 失敗回 null、
+  頂層 completed 但 `failedAgentCount:1` 說實話。
+
+  **主體挖出三條新缺口**(登記給 v38,詳見證據檔):`workflow_describe` 的 `phases[]`
+  結構上恆為空(orchestrator 已追到 catalog 根本不存 phases)、`workflow_register` 的
+  擁有權說明無條件、`worstCaseMs` 是下限非精確上界。
+- **iter:** v37
