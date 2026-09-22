@@ -445,7 +445,12 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 ```bash
 # Dashboard JSON REST API
 curl -s http://127.0.0.1:8787/api/home           # 首頁工作流程分組 {running,registered,other}
-curl -s http://127.0.0.1:8787/api/runs           # 列出所有 run（含即時狀態；每筆可能帶 costUSD/unpricedCalls/
+curl -s http://127.0.0.1:8787/api/runs           # 列出「最近 50 筆」run，不是全部（這支路由本身沒有
+                                                  # 分頁參數，永遠只回最新 50 筆）。要看第 51 筆以後，
+                                                  # 改用 MCP 的 run_list，帶明確的 limit（最高 500）：
+                                                  # {"name":"run_list","arguments":{"limit":500}}
+                                                  # 只加 workflow/status 篩選、不帶 limit 一樣停在 50 筆。
+                                                  # 含即時狀態；每筆可能帶 costUSD/unpricedCalls/
                                                   # tokensTotal/agentCount，該 run 從未呼叫過 agent() 時四者一起省略，不是 0）
 curl -s http://127.0.0.1:8787/api/runs/<runId>   # run 詳情（phase/agent tree）
 curl -s http://127.0.0.1:8787/api/runs/<runId>/dag   # composite 呼叫樹（DAG，含 lanes/current）

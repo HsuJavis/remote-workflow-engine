@@ -191,9 +191,11 @@ export function computeWorkflowMetrics(runs: RunSummary[]): Map<string | undefin
  * A workflow appears in exactly ONE group (RUNNING wins). Never throws.
  *
  * v36 (REQ-217 follow-up, DES-251, TASK-249): `activeRuns` is `RunStore.activeRuns()`'s own
- * "currently non-terminal" query — unbounded, bounded by concurrency rather than history — and is
- * the ONLY source RUNNING/`activeRunId` resolve from. `runs` (the paginated `list()` page) no
- * longer decides RUNNING at all: a suspended/interrupted run older than the page used to silently
+ * "currently non-terminal" query — unbounded, and NOT bounded by concurrency alone (Gate 8
+ * send-back, ARCH-174/ADR-081): its result set is active ∪ never-resumed — it grows with restarts
+ * × concurrency, not with total history; scan cost is bounded separately, by the `runs_status`
+ * index. It is the ONLY source RUNNING/`activeRunId` resolve from. `runs` (the paginated `list()`
+ * page) no longer decides RUNNING at all: a suspended/interrupted run older than the page used to silently
  * move its workflow to REGISTERED and drop `activeRunId`, the exact regression this closes.
  * `latestRunId`/`latestRunAt` stay sourced from `runs` alone — DES-250's already-accepted, page-
  * scoped narrowing for those two fields is unchanged by this fix (a card can legitimately carry an

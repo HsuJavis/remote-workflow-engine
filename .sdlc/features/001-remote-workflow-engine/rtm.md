@@ -236,6 +236,7 @@ in the same re-run — no regression on REQ-138's counts card).
 | REQ-214 | 控制檔要跟著實例走 (v36) | ARCH-164 | DES-242 | TASK-240 | IMPL-361 | IT-293, VAL-249 | ✅ |
 | REQ-215 | 結構化失敗標記要能穿過 sandbox 抵達 run 層 (v36) | ARCH-165, ARCH-166, ARCH-167, ARCH-168 | DES-248 | TASK-246 | IMPL-365 | IT-298, UT-292, UT-304, VAL-250 | ✅ |
 | REQ-216 | v35 審查歸檔的八條殘留(K1–K8)逐條結清 (v36) | ARCH-169, ARCH-170, ARCH-171, ARCH-172, ARCH-173 | DES-241, DES-247, DES-249 | TASK-239, TASK-245, TASK-247 | IMPL-360, IMPL-364, IMPL-366 | IT-297, UT-292, UT-293, UT-297, UT-298, UT-303, UT-305, VAL-251 | ✅ |
+| REQ-217 | 消除清單路徑的擴展懸崖,且不改變數字的語意 (v36 追加,業主裁決 K5) | ARCH-174 | DES-250, DES-251 | TASK-249 | IMPL-368, IMPL-369, IMPL-370 | IT-300, UT-307, UT-308, VAL-252 | ✅ |
 
 ## v36 Gate 7.5 update (2026-09-22, validator)
 
@@ -249,6 +250,46 @@ through a `real:true` verify item. The nine carried rows (REQ-014/086/087/095/09
 REQ-205/207 already have their own rows above) needed no edit: their existing ✅ already stood on
 real:true evidence from earlier iterations, and this round's REQ-211..216 real calls re-proved them
 as a byproduct (04-design.md's v36 real-tier table), confirmed not regressed rather than re-derived.
+
+## v36 Gate 7.5 validation update (2026-09-22, validator — Gate 8 send-back finding (3) closure)
+
+**Amends, does not replace, the note directly below** ("v36 Gate 8 re-review update"): its own
+closing sentence names exactly what this update discharges — a dedicated Gate-7.5 acceptance item
+for REQ-217, same tier/boot format as `VAL-246..251`, asserting the boundary "**>50 runs ⇒
+`/api/runs` returns exactly 50 while `/api/home`'s `successRate`/`avgCostUSD` for that workflow
+still reflect ALL of them**". `VAL-252` (new, `08-validation.md`) is that item: a real
+`./deploy.sh --background` boot (scratch port 8996), 60 runs seeded through the SUT's own
+`SqliteRunStore` port (no read-API mock), `GET /api/runs` returns exactly 50, `GET /api/home`'s card
+reports `terminalCount: 60` — the documented boundary, reproduced live. The item goes further than
+the boundary alone, closing findings (1)/(2)'s own `activeRuns()` claim in the same boot rather than
+opening a second one: a crash-orphaned `suspended` run seeded oldest (2020), 55 newer completed runs
+push it off the paginated page, and the LIVE `/api/home` response places the workflow in `running`
+with `activeRunId` pointing at that 2020 run — the exact regression ARCH-174/ADR-080 closes, observed
+externally rather than asserted from the doc comment. `runs_status` confirmed present on the real
+on-disk `index.db` (`sqlite_master` query) and `EXPLAIN QUERY PLAN` on the real `activeRuns()`
+statement against that same file reads `SEARCH r USING INDEX runs_status (status=?)`, not `SCAN r`
+— ADR-081's DDL, observed landed on a genuinely booted instance, not only in the unit fixture.
+One correction to this closure's own first attempt: README.md's fix originally suggested
+"filter `run_list` by workflow" reaches past row 50 — reproduced live and found FALSE (`run_list`
+defaults to the same `limit ?? 50`; a workflow-scoped filter alone still returns 50 of 56 seeded
+rows) — corrected to the only path that actually works, an explicit `limit` argument up to the hard
+cap of 500, and the wrong claim was never left in the shipped doc. REQ-217 row above flipped to ✅.
+
+## v36 Gate 8 re-review update (2026-09-22, architect — send-back repair round 2)
+
+Added the REQ-217 row above. REQ-217 was ruled by the owner mid-v36 (ARCH-172's marker → ADR-080)
+and shipped, but never got a row here, and its `activeRuns()` follow-up (`50cc26a`/`e3eb247`)
+never got an architecture parent — so `trace.py`'s ARCH-seeded transitive closure could not see it
+**by construction**. The row's ARCH column carries `ARCH-174` only: ARCH-172 and ADR-080 both
+discuss REQ-217 in their bodies, but ARCH-172's own `traces:` is REQ-216 and this matrix mirrors
+`build_matrix()` rather than inventing links (ADRs live in the ARCH rows' bodies here, as in every
+prior round). `Real-verified` is deliberately **⚠️ VAL 未建立**, not ✅: REQ-217's five sibling REQs
+each got a dedicated Gate-7.5 real-boot item (`VAL-246..251`) and REQ-217 has none — its evidence is
+currently the in-process `IT-300`/`UT-307`/`UT-308` only. The validation gate owns creating that
+item (same acceptance tier and booted-via-`deploy.sh` format as `VAL-246..251`, asserting the
+BOUNDARY: >50 runs ⇒ `/api/runs` returns exactly 50 while `/api/home`'s `successRate`/`avgCostUSD`
+for that workflow still reflect ALL of them) and flipping this column then — claiming closure before
+the acceptance-tier evidence exists is the same class of error the rest of this send-back repairs.
 
 ## v35 Gate 7.5 update (2026-09-21, validator)
 

@@ -92,6 +92,11 @@ export class SqliteRunStore implements RunStore {
     // column `name` so a workflow-only filter still uses it (SQLite can use a prefix of a composite
     // index), status/createdAt narrow/order the rest.
     this._db.exec('CREATE INDEX IF NOT EXISTS runs_name_status_created ON runs(name, status, createdAt DESC)');
+    // v36 (REQ-217 follow-up, ARCH-174, ADR-081): `activeRuns()`'s `WHERE status IN (...)`
+    // predicate is status-only — `runs_name_status_created` leads with `name`, so it cannot seek
+    // it (`SCAN r`, measured). This index turns that into `SEARCH r USING INDEX runs_status`.
+    // Idempotent `CREATE INDEX IF NOT EXISTS`, same idiom as the row above, no migration/backfill.
+    this._db.exec('CREATE INDEX IF NOT EXISTS runs_status ON runs(status)');
     // v24 (DES-151, TASK-140): admin cross-owner read audit trail — synchronous append (better-
     // sqlite3), `seq` (autoincrement rowid) orders reads within a runId for auditFor's newest-first cap.
     this._db.exec(`

@@ -17,6 +17,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { SqliteRunStore } from '../../src/store/sqlite-run-store.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import type { RunStore } from '../../src/run-store.js';
@@ -42,6 +43,16 @@ function newSqlite(): RunStore {
   const dir = mkdtempSync(join(tmpdir(), 'rwe-ut308-'));
   dirs.push(dir);
   return new SqliteRunStore(dir, new SteppingClock(ANCHOR_MS));
+}
+
+/** Same as `newSqlite()` but also hands back the on-disk db path — needed only by the
+ *  EXPLAIN-QUERY-PLAN case below, which opens a second, read-only-in-spirit raw `Database`
+ *  connection onto the SAME file (IT-114/`tests/integration/run-list.test.ts:87-100`'s own
+ *  precedent) rather than reach into `SqliteRunStore`'s private `_db`. */
+function newSqliteWithDbPath(): { store: RunStore; dbPath: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'rwe-ut308-plan-'));
+  dirs.push(dir);
+  return { store: new SqliteRunStore(dir, new SteppingClock(ANCHOR_MS)), dbPath: join(dir, 'index.db') };
 }
 
 /** Seeds ALL SEVEN `RunStatus` values through the port only (`createRun`/`recordTransition`, never
@@ -128,9 +139,13 @@ describe('UT-308: RunStore.activeRuns() — both stores agree, unbounded, status
 
   // The load-bearing, discriminating case (mirrors REQ-217's own `list()` pagination test,
   // IT-300): a single active run OLDER than every other row in the store must still be returned by
-  // `activeRuns()` even though `list()` (limit 50, DES-152) drops it off the page entirely — proof
-  // at the STORE level, not just the pure `buildHomeView` level, that this query is bounded by
-  // concurrency and not by history.
+  // `activeRuns()` even though `list()` (limit 50, DES-152) drops it off the page entirely.
+  // ARCH-174/ADR-081 (Gate 8 send-back repair): this does NOT prove the result set is "bounded by
+  // concurrency, not by history" — it proves the opposite. `staleId` here is exactly the kind of
+  // row that never gets swept (nothing transitions a suspended/interrupted run out except an
+  // operator's workflow_resume/workflow_stop); the true bound is "active ∪ never-resumed — grows
+  // with restarts × concurrency, not with total history". What IS bounded, separately, is scan
+  // cost, by the `runs_status` index (see the EXPLAIN QUERY PLAN case below).
   for (const [label, mk] of [
     ['SqliteRunStore', () => newSqlite()],
     ['InMemoryRunStore', () => new InMemoryRunStore(new SteppingClock(ANCHOR_MS))],
@@ -151,4 +166,31 @@ describe('UT-308: RunStore.activeRuns() — both stores agree, unbounded, status
       expect(active.map((r) => r.runId)).toEqual([staleId]);
     });
   }
+
+  // ARCH-174/ADR-081 (Gate 8 send-back repair): the `runs` table's OWN plan line for
+  // `activeRuns()`'s real statement must be a SEARCH on the new `runs_status` index, never a SCAN.
+  // A bare `/SEARCH/` match is already green BEFORE the index exists — the LEFT JOIN on
+  // `run_snapshots` contributes its own `SEARCH s ...` line regardless — so this asserts the `r`
+  // line specifically. Projection columns (the `_USAGE_PROJECTION` json_extract list, private to
+  // SqliteRunStore) do not change the access path chosen for `r`/`s`, so this statement keeps the
+  // real FROM/LEFT JOIN/correlated-subquery/WHERE shape and trims the unrelated SELECT list.
+  it("EXPLAIN QUERY PLAN for activeRuns()'s statement names runs_status on the `runs` table, not a SCAN", async () => {
+    const { store, dbPath } = newSqliteWithDbPath();
+    await store.activeRuns(); // ensures the schema (including the new index) exists on disk
+    const raw = new Database(dbPath);
+    try {
+      const plan = raw.prepare(`
+        EXPLAIN QUERY PLAN
+        SELECT r.runId,
+               (SELECT MIN(t.ts) FROM transitions t
+                WHERE t.runId = r.runId
+                  AND t.to_status IN ('completed', 'failed', 'stopped')) AS terminalAt
+        FROM runs r
+        LEFT JOIN run_snapshots s ON s.runId = r.runId
+        WHERE r.status IN (?, ?, ?, ?)
+      `).all('queued', 'running', 'suspended', 'interrupted') as Array<{ detail: string }>;
+      expect(plan.some((p) => p.detail.startsWith('SEARCH r USING INDEX runs_status'))).toBe(true);
+      expect(plan.some((p) => p.detail.startsWith('SCAN r'))).toBe(false);
+    } finally { raw.close(); }
+  });
 });

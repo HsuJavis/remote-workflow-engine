@@ -240,13 +240,16 @@ export interface RunStore {
    *  (a `null`/`undefined` name is ONE group, keyed `undefined`). */
   workflowMetrics(): Promise<Map<string | undefined, WorkflowMetrics>>;
   /** v36 (REQ-217 follow-up, DES-251, TASK-249): every run CURRENTLY non-terminal
-   *  (`ACTIVE` — queued/running/suspended/interrupted) — no LIMIT, unlike `list()`. This set is
-   *  naturally bounded by concurrency, not by history, so it does not reintroduce the scaling
-   *  cliff `list()`'s pagination (REQ-217) exists to remove. `buildHomeView`'s RUNNING group and
-   *  `activeRunId` resolve from THIS query, not from `list()`'s paginated page — a
-   *  suspended/interrupted run older than the page must still count (the regression this closes:
-   *  deriving a global "is this workflow active" fact from a paginated page silently dropped a
-   *  workflow's `activeRunId` the moment its only active run aged out of the page). */
+   *  (`ACTIVE` — queued/running/suspended/interrupted) — no LIMIT, unlike `list()`. **Corrected
+   *  bound (Gate 8 send-back, ARCH-174/ADR-081)**: this set is active ∪ never-resumed — it grows
+   *  with restarts × concurrency, not with total history (nothing sweeps a suspended/interrupted
+   *  row except an operator's `workflow_resume`/`workflow_stop`); scan cost is bounded separately,
+   *  by the `runs_status` index (ARCH-174/ADR-081) — the result set is not bounded by concurrency
+   *  alone. `buildHomeView`'s RUNNING group and `activeRunId` resolve from THIS query, not from
+   *  `list()`'s paginated page — a suspended/interrupted run older than the page must still count
+   *  (the regression this closes: deriving a global "is this workflow active" fact from a
+   *  paginated page silently dropped a workflow's `activeRunId` the moment its only active run
+   *  aged out of the page). */
   activeRuns(): Promise<RunSummary[]>;
   hydrateAll(): Promise<RunSummary[]>;
   /** Persists the script's return value for a completed run (DES-001/REQ-005: workflow_result

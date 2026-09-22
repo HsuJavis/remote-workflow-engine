@@ -12210,3 +12210,123 @@ the fixed metadata key, not prose) — carried forward to this report's `owner_d
 blocking Gate 8 per issue #15's rule, not this gate.
 
 `current_stage` → `review` (Gate 8 is next).
+
+## v36 Gate 8 send-back — validation slice (2026-09-22, validator)
+
+Scope: ONLY finding (3) of the three Gate 8 RE-REVIEW blocking findings (`send_back=[architecture,
+impl,validation]` on the REQ-217 follow-up, `50cc26a`/`e3eb247`) — findings (1) (missing ARCH/rtm
+row) and (2) (`activeRuns()`'s false doc-comment bound) were closed by architecture/impl before this
+slice started (ARCH-174/ADR-081, `rtm.md` REQ-217 row, corrected doc comments in `src/run-store.ts`/
+`src/dashboard.ts`/`tests/unit/active-runs-store-agreement.test.ts`/`05-tests.md`). This slice: (a)
+`README.md:448`'s stale "lists ALL runs" claim, and (b) a dedicated Gate-7.5 real-boot acceptance
+item for REQ-217 (its five sibling REQs in the same round each got one; REQ-217 had only the
+in-process `IT-300`).
+
+**Boot from documented steps only** — TWO scratch instances via the committed `./deploy.sh
+--background`, only `RWE_CONFIG_PATH`/`RWE_BIND`/`RWE_PORT` overridden, no undocumented step:
+```bash
+RWE_CONFIG_PATH="$(pwd)/scratch-217.config.json" RWE_BIND=127.0.0.1 RWE_PORT=8996 ./deploy.sh --background
+# 健康檢查通過：{"agentSemaphore":{"total":32,"inUse":0,"queued":0},"version":"0.1.0 (v0.20.0-434-ge3eb247)"}
+# ... torn down (kill + rm), fresh scratch config/workRoot rewritten, second boot for the
+# activeRuns()/index probe below:
+RWE_CONFIG_PATH="$(pwd)/scratch-217.config.json" RWE_BIND=127.0.0.1 RWE_PORT=8997 ./deploy.sh --background
+# 健康檢查通過：{"agentSemaphore":{"total":32,"inUse":0,"queued":0},"version":"0.1.0 (v0.20.0-434-ge3eb247)"}
+```
+`scratch-217.config.json` (`gateway:"direct-fetch"`, `auth.enabled:false`, `workRoot` a scratch
+directory) is untracked and was deleted after EACH round together with its `.rwe.scratch-217.
+config.{pid,log}` control files and the scratch `workRoot` (`git status --short` confirmed clean
+after both boot sessions this slice used; both scratch PIDs — 2300160, 2303941 — confirmed no
+longer running via `ps -p` after teardown).
+
+### VAL-252 — REQ-217: `/api/runs` genuinely caps at 50 while `/api/home`'s aggregates and the `activeRuns()`-derived RUNNING classification stay correct past that page, on a real boot
+- **status:** green
+- **traces:** REQ-217, ARCH-174, ADR-080, ADR-081, DES-250, DES-251
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  **(1) Pagination boundary (ADR-080's numbers).** Seeded 60 completed runs on one workflow name
+  (`val217-real-boot`) directly through the SUT's own `SqliteRunStore.createRun/recordTransition/
+  saveSnapshot` port against the booted instance's on-disk store (same technique as IT-300 — no
+  mock of either HTTP read surface). `curl -s http://127.0.0.1:8996/api/runs` → exactly 50 rows, all
+  50 for this workflow (the 60th-newest through 11th-newest; the 10 oldest are unreachable through
+  this route, no `OFFSET`/cursor exists). `curl -s http://127.0.0.1:8996/api/home` → this workflow's
+  card: `{"terminalCount":60,"successRate":1,"avgCostUSD":1,"unpricedRuns":0}` — full 60, not 50.
+  **(2) `activeRuns()` regression closed (findings (1)/(2), verified live not just unit-tested).**
+  Second boot (port 8997, fresh scratch `workRoot`), workflow `val217-active-page` registered for
+  real via `workflow_register({script:"return 1;", mermaid:"graph LR"})` (so it is a catalog
+  workflow — `buildHomeView`'s RUNNING/REGISTERED grouping only applies to those). Seeded ONE
+  crash-orphaned `suspended` run dated `2020-01-01` (oldest) then 55 newer `completed` runs on the
+  same name — 56 total, so the paginated page (`ORDER BY createdAt DESC LIMIT 50`) drops the 6
+  oldest, including the suspended one. `curl -s http://127.0.0.1:8997/api/runs` → 50 rows, confirmed
+  NOT containing the suspended runId. `curl -s http://127.0.0.1:8997/api/home` → this workflow's
+  card: `{"group":"running","activeRunId":"dff6796e-...","metrics":{"terminalCount":55,...}}` — the
+  2020 suspended run, long aged out of the `/api/runs` page, still correctly drives RUNNING/
+  `activeRunId` (the exact regression ARCH-174/ADR-080 closes: a pre-fix build would have derived
+  "active" from the paginated page alone and silently reclassified this workflow REGISTERED with no
+  `activeRunId`). **(3) The DDL landed on a real, on-disk file, not only the unit fixture.** Against
+  the SAME booted instance's `workRoot/store/index.db` (read-only `better-sqlite3` handle, opened
+  from outside the running process — no read of the live HTTP surface for this check):
+  `SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='runs'` → `sqlite_autoindex_runs_1,
+  runs_name_status_created, runs_status`; `EXPLAIN QUERY PLAN` on the real `activeRuns()` statement
+  shape (`FROM runs r LEFT JOIN run_snapshots s ... WHERE r.status IN (...)`) →
+  `SEARCH r USING INDEX runs_status (status=?)`, never `SCAN r`. **(4) MCP `run_list`'s own limit,
+  measured rather than assumed** (this slice's own README claim was wrong on first draft and
+  corrected before shipping — see rtm.md's v36 Gate 7.5 validation note): `tools/call run_list
+  {workflow:"val217-active-page"}` (no `limit` arg) → 50 rows, suspended run absent — filtering by
+  workflow ALONE does not reach past the default `limit ?? 50`. `tools/call run_list
+  {workflow:"val217-active-page", limit:100}` → all 56 rows, suspended run present — an explicit
+  `limit`, up to the hard cap of 500 (`Math.min(filter.limit ?? 50, 500)`, `sqlite-run-store.ts:424`),
+  is the only path past the 50-row default. README.md corrected to say exactly this, not the
+  weaker/wrong "filter and you'll find it" claim.
+  **Routed, not fixed here**: ARCH-174's own "numbers this row owns" sentence says run 51+ are
+  "reachable only via MCP `run_list`'s workflow/status/principal **filters**" — the sentence this
+  slice's README fix originally paraphrased, then measured false (above). ARCH-174 declares itself
+  the single source README/VAL must quote to avoid drift; it is now the stale half of that pair.
+  Not corrected here (`02-architecture.md` is architecture's slice, not validation's, per this
+  send-back's own routing rule) — flagged for architecture to amend its own row's sentence to
+  "an explicit `limit` argument" the next time that row is touched.
+- **iter:** v36
+
+### Handover doc updates (this slice)
+- `README.md:448-453`: the curl example previously commented `# 列出所有 run` (list ALL runs) — now
+  false since `listSummaries()` moved onto the paginated `list()` at REQ-217 (limit 50, hard cap
+  500, no `OFFSET`/cursor — `IMPL-368`). Rewritten to disclose the cap and point to MCP `run_list`
+  with an explicit `limit` (verified for real above — filtering by `workflow`/`status` alone does
+  NOT reach past 50; only an explicit `limit` argument does).
+- `05-tests.md:15451`: "REQ-217→(no separate VAL; discharges via UT-307/IT-300, the latter a real
+  …)" is superseded by `VAL-252` above — corrected in place to cite `VAL-252` as REQ-217's Gate-7.5
+  acceptance item, `UT-307`/`IT-300` kept as the unit/integration-tier corroboration they still are.
+- `DEPLOY.md`: checked for a second copy of the same stale claim (`grep -n "api/runs" DEPLOY.md`) —
+  its two `/api/runs` mentions are both the per-run detail route `GET /api/runs/:id` (unaffected by
+  the list-path pagination), not the list route; no edit needed.
+- No config/secret/port/flag changed by this repair — the `runs_status` index is schema DDL created
+  idempotently by `SqliteRunStore`'s own constructor (`CREATE INDEX IF NOT EXISTS`), not a config
+  key; DEPLOY.md's §1 設定總表 needs no row added, edited, or removed.
+
+### `sh .sdlc/trace --check` (this slice)
+Baseline captured before any edit in this slice (per CLAUDE.md — never by checking the ledger
+backwards in place): **2026 items / 77 gaps** (impl's own IMPL-370 repair had already landed, +1 from
+the "v36 round" section's own 2010/77 baseline). This slice adds exactly one new work item
+(`VAL-252`) and touches no existing trace-tracked link (the `05-tests.md`/`README.md`/`DEPLOY.md`
+edits above are prose/doc, not `### <ID>` items). Post-edit: **2027 items / 77 gaps** — +1, gap set
+unchanged (REQ-217 was never itself a trace gap; `IT-300` was already `real:true`). `sh .sdlc/trace
+--check` exits 1 on the same 15 pre-existing `IMPL-303..309` broken links this ledger has carried
+since v27 — out of this closure, unchanged by this slice.
+
+`rtm.md` updated by hand (no `--rtm` CLI path, confirmed via its own header) — REQ-217's row test
+column gains `VAL-252`, status column flips `⚠️ VAL 未建立` → `✅`; a new dated note documents the
+closure and explicitly amends (does not silently overwrite) the prior "v36 Gate 8 re-review update"
+note that named this gap.
+
+### Verdict (this slice)
+**PASSED.** REQ-217 now carries a `real:true` acceptance-tier VAL item (`VAL-252`) matching
+`VAL-246..251`'s booted-via-`deploy.sh` format, closing Gate 8 finding (3) — both the README
+disclosure and the dedicated real-boot record it asked for. Findings (1)/(2) (architecture/impl)
+were independently re-confirmed live by the same boot session rather than re-litigated: the
+`runs_status` index and the `activeRuns()`-derived RUNNING/`activeRunId` fix both hold on a real,
+freshly booted instance, not only in the unit fixture. No config file changed. No new
+`owner_decision` marker raised; the mechanical sweep for the fixed `- **owner_decision:** pending`
+key across `01`–`08` returns zero hits (K5 stands `answered(2026-09-22)`).
+
+`current_stage` → `review` (Gate 8 re-review is next).

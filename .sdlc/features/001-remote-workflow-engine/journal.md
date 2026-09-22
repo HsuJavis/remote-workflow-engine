@@ -8844,3 +8844,222 @@ implementer-named client-side narrowings as debt, not fix them.
    that "~" was honest, but the ledger now carries the exact lines instead of the approximation).
    No `git checkout`/`git restore`/`git stash` used (CLAUDE.md); no commit made (left for the
    orchestrator).
+
+## v36 GATE 8 RE-REVIEW (2026-09-22, reviewer)
+
+SEND-BACK, NOT CLOSED. Consolidated the two re-run architecture-expert panel reports
+(`.panel/review/adversarial.md`, `.panel/review/quality-dimensions.md` — both explicitly re-verified
+against HEAD `e3eb247`, not re-spawned per this dispatch). Round 1's three blocking findings (K8
+attempts probe, F6 refusal-order/pinnedRunId, K5 owner_decision marker) all verified CLOSED on disk
+by direct file:line read. 3 NEW blocking findings, all from the REQ-217 follow-up (`50cc26a`/
+`e3eb247`) which landed after round 1's review and was never architecture-reviewed on its own:
+(1) `RunStore.activeRuns()` has zero ARCH/ADR row and no `rtm.md` row; (2) its port-contract doc
+comment's "bounded by concurrency, not history" claim is false — an unindexed full scan of a
+never-shrinking `runs` table on every `/api/home` request, the same failure class as this
+iteration's own earlier F7 send-back; (3) `README.md:448`'s `/api/runs` curl example is stale
+against the new 50-row pagination cap, and REQ-217 has no dedicated Gate-7.5 acceptance-tier VAL
+item (covered only at integration tier by IT-300). `send_back=[architecture,impl,validation]`.
+`owner_decisions=[]` (K5 marker confirmed `answered(2026-09-22)`). trace 2023/77, all pre-existing.
+dashboard_check 0 high/7 mid (accepted FP)/1 low (accepted) when paired with the vendored trace.py —
+re-replicated independently this round in an isolated scratch dir, not trusted from round 1's
+account alone. solid_check 0 mid/10 low unchanged. `.panel/` retained (not a close). Full detail:
+`07-review.md`'s "v36 GATE 8 — RE-REVIEW" section (end of file); `state.yaml`'s `gates.review.note`
+and `current_stage` updated to match. No `git checkout`/`restore`/`stash` used (CLAUDE.md).
+
+## 2026-09-22 — Gate 2 architecture, v36 SEND-BACK REPAIR ROUND 2 (REQ-217 follow-up): PASSED
+
+Panel pre-ran; `.panel/architecture/adversarial.r1.md` (addendum §B) + `quality-dimensions.r1.md`
+were re-read and synthesized, not re-spawned. Repaired ONLY the three named blocking findings.
+**(1)** `RunStore.activeRuns()` got its architecture parent: **ARCH-174** (new row, not an ARCH-172
+amendment — `listRuns()` is unbounded because every caller is a sweep; `activeRuns()` is unbounded
+because a LIMIT re-creates the regression it closed; one row per reason) and **ADR-081**, plus the
+missing **REQ-217 row in `rtm.md`** (ARCH column = `ARCH-174` only, because ARCH-172's own `traces:`
+is REQ-216 and this matrix mirrors `build_matrix()`; `Real-verified` deliberately left ⚠️ 「VAL 未建立」
+for the validation gate to close, not pre-credited). **(2)** The false 「bounded by concurrency, not
+by history」 bound is corrected to 「**active ∪ never-resumed — grows with restarts × concurrency**」,
+and it lives in **four** places, not the two named: this gate fixed `04-design.md`'s DES-251 in place
+(design is not in `send_back`, but DES-251 traces REQ-217 and is inside the closure) and prescribed
+the other three paste-ready on ARCH-174 for impl (`src/run-store.ts:243-250`, `src/dashboard.ts:193-200`,
+`tests/unit/active-runs-store-agreement.test.ts:131-133`). Architecture **prescribes the index** —
+`CREATE INDEX IF NOT EXISTS runs_status ON runs(status)`, one line, `sqlite-run-store.ts:94`'s idiom —
+because REQ-217's own text refuses a cliff 「靠文件承接」 on this exact path; measured, not asserted,
+by running `EXPLAIN QUERY PLAN` on the **real** statement against a copy of the live `store/index.db`:
+`SCAN r` → `SEARCH r USING INDEX runs_status (status=?)`. The panel's proposed `/SEARCH/` assertion
+was **corrected rather than pasted** — it is green *before* the index too (the `run_snapshots` LEFT
+JOIN already emits `SEARCH s …`), so ARCH-174 prescribes asserting the `runs` table's own plan line.
+**(3)** README.md and the missing REQ-217 Gate-7.5 VAL item were **not** touched (validation owns
+them); ARCH-174 owns the numbers both must quote (limit 50 / hard cap 500 / **no OFFSET or cursor** /
+`activeRuns()` no LIMIT) and states the boundary the VAL item must assert. Also corrected the
+send-back's own sentence: `workflow_stop` exits an `interrupted` row too (`run-manager.ts:859-865`
+via `_requireLive:1084`); both exits are operator actions and nothing automatic sweeps — which is why
+ARCH-174 says the index bounds *scan cost* only and refuses to read 「indexed」 as 「cliff gone」.
+**Not expanded:** quality-dimensions' option (C) status lifecycle (`interrupted` → `abandoned`) is
+named and **filed as a v37 candidate** with an observable trigger (「a run stays `interrupted` across
+more than one boot」); ADR-081 records why that is a filing and not an `owner_decision` marker.
+`owner_decisions=[]`. Trace **2025 items / 77 gaps** (baseline **2023/77** captured to a scratch file
+*before* any edit; +2 = exactly the two new rows, gap count unchanged); `--check` still exits 1 on the
+15 pre-existing IMPL-303..309 broken links, unchanged since v27. No `git checkout`/`restore`/`stash`
+used (CLAUDE.md).
+
+- 2026-09-22 — **v36 Gate 8 RE-REVIEW send-back repair, impl slice — `activeRuns()`'s false
+  "bounded by concurrency, not history" claim corrected, `runs_status` index added, EXPLAIN-QUERY-
+  PLAN guard added.** Scope was ONLY the `impl` slice of `send_back=[architecture,impl,validation]`
+  (three NEW findings on the REQ-217 follow-up). Finding (1) is architecture's, already closed on
+  disk (ARCH-174/ADR-081, `rtm.md` REQ-217 row) before this repair started. Finding (3) (README.md
+  pagination disclosure, a REQ-217 Gate-7.5 VAL item) is validation's, per ARCH-174's own routing
+  note — left untouched here. This slice fixed finding (2): `activeRuns()`'s doc comment claiming it
+  is "naturally bounded by concurrency, not by history" is false as implemented — nothing sweeps a
+  crash-orphaned `interrupted`/`suspended` row except an operator's `workflow_resume`/
+  `workflow_stop`. ARCH-174 named four live copies of that sentence (three code, plus `04-design.md`'s
+  DES-251, which architecture had already corrected); a scoped `rg -n "bounded by concurrency|not by
+  history|scaling cliff" src tests .sdlc/features/001-remote-workflow-engine/*.md`, run before any
+  edit, found a FIFTH live copy — `05-tests.md`'s own UT-308 evidence paragraph repeated the identical
+  false claim. Corrected all five in place: `src/run-store.ts`'s `activeRuns()` port doc,
+  `src/dashboard.ts`'s `buildHomeView` doc, the `it()`-block comment in
+  `tests/unit/active-runs-store-agreement.test.ts`, and `05-tests.md`'s UT-308 evidence, each now
+  reading ARCH-174's own wording: "active ∪ never-resumed — grows with restarts × concurrency, not
+  with total history"; scan cost bounded separately by the new `runs_status` index. A SIXTH copy in
+  `06-impl-log.md`'s own IMPL-369 note was left as originally written, with an `- **amended (...):**`
+  pointer to the new IMPL-370 entry — this ledger's own `H-1`/`H-4` convention for correcting a past
+  log entry without rewriting history. `07-review.md`'s occurrences (the reviewer's own finding text)
+  and `04-design.md`'s (which already reads "was corrected... see ARCH-174/ADR-081") were left alone
+  as historical citations, not live claims.
+  **The index** (ADR-081's decision A over accept-the-scan, ruled because REQ-217's own text forbids
+  a doc-carried cliff on this exact path): `CREATE INDEX IF NOT EXISTS runs_status ON runs(status)`,
+  one line, `src/store/sqlite-run-store.ts`, same idempotent idiom as the pre-existing
+  `runs_name_status_created` index.
+  **The guard, red-first**: a 7th case added to `active-runs-store-agreement.test.ts`, following
+  `run-list.test.ts`'s own `EXPLAIN QUERY PLAN` precedent (IT-114) — a raw second `better-sqlite3`
+  `Database` connection onto the same on-disk file a `SqliteRunStore` instance already created
+  (never reaching into the store's private `_db`). The EXPLAIN'd statement keeps the real query's
+  `FROM runs r LEFT JOIN run_snapshots s ON s.runId = r.runId WHERE r.status IN (?,?,?,?)` shape and
+  the correlated `MIN(t.ts)` sub-select (verified these, not the trimmed `_USAGE_PROJECTION` columns,
+  are what determine the access path), and asserts the `runs` table's OWN plan line reads `SEARCH r
+  USING INDEX runs_status`, never `SCAN r` — deliberately NOT a bare `/SEARCH/` match, which ARCH-174
+  verified is green before the fix too (the LEFT JOIN on `run_snapshots` already emits its own
+  `SEARCH s ...` line regardless). Measured red (`SCAN r`) before the DDL existed on this working
+  tree; green after.
+  **Verification**: `npx tsc --noEmit` clean. Targeted 8 files / 47 cases green (UT-308 now 7 cases,
+  +1 from IMPL-369's baseline). Full suite: **3296 passed, 26 skipped, 0 failed** (449 files passed,
+  1 skipped) — exactly +1 from IMPL-369's own reported 3295/26/0 baseline, no other drift. Trace:
+  baseline **2025 items / 77 gaps** captured to a scratch file *before* any edit (per CLAUDE.md, never
+  by checking the ledger backwards in place); post-edit **2026 items / 77 gaps** — exactly +1 (the new
+  IMPL-370 row), gap set unchanged; `--check` still exits 1 on the same 15 pre-existing IMPL-303..309
+  broken links, unchanged since v27. No `git checkout`/`restore`/`stash` used (CLAUDE.md); no commit
+  made (left for the orchestrator). Not done, per the send-back's own scope rule: `README.md`,
+  `08-validation.md`, `02-architecture.md`, `rtm.md`, `04-design.md` untouched — architecture's and
+  validation's named deliverables. `gates.impl.passed=true`, `current_stage=verification`.
+  `owner_decisions=[]`.
+
+## 2026-09-22 — Gate 7.5 validation, v36 GATE 8 SEND-BACK slice (REQ-217 finding (3)): PASSED
+
+Scope: ONLY finding (3) of the Gate 8 RE-REVIEW's three blocking findings on the REQ-217 follow-up
+(`50cc26a`/`e3eb247`) — `README.md:448`'s stale "lists ALL runs" claim, and a missing dedicated
+Gate-7.5 real-boot acceptance item for REQ-217 (its five sibling REQs in the round each got one;
+REQ-217 had only the in-process `IT-300`). Findings (1) (missing ARCH/rtm row) and (2)
+(`activeRuns()`'s false doc-comment bound) were already closed by architecture/impl before this
+slice started (`ARCH-174`/`ADR-081`, `rtm.md` REQ-217 row, corrected doc comments in
+`src/run-store.ts`/`src/dashboard.ts`/`tests/unit/active-runs-store-agreement.test.ts`/
+`05-tests.md`) — confirmed on disk, not re-derived, before any edit here.
+
+**Boot from documented steps only**, two scratch sessions via the committed `./deploy.sh
+--background` (`RWE_CONFIG_PATH`/`RWE_BIND`/`RWE_PORT` overridden only), both scratch config +
+control files + `workRoot` deleted after use (`git status --short` clean each time, confirmed).
+Session 1 (port 8996): 60 completed runs on one workflow name seeded through the SUT's own
+`SqliteRunStore` port (createRun/recordTransition/saveSnapshot — the same technique `IT-300` uses,
+no mock of either HTTP read surface) — `GET /api/runs` returned exactly 50, `GET /api/home`'s card
+reported `terminalCount:60` (full-history, unaffected by the page). Session 2 (port 8997): a
+workflow REGISTERED for real (`workflow_register`, so `buildHomeView`'s RUNNING/REGISTERED grouping
+applies to it), seeded with one crash-orphaned `suspended` run dated 2020 (oldest) plus 55 newer
+completed runs (56 total) — `/api/runs` (50-row page) confirmed NOT containing the 2020 run, while
+`/api/home` placed the workflow in `running` with `activeRunId` pointing at that same 2020 run —
+the exact regression `ARCH-174`/`ADR-080` closes, observed live rather than only unit-tested. Also
+read the SAME booted instance's on-disk `workRoot/store/index.db` directly (read-only handle,
+outside the running process): `runs_status` index present (`sqlite_master`), and `EXPLAIN QUERY
+PLAN` on the real `activeRuns()` statement shape reads `SEARCH r USING INDEX runs_status (status=?)`
+— never `SCAN r` — confirming `ADR-081`'s DDL landed for real, not only in the unit fixture.
+
+**A self-correction inside this slice, worth recording**: the first draft of the README fix claimed
+filtering MCP `run_list` by `workflow` alone reaches past the 50-row cap. Reproduced live before
+shipping and found FALSE — `run_list` defaults to the identical `Math.min(filter.limit ?? 50, 500)`
+as `/api/runs`; a workflow-scoped filter with no explicit `limit` still returned exactly 50 of the
+56 seeded rows. Corrected to the only path that actually works (an explicit `limit` argument up to
+the hard cap of 500), verified live (`limit:100` → all 56, suspended run included) before the wrong
+claim was ever written into the shipped doc.
+
+New work item `VAL-252` (`08-validation.md`, acceptance tier, `real:true`) carries the full evidence
+above. `rtm.md` updated by hand (confirmed via its own header it has no `--rtm` CLI path) — REQ-217's
+row test column gains `VAL-252`, status flips `⚠️ VAL 未建立` → `✅`, and a new dated note explicitly
+amends (not silently overwrites) the prior round's note that named this gap. `05-tests.md:15451`'s
+stale "REQ-217→(no separate VAL...)" sentence corrected in place to cite `VAL-252`. `DEPLOY.md`
+checked for a second copy of the same stale claim — its two `/api/runs` mentions are both the
+per-run detail route (`GET /api/runs/:id`, unaffected by list pagination), no edit needed. No
+config/secret/port/flag changed by this repair — `runs_status` is schema DDL created idempotently
+by the store's own constructor, not a config key — so DEPLOY.md's §1 設定總表 needed no row change.
+
+**`sh .sdlc/trace --check`**: baseline captured before any edit in this slice (per CLAUDE.md, never
+by checking the ledger backwards in place) — **2026 items / 77 gaps** (impl's own `IMPL-370` had
+already landed). This slice adds exactly one work item (`VAL-252`); post-edit **2027 items / 77
+gaps** — +1, gap set unchanged (verified via `trace.analyze()` called as a library: filtering the 77
+gaps against the full 15-REQ closure {REQ-211..217, REQ-014, REQ-086, REQ-087, REQ-095, REQ-096,
+REQ-097, REQ-114, REQ-205} returns zero hits; all 15 REQs confirmed real-tier `verified`). `--check`
+still exits 1 on the same 15 pre-existing `IMPL-303..309` broken links carried since v27, unchanged.
+Ledger-wide mock census: 177 REQs total, 160 real-tier verified, **0 mock-only gaps anywhere**, 17
+pre-existing `未驗證` (out of this closure, the parked v29+ dashboard-audit backlog).
+
+Mechanical sweep for the fixed metadata key `- **owner_decision:** pending` across `01`–`08`: **zero
+live markers** — K5 stands `answered(2026-09-22)`. `owner_decisions=[]`.
+
+`state.yaml`: `gates.validation.passed=true` (already true from the prior round; note appended, not
+replaced, with this slice's closure), `current_stage: review` (Gate 8 re-review is next), `updated`
+bumped. No `git checkout`/`restore`/`stash` used (CLAUDE.md) — all scratch config/control
+files/`workRoot`s created by this slice's two boot sessions were deleted with plain `rm`, confirmed
+clean via `git status --short` before and after.
+
+## v36 GATE 8 RE-REVIEW #2 AND CLOSE (2026-09-22, reviewer)
+
+RE-REVIEW after the auto send-back re-ran `[architecture, impl, validation]` once. Verified, on
+disk (not from gate notes), that all 3 of round-1's blocking findings are closed: (1) `ARCH-174`/
+`ADR-081` + a `rtm.md` REQ-217 row now exist; (2) `src/run-store.ts`/`src/dashboard.ts`'s false
+"bounded by concurrency, not history" doc comment is corrected, a real `runs_status` index landed
+(`sqlite-run-store.ts:99`), and a red-before/green-after `EXPLAIN QUERY PLAN` guard was added
+(`active-runs-store-agreement.test.ts:177-192`, asserting the `runs` table's own plan line, not a
+bare `/SEARCH/` match — the trap the send-back itself named); (3) `README.md`'s pagination claim is
+corrected and a dedicated real-boot Gate-7.5 acceptance item (`VAL-252`, `real:true`, two fresh
+scratch instances, live `EXPLAIN QUERY PLAN` against the booted instance's own on-disk `index.db`)
+was added.
+
+`sh .sdlc/trace --check`: 2027 items / 77 gaps (15 high / 36 mid / 26 low), all pre-existing and
+unchanged since v27, 0 in the REQ-211..217 closure. 0 `未真實驗證`, 0 `待業主決策`. Mechanical sweep
+for the fixed `- **owner_decision:** pending` key across `01`-`08*.md`: zero hits.
+
+Dashboard QA: `dashboard_check.py` (plugin 2.4.3) paired with THIS repo's own vendored `trace.py`
+(scratch dir, both files copied together) → 0 high / 7 mid (accepted `erDiagram` crow's-foot lexical
+false positive) / 1 low (accepted, pre-`MMD_OK`-fallback). Pairing the checker with the plugin's OWN
+bundled `trace.py` instead reproduces a known false 5-HIGH (a raw evidence transcript file's 2-`#`
+headings shaped like `## REQ-211 — ...` get scanned as competing item definitions by the newer,
+looser `trace.py` — root-caused and already recorded earlier in this same ledger). Module-boundary:
+`solid_check.py` — this repo's own vendored `trace.py` predates the `module:`/`deps:` metadata
+convention entirely (confirmed: neither string appears in `.sdlc/trace.py`), so `solid_check` must
+be paired with the PLUGIN's bundled `trace.py` (the opposite pairing from dashboard_check) to do
+anything at all → 0 mid / 10 low, unchanged (same pre-existing unclaimed `src/*.ts` files every
+prior round has carried). `module_check.py`: dormant, no `build:` declared.
+
+Architecture consistency: consolidated the two pre-run `.panel/review/*.md` expert reports. Their
+`F4` (adversarial) and `O-3`/`S-2` (quality-dimensions) findings restate exactly the 3 items closed
+above — both reports were generated before this round's architecture/impl/validation repair landed
+(scoped through IMPL-369; the repair is IMPL-370 plus the architecture round-2 edit), and both are
+independently disproven by opening the current files. The remaining findings in both reports (F1-F3,
+F5-F6, O-1/O-2, R-1..5, C-1..3, S-1) are the SAME non-blocking debt round 1 already recorded — not
+re-litigated per the RE-REVIEW scope rule. One new LOW recorded: **DEBT-D** — `VAL-252`'s own
+evidence measured `ARCH-174`'s "reachable only via MCP `run_list`'s ... filters" sentence false (an
+explicit `limit` argument is required; a bare filter does not reach past 50), and validation
+corrected `README.md` but left `ARCH-174`'s own sentence unedited (out of validation's routing
+lane) — routed to the next architecture touch.
+
+**Verdict: `send_back = []`. Iteration CLOSES.** `arch_consistent=false`, carried entirely by
+pre-existing non-blocking debt (nothing new, nothing promoted). `state.yaml`:
+`gates.review.passed=true`, `current_stage: review` (terminal for this iteration), `updated`
+bumped. `.panel/` removed (`rm -rf .sdlc/features/001-remote-workflow-engine/.panel`) — its
+decisions are baked into `02-architecture.md`/`04-design.md` and this review; nothing downstream
+needs it. No `git checkout`/`restore`/`stash` used (CLAUDE.md).

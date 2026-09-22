@@ -15215,10 +15215,10 @@ e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
 - **tier:** unit
 - **real:** false
 - **result:** pass
-- **evidence:** `tests/unit/active-runs-store-agreement.test.ts` (new, 6 cases, plus 1 new
+- **evidence:** `tests/unit/active-runs-store-agreement.test.ts` (7 cases, plus 1 new
   load-bearing case in UT-072/`tests/unit/home-view.test.ts`) — measured red by running this file
   against a `git archive HEAD` copy (`50cc26a`, never a working-tree checkout — CLAUDE.md), before
-  writing the two `activeRuns()` implementations onto that copy: all 6 cases fail, `TypeError:
+  writing the two `activeRuns()` implementations onto that copy: the original 6 cases fail, `TypeError:
   store.activeRuns is not a function` / `sqlite.activeRuns is not a function`. Covers: `SqliteRunStore`
   and `InMemoryRunStore` each seeded (through the port only — `createRun`/`recordTransition`, never a
   direct SQL write) with ONE run per `RunStatus` value (all seven) plus one unnamed `running` run —
@@ -15230,9 +15230,17 @@ e.g. `- **traces:** DES-231, REQ-205, REQ-207` at line 14166).
   created FIRST (using a `SteppingClock` for a real, deterministic "oldest" `createdAt`, per
   `tests/integration/run-list.test.ts`'s own precedent — a `FixedClock` would give every row the
   identical timestamp and make the pagination cliff untestable) is excluded from `list()`'s 50-row
-  page once 55 newer `completed` runs are seeded after it, but `activeRuns()` still returns it —
-  proof at the STORE level, not only the pure `buildHomeView` level, that this query is bounded by
-  concurrency and not by history. **Load-bearing pure case (amended into UT-072 above):** a
+  page once 55 newer `completed` runs are seeded after it, but `activeRuns()` still returns it. **Gate
+  8 send-back correction (ARCH-174/ADR-081)**: this does NOT prove the result set is "bounded by
+  concurrency, not by history" — it proves the opposite (a never-swept stale row is exactly the
+  active ∪ never-resumed growth ARCH-174 names); what IS bounded, separately, is scan cost, by the
+  new `runs_status` index. **7th case, added in the same repair**: `EXPLAIN QUERY PLAN` for
+  `activeRuns()`'s real statement (raw second `Database` connection onto the same file, IT-114's
+  precedent) asserts the `runs` table's own plan line is `SEARCH r USING INDEX runs_status`, never
+  `SCAN r` — measured red (`SCAN r`, no `runs_status` index yet) before `CREATE INDEX IF NOT EXISTS
+  runs_status ON runs(status)` was added, green after; a bare `/SEARCH/` match would have been green
+  before the fix too, because the LEFT JOIN on `run_snapshots` already emits its own `SEARCH s ...`
+  line. **Load-bearing pure case (amended into UT-072 above):** a
   workflow whose only active run is absent from `runs` (the page) but present in `activeRuns` still
   lands in `view.running` with `activeRunId` intact — red message `expected undefined not to be
   undefined` at HEAD (`view.running.find(...)` finds no card at all, since HEAD derives RUNNING from
@@ -15440,8 +15448,11 @@ pending marker is carried forward unresolved (blocks Gate 8, not this gate, per 
 note at Gate 2).
 
 ### v36 amendment (REQ-217, 2026-09-22) — ARCH-172's marker answered, discharged as code
-DES-250→UT-307/IT-300. REQ-217→(no separate VAL; discharges via UT-307/IT-300, the latter a real
-`createServer`+`SqliteRunStore` end-to-end proof, same bar as this gate's own VAL rows). Also
+DES-250→UT-307/IT-300. REQ-217→**amended (2026-09-22, Gate 8 send-back finding (3), validator):**
+REQ-217's Gate-7.5 acceptance-tier item is `VAL-252` in `08-validation.md` (real `./deploy.sh` boot,
+matching `VAL-246..251`'s format) — the sentence originally written here ("no separate VAL;
+discharges via UT-307/IT-300") is superseded; `UT-307`/`IT-300` remain valid unit/integration-tier
+corroboration, just no longer the ONLY evidence. Also
 amended: UT-234 (`run-manager-summarize-usage.test.ts`, 4 fakes retargeted `listRuns`→`list`, 1 case
 added) and UT-072 (`home-view.test.ts`, 2 cases added — order-independence). ARCH-172's
 `owner_decision` marker (`02-architecture.md:4942`) flips from `pending` to `answered(2026-09-22)`

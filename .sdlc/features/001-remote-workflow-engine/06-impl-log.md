@@ -9693,6 +9693,14 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   `completed` runs are seeded after it, yet `activeRuns()` still returns it on both stores — proof at
   the STORE level, not only the pure `buildHomeView` level, that this query is bounded by
   concurrency and not by history.
+- **amended (2026-09-22, Gate 8 RE-REVIEW send-back repair — see IMPL-370):** the sentence this note
+  closed with above ("bounded by concurrency and not by history") is FALSE as implemented —
+  `hydrateAll()` never sweeps a crash-orphaned `interrupted` row and nothing but an operator's
+  `workflow_resume`/`workflow_stop` transitions one out, so the discriminating case above actually
+  proves the opposite: a never-swept stale row stays returned regardless of age. Left as originally
+  written above rather than rewritten, per this ledger's own "amended (date, Gate 8 send-back
+  repair, ...)" convention (`H-1`/`H-4` precedent) — the corrected bound, the new `runs_status`
+  index, and the new EXPLAIN-QUERY-PLAN guard case are logged as IMPL-370.
   **Two narrowings found and named as debt, not fixed** (per this card's dispatch scope — both
   guarded/non-crashing, both client-side): `src/dashboard/ui/workflow.js`'s `onTick` (`nameFilteredRuns`
   defined `:287`, called `:428`; the predicted-layout fallback it triggers is `paintSelected`'s
@@ -9717,3 +9725,88 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   other pre-existing function in the touched files are untouched in substance; the active/latest-run
   loop split is the one behavior change, and it is a bug fix (a workflow-classification defect), not
   a restructuring.
+
+### IMPL-370 — Gate 8 RE-REVIEW send-back repair (impl's slice): `activeRuns()`'s doc-comment bound corrected in three code copies, `runs_status` index added, EXPLAIN-QUERY-PLAN guard added
+
+- **status:** done
+- **traces:** TASK-249, DES-251, ARCH-174, ADR-081, REQ-217
+- **greens:** UT-308 (7th case added, and prior 6 re-verified), UT-072, IT-300 (re-verified, unaffected)
+- **files:** src/run-store.ts, src/dashboard.ts, src/store/sqlite-run-store.ts, tests/unit/active-runs-store-agreement.test.ts, 05-tests.md, 06-impl-log.md (this entry + IMPL-369 amendment)
+- **commit:** (uncommitted at report time — see report)
+- **iter:** v36
+- **note:** **Scope.** This is the `impl` slice of `send_back=[architecture,impl,validation]`
+  (07-review.md's Gate 8 RE-REVIEW, three NEW findings on the REQ-217 follow-up). Architecture's own
+  repair round 2 added ARCH-174/ADR-081 and prescribed three code copies of a false doc-comment
+  sentence, a one-line index, and a guard test — paste-ready, not executed there. Finding (1)
+  (missing ARCH/rtm row) and finding (3) (README.md pagination disclosure + a Gate-7.5 VAL item) are
+  NOT this slice's work — (1) is architecture's, already closed on disk (`grep -n ARCH-174
+  02-architecture.md` / `grep -n REQ-217 rtm.md` both hit); (3) is validation's, per ARCH-174's own
+  routing note ("`src/`, `README.md` and `08-validation.md` are not touched by this gate — they are
+  impl's and validation's named deliverables"). Not touched here: `README.md`, `08-validation.md`,
+  `02-architecture.md`, `rtm.md`, `04-design.md` (already corrected by architecture).
+  **The false sentence, found in one MORE place than ARCH-174's "four" count.** ARCH-174 named
+  `src/run-store.ts:242-249`, `src/dashboard.ts:193-200`, and
+  `tests/unit/active-runs-store-agreement.test.ts:128-133` as the three code copies (the fourth,
+  `04-design.md`'s DES-251, architecture corrected itself). A scoped `rg -n "bounded by
+  concurrency|not by history|scaling cliff" src tests .sdlc/features/001-remote-workflow-engine/*.md`
+  run before any edit (baseline trace 2025/77, unchanged by this DDL+comment+test repair) turned up
+  a FIFTH live copy: `05-tests.md`'s own UT-308 evidence paragraph asserted the identical false
+  claim ("proof at the STORE level... that this query is bounded by concurrency and not by
+  history") — the same conflation recurring in the test's own coverage write-up, not just its code
+  comment. Corrected in place (05-tests.md is a living document inside this closure — UT-308 traces
+  DES-251/TASK-249/REQ-217 — and this entry was already amending it to record the 7th case). A SIXTH
+  copy exists in `06-impl-log.md`'s own IMPL-369 note (line ~9694-9695) — left as originally written
+  and closed with an `- **amended (...):**` pointer to this entry, per this ledger's own
+  `H-1`/`H-4` convention for correcting a PAST log entry without rewriting history. `07-review.md`'s
+  occurrences are the reviewer's own finding text/historical citations (not this iteration's living
+  claim) and `04-design.md`'s occurrence already reads "was corrected... see ARCH-174/ADR-081" — both
+  left alone.
+  **Three code-comment corrections** (`src/run-store.ts:242-250`'s `activeRuns()` port doc,
+  `src/dashboard.ts:193-198`'s `buildHomeView` doc, and the `it()` block comment at
+  `tests/unit/active-runs-store-agreement.test.ts:140-147`): each replaces "naturally bounded by
+  concurrency, not by history, so it does not reintroduce the scaling cliff" with ARCH-174's own
+  wording — "active ∪ never-resumed — grows with restarts × concurrency, not with total history"
+  plus "scan cost is bounded by the `runs_status` index (ARCH-174/ADR-081); the result set is not
+  bounded by concurrency alone." The test-file comment additionally states explicitly that the case
+  below it proves the OPPOSITE of the old claim (a never-swept stale row stays returned regardless
+  of age), since ARCH-174 named that comment specifically as claiming the test proves the false
+  bound.
+  **The index** (`src/store/sqlite-run-store.ts`, same file/idiom as the pre-existing
+  `runs_name_status_created` index): `CREATE INDEX IF NOT EXISTS runs_status ON runs(status)`, one
+  line, idempotent, no migration/backfill — ADR-081's decision (A), ruled over (B) accept-the-scan
+  because REQ-217's own text forbids a doc-carried cliff on this exact path.
+  **The guard, red-first** (measured on THIS working tree — no `git archive`/checkout needed since
+  this is new test code, not a regression fixture): a 7th case added to
+  `tests/unit/active-runs-store-agreement.test.ts`, following `tests/integration/run-list.test.ts`'s
+  own `EXPLAIN QUERY PLAN` precedent (IT-114) — a raw second `better-sqlite3` `Database` connection
+  onto the SAME on-disk file a `SqliteRunStore` instance already created (never reaching into the
+  store's private `_db`, the class of shortcut F6 rejected), because `SqliteRunStore` doesn't expose
+  its connection. The EXPLAIN'd statement keeps the real query's `FROM runs r LEFT JOIN
+  run_snapshots s ON s.runId = r.runId WHERE r.status IN (?,?,?,?)` shape and the correlated
+  `MIN(t.ts)` sub-select (both are what determine the access path SQLite picks for `r`/`s`/`t`) and
+  trims the unrelated `_USAGE_PROJECTION` `json_extract` columns, which are private to
+  `SqliteRunStore` — verified empirically (with vs. without those columns, `r`'s plan line
+  unchanged) that they do not affect the access path this assertion checks (the `runs` table's own
+  line; the projection's effect on `s`/`t`'s lines was not separately measured, since neither is
+  asserted on). Measured red before the index existed:
+  `plan.some(p => p.detail.startsWith('SEARCH r USING INDEX runs_status'))` → `false`, the `r` line
+  read `SCAN r`. Green after adding the DDL. The assertion is deliberately NOT a bare `/SEARCH/`
+  match — ARCH-174 verified that trap explicitly: the LEFT JOIN on `run_snapshots` already emits its
+  own `SEARCH s ...` line regardless of the `runs_status` index, so a naive regex would have been
+  green before the fix too and proven nothing. Confirmed this trap holds on this tree: before the
+  index, `plan` contains `SEARCH s USING AUTOMATIC COVERING INDEX (runId=?) LEFT-JOIN` even while the
+  `r` line reads `SCAN r`.
+  **Verification.** `npx tsc --noEmit` clean. Targeted files (this test file, `home-view.test.ts`,
+  `run-list.test.ts`, `req217-pagination-full-history.test.ts`,
+  `run-manager-summarize-usage.test.ts`, `dashboard-disclosure.test.ts`, `val-083-home-cards.test.ts`,
+  `home-api.test.ts`) → 47/47 green (UT-308 now 7 cases, +1 from IMPL-369's baseline). Full suite:
+  **3296 passed, 26 skipped, 0 failed** (449 files passed, 1 skipped) — exactly +1 from IMPL-369's
+  own reported 3295/26/0 baseline (the new EXPLAIN-QUERY-PLAN case), no other drift.
+  `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` — baseline captured to a scratch file
+  *before* any edit (per CLAUDE.md, never by checking the ledger backwards in place): **2025 items /
+  77 gaps** (architecture's own post-repair-round-2 reading). After this entry: **2026 items / 77
+  gaps** — exactly +1 (this IMPL-370 row itself; no other ID-bearing row added), gap set unchanged.
+  `--check` exits 1, same as before this slice, on the 15 pre-existing IMPL-303..309 broken links
+  (unrelated to REQ-217, unchanged since v27).
+- **refactor:** none — surgical, three doc comments, one index, one new test case; no existing
+  behavior/structure changed.

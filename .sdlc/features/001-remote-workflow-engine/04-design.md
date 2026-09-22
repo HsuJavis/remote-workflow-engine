@@ -9165,7 +9165,7 @@ classDiagram
   // src/run-store.ts (port) — both implementations conform
   export const ACTIVE: ReadonlySet<RunStatus> = new Set(['queued', 'running', 'suspended', 'interrupted']);
   interface RunStore {
-    activeRuns(): Promise<RunSummary[]>; // no LIMIT — bounded by concurrency, not history
+    activeRuns(): Promise<RunSummary[]>; // no LIMIT — active ∪ never-resumed (ARCH-174/ADR-081)
   }
   // src/run-store.ts — InMemoryRunStore: filters the SAME ACTIVE set
   async activeRuns(): Promise<RunSummary[]> {
@@ -9190,10 +9190,19 @@ classDiagram
   ("is this workflow currently active") instead of a numeric one — and `activeRunId` is the single
   signal an operator most needs from this page. **The fix does not widen the page** (a bigger page
   is the same bug with a later trigger); it gives the store a query that answers "which runs are
-  CURRENTLY non-terminal" directly. That set is bounded by concurrency (how many runs can be
-  in-flight at once), never by history, so it cannot reintroduce a scaling cliff — the same shape of
-  argument DES-250 already made for `workflowMetrics()`, applied to a status filter instead of an
-  aggregate. **The status set (`ACTIVE`) is the RunStatus union's non-`TERMINAL` complement, exactly
+  CURRENTLY non-terminal" directly. That set is **not** bounded by concurrency alone, and this
+  design's original sentence (「bounded by concurrency … never by history, so it cannot reintroduce a
+  scaling cliff」) was **corrected at the Gate-8 re-review send-back — see ARCH-174/ADR-081, which now
+  own this bound**: `queued`/`running` are semaphore-bounded, but `suspended`/`interrupted`
+  accumulate (`hydrateAll()` permanently reclassifies crash-killed `running` rows to `interrupted`;
+  the only exits are the operator actions `workflow_resume`/`workflow_stop`; nothing automatic
+  sweeps and no `DELETE FROM runs` exists), so the honest bound is 「**active ∪ never-resumed —
+  grows with restarts × concurrency, not with total history**」. *Scan* cost is the separate number
+  and is bounded by the `runs_status` index ADR-081 prescribes (without it the status-only predicate
+  cannot seek `runs_name_status_created`, which leads with `name`: measured `SCAN r`). The shape of
+  argument DES-250 made for `workflowMetrics()` still holds for the *design* — the RUNNING decision
+  belongs on a status query, not on a page — it just does not license the cost claim this paragraph
+  originally attached to it. **The status set (`ACTIVE`) is the RunStatus union's non-`TERMINAL` complement, exactly
   four members** (`queued`, `running`, `suspended`, `interrupted`) — not independently re-derived,
   exported from `run-store.ts` next to the existing `TERMINAL` constant so `SqliteRunStore`'s SQL
   `WHERE ... IN (...)` and `InMemoryRunStore`'s filter read the identical set; `dashboard.ts` keeps
