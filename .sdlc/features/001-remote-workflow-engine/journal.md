@@ -9063,3 +9063,190 @@ pre-existing non-blocking debt (nothing new, nothing promoted). `state.yaml`:
 bumped. `.panel/` removed (`rm -rf .sdlc/features/001-remote-workflow-engine/.panel`) — its
 decisions are baked into `02-architecture.md`/`04-design.md` and this review; nothing downstream
 needs it. No `git checkout`/`restore`/`stash` used (CLAUDE.md).
+
+## 2026-09-22 — v37 Gate 2 (architecture): 安全硬化的裁決 —— 交給核心關,不自己蓋牢房;兩個說謊的綠測試模組退場
+
+**Panel 已先跑完(r1+r2,兩組),本閘只做綜整,沒有再 spawn。** 兩組獨立收斂到同一結論
+(REQ-218 選 (c)、REQ-219 兩個都刪),真正的爭點是**機制**:quality-dimensions r1 主張自己蓋
+bwrap/unshare 牢房並放在 `WorkspaceConfinement` 介面後面;adversarial 實測到我們**根本不 spawn
+Bash**——`claude` CLI 才是,而那支 CLI 已經內建牢房(`Options.sandbox`,`sdk.d.ts:1805`,schema
+`:2682-2736`,2.1.278 binary 裡有 `allowWrite`/`denyRead`/`bwrapPath` 字面值)。quality-dimensions 在
+r2 用**對方的 Karpathy 平手原則反駁自己的 r1**並讓步。本閘採納讓步:**一個純函式、一個 options
+欄位、不新增子系統**。
+
+反方向的讓步也記下來,因為它讓這一刀更小、也更誠實:adversarial r1 承諾「每個拒絕都會進 journal」,
+r2 實測發現 SDK **沒有任何 sandbox 違規的型別化訊息**(`SDKPermissionDeniedMessage` 只涵蓋
+permission-rule)。所以 ARCH-178 只把**我們自己造的政策物件**無條件記錄,拒絕事件則 spike 綁定並明
+寫 best-effort——一個因為「測試在對沒人用的程式碼說謊」而刪掉兩個模組的迭代,不能同一輪再鑄一個沒量
+過的綠。
+
+**本輪最重的發現不在需求文字裡**:`session-options-builder.ts` 帶著 REQ-021「run 中重走」條款的
+**唯一 production 形狀實作**,而 `rtm.md:100` 用 `VAL-024`(跑的正是這個沒接線的模組)把 REQ-021 標
+成 ✅。直接刪 = 把一個假綠變成永久假綠。ARCH-180 因此要求**先接線再刪**,並把 REQ-021 當成
+cross-reference(不開新 trace 邊、不改 rtm 的 REQ-021 列——那是 validation 的活)。這條規則被一般化
+成 INV-V37-3。
+
+新增 ARCH-175..180 + ADR-082..085;ARCH-007/016/017/025/107 + ADR-006 就地修訂(`iter: v37`,
+`traces:` 不動)。`rtm.md` 補 REQ-218/219 兩列(只填 ARCH 欄)。`state.yaml`:
+`gates.architecture.passed=true`、`current_stage: design`、`iteration: v37`、`updated` 更新。
+Trace **2039 項 / 81 缺口**,缺口清單與改動前基線**逐字相同**(`--check` 仍因 v27 起就存在的 15 條
+IMPL-303..323 斷鏈而回傳 1)。基線是**改動前**就先抓進 scratchpad 的檔案,沒有用
+`git checkout`/`restore`/`stash` 回頭讀 ledger(CLAUDE.md)。
+
+`owner_decisions=[]`:REQ-218 自己的驗收文字就把機制裁決**授權給 panel**;唯一像業主題的分支(遠端
+主機若拿不到 bubblewrap 怎麼辦)今天被量測擋掉了(本機 `bwrap`/`unshare` 具備、
+`unprivileged_userns_clone=1`),因此寫成 ADR-083 的**事件式 revisit trigger**,而不是掛一個會擋
+Gate 8 的 pending marker 在還沒成立的假設上。
+
+**下一閘的第一件事是 spike(S1–S8),而且要在遠端實機上跑**:`Options.sandbox.filesystem` 是否真的
+生效(否則走 `Options.settings.sandbox`)、拒絕時到底吐出什麼、workspace 自己寫的
+`.claude/settings.json` 能不能鬆綁牢房、窄 allow 能不能蓋過寬 deny、以及 `credentials.envVars` 遮蔽
+provider key 會不會把 CLI 自己的認證打死。ADR-082 的裁決在 arm 1/2 之間**不變**——純函式吐出的物件
+是同一個,只有交給哪個欄位會動。
+
+## v37 GATE 3+4(tasks + design,合併)—— 2026-09-22,designer(panel 由 workflow 預跑,r1+r2 全讀後綜整,未再 spawn)
+
+**PASSED,下一階段 tests。** 七張卡 TASK-250..256、九條 DES-252..260(v36 已用掉 DES-251,panel 草稿
+的 251..257 一律 +1),外加兩條 living-doc 修訂(DES-031、DES-106)與四條打上日期的 Gate-4 更正寫回
+`02-architecture.md`。
+
+**這一輪 panel 沒有收斂,是「交叉」。** ARCH-107 那段指南文字:adversarial r1 主張靜態段落、
+quality-dimensions r1 主張渲染實際 grant 清單;r2 兩邊各自讀了對方後**互換立場**。沒有可以照抄的
+共識,本閘因此按「哪一邊比較好反悔」裁:先出**靜態段落**(加欄位是 additive,拆佈線是 deletion),
+要不要升級成即時清單記成 **DES-258 的 `owner_decision: pending`** —— 這是本閘唯一一條 owner 決策。
+同時把 ARCH-107 那句「rendered from the effective grant list」就地更正,ARCH-177 的「不為沒人讀的值
+開 ServerConfig 欄位」因此**維持不動**。
+
+**panel 這輪最利的一刀是 adversarial 自己更正自己**:`reason:'terminal'` 根本擋不住重試——
+`invoke()` 的重試閘是 `retryable === false`。照原樣接線,兩條新拒絕都會被重試 `1+retries` 次:一條
+重走同一棵沒變的目錄樹,一條要求一台沒有 bubblewrap 的主機長出一個。DES-257/DES-259 都補上
+`retryable:false`,並各自有一條「`queryImpl` 被呼叫 0 次」的 UT。
+
+**第二刀是 B1**:ARCH-180 的 re-walk 照 Gate 2 寫法接線會**拒絕每一個 seeded run**——引擎自己在每個
+workspace 跑 `git init`,seed 又故意不刪 `CLAUDE.md`。修法是兩個檢查(containment + 從
+`dirname(workspace)` 起走),六臂表寫進 DES-257,其中兩臂就是這件事的回歸守衛。Scenario (+1) #4 一併
+更正:它原本描述的是「引擎拒絕自己的正常輸出」。也照實寫上:walk 起點上移之後,這條守衛的真陽性
+域**在構造上幾乎是空的**——還是接,但誰都不准把它讀成安全戰果。
+
+**切法是檔案所有權**:三條 ARCH 都要改同一段 ~55 行的 `Options` literal,而這棵樹上會同時站 ~20 個
+implementer,所以 TASK-253 一張卡獨佔那個檔案、內部三個有序 commit;救援(re-walk)必須在刪除
+(TASK-255)之前落地。可並行的卡之間 `files:` 零重疊。
+
+**spike 仍是第一件事,且加到十臂**:S9(真的跑完一個工作流、回報 EACCES 清單——原本八臂全在量
+「被拒」,沒有一臂量「還能完成」)與 S10(沙箱起不來時的失敗到底分不分得出來——這是 DES-259 那個
+標籤成立的前提)。三條 DES 把 spike 兩臂都寫死了,所以 Gate 5 寫的測試不會因為 spike 的結果重寫。
+
+**沒有碰的東西**(Karpathy,兩個 lens 各自讓步):第四個 `reason` literal、`ERROR_CATALOG` 條目、
+開機時的能力探測(要一次真的 `query()`)、一個結構上不可能存在的 `GUIDE_EXAMPLES` 例子、denial 的
+transcript 掃描器、第二個 containment helper、替代用的 fence 測試。
+
+**DES-031 / DES-106 就地修訂但 `iter:` 不動** —— v33 Decision-rationale item 22 / F6-1 的本帳本家規:
+`iter:` 記的是起源不是最後一次改動,升它只會在既有測試上長出假的 `漂移`。要重指的測試(val-024 的
+語意會**改變**,不只是換標的)寫在 DES-260 和 TASK-255 上,寫在 verifier 真的會讀的地方。
+
+**Trace:2055 項 / 88 缺口**,相對 Gate 2 的 81 條基線就是**七條新 TASK 的 `未實作`(low)**,一條不多;
+`斷鏈` 15→15、`孤兒` 0→0、`未驗證` 19→19、`TDD` 19→19、`漂移` 24→24,逐列相同。`--check` 仍 exit 1,
+原因與 v27 以來一樣是 IMPL-303..323 那 15 條既有斷鏈,與本輪無關。
+
+**寫回 `02-architecture.md` 的五條 Gate-4 更正(都打日期、不重寫整列)**:Scenario (+1) #4、
+ARCH-175(B2——兩個 `denyRead` arm 原本擺反了:deny 若勝出,意思是 agent 連自己的 workspace 都讀不到,
+不是「跨 run 讀取還開著」)、ARCH-107(改靜態 + 升級留給業主)、ARCH-178(每次呼叫一行 → 每次嘗試一行)、
+ADR-082(spike 加 S9/S10)。另有一條量測寫進 DES-256:`require('@anthropic-ai/claude-agent-sdk/package.json')`
+會丟 `ERR_PACKAGE_PATH_NOT_EXPORTED`(該套件 `exports` 沒有公開 package.json),所以版本要用
+`createRequire(...).resolve()` 再走到旁邊的 package.json 讀——實測 0.3.199,免得 implementer 卡在這。
+
+## v37 Gate 5(2026-09-22,verifier,test-first RED)—PASSED
+
+Impact closure:REQ-218、REQ-219(traces REQ-018/REQ-037/REQ-117,三者本身的鏈不動,rtm.md 的
+Gate 2/3+4 註記已經講明這是 impact-closure context,不是新的追溯邊)。
+
+14 條新 UT(UT-309..322,對到 DES-252..259 每一條;DES-252/253/254/256/257 各自有一條以上因為它們
+本身就是多分支簽章)分佈在 6 個新單元測試檔(bash-confinement/sandbox-config-wiring/
+bash-confinement-wiring/agent-confinement-events/workroot-rewalk.test.ts,加上擴充既有的
+authoring-guide.test.ts)+ 1 個既有檔案就地擴充(compose-config-v2-wiring.test.ts:加
+`sandbox` 到 `EXCLUDED`、hop-2 探針 UT-313——這一動**故意**把既有 UT-219 的 totality lock 打紅,
+因為那正是本輪要補的佈線洞)。2 條新 VAL(VAL-253/REQ-218、VAL-254/REQ-219,acceptance 層、
+real:false,真入口:VAL-253 是真 server+真 ClaudeAgentSdkGatewayClient+真 Ollama+真 claude CLI/
+bubblewrap,`it.skipIf` 跟 VAL-019/023 同一套慣例,外加一個不用 gate 的真 builder 宣告清單案例;
+VAL-254 是對磁碟上真實 src/tests 樹的 grep/exists 檢查)。VAL-024 的 session-init re-walk 那段
+改指向真正會留下來的 production 路徑 `findProjectMarkerAboveWorkspace()`(DES-257)——舊標的
+`session-options-builder.ts` 本輪要刪(零 production importer),語意也跟著翻轉:workspace 根目錄
+自己的 `.git`(引擎自己 `initGitBaseline` 寫的)現在是**允許**,原本的斷言剛好斷在 ARCH-180
+抓到的那個 bug 上(架構第一版寫反,會讓每個 seeded run 都被拒)。
+
+3 條刻意標成「一寫就綠」而非 red-first TDD(跟 v36 UT-306 同一個先例,05-tests.md 逐條寫明理由):
+UT-316 的 unbound-sink 案例、UT-319(EACCES 已經透過既有 `onEvent` 串流機制送達,這是測「線」不是
+測「圍欄」)、UT-322 的「沒有新增 GUIDE_EXAMPLES」否定斷言。UT-321 三案例中兩個是既有行為的
+回歸鎖(允許臂在圍欄還沒接上時本來就會過)。
+
+每個新增/修改的測試都**直接跑過**確認紅得有道理(module-not-found / `TypeError: ... is not a
+function` / 欄位讀到 `undefined`——不是語法錯誤,不是空殼)。`tests/unit` 整包重跑
+(84.86s):7 個失敗檔(剛好是本輪碰的 7 個)/ 201 個通過,2079 個測試通過、26 個失敗,其餘 201 檔
+零回歸。`tests/acceptance` 整包在 280s 逾時(既有的長真跑裝置,例如 VAL-023 的 hung-stub
+close-hook,跟本輪無關)——改成逐檔直接跑 val-024/253/254,三個都確認紅得對。
+
+**`sh .sdlc/trace --check`:88 個缺口**,用 ID 過濾(不是用眼睛掃數字)只有本輪碰過的 ID 帶著缺口:
+REQ-218/REQ-219 各自帶著預期中的「未實作」(mid)+「未真實驗證」(high)一對——真跑證明是 Gate 7.5
+的事,卡在 TASK-250 那條還沒跑的 spike 上;TASK-250..256 各自帶著預期中的「未實作」(low)——
+Gate 6 的事。其餘約 81 個缺口(IMPL-303..323 斷鏈、REQ-153..169 舊 backlog、若干漂移/TDD 標記)
+全是本輪之前就有的既有債,不在這次 impact closure 範圍內,原封不動。本輪新增/修改的每一項
+(UT-309..322、VAL-253/254)本身零斷鏈——`traces:` 全部指向確實存在的 DES/REQ。
+
+DES-258 的 `owner_decision`(04-design.md:9708,設計階段寫下的:指南要維持靜態段落還是升級為
+即時渲染的 grant 清單)原樣帶下去,本輪沒有新增裁決——UT-322 測的是設計自己選定的預設值
+(靜態段落),不論那個裁決日後怎麼答都不影響這條測試現在該不該紅。
+
+**故意沒做,理由寫進 05-tests.md 的「named for Gate 6」段落**:VAL-019 clause 2/3 和 VAL-023
+clause-2 沒有重指——兩者都會是一寫就綠的佈線鎖(production 機制`wireEffort()`/`AbortController`+
+`RunManager.withSlot()`都已經在跑),但 TASK-254/255 自己的 DoD 要求「重指」跟「刪模組」同一個
+commit——現在重指、模組還沒刪,會留下兩條路徑同時宣稱證明同一條款;UT-315(DES-259)刻意收窄成
+只鎖 `SANDBOX_UNAVAILABLE` 常數本身——完整的 detail-mapping 需要 spike S10 的實測證據(
+`evidence/v37-spike/` 目前一個檔都還沒有);`gateway-effort.test.ts` 裡 session-options-builder
+的零 importer 圍欄沒動(VAL-254 斷言它到 Gate 6 該消失,DES-260 要求跟模組同一個 commit 退場)。
+
+未使用 `git checkout`/`restore`/`stash`。下一階段:impl。
+
+## 2026-09-22 14:49 CST — TASK-250:阻擋性 spike,S1–S10 十份實測證據全部寫出
+
+在本機(javis,Linux 7.0.0-22-generic x86_64)對已安裝的 `@anthropic-ai/claude-agent-sdk@0.3.199`
+真跑十個測量臂,每份 `evidence/v37-spike/S<n>.md` 都帶日期、host、指令原文、原始輸出、一行
+`- **verdict:**`——`grep -l '^- \*\*verdict:\*\*' evidence/v37-spike/S*.md | wc -l` → **10**,DoD 達成。
+
+**全場最關鍵的一條發現(壓過其餘九條)**:`Options.sandbox` 不是死欄位——S1/S2 用安裝的
+`sdk.mjs` 原始碼(`aI()` 合併函式)+ 真跑抓到的 spawn 指令列證實它會被轉成 `--settings
+{"sandbox":...}` 送進 CLI,驅動真正的核心層沙箱建構——**但這台機器上,沙箱一旦
+`enabled:true`,沒有任何 Bash 指令跑得完**:`bwrap` 本身成功,但 CLI 內部的 `apply-seccomp`
+輔助程式需要再開一層巢狀 unprivileged userns 來裝 seccomp 過濾器,被這台機器的
+`/etc/apparmor.d/bwrap-userns-restrict` AppArmor 設定檔擋下(讀了真正的設定檔:`unpriv_bwrap`
+profile 對 bwrap 生出來的每個子行程一律 `audit deny capability`,含 `apply-seccomp` 自己要的
+`CAP_SYS_ADMIN`)——不是猜的,是讀了 host 上真正的 policy 檔案。用者空間手法(`apt-get download` +
+`dpkg-deb -x`,免 sudo)裝出 socat 越過依賴前置檢查後才把真正的卡點從「socat 沒裝」精確定位到
+這一層;也試過 `sandbox.seccomp.applyPath` 指向一個 no-op shim 想繞過去,CLI 仍然叫了原本那支,
+沒繞成。
+
+**十臂各自結論**:S1 無法定案(機制活著但執行被擋)/ S2 真跑證實跟 S1 位元對位元一致(不需要再
+測 fallback)/ S3 沒測(arm1 活著,ladder 用不到它)/ **S4 正面**——`PostToolUseFailure` 對
+沙箱造成的 Bash 失敗確實會觸發,帶 `tool_name`/`tool_input.command`/`error`,`agent.confinement_
+denied` 該做/ **S5 負面**——workspace 的 `.claude/settings.json` 寫 `sandbox.enabled:false` +
+`settingSources:['project']` 完全壓不動 SDK 給的沙箱(照樣 fail-closed,一字不差)/ S6:bwrap/
+unshare 都在、userns 開放,socat 預設沒裝;**附帶項,真跑 debug log 證實**:`query()` 預設叫的是
+`@anthropic-ai/claude-agent-sdk-linux-x64` 包裡綁的執行檔(**2.1.199**),不是 PATH 上的 `claude`
+(**2.1.278**)——DES-253 的鎖版本 rider 要跟著綁定檔版本走,不是 host PATH 版本/ S7、S8 都測不到
+(跟 S1 同一個卡點)——`DENY_READ_MODE` 維持 `'enumerated'`、`MASK_PROVIDER_ENV` 維持 `false`,
+兩個都照 DES-252 自己寫好的保守預設,不因未證實的證據翻面/ **S9 否**——真的 SDLC 形狀的
+workflow 在這台機器上不會在沙箱下跑完(第一個 Bash 呼叫就必死,拿不到 EACCES 清單;裸
+`bwrap` namespace 建置本身量到很便宜,~0–10ms/次,5 次量測)/ **S10 是,可分辨**——沙箱不可用的
+失敗訊息**形狀**不同(`subtype:"error_during_execution"` + `errors` 陣列 + `num_turns:0`)且有
+穩定可 grep 的字首(`"Sandbox required but unavailable: "`),跟真跑一個「普通終端失敗」對照組
+(亂填 model 名稱,`subtype:"success"` + `result` 字串 + `api_error_status:404`)量出來的形狀
+明顯不同。
+
+**留給 ADR-083 owner 的殘留項**:該 ADR 的 revisit trigger 是照「bubblewrap 不存在」措辭寫的;
+這台機器示範的是「bubblewrap 存在但功能性等同不存在」(`failIfUnavailable:true` 會擋下每一個
+run)——記在 IMPL-371 跟這裡,不是悄悄當作過關。
+
+已把 TASK-250 在 03-tasks.md 標 done、06-impl-log.md 補 IMPL-371(`iter: v37`)。state.yaml 待補一筆
+gate 註記並重新 `python3 -c "import yaml; yaml.safe_load(open('state.yaml'))"` 驗證。全程未使用
+`git checkout`/`restore`/`stash`,新增的探測腳本只放在會話自己的 scratchpad,repo 工作樹裡只新增
+了 `evidence/v37-spike/` 十份檔案。下一步:TASK-251..256 可以照架構已經寫好的「兩臂都覆蓋」設計
+繼續走 Gate 6,不必等這次的 host-specific 沙箱問題解決(那是本機的環境問題,不是設計缺口)。

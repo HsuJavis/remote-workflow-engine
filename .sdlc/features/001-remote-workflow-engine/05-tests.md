@@ -3433,6 +3433,20 @@ non-Anthropic alias, read back from a real transcript (gated); the same clause a
 unconditionally via `buildSessionOptions()`.
 Red reason: `Failed to load url ../../src/session-options-builder.js` — module does not exist yet.
 
+**v37 note (2026-09-22, verifier, REQ-219/ADR-085 — named for Gate 6, NOT executed this gate):**
+`session-options-builder.ts` is deleted this iteration (0 production importers, TASK-255). Its
+`thinkingMode:'disabled'` guarantee already lives in production via `wireEffort()`
+(`src/gateway/client.ts`, consumed by `claude-agent-sdk-client.ts`) — retargeting this file's clause
+2/3 `it()` at `wireEffort()` directly would be **green on arrival** (a wiring-lock, same precedent
+as v36's UT-306), not a red-first TDD case, because the production behaviour is unchanged; only
+which path proves it changes. Deliberately NOT done at this Gate-5 pass: while
+`session-options-builder.ts` still exists on disk (deletion is TASK-255's job, Gate 6), retargeting
+this file now would leave two call paths asserted as "the" production path for the same clause with
+no test distinguishing which one ships — TASK-255's own DoD requires the retarget and the deletion
+in the same commit for exactly this reason. Executor at Gate 6: replace the `buildSessionOptions`
+`it()` (clause 2) with a direct call to the real, exported `wireEffort()`, remove the now-unused
+`session-options-builder.js` import, and confirm green on arrival (do not force it red).
+
 ### VAL-020 — REQ-017: MCP tools provisioned server-side, referenced by name, explicitly injected
 - **status:** green
 - **traces:** REQ-017
@@ -3511,6 +3525,23 @@ resolving null (never hangs) — the pre-existing D-F7 abort race already satisf
 is BUILT ON resolves `ok:false` with a `kind:'timeout'` `FailureEnvelope` — the reusable v3 primitive
 this real path still needs to be re-plumbed through (D-DOS gauge/kill-on-timeout not yet observable).
 Red reason: `Failed to load url ../../src/timeout-race.js` — module does not exist yet.
+
+**v37 note (2026-09-22, verifier, REQ-219/ADR-085/ARCH-179 — named for Gate 6, NOT executed this
+gate):** `timeout-race.ts` is deleted this iteration (0 production importers, TASK-254). Its two
+guarantees already live in production — kill-on-timeout via `AbortController` on the SDK's own
+`Options.abortController` (`claude-agent-sdk-client.ts`), slot-free-exactly-once via
+`RunManager.withSlot()` + the semaphore's `finally` (`semaphoreGauge().inUse`, already public at
+`run-manager.ts:404`). Rewriting this file's second describe block (`raceWithTimeout` clause 2)
+against the production path (`the run resolves ok:false with a timeout, and
+semaphoreGauge().inUse returns to 0`) would be **green on arrival** — same wiring-lock precedent as
+v36's UT-306 and this same file's REQ-016 sibling note above — not new logic. Deliberately deferred
+to Gate 6 in the SAME commit as the deletion, per TASK-254's own DoD ("rewrite val-023 FIRST, then
+delete timeout-race.ts") — rewriting now while the module still exists would leave two mechanisms
+both claiming to prove the same clause. Executor at Gate 6: replace the `raceWithTimeout`-based case
+with the two assertions above (needs `RunManager` reachable off the real server — check
+`createServer()`'s return shape or add a narrow accessor if none exists), remove the
+`timeout-race.js` import, delete `src/timeout-race.ts` + `tests/unit/timeout-race.test.ts`, confirm
+`grep -rn "timeout-race" src tests | wc -l` → 0.
 
 ### UT-051 — assertWorkRootIsolated fails fast on a project-nested workRoot
 - **traces:** REQ-021, DES-031
@@ -3596,7 +3627,7 @@ fail; 8 existing UT-044 tests still pass).
 - **tier:** acceptance
 - **real:** false
 - **result:** pass
-- **iter:** v3
+- **iter:** v37
 
 **Ledger-hygiene fix (Gate 6.5+7 round 2 sweep, verifier, 2026-09-02):** header `status`/`result` fields were left `red`/`fail` from this item's original Gate-5 write even though the body text above already documents (or this gate's own direct re-run confirms) it has been green for one or more iterations — a metadata-only staleness the trace.py gap check does not surface (it does not flag `status: red` ledger entries as gaps). Corrected here; no `src/`/test-file change.
 File: `tests/acceptance/val-024-workroot-isolation.test.ts`.
@@ -3612,6 +3643,17 @@ Cases: a real `.git` file planted in a temp dir causes `assertWorkRootIsolated(w
 Red reason: `WorkRootInsideProjectError` typed fields absent + `buildSessionOptions` re-walk absent.
 Confirmed via a direct run (3/4 tests fail; 1 clean-workRoot test passes — not a syntax/import
 error).
+
+**v37 amendment (2026-09-22, verifier, REQ-219/ADR-085/DES-257 — see the v37 section's own entry for
+full detail):** the session-init re-walk describe block is RE-POINTED at the production
+`findProjectMarkerAboveWorkspace()` (the pre-v37 target, `session-options-builder.ts`'s
+`buildSessionOptions`, is being deleted this iteration with zero production importers) — clauses
+(b)/(c) above are untouched and remain green. The SEMANTICS also flip: a `.git` at the workspace
+root is now ALLOWED (the engine's own `initGitBaseline` writes it; the pre-v37 assertion here
+refused it, which is the exact defect ARCH-180 found). Confirmed via direct re-run
+(`npx vitest run tests/acceptance/val-024-workroot-isolation.test.ts`): 2 failed / 3 passed.
+- **status:** red
+- **result:** fail
 
 ### UT-055 — workspace-artifacts + workspace-seed (REQ-022/023/025)
 - **status:** green
@@ -11353,13 +11395,25 @@ File: `tests/unit/compose-config-v2-wiring.test.ts` (extended). RED: `expected u
 - **tier:** unit
 - **real:** false
 - **result:** pass
-- **iter:** v26
+- **iter:** v37
 
 File: `tests/unit/compose-config-v2-wiring.test.ts` (extended). The mechanical sweep the fix order
 asked for: 32 probed keys + 11 excluded-with-a-reason must exactly equal the exported key list.
 RED: `TypeError: Cannot convert undefined or null to object` (the list was not exported) and
 `expected undefined to deeply equal 7`. This is what turns a hand-written case per key — the shape
 that let three misses through — into a structural gate.
+
+**v37 amendment (2026-09-22, verifier, REQ-218/DES-253/ARCH-177):** added `sandbox` to `EXCLUDED`
+(consumed by `composeConfig()` itself — lands on the constructed gateway's own `confinement` config,
+never on `ServerConfig`, same shape as the pre-existing `gateway` exclusion). This flips the
+totality assertion **RED**: `sandbox` is not yet in `main.ts`'s `KNOWN_FILE_CONFIG_KEYS`, so
+`accounted` (33 excluded + 32 probed) no longer equals `known` (still 44). That is the correct red —
+it is the exact wiring gap TASK-252 exists to close. Confirmed via direct re-run
+(`npx vitest run tests/unit/compose-config-v2-wiring.test.ts`): fails on
+`expect(accounted).toEqual(known)`, `sandbox` present on one side only; 60 of 62 pre-existing cases
+in this file remain green (no regression). Re-status to `red` until TASK-252 lands.
+- **status:** red
+- **result:** fail
 
 ### UT-220 — the static anthropic price table (defects D3 + D4)
 - **status:** green
@@ -15479,3 +15533,354 @@ gate owns):**
   (see UT-304's own evidence for why: it can only arise from a forged/stale child IPC message,
   which REQ-215 forbids constructing as a test fixture) — a design fact, not an oversight, but
   still an untested branch of DES-248's own signature for Gate 6 to be aware of.
+
+## v37 (Gate 5, 2026-09-22, verifier) — REQ-218/REQ-219 test-first RED
+
+Impact closure: REQ-218, REQ-219 (traces REQ-018/REQ-037/REQ-117; those three REQs' own rows are
+untouched — rtm.md's v37 Gate 3+4 note already rules this explicitly). DES-252..259 each gain a UT
+(DES-260 is the deletion bookkeeping row — its "delete" half is VAL-254, its "wire" half is
+VAL-024's re-pointed re-walk clause below, no separate UT). Mock policy honoured throughout: unit
+tier fakes the SDK module (`vi.mock('@anthropic-ai/claude-agent-sdk', ...)`, same convention as
+`claude-agent-sdk-gateway-workspace-boundary.test.ts`); the two new VALs hit the real entrypoint
+(a real server + `ClaudeAgentSdkGatewayClient`, or a real filesystem/grep check) with no mock of the
+SUT's own boundary.
+
+### UT-309 — `buildBashConfinement()` — the whole posture as one pure function
+- **status:** red
+- **traces:** DES-252
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v37
+
+File: `tests/unit/bash-confinement.test.ts` (new). Every fixed field of the posture for a known
+root/workRoot (enumerated mode); `root===undefined`/`root===''` take the SAME branch
+(`allowWrite/allowRead: []`, never an absent sandbox); `workRoot===undefined` never leaks a literal
+`"undefined"` into `denyRead`; grants appear verbatim in both `allowWrite`/`allowRead`; `'workroot'`
+mode's `denyRead`/still-emitted `allowRead`; `allowManagedReadPathsOnly` never set in either mode;
+`DENY_READ_MODE` is the fixed constant `'enumerated'`; S8's `credentials.envVars` arm written
+against the `MASK_PROVIDER_ENV` constant (both arms). Red reason (confirmed via direct re-run,
+`npx vitest run tests/unit/bash-confinement.test.ts`): `Failed to load url
+../../src/gateway/bash-confinement.js — Does the file exist?` (module does not exist yet, 0 tests
+collected).
+
+### UT-310 — `validateHostPathGrants()` + `formatGrantRefusals()` — boot refuses a grant that would undo the control
+- **status:** red
+- **traces:** DES-254
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v37
+
+File: `tests/unit/bash-confinement.test.ts` (new, same file as UT-309). One case per `GrantRule`
+(`NOT_ABSOLUTE`/`UNRESOLVABLE`/`INSIDE_WORKROOT` both directions/`COVERS_PROTECTED`/`GLOB`); all
+refusals returned, never just the first; a symlinked grant resolves to its realpath target;
+`formatGrantRefusals()` renders one line per refusal naming the offending entry + remedy. Same
+module-not-found red as UT-309 (one file, one collection failure).
+
+### UT-311 — `composeConfig()` refuses boot on an invalid `sandbox.allowHostPaths` grant
+- **status:** red
+- **traces:** DES-254, TASK-252
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v37
+
+File: `tests/unit/sandbox-config-wiring.test.ts` (new). A relative grant / a grant inside `workRoot`
+refuse boot, naming the offending entry; absent `sandbox` key ⇒ `allowHostPaths:[]` (the strictest
+posture); a valid real grant (a real `mkdtemp`'d directory, or `validateHostPathGrants`'s
+`UNRESOLVABLE` rule fires before the forwarding under test) survives boot and reaches the
+constructed gateway. Red reason (confirmed via direct re-run): the two refusal cases resolve
+instead of rejecting (`sandbox` is silently dropped — logged only as an "unrecognized config key"
+warning today); the two forwarding cases read `undefined` off `_config.confinement` (the field does
+not exist).
+
+### UT-312 — `protectedFiles` come from the file `loadFileConfig()` actually read
+- **status:** red
+- **traces:** DES-255, TASK-252
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v37
+
+File: `tests/unit/sandbox-config-wiring.test.ts` (new, same file as UT-311). `loadFileConfig()`
+returns `{config, path}` (path = the absolute file it read, `undefined` when none exists);
+`composeConfig(fileConfig, {configPath})` puts that EXACT path at `confinement.protectedFiles[0]`,
+`join(workRoot,'auth-tokens.db')` second, never a re-`resolve()`; no config file on disk ⇒
+`protectedFiles` is just the auth DB. (The "process cwd elsewhere" half of DES-255's boundary
+condition is proven by the `deps.configPath` case, not by `process.chdir()` — vitest's worker pool
+does not support changing the process cwd mid-run; this is a test-environment constraint, not a
+narrowed claim, since `composeConfig()` never re-derives the path from cwd once `deps.configPath`
+is supplied.) Red reason (confirmed via direct re-run): `loadFileConfig is not a function` (not
+exported yet) and `expected undefined to be '<path>'`/`to deeply equal [...]` (no `confinement`
+field yet).
+
+### UT-313 — the hop-2 wiring probe: `composeConfig()` forwards `sandbox.allowHostPaths` into the constructed gateway's confinement
+- **status:** red
+- **traces:** DES-253, ARCH-177, TASK-252, REQ-216 (K8 precedent)
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v37
+
+File: `tests/unit/compose-config-v2-wiring.test.ts` (extended, new `it()` beside the existing
+REQ-216/K8 `retries`/`timeoutMs` hop-2 lock). `sandbox` joins `EXCLUDED` (consumed by
+`composeConfig()` itself, never forwarded onto `ServerConfig` — same shape as the `gateway`
+exclusion); this flips UT-219's totality assertion **red** until `sandbox` joins
+`KNOWN_FILE_CONFIG_KEYS` (main.ts) — the exact wiring gap this drift-lock exists to catch (see
+UT-219's own v37 amendment above). The new `it()` uses a REAL `mkdtemp`'d grant directory (a
+non-existent path would trip `UNRESOLVABLE` before the forwarding under test). Red reason
+(confirmed via direct re-run, `npx vitest run tests/unit/compose-config-v2-wiring.test.ts`): 2
+failed / 60 passed — `expect(accounted).toEqual(known)` fails (`sandbox` on one side only) and
+`gwConfig.confinement?.allowHostPaths` reads `undefined`; the 60 pre-existing cases are unaffected
+(no regression).
+
+### UT-314 — `options.sandbox` is the builder's own output, at every construction
+- **status:** red
+- **traces:** DES-253, ARCH-176, TASK-253
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v37
+
+File: `tests/unit/bash-confinement-wiring.test.ts` (new). Deep-equals `buildBashConfinement()`'s own
+output for the SAME input (identity of decision, never a re-computation), via the injected
+`queryImpl`/`vi.mock` seam (same convention as
+`claude-agent-sdk-gateway-workspace-boundary.test.ts`); `confinement` absent ⇒ the workspace-only
+posture is still built, never `sandbox:undefined`; an absent root still emits `allowWrite:[]`
+(ARCH-176 bug-class regression guard — the "nothing to check"/"checked and clean" branches must not
+collapse). Red reason (confirmed via direct re-run,
+`npx vitest run tests/unit/bash-confinement-wiring.test.ts`): 4/4 failed — `call.options?.sandbox`
+is `undefined` on every case (the field is never set today).
+
+### UT-315 — the sandbox-unavailable failure is labelled with `SANDBOX_UNAVAILABLE`
+- **status:** red
+- **traces:** DES-259, ADR-083, TASK-253
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v37
+
+File: `tests/unit/bash-confinement-wiring.test.ts` (new, same file as UT-314). Drift-lock only: the
+exported constant equals the literal `'sandbox unavailable'` that ADR-083's revisit trigger quotes.
+**Deliberately narrow, named as a gap rather than fabricated**: the full `detail`-mapping/`enrich()`
+non-overwrite assertions DES-259 also specifies depend on spike S10's measurement of what an
+unavailable-sandbox failure actually looks like on the wire (unmeasured — no evidence file exists
+yet under `evidence/v37-spike/`); asserting a specific detection shape now would pin an
+implementation choice this gate has no evidence for. Left for Gate 6 to extend once S10 reports.
+Red reason (confirmed via direct re-run): `SANDBOX_UNAVAILABLE` is not exported yet.
+
+### UT-316 — `agent.confinement` — zero on refusal, exactly one per attempt on admission
+- **status:** red
+- **traces:** DES-256, ARCH-178, TASK-253
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v37
+
+File: `tests/unit/agent-confinement-events.test.ts` (new). An admitted call emits exactly one
+`agent.confinement` line carrying `attempt:1`. **Second case in this describe block is GREEN ON
+ARRIVAL, not red-first TDD**: "an unbound sink never throws" already holds today (`invoke()` runs
+fine with no sink bound at all, since no sink is ever consulted before this feature exists) —
+recorded as a regression floor `bindEventSink()` must preserve, same precedent as v36's UT-306.
+Confirmed via direct re-run (`npx vitest run tests/unit/agent-confinement-events.test.ts`): 3
+failed / 2 passed — `client.bindEventSink is not a function` on the admission-count case.
+
+### UT-317 — `agent.confinement` is emitted from the object the builder just returned, never re-derived
+- **status:** red
+- **traces:** DES-256
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v37
+
+File: `tests/unit/agent-confinement-events.test.ts` (new, same file as UT-316). `allowWrite` on the
+event equals the builder's output for THIS call's workspace. Red reason: `bindEventSink is not a
+function`.
+
+### UT-318 — `sdkVersion` is read mechanically off the installed package, never hand-copied
+- **status:** red
+- **traces:** DES-256
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v37
+
+File: `tests/unit/agent-confinement-events.test.ts` (new, same file as UT-316). Compares
+`agent.confinement.sdkVersion` against a FRESH read of the installed
+`@anthropic-ai/claude-agent-sdk/package.json` (`createRequire(import.meta.url).resolve(...)`,
+deliberately the SAME mechanism DES-256 prescribes for the SUT but a SEPARATE invocation, so this
+is not a re-computation of the SUT's own call). Red reason: `bindEventSink is not a function`.
+
+### UT-319 — a faked EACCES `tool_result` reaches `agent_log` via `onEvent` (DES-256 fallback plumbing)
+- **status:** green
+- **traces:** DES-256
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v37
+
+File: `tests/unit/agent-confinement-events.test.ts` (new, same file as UT-316). **GREEN ON ARRIVAL —
+a wiring lock, not red-first TDD, exactly as DES-256 frames it** ("a claim about the wire and
+explicitly not a claim about the confinement"): `_drain()`'s existing tool_call/tool_result
+streaming already threads ANY payload through `onEvent` unchanged, including one that happens to
+carry the string `EACCES` — confirmed via direct re-run
+(`npx vitest run tests/unit/agent-confinement-events.test.ts -t "UT-319"`) → 1/1 pass. Kept as a
+deliberate regression guard against this plumbing narrowing later (same convention as v21's
+gateway-effort.test.ts A-7 green-on-first-write case).
+
+### UT-320 — `findProjectMarkerAboveWorkspace()` — pure, real fs — the six-arm table
+- **status:** red
+- **traces:** DES-257
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v37
+
+File: `tests/unit/workroot-rewalk.test.ts` (new). Real fs, no injected deps (same convention as
+`workroot-guard.ts`'s own `assertWorkRootIsolated` tests). Five arms: `.git` at the workspace root
+(the engine's own `initGitBaseline`) → **allow**; `CLAUDE.md` at the workspace root → **allow**; a
+marker on an ancestor BETWEEN the workspace and `workRoot` → **refuse**; `workspace===workRoot`
+(degenerate config) → **allow**, short-circuited before the walk; a workspace that is a symlink into
+a project → **refuse** (the containment check itself fails — the symlink's real location is outside
+`workRoot` altogether). Red reason (confirmed via direct re-run,
+`npx vitest run tests/unit/workroot-rewalk.test.ts`): `findProjectMarkerAboveWorkspace is not a
+function` (module export absent) on all five.
+
+### UT-321 — the gateway wires the re-walk BEFORE `query()`
+- **status:** red
+- **traces:** DES-257, ARCH-180, TASK-253
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v37
+
+File: `tests/unit/workroot-rewalk.test.ts` (new, same file as UT-320). Through the injected
+`vi.mock('@anthropic-ai/claude-agent-sdk')` seam: a refusal calls `queryImpl` **ZERO** times and
+returns `{ok:false, reason:'terminal', retryable:false, detail: WORKROOT_INSIDE_PROJECT}` — this
+case is genuinely red (`queryMock` is currently called once; nothing refuses today). **The other two
+cases in this describe block are GREEN ON ARRIVAL** (regression guards, not new red): a `.git` at
+the workspace root already lets `query()` proceed (there is no re-walk to block it yet), and
+"workRoot unknown ⇒ skip, query() proceeds" is trivially true with no confinement configured at all
+— both will keep passing once the refusal case is wired, which is exactly their job. Confirmed via
+direct re-run: 1 failed / 2 passed.
+
+### UT-322 — the guide's "host path grants" paragraph
+- **status:** red
+- **traces:** DES-258, ARCH-107, TASK-256, REQ-117
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v37
+
+File: `tests/unit/authoring-guide.test.ts` (extended). Section titled "host path grants" (never
+"sandbox" — that word is already owned by the `node:vm` script-sandbox section); states Bash may
+write inside the run workspace and nowhere else, an escape arrives as an ordinary `EACCES` inside
+the tool result (never a typed engine refusal), and a shared host path is an operator grant in
+`rwe.config.json` visible per-run in `agent.confinement`. **Fourth case in this describe block is
+GREEN ON ARRIVAL** (a negative assertion true both before and after the section is written): no
+`GUIDE_EXAMPLES` entry names it (DES-258's own rule — an `EACCES` happens inside a tool result the
+workflow script never sees, so an example would teach an invalid one). Confirmed via direct re-run
+(`npx vitest run tests/unit/authoring-guide.test.ts`): 3 failed / 55 passed (the 3 new
+section-content cases fail on an empty slice — `text.search(/host path grants/i)` returns `-1`; the
+GUIDE_EXAMPLES case and all 55 pre-existing cases are unaffected).
+
+- **owner_decision:** pending — DES-258's own row (`04-design.md:9708`) already carries this marker
+  (指南要維持靜態段落,還是升級為即時渲染的 grant 清單) from the design gate; it is NOT newly
+  deferred here. Carried forward unresolved — it blocks Gate 8, not this gate. This UT is written
+  against the design's OWN chosen default (the static paragraph), which is what ships regardless of
+  how that marker is later answered; the alternative (a rendered live list) would replace this UT's
+  assertions, not add to them, per DES-258's own note.
+
+### VAL-253 — REQ-218: an agent's Bash cannot write outside the run workspace, or the path is a declared operator grant
+- **status:** red
+- **traces:** REQ-218
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v37
+
+File: `tests/acceptance/val-253-bash-confinement.test.ts` (new). Mock policy (acceptance — no SUT
+boundary mocked): real server + real `ClaudeAgentSdkGatewayClient` + a real local Ollama model + a
+real spawned `claude` CLI under the OS sandbox, `it.skipIf`-gated on `OLLAMA_BASE_URL` AND a real
+`bwrap` binary being present (same convention as VAL-019/VAL-023's provider gating — a bare `npm
+test` stays fast/hermetic; Gate 7.5 sets this up for real on the TASK-250 spike host). A value
+import of `buildBashConfinement` guarantees the WHOLE FILE is red at collection regardless of
+gating — same technique as VAL-019/VAL-023's own import-time red guard. Two cases: a real spawned
+agent's Bash write to an undeclared `$HOME` path does not land on disk (gated, the acceptance
+text's 「真跑」 clause — full proof is Gate 7.5's, once TASK-250's spike has run); a granted host
+path appears verbatim in the posture handed to the kernel (always asserted, the declared-grant
+clause 2b proof, via the real pure builder — not gated, since it needs no provider). Red reason
+(confirmed via direct re-run, `npx vitest run tests/acceptance/val-253-bash-confinement.test.ts`):
+`Failed to load url ../../src/gateway/bash-confinement.js` — module does not exist yet (0 tests
+collected, matching VAL-019/VAL-023's own collection-level red).
+
+### VAL-254 — REQ-219: `timeout-race.ts` and `session-options-builder.ts` are GONE, not merely unwired
+- **status:** red
+- **traces:** REQ-219
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v37
+
+File: `tests/acceptance/val-254-req219-dead-code.test.ts` (new). Real entrypoint: greps the ACTUAL
+`src`/`tests` tree on disk (the same technique TASK-254/255's own DoD uses) — this is the "delete"
+half's real proof for both modules; the "wire" half's real proof (REQ-021's re-walk) is VAL-024's
+re-pointed re-walk clause (see that file's v37 amendment below), not duplicated here, per DES-260's
+own rule that a "nothing imports the deleted file" fence is not acceptable evidence on its own.
+Five cases: both files no longer exist; nothing under `src`/`tests` still references either module
+name; the `session-options-builder.ts` zero-importer fence (`gateway-effort.test.ts`) is retired in
+the SAME commit as the module (INV-V37-3) — no replacement fence. Red reason (confirmed via direct
+re-run, `npx vitest run tests/acceptance/val-254-req219-dead-code.test.ts`): 5/5 failed — both files
+still exist, and both module names still have live references (production code + not-yet-retired
+tests).
+
+### v37 amendment — VAL-024 re-walk clause re-pointed at the production path (REQ-021/REQ-219)
+- File: `tests/acceptance/val-024-workroot-isolation.test.ts` (amended in place; clauses (b)/(c)
+  untouched and remain green). The old "session-init re-walk" describe block called the
+  soon-to-be-deleted `session-options-builder.ts`'s `buildSessionOptions` and asserted refusal on a
+  `.git` written AT the workspace cwd — the EXACT defect ARCH-180 found (wired as the architecture
+  first drafted it, this refused every seeded run, since the engine's own `initGitBaseline` writes
+  that same `.git`). Replaced with two cases against the real, exported
+  `findProjectMarkerAboveWorkspace()` (DES-257): a `.git` at the workspace root is now **ALLOWED**
+  (the regression guard for exactly the defect above); a marker on an ancestor BETWEEN the
+  workspace and `workRoot` is **REFUSED**. The now-unused `buildSessionOptions`/`ProviderProfile`
+  import and the `PROFILE`/`ALLOWLIST` consts (used only by the removed block) were removed —
+  nothing else in this file used them. Red reason (confirmed via direct re-run, `npx vitest run
+  tests/acceptance/val-024-workroot-isolation.test.ts`): 2 failed / 3 passed —
+  `findProjectMarkerAboveWorkspace is not a function` on both new cases; clauses (b)/(c) (3 cases)
+  unaffected. This is REQ-219's "wire" half real proof (its own row does not need a separate one —
+  see VAL-254 above, which covers the "delete" half instead).
+- This is the SAME re-walk evidence REQ-021's row (`rtm.md`) will need re-pointed at Gate 8 (per the
+  architect's own v37 Gate 2/3+4 notes in `rtm.md` — "re-pointing VAL-024's re-walk clause ... is
+  verification's ... work"); REQ-021's own row is intentionally NOT edited here (out of this gate's
+  impact closure, per the same rtm.md note), only the test file it cites is corrected.
+- **iter:** v37
+
+### v37 trace summary
+DES-252→UT-309; DES-254→UT-310/UT-311; DES-253→UT-313/UT-314; DES-255→UT-312; DES-256→UT-316/
+UT-317/UT-318/UT-319; DES-257→UT-320/UT-321; DES-258→UT-322; DES-259→UT-315; DES-260→VAL-254 (delete
+half) + VAL-024's re-pointed re-walk clause (wire half, REQ-021 cross-reference). REQ-218→VAL-253.
+REQ-219→VAL-254. REQ-018/REQ-037/REQ-117: no new VAL — unchanged behaviour, impact-closure context
+only (rtm.md's own v37 Gate 3+4 note; their rows are deliberately not edited at this gate either).
+No `owner_decision` newly deferred by this gate — DES-258's own pending marker (04-design.md:9708,
+written at the design gate) is carried forward unresolved, listed in this gate's report per the
+owner-deferral rule, and blocks Gate 8, not this gate.
+
+**Exit-gate self-check gaps, named for Gate 6 (v34/v36 precedent — a heads-up, not a DoD violation
+this gate owns):**
+- UT-315 (DES-259) is deliberately narrow: only the `SANDBOX_UNAVAILABLE` drift-lock is asserted.
+  The full detail-mapping / `enrich()` non-overwrite behaviour depends on spike S10's measurement
+  (no `evidence/v37-spike/S10.md` exists yet) — Gate 6's implementer should extend this test once
+  the spike reports what an unavailable-sandbox failure actually looks like on the wire, per
+  DES-259's own "if indistinguishable, the mapping cannot be applied" escape hatch.
+- VAL-019's clause 2/3 (`buildSessionOptions`) and VAL-023's clause-2 describe block
+  (`raceWithTimeout`) are NOT retargeted at this gate — both would be green-on-arrival wiring locks
+  (the production mechanisms they'd assert already ship), but retargeting them while
+  `session-options-builder.ts`/`timeout-race.ts` still exist on disk would leave two paths claiming
+  to prove the same clause. TASK-254/255's own DoD requires the retarget and the deletion in the
+  SAME commit — see the v37 notes on VAL-019 and VAL-023 above for the exact replacement text.
+- `tests/unit/gateway-effort.test.ts`'s `session-options-builder.ts stays FENCED` describe block is
+  untouched at this gate (VAL-254 asserts it is gone as of Gate 6, per DES-260's own "same commit as
+  the module" instruction) — Gate 6 deletes it alongside `session-options-builder.ts`, writing no
+  replacement fence (INV-V37-3).

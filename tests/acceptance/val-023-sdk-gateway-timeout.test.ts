@@ -10,8 +10,6 @@ import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { ClaudeAgentSdkGatewayClient } from '../../src/gateway/claude-agent-sdk-client.js';
-// Value import — module-not-found when absent (guarantees this file is RED at collection).
-import { raceWithTimeout } from '../../src/timeout-race.js';
 import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 const HUNG_PORT = 38201;
@@ -87,13 +85,32 @@ describe('VAL-023: REQ-020 clause 1 — a hung provider call is bounded, agent()
 });
 
 describe('VAL-023: REQ-020 clause 2 — the provider/timeout failure is visible in the AgentRecord, never smuggled as fake success text', () => {
-  it('the deterministic (injected Clock) outer race resolves ok:false with a timeout FailureEnvelope — the reusable primitive this real path is built on', async () => {
-    const { FixedClock } = await import('../../src/clock.js');
-    const { createSemaphore } = await import('../../src/agent-semaphore.js');
-    const clock = new FixedClock(new Date('2020-01-01T00:00:00.000Z'));
-    const sem = createSemaphore(1);
-    const result = await raceWithTimeout(() => new Promise<string>(() => {}), { clock, timeoutMs: 50, kill: () => {}, semaphore: sem });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.envelope.kind).toBe('timeout');
-  });
+  it('the run resolves ok:false with a timeout on the AgentRecord, and the process-global slot frees back to 0 (DES-260: kill-on-timeout is now Options.abortController, slot-free is RunManager.withSlot()\'s own finally — the old standalone race primitive is deleted)', async () => {
+    const run = await runScriptVia(mcpCall, [
+      "export const meta = { params: { agents: { hang: {",
+      "  model: { type: 'string', default: 'default' },",
+      "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
+      "  timeoutMs: { type: 'number', default: 5000 },",
+      "} } } };",
+      "const r = await agent('hang', { prompt: 'this will hang too' });",
+      "return r === null ? 'bounded' : 'leaked-non-null';",
+    ].join('\n'));
+    const runId = run['runId'] as string;
+    let finalStatus: string | undefined;
+    for (let i = 0; i < 30; i++) {
+      const s = await mcpCall('run_status', { runId });
+      finalStatus = s['status'] as string;
+      if (finalStatus === 'completed' || finalStatus === 'failed') break;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    expect(finalStatus).toBe('completed');
+    const status = await mcpCall('run_status', { runId });
+    const view = status['result'] as { agents: Array<{ label?: string; state: string; detail?: string }> };
+    const hangAgent = view.agents.find((a) => a.label === 'hang');
+    expect(hangAgent?.state).toBe('failed');
+    expect(hangAgent?.detail).toMatch(/timeout/);
+    const statusRes = await fetch(`http://127.0.0.1:${server.port}/api/status`);
+    const statusBody = await statusRes.json() as { agentSemaphore: { inUse: number } };
+    expect(statusBody.agentSemaphore.inUse).toBe(0);
+  }, 60000);
 });

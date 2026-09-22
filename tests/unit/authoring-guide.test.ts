@@ -450,3 +450,39 @@ describe('buildAuthoringGuide — v36: the untimed-call caveat and the refusalRe
     expect(text).toMatch(/error\.code|\bcode\b.*forg|forg.*code/i);
   });
 });
+
+// v37 (DES-258, ARCH-107, TASK-256, REQ-117, REQ-218): a new "host path grants" paragraph a cold
+// author cannot infer from the tool schema alone — what Bash may touch, what an escape looks like
+// from inside the sandbox (an ordinary EACCES, never a typed engine refusal), and where a shared
+// host path comes from (an operator grant, visible per-run in agent.confinement). Deliberately
+// titled "host path grants", never "sandbox" — authoring-guide.ts already owns that word for the
+// node:vm script sandbox (SANDBOX_GLOBALS section above), and the same collision ARCH-175 avoided
+// in the filesystem must not reappear in the one document a cold author reads.
+// Written test-first (Gate 5, RED): this section does not exist yet.
+describe('buildAuthoringGuide — v37: the host-path-grants paragraph (DES-258, REQ-218)', () => {
+  const text = buildAuthoringGuide(CEILINGS);
+
+  it('titles the new section "host path grants" — never "sandbox" (that word is already owned by the script sandbox section)', () => {
+    expect(text).toMatch(/host path grants/i);
+  });
+
+  it('states Bash may write inside the run workspace and nowhere else, and an escape arrives as an ordinary EACCES in the tool result, never a typed engine refusal', () => {
+    const section = text.slice(text.search(/host path grants/i));
+    expect(section).toMatch(/\bBash\b/);
+    expect(section).toMatch(/run workspace/i);
+    expect(section).toMatch(/EACCES/);
+    expect(section).not.toMatch(/typed engine (refusal|error)/i);
+  });
+
+  it('states a shared host path is an OPERATOR grant in rwe.config.json, visible per-run in the agent.confinement log line', () => {
+    const section = text.slice(text.search(/host path grants/i));
+    expect(section).toMatch(/operator/i);
+    expect(section).toMatch(/rwe\.config\.json/);
+    expect(section).toMatch(/agent\.confinement/);
+  });
+
+  it('adds NO GUIDE_EXAMPLES entry for this section — an EACCES happens inside a tool result the workflow script never sees', () => {
+    const titles = GUIDE_EXAMPLES.map((ex: { title: string }) => ex.title.toLowerCase());
+    expect(titles.some((t: string) => t.includes('host path') || t.includes('sandbox') || t.includes('eacces'))).toBe(false);
+  });
+});

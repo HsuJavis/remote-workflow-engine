@@ -1,20 +1,25 @@
-// VAL-024 (REQ-021): WorkRoot Project-Isolation Guard — acceptance
+// VAL-024 (REQ-021 / REQ-219): WorkRoot Project-Isolation Guard — acceptance
 // Real-tier: real fs operations (no injected existsImpl/realpathImpl), real function calls, no
 // mock of the SUT's own boundaries. Three clauses from REQ-021:
 //   (b) boot fails fast with WORKROOT_INSIDE_PROJECT naming the offending ancestor + typed fields
 //   (c) clean workRoot → no false positive
-//   session-init re-walk → buildSessionOptions refuses when cwd carries a project marker
+//   session-init re-walk → findProjectMarkerAboveWorkspace() refuses when an ancestor BETWEEN the
+//     workspace and workRoot carries a project marker
+//
+// v37 (DES-257, ARCH-180, REQ-219): the re-walk clause is RE-POINTED at the production path —
+// `session-options-builder.ts` (the module this clause used to call through) has zero production
+// importers and is being deleted this iteration (ADR-085); `findProjectMarkerAboveWorkspace()` is
+// the wired replacement (walking ABOVE the workspace, not at it). The SEMANTICS also change, not
+// just the target: a `.git` written into the run's OWN workspace root is now ALLOWED (the engine
+// creates it itself via `initGitBaseline`) — the pre-v37 assertion here (refuse on a `.git` AT cwd)
+// asserted the exact defect ARCH-180 found ("wired as the architecture first wrote it, this refused
+// every seeded run"). The refusal case is now a marker on an ancestor BETWEEN the workspace and
+// workRoot. Written test-first (Gate 5, RED): findProjectMarkerAboveWorkspace does not exist yet.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertWorkRootIsolated, WorkRootInsideProjectError } from '../../src/workroot-guard.js';
-import { buildSessionOptions, type ProviderProfile } from '../../src/session-options-builder.js';
-
-const PROFILE: ProviderProfile = {
-  providerClass: 'non-anthropic', supportsExtendedThinking: false, timeoutMs: 30000, retries: 1,
-};
-const ALLOWLIST = ['Read', 'Write'];
 
 let tmpDir: string;
 
@@ -66,23 +71,23 @@ describe('VAL-024 REQ-021 clause (c): clean workRoot — no false positive', () 
   });
 });
 
-describe('VAL-024 REQ-021 session-init re-walk: .git written by agent causes build refusal', () => {
-  it('refuses buildSessionOptions when the run-workspace cwd has a real .git file (session-init re-walk, DES-031)', () => {
+describe('VAL-024 REQ-021/REQ-219 session-init re-walk: production path, walking ABOVE the workspace (DES-257)', () => {
+  it("a .git written by the ENGINE ITSELF at the run workspace root is ALLOWED (initGitBaseline regression guard — this is what broke every seeded run under the architecture's first draft)", async () => {
+    const { findProjectMarkerAboveWorkspace } = await import('../../src/workroot-guard.js');
     const workRoot = tmpDir;
-    const cwd = join(tmpDir, 'runs', 'run-1');
-    mkdirSync(cwd, { recursive: true });
-    // Simulate an agent writing a .git marker into its own workspace after boot
-    writeFileSync(join(cwd, '.git'), 'gitdir: /something');
+    const workspace = join(workRoot, 'workflows', 'wf', 'runs', 'run-1');
+    mkdirSync(workspace, { recursive: true });
+    writeFileSync(join(workspace, '.git'), 'gitdir: /something');
+    expect(findProjectMarkerAboveWorkspace(workspace, workRoot)).toBeNull();
+  });
 
-    // After DES-031: buildSessionOptions must re-walk from cwd up to workRoot and refuse on a hit.
-    // Currently: no re-walk → returns ok:true → expect(out.ok).toBe(false) fails → RED
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const out = (buildSessionOptions as any)(
-      'local-qwen', PROFILE,
-      { modelId: 'qwen2.5:7b', cwd, workRoot },
-      {}, [], ALLOWLIST,
-    );
-    expect(out.ok).toBe(false);
-    expect((out as { ok: false; error: string }).error).toMatch(/PROJECT/i);
+  it('a marker on an ancestor BETWEEN the workspace and workRoot is REFUSED', async () => {
+    const { findProjectMarkerAboveWorkspace } = await import('../../src/workroot-guard.js');
+    const workRoot = tmpDir;
+    const wfDir = join(workRoot, 'workflows', 'wf');
+    const workspace = join(wfDir, 'runs', 'run-1');
+    mkdirSync(workspace, { recursive: true });
+    writeFileSync(join(wfDir, '.git'), 'gitdir: /something');
+    expect(findProjectMarkerAboveWorkspace(workspace, workRoot)).toBe(wfDir);
   });
 });

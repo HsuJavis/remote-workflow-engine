@@ -9810,3 +9810,52 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   (unrelated to REQ-217, unchanged since v27).
 - **refactor:** none — surgical, three doc comments, one index, one new test case; no existing
   behavior/structure changed.
+
+### IMPL-371 — TASK-250: the blocking spike — S1–S10, ten real dated evidence files, one host-specific finding that gates the rest of v37
+- **status:** done
+- **traces:** TASK-250, ARCH-175, ARCH-025, ADR-082, ADR-083
+- **greens:** — (this TASK returns measurements, not code; no test suite gates it — the DoD is the
+  `grep -l '^- \*\*verdict:\*\*' evidence/v37-spike/S*.md | wc -l` → 10 check itself, run and confirmed)
+- **files:** evidence/v37-spike/S1.md, evidence/v37-spike/S2.md, evidence/v37-spike/S3.md,
+  evidence/v37-spike/S4.md, evidence/v37-spike/S5.md, evidence/v37-spike/S6.md,
+  evidence/v37-spike/S7.md, evidence/v37-spike/S8.md, evidence/v37-spike/S9.md,
+  evidence/v37-spike/S10.md
+- **commit:** (uncommitted at write time — evidence files only, no src/ touched)
+- **iter:** v37
+- **note:** All ten arms run for real against the actual installed `@anthropic-ai/claude-agent-sdk@0.3.199`
+  on this host (`javis`, Linux 7.0.0-22-generic x86_64), never reasoned from documentation alone —
+  each `S<n>.md` carries the exact command and raw output. **The one finding that dominates the
+  other nine**: `Options.sandbox` is confirmed live (not inert — S1/S2, static read of the installed
+  `sdk.mjs`'s `aI()` merge function plus a captured real spawn line showing it reaches the CLI as
+  `--settings {"sandbox":...}`), but **no Bash command can complete under `sandbox.enabled:true` on
+  this host at all**: `bwrap` succeeds, but the CLI's own `apply-seccomp` helper needs a second nested
+  unprivileged user namespace and is denied by this host's `/etc/apparmor.d/bwrap-userns-restrict`
+  AppArmor policy (`unpriv_bwrap` profile does `audit deny capability` on everything bwrap execs
+  inside its sandbox, including `apply-seccomp`'s own `CAP_SYS_ADMIN` need) — root-caused by reading
+  the actual policy file on this host, not guessed. Obtained a user-space `socat` (no root: `apt-get
+  download` + `dpkg-deb -x`) to get past the dependency preflight and isolate this as the true
+  blocker, and tried (and failed) a `sandbox.seccomp.applyPath` no-op-shim workaround. Consequences
+  per arm: **S1** inconclusive (mechanism live, execution blocked); **S2** arm 2 confirmed
+  byte-identical to arm 1 in a real run (no further fallback needed); **S3** not exercised (arm 1 is
+  live, ladder never reaches it); **S4** POSITIVE — `PostToolUseFailure` fires for a sandbox-caused
+  Bash failure with `tool_name`/`tool_input.command`/`error`, so `agent.confinement_denied`
+  (ARCH-178/DES-256) should be built; **S5** NEGATIVE — a workspace `.claude/settings.json` with
+  `sandbox.enabled:false` + `settingSources:['project']` did NOT weaken the SDK-supplied sandbox
+  (still failed closed identically); **S6** bwrap/unshare present and permissive
+  (`unprivileged_userns_clone=1`, `max_user_namespaces=123851`), socat absent by default; **addendum,
+  empirically confirmed via a real spawn's debug log**: `query()` spawns the binary bundled inside
+  `@anthropic-ai/claude-agent-sdk-linux-x64` (**2.1.199**), never the PATH-installed `claude`
+  (**2.1.278**), unless `pathToClaudeCodeExecutable` is set — DES-253's exact-pin rider needs to track
+  the bundled binary's version, not whatever is on the host's PATH; **S7/S8** could not measure (same
+  S1 blocker) — `DENY_READ_MODE` stays `'enumerated'` and `MASK_PROVIDER_ENV` stays `false`, both per
+  DES-252's own conservative-default fallback, not flipped on unverified evidence; **S9** NO — a real
+  SDLC-shaped workflow does not complete under confinement on this host (deterministic first-Bash-call
+  failure, no EACCES inventory producible; bare `bwrap` namespace setup itself measured cheap,
+  ~0–10ms/call, 5 runs); **S10** YES, distinguishable — the sandbox-unavailable failure has a
+  different message *shape* (`subtype:"error_during_execution"` + `errors` array + `num_turns:0`) AND
+  a stable greppable text prefix (`"Sandbox required but unavailable: "`), captured against a real
+  contrastive "ordinary terminal failure" (a bad-model-name run, `subtype:"success"` + `result` string
+  + `api_error_status:404`) run on this same host for comparison. **Residual flagged for the ADR-083
+  owner**: the ADR's revisit trigger is worded around bubblewrap *presence*; this host demonstrates the
+  functionally-equivalent failure mode (`failIfUnavailable:true` would refuse every run) with
+  bubblewrap *present* — recorded, not silently absorbed as a pass.

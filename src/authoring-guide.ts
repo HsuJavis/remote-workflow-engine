@@ -559,6 +559,24 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
 
   parts.push(
     section(
+      'Host path grants',
+      // v37 (DES-258, ARCH-107, TASK-256, REQ-117, REQ-218): the fact a cold author cannot infer
+      // from the tool schema alone — what Bash may touch on the host filesystem, what an escape
+      // looks like from inside it, and where a shared path comes from. Static text, three facts,
+      // no GUIDE_EXAMPLES entry (an EACCES happens inside a tool result the workflow script never
+      // sees, so an example demonstrating one would teach an invalid example).
+      '`Bash` may write inside the run workspace and nowhere else. A write outside it arrives as ' +
+        "an ordinary `EACCES` inside the agent's own tool result, not as an engine refusal — a " +
+        'script that shells out to a global cache sees a failed command, not a special error your ' +
+        'script can branch on.\n\n' +
+        'A shared host path is possible but is an **operator grant** in `rwe.config.json`, never ' +
+        "something a script requests — the list applied to a given run appears in that run's own " +
+        '`agent.confinement` log line.',
+    ),
+  );
+
+  parts.push(
+    section(
       'Prompt layering',
       // v34 (DES-229, TASK-230, REQ-202/203): after the `agentType` mechanism's retirement there
       // are exactly two author/caller segments, plus the engine's own scaffolding — nothing else

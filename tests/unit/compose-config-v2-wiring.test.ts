@@ -310,6 +310,12 @@ const EXCLUDED: Record<string, string> = {
   anthropicAuth: 'sdk branch only — passed to ClaudeAgentSdkGatewayClient, not onto ServerConfig',
   // Covered by its own cases above (the raw role map is TRANSFORMED, not copied).
   principals: 'validated + transformed by normalizePrincipals — covered by its own two cases above',
+  // v37 (DES-253, ARCH-177, TASK-252, REQ-218): consumed by composeConfig() itself — it lands on
+  // the constructed gateway's own confinement config, never on ServerConfig (same shape as the
+  // `gateway` exclusion above). This EXCLUDED row flips UT-219's totality assertion RED until
+  // `sandbox` joins `KNOWN_FILE_CONFIG_KEYS` (main.ts) — that is the correct red: the wiring gap is
+  // exactly what this drift-lock exists to catch.
+  sandbox: "consumed by composeConfig() itself: it lands on the constructed gateway's own config, never on ServerConfig",
 };
 
 const PROBES: Record<string, unknown> = {
@@ -375,5 +381,25 @@ describe('every KNOWN_FILE_CONFIG_KEYS entry is probed or excluded (UT-219, defe
     expect(gwConfig.retries).toBe(3);
     expect(gwConfig.timeoutMs).toBe(5000);
     expect(attemptsFor(gwConfig.retries, gwConfig.timeoutMs)).toBe(attemptsFor(3, 5000));
+  });
+
+  // v37 (UT-313, DES-253, ARCH-177, TASK-252, REQ-218): the SAME hop-2 class as the retries/
+  // timeoutMs probe above — `sandbox` is EXCLUDED from the PROBES sweep (it never lands on
+  // ServerConfig at all), so its own forwarding into the constructed gateway needs its own case,
+  // exactly as ARCH-177 prescribes ("this hop is the documented composeConfig bug class ... and the
+  // probe is not optional"). The grant must be a REAL directory outside workRoot, or
+  // validateHostPathGrants()'s UNRESOLVABLE/INSIDE_WORKROOT refusal fires before the forwarding this
+  // test asserts is ever reached.
+  it("sdk branch: composeConfig() forwards sandbox.allowHostPaths into the constructed gateway's confinement (REQ-218/ARCH-177)", async () => {
+    const { mkdtempSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-ccwiring-workroot-'));
+    const grant = mkdtempSync(join(tmpdir(), 'rwe-ccwiring-grant-'));
+    const cfg = await composeConfig({ gateway: 'sdk', workRoot, sandbox: { allowHostPaths: [grant] } } as any, FAKE_DEPS);
+    const gwConfig = (cfg.gateway as unknown as { _config: { confinement?: { allowHostPaths?: readonly string[] } } })._config;
+    expect(gwConfig.confinement?.allowHostPaths).toEqual([grant]);
+    rmSync(workRoot, { recursive: true, force: true });
+    rmSync(grant, { recursive: true, force: true });
   });
 });

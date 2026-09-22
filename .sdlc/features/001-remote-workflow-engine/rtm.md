@@ -237,6 +237,8 @@ in the same re-run — no regression on REQ-138's counts card).
 | REQ-215 | 結構化失敗標記要能穿過 sandbox 抵達 run 層 (v36) | ARCH-165, ARCH-166, ARCH-167, ARCH-168 | DES-248 | TASK-246 | IMPL-365 | IT-298, UT-292, UT-304, VAL-250 | ✅ |
 | REQ-216 | v35 審查歸檔的八條殘留(K1–K8)逐條結清 (v36) | ARCH-169, ARCH-170, ARCH-171, ARCH-172, ARCH-173 | DES-241, DES-247, DES-249 | TASK-239, TASK-245, TASK-247 | IMPL-360, IMPL-364, IMPL-366 | IT-297, UT-292, UT-293, UT-297, UT-298, UT-303, UT-305, VAL-251 | ✅ |
 | REQ-217 | 消除清單路徑的擴展懸崖,且不改變數字的語意 (v36 追加,業主裁決 K5) | ARCH-174 | DES-250, DES-251 | TASK-249 | IMPL-368, IMPL-369, IMPL-370 | IT-300, UT-307, UT-308, VAL-252 | ✅ |
+| REQ-218 | agent 的 Bash 必須受工作區約束,或其突破必須是申報過的 (v37) | ARCH-175, ARCH-176, ARCH-177, ARCH-178 | DES-252, DES-253, DES-254, DES-255, DES-256, DES-258, DES-259 | TASK-250, TASK-251, TASK-252, TASK-253, TASK-256 | — | UT-309, UT-310, UT-311, UT-312, UT-313, UT-314, UT-315, UT-322, VAL-253 | ⏳ 本輪未到驗證 |
+| REQ-219 | 有綠測試、production 零使用的安全模組,要嘛接線要嘛刪除 (v37) | ARCH-179, ARCH-180 | DES-257, DES-260 | TASK-253, TASK-254, TASK-255 | — | UT-316, UT-317, UT-318, UT-319, UT-320, UT-321, VAL-254 | ⏳ 本輪未到驗證 |
 
 ## v36 Gate 7.5 update (2026-09-22, validator)
 
@@ -335,3 +337,52 @@ does not even define, both already reported in 08-validation.md's trace section 
 in this matrix at all.** This predates v33 and is out of this fix-mode iteration's scope (REQ-201/
 REQ-116/REQ-117 only) — recorded here rather than silently leaving the matrix looking complete for a
 range it never covered.
+
+## v37 Gate 2 update (2026-09-22, architect)
+
+Added the REQ-218 / REQ-219 rows above at **architecture** time (same convention as the v36 REQ-217
+row: this file has no `--rtm` CLI path and is hand-written to mirror `trace.py`'s `build_matrix()`).
+Only the ARCH column is filled — DES/TASK/IMPL/VERIFICATION stay `—` and `Real-verified` is
+deliberately `⏳ 本輪未到驗證`, not `⚠️`: the downstream columns are the design, test-first,
+implementation and validation gates' to fill, and a blank column at Gate 2 is the truth rather than a
+defect. REQ-218's real-tier proof is required by its own acceptance text (a live run in which an
+agent's Bash write to `$HOME` is refused, or the path appears in the granted list) and belongs to
+Gate 7.5.
+
+**Two rows this gate deliberately did NOT edit**, both outside the v37 impact closure and both
+owned by validation:
+
+- **REQ-021** (`ARCH-019 | … | VAL-024, VAL-030 | ✅`) — the panel measured that its *intra-run
+  re-walk* clause has **no production implementation at all** (`findProjectMarkerAncestor` has no
+  `src/` caller outside the module v37 deletes) and that `VAL-024` verifies that clause against the
+  unwired module, while the *boot-time* clause is genuinely wired with its own real evidence
+  (`VAL-030`). ARCH-180 wires the missing line into production in the same commit that deletes the
+  module; **re-pointing VAL-024's re-walk clause (and VAL-019's clause 2/3) at the production path is
+  verification's and validation's work**, and this row should be revisited by them — not flipped here
+  on an architecture gate's say-so.
+- **REQ-016 / REQ-020** — `val-023-sdk-gateway-timeout.test.ts` is **rewritten** against the
+  production timeout path rather than deleted (ARCH-179), so neither row loses evidence; the
+  re-statement of what VAL-023 now proves belongs to the same downstream gates.
+
+**v37 Gate 3+4 update (2026-09-22, designer).** REQ-218/REQ-219 rows gained their DES and TASK
+columns (DES-252..260 / TASK-250..256). REQ-018/REQ-037/REQ-117 rows are deliberately NOT edited —
+they are impact-closure context, their own chains are unchanged, and the v37 items that touch them
+reach them through ARCH-016/ARCH-025/ARCH-107 (the same rule Gate 2 applied). REQ-021/REQ-016/REQ-020
+stay untouched for the same reason: the re-walk wiring and the `val-023` rewrite ride REQ-219's own
+rows, and re-pointing their evidence is validation's work, not a new trace edge here.
+
+**v37 Gate 5 update (2026-09-22, verifier).** REQ-218/REQ-219 rows gained their verification column
+(UT-309..322, VAL-253, VAL-254 — all `red`, unimplemented, confirmed via direct test runs; see
+`05-tests.md`'s own v37 section for the per-item red reasons). Real-verified stays `⏳ 本輪未到驗證`
+— no `real:true` evidence exists yet; that is Gate 7.5's, gated on TASK-250's blocking spike.
+**REQ-021's row is re-touched, per Gate 2/3+4's own instruction that this is verification's work**:
+`VAL-024`'s re-walk clause (still the SAME item named in REQ-021's Verification column) is
+re-pointed at the production `findProjectMarkerAboveWorkspace()` (DES-257) and now genuinely fails
+(2/5 cases red) — REQ-021's own row is NOT edited (its chain, its ✅, and its `VAL-024`/`VAL-030`
+citation are unchanged; the item behind that citation changed what it proves, not which REQ it
+proves it for — a distinction this same file's v37 Gate 2 note already anticipated). REQ-016/
+REQ-020's `val-023` rewrite and REQ-016's `val-019` clause 2/3 retarget are NOT done at this gate —
+see `05-tests.md`'s own "named for Gate 6" note: both would be green-on-arrival wiring locks, and
+retargeting them before `timeout-race.ts`/`session-options-builder.ts` are actually deleted would
+leave two paths claiming to prove the same clause; TASK-254/255 bundle the retarget with the
+deletion in one commit. REQ-018/REQ-037/REQ-117 rows remain untouched, same reason as Gate 3+4.

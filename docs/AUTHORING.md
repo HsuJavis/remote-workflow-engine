@@ -61,6 +61,12 @@ Two layers are **settable**, on the tool-calling (SDK gateway) path, and the fir
 
 `allowedTools: []` means no tools at all, and for a prose-only task that is usually what you want — especially on a smaller model. A smaller model handed a working tool surface tends to answer with a tool call rather than with prose: ask it to produce a summary while it holds `Write`, and the reply can come back as a tool-call envelope your script then has to unwrap. Emptying the surface removes the option and the model answers in text. It also makes the call markedly cheaper — the tool definitions are prompt tokens on every turn (measured on this engine: 162 input tokens with an empty surface against 1722 with the default one, for the same prompt).
 
+## Host path grants
+
+`Bash` may write inside the run workspace and nowhere else. A write outside it arrives as an ordinary `EACCES` inside the agent's own tool result, not as an engine refusal — a script that shells out to a global cache sees a failed command, not a special error your script can branch on.
+
+A shared host path is possible but is an **operator grant** in `rwe.config.json`, never something a script requests — the list applied to a given run appears in that run's own `agent.confinement` log line.
+
 ## Prompt layering
 
 After v34 there are exactly two author/caller segments in the prompt a model receives: the script's own `prompt` argument to `agent()`, then a caller-supplied `appendPrompt` override, framed inline as `<user-instructions untrusted="true">…</user-instructions>`. The engine adds only its own scaffolding around them (a schema suffix and a retry nudge) — it does not decide whether the appended segment is an authorized override or a foreign injection. An author who wants the appended segment to carry override force has to write the adoption rule into their OWN prompt; the engine draws no such line on the author's behalf.

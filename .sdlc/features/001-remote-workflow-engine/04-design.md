@@ -1109,7 +1109,8 @@ Per-tier mock policy: **unit** may mock freely — McpRegistry(InMemory store), 
 - **status:** draft
 - **traces:** ARCH-019, TASK-038
 - **signature:** one pure predicate, two call sites — a throwing boot wrapper and a non-throwing session-build re-walk; `realpathSync` canonicalization, injected fs seams.
-- **iter:** v3
+- **v37 amendment (REQ-219, ARCH-180, ADR-085, DES-257 — the session-init call site moves into production for the FIRST time, and its start point is corrected):** the second call site named below was never wired — it lived only in `session-options-builder.ts`, which v37 deletes — so this row's 「session-build re-walk」 has been a description of code no run executed. It is now wired in the gateway before `query()` (DES-257) through a new thin export `findProjectMarkerAboveWorkspace(workspace, workRoot, deps?)`, and **two things change with it**: (1) the walk starts at `dirname(workspace)`, **not at the workspace itself**, preceded by an `isPathContained(realpath(workspace), workRoot)` containment check — wired as written it would have refused every seeded run, because the engine `git init`s each run workspace (`initGitBaseline`) and seed materialization deliberately keeps `CLAUDE.md`; (2) the refusal is `{ok:false, reason:'terminal', retryable:false}` — `reason` alone does not stop `invoke()`'s retry loop, which gates on `retryable === false`. The boot call site (`assertWorkRootIsolated`, `stopAt=/`) is **unchanged and still genuinely wired**. `traces:` untouched; REQ-021 stays outside the v37 closure.
+- **iter:** v3  <!-- v37 amendment above; `iter:` records ORIGIN, not the last edit — v33 Decision-rationale item 22 / the F6-1 ruling: bumping a DES `iter:` buys nothing and manufactures low 漂移 flags on its existing tests -->
 
 ```ts
 // pure: the single predicate. realpathSync FIRST (resolve() misses a symlinked workRoot into a git repo — Adv#5).
@@ -2712,8 +2713,8 @@ classDiagram
   - **`thinkingFor()` (`claude-agent-sdk-client.ts:325`, wired at `:527`) remains the SOLE writer of `options.thinking` and takes the effort directive as an input.** It exists because unconditional extended thinking made every real SDK+local-Ollama call fail with a 400 after ~4 minutes (Gate 7.5 round 3). A second assignment site re-opens that shipped defect on the DEFAULT path. Non-Anthropic aliases get the explicit `{applied:false, reason:'thinking disabled for non-Anthropic alias (D-F6)'}` no-op entry. **Regression pin:** non-Anthropic alias + `effort:'max'` ⇒ `options.thinking` byte-identical to today.
   - Per-client wire assertion, one shared contract test parameterized over both impls (a third client inherits it): LiteLLM — spy `fetchImpl` captures the body, `low` vs `max` differ at `body[param]`; SDK — captured `Options` differ for an Anthropic alias at two effort levels. Both UT-tier, no network.
   - Effort-absent request composition is **byte-identical to pre-v21 on both clients** (pinned).
-  - `session-options-builder.ts` stays unwired (ADR-006), guarded by a standing zero-`src/`-importer assertion that retires when the security-hardening track wires the module deliberately.
-- **iter:** v21
+  - ~~`session-options-builder.ts` stays unwired (ADR-006), guarded by a standing zero-`src/`-importer assertion that retires when the security-hardening track wires the module deliberately.~~ **v37 (REQ-219, ADR-085, ARCH-180, TASK-255): SUPERSEDED — this IS that track.** The module is neither unwired nor wired but **deleted**, together with its unit test and that standing fence (`gateway-effort.test.ts:263`) in the same commit; left standing the fence would assert, greenly and forever, that nothing imports a file that no longer exists. ADR-006's own decision — effort mapping lives in `src/params`/`providers.ts`, `thinkingFor()` stays the sole writer of `options.thinking` — is **unaffected**: every other bullet on this row still holds, and nothing in this DES's wire behaviour changes.
+- **iter:** v21  <!-- v37 amendment above; `iter:` records ORIGIN, not the last edit — v33 Decision-rationale item 22 / the F6-1 ruling: bumping a DES `iter:` buys nothing and manufactures low 漂移 flags on its existing tests -->
 
 ### DES-107 — workflow-bound problem reports
 - **status:** draft
@@ -9396,3 +9397,493 @@ strengthen the other lens's position; they are taken.
     already correlate); log rotation inside the engine (ADR-078 — the stream is a shell redirect, so
     `logrotate`/systemd is the operator's existing tool; what v36 owes is the disclosure, and
     DES-242 ships it).
+
+## v37 design entries (REQ-218/REQ-219 — ARCH-175..180 + ARCH-107/016/025/017 amendments, ADR-082..085) — DES-252..260
+
+> Numbering note: v36's REQ-217 follow-up already took **DES-251**, so the v37 slice starts at **DES-252**
+> (the panel's r1/r2 drafts numbered these DES-251..257; the mapping is +1 from DES-252 onward).
+
+### Real-tier validation paths & per-tier mock policy — v37
+
+**Mock policy (unchanged rule, restated because this slice is security-shaped).** *Unit*: mock freely
+— the seams already exist (`queryImpl`, `existsImpl`/`realpathImpl`, `createEventSink({write})`); no
+new seam shape is invented. *Integration*: real adjacent components (`composeConfig()` constructs a
+real gateway), mock only third-party network. *E2E/acceptance*: **must not mock the SUT's own
+boundaries** — a real `claude` subprocess, a real workspace, real config on disk.
+**The rule this slice adds, and it binds the verifier: no UT in v37 may be cited as evidence that the
+confinement confines.** Three facts are knowable only from a real run — that `Options.sandbox` is
+honoured at all (`SandboxSettings` is `z.core.$loose`: nothing rejects a wrong shape), that a denial
+produces any observable signal (S4), and that a real workflow still completes (S9).
+
+| REQ | Real-tier path the validator runs (real entrypoint + real wiring) |
+|---|---|
+| REQ-218 | Remote host, real engine booted from `rwe.config.json`: run a workflow whose agent's `Bash` writes `$HOME/.cache/<name>` → **the write fails with `EACCES` inside the agent's own tool result** and the run's `agent.confinement` line shows the effective `allowWrite`; then grant that path in `rwe.config.json`, reboot, re-run → the path appears **verbatim** in `allowWrite` and the write succeeds. Both endings observable, neither by parsing a shell command (spike S1 is the same apparatus). |
+| REQ-018 | Same boot, with `$HOME` granted: an agent `Bash` running `cat <rwe.config.json>` and `cat <workRoot>/auth-tokens.db` **still fails** — `denyRead` + `credentials.files[].mode:'deny'` are expressed independently of `allowWrite`. This is the property no declaration-only design can state (spike S2's scenario). |
+| REQ-037 | Spike **S8** on the real host: `env` inside the agent's shell with `credentials.envVars[].mode:'mask'` set — the provider keys are hidden **and** the CLI still authenticates. Positive ⇒ the field joins DES-252's posture this iteration (ARCH-025); negative ⇒ a filed v38 REQ, never an unstated assumption. |
+| REQ-219 | `tests/acceptance/val-023-sdk-gateway-timeout.test.ts` **rewritten and still real-tier** (real server, fault-injected hung endpoint): the run resolves `ok:false`/timeout and `semaphoreGauge().inUse` returns to 0 — i.e. the mechanism that actually ships. Plus `val-024`'s re-walk clause and `val-019`'s clauses 2/3 re-pointed at the production path with their **changed** semantics (DES-260). |
+| REQ-117 | ARCH-108's cold-author probe re-run against the **served** guide (`workflow_authoring_guide` over real MCP HTTP): a cold model that has read only the guide writes a workflow that does not assume a writable `$HOME`. This is also the only honest measurement of the host-path-grants paragraph (DES-258). |
+
+**Seam consistency.** Both v37 functions that touch the filesystem take injected probes and take them
+on *every* path: `validateHostPathGrants(grants, ctx, realpathImpl?)` and
+`findProjectMarkerAboveWorkspace(workspace, workRoot, {existsImpl?, realpathImpl?})` — defaults are
+supplied *inside* `workroot-guard.ts`/`bash-confinement.ts`, never at the gateway call site, so the
+gateway acquires no `node:fs` import and stays testable as 「fake the SDK, assert the `Options`」.
+**Nothing in v37 reads a clock or a store** — the builder is pure and the sink stamps `at` itself; this
+is the first slice in four iterations with zero clock-injection questions, and that is a property to
+keep, not a coincidence to rely on.
+
+### DES-252 — `buildBashConfinement()` — the whole posture as one pure function
+- **status:** draft
+- **traces:** ARCH-175, ARCH-016, ARCH-025, TASK-251
+- **signature:**
+  ```ts
+  // src/gateway/bash-confinement.ts — PURE: no fs, no process, no env, no clock.
+  // Imports SandboxSettings TYPE-ONLY from @anthropic-ai/claude-agent-sdk (compiler as the only guard).
+  export const DENY_READ_MODE = 'enumerated';            // fixed by spike S7; a parameter, NEVER a config key
+  export const MASK_PROVIDER_ENV = false;                // fixed by spike S8 (see the conditional field below)
+  export const ENGINE_STATE_DENY = ['store','catalog.db','auth-tokens.db','cas','assets',
+                                    'webhooks.db','continuations.db','schedules.db'] as const;
+  export interface ConfinementInput {
+    readonly root: string | undefined;             // this call's workspace (req.workspace ?? cfg.cwd)
+    readonly grantedHostPaths: readonly string[];  // validated + realpath'd at boot (DES-254)
+    readonly protectedFiles: readonly string[];    // absolute, from the loader (DES-255)
+    readonly workRoot: string | undefined;
+    readonly denyReadMode: 'enumerated' | 'workroot';
+  }
+  export function buildBashConfinement(i: ConfinementInput): SandboxSettings;
+  ```
+  Returns, with every field fixed here because the posture IS the design: `enabled:true`;
+  `failIfUnavailable:true`; `autoAllowBashIfSandboxed:true`; `allowUnsandboxedCommands:false`;
+  `filesystem.allowWrite = root ? [root, ...grants] : []`; `filesystem.allowRead = root ? [root, ...grants] : []`;
+  `filesystem.denyRead = mode==='workroot' ? [workRoot, ...protectedFiles]
+   : [...(workRoot ? ENGINE_STATE_DENY.map(s => join(workRoot, s)) : []), ...protectedFiles]`
+  — **the `workRoot ?` guard is load-bearing, not defensive noise**: `join(undefined, s)` throws a
+  `TypeError` before any output filter could run, and an absent `workRoot` is exactly UT arm (3);
+  `filesystem.denyWrite = root ? [join(root,'.claude','settings.json'), join(root,'.claude','settings.local.json')] : []`;
+  `credentials.files = protectedFiles.map(path => ({path, mode:'deny'}))`.
+- **boundary conditions:**
+  - **Total, never `undefined`.** `root === undefined` **and** `root === ''` take the same branch and
+    yield `allowWrite: []` — an absent workspace is 「nothing may be written」, not 「no sandbox」. A guard
+    whose 「nothing to check」 arm returns the same verdict as its 「checked and clean」 arm is the exact
+    bug class ARCH-176 names (`extractCandidatePaths` returning `[]` for Bash and reading as clean).
+  - **One `isNonEmptyString` predicate filters every emitted array**, not just `denyRead`: an
+    unconfigured `workRoot` must never reach the kernel as a literal `'undefined'`.
+  - **`allowRead` is emitted in BOTH modes.** It is purely subtractive from a deny region (`sdk.d.ts:5863-5865`:
+    *「Takes precedence over `denyRead` for matching paths」*), so it is harmless under `'enumerated'`
+    and load-bearing under `'workroot'` — and S7 must be run **with it set** or it measures the wrong object.
+  - **`allowManagedReadPathsOnly` is never set**, in either mode, and a UT asserts its absence — it is
+    the one field that would turn `allowRead` into an exclusive whitelist and lock the CLI out of `/usr/lib`.
+  - **No `network` block, no `excludedCommands`** — REQ-218 is filesystem; `net-guard.ts` owns egress.
+  - **Both S7 arms ship; the loser is DELETED, not kept.** `'enumerated'` is the built-in posture
+    because the failure mode of a wrong `'workroot'` is 「the agent cannot read its own workspace」 —
+    every run dead — not 「cross-run reads stay open」. A positive S7 flips the constant and the
+    `'enumerated'` arm plus `ENGINE_STATE_DENY` are removed in the same change (named follow-up, so it
+    does not become permanent by inertia). Under `'enumerated'`, 「one run's Bash can read another run's
+    workspace」 is a **named residual of v37**, not a silent one.
+  - **S8-conditional field, specified now so no test is rewritten**: if S8 shows masking hides the value
+    from the shell while the CLI still authenticates, the builder additionally emits
+    `credentials.envVars = ['ANTHROPIC_API_KEY','CLAUDE_CODE_OAUTH_TOKEN','OPENROUTER_API_KEY'].map(name => ({name, mode:'mask'}))`
+    (ARCH-025: positive ⇒ this iteration). Negative ⇒ the field is absent and the exposure is a filed
+    v38 REQ. The arm is selected by `MASK_PROVIDER_ENV`, a module constant with **no path from config**
+    (same discipline as `DENY_READ_MODE`), and the UT is written for both arms against it.
+  - **A green typecheck is not evidence that this object confines anything.** `SandboxSettings` is
+    `z.core.$loose` — unknown keys pass and nothing is rejected at runtime — so a renamed field upstream
+    silently degrades the object to decoration. The mitigations are the exact dependency pin (DES-253),
+    the `sdkVersion` in the log payload (DES-256), and the real-run arm being re-earned on every bump.
+- **iter:** v37
+
+### DES-253 — the `confinement` block and the ONE options field it feeds
+- **status:** draft
+- **traces:** ARCH-176, ARCH-177, TASK-252, TASK-253
+- **signature:**
+  ```ts
+  // on ClaudeAgentSdkGatewayConfig (src/gateway/claude-agent-sdk-client.ts)
+  confinement?: {
+    readonly allowHostPaths: readonly string[];   // validated + realpath'd
+    readonly protectedFiles: readonly string[];   // absolute, from the loader
+    readonly workRoot: string;                    // REQUIRED inside the block
+  };
+  // in _invokeOnce's Options literal (:623-677), beside abortController and hooks.PreToolUse:
+  options.sandbox = buildBashConfinement({
+    root: req.workspace ?? this._config.cwd,
+    grantedHostPaths: c?.allowHostPaths ?? [], protectedFiles: c?.protectedFiles ?? [],
+    workRoot: c?.workRoot, denyReadMode: DENY_READ_MODE,
+  });
+  ```
+- **boundary conditions:**
+  - **Optionality lives on the BLOCK, never on a field inside it.** `workRoot` is required there
+    (the composition root always knows it; `protectedFiles` is unwritable without it), while
+    `ConfinementInput.workRoot` stays `string | undefined` only because the pure function is also
+    reachable from a unit-tier caller. `confinement` absent ⇒ the workspace-only posture is still
+    built — **never `sandbox: undefined`**.
+  - **Why optional at all, stated as the trade it is:** `new ClaudeAgentSdkGatewayClient(...)` has
+    **62 construction sites across 26 files** (measured this round); a required block would edit all of
+    them for a guarantee the hop-2 wiring probe already gives. The probe is a test and tests can be
+    deleted where a type cannot — that is the cost, and it is accepted because this exact hop already
+    regressed once (D-F10(a)).
+  - **The field is added HERE and nowhere else**: not threaded through `RunManager`, not added to the
+    `GatewayClient` port — the other implementation spawns no subprocess and would have to stub it.
+    `LiteLLMGatewayClient` is unconfined **by category, not by gap**, and that sentence belongs in the
+    port's doc comment so a later reader does not read it as an omission.
+  - **The exact pin rides this row**: `@anthropic-ai/claude-agent-sdk` loses its caret. The bundled
+    `claude` binary travels inside the package, so pinning the package pins the jail — *unless* a
+    PATH-installed `claude` is preferred at resolution time, which is S6's addendum, not a code change.
+  - Wiring assertion goes through the existing `queryImpl` seam: `options.sandbox` **deep-equals** the
+    builder's output for the same input — identity of decision, never a re-computation in the test.
+- **iter:** v37
+
+### DES-254 — `validateHostPathGrants()` — boot refuses a grant that would undo the control
+- **status:** draft
+- **traces:** ARCH-177, ADR-084, TASK-251, TASK-252
+- **signature:**
+  ```ts
+  // src/gateway/bash-confinement.ts — pure, realpath injected
+  export type GrantRule = 'NOT_ABSOLUTE' | 'UNRESOLVABLE' | 'INSIDE_WORKROOT' | 'COVERS_PROTECTED' | 'GLOB';
+  export interface GrantRefusal { readonly entry: string; readonly rule: GrantRule }
+  export function validateHostPathGrants(
+    grants: readonly string[], ctx: { workRoot: string; protectedFiles: readonly string[] },
+    realpathImpl?: (p: string) => string,
+  ): { ok: true; resolved: string[] } | { ok: false; refusals: GrantRefusal[] };
+  export function formatGrantRefusals(refusals: readonly GrantRefusal[]): string;  // ONE formatter, all refusals
+  ```
+- **boundary conditions:** one row per rule, and the refusal message is this table rendered by that one
+  formatter — four `if`s shipping four ad-hoc strings is how the message drifts:
+
+  | rule | refused when | remedy line |
+  |---|---|---|
+  | `NOT_ABSOLUTE` | not `isAbsolute(entry)`, or starts with `~` | give an absolute path; `~` is never expanded against whatever cwd systemd gave us |
+  | `UNRESOLVABLE` | `realpathImpl` throws | create the directory before boot — a not-yet-existing path can later be created as a symlink to anything |
+  | `INSIDE_WORKROOT` | `isPathContained(resolved, workRoot)` **or** `isPathContained(workRoot, resolved)` | grant a path outside `workRoot`; `<workRoot>/cas` would hand over the content store |
+  | `COVERS_PROTECTED` | resolved entry equals or is an ancestor of any `protectedFiles` entry | grant a narrower path; this one would hand back exactly what `denyRead` takes away |
+  | `GLOB` | entry contains `*`, `?` or `[` | a literal path only — a glob is a second grammar nobody asked for |
+
+  - **Containment is tested in BOTH directions**, via the repo's single existing primitive
+    `isPathContained` (no second containment idiom is minted).
+  - **All refusals are returned, never the first** — an operator editing a five-entry list under time
+    pressure is told about all five, once. ADR-028's 「one typed message」 idiom is satisfied by one
+    message that *lists* the entries.
+  - **`UNRESOLVABLE` is a refusal, not a forgiving pass-through** (unlike `workroot-guard`'s walk).
+    Its operational cost is real and belongs in the message and in `DEPLOY.md`: the operator must
+    `mkdir` a granted path before boot, where today the agent creates it itself.
+  - Grants are stored **realpath-resolved**, so a later re-point of a symlink cannot widen the grant.
+- **iter:** v37
+
+### DES-255 — `protectedFiles` come from the file the loader actually read
+- **status:** draft
+- **traces:** ARCH-177, ARCH-016, TASK-252
+- **signature:**
+  ```ts
+  // src/main.ts
+  export function loadFileConfig(): { config: FileConfig; path?: string };  // path = the absolute file READ (undefined if none)
+  interface ComposeConfigDeps { /* existing */ configPath?: string }        // deps, not a FileConfig key
+  // inside composeConfig():
+  const protectedFiles = [deps.configPath, join(workRoot, 'auth-tokens.db')].filter(isNonEmptyString);
+  ```
+- **boundary conditions:** `resolve(RWE_CONFIG_PATH ?? 'rwe.config.json')` computed a second time inside
+  `composeConfig()` resolves against **whatever cwd systemd gave the process** — under a different cwd it
+  names a file that does not exist, `denyRead` and `credentials.files` deny a phantom, and **the real
+  config stays readable, silently**. One fact, one source. `configPath` rides `ComposeConfigDeps` (the
+  existing injectable-seam convention) rather than `FileConfig`, so it needs no `KNOWN_FILE_CONFIG_KEYS`
+  row and no wiring probe of its own. No config file on disk ⇒ `protectedFiles` is just the auth DB —
+  there is nothing to deny. UT: `RWE_CONFIG_PATH` set, process cwd elsewhere ⇒ `protectedFiles[0]` is the
+  file that was loaded.
+- **iter:** v37
+
+### DES-256 — the two event kinds, the late-bound sink, and the emission order
+- **status:** draft
+- **traces:** ARCH-178, ARCH-159, TASK-253
+- **signature:**
+  ```ts
+  // src/event-log.ts — EngineEvent is a CLOSED union; v37 adds exactly two kinds, no AuditActor on either
+  | { kind: 'agent.confinement'; runId; agentId; attempt: number; root?: string;
+      allowWrite: string[]; denyRead: string[]; enabled: boolean; failIfUnavailable: boolean; sdkVersion: string }
+  | { kind: 'agent.confinement_denied'; runId; agentId; tool: string; detail: string }   // ONLY IF spike S4 fires
+  // src/gateway/claude-agent-sdk-client.ts — mirrors bindResolveMcp; a NO-OP sink is installed at construction
+  bindEventSink(sink: EventSink): void;
+  // sdkVersion — resolved ONCE at module load, measured this round because the obvious form throws:
+  //   require('@anthropic-ai/claude-agent-sdk/package.json')  → ERR_PACKAGE_PATH_NOT_EXPORTED
+  //     (the package's `exports` map publishes '.', './extract', './browser', './bridge', './sdk-tools' only)
+  //   WORKS: createRequire(import.meta.url).resolve('@anthropic-ai/claude-agent-sdk')
+  //          → <…>/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs → join(dirname(p),'package.json')
+  //          → JSON.parse(...).version   (verified: 0.3.199, and hoisting-proof because resolve() is used)
+  //   Unreadable for any reason ⇒ the string 'unknown'; a log line must never be the thing that fails a run.
+  ```
+  Order inside `invoke()`/`_invokeOnce`, pinned:
+  `auth/env resolution → DES-257 re-walk (refuse here) → buildBashConfinement() → emit agent.confinement → query()`.
+- **boundary conditions:**
+  - **A refused call emits ZERO `agent.confinement` lines** — no policy was applied, and 「a posture
+    printed for a session that never ran is a nerve attached to nothing」. Pinned in both directions by UT.
+  - **The contract is 「once per ATTEMPT」, not 「once per `agent()` call」**, and the payload carries
+    `attempt`: the options literal lives *inside* `invoke()`'s retry loop, so the 「once per call」 claim
+    was one no test could hold. `attempt` is a **new** counter passed from `invoke()` into `_invokeOnce`
+    — it must not be conflated with the existing `sys.attempt`, which is the CLI's own internal backoff.
+  - **The line is emitted from the object the builder just returned, never re-derived.**
+  - **Unbound sink ⇒ no throw, and not a branch**: the no-op sink is installed at construction so the
+    「nothing to do」 path and the 「did it」 path are not the same line of code. The gateway is built in
+    `composeConfig()` before the sink's owner exists — the same reason `resolveMcp` is a late bind.
+  - **Direction of the dependency**: the gateway may import the sink's type; the sink may never import
+    the gateway. `event-log.ts` gains two `kind` literals and nothing else.
+  - **`agent.confinement_denied` is spike-gated and that is the honest half.** There is no typed
+    sandbox-violation message in the SDK surface (`SDKPermissionDeniedMessage` covers permission-rule
+    denials only), so a kernel denial most likely arrives as `EACCES` in an ordinary failed tool result.
+    If S4 shows `PostToolUseFailure` fires, the kind is built; if not, it is **not built**, and the
+    denial reaches its consumer — the agent itself — through its own tool result. One UT pins that
+    fallback's *plumbing* (a faked `tool_result` carrying `EACCES` reaches `agent_log` via `onEvent`),
+    which is a claim about the wire and explicitly not a claim about the confinement.
+  - Neither kind carries an `AuditActor`: they are engine facts, not principal-attributable actions.
+  - A `2>/dev/null; true` inside a command masks the denial from every mechanism we have. That is a
+    property of shells; it is stated, and it is not a reason to build a transcript scanner.
+- **iter:** v37
+
+### DES-257 — `findProjectMarkerAboveWorkspace()` — REQ-021's re-walk, wired for the first time, walking ABOVE the workspace
+- **status:** draft
+- **traces:** ARCH-180, ARCH-019, TASK-253
+- **signature:**
+  ```ts
+  // src/workroot-guard.ts — thin export; defaults supplied HERE, so the gateway acquires no node:fs
+  export function findProjectMarkerAboveWorkspace(
+    workspace: string, workRoot: string,
+    deps?: { existsImpl?: (p: string) => boolean; realpathImpl?: (p: string) => string },
+  ): string | null;   // = containment check, THEN findProjectMarkerAncestor(dirname(workspace), workRoot, ...)
+  // gateway, before query():  → refuse {ok:false, reason:'terminal', retryable:false, detail: WORKROOT_INSIDE_PROJECT}
+  ```
+- **boundary conditions:**
+  - **Two checks, not one displaced check.** (1) `isPathContained(realpath(workspace), workRoot)` — a
+    workspace whose real location is outside `workRoot` is a refusal on its own terms, and this is what
+    catches the symlink-into-a-project case. (2) the marker walk starting at `dirname(workspace)`, with
+    the realpath kept *inside* `findProjectMarkerAncestor` exactly as today. Collapsing them into
+    `dirname(realpath(workspace))` steps straight past a project root when the link lands a level deeper.
+  - **Wired as the architecture first wrote it, this refused EVERY seeded run**: `findProjectMarkerAncestor`
+    tests the marker on `path` itself, the unwired module passed the *workspace*, the engine runs
+    `git init` in every seeded workspace (`initGitBaseline`), and seed materialization deliberately does
+    not strip `CLAUDE.md`. The six arms:
+
+    | case | expected |
+    |---|---|
+    | `.git` at the workspace root (the engine's own `initGitBaseline`) | **allow** — the regression guard for exactly this |
+    | `CLAUDE.md` at the workspace root (a seeded repo) | **allow** |
+    | marker at `<workRoot>/workflows/<name>/` or `.../runs/` | refuse |
+    | `workspace === workRoot` (degenerate config) | **allow**, by an explicit short-circuit BEFORE the walk (see below) — boot's own guard already owns `workRoot` |
+    | workspace is a symlink into a project | refuse (realpath first) |
+    | `workRoot` unknown on this call | **skip the re-walk**, and say so — neither a silent fail-open nor a fail-closed on a missing config |
+
+  - **The degenerate case is short-circuited, not walked**: if `realpath(workspace) === realpath(workRoot)`,
+    return `null` (allow) **before** the marker walk. `dirname(workspace)` is then *above* `workRoot`, so
+    `findProjectMarkerAncestor(..., stopAt=workRoot)` would never reach its stop condition and would walk
+    to `/` — turning a degenerate config into a refusal driven by whatever sits in the operator's `$HOME`.
+    (The containment check itself passes here: `isPathContained(x, x)` is true by construction —
+    `realPath === realRoot`, `path-containment.ts:15`.)
+  - **The refusal carries `retryable: false`.** The retry gate in `invoke()` is `retryable === false`,
+    **not** `reason` — a `terminal` failure without it is retried `1 + retries` times, re-walking an
+    unchanged tree. The UT asserts the injected `queryImpl` is called **zero** times on this arm.
+  - `WORKROOT_INSIDE_PROJECT` is **one exported constant** shared by the boot error class and this
+    `detail` — not three literals, and **not** an `ERROR_CATALOG` entry (nothing routes it to
+    `toErrEnvelope`; see the rationale for the revisit trigger).
+  - **Honest scope, on the row where it cannot be over-read:** with the walk starting above the
+    workspace, the only directories it can trip on are engine-created intermediates — which, once
+    REQ-218's sandbox lands, an agent can no longer write to. The re-walk's true-positive domain is
+    **near-empty by construction**. It is wired anyway (REQ-219's own standard: a module with green
+    tests and no caller must stop lying), and it is the only control left standing if the spike sends
+    the carrier to arm 3. 「We wired REQ-021's re-walk」 is not a security win of any size.
+- **iter:** v37
+
+### DES-258 — the guide's host-path-grants paragraph
+- **status:** draft
+- **traces:** ARCH-107, REQ-117, ADR-084, TASK-256
+- **signature:** one new section in `buildAuthoringGuide()`'s output (and therefore in generated
+  `docs/AUTHORING.md`), **static text**, titled after **host path grants** — never 「sandbox」, which
+  `authoring-guide.ts:432` already owns for the `node:vm` script sandbox. Content is exactly three
+  facts: (a) `Bash` may write inside the run workspace and nowhere else; (b) a write outside it arrives
+  as an ordinary **`EACCES` inside the agent's own tool result**, not as an engine refusal — a script
+  that shells out to a global cache sees a failed command, not a typed engine error; (c) a shared host
+  path is possible but is an **operator grant** in `rwe.config.json`, and the list applied to a given
+  run appears in that run's `agent.confinement` log line.
+- **boundary conditions:** no `GuideCeilings` field, no `ServerConfig` hop, no `mcp-facade` change — the
+  guide is rendered server-side and the grant list lands only on the gateway's own config, so rendering
+  the *effective* list means minting a second hop of exactly the silently-inert class this iteration
+  exists to delete. **No `GUIDE_EXAMPLES` entry**: `GuideExample` is `{title, script, mermaid,
+  expectRegister}` and the loop asserts *registration* — an `EACCES` occurs inside a tool result the
+  workflow script never sees, so an example demonstrating it would teach an invalid example (rule 4).
+  `docs/AUTHORING.md` stays byte-equal to the builder output in the same commit.
+- **owner_decision:** pending — 指南要維持這版「靜態段落」(作者讀到機制與申請管道,零佈線),還是要改成「渲染該部署當下的實際 grant 清單」(GuideCeilings 新欄位 + 一個 ServerConfig hop + hop-2 wiring test,並需修正 ARCH-177「不為沒人讀的值開 ServerConfig 欄位」那句)?兩位 lens 在 r2 互換立場、各自讓步給對方,沒有收斂;設計先出簡單且可逆的靜態版,是否升級為即時清單屬於產品面(作者體驗 vs 一條新佈線)的裁決。
+- **iter:** v37
+
+### DES-259 — the sandbox-unavailable failure surface
+- **status:** draft
+- **traces:** ARCH-176, ADR-083, TASK-253
+- **signature:**
+  ```ts
+  export const SANDBOX_UNAVAILABLE = 'sandbox unavailable';   // exported ONCE; the literal ADR-083's trigger quotes
+  // → { ok: false, reason: 'terminal', retryable: false, detail: `${SANDBOX_UNAVAILABLE}: <sdk detail>` }
+  ```
+- **boundary conditions:** **no 4th `GatewayResult.reason` literal.** There is no exhaustive `switch` on
+  `GatewayResult.reason` anywhere in `src/` and no production branch compares it (`retryable`, not
+  `reason`, drives every decision), so widening the union buys zero compile-time guarantee — and
+  `reason` is **persisted** into the `usage` transcript event, so a new literal widens a stored
+  vocabulary. What the requirement actually needs is that the failure be **labelled**, not merely typed:
+  ADR-083's revisit trigger is phrased as 「an operator reports a run refused for `sandbox unavailable`」,
+  and a trigger nobody can grep for never fires. Three assertions: the emitted `detail` starts with the
+  constant; a drift-lock that the constant and ADR-083's trigger sentence are the same string;
+  `enrich()` (which fills `detail` only when `undefined`) cannot overwrite it. `retryable:false` —
+  a retry cannot install bubblewrap. **If spike S10 shows the SDK's unavailable-sandbox error is
+  indistinguishable from an ordinary terminal failure**, the mapping cannot be applied: the label is
+  then omitted and ADR-083's trigger is recorded as unsatisfiable-from-the-log, a named residual rather
+  than a silent one.
+- **iter:** v37
+
+### DES-260 — the two deletion sets, and what each guarantee is attached to afterwards
+- **status:** draft
+- **traces:** ARCH-179, ARCH-180, ADR-085, TASK-254, TASK-255
+- **signature:**
+  ```
+  delete: src/timeout-race.ts · tests/unit/timeout-race.test.ts · the unit-tier use inside val-023
+  delete: src/session-options-builder.ts · tests/unit/session-options-builder.test.ts
+        · the fence at tests/unit/gateway-effort.test.ts:263 (same commit as the module)
+  production importers of both, before deletion: 0
+  ```
+- **boundary conditions:**
+  - **`raceWithTimeout`'s two guarantees, named where they now live**: kill-on-timeout →
+    `AbortController` + `setTimeout(abort)` on the SDK's own `Options.abortController` (strictly better —
+    the deleted primitive's `kill` was an injected callback a caller could get wrong, and did);
+    slot-free-exactly-once → `RunManager.withSlot()` + the semaphore's `finally`, which never depended
+    on the timeout primitive at all.
+  - **`val-023` is REWRITTEN, not deleted, and stays real-tier** — it is REQ-020's only fault-injected
+    real-tier coverage; deleting expensive true apparatus to satisfy a cleanup requirement trades a true
+    green for a smaller diff. New assertions: the run resolves `ok:false` with a timeout, and
+    `semaphoreGauge().inUse` returns to **0** (already public at `run-manager.ts:404`).
+  - **Rescue before delete, and the order is not decorative**: TASK-253 wires DES-257 and turns its UTs
+    green *first*; only then does TASK-255 remove the module. Deleting first leaves REQ-021 with neither
+    an implementation nor a test for the length of the reorder.
+  - **`val-024`'s re-walk clause changes SEMANTICS, not just its target**: it currently writes `.git`
+    into the workspace and asserts refusal — under DES-257 that case is **allowed** (the engine creates
+    that marker itself) and the refusal case is a marker on an ancestor between the workspace and
+    `workRoot`. Re-pointing it as a mechanical retarget would land a test asserting the opposite of the
+    truth. `val-019`'s clauses 2/3 re-point at the production `Options` the gateway builds.
+  - **The fence gets no replacement.** A hand-written 「nothing imports the deleted file」 assertion is the
+    greener-than-green pattern this slice exists to delete; INV-V37-3's automated checker is correctly
+    filed to v38.
+  - REQ-016/REQ-020/REQ-021 stay **outside** this closure: no new trace edge, no `rtm.md` edit, no new
+    REQ. The wiring rides REQ-219's own rows, and the VAL re-points are verification's and validation's
+    work, named here so they cannot be forgotten.
+- **iter:** v37
+
+### Class diagram — v37 (the four types this slice adds)
+
+```mermaid
+classDiagram
+  class ConfinementInput {
+    +root string|undefined
+    +grantedHostPaths string[]
+    +protectedFiles string[]
+    +workRoot string|undefined
+    +denyReadMode enumerated|workroot
+  }
+  class SandboxSettings {
+    <<SDK type, z.core.$loose>>
+    +enabled true
+    +failIfUnavailable true
+    +autoAllowBashIfSandboxed true
+    +allowUnsandboxedCommands false
+    +filesystem allowWrite/allowRead/denyRead/denyWrite
+    +credentials files[] mode deny
+  }
+  class ConfinementBlock {
+    <<on ClaudeAgentSdkGatewayConfig, optional>>
+    +allowHostPaths string[]
+    +protectedFiles string[]
+    +workRoot string
+  }
+  class GrantRefusal {
+    +entry string
+    +rule NOT_ABSOLUTE|UNRESOLVABLE|INSIDE_WORKROOT|COVERS_PROTECTED|GLOB
+  }
+  class buildBashConfinement { <<pure fn>> }
+  class validateHostPathGrants { <<pure fn, realpath injected>> }
+  class ClaudeAgentSdkGatewayClient {
+    +invoke(req) GatewayResult
+    +bindEventSink(sink)
+  }
+  class findProjectMarkerAboveWorkspace { <<workroot-guard, fs injected>> }
+  ConfinementInput --> buildBashConfinement
+  buildBashConfinement --> SandboxSettings : options.sandbox
+  validateHostPathGrants --> GrantRefusal : boot refusal (all of them)
+  ClaudeAgentSdkGatewayClient --> ConfinementBlock : one config block
+  ClaudeAgentSdkGatewayClient --> buildBashConfinement : one call site
+  ClaudeAgentSdkGatewayClient --> findProjectMarkerAboveWorkspace : refuse before query()
+  ClaudeAgentSdkGatewayClient --> EventSink : agent.confinement (once per attempt)
+```
+
+## Decision rationale — v37 (DES-252..260 + two in-place amendments; panel pre-ran, r1+r2, synthesized here)
+
+- **The panel CROSSED on ARCH-107's guide paragraph — it did not converge.** Adversarial r1 argued the
+  static paragraph; quality-dimensions r1 argued the live grant list. In r2 each read the other and
+  **swapped**: adversarial conceded the live list (「an author who can read the granted list can write a
+  script that stays inside it」), quality-dimensions conceded the static paragraph (「a list the author
+  cannot request changes to is not lower-friction than a sentence naming the mechanism」). With no
+  convergence to defer to, this gate takes the **cheaply-reversible** side: static now (adding the field
+  later is additive; removing a hop later is a deletion), and the upgrade is an **owner** call recorded
+  on DES-258 rather than a designer preference. ARCH-107's v37 sentence 「rendered from the effective
+  grant list」 is amended in place to match; ARCH-177's 「no `ServerConfig` field for a value nothing else
+  reads」 therefore stands unchanged.
+- **The mechanism concession went the direction that shrank the diff, and this gate took it rather than
+  splitting the difference**: one pure function, one options field, no `WorkspaceConfinement` interface
+  (quality-dimensions conceded it in r2 using adversarial's own Karpathy tie-break against its own r1).
+- **`terminal` + `retryable:false` + an exported `SANDBOX_UNAVAILABLE` beat a 4th `reason` literal**
+  (adversarial's measurement: zero exhaustive switches on `reason`, and `reason` is persisted;
+  quality-dimensions converged on the same fold in r2 and contributed the drift-lock that makes the
+  label falsifiable). Adversarial's r2 §4 listed this as still open only because it had not yet read
+  quality-dimensions r2 — it is closed.
+- **`reason:'terminal'` alone does not stop a retry** — the retry gate is `retryable === false`. This was
+  adversarial's own r1 error, self-corrected in r2 against the source, and it is the sharpest single
+  finding of the round: both new refusals would otherwise have retried, one of them re-walking an
+  unchanged tree and the other asking a host to grow a bubblewrap.
+- **`WORKROOT_INSIDE_PROJECT` does NOT join `ERROR_CATALOG`** (quality-dimensions held yes through r2;
+  adversarial measured that neither path can reach `toErrEnvelope`/`toErrorCode` — at boot it is a thrown
+  error that crashes before a facade exists, in production it is a `GatewayResult.detail`). Taken:
+  adversarial. Quality-dimensions' actual ask — 「decided, not inherited」 — is satisfied by this line plus
+  a **revisit trigger**: the first time this refusal is surfaced through `toErrEnvelope` to an MCP caller,
+  it joins the catalog with `see: null`. Its underlying ask (one shared constant, not three literals) is adopted.
+- **No boot-time confined-operation probe.** Quality-dimensions narrowed it in r2 to (a) which `claude`
+  binary resolved and (b) moving the fail-closed discovery to boot. (a) is an S6 observation recorded in
+  the `agent.confinement` payload — adopted, no code. (b) needs a live `query()` on the boot path of a
+  server whose whole admission story is that it boots without providers being reachable; Karpathy: no.
+- **No `GUIDE_EXAMPLES` EACCES entry** (quality-dimensions asked, sequenced after S9; adversarial showed
+  `GuideExample` structurally cannot see a tool result). The fact lives in DES-258's prose; its
+  measurement is ARCH-108's cold-author protocol, which already judges first-try authoring against the
+  served guide and costs nothing extra.
+- **Ship `'enumerated'`, widen on a positive S7, delete the loser** — both lenses converged. The
+  architecture had the two arms the wrong way round: it shipped the untested one, so a possible total
+  outage (the agent cannot read its own workspace) would have been discovered in production. Note the
+  SDK documents allow-over-deny, so S7 is now *expected* to pass — that changes the expectation, not the
+  ordering: a JSDoc line is the same class of evidence as a green typecheck, and ADR-082 itself records
+  that this block's doc comment contradicts its schema three lines below.
+- **S9 and S10 added to the spike.** Eight arms measured a denial and none measured that a real workflow
+  still completes (S9, both lenses); nothing measured whether a sandbox-unavailable failure is
+  distinguishable at all, which is the precondition for DES-259's label (S10). **What S9 does NOT buy:**
+  no built-in default grant list is designed in advance — if S9's inventory shows a real toolchain needs
+  `$TMPDIR` or a cache, that path becomes a documented **operator grant** in `rwe.config.example.json`
+  with its evidence line, not a new always-on widening invented before anyone measured it. If S9 shows
+  workflows cannot complete even with operator grants, that is an ADR-082 revisit with its own trigger,
+  not a quiet loosening here.
+- **One task owns `claude-agent-sdk-client.ts`.** ARCH-176's field, ARCH-178's emit and ARCH-180's
+  re-walk all edit the same ~55-line `Options` literal; this ledger's own CLAUDE.md records what ~20
+  concurrent implementers do to one shared file. Three ordered commits, one owner (TASK-253).
+- **Two living-document amendments made here, because no other gate will open them**: **DES-031** (the
+  re-walk's start point and its refusal semantics both change) and **DES-106** (whose 「stays unwired,
+  guarded by a standing zero-importer assertion」 bullet is superseded by ADR-085 — it traces REQ-093,
+  outside this closure, so ADR-085 prescribed the edit to this gate). **Neither bumps its `iter:`** — this
+  ledger's own house rule (v33 Decision-rationale item 22, re-affirmed by the F6-1 review finding): `iter:`
+  records a row's ORIGIN, not its last edit, and bumping a DES `iter:` manufactures low 漂移 flags on every
+  test that traces it while changing nothing real. The re-points those two amendments require are named
+  where a verifier will actually read them — DES-260 and TASK-255 — not signalled by a flag.
+- **One panel item deliberately NOT pinned this round**: adversarial B6 asked for a UT proving no asset
+  path can land at `<workspace>/.claude/settings.json` (asset materialization uses `dest:'asset-tree'`,
+  where seed materialization's `STRIP_RE` does not apply). It is a pin, not a hole — today's asset shape
+  is `.claude/skills/<name>/…` — and it lives in a different module than anything v37 touches, so adding
+  it here would widen a security slice's file set for a case nobody has produced. Recorded so the next
+  reader sees a decision rather than an oversight.
+- **Explicitly NOT built in v37** (both lenses, Karpathy): a `WorkspaceConfinement` interface; a 4th
+  `reason` literal; an `ERROR_CATALOG` entry; a boot-time capability probe; a `GUIDE_EXAMPLES` entry that
+  cannot exist; a transcript scanner for denials; a second containment helper; a read-back endpoint; a
+  replacement fence test; locking for a shared granted path (filed to v38 with its trigger); the
+  author-side grant *request* contract (ADR-084 option (C), with its trigger).
