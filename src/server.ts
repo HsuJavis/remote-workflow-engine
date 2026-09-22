@@ -1668,6 +1668,12 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // deletion that would weaken a test.)
   if (gateway instanceof ClaudeAgentSdkGatewayClient) {
     gateway.bindResolveMcp((workflow, names) => resolveMcp(assetCatalogPort, workflow, names));
+    // v37 Gate 6.5+7 (seam-wiring check, DES-256/ARCH-178): `bindEventSink` was called only by
+    // `agent-confinement-events.test.ts` (UT-316..319) — same shape as `bindResolveMcp` above, same
+    // hole `bindResolveMcp`'s own comment already names ("left unbound, out of scope"). Wired to the
+    // SAME `eventSink` instance the catalog/RunManager audit lines already share (line ~741), so
+    // `agent.confinement` redacts through the SAME secretValueProvider, not a second unaudited path.
+    gateway.bindEventSink(eventSink);
   }
 
   // v24 (DES-141): the boot announcement — "visibly", built rather than merely asserted.

@@ -237,8 +237,8 @@ in the same re-run — no regression on REQ-138's counts card).
 | REQ-215 | 結構化失敗標記要能穿過 sandbox 抵達 run 層 (v36) | ARCH-165, ARCH-166, ARCH-167, ARCH-168 | DES-248 | TASK-246 | IMPL-365 | IT-298, UT-292, UT-304, VAL-250 | ✅ |
 | REQ-216 | v35 審查歸檔的八條殘留(K1–K8)逐條結清 (v36) | ARCH-169, ARCH-170, ARCH-171, ARCH-172, ARCH-173 | DES-241, DES-247, DES-249 | TASK-239, TASK-245, TASK-247 | IMPL-360, IMPL-364, IMPL-366 | IT-297, UT-292, UT-293, UT-297, UT-298, UT-303, UT-305, VAL-251 | ✅ |
 | REQ-217 | 消除清單路徑的擴展懸崖,且不改變數字的語意 (v36 追加,業主裁決 K5) | ARCH-174 | DES-250, DES-251 | TASK-249 | IMPL-368, IMPL-369, IMPL-370 | IT-300, UT-307, UT-308, VAL-252 | ✅ |
-| REQ-218 | agent 的 Bash 必須受工作區約束,或其突破必須是申報過的 (v37) | ARCH-175, ARCH-176, ARCH-177, ARCH-178 | DES-252, DES-253, DES-254, DES-255, DES-256, DES-258, DES-259 | TASK-250, TASK-251, TASK-252, TASK-253, TASK-256 | — | UT-309, UT-310, UT-311, UT-312, UT-313, UT-314, UT-315, UT-322, VAL-253 | ⏳ 本輪未到驗證 |
-| REQ-219 | 有綠測試、production 零使用的安全模組,要嘛接線要嘛刪除 (v37) | ARCH-179, ARCH-180 | DES-257, DES-260 | TASK-253, TASK-254, TASK-255 | — | UT-316, UT-317, UT-318, UT-319, UT-320, UT-321, VAL-254 | ⏳ 本輪未到驗證 |
+| REQ-218 | agent 的 Bash 必須受工作區約束,或其突破必須是申報過的 (v37) | ARCH-175, ARCH-176, ARCH-177, ARCH-178 | DES-252, DES-253, DES-254, DES-255, DES-256, DES-258, DES-259 | TASK-250, TASK-251, TASK-252, TASK-253, TASK-256 | — | UT-309, UT-310, UT-311, UT-312, UT-313, UT-314, UT-315, UT-322, VAL-253 | ✅ |
+| REQ-219 | 有綠測試、production 零使用的安全模組,要嘛接線要嘛刪除 (v37) | ARCH-179, ARCH-180 | DES-257, DES-260 | TASK-253, TASK-254, TASK-255 | — | UT-316, UT-317, UT-318, UT-319, UT-320, UT-321, VAL-254, IT-301 | ✅ |
 
 ## v36 Gate 7.5 update (2026-09-22, validator)
 
@@ -410,3 +410,28 @@ makes FALSE on a deployment measured `'unconfined'` (this host's own real probe)
 the guide renders statically with no `confinementPosture` in scope, and a correct fix collides with
 DES-258's own unresolved `owner_decision` — named as an open, live gap for the orchestrator, not a
 someday-TODO.
+
+**v37 Gate 7.5 update (2026-09-22, validator) — REQ-218/REQ-219 flip to ✅.** Both rows' real-tier
+evidence was produced by a genuine documented-steps-only boot (`./deploy.sh --background` against a
+scratch `RWE_CONFIG_PATH`, `gateway:"sdk"`, real local Ollama, torn down after) plus direct re-runs
+of `VAL-253`/`VAL-254`/`VAL-024`/`IT-301`/`main-composition-root-events.test.ts` — see `05-tests.md`'s
+own v37 Gate 7.5 notes on each item for the exact commands/output. REQ-218's confined-Bash-write
+clause (VAL-253 clause 1) is the one clause this gate could NOT reach for real: this host's own
+nested-`bwrap` probe (the identical probe `confinement-probe.ts` runs at boot) fails the same way
+TASK-250's spike host did (`kernel.apparmor_restrict_unprivileged_userns=1`), reconfirmed directly
+by the validator, not merely inherited from the spike — recorded as an explicit `unreachable-dep`,
+not silently passed. Everything else REQ-218's acceptance criteria name (the ADR panel record, a
+real run demonstrating the accepted local/remote split, the two corrected contradictory code
+comments, the `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` justification) is real-tier confirmed. REQ-219's
+delete half (VAL-254) and wire half (VAL-024's re-pointed clause, cross-confirmed end-to-end over
+real MCP HTTP with a planted `.git`/`CLAUDE.md` ancestor — `queryImpl` never reached, `0` tokens on
+the failed agent record) are both real-tier confirmed; `IT-301` cross-confirmed against a genuinely
+non-fake `queryImpl` in the same boot session. **DEPLOY.md/README.md doc-drift found and fixed this
+gate**: §1c's security-model narrative had never been updated to match REQ-218's own corrected code
+comments (it still claimed Bash was closed by the app-layer path-boundary check) — rewritten to
+current state, two new §5 troubleshooting rows added, config-reference (§1b) rows confirmed already
+current (added at Gate 6.5+7, untouched by this gate). REQ-018/REQ-037/REQ-117 rows remain untouched
+— per this file's own Gate 2/3+4/5 notes, this iteration's changes are impact-closure context for
+them, not a behavioural change to their own acceptance criteria; no new cold-subject run was
+performed for REQ-117 this gate (see `08-validation.md`'s own v37 Gate 7.5 section for the
+reasoning and the `needs_clarification` this gate reports for it).

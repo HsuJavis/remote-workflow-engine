@@ -828,7 +828,14 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       runId: req.runId,
       agentId: req.agentId,
       attempt,
-      posture: this._config.confinementPosture === 'unconfined' ? 'unconfined' : 'confined',
+      // v37 Gate 6.5+7 fix (verifier, ARCH-176's own "two different reasons must not read the
+      // same" bug class): MIRRORS the `sandbox` ternary two statements above, not an independent
+      // reading of the same field — an earlier draft read this backwards (`=== 'unconfined' ?
+      // 'unconfined' : 'confined'`, so an OMITTED `confinementPosture` reported `posture:'confined'`
+      // on an event whose OWN `sandbox` was simultaneously `{enabled:false}` — the exact mismatch
+      // this iteration exists to make impossible, caught by the TZ-shift regression's own log
+      // output, not by UT-316/317 (both pass an explicit posture).
+      posture: this._config.confinementPosture === 'confined' ? 'confined' : 'unconfined',
       root: confinementRoot,
       allowWrite: sandbox?.filesystem?.allowWrite ?? [],
       denyRead: sandbox?.filesystem?.denyRead ?? [],

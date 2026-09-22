@@ -484,11 +484,15 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 `gateway:"sdk"` 路徑的關鍵安全設定（均已對真實 process 驗證）：
 
 1. **不用 `permissionMode:'bypassPermissions'`**：headless session 但每次工具呼叫均受裁決。
-2. **預設工具面**：`Read`/`Write`/`Edit`/`Glob`/`Grep`/`Bash`（限制在 run workspace 之內）；
-   `WebFetch`/`WebSearch`/`Task`/`Agent` 需明確 opt-in。
+2. **預設工具面**：`Read`/`Write`/`Edit`/`Glob`/`Grep`/`Bash`；`WebFetch`/`WebSearch`/`Task`/`Agent`
+   需明確 opt-in。`Read`/`Write`/`Edit`/`Glob`/`Grep` 限制在 run workspace 之內（見下一條）；
+   `Bash` 是另一個獨立機制（開機探測到的 OS 層圍籠姿態，見 DEPLOY.md §1c(e)）——探測失敗的部署上
+   `Bash` 對本機提交的 run 是真的不受限的，但遠端提交的 run 一律先被拒絕。
 3. **供應商 API key 只給 LiteLLM 子行程**：`claude` CLI 子行程環境變數白名單，從未看到真實 key。
-4. **workRoot 隔離**：run workspace 透過 `canUseTool` + `PreToolUse` 雙重 realpath 邊界封閉；
-   `workRoot` 若在 `.git`/`CLAUDE.md` 祖先之內 → 啟動時 `WORKROOT_INSIDE_PROJECT` fail-fast。
+4. **workRoot 隔離**：`Read`/`Write`/`Edit`/`Glob`/`Grep`/`NotebookEdit` 透過 `canUseTool` +
+   `PreToolUse` 雙重 realpath 邊界封閉在 run workspace 之內（`Bash` 的圍籠見上一條）；`workRoot`
+   若在 `.git`/`CLAUDE.md` 祖先之內 → 啟動時 `WORKROOT_INSIDE_PROJECT` fail-fast；同一顆檢查也在
+   每次執行時重跑一次（run workspace 與 `workRoot` 之間多出 `.git`/`CLAUDE.md` → 執行期同錯誤碼拒絕）。
 5. **Host/Origin 白名單**：外來 Host → 403 防 DNS-rebinding；非白名單 Origin POST → 403 防 CSRF。
 6. **Webhook HMAC**：常數時間比對 `X-Hub-Signature-256`；deliveryId 去重；±300s 時戳窗口。
 7. **伺服器端 secret**：config 內 `${secret:NAME}` → 由 `RWE_SECRET_<NAME>` 解析；缺失 → `SECRET_MISSING`；字面值永不外洩。

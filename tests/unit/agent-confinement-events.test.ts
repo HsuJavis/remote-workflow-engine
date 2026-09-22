@@ -39,6 +39,22 @@ describe('UT-316 agent.confinement — zero on refusal, exactly one per attempt 
     expect(confinementEvents[0]?.['attempt']).toBe(1);
   });
 
+  // v37 Gate 6.5+7 regression (verifier): `posture` on the event must NEVER disagree with `sandbox`
+  // on the SAME event — an earlier draft's `posture` ternary defaulted the OMITTED case to
+  // 'confined' while `sandbox` (built two statements above it) defaulted the same omitted case to
+  // `{enabled:false}` (the 'unconfined' shape). Caught by a TZ-shift regression's own log output,
+  // not by any existing case (every other one passes `confinementPosture` explicitly).
+  it("an OMITTED confinementPosture reports posture:'unconfined' AND enabled:false on the SAME event — never a mismatched pair", async () => {
+    const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
+    const client = new ClaudeAgentSdkGatewayClient({ baseUrl: 'http://127.0.0.1:4000' });
+    const events: FakeEvent[] = [];
+    (client as unknown as { bindEventSink: (sink: (ev: FakeEvent) => void) => void }).bindEventSink((ev) => events.push(ev));
+    await client.invoke({ prompt: 'ping', opts: {}, runId: 'run-1', agentId: 'agent-1', workspace: '/tmp/remote-workflow-runs/_adhoc/run-f' });
+    const ev = events.find((e) => e.kind === 'agent.confinement');
+    expect(ev?.['posture']).toBe('unconfined');
+    expect(ev?.['enabled']).toBe(false);
+  });
+
   it('an unbound sink never throws — a no-op sink is installed at construction', async () => {
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
     const client = new ClaudeAgentSdkGatewayClient({ baseUrl: 'http://127.0.0.1:4000' });

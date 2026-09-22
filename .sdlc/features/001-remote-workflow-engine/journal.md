@@ -9435,3 +9435,82 @@ Load-bearing 測試(`authoring-guide.test.ts` 新增的 describe block 第四個
 tests/unit/authoring-guide.test.ts` 62/62 綠;`npx tsc --noEmit` 乾淨。`UT-322` 自己也掛著一個
 重複的 `owner_decision: pending`(跟 `DES-258` 問一樣的問題),這次一併關掉,答案指回 `DES-258` 本列
 而不是另外裁決一次。全程未使用 `git checkout`/`restore`/`stash`,也沒有 commit(留給 orchestrator)。
+
+## 2026-09-22 — v37 Gate 6.5+7（verify + simplify 合併)通過
+簡化：檢視全部 v37 diff（13 檔/+668-215),已經很緊實,唯一真缺陷是 seam-wiring 檢查抓到的
+`bindEventSink()` 從沒在 `server.ts` composition root 接線(跟 `bindResolveMcp` 自己註解點名的同一類
+洞)——`agent.confinement` 事故從沒寫進真實 audit log。一行修好,轉發同一個 `eventSink` 實例。
+Regression：`npx vitest run` 全套 457 檔/3348 過/0 敗(重跑兩次數字一致)。UT-219/VAL-024/VAL-253 三個
+殘留紅翻線(TASK-252/253c/251 都在 Gate 6 落地了),VAL-208(REQ-134,舊缺陷,不在本輪 closure)刻意
+維持紅——歷史紀錄不是現況宣稱。
+Coverage：整體 96.23% 行/89.5% 分支/95.66% 函式,超過 90% 門檻。逐函式掃過整個 v37 diff,抓到兩個真
+的新程式碼缺口並補測試關掉(從不降門檻)：`composeConfig()` 的 grant-without-workRoot 拒絕分支
+(UT-325)、`resolveSdkVersion()` 的 catch-fallback 分支(UT-326,新檔案,mock `node:module` 的
+`createRequire` 讓它丟例外)。`@vitest/coverage-v8` 暫時裝成真依賴跑完後 `package.json`/
+`package-lock.json` 復原乾淨。
+其餘全綠：module gate 休眠(無 build: 宣告)、trace --check 2088/79(缺口數字不變,只剩 REQ-218/219 的
+未真實驗證,留給 Gate 7.5)、solid_check 0 HIGH、determinism_check exit 0、TZ=Kiritimati 時間平移對
+16 個 v37 delta 測試檔 0 flip、seam wiring 全接好(含這次修的那一個)。Real-dependency smoke：真的把
+`main.ts` boot 起來(gateway:direct-fetch,這台主機沒裝 litellm 二進位跑不了 sdk 路徑),真 probe 量到
+'unconfined'(跟 TASK-250 spike 主機不同失效原因——這裡是最外層 unshare-user 就被拒絕,spike 主機是
+更深一層的 apply-seccomp),boot log 跟真的 `workflow_authoring_guide` tools/call 都對得上 DES-258
+業主裁決;乾淨 SIGTERM 關機,port 確認釋放。SDK gateway 自己的逐呼叫接線改用 VAL-253 的真 in-process
+acceptance boot + TASK-250 的 S1-S10 spike 佐證。
+Owner-decision sweep：全 ledger 零 pending 活標記。State.yaml 更新:gates.verification.passed=true,
+current_stage: validation。未使用 git checkout/restore/stash。
+
+## 2026-09-22 — v37 Gate 6.5+7 收尾追加(advisor review 抓到兩個真缺陷)
+Advisor 覆核抓到兩個真的問題,都修好、都補了鎖：
+1) `bindEventSink()` 接線本身沒有系統層守衛——新增 IT-301(真 `createServer()` + 真
+`ClaudeAgentSdkGatewayClient`(fake queryImpl)跑一次真 `agent()` 呼叫,斷言 `agent.confinement` 真的
+寫進 console sink);先暫時拔掉接線確認真的會紅,再復原確認綠。
+2) `agent.confinement` 事件自己的 `posture` 欄位跟 `enabled` 欄位在「沒給 confinementPosture」時可能
+互相矛盾(兩個三元運算式對同一個欄位取相反的預設值——ARCH-176 點名的那類 bug)。TZ 平移那趟的 log
+就印出了 `posture:"confined"` 旁邊 `enabled:false`。一行修好(讓 posture 的三元跟 sandbox 的三元同
+一個方向),UT-316 跟 IT-301 都各補一個 case 鎖住。
+另外查 coverage 逐函式清單時發現 `loadFileConfig()`(v37 才 export)的 invalid-JSON catch 分支沒測到,
+補了一個 case。`composeConfig()` 剩下的兩塊 own-scope 缺口(v26 舊 provider 驗證分支、
+`onSupervisionEvent` 建構)確認都是 v37 diff 沒碰過的舊債(`git diff` 比對過),留著不修,原因寫進
+state.yaml。
+全套重跑三次:457 檔/3351 過/0 敗(比上一輪多 3 個測試,對應這輪新加的三個 case)。trace --check
+2089/79,缺口清單不變。State.yaml 的 current_stage 跟 gates.verification 筆記已同步改寫成最終版本。
+
+## 2026-09-22 — v37 Gate 7.5(validator)通過,current_stage → review
+真跑 boot:一個 scratch 實例(`./deploy.sh --background`,`gateway:"sdk"`,真的本機 Ollama,跑完拆掉),
+跑的是 Gate 6.5+7 verifier 留下、尚未 commit 的同一份工作樹(`bindEventSink` 接線 + `posture`/
+`enabled` 一致性修復)。
+
+REQ-218:本機自己的巢狀 `bwrap --unshare-user` 探測直接重跑一次,跟 TASK-250 spike 同一種失效
+(`kernel.apparmor_restrict_unprivileged_userns=1`)——confined 寫入被拒的那條 acceptance 分句在這台機器
+上仍是不可達,記成明確的 unreachable-dep,不拿 mock 充數。其餘全部真跑過:開機 log 印出真探測結果
+UNCONFINED;真 `workflow_register→publish→run_start` 過真 MCP 跑出一次完整 `agent()` 呼叫,真 log 印出
+`agent.confinement` 帶 `posture:"unconfined"`/`enabled:false`(Gate 6.5+7 那個修復第一次端對端證實,不只
+in-process 測試);遠端提交之門真的用一個帶 `X-Forwarded-For` 的 loopback 請求觸發(在 `CHANNEL_UNPUBLISHED`
+之前就先被拒,同一個未發佈工作流程不帶那個 header 則回 `CHANNEL_UNPUBLISHED`);`workflow_authoring_guide`
+真的吐出「not confined」+「remote submission is refused」兩段文字;開機期 grant 拒絕(`sandbox.allowHostPaths`
+包住 `workRoot`)真的擋下開機。程式碼內兩段互相矛盾的舊註解已訂正一致,`CLAUDE_SDK_CAN_USE_TOOL_SHADOWED`
+帶著必要的一行說明。**發現並修掉一個文件落差**:DEPLOY.md §1c/README.md 安全模型段落還在講 Bash 被
+app 層路徑邊界檔住——這正是 REQ-218 在程式碼裡訂正掉的舊說法,從沒同步進人讀的部署文件,這次就地改寫
+成目前實況,補兩條 §5 疑難排解列。
+
+REQ-219:刪除半邊(`VAL-254`)真跑 grep 5/5 過,另外對 DEPLOY.md/README.md/src 也 grep 一次確認零殘留
+（含之前沒查過的部署文件本身）。接線半邊(`VAL-024` 重指標的 re-walk clause)除了跑 vitest,還額外過真
+MCP HTTP 端對端證實一次:在 `workRoot`/工作流程名稱那一層目錄放一個 `CLAUDE.md`,真的 `run_start` 直接
+以 0 token（`queryImpl` 根本沒被叫到)回報 `WORKROOT_INSIDE_PROJECT`。`IT-301` 重跑 8/8 過,並且跟上面
+那次真 Ollama 呼叫的 log 交叉核對——兩邊 `posture`/`enabled` 一致。
+
+REQ-018/REQ-037/REQ-117:三者本輪不改動行為,依 rtm.md 自己 Gate 2/3+4/5 的認定維持原樣不重新驗證。
+REQ-117 特別記一筆:它的驗收文字明文排除「看過這個專案開發對話的人」當受試者，這一輪已經讀完整份
+v37 ledger 跟 diff 的驗證者本人也被排除在外，且驗證者沒有能力真的另開一個零脈絡的獨立實例——沒有硬把
+`VAL-245`(v35)的證據改成 v37 iter 充數，維持原樣不動，把「是否需要重新找一個真正冷的主體跑一次」的
+決定回報給 orchestrator。
+
+`sh .sdlc/trace --check`:編輯前基線取 `state.yaml` 自己 Gate 6.5+7 那行的數字 2090/79(journal 自己
+收尾那行寫的是 2089/79——同一個 gate 兩份記錄差一,這裡引 `state.yaml` 的數字,因為它跟「本輪零新增
+work item、items 數不變」對得起來,不是回頭在原地重算);把 `VAL-253`/`VAL-254`/`IT-301` 就地翻成
+`real:true` 後 2090/77(items 數不變,缺口 -2)——用 `trace.analyze()` 當函式庫呼叫、用 id 過濾確認
+本輪五個 REQ 零命中,全 ledger 零 `未真實驗證` 缺口。`rtm.md` 手改(這版 trace.py 沒有 `--rtm`
+CLI)：REQ-218/REQ-219 兩列翻 ✅,補一段日期化說明。
+
+State.yaml 更新:gates.validation.passed=true,current_stage: review。scratch 設定檔/PID/log/workRoot
+全部在收工前刪除確認乾淨。全程未使用 git checkout/restore/stash。

@@ -642,8 +642,14 @@ curl -s http://localhost:8787/api/models | python3 -c \
 `gateway:"sdk"` 路徑下，工具面只有兩層**可設定**的優先序：一次 `agent()` 呼叫自帶的 `opts.allowedTools`，
 否則落到部署設定的 `defaultAllowedTools`（省略時的內建預設是
 **`["Read","Write","Edit","Glob","Grep","Bash"]`**——與真實 dynamic-workflow agent 的工作工具面
-對齊）。**`Bash` 在預設集裡，但被 (d) 的工作目錄邊界封閉**（`cwd`=該次 run 工作目錄 + 每次呼叫
-的 realpath 路徑檢查；一個試圖逃出工作目錄的 Bash 指令會被 `deny`）。
+對齊）。**`Bash` 在預設集裡，但 (d) 的工作目錄邊界檢查對它不成立**：
+`Read`/`Write`/`Edit`/`Glob`/`Grep`/`NotebookEdit` 這幾個工具呼叫自己會帶一個路徑參數，(d) 檢查
+的就是那個參數；`Bash` 的呼叫只帶一整串 shell 指令字串，沒有任何一個欄位是「這次要碰的路徑」，
+所以 (d) 的兩層機制對 `Bash` 一律放行——這不是漏接，是這個檢查本身量不到 shell 指令要碰什麼路徑。
+`Bash` 真正的圍籠是另一個獨立機制：OS 層級的 `Options.sandbox`（詳見下面 (e)），只在開機探測量到
+「可用」時才會對這次 `agent()` 真的生效；量不到時 `Bash` 在**本機**送出的 run 上是真的不受限的
+（ADR-083 業主已接受的代價），但**遠端**送出的 `run_start`/`run_resume` 會在門口被整個拒絕——見
+§1b 設定總表「Bash 圍籠姿態」那一列。
 **仍不在預設、需明確 opt-in 的**：`WebFetch`/`WebSearch`（對外網連線，破壞工作目錄封閉性）與
 `Task`/`Agent`（在 agent 內再生子 agent，繞過引擎自己的 orchestration+DOS 追蹤模型）——這些工具
 只能靠呼叫端 `opts.allowedTools` 明確啟用，預設集不含它們。
@@ -681,10 +687,21 @@ curl -s http://localhost:8787/api/models | python3 -c \
   3. 沒有已知工作目錄 root 時（例如直接呼叫 `invoke()` 的單元測試情境，既無 `req.workspace`
      也未設定 `cwd`）——沒有邊界可執行，維持放行（不是這個機制要處理的情境）。
 
-**這個安全模型不是作業系統層級的 sandbox/jail**（沒有 container/namespace/chroot 隔離）——它是
-應用層的權限裁決 + 路徑邊界檢查，防的是「agent 被 prompt 誘導、透過 SDK 自己文件化的工具參數去
-讀寫工作目錄以外的路徑」這一類攻擊路徑；不是防一個真的被入侵、能直接呼叫任意系統呼叫繞過 SDK
-本身的惡意子行程。
+**這一層（(d) 的 canUseTool/PreToolUse）不是作業系統層級的 sandbox/jail**（沒有 container/
+namespace/chroot 隔離)——它是應用層的權限裁決 + 路徑邊界檢查，只防得住「agent 被 prompt 誘導、
+透過 SDK 自己文件化的工具參數去讀寫工作目錄以外的路徑」這一類攻擊路徑，對 `Bash` 完全不生效
+（見上面 (b)）；也防不住一個真的被入侵、能直接呼叫任意系統呼叫繞過 SDK 本身的惡意子行程。
+
+**(e) `Bash` 專屬的圍籠是量出來的，不是宣告的**（REQ-218，ADR-083 業主裁決 posture C）：開機時
+對本機跑一次巢狀 `bwrap --unshare-user` 探測——探測通過，這台部署上每個 `agent()` 呼叫都會真的
+帶 `options.sandbox` 請求 OS 層 namespace 隔離（`src/gateway/bash-confinement.ts`）；探測失敗
+（常見於本機開發機的 AppArmor `bwrap-userns-restrict` 政策擋住巢狀 user namespace，本專案自己的
+開發/CI 機器就是這個情況），`Bash` 就**完全不圍籠**——**本機（loopback）送出的 run 仍會照跑**，
+但**遠端送出的 `run_start`/`run_resume` 會在進 authz、進 ajv 之前就整個被拒絕**
+（`CONFINEMENT_UNAVAILABLE`，`src/call-tool.ts` 的「遠端提交之門」）。姿態量測結果印在開機 log
+的 `Bash confinement: CONFINED`/`UNCONFINED` 那一行，也隨每次 `agent()` 呼叫寫進
+`agent.confinement` 事件的 `posture`/`enabled` 欄位；無法用設定檔調高或調低（只有 §1b
+`sandbox.allowHostPaths` 能在「圍籠生效」的前提下額外開放特定主機路徑）。
 
 ## 2. 完整部署步驟（超出一鍵路徑之外：常駐化 / 容器化 / 上線前煙霧測試）
 
@@ -862,6 +879,8 @@ npm run start
 | 手動用 `curl http://0.0.0.0:<port>/api/status` 檢查健康狀態，收到 `403 Forbidden`（不是逾時、不是連不上） | 伺服器的 Host-header 允許清單刻意不把 `0.0.0.0` 當成合法 Host（那是「監聽所有介面」的萬用位址，不是真實可連的目的地名稱）——`RWE_BIND=0.0.0.0` 只影響「監聽哪些介面」，不代表 `0.0.0.0` 本身能當 URL 用 | 改用 `127.0.0.1:<port>` 檢查（`deploy.sh` §0 本身在 `RWE_BIND=0.0.0.0` 時也是這樣做）；要從區網其他主機檢查，用該主機看到的 LAN IP（並確認已列在 §1b `allowedHosts`） |
 | `auth.enabled:true` + `bind:"0.0.0.0"`，從**本機**呼叫 `/mcp` 做寫入（`workflow_register`／`workflow_publish`／`workflow_deregister`／`webhook_delete`…），明明帶了有效 bearer 卻回 `PRINCIPAL_REQUIRED`（或角色不足的 `FORBIDDEN_ROLE`） | 這個組合下本機來源走的是 D-BIND 豁免（§1b 部署前提第 3 點），伺服器直接放行、**根本不會去讀你帶的 bearer**，於是這次呼叫沒有身份可用，而寫入類操作在 `auth.enabled:true` 時不接受 `args.principal` 自稱 | 要用 bearer 身份做寫入，就從**非 loopback 來源**呼叫（例如從該主機的 LAN IP 打進去），或把 `bind` 設成 `127.0.0.1`（loopback bind 沒有豁免，bearer 一定會被讀取）；只讀不寫時維持現狀即可 |
 | `RWE_BIND=<LAN IP>`（如 §2 systemd 範例的 `192.168.0.125`）部署後，手動用 `curl http://127.0.0.1:<port>/api/status` 檢查，收到 `Connection refused`（連不上，不是 403） | 服務只監聽 `$RWE_BIND` 指定的那個介面；綁定成具體 LAN IP 時，該主機的 `127.0.0.1` 迴環介面根本沒有服務在聽 | 改用 `$RWE_BIND` 本身（例如 `curl http://192.168.0.125:<port>/api/status`）；`deploy.sh` §0 的健康檢查已依 `RWE_BIND` 是否為 `0.0.0.0`/`::` 自動選擇正確目的地，不需要手動判斷 |
+| `run_start`/`run_resume` 回 `CONFINEMENT_UNAVAILABLE` | 這台部署開機探測量到 `Bash` 圍籠不可用（見 §1c(e)），且這次呼叫被判定是「遠端提交」——判斷依據是 socket 的 peer 位址不是 loopback，**或**請求帶了任一 tunnel/forwarded 類 header（`X-Forwarded-For`/`X-Real-IP`/`Forwarded`/`CF-Connecting-IP`，即使 peer 本身是 loopback 也一樣，防止 cloudflared 之類的 tunnel 讓遠端流量偽裝成本機）——這是刻意設計，不是誤判 | 本機（loopback、不帶上述任何 header）呼叫仍會照跑；要接受遠端提交，唯一路徑是讓這台主機的巢狀 `bwrap --unshare-user` 探測通過（多半要調整 AppArmor 的 `bwrap-userns-restrict` 政策或改用容許巢狀 user namespace 的主機），開機 log 會印 `Bash confinement: CONFINED` |
+| `run_result`/`run_status` 的某個 agent `detail` 顯示 `WORKROOT_INSIDE_PROJECT: ... is outside workRoot or carries a project marker between the run workspace and workRoot` | 這是**執行期**的同一個檢查，跟 §1b `workRoot` 那一列的**開機期**檢查是同一顆函式（`findProjectMarkerAboveWorkspace`）——多半是 `workRoot` 底下的 `workflows/<name>/` 這一層目錄意外多出一個 `.git`/`CLAUDE.md`（例如手動在 `workRoot` 內跑過 `git init`） | 找到並移除該路徑下多出來的 `.git`/`CLAUDE.md`；引擎自己在**每個 run 自己的工作目錄根**寫的 `.git`（`initGitBaseline`）不受影響，只有「工作目錄與 `workRoot` 之間的祖先層」才會被擋 |
 
 ## 6. 維運注意事項 / 已知限制
 

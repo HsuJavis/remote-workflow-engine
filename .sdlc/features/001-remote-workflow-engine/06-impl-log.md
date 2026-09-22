@@ -9871,22 +9871,65 @@ F13 本質上是渲染問題,單元層看不到 DOM。
 ### IMPL-373 — the operator's grant surface, `loadFileConfig()`'s `{config,path}` shape, and the boot-time posture probe wired into `composeConfig()` (TASK-252, part of TASK-257)
 - **status:** done
 - **traces:** TASK-252, TASK-257, DES-253, DES-254, DES-255, DES-261, ARCH-177, ARCH-181
-- **greens:** UT-311, UT-312, UT-313
-- **files:** src/main.ts, rwe.config.example.json, DEPLOY.md, src/gateway/confinement-probe.ts, tests/unit/confinement-probe.test.ts
+- **greens:** UT-311, UT-312, UT-313, UT-325, UT-327
+- **files:** src/main.ts, rwe.config.example.json, DEPLOY.md, src/gateway/confinement-probe.ts, tests/unit/confinement-probe.test.ts, tests/unit/sandbox-config-wiring.test.ts (Gate 6.5+7)
 - **commit:** (uncommitted at write time)
 - **iter:** v37
 - **note:** `ComposeConfigDeps.confinementProbe` is a pre-computed VALUE (never a callable
   `composeConfig()` invokes), because `sandbox-config-wiring.test.ts`/`compose-config-v2-wiring.test.ts`
   globally `vi.mock('node:child_process', ...)`, which would silently null a `spawnSync` import
   resolved inside that mock's scope.
+- **v37 Gate 6.5+7 note (2026-09-22, verifier; coverage-gate item 1b):** `composeConfig()`'s own
+  `if (workRoot === undefined) throw ...` arm (`src/main.ts:256-258`, the case a grant is supplied
+  with NO `workRoot` configured at all) measured 0/2 lines hit — UT-311's two refusal cases both
+  supply a `workRoot`. Added UT-325 to `tests/unit/sandbox-config-wiring.test.ts` closing it; no
+  production code changed. Second gap found by the same sweep: `loadFileConfig()`'s own
+  `catch{throw...}` arm (`src/main.ts:149-151`, invalid-JSON-on-disk) also measured 0/2 hit — this
+  function was UNEXPORTED before v37, and UT-312's two cases don't cover it either. Added UT-327 to
+  the same test file closing it; no production code changed.
 
 ### IMPL-374 — `options.sandbox` posture-conditional wiring, `bindEventSink()` + `agent.confinement`, `SANDBOX_UNAVAILABLE` detection (TASK-253 parts a+b, NOT part c/DES-257)
 - **status:** done
 - **traces:** TASK-253, DES-253, DES-256, DES-259, ARCH-176, ARCH-178
-- **greens:** UT-314, UT-315, UT-316, UT-317, UT-318, UT-319
-- **files:** src/gateway/claude-agent-sdk-client.ts, src/event-log.ts, src/gateway/client.ts, package.json, package-lock.json, tests/unit/agent-confinement-events.test.ts
+- **greens:** UT-314, UT-315, UT-316, UT-317, UT-318, UT-319, UT-326, IT-301
+- **files:** src/gateway/claude-agent-sdk-client.ts, src/event-log.ts, src/gateway/client.ts, src/server.ts, package.json, package-lock.json, tests/unit/agent-confinement-events.test.ts, tests/unit/sdk-version-fallback.test.ts (Gate 6.5+7), tests/integration/main-composition-root-events.test.ts (Gate 6.5+7)
 - **commit:** (uncommitted at write time)
 - **iter:** v37
+- **v37 Gate 6.5+7 note (2026-09-22, verifier; seam-wiring check, item 6):** `bindEventSink()` had
+  exactly the same hole `bindResolveMcp`'s own comment already names one gate earlier ("left unbound,
+  out of scope") — `agent-confinement-events.test.ts` (UT-316..319) called it directly on the class
+  (legitimate unit-tier mock), but `server.ts`'s composition root never called it, so every real boot
+  left `_eventSink` at its no-op default and `agent.confinement` — the whole audit line REQ-218/
+  DES-256 exist for — never reached a real log. Fixed: one line, `gateway.bindEventSink(eventSink)`,
+  added next to the existing `gateway.bindResolveMcp(...)` call (`src/server.ts`, inside the same
+  `if (gateway instanceof ClaudeAgentSdkGatewayClient)` block), forwarding the SAME `eventSink`
+  instance `WorkflowCatalog`/`RunManager` already share — `agent.confinement` now redacts through the
+  same `secretValueProvider` as every other audit line, not a second unaudited path. No test asserted
+  the old (unwired) state, so no test changed. `npm run typecheck` clean; `tests/unit/agent-confinement-events.test.ts` and `tests/unit/authoring-guide.test.ts` re-run directly, still green (this
+  wiring is additive — no existing behavior depends on the old no-op). **Locked with a system-level
+  regression guard (advisor review — the exact "left unbound" precedent has no test of its own
+  either):** added IT-301 (`tests/integration/main-composition-root-events.test.ts`, the P1 describe
+  block, same real-`createServer()` composition-root shape as its two existing cases) — a real
+  `ClaudeAgentSdkGatewayClient` (fake `queryImpl`, no live provider needed) constructed exactly the
+  way `main.ts` does and injected via `config.gateway`, driven through one real `agent()` call inside
+  a real workflow script, asserts an `agent.confinement` line reaches the console sink. Confirmed the
+  guard actually catches the regression: temporarily commented out the `bindEventSink` call, re-ran —
+  `AssertionError: expected undefined not to be undefined` (the line never arrives); restored, green
+  again (8/8 in the file).
+  **Second real defect found by this same re-check pass (advisor review) — the `agent.confinement`
+  event's own `posture` field could DISAGREE with its `enabled` field on the SAME event:**
+  `_invokeOnce`'s `sandbox` ternary (built from `this._config.confinementPosture === 'confined'`,
+  omitted ⇒ `{enabled:false}`) and the event's `posture` ternary (`=== 'unconfined' ? 'unconfined' :
+  'confined'`, omitted ⇒ `'confined'`) read the SAME field with OPPOSITE defaults — ARCH-176's own
+  named bug class ("two different reasons must not read the same"), inside the very audit line this
+  iteration exists for. Caught by the val-023 log line printed during this gate's own TZ-shift
+  regression run (`"posture":"confined"` beside `"enabled":false`), not by UT-316/317 (both pass an
+  explicit posture, so neither exercises the omitted-default case). Fixed: the `posture` ternary now
+  mirrors the `sandbox` ternary exactly (`=== 'confined' ? 'confined' : 'unconfined'`). Regression
+  case added to `agent-confinement-events.test.ts` (construct with no `confinementPosture`, assert
+  `posture:'unconfined'` AND `enabled:false` on the SAME event) and to IT-301 above (same two
+  assertions, at the real composition-root tier). `npm run typecheck` clean;
+  `tests/unit/agent-confinement-events.test.ts` (7/7) and `tests/acceptance/val-023-sdk-gateway-timeout.test.ts` (2/2) re-run directly.
 - **note:** part (c) (`findProjectMarkerAboveWorkspace()`/DES-257) is explicitly NOT implemented —
   out of this dispatch's scope, `workroot-rewalk.test.ts` and `val-024`'s two re-pointed cases stay
   red exactly as Gate 5 left them. `agent.confinement_denied` (S4-gated) is also NOT built — S4 fired

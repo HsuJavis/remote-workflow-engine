@@ -12330,3 +12330,184 @@ freshly booted instance, not only in the unit fixture. No config file changed. N
 key across `01`–`08` returns zero hits (K5 stands `answered(2026-09-22)`).
 
 `current_stage` → `review` (Gate 8 re-review is next).
+
+## v37 round — REQ-218/REQ-219 (Bash confinement posture C + dead-security-module cleanup), 2026-09-22, validator
+
+Impact closure this round: REQ-218, REQ-219, REQ-018, REQ-037, REQ-117 (delta iteration; no new
+ledger, no new ID namespace, existing items flipped/amended in place per `05-tests.md`'s own v37
+Gate 7.5 notes on `VAL-253`, `VAL-254`, `IT-301`).
+
+**Boot from documented steps only.** One scratch instance via the committed `./deploy.sh
+--background`, only `RWE_CONFIG_PATH`/`RWE_BIND`/`RWE_PORT` overridden — no undocumented step:
+```bash
+RWE_CONFIG_PATH="$(pwd)/scratch-v37.config.json" RWE_BIND=127.0.0.1 RWE_PORT=8991 ./deploy.sh --background
+# == 步驟 5/5：健康檢查 (等待 /api/status 回應) ==
+# 健康檢查通過：{"agentSemaphore":{"total":32,"inUse":0,"queued":0},"version":"0.1.0 (v0.20.0-442-gc13021e)"}
+```
+`scratch-v37.config.json` (`gateway:"sdk"`, real local Ollama `qwen2.5:7b`/`local-qwen`, `auth.enabled:false`,
+`workRoot` a scratch `/tmp` directory) is untracked and was deleted after this round together with
+its `.rwe.scratch-v37.config.{pid,log}` control files and the scratch `workRoot` (`git status
+--short` confirmed clean of them after teardown; scratch PID 3041479 confirmed no longer running via
+`ps -p` after `kill`). No `rwe.service`/other production instance exists in this environment — this
+scratch instance was the only one running, and it ran the SAME uncommitted working tree the Gate
+6.5+7 verifier left (`git diff --stat HEAD -- src/`: `claude-agent-sdk-client.ts`/`server.ts`,
+the `bindEventSink` wiring + `posture`/`enabled` agreement fix — confirmed those two hunks are what
+this boot actually ran, not a stale committed snapshot).
+
+**REQ-218 real-tier evidence** (full detail on `VAL-253`'s own v37 Gate 7.5 note in `05-tests.md`):
+- Re-confirmed the host-specific blocker directly rather than trusting TASK-250's spike by citation:
+  `bwrap --unshare-user --unshare-pid --ro-bind / / --tmpfs /tmp -- bwrap --unshare-user
+  --unshare-pid --ro-bind / / --tmpfs /tmp -- /bin/true` → exit 1, `bwrap: No permissions to create
+  a new namespace...` (single-level bwrap succeeds; nested does not —
+  `kernel.apparmor_restrict_unprivileged_userns=1`). This makes the confined-write-denied clause of
+  REQ-218's acceptance `unreachable-dep` on this environment, same as every host measured so far in
+  this ledger — recorded explicitly, not silently passed.
+- Real boot log: `[remote-workflow-engine] Bash confinement: UNCONFINED (bwrap: No permissions to
+  create a new namespace...) — remote run submissions will be refused; local (loopback) runs still
+  proceed, unconfined` — the real `probeConfinement()` result, not a stubbed value.
+- A real `workflow_register`→`workflow_publish`→`run_start` round trip (`val37-escape-test`) over
+  real `POST /mcp` dispatched a real `agent()` call through the real SDK gateway against real
+  Ollama, completed, and the boot's own log carried
+  `{"kind":"agent.confinement",...,"posture":"unconfined","enabled":false,...}` — the Gate 6.5+7
+  posture/enabled-agreement fix confirmed end-to-end against a real (non-fake) `queryImpl`, not only
+  at the in-process integration-test tier `IT-301` covers.
+- Remote-submission door (DES-262): the same instance, called with an `X-Forwarded-For` tunnel
+  header over loopback, returned `CONFINEMENT_UNAVAILABLE` BEFORE the channel-publication check ran
+  (the identical unpublished-workflow call with no such header returned `CHANNEL_UNPUBLISHED`
+  instead) — confirms the door sits ahead of authz/ajv; a genuinely local call is NOT refused
+  (ADR-083's accepted cost, confirmed by the completed run above).
+- Live `workflow_authoring_guide` (DES-258): returned text contains both "`Bash` is **not
+  confined**: the boot-time probe found no working sandbox on this host..." and "...A **remote
+  submission** is refused before it ever reaches an agent..." — the measured-posture render is live.
+- Boot-time grant refusal (DES-254): a second scratch config with
+  `sandbox.allowHostPaths:["<workRoot>"]` refused `--check-config`: `rwe.config.json: invalid
+  sandbox.allowHostPaths entries — refusing to start (ADR-028 fail-closed): <workRoot>: not a valid
+  host-path grant (INSIDE_WORKROOT)...`.
+- Code inspection cross-checked against the above: the two previously contradictory comments in
+  `src/gateway/claude-agent-sdk-client.ts` (`BUILT_IN_CORE_TOOLS` doc comment, the `V3-residual`
+  comment) both now carry a correction stating the same fact this round's real run demonstrated.
+  `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` still prints (confirmed live in this round's own re-run of
+  `val-023-sdk-gateway-timeout.test.ts`) but now carries the required one-line justification inline.
+- **A real doc-drift gap found and fixed**: `DEPLOY.md` §1c's security-model narrative (§1c(b)/(d))
+  still asserted Bash was closed by the app-layer path-boundary check — the exact stale claim
+  REQ-218 exists to correct in code, never propagated to the human-facing deploy doc. Rewritten in
+  place plus a new §1c(e); `README.md`'s 安全模型 §2/§4 bullets corrected to match; two new §5
+  troubleshooting rows added (`CONFINEMENT_UNAVAILABLE`, runtime `WORKROOT_INSIDE_PROJECT`).
+
+**REQ-219 real-tier evidence** (full detail on `VAL-254`'s own v37 Gate 7.5 note in `05-tests.md`):
+- Delete half: re-ran `npx vitest run tests/acceptance/val-254-req219-dead-code.test.ts` (5/5 pass,
+  real `grep` against the on-disk `src`/`tests` tree); independently re-confirmed with
+  `grep -rn "session-options-builder|timeout-race" DEPLOY.md README.md src/` (excluding the checker
+  itself) — 0 hits anywhere, including the human-facing docs (not previously checked).
+- Wire half: re-ran `val-024-workroot-isolation.test.ts` (5/5 pass, real `findProjectMarkerAboveWorkspace()`
+  calls against real on-disk directory structure); additionally drove it end-to-end over real MCP
+  HTTP against the SAME booted instance above — a workflow (`val37-marker-test`) with a `CLAUDE.md`
+  planted at `<workRoot>/workflows/val37-marker-test/` (an ancestor strictly between the run
+  workspace and `workRoot`): `run_start` completed with the agent record showing `state:"failed"`,
+  `tokens:{input:0,output:0,...}` (gateway never reached) and
+  `detail:"WORKROOT_INSIDE_PROJECT: ... carries a project marker between the run workspace and
+  workRoot"` — the re-walk (IMPL-377) confirmed live in the real `_invokeOnce` path, not only via
+  direct-call fixtures.
+- `IT-301` re-run (8/8 pass) plus cross-confirmed against the real (non-fake) `queryImpl` dispatch
+  above — same event shape.
+
+**REQ-018/REQ-037/REQ-117 (carried, impact-closure context only, per `rtm.md`'s own Gate 2/3+4/5
+notes — their own acceptance criteria are unchanged by this iteration's diff).**
+- REQ-018 (secrets never workspace-reachable) and REQ-037 (provider-aware SDK routing): the
+  defensible basis for "unaffected" is NOT the uncommitted delta alone (the full v37 iteration,
+  `git diff 645555b..HEAD -- src/`, also touches DES-255's `protectedFiles`/REQ-018-adjacent
+  plumbing and the confinement wiring REQ-037's own dual-auth routing sits beside) — it is `rtm.md`'s
+  own Gate 2/3+4 architect classification: both rows are named as impact-closure CONTEXT for
+  REQ-218/219 ("extends REQ-018/D-R2 hermeticity"), not a behavioural change to either REQ's own
+  acceptance criteria, and neither row was edited at any v37 gate. This round's own real boot
+  happened to re-exercise REQ-037 as a byproduct — `gateway:"sdk"` correctly routed the
+  `ollama`-provider alias through the managed LiteLLM proxy (the real completed run above) —
+  consistent with, not a substitute for, its own existing `real:true` evidence (`VAL-027`/`VAL-092`
+  for REQ-018, REQ-037's own existing rows). Neither re-run beyond that.
+- REQ-117 (cold-model-gets-it-right-the-first-time): **NOT re-run this gate.** Its own acceptance
+  text disqualifies anyone who has seen this project's development conversation as a subject —
+  including this validator, which has read the full v37 ledger and diff in the course of this gate.
+  `rtm.md`'s own Gate 2/3+4 note classifies REQ-117 as impact-closure context, not a behavioural
+  change, for this iteration. **The precedent that argues the other way, and the reason this is
+  reported rather than silently closed**: `VAL-245`'s own text records that the v35 orchestrator
+  ruled "不沿用,重跑" (do not reuse the prior cold-subject evidence, re-run) PRECISELY BECAUSE the
+  live `workflow_authoring_guide` text changed that iteration — and DES-258 changed that SAME live
+  guide text again this iteration (the dual-posture/measured-posture host-path-grants paragraph).
+  The same trigger that fired at v35 has fired again; this validator is not overriding that
+  precedent by declining to re-run — it is surfacing the conflict between the precedent and its own
+  inability to supply a qualifying subject (bumping `VAL-245`'s `iter:` to v37 unchanged would be
+  exactly the silent-carry-forward the validator contract forbids). Reported below as
+  `needs_clarification`: whether a fresh cold-subject run is required before Gate 8, given the v35
+  precedent — a genuinely independent, context-free instance is not available to this validator.
+
+### Config-file sync check (this round)
+The v37 **iteration** (`git diff 645555b..HEAD`, i.e. since v36 closed) DID add a config key:
+`sandbox.allowHostPaths` (IMPL-373, TASK-252, landed at Gate 6) — `src/main.ts`'s
+`KNOWN_FILE_CONFIG_KEYS` gained the `sandbox` entry, `rwe.config.example.json` carries a
+`"sandbox": {"allowHostPaths": []}` block, and `DEPLOY.md` §1b gained the `sandbox.allowHostPaths`
+row plus the (non-key) measured-posture row — all landed at Gate 6/6.5+7, before this validation
+round. This round's OWN diff on top of that (`claude-agent-sdk-client.ts`'s posture ternary,
+`server.ts`'s one `bindEventSink` line) adds no further config surface. Round-tripped both
+directions this round (not merely asserted): extracted all 43 `KNOWN_FILE_CONFIG_KEYS` entries from
+`src/main.ts` via a small script and substring-checked each against `DEPLOY.md` — **0 keys missing
+from DEPLOY.md**, confirming `sandbox` is documented and no other key is undocumented. `git diff
+HEAD -- rwe.config.example.json deploy.sh src/main.ts` (the uncommitted delta specifically) is zero
+— the key's own doc/example sync was this round's inherited state, already current, not this
+round's own new work; recorded here as "confirmed", not "not applicable".
+
+### Handover doc updates (this round)
+- `DEPLOY.md`: §1c(b)/(d) rewritten (Bash is NOT closed by the app-layer path-boundary check — that
+  claim was stale, contradicting REQ-218's own corrected code comments), new §1c(e) added (the
+  measured OS-sandbox posture, ADR-083 posture C, in the same place a reader already looks for the
+  security model); two new §5 troubleshooting rows (`CONFINEMENT_UNAVAILABLE`,
+  runtime `WORKROOT_INSIDE_PROJECT`).
+- `README.md`: 安全模型 §2/§4 bullets corrected to the same current-state fact (Bash's confinement is
+  a separate, measured, posture-dependent mechanism — not covered by the workspace-boundary bullet).
+- Swept both files for 「舊版」「原本」「v1 時」「以前」「Changelog」/version-conditional language
+  after editing: zero hits introduced by this round's own edits (the pre-existing hits are legitimate
+  current-state operational text about upgrading an existing `workRoot`, same as prior rounds' own
+  sweep found — not history/changelog content).
+
+### `sh .sdlc/trace --check` (this round)
+Before this round, the authoritative pre-edit baseline per CLAUDE.md's "capture the baseline earlier
+into a file" rule (not re-derived by checking the ledger backwards): **2090 items / 79 gaps**, per
+`state.yaml`'s own Gate 6.5+7 exit-number note (the verifier's two records disagree by one item —
+`journal.md`'s own prose closing line says "2089/79"; `state.yaml`'s `current_stage` note, written
+by the same gate, says "2090 items / 79 gaps (2086 baseline + UT-325/UT-326/UT-327/IT-301)" — this
+round cites the `state.yaml` figure because it is the one that reconciles with an unchanged item
+count below, not because it was independently re-derived backwards). 2 of the 79 gaps were
+`未真實驗證`(mock-only) for `REQ-218`/`REQ-219` — every other gap pre-existing and out of this
+closure. After flipping `VAL-253`/`VAL-254`/`IT-301` to `real:true` in place (no new IDs, item count
+UNCHANGED at 2090 — consistent with adding zero new work items): **2090 items / 77 gaps**
+(`trace.analyze()` called as a library, not eyeballed): `[g for g in gaps if g['id'] in
+('REQ-218','REQ-219','REQ-018','REQ-037','REQ-117')]` → `[]` — zero hits, and zero `未真實驗證`
+gaps anywhere in the ledger (`Counter(g['type'] for g in gaps)` → `漂移`24/`TDD`19/`未驗證`17/
+`斷鏈`15/`未實作`2, no `未真實驗證` entries). `sh .sdlc/trace --check` still exits 1 on the same
+pre-existing, out-of-closure debt every prior validation round in this ledger has carried forward
+(matching the exit gate's actual bar: no gap for any REQ in THIS closure, not zero gaps ledger-wide).
+
+`rtm.md` updated by hand (no `--rtm` CLI flag in this repo's `trace.py`, confirmed via its own
+header): REQ-218/REQ-219 rows flip `⏳ 本輪未到驗證` → `✅`, REQ-219's Verification column gains
+`IT-301`; a new dated v37 Gate 7.5 note documents the closure and what remains unreachable/carried.
+
+### Verdict (this round)
+**PASSED, with one explicit unreachable-dep and one explicit needs_clarification — neither silently
+closed.** REQ-218 and REQ-219 each now carry ≥1 `real:true` green VAL/IT item against a genuinely
+booted, documented-steps-only instance running the exact uncommitted working tree under review —
+real MCP HTTP, a real SDK gateway dispatch against real Ollama, a real boot-time probe, a real
+boot-time config refusal, and a real filesystem/grep check. REQ-218's confined-Bash-write clause
+remains genuinely unreachable on every host measured in this ledger to date (recorded, not
+mock-passed). REQ-018/REQ-037/REQ-117 are carried unchanged, consistent with `rtm.md`'s own Gate
+2/3+4/5 impact-closure classification; REQ-117 specifically was NOT re-run (validator disqualified
+as a cold subject by its own acceptance text) — flagged to the orchestrator rather than silently
+bumped. A real doc-drift gap (stale Bash-confinement narrative in `DEPLOY.md`/`README.md`) was found
+and fixed as part of this gate's own 5a/5b duty.
+
+**Full regression, run as supplementary corroboration, not a gate requirement** (this round's own
+edits touched only `.md`/`.yaml` — no `src/`/`tests/` change of its own; the Gate 6.5+7 verifier
+already ran the full suite 3x clean on this identical working tree): `npx vitest run tests/unit
+tests/integration` → **371 files / 2932 tests / 0 failed, exit 0** (310.76s). Confirms nothing in
+this round's own doc/ledger edits (or the act of running the targeted real-tier re-runs above)
+disturbed the tree.
+
+`current_stage` → `review` (Gate 8 is next).

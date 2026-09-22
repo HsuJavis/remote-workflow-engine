@@ -64,6 +64,12 @@ describe('UT-311 composeConfig() refuses boot on an invalid sandbox.allowHostPat
     rmSync(workRoot, { recursive: true, force: true });
   });
 
+  it('UT-325: a grant with NO workRoot at all refuses boot (a grant needs a workRoot anchor to validate containment against)', async () => {
+    await expect(
+      composeConfig({ gateway: 'direct-fetch', sandbox: { allowHostPaths: ['/some/host/path'] } } as any, FAKE_DEPS),
+    ).rejects.toThrow(/sandbox\.allowHostPaths requires workRoot to be set/);
+  });
+
   it('a valid real grant survives boot and reaches the constructed gateway', async () => {
     const workRoot = makeWorkRoot();
     const grant = mkdtempSync(join(tmpdir(), 'rwe-sandboxcfg-grant-'));
@@ -85,6 +91,21 @@ describe('UT-312 protectedFiles come from the file loadFileConfig() actually rea
       const { config, path } = loadFileConfig();
       expect(config.port).toBe(9999);
       expect(path).toBe(cfgPath);
+    } finally {
+      if (prevEnv === undefined) delete process.env['RWE_CONFIG_PATH'];
+      else process.env['RWE_CONFIG_PATH'] = prevEnv;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('loadFileConfig() throws naming the path when the config file exists but is not valid JSON (coverage-gate item 1b, Gate 6.5+7)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-loadcfg-badjson-'));
+    const cfgPath = join(dir, 'rwe.config.json');
+    writeFileSync(cfgPath, '{ this is not json');
+    const prevEnv = process.env['RWE_CONFIG_PATH'];
+    process.env['RWE_CONFIG_PATH'] = cfgPath;
+    try {
+      expect(() => loadFileConfig()).toThrow(new RegExp(`${cfgPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*not valid JSON`));
     } finally {
       if (prevEnv === undefined) delete process.env['RWE_CONFIG_PATH'];
       else process.env['RWE_CONFIG_PATH'] = prevEnv;

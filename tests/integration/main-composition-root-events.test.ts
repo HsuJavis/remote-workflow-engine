@@ -33,6 +33,8 @@ import { createEventSink } from '../../src/event-log.js';
 import { registerPublished, registerPublishedVia, uniqueWorkflowName } from '../helpers/workflow-fixtures.js';
 import { createServer, type Server } from '../../src/server.js';
 import { FIXTURE_SCRIPT, FIXTURE_MERMAID } from '../../src/tool-specs.js';
+import { ClaudeAgentSdkGatewayClient } from '../../src/gateway/claude-agent-sdk-client.js';
+import type { Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 
 const clock = new FixedClock(new Date('2026-09-21T00:00:00.000Z'));
 const dirs: string[] = [];
@@ -218,5 +220,62 @@ describe('P1: the REAL createServer() composition root wires a secrets-aware sin
     expect(terminalLine).toBeDefined(); // sanity: the audit line was actually emitted
     expect(terminalLine).not.toContain(secretValue); // RunManager's sink must be the SAME secrets-aware instance
     expect(terminalLine).toContain(`‹secret:${SECRET_NAME}›`);
+  });
+
+  // IT-301 (v37 Gate 6.5+7, verifier; DES-256/ARCH-178 — seam-wiring check, item 6): `bindEventSink`
+  // is called only by `agent-confinement-events.test.ts` (a unit-tier mock on the class directly);
+  // nothing at system tier proved `server.ts`'s composition root actually calls it, so the hole
+  // (`agent.confinement` built but never reaching a real log) could reopen silently on the next
+  // refactor the same way `bindResolveMcp` was originally "left unbound, out of scope" (its own
+  // comment names this exact precedent). Drives a REAL `createServer()` + a REAL
+  // `ClaudeAgentSdkGatewayClient` (constructed the same way `main.ts` does, injected via
+  // `config.gateway` with a FAKE `queryImpl` so no live provider is needed — same technique as
+  // `agent-confinement-events.test.ts`'s own `okSession()`) through a REAL `agent()` call inside a
+  // real workflow script, and asserts an `agent.confinement` line reaches the console sink.
+  it("a real agent() call through the REAL createServer() composition root emits agent.confinement to the console sink (bindEventSink wiring guard)", async () => {
+    workRoot = mkdtempSync(join(tmpdir(), 'rwe-it301-'));
+    const fakeQueryImpl: Query = (async function* (): AsyncGenerator<SDKMessage, void> {
+      yield { type: 'result', subtype: 'success', is_error: false, result: 'ok', usage: { input_tokens: 1, output_tokens: 1 } } as SDKMessage;
+    })() as unknown as Query;
+    server = await createServer({
+      port: 0,
+      bind: '127.0.0.1',
+      workRoot,
+      aliases: { default: { provider: 'anthropic', model: 'claude-sonnet-5' } },
+      gateway: new ClaudeAgentSdkGatewayClient({
+        baseUrl: 'http://127.0.0.1:4000',
+        queryImpl: (() => fakeQueryImpl) as any,
+      } as any),
+    });
+
+    async function mcpCall(method: string, args: Record<string, unknown>): Promise<any> {
+      const res = await fetch(`http://127.0.0.1:${server!.port}/mcp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: method, arguments: args } }),
+      });
+      const json = (await res.json()) as { result?: { content?: Array<{ text?: string }> } };
+      const text = json.result?.content?.[0]?.text;
+      return text !== undefined ? JSON.parse(text) : json;
+    }
+    const name = uniqueWorkflowName('it301-confinement');
+    await registerPublishedVia(mcpCall, name, FIXTURE_SCRIPT, { mermaid: FIXTURE_MERMAID });
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const run = await mcpCall('run_start', { name });
+    let status: any;
+    for (let i = 0; i < 60; i++) {
+      status = await mcpCall('run_status', { runId: run.runId });
+      if (['completed', 'failed'].includes(status.status)) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const lines = logSpy.mock.calls.map((c) => String(c[0]));
+    logSpy.mockRestore();
+    expect(status.status).toBe('completed');
+    const confinementLine = lines.find((l) => { try { return JSON.parse(l).kind === 'agent.confinement'; } catch { return false; } });
+    expect(confinementLine).toBeDefined(); // sanity: the audit line was actually emitted, not just built
+    const parsed = JSON.parse(confinementLine as string);
+    expect(parsed.enabled).toBe(false); // this composition root sets no confinementProbe → gateway default (unconfined)
+    expect(parsed.posture).toBe('unconfined'); // must AGREE with `enabled` — the v37 Gate 6.5+7 posture-ternary fix
   });
 });
