@@ -888,7 +888,7 @@ describe('P-A3: a declared effort default takes effect at dispatch, or is refuse
         },
       };
       const mgr = new RunManager({ store, clock, workRoot: dir, catalog, spawner } as any);
-      const runId = await mgr.start({ name: 'it083-pa3-effort-default' }); // no overrides at all
+      const runId = await mgr.start({ origin: 'local', name: 'it083-pa3-effort-default' }); // no overrides at all
 
       // The real sandbox child process must actually reach the script's `agent()` call before the
       // injected spawner is invoked — poll for the terminal status (same pattern as the B2 describe

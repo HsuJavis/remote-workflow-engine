@@ -63,32 +63,32 @@ function newSqliteWithDbPath(): { store: RunStore; dbPath: string } {
 async function seedAllStatuses(store: RunStore): Promise<Record<string, string>> {
   const ids: Record<string, string> = {};
 
-  ids.queued = await store.createRun({ name: 'act-wf', args: {} }); // never transitioned
+  ids.queued = await store.createRun({ origin: 'local', name: 'act-wf', args: {} }); // never transitioned
 
-  ids.running = await store.createRun({ name: 'act-wf', args: {} });
+  ids.running = await store.createRun({ origin: 'local', name: 'act-wf', args: {} });
   await store.recordTransition(ids.running, 'queued', 'running', '2026-09-22T00:01:00.000Z');
 
-  ids.suspended = await store.createRun({ name: 'act-wf', args: {} });
+  ids.suspended = await store.createRun({ origin: 'local', name: 'act-wf', args: {} });
   await store.recordTransition(ids.suspended, 'queued', 'running', '2026-09-22T00:02:00.000Z');
   await store.recordTransition(ids.suspended, 'running', 'suspended', '2026-09-22T00:02:01.000Z');
 
-  ids.interrupted = await store.createRun({ name: 'act-wf', args: {} });
+  ids.interrupted = await store.createRun({ origin: 'local', name: 'act-wf', args: {} });
   await store.recordTransition(ids.interrupted, 'queued', 'running', '2026-09-22T00:03:00.000Z');
   await store.recordTransition(ids.interrupted, 'running', 'interrupted', '2026-09-22T00:03:01.000Z');
 
-  ids.completed = await store.createRun({ name: 'act-wf', args: {} });
+  ids.completed = await store.createRun({ origin: 'local', name: 'act-wf', args: {} });
   await store.recordTransition(ids.completed, 'queued', 'running', '2026-09-22T00:04:00.000Z');
   await store.recordTransition(ids.completed, 'running', 'completed', '2026-09-22T00:04:01.000Z');
 
-  ids.failed = await store.createRun({ name: 'act-wf', args: {} });
+  ids.failed = await store.createRun({ origin: 'local', name: 'act-wf', args: {} });
   await store.recordTransition(ids.failed, 'queued', 'running', '2026-09-22T00:05:00.000Z');
   await store.recordTransition(ids.failed, 'running', 'failed', '2026-09-22T00:05:01.000Z');
 
-  ids.stopped = await store.createRun({ name: 'act-wf', args: {} });
+  ids.stopped = await store.createRun({ origin: 'local', name: 'act-wf', args: {} });
   await store.recordTransition(ids.stopped, 'queued', 'running', '2026-09-22T00:06:00.000Z');
   await store.recordTransition(ids.stopped, 'running', 'stopped', '2026-09-22T00:06:01.000Z');
 
-  ids.unnamedRunning = await store.createRun({ args: {} });
+  ids.unnamedRunning = await store.createRun({ origin: 'local', args: {} });
   await store.recordTransition(ids.unnamedRunning, 'queued', 'running', '2026-09-22T00:07:00.000Z');
 
   return ids;
@@ -152,10 +152,10 @@ describe('UT-308: RunStore.activeRuns() — both stores agree, unbounded, status
   ] as const) {
     it(`${label}: a suspended run older than list()'s 50-row page is dropped by list() but still returned by activeRuns()`, async () => {
       const store = mk();
-      const staleId = await store.createRun({ name: 'act-wf', args: {} }); // oldest createdAt — created first
+      const staleId = await store.createRun({ origin: 'local', name: 'act-wf', args: {} }); // oldest createdAt — created first
       await store.recordTransition(staleId, 'queued', 'suspended', '2026-09-22T00:00:00.500Z');
       for (let i = 0; i < 55; i++) {
-        const id = await store.createRun({ name: 'flood', args: {} });
+        const id = await store.createRun({ origin: 'local', name: 'flood', args: {} });
         await store.recordTransition(id, 'queued', 'completed', '2026-09-22T00:10:00.000Z');
       }
       const page = await store.list();

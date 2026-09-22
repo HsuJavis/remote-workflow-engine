@@ -53,36 +53,36 @@ const doneAgent = (id: string, state: AgentRecord['state'] = 'done'): AgentRecor
  */
 async function seedFixture(store: RunStore): Promise<void> {
   // wm-priced
-  const p1 = await store.createRun({ name: 'wm-priced', args: {} });
+  const p1 = await store.createRun({ origin: 'local', name: 'wm-priced', args: {} });
   await store.recordTransition(p1, 'running', 'completed', '2026-09-22T00:01:00.000Z');
   await store.saveSnapshot(p1, { phases: [], agents: [doneAgent('a1')], workflowNodes: [], usage: usage(0.5) });
 
-  const p2 = await store.createRun({ name: 'wm-priced', args: {} });
+  const p2 = await store.createRun({ origin: 'local', name: 'wm-priced', args: {} });
   await store.recordTransition(p2, 'running', 'completed', '2026-09-22T00:02:00.000Z');
   await store.saveSnapshot(p2, { phases: [], agents: [doneAgent('a2')], workflowNodes: [], usage: usage(1.5) });
 
-  const p3 = await store.createRun({ name: 'wm-priced', args: {} });
+  const p3 = await store.createRun({ origin: 'local', name: 'wm-priced', args: {} });
   await store.recordTransition(p3, 'running', 'failed', '2026-09-22T00:03:00.000Z');
   await store.saveSnapshot(p3, { phases: [], agents: [doneAgent('a3', 'failed')], workflowNodes: [], usage: usage(0.4) });
 
-  const p4 = await store.createRun({ name: 'wm-priced', args: {} });
+  const p4 = await store.createRun({ origin: 'local', name: 'wm-priced', args: {} });
   await store.recordTransition(p4, 'running', 'completed', '2026-09-22T00:04:00.000Z');
   await store.saveSnapshot(p4, { phases: [], agents: [], workflowNodes: [], usage: usage(0) }); // zero-agent: unpriced despite costUSD:0 in the raw fold
 
-  const p5 = await store.createRun({ name: 'wm-priced', args: {} });
+  const p5 = await store.createRun({ origin: 'local', name: 'wm-priced', args: {} });
   await store.recordTransition(p5, 'queued', 'running', '2026-09-22T00:05:00.000Z'); // never terminal
 
   // wm-unpriced: the ONLY run is zero-agent — never priced at all.
-  const u1 = await store.createRun({ name: 'wm-unpriced', args: {} });
+  const u1 = await store.createRun({ origin: 'local', name: 'wm-unpriced', args: {} });
   await store.recordTransition(u1, 'running', 'completed', '2026-09-22T00:06:00.000Z');
   await store.saveSnapshot(u1, { phases: [], agents: [], workflowNodes: [], usage: usage(0) });
 
   // wm-active-only: no terminal run ever.
-  const a1 = await store.createRun({ name: 'wm-active-only', args: {} });
+  const a1 = await store.createRun({ origin: 'local', name: 'wm-active-only', args: {} });
   await store.recordTransition(a1, 'queued', 'running', '2026-09-22T00:07:00.000Z');
 
   // unnamed
-  const n1 = await store.createRun({ args: {} });
+  const n1 = await store.createRun({ origin: 'local', args: {} });
   await store.recordTransition(n1, 'running', 'completed', '2026-09-22T00:08:00.000Z');
   await store.saveSnapshot(n1, { phases: [], agents: [doneAgent('a4')], workflowNodes: [], usage: usage(0.9) });
 }

@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import type { Clock } from './clock.js';
 import type { ErrEnvelope, RefusalReason } from './types.js';
 import { computeNextFire, bootRearm, type StoredSchedule } from './scheduler-engine.js';
+import { toErrEnvelope } from './errors.js';
 
 // v24 (DES-149, ARCH-099, TASK-141): `workflow` becomes OPTIONAL — a trigger can now be created
 // UNCLAIMED (no bound workflow) and claimed later via `claim()`/`release()`/`ownerOf()`. A caller
@@ -25,10 +26,13 @@ import { computeNextFire, bootRearm, type StoredSchedule } from './scheduler-eng
 // the fire path, which refuses and RECORDS the verdict. `claimedBy`/`createdBy` are the
 // new per-trigger ownership fields (ARCH-099's "five columns", the other three being the refusal
 // trio below).
+// v37 (ARCH-182, DES-263, TASK-258): `createdRemote` — written ONCE at creation from
+// `ToolDeps.isRemoteSubmission`, never updated afterwards (provenance is a fact about creation).
+// Read back by `trigger()` and by `server.ts`'s ticker dispatcher to stamp `RunSpec.origin`.
 export type Schedule =
-  | { kind: 'cron'; id: string; workflow?: string; claimedBy?: string | null; createdBy?: string; args?: unknown; cron: string; tz?: string; enabled: boolean }
-  | { kind: 'once'; id: string; workflow?: string; claimedBy?: string | null; createdBy?: string; args?: unknown; at: string; enabled: boolean }
-  | { kind: 'resident'; id: string; workflow?: string; claimedBy?: string | null; createdBy?: string; args?: unknown; enabled: boolean };
+  | { kind: 'cron'; id: string; workflow?: string; claimedBy?: string | null; createdBy?: string; createdRemote?: boolean; args?: unknown; cron: string; tz?: string; enabled: boolean }
+  | { kind: 'once'; id: string; workflow?: string; claimedBy?: string | null; createdBy?: string; createdRemote?: boolean; args?: unknown; at: string; enabled: boolean }
+  | { kind: 'resident'; id: string; workflow?: string; claimedBy?: string | null; createdBy?: string; createdRemote?: boolean; args?: unknown; enabled: boolean };
 
 // Plain `Omit<Schedule, 'id'>` does NOT distribute over a discriminated union (a known TS gotcha —
 // it collapses to only the members' common keys, losing `cron`/`at`) unless the conditional's
@@ -43,6 +47,9 @@ export interface ScheduleStatus {
   workflow?: string;
   claimedBy?: string | null;
   createdBy?: string;
+  /** v37 (ARCH-182, DES-263, TASK-258): read by `server.ts`'s ticker dispatcher (via `get()`) to
+   *  stamp the fired run's `RunSpec.origin`. */
+  createdRemote?: boolean;
   enabled: boolean;
   /** v24 (integrator; REQ-103/REQ-015): the schedule's own time expression. It was absent, so
    *  `schedule_list` and `workflow_describe.triggers[]` could tell you a cron schedule EXISTS but
@@ -80,7 +87,9 @@ interface RunManagerPort {
   // v26 (DES-181, ARCH-118, TASK-181): `budget` widened to match `RunSpec` — a fire-path caller
   // never sets it (undefined), but the port's inline shape must stay a superset of `RunSpec`'s or
   // `RunManager` stops structurally satisfying this seam.
-  start(spec: { name?: string; script?: string; args?: unknown; budget?: number | { usd?: number; tokens?: number } | null; startedBy?: { type: string; id?: string } }): Promise<string>;
+  // v37 (ARCH-182, DES-263, TASK-258): `origin` is REQUIRED here too, matching `RunSpec.origin` —
+  // the compiler, not a reviewer, is what stops this call site from silently omitting it.
+  start(spec: { name?: string; script?: string; args?: unknown; budget?: number | { usd?: number; tokens?: number } | null; startedBy?: { type: string; id?: string }; origin: 'local' | 'remote' }): Promise<string>;
 }
 
 export interface SchedulerPortDeps {
@@ -105,6 +114,7 @@ interface ScheduleRow {
   workflow: string | null;
   claimedBy: string | null;
   createdBy: string | null;
+  createdRemote: number;
   argsJson: string | null;
   cron: string | null;
   tz: string | null;
@@ -121,7 +131,7 @@ interface ScheduleRow {
 
 function rowToSchedule(r: ScheduleRow): Schedule {
   const args = r.argsJson != null ? (JSON.parse(r.argsJson) as unknown) : undefined;
-  const shared = { workflow: r.workflow ?? undefined, claimedBy: r.claimedBy, createdBy: r.createdBy ?? undefined };
+  const shared = { workflow: r.workflow ?? undefined, claimedBy: r.claimedBy, createdBy: r.createdBy ?? undefined, createdRemote: r.createdRemote === 1 };
   if (r.kind === 'cron') {
     return { kind: 'cron', id: r.id, ...shared, args, cron: r.cron!, tz: r.tz ?? undefined, enabled: r.enabled === 1 };
   }
@@ -138,6 +148,7 @@ function rowToStatus(r: ScheduleRow): ScheduleStatus {
     workflow: r.workflow ?? undefined,
     claimedBy: r.claimedBy,
     createdBy: r.createdBy ?? undefined,
+    createdRemote: r.createdRemote === 1,
     enabled: r.enabled === 1,
     cron: r.cron ?? undefined,
     tz: r.tz ?? undefined,
@@ -196,6 +207,9 @@ export class SqliteSchedulerPort {
     try { this._db.exec('ALTER TABLE schedules ADD COLUMN refusalCount INTEGER NOT NULL DEFAULT 0'); } catch { /* already present */ }
     try { this._db.exec('ALTER TABLE schedules ADD COLUMN lastRefusedAt TEXT'); } catch { /* already present */ }
     try { this._db.exec('ALTER TABLE schedules ADD COLUMN lastRefusalReason TEXT'); } catch { /* already present */ }
+    // v37 (ARCH-182, DES-263, TASK-258): same idempotent idiom — written once at `schedule_create`
+    // from `ToolDeps.isRemoteSubmission`, read back by `trigger()` and the ticker dispatcher.
+    try { this._db.exec('ALTER TABLE schedules ADD COLUMN createdRemote INTEGER NOT NULL DEFAULT 0'); } catch { /* already present */ }
     // v26 Gate 7.5 round 6, defect D13: the `CREATE TABLE` above relaxed `workflow` to nullable for
     // a FRESH database only — an already-created file keeps `workflow TEXT NOT NULL`, and since
     // REQ-115 made a trigger creatable before any workflow claims it, `create()` inserts NULL there
@@ -236,11 +250,13 @@ export class SqliteSchedulerPort {
             createdBy TEXT,
             refusalCount INTEGER NOT NULL DEFAULT 0,
             lastRefusedAt TEXT,
-            lastRefusalReason TEXT
+            lastRefusalReason TEXT,
+            createdRemote INTEGER NOT NULL DEFAULT 0
           );
           INSERT INTO schedules__d13_rebuild
             SELECT id, kind, workflow, argsJson, cron, tz, at, enabled, nextFire, lastFire, lastRunId,
-                   lastError, claimedBy, createdBy, refusalCount, lastRefusedAt, lastRefusalReason
+                   lastError, claimedBy, createdBy, refusalCount, lastRefusedAt, lastRefusalReason,
+                   createdRemote
               FROM schedules;
           DROP TABLE schedules;
           ALTER TABLE schedules__d13_rebuild RENAME TO schedules;
@@ -275,8 +291,8 @@ export class SqliteSchedulerPort {
       : null;
     this._db
       .prepare(`
-        INSERT INTO schedules (id, kind, workflow, claimedBy, createdBy, argsJson, cron, tz, at, enabled, nextFire, lastFire, lastRunId)
-        VALUES (@id, @kind, @workflow, @claimedBy, @createdBy, @argsJson, @cron, @tz, @at, @enabled, @nextFire, NULL, NULL)
+        INSERT INTO schedules (id, kind, workflow, claimedBy, createdBy, createdRemote, argsJson, cron, tz, at, enabled, nextFire, lastFire, lastRunId)
+        VALUES (@id, @kind, @workflow, @claimedBy, @createdBy, @createdRemote, @argsJson, @cron, @tz, @at, @enabled, @nextFire, NULL, NULL)
       `)
       .run({
         id,
@@ -287,6 +303,8 @@ export class SqliteSchedulerPort {
         // rather than via a stored-row rewrite).
         claimedBy: s.workflow ?? null,
         createdBy: s.createdBy ?? null,
+        // v37 (ARCH-182, DES-263, TASK-258): written ONCE at creation, never updated afterwards.
+        createdRemote: s.createdRemote ? 1 : 0,
         argsJson,
         cron: s.kind === 'cron' ? s.cron : null,
         tz: s.kind === 'cron' ? (s.tz ?? null) : null,
@@ -360,7 +378,17 @@ export class SqliteSchedulerPort {
     if (row && row.enabled !== 1) {
       return { error: { code: 'SCHEDULE_DISABLED', message: `Resident schedule for '${workflow}' is disabled` } };
     }
-    const runId = await this._runManager.start({ name: workflow, args, startedBy: { type: 'schedule', id: workflow } });
+    // v37 (ARCH-182, DES-263, TASK-258): stamps `origin` from the SAME row this function already
+    // loaded (no `row` — no resident schedule found for this workflow — reads as 'local': there is
+    // no creator to consult, and this call path has no production caller today, ARCH-181's own
+    // finding). A thrown CONFINEMENT_UNAVAILABLE is mapped into this function's own typed
+    // ScheduleResult rather than escaping as a rejected promise.
+    let runId: string;
+    try {
+      runId = await this._runManager.start({ name: workflow, args, startedBy: { type: 'schedule', id: workflow }, origin: row?.createdRemote === 1 ? 'remote' : 'local' });
+    } catch (err) {
+      return { error: toErrEnvelope(err) };
+    }
     if (row) {
       const ts = this._clock.isoNow();
       this._db.prepare('UPDATE schedules SET lastFire = ?, lastRunId = ? WHERE id = ?').run(ts, runId, row.id);

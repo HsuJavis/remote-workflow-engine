@@ -65,7 +65,7 @@ describe('RunManager failure path ordering (DES-232, UT)', () => {
     const mgr = new RunManager({ store, clock, workRoot: dir } as never);
     const name = 'ut232-order';
     await registerPublished(mgr.catalog, name, "throw new Error('boom, UT-232 order');");
-    const runId = await mgr.start({ name });
+    const runId = await mgr.start({ origin: 'local', name });
     await waitForStatus(mgr, runId, 'failed');
 
     const errIdx = store.order.indexOf('recordError');
@@ -85,7 +85,7 @@ describe('RunManager failure path ordering (DES-232, UT)', () => {
       const mgr = new RunManager({ store, clock, workRoot: dir } as never);
       const name = 'ut232-throw';
       await registerPublished(mgr.catalog, name, "throw new Error('boom, UT-232 throw');");
-      const runId = await mgr.start({ name });
+      const runId = await mgr.start({ origin: 'local', name });
       await waitForStatus(mgr, runId, 'failed');
       // give any straggler microtask/unhandledRejection a chance to fire before asserting
       await new Promise((r) => setTimeout(r, 50));

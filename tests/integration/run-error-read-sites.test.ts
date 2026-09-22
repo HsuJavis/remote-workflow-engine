@@ -49,7 +49,7 @@ describe('RunStore error — four read sites agree, gated on status===failed (DE
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   it('a failed run surfaces error on listRuns, list, getRun AND getError — all four, one test', async () => {
-    const runId = await store.createRun({ script: 'return 1;' });
+    const runId = await store.createRun({ origin: 'local', script: 'return 1;' });
     setStatus(store, runId, 'failed');
     await store.recordError(runId, ERR);
 
@@ -65,7 +65,7 @@ describe('RunStore error — four read sites agree, gated on status===failed (DE
   });
 
   it('the crash-window row (error non-NULL, status interrupted) surfaces NOTHING on any read site', async () => {
-    const runId = await store.createRun({ script: 'return 1;' });
+    const runId = await store.createRun({ origin: 'local', script: 'return 1;' });
     setStatus(store, runId, 'failed');
     await store.recordError(runId, ERR);
     setStatus(store, runId, 'interrupted'); // REQ-060 reclassification after a crash
@@ -78,7 +78,7 @@ describe('RunStore error — four read sites agree, gated on status===failed (DE
   });
 
   it('a completed run with no recorded error surfaces nothing (never a crash, never undefined-as-string)', async () => {
-    const runId = await store.createRun({ script: 'return 1;' });
+    const runId = await store.createRun({ origin: 'local', script: 'return 1;' });
     setStatus(store, runId, 'completed');
     const view = (await store.getRun(runId)) as ProjectedView | null;
     expect(view?.error).toBeUndefined();
@@ -96,7 +96,7 @@ describe('failedAgentCount on the _USAGE_PROJECTION read surface (DES-234 cases 
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   async function makeTerminalRun(name: string): Promise<string> {
-    const runId = await store.createRun({ script: 'return 1;' });
+    const runId = await store.createRun({ origin: 'local', script: 'return 1;' });
     setStatus(store, runId, 'completed');
     return runId;
   }

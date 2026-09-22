@@ -22,7 +22,10 @@ export class SubmissionValidator {
     this._catalog = deps.catalog;
   }
 
-  async validate(spec: RunSpec): Promise<{ ok: true } | { ok: false; errors: ErrEnvelope[] }> {
+  // v37 (ARCH-182, DES-263, TASK-258): narrowed from `RunSpec` to the one field this function
+  // reads — `RunSpec.origin` becoming REQUIRED would otherwise force every caller (production and
+  // test) to thread a value this validator never looks at.
+  async validate(spec: Pick<RunSpec, 'name'>): Promise<{ ok: true } | { ok: false; errors: ErrEnvelope[] }> {
     // v22 (DES-117): renamed from MISSING_SCRIPT — a registered workflow "name" is the only way to
     // submit a run now; the old code/message named a parameter (`script`) that no longer exists and
     // would teach an agent to retry with it.

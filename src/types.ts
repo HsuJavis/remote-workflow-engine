@@ -467,6 +467,15 @@ export interface RunSpec {
   /** v15 (REQ-086 / DES-096): authenticated caller identity — attributed on the run record.
    *  null iff auth disabled or token-free loopback caller. NEVER forwarded to sandbox env. */
   principal?: string | null;
+  /** v37 (ARCH-182, DES-263, TASK-258, REQ-218, ADR-086): REQUIRED on purpose — the compiler, not a
+   *  reviewer, is what stops a fifth `RunManager.start()` admission site from being added without
+   *  answering the remoteness question `admissionRefusal()` gates on. Stamped at each of the four
+   *  admission sites from that site's own already-loaded provenance fact (never a live peer check —
+   *  ADR-086's ruling is keyed on the TRIGGER's stored provenance, never the workflow version's
+   *  registering author). `RunSpec` also doubles as the persisted-spec read-back type (see below);
+   *  the `runs` table never gained an `origin` column, so `getSpec()` synthesizes `'local'` on every
+   *  read-back — harmless because a resume is gated by `call-tool.ts`'s door, not this predicate. */
+  origin: 'local' | 'remote';
 }
 
 /** v10 Slice 2 (REQ-065): a CAS-manifest seed entry — REGULAR FILES ONLY (no mode int, no symlink/type,

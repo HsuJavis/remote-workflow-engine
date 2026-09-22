@@ -27,7 +27,7 @@ describe('IT-300: /api/runs paginates while /api/home keeps full-history metrics
     // immediately, so no explicit hand-off is needed.
     const seedStore = new SqliteRunStore(join(tmpDir, 'store'), clock);
     for (let i = 0; i < 60; i++) {
-      const runId = await seedStore.createRun({ name: NAME, args: {} });
+      const runId = await seedStore.createRun({ origin: 'local', name: NAME, args: {} });
       const ts = `2026-09-22T${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}:00.000Z`;
       await seedStore.recordTransition(runId, 'running', 'completed', ts);
       await seedStore.saveSnapshot(runId, {

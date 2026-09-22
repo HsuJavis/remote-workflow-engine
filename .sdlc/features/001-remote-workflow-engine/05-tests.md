@@ -16292,3 +16292,113 @@ real (non-fake) `queryImpl` in this same gate's own end-to-end run (see VAL-253'
 above): the real boot's own log carried the identical shape,
 `{"kind":"agent.confinement",...,"posture":"unconfined","enabled":false,...}`, from a real spawned
 `claude` CLI dispatch, not a fake one. Both pieces of evidence agree.
+
+### UT-329 — `admissionRefusal({posture, origin})` — pure 2x2 predicate (+ the undefined-posture edge)
+- **status:** green (2026-09-23, implementer)
+- **traces:** DES-263, ARCH-182, ADR-086, TASK-258, REQ-218
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v37
+
+File: `tests/unit/admission-refusal.test.ts` (new). Five cases: `{unconfined,remote}` →
+`'CONFINEMENT_UNAVAILABLE'`; `{unconfined,local}`, `{confined,remote}`, `{confined,local}` → `null`;
+`{posture:undefined, origin:either}` → `null` (the same fail-open-for-the-existing-suite convention
+`ToolDeps` already uses for this field). Red reason (confirmed via direct re-run before
+implementation): `TypeError: admissionRefusal is not a function` on all five cases —
+`src/run-manager.ts` exported no such name. Green after `admissionRefusal()` landed, 5/5 pass.
+
+### UT-330 — `RunManager.start()` calls `admissionRefusal()` as the literal FIRST statement
+- **status:** green (2026-09-23, implementer)
+- **traces:** DES-263, ARCH-182, TASK-258, REQ-218
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v37
+
+File: `tests/unit/run-manager-admission-order.test.ts` (new). Proves ORDER, not just outcome, via
+`INLINE_SCRIPT_CLOSED` as the witness: a `spec.script` set alongside `remote`+`unconfined` must come
+back `CONFINEMENT_UNAVAILABLE`, never `INLINE_SCRIPT_CLOSED` — the only way that is possible is if
+the admission gate runs before the inline-script check, since both are unconditional early-`start()`
+throws. Four cases: `[LOAD-BEARING]` remote+unconfined → `CONFINEMENT_UNAVAILABLE`; local+unconfined
+→ `INLINE_SCRIPT_CLOSED` (gate does NOT fire — the owner's accepted local-unconfined cost);
+remote+confined → `INLINE_SCRIPT_CLOSED` (gate does NOT fire — sandbox measured working);
+`confinementPosture` omitted entirely (every pre-existing `RunManager` test call site) →
+`INLINE_SCRIPT_CLOSED` (never gated). Red reason (confirmed via direct re-run before
+implementation): all four cases returned `INLINE_SCRIPT_CLOSED` — including the `[LOAD-BEARING]`
+case, which needed `CONFINEMENT_UNAVAILABLE` — because `RunManagerDeps` carried no
+`confinementPosture` and `start()` called no admission predicate at all. Green after the FIRST-
+statement wiring landed, 4/4 pass. **Full RUN_ADMISSION_LIMIT ordering** (the second check the DES
+row names explicitly) is not separately exercised here — constructing a live admitted run to exhaust
+`maxConcurrentRuns` would need a real catalog/gateway/sandbox setup this unit test deliberately
+avoids (Karpathy simplicity: the check is now unconditionally the single first statement in the
+function body, so it is definitionally ahead of every other check including this one) — reported
+here rather than silently assumed.
+
+### UT-331 — `SqliteRunStore.getSpec()` always reads back `origin:'local'`
+- **status:** green (2026-09-23, implementer)
+- **traces:** DES-263, ARCH-182, TASK-258, REQ-218
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v37
+
+File: `tests/unit/sqlite-run-store-legacy-origin.test.ts` (new). A run admitted with
+`origin:'remote'` still reads back `origin:'local'` via `getSpec()` — the `runs` table never gained
+an `origin` column at all (the predicate needs the fact only transiently, at admission; a resume is
+gated by `call-tool.ts`'s door, not this predicate). Second case pins the same for `origin:'local'`
+(not merely echoed — synthesized). Red reason (confirmed via direct re-run before implementation,
+and again at the type level): `expected undefined to be 'local'` at runtime, PLUS `tsc --noEmit`
+fails outright (`RunSpec.origin` required, `getSpec()`'s return literal has none) — this file was
+red at both the type-check and the assertion level. Green after `getSpec()`'s return literal gained
+`origin: 'local'`, 2/2 pass.
+
+### IT-302 — the SCHEDULE admission route: a remotely-created resident trigger is refused on an unconfined host, a locally-created one still fires
+- **status:** green (2026-09-23, implementer)
+- **traces:** DES-263, ARCH-182, ADR-086, TASK-258, REQ-218
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v37
+
+File: `tests/integration/scheduler-remote-origin.test.ts` (new). Per DES-263's own testability note
+(adopted from ADR-086): a fake `RunManagerPort` that ITSELF applies `admissionRefusal({posture:
+'unconfined', origin})` — this proves the WIRING (does `SqliteSchedulerPort` stamp the right
+`origin` from the trigger row's own `createdRemote` column and map the thrown refusal into
+`ScheduleResult`'s typed `error`), not the predicate itself (UT-329's job), without standing up an
+HTTP server, a real ticker, or a real bwrap-probed `RunManager`. Two cases:
+`[LOAD-BEARING]` a resident schedule created with `createdRemote:true`, triggered → `error.code ===
+'CONFINEMENT_UNAVAILABLE'`; the same, created WITHOUT `createdRemote` → fires normally. Red reason
+(confirmed via direct re-run before implementation): `tsc` failure (`NewSchedule`/`Schedule` carry
+no `createdRemote` field; the fake `RunManagerPort` literal's `origin` field is not assignable to
+the port's un-widened `start()` parameter type) PLUS, at runtime, `result.error?.code` was
+`undefined` — `Scheduler.trigger()` neither stamped `origin` nor wrapped `_runManager.start()` in a
+try/catch, so a thrown coded error escaped as a rejected promise instead of a typed `ScheduleResult`.
+Green after the column, the stamping, and the try/catch landed, 2/2 pass.
+
+### IT-303 — the WEBHOOK admission route: a remotely-created webhook is refused on an unconfined host, a locally-created one still fires
+- **status:** green (2026-09-23, implementer)
+- **traces:** DES-263, ARCH-182, ADR-086, TASK-258, REQ-218
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v37
+
+File: `tests/integration/webhook-remote-origin.test.ts` (new). Same shape as IT-302, for
+`WebhookRegistry`. Per DES-262's own note (unchanged, cited here rather than re-argued): the
+delivery PEER is deliberately NOT part of this predicate — what decides is who ATTACHED the trigger,
+`row.createdRemote`, written once at creation. Two cases: `[LOAD-BEARING]` a webhook created with
+`createdRemote:true`, delivered to → `{ok:false, reason}` containing `CONFINEMENT_UNAVAILABLE`; the
+same, created WITHOUT `createdRemote` → `{ok:true}`. Red reason (confirmed via direct re-run before
+implementation): `tsc` failure (`create()`'s param type carries no `createdRemote`; the fake
+`RunManagerPort`'s `origin` field mismatched the port's un-widened type) PLUS, at runtime, the
+`[LOAD-BEARING]` case returned `{ok:true}` — `deliver()` neither stamped `origin` on the spec it
+handed to `start()` nor wrapped that call in a try/catch. Green after the column, the stamping, and
+the try/catch landed, 2/2 pass.
+
+**v37 ARCH-182 follow-up trace addendum (2026-09-23, implementer):** DES-263→UT-329/UT-330/UT-331/
+IT-302/IT-303. No new REQ, no new VAL — this closure is entirely inside REQ-218 (already the subject
+of VAL-253), per ARCH-182's own text ("closes an admission gap the door alone did not"). ADR-086's
+`owner_decision` (answered 2026-09-23) unblocked this dispatch; no `owner_decision` newly deferred
+by this dispatch. `INV-V37-*` ids are cited in prose only, per this ledger's own standing rule
+(two-hyphen shape mis-parses in `trace.py`) — never as a `traces:` target.

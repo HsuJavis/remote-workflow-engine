@@ -9700,3 +9700,83 @@ trace baseline 在動筆前先存成 scratch 檔案讀取,未用 `git checkout/r
 `state.yaml`:`gates.impl.passed`/`current_stage` 皆**不動**(這輪沒有整體過關)。
 owner_decisions=[](ADR-086 那條 pending 是架構師的裁決留白,不是這次新掛的,在報告 owner_decisions
 欄位如實回報但不重複標記)。needs_clarification=[A1]。
+
+## 2026-09-23 — v37 ARCH-182 follow-up(implementer)—— TASK-258/DES-263,schedule/webhook 兩條漏網的啟動路徑補齊
+
+範圍只有 ARCH-182:`call-tool.ts` 那道遠端提交門只擋 `run_start`/`run_resume`,但 run 也可能從
+schedule 或 webhook 啟動,兩者都繞過那道門——ADR-086 業主裁決(2026-09-23 剛答覆)確認只補「觸發器
+本身是否遠端建立」這條路徑,**不**改成用「腳本註冊者是否遠端」來拒跑(那條裁決維持原判,本次不動)。
+
+依 dispatch 指示,設計 → 紅測試 → 實作,順序照做:先寫 DES-263(`admissionRefusal({posture,origin})`
+純函式、四個掛載點、兩個 migration、legacy 讀回預設)與 TASK-258,再寫五個新測試檔並先確認全紅,才動
+production 程式碼。
+
+**紅測試訊息(實作前逐一確認)**:UT-329(`admission-refusal.test.ts`)—— `TypeError: admissionRefusal
+is not a function`,五案全紅。UT-330(`run-manager-admission-order.test.ts`)—— 四案全部回
+`INLINE_SCRIPT_CLOSED`,包含本該回 `CONFINEMENT_UNAVAILABLE` 的 `[LOAD-BEARING]` 那案,因為
+`RunManagerDeps` 還沒有 `confinementPosture`、`start()` 也還沒呼叫任何 admission 判斷。UT-331
+(`sqlite-run-store-legacy-origin.test.ts`)—— 兩層紅:執行期 `expected undefined to be 'local'`,
+加上型別層 `tsc --noEmit` 直接編譯失敗(`RunSpec.origin` 必填,`getSpec()` 回傳字面值沒這個欄位)。
+IT-302/IT-303(scheduler/webhook 兩條路由的整合測試)—— 皆為 `tsc` 編譯失敗(`NewSchedule`/
+`webhooks.create()` 的參數型別沒有 `createdRemote`;假 `RunManagerPort` 的 `origin` 欄位跟 port 尚未
+放寬的型別對不上)疊加執行期斷言失敗(`[LOAD-BEARING]` 案子分別回 `undefined`/`{ok:true}`,不是預期
+的拒絕)。
+
+**實作**:`admissionRefusal()` 是 `run-manager.ts` 新匯出的純函式,在 `RunManager.start()` 裡是**字面
+上的第一行**,排在 `RUN_ADMISSION_LIMIT`、`INLINE_SCRIPT_CLOSED` 之前——一個在這個姿態下永遠不會被
+允許的提交,不該先耗掉一個 admission 名額,也不該被答成可重試的 `RUN_ADMISSION_LIMIT`(這是決定性、
+永久性的拒絕)。`RunSpec.origin` 訂為必填,`tsc` 因此抓出每一個**直接**構造 `RunSpec` 的地方(兩份
+tsconfig 皆乾淨)。四個掛載點各自從自己已經載入的憑證蓋 `origin`:`mcp-facade.ts` 的 `runStart()`
+多一個選填、預設 `false` 的 `isRemoteSubmission` 參數(從 `call-tool.ts` 的 `ToolDeps.isRemoteSubmission`
+牽過來,跟 `runAgentLog` 既有的逐請求事實傳遞手法一致);`webhook-registry.ts` 的 `deliver()` 與
+`scheduler.ts` 的 `trigger()` 讀自己早就查出來的那筆 row 的 `createdRemote`;`server.ts` 的 ticker
+派工迴圈則把 `resolveScheduleTarget()` 回傳形狀加寬帶出 `createdRemote`。`webhooks.createdRemote`/
+`schedules.createdRemote`(`INTEGER NOT NULL DEFAULT 0`)兩個欄位都走本倉庫既有的
+`try { ALTER TABLE … } catch {}` 冪等手法補上,連兩檔各自的 pre-v24 舊表重建路徑都一併補了這個欄位
+(否則極舊的落地 db 重建一次就會悄悄把它丟掉)。`webhook-registry.ts`/`scheduler.ts` 兩處各補一個
+`try/catch`,把 `.start()` 丟出的 `CONFINEMENT_UNAVAILABLE` 接住,轉成各自原本就有的型別化結果
+(`trigger()` 原本完全沒有 try/catch,是 ARCH-182 自己點名的缺口)。`SqliteRunStore.getSpec()` 一律
+補回 `origin:'local'`——`runs` 表格從來沒有 `origin` 欄位(這個判斷只在 admission 那一瞬間需要,
+resume 是靠 `call-tool.ts` 那道門擋,不是這個 predicate)。
+
+**回報 advisor 覆核抓到的兩個需要說清楚的地方,而不是含糊帶過**:(1)`RunManagerPort`(
+`webhook-registry.ts`/`scheduler.ts` 各自宣告的結構化介面)不是 `RunSpec`,TypeScript 對 method
+參數的雙變(bivariant)檢查本來會讓這兩個 port 的呼叫點漏填 `origin` 而 `tsc` 完全不吭聲(正是 A2
+那類「選填卻預設放行」的缺陷形狀)——把這兩個 port 的 `start()` 也加上必填 `origin` 是這次實作**手動**
+做的決定,不是編譯器自己找出來逼的;事後用 `rg -n "RunManagerPort|_runManager\.start\(|
+runManager\.start\("  src/` 覆查過,確認就這兩處 seam,沒有第三個(`webhook-registry.ts` 老註解提到
+的「continuation」那個 seam,對應的檔案早就不存在了)。(2)`tests/unit/started-by-coalesce.test.ts`
+自己的 `spec()` helper 把 `Partial<RunSpec>` 轉型穿過 `RunSpec`,四個呼叫點都用這個轉型——這是這次
+才發現、但**不是**這次引入的既有寫法,四處都只餵給 `InMemoryRunStore.createRun()`,從未碰到
+`RunManager.start()` 或任何 admission 路徑,所以無害、沒有動它;真正需要補 `origin` 的只有同檔案
+第 5 個案例那行沒轉型的字面值。
+
+`origin` 訂為必填後,連帶讓 ~30 個既有測試檔(直接對 `RunStore.createRun()`/`RunManager.start()`
+構造 `RunSpec` 字面值,跟 admission 完全無關)需要機械補上 `origin:'local'`——逐檔清單見
+06-impl-log.md IMPL-384;其中一處是真正的簡化,不是機械補丁:`SubmissionValidator.validate()`
+其實只讀 `spec.name`,參數型別索性收窄成 `Pick<RunSpec,'name'>`,不必逼每個呼叫者傳一個這個函式
+從來不看的欄位。另一處是把既有測試的假設更新,不是繞過它:`scheduler-migration.test.ts` 的 D13
+表重建測試原本硬寫死整列欄位的期望值,新欄位落地後補上 `createdRemote: 0`,跟該測試已經在覆核的
+其他新增欄位待遇一致。
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`:2098/77 → 2106/77——淨增 8 項
+(DES-263、TASK-258、UT-329、UT-330、UT-331、IT-302、IT-303、IMPL-384),缺口數不變,零新斷鏈/孤兒。
+
+`npx tsc --noEmit -p tsconfig.json` / `-p tsconfig.server.json`:皆乾淨。**全套 `npx vitest run`
+背景跑完一次**:462 檔通過 / 1 檔跳過(共 463),3368 條測試通過 / 27 條跳過(共 3395),**0 失敗**,
+707.13s——正好是這輪 dispatch 前 3353/0 基線加上這次新增的 15 條測試(5+4+2+2+2),零回歸。
+`git status` 另外顯示 `dashboard.html`(執行 `sh .sdlc/trace` 的重新產物)與兩張既有的真 Chromium
+截圖證據 PNG(`evidence/v28/val215-issues-{dark,light}.png`,全套測試跑過一次的副作用)變動過——
+沒有動它們的內容,不在本次範圍內,跟上一輪 slice(IMPL-383)記錄過的同一個副作用一樣。
+
+`rtm.md` 的 REQ-218 那一列**沒有**加上 DES-263/TASK-258/IMPL-384/UT-329..IT-303 的引用——依這份
+帳本的慣例,那一列是 validation/architecture 的欄位,留給 Gate 7.5/8 補;REQ-218 目前的 real-tier
+證據(VAL-253)還沒涵蓋這次新補的兩條路由,Gate 7.5 需要為此補一輪真跑證據,已在這裡點名而非留白。
+
+沒有使用 `git checkout`/`restore`/`stash`;沒有建立 commit(留給 orchestrator)。`state.yaml`:
+`gates.impl` 那一行的既有 note 前面串接一段新的(跟 v37 Gate 6 THIRD SLICE 之前幾輪的串接手法一樣),
+`current_stage`/`gates.impl.passed`/`gates.tests.passed` 皆**不動**(這是單一 TASK 的補丁式 follow-up,
+不是整輪 Gate 5/6 重跑,比照 v36 REQ-217 follow-up 的先例)。已用
+`python3 -c "import yaml; yaml.safe_load(open('state.yaml'))"` 重新解析過,通過。owner_decisions=[]
+(ADR-086 那條 pending 已在這次 dispatch 之前由業主答覆,不是這次新掛也不是這次答覆的,如實回報不重複
+標記)。needs_clarification=[]。

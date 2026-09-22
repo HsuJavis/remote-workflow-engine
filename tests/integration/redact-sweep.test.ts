@@ -80,7 +80,7 @@ describe('redact-at-capture completeness sweep — sink (1): appendTranscript (D
 
   beforeEach(async () => {
     store = new InMemoryRunStore(clock);
-    runId = await store.createRun({ script: 'return 1;' }, 'v1');
+    runId = await store.createRun({ origin: 'local', script: 'return 1;' }, 'v1');
   });
 
   it('A. message event with secret value → transcript stored has ‹secret:NAME›, not raw value', async () => {
@@ -308,7 +308,7 @@ describe('redact-at-capture completeness sweep — sink (5): effectiveParams sna
 describe('redact-at-capture completeness sweep — sink (6): kind:\'harness\' transcript descriptor (DES-088 inv-5 sink-completeness, review §4 B3)', () => {
   it('a secret riding the harness descriptor.prompt is redacted in the persisted kind:\'harness\' transcript entry', async () => {
     const store = new InMemoryRunStore(clock);
-    const runId = await store.createRun({ script: 'return 1;' }, 'v1');
+    const runId = await store.createRun({ origin: 'local', script: 'return 1;' }, 'v1');
 
     const descriptor: HarnessDescriptor = {
       model: 'fake-model',
@@ -365,7 +365,7 @@ const bigSecretProvider: SecretValueProvider = {
 describe('redact-at-capture completeness sweep — sink (7): AgentRecord.detail (H-3 send-back repair, INV-V26-5)', () => {
   it('a secret STRADDLING the 1024-byte detail cap boundary is still redacted — the marker survives on both the AgentRecord and the failed-branch usage event', async () => {
     const store = new InMemoryRunStore(clock);
-    const runId = await store.createRun({ script: 'return 1;' }, 'v1');
+    const runId = await store.createRun({ origin: 'local', script: 'return 1;' }, 'v1');
     // Secret (105 bytes) spans bytes 950..1055 — straddles the 1024-byte cutoff with margin on both
     // sides, while its marker (29 bytes) spans 950..979, comfortably below the cutoff once redacted.
     // A cap-first bug slices the RAW secret into two fragments, neither a value-exact match, so
@@ -408,7 +408,7 @@ describe('redact-at-capture completeness sweep — sink (7): AgentRecord.detail 
   // whatever built the string, even one straddling the 64-byte cap `sanitizeSubtype` itself applies.
   it('a secret straddling the 64-byte unmapped-subtype cap boundary is redacted at the persist site (lock)', async () => {
     const store = new InMemoryRunStore(clock);
-    const runId = await store.createRun({ script: 'return 1;' }, 'v1');
+    const runId = await store.createRun({ origin: 'local', script: 'return 1;' }, 'v1');
     // Secret spans bytes 50..76 — straddles sanitizeSubtype's own 64-byte cap.
     const unmappedEntry = `${'a'.repeat(50)}${SECRET_VALUE}`;
     const gateway: GatewayClient = {

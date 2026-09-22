@@ -10022,6 +10022,105 @@ keep, not a coincidence to rely on.
     firing on a schedule runs unconfined either way, same as any other local submission.
 - **iter:** v37
 
+### DES-263 — `admissionRefusal()` at `RunManager.start()`: ONE predicate keyed on `RunSpec.origin`, closing the two admission routes DES-262's door does not cover (new row, ARCH-182, ADR-086, REQ-218)
+- **status:** draft
+- **traces:** ARCH-182, ADR-086, TASK-258
+- **signature:**
+  ```ts
+  // src/run-manager.ts — pure, exported, no fs/db/clock:
+  export function admissionRefusal(input: {
+    posture: 'confined' | 'unconfined' | undefined;
+    origin: 'local' | 'remote';
+  }): 'CONFINEMENT_UNAVAILABLE' | null {
+    return input.posture === 'unconfined' && input.origin === 'remote' ? 'CONFINEMENT_UNAVAILABLE' : null;
+  }
+  // src/run-manager.ts — RunManagerDeps gains:
+  confinementPosture?: 'confined' | 'unconfined';   // forwarded from ServerConfig.confinementPosture
+  // RunManager.start() — the FIRST statement, ahead of RUN_ADMISSION_LIMIT and every other check:
+  async start(spec: RunSpec, overrides?: unknown): Promise<string> {
+    const refusal = admissionRefusal({ posture: this._confinementPosture, origin: spec.origin });
+    if (refusal !== null) throw codedError(refusal, '<message naming both facts>');
+    // ...existing checks, unchanged...
+  }
+  // src/types.ts — RunSpec gains a REQUIRED field:
+  origin: 'local' | 'remote';
+  ```
+- **boundary conditions:**
+  - **Why FIRST, ahead of `RUN_ADMISSION_LIMIT` specifically**: a submission that can never be
+    admitted under this posture must not consume an admission slot, and must not be answered with
+    `RUN_ADMISSION_LIMIT` (a `retryable` code) when the true refusal is deterministic and permanent —
+    retrying it changes nothing. Placing it ahead of `INLINE_SCRIPT_CLOSED`/seed validation too is
+    free (no test depends on their relative order) and keeps "one predicate, one place, always
+    first" simple to state.
+  - **The four admission sites, and what each stamps `origin` from** (all four are `.start()` call
+    sites in `src/`, per ARCH-181's grep-verified census):
+    1. `mcp-facade.ts` `runStart()` — the only `tools/call`-driven site. Gains a THIRD parameter,
+       `isRemoteSubmission: boolean` (default `false`, so the ~5 existing test call sites that omit
+       it keep compiling AND keep their prior local-submission behaviour — no test anywhere newly
+       gates on a param it never supplied), threaded the same way `runAgentLog(a, principal,
+       crossPrincipalRead, actor)` already threads a per-request fact. `call-tool.ts`'s `run_start`
+       case passes `deps.isRemoteSubmission === true`. `origin: isRemoteSubmission ? 'remote' :
+       'local'` is added to the spec object handed to `runManager.start()`.
+    2. `webhook-registry.ts` `WebhookRegistry.deliver()` — reads `row.createdRemote` (already
+       loaded by the row's own `SELECT *`, zero new queries) and stamps `origin: row.createdRemote
+       === 1 ? 'remote' : 'local'`.
+    3. `server.ts`'s ticker dispatcher (the `runManager.start()` call inside `ticker.start(...)`) —
+       `resolveScheduleTarget()` widened to also return `createdRemote: boolean`, read off
+       `scheduler.get(firing.id)?.createdRemote` (a new field on `ScheduleStatus`, sourced the same
+       `SELECT *` way).
+    4. `scheduler.ts` `SqliteSchedulerPort.trigger()` — reads the SAME `row` its own resident-lookup
+       `SELECT *` already loads and stamps `origin: row?.createdRemote === 1 ? 'remote' : 'local'`
+       (`undefined` row, i.e. no matching resident schedule found, reads as `'local'` — there is no
+       creator to consult and this call path has no production caller today, ARCH-181's own finding).
+  - **`RunManagerPort` (the structural seam BOTH `webhook-registry.ts` and `scheduler.ts` declare
+    locally, not importing `RunSpec`) gains `origin: 'local' | 'remote'` as a REQUIRED field on its
+    own `start()` parameter type** — same "the port's inline shape must stay a superset of `RunSpec`'s"
+    convention `budget`'s own widening comment already states, applied again: without this, TypeScript's
+    bivariant method-parameter check would let a call site omit `origin` and silently pass `undefined`
+    through the port, defeating the whole "compiler finds every site" point for the two sites that
+    don't go through the real `RunManager` type directly.
+  - **Persisted provenance — two idempotent columns, this repo's own `try { ALTER TABLE … } catch {}`
+    idiom** (`scheduler.ts:192-199`'s existing block; the twin in `webhook-registry.ts`):
+    `schedules.createdRemote INTEGER NOT NULL DEFAULT 0` and `webhooks.createdRemote INTEGER NOT
+    NULL DEFAULT 0`. Written ONCE, at `schedule_create`/`webhook_create` (`call-tool.ts`), from the
+    SAME `ToolDeps.isRemoteSubmission` the door (DES-262) already reads — both tools are dispatched
+    inside `call-tool.ts`, which already holds that flag, so no new plumbing to the HTTP layer.
+    `NewSchedule`/`Schedule` and the webhook `create()` param type both gain an optional
+    `createdRemote?: boolean` accepted at creation; never updated afterwards (provenance is a fact
+    about creation, not a live property). Each pre-v24-shape table-rebuild path in both files
+    (`webhooks__v24_rebuild`, `schedules__d13_rebuild`) is amended to carry the column through so an
+    ancient on-disk database does not lose it silently on its one-time rebuild.
+  - **Legacy persisted RUN specs read as `'local'`, and this is done in exactly ONE place.**
+    `RunSpec` doubles as the persisted-spec read-back type (`types.ts`'s own comment on the
+    interface) — and unlike `webhooks`/`schedules`, the `runs` table never gained an `origin`
+    column at all (this predicate needs the fact only at admission time, and a resume is gated by
+    DES-262's door, not by this one — ARCH-182's own note). So EVERY `getSpec()` read-back
+    synthesizes `origin: 'local'` — `SqliteRunStore.getSpec()` (`src/store/sqlite-run-store.ts`),
+    consumed by `_requireLive()` (`run-manager.ts:1086`) on resume. `InMemoryRunStore.getSpec()`
+    needs no change: it returns the exact `RunSpec` object `createRun()` was given, which — being a
+    real `RunSpec` — already carries whatever `origin` its caller admitted it with.
+  - **Error-mapping obligation, one per caller, into the idiom each already has** (ARCH-182's own
+    note: `Scheduler.trigger()` has no try/catch today and would otherwise leak `start()`'s throw as
+    a rejected promise instead of its typed `ScheduleResult`):
+    - `mcp-facade.ts` `runStart()` — already wraps `runManager.start()` in try/catch and returns
+      `toErrEnvelope(err)`; no change needed, `CONFINEMENT_UNAVAILABLE` flows through the existing
+      generic path.
+    - `webhook-registry.ts` `deliver()` — gains a try/catch around the `.start()` call, mapping a
+      thrown coded error to `{ok:false, httpStatus:403, reason: toErrEnvelope(err).message}` (the
+      existing `DeliverResult`'s middle variant already has this shape; no type widening needed).
+    - `scheduler.ts` `trigger()` — gains a try/catch around the `.start()` call, mapping to `{error:
+      toErrEnvelope(err)}` (already `ScheduleResult<T>`'s shape).
+    - `server.ts`'s ticker dispatcher — already has a generic `.catch((err) => scheduler.markFailed
+      (firing, code))`; no change needed.
+  - **Testability** (ADR-086's own note, adopted here rather than repeated): a 2×2 truth table over
+    the pure predicate, plus one integration test per admission ROUTE (schedule, webhook) against a
+    FAKE `RunManagerPort` that itself applies `admissionRefusal()` — this proves each route correctly
+    threads `createdRemote` into `origin` and correctly maps the refusal into its own result shape,
+    without standing up an HTTP server, a real ticker, or a real bwrap-probed `RunManager` (the
+    predicate's own correctness is already proven by the 2×2 table; duplicating that proof at every
+    route would be the redundant-test smell, not thoroughness).
+- **iter:** v37
+
 ### Class diagram — v37 (the four types this slice adds)
 
 ```mermaid

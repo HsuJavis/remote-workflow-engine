@@ -50,7 +50,7 @@ describe('harness emission via onHarness hook (IT-069, DES-066)', () => {
 
   beforeEach(async () => {
     store = new InMemoryRunStore(clock);
-    runId = await store.createRun({ script: 'return 1;' }, 'v1');
+    runId = await store.createRun({ origin: 'local', script: 'return 1;' }, 'v1');
   });
 
   it('appends a {kind:"harness"} transcript event when the hook is called', async () => {

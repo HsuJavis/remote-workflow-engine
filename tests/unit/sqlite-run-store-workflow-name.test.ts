@@ -23,7 +23,7 @@ afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 
 describe('SqliteRunStore.getWorkflowName — the chain-upstream join (v23, DES-128, ARCH-078)', () => {
   it('returns the registered workflow name of an existing run', async () => {
-    const runId = await store.createRun({ name: 'upstream-wf', script: 'return 1;' });
+    const runId = await store.createRun({ origin: 'local', name: 'upstream-wf', script: 'return 1;' });
     expect(store.getWorkflowName(runId)).toBe('upstream-wf');
   });
 
@@ -32,7 +32,7 @@ describe('SqliteRunStore.getWorkflowName — the chain-upstream join (v23, DES-1
   });
 
   it('a run submitted with no workflow name (inline script) is null, not the empty string', async () => {
-    const runId = await store.createRun({ script: 'return 1;' });
+    const runId = await store.createRun({ origin: 'local', script: 'return 1;' });
     expect(store.getWorkflowName(runId)).toBeNull();
   });
 });

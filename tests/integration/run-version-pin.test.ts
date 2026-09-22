@@ -75,7 +75,7 @@ describe('resume determinism: a suspended run continues the version it PINNED, n
       const { version: v1 } = await catalog.register({ name: 'rvp-flow', script: v1Script, mermaid: 'graph LR\nsubgraph "Work"\nn0(["slow"])\nend' });
       await catalog.publish('rvp-flow', v1, 'release', null);
 
-      const runId = await runManager.start({ name: 'rvp-flow' });
+      const runId = await runManager.start({ origin: 'local', name: 'rvp-flow' });
       await firstInvokeStartedPromise;
       await runManager.suspend(runId);
       await new Promise((r) => setTimeout(r, 300)); // let the post-abort journal write land
@@ -111,7 +111,7 @@ describe('resume determinism: a suspended run continues the version it PINNED, n
 
       const { version: v1 } = await catalog.register({ name: 'rvp-third', script: `return 'one';`, mermaid: 'graph LR' });
       await catalog.publish('rvp-third', v1, 'release', null);
-      const runId = await runManager.start({ name: 'rvp-third' });
+      const runId = await runManager.start({ origin: 'local', name: 'rvp-third' });
       const settled = await pollUntilSettled(runManager, runId);
       expect(settled.status).toBe('completed');
 
@@ -131,7 +131,7 @@ describe('resume determinism: a suspended run continues the version it PINNED, n
     try {
       const catalog = new WorkflowCatalog(join(dir, 'catalog'), CLOCK);
       const runManager = new RunManager({ store: new SqliteRunStore(join(dir, 'store'), CLOCK), clock: CLOCK, workRoot: dir, catalog });
-      await expect(runManager.start({ script: `return 1;` })).rejects.toMatchObject({ code: 'INLINE_SCRIPT_CLOSED' });
+      await expect(runManager.start({ origin: 'local', script: `return 1;` })).rejects.toMatchObject({ code: 'INLINE_SCRIPT_CLOSED' });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
@@ -151,7 +151,7 @@ describe('legacy-cohort fallback: a run whose pin is absent from workflow_versio
       // fixture rule: hand-written, never produced by the code under test) and whose status is
       // `suspended` so resume() is legal — models a run created before a deregister/re-register
       // restarted the name's version lineage.
-      const runId = await store.createRun({ name: 'legacy-cohort-flow', args: undefined }, 'v-gone');
+      const runId = await store.createRun({ origin: 'local', name: 'legacy-cohort-flow', args: undefined }, 'v-gone');
       const raw = new Database(join(dir, 'store', 'index.db'));
       raw.prepare('UPDATE runs SET status = ? WHERE runId = ?').run('suspended', runId);
       raw.close();

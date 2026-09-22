@@ -139,7 +139,7 @@ describe('a terminal status with no matching transition row is recorded (IT-133,
     const store = new SqliteRunStore(dir, new SystemClock());
     const mgr = new RunManager({ store, workRoot: tempDir(), onWarning: (w) => warnings.push(w) });
 
-    const runId = await store.createRun({ script: 'return 1;', name: 'it133' });
+    const runId = await store.createRun({ origin: 'local', script: 'return 1;', name: 'it133' });
     await store.recordTransition(runId, null, 'queued', new Date().toISOString());
     await store.recordTransition(runId, 'queued', 'running', new Date().toISOString());
 
@@ -169,14 +169,14 @@ describe('a terminal status with no matching transition row is recorded (IT-133,
     const store = new SqliteRunStore(dir, new SystemClock());
     const mgr = new RunManager({ store, workRoot: tempDir(), onWarning: (w) => warnings.push(w) });
 
-    const healthy = await store.createRun({ script: 'return 1;', name: 'it133-ok' });
+    const healthy = await store.createRun({ origin: 'local', script: 'return 1;', name: 'it133-ok' });
     await store.recordTransition(healthy, null, 'queued', new Date().toISOString());
     await store.recordTransition(healthy, 'queued', 'completed', new Date().toISOString());
     await mgr.status(healthy);
     await mgr.status(healthy);
     expect(warnings).toEqual([]);
 
-    const broken = await store.createRun({ script: 'return 1;', name: 'it133-bad' });
+    const broken = await store.createRun({ origin: 'local', script: 'return 1;', name: 'it133-bad' });
     await store.recordTransition(broken, null, 'queued', new Date().toISOString());
     const db = new Database(join(dir, 'index.db'));
     db.prepare("UPDATE runs SET status = 'failed' WHERE runId = ?").run(broken);

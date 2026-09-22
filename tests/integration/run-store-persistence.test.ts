@@ -31,7 +31,7 @@ describe('SqliteRunStore persistence (ARCH-006)', () => {
   it('createRun persists so a new store instance can getRun', async () => {
     if (!SqliteRunStore) throw new Error('SqliteRunStore: not implemented');
     const store1 = new SqliteRunStore(dir, CLOCK);
-    const runId = await store1.createRun({ script: 'return 1;', name: 'persist-test' });
+    const runId = await store1.createRun({ origin: 'local', script: 'return 1;', name: 'persist-test' });
 
     // New instance simulates restart
     const store2 = new SqliteRunStore(dir, CLOCK);
@@ -43,7 +43,7 @@ describe('SqliteRunStore persistence (ARCH-006)', () => {
   it('appendJournal entries survive restart', async () => {
     if (!SqliteRunStore) throw new Error('SqliteRunStore: not implemented');
     const store1 = new SqliteRunStore(dir, CLOCK);
-    const runId = await store1.createRun({ script: 'return 1;' });
+    const runId = await store1.createRun({ origin: 'local', script: 'return 1;' });
     await store1.appendJournal(runId, {
       callSeq: 0,
       key: { prompt: 'p', opts: {} },
@@ -60,8 +60,8 @@ describe('SqliteRunStore persistence (ARCH-006)', () => {
   it('hydrateAll enumerates all runs on restart', async () => {
     if (!SqliteRunStore) throw new Error('SqliteRunStore: not implemented');
     const store1 = new SqliteRunStore(dir, CLOCK);
-    await store1.createRun({ script: 'return 1;', name: 'a' });
-    await store1.createRun({ script: 'return 2;', name: 'b' });
+    await store1.createRun({ origin: 'local', script: 'return 1;', name: 'a' });
+    await store1.createRun({ origin: 'local', script: 'return 2;', name: 'b' });
 
     const store2 = new SqliteRunStore(dir, CLOCK);
     const runs = await store2.hydrateAll();
@@ -71,7 +71,7 @@ describe('SqliteRunStore persistence (ARCH-006)', () => {
   it('O-2: the state-transition audit trail (from/to/ts) survives restart', async () => {
     if (!SqliteRunStore) throw new Error('SqliteRunStore: not implemented');
     const store1 = new SqliteRunStore(dir, CLOCK);
-    const runId = await store1.createRun({ script: 'return 1;' });
+    const runId = await store1.createRun({ origin: 'local', script: 'return 1;' });
     await store1.recordTransition(runId, null, 'queued', '2024-01-01T00:00:00Z');
     await store1.recordTransition(runId, 'queued', 'running', '2024-01-01T00:00:01Z');
     await store1.recordTransition(runId, 'running', 'completed', '2024-01-01T00:00:02Z');
@@ -89,7 +89,7 @@ describe('SqliteRunStore persistence (ARCH-006)', () => {
   it('running runs re-hydrate as interrupted (resumable) on restart, not silently left as running (v8 Defer A REQ-060)', async () => {
     if (!SqliteRunStore) throw new Error('SqliteRunStore: not implemented');
     const store1 = new SqliteRunStore(dir, CLOCK);
-    const runId = await store1.createRun({ script: 'return 1;' });
+    const runId = await store1.createRun({ origin: 'local', script: 'return 1;' });
     await store1.recordTransition(runId, 'queued', 'running', CLOCK.isoNow());
 
     // Simulate crash + restart: a running run was interrupted by the crash.

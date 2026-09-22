@@ -220,16 +220,17 @@ export async function registerPublished(
 /** Drop-in for `mgr.start({ script, ...extra }, overrides)`: registers the script under a generated
  *  name (or `extra.name`), publishes it, then starts a NAMED run. Returns the runId, exactly as
  *  `start()` did. Every other RunSpec field (`args`, `budget`, `seed*`, `startedBy`, …) passes
- *  through untouched. */
+ *  through untouched. `origin` defaults to `'local'` (v37, ARCH-182) — every fixture that reaches
+ *  this helper is an in-process test submission; a fixture that needs `'remote'` still can. */
 export async function startScript(
   mgr: RunManager,
   script: string,
-  extra: Omit<RunSpec, 'script'> = {},
+  extra: Omit<RunSpec, 'script' | 'origin'> & { origin?: RunSpec['origin'] } = {},
   overrides?: unknown,
 ): Promise<string> {
   const name = extra.name ?? uniqueWorkflowName();
   await registerPublished(mgr.catalog, name, script, { principal: extra.principal ?? null });
-  return mgr.start({ ...extra, name }, overrides);
+  return mgr.start({ origin: 'local', ...extra, name }, overrides);
 }
 
 // ---------------------------------------------------------------------------

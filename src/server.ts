@@ -807,7 +807,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v26 (DES-178, ARCH-116, TASK-178): one TTL'd, single-flight snapshot shared by every run's
   // admission-time pin — never one fetch per run, let alone per agent() call.
   const modelBook = new ModelBook(buildModelCatalog, { clock });
-  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, aliasNames, modelBook, aliasMap, eventSink });
+  // v37 (ARCH-182, DES-263, TASK-258): forwards the SAME measured posture `confinementPosture`
+  // already rides to the facade/gateway (DES-258 owner ruling) — RunManager.start()'s
+  // admissionRefusal() is the ONE predicate every admission route (not just tools/call) passes.
+  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, aliasNames, modelBook, aliasMap, eventSink, confinementPosture: config?.confinementPosture });
   // v8 Defer B (REQ-057/058): durable webhook ingress registry, same workRoot convention.
   const webhooks = new WebhookRegistry({ clock, runManager, catalog, dbPath: config?.webhookDbPath ?? join(workRoot, 'webhooks.db') });
   // v22 (DES-113, TASK-108) SHRINK: SubmissionValidatorDeps is now `{catalog}` — the alias/MCP-name/
@@ -966,12 +969,16 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
    *  meets them; `markRefused` shares `markFailed`'s advance, so a refused `cron` gets a fresh
    *  `nextFire` (ADR-031's coalescing — one row per due instant, not 1440 rows a day) and a refused
    *  `once` is CONSUMED. */
-  async function resolveScheduleTarget(firing: { id: string; workflow: string }): Promise<{ workflow: string } | { refused: RefusalReason }> {
+  async function resolveScheduleTarget(firing: { id: string; workflow: string }): Promise<{ workflow: string; createdRemote: boolean } | { refused: RefusalReason }> {
     // The CLAIM, not the owner: `ownerOf` answers `createdBy` (the creating principal) as of the
     // Gate 6.5+7 round-2 authorization fix, so reading it here would resolve a PRINCIPAL ID as a
     // workflow name and refuse every authenticated user's schedule CLAIMED_WORKFLOW_MISSING.
     // `??` still folds both "no such row" and "unclaimed" onto the pre-v24 `firing.workflow` door.
-    const claimedBy = scheduler.get(firing.id)?.claimedBy ?? (firing.workflow !== '' ? firing.workflow : null);
+    const status = scheduler.get(firing.id);
+    const claimedBy = status?.claimedBy ?? (firing.workflow !== '' ? firing.workflow : null);
+    // v37 (ARCH-182, DES-263, TASK-258): the SAME row `status` above already loaded — read once,
+    // stamped onto the fired run's `RunSpec.origin` below.
+    const createdRemote = status?.createdRemote === true;
     if (claimedBy === null || claimedBy === '') return { refused: 'UNCLAIMED' };
     let released;
     try {
@@ -992,7 +999,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     //     rows only; the rows exist, so the guard stays. Until AF-2, the first guard did this job by proxy because an empty declaration
     //     was persisted as NULL — the exact conflation that made NOT_IN_RELEASE unreachable.
     if (released.triggers !== undefined && !released.triggers.includes(firing.id) && catalog.declaresTrigger(claimedBy, firing.id)) return { refused: 'NOT_IN_RELEASE' };
-    return { workflow: claimedBy };
+    return { workflow: claimedBy, createdRemote };
   }
   ticker.start(() => {
     const due = tick(scheduler.all(), clock.now());
@@ -1012,7 +1019,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         return;
       }
       runManager
-        .start({ name: target.workflow, args: firing.args, startedBy: { type: 'schedule', id: target.workflow } })
+        // v37 (ARCH-182, DES-263, TASK-258): `origin` stamped from `resolveScheduleTarget`'s own
+        // read of the fired trigger's stored `createdRemote` — a thrown CONFINEMENT_UNAVAILABLE
+        // falls into the SAME generic `.catch()` below `markFailed` already handles.
+        .start({ name: target.workflow, args: firing.args, startedBy: { type: 'schedule', id: target.workflow }, origin: target.createdRemote ? 'remote' : 'local' })
         .then((runId) => scheduler.markFired(firing, runId))
         .catch((err: unknown) => {
           // DES-118: a failed dispatch (e.g. the catalog entry was deleted after the schedule was

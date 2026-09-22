@@ -14,13 +14,16 @@ import { dirname } from 'node:path';
 import { randomUUID, randomBytes, createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { Clock } from './clock.js';
 import type { ErrEnvelope, RefusalReason } from './types.js';
+import { toErrEnvelope } from './errors.js';
 
 /** Structural seam — matches RunManager.start() without importing the class (as scheduler/continuation). */
 interface RunManagerPort {
   // v26 (DES-181, ARCH-118, TASK-181): `budget` widened to match `RunSpec` — a fire-path caller
   // never sets it (undefined), but the port's inline shape must stay a superset of `RunSpec`'s or
   // `RunManager` stops structurally satisfying this seam.
-  start(spec: { name?: string; script?: string; args?: unknown; budget?: number | { usd?: number; tokens?: number } | null; startedBy?: { type: string; id?: string } }): Promise<string>;
+  // v37 (ARCH-182, DES-263, TASK-258): `origin` is REQUIRED here too, matching `RunSpec.origin` —
+  // the compiler, not a reviewer, is what stops this call site from silently omitting it.
+  start(spec: { name?: string; script?: string; args?: unknown; budget?: number | { usd?: number; tokens?: number } | null; startedBy?: { type: string; id?: string }; origin: 'local' | 'remote' }): Promise<string>;
 }
 /** Structural seam — matches WorkflowCatalog's own resolve() signature without importing the class.
  *  Widened for H4's second site (07-review.md §4.2/§8.1, ARCH-072 note 1): `create()` needs the SAME
@@ -79,6 +82,7 @@ interface WebhookRow {
   refusalCount: number;
   lastRefusedAt: string | null;
   lastRefusalReason: string | null;
+  createdRemote: number;
 }
 
 export class WebhookRegistry {
@@ -131,7 +135,8 @@ export class WebhookRegistry {
             createdAt TEXT NOT NULL,
             refusalCount INTEGER NOT NULL DEFAULT 0,
             lastRefusedAt TEXT,
-            lastRefusalReason TEXT
+            lastRefusalReason TEXT,
+            createdRemote INTEGER NOT NULL DEFAULT 0
           );
           INSERT INTO webhooks__v24_rebuild (id, workflow, secret, enabled, createdAt)
             SELECT id, workflow, secret, enabled, createdAt FROM webhooks;
@@ -146,6 +151,9 @@ export class WebhookRegistry {
     try { this._db.exec('ALTER TABLE webhooks ADD COLUMN refusalCount INTEGER NOT NULL DEFAULT 0'); } catch { /* already exists */ }
     try { this._db.exec('ALTER TABLE webhooks ADD COLUMN lastRefusedAt TEXT'); } catch { /* already exists */ }
     try { this._db.exec('ALTER TABLE webhooks ADD COLUMN lastRefusalReason TEXT'); } catch { /* already exists */ }
+    // v37 (ARCH-182, DES-263, TASK-258): same idempotent idiom — written once at `webhook_create`
+    // from `ToolDeps.isRemoteSubmission`, read back by `deliver()` to stamp `RunSpec.origin`.
+    try { this._db.exec('ALTER TABLE webhooks ADD COLUMN createdRemote INTEGER NOT NULL DEFAULT 0'); } catch { /* already exists */ }
   }
 
   /** Registers a webhook. v24 (DES-149): `workflow` is now OPTIONAL — omitted, the webhook is
@@ -159,12 +167,13 @@ export class WebhookRegistry {
    *  that is delivered to is refused at DELIVERY (`UNCLAIMED` / `CLAIMED_WORKFLOW_MISSING` /
    *  `CHANNEL_UNPUBLISHED`) and the refusal is recorded on the row, which is where the answer is
    *  still true when it matters. */
-  async create(spec: { workflow?: string; enabled?: boolean; createdBy?: string }): Promise<{ webhookId: string; secret: string } | { error: ErrEnvelope }> {
+  async create(spec: { workflow?: string; enabled?: boolean; createdBy?: string; createdRemote?: boolean }): Promise<{ webhookId: string; secret: string } | { error: ErrEnvelope }> {
     const id = randomUUID();
     const secret = randomBytes(32).toString('hex');
     this._db
-      .prepare('INSERT INTO webhooks (id, workflow, createdBy, secret, enabled, createdAt) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(id, spec.workflow ?? null, spec.createdBy ?? null, secret, spec.enabled === false ? 0 : 1, this._clock.isoNow());
+      .prepare('INSERT INTO webhooks (id, workflow, createdBy, createdRemote, secret, enabled, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      // v37 (ARCH-182, DES-263, TASK-258): written ONCE at creation, never updated afterwards.
+      .run(id, spec.workflow ?? null, spec.createdBy ?? null, spec.createdRemote ? 1 : 0, secret, spec.enabled === false ? 0 : 1, this._clock.isoNow());
     return { webhookId: id, secret };
   }
 
@@ -302,7 +311,16 @@ export class WebhookRegistry {
         .run(req.deliveryId, id, this._clock.isoNow());
     }
 
-    const runId = await this._runManager.start({ name: row.workflow, args: { event: req.parsedBody }, startedBy: { type: 'webhook', id } });
+    // v37 (ARCH-182, DES-263, TASK-258): the delivery PEER is deliberately NOT part of this
+    // predicate (DES-262's own note) — what decides is who ATTACHED the trigger, `row.createdRemote`,
+    // written once at creation. A thrown CONFINEMENT_UNAVAILABLE is mapped into this function's own
+    // typed DeliverResult rather than escaping as a rejected promise.
+    let runId: string;
+    try {
+      runId = await this._runManager.start({ name: row.workflow, args: { event: req.parsedBody }, startedBy: { type: 'webhook', id }, origin: row.createdRemote === 1 ? 'remote' : 'local' });
+    } catch (err) {
+      return { ok: false, httpStatus: 403, reason: toErrEnvelope(err).message };
+    }
     return { ok: true, httpStatus: 202, runId };
   }
 }

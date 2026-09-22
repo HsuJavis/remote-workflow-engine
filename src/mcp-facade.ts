@@ -702,6 +702,12 @@ export class McpFacade {
       seed?: RunSpec['seed']; seedManifest?: RunSpec['seedManifest']; seedRef?: RunSpec['seedRef']; seedManifestRef?: string;
     },
     principal: Principal,
+    // v37 (ARCH-182, DES-263, TASK-258, REQ-218): the ONE `tools/call`-driven admission site —
+    // threaded as one more per-request fact, exactly as `runAgentLog(a, principal,
+    // crossPrincipalRead, actor)` already threads one. Defaults to `false` (local) so the ~5
+    // pre-existing test call sites that omit it keep compiling AND keep their prior behaviour —
+    // no test anywhere newly gates on a param it never supplied.
+    isRemoteSubmission = false,
   ): Promise<ResultEnvelope<{ runId: string }>> {
     const validation = await this.validator.validate({ name: a.name });
     if (!validation.ok) return { runId: '', status: 'failed', error: validation.errors[0] };
@@ -709,6 +715,7 @@ export class McpFacade {
       const attributed = attributionPrincipal(principal);
       const runId = await this.runManager.start({
         name: a.name, args: normalizeArgs(a.args), budget: a.budget ?? null, version: a.version, startedBy: { type: 'client' },
+        origin: isRemoteSubmission ? 'remote' : 'local',
         // v24 (integrator, REQ-097): `channel` was dropped here too — `RunSpec.channel` and
         // `run-manager.ts`'s resolve both consume it, and without this line the schema's channel
         // would be admitted and then ignored, which is worse than refusing it.

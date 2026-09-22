@@ -49,7 +49,7 @@ describe('resume readback of a pre-v24 params snapshot (IT-122, C-7 [28])', () =
       const mgr = new RunManager({ store, clock, workRoot: dir, spawner } as never);
       const name = 'it122-legacy-params';
       await registerPublished(mgr.catalog, name, "return await agent('worker', { prompt: 'go' });");
-      const runId = await mgr.start({ name });
+      const runId = await mgr.start({ origin: 'local', name });
       await mgr.suspend(runId);
 
       // Overwrite this run's snapshot with the pre-v24 shape — the state a database written by a
@@ -74,7 +74,7 @@ describe('resume readback of a pre-v24 params snapshot (IT-122, C-7 [28])', () =
       const mgr = new RunManager({ store, clock, workRoot: dir, spawner } as never);
       const name = 'it122-v24-params';
       await registerPublished(mgr.catalog, name, "return await agent('worker', { prompt: 'go' });");
-      const runId = await mgr.start({ name });
+      const runId = await mgr.start({ origin: 'local', name });
       await mgr.suspend(runId);
 
       const stored = await store.getEffectiveParams(runId);
@@ -101,7 +101,7 @@ describe('resume readback of a pre-v24 params snapshot (IT-122, C-7 [28])', () =
       const mgr = new RunManager({ store, clock, workRoot: dir, spawner } as never);
       const name = 'it177-legacy-tools';
       await registerPublished(mgr.catalog, name, "return await agent('worker', { prompt: 'go' });");
-      const runId = await mgr.start({ name });
+      const runId = await mgr.start({ origin: 'local', name });
       await mgr.suspend(runId);
 
       const stored = await store.getEffectiveParams(runId);
@@ -173,7 +173,7 @@ describe('a pre-v34 pinned script carrying agentType is refused at DISPATCH, not
       catalogDb.prepare('UPDATE workflow_versions SET script = ? WHERE name = ?').run(pinnedScript, name);
       catalogDb.close();
 
-      const runId = await mgr.start({ name });
+      const runId = await mgr.start({ origin: 'local', name });
       let terminal: { status?: string; agents?: Array<{ state?: string; detail?: string }> } | undefined;
       for (let i = 0; i < 50; i++) {
         const s = await mgr.status(runId) as unknown as { status?: string; agents?: Array<{ state?: string; detail?: string }> };

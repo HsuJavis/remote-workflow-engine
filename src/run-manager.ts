@@ -135,6 +135,11 @@ export interface RunManagerDeps {
   /** v36 (DES-243, ARCH-159, TASK-241, REQ-213): sink for the `run.terminal` audit line (TASK-243
    *  adds the actual emit call, at `_transition`). Omitted -> a bare console sink. */
   eventSink?: EventSink;
+  /** v37 (ARCH-182, DES-263, TASK-258, REQ-218): this engine's MEASURED confinement posture
+   *  (forwarded from `ServerConfig.confinementPosture`, itself set once at boot by the nested-bwrap
+   *  probe — ARCH-181). Omitted (every pre-existing RunManager test call site) -> `admissionRefusal`
+   *  never gates, matching the field's own fail-open-for-the-existing-suite convention. */
+  confinementPosture?: 'confined' | 'unconfined';
 }
 
 /** v25 (DES-168, REQ-120, owner ruling): the default per-run in-flight agent() cap. Explicit and
@@ -150,6 +155,20 @@ const TERMINAL: RunStatus[] = ['stopped', 'completed', 'failed'];
  *  any caller that wants it, ignored by ones (like McpFacade.toErrEnvelope) that don't. */
 function paramCodedError(err: ParamErr): Error {
   return Object.assign(codedError(err.code, err.message), { detail: err.detail });
+}
+
+/** v37 (ARCH-182, DES-263, TASK-258, REQ-218, ADR-086): the ONE predicate every run admission
+ *  passes, at `RunManager.start()` — pure (no fs, no db, no clock). `undefined` posture means
+ *  「never measured」 ⇒ do not gate, the same fail-open-for-the-existing-suite convention `ToolDeps`
+ *  already uses for this field. Keyed on the TRIGGER's own stored provenance (`origin`), never a
+ *  live delivery peer and never the workflow version's registering author — ADR-086's owner ruling
+ *  (answered 2026-09-23) refuses only a REMOTELY-CREATED trigger's run, not a locally-started run of
+ *  a remotely-registered script. */
+export function admissionRefusal(input: {
+  posture: 'confined' | 'unconfined' | undefined;
+  origin: 'local' | 'remote';
+}): 'CONFINEMENT_UNAVAILABLE' | null {
+  return input.posture === 'unconfined' && input.origin === 'remote' ? 'CONFINEMENT_UNAVAILABLE' : null;
 }
 
 
@@ -328,6 +347,9 @@ export class RunManager {
   private readonly _aliasMap: AliasMap;
   /** v36 (DES-243, TASK-241): `run.terminal` audit sink; TASK-243 calls it from `_transition`. */
   private readonly _eventSink: EventSink;
+  /** v37 (ARCH-182, DES-263, TASK-258): this engine's MEASURED confinement posture — read by
+   *  `admissionRefusal()` at the top of `start()`. */
+  private readonly _confinementPosture: 'confined' | 'unconfined' | undefined;
   private readonly _runs = new Map<string, RunEntry>();
   /** v25 (#53): runIds already reported for `terminal_without_transition` — one record per run,
    *  not one per poll (a terminal run is polled until the caller notices it is terminal). */
@@ -388,6 +410,7 @@ export class RunManager {
     this._modelBook = deps.modelBook ?? new ModelBook(async () => [], { clock: this._clock });
     this._aliasMap = deps.aliasMap ?? DEFAULT_ALIASES;
     this._eventSink = deps.eventSink ?? createEventSink({});
+    this._confinementPosture = deps.confinementPosture;
   }
 
   /** v8 Slice 4 (REQ-054): count of live (non-terminal) top-level runs in this process — the
@@ -440,6 +463,21 @@ export class RunManager {
    *  standing temptation to re-merge on resume. The redacted `effectiveParams` snapshot (below) is
    *  the single durable representation. */
   async start(spec: RunSpec, overrides?: unknown): Promise<string> {
+    // v37 (ARCH-182, DES-263, TASK-258, REQ-218): the FIRST statement, ahead of every other check
+    // (including RUN_ADMISSION_LIMIT immediately below) — a submission that can never be admitted
+    // under this posture must not consume an admission slot, and must not be answered with a
+    // RETRYABLE code (RUN_ADMISSION_LIMIT) when the true refusal is deterministic and permanent.
+    // Closes the two admission routes (schedule, webhook) DES-262's isLoopbackPeer door does not
+    // cover — a remotely-created trigger's run is refused identically to a remote run_start.
+    {
+      const refusal = admissionRefusal({ posture: this._confinementPosture, origin: spec.origin });
+      if (refusal !== null) {
+        throw codedError(
+          refusal,
+          `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — this run's trigger was created remotely, so it is refused; a locally-created trigger still runs, unconfined.`,
+        );
+      }
+    }
     // v22 (REQ-098, ADR-013, DES-113, DES-117, TASK-108/TASK-109): the inline ban is on INGRESS
     // ONLY — start() refuses ANY inline script, even off the wire (a caller that bypasses the MCP
     // schema entirely and calls RunManager directly). resume() never applies this check: a run

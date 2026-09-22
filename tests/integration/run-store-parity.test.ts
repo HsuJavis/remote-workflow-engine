@@ -24,12 +24,12 @@ const FULL_USAGE: RunUsage = { tokens: { input: 10, output: 5, cacheRead: 1, cac
 describe('InMemoryRunStore matches the SAME usage projection as SqliteRunStore (IT-166, ARCH-128 parity)', () => {
   it('a terminal run with a full snapshot+usage projects costUSD/tokensTotal/agentCount; a snapshot-less run omits all four', async () => {
     const store = new InMemoryRunStore(new FixedClock(new Date('2026-09-11T00:00:00.000Z')));
-    const withUsage = await store.createRun({ name: 'a', args: {} });
+    const withUsage = await store.createRun({ origin: 'local', name: 'a', args: {} });
     await store.recordTransition(withUsage, 'running', 'completed', '2026-09-11T00:01:00.000Z');
     const agent = (agentId: string) => ({ agentId, state: 'done' as const, provider: 'anthropic', model: 'claude-3-5-sonnet-20241022', tokens: { input: 0, output: 0 } });
     await store.saveSnapshot(withUsage, { phases: [], agents: [agent('x'), agent('y')], workflowNodes: [], usage: FULL_USAGE });
 
-    const noSnapshot = await store.createRun({ name: 'b', args: {} });
+    const noSnapshot = await store.createRun({ origin: 'local', name: 'b', args: {} });
     await store.recordTransition(noSnapshot, 'running', 'completed', '2026-09-11T00:01:00.000Z');
 
     const rows = (await store.listRuns()) as ProjectedSummary[];
@@ -47,7 +47,7 @@ describe('InMemoryRunStore matches the SAME usage projection as SqliteRunStore (
 
   it('backfillUsage exists on InMemoryRunStore and writes a {usage}-only backfill for a terminal run lacking one', async () => {
     const store = new InMemoryRunStore(new FixedClock(new Date('2026-09-11T00:00:00.000Z')));
-    const runId = await store.createRun({ name: 'c', args: {} });
+    const runId = await store.createRun({ origin: 'local', name: 'c', args: {} });
     await store.recordTransition(runId, 'running', 'completed', '2026-09-11T00:01:00.000Z');
     await (store as unknown as { backfillUsage(runId: string, usage: RunUsage): Promise<void> }).backfillUsage(runId, FULL_USAGE);
     const [row] = (await store.listRuns()) as ProjectedSummary[];
@@ -74,7 +74,7 @@ function agentRecord(agentId: string, state: 'done' | 'failed' | 'refused') {
 }
 
 async function seedMixedRun(store: RunStore): Promise<string> {
-  const runId = await store.createRun({ name: 'mixed', args: {} });
+  const runId = await store.createRun({ origin: 'local', name: 'mixed', args: {} });
   await store.recordTransition(runId, 'running', 'completed', '2026-09-11T00:01:00.000Z');
   await store.saveSnapshot(runId, {
     phases: [],
@@ -85,7 +85,7 @@ async function seedMixedRun(store: RunStore): Promise<string> {
 }
 
 async function seedZeroAgentRun(store: RunStore): Promise<string> {
-  const runId = await store.createRun({ name: 'zero', args: {} });
+  const runId = await store.createRun({ origin: 'local', name: 'zero', args: {} });
   await store.recordTransition(runId, 'running', 'completed', '2026-09-11T00:01:00.000Z');
   return runId;
 }

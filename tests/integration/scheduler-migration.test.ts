@@ -179,6 +179,9 @@ describe('D13 — SqliteSchedulerPort rebuilds a stale `schedules.workflow NOT N
       lastError: '{"code":"DISPATCH_FAILED","at":"2025-01-01T00:00:00.000Z"}',
       claimedBy: 'legacy-nightly', createdBy: 'principal-42', refusalCount: 3,
       lastRefusedAt: '2025-01-02T00:00:00.000Z', lastRefusalReason: 'UNCLAIMED',
+      // v37 (ARCH-182, DES-263, TASK-258): new idempotent ADD COLUMN — an upgraded row reads back
+      // the DEFAULT (0/local), same idiom as every other additive column this test already covers.
+      createdRemote: 0,
     });
     expect(origin).toEqual({ runId: 'run-legacy', scheduleId: 'upgraded-sched', kind: 'cron' });
   });

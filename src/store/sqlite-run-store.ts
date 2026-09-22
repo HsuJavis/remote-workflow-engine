@@ -169,6 +169,10 @@ export class SqliteRunStore implements RunStore {
       budget: row.budget ? JSON.parse(row.budget) : null,
       startedBy: row.started_by ? (JSON.parse(row.started_by) as RunSpec['startedBy']) : undefined,
       principal: row.principal ?? undefined,
+      // v37 (ARCH-182, DES-263, TASK-258): the `runs` table never gained an `origin` column — this
+      // predicate needs the fact only transiently, at admission, and a resume is gated by
+      // call-tool.ts's isLoopbackPeer door, not by admissionRefusal. The ONE tolerant read.
+      origin: 'local',
     };
   }
 

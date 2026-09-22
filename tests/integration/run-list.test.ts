@@ -33,12 +33,12 @@ describe('RunStore.list — filtered, indexed, ownerless-row exclusion (IT-114, 
       return { dir, store };
     }
     async function seed(store: SqliteRunStore) {
-      const a = await store.createRun({ name: 'deploy', principal: 'alice' });
+      const a = await store.createRun({ origin: 'local', name: 'deploy', principal: 'alice' });
       await store.recordTransition(a, null, 'running', new Date().toISOString());
-      const b = await store.createRun({ name: 'deploy', principal: 'bob' });
+      const b = await store.createRun({ origin: 'local', name: 'deploy', principal: 'bob' });
       await store.recordTransition(b, null, 'completed', new Date().toISOString());
-      const c = await store.createRun({ name: 'build', principal: 'alice' });
-      const d = await store.createRun({ name: 'build', principal: null });
+      const c = await store.createRun({ origin: 'local', name: 'build', principal: 'alice' });
+      const d = await store.createRun({ origin: 'local', name: 'build', principal: null });
       return { a, b, c, d };
     }
 
@@ -105,12 +105,12 @@ describe('RunStore.list — filtered, indexed, ownerless-row exclusion (IT-114, 
       return new InMemoryRunStore(new SteppingClock(ANCHOR_MS));
     }
     async function seed(store: InMemoryRunStore) {
-      const a = await store.createRun({ name: 'deploy', principal: 'alice' });
+      const a = await store.createRun({ origin: 'local', name: 'deploy', principal: 'alice' });
       await store.recordTransition(a, null, 'running', new Date().toISOString());
-      const b = await store.createRun({ name: 'deploy', principal: 'bob' });
+      const b = await store.createRun({ origin: 'local', name: 'deploy', principal: 'bob' });
       await store.recordTransition(b, null, 'completed', new Date().toISOString());
-      const c = await store.createRun({ name: 'build', principal: 'alice' });
-      const d = await store.createRun({ name: 'build', principal: null });
+      const c = await store.createRun({ origin: 'local', name: 'build', principal: 'alice' });
+      const d = await store.createRun({ origin: 'local', name: 'build', principal: null });
       return { a, b, c, d };
     }
 
@@ -131,10 +131,10 @@ describe('RunStore.list — filtered, indexed, ownerless-row exclusion (IT-114, 
 
     it('limit defaults to 50 and caps at 500 even when more rows exist', async () => {
       const store = new InMemoryRunStore(new SteppingClock(ANCHOR_MS));
-      for (let i = 0; i < 60; i++) await store.createRun({ name: 'flood' });
+      for (let i = 0; i < 60; i++) await store.createRun({ origin: 'local', name: 'flood' });
       const defaulted = await store.list({ workflow: 'flood' });
       expect(defaulted.length).toBe(50);
-      for (let i = 0; i < 450; i++) await store.createRun({ name: 'flood' }); // 510 total
+      for (let i = 0; i < 450; i++) await store.createRun({ origin: 'local', name: 'flood' }); // 510 total
       const capped = await store.list({ workflow: 'flood', limit: 10_000 });
       expect(capped.length).toBe(500);
     });

@@ -56,7 +56,7 @@ describe('args resolution at admission — the bare and declared-default cases (
     const mgr = new RunManager({ store, clock, workRoot: dir, spawner } as never);
     const name = 'it233-bare';
     await registerPublished(mgr.catalog, name, BARE_SCRIPT);
-    const runId = await mgr.start({ name });
+    const runId = await mgr.start({ origin: 'local', name });
     await waitForStatus(mgr, runId, 'completed');
     const result = await mgr.result(runId);
     expect(result).toEqual({ ok: true, value: {} });
@@ -68,7 +68,7 @@ describe('args resolution at admission — the bare and declared-default cases (
     const mgr = new RunManager({ store, clock, workRoot: dir, spawner } as never);
     const name = 'it233-default';
     await registerPublished(mgr.catalog, name, DEFAULT_SCRIPT);
-    const runId = await mgr.start({ name });
+    const runId = await mgr.start({ origin: 'local', name });
     await waitForStatus(mgr, runId, 'completed');
     const result = await mgr.result(runId);
     expect(result).toEqual({ ok: true, value: { url: 'https://x' } });
@@ -83,7 +83,7 @@ describe('args resolution at admission — the bare and declared-default cases (
     const mgr = new RunManager({ store, clock, workRoot: dir, spawner } as never);
     const name = 'it233-override';
     await registerPublished(mgr.catalog, name, DEFAULT_SCRIPT);
-    const runId = await mgr.start({ name, args: { url: 'https://caller' } });
+    const runId = await mgr.start({ origin: 'local', name, args: { url: 'https://caller' } });
     await waitForStatus(mgr, runId, 'completed');
     const result = await mgr.result(runId);
     expect(result).toEqual({ ok: true, value: { url: 'https://caller' } });
@@ -108,7 +108,7 @@ describe('args survive suspend->resume and restart-rehydrate->resume with the SA
     const mgr = new RunManager({ store, clock, workRoot: dir, spawner } as never);
     const name = 'it233-suspend-resume';
     await registerPublished(mgr.catalog, name, SUSPENDABLE_SCRIPT);
-    const runId = await mgr.start({ name });
+    const runId = await mgr.start({ origin: 'local', name });
     await mgr.suspend(runId);
 
     const mgr2 = new RunManager({ store, clock, workRoot: dir, spawner } as never);
@@ -124,7 +124,7 @@ describe('args survive suspend->resume and restart-rehydrate->resume with the SA
     const mgr1 = new RunManager({ store: store1, clock, workRoot: dir, spawner } as never);
     const name = 'it233-restart-resume';
     await registerPublished(mgr1.catalog, name, SUSPENDABLE_SCRIPT);
-    const runId = await mgr1.start({ name });
+    const runId = await mgr1.start({ origin: 'local', name });
     await mgr1.suspend(runId);
 
     const store2 = new SqliteRunStore(join(dir, 'store'), clock);
@@ -142,7 +142,7 @@ describe('args survive suspend->resume and restart-rehydrate->resume with the SA
     const mgr = new RunManager({ store, clock, workRoot: dir, spawner } as never);
     const name = 'it233-legacy-null';
     await registerPublished(mgr.catalog, name, "await agent('worker', {});\nreturn args;");
-    const runId = await mgr.start({ name });
+    const runId = await mgr.start({ origin: 'local', name });
     await mgr.suspend(runId);
 
     const db = new Database(join(dir, 'store', 'index.db'));
@@ -173,7 +173,7 @@ describe('args survive suspend->resume and restart-rehydrate->resume with the SA
       "await agent('worker', {});\n" +
       "return seen;";
     await registerPublished(mgr.catalog, name, script);
-    const runId = await mgr.start({ name, args: { token: SECRET_VALUE } });
+    const runId = await mgr.start({ origin: 'local', name, args: { token: SECRET_VALUE } });
     await mgr.suspend(runId);
 
     const mgr2 = new RunManager({ store, clock, workRoot: dir, spawner, secretValueProvider } as never);

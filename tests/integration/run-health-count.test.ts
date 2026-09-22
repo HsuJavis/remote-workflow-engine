@@ -72,7 +72,7 @@ describe('failedAgentCount on RunStatusView (DES-234, live fold, case iii)', () 
     const mgr = new RunManager({ store, clock, workRoot: dir, gateway } as never);
     const name = 'it234-running-one-failed';
     await registerPublished(mgr.catalog, name, TWO_AGENT_SCRIPT);
-    const runId = await mgr.start({ name });
+    const runId = await mgr.start({ origin: 'local', name });
 
     const agents = await waitForAgents(mgr, runId, (a) => a.some((r) => r.state === 'failed'));
     expect(agents.some((r) => r.state === 'failed')).toBe(true);
@@ -89,7 +89,7 @@ describe('failedAgentCount on RunStatusView (DES-234, live fold, case iii)', () 
     const mgr = new RunManager({ store, clock, workRoot: dir } as never);
     const name = 'it234-zero-agents';
     await registerPublished(mgr.catalog, name, 'return 1;');
-    const runId = await mgr.start({ name });
+    const runId = await mgr.start({ origin: 'local', name });
     await waitForStatus(mgr, runId, 'completed');
     const view = await mgr.status(runId) as unknown as { failedAgentCount?: number };
     expect(view.failedAgentCount).toBeUndefined();
@@ -107,7 +107,7 @@ describe('failedAgentCount on RunStatusView (DES-234, live fold, case iii)', () 
     const mgr = new RunManager({ store, clock, workRoot: dir, gateway } as never);
     const name = 'it234-mixed-terminal';
     await registerPublished(mgr.catalog, name, TWO_AGENT_SCRIPT);
-    const runId = await mgr.start({ name });
+    const runId = await mgr.start({ origin: 'local', name });
     await waitForStatus(mgr, runId, 'completed');
 
     const statusView = await mgr.status(runId) as unknown as { failedAgentCount?: number };
@@ -132,7 +132,7 @@ describe('failedAgentCount on the RESTORED path after a restart (DES-234)', () =
     const mgr1 = new RunManager({ store: store1, clock, workRoot: dir, gateway } as never);
     const name = 'it234-restored';
     await registerPublished(mgr1.catalog, name, TWO_AGENT_SCRIPT);
-    const runId = await mgr1.start({ name });
+    const runId = await mgr1.start({ origin: 'local', name });
     await waitForStatus(mgr1, runId, 'completed');
 
     const store2 = new SqliteRunStore(join(dir, 'store'), clock);
@@ -147,7 +147,7 @@ describe('failedAgentCount on the RESTORED path after a restart (DES-234)', () =
     const mgr = new RunManager({ store, clock, workRoot: dir } as never);
     const name = 'it234-pre-v35';
     await registerPublished(mgr.catalog, name, 'return 1;');
-    const runId = await mgr.start({ name });
+    const runId = await mgr.start({ origin: 'local', name });
     await waitForStatus(mgr, runId, 'completed');
 
     const store2 = new SqliteRunStore(join(dir, 'store'), clock);

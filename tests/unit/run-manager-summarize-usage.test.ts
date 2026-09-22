@@ -88,7 +88,7 @@ describe('RunManager.listSummaries() (UT-234, DES-194)', () => {
 
   it('with a real InMemoryRunStore and no live entries, listSummaries() delegates straight through to store.list()', async () => {
     const store = new InMemoryRunStore(new FixedClock(new Date('2026-09-11T00:00:00.000Z')));
-    const runId = await store.createRun({ name: 'x', args: {} });
+    const runId = await store.createRun({ origin: 'local', name: 'x', args: {} });
     await store.recordTransition(runId, 'running', 'completed', '2026-09-11T00:01:00.000Z');
     const manager = new RunManager({ store, clock: new FixedClock(new Date('2026-09-11T00:00:00.000Z')) });
     const rows = await (manager as unknown as { listSummaries(): Promise<ProjectedSummary[]> }).listSummaries();
@@ -100,7 +100,7 @@ describe('RunManager.listSummaries() (UT-234, DES-194)', () => {
   it('listSummaries() never returns more than store.list()\'s default limit (50), even with 60 rows present', async () => {
     const store = new InMemoryRunStore(new FixedClock(new Date('2026-09-11T00:00:00.000Z')));
     for (let i = 0; i < 60; i++) {
-      const runId = await store.createRun({ name: `n${i}`, args: {} });
+      const runId = await store.createRun({ origin: 'local', name: `n${i}`, args: {} });
       await store.recordTransition(runId, 'running', 'completed', `2026-09-11T00:${String(i % 60).padStart(2, '0')}:00.000Z`);
     }
     const manager = new RunManager({ store, clock: new FixedClock(new Date('2026-09-11T00:00:00.000Z')) });
@@ -115,7 +115,7 @@ describe('RunManager.listSummaries() (UT-234, DES-194)', () => {
       const db = (store as unknown as { _db: Database.Database })._db;
       // Ten terminal runs, no snapshot at all (the legacy cohort DES-194's backfill heals).
       for (let i = 0; i < 10; i++) {
-        const runId = await store.createRun({ name: `n${i}`, args: {} });
+        const runId = await store.createRun({ origin: 'local', name: `n${i}`, args: {} });
         db.prepare("UPDATE runs SET status = 'completed' WHERE runId = ?").run(runId);
       }
       let prepareCalls = 0;

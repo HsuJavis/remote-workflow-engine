@@ -29,7 +29,7 @@ describe('RunStore clock injection', () => {
     const fixedMs = ANCHOR.getTime();
     const clock = new FixedClock(ANCHOR);
     const store = new InMemoryRunStore(clock);
-    const runId = await store.createRun({ script: 'return 1;' });
+    const runId = await store.createRun({ origin: 'local', script: 'return 1;' });
     const summary = (await store.listRuns()).find((r) => r.runId === runId);
     expect(summary).toBeDefined();
     // The createdAt timestamp must be the injected clock's time, not Date.now()
@@ -39,7 +39,7 @@ describe('RunStore clock injection', () => {
   it('recordTransition uses the provided ts string (from injected Clock)', async () => {
     const clock = new FixedClock(ANCHOR);
     const store = new InMemoryRunStore(clock);
-    const runId = await store.createRun({ script: 'return 1;' });
+    const runId = await store.createRun({ origin: 'local', script: 'return 1;' });
     const ts = clock.isoNow();
     await store.recordTransition(runId, 'queued', 'running', ts);
     const view = await store.getRun(runId);

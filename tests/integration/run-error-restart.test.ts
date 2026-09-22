@@ -46,7 +46,7 @@ describe('run_result after a restart answers the STORED reason, never RUN_NOT_TE
     const mgr1 = new RunManager({ store: store1, clock, workRoot: dir } as never);
     const name = 'it232-restart';
     await registerPublished(mgr1.catalog, name, "throw new Error('boom, IT-232 restart');");
-    const runId = await mgr1.start({ name });
+    const runId = await mgr1.start({ origin: 'local', name });
     await waitForStatus(mgr1, runId, 'failed');
 
     // fresh process simulation: a brand-new RunManager/store instance over the SAME file, with NO
@@ -64,7 +64,7 @@ describe('run_result after a restart answers the STORED reason, never RUN_NOT_TE
   it('a pre-v35 row (failed, error column NULL) answers RUN_FAILED — "no reason was recorded", never RUN_NOT_TERMINAL', async () => {
     const dir = tempDir();
     const store1 = new SqliteRunStore(join(dir, 'store'), clock);
-    const runId = await store1.createRun({ script: 'return 1;' });
+    const runId = await store1.createRun({ origin: 'local', script: 'return 1;' });
     const db = new Database(join(dir, 'store', 'index.db'));
     db.prepare("UPDATE runs SET status = 'failed' WHERE runId = ?").run(runId);
     db.close();
@@ -82,7 +82,7 @@ describe('run_result after a restart answers the STORED reason, never RUN_NOT_TE
   it('an `interrupted` row with a stale non-NULL error column still answers RUN_NOT_TERMINAL (gated read)', async () => {
     const dir = tempDir();
     const store1 = new SqliteRunStore(join(dir, 'store'), clock);
-    const runId = await store1.createRun({ script: 'return 1;' });
+    const runId = await store1.createRun({ origin: 'local', script: 'return 1;' });
     const db = new Database(join(dir, 'store', 'index.db'));
     db.prepare("UPDATE runs SET status = 'failed' WHERE runId = ?").run(runId);
     db.close();
@@ -111,7 +111,7 @@ describe('redact-at-capture with a REAL injected secret (IT, DES-232)', () => {
     const mgr = new RunManager({ store, clock, workRoot: dir, secretValueProvider } as never);
     const name = 'it232-redact';
     await registerPublished(mgr.catalog, name, `throw new Error('leaked: ${SECRET_VALUE}');`);
-    const runId = await mgr.start({ name });
+    const runId = await mgr.start({ origin: 'local', name });
     await waitForStatus(mgr, runId, 'failed');
 
     const getError = (store as unknown as { getError(r: string): Promise<{ code: string; message: string } | null> }).getError.bind(store);

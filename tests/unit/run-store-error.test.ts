@@ -19,7 +19,7 @@ const ERR = { code: 'SCRIPT_ERROR', message: 'boom, run-store-error UT' };
 describe('RunStore.recordError/getError — InMemoryRunStore (DES-231)', () => {
   it('recordError then getError returns the byte-identical value', async () => {
     const store = new InMemoryRunStore(CLOCK);
-    const runId = await store.createRun({ script: 'return 1;' });
+    const runId = await store.createRun({ origin: 'local', script: 'return 1;' });
     await (store as unknown as { recordError(runId: string, err: unknown): Promise<void> }).recordError(runId, ERR);
     const got = await (store as unknown as { getError(runId: string): Promise<unknown> }).getError(runId);
     expect(got).toEqual(ERR);
@@ -27,7 +27,7 @@ describe('RunStore.recordError/getError — InMemoryRunStore (DES-231)', () => {
 
   it('getError is null before any recordError call', async () => {
     const store = new InMemoryRunStore(CLOCK);
-    const runId = await store.createRun({ script: 'return 1;' });
+    const runId = await store.createRun({ origin: 'local', script: 'return 1;' });
     const got = await (store as unknown as { getError(runId: string): Promise<unknown> }).getError(runId);
     expect(got).toBeNull();
   });
@@ -40,7 +40,7 @@ describe('RunStore.recordError/getError — SqliteRunStore (DES-231)', () => {
 
   it('recordError writes the runs.error column AND appends a {type:"error"} journal.jsonl line, byte-identical value', async () => {
     const store = new SqliteRunStore(dir, CLOCK);
-    const runId = await store.createRun({ script: 'return 1;' });
+    const runId = await store.createRun({ origin: 'local', script: 'return 1;' });
     await (store as unknown as { recordError(runId: string, err: unknown): Promise<void> }).recordError(runId, ERR);
 
     const got = await (store as unknown as { getError(runId: string): Promise<unknown> }).getError(runId);
@@ -56,7 +56,7 @@ describe('RunStore.recordError/getError — SqliteRunStore (DES-231)', () => {
 
   it('column BEFORE journal: if the column write throws, no journal line is appended', async () => {
     const store = new SqliteRunStore(dir, CLOCK);
-    const runId = await store.createRun({ script: 'return 1;' });
+    const runId = await store.createRun({ origin: 'local', script: 'return 1;' });
     const db = (store as unknown as { _db: { prepare: (sql: string) => { run: (...a: unknown[]) => unknown } } })._db;
     const origPrepare = db.prepare.bind(db);
     db.prepare = ((sql: string) => {

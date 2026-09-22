@@ -218,7 +218,9 @@ export async function callTool(
     case 'workflow_authoring_guide': return facade.workflowAuthoringGuide();
 
     // ---- run (8) ----
-    case 'run_start': return facade.runStart(a as never, principal);
+    // v37 (ARCH-182, DES-263, TASK-258): threads this request's own remoteness fact through to
+    // RunManager.start()'s admission predicate — the ONE tools/call-driven admission site.
+    case 'run_start': return facade.runStart(a as never, principal, deps.isRemoteSubmission === true);
     case 'run_status': return facade.runStatus(a as never, principal, crossPrincipalRead, actor);
     case 'run_result': return facade.runResult(a as never, principal, crossPrincipalRead, actor);
     case 'run_suspend': return facade.runSuspend(a as never, principal);
@@ -254,7 +256,10 @@ export async function callTool(
       const raw = a as unknown as Partial<NewSchedule> & Record<string, unknown>;
       const withKind = (raw.kind === undefined ? { ...raw, kind: 'cron' } : raw) as NewSchedule;
       const enabled = raw.enabled === undefined ? true : raw.enabled;
-      return deps.scheduler.create({ ...withKind, enabled, createdBy });
+      // v37 (ARCH-182, DES-263, TASK-258): written ONCE at creation from the SAME
+      // isRemoteSubmission the door (DES-262) already reads — both tools are dispatched inside
+      // this file, which already holds the flag, so no new plumbing to the HTTP layer.
+      return deps.scheduler.create({ ...withKind, enabled, createdBy, createdRemote: deps.isRemoteSubmission === true });
     }
     case 'schedule_list': return { result: scopeToActor(await deps.scheduler.list(), principal, actor) };
     case 'schedule_delete': return deps.scheduler.delete(a['id'] as string);
@@ -262,7 +267,8 @@ export async function callTool(
 
     // ---- webhook (3) ----
     case 'webhook_create': {
-      const r = await deps.webhooks.create({ ...(a as unknown as { workflow?: string; enabled?: boolean }), createdBy: actor ?? undefined });
+      // v37 (ARCH-182, DES-263, TASK-258): same createdRemote stamping as schedule_create above.
+      const r = await deps.webhooks.create({ ...(a as unknown as { workflow?: string; enabled?: boolean }), createdBy: actor ?? undefined, createdRemote: deps.isRemoteSubmission === true });
       if ('error' in r) return { error: r.error };
       return { result: { webhookId: r.webhookId, url: `${deps.webhookBaseUrl}/hooks/${r.webhookId}`, secret: r.secret } };
     }

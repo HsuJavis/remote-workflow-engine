@@ -130,7 +130,7 @@ describe('crash durability (v8 Defer A, REQ-059/060)', () => {
       const store1 = new SqliteRunStore(join(dir, 'store'), CLOCK);
       const g1 = blockingGateway();
       const mgr1 = new RunManager({ store: store1, clock: CLOCK, workRoot: dir, catalog, gateway: g1.gateway });
-      const runId = await mgr1.start({ name: 'two-step' }); // NAMED run — no inline script on the spec
+      const runId = await mgr1.start({ origin: 'local', name: 'two-step' }); // NAMED run — no inline script on the spec
       await g1.bReached;
 
       const store2 = new SqliteRunStore(join(dir, 'store'), CLOCK);
@@ -172,7 +172,7 @@ describe('crash durability (v8 Defer A, REQ-059/060)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'rwe-crash-legacy-spec-'));
     try {
       const store1 = new SqliteRunStore(join(dir, 'store'), CLOCK);
-      const runId = await store1.createRun({ script: `const a = await agent('A', {}); return { a };` });
+      const runId = await store1.createRun({ origin: 'local', script: `const a = await agent('A', {}); return { a };` });
       await store1.recordTransition(runId, null, 'queued', CLOCK.isoNow());
       await store1.recordTransition(runId, 'queued', 'running', CLOCK.isoNow());
 

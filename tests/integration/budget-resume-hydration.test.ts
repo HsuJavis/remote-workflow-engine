@@ -41,7 +41,7 @@ describe('the usage fold via transcript journal (IT-067, DES-068/DES-181)', () =
   it('folds all usage events from a run transcript into a token total', async () => {
     // Simulate two agents completing: agent-1 used 100+50, agent-2 used 200+80.
     const store = new InMemoryRunStore(CLOCK);
-    const runId = await store.createRun({ script: 'return 1;' });
+    const runId = await store.createRun({ origin: 'local', script: 'return 1;' });
     await store.appendTranscript(runId, 'agent-1', usageEv(100, 50));
     await store.appendTranscript(runId, 'agent-2', usageEv(200, 80));
 

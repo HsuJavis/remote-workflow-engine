@@ -39,7 +39,7 @@ describe('live transcript-event streaming (#20)', () => {
 
   beforeEach(async () => {
     store = new InMemoryRunStore(clock);
-    runId = await store.createRun({ script: 'return 1;' }, 'v1');
+    runId = await store.createRun({ origin: 'local', script: 'return 1;' }, 'v1');
   });
 
   it('streams events to the transcript live and does not duplicate them at terminal', async () => {

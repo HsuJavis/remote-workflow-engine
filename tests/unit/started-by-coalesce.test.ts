@@ -49,7 +49,7 @@ describe('startedBy provenance coalesce (UT-067, DES-063)', () => {
     // A run created WITHOUT startedBy (the legacy / internal path) must return {type:'unknown'},
     // never undefined/null/throw (DES-063 "total" invariant).
     const store = new InMemoryRunStore(CLOCK);
-    const runId = await store.createRun({ script: 'return 1;' });
+    const runId = await store.createRun({ origin: 'local', script: 'return 1;' });
     const view = await store.getRun(runId) as unknown as { startedBy?: { type: string } } | null;
     // Must coalesce to unknown — never be missing entirely.
     expect(view?.startedBy?.type).toBe('unknown');

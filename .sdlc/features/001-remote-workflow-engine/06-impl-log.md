@@ -10214,3 +10214,51 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   event-shaped trigger (the first host on which `probeConfinement()` measures `confined`) — a
   reader of `02-architecture.md` alone no longer implies the event ships. Nothing in code or tests
   changed for either finding.
+
+### IMPL-384 — admissionRefusal() at RunManager.start(): close the schedule/webhook admission routes ARCH-181's door does not cover
+- **status:** done
+- **traces:** TASK-258, DES-263, ARCH-182, ADR-086
+- **greens:** UT-329, UT-330, UT-331, IT-302, IT-303
+- **files:** src/types.ts, src/run-manager.ts, src/store/sqlite-run-store.ts, src/mcp-facade.ts, src/call-tool.ts, src/scheduler.ts, src/webhook-registry.ts, src/server.ts, src/submission-validator.ts, tests/unit/admission-refusal.test.ts, tests/unit/run-manager-admission-order.test.ts, tests/unit/sqlite-run-store-legacy-origin.test.ts, tests/integration/scheduler-remote-origin.test.ts, tests/integration/webhook-remote-origin.test.ts, tests/helpers/workflow-fixtures.ts, tests/integration/scheduler-migration.test.ts (+ ~30 pre-existing test files given an explicit `origin:'local'` at their own RunSpec construction sites — mechanical, no behavior change, listed in full in this dispatch's orchestrator report)
+- **commit:** (uncommitted at write time)
+- **iter:** v37
+- **note:** `admissionRefusal({posture, origin})` — pure, exported from `src/run-manager.ts` — is called
+  as the literal FIRST statement of `RunManager.start()`, ahead of `RUN_ADMISSION_LIMIT` and
+  `INLINE_SCRIPT_CLOSED`. `RunSpec.origin: 'local'|'remote'` is REQUIRED; `tsc` found every
+  DIRECT `RunSpec` construction site (both tsconfigs clean). **Nuance on "the compiler finds every
+  site", reported precisely rather than overclaimed**: `RunManagerPort` (the structural seam
+  `webhook-registry.ts`/`scheduler.ts` each declare locally, not importing `RunSpec`) is checked by
+  TypeScript's METHOD-parameter bivariance rule — an un-widened port would have let `.start({...})`
+  omit `origin` there with `tsc` staying silent (the exact A2 class: an optional-reading omission
+  admits silently). Widening both ports' `start()` to require `origin` too was this implementer's
+  own act, not something `tsc` forced; census confirmed via `rg -n "RunManagerPort|_runManager\.start\(|runManager\.start\("
+  src/` — exactly these two seams exist (no third; a `continuation-store.ts` the elder seam comment
+  references no longer exists on disk), both now widened, so a FUTURE fifth site through either seam
+  IS compiler-enforced. **One pre-existing cast, found and left alone (harmless, out of this
+  dispatch's admission paths)**: `tests/unit/started-by-coalesce.test.ts`'s own `spec()` helper casts
+  `Partial<RunSpec> as unknown as RunSpec` at 4 call sites, predating this dispatch — all 4 feed only
+  `InMemoryRunStore.createRun()` directly (never `RunManager.start()`, never an admission route), so
+  none needed touching; only the file's one BARE (uncast) literal, at its 5th case, needed `origin`.
+  Two idempotent columns (`schedules.createdRemote`, `webhooks.createdRemote`) land via the
+  existing `try { ALTER TABLE … } catch {}` idiom, including both files' pre-v24-shape
+  table-rebuild paths. Four admission sites stamp `origin`: `mcp-facade.ts` `runStart()` (new
+  optional `isRemoteSubmission` parameter, threaded from `ToolDeps.isRemoteSubmission` via
+  `call-tool.ts`), `webhook-registry.ts` `deliver()` and `scheduler.ts` `trigger()` (read the row's
+  own already-loaded `createdRemote`), and `server.ts`'s ticker dispatcher (`resolveScheduleTarget()`
+  widened to return `createdRemote`). `webhook-registry.ts`'s `deliver()` and `scheduler.ts`'s
+  `trigger()` each gained a try/catch mapping a thrown `CONFINEMENT_UNAVAILABLE` into their own typed
+  result shape (ARCH-182's own named gap — `trigger()` had no try/catch at all before this).
+  `SqliteRunStore.getSpec()` synthesizes `origin:'local'` on every read-back — the `runs` table never
+  gained an `origin` column at all (the predicate needs the fact only transiently, at admission; a
+  resume is gated by `call-tool.ts`'s door, not this predicate). One legitimate narrowing found along
+  the way: `SubmissionValidator.validate()` only ever read `spec.name`, so its parameter type shrank
+  to `Pick<RunSpec,'name'>` instead of forcing every caller to thread a meaningless `origin` through
+  a function that never looks at it. One pre-existing test updated for the new column
+  (`scheduler-migration.test.ts`'s D13 rebuild row-shape assertion — `createdRemote: 0` added,
+  matching every other additive column that test already covers). **Full suite** (`npx vitest run`,
+  whole repo, 707.13s): 462 files passed / 1 skipped (463), 3368 passed / 27 skipped (3395), **0
+  failed** — exactly the pre-dispatch 3353/0 baseline plus this dispatch's 15 new tests (5+4+2+2+2),
+  zero regression. `git status` also shows `dashboard.html` (trace regen) and two pre-existing
+  real-Chromium screenshot evidence PNGs (`evidence/v28/val215-issues-{dark,light}.png`) dirty as a
+  side effect of running `sh .sdlc/trace` and the full suite respectively — not edited, not part of
+  this scope, same noted side effect as a prior v37 slice (IMPL-383's own note).

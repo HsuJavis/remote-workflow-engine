@@ -28,7 +28,7 @@ function newStore(): { store: SqliteRunStore; dir: string } {
 }
 
 async function makeRun(store: SqliteRunStore, name: string): Promise<string> {
-  const runId = await store.createRun({ name, args: {} });
+  const runId = await store.createRun({ origin: 'local', name, args: {} });
   const db = (store as unknown as { _db: Database.Database })._db;
   db.prepare("UPDATE runs SET status = 'completed' WHERE runId = ?").run(runId);
   return runId;
@@ -124,7 +124,7 @@ describe('SqliteRunStore usage projection over listRuns()/list() (UT-233, DES-19
   it('backfillUsage on a NON-terminal run is a no-op (guards the write path, not just the read)', async () => {
     const { store, dir } = newStore();
     try {
-      const runId = await store.createRun({ name: 'still-running', args: {} }); // status stays 'queued'
+      const runId = await store.createRun({ origin: 'local', name: 'still-running', args: {} }); // status stays 'queued'
       await (store as unknown as { backfillUsage(runId: string, usage: RunUsage): Promise<void> }).backfillUsage(runId, FULL_USAGE);
       const [row] = (await store.listRuns()) as ProjectedSummary[];
       expect(row?.costUSD).toBeUndefined();
