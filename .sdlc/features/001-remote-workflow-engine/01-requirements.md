@@ -2965,3 +2965,60 @@ REQ-215 因含 IPC 契約與安全評估,走完整七閘(含 architecture);其�
   **And** 新增的 store 方法要有自己的測試,並在兩個 store 實作(記憶體/SQLite)上結果一致 ——
   v36 已經因為兩個 store 不一致吃過一次虧(`failedAgentCount`)。
 - **iter:** v36
+
+---
+
+## 迭代 v37 — 2026-09-22:安全硬化(需要架構辯論)
+
+**這輪與 v33–v36 不同**:前四輪都是「把已知的錯改對」,本輪要**決定引擎對外的安全姿態**,
+而選項之間有真實的取捨。故走完整七閘並開 panel,不走 fix。
+
+### REQ-218 — agent 的 Bash 必須受工作區約束,或其突破必須是申報過的
+
+- **status:** draft
+- **traces:** REQ-018, REQ-037, REQ-117
+- **證據(2026-09-20 遠端實機,至今未變)**:setup agent 在 `$HOME/.cache/jev-haiku` 寫入 510MB、
+  把 `$HOME/.local/bin` 放進 PATH;production journal 自 9/20 起印了 **70 次**
+  `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED`。
+- **根因(本輪重新查證,仍成立)**:`canUseTool` 被 bare `allowedTools` 影蔽(SDK 先行自動核准);
+  補位的 `makePreToolUseHook` 呼叫 `extractCandidatePaths` 時**沒有傳 `blockedPath`**
+  (`claude-agent-sdk-client.ts:291`),而 Bash 的 `tool_input` 只有 `command`、
+  沒有 `file_path`/`path`/`notebook_path` → candidates 為空 → 一律 allow。
+  於是 `BUILT_IN_CORE_TOOLS` 區塊宣稱的「Bash here is confined to that workspace」對 Bash 不成立,
+  同檔 V3-residual 區塊自己也寫了「Bash 仍是 best-effort」——**兩段註解互相矛盾,而讀者會信前者**。
+- **風險面**:同一 unix 使用者可讀 `rwe.config.json`(含 Google client secret)、`auth-tokens.db`、
+  其他 run 的 workspace。
+- **acceptance:**
+  **Given** panel 必須在以下之間做出裁決並記成 ADR
+  **Then** 選項是 (a) OS 層封閉(bwrap/unshare/user namespace,cwd 鎖 workspace)、
+  (b) 顯式 `allowHostPaths` 申報契約(讓 jev 那種共用快取變成申報而非默許)、(c) 兩者併用;
+  **路徑比對不是選項** —— 任意 shell 不可靜態解析,且 PreToolUse hook 的 input 根本拿不到
+  `blockedPath`,這一點已由本輪查證確認,panel 不得再繞回去。
+  **And Given** 不論選哪條 **Then** 要有**真跑**證明:agent 的 Bash 寫 `$HOME` 被拒,
+  或該路徑明確出現在申報清單裡;
+  **And** 互相矛盾的兩段註解改成事實;
+  **And** `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` 要嘛消失,要嘛有一行說明為何在新機制下無害。
+- **iter:** v37
+
+### REQ-219 — 有綠測試、production 零使用的安全模組,要嘛接線要嘛刪除
+
+- **status:** draft
+- **traces:** REQ-018, REQ-117
+- **現況(本輪現場量測,非引用舊筆記)**:
+  `net-guard.ts` 已由 `server.ts` 接線、`workroot-guard.ts` 已由 `main.ts` 接線 —— 這兩條**已解決**,
+  不列入本輪。仍未接線的是兩個:
+  `src/session-options-builder.ts` production **零 importer**,卻有 4 個測試檔;
+  `src/timeout-race.ts` production **零 importer**,卻有 2 個測試檔。
+- **acceptance:**
+  **Given** 每一個這樣的模組
+  **Then** 只有兩種結局:**接線到 production 路徑並有真跑證明它生效**,或**連同其測試一起刪除**;
+  不接受第三種「留著等以後」——一個有綠測試卻沒人使用的模組,是在對覆蓋率說謊:
+  它讓儀表板顯示這段邏輯被測過,而實際跑的程式碼裡沒有它。
+  **And** 若選擇接線,要說明它取代了現在哪一段內聯邏輯(例如 `session-options-builder` 對應
+  `claude-agent-sdk-client.ts` 內聯建構 SDK options 的那段),並證明行為不變或說明差異;
+  **And** 若選擇刪除,要在 ledger 記下當初為何建它、為何現在不需要。
+- **iter:** v37
+
+**路徑**:REQ-218 的機制選擇有真實取捨且影響對外安全姿態,走完整七閘並開 panel。
+REQ-219 依 REQ-218 的裁決可能連動(若選 OS 層封閉,`session-options-builder` 的角色會變),
+故同輪處理、同一個 panel 一起看。
