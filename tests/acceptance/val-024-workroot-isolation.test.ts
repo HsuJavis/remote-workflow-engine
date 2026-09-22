@@ -6,10 +6,10 @@
 //   session-init re-walk → findProjectMarkerAboveWorkspace() refuses when an ancestor BETWEEN the
 //     workspace and workRoot carries a project marker
 //
-// v37 (DES-257, ARCH-180, REQ-219): the re-walk clause is RE-POINTED at the production path —
-// `session-options-builder.ts` (the module this clause used to call through) has zero production
-// importers and is being deleted this iteration (ADR-085); `findProjectMarkerAboveWorkspace()` is
-// the wired replacement (walking ABOVE the workspace, not at it). The SEMANTICS also change, not
+// v37 (DES-257, ARCH-180, REQ-219): the re-walk clause is RE-POINTED at the production path — the
+// pure session-options module this clause used to call through (ARCH-180) had zero production
+// importers and is deleted this iteration (ADR-085, TASK-255); `findProjectMarkerAboveWorkspace()`
+// is the wired replacement (walking ABOVE the workspace, not at it). The SEMANTICS also change, not
 // just the target: a `.git` written into the run's OWN workspace root is now ALLOWED (the engine
 // creates it itself via `initGitBaseline`) — the pre-v37 assertion here (refuse on a `.git` AT cwd)
 // asserted the exact defect ARCH-180 found ("wired as the architecture first wrote it, this refused

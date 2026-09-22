@@ -22,9 +22,11 @@ import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { ClaudeAgentSdkGatewayClient } from '../../src/gateway/claude-agent-sdk-client.js';
-// Value import of the REAL pure builder REQ-016 clause 2/3 is built on (DES-026) — module-not-found
-// at load time when absent, so this VAL file is RED regardless of HAS_PROVIDER gating below.
-import { buildSessionOptions, type ProviderProfile } from '../../src/session-options-builder.js';
+// v37 (TASK-255, ADR-085, DES-260, REQ-219): the pure session-options module REQ-016 clause 2/3
+// used to import is deleted this iteration (zero production importers, ARCH-180) — re-pointed at
+// `wireEffort` (src/gateway/client.ts), the production Options-writer the SDK gateway itself calls
+// (`claude-agent-sdk-client.ts`'s own doc comment names it "the sole writer" of `options.thinking`).
+import { wireEffort, UNKNOWN_CAPS } from '../../src/gateway/client.js';
 import { runScriptVia, type ToolCaller } from '../helpers/workflow-fixtures.js';
 
 const HAS_PROVIDER = !!process.env['OLLAMA_BASE_URL'];
@@ -114,19 +116,19 @@ describe('VAL-019: REQ-016 — non-Anthropic model runs the full agent harness (
     expect(JSON.stringify(log['events'])).toContain('tool_call');
   }, 180000);
 
-  it.skipIf(!HAS_PROVIDER)('the SessionInitRecord transcript head shows thinkingMode:"disabled" for the non-Anthropic alias (D-F6 regression guard)' + NO_PROVIDER, async () => {
+  // v37 (TASK-255): the deleted module's SessionInitRecord.thinkingMode transcript head is not, and
+  // never was, produced by the real gateway (grep-confirmed: no production writer of that field) —
+  // asserting it here was a latent false-skip that would have failed the moment OLLAMA_BASE_URL was
+  // ever actually set. Re-pointed at the real observable regression guard: a non-Anthropic call
+  // whose thinking were NOT disabled fails at the CLI with a 400 before any turn, so a genuine
+  // 'completed' status on a real Ollama round-trip IS the production proof (D-F6).
+  it.skipIf(!HAS_PROVIDER)('a non-Anthropic alias round-trips to completion — thinking-enabled-by-default would 400 before any turn (D-F6 regression guard, production path)' + NO_PROVIDER, async () => {
     const r = await runAndWait(qwenScript('ponger', 'reply with only PONG'));
-    const label = labelOf(await mcpCall('run_status', { runId: r['runId'] as string }), 'ponger');
-    const log = await mcpCall('run_agent_log', { runId: r['runId'] as string, label });
-    const transcript = (log['events'] as unknown[]) ?? [];
-    const head = transcript[0] as { data?: { thinkingMode?: string } } | undefined;
-    expect(head?.data?.thinkingMode).toBe('disabled');
+    expect(r['status']).toBe('completed');
   }, 120000);
 
-  it('thinking is disabled for a non-Anthropic alias via the REAL SessionOptionsBuilder — ALWAYS asserted, independent of provider availability (REQ-016 clause 2)', () => {
-    const nonAnthropicProfile: ProviderProfile = { providerClass: 'non-anthropic', supportsExtendedThinking: false, timeoutMs: 30000, retries: 1 };
-    const out = buildSessionOptions('local-qwen', nonAnthropicProfile, { modelId: 'qwen2.5:7b', cwd: tmpDir }, {}, [], ['Read']);
-    expect(out.ok).toBe(true);
-    if (out.ok) expect(out.sessionInit.thinkingMode).toBe('disabled');
+  it('thinking is disabled for a non-Anthropic alias via wireEffort — the REAL production Options-writer, ALWAYS asserted, independent of provider availability (REQ-016 clause 2)', () => {
+    const wired = wireEffort('ollama', UNKNOWN_CAPS, undefined);
+    expect(wired.thinking).toEqual({ type: 'disabled' });
   });
 });

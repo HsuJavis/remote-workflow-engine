@@ -33,8 +33,12 @@ describe("UT-314 options.sandbox is the builder's own output, at every construct
   it('deep-equals buildBashConfinement() for the SAME input, via a real workspace + confinement config (confinementPosture explicitly confined)', async () => {
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
     const { buildBashConfinement, DENY_READ_MODE } = await import('../../src/gateway/bash-confinement.js');
-    const workspace = '/tmp/remote-workflow-runs/_adhoc/run-a';
     const workRoot = '/var/lib/rwe-data';
+    // v37 Gate-6 (DES-257): nested under workRoot the way every real run workspace is
+    // (`workRoot/workflows/<name>/runs/<runId>`, run-manager.ts) — a workspace path unrelated to
+    // workRoot now genuinely trips the re-walk's containment check (a real symlink-escape signal),
+    // which this case is not testing; only the confinement-build identity is.
+    const workspace = `${workRoot}/workflows/wf/runs/run-a`;
     const grant = '/srv/shared-cache';
     const protectedFiles = ['/home/op/rwe.config.json', `${workRoot}/auth-tokens.db`];
     const client = new ClaudeAgentSdkGatewayClient({

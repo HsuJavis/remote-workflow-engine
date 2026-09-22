@@ -24,6 +24,7 @@ import { isPathContained } from '../path-containment.js';
 import { resolveConfig, type SecretSource } from '../secret-resolver.js';
 import { proxyModelName } from './litellm-proxy.js';
 import { buildBashConfinement, DENY_READ_MODE } from './bash-confinement.js';
+import { findProjectMarkerAboveWorkspace, WORKROOT_INSIDE_PROJECT } from '../workroot-guard.js';
 import type { EventSink } from '../event-log.js';
 
 // v37 (DES-256, ARCH-178, TASK-253, REQ-218): the installed SDK's OWN package.json version, read
@@ -694,6 +695,28 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       // A missing real key/oauth token for the chosen Anthropic auth mode is a typed terminal
       // failure — never a silent attempt with the dummy key against the real Anthropic API.
       return stamp({ ok: false, provider: 'claude-agent-sdk', reason: 'terminal', detail: envResult.detail });
+    }
+
+    // v37 (DES-257, ARCH-180, TASK-253, REQ-219): REQ-021's intra-run re-walk, wired for the first
+    // time — only runnable when BOTH a workspace and a known workRoot are on this call; an unknown
+    // workRoot (no `confinement` block configured) SKIPS the re-walk rather than fail-open OR
+    // fail-closed on a missing config (DES-257's sixth arm). Pinned order: auth/env resolution
+    // (above) → this refusal → buildBashConfinement() → emit agent.confinement → query() (below).
+    if (req.workspace !== undefined && this._config.confinement?.workRoot !== undefined) {
+      const offender = findProjectMarkerAboveWorkspace(req.workspace, this._config.confinement.workRoot);
+      if (offender !== null) {
+        return stamp({
+          ok: false,
+          provider: 'claude-agent-sdk',
+          reason: 'terminal',
+          retryable: false,
+          // `offender` is either an ancestor carrying a project marker (the walk found one between
+          // the workspace and workRoot) OR the workspace's own real path (it resolved outside
+          // workRoot entirely, e.g. a symlink) — the two cases share one refusal, so the wording
+          // below stays neutral rather than misnaming a containment failure as a "marker".
+          detail: `${WORKROOT_INSIDE_PROJECT}: ${offender} is outside workRoot or carries a project marker between the run workspace and workRoot`,
+        });
+      }
     }
 
     // v37 (ARCH-175/176/181, DES-252/253/262, TASK-251/253, REQ-218, ADR-083 owner_decision posture

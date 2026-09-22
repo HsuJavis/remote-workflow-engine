@@ -9353,3 +9353,51 @@ turn 都還沒開始就死在 CLI 啟動階段,跟測試原本要驗證的東西
 03-tasks.md(TASK-253)裡原本寫「預設 confined」的段落也已經原地訂正、標註同一個理由——這則追記是
 給只看 journal 敘事的人一個完整的因果鏈,不是唯一的更正記錄。全程仍未使用
 `git checkout`/`restore`/`stash`。
+
+---
+
+**v37 Gate 6 第二段(2026-09-22,implementer)——把上一段留下的兩塊補完:DES-257 的 re-walk 佈線,
+REQ-219 的兩個死碼刪除。全套件兩輪:3342 passed / 27 skipped / 0 failed,`tsc` 乾淨。**
+
+DES-257(`findProjectMarkerAboveWorkspace()`)照設計文字直接實作,六個 arm 全部一次寫對,設計跟
+Gate-5 紅測試沒有分歧,不用改設計文字。唯一寫錯又自己抓到的地方是拒絕訊息的措辭——原稿每次都說
+「carries a project marker」,但 symlink 逃出 workRoot 那個 arm 其實沒有 marker,是 containment
+本身失敗,改成中性措辭。佈線順序照設計釘死的次序放:auth/env → re-walk 拒絕 → `buildBashConfinement()`
+→ 發 `agent.confinement` → `query()`。這一段落地之後,那 8 個跟本輪無關、屬於 DES-257 範圍的既有
+`tsc` 紅也直接消失,沒有另外修。
+
+REQ-219 兩個模組:`timeout-race.ts` 那組到場時已經被前一個 session 在 f36ed4e 刪掉、`val-023` 也已經
+改寫成打正式 timeout 路徑——沒有照抄 commit message 就信,自己真跑了一次(12.4 秒,真的掛起 HTTP
+端點 + 真 spawn CLI),兩個 clause 都綠、`agentSemaphore.inUse` 真的回到 0。`session-options-builder.ts`
+這組是這次刪的:照 TASK-255 釘死的順序(先讓 TASK-253/這次的 DES-257 把活著的那條線接上,才准刪)
+刪掉模組本體 + 它的單元測試 + `gateway-effort.test.ts` 裡那道「零引用」柵欄,三個同一個變更,不留
+替代柵欄。`val-019` 的 clause 3 改打 `wireEffort()`(production 唯一寫 `options.thinking` 的地方),
+用突變驗證過不是空測試(把 provider 改成 `'anthropic'` 斷言真的會炸,改回來再確認綠)。clause 2
+比表面上麻煩:它原本斷言的 `SessionInitRecord.thinkingMode` 這個欄位只存在於要刪的模組裡,grep
+過全 `src` 找不到第二個寫手,等於是個「等 OLLAMA_BASE_URL 真的設了就會炸」的假跳過——改成斷言真正
+可觀測的證據(非 Anthropic 的 round-trip 真的跑到 completed,因為沒關掉 thinking 的話在任何 turn
+之前就會 400)。
+
+**在刪之前先抓到一個 Gate-5 測試本身的缺陷,回報而不是悄悄改:** `val-254-req219-dead-code.test.ts`
+的 `grepCount()` 對 `src tests` 做全文 grep,但它自己就活在 `tests/` 底下,而且為了說出自己在測
+什麼,`describe`/`it` 的標題跟 `grepCount(...)` 的呼叫本身就一定含有它要找的那些字串
+(`timeout-race`、`session-options-builder`、`stays FENCED`)——在刪任何東西之前就先實測過:
+`grep -rln "timeout-race" src tests`,`src/timeout-race.ts` 早就不存在,結果還是只列出這個檢查器
+自己。5 個 case 裡有 3 個不管刪不刪都過不了。修法是把檢查器自己的檔名從比對結果裡濾掉——沒有削弱
+任何斷言,「除了這個檢查器,沒有別的檔案再提到它」這句話的本意完全保留。`val-024` 的標頭註解也順手
+拿掉被刪模組的字面名字,不然註解本身也會變成一筆命中。
+
+**靠跑全套件才抓到的一個真迴歸,不是設計時就想到:** `bash-confinement-wiring.test.ts` 的 UT-314
+第一個 case 原本用一組互不相干的 `workspace`/`workRoot`(`/tmp/remote-workflow-runs/_adhoc/run-a`
+vs `/var/lib/rwe-data`)——這個組合在 re-walk 佈線之前完全不重要,只是拿來測
+`buildBashConfinement()` 輸出是否等於預期值。一旦 re-walk 接上,containment 檢查正確地把這組路徑
+讀成「workspace 在 workRoot 之外」,直接拒絕,`query()` 沒被呼叫,測試就紅了——這不是測試錯,是
+fixture 從沒真的模型過巢狀關係。修法是把 `workspace` 改成巢狀在 `workRoot` 底下
+(`${workRoot}/workflows/wf/runs/run-a`),跟正式環境每一個 run workspace 的真實形狀一致
+(`run-manager.ts`)。
+
+Trace:用 `git archive HEAD | tar -x` 抽一份乾淨副本跑基線(CLAUDE.md 規定的安全讀法,不在原地往回
+算)——2083 items/82 gaps → 改完 2085 items/80 gaps,缺口是淨減少,沒有新缺口。`state.yaml` 這一輪
+的 `impl` 筆記改成「第二段」開頭,原本那段完整移到 `| PRIOR:` 後面保留;改完用
+`python3 -c "import yaml; yaml.safe_load(open('state.yaml'))"` 驗證過通過。全程未使用
+`git checkout`/`restore`/`stash`,也沒有 commit(留給 orchestrator)。

@@ -9922,3 +9922,66 @@ F13 本質上是渲染問題,單元層看不到 DOM。
 - **note:** load-bearing test written and run RED first — `TypeError: Cannot read properties of
   undefined (reading 'ok')` at `call-tool.ts:170` (inside `authorize()`), confirming no pre-dispatch
   door existed before this IMPL. See TASK-257's dod for the exact re-run evidence.
+
+### IMPL-377 — `findProjectMarkerAboveWorkspace()` wired into the gateway before `query()` (TASK-253 part c, DES-257)
+- **status:** done
+- **traces:** TASK-253, DES-257, ARCH-180, ARCH-019
+- **greens:** UT-320, UT-321
+- **files:** src/workroot-guard.ts, src/gateway/claude-agent-sdk-client.ts
+- **commit:** (uncommitted at write time)
+- **iter:** v37
+- **note:** completes TASK-253's part (c), left explicitly out of scope by IMPL-374. Two checks per
+  DES-257: (1) `isPathContained(realpath(workspace), realpath(workRoot))` — a workspace whose real
+  location is outside `workRoot` (symlink escape) refuses on its own terms; (2) the marker walk
+  starting at `dirname(workspace)`, stopping at (excluding) `workRoot`. Degenerate
+  `workspace===workRoot` short-circuited to `null` BEFORE either check. Wired in `_invokeOnce` at the
+  pinned order (auth/env → this refusal → `buildBashConfinement()` → emit `agent.confinement` →
+  `query()`), gated on both `req.workspace` and a known `confinement.workRoot` — either missing skips
+  the re-walk (sixth arm), never fail-open/fail-closed on a missing config. **Regression found and
+  fixed via a full-suite run** (targeted files alone did not catch it): `tests/unit/bash-confinement-wiring.test.ts`'s
+  UT-314 first case used an unrelated `workspace`/`workRoot` path pair
+  (`/tmp/remote-workflow-runs/_adhoc/run-a` vs `/var/lib/rwe-data`) purely to test confinement-build
+  identity — pre-dating the re-walk, this pairing never mattered before. Once wired, the containment
+  check correctly reads that pairing as a workspace outside `workRoot` and refuses (the exact
+  signal DES-257 specifies), so `query()` was never called and the test's `queryMock.mock.calls`
+  read empty. Fixed by nesting the fixture's `workspace` under `workRoot`
+  (`${workRoot}/workflows/wf/runs/run-a`), matching the real shape every production workspace has
+  (`run-manager.ts`'s `runWorkspace()`) — not a weakening, the fixture was asserting confinement-build
+  identity and had no stake in the containment relationship at all. `WORKROOT_INSIDE_PROJECT`
+  exported once from `workroot-guard.ts`, shared by the boot error class's `.code` and this refusal's
+  `detail`. Design and tests agreed on every arm; no design-text amendment needed. One wording defect
+  found while wiring, fixed here: the refusal `detail` originally named every non-null return a
+  "marker", which misdescribes the containment-failure arm (a symlinked-out workspace carries no
+  marker) — reworded neutrally. `npx tsc --noEmit` clean (resolves the 8 pre-existing errors this
+  row's absence caused).
+
+### IMPL-378 — REQ-219: delete `timeout-race.ts` (already done, independently re-verified) and `session-options-builder.ts` (deleted here), retire their fences, re-point dependent VALs
+- **status:** done
+- **traces:** TASK-254, TASK-255, DES-260, ADR-085, REQ-219
+- **greens:** VAL-023 (real-tier, re-verified), VAL-254, VAL-019 (clauses 2/3), VAL-024 (re-walk
+  clause, via IMPL-377)
+- **files:** src/session-options-builder.ts (deleted), tests/unit/session-options-builder.test.ts
+  (deleted), tests/unit/gateway-effort.test.ts (fence removed), tests/acceptance/val-019-non-anthropic-harness.test.ts
+  (clauses 2/3 re-pointed), tests/acceptance/val-024-workroot-isolation.test.ts (comment reworded),
+  tests/acceptance/val-254-req219-dead-code.test.ts (fixture defect fix)
+- **commit:** (uncommitted at write time)
+- **iter:** v37
+- **note:** `src/timeout-race.ts`/`tests/unit/timeout-race.test.ts` and the `val-023` rewrite were
+  found already landed (commit f36ed4e, a prior session) — independently re-verified real-tier here
+  (12.4s, real hung-endpoint fault injection, real spawned CLI, `ok:false` with timeout,
+  `agentSemaphore.inUse`→0), not merely trusted from the commit message. `session-options-builder.ts`
+  deleted in this IMPL, in order per TASK-255's dod (after TASK-253/IMPL-377 wired the one live
+  line it used to gate). VAL-019 clause 3 re-pointed at `wireEffort()` (production Options-writer),
+  proved non-vacuous by mutation (provider flipped to `'anthropic'`, assertion failed, reverted).
+  VAL-019 clause 2 needed more than a mechanical re-point: its assertion read
+  `SessionInitRecord.thinkingMode`, a field that existed ONLY inside the deleted module and had no
+  production writer anywhere (grep-confirmed) — re-pointed at the real observable proof (a
+  non-Anthropic round-trip reaching `'completed'`, since thinking-enabled-by-default 400s before any
+  turn). **Fixture defect found and fixed in `val-254-req219-dead-code.test.ts`** (reported per
+  implementer-contract rule 4, not silently patched): its `grepCount()` searched `src tests`
+  unfiltered, always re-discovering its own file (which must literally name every pattern it checks
+  for in its own `describe`/`it` titles) — 3 of its 5 cases were unpassable as written regardless of
+  what got deleted, confirmed empirically before any deletion in this dispatch. Fixed by excluding
+  the checker's own basename from the match count; no assertion weakened.
+  `grep -rn "timeout-race|session-options-builder" src tests` (excluding VAL-254's self-reference):
+  **0**. `npx tsc --noEmit` clean.

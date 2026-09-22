@@ -9689,7 +9689,7 @@ keep, not a coincidence to rely on.
 - **iter:** v37
 
 ### DES-257 — `findProjectMarkerAboveWorkspace()` — REQ-021's re-walk, wired for the first time, walking ABOVE the workspace
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-180, ARCH-019, TASK-253
 - **signature:**
   ```ts
@@ -9738,6 +9738,22 @@ keep, not a coincidence to rely on.
     **near-empty by construction**. It is wired anyway (REQ-219's own standard: a module with green
     tests and no caller must stop lying), and it is the only control left standing if the spike sends
     the carrier to arm 3. 「We wired REQ-021's re-walk」 is not a security win of any size.
+- **v37 Gate-6 amendment (2026-09-22, implementer):** implemented — `findProjectMarkerAboveWorkspace()`
+  landed in `src/workroot-guard.ts` (deps-injectable, same convention as `assertWorkRootIsolated`),
+  wired into `claude-agent-sdk-client.ts`'s `_invokeOnce` at the pinned order (auth/env → this
+  refusal → `buildBashConfinement()` → emit `agent.confinement` → `query()`), gated on BOTH
+  `req.workspace` and a known `this._config.confinement.workRoot` — absent either, the re-walk is
+  skipped (the sixth arm), never fail-open/fail-closed on a missing config. **Design and tests
+  agreed exactly** — all six arms (UT-320/321, `workroot-rewalk.test.ts`; `val-024`'s two re-pointed
+  cases) went green against the design as written, no amendment to the design's own semantics was
+  needed. One correction found while wiring: the refusal `detail` text originally drafted
+  ("...carries a project marker between the run workspace and workRoot") misnamed the containment-
+  failure arm (a workspace symlinked outside `workRoot` carries no marker at all) — worded neutrally
+  instead ("...is outside workRoot or carries a project marker between..."). The 8 pre-existing
+  `tsc --noEmit` errors this row's absence caused (unresolved `findProjectMarkerAboveWorkspace`
+  import in `workroot-rewalk.test.ts`/`val-024`) resolved as a direct consequence — no separate fix
+  needed. TASK-253's own Gate-6 note (which said part (c), this row, was "explicitly OUT OF SCOPE
+  for this dispatch and NOT implemented") is superseded by this entry.
 - **iter:** v37
 
 ### DES-258 — the guide's host-path-grants paragraph
@@ -9824,7 +9840,7 @@ keep, not a coincidence to rely on.
 - **iter:** v37
 
 ### DES-260 — the two deletion sets, and what each guarantee is attached to afterwards
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-179, ARCH-180, ADR-085, TASK-254, TASK-255
 - **signature:**
   ```
@@ -9857,6 +9873,18 @@ keep, not a coincidence to rely on.
   - REQ-016/REQ-020/REQ-021 stay **outside** this closure: no new trace edge, no `rtm.md` edit, no new
     REQ. The wiring rides REQ-219's own rows, and the VAL re-points are verification's and validation's
     work, named here so they cannot be forgotten.
+- **v37 Gate-6 amendment (2026-09-22, implementer):** both deletion sets DONE. `timeout-race.ts` set
+  found already landed (commit f36ed4e, a prior session) and independently re-verified real-tier here
+  (`val-023`, 12.4s, unchanged from this row's own spec). `session-options-builder.ts` set deleted in
+  this gate, in order (after TASK-253/DES-257 wired the re-walk it used to gate). `val-019`'s clause 3
+  re-pointed at `wireEffort()`; clause 2 needed MORE than "the production Options the gateway
+  builds" — its assertion read `SessionInitRecord.thinkingMode`, a field this row's own deleted module
+  was the ONLY producer of (grep-confirmed, no production writer exists), so it was re-pointed at the
+  actual observable proof of the same guarantee (a non-Anthropic round-trip completing, since
+  thinking-enabled-by-default 400s before any turn) rather than a field that was never really on the
+  production wire. This is a correction to this row's own framing, not a new decision: "production
+  Options" was always the right target, the row just hadn't traced that one specific field to its
+  actual (non-existent) production home.
 - **iter:** v37
 
 ### DES-261 — `probeConfinement()` — the boot-time nested-bwrap measurement (new row, ARCH-181, ADR-083 owner_decision posture C)

@@ -8,13 +8,19 @@
 // when workRoot (or any ancestor) is a Claude Code project, rather than run and leak silently.
 import { existsSync, realpathSync as fsRealpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { isPathContained } from './path-containment.js';
 
 const REMEDY =
   'Set workRoot to a path OUTSIDE any project/git repo ' +
   '(e.g. /var/lib/remote-workflow-engine, or ~/.local/share/rwe-data).';
 
+/** v37 (DES-257, ARCH-180, TASK-253, REQ-219): ONE exported constant shared by the boot error
+ *  class's `.code` below AND `findProjectMarkerAboveWorkspace`'s gateway-side refusal `detail` —
+ *  not three hand-copied literals. */
+export const WORKROOT_INSIDE_PROJECT = 'WORKROOT_INSIDE_PROJECT';
+
 export class WorkRootInsideProjectError extends Error {
-  readonly code = 'WORKROOT_INSIDE_PROJECT' as const;
+  readonly code = WORKROOT_INSIDE_PROJECT;
   readonly ancestor: string;
   readonly marker: '.git' | 'CLAUDE.md';
   readonly remedy: string;
@@ -90,4 +96,30 @@ export function assertWorkRootIsolated(
     if (parent === dir) return; // reached the filesystem root — clean
     dir = parent;
   }
+}
+
+/** v37 (DES-257, ARCH-180, TASK-253, REQ-219): REQ-021's intra-run re-walk, wired for the first
+ *  time — walks ABOVE the workspace (`dirname(workspace)`, not the workspace itself), so the
+ *  engine's own `.git`/`CLAUDE.md` markers AT the workspace root (`initGitBaseline`, a seeded
+ *  repo) are ALLOWED. Two checks, not one displaced check: (1) a containment check — a workspace
+ *  whose REAL location is outside `workRoot` (e.g. a symlink into a project) is refused on its own
+ *  terms; (2) the marker walk itself, stopping at (excluding) `workRoot`. The degenerate
+ *  `workspace === workRoot` case is short-circuited BEFORE either check — `dirname(workspace)`
+ *  would sit ABOVE `workRoot` and the walk would never hit its stop condition, wandering toward
+ *  the filesystem root on a config that boot's own guard (`assertWorkRootIsolated`) already owns.
+ *  Returns the offending ancestor (or, for the containment failure, the workspace's own real
+ *  path), or `null` when the walk finds nothing to refuse. Defaults supplied HERE so the caller
+ *  (the gateway) acquires no direct `node:fs` import of its own for this check. */
+export function findProjectMarkerAboveWorkspace(
+  workspace: string,
+  workRoot: string,
+  deps?: { existsImpl?: (p: string) => boolean; realpathImpl?: (p: string) => string },
+): string | null {
+  const existsImpl = deps?.existsImpl ?? existsSync;
+  const realpathImpl = deps?.realpathImpl ?? defaultRealpath;
+  const realWorkspace = realpathImpl(workspace);
+  const realWorkRoot = realpathImpl(workRoot);
+  if (realWorkspace === realWorkRoot) return null; // degenerate config — boot's guard already owns workRoot
+  if (!isPathContained(realWorkspace, realWorkRoot, realpathImpl)) return realWorkspace; // symlinked out of workRoot
+  return findProjectMarkerAncestor(dirname(workspace), realWorkRoot, existsImpl, realpathImpl);
 }

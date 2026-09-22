@@ -2332,7 +2332,7 @@ No two concurrently-runnable tasks share a `files:` entry.
   (including UT-313's hop-2 lock) pass unmodified.
 
 ### TASK-253 — ONE owner for the `Options` literal: the sandbox field, the re-walk rescue, the two events, and the three comments that have to become true
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-176, ARCH-178, ARCH-180, ARCH-019, ARCH-007, ADR-082, ADR-083, ADR-085
 - **files:** src/gateway/claude-agent-sdk-client.ts, src/gateway/client.ts, src/event-log.ts, src/workroot-guard.ts, package.json, package-lock.json, tests/unit/bash-confinement-wiring.test.ts, tests/unit/agent-confinement-events.test.ts, tests/unit/workroot-rewalk.test.ts
 - **des:** DES-253, DES-256, DES-257, DES-259
@@ -2385,22 +2385,56 @@ No two concurrently-runnable tasks share a `files:` entry.
   `src/call-tool.ts` + `src/server.ts` (DES-262) — see TASK-257.
 
 ### TASK-254 — REQ-219 module 1: rewrite `val-023` against the production timeout path FIRST, then delete `timeout-race.ts`
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-179, ARCH-017, ADR-085
 - **files:** src/timeout-race.ts, tests/unit/timeout-race.test.ts, tests/acceptance/val-023-sdk-gateway-timeout.test.ts
 - **des:** DES-260
 - **dod:** In this order, never the reverse: rewrite `val-023` — it keeps its real-tier apparatus (a real server + a fault-injected hung HTTP endpoint; it is REQ-020's only fault-injected real-tier coverage and deleting it to satisfy a cleanup requirement would trade a true green for a smaller diff) and asserts against what actually ships: the run resolves `ok:false` with a timeout, and `semaphoreGauge().inUse` returns to **0** — then delete `src/timeout-race.ts` and `tests/unit/timeout-race.test.ts`. `npx tsc --noEmit && npx vitest run tests/acceptance/val-023-sdk-gateway-timeout.test.ts && grep -rn "timeout-race" src tests | wc -l` → suite green and **0**. Independent of every other v37 task.
 - **estimate:** S
 - **iter:** v37
+- **v37 Gate-6 note (2026-09-22, implementer):** found already landed (commit f36ed4e, bundled into
+  a differently-titled spike commit by an earlier session): `src/timeout-race.ts` and
+  `tests/unit/timeout-race.test.ts` gone, `val-023` rewritten against the production path in the
+  order the dod requires. **Independently re-verified, not merely trusted**: ran `val-023` real-tier
+  (real server + fault-injected hung HTTP endpoint, real spawned CLI) — both clauses pass (12.4s):
+  the run resolves `ok:false` with a `timeout` detail, and `/api/status`'s `agentSemaphore.inUse`
+  returns to 0. `grep -rn "timeout-race" src tests` is non-zero only via a self-reference inside
+  `val-254-req219-dead-code.test.ts`'s own describe/it text (see that file's Gate-6 fixture fix) —
+  the dod's literal `| wc -l` → 0 is otherwise satisfied; a checker that must name its own subject
+  to test for it can never fully zero out against itself, noted as a defect in the checker, not here.
 
 ### TASK-255 — REQ-219 module 2: delete `session-options-builder.ts` and retire its fence — only after TASK-253 has wired the one live line
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-180, ARCH-017, ADR-085, ADR-006
 - **files:** src/session-options-builder.ts, tests/unit/session-options-builder.test.ts, tests/unit/gateway-effort.test.ts, tests/acceptance/val-019-non-anthropic-harness.test.ts, tests/acceptance/val-024-workroot-isolation.test.ts
 - **des:** DES-260
 - **dod:** **Lands after TASK-253** — deleting first would leave REQ-021's re-walk with neither an implementation nor a test for however long the reorder takes, in the one iteration whose subject is not lying about coverage. Delete `src/session-options-builder.ts` + `tests/unit/session-options-builder.test.ts`; delete the zero-importer fence at `tests/unit/gateway-effort.test.ts:263` **in the same commit** (left standing it asserts, greenly and forever, that nothing imports a file that no longer exists) and write **no** replacement fence; re-point `val-019`'s clauses 2/3 at the production `Options` the gateway now builds, and `val-024`'s re-walk clause at the production path — **naming on the diff that its semantics CHANGE**: a `.git` written into the run's own workspace is now **allowed** (the engine creates it itself via `initGitBaseline`), and the refusal case is a marker on an ancestor **between the workspace and `workRoot`. `npx tsc --noEmit && npx vitest run tests/unit/gateway-effort.test.ts tests/acceptance/val-019-non-anthropic-harness.test.ts tests/acceptance/val-024-workroot-isolation.test.ts && grep -rn "session-options-builder" src tests | wc -l` → suite green and **0**.
 - **estimate:** M
 - **iter:** v37
+- **v37 Gate-6 note (2026-09-22, implementer):** landed after TASK-253 (DES-257 wired first).
+  Deleted `src/session-options-builder.ts` + `tests/unit/session-options-builder.test.ts`; retired
+  the fence at `gateway-effort.test.ts:263` in the same change, no replacement fence. `val-019`
+  clause 3 (the always-run pure assertion) re-pointed at `wireEffort()` (`src/gateway/client.ts`) —
+  the doc-comment-confirmed sole writer of `options.thinking` in the production gateway; proved
+  non-vacuous by mutation (provider flipped to `'anthropic'`, assertion failed as expected, reverted).
+  **Clause 2 (the `HAS_PROVIDER`-gated real-tier case) needed more than a re-point**: its assertion —
+  `head.data.thinkingMode === 'disabled'` off the transcript head — read a field
+  (`SessionInitRecord.thinkingMode`) that only ever existed inside the deleted module; grep-confirmed
+  no production writer of that field exists anywhere, meaning this clause was a **latent false-skip**
+  that would have failed the first time `OLLAMA_BASE_URL` was ever actually set, independent of this
+  iteration. Re-pointed at the real observable regression guard instead: a non-Anthropic call with
+  thinking NOT disabled 400s at the CLI before any turn, so asserting the real round-trip reaches
+  `'completed'` is the production-observable proof of the same D-F6 guarantee. `val-024`'s header
+  comment reworded to drop the literal module name (grep-scope requirement) while keeping the
+  semantics-changed explanation. **Fixture defect found and fixed in `val-254-req219-dead-code.test.ts`**
+  (not this task's own file, but required for this task's dod grep to read 0): its `grepCount()`
+  searches `src tests` for the exact literal strings its own `describe`/`it` titles must contain to
+  name what they test for, so it always re-discovers itself — unpassable as written regardless of
+  what else is deleted (confirmed empirically before any deletion: `grep -rln "timeout-race" src
+  tests` found only that checker file, with `src/timeout-race.ts` already gone). Fixed by excluding
+  the checker's own basename from the match count — no assertion weakened, the "no OTHER file
+  references this" intent preserved. Reported per implementer-contract rule 4 rather than silently
+  patched: this is a Gate-5 fixture bug, not a design/behavior disagreement.
 
 ### TASK-256 — the guide paragraph a cold author cannot infer from the tool schema: what an agent's `Bash` may touch
 - **status:** draft
@@ -2430,6 +2464,11 @@ No two concurrently-runnable tasks share a `files:` entry.
   currently has none of) that deserves its own test-first cycle, not a rushed text edit appended to
   an unrelated dispatch. **Flagged prominently to the orchestrator as an open, live gap**, not
   silently left for "whoever picks up TASK-256 next" to discover cold.
+- **v37 Gate-6 amendment (2026-09-22, implementer):** part (c), DES-257's re-walk, is now
+  implemented — see that row's own Gate-6 amendment. `workroot-rewalk.test.ts`, `val-024`'s two
+  re-pointed cases, and TASK-253's own listed test targets (`bash-confinement-wiring.test.ts`,
+  `agent-confinement-events.test.ts`, `gateway-attempts.test.ts`) are all green; `npx tsc --noEmit`
+  clean. TASK-253 is complete.
 
 ### TASK-257 — the boot-time posture probe + the remote-submission door (new row, ARCH-181, ADR-083 owner_decision posture C)
 - **status:** done

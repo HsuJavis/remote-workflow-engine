@@ -9,11 +9,19 @@ import { execSync } from 'node:child_process';
 import { join } from 'node:path';
 
 const ROOT = join(import.meta.dirname, '../..');
+// v37 Gate-6 fixture fix (2026-09-22, implementer): this checker's own file lives under `tests/`
+// and necessarily NAMES every pattern it greps for (in its own describe/it titles and the
+// `grepCount(...)` call sites themselves) — an unfiltered `grep -rln` over `src tests` always
+// re-discovers ITSELF, making every assertion below unpassable regardless of what else is deleted
+// (empirically confirmed: `grep -rln "timeout-race" src tests` returned exactly this file, with
+// `src/timeout-race.ts` already gone). Excluding the checker's own basename preserves the intended
+// claim — "no OTHER file references this" — without weakening it.
+const SELF = 'val-254-req219-dead-code.test.ts';
 
 function grepCount(pattern: string): number {
   try {
     const out = execSync(`grep -rln "${pattern}" src tests`, { cwd: ROOT }).toString();
-    return out.split('\n').filter(Boolean).length;
+    return out.split('\n').filter((line) => line.length > 0 && !line.endsWith(SELF)).length;
   } catch {
     return 0; // grep exits 1 on no match — zero hits, not an error
   }

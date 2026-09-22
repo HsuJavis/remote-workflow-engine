@@ -15750,11 +15750,11 @@ deliberate regression guard against this plumbing narrowing later (same conventi
 gateway-effort.test.ts A-7 green-on-first-write case).
 
 ### UT-320 — `findProjectMarkerAboveWorkspace()` — pure, real fs — the six-arm table
-- **status:** red
+- **status:** green (2026-09-22, Gate-6 implementer)
 - **traces:** DES-257
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v37
 
 File: `tests/unit/workroot-rewalk.test.ts` (new). Real fs, no injected deps (same convention as
@@ -15768,11 +15768,12 @@ a project → **refuse** (the containment check itself fails — the symlink's r
 function` (module export absent) on all five.
 
 ### UT-321 — the gateway wires the re-walk BEFORE `query()`
-- **status:** red
+- **status:** green (2026-09-22, Gate-6 implementer; all 4 cases in the describe block pass, not
+  just the two that were already green on arrival)
 - **traces:** DES-257, ARCH-180, TASK-253
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v37
 
 File: `tests/unit/workroot-rewalk.test.ts` (new, same file as UT-320). Through the injected
@@ -15876,12 +15877,26 @@ clause 2b proof, via the real pure builder — not gated, since it needs no prov
 collected, matching VAL-019/VAL-023's own collection-level red).
 
 ### VAL-254 — REQ-219: `timeout-race.ts` and `session-options-builder.ts` are GONE, not merely unwired
-- **status:** red
+- **status:** green (2026-09-22, Gate-6 implementer; see fixture-defect note below)
 - **traces:** REQ-219
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v37
+
+**Gate-6 fixture defect found and fixed (2026-09-22, implementer, per implementer-contract rule 4 —
+reported, not silently patched):** `grepCount()`'s unfiltered `grep -rln "<pattern>" src tests`
+always re-discovers this checker's OWN file, because its `describe`/`it` titles and the
+`grepCount(...)` call sites must literally name the patterns ("timeout-race",
+"session-options-builder", "stays FENCED") to test for them. Confirmed empirically BEFORE any
+deletion in this dispatch: with `src/timeout-race.ts` already gone (landed at f36ed4e, a prior
+session), `grep -rln "timeout-race" src tests` still returned exactly this checker file — the three
+grep-based `it()`s (of 5 total) were unpassable as written, independent of what TASK-254/255 delete.
+Fixed by excluding the checker's own basename from `grepCount`'s result count (one line) — no
+assertion weakened; the intended claim ("no OTHER file references this") is unchanged and is what
+now passes. TASK-254's and TASK-255's own DoD `grep ... | wc -l → 0` commands have the identical
+self-reference problem once this file exists; noted on their own TASK rows in `03-tasks.md` rather
+than repeated here.
 
 File: `tests/acceptance/val-254-req219-dead-code.test.ts` (new). Real entrypoint: greps the ACTUAL
 `src`/`tests` tree on disk (the same technique TASK-254/255's own DoD uses) — this is the "delete"
@@ -15890,10 +15905,9 @@ re-pointed re-walk clause (see that file's v37 amendment below), not duplicated 
 own rule that a "nothing imports the deleted file" fence is not acceptable evidence on its own.
 Five cases: both files no longer exist; nothing under `src`/`tests` still references either module
 name; the `session-options-builder.ts` zero-importer fence (`gateway-effort.test.ts`) is retired in
-the SAME commit as the module (INV-V37-3) — no replacement fence. Red reason (confirmed via direct
-re-run, `npx vitest run tests/acceptance/val-254-req219-dead-code.test.ts`): 5/5 failed — both files
-still exist, and both module names still have live references (production code + not-yet-retired
-tests).
+the SAME commit as the module (INV-V37-3) — no replacement fence. Confirmed via direct re-run,
+`npx vitest run tests/acceptance/val-254-req219-dead-code.test.ts`: 5/5 pass, after both modules and
+their tests/fence were deleted (see TASK-254/255) and the `grepCount` self-reference fixed (above).
 
 ### v37 amendment — VAL-024 re-walk clause re-pointed at the production path (REQ-021/REQ-219)
 - File: `tests/acceptance/val-024-workroot-isolation.test.ts` (amended in place; clauses (b)/(c)
@@ -15915,6 +15929,11 @@ tests).
   architect's own v37 Gate 2/3+4 notes in `rtm.md` — "re-pointing VAL-024's re-walk clause ... is
   verification's ... work"); REQ-021's own row is intentionally NOT edited here (out of this gate's
   impact closure, per the same rtm.md note), only the test file it cites is corrected.
+- **v37 Gate-6 amendment (2026-09-22, implementer):** GREEN — `findProjectMarkerAboveWorkspace()`
+  landed (DES-257); both re-pointed cases pass, clauses (b)/(c) unaffected (5/5 total). The header
+  comment naming the retired module was reworded to drop its literal name (`session-options-builder`)
+  so it does not itself become a hit in VAL-254's grep scan — the semantics-changed explanation is
+  kept, only the token changed.
 - **iter:** v37
 
 ### v37 trace summary
@@ -15944,3 +15963,13 @@ this gate owns):**
   untouched at this gate (VAL-254 asserts it is gone as of Gate 6, per DES-260's own "same commit as
   the module" instruction) — Gate 6 deletes it alongside `session-options-builder.ts`, writing no
   replacement fence (INV-V37-3).
+
+**All three gaps above CLOSED (2026-09-22, Gate-6 implementer):** UT-315 unaffected (out of this
+dispatch's scope — TASK-253/DES-259 were already landed by an earlier session). VAL-019 clause 3
+re-pointed at `wireEffort()` (production Options-writer), proved non-vacuous by mutation; clause 2
+re-pointed at the real observable regression guard (round-trip completes, not a 400) rather than a
+mechanical retarget, because its original assertion read a transcript field
+(`SessionInitRecord.thinkingMode`) that only ever existed inside the deleted module and had no
+production writer — a latent false-skip, not merely a stale import, reported on TASK-255's row.
+VAL-023 confirmed already retargeted and real-tier green (a prior session, re-verified here). The
+fence at `gateway-effort.test.ts:263` deleted alongside the module, no replacement fence.
