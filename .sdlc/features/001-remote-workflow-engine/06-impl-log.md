@@ -9859,3 +9859,66 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   owner**: the ADR's revisit trigger is worded around bubblewrap *presence*; this host demonstrates the
   functionally-equivalent failure mode (`failIfUnavailable:true` would refuse every run) with
   bubblewrap *present* — recorded, not silently absorbed as a pass.
+
+### IMPL-372 — `buildBashConfinement()` + `validateHostPathGrants()` + `formatGrantRefusals()` (TASK-251)
+- **status:** done
+- **traces:** TASK-251, DES-252, DES-254, ARCH-175
+- **greens:** UT-309, UT-310
+- **files:** src/gateway/bash-confinement.ts
+- **commit:** (uncommitted at write time)
+- **iter:** v37
+
+### IMPL-373 — the operator's grant surface, `loadFileConfig()`'s `{config,path}` shape, and the boot-time posture probe wired into `composeConfig()` (TASK-252, part of TASK-257)
+- **status:** done
+- **traces:** TASK-252, TASK-257, DES-253, DES-254, DES-255, DES-261, ARCH-177, ARCH-181
+- **greens:** UT-311, UT-312, UT-313
+- **files:** src/main.ts, rwe.config.example.json, DEPLOY.md, src/gateway/confinement-probe.ts, tests/unit/confinement-probe.test.ts
+- **commit:** (uncommitted at write time)
+- **iter:** v37
+- **note:** `ComposeConfigDeps.confinementProbe` is a pre-computed VALUE (never a callable
+  `composeConfig()` invokes), because `sandbox-config-wiring.test.ts`/`compose-config-v2-wiring.test.ts`
+  globally `vi.mock('node:child_process', ...)`, which would silently null a `spawnSync` import
+  resolved inside that mock's scope.
+
+### IMPL-374 — `options.sandbox` posture-conditional wiring, `bindEventSink()` + `agent.confinement`, `SANDBOX_UNAVAILABLE` detection (TASK-253 parts a+b, NOT part c/DES-257)
+- **status:** done
+- **traces:** TASK-253, DES-253, DES-256, DES-259, ARCH-176, ARCH-178
+- **greens:** UT-314, UT-315, UT-316, UT-317, UT-318, UT-319
+- **files:** src/gateway/claude-agent-sdk-client.ts, src/event-log.ts, src/gateway/client.ts, package.json, package-lock.json, tests/unit/agent-confinement-events.test.ts
+- **commit:** (uncommitted at write time)
+- **iter:** v37
+- **note:** part (c) (`findProjectMarkerAboveWorkspace()`/DES-257) is explicitly NOT implemented —
+  out of this dispatch's scope, `workroot-rewalk.test.ts` and `val-024`'s two re-pointed cases stay
+  red exactly as Gate 5 left them. `agent.confinement_denied` (S4-gated) is also NOT built — S4 fired
+  positive but no Gate-5 test asks for the `PostToolUseFailure` hook wiring it needs; named as an
+  open gap, not silently shipped. One test-fixture defect fixed and reported (UT-318's own
+  `nodeRequire.resolve('.../package.json')` line throws `ERR_PACKAGE_PATH_NOT_EXPORTED` regardless of
+  the SUT — DES-256's own text documents this as the form that throws; fixed to resolve the main
+  entry instead, matching DES-256's documented working form). **Regression found and fixed via a
+  full-suite run, files:** `tests/unit/bash-confinement-wiring.test.ts` (UT-314 gained a 4th case,
+  its original 3 gained explicit `confinementPosture:'confined'`), `tests/unit/agent-confinement-events.test.ts`
+  (UT-317 gained the same), `tests/acceptance/val-253-bash-confinement.test.ts` (`beforeAll` gained
+  the same) — an earlier draft defaulted `confinementPosture` to `'confined'` when omitted, which
+  broke every real-CLI-spawning integration/acceptance test in the suite (`val-023-sdk-gateway-timeout`
+  and its siblings: `claude-agent-sdk-gateway-defects`, `claude-agent-sdk-session`,
+  `claude-agent-sdk-gateway-allowed-tools`) by forcing `sandbox.enabled:true` against a host that
+  cannot provide one. Corrected to default `'unconfined'`; all listed files re-verified green.
+
+### IMPL-375 — the boot-time confinement posture probe module (new mechanism, ARCH-181/DES-261, TASK-257)
+- **status:** done
+- **traces:** TASK-257, DES-261, ARCH-181, ADR-083
+- **greens:** UT-323
+- **files:** src/gateway/confinement-probe.ts, tests/unit/confinement-probe.test.ts
+- **commit:** (uncommitted at write time)
+- **iter:** v37
+
+### IMPL-376 — the remote-submission door in `call-tool.ts` + `isRemoteSubmission` threading in `server.ts` (new mechanism, ARCH-181/DES-262, TASK-257)
+- **status:** done
+- **traces:** TASK-257, DES-262, ARCH-181, ADR-083
+- **greens:** UT-324
+- **files:** src/call-tool.ts, src/server.ts
+- **commit:** (uncommitted at write time)
+- **iter:** v37
+- **note:** load-bearing test written and run RED first — `TypeError: Cannot read properties of
+  undefined (reading 'ok')` at `call-tool.ts:170` (inside `authorize()`), confirming no pre-dispatch
+  door existed before this IMPL. See TASK-257's dod for the exact re-run evidence.

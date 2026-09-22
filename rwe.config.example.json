@@ -58,5 +58,8 @@
   },
   "mcpEgressAllowlist": [
     "https://api.example.com"
-  ]
+  ],
+  "sandbox": {
+    "allowHostPaths": []
+  }
 }

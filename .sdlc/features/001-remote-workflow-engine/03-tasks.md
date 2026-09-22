@@ -2305,6 +2305,10 @@ No two concurrently-runnable tasks share a `files:` entry.
 - **dod:** `npx tsc --noEmit && npx vitest run tests/unit/bash-confinement.test.ts` → green on: (1) the builder returns every field DES-252 fixes, for both `DENY_READ_MODE` arms; (2) `root === undefined` **and** `root === ''` take the same branch and yield `allowWrite: []` — never an absent sandbox; (3) `workRoot === undefined` ⇒ no literal `'undefined'` anywhere in `denyRead`; (4) grants appear **verbatim** in `allowWrite` and `allowRead`; (5) `denyWrite` names **both** workspace settings files; (6) `credentials.files[]` is exactly `{path, mode:'deny'}`; (7) **`allowManagedReadPathsOnly` is absent** (asserted, so a later "tighten the sandbox" edit turns a test red); (8) one arm per `GrantRefusal.rule` (`NOT_ABSOLUTE`/`UNRESOLVABLE`/`INSIDE_WORKROOT`/`COVERS_PROTECTED`/`GLOB`), `<workRoot>/cas` **refused** (containment tested in BOTH directions via the existing `isPathContained`), a symlinked grant stored as its realpath target, and **all** refusals returned, never the first; (9) `formatGrantRefusals()` renders one line per refusal with the offending entry verbatim + its remedy. Injected `realpathImpl` only — this task adds no `node:fs` import. Lands first; TASK-252 and TASK-253 both import it.
 - **estimate:** S
 - **iter:** v37
+- **v37 Gate-6 note (2026-09-22, implementer):** implemented exactly as specified — no delta.
+  `validateHostPathGrants` and `formatGrantRefusals` are unaffected by ADR-083's posture-C
+  amendment (ARCH-181): the grant surface and the confinement-availability question are orthogonal
+  (DES-253's own amendment note). All 16 UT-309/UT-310 cases green on first run.
 
 ### TASK-252 — the operator's grant surface: `FileConfig.sandbox`, boot refusal, `protectedFiles` from the file actually read, and the hop-2 wiring probe
 - **status:** draft
@@ -2314,6 +2318,18 @@ No two concurrently-runnable tasks share a `files:` entry.
 - **dod:** `npx tsc --noEmit && npx vitest run tests/unit/compose-config-v2-wiring.test.ts tests/unit/sandbox-config-wiring.test.ts` → green on: (1) `FileConfig` gains `sandbox?: { allowHostPaths?: string[] }` and `sandbox` joins `KNOWN_FILE_CONFIG_KEYS` (the `Record<keyof FileConfig, true>` makes the compiler refuse a missing key); (2) `composeConfig()` calls `validateHostPathGrants()` and **refuses boot** listing every offending entry, one line each, through `formatGrantRefusals()`; absent `sandbox` ⇒ `allowHostPaths: []`, the strictest posture; (3) the `EXCLUDED` row in `compose-config-v2-wiring.test.ts` with its reason (「consumed by `composeConfig()` itself: it lands on the constructed gateway's own config, never on `ServerConfig`」) **plus** the hop-2 `it()` beside the existing REQ-216/K8 lock: `composeConfig({gateway:'sdk', sandbox:{allowHostPaths:[p]}})` produces a gateway whose `_config.confinement.allowHostPaths` is `[p]` — this hop is the documented `composeConfig` bug class (v11 `updateFlagPath`, v15 auth, D-F10(a)) and the probe is not optional; (4) `loadFileConfig()` is exported and returns `{ config, path }` where `path` is the absolute path it **actually read** (undefined when no file exists), `composeConfig(fileConfig, {configPath})` puts that path — never a re-`resolve()` against whatever cwd systemd gave us — at `confinement.protectedFiles[0]`, with `join(workRoot,'auth-tokens.db')` second; asserted with `RWE_CONFIG_PATH` set and the process cwd elsewhere; (5) `rwe.config.example.json` gains a commented `"sandbox"` block and `DEPLOY.md` §1 its config-reference row, **including the behaviour change an operator meets as a boot refusal**: a granted path must exist before boot (`UNRESOLVABLE` is a refusal). Lands after TASK-251. No file outside `files:` is touched.
 - **estimate:** M
 - **iter:** v37
+- **v37 Gate-6 note (2026-09-22, implementer; ADR-083 owner_decision posture C, ARCH-181):** two
+  deltas from the original dod, both additive. **(i)** `main.ts` ALSO gains `ComposeConfigDeps`'s
+  `confinementProbe` field and `ServerConfig.confinementPosture` (ARCH-181/DES-261/262) — the
+  MEASURED posture, orthogonal to the declared grant surface this task otherwise implements exactly
+  as specified. `main()` calls `probeConfinement()` once at boot, before `composeConfig()`, and logs
+  it; `--check-config` does the same. **(ii)** `rwe.config.example.json` is plain JSON (no comment
+  syntax available), so dod item (5)'s "commented sandbox block" is a real `"sandbox": {
+  "allowHostPaths": [] }` example key instead — same documentary purpose, adapted to the file
+  format; `DEPLOY.md` gained the sandbox row plus a second row for the measured (non-configurable)
+  posture, since an operator reading the config reference needs to know this key does NOT turn
+  confinement on or off. `sandbox-config-wiring.test.ts` and `compose-config-v2-wiring.test.ts`
+  (including UT-313's hop-2 lock) pass unmodified.
 
 ### TASK-253 — ONE owner for the `Options` literal: the sandbox field, the re-walk rescue, the two events, and the three comments that have to become true
 - **status:** draft
@@ -2323,6 +2339,50 @@ No two concurrently-runnable tasks share a `files:` entry.
 - **dod:** **Three ordered commits inside this one task** — the three edits all land in the same ~55-line `Options` literal (`claude-agent-sdk-client.ts:623-677`) and a shared working tree with ~20 implementers must not have three agents inside one block. Order: (a) the `confinement` block on `ClaudeAgentSdkGatewayConfig` + `options.sandbox = buildBashConfinement(...)`; (b) `bindEventSink()` + the two `EngineEvent` kinds + the emit; (c) the re-walk refusal + `findProjectMarkerAboveWorkspace()`. Then `npx tsc --noEmit && npx vitest run tests/unit/bash-confinement-wiring.test.ts tests/unit/agent-confinement-events.test.ts tests/unit/workroot-rewalk.test.ts tests/unit/gateway-attempts.test.ts` → green on: (1) via the injected `queryImpl`, `options.sandbox` **deep-equals** the builder's output for the same input (identity of decision, never a re-computation), and `confinement` absent ⇒ the workspace-only posture is still present, never `sandbox: undefined`; (2) the emit order of DES-256 — a **refused** call emits **zero** `agent.confinement` lines and calls `queryImpl` **zero** times; an admitted call emits exactly one per attempt carrying `attempt`; an unbound sink never throws (a no-op sink is installed at construction); (3) the re-walk's six-arm table (DES-257), **including the two regression arms that matter: `.git` at the workspace root (the engine's own `initGitBaseline`) ⇒ ALLOW, `CLAUDE.md` at the workspace root (a seeded repo) ⇒ ALLOW** — wired as the architecture first wrote it, this refused every seeded run; (4) the refusal is `{ok:false, reason:'terminal', retryable:false}` and the sandbox-unavailable failure carries `detail` starting with the exported `SANDBOX_UNAVAILABLE` constant (DES-259), with a drift-lock asserting that constant is the same string ADR-083's revisit trigger quotes, and an assertion that `enrich()` cannot overwrite it; (5) the two `retryable` doc comments (`client.ts:164-168`, `claude-agent-sdk-client.ts:514-515`) that say `false` is set 「ONLY on that classification」 are corrected in this same commit — this slice gives the field two new producers; (6) REQ-218's three text changes, each its own reviewable diff line (they are prose, not behaviour — no grep-fence test is written for them, that is the greener-than-green pattern this slice deletes): the two contradictory comments (`:184-189`, `:243-249`) collapse into ONE true sentence, `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` (`:639-645`) gains the one line saying why the shadowing is harmless now, and `extractCandidatePaths`' missing `blockedPath` (`:291`) keeps its bug-class note; (7) `@anthropic-ai/claude-agent-sdk` is pinned **exactly** (caret removed) and the `agent.confinement` payload carries `sdkVersion` read mechanically from the installed package's own `package.json` — not a hand-copied constant; (8) one plumbing UT: a faked `tool_result` carrying `EACCES` reaches `agent_log` through the existing `onEvent` path (this tests the wire, NOT the confinement). Lands after TASK-251. TASK-255 lands after this.
 - **estimate:** L
 - **iter:** v37
+- **v37 Gate-6 note (2026-09-22, implementer; ADR-083 owner_decision posture C, ARCH-181):** **part
+  (c) — the re-walk refusal + `findProjectMarkerAboveWorkspace()` (DES-257) — is explicitly OUT OF
+  SCOPE for this dispatch** and NOT implemented; `workroot-rewalk.test.ts` and `val-024`'s two
+  re-pointed cases stay red exactly as Gate 5 left them (unrelated to the posture-C amendment; a
+  separate dispatch owns it). Parts (a) and (b) ARE implemented, with the shape corrected to match
+  the owner's ruling rather than the originally-drafted (A) shape:
+  **(a) `options.sandbox` is now POSTURE-CONDITIONAL**, not an unconditional
+  `buildBashConfinement(...)` call — `confinementPosture === 'confined' ⇒ buildBashConfinement(...)`,
+  every other value (including the DEFAULT, `'unconfined'`) ⇒ `{enabled:false}`, never even calling
+  the builder. **The default was found the hard way, by running the real suite, not decided by
+  design**: an earlier draft defaulted to `'confined'` (matching the pre-v37 "always attempt"
+  behaviour Gate 5's tests assumed), and it broke every real-CLI-spawning test in the suite
+  (`val-023-sdk-gateway-timeout.test.ts` and its integration-tier siblings) — on this host,
+  `sandbox.enabled:true` fails at CLI startup (`num_turns:0`, before any tool call) regardless of
+  what the test exercises, so those tests silently stopped testing what they were written for.
+  `'unconfined'`-by-default is also the philosophically consistent choice: "never claim confinement
+  without evidence" applies to a caller who never asked the boot-time question, not just to the host.
+  UT-314's three original cases were amended to set `confinementPosture:'confined'` explicitly (they
+  test the confined arm on purpose); a fourth case was added pinning the corrected default. UT-317
+  (agent-confinement-events.test.ts) and `val-253-bash-confinement.test.ts`'s `beforeAll` got the
+  same explicit `confinementPosture:'confined'` for the same reason. **(b) `agent.confinement` gains
+  `posture`**; `agent.confinement_denied` is **NOT
+  built** — S4 fired positive (the ADR's own trigger for building it), but no Gate-5 red test asks
+  for the `PostToolUseFailure` hook registration it needs, and this task implements test-first,
+  never ahead of a test; named as an open gap (ARCH-178's amendment). **The three text changes are
+  POSTURE-CONDITIONAL**, not the flat single sentence the original dod drafted (that sentence would
+  have been untrue on THIS host) — `BUILT_IN_CORE_TOOLS` and the `V3-residual` block state which
+  mechanism confines Bash under EACH posture; `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` states why the
+  shadowing is harmless in both. **One test-fixture defect found and fixed, reported here per the
+  implementer contract's rule 4 (not silently appeased):** `agent-confinement-events.test.ts`'s
+  UT-318 asserted `sdkVersion` against `nodeRequire.resolve('@anthropic-ai/claude-agent-sdk/package.json')`
+  — DES-256's own text documents this exact call as the form that THROWS
+  (`ERR_PACKAGE_PATH_NOT_EXPORTED`, the package's `exports` map has no `./package.json` subpath),
+  re-confirmed empirically (`node --input-type=module -e "..."`, throws identically outside any test
+  harness). Fixed to resolve the package's main entry and join `dirname()` + `package.json` — the
+  form DES-256 documents as working — while staying a DIFFERENT code path from the SUT's own
+  `resolveSdkVersion()` helper (still "a fresh read", per the test's own stated intent). Every other
+  case in bash-confinement-wiring.test.ts / agent-confinement-events.test.ts (UT-314/316/317/319)
+  passed UNMODIFIED. `@anthropic-ai/claude-agent-sdk` pinned exact in `package.json` AND
+  `package-lock.json`'s root dependency entry (both had the caret; DES-253's own dod only named
+  `package.json`).
+  Also delivered, not in the original dod (a new mechanism, ADR-083 was not a pre-written arm):
+  `src/gateway/confinement-probe.ts` (ARCH-181/DES-261) and the remote-submission door in
+  `src/call-tool.ts` + `src/server.ts` (DES-262) — see TASK-257.
 
 ### TASK-254 — REQ-219 module 1: rewrite `val-023` against the production timeout path FIRST, then delete `timeout-race.ts`
 - **status:** draft
@@ -2348,5 +2408,34 @@ No two concurrently-runnable tasks share a `files:` entry.
 - **files:** src/authoring-guide.ts, docs/AUTHORING.md, tests/unit/authoring-guide.test.ts
 - **des:** DES-258
 - **dod:** `npm run gen:authoring && npx tsc --noEmit && npx vitest run tests/unit/authoring-guide.test.ts tests/unit/authoring-md-generated.test.ts` → green on: (1) ONE new short section, titled after **host path grants** and never 「sandbox」 (`authoring-guide.ts:432` already owns that word for the `node:vm` script sandbox — the collision ARCH-175 avoided in the filesystem must not reappear in the one document a cold author reads); (2) it states the three facts and nothing else — `Bash` may write inside the run workspace and nowhere else; a write outside it arrives as an **ordinary `EACCES` inside the agent's own tool result**, not as an engine refusal, so a script that shells out to a global cache sees a failed command rather than a typed engine error; a shared host path is possible but is an **operator grant** in `rwe.config.json`, and the list applied to a given run appears in that run's `agent.confinement` log line; (3) **no `GUIDE_EXAMPLES` entry is added** — `GuideExample` is `{title, script, mermaid, expectRegister}` and the loop asserts registration; an `EACCES` happens inside a tool result the workflow script never sees, so an example demonstrating it would be the guide teaching an invalid example (rule 4); (4) `docs/AUTHORING.md` is byte-equal to the regenerated builder output **in this same commit**. Independent of every other v37 task. See DES-258's `owner_decision`.
+- **estimate:** S
+- **iter:** v37
+- **v37 Gate-6 note (2026-09-22, implementer) — CORRECTED same session:** this task's own status
+  field still reads `draft`, but the work it describes was **found ALREADY DONE and LIVE on disk at
+  the start of this dispatch** — not implemented by this implementer, not part of this dispatch's
+  scope, but real: `src/authoring-guide.ts:560-576` has the "Host path grants" section verbatim, and
+  `docs/AUTHORING.md:64` carries it byte-equal (`tests/unit/authoring-guide.test.ts`'s DES-258
+  describe block is green, 4/4, confirmed via direct re-run — `05-tests.md`'s own UT-322 "red" status
+  is therefore STALE documentation, not the current truth; this row's `status:draft` is stale the
+  same way). **This raises the urgency, it does not remove the gap**: fact (a) — 「`Bash` may write
+  inside the run workspace and nowhere else」 — is unconditional STATIC text, served LIVE today via
+  `workflow_authoring_guide` to any authenticated principal, and it is now FALSE whenever this
+  deployment's measured posture is `'unconfined'` (this host's own real probe says exactly that — see
+  ARCH-181). This is a shipped false-confinement claim, precisely the class of defect this whole
+  iteration exists to end. **Not fixed in this dispatch**: the guide is rendered STATICALLY
+  server-side with no access to `confinementPosture` at render time (DES-258's own boundary
+  conditions), and DES-258 already carries an unresolved `owner_decision` about static-vs-live
+  rendering that a correct fix here would collide with — threading `confinementPosture` through
+  `buildAuthoringGuide()`'s call site is itself new wiring (a `ServerConfig` hop `authoring-guide.ts`
+  currently has none of) that deserves its own test-first cycle, not a rushed text edit appended to
+  an unrelated dispatch. **Flagged prominently to the orchestrator as an open, live gap**, not
+  silently left for "whoever picks up TASK-256 next" to discover cold.
+
+### TASK-257 — the boot-time posture probe + the remote-submission door (new row, ARCH-181, ADR-083 owner_decision posture C)
+- **status:** done
+- **traces:** ARCH-181, DES-261, DES-262, ADR-083
+- **files:** src/gateway/confinement-probe.ts, src/call-tool.ts, src/server.ts, src/main.ts, tests/unit/confinement-probe.test.ts, tests/unit/call-tool-confinement-door.test.ts
+- **des:** DES-261, DES-262
+- **dod:** `npx tsc --noEmit && npx vitest run tests/unit/confinement-probe.test.ts tests/unit/call-tool-confinement-door.test.ts` → green on: (1) `probeConfinement()` runs the nested-bwrap probe, injectable `spawn`, exit 0 ⇒ `confined`, anything else (nonzero/spawn-error/timeout) ⇒ `unconfined` with a `reason`; a real (unmocked) call against this host succeeds without throwing; (2) `main()` calls it once before `composeConfig()`, threads the result through `ComposeConfigDeps.confinementProbe`, and logs the posture unconditionally at boot (never silent when unconfined) — `--check-config` does the same, read-only; (3) `ToolDeps` gains `confinementPosture`/`isRemoteSubmission`, both optional, `undefined` on either ⇒ no gating (every existing `callTool()` test call site keeps passing unmodified — verified: `call-tool-order.test.ts`'s 3 cases green with no edits); (4) `callTool()` refuses `run_start`/`run_resume` with `code:'CONFINEMENT_UNAVAILABLE'`, before schema/authz, ONLY when BOTH `confinementPosture === 'unconfined'` AND `isRemoteSubmission === true`; a local submission on the same posture, and a remote submission on `'confined'`, both still reach the facade; `run_status` (a read) is never gated; (5) `server.ts` computes `isRemoteSubmission` ONCE per request from `!isLoopbackPeer(req.socket?.remoteAddress, req.headers)` (never `Principal.kind`, `dbindExempt`, or `bind`/`allowedHosts`) and threads it through both `tools/call` sites via `buildToolDeps(webhookBaseUrl, isRemoteSubmission)`. **[LOAD-BEARING]** the red message before implementation: `TypeError: Cannot read properties of undefined (reading 'ok')` at `call-tool.ts:170` inside `authorize()` — confirming no pre-dispatch door existed; after implementation the same case returns `{code:'CONFINEMENT_UNAVAILABLE', ...}` without ever calling `authorize()` or the facade.
 - **estimate:** S
 - **iter:** v37

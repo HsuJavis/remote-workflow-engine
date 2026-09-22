@@ -9490,6 +9490,14 @@ keep, not a coincidence to rely on.
     `z.core.$loose` — unknown keys pass and nothing is rejected at runtime — so a renamed field upstream
     silently degrades the object to decoration. The mitigations are the exact dependency pin (DES-253),
     the `sdkVersion` in the log payload (DES-256), and the real-run arm being re-earned on every bump.
+  - **v37 Gate-6 amendment (2026-09-22, implementer; ADR-083 owner_decision posture C):** this
+    function's own contract is UNCHANGED — it is still called with exactly the same input shape and
+    still returns exactly the fields above. What changed is WHETHER it is called at all: DES-253
+    now calls it only when `confinementPosture === 'confined'` (ARCH-181; DEFAULT is `'unconfined'`,
+    corrected empirically — see DES-253's own amendment for why). Whether a host can
+    provide a working sandbox is a measured, host-specific fact (`probeConfinement()`,
+    `confinement-probe.ts`) and stays out of this module on purpose — it would make a PURE builder's
+    own tests host-dependent.
 - **iter:** v37
 
 ### DES-253 — the `confinement` block and the ONE options field it feeds
@@ -9530,6 +9538,39 @@ keep, not a coincidence to rely on.
     PATH-installed `claude` is preferred at resolution time, which is S6's addendum, not a code change.
   - Wiring assertion goes through the existing `queryImpl` seam: `options.sandbox` **deep-equals** the
     builder's output for the same input — identity of decision, never a re-computation in the test.
+  - **v37 Gate-6 amendment (2026-09-22, implementer; ADR-083 owner_decision posture C, ARCH-181,
+    DES-261/262 — not one of the pre-written design arms, so this row gains new text rather than a
+    struck-through rewrite):** `ClaudeAgentSdkGatewayConfig` gains a SECOND optional field,
+    `confinementPosture?: 'confined' | 'unconfined'`, independent of the `confinement` block above
+    (that block says what a CONFINED run may additionally touch; this field says whether confinement
+    is attempted at all). Options assembly becomes:
+    ```ts
+    const sandbox: Options['sandbox'] = confinementPosture === 'confined'
+      ? buildBashConfinement({ root, grantedHostPaths: confinement?.allowHostPaths ?? [],
+          protectedFiles: confinement?.protectedFiles ?? [], workRoot: confinement?.workRoot,
+          denyReadMode: DENY_READ_MODE })
+      : { enabled: false };
+    ```
+    `confinementPosture` **defaults to `'unconfined'` when omitted — corrected mid-implementation
+    by running the real suite, not decided in advance.** The first draft defaulted to `'confined'`
+    (the "confinement absent ⇒ still built" discipline this row's original text applies to the
+    `confinement` block, naively extended to the posture too) — it typechecked and passed UT-314/
+    316/317 unmodified, but running the FULL suite showed it broke every real-CLI-spawning
+    acceptance/integration test that constructs this class directly without going through `main.ts`
+    (`val-023-sdk-gateway-timeout.test.ts` and its siblings — none of them set `confinementPosture`,
+    all of them spawn the real `claude` CLI): on a host without a working sandbox,
+    `sandbox.enabled:true` fails at CLI startup (`num_turns:0`, before any tool call), so those tests
+    silently stopped testing timeouts/retries/tool-parity and started testing `SANDBOX_UNAVAILABLE`
+    instead. `'unconfined'`-by-default fixes this AND is the more consistent reading of this
+    iteration's own thesis ("never claim confinement without evidence") — the evidence requirement
+    applies to a CALLER that never asked the boot-time question, not only to the host it runs on.
+    UT-314's three cases were amended to set `confinementPosture:'confined'` explicitly (each tests
+    the confined arm on purpose) and gained a fourth case pinning the corrected default; UT-317 and
+    `val-253-bash-confinement.test.ts`'s `beforeAll` got the same explicit opt-in — UT-316/318/319 are
+    unaffected (none assert on `sandbox` content). Only `main.ts`'s real boot probe (ARCH-181) ever
+    sets `'confined'`, from a real measurement. `sandbox` is
+    computed ONCE, before the `Options` literal, and referenced by the literal AND by the
+    `agent.confinement` event (DES-256) — the SAME object, never re-derived twice.
 - **iter:** v37
 
 ### DES-254 — `validateHostPathGrants()` — boot refuses a grant that would undo the control
@@ -9633,6 +9674,18 @@ keep, not a coincidence to rely on.
   - Neither kind carries an `AuditActor`: they are engine facts, not principal-attributable actions.
   - A `2>/dev/null; true` inside a command masks the denial from every mechanism we have. That is a
     property of shells; it is stated, and it is not a reason to build a transcript scanner.
+  - **v37 Gate-6 amendment (2026-09-22, implementer; ADR-083 owner_decision posture C):**
+    `agent.confinement` gains `posture: 'confined' | 'unconfined'` — the field an operator actually
+    reads to tell whether the kernel was asked to enforce anything this attempt, independent of
+    `enabled`/`allowWrite`, which a `'confined'`-posture call with no known workspace can ALSO report
+    empty for an unrelated reason (ARCH-175's no-root branch). Under `'unconfined'`, the payload
+    reports exactly what was applied — nothing (`enabled:false`, `allowWrite:[]`, `denyRead:[]`,
+    `failIfUnavailable:false`) — `buildBashConfinement()` is not called in this arm at all, so there
+    is no "would-be" output to report. **`agent.confinement_denied` is NOT built this gate**, even
+    though S4 fired positive: no Gate-5 red test exists for the `PostToolUseFailure` hook
+    registration this kind needs, and this gate implements test-first, never ahead of a test — filed
+    as an open gap (the ADR's own text already anticipated exactly this residual, "the denial then
+    reaches the operator as the agent's own failed tool result").
 - **iter:** v37
 
 ### DES-257 — `findProjectMarkerAboveWorkspace()` — REQ-021's re-walk, wired for the first time, walking ABOVE the workspace
@@ -9706,6 +9759,27 @@ keep, not a coincidence to rely on.
   workflow script never sees, so an example demonstrating it would teach an invalid example (rule 4).
   `docs/AUTHORING.md` stays byte-equal to the builder output in the same commit.
 - **owner_decision:** pending — 指南要維持這版「靜態段落」(作者讀到機制與申請管道,零佈線),還是要改成「渲染該部署當下的實際 grant 清單」(GuideCeilings 新欄位 + 一個 ServerConfig hop + hop-2 wiring test,並需修正 ARCH-177「不為沒人讀的值開 ServerConfig 欄位」那句)?兩位 lens 在 r2 互換立場、各自讓步給對方,沒有收斂;設計先出簡單且可逆的靜態版,是否升級為即時清單屬於產品面(作者體驗 vs 一條新佈線)的裁決。
+- **v37 Gate-6 amendment (2026-09-22, implementer; ADR-083 owner_decision posture C, ARCH-181):**
+  **fact (a) is no longer unconditionally true and this row must say so before TASK-256 ships text
+  from it.** 「`Bash` may write inside the run workspace and nowhere else」 holds only when this
+  deployment's measured posture is `confined`. On a host where the boot probe found no working
+  nested user namespace (`confinementPosture:'unconfined'`), a LOCALLY-submitted run's Bash is
+  genuinely unconfined — the accepted cost ADR-083's owner_decision records in plain terms
+  (「本機發起的 run 仍不受限制」) — and a REMOTE submission never reaches an agent at all (refused at
+  the door, ARCH-181/DES-262), so fact (a) is vacuously true for it but for the wrong reason (no run,
+  not a jail). The guide paragraph this row specifies must be corrected the same way the code
+  comments were (ARCH-176's amendment) before it is generated. **Correction, found while checking
+  this row against disk**: the guide text is NOT pending — `src/authoring-guide.ts:560-576` and
+  `docs/AUTHORING.md:64` already carry it, verbatim, unconditional, LIVE (this task's own `status:
+  draft` field and `05-tests.md`'s UT-322 "red" status are both stale documentation — confirmed via
+  direct re-run, `tests/unit/authoring-guide.test.ts`'s DES-258 block is green, 4/4). So fact (a) is
+  not a future risk this row is warning the next implementer about — it is a FALSE CLAIM SHIPPED
+  TODAY on any deployment whose measured posture is `'unconfined'` (this host's own real probe says
+  exactly that). **Still not fixed in this dispatch**: the guide is rendered statically with no
+  `confinementPosture` in scope at render time, and a correct fix collides with this row's own
+  unresolved `owner_decision` (static vs. live rendering) — threading the posture through is itself
+  new wiring deserving its own test-first cycle, not a rushed append to an unrelated dispatch's
+  diff. Flagged to the orchestrator as an open, LIVE gap, not a someday-TODO.
 - **iter:** v37
 
 ### DES-259 — the sandbox-unavailable failure surface
@@ -9729,6 +9803,24 @@ keep, not a coincidence to rely on.
   indistinguishable from an ordinary terminal failure**, the mapping cannot be applied: the label is
   then omitted and ADR-083's trigger is recorded as unsatisfiable-from-the-log, a named residual rather
   than a silent one.
+- **v37 Gate-6 amendment (2026-09-22, implementer; ADR-083 owner_decision posture C):** **S10 fired
+  positive** (`evidence/v37-spike/S10.md`) — distinguishable on two axes (`subtype:
+  "error_during_execution"` + `errors` array + `num_turns:0`, and the stable thrown-message prefix
+  `"Sandbox required but unavailable: "`) — so the mapping IS applied, implemented in `_drain`'s own
+  `catch` block (the thrown-error path an async-generator failure takes, confirmed by S10 itself:
+  `query()`'s iterator THROWS rather than yielding an ordinary `result` message). **This row's own
+  original framing — written when ADR-083 still meant (A), "the run fails, full stop" — needs one
+  scope correction**: this mapping is no longer the ROUTINE outcome of an unavailable sandbox. Under
+  posture C, `confinementPosture:'unconfined'` means `buildBashConfinement()` is never even called
+  (ARCH-176's amendment) — this class's own `sandbox.enabled:true` is never sent, so the SDK's
+  "Sandbox required but unavailable" error should not normally fire at all on a host this engine has
+  already measured as unconfined. What remains is the honest residual DES-259 was always partly
+  about: a host measured `confined` at boot (nested-bwrap probe passed) whose CLI-level sandbox
+  construction fails anyway at the moment of a REAL call (e.g. a missing `socat` dependency that the
+  boot probe, which uses bare `bwrap` and never spawns the real CLI, cannot see) — for that arm, the
+  label still fires, `retryable:false` still ends the attempt, and ADR-083's revisit trigger stays
+  satisfiable from the log exactly as this row specifies. The detection is unconditional in the code
+  (never gated on `confinementPosture`) precisely so this residual case is still caught if it occurs.
 - **iter:** v37
 
 ### DES-260 — the two deletion sets, and what each guarantee is attached to afterwards
@@ -9765,6 +9857,95 @@ keep, not a coincidence to rely on.
   - REQ-016/REQ-020/REQ-021 stay **outside** this closure: no new trace edge, no `rtm.md` edit, no new
     REQ. The wiring rides REQ-219's own rows, and the VAL re-points are verification's and validation's
     work, named here so they cannot be forgotten.
+- **iter:** v37
+
+### DES-261 — `probeConfinement()` — the boot-time nested-bwrap measurement (new row, ARCH-181, ADR-083 owner_decision posture C)
+- **status:** draft
+- **traces:** ARCH-181, ADR-083, TASK-257
+- **signature:**
+  ```ts
+  // src/gateway/confinement-probe.ts — IMPURE (spawns a real subprocess); kept OUT of
+  // bash-confinement.ts, which stays fs/process/env/clock-free.
+  export type ConfinementPosture = 'confined' | 'unconfined';
+  export interface ConfinementProbeResult { readonly posture: ConfinementPosture; readonly reason?: string }
+  export type SpawnImpl = (cmd: string, args: string[], opts: { timeout: number }) =>
+    { status: number | null; error?: Error; stderr: Buffer | string };
+  export function probeConfinement(spawn: SpawnImpl = REAL_SPAWN): ConfinementProbeResult;
+  ```
+  Runs `bwrap --unshare-user --unshare-pid --ro-bind / / --tmpfs /tmp -- bwrap --unshare-user
+  --unshare-pid --ro-bind / / --tmpfs /tmp -- /bin/true` (5s timeout). Exit `0` ⇒ `{posture:'confined'}`.
+  Any nonzero exit, a spawn error, or a timeout ⇒ `{posture:'unconfined', reason: <stderr or error
+  message>}` — never a bare boolean; the reason is what an operator reading the boot line needs.
+- **boundary conditions:**
+  - **Why NESTED bwrap, not a bare single invocation**: TASK-250's S1 measured that a bare `bwrap
+    --unshare-user ...` succeeds on this host (exit 0) even though NO Bash command can complete under
+    `sandbox.enabled:true` — the CLI's own `apply-seccomp` helper needs a SECOND, nested unprivileged
+    user namespace, and that is what a host like this one denies. A single-bwrap probe would report
+    `confined` on a host where every real run fails. The nested form is the exact command ADR-083's
+    owner_decision cites as its own independent re-verification.
+  - **A pre-computed VALUE rides `ComposeConfigDeps`, never a callable `composeConfig()` invokes
+    itself.** Several existing test files (`sandbox-config-wiring.test.ts`,
+    `compose-config-v2-wiring.test.ts`) `vi.mock('node:child_process', () => ({ spawn: vi.fn(...) }))`
+    at module scope — this REPLACES the whole module's exports, so a `spawnSync` import resolved
+    inside that mock's scope would silently become `undefined`. `main.ts` calls `probeConfinement()`
+    for real, ONCE, before `composeConfig()`, and passes the RESULT in — the same seam shape
+    `configPath` (DES-255) already uses, for the same reason.
+  - **Omitted in every test call site ⇒ no gating anywhere, and no false confinement claim either**
+    — `composeConfig()` leaves `ServerConfig.confinementPosture` unset and the gateway's own
+    `confinementPosture` unset, each falling back to ITS OWN independent default: unset ⇒ no door
+    gating; the gateway's own default is `'unconfined'` (ARCH-176's amendment — corrected from an
+    earlier `'confined'`-default draft that broke every real-CLI-spawning test in the suite; "no
+    evidence a sandbox works" is the honest default, not "assume it does").
+  - **`--check-config` runs the SAME probe and reports it** — that command's own contract is "no side
+    effects", and a subprocess-based READ is not a mutation; reporting the posture here is exactly the
+    "at startup, before any run" visibility REQ-218 asks for.
+- **iter:** v37
+
+### DES-262 — the remote-submission door: `call-tool.ts` refuses `run_start`/`run_resume` when unconfined AND remote (new row, ARCH-181, ADR-083 owner_decision posture C)
+- **status:** draft
+- **traces:** ARCH-181, ADR-083, TASK-257
+- **signature:**
+  ```ts
+  // src/call-tool.ts — ToolDeps gains two OPTIONAL fields (undefined on either ⇒ "don't gate",
+  // preserving every one of this file's ~250 other test call sites unmodified):
+  confinementPosture?: 'confined' | 'unconfined';   // this engine's MEASURED posture (ARCH-181)
+  isRemoteSubmission?: boolean;                      // this ONE request's peer locality
+  // pre-dispatch, ahead of ajv/authorize (same precedent as INLINE_SCRIPT_CLOSED):
+  if ((spec.name === 'run_start' || spec.name === 'run_resume')
+      && deps.confinementPosture === 'unconfined' && deps.isRemoteSubmission === true) {
+    return refusalEnvelope('CONFINEMENT_UNAVAILABLE', <message naming both facts>);
+  }
+  // src/server.ts — computed ONCE per request, reused at both tools/call sites:
+  const isRemoteSubmission = !isLoopbackPeer(req.socket?.remoteAddress, req.headers);
+  ```
+- **boundary conditions:**
+  - **"Remote" is `isLoopbackPeer`, and nothing else was considered correct.** `Principal.kind` is
+    unusable: a `loopback-exempt` principal only exists on a non-loopback bind with auth enabled, so on
+    the DEFAULT config (loopback bind, auth enabled) every local caller gets an ordinary id-bearing
+    principal and a kind-based rule would refuse the operator's own machine. `dbindExempt` ANDs the
+    peer check with `!isLoopback(bind)`, so it reads `false` on a loopback bind even though the peer
+    genuinely IS loopback — wrong signal for "is THIS request remote". `bind`/`allowedHosts` are
+    deployment-wide DNS-rebinding policy, not a per-request fact. `isLoopbackPeer` is the one existing
+    primitive built for exactly this question (the D-BIND auth exemption already answers it the same
+    way) — fail-closed on a tunnel/forwarded header, so a cloudflared-fronted caller is never
+    misread as local.
+  - **Gated tools: `run_start` and `run_resume`, and NOTHING else.** Both admit new Bash-capable
+    `agent()` work (a resume replays the pinned parameter snapshot and keeps running); every read
+    (`run_status`, `run_agent_log`, ...) and every management call is unaffected — a remote caller can
+    still watch/manage a run it is otherwise authorized to see.
+  - **The accepted cost is in the code, not just the ADR.** A LOCAL (loopback-peer) submission on the
+    SAME `unconfined` posture is NOT refused — `ClaudeAgentSdkGatewayClient` never even calls
+    `buildBashConfinement()` for that run (ARCH-176's amendment); the run proceeds genuinely
+    unconfined. This is ADR-083's owner_decision (「本機發起的 run 仍不受限制」) stated as code, not a
+    gap.
+  - **One site, not two.** `isRemoteSubmission` is computed once in `server.ts` (beside the existing
+    `dbindExempt` computation, same scope) and threaded through `buildToolDeps(webhookBaseUrl,
+    isRemoteSubmission)` at both `tools/call` handlers; the refusal LOGIC lives once, in `callTool()`,
+    which both already share.
+  - **Scheduled/webhook-fired runs have no HTTP peer and are never gated** (`run-manager.ts`'s own
+    ticker-driven `.start()` call, `server.ts:997`, never goes through `callTool()`) — named as an
+    accepted residual of posture C, not a v37 build item: a workflow trigger created remotely but
+    firing on a schedule runs unconfined either way, same as any other local submission.
 - **iter:** v37
 
 ### Class diagram — v37 (the four types this slice adds)

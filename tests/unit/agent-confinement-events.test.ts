@@ -7,6 +7,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 import type { AgentOpts, TranscriptEvent } from '../../src/types.js';
 
 const queryMock = vi.fn();
@@ -54,9 +55,13 @@ describe('UT-317 agent.confinement is emitted from the object the builder just r
     queryMock.mockReturnValue(okSession());
   });
 
+  // v37 Gate-6 amendment (2026-09-22, implementer; ADR-083 owner_decision posture C): `confinementPosture`
+  // defaults to `'unconfined'`, found by running the real suite (see bash-confinement-wiring.test.ts's
+  // own amendment note for the full reasoning) — `confinementPosture:'confined'` set explicitly here
+  // so this case still exercises the confined arm it was written to test.
   it("allowWrite/denyRead on the event equal the builder's output for THIS call's workspace", async () => {
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
-    const client = new ClaudeAgentSdkGatewayClient({ baseUrl: 'http://127.0.0.1:4000' });
+    const client = new ClaudeAgentSdkGatewayClient({ baseUrl: 'http://127.0.0.1:4000', confinementPosture: 'confined' } as any);
     const events: FakeEvent[] = [];
     (client as unknown as { bindEventSink: (sink: (ev: FakeEvent) => void) => void }).bindEventSink((ev) => events.push(ev));
     const workspace = '/tmp/remote-workflow-runs/_adhoc/run-c';
@@ -76,10 +81,16 @@ describe('UT-318 sdkVersion is read mechanically off the installed package, neve
     (client as unknown as { bindEventSink: (sink: (ev: FakeEvent) => void) => void }).bindEventSink((ev) => events.push(ev));
     await client.invoke({ prompt: 'ping', opts: {}, runId: 'run-1', agentId: 'agent-1', workspace: '/tmp/remote-workflow-runs/_adhoc/run-d' });
     const ev = events.find((e) => e.kind === 'agent.confinement');
-    // Mechanism deliberately DIFFERENT from the SUT's own createRequire(import.meta.url).resolve(...)
-    // — this is a fresh read of the installed package, not a re-computation via the same code path.
+    // v37 Gate-6 test-defect fix (implementer, 2026-09-22): the ORIGINAL line here was
+    // `nodeRequire.resolve('@anthropic-ai/claude-agent-sdk/package.json')`, which this very DES-256
+    // row documents as the form that THROWS (`ERR_PACKAGE_PATH_NOT_EXPORTED` — the package's
+    // `exports` map does not publish a `./package.json` subpath); re-verified empirically here
+    // (`node --input-type=module -e "..."`, throws identically). A fresh read still needs to be
+    // DIFFERENT from the SUT's own `resolveSdkVersion()` helper — so this resolves the package's MAIN
+    // entry (the documented working form) directly, rather than calling that helper.
     const nodeRequire = createRequire(import.meta.url);
-    const pkgPath = nodeRequire.resolve('@anthropic-ai/claude-agent-sdk/package.json');
+    const entry = nodeRequire.resolve('@anthropic-ai/claude-agent-sdk');
+    const pkgPath = join(dirname(entry), 'package.json');
     const { version } = JSON.parse(readFileSync(pkgPath, 'utf8')) as { version: string };
     expect(ev?.['sdkVersion']).toBe(version);
   });

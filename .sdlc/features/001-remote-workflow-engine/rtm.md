@@ -386,3 +386,27 @@ see `05-tests.md`'s own "named for Gate 6" note: both would be green-on-arrival 
 retargeting them before `timeout-race.ts`/`session-options-builder.ts` are actually deleted would
 leave two paths claiming to prove the same clause; TASK-254/255 bundle the retarget with the
 deletion in one commit. REQ-018/REQ-037/REQ-117 rows remain untouched, same reason as Gate 3+4.
+
+**v37 Gate 6 update (2026-09-22, implementer; ADR-083 owner_decision posture C — recorded mid-
+iteration, after Gate 5).** REQ-218's own scope this gate: TASK-251/252/253 parts (a)+(b) (the
+confinement builder, the operator grant surface, the `options.sandbox` wiring + events + the
+posture probe/door new mechanism, ARCH-181/DES-261/262) — TASK-253 part (c) (DES-257's re-walk),
+TASK-254/255 (REQ-219), and TASK-256 (the guide) are explicitly OUT of this gate's scope and remain
+untouched, their own rows/tests unchanged. UT-309..319 flip **red → green** (confirmed by direct
+re-run, `05-tests.md`'s own per-item confirmation lines); UT-320/321/322 (DES-257/DES-258, out of
+scope) stay red. Two new unit tests, UT-323/UT-324 (ARCH-181/DES-261/262 — new rows, not in the
+original Gate 3+4 design), both green; `05-tests.md` gained their entries. VAL-253/VAL-254 are
+**NOT re-verified at this gate** (Gate 7.5's own job; VAL-253's real-tier arm stays `it.skipIf`-gated
+on `OLLAMA_BASE_URL`, absent in this environment). Real-verified stays `⏳ 本輪未到驗證` — unchanged,
+Gate 7.5's to set. `rtm.md`'s REQ-218 row itself is not edited (its DES/TASK columns already name
+DES-252..260/TASK-250..256; ARCH-181/DES-261/262/TASK-257 are cross-referenced from those rows'
+own text — mirroring REQ-021's Gate-5 precedent of not minting a new trace edge for evidence that
+changed shape mid-chain). **One finding surfaced outside this gate's own scope, flagged rather than
+fixed**: TASK-256 (REQ-117's guide paragraph) was found ALREADY implemented and live on disk
+(`src/authoring-guide.ts`/`docs/AUTHORING.md`) — `05-tests.md`'s UT-322 "red" status and this task's
+own `status:draft` were both stale, corrected in place. The shipped text unconditionally claims
+「`Bash` may write inside the run workspace and nowhere else」, which this gate's own posture-C work
+makes FALSE on a deployment measured `'unconfined'` (this host's own real probe). Not fixed here —
+the guide renders statically with no `confinementPosture` in scope, and a correct fix collides with
+DES-258's own unresolved `owner_decision` — named as an open, live gap for the orchestrator, not a
+someday-TODO.

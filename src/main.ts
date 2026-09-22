@@ -19,13 +19,16 @@
 // This entrypoint is the ONLY place that decides between the two — server.ts's own default (an
 // undefined `config.gateway` falling through to LiteLLMGatewayClient) stays exactly as it was for
 // every test caller, none of which sets RWE_CONFIG_PATH/goes through main().
-import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, existsSync, realpathSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from './server.js';
 import type { ServerConfig } from './server.js';
 import { ClaudeAgentSdkGatewayClient } from './gateway/claude-agent-sdk-client.js';
 import type { ClaudeAgentSdkGatewayConfig } from './gateway/claude-agent-sdk-client.js';
+import { validateHostPathGrants, formatGrantRefusals } from './gateway/bash-confinement.js';
+import { probeConfinement } from './gateway/confinement-probe.js';
+import type { ConfinementProbeResult } from './gateway/confinement-probe.js';
 import { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
 import { assertWorkRootIsolated } from './workroot-guard.js';
@@ -34,6 +37,10 @@ import type { Role } from './tool-specs.js';
 import { validateAliases } from './providers.js';
 
 type GatewayChoice = 'sdk' | 'direct-fetch';
+
+function isNonEmptyString(s: string | undefined): s is string {
+  return typeof s === 'string' && s.length > 0;
+}
 
 // DEFAULT_ALIASES (src/default-aliases.ts) is the single-source fallback table, used here only to
 // give the SDK gateway's managed LiteLLM proxy an alias table to route through when the config file
@@ -45,7 +52,7 @@ type GatewayChoice = 'sdk' | 'direct-fetch';
 // meaningful field is a FUNCTION (the injected renderer), which a JSON config file cannot express.
 // Its two numeric knobs are engine constants on purpose (`diagram-render.ts`), so there is nothing
 // here for composeConfig to forward and therefore nothing it can forget to forward.
-interface FileConfig extends Partial<Omit<ServerConfig, 'gateway' | 'principals' | 'diagramRender'>> {
+interface FileConfig extends Partial<Omit<ServerConfig, 'gateway' | 'principals' | 'diagramRender' | 'confinementPosture'>> {
   /** D-F4: which GatewayClient main.ts wires up. Default "sdk" (ClaudeAgentSdkGatewayClient, the
    *  real tool-loop-capable path). "direct-fetch" opts out to the legacy LiteLLMGatewayClient path
    *  (server.ts's own pre-existing default, driven by `aliases`/`useLiteLLMProxy`). */
@@ -69,6 +76,12 @@ interface FileConfig extends Partial<Omit<ServerConfig, 'gateway' | 'principals'
    *  presence. The auth material itself is NEVER read from this JSON file — only from the server-side
    *  secret store (RWE_SECRET_ANTHROPIC_API_KEY / RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN) or plain env. */
   anthropicAuth?: 'api-key' | 'subscription';
+  /** v37 (ARCH-177, DES-254, ADR-084): operator-granted host paths a run's Bash may ALSO write/read,
+   *  beyond its own run workspace — validated (`validateHostPathGrants`) and refused at boot (naming
+   *  every offending entry) rather than silently admitted or silently dropped. Absent -> `[]`, the
+   *  strictest posture. The OPERATOR grants; there is no author-side request surface this iteration
+   *  (ADR-084's deferred (C) — the operator and the author are the same person today). */
+  sandbox?: { allowHostPaths?: string[] };
 }
 
 // v24 (ARCH-090, DES-141, standing rule 1 — same "twice-bitten composeConfig bug class" convention
@@ -93,6 +106,7 @@ export const KNOWN_FILE_CONFIG_KEYS: Record<keyof FileConfig, true> = {
   auth: true, maxTimeoutMs: true, maxAppendPromptBytes: true, maxEffort: true,
   maxWorkflowVersions: true, principals: true, mcpEgressAllowlist: true,
   defaultAllowedTools: true, anthropicBaseUrl: true, anthropicAuth: true,
+  sandbox: true,
 };
 
 // v34 (DES-227, ARCH-139, TASK-229, REQ-203): keys that USED to be forwarded by composeConfig and
@@ -122,11 +136,17 @@ export function normalizePrincipals(
   return { ok: true, value };
 }
 
-function loadFileConfig(): FileConfig {
-  const path = process.env['RWE_CONFIG_PATH'] ?? 'rwe.config.json';
-  if (!existsSync(path)) return {};
+// v37 (DES-255, ARCH-177, TASK-252): returns the path this function actually read too — the value
+// `composeConfig()`'s `protectedFiles[0]` must use (never a SECOND `resolve()` inside composeConfig,
+// which would resolve against whatever cwd systemd happened to hand the process and could name a
+// file that does not exist while the real config stays readable). `undefined` when no file exists on
+// disk — never a literal `'undefined'` reaching a deny list (bash-confinement.ts's own filter).
+export function loadFileConfig(): { config: FileConfig; path?: string } {
+  const raw = process.env['RWE_CONFIG_PATH'] ?? 'rwe.config.json';
+  const path = resolve(raw);
+  if (!existsSync(path)) return { config: {} };
   try {
-    return JSON.parse(readFileSync(path, 'utf8')) as FileConfig;
+    return { config: JSON.parse(readFileSync(path, 'utf8')) as FileConfig, path };
   } catch (err) {
     throw new Error(`RWE_CONFIG_PATH "${path}" is not valid JSON: ${(err as Error).message}`);
   }
@@ -145,6 +165,23 @@ interface ComposeConfigDeps {
    *  relying on the caller's proxyManager alone to be a well-behaved no-op. Omitted/`true` ->
    *  unchanged real-boot behavior. */
   listen?: boolean;
+  /** v37 (DES-255, ARCH-177): the absolute path `loadFileConfig()` actually read (`undefined` when
+   *  no config file exists) — rides deps rather than `FileConfig` (same seam convention) so it needs
+   *  no `KNOWN_FILE_CONFIG_KEYS` row. Omitted (every existing test call site) -> `protectedFiles` is
+   *  just the auth DB, same as "no config file on disk". */
+  configPath?: string;
+  /** v37 (ARCH-181, DES-261/262, TASK-257, REQ-218, ADR-083 owner_decision posture C): the ALREADY-
+   *  RESOLVED result of `probeConfinement()` — a pre-computed VALUE, never a callable composeConfig
+   *  invokes itself (the real probe spawns a subprocess; several test files in this suite globally
+   *  `vi.mock('node:child_process', ...)`, which would silently null out an internal `spawnSync`
+   *  import — importing the pure VALUE here instead means this file never needs to know how the
+   *  probe was obtained). Omitted (every existing test call site + this file's own default) ->
+   *  `confinementPosture` is left UNSET on both `ServerConfig` and the constructed gateway's own
+   *  config, and each falls back to ITS OWN default independently (ServerConfig: unset — no door
+   *  gating; `ClaudeAgentSdkGatewayConfig`: 'confined', ARCH-176's own conservative default) — never
+   *  a silent 'unconfined' for a config that never asked the question. `main()`'s real call site is
+   *  the ONLY caller that sets this, from a real `probeConfinement()` call before `composeConfig()`. */
+  confinementProbe?: ConfinementProbeResult;
 }
 
 // D-F10(a/b): the FileConfig -> ServerConfig translation main() performs, extracted into an
@@ -206,6 +243,25 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   // into the agent context (a session-init confinement leak the tool-jail can't catch). Only the
   // explicit workRoot is checked; an omitted one falls through to server.ts's tmpdir default (clean).
   if (workRoot !== undefined) assertWorkRootIsolated(workRoot);
+
+  // v37 (ARCH-177, DES-254/255, TASK-252, REQ-218): protectedFiles are the two files REQ-218's own
+  // 風險面 names — the config file the loader actually read (never a second resolve() against
+  // whatever cwd systemd handed the process — DES-255) and this workRoot's auth-tokens.db. Grant
+  // validation runs only when the operator actually asked for a shared path — an absent/empty
+  // `sandbox.allowHostPaths` needs no `workRoot` anchor and stays the strictest posture (`[]`).
+  const protectedFiles = [deps.configPath, workRoot ? join(workRoot, 'auth-tokens.db') : undefined].filter(isNonEmptyString);
+  const rawGrants = fileConfig.sandbox?.allowHostPaths ?? [];
+  let resolvedGrants: string[] = [];
+  if (rawGrants.length > 0) {
+    if (workRoot === undefined) {
+      throw new Error('rwe.config.json: sandbox.allowHostPaths requires workRoot to be set (a grant is validated against workRoot containment) — set workRoot, or remove the grant.');
+    }
+    const grantResult = validateHostPathGrants(rawGrants, { workRoot, protectedFiles }, realpathSync);
+    if (!grantResult.ok) {
+      throw new Error(`rwe.config.json: invalid sandbox.allowHostPaths entries — refusing to start (ADR-028 fail-closed):\n${formatGrantRefusals(grantResult.refusals)}`);
+    }
+    resolvedGrants = grantResult.resolved;
+  }
 
   const config: ServerConfig = {
     bind: process.env['RWE_BIND'] ?? fileConfig.bind ?? '127.0.0.1',
@@ -304,6 +360,12 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // `http` transport — same forwarding convention, no validation needed here (an empty/absent
     // allowlist just means no `http` MCP config is ever admitted).
     mcpEgressAllowlist: fileConfig.mcpEgressAllowlist,
+    // v37 (ARCH-181, DES-262, TASK-257, REQ-218): MEASURED, never declared — set only when the
+    // caller actually supplied a probe result (deps.confinementProbe, `main()`'s real boot path).
+    // Every existing test call site omits it, so `confinementPosture` stays unset here exactly as
+    // it did before this field existed — no test anywhere newly gates on a posture it never asked
+    // about.
+    ...(deps.confinementProbe ? { confinementPosture: deps.confinementProbe.posture } : {}),
   };
 
   if (gatewayChoice === 'sdk') {
@@ -369,6 +431,16 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
       // straight to the real Anthropic API with real auth (no tool-schema translation for Claude).
       anthropicBaseUrl: fileConfig.anthropicBaseUrl,
       anthropicAuth: fileConfig.anthropicAuth,
+      // v37 (ARCH-177, DES-253, TASK-252): the grant/protected/workRoot block `buildBashConfinement()`
+      // consumes — omitted (never `workRoot: undefined`) when workRoot itself is unknown at THIS
+      // stage (an operator who set no `workRoot` gets server.ts's own per-boot tmpdir default,
+      // computed later); the gateway's own confinement-absent posture ("workspace-only, still built")
+      // still applies either way. `resolvedGrants`/`protectedFiles` are already validated above.
+      ...(workRoot ? { confinement: { allowHostPaths: resolvedGrants, protectedFiles, workRoot } } : {}),
+      // v37 (ARCH-181, DES-262): MEASURED posture, independent of the grant block above — set only
+      // when the caller supplied a probe result (`main()`'s real boot path); every existing test call
+      // site omits it, so the gateway falls back to its OWN 'confined' default unchanged.
+      ...(deps.confinementProbe ? { confinementPosture: deps.confinementProbe.posture } : {}),
     });
   }
 
@@ -383,7 +455,7 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
 // live service is ever touched.
 async function runCheckConfig(): Promise<void> {
   try {
-    const fileConfig = loadFileConfig();
+    const { config: fileConfig, path: configPath } = loadFileConfig();
     // A NOOP proxy manager stand-in, paired with deps.listen:false (composeConfig skips calling
     // `.start()` on it entirely) — belt-and-suspenders against ever spawning a real litellm
     // subprocess from a config-validation invocation.
@@ -392,9 +464,13 @@ async function runCheckConfig(): Promise<void> {
         throw new Error('--check-config must never spawn a proxy subprocess');
       }) as unknown as typeof import('node:child_process').spawn,
     });
-    await composeConfig(fileConfig, { proxyManager: noopProxyManager, listen: false });
+    // v37 (ARCH-181): --check-config is read-only apparatus (its own header comment: "NO side
+    // effects") — the nested-bwrap probe is a READ, not a mutation, and reporting the posture here
+    // is exactly the "at startup, before any run" visibility REQ-218 asks for.
+    const confinementProbe = probeConfinement();
+    await composeConfig(fileConfig, { proxyManager: noopProxyManager, listen: false, configPath, confinementProbe });
     // eslint-disable-next-line no-console
-    console.log('[remote-workflow-engine] --check-config: OK');
+    console.log(`[remote-workflow-engine] --check-config: OK (confinement posture: ${confinementProbe.posture}${confinementProbe.reason ? ` — ${confinementProbe.reason}` : ''})`);
     process.exit(0);
   } catch (err) {
     console.error(`[remote-workflow-engine] --check-config: ${(err as Error).message}`);
@@ -407,11 +483,27 @@ async function main(): Promise<void> {
     await runCheckConfig();
     return;
   }
-  const config = await composeConfig(loadFileConfig());
+  const { config: fileConfig, path: configPath } = loadFileConfig();
+  // v37 (ARCH-181, DES-261/262, TASK-257, REQ-218, ADR-083 owner_decision posture C): measured
+  // ONCE, here, before `composeConfig()` — "at startup" means the operator learns this before any
+  // run is ever submitted, not at the first agent() call. `main()` is the ONLY real caller; every
+  // test constructs `composeConfig()` directly and omits this (safe default: no door gating, no
+  // `confinementPosture` on the gateway — see ComposeConfigDeps.confinementProbe's own doc comment).
+  const confinementProbe = probeConfinement();
+  const config = await composeConfig(fileConfig, { configPath, confinementProbe });
   const server = await createServer(config);
   // eslint-disable-next-line no-console
   console.log(
     `[remote-workflow-engine] listening on http://${config.bind}:${server.port}/mcp (workRoot=${server.workRoot})`,
+  );
+  // v37 (ARCH-181, DES-262): ONE boot line naming the posture, unconditionally — the whole reason
+  // this iteration exists is that a false claim of confinement (BUILT_IN_CORE_TOOLS's old "Bash here
+  // is confined to that workspace") survived 70 warnings and two days without anything failing.
+  // Never say "isolated"/"sandboxed" without the measured fact attached.
+  console.log(
+    confinementProbe.posture === 'confined'
+      ? '[remote-workflow-engine] Bash confinement: CONFINED (nested-userns probe passed at boot)'
+      : `[remote-workflow-engine] Bash confinement: UNCONFINED (${confinementProbe.reason ?? 'nested-userns probe failed'}) — remote run submissions will be refused; local (loopback) runs still proceed, unconfined`,
   );
   // Healthcheck-friendly startup line other tooling can grep for.
   console.log('[remote-workflow-engine] ready');

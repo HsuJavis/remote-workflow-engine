@@ -10,8 +10,9 @@
 // integration tier points the real export at a local stub /v1/messages server — IT-015).
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { CanUseTool, HookCallback, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { existsSync, readdirSync, statSync, mkdirSync, copyFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, statSync, mkdirSync, copyFileSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, isAbsolute, dirname } from 'node:path';
+import { createRequire } from 'node:module';
 import type { AgentOpts, Caps, HarnessDescriptor, TranscriptEvent, Tokens } from '../types.js';
 import { ZERO_TOKENS } from '../run-guard.js';
 import { redactHarness } from '../agent-executor.js';
@@ -22,6 +23,26 @@ import { resolveAlias, type Provider } from '../providers.js';
 import { isPathContained } from '../path-containment.js';
 import { resolveConfig, type SecretSource } from '../secret-resolver.js';
 import { proxyModelName } from './litellm-proxy.js';
+import { buildBashConfinement, DENY_READ_MODE } from './bash-confinement.js';
+import type { EventSink } from '../event-log.js';
+
+// v37 (DES-256, ARCH-178, TASK-253, REQ-218): the installed SDK's OWN package.json version, read
+// ONCE at module load — `require('@anthropic-ai/claude-agent-sdk/package.json')` throws
+// ERR_PACKAGE_PATH_NOT_EXPORTED (the package's `exports` map publishes only '.'/'./extract'/
+// './browser'/'./bridge'/'./sdk-tools'), so the resolved MAIN entry's directory is used instead
+// (measured this iteration: TASK-250's S6/UT-318). Never a hand-copied constant; unreadable for any
+// reason -> 'unknown' — a log line must never be the thing that fails a run.
+function resolveSdkVersion(): string {
+  try {
+    const nodeRequire = createRequire(import.meta.url);
+    const entry = nodeRequire.resolve('@anthropic-ai/claude-agent-sdk');
+    const pkgPath = join(dirname(entry), 'package.json');
+    return (JSON.parse(readFileSync(pkgPath, 'utf8')) as { version?: string }).version ?? 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+const SDK_VERSION = resolveSdkVersion();
 
 type QueryImpl = typeof sdkQuery;
 
@@ -88,6 +109,30 @@ export interface ClaudeAgentSdkGatewayConfig {
    *  present, else api-key. The chosen mode's secret being absent is a typed terminal failure
    *  (ANTHROPIC_AUTH_MISSING), never a silent dummy-key attempt. */
   anthropicAuth?: 'api-key' | 'subscription';
+  /** v37 (ARCH-176/177, DES-253, TASK-253, REQ-218): the grant/protected/workRoot block
+   *  `buildBashConfinement()` (src/gateway/bash-confinement.ts) consumes, USED ONLY when
+   *  `confinementPosture === 'confined'` (see that field's own doc comment — absent this block,
+   *  `buildBashConfinement()` is never even called). Set by ONE caller (`main.ts`'s
+   *  `composeConfig()`, ARCH-177 — not threaded through `RunManager`, not added to the
+   *  `GatewayClient` port; `LiteLLMGatewayClient` has no subprocess and is unconfined BY CATEGORY,
+   *  not by gap). */
+  confinement?: { allowHostPaths: readonly string[]; protectedFiles: readonly string[]; workRoot: string };
+  /** v37 (ARCH-181, DES-262, TASK-257, REQ-218, ADR-083 owner_decision posture C): this engine's
+   *  MEASURED confinement posture (src/gateway/confinement-probe.ts, run once at boot — never a
+   *  config key). **Defaults to `'unconfined'` when omitted** — found empirically, not assumed: an
+   *  earlier draft of this field defaulted to `'confined'`, which broke every real-CLI-spawning
+   *  integration/acceptance test that constructs this class directly (`val-023-sdk-gateway-timeout`
+   *  and its siblings) — on a host without a working sandbox, `sandbox.enabled:true` fails at CLI
+   *  startup (`num_turns:0`, before any tool call) regardless of what the test actually exercises.
+   *  `'unconfined'` is also the philosophically correct default for this iteration's own thesis —
+   *  "never claim confinement without evidence" applies to the CALLER too: a construction that never
+   *  asked the boot-time nested-userns question has none. Only `main.ts`'s real boot probe
+   *  (ARCH-181) ever sets `'confined'` explicitly, from a real measurement; a real-tier test that
+   *  wants to exercise the confined arm sets it explicitly too (`bash-confinement-wiring.test.ts`,
+   *  `val-253-bash-confinement.test.ts`). `'unconfined'` ⇒ `options.sandbox = { enabled:false }` —
+   *  `buildBashConfinement()` is not even
+   *  called; a host that cannot measure a working nested user namespace does not get asked to try. */
+  confinementPosture?: 'confined' | 'unconfined';
 }
 
 /** REQ-037: resolves the Anthropic-direct auth material for the chosen mode, reading the injected
@@ -182,11 +227,20 @@ export async function materializeAssets(
  *  Bash-from-default exclusion: that exclusion existed because at the time there was NO fs jail (a
  *  Bash default would have driven a shell anywhere in the parent trust zone). The jail now exists —
  *  D-V2G8-1(d)'s realpath workspace-boundary is enforced for EVERY call via BOTH canUseTool and the
- *  PreToolUse hook (a Bash command's own `blockedPath`, a Read/Write/Edit `file_path`), and cwd is
- *  re-scoped to the run workspace — so Bash here is confined to that workspace, exactly the "bash
- *  跑在固定工作目錄下" the user asked for. Web egress (WebFetch/WebSearch) and sub-agent spawning
- *  (Task/Agent) stay OUT of the default (opt-in via an explicit per-call `allowedTools`) — they
- *  break workspace confinement / the engine's own orchestration+DOS model respectively. */
+ *  PreToolUse hook, and cwd is re-scoped to the run workspace. **v37 correction (REQ-218, ARCH-176):**
+ *  this is true for every OTHER path-bearing tool (Read/Write/Edit/Glob/Grep/NotebookEdit — their
+ *  path argument is right there in `tool_input`), but it was never true for Bash the way this
+ *  paragraph used to claim: `extractCandidatePaths` gets no `blockedPath` for Bash (its `tool_input`
+ *  carries only `command`, `claude-agent-sdk-client.ts`'s own `makePreToolUseHook` call), so the hook
+ *  allows every Bash call unconditionally — see `src/gateway/bash-confinement.ts` for what actually
+ *  confines Bash now: the OS-level sandbox (`Options.sandbox`, kernel-enforced, ADR-082), attempted
+ *  on every call when this engine's boot-time posture probe found a working nested user namespace
+ *  (`agent.confinement`'s `posture:'confined'`), and — on a host where it did not — NOT attempted at
+ *  all: a locally-submitted run's Bash is genuinely unconfined (ADR-083 owner_decision posture C,
+ *  the accepted cost), and only a REMOTE submission is refused outright, before this code ever runs
+ *  (`call-tool.ts`'s door). Web egress (WebFetch/WebSearch) and sub-agent spawning (Task/Agent) stay
+ *  OUT of the default (opt-in via an explicit per-call `allowedTools`) — they break workspace
+ *  confinement / the engine's own orchestration+DOS model respectively, in EITHER posture. */
 const BUILT_IN_CORE_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'];
 
 /** REQ-038 passthrough: a model already in `openrouter/<id>` form is NOT a configured alias — its
@@ -243,9 +297,14 @@ function isInsideWorkspace(candidate: string, root: string): boolean {
 // `blockedPath`. Glob/Grep carry their search root in `path`, and NotebookEdit uses `notebook_path`
 // — an agent could Glob/Grep/read a notebook OUTSIDE the workspace through those un-inspected fields.
 // Every known path-bearing tool argument is now extracted and checked; a call is denied if ANY of
-// them escapes. (Bash beyond its SDK-computed `blockedPath` remains best-effort — arbitrary shell
-// isn't statically parseable — so Bash stays opt-in via an explicit per-call `allowedTools`, never
-// in the default surface for untrusted work.)
+// them escapes. **v37 correction (REQ-218, ARCH-176):** the parenthetical this comment used to carry
+// ("Bash beyond its SDK-computed `blockedPath` remains best-effort") was the HONEST half of the pair
+// this row's own doc comment above contradicted — it is still accurate as a description of THIS
+// hook's own reach (a shell command's targets cannot be read off its text; `blockedPath` is never
+// populated for Bash, see `extractCandidatePaths`' call site below) but it read as "so Bash is only
+// weakly confined", which stopped being the whole story once REQ-218 shipped: Bash is confined by a
+// SEPARATE mechanism, the OS sandbox (`bash-confinement.ts`), not by this hook at all — and that
+// mechanism's own honesty is stated where it lives, not repeated here a third way.
 const PATH_ARG_FIELDS = ['file_path', 'path', 'notebook_path'] as const;
 
 function extractCandidatePaths(input: Record<string, unknown>, blockedPath?: string): string[] {
@@ -451,9 +510,19 @@ function sanitizeSubtype(subtype: unknown): string {
  *  `result` message off the session's own async-generator agent loop. */
 export class ClaudeAgentSdkGatewayClient implements GatewayClient {
   private readonly _query: QueryImpl;
+  // v37 (DES-256, ARCH-178): late-bound, mirrors `bindResolveMcp` below — the gateway is constructed
+  // in `composeConfig()` BEFORE the sink's owner (server.ts's `store`) exists. A NO-OP sink at
+  // construction means "nothing bound yet" and "did it" are never the same line of code.
+  private _eventSink: EventSink = () => {};
 
   constructor(private readonly _config: ClaudeAgentSdkGatewayConfig) {
     this._query = _config.queryImpl ?? sdkQuery;
+  }
+
+  /** v37 (DES-256, ARCH-178, TASK-253): binds the operational-event sink AFTER construction — same
+   *  shape and reason as `bindResolveMcp` above. */
+  bindEventSink(sink: EventSink): void {
+    this._eventSink = sink;
   }
 
   /** v24 (integrator; REQ-113, adjudication #4 C-2's wiring sweep): binds the catalog-backed
@@ -507,18 +576,25 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     const attempts = attemptsFor(this._config.retries, effTimeout);
     let last: GatewayResult = { ok: false, provider: 'claude-agent-sdk', reason: 'terminal' };
     for (let i = 0; i < attempts; i++) {
-      last = await this._invokeOnce(req);
+      // v37 (DES-256): `agent.confinement`'s own `attempt` counter — DISTINCT from `sys.attempt`
+      // (the CLI's internal backoff, read inside `_drain`) — one per pass through THIS loop, so the
+      // event's contract is "once per attempt", the claim a single "once per call" line could never
+      // hold (the options literal, and the posture it carries, is rebuilt inside `_invokeOnce` on
+      // every pass).
+      last = await this._invokeOnce(req, i + 1);
       if (last.ok) return last;
       // v26 (DES-171, ARCH-111, TASK-176, issue #65): a classifyApiError-terminal failure ends the
       // attempt immediately — retrying costs a full timeoutMs against a provider that already said
-      // no. `retryable` is `false` ONLY on that classification; every other failure reason (absent
-      // `retryable`) keeps retrying up to the configured bound, unchanged.
+      // no. `retryable` is `false` on that classification; every other failure reason (absent
+      // `retryable`) keeps retrying up to the configured bound, unchanged. v37 (DES-259, REQ-218)
+      // adds a SECOND producer: `SANDBOX_UNAVAILABLE` (below) also sets `retryable:false` — a retry
+      // cannot install a working nested user namespace.
       if (!last.ok && last.retryable === false) break;
     }
     return last;
   }
 
-  private async _invokeOnce(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; assets?: { roots: { workflow: string; global: string }; declared: { skills: string[]; mcp: string[] }; workflow: string }; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>; onEvent?: (ev: TranscriptEvent) => void | Promise<void>; caps?: Caps }): Promise<GatewayResult> {
+  private async _invokeOnce(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; assets?: { roots: { workflow: string; global: string }; declared: { skills: string[]; mcp: string[] }; workflow: string }; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>; onEvent?: (ev: TranscriptEvent) => void | Promise<void>; caps?: Caps }, attempt = 1): Promise<GatewayResult> {
     // issue #24/#22: per-call AgentOpts.timeoutMs overrides the configured default (both directions);
     // MUST match invoke()'s attempts calc above so a bounded attempt count never pairs with an
     // unbounded timer (or vice-versa). resolveTimeout rejects a bad value → gateway default applies.
@@ -620,8 +696,41 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       return stamp({ ok: false, provider: 'claude-agent-sdk', reason: 'terminal', detail: envResult.detail });
     }
 
+    // v37 (ARCH-175/176/181, DES-252/253/262, TASK-251/253, REQ-218, ADR-083 owner_decision posture
+    // C): the confinement posture decides WHETHER the sandbox is even attempted — never what it
+    // contains (that is `buildBashConfinement()`'s own, unaffected, contract).
+    // **`'unconfined'` is the DEFAULT when `confinementPosture` is omitted** — found the hard way,
+    // by running the real suite: an earlier draft of this line defaulted to `'confined'`, which broke
+    // every real-CLI-spawning integration/acceptance test that constructs this class directly without
+    // going through `main.ts`'s probe (`val-023-sdk-gateway-timeout.test.ts` and its siblings) — on
+    // THIS host `sandbox.enabled:true` fails at CLI startup (`num_turns:0`, before any tool call), so
+    // those tests stopped testing what they were written to test and instead universally hit
+    // `SANDBOX_UNAVAILABLE`. `'unconfined'` is also the philosophically correct default for this
+    // iteration's own thesis — "never claim confinement without evidence" applies to the CALLER too:
+    // a construction that never asked the boot-time nested-userns question has no evidence to attempt
+    // one. Only `main.ts`'s real boot probe (ARCH-181) ever sets `'confined'` explicitly, from a real
+    // measurement. `'confined'` (set explicitly, e.g. by a real-tier test that wants to exercise the
+    // actually-confined arm — see `bash-confinement-wiring.test.ts`/`val-253`): the full posture is
+    // built and handed to the kernel, `failIfUnavailable:true`. `'unconfined'`: `buildBashConfinement()`
+    // is not even called — a host/caller with no evidence a sandbox works is not asked to try one, for
+    // ANY run (the owner's accepted cost: a locally-submitted run is still unconfined; REQ-218's
+    // remote-submission door, call-tool.ts, is the control that actually closes for this posture —
+    // this class has no notion of "remote").
+    const confinementRoot = req.workspace ?? this._config.cwd;
+    const sandbox: Options['sandbox'] =
+      this._config.confinementPosture === 'confined'
+        ? buildBashConfinement({
+            root: confinementRoot,
+            grantedHostPaths: this._config.confinement?.allowHostPaths ?? [],
+            protectedFiles: this._config.confinement?.protectedFiles ?? [],
+            workRoot: this._config.confinement?.workRoot,
+            denyReadMode: DENY_READ_MODE,
+          })
+        : { enabled: false };
+
     const options: Options = {
       cwd: req.workspace ?? this._config.cwd,
+      sandbox,
       // REQ-037: an anthropic-direct call names the REAL Anthropic model id (LiteLLM bypassed);
       // every other provider is routed via the proxy-facing alias name (see proxyModelName) — the
       // CLI would otherwise expand a bare shorthand like `haiku` to a dated Anthropic id the LiteLLM
@@ -642,6 +751,14 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       // to stay bare and non-empty (never left unset, including the built-in fallback), so the
       // `hooks.PreToolUse` matcher below (the SDK's own suggested mechanism for this exact case)
       // enforces the SAME workspace-boundary decision for every call this auto-approves.
+      // v37 (REQ-218, ARCH-176): the warning is correct and BY DESIGN, not a defect to silence — it
+      // is harmless under this posture because the decision it skips (`canUseTool`) was never Bash's
+      // last line of defence anyway: for Read/Write/Edit/Glob/Grep/NotebookEdit the `PreToolUse`
+      // hook right below picks up exactly what the shadowed callback would have decided (same
+      // `toolUsePreCheck`); for Bash the last line of defence is the kernel (`bash-confinement.ts`,
+      // when the boot posture is confined) or, on a host where it is not, the remote-submission door
+      // (`call-tool.ts`) that refused this call before any of this ever ran — never `canUseTool`,
+      // shadowed or not.
       allowedTools: curatedTools,
       // `allowedTools` alone only auto-approves those tools without prompting — it does NOT remove
       // the rest from what the CLI puts on the wire (sdk.d.ts:1323's own doc: "To restrict which
@@ -677,6 +794,25 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     // v26 (DES-179, ARCH-117, TASK-179): `wireEffort` already resolved the flat `Options.effort`
     // field alongside `thinking` above — set only when it actually applies (the anthropic arm).
     if (wired.effort !== undefined) options.effort = wired.effort;
+    // v37 (ARCH-178, DES-256, TASK-253, REQ-218): the policy applied is OUR data, so it is
+    // unconditional — emitted from `sandbox`, the object the builder above JUST returned, never
+    // re-derived. Once per ATTEMPT (the `attempt` param threaded from `invoke()`'s retry loop, NOT
+    // `sys.attempt` — the CLI's own internal backoff, read inside `_drain`). A call that is refused
+    // before reaching here (this class has no such refusal path today) would emit ZERO lines — "a
+    // posture printed for a session that never ran is a nerve attached to nothing".
+    this._eventSink({
+      kind: 'agent.confinement',
+      runId: req.runId,
+      agentId: req.agentId,
+      attempt,
+      posture: this._config.confinementPosture === 'unconfined' ? 'unconfined' : 'confined',
+      root: confinementRoot,
+      allowWrite: sandbox?.filesystem?.allowWrite ?? [],
+      denyRead: sandbox?.filesystem?.denyRead ?? [],
+      enabled: sandbox?.enabled === true,
+      failIfUnavailable: sandbox?.failIfUnavailable === true,
+      sdkVersion: SDK_VERSION,
+    });
     // DES-066 (TASK-069): emit harness descriptor eagerly at session-build time (post-curation, before query).
     if (req.onHarness) {
       const descriptor = redactHarness({
@@ -830,7 +966,27 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       return { ok: false, provider: 'claude-agent-sdk', reason: 'unreachable', unmapped };
     } catch (err) {
       const timedOut = err instanceof Error && err.name === 'AbortError';
+      // v37 (DES-259, ADR-083, TASK-253, REQ-218): a sandbox that cannot start THROWS on the async
+      // iterator (TASK-250's S10 — real, on-host measurement) rather than yielding an ordinary
+      // `result` message: `subtype:"error_during_execution"`, `errors:[...]`, `num_turns:0`, and the
+      // thrown `.message` is `"Claude Code returned an error result: " + errors[0]`, whose own text
+      // starts with the stable, literal prefix `"Sandbox required but unavailable: "` (S10's own
+      // contrastive comparison against an ordinary terminal failure — different `subtype`, different
+      // detail field, different thrown-message prefix). `retryable:false` — a retry cannot install a
+      // working nested user namespace. This detection is unconditional (never gated on
+      // `confinementPosture`): if it fires under the 'unconfined' posture at all (this class's own
+      // `sandbox:{enabled:false}` object should never provoke it), labelling it accurately is still
+      // correct, never a regression.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('Sandbox required but unavailable')) {
+        return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', retryable: false, detail: `${SANDBOX_UNAVAILABLE}: ${msg}`, unmapped };
+      }
       return { ok: false, provider: 'claude-agent-sdk', reason: timedOut ? 'timeout' : 'unreachable', unmapped };
     }
   }
 }
+
+// v37 (DES-259, ADR-083, TASK-253, REQ-218): exported ONCE — the exact literal ADR-083's revisit
+// trigger quotes ("an operator reports a run refused for `sandbox unavailable`"). A drift-lock UT
+// pins this string; a rename on either side must break it, never silently diverge.
+export const SANDBOX_UNAVAILABLE = 'sandbox unavailable';

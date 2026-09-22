@@ -191,6 +191,15 @@ export interface ServerConfig {
   // rwe.config.json: no operator knob is asked for, and every unforwarded config block this repo
   // has added became a silent-failure bug (the composeConfig class, twice).
   diagramRender?: DiagramRendererOpts;
+  // v37 (ARCH-181, DES-262, TASK-257, REQ-218, ADR-083 owner_decision posture C): this engine's
+  // MEASURED Bash-confinement posture, set ONCE at boot by `main.ts`'s real
+  // `probeConfinement()` (src/gateway/confinement-probe.ts) and forwarded here by `composeConfig()`.
+  // Deliberately NOT a `FileConfig`/`rwe.config.json` key (excluded from `FileConfig` below,
+  // same convention as `gateway`/`diagramRender`) — this is MEASURED, not declared; an operator
+  // cannot make the host's nested-userns capability true by writing JSON. Read by the
+  // `call-tool.ts` remote-submission door (DES-262) and stamped onto every `agent.confinement`
+  // event (ARCH-178/DES-256) so the posture is visible, not implicit.
+  confinementPosture?: 'confined' | 'unconfined';
 }
 
 export interface Server {
@@ -874,11 +883,16 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     scheduler, webhooks,
   });
 
-  // v24 (DES-140, TASK-147): ToolDeps built once per request (only `webhookBaseUrl` varies with
-  // the incoming Host header) — `assetSync` is read live off the outer `let` so a call after
+  // v24 (DES-140, TASK-147): ToolDeps built once per request (`webhookBaseUrl`/`isRemoteSubmission`
+  // vary with the incoming request) — `assetSync` is read live off the outer `let` so a call after
   // `bindAssetSync` runs sees the real instance.
-  function buildToolDeps(webhookBaseUrl: string): ToolDeps {
-    return { facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, modelBook, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store };
+  // v37 (DES-262, ARCH-181): `isRemoteSubmission` defaults to `false` (never gate a caller this
+  // helper's OWN internal uses — `buildInitializeInstructions`'s `workflow_authoring_guide` call —
+  // never need to supply); `confinementPosture` rides `config?.confinementPosture`, set once at boot
+  // by `main.ts`'s real probe (ARCH-181) — `undefined` on every test/zero-config boot, which the
+  // door already treats as "don't gate" (call-tool.ts's own documented default).
+  function buildToolDeps(webhookBaseUrl: string, isRemoteSubmission = false): ToolDeps {
+    return { facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, modelBook, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store, confinementPosture: config?.confinementPosture, isRemoteSubmission };
   }
   // v35 (DES-239b, ARCH-152, TASK-237, REQ-210): BOTH `initialize` results carry `instructions`
   // with `ENVELOPE_NOTE` and a guide-size figure COMPUTED per call from the SAME stringified
@@ -1140,6 +1154,14 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // self-update rescue path. Loopback-bound servers are excluded (no non-loopback peers possible).
     // Tunnel/forwarded headers → NEVER exempt (D-AUTH-3 cloudflared-on-loopback hole).
     const dbindExempt = isLoopbackPeer(req.socket?.remoteAddress, req.headers) && !isLoopback(bind);
+    // v37 (DES-262, ARCH-181, REQ-218): "remote" for the confinement door is the caller's raw socket
+    // peer, period — NOT `dbindExempt` (which additionally requires a non-loopback `bind` and is
+    // false on a loopback bind even though the peer genuinely IS loopback) and NOT `Principal.kind`
+    // (auth-disabled/loopback-exempt principals carry no locality signal of their own — an
+    // authenticated remote caller on a non-loopback bind gets an ordinary id-bearing principal).
+    // Computed ONCE per request, reused at both `tools/call` sites below (server.ts's own :1143-ish
+    // precedent against two copies of the same check).
+    const isRemoteSubmission = !isLoopbackPeer(req.socket?.remoteAddress, req.headers);
     // v23 Gate 6.5 (round 4): the ONE way this handler dispatches a dashboard/API request. A1 gave
     // `/api/workflows/:name/describe` a second, authenticated entry, and the POSITIONAL argument
     // list was typed out twice; a drift between the two copies would diverge on one path and not
@@ -1295,7 +1317,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
                 const args = rpc.params?.arguments ?? {};
                 const webhookBaseUrl = `http://${req.headers.host ?? `${bind}:${boundPort}`}`;
                 const principal: Principal = principalFor(p.principal);
-                const result = await callTool(buildToolDeps(webhookBaseUrl), name, args, principal);
+                const result = await callTool(buildToolDeps(webhookBaseUrl, isRemoteSubmission), name, args, principal);
                 // v24 (DES-140): the ONE case that lifts to a top-level JSON-RPC `error` — every
                 // other outcome (schema/authz refusal, a handler's own envelope) is wrapped in
                 // `result.content` like before.
@@ -1554,7 +1576,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
           // peer on an auth-ENABLED server (dbindExempt skipped the auth-gated block above) — the
           // two are distinct Principal kinds even though neither carries an id.
           const principal: Principal = authCfg ? { kind: 'loopback-exempt' } : { kind: 'auth-disabled' };
-          const result = await callTool(buildToolDeps(webhookBaseUrl), name, args, principal);
+          const result = await callTool(buildToolDeps(webhookBaseUrl, isRemoteSubmission), name, args, principal);
           if (result && typeof result === 'object' && 'error' in result && typeof (result as { error?: { code?: unknown } }).error?.code === 'number') {
             sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, error: (result as { error: { code: number; message: string } }).error });
             return;

@@ -47,6 +47,18 @@ export interface ToolDeps {
   lookup: OwnerLookup;
   audit: AuditWriter;
   authorize?: (principal: Principal, spec: { name: string; key: string | null; authz: unknown }, args: Record<string, unknown>, lookup: OwnerLookup) => AuthzVerdict;
+  /** v37 (DES-262, ARCH-181, REQ-218, ADR-083 owner_decision posture C): this engine's MEASURED
+   *  confinement posture (src/gateway/confinement-probe.ts, set once at boot — never a config key).
+   *  Both this field and `isRemoteSubmission` below default to the SAFE-for-the-existing-suite
+   *  reading when omitted (`undefined` ⇒ "don't gate") — every one of this file's other ~250 test
+   *  call sites constructs `ToolDeps` without either field and must keep passing unmodified; only
+   *  `server.ts`'s real request handler sets both from real measurements. */
+  confinementPosture?: 'confined' | 'unconfined';
+  /** v37 (DES-262): true iff the caller's raw socket peer is NOT loopback (`net-guard.ts`'s
+   *  `isLoopbackPeer`, the same primitive the D-BIND auth exemption already uses — never
+   *  `Principal.kind`, which conflates auth state with physical locality, and never `ServerConfig`'s
+   *  `bind`/`allowedHosts`, which are deployment-wide policy, not this one request's origin). */
+  isRemoteSubmission?: boolean;
 }
 
 /** {code:number} marks the ONE case (unknown tool name) that lifts to a top-level JSON-RPC
@@ -95,6 +107,22 @@ export async function callTool(
   if (!spec) return unknownTool(name);
 
   const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
+  // v37 (DES-262, ARCH-181, REQ-218, ADR-083 owner_decision posture C): the remote-submission door.
+  // Ahead of ajv/authorize — same precedent as INLINE_SCRIPT_CLOSED below, and for the same reason:
+  // this is a REFUSAL with a migration-shaped answer ("why", not a bare validation complaint), and
+  // there is no reason to spend a schema/authz check on a call this engine will not run either way.
+  // Gated on BOTH conditions together, never one alone: `confinementPosture === 'unconfined'` (this
+  // engine could not measure a working nested user namespace at boot — the sandbox is not attempted
+  // for ANY run) AND `isRemoteSubmission === true` (the caller's raw socket peer is not loopback).
+  // A LOCAL submission on the same unconfined posture is NOT refused — that is the owner's own
+  // accepted cost (ADR-083: "本機發起的 run 仍不受限制"), not an oversight; only `run_start`/
+  // `run_resume` are gated — both admit new Bash-capable agent() work, unlike every read tool.
+  if ((spec.name === 'run_start' || spec.name === 'run_resume') && deps.confinementPosture === 'unconfined' && deps.isRemoteSubmission === true) {
+    return refusalEnvelope(
+      'CONFINEMENT_UNAVAILABLE',
+      'CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — remote run submissions are refused; local (loopback) submissions still run, unconfined.',
+    );
+  }
   // v24 (integrator; REQ-098 + DES-142): `run_start`'s schema is CLOSED, so a caller still using the
   // RETIRED inline door (`{script}`) would be answered a bare `INVALID_ARGUMENT: (root) must NOT
   // have additional properties` — technically true and completely useless. The whole point of

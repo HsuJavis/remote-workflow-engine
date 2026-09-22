@@ -44,6 +44,12 @@ beforeAll(async () => {
       baseUrl: process.env['OLLAMA_BASE_URL'] ?? 'http://127.0.0.1:4000',
       aliases: QWEN_ALIAS,
       timeoutMs: 60000,
+      // v37 Gate-6 amendment (2026-09-22, implementer; ADR-083 owner_decision posture C):
+      // `confinementPosture` defaults to 'unconfined' (found by running the real suite — see
+      // bash-confinement-wiring.test.ts's own note) — set explicitly here so this real-tier test,
+      // when it DOES run on a sandbox-capable host, still exercises the confined arm it is written
+      // to prove (a write outside the workspace must not land on disk).
+      confinementPosture: 'confined',
       confinement: { allowHostPaths: [], protectedFiles: [join(workRoot, 'auth-tokens.db')], workRoot },
     } as any),
   });

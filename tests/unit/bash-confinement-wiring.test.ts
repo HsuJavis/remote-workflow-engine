@@ -23,7 +23,14 @@ describe("UT-314 options.sandbox is the builder's own output, at every construct
     queryMock.mockReturnValue(okSession());
   });
 
-  it('deep-equals buildBashConfinement() for the SAME input, via a real workspace + confinement config', async () => {
+  // v37 Gate-6 amendment (2026-09-22, implementer; ADR-083 owner_decision posture C — found by
+  // running the real suite, not by design): `confinementPosture` DEFAULTS TO `'unconfined'`, not
+  // `'confined'` as this describe block originally assumed — the `'confined'` default broke every
+  // real-CLI-spawning test in the suite (`val-023-sdk-gateway-timeout.test.ts` and siblings), which
+  // never set `confinementPosture` and started hitting `SANDBOX_UNAVAILABLE` at CLI startup instead
+  // of testing what they were written to test. The three cases below now set `confinementPosture:
+  // 'confined'` explicitly to keep testing the confined arm; a fourth case pins the corrected default.
+  it('deep-equals buildBashConfinement() for the SAME input, via a real workspace + confinement config (confinementPosture explicitly confined)', async () => {
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
     const { buildBashConfinement, DENY_READ_MODE } = await import('../../src/gateway/bash-confinement.js');
     const workspace = '/tmp/remote-workflow-runs/_adhoc/run-a';
@@ -32,6 +39,7 @@ describe("UT-314 options.sandbox is the builder's own output, at every construct
     const protectedFiles = ['/home/op/rwe.config.json', `${workRoot}/auth-tokens.db`];
     const client = new ClaudeAgentSdkGatewayClient({
       baseUrl: 'http://127.0.0.1:4000',
+      confinementPosture: 'confined',
       confinement: { allowHostPaths: [grant], protectedFiles, workRoot },
     } as any);
     const opts: AgentOpts = {};
@@ -41,9 +49,9 @@ describe("UT-314 options.sandbox is the builder's own output, at every construct
     expect(call.options?.sandbox).toEqual(expected);
   });
 
-  it('confinement absent ⇒ the workspace-only posture is still built, NEVER sandbox:undefined', async () => {
+  it('confinementPosture:"confined" + confinement absent ⇒ the workspace-only posture is still built, NEVER sandbox:undefined', async () => {
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
-    const client = new ClaudeAgentSdkGatewayClient({ baseUrl: 'http://127.0.0.1:4000' });
+    const client = new ClaudeAgentSdkGatewayClient({ baseUrl: 'http://127.0.0.1:4000', confinementPosture: 'confined' } as any);
     const opts: AgentOpts = {};
     const workspace = '/tmp/remote-workflow-runs/_adhoc/run-b';
     await client.invoke({ prompt: 'ping', opts, runId: 'run-2', agentId: 'agent-1', workspace });
@@ -53,13 +61,22 @@ describe("UT-314 options.sandbox is the builder's own output, at every construct
     expect(call.options?.sandbox?.filesystem?.allowWrite).toEqual([workspace]);
   });
 
-  it('an absent root (no workspace, no configured cwd) still emits a sandbox object with allowWrite:[] — never an absent sandbox (ARCH-176 bug-class regression guard)', async () => {
+  it('confinementPosture:"confined" + an absent root (no workspace, no configured cwd) still emits a sandbox object with allowWrite:[] — never an absent sandbox (ARCH-176 bug-class regression guard)', async () => {
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
-    const client = new ClaudeAgentSdkGatewayClient({ baseUrl: 'http://127.0.0.1:4000' });
+    const client = new ClaudeAgentSdkGatewayClient({ baseUrl: 'http://127.0.0.1:4000', confinementPosture: 'confined' } as any);
     const opts: AgentOpts = {};
     await client.invoke({ prompt: 'ping', opts, runId: 'run-3', agentId: 'agent-1' });
     const [[call]] = queryMock.mock.calls as [[{ options?: { sandbox?: { filesystem?: { allowWrite?: string[] } } } }]];
     expect(call.options?.sandbox?.filesystem?.allowWrite).toEqual([]);
+  });
+
+  it('confinementPosture omitted entirely ⇒ unconfined by default: options.sandbox is {enabled:false}, buildBashConfinement() never called', async () => {
+    const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
+    const client = new ClaudeAgentSdkGatewayClient({ baseUrl: 'http://127.0.0.1:4000' });
+    const opts: AgentOpts = {};
+    await client.invoke({ prompt: 'ping', opts, runId: 'run-4', agentId: 'agent-1', workspace: '/tmp/remote-workflow-runs/_adhoc/run-d' });
+    const [[call]] = queryMock.mock.calls as [[{ options?: { sandbox?: unknown } }]];
+    expect(call.options?.sandbox).toEqual({ enabled: false });
   });
 });
 

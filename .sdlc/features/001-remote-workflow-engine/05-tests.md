@@ -15546,11 +15546,11 @@ tier fakes the SDK module (`vi.mock('@anthropic-ai/claude-agent-sdk', ...)`, sam
 SUT's own boundary.
 
 ### UT-309 — `buildBashConfinement()` — the whole posture as one pure function
-- **status:** red
+- **status:** green
 - **traces:** DES-252
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v37
 
 File: `tests/unit/bash-confinement.test.ts` (new). Every fixed field of the posture for a known
@@ -15564,12 +15564,14 @@ against the `MASK_PROVIDER_ENV` constant (both arms). Red reason (confirmed via 
 ../../src/gateway/bash-confinement.js — Does the file exist?` (module does not exist yet, 0 tests
 collected).
 
+**Gate-6 confirmation (2026-09-22, implementer):** green, 16/16 (UT-309+UT-310 share `tests/unit/bash-confinement.test.ts`), `npx vitest run tests/unit/bash-confinement.test.ts`.
+
 ### UT-310 — `validateHostPathGrants()` + `formatGrantRefusals()` — boot refuses a grant that would undo the control
-- **status:** red
+- **status:** green
 - **traces:** DES-254
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v37
 
 File: `tests/unit/bash-confinement.test.ts` (new, same file as UT-309). One case per `GrantRule`
@@ -15578,12 +15580,14 @@ refusals returned, never just the first; a symlinked grant resolves to its realp
 `formatGrantRefusals()` renders one line per refusal naming the offending entry + remedy. Same
 module-not-found red as UT-309 (one file, one collection failure).
 
+**Gate-6 confirmation (2026-09-22, implementer):** green, 16/16 (UT-309+UT-310 share `tests/unit/bash-confinement.test.ts`), `npx vitest run tests/unit/bash-confinement.test.ts`.
+
 ### UT-311 — `composeConfig()` refuses boot on an invalid `sandbox.allowHostPaths` grant
-- **status:** red
+- **status:** green
 - **traces:** DES-254, TASK-252
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v37
 
 File: `tests/unit/sandbox-config-wiring.test.ts` (new). A relative grant / a grant inside `workRoot`
@@ -15595,12 +15599,14 @@ instead of rejecting (`sandbox` is silently dropped — logged only as an "unrec
 warning today); the two forwarding cases read `undefined` off `_config.confinement` (the field does
 not exist).
 
+**Gate-6 confirmation (2026-09-22, implementer):** green, 8/8, `npx vitest run tests/unit/sandbox-config-wiring.test.ts` (UT-311+UT-312 share this file).
+
 ### UT-312 — `protectedFiles` come from the file `loadFileConfig()` actually read
-- **status:** red
+- **status:** green
 - **traces:** DES-255, TASK-252
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v37
 
 File: `tests/unit/sandbox-config-wiring.test.ts` (new, same file as UT-311). `loadFileConfig()`
@@ -15615,12 +15621,14 @@ is supplied.) Red reason (confirmed via direct re-run): `loadFileConfig is not a
 exported yet) and `expected undefined to be '<path>'`/`to deeply equal [...]` (no `confinement`
 field yet).
 
+**Gate-6 confirmation (2026-09-22, implementer):** green, 8/8, `npx vitest run tests/unit/sandbox-config-wiring.test.ts` (UT-311+UT-312 share this file).
+
 ### UT-313 — the hop-2 wiring probe: `composeConfig()` forwards `sandbox.allowHostPaths` into the constructed gateway's confinement
-- **status:** red
+- **status:** green
 - **traces:** DES-253, ARCH-177, TASK-252, REQ-216 (K8 precedent)
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v37
 
 File: `tests/unit/compose-config-v2-wiring.test.ts` (extended, new `it()` beside the existing
@@ -15635,12 +15643,14 @@ failed / 60 passed — `expect(accounted).toEqual(known)` fails (`sandbox` on on
 `gwConfig.confinement?.allowHostPaths` reads `undefined`; the 60 pre-existing cases are unaffected
 (no regression).
 
+**Gate-6 confirmation (2026-09-22, implementer):** green, 62/62, `npx vitest run tests/unit/compose-config-v2-wiring.test.ts` (0 regressions among the 60 pre-existing cases).
+
 ### UT-314 — `options.sandbox` is the builder's own output, at every construction
-- **status:** red
+- **status:** green
 - **traces:** DES-253, ARCH-176, TASK-253
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v37
 
 File: `tests/unit/bash-confinement-wiring.test.ts` (new). Deep-equals `buildBashConfinement()`'s own
@@ -15653,12 +15663,14 @@ collapse). Red reason (confirmed via direct re-run,
 `npx vitest run tests/unit/bash-confinement-wiring.test.ts`): 4/4 failed — `call.options?.sandbox`
 is `undefined` on every case (the field is never set today).
 
+**Gate-6 confirmation (2026-09-22, implementer):** green, 5/5, `npx vitest run tests/unit/bash-confinement-wiring.test.ts` (UT-314+UT-315 share this file). UT-314 gained a 4th case and its original 3 gained explicit `confinementPosture:'confined'` — the default flipped to `'unconfined'` mid-implementation after running the real suite surfaced a regression in real-CLI-spawning tests; see DES-253/ARCH-176's own v37 amendments.
+
 ### UT-315 — the sandbox-unavailable failure is labelled with `SANDBOX_UNAVAILABLE`
-- **status:** red
+- **status:** green
 - **traces:** DES-259, ADR-083, TASK-253
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v37
 
 File: `tests/unit/bash-confinement-wiring.test.ts` (new, same file as UT-314). Drift-lock only: the
@@ -15670,12 +15682,14 @@ yet under `evidence/v37-spike/`); asserting a specific detection shape now would
 implementation choice this gate has no evidence for. Left for Gate 6 to extend once S10 reports.
 Red reason (confirmed via direct re-run): `SANDBOX_UNAVAILABLE` is not exported yet.
 
+**Gate-6 confirmation (2026-09-22, implementer):** green, 5/5, `npx vitest run tests/unit/bash-confinement-wiring.test.ts` (UT-314+UT-315 share this file). UT-314 gained a 4th case and its original 3 gained explicit `confinementPosture:'confined'` — the default flipped to `'unconfined'` mid-implementation after running the real suite surfaced a regression in real-CLI-spawning tests; see DES-253/ARCH-176's own v37 amendments.
+
 ### UT-316 — `agent.confinement` — zero on refusal, exactly one per attempt on admission
-- **status:** red
+- **status:** green
 - **traces:** DES-256, ARCH-178, TASK-253
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v37
 
 File: `tests/unit/agent-confinement-events.test.ts` (new). An admitted call emits exactly one
@@ -15686,24 +15700,28 @@ recorded as a regression floor `bindEventSink()` must preserve, same precedent a
 Confirmed via direct re-run (`npx vitest run tests/unit/agent-confinement-events.test.ts`): 3
 failed / 2 passed — `client.bindEventSink is not a function` on the admission-count case.
 
+**Gate-6 confirmation (2026-09-22, implementer):** green, 5/5, `npx vitest run tests/unit/agent-confinement-events.test.ts` (UT-316..319 share this file).
+
 ### UT-317 — `agent.confinement` is emitted from the object the builder just returned, never re-derived
-- **status:** red
+- **status:** green
 - **traces:** DES-256
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v37
 
 File: `tests/unit/agent-confinement-events.test.ts` (new, same file as UT-316). `allowWrite` on the
 event equals the builder's output for THIS call's workspace. Red reason: `bindEventSink is not a
 function`.
 
+**Gate-6 confirmation (2026-09-22, implementer):** green, 5/5, `npx vitest run tests/unit/agent-confinement-events.test.ts` (UT-316..319 share this file). This case's client construction gained an explicit `confinementPosture:'confined'` — the gateway's default flipped to `'unconfined'` mid-implementation (see DES-253/ARCH-176's v37 amendments), and this case tests the confined arm on purpose.
+
 ### UT-318 — `sdkVersion` is read mechanically off the installed package, never hand-copied
-- **status:** red
+- **status:** green
 - **traces:** DES-256
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v37
 
 File: `tests/unit/agent-confinement-events.test.ts` (new, same file as UT-316). Compares
@@ -15711,6 +15729,8 @@ File: `tests/unit/agent-confinement-events.test.ts` (new, same file as UT-316). 
 `@anthropic-ai/claude-agent-sdk/package.json` (`createRequire(import.meta.url).resolve(...)`,
 deliberately the SAME mechanism DES-256 prescribes for the SUT but a SEPARATE invocation, so this
 is not a re-computation of the SUT's own call). Red reason: `bindEventSink is not a function`.
+
+**Gate-6 confirmation (2026-09-22, implementer):** green, 5/5, `npx vitest run tests/unit/agent-confinement-events.test.ts` — the RESOLVE-form defect fixed (see TASK-253's v37 Gate-6 note): the original comparison line threw `ERR_PACKAGE_PATH_NOT_EXPORTED`, unrelated to the SUT.
 
 ### UT-319 — a faked EACCES `tool_result` reaches `agent_log` via `onEvent` (DES-256 fallback plumbing)
 - **status:** green
@@ -15766,11 +15786,15 @@ the workspace root already lets `query()` proceed (there is no re-walk to block 
 direct re-run: 1 failed / 2 passed.
 
 ### UT-322 — the guide's "host path grants" paragraph
-- **status:** red
+- **status:** green (CORRECTED 2026-09-22, Gate-6 implementer — found already implemented and live
+  on disk at the start of this dispatch, unrelated to this dispatch's own work; this row's `red`
+  status here was stale. Confirmed via direct re-run: 4/4 pass, `npx vitest run
+  tests/unit/authoring-guide.test.ts`. See DES-258's own v37 amendment: the text is now FALSE on a
+  deployment measured `unconfined` — an open, live gap, not fixed in this dispatch.)
 - **traces:** DES-258, ARCH-107, TASK-256, REQ-117
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v37
 
 File: `tests/unit/authoring-guide.test.ts` (extended). Section titled "host path grants" (never
@@ -15791,6 +15815,42 @@ GUIDE_EXAMPLES case and all 55 pre-existing cases are unaffected).
   against the design's OWN chosen default (the static paragraph), which is what ships regardless of
   how that marker is later answered; the alternative (a rendered live list) would replace this UT's
   assertions, not add to them, per DES-258's own note.
+
+### UT-323 — `probeConfinement()` — the boot-time nested-bwrap measurement (new, ARCH-181/DES-261, TASK-257)
+- **status:** green
+- **traces:** DES-261, ARCH-181, TASK-257, REQ-218
+- **tier:** unit
+- **real:** false (injected `spawn`) / true (the `UT-323b` smoke case, a real unmocked `spawnSync` call against this host — not gated, always runs)
+- **result:** pass
+- **iter:** v37
+
+File: `tests/unit/confinement-probe.test.ts`. Written by the Gate-6 implementer (ADR-083's
+owner_decision recorded mid-iteration, after the original Gate-5 pass — no pre-written red test
+existed for this new mechanism). Four injected-`spawn` cases (exit 0 ⇒ confined; nonzero/spawn-error/
+timeout ⇒ unconfined with a reason) plus one real-`spawnSync` smoke case confirming the default arg
+runs against the actual host without throwing. Confirmed via direct run: 5/5 pass.
+
+### UT-324 — the remote-submission door: `run_start`/`run_resume` refused when unconfined AND remote (new, ARCH-181/DES-262, TASK-257)
+- **status:** green
+- **traces:** DES-262, ARCH-181, TASK-257, REQ-218, ADR-083
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v37
+
+File: `tests/unit/call-tool-confinement-door.test.ts`. **[LOAD-BEARING]** the red message before
+`call-tool.ts`'s door existed (`git stash`/backwards-checkout are forbidden per this repo's own
+CLAUDE.md — the red was captured by running the test against the pre-edit tree, not by reverting
+after the fact): `TypeError: Cannot read properties of undefined (reading 'ok')` at
+`src/call-tool.ts:170`, inside `authorize()` — the pre-dispatch check did not exist, so the call fell
+through to the real authorize path with an intentionally-incomplete test `lookup`/`authorize` fixture
+and crashed before ever reaching a refusal. Six cases: remote+unconfined refuses `run_start` with
+`code:'CONFINEMENT_UNAVAILABLE'` before `authorize()`/the facade are ever called (the load-bearing
+case); local+unconfined still reaches the facade (the owner's accepted local-unconfined cost);
+remote+confined still reaches the facade (the door only closes under the degraded posture);
+remote+fields-omitted (the shape every one of this file's ~250 other test call sites uses) is
+unaffected; `run_resume` is gated the same way; `run_status` (a read) is never gated. Confirmed via
+direct re-run: 6/6 pass.
 
 ### VAL-253 — REQ-218: an agent's Bash cannot write outside the run workspace, or the path is a declared operator grant
 - **status:** red

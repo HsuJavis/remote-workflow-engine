@@ -9250,3 +9250,106 @@ gate 註記並重新 `python3 -c "import yaml; yaml.safe_load(open('state.yaml')
 `git checkout`/`restore`/`stash`,新增的探測腳本只放在會話自己的 scratchpad,repo 工作樹裡只新增
 了 `evidence/v37-spike/` 十份檔案。下一步:TASK-251..256 可以照架構已經寫好的「兩臂都覆蓋」設計
 繼續走 Gate 6,不必等這次的 host-specific 沙箱問題解決(那是本機的環境問題,不是設計缺口)。
+
+---
+
+**v37 Gate 6(2026-09-22,implementer)—業主裁決 (C) 落地,不是照 TASK-251..253 原稿的 (A) 姿態實作。**
+
+進來之前先重讀 ADR-083 記在同一列的 `owner_decision`:TASK-250 的 S1/S9 量到本機
+`sandbox.enabled:true` 時沒有任何 Bash 指令跑得完(bwrap 第一層過、CLI 自己的 `apply-seccomp`
+巢狀 userns 被 `/etc/apparmor.d/bwrap-userns-restrict` 擋),業主選 (C):照樣嘗試圍籠,量不到就
+不圍——本機送出的 run 仍不受限制,遠端送出的一律在門口拒絕。(C) 不在原本 ADR-083 寫死的三選項
+文字裡,所以设计要先補,不能直接套用 TASK-251..253 原本針對 (A) 寫的 dod。
+
+**「姿態」不能是常數,只能是量出來的。** advisor 在動手前糾正了我原本想寫的
+`CONFINEMENT_AVAILABLE = false` 常數方案——那樣會把 revisit trigger(「上游修好 nested userns 就
+翻回 (A),不用重辯論」)寫死成程式碼修改,而不是量測結果自動反映。改成
+`src/gateway/confinement-probe.ts`:開機時真的跑一次巢狀 `bwrap --unshare-user ... -- bwrap
+--unshare-user ...`(跟 owner_decision 自己引的獨立複驗指令一模一樣),exit 0 記 `confined`,任何
+非零/spawn 失敗/timeout 記 `unconfined` 並帶 `reason`。純函式 `buildBashConfinement()` 完全不知道
+「姿態」這件事——量測結果只決定要不要呼叫它,而不是它回傳什麼。
+
+**「遠端」是什麼:直接去讀已有的程式碼,而不是三個提示裡的任何一個字面詞。** 派工提示點名
+「loopback-exempt principal kind、bind 設定、allowedHosts 清單」,但這三個全部量錯:
+`loopback-exempt` principal 只在「bind 非 loopback 且 auth 開啟」才存在,預設設定(loopback bind)
+下本機呼叫者拿到的是普通帶 id 的 principal,用 kind 判斷會把業主自己的機器也擋掉;`dbindExempt`
+額外 AND 了 `!isLoopback(bind)`,在 loopback bind 下永遠是 false,即使 peer 真的是 loopback;
+`bind`/`allowedHosts` 是部署層級的 DNS-rebinding 政策,不是這一次請求的事實。真正對的原語是
+`net-guard.ts` 既有的 `isLoopbackPeer(remoteAddress, headers)`——D-BIND 的 auth 豁免已經在用同一個
+判斷,連 tunnel header fail-closed 都已經處理好了。
+
+**門開在 `call-tool.ts`,跟既有的 `INLINE_SCRIPT_CLOSED` 同一個位置。** `ToolDeps` 加兩個 optional
+欄位(`confinementPosture`/`isRemoteSubmission`),兩者任一 `undefined` 就不擋——這保住了這個檔案
+另外約 250 個既有呼叫點,一個都不用改。`server.ts` 算一次 `isLoopbackPeer`,兩個 `tools/call` 進入
+點共用。只擋 `run_start`/`run_resume`(唯二會真的送新 Bash 工作進來的工具),`run_status` 等純讀取
+不受影響。
+
+**紅測先寫、先跑、記下真實紅字。** `tests/unit/call-tool-confinement-door.test.ts` 第一版在
+`callTool()` 還沒接門之前跑出 `TypeError: Cannot read properties of undefined (reading 'ok')`
+(`call-tool.ts:170`,`authorize()` 內部)——因為門不存在,呼叫直接落到真正的 authorize 路徑,而
+測試故意給的 `lookup`/`authorize` 假物件不完整。接上門之後同一個 case 回
+`{code:'CONFINEMENT_UNAVAILABLE', ...}`,`authorize()`/facade 都沒被呼叫到。
+
+**既有 Gate 5 紅測全部照原樣轉綠,一個字都沒改動斷言。** `buildBashConfinement()`/
+`validateHostPathGrants()`(UT-309/310)、`composeConfig()` 的申報清單+`protectedFiles`
+(UT-311/312/313)完全不受 (A)→(C) 姿態改變影響(申報清單管「圍住的 run 還能多碰什麼」,姿態管
+「要不要圍」,兩件事正交)。`options.sandbox`/`agent.confinement` 那組測試(UT-314/316/317/319)
+一開始擔心「confinementPosture 預設值」會讓它們變紅——最後選的預設是:欄位缺席時視同 `'confined'`
+(這個 class 直接建構、沒經過 `main.ts` 探測的每一個現有單元測試都保持 pre-v37「一律嘗試圍籠」的
+行為不變),於是這批測試完全不用改,直接綠。
+
+**抓到一個測試本身的缺陷,修了、記下來,沒有偷偷改斷言配合實作。** UT-318 原本比對
+`nodeRequire.resolve('@anthropic-ai/claude-agent-sdk/package.json')`——DES-256 那一列自己的文字
+早就寫死這個寫法會丟 `ERR_PACKAGE_PATH_NOT_EXPORTED`(套件的 `exports` 沒開放 `./package.json`
+子路徑),用 `node --input-type=module -e "..."` 在測試框架之外重驗一次,結果一樣丟例外。改成
+解析主入口再 `dirname()+'package.json'`(DES-256 自己記錄「可行」的寫法),仍然是跟 SUT 自己的
+`resolveSdkVersion()` 不同的程式路徑,滿足「fresh read」的原始用意。
+
+**沒做的部分,明講,不是默默漏掉:** TASK-253 的 (c)(`findProjectMarkerAboveWorkspace()`/
+DES-257 re-walk)、TASK-254/255(REQ-219 兩個模組刪除)、TASK-256(guide 段落)這次都不在派工
+範圍內,`workroot-rewalk.test.ts`/`val-024` 兩個 re-walk case/`authoring-guide.test.ts` 的
+host-path-grants 段落維持 Gate 5 留下的紅。`agent.confinement_denied`(S4 已測正面)這次也沒做——
+沒有 Gate-5 紅測要求 `PostToolUseFailure` hook 接線,implementer 合約不能搶著實作沒有測試撐著的
+行為,記在 ARCH-178/DES-256 的 v37 修訂裡當缺口,不是悄悄出貨。
+
+三段矛盾註解(`BUILT_IN_CORE_TOOLS`/V3-residual/`CLAUDE_SDK_CAN_USE_TOOL_SHADOWED`)全部改成
+「看姿態決定」的講法,不是套用原本設計稿裡那句在 (A) 假設下寫死的單一句子——那句話在這台機器上
+會是假的。`@anthropic-ai/claude-agent-sdk` 在 `package.json` 跟 `package-lock.json` 都拿掉了 caret。
+
+全程未使用 `git checkout`/`restore`/`stash`。design/tasks/tests/impl-log/rtm 全部用「原地標註日期、
+上稿保留」的方式修訂,新增的 ARCH-181/DES-261/DES-262/TASK-257/UT-323/UT-324 都是全新列,不是覆蓋
+既有列。state.yaml 待補一筆 gate 註記並重新 `python3 -c "import yaml; yaml.safe_load(open('state.yaml'))"`
+驗證;`npx tsc --noEmit` 除了本來就跟本次無關、屬於 DES-257 範圍的既有紅之外全過;全套件結果見
+下一則 impl-log/orchestrator 報告。
+
+---
+
+**v37 Gate 6 追記(同日,implementer)——上面那段「預設選 confined」寫的時候是真的,但錯了,靠跑
+全套件才抓到,不是設計時就想到。**
+
+上面那段說「confinementPosture 缺席時視同 confined,UT-314/316/317/319 完全不用改」——這在只跑
+那幾個目標檔案時是真的(mock 過 `@anthropic-ai/claude-agent-sdk` 的單元測試不在乎 `sandbox` 欄位
+內容,直接綠)。但跑全套件(3380 案例、676 秒)才發現:`val-023-sdk-gateway-timeout.test.ts` 這種
+「真的 spawn `claude` CLI、指向本機 stub HTTP 端點」的 acceptance/integration 測試,建構
+`ClaudeAgentSdkGatewayClient` 時完全沒設 `confinementPosture`——而這台機器連 CLI 自己的沙箱依賴
+前置檢查都過不了(`socat` 預設沒裝,S1/S6/S9 早就量過)。預設選 `'confined'` 等於讓每一個這樣的真
+CLI 測試,從「測時逾時/重試/工具路由」變成「測 `SANDBOX_UNAVAILABLE`」——`num_turns:0`,連一個
+turn 都還沒開始就死在 CLI 啟動階段,跟測試原本要驗證的東西完全無關。這是一個貨真價實的迴歸,不是
+理論風險。
+
+修法:把預設方向整個反過來——`confinementPosture` 缺席時視同 `'unconfined'`,只有明確傳
+`'confined'` 才會呼叫 `buildBashConfinement()`。這個方向不只修掉迴歸,還更貼合這一輪的核心主張本身
+(「沒量測過就不能宣稱有圍籠」)——連「呼叫端」都適用這句話,不只主機:一個從沒問過開機探測問題的
+建構,本來就沒有證據可以拿去嘗試。`main.ts` 的真探測路徑才是唯一會明確設 `'confined'` 的地方。
+
+代價:UT-314 原本 3 個 case、UT-317 的 1 個 case、`val-253-bash-confinement.test.ts` 的
+`beforeAll`,原本靠「預設值剛好符合它們的斷言」矇混過關——現在補上明確的 `confinementPosture:
+'confined'`,UT-314 另外加了第 4 個 case 釘住修正後的預設行為。改完之後 `val-023` 跟其他真 CLI
+測試(`claude-agent-sdk-gateway-defects`/`claude-agent-sdk-session`/
+`claude-agent-sdk-gateway-allowed-tools`/`gateway-terminal-no-retry`/`ollama-tools-verbatim`/
+`val-019`/`val-201`)全部重新驗證過,綠。
+
+記在這裡是因為 02-architecture.md(ARCH-176/177)、04-design.md(DES-253/DES-261)、
+03-tasks.md(TASK-253)裡原本寫「預設 confined」的段落也已經原地訂正、標註同一個理由——這則追記是
+給只看 journal 敘事的人一個完整的因果鏈,不是唯一的更正記錄。全程仍未使用
+`git checkout`/`restore`/`stash`。

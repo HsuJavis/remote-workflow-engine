@@ -165,7 +165,10 @@ export type GatewayResult =
       /** v26 (DES-171, ARCH-111, TASK-176, issue #65): `false` on a `classifyApiError`-terminal
        *  failure — `invoke()`'s retry loop stops immediately instead of burning the full
        *  `timeoutMs × (1+retries)` bound against a provider that already said no. Absent (not
-       *  `true`) on every other failure reason, which keeps retrying (unchanged legacy behavior). */
+       *  `true`) on every other failure reason, which keeps retrying (unchanged legacy behavior).
+       *  v37 (DES-259, ADR-083, REQ-218) gives this field a SECOND producer: a sandbox-unavailable
+       *  failure (`SANDBOX_UNAVAILABLE`, `claude-agent-sdk-client.ts`'s `_drain`) is also
+       *  `retryable:false` — a retry cannot install a working nested user namespace either. */
       retryable?: false;
       /** v26 (DES-171): the classified provider error this terminal failure came from. */
       error?: { kind: string; status: number | null; attempt: number };
