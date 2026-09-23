@@ -1,344 +1,300 @@
-# Quality-dimensions lens — Architecture round 2 (v37 Gate 8 send-back)
+# Quality-dimensions lens — Architecture round 2 (v37 Gate 8 round-2 send-back)
 
-**Scope:** same five send-back findings as my own r1 — **A1** (webhook/scheduler bypass the
-remote-submission door), **A2** (`confinement.workRoot` evaporates to `denyRead: []`), **A3**
-(`ENGINE_STATE_DENY` hand-maintained, incomplete), **A4** (INV-V37-1/2 worded unconditional but
-false under posture `unconfined`), **O-1** (ARCH-178's row not amended for the deferred event).
-Responding to `adversarial.r1.md`'s **ADDENDUM — v37 Gate 8 send-back** section (the only other
-panellist's send-back round; I have read it in full, including their base-round §1–§7 above the
-addendum, for context on precedent they cite forward). They also rule on **A5/C-1** (routed
-elsewhere, one architectural sentence each) and surface a **new finding, A9**, which folds A3/A6/A8
-into one decision (**ADR-086**). I address all of it below, dimension by dimension, with an explicit
-rebut/concede/hold per disagreement. **This file supersedes the send-back `quality-dimensions.r2.md`
-this same path previously held** (the earlier round-2 content answered the pre-send-back version of
-`adversarial.r1.md`'s base round only — that file was clean at `HEAD` before this write, per
-`git status`, so it stays reachable via `git show HEAD:<path>` per this repo's own read-a-commit
-rule; this is a fresh r2 answering the send-back addendum specifically).
+**Scope:** same five items my own r1 left open to architecture — **B1** (INV-V37-5's hop lock
+covers `confinementPosture` only, not `isRemoteSubmission`), **B2** (creation-time vs.
+attachment-time trust on `createdRemote`), **B4** (`WebhookRegistry.deliver()`'s catch flattens
+every `start()` throw into an uncoded 403), **QD-MED** (the authoring guide names two admission
+routes where four now exist), **B5/B6** (ledger bookkeeping one edit behind the code). Responding
+to `adversarial.r1.md`'s **ADDENDUM 2 — v37 Gate 8 round-2 send-back** (the only other panellist's
+round-2 content; read in full, including the base round and ADDENDUM above it for precedent they
+cite forward). They also rule on **B3** and **B7**, and raise **A6/A8** as a Replaceability item I
+address below. **This file supersedes the round-2-send-back-addendum content this same path
+previously held** (that content answered the earlier, already-resolved `ADDENDUM` on A1-A9 — it is
+clean at `HEAD`, so `git show HEAD:<path>` reaches it, per this repo's own read-a-commit rule; this
+is a fresh r2 answering `ADDENDUM 2` specifically, which is the round my own r1 above is scoped to).
+
+I re-verified, myself, every load-bearing fact adversarial's addendum 2 depends on before conceding
+to any of it: `grep -n "admissionRefusal\|async resume" src/run-manager.ts` — `admissionRefusal` is
+called at `:473` only, inside `start()`; `resume()` is at `:848` and never calls it. `grep -n
+"createdRemote" src/*.ts` — written at exactly two `INSERT` sites (`scheduler.ts:294`,
+`webhook-registry.ts:174`), both behind a migration that does `ALTER TABLE … ADD COLUMN
+createdRemote INTEGER NOT NULL DEFAULT 0`. `grep -n "isRemoteSubmission" src/mcp-facade.ts
+src/call-tool.ts` — `workflowRegister(a, principal)` and `workflowPublish(a, principal)` take no
+`deps` argument at all; `deps.isRemoteSubmission` cannot reach either. `claim()`'s `'held'` arm
+(`webhook-registry.ts:211-213`) returns before any `UPDATE`. All four confirmed exactly as stated.
 
 ## Headline of this round
 
-**Converged, fully, on four of six decisions**: A1's chokepoint-at-`RunManager.start()`/`resume()`
-keyed on persisted **provenance** rather than live socket peer (their **ARCH-182**); A2's fix as
-"delete the optionality," not "defend against it" (their **ARCH-183** — I now go further than my own
-r1 and say so); A4's posture-conditional invariant reword; O-1's one-sentence ARCH-178 amendment.
-**One reversal of my own r1 position**: I withdraw my A3 recommendation (complete
-`ENGINE_STATE_DENY`, add a completeness test) and adopt their **ADR-086** (flip `DENY_READ_MODE` to
-`'workroot'`, delete the enumerated arm) — their **A9** finding (SDK reads are default-allow;
-`allowRead` is a punch-out, not an allowlist, confirmed against `sdk.d.ts` below) proves my fix was
-solving the wrong-shaped problem: completing a hand-list that was never the thing protecting sibling
-run workspaces in the first place. **One live disagreement remains, on R3** (how to mark
-pre-existing trigger rows that predate the `origin` column) — not a rebuttal of their ruling, a
-refinement of it, argued in §1/§3 below.
+**Converged on the shape of every fix except one ranking.** B4+B7 collapse into the same shared
+classifier I proposed in r1 under a different name — I adopt theirs (`classifyStartRefusal`) and
+their one correction I had missed (`RUN_ADMISSION_LIMIT` must NOT join `RefusalReason` — see §2).
+B1's remedy is compiler-enforced required keys, not more test cases — I concede this as the
+*stronger* instance of my own Observability principle, not a competing one. B3 converges exactly
+(mirror `createdRemote` on `WebhookView`). QD-MED converges on data-driven guide text. **One
+reversal of my own r1**: B2 is not a re-arm residual, it is zero coverage on the entire pre-v37
+cohort by construction — I withdraw my narrower framing and adopt the corrected arithmetic, while
+keeping my own zero-operator-action framing as a *second*, independent premise correction for the
+same `owner_decision`. **The one live disagreement is B2's option ranking** — not a fix-shape
+dispute, an `owner_decision` input both of us agree is not ours to resolve.
 
-## Responses to adversarial.r1.md's addendum, by disagreement
+## Responses to adversarial's ADDENDUM 2, per disagreement
 
-**D1 (A1, chokepoint layer) — no disagreement, converges.** My own r1 independently landed on
-`RunManager.start()` as the chokepoint, citing the same `INLINE_SCRIPT_CLOSED` precedent they cite.
-**What I add, not covered in my r1**: their ruling on `resume()` — refuse if *either* the stored
-`RunSpec.origin` or the resume request's own remoteness is `'remote'` — is new territory my r1 never
-reached. I adopt it, and add one Observability requirement in §1 below: a resume refusal and a start
-refusal must be distinguishable in the journal, not collapsed into one `CONFINEMENT_UNAVAILABLE`
-shape, because they are diagnostically different events for an operator (a resume-time refusal means
-the posture changed *underneath* an already-running workflow, which is a fact worth its own line).
+**On B2 (§1) — concede the arithmetic, hold my premise as an addition, rebut nothing.** My r1 framed
+B2 as: an existing local trigger gets re-registered remotely, `createdRemote` never re-stamps, a
+cold fire admits unreviewed work. That is real but it is the *second-order* case. Adversarial's
+first-order fact is stronger and I verified it myself above: `createdRemote` is a column this
+iteration adds, `DEFAULT 0`, written only at row creation — so **every trigger that predates the
+migration reads local**, and ARCH-182's refusal arm has nothing to refuse on the population REQ-218
+exists for. My re-arm path is a live, additional way coverage *stays* zero even after an operator
+manually recreates a trigger to get it; it does not compete with their finding, it extends it past
+the point their "recreate the trigger" mitigation would otherwise look sufficient. I fold both into
+one corrected premise for the re-put `owner_decision`: **(a) coverage starts at zero** (theirs) **and
+(b) recreating a trigger does not make it durable**, because `workflow_publish` — not `claim()` — is
+the actual laundering point, and neither call receives `isRemoteSubmission` today. My r1's proposed
+fix (OR version provenance into fire-path admission) is withdrawn on their §1.1 evidence: stamping
+it would be a sixth unlocked hop through the facade, the exact bug class B1 already names once this
+round. I do not propose a fix for B2; I contribute a second premise to the same re-opened decision.
 
-**D2 (A1, one persisted signal vs. two, required vs. optional) — concede, and resolve my own r1's
-open question.** My r1 flagged, as unresolved, whether provenance should be recorded once (at
-`workflow_register`) or independently at `webhook_create`/`schedule_create` too, and predicted
-adversarial "may argue for recording it once... rather than separately." They didn't — they ruled
-**both**: `RunSpec.origin` on the run, **and** `createdRemote` independently on each trigger row,
-because a locally-registered workflow's webhook can still be attached by a remote party later. That
-resolves my own open question in the more conservative direction, and I take it: a single-signal
-model conflates "who registered the workflow" with "who attached this trigger to it," which are
-different trust events. **On `RunSpec.origin` required-vs-optional**: I agree with them ahead of the
-disagreement they predicted from my side. This isn't a reluctant concession — it follows directly
-from my own r1 Self-sustainability argument about A2 ("a system... needs its defaults to compose
-toward the SAME guarantee regardless of which optional key is set"). An optional origin field
-recreates exactly the `undefined`-means-permissive cascade I already objected to for `workRoot`. A
-security field whose absence silently means "admit" is the A2 defect wearing a different field name.
-Making it required lets the compiler catch admission site #5 the way their §"Testability" point
-argues — that's a Self-sustainability win too (see §4): no future admission path can forget to set
-it, because it won't compile.
+**On B2's option ranking (§1.3) — hold, and name it as the one real remaining dispute.** Adversarial
+ranks (iii) fix the host > (iv) drop `Bash` under `unconfined` > (ii) add version-origin > (i) keep
+C, correct the text. I do not have standing to out-rank this from my own lens's evidence — (iii) and
+(iv) are feasibility/spike questions (R6 in their own risk list), not quality-dimension questions.
+What I add, from Self-sustainability (§4 below): (iv) is not merely "the honest degradation," it is
+the textbook shape of a **circuit breaker** — the exact mechanism this dimension's brief names
+("circuit-breaker / graceful degradation under extreme load") applied to a trust condition instead
+of a load condition. That is a reason to keep it *in* the ranked set, not a reason to move it up
+past their own stated caveat (R6: spike before ruling). I hold at "their ranking, my caveat noted,"
+and I agree with them that the deliverable this round is a corrected `owner_decision`, not a winner.
 
-**D3 (A2, hoist vs. delete) — concede the sharper phrasing; my own recommendation already implied
-it.** My r1 asked to hoist `workRoot`'s default to `composeConfig()`, "so `confinement.workRoot` is
-never conditionally omitted." I verified `server.ts:655` this round:
-`const workRoot = config?.workRoot ?? mkdtempSync(join(tmpdir(), 'rwe-'));` — a second default that
-survives untouched if the fix only *adds* an upstream one. Their ARCH-183 says delete it outright,
-and that's the correct reading of my own r1 rationale, not a different position: a resolved
-`workRoot` arriving from `composeConfig()` makes `server.ts`'s local `??` dead code that *looks*
-alive — the same shape as `session-options-builder.ts`, a description of the boundary left standing
-next to the boundary after the boundary moved. I should have said "delete" in my own r1 and say it
-now: leaving an unreachable second default in place is itself the self-sustainability failure this
-whole finding is about, one line lower in the same file.
+**On B4+B7 (§2) — concede fully, with one correction I owe them.** `classifyStartRefusal(err) ->
+{code, retryable, httpStatus}` is the same shared-mapper shape my r1 asked for
+(`admissionErrorToOutcome`); I adopt their name and their routing detail (`RUN_ADMISSION_LIMIT` →
+503, not 403) since I had left the status code unspecified. **The correction they made that I had
+not**: my r1 proposed widening `RefusalReason` with *both* `'CONFINEMENT_UNAVAILABLE'` and
+`'RUN_ADMISSION_LIMIT'`; theirs adds only the first. I checked why and their choice is right —
+`markRefused` (the writer both `RefusalReason` members would flow through) sets `enabled = 0` on the
+webhook row (confirmed, `webhook-registry.ts`'s `markRefused`/`_recordRefusal` pairing). A transient
+concurrency ceiling is not a reason to auto-disable a webhook; only a permanent, policy-shaped
+refusal should touch that durable state. `RUN_ADMISSION_LIMIT` gets its 503 and its log line, never
+a `_recordRefusal` call, never a `RefusalReason` membership. I withdraw my wider version. I also
+agree to pull **B7** into this round: it is one branch on `classifyStartRefusal(err).retryable`
+routing a permanent refusal to `scheduler.markRefused` instead of `markFailed`, and their §"Internal
+conflicts" check (neither writer advances `nextFire`; that belongs to `claimFiring()` since v29) is
+the exact verification I would have asked for before agreeing — they already did it.
 
-**D4 (A3/A6/A8/A9 → ADR-086) — concede fully; this is the round's substantive reversal.** I checked
-their central claim against the file directly:
+**On B1 (§3) — concede the mechanism as a stronger instance of my own principle; add the sequencing
+condition and the missing test's shape.** My r1 asked for INV-V37-5 to be reworded so a reader can
+enumerate "two locks, check both are present." Adversarial's structural fix — make
+`isRemoteSubmission`/`confinementPosture` **required keys** at the composition-root boundary
+(`buildToolDeps`, `ToolDeps`, `RunManagerDeps`) instead of optional-with-a-permissive-default — is
+not a competing remedy, it is the more observable one: a missing forward becomes a compile error
+before the code exists, rather than a green test suite someone must remember to extend. That is my
+own dimension's "internal state observable at any time" argument taken to its limit, and I adopt it
+as the primary fix; the reworded invariant text becomes secondary documentation of a fact the type
+system now enforces. **What I add, not in their fix:** their own new finding — `resume()` calls
+`admissionRefusal()` nowhere, so the `call-tool.ts` door is the *sole* cover for `run_resume`, not a
+redundant twin — means the required-key change and the door's deletion cannot land in the same
+commit (their R3, which I fully endorse: extend the predicate to `resume()` first, delete the door
+in v38). My contribution to that sequencing is the one test their §3.2 already asks for but I want
+named explicitly as an Observability requirement, not just a testability one: **if the door is kept
+even temporarily, one test must assert that the door and the predicate refuse the identical input**
+— not two tests that happen to both pass, one test that would fail if either half of the duplicate
+silently diverged. A duplicate control that is only accidentally in agreement is exactly as opaque
+as no control, until something asserts the agreement itself.
 
-```
-node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts (filesystem block)
-  denyRead?:  "Additional paths to deny reading within the sandbox."
-  allowRead?: "Paths to re-allow reading within denyRead regions.
-               Takes precedence over denyRead for matching paths."
-```
+**On B3 (§4) — full convergence, nothing to add.** Mirror `createdRemote` onto `WebhookView` and
+`list()`, exactly as my r1 proposed independently. I accept their sharper framing over mine: "a
+decision input that cannot be read back is not auditable" is the same claim I made under
+Consumability, stated more precisely as an Observability one — I fold my own framing into theirs
+rather than keep a separate, weaker version.
 
-That confirms A9 as read: `allowRead` only *widens back* what `denyRead` (plus permission rules)
-already narrowed — it is not an allowlist that narrows an otherwise-open read surface. My r1's A3
-fix (complete `ENGINE_STATE_DENY` with the two missing literals, add a completeness test against the
-resolved config) would have shipped a technically-more-complete version of a list that was never the
-thing standing between an agent and a sibling run's workspace — ARCH-175's own note excludes sibling
-run directories from that list *by design* ("not a stale sibling run-directory list"), and with
-reads default-allow, excluding them from `denyRead` is excluding them from the only thing that could
-have denied them. **My own Self-sustainability argument for A3 in r1** — "deriving the deny list
-from the same resolved config... removes the coupling requirement entirely... correct by
-construction" — argues *for* ADR-086 more cleanly than it argued for my own round-1 option (i): a
-`denyRead = [workRoot, ...enginePaths, ...protectedFiles]` derived from the composed config, with
-sibling workspaces caught for free because they live *under* `workRoot`, is a stronger instance of
-"correct by construction" than a completed-but-still-enumerated literal array. I was arguing for the
-right destination and stopped one stop short of it. Where I add value on top of the concession is in
-§1 and §4 below: an unmeasured mode flip needs a self-check, not just a documented revisit trigger.
+**On the tri-state (their §4, addressed to me by name) — the withdrawal stands, condition
+accepted.** My r1 already declined to re-ask for `originConfirmed`/`NULL`-as-unreviewed this round
+(I noted only that projecting the existing boolean is the minimum bar). Adversarial asks for one
+explicit condition on their own decline: the coverage-zero fact must land in `DEPLOY.md`, not just
+in an ADR paragraph an operator won't open before running a sweep. I accept the condition — it costs
+nothing and it is exactly the kind of observable-surface argument this lens exists to insist on.
 
-**D5 (A4/O-1) — no disagreement, converges as both sides predicted.** Posture-conditional rewording
-of INV-V37-1/2, `rtm.md` repointed to the chokepoint rows once ARCH-182 has an id, and ARCH-178
-amended in place to record the `confinement_denied` deferral rather than build a structurally-unable-
-to-fire event. I have nothing to add past my own r1 text here.
+**On QD-MED/B5/B6 (their §6) — converge on the rule, converge on the mechanism, one addition.**
+"A comment or guide paragraph asserting a fact about the code either cites the line that makes it
+true or is deleted" is a stricter, better-stated version of my own r1's "derive the observable
+artifact from the current shape, don't hand-author it once." I adopt their wording. Their proposed
+mechanism for QD-MED specifically — the admission-route list becomes data in `errors.ts`, the guide
+renders it — is exactly my own Consumability proposal from r1 (name the rule, not a route census)
+implemented as an actual data structure instead of a rewritten paragraph; I prefer their concrete
+mechanism over my own prose-only version and adopt it, with the one qualifier they already stated
+themselves: if judged too much for a send-back round, the fallback is the text edit plus one ARCH
+note recording that the duplication exists and will drift again. B6 (`workRootDefault` optional vs.
+required) — I agree with their resolution and, more, with the general principle they state to
+resolve the apparent tension with B1: **optionality is acceptable exactly when the default is the
+safe answer, never when it is the permissive one.** That sentence deserves to sit in INV-V37-5
+itself, not just in this round's prose, because it is the one line that would have prevented B1,
+B4's `RUN_ADMISSION_LIMIT`/`RefusalReason` question, and B6 all being separately re-derived.
 
-**D6 (A5 → INV-V37-5) — agree, with one guard-the-guard caution.** "Any security-relevant field
-forwarded through `composeConfig()` carries a hop-level wiring assertion" is the right generalization
-of the `composeConfig` 佈線 bug class this repo's own memory already names twice (v11
-`updateFlagPath`, v15 auth). One caution, in the same spirit as D4: don't let "which fields are
-security-relevant" become a new hand-maintained list standing next to the code the way
-`ENGINE_STATE_DENY` did — see §4 for a mechanical alternative.
+**On A6/A8 (their point 6, addressed to me as the Replaceability owner) — concede the carry, take
+the ask.** `DENY_READ_MODE`'s `'workroot'` arm and `MASK_PROVIDER_ENV`'s `envVars` arm are
+compiled-in and unreachable by any shipped config today — the same shape REQ-219 just deleted two
+modules for, and my own r1's Replaceability section is exactly the lens that should be uncomfortable
+carrying dead flexibility as debt without a name. I accept the carry this round (LOW, not blocking)
+on their stated condition: the flip trigger goes on the ARCH row as an event ("a positive spike S7/S8
+result, or the first `confined` host measurement") rather than as a code comment, because a comment
+saying "flip this when X" is precisely the artifact-drift shape B5/B6 are instances of, and I am not
+going to ask for that discipline everywhere else in this same document and then exempt my own item.
 
-**D7 (C-1 → typed `ErrorCode`) — agree, small addition.** A type is smaller than a test, and it
-closes the class rather than one instance of it, which is the same shape of fix as ADR-086 versus my
-r1's A3. One addition from a Consumability angle: if `refusalEnvelope`'s `code` parameter becomes a
-closed union, that union should be part of the type surface an external SDK consumer (or this repo's
-own `--check-config` tooling) can import, not an internal-only type — otherwise the fix closes the
-production-code class but leaves the *documented* error surface untyped, which is its own smaller
-instance of the same defect.
+## Answering their six "expected disagreements," by number
 
-**D8 (R3, the `createdRemote` default for pre-existing rows) — hold, and refine rather than
-reverse.** This is the one place I want a different shape of answer, argued in §1 and §3, not a
-different admission outcome. I agree with their `DEFAULT 0` / fail-open choice on the merits (a
-fail-closed default would silently break every existing schedule on an upgrade, which is a worse
-outcome than the exposure it prevents, on their own correct reasoning). What I don't accept is that
-a **boot-time WARN is the only surface** for a fact the operator needs to act on. See §1.
+1. **Tri-state for B3** — not disagreeing; addressed above (withdrawal stands, `DEPLOY.md` condition
+   accepted).
+2. **B1 as "more checks" vs. "fewer hops"** — not disagreeing; conceded above, with the added
+   argument that a compile-time required key is the more observable failure mode, not a different
+   dimension's win over mine.
+3. **B7 in scope** — not disagreeing; agreed above, on their own verification that neither writer
+   advances scheduling state, so there is no behavioural risk to the pull-in.
+4. **Guide text growing into a doc-generation mechanism** — agreed with their stated ceiling (data in
+   `errors.ts`, rendered by the existing guide, nothing more); I would object only if a future round
+   proposed a templating layer beyond that, which nobody has.
+5. **Option (iv)'s consumability objection** ("removing `Bash` breaks every workflow") — I do not
+   raise this objection. A loud, coded failure is strictly more consumable than a silent one; my only
+   addition is the self-sustainability framing in §4, not a consumability rebuttal.
+6. **Replaceability being the more aggressive lens on A6/A8** — not really a disagreement; I concede
+   the carry and add the one condition (event-shaped trigger on the ARCH row, not a comment) they
+   themselves proposed. Converged.
 
 ---
 
 ## 1. Observability
 
-**A1/resume — a resume-time refusal and a start-time refusal must be distinguishable events, not
-one shape.** Their ruling correctly closes the gap (refuse if either origin is remote), but the two
-refusal *causes* are operationally different facts: a start-time refusal means "this work was never
-admitted"; a resume-time refusal under their rule means "this work was admitted once, and the
-posture or the resume request's own remoteness has since made it inadmissible" — the second is a
-mid-flight state change an operator investigating "why did my long-running workflow stop resuming"
-needs to see named as such, not inferred from a generic `CONFINEMENT_UNAVAILABLE` line that looks
-identical to a same-request refusal. One extra field on the existing refusal event
-(`phase: 'start' | 'resume'`) is the whole cost.
+**B1's fix, restated as an observability claim.** A required key with a `| undefined` value is a
+strictly more observable contract than an optional key with a default: the "never measured" state
+stays representable, but *silently forgetting to say anything* stops being representable at all. My
+r1 asked for a reworded invariant that a human reader could check; the required-key fix makes the
+compiler the reader, which fires before the code that would violate it ships, not after a test
+happens to catch it. I still want the reworded INV-V37-5 sentence — "optionality is acceptable
+exactly when the default is safe, never when it is permissive" — but now as the recorded *reason* for
+the type shape, not as a substitute for it. And regardless of whether the `call-tool.ts` door is kept
+this round or deleted in v38, the one non-negotiable observability requirement is the never-diverge
+test: two controls that happen to agree, with nothing asserting that they must, are indistinguishable
+from one control and a coincidence.
 
-**A2 — the same "silent-mode" argument I made in r1 now also indicts leaving the dead default in
-place (D3).** A resolved `workRoot` arriving from `composeConfig()` with `server.ts:655`'s `??`
-still sitting underneath it is *worse* for observability than either state alone: it reads as live
-code, a future reader has no signal it is unreachable, and the day someone refactors
-`composeConfig()` to legitimately omit the field again (a plausible future edit, since nothing marks
-the line as load-bearing-only-during-migration), the dead default silently reactivates and A2
-recurs. Delete it in the same change, per D3.
+**B4's root cause, confirmed by reading `DeliverResult` and the catch directly, is a missing
+classification, not a missing field** — `classifyStartRefusal()` fixes this once, at the type level
+(`RefusalReason` gaining exactly one new member, `'CONFINEMENT_UNAVAILABLE'`, not two), and every one
+of the four admission-throwing consumers inherits a `code`, a durable `_recordRefusal`/`markRefused`
+write, and a `RUN_ADMISSION_LIMIT` that is finally visible as *retryable* rather than indistinguishable
+from a permanent posture refusal. I want one more sentence recorded on the wire-boundary rule they
+named: **`err.message` is for logs; a wire boundary emits `code` plus static catalog text.** The
+sandbox-probe string currently reaching an HMAC-authenticated webhook caller (their §2.1's disclosure
+point) is a small but real instance of exactly the "opaque failure is a design defect" principle
+applied in the other direction — here the failure is *too* transparent, to the wrong audience.
 
-**A3/A9/ADR-086 — the flip is correct, and the honest cost adversarial names (R1: "no host in this
-ledger can execute the `confined` arm") deserves more than a documentation note, though not as much
-more as my first draft of this section claimed.** Their own lens vocabulary supplies the shape of
-the fix: this is what a Self-sustainability "tool-liveness check" is for (see §4, revised after I
-checked what `confinementProbe` actually measures) — I fold the mitigation there rather than
-duplicating it, but flag here that an *unverified security-mode flip shipped with no executable
-signal at all about whether it holds* is the same kind of silent, unfalsifiable claim my own A4
-argument objected to. §4's revised proposal is narrower than "self-test discharges R1" — a cheap
-boot-time bwrap-level check is additive diagnostic signal, not a substitute for the real-tier
-validation run their own R1 mitigation already calls for.
-
-**A5/INV-V37-5 — the wiring-assertion obligation is only observable if it fails loudly, not
-silently.** A hop-level test that exists but is easy to forget to *add* for the next security-
-relevant field is the same shape of gap A1 had (a control installed at some but not all of its
-required points). Prefer, where feasible, a test that enumerates security-relevant fields from a
-single typed marker (e.g., a branded type or a fixed list co-located with the field's own
-declaration in `FileConfig`, walked by one test) over a test file that maintains its own separate
-list of "fields that need wiring assertions" — the latter is `ENGINE_STATE_DENY`'s exact shape one
-layer up, and D6 already names this risk; this is where I'd put the fix if implementation asks.
-
-**R3 (D8) — a one-time boot WARN is not a durable observability surface.** Their mitigation logs a
-count at boot; a count seen once in a log stream that operators do not tail continuously is not
-meaningfully different from silent, for the same reason this repo's own incident history keeps
-citing "nobody's build failed on it" as the recurring failure shape. §3 below proposes a durable,
-queryable alternative that costs one schema decision, not one feature.
+**B3, folded into Observability rather than kept as a separate Consumability point** (see response
+above): `createdRemote` decides whether Bash-capable code executes on this host, and it is currently
+readable back for schedules and not for webhooks. Mirror the field.
 
 ## 2. Replaceability
 
-**A1 — the chokepoint choice is orthogonal to gateway pluggability, and stays that way.** Moving the
-door to `RunManager.start()`/`resume()` touches nothing `LiteLLMGatewayClient` needs to implement —
-provenance is a property of *how a run was admitted*, not of which LLM backend executes it. No new
-interface, no new method either gateway impl must stub. This matches my r1's "Where this dimension
-does NOT ask for new abstraction" stance and I extend it here without qualification.
+**B4/B7's shared classifier is the LLM-backend-swap argument applied to error taxonomy, and I keep my
+r1's framing of it, now aimed at their concrete function.** Today, a fifth admission-throwing
+condition added to `RunManager.start()` (plausible — REQ-218's residuals are not fully closed) would
+require editing four call sites by hand; with `classifyStartRefusal()` as the one place that maps a
+throw to `{code, retryable, httpStatus}`, it requires editing one function, and all four routes
+(`call-tool.ts`, `webhook-registry.ts`, `scheduler.ts`, the ticker) inherit the fix automatically. The
+per-route HTTP envelope stays route-specific by design — a webhook caller and a `tools/call` caller
+legitimately want different wire shapes — the DECOUPLING is at the taxonomy (`RefusalReason`,
+`{retryable, httpStatus}`), not at forcing one envelope shape on every consumer.
 
-**A3/A9/ADR-086 — deleting the `'enumerated'` arm rather than keeping both modes is the right call,
-and I want to name the tie-break explicitly since my own lens is the one that would normally worry
-about removing an option.** Replaceability asks "does removing this branch cost us a legitimate
-future configuration?" Here, no: A9 proves the `'enumerated'` arm never delivered the guarantee its
-own name implied (an enumerated allowlist), so keeping it as a second mode preserves an option that
-was never real — the same premature-abstraction shape my r1 already flagged once this iteration (the
-withdrawn `WorkspaceConfinement` interface, cited in my own r1 Replaceability section). A mode with
-one real implementation and one non-functional one is not two options, it is one option and one trap
-for the next operator who picks the wrong `DENY_READ_MODE` value. Delete it.
-
-**A5/INV-V37-5 — agree with their own observation and add nothing**: the posture hop's fix (moving
-the door to `RunManager`) *deletes* a wiring obligation rather than adding a guard for it, which is
-the strongest form of a replaceability-friendly fix — fewer seams a future gateway or admission path
-has to reimplement correctly, not more.
+**A6/A8, carried as named debt with an event-shaped trigger, per the section above.** This is the
+converse of the classifier point: `DENY_READ_MODE`'s dead `'workroot'` arm is flexibility nobody can
+currently reach, kept alive by a hand-written enum rather than deleted and re-added when the trigger
+event (a `confined` host, or a positive sandbox spike) actually arrives. I accept it as debt rather
+than asking for its deletion this round, on the strength of the same tie-break my own r1 used against
+premature abstraction elsewhere — but debt that is only named in a comment is exactly the B5/B6
+pattern, so the trigger condition belongs on the ARCH row where the next iteration will actually read
+it before deciding whether to act.
 
 ## 3. Consumability
 
-**A1 — `createdRemote`/`origin` must be visible on the existing `webhook_list`/`schedule_list`
-surface, which they already name as a dependency of their own R3 mitigation.** I want to promote
-this from "an observability clause the mitigation depends on" (their framing) to a first-class
-Consumability point in its own right: a field added to an *existing* tool's output, with no new tool
-and no new endpoint, is exactly the "reuse of the software asset" this dimension's own goal statement
-names — it is the cheapest possible way to make a security-relevant fact inspectable by whatever
-already calls that tool (an operator's own script, a dashboard, a future audit pass), and it should
-be scoped and typed as part of ARCH-182 itself, not left as a follow-on.
+**QD-MED, converged on the data-driven fix.** The admission-route list becomes a small data structure
+in `errors.ts` (already the file that maps `CONFINEMENT_UNAVAILABLE` to `workflow_authoring_guide`);
+the guide renders it rather than hand-naming routes. A cold agent — REQ-117's own bar — learns the
+actual predicate ("every run this workflow can trigger is refused identically when the host is
+unconfined and the trigger's own recorded provenance is remote") rather than a route census that a
+fifth admission site will make stale again, exactly as it made the current two-route sentence stale
+after ARCH-182 shipped four.
 
-**D8/R3, concretely — propose a tri-state origin marker instead of a boolean `DEFAULT 0`, so the
-"needs operator review" fact is queryable forever, not just visible once at one boot.** Their
-`createdRemote INTEGER NOT NULL DEFAULT 0` makes every pre-existing row indistinguishable from a row
-a human explicitly confirmed as local after this fix shipped — the boot WARN is the only place that
-distinction is ever surfaced, and it is surfaced exactly once, at exactly the boot immediately after
-migration; an operator who reads logs a day later, or scrolls past it, has no second chance to find
-out which of their webhooks/schedules are unreviewed legacy rows versus confirmed-local ones. I
-propose the column be nullable (`createdRemote INTEGER` — `NULL` for pre-existing rows, `0`/`1` for
-every row created from this migration forward), with the **admission predicate treating `NULL`
-identically to `0`** (so the operational outcome they already argued for — no silent outage of
-existing schedules — is unchanged) **but the value staying permanently distinguishable on
-`webhook_list`/`schedule_list`** (surfaced as e.g. `originConfirmed: false` for `NULL` rows). This
-costs one nullable column instead of a defaulted one — no new migration shape, no new admission
-logic, same fail-open behavior they already argued for on the merits — and turns "operator reviews
-existing triggers once" from a DEPLOY.md rider nobody can verify was followed into something the
-operator's own tooling can query at any later time: `schedule_list` where `originConfirmed = false`
-is the entire review checklist, indefinitely, not a boot-log needle. I'm not proposing a different
-admission outcome than their R3 — I'm proposing the same outcome stay visible past the first boot.
-
-**A3/A9/ADR-086 — no new consumability surface, matching their own framing.** The flip removes a
-config mode (`'enumerated'`) rather than adding one; an operator who never touched
-`DENY_READ_MODE` sees no change to any documented interface. Agreed, nothing to add.
-
-**C-1/D7 — export the `ErrorCode` union where the documented error surface can use it (small,
-already noted in D7).**
+**B4, kept as a consumability point too, not only observability**: `webhook_list`'s existing
+`lastRefusalReason?: RefusalReason` field is precisely the machine-readable surface a management
+caller or the dashboard should be able to branch on for this refusal class; today it cannot, at all,
+for `CONFINEMENT_UNAVAILABLE`. The classifier closes this as a side effect of closing B4's
+observability gap — the same fix serves both dimensions, which is itself a small confirmation that
+the fix is at the right layer.
 
 ## 4. Self-sustainability
 
-**A3/A9/ADR-086 — this is where I most want to land the concession, because it is the dimension my
-own r1 used to argue for the *wrong* fix.** My r1's Self-sustainability section said, correctly, that
-a hand-maintained list "requires a human to remember to update it every time a DIFFERENT, unrelated
-config surface changes." I then proposed keeping the list and adding a completeness test — which
-still requires a human to remember to run/maintain the *test*, and still requires enumerating every
-engine-written path by name somewhere. ADR-086's `denyRead = [workRoot, ...enginePaths,
-...protectedFiles]`, derived from the composed config rather than named literal-by-literal, is
-closer to the "correct by construction" state I described but didn't fully reach: the day a ninth
-config-driven path is added, it is *already* under `workRoot` (or explicitly in the composed
-config's path set) with no separate list to remember. I adopt their **INV-V37-4** (a test that
-enumerates the composed config's path-typed keys and asserts each resolved value lands in some
-`denyRead` entry) as the mechanically-checkable version of exactly the completeness test my own r1
-asked for — independently converged on, different route, same shape, and I'd rather credit that
-convergence than pretend my r1 got there first.
+**B2, read through this dimension, is the strongest argument for re-opening the `owner_decision`
+regardless of which option wins.** ARCH-182/ADR-086 implement a closed-loop control meant to keep a
+human out of the loop for ordinary trigger fires while still gating Bash-capable agent work. Two
+independent, verified facts now show the loop is not closed the way the ruling assumed: **(a)**
+coverage is zero on the entire pre-migration cohort by construction (adversarial's arithmetic,
+verified above), and **(b)** even a freshly-recreated trigger's provenance can be laundered one call
+later, at `workflow_publish`, without any forward carrying `isRemoteSubmission` there today (my own
+r1's zero-operator-action path, sharpened by their evidence that `claim()` was never actually the
+laundering point). Both facts describe the same failure mode from this dimension's own definition:
+*the control's trust boundary degrades on ordinary, unattended operation* — the opposite of
+"minimize human intervention while surviving," because here the absence of intervention is what
+silently produces coverage instead of assurance.
 
-**A3/A9's unmeasured-flip risk (R1 in their doc) is a textbook case for this dimension's own
-"tool-liveness check" idea — but I checked what `confinementProbe` actually is before proposing to
-extend it, and the honest version of this proposal is smaller than my first draft.**
-`src/gateway/confinement-probe.ts` is a bare `spawnSync('bwrap', NESTED_BWRAP_ARGS, ...)` — no model
-call, no `query()`, deliberately "impure... kept OUT of `bash-confinement.ts`" per its own header
-comment. It measures one fact: can this host open a *nested* user namespace. It does **not**, and
-cannot without invoking the SDK, tell us whether the CLI's own `denyRead`/`allowRead` composition
-matches `sdk.d.ts`'s doc comments — that is a claim about the spawned `claude` process's internal
-behavior, one layer past what a bare `bwrap` probe can see. So there are honestly two different
-things I could be asking for here, and I pick one rather than blur them:
+**On the option ranking**, I contribute exactly one dimension-scoped argument and no vote: option
+(iv) — drop `Bash` from the agent's tool surface when posture is `unconfined`, rather than gating who
+may fire — is a **circuit breaker** in the literal sense this dimension's brief names, applied to a
+trust condition instead of a load condition. That is a reason it belongs in the ranked set on its
+own architectural merits, independent of whichever option the owner ultimately picks; it is not a
+reason to move it ahead of adversarial's own stated precondition (spike whether the SDK's
+`disallowedTools` reliably survives `allowedTools` shadowing, before anyone rules on it — their R6,
+which I have not independently verified and do not dispute).
 
-- **(a) Extend `confinementProbe` itself with a second bare-bwrap check** (deny a scratch path,
-  confirm the nested sandbox actually refuses the read) — cheap, boot-time, no model dependency,
-  consistent with the probe's existing shape. But it only proves *this host's bwrap can enforce a
-  deny*, not that the CLI's SDK-level `filesystem.denyRead`/`allowRead` options compose the way A9
-  reads the doc comments. It does **not** discharge their R1 by itself, and I should not claim it
-  does.
-- **(b) A real `query()` call exercising `Options.sandbox.filesystem` end-to-end** — this is the
-  thing that actually discharges R1, because it is the only way to observe the SDK's own composition
-  rather than the doc comment describing it. It is an agent turn: a model call, an API-key
-  dependency, tokens, latency. That is not `confinementProbe`'s shape, and making engine *boot* on
-  every host depend on model availability would be a worse self-sustainability trade than the one it
-  fixes — the same "don't add a mechanism the codebase's own tie-break wouldn't accept" discipline
-  my r1 already applied to A1 and A3. So I do **not** propose it as a boot gate. It belongs where
-  REQ-218's other real-tier evidence already lives: a Gate-7.5-shaped one-shot validation run,
-  executed once on the first host that measures `confined`, exactly as their own R1 mitigation text
-  already says — I am not adding new scope there, only naming precisely why it can't be folded into
-  boot the way I first drafted it.
-
-**Revised proposal: do (a) as a cheap boot-time addition to `confinementProbe` (extra diagnostic
-signal, not a new component's worth of scope), and leave (b) exactly where their R1 mitigation
-already puts it — a real-tier validation task gated on the first `confined` host, not a boot check.**
-This is a smaller ask than my first draft and an honest one: it stops short of claiming a bwrap-only
-probe extension discharges a risk that only an actual `query()` call can discharge.
-
-**A1/A5 — the required `RunSpec.origin` field and the hop-deletion in A5 are both self-sustainability
-wins for the same reason: they remove a place a future change can silently regress rather than adding
-a check that could be silently skipped.** A required compiler-enforced field and a deleted hop both
-need zero ongoing human vigilance to stay correct; a WARN log and a remembered revisit trigger both
-need some. Where ADR-086's mitigation is *forced* to rely on a documented revisit trigger (because
-the arm genuinely cannot be measured today), that's the one place I add the self-test above rather
-than accept the documentation-only mitigation; where a required field or a deleted hop is available
-instead (A1, A5, D3's dead-default deletion), those are strictly the better fix and both proposals
-already reach for them.
-
-**D8/R3 — the tri-state marker (§3) is also a self-sustainability point, not only a consumability
-one.** A boot-time WARN is a one-shot mitigation that depends on an operator's attention at one
-moment; a queryable field is a mitigation that survives regardless of whether anyone was watching
-the log at boot. The system should not need the operator to have been paying attention at exactly
-the right minute for a security-relevant migration fact to still be discoverable a week later.
+**B7, once pulled into this round, is a self-sustainability fix in exactly this dimension's terms**:
+a permanently-refused `cron` schedule currently re-fires every period forever with a `console.error`
+and no durable counter — an unbounded, silent retry loop with no backoff and no circuit-breaker,
+which is the failure mode this dimension exists to catch even though it is not, on adversarial's own
+verification, a *scheduling*-correctness bug (neither writer advances `nextFire`). Routing a
+permanent refusal to `markRefused` instead of `markFailed` gives the loop a durable, visible refusal
+count for free, as a side effect of the same classifier that fixes B4 — I have nothing to add beyond
+endorsing the routing and noting, as they do, that whether a repeatedly-refused `cron` should
+eventually auto-disable is a separate, not-yet-asked question that the refusal counter now at least
+makes visible enough to ask.
 
 ---
 
-## Final position and remaining disagreements
+## Remaining disagreements
 
-**Converged, no further debate needed**: A1 (chokepoint, persisted two-column provenance, required
-field, resume-refuse-if-either-remote — I add only the `phase` field on the refusal event, §1); A2
-(delete the optionality, not defend it — I now agree `server.ts:655`'s local default should be
-deleted outright, verified on disk); A3/A6/A8/A9 → ADR-086 (I withdraw my r1's completion-of-
-`ENGINE_STATE_DENY` recommendation and adopt the flip, verified the `allowRead`/`denyRead` doc
-comments myself against `sdk.d.ts` this round); A4 (posture-conditional reword); O-1 (one-sentence
-ARCH-178 amendment); A5 (INV-V37-5, with the guard-the-guard caution in D6/§1); C-1 (typed
-`ErrorCode`, with the export note in D7/§3).
+- **B2's option ranking** ((iii) > (iv) > (ii) > (i)) is the one item where I do not converge on a
+  position, because it is not a quality-dimension question — it is an `owner_decision` weighing a
+  live-host blackout against a host-level fix of unknown effort against a tool-surface circuit
+  breaker of unverified reliability. I ask that the re-put decision carry **two** corrected premises,
+  not one: coverage-zero-on-legacy (theirs, verified) and publish-time laundering
+  (mine, verified), since either alone understates the gap between what the 2026-09-23 ruling was
+  asked to weigh and what is actually shipped.
+- **Everything else in this round is converged**: B1 (required keys + sequenced door deletion + a
+  never-diverge test), B3 (mirror the field), B4+B7 (one classifier, one new `RefusalReason` member,
+  not two), QD-MED (data-driven guide text), B5/B6 (the safe-default-vs-permissive-default rule,
+  recorded once in INV-V37-5), and A6/A8 (carried debt with an event-shaped trigger on the ARCH row).
 
-**Remaining, genuinely open, for the panel/owner rather than for another debate round between the
-two of us**: D8/R3's default-marking shape. I am not proposing a different admission *outcome* than
-adversarial's `DEFAULT 0` fail-open ruling — I think that ruling is correct on the merits they gave.
-I am proposing the fact be stored as permanently queryable (`NULL`/tri-state) rather than surfaced
-once at boot and then lost to a log stream, at the cost of one nullable-vs-defaulted column decision.
-Adversarial's own R3 text says "I do not think the argument is finished" — I'm taking that invitation
-literally rather than treating it as closed, and I'd rather this specific point get one more look
-(from validation or the owner, since it is genuinely a product/operability call, not a pure
-architecture one) than have either lens force a resolution here.
+## Key points
 
-**One thing I want on the record for whoever implements ADR-086**: §4's two-part self-test proposal
-is new scope neither r1 named. Part (a) — a bare bwrap-level deny/allow check added to
-`confinementProbe` — is small and can plausibly ride inside ADR-086's own diff. Part (b) — the real
-`query()`-level validation of `filesystem.allowRead`/`denyRead` composition that actually discharges
-their R1 — is *not* new scope at all; it is their own R1 mitigation text, restated, and belongs to
-the same "first `confined` host" validation task they already named. I want it explicit which one is
-being committed to where, so ADR-086 doesn't quietly inherit an agent-turn-shaped boot dependency
-nobody asked for.
+- I withdrew my r1's B2 framing (re-arm residual) in favor of the stronger, independently-verified
+  coverage-zero arithmetic, and I withdrew my proposed fix (OR-ing version provenance into the fire
+  path) once verification showed it would be an unlocked sixth hop through the facade — the same bug
+  class this round's B1 already names.
+- I withdrew half of my own B4 proposal: `RefusalReason` gains one member
+  (`'CONFINEMENT_UNAVAILABLE'`), not two — `RUN_ADMISSION_LIMIT` must stay outside the durable-refusal
+  vocabulary because that vocabulary drives `markRefused`'s auto-disable write, and a transient
+  concurrency ceiling is not a reason to disable a webhook.
+- I adopted adversarial's required-keys fix for B1 as the stronger instance of my own Observability
+  principle (a compile error is the earliest, most certain observable failure), not a competing
+  testability-vs-observability outcome — and added the one test I think their sequencing still needs
+  named explicitly: a never-diverge assertion between the door and the predicate for as long as both
+  exist.
+- Every other item (B3, QD-MED, B5/B6, A6/A8, B7's pull-in) converges without residue.
 
-**Minor correction to my own r1, surfaced by their count, not mine.** My r1's Replaceability section
-named three modules independently calling `RunManager.start()` (`call-tool.ts`, `webhook-registry.ts`,
-`scheduler.ts`); adversarial's addendum greps four live call sites, including a second, inlined
-ticker dispatcher at `server.ts:1015` alongside the injected `Scheduler.dispatch` — the same
-twin-divergence shape this ledger's own v36 K1 finding already named elsewhere. I did not re-verify
-the grep myself this round, but I have no reason to doubt it and it strengthens, rather than
-undercuts, the case for a single chokepoint: a fourth uncounted site is exactly the failure mode a
-per-call-site check (my r1's implicit alternative) is worst at catching, and the chokepoint both
-proposals converge on catches it by construction. Noting the correction for the record rather than
-re-deriving it.
+*Quality-dimensions lens — v37 Gate 8 round-2 send-back, debate round 2, 2026-09-23.*

@@ -14,7 +14,8 @@ import { dirname } from 'node:path';
 import { randomUUID, randomBytes, createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { Clock } from './clock.js';
 import type { ErrEnvelope, RefusalReason } from './types.js';
-import { toErrEnvelope } from './errors.js';
+import { ERROR_CATALOG } from './errors.js';
+import { admissionErrorToOutcome } from './run-manager.js';
 
 /** Structural seam — matches RunManager.start() without importing the class (as scheduler/continuation). */
 interface RunManagerPort {
@@ -61,14 +62,25 @@ export interface WebhookView {
   refusalCount: number;
   lastRefusedAt?: string;
   lastRefusalReason?: RefusalReason;
+  /** v37 Gate-8 round-2 (finding B3, ARCH-182 (4)): mirrors `ScheduleStatus.createdRemote`
+   *  (scheduler.ts) — a value that decides whether code executes and cannot be read back is
+   *  unauditable by construction; `webhook_list` needed this to answer "was this webhook created
+   *  remotely" at all. */
+  createdRemote: boolean;
 }
 
 /** The verify+fire outcome, mapped by the HTTP route to a status code. v24 (DES-150) adds 409 for
- *  a claim-model refusal, carrying the machine-readable `code` alongside the existing `reason` text. */
+ *  a claim-model refusal, carrying the machine-readable `code` alongside the existing `reason` text.
+ *  v37 Gate-8 round-2 (finding B4, ARCH-182 (3)): the 403 arm (a PERMANENT admission refusal from
+ *  `RunManager.start()`) is widened the same way, so a refused delivery leaves the same durable
+ *  trace the 409 reasons already do; 503 is the RETRYABLE twin (a concurrency cap, not a policy
+ *  refusal) and carries no `code` — `RUN_ADMISSION_LIMIT` is deliberately not a `RefusalReason`. */
 export type DeliverResult =
   | { ok: true; httpStatus: 202 | 200; runId?: string; replayed?: boolean }
-  | { ok: false; httpStatus: 401 | 403 | 404; reason: string }
-  | { ok: false; httpStatus: 409; reason: string; code: RefusalReason };
+  | { ok: false; httpStatus: 401 | 404; reason: string }
+  | { ok: false; httpStatus: 403; reason: string; code?: RefusalReason }
+  | { ok: false; httpStatus: 409; reason: string; code: RefusalReason }
+  | { ok: false; httpStatus: 500 | 503; reason: string };
 
 const REPLAY_WINDOW_MS = 300_000; // ±300s
 
@@ -195,6 +207,7 @@ export class WebhookRegistry {
       id: r.id, workflow: r.workflow, createdBy: r.createdBy ?? null, enabled: r.enabled === 1,
       secretFingerprint: createHash('sha256').update(r.secret).digest('hex').slice(0, 16),
       refusalCount: r.refusalCount ?? 0,
+      createdRemote: r.createdRemote === 1,
       ...(r.lastRefusedAt ? { lastRefusedAt: r.lastRefusedAt } : {}),
       ...(r.lastRefusalReason ? { lastRefusalReason: r.lastRefusalReason as RefusalReason } : {}),
     }));
@@ -312,14 +325,30 @@ export class WebhookRegistry {
     }
 
     // v37 (ARCH-182, DES-263, TASK-258): the delivery PEER is deliberately NOT part of this
-    // predicate (DES-262's own note) — what decides is who ATTACHED the trigger, `row.createdRemote`,
-    // written once at creation. A thrown CONFINEMENT_UNAVAILABLE is mapped into this function's own
-    // typed DeliverResult rather than escaping as a rejected promise.
+    // predicate (DES-262's own note) — what decides is who CREATED the trigger ROW,
+    // `row.createdRemote`, written once at creation and never re-stamped by a later attachment
+    // event (`claim()`, `workflow_register`, `workflow_publish` — Gate-8 round-2, finding B2). A
+    // thrown admission error is mapped into this function's own typed DeliverResult rather than
+    // escaping as a rejected promise.
     let runId: string;
     try {
       runId = await this._runManager.start({ name: row.workflow, args: { event: req.parsedBody }, startedBy: { type: 'webhook', id }, origin: row.createdRemote === 1 ? 'remote' : 'local' });
     } catch (err) {
-      return { ok: false, httpStatus: 403, reason: toErrEnvelope(err).message };
+      // v37 Gate-8 round-2 (finding B4): a PERMANENT refusal (CONFINEMENT_UNAVAILABLE) leaves the
+      // same durable trace the other four RefusalReasons already do; a RETRYABLE one
+      // (RUN_ADMISSION_LIMIT — a concurrency cap, not policy) gets a dedicated retryable status and
+      // NO durable refusal row; anything else is a plain internal failure. Only the static catalog
+      // hint crosses the wire — never `err.message`, which can carry host-measured detail (the
+      // sandbox-probe posture, `maxConcurrentRuns=N`) nobody decided to disclose to an
+      // HMAC-authenticated peer.
+      const outcome = admissionErrorToOutcome(err);
+      const hint = ERROR_CATALOG[outcome.code].hint;
+      if (outcome.httpStatus === 403) {
+        this._recordRefusal(id, 'CONFINEMENT_UNAVAILABLE');
+        return { ok: false, httpStatus: 403, reason: hint, code: 'CONFINEMENT_UNAVAILABLE' };
+      }
+      if (outcome.httpStatus === 503) return { ok: false, httpStatus: 503, reason: hint };
+      return { ok: false, httpStatus: 500, reason: hint };
     }
     return { ok: true, httpStatus: 202, runId };
   }

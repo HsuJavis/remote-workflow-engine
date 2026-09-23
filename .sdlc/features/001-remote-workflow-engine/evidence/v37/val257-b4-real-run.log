@@ -1,0 +1,134 @@
+
+=== webhook_create (remote, X-Forwarded-For) ===
+{
+  "result": {
+    "webhookId": "52c36093-d746-49b2-806c-95d55962fdfc",
+    "url": "http://127.0.0.1:8792/hooks/52c36093-d746-49b2-806c-95d55962fdfc",
+    "secret": "f40bdf8e53a2d51a86ca684e90360054984f566145895bd01824482e104c7b2e"
+  }
+}
+
+=== workflow_register (remote) ===
+{
+  "runId": "",
+  "status": "completed",
+  "version": 1,
+  "result": {
+    "name": "val257-remote-629da9c4",
+    "version": "v1",
+    "versions": [
+      "v1"
+    ],
+    "channels": {
+      "release": null,
+      "beta": null
+    }
+  }
+}
+
+=== workflow_publish (remote) ===
+{
+  "runId": "",
+  "status": "completed",
+  "result": {
+    "channel": "release",
+    "version": "v1",
+    "from": null
+  }
+}
+
+=== CELL 3 — POST /hooks/:id delivery (remote-created, plain loopback delivery) ===
+{
+  "status": 403,
+  "body": {
+    "error": "this host could not measure a working Bash sandbox at boot; a run whose recorded provenance is remote is refused — a remote run_start/run_resume, a webhook delivery, or a schedule firing whose trigger was itself created remotely (a local/loopback submission still runs, unconfined)",
+    "code": "CONFINEMENT_UNAVAILABLE"
+  }
+}
+
+=== CELL 3 — webhook_list row after refused delivery ===
+{
+  "id": "52c36093-d746-49b2-806c-95d55962fdfc",
+  "workflow": "val257-remote-629da9c4",
+  "createdBy": null,
+  "enabled": true,
+  "secretFingerprint": "016d550dd6e0d909",
+  "refusalCount": 1,
+  "createdRemote": true,
+  "lastRefusedAt": "2026-09-23T02:06:41.753Z",
+  "lastRefusalReason": "CONFINEMENT_UNAVAILABLE"
+}
+
+=== webhook_create (local, no headers) ===
+{
+  "result": {
+    "webhookId": "8697cd48-4810-401d-b4f5-5f5ec28c3b61",
+    "url": "http://127.0.0.1:8792/hooks/8697cd48-4810-401d-b4f5-5f5ec28c3b61",
+    "secret": "6069a6e57decb2686a837e64581c25634ecf1cc5dc47466b1b74a939863ea881"
+  }
+}
+
+=== workflow_publish (local) ===
+{
+  "runId": "",
+  "status": "completed",
+  "result": {
+    "channel": "release",
+    "version": "v1",
+    "from": null
+  }
+}
+
+=== CELL 4 — POST /hooks/:id delivery (local-created, plain loopback delivery) ===
+{
+  "status": 202,
+  "body": {
+    "runId": "bf7a62ed-89d6-4038-9245-be90a3a10c9d"
+  }
+}
+
+=== CELL 4 — run_result ===
+{
+  "runId": "bf7a62ed-89d6-4038-9245-be90a3a10c9d",
+  "status": "completed",
+  "result": {
+    "hooked": "local"
+  },
+  "meta": {
+    "usage": {
+      "tokens": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "costUSD": 0,
+      "unpricedCalls": 0,
+      "unmappedMessages": {}
+    },
+    "budgetEnforceable": {
+      "usd": false,
+      "tokens": true,
+      "unpricedModels": [
+        "anthropic/claude-3-5-sonnet-20241022"
+      ]
+    }
+  }
+}
+
+=== CELL 4 — webhook_list row after successful delivery ===
+{
+  "id": "8697cd48-4810-401d-b4f5-5f5ec28c3b61",
+  "workflow": "val257-local-599813c2",
+  "createdBy": null,
+  "enabled": true,
+  "secretFingerprint": "cf9d6251ea7782bc",
+  "refusalCount": 0,
+  "createdRemote": false
+}
+
+=== SUMMARY ===
+Cell3 status 403 code CONFINEMENT_UNAVAILABLE error===hint(not err.message)? this host could not measure a working Bash sandbox at boot; a run whose recorded provenance is remote is refused — a remote run_start/run_resume, a webhook delivery, or a schedule firing whose trigger was itself created remotely (a local/loopback submission still runs, unconfined)
+Cell3 webhook_list createdRemote true refusalCount 1 lastRefusalReason CONFINEMENT_UNAVAILABLE
+Cell4 status 202 runId bf7a62ed-89d6-4038-9245-be90a3a10c9d run status undefined
+Cell4 webhook_list createdRemote false refusalCount 0

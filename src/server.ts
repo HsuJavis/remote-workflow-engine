@@ -809,7 +809,9 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   const modelBook = new ModelBook(buildModelCatalog, { clock });
   // v37 (ARCH-182, DES-263, TASK-258): forwards the SAME measured posture `confinementPosture`
   // already rides to the facade/gateway (DES-258 owner ruling) — RunManager.start()'s
-  // admissionRefusal() is the ONE predicate every admission route (not just tools/call) passes.
+  // admissionRefusal() covers every `start()`-driven admission route (tools/call's run_start,
+  // webhook delivery, schedule firing); `run_resume` never calls `start()` and stays covered by
+  // `call-tool.ts`'s door alone (Gate-8 round-2, finding B2/INV-V37-5(c) — the two never diverge).
   const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, aliasNames, modelBook, aliasMap, eventSink, confinementPosture: config?.confinementPosture });
   // v8 Defer B (REQ-057/058): durable webhook ingress registry, same workRoot convention.
   const webhooks = new WebhookRegistry({ clock, runManager, catalog, dbPath: config?.webhookDbPath ?? join(workRoot, 'webhooks.db') });
@@ -1473,7 +1475,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
           rawBody: raw, parsedBody: parsed,
         });
         if (out.ok) sendJson(res, out.httpStatus, out.replayed ? { replayed: true } : { runId: out.runId });
-        else sendJson(res, out.httpStatus, { error: out.reason });
+        // v37 Gate-8 round-2 (finding B4, ARCH-182 (3)): "every wire boundary emits `code` + STATIC
+        // catalog text" — `DeliverResult`'s `code` (409's `RefusalReason`, 403's now-optional one)
+        // previously stopped at this function's own return value and never reached the HTTP body.
+        else sendJson(res, out.httpStatus, { error: out.reason, ...('code' in out && out.code !== undefined ? { code: out.code } : {}) });
       }).catch((err: unknown) => {
         if (err instanceof BodyTooLargeError) sendJson(res, 413, { error: err.message, code: err.code, cap: err.cap, hint: err.hint });
         else sendJson(res, 500, { error: 'webhook ingress error' });

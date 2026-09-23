@@ -13255,3 +13255,327 @@ tech debt below, not blocking.
   REQ-153..169 未驗證) — zero of it new, zero of it touched by v37.
 
 *Reviewer: Gate 8, 2026-09-22, send-back round 1.*
+
+---
+
+## v37 GATE 8 round 2 (re-review, 2026-09-23)
+
+**Scope:** verify round 1's send-back (`send_back=[architecture,impl,validation,tests]`, three
+HIGH + four MED + four LOW) against the repair commits (`76ac20d`..`997769f`, specifically
+`c2e6a8c`/`9227365`/`045bd6e`/`f24df7a`/`997769f` — the ARCH-182/DES-263/TASK-258 admission-route
+slice, ADR-086's owner ruling, and VAL-256's real-tier run), then review the repair itself.
+Panels re-spawned per the workflow (`.panel/review/{adversarial,quality-dimensions}.md`, both
+timestamped 2026-09-23 07:34/07:39, both AFTER the last repair commit `997769f` 07:25) — this
+review consolidates them and independently re-verifies the load-bearing claims on disk (not
+trusted from the reports alone).
+
+### A. Round-1 closure — verified, not inherited
+
+All seven round-1 named findings are CLOSED on disk, independently re-confirmed this round:
+
+- **A1** (door covers 1/4 admissions) — `admissionRefusal()` is the first statement of
+  `RunManager.start()` (`src/run-manager.ts:167-172`); all four `.start(` call sites now stamp
+  `origin` (`src/mcp-facade.ts:718`, `src/webhook-registry.ts:320`, `src/scheduler.ts:388`,
+  `src/server.ts:1025`); `RunSpec.origin` is required (`src/types.ts:478`). VAL-256 real-tier proof
+  through the real ticker and real `POST /hooks/:id` (both admission arms, both refuse/admit
+  correctly) — re-read `08-validation.md:12617-12621` and journal.md's 2026-09-23 entry directly.
+- **A2** (`protectedFiles` evaporates on unset `workRoot`) — `src/main.ts:257`
+  (`workRootDefault` fallback) and `:480` (unconditional confinement forward) confirmed by reading.
+- **A3** (`ENGINE_STATE_DENY` incomplete) — `src/gateway/bash-confinement.ts:38-40` is the corrected
+  5-entry set, confirmed by reading.
+- **A4** (invariants worded unconditional) — `INV-V37-1`/`INV-V37-2` are posture-conditional
+  (`02-architecture.md:5763-5783`), confirmed by reading.
+- **C-1** (`CONFINEMENT_UNAVAILABLE` uncatalogued) — `src/errors.ts:91`, `src/tool-specs.ts:532,599`
+  confirmed by reading. (Reopened one route over — see **B4** below.)
+- **O-1** (`agent.confinement_denied` claimed but not built) — ARCH-178 now states the v38 deferral
+  explicitly (`02-architecture.md:5588-5603`), confirmed by reading.
+
+Credit where earned: `bindEventSink` wired at the real composition root, `agent.confinement`'s
+`posture` ternary now mirrors `sandbox`'s ternary (no more opposite-default same-field bug), and
+VAL-256's own construction (a tunnel header over a loopback socket, delivered with and without it)
+is the one test shape that actually proves delivery-peer-blindness.
+
+### B. New findings — the repair introduces its own gaps (both re-spawned panels + this review's own independent verification)
+
+**B1 — HIGH — INV-V37-5's hop lock covers `confinementPosture`'s two `composeConfig()` spreads
+(UT-328) but NONE of the three downstream forwards it was minted to cover, and the failure
+direction is silently insecure.** Verified independently, not from the panel text alone:
+- `grep -rln isRemoteSubmission tests/` → exactly one file
+  (`tests/unit/call-tool-confinement-door.test.ts`), which hands `deps` to `callTool()` directly —
+  never through `createServer()`/`buildToolDeps()`.
+- `grep -rn createdRemote tests/` → three files, all constructing the row directly
+  (`port.create({createdRemote:true})` / `reg.create({createdRemote:true})`), bypassing
+  `call-tool.ts` entirely.
+- `grep -rn "unconfined" tests/ | grep -i "createServer\|confinementPosture"` → every hit
+  constructs `new RunManager({confinementPosture:'unconfined'})` or passes `deps` directly to
+  `callTool()`/`buildAuthoringGuide()` — **zero** hits call `createServer({confinementPosture:
+  'unconfined', ...})` and assert an `origin:'remote'` submission is refused.
+- The three unlocked forwards, each a one-line drop that compiles clean and leaves every existing
+  test green: `src/server.ts:1178→:1334/:1593` (`buildToolDeps(webhookBaseUrl, isRemoteSubmission)`
+  — drop the 2nd arg, defaults to `false`, `src/server.ts:901`); `src/call-tool.ts:262`
+  (`createdRemote: deps.isRemoteSubmission === true` on `schedule_create`); `src/call-tool.ts:271`
+  (same on `webhook_create`). Plus the two `ServerConfig→RunManager`/`ServerConfig→ToolDeps` hops
+  (`src/server.ts:813`, `:902`) that make `admissionRefusal()` non-vacuous in the first place —
+  `val-253-bash-confinement.test.ts` boots a real `createServer` with `confinementPosture:'confined'`,
+  the one value `admissionRefusal()` treats as non-gating, so it stays green even if both forwards
+  are deleted.
+- Why this matters more than an ordinary missing-test gap: INV-V37-5 was minted BY round 1's own
+  repair, for exactly this bug class ("this repo's memory now names this bug class three times —
+  v11 `updateFlagPath`, v15 auth, v37 A5 — and a hop lock is the only thing that has ever caught
+  it"), and IMPL-381's own closing note claims it closed the class. It closed one hop of two named
+  values and left the other value and three of five forwards with no regression lock at all — on
+  the exact security-relevant field this iteration exists to protect. VAL-256 is excellent
+  real-tier evidence the wiring is correct *today*; it is a one-time manual run, not a standing
+  assertion that fails on the next commit that drops a forward — the quality-dimensions group
+  reaches the identical conclusion independently, via the Observability lens, calling it their one
+  HIGH ("INV-V37-5 is reported closed but two of its three named consumers have no wiring lock").
+- **Fix, no production change** (both reviews agree, and it is genuinely three cheap cases):
+  `callTool({...deps, isRemoteSubmission:true}, 'webhook_create'/'schedule_create', {})` then read
+  the row back through the store and assert `createdRemote === 1` (the webhook half needs B3's
+  field first, see below); one integration case: `createServer({confinementPosture:'unconfined'})`
+  refuses an `origin:'remote'` `RunSpec` with `CONFINEMENT_UNAVAILABLE`.
+
+**B2 — HIGH — ARCH-182's admission control keys on WHO CREATED the trigger row; its own rationale
+and ADR-086's 2026-09-23 owner ruling argue from WHO ATTACHED it — in this codebase those are two
+different, later, re-assignable events, and the gap is not hypothetical on the production host.**
+Independently verified, not accepted from the panel text:
+- `createdRemote` is written once, at row creation only (`src/webhook-registry.ts:176`,
+  `src/scheduler.ts:294-307`) — confirmed by reading both `INSERT` statements.
+- `claim()` (`src/webhook-registry.ts:211-219`, read in full) does **not** touch `createdRemote` —
+  confirmed: the transaction only ever does `SELECT workflow` then `UPDATE ... SET workflow = ?`.
+  `mcp-facade.ts`'s `workflowRegister()` (`:365-395`, read in full) claims each declared trigger
+  onto the registering workflow; its only two gates (`NOT_TRIGGER_OWNER` on the trigger's own
+  `createdBy`, `NOT_WORKFLOW_OWNER` on the workflow name's owner) are both identity facts — neither
+  reads request origin.
+- **Attack path, zero operator action, verified structurally against the code above**: an ordinary
+  author/admin principal (the production deployment's own norm, per ADR-084: "operator and author
+  are the same person") calls `workflow_register` with a malicious script on a workflow name that
+  already owns a trigger, then `workflow_publish`. The trigger row is untouched — still
+  `createdRemote = 0` — so its next cron firing or webhook delivery stamps `origin:'local'`,
+  `admissionRefusal()` returns `null`, and the confinement gate never fires on an `unconfined` host.
+  This reproduces the 2026-09-20 incident this iteration exists to close, through a path neither
+  control covers.
+- **This is not the residual ADR-086 already named.** ADR-086's accepted residual explicitly
+  requires "the OPERATOR later starts it locally" (「這條路徑需要操作者自己動手」— the owner's own
+  ruling text). The path above needs no operator action; a pre-existing schedule or webhook
+  supplies the trigger. The accepted-cost premise does not hold for any workflow that already owns
+  a trigger — and on the production catalog (owner-confirmed, all workflows remotely registered,
+  including a live hourly health check), that is every trigger that exists today.
+- This gate does not reverse the owner's ADR-083/ADR-086 rulings (both sound, both correctly
+  respected) — the defect is narrower: ARCH-182's justifying sentence describes a fact
+  (`createdRemote` tracks attachment) the code does not compute (it tracks creation only), and the
+  owner's 2026-09-23 answer was given against that incorrect premise. **This must go back to the
+  owner with the corrected premise** — the architecture gate cannot rule on a production security
+  posture and cannot silently let a stale premise stand either.
+
+**B3 — MED — ADR-086's own promised compensating control (an operator sweep of the pre-v37 cohort,
+named "in DEPLOY.md") was never written, and for webhooks the read path doesn't exist to perform
+it.** Verified independently:
+- `grep -n "createdRemote\|sweep\|遠端建立\|升級後" DEPLOY.md` → no hits. `DEPLOY.md`'s upgrade
+  section (§6, read in full at `:895-910`) documents the `schedules`/`webhooks` table-rebuild
+  migration — a different, unrelated automatic migration — and literally says "你要做的事：沒有",
+  which is true of the schema rebuild and false of the `createdRemote` cohort ADR-086 says needs a
+  DEPLOY.md sweep. `DEPLOY.md`'s troubleshooting row for `CONFINEMENT_UNAVAILABLE` (§5, `:882`)
+  documents only the `run_start`/`run_resume` door, not the webhook/schedule admission routes
+  ARCH-182 added.
+- `ScheduleStatus.createdRemote` is projected (`src/scheduler.ts:151`); `WebhookView`
+  (`src/webhook-registry.ts:50-64`) and `list()` (`:192-202`) — read directly — have no such field.
+  `webhook_list` cannot answer "was this webhook created remotely" at all, so the promised sweep is
+  unperformable for half the cohort, not merely undocumented. This also blocks B1's webhook test
+  case from asserting the stamp without reaching into SQLite directly.
+
+**B4 — MED — `WebhookRegistry.deliver()`'s new catch (IMPL-384) maps EVERY `RunManager.start()`
+throw into an uncoded HTTP 403 and records nothing on the row — reopening C-1's own bug class one
+route over, and inverting ARCH-182's own retryable-vs-permanent reasoning.** Verified directly at
+`src/webhook-registry.ts:316-323`:
+```
+try {
+  runId = await this._runManager.start({...});
+} catch (err) {
+  return { ok: false, httpStatus: 403, reason: toErrEnvelope(err).message };
+}
+```
+- No `code` field — `DeliverResult`'s 409 arm (`:68-71`) carries one, the 403 arm does not;
+  `toErrEnvelope(err).message` is flattened into a plain string. VAL-256's own captured body
+  (`08-validation.md:12617-12621`) is `{"error":"CONFINEMENT_UNAVAILABLE: …"}`, no machine-readable
+  code — C-1 fixed at `tools/call`, reopened at the webhook ingress ARCH-182 exists to cover.
+- Every `start()` throw becomes 403 Forbidden, including `RUN_ADMISSION_LIMIT` (explicitly
+  retryable per `src/run-manager.ts:495`) — the inverse of ARCH-182's own stated reason for
+  hoisting `admissionRefusal()` above the admission limit ("must not answer a retryable limit with
+  a deterministic-permanent refusal, or vice versa").
+- `_recordRefusal()` (the v24 mechanism already used for `UNCLAIMED`/`CLAIMED_WORKFLOW_MISSING`/
+  `CHANNEL_UNPUBLISHED`/`NOT_IN_RELEASE`, `:283-308`) is not called here — a refused remote webhook
+  leaves no durable trace (no counter, no timestamp) for an operator or forensic read, unlike the
+  scheduler side which at least lands in `lastError`.
+
+**QD-MED — the one designated explanation surface for this error code was not updated for the
+widened admission surface.** `src/authoring-guide.ts:363-369` (`HOST_PATH_GRANTS_UNCONFINED`,
+reachable from the live `workflow_authoring_guide` tool and `docs/AUTHORING.md`) still reads: "A
+remote submission is refused before it ever reaches an agent — `run_start`/`run_resume` return a
+refusal." That was true when IMPL-379 wrote it; ARCH-182/IMPL-384 subsequently added a second,
+independent admission control at webhook delivery / schedule firing that this text does not
+mention, and `errors.ts:91`'s `CONFINEMENT_UNAVAILABLE.see: 'workflow_authoring_guide'` pointer
+sends exactly the confused remote author — debugging a refused webhook they never called
+`run_start`/`run_resume` for — to this stale paragraph. REQ-117 (this doc's owning requirement) is
+inside this closure. Confirmed by reading the cited lines directly.
+
+**B5 — LOW, but include in this repair (three-line fix, and this repair introduced a new
+instance of the exact pattern REQ-218 exists to eliminate)** — round-1's A7 ("comments contradict
+code") is unrepaired at two sites (`src/main.ts:483`, `src/gateway/claude-agent-sdk-client.ts:826-828`)
+and a THIRD instance was newly written by this round's own repair: `src/main.ts:182-183`'s new
+`confinementProbe` doc comment claims the gateway's default is `'confined'` when
+`src/gateway/claude-agent-sdk-client.ts:748` and its own field doc (`:129-140`) fail open to
+`'unconfined'` (a default ARCH-176's Gate-6 amendment records was tried as `'confined'` and
+reverted because it broke the real suite). Verified by reading all four cited locations.
+
+**B6 — LOW — ledger accuracy** — ARCH-177's amendment states `ComposeConfigDeps.workRootDefault:
+string` (required); the shipped type is `workRootDefault?: string` (`src/main.ts:197`). IMPL-380's
+own note argues the optional-field engineering call correctly (avoids forcing ~80 pre-existing
+`composeConfig()` call sites to supply a value); the architecture row was never amended to match.
+One-word doc fix, no code change.
+
+### C. Carried-forward LOW debt (unchanged, not blocking)
+
+- **A6** — `DENY_READ_MODE`'s `'workroot'` arm and `MASK_PROVIDER_ENV`'s `credentials.envVars` arm
+  remain compiled-in, unreachable by any shipped config (`src/gateway/bash-confinement.ts:17,21,66-69,85-87`).
+- **A8** — `allowRead` vs. the CLI's-own-paths note disagree, unfalsifiable until the first
+  `confined` host (`src/gateway/bash-confinement.ts:77`).
+- **B7** — a deterministic, permanent `CONFINEMENT_UNAVAILABLE` on a scheduled fire is routed to
+  `markFailed` at the ticker (`src/server.ts:1027-1038`), which shares `markFired`'s advance, so a
+  remotely-created `cron` schedule re-fires and re-refuses every period with a `console.error`
+  each time and `refusalCount` never incremented. This is what `ARCH-182`'s own contract table
+  literally prescribes ("`markFailed` at the ticker driver"), so it is an architecture+implementation
+  pair, not an implementer deviation — filed as a v38 candidate (route through
+  `resolveScheduleTarget()`'s existing `markRefused` path instead), not built here, no finding
+  asked for it this iteration.
+- All 15 pre-existing HIGH broken-link gaps (`IMPL-303..311/323`, `UT-264/265` → nonexistent
+  `REQ-144..152/186`, unchanged since v27) and the remaining 35 mid / 25 low pre-existing gaps
+  (drift/backlog rows) — independently re-confirmed via `sh .sdlc/trace --check` this round: 2107
+  items / 77 gaps, filtered by ID against every v37 identifier
+  (REQ-218/219, DES-25x/26x, TASK-25x, IMPL-37x/38x, UT-32x/33x, IT-30x, VAL-25x): **zero hits** —
+  none of this closure's own IDs carry a gap, confirming no new drift and no regression in the
+  mechanical gap count.
+
+### D. Dashboard QA
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` regenerated clean (2107 items / 77 gaps).
+The project's vendored `.sdlc/trace.py` has no `--tool` dispatch (a deliberately pinned older
+build, per `02-architecture.md:4064`/`:4070`'s own housekeeping note, kept so gap-count baselines
+stay comparable across gates — not an oversight). Ran the plugin's bundled `dashboard_check.py`/
+`solid_check.py`/`module_check.py` (2.4.3) directly against the ledger:
+
+- **dashboard_check: 5 high / 7 mid / 1 low.** Independently re-diagnosed, not inherited from
+  round 1's identical finding: the 5 HIGH claim `REQ-211..215`'s SoT link resolves to
+  `evidence/v36/gate75-real-run-2026-09-22.md` (a raw transcript excerpt, not an SoT doc) instead
+  of `01-requirements.md`. Parsed the SHIPPED `dashboard.html`'s own embedded data directly
+  (`data['items']['REQ-211']['file']`) rather than trusting the tool's prose: it reads
+  `01-requirements.md`, line 2851 — the dashboard actually delivered has correct links. The 5 HIGH
+  is a `trace.py`-version mismatch (the plugin's newer scanner treats the evidence file's 2-`#`
+  headings, shaped like `## REQ-211 — ...`, as competing item definitions; this repo's own vendored
+  `trace.py` requires an exact 3-`#` heading and does not), same root cause round 1 already
+  root-caused and recorded — **unchanged accepted LOW debt**, re-verified rather than assumed.
+  The 7 mid are the same recurring `erDiagram` crow's-foot bracket-balance false positive
+  (`\|\|--o{` misread as unbalanced `{`), unchanged since ~v27. The 1 low is the pre-`MMD_OK`-
+  fallback vendored `trace.py`, unchanged baseline.
+- **solid_check: 0 mid / 10 low** — unchanged from round 1 (10 unclaimed files, architecture-doc
+  drift, non-blocking, e.g. `src/net-guard.ts`, `src/clock.ts`).
+- **module_check: dormant** — no ARCH-* declares `build:`.
+- No playwright/browser tool was available in this session — degraded per the contract's fallback,
+  mitigated by the direct-parse replication above (byte-identical to what a render pass needs to
+  not have 404'd on).
+
+### E. Owner-deferral ledger sweep (issue #15)
+
+Mechanical sweep, the fixed metadata key only (`grep -rn "owner_decision" <sdlc_dir>`, then
+filtered to the literal `- **owner_decision:** pending` / `owner_decision: pending` shape per file):
+`01-requirements.md` 0, `02-architecture.md` 1 (a table cell at `:4742` *quoting* the key while
+describing a past sweep's methodology — confirmed not live), `03-tasks.md` 0, `04-design.md` 0,
+`05-tests.md` 1 and `08-validation.md` 2 (all three are prose referring to the now-`answered`
+`ARCH-172`/REQ-216/K5 marker, confirmed `answered(2026-09-22)` at `02-architecture.md:4942`),
+`06-impl-log.md` 0, `07-review.md` 13 (historical prose across earlier rounds' own text, this
+round's own text now among them). **Zero live `pending` markers. `owner_decisions: []`.** ADR-086
+itself (`02-architecture.md:5756`) reads `answered 2026-09-23` — mechanically resolved — but **B2**
+above shows the answer rests on a premise this review can demonstrate is false for the entire
+production trigger population; this is reported as an architecture-consistency finding (B2), not
+as a live `owner_decisions` entry, per the contract's mechanical-marker rule. Spot-checked
+ADR-086/ADR-082/ADR-084/ADR-085 for decision-shaped hedging without the marker: none found — all
+follow the ledger's Context/Options/Decision/Consequences/Revisit-trigger shape.
+
+### F. Validation & handover
+
+`08-validation.md`'s VAL-256 entry (real:true, tier:acceptance) — a genuinely unconfined scratch
+instance, own port, own workRoot, `./deploy.sh --background`, production untouched — real-run
+proof for all four admission cells (remote schedule refused / local schedule runs / remote webhook
+refused / local webhook runs). `README.md`/`DEPLOY.md` present, current-state (opening blockquote:
+"不是變更歷程"), single `DEPLOY.md §1b 設定總表`, `§0` leads with the one-command
+`./deploy.sh --background` Gate 7.5 actually ran (verified by reading `DEPLOY.md:1-40`). **B3
+above is also a validation/handover finding**: DEPLOY.md's upgrade section (§6) claims "你要做的事:
+沒有" for a different (unrelated, schema-rebuild) migration while ADR-086's own compensating
+control — the `createdRemote` cohort sweep — was never written into DEPLOY.md at all, and
+`webhook_list`'s missing field (B3) makes that sweep unperformable even if documented. Trace
+`--check`: 0 未真實驗證/未驗證 gaps, confirmed by direct query against the shipped dashboard data
+(§C above).
+
+No CLAUDE.md/AGENTS.md/SKILL.md touched in the repair range (`git diff --stat HEAD~5..HEAD --
+CLAUDE.md AGENTS.md '**/SKILL.md'` → empty) — special-file review N/A.
+
+### G. Independently re-run this round (not trusted from either panel report)
+
+- `grep -rln isRemoteSubmission tests/`, `grep -rn createdRemote tests/`, `grep -rn unconfined
+  tests/ | grep -i "createServer\|confinementPosture"` — all three confirm B1's census exactly.
+- Read `src/mcp-facade.ts:365-395` (full `workflowRegister` claim block), `src/webhook-registry.ts:
+  205-225` (full `claim()`), `src/webhook-registry.ts:170-176,300-322` (creation + `deliver()`),
+  `src/scheduler.ts:294-307,388` — confirms B2 and B4's evidence directly, not accepted from prose.
+  `src/webhook-registry.ts:50-64,192-202` vs `src/scheduler.ts:151` — confirms B3's field asymmetry.
+  `src/server.ts:808-818,895-905` — confirms `confinementPosture`'s two unlocked hops (B1).
+- `DEPLOY.md:1-40,870-910` read directly — confirms §0's one-command deploy and B3's upgrade-section
+  gap.
+- Parsed the shipped `dashboard.html`'s own embedded JSON (`const D=...`) directly rather than
+  trusting either check tool's prose, for both the SoT-link false-positive (§D) and the iter-drift
+  filter (§C).
+- `sh .sdlc/trace --check`, `dashboard_check.py`, `solid_check.py`, `module_check.py` — all re-run
+  fresh this round (not copied from the panel reports or round 1).
+
+### H. Verdict
+
+**`send_back = [architecture, impl, validation]`. Iteration DOES NOT CLOSE.**
+
+Two HIGH findings from this round's repair: **B1** (a security-relevant invariant this iteration
+itself minted, INV-V37-5, was closed on paper for one hop of two named values and left three of
+five forwards with zero regression lock — silently-insecure failure direction, cheap fix, no
+production code change) and **B2** (ARCH-182's admission control and the owner's 2026-09-23 ruling
+both rest on a premise — that `createdRemote` tracks who ATTACHED a trigger — the code does not
+implement; it tracks only who CREATED the row, and a verified, zero-operator-action path exists on
+the production host's actual trigger population that reproduces the 2026-09-20 incident through
+neither control). B2 cannot be decided by this gate — it is relayed to the owner with the corrected
+premise, not silently passed or silently reversed.
+
+Two MED findings folded into `blocking_findings` because they are cheap, reachable, in the files
+already being repaired, and directly contradict this iteration's own architecture rationale: **B4**
+(webhook delivery's catch-all reopens C-1's bug class and inverts the retryable-vs-permanent
+distinction ARCH-182 was written to enforce) and **QD-MED** (the sole designated explanation
+surface for the wire-reachable error code was not updated for the widened admission surface, and
+REQ-117 — its owning requirement — is inside this closure). **B3** (the DEPLOY.md sweep ADR-086
+promised, and the missing `webhook_list` field that makes it unperformable) is routed to
+`validation` since it is a handover-manual + wire-surface gap, not a behavior gap.
+
+**LOW findings folded in because they are three-line/one-word fixes riding the same commits, not
+because they independently justify a send-back:** B5 (a NEW instance, introduced by this repair,
+of the exact "comment contradicts code" pattern REQ-218 exists to eliminate — `main.ts:182-183`)
+and B6 (ARCH-177's stated type vs. the shipped optional field — one word).
+
+**Recorded as tech debt, not blocking (send_back does not depend on these):** B7 (arch+impl pair,
+cron re-fire-forever on a permanent refusal — architecture's own contract table prescribes exactly
+this routing, so it is filed as a v38 candidate, not a deviation), A6/A8 (carried forward from
+round 1, unchanged, unrepaired by design — no shipped config reaches them / unmeasurable until the
+first `confined` host), the 15 pre-existing broken-link HIGH gaps and the remaining pre-existing 35
+mid/25 low gaps (unchanged, zero touching this closure), dashboard_check's 7 erDiagram false
+positives + 1 `MMD_OK`-fallback low (unchanged accepted baseline) and its own 5-HIGH tool-version
+artifact (re-verified this round by parsing the shipped dashboard's own data, not re-diagnosed from
+scratch), solid_check's 10 unclaimed-file low warnings (unchanged), the evidence-file 2-`#`-heading
+latent hazard (unchanged, out of this iteration's touched-file scope).
+
+`.panel/` is LEFT IN PLACE (send_back is non-empty) — the re-run gates and the next re-review need
+it.
+
+*Reviewer: Gate 8, 2026-09-23, re-review round 2 (send-back).*

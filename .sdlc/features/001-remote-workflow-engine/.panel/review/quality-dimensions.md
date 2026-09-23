@@ -1,233 +1,190 @@
-# Gate-2-vs-implementation review — lens: Quality-dimensions expert (Observability / Replaceability / Consumability / Self-sustainability)
+# Quality-dimensions review — Gate 2 architecture (v37 slice) vs. implementation
 
-Scope: v37 slice only (REQ-218 Bash confinement, REQ-219 dead-code deletion), per `06-impl-log.md`
-IMPL-371..379 `files:` lists. Compared against `02-architecture.md` ARCH-175..181,
-ADR-082/083/084/085, INV-V37-1/2/3.
+Scope: v37 slice only (REQ-218/219, ARCH-175..182, ADR-082..086, INV-V37-1..5), IMPL-371..384.
+Files read: everything on IMPL-372..384's `files:` lines (production `src/` only; the ~30
+mechanical `origin:'local'` test edits from IMPL-384 were not individually read) plus the three
+wiring-lock test files ARCH-182/INV-V37-5 names.
 
-Files read: `src/gateway/bash-confinement.ts`, `src/gateway/confinement-probe.ts`,
-`src/gateway/claude-agent-sdk-client.ts`, `src/gateway/client.ts`, `src/main.ts`, `src/call-tool.ts`,
-`src/server.ts`, `src/workroot-guard.ts`, `src/event-log.ts`, `src/authoring-guide.ts`,
-`src/mcp-facade.ts`, `src/errors.ts`, `src/tool-specs.ts`, `src/path-containment.ts`, `src/net-guard.ts`,
-`DEPLOY.md`, `rwe.config.example.json`, `node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts`
-(schema ground-truth), `tests/unit/compose-config-v2-wiring.test.ts`,
-`tests/unit/error-catalog-closed.test.ts`.
+Four dimensions below, each headed, each stating what was checked whether or not it found a
+defect.
 
 ---
 
 ## 1. Observability
 
-**Finding O-1 (MEDIUM) — `agent.confinement_denied` is architecturally due, spike-confirmed, and not built; the ADR's own conditional was never revised to say "no longer applies."**
+**Checked and consistent:**
+- `agent.confinement` event (`src/gateway/claude-agent-sdk-client.ts:816-846`) carries exactly the
+  field set ARCH-178 + its Gate-4/Gate-6 amendments specify (`attempt`, `posture`, `root`,
+  `allowWrite`, `denyRead`, `enabled`, `failIfUnavailable`, `sdkVersion`), and the `posture` ternary
+  now mirrors the `sandbox` ternary (the Gate-6.5 fix for the "two different reasons must not read
+  the same" bug class) — verified, both read the same default.
+- `agent.confinement_denied` / `PostToolUseFailure` is correctly NOT registered anywhere in
+  `claude-agent-sdk-client.ts` — matches ARCH-178's Gate-8 deferral-to-v38 (O-1).
+- `main.ts`'s real boot path (`main.ts:557-560`) logs the measured posture on EVERY boot, both arms
+  written out loud (`CONFINED` / `UNCONFINED (<reason>)`) — satisfies INV-V37-1's "never inferred
+  from the absence of a sentence."
+- `ENGINE_STATE_DENY` in `src/gateway/bash-confinement.ts:38-40` is exactly the 5-entry set ARCH-175's
+  Gate-8 amendment (finding A3) prescribes (`store`, `catalog.db`, `auth-tokens.db`,
+  `mcp-registry.db`, `_global_assets`) — the two previously-missing entries are present, the three
+  operator-overridable ones and the `continuations.db` phantom are correctly absent.
 
-ARCH-178's `api:` clause is written as a conditional, not a wish: *"emitted from a `PostToolUseFailure`
-hook … **if and only if spike S4 shows that hook fires for a sandbox-denied command**. If it does not,
-this second event is **not built** and the ADR says so."* TASK-250's spike answered the condition:
-`evidence/v37-spike/S4.md` — **S4 POSITIVE**, `PostToolUseFailure` fires for a sandbox-caused Bash
-failure with `tool_name`/`tool_input.command`/`error` (06-impl-log.md IMPL-371). Per ARCH-178's own
-stated rule, a positive S4 is the condition under which the row says the event **should** exist.
+**Violation found — INV-V37-5 is reported closed but two of its three named consumers have no wiring lock.**
 
-`src/event-log.ts:21` shows the `TranscriptEvent` union carries exactly one confinement-related kind,
-`agent.confinement` — `agent.confinement_denied` does not exist anywhere in `src/`. IMPL-374 records
-this explicitly ("`agent.confinement_denied` (S4-gated) is also NOT built — S4 fired positive but no
-Gate-5 red test asks for it … named as an open gap"), which is honest about the gap but does not
-constitute an architecture revision: ARCH-178's own text, unedited, still reads as if a positive S4
-means the event ships. The row was not amended to say "deferred to v38 despite S4" — it simply
-wasn't finished, and the ledger's own convention (ADR text = the standing decision) means a reader of
-`02-architecture.md` alone would believe this event exists.
-
-Consequence under this lens: on a `confined` deployment, a real kernel-level Bash denial reaches the
-operator only as the agent's own failed tool result — an ordinary tool-call failure indistinguishable
-from any other Bash error, with no purpose-built audit line naming it as a *confinement* denial. This
-is exactly the "silent/opaque failure is a design defect" case the lens exists to flag, and the
-architecture itself already agrees (ARCH-178: "a denial must be a positively emitted fact or not
-claimed at all") — the gap is that the *not claimed* half was never written back into the row once S4
-turned positive.
-
-Not counted as a violation but adjacent: INV-V37-3 (no VAL evidence against a zero-importer module) and
-the "automated INV-V37-3 checker" are correctly filed as v38 candidates with a stated trigger — that
-deferral pattern is done right elsewhere in this same file; O-1 is the one place a spike result
-should have triggered either the build or an explicit row amendment and got neither.
-
-**Finding O-2 (LOW) — `confinement-probe.ts`'s own doc comment overclaims where `reason` is visible.**
-
-`src/gateway/confinement-probe.ts:17-18`: `reason` is documented as present "so an operator reading
-the boot line (**or the confinement-posture ARCH-178 event**) sees WHY, not just THAT." But the actual
-`agent.confinement` event shape (`src/event-log.ts:21`) is
-`{runId, agentId, attempt, posture, root?, allowWrite, denyRead, enabled, failIfUnavailable, sdkVersion}`
-— no `reason` field. `reason` only ever reaches `main.ts`'s boot-time `console.log` (main.ts:504-506,
-:473) and `--check-config`'s stdout. This is the same "comment says X, the thing doesn't do X" bug
-class ARCH-176 names and fixes elsewhere in this very iteration (the `extractCandidatePaths` comment
-vs. its `PATH_ARG_FIELDS` reality) — recurring here in a doc comment rather than a security control, so
-severity is low, but an operator/log-scraper who trusts this module's own comment and greps the
-per-run event stream for `reason` will not find it there.
-
-**Verified consistent:**
-- `agent.confinement` fires once per attempt (not once per call), carries its own `attempt` counter
-  distinct from `sys.attempt`, exactly as DES-256/ARCH-178's Gate-4 correction specifies
-  (`claude-agent-sdk-client.ts:580-585, 821-843`).
-- Every event line — including `agent.confinement` — passes through `redact()` unconditionally at the
-  single sink (`event-log.ts:38`), so ARCH-056's redact-at-capture invariant holds for the new kind
-  with no special-casing needed.
-- The `posture`/`enabled` same-event-disagreement bug IMPL-374 found and fixed (two ternaries reading
-  the same field with opposite implicit defaults) is fixed correctly in the shipped code: both
-  `sandbox` (`:744`) and the event's `posture` (`:838`) now read `confinementPosture === 'confined'`
-  with the same true/false branch, confirmed by direct read of both lines.
-- The posture is printed at boot (`main.ts:504-506`) and via `--check-config` (`:473`), giving an
-  operator a positive, dated fact rather than an inferred one — matching ARCH-181's "measured, never
-  argued" framing.
+- **file:** `tests/unit/compose-config-v2-wiring.test.ts:406-418` (the IMPL-381/UT-328 lock,
+  reported as closing "finding A5, INV-V37-5")
+- **also:** `src/server.ts:813` (RunManager construction) and `src/server.ts:902` (`buildToolDeps`,
+  the door's read)
+- **which ARCH/INV:** INV-V37-5 — "`confinementPosture` crosses two hops (`main.ts:368` →
+  `ServerConfig` → **the door and RunManager's predicate**; `main.ts:443` → the gateway) ... each hop
+  needs an assertion that fails when the forward is dropped."
+- **evidence:** the test's own comment (lines 406-411) names all three consumers — "the door's own
+  read in call-tool.ts and RunManager's predicate" plus "the constructed gateway's own config" — and
+  claims "Mirrors the `allowHostPaths` lock's shape exactly, one probe result in, **both hops
+  checked**." The assertions that follow (lines 415-418) check only `cfg.confinementPosture` (the
+  `ServerConfig` field `composeConfig()` itself returns) and `cfg.gateway._config.confinementPosture`
+  (the gateway hop). Neither `RunManager`'s `_confinementPosture` nor `ToolDeps.confinementPosture`
+  is touched anywhere in this test, because both live inside `src/server.ts`'s `createServer()`, a
+  function `composeConfig()` (`src/main.ts`) never calls and this test never invokes. Confirmed by
+  `grep -rn "confinementPosture" tests/` (full search, this session): the only test that constructs
+  a real `RunManager`/door pair with `confinementPosture` set is `run-manager-admission-order.test.ts`
+  and `call-tool-confinement-door.test.ts`, and both pass `confinementPosture` as a **direct
+  constructor argument**, never through `createServer()`/`composeConfig()` — neither locks the
+  `server.ts:813`/`server.ts:902` forward. `tests/integration/scheduler-remote-origin.test.ts` and
+  `webhook-remote-origin.test.ts` (IT-302/303) use a fake `RunManagerPort` that re-implements the
+  predicate itself (by design, per DES-263's own testability note) and so cannot catch this either.
+- **failure scenario:** a future edit that drops `confinementPosture: config?.confinementPosture`
+  from either `src/server.ts:813` or `:902` (e.g. during an unrelated refactor of the `RunManager`/
+  `McpFacade` constructor argument lists — exactly the shape of edit v11's `updateFlagPath` and v15's
+  auth regression were) compiles clean and every existing test — including the one that claims to be
+  this exact hop's lock — stays green. `RunManager._confinementPosture`/`ToolDeps.confinementPosture`
+  silently become `undefined`; `admissionRefusal()`'s own documented convention treats `undefined` as
+  "never measured ⇒ do not gate" (`src/run-manager.ts:170-171`). Result: on a host the boot probe
+  measured `unconfined`, every remote `run_start`/`run_resume` AND every remote-created webhook/
+  schedule delivery is silently ADMITTED instead of refused — the exact "silently INSECURE, not
+  silently inert" failure class INV-V37-5 states by name, in the one slice built specifically to stop
+  it, reopened by the very repair commit (IMPL-381) whose own note claims it closed.
+- **severity:** HIGH. This is not a hypothetical edge case — it is the two load-bearing consumers of
+  the security-relevant value the entire v37 slice exists to protect, left with a test that reads as
+  covering them (same file, same shape, comment names them explicitly) but does not.
 
 ---
 
 ## 2. Replaceability
 
-**No violations found.**
-
-- ARCH-175/176's central claim — confinement is a property that lives on the SDK-gateway class only,
-  never on the `GatewayClient` port — holds in code: `src/gateway/client.ts:189`'s `GatewayClient`
-  interface gains no confinement-related member, and `LiteLLMGatewayClient` (`:471`) has no
-  `confinementPosture`/`sandbox` field anywhere. Swapping the gateway backend (the port's whole reason
-  to exist) is unaffected by this iteration, exactly as ARCH-175's note argues ("a second
-  implementation would have to spawn Bash itself, which nothing in this engine does").
-- `buildBashConfinement()` stays pure (verified: only imports `node:path` and a type-only SDK import;
-  no `fs`/`process`/`env`/clock access in `bash-confinement.ts`), while the host-specific *measurement*
-  lives in the separate, explicitly-impure `confinement-probe.ts` — the module boundary ARCH-181's note
-  argues for is real in the file layout, not just asserted in prose.
-- The `SandboxSettings` object `buildBashConfinement()` returns was checked field-by-field against the
-  SDK's own zod schema (`node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts:2682-2736`):
-  `enabled`/`failIfUnavailable`/`autoAllowBashIfSandboxed`/`allowUnsandboxedCommands`,
-  `filesystem.{allowWrite,allowRead,denyRead,denyWrite}`, `credentials.files[].mode:'deny'` all match
-  the installed SDK's actual schema, not a stale doc comment — the "one carrier, arm 1 wins" premise
-  ADR-082 rests on is real against the current dependency version.
+**Checked and consistent — no violations found.**
+- `src/gateway/client.ts` (the `GatewayClient` port `LiteLLMGatewayClient` also implements) gained no
+  `sandbox`/`confinement` member; `sandbox`/`confinementPosture` live only on
+  `ClaudeAgentSdkGatewayConfig`, exactly as ARCH-176 decided ("not added to the `GatewayClient` port
+  ... the other implementation has no subprocess and would have to stub it"). A provider swap
+  (`gateway: 'direct-fetch'` vs `'sdk'`) still needs zero confinement-aware code in the non-SDK
+  backend.
+- `src/run-manager.ts` imports no confinement module (`grep "confine\|sandbox"` on its imports finds
+  only the pre-existing, unrelated `./sandbox/host.js` script sandbox) — `RunManager` depends only on
+  the pure `admissionRefusal()` predicate it owns, and the posture arrives as an opaque
+  `'confined'|'unconfined'|undefined` string, not a `ClaudeAgentSdkGatewayConfig`-shaped object. The
+  admission control is gateway-implementation-agnostic, matching ARCH-182's placement rationale ("the
+  point all four admissions already converge on").
+- `buildBashConfinement()` (`src/gateway/bash-confinement.ts`) imports only the SDK's `SandboxSettings`
+  **type** (type-only import, line 8) plus one local pure helper (`isPathContained`) — no fs/process/
+  env/clock — matching ARCH-175's contract verbatim; swapping the CLI's sandbox schema for a future
+  SDK version only requires touching this one function's return shape, never its callers.
+- `ComposeConfigDeps.workRootDefault`/`confinementProbe` being pre-computed VALUES rather than
+  callables (both flagged as deliberate in the ledger, both confirmed at their two production call
+  sites in `main.ts:518,547`) keeps `composeConfig()` swappable/testable without a `vi.mock` collision
+  — consistent with the DES-255 seam rule the architecture states.
 
 ---
 
 ## 3. Consumability
 
-**Finding C-1 (HIGH) — `CONFINEMENT_UNAVAILABLE` is a real, wire-reachable refusal on `run_start`/`run_resume` that is absent from the one place ARCH-087 says the tool surface lives, reproducing a bug class this codebase already paid to fix once.**
+**Checked and consistent:**
+- `CONFINEMENT_UNAVAILABLE` is in `ERROR_CATALOG` (`src/errors.ts:91`) with a `see` pointer, and in
+  both `run_start`'s (`tool-specs.ts:532`) and `run_resume`'s (`tool-specs.ts:599`) advertised
+  `errors:` arrays — closes the C-1 finding as claimed.
+- `refusalEnvelope`'s `code` parameter is typed `ErrorCode` in `src/call-tool.ts` (verified import/
+  usage), closing the class rather than one instance, as ARCH-181's amendment specifies.
+- `rwe.config.example.json` documents `sandbox.allowHostPaths`; `KNOWN_FILE_CONFIG_KEYS` in
+  `src/main.ts:110` includes `sandbox` — the compiler-enforced forwarding discipline ARCH-177 asks
+  for is in place.
 
-ARCH-087 (unchanged this iteration, still governing): *"`TOOL_SPECS`: one data array that **is** the
-tool surface — names, schemas, descriptions, **`errors:`**, authorization row, REQ-118 fixture list."*
-ARCH-051 promises *"precise self-describing tool schemas + a structured drift-lock test across
-new/changed tools."*
+**Violation found — the authoring guide's confinement explanation was not updated for ARCH-182's widened admission surface.**
 
-ARCH-181/DES-262 (this iteration) adds a real refusal: `call-tool.ts:120-124` —
-
-```
-if ((spec.name === 'run_start' || spec.name === 'run_resume') &&
-    deps.confinementPosture === 'unconfined' && deps.isRemoteSubmission === true) {
-  return refusalEnvelope('CONFINEMENT_UNAVAILABLE', 'CONFINEMENT_UNAVAILABLE: Bash confinement is
-  unavailable on this host … remote run submissions are refused …');
-}
-```
-
-This is reachable in production (any remote-submitted `run_start`/`run_resume` on an `unconfined`
-posture — the exact posture this very host measures per IMPL-371/ADR-083's owner_decision) and it is
-even tested directly (`tests/unit/call-tool-confinement-door.test.ts:28,66`). But:
-
-- `src/errors.ts`'s `ERROR_CATALOG` (the "closed `ErrorCode` union — every coded refusal this engine
-  can throw is a key here", per that file's own header comment) has **no `CONFINEMENT_UNAVAILABLE`
-  key** — `grep -n CONFINEMENT_UNAVAILABLE src/errors.ts` returns nothing.
-- `refusalEnvelope(code: string, …)` (`call-tool.ts:76`) takes a bare `string`, not the `ErrorCode`
-  type — so this call site is not even compiler-checked against the catalog, unlike every other coded
-  refusal in the file.
-- `src/tool-specs.ts:532` (`run_start`'s `errors:` array) and `:599` (`run_resume`'s `errors:` array)
-  both omit `CONFINEMENT_UNAVAILABLE` — a client reading `tools/list` (the surface ARCH-091/ARCH-087
-  exist to make authoritative) has no way to learn this refusal exists before hitting it.
-- The implementer's own comment at the call site invokes the *correct* precedent and then does not
-  follow it: *"same precedent as INLINE_SCRIPT_CLOSED below"* — but `INLINE_SCRIPT_CLOSED` **is**
-  catalogued (`errors.ts:86`) **and** listed in `run_start`'s `errors:` array (confirmed at
-  `tool-specs.ts:532`); `CONFINEMENT_UNAVAILABLE` received neither treatment.
-- This is not a new bug class for this codebase — it is the *identical* defect
-  `tests/unit/error-catalog-closed.test.ts` (UT-164, v24 Gate-8 AF-3) was written to prevent: *"A code
-  a client really receives, with no `see` pointer, in no generated documentation, and invisible to the
-  existing closure tests."* That test's own header names the gap in its own coverage: it locks
-  `AUTHZ_ERROR_CODES` (authz.ts's derived union) against `ERROR_CATALOG`, and its comment says the
-  *other* direction is "locked elsewhere" by `tool-specs.test.ts` — but that other lock only checks
-  that a row's `errors[]`/fixtures don't cite codes outside the catalog, which is silent about an
-  ad-hoc `refusalEnvelope()` call in `call-tool.ts` that names a code belonging to neither list. The
-  same seam the codebase already found and fixed once (for `authz.ts`) reopened, this time via a
-  pre-dispatch door in `call-tool.ts` rather than `authorize()`.
-
-Under this lens specifically: Consumability's whole target is "structured, well-typed I/O… minimize the
-caller's learning curve," and the stated mechanism for that in this codebase is precisely
-`errors:` + `ERROR_CATALOG` + the `see: 'workflow_authoring_guide'` pointer. A cold MCP client — the
-exact reader ARCH-051/ARCH-087 are written for — has no schema-level or catalog-level way to discover
-that `run_start`/`run_resume` can fail this way; it will encounter the code only by making a remote
-call from an unconfined host and reading the ad-hoc message string.
-
-**Verified consistent:**
-- `docs/AUTHORING.md` / `DEPLOY.md` (§1b, §1c(e), the `run_start`/`run_resume` refusal-table row) do
-  document `CONFINEMENT_UNAVAILABLE` in prose, including the exact loopback-exemption and
-  tunnel-header semantics — confirmed against `isLoopbackPeer`'s real implementation
-  (`net-guard.ts:109-116`: any `TUNNEL_HEADERS` entry present ⇒ never loopback-exempt), so the
-  *human-facing* documentation is accurate; the gap is specifically the machine-readable tool surface
-  (`tools/list` / `ERROR_CATALOG`), which is the one this lens weighs most heavily for agent-to-agent
-  consumability.
-- `authoring-guide.ts`'s `hostPathGrantsBody(posture)` (IMPL-379) correctly threads the *measured*
-  posture through `McpFacade` → `workflow_authoring_guide` (confirmed: `mcp-facade.ts:116-122,
-  278-300, 680-683`, `server.ts:866-870`) rather than a hardcoded claim, and the static generated
-  `docs/AUTHORING.md` correctly renders the dual-posture text because `scripts/gen-authoring-md.ts`
-  passes no posture at generation time (build-time, not deploy-time) — this is the one place the
-  slice's Consumability work is fully closed.
-- ARCH-177's own named bug class (a new `FileConfig` key parsed but never forwarded) does **not**
-  recur here: `compose-config-v2-wiring.test.ts:318` carries the `sandbox:` EXCLUDED row with its
-  reason stated, and `:393-401` asserts the hop-2 forwarding into the constructed gateway's
-  `_config.confinement.allowHostPaths` — the standing probe this repo's own memory
-  ("composeConfig 佈線 bug class") flags as the only test that has ever caught this class does carry
-  the new key, correctly.
+- **file:** `src/authoring-guide.ts:363-369` (`HOST_PATH_GRANTS_UNCONFINED`), reachable from the live
+  `workflow_authoring_guide` tool and from `docs/AUTHORING.md`
+- **which ARCH violated:** ARCH-107 amendment / REQ-117 (this is the one documented read-path for
+  「what may this agent touch / when is Bash refused」 — ARCH-177's own note: "No read-back endpoint
+  is added ... a third surface would be a second thing describing the same fact," making this text
+  the authoritative, sole explanation) against ARCH-182, which was landed one gate later (IMPL-384)
+  and never touched `src/authoring-guide.ts` (absent from IMPL-384's `files:` list).
+- **evidence:** the text reads, verbatim: *"A remote submission is refused before it ever reaches an
+  agent — `run_start`/`run_resume` return a refusal instead of admitting Bash-capable work."* This
+  was accurate when IMPL-379 wrote it (ARCH-181's door was, at that point, the only admission
+  control). ARCH-182/IMPL-384 subsequently added a SECOND, independent admission control — the
+  `admissionRefusal()` predicate at `RunManager.start()` — specifically because ARCH-181's door
+  "covers ONE of four admission sites" (the Gate-8 finding A1 that produced ARCH-182). A remotely-
+  created webhook or resident schedule on an `unconfined` host is now also refused, but NOT via
+  `run_start`/`run_resume` — it is refused at webhook delivery (`POST /hooks/:id`'s response body) or
+  surfaces as the schedule's `lastError` (`schedule_list`), mechanisms the guide text names nowhere
+  and which do not match the sentence's own claim that only `run_start`/`run_resume` "return a
+  refusal." `errors.ts:91`'s `CONFINEMENT_UNAVAILABLE.see: 'workflow_authoring_guide'` pointer means
+  this is exactly the text a remote author debugging a silently-refused webhook/schedule is directed
+  to, and it will not explain what they are seeing.
+- **failure scenario:** a remote party registers a workflow and a webhook against it on a host whose
+  boot probe measured `unconfined`. The webhook fires; delivery returns `CONFINEMENT_UNAVAILABLE`.
+  The author reads `workflow_authoring_guide` (the only surface the error's `see` field points them
+  to) expecting an explanation, and reads a sentence that describes `run_start`/`run_resume` — a tool
+  call they never made — leaving them unable to connect the refusal to their webhook at all.
+- **severity:** MEDIUM. Not a security gap (the refusal itself is correctly enforced, per Section 1's
+  caveat about the wiring lock) — it is a documentation/consumability gap: the one designated
+  explanation surface for a wire-reachable error code describes a narrower mechanism than what
+  actually ships, for the exact audience (a remote author) the error is aimed at.
+- **secondary instance, same root cause, lower severity:** `src/errors.ts:91`'s own `hint` string
+  ("a remotely-submitted run is refused") and `src/main.ts:560`'s boot banner ("remote run
+  submissions will be refused") use the same pre-ARCH-182 framing; both are generic enough to be read
+  as covering webhook/schedule too (unlike the guide, they don't name `run_start`/`run_resume`
+  specifically), so they are noted but not counted as a separate violation.
 
 ---
 
 ## 4. Self-sustainability
 
-**No violations found.**
-
-- ADR-083's owner_decision (posture C) is implemented exactly as adjudicated: a host that cannot
-  confine still runs **local** submissions unconfined (`claude-agent-sdk-client.ts:743-745` — the
-  `sandbox` ternary depends only on `confinementPosture`, never on remoteness) while refusing
-  **remote** `run_start`/`run_resume` at the door (`call-tool.ts:120`) — the "accepted cost" language
-  in `DEPLOY.md:541` ("本機發起的 run 仍不受限制") matches the code, not just the prose.
-  `failIfUnavailable: true` (ADR-083, the strict half) is a literal field in `buildBashConfinement()`'s
-  output (`bash-confinement.ts:59`) and reachable failures are typed and distinguishable
-  (`SANDBOX_UNAVAILABLE`, `claude-agent-sdk-client.ts:999-1022`, S10-confirmed distinguishable from an
-  ordinary terminal failure) rather than silently degrading — the lens's "graceful degradation" concern
-  is honored by refusing loudly, which is the posture this ADR explicitly chose over a quieter one.
-- The posture is measured once, at boot, by a real subprocess probe (`confinement-probe.ts`) rather
-  than trusted from a config flag or inferred from environment — `probeConfinement()`'s nested-`bwrap`
-  command was independently re-run against this host during this review's own reading of the code path
-  and its shape (`spawnSync('bwrap', NESTED_BWRAP_ARGS, {timeout:5000})`, exit-code/error/timeout →
-  posture) matches ADR-083's owner_decision paragraph verbatim (single `bwrap` exit 0 vs. nested
-  `bwrap … -- bwrap --unshare-user` → `No permissions to create a new namespace`). `--check-config`
-  runs the identical probe read-only (`main.ts:470-473`), so an operator has a liveness check available
-  on demand without booting the full server — the closest analogue this slice has to a "tool-liveness
-  check," and it is wired.
-- `validateHostPathGrants` (`bash-confinement.ts:98-135`) fails closed at boot on any malformed grant,
-  checked in both containment directions via the repo's one existing `isPathContained` primitive
-  (confirmed: `isPathContained(target, workRoot)` catches a grant nested inside `workRoot`,
-  `isPathContained(workRoot, target)` catches a grant that is an ancestor of `workRoot`) — no
-  degraded-but-running state is possible from a bad grant list; the engine does not start, exactly as
-  ADR-028's fail-closed idiom this file reuses requires.
-- INV-V37-2 ("the confined party cannot widen its own confinement") holds by construction:
-  `grantedHostPaths`/`protectedFiles`/`workRoot` all arrive at `buildBashConfinement()` from
-  `main.ts`'s composition root (`ComposeConfigDeps.confinementProbe` is a pre-computed **value**, never
-  a callable the gateway or an agent-reachable path could re-invoke), and `denyWrite` on the
-  workspace's own `.claude/settings*.json` (`bash-confinement.ts:66`) closes the one path an agent
-  could otherwise use to edit its own sandbox settings — matching ARCH-175's note on this exactly.
-- Deferred items (an automated INV-V37-3 checker, locking for a concurrently-shared granted path, the
-  author-side `allowHostPaths` request contract) are each filed under "v38 candidates" with a named,
-  event-shaped (not date-shaped) trigger — the self-sustainability-relevant property of "the next
-  occurrence is a rule violation rather than a fresh discovery" is genuinely set up for the checker
-  item, not just asserted.
+**Checked and consistent — no violations found.**
+- Refused remote schedule/webhook admissions do not tight-loop: `scheduler.ts`'s ticker driver
+  (`server.ts:1015-1029`) routes the thrown `CONFINEMENT_UNAVAILABLE` into the SAME generic
+  `.catch()` → `markFailed()` path every other dispatch failure uses — this is not an omission, it is
+  what ARCH-182's own contract table prescribes verbatim ("`markFailed` at the ticker driver
+  (`server.ts:1017-1025` already routes `err.code` there)"). `markFailed` (`scheduler.ts:570-579`)
+  already advances a `cron` schedule's `nextFire` independently of outcome and auto-disables a
+  `once` schedule — no new infinite-retry surface is introduced. (`Scheduler.trigger()`'s own
+  try/catch, `scheduler.ts:378-390`, and `webhook-registry.ts`'s equivalent at `:316-321`, both exist
+  as IMPL-384 claims; verified present.)
+- The confinement posture is measured exactly once per process lifetime, at boot
+  (`src/gateway/confinement-probe.ts`, called once from `main.ts:539`), never re-probed mid-run — this
+  is architecture-as-designed (ADR-083's revisit trigger is explicitly an operator/upstream event,
+  not a runtime retry loop), not a gap: a host whose nested-userns support changes requires a
+  restart, which is documented behavior, not silent drift.
+- `admissionRefusal()` (`src/run-manager.ts:167-171`) is a total, pure function over its three-value
+  input domain (`'confined'|'unconfined'|undefined' × 'local'|'remote'`) with no unhandled branch —
+  no path can throw an unexpected shape into a caller that isn't already prepared for a coded error.
+- Legacy persisted `RunSpec` rows (`sqlite-run-store.ts`'s `getSpec()`) backfill `origin: 'local'` on
+  read rather than leaving the field `undefined`/throwing — a pre-v37 run's resume path degrades to
+  "not gated" rather than crashing, matching ARCH-182's own stated rationale ("harmless because a
+  resume is gated by ARCH-181's door, not by this predicate").
 
 ---
 
 ## Summary
 
-| # | Dimension | Severity | ARCH/INV | One-line |
-|---|---|---|---|---|
-| C-1 | Consumability | **HIGH** | ARCH-087, ARCH-051 | `CONFINEMENT_UNAVAILABLE` reachable on `run_start`/`run_resume`, absent from `ERROR_CATALOG` and both tools' `errors:` — reproduces the exact v24 Gate-8 AF-3 defect (UT-164) this codebase already paid to fix once |
-| O-1 | Observability | MEDIUM | ARCH-178 | S4 fired positive; `agent.confinement_denied` still not built and the row's own conditional was never revised to say so |
-| O-2 | Observability | LOW | ARCH-178 (adjacent) | `confinement-probe.ts` comment claims `reason` reaches the `agent.confinement` event; the event schema has no `reason` field |
+| Dimension | Violations | Notes |
+|---|---|---|
+| Observability | 1 (HIGH) | INV-V37-5's own wiring lock does not cover the two consumers it names |
+| Replaceability | 0 | — |
+| Consumability | 1 (MEDIUM) | Authoring guide's confinement text stale after ARCH-182 widened admission |
+| Self-sustainability | 0 | — |
 
-Replaceability and Self-sustainability: no violations found in this slice; evidence recorded above.
-
-ARCHCHECK: lens=quality-dimensions, file=/home/user/Documents/remote-workflow/.sdlc/features/001-remote-workflow-engine/.panel/review/quality-dimensions.md, consistent=no, violations=3
+**Total violations: 2** (1 HIGH, 1 MEDIUM). Both are drift introduced by the LATER of two Gate-8
+send-back repairs not reaching back into an EARLIER repair's artifacts (IMPL-381's test, IMPL-379's
+guide text) once IMPL-384/ARCH-182 changed what those artifacts needed to say — not deviations from
+the original v37 design intent, but real, currently-unclosed gaps between what the architecture's
+own invariants (INV-V37-5) and rationale (ARCH-177's "no read-back endpoint... a third surface would
+be a second thing describing the same fact") require and what ships today.

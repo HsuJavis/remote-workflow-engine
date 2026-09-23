@@ -1,5 +1,13 @@
 # Adversarial architecture group — debate round 2 (v37 Gate 8 send-back)
 
+> **Reader pointer.** The **current round** — *v37 Gate 8 round-2 send-back, debate round 2* —
+> is the **ADDENDUM near the end of this file** (`# ADDENDUM — v37 Gate 8 **round-2** send-back,
+> debate **round 2**`). Everything above it is the earlier **Gate-2** round-2 record, kept
+> because `adversarial.r1.md` ADDENDUM 2 §1.3 cites it by section number. The two rounds have
+> different headlines and different disagreement lists: the Gate-2 section's open items are
+> labelled `D1`/`D2`, the current round's are `RD1`–`RD9`. They are not the same items.
+
+
 **Lenses**: (a) Security · (b) Scalability/performance · (c) Testability. **Tie-breaker**: Karpathy
 simplicity-first. **Round**: 2 — I have read `quality-dimensions.r1.md` (the only other r1 in the
 panel directory). **This file supersedes the stale Gate-2 `adversarial.r2.md` this path held**
@@ -387,3 +395,328 @@ with no event built; the refusal event's shape; C-1's typed code.
 dispatchers); the origin row (version, not workflow, not triggers); resume needs no second fact;
 `ENGINE_STATE_DENY` contains a phantom.
 **Open**: D1 (flip timing), D2 (legacy default).
+
+---
+
+# ADDENDUM — v37 Gate 8 **round-2** send-back, debate **round 2**
+
+*Adversarial architecture group (security / scalability / testability, Karpathy simplicity as
+tie-break). Written 2026-09-23 after reading `quality-dimensions.r1.md` in full. **Appended, not
+overwritten** — this file's original content is the Gate-2 round-2 record that my own
+`adversarial.r1.md` ADDENDUM 2 §1.3 cites by section number ("my own r2 §1 design"); deleting it
+would break a live cross-reference in the same panel directory. Scope is the round-2 send-back
+items only: B1, B2, B4, B3, QD-MED, B5/B6, and B7 (which I am still asking to pull in).*
+
+**Headline.** We converged on more than the r1s predicted. The shared error classifier, the B3
+mirror, the rule-shaped guide sentence and the INV-V37-5 enumeration are all agreed by both lenses
+from independent starting points. The one place QD and I genuinely diverged — B2's fix shape — I
+**rebut on cost and concede on premise**, and the two premises turn out to be one: QD's
+zero-operator-action re-arm and my coverage-zero-on-legacy are two readings of the same wrong
+sentence in ARCH-182. That merges into **one** `owner_decision`, not two. Two disagreements
+survive, both small and both stated as such: whether B7 is in scope, and how many words
+`RefusalReason` grows by.
+
+---
+
+## 1. Disagreement ledger (verdict first, reason second)
+
+| # | Item | QD's r1 position | My verdict |
+|---|---|---|---|
+| RD1 | B2 fix shape | fire-path-only OR of `trigger.createdRemote` ∨ version origin; then retreat to "flag `claim()`-after-creation" | **rebut both, concede the premise** — §2 |
+| RD2 | B2 relay | a *fresh* `owner_decision` distinct from `:5756` | **concede, and merge with mine** — §2.4 |
+| RD3 | B4 mapper | `admissionErrorToOutcome`, 4 call sites | **converged** — §3 |
+| RD4 | `RefusalReason` width | grow by **two** words | **hold at one** — §3.2 |
+| RD5 | B7 | filed as v38 debt, "not proposing a fix this round" | **hold — and QD already argued my side** — §4 |
+| RD6 | B1 remedy | reword INV-V37-5 to enumerate both hops; would accept "architecture only owns the reword" | **concede the enumeration, hold the structure** — §5 |
+| RD7 | B3 | mirror the existing boolean, no tri-state | **converged** — §6 |
+| RD8 | QD-MED | rule-shaped guide sentence, no mechanism | **concede to QD, against my own r1** — §7 |
+| RD9 | B5/B6 | barely touched | no conflict — §8 |
+
+---
+
+## 2. RD1/RD2 — B2: the cheap fix is not cheap, and our two premises are one premise
+
+### 2.1 REBUT — "fire-path-only" does not buy what QD prices it at
+
+QD's narrowing is genuinely well-motivated: refuse on the trigger path only, leave local
+`run_start` exactly where ADR-083 left it, stay additive. I wanted it to work. It does not, and QD
+is the one who found the reason, in their own Self-sustainability section: per ADR-086's ruling text
+(`02-architecture.md:5757`), *"production catalog 現有的工作流程**全部**是遠端註冊的"*, naming
+`jev-haiku` v4's hourly health check explicitly. OR version-origin into the fire path and **every
+existing scheduled and webhook fire on that host is refused** — the identical blackout the owner
+rejected, delivered through two of the four routes instead of four.
+
+**And the escape hatch people will reach for does not exist.** I checked whether the blackout could
+be avoided by a kind `DEFAULT`. It cannot, and this is the sharpest new fact of the round:
+
+- `workflow_versions` (`workflow-catalog.ts:267`, with the later `ALTER TABLE`s at `:322-327`)
+  carries `name, version, script, defaults, params, mermaid, triggers, createdAt, diagram_contract`
+  — **no `createdBy`, no origin, nothing about where a registration came from.** Adding version
+  origin is a new column with a backfill decision attached, exactly like `createdRemote` was.
+- **The catalog knows *who*, never *from where*.** `workflows.owner` does exist
+  (`workflow-catalog.ts:242-243`, backfilled to the operator email at boot, `:86`/`:255`) — so a
+  reader may object that provenance is already on disk. It is not: `owner` is an **identity**, and
+  the ruling at `:5757` records that this same identity (`owner=hsuhungjung@gmail.com`) registered
+  every existing workflow **remotely**. That is ADR-083's distinction exactly — the threat surface
+  is 遠端提交, not an untrusted principal — and it is why **no existing column can be backfilled
+  into an origin**: the one column that looks like a candidate is uniformly the trusted operator
+  and uniformly remote.
+- For `createdRemote` the cheap backfill (`DEFAULT 0` = local) is *unverified* — it might be true
+  for some rows. For version origin the cheap backfill is **known false**: the owner has stated on
+  the record that every existing workflow is remote-registered. An honest backfill is `'remote'`,
+  and an honest backfill **is** the blackout.
+
+So the choice is not "expensive option vs. cheap option". It is binary and the two ends are already
+on my r1 table: **the automated fires stop on this host, or the control refuses nothing on it.**
+There is no third column that makes this cheaper, and I withdraw any suggestion that QD's narrowing
+is a middle path. It is option (ii) with a smaller blast radius — which is a real improvement and I
+credit it below — not a different kind of option.
+
+### 2.2 REBUT — the `claim()` flag misses the path it is named after
+
+QD's fallback ("detect and flag `claim()`-after-creation as an event the operator should confirm")
+is weaker than their own first proposal, for two measured reasons and one Karpathy reason:
+
+1. **`claim()`'s `'held'` arm returns before any `UPDATE`** (`webhook-registry.ts:211-219`, read in
+   full). The re-register path — the one QD's own B2 narrative runs through — hits that arm. A flag
+   written in `claim()` never fires on it.
+2. **The bytes that execute are chosen one call later.** Both dispatch sites resolve through
+   `catalog.resolve(workflow, {channel:'release'})`. `claim()` binds an *id*; `workflow_publish`
+   decides which *script* that id will run. The laundering event is the release-pointer move, not
+   the claim.
+3. It invents a confirmation surface with no actor: nothing in this engine notifies an operator or
+   holds a decision pending one. That is a new mechanism bought to avoid a decision — the same
+   thing I declined my own local-allowlist for in r1 §1.3. **Consistency demands I decline QD's too.**
+
+### 2.3 CONCEDE — QD's premise correction is right, and it is my premise
+
+QD: the owner's `:5756` ruling priced a residual that requires *"操作者在本機誤按啟動"* — a human
+pressing a button; B2's path needs no human at all, because the trigger fires itself. That is
+correct and it is the same defect I argued from the other end: I said ARCH-182's refusal arm is
+**unreachable** for the pre-v37 trigger population (`createdRemote` is written at exactly two
+`INSERT` sites, `webhook-registry.ts:170-176` / `scheduler.ts:294-307`, and nothing in the lifecycle
+re-stamps it). QD said the trust **degrades** on unattended operation. Both are consequences of one
+sentence being wrong: **ARCH-182 says provenance tracks attachment; the code records row creation.**
+Start from creation-time truth and you get my coverage-zero at upgrade *and* QD's re-arm afterwards,
+automatically. I therefore drop my framing's claim to priority ("the first-order fact is simpler"
+— r1 ADDENDUM 2 Summary ¶1): neither is first-order, the premise is.
+
+### 2.4 The merged relay (RD2 — concede, with one amendment)
+
+QD asks for a fresh `owner_decision` distinct from the answered `:5756`. Agreed, and it must be
+**one** item carrying both facts, because an owner given only one of them can reasonably pick an
+option that the other one defeats:
+
+> **`owner_decision` (v37-B2).** ADR-086's 2026-09-23 ruling was taken against the premise that
+> `createdRemote` records who *attached* a trigger. It records who *created the row*. Two
+> consequences the ruling was not given: (a) every trigger row predating this upgrade reads
+> `DEFAULT 0` = local, so ARCH-182 refuses nothing on the existing population — coverage zero, not
+> "a residual"; (b) the residual that does exist needs **no operator action** — a cron tick re-runs
+> a re-pointed script by itself. Options, costs on my r1 ADDENDUM 2 §1.3 table, ranked
+> **(iii) fix the host > (iv) drop `Bash` when `unconfined` (spike first, R6) > (ii) version-origin
+> column > (i) keep C and correct the text + sweep**. **(ii) now has a narrower sub-variant, from
+> the quality-dimensions lens: apply it to trigger-fired admissions only**, which stops the
+> automated fires (on this host: `jev-haiku`'s hourly check) while leaving every workflow runnable
+> by local `run_start`. That is a materially smaller blast radius than the one rejected on
+> 2026-09-23 and the owner has not ruled on it. Note for whoever relays: the honest backfill for a
+> version-origin column is `'remote'` — the owner's own stated fact — so the stoppage is not
+> avoidable by choosing a default.
+
+**I upgrade my ranking to put (ii-narrow) above bare (ii)**, on QD's argument, and I leave (iii)/(iv)
+above both: they are the only options that make the engine's *own claim* true rather than buying
+coverage with a column.
+
+**Unchanged and not owner-gated:** ARCH-182's justifying sentence and ADR-086's consequence
+paragraph get corrected **this round**, whatever the owner answers. A wrong premise in an ADR is
+worse than a known gap.
+
+---
+
+## 3. RD3/RD4 — B4: converged on the mapper, holding at one vocabulary word
+
+### 3.1 CONVERGED — same function, two names; take QD's
+
+QD proposed `admissionErrorToOutcome(err) -> {code, retryable, httpStatus}` consumed by four call
+sites; I proposed `classifyStartRefusal(err) -> {code, retryable, httpStatus}` beside
+`admissionRefusal()`. Same object. **Take QD's name** — it is the one that does not imply the error
+came from `start()` specifically, which matters if a fifth admission condition ever throws from
+elsewhere. Placement: beside `admissionRefusal()` in `run-manager.ts`, so the thrower and the
+classifier are read together.
+
+Both of us independently flagged the same premature-abstraction risk against our own proposal (QD's
+Risks ¶1; my r1 expected-disagreement ¶). Neither of us is going to raise it against the other, so
+let it be recorded as **not a disagreement**: four hand-written mappings with one already wrong and
+a second one-find away is not the case the Karpathy tie-break protects. The rule survives: one
+function, four consumers, each keeping its own envelope shape.
+
+**One measured correction to QD's version of the ticker twin-bug.** QD writes that
+`CONFINEMENT_UNAVAILABLE` and a deleted-catalog-entry failure "are recorded identically via
+`markFailed`". Read at `server.ts:1024-1031`: the `.catch()` *does* extract `err.code` when present,
+so `lastError` reads `CONFINEMENT_UNAVAILABLE` rather than `DISPATCH_FAILED`. The schedule side is
+not blind — it is **misclassified**: a policy refusal is written to the dispatch-failure field,
+`refusalCount` never increments, and `scheduler.ts:499`'s own comment (*"`lastError` means dispatch
+failed, `lastRefusalReason` means policy refused"*) is violated by the code one file over. That
+makes the fix a routing branch, not a new field, which is cheaper than QD's framing implies and is
+precisely why B7 rides along (§4).
+
+### 3.2 HOLD — `RefusalReason` grows by ONE word, not two
+
+QD wants `'CONFINEMENT_UNAVAILABLE'` **and** `'RUN_ADMISSION_LIMIT'`. I hold at
+`'CONFINEMENT_UNAVAILABLE'` only, on the union's own documented meaning:
+`scheduler.ts:499` defines `lastRefusalReason` as *"policy refused before dispatch"*. A concurrency
+cap is **capacity, not policy** — it is retryable by construction, and writing it into
+`refusalCount` makes the operator-facing counter answer "why did this webhook stop firing?" with a
+number that mixes "this host will never run this" and "the host was busy for 200 ms". That is the
+exact conflation B4 exists to fix, re-introduced one field over. `RUN_ADMISSION_LIMIT` gets a
+`retryable: true` + **503** from the mapper and no durable refusal row; that is the whole of what a
+sender needs.
+
+**QD's own open risk on this, closed this round by measurement:** QD flagged "unverified whether
+exhaustive switches over `RefusalReason` exist". I grepped `src/` — every one of the ~20 sites is an
+assignment, a cast, a column read or a type annotation; the only `switch` on a field named `reason`
+is `asset-sync.ts:125`, over an unrelated union. **No exhaustive switch over `RefusalReason` exists,
+so widening it cannot break a `never` check.** My own r1 R5 raised the same worry; it is retired for
+both of us. The residual ripple is persisted-string readers only, which is a grep, not a redesign.
+
+---
+
+## 4. RD5 — B7: HOLD, and QD has already argued my side
+
+QD files B7 as non-blocking v38 debt "per the reviewer's own routing" — and then writes, in their
+Key Points: *"Any fix scoped to `webhook-registry.ts` alone leaves this open."* Those two sentences
+cannot both be acted on. The thing QD says must not be left open **is** B7's mechanism: the ticker
+routing a permanent refusal through the dispatch-failure writer, hence no `refusalCount`, hence
+re-refuse every period forever. QD has argued for touching the ticker; they declined only to use
+the label.
+
+**So I read this as agreement and record it as a disagreement about scope-hygiene, not about
+engineering.** My position stands: with the mapper in place, B7 is `if
+(!admissionErrorToOutcome(err).retryable) scheduler.markRefused(firing, code); else
+scheduler.markFailed(firing, code);` — one branch, inside a change we are already making, using
+`markRefused` which already takes exactly a `RefusalReason` (`scheduler.ts:501`). Deferring it ships
+a known unbounded loop on the one host we know is `unconfined`, and re-opens the same file in v38.
+
+**Scheduling-behaviour risk: none, verified in r1** — since v29/REQ-152 `claimFiring()`
+(`scheduler.ts:465-472`) recomputes `nextFire` before dispatch; `markRefused` and `markFailed` are
+both pure recorders and disable `once` identically. The only difference is which trio is written.
+
+**What I still do not propose:** auto-disable after N consecutive refusals. Speculative; the counter
+makes the condition visible, and visibility was what was missing. (QD's aside about a
+"`refusalCount`-driven auto-disable the webhook side already has" is muddled — that write is
+`scheduler.ts:515`, `once`-kind only — but nothing either of us is ruling on depends on it.)
+
+---
+
+## 5. RD6 — B1: concede the enumeration, hold the structure, because `resume()` decides it
+
+**CONCEDE, and note we wrote the same sentence independently.** QD: INV-V37-5 must state both hops
+as separately-locked obligations so a reader can enumerate two assertions and find one missing. My
+r1 §3.2: "INV-V37-5 must name its consumers explicitly … an invariant that does not enumerate its
+surface cannot be audited." Converged, no argument.
+
+**HOLD on the structural half, and on QD's own open question.** QD offers to accept the narrow
+framing — "architecture's only job is the INV-V37-5 reword" — if another lens raises it. I raise the
+opposite, on one fact QD did not have:
+
+- `grep -n "admissionRefusal\|async resume\|async start" src/run-manager.ts` → `admissionRefusal` is
+  called at **:473 only**, inside `start()` (`:465`). `async resume(runId)` is at **:848** and never
+  calls it. **Re-verified this round.**
+- Therefore ARCH-182's headline — *"the ONE predicate every run admission passes"* — is **false as
+  written**. `run_resume` is admitted by the `call-tool.ts:124` door alone.
+- Therefore the door is **not** redundant (this reversed my own first draft), and B1 is not "three
+  test cases": it is a ledger row asserting a property the code does not have — **the same class as
+  B2's premise and B5's comments**, in the row that exists to close them. That makes B1
+  architecture's finding, which answers QD's own open question in the direction they did not expect.
+
+**Ruling, sequenced (r1 R3, unchanged):** this round — keep the door, extend the predicate to
+`resume()` (a required `origin` argument stamped from the resume request's own peer), make the
+forwards **required keys with `| undefined` values** (`buildToolDeps`'s
+`isRemoteSubmission = false` default is a fail-open default on a security value),
+add the never-diverge clause and one **non-vacuous** boot test at
+`confinementPosture:'unconfined'` — today's suite exercises the predicate only at `'confined'`,
+where it is vacuous. v38 — delete the door and re-point REQ-218's real-tier evidence. Not
+simultaneous: deleting first opens a real hole on `resume()`.
+
+To QD's expected objection that a compiler check is not observability: a type error is the most
+observable failure available, because it fires before the code exists. That is the one place my
+testability lens produced the better *security* answer, and I keep it.
+
+---
+
+## 6. RD7 — B3: converged, with my rider intact
+
+Both lenses: **mirror the existing `createdRemote` boolean onto `WebhookView`/`list()`** (verified
+absent — `webhook-registry.ts:50-64`, `:192-202`; `ScheduleStatus` projects it at `scheduler.ts:151`),
+**no tri-state.** QD explicitly does not re-ask for the `NULL`-means-unreviewed surface they proposed
+in the Gate-2 round; I explicitly supported that decline and still do. One line, no new concept,
+unblocks ADR-086's promised sweep and B1's webhook assertion.
+
+**Rider, restated because it is the decline's price:** the decline is defensible only if §2.3's
+coverage-zero fact is written where an operator reads it — `DEPLOY.md`. A tri-state is a schema-level
+way of saying "we never looked at these rows". Decline the schema *and* the sentence and a
+known-empty control ships looking full. **If the sentence does not land, I withdraw the decline.**
+
+---
+
+## 7. RD8 — QD-MED: I concede to QD against my own r1
+
+My r1 wanted the admission-route list to be **data in `errors.ts` that the guide renders**, so code
+adding a fifth route is obliged to update the prose. QD wants the guide to state the **rule** —
+every run this workflow can trigger is refused identically, regardless of route, when the host is
+`unconfined` and the trigger's recorded provenance is remote — instead of enumerating routes at all.
+
+**QD is right and my tie-break says so.** A rule-shaped sentence needs *no mechanism* and cannot go
+stale when a fifth route appears; my version buys a rendering pipeline to keep a census accurate
+that should not exist. My own r1 set the ceiling ("data in `errors.ts` rendered by the existing
+guide is the ceiling") — QD's answer is below it. Karpathy tie-break goes to QD; I drop my proposal.
+One paragraph in `authoring-guide.ts:363-369`, rule-shaped, no new surface.
+
+---
+
+## 8. RD9 — B5 / B6: no conflict, two rules carried forward
+
+Unchanged from r1 and unopposed. **B5:** a comment asserting a fact about the code either cites the
+line that makes it true or is deleted — `main.ts:182-183` claims a `'confined'` gateway default that
+`claude-agent-sdk-client.ts:748` contradicts by deliberate fail-open. REQ-218 exists *because* two
+comments contradicted each other; this repair wrote a third instance. **B6:** amend ARCH-177 to the
+shipped `workRootDefault?: string` — IMPL-380's call was right — and resolve the tension with §5's
+required-keys argument out loud: **optionality is acceptable exactly when the default is the safe
+answer, never when it is the permissive one.** That sentence belongs in INV-V37-5, and it is the
+one-line rule that separates B6 (fine) from `buildToolDeps`'s default (not fine).
+
+---
+
+## 9. Final position (what I am asking the gate to adopt)
+
+1. **Correct the premise this round, independent of the owner:** ARCH-182 and ADR-086 state that
+   `createdRemote` records *row creation* — never attachment, never authorship — and record
+   coverage-zero-on-the-legacy-cohort as a first-class consequence.
+2. **One merged `owner_decision`** (§2.4) carrying both premise corrections and four-plus-one
+   options, ranked **(iii) > (iv, spike first) > (ii-narrow) > (ii) > (i)**.
+3. **`admissionErrorToOutcome()`** — QD's name, one pure function, four consumers, each keeping its
+   own envelope; wire boundaries emit `code` + static catalog text, `err.message` to logs only.
+4. **`RefusalReason` += `'CONFINEMENT_UNAVAILABLE'`** (one word; no exhaustive switch exists to
+   break). `RUN_ADMISSION_LIMIT` → retryable + 503, no durable refusal row.
+5. **B7 in scope**: one `retryable` branch routing permanent refusals to `markRefused`.
+6. **B1**: extend the predicate to `resume()`; required keys for both forwards; keep the door with a
+   never-diverge clause; one non-vacuous `unconfined` boot test; INV-V37-5 enumerates its consumers.
+   ARCH-182's "ONE predicate" sentence is corrected or made true — it may not stand as written.
+7. **B3**: mirror `createdRemote` on `WebhookView` + the `DEPLOY.md` sentence (paired, not separable).
+8. **QD-MED**: rule-shaped guide paragraph, no rendering mechanism.
+9. **B5/B6**: the two rules in §8, one of them written into INV-V37-5.
+
+## 10. Remaining disagreements (two, both small)
+
+- **B7's scope.** QD defers it to v38 on send-back discipline while simultaneously requiring the
+  ticker not be left open; I ask for the branch now. If the gate rules for deferral, the ticker's
+  misclassification must be **filed with the corrected mechanism** (`lastError` carries the code but
+  `refusalCount` never increments — §3.1), not carried as QD's "recorded identically", or v38
+  inherits a wrong description of the bug.
+- **`RefusalReason` width.** One word (mine) vs. two (QD's). Decidable in one sentence by the gate:
+  does `refusalCount` mean "policy refused" or "did not run"? I say policy, per the field's own
+  comment.
+
+*No third disagreement is manufactured. On B2's option ranking both lenses defer to the owner, and
+on the mapper, B3, QD-MED and INV-V37-5's enumeration we independently converged.*
+
+*Adversarial architecture group — v37 Gate 8 round-2 send-back, debate round 2, 2026-09-23.*

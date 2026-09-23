@@ -5,7 +5,8 @@
 // thrown admission refusal into DeliverResult's typed failure shape. Per DES-262's own note, the
 // delivery PEER is deliberately NOT part of this predicate — a webhook exists to be called from
 // another machine, so gating on the caller's socket would refuse every legitimate webhook; what
-// decides is who ATTACHED the trigger, written once at creation.
+// decides is who CREATED the trigger ROW, written once at creation and never re-stamped by a later
+// attachment event (`claim()`, `workflow_register`, `workflow_publish` — Gate-8 round-2, finding B2).
 // Written test-first (RED): WebhookRegistry.create()'s param type carries no `createdRemote`, the
 // `webhooks` table has no such column, and `deliver()` neither stamps `origin` on the spec it hands
 // to `start()` nor wraps that call in a try/catch — a thrown coded error today escapes `deliver()`'s
@@ -65,7 +66,14 @@ describe('IT-303 webhook admission route (DES-263)', () => {
     const r = await reg.deliver(c.webhookId, { signature: sign(c.secret, body), timestamp: CLOCK.isoNow(), deliveryId: 'd-remote', rawBody: body, parsedBody: {} });
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error('unreachable: expected refusal');
-    expect(r.reason).toContain('CONFINEMENT_UNAVAILABLE');
+    // v37 Gate-8 round-2 (finding B4): the wire reason is now the STATIC catalog hint, never
+    // `err.message` (which could carry host-measured detail) — the machine-readable signal is the
+    // `code`, and the refusal is now durably recorded on the row (`_recordRefusal`).
+    expect(r.httpStatus).toBe(403);
+    expect((r as { code?: string }).code).toBe('CONFINEMENT_UNAVAILABLE');
+    const view = reg.get(c.webhookId);
+    expect(view?.lastRefusalReason).toBe('CONFINEMENT_UNAVAILABLE');
+    expect(view?.refusalCount).toBe(1);
   });
 
   it('a webhook created WITHOUT createdRemote (local) still fires on the same unconfined host', async () => {

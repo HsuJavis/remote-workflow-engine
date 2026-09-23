@@ -365,8 +365,13 @@ const HOST_PATH_GRANTS_UNCONFINED =
   'on this host, so `Bash` runs with the same filesystem access as the engine process itself — ' +
   'not limited to the run workspace, and not limited to any operator-granted host path either. ' +
   'A **locally-submitted** run still executes exactly this way; that is the accepted cost of this ' +
-  "deployment's posture, not a bug. A **remote submission** is refused before it ever reaches an " +
-  'agent — `run_start`/`run_resume` return a refusal instead of admitting Bash-capable work.';
+  "deployment's posture, not a bug. Every run this workflow can trigger is refused identically " +
+  'when its recorded provenance is remote — `run_start`/`run_resume` (a remote MCP caller), a ' +
+  'webhook delivery (`POST /hooks/:id` → HTTP 403, for a webhook that was itself created by a ' +
+  'remote submission), and a schedule firing (surfaced in `schedule_list`\'s `lastError`, for a ' +
+  'schedule created the same way) all return `CONFINEMENT_UNAVAILABLE` instead of admitting ' +
+  'Bash-capable work — this is a rule about every admission route this posture gates, not a ' +
+  'fixed list of tool names.';
 
 function hostPathGrantsBody(posture: 'confined' | 'unconfined' | undefined): string {
   if (posture === 'confined') return HOST_PATH_GRANTS_CONFINED;

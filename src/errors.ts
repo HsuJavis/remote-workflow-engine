@@ -88,7 +88,7 @@ export const ERROR_CATALOG = {
   // (ADR-083 owner_decision posture C) throws this code BEFORE schema/authz, same precedent as
   // INLINE_SCRIPT_CLOSED above — a real, remotely-reachable refusal is uncatalogued (invisible to
   // any cold MCP client reading `tools/list`/ERROR_CATALOG) unless it is a key here too.
-  CONFINEMENT_UNAVAILABLE: { see: 'workflow_authoring_guide', hint: 'this host could not measure a working Bash sandbox at boot; a remotely-submitted run is refused (a local/loopback submission still runs, unconfined)' },
+  CONFINEMENT_UNAVAILABLE: { see: 'workflow_authoring_guide', hint: 'this host could not measure a working Bash sandbox at boot; a run whose recorded provenance is remote is refused — a remote run_start/run_resume, a webhook delivery, or a schedule firing whose trigger was itself created remotely (a local/loopback submission still runs, unconfined)' },
   NESTING_DEPTH_EXCEEDED: { see: 'workflow_authoring_guide', hint: 'nested workflow() calls exceed the configured maxWorkflowDepth' },
   NESTING_CYCLE: { see: 'workflow_authoring_guide', hint: 'a workflow() call would re-enter an ancestor already on this call\'s chain' },
   DESCENDANT_CAP_EXCEEDED: { see: 'workflow_authoring_guide', hint: 'nested workflow() calls exceed the configured maxWorkflowDescendants' },

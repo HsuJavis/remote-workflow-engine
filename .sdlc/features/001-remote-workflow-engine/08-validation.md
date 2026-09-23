@@ -12644,4 +12644,153 @@ disturbed the tree.
   scratch `workRoot`/config left under the session scratchpad (outside the repo, never committed).
   Production instance on port 8899 was never touched — confirmed via `ss -ltnp` before and after
   showing only 8899's pre-existing PID, unchanged.
+
+  **v37 Gate-8 round-2 amendment (2026-09-23, implementer; finding B4) — Cell 3's frozen response
+  body above is now STALE, the underlying refusal it proves is NOT.** B4 changed
+  `WebhookRegistry.deliver()`'s wire mapping: the 403 body is no longer `{"error":
+  "CONFINEMENT_UNAVAILABLE: <err.message>"}` (which leaked host-measured detail — the exact
+  information-disclosure gap B4 closes) but `{"error": "<static ERROR_CATALOG hint>", "code":
+  "CONFINEMENT_UNAVAILABLE"}`; `_recordRefusal` now also fires on this path, so `webhook_list`'s
+  `refusalCount`/`lastRefusalReason` for this webhook would now read `1`/`CONFINEMENT_UNAVAILABLE`
+  where the transcript above shows neither being checked. **What this amendment does NOT claim**:
+  Cell 3's real-tier proof — that a real `unconfined` boot refuses a remotely-created webhook's
+  delivery over a plain-loopback socket, before any run starts, tracking creation provenance not
+  delivery peer — is unaffected; `tests/integration/confinement-unconfined-wiring.test.ts` (IT-304,
+  new this dispatch) re-proves the SAME end-to-end path against the fixed wire shape (`json.code ===
+  'CONFINEMENT_UNAVAILABLE'`, `res.status === 403`) on a real `createServer()` boot, closing the gap
+  without repeating VAL-256's own real-scratch-instance/`RealTicker` boot (which real-tier evidence
+  for this predicate does not need repeating just because the response BODY format changed). Not
+  independently re-verified by a second scratch boot in this dispatch — flagged here for the next
+  Gate 7.5 pass to confirm the live body shape if it re-runs this cell, rather than silently left for
+  someone to discover the transcript disagrees with the code.
 - **iter:** v37
+
+## v37 Gate 8 round-2 SEND-BACK REPAIR — validation slice (2026-09-23, validator)
+
+Scope: this gate's own slice of `send_back=[architecture,impl,validation]` — item (7) (validation/B3
+doc half, already landed by the implementer's IMPL-385 — verified not re-done) plus closing the gap
+VAL-256's own amendment flagged (the B4 wire-shape change was never re-proven at the real tier) and
+confirming, by independent re-run, that items (1)-(6) actually landed in the working tree rather than
+trusting the gate notes. `git diff --stat` at dispatch start already showed all seven findings'
+production-code and doc changes present and uncommitted; nothing in this slice required a code
+change — this is real-tier confirmation + one ledger-accuracy repair (two DEPLOY.md rows, see below).
+
+**Findings (1)/(4)/(5)/(6) — verified in place, not redone:**
+- (1) architecture/B2: `02-architecture.md:5899` carries `- **owner_decision:** pending —` with the
+  corrected premise ("誰『掛上』觸發器" vs "誰『建立』了那一列") and both options (a)/(b) named —
+  confirmed by direct read, not the gate note. Mirrored into this report's `owner_decisions`.
+- (4) QD-MED: `src/authoring-guide.ts`'s `HOST_PATH_GRANTS_UNCONFINED` (lines ~363-374) names all
+  three admission routes (`run_start`/`run_resume`, webhook delivery HTTP 403, schedule firing via
+  `schedule_list.lastError`) — confirmed by grep + regenerating `docs/AUTHORING.md`
+  (`npx tsx scripts/gen-authoring-md.ts`) and diffing: zero further change, i.e. the committed file
+  already matches the generator (no drift). `errors.ts:91`'s `CONFINEMENT_UNAVAILABLE` hint also
+  names all three routes.
+- (5) B5 stale comments: `grep -n "confined default\|no such refusal path\|falls back to its OWN
+  confined" src/main.ts src/gateway/claude-agent-sdk-client.ts` → zero hits (all corrected).
+  `claude-agent-sdk-client.ts:828` now cites `IMPL-377`'s `WORKROOT_INSIDE_PROJECT` refusal instead
+  of claiming no such path exists.
+- (6) B6: `02-architecture.md:5540/5542` states `workRootDefault?: string` (optional) matching
+  `main.ts:199`'s actual optional field — ledger and code agree.
+
+**Real-tier re-run — REQ-218 (VAL-257, closes VAL-256's own flagged gap):**
+
+VAL-256's amendment (this same file, dated 2026-09-23) states finding B4 changed the webhook
+403 wire shape and that this was "not independently re-verified by a second scratch boot in this
+dispatch". This item is that re-verification, against the actual fixed code (not the test file
+alone — a genuinely booted `unconfined` instance).
+
+### VAL-257 — REQ-218: B4's fixed `WebhookRegistry.deliver()` wire shape (static hint + `code`, `_recordRefusal` durable trace) re-proven on a genuinely `unconfined` real boot
+
+- **status:** green
+- **traces:** ARCH-182, DES-263, IMPL-385, UT-332, UT-333, UT-334, IT-304, REQ-218
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  **Boot** (documented steps only, own scratch instance, port 8792, production 8899 untouched):
+  ```
+  RWE_CONFIG_PATH=<scratchpad>/rwe.val257.config.json RWE_PORT=8792 RWE_BIND=127.0.0.1 ./deploy.sh --background
+  # 健康檢查通過：{"agentSemaphore":{...},"version":"0.1.0 (v0.20.0-447-g997769f)"}
+  ```
+  Boot log confirms genuinely unconfined host (same real probe every other v37 item cites):
+  `Bash confinement: UNCONFINED (bwrap: No permissions to create a new namespace...)`.
+
+  **Cell 3 — remotely-created webhook, delivered over plain loopback → refused, NEW wire shape:**
+  `webhook_create({}, headers:{X-Forwarded-For:'203.0.113.9'})` → bound via `workflow_register`
+  + `workflow_publish`. Delivery `POST /hooks/:id` (correct HMAC, `X-RWE-Timestamp`, no tunnel
+  header at delivery) →
+  ```
+  HTTP 403
+  {"error":"this host could not measure a working Bash sandbox at boot; a run whose recorded
+  provenance is remote is refused — a remote run_start/run_resume, a webhook delivery, or a
+  schedule firing whose trigger was itself created remotely (a local/loopback submission still
+  runs, unconfined)","code":"CONFINEMENT_UNAVAILABLE"}
+  ```
+  — this is the static `ERROR_CATALOG.CONFINEMENT_UNAVAILABLE.hint` text verbatim, NOT
+  `err.message` (confirms the information-disclosure fix). `webhook_list` immediately after:
+  ```
+  {"createdRemote":true,"refusalCount":1,"lastRefusedAt":"2026-09-23T02:06:41.753Z",
+   "lastRefusalReason":"CONFINEMENT_UNAVAILABLE"}
+  ```
+  — `_recordRefusal` now fires on this path (previously it did not — the exact B4 gap), and
+  `createdRemote` is now visible on `webhook_list` at all (the B3 code-half field).
+
+  **Cell 4 — locally-created webhook, delivered over plain loopback → proceeds, unaffected:**
+  `webhook_create({})` no headers → delivery → `HTTP 202 {"runId":"bf7a62ed-..."}`; `run_result`
+  → `{"status":"completed","result":{"hooked":"local"}}` (real run, real script result
+  round-tripped); `webhook_list` → `{"createdRemote":false,"refusalCount":0}` — unaffected by B4.
+
+  **What this closes**: VAL-256 Cell 3's frozen transcript is now superseded (not contradicted) by
+  this item for the current wire shape; VAL-256 remains valid evidence for the admission-tracks-
+  creation-not-delivery-peer claim, which B4 does not touch.
+
+  **REQ-117 (QD-MED) live-wire re-check, same boot**: `curl -X POST /mcp
+  {"method":"tools/call","params":{"name":"workflow_authoring_guide"}}` → response text contains
+  `CONFINEMENT_UNAVAILABLE`, `webhook delivery`, and `schedule firing` (all three admission routes
+  named), matching the regenerated `docs/AUTHORING.md` byte-for-byte-sourced content (`npx tsx
+  scripts/gen-authoring-md.ts` produced zero further diff against the committed file).
+
+  **Script + full raw JSON transcript**: `evidence/v37/val257-b4-real-run.mjs` and
+  `evidence/v37/val257-b4-real-run.log`.
+
+  **Cleanup**: scratch instance stopped (`kill $(cat <scratch>/.rwe.rwe.val257.config.pid)`);
+  scratch config/workRoot under the session scratchpad, outside the repo, never committed.
+  Production instance on port 8899 confirmed untouched (`ss -ltnp` before/after: only 8899's
+  pre-existing PID, different version string, unchanged).
+- **iter:** v37
+
+**Regression (Gate 7, re-run independently — this repair round was not itself gated through
+verification before validation dispatch):**
+```
+npx tsc --noEmit                              # clean, zero errors
+npx vitest run tests/unit tests/integration   # 377 files / 2953 tests passed, 1 skipped, 0 failed, 312.42s
+```
+Identical pass/fail counts to the pre-repair baseline recorded in `state.yaml`'s `impl` gate note —
+no regression introduced by this repair round.
+
+**Config-file sync check**: `createdRemote` is a SQLite column (`DEFAULT 0`, auto-migrated on boot —
+already covered by DEPLOY.md's existing schedules/webhooks table-rebuild idiom), not a config/env
+key. `git diff --stat rwe.config.example.json` → empty; no config file changed this round, and none
+needed to. Stated explicitly per the exit-gate's config-sync requirement.
+
+**DEPLOY.md current-state repair (ledger-accuracy, no code change)**: two rows added by IMPL-385
+(§5 troubleshooting, §6 upgrade-section) named gate/finding process metadata verbatim
+("v37 Gate-8 round-2（finding QD-MED）", "Gate-8 round-2 已修正這個前提") — a Current-State Rule
+violation (exit gate 3b): DEPLOY.md is an operation manual, not a process log, and that history
+belongs only in this ledger. Rewritten in place to state the same operator-facing facts without the
+gate/finding names; no operator-facing content removed. Swept the rest of both manuals
+(`grep -nE 'v3[0-9]|Gate-?[0-9]|finding|round-2|已修正|舊版|原本|previously|Changelog|變更紀錄'
+README.md DEPLOY.md`) — remaining hits are all pre-existing and legitimate: §1 設定總表's own `iter`
+column (contract-mandated), a third-party plugin's own version number (DEPLOY.md:305, unrelated to
+this system's history), and generic present-tense upgrade/migration operational notes (no
+before/after pairing, no version-conditional instruction).
+
+**Owner decision carried forward (not this gate's to resolve, not silently dropped)**:
+`02-architecture.md:5899` — ADR-086's `owner_decision: pending`, corrected premise: whether
+ARCH-182/ADR-086's rationale should be reworded to "who created the trigger ROW" (option a, with the
+re-attachment gap filed as a second named residual) or whether `claim()`/`workflow_register`/
+`workflow_publish` should re-stamp `createdRemote` at attachment time (option b). System validated
+as shipped (de facto option (a) — the premise correction and residual are already written into
+ARCH-182/ADR-086; no code re-stamps `createdRemote` at claim time). This does not block this gate's
+`passed`; `sh .sdlc/trace --check`'s mock-only/unverified gap check is a separate signal from an
+open `owner_decision` marker, reported distinctly below.

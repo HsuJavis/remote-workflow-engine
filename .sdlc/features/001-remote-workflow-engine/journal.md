@@ -9833,3 +9833,248 @@ TASK-258、IMPL-384、UT-329..331、IT-302、IT-303)零命中缺口清單、零�
 `current_stage`/其餘 gates.*.passed 皆**不動**——這是單一缺口的補丁式 follow-up,不是整輪 Gate 7.5
 重跑。已用 `python3 -c "import yaml; yaml.safe_load(open('state.yaml'))"` 重新解析過,通過。
 owner_decisions=[]。needs_clarification=[]。
+
+## 2026-09-23 — v37 GATE 8 round 2 (reviewer, RE-REVIEW) — SEND-BACK, iteration does not close
+
+Re-spawned architecture-consistency panels per the workflow (`.panel/review/{adversarial,
+quality-dimensions}.md`, both 2026-09-23 07:34/07:39, both after the round-1 repair commits
+`76ac20d..997769f`). Verified all seven round-1 findings (A1/A2/A3/A4/C-1/O-1) CLOSED on disk by
+reading the cited files directly, not from the panel text or gate notes. Independently re-ran
+`sh .sdlc/trace --check` (2107 items/77 gaps, 0 hits filtering the gap list by any v37 ID — no new
+drift), `dashboard_check.py`/`solid_check.py`/`module_check.py` (2.4.3, since this repo's own
+vendored `trace.py` predates `--tool`), and a mechanical `owner_decision: pending` sweep (0 live
+hits, `owner_decisions=[]`).
+
+Two NEW HIGH findings, both independently confirmed on disk (not accepted from either panel
+report): **B1** — INV-V37-5's own hop lock (UT-328, written by this iteration's own round-1 repair)
+covers `confinementPosture`'s `composeConfig()` spreads only; `isRemoteSubmission` has zero test
+coverage of any forward and `confinementPosture`'s two gating hops (`server.ts:813`/`:902`) are
+unlocked in the only direction that fails — confirmed by `grep -rln isRemoteSubmission tests/`
+(one file, never through `createServer()`), `grep -rn createdRemote tests/` (three files, all
+bypass `call-tool.ts`), and `grep -rn unconfined tests/ | grep -i createServer` (zero hits). Fix is
+three test cases, no production change. **B2** — ARCH-182's admission control and ADR-086's
+2026-09-23 owner ruling both key on WHO CREATED a trigger row while the rationale and the ruling's
+own text argue from WHO ATTACHED it; `claim()` (read in full, `webhook-registry.ts:205-219`) never
+re-stamps `createdRemote`, so an ordinary `workflow_register` onto an already-owned trigger (zero
+operator action) reproduces the 2026-09-20 incident on the production host's entire trigger
+population — the ruling's own accepted premise ("operator must start it locally") does not hold for
+that path. Not decided here; relayed to the owner with the corrected premise.
+
+Two MED findings folded into `blocking_findings`: **B4** (`WebhookRegistry.deliver()`'s new catch,
+confirmed at `webhook-registry.ts:316-323`, maps every `start()` throw — including the explicitly
+retryable `RUN_ADMISSION_LIMIT` — into an uncoded permanent 403 with no `_recordRefusal`, reopening
+C-1's bug class one route over and inverting ARCH-182's own retryable-vs-permanent reasoning) and
+**QD-MED** (`authoring-guide.ts:363-369`, the sole `workflow_authoring_guide` explanation for
+`CONFINEMENT_UNAVAILABLE`, still describes only `run_start`/`run_resume`, not updated for ARCH-182's
+webhook/schedule routes; REQ-117 is inside this closure). **B3** (MED, routed to `validation`):
+ADR-086's promised DEPLOY.md operator sweep of the pre-v37 `createdRemote=0` cohort was never
+written (confirmed: `grep` for the cohort in `DEPLOY.md` returns nothing; its upgrade section
+documents an unrelated schema-rebuild migration instead), and `WebhookView`/`list()` (read
+directly) do not project `createdRemote` at all, so the sweep is unperformable for webhooks even if
+documented.
+
+Two LOW findings folded in as cheap same-commit fixes: **B5** (a NEW instance of REQ-218's own
+"comment must be a measurement" defect class, introduced by this round's repair at `main.ts:182-183`,
+plus two round-1 A7 instances still unrepaired) and **B6** (ARCH-177 states
+`workRootDefault: string`, ships optional — one-word ledger fix).
+
+Recorded as non-blocking tech debt: B7 (arch+impl pair — a permanent refusal on a scheduled fire
+re-fires forever via `markFailed`, which is what ARCH-182's own contract table prescribes verbatim;
+filed as a v38 candidate, not a deviation), A6/A8 (carried unchanged from round 1), all
+pre-existing 77-gap debt (unchanged, zero touching this closure), `dashboard_check`'s 5-HIGH
+tool-version SoT-link artifact (re-verified this round by parsing the shipped `dashboard.html`'s
+own embedded data directly — `REQ-211.file == '01-requirements.md'`, links correct — same root
+cause round 1 already diagnosed) plus its 7-mid/1-low unchanged baseline, `solid_check`'s 10
+unclaimed-file low warnings (unchanged).
+
+`send_back=[architecture,impl,validation]`. `.panel/` left in place. `state.yaml`'s
+`gates.review` note updated in place (prepended, same technique as prior rounds); `current_stage`
+and all other `gates.*.passed` left untouched, following this ledger's own established convention
+that a send-back review updates only its own gate's note (round 1 did the same — the top-level
+`current_stage` pointer is only advanced on a PASS). Re-parsed `state.yaml` with `python3 -c
+"import yaml; yaml.safe_load(open('state.yaml'))"` after editing — passed. No `git checkout`/
+`restore`/`stash` used at any point. No commit created (left for the orchestrator).
+
+## 2026-09-23 — v37 Gate 2 送回修補 ROUND 2(architect;panel 已預跑,四份 r1/r2 連同兩輪 ADDENDUM 2 全讀,未重開 panel)
+
+**範圍紀律先寫在最前面,因為這是本輪最容易被質疑的判斷。** reviewer 的
+`send_back=[architecture,impl,validation]`,而七條 finding 本身就標了各自的閘。本閘只修屬於這個閘的部分:
+**B2**(HIGH,architecture 自己的 finding)與 **B6**(一個字的帳面精確性修正,而且 `02-architecture.md` 就是
+本閘的檔案),並把 **B1/B3/B4/QD-MED 的「架構面」**寫成擁有它們的那幾列上的 prescription,讓 impl 與
+validation 兩個閘是對著一份已經正確的 ledger 施工,而不是對著 review 的註解。**本閘沒有動任何 `src/`、
+`tests/`、`DEPLOY.md`、`docs/` 檔**:同一輪有另外兩個閘在同一棵工作樹上修同一批東西,架構列才是它們會讀的
+耐久產物。沒有重新分解、沒有新 REQ、沒有新 ARCH/ADR id,closure 維持在
+{REQ-218, REQ-219, REQ-018, REQ-037, REQ-117}。
+
+**B2 —— 事實本閘自己量,解法交回業主。** 重讀確認:`createdRemote` 只在建立那一列時寫一次
+(`webhook-registry.ts:176`、`scheduler.ts:294-307` 兩個 `INSERT`),之後沒有任何事件會重新蓋章 ——
+`claim()`(`webhook-registry.ts:205-219`)只碰 `workflow` 欄,而且「已經屬於這個工作流程」那一支(`'held'`)在
+任何 `UPDATE` 之前就回傳;`mcp-facade.ts` 的 `workflowRegister()`(`:365-395`)/`workflowPublish()` 只拿到
+`(a, principal)`,收不到 `isRemoteSubmission`。因此兩件事被寫成第一級後果而不是註腳:(一)**升級後每一列
+既有觸發器都讀成本機(`DEFAULT 0`),這道控制在現有族群上的覆蓋率是零**,不是「殘留風險」;(二)**真正
+存在的那條殘留路徑不需要操作者動手** —— 遠端 `workflow_register` + `workflow_publish` 到一個已擁有觸發器的
+工作流程名稱上,下一次 cron 或 webhook 自己就把新腳本跟起來,而 2026-09-23 裁決承擔的殘留風險寫的是
+「這條路徑需要操作者自己動手」。ARCH-182 的標題與內文已更正成「誰建立了觸發器列」,並加上 Gate-8 round-2
+修訂;`ADR-086.owner_decision` **回到 `pending`**,帶著更正後的前提與五個標好成本的選項((iii) 修主機 >
+(iv) unconfined 時移除 `Bash`(需先 spike)> (ii-narrow) 只在觸發器啟動路徑 OR 進版本來源 > (ii) 完整
+`workflow_versions.origin` > (i) 維持現狀只更正文字),2026-09-23 的裁決原文原封保留為歷史,明確標示
+「依已被推翻的前提作成」。panel 實測到的「`claim()` 重新蓋章」成本(`'held'` 分支永遠不會觸發、真正決定跑哪份
+腳本的是後一步的 `workflow_publish`、而且要新增第六條未上鎖的 forward)一併記在同一則裡,免得它看起來比
+實際便宜。**解法不由架構閘決定,前提也不由業主決定** —— 這個切法就是本輪的裁決本身。
+
+**同一則 finding 帶出的第二個假陳述,順手一起更正:** ARCH-182 原標題宣稱「every run admission passes ONE
+predicate」是**假的** —— `admissionRefusal()` 只在 `run-manager.ts:473`(`start()` 內)被呼叫,`resume()`
+在 `:848` 從不呼叫它,所以 `call-tool.ts:124` 那道門不是多餘的雙胞胎,而是 `run_resume` 的**唯一**掩護,本輪
+保留。把 predicate 延伸到 `resume()`、然後才刪門,是 panel 的裁決,但作為**有順序的 v38 candidate** 歸檔:
+先刪門會在 `unconfined` 主機上開一個真的洞,還會把 REQ-218 的 real-tier 證據(VAL-253)搬家。
+
+**B6:** ARCH-177 的 `workRootDefault: string` 改成出貨的 `workRootDefault?: string`,附一行說明
+(型別上可選、production 路徑上永遠有值),並把那條分界規則寫進 INV-V37-5:**可選性只有在預設值是「安全的
+那個答案」時才可接受,預設值是「寬鬆的那個答案」時永遠不可接受** —— 這一句就是 B6(沒問題)與
+`buildToolDeps` 的 `isRemoteSubmission = false`(有問題)的分界。
+
+**交付給其他兩個閘的 prescription(寫在擁有它們的列上,不是本閘自己施工):** 四條啟動路徑共用的拒絕契約
+(一個 `admissionErrorToOutcome` 純函式;永久性的 `CONFINEMENT_UNAVAILABLE` → 403 `{reason, code}` 並呼叫
+`_recordRefusal`;可重試的 `RUN_ADMISSION_LIMIT` → 503、且**不**寫耐久的 refusal 列;其餘 → 500;
+`RefusalReason` 只長**一個**字;wire 邊界一律輸出 `code` + 靜態目錄文字,`err.message` 只進 log)、
+`WebhookView` 補 `createdRemote` 並在 `list()` 投影(與 DEPLOY.md 的盤點列**成對、不可分割**)、
+規則式(而非路線清單式)的 authoring-guide 段落、INV-V37-5 列出全部五條 forward、以及兩則仍在重複舊前提的
+程式碼註解(`webhook-registry.ts:315`、`server.ts:812`)。
+
+**本輪明白拒絕、附事件式觸發條件歸檔的三件事(不是靜默略過):** B7(排程器把「永久拒絕」寫進 dispatch-failure
+欄,所以 `refusalCount` 永遠不動、`cron` 每期重拒到天荒地老)—— 兩個 lens 都要求本輪收進來,但 reviewer 自己
+把它列為非阻擋,理由正是 ARCH-182 的契約表逐字規定了 `markFailed`;歸檔時**連機制一起更正**(排程器不是瞎的,
+`server.ts:1024-1031` 已經把 `err.code` 取進 `lastError`,它是**分類錯誤**),免得 v38 繼承一個錯誤的描述。
+另外兩件:把兩條 forward 改成 required key(panel 對 B1 偏好的結構性解法,但 reviewer 自己的 fixed state 寫著
+「不需要改 production 程式碼」),以及有順序的刪門。
+
+**Karpathy:** 本閘新增 0 個模組、0 個 ARCH id、0 個 ADR、0 個 schema 變更。本輪所有「為了不必做決定而發明的
+機制」全部被拒絕 —— 本機版本白名單(adversarial 自己提、自己否決)、`claim()` 時的確認介面(沒有任何行為者可以
+確認,quality-dimensions 自己撤回)、三值 provenance 欄位加兩個工具面(第二次被否決)。這種輪次的交付物是一個
+更正過的決定,不是一個讓我們可以不做決定的機制。
+
+**驗證:** `sh .sdlc/trace` 在編輯前後都是 **2107 個工作項 / 77 個缺口**(逐字相同);`git diff` 確認本閘沒有
+新增/刪除任何 `### <ID>` 工作項、沒有動任何 `traces:`/`status:`/`iter:` 欄位(只有 prose 與 amendment)。
+`02-architecture.md` 的 `- **owner_decision:** pending` 計數 = 2,其中一筆是 `:4742` 早就存在、reviewer 已
+確認為非活躍的表格引用,活躍的只有 ADR-086 這一筆。`state.yaml` 改完以 `yaml.safe_load` 重新解析通過。
+全程未使用 `git checkout`/`restore`/`stash`。未建立 commit(留給 orchestrator)。
+
+## v37 GATE 8 round-2 SEND-BACK REPAIR ——實作/驗證兩閘的施工份（2026-09-23，implementer）
+
+**範圍：** 只做 `send_back=[architecture,impl,validation]` 中,架構閘已經在自己的列上寫成
+prescription、留給這一閘動手的部分——B1(INV-V37-5(d)，兩個漏掉的回歸鎖)、B3 的程式碼半邊
+(`WebhookView.createdRemote`)、B4(`webhook-registry.ts` `deliver()` 的 catch-all）、B5(五處
+與程式碼矛盾的註解）、QD-MED(`authoring-guide.ts`/`errors.ts`/`DEPLOY.md` 的啟動路徑敘述過時）。
+B2、B6 是架構閘自己的份,進來前已讀 `state.yaml` 的 `gates.architecture`/`gates.impl` 兩則筆記
+確認早就修完——沒有重做。
+
+**B4:** 新增一個純函式 `admissionErrorToOutcome(err)`(擺在 `run-manager.ts`、`admissionRefusal()`
+旁邊,同一個模組,沒開新 ARCH id),把 `start()` 丟出的例外分類成
+`{code, retryable, httpStatus:403|503|500}`。`webhook-registry.ts` 的 `deliver()` 原本把
+**每一種** `start()` 例外都映成同一顆沒有 code 的永久 403,連可重試的 `RUN_ADMISSION_LIMIT`
+也一樣,而且從來沒呼叫 `_recordRefusal()`——這是 finding B4 指出的「C-1 重新打開、可重試/永久
+兩種語意顛倒」。修完:永久的 `CONFINEMENT_UNAVAILABLE` → `DeliverResult` 的 403 臂寬成
+`{reason, code}`(照抄既有的 409 臂)並呼叫 `_recordRefusal`,補上跟另外四種 `RefusalReason`
+一樣的耐久痕跡;可重試的 `RUN_ADMISSION_LIMIT` → 新的 503 臂,**不**寫耐久 refusal 列(這是
+容量問題,不是政策問題);其餘 → 500。每一臂的 wire 文字改成 `ERROR_CATALOG` 的靜態 hint,不再是
+`err.message`——原本會把主機的圍籠探測狀態、`maxConcurrentRuns=N` 洩漏給任何一個持有 HMAC 密鑰的
+呼叫者,這是沒人做過的資安決定。`RefusalReason`(`types.ts`)只長一個字:`CONFINEMENT_UNAVAILABLE`。
+
+**B3(程式碼半邊）:** `WebhookView` 補 `createdRemote: boolean`,在 `list()` 投影(照抄
+`ScheduleStatus.createdRemote` 已有的作法)——沒有這個欄位,`webhook_list` 永遠答不出「這支
+webhook 是不是遠端建立的」,也擋住了 B1 的 webhook 測試(不然只能鑽進 SQLite 自己讀）。
+
+**B1/INV-V37-5(d)(只加測試,兩次都驗證「不需要動 production 程式碼」屬實):** 在
+`tests/unit/call-tool-confinement-door.test.ts`(finding 自己指出的、唯一含 `isRemoteSubmission`
+的測試檔)加兩個案例——`callTool({...,isRemoteSubmission:true}, 'webhook_create'|'schedule_create',
+{})` 打在**真的** `WebhookRegistry`/`SqliteSchedulerPort`(`dbPath:':memory:'`)上,`createdRemote`
+從 `.get()` 讀回來驗證,外加一個「不給 `isRemoteSubmission` 就仍是 `false`」的反例。新增一個
+整合測試檔 `tests/integration/confinement-unconfined-wiring.test.ts`——先前這條 predicate 的每一個
+測試都是在 `confinementPosture:'confined'` 底下跑,而 ARCH-182 自己講得很白:那正是這道控制**唯一
+不會擋任何東西**的姿態,是個空洞的驗證。這個新測試真的啟動 `createServer({confinementPosture:
+'unconfined'})`,在伺服器打開同一個 `webhookDbPath` **之前**直接寫入一列 `createdRemote:true` 的
+webhook,註冊+發布同名工作流程(走 `claim()` 的 `'held'` 分支——這一步正好驗證 Gate-8 round-2 更正的
+那個事實:重新掛載不會重新蓋章 `createdRemote`),再送一個簽章正確的 webhook 請求,斷言 403、且
+body 沒有洩漏 `maxConcurrentRuns` 之類的主機細節。兩個新檔案**第一次跑就是綠的**——不是抓到缺陷,
+是把 finding 點名的覆蓋率空洞補起來。連帶把既有的 `tests/integration/webhook-remote-origin.test.ts`
+(IT-303)的斷言從「舊的、會洩漏 `err.message` 的字串比對」改成「新的 `httpStatus`/`code`/
+`lastRefusalReason` 比對」——這是跟著 B4 的刻意行為改變走的測試修正,不是測試本身有錯,所以記在
+`05-tests.md` 裡,沒有當成 `test_defect` 回報(沒有為了討好舊斷言改任何一行 production 程式碼)。
+
+**B5(五處註解跟程式碼矛盾,REQ-218 自己的規則:註解要嘛指到讓它成立的那一行,要嘛刪掉):**
+`webhook-registry.ts:315`(「決定的是誰**掛上**觸發器」→ 改成「誰**建立**了觸發器那一列」)、
+`server.ts:812`(「every admission route... passes」這句假話 → 改成明白點名只覆蓋 `start()` 系的
+路徑,`run_resume` 由門單獨掩護)、`run-manager.ts` 的 `admissionRefusal()` 文件註解(帶著同一句假話,
+finding 清單以外多修的一處,同一種缺陷、同一個地方,順手一起修)、`main.ts` 的 `confinementProbe`
+欄位文件與它的渲染點(兩處都宣稱 gateway 的預設是 `'confined'`,更正成實測的 `'unconfined'`)、
+`claude-agent-sdk-client.ts` 的 `agent.confinement` 發射點註解(「this class has no such refusal
+path today」→ 改成點名 IMPL-377 這一輪剛加的 `WORKROOT_INSIDE_PROJECT` 拒絕）。
+
+**QD-MED:** `authoring-guide.ts` 的啟動路徑段落改寫成規則式(不是路線清單式,兩個 panel 在
+tie-break 上都同意這種寫法「不會因為第五條路徑出現而過時」),把今天的三條路徑(`run_start`/
+`run_resume`、webhook 送達、排程觸發)當範例點名;`docs/AUTHORING.md` 重新產生
+(`npm run gen:authoring`);`errors.ts:91` 的 hint(跟 B4 現在放上 wire 的靜態文字是同一顆)
+也一併補上三條路徑。`DEPLOY.md` 加了 §5 疑難排解新的一列(`POST /hooks/:id`/`schedule_list.lastError`
+現在也會回 `CONFINEMENT_UNAVAILABLE`,不只 `run_start`/`run_resume`)和 §6 升級小節新的一段
+(講清楚 `createdRemote` 這個族群**跟旁邊的資料表重建不一樣**,需要操作者動手刪除重建才拿得到
+覆蓋率),跟 B3 的欄位改動配成一對,照架構那一列自己說的「兩者不可分割」。
+
+**驗證:** `npx tsc --noEmit` 乾淨。`npx vitest run tests/unit tests/integration`:377 個檔案 /
+2953 個測試通過,1 個跳過,**0 個失敗**(310 秒)。`sh .sdlc/trace`:編輯前 2107/77(架構閘的
+post-edit 基線)→ 編輯後 2112/77(4 個新 UT/IT 項 + 1 個新 IMPL 項)——**沒有新缺口**。中途自己
+抓到一個錯:UT-332/333/334/IT-304 第一版的 `traces:` 欄寫了 `INV-V37-5`,踩到這本帳自己記的規則
+(兩段連字號在 `trace.py` 會解析錯),暫時多出 4 個假的「斷鏈」缺口,拿掉那個 id(仍留在 prose 裡)
+後恢復 77。沒有新的 `owner_decision`——ADR-086 的 `pending` 標記(架構閘重開的)原封不動,本閘沒碰。
+`state.yaml` 改完以 `yaml.safe_load` 重新解析通過。全程未使用 `git checkout`/`restore`/`stash`。
+未建立 commit(留給 orchestrator)。`current_stage` 進到 `verification`。
+
+**自我複查追加(同一份 dispatch,回報前)：** 抓到一個自我檢查沒抓到的洞——`server.ts` 的
+`POST /hooks/:id` 路由把 `DeliverResult.code` 丟在 wire 之前(`sendJson` 只轉發 `error`),讓這一輪
+自己寫進 `DEPLOY.md`/authoring guide 的說法(「body 帶 `CONFINEMENT_UNAVAILABLE`」)當場失真——正是
+B5 那種「文件與程式碼矛盾」的缺陷,被這一輪自己的修補重新引入。修法是路由那一行補上 `code`(連帶
+把既有的 409 臂也一起補齊,同一個鏡射)；`IT-304` 的斷言從「只看 403」收緊成「看 `json.code`」——
+原本那個斷言連「webhook 被停用」的 403 都會誤判成通過。另外照 ARCH-182(3)指名的 grep 真的跑了一次
+(`src/dashboard*.ts` 有沒有窮舉 `RefusalReason` 的讀者)——零命中,寫進 IMPL-385。`08-validation.md`
+的 VAL-256(REQ-218,`real:true`)那份凍結的真實開機逐字稿是 B4 修補**之前**的 wire body,現在跟
+程式碼不一致——沒有重新開一次 scratch 主機重跑,而是加一則說明:body 的**形狀**過時了,但它證明的
+**機制**沒變,並指向 `IT-304` 作為同一條路徑在新 wire 形狀下的再證明。`webhook-remote-origin.test.ts`
+自己的檔頭註解也還留著「who ATTACHED the trigger」(B2 的原話)——一併更正。修完後 `npx tsc --noEmit`
+乾淨,完整 `npx vitest run tests/unit tests/integration` 再跑兩次,377/2953/0 failed 不變。
+
+## v37 Gate 8 round-2 SEND-BACK REPAIR — validation slice（2026-09-23，validator）
+
+送回清單第 (7) 項（validation/B3 文件半邊）一讀就發現implementer 的 IMPL-385 已經做完了
+（`WebhookView.createdRemote` 已投影、`DEPLOY.md` §5/§6 兩列都在）——沒有重做，改成逐項核對
+(1)/(4)/(5)/(6) 是否真的落地（grep/直接讀原始碼，不信 gate 筆記）：全部確認在案。真正剩下的缺口是
+`08-validation.md` 自己那則 VAL-256 附註留給下一輪的話——B4 改了 webhook 403 的 wire 形狀，這件事
+「這次沒有重新開一次 scratch 主機驗證」。這一輪把那個缺口補上：真開一個 `unconfined` scratch 主機
+（port 8792，`./deploy.sh --background`，production 8899 全程未動），重跑 VAL-256 的 Cell 3/Cell 4，
+確認修好後的線路——遠端建立的 webhook 送達回 403，body 是靜態 `ERROR_CATALOG` 提示文字（不是
+`err.message`），`code:"CONFINEMENT_UNAVAILABLE"`；`webhook_list` 馬上讀到
+`refusalCount:1`/`lastRefusalReason:"CONFINEMENT_UNAVAILABLE"`（B4 補的持久痕跡）與
+`createdRemote:true`（B3 補的欄位）；本機建立的 webhook 照樣 202、真的跑完一個 run，不受影響。同一台
+主機也真的呼叫了 `workflow_authoring_guide`，確認 QD-MED 改寫的那段文字（三條放行路徑都點名）活在真
+MCP 線路上，不是只活在靜態檔案裡。寫成 `08-validation.md` 的 `VAL-257`，`rtm.md` 的 REQ-218 那列補上
+`IMPL-385`/`UT-332..334`/`IT-304`/`VAL-257`（8/8 欄位前後都核對過）。
+
+順手做了一次獨立回歸（這輪送回修補落地後，verification 階段還沒重跑過）：`npx tsc --noEmit` 乾淨，
+`npx vitest run tests/unit tests/integration` 377 檔／2953 測試通過／1 skip／0 fail（312.42s），跟
+修補前的基準數字一致，零回歸。
+
+`DEPLOY.md` 抓到一個違反「現況守則」的小地方：implementer 這輪新增的兩列（§5 疑難排解、§6 升級
+注意事項）逐字寫了 gate/finding 名稱（「v37 Gate-8 round-2（finding QD-MED）」「Gate-8 round-2 已修正
+這個前提」）——這是流程紀錄的用語，不該出現在給人看的維運手冊裡（那段歷史只該留在這份 ledger）。就地
+改寫成同樣的維運事實，拿掉 gate/finding 字樣；操作者要做的事一個字都沒少。掃過整份 README/DEPLOY，
+剩下命中的字串都是既有、合理的（§1 設定總表自己的 iter 欄、一個跟本系統無關的第三方 plugin 版本號、
+一般性的現在式升級說明，沒有「以前 X／現在 Y」的對照）。
+
+`sh .sdlc/trace --check` 仍 exit 1，但缺口數 77 不變（2112→2113，只加了 `VAL-257` 這一項）；用
+`trace.analyze()` 當函式庫直接查證：這 77 個缺口沒有一個碰到本輪範圍的五個 REQ
+（REQ-018/037/117/218/219），全部 77 個裡零筆是「未真實驗證」，17 筆「未驗證」全部落在跟本輪無關的
+REQ-153..169（既有、非本輪新開的缺口）。`mock_census`：verified-real=1673 / mock-only=0 /
+unverified=17（全部既有，非本輪範圍）。
+
+`ADR-086` 的 `owner_decision: pending`（架構 gate 這輪重新打開、更正前提）原樣帶到這份報告的
+`owner_decisions`——不是這個 gate 該裁決的事，也沒有被靜默丟掉；系統照現狀（事實上的選項 (a)）驗證
+通過。`state.yaml` 用 `yaml.safe_load` 重新解析通過。全程未使用 `git checkout`/`restore`/`stash`。
+未建立 commit（留給 orchestrator）。`current_stage` 進到 `review`。

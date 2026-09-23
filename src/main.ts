@@ -179,9 +179,11 @@ interface ComposeConfigDeps {
    *  probe was obtained). Omitted (every existing test call site + this file's own default) ->
    *  `confinementPosture` is left UNSET on both `ServerConfig` and the constructed gateway's own
    *  config, and each falls back to ITS OWN default independently (ServerConfig: unset — no door
-   *  gating; `ClaudeAgentSdkGatewayConfig`: 'confined', ARCH-176's own conservative default) — never
-   *  a silent 'unconfined' for a config that never asked the question. `main()`'s real call site is
-   *  the ONLY caller that sets this, from a real `probeConfinement()` call before `composeConfig()`. */
+   *  gating; `ClaudeAgentSdkGatewayConfig`: **'unconfined'**, found empirically — an earlier
+   *  'confined' default broke the real-CLI-spawning suite, per that field's own doc comment) — a
+   *  caller that never asked the boot-time nested-userns question gets the fail-open answer, not a
+   *  claimed confinement it never measured. `main()`'s real call site is the ONLY caller that sets
+   *  this, from a real `probeConfinement()` call before `composeConfig()`. */
   confinementProbe?: ConfinementProbeResult;
   /** v37 Gate-8 send-back (finding A2, ARCH-177 amendment): a PRE-COMPUTED workRoot value — never a
    *  callable `composeConfig()` invokes itself (several test files in this suite globally
@@ -480,7 +482,9 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
       confinement: { allowHostPaths: resolvedGrants, protectedFiles, workRoot },
       // v37 (ARCH-181, DES-262): MEASURED posture, independent of the grant block above — set only
       // when the caller supplied a probe result (`main()`'s real boot path); every existing test call
-      // site omits it, so the gateway falls back to its OWN 'confined' default unchanged.
+      // site omits it, so the gateway falls back to its OWN 'unconfined' default unchanged
+      // (found empirically — an earlier 'confined' default broke the real-CLI-spawning suite;
+      // see `claude-agent-sdk-client.ts`'s own note on that field).
       ...(deps.confinementProbe ? { confinementPosture: deps.confinementProbe.posture } : {}),
     });
   }

@@ -16396,9 +16396,91 @@ implementation): `tsc` failure (`create()`'s param type carries no `createdRemot
 handed to `start()` nor wrapped that call in a try/catch. Green after the column, the stamping, and
 the try/catch landed, 2/2 pass.
 
+**v37 Gate-8 round-2 amendment (2026-09-23, implementer; finding B4):** the `[LOAD-BEARING]` case's
+assertion was `r.reason).toContain('CONFINEMENT_UNAVAILABLE')`, which passed against
+`toErrEnvelope(err).message` (the OLD, un-fixed `deliver()` catch-all) — exactly the leaky-`err.message`
+behaviour B4 names. Re-pointed at the FIXED shape: `r.httpStatus===403`, `r.code===
+'CONFINEMENT_UNAVAILABLE'` (the wire-visible machine code, never message-string-sniffed), and the
+row's own `lastRefusalReason`/`refusalCount` read back through `reg.get()` (proving `_recordRefusal`
+now fires on this path, which it did not before B4). Still green, still 2/2; this is a test
+CORRECTION tracking a deliberate behavior change (static catalog text replaces `err.message` on the
+wire), not a defect in the test's original intent.
+
 **v37 ARCH-182 follow-up trace addendum (2026-09-23, implementer):** DES-263→UT-329/UT-330/UT-331/
 IT-302/IT-303. No new REQ, no new VAL — this closure is entirely inside REQ-218 (already the subject
 of VAL-253), per ARCH-182's own text ("closes an admission gap the door alone did not"). ADR-086's
 `owner_decision` (answered 2026-09-23) unblocked this dispatch; no `owner_decision` newly deferred
 by this dispatch. `INV-V37-*` ids are cited in prose only, per this ledger's own standing rule
 (two-hyphen shape mis-parses in `trace.py`) — never as a `traces:` target.
+
+### UT-332 — `callTool('webhook_create', {...})` with `ToolDeps.isRemoteSubmission:true` stamps `createdRemote:1` on the created row, read back through the real `WebhookRegistry`
+- **status:** green (2026-09-23, implementer)
+- **traces:** ARCH-182, TASK-258, REQ-218
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v37
+
+File: `tests/unit/call-tool-confinement-door.test.ts` (extended — same file `grep -rln
+isRemoteSubmission tests/` already names as the door's only coverage; finding B1's own evidence).
+A REAL `WebhookRegistry` (`dbPath: ':memory:'`) behind a fake catalog/runManager (neither is
+exercised by `create()`), dispatched through `callTool()` itself — not `webhooks.create()` called
+directly — so the assertion is on the FORWARD (`ToolDeps.isRemoteSubmission` →
+`call-tool.ts:271`'s `createdRemote` stamp), not on the store. `[LOAD-BEARING]`.
+
+### UT-333 — `callTool('schedule_create', {...})` with `ToolDeps.isRemoteSubmission:true` stamps `createdRemote:1` on the created row, read back through the real `SqliteSchedulerPort`
+- **status:** green (2026-09-23, implementer)
+- **traces:** ARCH-182, TASK-258, REQ-218
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v37
+
+File: `tests/unit/call-tool-confinement-door.test.ts`. `schedule_create`'s twin of UT-332 (finding
+B1's own fixed-state wording names both explicitly).
+
+### UT-334 — `webhook_create`/`schedule_create` WITHOUT `isRemoteSubmission` ⇒ `createdRemote` stays `false` (the existing, un-gated default is unaffected)
+- **status:** green (2026-09-23, implementer)
+- **traces:** ARCH-182, TASK-258, REQ-218
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v37
+
+File: `tests/unit/call-tool-confinement-door.test.ts`. Not itself named by finding B1, but its
+absence would leave UT-332/UT-333 provable by a stamp-always-1 regression (e.g. dropping the
+`deps.isRemoteSubmission === true` ternary at `call-tool.ts:262`/`:271` in favour of a bare
+`true`) — the negative case a 2×2 truth table needs to actually distinguish the two branches.
+
+### IT-304 — `createServer({confinementPosture:'unconfined'})` wires the posture into the REAL `RunManager` end to end: a webhook delivery whose trigger was `createdRemote:true` is refused `CONFINEMENT_UNAVAILABLE`
+- **status:** green (2026-09-23, implementer)
+- **traces:** ARCH-182, TASK-258, REQ-218
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v37
+
+File: `tests/integration/confinement-unconfined-wiring.test.ts` (new). INV-V37-5(d)'s own fixed
+state: IT-302/IT-303 prove the WEBHOOK/SCHEDULE registries stamp `origin` correctly against a FAKE
+`RunManagerPort` (DES-263's own testability note); neither ever booted a real `createServer` with
+`confinementPosture:'unconfined'`, so the five-forward wiring hop
+(`main.ts`→`ServerConfig.confinementPosture`→`RunManagerDeps.confinementPosture`,
+`server.ts:813`) had no test at the one posture value that actually gates anything — "today the
+suite exercises the predicate only at `confinementPosture:'confined'`, the one value it never gates
+on — a vacuous boot" (ARCH-182's own words). Seeds a `webhooks.db` row directly (`createdRemote:
+true`) BEFORE the real server opens the same `webhookDbPath`, boots `createServer({...,
+confinementPosture:'unconfined'})`, registers+publishes the pre-claimed workflow name (exercising
+`claim()`'s `'held'` branch — the row is already bound — per the Gate-8 round-2 correction that
+re-attachment never re-stamps `createdRemote`), then POSTs a correctly-HMAC-signed delivery and
+asserts `json.code === 'CONFINEMENT_UNAVAILABLE'` (not merely `status===403`, which a pre-existing
+"webhook disabled" 403 would also satisfy) plus no `maxConcurrentRuns`/posture-detail leak in the
+body (finding B4's information-disclosure point). `[LOAD-BEARING]`.
+
+**Amendment (same day, on review):** this DID find one real gap, not zero — `server.ts`'s
+`POST /hooks/:id` route dropped `DeliverResult.code` before the wire (`sendJson(res, out.httpStatus,
+{ error: out.reason })`, no `code`), so the FIRST version of this test's `json.code` assertion above
+would have failed had it been written before the fix, and passed vacuously with only the weaker
+`status===403` check this row originally shipped with. Fixed at the route (one line, spreads `code`
+when the `DeliverResult` carries one — also fixes the pre-existing 409 arm the same way). So: one
+production line WAS needed, contrary to this row's first-draft note above — corrected here rather
+than silently amended, since "no production change needed" was itself briefly wrong.

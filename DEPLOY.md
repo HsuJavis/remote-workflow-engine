@@ -880,6 +880,7 @@ npm run start
 | `auth.enabled:true` + `bind:"0.0.0.0"`，從**本機**呼叫 `/mcp` 做寫入（`workflow_register`／`workflow_publish`／`workflow_deregister`／`webhook_delete`…），明明帶了有效 bearer 卻回 `PRINCIPAL_REQUIRED`（或角色不足的 `FORBIDDEN_ROLE`） | 這個組合下本機來源走的是 D-BIND 豁免（§1b 部署前提第 3 點），伺服器直接放行、**根本不會去讀你帶的 bearer**，於是這次呼叫沒有身份可用，而寫入類操作在 `auth.enabled:true` 時不接受 `args.principal` 自稱 | 要用 bearer 身份做寫入，就從**非 loopback 來源**呼叫（例如從該主機的 LAN IP 打進去），或把 `bind` 設成 `127.0.0.1`（loopback bind 沒有豁免，bearer 一定會被讀取）；只讀不寫時維持現狀即可 |
 | `RWE_BIND=<LAN IP>`（如 §2 systemd 範例的 `192.168.0.125`）部署後，手動用 `curl http://127.0.0.1:<port>/api/status` 檢查，收到 `Connection refused`（連不上，不是 403） | 服務只監聽 `$RWE_BIND` 指定的那個介面；綁定成具體 LAN IP 時，該主機的 `127.0.0.1` 迴環介面根本沒有服務在聽 | 改用 `$RWE_BIND` 本身（例如 `curl http://192.168.0.125:<port>/api/status`）；`deploy.sh` §0 的健康檢查已依 `RWE_BIND` 是否為 `0.0.0.0`/`::` 自動選擇正確目的地，不需要手動判斷 |
 | `run_start`/`run_resume` 回 `CONFINEMENT_UNAVAILABLE` | 這台部署開機探測量到 `Bash` 圍籠不可用（見 §1c(e)），且這次呼叫被判定是「遠端提交」——判斷依據是 socket 的 peer 位址不是 loopback，**或**請求帶了任一 tunnel/forwarded 類 header（`X-Forwarded-For`/`X-Real-IP`/`Forwarded`/`CF-Connecting-IP`，即使 peer 本身是 loopback 也一樣，防止 cloudflared 之類的 tunnel 讓遠端流量偽裝成本機）——這是刻意設計，不是誤判 | 本機（loopback、不帶上述任何 header）呼叫仍會照跑；要接受遠端提交，唯一路徑是讓這台主機的巢狀 `bwrap --unshare-user` 探測通過（多半要調整 AppArmor 的 `bwrap-userns-restrict` 政策或改用容許巢狀 user namespace 的主機），開機 log 會印 `Bash confinement: CONFINED` |
+| `POST /hooks/:id` 回 403、body 帶 `CONFINEMENT_UNAVAILABLE`；或 `schedule_list` 某筆的 `lastError.code` 是 `CONFINEMENT_UNAVAILABLE` | 這不是只有 `run_start`/`run_resume` 才會回的碼——同一道圍籠不可用判定，也擋 webhook 送達與排程觸發這兩條路徑，判斷依據是**那個 webhook/schedule 被建立當下**是不是一次遠端提交（`createdRemote`，寫在觸發器那一列，建立後不會再變，即使之後被別的工作流程認領也不會重蓋），不是這次送達/觸發本身的來源 | 本機建立的 webhook/schedule 不受影響；要讓遠端建立的觸發器也能跑，同樣是讓這台主機的巢狀 `bwrap --unshare-user` 探測通過（見上一列），或在本機重新建立該 webhook/schedule |
 | `run_result`/`run_status` 的某個 agent `detail` 顯示 `WORKROOT_INSIDE_PROJECT: ... is outside workRoot or carries a project marker between the run workspace and workRoot` | 這是**執行期**的同一個檢查，跟 §1b `workRoot` 那一列的**開機期**檢查是同一顆函式（`findProjectMarkerAboveWorkspace`）——多半是 `workRoot` 底下的 `workflows/<name>/` 這一層目錄意外多出一個 `.git`/`CLAUDE.md`（例如手動在 `workRoot` 內跑過 `git init`） | 找到並移除該路徑下多出來的 `.git`/`CLAUDE.md`；引擎自己在**每個 run 自己的工作目錄根**寫的 `.git`（`initGitBaseline`）不受影響，只有「工作目錄與 `workRoot` 之間的祖先層」才會被擋 |
 
 ## 6. 維運注意事項 / 已知限制
@@ -903,6 +904,8 @@ npm run start
   `refusalCount`／`lastError` 等欄位）與 `run_origins` 全部原封不動搬過去。**中途斷電**：交易沒
   commit，舊表完好，下次啟動再重建一次即可（重建有冪等保護，已經正確的資料庫完全不會被碰）。
   `webhooks` 資料表有同樣的自動重建。
+
+- **升級後既有的 webhook/schedule：`createdRemote` 全部讀成本機建立（`false`）——這件事你要做，不像上面 schedules/webhooks 的資料表重建。** `createdRemote` 欄位只在**建立那一刻**寫入一次，用來判斷這台部署 `Bash` 圍籠不可用時要不要擋下這個觸發器之後的每次啟動；欄位是升級才新加的，`DEFAULT 0`，所以**升級前就存在的每一筆**都讀成「本機建立」——即使它其實是從別的機器 `webhook_create`/`schedule_create` 建立的。這台主機現有的工作流程/觸發器如果**全部是遠端註冊**（用 `webhook_list`/`schedule_list` 查不到 `createdRemote:true` 就是這個狀態），代表這道控制目前對既有族群的覆蓋率是零，不是「有殘留風險」而已。**要拿回覆蓋率**：對每一個需要被這道控制保護的觸發器，用遠端呼叫者刪除、重新 `webhook_create`/`schedule_create`（回傳的新 id 要重新`workflow_register({triggers:[id]})` 認領）；`claim()`／`workflow_register`／`workflow_publish` 都不會重新蓋章這個欄位——**認領一個既有 id 不會補上覆蓋率，只有重新「建立」觸發器才會**。
 
 **日誌與狀態位置**：日誌僅 stdout/stderr（`[remote-workflow-engine] ...` 前綴），交給你的
 process manager（systemd/pm2/docker）收集；沒有另外寫檔案 log。狀態存在 `$workRoot/store`

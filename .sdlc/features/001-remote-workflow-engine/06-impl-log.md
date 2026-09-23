@@ -10262,3 +10262,143 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   real-Chromium screenshot evidence PNGs (`evidence/v28/val215-issues-{dark,light}.png`) dirty as a
   side effect of running `sh .sdlc/trace` and the full suite respectively — not edited, not part of
   this scope, same noted side effect as a prior v37 slice (IMPL-383's own note).
+
+### IMPL-385 — v37 Gate-8 round-2 SEND-BACK REPAIR (impl/validation slices): `admissionErrorToOutcome()` + `WebhookView.createdRemote` + `_recordRefusal` on the CONFINEMENT_UNAVAILABLE path (finding B4/B3), five stale comments corrected (finding B5), the authoring-guide/DEPLOY.md admission-route prose widened (finding QD-MED), and the two missing regression locks added (finding B1/INV-V37-5(d))
+- **status:** done
+- **traces:** ARCH-182, ADR-086, TASK-258, DES-263, REQ-218, REQ-117
+- **greens:** UT-332, UT-333, UT-334, IT-304, IT-303
+- **files:** src/types.ts, src/run-manager.ts, src/webhook-registry.ts, src/server.ts, src/main.ts, src/gateway/claude-agent-sdk-client.ts, src/authoring-guide.ts, src/errors.ts, docs/AUTHORING.md, DEPLOY.md, tests/unit/call-tool-confinement-door.test.ts, tests/integration/webhook-remote-origin.test.ts, tests/integration/confinement-unconfined-wiring.test.ts (new)
+- **commit:** (uncommitted at write time)
+- **iter:** v37
+- **note:** architecture's own Gate-8 round-2 amendment (02-architecture.md, ARCH-182 (3)/(4)/(5)/(6),
+  INV-V37-5(d)) prescribed every item below to this gate; none of it is a re-decomposition or a new
+  ARCH/DES/ADR id — B2's premise correction and B6's ledger fix were already closed at the
+  architecture gate before this dispatch started (verified via `gates.architecture`/`gates.impl`
+  notes in `state.yaml`, not redone here).
+
+  **B4 (impl) — `WebhookRegistry.deliver()`'s catch-all reopened C-1 and inverted retryable-vs-
+  permanent.** New pure `admissionErrorToOutcome(err): {code, retryable, httpStatus:403|503|500}`,
+  exported beside `admissionRefusal()` in `run-manager.ts` (same module, per the architecture row's
+  own instruction — no new ARCH id). `deliver()`'s catch now: `403` (CONFINEMENT_UNAVAILABLE,
+  permanent) → `DeliverResult`'s `{reason, code}` shape (mirroring the pre-existing 409 arm) +
+  `_recordRefusal(id, 'CONFINEMENT_UNAVAILABLE')` — the same durable trace the other four
+  `RefusalReason`s already leave, which this path never left before; `503` (RUN_ADMISSION_LIMIT,
+  retryable — a concurrency cap, not policy) → `{reason}`, no `code`, no durable refusal row; anything
+  else → `500` + the `INTERNAL_ERROR` catalog hint. Every arm's `reason` is now the STATIC
+  `ERROR_CATALOG[code].hint`, never `err.message` — closing the information-disclosure gap (the
+  sandbox-probe posture / `maxConcurrentRuns=N` no longer reach an HMAC-authenticated peer over this
+  path). `RefusalReason` (`types.ts`) gains exactly the one word `'CONFINEMENT_UNAVAILABLE'`;
+  `RUN_ADMISSION_LIMIT` deliberately does not join it (grep-verified: no exhaustive `switch` over
+  `RefusalReason` exists in `src/`, so the widening is non-breaking). `DeliverResult`'s 403 arm gained
+  an optional `code?: RefusalReason` (the pre-existing "webhook disabled" 403 at line ~254 carries
+  none, unaffected) and two new terminal arms, `500 | 503`.
+
+  **B3 (validation, code half) — `WebhookView` could not answer "was this webhook created
+  remotely".** Added `createdRemote: boolean`, projected in `list()` exactly as
+  `ScheduleStatus.createdRemote` already is (one field, mirrors the existing scheduler pattern) — a
+  prerequisite for B1's webhook regression case (asserts the stamp through `webhooks.get()`, never
+  reaching into SQLite) and for `webhook_list` ever being able to answer the question at all.
+
+  **B1/INV-V37-5(d) (impl, tests only — "no production code change needed", verified true both
+  times) — two missing regression locks.** (1) Two unit cases in
+  `tests/unit/call-tool-confinement-door.test.ts` — the ONE file `grep -rln isRemoteSubmission
+  tests/` names as covering this flag at all, and until now only via `callTool()` with hand-built
+  fake deps, never against a REAL trigger store: `callTool({...,isRemoteSubmission:true},
+  'webhook_create'|'schedule_create', {})` against a real `WebhookRegistry`/`SqliteSchedulerPort`
+  (`dbPath:':memory:'`), reading `createdRemote` back through `.get()` (UT-332/UT-333), plus a third
+  negative case proving the un-gated default still reads `false` (UT-334, not itself named by the
+  finding but needed to make the 2×2 actually distinguish the two branches). (2) One new integration
+  file, `tests/integration/confinement-unconfined-wiring.test.ts` (IT-304): boots a REAL
+  `createServer({confinementPosture:'unconfined'})` — every prior test of this predicate ran at
+  `confinementPosture:'confined'`, the one value ARCH-182 itself calls "vacuous" — seeds a
+  `webhooks.db` row with `createdRemote:true` directly at the `webhookDbPath` the server will open
+  (before the server opens it, same idiom `scheduler-migration.test.ts` uses), registers+publishes
+  the pre-claimed workflow name (exercising `claim()`'s `'held'` branch, per the Gate-8 round-2
+  correction that re-attachment never re-stamps `createdRemote`), then delivers a correctly-signed
+  webhook POST and asserts `403` with no `maxConcurrentRuns`/posture leak in the body. Both were
+  GREEN on first run — the wiring these tests exercise was already correct; they close a coverage
+  gap, not a defect. `IT-303` (`webhook-remote-origin.test.ts`) was also amended: its `[LOAD-BEARING]`
+  assertion targeted the OLD leaky `err.message` shape (`toContain('CONFINEMENT_UNAVAILABLE')`, which
+  no longer appears verbatim in the new static hint) and is re-pointed at `httpStatus`/`code`/the
+  row's own `lastRefusalReason`/`refusalCount` — a test correction tracking B4's deliberate behavior
+  change, not a defect in the test's original intent (listed in `05-tests.md`'s IT-303 amendment, not
+  as a `test_defects` report, since no code was fudged to appease it).
+
+  **B5 (impl) — five comments asserting a fact about the code that the code no longer makes true**
+  (REQ-218's own rule: a comment either cites the line that makes it true or is deleted).
+  `webhook-registry.ts:315` ("what decides is who ATTACHED the trigger") →corrected to "who CREATED
+  the trigger ROW ... never re-stamped by a later attachment event". `server.ts:812` ("the ONE
+  predicate every admission route (not just tools/call) passes") → corrected to name `start()`-driven
+  routes specifically and that `run_resume` stays covered by the door alone (mirrors
+  `run-manager.ts`'s own `admissionRefusal()` doc comment, which carried the identical false claim
+  and is fixed alongside it — one comment beyond the finding's literal list, same defect class, same
+  function). `main.ts`'s `confinementProbe` field doc (~:182) and its render site (~:483) both
+  claimed the gateway's own fallback default is `'confined'`; corrected to the measured `'unconfined'`
+  (`claude-agent-sdk-client.ts:129-140`'s own doc comment is the source of truth — an earlier
+  `'confined'` default broke the real-CLI-spawning suite, per ARCH-176's Gate-6 amendment).
+  `claude-agent-sdk-client.ts`'s `agent.confinement` emission comment claimed "this class has no such
+  refusal path today"; corrected to name IMPL-377's `WORKROOT_INSIDE_PROJECT` refusal (added this same
+  iteration, at `:709-728`), which does return before that emission site.
+
+  **QD-MED (impl) — `authoring-guide.ts`'s admission-route paragraph was pre-ARCH-182.** The
+  "host path grants" unconfined-posture body named only `run_start`/`run_resume`; rewritten
+  rule-shaped (a rule that "cannot go stale when a fifth route appears" — the adversarial/quality-
+  dimensions tie-break both lenses converged on) naming today's three routes as examples: `run_start`/
+  `run_resume`, a webhook delivery (`POST /hooks/:id` → 403), a schedule firing (`schedule_list`'s
+  `lastError`). `docs/AUTHORING.md` regenerated (`npm run gen:authoring`). `errors.ts:91`'s
+  `CONFINEMENT_UNAVAILABLE` hint (the one every `see:'workflow_authoring_guide'` reader is pointed at,
+  and the same static text B4 now puts on the wire) widened to name all three routes too — optional
+  per the architecture row, done because it is cheap and this dispatch was already wiring that exact
+  hint into `webhook-registry.ts`'s response. `DEPLOY.md` gained (i) a new §5 troubleshooting row for
+  `POST /hooks/:id`/`schedule_list.lastError` returning `CONFINEMENT_UNAVAILABLE` (the existing row
+  named only `run_start`/`run_resume`) and (ii) a new §6 upgrade-section bullet stating plainly that
+  the `createdRemote` cohort, UNLIKE the schema-rebuild migration next to it, needs an OPERATOR
+  ACTION (delete+recreate, since `claim()`/`workflow_register`/`workflow_publish` never re-stamp the
+  column) to gain any coverage — paired with B3's schema addition per the architecture row's own
+  "not separable" instruction. `main.ts:560`'s boot banner was checked and left alone: it already
+  reads generically ("remote run submissions") without naming a fixed route list, so it was not
+  stale.
+
+  **Verification:** `npx tsc --noEmit` clean (both tsconfigs implied by the shared root config).
+  `npx vitest run tests/unit tests/integration` — 377 files / 2953 tests passed, 1 skipped, **0
+  failed** (310s). `sh .sdlc/trace` before this dispatch's edits: 2107 items / 77 gaps (the
+  architecture gate's own post-edit baseline); after: 2111 items (the 4 new UT/IT rows) / 77 gaps —
+  **no new gap**. One self-caught mistake, corrected before this report: the first draft of
+  UT-332/333/334/IT-304's `traces:` line included `INV-V37-5`, which this ledger's own standing rule
+  (`05-tests.md`'s UT-329..331/IT-302/303 addendum) says mis-parses in `trace.py`'s two-hyphen ID
+  regex and must be cited in prose only — that draft transiently produced 4 spurious "斷鏈" gaps,
+  fixed by dropping the ID from every `traces:` line (INV-V37-5 is still cited in each item's prose).
+
+  **A second self-caught gap, found on review before this report, NOT by the self-check above (which
+  only re-ran `tsc`/the targeted suite/`trace`, none of which exercise the HTTP wire body):** B4's
+  `DeliverResult.code` widening stopped at `WebhookRegistry.deliver()`'s own return value —
+  `server.ts`'s `POST /hooks/:id` route still did `sendJson(res, out.httpStatus, { error: out.reason
+  })`, dropping `code` before it ever reached the wire. This made the DEPLOY.md/authoring-guide prose
+  this same dispatch just wrote FALSE on arrival (the exact B5 defect class, reintroduced by this
+  repair) and left IT-304 unable to distinguish the refusal it exists to lock from any other 403 (the
+  pre-existing "webhook disabled" 403 would have passed the original `status===403 && error truthy`
+  assertion identically). Fixed: one line at the route, spreading `code` into the body when the
+  `DeliverResult` carries one (covers the pre-existing 409 arm too — the same mirror the architecture
+  row asked for, not code duplicated per-status). IT-304 tightened to assert `json.code ===
+  'CONFINEMENT_UNAVAILABLE'` before the pre-existing `error`/no-leak checks. Also, on review:
+  `tests/integration/webhook-remote-origin.test.ts`'s own header comment still read "who ATTACHED the
+  trigger" (finding B2's exact phrase, one file this dispatch was already editing) — corrected;
+  `scheduler-remote-origin.test.ts` grepped clean for the same phrase, no second copy. Prescribed grep
+  from ARCH-182 (3) run explicitly, not skipped: `rg -n "lastRefusalReason|NOT_IN_RELEASE|
+  CHANNEL_UNPUBLISHED|UNCLAIMED" src/dashboard.ts src/dashboard-page.ts src/dashboard/` — zero hits;
+  no exhaustive reader keyed on the closed `RefusalReason` set exists in the dashboard (or anywhere
+  in `src/`, per the broader `lastRefusalReason` grep in this note's earlier paragraph), so widening
+  the union needed no third-site fix. `08-validation.md`'s VAL-256 (REQ-218, `real:true`, the
+  scratch-instance real-tier proof of this same webhook-403 path) carries a FROZEN transcript of the
+  pre-B4 response body; amended with a note (not a silent edit) stating the wire SHAPE it captured is
+  now stale while the REFUSAL MECHANISM it proves is unaffected, and pointing at IT-304 as the
+  re-proof against the fixed shape — no second real scratch boot was run in this dispatch to
+  regenerate VAL-256's own transcript (flagged for the next Gate 7.5 pass, not silently left).
+  Re-verified after all of the above: `npx tsc --noEmit` clean; targeted re-run (5 files, 15 tests)
+  green; **full `npx vitest run tests/unit tests/integration` re-run a second time: 377 files / 2953
+  tests passed, 1 skipped, 0 failed** (309s) — the `server.ts` route change is non-breaking across
+  the whole unit+integration tier. `sh .sdlc/trace` unchanged at 2112/77 after the `08-validation.md`
+  prose-only amendment (no `traces:`/`status:`/`iter:` touched there).
+
+  No `owner_decision` newly deferred by this dispatch — ADR-086's `pending` marker (re-opened by the
+  architecture gate, not by this one) is unchanged and untouched here.

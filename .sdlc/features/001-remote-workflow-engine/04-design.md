@@ -10119,6 +10119,33 @@ keep, not a coincidence to rely on.
     without standing up an HTTP server, a real ticker, or a real bwrap-probed `RunManager` (the
     predicate's own correctness is already proven by the 2×2 table; duplicating that proof at every
     route would be the redundant-test smell, not thoroughness).
+  - **v37 Gate-8 round-2 amendment (2026-09-23, implementer; findings B1/B3/B4, prescribed by
+    ARCH-182's own Gate-8 round-2 amendment):**
+    - **`webhook-registry.ts` `deliver()`'s mapping above is SUPERSEDED, not merely extended.** The
+      `{ok:false, httpStatus:403, reason: toErrEnvelope(err).message}` shape leaked `err.message`
+      (host-measured detail — the sandbox-probe posture, `maxConcurrentRuns=N`) to any
+      HMAC-authenticated peer, and mapped the RETRYABLE `RUN_ADMISSION_LIMIT` into the SAME permanent
+      403 as `CONFINEMENT_UNAVAILABLE`. New shared mapper `admissionErrorToOutcome(err)` (pure,
+      exported beside `admissionRefusal()` in `run-manager.ts`) classifies the throw into `{code,
+      retryable, httpStatus: 403|503|500}`; `deliver()`'s catch now dispatches on `httpStatus`:
+      `403` → `DeliverResult`'s `{reason, code}` shape (mirroring the pre-existing 409 arm) **and**
+      `_recordRefusal(id, 'CONFINEMENT_UNAVAILABLE')` (the same durable trace the other four
+      `RefusalReason`s already leave); `503` → `{reason}`, no `code`, no `_recordRefusal` (capacity,
+      not policy); anything else → `500` + the `INTERNAL_ERROR` catalog hint. `reason` on every arm
+      is now the STATIC `ERROR_CATALOG[code].hint`, never `err.message`. `RefusalReason` (`types.ts`)
+      gains the one word `'CONFINEMENT_UNAVAILABLE'`; `RUN_ADMISSION_LIMIT` deliberately does not
+      join it.
+    - **`WebhookView` gains `createdRemote: boolean`** (finding B3), projected in `list()` exactly as
+      `ScheduleStatus.createdRemote` already is — a value that gates whether code executes and cannot
+      be read back is unauditable by construction; it also lets a test assert the stamp through
+      `webhooks.get(id)` instead of reaching into SQLite.
+    - **Regression locks added, not a behavior change** (finding B1/INV-V37-5(d)): two unit cases
+      (`callTool({...,isRemoteSubmission:true}, 'webhook_create'|'schedule_create', {})` reads
+      `createdRemote===1` back through the REAL store, not a fake) plus one integration case booting
+      a REAL `createServer({confinementPosture:'unconfined'})` and proving a webhook whose trigger
+      row is `createdRemote:true` is refused end to end — closing the gap the finding named: every
+      prior test of this predicate ran at `confinementPosture:'confined'`, the one value that never
+      gates. No production code changed for this bullet; the wiring was already correct.
 - **iter:** v37
 
 ### Class diagram — v37 (the four types this slice adds)

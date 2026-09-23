@@ -1,387 +1,270 @@
 # Quality-dimensions lens — Architecture round 1 (independent proposal)
 
-**Scope:** this is not a fresh REQ-218/REQ-219 design — ADR-082/083/084/085 and ARCH-175..181 are
-already owner-decided and shipped, and this round does not reopen them. `send_back = [architecture,
-impl, validation, tests]` from **v37 GATE 8 — Consistency review (2026-09-22)** names five findings
-that are architecture's to fix: **A1** (webhook/scheduler bypass the remote-submission door), **A2**
-(`confinement.workRoot` evaporates to `denyRead: []` on the DEPLOY.md-documented optional-workRoot
-config), **A3** (`ENGINE_STATE_DENY` is a hand-maintained list, already stale, blind to operator path
-overrides), **A4** (INV-V37-1/2 worded as unconditional but false under posture `unconfined`; the
-`rtm.md` REQ-218 row cites the mechanism that doesn't run on this host and omits the one that does),
-and **O-1** (ARCH-178's row never amended to say `agent.confinement_denied` is deferred despite a
-positive S4). C-1 and A5 are impl/tests-owned (a catalog entry, a wiring-lock test) and are out of
-this lens's scope. This proposal's job is to fix the five architecture rows, not to re-litigate the
-posture-C decision they sit inside. **This file supersedes the Gate-2 `quality-dimensions.r1.md`
-this same path held** (`git status --short` on this path shows `M`, so that Gate-2 round is not
-lost — it is `HEAD`'s copy, reachable via `git show HEAD:<path>` if ever needed, per this repo's
-own read-a-commit rule; this send-back opens a fresh r1/r2 exchange scoped to the five findings
-above, at the same conventional path).
-
-## Summary
-
-All five findings are instances of one shape: **a control was specified at one seam and the system
-has more than one seam.** A1 is one admission chokepoint assumed where there are four. A2 is one
-`workRoot` assumed where the documented config has two behaviors (explicit / auto-tmpdir) and only
-one reaches the confinement block. A3 is one hand-authored path list assumed to track N independently
-configurable path options. A4 is one invariant text assumed to hold under both measured postures. O-1
-is one row assumed to still describe what shipped after a spike changed the answer. Recommended
-shape for all five, argued dimension-by-dimension below: **stop asserting single-seam claims that the
-code doesn't structurally guarantee — either collapse the seams to one (A1, A3) or write the claim
-conditionally on the fact that varies (A2, A4, O-1).** Concretely: move the remote-submission gate's
-CHOKEPOINT into `RunManager.start()` (A1's `INLINE_SCRIPT_CLOSED` precedent still holds), but key it
-on a **persisted** remoteness signal recorded at the moment a remote party gains the ability to cause
-a run — `workflow_register`/`webhook_create`/`schedule_create` time — not on the live request's own
-socket peer, because two of the four admission sites (`schedule` ticks, `chain` sub-runs) fire with
-no inbound request to read a peer from at all, and the third (`webhook`) is *supposed* to receive
-non-loopback deliveries from a legitimate third party (GitHub-shaped), so gating on the delivery's own
-peer would refuse an operator's correctly configured webhook exactly as readily as it refuses an
-attacker's; hoist `workRoot`'s tmpdir default — currently computed late, inside `server.ts` — up into
-`composeConfig()`, so `confinement.workRoot` is never conditionally omitted (A2); **A3 turns out to be
-the SAME hoist, extended to five siblings**: `casDir`/`webhookDbPath`/`schedulerDbPath`/
-`continuationDbPath`/`selfUpdateDbPath` all default the identical way — `config?.X ?? join(workRoot,
-'<literal>')` — but *inside `server.ts`*, not at `main.ts`'s composition root (`main.ts:348`'s own
-comment names this explicitly: "server.ts's own defaults... them"), so `ARCH-177`'s `protectedFiles`
-today sees `undefined` for every one of the five on a zero-config deployment, not a resolved path;
-complete `ENGINE_STATE_DENY` with the two genuinely knob-less literals the reviewer found missing
-(`mcp-registry.db`, `_global_assets` — no `FileConfig` key exists for either) and, for the five
-siblings, hoist their `join(workRoot, ...)` defaults to the SAME composition-root point A2 already
-needs, so both arrive as one resolved-value read, not two problems; reword INV-V37-1/2 as
-posture-conditional and repoint the `rtm.md` REQ-218 trace row at ARCH-181 (A4); and amend ARCH-178's
-row in place, one sentence (O-1).
+**Scope:** this is not a fresh REQ or a re-litigation of ADR-082..086 / ARCH-175..182 / INV-V37-1..5,
+all owner-or-gate-decided and shipped. `send_back = [architecture, impl, validation]` from **v37 GATE 8
+ROUND 2 — Consistency re-review (2026-09-23)** names seven items architecture owns a piece of: **B1**
+(INV-V37-5's hop lock covers `confinementPosture`'s `composeConfig()` spreads only; `isRemoteSubmission`
+has zero forward-lock coverage and `server.ts:813`/`:902` are unlocked in the direction that fails
+silently INSECURE), **B2** (ARCH-182/ADR-086 key admission on WHO CREATED a trigger row; the ruling's
+own accepted premise argues from WHO ATTACHED it; `claim()` never re-stamps `createdRemote`), **B4**
+(`WebhookRegistry.deliver()`'s catch at `webhook-registry.ts:316-323` maps every `RunManager.start()`
+throw — retryable `RUN_ADMISSION_LIMIT` included — into an uncoded permanent 403, with no
+`_recordRefusal`), **QD-MED** (`authoring-guide.ts:363-369`'s `CONFINEMENT_UNAVAILABLE` prose still
+names only `run_start`/`run_resume`, stale since ARCH-182 added two more admission routes), **B5/B6**
+(two ledger-accuracy items: a new "comment must be a measurement" instance at `main.ts:182-183`, and
+ARCH-177's `workRootDefault: string` row shipping optional), and **B3/B7**, routed to validation and
+filed as non-blocking debt respectively — named here for completeness but not re-argued, since this
+lens's job is the five items still open to architecture (B1, B2, B4, QD-MED, B5/B6). **This file
+supersedes the v37-Gate-8-round-1 `quality-dimensions.r1.md` this same path held** (that round's five
+findings — A1/A2/A3/A4/O-1 — were independently verified CLOSED on disk by the round-2 reviewer before
+B1-B7 were raised; `git status --short` on this path is clean at `045bd6e`, so that content is not
+lost — `git show 045bd6e:<path>` reaches it, per this repo's own read-a-commit rule). Verified directly
+against source, not accepted from the review-stage panel text: `src/webhook-registry.ts` (types,
+`deliver()`, `claim()`, `list()`), `src/types.ts` (`RefusalReason`), `src/server.ts:960-1030`
+(`resolveScheduleTarget`, the ticker's `.catch()`), `src/authoring-guide.ts:363-386`,
+`02-architecture.md` ARCH-182/ADR-086/INV-V37-4/5 rows (including the owner's 2026-09-23 ruling at
+`:5756`, already answered — **not reopened here**).
 
 ## Altitude call
 
-**Both, and this send-back sits mostly on the plain-system half.** REQ-218/219's original design
-question (v37 Gate 2) was squarely on the seam between agent altitude (a spawned CLI's Bash tool)
-and system altitude (kernel confinement) — that question is closed. What GATE 8 found is different in
-kind: A1 is an HTTP-server admission-control gap (webhook/scheduler routes bypassing a check that
-lives in a third route's handler) — conventional system architecture, no agent behavior involved. A2
-is a config-composition gap (`composeConfig()` not forwarding a computed default) — the exact
-`composeConfig` 佈線 bug-class this repo's own memory names, again conventional. A3 is a
-maintainability gap in a literal array versus the config surface that actually varies it —
-conventional. A4 and O-1 are documentation-consistency gaps in the architecture ledger itself. None
-of the five is about the agent's chain-of-thought, tool-call sequence, or LLM-backend pluggability —
-so below I apply plain-system altitude throughout, and I call out the one place (O-1, Observability)
-where the *subject* of the fix is an agent-emitted event even though the *fix itself* is system-side
-(editing a row, not building the event).
+Both altitudes apply, at different seams of the same finding set. The engine's own control plane
+(webhook/scheduler dispatch, admission refusal, the authoring guide, the composition root) is a
+**conventional distributed system** — B1/B4/QD-MED/B5/B6 are ordinary observability/consumability/
+config-correctness defects in that plane, argued at system altitude. But every one of them gates
+**agent-shaped work** (`agent()` calls with real Bash access), and B2 specifically is about the
+system's ability to attest, to itself, whether the *script an agent is about to run* was authored by
+a party the confinement decision trusts — that is the agent altitude's provenance/trust question, not
+a generic input-validation one. I apply system altitude to B1/B4/QD-MED/B5/B6 and agent altitude to B2.
+
+## Summary
+
+Four of the five open items are the same shape this lens named in the round-1 send-back and the
+round-2 reviewer just found again one layer down: **a control's OBSERVABLE STATE (a lock, a log line,
+a doc sentence, a type) fell out of sync with the control's ACTUAL SHAPE once ARCH-182 added routes**
+the earlier text didn't anticipate. B1 is a wiring lock that covers one of two forwarded values. B4 is
+an error-mapping catch that predates the error it now also has to map. QD-MED is a guide sentence that
+names two routes where four now exist. B5/B6 are the ledger's own bookkeeping falling one edit behind
+the code. The fix for all four is the same discipline INV-V37-4 already established for the composed
+config's deny surface: **derive the observable artifact from the current shape, don't hand-author it
+once and let it drift.** I'm applying it here to the lock/catch/guide/comment artifacts. B2 is different
+in kind — it is not a staleness bug, it is a genuine gap between what ADR-086's
+*rationale* argues (attachment-time trust) and what ARCH-182 *implements* (creation-time trust), newly
+exposed because the reviewer found a zero-operator-action path through it that the owner's 2026-09-23
+ruling did not evaluate. I do not propose closing B2 unilaterally; I propose the narrowest fix that is
+consistent with the ruling's own accepted premise, and I relay the corrected premise as a fresh
+`owner_decision`, distinct from the one already answered at `02-architecture.md:5756`.
 
 ## 1. Observability
 
-**A1 — the door's own refusal is invisible to the operator.** `call-tool.ts:120-124` returns
-`CONFINEMENT_UNAVAILABLE` straight to the caller and emits nothing to the event sink — confirmed by
-reading the block: no `emit(...)` call anywhere near the refusal, unlike `agent.confinement`
-(ARCH-178), which fires for every run that *starts*. A refused remote-admission attempt is exactly
-the event an operator investigating "why didn't my webhook fire" — or auditing for the next 9/20-class
-incident — needs in the journal, and today it produces zero journal lines regardless of which of the
-three admission sites reaches it. This is additive to A1's headline fix, not a substitute for it: the
-recommendation below (§ synthesis) is to put the gate in `RunManager.start()`, and whichever module
-ends up holding the refusal should emit one line, same shape as `agent.confinement`
-(`{runId: undefined, startedBy, posture, reason: 'CONFINEMENT_UNAVAILABLE'}` — no `runId` exists yet
-at refusal time, which is itself informative: the event's own shape proves the run never got as far as
-having one).
+**B1 — a wiring lock is not a claim about the wire it doesn't check.** INV-V37-5's text says
+`confinementPosture` *and* `isRemoteSubmission` each need "a hop-level wiring lock… in the shape of
+the `allowHostPaths` lock that already exists." What shipped is `compose-config-v2-wiring.test.ts`
+covering `confinementPosture`'s spread into `ServerConfig`/gateway config — real, and confirmed
+independently on disk by round 2 — but `isRemoteSubmission`'s own forward, from
+`server.ts:1168`'s per-request computation into `ToolDeps` at the two `tools/call` sites
+(`server.ts:813`/`:902`), has **zero test asserting the drop-it-and-every-run-ships-unconfined
+direction**. This is not a hypothetical: it is the *exact same bug class this repo's memory already
+names three times* (v11 `updateFlagPath`, v15 auth, v37's own A5), on the invariant written specifically
+to stop a fourth instance. The fix is architectural in shape even though the change is a test: INV-V37-5
+should be reworded to state **both hops explicitly as independently-locked obligations**, not as one
+sentence covering two mechanisms where only one lock exists — so a reader checking "is INV-V37-5
+satisfied" can enumerate exactly two assertions and find one missing, instead of reading a green
+CI run and assuming coverage that isn't there. (This is impl's test to write; it is architecture's row
+to make checkable.)
 
-**A4 — INV-V37-1 as worded is a claim the system cannot honor under its own accepted posture, and an
-unfalsifiable invariant is worse than no invariant.** "No agent Bash write may land outside {workspace}
-∪ {granted paths}" is true only when `posture === 'confined'`; under `'unconfined'` (this host, today,
-per ADR-083's own owner_decision) a **local** submission's Bash is genuinely unconstrained by design —
-`buildBashConfinement()` is never even called (ARCH-176's Gate-6 amendment). An invariant that is
-silently false on the one host this ledger has actually measured is not observable to the next
-architect who reads it — they will believe INV-V37-1 holds, exactly the failure mode ARCH-176's own
-`BUILT_IN_CORE_TOOLS`-vs-`V3-residual` contradiction was written to retire. The fix is the same
-discipline ARCH-176 already applied to its two comments: state the invariant per posture, not as an
-unconditional universal. Same for INV-V37-2 (denyWrite-on-workspace-settings only matters in the
-`confined` arm; under `unconfined` there is no policy object to protect). The `rtm.md` REQ-218 row
-compounds this: citing ARCH-175..178 (the mechanism that never runs on the measured host) while
-omitting ARCH-181 (the door, which is the only control actually active here) means a reader who
-traces REQ-218's evidence lands on inert code — the trace itself is the thing that isn't observable.
+**B4 — an admission refusal that reaches production loses its own identity before anyone can see it.**
+`WebhookRegistry.deliver()`'s catch (`:320-323`) does `return { ok: false, httpStatus: 403, reason:
+toErrEnvelope(err).message }`. `toErrEnvelope` already computes a `code` — the catch simply discards
+it. Two consequences, both observability failures: (a) `RUN_ADMISSION_LIMIT` (retryable — the ARCH-182
+row's own text says so explicitly, "must not be answered with the RETRYABLE limit refusal when the
+true condition is deterministic and permanent," which is exactly backwards here for the OTHER
+direction: a genuinely retryable limit refusal is flattened into a `403` that looks exactly like a
+permanent `CONFINEMENT_UNAVAILABLE` refusal) is now indistinguishable, from the caller's or an
+operator's side, from a posture refusal; (b) `_recordRefusal(id, reason)` — called on every OTHER
+refusal branch in this same function (`UNCLAIMED`, `CLAIMED_WORKFLOW_MISSING`/`NOT_IN_RELEASE` via the
+lines above) — is never called here, so `webhook_list`'s `refusalCount`/`lastRefusedAt`/
+`lastRefusalReason` (the dashboard's only window into "why does this webhook keep not firing")
+undercounts every admission-gated refusal. An operator watching the dashboard after their host measures
+`unconfined` sees a webhook that silently stopped firing with no count and no reason — the "opaque
+failure is a design defect" case this lens exists to catch, verbatim. Root cause at the TYPE level,
+confirmed by reading `DeliverResult` directly: the `401 | 403 | 404` branch carries `reason: string`
+only, no `code` — only the `409` branch has a `code: RefusalReason` slot, and `RefusalReason` itself
+(`types.ts:427`) is `'UNCLAIMED' | 'CLAIMED_WORKFLOW_MISSING' | 'NOT_IN_RELEASE' |
+'CHANNEL_UNPUBLISHED'` — four pre-ARCH-182 values with no room for `CONFINEMENT_UNAVAILABLE` or
+`RUN_ADMISSION_LIMIT`. The catch block was wired to the code that existed before ARCH-182; ARCH-182's
+new throw landed in the same `try` without the type or the recording call growing to match.
 
-**A3 — a hand-maintained deny list is a standing observability debt, not just a completeness bug.**
-Every time an operator sets `casDir`/`webhookDbPath`/`schedulerDbPath`/`continuationDbPath` away from
-its default (all six documented, resolvable), the actual set of engine-state files diverges from what
-`ENGINE_STATE_DENY` protects, and nothing surfaces that divergence — not a boot warning, not a log
-line, not a test (the one test that exists is tautological against the same constant, per the
-reviewer's A3 finding). An operator has no way to observe that their own documented config choice
-silently shrank the protected set.
+**QD-MED, read as an observability defect too, not just a doc defect:** the guide's
+`HOST_PATH_GRANTS_UNCONFINED` string is the *only* place a caller can learn what "confined" means on
+this deployment, and it says "`run_start`/`run_resume` return a refusal instead" — silently false for
+the two routes ARCH-182 added. An author who reads the guide, provisions a webhook, and sees it never
+fire has no text anywhere connecting the observed silence to the documented posture. This is the same
+"agent's chain-of-thought / tool-call sequence must be inspectable" principle one level up: the *guide
+that lets a cold agent predict its own admission* is part of the observable surface, and it now
+under-reports the admission surface it's describing.
 
 ## 2. Replaceability
 
-**A1 — the real defect is that the admission check was NOT made replaceable/reusable across ingress
-modules, so it had to be copy-pasted, and it wasn't.** `call-tool.ts`, `webhook-registry.ts`, and
-`scheduler.ts` are three independently evolving modules that each start Bash-capable runs; ARCH-181's
-own text asserted "both are the only two" without checking `webhook-registry.ts:305` and
-`scheduler.ts:363`, both of which call `RunManager.start()` directly. `RunManager.start()` already
-has exactly this shape of chokepoint — `INLINE_SCRIPT_CLOSED` is enforced once, at the top of
-`start()`, "even off the wire," specifically because REQ-098's ban needed to hold for a caller that
-"bypasses the MCP schema entirely and calls RunManager directly" (the comment's own words). The
-confinement-door check is the same class of concern and belongs at the same seam: one check, one
-place, reused by construction rather than by discipline. Putting it in `call-tool.ts` made it
-non-reusable — the door and the RunManager convergence point are two different modules, and only one
-of them is where all four admissions actually meet. **The chokepoint (`RunManager.start()`) and the
-INPUT to the check (what counts as "remote") are two separate decisions, and only the first one
-transfers cleanly from the `call-tool.ts` precedent** — see § Recommended concrete decisions below for
-why the input needs its own seam (a persisted origin, not the live request's peer), because `schedule`
-and `chain` admissions have no live request to read a peer from at all, and `webhook`'s live peer is
-expected-non-loopback by the feature's own design.
-
-**A3 — the reusable fix is NOT "read an already-resolved `ServerConfig` field", it is hoisting a
-default-resolution step that today lives in the wrong module.** `ARCH-177` resolves `protectedFiles`
-from `deps.configPath` and `workRoot` at `main.ts`'s composition root, but the six operator-overridable
-DB/dir paths the reviewer names are not uniformly resolved there: `assetRoot` IS
-(`main.ts:295`, `fileConfig.assetRoot ?? (workRoot ? join(workRoot, 'assets') : undefined)`) — the one
-correct precedent to copy — but `casDir`/`webhookDbPath`/`schedulerDbPath`/`continuationDbPath`/
-`selfUpdateDbPath` are forwarded RAW at `main.ts` (`fileConfig.casDir`, etc., `:290,323,352-354`) with
-their `join(workRoot, '<literal>')` defaults applied later, *inside `server.ts`*
-(`:774,812,820,671-672` — `main.ts:348`'s own comment names this split explicitly: "server.ts's own
-defaults... them"). So on the single most common deployment shape — an operator who sets none of
-these six — `ARCH-177` sees `undefined` for five of them today, not a resolved path; reusability here
-means hoisting `server.ts`'s five defaults up to where `assetRoot`'s already lives, which is the SAME
-hoist A2 needs for `workRoot` itself. **Separately, two of the reviewer's three named-missing files
-have no config knob to derive from at all** — `mcp-registry.db` is `join(this._workRoot,
-'mcp-registry.db')`, a literal in `workflow-catalog.ts:398`, and `_global_assets` is `join(workRoot,
-'_global_assets')`, a literal in `asset-sync.ts:145`; neither path is ever overridden by any
-`FileConfig` key (confirmed: no `mcpRegistryDbPath`/`globalAssetsPath`-shaped key anywhere in
-`main.ts`). Those two stay named literals by necessity — see § Recommended
-concrete decisions for the two-option split this forces.
-
-**Where this dimension does NOT ask for new abstraction:** A2 (and, per the correction above, A3's
-config-hoist half) are not replaceability problems in the "new interface" sense — they are a
-config-defaulting bug, now understood as one bug with two visible symptoms rather than two — and A4/O-1
-are a documentation-consistency bug; inventing an interface for any of these would be exactly the
-premature-abstraction move this same lens conceded away in the prior round (the `WorkspaceConfinement`
-interface withdrawal, ARCH-175's own
-note). No new port, no second implementation, on either.
+ARCH-182's own note says the four admission callers each map `CONFINEMENT_UNAVAILABLE` "into the idiom
+it already has" — `refusalEnvelope` at the facade, the webhook route's ad hoc catch, `ScheduleResult`
+at `Scheduler.trigger()` (dead code today, no production caller — filed as v38 debt already), and
+`markFailed` at the ticker driver. Reading the ticker driver directly (`server.ts:1017-1025`) shows this
+is not hypothetical either: `CONFINEMENT_UNAVAILABLE` thrown from `start()` "falls into the SAME generic
+`.catch()` below `markFailed` already handles" — the same code path that handles "the catalog entry was
+deleted." A **deterministic, permanent, posture-caused** refusal and a **transient-until-the-operator-
+fixes-the-catalog** failure are recorded with the same `lastError` shape, on the schedule side, for the
+identical reason B4 exists on the webhook side. Four hand-written mappings is not decoupling, it is
+the same logic re-derived four times with one instance already wrong (B4) and a second (the ticker) one
+missed find away from the same bug. I propose one shared, pure mapping function —
+`admissionErrorToOutcome(err: unknown): { code: ErrorCode; retryable: boolean; httpStatus?: 403 | 503 }`
+(name illustrative) — that each of the four callers consumes instead of writing its own `catch`. This
+is the LLM-backend-swap argument applied to error taxonomy rather than providers: today, adding a fifth
+admission-throwing condition to `RunManager.start()` (plausible — REQ-218's residuals aren't closed)
+requires editing four call sites correctly; with one mapper, it requires editing one function and
+every caller inherits the fix. `RefusalReason` should grow to a shared, ARCH-182-aware type (adding
+`'CONFINEMENT_UNAVAILABLE'` and `'RUN_ADMISSION_LIMIT'`) that the mapper returns and every one of the
+four idioms narrows into its own status-code convention — the DECOUPLING is at the taxonomy, not at
+each route's HTTP shape, which stays route-specific by design (a webhook caller and a `tools/call`
+caller legitimately want different envelopes).
 
 ## 3. Consumability
 
-**A1 — if the gate moves to `RunManager.start()`, the three callers must not learn about the refusal
-in three different shapes.** Today: `call-tool.ts` returns a typed `refusalEnvelope` (MCP JSON-RPC
-shape); `webhook-registry.ts`'s `deliver()` returns `{ok:false, httpStatus, reason, code}` via its own
-`_recordRefusal` idiom; `scheduler.ts`'s `trigger()` returns a `ScheduleResult<{runId}>` with
-`{error:{code, message, field?}}`. If `RunManager.start()` throws `codedError('CONFINEMENT_UNAVAILABLE', ...)`
-uniformly, each caller's existing catch/translate path needs to map that ONE thrown shape into ITS
-OWN existing idiom (the webhook route already has a `try/catch` around `runManager.start()`-adjacent
-calls elsewhere in the file, per `_recordRefusal`'s pattern; the scheduler's `trigger()` does not
-currently catch anything from `start()` at all — that gap needs naming, not assuming it already
-exists, or the fix regresses to an uncaught throw → HTTP 500 for a webhook caller who deserves a 409
-with a code, exactly the "generic complaint, not a migration-shaped answer" anti-pattern
-`call-tool.ts`'s own comment on `INLINE_SCRIPT_CLOSED` was written to avoid). This is why the
-recommendation below asks implementation to inventory all three call sites' error handling in the
-same change, not treat "move the check" as a one-line diff.
+**QD-MED's fix, stated as an interface-friendliness requirement, not just a text patch:** the guide
+should describe the admission predicate's actual KEY ("every run this workflow can trigger is refused
+identically, regardless of route, when this host is unconfined and the trigger's own recorded
+provenance is remote") rather than enumerate routes, which is exactly the drift-prone shape B1/QD-MED
+both are instances of. A caller integrating against this engine — including a cold agent reading only
+the guide, REQ-117's own bar — should learn the RULE, not a route census that a fifth admission site
+(schedule/webhook already made it four) will make stale again. This is a one-paragraph rewrite in the
+same builder DES-258 already established as the pattern (a static string keyed on `posture`), and it
+composes with my Observability point: name the rule, and the rule stays true across future admission
+sites without a text edit.
 
-**A2 — "optional, auto-tmpdir default" is consumability language in `DEPLOY.md`'s own 設定總表, and
-consumability requires the two paths it describes (explicit `workRoot` / omitted `workRoot`) to
-behave the same with respect to every OTHER documented guarantee, including this one.** An operator
-who reads the table, sees `workRoot` marked optional, and reasonably omits it for a low-stakes
-deployment gets a silently weaker security posture than the table's own REQ-018/ARCH-007 prose
-promises — with no error, no warning, nothing in `--check-config`'s output (unverified either way in
-this pass, but nothing in `main.ts:245-260` suggests it checks this). A config surface with a silent
-mode that quietly forfeits a documented invariant is a bad-faith contract with an operator who did
-exactly what the docs told them to do.
+**B4, read as consumability:** an uncoded `403` with only a prose `reason` gives a webhook-management
+caller (`webhook_list`, the dashboard, a future retry-aware client) nothing machine-readable to branch
+on. `webhook_list`'s existing `lastRefusalReason?: RefusalReason` field is exactly the typed surface a
+caller should be able to read this outcome from — it currently can't, for this refusal class, at all.
 
-**A3 — same shape as A2, smaller radius.** An operator who sets `casDir` (a documented, supported
-override) gets a `sandbox` deny-list that still protects the OLD default location, not the one their
-own config now points at. The consumability cost lands on the operator who followed the docs
-correctly, which is the worst place for a security-relevant silent gap to land.
-
-**A4/O-1 — the `rtm.md` row and ARCH-178's row are consumability surfaces for the NEXT architect,**
-not for an operator or a remote caller — but "consumability" as this lens frames it is about
-integration cost for any consumer of the artifact, and a trace row that points at the wrong mechanism
-imposes a real cost: whoever next touches REQ-218 will read ARCH-175..178, believe the kernel enforces
-this on the measured host, and build on a premise that is false today. Fixing both rows is the cheapest
-possible instance of this dimension's concern — no schema, no new surface, one sentence each.
+**B3** (routed to validation, not mine to fix) is worth one sentence here because it compounds QD-MED:
+`WebhookView`/`ScheduleView` project `id, workflow, createdBy, enabled, secretFingerprint,
+refusalCount, lastRefusedAt?, lastRefusalReason?` — `createdRemote`, the one field ADR-086's promised
+operator sweep needs to find the pre-v37 cohort, is not projected at all. I am not re-asking for the
+tri-state this lens's own r2 conceded on the Karpathy tie-break; I am noting that projecting the
+EXISTING boolean on `list()` is the minimum consumability bar for a sweep ADR-086 already promised in
+`DEPLOY.md`, and its absence is what makes B3 a real, not decorative, finding.
 
 ## 4. Self-sustainability
 
-**A3 is centrally a self-sustainability finding: a hand-maintained list requires a human to remember
-to update it every time a DIFFERENT, unrelated config surface changes, and nothing forces that
-remembering.** `casDir`/`webhookDbPath`/etc. are ordinary deployment knobs an operator can and does
-turn without touching `bash-confinement.ts` at all — there is no coupling forcing the two to move
-together, which is exactly the shape of drift that survives silently until an incident. Deriving the
-deny list from the same resolved config `ARCH-177` already assembles removes the coupling requirement
-entirely: the list becomes correct by construction, one edit away from zero maintenance instead of
-eight-entries-of-vigilance away from it. This is the same "review-free switch" concern ADR-083/A2
-already names for the posture flip — a control that degrades without anyone deciding to degrade it is
-the self-sustainability failure mode this dimension exists to catch, and A3 is a second instance of it
-in the same iteration.
+**B2, at agent altitude.** ARCH-182/ADR-086 implement a closed-loop control — the engine decides,
+without a human in the loop, whether an incoming trigger fire is trustworthy enough to admit
+Bash-capable `agent()` work. The owner's 2026-09-23 ruling on ADR-086's named residual (`:5756`)
+accepted a **specific, bounded** cost: a remotely-registered script can still run if "操作者本機誤啟動"
+— the operator's own deliberate local action starts it. That is a self-sustainability argument in this
+lens's own terms: the accepted risk requires a human circuit-breaker in the loop. B2 shows a path where
+**no human acts at all**: an existing, locally-created (`createdRemote=0`) webhook or schedule already
+claims a workflow name; a remote principal calls `workflow_register` against that name (registering a
+new version, or re-claiming via `claim()` if the trigger was ever released); the trigger's own
+`createdRemote` stamp — written once, at row creation, per ARCH-182's own text — never changes; the
+NEXT automated fire (a cron tick, an inbound webhook `POST`) reads `origin: 'local'` and admits
+Bash-capable work under a script the trigger's creator never reviewed. This is not the residual the
+owner ruled on — that residual required "操作者" to press a button; this one requires nothing, because
+the trigger fires itself. The self-sustainability defect is exact: **the control's own trust boundary
+degrades on ordinary, unattended operation**, which is the opposite of "minimize human intervention
+while surviving" — it is a case where the *absence* of intervention is what breaks the guarantee.
 
-**A2 is the same failure mode at the config layer**: `ADR-083`'s revisit trigger is explicitly an
-EVENT ("upstream CLI no longer needs nested userns, or the owner decides to flip policy") specifically
-so the posture reverses "without a re-debate." An omitted `workRoot` reversing `denyRead` to `[]` is
-the same kind of silent reversal, but triggered by an ordinary config omission rather than a deliberate
-ADR-anticipated event — nobody decided to weaken the posture, a default cascade did it for them. A
-system that is meant to survive long-term with minimal human intervention needs its defaults to
-compose toward the SAME guarantee regardless of which optional key is set, not toward a materially
-different one depending on an unrelated key's absence.
+I do not propose (B) from ADR-086 (a `workflow_versions.origin` column refusing any run of a
+remote-authored script) — that is the option the owner already rejected, for a reason (ADR-083's
+"本機發起的 run 仍不受限制") that is untouched by B2. Narrower shape, consistent with the accepted
+premise: **origin, for a TRIGGER-FIRED admission only** (webhook `deliver()` / schedule ticker — never
+`run_start`/`run_resume`, which stay exactly as ADR-083 settled them), is `'remote'` if EITHER
+`trigger.createdRemote` OR the released version's own provenance is remote. This restores the ruling's
+own stated premise (an unattended fire should carry the same trust as the weakest of the two facts that
+produced it — who attached the trigger, and what script it currently points at) without reopening the
+local-`run_start` question the owner already closed. This is additive on top of ARCH-182 exactly as
+ADR-086's own "Consequences" paragraph already anticipated ("closing it means adding (B)'s column ON
+TOP of (C), which is purely additive and can ship later without re-keying anything") — I am proposing
+the trigger already arrived (a zero-operator-action production path, not a hypothetical), narrowed to
+the fire-path only, not the general (B).
 
-**A1, self-sustainability framing**: `RunManager.start()` is already the place this codebase chose,
-once, to make an admission rule hold "even off the wire" (`INLINE_SCRIPT_CLOSED`'s own justification).
-A check placed at one of three convergent call sites needs a human to remember, for every future new
-admission path, to add the check there too — `webhook_registry.ts`/`scheduler.ts` are the second
-instance of exactly this omission in this same iteration (the first being the `INLINE_SCRIPT_CLOSED`
-precedent that DID get this right by putting it at the convergence point). Putting A1's fix at the
-convergence point is not just cleaner, it is the one placement that doesn't need a human to remember
-anything the next time a fourth ingress module is added.
+**Recorded as a fresh `owner_decision`, not decided here**: whether to ship the additive, fire-path-only
+version-origin check. The premise correction that makes this a *different* question from the one
+answered 2026-09-23: that ruling's cost/benefit was framed entirely around a deliberate local human
+action; B2's path requires none. I attach the concrete production fact the relay should carry: per
+ADR-086's own text, "production catalog 現有的工作流程**全部**是遠端註冊的" — so the fire-path check,
+if the ADR's OR is read literally (version provenance ORed in), would refuse **every existing
+schedule/webhook fire on this production host**, the same blast radius the owner already rejected once
+for a different reason. The narrower, defensible framing is therefore not "OR in version origin" but
+"detect and flag `claim()`-after-creation as an event the operator should confirm" (see below) —
+functionally a decision the owner should make with this cost stated up front, not one this lens should
+resolve by picking the ADR wording that happens to compile.
 
-**Credit, not just findings**: the boot-time `confinementProbe` (ARCH-181) is itself a working
-instance of this dimension's "tool-liveness check" idea — it re-measures a real host fact (nested
-bwrap userns) once per boot rather than trusting a config flag, and ADR-083's revisit trigger is
-phrased as an event specifically so the system's posture can correct itself when the underlying host
-fact changes. That discipline is sound and this round's fixes (A2, A3) are asking for the SAME
-discipline to be applied one layer further out — to config composition, not just to host measurement.
-
-## Recommended concrete decisions (synthesis, for the panel to converge on)
-
-1. **A1**: keep the chokepoint at `RunManager.start()` (the `INLINE_SCRIPT_CLOSED` precedent), but key
-   it on a **persisted** origin signal, not the live request's peer. Rationale, walked per admission
-   site: `schedule` ticks and `chain` sub-runs fire with **no inbound request at all** — a
-   ticker-driven `scheduler.ts:363` call has no socket to read `isLoopbackPeer` from, so "hardcoded
-   non-remote" (this proposal's own first draft) is wrong — a remote caller can `workflow_register`
-   then `schedule_create` an ungated resident trigger and the ticker admits Bash-capable work from a
-   workflow nobody local ever approved, the SAME incident class ADR-083 exists to intercept, through a
-   door this draft itself would have left unlocked. `webhook` deliveries are, by the feature's own
-   design, expected to arrive from a non-loopback peer (a GitHub-shaped integration) — gating on the
-   DELIVERY's own peer refuses an operator's correctly configured webhook exactly as readily as an
-   attacker's, a functional regression on legitimate use. `client` (a direct `run_start`/`run_resume`
-   over `tools/call`) is the one site where the live request genuinely IS the submission, and
-   `isRemoteSubmission` is already computed in scope for it (`server.ts:1168`, inside the same
-   `createHttpServer` closure the webhook branch at `:1450` also runs in — confirmed by reading the
-   enclosing function, so this is NOT new plumbing for that one site). The signal that covers all four
-   sites uniformly is recorded **at the moment a remote party gains the ability to cause a run** —
-   `workflow_register` (was the registering caller's peer non-loopback?) and/or `webhook_create`/
-   `schedule_create` (same question at binding-creation time) — persisted on the catalog/webhook/
-   schedule row, with `RunManager.start()` reading it from `spec`/the persisted row rather than from
-   `ToolDeps`. This also matches ADR-083's owner_decision **literally**: 「另一台機器送來的工作流程」
-   names the *workflow's* origin, not the triggering request's origin. `chain` sub-runs never need
-   independent gating — they exist only as children of an already-admitted parent run, so they inherit
-   whatever the parent's admission already decided. **Open migration question, named for the panel, not
-   resolved here**: pre-v37 catalog/webhook/schedule rows carry no persisted origin — backfill them as
-   `local` (permissive; matches today's de facto behavior, no existing legitimate webhook/schedule
-   breaks) or fail-closed as `remote` (safer default, but refuses every pre-existing binding until an
-   operator re-registers it). `ARCH-181`'s false "only two" claim is corrected in the same edit that
-   relocates the check.
-2. **A2 and A3 are ONE hoist, not two fixes** — resolve `workRoot`'s own tmpdir default (currently
-   `server.ts`'s), plus the five sibling defaults that share its exact shape (`casDir`,
-   `webhookDbPath`, `schedulerDbPath`, `continuationDbPath`, `selfUpdateDbPath` — each
-   `config?.X ?? join(workRoot, '<literal>')`, verified at `server.ts:671-672,774,812,820`), ONCE, at
-   the composition root, before `confinement`/`protectedFiles` are built — copying the ONE precedent
-   in this codebase that already does this correctly, `assetRoot` (`main.ts:295`). Each resolved
-   default arrives on `ComposeConfigDeps` as a **pre-computed value**, matching `configPath`'s and
-   `confinementProbe`'s own idiom (ARCH-181/DES-255's stated reason: several test files globally
-   `vi.mock('node:child_process')`/mock the fs layer, and a callable seam resolved inside that mock's
-   scope silently becomes `undefined` — the same hazard applies to `mkdtempSync`-shaped defaulting, not
-   only to `spawnSync`). This closes `confinement.workRoot` never being conditionally omitted (A2) AND
-   gives `ENGINE_STATE_DENY` a real resolved path for all five siblings (A3's config-backed half) in
-   the same edit; it needs the standing wiring-lock treatment (`compose-config-v2-wiring.test.ts`) that
-   catches this bug class, which is impl/tests' job once architecture states the resolved shape.
-3. **A3's remaining half — two options**, named because the hoist above still doesn't reach the two
-   genuinely knob-less paths (§ Replaceability above): **(i, recommended for this round)** add
-   `mcp-registry.db`/`_global_assets` as named literals to `ENGINE_STATE_DENY` (confirmed to have no
-   `FileConfig` key, so a literal is not an oversight here, it is the honest answer) alongside the
-   five now-hoisted-and-derived siblings from item 2; add a completeness test that cross-checks the
-   merged list against an actual census of `join(workRoot, ...)`/`join(this._workRoot, ...)` literals
-   under `src/` so a ninth engine-state path added later fails a test instead of silently joining the
-   unprotected set — small, send-back-sized, closes the finding. **(ii, structural, NOT this round)**
-   consolidate all engine state under one deniable ancestor (e.g. `<workRoot>/.engine/`), complete by
-   construction with no per-path enumeration ever again needed — but an on-disk layout migration
-   touching `workflow-catalog.ts`, `asset-sync.ts`, `webhook-registry.ts`, `scheduler.ts` and every
-   existing deployment's directory layout, well beyond a consistency-review send-back's blast radius;
-   filed as a v38 candidate rather than decided here.
-4. **A4**: reword INV-V37-1 and INV-V37-2 as posture-conditional ("...holds when `posture ===
-   'confined'`; under `'unconfined'`, the control is ARCH-181's door, not the kernel"); repoint
-   `rtm.md`'s REQ-218 trace row to include ARCH-181 (and DES-261/262/IMPL-375/376, matching what the
-   reviewer's own re-verification named as the mechanism that actually runs).
-5. **O-1**: one-sentence amendment to ARCH-178's row: "`agent.confinement_denied` is deferred despite
-   S4 firing positive — no Gate-5 red test exists for the `PostToolUseFailure` registration this
-   would require; see IMPL-374." No new event is built by this fix.
+**B7** (filed as non-blocking v38 debt by the reviewer, not reopened) is the same self-sustainability
+shape one level down: a permanent refusal re-firing forever via `markFailed` is a missing circuit-
+breaker on the schedule side — ARCH-182's contract table already prescribes this behavior verbatim, so
+it is not a deviation, but it means a schedule that starts refusing (posture flips to `unconfined`, or
+lands in the B2 scenario above) burns a ticker cycle every interval forever with no backoff and no
+"disable after N consecutive refusals" the webhook side's `refusalCount`-driven auto-disable
+(`markRefused`'s `enabled = 0` write) already has. I note the asymmetry only; not proposing a fix this
+round, per the reviewer's own routing.
 
 ## Key points
 
-- All five findings share one root shape — a single-seam claim (one chokepoint / one workRoot value /
-  one hand-list / one universal invariant / one still-current row) made about a system that actually
-  has more than one of that thing. The fix is either collapsing to a true single seam (A1, A3) or
-  stating the claim conditionally on what varies (A2, A4, O-1) — never adding a parallel mechanism.
-- A1's fix reuses a precedent this exact codebase already has right (`INLINE_SCRIPT_CLOSED` at
-  `RunManager.start()`); it is not a new pattern, and quality-dimensions has no basis to propose
-  anything else without a reason the existing precedent doesn't already serve.
-- A2 and A3 are both instances of this repo's own named `composeConfig` 佈線 bug class, just discovered
-  by an architecture-consistency reviewer instead of a real run this time — the ledger has now paid for
-  this class enough times that the fix should also close the *pattern*, not just these two instances,
-  though a generic detector is out of scope for this round (already filed as a v38 candidate for
-  INV-V37-3's sibling problem).
-- No new abstraction, port, or config surface is proposed anywhere in this document — every
-  recommendation edits an existing seam (`RunManager.start()`, `composeConfig()`, `ARCH-177`'s already-
-  resolved config, two prose rows) rather than adding one.
-- O-1's fix is the cheapest possible instance of any of these — verify it does not get bundled into a
-  larger rewrite of ARCH-178 that the send-back does not ask for.
+- B1/B4/QD-MED/B5/B6 are one recurring shape: an observable artifact (lock, catch, guide sentence,
+  comment, type) authored once and not re-derived when ARCH-182 added routes. The systemic fix is one
+  shared error-mapping function + a rule-shaped guide sentence, not four/five point patches.
+- B4's root cause is in the TYPE (`DeliverResult`'s `403` branch has no `code` slot; `RefusalReason` has
+  no ARCH-182-era member) — fixing the catch body without widening the type just moves the same bug to
+  the next admission-throwing condition.
+- The schedule-side ticker has the SAME bug as B4 (verified directly, not in the round-2 finding text)
+  — `CONFINEMENT_UNAVAILABLE` and a deleted-catalog-entry failure are recorded identically via
+  `markFailed`. Any fix scoped to `webhook-registry.ts` alone leaves this open.
+- B2 is a genuine gap between ADR-086's stated rationale (attachment-time trust) and its implementation
+  (creation-time trust), newly reachable with zero operator action. It is not the residual the
+  2026-09-23 ruling already closed, and deserves its own, narrower relay — not silent adoption of
+  option (B), which the owner has already rejected once for a related but distinct reason.
+- B3's fix (project `createdRemote` on `list()`) is a precondition for ADR-086's own promised sweep to
+  be performable at all — noted for validation's benefit, not claimed as this lens's fix.
 
 ## Risks
 
-- **A1's persisted-origin signal is new state (a column/field on the catalog/webhook/schedule row)
-  that does not exist today**, and the migration question named in § Recommended concrete decisions
-  (backfill pre-v37 rows as `local` vs fail-closed as `remote`) is a real product decision, not a
-  formality — get it wrong in the fail-closed direction and every webhook/schedule an operator already
-  has running stops firing the moment this ships, on an unconfined host, with no code change on the
-  operator's side to explain why. (Correction to this proposal's own first draft: `isLoopbackPeer` for
-  the `client` site is NOT new plumbing — `server.ts:1168` computes it inside the same
-  `createHttpServer` closure the webhook branch at `:1450` also runs in, confirmed by reading the
-  enclosing function boundaries; the risk is specifically in the NEW persisted-origin path for
-  `webhook`/`schedule`, not in reusing the existing per-request check for `client`.)
-- **Moving the check into `RunManager.start()` changes its position relative to `RUN_ADMISSION_LIMIT`
-  and the workspace-creation side effects `start()` performs** — the order needs to be decided
-  (confinement gate before or after the concurrency-limit check) and is not specified by this
-  proposal; get it wrong and a saturated engine could either leak "confinement unavailable" refusals
-  ahead of a legitimate "try again later," or vice versa.
-- **A3's config-driven derivation adds a dependency from `bash-confinement.ts`'s pure-function
-  contract onto values that flow through `composeConfig()`** — ARCH-175's own row is explicit that
-  `buildBashConfinement()` stays fs/process/env/clock-free; deriving the deny list from resolved
-  config must happen at the composition root (where ARCH-177 already lives) and be PASSED IN as
-  `protectedFiles`-shaped data, never computed inside the pure function itself. Getting this backwards
-  would reopen the exact purity property ARCH-175 was written to protect.
-- **A4's reword touches text the owner has already read and accepted (ADR-083's owner_decision)** —
-  the invariant rewording must not read as re-litigating posture C; it is describing what posture C
-  already means, not proposing a different posture. A version that drifts into re-arguing (A) vs (C)
-  would be an unwelcome scope expansion this round does not have standing for.
-- **This proposal takes no position on C-1 or A5** (the catalog entry and the wiring-lock test) beyond
-  confirming they are correctly impl/tests-owned; if the converged panel decides either one actually
-  needs an architecture decision after all (for instance, if `refusalEnvelope`'s untyped `code`
-  parameter turns out to need a scoped local type that itself wants an architecture row), that is new
-  scope this document does not cover and should be raised explicitly rather than folded in silently.
+- **Scope creep risk on my own proposal:** the shared `admissionErrorToOutcome` mapper touches four
+  call sites (`call-tool.ts`, `webhook-registry.ts`, `scheduler.ts`, `server.ts`'s ticker) for what the
+  reviewer scoped as one file's finding (B4). If the panel prefers a surgical, webhook-only fix
+  (Karpathy tie-break cutting the other way from my r1's own precedent on ARCH-182's confinement
+  builder), the ticker-side twin bug should at minimum be FILED, not silently left for a third
+  discovery.
+- **B2's proposed check has a real false-negative-preserving property, not a closure:** OR-ing version
+  provenance into fire-path admission only narrows the window (it still doesn't stop the SAME script
+  from running via a local `run_start`, by design/ADR-083) — if the panel or owner reads it as "closes
+  B2," that overstates it. It converts an unattended, zero-operator-action path into one requiring
+  either (a) the operator's own local button press (already-accepted cost) or (b) the trigger creator
+  never having re-registered the workflow under a different, remote identity after creation — narrower,
+  not zero.
+- **Cost of widening `RefusalReason`:** every existing `switch`/exhaustiveness check over that union
+  (if any exist in tests or dashboard code) needs a new-member arm; unverified this round whether such
+  exhaustive switches exist — a real risk if TypeScript's `never` check is relied on anywhere and this
+  change is applied without a full-suite compile.
+- **My B2 framing could itself be second-guessed as re-litigating an answered ruling** — I have tried to
+  make the premise difference explicit (deliberate local action vs. zero action) but the adversarial
+  lens or the gate may read it as the same question with different words; if so, the correct outcome is
+  the gate saying so explicitly, not my silently dropping it.
 
 ## Expected disagreements with other lenses
 
-- **Adversarial will likely push A1's chokepoint fix toward the door pattern already proven at
-  `call-tool.ts` (duplicate the check at each ingress site, explicitly, rather than centralize it at
-  `RunManager.start()`)**, on the grounds that a shared chokepoint is also a shared single point of
-  failure for the check itself, and that `webhook-registry.ts`/`scheduler.ts` already have their own
-  typed-refusal idioms that a thrown-from-`RunManager` error has to be retrofitted into (my own
-  Consumability section above concedes this retrofitting cost is real). I expect to hold the
-  centralization position on the `INLINE_SCRIPT_CLOSED` precedent, but the retrofitting cost is a
-  legitimate trade the panel should weigh, not dismiss.
-- **On A1's SIGNAL (as opposed to the chokepoint), I expect the live disagreement to be about
-  WHERE origin gets persisted, not WHETHER** — a persisted signal is close to forced once the
-  scheduler/chain gap is walked through (§ Recommended concrete decisions), but adversarial may argue
-  for recording it once at `workflow_register` only (the workflow's own origin, matching ADR-083's
-  owner_decision text most literally) rather than separately at `webhook_create`/`schedule_create` too
-  (which would let a LOCALLY-registered workflow's webhook binding be independently flagged if a
-  remote party later attaches a trigger to someone else's already-registered workflow — a real
-  distinction my proposal's synthesis collapses by naming both without picking one). This is a genuine
-  open question I have not resolved and expect the panel to need to.
-- **Adversarial may treat A3's two-option split as over-engineered for a send-back** — even option (i)
-  (complete the literals + derive the six config-backed ones) touches more files than a bare literal
-  patch (just adding the two missing knob-less paths and leaving the six as-is) would. I'd expect them
-  to propose the smaller fix over the more self-sustaining one, and the tie-break is the same Karpathy
-  rule ARCH-175 already invoked once this iteration — if the smaller fix is equally durable, it should
-  win; my Self-sustainability section argues the six config-backed entries are NOT equally durable as
-  literals (they drift again the next time an operator changes `casDir` etc., which the two purely
-  knob-less paths structurally cannot do), so I expect to hold option (i) but concede the panel may
-  reasonably split the difference (derive the six, but treat completing the two literals as the ENTIRE
-  A3 fix rather than bundling a new completeness test in the same change).
-- **On A2, I'd expect convergence** — both lenses' independent re-verification already agrees this is
-  a `composeConfig()`-shape defect of the exact class this repo's own memory names; I don't expect a
-  live disagreement here, only a difference in which specific resolution point (main.ts vs a new
-  helper) gets proposed.
-- **On A4/O-1, adversarial may consider these too small to need explicit architecture-panel debate at
-  all** (pure prose edits) and want to route them straight to an implementer instruction; I've included
-  them here because the send-back explicitly assigned them to architecture and a panel round is
-  running anyway, but I would not object to them being handled as direct edits without further debate
-  cycles if the other lens proposes that.
+- **On B2's fix shape:** adversarial's r1/r2 history on this exact question (ADR-086's Options B vs C)
+  shows a live disagreement pattern — I expect adversarial to push harder toward the general (B)
+  (`workflow_versions.origin`, refusing local `run_start` too) on the ground that the 2026-09-20
+  incident's shortest path runs through exactly this gap; I will hold at the narrower, fire-path-only,
+  additive shape because the general (B) is the option the owner has already ruled out once, on a
+  premise B2 does not disturb (the local-`run_start` case still requires the deliberate action ADR-083
+  accepted).
+- **On B4/B1's remedy granularity:** I expect pushback that a shared mapper is premature abstraction for
+  four call sites (the same Karpathy tie-break my OWN r1 used against the `WorkspaceConfinement`
+  interface, now potentially used against me) — I'm flagging this as a live risk above rather than
+  presenting the mapper as obviously right.
+- **On QD-MED:** low-disagreement risk; the "route census goes stale" argument is the same one INV-V37-4
+  already won for the config-deny-surface case, and I expect convergence on rule-shaped, not
+  route-shaped, guide text.
+- **On whether B1 is architecture's finding at all:** the reviewer filed it as "three test cases, no
+  production change" — another lens may argue this is entirely impl/verification-owned and that
+  architecture's only job is the INV-V37-5 reword I proposed; I'd accept that narrower framing if raised.

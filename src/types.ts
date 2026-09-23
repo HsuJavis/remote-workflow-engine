@@ -423,8 +423,13 @@ export interface RunListFilter {
 
 /** v24 (DES-150): a fire-path refusal — policy refused the firing BEFORE dispatch, distinct from
  *  `lastError` (dispatch itself failed). Shared vocabulary between the scheduler (TASK-141) and
- *  webhook registry (TASK-142) — declared once here so neither redeclares it. */
-export type RefusalReason = 'UNCLAIMED' | 'CLAIMED_WORKFLOW_MISSING' | 'NOT_IN_RELEASE' | 'CHANNEL_UNPUBLISHED';
+ *  webhook registry (TASK-142) — declared once here so neither redeclares it.
+ *  v37 Gate-8 round-2 (finding B4, ARCH-182 (3)): `'CONFINEMENT_UNAVAILABLE'` joins the union — a
+ *  webhook delivery refused by RunManager.start()'s admission predicate is a PERMANENT policy
+ *  refusal too, and must leave the same durable trace the other four reasons already do.
+ *  `'RUN_ADMISSION_LIMIT'` deliberately does NOT join it — a concurrency cap is capacity, not
+ *  policy, and mixing the two would make `refusalCount` answer two different questions. */
+export type RefusalReason = 'UNCLAIMED' | 'CLAIMED_WORKFLOW_MISSING' | 'NOT_IN_RELEASE' | 'CHANNEL_UNPUBLISHED' | 'CONFINEMENT_UNAVAILABLE';
 
 export interface RunSpec {
   name?: string;

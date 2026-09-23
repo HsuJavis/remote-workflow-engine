@@ -824,9 +824,10 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     // v37 (ARCH-178, DES-256, TASK-253, REQ-218): the policy applied is OUR data, so it is
     // unconditional — emitted from `sandbox`, the object the builder above JUST returned, never
     // re-derived. Once per ATTEMPT (the `attempt` param threaded from `invoke()`'s retry loop, NOT
-    // `sys.attempt` — the CLI's own internal backoff, read inside `_drain`). A call that is refused
-    // before reaching here (this class has no such refusal path today) would emit ZERO lines — "a
-    // posture printed for a session that never ran is a nerve attached to nothing".
+    // `sys.attempt` — the CLI's own internal backoff, read inside `_drain`). A call refused before
+    // reaching here (IMPL-377's `WORKROOT_INSIDE_PROJECT` refusal at :709-728, added this same
+    // iteration) emits ZERO lines — "a posture printed for a session that never ran is a nerve
+    // attached to nothing".
     this._eventSink({
       kind: 'agent.confinement',
       runId: req.runId,

@@ -862,3 +862,534 @@ smaller than a test.
   says」. I let security rule the *direction* and testability rule the *trust*: record the decision,
   gate the trust on the first `confined` host. Neither lens wins outright and the split is
   deliberate.
+
+---
+
+# ADDENDUM 2 — v37 Gate 8 **round-2** send-back, debate round 1 (independent)
+
+*Adversarial architecture group (security / scalability / testability, Karpathy simplicity as
+tie-break). Written 2026-09-23, independently, against the round-2 send-back
+(`07-review.md` §"v37 GATE 8 round 2", `send_back=[architecture,impl,validation]`). I have NOT read
+this round's quality-dimensions r1. Appended, not overwritten — the two prior rounds are the record
+ADR-086 cites and must stay readable.*
+
+**Scope discipline.** This is a send-back repair round: no re-decomposition, no new REQ, closure
+stays `{REQ-218, REQ-219, REQ-018, REQ-037, REQ-117}`. I organise strictly by the sent-back
+findings. **REQ-219 is CLOSED** — both modules are gone from disk (`ls src/session-options-builder.ts
+src/timeout-race.ts` → no such file; the only surviving reference is
+`tests/acceptance/val-254-req219-dead-code.test.ts`, which is the standing guard my own r1 §F1 asked
+for). One line, not reopened.
+
+**Altitude call (both, and the split is the whole story).** This is simultaneously a conventional
+system (HTTP + SQLite + OAuth principals + HMAC ingress) and an AI-agent system (a tool-loop harness
+that executes remotely-authored scripts which drive `Bash` under the engine's own unix identity).
+REQ-218 is an **agent-altitude** confinement problem. Everything v37 shipped for it after the
+sandbox probe failed — the `tools/call` door, `createdRemote`, `admissionRefusal()` — is a
+**system-altitude admission control**. That substitution is legitimate as a compensating control and
+it has one permanent ceiling worth writing down once: *admission control can only ever change **who
+may fire**; it can never change **what the agent may do** once it fires.* Every finding below is
+downstream of that ceiling.
+
+---
+
+## Summary
+
+Five rulings, ranked by what actually moves the risk:
+
+1. **B2 is larger than the review states, and the correction is arithmetic, not semantic.**
+   The review frames B2 as a re-arm path. It is that, but the first-order fact is simpler and
+   structurally certain: **`createdRemote` was added by this iteration, therefore every trigger row
+   that exists on the production host today reads `0`, therefore ARCH-182 refuses exactly nothing on
+   the population that motivated REQ-218.** The legacy-cohort `DEFAULT 0` decision and B2's
+   re-arm path are the same defect seen at two times: coverage starts at zero and stays at zero,
+   because the only event that ever writes the column (row creation) is not an event the production
+   workflow lifecycle performs. I cannot rule on the fix — it reverses or confirms an owner ruling.
+   I can, and do, demand the ruling be re-taken against the corrected number.
+2. **B4 and B7 are one change, not a MED plus a deferred v38 candidate.** Both are the same missing
+   fact: *nothing classifies a `start()` throw as retryable-vs-permanent at the three non-facade
+   admission sites.* One shared classifier plus **one word added to `RefusalReason`** fixes the
+   uncoded 403, restores durable refusal accounting on the webhook row, and dissolves B7's
+   re-fire-forever loop for free. Arguing B7 into this round is the only scope expansion I ask for,
+   and it costs nothing extra.
+3. **B1's fix is not three tests — it is one extended predicate plus required keys.** The review's
+   remedy (write the missing cases) is correct and insufficient: the reason a forward could be
+   dropped silently is that the forwards are *optional with a permissive default*, and the reason
+   there are five of them is that v37 kept **two checks for one predicate**. Measured this round
+   (and it reversed my own draft ruling): **`RunManager.resume()` never calls `admissionRefusal()`**
+   — `run-manager.ts:473` is the only call site, `:848` is `resume` — so the `call-tool` door is not
+   redundant, it is the sole cover for `run_resume`, and ARCH-182's «the ONE predicate every run
+   admission passes» is false as written. Extend the predicate to `resume()`, make the forwards
+   required keys so the compiler is the lock, and only then collapse the duplicate. That is the
+   discipline ARCH-182 already applied to `RunSpec.origin` and then applied to nothing else.
+4. **B3 is a symmetry bug with a security consequence**: `ScheduleStatus.createdRemote` is
+   projected, `WebhookView.createdRemote` is not. A value that decides whether code executes and
+   cannot be read back is unauditable by construction. Mirror the field; it is one line and it
+   unblocks both the sweep and B1's webhook case.
+5. **QD-MED / B5 / B6 are text, and the architectural rule behind them is one sentence**: a comment
+   or guide paragraph that states a *fact about the code* must either cite the line that makes it
+   true or be deleted. REQ-218 exists because two comments contradicted each other and readers
+   believed the wrong one; this repair wrote a third instance. That is the class, not the instance.
+
+**Boilerplate lens items, dispatched in three lines so they do not eat the round:** webhook HMAC
+compare is already `timingSafeEqual` with a length short-circuit (`webhook-registry.ts:329-334`) —
+no timing oracle. The admission predicate runs *after* signature + timestamp-window verification
+(`deliver()`'s documented order, re-read this round), so an unauthenticated peer cannot use it to
+probe host posture — that ordering is load-bearing and should be stated as an invariant before
+someone "optimises" the cheap check upward. There is no JWT in this path and no brute-forceable
+credential; the one real disclosure risk is B4's `err.message` pass-through (§2).
+
+---
+
+## Key points (condensed)
+
+- **KP1.** `createdRemote` records *row creation*. Nothing in the production lifecycle
+  (`claim()`'s `'held'` arm, `workflow_register`, `workflow_publish`) ever writes it, and no
+  pre-upgrade row carries it — so ARCH-182's refusal arm is unreachable for the existing trigger
+  population. ARCH-182/ADR-086 assert otherwise; the text must be corrected whatever the owner
+  decides.
+- **KP2.** The owner's 2026-09-23 ruling weighed «blackout vs. a residual needing operator action».
+  The real trade is «a visible blackout vs. a control that refuses nothing here». Re-put it, with
+  four options ranked (iii) fix the host > (iv) drop `Bash` when `unconfined` > (ii) add
+  `workflow_versions.origin` > (i) keep C and correct the text.
+- **KP3.** B4 and B7 are one change: `classifyStartRefusal()` (permanent/retryable) + one word added
+  to `RefusalReason`. That gives the webhook 403 a `code`, makes `RUN_ADMISSION_LIMIT` retryable
+  again, records refusals durably on both trigger stores, and ends the re-refuse-forever loop.
+- **KP4.** B1's real fix is structural: `resume()` is not covered by the predicate (verified — so
+  the `call-tool` door is *not* redundant), and every security-relevant forward is optional with a
+  *permissive* default. Extend the predicate to `resume()`, make the forwards required keys, keep
+  one non-vacuous `unconfined` boot test. Fewer hops beats more hop-locks.
+- **KP5.** `WebhookView` must project `createdRemote` as `ScheduleStatus` already does — a value
+  that decides whether code executes and cannot be read back is unauditable, and its absence blocks
+  both the promised sweep and B1's webhook assertion.
+- **KP6.** One rule covers QD-MED/B5/B6: a comment or guide paragraph asserting a fact about the
+  code cites the line that makes it true or is deleted; and optionality is acceptable exactly when
+  the default is the *safe* answer, never the permissive one.
+
+---
+
+## 1. B2 — the admission control's coverage on the production host is zero by construction
+
+### 1.1 What I verified myself (not accepted from the review or either panel)
+
+- `createdRemote` is written at exactly two sites, both `INSERT`: `webhook-registry.ts:170-176`,
+  `scheduler.ts:294-307`. Both carry this iteration's own comment «written ONCE at creation, never
+  updated afterwards».
+- `claim()` (`webhook-registry.ts:211-219`, read in full) touches `workflow` only. **And note the
+  arm the review's own attack narrative depends on:** when the trigger is *already* this workflow's,
+  `claim()` returns `'held'` **before any `UPDATE` at all**. So even a hypothetical "stamp at
+  `claim()`" repair would not fire on the re-register path unless it also stamped the `held` arm.
+- `mcp-facade.ts:349` `workflowRegister(a, principal)` and `:492` `workflowPublish(a, principal)`
+  take **no deps argument**; `call-tool.ts:212/214` dispatch them with `(a, principal)` only.
+  `deps.isRemoteSubmission` **does not reach either**. Any attachment-time stamping is therefore a
+  *new* forward through the facade — i.e. a sixth hop, governed by INV-V37-5, on the same iteration
+  that just failed to lock five.
+- The script that actually runs is selected by `catalog.resolve(workflow, {channel:'release'})` at
+  both trigger dispatch sites. **The attachment event that matters is therefore `workflow_publish`
+  moving the release pointer, not `claim()`** — `claim()` binds an id, `publish` decides which bytes
+  that id will execute. The review names `claim()`; the real laundering point is one call later.
+
+### 1.2 The arithmetic the owner's 2026-09-23 ruling was not given
+
+ADR-086's ruling weighed *«方案 B 會讓這台主機上每一個現有工作流程都停跑»* against *«殘留風險需要
+操作者自己動手»*. Both sides of that trade are wrong as stated:
+
+- **The residual does not require operator action.** B2's path is a cron tick. Correct.
+- **But the prior, larger fact:** `webhooks.createdRemote` / `schedules.createdRemote` are columns
+  **this iteration adds**, and every row created before that migration runs reads `DEFAULT 0` by
+  the same ADR's own decision. I have not queried the deployed host (and should not), so I state
+  the bound rather than the number: **every trigger that predates the v37 upgrade — which, on a
+  host still printing the 2026-09-20 `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` lines, is all of them —
+  reads as local, so ARCH-182's refusal arm is unreachable for it.** Not "weakened", not "has a residual":
+  **coverage zero**, until each trigger is deleted and recreated by a remote caller. No attack is
+  needed to reach this state; it is the upgrade's resting state.
+
+So the choice the owner actually faced was not «blackout vs. a narrow residual». It was
+**«a visible, immediate blackout (B)» vs. «a control that silently refuses nothing on this host (C
+as shipped)»**. That is a materially different trade and it must be re-put.
+
+### 1.3 The options, with costs I will defend
+
+| | Option | What it costs | What it buys |
+|---|---|---|---|
+| **(i)** | Keep C, **correct the text** — ARCH-182 stops claiming provenance tracks attachment; ADR-086 records coverage-zero-on-legacy explicitly; B3's sweep becomes the compensating control | operator must sweep + recreate triggers to get *any* coverage; the re-register path stays open forever | honesty; no blackout; no code change |
+| **(ii)** | Adopt B **in addition** (`workflow_versions.origin`, OR-ed with the trigger fact — my own r2 §1 design, purely additive, no re-keying) | every production workflow stops until locally re-registered — loud, at upgrade, once | the only option that closes B2's path and the legacy cohort together |
+| **(iii)** | **Fix the host**: make the nested-userns probe pass (this is what spike S1 blocked on), so posture is `confined` | a host-level fix, possibly a kernel/AppArmor change; unknown effort | the entire question dissolves — provenance stops being load-bearing at all |
+| **(iv)** | **Fail-closed at the agent altitude**: when posture is `unconfined`, remove `Bash` from the agent tool surface (the SDK's own `disallowedTools`) instead of gating who may fire | every Bash-using workflow fails — but with a code and a reason, not silently | cannot be re-armed by any register/publish/claim path; needs no column, no migration, no ruling about remoteness |
+
+**My ranking: (iii) > (iv) > (ii) > (i).** The reasoning, in one line each. (iii) is the only option
+that restores the control REQ-218 actually asks for — everything else is a proxy for a sandbox that
+is not running. (iv) is the honest degradation: it makes the *engine's own claim* true on every host
+in every posture, and it is the same discipline REQ-218's acceptance criteria already blesses for
+paths («顯式申報契約 —— 讓共用快取變成申報而非默許»), applied one level up to the tool itself.
+(ii) is correct-but-expensive and the expense lands all at once on a live host. (i) is defensible
+**only** if the text stops asserting a coverage the code does not have — as shipped, ARCH-182 reads
+like a control and behaves like a label.
+
+**What I explicitly do NOT propose, and why (Karpathy tie-break, stated so the next round does not
+re-invent it):** a "locally bless this workflow version" allowlist (`{workflow, scriptSha256}` in
+`rwe.config.json`) is the obvious way to buy (ii)'s security without (ii)'s blackout. I drafted it
+and I am declining it. It is a new configuration surface, a new boot validator, a new re-pin ritual
+on every release, and a new way to be wrong (name-keyed entries would launder the next version, so
+it must be hash-keyed, so it must be re-pinned, so it will be pinned once and forgotten). That is
+three mechanisms bought to avoid one owner decision. **The deliverable of this round is a corrected
+`owner_decision`, not a mechanism that lets us avoid taking one.**
+
+**Half-measure, named and declined:** stamping provenance on `claim()`'s `'claimed'` arm only
+(adopting a previously-unclaimed trigger). It closes the narrowest sub-path, leaves the `'held'`
+re-register path — the actual one — open, and makes the column's meaning *even harder* to state.
+Worse than either endpoint.
+
+### 1.4 What architecture can do this round without the owner
+
+Regardless of which option wins: **amend ARCH-182's justifying sentence and ADR-086's consequence
+paragraph so the ledger states what the code computes** — provenance of *row creation*, never of
+attachment, never of authorship — and record the coverage-zero-on-legacy fact as a first-class
+consequence rather than a `DEFAULT 0` footnote. A wrong premise in an ADR is worse than a known gap,
+because the next iteration reasons from it.
+
+---
+
+## 2. B4 + B7 — one classifier, one vocabulary word, three sites
+
+### 2.1 The defect is a missing classification, not a missing `code` field
+
+`webhook-registry.ts:316-323` maps **every** `start()` throw to `403 + flattened message`. Three
+distinct failures follow, and they are all the same root:
+
+- **Retryable answered as permanent.** `RUN_ADMISSION_LIMIT` (`run-manager.ts:495`) is explicitly
+  retryable; it now returns 403 Forbidden to a webhook sender, which will not retry. This inverts
+  the *exact* reasoning ARCH-182 used to hoist `admissionRefusal()` above the limit check. The
+  architecture got the ordering right at the choke point and then threw the distinction away at the
+  first consumer.
+- **Uncoded wire error.** `DeliverResult`'s 409 arm carries `code`; the 403 arm does not. C-1 was
+  closed at `tools/call` and reopened at the ingress ARCH-182 exists to cover.
+- **Message pass-through is an information-disclosure decision nobody took.** `toErrEnvelope(err)
+  .message` goes straight to the wire. Today that string is
+  «…the boot-time sandbox probe found no working nested user namespace…» — i.e. an HMAC-authenticated
+  peer who knows one webhook secret learns the host's sandbox posture; `RUN_ADMISSION_LIMIT`'s
+  message ships `maxConcurrentRuns=N`. Neither is catastrophic; both are *unaudited*. **Rule: a wire
+  boundary emits `code` + static catalog text. `err.message` is for logs.**
+
+### 2.2 The fix, and why B7 rides it for free
+
+One shared, pure classifier next to `admissionRefusal()` — same file, same test shape, no new module:
+
+```
+classifyStartRefusal(err) -> { code: ErrorCode; retryable: boolean; httpStatus: 403 | 409 | 503 | 500 }
+```
+
+- `CONFINEMENT_UNAVAILABLE` → permanent, 403, `code` on the envelope, static text.
+- `RUN_ADMISSION_LIMIT` → retryable, **503** (the sender should retry; 403 tells it never to).
+- anything else → 500 + static text, `err` to the log only.
+
+Then **add `'CONFINEMENT_UNAVAILABLE'` to `RefusalReason`** (`types.ts:427`, currently four members,
+already a deliberately *shared* vocabulary between the scheduler and the webhook registry). That one
+word does three jobs at once:
+
+1. `WebhookRegistry._recordRefusal(id, 'CONFINEMENT_UNAVAILABLE')` becomes legal — the refusal lands
+   in `refusalCount` / `lastRefusedAt` / `lastRefusalReason` like the other four, so a refused
+   delivery leaves a durable forensic trace instead of nothing.
+2. The ticker can route a **permanent** refusal to `scheduler.markRefused(firing, reason)`
+   (`scheduler.ts:501`, which already takes exactly a `RefusalReason` and is already the path
+   `resolveScheduleTarget`'s pre-dispatch refusals use) instead of `markFailed`. **That is B7**: the
+   re-fire-every-period-forever loop with an un-incremented `refusalCount` and a `console.error`
+   per period exists solely because a permanent refusal is currently routed through the
+   *dispatch-failure* writer. It is one branch on `classifyStartRefusal(err).retryable`.
+3. Failure accounting becomes *consistent across all four admission routes*, which is the only
+   scalability-lens claim I will make about this system (see §5).
+
+**I ask for B7 to be pulled into this round.** The review filed it as a v38 candidate because
+ARCH-182's contract table literally prescribes `markFailed` — correct, and that is precisely why it
+belongs here: the architecture row is wrong, this is the architecture gate, and the repair is one
+branch inside a change we are already making. Deferring it means shipping a known
+refuse-and-retry-hourly-forever loop on the one host we know is `unconfined`.
+
+---
+
+## 3. B1 — fewer hops beats more hop-locks
+
+### 3.1 The census, re-run
+
+The review's grep census is exact; I re-ran all three and confirm it. What I want to add is *why*
+five forwards exist at all.
+
+`call-tool.ts:124` still runs the v37 door (`spec.name === 'run_start' || 'run_resume'` &&
+`deps.confinementPosture === 'unconfined'` && `deps.isRemoteSubmission === true`) **and**
+`call-tool.ts:223` passes `deps.isRemoteSubmission` into `facade.runStart(...)`, which stamps
+`RunSpec.origin`, which `RunManager.start()`'s `admissionRefusal()` then evaluates as its *first
+statement*. **These are two implementations of one predicate on one path.** They read the same two
+facts through two independent forwards (`server.ts:813` → `RunManager`, `server.ts:902` → `ToolDeps`)
+and they can drift without a type error.
+
+That is the actual architecture defect under B1. INV-V37-5 asks for a lock per hop; the cheaper move
+is to have fewer hops:
+
+- **NEW FINDING, and it inverts my own first draft of this section — `resume()` is not gated by
+  the predicate at all, so the door is NOT redundant; it is the only cover for one route.**
+  I nearly wrote "delete the `call-tool.ts:120-127` door, it is strictly redundant". Measured
+  before writing it: `grep -n "admissionRefusal\|async resume" src/run-manager.ts` →
+  `admissionRefusal` is called at **:473 only** (inside `start()`); `async resume(runId)` is at
+  **:848** and never calls it. The door covers `run_start` **and** `run_resume`; the predicate
+  covers `start()` only. So:
+  - **ARCH-182's own headline claim — «the ONE predicate every run admission passes» — is false as
+    written.** A resume is an admission of Bash-capable agent work onto an `unconfined` host, and
+    it passes a *different*, facade-local check. Today no route other than `tools/call` can reach
+    `resume()`, so there is no live hole — but the sentence in the ledger asserts a property the
+    code does not have, which is the same class as B2's premise and B5's comments, in the row that
+    exists to close them.
+  - This is also exactly the omission my own r2 §1(5) predicted («`resume(runId)` carries no
+    `RunSpec`, so `RunManager.resume()` grows a required `origin` argument») and which the repair
+    did not land.
+  - **Ruling: the predicate is extended to `resume()` FIRST (a required `origin` argument on
+    `RunManager.resume()`, stamped from the resume request's own peer exactly as `start` is), and
+    only then does the door become genuinely redundant and deletable.** Sequenced, not simultaneous
+    — see R3. One forward (`ToolDeps.confinementPosture`) disappears with the door, at the end of
+    that sequence, not at the start of it.
+  - *Cost, stated honestly:* the door is where REQ-218's real-tier evidence currently points
+    (VAL-253 / DES-262). Deleting it requires re-pointing that evidence at the predicate — which
+    VAL-256 already exercises through two of the four routes. **If this round keeps the door (my
+    recommendation: keep it, extend `resume()`, defer the deletion), then INV-V37-5 must state that
+    the two checks are one predicate over two route sets and may never diverge**, and one test must
+    assert both refuse the same input. Silent duplication is the unacceptable third outcome.
+- **Make the survivors required properties, not optional ones.** `buildToolDeps(webhookBaseUrl,
+  isRemoteSubmission = false)` (`server.ts:901`) is a **fail-open default on a security value** —
+  drop the argument and a remote caller is read as local, with a clean compile and a green suite.
+  That is the precise shape of the bug the review found, and the type system already pays for the
+  fix:
+  - `buildToolDeps(webhookBaseUrl: string, isRemoteSubmission: boolean)` — required. The one
+    internal caller (`buildInitializeInstructions`, `server.ts:909`) passes `false` explicitly,
+    which is also the only place that "this call is not a submission" is *true by construction*
+    rather than by default.
+  - `ToolDeps.confinementPosture` and `ToolDeps.isRemoteSubmission` become **required keys with
+    `| undefined` values** (required key, nullable value) instead of `?:`. "Never measured" stays a
+    representable state; *forgetting to say anything* stops being one. Same for
+    `RunManagerDeps.confinementPosture`.
+  - This is exactly the discipline ARCH-182 already argued for `RunSpec.origin` («required on
+    purpose: the compiler is what stops a fifth admission site being added without answering the
+    remoteness question»). v37 applied it to one field and to nothing else. **Generalise it: every
+    security-relevant value crossing a composition-root boundary is a required key. The compiler is
+    the hop-lock; tests are the backstop.**
+  - *Cost, measured:* 7 test files touch `confinementPosture`; the ToolDeps literals are already
+    mostly built through helpers. A one-time, compiler-guided edit. This repo's memory names this
+    bug class four times now (v11 `updateFlagPath`, v15 auth, v37 A5, v37 B1) and hand-written hop
+    tests have caught it once. A required key catches it every time, for free, forever.
+
+### 3.2 The one test that must exist regardless
+
+The deepest testability finding here is not "a case is missing"; it is that **the entire suite
+exercises `admissionRefusal()` only at values where it is vacuous.** `val-253` boots a real
+`createServer` with `confinementPosture:'confined'` — the one value the predicate never gates on — so
+it stays green with both forwards deleted. Fix the *shape*, not the count:
+
+- one integration case that boots `createServer({confinementPosture:'unconfined'})` and asserts an
+  `origin:'remote'` submission is refused with `CONFINEMENT_UNAVAILABLE`, and a local one is
+  admitted — i.e. a **non-vacuous** boot;
+- the posture-carrying boot tests parameterised over both postures (`describe.each`), so no future
+  suite can again cover only the non-gating value;
+- the two `createdRemote` stamp cases the review names, through `callTool(...)`, reading the row
+  back through the store (the webhook half needs B3's field, §4).
+
+And **INV-V37-5 must name its consumers explicitly** — `RunManager`, `ToolDeps`, both
+`buildToolDeps` call sites, both `createdRemote` stamps — or it is an invariant nobody can check.
+An invariant that does not enumerate its surface cannot be audited, which is how IMPL-381 came to
+claim the class was closed with three of five forwards unlocked.
+
+---
+
+## 4. B3 — a decision input that cannot be read back is not auditable
+
+`ScheduleStatus` projects `createdRemote` (`scheduler.ts:151`); `WebhookView`
+(`webhook-registry.ts:50-64`) and `list()` (`:192-202`) do not. Same fact, same decision, same
+iteration, one surface. **Mirror the field.** One line, no new concept, and it:
+
+- makes ADR-086's promised operator sweep performable for webhooks at all (today it is not);
+- unblocks B1's webhook stamp assertion without reaching into SQLite;
+- restores the symmetry the two trigger stores otherwise maintain deliberately (`RefusalReason`,
+  `refusalCount`, `markRefused`/`_recordRefusal` are all already shared vocabulary).
+
+**Position, taken in advance, on the tri-state I expect to resurface:** quality-dimensions r2 §3
+previously proposed `NULL` = unreviewed legacy plus an `originConfirmed` surface, and ARCH-182
+declined it on the Karpathy tie-break. **I supported that decline and I still do — with one
+qualification I did not make then.** The decline is only defensible if §1's coverage-zero fact is
+written down somewhere an operator will read. A tri-state is a schema-level way of saying "we never
+looked at these rows"; if we decline the schema, the sentence must exist in `DEPLOY.md` instead.
+Declining *both* is how a known-empty control ships looking full.
+
+---
+
+## 5. Scalability / performance lens — the honest version
+
+I will not manufacture a horizontal-scaling story. This is a single-process Node engine on SQLite;
+there is no clustering requirement in `01-requirements.md` and inventing one would violate the
+tie-break. Three real statements, and no more:
+
+- **Admission-path cost is nil.** `admissionRefusal()` is two scalar comparisons on a path that
+  already does `INSERT INTO runs`. Hoisting it above `RUN_ADMISSION_LIMIT` is correct and *saves*
+  work — a permanently-refusable submission no longer consumes a slot.
+- **Failure counting is the only consistency question in scope, and it is currently inconsistent
+  across routes, not across processes.** Within one process, `UPDATE … refusalCount = refusalCount
+  + 1` in a single `better-sqlite3` statement is atomic; there is no race to design against. The
+  defect is that *two of four routes count refusals and two do not* (§2): the webhook confinement
+  refusal records nothing, and the ticker's permanent refusal is recorded as a dispatch *failure*.
+  Consistency here means one vocabulary, one writer per outcome class — which is exactly what the
+  `RefusalReason` addition buys.
+- **The one unbounded behaviour in the iteration is B7's loop**, and it is a *duration* problem, not
+  a load problem: a permanently-refused `cron` schedule re-refuses once per period forever, with a
+  `console.error` each time and no counter. On an hourly health-check schedule that is a log line an
+  hour, indefinitely, with the durable signal of the refusal absent. Naming it as "performance" would
+  be overstating it; naming it as unbounded-by-construction is exact.
+
+---
+
+## 6. QD-MED, B5, B6 — text, and the one rule behind them
+
+- **QD-MED** (`authoring-guide.ts:363-369`): `errors.ts:91` points `CONFINEMENT_UNAVAILABLE` at
+  `workflow_authoring_guide`, and the guide paragraph still names only `run_start`/`run_resume`. The
+  remote author debugging a refused webhook is sent, by the engine's own pointer, to a paragraph
+  that does not describe their case. Architectural form of the fix: the **admission-route list is
+  data in `errors.ts` and the guide renders it**, so the code that adds a fifth route updates the
+  prose it is obliged to update. If that is judged too much for a send-back round, the minimum is
+  the text edit plus an ARCH note that the duplication exists.
+- **B5**: `main.ts:182-183` claims a `'confined'` gateway default that
+  `claude-agent-sdk-client.ts:748` contradicts (it fails open to `'unconfined'`, deliberately, per
+  ARCH-176's Gate-6 amendment) — plus round 1's two unrepaired A7 sites. **The rule, and it is
+  REQ-218's own rule:** a comment asserting a fact about code either cites the line that makes it
+  true or is deleted. REQ-218 exists because «Bash here is confined to that workspace» and «Bash is
+  still best-effort» sat in one file and readers believed the first. This repair wrote a third
+  instance of that pattern while closing the requirement about it; that is the finding, and it is
+  worth one invariant line rather than three silent edits.
+- **B6**: ARCH-177 says `workRootDefault: string`, the shipped type is `workRootDefault?: string`.
+  Amend the ledger to the shipped type — IMPL-380's engineering call was right (≈80 call sites).
+  **But note the tension with §3.1 and resolve it out loud rather than by accident:** I am arguing
+  *required keys* for security-relevant forwards and *accepting an optional one* here. The line is
+  not arbitrary — `workRootDefault` is a fallback whose absent case is well-defined and harmless;
+  `isRemoteSubmission`'s absent case silently reads a remote caller as local. **Optionality is
+  acceptable exactly when the default is safe; it is never acceptable when the default is the
+  permissive answer.** That sentence belongs in INV-V37-5.
+
+---
+
+## Risks
+
+- **R1 — The corrected premise may not change the owner's answer, and the round must not stall on
+  it.** Every repair in §2–§6 is independent of B2's outcome. Sequence them first; carry B2 as an
+  open `owner_decision` with the corrected numbers. What is *not* acceptable is shipping ARCH-182's
+  current justifying sentence unchanged while knowing it is false.
+- **R2 — Option (ii)'s blackout is real and lands on a live host.** If the owner picks it, it needs
+  a stated operator procedure (re-register locally, or delete+recreate triggers) in `DEPLOY.md`
+  *before* the upgrade, not after. My own r2 argued for (ii) and the owner overrode it with a
+  concrete cost; I am not re-arguing it, I am re-costing the alternative.
+- **R3 — the door must not be deleted before `resume()` is covered, and deleting it moves
+  REQ-218's real-tier evidence.** Two distinct hazards, one sequence. (a) `resume()` is currently
+  ungated by the predicate (§3.1), so a deletion done first opens a real hole on an `unconfined`
+  host. (b) VAL-253 proves the door; VAL-256 proves the predicate on two of four routes — deleting
+  the door forces validation to re-point, i.e. a send-back into a gate that has already run.
+  **Mitigation and recommended sequence: this round, keep the door, extend the predicate to
+  `resume()`, add the never-diverge invariant and one shared test; v38, delete the door and re-point
+  the evidence.** I state the simplification ruling and its safe sequencing separately so the round
+  can take one without the other — and I would rather be overruled on the deletion than have it
+  taken out of order.
+- **R4 — Required-key changes touch tests broadly.** Compiler-guided, mechanical, one-time, and the
+  failure mode is a red build, never a silent hole. Small risk, correctly shaped.
+- **R5 — Adding `'CONFINEMENT_UNAVAILABLE'` to `RefusalReason` widens a persisted vocabulary.**
+  Both stores write it into `lastRefusalReason`; any reader that switches exhaustively on the four
+  members (dashboard, `schedule_list`, `webhook_list`) must handle the fifth. This is a real, small
+  ripple and it should be grep-verified in the same change, not discovered at Gate 7.5.
+- **R6 — Option (iv) is the one I rank second and have the least evidence for.** Whether the SDK's
+  `disallowedTools` reliably removes `Bash` from an already-`allowedTools`-shadowed session is
+  precisely the mechanism that already surprised this iteration once
+  (`CLAUDE_SDK_CAN_USE_TOOL_SHADOWED`, 70 occurrences). **It must be spiked before it is ruled, not
+  ruled and then spiked.** I raise it as an option with that condition attached, not as a
+  recommendation to implement blind.
+
+---
+
+## Internal conflicts between my own three lenses (surfaced deliberately)
+
+- **Security vs. operability (the round's central conflict).** Security says attachment/authorship is
+  the event that matters, so option (ii); operability says (ii) stops every workflow on the one
+  production host. I do **not** resolve this with a new mechanism (§1.3's declined allowlist) —
+  that is where a simplicity-first discipline and a security-first instinct genuinely collide, and
+  simplicity wins because the mechanism buys security for the *config-writing operator*, who is
+  already the trusted party, at the price of three moving parts and a ritual. The resolution is a
+  decision, not a design.
+- **Security vs. testability, resolved in testability's favour — and it changes the security
+  answer.** My instinct on B1 was "add the missing assertions". The stronger move is structural:
+  delete a door and make two keys required, so the assertion becomes unnecessary. This is the one
+  place where the testability lens produced the *better security* outcome, because a compile error
+  is a stronger guarantee than a test somebody must remember to write.
+- **Scalability vs. security on B7's routing — I checked this instead of asserting it, and the
+  conflict dissolved.** My draft claimed `markRefused` and `markFailed` advance differently, and
+  that routing a permanent refusal to `markRefused` might turn an hourly loop into a 500ms hot
+  loop. **Read both (`scheduler.ts:501-522` and `markFailed`), and neither advances anything**:
+  since v29/REQ-152 the advance belongs to `claimFiring()` (`:465-472`, which recomputes `nextFire`
+  before dispatch), and both writers are pure recorders — `once` is disabled identically by both,
+  `cron` is left to the claim. The *only* difference is which trio is written: `lastError`
+  («dispatch failed») versus `refusalCount`/`lastRefusedAt`/`lastRefusalReason` («policy refused»).
+  That is precisely the distinction B7 is about, so the routing change is semantically right and
+  carries **no** scheduling-behaviour risk. The residual work B7 still needs is a decision about
+  whether a repeatedly-refused `cron` should eventually be auto-disabled — which I do **not**
+  propose (speculative; the refusal counter now makes it visible, and visibility is what was
+  missing).
+- **Simplicity vs. observability on the tri-state (§4).** I decline the schema and then demand the
+  sentence. That is not free — prose rots and a column does not. I take it anyway, because a
+  one-time upgrade cohort does not justify a three-valued column plus two tool surfaces, and I flag
+  that this is the decline's actual cost so the next reviewer can hold me to it.
+
+---
+
+## Expected disagreements with the other lens group (quality-dimensions)
+
+1. **They will want the tri-state / `originConfirmed` surface back for B3.** Expected, and I
+   half-concede in advance (§4): mirror `createdRemote` on `WebhookView`, no tri-state, but the
+   coverage-zero sentence must land in `DEPLOY.md` or I withdraw the decline.
+2. **They will treat B1 as an observability finding** («an invariant reported closed with two of
+   three consumers unlocked») and ask for more *checks*: a standing wiring test, perhaps an
+   automated importer/forward scanner. I argue for *fewer things to check* — the predicate extended
+   to `resume()`, the forwards made required keys, the duplicate door collapsed once it is safe to —
+   plus exactly one non-vacuous boot test. Expect a genuine disagreement about
+   whether the compiler counts as observability. My position: a type error is the most observable
+   possible failure, because it fires before the code exists.
+3. **They will likely defend keeping B7 out of scope** on send-back discipline. I argue it is the
+   same branch as B4 and costs one word in a type union; deferring it ships a known unbounded loop.
+4. **They may prefer a generated/derived explanation surface for QD-MED** (their own finding) and I
+   agree in principle, but I will resist if it grows into a doc-generation mechanism; data in
+   `errors.ts` rendered by the existing guide is the ceiling.
+5. **Option (iv) will meet a consumability objection** — «removing `Bash` breaks every existing
+   workflow». My answer: it breaks them *loudly, with a code and a reason*, which is strictly better
+   than the current state where the protection is absent and the comment says it is present. But see
+   R6: it needs a spike before anyone rules on it.
+6. **Replaceability, where I expect to be the more aggressive lens:** A6/A8 (`DENY_READ_MODE`'s
+   `'workroot'` arm, `MASK_PROVIDER_ENV`'s `envVars` arm) are compiled-in and unreachable by any
+   shipped config — the same shape REQ-219 just deleted two modules for. They are carried as
+   accepted LOW debt. I accept the carry *this round* (they are bridges with a named flip condition,
+   documented in `bash-confinement.ts`'s own header), but I want the flip condition written as an
+   event-shaped revisit trigger on the ARCH row, not as a comment — otherwise v38 inherits exactly
+   the REQ-219 situation with a nicer explanation.
+
+---
+
+## What I would put in the ledger (skeleton, for whoever synthesises)
+
+- **ADR-086 amendment (not a new ADR — the same decision, corrected premise):** state that
+  `createdRemote` records *row creation*, not attachment nor authorship; record coverage-zero on the
+  pre-v37 cohort as a consequence; re-open the `owner_decision` with §1.3's four options and their
+  costs; keep the answered 2026-09-23 ruling in place as history, clearly marked as given against
+  the superseded premise.
+- **ARCH-182 amendment:** justifying sentence corrected (creation, not attachment); **the «ONE
+  predicate every run admission passes» claim either becomes true by extending it to
+  `RunManager.resume()` with a required `origin`, or is reworded to name the route it does not
+  cover** — it may not stand as written; contract table's `markFailed` cell replaced by the
+  retryable/permanent branch; the four-route refusal contract (`code` + static text + durable
+  record) stated once, here, rather than four times in four consumers.
+- **New ARCH row (small):** `classifyStartRefusal()` — one pure function beside `admissionRefusal()`,
+  the single mapper from a `start()` throw to `{code, retryable, httpStatus}`, consumed by all four
+  admission sites. Named so a fifth site cannot invent a fifth mapping.
+- **INV-V37-5 amendment:** enumerate the consumers; add «optionality is acceptable exactly when the
+  default is the *safe* answer, never when it is the permissive one»; add the two-doors-never-diverge
+  clause if the `call-tool` door is kept.
+- **Tech-debt row with an event-shaped trigger:** collapse the duplicate door (v38, trigger = the
+  first re-point of REQ-218's real-tier evidence); A6/A8's flip condition (trigger = a positive
+  spike S7/S8 or the first `confined` host).
+
+*Adversarial architecture group — v37 Gate 8 round-2 send-back, debate round 1, 2026-09-23.*

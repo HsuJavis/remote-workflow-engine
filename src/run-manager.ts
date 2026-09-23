@@ -13,6 +13,7 @@ import { casNamespaceFor } from './cas-store.js';
 import { initGitBaseline } from './workspace-git.js';
 import { listArtifacts, type ArtifactEntry } from './workspace-artifacts.js';
 import { IllegalTransitionError, codedError, toErrorCode, toErr, captureFailure } from './errors.js';
+import type { ErrorCode } from './errors.js';
 import { isEgressAllowed, normalizeSeedRefAllowlist } from './seedref-egress.js';
 import type { SeedRefFetcher } from './seedref-fetcher.js';
 import { HardenedSeedRefFetcher } from './seedref-fetcher.js';
@@ -157,18 +158,38 @@ function paramCodedError(err: ParamErr): Error {
   return Object.assign(codedError(err.code, err.message), { detail: err.detail });
 }
 
-/** v37 (ARCH-182, DES-263, TASK-258, REQ-218, ADR-086): the ONE predicate every run admission
- *  passes, at `RunManager.start()` — pure (no fs, no db, no clock). `undefined` posture means
- *  「never measured」 ⇒ do not gate, the same fail-open-for-the-existing-suite convention `ToolDeps`
+/** v37 (ARCH-182, DES-263, TASK-258, REQ-218, ADR-086): the admission predicate at
+ *  `RunManager.start()` — pure (no fs, no db, no clock). `undefined` posture means 「never
+ *  measured」 ⇒ do not gate, the same fail-open-for-the-existing-suite convention `ToolDeps`
  *  already uses for this field. Keyed on the TRIGGER's own stored provenance (`origin`), never a
  *  live delivery peer and never the workflow version's registering author — ADR-086's owner ruling
- *  (answered 2026-09-23) refuses only a REMOTELY-CREATED trigger's run, not a locally-started run of
- *  a remotely-registered script. */
+ *  (answered 2026-09-23, premise corrected at the Gate-8 round-2 send-back) refuses only a
+ *  REMOTELY-CREATED trigger's run, not a locally-started run of a remotely-registered script.
+ *  v37 Gate-8 round-2 (finding B2/INV-V37-5(c)): this predicate covers `start()` only — `resume()`
+ *  never calls it, so `call-tool.ts`'s door is the SOLE cover for `run_resume`, not a redundant
+ *  twin of this function. */
 export function admissionRefusal(input: {
   posture: 'confined' | 'unconfined' | undefined;
   origin: 'local' | 'remote';
 }): 'CONFINEMENT_UNAVAILABLE' | null {
   return input.posture === 'unconfined' && input.origin === 'remote' ? 'CONFINEMENT_UNAVAILABLE' : null;
+}
+
+/** v37 Gate-8 round-2 (finding B4, ARCH-182 (3)): classifies a `start()` throw into the outcome
+ *  its four callers (facade, webhook route, `Scheduler.trigger()`, the ticker driver) already need
+ *  to map identically, so none of them re-derives it separately. Pure — no fs, no db, no clock.
+ *  `CONFINEMENT_UNAVAILABLE` is PERMANENT (403, and the caller should leave a durable refusal
+ *  trace); `RUN_ADMISSION_LIMIT` is RETRYABLE (503, capacity — not policy — so no durable refusal
+ *  row); anything else is an ordinary internal failure (500), and only `err`'s CODE crosses this
+ *  boundary — the caller decides what (if any) STATIC catalog text a wire response gets, never
+ *  `err.message`, which can carry host-measured detail (e.g. `maxConcurrentRuns=N`) nobody decided
+ *  to disclose to an HMAC-authenticated peer. */
+export function admissionErrorToOutcome(err: unknown): { code: ErrorCode; retryable: boolean; httpStatus: 403 | 503 | 500 } {
+  const e = err as { code?: unknown } | null | undefined;
+  const code = toErrorCode(typeof e?.code === 'string' ? e.code : '');
+  if (code === 'CONFINEMENT_UNAVAILABLE') return { code, retryable: false, httpStatus: 403 };
+  if (code === 'RUN_ADMISSION_LIMIT') return { code, retryable: true, httpStatus: 503 };
+  return { code: 'INTERNAL_ERROR', retryable: false, httpStatus: 500 };
 }
 
 

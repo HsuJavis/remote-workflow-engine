@@ -237,7 +237,7 @@ in the same re-run — no regression on REQ-138's counts card).
 | REQ-215 | 結構化失敗標記要能穿過 sandbox 抵達 run 層 (v36) | ARCH-165, ARCH-166, ARCH-167, ARCH-168 | DES-248 | TASK-246 | IMPL-365 | IT-298, UT-292, UT-304, VAL-250 | ✅ |
 | REQ-216 | v35 審查歸檔的八條殘留(K1–K8)逐條結清 (v36) | ARCH-169, ARCH-170, ARCH-171, ARCH-172, ARCH-173 | DES-241, DES-247, DES-249 | TASK-239, TASK-245, TASK-247 | IMPL-360, IMPL-364, IMPL-366 | IT-297, UT-292, UT-293, UT-297, UT-298, UT-303, UT-305, VAL-251 | ✅ |
 | REQ-217 | 消除清單路徑的擴展懸崖,且不改變數字的語意 (v36 追加,業主裁決 K5) | ARCH-174 | DES-250, DES-251 | TASK-249 | IMPL-368, IMPL-369, IMPL-370 | IT-300, UT-307, UT-308, VAL-252 | ✅ |
-| REQ-218 | agent 的 Bash 必須受工作區約束,或其突破必須是申報過的 (v37) | ARCH-175, ARCH-176, ARCH-177, ARCH-178, ARCH-181, ARCH-182 | DES-252, DES-253, DES-254, DES-255, DES-256, DES-258, DES-259, DES-261, DES-262, DES-263 | TASK-250, TASK-251, TASK-252, TASK-253, TASK-256, TASK-258 | IMPL-375, IMPL-376, IMPL-384 | UT-309, UT-310, UT-311, UT-312, UT-313, UT-314, UT-315, UT-322, UT-329, UT-330, UT-331, IT-302, IT-303, VAL-253, VAL-256 | ✅ |
+| REQ-218 | agent 的 Bash 必須受工作區約束,或其突破必須是申報過的 (v37) | ARCH-175, ARCH-176, ARCH-177, ARCH-178, ARCH-181, ARCH-182 | DES-252, DES-253, DES-254, DES-255, DES-256, DES-258, DES-259, DES-261, DES-262, DES-263 | TASK-250, TASK-251, TASK-252, TASK-253, TASK-256, TASK-258 | IMPL-375, IMPL-376, IMPL-384, IMPL-385 | UT-309, UT-310, UT-311, UT-312, UT-313, UT-314, UT-315, UT-322, UT-329, UT-330, UT-331, UT-332, UT-333, UT-334, IT-302, IT-303, IT-304, VAL-253, VAL-256, VAL-257 | ✅ |
 | REQ-219 | 有綠測試、production 零使用的安全模組,要嘛接線要嘛刪除 (v37) | ARCH-179, ARCH-180 | DES-257, DES-260 | TASK-253, TASK-254, TASK-255 | — | UT-316, UT-317, UT-318, UT-319, UT-320, UT-321, VAL-254, IT-301 | ✅ |
 
 ## v36 Gate 7.5 update (2026-09-22, validator)
@@ -456,6 +456,18 @@ is the same class of false green `INV-V37-3` was written to forbid.
 - **Remote-registered, locally-started workflows** — ARCH-182's predicate keys on the *trigger's*
   provenance, so a script registered by a remote party and then started by the operator locally is
   still admitted. That is ADR-086's named residual and carries its `owner_decision`.
+- **[ADDED 2026-09-23, Gate 8 round-2 repair — finding B2] Remote RE-ATTACHMENT, and the pre-v37
+  cohort** — `createdRemote` is stamped once, at trigger-ROW CREATION, and no later event re-stamps
+  it (`claim()`'s `'held'` arm returns before any `UPDATE`; `workflowRegister()`/`workflowPublish()`
+  never receive `isRemoteSubmission`). So (a) every trigger row predating the v37 upgrade reads
+  `local` by `DEFAULT 0` — on a host whose workflows were all registered remotely, this predicate's
+  refusal arm covers **nothing** until each trigger is deleted and recreated by a remote caller; and
+  (b) a remote `workflow_register` + `workflow_publish` onto a workflow name that already owns a
+  trigger is executed by the next cron tick or webhook delivery with **no operator action at all** —
+  which the residual bullet above (「操作者自己動手」) does not cover. Both are recorded on ARCH-182's
+  Gate-8 round-2 amendment and re-opened as ADR-086's `owner_decision: pending`. The row's ✅ is not
+  re-scored: it records the real-tier evidence that the shipped routes behave as specified, which is
+  still true — what changed is the ledger's statement of what that specification covers.
 
 ## v37 Gate 7.5 follow-up (2026-09-23, validator) — REQ-218 row cites ARCH-182's two admission routes for real
 
@@ -482,3 +494,21 @@ NOT the test, per DES-262's own rule) → `403 CONFINEMENT_UNAVAILABLE`; the sam
 **Still owed by validation before this row's ✅ is re-earned for the A1 fix**: a real-tier run through
 the **webhook** ingress and one through the **scheduler** ingress. `VAL-253`'s existing evidence covers
 the `tools/call` ingress only.
+
+## v37 Gate 8 round-2 SEND-BACK REPAIR — validation slice (2026-09-23, validator)
+
+**REQ-218 row updated, not re-scored** (same convention as the two prior repairs above): gained
+`IMPL-385`, `UT-332`, `UT-333`, `UT-334`, `IT-304`, `VAL-257` — the finding B1/B3/B4 regression
+locks and the new real-tier item that re-proves B4's fixed webhook 403 wire shape (static hint +
+`code`, `_recordRefusal` durable trace) on a genuinely `unconfined` real boot. Verified 8/8 columns
+before and after the edit. `VAL-256` stays in the row (still valid evidence for the
+admission-tracks-creation-not-delivery-peer claim; B4 did not change that mechanism, only the
+wire body on refusal — see `08-validation.md` VAL-257's own note on what it closes vs. what
+VAL-256 still proves).
+
+REQ-018/REQ-037/REQ-117/REQ-219 rows: not edited (REQ-117's underlying mechanism — the generated
+guide/authoring doc — was re-verified live over real MCP this round per `08-validation.md`'s VAL-257
+entry, but the row's existing IMPL/VERIFICATION columns already trace the guide-generation
+machinery and are not stale; no new ID was created for a content-only prose correction inside an
+already-covered mechanism, consistent with this round's delta-iteration scope naming REQ-117 as
+"content it touches", not "row it edits").
