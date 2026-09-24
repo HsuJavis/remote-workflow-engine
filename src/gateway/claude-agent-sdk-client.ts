@@ -241,9 +241,16 @@ export async function materializeAssets(
  *  confines Bash now: the OS-level sandbox (`Options.sandbox`, kernel-enforced, ADR-082), attempted
  *  on every call when this engine's boot-time posture probe found a working nested user namespace
  *  (`agent.confinement`'s `posture:'confined'`), and — on a host where it did not — NOT attempted at
- *  all: a locally-submitted run's Bash is genuinely unconfined (ADR-083 owner_decision posture C,
- *  the accepted cost), and only a REMOTE submission is refused outright, before this code ever runs
- *  (`call-tool.ts`'s door). Web egress (WebFetch/WebSearch) and sub-agent spawning (Task/Agent) stay
+ *  all: such a run's Bash is genuinely unconfined (ADR-083 owner_decision posture C, the accepted
+ *  cost — narrowed by v37 P1, see below). **[更正 2026-09-25, Gate 8 round-5 finding R5-F3]**
+ *  ~~and only a REMOTE submission is refused outright~~ — that has not been true since ADR-086's
+ *  third owner ruling: on an unconfined host a run is refused when it is a remote submission
+ *  (`call-tool.ts`'s door), OR its trigger was created remotely, OR the version it resolves to was
+ *  registered remotely — the last of which refuses a LOCAL `run_start` too. So the accepted cost
+ *  now covers only a local submission OF A LOCALLY-REGISTERED version, and `call-tool.ts`'s door is
+ *  one of three controls, not the only one (`admissionRefusal()` in `run-manager.ts` is the others).
+ *  The stale version of this very docblock is what `src/main.ts` names as the reason this iteration
+ *  exists, so leaving it stale would be the same defect twice. Web egress (WebFetch/WebSearch) and sub-agent spawning (Task/Agent) stay
  *  OUT of the default (opt-in via an explicit per-call `allowedTools`) — they break workspace
  *  confinement / the engine's own orchestration+DOS model respectively, in EITHER posture. */
 const BUILT_IN_CORE_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'];
@@ -740,9 +747,13 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     // actually-confined arm — see `bash-confinement-wiring.test.ts`/`val-253`): the full posture is
     // built and handed to the kernel, `failIfUnavailable:true`. `'unconfined'`: `buildBashConfinement()`
     // is not even called — a host/caller with no evidence a sandbox works is not asked to try one, for
-    // ANY run (the owner's accepted cost: a locally-submitted run is still unconfined; REQ-218's
-    // remote-submission door, call-tool.ts, is the control that actually closes for this posture —
-    // this class has no notion of "remote").
+    // ANY run (the owner's accepted cost: such a run is still unconfined; this class has no notion
+    // of "remote" and deliberately never gains one).
+    // v37 P1 (R5-F3, 2026-09-25): call-tool.ts's remote-submission door is NOT "the control that
+    // actually closes for this posture" — it is ONE of three. The other two are admissionRefusal()'s
+    // call sites in run-manager.ts, keyed on the trigger's createdRemote and on the resolved
+    // version's registeredRemote; the latter refuses a LOCAL run_start of a remotely-registered
+    // version, which the door cannot see. Admission is the boundary; this class stays posture-blind.
     const confinementRoot = req.workspace ?? this._config.cwd;
     const sandbox: Options['sandbox'] =
       this._config.confinementPosture === 'confined'

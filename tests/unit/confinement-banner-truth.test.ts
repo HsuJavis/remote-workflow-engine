@@ -9,10 +9,14 @@
 // test read. A string no test reads cannot go red. That is the defect this file closes — not the
 // wording itself, which was a one-line fix, but the fact that nothing could have failed.
 //
-// The rule the banner must mirror is `admissionRefusal()`'s. These cases assert the two halves
-// TOGETHER: the predicate's actual behaviour, and the banner naming every source that behaviour
-// has. If a future change adds or removes a refusal source, the banner must move with it.
+// What this file IS, stated honestly (round 5 corrected an overstatement here): cases 1-2 are a
+// WORDING lock on the banner — they fail if the text drops a source or re-adds the false promise.
+// They do NOT detect a deleted refusal in the code, because `admissionRefusal()` is a pure function
+// of {posture, origin} and has no notion of the three sources. Case 4 covers that half by counting
+// the predicate's call sites. Together they force a change to the admission surface to come back
+// and re-read the banner; neither half alone would have.
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { confinementBannerLine } from '../../src/main.js';
 import { admissionRefusal } from '../../src/run-manager.js';
 
@@ -35,16 +39,27 @@ describe('UT-338 — the boot banner tells the truth about who gets refused', ()
     expect(line).toMatch(/local submission of a locally-registered version/);
   });
 
-  it('the banner is consistent with admissionRefusal() itself, not just internally plausible', () => {
-    // The predicate is the authority; the banner is its prose. Trigger-side source:
-    expect(admissionRefusal({ posture: 'unconfined', origin: 'remote' })).toBe('CONFINEMENT_UNAVAILABLE');
-    // A purely local run of a local version is the ONE admitted combination the banner promises.
-    expect(admissionRefusal({ posture: 'unconfined', origin: 'local' })).toBeNull();
-    // The version-side source reaches the same predicate via start()'s second call site, which
-    // passes the resolved version's provenance as `origin` — same function, same answer.
-    expect(admissionRefusal({ posture: 'unconfined', origin: 'remote' })).toBe('CONFINEMENT_UNAVAILABLE');
-    // Confined hosts refuse nothing on these grounds, and the banner for them says nothing about it.
+  it('the confined banner promises nothing about refusals', () => {
     expect(admissionRefusal({ posture: 'confined', origin: 'remote' })).toBeNull();
     expect(confinementBannerLine({ posture: 'confined' })).not.toMatch(/refused/);
+  });
+
+  it('[LOAD-BEARING] deleting an admission CALL SITE must not leave this banner silently over-promising', () => {
+    // v37 Gate 8 round-5 finding R5-F6. The first two cases above are a WORDING lock: they fail if
+    // someone edits the banner, and pass if someone deletes a refusal from the code. That is the
+    // weaker half, and round 5 was right to say so — `admissionRefusal()` is a pure function of
+    // {posture, origin} with no notion of the three sources, so asserting it cannot detect a
+    // deleted call site. The three sources are three CALL SITES, so the drift this case detects is
+    // a change in their number: delete the version-side check in `start()`, or `runNested()`'s, or
+    // `resume()`'s legacy-substitution one, and the count moves and this fails. It is a coarse lock
+    // and deliberately so — its job is to force whoever changes the admission surface to come back
+    // and re-read the banner, which is exactly what did not happen in round 4.
+    const src = readFileSync(new URL('../../src/run-manager.ts', import.meta.url), 'utf8');
+    const callSites = src.split('\n').filter((l) => /admissionRefusal\(\{/.test(l)).length;
+    expect(callSites).toBe(4); // start() trigger-origin, start() version-origin, runNested(), resume() legacy substitution
+    // …and the banner must still name one source per admission FACT (submission/trigger, version).
+    const line = confinementBannerLine({ posture: 'unconfined', reason: 'x' });
+    expect(line).toMatch(/remote submission/);
+    expect(line).toMatch(/registered remotely/);
   });
 });

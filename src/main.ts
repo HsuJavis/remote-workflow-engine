@@ -129,10 +129,15 @@ export const RETIRED_CONFIG_KEYS: Record<string, string> = {
  *  pinned by a test. It was inline `console.log` text before, and that is precisely why it went on
  *  promising "local (loopback) runs still proceed" for a full round after admission gained its
  *  second source: a string no test reads cannot go red. Gate 8 round 4 (finding F1) caught it in
- *  this iteration's OWN evidence log. The rule this line must mirror is `admissionRefusal()`'s: on
- *  an unconfined host a run is refused when it is a remote submission, OR its trigger was created
- *  remotely, OR the version it resolves to was registered remotely. Change the rule ⇒ change this
- *  line; `tests/unit/confinement-banner-truth.test.ts` fails if the two drift apart. */
+ *  this iteration's OWN evidence log. The rule this line must mirror: on an unconfined host a run is
+ *  refused when it is a remote submission, OR its trigger was created remotely, OR the version it
+ *  resolves to was registered remotely. Change the rule ⇒ change this line.
+ *  **[更正 2026-09-25, Gate 8 round-5 finding R5-F6]** ~~`confinement-banner-truth.test.ts` fails if
+ *  the two drift apart~~ overstated what one test can do. That file locks the WORDING (it fails if
+ *  this text drops a source or re-adds the false promise) and, separately, COUNTS
+ *  `admissionRefusal()`'s call sites in `run-manager.ts` so that deleting a refusal also fails it.
+ *  Neither half alone would have caught round 4's drift; the count is deliberately coarse, and its
+ *  job is to force whoever changes the admission surface back to this line. */
 export function confinementBannerLine(probe: { posture: 'confined' | 'unconfined'; reason?: string }): string {
   if (probe.posture === 'confined') {
     return '[remote-workflow-engine] Bash confinement: CONFINED (nested-userns probe passed at boot)';

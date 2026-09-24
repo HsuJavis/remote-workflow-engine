@@ -478,7 +478,11 @@ export interface RunSpec {
    *  admission sites from that site's own already-loaded TRIGGER provenance fact (never a live peer
    *  check). `RunSpec` also doubles as the persisted-spec read-back type (see below); the `runs`
    *  table never gained an `origin` column, so `getSpec()` synthesizes `'local'` on every read-back
-   *  — harmless because a resume is gated by `call-tool.ts`'s door, not this predicate.
+   *  — harmless because an ordinary resume is gated by `call-tool.ts`'s door, not this predicate.
+   *  **[更正 2026-09-25, R5-F1]** ~~not this predicate~~ is true of the PINNED resume path only: since v37 P1,
+   *  `resume()` DOES apply the predicate when the pin is gone and the current `release` is substituted for it
+   *  (a version the run never carried). That path keys on the SUBSTITUTED VERSION's `registeredRemote`, not on
+   *  this synthesized `'local'`, so the synthesis stays harmless either way.
    *  v37 P1 (ADR-086's third owner ruling, 2026-09-25, DES-263's 第三次修訂): this field carries
    *  ONLY the trigger-side half of admission. The other half — "who registered the script this run
    *  is about to execute" — lives on the resolved catalog row (`VersionEntry.registeredRemote`,

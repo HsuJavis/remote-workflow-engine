@@ -171,7 +171,14 @@ function paramCodedError(err: ParamErr): Error {
  *  EITHER call reports `'remote'` — the two facts are OR'd by calling this twice/three times and
  *  short-circuiting on the first non-null result, never by pre-combining them into one `origin`.
  *  v37 Gate-8 round-2 (finding B2/INV-V37-5(c)): this predicate covers `start()`/`runNested()`
- *  only — `resume()` never calls it, so `call-tool.ts`'s door is the SOLE cover for `run_resume`,
+ *  only — **[更正 2026-09-25, R5-F1: `resume()` DOES call it now, in exactly one place.]** ~~`resume()` never calls it, so
+ *  `call-tool.ts`'s door is the SOLE cover for `run_resume`~~ — `resume()` calls this predicate for the
+ *  LEGACY-SUBSTITUTION case only (a run whose pinned version is gone, so the CURRENT `release` is
+ *  substituted: a version the run never carried and no admission check ever saw). The PINNED path
+ *  is still ungated, and `call-tool.ts`'s door is still the cover for an ordinary `run_resume`, so
+ *  the two are complementary, not redundant. The refusal lives in `resume()` and NOT in the shared
+ *  `_requireLive()` helper, because `suspend()` and `stop()` call that too — refusing in there left
+ *  the run unable to reach a terminal state at all (R5-F1).
  *  not a redundant twin of this function. */
 export function admissionRefusal(input: {
   posture: 'confined' | 'unconfined' | undefined;
@@ -199,6 +206,14 @@ export function admissionErrorToOutcome(err: unknown): { code: ErrorCode; retrya
 
 
 interface RunEntry {
+  /** v37 P1 (Gate 8 round-5 finding R5-F1): set by `_requireLive()` when the run's pinned version
+   *  was gone and the CURRENT `release` had to be substituted for it — the pin, what replaced it,
+   *  and whether that replacement was registered remotely. `_requireLive()` records these FACTS and
+   *  refuses nothing: it is shared by `suspend()`, `resume()` AND `stop()`, so a refusal placed
+   *  inside it also blocks `stop()`, leaving the run permanently non-terminal and taking
+   *  `workspace_delete`/`workspace_purge` and the `interruptedRuns` badge with it. Only `resume()`
+   *  reads this and decides. `undefined` whenever no substitution happened. */
+  legacySubstitution?: { pinned: string; resolved: string; remote: boolean };
   script: string;
   args: unknown;
   /** Top-level workflow name (undefined for an ad-hoc script run) — seeds the nesting ancestor set
@@ -892,6 +907,23 @@ export class RunManager {
 
   async resume(runId: string): Promise<void> {
     const entry = await this._requireLive(runId);
+    // v37 P1 (Gate 8 round-5 finding R5-F1; ADR-086's third owner ruling, DES-263 第四次修訂):
+    // `resume()`'s ONE admission stage. `_requireLive()` only RECORDS that it had to substitute the
+    // current `release` for a pin that no longer exists, and whether that substituted version was
+    // registered remotely; the refusal belongs here because `_requireLive()` is shared with
+    // `suspend()` and `stop()`, and refusing in there leaves the run unable to reach a terminal
+    // state at all. The owner-accepted resume exclusion (INV-V37-5(c)) covers CONTINUING THE CODE
+    // THE RUN STARTED WITH — the pinned path, which stays ungated. A substitution is not that.
+    const sub = entry.legacySubstitution;
+    if (sub?.remote === true) {
+      const refusal = admissionRefusal({ posture: this._confinementPosture, origin: 'remote' });
+      if (refusal !== null) {
+        throw codedError(
+          refusal,
+          `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — this run's pinned version ${sub.pinned} no longer exists, and the '${entry.name ?? '?'}' version that would be substituted for it (${sub.resolved}) was registered remotely, so RESUMING it is refused (stopping it is NOT — this run can still be stopped and its workspace purged); re-register that workflow locally (workflow_register with the same triggers, then workflow_publish) to recover.`,
+        );
+      }
+    }
     // v8 Defer A (REQ-060): `interrupted` (crashed while running) is resumable, like suspended/stopped.
     if (entry.status !== 'suspended' && entry.status !== 'stopped' && entry.status !== 'interrupted') {
       throw new IllegalTransitionError(entry.status, 'running');
@@ -1175,6 +1207,9 @@ export class RunManager {
     // and returns undefined. (Pre-Defer-A, no test covered a named-workflow restart-resume.)
     let script = spec.script ?? '';
     let registeredContract: ParamContract | undefined;
+    // v37 P1 (R5-F1): facts about a legacy substitution, carried to `resume()` which owns the
+    // decision. `undefined` on every path that did not substitute.
+    let legacySubstitution: { pinned: string; resolved: string; remote: boolean } | undefined;
     if (spec.name && !spec.script) {
       // v22 (DES-113, ADR-010, TASK-108): resolve the PIN (view.scriptVersion), never the current
       // `release` — a suspended run continues the version it started with. Legacy-cohort fallback
@@ -1188,23 +1223,17 @@ export class RunManager {
       } catch (err) {
         if ((err as { code?: string } | undefined)?.code !== 'VERSION_NOT_FOUND') throw err;
         const registered = await this._catalog.resolve(spec.name, {});
-        // v37 P1 (Gate 8 round-4 finding F5, ADR-086's third owner ruling): the ONE admission stage
-        // `resume()` has, and it is deliberately confined to THIS branch. The owner-accepted resume
-        // exclusion (INV-V37-5(c), DES-263) protects *continuing the code the run started with* — a
-        // run suspended before the posture flipped, resumed locally by the operator. This fallback
-        // is not that: the pin is gone, so it resolves the CURRENT `release`, which may be a
-        // DIFFERENT and possibly remotely-registered version the run never carried and no admission
-        // check ever saw. Refusing here honours the exclusion exactly (the pinned path above stays
-        // ungated) while closing the substitution hole. The pin itself is still never rewritten.
-        {
-          const refusal = admissionRefusal({ posture: this._confinementPosture, origin: registered.registeredRemote ? 'remote' : 'local' });
-          if (refusal !== null) {
-            throw codedError(
-              refusal,
-              `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — this run's pinned version ${view.scriptVersion} no longer exists, and the '${spec.name}' version that would be substituted (${registered.version}) was registered remotely, so resuming it is refused; re-register that workflow locally (workflow_register with the same triggers, then workflow_publish) to recover.`,
-            );
-          }
-        }
+        // v37 P1 (Gate 8 round-5 finding R5-F1, correcting round 4's F5 repair): record the FACT,
+        // decide nothing. Round 4 put the admission refusal right here, believing this `catch` was
+        // a branch of `resume()`. It is not — it sits in `_requireLive()`, which `suspend()`,
+        // `resume()` AND `stop()` all call, so the refusal also blocked `stop()`: the run could
+        // never reach a terminal state, taking `workspace_delete`/`workspace_purge` and the
+        // `interruptedRuns` badge with it, and answering an operation the caller never asked for
+        // with 「so resuming it is refused」. The slicing criterion was right (the pinned path
+        // continues the code the run started with; this substitution resolves the CURRENT `release`,
+        // a version the run never carried and no admission check ever saw); the FUNCTION was wrong.
+        // The refusal now lives in `resume()` alone, keyed on this flag.
+        legacySubstitution = { pinned: view.scriptVersion, resolved: registered.version, remote: registered.registeredRemote };
         script = registered.script;
         registeredContract = registered.params as ParamContract | undefined;
         const sub = { pinned: view.scriptVersion, resolved: registered.version };
@@ -1287,6 +1316,7 @@ export class RunManager {
       args: spec.args ?? {},
       name: spec.name,
       status: view.status,
+      legacySubstitution,
       guard,
       budgetLimits,
       abortController: new AbortController(),

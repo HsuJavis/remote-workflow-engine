@@ -10228,8 +10228,25 @@ keep, not a coincidence to rely on.
     所以判定只加在**替換那一支**,釘住那一條維持不加。這樣既完全尊重業主核可的豁免(繼續同一份程式碼),
     又關掉「本機續跑一個舊的掛起 run,靜默執行遠端註冊腳本」這個洞。釘住的版本本身仍然永不被改寫。
     拒絕訊息同時指出兩件事:釘住的版本已不存在,以及會被替換進來的是哪一版 —— 只講一件操作者無法行動。
-    回歸鎖 IT-307,含反向對照(本機註冊的替換版本仍可續跑),並已驗證移除判定即轉紅
-    (`promise resolved "undefined" instead of rejecting`)。
+    **[更正 2026-09-25 同日,Gate 8 round-5 finding R5-F1 —— 切法對,放的函式錯。]** 上面寫「判定只加在
+    替換那一支」,實作時我把它放進了那個 `catch` 所在的函式 —— 而那個 `catch` 不在 `resume()` 裡,它在
+    **共用的 `_requireLive()`** 裡,`suspend()`、`resume()`、`stop()` 三個都呼叫它。後果:
+    ```
+    _requireLive()  ← suspend() / resume() / stop() 全都經過這裡
+       └ 把拒絕放這裡 ⇒ stop() 也被拒 ⇒ run 永遠無法進入終結狀態
+                       ⇒ withTerminalRun 連帶擋掉 workspace_delete / workspace_purge
+                       ⇒ interruptedRuns 徽章永遠清不掉
+                       ⇒ 而且對一個呼叫者根本沒要求的操作,回答「so resuming it is refused」
+    ```
+    這比原本那個洞更糟。**正確形狀:`_requireLive()` 只記錄事實,`resume()` 做決定。**
+    `RunEntry` 增加 `legacySubstitution?: { pinned, resolved, remote }`(三個事實,不是一個決定),
+    由 `_requireLive()` 在替換時填上;`resume()` 讀它並拒絕。`suspend()`/`stop()` 不讀,因此不受影響。
+    拒絕訊息同時指名釘住的版本、替換進來的版本,並明講**「停止不受影響」**,否則操作者會以為這個 run 卡死了。
+    **教訓**:判定要掛在**操作**上,不是掛在共用的重建輔助函式上 —— 後者的呼叫者集合不是我以為的那一個。
+    回歸鎖 IT-307 三個案例:替換版本為遠端 ⇒ 本機續跑被拒;**同一個 run 仍可 `stop()`**(這一條就是 R5-F1
+    的鎖);以及反向對照(本機註冊的替換版本仍可續跑)。紅燈皆已驗證 —— 移除判定則第一條轉紅
+    (`promise resolved "undefined" instead of rejecting`),還原成 round-4 的放法則 `stop()` 那條轉紅
+    (`promise rejected … instead of resolving`)。
 - **iter:** v37
 
 ### Class diagram — v37 (the four types this slice adds)

@@ -10558,7 +10558,7 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   (c) `runNested()`(`run-manager.ts:1484`)。**(c) 是這一輪記帳時才發現的第三道繞道門** ——
   執行中的腳本呼叫 `workflow()` 巢狀進子工作流**完全不經過 `start()`**,所以本機註冊的父流程可以巢狀
   進遠端註冊的子流程,整道判定繞過去;與 ARCH-182 當初修掉的 scheduler/webhook 同一類。
-  刻意**不加**在 `resume()`:理由同 INV-V37-5(c),`call-tool.ts` 的門是 `run_resume` 的唯一覆蓋。
+  ~~刻意**不加**在 `resume()`:理由同 INV-V37-5(c),`call-tool.ts` 的門是 `run_resume` 的唯一覆蓋。~~ **[更正 2026-09-25, Gate 8 round-5 finding R5-F1:`resume()` 現在確實會呼叫該述詞,但只在 **legacy 替換** 那一支 —— 釘住的版本已不存在、改解析當前 `release`(一份 run 從未帶過、也從未經任何判定的版本)。釘住版本那條仍不加,所以 `call-tool.ts` 的門對「一般的 `run_resume`」仍是覆蓋者,兩者互補而非重複。判定放在 `resume()` 內、**不在**共用的 `_requireLive()` 內 —— 放後者會連 `suspend()`/`stop()` 一起擋掉,run 永遠無法終結。]**
 
   **廣告介面連帶更正(這是本輪第二類改動,不是附帶)**:P1 讓 2026-09-23 那句
   「拒絕的是遠端建立的觸發器,**不是**本機發起、跑遠端註冊腳本的 run」變成**反過來才對**。
@@ -10612,4 +10612,46 @@ F13 本質上是渲染問題,單元層看不到 DOM。
 
   **F4(LOW)**:`05-tests.md` UT-336/UT-337 標題、IT-304 那條 2026-09-24 的修訂(它自己現在變成那句不成立的話)、
   以及 DES-263 標題,全部更正。
+
+### IMPL-389 — v37 Gate 8 round-5 SEND-BACK 修復(R5-F1..F8):把 round-4 放錯函式的判定搬到 `resume()`,並修掉我自己改壞的兩處帳
+- **status:** done
+- **traces:** DES-263, ADR-086, ARCH-182, TASK-259, REQ-218
+- **greens:** UT-338, IT-307
+- **files:** src/run-manager.ts, src/types.ts, src/main.ts, src/store/sqlite-run-store.ts, src/gateway/claude-agent-sdk-client.ts, tests/unit/confinement-banner-truth.test.ts, tests/unit/call-tool-confinement-door.test.ts, tests/unit/admission-refusal.test.ts, tests/integration/resume-legacy-substitution-admission.test.ts, 02-architecture.md, 03-tasks.md, 04-design.md, 05-tests.md, rtm.md
+- **commit:** (uncommitted at write time)
+- **iter:** v37
+- **note:** 第二位複審者(round 5)獨立重跑了 round-4 回報的三個數字,全部成立,並確認 IT-307 的 fixture 與
+  banner 抽取都是真的;送回的是**我在 round 4 引入的一個真缺陷**加上四處帳務不一致。
+
+  **R5-F1(阻斷,我的缺陷):切法對,放的函式錯。** DES-263 第四次修訂寫「判定只加在 legacy 替換那一支」,
+  我實作時把它放進那個 `catch` 所在的函式 —— 而那個 `catch` 在**共用的 `_requireLive()`** 裡,
+  `suspend()`/`resume()`/`stop()` 三個都呼叫它。於是 `stop()` 也被拒,run 永遠無法終結,
+  `withTerminalRun` 連帶擋掉 `workspace_delete`/`workspace_purge`,`interruptedRuns` 徽章永遠清不掉,
+  而且對一個沒人要求的操作回答「so resuming it is refused」。**這比原本那個洞更糟。**
+  修正:`_requireLive()` 只記錄事實(`RunEntry.legacySubstitution = {pinned, resolved, remote}`),
+  `resume()` 讀它並決定。IT-307 補第三個案例「同一個 run 仍可 `stop()`」,並以「還原成 round-4 的放法」
+  驗證它轉紅。**教訓:判定掛在操作上,不掛在共用的重建輔助函式上 —— 後者的呼叫者集合不是我以為的那一個。**
+
+  **R5-F2**:F5 那個改動推翻了八處「`resume()` 從不呼叫它 / 那道門是唯一覆蓋」的陳述,我一處都沒改。
+  全部加上更正:`run-manager.ts` 述詞自己的 docblock(距新呼叫點 27 行)、`types.ts`、
+  `sqlite-run-store.ts`、`02-architecture.md` 三處、`03-tasks.md`、`06-impl-log.md`。
+
+  **R5-F4(我改壞的)**:`02-architecture.md:5692` 被我改成對**兩個**欄位都主張已刪除的 `claim()` 重新蓋章 ——
+  比原文更錯,而且與同一個提交改寫的標題自相矛盾。改為「各自 INSERT 一次、永不改寫、兩者都不是污染位元」。
+  修的時候我又一次整行替換、順手刪掉了一句仍然成立的話(「`run_start` 是唯一存在 live peer 的接納點,
+  所以 ARCH-181 的門保留」),已補回 —— **整行替換要先看尾巴**。
+
+  **R5-F5(我改壞的)**:`rtm.md` 那個 `[SUPERSEDED]` 橫幅被我插進了它所註記的那一條**裡面**,
+  把該條切成未收尾的 `**[`。已移到該條之前。同一檔、同一類、第四輪。
+
+  **R5-F6**:UT-338 被我宣稱為「規則鏡」,複審給了反例 —— 刪掉 `start()` 版本側那個呼叫點,它照樣綠,
+  因為 `admissionRefusal()` 是 `{posture, origin}` 的純函式,對「三個來源」沒有概念;而我寫的交叉檢查
+  還把同一個呼叫寫了兩次,是真的同義反覆。修法:移除同義反覆,另加一個**清點 `admissionRefusal()` 呼叫點數目**
+  的案例(粗但真的會抓到刪除),並把 `main.ts` 與 `05-tests.md` 的宣稱降級成它實際做到的事。
+  新鎖已用複審給的那個反例驗證:`expected 3 to be 4`。
+
+  **R5-F3**:F1 的清單第三次不完整 —— `src/gateway/claude-agent-sdk-client.ts:245`(「only a REMOTE
+  submission is refused outright」)與 `:744`(那道門「is the control that actually closes for this
+  posture」)。前者正是 `src/main.ts` 指名「本迭代存在的理由」的那個 docblock 的近親,留著不改等於同一個
+  缺陷做兩次。另加兩個測試檔頭註記(LOW)。**R5-F7/F8**:兩處 status 日期、一處指向自己上方的「在本行之後」。
 

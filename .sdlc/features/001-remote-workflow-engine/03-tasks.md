@@ -2513,7 +2513,7 @@ No two concurrently-runnable tasks share a `files:` entry.
   (1) `workflow_versions` 新增 `registeredRemote INTEGER NOT NULL DEFAULT 0`,走既有 `versionCols.includes()` 冪等 ALTER;`catalog-v24.test.ts` 的欄位黃金清單同步更新(新增欄位必須有人明確承認);
   (2) `insertVersion` 由 `workflowRegister` 轉發的 `isRemoteSubmission` 寫入該欄,**且此路徑的回歸鎖必須走 `callTool()`**——刪掉 `call-tool.ts:212` 的引數或 `mcp-facade.ts` 的轉發,UT-336/UT-337 必須轉紅(這是本專案反覆出現的「新欄位進得了 store 但沒人轉發,單元測試照樣全綠」那一類);
   (3) `claim()` 回復為兩參數,**任何 outcome 都不寫 `createdRemote`**(UT-335,`describe.each` 同時驅動兩個實作,INV-V37-7);
-  (4) `admissionRefusal()` 簽章不變,改為被呼叫三次並短路:`start()` 第一敘述(觸發器來源)、`start()` 於 `catalog.resolve()` 之後且在一切耐久動作之前(版本來源)、`runNested()`(巢狀 `workflow()`,本輪新發現的第三道繞道門);`resume()` 刻意不加(INV-V37-5(c));
+  (4) `admissionRefusal()` 簽章不變,改為被呼叫三次並短路:`start()` 第一敘述(觸發器來源)、`start()` 於 `catalog.resolve()` 之後且在一切耐久動作之前(版本來源)、`runNested()`(巢狀 `workflow()`,本輪新發現的第三道繞道門);`resume()` 於 **legacy 替換那一支**加(2026-09-25, R5-F1;釘住版本那條仍不加 —— 按「是否同一份程式碼」切,不按方法名切,且判定必須在 `resume()` 內而非共用的 `_requireLive()` 內,否則 `stop()` 一併被擋、run 永遠無法終結);
   (5) 廣告介面四處(`errors.ts`/`call-tool.ts`/`run-manager.ts`/`authoring-guide.ts`)「本機提交仍會照跑」的措辭改寫並重跑 `npm run gen:authoring`(`authoring-md-generated.test.ts` 逐位元組比對);
   (6) 復原形狀被測試釘住:本機 `workflow_register`(照列原本的 `triggers[]`)+ `workflow_publish` ⇒ 同一個 webhook id/secret 恢復送達(IT-306,以原始 secret 簽章取得 202 為證,非欄位相等斷言)。
 - **estimate:** M

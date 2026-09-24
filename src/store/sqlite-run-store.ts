@@ -170,8 +170,12 @@ export class SqliteRunStore implements RunStore {
       startedBy: row.started_by ? (JSON.parse(row.started_by) as RunSpec['startedBy']) : undefined,
       principal: row.principal ?? undefined,
       // v37 (ARCH-182, DES-263, TASK-258): the `runs` table never gained an `origin` column — this
-      // predicate needs the fact only transiently, at admission, and a resume is gated by
+      // predicate needs the fact only transiently, at admission, and an ORDINARY resume is gated by
       // call-tool.ts's isLoopbackPeer door, not by admissionRefusal. The ONE tolerant read.
+      // v37 P1 (R5-F1, 2026-09-25): `resume()` does now apply admissionRefusal in ONE case — when
+      // the run's pinned version is gone and the current `release` is substituted for it. That case
+      // keys on the SUBSTITUTED VERSION's own `registeredRemote`, never on this synthesized value,
+      // so the synthesis is still tolerant-by-design rather than load-bearing.
       origin: 'local',
     };
   }

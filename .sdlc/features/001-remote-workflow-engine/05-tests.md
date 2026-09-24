@@ -16474,7 +16474,7 @@ registration must not launder a remotely-CREATED trigger — now holds in a stri
 not by a monotonicity rule, but because **no write path to the column exists at all** after creation.
 
 ### UT-336 — `workflow_register` with `isRemoteSubmission:true` re-listing an EXISTING locally-owned SCHEDULE trigger id leaves the trigger `createdRemote:false` and taints the NEW VERSION `registeredRemote:true` (P1, 2026-09-25; ~~upgrades it to `createdRemote:true`~~ `[SUPERSEDED]`), through the real `callTool()` dispatch
-- **status:** green (2026-09-24, implementer)
+- **status:** green (2026-09-24, implementer;斷言方向於 2026-09-25 隨 P1 反轉並重驗 — 見本項下方修訂)
 - **traces:** DES-263, ADR-086, ARCH-182, REQ-218
 - **tier:** unit
 - **real:** false
@@ -16501,7 +16501,7 @@ P1 刪除了那條重新蓋章規則,所以本案例現在同時釘**兩半**:(a
 這正是本專案反覆出現的「新設定沒被 `composeConfig`/facade 轉發,功能靜默失效而單元測試全綠」那一類。
 
 ### UT-337 — `workflow_register` with `isRemoteSubmission:true` re-listing an EXISTING locally-owned WEBHOOK trigger id leaves the trigger `createdRemote:false` and taints the NEW VERSION `registeredRemote:true` (P1, 2026-09-25; ~~upgrades it to `createdRemote:true`~~ `[SUPERSEDED]`), through the real `callTool()` dispatch
-- **status:** green (2026-09-24, implementer)
+- **status:** green (2026-09-24, implementer;斷言方向於 2026-09-25 隨 P1 反轉並重驗 — 見本項下方修訂)
 - **traces:** DES-263, ADR-086, ARCH-182, REQ-218
 - **tier:** unit
 - **real:** false
@@ -16623,7 +16623,7 @@ VAL-259 證據日誌把那行假字原封不動抄了下來(`evidence/v37/val259
 修法有兩步:(a) 把那行抽成 `src/main.ts` 的純函式 `confinementBannerLine(probe)`,使它可被測;
 (b) 本檔三個案例把兩半綁在一起釘 —— banner 必須命名**全部三個**拒絕來源(遠端提交 / 遠端建立的觸發器 /
 遠端註冊的版本),**不得**再出現「本機仍會照跑」那種承諾(連同一個較寬的正則,擋掉粗心改寫會寫出的形狀),
-並直接對 `admissionRefusal()` 斷言其行為,使 banner 是述詞的散文而非自說自話。
+並另外**清點 `run-manager.ts` 裡 `admissionRefusal()` 的呼叫點數目**。**[更正 2026-09-25, R5-F6:原文寫「使 banner 是述詞的散文而非自說自話」是誇大 ——`admissionRefusal()` 是 `{posture, origin}` 的純函式,對「三個來源」沒有概念,所以對它斷言抓不到「某個呼叫點被刪掉」;原本那個交叉檢查還把同一個呼叫寫了兩次,是真的同義反覆。現況:措辭鎖(案例 1-2)+ 呼叫點清點(案例 4)兩半合起來才成立,單獨任一半都抓不到 round 4 的漂移。呼叫點清點已用複審給的反例驗證(刪掉 `start()` 版本側那個呼叫點 → `expected 3 to be 4`)。]**
 **紅燈已獨立驗證**:把出貨時那行假字暫時放回去,本檔 2 failed / 1 passed
 (`expected … to match /remote submission/`、`expected … not to match /local \(loopback\) runs still proceed/`),
 還原後 3 passed。守衛是真的會失敗的。

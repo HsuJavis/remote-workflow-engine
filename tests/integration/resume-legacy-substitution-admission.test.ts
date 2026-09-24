@@ -55,6 +55,21 @@ describe("IT-307 — resume()'s legacy substitution is admission-checked; its pi
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 20000);
 
+  it("[LOAD-BEARING] the SAME run can still be stopped — the refusal is resume()'s, not _requireLive()'s (R5-F1)", async () => {
+    // Round 4's first repair put the refusal inside `_requireLive()`, which `suspend()`, `resume()`
+    // AND `stop()` all call. The run then could not be stopped either, so it never became terminal
+    // and `withTerminalRun` blocked `workspace_delete`/`workspace_purge` while the `interruptedRuns`
+    // badge could never clear — a worse outcome than the hole being closed. This case is the lock:
+    // the refusal must be attached to the OPERATION, not to the shared rehydration helper.
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-it307c-'));
+    try {
+      const { runManager, runId } = await seedSuspendedRunWithMissingPin(dir, 'it307-stoppable', true);
+      await expect(runManager.resume(runId)).rejects.toMatchObject({ code: 'CONFINEMENT_UNAVAILABLE' });
+      // …and yet:
+      await expect(runManager.stop(runId)).resolves.not.toThrow();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 20000);
+
   it('mirror: the same substitution with a LOCALLY registered `release` version still resumes', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rwe-it307b-'));
     try {

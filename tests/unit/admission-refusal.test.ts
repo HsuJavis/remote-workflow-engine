@@ -1,4 +1,8 @@
 // UT-329 (DES-263, ARCH-182, ADR-086, TASK-258, REQ-218) — admissionRefusal({posture, origin}): the
+// [更正 2026-09-25, Gate 8 round-5 finding R5-F3] Wherever the header below implies that only a
+// REMOTE submission is refused, or that call-tool.ts's door is the only control: since v37 P1 a run
+// is also refused when its trigger was created remotely or when the version it resolves to was
+// registered remotely — the latter refuses a LOCAL run_start too. See DES-263 第三次/第四次修訂.
 // ONE pure predicate every run admission passes at RunManager.start(). Closes the two admission
 // routes (schedule, webhook) DES-262's isLoopbackPeer door does not cover, per ADR-086's ruling
 // (keyed on the TRIGGER's own stored provenance, never the workflow version's registering author).
