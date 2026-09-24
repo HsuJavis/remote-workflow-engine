@@ -10158,6 +10158,14 @@ keep, not a coincidence to rely on.
   `'held'` 正是 (b) 那條重新註冊路徑,只蓋 `'claimed'` 等於沒修;`'NOT_FOUND'` 無列可蓋;
   **`'ALREADY_CLAIMED'` 一律不蓋**,那一列屬於另一個工作流程,重新蓋章會讓 A 的註冊改寫 B 的觸發器 provenance。
   **既有列因此自我修復**:下一次被認領時就會被重新評估,不需要資料遷移。
+  **修正(2026-09-24,同日稍晚,由 `confinement-unconfined-wiring.test.ts` 抓到):重新蓋章必須是單調的
+  —— 只由 local 升級為 remote,絕不反向。** 第一版寫成無條件覆寫,通過了「遠端重新註冊要升級」這一向,
+  卻打破了反向的保護:該測試的情境是 webhook **遠端建立**、工作流程**本機註冊**,覆寫語意會讓本機註冊
+  把它降級,於是遠端建立的觸發器被洗白。那是真的損失 —— **建立 webhook 的人掌握何時觸發、以及送什麼
+  payload**(`args.event` 會流進腳本),觸發權本身就是攻擊面,不能因為腳本是本機註冊的就忽略。
+  故最終規則是聯集:`createdRemote = 既有值 OR 這次認領的註冊是否遠端`。兩個保護同時成立。
+  該測試的原註解(「claim() 的 held 分支 must not re-stamp」)寫的是它在防的那一向,不是在反對升級;
+  本修正保留了它防的東西,只增加另一向。
 - **iter:** v37
 
 ### Class diagram — v37 (the four types this slice adds)

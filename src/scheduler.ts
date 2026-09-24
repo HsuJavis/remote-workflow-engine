@@ -538,8 +538,15 @@ export class SqliteSchedulerPort {
     const row = this._db.prepare('SELECT claimedBy FROM schedules WHERE id = ?').get(id) as { claimedBy: string | null } | undefined;
     if (!row) return 'NOT_FOUND';
     const stamp = (): void => {
-      if (createdRemote === undefined) return; // caller has no provenance to assert — leave the row as-is
-      this._db.prepare('UPDATE schedules SET createdRemote = ? WHERE id = ?').run(createdRemote ? 1 : 0, id);
+      // MONOTONIC: only ever local -> remote, never the reverse. Two protections have to hold at
+      // once and they point in opposite directions: (i) a REMOTE registration must taint a
+      // trigger it claims (the re-registration hole ADR-086's second ruling closes); (ii) a
+      // LOCAL registration must NOT launder a trigger that was CREATED remotely — whoever
+      // created the webhook still controls WHEN it fires and what payload reaches the script.
+      // A plain overwrite satisfies (i) and breaks (ii), which is what
+      // confinement-unconfined-wiring.test.ts caught. So: remote is sticky.
+      if (createdRemote !== true) return;
+      this._db.prepare('UPDATE schedules SET createdRemote = 1 WHERE id = ?').run(id);
     };
     if (row.claimedBy === workflow) { stamp(); return 'held'; }
     if (row.claimedBy != null) return 'ALREADY_CLAIMED';

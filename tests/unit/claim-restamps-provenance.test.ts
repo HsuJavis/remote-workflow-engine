@@ -47,7 +47,7 @@ describe('claim() re-stamps trigger provenance (UT-335, DES-263 amendment)', () 
     expect(st.get(id)?.createdRemote).toBe(false);
 
     expect(st.claim(id, 'wf-a', true)).toBe('held');
-    expect(st.get(id)?.createdRemote).toBe(true);
+    expect(st.get(id)?.createdRemote).toBe(true); // local -> remote: the hole ADR-086 closes
   });
 
   it("'ALREADY_CLAIMED' never re-stamps — one workflow must not rewrite another's trigger", async () => {
