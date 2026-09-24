@@ -1,190 +1,202 @@
-# Quality-dimensions review — Gate 2 architecture (v37 slice) vs. implementation
+# Quality-dimensions review — Gate 2 architecture vs. implementation (v37, ADR-086 claim()-restamp slice)
 
-Scope: v37 slice only (REQ-218/219, ARCH-175..182, ADR-082..086, INV-V37-1..5), IMPL-371..384.
-Files read: everything on IMPL-372..384's `files:` lines (production `src/` only; the ~30
-mechanical `origin:'local'` test edits from IMPL-384 were not individually read) plus the three
-wiring-lock test files ARCH-182/INV-V37-5 names.
+**Scope note (itself the first finding, see §1):** the task instruction was to scope code reading
+to files listed on each IMPL's `files:` line in `06-impl-log.md`. The work under review — commits
+`2a760bd` (docs: ADR-086 corrected ruling), `3e3c331` (feat: `claim()` re-stamps provenance) and
+`2cf5f32` (fix: re-stamp made monotonic) — has **no IMPL entry at all**: `06-impl-log.md`'s last
+entry (IMPL-385) was written by `2a760bd` and the file is untouched by the two commits after it.
+Scoping strictly to `files:` lines would have silently skipped the entire slice under review, so
+this pass reads the actual changed files instead: `src/scheduler.ts`, `src/webhook-registry.ts`,
+`src/mcp-facade.ts`, `src/call-tool.ts`, `tests/unit/claim-restamps-provenance.test.ts`, plus the
+architecture/design/deploy prose these commits reference or should have updated
+(`02-architecture.md` ADR-086/ARCH-182, `04-design.md` DES-263, `rtm.md`, `05-tests.md`,
+`DEPLOY.md`). The prior `.panel/review/quality-dimensions.md` (IMPL-371..384 slice, 2 findings, both
+about `authoring-guide.ts`/`INV-V37-5`'s own wiring-lock coverage) is superseded by this file; its
+findings are not re-verified here and should be re-checked on a future pass — this pass is scoped to
+the claim()-restamp slice only.
 
-Four dimensions below, each headed, each stating what was checked whether or not it found a
-defect.
+**Architecture decision under review:** ADR-086's second owner ruling (`02-architecture.md:5880-5906`)
+— "在 `claim()` 重新蓋章": re-stamp `createdRemote` on a trigger row whenever a `workflow_register`
+call claims it, using that call's own `isRemoteSubmission`, closing (a) the zero-coverage-on-legacy-
+rows gap and (b) the "remote `workflow_register`+`workflow_publish` onto an already-triggered
+workflow name, no operator action needed" residual named in ARCH-182's Gate-8 round-2 amendment
+(1b).
 
 ---
 
 ## 1. Observability
 
-**Checked and consistent:**
-- `agent.confinement` event (`src/gateway/claude-agent-sdk-client.ts:816-846`) carries exactly the
-  field set ARCH-178 + its Gate-4/Gate-6 amendments specify (`attempt`, `posture`, `root`,
-  `allowWrite`, `denyRead`, `enabled`, `failIfUnavailable`, `sdkVersion`), and the `posture` ternary
-  now mirrors the `sandbox` ternary (the Gate-6.5 fix for the "two different reasons must not read
-  the same" bug class) — verified, both read the same default.
-- `agent.confinement_denied` / `PostToolUseFailure` is correctly NOT registered anywhere in
-  `claude-agent-sdk-client.ts` — matches ARCH-178's Gate-8 deferral-to-v38 (O-1).
-- `main.ts`'s real boot path (`main.ts:557-560`) logs the measured posture on EVERY boot, both arms
-  written out loud (`CONFINED` / `UNCONFINED (<reason>)`) — satisfies INV-V37-1's "never inferred
-  from the absence of a sentence."
-- `ENGINE_STATE_DENY` in `src/gateway/bash-confinement.ts:38-40` is exactly the 5-entry set ARCH-175's
-  Gate-8 amendment (finding A3) prescribes (`store`, `catalog.db`, `auth-tokens.db`,
-  `mcp-registry.db`, `_global_assets`) — the two previously-missing entries are present, the three
-  operator-overridable ones and the `continuations.db` phantom are correctly absent.
+**Checked and consistent:** the `stamp()` closures added in `scheduler.ts:537-560` and
+`webhook-registry.ts:230-247` are pure, small, and the monotonic-union rule (`createdRemote !== true
+? return : UPDATE ... = 1`) is legible from the diff alone — no argument that this specific 6-line
+change is hard to read.
 
-**Violation found — INV-V37-5 is reported closed but two of its three named consumers have no wiring lock.**
+**Violation 1 — HIGH — the entire slice is invisible to the traceability chain the SDLC exists to
+produce.** `06-impl-log.md` (the one document whose whole purpose is "internal state [of the
+build process] observable at any time") has zero entry for this work:
+- `git log --stat` on `3e3c331`/`2cf5f32` shows neither commit touches `06-impl-log.md`.
+- `05-tests.md` has zero mentions of `UT-335` (grep, zero hits) — the new red-then-green test suite
+  `tests/unit/claim-restamps-provenance.test.ts` was written and landed with no Gate-5 test-spec
+  entry to trace it back to.
+- `rtm.md:455-468` still carries the PRE-fix language: "`createdRemote` is stamped once, at
+  trigger-ROW CREATION, and no later event re-stamps it (`claim()`'s `'held'` arm returns before any
+  `UPDATE`...)" and "re-opened as ADR-086's `owner_decision: pending`" — both now false of the
+  shipped code, and neither line was touched by either commit.
+- `02-architecture.md:5691` (ARCH-182's own `api:` paragraph) still asserts `createdRemote` is
+  "written once by the `INSERT` and never re-stamped by any later attachment event (`claim()`,
+  `workflow_register`, `workflow_publish`)" — the exact fact this slice changed, uncorrected in the
+  architecture document itself.
+- `02-architecture.md:5900-5906` is internally self-contradictory as it now stands: the round-2
+  amendment sentence says the ADR "回到 `pending`", the `owner_decision:` line two paragraphs later
+  says "answered 2026-09-23(第二次...)" and gives a ruling, and the same block's tail still repeats
+  the *pre-ruling* framing ("請在更正後的前提下重新裁決: 選「只更正文字」... 還是選「在 `claim()`
+  時重新蓋章」?") as if unanswered — three inconsistent states of the same decision coexist in one
+  entry, with no marker showing which paragraphs are superseded.
 
-- **file:** `tests/unit/compose-config-v2-wiring.test.ts:406-418` (the IMPL-381/UT-328 lock,
-  reported as closing "finding A5, INV-V37-5")
-- **also:** `src/server.ts:813` (RunManager construction) and `src/server.ts:902` (`buildToolDeps`,
-  the door's read)
-- **which ARCH/INV:** INV-V37-5 — "`confinementPosture` crosses two hops (`main.ts:368` →
-  `ServerConfig` → **the door and RunManager's predicate**; `main.ts:443` → the gateway) ... each hop
-  needs an assertion that fails when the forward is dropped."
-- **evidence:** the test's own comment (lines 406-411) names all three consumers — "the door's own
-  read in call-tool.ts and RunManager's predicate" plus "the constructed gateway's own config" — and
-  claims "Mirrors the `allowHostPaths` lock's shape exactly, one probe result in, **both hops
-  checked**." The assertions that follow (lines 415-418) check only `cfg.confinementPosture` (the
-  `ServerConfig` field `composeConfig()` itself returns) and `cfg.gateway._config.confinementPosture`
-  (the gateway hop). Neither `RunManager`'s `_confinementPosture` nor `ToolDeps.confinementPosture`
-  is touched anywhere in this test, because both live inside `src/server.ts`'s `createServer()`, a
-  function `composeConfig()` (`src/main.ts`) never calls and this test never invokes. Confirmed by
-  `grep -rn "confinementPosture" tests/` (full search, this session): the only test that constructs
-  a real `RunManager`/door pair with `confinementPosture` set is `run-manager-admission-order.test.ts`
-  and `call-tool-confinement-door.test.ts`, and both pass `confinementPosture` as a **direct
-  constructor argument**, never through `createServer()`/`composeConfig()` — neither locks the
-  `server.ts:813`/`server.ts:902` forward. `tests/integration/scheduler-remote-origin.test.ts` and
-  `webhook-remote-origin.test.ts` (IT-302/303) use a fake `RunManagerPort` that re-implements the
-  predicate itself (by design, per DES-263's own testability note) and so cannot catch this either.
-- **failure scenario:** a future edit that drops `confinementPosture: config?.confinementPosture`
-  from either `src/server.ts:813` or `:902` (e.g. during an unrelated refactor of the `RunManager`/
-  `McpFacade` constructor argument lists — exactly the shape of edit v11's `updateFlagPath` and v15's
-  auth regression were) compiles clean and every existing test — including the one that claims to be
-  this exact hop's lock — stays green. `RunManager._confinementPosture`/`ToolDeps.confinementPosture`
-  silently become `undefined`; `admissionRefusal()`'s own documented convention treats `undefined` as
-  "never measured ⇒ do not gate" (`src/run-manager.ts:170-171`). Result: on a host the boot probe
-  measured `unconfined`, every remote `run_start`/`run_resume` AND every remote-created webhook/
-  schedule delivery is silently ADMITTED instead of refused — the exact "silently INSECURE, not
-  silently inert" failure class INV-V37-5 states by name, in the one slice built specifically to stop
-  it, reopened by the very repair commit (IMPL-381) whose own note claims it closed.
-- **severity:** HIGH. This is not a hypothetical edge case — it is the two load-bearing consumers of
-  the security-relevant value the entire v37 slice exists to protect, left with a test that reads as
-  covering them (same file, same shape, comment names them explicitly) but does not.
+  This is not a paperwork nit: the CLAUDE.md project rule and this feature's own INV-V37-3
+  ("no requirement's only evidence may run against code with no production caller" — the general
+  form of "wire it or delete it") both depend on the ledger being the thing reviewers and future
+  agents read instead of re-deriving from source. A security-relevant behavior change (who can start
+  unconfined Bash execution on a remote-registered script) shipped through review with **no traced
+  record that it happened at all** — a reviewer reading `06-impl-log.md`, `05-tests.md` or `rtm.md`
+  top-to-bottom today would not learn this fix exists, would still see ADR-086 as "pending", and
+  would still see the round-2 amendment's residual (1b) described as open. Evidence:
+  `06-impl-log.md` (10404 lines, none after IMPL-385), `05-tests.md` (grep `UT-335` → 0 hits),
+  `rtm.md:455-468`, `02-architecture.md:5691,5900-5906`.
+
+**Violation 2 — MED — the re-stamp transition is itself unaudited, contradicting the architecture's
+own stated principle for this exact area.** ARCH-182 (4) states, about a *different* field in this
+same slice, "a value that decides whether code executes and cannot be read back is unauditable by
+construction." `createdRemote`'s local→remote transition now silently mutates in place
+(`UPDATE schedules SET createdRemote = 1 WHERE id = ?` / the `webhooks` twin,
+`scheduler.ts:552`/`webhook-registry.ts:243`) with no `provenanceChangedAt`, no actor, no journal/log
+line — an operator (or `webhook_list`/`schedule_list`) can see the CURRENT value but never learn
+*when* a trigger flipped from locally- to remotely-owned or *which registration* did it, which is
+exactly the audit question this predicate exists to let an operator answer after an incident.
 
 ---
 
 ## 2. Replaceability
 
-**Checked and consistent — no violations found.**
-- `src/gateway/client.ts` (the `GatewayClient` port `LiteLLMGatewayClient` also implements) gained no
-  `sandbox`/`confinement` member; `sandbox`/`confinementPosture` live only on
-  `ClaudeAgentSdkGatewayConfig`, exactly as ARCH-176 decided ("not added to the `GatewayClient` port
-  ... the other implementation has no subprocess and would have to stub it"). A provider swap
-  (`gateway: 'direct-fetch'` vs `'sdk'`) still needs zero confinement-aware code in the non-SDK
-  backend.
-- `src/run-manager.ts` imports no confinement module (`grep "confine\|sandbox"` on its imports finds
-  only the pre-existing, unrelated `./sandbox/host.js` script sandbox) — `RunManager` depends only on
-  the pure `admissionRefusal()` predicate it owns, and the posture arrives as an opaque
-  `'confined'|'unconfined'|undefined` string, not a `ClaudeAgentSdkGatewayConfig`-shaped object. The
-  admission control is gateway-implementation-agnostic, matching ARCH-182's placement rationale ("the
-  point all four admissions already converge on").
-- `buildBashConfinement()` (`src/gateway/bash-confinement.ts`) imports only the SDK's `SandboxSettings`
-  **type** (type-only import, line 8) plus one local pure helper (`isPathContained`) — no fs/process/
-  env/clock — matching ARCH-175's contract verbatim; swapping the CLI's sandbox schema for a future
-  SDK version only requires touching this one function's return shape, never its callers.
-- `ComposeConfigDeps.workRootDefault`/`confinementProbe` being pre-computed VALUES rather than
-  callables (both flagged as deliberate in the ledger, both confirmed at their two production call
-  sites in `main.ts:518,547`) keeps `composeConfig()` swappable/testable without a `vi.mock` collision
-  — consistent with the DES-255 seam rule the architecture states.
+**Checked and consistent:** both trigger stores (`SqliteSchedulerPort`, `WebhookRegistry`) implement
+the widened `TriggerClaimStore.claim(id, workflow, createdRemote?)` port identically in shape and in
+the monotonic rule, so `McpFacade._storeFor()` still dispatches through one interface with no
+backend-specific branching — a third store implementation (e.g. swapping SQLite for another engine)
+would plug in the same way it always has.
+
+**Violation 3 — MED — the port widening is not compiler-enforced, and the implementers' own commit
+message says so without adding the compensating test.** `mcp-facade.ts:64-70`'s
+`TriggerClaimStore.claim` signature grew a third, optional parameter. The `3e3c331` commit message
+states directly: "TypeScript 方法參數的雙變性讓較窄的實作靜默滿足較寬的 port，所以編譯器不守這條縫"
+(method-parameter bivariance means the compiler will not catch a narrower implementation silently
+satisfying the wider port) — i.e., a future third `TriggerClaimStore` (or a refactor of one of the
+two existing ones) that simply drops the third parameter, or accepts it but never re-stamps, would
+type-check cleanly and compile with no error, silently reopening ADR-086's hole. The codebase has an
+established pattern for exactly this class of problem — INV-V37-5's "hop-level wiring lock" tests
+for `confinementPosture`/`allowHostPaths` (`04-design.md`, `confinement-unconfined-wiring.test.ts`)
+— but no equivalent lock was added here: `UT-335` (`claim-restamps-provenance.test.ts`) imports and
+tests `SqliteSchedulerPort` only (grep confirms zero references to `WebhookRegistry` in that file),
+so `WebhookRegistry.claim()`'s local→remote upgrade direction has **no direct unit test at all**;
+it is only reachable indirectly through `confinement-unconfined-wiring.test.ts`, which tests the
+*other* direction (local registration must not downgrade a remote-created row) and says so in its
+own comment ("it does not, and must not, re-stamp `createdRemote`"). If either store's `claim()`
+regressed to not upgrading local→remote, no test in the suite would fail.
 
 ---
 
 ## 3. Consumability
 
-**Checked and consistent:**
-- `CONFINEMENT_UNAVAILABLE` is in `ERROR_CATALOG` (`src/errors.ts:91`) with a `see` pointer, and in
-  both `run_start`'s (`tool-specs.ts:532`) and `run_resume`'s (`tool-specs.ts:599`) advertised
-  `errors:` arrays — closes the C-1 finding as claimed.
-- `refusalEnvelope`'s `code` parameter is typed `ErrorCode` in `src/call-tool.ts` (verified import/
-  usage), closing the class rather than one instance, as ARCH-181's amendment specifies.
-- `rwe.config.example.json` documents `sandbox.allowHostPaths`; `KNOWN_FILE_CONFIG_KEYS` in
-  `src/main.ts:110` includes `sandbox` — the compiler-enforced forwarding discipline ARCH-177 asks
-  for is in place.
+**Checked and consistent:** the facade-level contract (`workflowRegister(a, principal,
+isRemoteSubmission = false)`) defaults the new parameter so every pre-existing caller keeps
+compiling and keeps prior behavior — no breaking change to the tool's advertised I/O shape.
 
-**Violation found — the authoring guide's confinement explanation was not updated for ARCH-182's widened admission surface.**
-
-- **file:** `src/authoring-guide.ts:363-369` (`HOST_PATH_GRANTS_UNCONFINED`), reachable from the live
-  `workflow_authoring_guide` tool and from `docs/AUTHORING.md`
-- **which ARCH violated:** ARCH-107 amendment / REQ-117 (this is the one documented read-path for
-  「what may this agent touch / when is Bash refused」 — ARCH-177's own note: "No read-back endpoint
-  is added ... a third surface would be a second thing describing the same fact," making this text
-  the authoritative, sole explanation) against ARCH-182, which was landed one gate later (IMPL-384)
-  and never touched `src/authoring-guide.ts` (absent from IMPL-384's `files:` list).
-- **evidence:** the text reads, verbatim: *"A remote submission is refused before it ever reaches an
-  agent — `run_start`/`run_resume` return a refusal instead of admitting Bash-capable work."* This
-  was accurate when IMPL-379 wrote it (ARCH-181's door was, at that point, the only admission
-  control). ARCH-182/IMPL-384 subsequently added a SECOND, independent admission control — the
-  `admissionRefusal()` predicate at `RunManager.start()` — specifically because ARCH-181's door
-  "covers ONE of four admission sites" (the Gate-8 finding A1 that produced ARCH-182). A remotely-
-  created webhook or resident schedule on an `unconfined` host is now also refused, but NOT via
-  `run_start`/`run_resume` — it is refused at webhook delivery (`POST /hooks/:id`'s response body) or
-  surfaces as the schedule's `lastError` (`schedule_list`), mechanisms the guide text names nowhere
-  and which do not match the sentence's own claim that only `run_start`/`run_resume` "return a
-  refusal." `errors.ts:91`'s `CONFINEMENT_UNAVAILABLE.see: 'workflow_authoring_guide'` pointer means
-  this is exactly the text a remote author debugging a silently-refused webhook/schedule is directed
-  to, and it will not explain what they are seeing.
-- **failure scenario:** a remote party registers a workflow and a webhook against it on a host whose
-  boot probe measured `unconfined`. The webhook fires; delivery returns `CONFINEMENT_UNAVAILABLE`.
-  The author reads `workflow_authoring_guide` (the only surface the error's `see` field points them
-  to) expecting an explanation, and reads a sentence that describes `run_start`/`run_resume` — a tool
-  call they never made — leaving them unable to connect the refusal to their webhook at all.
-- **severity:** MEDIUM. Not a security gap (the refusal itself is correctly enforced, per Section 1's
-  caveat about the wiring lock) — it is a documentation/consumability gap: the one designated
-  explanation surface for a wire-reachable error code describes a narrower mechanism than what
-  actually ships, for the exact audience (a remote author) the error is aimed at.
-- **secondary instance, same root cause, lower severity:** `src/errors.ts:91`'s own `hint` string
-  ("a remotely-submitted run is refused") and `src/main.ts:560`'s boot banner ("remote run
-  submissions will be refused") use the same pre-ARCH-182 framing; both are generic enough to be read
-  as covering webhook/schedule too (unlike the guide, they don't name `run_start`/`run_resume`
-  specifically), so they are noted but not counted as a separate violation.
+**Violation 4 — HIGH — `DEPLOY.md`, the operator-facing document, now gives actively wrong
+remediation instructions that contradict the shipped code.** `DEPLOY.md:908` reads (unchanged by
+either commit): "`claim()`／`workflow_register`／`workflow_publish` 都不會重新蓋章這個欄位——認領一個
+既有 id 不會補上覆蓋率，只有重新『建立』觸發器才會" (claim()/workflow_register/workflow_publish will
+NEVER re-stamp this field; claiming an existing id does not restore coverage, only re-creating the
+trigger does) and prescribes, as the *only* remedy for the legacy zero-coverage cohort, deleting and
+recreating every webhook/schedule from a remote caller. `DEPLOY.md:883` similarly states
+`createdRemote` "建立後不會再變，即使之後被別的工作流程認領也不會重蓋" (never changes after
+creation, even if claimed by another workflow, never re-stamped). Both sentences are now false of
+the code an operator following this doc would be running: `claim()` on both stores now re-stamps
+(monotonically) exactly when a remote registration claims the row. An operator who trusts this
+paragraph will delete-and-recreate triggers that a plain remote re-registration would already have
+fixed, or — worse — will read the *converse* implication (their local reclaims are inert) and miss
+that a LOCAL re-registration of a workflow that owns a remotely-created webhook is correctly
+*refused* from downgrading it, which is new, security-relevant behavior this doc never mentions.
+This traces directly back to Violation 1: because no IMPL entry flagged the change, the standard
+"prose this row's own widening made stale" sweep that ARCH-182 (5) itself prescribes for exactly this
+kind of drift never ran against `DEPLOY.md` for the claim()-restamp slice.
 
 ---
 
 ## 4. Self-sustainability
 
-**Checked and consistent — no violations found.**
-- Refused remote schedule/webhook admissions do not tight-loop: `scheduler.ts`'s ticker driver
-  (`server.ts:1015-1029`) routes the thrown `CONFINEMENT_UNAVAILABLE` into the SAME generic
-  `.catch()` → `markFailed()` path every other dispatch failure uses — this is not an omission, it is
-  what ARCH-182's own contract table prescribes verbatim ("`markFailed` at the ticker driver
-  (`server.ts:1017-1025` already routes `err.code` there)"). `markFailed` (`scheduler.ts:570-579`)
-  already advances a `cron` schedule's `nextFire` independently of outcome and auto-disables a
-  `once` schedule — no new infinite-retry surface is introduced. (`Scheduler.trigger()`'s own
-  try/catch, `scheduler.ts:378-390`, and `webhook-registry.ts`'s equivalent at `:316-321`, both exist
-  as IMPL-384 claims; verified present.)
-- The confinement posture is measured exactly once per process lifetime, at boot
-  (`src/gateway/confinement-probe.ts`, called once from `main.ts:539`), never re-probed mid-run — this
-  is architecture-as-designed (ADR-083's revisit trigger is explicitly an operator/upstream event,
-  not a runtime retry loop), not a gap: a host whose nested-userns support changes requires a
-  restart, which is documented behavior, not silent drift.
-- `admissionRefusal()` (`src/run-manager.ts:167-171`) is a total, pure function over its three-value
-  input domain (`'confined'|'unconfined'|undefined' × 'local'|'remote'`) with no unhandled branch —
-  no path can throw an unexpected shape into a caller that isn't already prepared for a coded error.
-- Legacy persisted `RunSpec` rows (`sqlite-run-store.ts`'s `getSpec()`) backfill `origin: 'local'` on
-  read rather than leaving the field `undefined`/throwing — a pre-v37 run's resume path degrades to
-  "not gated" rather than crashing, matching ARCH-182's own stated rationale ("harmless because a
-  resume is gated by ARCH-181's door, not by this predicate").
+**Checked and consistent:** the monotonic-union design (`createdRemote = existing OR
+this-claim-is-remote`) is a genuinely closed-loop self-healing rule in the two cases it actually
+fires for — a pre-existing trigger explicitly re-listed in a later remote `workflow_register` call
+upgrades itself with zero operator action, exactly as designed, and the fix's regression (caught by
+`confinement-unconfined-wiring.test.ts` and corrected same-day in `2cf5f32`, with the design doc
+amended in place recording what the first version got wrong) is a good instance of the process
+working: a real test caught a real regression before merge, and the correction is documented rather
+than silently folded in.
+
+**Violation 5 — HIGH — the "self-heals" claim does not hold for the actual attack path ADR-086 (1b)
+names, because `claim()` is not always called on re-registration.** `mcp-facade.ts:373`:
+`const triggers = a.triggers ?? [];` — the set of trigger ids a `workflow_register` call re-claims
+is taken *only* from the caller-supplied, optional `a.triggers` argument. Trigger ownership
+(`claimedBy`/`workflow` in the two stores) persists per workflow **name** across versions
+independent of whether a later `workflow_register` call re-lists it — `workflow_publish`
+(`mcp-facade.ts:501-519`) takes only `(a, principal)`, calls no store's `claim()`, and simply flips
+the release-channel pointer via `catalog.publish()`; firing resolves the running script by
+`catalog.resolve(row.workflow, {channel:'release'})` (`webhook-registry.ts:318`,
+`scheduler.ts`'s twin), keyed on workflow name, not on which trigger ids any particular
+`workflow_register` call happened to list.
+
+Concretely: workflow `wf-a` already owns trigger `cron-x` (`createdRemote: false`, e.g. locally
+created). A remote peer calls `workflow_register({name:'wf-a', script:<malicious>, mermaid, ...})`
+**without `triggers`** (the field is optional; there is no validation requiring already-owned ids to
+be re-listed) to register `v2`, then `workflow_publish({name:'wf-a', version:'v2'})`. Because
+`triggers` is empty, the `for (const id of triggers)` loop (`mcp-facade.ts:390-396`) never runs,
+`claim()` is never called for `cron-x`, and its row is untouched — `createdRemote` stays `false`.
+The next scheduler tick resolves `wf-a`'s release channel, now `v2` (the remote script), reads
+`origin: 'local'` off the trigger row, and `admissionRefusal({posture:'unconfined',
+origin:'local'})` returns `null` — the run is **not refused**, and Bash-capable work executes
+unconfined running a remotely-authored script. This is the *exact* scenario ARCH-182's Gate-8
+round-2 amendment (1b) describes ("遠端 `workflow_register` + `workflow_publish` 到一個已經擁有觸發器
+的工作流程名稱上，下一次 cron 或 webhook 自己就把新腳本跟起來" / "no operator action needed") and
+that ADR-086's owner ruling was explicitly chosen to close ("它一次關掉兩個洞（重新註冊路徑、既有列
+在下次被認領時重新評估）" — `02-architecture.md:5906`). The shipped fix closes this hole **only when
+the remote registration call happens to include the already-owned trigger id in `triggers`**, which
+nothing in the API, the validation, or the test suite requires or exercises — `UT-335`'s three cases
+all call the store's `claim()` directly, never through `workflowRegister()`'s trigger-derivation
+logic, so this gap is untested as well as unfixed. The system does not, in fact, self-heal the
+residual the ADR was answered to close; it self-heals a narrower case (explicit re-claim of a
+specific id) that happens to overlap with it in the common, cooperative case but not in the
+adversarial one the ADR's own threat model describes.
 
 ---
 
 ## Summary
 
-| Dimension | Violations | Notes |
+| Dimension | Violations | Severity |
 |---|---|---|
-| Observability | 1 (HIGH) | INV-V37-5's own wiring lock does not cover the two consumers it names |
-| Replaceability | 0 | — |
-| Consumability | 1 (MEDIUM) | Authoring guide's confinement text stale after ARCH-182 widened admission |
-| Self-sustainability | 0 | — |
+| Observability | 2 | HIGH, MED |
+| Replaceability | 1 | MED |
+| Consumability | 1 | HIGH |
+| Self-sustainability | 1 | HIGH |
 
-**Total violations: 2** (1 HIGH, 1 MEDIUM). Both are drift introduced by the LATER of two Gate-8
-send-back repairs not reaching back into an EARLIER repair's artifacts (IMPL-381's test, IMPL-379's
-guide text) once IMPL-384/ARCH-182 changed what those artifacts needed to say — not deviations from
-the original v37 design intent, but real, currently-unclosed gaps between what the architecture's
-own invariants (INV-V37-5) and rationale (ARCH-177's "no read-back endpoint... a third surface would
-be a second thing describing the same fact") require and what ships today.
+**Total violations: 5** (3 HIGH, 1 MED counted twice across dims — see below, 1 further MED).
+
+**Not consistent.** The headline issue (Violation 5) is that the shipped `claim()`-restamp fix does
+not close the residual ADR-086's owner ruling was chosen specifically to close: a remote
+`workflow_register`+`workflow_publish` onto an already-triggered workflow name, made **without**
+re-listing that trigger's id, still results in unconfined execution of a remotely-authored script
+with no operator action — because `claim()` is only invoked over `a.triggers`, an optional argument
+independent of what `workflow_publish` actually releases. This is compounded by Violation 1: the
+work has no traceability-chain entry at all (no IMPL row, no test-spec row, no RTM update), so the
+architecture document, the RTM, and the deployment guide all still describe the PRE-fix state (or,
+worse, a state that never existed — RTM/DEPLOY.md's "never re-stamps" claims were already an
+overstatement of the pre-fix code and are now simply false), and no downstream reviewer following
+the ledger would discover any of this without re-deriving it from source, as this review did.

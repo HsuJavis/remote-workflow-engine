@@ -10078,3 +10078,210 @@ unverified=17（全部既有，非本輪範圍）。
 `owner_decisions`——不是這個 gate 該裁決的事，也沒有被靜默丟掉；系統照現狀（事實上的選項 (a)）驗證
 通過。`state.yaml` 用 `yaml.safe_load` 重新解析通過。全程未使用 `git checkout`/`restore`/`stash`。
 未建立 commit（留給 orchestrator）。`current_stage` 進到 `review`。
+
+## v37 GATE 8 round 3（re-review，2026-09-24，reviewer）— SEND-BACK
+
+Round 2 關掉的一切在磁碟上獨立重驗全數維持關閉（B1–B7 逐條核對，非信任 gate 筆記）。但 round 2
+的架構/實作/驗證三閘關閉之後，`master` 上又多了兩個 commit：`3e3c331`（`claim()` 重新蓋章
+trigger provenance）與 `2cf5f32`（改成單調），實作的是 ADR-086 的**第二次**業主裁決（架構閘那輪
+把前提更正、重開 `pending` 之後業主重新裁決的結果）。這兩個 commit **沒有走任何 gate**：
+`06-impl-log.md` 停在 IMPL-385（那則筆記本身還寫著相反的事實）、`05-tests.md` 完全沒有新增的
+`UT-335` 這一列、`rtm.md`/`02-architecture.md` 都還停在修補前的模型。`sh .sdlc/trace --check`
+2113/77，數字沒變——**不是因為沒有漂移，是因為這批改動沒有任何 ledger id，掃描工具本來就看不到**，
+這正是這輪存在的理由。
+
+Panel（`.panel/review/{adversarial,quality-dimensions}.md`）已由 workflow 重跑到 round 3，兩組都
+自己發現同一件事、繞過「只讀 `files:` 那行」的規則直接讀了實際改動的檔案。整合兩份報告時發現一處
+事實衝突：quality-dimensions 的 Violation 5（HIGH）主張修補沒有真的關掉 ADR-086 的殘留——遠端
+`workflow_register`（不帶 `triggers`）接著 `workflow_publish`，會在沒呼叫 `claim()` 的情況下把
+新腳本跑起來。**沒有照單全收，直接讀了真正的守門邏輯查證**：`workflow-catalog.ts` 的
+`declaresTrigger()`/`declaredTriggers()` 掃描的是**這個工作流程名稱底下所有曾經註冊過的版本**，不是
+只看目前發布的版本；`mcp-facade.ts:373` 的 `const triggers = a.triggers ?? []` 讓新版本的
+`triggers` 欄位存的是 `[]` 而不是 `undefined`。兩者合起來，既有的 `NOT_IN_RELEASE` 守門
+（`released.triggers !== undefined && !released.triggers.includes(id) && declaresTrigger(...)`）
+就會擋下 quality-dimensions 描述的那條路徑——**adversarial 的 C3 是對的，quality-dimensions 的
+Violation 5 是錯的**，記錄為「複審後推翻」，不算進本輪 blocking，但 quality-dimensions 其餘 4 條
+（Violation 1–4）獨立驗證後成立。C2 也額外查證：`grep -rn "workflow_register" tests/ | grep -i
+isRemoteSubmission` 零命中，`UT-335` 只 import `SqliteSchedulerPort`，`WebhookRegistry` 零引用。
+
+**3 HIGH**：C1（`02-architecture.md:5683,5691,5413,5704-5710` 的 ARCH-182 仍寫著
+`createdRemote` 從不重新蓋章——`3e3c331` 之後已經是假的）；C2（ADR-086 自己文字預言的「第六條未上鎖
+forward」——`call-tool.ts:212`→`mcp-facade.ts:358/392`——出貨時沒鎖，獨立查證零測試覆蓋任何一跳）；
+C4/QD-1（整個切片對追溯鏈不可見——`06-impl-log.md`/`05-tests.md`/`rtm.md` 都沒動，
+`02-architecture.md:5899-5920`/`:6146` 同一則決定疊了三種互相矛盾的狀態，沒有任何取代標記）。
+
+**5 MED**：C3（pre-v24 綁定當下就認領的既有列，`claim()` 永遠不會被呼叫，自我修復碰不到——工具面對
+新列已關，`call-tool.ts:180-184` 直接查證關閉）；C5（單調規則沒有任何反向路徑，這台主機的整個觸發器
+族群都是遠端註冊、量到 `unconfined`——下一次尋常的遠端重新註冊就會永久拒絕那個觸發器，成本沒寫進
+ADR-086，跟 round 2 的 B2 同一個模式，交還業主而非這裡裁決）；C6/QD-4（`DEPLOY.md:883,908`
+直接讀取確認：操作手冊现在教操作者做一件多餘的破壞性動作，還漏講便宜路徑會不可逆地染色）；QD-2
+（本機→遠端這個轉換本身沒有稽核痕跡）；QD-3（port 加寬那個參數逃過編譯器的雙變性檢查，
+`WebhookRegistry.claim()` 的升級方向完全沒有直接測試）。
+
+**非阻擋、記為技術債**：C7（`SqliteSchedulerPort.claim()` 兩個 UPDATE 沒包在交易裡，方向安全）、
+C8（`createdRemote` 投影欄位的文件仍讀成純建立時事實）、A6/A8/B7（沿用不變，與本切片無關）。
+
+**Dashboard QA**：本專案的 `.sdlc/trace.py` 是落後 plugin 目前版本的舊 vendor 拷貝，既沒有
+`--tool` dispatch，也不解析 `module:`/`deps:`/`build:`/`owner_decision:`（`02-architecture.md`
+實際有 240 處這類宣告）。直接用 plugin 自帶的 `trace.py` 跑會重現 round 1 已經根因過的
+「5-high 工具版本假警報」（`ITEM_RE` 較寬，項目數從 2113 灌水到 2135）。在 scratch 合了一份
+`trace.py`：項目數與專案版本逐位元核對一致（2113）,額外接上 plugin 的欄位解析，用這份跑三個檢查：
+`dashboard_check` 0 high/7 mid（既有 erDiagram 假警報)/1 low（既有,無 mermaid 離線 fallback）——
+跟歷史記錄一致；`solid_check` 0 mid/10 low 不變，120 個模組；`module_check` 休眠。沒有 playwright
+（degraded，用直接讀 SoT 補）。
+
+**Validation**：`VAL-256`/`VAL-257` 都在 `3e3c331`/`2cf5f32` 之前，完全沒驗過 claim() 重新蓋章這個
+機制；`DEPLOY.md` 自己的 §5/§6 現在陳述錯誤——照這份合約自己的規則算 validation gate 的缺口。
+
+**OWNER-DEFERRAL SWEEP**：機械 grep 固定 metadata key，零活的 `pending` 標記（`rtm.md:468`／
+`01-requirements.md:1695` 是引號內的歷史敘述，非活標記；`rtm.md:468` 那句本身已經過期，併入 C4 的
+修法）。`owner_decisions=[]`。C5 形狀上等同一個還沒被標記出來的業主裁決缺口，轉交架構閘記錄+轉呈。
+
+`send_back=[architecture, impl, validation]`，12 項 `blocking_findings`（逐項可獨立執行）寫在
+`07-review.md` 的 'v37 GATE 8 round 3' 一節。`state.yaml` 用 `yaml.safe_load` 重新解析通過。全程
+未使用 `git checkout`/`restore`/`stash`。未建立 commit（留給 orchestrator）。`.panel/` 保留
+（send_back 非空）。`current_stage` 停在 `review`（未過）。
+
+## 2026-09-24 — v37 Gate 2 送回修補 round 3(architect;panel 預先跑過,只讀不重生)
+
+round-3 送回共 12 項,**本閘只執行標為 architecture 的 (1)(2)(3)(4)**,(5)–(12) 以處方形式寫在
+ARCH-182 修訂 (8f)/(8g) 上,交給同一輪的 impl / validation 兩閘執行 —— 本閘沒有動任何 `src/`、
+`tests/`、`DEPLOY.md`、`docs/`、`05-tests.md`、`06-impl-log.md`、`rtm.md`、`08-validation.md`
+(round 2 已就「三個閘同時修一棵樹」定下這個分工)。本閘通過**不代表** (5)–(12) 已完成。
+
+- **(1)** ARCH-182 的標題、`:5413` 持久化/API 表格列與「written once … never re-stamped」那句,全部改成
+  **實際出貨的機制**:provenance 在建立時蓋章,並由 `claim()` 以 **local→remote 單調**方式重新蓋章,
+  `'claimed'` 與 `'held'` 兩個結果都蓋、`'ALREADY_CLAIMED'` 永不蓋(六個 hop 本輪逐一讀過)。修訂
+  (1)/(1a)/(1b) 就地加註日期標記而不是改寫;(1b) 的「第二條具名殘留風險」依指示折疊成「以受支援方式被
+  認領的觸發器已由 2026-09-24 裁決關閉,只對 pre-v24 建立時即綁定的族群仍然成立」。
+- **(2)** ADR-086 從三個互相矛盾的狀態收斂成**一個現行狀態**條目:round-3 轉呈 → `owner_decision: pending`
+  → 現行裁決(業主原文,2026-09-23 記錄、2026-09-24 實作)→ `[SUPERSEDED 2026-09-23]` 的 round-2 待決
+  問題(含那條已被實作推翻的 `'held'` 成本估計)→ 已標記的第一次答覆。`:6146` 那句「goto pending」就地
+  **加註**而非改寫 —— 會自我改寫歷史的 ledger 無法稽核。
+- **(3)** ADR-086 的 `owner_decision` **重新打開為 pending,只問復原機制**(意圖不重開,兩個下游閘照現行
+  機制執行):`src/` 內沒有任何反向路徑、這台主機全遠端註冊且實測 `unconfined`(VAL-256),所以下一次
+  平常的遠端 `workflow_register` 只要再列一次既有觸發器 id,那個觸發器就永久被拒;連失敗的註冊也會留下
+  蓋章。四個選項 P1/P2/P3/P4 各自標好成本,並寫明「四個選項都不會讓觸發器繼續跑,業主選的是復原成本」,
+  以及「當初否決版本列方案的理由不及於 P1」。建議排序記為建議,不是裁決。
+- **(4)** pre-v24「建立時即綁定」族群的例外寫進 ARCH-182 (8c):它永遠不會進任何版本的 `triggers[]`,所以
+  `declaresTrigger()` 為假、`claim()` 永不被呼叫、自癒永不發生 —— 而且對這個族群連 `NOT_IN_RELEASE`
+  守衛也是空的,所以這是覆蓋率事實不是整潔問題。盤點查詢以 MCP 形式與 SQL 形式各寫一份給 DEPLOY.md 用。
+
+新增不變式(皆為清單項目,不新增任何 item id):**INV-V37-6**(provenance 單調,1→0 永不發生,並把
+「沒有 un-stamp 路徑」的後果與不變式寫在一起)、**INV-V37-7**(一個有兩種實作的 port,只有在一套
+conformance suite 驅動**每一個**實作時才算接好 —— 型別方案已被兩組 lens 各自實測否決,記為「否決為緩解
+手段」而不是「待辦」)。INV-V37-5 補上**第六條 forward**(`workflow_register` → `claim()`,零測試覆蓋),
+並修正其可選性條款:寬鬆預設值的緩解手段永遠不是「把參數改成必填」,而是一個從**真實工具面**驅動的測試。
+C7 由 LOW 升為 MED。以事件式 trigger 歸檔、本輪不做:`remoteStampedAt` 稽核欄、欄名重新命名、port 重新宣告
+(否決)、`declaredTriggers()` 每次觸發的掃描、未接線的 bind guard。
+
+`owner_decisions=[1]`(ADR-086)。trace 2113 items / 77 gaps,與編輯前擷取的基線逐字相同;`--check` 仍以
+既有的斷鏈退出 1(自 v27 起未變)。全程未使用 `git checkout`/`restore`/`stash`。未建立 commit。
+
+- 2026-09-24 — **v37 GATE 8 round-3 SEND-BACK REPAIR — impl slice(implementer),findings 5/6/7/8/10/11
+  完成,findings 9/12 留給 validation gate。** 本輪範圍是 ARCH-182 amendment (8f) 明確指定給 impl 的六項,
+  不重做架構切片(1-4,architect 已完成)、不動 DEPLOY.md/08-validation.md(finding 9/12 是 validation 的)。
+
+  **06-impl-log.md 新增 IMPL-386**:記錄 `3e3c331`+`2cf5f32` 兩個在任何 gate 之外落地的 commit 實際做了
+  什麼 —— `claim()` 現在在 `'claimed'` 與 `'held'` 兩種結果都會重新蓋章 `createdRemote`(單調,只能
+  local→remote,`2cf5f32` 修正了 `3e3c331` 初版的無條件覆寫,被 `confinement-unconfined-wiring.test.ts`
+  抓到;新命名為 **INV-V37-6**)。IMPL-385 的舊note描述的是修補前的模型、且明白寫著相反的話——就地標註過時,
+  不改寫原文,依循本帳本一貫的作法。
+
+  **finding 6**:UT-335(`tests/unit/claim-restamps-provenance.test.ts`)補上 05-tests.md 的行。
+  **finding 8 / INV-V37-7**:UT-335 原本只測 `SqliteSchedulerPort`,`WebhookRegistry.claim()` 的
+  local→remote 升級方向完全沒有直接單元測試鎖住;改為 `describe.each` 把既有三個 `it()` 案例同時跑在
+  兩個 store 上(六個斷言,不是新開一份檔案)——架構本身建議的「最便宜做法」。
+  **finding 7 / C2**:`workflow_register` → `claim()` 這第六條路徑上線時零回歸測試
+  (`grep -rn workflow_register tests/ | grep -i isRemoteSubmission` 之前是 0 筆)。新增兩個
+  `[LOAD-BEARING]` 案例(UT-336 排程、UT-337 webhook,皆在 `call-tool-confinement-door.test.ts`):
+  真正的 `McpFacade`+`WorkflowCatalog`+`RunManager`+store(`claim()` 未 mock),先本機建立未認領的
+  trigger,再用 `callTool({...,isRemoteSubmission:true},'workflow_register',{name,script,mermaid,
+  triggers:[id]})` 認領,斷言 `store.get(id).createdRemote === true`。本輪已實測驗證這兩個案例真的會
+  抓到迴歸:暫時把 `call-tool.ts:212` 的 `isRemoteSubmission` 引數拿掉重新跑測試,兩案例皆紅
+  (`expected false to be true`),再改回——對 `:212` 那一行淨差異是零,只有它上方的註解(finding 10)
+  被更正。
+  **finding 10**:八處過時的「建立時寫一次、之後不再更動」註解改成單調規則的正確描述——
+  `scheduler.ts:29-30`/`:212-213`/`:309`、`webhook-registry.ts:166-167`/`:188-189`/`:349-352`、
+  `call-tool.ts:259-261`,以及 `tests/integration/confinement-unconfined-wiring.test.ts:65-66`
+  (改寫為它真正釘住的「不可降級」方向——該測試自己的認領動作是本機、對一列已經
+  `createdRemote:true` 的列重新認領,正是 `2cf5f32` 要保護的那個方向)。
+  **finding 11**:`rtm.md` REQ-218 那一列(2026-09-23 B2 那條 bullet)改寫為現況事實,不重新評分——
+  `claim()` 單調重新蓋章、已修好「支援方式認領」的重新綁定殘留;pre-v24 建立時即綁定族群是唯一例外
+  (ARCH-182 (8c));ADR-086 第二次裁決已答覆並上線;第三個更窄的 `owner_decision` 仍開著,只針對
+  復原機制(`src/` 沒有任何 un-stamp 路徑,這台全遠端註冊、量測為 unconfined 的正式主機上,下一次
+  普通的遠端重註冊就會永久拒絕該 trigger 的每一次未來觸發,今天唯一的復原方式是刪除重建)——這個
+  `pending` 是架構 gate 這一輪重新開的,本次未變動、未新增。
+
+  `npx tsc --noEmit` 乾淨;`npx vitest run tests/unit tests/integration`:378 files / 2961 tests
+  通過、1 skip、0 failed(314.48s)。trace:2113/77(編輯前基線,架構 round-3 自己回報的數字)→
+  2117/77(+4 = UT-335 + UT-336 + UT-337 + IMPL-386),缺口「數量」不變(仍 77,`--check` 仍以自 v27
+  起未變的既有斷鏈退出 1)——磁碟上沒有編輯前的乾淨缺口「集合」快照可逐項比對,故此為數量比對,非集合
+  diff。全程未使用
+  `git checkout`/`restore`/`stash`。未建立 commit(留給 orchestrator)。`owner_decisions=[]`——本次
+  未新增任何 owner_decision。
+
+- 2026-09-24 — **v37 GATE 8 round-3 SEND-BACK REPAIR — validation slice(validator),findings 9/12
+  完成,PASSED,next stage review(Gate 8 re-review)。** 範圍是 ARCH-182 amendment (8g) 明確指定給
+  validation 這一閘的兩項,不重做架構切片(1-4)、不重做 impl 切片(5/6/7/8/10/11,直接讀原始碼/
+  ledger 確認已落地)。
+
+  **開機**:自己的 scratch 實例(port 8793、獨立 workRoot 在 session scratchpad 外、`./deploy.sh
+  --background`),production 8899 全程未動(`ss -ltnp` 前後比對)。boot log 版本字串
+  `v0.20.0-450-g2cf5f32` 確認兩個修補 commit 都在跑的 build 裡;`tools/list` 回 35 個工具(delivery
+  interface 真跑確認,retro L-003)。
+
+  **finding 9(DEPLOY.md)**:`:883`(§5)與 `:908`(§6)兩處「建立時寫一次、之後不再更動」的敘述改寫成
+  實際機制——建立時蓋章、之後每次 `claim()` 認領/重新認領都會再蓋一次章(只能本機→遠端,單調);
+  最便宜的「拿回覆蓋率」手段改成:讓一個遠端呼叫者對既有 id 做一次 `workflow_register`+`publish`
+  即可,不必刪除重建、不必換 webhook secret;新增不可逆警告(`src/` 沒有任何路徑能把欄位寫回
+  `false`,復原只能刪除重建,代價目前掛在 ADR-086 第三個 `owner_decision` 下);新增 pre-v24 建立時
+  綁定族群的例外與辨識查詢。
+
+  **finding 12(VAL-258)**:同一個 scratch 實例上,排程與 webhook 都做了三件事的真跑驗證——
+  (a) 升級:本機建立→本機認領(`'claimed'`)→**遠端**重新註冊同一個觸發器 id(`'held'` 分支)
+  把 `createdRemote` 從 `false` 翻成 `true`,下一次觸發/送達被拒;(b) 不降級:遠端建立→本機認領→
+  本機重新註冊,`createdRemote` 全程保持 `true`(INV-V37-6 端到端成立);(c) pre-v24 族群:用
+  `better-sqlite3` **直接寫入**一筆真正 pre-v24 形狀的列(`workflow` 有值、`claimedBy` 是
+  `NULL`——這是 `ALTER TABLE ... ADD COLUMN claimedBy` 對升級前既有列留下的形狀,**不是**
+  store 自己的 `create({workflow})` 相容路徑,那條路徑會把 `claimedBy` 立刻設成 `workflow`,是不同
+  的形狀,用它測會測錯族群),證明一次遠端 `workflow_register`(`triggers:[]`,不宣告這個舊 id)
+  完全不會碰到這一列,而且它照樣能透過舊式綁定真的觸發一次被完整放行的 run——即使那個工作流程剛剛
+  才被遠端註冊過。這是 (1b)/(8c) 具名殘留風險的真實重現,不是照抄文件。
+
+  **意外發現並記錄的落差(不在這一閘範圍內,不自己動手改架構文件)**:ARCH-182 修訂 (8c) 給的
+  「MCP 查法」(拿 id 去比對 `workflow_describe({name}).triggers[]`,「不在裡面」代表屬於這個族群)
+  實測**不成立**——`McpFacade._resolveTriggers()`/`claimedIdsFor()` 刻意把「版本宣告的」跟「目前綁定
+  的」兩種來源合併顯示(為了讓 legacy 列在這個畫面上看得見),所以 legacy 觸發器**永遠不會**「不在
+  裡面」。同一條修訂給的兩個 SQL 查法(排程用 `claimedBy IS NULL`;webhook 用 `ATTACH`+
+  `json_each` 對 `workflow_versions.triggers`)則對同一筆種入的列**驗證正確**。DEPLOY.md §6 的辨識
+  查詢因此只採用驗證過的 SQL 查法(這台主機沒有 `sqlite3` 指令,另外補了等價的 `better-sqlite3`
+  node 一行版本,一併記錄這個環境缺口),並老實寫明排程有 MCP-only 替代查法(`schedule_list` 的
+  `claimedBy:null`+`workflow` 有值)而 webhook 目前沒有。這個落差寫進本次的 `needs_clarification`,
+  留給下一個會動到架構文件的 gate 去修 (8c) 的文字,這一閘不動手改。
+
+  `rtm.md` REQ-218 那一列補上 `IMPL-386`/`UT-335`/`VAL-258`(編輯前後都驗證 8/8 欄)。本次沒有動到
+  任何 `src/`/`tests/` 檔案,所以沒有重跑 `npx tsc`/`npx vitest`(沒有東西可能被本輪改壞)。設定檔
+  同步檢查:`createdRemote` 是 SQLite 欄位,不是設定鍵;`git diff --stat rwe.config.example.json`
+  是空的,本輪沒有、也不需要動設定檔。
+
+  **advisor 覆核後追加的第二個落差(自己動手重測,沒有照抄 (8c) 就寫進文件)**:advisor 指出
+  「這個殘留沒有自癒路徑,只能刪除重建」這句我還沒實測過。重新開機同一個 scratch 實例(同一份
+  config/workRoot,種入的列跟已發布的 v1 都還在),讓一個**遠端**呼叫者對排程/webhook 兩個 legacy
+  列各做一次**明確把這個舊 id 列進 `triggers[]`** 的 `workflow_register`+`publish`——兩邊都成功
+  認領(`claimedBy` 從 `null` 變成有值、`createdRemote` 從 `false` 變成 `true`),證明 (8c)「只能刪除
+  重建」也是錯的:明確列出這個舊 id 做一次認領就夠了,不必刪除重建、不換 id/secret。DEPLOY.md §6
+  改寫成這個實測過的復原手段(不是抄 (8c) 的文字),`needs_clarification` 也補上這第二個落差。證據:
+  `evidence/v37/val258c-remediation-test.{mjs,log}`。
+
+  **mock_census 補跑(advisor 指出這欄不能留白猜數字)**:`python3` 把 `trace.py` 當函式庫載入,
+  `scan()`+`analyze()`+`reachable_from_pred(is_real_test)` 對全部 179 個 REQ 級項目實際跑一次:
+  `verified-real=162 / mock-only=0 / unverified=17`(跟本迭代每一輪一樣的 REQ-153..169,零新增);
+  REQ-218/219/018/037/117 五個逐一確認都落在 `verified_real` 集合裡,沒有一個是 mock-only。
+
+  trace:2117/77 → 2118/77(+1 為新增的 VAL-258,缺口數量不變,grep 確認 VAL-258/IMPL-386/UT-335
+  沒有出現在缺口清單裡)。scratch 實例已停(兩次開機都 `kill $(cat <scratch>/.rwe.rwe.val258.config.pid)`,
+  port 8793 確認兩次都已釋放);production 8899 的 PID 全程未變、未被動過。`owner_decisions=[ADR-086`
+  第三個 `owner_decision: pending`(只針對復原機制,P1~P4),原封不動從架構閘帶過來,本閘未裁決`]`。
+  `needs_clarification=[ARCH-182 (8c)`的「MCP 查法」寫錯,「只能刪除重建」也寫錯,見上`]`。全程未使用
+  `git checkout`/`restore`/`stash`。未建立 commit(留給 orchestrator)。

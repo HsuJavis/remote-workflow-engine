@@ -13579,3 +13579,228 @@ latent hazard (unchanged, out of this iteration's touched-file scope).
 it.
 
 *Reviewer: Gate 8, 2026-09-23, re-review round 2 (send-back).*
+
+---
+
+## v37 GATE 8 round 3 (re-review, 2026-09-24)
+
+**What changed since round 2's PASS-track (architecture/impl/validation) closed all of B1–B7.**
+Every round-2 finding is verified CLOSED on disk this round (re-confirmed independently, not
+inherited — see the panel reports' own Part 1 tables). But two commits landed on `master` AFTER
+the round-2 repair closed and AFTER the architect/implementer/validator gate notes were written,
+implementing the owner's SECOND ruling on ADR-086 (「在 `claim()` 重新蓋章」, itself a correction of
+the round-2 architecture repair's own premise): `3e3c331` (`claim()` re-stamps trigger provenance)
+and `2cf5f32` (fix: the re-stamp made monotonic, after a test caught a real regression — a naive
+overwrite would have let a local re-registration launder a remotely-created webhook). These two
+commits touch `src/mcp-facade.ts`, `src/call-tool.ts`, `src/scheduler.ts`, `src/webhook-registry.ts`
+and add `tests/unit/claim-restamps-provenance.test.ts` (UT-335) — a security-relevant behavior
+change on the exact predicate this iteration's Gate 8 exists to check — and **they were not run
+through any gate**: no `06-impl-log.md` entry, no `05-tests.md` entry, no `rtm.md` update, no
+`journal.md` entry, no `state.yaml` gate-note update. `trace --check` cannot see this drift (2113
+items / 77 gaps, unchanged, all 77 pre-existing) precisely *because* the work carries no ledger id
+for the tool to compare — the drift is real and it is invisible to the mechanical check, which is
+why this round exists.
+
+**Panels re-spawned per the workflow's own instruction** (not by me — `.panel/review/{adversarial,
+quality-dimensions}.md` were already round-3 when this dispatch started), scoped past the stale
+`files:`-line rule for exactly this reason (both panels independently noticed the same gap and
+read the actual changed files via `git show`/on disk instead of skipping the slice). I consolidate
+them below and independently re-verified the one place they disagreed.
+
+### Architecture-consistency findings (consolidated, both groups)
+
+**Adversarial (security/scalability/testability) — round 3, `consistent: no`, 2 HIGH / 4 MED / 2 LOW
+new (C1–C8) + 3 carried (A6, A8, B7 — all deferred/pre-existing, unchanged).**
+**Quality-dimensions — `consistent: no`, 5 violations across 4 dimensions (Observability ×2,
+Replaceability ×1, Consumability ×1, Self-sustainability ×1).**
+
+**One factual conflict between the two panels, resolved by independent verification (not taken on
+either panel's word):** quality-dimensions' Violation 5 (HIGH) claims the shipped fix does not
+close ADR-086's residual (1b) because a remote `workflow_register({name:'wf-a', script:<bad>})`
+**without** re-listing an already-owned trigger id, followed by `workflow_publish`, would run the
+new script unconfined without ever calling `claim()`. **I read the actual guard chain
+(`src/workflow-catalog.ts:355-368` `declaresTrigger()`/`declaredTriggers()`, `src/server.ts:1003`'s
+ticker guard, `src/webhook-registry.ts:336`'s delivery guard, `src/mcp-facade.ts:373`'s
+`const triggers = a.triggers ?? []` feeding `insertVersion`) and confirmed adversarial's C3 is
+correct and quality-dimensions' Violation 5 is not:** `declaredTriggers()` scans **every** version
+row ever inserted for the workflow name, not just the released one, so a trigger id declared in
+`v1` is still `declaresTrigger()===true` after a `triggers`-less `v2`; the release version's own
+`triggers` column is `[]` (not `undefined`, per `mcp-facade.ts:373`), so the `NOT_IN_RELEASE` guard
+(`released.triggers !== undefined && !released.triggers.includes(id) && declaresTrigger(...)`)
+fires and refuses the firing — the exact scenario QD's Violation 5 describes is caught by a
+pre-existing v24 guard, not left open. **Quality-dimensions' Violations 1–4 remain valid** (verified
+independently below) and its Violation 5 is recorded here as reviewed-and-refuted so a future reader
+does not re-derive the same wrong alarm. I also independently re-verified C2's evidence (`grep -rn
+"workflow_register" tests/ | grep -i isRemoteSubmission` → **0 hits**; `grep -n "WebhookRegistry"
+tests/unit/claim-restamps-provenance.test.ts` → **0 hits**, only `SqliteSchedulerPort` is imported)
+and DEPLOY.md's C6/QD-Violation-4 text (`DEPLOY.md:883,908`, read directly — both sentences are
+exactly as described, still asserting creation-immutability and prescribing delete-and-recreate as
+the only remedy).
+
+**Consolidated findings, my own severity (both panels' input weighed, not copied verbatim):**
+
+- **HIGH — C1 (architecture doc contradicts shipped code, inverse of round-2's B2).** ARCH-182's
+  header/`api`/persistence-table row (`02-architecture.md:5683,5691,5413`) and amendment (1)
+  (`:5704-5710`) still state `createdRemote` is "written once by the `INSERT` and never re-stamped
+  by any later attachment event (`claim()`, `workflow_register`, `workflow_publish`)" — false since
+  `3e3c331`. The owner ruling and `04-design.md`'s DES-263 amendment moved; `02-architecture.md` did
+  not.
+- **HIGH — C2 (the sixth forward ADR-086 itself predicted, shipped unlocked, zero regression
+  coverage).** `call-tool.ts:212 → mcp-facade.ts:358(isRemoteSubmission default `false`) →
+  mcp-facade.ts:392(`claim(...,createdRemote?)`, optional, bivariance-exempt per the port's own
+  comment)` — independently confirmed **zero** test anywhere drives `workflow_register` with
+  `isRemoteSubmission`; deleting the third argument at any of the three hops leaves the full suite
+  green. This is the same bug class this repo's own memory names four times (v11
+  `updateFlagPath`, v15 auth, v37 A5, v37 B1) and the one thing that has ever caught it is a hop
+  lock, which was not added this round.
+- **HIGH — C4/QD-Violation-1 (the slice is invisible to the traceability chain the SDLC exists to
+  produce).** `06-impl-log.md` ends at IMPL-385, whose own note states the *opposite* of what
+  `3e3c331`/`2cf5f32` do; `05-tests.md` has zero mentions of `UT-335`; `rtm.md:455-468` still reads
+  the pre-fix model and says the residual was "re-opened as ADR-086's `owner_decision: pending`" —
+  both now false; `02-architecture.md:5899-5920`/`:6146` interleave THREE inconsistent states of the
+  same decision in one entry (the architect's pending-phrased corrected-premise text, the "goes back
+  to `pending`" sentence, and the owner's "answered 2026-09-23(第二次)" ruling two paragraphs later)
+  with no supersession marker. A reviewer or future agent reading the ledger top-to-bottom today does
+  not learn this fix exists.
+- **MED — C3 (self-heal does not reach the pre-v24 legacy-binding cohort — bounded, documented
+  nowhere).** `schedule_create({workflow})`/`webhook_create({workflow})` is closed on the tool
+  surface for NEW rows (verified directly, `call-tool.ts:180-184`) but the store's own
+  `create({workflow})` is unchanged for existing rows bound that way pre-v24: such a row is its own
+  claim from birth, `claim()` is never called on it, and `declaresTrigger()` is false for it (never
+  entered any version's `triggers[]`), so the `NOT_IN_RELEASE` guard is also skipped. ADR-086's
+  residual (1b) genuinely survives for this specific, identifiable, already-named cohort (the same
+  one `DEPLOY.md` §6 already tells the operator to sweep).
+- **MED — C5 (the monotonic rule's availability cost was never costed, and this host is one routine
+  action away from paying it).** `stamp()` is local→remote only, with **no un-stamp path anywhere in
+  `src/`** (grep-confirmed). This production host's entire trigger catalog is registered remotely and
+  measures `unconfined` (VAL-256's own evidence). The next ordinary remote `workflow_register` that
+  re-lists an already-owned trigger id (a routine re-publish, not an attack) permanently flips that
+  trigger to `createdRemote=1`; every subsequent firing is then refused `CONFINEMENT_UNAVAILABLE`
+  forever, with no DEPLOY.md row explaining why or how to recover. This is the same pattern as
+  round-2's B2 — a ruling costed without a consequence that only surfaces once the code is read —
+  and it is this gate's job to hand the corrected premise back, not to decide it.
+- **MED — C6/QD-Violation-4 (DEPLOY.md now gives backwards operator remediation).** `DEPLOY.md:883`
+  and `:908` both assert `createdRemote` is fixed forever at creation, and `:908` — the sweep
+  instruction ADR-086 itself promised — tells the operator the *only* remedy for the zero-coverage
+  legacy cohort is deleting and recreating every trigger, which a plain remote re-registration would
+  now already fix, while omitting that the cheap path (C5) taints irreversibly. Read directly,
+  confirmed exactly as both panels describe.
+- **MED — QD-Violation-3 (port widening not compiler-enforced; `WebhookRegistry`'s upgrade direction
+  has no direct test).** `TriggerClaimStore.claim()`'s third parameter is optional, and TypeScript's
+  method-parameter bivariance means a narrower future implementation (or a regression in either
+  existing store) type-checks silently. Independently confirmed: `UT-335` imports and exercises
+  `SqliteSchedulerPort` only — zero references to `WebhookRegistry` in that file. If
+  `WebhookRegistry.claim()`'s `stamp()` call regressed to a no-op, no test in the suite would fail.
+- **Recorded as tech debt, not blocking:** QD-Violation-2 (the local→remote transition itself is
+  unaudited — no timestamp/actor/log line; a real gap, but operability/forensics rather than an open
+  admission hole, and ARCH-182 does not currently promise this field the auditability guarantee it
+  promises a sibling field); C7 (re-stamp not compensated on a failed registration — safe direction
+  by construction; `SqliteSchedulerPort.claim()`'s two UPDATEs run outside a transaction while
+  `WebhookRegistry`'s twin wraps them — single synchronous connection, so unmeasurable today, worth
+  one comment); C8 (the `createdRemote` field name/projection docs at both read sites still describe
+  pure creation provenance, which is no longer accurate — cheap doc fix, not a mechanism); A6/A8
+  (carried forward, unrepaired, unrelated to this slice, unchanged since round 1); B7 (deferred to
+  v38 by the architect's own explicit ruling with a corrected mechanism — not a defect of this
+  round). **QD's Violation 5 is recorded as reviewed-and-refuted, not as debt** (see above).
+
+**Credit, both panels gave it and I confirm it on the diff:** the wire boundary now emits `code` +
+static catalog text, never `err.message`; `admissionErrorToOutcome()` is pure and lives beside the
+predicate it classifies; and the monotonic correction in `2cf5f32` is genuinely good engineering — a
+real test caught a real regression (a naive overwrite would have laundered a remotely-created
+webhook through a local re-registration) before merge, and the fix is documented with what the first
+draft got wrong rather than silently folded in.
+
+### Traceability / dashboard / module-boundary
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: **2113 items / 77 gaps**,
+unchanged from round 2's post-repair baseline. Loaded `trace.analyze()` as a library and confirmed
+by type: 15 HIGH (all pre-existing `IMPL-303..311`/`UT-264/265`/`IMPL-323` broken links, 0 touching
+this iteration's ids), 36 MID + 26 LOW (pre-existing drift/TDD/未實作 debt, oldest dated v6–v28,
+0 touching v37), 17 未驗證 (all `REQ-153..169`, pre-existing, unrelated), **0 未真實驗證** anywhere.
+`--check` exits 1 on the same 77 as every round since v36 — **as established above, this count
+cannot and does not reflect the claim()-restamp slice, because that slice carries no ledger id for
+the scanner to see.**
+
+**Dashboard QA — degraded tooling, worked around, result matches history.** This project's
+`.sdlc/trace`/`trace.py` is a **stale vendor copy** that predates the plugin's `--tool` dispatch
+entirely (no `dashboard_check`/`solid_check`/`module_check` routing, and it lacks the `module`/
+`deps`/`build`/`owner_decision`/`flag` field-parsing the plugin's current `trace.py` has — this is
+itself worth a v38 sync so the documented `sh .sdlc/trace --tool …` commands actually work in this
+ledger). Running the plugin's checker scripts against the plugin's *own* bundled `trace.py` instead
+reproduces the exact **5-HIGH tool-version artifact round 1 root-caused** (item-count drifts from
+2113 to 2135 because the plugin's `ITEM_RE` matches `##`/`####` headings the project's regex
+deliberately excludes — the project's own comment explains why). To get an accurate signal I built
+a merged `trace.py` in scratch (project's `parse_file`/`ITEM_RE` — verified byte-for-byte item-count
+match, 2113 — plus the plugin's `module`/`deps`/`build`/`owner_decision`/`flag` field parsing spliced
+in, since `02-architecture.md` has 240 `module:`/`build:`/`deps:` declarations that the project's
+stale parser silently drops) and ran the checkers against that:
+- `dashboard_check`: **0 high / 7 mid / 1 low** — the 7 mid are the accepted erDiagram crow's-foot
+  bracket-balance false positive (unchanged since round 1); the 1 low is the accepted "vendored
+  trace.py, no mermaid offline fallback" debt (unchanged). Matches the history this ledger has
+  recorded every round.
+- `solid_check`: **0 mid / 10 low** (unclaimed-file warnings, unchanged) — module boundaries hold,
+  120 modules, dependencies as declared in `02-architecture.md`.
+- `module_check`: dormant (no ARCH-* declares `build:`).
+- **No playwright available this session** — degraded, same as every prior round; mitigated by the
+  direct data-parse re-verification above (SoT `file:line` targets resolved by reading the ledger
+  directly, not just trusting the tool).
+
+### Validation & handover
+
+`08-validation.md` has `VAL-256`/`VAL-257` (`real:true`) for REQ-218's four admission-route cells,
+including the B4 wire-shape fix re-proof — both predate `3e3c331`/`2cf5f32` and neither exercises the
+claim()-restamp mechanism at all. **No real-tier evidence exists for the second ADR-086 ruling.**
+`README.md`/`DEPLOY.md` are present, current-state (no gate/finding-name leakage per the round-2
+validation repair, re-checked), and `DEPLOY.md` leads with a working one-command deploy (unchanged,
+not touched this round) — but **`DEPLOY.md`'s own §5/§6 rows are now factually wrong** (C6, above),
+which is itself a validation-gate finding per this contract's own rule (a manual carrying stale
+instructions is a finding, sent back to Gate 7.5). Mock hard-rule: 0 未真實驗證 gaps, confirmed above.
+
+### Owner-deferral ledger sweep (issue #15)
+
+Mechanical sweep (`grep -rn "owner_decision"`, reconciled on the fixed metadata-key shape, never on
+prose): **zero live `- **owner_decision:** pending` markers** across `01`–`08`. `rtm.md:468` and
+`01-requirements.md:1695` contain the string `owner_decision: pending` inside historical/citational
+prose (describing what a prior round did, in backticks) — not a live marker; `rtm.md:468`'s instance
+is additionally now stale (see C4) and is folded into that finding's fix, not counted as a pending
+decision here. **`owner_decisions: []`** for this report's mechanical field. **C5, above, is
+functionally the same shape as a `pending` owner decision that hasn't been marked as one yet** — the
+second ADR-086 ruling was costed without its availability consequence — and is routed to the
+architect to record + relay, per this ledger's own established pattern (round 2's B2 handled the
+same way). This is reported as an architecture-consistency finding, not retroactively invented as a
+marker I do not have authority to write.
+
+### Special-file review
+
+`git log --name-only 76ac20d..HEAD | grep -iE "CLAUDE\.md|AGENTS\.md|SKILL\.md"` → zero hits. N/A
+this round.
+
+### Send-back
+
+**`arch_consistent: no`.** Three HIGH (C1, C2, C4/QD-1) and five MED (C3, C5, C6/QD-4, QD-2, QD-3)
+findings, all traced to the same two un-gated commits. None of round 2's own findings regressed —
+every one of B1–B7 is independently re-verified closed. **`send_back: [architecture, impl,
+validation]`** — the same three gates round 2 used, because the shape of the problem is identical:
+architecture's document doesn't match the shipped decision, impl shipped a security-relevant change
+with no ledger trace and an unlocked forward, validation's real-tier evidence and operator manual
+don't cover the new mechanism. See `blocking_findings` for the itemized, gate-scoped list (12
+items) — each is actionable standalone and is the repair agent's entire scope, per this contract's
+own rule.
+
+**Retro.** Round 2's repair gates worked: everything they closed stayed closed. The defect this round
+is process, not engineering — the `2cf5f32` monotonic fix is good work, caught by a real test,
+documented honestly about what the first draft got wrong. What failed is that a security-relevant
+predicate changed **after** the gate sequence that was supposed to review it, outside any gate, and
+the ledger (impl log, test spec, RTM, architecture doc, operator manual) simply didn't move with it —
+exactly the failure mode this contract's own Observability check exists to catch, and exactly why
+`06-impl-log.md`'s purpose statement ("internal state of the build process observable at any time")
+is not decorative. **Going forward:** when a fix lands to correct an owner ruling made under a wrong
+premise, it still needs an IMPL row and a test-spec row even if — especially if — the agent doing it
+is "just implementing what the owner already decided." The second, harder lesson is QD's Violation 5:
+a plausible-sounding security finding turned out to be wrong once the actual guard chain was read: the
+same rigor this ledger asks of implementers (test the real interface, don't guess) applies to
+reviewers checking reviewers.
+
+`.panel/` LEFT IN PLACE (`send_back` non-empty) — the re-run gates and the next re-review need it.
+
+*Reviewer: Gate 8, 2026-09-24, re-review round 3 (send-back).*

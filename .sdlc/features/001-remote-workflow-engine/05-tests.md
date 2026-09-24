@@ -16452,6 +16452,57 @@ absence would leave UT-332/UT-333 provable by a stamp-always-1 regression (e.g. 
 `deps.isRemoteSubmission === true` ternary at `call-tool.ts:262`/`:271` in favour of a bare
 `true`) — the negative case a 2×2 truth table needs to actually distinguish the two branches.
 
+### UT-335 — `claim()` re-stamps trigger provenance monotonically (local→remote), parametrized over BOTH `SqliteSchedulerPort` and `WebhookRegistry` (ADR-086's second owner ruling)
+- **status:** green (2026-09-24, implementer)
+- **traces:** DES-263, ADR-086, ARCH-182, REQ-218
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v37
+
+File: `tests/unit/claim-restamps-provenance.test.ts`. v37 Gate-8 round-3 send-back repair (findings
+5/6/8). Three `it()` cases run via `describe.each` over both trigger stores (finding 8,
+INV-V37-7 — the first draft of this file exercised `SqliteSchedulerPort` only, leaving
+`WebhookRegistry.claim()`'s own upgrade direction with no direct unit lock): (1) `[LOAD-BEARING]`
+created locally then `claim()`ed by a remote registration → `createdRemote` reads `true`; (2)
+`[LOAD-BEARING]` the `'held'` outcome (an ordinary re-registration onto an already-owned trigger)
+re-stamps too — this IS the re-registration path ADR-086's second ruling closes, so stamping only
+`'claimed'` would not have fixed it; (3) `'ALREADY_CLAIMED'` (a different workflow's row) never
+re-stamps. Six assertions total (3 cases × 2 stores), all green.
+
+### UT-336 — `workflow_register` with `isRemoteSubmission:true` re-listing an EXISTING locally-owned SCHEDULE trigger id upgrades it to `createdRemote:true`, through the real `callTool()` dispatch
+- **status:** green (2026-09-24, implementer)
+- **traces:** DES-263, ADR-086, ARCH-182, REQ-218
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v37
+
+File: `tests/unit/call-tool-confinement-door.test.ts` (extended). v37 Gate-8 round-3 send-back
+repair, finding 7 (architecture's finding C2, INV-V37-5 amendment): the sixth forward
+`workflow_register`→`claim()` opens shipped with ZERO regression coverage —
+`grep -rn 'workflow_register' tests/ | grep -i isRemoteSubmission` returned 0 hits before this test.
+`[LOAD-BEARING]`: a real `McpFacade`+`SqliteSchedulerPort`+`WorkflowCatalog`+`RunManager` (no fake
+`claim()`), a schedule trigger created locally and unclaimed, then
+`callTool({...,isRemoteSubmission:true}, 'workflow_register', {name,script,mermaid,triggers:[id]})`
+— asserts `scheduler.get(id).createdRemote === true`. Independently re-verified this round: deleting
+the `isRemoteSubmission` argument at `call-tool.ts:212` turns this RED (confirmed by temporarily
+reverting the call site and re-running — reverted immediately after, no net diff).
+
+### UT-337 — `workflow_register` with `isRemoteSubmission:true` re-listing an EXISTING locally-owned WEBHOOK trigger id upgrades it to `createdRemote:true`, through the real `callTool()` dispatch
+- **status:** green (2026-09-24, implementer)
+- **traces:** DES-263, ADR-086, ARCH-182, REQ-218
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v37
+
+File: `tests/unit/call-tool-confinement-door.test.ts` (extended). UT-336's webhook twin — same
+finding 7, exercising `WebhookRegistry.claim()` instead of `SqliteSchedulerPort.claim()` through the
+identical `callTool()` path, so a regression that drops `createdRemote` from the
+`mcp-facade.ts:392` `claim()` call (which both stores share one call site for) is caught from either
+store's side.
+
 ### IT-304 — `createServer({confinementPosture:'unconfined'})` wires the posture into the REAL `RunManager` end to end: a webhook delivery whose trigger was `createdRemote:true` is refused `CONFINEMENT_UNAVAILABLE`
 - **status:** green (2026-09-23, implementer)
 - **traces:** ARCH-182, TASK-258, REQ-218
@@ -16484,3 +16535,12 @@ would have failed had it been written before the fix, and passed vacuously with 
 when the `DeliverResult` carries one — also fixes the pre-existing 409 arm the same way). So: one
 production line WAS needed, contrary to this row's first-draft note above — corrected here rather
 than silently amended, since "no production change needed" was itself briefly wrong.
+
+**Amendment (2026-09-24, Gate-8 round-3 impl slice — finding 10's ledger twin):** the paragraph
+above's "per the Gate-8 round-2 correction that re-attachment never re-stamps `createdRemote`" is
+**false since `3e3c331`+`2cf5f32`** — `claim()`'s `'held'` outcome now re-stamps monotonically
+(local→remote only, INV-V37-6). This test's own registration is a LOCAL re-claim of a row already
+seeded `createdRemote:true`, which is exactly the NO-DOWNGRADE direction `2cf5f32` protects, so the
+test's assertion still passes for the same reason it always did — only the reason-stated-in-prose was
+stale. See `UT-335`/`UT-336`/`UT-337` and `IMPL-386` for the current mechanism and its own regression
+locks.

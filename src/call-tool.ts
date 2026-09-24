@@ -256,9 +256,11 @@ export async function callTool(
       const raw = a as unknown as Partial<NewSchedule> & Record<string, unknown>;
       const withKind = (raw.kind === undefined ? { ...raw, kind: 'cron' } : raw) as NewSchedule;
       const enabled = raw.enabled === undefined ? true : raw.enabled;
-      // v37 (ARCH-182, DES-263, TASK-258): written ONCE at creation from the SAME
-      // isRemoteSubmission the door (DES-262) already reads — both tools are dispatched inside
-      // this file, which already holds the flag, so no new plumbing to the HTTP layer.
+      // v37 (ARCH-182, DES-263, TASK-258): the creation stamp, from the SAME isRemoteSubmission
+      // the door (DES-262) already reads — both tools are dispatched inside this file, which
+      // already holds the flag, so no new plumbing to the HTTP layer. `claim()` (invoked from
+      // `workflow_register`, `:212` below) re-stamps this monotonically afterwards — this is not
+      // the only writer.
       return deps.scheduler.create({ ...withKind, enabled, createdBy, createdRemote: deps.isRemoteSubmission === true });
     }
     case 'schedule_list': return { result: scopeToActor(await deps.scheduler.list(), principal, actor) };

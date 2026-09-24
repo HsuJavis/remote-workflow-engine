@@ -10314,7 +10314,11 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   `webhooks.db` row with `createdRemote:true` directly at the `webhookDbPath` the server will open
   (before the server opens it, same idiom `scheduler-migration.test.ts` uses), registers+publishes
   the pre-claimed workflow name (exercising `claim()`'s `'held'` branch, per the Gate-8 round-2
-  correction that re-attachment never re-stamps `createdRemote`), then delivers a correctly-signed
+  correction that re-attachment never re-stamps `createdRemote`
+  **[2026-09-24 round-3 更正:自 `3e3c331`+`2cf5f32` 起為假 —— `claim()` 現在在 `'held'` 也會重新蓋章
+  `createdRemote`(單調,只能 local→remote)。這個測試本身的認領是本機對一列已 `createdRemote:true`
+  的觸發器重新註冊,剛好落在「不可降級」方向上,所以它當時的斷言仍然通過,但引用的機制描述是舊的;
+  現行機制見 IMPL-386。]**), then delivers a correctly-signed
   webhook POST and asserts `403` with no `maxConcurrentRuns`/posture leak in the body. Both were
   GREEN on first run — the wiring these tests exercise was already correct; they close a coverage
   gap, not a defect. `IT-303` (`webhook-remote-origin.test.ts`) was also amended: its `[LOAD-BEARING]`
@@ -10327,7 +10331,10 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   **B5 (impl) — five comments asserting a fact about the code that the code no longer makes true**
   (REQ-218's own rule: a comment either cites the line that makes it true or is deleted).
   `webhook-registry.ts:315` ("what decides is who ATTACHED the trigger") →corrected to "who CREATED
-  the trigger ROW ... never re-stamped by a later attachment event". `server.ts:812` ("the ONE
+  the trigger ROW ... never re-stamped by a later attachment event"
+  **[2026-09-24 round-3 更正:這句「never re-stamped」自 `3e3c331`+`2cf5f32` 起為假,該行(現為
+  `deliver()` 內、行號已因後續編輯偏移)已在 IMPL-386 這一輪再次改寫為單調重新蓋章規則。]**.
+  `server.ts:812` ("the ONE
   predicate every admission route (not just tools/call) passes") → corrected to name `start()`-driven
   routes specifically and that `run_resume` stays covered by the door alone (mirrors
   `run-manager.ts`'s own `admissionRefusal()` doc comment, which carried the identical false claim
@@ -10354,7 +10361,12 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   named only `run_start`/`run_resume`) and (ii) a new §6 upgrade-section bullet stating plainly that
   the `createdRemote` cohort, UNLIKE the schema-rebuild migration next to it, needs an OPERATOR
   ACTION (delete+recreate, since `claim()`/`workflow_register`/`workflow_publish` never re-stamp the
-  column) to gain any coverage — paired with B3's schema addition per the architecture row's own
+  column) to gain any coverage
+  **[2026-09-24 round-3 更正:這兩行 DEPLOY.md 敘述自 `3e3c331`+`2cf5f32` 起為假,且「刪除重建」已不是
+  唯一補救——一次普通的遠端 `workflow_register` 重新列出既有 id 即可升級覆蓋率,但會永久性地把該
+  trigger 標記為 remote(無 un-stamp 路徑)。改寫這兩行是 ARCH-182 (8g) 交給 VALIDATION gate 的
+  finding 9,本輪(impl 切片)未動 DEPLOY.md。]**
+   — paired with B3's schema addition per the architecture row's own
   "not separable" instruction. `main.ts:560`'s boot banner was checked and left alone: it already
   reads generically ("remote run submissions") without naming a fixed route list, so it was not
   stale.
@@ -10402,3 +10414,115 @@ F13 本質上是渲染問題,單元層看不到 DOM。
 
   No `owner_decision` newly deferred by this dispatch — ADR-086's `pending` marker (re-opened by the
   architecture gate, not by this one) is unchanged and untouched here.
+
+### IMPL-386 — v37 Gate-8 round-3 SEND-BACK REPAIR (impl slice, findings 5/6/7/8/10/11): `claim()` re-stamps `createdRemote` monotonically local→remote — ledger entry for `3e3c331`+`2cf5f32`, the missing regression lock (finding 7/C2), the webhook-twin unit coverage (finding 8/INV-V37-7), eight stale comments corrected (finding 10), rtm.md's REQ-218 row updated to current-state facts (finding 11)
+- **status:** done
+- **traces:** DES-263, ADR-086, ARCH-182, TASK-258, REQ-218
+- **greens:** UT-335, UT-336, UT-337
+- **files:** src/mcp-facade.ts, src/call-tool.ts, src/scheduler.ts, src/webhook-registry.ts, tests/unit/claim-restamps-provenance.test.ts, tests/unit/call-tool-confinement-door.test.ts, tests/integration/confinement-unconfined-wiring.test.ts, rtm.md
+- **commit:** (uncommitted at write time)
+- **iter:** v37
+- **note:** this gate's ONLY objective is the six findings 02-architecture.md's ARCH-182 amendment
+  (8f) prescribed to the impl slice of the v37 Gate-8 round-3 send-back (findings 9/12 are the
+  VALIDATION gate's — not touched here, not redone). Findings 1-4 (architecture) were already closed
+  before this dispatch started (verified via `gates.architecture`'s note in `state.yaml`, not
+  redone).
+
+  **What `3e3c331`+`2cf5f32` actually shipped (this entry is the ledger record ARCH-182 (8f)(i)
+  asked for — IMPL-385's note describes the PRE-fix model and states the opposite of what these two
+  commits do; date-marked there as stale, not rewritten).** `TriggerClaimStore.claim(id, workflow,
+  createdRemote?)` (`mcp-facade.ts`'s seam, `scheduler.ts`/`webhook-registry.ts`'s two
+  implementations) now RE-STAMPS `createdRemote` on both its `'claimed'` and `'held'` outcomes, from
+  the remoteness of the registration doing the claiming — not just at row creation. Six hops, all
+  re-read this round: `call-tool.ts:212` (`workflow_register` case) →
+  `mcp-facade.ts:358` (`workflowRegister(a, principal, isRemoteSubmission)`, defaulted `false`) →
+  `mcp-facade.ts:392` (`this._storeFor(id).claim(id, a.name, isRemoteSubmission)`) →
+  `scheduler.ts:548` / `webhook-registry.ts:242` (`claim()`'s own `stamp()` closure). `'held'`
+  re-stamping matters because it IS the ordinary-re-registration path ADR-086's second ruling closes
+  (a workflow re-registering a NEW version still declaring an id it already owns); `'claimed'`
+  re-stamping alone would have left that path open. `'ALREADY_CLAIMED'` never re-stamps — that row
+  belongs to a DIFFERENT workflow, and letting A's registration rewrite B's provenance would be a new
+  hole, not a fix.
+
+  **What the first draft (`3e3c331` alone) got wrong, and what `2cf5f32` (same day) fixed**: the
+  first `stamp()` was a plain unconditional overwrite —
+  `this._db.prepare('UPDATE … SET createdRemote = ?').run(createdRemote ? 1 : 0, id)` — which closed
+  the re-registration hole (protection (i): a REMOTE claim taints) but broke the opposite direction
+  (protection (ii): a LOCAL re-registration must not LAUNDER a trigger that was CREATED remotely —
+  whoever created a webhook still controls when it fires and what payload it forwards).
+  `tests/integration/confinement-unconfined-wiring.test.ts` (IT-304, already in the suite from the
+  round-2 repair) caught this the same day: its seeded `createdRemote:true` webhook, re-registered
+  LOCALLY via the `'held'` branch, would have been downgraded back to `false` by the overwrite —
+  IT-304's own refusal assertion would have gone the wrong way. `2cf5f32` made the write monotone:
+  `if (createdRemote !== true) return;` before the `UPDATE`, in both stores — remote is sticky,
+  local can never un-taint. This rule is now named **INV-V37-6** (stated in the invariant list, not
+  only in a code comment — the whole of round-3 finding C1 was that the guarantee lived nowhere the
+  scanner or a future reader could find it) rather than a second production commit; no code changed
+  in this dispatch to make the rule hold, it already holds — this entry is the missing ledger record
+  plus the regression locks that keep it holding.
+
+  **Finding 7/C2 — the sixth forward's regression lock (INV-V37-5 amendment).** Before this
+  dispatch, `grep -rn 'workflow_register' tests/ | grep -i isRemoteSubmission` returned ZERO hits —
+  deleting the `isRemoteSubmission` argument at `call-tool.ts:212`, dropping `createdRemote` from the
+  `claim()` call at `mcp-facade.ts:392`, or deleting either store's `claim()` `stamp()` call all left
+  the full suite green. Two new `[LOAD-BEARING]` cases in `tests/unit/call-tool-confinement-door.test.ts`
+  (UT-336 schedule, UT-337 webhook) close this: a real `McpFacade`+`WorkflowCatalog`+`RunManager`+
+  store (no faked `claim()`), a trigger created locally and unclaimed, then
+  `callTool({...,isRemoteSubmission:true}, 'workflow_register', {name,script,mermaid,triggers:[id]})`
+  — asserts `store.get(id).createdRemote === true`. Independently re-verified this round by
+  temporarily reverting `call-tool.ts:212` to `facade.workflowRegister(a as never, principal)` (no
+  `isRemoteSubmission` argument), confirming both new cases go RED (`expected false to be true`), then
+  reverting the temporary edit back — net diff to `call-tool.ts:212` is zero; only the comment above
+  it (finding 10) changed.
+
+  **Finding 8/INV-V37-7 — the webhook-side twin of UT-335's own `claim()` coverage.** UT-335
+  (`tests/unit/claim-restamps-provenance.test.ts`) imported and exercised `SqliteSchedulerPort` only
+  — `WebhookRegistry.claim()`'s local→remote upgrade direction had no direct unit test, so a future
+  refactor dropping ITS `stamp()` call specifically (as opposed to the scheduler's) would have passed
+  the full suite unnoticed. Per the architecture row's own instruction ("parametrizing the existing
+  three `it()` blocks over both stores is the cheapest form of it"), the file's three cases now run
+  via `describe.each` over both `SqliteSchedulerPort` and `WebhookRegistry` (six assertions, not a
+  second file) — same behaviour, different `create()`/`get()` return shapes abstracted behind one
+  `TriggerStore` interface and a per-store `createLocal()` factory.
+
+  **Finding 10 — eight stale creation-immutability comments, corrected to the monotone rule (REQ-218's
+  own rule: a comment asserting a fact about the code cites the line that makes it true, or is
+  deleted).** `src/scheduler.ts:29-30` (the `Schedule` type's own header comment), `:212-213`
+  (the idempotent `ALTER TABLE … createdRemote` migration comment — re-pointed at `claim()`'s own
+  comment rather than duplicating it), `:309` (the `INSERT`'s inline comment, inside `create()`);
+  `src/webhook-registry.ts:166-167` (the migration comment, same pattern), `:188-189` (the `INSERT`'s
+  inline comment), `:349-352` (`deliver()`'s own comment, the one every dispatch site's admission
+  predicate reads FROM — corrected to state the re-stamp mechanism, not its absence);
+  `src/call-tool.ts:259-261` (`schedule_create`'s creation-stamp comment — corrected to note `claim()`
+  is not the only writer). Plus `tests/integration/confinement-unconfined-wiring.test.ts:65-66`, whose
+  "it does not, and must not, re-stamp `createdRemote`" is false in the general form since `3e3c331`
+  and true only in the NO-DOWNGRADE direction the test actually pins (its registration is LOCAL,
+  re-claiming an already-`createdRemote:true` row — the exact case `2cf5f32` protects) — restated as
+  that direction, since this is the test that caught the first draft's overwrite bug.
+
+  **Finding 11 — `rtm.md:455-468`'s REQ-218 row prose updated to current-state facts, NOT re-scored**
+  (the same "correct, don't re-score" convention every prior REQ-218 repair in this file has used).
+  The bullet previously said `createdRemote` "is stamped once, at trigger-ROW CREATION, and no later
+  event re-stamps it (`claim()`'s `'held'` arm returns before any `UPDATE`;
+  `workflowRegister()`/`workflowPublish()` never receive `isRemoteSubmission`)" and that both
+  consequences were "re-opened as ADR-086's `owner_decision: pending`" — both false of the shipped
+  code. Replaced with: `claim()` re-stamps monotonically (local→remote, INV-V37-6) on both `'claimed'`
+  and `'held'`, closing the re-attachment residual for triggers claimed the supported way; ADR-086's
+  second ruling is ANSWERED and shipped (`3e3c331`/`2cf5f32`); a pre-v24 create-time-bound cohort is
+  the one exception (never claimed, never re-stamped — ARCH-182 (8c)'s identifying query); and a
+  THIRD `owner_decision: pending` is open, narrower than before — the RECOVERY MECHANISM only (no
+  un-stamp path exists in `src/`, so the next ordinary remote re-registration of an existing trigger
+  id permanently refuses it on an `unconfined` host) — not the intent, which stands.
+
+  **Not in this dispatch's scope, left exactly as ARCH-182 (8g) prescribed**: `DEPLOY.md`'s two rows
+  (finding 9) and the real-tier VAL entry (finding 12) are the VALIDATION gate's — neither read nor
+  edited here.
+
+  Re-verified after all of the above: `npx tsc --noEmit` clean; full
+  `npx vitest run tests/unit tests/integration` re-run — see this dispatch's Gate self-check for the
+  exact counts.
+
+  No `owner_decision` newly deferred by this dispatch. ADR-086's THIRD `pending` marker (the recovery
+  mechanism) was re-opened by the ARCHITECTURE gate of this same send-back round, not by this one —
+  unchanged and untouched here; this entry only records that the impl/tests execute against the
+  SHIPPED mechanism, as ARCH-182 (8d) instructs.

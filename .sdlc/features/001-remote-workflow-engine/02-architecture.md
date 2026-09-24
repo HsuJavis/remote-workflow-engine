@@ -5410,7 +5410,7 @@ caller at all, which is the whole of REQ-219's case).
 | event `agent.confinement_denied` | `{kind, runId, agentId, tool, detail}` | ARCH-178, **best-effort and labelled so** — its existence depends on spike S4. |
 | `workflow_authoring_guide` | one new paragraph, rendered from the effective grant list | ARCH-107 amendment (REQ-117). **No new MCP tool, no new tool parameter, no change to any tool schema.** |
 | removed: `raceWithTimeout()`, `buildSessionOptions()`, `ProviderProfile` (the builder's copy) | — | ARCH-179/180. Zero `src/` importers today, so no production caller changes. |
-| `webhooks.createdRemote` / `schedules.createdRemote` | `INTEGER NOT NULL DEFAULT 0` | **ARCH-182 (new, v37 Gate-8 repair).** Written once at `webhook_create`/`schedule_create` from `ToolDeps.isRemoteSubmission`; read at the three trigger dispatch sites. Never updated afterwards — provenance is a fact about creation. |
+| `webhooks.createdRemote` / `schedules.createdRemote` | `INTEGER NOT NULL DEFAULT 0` | **ARCH-182 (new, v37 Gate-8 repair).** Initialised at `webhook_create`/`schedule_create` from `ToolDeps.isRemoteSubmission`, then **re-stamped monotonically by `claim()`** as the OR of its existing value and the remoteness of the registration claiming the trigger (`'claimed'` and `'held'` both stamp; `'ALREADY_CLAIMED'` never does). **A taint bit, not a creation record**: monotone non-decreasing for the row's lifetime, no path in `src/` clears it, and the only recorded remedy is delete-and-recreate — which rotates a webhook's id and secret (ADR-086's re-opened `owner_decision`). Read at the three trigger dispatch sites. **Exception**: a pre-v24 trigger bound at creation is never claimed and so never re-stamped — amendment (8c). |
 | `RunSpec.origin: 'local' \| 'remote'` | **required** field on the run spec | ARCH-182. Required on purpose: the compiler is what stops a fifth admission site from being added without answering the remoteness question. |
 | `admissionRefusal({posture, origin})` | pure function → `'CONFINEMENT_UNAVAILABLE' \| null` | ARCH-182. The single predicate every admission passes, at `RunManager.start()`. |
 | `CONFINEMENT_UNAVAILABLE` | `ERROR_CATALOG` entry (`see: workflow_authoring_guide`) + `run_start`/`run_resume` `errors:` arrays | ARCH-181 amendment (finding C-1). `refusalEnvelope(code: ErrorCode, …)` — the code parameter is typed against the catalog, so a future ad-hoc code cannot slip through uncatalogued. |
@@ -5680,7 +5680,7 @@ caller at all, which is the whole of REQ-219's case).
   real-tier proof must now cover the WEBHOOK ingress and the SCHEDULER ingress, not only `tools/call`.
 - **iter:** v37
 
-### ARCH-182 — REQ-218: every run admission that reaches `RunManager.start()` passes ONE predicate, keyed on the stored provenance of the trigger ROW's CREATION (`run_resume` is covered by ARCH-181's door alone — Gate-8 round-2 amendment (2) below)
+### ARCH-182 — REQ-218: every run admission that reaches `RunManager.start()` passes ONE predicate, keyed on the trigger ROW's stored provenance — stamped at creation AND re-stamped monotonically local→remote by `claim()` (round-3 amendment (8) below) (`run_resume` is covered by ARCH-181's door alone — Gate-8 round-2 amendment (2) below)
 - **status:** draft
 - **traces:** REQ-218
 - **module:** src/run-manager.ts
@@ -5688,7 +5688,7 @@ caller at all, which is the whole of REQ-219's case).
 - **api:** `admissionRefusal(input: { posture: 'confined' | 'unconfined' | undefined; origin: 'local' | 'remote' }): 'CONFINEMENT_UNAVAILABLE' | null` — one pure exported function (no fs, no db, no clock): `'CONFINEMENT_UNAVAILABLE'` iff `posture === 'unconfined' && origin === 'remote'`, `null` otherwise (`undefined` posture means 「never measured」 ⇒ do not gate, the same fail-open-for-the-existing-suite convention `ToolDeps` already uses for this field). Called as the FIRST statement of `RunManager.start()`, **ahead of `RUN_ADMISSION_LIMIT`** (`run-manager.ts:459`): a submission that can never be admitted under this posture must not consume a slot, and must not be answered with the RETRYABLE limit refusal when the true condition is deterministic and permanent. The posture reaches `RunManager` from `ServerConfig.confinementPosture`, which `main.ts:368` already forwards (ARCH-177's amendment; INV-V37-5 locks the hop). `start()` throws `codedError('CONFINEMENT_UNAVAILABLE', …)`; each of the four callers maps it into the idiom it already has — `refusalEnvelope` at the facade, the refusal body at the webhook route, `ScheduleResult.error` at `Scheduler.trigger()`, `markFailed` at the ticker driver (`server.ts:1017-1025` already routes `err.code` there). **`Scheduler.trigger()` (`scheduler.ts:352-370`) has NO try/catch** (read this round): it returns `ScheduleResult`, so a throw from `start()` escapes its own result type as a rejected promise rather than the typed error its signature promises — it needs the same mapping as the other three, even though today its only caller is a unit test.
   **`RunSpec.origin: 'local' | 'remote'` is REQUIRED, not optional** — the compiler, not a reviewer, is what makes admission site #5 impossible to add silently; an optional security field whose absence means 「admit」 is finding A2 wearing a different field name. Stamped per site: `mcp-facade.ts:710` — the ONE `tools/call`-driven admission — from this request's own `isRemoteSubmission` (threaded as one more parameter, exactly as `runAgentLog(a, principal, crossPrincipalRead, actor)` already threads per-request facts); `webhook-registry.ts:305`, `server.ts:1015` and `scheduler.ts:363` from the STORED provenance of the trigger row each of them already loads — no live peer is consulted on any of the three, and none of them needs a new parameter threaded from the HTTP layer. (Name collision called out so nobody greps the wrong table: `scheduler.ts:183`'s `run_origins` is the scheduler's own runId→schedule map and is unrelated to this field.)
   **Persisted provenance — two idempotent columns, in this repo's own `try { ALTER TABLE … } catch {}` idiom** (`scheduler.ts:192-199`; the twin exists in `webhook-registry.ts`): `webhooks.createdRemote INTEGER NOT NULL DEFAULT 0` and `schedules.createdRemote INTEGER NOT NULL DEFAULT 0`, written at `webhook_create`/`schedule_create` from the same `ToolDeps.isRemoteSubmission` the door reads — both tools are dispatched inside `call-tool.ts`, which already holds that flag, so no new plumbing to the HTTP layer is needed. Both rows are already loaded at their dispatch sites, so this adds **zero new queries**.
-  **The delivery peer is deliberately NOT part of the predicate for `POST /hooks/:id`**: a webhook exists to be called from another machine, so gating on the hook caller's own socket would refuse every legitimate webhook. The fact that decides is who **CREATED the trigger ROW** — `createdRemote`, written once by the `INSERT` and never re-stamped by any later attachment event (`claim()`, `workflow_register`, `workflow_publish`); the Gate-8 round-2 amendment below states what that does and does not cover, and re-opens ADR-086's owner question on the corrected premise. `run_start` is the only admission where a live peer exists at all, and there the peer genuinely IS the provenance — which is also why ARCH-181's door, reading the same fact one layer earlier, stays.
+  **The delivery peer is deliberately NOT part of the predicate for `POST /hooks/:id`**: a webhook exists to be called from another machine, so gating on the hook caller's own socket would refuse every legitimate webhook. The fact that decides is who **CREATED the trigger ROW** — `createdRemote`, stamped at creation by the `INSERT` **and re-stamped monotonically local→remote by `claim()`** on both the `'claimed'` and the `'held'` outcome (never on `'ALREADY_CLAIMED'`) — a taint bit, not a creation record; round-3 amendment (8) below states the mechanism, its one pre-v24 exception, and the fact that nothing in `src/` clears it; the Gate-8 round-2 amendment below states what that does and does not cover, and re-opens ADR-086's owner question on the corrected premise. `run_start` is the only admission where a live peer exists at all, and there the peer genuinely IS the provenance — which is also why ARCH-181's door, reading the same fact one layer earlier, stays.
   **Legacy persisted specs read as `'local'`, and this must be done in exactly one place.** `RunSpec` doubles as the persisted-spec read-back type (`types.ts:431-436`'s own comment), so every spec stored before this field existed lacks `origin`; the store's spec rehydration (`getSpec()`, consumed by `_requireLive` at `run-manager.ts:1086`) fills `origin: 'local'` for those rows — same rationale as the `DEFAULT 0` cohort, and harmless because a resume is gated by ARCH-181's door, not by this predicate. The field stays REQUIRED on the type so a new admission path cannot omit it; the one tolerant read is the rehydration, named here so an implementer meeting the compile error does not invent a different answer.
 - **note:** **What this closes** — a remote `webhook_create`/`schedule_create` can no longer start Bash-capable `agent()` work on a host measured `unconfined`; such a run is refused identically to a remote `run_start`, which is what ADR-083's 裁決理由 (1) 「另一台機器送來的工作流程」 asks for and what ARCH-181's door alone did not deliver. **What it does NOT close** — a workflow version REGISTERED remotely and then started LOCALLY by the operator; that is ADR-086's named residual and its `owner_decision`. **Why the key is the trigger row rather than `workflow_versions.origin`** — full trade-off in ADR-086; the short form is that the version-row design (adversarial r2 §1) refuses a LOCAL `run_start` of a remote-authored script, reversing ADR-083's ANSWERED owner ruling 「本機發起的 run 仍不受限制」, and it still admits the remote-`webhook_create`-on-a-local-workflow path this finding is actually about. **Legacy rows are `DEFAULT 0` (read as local) by decision, not by accident**: fail-closed would black out every pre-existing webhook and schedule at upgrade — a silent outage on hosts where nothing was ever confined anyway — and the operator sweep belongs in `DEPLOY.md`, not in a boot WARN seen once and lost. Quality-dimensions r2 §3 proposed a tri-state (`NULL` = unreviewed legacy) surfaced as `originConfirmed` on `webhook_list`/`schedule_list` so the legacy cohort stays queryable forever; **declined on the Karpathy tie-break** — a three-valued column plus two tool-output surfaces bought for a one-time upgrade cohort — and the decline is recorded rather than left silent. **Testability** — a 2×2 truth table over a pure function plus one integration test per route against a fake `RunManager`, instead of an HTTP-server-plus-ticker-plus-clock setup per route. **Performance** — two scalar comparisons on a path that already does `INSERT INTO runs`; unmeasurable.
 - **v37 Gate-8 round-2 send-back amendment (2026-09-23, architect; finding B2 — HIGH — plus the
@@ -5704,6 +5704,7 @@ caller at all, which is the whole of REQ-219's case).
   read in full) does `SELECT workflow` then `UPDATE … SET workflow`, nothing else — and its `'held'`
   arm returns **before any `UPDATE` at all**; `mcp-facade.ts`'s `workflowRegister()` (`:365-395`) and
   `workflowPublish()` take `(a, principal)` and never receive `deps.isRemoteSubmission`. Two
+  **[2026-09-24 round-3 更正:以上三句自 `3e3c331` 起為假。** `claim()` 現在會重新蓋章 `createdRemote`,`'held'` 分支在回傳前也會蓋(`scheduler.ts:548`、`webhook-registry.ts:242`),而 `workflowRegister()` 已經收得到 `isRemoteSubmission`(`mcp-facade.ts:358`,由 `call-tool.ts:212` 傳入)。原文保留為當時的量測紀錄(2026-09-23 的裁決是在它之上作成的);現行機制見下方修訂 (8)。]**
   consequences follow, and both are first-class, not footnotes:
   **(1a) Coverage on the existing population is ZERO, not 「a residual」.** `createdRemote` is a column
   this iteration adds with `DEFAULT 0`, so every trigger row predating the upgrade reads `local` and
@@ -5712,6 +5713,7 @@ caller at all, which is the whole of REQ-219's case).
   hourly health check named explicitly), so on that host the refusal arm refuses nothing until each
   trigger is deleted and recreated by a remote caller. That is the upgrade's resting state, not an
   attack.
+  **[2026-09-24 round-3 部分更正:** 覆蓋率不再恆為零。`3e3c331` 之後,每一次在 `triggers[]` 裡列出既有觸發器 id 的**遠端** `workflow_register` 都會把那一列永久升級成 remote(單調,見修訂 (8a)/(8b)),所以覆蓋率隨著再註冊逐列長出來 —— 而真正恆為零的只剩 (8c) 的 pre-v24「建立時即綁定」族群。這裡保留原文,因為 2026-09-23 的裁決是在它之上作成的。]**
   **(1b) The re-attachment gap needs NO operator action, and it is a SECOND residual, distinct from
   the one ADR-086 accepted.** An ordinary author/admin principal `workflow_register`s a new script
   onto a workflow name that already owns a trigger, then `workflow_publish`es it; the trigger row is
@@ -5723,6 +5725,7 @@ caller at all, which is the whole of REQ-219's case).
   **Revisit trigger for this second residual, event-shaped:** ADR-086's re-opened `owner_decision` is
   answered, or the first trigger row observed with a `createdRemote` value that disagrees with how its
   workflow's released version was registered.
+  **[2026-09-24 round-3 更正 —— 這條第二條具名殘留風險已被關閉,對「以受支援方式被認領的觸發器」而言:** 2026-09-24 的裁決(`3e3c331`+`2cf5f32`)讓 `claim()` 在 `workflow_register` 當下重新蓋章,`'held'`(既有觸發器的重新註冊)那一支也蓋,所以遠端 register+publish 這條路徑現在會把觸發器升級成 remote 並在下一次觸發時被拒。**它只對 pre-v24「建立時即綁定」的族群仍然成立** —— 那些列永遠不會被 `claim()`,因此永遠不會自癒,連 `NOT_IN_RELEASE` 這道守衛對它們也是空的;盤點查詢與完整說明見下方修訂 (8c)。]**
   **What this row may not do is keep asserting a coverage the code does not have** — (1)/(1a)/(1b)
   stand whichever option the owner picks; only the *fix* is owner-gated (ADR-086, `pending`).
   **(2) 「every run admission passes ONE predicate」 was FALSE as written; it is corrected, not made
@@ -5810,6 +5813,129 @@ caller at all, which is the whole of REQ-219's case).
   required (the panel's preferred structural fix for B1) is declined here on the reviewer's own fixed
   state (「no production code change needed」) and on surgical-change grounds; the rule it rests on is
   written into INV-V37-5 so v38 starts from it rather than re-deriving it.
+- **v37 Gate-8 round-3 送回修補 amendment (8) (2026-09-24, architect; findings C1/C3/C4/C5/C7.
+  Panel: `adversarial.r1.md` ADDENDUM 3 §2/§3/§4/§5 + `quality-dimensions.r1.md` §1/§2/§4, round 1
+  only — the two headlines are complementary, so no round 2 was spawned):**
+  **(8a) What actually shipped, replacing this row's 「written once … never re-stamped」 sentence,
+  which is FALSE since `3e3c331` (2026-09-24 19:34) — all six hops read this round, not taken from
+  the review.** The trigger row's provenance is stamped **at creation** from
+  `ToolDeps.isRemoteSubmission` (`call-tool.ts:262`, `:271`) **AND re-stamped by `claim()`**:
+  `call-tool.ts:212` → `mcp-facade.ts:358` (`workflowRegister(a, principal, isRemoteSubmission)`,
+  defaulted `false`) → `:392` (`this._storeFor(id).claim(id, a.name, isRemoteSubmission)`) →
+  `scheduler.ts:548` / `webhook-registry.ts:242`. **Both the `'claimed'` and the `'held'` outcome
+  stamp** — `'held'` (the id already belongs to this workflow, i.e. an ordinary re-registration) IS
+  the path ADR-086's second ruling closes, so stamping only `'claimed'` would not have fixed
+  anything — and **`'ALREADY_CLAIMED'` never stamps**, because that row belongs to a DIFFERENT
+  workflow and letting A's registration rewrite B's provenance would be a new hole, not a fix.
+  `2cf5f32` (same day, 20:10) then made the write **monotone**: `if (createdRemote !== true) return;`
+  in both stores, so the transition is local→remote only and a LOCAL re-registration can never launder
+  a remotely-created trigger. That rule is **INV-V37-6**, stated in the invariant list rather than
+  only in a code comment, because the whole of finding C1 is that it lived in a comment.
+  **(8b) The value is therefore a TAINT BIT, not a creation record, and the persistence-table row at
+  the head of this slice says so.** It is monotone non-decreasing for the row's lifetime; read at the
+  three dispatch sites (`server.ts:1027`, `webhook-registry.ts:354`, `scheduler.ts:388`).
+  **(8c) The ONE exception to 「self-heals on the next claim」 — the pre-v24 cohort bound AT CREATION,
+  named here because the two self-heal comments (`scheduler.ts:536`, `webhook-registry.ts:229`) do not
+  name it and round 3 had to re-derive it.** A trigger created through the pre-v24
+  `schedule_create({workflow})` / `webhook_create({workflow})` door — closed for NEW rows by
+  adjudication #8 and independently re-verified at `call-tool.ts:180-184`, while the stores' own
+  `create({workflow})` is unchanged for old ones — **never enters any version's `triggers[]`**. So
+  `catalog.declaresTrigger(name, id)` is false for it, `claim()` is never called on it (it is its own
+  claim from birth), and the 2026-09-24 re-stamp therefore **never fires for it**: its `createdRemote`
+  stays at the `DEFAULT 0` migration value forever. **Why this is a coverage fact and not a tidiness
+  note:** for exactly this cohort the fire path's `NOT_IN_RELEASE` guard (`server.ts:1003`,
+  `webhook-registry.ts:336`) is also inert — its third clause is `declaresTrigger(...)` — so a remote
+  `workflow_register` + `workflow_publish` onto that workflow name is executed by the next firing, and
+  the admission predicate reads `origin:'local'`. That is amendment (1b)'s second residual, alive for
+  this cohort only. **Identifying query, named here for DEPLOY.md to use** (both forms give the same
+  set; the MCP form needs no sqlite access):
+  · *MCP form* — for each `schedule_list`/`webhook_list` row with a non-null workflow binding, compare
+  its id against `workflow_describe({name}).triggers[]` of that same workflow: **an id that is bound
+  but is NOT declared by any version of its workflow is in the cohort.**
+  · *SQL form* — schedules carry two binding columns, so they need no cross-db join:
+  `sqlite3 <workRoot>/schedules.db "SELECT id, workflow FROM schedules WHERE workflow IS NOT NULL AND claimedBy IS NULL;"`.
+  Webhooks carry only one (`workflow-catalog.ts:350`'s own comment says exactly this), so the
+  discriminator is the catalog:
+  `sqlite3 <workRoot>/webhooks.db "ATTACH '<workRoot>/catalog.db' AS cat; SELECT w.id, w.workflow FROM webhooks w WHERE w.workflow IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cat.workflow_versions v, json_each(v.triggers) t WHERE v.name = w.workflow AND t.value = w.id);"`
+  — the SQL spelling of `declaredTriggers()` (`workflow-catalog.ts:355-368`), which unions the
+  `triggers` JSON of EVERY version row of that name. Rows in the cohort are remediated only by
+  delete-and-recreate (or by whatever ADR-086's re-opened decision picks); they cannot self-heal.
+  **(8d) The availability consequence of the monotone rule, recorded here and relayed to the owner
+  rather than decided by this gate (finding C5).** There is **no un-stamp path anywhere in `src/`** —
+  every writer enumerated: two `INSERT`s, two `UPDATE … SET createdRemote = 1`; `release()`
+  (`scheduler.ts:564`, `webhook-registry.ts:256`) clears binding columns only. This host's entire
+  trigger catalog is registered remotely (the owner's own statement in ADR-086) and measures
+  `unconfined` (VAL-256), so **the next ordinary remote `workflow_register` that re-lists an existing
+  trigger id refuses that trigger's every future firing, permanently**, and deleting a webhook to
+  recover rotates its id and secret. The mechanism is doing what the ruling asked; what was never
+  costed is the RECOVERY. `ADR-086.owner_decision` is therefore re-opened `pending` on the
+  **mechanism/recovery only** (P1 version-row · P2 split column · P3 accept + document · P4 un-taint
+  tool, each costed there). **The intent is NOT re-opened**: the shipped mechanism is the current
+  state and the impl/validation gates execute against it, not against a hypothetical.
+  **(8e) C7 — the stamp is not compensated on a FAILED registration, re-severitied MED (this gate
+  agrees with the panel, against the review's LOW).** The stamp lands at `mcp-facade.ts:392`, inside
+  the claim loop, BEFORE `:400`'s `insertVersion`; both failure paths (`:395`, `:402`) call
+  `release()`, which does not un-stamp. So a registration that fails still taints every trigger it got
+  through first, permanently. Under a monotone rule 「safe direction」 and 「permanent」 are the same
+  sentence. Disposition is ADR-086's: it disappears under P1, is free under P2, and needs an explicit
+  accepted-cost line under P3.
+  **(8f) PRESCRIBED TO THE IMPL GATE of this same send-back (findings 5, 6, 7, 8, 10, 11 — this gate
+  touched no `src/`, `tests/`, `DEPLOY.md` or `docs/` file, exactly as round 2 ruled when three gates
+  repair one tree in one round).** (i) **IMPL-386** in `06-impl-log.md` for `3e3c331`+`2cf5f32` —
+  `files:` `src/mcp-facade.ts`, `src/call-tool.ts`, `src/scheduler.ts`, `src/webhook-registry.ts`,
+  `tests/unit/claim-restamps-provenance.test.ts`; `traces:` DES-263, ADR-086; `greens:` UT-335 —
+  describing (8a)'s mechanism AND the same-day monotone correction, including what the first draft got
+  wrong (a plain overwrite, which satisfied protection (i) and broke protection (ii)), per this
+  ledger's own convention. IMPL-385's note states the opposite of what these commits do and must be
+  date-marked, not silently rewritten. (ii) **UT-335** gains its row in `05-tests.md`, tracing DES-263.
+  (iii) **The sixth forward's regression lock (INV-V37-5 amendment, finding C2)**: at minimum two
+  cases — schedule AND webhook — driving
+  `callTool({…, isRemoteSubmission: true}, 'workflow_register', { name, script, mermaid, triggers: [existingLocallyOwnedId] })`
+  against a REAL store and asserting `get(id).createdRemote === true`; deleting the argument at
+  `call-tool.ts:212`, at `mcp-facade.ts:358/392`, or the `stamp()` call in either store must turn it
+  RED (today all of them leave the suite green). (iv) **The webhook twin's own unit case** beside
+  UT-335, which imports `SqliteSchedulerPort` only — the conformance shape is INV-V37-7; parametrizing
+  the existing three `it()` blocks over both stores is the cheapest form of it. (v) **The stale
+  creation-immutability comments**: `src/scheduler.ts:29-30`, `:210`, `:306`;
+  `src/webhook-registry.ts:166`, `:187`, `:348`; `src/call-tool.ts:259` — correct each to the monotone
+  rule or delete it (REQ-218's own rule: a comment asserting a fact about the code cites the line that
+  makes it true or goes). Plus `tests/integration/confinement-unconfined-wiring.test.ts:66`, whose
+  「it does not, and must not, re-stamp `createdRemote`」 is now false in the general form and true
+  only in the NO-DOWNGRADE direction it actually pins — restate it as the direction, since that test
+  is what caught `3e3c331`'s overwrite. (vi) `rtm.md:455-468` (REQ-218's row prose) still describes
+  the pre-fix model and says the residual was 「re-opened as ADR-086's `owner_decision: pending`」 —
+  update it to the current-state facts (`claim()` re-stamps monotonically; ADR-086's second ruling is
+  answered and shipped; a THIRD `pending` is open on recovery only). Not re-scored.
+  **(8g) PRESCRIBED TO THE VALIDATION GATE of this same send-back (findings 9, 12).**
+  (i) `DEPLOY.md:883` (§5) and `:908` (§6) both say the field is written once at creation and never
+  re-stamped; both are false of the shipped code, and §6's 「delete and recreate every trigger from a
+  remote caller」 is now needlessly destructive. Replacement content, so the rewrite is against a
+  ledger that is already right: *provenance is stamped at creation and re-stamped monotonically
+  local→remote by `claim()`; a plain remote `workflow_register` that re-lists the trigger's existing
+  id is now enough to gain coverage — no delete, no secret rotation*; **with the irreversibility
+  warning attached to that cheaper path** (it taints permanently: nothing in `src/` clears the bit,
+  and on an `unconfined` host that trigger then refuses every firing, recoverable today only by
+  delete-and-recreate, which rotates a webhook's id and secret); **plus the pre-v24 cohort exception
+  and (8c)'s identifying query**, because for that cohort delete-and-recreate really is the only
+  remedy. (ii) A **VAL entry** booting a real unconfined scratch instance for: (a) a remote
+  `workflow_register` re-listing an existing LOCAL trigger's id upgrades it to `createdRemote:true`
+  and subsequent firings are refused; (b) a LOCAL re-registration of a remotely-created trigger does
+  NOT downgrade it (INV-V37-6 holds end-to-end); (c) the pre-v24 create-time-bound cohort behaves as
+  (8c) documents — never claimed, never re-stamped, and identified by the stated query. VAL-256/257
+  both predate `3e3c331` and exercise none of this.
+  **(8h) Filed with event-shaped triggers, deliberately NOT built this round** (each was proposed by a
+  lens and declined on the Karpathy tie-break as scope this send-back does not name): a
+  `remoteStampedAt`/actor audit field beside `createdRemote` (quality-dimensions QD-2 — **trigger**:
+  the first operator question about *when* a trigger became remote); renaming the column now that it
+  is a taint bit (C8 — **trigger**: the next migration that touches these tables for another reason; a
+  rename costs a migration on every deployed workRoot and buys nothing the two projections cannot say);
+  re-declaring `TriggerClaimStore`'s members as function properties (**declined outright as a
+  mitigation** — both lenses measured that it does not close the drop-the-parameter hole; INV-V37-7's
+  test is the lock); `declaredTriggers()`'s per-firing all-versions scan, which became load-bearing for
+  a security refusal this round (**trigger**: the first workflow past ~10³ versions — and a cache there
+  now has a security consequence, so it needs a test, not an index); the unwired bind guard that makes
+  `auth-disabled` + non-loopback reachable (**trigger**: the first such deployment — named because an
+  irreversible remotely-reachable write now sits behind it, NOT pulled into v37).
 - **iter:** v37
 
 
@@ -5896,10 +6022,58 @@ caller at all, which is the whole of REQ-219's case).
   只有「(C) 實際擋到了什麼」。ARCH-182 的 Gate-8 round-2 修訂已把這個事實寫進架構文件,並將「重新掛載」
   列為第二條具名殘留風險(含事件式 revisit trigger) —— 這一步不等業主裁決,因為一個寫錯前提的 ADR 比
   一個已知缺口更危險: 下一輪會從它推論。
-- **owner_decision:** answered 2026-09-23(第二次,前提更正後)— ADR-086 的 2026-09-23 裁決是在「`createdRemote` 記錄的是誰『掛上』觸發器」
+  **[2026-09-24 round-3 註記:本段「裁決回到 `pending`」是 round-2 當時的狀態。業主已於 2026-09-23 回答(「在 `claim()` 重新蓋章」,見下方「現行裁決」),並於 2026-09-24 實作;round 3 只就「被蓋章之後如何復原」另開第三題,見下方 `owner_decision`。]**
+- **v37 Gate-8 round-3 送回修補 (2026-09-24, architect; findings C1/C3/C4/C5/C7。Panel:
+  `.panel/architecture/adversarial.r1.md` ADDENDUM 3 §2/§3/§4/§5 與 `quality-dimensions.r1.md`
+  §1/§2/§4,兩份都是本輪 round 1;headline 互補不衝突,故未再跑 round 2):** 第二次裁決已經實作
+  (`3e3c331` 2026-09-24 + `2cf5f32` 同日修成單調),**它的「意圖」本輪沒有被推翻,也不在下方 `pending`
+  的範圍內** —— ARCH-182 修訂 (8) 記錄的就是它實際的機制,impl/validation 兩閘依它執行,不必等待裁決。
+  本輪重新打開的是當時**沒有一起呈上的可用性代價**,以及它衍生的復原機制選擇:
+  **(甲) 單調蓋章沒有反向路徑。** `grep -rn "createdRemote" src/` 清點完畢:兩個 `INSERT`、兩個
+  `UPDATE … SET createdRemote = 1`,沒有任何一處把它寫回 0;`release()`(`scheduler.ts:564`、
+  `webhook-registry.ts:256`)只清綁定欄。
+  **(乙) 這台主機的算術。** 觸發器目錄全部是遠端註冊(業主自述,ADR-086 裁決文),提交確實來自非 loopback
+  且主機實測 `unconfined`(VAL-256)。因此**下一個平常的遠端 `workflow_register` 只要在 `triggers[]` 裡
+  再列一次既有觸發器 id,那個觸發器從此每一次觸發都被永久拒絕**;唯一已記錄的復原手段是刪除重建,而刪除
+  webhook 會換掉 id 與 secret,每個外部呼叫端都要重新接線。業主先前兩次(方案 (B)、(ii-narrow))都刻意
+  避開「整批停跑」,而這個機制是把同樣的結果**延後、逐工作流程**地交付 —— 歸因更難,因為故障出現在動作
+  之後好幾小時、發生在沒有人碰過的觸發器上。
+  **(丙) 連失敗的註冊也會留下蓋章(C7)。** 蓋章發生在 `mcp-facade.ts:392` 的認領迴圈內,早於 `:400` 的
+  `insertVersion`;兩條失敗路徑(`:395` 後續觸發器 `ALREADY_CLAIMED`、`:402` `insertVersion` 拋出)都只
+  呼叫 `release()`,而 `release()` 不會還原蓋章。在單調規則下,「方向是安全的」與「永久」是同一句話。
+  **(丁) P1 與本 ADR 當初否決 (B) 的理由並不衝突,先講清楚以免 ADR 自相矛盾。** 當初否決版本列方案的理由
+  是「它會拒絕本機 `run_start` 一份遠端註冊的腳本」,牴觸 ADR-083 已裁決的「本機發起的 run 仍不受限制」。
+  P1 只在**兩個觸發器派送點**讀 `workflow_versions.registeredRemote`(那兩處本來就為 `NOT_IN_RELEASE`
+  載入了 released 版本列),`run_start` 完全不讀它 —— 那個否決理由不及於 P1。
+  **(戊) 架構閘本輪不等裁決就做完的事:** ARCH-182 修訂 (8)(含機制、pre-v24 例外與盤點查詢)、
+  INV-V37-6/INV-V37-7、以及給 impl/validation 兩閘的處方。這些在四個選項下都成立。
+- **owner_decision:** answered 2026-09-25(第三次,僅就復原機制)— ADR-086 第二次裁決(在 `claim()` 重新蓋章)已實作、意圖成立,但當時沒有把它的
+  **業主裁決:P1 —— 把「腳本來源」搬到 `workflow_versions.registeredRemote`,`createdRemote` 回復為不可變。**
+  **orchestrator 的自我更正(第二次,記下來因為這是我實作時漏掉的):** 上一輪我把業主的「在 `claim()` 重新蓋章」裁決實作出來時,**沒有把它的可用性代價一起呈上** —— `src/` 裡沒有任何路徑能把 `createdRemote` 由 1 寫回 0,所以一次平常的遠端 `workflow_register`(只要 `triggers[]` 再列一次既有 id,甚至註冊失敗也算,因為補償只 `release()`)就讓那個觸發器**永久**被拒,而唯一已記錄的復原是刪除重建、並輪換 webhook 的 id 與 secret。這個代價是架構閘第三輪才挖出來的,不是業主當時能看見的。
+  **為什麼 P1 勝出**:它把被混為一談的兩件事分開 —— 「誰寫了這次要跑的腳本」是**版本**的屬性(隨每次 publish 自然重新評估),「誰掛上觸發器」才是觸發器的屬性(建立時決定,不可變)。於是:(1) 業主要關的洞照樣關著 —— 遠端 re-publish 產生的新版本帶 `registeredRemote: true`,run 依版本判定即被拒;(2) 復原成本降為「在本機 publish 一次」,不必輪換 id/secret、不必重接每個外部呼叫端;(3) 覆蓋率延伸到 `claim()` 永遠碰不到的 pre-v24 建立時綁定族群,因為版本側的判定對每一次 run 都成立;(4) 淨刪程式碼 —— `claim()` 的重新蓋章與其單調性特例一併移除。
+  **維持不變的**:admission 仍是 `RunManager.start()` 的單一述詞;`createdRemote` 仍參與判定(取 OR),只是不再被任何路徑改寫。INV-V37-6 的單調性論述隨之改寫為「兩個來源取 OR,各自不可變」。
+  **可用性代價**一起呈上,請只就**復原機制**裁決(不是重新裁決意圖):`src/` 裡沒有任何路徑能把 `createdRemote`
+  從 1 寫回 0(兩個 `INSERT`、兩個 `UPDATE … SET createdRemote = 1`,`release()` 只清綁定欄),而這台主機的
+  觸發器目錄全部是遠端註冊、實測 `unconfined`(VAL-256),所以**下一次任何一個平常的遠端 `workflow_register`
+  只要在 `triggers[]` 再列一次既有觸發器 id,那個觸發器此後每一次觸發都被永久拒絕**;連註冊失敗也一樣留下
+  蓋章(`mcp-facade.ts:395/402` 只 `release()`,不還原蓋章);唯一已記錄的復原手段是刪除重建,而刪除 webhook
+  會輪換 id 與 secret,每個外部呼叫端都要重新接線。四個選項:**(P1)** 把「腳本來源」搬到
+  `workflow_versions.registeredRemote`、`createdRemote` 回復為不可變(復原 = 在本機重新 publish 一次;覆蓋率
+  還延伸到 `claim()` 永遠碰不到的 pre-v24 建立時綁定族群;淨刪碼;代價是再次更動兩天前才裁決並實作的機制,
+  且「在本機 publish」是這台主機平常不做的動作);**(P2)** 保留 `claim()` 蓋章但拆成兩欄(不可變的
+  `createdRemote` + 由 `release()` 清除的 `attachedRemote`,判定取 OR;復原 = deregister 後重新註冊;不解決
+  pre-v24 族群);**(P3)** 維持現狀,只把代價寫進 DEPLOY.md(零程式碼;復原 = 刪除重建並輪換 webhook secret);
+  **(P4)** 新增 loopback+admin only 的 `trigger_reset_provenance(id)` 工具(新的工具面、授權面與稽核義務)。
+  **四個選項都不會讓這台主機的觸發器在下一次遠端 re-publish 之後繼續跑 —— 拒絕正是裁決要的;業主在選的是
+  「復原成本」**,唯一讓整題消失的仍是把主機修成 confined(ADR-086 自己的排序第一,不在 v37 範圍)。架構閘
+  建議排序(建議,不是裁決):P1 > P2 > P3 > P4。若裁決為 P3,請明確記錄接受這項具體代價:「被蓋章的觸發器
+  永久拒絕,復原 = 刪除重建並輪換 webhook secret」。
+- **現行裁決(第二次,前提更正後;2026-09-23 業主裁決、2026-09-24 由 `3e3c331`+`2cf5f32` 實作;**意圖仍然有效**;已出貨的 `claim()` 重新蓋章機制就是現行狀態,impl/validation 兩閘依它執行 —— 直到上方 `pending` 另擇其一為止。注意 P1/P2 更動的是**機制**(把「腳本來源」搬到版本列、或拆成兩欄),不是這個裁決的**意圖**(遠端再註冊必須沾染它所認領的觸發器);那個意圖本輪沒有被推翻,也不在 `pending` 的範圍內):**
   **業主裁決:在 `claim()` 重新蓋章。** 架構閘的更正成立,orchestrator 已獨立查證:`scheduler.ts:29` 的註解自己寫著 `createdRemote` 是「written ONCE at creation」;`webhook-registry.ts:230` 的 `claim()` 只做 `UPDATE ... SET workflow = ?`,不碰 provenance;migration 是 `ADD COLUMN ... NOT NULL DEFAULT 0`,所以既有每一列都讀成本機。
   **orchestrator 的自我更正(記下來,因為業主的前一次裁決是基於它作成的):** 上一輪呈給業主的殘留風險描述是「別台電腦註冊壞腳本、操作者在本機誤按啟動」,並以「**需要操作者自己動手**」作為接受該風險的理由。**那個理由不成立**:遠端對一個已掛著觸發器的工作流程名稱 register+publish新版本後,下一次 cron 到點就自己把新腳本跟起來,沒有人按任何按鈕。且因既有列全讀成本機,這道控制在現有觸發器族群上的覆蓋率是**零** —— 一個看起來像保護、實際不保護的控制比沒有更糟,因為它讓人以為擋住了。
   **選擇 `claim()` 重新蓋章而非只改文字的理由**:它一次關掉兩個洞(重新註冊路徑、既有列在下次被認領時重新評估),每個 store 一行,且 `call-tool.ts` 在 `workflow_register` 當下已經持有 `isRemoteSubmission`,不需要新的資料來源。只改文字的方案會讓這道控制在現有族群上維持零覆蓋,只是把它命名出來。
+- **[SUPERSEDED 2026-09-23] round-2 遞交給業主的更正前提與選項清單 —— 業主已在同日以上面的「現行裁決」回答它,保留為歷史,不再是有效的待決問題。其中「`'held'` 分支在任何 `UPDATE` 之前就回傳,所以只堵得住窄路」這項成本估計,已被 `3e3c331` 的實作推翻(`'held'` 現在也蓋章,而且那正是被關掉的那條路):** ADR-086 的 2026-09-23 裁決是在
+  「`createdRemote` 記錄的是誰『掛上』觸發器」
   這個前提下作成的,但程式碼記錄的只有「誰建立了那一列」: (a) 升級後每一列既有觸發器都讀成本機,這道
   控制在現有族群上的覆蓋率是零(不是「殘留風險」); (b) 真正存在的那條殘留路徑不需要操作者動手 ——
   遠端 `workflow_register` + `workflow_publish` 到一個已擁有觸發器的工作流程名稱上,下一次 cron/webhook
@@ -5991,6 +6165,19 @@ caller at all, which is the whole of REQ-219's case).
   (`call-tool.ts:262`, `:271`). Measured this round: dropping the 2nd argument at either call site, or
   the `createdRemote` property at either stamp, **compiles clean and leaves the whole suite green** —
   which is the definition of an unlocked hop.
+  **v37 Gate-8 round-3 amendment (2026-09-24, architect; finding C2): the surface is SIX forwards,
+  not five, and the sixth shipped unlocked.** `3e3c331` added
+  `ToolDeps.isRemoteSubmission` → (6) `call-tool.ts:212` (`workflow_register`'s dispatch) →
+  `mcp-facade.ts:358` (`workflowRegister`'s third parameter, defaulted `false`) → `:392`
+  (`claim(id, name, isRemoteSubmission)`) → the two `stamp()` closures. Measured: `grep -rn
+  "workflow_register" tests/ | grep -i isRemoteSubmission` returns **zero** hits, and deleting the
+  argument at ANY of the three hops leaves the full suite green — the same class this invariant was
+  written for, now at its fifth instance in this repo's own memory (v11 `updateFlagPath`, v15 auth,
+  v37 A5, v37 B1, v37 C2). **Clause (b) is amended once, generally:** the mitigation for a permissive
+  default is NEVER "make the parameter required" — both lens groups measured, independently, that a
+  narrower implementation still satisfies a wider port — it is a test that drives the forward from the
+  REAL tool surface. A forward whose default is permissive is not considered wired until such a test
+  exists; the conformance half of that lock is INV-V37-7.
   **(b) Optionality is acceptable exactly when the default is the SAFE answer, never when it is the
   permissive one.** `buildToolDeps(webhookBaseUrl, isRemoteSubmission = false)` is a fail-open default
   on a security value; `workRootDefault?: string` (finding B6) is a fallback whose absent case is
@@ -6009,6 +6196,31 @@ caller at all, which is the whole of REQ-219's case).
   `createServer({confinementPosture:'unconfined'})` that refuses an `origin:'remote'` RunSpec with
   `CONFINEMENT_UNAVAILABLE`. **The shape matters more than the count**: today the suite exercises the
   predicate only at `confinementPosture:'confined'`, the one value it never gates on — a vacuous boot.
+- **INV-V37-6 (trigger provenance is MONOTONE — `createdRemote` never transitions 1 → 0).** Added at
+  the v37 Gate-8 round-3 send-back (2026-09-24; findings C1/C5; shipped by `2cf5f32` after `3e3c331`
+  shipped a plain overwrite that `confinement-unconfined-wiring.test.ts` caught). Two protections
+  point in opposite directions and both must hold: (i) a REMOTE registration must taint a trigger it
+  claims (the re-registration hole ADR-086's second ruling closes); (ii) a LOCAL registration must NOT
+  launder a trigger that was CREATED remotely — whoever created a webhook still controls WHEN it fires
+  and what payload reaches the script. The two `stamp()` closures (`scheduler.ts:548`,
+  `webhook-registry.ts:242`, both guarded by `if (createdRemote !== true) return;`) are the ONLY
+  writers after creation; `release()` clears binding columns only. **The consequence is stated with
+  the invariant, not discovered downstream: there is no un-stamp path anywhere in `src/`** — the
+  recovery cost of that is ADR-086's re-opened `owner_decision`, and any future writer that clears the
+  bit changes this invariant rather than merely adding a feature.
+- **INV-V37-7 (a port with more than one implementation is wired only when ONE conformance suite
+  drives EVERY implementation).** Added at the v37 Gate-8 round-3 send-back (2026-09-24; findings
+  C2/QD-3). `TriggerClaimStore` (`mcp-facade.ts:60-75`) has two implementations —
+  `SqliteSchedulerPort` and `WebhookRegistry` — and **the compiler does not police this seam**: a
+  method-shorthand port accepts an implementation that simply omits the third parameter (checked by
+  both lens groups; quality-dimensions re-verified it with `tsc --noEmit --strict` against a
+  property-typed member and reached the same answer, so re-declaring the member as a function property
+  is NOT the fix and must not be recorded as one). The lock is a test: every implementation of the
+  port runs the SAME cases, and all three directions are asserted — remote claim taints
+  (`local → remote`), local claim does NOT launder (`remote → remote`), `ALREADY_CLAIMED` leaves the
+  row untouched. A new implementation is wired only when it is added to that suite. Today `UT-335`
+  covers `SqliteSchedulerPort` alone, so a regression that made `WebhookRegistry.claim()`'s `stamp()`
+  a no-op would leave the whole suite green — the gap this invariant exists to close.
 
 ### v38 candidates (filed here so the next round starts from evidence, NOT actioned in v37)
 
@@ -6143,6 +6355,7 @@ caller at all, which is the whole of REQ-219's case).
   a residual that needs no operator action) are measurements and are written into ARCH-182 and ADR-086
   now; the *remedy* trades local availability against the posture of remotely-authored scripts on a
   live production host, which is exactly the shape ADR-083/ADR-086 established as owner-overrulable.
+  **[2026-09-24 round-3 註記:本段是 2026-09-23 當時的狀態。該 pending 已由業主於同日以「在 `claim()` 重新蓋章」回答,並於 2026-09-24 由 `3e3c331`+`2cf5f32` 實作;round 3 另就「被蓋章之後如何復原」開了第三題 `pending`(ADR-086)。本段不改寫,保留為當時的決策紀錄。]**
   So `ADR-086.owner_decision` goes back to `pending` with the corrected premise and five costed
   options, the 2026-09-23 answer is kept in place as history explicitly marked 「given against the
   superseded premise」, and this gate records a recommended ranking without taking the decision. A
@@ -6177,3 +6390,63 @@ caller at all, which is the whole of REQ-219's case).
   actor to confirm it (quality-dimensions, withdrawn), and a tri-state provenance column with two new
   tool surfaces (declined twice now) — was refused. The deliverable of a round like this is a
   corrected decision, not a mechanism that lets us avoid taking one.
+
+
+### Decision rationale — v37 Gate-8 round-3 send-back (2026-09-24, architect; panel PRE-RAN, round-1 files read in full, NOT re-spawned)
+
+- **Scope, stated first because it is the decision most likely to be second-guessed.** The reviewer's
+  round-3 `send_back` is `[architecture, impl, validation]` and its twelve findings are labelled by
+  gate. **This gate executed findings (1)–(4) — the four labelled `architecture` — and wrote findings
+  (5)–(12) as PRESCRIPTIONS on the row that owns them** (ARCH-182 amendment (8f)/(8g)), exactly as
+  round 2 did: no `src/`, `tests/`, `DEPLOY.md`, `docs/`, `05-tests.md`, `06-impl-log.md`, `rtm.md` or
+  `08-validation.md` file was touched here, because two other gates repair the same tree in the same
+  round and the architecture row is the durable artifact they read. A pass on this gate is **not** a
+  claim that (5)–(12) are done. **No re-decomposition, no new REQ, no new ARCH/ADR id, closure held at
+  {REQ-218, REQ-219, REQ-018, REQ-037, REQ-117}.**
+- **The premise correction is this gate's; the remedy is not — for the second time on the same ADR.**
+  The facts are measurements and were written without waiting: `claim()` re-stamps (six hops, read
+  this round), the rule is monotone, no un-stamp path exists in `src/`, and a whole cohort of pre-v24
+  create-time-bound triggers can never be claimed and therefore never self-heals. What is **not** this
+  gate's is the recovery mechanism, because it trades local availability against posture on a live
+  production host — the exact shape ADR-083/ADR-086 already established as owner-overrulable. So
+  `ADR-086.owner_decision` re-opens `pending` on the **mechanism only** (P1–P4, costed), the second
+  ruling stays in force and is labelled the current state, and the impl/validation gates execute
+  against what shipped rather than waiting. This is round 2's B2 pattern applied to its own successor:
+  hand back the corrected premise, do not decide it here.
+- **Three interleaved states became one entry (finding (2)) — by marking, not by rewriting.**
+  Top-down: the round-3 relay → `owner_decision: pending` → the CURRENT ruling (the owner's own text,
+  verbatim, dated 2026-09-23 recorded / 2026-09-24 implemented) → `[SUPERSEDED 2026-09-23]` on the
+  round-2 pending-phrased question **including its cost bullet**, whose 「`'held'` 分支在任何 `UPDATE`
+  之前就回傳,所以只堵得住窄路」 estimate the implementation itself disproved → the already-marked
+  first answer. The round-2 rationale's 「goes back to `pending`」 sentence is **annotated in place,
+  not rewritten** — it was true when written, and a ledger that edits its own history cannot be
+  audited. Introducing a fourth state while fixing three would have been the same defect.
+- **Debate convergence, recorded (who conceded, and why).** Only round 1 exists this round: the two
+  headlines were complementary (one lens argued the mechanism's design, the other the four quality
+  seams of shipping it), so no round 2 was spawned — the contract's condition for round 2 is material
+  conflict, not habit. **Converged without argument:** C1/C4 (the fix went dark to the ledger — both
+  lenses called it the same defect), C3 as a *bounded* exception needing documentation + a query
+  rather than a sweep, C2/QD-3 as **one test, not a type fix** (quality-dimensions re-verified with
+  `tsc --noEmit --strict` that a property-typed member does not stop a dropped parameter, and
+  adversarial reached the same answer from bivariance — so the port redeclaration is recorded as
+  **declined as a mitigation**, which is stronger than filing it), and C5 as owner-gated.
+  **They split on one thing only:** adversarial recommends P1 (move script-provenance to the version
+  row, restore `createdRemote` to immutable, net-negative code) while quality-dimensions costs (a) a
+  narrow local-only re-arm tool vs (b) accept-and-document without ranking. **This gate took neither**
+  — that split *is* the owner's question, and both readings are carried into it (P1/P4 come from the
+  two lenses respectively). **This gate overruled the panel on exactly one point:** adversarial asked
+  the architecture row to adopt P1 now; a send-back repair round may not re-key a mechanism the owner
+  ruled on two days ago and that has shipped — it is relayed with its costs and its strongest
+  argument (P1 is the only option that also covers the C3 cohort) intact, and the ADR now states why
+  ADR-086's recorded rejection of the version-row design does not reach a fire-path-only read, so the
+  entry is not self-contradicting whichever way the owner rules. **This gate also raised C7 from the
+  review's LOW to MED**, agreeing with adversarial: under a monotone rule 「safe direction」 and
+  「permanent」 are the same sentence, and a FAILED registration still taints.
+- **Karpathy tie-break, applied and countable.** This gate ships **zero new modules, zero new ARCH
+  ids, zero new ADRs, zero schema changes, zero code**. It adds two invariants (one of which,
+  INV-V37-7, exists only because a test is measurably the ONLY mechanism that holds this seam — the
+  type-system alternative was measured and rejected by both lenses), one amendment, one re-opened
+  owner question, and five deferrals filed with event-shaped triggers instead of built. Where two
+  proposals delivered equal value the simpler won: the pre-v24 cohort gets a documented identifying
+  query rather than an active sweep; the naming complaint (C8) is declined because a column rename
+  costs a migration on every deployed workRoot and buys nothing the two projections cannot say.

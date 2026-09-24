@@ -5,11 +5,17 @@
 // "本機發起的 run 仍不受限制" — a locally-submitted run stays unconfined, never refused).
 // Written test-first (Gate 5b amendment, RED): ToolDeps carries no isRemoteSubmission/
 // confinementPosture field yet, and callTool has no pre-dispatch check for them.
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { callTool } from '../../src/call-tool.js';
 import type { ToolDeps } from '../../src/call-tool.js';
 import { WebhookRegistry } from '../../src/webhook-registry.js';
 import { SqliteSchedulerPort } from '../../src/scheduler.js';
+import { WorkflowCatalog } from '../../src/workflow-catalog.js';
+import { RunManager } from '../../src/run-manager.js';
+import { McpFacade } from '../../src/mcp-facade.js';
 import type { Clock } from '../../src/clock.js';
 
 function partialDeps(d: Record<string, unknown>): ToolDeps {
@@ -117,5 +123,62 @@ describe('v37 Gate-8 round-2 (finding B1, INV-V37-5(d)) — ToolDeps.isRemoteSub
     const schResult = (await callTool(partialDeps({ scheduler }), 'schedule_create', { kind: 'cron', cron: '0 6 * * *' }, { kind: 'auth-disabled' })) as { result?: { id: string } };
     expect(webhooks.get(whResult.result!.webhookId)?.createdRemote).toBe(false);
     expect(scheduler.get(schResult.result!.id)?.createdRemote).toBe(false);
+  });
+});
+
+// v37 Gate-8 round-3 send-back repair (finding 7 / architecture's finding C2, INV-V37-5 amendment):
+// the SIXTH forward `workflow_register`+`claim()` opens was shipped with ZERO regression coverage —
+// `grep -rn 'workflow_register' tests/ | grep -i isRemoteSubmission` returned 0 hits before this
+// block. Deleting the `isRemoteSubmission` argument at `call-tool.ts:212`, dropping `createdRemote`
+// from the `claim()` call at `mcp-facade.ts:392`, or deleting either store's `claim()` `stamp()`
+// call must turn ONE of these RED; today all of them leave the suite green.
+describe('UT-336/UT-337 — workflow_register isRemoteSubmission:true, re-listing an EXISTING locally-owned trigger id, re-stamps it createdRemote:true end to end through callTool() (finding 7)', () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'rwe-c2-restamp-')); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  const SCRIPT = 'return 1;';
+  // v26 (REQ-128): a plain LR swimlane with no agent() label — the same minimal fixture
+  // `register-trigger-ownership.test.ts` (IT-123) uses, which registers clean.
+  const MERMAID = 'graph LR';
+
+  it('[LOAD-BEARING] UT-336 schedule: claim() re-stamps the existing schedule trigger to remote', async () => {
+    const catalog = new WorkflowCatalog(dir, B1_CLOCK);
+    const scheduler = new SqliteSchedulerPort({ clock: B1_CLOCK, catalog: b1FakeCatalog() as never, runManager: b1FakeRunManager() as never, dbPath: join(dir, 'schedules.db') });
+    const webhooks = new WebhookRegistry({ clock: B1_CLOCK, catalog: b1FakeCatalog() as never, runManager: b1FakeRunManager() as never, dbPath: join(dir, 'webhooks.db') });
+    const facade = new McpFacade({
+      runManager: new RunManager({ clock: B1_CLOCK, workRoot: dir, catalog }),
+      schedulerClaims: scheduler, webhookClaims: webhooks,
+    } as never);
+
+    // Created LOCALLY (isRemoteSubmission:false / omitted), no `workflow` bound yet.
+    const created = await scheduler.create({ kind: 'once', at: '2026-06-01T00:00:00Z', enabled: true } as never);
+    const id = (created as { result?: { id: string } }).result!.id;
+    expect(scheduler.get(id)?.createdRemote).toBe(false);
+
+    const deps = partialDeps({ facade, scheduler, webhooks, isRemoteSubmission: true });
+    const res = (await callTool(deps, 'workflow_register', { name: 'wf-c2-sched', script: SCRIPT, mermaid: MERMAID, triggers: [id] }, { kind: 'auth-disabled' })) as { status?: string };
+    expect(res.status).toBe('completed');
+    expect(scheduler.get(id)?.createdRemote).toBe(true);
+  });
+
+  it('[LOAD-BEARING] UT-337 webhook: claim() re-stamps the existing webhook trigger to remote', async () => {
+    const catalog = new WorkflowCatalog(dir, B1_CLOCK);
+    const scheduler = new SqliteSchedulerPort({ clock: B1_CLOCK, catalog: b1FakeCatalog() as never, runManager: b1FakeRunManager() as never, dbPath: join(dir, 'schedules.db') });
+    const webhooks = new WebhookRegistry({ clock: B1_CLOCK, catalog: b1FakeCatalog() as never, runManager: b1FakeRunManager() as never, dbPath: join(dir, 'webhooks.db') });
+    const facade = new McpFacade({
+      runManager: new RunManager({ clock: B1_CLOCK, workRoot: dir, catalog }),
+      schedulerClaims: scheduler, webhookClaims: webhooks,
+    } as never);
+
+    // Created LOCALLY (isRemoteSubmission:false / omitted), unclaimed.
+    const created = await webhooks.create({});
+    const id = (created as { webhookId: string }).webhookId;
+    expect(webhooks.get(id)?.createdRemote).toBe(false);
+
+    const deps = partialDeps({ facade, scheduler, webhooks, isRemoteSubmission: true });
+    const res = (await callTool(deps, 'workflow_register', { name: 'wf-c2-hook', script: SCRIPT, mermaid: MERMAID, triggers: [id] }, { kind: 'auth-disabled' })) as { status?: string };
+    expect(res.status).toBe('completed');
+    expect(webhooks.get(id)?.createdRemote).toBe(true);
   });
 });

@@ -163,8 +163,9 @@ export class WebhookRegistry {
     try { this._db.exec('ALTER TABLE webhooks ADD COLUMN refusalCount INTEGER NOT NULL DEFAULT 0'); } catch { /* already exists */ }
     try { this._db.exec('ALTER TABLE webhooks ADD COLUMN lastRefusedAt TEXT'); } catch { /* already exists */ }
     try { this._db.exec('ALTER TABLE webhooks ADD COLUMN lastRefusalReason TEXT'); } catch { /* already exists */ }
-    // v37 (ARCH-182, DES-263, TASK-258): same idempotent idiom — written once at `webhook_create`
-    // from `ToolDeps.isRemoteSubmission`, read back by `deliver()` to stamp `RunSpec.origin`.
+    // v37 (ARCH-182, DES-263, TASK-258): same idempotent idiom — stamped at `webhook_create`
+    // from `ToolDeps.isRemoteSubmission`, re-stamped monotonically by `claim()` (see the column's
+    // own comment below), read back by `deliver()` to stamp `RunSpec.origin`.
     try { this._db.exec('ALTER TABLE webhooks ADD COLUMN createdRemote INTEGER NOT NULL DEFAULT 0'); } catch { /* already exists */ }
   }
 
@@ -184,7 +185,9 @@ export class WebhookRegistry {
     const secret = randomBytes(32).toString('hex');
     this._db
       .prepare('INSERT INTO webhooks (id, workflow, createdBy, createdRemote, secret, enabled, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      // v37 (ARCH-182, DES-263, TASK-258): written ONCE at creation, never updated afterwards.
+      // v37 (ARCH-182, DES-263, TASK-258): the CREATION stamp — `claim()` below re-stamps this
+      // monotonically (local→remote) on later registrations; this INSERT never runs again for an
+      // existing row, so it is a one-time write, not a claim that the value stays frozen.
       .run(id, spec.workflow ?? null, spec.createdBy ?? null, spec.createdRemote ? 1 : 0, secret, spec.enabled === false ? 0 : 1, this._clock.isoNow());
     return { webhookId: id, secret };
   }
@@ -344,9 +347,10 @@ export class WebhookRegistry {
     }
 
     // v37 (ARCH-182, DES-263, TASK-258): the delivery PEER is deliberately NOT part of this
-    // predicate (DES-262's own note) — what decides is who CREATED the trigger ROW,
-    // `row.createdRemote`, written once at creation and never re-stamped by a later attachment
-    // event (`claim()`, `workflow_register`, `workflow_publish` — Gate-8 round-2, finding B2). A
+    // predicate (DES-262's own note) — what decides is who CREATED (or later, remotely, CLAIMED)
+    // the trigger ROW: `row.createdRemote` is stamped at creation and re-stamped monotonically
+    // (local→remote only) by `claim()` on `workflow_register`/`workflow_publish` — ADR-086's
+    // second ruling, `3e3c331`+`2cf5f32`, 2026-09-24. A
     // thrown admission error is mapped into this function's own typed DeliverResult rather than
     // escaping as a rejected promise.
     let runId: string;

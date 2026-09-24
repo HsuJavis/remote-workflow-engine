@@ -12794,3 +12794,203 @@ as shipped (de facto option (a) — the premise correction and residual are alre
 ARCH-182/ADR-086; no code re-stamps `createdRemote` at claim time). This does not block this gate's
 `passed`; `sh .sdlc/trace --check`'s mock-only/unverified gap check is a separate signal from an
 open `owner_decision` marker, reported distinctly below.
+
+## v37 Gate 8 round-3 SEND-BACK REPAIR — validation slice (2026-09-24, validator)
+
+Scope: this gate's own slice of the round-3 send-back — findings 9 and 12 only, exactly what
+ARCH-182 amendment (8g) prescribes to the validation gate. Findings 1-4 (architecture) and 5/6/7/8/
+10/11 (impl) are done by prior gates this same round (confirmed by direct read of
+`02-architecture.md` amendment (8a)-(8h), `06-impl-log.md` IMPL-386, `05-tests.md` UT-335's row, and
+`rtm.md`'s finding-11 correction — not redone here). No `src/`/`tests/` file touched by this slice.
+
+**Finding 9 — DEPLOY.md:883 (§5) and :908 (§6), both false since `3e3c331`+`2cf5f32`, rewritten
+in place** to state the shipped mechanism (stamped at creation, re-stamped monotonically
+local→remote by `claim()` on both `'claimed'`/`'held'`, never on `'ALREADY_CLAIMED'`), the cheaper
+coverage path (a plain remote `workflow_register` re-listing the trigger's existing id — no delete,
+no secret rotation), the irreversibility warning (no un-stamp path in `src/`; permanent refusal on
+an `unconfined` host; delete-and-recreate is the only recorded remedy and rotates a webhook's
+id/secret), and the pre-v24 cohort exception with (8c)'s identifying queries. See VAL-258 below for
+the real-tier proof this rewrite is based on, including one discrepancy found in (8c)'s own text
+(recorded, not silently corrected in `02-architecture.md`, which is out of this gate's scope).
+
+### VAL-258 — REQ-218: `claim()`'s local→remote monotone re-stamp (ADR-086's second ruling, `3e3c331`+`2cf5f32`) proven on a genuinely `unconfined` real boot — upgrade, no-downgrade, and the pre-v24 legacy-cohort exception
+
+- **status:** green
+- **traces:** DES-263, ADR-086, IMPL-386, UT-335, REQ-218
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  VAL-256/VAL-257 both predate `3e3c331`/`2cf5f32` and exercise none of the re-stamp mechanism —
+  this item is (8g)(ii)'s prescribed real-tier proof: a genuinely booted, genuinely `unconfined`
+  instance exercising (a) upgrade, (b) no-downgrade, and (c) the pre-v24 cohort exception.
+
+  **Boot (documented steps only, own scratch instance, port 8793, production 8899 untouched):**
+  ```
+  export RWE_CONFIG_PATH=<scratch>/rwe.val258.config.json   # own port 8793, own workRoot outside
+                                                              # the repo, copy of
+                                                              # rwe.config.example.json with only
+                                                              # port/workRoot changed
+  export RWE_PORT=8793
+  export RWE_BIND=127.0.0.1
+  export PATH=/home/user/.rwe-litellm-venv/bin:$PATH        # gateway:"sdk" needs litellm on PATH
+                                                              # at boot (§5's own documented row)
+  ./deploy.sh --background
+  ```
+  Boot log tail:
+  ```
+  [remote-workflow-engine] listening on http://127.0.0.1:8793/mcp (workRoot=.../workroot258)
+  [remote-workflow-engine] Bash confinement: UNCONFINED (bwrap: No permissions to create a new
+  namespace, ...) — remote run submissions will be refused; local (loopback) runs still proceed,
+  unconfined
+  [remote-workflow-engine] ready
+  ```
+  Healthcheck: `curl http://127.0.0.1:8793/api/status` → `200
+  {"agentSemaphore":{"total":32,"inUse":0,"queued":0},"version":"0.1.0 (v0.20.0-450-g2cf5f32)"}` —
+  version string confirms both repair commits are in the running build.
+  `tools/list` (delivery-interface real check, retro L-003): `35 tools`, including
+  `workflow_register`/`schedule_create`/`schedule_list`/`webhook_create`/`webhook_list`.
+  **Booted twice under this same boot recipe**: (a) covers this item's (a)/(b)/(c) below; (b) a
+  second boot later in this same item — same `RWE_CONFIG_PATH`/workRoot (the seeded rows and their
+  published v1 workflows persisted across the stop/restart), same `./deploy.sh --background`, same
+  `UNCONFINED` banner, same `v0.20.0-450-g2cf5f32` version string — for the pre-v24 remediation
+  re-test the second "discrepancy found" paragraph below describes.
+
+  **Method**: same `X-Forwarded-For: 203.0.113.x` technique VAL-256 used to make `isRemoteSubmission`
+  true over the same loopback socket (`isLoopbackPeer()`, `src/net-guard.ts:109`).
+
+  **(a) local create → local claim (`'claimed'`) → REMOTE re-register of the same trigger id
+  (`'held'`) upgrades `createdRemote`, then the next firing/delivery is refused.**
+  Schedule: `schedule_create({kind:'once',at:<past>,enabled:false})` (no headers) → id; LOCAL
+  `workflow_register({name,script:'return 1;',mermaid,triggers:[id]})` + `workflow_publish` →
+  `schedule_list` row `{createdRemote:false,claimedBy:<wf>}`; REMOTE (X-Forwarded-For)
+  `workflow_register` on the SAME workflow name, SAME trigger id (v2) + `workflow_publish` →
+  `schedule_list` row `{createdRemote:true,claimedBy:<wf>}` (the `'held'` branch fired, since
+  `claimedBy` already equalled the workflow); `schedule_setEnabled({enabled:true})` → real
+  `RealTicker` fires it → `lastError:{code:"CONFINEMENT_UNAVAILABLE",...}`, zero run started.
+  Webhook: identical recipe (`webhook_create`→local claim→REMOTE re-register of the same id) →
+  `webhook_list` row flips `createdRemote:false`→`true`; delivery over plain loopback (no tunnel
+  header, correct HMAC) → `403 {"code":"CONFINEMENT_UNAVAILABLE","error":"<static
+  ERROR_CATALOG hint>"}` — the B4-fixed wire shape VAL-257 already proved, re-observed here on the
+  upgrade path specifically.
+  Raw transcript: `evidence/v37/val258-claim-restamp-real-run.{mjs,log}`.
+
+  **(b) remote create → local claim (`'claimed'`) → local re-register (`'held'`) does NOT
+  downgrade — INV-V37-6 holds end-to-end.**
+  Schedule: `schedule_create(...,{X-Forwarded-For})` → `schedule_list` row `{createdRemote:true,
+  claimedBy:null}` immediately (unclaimed, but already tainted at creation); LOCAL
+  `workflow_register`+`publish` (v1, `'claimed'`) → `{createdRemote:true}` (stays true); LOCAL
+  re-register (v2, `'held'`) → `{createdRemote:true}` (still stays true — no downgrade, even though
+  every step after creation was local). Webhook: identical recipe, identical outcome
+  (`createdRemote` stays `true` through both local claim and local re-claim).
+  Raw transcript: same file as (a) above (script exercises both in one run).
+
+  **(c) the pre-v24 create-time-bound cohort — never claimed, never re-stamped, identified by the
+  stated query, and its own admission gap reproduced live.**
+  The create-time binding door is closed for NEW rows (`call-tool.ts:180-184`, refuses `workflow` on
+  `schedule_create`/`webhook_create` with `INVALID_ARGUMENT`) — independently re-confirmed by
+  reading the code, not just cited. So this shape can only be produced today by a direct write to
+  the on-disk store, exactly what upgrading a real pre-v24 deployment leaves behind (`ALTER TABLE
+  schedules ADD COLUMN claimedBy TEXT`, `scheduler.ts:207`, defaults every pre-existing row's
+  `claimedBy` to `NULL` while `workflow` stays set) — **not** a mock of the SUT's own boundary
+  (no MCP call is faked; the two admission/query code paths exercised below are the real, unmodified
+  `src/` functions reading real on-disk rows). Seeded via `better-sqlite3` (the same driver the
+  product itself uses) directly into the scratch instance's `schedules.db`/`webhooks.db` while it
+  was running: `id` fresh, `workflow` set to a fresh workflow name, `claimedBy` **NULL**,
+  `createdRemote` 0. Script: `evidence/v37/val258c-seed-legacy.mjs`, log:
+  `evidence/v37/val258c-seed.log`. **This is NOT the same shape as calling
+  `SqliteSchedulerPort.create({workflow})` directly** — that store-level compat path (still present
+  for internal/test use, `scheduler.ts:307`, `claimedBy: s.workflow ?? null`) sets `claimedBy`
+  immediately ("its own claim from birth"), which is a *different* row shape from a genuinely
+  migrated ancient row; using it would have silently tested the wrong cohort — noted here because it
+  is exactly the kind of shape mistake real-tier evidence exists to catch.
+
+  Verified, against the running scratch instance (`evidence/v37/val258c-verify.{mjs,log}`):
+  - A REMOTE `workflow_register`+`publish` onto the seeded row's own workflow name, with
+    `triggers:[]` (i.e. NOT declaring the legacy id — the realistic case, since nobody knows to
+    declare an id that was bound before declaration existed) leaves the row **byte-for-byte
+    unchanged** (`claimedBy:null`, `createdRemote:false`) — `claim()` is never invoked on it because
+    it is never in the `triggers` array any registration call passes.
+  - Enabling and firing the schedule **succeeds and starts a real run** (`lastRunId` populated, not
+    a refusal) even though the workflow it fires was JUST registered remotely — because the
+    predicate reads the TRIGGER's own `createdRemote` (`false`), not the workflow's registration
+    origin. Webhook: delivering over plain loopback after the same remote re-register →
+    `202 {"runId":...}`, a real admitted run. **This is (1b)/(8c)'s named residual, reproduced live,
+    not merely quoted from the architecture doc.**
+  - **Identifying queries, both forms, run against the real seeded rows**
+    (`evidence/v37/val258c-sql-queries.{mjs,log}`, via `better-sqlite3` since this host has no
+    `sqlite3` CLI binary installed — noted as a DEPLOY.md prerequisite gap, see below):
+    - SQL form, schedules (`workflow IS NOT NULL AND claimedBy IS NULL`) → returns exactly the
+      seeded row. **Verified correct.**
+    - SQL form, webhooks (`ATTACH catalog.db` + `NOT EXISTS` over `json_each(workflow_versions.
+      triggers)`) → returns exactly the seeded row, cross-checked against the raw
+      `workflow_versions.triggers` column (`"[]"` for both seeded workflows — genuinely
+      undeclared). **Verified correct.**
+    - **(8c)'s "MCP form" ("compare the id against `workflow_describe({name}).triggers[]`; absent ⇒
+      cohort member") does NOT work as written — DISCREPANCY, recorded, not silently fixed here.**
+      `workflow_describe`'s `triggers` field is `McpFacade._resolveTriggers()`
+      (`mcp-facade.ts:328-339`), which is a UNION of the version's declared ids **and**
+      `claimedIdsFor(workflow)` — and `claimedIdsFor` matches `claimedBy = ? OR workflow = ?`
+      (schedules) / `workflow = ?` (webhooks), which is *deliberately* written (per its own comment)
+      to surface pre-v24 legacy bindings on this exact tool so they are not invisible to an
+      operator. Net effect, empirically confirmed: the seeded legacy trigger IS present in
+      `workflow_describe({name}).triggers[]` (as a full trigger object), the literal opposite of
+      "absent". The "absent ⇒ cohort member" test as (8c) states it would therefore silently
+      misclassify every legacy row as normally-declared. **What DOES work via MCP alone**:
+      `schedule_list`'s own `claimedBy:null` + `workflow` set (the SQL form's condition, readable
+      without SQL) — used above. **What has no MCP-only substitute**: webhooks (no `claimedBy`
+      column exists on that table at all) — the SQL form (or the `better-sqlite3` node fallback) is
+      the only working method today.
+
+  **Second discrepancy found (8c): "remediated only by delete-and-recreate" is ALSO false — a
+  cheaper remediation was tested and works.** Rebooted the same scratch instance against the same
+  `RWE_CONFIG_PATH`/workRoot (the seeded rows and their v1-published workflows were still there),
+  then drove a REMOTE `workflow_register` that EXPLICITLY lists the legacy id in `triggers`
+  (`{name:<legacy workflow>, script, mermaid, triggers:[<legacy id>]}`) + `workflow_publish`, for
+  both the seeded schedule and the seeded webhook. Both succeeded: `schedule_list`/`webhook_list`
+  afterward show `claimedBy:"val258-legacy-sched-wf"` (previously `null`) and `createdRemote:true`
+  (previously `false`) — `claim()` DOES run and DOES stamp once an operator (local or remote)
+  explicitly names the legacy id in a registration's `triggers[]`, exactly like any other trigger.
+  Raw transcript: `evidence/v37/val258c-remediation-test.{mjs,log}`. **What this means**: the
+  pre-v24 cohort does not self-heal on an *ordinary* re-registration (one that doesn't know to name
+  the old id — the realistic default case, proven above), but it is NOT stuck requiring
+  delete-and-recreate either — a single explicit `workflow_register({triggers:[...existing ids,
+  <legacy id>]})` claims and stamps it like any other trigger, no id/secret rotation. DEPLOY.md's
+  §6 pre-v24 paragraph is written to this corrected, tested fact (not to (8c)'s "remediated only by
+  delete-and-recreate" text, which is the second identified defect in that amendment).
+
+  **Cleanup**: `kill $(cat <scratch>/.rwe.rwe.val258.config.pid)` (both boots — the second boot for
+  the remediation re-test above, same scratch config/workRoot, reused rather than re-seeded); `ss
+  -ltnp` before/after (both boots) confirms only 8899's pre-existing PID on that port, unchanged;
+  scratch `workRoot`/config left under the session scratchpad, outside the repo, never committed.
+
+  **DEPLOY.md repair (finding 9) based directly on this evidence**: rewrote §5:883 and §6:908 to the
+  shipped monotone mechanism, the cheaper coverage path for ordinary triggers, the irreversibility
+  warning, and the pre-v24 exception — using the VERIFIED-CORRECT SQL forms above (not the unverified
+  MCP form), adding the `better-sqlite3` node fallback for hosts without a `sqlite3` CLI (this one),
+  stating plainly that no MCP-only method exists for webhooks today, and stating the TESTED
+  remediation for the pre-v24 cohort (explicit `triggers:[...]` listing claims+stamps it; delete-
+  and-recreate is a heavier alternative, not the only one).
+- **iter:** v37
+
+**Needs-clarification (not decided here, architecture-owned)**: `02-architecture.md` ARCH-182
+amendment (8c) has TWO inaccuracies, both found by this item's real run and both left for
+architecture to correct (not edited here, out of this gate's scope):
+1. The "MCP form" identifying query is incorrect as written (see VAL-258 above for the
+full mechanism) — `workflow_describe({name}).triggers[]` cannot distinguish a version-declared
+trigger from a legacy-bound one, because `_resolveTriggers()` deliberately unions both for
+operator visibility. The SQL forms in the same amendment are unaffected and verified correct.
+2. "Rows in the cohort are remediated only by delete-and-recreate (or by whatever ADR-086's
+re-opened decision picks); they cannot self-heal" is also false as written — VAL-258's remediation
+re-test above shows an explicit `workflow_register({triggers:[...,<legacy id>]})` (local or remote)
+DOES claim and stamp a pre-v24-bound row exactly like any other trigger; delete-and-recreate is a
+heavier alternative, not the only remedy.
+This gate's DEPLOY.md rewrite routes around both defects (verified SQL forms only for the query; the
+tested explicit-claim remediation, not "delete-and-recreate only", for the fix) rather than shipping
+a non-working operator instruction, but the architecture doc's own (8c) text still states both and
+should be corrected in the next architecture-touching gate.
+
+**Config-file sync check (this slice)**: no config/settings file read or written by this slice;
+`createdRemote` remains a SQLite column, not a config key (consistent with the pre-existing
+sync-check note above). Confirmed via `git diff --stat rwe.config.example.json` (empty) at the end
+of this slice too.

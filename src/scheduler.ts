@@ -26,8 +26,10 @@ import { toErrEnvelope } from './errors.js';
 // the fire path, which refuses and RECORDS the verdict. `claimedBy`/`createdBy` are the
 // new per-trigger ownership fields (ARCH-099's "five columns", the other three being the refusal
 // trio below).
-// v37 (ARCH-182, DES-263, TASK-258): `createdRemote` — written ONCE at creation from
-// `ToolDeps.isRemoteSubmission`, never updated afterwards (provenance is a fact about creation).
+// v37 (ARCH-182, DES-263, TASK-258): `createdRemote` — stamped at creation from
+// `ToolDeps.isRemoteSubmission`, then RE-STAMPED MONOTONICALLY (local→remote only, never the
+// reverse) by `claim()` on both its `'claimed'` and `'held'` outcomes (ADR-086's second ruling,
+// 2026-09-24; `3e3c331`+`2cf5f32`) — a taint bit, not a frozen creation record.
 // Read back by `trigger()` and by `server.ts`'s ticker dispatcher to stamp `RunSpec.origin`.
 export type Schedule =
   | { kind: 'cron'; id: string; workflow?: string; claimedBy?: string | null; createdBy?: string; createdRemote?: boolean; args?: unknown; cron: string; tz?: string; enabled: boolean }
@@ -207,8 +209,9 @@ export class SqliteSchedulerPort {
     try { this._db.exec('ALTER TABLE schedules ADD COLUMN refusalCount INTEGER NOT NULL DEFAULT 0'); } catch { /* already present */ }
     try { this._db.exec('ALTER TABLE schedules ADD COLUMN lastRefusedAt TEXT'); } catch { /* already present */ }
     try { this._db.exec('ALTER TABLE schedules ADD COLUMN lastRefusalReason TEXT'); } catch { /* already present */ }
-    // v37 (ARCH-182, DES-263, TASK-258): same idempotent idiom — written once at `schedule_create`
-    // from `ToolDeps.isRemoteSubmission`, read back by `trigger()` and the ticker dispatcher.
+    // v37 (ARCH-182, DES-263, TASK-258): same idempotent idiom — stamped at `schedule_create`
+    // from `ToolDeps.isRemoteSubmission`, re-stamped monotonically by `claim()` (see the column's
+    // own comment above), read back by `trigger()` and the ticker dispatcher.
     try { this._db.exec('ALTER TABLE schedules ADD COLUMN createdRemote INTEGER NOT NULL DEFAULT 0'); } catch { /* already present */ }
     // v26 Gate 7.5 round 6, defect D13: the `CREATE TABLE` above relaxed `workflow` to nullable for
     // a FRESH database only — an already-created file keeps `workflow TEXT NOT NULL`, and since
@@ -303,7 +306,9 @@ export class SqliteSchedulerPort {
         // rather than via a stored-row rewrite).
         claimedBy: s.workflow ?? null,
         createdBy: s.createdBy ?? null,
-        // v37 (ARCH-182, DES-263, TASK-258): written ONCE at creation, never updated afterwards.
+        // v37 (ARCH-182, DES-263, TASK-258): the CREATION stamp — `claim()` below re-stamps this
+        // monotonically (local→remote) on later registrations; this INSERT never runs again for
+        // an existing row, so it is a one-time write, not a claim that the value stays frozen.
         createdRemote: s.createdRemote ? 1 : 0,
         argsJson,
         cron: s.kind === 'cron' ? s.cron : null,

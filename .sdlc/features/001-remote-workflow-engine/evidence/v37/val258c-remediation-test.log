@@ -1,0 +1,8 @@
+=== SCHEDULE: REMOTE workflow_register EXPLICITLY listing the legacy id in triggers[] ===
+register result: {"runId":"","status":"completed","version":2,"result":{"name":"val258-legacy-sched-wf","version":"v2","versions":["v1","v2"],"channels":{"release":"v1","beta":null}}}
+publish result: {"runId":"","status":"completed","result":{"channel":"release","version":"v2","from":"v1"}}
+legacy schedule row AFTER explicit remote claim attempt: {"id":"c473d2f2-884c-4765-b98b-0901928e3fc4","kind":"once","workflow":"val258-legacy-sched-wf","claimedBy":"val258-legacy-sched-wf","createdRemote":true,"enabled":false,"at":"2026-09-24T14:10:03.836Z","nextFire":"2026-09-24T14:10:03.836Z","lastFire":"2026-09-24T14:11:12.736Z","lastRunId":"0911b0e7-5458-47cc-bcf6-555d45b6e1fb","refusalCount":0}
+=== WEBHOOK: REMOTE workflow_register EXPLICITLY listing the legacy id in triggers[] ===
+register result: {"runId":"","status":"completed","version":2,"result":{"name":"val258-legacy-hook-wf","version":"v2","versions":["v1","v2"],"channels":{"release":"v1","beta":null}}}
+publish result: {"runId":"","status":"completed","result":{"channel":"release","version":"v2","from":"v1"}}
+legacy webhook row AFTER explicit remote claim attempt: {"id":"76fef1b5-38ac-4366-88e0-43cdf8b3586a","workflow":"val258-legacy-hook-wf","createdBy":null,"enabled":true,"secretFingerprint":"718018a254f3949d","refusalCount":0,"createdRemote":true}

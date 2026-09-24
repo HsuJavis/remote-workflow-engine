@@ -1,0 +1,64 @@
+=== (a) SCHEDULE: local create, local claim, then REMOTE re-register (held) upgrades createdRemote ===
+after LOCAL claim (should be createdRemote:false): {"createdRemote":false,"claimedBy":"val258-sched-a-u8hkwy"}
+after REMOTE re-register (held) (should be createdRemote:true): {"createdRemote":true,"claimedBy":"val258-sched-a-u8hkwy"}
+final row after fire attempt: {"id":"d84fc860-8f2a-4ac2-9372-546929e12ba8","kind":"once","claimedBy":"val258-sched-a-u8hkwy","createdRemote":true,"enabled":false,"at":"2026-09-24T14:07:51.662Z","nextFire":"2026-09-24T14:07:51.662Z","lastError":{"code":"CONFINEMENT_UNAVAILABLE","at":"2026-09-24T14:07:53.862Z"},"refusalCount":0}
+=== (a) WEBHOOK: local create, local claim, then REMOTE re-register (held) upgrades createdRemote ===
+after LOCAL claim (should be createdRemote:false): {"createdRemote":false}
+after REMOTE re-register (held) (should be createdRemote:true): {"createdRemote":true}
+delivery after upgrade to remote: 403 {"error":"this host could not measure a working Bash sandbox at boot; a run whose recorded provenance is remote is refused — a remote run_start/run_resume, a webhook delivery, or a schedule firing whose trigger was itself created remotely (a local/loopback submission still runs, unconfined)","code":"CONFINEMENT_UNAVAILABLE"}
+=== (b) SCHEDULE: remote create, local claim, local re-register (held) — must stay createdRemote:true ===
+immediately after remote create (should be createdRemote:true, unclaimed): {"createdRemote":true,"claimedBy":null}
+after LOCAL claim (must STAY createdRemote:true, INV-V37-6): {"createdRemote":true}
+after LOCAL re-register/held (must STAY createdRemote:true, no downgrade): {"createdRemote":true}
+=== (b) WEBHOOK: remote create, local claim, local re-register (held) — must stay createdRemote:true ===
+immediately after remote create: {"createdRemote":true}
+after LOCAL claim (must STAY true): {"createdRemote":true}
+after LOCAL re-register/held (must STAY true, no downgrade): {"createdRemote":true}
+=== FULL RESULT ===
+{
+  "a_schedule": {
+    "id": "d84fc860-8f2a-4ac2-9372-546929e12ba8",
+    "wfName": "val258-sched-a-u8hkwy",
+    "createdRemote_after_local_claim": false,
+    "createdRemote_after_remote_held": true,
+    "final": {
+      "id": "d84fc860-8f2a-4ac2-9372-546929e12ba8",
+      "kind": "once",
+      "claimedBy": "val258-sched-a-u8hkwy",
+      "createdRemote": true,
+      "enabled": false,
+      "at": "2026-09-24T14:07:51.662Z",
+      "nextFire": "2026-09-24T14:07:51.662Z",
+      "lastError": {
+        "code": "CONFINEMENT_UNAVAILABLE",
+        "at": "2026-09-24T14:07:53.862Z"
+      },
+      "refusalCount": 0
+    }
+  },
+  "a_webhook": {
+    "id": "e3d402e6-e86f-4830-ab4d-067dae25cbf5",
+    "wfName": "val258-hook-a-mhgomn",
+    "createdRemote_after_local_claim": false,
+    "createdRemote_after_remote_held": true,
+    "deliveryStatus": 403,
+    "deliveryBody": {
+      "error": "this host could not measure a working Bash sandbox at boot; a run whose recorded provenance is remote is refused — a remote run_start/run_resume, a webhook delivery, or a schedule firing whose trigger was itself created remotely (a local/loopback submission still runs, unconfined)",
+      "code": "CONFINEMENT_UNAVAILABLE"
+    }
+  },
+  "b_schedule": {
+    "id": "e566bf1d-6706-4373-9dec-2a931bce123f",
+    "wfName": "val258-sched-b-836mju",
+    "createdRemote_at_creation": true,
+    "createdRemote_after_local_claimed": true,
+    "createdRemote_after_local_held": true
+  },
+  "b_webhook": {
+    "id": "9f92eaf6-18ca-4488-bbbb-53f2220e847e",
+    "wfName": "val258-hook-b-vklbyw",
+    "createdRemote_at_creation": true,
+    "createdRemote_after_local_claimed": true,
+    "createdRemote_after_local_held": true
+  }
+}

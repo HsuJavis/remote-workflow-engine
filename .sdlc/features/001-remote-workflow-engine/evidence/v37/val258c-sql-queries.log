@@ -1,0 +1,27 @@
+--- (8c) SQL form, schedules: WHERE workflow IS NOT NULL AND claimedBy IS NULL ---
+[
+  {
+    "id": "c473d2f2-884c-4765-b98b-0901928e3fc4",
+    "workflow": "val258-legacy-sched-wf"
+  }
+]
+--- (8c) SQL form, webhooks: ATTACH catalog.db, NOT EXISTS json_each over workflow_versions.triggers ---
+[
+  {
+    "id": "76fef1b5-38ac-4366-88e0-43cdf8b3586a",
+    "workflow": "val258-legacy-hook-wf"
+  }
+]
+--- cross-check: workflow_versions.triggers raw column for both legacy workflow names ---
+[
+  {
+    "name": "val258-legacy-hook-wf",
+    "version": "v1",
+    "triggers": "[]"
+  },
+  {
+    "name": "val258-legacy-sched-wf",
+    "version": "v1",
+    "triggers": "[]"
+  }
+]

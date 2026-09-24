@@ -1,0 +1,110 @@
+=== (c) SCHEDULE: legacy row before any registration ===
+{"id":"c473d2f2-884c-4765-b98b-0901928e3fc4","kind":"once","workflow":"val258-legacy-sched-wf","claimedBy":null,"createdRemote":false,"enabled":false,"at":"2026-09-24T14:10:03.836Z","nextFire":"2026-09-24T14:10:03.836Z","refusalCount":0}
+=== (c) SCHEDULE: REMOTE workflow_register+publish onto the legacy workflow name, triggers:[] (NOT declaring the legacy id) ===
+legacy row after REMOTE register of its own workflow name (claim() never called on it — must be UNCHANGED): {"id":"c473d2f2-884c-4765-b98b-0901928e3fc4","kind":"once","workflow":"val258-legacy-sched-wf","claimedBy":null,"createdRemote":false,"enabled":false,"at":"2026-09-24T14:10:03.836Z","nextFire":"2026-09-24T14:10:03.836Z","refusalCount":0}
+=== (c) SCHEDULE: enable + fire — does it run the REMOTELY-registered script, unconfined, because ITS OWN createdRemote is still false? ===
+final legacy schedule row: {"id":"c473d2f2-884c-4765-b98b-0901928e3fc4","kind":"once","workflow":"val258-legacy-sched-wf","claimedBy":null,"createdRemote":false,"enabled":false,"at":"2026-09-24T14:10:03.836Z","nextFire":"2026-09-24T14:10:03.836Z","lastFire":"2026-09-24T14:11:12.736Z","lastRunId":"0911b0e7-5458-47cc-bcf6-555d45b6e1fb","refusalCount":0}
+run result (should show the REMOTELY-registered script executed, unconfined, via legacy binding): {"runId":"0911b0e7-5458-47cc-bcf6-555d45b6e1fb","status":"running","error":{"code":"RUN_NOT_TERMINAL","message":"Run 0911b0e7-5458-47cc-bcf6-555d45b6e1fb has not completed (status: running)"},"meta":{"usage":{"tokens":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"costUSD":0,"unpricedCalls":0,"unmappedMessages":{}},"budgetEnforceable":{"usd":false,"tokens":true,"unpricedModels":["anthropic/claude-3-5-sonnet-20241022"]}}}
+=== (c) WEBHOOK: legacy row before any registration ===
+{"id":"76fef1b5-38ac-4366-88e0-43cdf8b3586a","workflow":"val258-legacy-hook-wf","createdBy":null,"enabled":true,"secretFingerprint":"718018a254f3949d","refusalCount":0,"createdRemote":false}
+=== (c) WEBHOOK: REMOTE workflow_register+publish onto the legacy webhook workflow name, triggers:[] ===
+legacy webhook row after REMOTE register of its own workflow name (must be UNCHANGED, createdRemote stays false): {"id":"76fef1b5-38ac-4366-88e0-43cdf8b3586a","workflow":"val258-legacy-hook-wf","createdBy":null,"enabled":true,"secretFingerprint":"718018a254f3949d","refusalCount":0,"createdRemote":false}
+=== (c) WEBHOOK: deliver over plain loopback — should be ADMITTED (origin:local, since the TRIGGER itself still reads createdRemote:false) ===
+delivery result: 202 {"runId":"32303eda-ccc7-41fb-9839-052e3c6dd992"}
+=== (c) IDENTIFYING QUERIES ===
+MCP-form cohort membership — schedule: true webhook: true (true = correctly identified as pre-v24 cohort)
+=== FULL RESULT ===
+{
+  "before": {
+    "id": "c473d2f2-884c-4765-b98b-0901928e3fc4",
+    "kind": "once",
+    "workflow": "val258-legacy-sched-wf",
+    "claimedBy": null,
+    "createdRemote": false,
+    "enabled": false,
+    "at": "2026-09-24T14:10:03.836Z",
+    "nextFire": "2026-09-24T14:10:03.836Z",
+    "refusalCount": 0
+  },
+  "registeredVersion": "v1",
+  "afterRemoteRegisterNoDeclare": {
+    "id": "c473d2f2-884c-4765-b98b-0901928e3fc4",
+    "kind": "once",
+    "workflow": "val258-legacy-sched-wf",
+    "claimedBy": null,
+    "createdRemote": false,
+    "enabled": false,
+    "at": "2026-09-24T14:10:03.836Z",
+    "nextFire": "2026-09-24T14:10:03.836Z",
+    "refusalCount": 0
+  },
+  "finalScheduleRow": {
+    "id": "c473d2f2-884c-4765-b98b-0901928e3fc4",
+    "kind": "once",
+    "workflow": "val258-legacy-sched-wf",
+    "claimedBy": null,
+    "createdRemote": false,
+    "enabled": false,
+    "at": "2026-09-24T14:10:03.836Z",
+    "nextFire": "2026-09-24T14:10:03.836Z",
+    "lastFire": "2026-09-24T14:11:12.736Z",
+    "lastRunId": "0911b0e7-5458-47cc-bcf6-555d45b6e1fb",
+    "refusalCount": 0
+  },
+  "runResult": {
+    "runId": "0911b0e7-5458-47cc-bcf6-555d45b6e1fb",
+    "status": "running",
+    "error": {
+      "code": "RUN_NOT_TERMINAL",
+      "message": "Run 0911b0e7-5458-47cc-bcf6-555d45b6e1fb has not completed (status: running)"
+    },
+    "meta": {
+      "usage": {
+        "tokens": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "costUSD": 0,
+        "unpricedCalls": 0,
+        "unmappedMessages": {}
+      },
+      "budgetEnforceable": {
+        "usd": false,
+        "tokens": true,
+        "unpricedModels": [
+          "anthropic/claude-3-5-sonnet-20241022"
+        ]
+      }
+    }
+  },
+  "webhookBefore": {
+    "id": "76fef1b5-38ac-4366-88e0-43cdf8b3586a",
+    "workflow": "val258-legacy-hook-wf",
+    "createdBy": null,
+    "enabled": true,
+    "secretFingerprint": "718018a254f3949d",
+    "refusalCount": 0,
+    "createdRemote": false
+  },
+  "webhookAfterRemoteRegisterNoDeclare": {
+    "id": "76fef1b5-38ac-4366-88e0-43cdf8b3586a",
+    "workflow": "val258-legacy-hook-wf",
+    "createdBy": null,
+    "enabled": true,
+    "secretFingerprint": "718018a254f3949d",
+    "refusalCount": 0,
+    "createdRemote": false
+  },
+  "webhookDelivery": {
+    "status": 202,
+    "respBody": {
+      "runId": "32303eda-ccc7-41fb-9839-052e3c6dd992"
+    }
+  },
+  "mcpForm": {
+    "schedule": true,
+    "webhook": true
+  }
+}

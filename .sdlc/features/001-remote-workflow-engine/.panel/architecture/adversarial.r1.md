@@ -1393,3 +1393,545 @@ tie-break. Three real statements, and no more:
   spike S7/S8 or the first `confined` host).
 
 *Adversarial architecture group — v37 Gate 8 round-2 send-back, debate round 1, 2026-09-23.*
+
+---
+---
+
+# ADDENDUM 3 — v37 Gate 8 **round-3** send-back, debate round 1 (independent)
+
+*Appended 2026-09-24. The three sections above (original r1, ADDENDUM, ADDENDUM 2) are unchanged and
+still stand — this is a delta over them, not a re-derivation.*
+
+**Altitude:** unchanged from §0 of the original r1 and re-affirmed. This is **both** a system and an
+agent-hosting system, but this slice sits at the **agent altitude**: the asset being protected is
+*what a hosted agent's shell may touch on an unconfined host*, not a token. I again produce **no**
+JWT / brute-force / timing findings — there is no new credential surface in `3e3c331`/`2cf5f32`.
+The system-altitude halves that *do* apply are **attack surface** and **authz correctness**, and
+§3.2 below uses them.
+
+**Scope.** `send_back=[architecture, impl, validation]`; this document takes only the
+**architecture-owned** half of the reviewer's consolidated round-3 list: **C1**, the
+`02-architecture.md` half of **C4**, **C5** (cost + relay — I do not rule), **C3**, **QD-3**, **C8**,
+and **C7 re-severitied**. C2's *test* is the tests/impl gate's; C2's *invariant sentence* is mine.
+C6 (`DEPLOY.md`) is validation's, but §2.4 supplies the replacement text because under my primary
+recommendation the current text becomes correct again rather than needing a rewrite.
+
+---
+
+## Summary
+
+The round-3 findings are not seven defects. They are **one design defect with seven faces**:
+`createdRemote` is a single bit that, since `3e3c331`, carries **two different facts** that have
+different lifetimes and different correct behaviours.
+
+- **Fact A — the firing capability.** Who created the trigger ROW, and therefore who holds the
+  webhook secret / controls the cron expression / supplies `args.event`. This fact is **immutable**
+  and must never be laundered. `2cf5f32`'s monotonicity is *right* about this fact.
+- **Fact B — the script provenance.** Whether the code that will run on this firing arrived from a
+  remote registration. This fact is **per-attachment** and legitimately changes when the workflow is
+  re-registered or re-published. Monotonicity is *wrong* about this fact, and that wrongness is C5.
+
+Conflating them into one column is what makes C1 unfixable-by-editing (the doc cannot describe one
+bit that is both immutable and re-stamped), what makes C6 backwards (the operator manual is correct
+about Fact A and wrong about Fact B), what makes C8 a naming problem that cannot be fixed by
+renaming, what leaves C3's create-time-bound cohort uncovered (`claim()` never runs on it, so Fact B
+is unreachable there), and what makes C5 irreversible (you cannot clear the mutable fact without
+also clearing the immutable one).
+
+**My primary recommendation (P1): stop re-stamping, and store Fact B where it already belongs —
+one `workflow_versions.registeredRemote` column, read at the two fire sites from a row they already
+load.** Refusal becomes `origin = row.createdRemote || released.registeredRemote ? 'remote' :
+'local'`. This preserves the owner's *intent* in the second ADR-086 ruling ("a remote re-registration
+must taint the trigger it attaches to") while (a) extending coverage to the C3 cohort the shipped
+mechanism structurally cannot reach, (b) restoring a recovery path that is a routine local
+re-publish rather than delete-and-recreate, (c) making ARCH-182's *original* sentence true again,
+and (d) removing code rather than adding it (the two `UPDATE`s, the monotonic rule, the
+compensation question, and the bivariant third port parameter all evaporate).
+
+**I do not have the authority to reverse the owner's 2026-09-24 ruling and I am not asking the
+architect to.** I am asking for the same move this ledger made at round 2's B2 and round 1's A2:
+**relay the corrected premise with costed options.** §3.3 supplies them. If the owner keeps the
+shipped mechanism, §3.4 is the fallback (P2) and §3.5 is the floor (P3) — all three are costed, and
+all three carry the same non-negotiables in §4/§5.
+
+---
+
+## Key points (condensed)
+
+1. **C1 is not a stale sentence; it is the symptom.** `02-architecture.md:5683/5691/5413/5704-5710`
+   say `createdRemote` is "written once by the `INSERT` and never re-stamped by any later attachment
+   event (`claim()`, `workflow_register`, `workflow_publish`)". `src/scheduler.ts:548` and
+   `src/webhook-registry.ts:242` re-stamp it from `claim()`, reached from
+   `src/mcp-facade.ts:392` ← `:358` ← `src/call-tool.ts:212`. I verified all six sites this round.
+   The replacement sentence is in §2.1 — but note that under P1 the *original* sentence is restored
+   verbatim instead, which is the cheapest possible repair of the contradiction.
+2. **C5 has an attacker-shaped face that the reviewer's "routine re-publish" framing understates,
+   and it is the reason the un-stamp question is mandatory rather than nice-to-have.** See §3.2.
+   It is still C5, not a new HIGH — I checked the authz gate before claiming otherwise.
+3. **C3 is not a bounded legacy exception under P1 — it is *covered*.** The shipped mechanism keys
+   on `claim()`, which by construction never runs on a create-time-bound row
+   (`src/call-tool.ts:180-184` closed the tool door for new rows; the store's own
+   `create({workflow})` is unchanged for old ones). The version-row key reaches every firing
+   regardless of how the trigger got bound. This is the single strongest technical argument for P1
+   and it is a **security coverage** argument, not a tidiness one.
+4. **C7 should be MED, not LOW.** The re-stamp lands *before* the registration is known to succeed
+   and is never compensated (`src/mcp-facade.ts:395`/`:402` release the claim, nothing un-stamps).
+   Under a monotonic rule, "safe direction" means "permanent". See §5.
+5. **QD-3 cannot be fixed by the compiler and the architecture row must say so.** Making the third
+   parameter required does not help: TypeScript method-parameter bivariance means a 2-argument
+   implementation still satisfies a 3-argument port. The only mechanism that holds is a
+   **conformance test parametrized over both stores**, and that belongs in an INV so the tests gate
+   owns it rather than each store's author remembering.
+6. **Scalability: nothing new to report, and one thing to *watch* rather than optimise.** See §6.
+   I decline to propose an index or a cache.
+
+---
+
+## 1. What I verified myself this round (not taken from the review, not from either panel)
+
+| Claim | How | Result |
+|---|---|---|
+| The re-stamp chain exists end to end | read `call-tool.ts:212`, `mcp-facade.ts:69,358,392`, `scheduler.ts:537-550`, `webhook-registry.ts:230-249` | Confirmed; six hops, two of them defaulting to `false` |
+| The rule is monotonic, local→remote only | `scheduler.ts:548`, `webhook-registry.ts:242` — `if (createdRemote !== true) return;` | Confirmed |
+| No un-stamp path exists in `src/` | `grep -rn "createdRemote" src/` — every writer enumerated | Confirmed: two `INSERT`s and two `UPDATE … SET createdRemote = 1`. Nothing sets it to 0 after creation. `release()` (`scheduler.ts:564`, `webhook-registry.ts:256`) clears the binding columns only |
+| No test drives the `callTool` → facade → store forward | `grep -rln isRemoteSubmission tests/` → **one** file, `call-tool-confinement-door.test.ts` (the `run_start`/`run_resume` door, not `workflow_register`); `grep -rn "\.claim(" tests/` → every pre-existing call site is 2-argument | Confirmed. C2 stands |
+| No test covers the webhook twin's upgrade direction | UT-335 imports `SqliteSchedulerPort` only | Confirmed. QD-3 stands |
+| The ownership gate bounds who can taint what | `mcp-facade.ts:377-386` — `isAdmin \|\| owner === actorId`, ownerless rows admin-only | Confirmed, and it is the reason §3.2 is C5's face and not a separate finding |
+| `auth-disabled` makes every caller admin, including a non-loopback one | `mcp-facade.ts:377` (`kind === 'auth-disabled'` ⇒ `isAdmin`); `server.ts:1597` hands a non-loopback caller `{kind:'auth-disabled'}` when `authCfg` is absent; **no bind guard is wired** (`find src -name "*bind*"` → nothing; `grep -rn "bindGuard\|assertBind" src/` → nothing) | Confirmed — this is the pre-existing unwired-bind-guard debt, and §3.2 is what the new durable write makes of it |
+| The reviewer's refutation of QD-Violation-5 is correct | read `workflow-catalog.ts:355-368` (`declaredTriggers` unions `triggers` over **every** version row of the name), `mcp-facade.ts:373` (`a.triggers ?? []` — so a `triggers`-less v2 stores `[]`, not `undefined`), `server.ts:1003` and `webhook-registry.ts:336` (both guards) | **Confirmed. I independently reach the same conclusion.** And §4.3 says what to do about the fact that this refutation is currently verified only by two people reading code |
+| The re-stamp is not compensated on a failed registration | `mcp-facade.ts:395`, `:402` call `release()` only | Confirmed — §5 |
+
+---
+
+## 2. C1 + the architecture half of C4 — the exact replacement text
+
+### 2.1 If the shipped mechanism stands (P2/P3)
+
+`02-architecture.md:5413` (persistence/API table row for `webhooks.createdRemote` /
+`schedules.createdRemote`) — replace *"Written once at `webhook_create`/`schedule_create` from
+`ToolDeps.isRemoteSubmission`; read at the three trigger dispatch sites. Never updated afterwards —
+provenance is a fact about creation."* with:
+
+> Initialised at `webhook_create`/`schedule_create` from `ToolDeps.isRemoteSubmission`, then
+> **monotonically re-stamped by `claim()`** as the OR of its existing value and the remoteness of
+> the registration claiming the trigger (`'claimed'` and `'held'` both stamp; `'ALREADY_CLAIMED'`
+> never does). **The value is therefore a taint bit, not a creation record**: it is monotone
+> non-decreasing for the lifetime of the row, there is no path in `src/` that clears it, and the
+> only operator remedy is deleting and recreating the trigger — which rotates a webhook's id and
+> secret. Read at the three trigger dispatch sites (`server.ts:1027`, `webhook-registry.ts:354`,
+> `scheduler.ts:388`).
+
+`:5683` (the ARCH-182 header) and `:5691` (the `deps`/prose restatement) carry the same
+"written once by the `INSERT` and never re-stamped by any later attachment event (`claim()`,
+`workflow_register`, `workflow_publish`)" clause — the parenthesis is now precisely inverted and must
+go. `:5704-5710` (amendment (1)) is the round-2 premise correction; it must gain a
+`[SUPERSEDED 2026-09-24 by amendment (8)]` marker rather than being edited in place, because the
+round-2 ruling was *taken on it* and a future reader needs to see what was true when.
+
+**New amendment (8)** states the invariant as an invariant, because the whole of C1/C6/C8 is that
+this rule lives in a code comment:
+
+> **INV-V37-6 — trigger provenance is monotone.** For any trigger row, `createdRemote` never
+> transitions `1 → 0`. Every writer must preserve this; the two `stamp()` closures are the only
+> writers after creation, and a conformance test (§4.2) pins **both stores in both directions**,
+> because the port's optional third parameter is bivariance-exempt and the compiler does not police
+> this seam.
+
+### 2.2 The ADR-086 entry (`:5899-5920`, `:6146`)
+
+Three states of one decision are interleaved in a single entry with no supersession marker: the
+architect's round-2 corrected-premise text (phrased as still pending), the sentence saying the
+decision "goes back to `pending`", and the owner's `answered 2026-09-23(第二次)` ruling two
+paragraphs later. **`04-design.md`'s DES-263 already shows the shape to copy** — the superseded
+sentence is kept struck through with an explicit `[SUPERSEDED]` tag and the replacement follows it.
+Apply the same treatment here: one CURRENT ruling at the top of the entry, everything else marked
+and dated. This is also the entry that must carry §3's costed options, because C5 is functionally an
+uncosted owner decision and this ledger's own pattern (round 1's A2, round 2's B2) is to put the
+corrected premise where the owner reads it.
+
+### 2.3 The architecture half of C4
+
+Not my call to write IMPL-386/UT-335 rows (that is the impl gate), but **the architecture row must
+name them**, because ARCH-182's `traces:` chain is what makes the mechanism discoverable at all. One
+line at the end of amendment (8): *"Shipped by `3e3c331` + `2cf5f32`; IMPL row and UT-335 test-spec
+row are owed by the impl/tests gates of this same send-back."* If the architect writes the amendment
+without that sentence, the next `trace --check` still shows 2113/77 and the drift stays invisible —
+which is exactly how this round happened.
+
+### 2.4 C6 (validation's, but the text depends on the ruling)
+
+`DEPLOY.md:883` and `:908` are **correct about Fact A and wrong about Fact B**. Under P1 they become
+correct as written and need only one added sentence ("a trigger refused `CONFINEMENT_UNAVAILABLE`
+because its *released version* was registered remotely is recovered by re-publishing that workflow
+from a local session; a trigger refused because the *row itself* was created remotely must be
+deleted and recreated"). Under P2/P3 the whole of `:908` must be rewritten, because delete-and-
+recreate stops being the only remedy (P2) or becomes the only remedy for a much larger population
+than the text describes (P3). **This is the strongest operational argument for P1: it is the option
+where the manual that already shipped is the manual that is true.**
+
+---
+
+## 3. C5 — the availability cost, its attacker-shaped face, and the four options
+
+### 3.1 The arithmetic, restated so it is in the architecture document and not only in a review
+
+This host: every workflow on the production catalog is remotely registered (ADR-086's own ruling
+text), submissions genuinely arrive non-loopback (VAL-256 measured it on this host), and the host
+measures `unconfined` (VAL-256 again). Therefore **every** trigger on this host is one ordinary
+remote `workflow_register({triggers:[…existing ids…]})` away from `createdRemote = 1`, after which
+**every firing of it is refused permanently** with no path back except deleting the row. Deleting a
+webhook row rotates its id and secret, so recovery is not local: every external caller pointed at
+that hook must be reconfigured.
+
+The owner declined a fleet-wide blackout twice (option (B), then option (ii-narrow)) specifically to
+avoid this outcome. The shipped mechanism delivers the same outcome **lazily, per workflow, at
+re-registration time** — which is strictly worse to attribute, because the failure appears hours or
+days after the action that caused it, on a trigger nobody touched.
+
+### 3.2 The attacker-shaped face — why an un-stamp path is mandatory, not a convenience
+
+`3e3c331` introduced the first **durable, irreversible, remotely-reachable write** in this
+subsystem. Who can reach it, verified at `mcp-facade.ts:377-386`:
+
+- **A non-admin remote principal can only taint triggers it created**, which already read
+  `createdRemote = 1`. **No new exposure.** (I want this on the record because it is the reflex
+  finding and it is wrong.)
+- **An admin principal acting remotely can taint any trigger id in the catalog**, including ones an
+  operator created locally, by naming them in a single `workflow_register` — and an admin's routine
+  remote re-publish *is* §3.1's scenario. Same act, different intent.
+- **On an `auth-disabled` deployment every caller is `isAdmin`** (`mcp-facade.ts:377`), including a
+  non-loopback one (`server.ts:1597`), and **no bind guard is wired** to prevent that configuration.
+  On such a host, an unauthenticated remote caller can permanently brick every trigger in the
+  catalog with one call. Note the shape carefully: this caller **cannot** get code execution —
+  ARCH-181's door and ARCH-182's predicate both refuse it, which is the control working. What it
+  **can** do is destroy availability irreversibly. **A security control whose failure mode is a
+  permanent, unauthenticated, remote denial of service on the asset it protects has traded the wrong
+  way**, and it did not have that property before `3e3c331`.
+
+This does **not** promote C5 to HIGH. `auth-disabled` + non-loopback bind is an already-named,
+already-tracked posture (the unwired bind-guard debt), and an admin is trusted by construction. It
+*does* settle the question §3.3 asks: an irreversible write reachable by a remote caller needs a
+reverse path, and "delete and recreate" is not one when deleting rotates the credential.
+
+### 3.3 The four options, costed. The architect relays; the owner rules.
+
+**(P1) Move Fact B to the version row; restore `createdRemote` to immutable. — my recommendation.**
+`workflow_versions.registeredRemote INTEGER NOT NULL DEFAULT 0`, written by `insertVersion` from the
+`isRemoteSubmission` that `mcp-facade.ts:358` *already receives* (that hop exists as of `3e3c331`, so
+this is not new plumbing). The two fire sites compute
+`origin = (row.createdRemote === 1 || released.registeredRemote === 1) ? 'remote' : 'local'` from a
+`released` row **they already load** for the `NOT_IN_RELEASE` guard (`server.ts:1003`,
+`webhook-registry.ts:336`). `claim()` reverts to two arguments; the port's third parameter, the two
+`UPDATE`s, the monotonic rule, and the compensation question all delete.
+- *Security:* **strictly more coverage than shipped.** Fact A stays immutable, so a remotely-created
+  webhook can never be laundered by a local registration — `2cf5f32`'s protection (ii) is preserved
+  by construction rather than by a rule. Fact B now reaches the **create-time-bound cohort** (C3),
+  which `claim()` structurally cannot, because the fire path always resolves a released version
+  whether or not the trigger ever entered a `triggers[]`.
+- *Availability:* recovery is a **local re-publish of the workflow** — no id churn, no secret
+  rotation, no external reconfiguration. The remedy is an act the operator already performs.
+- *Cost:* one column, one idempotent `ALTER` in the idiom already at `workflow-catalog.ts:272-277`,
+  one extra field on `insertVersion`, one extra field read at two sites. **Zero new queries.**
+- *The obvious attack on P1, stated by me because it survives:* a principal who can `workflow_publish`
+  can move Fact B **both** ways by choosing which version is released. Publishing an older,
+  locally-registered version clears the taint. That is **correct, not a hole**: the script that will
+  run is then the locally-authored one, which is exactly ADR-083's ANSWERED position
+  (「本機發起的 run 仍不受限制」), and the firing capability is still governed by the immutable Fact A.
+- *The rejection ADR-086 already recorded does not apply.* ADR-086 declined the version-row design
+  (adversarial r2 §1) because it would refuse a **local `run_start`** of a remote-authored script.
+  P1 reads the version bit **only at the two trigger fire sites** and leaves `run_start` entirely to
+  ARCH-181's live-peer door. The stated objection is not reachable from this proposal, and the
+  architect must say so explicitly or the ADR will look self-contradicting.
+- *Honest cost:* it changes the mechanism of a ruling the owner made two days ago and that has
+  already been implemented and then repaired. That churn is real and the owner may reasonably
+  decline it.
+
+**(P2) Keep the re-stamp; split the column. — the fallback if the owner keeps `claim()`.**
+Add `attachedRemote INTEGER NOT NULL DEFAULT 0` beside the immutable `createdRemote`; `claim()`
+stamps `attachedRemote` (monotone within one attachment); `release()` clears it; the predicate is the
+OR of the two. Laundering is impossible because `createdRemote` is untouched, and C5's irreversibility
+shrinks to the half that genuinely *should* be irreversible.
+- *Cost:* one column per table (two total), one field in each status projection, `release()` gains a
+  clause. Keeps `claim()`'s widened port and therefore keeps QD-3.
+- *Does not fix C3* — `claim()` still never runs on a create-time-bound row.
+
+**(P3) Keep exactly what shipped; pay in documentation. — the floor.**
+ARCH-182 amendment (8) per §2.1, `DEPLOY.md:908` rewritten, the two missing tests (§4), and an
+explicit accepted-cost line: *"a trigger tainted remote is refused forever; the remedy is delete and
+recreate, which rotates a webhook's id and secret."*
+- *Cost:* zero code beyond tests. **Does not solve C5** — it only makes the cost visible.
+
+**(P4) An operator un-taint tool.** A loopback-only, admin-only `trigger_reset_provenance(id)`.
+- **I recommend against it on the Karpathy tie-break.** It is a new MCP tool, a new authz surface,
+  and a new audit obligation, bought to undo a write that P1 removes the need for. If the owner
+  keeps P3, P4 becomes the least-bad mitigation — but P1 dominates it.
+
+**The sentence the owner needs before reading any of the above, and the one my Risk 2 muddles.**
+**None of P1–P4 keeps this host's catalog running past its next remote re-publish.** Every option
+refuses those triggers, because refusing them is precisely what the owner's ruling asks for on a host
+that measures `unconfined` — the control is working, not failing. The only option that keeps the
+catalog running is **confining the host**, which ADR-086's own ranking already puts first and which
+is out of v37 scope. **What the owner is choosing between in P1–P4 is the *recovery cost* of a
+refusal that every option delivers**, not whether the refusal happens: P1 costs one local re-publish
+per workflow, P2 costs one `workflow_deregister` + re-register, P3 costs deleting and recreating
+every trigger and reconfiguring every external caller pointed at a rotated webhook secret, P4 costs a
+new tool. And note the wrinkle that makes P1's recovery less free than it sounds on *this* host: the
+owner's stated workflow is remote registration only, so "re-publish locally" is an act they do not
+normally perform and may not have a session for. That is an honest cost of P1, it belongs in the
+relay, and it is the reason §3.5's floor (P3, documented) is not an absurd choice.
+
+**Karpathy tie-break across P1–P4:** the rule is *minimum architecture that solves the problem*, and
+"solves" is doing the work. P3 is the smallest and does not solve C5. P4 adds surface. P2 solves C5
+but not C3 and keeps the bivariant seam. **P1 is the smallest option that closes C5 *and* C3 *and*
+dissolves C1/C6/C8 instead of patching them — and it is net-negative in code.** That is the answer
+the tie-break gives, and it is the only one of the four where the sentence already in
+`02-architecture.md:5413` becomes true again by *reverting* code rather than by rewriting the
+document to match a mechanism nobody has re-reviewed.
+
+### 3.4 What architecture can do this round without the owner
+
+Regardless of the ruling: write amendment (8) (§2.1), mark ADR-086's three interleaved states
+(§2.2), record §3.1's arithmetic and §3.2's failure shape in the ADR, name the IMPL/UT obligation
+(§2.3), and state the §4 invariants. **None of that pre-empts the ruling**, and all of it is owed
+even if the owner picks P3 unchanged.
+
+---
+
+## 4. C2 + QD-3 — the seam the compiler cannot hold, and the two tests that can
+
+### 4.1 Why "make the parameter required" is not the fix
+
+`mcp-facade.ts:69` declares `claim(id, workflow, createdRemote?)`. The commit message for `3e3c331`
+already names the limit correctly and I confirm it: **TypeScript's method-parameter bivariance lets a
+2-argument implementation satisfy a 3-argument port silently.** Making the parameter *required* on
+the port changes nothing — a narrower implementation still type-checks. Deleting the optionality at
+the *caller* (`mcp-facade.ts:392` always passes a boolean) is already true today and still did not
+stop C2, because the defect is that nothing *exercises* the forward, not that something could omit it.
+
+**Architectural consequence, and it generalises past this field:** this repo's named `composeConfig`
+wiring bug class (v11 `updateFlagPath`, v15 auth, v37 A5, v37 B1, now C2) has never once been caught
+by a type. It has been caught five times out of five by a test that drives the **real entry point**.
+The architecture row should stop offering "required parameter" as a mitigation for this class and say
+so once: *optionality is acceptable exactly when the default is the SAFE answer, never when it is the
+permissive one; and no forward whose default is permissive is considered wired until a test drives it
+from the tool surface.*
+
+### 4.2 INV-V37-7 — the conformance test, stated as an invariant so the tests gate owns it
+
+> Any type that implements `TriggerClaimStore` must pass one shared conformance suite, parametrized
+> over **every** implementation (`SqliteSchedulerPort`, `WebhookRegistry`), asserting all three
+> directions: remote claim taints (`local → remote`), local claim does **not** launder
+> (`remote → remote`), and `ALREADY_CLAIMED` leaves the row untouched. A new implementation is
+> wired only when it is added to that suite's parameter list.
+
+Today UT-335 is three `it()` blocks against `SqliteSchedulerPort` alone; if `WebhookRegistry.claim()`'s
+`stamp()` regressed to a no-op, **no test in this repo fails**. Parametrizing the existing file over
+both stores is a mechanical change to a test that already exists — it is not new structure, it is the
+same three cases run twice.
+
+### 4.3 The one test the reviewer's own refutation now needs
+
+The `NOT_IN_RELEASE` guard is what makes quality-dimensions' Violation 5 wrong, and it is therefore
+**load-bearing security logic whose correctness is currently attested only by two people reading
+`workflow-catalog.ts:355-368` and `mcp-facade.ts:373`**. Pin it: register `v1` with
+`triggers:['T']`, register `v2` **without** `triggers`, publish `v2`, fire `T`, assert the firing is
+refused `NOT_IN_RELEASE`. That is an architecture-level obligation — the guard's behaviour is what
+ARCH-182's coverage statement now depends on — even though the test itself belongs to the tests gate.
+If a future refactor makes `declaredTriggers()` scan only the released row, ADR-086's residual (1b)
+silently re-opens and nothing goes red.
+
+### 4.4 C2's hop lock (tests gate's to write; architecture's to require)
+
+One case driving `callTool({isRemoteSubmission: true}, 'workflow_register', {triggers:[id]})` against
+a **real** store and asserting the row flipped. Deleting the third argument at any of the three hops
+(`call-tool.ts:212`, `mcp-facade.ts:358`, `:392`) must turn it red. Under P1 this test re-points to
+`insertVersion`'s field instead; the obligation is identical either way, which is why it belongs in
+the architecture row and not only in a test file.
+
+---
+
+## 5. C7 — I disagree with LOW, and the disagreement is about the word "safe"
+
+The re-stamp lands inside the claim loop (`mcp-facade.ts:392`) **before** `insertVersion` is
+attempted (`:400`). Both failure paths — a later trigger returning `ALREADY_CLAIMED` (`:395`) and
+`insertVersion` throwing (`:402`) — call `release()`, and **`release()` does not un-stamp**
+(`scheduler.ts:564`, `webhook-registry.ts:256`: binding columns only).
+
+So a registration that **fails** still taints every trigger it got through first, permanently. The
+reviewer classed this "safe direction by construction". Under a monotonic rule, *safe direction* and
+*permanent* are the same sentence: this is the **cheapest** form of §3.2 — a caller does not even
+need the registration to succeed. **MED, not LOW.**
+
+Under **P1 it disappears entirely** — a failed `insertVersion` writes no version row, so there is no
+Fact B to un-do. Under P2, `release()` clearing `attachedRemote` fixes it for free. Under P3 it needs
+an explicit compensating un-stamp, which contradicts the monotonic invariant and is exactly the
+tangle that says the one-bit design is underpowered.
+
+The scheduler/webhook transaction asymmetry (`scheduler.ts:537-550` runs `SELECT` + two `UPDATE`s
+outside a transaction; `webhook-registry.ts:231` wraps its twin) is **unmeasurable today** on one
+synchronous `better-sqlite3` connection, and I do not propose adding a transaction. I propose
+replacing the current code comment's reasoning: the right argument is not "one connection" (which a
+future WAL/multi-process change falsifies) but **"the stamp is idempotent and order-independent
+because it is a monotone OR"** — which stays true under any concurrency model. That is a one-sentence
+change with a much longer shelf life.
+
+---
+
+## 6. Scalability / performance — the honest version
+
+**Nothing to optimise, and one thing to watch.**
+
+- The re-stamp adds at most one `UPDATE … WHERE id = ?` per claimed trigger per registration, on a
+  path that already does several writes. Unmeasurable. Under P1 it is *removed*.
+- The admission predicate is still two scalar comparisons with zero new queries.
+- **The thing to watch:** `declaredTriggers()` (`workflow-catalog.ts:355-368`) runs on **every**
+  cron firing (`server.ts:1003`) and **every** webhook delivery (`webhook-registry.ts:336`), and it
+  `SELECT`s and `JSON.parse`s the `triggers` column of **every version row ever registered** for that
+  name. It is a primary-key range scan of a table that grows by one row per `workflow_register`, on
+  the per-firing path. **I explicitly do NOT propose an index or a cache** — the scan is bounded by
+  a workflow's version count, and this is a developer-tooling engine, not a fleet. What changed this
+  round is that this scan became **load-bearing for a security refusal** (it is the whole of the
+  QD-Violation-5 refutation), so its *correctness* now matters more than its cost — which is §4.3,
+  not a performance item. Recording it here so a future iteration that does hit a version-count
+  problem knows that caching this predicate has a security consequence.
+- Under P1, the fire path reads one more integer off a row it already has. Also unmeasurable.
+
+---
+
+## Risks of my own recommendation
+
+1. **P1 reverses the mechanism of a ruling made two days ago.** If the owner reads this as the panel
+   re-litigating a settled decision, the relay pattern breaks down. Mitigation: the architect must
+   present it as *the second corrected premise on the same ADR* (the first correction was round 2's
+   B2), with §3.3's costs intact, and must state plainly that the owner's **intent** — a remote
+   re-registration taints — is preserved and extended, not reversed.
+2. **P1's `DEFAULT 0` legacy cohort has the same zero-coverage-at-upgrade property as the shipped
+   design's, and I want to be precise about the difference rather than hand-wave it.** Every
+   pre-existing version row reads local until that workflow is next registered. The difference from
+   the shipped design is about **which** re-registrations populate the bit, not about how routine
+   they are: the shipped `claim()` stamp only fires when the registration **re-lists the trigger id**
+   in `triggers[]`, so a workflow re-registered without re-listing its trigger stays uncovered
+   indefinitely — and a create-time-bound trigger (C3) is never covered at all. P1's bit is written
+   by **every** `insertVersion`, so coverage follows registration rather than re-listing. That is a
+   real coverage advantage, it is not a claim that either upgrade is instant, and it must be stated
+   in the ADR rather than discovered at the next Gate 8.
+3. **The version row IS always loaded at both fire sites — checked, with one misleading character.**
+   `webhook-registry.ts:336` reads `released?.triggers` with optional chaining while `server.ts:1003`
+   reads `released.triggers` without it, which looks like evidence that the webhook path can reach
+   `start()` with no released version. It cannot: `webhook-registry.ts:315-322` assigns `released`
+   inside a `try` whose `catch` **returns** `CHANNEL_UNPUBLISHED` / `CLAIMED_WORKFLOW_MISSING`, and
+   `:304` has already refused `UNCLAIMED`. The `?.` is vestigial defensiveness, not a reachable
+   undefined — worth deleting on the same commit as C8's comment fixes so the next reader does not
+   re-derive the alarm I just did. **The residual risk is forward-looking:** a future admission route
+   that dispatches a firing without resolving a released version would lose Fact B silently. The
+   architecture row must state the dependency as a rule: *any admission site that reads Fact B must
+   resolve the released version first, and must refuse when it cannot* — the same "required field"
+   discipline ARCH-182 already applies to `RunSpec.origin`.
+   **One cost of P1 I did not see until I read the source of `resolve()`:** the field is read by
+   adding one column to the `SELECT` already at `workflow-catalog.ts:835` (the exact row, already
+   fetched) and one property to the `VersionEntry` it returns at `:837-852`. That is cheaper than I
+   claimed — but `VersionEntry` is a **shared** type that `resolveDetail()` spreads into
+   `workflow_describe`'s output, so the field becomes visible on a read surface unless deliberately
+   stripped. Name that in the ADR and decide it once: I would **project it** (it is the same
+   auditability `webhook_list.createdRemote` already got at round 2's B3) rather than strip it.
+4. **Two columns (P2) or a second table's column (P1) is still more state than one bit.** A reader
+   applying Karpathy naively will prefer the shipped design because it is one column. §3.3's
+   tie-break argument has to be *in the document*, or this decision gets re-litigated in v38 by
+   someone counting columns.
+5. **All four options leave C3's pre-v24 create-time-bound rows partially exceptional** — P1 covers
+   them for Fact B but they still have `createdRemote = 0` and no way to have been created remotely
+   before v37, which is fine and should simply be *stated* rather than left as an unmarked hole.
+
+---
+
+## Internal conflicts between my own three lenses (surfaced deliberately, as the lens requires)
+
+1. **Security vs. availability — the round's real conflict, and it is not resolvable inside one
+   bit.** Security wants Fact A sticky forever (`2cf5f32` is right, and the reasoning in its commit
+   message — that whoever created a webhook controls *when* it fires and what payload reaches the
+   script — is the best piece of security thinking in this iteration). Availability wants Fact B
+   resettable, because this host's entire catalog is one re-publish from permanent refusal. **These
+   are not in conflict once the facts are separated; they are in irreconcilable conflict while they
+   share a column.** That observation is the whole of my proposal. Where the two lenses genuinely
+   still pull apart, even under P1, is §3.2's `auth-disabled` case: security says refuse, availability
+   says an unauthenticated remote caller should not be able to cause a permanent refusal — and the
+   real answer there is the **unwired bind guard**, which is not this iteration's scope and which I
+   decline to pull in.
+2. **Testability vs. surgical change — and testability wins cheaply again.** The structural fix for
+   QD-3 (required parameters) is both expensive and *ineffective* (§4.1). The test fix is
+   parametrizing a file that already exists. When the cheap option is also the only one that works,
+   there is no trade to argue — but I note that my lens's reflex ("tighten the type") was wrong here
+   for the second round running, and the thing that settled it was reading how bivariance actually
+   behaves rather than reasoning about what a port *ought* to guarantee.
+3. **Karpathy vs. my own security lens — where I had to rule against myself.** My security reflex
+   wanted an audit trail on the local→remote transition (QD-Violation-2: timestamp, actor, log line)
+   and an operator un-taint tool (P4). Both are defensible. **I decline both on the tie-break**: the
+   audit field is a real gap but ARCH-182 does not promise this field the auditability guarantee it
+   promises `createdBy`, and the un-taint tool is new authz surface bought to undo a write that P1
+   deletes. If the owner picks P3, P4 comes *back* — the tie-break is contingent on the ruling, and
+   I would rather say that than pretend the answer is unconditional.
+4. **Scalability — a fourth round with nothing to report, and I again think saying so is worth more
+   than manufacturing a finding.** The one honest observation (§6) is that a cheap security guard now
+   rides an unbounded-in-principle scan, and the right response is a test, not an index.
+
+---
+
+## Expected disagreements with the other lens group (quality-dimensions)
+
+1. **They will want the audit trail (their Violation 2) as a blocking item; I will not.** Expected
+   split, same as round 2. My position: record it as debt with a trigger condition (the first time an
+   operator asks *when* a trigger became remote), not as this round's work. Where I expect them to
+   land a point on me: under P1, Fact B's transition is *derivable* from the version row's own
+   `createdAt`/`actor`, so P1 gives them most of what they want for free — I should concede that
+   rather than argue it.
+2. **They will likely prefer P2 (two columns, keep `claim()`) over P1 (version row).** Their
+   replaceability lens reads a cross-module read (`webhook-registry` → `workflow-catalog`'s released
+   row) as new coupling. **My counter:** that read **already exists** at both fire sites for the
+   `NOT_IN_RELEASE` guard — P1 adds a *field*, not a dependency. I expect this to be the sharpest
+   disagreement of round 2 and I want it argued on that specific fact.
+3. **Their Violation 5 was refuted and I confirm the refutation independently** (§1). I expect them
+   to accept it; if they do not, the settling evidence is `mcp-facade.ts:373`'s `a.triggers ?? []`
+   and `workflow-catalog.ts:355-368`'s all-versions union, and §4.3 turns the argument into a test so
+   neither group has to be believed.
+4. **Consumability: they will read the `createdRemote` name as needing a rename (C8); I will not.**
+   Renaming a persisted column for a naming nit costs a migration on every deployed workRoot. Under
+   P1 the name becomes accurate again and the question evaporates. Under P2/P3, document the
+   semantics at the two projection sites and leave the column alone — that is my Karpathy call and I
+   expect to have to defend it.
+5. **Self-sustainability: we will agree on C4 and should say so loudly.** A security-relevant
+   predicate changed outside every gate and the ledger did not move. Neither lens group disagrees
+   about that, and the architecture-side repair is §2.3's one sentence — worth stating as consensus
+   in round 2 rather than each group re-arguing it.
+
+---
+
+## What I would put in the ledger (skeleton, for whoever synthesises)
+
+- **ARCH-182 amendment (8)** — the monotonic rule stated as **INV-V37-6**; the persistence-table row
+  at `:5413` replaced (§2.1); the "never re-stamped" parenthesis removed from `:5683`/`:5691`;
+  amendment (1) at `:5704-5710` marked `[SUPERSEDED 2026-09-24]` rather than edited; the IMPL/UT
+  obligation named (§2.3); the "released version must be resolved before Fact B is read" dependency
+  stated if P1 is chosen (risk 3).
+- **ADR-086, third entry** — ONE current ruling at the top, the two older states marked and dated in
+  the DES-263 style already on disk; §3.1's arithmetic and §3.2's failure shape recorded as the
+  corrected premise; §3.3's four options with their costs; `owner_decision: pending` re-opened on the
+  **mechanism** (P1/P2/P3/P4) only — not on the intent, which is settled.
+- **INV-V37-7** (§4.2) — the `TriggerClaimStore` conformance suite, parametrized over every
+  implementation, three directions each. Owner: tests gate.
+- **One sentence in the wiring-bug-class row** (§4.1) — stop offering "required parameter" as a
+  mitigation for a permissive default; a permissive forward is unwired until a test drives it from
+  the tool surface. This is the fifth instance of the class in this repo's own memory.
+- **C7 re-severitied to MED** with its disposition under each of P1/P2/P3 (§5), and the `stamp()`
+  comment's justification changed from "one connection" to "monotone OR is idempotent and
+  order-independent".
+- **New ARCH row, only under P1** — `workflow_versions.registeredRemote`, its `DEFAULT 0` cohort
+  stated honestly (risk 2), and the explicit note that ADR-086's recorded rejection of the
+  version-row design was about `run_start` and does not reach a fire-path-only read (§3.3).
+- **Tech-debt rows with event-shaped triggers** — QD-Violation-2's audit field (trigger: the first
+  operator question about *when*); C8's naming (trigger: the next migration that touches these
+  tables for another reason); the `declaredTriggers()` per-firing scan (trigger: the first workflow
+  past ~10³ versions); the unwired bind guard (trigger: the first `auth-disabled` non-loopback
+  deployment) — that last one is **not** v37 scope and I am filing it, not pulling it in.
+
+*Adversarial architecture group (security / scalability / testability + Karpathy tie-break) —
+v37 Gate 8 round-3 send-back, debate round 1 (independent), 2026-09-24.*
