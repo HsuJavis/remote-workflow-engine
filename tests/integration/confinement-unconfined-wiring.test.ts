@@ -63,11 +63,11 @@ beforeAll(async () => {
   server = await createServer({ port: 0, bind: '127.0.0.1', workRoot: tmpDir, webhookDbPath, confinementPosture: 'unconfined' });
 
   // Registering claims the ALREADY-webhook-bound name (claim()'s 'held' branch — the row's own
-  // `workflow` already equals this name), over loopback (isRemoteSubmission:false) — this is
-  // therefore a LOCAL re-registration of a REMOTELY-created row, and `claim()`'s re-stamp is
-  // monotonic (local→remote only, INV-V37-6): it must NOT downgrade `createdRemote` back to
-  // false. This is the no-downgrade direction, not an absence of any re-stamp — `claim()` DOES
-  // re-stamp on a REMOTE 'held'/'claimed' registration (ADR-086's second ruling, `3e3c331`).
+  // `workflow` already equals this name), over loopback (isRemoteSubmission:false). v37 P1
+  // (ADR-086's third owner ruling, 2026-09-25, DES-263's 第三次修訂): `claim()` no longer touches
+  // `createdRemote` on ANY outcome — the row seeded above (`createdRemote:true`) stays exactly
+  // that, untouched by this LOCAL registration; this test's refusal below is proven by the
+  // TRIGGER's own write-once stamp, not by any re-stamp `claim()` used to apply.
   await registerPublishedVia(callTool, 'confinement-wiring-check', `return { hooked: args.event };`, {
     triggers: [webhookId],
   });

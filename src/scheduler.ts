@@ -26,10 +26,12 @@ import { toErrEnvelope } from './errors.js';
 // the fire path, which refuses and RECORDS the verdict. `claimedBy`/`createdBy` are the
 // new per-trigger ownership fields (ARCH-099's "five columns", the other three being the refusal
 // trio below).
-// v37 (ARCH-182, DES-263, TASK-258): `createdRemote` — stamped at creation from
-// `ToolDeps.isRemoteSubmission`, then RE-STAMPED MONOTONICALLY (local→remote only, never the
-// reverse) by `claim()` on both its `'claimed'` and `'held'` outcomes (ADR-086's second ruling,
-// 2026-09-24; `3e3c331`+`2cf5f32`) — a taint bit, not a frozen creation record.
+// v37 P1 (ARCH-182, DES-263, TASK-258, ADR-086's third owner ruling 2026-09-25): `createdRemote` —
+// written ONCE at creation from `ToolDeps.isRemoteSubmission`, never updated afterwards (provenance
+// is a fact about creation). The earlier monotonic local→remote re-stamp `claim()` applied
+// (`3e3c331`+`2cf5f32`, ADR-086's second ruling) is SUPERSEDED and deleted — "who wrote the script
+// about to run" now lives on the version row (`workflow_versions.registeredRemote`,
+// workflow-catalog.ts), OR'd against this column at admission (`admissionRefusal`).
 // Read back by `trigger()` and by `server.ts`'s ticker dispatcher to stamp `RunSpec.origin`.
 export type Schedule =
   | { kind: 'cron'; id: string; workflow?: string; claimedBy?: string | null; createdBy?: string; createdRemote?: boolean; args?: unknown; cron: string; tz?: string; enabled: boolean }
@@ -209,9 +211,9 @@ export class SqliteSchedulerPort {
     try { this._db.exec('ALTER TABLE schedules ADD COLUMN refusalCount INTEGER NOT NULL DEFAULT 0'); } catch { /* already present */ }
     try { this._db.exec('ALTER TABLE schedules ADD COLUMN lastRefusedAt TEXT'); } catch { /* already present */ }
     try { this._db.exec('ALTER TABLE schedules ADD COLUMN lastRefusalReason TEXT'); } catch { /* already present */ }
-    // v37 (ARCH-182, DES-263, TASK-258): same idempotent idiom — stamped at `schedule_create`
-    // from `ToolDeps.isRemoteSubmission`, re-stamped monotonically by `claim()` (see the column's
-    // own comment above), read back by `trigger()` and the ticker dispatcher.
+    // v37 P1 (ARCH-182, DES-263, TASK-258): same idempotent idiom — written once at
+    // `schedule_create` from `ToolDeps.isRemoteSubmission`, never updated afterwards (see the
+    // column's own comment above), read back by `trigger()` and the ticker dispatcher.
     try { this._db.exec('ALTER TABLE schedules ADD COLUMN createdRemote INTEGER NOT NULL DEFAULT 0'); } catch { /* already present */ }
     // v26 Gate 7.5 round 6, defect D13: the `CREATE TABLE` above relaxed `workflow` to nullable for
     // a FRESH database only — an already-created file keeps `workflow TEXT NOT NULL`, and since
@@ -306,9 +308,9 @@ export class SqliteSchedulerPort {
         // rather than via a stored-row rewrite).
         claimedBy: s.workflow ?? null,
         createdBy: s.createdBy ?? null,
-        // v37 (ARCH-182, DES-263, TASK-258): the CREATION stamp — `claim()` below re-stamps this
-        // monotonically (local→remote) on later registrations; this INSERT never runs again for
-        // an existing row, so it is a one-time write, not a claim that the value stays frozen.
+        // v37 P1 (ARCH-182, DES-263, TASK-258): the ONLY write this column ever gets — `claim()`
+        // below does NOT touch it (that re-stamp rule is superseded); this INSERT never runs again
+        // for an existing row either, so the value is frozen from creation onward.
         createdRemote: s.createdRemote ? 1 : 0,
         argsJson,
         cron: s.kind === 'cron' ? s.cron : null,
@@ -530,37 +532,26 @@ export class SqliteSchedulerPort {
    *  sqlite3 is synchronous, so the SELECT-then-UPDATE below is already atomic — no explicit
    *  `.transaction()` wrapper needed for a single connection). `'held'` (already claimed by the
    *  SAME workflow) is distinct from `'claimed'` for a reason: compensation on a later failure must
-   *  release only ids THIS call newly claimed, never an id that was already a working claim. */
-  // v37 (DES-263 amendment 2026-09-24, ADR-086's second owner ruling): `createdRemote` is NO LONGER
-  // a fact about who created the row — it is re-stamped here, from the remoteness of the
-  // registration that is claiming the trigger. Two outcomes re-stamp: 'claimed' (first binding) and
-  // 'held' (already this workflow's, from an EARLIER version) — 'held' is precisely the
-  // re-registration path the ruling closes, so stamping only 'claimed' would not fix it.
-  // 'ALREADY_CLAIMED' never re-stamps: that row belongs to a DIFFERENT workflow, and letting A's
-  // registration rewrite B's trigger provenance would be a new hole, not a fix. A pre-existing row
-  // (migrated in as 0 = local) therefore self-heals the next time it is claimed — no data migration.
-  claim(id: string, workflow: string, createdRemote?: boolean): 'claimed' | 'held' | 'NOT_FOUND' | 'ALREADY_CLAIMED' {
+   *  release only ids THIS call newly claimed, never an id that was already a working claim.
+   *  v37 P1 (ADR-086's third owner ruling, 2026-09-25, DES-263's 第三次修訂): back to its pre-v24.5
+   *  shape — `createdRemote` is NOT touched here on any outcome. The re-stamp rule this method
+   *  applied for one iteration (`3e3c331`+`2cf5f32`, ADR-086's second ruling) is SUPERSEDED and
+   *  deleted: it closed the re-registration hole by rewriting the TRIGGER row, which meant a local
+   *  re-claim of a remotely-created trigger had to be defended separately (the monotonic
+   *  local→remote-only rule `confinement-unconfined-wiring.test.ts` caught the first draft
+   *  missing). The hole is now closed one row over — `insertVersion` stamps
+   *  `workflow_versions.registeredRemote` from the SAME registration's remoteness, and the
+   *  admission predicate ORs it against this column — so the trigger row never needs rewriting at
+   *  all, on any outcome. */
+  claim(id: string, workflow: string): 'claimed' | 'held' | 'NOT_FOUND' | 'ALREADY_CLAIMED' {
     const row = this._db.prepare('SELECT claimedBy FROM schedules WHERE id = ?').get(id) as { claimedBy: string | null } | undefined;
     if (!row) return 'NOT_FOUND';
-    const stamp = (): void => {
-      // MONOTONIC: only ever local -> remote, never the reverse. Two protections have to hold at
-      // once and they point in opposite directions: (i) a REMOTE registration must taint a
-      // trigger it claims (the re-registration hole ADR-086's second ruling closes); (ii) a
-      // LOCAL registration must NOT launder a trigger that was CREATED remotely — whoever
-      // created the webhook still controls WHEN it fires and what payload reaches the script.
-      // A plain overwrite satisfies (i) and breaks (ii), which is what
-      // confinement-unconfined-wiring.test.ts caught. So: remote is sticky.
-      if (createdRemote !== true) return;
-      this._db.prepare('UPDATE schedules SET createdRemote = 1 WHERE id = ?').run(id);
-    };
-    if (row.claimedBy === workflow) { stamp(); return 'held'; }
+    if (row.claimedBy === workflow) return 'held';
     if (row.claimedBy != null) return 'ALREADY_CLAIMED';
     const info = this._db
       .prepare('UPDATE schedules SET claimedBy = ? WHERE id = ? AND claimedBy IS NULL')
       .run(workflow, id);
-    if (info.changes !== 1) return 'ALREADY_CLAIMED'; // lost a race between the SELECT and the UPDATE
-    stamp();
-    return 'claimed';
+    return info.changes === 1 ? 'claimed' : 'ALREADY_CLAIMED'; // lost a race between the SELECT and the UPDATE
   }
 
   /** Idempotent: releasing an id not claimed by `workflow` (including one already unclaimed) is a

@@ -10285,3 +10285,31 @@ C7 由 LOW 升為 MED。以事件式 trigger 歸檔、本輪不做:`remoteStampe
   第三個 `owner_decision: pending`(只針對復原機制,P1~P4),原封不動從架構閘帶過來,本閘未裁決`]`。
   `needs_clarification=[ARCH-182 (8c)`的「MCP 查法」寫錯,「只能刪除重建」也寫錯,見上`]`。全程未使用
   `git checkout`/`restore`/`stash`。未建立 commit(留給 orchestrator)。
+
+## 2026-09-25 — ADR-086 第三次裁決(P1)實作 + 真跑驗證
+
+業主在四個選項中選 P1。**上一輪我把第二次裁決實作出來時,沒有把它的可用性代價一起呈上** —— `src/` 裡
+沒有任何路徑能把 `createdRemote` 由 1 寫回 0,所以一次平常的遠端 `workflow_register` 就讓那個觸發器
+永久被拒,而唯一已記錄的復原是刪除重建並輪換 webhook 的 id 與 secret。那是架構閘第三輪才挖出來的,
+業主當時看不到。這一輪的裁決是在補這個資訊差。
+
+P1 把被混為一談的兩件事拆開:「誰掛上觸發器」是觸發器的屬性(建立時決定),「誰寫了這次要跑的腳本」
+是**版本**的屬性(隨每次 publish 自然重新評估)。兩個來源各自不可變,接納時取 OR。洞照樣關著,復原
+降為在本機 `workflow_register`(照列原本的 `triggers[]`)+ `workflow_publish`,id/secret 不變。
+
+**記帳時翻出第三道繞道門**:`runNested()` —— 執行中的腳本呼叫 `workflow()` 巢狀進子工作流,完全不經過
+`start()`。本機註冊的父流程可以巢狀進遠端註冊的子流程。與 ARCH-182 當初修掉的 scheduler/webhook 同一類。
+同一個純述詞多一個呼叫點。VAL-259 第五項真跑證了它是接上的,不只是寫進設計。
+
+**兩個自找的斷鏈,值得記下來避免再犯**:(1) `### TASK-259 / IMPL-387 — …` 這種併寫標題,`trace.py` 兩個
+id 都不會登錄 —— 一個 id 一個標題,而且 TASK 屬於 `03-tasks.md`、IMPL 屬於 `06-impl-log.md`,不能圖方便
+寫在一起;(2) IMPL 的 `traces:` 忘了列新的 TASK,缺口就從 77 變 78。兩個都是 trace 抓出來的,不是我看
+出來的 —— 先看缺口數再宣告完成,這條規矩這次又救了一次。
+
+**(8c) 的兩條被 VAL-258c 實測推翻的說法,處置方式是整段作廢而不是修好。** 在 P1 之下那份操作指示
+(怎麼辨識 pre-v24 族群、怎麼補救)已經沒有讀者 —— 版本側判定對每一次 run 都成立。留一份修好的死指示
+比作廢它更糟。
+
+`tsc` 乾淨;全套 3383 passed / 0 failed(基準 3375);trace 2123/77(缺口回到基準)。
+VAL-259 真跑五項全 PASS,scratch 實例 port 8901、workRoot 在專案外,已停;production 8899 全程未動。
+全程未使用 `git checkout`/`restore`/`stash`。ledger 活的 `owner_decision: pending` 標記歸零。

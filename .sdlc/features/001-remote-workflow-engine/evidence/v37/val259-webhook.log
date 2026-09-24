@@ -1,0 +1,271 @@
+--- webhook_create (LOCAL, no headers) ---
+{
+  "httpStatus": 200,
+  "result": {
+    "webhookId": "9fb6e171-0b56-419c-9add-d7ae5bcbbe32",
+    "url": "http://127.0.0.1:8901/hooks/9fb6e171-0b56-419c-9add-d7ae5bcbbe32",
+    "secret": "442a97f0a8ee181430e942a46d55d852289e7690c70583058664a5eb1b0c1674"
+  }
+}
+--- workflow_register (REMOTE headers), triggers:[webhookId] ---
+{
+  "httpStatus": 200,
+  "runId": "",
+  "status": "completed",
+  "version": 1,
+  "result": {
+    "name": "val259-item4-wf-u81eqf",
+    "version": "v1",
+    "versions": [
+      "v1"
+    ],
+    "channels": {
+      "release": null,
+      "beta": null
+    }
+  }
+}
+--- workflow_publish v1 to release ---
+{
+  "httpStatus": 200,
+  "runId": "",
+  "status": "completed",
+  "result": {
+    "channel": "release",
+    "version": "v1",
+    "from": null
+  }
+}
+--- FIRST delivery: correctly HMAC-signed with the ORIGINAL secret, expect 403 CONFINEMENT_UNAVAILABLE ---
+{
+  "status": 403,
+  "respBody": {
+    "error": "this host could not measure a working Bash sandbox at boot; a run is refused when EITHER its trigger's provenance OR its resolved script version's registering submission is remote — a remote run_start/run_resume, a webhook delivery or schedule firing whose trigger was created remotely, or ANY run (including a local one) resolving to a version registered remotely",
+    "code": "CONFINEMENT_UNAVAILABLE"
+  }
+}
+--- webhook_list: confirm secretFingerprint + createdRemote BEFORE recovery ---
+{
+  "id": "9fb6e171-0b56-419c-9add-d7ae5bcbbe32",
+  "workflow": "val259-item4-wf-u81eqf",
+  "createdBy": null,
+  "enabled": true,
+  "secretFingerprint": "373b99bef963fdad",
+  "refusalCount": 1,
+  "createdRemote": false,
+  "lastRefusedAt": "2026-09-24T20:53:54.012Z",
+  "lastRefusalReason": "CONFINEMENT_UNAVAILABLE"
+}
+--- RECOVERY: LOOPBACK (no remote header) workflow_register({name, script, mermaid, triggers:[SAME webhookId]}) ---
+{
+  "httpStatus": 200,
+  "runId": "",
+  "status": "completed",
+  "version": 2,
+  "result": {
+    "name": "val259-item4-wf-u81eqf",
+    "version": "v2",
+    "versions": [
+      "v1",
+      "v2"
+    ],
+    "channels": {
+      "release": "v1",
+      "beta": null
+    }
+  }
+}
+--- RECOVERY: workflow_publish v2 to release ---
+{
+  "httpStatus": 200,
+  "runId": "",
+  "status": "completed",
+  "result": {
+    "channel": "release",
+    "version": "v2",
+    "from": "v1"
+  }
+}
+--- workflow_describe v2: confirm registeredRemote:false on the recovered version ---
+{
+  "httpStatus": 200,
+  "runId": "",
+  "status": "completed",
+  "result": {
+    "name": "val259-item4-wf-u81eqf",
+    "version": "v2",
+    "resolvedBy": "version",
+    "channels": {
+      "release": "v2",
+      "beta": null
+    },
+    "versions": [
+      "v1",
+      "v2"
+    ],
+    "description": "",
+    "phases": [],
+    "params": {
+      "agents": {},
+      "args": {}
+    },
+    "lockedKeys": [
+      "prompt",
+      "allowedTools",
+      "skills",
+      "mcp",
+      "workdir",
+      "cwd"
+    ],
+    "owner": null,
+    "reportProblem": "this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: \"val259-item4-wf-u81eqf\"})",
+    "triggers": [
+      {
+        "id": "9fb6e171-0b56-419c-9add-d7ae5bcbbe32",
+        "workflow": "val259-item4-wf-u81eqf",
+        "createdBy": null,
+        "enabled": true,
+        "secretFingerprint": "373b99bef963fdad",
+        "refusalCount": 1,
+        "createdRemote": false,
+        "lastRefusedAt": "2026-09-24T20:53:54.012Z",
+        "lastRefusalReason": "CONFINEMENT_UNAVAILABLE"
+      }
+    ],
+    "mermaid": "graph LR",
+    "mermaidNote": null,
+    "runnable": true,
+    "runnableReason": null,
+    "diagramContract": "v2",
+    "registeredRemote": false,
+    "toolSurface": {}
+  }
+}
+--- webhook_list: id + secretFingerprint + createdRemote AFTER recovery (must be UNCHANGED vs rowBefore) ---
+{
+  "id": "9fb6e171-0b56-419c-9add-d7ae5bcbbe32",
+  "workflow": "val259-item4-wf-u81eqf",
+  "createdBy": null,
+  "enabled": true,
+  "secretFingerprint": "373b99bef963fdad",
+  "refusalCount": 1,
+  "createdRemote": false,
+  "lastRefusedAt": "2026-09-24T20:53:54.012Z",
+  "lastRefusalReason": "CONFINEMENT_UNAVAILABLE"
+}
+--- SECOND delivery: signed with the ORIGINAL secret (never rotated), expect 202 ---
+{
+  "status": 202,
+  "respBody": {
+    "runId": "aec33db2-3d9d-406b-82c1-98b981719a92"
+  }
+}
+--- Sanity: a delivery signed with a WRONG secret should fail HMAC (401), confirming 202 above is not a fluke of unauthenticated delivery ---
+{
+  "status": 401,
+  "respBody": {
+    "error": "bad signature"
+  }
+}
+=== FULL RESULT ===
+{
+  "webhookId": "9fb6e171-0b56-419c-9add-d7ae5bcbbe32",
+  "originalSecret": "442a97f0a8ee181430e942a46d55d852289e7690c70583058664a5eb1b0c1674",
+  "url": "http://127.0.0.1:8901/hooks/9fb6e171-0b56-419c-9add-d7ae5bcbbe32",
+  "delivery1": {
+    "status": 403,
+    "respBody": {
+      "error": "this host could not measure a working Bash sandbox at boot; a run is refused when EITHER its trigger's provenance OR its resolved script version's registering submission is remote — a remote run_start/run_resume, a webhook delivery or schedule firing whose trigger was created remotely, or ANY run (including a local one) resolving to a version registered remotely",
+      "code": "CONFINEMENT_UNAVAILABLE"
+    }
+  },
+  "rowBefore": {
+    "id": "9fb6e171-0b56-419c-9add-d7ae5bcbbe32",
+    "workflow": "val259-item4-wf-u81eqf",
+    "createdBy": null,
+    "enabled": true,
+    "secretFingerprint": "373b99bef963fdad",
+    "refusalCount": 1,
+    "createdRemote": false,
+    "lastRefusedAt": "2026-09-24T20:53:54.012Z",
+    "lastRefusalReason": "CONFINEMENT_UNAVAILABLE"
+  },
+  "recoveredVersion": "v2",
+  "desc2": {
+    "httpStatus": 200,
+    "runId": "",
+    "status": "completed",
+    "result": {
+      "name": "val259-item4-wf-u81eqf",
+      "version": "v2",
+      "resolvedBy": "version",
+      "channels": {
+        "release": "v2",
+        "beta": null
+      },
+      "versions": [
+        "v1",
+        "v2"
+      ],
+      "description": "",
+      "phases": [],
+      "params": {
+        "agents": {},
+        "args": {}
+      },
+      "lockedKeys": [
+        "prompt",
+        "allowedTools",
+        "skills",
+        "mcp",
+        "workdir",
+        "cwd"
+      ],
+      "owner": null,
+      "reportProblem": "this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: \"val259-item4-wf-u81eqf\"})",
+      "triggers": [
+        {
+          "id": "9fb6e171-0b56-419c-9add-d7ae5bcbbe32",
+          "workflow": "val259-item4-wf-u81eqf",
+          "createdBy": null,
+          "enabled": true,
+          "secretFingerprint": "373b99bef963fdad",
+          "refusalCount": 1,
+          "createdRemote": false,
+          "lastRefusedAt": "2026-09-24T20:53:54.012Z",
+          "lastRefusalReason": "CONFINEMENT_UNAVAILABLE"
+        }
+      ],
+      "mermaid": "graph LR",
+      "mermaidNote": null,
+      "runnable": true,
+      "runnableReason": null,
+      "diagramContract": "v2",
+      "registeredRemote": false,
+      "toolSurface": {}
+    }
+  },
+  "rowAfter": {
+    "id": "9fb6e171-0b56-419c-9add-d7ae5bcbbe32",
+    "workflow": "val259-item4-wf-u81eqf",
+    "createdBy": null,
+    "enabled": true,
+    "secretFingerprint": "373b99bef963fdad",
+    "refusalCount": 1,
+    "createdRemote": false,
+    "lastRefusedAt": "2026-09-24T20:53:54.012Z",
+    "lastRefusalReason": "CONFINEMENT_UNAVAILABLE"
+  },
+  "delivery2": {
+    "status": 202,
+    "respBody": {
+      "runId": "aec33db2-3d9d-406b-82c1-98b981719a92"
+    }
+  },
+  "delivery3_wrongSecretSanity": {
+    "status": 401,
+    "respBody": {
+      "error": "bad signature"
+    }
+  }
+}

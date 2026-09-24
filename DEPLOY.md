@@ -538,7 +538,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `proxyManager` / `issueReporter` / `mcpProbe` / `modelCatalog` / `modelCatalogFetchers` / `systemInfo` | **程式注入用的替身接點，JSON 設定檔設不了**（值是函式/物件）。列在這裡只是為了說明：把它們寫進 `rwe.config.json` 不會被當成「不認得的鍵」警告，但也不會有任何效果 | 物件/函式 / — | 否 | v26 |
 | `rwe.config.json` → `mcpEgressAllowlist` | `workspace_push({kind:"mcp"})` 註冊 `http` transport 時的 https-only 白名單（URL 前綴比對，同 `seedRefAllowlist` 的 fail-closed 慣例）；省略/空陣列＝任何 `http` MCP 設定一律 `EGRESS_DENIED`（探測前就擋，探測次數為零） | `string[]` / `[]` | 否 | v24 |
 | `rwe.config.json` → `sandbox.allowHostPaths` | 營運者授予的共用主機路徑清單——agent 的 Bash 除了自己的 run workspace，還可以讀寫這些路徑（REQ-218）。每一筆在開機時驗證：必須是絕對路徑（不展開 `~`）、必須存在於磁碟上（**開機前要先 `mkdir`**，否則以 `UNRESOLVABLE` 拒絕啟動）、不可在 `workRoot` 內也不可包住 `workRoot`、不可等於或包住 `rwe.config.json`/`auth-tokens.db`、不可含萬用字元；任何一筆不合規就**整個拒絕開機**，訊息逐筆列出。省略 = `[]`，最嚴格姿態。**此鍵只申報授權清單，不決定 Bash 是否真的受限——那是量測出來的**（見下一列） | `string[]` / `[]` | 是 | v37 |
-| （量測值，非設定鍵）Bash 圍籠姿態 | 開機時對主機跑一次巢狀 `bwrap --unshare-user` 探測（REQ-218，ADR-083 業主裁決 posture C）：探測通過 → `confined`，這台部署上每個 agent() 呼叫都真的請求 OS 沙箱；探測失敗（常見於本機開發機的 AppArmor `bwrap-userns-restrict` 政策擋住巢狀 namespace）→ `unconfined`，**本機（loopback）送出的 run 仍會照跑、不受任何 Bash 圍籠**，但**遠端送出的 `run_start`/`run_resume` 一律在進 authz 之前就被拒絕**（`CONFINEMENT_UNAVAILABLE`）。姿態印在開機那行 log 與每次 `agent.confinement` 事件的 `posture` 欄位，無法用設定檔調高或調低——這是量測，不是宣告 | — | — | v37 |
+| （量測值，非設定鍵）Bash 圍籠姿態 | 開機時對主機跑一次巢狀 `bwrap --unshare-user` 探測（REQ-218，ADR-083 業主裁決 posture C）：探測通過 → `confined`，這台部署上每個 agent() 呼叫都真的請求 OS 沙箱；探測失敗（常見於本機開發機的 AppArmor `bwrap-userns-restrict` 政策擋住巢狀 namespace）→ `unconfined`，**本機（loopback）送出、且跑的是本機註冊版本的 run 仍會照跑、不受任何 Bash 圍籠**，但**遠端送出的 `run_start`/`run_resume` 一律在進 authz 之前就被拒絕**，而且**不論從哪裡送出，只要這次要跑的版本是遠端註冊的、或觸發器是遠端建立的，同樣被拒**（`CONFINEMENT_UNAVAILABLE`，判定式見 §6）。姿態印在開機那行 log 與每次 `agent.confinement` 事件的 `posture` 欄位，無法用設定檔調高或調低——這是量測，不是宣告 | — | — | v37 |
 | `rwe.config.json` → `seedRefAllowlist` | engine-pull `seedRef:{repoUrl,sha}` 的 egress 白名單（`https://` URL 前綴）；**fail-closed**：省略/空陣列 = 任何 seedRef 回 `SEEDREF_DISABLED`；不命中前綴（含 `169.254.169.254`/`localhost`/私有 IP/`file://`）→ `SEEDREF_EGRESS_DENIED`（SSRF 安全） | `string[]` / `[]` | 否 | v13 |
 | `rwe.config.json` → `maxBlobBytes` | `POST /assets/blob/:sha`（streaming raw-body 上傳）最大 body bytes；超過 → HTTP 413 `BLOB_TOO_LARGE` | `number` / `268435456`（256 MiB，最小 1048576） | 否 | v10 |
 | `rwe.config.json` → `runConcurrency` | **單一 run 內同時在飛的 `agent()` 上限** —— 一個 `parallel()` 實際跑多寬。達上限的呼叫在 `acquireSlot()` **排隊**（不拒絕、不丟棄），所以更寬的 fan-out 只是比較慢。另有一層跨所有 run 的主機層上限（agent 號誌），由 `agentSlots` 設定 | `number` / `24` | 否 | v25 |
@@ -879,8 +879,8 @@ npm run start
 | 手動用 `curl http://0.0.0.0:<port>/api/status` 檢查健康狀態，收到 `403 Forbidden`（不是逾時、不是連不上） | 伺服器的 Host-header 允許清單刻意不把 `0.0.0.0` 當成合法 Host（那是「監聽所有介面」的萬用位址，不是真實可連的目的地名稱）——`RWE_BIND=0.0.0.0` 只影響「監聽哪些介面」，不代表 `0.0.0.0` 本身能當 URL 用 | 改用 `127.0.0.1:<port>` 檢查（`deploy.sh` §0 本身在 `RWE_BIND=0.0.0.0` 時也是這樣做）；要從區網其他主機檢查，用該主機看到的 LAN IP（並確認已列在 §1b `allowedHosts`） |
 | `auth.enabled:true` + `bind:"0.0.0.0"`，從**本機**呼叫 `/mcp` 做寫入（`workflow_register`／`workflow_publish`／`workflow_deregister`／`webhook_delete`…），明明帶了有效 bearer 卻回 `PRINCIPAL_REQUIRED`（或角色不足的 `FORBIDDEN_ROLE`） | 這個組合下本機來源走的是 D-BIND 豁免（§1b 部署前提第 3 點），伺服器直接放行、**根本不會去讀你帶的 bearer**，於是這次呼叫沒有身份可用，而寫入類操作在 `auth.enabled:true` 時不接受 `args.principal` 自稱 | 要用 bearer 身份做寫入，就從**非 loopback 來源**呼叫（例如從該主機的 LAN IP 打進去），或把 `bind` 設成 `127.0.0.1`（loopback bind 沒有豁免，bearer 一定會被讀取）；只讀不寫時維持現狀即可 |
 | `RWE_BIND=<LAN IP>`（如 §2 systemd 範例的 `192.168.0.125`）部署後，手動用 `curl http://127.0.0.1:<port>/api/status` 檢查，收到 `Connection refused`（連不上，不是 403） | 服務只監聽 `$RWE_BIND` 指定的那個介面；綁定成具體 LAN IP 時，該主機的 `127.0.0.1` 迴環介面根本沒有服務在聽 | 改用 `$RWE_BIND` 本身（例如 `curl http://192.168.0.125:<port>/api/status`）；`deploy.sh` §0 的健康檢查已依 `RWE_BIND` 是否為 `0.0.0.0`/`::` 自動選擇正確目的地，不需要手動判斷 |
-| `run_start`/`run_resume` 回 `CONFINEMENT_UNAVAILABLE` | 這台部署開機探測量到 `Bash` 圍籠不可用（見 §1c(e)），且這次呼叫被判定是「遠端提交」——判斷依據是 socket 的 peer 位址不是 loopback，**或**請求帶了任一 tunnel/forwarded 類 header（`X-Forwarded-For`/`X-Real-IP`/`Forwarded`/`CF-Connecting-IP`，即使 peer 本身是 loopback 也一樣，防止 cloudflared 之類的 tunnel 讓遠端流量偽裝成本機）——這是刻意設計，不是誤判 | 本機（loopback、不帶上述任何 header）呼叫仍會照跑；要接受遠端提交，唯一路徑是讓這台主機的巢狀 `bwrap --unshare-user` 探測通過（多半要調整 AppArmor 的 `bwrap-userns-restrict` 政策或改用容許巢狀 user namespace 的主機），開機 log 會印 `Bash confinement: CONFINED` |
-| `POST /hooks/:id` 回 403、body 帶 `CONFINEMENT_UNAVAILABLE`；或 `schedule_list` 某筆的 `lastError.code` 是 `CONFINEMENT_UNAVAILABLE` | 這不是只有 `run_start`/`run_resume` 才會回的碼——同一道圍籠不可用判定，也擋 webhook 送達與排程觸發這兩條路徑，判斷依據是**那個 webhook/schedule 這一列目前的 `createdRemote` 值**（不是這次送達/觸發本身的來源）：建立時依建立者是否遠端寫入一次，**之後每次有人用 `workflow_register` 認領或重新認領這個觸發器 id，`claim()` 都會用「這次認領呼叫是否遠端」再蓋一次章**——但只能從「本機」蓋成「遠端」，絕不會蓋回本機（單調，細節與不可逆代價見 §6） | 本機建立、且從未被任何遠端 `workflow_register` 認領過的 webhook/schedule 不受影響；已經讀到 `createdRemote:true` 的觸發器沒有「改回本機」的路徑（見 §6）——要嘛讓這台主機的巢狀 `bwrap --unshare-user` 探測通過（見上一列），要嘛刪除重建該 webhook/schedule（webhook 會連帶換掉 id 與 secret，排程只換 id）；反過來，如果是一個**應該被擋卻沒被擋**的舊觸發器（排程可以直接從 `schedule_list` 看到 `claimedBy:null`；webhook 沒有這個欄位，要用 §6 的 SQL 查法找），那是 pre-v24 建立時綁定的族群，明確認領的做法見 §6 |
+| `run_start`/`run_resume` 回 `CONFINEMENT_UNAVAILABLE` | 這台部署開機探測量到 `Bash` 圍籠不可用（見 §1c(e)），且**下列兩件事至少成立一件**：(a) 這次呼叫被判定是「遠端提交」——判斷依據是 socket 的 peer 位址不是 loopback，**或**請求帶了任一 tunnel/forwarded 類 header（`X-Forwarded-For`/`X-Real-IP`/`Forwarded`/`CF-Connecting-IP`，即使 peer 本身是 loopback 也一樣，防止 cloudflared 之類的 tunnel 讓遠端流量偽裝成本機）；(b) **這次要跑的版本是遠端註冊的**（`workflow_describe` 的 `registeredRemote`）——**這一項與呼叫者在哪裡無關,本機呼叫一樣被擋**,因為擋的是腳本的來源,不是連線的來源。錯誤訊息會指名是哪一版。這是刻意設計，不是誤判 | (a) 本機（loopback、不帶上述任何 header）呼叫仍會照跑；(b) 在這台主機上重新註冊一次再 publish（§6 的兩個呼叫），或讓這台主機的巢狀 `bwrap --unshare-user` 探測通過（多半要調整 AppArmor 的 `bwrap-userns-restrict` 政策或改用容許巢狀 user namespace 的主機），開機 log 會印 `Bash confinement: CONFINED` |
+| `POST /hooks/:id` 回 403、body 帶 `CONFINEMENT_UNAVAILABLE`；或 `schedule_list` 某筆的 `lastError.code` 是 `CONFINEMENT_UNAVAILABLE` | 這不是只有 `run_start`/`run_resume` 才會回的碼——同一道圍籠不可用判定也擋 webhook 送達與排程觸發，判斷依據**不是**這次送達/觸發本身的來源，而是 §6 那個聯集：**這個 webhook/schedule 建立時寫下的 `createdRemote`**，**或這次要跑的版本註冊時寫下的 `registeredRemote`**，任一為真就擋。兩個欄位都是建立/註冊當下寫一次、之後不可改寫 | 先分清楚是哪一半：`webhook_list`/`schedule_list` 看 `createdRemote`，`workflow_describe({name})` 看 `registeredRemote`。**版本那一半**——在這台主機上重新 `workflow_register`（把原本的觸發器 id 原樣列進 `triggers[]`）再 `workflow_publish`，webhook 的 id 與 secret 不變（§6 有完整指令）。**觸發器那一半**——沒有改回本機的路徑，只能刪除重建（webhook 連帶換 id 與 secret，排程只換 id），或讓這台主機的巢狀 `bwrap --unshare-user` 探測通過 |
 | `run_result`/`run_status` 的某個 agent `detail` 顯示 `WORKROOT_INSIDE_PROJECT: ... is outside workRoot or carries a project marker between the run workspace and workRoot` | 這是**執行期**的同一個檢查，跟 §1b `workRoot` 那一列的**開機期**檢查是同一顆函式（`findProjectMarkerAboveWorkspace`）——多半是 `workRoot` 底下的 `workflows/<name>/` 這一層目錄意外多出一個 `.git`/`CLAUDE.md`（例如手動在 `workRoot` 內跑過 `git init`） | 找到並移除該路徑下多出來的 `.git`/`CLAUDE.md`；引擎自己在**每個 run 自己的工作目錄根**寫的 `.git`（`initGitBaseline`）不受影響，只有「工作目錄與 `workRoot` 之間的祖先層」才會被擋 |
 
 ## 6. 維運注意事項 / 已知限制
@@ -905,16 +905,38 @@ npm run start
   commit，舊表完好，下次啟動再重建一次即可（重建有冪等保護，已經正確的資料庫完全不會被碰）。
   `webhooks` 資料表有同樣的自動重建。
 
-- **`createdRemote`：建立時蓋一次章，之後每次被 `workflow_register` 認領／重新認領也會再蓋一次章——但只能從「本機」蓋成「遠端」，絕不會反向。** 這個欄位判斷這台部署 `Bash` 圍籠不可用時要不要擋下這個觸發器之後的每次啟動；欄位是升級才新加的，`DEFAULT 0`，所以升級前就存在、且從未被任何遠端呼叫者用 `workflow_register` 認領過的每一筆，都讀成「本機建立」——即使它其實是從別的機器 `webhook_create`/`schedule_create` 建立的。**要讓這個控制開始保護一個既有觸發器，現在只需要一件事：讓一個遠端呼叫者對擁有它的工作流程做一次 `workflow_register({name, script, mermaid, triggers:[<既有 id>]})`（把這個 id 原樣列進 `triggers`）再 `workflow_publish`——不必刪除、不必重建、也不必換 webhook 的 id/secret。** `claim()` 認領一個「已經被同一個工作流程認領過」的 id（最常見的情境：改版重新註冊）一樣會蓋章——這正是 ADR-086 第二次裁決要補上的洞。
+- **圍籠不可用時擋誰：兩個欄位，各寫一次、之後不可變，取聯集。** 這台部署量到 `unconfined`（§1c(e)）時，一次啟動被拒絕的條件是：
 
-  **不可逆警告：這是單態（monotone）欄位，`src/` 裡沒有任何程式路徑會把它從 `true` 寫回 `false`。** 連失敗的註冊也算數——蓋章發生在寫入新版本「之前」，註冊如果後續失敗，蓋章不會復原。這台主機的觸發器目錄如果**全部是遠端註冊**（用 `webhook_list`/`schedule_list` 查不到 `createdRemote:true` 就是這個狀態）且實測 `unconfined`，**下一次任何一個平常的遠端 `workflow_register` 只要在 `triggers[]` 裡再列一次既有觸發器 id，那個觸發器從此每一次觸發都被永久拒絕**；今天唯一已記錄的復原手段是刪除重建（`webhook_delete`+`webhook_create` 或 `schedule_delete`+`schedule_create`，再重新 `workflow_register({triggers:[新 id]})` 認領），代價是 webhook 的 id 與 secret 會跟著換掉、每個外部呼叫端都要重新接線（排程沒有 secret，只換 id）。這個代價目前掛在 `02-architecture.md` ADR-086 一個尚未回答的 `owner_decision` 下（復原機制本身要怎麼選，不是這個機制要不要做）。
+  ```
+  拒絕 ⟺ 姿態 unconfined ∧ ( 觸發器.createdRemote ∨ 這次要跑的版本.registeredRemote )
+                             └ 誰掛上觸發器 ┘        └ 誰註冊了這版腳本 ┘
+                             webhook_create /         workflow_register
+                             schedule_create 當下      當下寫一次
+                             寫一次
+  ```
 
-  **例外：pre-v24「建立時就綁定工作流程」的觸發器，不會被「一般的」重新註冊自動蓋到。** v24 以前，`schedule_create`/`webhook_create` 可以直接帶 `workflow` 參數、建立時就綁定；這個口子對新呼叫已經關閉（帶 `workflow` 一律 `INVALID_ARGUMENT`，改用「先建立、再用 `workflow_register({triggers:[id]})` 認領」），但**升級前就用那個口子建立的舊列不受影響，照舊運作**——它們從來沒被任何版本的 `triggers[]` 宣告過，所以**一般的**改版重新註冊（不特別去列這個舊 id）永遠不會呼叫到它們的 `claim()`（它們「生下來就是認領好的」，`claimedBy` 從建立起就等於 `workflow`），上面說的自癒機制蓋不到它們。這個族群即使所屬的工作流程之後被遠端重新註冊，只要那次註冊沒有把這個舊 id 明確列進 `triggers[]`，它自己的 `createdRemote` 就不會跟著變——下一次觸發仍照它原本（多半是 `false`／本機）的判定放行，等於繞過整套「圍籠不可用時擋遠端」的保護。**但這個殘留並非只能刪除重建：把這個舊 id 明確列進 `triggers[]` 做一次 `workflow_register({name, script, mermaid, triggers:[...已宣告的 id, 這個舊 id]})` + `workflow_publish`（實測驗證於 `08-validation.md` VAL-258 (c)）——`claim()` 這時會正常執行，`claimedBy`/`createdRemote` 都會照那次呼叫是否遠端蓋章，跟一般觸發器完全一樣。** 換句話說：要讓這個族群開始受控制保護，用遠端呼叫者做這次明確認領即可；刪除重建（見上）只是另一個更重的選項（會換 webhook 的 id/secret），不是唯一手段。
+  兩個欄位**都沒有任何程式路徑會事後改寫**（`release()` 只清綁定欄位；版本列本身不可變）。`run_start`／`run_resume`、webhook 送達、排程觸發，以及**執行中的腳本用 `workflow()` 巢狀呼叫子工作流程**，四條路徑讀的是同一個判定。
 
-  **怎麼找出這個族群（三種查法都已用一筆真實種入的 pre-v24 型列實測過，見 `08-validation.md` VAL-258，會給出同一筆列）**：
-  - 排程：`schedule_list` 直接看得出來——一筆同時有 `workflow` 欄位、`claimedBy` 卻是 `null` 的，就是這個族群（正常認領過的列 `claimedBy` 一定有值）；等價 SQL：`sqlite3 <workRoot>/schedules.db "SELECT id, workflow FROM schedules WHERE workflow IS NOT NULL AND claimedBy IS NULL;"`。
-  - Webhook：`webhooks` 資料表沒有 `claimedBy` 欄位，**目前也沒有任何 MCP 工具能單獨判斷「這個 id 有沒有被某個版本的 `triggers[]` 宣告過」**——`workflow_describe` 的 `triggers` 欄位刻意把「版本宣告的」與「目前綁定的」兩種來源合併顯示（讓這個族群在那個畫面上看得見），所以無法拿它來分辨；只能查 SQL：`sqlite3 <workRoot>/webhooks.db "ATTACH '<workRoot>/catalog.db' AS cat; SELECT w.id, w.workflow FROM webhooks w WHERE w.workflow IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cat.workflow_versions v, json_each(v.triggers) t WHERE v.name = w.workflow AND t.value = w.id);"`。
-  - 沒有 `sqlite3` 指令的主機：用引擎本來就依賴的 `better-sqlite3` 跑等價查詢（以排程為例，指到你自己的 `workRoot`）：`node -e "const D=require('/path/to/node_modules/better-sqlite3');const db=new D('<workRoot>/schedules.db',{readonly:true});console.log(db.prepare('SELECT id, workflow FROM schedules WHERE workflow IS NOT NULL AND claimedBy IS NULL').all())"`。
+  **怎麼查目前狀態**：觸發器那一半用 `webhook_list`／`schedule_list` 看每筆的 `createdRemote`；腳本那一半用 `workflow_describe({name})` 看回傳的 `registeredRemote`。**還沒 publish 的版本要帶 `version`**——`workflow_describe({name})` 不帶 `version` 時，對一個尚未發布到任何頻道的版本會回 `CHANNEL_UNPUBLISHED`，不會退回最新註冊的版本；復原流程裡想先確認「哪一版被標記」，寫成 `workflow_describe({name, version:'vN'})`。
+
+  **升級後的既有資料**：兩個欄位都是 `DEFAULT 0`，所以**升級前就存在的每一筆觸發器與每一個既有版本，一律讀成「本機」**——即使它其實是從別的機器建立或註冊的。這是刻意的：升級不會讓這台主機上任何既有工作流程突然停擺。控制從**下一次遠端 `workflow_register`** 開始逐版生效。
+
+  **被擋住之後怎麼復原——兩個呼叫，webhook 的 id 與 secret 全程不變**：
+
+  ```
+  在這台主機上執行（從別台機器連進來依定義就算遠端，做這件事沒有用）：
+    1. workflow_register({ name, script, mermaid, triggers: [ ...原本那些觸發器 id... ] })
+       → 產生新版本，registeredRemote 為本機
+       ※ triggers 必須把原本的 id 原樣列回去。漏掉的話該觸發器改由 NOT_IN_RELEASE 被擋，
+         症狀不同但一樣不會跑。
+    2. workflow_publish({ name, version: '<上一步回傳的版本>', channel: 'release' })
+       → 下一次觸發解析到這個乾淨版本
+  ```
+
+  **不需要**刪除重建 webhook 或排程，**不需要**換 secret，外部呼叫端不必重新接線。若被擋的原因是觸發器那一半（`createdRemote:true`，亦即這個 webhook／schedule 本身是從遠端建立的），那就沒有「改回本機」的路徑——那筆只能刪除重建（webhook 連帶換 id 與 secret，排程只換 id），或讓這台主機的巢狀 `bwrap --unshare-user` 探測通過。
+
+  **pre-v24「建立時就綁定工作流程」的舊觸發器**（v24 以前 `schedule_create`／`webhook_create` 可以直接帶 `workflow` 參數；這個口子對新呼叫已關閉，帶 `workflow` 一律 `INVALID_ARGUMENT`）**不需要任何額外處置**：它們的 `createdRemote` 多半停在 `0`，但腳本那一半的判定對**每一次**啟動都成立，不管觸發器當初是怎麼綁上去的，所以遠端註冊的腳本照樣擋得下來。
+
 
 **日誌與狀態位置**：日誌僅 stdout/stderr（`[remote-workflow-engine] ...` 前綴），交給你的
 process manager（systemd/pm2/docker）收集；沒有另外寫檔案 log。狀態存在 `$workRoot/store`

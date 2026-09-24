@@ -144,6 +144,12 @@ export interface VersionEntry {
   /** v26 (DES-184, ARCH-119, TASK-189): `'v1'` for a NULL (pre-v26) row, `'v2'` for every row
    *  `insertVersion` writes from here on — a grandfathered row is never re-checked with `v2`. */
   diagramContract: 'v1' | 'v2';
+  /** v37 P1 (ADR-086's third owner ruling, 2026-09-25, DES-263's 第三次修訂): who registered THIS
+   *  version — written once by `insertVersion` from `ToolDeps.isRemoteSubmission`, never updated
+   *  (a version row is immutable). Read by `RunManager.start()`'s second admission stage and by
+   *  `runNested()`, OR'd against the trigger's own immutable `createdRemote`
+   *  (`admissionRefusal`'s two-source rule). `false` on every pre-v37 row (grandfathered local). */
+  registeredRemote: boolean;
 }
 export interface WorkflowDetail extends VersionEntry {
   name: string; createdAt: string; owner: string | null; channels: Channels; versions: string[];
@@ -325,6 +331,14 @@ export class WorkflowCatalog {
     // row is never re-checked and renders as before (ADR-025: version rows are immutable). Every row
     // `insertVersion` writes from here on carries `'v2'` explicitly.
     if (!versionCols.includes('diagram_contract')) this._db.exec('ALTER TABLE workflow_versions ADD COLUMN diagram_contract TEXT');
+    // v37 P1 (ADR-086's third owner ruling, 2026-09-25, DES-263's 第三次修訂): "who wrote the
+    // script that is about to run" — write-once at `insertVersion`, from the same
+    // `ToolDeps.isRemoteSubmission` `workflow_register` already threads; a version row is
+    // immutable (ADR-025), so there is no UPDATE path for this column either, ever.
+    // `DEFAULT 0` grandfathers every pre-existing row as local — deliberate (see DES-263's own
+    // migration-semantics note): coverage grows from the next remote registration onward, never
+    // backfilled.
+    if (!versionCols.includes('registeredRemote')) this._db.exec('ALTER TABLE workflow_versions ADD COLUMN registeredRemote INTEGER NOT NULL DEFAULT 0');
 
     // v24 (ARCH-098, DES-148, DES-153, TASK-143): the asset store's catalog rows — `workflow = ''` is
     // the global-scope sentinel (SQLite refuses expressions in a PK). `AssetSyncService` (TASK-144)
@@ -628,9 +642,15 @@ export class WorkflowCatalog {
    *  REGISTRATION_CONFLICT instead of an untyped 500. Callers (the facade, ARCH-091/DES-149) run any
    *  trigger `claim()` BETWEEN `validateRegistration` and this call — this method itself does not
    *  know about trigger stores. */
-  async insertVersion(req: { name: string; script: string; mermaid: string; triggers?: string[]; params: ParamContract; principal?: string | null; actor?: Actor }): Promise<{ version: string }> {
+  async insertVersion(req: { name: string; script: string; mermaid: string; triggers?: string[]; params: ParamContract; principal?: string | null; actor?: Actor; registeredRemote?: boolean }): Promise<{ version: string }> {
     const { name, script, mermaid, triggers, params } = req;
     const actor: Actor = req.actor ?? actorFromPrincipal(req.principal ?? null);
+    // v37 P1 (ADR-086's third owner ruling, 2026-09-25, DES-263's 第三次修訂): the ONE write this
+    // column ever gets — never re-evaluated or re-stamped afterwards (a version row is immutable,
+    // ADR-025). `mcp-facade.ts`'s `workflowRegister` forwards the SAME `isRemoteSubmission` the
+    // door (DES-262) and the trigger stores' creation stamp already read — no second source of
+    // truth for "was this submission remote".
+    const registeredRemote = req.registeredRemote === true ? 1 : 0;
     const paramsJson = JSON.stringify(params);
     // v24 Gate 8 (AF-2, TASK-161, adjudication #7 G-2): an EMPTY array is stored as '[]', never as
     // NULL. `NULL` is reserved for pre-v24 rows — rows written before this column existed — which is
@@ -668,8 +688,8 @@ export class WorkflowCatalog {
           this._db.prepare('INSERT INTO workflows (name, createdAt, owner) VALUES (?, ?, ?)').run(name, createdAt, owner);
         }
         this._db
-          .prepare('INSERT INTO workflow_versions (name, version, script, defaults, params, mermaid, triggers, createdAt, diagram_contract) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)')
-          .run(name, v, script, paramsJson, mermaid, triggersJson, createdAt, 'v2');
+          .prepare('INSERT INTO workflow_versions (name, version, script, defaults, params, mermaid, triggers, createdAt, diagram_contract, registeredRemote) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)')
+          .run(name, v, script, paramsJson, mermaid, triggersJson, createdAt, 'v2', registeredRemote);
         return v;
       }).immediate();
       // v36 (DES-243/244, TASK-242, REQ-213/212): one audit line per successful registration,
@@ -691,7 +711,7 @@ export class WorkflowCatalog {
    *  `register(name, script, defaults, principal)` shape (ADR-035 retires `defaults` from
    *  registration entirely). The facade (ARCH-091/DES-149) does NOT call this — it calls
    *  `validateRegistration`/`insertVersion` separately with a trigger-claim step in between. */
-  async register(req: { name: string; script: string; mermaid: string; triggers?: string[]; principal?: string | null }): Promise<{ version: string }> {
+  async register(req: { name: string; script: string; mermaid: string; triggers?: string[]; principal?: string | null; registeredRemote?: boolean }): Promise<{ version: string }> {
     if (typeof req !== 'object' || req === null || typeof (req as { name?: unknown }).name !== 'string') {
       throw codedError(
         'INVALID_ARGUMENT',
@@ -832,8 +852,8 @@ export class WorkflowCatalog {
       // holds pre-v24 rows, and any run reaching one of those is already refused LEGACY_REREGISTER
       // for the missing per-agent contract. Reading a retired column kept a dead value flowing
       // through the whole admission path.
-      .prepare('SELECT script, mermaid, params, triggers, diagram_contract FROM workflow_versions WHERE name = ? AND version = ?')
-      .get(name, result.version) as { script: string; mermaid: string | null; params: string | null; triggers: string | null; diagram_contract: string | null };
+      .prepare('SELECT script, mermaid, params, triggers, diagram_contract, registeredRemote FROM workflow_versions WHERE name = ? AND version = ?')
+      .get(name, result.version) as { script: string; mermaid: string | null; params: string | null; triggers: string | null; diagram_contract: string | null; registeredRemote: number };
     return {
       script: vrow.script,
       version: result.version,
@@ -850,6 +870,10 @@ export class WorkflowCatalog {
       ...(vrow.triggers ? { triggers: JSON.parse(vrow.triggers) as string[] } : {}),
       // v26 (DES-184, TASK-189): NULL (every pre-v26 row) reads as 'v1' (ADR-025 grandfather).
       diagramContract: vrow.diagram_contract === 'v2' ? 'v2' : 'v1',
+      // v37 P1 (ADR-086's third owner ruling, DES-263's 第三次修訂): read back for the admission
+      // predicate's second source and for `workflow_describe` (so an operator can see which
+      // version is tainted).
+      registeredRemote: vrow.registeredRemote === 1,
     };
   }
 

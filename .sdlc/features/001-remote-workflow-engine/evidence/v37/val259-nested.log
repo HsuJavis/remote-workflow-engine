@@ -1,0 +1,369 @@
+--- child: workflow_register (REMOTE headers) ---
+{
+  "httpStatus": 200,
+  "runId": "",
+  "status": "completed",
+  "version": 1,
+  "result": {
+    "name": "val259-item5-child-5vjflk",
+    "version": "v1",
+    "versions": [
+      "v1"
+    ],
+    "channels": {
+      "release": null,
+      "beta": null
+    }
+  }
+}
+--- child: workflow_publish (local caller, publish not origin-gated) ---
+{
+  "httpStatus": 200,
+  "runId": "",
+  "status": "completed",
+  "result": {
+    "channel": "release",
+    "version": "v1",
+    "from": null
+  }
+}
+--- child: workflow_describe, confirm registeredRemote:true ---
+{
+  "httpStatus": 200,
+  "runId": "",
+  "status": "completed",
+  "result": {
+    "name": "val259-item5-child-5vjflk",
+    "version": "v1",
+    "resolvedBy": "default-release",
+    "channels": {
+      "release": "v1",
+      "beta": null
+    },
+    "versions": [
+      "v1"
+    ],
+    "description": "",
+    "phases": [],
+    "params": {
+      "agents": {},
+      "args": {}
+    },
+    "lockedKeys": [
+      "prompt",
+      "allowedTools",
+      "skills",
+      "mcp",
+      "workdir",
+      "cwd"
+    ],
+    "owner": null,
+    "reportProblem": "this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: \"val259-item5-child-5vjflk\"})",
+    "triggers": [],
+    "mermaid": "graph LR",
+    "mermaidNote": null,
+    "runnable": true,
+    "runnableReason": null,
+    "diagramContract": "v2",
+    "registeredRemote": true,
+    "toolSurface": {}
+  }
+}
+--- parent: workflow_register (LOCAL, no headers), script calls workflow() on the remote child ---
+parent script: const child = await workflow("val259-item5-child-5vjflk", {}); return { child };
+{
+  "httpStatus": 200,
+  "runId": "",
+  "status": "completed",
+  "version": 1,
+  "result": {
+    "name": "val259-item5-parent-jrc1ms",
+    "version": "v1",
+    "versions": [
+      "v1"
+    ],
+    "channels": {
+      "release": null,
+      "beta": null
+    }
+  }
+}
+--- parent: workflow_publish ---
+{
+  "httpStatus": 200,
+  "runId": "",
+  "status": "completed",
+  "result": {
+    "channel": "release",
+    "version": "v1",
+    "from": null
+  }
+}
+--- parent: workflow_describe, confirm registeredRemote:false (parent itself is local) ---
+{
+  "httpStatus": 200,
+  "runId": "",
+  "status": "completed",
+  "result": {
+    "name": "val259-item5-parent-jrc1ms",
+    "version": "v1",
+    "resolvedBy": "default-release",
+    "channels": {
+      "release": "v1",
+      "beta": null
+    },
+    "versions": [
+      "v1"
+    ],
+    "description": "",
+    "phases": [],
+    "params": {
+      "agents": {},
+      "args": {}
+    },
+    "lockedKeys": [
+      "prompt",
+      "allowedTools",
+      "skills",
+      "mcp",
+      "workdir",
+      "cwd"
+    ],
+    "owner": null,
+    "reportProblem": "this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: \"val259-item5-parent-jrc1ms\"})",
+    "triggers": [],
+    "mermaid": "graph LR",
+    "mermaidNote": null,
+    "runnable": true,
+    "runnableReason": null,
+    "diagramContract": "v2",
+    "registeredRemote": false,
+    "toolSurface": {}
+  }
+}
+--- parent: run_start LOCAL (no header) — start() admits it (parent version is local); expect the NESTED workflow() call to fail the run ---
+{
+  "httpStatus": 200,
+  "runId": "ecfc49bc-a1e0-4076-a239-993b93902726",
+  "status": "running",
+  "result": {
+    "runId": "ecfc49bc-a1e0-4076-a239-993b93902726"
+  }
+}
+--- polling run_status until terminal ---
+{
+  "httpStatus": 200,
+  "runId": "ecfc49bc-a1e0-4076-a239-993b93902726",
+  "status": "failed",
+  "result": {
+    "runId": "ecfc49bc-a1e0-4076-a239-993b93902726",
+    "status": "failed",
+    "scriptVersion": "v1",
+    "phases": [],
+    "agents": [],
+    "workflowNodes": [],
+    "usage": {
+      "tokens": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "costUSD": 0,
+      "unpricedCalls": 0,
+      "unmappedMessages": {}
+    },
+    "startedBy": {
+      "type": "client"
+    },
+    "terminalAt": "2026-09-24T20:54:16.118Z",
+    "error": {
+      "code": "CONFINEMENT_UNAVAILABLE",
+      "message": "CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — nested workflow() 'val259-item5-child-5vjflk' version v1 was registered remotely, so running it is refused."
+    }
+  }
+}
+--- run_result (expect the nested CONFINEMENT_UNAVAILABLE surfaced as this run's failure) ---
+{
+  "httpStatus": 200,
+  "runId": "ecfc49bc-a1e0-4076-a239-993b93902726",
+  "status": "failed",
+  "error": {
+    "code": "CONFINEMENT_UNAVAILABLE",
+    "message": "CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — nested workflow() 'val259-item5-child-5vjflk' version v1 was registered remotely, so running it is refused."
+  },
+  "meta": {
+    "usage": {
+      "tokens": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "costUSD": 0,
+      "unpricedCalls": 0,
+      "unmappedMessages": {}
+    },
+    "budgetEnforceable": {
+      "usd": false,
+      "tokens": true,
+      "unpricedModels": [
+        "anthropic/claude-3-5-sonnet-20241022"
+      ]
+    }
+  }
+}
+=== FULL RESULT ===
+{
+  "childDescribe": {
+    "httpStatus": 200,
+    "runId": "",
+    "status": "completed",
+    "result": {
+      "name": "val259-item5-child-5vjflk",
+      "version": "v1",
+      "resolvedBy": "default-release",
+      "channels": {
+        "release": "v1",
+        "beta": null
+      },
+      "versions": [
+        "v1"
+      ],
+      "description": "",
+      "phases": [],
+      "params": {
+        "agents": {},
+        "args": {}
+      },
+      "lockedKeys": [
+        "prompt",
+        "allowedTools",
+        "skills",
+        "mcp",
+        "workdir",
+        "cwd"
+      ],
+      "owner": null,
+      "reportProblem": "this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: \"val259-item5-child-5vjflk\"})",
+      "triggers": [],
+      "mermaid": "graph LR",
+      "mermaidNote": null,
+      "runnable": true,
+      "runnableReason": null,
+      "diagramContract": "v2",
+      "registeredRemote": true,
+      "toolSurface": {}
+    }
+  },
+  "parentDescribe": {
+    "httpStatus": 200,
+    "runId": "",
+    "status": "completed",
+    "result": {
+      "name": "val259-item5-parent-jrc1ms",
+      "version": "v1",
+      "resolvedBy": "default-release",
+      "channels": {
+        "release": "v1",
+        "beta": null
+      },
+      "versions": [
+        "v1"
+      ],
+      "description": "",
+      "phases": [],
+      "params": {
+        "agents": {},
+        "args": {}
+      },
+      "lockedKeys": [
+        "prompt",
+        "allowedTools",
+        "skills",
+        "mcp",
+        "workdir",
+        "cwd"
+      ],
+      "owner": null,
+      "reportProblem": "this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: \"val259-item5-parent-jrc1ms\"})",
+      "triggers": [],
+      "mermaid": "graph LR",
+      "mermaidNote": null,
+      "runnable": true,
+      "runnableReason": null,
+      "diagramContract": "v2",
+      "registeredRemote": false,
+      "toolSurface": {}
+    }
+  },
+  "parentRunStart": {
+    "httpStatus": 200,
+    "runId": "ecfc49bc-a1e0-4076-a239-993b93902726",
+    "status": "running",
+    "result": {
+      "runId": "ecfc49bc-a1e0-4076-a239-993b93902726"
+    }
+  },
+  "finalStatus": {
+    "httpStatus": 200,
+    "runId": "ecfc49bc-a1e0-4076-a239-993b93902726",
+    "status": "failed",
+    "result": {
+      "runId": "ecfc49bc-a1e0-4076-a239-993b93902726",
+      "status": "failed",
+      "scriptVersion": "v1",
+      "phases": [],
+      "agents": [],
+      "workflowNodes": [],
+      "usage": {
+        "tokens": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "costUSD": 0,
+        "unpricedCalls": 0,
+        "unmappedMessages": {}
+      },
+      "startedBy": {
+        "type": "client"
+      },
+      "terminalAt": "2026-09-24T20:54:16.118Z",
+      "error": {
+        "code": "CONFINEMENT_UNAVAILABLE",
+        "message": "CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — nested workflow() 'val259-item5-child-5vjflk' version v1 was registered remotely, so running it is refused."
+      }
+    }
+  },
+  "runResult": {
+    "httpStatus": 200,
+    "runId": "ecfc49bc-a1e0-4076-a239-993b93902726",
+    "status": "failed",
+    "error": {
+      "code": "CONFINEMENT_UNAVAILABLE",
+      "message": "CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — nested workflow() 'val259-item5-child-5vjflk' version v1 was registered remotely, so running it is refused."
+    },
+    "meta": {
+      "usage": {
+        "tokens": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "costUSD": 0,
+        "unpricedCalls": 0,
+        "unmappedMessages": {}
+      },
+      "budgetEnforceable": {
+        "usd": false,
+        "tokens": true,
+        "unpricedModels": [
+          "anthropic/claude-3-5-sonnet-20241022"
+        ]
+      }
+    }
+  }
+}

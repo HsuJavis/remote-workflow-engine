@@ -5410,7 +5410,8 @@ caller at all, which is the whole of REQ-219's case).
 | event `agent.confinement_denied` | `{kind, runId, agentId, tool, detail}` | ARCH-178, **best-effort and labelled so** — its existence depends on spike S4. |
 | `workflow_authoring_guide` | one new paragraph, rendered from the effective grant list | ARCH-107 amendment (REQ-117). **No new MCP tool, no new tool parameter, no change to any tool schema.** |
 | removed: `raceWithTimeout()`, `buildSessionOptions()`, `ProviderProfile` (the builder's copy) | — | ARCH-179/180. Zero `src/` importers today, so no production caller changes. |
-| `webhooks.createdRemote` / `schedules.createdRemote` | `INTEGER NOT NULL DEFAULT 0` | **ARCH-182 (new, v37 Gate-8 repair).** Initialised at `webhook_create`/`schedule_create` from `ToolDeps.isRemoteSubmission`, then **re-stamped monotonically by `claim()`** as the OR of its existing value and the remoteness of the registration claiming the trigger (`'claimed'` and `'held'` both stamp; `'ALREADY_CLAIMED'` never does). **A taint bit, not a creation record**: monotone non-decreasing for the row's lifetime, no path in `src/` clears it, and the only recorded remedy is delete-and-recreate — which rotates a webhook's id and secret (ADR-086's re-opened `owner_decision`). Read at the three trigger dispatch sites. **Exception**: a pre-v24 trigger bound at creation is never claimed and so never re-stamped — amendment (8c). |
+| `webhooks.createdRemote` / `schedules.createdRemote` | `INTEGER NOT NULL DEFAULT 0` | **ARCH-182 (new, v37 Gate-8 repair);2026-09-25 P1 改寫。** 在 `webhook_create`/`schedule_create` 由 `ToolDeps.isRemoteSubmission` **寫一次,此後不可變** —— `src/` 中沒有任何 UPDATE 路徑觸碰它(`release()` 只清綁定欄位)。~~由 `claim()` 單調重新蓋章~~ 隨 ADR-086 第三次裁決刪除。**它記的是「誰掛上這個觸發器」,不是「誰寫了要跑的腳本」** —— 後者是同表新增的 `workflow_versions.registeredRemote`,兩者在接納述詞裡取 OR(INV-V37-6)。在三個觸發器派發點被讀取。 |
+| `workflow_versions.registeredRemote` | `INTEGER NOT NULL DEFAULT 0` | **新增,2026-09-25,ADR-086 第三次裁決 P1(DES-263 第三次修訂)。** 在 `insertVersion` 由同一個 `isRemoteSubmission` **寫一次**;版本列不可變,故亦無 UPDATE 路徑。記的是「這一版腳本是誰註冊的」,隨每次 publish 自然重新評估,於 `catalog.resolve()` 之後被接納述詞讀取(`start()` 第二段門與 `runNested()`)。**`DEFAULT 0` 是刻意的 grandfather** —— 升級當下所有既存版本一律視為 local(本機整份目錄目前皆遠端註冊,見 ADR-086),覆蓋率自**下一次遠端註冊**起逐列長出;此事實寫進 DEPLOY.md,不是被忽略的盲點。 |
 | `RunSpec.origin: 'local' \| 'remote'` | **required** field on the run spec | ARCH-182. Required on purpose: the compiler is what stops a fifth admission site from being added without answering the remoteness question. |
 | `admissionRefusal({posture, origin})` | pure function → `'CONFINEMENT_UNAVAILABLE' \| null` | ARCH-182. The single predicate every admission passes, at `RunManager.start()`. |
 | `CONFINEMENT_UNAVAILABLE` | `ERROR_CATALOG` entry (`see: workflow_authoring_guide`) + `run_start`/`run_resume` `errors:` arrays | ARCH-181 amendment (finding C-1). `refusalEnvelope(code: ErrorCode, …)` — the code parameter is typed against the catalog, so a future ad-hoc code cannot slip through uncatalogued. |
@@ -5714,6 +5715,7 @@ caller at all, which is the whole of REQ-219's case).
   trigger is deleted and recreated by a remote caller. That is the upgrade's resting state, not an
   attack.
   **[2026-09-24 round-3 部分更正:** 覆蓋率不再恆為零。`3e3c331` 之後,每一次在 `triggers[]` 裡列出既有觸發器 id 的**遠端** `workflow_register` 都會把那一列永久升級成 remote(單調,見修訂 (8a)/(8b)),所以覆蓋率隨著再註冊逐列長出來 —— 而真正恆為零的只剩 (8c) 的 pre-v24「建立時即綁定」族群。這裡保留原文,因為 2026-09-23 的裁決是在它之上作成的。]**
+  **[2026-09-25 再更正(P1):上面這段的機制(`claim()` 重新蓋章)已被 ADR-086 第三次裁決刪除 —— 洞仍然關著,但改由版本側的 `workflow_versions.registeredRemote` 關,覆蓋率也因此延伸到這裡說「恆為零」的 pre-v24 族群。詳見下方 (8a)-(8d) 前的整組作廢說明。]**
   **(1b) The re-attachment gap needs NO operator action, and it is a SECOND residual, distinct from
   the one ADR-086 accepted.** An ordinary author/admin principal `workflow_register`s a new script
   onto a workflow name that already owns a trigger, then `workflow_publish`es it; the trigger row is
@@ -5726,6 +5728,7 @@ caller at all, which is the whole of REQ-219's case).
   answered, or the first trigger row observed with a `createdRemote` value that disagrees with how its
   workflow's released version was registered.
   **[2026-09-24 round-3 更正 —— 這條第二條具名殘留風險已被關閉,對「以受支援方式被認領的觸發器」而言:** 2026-09-24 的裁決(`3e3c331`+`2cf5f32`)讓 `claim()` 在 `workflow_register` 當下重新蓋章,`'held'`(既有觸發器的重新註冊)那一支也蓋,所以遠端 register+publish 這條路徑現在會把觸發器升級成 remote 並在下一次觸發時被拒。**它只對 pre-v24「建立時即綁定」的族群仍然成立** —— 那些列永遠不會被 `claim()`,因此永遠不會自癒,連 `NOT_IN_RELEASE` 這道守衛對它們也是空的;盤點查詢與完整說明見下方修訂 (8c)。]**
+  **[2026-09-25 再更正(P1):上面這段的機制(`claim()` 重新蓋章)已被 ADR-086 第三次裁決刪除 —— 洞仍然關著,但改由版本側的 `workflow_versions.registeredRemote` 關,覆蓋率也因此延伸到這裡說「恆為零」的 pre-v24 族群。詳見下方 (8a)-(8d) 前的整組作廢說明。]**
   **What this row may not do is keep asserting a coverage the code does not have** — (1)/(1a)/(1b)
   stand whichever option the owner picks; only the *fix* is owner-gated (ADR-086, `pending`).
   **(2) 「every run admission passes ONE predicate」 was FALSE as written; it is corrected, not made
@@ -5816,6 +5819,20 @@ caller at all, which is the whole of REQ-219's case).
 - **v37 Gate-8 round-3 送回修補 amendment (8) (2026-09-24, architect; findings C1/C3/C4/C5/C7.
   Panel: `adversarial.r1.md` ADDENDUM 3 §2/§3/§4/§5 + `quality-dimensions.r1.md` §1/§2/§4, round 1
   only — the two headlines are complementary, so no round 2 was spawned):**
+  > **[SUPERSEDED 2026-09-25 —— 以下 (8a)(8b)(8c)(8d) 四段整組作廢,由 ADR-086 第三次裁決(P1)取代。
+  > 原文保留,因為第三次裁決正是在它們挖出的事實之上作成的。]**
+  > 四段共同的前提是「`claim()` 會重新蓋章 `createdRemote`」。P1 刪除了那個機制:`createdRemote` 回復為
+  > 建立時寫一次、不可變,腳本來源改由新欄位 `workflow_versions.registeredRemote` 承載,接納述詞取兩者的
+  > OR(INV-V37-6 改寫版、DES-263 第三次修訂)。逐段的下場:
+  > · **(8a)/(8b)** —— 重新蓋章與「污染位元」語意不復存在,故整段不再描述本系統。
+  > · **(8c)** —— 它記的 pre-v24「建立時即綁定、永不被 `claim()`、因此永不自癒」族群,在 P1 之下**由版本側
+  >   判定覆蓋**:版本來源對**每一次 run** 都成立,不管觸發器當初是怎麼綁上去的。這正是 P1 勝出的理由之一。
+  >   因此它的「辨識查詢」與「只能刪除重建」已無讀者 —— 而這兩條**都已被 VAL-258c 實測推翻**(MCP 形式的
+  >   「未被任何版本宣告 ⇒ 屬於該族群」判準會漏判;「只能刪除重建」亦為偽)。**這裡不去修補那份操作指示**,
+  >   因為在 P1 之下它要解決的問題已經不存在,留一份修好的死指示比作廢它更糟。作廢即是對那兩條缺陷的處置。
+  > · **(8d)** —— 它記的可用性代價(遠端再列一次既有 id ⇒ 該觸發器永久被拒,復原需刪除重建並輪換 webhook
+  >   secret)**正是 P1 消除的東西**。P1 之下復原 = 在本機 `workflow_register`(照列原本的 `triggers[]`)
+  >   + `workflow_publish`,webhook 的 id 與 secret 不變。
   **(8a) What actually shipped, replacing this row's 「written once … never re-stamped」 sentence,
   which is FALSE since `3e3c331` (2026-09-24 19:34) — all six hops read this round, not taken from
   the review.** The trigger row's provenance is stamped **at creation** from
@@ -6196,18 +6213,26 @@ caller at all, which is the whole of REQ-219's case).
   `createServer({confinementPosture:'unconfined'})` that refuses an `origin:'remote'` RunSpec with
   `CONFINEMENT_UNAVAILABLE`. **The shape matters more than the count**: today the suite exercises the
   predicate only at `confinementPosture:'confined'`, the one value it never gates on — a vacuous boot.
-- **INV-V37-6 (trigger provenance is MONOTONE — `createdRemote` never transitions 1 → 0).** Added at
-  the v37 Gate-8 round-3 send-back (2026-09-24; findings C1/C5; shipped by `2cf5f32` after `3e3c331`
-  shipped a plain overwrite that `confinement-unconfined-wiring.test.ts` caught). Two protections
-  point in opposite directions and both must hold: (i) a REMOTE registration must taint a trigger it
-  claims (the re-registration hole ADR-086's second ruling closes); (ii) a LOCAL registration must NOT
-  launder a trigger that was CREATED remotely — whoever created a webhook still controls WHEN it fires
-  and what payload reaches the script. The two `stamp()` closures (`scheduler.ts:548`,
-  `webhook-registry.ts:242`, both guarded by `if (createdRemote !== true) return;`) are the ONLY
-  writers after creation; `release()` clears binding columns only. **The consequence is stated with
-  the invariant, not discovered downstream: there is no un-stamp path anywhere in `src/`** — the
-  recovery cost of that is ADR-086's re-opened `owner_decision`, and any future writer that clears the
-  bit changes this invariant rather than merely adding a feature.
+- **INV-V37-6 (provenance comes from TWO immutable sources, OR'd — neither is ever re-written).**
+  **[改寫 2026-09-25,ADR-086 第三次裁決 P1;原文的「單調非遞減」論述 `[SUPERSEDED]`,連同它所描述的
+  `claim()` 重新蓋章機制(`3e3c331`/`2cf5f32`)一併刪除。]** 上一版把「誰掛上觸發器」與「誰寫了腳本」
+  合併成觸發器那一列上的一個會被改寫的污染位元,於是需要一條單調性規則去馴服改寫,也因此沒有任何路徑能
+  把它寫回去 —— 那條「沒有 un-stamp 路徑」的推論正是把裁決重新打開的可用性代價。P1 把兩件事拆開,規則
+  因此不再需要單調性,而是**兩個各自不可變的來源取聯集**:
+  ```
+  refuse ⟺ posture === 'unconfined' ∧ ( 觸發器.createdRemote ∨ 解析出的版本.registeredRemote )
+  ```
+  (i) `schedules.createdRemote` / `webhooks.createdRemote` —— **建立時寫一次**(`schedule_create` /
+  `webhook_create`,取自 `ToolDeps.isRemoteSubmission`),此後 `src/` 中沒有任何 UPDATE 路徑觸碰它;
+  (ii) `workflow_versions.registeredRemote` —— **註冊時寫一次**(`insertVersion`,同一個
+  `isRemoteSubmission`),版本列本身不可變,所以它也沒有 UPDATE 路徑。**兩個保護都還在**:遠端重新註冊
+  產生的是新版本列(帶 1),下一次觸發解析到它就被拒;而遠端建立的觸發器不會因為腳本是本機註冊的就被洗白,
+  因為 (i) 從來沒被改寫過 —— 建立 webhook 的人掌握何時觸發、送什麼 payload,這道保護是 `2cf5f32` 時
+  `confinement-unconfined-wiring.test.ts` 抓出來的,P1 之下它以更強的形式成立(不是靠一條單調性規則,
+  而是靠根本沒有寫入路徑)。**不變式的驗證形狀因此改變**:要證的不再是「1 不會變回 0」,而是
+  **「這兩欄在建立/註冊之後,`src/` 中不存在任何 UPDATE 寫入點」** —— 一個可以用 grep 稽核的性質。
+  **可用性後果同步消失**:復原不再需要刪除重建觸發器,而是在本機重新 `workflow_register`(照列原本的
+  `triggers[]`)再 `workflow_publish`,webhook 的 id 與 secret 全程不變(DES-263 第三次修訂記了精確形狀)。
 - **INV-V37-7 (a port with more than one implementation is wired only when ONE conformance suite
   drives EVERY implementation).** Added at the v37 Gate-8 round-3 send-back (2026-09-24; findings
   C2/QD-3). `TriggerClaimStore` (`mcp-facade.ts:60-75`) has two implementations —
@@ -6221,6 +6246,12 @@ caller at all, which is the whole of REQ-219's case).
   row untouched. A new implementation is wired only when it is added to that suite. Today `UT-335`
   covers `SqliteSchedulerPort` alone, so a regression that made `WebhookRegistry.claim()`'s `stamp()`
   a no-op would leave the whole suite green — the gap this invariant exists to close.
+  **[2026-09-25 修訂(P1)—— 不變式成立,但它的具名例子換了。]** P1 刪掉了 `claim()` 的第三個參數,所以
+  「實作省略第三個參數,編譯器不吭聲」這個**具體**破口已不存在;`TriggerClaimStore` 仍有兩個實作,雙變
+  (bivariance) 這個**語言性質**也仍在,所以不變式本身不撤。它現在要鎖的性質改為:兩個實作的 `claim()`
+  都**不得**寫入 `createdRemote`(INV-V37-6 (i)),而這必須由同一份 conformance 案例同時驅動兩個實作 ——
+  UT-335 因此改寫為 `created-remote-immutable.test.ts` 並涵蓋兩者,補上原本只蓋 `SqliteSchedulerPort`
+  的缺口。
 
 ### v38 candidates (filed here so the next round starts from evidence, NOT actioned in v37)
 

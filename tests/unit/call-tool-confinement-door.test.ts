@@ -126,13 +126,15 @@ describe('v37 Gate-8 round-2 (finding B1, INV-V37-5(d)) — ToolDeps.isRemoteSub
   });
 });
 
-// v37 Gate-8 round-3 send-back repair (finding 7 / architecture's finding C2, INV-V37-5 amendment):
-// the SIXTH forward `workflow_register`+`claim()` opens was shipped with ZERO regression coverage —
-// `grep -rn 'workflow_register' tests/ | grep -i isRemoteSubmission` returned 0 hits before this
-// block. Deleting the `isRemoteSubmission` argument at `call-tool.ts:212`, dropping `createdRemote`
-// from the `claim()` call at `mcp-facade.ts:392`, or deleting either store's `claim()` `stamp()`
-// call must turn ONE of these RED; today all of them leave the suite green.
-describe('UT-336/UT-337 — workflow_register isRemoteSubmission:true, re-listing an EXISTING locally-owned trigger id, re-stamps it createdRemote:true end to end through callTool() (finding 7)', () => {
+// v37 P1 (ADR-086's THIRD owner ruling, 2026-09-25, DES-263's 第三次修訂) — this block used to pin
+// the OPPOSITE fact (`claim()` re-stamping `createdRemote` to true). That rule is SUPERSEDED and
+// DELETED: `createdRemote` is write-once at creation, never touched by `claim()`. The re-registration
+// hole finding 7 named is now closed one row over — `workflow_versions.registeredRemote`, written
+// once by `insertVersion` from the SAME `isRemoteSubmission` `workflow_register` already threads —
+// so this block now pins BOTH halves: the trigger id stays untouched, and the version row is
+// tainted. Losing either `isRemoteSubmission` at `call-tool.ts:212`, or the forward into
+// `insertVersion` at `mcp-facade.ts`, must turn one of these RED.
+describe('UT-336/UT-337 — workflow_register isRemoteSubmission:true, re-listing an EXISTING locally-owned trigger id: the trigger stays untouched, the NEW version is tainted (P1)', () => {
   let dir: string;
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'rwe-c2-restamp-')); });
   afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
@@ -142,7 +144,7 @@ describe('UT-336/UT-337 — workflow_register isRemoteSubmission:true, re-listin
   // `register-trigger-ownership.test.ts` (IT-123) uses, which registers clean.
   const MERMAID = 'graph LR';
 
-  it('[LOAD-BEARING] UT-336 schedule: claim() re-stamps the existing schedule trigger to remote', async () => {
+  it('[LOAD-BEARING] UT-336 schedule: claim() leaves the existing schedule trigger local; the new version is registeredRemote:true', async () => {
     const catalog = new WorkflowCatalog(dir, B1_CLOCK);
     const scheduler = new SqliteSchedulerPort({ clock: B1_CLOCK, catalog: b1FakeCatalog() as never, runManager: b1FakeRunManager() as never, dbPath: join(dir, 'schedules.db') });
     const webhooks = new WebhookRegistry({ clock: B1_CLOCK, catalog: b1FakeCatalog() as never, runManager: b1FakeRunManager() as never, dbPath: join(dir, 'webhooks.db') });
@@ -157,12 +159,17 @@ describe('UT-336/UT-337 — workflow_register isRemoteSubmission:true, re-listin
     expect(scheduler.get(id)?.createdRemote).toBe(false);
 
     const deps = partialDeps({ facade, scheduler, webhooks, isRemoteSubmission: true });
-    const res = (await callTool(deps, 'workflow_register', { name: 'wf-c2-sched', script: SCRIPT, mermaid: MERMAID, triggers: [id] }, { kind: 'auth-disabled' })) as { status?: string };
+    const res = (await callTool(deps, 'workflow_register', { name: 'wf-c2-sched', script: SCRIPT, mermaid: MERMAID, triggers: [id] }, { kind: 'auth-disabled' })) as { status?: string; result?: { version?: string } };
     expect(res.status).toBe('completed');
-    expect(scheduler.get(id)?.createdRemote).toBe(true);
+    // The trigger row: write-once, untouched by this remote claim.
+    expect(scheduler.get(id)?.createdRemote).toBe(false);
+    // The version row: tainted by the SAME isRemoteSubmission — this is what actually closes the
+    // re-registration hole under P1.
+    const resolved = await catalog.resolve('wf-c2-sched', { version: res.result!.version });
+    expect((resolved as { registeredRemote?: boolean }).registeredRemote).toBe(true);
   });
 
-  it('[LOAD-BEARING] UT-337 webhook: claim() re-stamps the existing webhook trigger to remote', async () => {
+  it('[LOAD-BEARING] UT-337 webhook: claim() leaves the existing webhook trigger local; the new version is registeredRemote:true', async () => {
     const catalog = new WorkflowCatalog(dir, B1_CLOCK);
     const scheduler = new SqliteSchedulerPort({ clock: B1_CLOCK, catalog: b1FakeCatalog() as never, runManager: b1FakeRunManager() as never, dbPath: join(dir, 'schedules.db') });
     const webhooks = new WebhookRegistry({ clock: B1_CLOCK, catalog: b1FakeCatalog() as never, runManager: b1FakeRunManager() as never, dbPath: join(dir, 'webhooks.db') });
@@ -177,8 +184,10 @@ describe('UT-336/UT-337 — workflow_register isRemoteSubmission:true, re-listin
     expect(webhooks.get(id)?.createdRemote).toBe(false);
 
     const deps = partialDeps({ facade, scheduler, webhooks, isRemoteSubmission: true });
-    const res = (await callTool(deps, 'workflow_register', { name: 'wf-c2-hook', script: SCRIPT, mermaid: MERMAID, triggers: [id] }, { kind: 'auth-disabled' })) as { status?: string };
+    const res = (await callTool(deps, 'workflow_register', { name: 'wf-c2-hook', script: SCRIPT, mermaid: MERMAID, triggers: [id] }, { kind: 'auth-disabled' })) as { status?: string; result?: { version?: string } };
     expect(res.status).toBe('completed');
-    expect(webhooks.get(id)?.createdRemote).toBe(true);
+    expect(webhooks.get(id)?.createdRemote).toBe(false);
+    const resolved = await catalog.resolve('wf-c2-hook', { version: res.result!.version });
+    expect((resolved as { registeredRemote?: boolean }).registeredRemote).toBe(true);
   });
 });

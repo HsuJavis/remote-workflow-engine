@@ -475,11 +475,15 @@ export interface RunSpec {
   /** v37 (ARCH-182, DES-263, TASK-258, REQ-218, ADR-086): REQUIRED on purpose — the compiler, not a
    *  reviewer, is what stops a fifth `RunManager.start()` admission site from being added without
    *  answering the remoteness question `admissionRefusal()` gates on. Stamped at each of the four
-   *  admission sites from that site's own already-loaded provenance fact (never a live peer check —
-   *  ADR-086's ruling is keyed on the TRIGGER's stored provenance, never the workflow version's
-   *  registering author). `RunSpec` also doubles as the persisted-spec read-back type (see below);
-   *  the `runs` table never gained an `origin` column, so `getSpec()` synthesizes `'local'` on every
-   *  read-back — harmless because a resume is gated by `call-tool.ts`'s door, not this predicate. */
+   *  admission sites from that site's own already-loaded TRIGGER provenance fact (never a live peer
+   *  check). `RunSpec` also doubles as the persisted-spec read-back type (see below); the `runs`
+   *  table never gained an `origin` column, so `getSpec()` synthesizes `'local'` on every read-back
+   *  — harmless because a resume is gated by `call-tool.ts`'s door, not this predicate.
+   *  v37 P1 (ADR-086's third owner ruling, 2026-09-25, DES-263's 第三次修訂): this field carries
+   *  ONLY the trigger-side half of admission. The other half — "who registered the script this run
+   *  is about to execute" — lives on the resolved catalog row (`VersionEntry.registeredRemote`,
+   *  workflow-catalog.ts), read separately inside `RunManager.start()`/`runNested()`, and OR'd
+   *  against this field's signal by calling `admissionRefusal()` twice/three times. */
   origin: 'local' | 'remote';
 }
 

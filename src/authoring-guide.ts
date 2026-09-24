@@ -364,12 +364,13 @@ const HOST_PATH_GRANTS_UNCONFINED =
   'On this deployment, `Bash` is **not confined**: the boot-time probe found no working sandbox ' +
   'on this host, so `Bash` runs with the same filesystem access as the engine process itself — ' +
   'not limited to the run workspace, and not limited to any operator-granted host path either. ' +
-  'A **locally-submitted** run still executes exactly this way; that is the accepted cost of this ' +
-  "deployment's posture, not a bug. Every run this workflow can trigger is refused identically " +
-  'when its recorded provenance is remote — `run_start`/`run_resume` (a remote MCP caller), a ' +
-  'webhook delivery (`POST /hooks/:id` → HTTP 403, for a webhook that was itself created by a ' +
-  'remote submission), and a schedule firing (surfaced in `schedule_list`\'s `lastError`, for a ' +
-  'schedule created the same way) all return `CONFINEMENT_UNAVAILABLE` instead of admitting ' +
+  'A **locally-submitted** run of a **locally-registered** script still executes exactly this ' +
+  "way; that is the accepted cost of this deployment's posture, not a bug. Every run this " +
+  'workflow can trigger is refused identically when EITHER its trigger OR its resolved script ' +
+  "version's registering submission was remote — `run_start`/`run_resume` (a remote MCP caller, " +
+  'or a LOCAL caller naming a workflow version that was itself registered remotely), a webhook ' +
+  'delivery (`POST /hooks/:id` → HTTP 403), and a schedule firing (surfaced in ' +
+  '`schedule_list`\'s `lastError`) all return `CONFINEMENT_UNAVAILABLE` instead of admitting ' +
   'Bash-capable work — this is a rule about every admission route this posture gates, not a ' +
   'fixed list of tool names.';
 

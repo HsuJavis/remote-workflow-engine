@@ -12994,3 +12994,72 @@ should be corrected in the next architecture-touching gate.
 `createdRemote` remains a SQLite column, not a config key (consistent with the pre-existing
 sync-check note above). Confirmed via `git diff --stat rwe.config.example.json` (empty) at the end
 of this slice too.
+
+### VAL-259 — ADR-086 第三次裁決(P1)的真跑驗證:五項全部對著一台真的引擎打 HTTP,含本輪新發現的第三道門
+- **status:** pass
+- **traces:** DES-263, ADR-086, ARCH-182, REQ-218, TASK-259, IMPL-387
+- **tier:** real
+- **real:** true
+- **result:** pass
+- **iter:** v37
+- **evidence:** `evidence/v37/val259-{boot,schema,runs,webhook,nested}.{mjs,log}`
+
+**為什麼要有這一項(IT-305/IT-306 已經綠了)**:in-process 整合測試證不了 HTTP 這一段的佈線,而
+「欄位進得了 store、卻沒人從 facade 轉發,單元測試照樣全綠」正是本專案反覆踩到的那一類缺陷
+(composeConfig 佈線 bug class)。所以本項另起一台**獨立的 scratch 實例**(`RWE_PORT=8901`,
+workRoot 在 Claude 專案目錄之外),透過 `POST /mcp` 與 `POST /hooks/:id` 真的打進去。
+**沒有動到 8899 的正式服務,也沒有動 `rwe.config.json`。**
+
+**前提條件(觀測值,不是假設)**:開機行 `Bash confinement: UNCONFINED (bwrap: No permissions to
+create a new namespace…)`(`val259-boot.log:30-32`)—— 姿態若不是 unconfined,底下每一條拒絕都不會發生,
+這一項就會變成「什麼都沒驗到卻全綠」。`PRAGMA table_info(workflow_versions)`
+(`val259-schema.log:74-80`)實測 `registeredRemote / INTEGER / notnull:1 / dflt_value:"0"`,
+與 DES-263 的 grandfather 遷移語意一致。
+
+**(1) `run_start`:遠端註冊的腳本 + 本機呼叫者 ⇒ 拒絕。** PASS,`val259-runs.log:75-82`。
+帶 `X-Forwarded-For` 註冊並 publish,`workflow_describe` 讀回 `registeredRemote:true`,
+接著用**不帶任何 header 的真 loopback 呼叫** `run_start` → `CONFINEMENT_UNAVAILABLE`,
+訊息指名版本:`workflow 'val259-item1-remote-wf-vu2pd4' version v1 was registered remotely … re-register
+locally (workflow_register with the same triggers, then workflow_publish) to recover`。
+**這正是 P1 帶來的反轉** —— 在 2026-09-23 的裁決下這個呼叫是被接納的。錯誤訊息本身就把復原指示交到
+操作者手上,不必先去翻 DEPLOY.md。
+
+**(2) 反向對照(沒有它,一個「什麼都拒絕」的述詞也會通過第 1 項)。** PASS,`val259-runs.log:88-224`。
+全程不帶 header:`registeredRemote:false`、`run_start` 被接納、輪詢到 `status:"completed"`、
+`run_result` 回 `42`。
+
+**(3) 觸發器不可變 + 版本被標記(兩半都要成立)。** PASS,`val259-runs.log:237-315`。
+本機 `webhook_create` → `createdRemote:false`;接著**遠端** `workflow_register` 把該 webhook id
+列進 `triggers[]`;事後 `webhook_list` **仍讀到 `createdRemote:false`**(那一欄沒有 UPDATE 路徑),
+而新版本讀到 `registeredRemote:true`。這同時證了兩件事:舊機制(`claim()` 重新蓋章)真的被移除了,
+新機制真的接上了。
+
+**(4) webhook 送達先被拒、再復原,而 secret 自始至終沒被輪換。** PASS,`val259-webhook.log`。
+用原始 secret 正確簽章的第一次送達 → **403 `CONFINEMENT_UNAVAILABLE`**(:39-46);
+從 loopback 重新 `workflow_register({… triggers:[同一個 id]})` + `workflow_publish`(:59-88),
+復原後的版本 `registeredRemote:false`(:140);`webhook_list` 復原前後的 `id` 與
+`secretFingerprint` 完全相同(`373b99bef963fdad`,:53 與 :150);用**原始 secret** 簽的第二次送達
+→ **202** 並回傳 `runId`(:156-162)。
+**這一項的證明是結構性的,不是斷言一個欄位相等**:secret 若被輪換,HMAC 就會驗不過。腳本另外補了一發
+**故意用錯 secret** 的送達 → **401 bad signature**(:163-169),排除「202 只是因為送達根本沒在驗簽」
+這個假通過。
+
+**(5) 巢狀 `workflow()` 那道門 —— 本輪記帳時才發現的第三道繞道門。** PASS(可建構,非 BLOCKED),
+`val259-nested.log`。遠端註冊並 publish 一個子工作流(`registeredRemote:true`);本機註冊一個父工作流,
+腳本就是 `const child = await workflow("<child>", {}); return { child };`,本機 publish
+(`registeredRemote:false`);本機 `run_start` 父流程 —— `start()` **接納**它(父版本是本機的,
+判定正確地只看這一次要跑的東西),然後該 run 以 `failed` 終止,訊息為
+`nested workflow() 'val259-item5-child-5vjflk' version v1 was registered remotely, so running it is refused`
+(:181-182,`run_result` :191-193 再次確認)。
+**意義**:DES-263 列的三個判定點中,(c) 是唯一沒有先例的 —— 執行中的腳本呼叫 `workflow()` 完全不經過
+`start()`,若只寫進設計而沒接線,整合測試與這裡都會靜默放行。現在它是接上的。
+
+**與 DES-263 第三次修訂的矛盾:無。** 兩來源取 OR、兩欄皆無 UPDATE 路徑、三個判定點、復原是兩個呼叫且
+id/secret 不變、`DEFAULT 0` grandfather —— 逐條與規格相符。`deliver()` 的 403 仍套用 Gate-8 round-2
+修訂的靜態目錄文字(不外洩 `err.message`),四次送達路徑的拒絕文字一致。
+
+**設計沒預期到、但值得記下的一點(非本切片缺陷)**:`workflow_describe` 不帶 `version` 時,對一個
+**尚未 publish** 的版本會回 `CHANNEL_UNPUBLISHED`,而不是退回最新註冊版本 —— 這是既有的工具行為
+(`src/tool-specs.ts` 自己就這麼寫),不是本輪引入的。但它直接影響操作者:復原時想先確認「哪一版被標記」,
+必須寫成 `workflow_describe({name, version})`。已補進 DEPLOY.md §6 的查法說明。
+

@@ -163,9 +163,9 @@ export class WebhookRegistry {
     try { this._db.exec('ALTER TABLE webhooks ADD COLUMN refusalCount INTEGER NOT NULL DEFAULT 0'); } catch { /* already exists */ }
     try { this._db.exec('ALTER TABLE webhooks ADD COLUMN lastRefusedAt TEXT'); } catch { /* already exists */ }
     try { this._db.exec('ALTER TABLE webhooks ADD COLUMN lastRefusalReason TEXT'); } catch { /* already exists */ }
-    // v37 (ARCH-182, DES-263, TASK-258): same idempotent idiom — stamped at `webhook_create`
-    // from `ToolDeps.isRemoteSubmission`, re-stamped monotonically by `claim()` (see the column's
-    // own comment below), read back by `deliver()` to stamp `RunSpec.origin`.
+    // v37 P1 (ARCH-182, DES-263, TASK-258): same idempotent idiom — written once at
+    // `webhook_create` from `ToolDeps.isRemoteSubmission`, never updated afterwards (see the
+    // column's own comment below), read back by `deliver()` to stamp `RunSpec.origin`.
     try { this._db.exec('ALTER TABLE webhooks ADD COLUMN createdRemote INTEGER NOT NULL DEFAULT 0'); } catch { /* already exists */ }
   }
 
@@ -185,9 +185,9 @@ export class WebhookRegistry {
     const secret = randomBytes(32).toString('hex');
     this._db
       .prepare('INSERT INTO webhooks (id, workflow, createdBy, createdRemote, secret, enabled, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      // v37 (ARCH-182, DES-263, TASK-258): the CREATION stamp — `claim()` below re-stamps this
-      // monotonically (local→remote) on later registrations; this INSERT never runs again for an
-      // existing row, so it is a one-time write, not a claim that the value stays frozen.
+      // v37 P1 (ARCH-182, DES-263, TASK-258): the ONLY write this column ever gets — `claim()`
+      // below does NOT touch it (that re-stamp rule is superseded); this INSERT never runs again
+      // for an existing row either, so the value is frozen from creation onward.
       .run(id, spec.workflow ?? null, spec.createdBy ?? null, spec.createdRemote ? 1 : 0, secret, spec.enabled === false ? 0 : 1, this._clock.isoNow());
     return { webhookId: id, secret };
   }
@@ -223,34 +223,21 @@ export class WebhookRegistry {
 
   /** v24 (DES-149): claims an unclaimed webhook for `workflow` inside one transaction — the same
    *  claim model the trigger stores share. `'held'` (already claimed BY this workflow) is never
-   *  released by compensation; `'ALREADY_CLAIMED'` (claimed by someone else) leaves the row untouched. */
-  // v37 (DES-263 amendment 2026-09-24, ADR-086's second owner ruling) — twin of
-  // `SqliteSchedulerPort.claim()`: `createdRemote` is re-stamped from the remoteness of the
-  // registration doing the claiming, not frozen at row creation. 'claimed' and 'held' both stamp
-  // ('held' IS the re-registration path the ruling closes); 'ALREADY_CLAIMED' never does, because
-  // that row belongs to a different workflow. Pre-existing rows (migrated in as 0 = local)
-  // self-heal on their next claim, so no data migration is needed.
-  claim(id: string, workflow: string, createdRemote?: boolean): 'claimed' | 'held' | 'NOT_FOUND' | 'ALREADY_CLAIMED' {
+   *  released by compensation; `'ALREADY_CLAIMED'` (claimed by someone else) leaves the row untouched.
+   *  v37 P1 (ADR-086's third owner ruling, 2026-09-25, DES-263's 第三次修訂) — twin of
+   *  `SqliteSchedulerPort.claim()`: back to its pre-v24.5 shape, `createdRemote` is NOT touched on
+   *  any outcome. The one-iteration re-stamp rule (`3e3c331`+`2cf5f32`, ADR-086's second ruling) is
+   *  SUPERSEDED and deleted — the re-registration hole it closed by rewriting this row is now
+   *  closed one row over, by `WorkflowCatalog.insertVersion`'s `registeredRemote` column, OR'd
+   *  against this one at admission. */
+  claim(id: string, workflow: string): 'claimed' | 'held' | 'NOT_FOUND' | 'ALREADY_CLAIMED' {
     return this._db.transaction((): 'claimed' | 'held' | 'NOT_FOUND' | 'ALREADY_CLAIMED' => {
       const row = this._db.prepare('SELECT workflow FROM webhooks WHERE id = ?').get(id) as { workflow: string | null } | undefined;
       if (!row) return 'NOT_FOUND';
-      const stamp = (): void => {
-        // MONOTONIC: only ever local -> remote, never the reverse. Two protections have to hold at
-        // once and they point in opposite directions: (i) a REMOTE registration must taint a
-        // trigger it claims (the re-registration hole ADR-086's second ruling closes); (ii) a
-        // LOCAL registration must NOT launder a trigger that was CREATED remotely — whoever
-        // created the webhook still controls WHEN it fires and what payload reaches the script.
-        // A plain overwrite satisfies (i) and breaks (ii), which is what
-        // confinement-unconfined-wiring.test.ts caught. So: remote is sticky.
-        if (createdRemote !== true) return;
-        this._db.prepare('UPDATE webhooks SET createdRemote = 1 WHERE id = ?').run(id);
-      };
-      if (row.workflow === workflow) { stamp(); return 'held'; }
+      if (row.workflow === workflow) return 'held';
       if (row.workflow !== null) return 'ALREADY_CLAIMED';
       const info = this._db.prepare('UPDATE webhooks SET workflow = ? WHERE id = ? AND workflow IS NULL').run(workflow, id);
-      if (info.changes !== 1) return 'ALREADY_CLAIMED'; // lost a race between the SELECT and the UPDATE
-      stamp();
-      return 'claimed';
+      return info.changes === 1 ? 'claimed' : 'ALREADY_CLAIMED'; // lost a race between the SELECT and the UPDATE
     })();
   }
 
@@ -346,13 +333,14 @@ export class WebhookRegistry {
         .run(req.deliveryId, id, this._clock.isoNow());
     }
 
-    // v37 (ARCH-182, DES-263, TASK-258): the delivery PEER is deliberately NOT part of this
-    // predicate (DES-262's own note) — what decides is who CREATED (or later, remotely, CLAIMED)
-    // the trigger ROW: `row.createdRemote` is stamped at creation and re-stamped monotonically
-    // (local→remote only) by `claim()` on `workflow_register`/`workflow_publish` — ADR-086's
-    // second ruling, `3e3c331`+`2cf5f32`, 2026-09-24. A
-    // thrown admission error is mapped into this function's own typed DeliverResult rather than
-    // escaping as a rejected promise.
+    // v37 P1 (ARCH-182, DES-263, TASK-258, ADR-086's third owner ruling 2026-09-25): the delivery
+    // PEER is deliberately NOT part of this predicate (DES-262's own note) — what decides is who
+    // CREATED the trigger ROW: `row.createdRemote`, written once at creation and never updated
+    // afterwards (the `claim()` re-stamp `3e3c331`+`2cf5f32` applied for one iteration is
+    // superseded). `RunManager.start()`'s own second admission stage separately ORs in "who
+    // registered the resolved VERSION" (`workflow_versions.registeredRemote`) — this call site
+    // only has to supply the TRIGGER half. A thrown admission error is mapped into this function's
+    // own typed DeliverResult rather than escaping as a rejected promise.
     let runId: string;
     try {
       runId = await this._runManager.start({ name: row.workflow, args: { event: req.parsedBody }, startedBy: { type: 'webhook', id }, origin: row.createdRemote === 1 ? 'remote' : 'local' });

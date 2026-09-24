@@ -255,7 +255,9 @@ describe('WorkflowCatalog v24 — mermaid/triggers required, assets, deregister 
         // whether this version's diagram was checked against the v2 LR-swimlane grammar. A row
         // migrated from a pre-v26 db has it NULL, read back as 'v1' (grandfathered, never
         // re-checked), which is why the column joins the pinned set rather than replacing anything.
-        ['name', 'version', 'script', 'defaults', 'params', 'createdAt', 'mermaid', 'triggers', 'diagram_contract'].sort(),
+        // v37 P1 (ADR-086's third owner ruling, 2026-09-25, DES-263's 第三次修訂): `registeredRemote`
+        // — same idempotent ALTER idiom, `DEFAULT 0` grandfathers this migrated row as local.
+        ['name', 'version', 'script', 'defaults', 'params', 'createdAt', 'mermaid', 'triggers', 'diagram_contract', 'registeredRemote'].sort(),
       );
       // Re-opening a SECOND WorkflowCatalog over the SAME already-migrated file must not throw
       // (a non-guarded `ALTER TABLE ADD COLUMN` on an existing column throws SQLITE_ERROR) and must

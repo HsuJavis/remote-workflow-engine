@@ -16452,23 +16452,26 @@ absence would leave UT-332/UT-333 provable by a stamp-always-1 regression (e.g. 
 `deps.isRemoteSubmission === true` ternary at `call-tool.ts:262`/`:271` in favour of a bare
 `true`) — the negative case a 2×2 truth table needs to actually distinguish the two branches.
 
-### UT-335 — `claim()` re-stamps trigger provenance monotonically (local→remote), parametrized over BOTH `SqliteSchedulerPort` and `WebhookRegistry` (ADR-086's second owner ruling)
-- **status:** green (2026-09-24, implementer)
+### UT-335 — `createdRemote` is IMMUTABLE: `claim()` never writes it on any outcome, parametrized over BOTH `SqliteSchedulerPort` and `WebhookRegistry` (ADR-086's third owner ruling, P1)
+- **status:** green (2026-09-25, implementer)
 - **traces:** DES-263, ADR-086, ARCH-182, REQ-218
 - **tier:** unit
 - **real:** false
 - **result:** pass
 - **iter:** v37
 
-File: `tests/unit/claim-restamps-provenance.test.ts`. v37 Gate-8 round-3 send-back repair (findings
-5/6/8). Three `it()` cases run via `describe.each` over both trigger stores (finding 8,
-INV-V37-7 — the first draft of this file exercised `SqliteSchedulerPort` only, leaving
-`WebhookRegistry.claim()`'s own upgrade direction with no direct unit lock): (1) `[LOAD-BEARING]`
-created locally then `claim()`ed by a remote registration → `createdRemote` reads `true`; (2)
-`[LOAD-BEARING]` the `'held'` outcome (an ordinary re-registration onto an already-owned trigger)
-re-stamps too — this IS the re-registration path ADR-086's second ruling closes, so stamping only
-`'claimed'` would not have fixed it; (3) `'ALREADY_CLAIMED'` (a different workflow's row) never
-re-stamps. Six assertions total (3 cases × 2 stores), all green.
+File: `tests/unit/created-remote-immutable.test.ts` (`git mv` from `claim-restamps-provenance.test.ts`
+— same lineage, INVERTED assertion). **This registration replaces the 2026-09-24 one, which pinned
+the opposite fact** (`claim()` re-stamping provenance monotonically local→remote); that rule shipped
+as `3e3c331`+`2cf5f32` and is `[SUPERSEDED]` by ADR-086's third owner ruling, because it made the bit
+un-clearable and so made the only recorded recovery "delete the trigger and rotate its id+secret".
+Under P1 the rule this file locks is: **`claim()` does not write `createdRemote` on ANY outcome** —
+`'claimed'`, `'held'`, or `'ALREADY_CLAIMED'` — so a remote `workflow_register` claiming a locally
+created trigger leaves the row reading `false`. Still `describe.each` over BOTH stores (INV-V37-7:
+the port has two implementations and TypeScript's method-parameter bivariance does not police the
+seam, so one conformance suite must drive both). The protection the old direction defended — a local
+registration must not launder a remotely-CREATED trigger — now holds in a strictly stronger form:
+not by a monotonicity rule, but because **no write path to the column exists at all** after creation.
 
 ### UT-336 — `workflow_register` with `isRemoteSubmission:true` re-listing an EXISTING locally-owned SCHEDULE trigger id upgrades it to `createdRemote:true`, through the real `callTool()` dispatch
 - **status:** green (2026-09-24, implementer)
@@ -16489,6 +16492,14 @@ repair, finding 7 (architecture's finding C2, INV-V37-5 amendment): the sixth fo
 the `isRemoteSubmission` argument at `call-tool.ts:212` turns this RED (confirmed by temporarily
 reverting the call site and re-running — reverted immediately after, no net diff).
 
+**[改寫 2026-09-25,ADR-086 第三次裁決(P1)—— 本案例的斷言方向反轉,登錄一併更新。]** 原文釘的是
+「遠端 `workflow_register` 重新列出既有 SCHEDULE 觸發器 id ⇒ 該觸發器被升級為 `createdRemote:true`」。
+P1 刪除了那條重新蓋章規則,所以本案例現在同時釘**兩半**:(a) 觸發器那一列**不被碰**(`createdRemote`
+仍為 `false`,INV-V37-6 的不可變性);(b) 這次註冊產生的**新版本列**被標記 `registeredRemote:true`
+(`catalog.resolve()` 讀回來斷言)。**它守的佈線缺口沒有變**:刪掉 `call-tool.ts:212` 的
+`isRemoteSubmission` 引數,或刪掉 `mcp-facade.ts` 往 `insertVersion` 的轉發,都必須讓本案例轉紅 ——
+這正是本專案反覆出現的「新設定沒被 `composeConfig`/facade 轉發,功能靜默失效而單元測試全綠」那一類。
+
 ### UT-337 — `workflow_register` with `isRemoteSubmission:true` re-listing an EXISTING locally-owned WEBHOOK trigger id upgrades it to `createdRemote:true`, through the real `callTool()` dispatch
 - **status:** green (2026-09-24, implementer)
 - **traces:** DES-263, ADR-086, ARCH-182, REQ-218
@@ -16502,6 +16513,54 @@ finding 7, exercising `WebhookRegistry.claim()` instead of `SqliteSchedulerPort.
 identical `callTool()` path, so a regression that drops `createdRemote` from the
 `mcp-facade.ts:392` `claim()` call (which both stores share one call site for) is caught from either
 store's side.
+
+**[改寫 2026-09-25,ADR-086 第三次裁決(P1)—— 本案例的斷言方向反轉,登錄一併更新。]** 原文釘的是
+「遠端 `workflow_register` 重新列出既有 webhook 觸發器 id ⇒ 該觸發器被升級為 `createdRemote:true`」。
+P1 刪除了那條重新蓋章規則,所以本案例現在同時釘**兩半**:(a) 觸發器那一列**不被碰**(`createdRemote`
+仍為 `false`,INV-V37-6 的不可變性);(b) 這次註冊產生的**新版本列**被標記 `registeredRemote:true`
+(`catalog.resolve()` 讀回來斷言)。**它守的佈線缺口沒有變**:刪掉 `call-tool.ts:212` 的
+`isRemoteSubmission` 引數,或刪掉 `mcp-facade.ts` 往 `insertVersion` 的轉發,都必須讓本案例轉紅 ——
+這正是本專案反覆出現的「新設定沒被 `composeConfig`/facade 轉發,功能靜默失效而單元測試全綠」那一類。
+
+### IT-305 — remote `workflow_register` + publish ⇒ a LOCAL `run_start` of that name is refused `CONFINEMENT_UNAVAILABLE` on an unconfined host (P1, real `callTool` → facade → catalog → `RunManager.start()`)
+- **status:** green (2026-09-25, implementer)
+- **traces:** DES-263, ADR-086, ARCH-182, REQ-218
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v37
+
+File: `tests/integration/registered-remote-admission.test.ts`, first `describe`. Two cases: the
+`[LOAD-BEARING]` refusal, and its mirror (a LOCALLY registered + published version still runs on the
+SAME unconfined host — without the mirror a predicate that refuses everything would also pass).
+**Deliberately routed through `callTool(..., isRemoteSubmission: true)`, never `insertVersion`
+directly**: the defect class this test exists to catch is a field that reaches the store but is never
+forwarded from the facade, which a direct-call unit test cannot see.
+**This case also records the reversal of a 2026-09-23 statement**: the admission predicate now DOES
+refuse a locally-started run of a remotely-registered script. That was the previous ruling's explicit
+non-goal; P1 makes it the point, because "who wrote the script about to run" is the fact the owner
+was actually protecting against.
+
+### IT-306 — recovery from a tainted version is TWO calls and never rotates the webhook id/secret (P1)
+- **status:** green (2026-09-25, implementer)
+- **traces:** DES-263, ADR-086, ARCH-182, REQ-218
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v37
+
+File: `tests/integration/registered-remote-admission.test.ts`, second `describe`. The sequence a
+DEPLOY.md reader will actually perform: remote `workflow_register` + `workflow_publish` ⇒ a signed
+webhook delivery to the existing trigger is refused **403**; then, from loopback,
+`workflow_register({… triggers:[the SAME id]})` + `workflow_publish` ⇒ the **same** webhook id and
+secret deliver **202**. **The proof that the secret was not rotated is structural, not an equality
+assertion**: the second delivery is signed with the ORIGINAL secret, so a rotated one would fail HMAC
+verification (401) instead of returning 202. The test also pins the failure mode of the obvious wrong
+recovery — dropping `triggers[]` from the local re-registration turns `declaresTrigger()` false and
+the delivery is refused `NOT_IN_RELEASE` instead, which is why the recorded instruction says to
+re-list them. **This is the case that makes P1 worth choosing over the other three options**: the
+recovery path is the thing the owner was deciding about, and it had never been exercised before.
+
 
 ### IT-304 — `createServer({confinementPosture:'unconfined'})` wires the posture into the REAL `RunManager` end to end: a webhook delivery whose trigger was `createdRemote:true` is refused `CONFINEMENT_UNAVAILABLE`
 - **status:** green (2026-09-23, implementer)

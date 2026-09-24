@@ -118,13 +118,18 @@ export async function callTool(
   // Gated on BOTH conditions together, never one alone: `confinementPosture === 'unconfined'` (this
   // engine could not measure a working nested user namespace at boot — the sandbox is not attempted
   // for ANY run) AND `isRemoteSubmission === true` (the caller's raw socket peer is not loopback).
-  // A LOCAL submission on the same unconfined posture is NOT refused — that is the owner's own
-  // accepted cost (ADR-083: "本機發起的 run 仍不受限制"), not an oversight; only `run_start`/
-  // `run_resume` are gated — both admit new Bash-capable agent() work, unlike every read tool.
+  // A LOCAL submission is NOT refused BY THIS DOOR — that is the owner's own accepted cost
+  // (ADR-083: "本機發起的 run 仍不受限制"), not an oversight; only `run_start`/`run_resume` are
+  // gated here — both admit new Bash-capable agent() work, unlike every read tool. v37 P1
+  // (ADR-086's third owner ruling 2026-09-25, DES-263's 第三次修訂): this door's own scope is
+  // unchanged (peer locality only) — but it is no longer the WHOLE story for a local submission.
+  // `RunManager.start()`'s second admission stage separately refuses a local run_start whose
+  // RESOLVED SCRIPT VERSION was itself registered remotely, so "local submissions still run
+  // unconfined" is true of this door, not of the engine as a whole.
   if ((spec.name === 'run_start' || spec.name === 'run_resume') && deps.confinementPosture === 'unconfined' && deps.isRemoteSubmission === true) {
     return refusalEnvelope(
       'CONFINEMENT_UNAVAILABLE',
-      'CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — remote run submissions are refused; local (loopback) submissions still run, unconfined.',
+      'CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — remote run submissions are refused.',
     );
   }
   // v24 (integrator; REQ-098 + DES-142): `run_start`'s schema is CLOSED, so a caller still using the

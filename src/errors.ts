@@ -88,7 +88,11 @@ export const ERROR_CATALOG = {
   // (ADR-083 owner_decision posture C) throws this code BEFORE schema/authz, same precedent as
   // INLINE_SCRIPT_CLOSED above — a real, remotely-reachable refusal is uncatalogued (invisible to
   // any cold MCP client reading `tools/list`/ERROR_CATALOG) unless it is a key here too.
-  CONFINEMENT_UNAVAILABLE: { see: 'workflow_authoring_guide', hint: 'this host could not measure a working Bash sandbox at boot; a run whose recorded provenance is remote is refused — a remote run_start/run_resume, a webhook delivery, or a schedule firing whose trigger was itself created remotely (a local/loopback submission still runs, unconfined)' },
+  // v37 P1 (ADR-086's third owner ruling, 2026-09-25, DES-263's 第三次修訂): the hint used to end
+  // "(a local/loopback submission still runs, unconfined)" — no longer true. A local run_start of
+  // a REMOTELY-REGISTERED script is refused identically; only a submission that is local AND
+  // resolves to a locally-registered script still runs unconfined.
+  CONFINEMENT_UNAVAILABLE: { see: 'workflow_authoring_guide', hint: "this host could not measure a working Bash sandbox at boot; a run is refused when EITHER its trigger's provenance OR its resolved script version's registering submission is remote — a remote run_start/run_resume, a webhook delivery or schedule firing whose trigger was created remotely, or ANY run (including a local one) resolving to a version registered remotely" },
   NESTING_DEPTH_EXCEEDED: { see: 'workflow_authoring_guide', hint: 'nested workflow() calls exceed the configured maxWorkflowDepth' },
   NESTING_CYCLE: { see: 'workflow_authoring_guide', hint: 'a workflow() call would re-enter an ancestor already on this call\'s chain' },
   DESCENDANT_CAP_EXCEEDED: { see: 'workflow_authoring_guide', hint: 'nested workflow() calls exceed the configured maxWorkflowDescendants' },

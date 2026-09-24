@@ -1,0 +1,32 @@
+== 步驟 1/5：安裝 Node 依賴 (npm install) ==
+
+up to date, audited 403 packages in 1s
+
+86 packages are looking for funding
+  run `npm fund` for details
+
+11 vulnerabilities (5 moderate, 5 high, 1 critical)
+
+To address issues that do not require attention, run:
+  npm audit fix
+
+To address all issues (including breaking changes), run:
+  npm audit fix --force
+
+Run `npm audit` for details.
+== 步驟 2/5：確認設定檔 (/home/user/rwe-scratch-v37/scratch.config.json) ==
+/home/user/rwe-scratch-v37/scratch.config.json 已存在，保留不覆蓋。
+== 步驟 3/5：確認 LiteLLM Python venv (gateway:"sdk" 需要) ==
+litellm 已存在於 /home/user/.rwe-litellm-venv/bin/litellm，略過建立。
+== 步驟 4/5：啟動服務 (RWE_BIND=127.0.0.1 RWE_PORT=8901) ==
+啟動中，PID=4027990，log 在 /home/user/rwe-scratch-v37/.rwe.scratch.config.log
+== 步驟 5/5：健康檢查 (等待 /api/status 回應) ==
+健康檢查通過：
+{"agentSemaphore":{"total":32,"inUse":0,"queued":0},"version":"0.1.0 (v0.20.0-451-g764a48f)"}
+部署完成。服務位址：http://127.0.0.1:8901/mcp
+背景模式：服務持續在背景執行（PID=4027990）。停止：kill $(cat /home/user/rwe-scratch-v37/.rwe.scratch.config.pid)
+
+=== engine's own stdout, captured via `grep -n "Bash confinement\|listening on\|ready" /home/user/rwe-scratch-v37/.rwe.scratch.config.log` immediately after boot, before the scratch workRoot was deleted during cleanup ===
+5:[remote-workflow-engine] listening on http://127.0.0.1:8901/mcp (workRoot=/home/user/rwe-scratch-v37/workroot)
+6:[remote-workflow-engine] Bash confinement: UNCONFINED (bwrap: No permissions to create a new namespace, likely because the kernel does not allow non-privileged user namespaces. See <https://deb.li/bubblewrap> or <file:///usr/share/doc/bubblewrap/README.Debian.gz>.) — remote run submissions will be refused; local (loopback) runs still proceed, unconfined
+7:[remote-workflow-engine] ready

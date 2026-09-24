@@ -10166,6 +10166,53 @@ keep, not a coincidence to rely on.
   故最終規則是聯集:`createdRemote = 既有值 OR 這次認領的註冊是否遠端`。兩個保護同時成立。
   該測試的原註解(「claim() 的 held 分支 must not re-stamp」)寫的是它在防的那一向,不是在反對升級;
   本修正保留了它防的東西,只增加另一向。
+  - **第三次修訂(2026-09-25,ADR-086 第三次裁決 P1 —— 以上兩段的重新蓋章規則整段 `[SUPERSEDED]`)。**
+    ~~`claim()` 在認領當下重新蓋章 `createdRemote`(單調,local→remote)~~ —— 這條規則連同它的單調性
+    特例一起**刪除**;`createdRemote` 回復為**建立時寫一次、此後任何路徑都不改寫**。上面兩段保留原文是
+    因為裁決是在它們之上作成的,但實作上它們已不生效。
+    **取而代之:把「這次要跑的腳本是誰寫的」搬到它真正所屬的資料列 —— 版本。**
+    `workflow_versions` 新增 `registeredRemote INTEGER NOT NULL DEFAULT 0`,由 `workflowRegister` 手上
+    已有的 `isRemoteSubmission` 一路傳到 `insertVersion` 的 INSERT。判定改為**兩個來源取 OR,各自不可變**:
+    ```
+    refuse  ⟺  posture === 'unconfined'  ∧  ( 觸發器.createdRemote  ∨  解析出的版本.registeredRemote )
+                                             └ 誰掛上觸發器 ┘        └ 誰寫了這次跑的腳本 ┘
+                                               建立時決定               每次 publish 重新評估
+    ```
+    **為什麼這樣就同時關住洞又壓低復原成本**:遠端 re-publish 產生的是**新的一列版本**,帶 `registeredRemote=1`,
+    所以下一次觸發解析到它就被拒 —— 業主要關的洞照樣關著;而觸發器那一列**從頭到尾沒被寫髒**,復原不必刪除
+    重建、不必輪換 webhook 的 id 與 secret。
+    **復原的精確形狀是兩個呼叫,不是一個**(`workflow_publish` 只移動頻道指標,不會改寫版本列的
+    `registeredRemote`,所以「本機 publish 一次」這個說法必須寫精確,否則操作者照做會失敗):
+    ```
+    在這台主機上(loopback,遠端連線依定義就是 remote):
+      1. workflow_register({name, script, mermaid, triggers:[…原本那些 id…]})  → 新版 vN+1,registeredRemote=0
+         ── triggers[] 必須照列,否則 declaresTrigger() 轉偽,改由 NOT_IN_RELEASE 擋下
+      2. workflow_publish({name, version:'vN+1', channel:'release'})           → 觸發器下一次解析到乾淨版本
+    webhook 的 id 與 secret 全程不變,外部呼叫端不必重接。
+    ```
+    **三道判定點,不是一道**(`start()` 的「第一個敘述」註解隨之改寫為兩段式門):
+    (a) `start()` 第一個敘述 —— 觸發器來源,維持不變,仍在 `RUN_ADMISSION_LIMIT` 之前,讓一個永遠不可能被
+    接納的提交不佔用接納名額;(b) `start()` 於 `_catalog.resolve()` 之後、`createRun()` 等一切耐久動作之前
+    —— 版本來源(此時才知道);(c) `runNested()`(`run-manager.ts:1462` 的 `resolve(name, {})`)—— 執行中的
+    腳本呼叫 `workflow()` 巢狀進子工作流**完全不經過 `start()`**,本輪才發現,是與 ARCH-182 修掉的
+    scheduler/webhook 同一類的繞道門:一個本機註冊的父流程可以巢狀進遠端註冊的子流程。同一個述詞、同一個
+    純函式,補上第三個呼叫點。
+    **`resume()` 刻意不加**:理由與 INV-V37-5(c) 記的同一條 —— `call-tool.ts` 的門是 `run_resume` 的唯一
+    覆蓋,而一個在 posture 翻轉前就掛起的 run,其續跑是由操作者在本機發起的;這是記錄下來的取捨,不是遺漏。
+    **遷移語意(明講,不重蹈上一輪「對現存族群覆蓋率為零」的盲點)**:`DEFAULT 0` 讓**所有既存版本列一律視為
+    local**,亦即這台主機目前整份目錄(業主自陳全部遠端註冊)在升級後仍可跑 —— 這是刻意的 grandfather,
+    覆蓋率從**下一次遠端註冊**開始逐列長出。與上一輪不同的是,這次它不是被忽略的盲點,而是寫進 DEPLOY.md
+    的已知狀態。
+    **INV-V37-6 改寫**:原文的「單調非遞減」論述失效,改為「**兩個來源取 OR,各自不可變**」——
+    `createdRemote` 建立時寫一次,`registeredRemote` 註冊時寫一次,兩者都沒有任何 UPDATE 路徑。
+    **連帶作廢**:ARCH-182 修訂 (8c)/(8d) 整段 —— (8c) 的 pre-v24「永不自癒」族群在 P1 之下由版本側判定
+    覆蓋(版本側對每一次 run 都成立,不管觸發器是怎麼綁上去的),其「辨識查詢」與「只能刪除重建」兩條
+    (VAL-258c 已實測推翻的那兩條)隨整段一起 `[SUPERSEDED]`,不另行修補一份已無讀者的操作指示;
+    (8d) 描述的可用性代價正是 P1 消除的東西。
+    **廣告介面連帶更正**:`errors.ts` / `call-tool.ts` / `run-manager.ts` / `authoring-guide.ts` 中
+    「本機(loopback)提交仍會跑」的措辭現在**不再為真** —— 在 unconfined 主機上,本機 `run_start` 一個
+    解析到遠端註冊版本的工作流同樣被拒。2026-09-23 那句「拒絕的是遠端建立的觸發器,不是本機發起、跑遠端
+    註冊腳本的 run」隨本次裁決 `[SUPERSEDED 2026-09-25]`。
 - **iter:** v37
 
 ### Class diagram — v37 (the four types this slice adds)

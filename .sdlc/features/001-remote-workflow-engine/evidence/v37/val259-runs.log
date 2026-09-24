@@ -1,0 +1,578 @@
+=========================================================
+ITEM 1: REMOTE workflow_register+publish, then LOCAL (no header) run_start — must be refused CONFINEMENT_UNAVAILABLE
+=========================================================
+--- workflow_register (REMOTE headers) ---
+{
+  "httpStatus": 200,
+  "runId": "",
+  "status": "completed",
+  "version": 1,
+  "result": {
+    "name": "val259-item1-remote-wf-vu2pd4",
+    "version": "v1",
+    "versions": [
+      "v1"
+    ],
+    "channels": {
+      "release": null,
+      "beta": null
+    }
+  }
+}
+--- workflow_publish (local caller, publish is not gated by origin) ---
+{
+  "httpStatus": 200,
+  "runId": "",
+  "status": "completed",
+  "result": {
+    "channel": "release",
+    "version": "v1",
+    "from": null
+  }
+}
+--- workflow_describe: confirm registeredRemote:true on this version, BEFORE run_start ---
+{
+  "httpStatus": 200,
+  "runId": "",
+  "status": "completed",
+  "result": {
+    "name": "val259-item1-remote-wf-vu2pd4",
+    "version": "v1",
+    "resolvedBy": "default-release",
+    "channels": {
+      "release": "v1",
+      "beta": null
+    },
+    "versions": [
+      "v1"
+    ],
+    "description": "",
+    "phases": [],
+    "params": {
+      "agents": {},
+      "args": {}
+    },
+    "lockedKeys": [
+      "prompt",
+      "allowedTools",
+      "skills",
+      "mcp",
+      "workdir",
+      "cwd"
+    ],
+    "owner": null,
+    "reportProblem": "this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: \"val259-item1-remote-wf-vu2pd4\"})",
+    "triggers": [],
+    "mermaid": "graph LR",
+    "mermaidNote": null,
+    "runnable": true,
+    "runnableReason": null,
+    "diagramContract": "v2",
+    "registeredRemote": true,
+    "toolSurface": {}
+  }
+}
+--- run_start WITHOUT remote header (genuine loopback call) ---
+{
+  "httpStatus": 200,
+  "runId": "",
+  "status": "failed",
+  "error": {
+    "code": "CONFINEMENT_UNAVAILABLE",
+    "message": "CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — workflow 'val259-item1-remote-wf-vu2pd4' version v1 was registered remotely, so running it is refused; re-register locally (workflow_register with the same triggers, then workflow_publish) to recover.",
+    "see": "workflow_authoring_guide"
+  }
+}
+=========================================================
+ITEM 2 (mirror): LOCAL workflow_register+publish, LOCAL run_start — must be ADMITTED and reach terminal
+=========================================================
+--- workflow_register (no headers, local) ---
+{
+  "httpStatus": 200,
+  "runId": "",
+  "status": "completed",
+  "version": 1,
+  "result": {
+    "name": "val259-item2-local-wf-m2apgk",
+    "version": "v1",
+    "versions": [
+      "v1"
+    ],
+    "channels": {
+      "release": null,
+      "beta": null
+    }
+  }
+}
+--- workflow_publish ---
+{
+  "httpStatus": 200,
+  "runId": "",
+  "status": "completed",
+  "result": {
+    "channel": "release",
+    "version": "v1",
+    "from": null
+  }
+}
+--- workflow_describe: confirm registeredRemote:false on this version ---
+{
+  "httpStatus": 200,
+  "runId": "",
+  "status": "completed",
+  "result": {
+    "name": "val259-item2-local-wf-m2apgk",
+    "version": "v1",
+    "resolvedBy": "default-release",
+    "channels": {
+      "release": "v1",
+      "beta": null
+    },
+    "versions": [
+      "v1"
+    ],
+    "description": "",
+    "phases": [],
+    "params": {
+      "agents": {},
+      "args": {}
+    },
+    "lockedKeys": [
+      "prompt",
+      "allowedTools",
+      "skills",
+      "mcp",
+      "workdir",
+      "cwd"
+    ],
+    "owner": null,
+    "reportProblem": "this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: \"val259-item2-local-wf-m2apgk\"})",
+    "triggers": [],
+    "mermaid": "graph LR",
+    "mermaidNote": null,
+    "runnable": true,
+    "runnableReason": null,
+    "diagramContract": "v2",
+    "registeredRemote": false,
+    "toolSurface": {}
+  }
+}
+--- run_start (no header, local) ---
+{
+  "httpStatus": 200,
+  "runId": "98e14a8a-fc72-43b1-9858-8c5c208e225f",
+  "status": "running",
+  "result": {
+    "runId": "98e14a8a-fc72-43b1-9858-8c5c208e225f"
+  }
+}
+--- polling run_status until terminal ---
+{
+  "httpStatus": 200,
+  "runId": "98e14a8a-fc72-43b1-9858-8c5c208e225f",
+  "status": "completed",
+  "result": {
+    "runId": "98e14a8a-fc72-43b1-9858-8c5c208e225f",
+    "status": "completed",
+    "scriptVersion": "v1",
+    "phases": [],
+    "agents": [],
+    "workflowNodes": [],
+    "usage": {
+      "tokens": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "costUSD": 0,
+      "unpricedCalls": 0,
+      "unmappedMessages": {}
+    },
+    "startedBy": {
+      "type": "client"
+    },
+    "terminalAt": "2026-09-24T20:53:30.458Z"
+  }
+}
+--- run_result ---
+{
+  "httpStatus": 200,
+  "runId": "98e14a8a-fc72-43b1-9858-8c5c208e225f",
+  "status": "completed",
+  "result": 42,
+  "meta": {
+    "usage": {
+      "tokens": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "costUSD": 0,
+      "unpricedCalls": 0,
+      "unmappedMessages": {}
+    },
+    "budgetEnforceable": {
+      "usd": false,
+      "tokens": true,
+      "unpricedModels": [
+        "anthropic/claude-3-5-sonnet-20241022"
+      ]
+    }
+  }
+}
+=========================================================
+ITEM 3: webhook_create LOCAL -> createdRemote:false; REMOTE workflow_register listing that id in triggers[] -> webhook row UNCHANGED, but the NEW VERSION registeredRemote:true
+=========================================================
+--- webhook_create (no headers, local) ---
+{
+  "httpStatus": 200,
+  "result": {
+    "webhookId": "97e5da55-e26f-4340-bae8-ec74eed4c779",
+    "url": "http://127.0.0.1:8901/hooks/97e5da55-e26f-4340-bae8-ec74eed4c779",
+    "secret": "41a19138cbc9962b697b65a98c9f9664d6242efeceb567252b94c59cf3980d7b"
+  }
+}
+--- webhook_list: BEFORE remote register, confirm createdRemote:false ---
+{
+  "id": "97e5da55-e26f-4340-bae8-ec74eed4c779",
+  "workflow": null,
+  "createdBy": null,
+  "enabled": true,
+  "secretFingerprint": "a1f0cc13a544dd4f",
+  "refusalCount": 0,
+  "createdRemote": false
+}
+--- workflow_register (REMOTE headers), triggers:[webhookId] ---
+{
+  "httpStatus": 200,
+  "runId": "",
+  "status": "completed",
+  "version": 1,
+  "result": {
+    "name": "val259-item3-wf-xu8nnb",
+    "version": "v1",
+    "versions": [
+      "v1"
+    ],
+    "channels": {
+      "release": null,
+      "beta": null
+    }
+  }
+}
+--- webhook_list: AFTER remote register, createdRemote must STILL be false (no UPDATE path) ---
+{
+  "id": "97e5da55-e26f-4340-bae8-ec74eed4c779",
+  "workflow": "val259-item3-wf-xu8nnb",
+  "createdBy": null,
+  "enabled": true,
+  "secretFingerprint": "a1f0cc13a544dd4f",
+  "refusalCount": 0,
+  "createdRemote": false
+}
+--- workflow_describe (version:v1, unpublished — proves the taint exists on the version itself, not on the release pointer): the NEW version must report registeredRemote:true ---
+{
+  "httpStatus": 200,
+  "runId": "",
+  "status": "completed",
+  "result": {
+    "name": "val259-item3-wf-xu8nnb",
+    "version": "v1",
+    "resolvedBy": "version",
+    "channels": {
+      "release": null,
+      "beta": null
+    },
+    "versions": [
+      "v1"
+    ],
+    "description": "",
+    "phases": [],
+    "params": {
+      "agents": {},
+      "args": {}
+    },
+    "lockedKeys": [
+      "prompt",
+      "allowedTools",
+      "skills",
+      "mcp",
+      "workdir",
+      "cwd"
+    ],
+    "owner": null,
+    "reportProblem": "this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: \"val259-item3-wf-xu8nnb\"})",
+    "triggers": [
+      {
+        "id": "97e5da55-e26f-4340-bae8-ec74eed4c779",
+        "workflow": "val259-item3-wf-xu8nnb",
+        "createdBy": null,
+        "enabled": true,
+        "secretFingerprint": "a1f0cc13a544dd4f",
+        "refusalCount": 0,
+        "createdRemote": false
+      }
+    ],
+    "mermaid": "graph LR",
+    "mermaidNote": null,
+    "runnable": false,
+    "runnableReason": "CHANNEL_UNPUBLISHED",
+    "diagramContract": "v2",
+    "registeredRemote": true,
+    "toolSurface": {}
+  }
+}
+=========================================================
+FULL RESULT (JSON)
+=========================================================
+{
+  "item1_describeBeforeRun": {
+    "httpStatus": 200,
+    "runId": "",
+    "status": "completed",
+    "result": {
+      "name": "val259-item1-remote-wf-vu2pd4",
+      "version": "v1",
+      "resolvedBy": "default-release",
+      "channels": {
+        "release": "v1",
+        "beta": null
+      },
+      "versions": [
+        "v1"
+      ],
+      "description": "",
+      "phases": [],
+      "params": {
+        "agents": {},
+        "args": {}
+      },
+      "lockedKeys": [
+        "prompt",
+        "allowedTools",
+        "skills",
+        "mcp",
+        "workdir",
+        "cwd"
+      ],
+      "owner": null,
+      "reportProblem": "this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: \"val259-item1-remote-wf-vu2pd4\"})",
+      "triggers": [],
+      "mermaid": "graph LR",
+      "mermaidNote": null,
+      "runnable": true,
+      "runnableReason": null,
+      "diagramContract": "v2",
+      "registeredRemote": true,
+      "toolSurface": {}
+    }
+  },
+  "item1_runStart": {
+    "httpStatus": 200,
+    "runId": "",
+    "status": "failed",
+    "error": {
+      "code": "CONFINEMENT_UNAVAILABLE",
+      "message": "CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — workflow 'val259-item1-remote-wf-vu2pd4' version v1 was registered remotely, so running it is refused; re-register locally (workflow_register with the same triggers, then workflow_publish) to recover.",
+      "see": "workflow_authoring_guide"
+    }
+  },
+  "item2_describeBeforeRun": {
+    "httpStatus": 200,
+    "runId": "",
+    "status": "completed",
+    "result": {
+      "name": "val259-item2-local-wf-m2apgk",
+      "version": "v1",
+      "resolvedBy": "default-release",
+      "channels": {
+        "release": "v1",
+        "beta": null
+      },
+      "versions": [
+        "v1"
+      ],
+      "description": "",
+      "phases": [],
+      "params": {
+        "agents": {},
+        "args": {}
+      },
+      "lockedKeys": [
+        "prompt",
+        "allowedTools",
+        "skills",
+        "mcp",
+        "workdir",
+        "cwd"
+      ],
+      "owner": null,
+      "reportProblem": "this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: \"val259-item2-local-wf-m2apgk\"})",
+      "triggers": [],
+      "mermaid": "graph LR",
+      "mermaidNote": null,
+      "runnable": true,
+      "runnableReason": null,
+      "diagramContract": "v2",
+      "registeredRemote": false,
+      "toolSurface": {}
+    }
+  },
+  "item2_finalStatus": {
+    "httpStatus": 200,
+    "runId": "98e14a8a-fc72-43b1-9858-8c5c208e225f",
+    "status": "completed",
+    "result": {
+      "runId": "98e14a8a-fc72-43b1-9858-8c5c208e225f",
+      "status": "completed",
+      "scriptVersion": "v1",
+      "phases": [],
+      "agents": [],
+      "workflowNodes": [],
+      "usage": {
+        "tokens": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "costUSD": 0,
+        "unpricedCalls": 0,
+        "unmappedMessages": {}
+      },
+      "startedBy": {
+        "type": "client"
+      },
+      "terminalAt": "2026-09-24T20:53:30.458Z"
+    }
+  },
+  "item2_runResult": {
+    "httpStatus": 200,
+    "runId": "98e14a8a-fc72-43b1-9858-8c5c208e225f",
+    "status": "completed",
+    "result": 42,
+    "meta": {
+      "usage": {
+        "tokens": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "costUSD": 0,
+        "unpricedCalls": 0,
+        "unmappedMessages": {}
+      },
+      "budgetEnforceable": {
+        "usd": false,
+        "tokens": true,
+        "unpricedModels": [
+          "anthropic/claude-3-5-sonnet-20241022"
+        ]
+      }
+    }
+  },
+  "item3_webhookCreate": {
+    "httpStatus": 200,
+    "result": {
+      "webhookId": "97e5da55-e26f-4340-bae8-ec74eed4c779",
+      "url": "http://127.0.0.1:8901/hooks/97e5da55-e26f-4340-bae8-ec74eed4c779",
+      "secret": "41a19138cbc9962b697b65a98c9f9664d6242efeceb567252b94c59cf3980d7b"
+    }
+  },
+  "item3_webhookRowBefore": {
+    "id": "97e5da55-e26f-4340-bae8-ec74eed4c779",
+    "workflow": null,
+    "createdBy": null,
+    "enabled": true,
+    "secretFingerprint": "a1f0cc13a544dd4f",
+    "refusalCount": 0,
+    "createdRemote": false
+  },
+  "item3_register": {
+    "httpStatus": 200,
+    "runId": "",
+    "status": "completed",
+    "version": 1,
+    "result": {
+      "name": "val259-item3-wf-xu8nnb",
+      "version": "v1",
+      "versions": [
+        "v1"
+      ],
+      "channels": {
+        "release": null,
+        "beta": null
+      }
+    }
+  },
+  "item3_webhookRowAfter": {
+    "id": "97e5da55-e26f-4340-bae8-ec74eed4c779",
+    "workflow": "val259-item3-wf-xu8nnb",
+    "createdBy": null,
+    "enabled": true,
+    "secretFingerprint": "a1f0cc13a544dd4f",
+    "refusalCount": 0,
+    "createdRemote": false
+  },
+  "item3_describe": {
+    "httpStatus": 200,
+    "runId": "",
+    "status": "completed",
+    "result": {
+      "name": "val259-item3-wf-xu8nnb",
+      "version": "v1",
+      "resolvedBy": "version",
+      "channels": {
+        "release": null,
+        "beta": null
+      },
+      "versions": [
+        "v1"
+      ],
+      "description": "",
+      "phases": [],
+      "params": {
+        "agents": {},
+        "args": {}
+      },
+      "lockedKeys": [
+        "prompt",
+        "allowedTools",
+        "skills",
+        "mcp",
+        "workdir",
+        "cwd"
+      ],
+      "owner": null,
+      "reportProblem": "this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: \"val259-item3-wf-xu8nnb\"})",
+      "triggers": [
+        {
+          "id": "97e5da55-e26f-4340-bae8-ec74eed4c779",
+          "workflow": "val259-item3-wf-xu8nnb",
+          "createdBy": null,
+          "enabled": true,
+          "secretFingerprint": "a1f0cc13a544dd4f",
+          "refusalCount": 0,
+          "createdRemote": false
+        }
+      ],
+      "mermaid": "graph LR",
+      "mermaidNote": null,
+      "runnable": false,
+      "runnableReason": "CHANNEL_UNPUBLISHED",
+      "diagramContract": "v2",
+      "registeredRemote": true,
+      "toolSurface": {}
+    }
+  },
+  "item3_fixture": {
+    "webhookId": "97e5da55-e26f-4340-bae8-ec74eed4c779",
+    "secret": "41a19138cbc9962b697b65a98c9f9664d6242efeceb567252b94c59cf3980d7b",
+    "url": "http://127.0.0.1:8901/hooks/97e5da55-e26f-4340-bae8-ec74eed4c779",
+    "wfName": "val259-item3-wf-xu8nnb",
+    "version": "v1"
+  }
+}

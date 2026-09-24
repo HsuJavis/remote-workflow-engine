@@ -158,16 +158,21 @@ function paramCodedError(err: ParamErr): Error {
   return Object.assign(codedError(err.code, err.message), { detail: err.detail });
 }
 
-/** v37 (ARCH-182, DES-263, TASK-258, REQ-218, ADR-086): the admission predicate at
- *  `RunManager.start()` — pure (no fs, no db, no clock). `undefined` posture means 「never
- *  measured」 ⇒ do not gate, the same fail-open-for-the-existing-suite convention `ToolDeps`
- *  already uses for this field. Keyed on the TRIGGER's own stored provenance (`origin`), never a
- *  live delivery peer and never the workflow version's registering author — ADR-086's owner ruling
- *  (answered 2026-09-23, premise corrected at the Gate-8 round-2 send-back) refuses only a
- *  REMOTELY-CREATED trigger's run, not a locally-started run of a remotely-registered script.
- *  v37 Gate-8 round-2 (finding B2/INV-V37-5(c)): this predicate covers `start()` only — `resume()`
- *  never calls it, so `call-tool.ts`'s door is the SOLE cover for `run_resume`, not a redundant
- *  twin of this function. */
+/** v37 (ARCH-182, DES-263, TASK-258, REQ-218, ADR-086): the admission predicate — pure (no fs, no
+ *  db, no clock). `undefined` posture means 「never measured」 ⇒ do not gate, the same
+ *  fail-open-for-the-existing-suite convention `ToolDeps` already uses for this field.
+ *  `input.origin` is never a live delivery peer — it is one of TWO write-once, never-updated
+ *  provenance facts, and `start()` calls this SAME function twice (P1, ADR-086's third owner
+ *  ruling 2026-09-25, DES-263's 第三次修訂): once keyed on the TRIGGER's own stored `RunSpec.origin`
+ *  (unchanged since v37's first cut), and again — after `catalog.resolve()`, before any durable
+ *  work — keyed on the RESOLVED VERSION's `registeredRemote` (`'remote'` iff that version was
+ *  registered remotely). `runNested()` is a THIRD call site, same predicate, same pure function,
+ *  keyed on the NESTED resolve's `registeredRemote`. Refuse ⟺ posture==='unconfined' AND
+ *  EITHER call reports `'remote'` — the two facts are OR'd by calling this twice/three times and
+ *  short-circuiting on the first non-null result, never by pre-combining them into one `origin`.
+ *  v37 Gate-8 round-2 (finding B2/INV-V37-5(c)): this predicate covers `start()`/`runNested()`
+ *  only — `resume()` never calls it, so `call-tool.ts`'s door is the SOLE cover for `run_resume`,
+ *  not a redundant twin of this function. */
 export function admissionRefusal(input: {
   posture: 'confined' | 'unconfined' | undefined;
   origin: 'local' | 'remote';
@@ -484,18 +489,23 @@ export class RunManager {
    *  standing temptation to re-merge on resume. The redacted `effectiveParams` snapshot (below) is
    *  the single durable representation. */
   async start(spec: RunSpec, overrides?: unknown): Promise<string> {
-    // v37 (ARCH-182, DES-263, TASK-258, REQ-218): the FIRST statement, ahead of every other check
-    // (including RUN_ADMISSION_LIMIT immediately below) — a submission that can never be admitted
-    // under this posture must not consume an admission slot, and must not be answered with a
-    // RETRYABLE code (RUN_ADMISSION_LIMIT) when the true refusal is deterministic and permanent.
-    // Closes the two admission routes (schedule, webhook) DES-262's isLoopbackPeer door does not
-    // cover — a remotely-created trigger's run is refused identically to a remote run_start.
+    // v37 P1 (ARCH-182, DES-263, TASK-258, REQ-218, ADR-086's third owner ruling 2026-09-25): the
+    // FIRST of a TWO-STAGE door, ahead of every other check (including RUN_ADMISSION_LIMIT
+    // immediately below) — a submission that can never be admitted under this posture must not
+    // consume an admission slot, and must not be answered with a RETRYABLE code
+    // (RUN_ADMISSION_LIMIT) when the true refusal is deterministic and permanent. This FIRST stage
+    // is keyed on the TRIGGER's own stored provenance (`spec.origin`) — the only fact known before
+    // any catalog lookup — and closes the two admission routes (schedule, webhook) DES-262's
+    // isLoopbackPeer door does not cover. The SECOND stage, immediately after `catalog.resolve()`
+    // below (the moment the SCRIPT's own provenance is first known), ORs in
+    // `registeredRemote` — "who wrote the script that is about to run", which this trigger-side
+    // check cannot see. Both stages call the SAME pure `admissionRefusal()`.
     {
       const refusal = admissionRefusal({ posture: this._confinementPosture, origin: spec.origin });
       if (refusal !== null) {
         throw codedError(
           refusal,
-          `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — this run's trigger was created remotely, so it is refused; a locally-created trigger still runs, unconfined.`,
+          `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — this run's trigger was created remotely, so it is refused.`,
         );
       }
     }
@@ -610,6 +620,20 @@ export class RunManager {
       // v22 (REQ-097, DES-114, TASK-109): the wire selector — explicit `version` wins over `channel`;
       // neither supplied defaults to `release` (DES-110's resolveVersionRequest truth table).
       const registered = await this._catalog.resolve(spec.name, { version: spec.version, channel: spec.channel }); // throws CatalogNotFoundError/typed resolve error — caught by SubmissionValidator pre-run
+      // v37 P1 (ARCH-182, DES-263, TASK-258, ADR-086's third owner ruling 2026-09-25): the SECOND
+      // admission stage — the resolved VERSION's own `registeredRemote`, known only now. Placed
+      // ahead of LEGACY_REREGISTER and every durable write below (createRun, workspace mkdir,
+      // seed) for the same "never spend durable work on a submission that cannot be admitted"
+      // reason the first stage is placed ahead of RUN_ADMISSION_LIMIT.
+      {
+        const refusal = admissionRefusal({ posture: this._confinementPosture, origin: registered.registeredRemote ? 'remote' : 'local' });
+        if (refusal !== null) {
+          throw codedError(
+            refusal,
+            `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — workflow '${spec.name}' version ${registered.version} was registered remotely, so running it is refused; re-register locally (workflow_register with the same triggers, then workflow_publish) to recover.`,
+          );
+        }
+      }
       script = registered.script;
       resolvedVersion = registered.version;
       scriptVersion = Number(registered.version.replace(/^v/, '')) || 1;
@@ -1460,6 +1484,22 @@ export class RunManager {
     }
 
     const registered = await this._catalog.resolve(name, {}); // throws CatalogNotFoundError/typed resolve error — message names the missing workflow
+    // v37 P1 (ARCH-182, DES-263, TASK-258, ADR-086's third owner ruling 2026-09-25): the THIRD
+    // admission call site — same predicate, same pure function as `start()`'s two stages. A
+    // running script's own `workflow()` call dispatches a nested run WITHOUT ever passing through
+    // `start()`, so a locally-started parent could otherwise compose a remotely-registered child
+    // unchecked — the same class of bypass ARCH-182 closed for the scheduler/webhook routes. A
+    // refusal here throws and fails the run (via the caller's own error path below) — permanent,
+    // matching every other admission refusal in this file.
+    {
+      const refusal = admissionRefusal({ posture: this._confinementPosture, origin: registered.registeredRemote ? 'remote' : 'local' });
+      if (refusal !== null) {
+        throw codedError(
+          refusal,
+          `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — nested workflow() '${name}' version ${registered.version} was registered remotely, so running it is refused.`,
+        );
+      }
+    }
     const framePathKey = `${parentPathKey}.${parentCallSeq}`;
     const frameBase = this._frameBaseFor(entry, framePathKey);
     const childAncestors = new Set(ancestors).add(name);

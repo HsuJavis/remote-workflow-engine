@@ -10526,3 +10526,51 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   mechanism) was re-opened by the ARCHITECTURE gate of this same send-back round, not by this one —
   unchanged and untouched here; this entry only records that the impl/tests execute against the
   SHIPPED mechanism, as ARCH-182 (8d) instructs.
+
+### IMPL-387 — v37 ADR-086 第三次裁決(P1)實作:刪除 `claim()` 的重新蓋章,把「腳本來源」搬到 `workflow_versions.registeredRemote`,接納述詞改為兩個不可變來源取 OR;順手補上第三道繞道門 `runNested()`
+- **status:** done
+- **traces:** DES-263, ADR-086, ARCH-182, TASK-258, TASK-259, REQ-218
+- **greens:** UT-335, UT-336, UT-337, IT-305, IT-306
+- **files:** src/workflow-catalog.ts, src/types.ts, src/mcp-facade.ts, src/run-manager.ts, src/scheduler.ts, src/webhook-registry.ts, src/errors.ts, src/call-tool.ts, src/authoring-guide.ts, docs/AUTHORING.md, tests/unit/created-remote-immutable.test.ts, tests/unit/call-tool-confinement-door.test.ts, tests/integration/registered-remote-admission.test.ts, tests/integration/confinement-unconfined-wiring.test.ts, tests/integration/catalog-v24.test.ts
+- **commit:** (uncommitted at write time)
+- **iter:** v37
+- **note:** **這一輪 SUPERSEDES IMPL-386 的核心機制,不是延伸它。** IMPL-386 記的
+  `claim()` 單調重新蓋章(`3e3c331`+`2cf5f32`)連同它的單調性特例整個刪除;那條規則本身是正確地關住了洞,
+  但它把「誰掛上觸發器」與「誰寫了腳本」壓進同一個會被改寫的位元,於是沒有任何路徑能把它寫回去 ——
+  一次平常的遠端 `workflow_register` 就讓該觸發器永久被拒,而唯一的復原是刪除重建並輪換 webhook 的
+  id 與 secret。那個可用性代價是架構閘第三輪才挖出來的,業主據以作成第三次裁決 P1。
+
+  **拆開成兩個各自不可變的來源**(INV-V37-6 改寫版):
+  ```
+  refuse ⟺ posture === 'unconfined' ∧ ( 觸發器.createdRemote ∨ 解析出的版本.registeredRemote )
+                                        建立時寫一次            註冊時寫一次
+                                        claim() 不再碰它        版本列本身不可變
+  ```
+  `workflow_versions` 新增 `registeredRemote INTEGER NOT NULL DEFAULT 0`(既有的
+  `versionCols.includes()` 冪等 ALTER 慣用法),由 `workflowRegister` 手上已有的 `isRemoteSubmission`
+  轉發進 `insertVersion` 的 INSERT;`catalog.resolve()` 一併讀回,`VersionEntry` 增欄,
+  `workflow_describe` 曝光它(`mcp-facade.ts:612`)—— **沒有這一步,DEPLOY.md 的復原指示是查不到的**
+  (操作者無從得知哪一版被標記)。
+
+  **三個呼叫點,同一個純述詞,不是一個帶可選參數的述詞。** `admissionRefusal()` 的簽章完全沒動,改為
+  被呼叫多次、短路在第一個非 null:(a) `start()` 第一個敘述(觸發器來源,仍在 `RUN_ADMISSION_LIMIT`
+  之前);(b) `start()` 於 `catalog.resolve()` 之後、`createRun()` 等一切耐久動作之前(版本來源);
+  (c) `runNested()`(`run-manager.ts:1484`)。**(c) 是這一輪記帳時才發現的第三道繞道門** ——
+  執行中的腳本呼叫 `workflow()` 巢狀進子工作流**完全不經過 `start()`**,所以本機註冊的父流程可以巢狀
+  進遠端註冊的子流程,整道判定繞過去;與 ARCH-182 當初修掉的 scheduler/webhook 同一類。
+  刻意**不加**在 `resume()`:理由同 INV-V37-5(c),`call-tool.ts` 的門是 `run_resume` 的唯一覆蓋。
+
+  **廣告介面連帶更正(這是本輪第二類改動,不是附帶)**:P1 讓 2026-09-23 那句
+  「拒絕的是遠端建立的觸發器,**不是**本機發起、跑遠端註冊腳本的 run」變成**反過來才對**。
+  `errors.ts:91`、`call-tool.ts:127`、`run-manager.ts:498`、`authoring-guide.ts:372` 裡
+  「本機(loopback)提交仍會跑」的措辭全部改寫,`npm run gen:authoring` 重生 `docs/AUTHORING.md`
+  (`authoring-md-generated.test.ts` 逐位元組比對)。留著不改就是廣告介面在說謊 —— 本專案反覆出現的
+  「控制看起來在、結構上不可能失敗/保護」那一類的近親。
+
+  **遷移語意明確寫下,不重蹈上一輪的盲點**:`DEFAULT 0` 讓所有既存版本列一律視為 local,亦即本機
+  目前整份目錄(業主自陳全部遠端註冊)升級後仍可跑 —— 刻意的 grandfather,覆蓋率自**下一次遠端註冊**
+  起逐列長出。上一輪「對現存族群覆蓋率為零」是被忽略的盲點,這一輪它是寫進 ARCH 綱要表與 DEPLOY.md
+  的已知狀態。
+
+  **`catalog-v24.test.ts` 的遷移冪等性測試**釘住 `workflow_versions` 的完整欄位清單,新欄位讓它由
+  7 欄變 8 欄 —— 黃金清單同步更新(那是這個測試該做的事:新增欄位必須有人明確承認)。

@@ -61,12 +61,12 @@ function nsOf(p: Principal): string {
  *  register/deregister sequence only needs these three trigger-claim primitives from either store. */
 interface TriggerClaimStore {
   ownerOf(id: string): string | null | undefined;
-  /** v37 (DES-263 amendment 2026-09-24): the third parameter carries the CLAIMING REGISTRATION's
-   *  remoteness, which both stores re-stamp onto the trigger row. Optional at the port so a caller
-   *  with no provenance to assert leaves the row untouched — but note that a port left un-widened
-   *  is exactly how this hole stayed open: TypeScript's method-parameter bivariance lets a narrower
-   *  implementation satisfy a wider port silently, so the compiler does NOT police this seam. */
-  claim(id: string, workflow: string, createdRemote?: boolean): 'claimed' | 'held' | 'NOT_FOUND' | 'ALREADY_CLAIMED';
+  /** v37 P1 (ADR-086's third owner ruling, 2026-09-25, DES-263's 第三次修訂): back to a plain
+   *  two-argument claim — `createdRemote` is write-once at trigger creation and `claim()` no
+   *  longer re-stamps it (that rule, `3e3c331`+`2cf5f32`, is SUPERSEDED). "Who wrote the script
+   *  about to run" now lives on the version row (`workflow_versions.registeredRemote`), written by
+   *  `insertVersion`, not by this call. */
+  claim(id: string, workflow: string): 'claimed' | 'held' | 'NOT_FOUND' | 'ALREADY_CLAIMED';
   release(id: string, workflow: string): void;
   /** v24 (integrator; DES-156/REQ-103): the by-id snapshot `workflow_describe.triggers[]` serves,
    *  and the id set for one workflow. Optional so a unit-tier construction with no trigger stores
@@ -88,7 +88,10 @@ const NEVER_CLAIMS: TriggerClaimStore = {
  *  WorkflowCatalog class beyond what's already imported for read-side helpers. */
 interface RegistrationCatalog {
   validateRegistration(req: { name: string; script: string; mermaid: string; actor?: Actor }): Promise<{ params: ParamContract }>;
-  insertVersion(req: { name: string; script: string; mermaid: string; triggers?: string[]; params: ParamContract; actor?: Actor }): Promise<{ version: string }>;
+  /** v37 P1 (DES-263's 第三次修訂): `registeredRemote` — the SAME `isRemoteSubmission` the trigger
+   *  stores' creation stamp already reads, forwarded one hop further so the version row records
+   *  who wrote the script it holds. */
+  insertVersion(req: { name: string; script: string; mermaid: string; triggers?: string[]; params: ParamContract; actor?: Actor; registeredRemote?: boolean }): Promise<{ version: string }>;
   /** v33 (DES-222, REQ-201): the v22 read (DES-111) — type-only addition, no new catalog method or
    *  behaviour. Read AFTER insertVersion so the register response shows the version loop. */
   resolveDetail(name: string, sel: { version?: string }): Promise<{ versions: string[]; channels: { release: string | null; beta: string | null } }>;
@@ -351,10 +354,13 @@ export class McpFacade {
    *  written) → every trigger id located + ownership-checked → `claim()` each (first non-'claimed'
    *  releases the ids THIS call claimed, in reverse, and refuses) → `insertVersion` → on throw,
    *  release exactly the ids this call claimed. */
-  // v37 (DES-263 amendment 2026-09-24, ADR-086's second owner ruling): `isRemoteSubmission` is
-  // threaded here for the SAME reason `runStart` already takes it — the trigger claims below
-  // re-stamp provenance from THIS registration's remoteness. Defaults to `false` (local) so the
-  // pre-existing call sites that omit it keep compiling and keep their prior behaviour.
+  // v37 P1 (ADR-086's third owner ruling, 2026-09-25, DES-263's 第三次修訂): `isRemoteSubmission` is
+  // threaded here for the SAME reason `runStart` already takes it, but it no longer feeds the
+  // trigger claims below (that re-stamp rule, `3e3c331`+`2cf5f32`, is SUPERSEDED) — it feeds
+  // `insertVersion`'s new `registeredRemote` column instead, one row over, so a re-registration of
+  // an already-claimed trigger taints the VERSION rather than laundering/upgrading the TRIGGER.
+  // Defaults to `false` (local) so the pre-existing call sites that omit it keep compiling and keep
+  // their prior behaviour.
   async workflowRegister(a: { name: string; script: string; mermaid: string; triggers?: string[] }, principal: Principal, isRemoteSubmission = false): Promise<Record<string, unknown>> {
     const claimedThisCall: string[] = [];
     try {
@@ -389,7 +395,7 @@ export class McpFacade {
       const actor = actorFor(principal, a, 'attribution');
       const { params } = await catalog.validateRegistration({ name: a.name, script: a.script, mermaid: a.mermaid, actor });
       for (const id of triggers) {
-        const outcome = this._storeFor(id).claim(id, a.name, isRemoteSubmission);
+        const outcome = this._storeFor(id).claim(id, a.name);
         if (outcome === 'claimed') { claimedThisCall.push(id); continue; }
         if (outcome === 'held') continue; // already this workflow's from an earlier version — never released by compensation
         for (const rid of [...claimedThisCall].reverse()) this._storeFor(rid).release(rid, a.name);
@@ -397,7 +403,7 @@ export class McpFacade {
       }
       let version: string;
       try {
-        ({ version } = await catalog.insertVersion({ name: a.name, script: a.script, mermaid: a.mermaid, triggers, params, actor }));
+        ({ version } = await catalog.insertVersion({ name: a.name, script: a.script, mermaid: a.mermaid, triggers, params, actor, registeredRemote: isRemoteSubmission }));
       } catch (err) {
         for (const id of [...claimedThisCall].reverse()) this._storeFor(id).release(id, a.name);
         throw err;
@@ -599,7 +605,11 @@ export class McpFacade {
     });
     return {
       runId: '', status: 'completed',
-      result: { ...view, phases, diagramContract: full.diagramContract, toolSurface, ...(toolScan.unscannable ? { toolSurfaceUnscannable: true as const } : {}) },
+      // v37 P1 (ADR-086's third owner ruling, DES-263's 第三次修訂): `registeredRemote` — same
+      // seam as `diagramContract` just above (computed off `full`, not carried through
+      // `WorkflowOwnerView`). Without it, an operator following the recovery instruction (P1's
+      // whole point — re-register+publish locally) has no way to CONFIRM which version is tainted.
+      result: { ...view, phases, diagramContract: full.diagramContract, registeredRemote: full.registeredRemote, toolSurface, ...(toolScan.unscannable ? { toolSurfaceUnscannable: true as const } : {}) },
     };
   }
 
