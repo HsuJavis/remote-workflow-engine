@@ -487,7 +487,9 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 2. **預設工具面**：`Read`/`Write`/`Edit`/`Glob`/`Grep`/`Bash`；`WebFetch`/`WebSearch`/`Task`/`Agent`
    需明確 opt-in。`Read`/`Write`/`Edit`/`Glob`/`Grep` 限制在 run workspace 之內（見下一條）；
    `Bash` 是另一個獨立機制（開機探測到的 OS 層圍籠姿態，見 DEPLOY.md §1c(e)）——探測失敗的部署上
-   `Bash` 對本機提交的 run 是真的不受限的，但遠端提交的 run 一律先被拒絕。
+   `Bash` 是真的不受限的，所以引擎改以接納判定來擋：**遠端提交、遠端建立的觸發器、遠端註冊的版本，
+   三者任一成立就拒絕**（`CONFINEMENT_UNAVAILABLE`）。第三項與呼叫者在哪裡無關，本機呼叫一樣被擋；
+   只有「本機提交 + 本機註冊的版本」才會真的跑起來。判定式與復原見 DEPLOY.md §6。
 3. **供應商 API key 只給 LiteLLM 子行程**：`claude` CLI 子行程環境變數白名單，從未看到真實 key。
 4. **workRoot 隔離**：`Read`/`Write`/`Edit`/`Glob`/`Grep`/`NotebookEdit` 透過 `canUseTool` +
    `PreToolUse` 雙重 realpath 邊界封閉在 run workspace 之內（`Bash` 的圍籠見上一條）；`workRoot`

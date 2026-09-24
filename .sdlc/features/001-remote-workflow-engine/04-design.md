@@ -10022,7 +10022,7 @@ keep, not a coincidence to rely on.
     firing on a schedule runs unconfined either way, same as any other local submission.
 - **iter:** v37
 
-### DES-263 — `admissionRefusal()` at `RunManager.start()`: ONE predicate keyed on `RunSpec.origin`, closing the two admission routes DES-262's door does not cover (new row, ARCH-182, ADR-086, REQ-218)
+### DES-263 — `admissionRefusal()` at `RunManager.start()`: ONE pure predicate, called at THREE sites, keyed on TWO write-once provenance facts OR'd — `RunSpec.origin` AND the resolved version's `registeredRemote` (P1, 2026-09-25; ~~keyed on `RunSpec.origin`~~ alone `[SUPERSEDED]`), closing the two admission routes DES-262's door does not cover (new row, ARCH-182, ADR-086, REQ-218)
 - **status:** draft
 - **traces:** ARCH-182, ADR-086, TASK-258
 - **signature:**
@@ -10213,6 +10213,23 @@ keep, not a coincidence to rely on.
     「本機(loopback)提交仍會跑」的措辭現在**不再為真** —— 在 unconfined 主機上,本機 `run_start` 一個
     解析到遠端註冊版本的工作流同樣被拒。2026-09-23 那句「拒絕的是遠端建立的觸發器,不是本機發起、跑遠端
     註冊腳本的 run」隨本次裁決 `[SUPERSEDED 2026-09-25]`。
+  - **第四次修訂(2026-09-25,Gate 8 round-4 finding F5)—— `resume()` 的豁免必須按「是否同一份程式碼」切,
+    不是按「哪個方法」切。** 第三次修訂寫「`resume()` 刻意不加」,理由是一個在 posture 翻轉前就掛起的 run,
+    其續跑是操作者在本機發起的。**那個理由只涵蓋釘住版本那一條路**:
+    ```
+    resume 兩條路(run-manager.ts:1185 / :1189)
+     ├─ 正常:resolve(name, {version: view.scriptVersion})
+     │    跑的是這個 run 啟動時就通過過判定的同一份程式碼 → 豁免成立,不加判定
+     └─ legacy 替換(catch VERSION_NOT_FOUND):resolve(name, {})
+          釘住的版本已不存在(deregister/re-register 重啟了 lineage),於是解析「當前 release」——
+          一份這個 run 從未帶過、也從未經任何接納判定的版本,而且可能是遠端註冊的。
+          豁免的理由蓋不到它 → 加判定
+    ```
+    所以判定只加在**替換那一支**,釘住那一條維持不加。這樣既完全尊重業主核可的豁免(繼續同一份程式碼),
+    又關掉「本機續跑一個舊的掛起 run,靜默執行遠端註冊腳本」這個洞。釘住的版本本身仍然永不被改寫。
+    拒絕訊息同時指出兩件事:釘住的版本已不存在,以及會被替換進來的是哪一版 —— 只講一件操作者無法行動。
+    回歸鎖 IT-307,含反向對照(本機註冊的替換版本仍可續跑),並已驗證移除判定即轉紅
+    (`promise resolved "undefined" instead of rejecting`)。
 - **iter:** v37
 
 ### Class diagram — v37 (the four types this slice adds)

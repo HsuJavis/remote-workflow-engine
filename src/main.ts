@@ -125,6 +125,26 @@ export const RETIRED_CONFIG_KEYS: Record<string, string> = {
  *  (`{ok:false, key, role}`) so the caller (composeConfig) can refuse to boot (ADR-028: a typo like
  *  "admn" must not silently become "user"). Keys (including `"*"`) are stored verbatim — no
  *  normalization/lowercasing. */
+/** v37 P1 (ADR-086's third owner ruling, 2026-09-25) — the boot banner, EXTRACTED so it can be
+ *  pinned by a test. It was inline `console.log` text before, and that is precisely why it went on
+ *  promising "local (loopback) runs still proceed" for a full round after admission gained its
+ *  second source: a string no test reads cannot go red. Gate 8 round 4 (finding F1) caught it in
+ *  this iteration's OWN evidence log. The rule this line must mirror is `admissionRefusal()`'s: on
+ *  an unconfined host a run is refused when it is a remote submission, OR its trigger was created
+ *  remotely, OR the version it resolves to was registered remotely. Change the rule ⇒ change this
+ *  line; `tests/unit/confinement-banner-truth.test.ts` fails if the two drift apart. */
+export function confinementBannerLine(probe: { posture: 'confined' | 'unconfined'; reason?: string }): string {
+  if (probe.posture === 'confined') {
+    return '[remote-workflow-engine] Bash confinement: CONFINED (nested-userns probe passed at boot)';
+  }
+  return (
+    `[remote-workflow-engine] Bash confinement: UNCONFINED (${probe.reason ?? 'nested-userns probe failed'})` +
+    ' — a run is refused (CONFINEMENT_UNAVAILABLE) when it is a remote submission, OR its trigger was created remotely,' +
+    ' OR the version it resolves to was registered remotely; only a local submission of a locally-registered version' +
+    ' proceeds, unconfined'
+  );
+}
+
 export function normalizePrincipals(
   raw: Record<string, { role: string }> | undefined,
 ): { ok: true; value: Record<string, { role: Role }> } | { ok: false; key: string; role: string } {
@@ -557,12 +577,9 @@ async function main(): Promise<void> {
   // v37 (ARCH-181, DES-262): ONE boot line naming the posture, unconditionally — the whole reason
   // this iteration exists is that a false claim of confinement (BUILT_IN_CORE_TOOLS's old "Bash here
   // is confined to that workspace") survived 70 warnings and two days without anything failing.
-  // Never say "isolated"/"sandboxed" without the measured fact attached.
-  console.log(
-    confinementProbe.posture === 'confined'
-      ? '[remote-workflow-engine] Bash confinement: CONFINED (nested-userns probe passed at boot)'
-      : `[remote-workflow-engine] Bash confinement: UNCONFINED (${confinementProbe.reason ?? 'nested-userns probe failed'}) — remote run submissions will be refused; local (loopback) runs still proceed, unconfined`,
-  );
+  // Never say "isolated"/"sandboxed" without the measured fact attached — the line itself is
+  // `confinementBannerLine()` above, which a test pins against the admission rule it describes.
+  console.log(confinementBannerLine(confinementProbe));
   // Healthcheck-friendly startup line other tooling can grep for.
   console.log('[remote-workflow-engine] ready');
 

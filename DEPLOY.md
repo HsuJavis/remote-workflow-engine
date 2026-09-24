@@ -696,9 +696,12 @@ namespace/chroot 隔離)——它是應用層的權限裁決 + 路徑邊界檢�
 對本機跑一次巢狀 `bwrap --unshare-user` 探測——探測通過，這台部署上每個 `agent()` 呼叫都會真的
 帶 `options.sandbox` 請求 OS 層 namespace 隔離（`src/gateway/bash-confinement.ts`）；探測失敗
 （常見於本機開發機的 AppArmor `bwrap-userns-restrict` 政策擋住巢狀 user namespace，本專案自己的
-開發/CI 機器就是這個情況），`Bash` 就**完全不圍籠**——**本機（loopback）送出的 run 仍會照跑**，
-但**遠端送出的 `run_start`/`run_resume` 會在進 authz、進 ajv 之前就整個被拒絕**
-（`CONFINEMENT_UNAVAILABLE`，`src/call-tool.ts` 的「遠端提交之門」）。姿態量測結果印在開機 log
+開發/CI 機器就是這個情況），`Bash` 就**完全不圍籠**，於是引擎改以「這次啟動該不該被接納」來擋——**被拒絕的是三種情形的聯集**：
+(1) **遠端送出**的 `run_start`/`run_resume`，在進 authz、進 ajv 之前就整個被拒
+（`src/call-tool.ts` 的「遠端提交之門」）；(2) 觸發器是**遠端建立**的（webhook 送達、排程觸發）；
+(3) 這次要跑的**版本是遠端註冊**的——**這一項與呼叫者在哪裡無關，本機呼叫一樣被擋**。
+三者皆非時（本機送出、本機建立的觸發器、本機註冊的版本）才照跑，且是真的不受任何 `Bash` 圍籠。
+判定式、查法與復原步驟見 §6（`CONFINEMENT_UNAVAILABLE`）。姿態量測結果印在開機 log
 的 `Bash confinement: CONFINED`/`UNCONFINED` 那一行，也隨每次 `agent()` 呼叫寫進
 `agent.confinement` 事件的 `posture`/`enabled` 欄位；無法用設定檔調高或調低（只有 §1b
 `sandbox.allowHostPaths` 能在「圍籠生效」的前提下額外開放特定主機路徑）。

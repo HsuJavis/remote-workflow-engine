@@ -10574,3 +10574,42 @@ F13 本質上是渲染問題,單元層看不到 DOM。
 
   **`catalog-v24.test.ts` 的遷移冪等性測試**釘住 `workflow_versions` 的完整欄位清單,新欄位讓它由
   7 欄變 8 欄 —— 黃金清單同步更新(那是這個測試該做的事:新增欄位必須有人明確承認)。
+
+### IMPL-388 — v37 Gate 8 round-4 SEND-BACK 修復(F1-F6):三處仍在說謊的廣告介面 + 八處架構/rtm 陳述 + 兩個新守衛,並把 resume 的豁免按「是否同一份程式碼」重切
+- **status:** done
+- **traces:** DES-263, ADR-086, ARCH-182, TASK-259, REQ-218
+- **greens:** UT-338, IT-307
+- **files:** src/main.ts, src/run-manager.ts, src/tool-specs.ts, DEPLOY.md, README.md, tests/unit/confinement-banner-truth.test.ts, tests/integration/resume-legacy-substitution-admission.test.ts, 02-architecture.md, 04-design.md, 05-tests.md, rtm.md
+- **commit:** (uncommitted at write time)
+- **iter:** v37
+- **note:** **F1 的根因是我的派工說明本身不完整,這點要記下來。** 我交代執行者改「四處」廣告介面,它就把那份
+  清單當成完整的;實際至少七處。漏掉的三處是:`src/main.ts` 每次 unconfined 開機都會印的那行
+  (承諾「local (loopback) runs still proceed」)、`DEPLOY.md` §1c(e)(而且**兩個已被更正的故障表列都把
+  §1c(e) 當權威來源引用**,讀者被導過去正好落在那段舊文)、以及 `README.md` 的工具面段落。
+  **那行假字被本迭代自己的 VAL-259 證據日誌原封不動抄了下來**(`evidence/v37/val259-boot.log:31`),
+  沒有人發現 —— 3383 綠燈也不會發現,因為它是內嵌在 `console.log` 裡、沒有任何測試讀它的字串。
+
+  **所以修法不是改那句話,而是讓它有可能失敗**:抽成純函式 `confinementBannerLine(probe)`
+  (`src/main.ts`),再用 UT-338 把 banner 命名的拒絕集合對著 `admissionRefusal()` 的實際行為釘住。
+  **紅燈獨立驗證過**:把出貨時那行假字暫時放回去,UT-338 轉為 2 failed / 1 passed,還原後 3 passed。
+
+  **F2/F3(架構與 rtm 仍在主張已刪除的機制)**:`02-architecture.md` 六處(ARCH-182 標題與其「不涵蓋什麼」
+  論述 —— 那段原本用來論證**不採用**版本列的設計,而 P1 正是採用了它;ADR-083 的已承認代價兩處收窄為
+  「本機發起**且**跑本機註冊版本」;ADR-086 標題與其自己已裁決的第三次結論相反)、`rtm.md` 兩條
+  (其中一條在 2026-09-24 才被標為「CORRECTED … current-state facts」,敘述的卻仍是已刪除的機制 ——
+  同一檔、同一類、連續第三輪)。全部以 `[SUPERSEDED]`／收窄註記處理,原文保留為歷史。
+
+  **F5 是複審評 LOW、但我判斷值得修的一條,理由是豁免的切法錯了。** 第三次修訂寫「`resume()` 刻意不加」,
+  理由是「續跑的是操作者在本機發起、且是這個 run 原本那份程式碼」。但 `resume()` 有兩條路:釘住版本那條
+  符合這個理由;**legacy 替換那條不符合** —— 釘住的版本已不存在,它解析「當前 release」,一份 run 從未帶過、
+  也從未經任何判定的版本,可能是遠端註冊的。於是判定只加在替換那一支(`run-manager.ts:1189` 的 catch 內),
+  釘住那條維持不加:**按「是否同一份程式碼」切,而不是按方法名切**。IT-307 含反向對照,紅燈已驗證。
+
+  **F6**:`workflow_describe` 的 spec 用散文描述回傳什麼,而 DEPLOY.md §6 正是叫操作者去那裡讀
+  `registeredRemote`;補上該欄位與「未 publish 的版本必須帶 `version`,否則 release 預設會回
+  `CHANNEL_UNPUBLISHED`」——後者是 VAL-259 真的踩到的坑。`npm run gen:authoring` 重跑,
+  `docs/AUTHORING.md` 無變動(工具 spec 的 description 不進該檔)。
+
+  **F4(LOW)**:`05-tests.md` UT-336/UT-337 標題、IT-304 那條 2026-09-24 的修訂(它自己現在變成那句不成立的話)、
+  以及 DES-263 標題,全部更正。
+

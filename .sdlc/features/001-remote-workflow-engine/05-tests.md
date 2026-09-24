@@ -16473,7 +16473,7 @@ seam, so one conformance suite must drive both). The protection the old directio
 registration must not launder a remotely-CREATED trigger — now holds in a strictly stronger form:
 not by a monotonicity rule, but because **no write path to the column exists at all** after creation.
 
-### UT-336 — `workflow_register` with `isRemoteSubmission:true` re-listing an EXISTING locally-owned SCHEDULE trigger id upgrades it to `createdRemote:true`, through the real `callTool()` dispatch
+### UT-336 — `workflow_register` with `isRemoteSubmission:true` re-listing an EXISTING locally-owned SCHEDULE trigger id leaves the trigger `createdRemote:false` and taints the NEW VERSION `registeredRemote:true` (P1, 2026-09-25; ~~upgrades it to `createdRemote:true`~~ `[SUPERSEDED]`), through the real `callTool()` dispatch
 - **status:** green (2026-09-24, implementer)
 - **traces:** DES-263, ADR-086, ARCH-182, REQ-218
 - **tier:** unit
@@ -16500,7 +16500,7 @@ P1 刪除了那條重新蓋章規則,所以本案例現在同時釘**兩半**:(a
 `isRemoteSubmission` 引數,或刪掉 `mcp-facade.ts` 往 `insertVersion` 的轉發,都必須讓本案例轉紅 ——
 這正是本專案反覆出現的「新設定沒被 `composeConfig`/facade 轉發,功能靜默失效而單元測試全綠」那一類。
 
-### UT-337 — `workflow_register` with `isRemoteSubmission:true` re-listing an EXISTING locally-owned WEBHOOK trigger id upgrades it to `createdRemote:true`, through the real `callTool()` dispatch
+### UT-337 — `workflow_register` with `isRemoteSubmission:true` re-listing an EXISTING locally-owned WEBHOOK trigger id leaves the trigger `createdRemote:false` and taints the NEW VERSION `registeredRemote:true` (P1, 2026-09-25; ~~upgrades it to `createdRemote:true`~~ `[SUPERSEDED]`), through the real `callTool()` dispatch
 - **status:** green (2026-09-24, implementer)
 - **traces:** DES-263, ADR-086, ARCH-182, REQ-218
 - **tier:** unit
@@ -16603,3 +16603,45 @@ seeded `createdRemote:true`, which is exactly the NO-DOWNGRADE direction `2cf5f3
 test's assertion still passes for the same reason it always did — only the reason-stated-in-prose was
 stale. See `UT-335`/`UT-336`/`UT-337` and `IMPL-386` for the current mechanism and its own regression
 locks.
+
+**[再更正 2026-09-25(P1)—— 上面這段 2026-09-24 的修訂,現在自己變成了那句不成立的話(Gate 8 round-4 finding F4)。]** `claim()` 的重新蓋章已隨 ADR-086 第三次裁決刪除,`'held'` 不再蓋章,`createdRemote` 回復為建立時寫一次、不可變。**本測試的斷言仍然成立,而且理由比兩版都單純**:它的那一列是直接種入 `createdRemote:true` 的,而現在**沒有任何路徑**能改寫它 —— 不是靠一條單調性規則擋住降級,是根本沒有寫入點。現行機制與回歸鎖見 DES-263 第三次修訂、`UT-335`(已反轉為不可變性)、`UT-336`/`UT-337`(已改寫為兩半都釘)、`IT-305`/`IT-306`、`IMPL-387`。
+
+
+### UT-338 — 開機 banner 必須說真話:它命名的拒絕集合要與 `admissionRefusal()` 實際實作的一致(Gate 8 round-4 finding F1)
+- **status:** green (2026-09-25, orchestrator)
+- **traces:** DES-263, ADR-086, ARCH-182, REQ-218
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v37
+
+File: `tests/unit/confinement-banner-truth.test.ts`。**這個檔案存在的理由不是那句措辭,而是「當時沒有任何
+東西可能失敗」。** 每次 unconfined 開機都會印的那行字承諾「local (loopback) runs still proceed,
+unconfined」,在 P1 讓判定多出第二個來源之後整整一輪都是假的;3383 個測試全綠沒抓到它,而本迭代**自己的**
+VAL-259 證據日誌把那行假字原封不動抄了下來(`evidence/v37/val259-boot.log:31`)—— 因為它是內嵌在
+`console.log` 裡、沒有任何測試讀它的字串。**沒有測試讀的字串不可能轉紅。**
+修法有兩步:(a) 把那行抽成 `src/main.ts` 的純函式 `confinementBannerLine(probe)`,使它可被測;
+(b) 本檔三個案例把兩半綁在一起釘 —— banner 必須命名**全部三個**拒絕來源(遠端提交 / 遠端建立的觸發器 /
+遠端註冊的版本),**不得**再出現「本機仍會照跑」那種承諾(連同一個較寬的正則,擋掉粗心改寫會寫出的形狀),
+並直接對 `admissionRefusal()` 斷言其行為,使 banner 是述詞的散文而非自說自話。
+**紅燈已獨立驗證**:把出貨時那行假字暫時放回去,本檔 2 failed / 1 passed
+(`expected … to match /remote submission/`、`expected … not to match /local \(loopback\) runs still proceed/`),
+還原後 3 passed。守衛是真的會失敗的。
+
+### IT-307 — `resume()` 的 legacy 替換分支有接納判定,釘住那一條沒有(Gate 8 round-4 finding F5)
+- **status:** green (2026-09-25, orchestrator)
+- **traces:** DES-263, ADR-086, ARCH-182, REQ-218
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v37
+
+File: `tests/integration/resume-legacy-substitution-admission.test.ts`。釘的是**豁免的理由**,不是方法名:
+釘住版本的續跑跑的是這個 run 啟動時就通過過判定的同一份程式碼(豁免成立);替換分支解析的是「當前 release」,
+一份 run 從未帶過、也從未經任何判定的版本,可能是遠端註冊的(豁免蓋不到)。兩個案例:
+(a) `[LOAD-BEARING]` 釘住的版本不存在、替換進來的 release 是遠端註冊的 ⇒ **本機**續跑被拒
+`CONFINEMENT_UNAVAILABLE`,且訊息同時指名「釘住的版本」與「會被替換進來的版本」(只講一件操作者無法行動);
+(b) 反向對照 —— 同一個替換情境但 release 是本機註冊的,仍可續跑(沒有這一條,一個無條件丟錯的 fallback
+也會讓 (a) 通過)。fixture 規則沿用既有 IT-086 legacy-cohort 案例:缺失的 pin 是手工種入的,不由被測程式產生。
+**紅燈已驗證**:移除該判定後 (a) 轉紅(`promise resolved "undefined" instead of rejecting`),還原後 2 passed。
+

@@ -345,7 +345,7 @@ export const TOOL_SPECS = [
     // v27b (DES-197, ARCH-131, TASK-202, REQ-106's precedent): names `phases[].agents` in the
     // advertised description itself, not just the schema shape, so a cold, schema-only client
     // learns the predicted lane membership without fetching first.
-    description: "Describe a workflow: per-agent parameters, agent labels, live triggers, its author-supplied diagram, and the predicted lane membership (phases[].agents). Defaults to the release pointer; pass version or channel to describe another one.",
+    description: "Describe a workflow: per-agent parameters, agent labels, live triggers, its author-supplied diagram, and the predicted lane membership (phases[].agents). Also returns registeredRemote: whether THIS version was registered by a remote submission — on a host whose Bash-confinement probe failed at boot, such a version is refused CONFINEMENT_UNAVAILABLE even for a local run_start, and this is the field that says which version to re-register locally. Defaults to the release pointer; pass version or channel to describe another one — an unpublished version must be named with version, since the release default answers CHANNEL_UNPUBLISHED.",
     // v24 Gate 7.5 (D-7, REQ-118): the handler has always accepted `version`/`channel` (it builds
     // a `VersionSelector` from them) and the row advertised only `name`. `version` is not a
     // convenience: a workflow that was never published cannot be described WITHOUT it — the bare

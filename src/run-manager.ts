@@ -1188,6 +1188,23 @@ export class RunManager {
       } catch (err) {
         if ((err as { code?: string } | undefined)?.code !== 'VERSION_NOT_FOUND') throw err;
         const registered = await this._catalog.resolve(spec.name, {});
+        // v37 P1 (Gate 8 round-4 finding F5, ADR-086's third owner ruling): the ONE admission stage
+        // `resume()` has, and it is deliberately confined to THIS branch. The owner-accepted resume
+        // exclusion (INV-V37-5(c), DES-263) protects *continuing the code the run started with* — a
+        // run suspended before the posture flipped, resumed locally by the operator. This fallback
+        // is not that: the pin is gone, so it resolves the CURRENT `release`, which may be a
+        // DIFFERENT and possibly remotely-registered version the run never carried and no admission
+        // check ever saw. Refusing here honours the exclusion exactly (the pinned path above stays
+        // ungated) while closing the substitution hole. The pin itself is still never rewritten.
+        {
+          const refusal = admissionRefusal({ posture: this._confinementPosture, origin: registered.registeredRemote ? 'remote' : 'local' });
+          if (refusal !== null) {
+            throw codedError(
+              refusal,
+              `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — this run's pinned version ${view.scriptVersion} no longer exists, and the '${spec.name}' version that would be substituted (${registered.version}) was registered remotely, so resuming it is refused; re-register that workflow locally (workflow_register with the same triggers, then workflow_publish) to recover.`,
+            );
+          }
+        }
         script = registered.script;
         registeredContract = registered.params as ParamContract | undefined;
         const sub = { pinned: view.scriptVersion, resolved: registered.version };

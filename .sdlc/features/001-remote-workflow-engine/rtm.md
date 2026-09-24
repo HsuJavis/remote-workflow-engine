@@ -237,7 +237,7 @@ in the same re-run — no regression on REQ-138's counts card).
 | REQ-215 | 結構化失敗標記要能穿過 sandbox 抵達 run 層 (v36) | ARCH-165, ARCH-166, ARCH-167, ARCH-168 | DES-248 | TASK-246 | IMPL-365 | IT-298, UT-292, UT-304, VAL-250 | ✅ |
 | REQ-216 | v35 審查歸檔的八條殘留(K1–K8)逐條結清 (v36) | ARCH-169, ARCH-170, ARCH-171, ARCH-172, ARCH-173 | DES-241, DES-247, DES-249 | TASK-239, TASK-245, TASK-247 | IMPL-360, IMPL-364, IMPL-366 | IT-297, UT-292, UT-293, UT-297, UT-298, UT-303, UT-305, VAL-251 | ✅ |
 | REQ-217 | 消除清單路徑的擴展懸崖,且不改變數字的語意 (v36 追加,業主裁決 K5) | ARCH-174 | DES-250, DES-251 | TASK-249 | IMPL-368, IMPL-369, IMPL-370 | IT-300, UT-307, UT-308, VAL-252 | ✅ |
-| REQ-218 | agent 的 Bash 必須受工作區約束,或其突破必須是申報過的 (v37) | ARCH-175, ARCH-176, ARCH-177, ARCH-178, ARCH-181, ARCH-182 | DES-252, DES-253, DES-254, DES-255, DES-256, DES-258, DES-259, DES-261, DES-262, DES-263 | TASK-250, TASK-251, TASK-252, TASK-253, TASK-256, TASK-258, TASK-259 | IMPL-375, IMPL-376, IMPL-384, IMPL-385, IMPL-386, IMPL-387 | UT-309, UT-310, UT-311, UT-312, UT-313, UT-314, UT-315, UT-322, UT-329, UT-330, UT-331, UT-332, UT-333, UT-334, UT-335, IT-302, IT-303, IT-304, VAL-253, VAL-256, VAL-257, VAL-258, IT-305, IT-306, VAL-259 | ✅ |
+| REQ-218 | agent 的 Bash 必須受工作區約束,或其突破必須是申報過的 (v37) | ARCH-175, ARCH-176, ARCH-177, ARCH-178, ARCH-181, ARCH-182 | DES-252, DES-253, DES-254, DES-255, DES-256, DES-258, DES-259, DES-261, DES-262, DES-263 | TASK-250, TASK-251, TASK-252, TASK-253, TASK-256, TASK-258, TASK-259 | IMPL-375, IMPL-376, IMPL-384, IMPL-385, IMPL-386, IMPL-387, IMPL-388 | UT-309, UT-310, UT-311, UT-312, UT-313, UT-314, UT-315, UT-322, UT-329, UT-330, UT-331, UT-332, UT-333, UT-334, UT-335, IT-302, IT-303, IT-304, VAL-253, VAL-256, VAL-257, VAL-258, IT-305, IT-306, VAL-259, UT-338, IT-307 | ✅ |
 | REQ-219 | 有綠測試、production 零使用的安全模組,要嘛接線要嘛刪除 (v37) | ARCH-179, ARCH-180 | DES-257, DES-260 | TASK-253, TASK-254, TASK-255 | — | UT-316, UT-317, UT-318, UT-319, UT-320, UT-321, VAL-254, IT-301 | ✅ |
 
 ## v36 Gate 7.5 update (2026-09-22, validator)
@@ -453,10 +453,9 @@ is the same class of false green `INV-V37-3` was written to forbid.
   `allowRead` is a *re-allow* punch-out rather than an allowlist (`sdk.d.ts:5862-5864`), so no test on
   any host can currently close it. It closes with the `DENY_READ_MODE` flip on the first host that
   measures `confined` (ARCH-175's amendment).
-- **Remote-registered, locally-started workflows** — ARCH-182's predicate keys on the *trigger's*
-  provenance, so a script registered by a remote party and then started by the operator locally is
-  still admitted. That is ADR-086's named residual and carries its `owner_decision`.
+- **Remote-registered, locally-started workflows** — **[CLOSED 2026-09-25 by ADR-086 的第三次裁決(P1)。這一條在 2026-09-24 被標為「CORRECTED … current-state facts」,但它敘述的仍是已被刪除的機制 —— 連續第三輪,Gate 8 round-4 finding F3。]** ~~ARCH-182 的述詞只 key 在觸發器的來源上,所以遠端註冊、由操作者在本機啟動的腳本仍會被接納;這是 ADR-086 的具名殘留,並帶著它的 `owner_decision`。~~ **現況**:腳本來源已移到 `workflow_versions.registeredRemote`,接納判定取「觸發器.createdRemote ∨ 版本.registeredRemote」,所以**本機啟動一個遠端註冊的版本現在會被拒**。殘留消失,`owner_decision` 已裁決並關閉。
 - **[ADDED 2026-09-23, Gate 8 round-2 repair — finding B2; CORRECTED 2026-09-24, Gate 8 round-3
+- **[SUPERSEDED 2026-09-25(P1)—— 下面這一整條所描述的 `claim()` 重新蓋章、「自我修復」、以及「只能靠刪除重建復原(會輪換 webhook 的 id 與 secret)」,三者都已隨 ADR-086 第三次裁決刪除。現行機制:兩個各自不可變的來源取 OR;復原 = 在本機 `workflow_register`(照列原本的 `triggers[]`)+ `workflow_publish`,webhook 的 id 與 secret 不變。原文保留為歷史。]**
   repair — finding 11, current-state facts, not re-scored] Remote RE-ATTACHMENT, self-healed for the
   supported claim path; a THIRD `owner_decision` open on recovery only, for one narrower cohort.**
   The round-2 text above described the pre-fix model and is **false since `3e3c331`+`2cf5f32`**
