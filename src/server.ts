@@ -811,7 +811,14 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // already rides to the facade/gateway (DES-258 owner ruling) — RunManager.start()'s
   // admissionRefusal() covers every `start()`-driven admission route (tools/call's run_start,
   // webhook delivery, schedule firing); `run_resume` never calls `start()` and stays covered by
-  // `call-tool.ts`'s door alone (Gate-8 round-2, finding B2/INV-V37-5(c) — the two never diverge).
+  // `call-tool.ts`'s door alone (Gate-8 round-2, finding B2/INV-V37-5(c)).
+  // v37 P1 (Gate 8 round-6 finding R6-F2, 2026-09-25): the parenthetical that used to end this
+  // sentence — "the two never diverge" — is no longer true, and this is the COMPOSITION ROOT, so it
+  // is the worst place to leave it stale. `resume()` now applies admissionRefusal() in exactly one
+  // case: a legacy substitution, where the run's pinned version is gone and the current `release` is
+  // substituted for it (a version the run never carried and no admission check ever saw). The PINNED
+  // resume path is still ungated, so call-tool.ts's door is still the cover for an ORDINARY
+  // run_resume — the two are complementary, not identical. See DES-263 第三次/第四次修訂.
   const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, aliasNames, modelBook, aliasMap, eventSink, confinementPosture: config?.confinementPosture });
   // v8 Defer B (REQ-057/058): durable webhook ingress registry, same workRoot convention.
   const webhooks = new WebhookRegistry({ clock, runManager, catalog, dbPath: config?.webhookDbPath ?? join(workRoot, 'webhooks.db') });

@@ -10655,3 +10655,52 @@ F13 本質上是渲染問題,單元層看不到 DOM。
   posture」)。前者正是 `src/main.ts` 指名「本迭代存在的理由」的那個 docblock 的近親,留著不改等於同一個
   缺陷做兩次。另加兩個測試檔頭註記(LOW)。**R5-F7/F8**:兩處 status 日期、一處指向自己上方的「在本行之後」。
 
+### IMPL-390 — v37 Gate 8 round-6 SEND-BACK 修復(R6-F1..F7):被拒絕的重建會把拒絕記憶住,復原因此失效;以及不變式本身從沒被更正
+- **status:** done
+- **traces:** DES-263, ADR-086, ARCH-182, TASK-259, REQ-218
+- **greens:** UT-338, IT-307
+- **files:** src/run-manager.ts, src/server.ts, tests/unit/confinement-banner-truth.test.ts, tests/unit/admission-refusal.test.ts, tests/unit/call-tool-confinement-door.test.ts, tests/integration/resume-legacy-substitution-admission.test.ts, 02-architecture.md, 04-design.md, 05-tests.md
+- **commit:** (uncommitted at write time)
+- **iter:** v37
+- **note:** 第三位複審者。三個數字全部重跑成立,並確認 R5-F1 的修復是真的(`suspended` 與 `interrupted` 兩種狀態下
+  `resume()` 拒絕、`stop()` 成功、可達終結狀態、workspace 可清)。送回兩條阻斷。
+
+  **R6-F1(阻斷,我的缺陷 —— 而且 round 4 那個放錯函式的版本反而沒有這個 bug):被拒絕的重建把拒絕記憶住了。**
+  `_requireLive()` 無條件把重建出來的 entry 存進 `_runs`(成功的路徑需要它這麼做),而我的拒絕丟在那之後。
+  那個 entry 同時持有**被拒版本的 `script`** 與 `legacySubstitution`,於是操作者照訊息所寫去做
+  (本機 `workflow_register` + `workflow_publish`)之後,`resume()` **仍然被拒,直到行程重啟** ——
+  因為快取在目錄被重讀之前就先被採用了。修法:拒絕前 `this._runs.delete(runId)`,**被拒絕的重建不該留下痕跡**。
+  驅逐是安全的:該 entry 來自重建,它的 `SandboxHost` 只是建構好、從未啟動(`resume()` 本來就會換掉),
+  `stop()` 會再重建一次 —— 這也是 `stop()` 仍然可用的原因。IT-307 補第四個案例,**必須在同一個 `RunManager`
+  實例上測**(換新實例即使有 bug 也會通過),並以移除驅逐驗證轉紅。
+
+  **R6-F2(阻斷):我上一輪報「八處已註記」是錯的 —— 是八之七,而且另有四處從來不在任何清單上。**
+  漏的與從沒列的:`02-architecture.md:5693`(它在 `types.ts:481` 的孿生句被修好時仍未動)、
+  `src/server.ts:812-814`(「the two never diverge」,而且這裡是**組裝根**,留舊的代價最大)、
+  `04-design.md:9812`/`:10013`(ADR-083 的已承認代價以程式碼形式重述),
+  以及最嚴重的 **`02-architecture.md:6205` —— INV-V37-5(c) 不變式本身**,
+  也就是前述五處註記共同引用的權威來源。一位 v38 實作者會從那裡讀到「`resume()` 從不呼叫它」而據以推論。
+  全部更正。**教訓:更正一組互相引用的陳述時,要先找出它們共同引用的那一條。**
+
+  **R6-F3**:「註記插進它所註記的結構裡面」這一類我又犯了四次 —— `02-architecture.md:5736`(句中)、
+  `:5739`(括號內)、兩個測試檔頭(把第一句切成兩半)。全部移到句子/段落/檔首之外。這是我第三輪犯同一類。
+
+  **R6-F6**:複審回答了我的問題(清點鎖「誠實但比身分鎖弱」),並指出更好的鎖 —— 給 `admissionRefusal`
+  一個 `source` 判別子、讓 `confinementBannerLine()` 窮盡消費該 union,使少一個來源變成**編譯錯誤**。
+  我同意它更好,但它會改動多個測試已釘住的匯出簽章,不宜在送回輪裡做,**已列為 v38 候選**;
+  本輪採用複審自己提的折衷:**斷言四個呼叫點各自的身分**而非只數數目。
+  已用 delete-one-add-one 驗證(數目仍是 4,但紅燈訊息直接指名消失的來源:
+  `admission source missing: resume() — the legacy substitution`)。
+  **驗證本身也修了一次**:我第一次的擾動腳本縮排不符、什麼都沒改就宣告「已驗證」——
+  那正是我一直在抓的「不可能失敗的檢查」,重做後才是真的。
+
+  **R6-F5**:拒絕訊息的「stopping it is NOT」對「已經是 `stopped` 的 run」為偽(那會回 `ILLEGAL_TRANSITION`),
+  改為「NOT refused ON THIS GROUND」並講清兩者差別。**R6-F7**:R5-F8 只修了一半 ——
+  指向修好了,但註記仍是尾註;改為在「What it does NOT close」與「Why the key is the trigger row」兩段**就地劃線**,
+  並修正尾註那句指向後方的「下文」。
+
+  **複審更正了我的派工說明兩處,記錄下來**:(1) 我把「stopping it is NOT」列為可能的阻斷,它判定不是
+  (run 已終結、purge 可用),真正的阻斷是同一則訊息裡「re-register … to recover」那一句 —— 即 R6-F1;
+  (2) 我提的快取假說(cached entry 沒有 `legacySubstitution` 會跳過判定)確實存在,但**是安全的** ——
+  那條路不會發生替換,`resume()` 跑的是原本已通過接納的 `entry.script`。
+

@@ -1,8 +1,9 @@
-// UT-324 (DES-262, ARCH-181, TASK-257, REQ-218, ADR-083 owner_decision posture C) — the
 // [更正 2026-09-25, Gate 8 round-5 finding R5-F3] Wherever the header below implies that only a
 // REMOTE submission is refused, or that call-tool.ts's door is the only control: since v37 P1 a run
 // is also refused when its trigger was created remotely or when the version it resolves to was
 // registered remotely — the latter refuses a LOCAL run_start too. See DES-263 第三次/第四次修訂.
+//
+// UT-324 (DES-262, ARCH-181, TASK-257, REQ-218, ADR-083 owner_decision posture C) — the
 // remote-submission door: run_start/run_resume are refused BEFORE schema/authz when this engine's
 // measured confinement posture is 'unconfined' AND the caller is not a loopback peer. A LOCAL
 // submission on the SAME unconfined posture still reaches the facade (the owner's accepted cost:

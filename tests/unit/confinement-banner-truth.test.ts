@@ -55,8 +55,26 @@ describe('UT-338 — the boot banner tells the truth about who gets refused', ()
     // and deliberately so — its job is to force whoever changes the admission surface to come back
     // and re-read the banner, which is exactly what did not happen in round 4.
     const src = readFileSync(new URL('../../src/run-manager.ts', import.meta.url), 'utf8');
-    const callSites = src.split('\n').filter((l) => /admissionRefusal\(\{/.test(l)).length;
-    expect(callSites).toBe(4); // start() trigger-origin, start() version-origin, runNested(), resume() legacy substitution
+    const callSites = src.split('\n').filter((l) => /admissionRefusal\(\{/.test(l));
+    // v37 Gate 8 round-6 finding R6-F6: assert the four sites' IDENTITIES, not just their count. A
+    // count alone stays green on delete-one-add-one, and its failure message ("expected 3 to be 4")
+    // does not say which refusal vanished. Each pattern below is the argument shape unique to one
+    // admission source, so a deleted site names itself. Round 6 also proposed the strictly better
+    // lock — give `admissionRefusal` a `source` discriminator and have `confinementBannerLine()`
+    // consume that union exhaustively, making a missing source a COMPILE error — and I agree it is
+    // better; it changes an exported signature that several other tests pin, so it is filed as a v38
+    // candidate rather than done inside a send-back round. This is round 6's own stated intermediate.
+    const sources: Array<[string, RegExp]> = [
+      ['start() — the trigger/submission origin', /origin: spec\.origin/],
+      ['runNested() / start() — the resolved version origin', /origin: registered\.registeredRemote \? 'remote' : 'local'/],
+      ["resume() — the legacy substitution", /posture: this\._confinementPosture, origin: 'remote'/],
+    ];
+    for (const [label, pattern] of sources) {
+      expect(callSites.filter((l) => pattern.test(l)).length, `admission source missing: ${label}`).toBeGreaterThan(0);
+    }
+    // …and the version-origin shape appears at BOTH of its sites (start()'s second stage and runNested()).
+    expect(callSites.filter((l) => /origin: registered\.registeredRemote/.test(l)).length).toBe(2);
+    expect(callSites.length).toBe(4);
     // …and the banner must still name one source per admission FACT (submission/trigger, version).
     const line = confinementBannerLine({ posture: 'unconfined', reason: 'x' });
     expect(line).toMatch(/remote submission/);

@@ -16621,7 +16621,7 @@ unconfined」,在 P1 讓判定多出第二個來源之後整整一輪都是假�
 VAL-259 證據日誌把那行假字原封不動抄了下來(`evidence/v37/val259-boot.log:31`)—— 因為它是內嵌在
 `console.log` 裡、沒有任何測試讀它的字串。**沒有測試讀的字串不可能轉紅。**
 修法有兩步:(a) 把那行抽成 `src/main.ts` 的純函式 `confinementBannerLine(probe)`,使它可被測;
-(b) 本檔三個案例把兩半綁在一起釘 —— banner 必須命名**全部三個**拒絕來源(遠端提交 / 遠端建立的觸發器 /
+(b) 本檔四個案例把兩半綁在一起釘 —— banner 必須命名**全部三個**拒絕來源(遠端提交 / 遠端建立的觸發器 /
 遠端註冊的版本),**不得**再出現「本機仍會照跑」那種承諾(連同一個較寬的正則,擋掉粗心改寫會寫出的形狀),
 並另外**清點 `run-manager.ts` 裡 `admissionRefusal()` 的呼叫點數目**。**[更正 2026-09-25, R5-F6:原文寫「使 banner 是述詞的散文而非自說自話」是誇大 ——`admissionRefusal()` 是 `{posture, origin}` 的純函式,對「三個來源」沒有概念,所以對它斷言抓不到「某個呼叫點被刪掉」;原本那個交叉檢查還把同一個呼叫寫了兩次,是真的同義反覆。現況:措辭鎖(案例 1-2)+ 呼叫點清點(案例 4)兩半合起來才成立,單獨任一半都抓不到 round 4 的漂移。呼叫點清點已用複審給的反例驗證(刪掉 `start()` 版本側那個呼叫點 → `expected 3 to be 4`)。]**
 **紅燈已獨立驗證**:把出貨時那行假字暫時放回去,本檔 2 failed / 1 passed
@@ -16636,12 +16636,13 @@ VAL-259 證據日誌把那行假字原封不動抄了下來(`evidence/v37/val259
 - **result:** pass
 - **iter:** v37
 
-File: `tests/integration/resume-legacy-substitution-admission.test.ts`。釘的是**豁免的理由**,不是方法名:
+File: `tests/integration/resume-legacy-substitution-admission.test.ts`(**四個案例**,2026-09-25 隨 round-5/round-6 兩次送回各增一個)。釘的是**豁免的理由**,不是方法名:
 釘住版本的續跑跑的是這個 run 啟動時就通過過判定的同一份程式碼(豁免成立);替換分支解析的是「當前 release」,
-一份 run 從未帶過、也從未經任何判定的版本,可能是遠端註冊的(豁免蓋不到)。兩個案例:
+一份 run 從未帶過、也從未經任何判定的版本,可能是遠端註冊的(豁免蓋不到)。四個案例:
 (a) `[LOAD-BEARING]` 釘住的版本不存在、替換進來的 release 是遠端註冊的 ⇒ **本機**續跑被拒
 `CONFINEMENT_UNAVAILABLE`,且訊息同時指名「釘住的版本」與「會被替換進來的版本」(只講一件操作者無法行動);
 (b) 反向對照 —— 同一個替換情境但 release 是本機註冊的,仍可續跑(沒有這一條,一個無條件丟錯的 fallback
 也會讓 (a) 通過)。fixture 規則沿用既有 IT-086 legacy-cohort 案例:缺失的 pin 是手工種入的,不由被測程式產生。
-**紅燈已驗證**:移除該判定後 (a) 轉紅(`promise resolved "undefined" instead of rejecting`),還原後 2 passed。
+(c) **同一個 run 仍可 `stop()`**(round 5 finding R5-F1 的鎖 —— 判定曾被放進共用的 `_requireLive()`,連 `stop()` 一起擋掉,run 永遠無法終結);(d) **訊息所規定的復原在同一個行程內真的有效**(round 6 finding R6-F1 的鎖 —— 拒絕曾被快取記憶住,操作者照著做仍永遠被拒到行程重啟;必須在同一個 `RunManager` 實例上測,換新實例即使有 bug 也會通過)。
+**紅燈皆已驗證**:移除判定 ⇒ (a) 轉紅(`promise resolved "undefined" instead of rejecting`);還原成 round-4 的放法 ⇒ (c) 轉紅(`promise rejected … instead of resolving`);移除快取驅逐 ⇒ (d) 轉紅(復原後仍 `CONFINEMENT_UNAVAILABLE`)。四個案例全綠。
 

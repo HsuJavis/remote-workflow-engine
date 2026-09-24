@@ -918,9 +918,21 @@ export class RunManager {
     if (sub?.remote === true) {
       const refusal = admissionRefusal({ posture: this._confinementPosture, origin: 'remote' });
       if (refusal !== null) {
+        // v37 P1 (Gate 8 round-6 finding R6-F1): **a refused rehydration must leave NO trace.**
+        // `_requireLive()` has already cached this entry (it caches unconditionally, as it must for
+        // the paths that succeed), and that entry holds BOTH the refused version's `script` and this
+        // `legacySubstitution`. Without this eviction the refusal is memoised: the operator does
+        // exactly what the message below prescribes — re-register locally, re-publish — and `resume()`
+        // still refuses, forever, until the process restarts, because the cached entry is consulted
+        // before the catalog is ever re-read. Round 4's (wrongly placed) refusal happened to avoid
+        // this by throwing before the `_runs.set`; keeping the decision in `resume()` means paying
+        // for it explicitly here. Evicting is safe and cheap: this entry came from rehydration, so
+        // its `SandboxHost` was constructed but never started (`resume()` replaces it below anyway),
+        // and `stop()` simply rehydrates again — which is why `stop()` keeps working.
+        this._runs.delete(runId);
         throw codedError(
           refusal,
-          `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — this run's pinned version ${sub.pinned} no longer exists, and the '${entry.name ?? '?'}' version that would be substituted for it (${sub.resolved}) was registered remotely, so RESUMING it is refused (stopping it is NOT — this run can still be stopped and its workspace purged); re-register that workflow locally (workflow_register with the same triggers, then workflow_publish) to recover.`,
+          `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — this run's pinned version ${sub.pinned} no longer exists, and the '${entry.name ?? '?'}' version that would be substituted for it (${sub.resolved}) was registered remotely, so RESUMING it is refused (stopping it is NOT refused ON THIS GROUND — a run that is still suspended/interrupted can be stopped and its workspace purged; one that is already stopped answers ILLEGAL_TRANSITION, which is a different matter and already terminal); re-register that workflow locally (workflow_register with the same triggers, then workflow_publish) and resume again to recover.`,
         );
       }
     }

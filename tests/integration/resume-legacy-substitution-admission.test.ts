@@ -27,6 +27,17 @@ import { FixedClock } from '../../src/clock.js';
 
 const CLOCK = new FixedClock(new Date('2026-09-25T00:00:00Z'));
 
+// Same shape as run-version-pin.test.ts's own helper (IT-086) — kept local rather than exported so
+// the two files stay independent.
+async function pollUntilSettled(mgr: RunManager, runId: string, maxIters = 200) {
+  let view = await mgr.status(runId);
+  for (let i = 0; i < maxIters && (view.status === 'running' || view.status === 'queued'); i++) {
+    await new Promise((r) => setTimeout(r, 30));
+    view = await mgr.status(runId);
+  }
+  return view;
+}
+
 async function seedSuspendedRunWithMissingPin(dir: string, name: string, registeredRemote: boolean) {
   const catalog = new WorkflowCatalog(join(dir, 'catalog'), CLOCK);
   const store = new SqliteRunStore(join(dir, 'store'), CLOCK);
@@ -69,6 +80,43 @@ describe("IT-307 — resume()'s legacy substitution is admission-checked; its pi
       await expect(runManager.stop(runId)).resolves.not.toThrow();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 20000);
+
+  it('[LOAD-BEARING] the recovery the refusal message PRESCRIBES actually works, on the SAME process (R6-F1)', async () => {
+    // Round 6 found that the round-5 repair memoised its own refusal: `_requireLive()` caches the
+    // rehydrated entry (it must, for the paths that succeed), and the refusal was thrown afterwards,
+    // so the cached entry — holding the refused version's script AND the substitution fact — was
+    // consulted before the catalog was ever re-read. An operator who did exactly what the message
+    // says (re-register locally, re-publish) was still refused, forever, until a process restart.
+    // A refused rehydration must leave no trace. This case is the lock, and it is deliberately run
+    // on ONE RunManager instance: a fresh instance would pass even with the bug present.
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-it307d-'));
+    try {
+      const name = 'it307-recoverable';
+      const catalog = new WorkflowCatalog(join(dir, 'catalog'), CLOCK);
+      const store = new SqliteRunStore(join(dir, 'store'), CLOCK);
+      const runManager = new RunManager({ store, clock: CLOCK, workRoot: dir, catalog, confinementPosture: 'unconfined' });
+      const remote = await catalog.register({ name, script: `return 'REMOTE';`, mermaid: 'graph LR', registeredRemote: true });
+      await catalog.publish(name, remote.version, 'release', null);
+      const runId = await store.createRun({ origin: 'local', name, args: undefined }, 'v-gone');
+      const raw = new Database(join(dir, 'store', 'index.db'));
+      raw.prepare('UPDATE runs SET status = ? WHERE runId = ?').run('suspended', runId);
+      raw.close();
+
+      await expect(runManager.resume(runId)).rejects.toMatchObject({ code: 'CONFINEMENT_UNAVAILABLE' });
+
+      // The prescribed recovery, verbatim: register locally (same name), publish to release.
+      const local = await catalog.register({ name, script: `return 'LOCAL-FIXED';`, mermaid: 'graph LR', registeredRemote: false });
+      await catalog.publish(name, local.version, 'release', null);
+
+      // Same RunManager, same runId — must now resume and run the LOCAL script.
+      await expect(runManager.resume(runId)).resolves.not.toThrow();
+      const settled = await pollUntilSettled(runManager, runId);
+      expect(settled.status).toBe('completed');
+      const outcome = await runManager.result(runId);
+      expect(outcome.ok).toBe(true);
+      if (outcome.ok) expect(outcome.value).toBe('LOCAL-FIXED');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 30000);
 
   it('mirror: the same substitution with a LOCALLY registered `release` version still resumes', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rwe-it307b-'));
