@@ -526,15 +526,29 @@ export class SqliteSchedulerPort {
    *  `.transaction()` wrapper needed for a single connection). `'held'` (already claimed by the
    *  SAME workflow) is distinct from `'claimed'` for a reason: compensation on a later failure must
    *  release only ids THIS call newly claimed, never an id that was already a working claim. */
-  claim(id: string, workflow: string): 'claimed' | 'held' | 'NOT_FOUND' | 'ALREADY_CLAIMED' {
+  // v37 (DES-263 amendment 2026-09-24, ADR-086's second owner ruling): `createdRemote` is NO LONGER
+  // a fact about who created the row — it is re-stamped here, from the remoteness of the
+  // registration that is claiming the trigger. Two outcomes re-stamp: 'claimed' (first binding) and
+  // 'held' (already this workflow's, from an EARLIER version) — 'held' is precisely the
+  // re-registration path the ruling closes, so stamping only 'claimed' would not fix it.
+  // 'ALREADY_CLAIMED' never re-stamps: that row belongs to a DIFFERENT workflow, and letting A's
+  // registration rewrite B's trigger provenance would be a new hole, not a fix. A pre-existing row
+  // (migrated in as 0 = local) therefore self-heals the next time it is claimed — no data migration.
+  claim(id: string, workflow: string, createdRemote?: boolean): 'claimed' | 'held' | 'NOT_FOUND' | 'ALREADY_CLAIMED' {
     const row = this._db.prepare('SELECT claimedBy FROM schedules WHERE id = ?').get(id) as { claimedBy: string | null } | undefined;
     if (!row) return 'NOT_FOUND';
-    if (row.claimedBy === workflow) return 'held';
+    const stamp = (): void => {
+      if (createdRemote === undefined) return; // caller has no provenance to assert — leave the row as-is
+      this._db.prepare('UPDATE schedules SET createdRemote = ? WHERE id = ?').run(createdRemote ? 1 : 0, id);
+    };
+    if (row.claimedBy === workflow) { stamp(); return 'held'; }
     if (row.claimedBy != null) return 'ALREADY_CLAIMED';
     const info = this._db
       .prepare('UPDATE schedules SET claimedBy = ? WHERE id = ? AND claimedBy IS NULL')
       .run(workflow, id);
-    return info.changes === 1 ? 'claimed' : 'ALREADY_CLAIMED';
+    if (info.changes !== 1) return 'ALREADY_CLAIMED'; // lost a race between the SELECT and the UPDATE
+    stamp();
+    return 'claimed';
   }
 
   /** Idempotent: releasing an id not claimed by `workflow` (including one already unclaimed) is a

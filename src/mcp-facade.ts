@@ -61,7 +61,12 @@ function nsOf(p: Principal): string {
  *  register/deregister sequence only needs these three trigger-claim primitives from either store. */
 interface TriggerClaimStore {
   ownerOf(id: string): string | null | undefined;
-  claim(id: string, workflow: string): 'claimed' | 'held' | 'NOT_FOUND' | 'ALREADY_CLAIMED';
+  /** v37 (DES-263 amendment 2026-09-24): the third parameter carries the CLAIMING REGISTRATION's
+   *  remoteness, which both stores re-stamp onto the trigger row. Optional at the port so a caller
+   *  with no provenance to assert leaves the row untouched — but note that a port left un-widened
+   *  is exactly how this hole stayed open: TypeScript's method-parameter bivariance lets a narrower
+   *  implementation satisfy a wider port silently, so the compiler does NOT police this seam. */
+  claim(id: string, workflow: string, createdRemote?: boolean): 'claimed' | 'held' | 'NOT_FOUND' | 'ALREADY_CLAIMED';
   release(id: string, workflow: string): void;
   /** v24 (integrator; DES-156/REQ-103): the by-id snapshot `workflow_describe.triggers[]` serves,
    *  and the id set for one workflow. Optional so a unit-tier construction with no trigger stores
@@ -346,7 +351,11 @@ export class McpFacade {
    *  written) → every trigger id located + ownership-checked → `claim()` each (first non-'claimed'
    *  releases the ids THIS call claimed, in reverse, and refuses) → `insertVersion` → on throw,
    *  release exactly the ids this call claimed. */
-  async workflowRegister(a: { name: string; script: string; mermaid: string; triggers?: string[] }, principal: Principal): Promise<Record<string, unknown>> {
+  // v37 (DES-263 amendment 2026-09-24, ADR-086's second owner ruling): `isRemoteSubmission` is
+  // threaded here for the SAME reason `runStart` already takes it — the trigger claims below
+  // re-stamp provenance from THIS registration's remoteness. Defaults to `false` (local) so the
+  // pre-existing call sites that omit it keep compiling and keep their prior behaviour.
+  async workflowRegister(a: { name: string; script: string; mermaid: string; triggers?: string[] }, principal: Principal, isRemoteSubmission = false): Promise<Record<string, unknown>> {
     const claimedThisCall: string[] = [];
     try {
       // v24 Gate 7.5 (D-2, REQ-110's last clause + adjudication #2 A-2): the pre-v24 workflow-wide
@@ -380,7 +389,7 @@ export class McpFacade {
       const actor = actorFor(principal, a, 'attribution');
       const { params } = await catalog.validateRegistration({ name: a.name, script: a.script, mermaid: a.mermaid, actor });
       for (const id of triggers) {
-        const outcome = this._storeFor(id).claim(id, a.name);
+        const outcome = this._storeFor(id).claim(id, a.name, isRemoteSubmission);
         if (outcome === 'claimed') { claimedThisCall.push(id); continue; }
         if (outcome === 'held') continue; // already this workflow's from an earlier version — never released by compensation
         for (const rid of [...claimedThisCall].reverse()) this._storeFor(rid).release(rid, a.name);

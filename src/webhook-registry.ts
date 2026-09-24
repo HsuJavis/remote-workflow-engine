@@ -221,14 +221,26 @@ export class WebhookRegistry {
   /** v24 (DES-149): claims an unclaimed webhook for `workflow` inside one transaction — the same
    *  claim model the trigger stores share. `'held'` (already claimed BY this workflow) is never
    *  released by compensation; `'ALREADY_CLAIMED'` (claimed by someone else) leaves the row untouched. */
-  claim(id: string, workflow: string): 'claimed' | 'held' | 'NOT_FOUND' | 'ALREADY_CLAIMED' {
+  // v37 (DES-263 amendment 2026-09-24, ADR-086's second owner ruling) — twin of
+  // `SqliteSchedulerPort.claim()`: `createdRemote` is re-stamped from the remoteness of the
+  // registration doing the claiming, not frozen at row creation. 'claimed' and 'held' both stamp
+  // ('held' IS the re-registration path the ruling closes); 'ALREADY_CLAIMED' never does, because
+  // that row belongs to a different workflow. Pre-existing rows (migrated in as 0 = local)
+  // self-heal on their next claim, so no data migration is needed.
+  claim(id: string, workflow: string, createdRemote?: boolean): 'claimed' | 'held' | 'NOT_FOUND' | 'ALREADY_CLAIMED' {
     return this._db.transaction((): 'claimed' | 'held' | 'NOT_FOUND' | 'ALREADY_CLAIMED' => {
       const row = this._db.prepare('SELECT workflow FROM webhooks WHERE id = ?').get(id) as { workflow: string | null } | undefined;
       if (!row) return 'NOT_FOUND';
-      if (row.workflow === workflow) return 'held';
+      const stamp = (): void => {
+        if (createdRemote === undefined) return; // caller asserts no provenance — leave the row as-is
+        this._db.prepare('UPDATE webhooks SET createdRemote = ? WHERE id = ?').run(createdRemote ? 1 : 0, id);
+      };
+      if (row.workflow === workflow) { stamp(); return 'held'; }
       if (row.workflow !== null) return 'ALREADY_CLAIMED';
       const info = this._db.prepare('UPDATE webhooks SET workflow = ? WHERE id = ? AND workflow IS NULL').run(workflow, id);
-      return info.changes === 1 ? 'claimed' : 'ALREADY_CLAIMED'; // lost a race between the SELECT and the UPDATE
+      if (info.changes !== 1) return 'ALREADY_CLAIMED'; // lost a race between the SELECT and the UPDATE
+      stamp();
+      return 'claimed';
     })();
   }
 

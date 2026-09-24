@@ -10146,6 +10146,18 @@ keep, not a coincidence to rely on.
       row is `createdRemote:true` is refused end to end — closing the gap the finding named: every
       prior test of this predicate ran at `confinementPosture:'confined'`, the one value that never
       gates. No production code changed for this bullet; the wiring was already correct.
+- **v37 amendment (2026-09-24, ADR-086 第二次業主裁決,前提更正後)—— provenance 改為「當前擁有該觸發器的那次註冊」,不再是「誰建立了那一列」:**
+  ~~原文:`createdRemote` written ONCE at creation, never updated afterwards (provenance is a fact about creation).~~
+  **[SUPERSEDED 2026-09-24]** 架構閘複審指出、orchestrator 獨立查證屬實:只在建立時蓋一次會留下兩個洞 ——
+  (a) migration 是 `ADD COLUMN … NOT NULL DEFAULT 0`,**既有每一列都讀成本機**,這道控制在現有觸發器族群上的覆蓋率是零;
+  (b) 遠端對一個已掛著觸發器的工作流程名稱 `workflow_register` + `workflow_publish` 新版本後,
+  **下一次 cron 到點或 webhook 送達,舊觸發器自己就把新腳本跟起來**,不需要任何人按按鈕。
+  **新規則**:`claim(id, workflow, createdRemote)` 在觸發器被某次註冊認領時重新蓋章,值取自那次 `workflow_register`
+  的 `isRemoteSubmission`(`call-tool.ts` 當下已持有,不新增第二個真相來源)。
+  **哪些 outcome 重新蓋章,以及為什麼**:`'claimed'`(首次綁定)與 **`'held'`(已是同一個工作流程名稱的,來自更早的版本)** 兩者都蓋 ——
+  `'held'` 正是 (b) 那條重新註冊路徑,只蓋 `'claimed'` 等於沒修;`'NOT_FOUND'` 無列可蓋;
+  **`'ALREADY_CLAIMED'` 一律不蓋**,那一列屬於另一個工作流程,重新蓋章會讓 A 的註冊改寫 B 的觸發器 provenance。
+  **既有列因此自我修復**:下一次被認領時就會被重新評估,不需要資料遷移。
 - **iter:** v37
 
 ### Class diagram — v37 (the four types this slice adds)

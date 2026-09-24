@@ -209,7 +209,7 @@ export async function callTool(
   const { facade } = deps;
   switch (spec.name) {
     // ---- workflow (7) ----
-    case 'workflow_register': return facade.workflowRegister(a as never, principal);
+    case 'workflow_register': return facade.workflowRegister(a as never, principal, deps.isRemoteSubmission === true);
     case 'workflow_deregister': return facade.workflowDeregister(a as never, principal);
     case 'workflow_publish': return facade.workflowPublish(a as never, principal);
     case 'workflow_describe': return facade.workflowDescribe(a as never, principal);
