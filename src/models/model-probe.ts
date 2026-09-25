@@ -119,9 +119,10 @@ async function timed(clock: Clock, fn: () => Promise<GatewayResult>): Promise<{ 
   return { r, ms: Math.max(0, clock.now() - t0) };
 }
 
-/** Probe one target through `gateway.invoke()`. The tool leg runs in a throwaway workspace UNDER
- *  workRoot (the SDK gateway refuses a workspace outside it — WORKROOT_INSIDE_PROJECT), removed
- *  afterwards. Never throws: a gateway exception is a failed leg. */
+/** Probe one target through `gateway.invoke()`. Both legs run in a throwaway workspace UNDER
+ *  workRoot — as every agent() call runs in its run workspace (the SDK gateway refuses one outside
+ *  workRoot — WORKROOT_INSIDE_PROJECT) — removed afterwards. Never throws: a gateway exception is a
+ *  failed leg. */
 export async function runProbe(
   gateway: GatewayClient,
   target: ProbeTarget,
@@ -129,15 +130,16 @@ export async function runProbe(
 ): Promise<ProbeResult> {
   const { clock, timeoutMs } = opts;
   const runId = `model-probe-${clock.now()}`;
-  const prose = await timed(clock, () => gateway.invoke({
-    prompt: PROSE_PROMPT, opts: { model: target.alias, allowedTools: [], timeoutMs }, runId, agentId: `probe-prose-${target.alias}`,
-  }));
   const parent = join(opts.workRoot, 'model-probe');
   mkdirSync(parent, { recursive: true });
   const workspace = mkdtempSync(join(parent, 'ws-'));
   const nonce = randomBytes(12).toString('hex');
+  let prose: { r: GatewayResult; ms: number };
   let tools: { r: GatewayResult; ms: number };
   try {
+    prose = await timed(clock, () => gateway.invoke({
+      prompt: PROSE_PROMPT, opts: { model: target.alias, allowedTools: [], timeoutMs }, runId, agentId: `probe-prose-${target.alias}`, workspace,
+    }));
     writeFileSync(join(workspace, NONCE_FILE), `${nonce}\n`);
     tools = await timed(clock, () => gateway.invoke({
       prompt: TOOLS_PROMPT, opts: { model: target.alias, allowedTools: ['Bash'], timeoutMs }, runId, agentId: `probe-tools-${target.alias}`, workspace,

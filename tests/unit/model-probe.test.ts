@@ -113,6 +113,8 @@ describe('runProbe (#73) — the real GatewayClient.invoke path, a throwaway wor
       expect(reqs[1]!.opts).toMatchObject({ model: 'haiku', allowedTools: ['Bash'], timeoutMs: 1234 });
       // The tool prompt must NOT contain the value it asks for — otherwise echoing the prompt passes.
       const ws = reqs[1]!.workspace!;
+      // Both legs run in the throwaway workspace, like every agent() call runs in its run workspace.
+      expect(reqs[0]!.workspace).toBe(ws);
       const rel = relative(workRoot, ws);
       expect(rel.startsWith('..') || isAbsolute(rel)).toBe(false);
       expect(existsSync(ws)).toBe(false);
