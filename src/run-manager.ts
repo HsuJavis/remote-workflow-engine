@@ -151,6 +151,15 @@ export const DEFAULT_RUN_CONCURRENCY = 24;
 
 const TERMINAL: RunStatus[] = ['stopped', 'completed', 'failed'];
 
+/** Issue #82: did the run bring a seed of its own (any of the four kinds)? Same "present" test as
+ *  start()'s 4-way SEED_SOURCE_CONFLICT check — an empty array is no seed. */
+function hasExplicitSeed(spec: RunSpec): boolean {
+  return (Array.isArray(spec.seed) && spec.seed.length > 0)
+    || (Array.isArray(spec.seedManifest) && spec.seedManifest.length > 0)
+    || spec.seedRef !== undefined
+    || spec.seedManifestRef !== undefined;
+}
+
 /** v21 (DES-101): wraps a params/contract.ts rejection into the codebase's one Error factory,
  *  carrying the machine-shaped `detail` object as an extra (non-ErrEnvelope) property — read by
  *  any caller that wants it, ignored by ones (like McpFacade.toErrEnvelope) that don't. */
@@ -499,6 +508,35 @@ export class RunManager {
     }
   }
 
+  /** v14 REQ-082 (DES-087) ladder, extracted for issue #82 so `workflow_register({seedManifestRef})`
+   *  validates a version's default seed with the SAME check `run_start({seedManifestRef})` uses:
+   *  CAS_UNAVAILABLE → MISSING_BLOBS → INVALID_SEED_SPEC. `ns` is the security boundary — the
+   *  manifest and every blob it names must be in THAT namespace's refset (a blob another principal
+   *  uploaded reads as missing), so this is also the ownership check. Returns the parsed entries. */
+  async loadSeedManifestRef(ns: string, ref: string): Promise<ManifestEntry[]> {
+    if (!this._cas) throw codedError('CAS_UNAVAILABLE', 'seedManifestRef requires a configured content store');
+    // Check the manifest blob is present in the namespace (security boundary: namespace-scoped check).
+    const manifestMissing = await this._cas.missing(ns, [ref]);
+    if (manifestMissing.length > 0) {
+      throw codedError('MISSING_BLOBS', `manifest blob ${ref} not found in namespace ${ns}; register via POST /assets/manifest`);
+    }
+    // Read from the namespace-agnostic blob pool (presence already confirmed above).
+    const manifestBuf = await this._cas.readBlob(ref);
+    if (!manifestBuf) throw codedError('MISSING_BLOBS', `manifest blob ${ref} missing from blob pool`);
+    let parsedManifest: unknown;
+    try { parsedManifest = JSON.parse(manifestBuf.toString('utf8')); } catch {
+      throw codedError('INVALID_SEED_SPEC', `seedManifestRef blob is not valid JSON; register via POST /assets/manifest`);
+    }
+    if (!Array.isArray(parsedManifest)) {
+      throw codedError('INVALID_SEED_SPEC', `seedManifestRef blob must be a JSON array of {path, sha256, exec?}`);
+    }
+    // Re-validate all referenced blobs are present in the namespace (security boundary per DES-087).
+    const referencedShas = (parsedManifest as Array<{ sha256?: unknown }>).map((e) => String(e.sha256 ?? ''));
+    const missing = await this._cas.missing(ns, referencedShas);
+    if (missing.length > 0) throw codedError('MISSING_BLOBS', `${missing.length} blob(s) missing for seedManifestRef: ${missing.slice(0, 8).join(',')}${missing.length > 8 ? '…' : ''}`);
+    return parsedManifest as ManifestEntry[];
+  }
+
   /** `overrides` (v21, ARCH-066, DES-104) is an ARGUMENT, never a RunSpec field — persisting it on
    *  RunSpec (read back wholesale by getSpec() on resume) would be a second unredacted sink plus a
    *  standing temptation to re-merge on resume. The redacted `effectiveParams` snapshot (below) is
@@ -594,29 +632,9 @@ export class RunManager {
     //   Loads the manifest blob from CAS, parses it, re-validates referenced blobs, then assigns
     //   spec.seedManifest so the EXISTING materializeManifest branch runs unchanged (inline+ref parity).
     if (spec.seedManifestRef !== undefined) {
-      if (!this._cas) throw codedError('CAS_UNAVAILABLE', 'seedManifestRef requires a configured content store');
       const ns = spec.seedNamespace ?? casNamespaceFor(spec.principal);
-      // Check the manifest blob is present in the namespace (security boundary: namespace-scoped check).
-      const manifestMissing = await this._cas.missing(ns, [spec.seedManifestRef]);
-      if (manifestMissing.length > 0) {
-        throw codedError('MISSING_BLOBS', `manifest blob ${spec.seedManifestRef} not found in namespace ${ns}; register via POST /assets/manifest`);
-      }
-      // Read from the namespace-agnostic blob pool (presence already confirmed above).
-      const manifestBuf = await this._cas.readBlob(spec.seedManifestRef);
-      if (!manifestBuf) throw codedError('MISSING_BLOBS', `manifest blob ${spec.seedManifestRef} missing from blob pool`);
-      let parsedManifest: unknown;
-      try { parsedManifest = JSON.parse(manifestBuf.toString('utf8')); } catch {
-        throw codedError('INVALID_SEED_SPEC', `seedManifestRef blob is not valid JSON; register via POST /assets/manifest`);
-      }
-      if (!Array.isArray(parsedManifest)) {
-        throw codedError('INVALID_SEED_SPEC', `seedManifestRef blob must be a JSON array of {path, sha256, exec?}`);
-      }
-      // Re-validate all referenced blobs are present in the namespace (security boundary per DES-087).
-      const referencedShas = (parsedManifest as Array<{ sha256?: unknown }>).map((e) => String(e.sha256 ?? ''));
-      const missing = await this._cas.missing(ns, referencedShas);
-      if (missing.length > 0) throw codedError('MISSING_BLOBS', `${missing.length} blob(s) missing for seedManifestRef: ${missing.slice(0, 8).join(',')}${missing.length > 8 ? '…' : ''}`);
       // Fall into the existing materializeManifest branch.
-      spec.seedManifest = parsedManifest as ManifestEntry[];
+      spec.seedManifest = await this.loadSeedManifestRef(ns, spec.seedManifestRef);
       spec.seedNamespace = ns;
     }
     // v10 REQ-065: fail fast (before any durable work) if a seedManifest references blobs the client
@@ -667,6 +685,19 @@ export class RunManager {
           `LEGACY_REREGISTER: workflow '${spec.name}' version ${resolvedVersion} predates the v24 per-agent parameter contract and cannot be run; re-register it`,
           { workflow: spec.name, version: resolvedVersion },
         );
+      }
+      // Issue #82 (option B): the resolved VERSION's default seed, bound at workflow_register. Here,
+      // in the one door every start path shares (run_start, schedule ticker, resident trigger,
+      // webhook), so no start path needs its own seed code. Applied only when the run brought NO
+      // seed of its own — an explicit seed of any of the four kinds REPLACES the default, never
+      // merges with it (same rule as the 4-way mutual exclusion above). Read from the REGISTRANT's
+      // namespace stored on the row, not the run's: a fired run carries no principal, and the
+      // registrant is who proved possession at register time. Still before any durable work.
+      if (registered.seedManifestRef !== undefined && !hasExplicitSeed(spec)) {
+        const ns = registered.seedNamespace ?? casNamespaceFor(null);
+        spec.seedManifest = await this.loadSeedManifestRef(ns, registered.seedManifestRef);
+        spec.seedNamespace = ns;
+        spec.seedManifestRef = registered.seedManifestRef;
       }
     }
 

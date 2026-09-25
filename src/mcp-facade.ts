@@ -91,7 +91,7 @@ interface RegistrationCatalog {
   /** v37 P1 (DES-263's 第三次修訂): `registeredRemote` — the SAME `isRemoteSubmission` the trigger
    *  stores' creation stamp already reads, forwarded one hop further so the version row records
    *  who wrote the script it holds. */
-  insertVersion(req: { name: string; script: string; mermaid: string; triggers?: string[]; params: ParamContract; actor?: Actor; registeredRemote?: boolean }): Promise<{ version: string }>;
+  insertVersion(req: { name: string; script: string; mermaid: string; triggers?: string[]; params: ParamContract; actor?: Actor; registeredRemote?: boolean; seedManifestRef?: string; seedNamespace?: string }): Promise<{ version: string }>;
   /** v33 (DES-222, REQ-201): the v22 read (DES-111) — type-only addition, no new catalog method or
    *  behaviour. Read AFTER insertVersion so the register response shows the version loop. */
   resolveDetail(name: string, sel: { version?: string }): Promise<{ versions: string[]; channels: { release: string | null; beta: string | null } }>;
@@ -361,7 +361,7 @@ export class McpFacade {
   // an already-claimed trigger taints the VERSION rather than laundering/upgrading the TRIGGER.
   // Defaults to `false` (local) so the pre-existing call sites that omit it keep compiling and keep
   // their prior behaviour.
-  async workflowRegister(a: { name: string; script: string; mermaid: string; triggers?: string[] }, principal: Principal, isRemoteSubmission = false): Promise<Record<string, unknown>> {
+  async workflowRegister(a: { name: string; script: string; mermaid: string; triggers?: string[]; seedManifestRef?: string }, principal: Principal, isRemoteSubmission = false): Promise<Record<string, unknown>> {
     const claimedThisCall: string[] = [];
     try {
       // v24 Gate 7.5 (D-2, REQ-110's last clause + adjudication #2 A-2): the pre-v24 workflow-wide
@@ -376,6 +376,22 @@ export class McpFacade {
           { param: 'defaults' },
         );
       }
+      // Issue #82 (option B): a version's default seed is a REF only (`seedManifestRef`) — rows stay
+      // small and the content goes through the CAS's own upload path. The register schema is
+      // open, so an inline key would otherwise be dropped silently; refuse it by name instead.
+      const inlineSeedKey = (['seed', 'seedManifest', 'seedRef'] as const).find((k) => Object.hasOwn(a as object, k));
+      if (inlineSeedKey !== undefined) {
+        throw codedError(
+          'INVALID_ARGUMENT',
+          `INVALID_ARGUMENT: workflow_register does not accept \`${inlineSeedKey}\` — a version's default seed is a reference only: upload the files (POST /assets/blob/<sha>, then POST /assets/manifest) and pass the returned seedManifestRef`,
+          { param: inlineSeedKey },
+        );
+      }
+      // Issue #82: validated NOW, in the registrant's own CAS namespace (the same ladder and the same
+      // per-namespace ownership check run_start({seedManifestRef}) uses), so a bad or foreign ref is
+      // refused here — before any trigger is claimed — rather than first at fire time.
+      const seedNamespace = a.seedManifestRef !== undefined ? nsOf(principal) : undefined;
+      if (a.seedManifestRef !== undefined) await this.runManager.loadSeedManifestRef(seedNamespace!, a.seedManifestRef);
       const triggers = a.triggers ?? [];
       if (new Set(triggers).size !== triggers.length) {
         throw codedError('INVALID_ARGUMENT', 'INVALID_ARGUMENT: duplicate ids in triggers[]');
@@ -403,7 +419,7 @@ export class McpFacade {
       }
       let version: string;
       try {
-        ({ version } = await catalog.insertVersion({ name: a.name, script: a.script, mermaid: a.mermaid, triggers, params, actor, registeredRemote: isRemoteSubmission }));
+        ({ version } = await catalog.insertVersion({ name: a.name, script: a.script, mermaid: a.mermaid, triggers, params, actor, registeredRemote: isRemoteSubmission, ...(a.seedManifestRef !== undefined ? { seedManifestRef: a.seedManifestRef, seedNamespace } : {}) }));
       } catch (err) {
         for (const id of [...claimedThisCall].reverse()) this._storeFor(id).release(id, a.name);
         throw err;
@@ -417,7 +433,7 @@ export class McpFacade {
       // Issue #78(b): non-fatal — the version is already registered. Absent when empty, so an
       // unaffected registration keeps exactly the reply keys it had before.
       const warnings = toolSurfaceWarnings(scanAgentCalls(a.script));
-      return { runId: '', status: 'completed', version: versionNum, result: { name: a.name, version, versions, channels, ...(warnings.length > 0 ? { warnings } : {}) } };
+      return { runId: '', status: 'completed', version: versionNum, result: { name: a.name, version, versions, channels, ...(a.seedManifestRef !== undefined ? { seedManifestRef: a.seedManifestRef } : {}), ...(warnings.length > 0 ? { warnings } : {}) } };
     } catch (err) {
       const e = toErrEnvelope(err);
       return { runId: '', status: 'failed', code: e.code, error: e };
@@ -612,7 +628,9 @@ export class McpFacade {
       // seam as `diagramContract` just above (computed off `full`, not carried through
       // `WorkflowOwnerView`). Without it, an operator following the recovery instruction (P1's
       // whole point — re-register+publish locally) has no way to CONFIRM which version is tainted.
-      result: { ...view, phases, diagramContract: full.diagramContract, registeredRemote: full.registeredRemote, toolSurface, ...(toolScan.unscannable ? { toolSurfaceUnscannable: true as const } : {}) },
+      // Issue #82: the version's default seed ref (absent when none was bound). The namespace is
+      // not shown — it is the registrant's identity, already on `owner`/attribution surfaces.
+      result: { ...view, phases, diagramContract: full.diagramContract, registeredRemote: full.registeredRemote, ...(full.seedManifestRef !== undefined ? { seedManifestRef: full.seedManifestRef } : {}), toolSurface, ...(toolScan.unscannable ? { toolSurfaceUnscannable: true as const } : {}) },
     };
   }
 

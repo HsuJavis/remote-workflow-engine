@@ -150,6 +150,12 @@ export interface VersionEntry {
    *  `runNested()`, OR'd against the trigger's own immutable `createdRemote`
    *  (`admissionRefusal`'s two-source rule). `false` on every pre-v37 row (grandfathered local). */
   registeredRemote: boolean;
+  /** Issue #82 (option B): the version's DEFAULT seed — a CAS manifest ref bound at registration
+   *  (`workflow_register({seedManifestRef})`), plus the CAS namespace the registrant proved
+   *  possession of it in. `RunManager.start()` materializes it for a run that brings no seed of
+   *  its own. Both absent on a version registered without one (and on every pre-#82 row). */
+  seedManifestRef?: string;
+  seedNamespace?: string;
 }
 export interface WorkflowDetail extends VersionEntry {
   name: string; createdAt: string; owner: string | null; channels: Channels; versions: string[];
@@ -339,6 +345,10 @@ export class WorkflowCatalog {
     // migration-semantics note): coverage grows from the next remote registration onward, never
     // backfilled.
     if (!versionCols.includes('registeredRemote')) this._db.exec('ALTER TABLE workflow_versions ADD COLUMN registeredRemote INTEGER NOT NULL DEFAULT 0');
+    // Issue #82 (option B): the version's default seed — write-once like every other column here
+    // (a new seed is a new version). NULL = no default seed (every pre-#82 row).
+    if (!versionCols.includes('seed_manifest_ref')) this._db.exec('ALTER TABLE workflow_versions ADD COLUMN seed_manifest_ref TEXT');
+    if (!versionCols.includes('seed_namespace')) this._db.exec('ALTER TABLE workflow_versions ADD COLUMN seed_namespace TEXT');
 
     // v24 (ARCH-098, DES-148, DES-153, TASK-143): the asset store's catalog rows — `workflow = ''` is
     // the global-scope sentinel (SQLite refuses expressions in a PK). `AssetSyncService` (TASK-144)
@@ -642,7 +652,7 @@ export class WorkflowCatalog {
    *  REGISTRATION_CONFLICT instead of an untyped 500. Callers (the facade, ARCH-091/DES-149) run any
    *  trigger `claim()` BETWEEN `validateRegistration` and this call — this method itself does not
    *  know about trigger stores. */
-  async insertVersion(req: { name: string; script: string; mermaid: string; triggers?: string[]; params: ParamContract; principal?: string | null; actor?: Actor; registeredRemote?: boolean }): Promise<{ version: string }> {
+  async insertVersion(req: { name: string; script: string; mermaid: string; triggers?: string[]; params: ParamContract; principal?: string | null; actor?: Actor; registeredRemote?: boolean; seedManifestRef?: string; seedNamespace?: string }): Promise<{ version: string }> {
     const { name, script, mermaid, triggers, params } = req;
     const actor: Actor = req.actor ?? actorFromPrincipal(req.principal ?? null);
     // v37 P1 (ADR-086's third owner ruling, 2026-09-25, DES-263's 第三次修訂): the ONE write this
@@ -688,8 +698,8 @@ export class WorkflowCatalog {
           this._db.prepare('INSERT INTO workflows (name, createdAt, owner) VALUES (?, ?, ?)').run(name, createdAt, owner);
         }
         this._db
-          .prepare('INSERT INTO workflow_versions (name, version, script, defaults, params, mermaid, triggers, createdAt, diagram_contract, registeredRemote) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)')
-          .run(name, v, script, paramsJson, mermaid, triggersJson, createdAt, 'v2', registeredRemote);
+          .prepare('INSERT INTO workflow_versions (name, version, script, defaults, params, mermaid, triggers, createdAt, diagram_contract, registeredRemote, seed_manifest_ref, seed_namespace) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(name, v, script, paramsJson, mermaid, triggersJson, createdAt, 'v2', registeredRemote, req.seedManifestRef ?? null, req.seedManifestRef !== undefined ? (req.seedNamespace ?? null) : null);
         return v;
       }).immediate();
       // v36 (DES-243/244, TASK-242, REQ-213/212): one audit line per successful registration,
@@ -711,7 +721,7 @@ export class WorkflowCatalog {
    *  `register(name, script, defaults, principal)` shape (ADR-035 retires `defaults` from
    *  registration entirely). The facade (ARCH-091/DES-149) does NOT call this — it calls
    *  `validateRegistration`/`insertVersion` separately with a trigger-claim step in between. */
-  async register(req: { name: string; script: string; mermaid: string; triggers?: string[]; principal?: string | null; registeredRemote?: boolean }): Promise<{ version: string }> {
+  async register(req: { name: string; script: string; mermaid: string; triggers?: string[]; principal?: string | null; registeredRemote?: boolean; seedManifestRef?: string; seedNamespace?: string }): Promise<{ version: string }> {
     if (typeof req !== 'object' || req === null || typeof (req as { name?: unknown }).name !== 'string') {
       throw codedError(
         'INVALID_ARGUMENT',
@@ -852,8 +862,8 @@ export class WorkflowCatalog {
       // holds pre-v24 rows, and any run reaching one of those is already refused LEGACY_REREGISTER
       // for the missing per-agent contract. Reading a retired column kept a dead value flowing
       // through the whole admission path.
-      .prepare('SELECT script, mermaid, params, triggers, diagram_contract, registeredRemote FROM workflow_versions WHERE name = ? AND version = ?')
-      .get(name, result.version) as { script: string; mermaid: string | null; params: string | null; triggers: string | null; diagram_contract: string | null; registeredRemote: number };
+      .prepare('SELECT script, mermaid, params, triggers, diagram_contract, registeredRemote, seed_manifest_ref, seed_namespace FROM workflow_versions WHERE name = ? AND version = ?')
+      .get(name, result.version) as { script: string; mermaid: string | null; params: string | null; triggers: string | null; diagram_contract: string | null; registeredRemote: number; seed_manifest_ref: string | null; seed_namespace: string | null };
     return {
       script: vrow.script,
       version: result.version,
@@ -874,6 +884,8 @@ export class WorkflowCatalog {
       // predicate's second source and for `workflow_describe` (so an operator can see which
       // version is tainted).
       registeredRemote: vrow.registeredRemote === 1,
+      // Issue #82 (option B): the version's default seed, if one was bound at registration.
+      ...(vrow.seed_manifest_ref ? { seedManifestRef: vrow.seed_manifest_ref, ...(vrow.seed_namespace ? { seedNamespace: vrow.seed_namespace } : {}) } : {}),
     };
   }
 

@@ -45,6 +45,10 @@ export function casNamespaceFor(principal: string | null | undefined): string {
   return principal ?? 'local';
 }
 
+// Retention (issue #82): this store never deletes a blob or a refs row — there is no CAS GC. If
+// one is ever added, `workflow_versions.seed_manifest_ref` (with its `seed_namespace`) and every
+// sha named inside that manifest are LIVE roots for as long as the version row exists: every
+// future run of that version (scheduled/webhook-fired ones included) re-reads them at start.
 export class CasStore {
   private readonly _db: Database.Database;
   private readonly _blobDir: string;

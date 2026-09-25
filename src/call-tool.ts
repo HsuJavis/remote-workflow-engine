@@ -77,7 +77,8 @@ function unknownTool(name: string): UnknownToolResult {
 // v37 Gate-8 send-back (finding C-1): `code` is `ErrorCode`, not `string` — a type closes the
 // class (an ad-hoc, uncatalogued refusal code can no longer slip through this function) where a
 // test closes one instance.
-/** run_start's four seed sources (tool-specs.ts). A trigger stores none of them (issue #82). */
+/** run_start's four seed sources (tool-specs.ts). A trigger stores none of them (issue #82) — the
+ *  seed belongs to the workflow VERSION (`workflow_register({seedManifestRef})`). */
 const TRIGGER_SEED_KEYS = ['seed', 'seedManifest', 'seedManifestRef', 'seedRef'] as const;
 
 function refusalEnvelope(code: ErrorCode, message: string, detail?: Record<string, unknown>): Record<string, unknown> {
@@ -200,8 +201,9 @@ export async function callTool(
     if (seedKey !== undefined) {
       return refusalEnvelope(
         'INVALID_ARGUMENT',
-        `INVALID_ARGUMENT: ${spec.name} does not accept \`${seedKey}\` — a scheduled or webhook-triggered run cannot carry a seed today, and the key would be silently dropped. ` +
-          "The only files a triggered run gets are its workflow's own skill assets: push them once with workspace_push({workflow, kind:'skill', name, files}), declare the name in meta.params.agents.<label>.skills, and every run materializes them into that agent's .claude/skills/<name>/. " +
+        `INVALID_ARGUMENT: ${spec.name} does not accept \`${seedKey}\` — a trigger cannot carry a seed, and the key would be silently dropped. ` +
+          'Bind the seed to the workflow VERSION instead: upload the files (POST /assets/blob/<sha>, then POST /assets/manifest) and register with workflow_register({name, script, mermaid, seedManifestRef}) — every run of that version that brings no seed of its own, scheduled and webhook-fired runs included, starts with those files. ' +
+          "Per-agent skill files can also ship as skill assets (workspace_push({workflow, kind:'skill', name, files})). " +
           'Or start the run yourself with run_start({name, seed | seedManifest | seedManifestRef | seedRef}).',
       );
     }
