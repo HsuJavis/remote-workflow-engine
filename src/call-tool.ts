@@ -77,6 +77,9 @@ function unknownTool(name: string): UnknownToolResult {
 // v37 Gate-8 send-back (finding C-1): `code` is `ErrorCode`, not `string` — a type closes the
 // class (an ad-hoc, uncatalogued refusal code can no longer slip through this function) where a
 // test closes one instance.
+/** run_start's four seed sources (tool-specs.ts). A trigger stores none of them (issue #82). */
+const TRIGGER_SEED_KEYS = ['seed', 'seedManifest', 'seedManifestRef', 'seedRef'] as const;
+
 function refusalEnvelope(code: ErrorCode, message: string, detail?: Record<string, unknown>): Record<string, unknown> {
   return { runId: '', status: 'failed', code, error: { code, message, ...(detail ? { detail } : {}) } };
 }
@@ -187,6 +190,21 @@ export async function callTool(
       'INVALID_ARGUMENT',
       `INVALID_ARGUMENT: ${spec.name} names no workflow — create the trigger unclaimed, then bind its id with workflow_register({name, script, mermaid, triggers:[id]})`,
     );
+  }
+  // Issue #82: a trigger stores no seed, so `schedule_create({…, seed})` used to succeed and the
+  // fired run got an empty workspace. Both schemas are now closed, but a bare "must NOT have
+  // additional properties" would not say why or what to do instead — so the seed keys are refused
+  // here, ahead of ajv, with that answer (same reason as the `workflow` door above).
+  if (spec.name === 'schedule_create' || spec.name === 'webhook_create') {
+    const seedKey = TRIGGER_SEED_KEYS.find((k) => a[k] !== undefined);
+    if (seedKey !== undefined) {
+      return refusalEnvelope(
+        'INVALID_ARGUMENT',
+        `INVALID_ARGUMENT: ${spec.name} does not accept \`${seedKey}\` — a scheduled or webhook-triggered run cannot carry a seed today, and the key would be silently dropped. ` +
+          "The only files a triggered run gets are its workflow's own skill assets: push them once with workspace_push({workflow, kind:'skill', name, files}), declare the name in meta.params.agents.<label>.skills, and every run materializes them into that agent's .claude/skills/<name>/. " +
+          'Or start the run yourself with run_start({name, seed | seedManifest | seedManifestRef | seedRef}).',
+      );
+    }
   }
   // v24 (integrator): `system_info.topN` is the one place two live design statements collide.
   // DES-077 names the behaviour "clamp-not-reject" (IT-069) AND requires the advertised schema to

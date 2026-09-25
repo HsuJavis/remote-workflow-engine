@@ -590,6 +590,41 @@ export function scanAgentCalls(script: string): AgentCallScan {
   return { labels, calls, violations };
 }
 
+/** Issue #78(b): the file tools a shell can stand in for. */
+const BASH_SUBSUMED_TOOLS = ['Read', 'Grep', 'Glob', 'Write', 'Edit'];
+
+export interface RegistrationWarning {
+  code: 'BASH_SUBSUMES_FILE_TOOLS';
+  label: string;
+  line: number;
+  message: string;
+}
+
+/** Issue #78(b): `allowedTools` restricts tool NAMES, not capability — Bash can read, write and
+ *  search whatever Read/Write/Edit/Grep/Glob can, so a literal list naming Bash beside any of them
+ *  looks narrower than it is. Non-fatal: `workflow_register` returns these as `result.warnings` and
+ *  registers anyway (an implementer that needs a shell is legitimate). Only a LITERAL list counts —
+ *  a call with no `allowedTools` gets the deployment default, which the author did not write. */
+export function toolSurfaceWarnings(scan: AgentCallScan): RegistrationWarning[] {
+  const out: RegistrationWarning[] = [];
+  for (const call of scan.calls) {
+    const tools = call.allowedTools;
+    if (!Array.isArray(tools) || !tools.includes('Bash')) continue;
+    const subsumed = tools.filter((t) => BASH_SUBSUMED_TOOLS.includes(t));
+    if (subsumed.length === 0) continue;
+    out.push({
+      code: 'BASH_SUBSUMES_FILE_TOOLS',
+      label: call.label,
+      line: call.line,
+      message:
+        `agent('${call.label}') (line ${call.line}) lists Bash together with ${subsumed.join(', ')}. ` +
+        'allowedTools restricts tool names only: Bash can already read, write and search anything those tools can, so this list is no narrower than Bash alone. ' +
+        "Keep it if the agent needs a shell; for a read-only agent use ['Read', 'Grep', 'Glob'] with no Bash.",
+    });
+  }
+  return out;
+}
+
 /** Predicted DAG skeleton — a pure static scan of phase()/agent()/parallel()/workflow() calls in
  *  source order. Nodes inside a parallel([...]) share a `parallel` group id; nodes inside a
  *  loop/map/if body are `dynamic:true` (best-effort — real shape resolves only at run time). Never
