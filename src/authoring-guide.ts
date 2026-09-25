@@ -374,6 +374,38 @@ const HOST_PATH_GRANTS_UNCONFINED =
   'Bash-capable work — this is a rule about every admission route this posture gates, not a ' +
   'fixed list of tool names.';
 
+/** Issue #78(c): the read-only shell mode. Enforcement is the kernel sandbox or a refusal — the
+ *  closing sentence states which one this deployment gives, from the same measured posture the Host
+ *  path grants section renders. */
+function readonlyBashBody(posture: 'confined' | 'unconfined' | undefined): string {
+  const here =
+    posture === 'confined'
+      ? "This deployment's boot probe measured a working sandbox, so the mode is enforced here."
+      : posture === 'unconfined'
+        ? "This deployment's boot probe found no working sandbox, so here every `bash: 'readonly'` call fails closed, and `workflow_register` warns about it in advance."
+        : "Whether it is enforced or refused depends on the serving deployment's measured posture — the live `workflow_authoring_guide` response says which.";
+  return (
+    'When an agent needs a shell to run commands and report their output, but must not change ' +
+    "anything, add `bash: 'readonly'` beside its `allowedTools`:\n\n" +
+    '```js\n' +
+    "const facts = await agent('clerk', { prompt: 'Run `ls -la src` and `wc -l src/*.ts`; paste the raw output.', allowedTools: ['Bash', 'Read', 'Grep', 'Glob'], bash: 'readonly' });\n" +
+    '```\n\n' +
+    "The kernel sandbox enforces it, not the prompt and not the tool list: that agent's `Bash` gets " +
+    "no writable path — not the run workspace and not any host path grant. Only the CLI's own " +
+    'private scratch directory stays writable, because the shell cannot run without it. ' +
+    'That combination does not trip `BASH_SUBSUMES_FILE_TOOLS`. ' +
+    'On a host with no working Bash sandbox, the engine never downgrades a readonly agent to a writable shell. ' +
+    'The call fails closed: the agent returns `null`, and its record carries ' +
+    '`BASH_READONLY_UNENFORCEABLE`, with no session started. ' +
+    "`workflow_register` refuses `bash: 'readonly'` beside `Write`, `Edit` or `NotebookEdit`, with " +
+    'no literal `allowedTools` (the deployment default includes write tools), or with no `Bash` in ' +
+    'the list — `SCAN_VIOLATION` `BASH_READONLY_CONFLICT`. It refuses any other `bash` value ' +
+    '(`BASH_MODE_INVALID`) and a `bash` key in `meta.params`. `run_start` overrides cannot change it. ' +
+    "The agent's `harness.bash` record in `run_agent_log` shows `{mode, enforced}`. " +
+    here
+  );
+}
+
 function hostPathGrantsBody(posture: 'confined' | 'unconfined' | undefined): string {
   if (posture === 'confined') return HOST_PATH_GRANTS_CONFINED;
   if (posture === 'unconfined') return HOST_PATH_GRANTS_UNCONFINED;
@@ -624,6 +656,8 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '`workflow_register` answers it with a non-fatal `result.warnings` entry ' +
         '(`BASH_SUBSUMES_FILE_TOOLS`) and registers the version anyway. A read-only agent is ' +
         "`['Read', 'Grep', 'Glob']`, with no `Bash`.\n\n" +
+        readonlyBashBody(ceilings.confinementPosture) +
+        '\n\n' +
         // Issue #77: the SDK's Write description says "must be absolute"; the engine cannot change
         // that text, so the guide states the rule the engine actually applies.
         'File tools take workspace-relative paths: `out/result.txt` resolves inside the run ' +

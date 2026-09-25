@@ -23,7 +23,7 @@ import { resolveAlias, resolveModelRef, type Provider } from '../providers.js';
 import { isPathContained } from '../path-containment.js';
 import { resolveConfig, type SecretSource } from '../secret-resolver.js';
 import { proxyModelName } from './litellm-proxy.js';
-import { buildBashConfinement, DENY_READ_MODE } from './bash-confinement.js';
+import { buildBashConfinement, DENY_READ_MODE, readonlyBashRefusal } from './bash-confinement.js';
 import { findProjectMarkerAboveWorkspace, WORKROOT_INSIDE_PROJECT } from '../workroot-guard.js';
 import type { EventSink } from '../event-log.js';
 
@@ -795,6 +795,14 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     // version's registeredRemote; the latter refuses a LOCAL run_start of a remotely-registered
     // version, which the door cannot see. Admission is the boundary; this class stays posture-blind.
     const confinementRoot = req.workspace ?? this._config.cwd;
+    // Issue #78(c): `bash:'readonly'` is only ever dispatched with the kernel enforcing it — a bad
+    // value, a write tool beside it, or a host with no working sandbox refuses here, before any
+    // session (the one exception to "this class stays posture-blind": it never downgrades a
+    // readonly shell to a writable one).
+    const bashRefusal = readonlyBashRefusal({ bash: req.opts.bash, tools: curatedTools, posture: this._config.confinementPosture, root: confinementRoot });
+    if (bashRefusal !== null) {
+      return stamp({ ok: false, provider: 'claude-agent-sdk', reason: 'terminal', retryable: false, detail: bashRefusal });
+    }
     const sandbox: Options['sandbox'] =
       this._config.confinementPosture === 'confined'
         ? buildBashConfinement({
@@ -803,6 +811,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
             protectedFiles: this._config.confinement?.protectedFiles ?? [],
             workRoot: this._config.confinement?.workRoot,
             denyReadMode: DENY_READ_MODE,
+            ...(req.opts.bash === 'readonly' ? { bashMode: 'readonly' as const } : {}),
           })
         : { enabled: false };
 
@@ -934,6 +943,8 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       if (materialized) descriptor.materialized = materialized;
       // #81/#83: what the model could actually activate — distinct from what is on disk above.
       descriptor.skillsExposed = exposedSkills;
+      // Issue #78(c): the effective Bash mode and whether the kernel sandbox actually carried it.
+      if (wireTools.includes('Bash')) descriptor.bash = { mode: req.opts.bash === 'readonly' ? 'readonly' : 'full', enforced: sandbox?.enabled === true };
       // `applied` travels to the caller as onHarness's own second argument (the single source of
       // truth downstream decoration reads) — no separate write onto `descriptor` needed here.
       // v26 (DES-179): `wireEffort.applied` is ALWAYS present (its own doc comment), but the

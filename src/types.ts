@@ -209,6 +209,12 @@ export interface AgentOpts {
    *  DIFFERENT name (`tools`) that addressed nothing. That gap is #55: the v24 cold subject wrote
    *  `tools: []`, was silently ignored, and worked around a capability it already had. */
   allowedTools?: string[];
+  /** Issue #78(c): `'readonly'` makes this agent's Bash unable to write anything — enforced by the
+   *  kernel sandbox (`buildBashConfinement`'s readonly posture), never by prompt or name list. On a
+   *  host whose boot probe found no working sandbox the call fails closed
+   *  (`BASH_READONLY_UNENFORCEABLE`) instead of running a writable shell. Absent = the normal
+   *  (workspace-writable) Bash. Author-locked: registration checks the literal, `LOCKED_KEYS` has it. */
+  bash?: 'readonly';
 }
 
 export interface AgentRecord {
@@ -590,6 +596,11 @@ export interface HarnessDescriptor {
    *  and a skill that never reached the model read as delivered. `[]` = no Skill tool on the wire.
    *  Absent on records written before it existed. */
   skillsExposed?: string[];
+  /** Issue #78(c): present exactly when Bash was on the wire. `mode` is the effective Bash mode;
+   *  `enforced` is whether the kernel sandbox was actually handed to the CLI for this call (host
+   *  posture confined). A readonly call is never dispatched unenforced, so `{mode:'readonly',
+   *  enforced:false}` cannot occur — it is refused `BASH_READONLY_UNENFORCEABLE` before a session. */
+  bash?: { mode: 'readonly' | 'full'; enforced: boolean };
 }
 
 export interface TranscriptEvent {

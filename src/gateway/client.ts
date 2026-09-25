@@ -510,7 +510,8 @@ export class LiteLLMGatewayClient implements GatewayClient {
     const applied: EffortApplied | undefined =
       req.opts.effort !== undefined ? wireEffort(target.provider, req.caps ?? UNKNOWN_CAPS, req.opts.effort).applied : undefined;
     // DES-066 (TASK-069): emit harness descriptor eagerly at model-resolution time (surfaceType:'none'
-    // — direct-fetch has no curated tool surface). The prompt rides UNCUT: the 4KB head+tail cap is
+    // — direct-fetch has no curated tool surface, so no Bash either: issue #78(c)'s `bash:'readonly'`
+    // is trivially true here and needs no sandbox or refusal). The prompt rides UNCUT: the 4KB head+tail cap is
     // applied at the persist site after `redact()` (review §R2 R-G9 — capping first can split a
     // secret across the seam and defeat the value-exact match).
     if (req.onHarness) {

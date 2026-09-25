@@ -51,8 +51,8 @@ describe('LOCKED_KEYS / TUNABLE_KEYS / EFFORT_RANK vocabulary (DES-101, ADR-001)
   // schema description and `workflow_describe.lockedKeys` — so a name in it that addresses nothing
   // is worse than an omission: it is what the v24 cold subject copied, and it was silently dropped.
   // The rename is the whole point of the fix; this pin moves WITH it, deliberately.
-  it('LOCKED_KEYS is exactly the 6 D12-locked keys, spelled as the pipeline spells them', () => {
-    expect([...LOCKED_KEYS].sort()).toEqual(['allowedTools', 'cwd', 'mcp', 'prompt', 'skills', 'workdir'].sort());
+  it('LOCKED_KEYS is exactly the 6 D12-locked keys + #78(c) bash, spelled as the pipeline spells them', () => {
+    expect([...LOCKED_KEYS].sort()).toEqual(['allowedTools', 'bash', 'cwd', 'mcp', 'prompt', 'skills', 'workdir'].sort());
   });
 
   it('TUNABLE_KEYS is exactly the 4 engine-global harness knobs', () => {

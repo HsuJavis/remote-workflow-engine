@@ -48,7 +48,7 @@ export const meta = {
 
 The engine-owned keys are never written inside an `agent()` call's options literal — `model`, `effort`, `timeoutMs`, `appendPrompt` there are refused `SCAN_VIOLATION`, naming the key and the `meta.params.agents.<label>.<key>.default` it belongs in instead.
 
-The options object is closed. An `agent()` option key that is not one of `prompt`, `label`, `phase`, `schema`, `isolation`, `mcp`, `allowedTools` is refused `SCAN_VIOLATION: PARAM_UNKNOWN` at registration, naming the key you wrote and listing the ones that are accepted. It is never silently dropped — before v25 it was, and an author who reached for a plausible-sounding name got a run that looked correct and ignored the option.
+The options object is closed. An `agent()` option key that is not one of `prompt`, `label`, `phase`, `schema`, `isolation`, `mcp`, `allowedTools`, `bash` is refused `SCAN_VIOLATION: PARAM_UNKNOWN` at registration, naming the key you wrote and listing the ones that are accepted. It is never silently dropped — before v25 it was, and an author who reached for a plausible-sounding name got a run that looked correct and ignored the option.
 
 ## The agent's tool surface
 
@@ -62,6 +62,14 @@ const editor  = await agent('editor', { prompt: 'Fix the typo in README.md.', al
 Two layers are **settable**, on the tool-calling (SDK gateway) path, and the first one present wins: the per-call `allowedTools` above, then this deployment's configured `defaultAllowedTools`. Only the first is settable from a script. If the deployment configures neither, the engine applies a built-in core set — `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash` — so a session is never handed the CLI's full uncurated tool list. (The direct-fetch transport has no tool surface at all — this section does not apply to it.)
 
 `allowedTools` restricts tool **names**, not what the agent can reach. `Bash` can read, write and search anything `Read`, `Write`, `Edit`, `Grep` and `Glob` can — inside the run workspace when this deployment confines `Bash`, anywhere the engine process can reach when it does not (see Host path grants). So `['Bash']` alone can still write files, and a list that names `Bash` beside any of those five is no narrower than `Bash` alone: `workflow_register` answers it with a non-fatal `result.warnings` entry (`BASH_SUBSUMES_FILE_TOOLS`) and registers the version anyway. A read-only agent is `['Read', 'Grep', 'Glob']`, with no `Bash`.
+
+When an agent needs a shell to run commands and report their output, but must not change anything, add `bash: 'readonly'` beside its `allowedTools`:
+
+```js
+const facts = await agent('clerk', { prompt: 'Run `ls -la src` and `wc -l src/*.ts`; paste the raw output.', allowedTools: ['Bash', 'Read', 'Grep', 'Glob'], bash: 'readonly' });
+```
+
+The kernel sandbox enforces it, not the prompt and not the tool list: that agent's `Bash` gets no writable path — not the run workspace and not any host path grant. Only the CLI's own private scratch directory stays writable, because the shell cannot run without it. That combination does not trip `BASH_SUBSUMES_FILE_TOOLS`. On a host with no working Bash sandbox, the engine never downgrades a readonly agent to a writable shell. The call fails closed: the agent returns `null`, and its record carries `BASH_READONLY_UNENFORCEABLE`, with no session started. `workflow_register` refuses `bash: 'readonly'` beside `Write`, `Edit` or `NotebookEdit`, with no literal `allowedTools` (the deployment default includes write tools), or with no `Bash` in the list — `SCAN_VIOLATION` `BASH_READONLY_CONFLICT`. It refuses any other `bash` value (`BASH_MODE_INVALID`) and a `bash` key in `meta.params`. `run_start` overrides cannot change it. The agent's `harness.bash` record in `run_agent_log` shows `{mode, enforced}`. Whether it is enforced or refused depends on the serving deployment's measured posture — the live `workflow_authoring_guide` response says which.
 
 File tools take workspace-relative paths: `out/result.txt` resolves inside the run workspace, even where a tool's own description asks for an absolute path. A file-tool path that resolves outside the workspace is refused, and the refusal names the workspace root.
 
@@ -85,7 +93,7 @@ After v34 there are exactly two author/caller segments in the prompt a model rec
 
 ## Locked vs. tunable
 
-The six locked keys are engine-owned and can never be overridden by a caller: prompt, allowedTools, skills, mcp, workdir, cwd. The four tunable keys an override may target, per declared agent label, are: model, effort, timeoutMs, appendPrompt.
+The six locked keys are engine-owned and can never be overridden by a caller: prompt, allowedTools, bash, skills, mcp, workdir, cwd. The four tunable keys an override may target, per declared agent label, are: model, effort, timeoutMs, appendPrompt.
 
 ## Engine ceilings (this deployment)
 

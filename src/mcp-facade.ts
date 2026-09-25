@@ -416,7 +416,7 @@ export class McpFacade {
       const { versions, channels } = await catalog.resolveDetail(a.name, { version });
       // Issue #78(b): non-fatal — the version is already registered. Absent when empty, so an
       // unaffected registration keeps exactly the reply keys it had before.
-      const warnings = toolSurfaceWarnings(scanAgentCalls(a.script));
+      const warnings = toolSurfaceWarnings(scanAgentCalls(a.script), this.confinementPosture);
       return { runId: '', status: 'completed', version: versionNum, result: { name: a.name, version, versions, channels, ...(warnings.length > 0 ? { warnings } : {}) } };
     } catch (err) {
       const e = toErrEnvelope(err);

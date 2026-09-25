@@ -8,6 +8,7 @@ import { parseParamContract, retiredDefaults, TUNABLE_KEYS, type ParamContract, 
 // v25 (#55): the scanner's accepted-key set is derived from the AgentOpts TYPE, so the two
 // cannot drift apart (see AGENT_OPT_KEYS below).
 import type { AgentOpts } from './types.js';
+import { READONLY_BASH_FORBIDDEN_TOOLS } from './gateway/bash-confinement.js';
 
 export interface WorkflowMeta {
   description: string;
@@ -165,7 +166,14 @@ export type AgentCallViolationCode =
   /** v35 (DES-236/237, ARCH-149, TASK-233, REQ-208): the `nonCodeSpans` acorn oracle failed to
    *  parse the script — fail CLOSED (no partial scan) rather than risk a literal-heavy string
    *  ("...agent (mode A)...") being misread as a real call, or vice versa. */
-  | 'SCRIPT_UNSCANNABLE';
+  | 'SCRIPT_UNSCANNABLE'
+  /** Issue #78(c): `bash:` is anything but the literal `'readonly'` — a security declaration must be
+   *  statically readable, and an unrecognised mode must never read as the writable default. */
+  | 'BASH_MODE_INVALID'
+  /** Issue #78(c): `bash:'readonly'` whose tool surface is not a read-only shell — a literal
+   *  `allowedTools` that also grants a write tool, names no Bash, or is absent/non-literal (the
+   *  deployment default carries Write/Edit, which this scan cannot see). */
+  | 'BASH_READONLY_CONFLICT';
 
 export interface AgentCallViolation {
   line: number;
@@ -188,6 +196,8 @@ export interface AgentCallScan {
     /** DES-174: the literal array when the options object carries `allowedTools` (including `[]`,
      *  recorded verbatim); `'absent'` when the call has no `allowedTools` key at all. */
     allowedTools?: string[] | 'absent';
+    /** Issue #78(c): present only when the options literal carries a valid `bash: 'readonly'`. */
+    bash?: 'readonly';
     /** DES-174: both arms of one ternary or one if/else, or every member of one `parallel([...])`,
      *  share one `{kind, id}` — detected with the same string-aware `matchDelimiter` below. Absent
      *  for a plain sequential call. */
@@ -219,7 +229,7 @@ const LOCKED_PARAM_KEYS = new Set<string>(TUNABLE_KEYS);
  *  reason: this ledger has now recorded one-directional vocabulary drift four times. */
 const AGENT_OPT_KEYS: Record<keyof AgentOpts | 'prompt', true> = {
   prompt: true, label: true, phase: true, schema: true, model: true, effort: true,
-  timeoutMs: true, isolation: true, mcp: true, allowedTools: true,
+  timeoutMs: true, isolation: true, mcp: true, allowedTools: true, bash: true,
 };
 
 /** v34 (DES-224, ARCH-138, TASK-229, REQ-203): agent() options keys that USED to work and now
@@ -539,6 +549,8 @@ export function scanAgentCalls(script: string): AgentCallScan {
     }
 
     let allowedTools: string[] | 'absent' = 'absent';
+    let bashRaw: string | undefined;
+    let bash: 'readonly' | undefined;
     const optsText = optsArg!.trim();
     if (!(optsText.startsWith('{') && optsText.endsWith('}'))) {
       violations.push({ line, code: 'AGENT_OPTS_NOT_LITERAL', hint: 'the options argument must be a literal object: { … }' });
@@ -552,6 +564,7 @@ export function scanAgentCalls(script: string): AgentCallScan {
           const parsed = parseStringArrayLiteral(entry.slice(colonIdx + 1));
           if (parsed !== null) allowedTools = parsed;
         }
+        if (key === 'bash') bashRaw = entry.slice(colonIdx + 1).trim();
         if (LOCKED_PARAM_KEYS.has(key)) {
           const label = validLabel ?? '<label>';
           violations.push({
@@ -581,20 +594,41 @@ export function scanAgentCalls(script: string): AgentCallScan {
           });
         }
       }
+      if (bashRaw !== undefined) {
+        const conflict = readonlyBashConflict(allowedTools);
+        if (literalStringValue(bashRaw) !== 'readonly') {
+          violations.push({ line, key: 'bash', code: 'BASH_MODE_INVALID', hint: "bash accepts only the literal 'readonly' (omit the key for normal Bash)" });
+        } else if (conflict !== null) {
+          violations.push({ line, key: 'bash', code: 'BASH_READONLY_CONFLICT', hint: conflict });
+        } else {
+          bash = 'readonly';
+        }
+      }
     }
 
-    calls.push({ line, label: validLabel ?? labelVal ?? '', index, allowedTools, group });
+    calls.push({ line, label: validLabel ?? labelVal ?? '', index, allowedTools, ...(bash !== undefined ? { bash } : {}), group });
     if (validLabel && !labels.includes(validLabel)) labels.push(validLabel);
   }
 
   return { labels, calls, violations };
 }
 
+/** Issue #78(c): why a `bash:'readonly'` call's literal tool list is not a read-only shell, or null. */
+function readonlyBashConflict(allowedTools: string[] | 'absent'): string | null {
+  if (allowedTools === 'absent') {
+    return "bash:'readonly' needs a literal allowedTools list (e.g. ['Bash', 'Read', 'Grep', 'Glob']) — without one the agent gets the deployment default, which includes Write/Edit";
+  }
+  const writers = allowedTools.filter((t) => (READONLY_BASH_FORBIDDEN_TOOLS as readonly string[]).includes(t));
+  if (writers.length > 0) return `bash:'readonly' contradicts ${writers.join(', ')} in allowedTools — a read-only agent cannot also hold a write tool`;
+  if (!allowedTools.includes('Bash')) return "bash:'readonly' but allowedTools has no Bash — the declaration would restrict nothing";
+  return null;
+}
+
 /** Issue #78(b): the file tools a shell can stand in for. */
 const BASH_SUBSUMED_TOOLS = ['Read', 'Grep', 'Glob', 'Write', 'Edit'];
 
 export interface RegistrationWarning {
-  code: 'BASH_SUBSUMES_FILE_TOOLS';
+  code: 'BASH_SUBSUMES_FILE_TOOLS' | 'BASH_READONLY_UNENFORCEABLE';
   label: string;
   line: number;
   message: string;
@@ -605,9 +639,27 @@ export interface RegistrationWarning {
  *  looks narrower than it is. Non-fatal: `workflow_register` returns these as `result.warnings` and
  *  registers anyway (an implementer that needs a shell is legitimate). Only a LITERAL list counts —
  *  a call with no `allowedTools` gets the deployment default, which the author did not write. */
-export function toolSurfaceWarnings(scan: AgentCallScan): RegistrationWarning[] {
+export function toolSurfaceWarnings(scan: AgentCallScan, posture?: 'confined' | 'unconfined'): RegistrationWarning[] {
   const out: RegistrationWarning[] = [];
   for (const call of scan.calls) {
+    // Issue #78(c): a readonly shell beside Read/Grep/Glob IS the narrow shape — the kernel keeps it
+    // from writing (registration already refused it beside a write tool). What an author must learn
+    // at registration instead is whether THIS engine can enforce it: posture is a boot-time host
+    // fact that can change without re-registering, so this warns; dispatch is what refuses.
+    if (call.bash === 'readonly') {
+      if (posture !== 'confined') {
+        out.push({
+          code: 'BASH_READONLY_UNENFORCEABLE',
+          label: call.label,
+          line: call.line,
+          message:
+            `agent('${call.label}') (line ${call.line}) declares bash:'readonly', and this engine has no working Bash sandbox (boot probe: unconfined). ` +
+            'Every dispatch of this agent here will fail closed (BASH_READONLY_UNENFORCEABLE) rather than run a writable shell; ' +
+            "it only runs on an engine whose probe measured 'confined'. For a read-only agent on this host, drop Bash: ['Read', 'Grep', 'Glob'].",
+        });
+      }
+      continue;
+    }
     const tools = call.allowedTools;
     if (!Array.isArray(tools) || !tools.includes('Bash')) continue;
     const subsumed = tools.filter((t) => BASH_SUBSUMED_TOOLS.includes(t));
