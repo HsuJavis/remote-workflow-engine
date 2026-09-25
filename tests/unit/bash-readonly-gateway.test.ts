@@ -46,7 +46,7 @@ describe('#78(c) buildBashConfinement — readonly posture', () => {
   it('no bashMode ⇒ byte-identical to before (the writable posture is untouched)', () => {
     const a = buildBashConfinement({ root: ROOT, grantedHostPaths: [GRANT], protectedFiles: [], workRoot: WORKROOT, denyReadMode: 'enumerated' });
     expect(a.filesystem?.allowWrite).toEqual([ROOT, GRANT]);
-    expect(a.filesystem?.denyWrite).toEqual([join(ROOT, '.claude', 'settings.json'), join(ROOT, '.claude', 'settings.local.json')]);
+    expect(a.filesystem?.denyWrite).toEqual(['.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/commands', '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/launch.json', '.claude/skills', '.mcp.json'].map((rel) => join(ROOT, rel)));
   });
 });
 

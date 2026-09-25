@@ -24,6 +24,7 @@ import { isPathContained } from '../path-containment.js';
 import { resolveConfig, type SecretSource } from '../secret-resolver.js';
 import { proxyModelName } from './litellm-proxy.js';
 import { buildBashConfinement, DENY_READ_MODE, readonlyBashRefusal } from './bash-confinement.js';
+import { protectedConfigTarget, sweepPlantedConfig } from './project-config-guard.js';
 import { findProjectMarkerAboveWorkspace, WORKROOT_INSIDE_PROJECT } from '../workroot-guard.js';
 import type { EventSink } from '../event-log.js';
 
@@ -343,7 +344,12 @@ function resolveAgainstWorkspace(candidate: string, root: string): string {
   return isAbsolute(candidate) ? candidate : join(root, candidate);
 }
 
-function toolUsePreCheck(root: string | undefined, candidates: string[]): { behavior: 'allow' } | { behavior: 'deny'; message: string } {
+/** Tools that only read. Every OTHER tool (Write/Edit/MultiEdit/NotebookEdit, and any tool a future
+ *  CLI adds) is held to the project-configuration rule below — an allowlist, so a new writer is
+ *  covered before anyone remembers to list it. */
+const READ_ONLY_FILE_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS', 'NotebookRead']);
+
+function toolUsePreCheck(root: string | undefined, candidates: string[], toolName: string): { behavior: 'allow' } | { behavior: 'deny'; message: string } {
   if (root === undefined) return { behavior: 'allow' }; // no workspace known → nothing to enforce
   for (const candidate of candidates) {
     if (!isInsideWorkspace(resolveAgainstWorkspace(candidate, root), root)) {
@@ -360,12 +366,27 @@ function toolUsePreCheck(root: string | undefined, candidates: string[]): { beha
       };
     }
   }
+  // The workspace is the CLI's project directory: configuration written here is loaded by the next
+  // agent's CLI (hooks run commands, permissions/sandbox widen). See PROJECT_CONFIG_PATHS.
+  if (!READ_ONLY_FILE_TOOLS.has(toolName)) {
+    for (const candidate of candidates) {
+      const hit = protectedConfigTarget(candidate, root);
+      if (hit !== null) {
+        return {
+          behavior: 'deny',
+          message:
+            `PROJECT_CONFIG_PROTECTED: ${candidate} is ${hit} in this run's workspace — configuration the Claude CLI loads for every agent in this run ` +
+            '(it can run commands or widen permissions), so no agent tool may create or change it. Write to a different path; reading it is allowed.',
+        };
+      }
+    }
+  }
   return { behavior: 'allow' };
 }
 
 function makeCanUseTool(root: string | undefined): CanUseTool {
-  return async (_toolName, input, options) => {
-    return toolUsePreCheck(root, extractCandidatePaths(input as Record<string, unknown>, options.blockedPath));
+  return async (toolName, input, options) => {
+    return toolUsePreCheck(root, extractCandidatePaths(input as Record<string, unknown>, options.blockedPath), toolName);
   };
 }
 
@@ -375,7 +396,7 @@ function makeCanUseTool(root: string | undefined): CanUseTool {
 function makePreToolUseHook(root: string | undefined): HookCallback {
   return async (input) => {
     if (input.hook_event_name !== 'PreToolUse') return {};
-    const decision = toolUsePreCheck(root, extractCandidatePaths((input.tool_input ?? {}) as Record<string, unknown>));
+    const decision = toolUsePreCheck(root, extractCandidatePaths((input.tool_input ?? {}) as Record<string, unknown>), input.tool_name);
     if (decision.behavior === 'deny') {
       return {
         hookSpecificOutput: {
@@ -675,6 +696,23 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     // `.mcp.json` is REWRITTEN by `materializeAssets` itself; `strictMcpConfig: true` below still
     // needs the SAME resolved configs on `options.mcpServers` (a project `.mcp.json` is not read
     // once `strictMcpConfig` is set) — resolved ONCE here and threaded into both.
+    // Project configuration another agent (or anything else) left in the workspace is removed before
+    // this CLI can load it — and before skills are materialized, so a `.claude` symlink cannot carry
+    // them out of the workspace. The file tools cannot write these paths (toolUsePreCheck); this
+    // catches every other route (Bash on an unconfined host). Unremovable ⇒ refuse, never load it.
+    let plantedConfigRemoved: string[] = [];
+    if (req.workspace !== undefined) {
+      try {
+        plantedConfigRemoved = sweepPlantedConfig(req.workspace);
+      } catch (err) {
+        if (timer !== undefined) clearTimeout(timer);
+        req.signal?.removeEventListener('abort', onExternalAbort);
+        return { ok: false, provider: 'claude-agent-sdk', transport: 'claude-agent-sdk', reason: 'terminal', retryable: false, detail: `PLANTED_CONFIG_UNREMOVABLE: ${(err as Error).message} in the run workspace — refusing to start an agent that would load it` };
+      }
+      if (plantedConfigRemoved.length > 0) {
+        this._eventSink({ kind: 'agent.planted_config_removed', runId: req.runId, agentId: req.agentId, attempt, root: req.workspace, removed: plantedConfigRemoved });
+      }
+    }
     let materialized: { skills: string[]; mcp: string[]; missing: string[] } | undefined;
     let mcpConfigs: Record<string, McpServerConfig> = {};
     let mcpMissing: string[] = [];
@@ -943,6 +981,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       if (materialized) descriptor.materialized = materialized;
       // #81/#83: what the model could actually activate — distinct from what is on disk above.
       descriptor.skillsExposed = exposedSkills;
+      if (plantedConfigRemoved.length > 0) descriptor.plantedConfigRemoved = plantedConfigRemoved;
       // Issue #78(c): the effective Bash mode and whether the kernel sandbox actually carried it.
       if (wireTools.includes('Bash')) descriptor.bash = { mode: req.opts.bash === 'readonly' ? 'readonly' : 'full', enforced: sandbox?.enabled === true };
       // `applied` travels to the caller as onHarness's own second argument (the single source of
