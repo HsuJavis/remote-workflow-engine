@@ -7,6 +7,7 @@
 // this module reads no credentials at all).
 import type { AliasMap } from '../gateway/client.js';
 import type { FourRates } from '../types.js';
+import type { ProbeResult } from './model-probe.js';
 
 export interface ModelEntry {
   provider: string;
@@ -330,7 +331,7 @@ function annotate(entries: ModelEntry[]): ModelEntry[] {
 
 /** Stability tier for a model entry. Extension point: to add a level, add the literal here,
  *  update `classifyStability`, and extend the drift-lock (DES-075). */
-export type Stability = 'stable' | 'variable' | 'best-effort';
+export type Stability = 'stable' | 'variable' | 'best-effort' | 'degraded' | 'unavailable';
 
 /** A ModelEntry enriched with the three additive capability/cost fields (DES-075), plus v26's
  *  declared-not-probed capability fields (DES-179, ARCH-117, TASK-179). `toolUse` is RENAMED to
@@ -357,6 +358,18 @@ export interface EnrichedModelEntry extends Omit<ModelEntry, 'toolUse' | 'effort
    *  shape change to save ~24 bytes/row, DES-179's own boundary). `null` when the caller has no
    *  catalog snapshot timestamp to attach (e.g. a direct `enrichModelEntry` call in a unit test). */
   catalogFetchedAt: string | null;
+  /** Issue #73: OBSERVED by the engine's own probe (model-probe.ts) through the real gateway —
+   *  `null` = never probed. `toolUseVerified` is true only when the model ran a real Bash tool call
+   *  AND reported the unguessable value it printed. */
+  toolUseVerified: boolean | null;
+  proseVerified: boolean | null;
+  lastProbedAt: string | null;
+  probeDetail: string | null;
+  /** Issue #73: where `stability` came from. `'probe'` (a probe result exists): prose failed ->
+   *  `unavailable`; prose ok but tools failed -> `degraded`; both passed -> the rule's own tier (a
+   *  probe proves liveness, not an SLA, so it never promotes a local/free model to `stable`).
+   *  `'rule'` (never probed): `classifyStability`. */
+  stabilitySource: 'probe' | 'rule';
 }
 
 /** Ascending price bands ($/1M) for mapping a scalar price to an integer cost level 0–10.
@@ -416,7 +429,7 @@ export function computeCostLevel(e: ModelEntry): number | null {
  *  wired through `ModelBook.snapshot()`) — optional and defaulting to `null` so a direct call with
  *  no catalog context (a unit test, or `check-mermaid.ts`-style internal use) keeps DES-179's
  *  original honest "we never looked" default unchanged. */
-export function enrichModelEntry(e: ModelEntry, catalogFetchedAt: string | null = null): EnrichedModelEntry {
+export function enrichModelEntry(e: ModelEntry, catalogFetchedAt: string | null = null, probe?: ProbeResult): EnrichedModelEntry {
   // capability: truncate at 200 chars (199 + '…'); empty/null → fallback "${provider} model"
   let capability = e.description?.trim() ?? '';
   if (!capability) capability = `${e.provider} model`;
@@ -427,10 +440,12 @@ export function enrichModelEntry(e: ModelEntry, catalogFetchedAt: string | null 
   // v26 integration: `supported_parameters` is dropped for the same reason — it is the RAW signal
   // the two `*Declared` fields below project, and the output must carry one name per fact.
   const { toolUse, effortDeclared, declaredSource, supported_parameters: _supported, ...rest } = e;
+  const ruleStability = classifyStability(e);
+  const stability: Stability = !probe ? ruleStability : !probe.proseVerified ? 'unavailable' : !probe.toolUseVerified ? 'degraded' : ruleStability;
   return {
     ...rest,
     capability,
-    stability: classifyStability(e),
+    stability,
     costLevel: computeCostLevel(e),
     toolUseDeclared: toolUse,
     effortDeclared: effortDeclared ?? 'unknown',
@@ -438,6 +453,11 @@ export function enrichModelEntry(e: ModelEntry, catalogFetchedAt: string | null 
     // v26 (DES-179's own boundary): per-row, never a top-level wrapper — `null` when the caller has
     // no catalog snapshot timestamp to attach (the parameter's own default).
     catalogFetchedAt,
+    toolUseVerified: probe ? probe.toolUseVerified : null,
+    proseVerified: probe ? probe.proseVerified : null,
+    lastProbedAt: probe ? probe.probedAt : null,
+    probeDetail: probe ? (probe.detail.length > 200 ? probe.detail.slice(0, 199) + '…' : probe.detail) : null,
+    stabilitySource: probe ? 'probe' : 'rule',
   };
 }
 

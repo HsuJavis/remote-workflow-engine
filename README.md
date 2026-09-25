@@ -107,6 +107,15 @@
 - **系統監控**：`system_info`（CPU 負載 + 核心數 + 利用率 %、記憶體 total/used/free、磁碟、引擎行程 + 主機 Top-N 行程 + 系統行程統計，`GET /api/system`）
 - **模型目錄**：`models_list`（跨供應商統一目錄，含 `capability`/`stability`/`costLevel 0–10`/`modalities`/`ref` 等豐富欄位，支援多維篩選，`GET /api/models`）。
   **每個模型只有一列**；該列的 `aliases` 列出這台部署所有指向它的別名（`ref` 是其中第一個，也就是可以直接丟給 `agent({model})` 的那個字串）。
+- **模型探測（issue #73）**：`toolUseDeclared`/`effortDeclared` 只是目錄「宣稱」的能力；引擎另外會對**設定的別名**
+  （每個不同的 provider/model 一次，不碰其他目錄列）實際打兩通小呼叫——一通純文字、一通只給 `Bash`、
+  必須執行指令並回報一個猜不到的隨機值——走的是 agent 用的同一個 gateway。結果存進 `store/index.db`（重啟不丟），
+  `models_list`／`GET /api/models` 每列多出 `toolUseVerified`/`proseVerified`（`true|false`，從沒探測過為 `null`）、
+  `lastProbedAt`、`probeDetail`，以及 `stabilitySource`：`'probe'` 時文字失敗 → `stability:'unavailable'`、
+  工具失敗 → `'degraded'`、兩通都過 → 保留規則層級；`'rule'` 表示沒探測過、沿用原規則。
+  管理員可用 `models_probe`（admin 限定；可帶 `{alias}` 只測一個）立即探測；引擎本身依 `modelProbe.intervalMs`
+  （預設每週）自動重測。`run_start` 若有帶工具的 agent 落在「最近一次探測沒用工具」的模型上，會照常啟動並在
+  `result.warnings` 回 `MODEL_TOOL_USE_UNVERIFIED`（排程/webhook 啟動的 run 則寫進引擎日誌）。
 - **儀表板**：`GET /dashboard` —— 深色系操作介面（畫面右上角三段式主題切換：跟隨系統／淺色／
   深色；語言可切中/英；還有一顆 accent 色調滑桿，可即時看到目前角度，喜歡什麼顏色自己調——三者的
   選擇都存在瀏覽器 `localStorage`，換裝置不會帶過去）。分頁列是可鍵盤操作的頁籤（目前分頁有底線
@@ -192,7 +201,7 @@
   `schedule_*`/`webhook_*` 需要 `author`，全域資產推送需要 `admin`（見 DEPLOY.md §1b「角色」）。
   啟用方式：在 `rwe.config.json` 加入 `auth:{enabled:true,...}` 區塊（見 `rwe.config.example.json` / DEPLOY.md §1b 設定總表）。
 
-共 **35 個** MCP 工具（權威清單見 `src/tool-specs.ts`）。
+共 **36 個** MCP 工具（權威清單見 `src/tool-specs.ts`）。
 
 ## 前置需求
 
@@ -407,7 +416,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 # 沒過就回 401 + WWW-Authenticate——而且是在讀到任何工作流程資料「之前」就擋下，
 # 所以未授權的呼叫端連「這個名稱存不存在」都問不出來（存在與不存在都是同一個 401）。
 
-# 查詢 35 個 MCP 工具（含 schema）
+# 查詢 36 個 MCP 工具（含 schema）
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'

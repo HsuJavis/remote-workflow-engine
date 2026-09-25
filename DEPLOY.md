@@ -6,8 +6,8 @@
 > `.sdlc/features/001-remote-workflow-engine/08-validation.md`。
 
 這是一個可遠端操控的 **Claude 工作流程執行引擎**：一台常駐伺服器，透過 **MCP Streamable HTTP**
-介面對外提供 **35 個工具**（`workflow_*` 7、`run_*` 8、`workspace_*` 6、`schedule_*` 4、`webhook_*` 3、
-`issue_*` 5、`models_list`/`system_info`），並把每個 `agent()` 呼叫路由到你設定的 LLM 供應商
+介面對外提供 **36 個工具**（`workflow_*` 7、`run_*` 8、`workspace_*` 6、`schedule_*` 4、`webhook_*` 3、
+`issue_*` 5、`models_list`/`models_probe`/`system_info`），並把每個 `agent()` 呼叫路由到你設定的 LLM 供應商
 （Anthropic / OpenRouter / 本機 Ollama——只有這三條路，見下方 §0 附錄）。狀態全存在本機檔案
 （SQLite + JSONL journal），
 不需要外部資料庫伺服器。**權威工具清單是 `src/tool-specs.ts`**——不在那張表上的名字，引擎一律回
@@ -153,7 +153,7 @@ curl -s -X POST http://localhost:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | python3 -c \
   "import json,sys; d=json.load(sys.stdin); print('tools:', len(d['result']['tools']))"
-# 預期：tools: 35
+# 預期：tools: 36
 
 # 主機系統資源快照（第一次呼叫 utilizationPct=null；第二次有值）
 curl -s http://localhost:8787/api/system | python3 -c \
@@ -544,8 +544,9 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `runConcurrency` | **單一 run 內同時在飛的 `agent()` 上限** —— 一個 `parallel()` 實際跑多寬。達上限的呼叫在 `acquireSlot()` **排隊**（不拒絕、不丟棄），所以更寬的 fan-out 只是比較慢。另有一層跨所有 run 的主機層上限（agent 號誌），由 `agentSlots` 設定 | `number` / `24` | 否 | v25 |
 | `rwe.config.json` → `agentSlots` | **跨所有 run 的主機層 agent 號誌上限** —— 同一時間允許幾個 agent 子行程存在；達上限的呼叫排隊等槽位。可在 `/api/status` 的 `agentSemaphore.total` 直接看到生效值（設 `"agentSlots": 7` 就會讀到 7）。與 `runConcurrency`（單一 run 內）是兩層不同的上限 | `number` / `32` | 否 | v26 |
 | `rwe.config.json` → `maxConcurrentRuns` | 頂層 run 並行上限（run-admission counter）；達上限時 `start()` 在任何持久化動作之前以 `RUN_ADMISSION_LIMIT` 拒絕；巢狀 `workflow()` 不佔用槽位 | `number` / `64` | 否 | v8 |
+| `rwe.config.json` → `modelProbe` | 週期性模型探測（issue #73）：對每個設定別名的不同 provider/model 打一通純文字＋一通只給 `Bash` 的呼叫，結果供 `models_list` 的 `toolUseVerified`/`proseVerified`/`stabilitySource`，並在 `run_start` 對「帶工具卻落在探測沒用工具的模型」的 agent 發非致命警告。`{enabled, intervalMs, timeoutMs}`：`intervalMs` 為整數且 ≥ 60000、`timeoutMs` 為 1..600000 的整數、不認得的鍵——任一不符即開機拒絕。成本約每模型每週兩通極小呼叫；不在開機時探測，第一次檢查在 min(intervalMs, 1h) 後。`enabled:false` 只關週期探測，admin 的 `models_probe` 仍可用 | `object` / `{enabled:true, intervalMs:604800000, timeoutMs:60000}` | 否 | #73 |
 | `rwe.config.json` → `workspaceTtlMs` | Workspace GC sweep 間隔（ms）：回收閒置舊 workspace 目錄（REQ-026），**同時決定 auth-table GC（`gcExpired()`）間隔**；`0`/省略 = workspace reclaim 關閉，auth 啟用但未設此鍵時 sweep 每小時跑一次 | `number` / `0`（停用） | 否 | v16 |
-| `rwe.config.json` → `continuationDbPath` | on-completion chaining 續接的 SQLite 檔路徑；引擎會開這個檔，但 35 個工具裡沒有任何一個對應到它（沒有 `chain_*` 工具），設了不影響行為 | `string` / `$workRoot/continuations.db` | 否 | v24 |
+| `rwe.config.json` → `continuationDbPath` | on-completion chaining 續接的 SQLite 檔路徑；引擎會開這個檔，但 36 個工具裡沒有任何一個對應到它（沒有 `chain_*` 工具），設了不影響行為 | `string` / `$workRoot/continuations.db` | 否 | v24 |
 | `rwe.config.json` → `webhookDbPath` | webhook 註冊表（`webhooks`+`webhook_deliveries`）SQLite 檔路徑；**secret 明文儲存**於此檔（HMAC 驗簽需要），存取權限即機密邊界；`webhook_list` 只回 sha256 前綴指紋 | `string` / `$workRoot/webhooks.db` | 否 | v8 |
 | `rwe.config.json` → `casDir` | 內容定址 blob 儲存庫（CAS）目錄；`workspace_push({sha256,contentB64})` 以內容 sha256 為鍵（伺服器 byte-verify）。namespace 一律由呼叫者身份推導，不接受呼叫端指定 | `string` / `$workRoot/cas` | 否 | v10 |
 | `rwe.config.json` → `updateFlagPath` | GitHub tag/release webhook 觸發自我更新的旗標檔路徑（mode 0600，原子寫入）；**必須在所有 `workRoot` 之外**（違反則 `UPDATE_FLAG_INSIDE_WORKROOT` 拒絕啟動）；省略時 `/github/webhook` 對已驗簽事件回 503 | `string` / — | 否 | v11 |
@@ -607,7 +608,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | 角色 | 這個角色（含以上）才叫得動的工具 |
 |---|---|
 | `author` | `workflow_register`／`workflow_deregister`／`workflow_publish`／`workflow_source`、`schedule_create`／`schedule_list`／`schedule_delete`／`schedule_setEnabled`、`webhook_create`／`webhook_list`／`webhook_delete`、`workspace_push` 的資產模式（`{workflow,kind,name}`）、`workspace_list`／`workspace_delete` 的工作流程模式 |
-| `admin` | `workspace_push`／`workspace_delete` 的 `scope:"global"`（全域資產）、以及 `workspace_push({kind:"mcp"})` 帶 `stdio` transport（`config.type:"stdio"`）的 MCP server——其他角色回 `FORBIDDEN_ROLE`，不探測、不啟動任何子行程 |
+| `admin` | `models_probe`（立即探測設定的模型）、`workspace_push`／`workspace_delete` 的 `scope:"global"`（全域資產）、以及 `workspace_push({kind:"mcp"})` 帶 `stdio` transport（`config.type:"stdio"`）的 MCP server——其他角色回 `FORBIDDEN_ROLE`，不探測、不啟動任何子行程 |
 | `user` | 其餘全部：`workflow_describe`／`workflow_list`／`workflow_authoring_guide`、所有 `run_*`、`workspace_diff`／`workspace_pull`／`workspace_purge` 與 run 模式的 `workspace_list`／`workspace_delete`、所有 `issue_*`、`models_list`、`system_info` |
 
 角色不足一律回 `FORBIDDEN_ROLE`。角色**之外**還有一層擁有權檢查（`NOT_WORKFLOW_OWNER`／
@@ -835,8 +836,8 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
-判定標準：回傳 `200`，且 body 的 `result.tools` 陣列包含 35 個工具（`workflow_*` 7、`run_*` 8、
-`workspace_*` 6、`schedule_*` 4、`webhook_*` 3、`issue_*` 5、`models_list`＋`system_info`）；
+判定標準：回傳 `200`，且 body 的 `result.tools` 陣列包含 36 個工具（`workflow_*` 7、`run_*` 8、
+`workspace_*` 6、`schedule_*` 4、`webhook_*` 3、`issue_*` 5、`models_list`＋`models_probe`＋`system_info`）；
 終端機/日誌會印出 `[remote-workflow-engine] ready`；`GET /api/status` 回 `{agentSemaphore,version}`。
 完整真實層驗證證據（含逐 REQ 的真實指令與觀察輸出）見
 `.sdlc/features/001-remote-workflow-engine/08-validation.md`。
@@ -865,7 +866,7 @@ npm run start
 | `agent()` 一律回傳 `null`、`run_status.agents[].state === "failed"` | 該別名對應的 provider 沒有可用憑證/端點（伺服器不會掛住，只會讓該次呼叫失敗回 `null`）——一個**依序** `await agent(...)` 呼叫失敗或逾時一律回傳 `null`，不拋例外，是刻意設計，不是漏接；`run_status`/`run_result`/`GET /api/runs/:id` 會同時多一個 `failedAgentCount` 欄位，不必自己去掃 `agents[]` 才發現「這次 run 裡有東西失敗了」 | 確認 `ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY`/`OLLAMA_BASE_URL` 已正確設定，且 `rwe.config.json` 的 `aliases` 有指到你要的 provider/model；腳本自己要對 `await agent(...)` 的回傳值判斷 `null` 再往下用，避免把 `null` 字串化接進下一段 prompt |
 | 宣告的 `timeoutMs` 跟實際等到失敗的時間對不上（例如宣告 60000ms、實測快兩倍才失敗） | `timeoutMs` 界定的是**單次嘗試**、不是整個呼叫；部署的 `retries`（`rwe.config.json`，預設 1）會讓實際最壞等待時間變成 `timeoutMs × (1 + retries)` | 呼叫 `workflow_describe` 直接讀 `params.agents.<label>.timeoutMs.attempts`/`.worstCaseMs`（伺服器已經照這條公式算好，不必自己乘） |
 | `workflow_register` 回 `UNKNOWN_ALIAS` | 腳本 `meta.params.agents.<label>.model.default` 的別名沒在 `aliases` 設定檔裡 | 補上該別名，或改用已存在的別名——這是在**註冊當下**就報錯（`model` 不能寫在 `agent()` 呼叫裡，寫了是 `SCAN_VIOLATION`），不會跑到一半才失敗 |
-| 任何工具呼叫回 JSON-RPC `-32601 Unknown tool` | 用的工具名不存在（例如 `workflow_run`／`workflow_status`／`asset_push`／`mcp_provision`／`chain_create`） | 用 `tools/list`（35 個）查現行名稱；權威清單是 `src/tool-specs.ts` |
+| 任何工具呼叫回 JSON-RPC `-32601 Unknown tool` | 用的工具名不存在（例如 `workflow_run`／`workflow_status`／`asset_push`／`mcp_provision`／`chain_create`） | 用 `tools/list`（36 個）查現行名稱；權威清單是 `src/tool-specs.ts` |
 | 開機 log 出現 `unrecognized config key(s) in rwe.config.json, ignored: …` | `rwe.config.json` 有引擎不認得的鍵（打錯字，或已不存在的鍵，例如 `graphAnalyzer`） | 把該鍵從設定檔移除；有效鍵只有 §1b 設定總表列出的那些 |
 | `workflow_register` 回 `MERMAID_REQUIRED` 或 `DIAGRAM_MISMATCH` | 註冊必須附一張非空的 Mermaid 圖，而且圖裡的 stadium 節點 `id(["label"])` 要跟腳本的 `agent()` label 雙向完全對上 | 補上 `mermaid` 參數；節點少了就補、多了就刪。詳細語法見 `docs/AUTHORING.md`（或呼叫 `workflow_authoring_guide`）|
 | `run_start` 回 `PARAM_UNKNOWN`，訊息說 overrides 只有 `agents` 一個鍵 | 用的是扁平的 `overrides:{effort:...}` | 改成逐 agent：`overrides:{agents:{'<label>':{effort:...}}}`；而且該鍵必須在 `meta.params.agents.<label>` 宣告過 |
@@ -957,7 +958,7 @@ frame，頂層 `""`）+ `startedAt`/`endedAt`，`workflowNodes:[{frame,name,pare
 巢狀樹（不攤平）；改動前留下、無快照的舊 run 仍以既有方式重建。**尚未支援**：parallel-group
 標記（需 sandbox-IPC 改動）、樹的靜態預讀+快取。
 
-**沒有跨觸發串接工具**：35 個工具裡沒有 `chain_*` 這類工具（呼叫會得到 `-32601`），也沒有替代工具。
+**沒有跨觸發串接工具**：36 個工具裡沒有 `chain_*` 這類工具（呼叫會得到 `-32601`），也沒有替代工具。
 `continuationDbPath` 設定鍵存在（見 §1b），但沒有任何可呼叫的功能對應到它。要串接多個工作流程，改在腳本裡用 `await workflow(name, args)`
 巢狀呼叫（深度/總數由 `maxWorkflowDepth`／`maxWorkflowDescendants` 把關）。
 

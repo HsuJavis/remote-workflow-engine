@@ -98,6 +98,12 @@ export const DEMO = new Map([
       stability: 'stable',
       costLevel: 8,
       catalogFetchedAt: '2026-09-17T00:00:00.000Z',
+      // Issue #73: probe-backed fields (this demo row was never probed).
+      toolUseVerified: null,
+      proseVerified: null,
+      lastProbedAt: null,
+      probeDetail: null,
+      stabilitySource: 'rule',
     },
   ]],
 ]);

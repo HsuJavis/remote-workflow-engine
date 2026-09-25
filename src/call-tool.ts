@@ -16,6 +16,7 @@ import type { McpProbe } from './mcp-probe.js';
 import type { IssueReporter, IssueReportInput, IssueListFilter } from './github/issue-reporter.js';
 import { filterCatalog, enrichModelEntry, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
 import type { ModelBook } from './models/model-book.js';
+import type { ModelProber, ProbeResult } from './models/model-probe.js';
 import type { SystemInfoSampler } from './system-info.js';
 import type { RunStore } from './run-store.js';
 import type { ErrorCode } from './errors.js';
@@ -44,6 +45,11 @@ export interface ToolDeps {
    *  `ModelBook.snapshot()` is TTL'd and single-flight, so a burst of `models_list` calls fires at
    *  most one upstream fetch, and its `fetchedAt` becomes the served rows' `catalogFetchedAt`. */
   modelBook: ModelBook;
+  /** Issue #73: latest probe result per (provider, model), merged into `models_list` rows; and the
+   *  prober behind the admin `models_probe` tool. Optional so the many existing ToolDeps test
+   *  fixtures compile unchanged — absent means "never probed" / "probing not wired". */
+  probeLookup?: (provider: string, model: string) => ProbeResult | undefined;
+  modelProber?: ModelProber;
   systemInfo: SystemInfoSampler;
   lookup: OwnerLookup;
   audit: AuditWriter;
@@ -339,7 +345,14 @@ export async function callTool(
       // production wiring site (server.ts's `buildModelCatalog` is `ModelBook`'s own `source()`).
       const snapshot = await deps.modelBook.snapshot();
       const entries = snapshot.entries as ModelEntry[];
-      return { result: filterCatalog(entries, a as CatalogFilter).map((e) => enrichModelEntry(e, snapshot.fetchedAt)) };
+      return { result: filterCatalog(entries, a as CatalogFilter).map((e) => enrichModelEntry(e, snapshot.fetchedAt, deps.probeLookup?.(e.provider, e.model))) };
+    }
+    case 'models_probe': {
+      if (!deps.modelProber) return refusalEnvelope('INVALID_ARGUMENT', 'model probing is not available on this engine (no gateway configured)');
+      const alias = a['alias'] as string | undefined;
+      const results = await deps.modelProber.probeNow(alias, a['timeoutMs'] as number | undefined);
+      if (results === null) return refusalEnvelope('UNKNOWN_ALIAS', `UNKNOWN_ALIAS: '${alias}' is not a configured model alias`);
+      return { result: results };
     }
     case 'system_info': {
       const topN = a['topN'] !== undefined ? Math.floor(Number(a['topN'])) : 5;

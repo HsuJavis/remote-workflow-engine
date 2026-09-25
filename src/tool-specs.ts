@@ -407,7 +407,7 @@ export const TOOL_SPECS = [
   // ---- run (8) ----
   {
     name: 'run_start', entity: 'run', key: null,
-    description: "Start a run of a workflow's current release. First-try traps: a just-registered workflow has no release yet — pass {version} to run the version workflow_register just returned, to iterate, and call workflow_publish to move it to release once it is stable — and starting a run returns no result; poll run_status until terminal, then call run_result.",
+    description: "Start a run of a workflow's current release. First-try traps: a just-registered workflow has no release yet — pass {version} to run the version workflow_register just returned, to iterate, and call workflow_publish to move it to release once it is stable — and starting a run returns no result; poll run_status until terminal, then call run_result. The result may carry non-fatal `warnings` (the run is started regardless): MODEL_TOOL_USE_UNVERIFIED names an agent that holds tools on a model whose last probe (models_list toolUseVerified:false) did not use a tool.",
     // v24 adjudication #2 A-2: seed/seedManifest/seedRef/seedManifestRef are RESTORED here — only
     // seedNamespace was meant to drop (ADR-028 derives it from the principal). Omitting them left the
     // TASK-153 plugin doc advertising run_start({seedManifestRef}) against an engine that rejected it.
@@ -1001,7 +1001,12 @@ export const TOOL_SPECS = [
       'expensive tier, null when the provider publishes no price. v26: `toolUseDeclared` / ' +
       '`effortDeclared` (boolean, or \'unknown\' when the catalog said nothing) and `declaredSource` ' +
       "('upstream'|'static'|'unknown') are DECLARED capability, never probed by dispatching a call; " +
-      '`catalogFetchedAt` is per-row catalog provenance (string timestamp, or null).',
+      '`catalogFetchedAt` is per-row catalog provenance (string timestamp, or null). ' +
+      '`toolUseVerified` / `proseVerified` are OBSERVED by the engine\'s own probe of each configured ' +
+      'model (see models_probe) — true/false from the last probe, null when never probed — with ' +
+      '`lastProbedAt` and a short `probeDetail`. `stabilitySource` says where `stability` came from: ' +
+      "'probe' (prose failed -> 'unavailable'; tools failed -> 'degraded'; both passed -> the rule tier) " +
+      "or 'rule' (never probed: 'best-effort' for free tiers, 'variable' for local, else 'stable').",
     inputSchema: schema({
       provider: { type: 'string', description: "Exact provider id, e.g. 'anthropic' or 'ollama'." },
       query: { type: 'string', description: 'Substring match over the model id and description.' },
@@ -1018,6 +1023,37 @@ export const TOOL_SPECS = [
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
     fixture: { happy: {}, errors: {} },
+  },
+  {
+    // Issue #73: the admin-only "probe now". Each probe is one prose call plus one call holding
+    // only Bash that must print a random value the probe planted — through the engine's own
+    // gateway, so it measures what an agent() call would get.
+    name: 'models_probe', entity: 'models', key: null,
+    description:
+      'Admin only. Probe the configured models NOW, through the same gateway agents use: per distinct ' +
+      'configured provider/model (or only the one `alias` names), one prose call and one call allowed ' +
+      'only the Bash tool that must run a command and report its unguessable output. Returns one row per ' +
+      'model: alias, provider, model, proseVerified, toolUseVerified, probedAt, latencyMs {prose, tools}, ' +
+      'detail. Results are stored and appear on models_list (toolUseVerified/proseVerified/lastProbedAt/' +
+      'probeDetail/stabilitySource). Takes up to two probe timeouts per model; the engine also re-probes ' +
+      'on its own every modelProbe.intervalMs (default weekly).',
+    inputSchema: {
+      ...schema({
+        alias: { type: 'string', description: 'Probe only this configured alias. Omit to probe every configured model once.' },
+        timeoutMs: { type: 'integer', minimum: 1000, maximum: 600000, description: "Per-call bound for this probe only (default: the engine's modelProbe.timeoutMs)." },
+      }),
+      additionalProperties: false,
+    },
+    outputSchema: OUT,
+    errors: ['UNKNOWN_ALIAS', 'INVALID_ARGUMENT', 'FORBIDDEN_ROLE'] as ErrorCode[],
+    seeAlso: ['models_list'] as string[],
+    authz: { minRole: 'admin', ownership: 'none' } as AuthzRow,
+    fixture: {
+      // A short bound: the conformance engine's provider never answers, so the happy path is a
+      // quickly-recorded FAILED probe — which is still the tool working as specified.
+      happy: { alias: 'default', timeoutMs: 1000 },
+      errors: { UNKNOWN_ALIAS: { alias: 'no-such-alias-fixture' }, INVALID_ARGUMENT: { alias: 5 } },
+    },
   },
   {
     name: 'system_info', entity: 'system', key: null,

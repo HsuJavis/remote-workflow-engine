@@ -17,6 +17,11 @@
   "gateway": "sdk",
   "seedRefAllowlist": [],
   "maxBlobBytes": 268435456,
+  "modelProbe": {
+    "enabled": true,
+    "intervalMs": 604800000,
+    "timeoutMs": 60000
+  },
   "defaultAllowedTools": [
     "Read",
     "Write",

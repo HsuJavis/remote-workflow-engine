@@ -36,6 +36,7 @@ import { assertWorkRootIsolated } from './workroot-guard.js';
 import { DEFAULT_ALIASES } from './default-aliases.js';
 import type { Role } from './tool-specs.js';
 import { validateAliases } from './providers.js';
+import { validateModelProbeConfig } from './models/model-probe.js';
 
 type GatewayChoice = 'sdk' | 'direct-fetch';
 
@@ -107,7 +108,7 @@ export const KNOWN_FILE_CONFIG_KEYS: Record<keyof FileConfig, true> = {
   auth: true, maxTimeoutMs: true, maxAppendPromptBytes: true, maxEffort: true,
   maxWorkflowVersions: true, principals: true, mcpEgressAllowlist: true,
   defaultAllowedTools: true, anthropicBaseUrl: true, anthropicAuth: true,
-  sandbox: true,
+  sandbox: true, modelProbe: true,
 };
 
 // v34 (DES-227, ARCH-139, TASK-229, REQ-203): keys that USED to be forwarded by composeConfig and
@@ -277,6 +278,13 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
       );
     }
   }
+  // Issue #73: validated at load, fail-closed (a bad interval must not silently mis-schedule or
+  // disable the probe); absent -> the defaults (enabled, weekly). Forwarded below — the
+  // composeConfig bug class (compose-config-v2-wiring.test.ts's PROBES row guards it).
+  const modelProbe = validateModelProbeConfig(fileConfig.modelProbe);
+  if (!modelProbe.ok) {
+    throw new Error(`rwe.config.json: invalid modelProbe — ${modelProbe.message}. Refusing to start (ADR-028 fail-closed).`);
+  }
   const explicitWorkRoot = process.env['RWE_WORK_ROOT'] ?? fileConfig.workRoot;
   // D-V3M-5 (REQ-021): fail-closed if the configured workRoot is inside a Claude Code project — a
   // nested run workspace makes the SDK-gateway agent CLI load that project's CLAUDE.md/auto-memory
@@ -425,6 +433,7 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // `http` transport — same forwarding convention, no validation needed here (an empty/absent
     // allowlist just means no `http` MCP config is ever admitted).
     mcpEgressAllowlist: fileConfig.mcpEgressAllowlist,
+    modelProbe: modelProbe.value,
     // v37 (ARCH-181, DES-262, TASK-257, REQ-218): MEASURED, never declared — set only when the
     // caller actually supplied a probe result (deps.confinementProbe, `main()`'s real boot path).
     // Every existing test call site omits it, so `confinementPosture` stays unset here exactly as

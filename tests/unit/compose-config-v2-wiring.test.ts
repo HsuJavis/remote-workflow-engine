@@ -350,6 +350,9 @@ const PROBES: Record<string, unknown> = {
   maxEffort: 'medium',
   maxWorkflowVersions: 12,
   mcpEgressAllowlist: ['https://mcp.example/'],
+  // Issue #73: the model-probe block — a fully-specified value, so the validated+normalized object
+  // composeConfig() forwards is `toEqual` to what went in.
+  modelProbe: { enabled: false, intervalMs: 3_600_000, timeoutMs: 45_000 },
 };
 
 describe('every KNOWN_FILE_CONFIG_KEYS entry is probed or excluded (UT-219, defect D7)', () => {
@@ -416,5 +419,18 @@ describe('every KNOWN_FILE_CONFIG_KEYS entry is probed or excluded (UT-219, defe
     expect((cfg as Record<string, unknown>)['confinementPosture']).toBe('confined');
     const gwConfig = (cfg.gateway as unknown as { _config: { confinementPosture?: string } })._config;
     expect(gwConfig.confinementPosture).toBe('confined');
+  });
+});
+
+// Issue #73: `modelProbe` is validated at config load (fail-closed) and defaulted when absent — a
+// bad value must refuse the boot rather than silently disable or mis-schedule the probe.
+describe('modelProbe is validated and defaulted by composeConfig (#73)', () => {
+  it('absent -> enabled weekly defaults land on ServerConfig', async () => {
+    const cfg = await composeConfig({ gateway: 'direct-fetch' }, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['modelProbe']).toEqual({ enabled: true, intervalMs: 604_800_000, timeoutMs: 60_000 });
+  });
+  it('a bad value refuses to start, naming the key', async () => {
+    await expect(composeConfig({ gateway: 'direct-fetch', modelProbe: { intervalMs: 5 } } as any, FAKE_DEPS)).rejects.toThrow(/modelProbe/);
+    await expect(composeConfig({ gateway: 'direct-fetch', modelProbe: { enabled: 'yes' } } as any, FAKE_DEPS)).rejects.toThrow(/modelProbe/);
   });
 });

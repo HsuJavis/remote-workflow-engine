@@ -715,7 +715,14 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '`price:"unknown"`. Its `toolUseDeclared`/`effortDeclared` flags and ' +
         '`costLevel` rating are DECLARED capability, never probed by dispatching a call, and carry ' +
         "their own provenance: `declaredSource` ('upstream'|'static'|'unknown') says where the flag " +
-        'came from, and `catalogFetchedAt` is per-row catalog provenance (a timestamp, or `null`).',
+        'came from, and `catalogFetchedAt` is per-row catalog provenance (a timestamp, or `null`). ' +
+        '`toolUseVerified`/`proseVerified` are the OBSERVED counterpart: the engine periodically probes ' +
+        'each configured model with one prose call and one call that must run a command through Bash ' +
+        '(`null` = never probed; `lastProbedAt`/`probeDetail` say when and what happened), and ' +
+        "`stabilitySource:'probe'` means `stability` reflects that probe ('unavailable' = no prose " +
+        "answer, 'degraded' = no tool use). If an agent needs tools, pick a model whose row says " +
+        '`toolUseVerified: true` — `run_start` answers a non-fatal `warnings` entry ' +
+        '(MODEL_TOOL_USE_UNVERIFIED) when an agent holding tools lands on one whose probe saw none.',
     ),
   );
 
