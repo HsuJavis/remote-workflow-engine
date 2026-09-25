@@ -139,4 +139,61 @@ describe('IT-295: run.terminal fires at the ONE authoritative terminal writer, i
     expect(terminal.outcome).toBe('completed');
     expect(terminal.principal).toBe('carol');
   }, 30000);
+
+  // Bug fix (final verification, fv53): `run.terminal.version` printed the resume GENERATION
+  // counter (`entry.scriptVersion`, bumped by every resume), so a v1-only workflow logged "v2"
+  // after one suspend/resume. It must report the registered version the run pinned — on both the
+  // same-process resume path and the rehydrated (second RunManager) path.
+  it('suspend -> resume (same process) -> completed: run.terminal.version is the pinned version, not the resume count', async () => {
+    const dir = tempDir();
+    const lines: string[] = [];
+    const eventSink = createEventSink({ write: (l: string) => lines.push(l), now: () => clock.isoNow() });
+    const store = new SqliteRunStore(join(dir, 'store'), clock);
+    const catalog = new WorkflowCatalog(join(dir, 'catalog'), clock);
+    let block = true;
+    let reached: () => void = () => {};
+    const bReached = new Promise<void>((r) => { reached = r; });
+    const gateway: GatewayClient = {
+      async invoke(req) {
+        if (req.prompt === 'B' && block) { reached(); await new Promise<void>(() => {}); }
+        return { ok: true, provider: 'fake', model: 'fake', tokens: { input: 1, output: 1 }, content: req.prompt };
+      },
+    };
+    const mgr = new RunManager({ store, clock, catalog, workRoot: dir, gateway, eventSink } as any);
+    const { version } = await registerPublished(catalog, 'it295-ver', `const a = await agent('A', {}); const b = await agent('B', {}); return { a, b };`);
+    expect(version).toBe('v1');
+    const runId = await mgr.start({ name: 'it295-ver', principal: 'dave' } as any);
+    await bReached;
+    await mgr.suspend(runId);
+    block = false;
+    await mgr.resume(runId);
+    await waitForStatus(mgr, runId, 'completed');
+    const terminal = lines.map((l) => JSON.parse(l)).find((e) => e.kind === 'run.terminal' && e.runId === runId);
+    expect(terminal?.outcome).toBe('completed');
+    expect(terminal?.version).toBe(version); // pre-fix: 'v2'
+  }, 30000);
+
+  it('suspend -> resume on a SECOND RunManager -> completed: run.terminal.version is the pinned version', async () => {
+    const dir = tempDir();
+    const store1 = new SqliteRunStore(join(dir, 'store'), clock);
+    const catalog1 = new WorkflowCatalog(join(dir, 'catalog'), clock);
+    const g1 = blockingGateway();
+    const mgr1 = new RunManager({ store: store1, clock, catalog: catalog1, workRoot: dir, gateway: g1.gateway } as any);
+    const { version } = await registerPublished(catalog1, 'it295-ver2', `const a = await agent('A', {}); const b = await agent('B', {}); return { a, b };`);
+    const runId = await mgr1.start({ name: 'it295-ver2', principal: 'erin' } as any);
+    await g1.bReached;
+    await mgr1.suspend(runId);
+
+    const store2 = new SqliteRunStore(join(dir, 'store'), clock);
+    await store2.hydrateAll();
+    const catalog2 = new WorkflowCatalog(join(dir, 'catalog'), clock);
+    const lines2: string[] = [];
+    const eventSink2 = createEventSink({ write: (l: string) => lines2.push(l), now: () => clock.isoNow() });
+    const mgr2 = new RunManager({ store: store2, clock, catalog: catalog2, workRoot: dir, gateway: countingGateway(), eventSink: eventSink2 } as any);
+    await mgr2.resume(runId);
+    await waitForStatus(mgr2, runId, 'completed');
+    const terminal = lines2.map((l) => JSON.parse(l)).find((e) => e.kind === 'run.terminal' && e.runId === runId);
+    expect(terminal?.outcome).toBe('completed');
+    expect(terminal?.version).toBe(version); // pre-fix: 'v2'
+  }, 30000);
 });
