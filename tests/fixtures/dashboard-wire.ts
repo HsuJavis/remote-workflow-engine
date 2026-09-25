@@ -175,15 +175,19 @@ export const MODEL_ENTRY_OK: EnrichedModelEntry = {
   location: 'remote', ref: 'sonnet', ratesPerM: { in: 3, out: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   effortDeclared: true, declaredSource: 'static', capability: 'general-purpose reasoning and tool use',
   stability: 'stable', costLevel: 8, catalogFetchedAt: '2026-09-17T00:00:00.000Z',
+  // Issue #73: probe-backed fields — this fixture row was never probed.
+  toolUseVerified: null, proseVerified: null, lastProbedAt: null, probeDetail: null, stabilitySource: 'rule',
 };
 export const ALLOWED_MODEL_ENTRY_KEYS = [
   'provider', 'model', 'aliases', 'description', 'modalities', 'contextWindow', 'price',
   'toolUseDeclared', 'location', 'ref', 'besteffort', 'ratesPerM', 'effortDeclared', 'declaredSource',
   'capability', 'stability', 'costLevel', 'catalogFetchedAt',
+  'toolUseVerified', 'proseVerified', 'lastProbedAt', 'probeDetail', 'stabilitySource',
 ] as const;
 export const REQUIRED_MODEL_ENTRY_KEYS = [
   'provider', 'model', 'description', 'modalities', 'contextWindow', 'price', 'toolUseDeclared',
   'location', 'capability', 'stability', 'costLevel', 'catalogFetchedAt',
+  'toolUseVerified', 'proseVerified', 'lastProbedAt', 'probeDetail', 'stabilitySource',
 ] as const;
 
 // ---- GET /api/issues (v28, DES-218, TASK-219, REQ-139) ----

@@ -48,6 +48,8 @@ import { defaultRunParams, mergeRunParams, type RunParams } from './params/resol
 import { resolveAlias } from './providers.js';
 import { ModelBook, reachableModels } from './models/model-book.js';
 import { createEventSink, type EventSink } from './event-log.js';
+import { scanAgentCalls } from './workflow-meta.js';
+import { toolProbeWarnings, type ProbeResult, type ModelToolWarning } from './models/model-probe.js';
 
 // Default gateway config (REQ-004) for the gateway RunManager builds when no GatewayClient is
 // injected — routes through the single-source DEFAULT_ALIASES table (src/default-aliases.ts).
@@ -141,6 +143,9 @@ export interface RunManagerDeps {
    *  probe — ARCH-181). Omitted (every pre-existing RunManager test call site) -> `admissionRefusal`
    *  never gates, matching the field's own fail-open-for-the-existing-suite convention. */
   confinementPosture?: 'confined' | 'unconfined';
+  /** Issue #73 (d): the latest model-probe result for a resolved (provider, model). Omitted -> no
+   *  probe-based admission warnings. */
+  probeLookup?: (provider: string, model: string) => ProbeResult | undefined;
 }
 
 /** v25 (DES-168, REQ-120, owner ruling): the default per-run in-flight agent() cap. Explicit and
@@ -391,6 +396,9 @@ export class RunManager {
   /** v37 (ARCH-182, DES-263, TASK-258): this engine's MEASURED confinement posture — read by
    *  `admissionRefusal()` at the top of `start()`. */
   private readonly _confinementPosture: 'confined' | 'unconfined' | undefined;
+  private readonly _probeLookup: ((provider: string, model: string) => ProbeResult | undefined) | undefined;
+  /** Issue #73 (d): non-fatal admission warnings per started run, read back by `run_start`. */
+  private readonly _admissionWarnings = new Map<string, ModelToolWarning[]>();
   private readonly _runs = new Map<string, RunEntry>();
   /** v25 (#53): runIds already reported for `terminal_without_transition` — one record per run,
    *  not one per poll (a terminal run is polled until the caller notices it is terminal). */
@@ -452,6 +460,7 @@ export class RunManager {
     this._aliasMap = deps.aliasMap ?? DEFAULT_ALIASES;
     this._eventSink = deps.eventSink ?? createEventSink({});
     this._confinementPosture = deps.confinementPosture;
+    this._probeLookup = deps.probeLookup;
   }
 
   /** v8 Slice 4 (REQ-054): count of live (non-terminal) top-level runs in this process — the
@@ -876,6 +885,24 @@ export class RunManager {
       refusalsDropped: 0,
     };
     this._runs.set(runId, entry);
+    // Issue #73 (d): every admission route (run_start, schedule, webhook, chain) reaches here —
+    // WARN, never refuse, when an agent holding tools resolves to a model whose latest probe saw no
+    // tool use. Logged for the trigger routes (no caller to answer); run_start returns them.
+    if (this._probeLookup) {
+      const lookup = this._probeLookup;
+      const warnings = toolProbeWarnings({
+        calls: scanAgentCalls(script).calls,
+        modelFor: (label) => effectiveParams.agents?.[label]?.model ?? effectiveParams.model ?? 'default',
+        resolve: (alias) => resolveAlias(this._aliasMap, alias),
+        lookup,
+      });
+      if (warnings.length > 0) {
+        // Trigger-started runs never take theirs — bound the map (oldest first) so they can't pile up.
+        if (this._admissionWarnings.size >= 256) this._admissionWarnings.delete(this._admissionWarnings.keys().next().value!);
+        this._admissionWarnings.set(runId, warnings);
+        for (const w of warnings) console.warn(`[model-probe] run ${runId}: ${w.message}`);
+      }
+    }
     entry.seedRef = seedRefView; // v13: overlaid onto RunStatusView by _mergeLive (present on success AND failure)
     if (spec.seedManifestRef !== undefined) entry.seedManifestRef = spec.seedManifestRef; // v14: DES-087
     if (seedRefFail) {
@@ -1143,6 +1170,13 @@ export class RunManager {
         transitions: transitions.map((t) => `${t.from ?? 'null'}->${t.to}`),
       });
     } catch { /* an observer's failure is never the caller's */ }
+  }
+
+  /** Issue #73 (d): the admission warnings `start()` recorded for `runId`, handed over ONCE. */
+  takeAdmissionWarnings(runId: string): ModelToolWarning[] {
+    const w = this._admissionWarnings.get(runId) ?? [];
+    this._admissionWarnings.delete(runId);
+    return w;
   }
 
   /** Fire-and-forget, like `onTerminal`: a throwing sink never wedges the path it observes. */

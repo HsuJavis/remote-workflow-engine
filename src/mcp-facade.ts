@@ -730,7 +730,7 @@ export class McpFacade {
     // pre-existing test call sites that omit it keep compiling AND keep their prior behaviour —
     // no test anywhere newly gates on a param it never supplied.
     isRemoteSubmission = false,
-  ): Promise<ResultEnvelope<{ runId: string }>> {
+  ): Promise<ResultEnvelope<{ runId: string; warnings?: unknown[] }>> {
     const validation = await this.validator.validate({ name: a.name });
     if (!validation.ok) return { runId: '', status: 'failed', error: validation.errors[0] };
     try {
@@ -749,7 +749,9 @@ export class McpFacade {
         ...(attributed ? { principal: attributed } : {}),
       }, a.overrides);
       const view = await this.store.getRun(runId);
-      return { runId, status: view?.status ?? 'queued', result: { runId } };
+      // Issue #73 (d): non-fatal — the run is already admitted; these only say what to expect.
+      const warnings = this.runManager.takeAdmissionWarnings?.(runId) ?? [];
+      return { runId, status: view?.status ?? 'queued', result: { runId, ...(warnings.length > 0 ? { warnings } : {}) } };
     } catch (err) {
       return { runId: '', status: 'failed', error: toErrEnvelope(err) };
     }

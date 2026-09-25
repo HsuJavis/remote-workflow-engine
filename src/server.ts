@@ -64,6 +64,7 @@ import { projectToolsList, ENVELOPE_NOTE } from './tool-specs.js';
 import { resolveRole, type Principal } from './authz.js';
 import { createOwnerLookup } from './owner-lookup.js';
 import { DiagramRenderer, renderWithMmdc, type DiagramRendererOpts } from './diagram-render.js';
+import { ModelProbeStore, ModelProber, MODEL_PROBE_DEFAULTS, type ModelProbeConfig, type ProbeResult } from './models/model-probe.js';
 
 export interface ServerConfig {
   bind?: string;   // default '127.0.0.1'
@@ -200,6 +201,10 @@ export interface ServerConfig {
   // `call-tool.ts` remote-submission door (DES-262) and stamped onto every `agent.confinement`
   // event (ARCH-178/DES-256) so the posture is visible, not implicit.
   confinementPosture?: 'confined' | 'unconfined';
+  // Issue #73: periodic model probe (model-probe.ts). composeConfig() always sets it (defaults:
+  // enabled, weekly); a direct createServer() caller that omits it gets NO periodic probe (tests),
+  // while the admin `models_probe` tool and the probe-backed models_list fields work either way.
+  modelProbe?: ModelProbeConfig;
 }
 
 export interface Server {
@@ -339,6 +344,8 @@ async function handleDashboardRequest(
   authAnnounce: { enabled: boolean; principalsCount: number; defaultRole: 'user' } = { enabled: false, principalsCount: 0, defaultRole: 'user' },
   // v25 (REQ-119, DES-166): the (name, version)-keyed SVG cache in front of the renderer.
   diagrams: DiagramRenderer = new DiagramRenderer(),
+  // Issue #73: the latest model-probe result per (provider, model), merged into `/api/models`.
+  probeLookup: (provider: string, model: string) => ProbeResult | undefined = () => undefined,
 ): Promise<void> {
   if (req.method !== 'GET') {
     sendJson(res, 405, { error: 'Dashboard API is read-only: only GET is supported.' });
@@ -397,7 +404,7 @@ async function handleDashboardRequest(
     if (path === '/api/models') {
       const snapshot = await modelBook.snapshot();
       const entries = snapshot.entries as ModelEntry[];
-      sendJson(res, 200, filterCatalog(entries).map((e) => enrichModelEntry(e, snapshot.fetchedAt)));
+      sendJson(res, 200, filterCatalog(entries).map((e) => enrichModelEntry(e, snapshot.fetchedAt, probeLookup(e.provider, e.model))));
       return;
     }
     if (path === '/api/runs') {
@@ -807,6 +814,15 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v26 (DES-178, ARCH-116, TASK-178): one TTL'd, single-flight snapshot shared by every run's
   // admission-time pin — never one fetch per run, let alone per agent() call.
   const modelBook = new ModelBook(buildModelCatalog, { clock });
+  // Issue #73: probe results live in the run store's own index.db (the Bash sandbox already denies
+  // `store/`), so they survive a restart. The prober needs the deployment's REAL gateway — the same
+  // object every agent() call dispatches through — so it exists only when one is configured.
+  const probeStore = new ModelProbeStore(join(workRoot, 'store', 'index.db'));
+  const probeLookup = (provider: string, model: string): ProbeResult | undefined => probeStore.get(provider, model);
+  const modelProber = gateway
+    ? new ModelProber({ gateway, aliases: aliasMap, store: probeStore, workRoot, clock, config: config?.modelProbe ?? { ...MODEL_PROBE_DEFAULTS, enabled: false } })
+    : undefined;
+  modelProber?.start();
   // v37 (ARCH-182, DES-263, TASK-258): forwards the SAME measured posture `confinementPosture`
   // already rides to the facade/gateway (DES-258 owner ruling) — RunManager.start()'s
   // admissionRefusal() covers every `start()`-driven admission route (tools/call's run_start,
@@ -819,7 +835,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // substituted for it (a version the run never carried and no admission check ever saw). The PINNED
   // resume path is still ungated, so call-tool.ts's door is still the cover for an ORDINARY
   // run_resume — the two are complementary, not identical. See DES-263 第三次/第四次修訂.
-  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, aliasNames, modelBook, aliasMap, eventSink, confinementPosture: config?.confinementPosture });
+  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, aliasNames, modelBook, aliasMap, eventSink, confinementPosture: config?.confinementPosture, probeLookup });
   // v8 Defer B (REQ-057/058): durable webhook ingress registry, same workRoot convention.
   const webhooks = new WebhookRegistry({ clock, runManager, catalog, dbPath: config?.webhookDbPath ?? join(workRoot, 'webhooks.db') });
   // v22 (DES-113, TASK-108) SHRINK: SubmissionValidatorDeps is now `{catalog}` — the alias/MCP-name/
@@ -908,7 +924,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // by `main.ts`'s real probe (ARCH-181) — `undefined` on every test/zero-config boot, which the
   // door already treats as "don't gate" (call-tool.ts's own documented default).
   function buildToolDeps(webhookBaseUrl: string, isRemoteSubmission = false): ToolDeps {
-    return { facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, modelBook, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store, confinementPosture: config?.confinementPosture, isRemoteSubmission };
+    return { facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, modelBook, probeLookup, modelProber, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store, confinementPosture: config?.confinementPosture, isRemoteSubmission };
   }
   // v35 (DES-239b, ARCH-152, TASK-237, REQ-210): BOTH `initialize` results carry `instructions`
   // with `ENVELOPE_NOTE` and a guide-size figure COMPUTED per call from the SAME stringified
@@ -1191,7 +1207,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // the other, with no type error. Same one-declaration rule as
     // `DEFAULT_CEILINGS`/`UNBOUND_ENTRY_LABEL`.
     const dispatchDashboard = (): void => {
-      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, modelBook, authAnnounce, diagrams).catch((err) => {
+      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, modelBook, authAnnounce, diagrams, probeLookup).catch((err) => {
         // v27b (DES-198, TASK-203): 'internal' — the closed reason set's one member with no warning
         // by construction (a promise rejection `handleDashboardRequest`'s own try/catch didn't catch).
         console.warn(JSON.stringify({ event: 'dashboard_api_degraded', route: (req.url ?? '').split('?')[0], reason: 'internal', detail: (err as Error)?.message }));
@@ -1712,6 +1728,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       // D-V2I-2: stop the firing-engine ticker so a closed server never fires another schedule.
       ticker.stop();
       if (gcTimer) clearInterval(gcTimer); // REQ-026: stop the workspace GC sweep on shutdown
+      modelProber?.stop(); // issue #73: stop the periodic model probe
       return new Promise<void>((resolve, reject) => {
         http.close((err) => (err ? reject(err) : resolve()));
       })
@@ -1721,7 +1738,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         // reaped by main.ts's shutdown handler via composeConfig()'s returned `proxyManager`).
         .then(() => gateway?.stop?.())
         // v11 (TASK-062): close the self-update SQLite DB if it was opened.
-        .then(() => { selfUpdateDb?.close(); });
+        .then(() => { selfUpdateDb?.close(); probeStore.close(); });
     },
   };
 }
