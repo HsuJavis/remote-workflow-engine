@@ -601,6 +601,9 @@ export interface HarnessDescriptor {
    *  posture confined). A readonly call is never dispatched unenforced, so `{mode:'readonly',
    *  enforced:false}` cannot occur — it is refused `BASH_READONLY_UNENFORCEABLE` before a session. */
   bash?: { mode: 'readonly' | 'full'; enforced: boolean };
+  /** Project configuration (`.claude/settings.json`, `.claude/hooks/`, ... — PROJECT_CONFIG_PATHS)
+   *  found in the workspace and removed before this dispatch's CLI could load it. Absent when none. */
+  plantedConfigRemoved?: string[];
 }
 
 export interface TranscriptEvent {

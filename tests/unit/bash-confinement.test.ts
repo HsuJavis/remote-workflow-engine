@@ -26,7 +26,9 @@ describe('UT-309 buildBashConfinement() — the whole posture as one pure functi
     expect(s.allowUnsandboxedCommands).toBe(false);
     expect(s.filesystem?.allowWrite).toEqual([ROOT]);
     expect(s.filesystem?.allowRead).toEqual([ROOT]);
-    expect(s.filesystem?.denyWrite).toEqual([join(ROOT, '.claude', 'settings.json'), join(ROOT, '.claude', 'settings.local.json')]);
+    // Every project-configuration path the CLI loads from the workspace (bash-confinement.ts
+    // PROJECT_CONFIG_PATHS + ENGINE_OWNED_CONFIG_PATHS), spelled out here so a list change is seen.
+    expect(s.filesystem?.denyWrite).toEqual(['.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/commands', '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/launch.json', '.claude/skills', '.mcp.json'].map((rel) => join(ROOT, rel)));
     // v37 Gate-8 send-back note (finding A3): this assertion tests buildBashConfinement()'s OWN
     // join/concat MECHANICS (does it correctly fold ENGINE_STATE_DENY + protectedFiles into
     // denyRead?) — deriving the expectation from the same constant is the right shape for THAT

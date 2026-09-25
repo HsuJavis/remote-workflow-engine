@@ -45,7 +45,7 @@ import { LiteLLMGatewayClient } from './gateway/client.js';
 import { DEFAULT_ALIASES } from './default-aliases.js';
 import { validateUserOverrides, validateDeclaredArgs, materializeArgDefaults, isKnownAlias, FRAME_CLOSE_FORGERY, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type Err as ParamErr } from './params/contract.js';
 import { defaultRunParams, mergeRunParams, type RunParams } from './params/resolve.js';
-import { resolveModelRef } from './providers.js';
+import { resolveAlias, resolveModelRef } from './providers.js';
 import { ModelBook, reachableModels } from './models/model-book.js';
 import { createEventSink, type EventSink } from './event-log.js';
 import { scanAgentCalls } from './workflow-meta.js';

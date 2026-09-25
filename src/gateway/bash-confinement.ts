@@ -39,6 +39,34 @@ export const ENGINE_STATE_DENY = [
   'store', 'catalog.db', 'auth-tokens.db', 'mcp-registry.db', '_global_assets',
 ] as const;
 
+/** Workspace-relative paths the Claude CLI reads as PROJECT configuration from its cwd (= the run
+ *  workspace, `settingSources:['project']`) and that can run code or widen what a later agent may do.
+ *  The list is the CLI's own: 2.1.199's sandbox builder puts exactly these (minus `.mcp.json`) on its
+ *  own denyWrite for every project root. Why each is dangerous, not merely prompt text:
+ *  - `settings.json`: `hooks` (commands run by the CLI, outside any sandbox), `permissions.allow`,
+ *    `sandbox.filesystem.allowWrite`, `env`, `apiKeyHelper`, `enabledPlugins`.
+ *  - `settings.local.json`: the same schema; inert today (`'local'` is not in `settingSources`), kept
+ *    so widening `settingSources` later does not silently open it.
+ *  - `hooks/`: the scripts settings hooks point at.
+ *  - `agents/`, `commands/`: sub-agent / command definitions — tool grants, permission mode, hooks,
+ *    inline `!cmd` shell.
+ *  - `workflows/`, `routines/`, `scheduled_tasks.json`, `launch.json`: things the CLI runs or
+ *    schedules on its own (`launch.json` is a dev-server command the CLI's Write auto-approves).
+ *  NOT here, and why: `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, `.claude/rules/`,
+ *  `.claude/output-styles/` are prompt text — they change what the next agent reads, never what it
+ *  may do (their `@import` of a file OUTSIDE the project needs a per-project approval the headless
+ *  CLI never gives). The engine sweeps these paths before every dispatch (project-config-guard.ts). */
+export const PROJECT_CONFIG_PATHS = [
+  '.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/commands',
+  '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/launch.json',
+] as const;
+
+/** Project configuration the ENGINE writes (skills materialized per dispatch, `.mcp.json` rewritten
+ *  per dispatch — and inert anyway under `strictMcpConfig:true`). An agent may not write them; the
+ *  pre-dispatch sweep leaves them alone, because they are the engine's own output. A planted skill is
+ *  not exposed (`Options.skills` is an explicit list) and a tampered declared one is re-copied. */
+export const ENGINE_OWNED_CONFIG_PATHS = ['.claude/skills', '.mcp.json'] as const;
+
 export interface ConfinementInput {
   /** This call's workspace (req.workspace ?? cfg.cwd). undefined/'' both mean "nothing to write". */
   readonly root: string | undefined;
@@ -64,7 +92,7 @@ export function buildBashConfinement(input: ConfinementInput): SandboxSettings {
   const { root, grantedHostPaths, protectedFiles, workRoot, denyReadMode, bashMode } = input;
   const grants = grantedHostPaths.filter(isNonEmptyString);
   const allowPaths = isNonEmptyString(root) ? [root, ...grants] : [];
-  const settingsFiles = isNonEmptyString(root) ? [join(root, '.claude', 'settings.json'), join(root, '.claude', 'settings.local.json')] : [];
+  const settingsFiles = isNonEmptyString(root) ? [...PROJECT_CONFIG_PATHS, ...ENGINE_OWNED_CONFIG_PATHS].map((rel) => join(root, rel)) : [];
   // Issue #78(c) readonly: `allowWrite: []` alone is NOT read-only. The CLI (2.1.199, read from its
   // settings→sandbox builder) always seeds the write list with "." (the session cwd = root) and its
   // own per-uid scratch dir before merging `allowWrite`, and sandbox-runtime adds a fixed list

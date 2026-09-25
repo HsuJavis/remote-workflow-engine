@@ -18,7 +18,10 @@ export type EngineEvent =
   // UNCONFINED without inferring it from `enabled`/`allowWrite`, which a 'confined'-but-no-workspace
   // call can also report empty (ARCH-176's own bug class: two different reasons must not read the
   // same). No `AuditActor` — this is an engine fact, not a principal-attributable action.
-  | { kind: 'agent.confinement'; runId: string; agentId: string; attempt: number; posture: 'confined' | 'unconfined'; root?: string; allowWrite: string[]; denyRead: string[]; enabled: boolean; failIfUnavailable: boolean; sdkVersion: string };
+  | { kind: 'agent.confinement'; runId: string; agentId: string; attempt: number; posture: 'confined' | 'unconfined'; root?: string; allowWrite: string[]; denyRead: string[]; enabled: boolean; failIfUnavailable: boolean; sdkVersion: string }
+  // Project configuration (PROJECT_CONFIG_PATHS, bash-confinement.ts) found in the run workspace and
+  // removed before this attempt's CLI could load it — something planted it; an operator should know.
+  | { kind: 'agent.planted_config_removed'; runId: string; agentId: string; attempt: number; root: string; removed: string[] };
 
 export type EventSink = (event: EngineEvent) => void;
 
