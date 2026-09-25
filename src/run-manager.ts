@@ -1524,9 +1524,15 @@ export class RunManager {
     // limits already travelled onto `entry.sandbox`'s own `SandboxHostConfig.budget` at construction
     // (`_newSandbox`, above), which now wins; `entry.guard.budgetView().total` is TOKENS (the pre-
     // v26 view) and would be a wrong-unit value on this parameter today.
-    entry.sandbox
+    // issue #53: `suspend()` SIGKILLs this child without awaiting its exit, and `resume()` installs a
+    // NEW `entry.sandbox` and sets `running` again — so this child's late `exit` (ABORTED/SIGKILL, or
+    // an EPIPE `error`) can arrive while the run is `running` under its successor. Identity, not
+    // timing: only the sandbox this execution was started on may settle the run.
+    const sandbox = entry.sandbox;
+    sandbox
       .run(runId, script, entry.args, null)
       .then(async (outcome) => {
+        if (entry.sandbox !== sandbox) return; // superseded by resume(): a newer execution owns the run
         if (entry.status !== 'running') return; // suspend/stop already recorded the terminal transition
         if ('result' in outcome) {
           entry.result = outcome.result;
@@ -1576,6 +1582,10 @@ export class RunManager {
   ): Promise<unknown> {
     const entry = this._runs.get(runId);
     if (!entry) throw new Error(`Unknown run: ${runId}`);
+    // issue #53: the execution generation this frame belongs to. suspend()/stop() abort it and
+    // resume() replaces it; either way this frame's nested child is then superseded (see below).
+    const generation = entry.abortController.signal;
+    if (generation.aborted) throw new Error(`run ${runId}: workflow() from a suspended/stopped execution`);
     const name = typeof ref === 'string' ? ref : (ref as { scriptPath?: string } | undefined)?.scriptPath;
     if (!name) throw new Error('workflow() requires a registered name or {scriptPath}');
 
@@ -1606,6 +1616,9 @@ export class RunManager {
         );
       }
     }
+    // issue #53: re-check after the awaits above — an abort that landed meanwhile would never fire
+    // the kill listener registered below (an already-aborted signal dispatches no later 'abort').
+    if (generation.aborted) throw new Error(`run ${runId}: workflow() from a suspended/stopped execution`);
     const framePathKey = `${parentPathKey}.${parentCallSeq}`;
     const frameBase = this._frameBaseFor(entry, framePathKey);
     const childAncestors = new Set(ancestors).add(name);
@@ -1626,8 +1639,12 @@ export class RunManager {
       // v8 REQ-044: nested agent() callSeqs are namespaced into this frame's base (see _frameBaseFor)
       // so they never collide with the parent's own or a sibling frame's entries in the shared journal.
       // v8 REQ-045: the nested agents are tagged with THIS frame's path so the dashboard nests them.
-      onAgentRequest: (prompt, opts, callSeq, phase) =>
-        this._handleAgentRequest(runId, prompt, opts, frameBase + callSeq, framePathKey, phase),
+      // issue #53: a superseded frame's calls are refused, never dispatched into the run's CURRENT
+      // generation (after an immediate resume they otherwise ran live under the new controller).
+      onAgentRequest: (prompt, opts, callSeq, phase) => {
+        if (generation.aborted) throw new Error(`run ${runId}: agent() from a suspended/stopped nested workflow() frame`);
+        return this._handleAgentRequest(runId, prompt, opts, frameBase + callSeq, framePathKey, phase);
+      },
       // v8 REQ-041: a deeper workflow() recurses here one level down, carrying this frame's path +
       // the extended ancestor set — enabling N-level composition (was: no delegate → NESTING_ERROR).
       onWorkflowRequest: (ref2, args2, callSeq2) =>
@@ -1644,7 +1661,17 @@ export class RunManager {
     });
     // v26 (DES-182): `null` positionally — the limits already travelled via `SandboxHostConfig.budget`
     // above, which wins (see `SandboxHost.run`'s own doc).
-    const outcome = await nested.run(`${runId}-nested`, registered.script, args, null);
+    // issue #53: suspend()/stop() only SIGKILL the top-level child (`entry.sandbox`); this nested
+    // child lives in its own host, so without this it kept running its script after the run was
+    // suspended or stopped. Kill it when its generation is aborted.
+    const killNested = () => { void nested.abort(`${runId}-nested`, 'stop'); };
+    generation.addEventListener('abort', killNested, { once: true });
+    let outcome: Awaited<ReturnType<SandboxHost['run']>>;
+    try {
+      outcome = await nested.run(`${runId}-nested`, registered.script, args, null);
+    } finally {
+      generation.removeEventListener('abort', killNested);
+    }
     if ('result' in outcome) return outcome.result;
     const err = toErr(outcome.error);
     // v24 (DES-137): the one genuinely-`string` site — `toErr()` can return a raw `Error.name`
