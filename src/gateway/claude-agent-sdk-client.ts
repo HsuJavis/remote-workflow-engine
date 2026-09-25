@@ -19,7 +19,7 @@ import { redactHarness } from '../agent-executor.js';
 import type { McpServerConfig } from '../mcp-probe.js';
 import type { AliasMap, EffortApplied, GatewayClient, GatewayResult } from './client.js';
 import { resolveTimeout, wireEffort, UNKNOWN_CAPS, attemptsFor } from './client.js';
-import { resolveAlias, type Provider } from '../providers.js';
+import { resolveAlias, resolveModelRef, type Provider } from '../providers.js';
 import { isPathContained } from '../path-containment.js';
 import { resolveConfig, type SecretSource } from '../secret-resolver.js';
 import { proxyModelName } from './litellm-proxy.js';
@@ -254,6 +254,12 @@ export async function materializeAssets(
  *  OUT of the default (opt-in via an explicit per-call `allowedTools`) — they break workspace
  *  confinement / the engine's own orchestration+DOS model respectively, in EITHER posture. */
 const BUILT_IN_CORE_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'];
+
+/** issue #53: the result of an attempt refused because the caller's signal was already aborted —
+ *  nothing was dispatched. `retryable:false` so no retry loop ever re-attempts it. */
+function abortedBeforeDispatch(): GatewayResult {
+  return { ok: false, provider: 'claude-agent-sdk', transport: 'claude-agent-sdk', reason: 'terminal', retryable: false, detail: 'aborted by caller before dispatch (run suspended or stopped)' };
+}
 
 /** REQ-038 passthrough: a model already in `openrouter/<id>` form is NOT a configured alias — its
  *  provider is the prefix and it must NOT be proxy-cloaked (`rwe-proxy-*`). It matches LiteLLM's
@@ -612,6 +618,10 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       // adds a SECOND producer: `SANDBOX_UNAVAILABLE` (below) also sets `retryable:false` — a retry
       // cannot install a working nested user namespace.
       if (!last.ok && last.retryable === false) break;
+      // issue #53: the caller aborted (run_suspend/run_stop) — no further attempt may start. The
+      // discriminator is the caller's signal, never `reason`: an abort and a genuine timeout both
+      // surface as `reason:'timeout'`, and only the latter may retry.
+      if (req.signal?.aborted) break;
     }
     return last;
   }
@@ -621,6 +631,11 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     // MUST match invoke()'s attempts calc above so a bounded attempt count never pairs with an
     // unbounded timer (or vice-versa). resolveTimeout rejects a bad value → gateway default applies.
     const timeoutMs = resolveTimeout(req.opts.timeoutMs) ?? this._config.timeoutMs;
+    // issue #53: an attempt that begins with the caller's signal already aborted dispatches NOTHING
+    // (no session, no harness, no confinement line) — an `abort` listener added to an already-aborted
+    // signal never fires, so such an attempt would otherwise run unbounded outside the run's
+    // accounting. `retryable:false` is belt-and-braces for `invoke()`'s own post-attempt check.
+    if (req.signal?.aborted) return abortedBeforeDispatch();
     // D-F10(c): the controller must exist BEFORE query() is called and be handed to the SDK's own
     // documented cancellation hook (Options.abortController, sdk.d.ts:1275) — otherwise aborting it
     // only resolves this class's own local await-race while the real spawned `claude` CLI
@@ -707,7 +722,11 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     // never the alias, never the `rwe-proxy-*` cloak `modelName` puts on the wire. An anthropic-direct
     // or passthrough dispatch already has the resolved id in `modelName`; every other alias resolves
     // through the SAME alias table `anthropicTarget` reads above, just unconditional on provider.
-    const aliasTarget = req.opts.model !== undefined ? this._config.aliases?.[req.opts.model] : undefined;
+    // issue #85: resolved through the SAME normalizer the admission pin uses (`resolveModelRef`), so
+    // a passthrough `openrouter/<id>` stamps `<id>` — the capture keys its price lookup by
+    // `${provider}/${model}`, and stamping the raw ref looked up `openrouter/openrouter/<id>`, a key
+    // no catalog has (always unpriced). An alias resolves to its row's model exactly as before.
+    const aliasTarget = req.opts.model !== undefined ? resolveModelRef(this._config.aliases ?? {}, req.opts.model) : undefined;
     const resolvedModel = aliasTarget?.model ?? modelName;
     // v26 (DES-177): the proxy-facing cloak is reportable only when one was actually put on the wire
     // (the LiteLLM-proxy route) — absent on an anthropic-direct dispatch and on a raw passthrough
@@ -925,6 +944,15 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       // `wired.applied` unconditionally would silently add `effortApplied:{reason:'no effort
       // requested'}` to EVERY SDK-gateway record, a persisted-shape change no DES asked for.
       await req.onHarness(descriptor, req.opts.effort !== undefined ? applied : undefined);
+    }
+    // issue #53: the awaits above (MCP resolution, asset materialization, onHarness) are a window in
+    // which the caller can abort; `onExternalAbort` already fired into `controller`, but `bound`
+    // below would attach its listener to an already-aborted signal and never resolve. Refuse here,
+    // synchronously before the spawn, rather than start a session nobody can stop.
+    if (req.signal?.aborted) {
+      if (timer !== undefined) clearTimeout(timer);
+      req.signal.removeEventListener('abort', onExternalAbort);
+      return abortedBeforeDispatch();
     }
     const session = this._query({ prompt: req.prompt, options });
     const drain = this._drain(session, req.opts.model, req.onEvent);

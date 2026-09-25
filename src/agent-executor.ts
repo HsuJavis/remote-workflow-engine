@@ -1,7 +1,7 @@
 // AgentExecutor (DES-007 / ARCH-004) + AgentTranscriptSink (DES-008 / TASK-010).
 import Ajv from 'ajv';
 import type { AgentOpts, AgentRecord, HarnessDescriptor, TranscriptEvent, PriceBook, Caps } from './types.js';
-import { resolveAlias } from './providers.js';
+import { resolveModelRef } from './providers.js';
 import type { GatewayClient, GatewayResult } from './gateway/client.js';
 import type { RunGuard } from './run-guard.js';
 import { ZERO_TOKENS, priceCall } from './run-guard.js';
@@ -502,13 +502,32 @@ export class AgentExecutor implements AgentSpawner {
    *  applied, and `effortApplied.reason` says the catalog could not be read). */
   private _pinnedCapsFor(model: string | undefined): Caps | undefined {
     if (!this._priceBook || !this._aliases) return undefined;
-    const resolved = resolveAlias(this._aliases, model ?? 'default');
+    // issue #85: the same normalizer as the pin itself, so a passthrough finds its pinned caps.
+    const resolved = resolveModelRef(this._aliases, model ?? 'default');
     if (!resolved) return undefined;
     return this._priceBook.pinned[`${resolved.provider}/${resolved.model}`]?.caps;
   }
 
+  /** issue #53: finalizes the record of a call the run's abort (run_suspend/run_stop) cut short.
+   *  Before this, both aborted exits of `run()` returned BEFORE `capture()`, so the record kept its
+   *  `markRunning` stamp — `state:'running'`, no `endedAt` — for the rest of the process's life.
+   *  Routed through the SAME `capture()` failed branch every other unfinished call takes: the record
+   *  becomes `failed` with `endedAt` and a detail naming the abort, and the durable usage event it
+   *  journals makes `deriveAgentRecords` rebuild the same record after a restart. `failed`, not a new
+   *  state: the call reached (or was about to reach) a gateway and did not complete, which is what
+   *  `failed` already means; its `detail` says why. The resumed re-run gets a NEW agentId. */
+  private async _finalizeAborted(req: AgentReq): Promise<AgentOutcome> {
+    await this._sink.capture(
+      req.runId,
+      { agentId: req.agentId, label: req.opts.label },
+      { ok: false, provider: '', reason: 'terminal', detail: 'ABORTED: the run was suspended or stopped while this call was in flight' },
+      this._clock.isoNow(),
+    );
+    return { kind: 'null', aborted: true };
+  }
+
   async run(req: AgentReq): Promise<AgentOutcome> {
-    if (req.signal.aborted) return { kind: 'null', aborted: true };
+    if (req.signal.aborted) return this._finalizeAborted(req);
 
     // v21 (ARCH-068, DES-105, TASK-101): a script-supplied per-call knob outside the contract
     // (today: an invalid `effort`) must be RECORDED then THROWN, pre-dispatch — never a silent
@@ -590,7 +609,7 @@ export class AgentExecutor implements AgentSpawner {
           ? schemaPrompt
           : `${schemaPrompt}\n\n(Your previous reply did not parse as JSON matching the schema above. Reply with ONLY the JSON value — nothing else.)`;
       const outcome = await this._invokeOnce(req, prompt, effectiveOpts, eff);
-      if (outcome === 'aborted') return { kind: 'null', aborted: true };
+      if (outcome === 'aborted') return this._finalizeAborted(req);
       const result = outcome;
 
       await this._sink.capture(req.runId, { agentId: req.agentId, label: effectiveOpts.label }, result, this._clock.isoNow());
@@ -606,6 +625,9 @@ export class AgentExecutor implements AgentSpawner {
   }
 
   private async _invokeOnce(req: AgentReq, prompt: string, opts: AgentOpts, eff: EffectiveCallParams): Promise<GatewayResult | 'aborted'> {
+    // issue #53: a schema-retry attempt that begins after the abort must not dispatch — the race
+    // below adds its listener to an already-aborted signal, which never fires.
+    if (req.signal.aborted) return 'aborted';
     // D-V2V-1: forward the run's own workspace — only ClaudeAgentSdkGatewayClient consumes it
     // (per-call cwd re-scoping + asset materialization); other gateways ignore the extra field.
     // DES-066 (TASK-069): onHarness closure — appends a kind:'harness' transcript event when the

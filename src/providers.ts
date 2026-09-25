@@ -63,3 +63,21 @@ export function resolveAlias(
     ? { provider: entry.provider, model: entry.model, proxyModel: entry.proxyModel }
     : { provider: entry.provider, model: entry.model };
 }
+
+/** issue #85: the ONE model-reference normalizer — alias OR `openrouter/<id>` passthrough → the
+ *  `{provider, model}` pair the model catalog/price book is keyed by (`${provider}/${model}`).
+ *  Admission accepts a passthrough by regex (`params/contract.ts`'s OPENROUTER_PASSTHROUGH) without
+ *  any alias row, so `resolveAlias` alone yields nothing for it; every site that must agree with
+ *  admission — the price pin (`run-manager.ts`), the pinned-caps lookup and the resolved model the
+ *  SDK gateway stamps (and the capture keys its price lookup by) — resolves through HERE, so the
+ *  admitted-model set and the priced-model set are the same set (INV-V26-4). A passthrough's model
+ *  is the id WITHOUT the `openrouter/` prefix: the openrouter catalog lists `deepseek/…`, not
+ *  `openrouter/deepseek/…`, exactly like an alias-routed openrouter row (`openai/gpt-4.1-mini`).
+ *  The passthrough check comes first, matching `effectiveProvider`'s own precedence. */
+export function resolveModelRef(
+  aliases: Record<string, AliasEntry>,
+  modelOrAlias: string,
+): { provider: Provider; model: string; proxyModel?: string } | undefined {
+  if (/^openrouter\/.+/.test(modelOrAlias)) return { provider: 'openrouter', model: modelOrAlias.slice('openrouter/'.length) };
+  return resolveAlias(aliases, modelOrAlias);
+}

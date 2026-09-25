@@ -45,7 +45,7 @@ import { LiteLLMGatewayClient } from './gateway/client.js';
 import { DEFAULT_ALIASES } from './default-aliases.js';
 import { validateUserOverrides, validateDeclaredArgs, materializeArgDefaults, isKnownAlias, FRAME_CLOSE_FORGERY, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type Err as ParamErr } from './params/contract.js';
 import { defaultRunParams, mergeRunParams, type RunParams } from './params/resolve.js';
-import { resolveAlias } from './providers.js';
+import { resolveModelRef } from './providers.js';
 import { ModelBook, reachableModels } from './models/model-book.js';
 import { createEventSink, type EventSink } from './event-log.js';
 
@@ -763,7 +763,7 @@ export class RunManager {
     // Pinned here, never re-resolved on resume — a mid-run price change or listing outage cannot
     // move a pinned run's arithmetic. One entry per reachable model, present even when every entry
     // prices `null` ("we looked and found nothing" vs "we never looked" stay distinguishable only
-    // because the key is THERE). `m` is already alias-validated above, so `resolveAlias` failing
+    // because the key is THERE). `m` is already alias-validated above, so `resolveModelRef` failing
     // here would mean the admission table and the pin table disagreed — never expected in practice.
     const bookSnapshot = await this._modelBook.snapshot();
     const pinned: PriceBook['pinned'] = {};
@@ -774,10 +774,12 @@ export class RunManager {
     // recorded nothing for most real runs. Both gateways fall back to the `'default'` alias
     // (`req.opts.model ?? 'default'`), so it is genuinely reachable and must be pinned. Added HERE
     // and not inside `reachableModels` on purpose: the admission UNKNOWN_ALIAS check must keep
-    // judging exactly what the author wrote, and `resolveAlias` simply yields nothing for a
+    // judging exactly what the author wrote, and `resolveModelRef` simply yields nothing for a
     // deployment whose table has no `'default'` row.
     for (const m of [...new Set([...modelsToCheck, 'default'])]) {
-      const resolved = resolveAlias(this._aliasMap, m);
+      // issue #85: `resolveModelRef`, not `resolveAlias` — a passthrough `openrouter/<id>` is
+      // admitted without an alias row and must be pinned too, or its price is never looked up.
+      const resolved = resolveModelRef(this._aliasMap, m);
       if (!resolved) continue;
       pinned[`${resolved.provider}/${resolved.model}`] = bookSnapshot.lookup(resolved.provider, resolved.model);
     }
@@ -983,6 +985,13 @@ export class RunManager {
     entry.nestedFrames = new Map();
     entry.nestedFrameSeq = 0;
     entry.workflowNodes = [];
+    // issue #53: `phases` is the lane list the dashboard lays agents out by ordinal (`phaseIndex`),
+    // not an append-only history — the re-executed script re-pushes every `phase()` it reaches (the
+    // replayed prefix included), so without this reset a suspend→resume doubled it
+    // (`['greet','greet']`) and the resumed agent landed in lane 1 of a one-lane workflow. Reset
+    // for the same replay-stable-ordinals reason as the frame allocator above; a rehydrated
+    // (post-restart) entry already starts from `[]`, so both resume paths now agree.
+    entry.phases = [];
     await this._transition(runId, entry, 'running');
     this._runLive(runId, entry, entry.script, cachePlan);
   }
