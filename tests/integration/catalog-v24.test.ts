@@ -257,7 +257,9 @@ describe('WorkflowCatalog v24 — mermaid/triggers required, assets, deregister 
         // re-checked), which is why the column joins the pinned set rather than replacing anything.
         // v37 P1 (ADR-086's third owner ruling, 2026-09-25, DES-263's 第三次修訂): `registeredRemote`
         // — same idempotent ALTER idiom, `DEFAULT 0` grandfathers this migrated row as local.
-        ['name', 'version', 'script', 'defaults', 'params', 'createdAt', 'mermaid', 'triggers', 'diagram_contract', 'registeredRemote'].sort(),
+        // Issue #82 (option B): `seed_manifest_ref`/`seed_namespace` — the version's default seed,
+        // same idempotent ALTER idiom, NULL on this migrated row (no default seed).
+        ['name', 'version', 'script', 'defaults', 'params', 'createdAt', 'mermaid', 'triggers', 'diagram_contract', 'registeredRemote', 'seed_manifest_ref', 'seed_namespace'].sort(),
       );
       // Re-opening a SECOND WorkflowCatalog over the SAME already-migrated file must not throw
       // (a non-guarded `ALTER TABLE ADD COLUMN` on an existing column throws SQLITE_ERROR) and must
