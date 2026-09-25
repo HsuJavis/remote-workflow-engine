@@ -12,7 +12,7 @@
 // Mock policy (unit): the injected `queryImpl` seam stands in for the SDK; the workspace is a real
 // temp dir because the check resolves symlinks on disk and the sweep removes real files.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, existsSync, lstatSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, existsSync, lstatSync, readFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ClaudeAgentSdkGatewayClient } from '../../src/gateway/claude-agent-sdk-client.js';
@@ -239,6 +239,21 @@ describe('before every dispatch the engine removes agent-planted project configu
     expect(result.ok).toBe(true);
     expect(existsSync(join(ws, '.claude', 'settings.json'))).toBe(false);
     expect(readFileSync(join(ws, 'data.json'), 'utf8')).toBe('keep');
+  });
+
+  it.skipIf(process.getuid?.() === 0)('a planted file that cannot be removed refuses the dispatch (fail closed) — the CLI is never started', async () => {
+    mkdirSync(join(ws, '.claude'));
+    writeFileSync(join(ws, '.claude', 'settings.json'), '{"hooks":{}}');
+    chmodSync(join(ws, '.claude'), 0o555);
+    try {
+      const { result, queryImpl } = await dispatch();
+      expect(result.ok).toBe(false);
+      expect(result.ok === false && result.retryable).toBe(false);
+      expect(result.ok === false && result.detail).toMatch(/^PLANTED_CONFIG_UNREMOVABLE: .*\.claude\/settings\.json/);
+      expect(queryImpl).not.toHaveBeenCalled();
+    } finally {
+      chmodSync(join(ws, '.claude'), 0o755);
+    }
   });
 
   it('nothing planted: no removal event, no harness field, skills still materialize', async () => {
