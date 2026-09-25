@@ -158,7 +158,7 @@ function fmtDeclared(value, source) {
  *  Only the DISPLAYED cell is translated — `sortKeys` keeps the raw value, so switching language
  *  never reorders the table. An unrecognised wire value passes through unchanged rather than
  *  rendering the literal string `undefined` (the BF-5/BF-6 class). */
-const STABILITY_KEY = { stable: 'stable', variable: 'variable', 'best-effort': 'bestEffort' };
+const STABILITY_KEY = { stable: 'stable', variable: 'variable', 'best-effort': 'bestEffort', degraded: 'degraded', unavailable: 'unavailable' };
 const LOCATION_KEY = { remote: 'remote', local: 'local' };
 function word(map, raw, lang) {
   if (raw === undefined || raw === null || raw === '') return '—';

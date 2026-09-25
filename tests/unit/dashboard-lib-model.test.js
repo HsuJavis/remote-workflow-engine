@@ -287,6 +287,16 @@ describe('lib/model.js: stability and location render in the viewer’s language
     expect(sortKeys.stability).toBe('stable');
     expect(sortKeys.location).toBe('remote');
   });
+  // #73 added two probe-derived stability values; they must not reopen REQ-150's raw-wire-word leak.
+  it.each([['degraded', '降級', 'Degraded'], ['unavailable', '無法使用', 'Unavailable']])(
+    'probe-derived %s is translated in both panels and table', (raw, zh, en) => {
+      const e = { ...entry, stability: raw, stabilitySource: 'probe' };
+      expect(modelRow(e, 'zh').cells).toContain(zh);
+      expect(modelRow(e, 'zh').cells).not.toContain(raw);
+      expect(modelRow(e, 'en').cells).toContain(en);
+      expect(modelRow(e, 'zh').sortKeys.stability).toBe(raw);
+      expect(JSON.stringify(modelPanel(e, 'zh'))).not.toContain(`"${raw}"`);
+    });
 });
 
 describe('lib/model.js: the two cell formats REQ-137 spells out (UT-272, v29f, REQ-162)', () => {

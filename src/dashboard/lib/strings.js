@@ -58,7 +58,7 @@ export const STR = {
     effortNotApplied: '未套用', fit: '適應畫面',
     // [v32, REQ-197] a running call that has not reported yet — distinct from 無活動 (reported, then froze).
     noReportYet: '尚無回報',
-    stable: '穩定', variable: '變動', bestEffort: '盡力', remote: '遠端', local: '本機', free: '免費',
+    stable: '穩定', variable: '變動', bestEffort: '盡力', degraded: '降級', unavailable: '無法使用', remote: '遠端', local: '本機', free: '免費',
     issuesOpen: '未解決', issuesResolved: '已解決', openOnGitHub: '在 GitHub 開啟 ↗',
     stDone: '完成',
     // [v29c, REQ-153/154/155] the detail page's structural strings. Key names follow the delivery
@@ -96,7 +96,7 @@ export const STR = {
     tokIn: 'in', tokOut: 'out', tokCacheRead: 'cache read', tokCacheWrite: 'cache write',
     effortNotApplied: 'not applied', fit: 'Fit',
     noReportYet: 'no report yet',
-    stable: 'Stable', variable: 'Variable', bestEffort: 'Best effort', remote: 'Remote', local: 'Local', free: 'Free',
+    stable: 'Stable', variable: 'Variable', bestEffort: 'Best effort', degraded: 'Degraded', unavailable: 'Unavailable', remote: 'Remote', local: 'Local', free: 'Free',
     issuesOpen: 'Open', issuesResolved: 'Resolved', openOnGitHub: 'Open on GitHub \u2197',
     stDone: 'Done',
     noResults: 'No workflows match', trigger: 'Trigger',
