@@ -6203,7 +6203,7 @@ caller at all, which is the whole of REQ-219's case).
   B6 and B4's `RefusalReason` question from being re-derived separately.
   **(c) The door and the predicate are ONE predicate over two route sets and may never diverge.**
   `call-tool.ts:124` covers `run_start` **and** `run_resume`; `admissionRefusal()` covers `start()`
-  only (`run-manager.ts:473`; `resume()` at `:848` never calls it), so the door is the SOLE cover for  **[CORRECTED 2026-09-25, Gate 8 round-6 finding R6-F2]** ~~the door is the SOLE cover / the two never diverge~~ — since v37 P1, `resume()` DOES apply `admissionRefusal()`, in exactly one place: the legacy-substitution case (the run's pinned version is gone, so the CURRENT `release` is substituted — a version the run never carried and no admission check ever saw). The PINNED resume path is still ungated, so `call-tool.ts`'s door remains the cover for an ORDINARY `run_resume`; the two are complementary, not identical. The refusal lives in `resume()` and NOT in the shared `_requireLive()` helper (R5-F1) and it EVICTS the rehydrated entry before throwing (R6-F1), or the refusal would memoise itself. **這條不變式本身就是上述五處註記共同引用的權威來源,所以它沒被更正的代價最大:一位 v38 實作者會從這裡讀到「`resume()` 從不呼叫它」而據以推論。現行事實:`resume()` 呼叫它,但僅限 legacy 替換那一支。**
+  only (`run-manager.ts:473`; `resume()` at `:848` never calls it), ~~so the door is the SOLE cover for~~ **[FALSE since v37 P1 — see the correction at the end of this invariant]** the door is the cover for an ORDINARY `run_resume` only, and it is one of TWO covers for
   `run_resume` — not a redundant twin (ARCH-182's Gate-8 round-2 amendment (2)). One test must assert
   that both refuse the identical input; a duplicate control that is only accidentally in agreement is
   as opaque as no control.
@@ -6214,6 +6214,7 @@ caller at all, which is the whole of REQ-219's case).
   `createServer({confinementPosture:'unconfined'})` that refuses an `origin:'remote'` RunSpec with
   `CONFINEMENT_UNAVAILABLE`. **The shape matters more than the count**: today the suite exercises the
   predicate only at `confinementPosture:'confined'`, the one value it never gates on — a vacuous boot.
+  **[CORRECTED 2026-09-25, Gate 8 round-6 finding R6-F2]** ~~the door is the SOLE cover / the two never diverge~~ — since v37 P1, `resume()` DOES apply `admissionRefusal()`, in exactly one place: the legacy-substitution case (the run's pinned version is gone, so the CURRENT `release` is substituted — a version the run never carried and no admission check ever saw). The PINNED resume path is still ungated, so `call-tool.ts`'s door remains the cover for an ORDINARY `run_resume`; the two are complementary, not identical. The refusal lives in `resume()` and NOT in the shared `_requireLive()` helper (R5-F1) and it EVICTS the rehydrated entry before throwing (R6-F1), or the refusal would memoise itself. **這條不變式本身就是上述五處註記共同引用的權威來源,所以它沒被更正的代價最大:一位 v38 實作者會從這裡讀到「`resume()` 從不呼叫它」而據以推論。現行事實:`resume()` 呼叫它,但僅限 legacy 替換那一支。**
 - **INV-V37-6 (provenance comes from TWO immutable sources, OR'd — neither is ever re-written).**
   **[改寫 2026-09-25,ADR-086 第三次裁決 P1;原文的「單調非遞減」論述 `[SUPERSEDED]`,連同它所描述的
   `claim()` 重新蓋章機制(`3e3c331`/`2cf5f32`)一併刪除。]** 上一版把「誰掛上觸發器」與「誰寫了腳本」
@@ -6255,6 +6256,26 @@ caller at all, which is the whole of REQ-219's case).
   的缺口。
 
 ### v38 candidates (filed here so the next round starts from evidence, NOT actioned in v37)
+
+- **(v38, from Gate 8 round-6 finding R6-F6 — the lock that `tsc` enforces instead of a regex.)** Give
+  `admissionRefusal` a `source: 'submission' | 'trigger' | 'version' | 'resume-substitution'` discriminator and
+  have `confinementBannerLine()` consume that union exhaustively (a `Record<Source, string>` or a `satisfies`
+  const array), so adding or removing an admission source becomes a **compile error in the banner**. Round 6
+  proposed it, round 7 re-confirmed it, and the orchestrator agreed it is strictly better than what shipped;
+  it was NOT done inside a send-back round because it changes an exported signature several tests pin
+  (UT-329 among them). What shipped instead is round 6's own stated intermediate: `UT-338` asserts the four
+  call sites' IDENTITIES with one distinguishing regex each. **Known limit of the shipped form, measured by
+  round 7**: a byte-identical decoy moved to another method keeps it green. That is the gap this candidate closes.
+- **(v38, from Gate 8 round-7 finding R7-F5 — pre-existing, NOT a v37 defect.)**
+  `tests/unit/litellm-proxy-hardening.test.ts` hard-codes fixed ports 48173–48178 (`:58, :93, :110, :161,
+  :190, :203`), so **two overlapping `npm test` runs collide on 48174 deterministically** — not flakily.
+  One such collision happened during v37's round-6 verification (orchestrator's and reviewer's suites
+  overlapping) and produced a single red that re-ran green alone; round 7 independently confirmed the
+  diagnosis is sound and is not a real flake being explained away. Fix shape: allocate an ephemeral port per
+  test (bind `:0` and read it back) as the rest of the suite does, rather than raising the fixed numbers.
+  **Related housekeeping, deliberately NOT actioned**: 25 orphaned `litellm` processes (`ppid=1`, 5-7 days old,
+  ports 33xxx-46xxx, none on `4817x`, none a child of the production node) are alive on this host. Killing
+  processes of uncertain ownership is the owner's call, not a gate's.
 
 - **`continuationDbPath` is forwarded by `composeConfig()` to no production consumer** (found while
   fixing A3: no `ContinuationStore` construction site exists in `src/`, yet

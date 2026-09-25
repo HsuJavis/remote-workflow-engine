@@ -12393,6 +12393,7 @@ this boot actually ran, not a stale committed snapshot).
   REQ-218 exists to correct in code, never propagated to the human-facing deploy doc. Rewritten in
   place plus a new §1c(e); `README.md`'s 安全模型 §2/§4 bullets corrected to match; two new §5
   troubleshooting rows added (`CONFINEMENT_UNAVAILABLE`, runtime `WORKROOT_INSIDE_PROJECT`).
+> **[指標 2026-09-25, Gate 8 round-7 finding R7-F4 —— 不修改上方引文,它是證據。]** 上方逐字引用的開機 banner 含「local (loopback) runs still proceed」,那句話在**擷取當時就是錯的**(Gate 8 round-4 finding F1),已於 `src/main.ts` 修正並由 UT-338 釘住。引文保留原樣正是為了讓那個缺陷可被追溯 —— 它也是本迭代「沒有測試讀的字串不可能轉紅」那條教訓的原始證物。現行措辭與判定見 DES-263 第三次/第四次修訂。
 
 **REQ-219 real-tier evidence** (full detail on `VAL-254`'s own v37 Gate 7.5 note in `05-tests.md`):
 - Delete half: re-ran `npx vitest run tests/acceptance/val-254-req219-dead-code.test.ts` (5/5 pass,
@@ -12569,6 +12570,7 @@ disturbed the tree.
   namespace, likely because the kernel does not allow non-privileged user namespaces. ...)
   — remote run submissions will be refused; local (loopback) runs still proceed, unconfined
   ```
+> **[指標 2026-09-25, Gate 8 round-7 finding R7-F4 —— 不修改上方引文,它是證據。]** 上方逐字引用的開機 banner 含「local (loopback) runs still proceed」,那句話在**擷取當時就是錯的**(Gate 8 round-4 finding F1),已於 `src/main.ts` 修正並由 UT-338 釘住。引文保留原樣正是為了讓那個缺陷可被追溯 —— 它也是本迭代「沒有測試讀的字串不可能轉紅」那條教訓的原始證物。現行措辭與判定見 DES-263 第三次/第四次修訂。
   Healthcheck: `curl http://127.0.0.1:8791/api/status` → `200 {"agentSemaphore":...,"version":"0.1.0 (v0.20.0-446-gf24df7a)"}`.
 
   **Method — how "remote" vs "local" was made true, per DES-262/ADR-086's own rule that the
@@ -12845,6 +12847,7 @@ the real-tier proof this rewrite is based on, including one discrepancy found in
   unconfined
   [remote-workflow-engine] ready
   ```
+> **[指標 2026-09-25, Gate 8 round-7 finding R7-F4 —— 不修改上方引文,它是證據。]** 上方逐字引用的開機 banner 含「local (loopback) runs still proceed」,那句話在**擷取當時就是錯的**(Gate 8 round-4 finding F1),已於 `src/main.ts` 修正並由 UT-338 釘住。引文保留原樣正是為了讓那個缺陷可被追溯 —— 它也是本迭代「沒有測試讀的字串不可能轉紅」那條教訓的原始證物。現行措辭與判定見 DES-263 第三次/第四次修訂。
   Healthcheck: `curl http://127.0.0.1:8793/api/status` → `200
   {"agentSemaphore":{"total":32,"inUse":0,"queued":0},"version":"0.1.0 (v0.20.0-450-g2cf5f32)"}` —
   version string confirms both repair commits are in the running build.

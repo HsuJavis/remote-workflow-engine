@@ -9809,7 +9809,7 @@ keep, not a coincidence to rely on.
   deployment's measured posture is `confined`. On a host where the boot probe found no working
   nested user namespace (`confinementPosture:'unconfined'`), a LOCALLY-submitted run's Bash is
   genuinely unconfined — the accepted cost ADR-083's owner_decision records in plain terms
-  (「本機發起的 run 仍不受限制」) — and a REMOTE submission never reaches an agent at all (refused at  **[收窄 2026-09-25, R6-F2:「本機發起的 run 仍不受限制」現在只涵蓋「本機發起 **且** 跑本機註冊版本」的 run。本機發起但解析到遠端註冊版本的 run,已被 ADR-086 第三次裁決(P1)擋在 `RunManager.start()` 的第二段門。]**
+  (「本機發起的 run 仍不受限制」) — and a REMOTE submission never reaches an agent at all (refused at
   the door, ARCH-181/DES-262), so fact (a) is vacuously true for it but for the wrong reason (no run,
   not a jail). The guide paragraph this row specifies must be corrected the same way the code
   comments were (ARCH-176's amendment) before it is generated. **Correction, found while checking
@@ -9824,6 +9824,7 @@ keep, not a coincidence to rely on.
   unresolved `owner_decision` (static vs. live rendering) — threading the posture through is itself
   new wiring deserving its own test-first cycle, not a rushed append to an unrelated dispatch's
   diff. Flagged to the orchestrator as an open, LIVE gap, not a someday-TODO.
+  **[收窄 2026-09-25, R6-F2:「本機發起的 run 仍不受限制」現在只涵蓋「本機發起 **且** 跑本機註冊版本」的 run。本機發起但解析到遠端註冊版本的 run,已被 ADR-086 第三次裁決(P1)擋在 `RunManager.start()` 的第二段門。]**
 - **v37 Gate-6 amendment (2026-09-22, implementer — CLOSES the `owner_decision` above):** fixed.
   `hostPathGrantsBody(posture)` (`src/authoring-guide.ts`, beside `section()`) replaces the
   unconditional static text with three bodies: `HOST_PATH_GRANTS_CONFINED` (the original three
@@ -10010,8 +10011,9 @@ keep, not a coincidence to rely on.
   - **The accepted cost is in the code, not just the ADR.** A LOCAL (loopback-peer) submission on the
     SAME `unconfined` posture is NOT refused — `ClaudeAgentSdkGatewayClient` never even calls
     `buildBashConfinement()` for that run (ARCH-176's amendment); the run proceeds genuinely
-    unconfined. This is ADR-083's owner_decision (「本機發起的 run 仍不受限制」) stated as code, not a  **[收窄 2026-09-25, R6-F2:「本機發起的 run 仍不受限制」現在只涵蓋「本機發起 **且** 跑本機註冊版本」的 run。本機發起但解析到遠端註冊版本的 run,已被 ADR-086 第三次裁決(P1)擋在 `RunManager.start()` 的第二段門。]**
+    unconfined. This is ADR-083's owner_decision (「本機發起的 run 仍不受限制」) stated as code, not a
     gap.
+  **[收窄 2026-09-25, R6-F2:「本機發起的 run 仍不受限制」現在只涵蓋「本機發起 **且** 跑本機註冊版本」的 run。本機發起但解析到遠端註冊版本的 run,已被 ADR-086 第三次裁決(P1)擋在 `RunManager.start()` 的第二段門。]**
   - **One site, not two.** `isRemoteSubmission` is computed once in `server.ts` (beside the existing
     `dbindExempt` computation, same scope) and threaded through `buildToolDeps(webhookBaseUrl,
     isRemoteSubmission)` at both `tools/call` handlers; the refusal LOGIC lives once, in `callTool()`,

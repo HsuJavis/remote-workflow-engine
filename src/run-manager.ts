@@ -918,7 +918,11 @@ export class RunManager {
     if (sub?.remote === true) {
       const refusal = admissionRefusal({ posture: this._confinementPosture, origin: 'remote' });
       if (refusal !== null) {
-        // v37 P1 (Gate 8 round-6 finding R6-F1): **a refused rehydration must leave NO trace.**
+        // v37 P1 (Gate 8 round-6 finding R6-F1; wording corrected round 7, R7-F3): **a refused
+        // rehydration must leave no CACHED trace.** It does leave durable ones on purpose — the
+        // `recordLegacySubstitution` row and the `run.legacySubstitution:` log line are written
+        // before this point, and both should survive a refusal as the audit record of what was
+        // attempted. What must not survive is the in-memory entry.
         // `_requireLive()` has already cached this entry (it caches unconditionally, as it must for
         // the paths that succeed), and that entry holds BOTH the refused version's `script` and this
         // `legacySubstitution`. Without this eviction the refusal is memoised: the operator does

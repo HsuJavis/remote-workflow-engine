@@ -16125,6 +16125,7 @@ isolation):
   troubleshooting rows (`CONFINEMENT_UNAVAILABLE`, runtime `WORKROOT_INSIDE_PROJECT`) in DEPLOY.md
   §5 — the config-reference rows for the grant list and the measured posture (§1b, added at Gate
   6.5+7) were already current; only the older §1c security-model narrative had drifted.
+> **[指標 2026-09-25, Gate 8 round-7 finding R7-F4 —— 不修改上方引文,它是證據。]** 上方逐字引用的開機 banner 含「local (loopback) runs still proceed」,那句話在**擷取當時就是錯的**(Gate 8 round-4 finding F1),已於 `src/main.ts` 修正並由 UT-338 釘住。引文保留原樣正是為了讓那個缺陷可被追溯 —— 它也是本迭代「沒有測試讀的字串不可能轉紅」那條教訓的原始證物。現行措辭與判定見 DES-263 第三次/第四次修訂。
 
 **Confined-arm gap (recorded, not silently closed):** the acceptance text's "a real spawned agent's
 Bash write to an UNDECLARED `$HOME` path does not land on disk" clause under a WORKING sandbox
@@ -16623,10 +16624,10 @@ VAL-259 證據日誌把那行假字原封不動抄了下來(`evidence/v37/val259
 修法有兩步:(a) 把那行抽成 `src/main.ts` 的純函式 `confinementBannerLine(probe)`,使它可被測;
 (b) 本檔四個案例把兩半綁在一起釘 —— banner 必須命名**全部三個**拒絕來源(遠端提交 / 遠端建立的觸發器 /
 遠端註冊的版本),**不得**再出現「本機仍會照跑」那種承諾(連同一個較寬的正則,擋掉粗心改寫會寫出的形狀),
-並另外**清點 `run-manager.ts` 裡 `admissionRefusal()` 的呼叫點數目**。**[更正 2026-09-25, R5-F6:原文寫「使 banner 是述詞的散文而非自說自話」是誇大 ——`admissionRefusal()` 是 `{posture, origin}` 的純函式,對「三個來源」沒有概念,所以對它斷言抓不到「某個呼叫點被刪掉」;原本那個交叉檢查還把同一個呼叫寫了兩次,是真的同義反覆。現況:措辭鎖(案例 1-2)+ 呼叫點清點(案例 4)兩半合起來才成立,單獨任一半都抓不到 round 4 的漂移。呼叫點清點已用複審給的反例驗證(刪掉 `start()` 版本側那個呼叫點 → `expected 3 to be 4`)。]**
-**紅燈已獨立驗證**:把出貨時那行假字暫時放回去,本檔 2 failed / 1 passed
+並另外**斷言 `run-manager.ts` 裡 `admissionRefusal()` 四個呼叫點各自的身分**(不只數目)。**[更正 2026-09-25, R5-F6:原文寫「使 banner 是述詞的散文而非自說自話」是誇大 ——`admissionRefusal()` 是 `{posture, origin}` 的純函式,對「三個來源」沒有概念,所以對它斷言抓不到「某個呼叫點被刪掉」;原本那個交叉檢查還把同一個呼叫寫了兩次,是真的同義反覆。現況:措辭鎖(案例 1-2)+ 呼叫點身分斷言(案例 4)兩半合起來才成立,單獨任一半都抓不到 round 4 的漂移。**[再更正 2026-09-25, Gate 8 round-6 finding R6-F6:案例 4 原本只清點數目,已升級為逐一斷言四個呼叫點的身分 ——清點在 delete-one-add-one 之下仍是綠的,而且紅燈訊息(`expected 3 to be 4`)不會說是哪個來源消失了。現在四個來源各有一條可區分的斷言,紅燈訊息直接指名,例如 `admission source missing: resume() — the legacy substitution`。已用四個呼叫點逐一刪除與 delete-one-add-one 全部驗證過。複審指出更好的鎖是給 `admissionRefusal` 一個 `source`判別子、讓 banner 窮盡消費,使少一個來源變成編譯錯誤 —— 同意,但會改動多個測試已釘住的匯出簽章,列為 v38 候選。]**]**
+**紅燈已獨立驗證(兩種擾動)**:(i) 把出貨時那行假字暫時放回去 → 2 failed / 1 passed
 (`expected … to match /remote submission/`、`expected … not to match /local \(loopback\) runs still proceed/`),
-還原後 3 passed。守衛是真的會失敗的。
+還原後全綠;(ii) 逐一刪除四個呼叫點、以及 delete-one-add-one → 案例 4 逐次轉紅並指名消失的來源。守衛是真的會失敗的。
 
 ### IT-307 — `resume()` 的 legacy 替換分支有接納判定,釘住那一條沒有(Gate 8 round-4 finding F5)
 - **status:** green (2026-09-25, orchestrator)
