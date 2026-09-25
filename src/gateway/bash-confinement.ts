@@ -48,6 +48,8 @@ export interface ConfinementInput {
   readonly protectedFiles: readonly string[];
   readonly workRoot: string | undefined;
   readonly denyReadMode: 'enumerated' | 'workroot';
+  /** Issue #78(c): `'readonly'` ⇒ Bash may write nothing under the root or any grant. */
+  readonly bashMode?: 'readonly';
 }
 
 function isNonEmptyString(s: string | undefined | null): s is string {
@@ -59,9 +61,17 @@ function isNonEmptyString(s: string | undefined | null): s is string {
  *  workspace means "nothing may be written", never "no sandbox" (the ARCH-176 bug-class: a guard
  *  whose "nothing to check" arm must not return the same verdict as its "checked and clean" arm). */
 export function buildBashConfinement(input: ConfinementInput): SandboxSettings {
-  const { root, grantedHostPaths, protectedFiles, workRoot, denyReadMode } = input;
+  const { root, grantedHostPaths, protectedFiles, workRoot, denyReadMode, bashMode } = input;
   const grants = grantedHostPaths.filter(isNonEmptyString);
   const allowPaths = isNonEmptyString(root) ? [root, ...grants] : [];
+  const settingsFiles = isNonEmptyString(root) ? [join(root, '.claude', 'settings.json'), join(root, '.claude', 'settings.local.json')] : [];
+  // Issue #78(c) readonly: `allowWrite: []` alone is NOT read-only. The CLI (2.1.199, read from its
+  // settings→sandbox builder) always seeds the write list with "." (the session cwd = root) and its
+  // own per-uid scratch dir before merging `allowWrite`, and sandbox-runtime adds a fixed list
+  // (`/tmp/claude`, `/dev/std*`, `~/.claude/debug`, `~/.npm/_logs`). `denyWrite` wins inside that
+  // allow set, so the root and every grant go there. The CLI's own scratch stays writable — the
+  // CLI's shell wrapper needs it, and it holds no run data.
+  const readonly = bashMode === 'readonly';
   const filteredProtected = protectedFiles.filter(isNonEmptyString);
   const denyRead =
     denyReadMode === 'workroot'
@@ -73,10 +83,10 @@ export function buildBashConfinement(input: ConfinementInput): SandboxSettings {
     autoAllowBashIfSandboxed: true,
     allowUnsandboxedCommands: false,
     filesystem: {
-      allowWrite: allowPaths,
+      allowWrite: readonly ? [] : allowPaths,
       allowRead: allowPaths,
       denyRead,
-      denyWrite: isNonEmptyString(root) ? [join(root, '.claude', 'settings.json'), join(root, '.claude', 'settings.local.json')] : [],
+      denyWrite: readonly ? [...allowPaths, ...settingsFiles] : settingsFiles,
     },
     credentials: {
       files: filteredProtected.map((path) => ({ path, mode: 'deny' as const })),
@@ -90,7 +100,40 @@ export function buildBashConfinement(input: ConfinementInput): SandboxSettings {
   return settings;
 }
 
-export type GrantRule = 'NOT_ABSOLUTE' | 'UNRESOLVABLE' | 'INSIDE_WORKROOT' | 'COVERS_PROTECTED' | 'GLOB';
+/** Issue #78(c): tools that write through their own path — a readonly shell beside any of them is not
+ *  a read-only agent. One list for registration (workflow-meta scan) and dispatch (below). */
+export const READONLY_BASH_FORBIDDEN_TOOLS = ['Write', 'Edit', 'NotebookEdit'] as const;
+
+/** Issue #78(c): the dispatch-time verdict for an agent's `bash` option, as a typed terminal detail
+ *  (`CODE: why`) or `null` to proceed. `bash` is `unknown` because it crossed the script sandbox as
+ *  an opaque opts field — a runtime-computed value registration could not see. Order: a bad value, a
+ *  contradictory surface, then the host — so the author is told the fixable thing first. */
+export function readonlyBashRefusal(input: {
+  readonly bash: unknown;
+  readonly tools: readonly string[];
+  readonly posture: 'confined' | 'unconfined' | undefined;
+  readonly root: string | undefined;
+}): string | null {
+  const { bash, tools, posture, root } = input;
+  if (bash === undefined) return null;
+  if (bash !== 'readonly') {
+    return `BASH_MODE_INVALID: bash: ${JSON.stringify(bash)} is not a Bash mode — the only accepted value is 'readonly' (omit the key for normal Bash)`;
+  }
+  const writers = tools.filter((t) => (READONLY_BASH_FORBIDDEN_TOOLS as readonly string[]).includes(t));
+  if (writers.length > 0) {
+    return `BASH_READONLY_CONFLICT: bash:'readonly' but the tool surface also grants ${writers.join(', ')} — name allowedTools explicitly without write tools (e.g. ['Bash', 'Read', 'Grep', 'Glob'])`;
+  }
+  if (posture !== 'confined') {
+    return "BASH_READONLY_UNENFORCEABLE: bash:'readonly' needs the kernel Bash sandbox, and this engine has no working Bash sandbox (its boot probe measured the host unconfined) — the call was refused rather than run with a writable shell";
+  }
+  // The CLI makes its cwd writable by itself; with no root there is nothing to put on denyWrite.
+  if (!isNonEmptyString(root)) {
+    return "BASH_READONLY_UNENFORCEABLE: bash:'readonly' needs a known workspace to deny writes to, and this call has none";
+  }
+  return null;
+}
+
+export type GrantRule ='NOT_ABSOLUTE' | 'UNRESOLVABLE' | 'INSIDE_WORKROOT' | 'COVERS_PROTECTED' | 'GLOB';
 export interface GrantRefusal {
   readonly entry: string;
   readonly rule: GrantRule;

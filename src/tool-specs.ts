@@ -221,7 +221,7 @@ export const TOOL_SPECS = [
     name: 'workflow_register', entity: 'workflow', key: null,
     description: 'Register a new workflow version under a name; the caller becomes its owner. Registering the same name again appends a new version (v2, v3…) and overwrites nothing; use a different name only for a different purpose. ' +
       // Issue #78(b): advertised here because a cold client reads only tools/list.
-      "The reply may carry result.warnings — non-fatal notes, the version is registered anyway: BASH_SUBSUMES_FILE_TOOLS when an agent() call's allowedTools names Bash beside Read/Grep/Glob/Write/Edit (allowedTools restricts names, and Bash can do what those do).",
+      "The reply may carry result.warnings — non-fatal notes, the version is registered anyway: BASH_SUBSUMES_FILE_TOOLS when an agent() call's allowedTools names Bash beside Read/Grep/Glob/Write/Edit (allowedTools restricts names, and Bash can do what those do); BASH_READONLY_UNENFORCEABLE when an agent() declares bash:'readonly' on an engine with no working Bash sandbox (every dispatch of it will fail closed there).",
     inputSchema: schema({
       name: { type: 'string' },
       script: { type: 'string' },

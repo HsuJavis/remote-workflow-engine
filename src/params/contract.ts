@@ -22,7 +22,9 @@ import type { ErrorCode } from '../errors.js';
 // reaches nothing. This list is PUBLIC — it renders into
 // `workflow_authoring_guide`, `run_start.overrides`'s schema description and
 // `workflow_describe.lockedKeys` — so the name in it must be the name an author would write.
-export const LOCKED_KEYS = ['prompt', 'allowedTools', 'skills', 'mcp', 'workdir', 'cwd'] as const;
+// Issue #78(c): `bash` (the agent() option `bash:'readonly'`) is author-locked like `allowedTools` —
+// a run_start override must never turn a read-only shell back into a writable one.
+export const LOCKED_KEYS = ['prompt', 'allowedTools', 'bash', 'skills', 'mcp', 'workdir', 'cwd'] as const;
 export const TUNABLE_KEYS = ['model', 'effort', 'timeoutMs', 'appendPrompt'] as const;
 
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -343,6 +345,12 @@ function validateOneAgentSpec(label: string, raw: unknown, aliasNames: Set<strin
         return invalid(`agents.${label}.appendPrompt`, `default is ${bytes} bytes, over the engine ceiling maxAppendPromptBytes ${DEFAULT_CEILINGS.maxAppendPromptBytes}`);
       }
     }
+  }
+  // Issue #78(c): the Bash mode is declared on the agent() call beside the allowedTools it narrows
+  // (where registration checks the pair). This block reads no `bash` key, so accepting one here
+  // would be a read-only declaration that reaches nothing.
+  if (Object.hasOwn(spec, 'bash')) {
+    return invalid(`agents.${label}.bash`, "declare bash: 'readonly' in the agent() options beside allowedTools, not in meta.params");
   }
   if (spec.skills !== undefined) {
     const skillsErr = validateNameArray(`agents.${label}.skills`, spec.skills);
