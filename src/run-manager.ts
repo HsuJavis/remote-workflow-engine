@@ -926,7 +926,7 @@ export class RunManager {
       const warnings = toolProbeWarnings({
         calls: scanAgentCalls(script).calls,
         modelFor: (label) => effectiveParams.agents?.[label]?.model ?? effectiveParams.model ?? 'default',
-        resolve: (alias) => resolveAlias(this._aliasMap, alias),
+        resolve: (alias) => resolveModelRef(this._aliasMap, alias),
         lookup,
       });
       if (warnings.length > 0) {
