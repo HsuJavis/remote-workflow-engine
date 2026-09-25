@@ -603,6 +603,22 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '`Glob`, `Grep`, `Bash` — so a session is never handed the CLI\'s full uncurated tool ' +
         'list. (The direct-fetch transport has no tool surface at all — this section does not ' +
         'apply to it.)\n\n' +
+        // Issue #78(a): reproduced — `allowedTools: ['Bash']` wrote a file. The list names tools;
+        // it does not bound what a shell can do. Posture-neutral on purpose: the next section
+        // (Host path grants) is the one that says whether Bash is confined on this deployment.
+        '`allowedTools` restricts tool **names**, not what the agent can reach. `Bash` can read, ' +
+        'write and search anything `Read`, `Write`, `Edit`, `Grep` and `Glob` can — inside the run ' +
+        'workspace when this deployment confines `Bash`, anywhere the engine process can reach when ' +
+        "it does not (see Host path grants). So `['Bash']` alone can still write files, and a list " +
+        "that names `Bash` beside any of those five is no narrower than `Bash` alone: " +
+        '`workflow_register` answers it with a non-fatal `result.warnings` entry ' +
+        '(`BASH_SUBSUMES_FILE_TOOLS`) and registers the version anyway. A read-only agent is ' +
+        "`['Read', 'Grep', 'Glob']`, with no `Bash`.\n\n" +
+        // Issue #77: the SDK's Write description says "must be absolute"; the engine cannot change
+        // that text, so the guide states the rule the engine actually applies.
+        'File tools take workspace-relative paths: `out/result.txt` resolves inside the run ' +
+        "workspace, even where a tool's own description asks for an absolute path. A file-tool path " +
+        'that resolves outside the workspace is refused, and the refusal names the workspace root.\n\n' +
         '`allowedTools: []` means no tools at all, and for a prose-only task that is usually what you ' +
         'want — especially on a smaller model. A smaller model handed a working tool surface tends to ' +
         'answer with a tool call rather than with prose: ask it to produce a summary while it holds ' +

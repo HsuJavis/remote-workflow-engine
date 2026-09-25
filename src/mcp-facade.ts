@@ -17,7 +17,7 @@ import { SubmissionValidator } from './submission-validator.js';
 // wire — the guide a cold model is told to consult was unreachable from the errors that tell it to.
 import { CatalogNotFoundError, codedError, toErrEnvelope, type ErrorCode } from './errors.js';
 import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, HarnessDescriptor, RunListFilter, AuditAction, RunSpec, RunUsage, AgentLogView } from './types.js';
-import { parseMeta } from './workflow-meta.js';
+import { parseMeta, toolSurfaceWarnings } from './workflow-meta.js';
 import { buildAuthoringGuide } from './authoring-guide.js';
 import { effectiveAgentBounds, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type AgentParamSpec } from './params/contract.js';
 import { projectWorkflowForRead, projectWorkflowDescribe, type WorkflowOwnerView } from './workflow-view.js';
@@ -414,7 +414,10 @@ export class McpFacade {
       // boundary). Only `versions`/`channels` are lifted off the detail; the rest of WorkflowDetail
       // (notably `script`) is discarded here, never on the envelope.
       const { versions, channels } = await catalog.resolveDetail(a.name, { version });
-      return { runId: '', status: 'completed', version: versionNum, result: { name: a.name, version, versions, channels } };
+      // Issue #78(b): non-fatal — the version is already registered. Absent when empty, so an
+      // unaffected registration keeps exactly the reply keys it had before.
+      const warnings = toolSurfaceWarnings(scanAgentCalls(a.script));
+      return { runId: '', status: 'completed', version: versionNum, result: { name: a.name, version, versions, channels, ...(warnings.length > 0 ? { warnings } : {}) } };
     } catch (err) {
       const e = toErrEnvelope(err);
       return { runId: '', status: 'failed', code: e.code, error: e };

@@ -219,7 +219,9 @@ export const TOOL_SPECS = [
   // ---- workflow (7) ----
   {
     name: 'workflow_register', entity: 'workflow', key: null,
-    description: 'Register a new workflow version under a name; the caller becomes its owner. Registering the same name again appends a new version (v2, v3…) and overwrites nothing; use a different name only for a different purpose.',
+    description: 'Register a new workflow version under a name; the caller becomes its owner. Registering the same name again appends a new version (v2, v3…) and overwrites nothing; use a different name only for a different purpose. ' +
+      // Issue #78(b): advertised here because a cold client reads only tools/list.
+      "The reply may carry result.warnings — non-fatal notes, the version is registered anyway: BASH_SUBSUMES_FILE_TOOLS when an agent() call's allowedTools names Bash beside Read/Grep/Glob/Write/Edit (allowedTools restricts names, and Bash can do what those do).",
     inputSchema: schema({
       name: { type: 'string' },
       script: { type: 'string' },
@@ -800,7 +802,7 @@ export const TOOL_SPECS = [
     // the one-shot and resident kinds REQ-015 clause 2 specifies (and VAL-016 validates) were
     // unreachable through the tool surface — ajv refused them for a missing `cron` before the store
     // ever saw them. The store has supported all three kinds since v2; only the schema was narrow.
-    inputSchema: schema({
+    inputSchema: { ...schema({
       kind: { type: 'string', enum: ['cron', 'once', 'resident'], description: "Defaults to 'cron' when omitted." },
       cron: { type: 'string', description: "A 5-field cron expression, e.g. '0 3 * * *'. Required when kind is 'cron'." },
       at: { type: 'string', description: "An ISO-8601 timestamp. Required when kind is 'once'; a past value fires on the next tick." },
@@ -817,7 +819,9 @@ export const TOOL_SPECS = [
     // only, which is what ARCH-099's `create(spec)` says and what this row's description promises.
     // Passing it is refused INVALID_ARGUMENT with the migration answer (call-tool.ts, ahead of ajv —
     // `schema()` sets no `additionalProperties:false`, so an undeclared key would still be admitted).
-    }),
+    // Issue #82: that is exactly how `seed` was lost — admitted, then dropped by the store. The row
+    // is now CLOSED; the four seed keys still get their own explanatory refusal in call-tool.ts.
+    }), additionalProperties: false },
     outputSchema: OUT,
     // WORKFLOW_NOT_FOUND / VERSION_NOT_FOUND / CHANNEL_UNPUBLISHED are GONE with the create-time
     // catalog check: REQ-115's last clause moves that check off this row — a trigger's target is
@@ -876,7 +880,12 @@ export const TOOL_SPECS = [
     // webhook is created unclaimed and bound by `workflow_register({triggers:[id]})`; delivering to
     // an unclaimed one is refused UNCLAIMED at delivery and the refusal is recorded on the row
     // (`lastRefusalReason`), which is REQ-115's own stated behaviour.
-    inputSchema: schema({}),
+    // Issue #82: CLOSED, like schedule_create. `enabled` was always honoured by the store
+    // (webhook-registry.ts `create`) but never advertised; it is declared now so closing the row
+    // does not remove it.
+    inputSchema: { ...schema({
+      enabled: { type: 'boolean', description: 'Defaults to true when omitted — a disabled webhook refuses deliveries.' },
+    }), additionalProperties: false },
     outputSchema: OUT,
     errors: ['FORBIDDEN_ROLE'],
     seeAlso: [] as string[],

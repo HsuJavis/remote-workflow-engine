@@ -341,7 +341,17 @@ function toolUsePreCheck(root: string | undefined, candidates: string[]): { beha
   if (root === undefined) return { behavior: 'allow' }; // no workspace known → nothing to enforce
   for (const candidate of candidates) {
     if (!isInsideWorkspace(resolveAgainstWorkspace(candidate, root), root)) {
-      return { behavior: 'deny', message: `path outside run workspace: ${candidate}` };
+      // Issue #77: the SDK's own Write description says "must be absolute", so a model that only
+      // hears "outside" keeps guessing absolute paths. Say where the workspace is and that a
+      // relative path resolves inside it. The root is not new to the agent (it is its cwd, and a
+      // successful file tool echoes absolute paths into the transcript). Scoped to the file tools'
+      // path arguments on purpose: this hook is not Bash's confinement (see PATH_ARG_FIELDS).
+      return {
+        behavior: 'deny',
+        message:
+          `path outside run workspace: ${candidate}. File-tool paths (Read/Write/Edit/Glob/Grep/NotebookEdit) must resolve inside this run's workspace, ${root}. ` +
+          'Use a relative path such as "out/result.txt": it resolves inside the workspace, even where a tool description asks for an absolute path.',
+      };
     }
   }
   return { behavior: 'allow' };
