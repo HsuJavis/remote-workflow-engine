@@ -584,6 +584,12 @@ export interface HarnessDescriptor {
    *  `surfaceType:'none'` dispatch materializes nothing (DES-154), so its `skills`/`mcp` are empty
    *  and every declared name is `missing`. Absent for every pre-v24 record. */
   materialized?: { skills: string[]; mcp: string[]; missing: string[] };
+  /** issues #81/#83: the skill names the MODEL could activate this dispatch — through the SDK's
+   *  Skill tool (put on the wire with `Options.skills` set to exactly this list). `materialized.skills`
+   *  only says the files were copied into the workspace; before this field the two were conflated
+   *  and a skill that never reached the model read as delivered. `[]` = no Skill tool on the wire.
+   *  Absent on records written before it existed. */
+  skillsExposed?: string[];
 }
 
 export interface TranscriptEvent {

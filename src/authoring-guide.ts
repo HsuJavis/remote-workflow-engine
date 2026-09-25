@@ -313,14 +313,14 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
     title: 'skills and mcp',
     script:
       `export const meta = {\n` +
-      `  description: 'An agent declared with a skill name, an mcp server name, and a curated tool set',\n` +
+      `  description: 'An agent declared with a skill and an mcp server and NO file tools — the declared skill is still reachable, through the Skill tool',\n` +
       `  params: { agents: { coder: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'medium' }, timeoutMs: { type: 'number', default: 120000 }, skills: ['repo-search'], mcp: ['project-tracker'] } } },\n` +
       `};\n` +
       `phase('code');\n` +
-      `return await agent('coder', { prompt: 'Fix the failing test', allowedTools: ['Read', 'Edit'] });`,
+      `return await agent('coder', { prompt: 'Use the repo-search skill to say where the retry policy is defined', allowedTools: [] });`,
     mermaid:
       `graph LR\n` +
-      `subgraph "code"\n${stadiumNode('coder', 'coder', 'medium', 120000, ['Read', 'Edit'])}\nend`,
+      `subgraph "code"\n${stadiumNode('coder', 'coder', 'medium', 120000, 'none')}\nend`,
     expectRegister: 'ok',
   },
   {
@@ -552,6 +552,16 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '  },\n' +
         '};\n' +
         '```\n\n' +
+        // issues #81/#83: nothing said how a declared skill is activated, and the only example
+        // paired one with file tools — authors could not tell a skill never reached the model.
+        '**Skills.** `skills: [name, ...]` names skills pushed with `workspace_push` (`kind: \'skill\'`). ' +
+        'The model activates a declared skill through the Skill tool, which the engine adds to that ' +
+        "agent's tool surface for you — do not list `Skill` in `allowedTools`. Declaring a skill grants " +
+        'no file tools, and none are needed to reach it: an agent with `allowedTools: []` and a declared ' +
+        "skill can still activate it. Only the agent's own declared skills can be activated (other " +
+        "skills are hidden from it), and a skill's inline shell command (the `!` prefix form) is not executed. In " +
+        "`run_agent_log`, `harness.skillsExposed` lists the skills the model could activate; " +
+        '`harness.materialized` only records which files were copied into the workspace.\n\n' +
         '`meta.params.args` declares the run-time inputs the script reads off `args.<name>` — `{type, ' +
         'enum?, min?, max?, default?}`. A declared `.default` fills in the key when the caller omits ' +
         "it (or a run_start call omits `args` entirely); an explicit caller-supplied value always " +
