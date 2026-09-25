@@ -543,7 +543,10 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "depth available, the simplest and most readable script still flattens a needless wrapper into " +
         "its caller, and draws another owner's workflow as a black-box rectangle node in your diagram " +
         "rather than expanding it. A nested workflow()'s own phase() calls are recorded on THAT " +
-        "sub-workflow's card, not folded into the parent run as one of its lanes.\n\n" +
+        "sub-workflow's card, not folded into the parent run as one of its lanes. Its agent() calls run on " +
+        "THAT workflow's own `meta.params.agents` defaults — your run's `overrides.agents` never reach " +
+        'them (labels belong to the workflow that declares them, even when a name collides) — and its ' +
+        "models are priced into, and bound by, your run's budget.\n\n" +
         '`Date` and `Math` are present but GUARDED — three calls are refused `DETERMINISM_GUARD` ' +
         "because resume replays agent() calls keyed by prompt+opts, so a wall-clock or random value " +
         'baked into that key would change it on replay and re-dispatch an already-paid call:\n\n' +

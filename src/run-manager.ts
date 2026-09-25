@@ -765,15 +765,14 @@ export class RunManager {
     // reachable here as the old flat one was.
     // v26 (DES-178, ARCH-116, TASK-178): extracted to `reachableModels` so this admission check and
     // the price-book pin below derive the SAME reachable set from ONE place (INV-V26-4).
-    const modelsToCheck = this._refuseUnadmittableParams(effectiveParams);
     // v21 Gate 8 RE-REVIEW #6 (P6-2, review §T5/§T6): mirrors R-G2 one field over — F2
     // (validateUserOverrides in contract.ts) only frame-checks a CALLER-SUPPLIED
     // overrides.appendPrompt; a registered defaults.appendPrompt origin reaches this point
-    // unchecked on every no-overrides submission. Re-check the EFFECTIVE post-merge value before
-    // any durable work (both checks live in `_refuseUnadmittableParams`, shared with a nested
-    // `workflow()` frame's own admission), same shared FRAME_CLOSE_FORGERY constant, reported by size only (DES-101
-    // row 6 discipline: never echo caller/author text). v24 (TASK-158): same widen as the alias
-    // check above — every label's resolved appendPrompt, not just the top-level field.
+    // unchecked on every no-overrides submission, so the EFFECTIVE post-merge value is re-checked
+    // too (DES-101 row 6: reported by size only). v24 (TASK-158): both checks cover every label's
+    // resolved value. Both live in `_refuseUnadmittableParams`, shared with a nested `workflow()`
+    // frame's own admission.
+    const modelsToCheck = this._refuseUnadmittableParams(effectiveParams);
     // v35 (DES-233): the materialized args RECORD, folded into the admission snapshot BEFORE the
     // redact fork below — `effective_params.args` records it (readable, e.g. by `workflow_describe`
     // fixtures), but stays the redacted ADMISSION record; it is never promoted to a dispatch source
