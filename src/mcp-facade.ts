@@ -791,8 +791,14 @@ export class McpFacade {
   private async _resultMeta(runId: string, view: RunStatusView): Promise<{ usage: RunUsage; budgetEnforceable: { usd: boolean; tokens: boolean; unpricedModels: string[] } }> {
     const usage = view.usage ?? { tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, costUSD: 0, unpricedCalls: 0, unmappedMessages: {} };
     const priceBook = await this.store.getPriceBook(runId);
-    const unpricedModels = priceBook ? Object.entries(priceBook.pinned).filter(([, e]) => e.price === null).map(([k]) => k) : [];
-    const budgetEnforceable = { usd: priceBook !== null && unpricedModels.length === 0, tokens: true, unpricedModels };
+    const pinnedUnpriced = priceBook ? Object.entries(priceBook.pinned).filter(([, e]) => e.price === null).map(([k]) => k) : [];
+    // issue #85: the pin is a PREDICTION of what the run may call; the records are what it DID call.
+    // A call that actually went unpriced (a done record with `unpriced:true`) means the USD limit did
+    // not bind on it, whatever the pin claimed — so its model is named here and `usd` goes false. The
+    // run once reported `usd:true, unpricedModels:[]` beside `unpricedCalls:2`.
+    const usedUnpriced = view.agents.filter((a) => a.state === 'done' && a.unpriced === true).map((a) => `${a.provider}/${a.model}`);
+    const unpricedModels = [...new Set([...pinnedUnpriced, ...usedUnpriced])];
+    const budgetEnforceable = { usd: priceBook !== null && unpricedModels.length === 0 && usage.unpricedCalls === 0, tokens: true, unpricedModels };
     return { usage, budgetEnforceable };
   }
 

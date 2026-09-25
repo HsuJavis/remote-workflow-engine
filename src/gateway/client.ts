@@ -284,6 +284,12 @@ function numField(v: unknown, name: string, gaps: string[]): number {
   return 0;
 }
 
+/** issue #53: an attempt refused because the caller's signal was already aborted — nothing was
+ *  dispatched; `retryable:false` so the retry loop never re-attempts it. */
+function abortedBeforeDispatch(provider: string): AttemptFailure {
+  return { ok: false, provider, reason: 'terminal', retryable: false, detail: 'aborted by caller before dispatch (run suspended or stopped)' };
+}
+
 /** Real provider call — one impl per provider, all sharing the same bounded-timeout contract. */
 async function callProvider(
   target: ProviderTarget,
@@ -299,6 +305,9 @@ async function callProvider(
   // AgentExecutor) genuinely cancels the in-flight fetch on workflow_suspend, not just the
   // timeoutMs-bounded internal timer.
   const onExternalAbort = (): void => controller.abort();
+  // issue #53: an attempt that begins already aborted dispatches nothing (a listener added to an
+  // already-aborted signal never fires, so the fetch below would run to its own timeout).
+  if (signal?.aborted) { clearTimeout(timer); return abortedBeforeDispatch(target.provider); }
   signal?.addEventListener('abort', onExternalAbort, { once: true });
   const correlationHeaders = { 'x-run-id': req.runId, 'x-agent-id': req.agentId };
   try {
@@ -428,6 +437,9 @@ async function callViaLiteLLMProxy(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   // D-F10(c): same external-signal linkage as callProvider above.
   const onExternalAbort = (): void => controller.abort();
+  // issue #53: same already-aborted refusal as callProvider — checked AFTER `proxy.start()`, whose
+  // await is itself a window the caller can abort in.
+  if (signal?.aborted) { clearTimeout(timer); return abortedBeforeDispatch(target.provider); }
   signal?.addEventListener('abort', onExternalAbort, { once: true });
   try {
     const res = await fetchImpl(`${baseUrl}/v1/messages`, {
@@ -542,6 +554,9 @@ export class LiteLLMGatewayClient implements GatewayClient {
       // (claude-agent-sdk-client.ts's own `invoke()` loop) — a `retryable:false` attempt (401/403/404)
       // ends here instead of burning the rest of the configured retry bound.
       if (!last.ok && last.retryable === false) break;
+      // issue #53: the caller aborted (run_suspend/run_stop) — no further attempt may start. Keyed
+      // on the caller's signal, never on `reason` (an abort and a genuine timeout share 'timeout').
+      if (req.signal?.aborted) break;
     }
     return last;
   }
