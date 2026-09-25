@@ -919,7 +919,13 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'missing `contentB64` (or carrying only a `sha256`) does NOT silently materialize a 0-byte ' +
         'file; the refusal names the offending `path` and points at `seedManifest` instead. Content ' +
         'referenced only by hash (`seedManifest`, `seedManifestRef`) must already exist in the CAS ' +
-        '— push it first with `workspace_push`.',
+        '— push it first with `workspace_push`.\n\n' +
+        // Issue #82 (option B): rendered from workflow_register's own schema, like the rows above.
+        '**Scheduled and webhook-fired runs** carry no `run_start` arguments, so they cannot bring a ' +
+        'seed of their own — bind one to the workflow VERSION instead: `workflow_register({name, ' +
+        'script, mermaid, seedManifestRef})`. ' +
+        ((TOOL_SPECS.find((t) => t.name === 'workflow_register')!.inputSchema as unknown as { properties: Record<string, { description?: string }> })
+          .properties.seedManifestRef?.description ?? ''),
     ),
   );
 

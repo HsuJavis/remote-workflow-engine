@@ -246,6 +246,16 @@ export const TOOL_SPECS = [
       },
       // v26 Gate 7.5 round 1 (defect D1): item schema — see ARRAY_ITEMS_RULE below.
       triggers: { type: 'array', description: 'Trigger ids (from schedule_create / webhook_create) this version claims. Each element is the id string.', items: { type: 'string' } },
+      // Issue #82 (option B): the version's default seed — a REF only, never inline content.
+      seedManifestRef: {
+        type: 'string',
+        pattern: '^[0-9a-f]{64}$',
+        description:
+          "Optional default seed for THIS version: the sha256 of a manifest you already uploaded (POST /assets/blob/<sha> for each file, then POST /assets/manifest). " +
+          'Every run of this version that brings no seed of its own — run_start, a scheduled firing, a webhook delivery — starts with those files in its workspace. ' +
+          'A run_start seed (seed/seedManifest/seedManifestRef/seedRef) REPLACES it, never merges. Checked now, in your own CAS namespace: MISSING_BLOBS if you never uploaded it, INVALID_SEED_SPEC if it is not a manifest. ' +
+          'References only — inline seed/seedManifest/seedRef are refused INVALID_ARGUMENT. Versions are immutable: a different seed is a new registration (a new version).',
+      },
     }, ['name', 'script']),
     outputSchema: OUT,
     // v24 (integrator; adjudication #4 C-6 [21] + #2 A-4): reconciled BOTH ways against what the
@@ -275,6 +285,8 @@ export const TOOL_SPECS = [
       'NOT_WORKFLOW_OWNER', 'REGISTRATION_CONFLICT', 'VERSION_CEILING_EXCEEDED',
       'INVALID_ARGUMENT', 'TRIGGER_NOT_FOUND', 'NOT_TRIGGER_OWNER', 'TRIGGER_ALREADY_CLAIMED',
       'FORBIDDEN_ROLE',
+      // Issue #82: the seedManifestRef ladder (RunManager.loadSeedManifestRef), run at register time.
+      'MISSING_BLOBS', 'INVALID_SEED_SPEC', 'CAS_UNAVAILABLE',
     ],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'none' } as AuthzRow,
