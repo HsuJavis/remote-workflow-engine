@@ -670,6 +670,17 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       materialized = await materializeAssets(req.assets.roots, req.workspace, req.assets.declared, async () => mcpResolved);
     }
     const mcpServers = Object.keys(mcpConfigs).length > 0 ? mcpConfigs : undefined;
+    // issues #81/#83: materializing a skill's files is not delivering it — the model reaches a
+    // skill only through the SDK's Skill tool. Measured against the real CLI: `Options.skills` alone
+    // auto-approves `Skill(<name>)` but does NOT put the tool on the wire when `tools` is explicit
+    // (it always is here), so `Skill` is added to `tools` — never to `allowedTools` (deprecated
+    // there; the SDK derives the per-skill approval from `Options.skills` itself), and never any
+    // file tool, so a skill-only agent (`allowedTools: []`) is a real shape. `Options.skills` is
+    // ALWAYS an explicit list: unset means "every discovered skill" (incl. the CLI's bundled ones),
+    // which an author hand-adding `Skill` would otherwise get. Only what actually landed on disk is
+    // exposed — a declared-but-missing name is not activatable.
+    const exposedSkills = materialized?.skills ?? [];
+    const wireTools = exposedSkills.length > 0 && !curatedTools.includes('Skill') ? [...curatedTools, 'Skill'] : curatedTools;
 
     // REQ-037: provider-aware routing. An alias whose provider is `anthropic` dispatches DIRECT to
     // the real Anthropic API (LiteLLM bypassed) — so its env carries the real auth AND its model
@@ -813,8 +824,14 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       // tools are available, use the `tools` option instead"). Confirmed via a direct real-CLI
       // repro (IT-023): with only `allowedTools` set, the outbound request's own `tools` array
       // still carried the CLI's full built-in surface. `tools` (sdk.d.ts:1370) is the option that
-      // actually narrows the built-in tool set sent to the model — set to the SAME curated list.
-      tools: curatedTools,
+      // actually narrows the built-in tool set sent to the model — set to the SAME curated list,
+      // plus the Skill tool when this agent has a declared skill to activate (#81/#83, above).
+      tools: wireTools,
+      skills: exposedSkills,
+      // #81/#83: a skill's inline `!`cmd`` would run through the CLI's own shell path at activation.
+      // Skill text is instructions; anything it wants executed goes through the agent's tools.
+      // (Serialized to --settings by the SDK, with `sandbox` below merged into the same object.)
+      settings: { disableSkillShellExecution: true },
       // The CLI's full uncurated surface (round-5 VAL-003's root cause) also included this HOST
       // environment's own inherited project/user MCP plugin tools (Playwright, Cloudflare, ...) —
       // `tools` alone doesn't touch those. `settingSources: []` (SDK isolation mode) skips loading
@@ -881,7 +898,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         ...(proxyModel !== undefined ? { proxyModel } : {}),
         provider,
         prompt: req.prompt,
-        curatedTools,
+        curatedTools: wireTools,
         mergedMcp: Object.entries(mcpConfigs).map(([name, cfg]) => ({ name, ...(cfg as Record<string, unknown>) })),
         // v24 (ARCH-103, DES-160, TASK-145): the ACTUAL materialized skill set, not "every stored
         // skill" — a declared-but-absent name is in `materialized.missing`, never silently dropped.
@@ -896,6 +913,8 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       // decoration site downstream, `agent-executor.ts`, fills the honest empty set for a dispatch
       // that never sets `req.assets` at all — e.g. the direct-fetch gateway).
       if (materialized) descriptor.materialized = materialized;
+      // #81/#83: what the model could actually activate — distinct from what is on disk above.
+      descriptor.skillsExposed = exposedSkills;
       // `applied` travels to the caller as onHarness's own second argument (the single source of
       // truth downstream decoration reads) — no separate write onto `descriptor` needed here.
       // v26 (DES-179): `wireEffort.applied` is ALWAYS present (its own doc comment), but the

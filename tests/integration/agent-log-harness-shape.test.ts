@@ -217,6 +217,9 @@ describe('run_agent_log harness provenance (IT-066 v21, DES-105)', () => {
     }
     expect(harness?.label).toBe('plan');
     expect(harness?.materialized).toBeDefined();
+    // #81/#83: on-disk (`materialized`) and reachable-by-the-model (`skillsExposed`) are separate
+    // facts; an agent that declared no skill exposes none, and the persisted record says so.
+    expect((harness as { skillsExposed?: unknown } | undefined)?.skillsExposed).toEqual([]);
   }, 10_000);
 
   // IT-174 (DES-225, ARCH-140, ADR-061, TASK-229, REQ-203/REQ-204, Gate-5 constraint 2): the

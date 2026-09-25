@@ -535,3 +535,26 @@ describe('buildAuthoringGuide — v37 correction: the host-path-grants section s
     }
   });
 });
+
+// issues #81/#83: the guide never said how a declared skill is activated, and its only skills
+// example paired the skill with `allowedTools: ['Read', 'Edit']` — which made it look like a
+// skill needs file tools to be read. It does not: the engine puts the SDK's Skill tool on the
+// agent's surface for its declared skills (tests/unit/sdk-gateway-skill-exposure.test.ts).
+describe('the guide teaches how declared skills reach the model (#81/#83)', () => {
+  it('states the Skill-tool activation, that no file tools are needed, and that only declared skills activate', () => {
+    const text = buildAuthoringGuide(CEILINGS);
+    expect(text).toMatch(/activates? .*through the Skill tool/i);
+    expect(text).toMatch(/do not list `Skill` in `allowedTools`/i);
+    expect(text).toMatch(/grants no file tools/i);
+    expect(text).toMatch(/Only the agent's own declared skills/i);
+    expect(text).toMatch(/skillsExposed/);
+  });
+
+  it('the skills example is a skill-only agent (allowedTools: []) — the shape a reader would doubt works', () => {
+    const ex = (GUIDE_EXAMPLES as Array<{ title: string; script: string; mermaid: string }>).find((e) => e.title === 'skills and mcp');
+    expect(ex, 'the skills example is missing').toBeDefined();
+    expect(ex!.script).toMatch(/skills: \['repo-search'\]/);
+    expect(ex!.script).toMatch(/allowedTools: \[\]/);
+    expect(ex!.mermaid).toMatch(/tools: none/);
+  });
+});

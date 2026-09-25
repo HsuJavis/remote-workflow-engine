@@ -40,6 +40,8 @@ export const meta = {
 };
 ```
 
+**Skills.** `skills: [name, ...]` names skills pushed with `workspace_push` (`kind: 'skill'`). The model activates a declared skill through the Skill tool, which the engine adds to that agent's tool surface for you — do not list `Skill` in `allowedTools`. Declaring a skill grants no file tools, and none are needed to reach it: an agent with `allowedTools: []` and a declared skill can still activate it. Only the agent's own declared skills can be activated (other skills are hidden from it), and a skill's inline shell command (the `!` prefix form) is not executed. In `run_agent_log`, `harness.skillsExposed` lists the skills the model could activate; `harness.materialized` only records which files were copied into the workspace.
+
 `meta.params.args` declares the run-time inputs the script reads off `args.<name>` — `{type, enum?, min?, max?, default?}`. A declared `.default` fills in the key when the caller omits it (or a run_start call omits `args` entirely); an explicit caller-supplied value always wins, including an explicit `undefined`. `type` is one of `string | number | enum` (an `enum` type requires the `enum` array of legal values).
 
 `meta.params.knobs` and `meta.defaults` are retired — a script that declares either is refused `DEFAULTS_RETIRED`, naming `meta.params.agents.<label>.<key>.default` as the replacement.
@@ -565,11 +567,11 @@ end
 
 ```js
 export const meta = {
-  description: 'An agent declared with a skill name, an mcp server name, and a curated tool set',
+  description: 'An agent declared with a skill and an mcp server and NO file tools — the declared skill is still reachable, through the Skill tool',
   params: { agents: { coder: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'medium' }, timeoutMs: { type: 'number', default: 120000 }, skills: ['repo-search'], mcp: ['project-tracker'] } } },
 };
 phase('code');
-return await agent('coder', { prompt: 'Fix the failing test', allowedTools: ['Read', 'Edit'] });
+return await agent('coder', { prompt: 'Use the repo-search skill to say where the retry policy is defined', allowedTools: [] });
 ```
 
 Mermaid:
@@ -577,7 +579,7 @@ Mermaid:
 ```
 graph LR
 subgraph "code"
-coder(["coder<br/>default · medium · 120000<br/>tools: Edit, Read"])
+coder(["coder<br/>default · medium · 120000<br/>tools: none"])
 end
 ```
 

@@ -647,6 +647,8 @@ export class AgentExecutor implements AgentSpawner {
         ...(queued?.phase !== undefined ? { phase: queued.phase } : {}),
         ...(queued?.phaseIndex !== undefined ? { phaseIndex: queued.phaseIndex } : {}),
         materialized: descriptor.materialized ?? { skills: [], mcp: [], missing: declaredNames },
+        // #81/#83: a gateway that exposes no skill (e.g. direct-fetch) leaves this unset -> none.
+        skillsExposed: descriptor.skillsExposed ?? [],
         ...(applied !== undefined ? { effortApplied: applied.applied ? { param: applied.param, value: applied.value } : { reason: applied.reason } } : {}),
       };
       // #20: surface model/provider on the LIVE agent record the moment the session is built (before
