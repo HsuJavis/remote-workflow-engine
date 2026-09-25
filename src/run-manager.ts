@@ -1582,6 +1582,9 @@ export class RunManager {
         );
       }
     }
+    // issue #53: re-check after the awaits above — an abort that landed meanwhile would never fire
+    // the kill listener registered below (an already-aborted signal dispatches no later 'abort').
+    if (generation.aborted) throw new Error(`run ${runId}: workflow() from a suspended/stopped execution`);
     const framePathKey = `${parentPathKey}.${parentCallSeq}`;
     const frameBase = this._frameBaseFor(entry, framePathKey);
     const childAncestors = new Set(ancestors).add(name);
