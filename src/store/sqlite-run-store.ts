@@ -141,6 +141,10 @@ export class SqliteRunStore implements RunStore {
     return JSON.parse(row.price_book) as PriceBook;
   }
 
+  async updatePriceBook(runId: string, priceBook: PriceBook): Promise<void> {
+    this._db.prepare('UPDATE runs SET price_book = ? WHERE runId = ?').run(JSON.stringify(priceBook), runId);
+  }
+
   /** v23 (DES-128, ARCH-078, TASK-126): the SYNC `TriggerPorts.runs` read — the chain-upstream join
    *  `getTriggerBindings` needs (a continuation names its DOWNSTREAM target; the upstream workflow
    *  name is this lookup on `afterRunId`). A purged/unknown run is a first-class `null`, never an

@@ -246,7 +246,12 @@ interface RunEntry {
   spawner: AgentSpawner;
   workspace: string;
   journal: JournalEntry[];
+  /** Execution GENERATION, not a workflow version: bumped by every resume() and stamped on journal
+   *  entries. The registered version the run pinned is `pinnedVersion` below. */
   scriptVersion: number;
+  /** The registered workflow version this run pinned at admission (`runs.scriptVersion`, e.g. 'v1')
+   *  — what `run.terminal` reports, unchanged by suspend/resume. */
+  pinnedVersion: string;
   cachePlan: ResumePlan | null;
   phases: PhaseView[];
   /** v8 REQ-043: running count of nested workflow() invocations across this run's whole tree. */
@@ -268,6 +273,10 @@ interface RunEntry {
   /** v21 (ARCH-066, DES-104, TASK-100): the run-immutable admission-time parameter snapshot —
    *  computed once in start() (or rehydrated in _requireLive() on resume), never re-resolved. */
   effectiveParams: RunParams;
+  /** v26 (DES-178): the run's price/capability pin — the SAME object the run's AgentExecutor prices
+   *  against (shared by reference), so a nested `workflow()` frame extending it (`_pinChildModels`)
+   *  is priced live. `null` for a pre-v26 row ("we never looked" — never extended). */
+  priceBook: PriceBook | null;
   /** v24 (integrator; REQ-113, DES-154): the author-DECLARED asset names per agent label, taken
    *  from the registered `ParamContract`'s `agents.<label>.skills/.mcp` at admission. `RunParams`
    *  deliberately does not carry `skills`/`mcp` (they are author-only, not tunable), so the
@@ -756,35 +765,15 @@ export class RunManager {
     // reachable here as the old flat one was.
     // v26 (DES-178, ARCH-116, TASK-178): extracted to `reachableModels` so this admission check and
     // the price-book pin below derive the SAME reachable set from ONE place (INV-V26-4).
-    const modelsToCheck = reachableModels(effectiveParams);
-    for (const m of modelsToCheck) {
-      if (m !== undefined && !isKnownAlias(m, this._aliasNames)) {
-        throw paramCodedError({
-          ok: false,
-          code: 'UNKNOWN_ALIAS',
-          message: `model is not a known alias: ${m}`,
-          detail: { param: 'model', supplied: m, allowed: { enum: [...this._aliasNames] } },
-        });
-      }
-    }
+    const modelsToCheck = this._refuseUnadmittableParams(effectiveParams);
     // v21 Gate 8 RE-REVIEW #6 (P6-2, review §T5/§T6): mirrors R-G2 one field over — F2
     // (validateUserOverrides in contract.ts) only frame-checks a CALLER-SUPPLIED
     // overrides.appendPrompt; a registered defaults.appendPrompt origin reaches this point
     // unchecked on every no-overrides submission. Re-check the EFFECTIVE post-merge value before
-    // any durable work, same shared FRAME_CLOSE_FORGERY constant, reported by size only (DES-101
+    // any durable work (both checks live in `_refuseUnadmittableParams`, shared with a nested
+    // `workflow()` frame's own admission), same shared FRAME_CLOSE_FORGERY constant, reported by size only (DES-101
     // row 6 discipline: never echo caller/author text). v24 (TASK-158): same widen as the alias
     // check above — every label's resolved appendPrompt, not just the top-level field.
-    const appendPromptsToCheck = [effectiveParams.appendPrompt, ...Object.values(effectiveParams.agents ?? {}).map((a) => a.appendPrompt)];
-    for (const ap of appendPromptsToCheck) {
-      if (typeof ap === 'string' && FRAME_CLOSE_FORGERY.test(ap)) {
-        throw paramCodedError({
-          ok: false,
-          code: 'PARAM_OUT_OF_RANGE',
-          message: 'appendPrompt cannot contain the user-instructions frame close delimiter',
-          detail: { param: 'appendPrompt', suppliedBytes: Buffer.byteLength(ap, 'utf8') },
-        });
-      }
-    }
     // v35 (DES-233): the materialized args RECORD, folded into the admission snapshot BEFORE the
     // redact fork below — `effective_params.args` records it (readable, e.g. by `workflow_describe`
     // fixtures), but stays the redacted ADMISSION record; it is never promoted to a dispatch source
@@ -905,6 +894,7 @@ export class RunManager {
       workspace,
       journal: [],
       scriptVersion,
+      pinnedVersion: resolvedVersion,
       cachePlan: null,
       phases: [],
       descendants: 0,
@@ -912,6 +902,7 @@ export class RunManager {
       nestedFrameSeq: 0,
       workflowNodes: [],
       effectiveParams,
+      priceBook,
       declaredAssets: declaredAssetsOf(contract),
       principal: spec.principal,
       refusals: new Map(),
@@ -1415,6 +1406,7 @@ export class RunManager {
       workspace,
       journal: persistedJournal,
       scriptVersion: Number(view.scriptVersion.replace(/^v/, '')) || 1,
+      pinnedVersion: view.scriptVersion,
       cachePlan: null,
       phases: [],
       descendants: 0,
@@ -1422,6 +1414,7 @@ export class RunManager {
       nestedFrameSeq: 0,
       workflowNodes: [],
       effectiveParams,
+      priceBook: persistedPriceBook,
       declaredAssets: declaredAssetsOf(registeredContract),
       principal: spec.principal,
       refusals: new Map(),
@@ -1445,7 +1438,7 @@ export class RunManager {
         kind: 'run.terminal',
         runId,
         name: entry.name ?? null,
-        version: `v${entry.scriptVersion}`,
+        version: entry.pinnedVersion,
         outcome: to,
         principal: entry.principal ?? null,
         ...(entry.resultError ? { code: entry.resultError.code } : {}),
@@ -1537,6 +1530,57 @@ export class RunManager {
   // STRIDE bounds calls-per-frame (< STRIDE, enforced by the agent/descendant caps); frameSeq stays
   // far within MAX_SAFE_INTEGER (9e15/1e6 ≈ 9e9 frames >> the descendant cap).
   private static readonly NESTED_FRAME_STRIDE = 1_000_000;
+
+  /** Admission checks over a resolved parameter snapshot, shared by `start()` and a nested
+   *  `workflow()` frame (whose child version is its own admission — see `_handleWorkflowRequest`):
+   *  every reachable model must still be a configured alias (UNKNOWN_ALIAS — a registered default
+   *  can fall out of the table after a config change) and no resolved appendPrompt may carry the
+   *  user-instructions frame close delimiter (PARAM_OUT_OF_RANGE, reported by size only). Returns
+   *  the reachable model set, which the price pin is taken over (INV-V26-4). */
+  private _refuseUnadmittableParams(params: RunParams): string[] {
+    const models = reachableModels(params);
+    for (const m of models) {
+      if (m !== undefined && !isKnownAlias(m, this._aliasNames)) {
+        throw paramCodedError({
+          ok: false,
+          code: 'UNKNOWN_ALIAS',
+          message: `model is not a known alias: ${m}`,
+          detail: { param: 'model', supplied: m, allowed: { enum: [...this._aliasNames] } },
+        });
+      }
+    }
+    const appendPrompts = [params.appendPrompt, ...Object.values(params.agents ?? {}).map((a) => a.appendPrompt)];
+    for (const ap of appendPrompts) {
+      if (typeof ap === 'string' && FRAME_CLOSE_FORGERY.test(ap)) {
+        throw paramCodedError({
+          ok: false,
+          code: 'PARAM_OUT_OF_RANGE',
+          message: 'appendPrompt cannot contain the user-instructions frame close delimiter',
+          detail: { param: 'appendPrompt', suppliedBytes: Buffer.byteLength(ap, 'utf8') },
+        });
+      }
+    }
+    return models;
+  }
+
+  /** INV-V26-4 for a nested frame: the pin taken in `start()` covers only the models the TOP-level
+   *  workflow names — a child's are unknowable then (its name is a runtime value, at any depth). A
+   *  nested `workflow()` is therefore a second admission point, and the child's reachable models are
+   *  ADDED to the run's pin here, so its agents are priced and USD-budget-bound. Only ABSENT keys are
+   *  looked up; an entry already pinned is never re-resolved (a resumed frame re-executes and skips
+   *  them). Mutates the pin in place — the run's AgentExecutor holds the same object — and persists
+   *  it so a restart-resume and `run_result.meta.budgetEnforceable` read the extended pin. */
+  private async _pinChildModels(runId: string, entry: RunEntry, models: string[]): Promise<void> {
+    const book = entry.priceBook;
+    if (book === null) return; // pre-v26 row: "we never looked" stays that way
+    const missing = models
+      .map((m) => resolveModelRef(this._aliasMap, m))
+      .filter((r): r is NonNullable<typeof r> => r !== undefined && !Object.hasOwn(book.pinned, `${r.provider}/${r.model}`));
+    if (missing.length === 0) return;
+    const snapshot = await this._modelBook.snapshot();
+    for (const r of missing) book.pinned[`${r.provider}/${r.model}`] = snapshot.lookup(r.provider, r.model);
+    await this._store.updatePriceBook(runId, book);
+  }
 
   private _frameBaseFor(entry: RunEntry, pathKey: string): number {
     let base = entry.nestedFrames.get(pathKey);
@@ -1647,6 +1691,34 @@ export class RunManager {
         );
       }
     }
+    // A nested frame's agents take their harness params from the CHILD version's own
+    // `meta.params.agents.<label>` defaults — never from the parent run's admission snapshot, whose
+    // labels belong to another workflow (a same-named parent label used to leak its override in).
+    // The parent's `overrides.agents` do NOT reach here: they are validated against, and scoped to,
+    // the parent's own contract (REQ-110), and the child is a black box (AUTHORING.md). Same merge
+    // (`defaultRunParams`, the no-overrides producer), same admission checks, same LEGACY_REREGISTER
+    // refusal as `start()` for a version predating the per-agent contract.
+    const childContract = registered.params as ParamContract | undefined;
+    if (childContract === undefined) {
+      throw codedError(
+        'LEGACY_REREGISTER',
+        `LEGACY_REREGISTER: nested workflow '${name}' version ${registered.version} predates the v24 per-agent parameter contract and cannot be run; re-register it`,
+        { workflow: name, version: registered.version },
+      );
+    }
+    const childParams = defaultRunParams(undefined, childContract.agents);
+    await this._pinChildModels(runId, entry, this._refuseUnadmittableParams(childParams));
+    // Issue #73 (d) for the child's agents: WARN, never refuse — logged only, the run_start caller
+    // has already been answered by the time a nested frame is admitted.
+    if (this._probeLookup) {
+      const warnings = toolProbeWarnings({
+        calls: scanAgentCalls(registered.script).calls,
+        modelFor: (label) => childParams.agents?.[label]?.model ?? childParams.model ?? 'default',
+        resolve: (alias) => resolveModelRef(this._aliasMap, alias),
+        lookup: this._probeLookup,
+      });
+      for (const w of warnings) console.warn(`[model-probe] run ${runId} (nested '${name}'): ${w.message}`);
+    }
     // issue #53: re-check after the awaits above — an abort that landed meanwhile would never fire
     // the kill listener registered below (an already-aborted signal dispatches no later 'abort').
     if (generation.aborted) throw new Error(`run ${runId}: workflow() from a suspended/stopped execution`);
@@ -1674,7 +1746,7 @@ export class RunManager {
       // generation (after an immediate resume they otherwise ran live under the new controller).
       onAgentRequest: (prompt, opts, callSeq, phase) => {
         if (generation.aborted) throw new Error(`run ${runId}: agent() from a suspended/stopped nested workflow() frame`);
-        return this._handleAgentRequest(runId, prompt, opts, frameBase + callSeq, framePathKey, phase);
+        return this._handleAgentRequest(runId, prompt, opts, frameBase + callSeq, framePathKey, phase, childParams);
       },
       // v8 REQ-041: a deeper workflow() recurses here one level down, carrying this frame's path +
       // the extended ancestor set — enabling N-level composition (was: no delegate → NESTING_ERROR).
@@ -1714,7 +1786,7 @@ export class RunManager {
 
   /** Handles one child agent() call: replay from the resume cache when available, otherwise
    *  enforce budget + concurrency (RunGuard, single authority) and dispatch to the AgentSpawner. */
-  private async _handleAgentRequest(runId: string, positional: string, opts: unknown, callSeq: number, framePath = '', phase?: { title: string; index: number }): Promise<unknown> {
+  private async _handleAgentRequest(runId: string, positional: string, opts: unknown, callSeq: number, framePath = '', phase?: { title: string; index: number }, frameParams?: RunParams): Promise<unknown> {
     const entry = this._runs.get(runId);
     if (!entry) throw new Error(`Unknown run: ${runId}`);
     // v24 (integrator; DES-143/ADR-029 + REQ-110/REQ-113): the script-facing call is
@@ -1790,10 +1862,13 @@ export class RunManager {
       // close). `prompt`/`tools` stay the run-wide (workflow-level, not per-agent) fields. No
       // label, or no contract at admission (ad-hoc/legacy script) → the flat snapshot unchanged,
       // same as before this task.
-      const labelParams = key.opts.label ? entry.effectiveParams.agents?.[key.opts.label] : undefined;
+      // A nested workflow() frame passes its CHILD version's snapshot as `frameParams` (see
+      // `_handleWorkflowRequest`); a top-level call passes none and reads the run's own.
+      const baseParams = frameParams ?? entry.effectiveParams;
+      const labelParams = key.opts.label ? baseParams.agents?.[key.opts.label] : undefined;
       const runParams: RunParams = labelParams
-        ? { ...entry.effectiveParams, model: labelParams.model, effort: labelParams.effort, timeoutMs: labelParams.timeoutMs, appendPrompt: labelParams.appendPrompt, provenance: labelParams.provenance }
-        : entry.effectiveParams;
+        ? { ...baseParams, model: labelParams.model, effort: labelParams.effort, timeoutMs: labelParams.timeoutMs, appendPrompt: labelParams.appendPrompt, provenance: labelParams.provenance }
+        : baseParams;
       // v24 (integrator; REQ-113, ARCH-103/DES-154, adjudication #4 C-2): `AgentReq.assets` —
       // THE missing wire. `agent-executor.ts` forwards it, `claude-agent-sdk-client.ts` acts on
       // it and `materialize-assets.test.ts` proved the algorithm, but NOBODY produced the value,

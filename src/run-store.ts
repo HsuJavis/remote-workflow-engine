@@ -206,6 +206,10 @@ export interface RunStore {
    *  `null` for a pre-v26 run row (never persisted one) or an unknown runId. Same row `getEffectiveParams`
    *  reads. */
   getPriceBook(runId: string): Promise<PriceBook | null>;
+  /** Rewrites the run's pin. Only ever called to ADD entries — a nested `workflow()` frame is a
+   *  second admission point whose child's models the pin taken at `start()` could not know; an
+   *  existing entry is never re-resolved (RunManager `_pinChildModels`). */
+  updatePriceBook(runId: string, priceBook: PriceBook): Promise<void>;
   appendJournal(runId: string, entry: JournalEntry): Promise<void>;
   appendTranscript(runId: string, agentId: string, ev: TranscriptEvent): Promise<void>;
   recordTransition(runId: string, from: RunStatus | null, to: RunStatus, ts: string): Promise<void>;
@@ -356,6 +360,11 @@ export class InMemoryRunStore implements RunStore {
 
   async getPriceBook(runId: string): Promise<PriceBook | null> {
     return this._runs.get(runId)?.priceBook ?? null;
+  }
+
+  async updatePriceBook(runId: string, priceBook: PriceBook): Promise<void> {
+    const run = this._runs.get(runId);
+    if (run) run.priceBook = priceBook;
   }
 
   async getSpec(runId: string): Promise<RunSpec | null> {
