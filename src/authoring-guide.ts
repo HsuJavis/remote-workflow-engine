@@ -401,7 +401,8 @@ function readonlyBashBody(posture: 'confined' | 'unconfined' | undefined): strin
     'no literal `allowedTools` (the deployment default includes write tools), or with no `Bash` in ' +
     'the list — `SCAN_VIOLATION` `BASH_READONLY_CONFLICT`. It refuses any other `bash` value ' +
     '(`BASH_MODE_INVALID`) and a `bash` key in `meta.params`. `run_start` overrides cannot change it. ' +
-    "The agent's `harness.bash` record in `run_agent_log` shows `{mode, enforced}`. " +
+    "When a session starts, the agent's `harness.bash` record in `run_agent_log` shows `{mode, enforced}`; " +
+    'a fail-closed call starts no session, so it has no harness record — read its detail instead. ' +
     here
   );
 }
