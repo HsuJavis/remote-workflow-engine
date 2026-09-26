@@ -220,6 +220,10 @@ export const TOOL_SPECS = [
   {
     name: 'workflow_register', entity: 'workflow', key: null,
     description: 'Register a new workflow version under a name; the caller becomes its owner. Registering the same name again appends a new version (v2, v3…) and overwrites nothing; use a different name only for a different purpose. ' +
+      // Issue #91: the engine registers no rwe-* workflows, for EVERY caller including admin — the
+      // client plugin is being removed, so this door has to be self-contained here too, not just on
+      // workspace_push's asset-name check.
+      "`name` may not start with the engine-reserved 'rwe-' prefix — refused RESERVED_PREFIX, for every caller including admin. " +
       "Every agent() call's model comes from `script`'s own `export const meta = { params: { agents: { <label>: { model: {...} } } } }`: `model` is REQUIRED with a `.default`, and that default MUST be a full `<provider>/<model-id>` ref — providers are exactly anthropic, openrouter, ollama (e.g. \"anthropic/claude-haiku-4-5-20251001\", \"openrouter/openai/gpt-4.1\", \"ollama/qwen2.5:7b\"); there are no aliases, no bare names, no 'default'/'local'-style shortcuts — a bare name is refused UNKNOWN_MODEL. Use models_list to find a valid ref (copy its `ref` field verbatim). A run_start override may replace it with a different full ref per run; see workflow_authoring_guide for the complete authoring rules. " +
       // Issue #78(b): advertised here because a cold client reads only tools/list.
       "The reply may carry result.warnings — non-fatal notes, the version is registered anyway: BASH_SUBSUMES_FILE_TOOLS when an agent() call's allowedTools names Bash beside Read/Grep/Glob/Write/Edit (allowedTools restricts names, and Bash can do what those do); BASH_READONLY_UNENFORCEABLE when an agent() declares bash:'readonly' on an engine with no working Bash sandbox (every dispatch of it will fail closed there); MODEL_CATALOG_UNVERIFIED when a declared model ref could not be checked against a live catalog listing (openrouter/ollama) or is an anthropic id not yet in this deployment's static price table — the version registers anyway.",
@@ -286,6 +290,9 @@ export const TOOL_SPECS = [
       'NOT_WORKFLOW_OWNER', 'REGISTRATION_CONFLICT', 'VERSION_CEILING_EXCEEDED',
       'INVALID_ARGUMENT', 'TRIGGER_NOT_FOUND', 'NOT_TRIGGER_OWNER', 'TRIGGER_ALREADY_CLAIMED',
       'FORBIDDEN_ROLE',
+      // Issue #91: `name` starting with the engine-reserved 'rwe-' prefix — checked before every
+      // other registration step (workflow-catalog.ts's validateRegistration), for every caller.
+      'RESERVED_PREFIX',
       // Issue #82: the seedManifestRef ladder (RunManager.loadSeedManifestRef), run at register time.
       'MISSING_BLOBS', 'INVALID_SEED_SPEC', 'CAS_UNAVAILABLE',
     ],
@@ -300,6 +307,9 @@ export const TOOL_SPECS = [
         // that comes back is DIAGRAM_MISMATCH and not DIAGRAM_DIRECTION.
         DIAGRAM_MISMATCH: { name: 'fixture-mismatch', script: FIXTURE_SCRIPT, mermaid: 'graph LR\nsubgraph "Greet"\nother(["other"])\nend' },
         SCAN_VIOLATION: { name: 'fixture-scan', script: "phase('Greet');\nconst l = \"greet\";\nreturn await agent(l, {});", mermaid: FIXTURE_MERMAID },
+        // Issue #91: an otherwise-valid registration, refused for the NAME alone — proves the check
+        // runs before script/mermaid content is ever inspected.
+        RESERVED_PREFIX: { name: 'rwe-impostor', script: FIXTURE_SCRIPT, mermaid: FIXTURE_MERMAID },
       },
     },
   },

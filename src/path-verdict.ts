@@ -18,7 +18,11 @@ export type Verdict =
 // CLAUDE.md is NOT stripped (copied verbatim from the former workspace-seed.ts STRIP_RE).
 const STRIP_RE = /(^|\/)\.claude\/(settings[^/]*\.json|hooks\/.*)$/;
 
-const RESERVED_PREFIX = 'rwe-';
+// Issue #91: exported so every other caller-supplied-NAME check (workflow_register's, so far —
+// see workflow-catalog.ts's validateRegistration) reuses this ONE literal instead of duplicating
+// it; the case-sensitivity (plain `startsWith`, no `toLowerCase`) is part of the contract other
+// callers must match, not an implementation detail local to this file.
+export const RESERVED_PREFIX = 'rwe-';
 
 /** Pure, no filesystem access — decides everything that can be decided from the string alone.
  *  Normalizes `\` to `/`; rejects `''`, absolute paths (`/…`, `C:\…`), `..` traversal, and NUL;
