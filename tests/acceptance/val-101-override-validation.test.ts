@@ -53,7 +53,7 @@ const LABEL = 'work';
 function declaredScript(extra = ''): string {
   return [
     'export const meta = { params: { agents: { ' + LABEL + ': {',
-    "  model: { type: 'string', default: 'default' },",
+    "  model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' },",
     "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
     '  timeoutMs: { type: \'number\', default: 60000 }' + (extra ? ',' : ''),
     extra,

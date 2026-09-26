@@ -1,10 +1,25 @@
-// VAL-004: Multi-model routing via LiteLLM alias (REQ-004)
-// Requires a running LiteLLM proxy configured with aliases.
+// VAL-004: Multi-model routing (REQ-004)
+// Requires a running LiteLLM proxy / a live provider to observe end-to-end dispatch.
+//
+// 2026-09-26 (alias mechanism removed, owner decisions 1/2/6): every model is now a full
+// `<provider>/<model-id>` ref, declared REQUIRED at `meta.params.agents.<label>.model.default` —
+// there is no more alias table for `ServerConfig`/`createServer` to carry, and no 'default'
+// fallback for an agent that declares no model. The "declaring the 'default' alias routes through
+// this server's default entry" case is REMOVED (not rewritten): that mechanism does not exist any
+// more — every label's model is always the ref it declares, never a server-wide fallback. The
+// "unknown alias rejected at REGISTRATION" case is REWRITTEN: the old mechanism scanned a raw
+// `agent(label, {model:'x'})` LITERAL for an unknown alias, at a script-check door that ran BEFORE
+// the `PARAM_IN_SCRIPT`/`SCAN_VIOLATION` check — that literal-scan door is gone (`model` inside an
+// agent() call's OWN options was always refused `PARAM_IN_SCRIPT` regardless, so the script-level
+// alias scan was checking something no valid script could ever also trigger the other way). The
+// only place a model string is checked now is the declared CONTRACT
+// (`meta.params.agents.<label>.model.default`/`enum`), so the rewritten case declares a bad ref
+// there instead.
 //
 // v24 MIGRATION (TASK-152), two separate defects fixed here:
 //  1. FALSE GREEN. All four cases began `if (!HAS_PROVIDER) return;`, so with no provider they
 //     passed having asserted nothing. The three that genuinely need a live provider are now
-//     `it.skipIf(!HAS_PROVIDER)` with the reason in the NAME; the UNKNOWN_ALIAS case needs no
+//     `it.skipIf(!HAS_PROVIDER)` with the reason in the NAME; the UNKNOWN_MODEL case needs no
 //     provider at all once migrated (it is a registration-time refusal) and is now unconditional —
 //     a real green replacing a fake one.
 //  2. Pre-v24 fixtures: inline `run_start({script})` is closed (REQ-098); `model` inside an agent()
@@ -20,11 +35,11 @@ import { runScriptVia, type ToolCaller } from '../helpers/workflow-fixtures.js';
 const HAS_PROVIDER = !!(process.env['LITELLM_BASE_URL'] || process.env['ANTHROPIC_API_KEY']);
 const NO_PROVIDER = ' [UNVERIFIED here: no provider configured — set LITELLM_BASE_URL or ANTHROPIC_API_KEY]';
 
-/** One declared agent label routed at `alias`, the shape DES-144 requires. */
-function routedScript(label: string, alias: string, prompt: string): string {
+/** One declared agent label routed at a full `<provider>/<model-id>` ref, the shape DES-144 requires. */
+function routedScript(label: string, ref: string, prompt: string): string {
   return [
     `export const meta = { params: { agents: { ${label}: {`,
-    `  model: { type: 'string', default: '${alias}' },`,
+    `  model: { type: 'string', default: '${ref}' },`,
     "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
     "  timeoutMs: { type: 'number', default: 120000 },",
     '} } } };',
@@ -46,14 +61,7 @@ describe('VAL-004: multi-model routing (REQ-004)', () => {
 
   beforeAll(async () => {
     // Always attempt to start — throws "not implemented" at Gate 5.
-    server = await createServer({
-      port: 0,
-      aliases: {
-        sonnet:  { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
-        haiku:   { provider: 'anthropic', model: 'claude-3-5-haiku-20241022' },
-        default: { provider: 'anthropic', model: 'claude-3-5-haiku-20241022' },
-      },
-    });
+    server = await createServer({ port: 0 });
     baseUrl = `http://127.0.0.1:${server.port}`;
   });
 
@@ -82,8 +90,8 @@ describe('VAL-004: multi-model routing (REQ-004)', () => {
     throw new Error('timed out');
   }
 
-  it.skipIf(!HAS_PROVIDER)('a label declaring model.default:"haiku" routes to the haiku alias provider+model' + NO_PROVIDER, async () => {
-    const r = await runAndWait(routedScript('route', 'haiku', 'say yes'));
+  it.skipIf(!HAS_PROVIDER)('a label declaring model.default:"anthropic/claude-3-5-haiku-20241022" routes to that exact provider+model' + NO_PROVIDER, async () => {
+    const r = await runAndWait(routedScript('route', 'anthropic/claude-3-5-haiku-20241022', 'say yes'));
     expect(r.status).toBe('completed');
     const agents = agentsOf(await callTool('run_status', { runId: r.runId }));
     expect(agents.length).toBeGreaterThan(0);
@@ -91,36 +99,27 @@ describe('VAL-004: multi-model routing (REQ-004)', () => {
     expect(agents[0]!.model).toBe('claude-3-5-haiku-20241022');
   }, 120000);
 
-  it.skipIf(!HAS_PROVIDER)('declaring the "default" alias routes through this server\'s default entry' + NO_PROVIDER, async () => {
-    const r = await runAndWait(routedScript('plain', 'default', 'say yes'));
-    expect(r.status).toBe('completed');
-    const agents = agentsOf(await callTool('run_status', { runId: r.runId }));
-    expect(agents[0]!.model).toBe('claude-3-5-haiku-20241022');
-  }, 120000);
-
-  // v24 (ADR-013, DES-148): the alias check moved from submission to REGISTRATION — the ingress a
-  // script now enters through. Same oracle, and it is STRONGER at the new ingress: nothing is
-  // stored, so no run can ever reach the bad alias mid-flight. No provider is needed to observe it,
-  // so this case is unconditional rather than provider-gated (it used to be gated and therefore
-  // never ran).
-  it('unknown alias rejected at REGISTRATION with UNKNOWN_ALIAS (never mid-run)', async () => {
+  // 2026-09-26 (owner decisions 1/2/6): rewritten from "unknown alias rejected at REGISTRATION" —
+  // the model check now lives ONLY in the declared contract (`meta.params.agents.<label>.model`),
+  // never in a raw scan of an agent() call's own options (which is refused PARAM_IN_SCRIPT
+  // regardless of content). Registration is still the ingress the check runs at, so nothing is ever
+  // stored and no run can reach a bad ref mid-flight — same strength, new door.
+  it('a bare (non-full-ref) model.default is rejected at REGISTRATION with UNKNOWN_MODEL (never mid-run)', async () => {
     const env = await callTool('workflow_register', {
-      name: 'val004-bad-alias',
-      script: `return agent('x',{model:'nonexistent-alias'});`,
-      mermaid: 'graph TD;\nn0(["x"])',
+      name: 'val004-bad-model',
+      script: routedScript('x', 'nonexistent-alias', 'hi'),
+      mermaid: 'graph LR\nsubgraph "p"\nn0(["x"])\nend',
     });
     expect(env.status).toBe('failed');
-    expect(env.error?.code).toBe('UNKNOWN_ALIAS');
-    const got = await callTool('workflow_source', { name: 'val004-bad-alias' });
+    expect(env.error?.code).toBe('UNKNOWN_MODEL');
+    const got = await callTool('workflow_source', { name: 'val004-bad-model' });
     expect(got.error?.code ?? got.code).toBe('WORKFLOW_NOT_FOUND'); // nothing stored
   }, 10000);
 
   it.skipIf(!HAS_PROVIDER)('provider down: agent() resolves null, run continues (D-G breaker)' + NO_PROVIDER, async () => {
-    // Configure a bad-provider alias by creating a second server instance
-    const badServer = await createServer({
-      port: 0,
-      aliases: { default: { provider: 'ollama', model: 'nonexistent:99b' } },
-    });
+    // A second server instance, still zero-config — the "provider down" shape below routes to a
+    // genuinely-nonexistent ollama model id (no alias table needed to make a target unreachable).
+    const badServer = await createServer({ port: 0 });
     const badBase = `http://127.0.0.1:${badServer.port}`;
     try {
       const badCall: ToolCaller<any> = async (name, args) => {
@@ -133,7 +132,7 @@ describe('VAL-004: multi-model routing (REQ-004)', () => {
       };
       const downScript = [
         "export const meta = { params: { agents: { down: {",
-        "  model: { type: 'string', default: 'default' },",
+        "  model: { type: 'string', default: 'ollama/nonexistent:99b' },",
         "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
         "  timeoutMs: { type: 'number', default: 120000 },",
         "} } } };",

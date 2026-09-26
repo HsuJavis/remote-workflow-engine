@@ -112,7 +112,7 @@ beforeAll(async () => {
   // as `phases: []` and the predicted-lane join (`predictedLanes`) never has a row to attach agents
   // to. Without this, both never-run cases below can only exercise the `predictedLayoutUnavailable`
   // fallback, never the agent-NAME branch the design and the auth-enabled case require.
-  await registerPublishedVia(mcpCall, 'val199-never-run', `export const meta = { params: { agents: { x: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } }, phases: [{title:'a'}] };\nphase('a'); await agent('x', {}); return 1;`);
+  await registerPublishedVia(mcpCall, 'val199-never-run', `export const meta = { params: { agents: { x: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } }, phases: [{title:'a'}] };\nphase('a'); await agent('x', {}); return 1;`);
 
   authTmpDir = mkdtempSync(join(tmpdir(), 'rwe-val199-auth-'));
   authServer = await createServer({
@@ -128,7 +128,7 @@ beforeAll(async () => {
   const ownerToken = await mintBearer(authTmpDir, AUTH_OWNER);
   // Same `meta.phases` declaration as the plain-server fixture above — required for the predicted
   // agent NAME (not just the fallback wording) to reach `describe.phases[].agents` at all.
-  await registerPublishedVia(authMcpCallFor(ownerToken), 'val199-auth-never-run', `export const meta = { params: { agents: { '${AUTH_AGENT_MARKER}': { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } }, phases: [{title:'a'}] };\nphase('a'); await agent('${AUTH_AGENT_MARKER}', {}); return 1;`);
+  await registerPublishedVia(authMcpCallFor(ownerToken), 'val199-auth-never-run', `export const meta = { params: { agents: { '${AUTH_AGENT_MARKER}': { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } }, phases: [{title:'a'}] };\nphase('a'); await agent('${AUTH_AGENT_MARKER}', {}); return 1;`);
 }, 30000);
 
 afterAll(async () => {

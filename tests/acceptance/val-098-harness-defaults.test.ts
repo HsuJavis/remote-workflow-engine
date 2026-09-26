@@ -29,10 +29,6 @@ beforeAll(async () => {
     port: 0,
     bind: '127.0.0.1',
     workRoot: tmpDir,
-    aliases: {
-      sonnet: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
-      default: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
-    },
   });
 });
 

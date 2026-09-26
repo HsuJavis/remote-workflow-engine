@@ -35,7 +35,6 @@ beforeAll(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), 'rwe-val103-'));
   server = await createServer({
     port: 0, bind: '127.0.0.1', workRoot: tmpDir,
-    aliases: { local: { provider: 'ollama', model: 'qwen2.5:7b' }, default: { provider: 'ollama', model: 'qwen2.5:7b' } },
   });
 });
 afterAll(async () => { await server?.close(); rmSync(tmpDir, { recursive: true, force: true }); });
@@ -57,7 +56,7 @@ const LABEL = 'speaker';
 function declaredScript(effortDefault = 'low'): string {
   return [
     'export const meta = { params: { agents: { ' + LABEL + ': {',
-    "  model: { type: 'string', default: 'default' },",
+    "  model: { type: 'string', default: 'ollama/qwen2.5:7b' },",
     "  effort: { type: 'enum', enum: ['low','medium','high','xhigh','max'], default: '" + effortDefault + "' },",
     "  timeoutMs: { type: 'number', default: 60000 } } } } };",
     "return await agent('" + LABEL + "', { prompt: 'say hi' });",

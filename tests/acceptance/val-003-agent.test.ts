@@ -22,6 +22,9 @@ import { runScriptVia, type ToolCaller } from '../helpers/workflow-fixtures.js';
 // (so Gate 5 RED is triggered by the unimplemented createServer, not by the SKIP guard).
 const HAS_PROVIDER = !!(process.env['ANTHROPIC_API_KEY'] || process.env['OLLAMA_BASE_URL']);
 const NO_PROVIDER = ' [UNVERIFIED here: no provider configured — set ANTHROPIC_API_KEY or OLLAMA_BASE_URL]';
+// 2026-09-26 (alias mechanism removed): a full ref naming whichever provider is actually configured
+// — no alias table resolves a bare 'default' any more.
+const MODEL_REF = process.env['OLLAMA_BASE_URL'] ? 'ollama/qwen2.5:7b' : 'anthropic/claude-haiku-4-5-20251001';
 
 describe('VAL-003: real agent execution via Claude Agent SDK (REQ-003)', () => {
   let server: Server;
@@ -63,11 +66,12 @@ describe('VAL-003: real agent execution via Claude Agent SDK (REQ-003)', () => {
   }
 
   /** One declared agent label, the shape DES-144 requires (model/effort/timeoutMs, each with a
-   *  `.default`). `default` is the alias `DEFAULT_ALIASES` always defines. */
+   *  `.default`). 2026-09-26 (alias mechanism removed): `MODEL_REF` is a full ref naming whichever
+   *  provider this run actually has configured. */
   function withAgent(label: string, body: string): string {
     return [
       `export const meta = { params: { agents: { ${label}: {`,
-      "  model: { type: 'string', default: 'default' },",
+      `  model: { type: 'string', default: ${JSON.stringify(MODEL_REF)} },`,
       "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
       '  timeoutMs: { type: \'number\', default: 120000 },',
       '} } } };',

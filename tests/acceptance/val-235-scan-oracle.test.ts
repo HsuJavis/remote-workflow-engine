@@ -35,7 +35,7 @@ describe('VAL-235 — a role-prompt string containing "agent (" registers clean 
     // workflow-catalog.ts:464), which is a different, pre-existing (v24) rule, not this scanner.
     const script =
       "export const meta = { params: { agents: { verifier: {\n" +
-      "  model: { type: 'string', default: 'default' },\n" +
+      "  model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' },\n" +
       "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },\n" +
       "  timeoutMs: { type: 'number', default: 120000 },\n" +
       "} } } };\n" +

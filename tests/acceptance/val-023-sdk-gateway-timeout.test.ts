@@ -13,6 +13,16 @@ import { ClaudeAgentSdkGatewayClient } from '../../src/gateway/claude-agent-sdk-
 import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 const HUNG_PORT = 38201;
+// 2026-09-26 (alias mechanism removed): `ClaudeAgentSdkGatewayClient` routes `anthropic` straight to
+// the REAL Anthropic API regardless of `config.baseUrl` (REQ-037's provider-aware env) — only a
+// non-anthropic provider's traffic goes through `config.baseUrl`, which is what this file's hung
+// stub actually intercepts. A bare `'default'` alias used to resolve to an anthropic model and still
+// hit the stub because the OLD alias-resolution layer sat in front of that provider check; the
+// full-ref successor has to name a non-anthropic provider directly. `openrouterFetch`/`ollamaFetch`
+// are stubbed down so this openrouter ref is always in the "listing unavailable -> warn, never
+// refuse" branch regardless of this host's real network/Ollama reachability.
+const down = (async () => { throw new Error('offline'); }) as unknown as typeof fetch;
+const HUNG_MODEL_REF = 'openrouter/some-vendor/some-model';
 
 let server: Server;
 let tmpDir: string;
@@ -25,6 +35,7 @@ beforeAll(async () => {
   server = await createServer({
     port: 0, bind: '127.0.0.1', workRoot: tmpDir,
     gateway: new ClaudeAgentSdkGatewayClient({ baseUrl: `http://127.0.0.1:${HUNG_PORT}`, timeoutMs: 5000, retries: 0 }),
+    modelCatalogFetchers: { ollamaFetch: down, openrouterFetch: down },
   });
 });
 
@@ -59,11 +70,13 @@ describe('VAL-023: REQ-020 clause 1 — a hung provider call is bounded, agent()
     // `timeoutMs.default` is DELIBERATELY the same 5000ms this file's `beforeAll` configures on the
     // gateway: a per-call `opts.timeoutMs` OVERRIDES the client's configured default
     // (claude-agent-sdk-client.ts:443/457), so the bound under test has to be declared here or the
-    // fixture would silently be measuring a different one. `model:'default'` resolves through
-    // DEFAULT_ALIASES to the same dial the hung stub intercepts via `baseUrl`.
+    // fixture would silently be measuring a different one. 2026-09-26 (alias mechanism removed):
+    // any full ref hits the SAME dial the hung stub intercepts — `ClaudeAgentSdkGatewayClient`
+    // unconditionally sets the spawned CLI's `ANTHROPIC_BASE_URL` to `config.baseUrl` regardless of
+    // provider, so an anthropic static-table ref needs no catalog to be accepted either.
     const run = await runScriptVia(mcpCall, [
       "export const meta = { params: { agents: { hang: {",
-      "  model: { type: 'string', default: 'default' },",
+      `  model: { type: 'string', default: ${JSON.stringify(HUNG_MODEL_REF)} },`,
       "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
       "  timeoutMs: { type: 'number', default: 5000 },",
       "} } } };",
@@ -88,7 +101,7 @@ describe('VAL-023: REQ-020 clause 2 — the provider/timeout failure is visible 
   it('the run resolves ok:false with a timeout on the AgentRecord, and the process-global slot frees back to 0 (DES-260: kill-on-timeout is now Options.abortController, slot-free is RunManager.withSlot()\'s own finally — the old standalone race primitive is deleted)', async () => {
     const run = await runScriptVia(mcpCall, [
       "export const meta = { params: { agents: { hang: {",
-      "  model: { type: 'string', default: 'default' },",
+      `  model: { type: 'string', default: ${JSON.stringify(HUNG_MODEL_REF)} },`,
       "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
       "  timeoutMs: { type: 'number', default: 5000 },",
       "} } } };",

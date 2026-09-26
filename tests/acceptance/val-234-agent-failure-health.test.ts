@@ -8,13 +8,19 @@
 // The real dependency here is the GATEWAY (third-party network) — a genuinely unreachable address
 // is the honest real-tier failure per DES-234's own real-tier path table, not a mock of the SUT.
 //
-// Mock policy (acceptance): real createServer(), real MCP HTTP; the ONLY "fake" is aliasing every
-// model to an address nothing listens on, per ADR-precedent (real dependency, real network attempt,
-// real timeout/refusal — not a stubbed GatewayClient).
+// Mock policy (acceptance): real createServer(), real MCP HTTP; the ONLY "fake" is an `ollama/...`
+// model ref pointed (via OLLAMA_BASE_URL deletion) at an address nothing listens on, per
+// ADR-precedent (real dependency, real network attempt, real timeout/refusal — not a stubbed
+// GatewayClient). 2026-09-26 (alias mechanism removed): the script below declares the full ref
+// directly — no alias to route through any more; `modelCatalogFetchers` is stubbed down so
+// registration's existence check is deterministic regardless of what this host's own Ollama
+// installation (if any) happens to list.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { registerPublishedVia, type ToolCaller } from '../helpers/workflow-fixtures.js';
+
+const down = (async () => { throw new Error('offline'); }) as unknown as typeof fetch;
 
 let server: Server;
 let baseUrl: string;
@@ -37,8 +43,8 @@ beforeAll(async () => {
   delete (process.env as Record<string, string | undefined>)['OLLAMA_BASE_URL'];
   server = await createServer({
     port: 0, bind: '127.0.0.1', useLiteLLMProxy: false, timeoutMs: 2000, retries: 0,
-    aliases: { default: { provider: 'ollama', model: 'unreachable-model' } },
-  } as never);
+    modelCatalogFetchers: { ollamaFetch: down, openrouterFetch: down },
+  });
   baseUrl = `http://127.0.0.1:${server.port}`;
 });
 afterAll(async () => { await server?.close(); });
@@ -47,7 +53,7 @@ describe('VAL-234 — every agent() fails: run-level health is visible without r
   it('failedAgentCount agrees between run_status and run_list for the terminal run', async () => {
     const c = call();
     const script =
-      "export const meta = { params: { agents: { worker: { model: { type: 'string', default: 'default' }, " +
+      "export const meta = { params: { agents: { worker: { model: { type: 'string', default: 'ollama/unreachable-model' }, " +
       "effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 1000 } } } } };\n" +
       "phase('main');\nreturn await agent('worker', {});";
     await registerPublishedVia(c, 'val234-all-fail', script);

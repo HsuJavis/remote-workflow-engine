@@ -50,7 +50,6 @@ beforeAll(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), 'rwe-val100-'));
   server = await createServer({
     port: 0, bind: '127.0.0.1', workRoot: tmpDir,
-    aliases: { sonnet: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' }, default: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' } },
   });
 });
 afterAll(async () => { await server?.close(); rmSync(tmpDir, { recursive: true, force: true }); });

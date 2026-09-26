@@ -45,14 +45,14 @@ const MERMAID = [
   // v26 (REQ-128): the agent node lives in its phase's lane. The hostile free-text nodes stay
   // OUTSIDE the lane — they are exactly the untrusted-label case this file is about.
   'subgraph "Write"',
-  'writer(["writer<br/>sonnet · low · 60000"])',
+  'writer(["writer<br/>ollama/x7b · low · 60000"])',
   'end',
   'trig-->writer',
   'xss-->writer',
 ].join('\n');
 const SCRIPT = [
   "export const meta = { description: 'hostile labels', params: { agents: {",
-  "  writer: { model: { type: 'string', default: 'sonnet' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },",
+  "  writer: { model: { type: 'string', default: 'ollama/x7b' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },",
   '} } };',
   "phase('Write');",
   "if (false) { await agent('writer', {}); }",
@@ -119,7 +119,18 @@ beforeAll(async () => {
   }
   if (reason) console.warn(`[VAL-169] ${reason} — the render path is NOT verified in this run.`);
   tmpDir = mkdtempSync(join(tmpdir(), 'rwe-val169-'));
-  server = await createServer({ port: 0, bind: '127.0.0.1', workRoot: tmpDir });
+  // 2026-09-26 (alias mechanism removed): `ollama/x7b` is a deliberately-fake, deliberately-SHORT
+  // ref (never actually dispatched — the agent() call below is unreachable, `if (false)`) picked so
+  // the rendered stadium label's second row stays short enough to render on ONE line, not
+  // auto-wrap into a third — a real static-table anthropic id is long enough to auto-wrap, which
+  // would make the "exactly two rows" assertion below fail for a rendering reason unrelated to
+  // this test's actual subject. Fetchers stubbed down so it is accepted deterministically
+  // regardless of this host's own Ollama state (the "listing unavailable -> warn" branch).
+  const down = (async () => { throw new Error('offline'); }) as unknown as typeof fetch;
+  server = await createServer({
+    port: 0, bind: '127.0.0.1', workRoot: tmpDir,
+    modelCatalogFetchers: { ollamaFetch: down, openrouterFetch: down },
+  });
   const reg = await call('workflow_register', { name: WF, script: SCRIPT, mermaid: MERMAID });
   expect(reg.error).toBeUndefined(); // the hostile labels are ACCEPTED by checkMermaid — free text
   await call('workflow_publish', { name: WF, version: reg.result.version, channel: 'release' });
@@ -140,7 +151,7 @@ describe('VAL-169 — the diagram is really drawn, server-side, by a real headle
   });
 
   itReal('renders the REQ-112 value triple on TWO lines — the display server-side rendering buys', () => {
-    // `writer` on row 1, `sonnet · low · 60000` on row 2. Client-side rendering could not do this and
+    // `writer` on row 1, `ollama/x7b · low · 60000` on row 2. Client-side rendering could not do this and
     // stay safe: it needs securityLevel:'strict', under which the <br/> prints literally (04-design
     // adjudication #12 L-1).
     const texts = svg.match(/<text[^>]*>[\s\S]*?<\/text>/g) ?? [];
@@ -148,7 +159,7 @@ describe('VAL-169 — the diagram is really drawn, server-side, by a real headle
     expect(writerText, 'the agent node was not rendered at all').toBeDefined();
     const rows = writerText!.match(/class="text-outer-tspan row"/g) ?? [];
     expect(rows.length).toBe(2);
-    expect(writerText).toContain('sonnet');
+    expect(writerText).toContain('ollama/x7b');
     expect(writerText).not.toContain('<br/>'); // the separator became a line break, not literal text
   });
 

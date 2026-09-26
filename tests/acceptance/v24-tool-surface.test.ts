@@ -45,6 +45,23 @@ import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { TOOL_SPECS, resolveFixture, FIXTURE_SCRIPT, FIXTURE_MERMAID, FIXTURE_AGENT_LABEL, type SetupKey } from '../../src/tool-specs.js';
 
+// 2026-09-26 (alias mechanism removed): the shared `FIXTURE_SCRIPT` now hard-codes a static
+// anthropic ref (no more per-server alias table to redirect its `model.default` at) — but THIS
+// file's whole "four runs stay live" design depends on the fixture's dispatch actually reaching
+// the STALLED local HTTP server below, which only the ollama branch of the direct-fetch transport
+// honors via `OLLAMA_BASE_URL` (the anthropic branch posts straight to the real
+// api.anthropic.com, with no override knob on this transport, and fails closed in ~0ms when
+// ANTHROPIC_API_KEY is unset — never hanging). So THIS file registers its own model-substituted
+// copy of the fixture script for the 'demo' workflow only; `FIXTURE_MERMAID`/`FIXTURE_AGENT_LABEL`
+// are pure structure (no `<br/>` value triple to keep in sync) and are unaffected, unchanged.
+const STALLING_FIXTURE_SCRIPT = (() => {
+  const needle = "default: 'anthropic/claude-haiku-4-5-20251001'";
+  if (!FIXTURE_SCRIPT.includes(needle)) {
+    throw new Error('v24-tool-surface.test.ts: FIXTURE_SCRIPT no longer contains the expected model.default literal — update STALLING_FIXTURE_SCRIPT to match tool-specs.ts');
+  }
+  return FIXTURE_SCRIPT.replace(needle, "default: 'ollama/qwen2.5:7b'");
+})();
+
 // v25 (orchestrator, adjudication #10): this file is BOTH committed evidence (the REQ-118 live tool
 //  table) and a test OUTPUT, and being both is what made it dirty the working tree on every single
 //  acceptance run — it blocked a branch switch twice, blocked a merge once, and the Gate 8 fix pass
@@ -126,9 +143,10 @@ describe('REQ-118 — every MCP tool interface exercised once against a live eng
     workRoot = mkdtempSync(join(tmpdir(), 'rwe-v24-surface-'));
     server = await createServer({
       port: 0, bind: '127.0.0.1', workRoot,
-      // The real production gateway client, direct-fetch (no managed LiteLLM subprocess), routed at
-      // the stalled provider above. `default` is the alias FIXTURE_SCRIPT's contract declares.
-      aliases: { default: { provider: 'ollama', model: 'stall' } },
+      // The real production gateway client, direct-fetch (no managed LiteLLM subprocess). The
+      // 'demo' workflow (STALLING_FIXTURE_SCRIPT) declares an `ollama/…` full ref, which the
+      // direct-fetch transport dispatches to OLLAMA_BASE_URL (set to the stalled provider above) —
+      // no alias table involved any more.
       useLiteLLMProxy: false,
       timeoutMs: 120000,
     });
@@ -225,7 +243,7 @@ describe('REQ-118 — every MCP tool interface exercised once against a live eng
     const webhook = await callOk('webhook_create', {});
     setup.webhookId = String(webhook.result?.webhookId ?? webhook.webhookId);
 
-    const registered = await callOk('workflow_register', { name: 'demo', script: FIXTURE_SCRIPT, mermaid: FIXTURE_MERMAID, triggers: [setup.scheduleId, setup.webhookId] });
+    const registered = await callOk('workflow_register', { name: 'demo', script: STALLING_FIXTURE_SCRIPT, mermaid: FIXTURE_MERMAID, triggers: [setup.scheduleId, setup.webhookId] });
     setup.workflow = 'demo';
     setup.version = String(registered.result?.version ?? registered.version);
     setup.agentLabel = FIXTURE_AGENT_LABEL;

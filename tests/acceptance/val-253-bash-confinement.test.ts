@@ -28,7 +28,8 @@ function hasBubblewrap(): boolean {
 const HAS_SANDBOX_RUNTIME = HAS_PROVIDER && hasBubblewrap();
 const NO_RUNTIME = " [UNVERIFIED here: needs OLLAMA_BASE_URL + a real bubblewrap-capable host — see TASK-250's spike]";
 
-const QWEN_ALIAS = { 'local-qwen': { provider: 'ollama' as const, model: 'qwen2.5:7b' } };
+// 2026-09-26 (alias mechanism removed): the full ref itself — no alias table any more.
+const QWEN_REF = 'ollama/qwen2.5:7b';
 
 let server: Server;
 let workRoot: string;
@@ -39,10 +40,8 @@ beforeAll(async () => {
     port: 0,
     bind: '127.0.0.1',
     workRoot,
-    aliases: QWEN_ALIAS,
     gateway: new ClaudeAgentSdkGatewayClient({
       baseUrl: process.env['OLLAMA_BASE_URL'] ?? 'http://127.0.0.1:4000',
-      aliases: QWEN_ALIAS,
       timeoutMs: 60000,
       // v37 Gate-6 amendment (2026-09-22, implementer; ADR-083 owner_decision posture C):
       // `confinementPosture` defaults to 'unconfined' (found by running the real suite — see
@@ -80,7 +79,7 @@ describe("VAL-253: REQ-218 — an agent's Bash cannot write outside the run work
         mcpCall,
         [
           "export const meta = { params: { agents: { escape: {",
-          "  model: { type: 'string', default: 'local-qwen' },",
+          `  model: { type: 'string', default: '${QWEN_REF}' },`,
           "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
           "  timeoutMs: { type: 'number', default: 60000 },",
           '} } } };',

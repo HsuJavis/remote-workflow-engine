@@ -161,20 +161,31 @@ beforeAll(async () => {
   stub = startStubOllamaServer();
   await new Promise<void>((resolve) => stub.listen(STUB_PORT, '127.0.0.1', resolve));
   process.env['OLLAMA_BASE_URL'] = `http://127.0.0.1:${STUB_PORT}`;
+  // 2026-09-26 (alias mechanism removed): each run below overrides its agent's model to a plain
+  // `ollama/...` ref, routed through OLLAMA_BASE_URL (the local stub above) — no alias table to
+  // configure any more. `graphAnalyzer` is a pre-existing (v24) RETIRED key, unrelated to aliases —
+  // left as-is (warns and is ignored, never forwarded).
   server = await createServer({
     port: 0, bind: '127.0.0.1', useLiteLLMProxy: false,
-    aliases: { default: { provider: 'ollama', model: 'default-model' } },
     graphAnalyzer: { enabled: false },
   } as ServerConfig);
   baseUrl = `http://127.0.0.1:${server.port}`;
   const caller = makeCaller(baseUrl);
-  const run = await runScriptVia(caller, `return agent('panel-agent', { prompt: 'the visible script prompt' });`);
+  const run = await runScriptVia(
+    caller,
+    `return agent('panel-agent', { prompt: 'the visible script prompt' });`,
+    { overrides: { agents: { 'panel-agent': { model: 'ollama/default-model' } } } },
+  );
   runId = run.runId as string;
   await waitTerminal(baseUrl, runId);
   // A failed `agent()` call resolves to `null` and the SCRIPT keeps going (same rule as
   // `failed-call-unmapped-meta.test.ts`), so this run's own status is `completed` — it is the
   // ONE agent record inside it that is `state:'failed'` with a `detail`.
-  const failRun = await runScriptVia(caller, `return agent('panel-agent-failing', { prompt: '${FAIL_MARKER}' });`);
+  const failRun = await runScriptVia(
+    caller,
+    `return agent('panel-agent-failing', { prompt: '${FAIL_MARKER}' });`,
+    { overrides: { agents: { 'panel-agent-failing': { model: 'ollama/default-model' } } } },
+  );
   failRunId = failRun.runId as string;
   await waitTerminal(baseUrl, failRunId);
 
@@ -196,12 +207,24 @@ beforeAll(async () => {
   // genuine `message` kind and a genuine `tool_call`/`tool_result` kind, closing the fixture gap
   // the previous audit pass measured and reported (SPEC_ROWS comment above the two rows).
   queryMock.mockImplementation(() => fakeToolUseSession());
+  // 2026-09-26 (alias mechanism removed): `ClaudeAgentSdkGatewayClient` routes `anthropic` straight
+  // to the REAL Anthropic API regardless of `baseUrl` (REQ-037) — with no real credential
+  // configured, that fails fast on ANTHROPIC_AUTH_MISSING BEFORE the SDK's mocked `query()` is ever
+  // called, which is exactly what starved this run of the tool_use/tool_result pair the SPEC_ROWS
+  // oracle below needs. An `ollama/...` ref routes through `config.baseUrl` instead, reaching the
+  // mocked `query()`; `modelCatalogFetchers` is stubbed down so the ref is checked deterministically.
+  const down = (async () => { throw new Error('offline'); }) as unknown as typeof fetch;
   toolServer = await createServer({
     port: 0, bind: '127.0.0.1',
     gateway: new ClaudeAgentSdkGatewayClient({ baseUrl: 'http://127.0.0.1:4000' }),
+    modelCatalogFetchers: { ollamaFetch: down, openrouterFetch: down },
   });
   toolBaseUrl = `http://127.0.0.1:${toolServer.port}`;
-  const toolRun = await runScriptVia(makeCaller(toolBaseUrl), `return agent('toolcall-agent', { prompt: 'inspect the file' });`);
+  const toolRun = await runScriptVia(
+    makeCaller(toolBaseUrl),
+    `return agent('toolcall-agent', { prompt: 'inspect the file' });`,
+    { overrides: { agents: { 'toolcall-agent': { model: 'ollama/qwen2.5:7b' } } } },
+  );
   toolRunId = toolRun.runId as string;
   await waitTerminal(toolBaseUrl, toolRunId);
 }, 30000);

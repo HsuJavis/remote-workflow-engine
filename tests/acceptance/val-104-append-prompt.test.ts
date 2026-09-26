@@ -21,7 +21,6 @@ beforeAll(async () => {
   // session-build time without spawning the litellm subprocess or needing a live backend.
   server = await createServer({
     port: 0, bind: '127.0.0.1', workRoot: tmpDir,
-    aliases: { default: { provider: 'ollama', model: 'qwen2.5:7b' } },
     useLiteLLMProxy: false,
   });
 });
@@ -46,7 +45,7 @@ const LABEL = 'writer';
 function declaredScript(prompt: string): string {
   return [
     'export const meta = { params: { agents: { ' + LABEL + ': {',
-    "  model: { type: 'string', default: 'default' },",
+    "  model: { type: 'string', default: 'ollama/qwen2.5:7b' },",
     "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
     "  timeoutMs: { type: 'number', default: 60000 },",
     // Declared explicitly: a per-agent override may only name a key the LABEL declares (v24 answers

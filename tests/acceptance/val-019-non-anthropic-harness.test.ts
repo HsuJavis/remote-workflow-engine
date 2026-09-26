@@ -31,13 +31,15 @@ import { runScriptVia, type ToolCaller } from '../helpers/workflow-fixtures.js';
 
 const HAS_PROVIDER = !!process.env['OLLAMA_BASE_URL'];
 const NO_PROVIDER = ' [UNVERIFIED here: no provider configured — set OLLAMA_BASE_URL]';
-const QWEN_ALIAS = { 'local-qwen': { provider: 'ollama' as const, model: 'qwen2.5:7b' } };
+// 2026-09-26 (alias mechanism removed): the full ref itself — no alias table for the server or the
+// gateway to carry any more; the provider comes straight off this string's own prefix.
+const QWEN_REF = 'ollama/qwen2.5:7b';
 
-/** One declared agent label routed at the non-Anthropic alias, the shape DES-144 requires. */
+/** One declared agent label routed at the full ollama ref, the shape DES-144 requires. */
 function qwenScript(label: string, prompt: string, opts = ''): string {
   return [
     `export const meta = { params: { agents: { ${label}: {`,
-    "  model: { type: 'string', default: 'local-qwen' },",
+    `  model: { type: 'string', default: '${QWEN_REF}' },`,
     "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
     "  timeoutMs: { type: 'number', default: 60000 },",
     '} } } };',
@@ -50,17 +52,12 @@ let tmpDir: string;
 
 beforeAll(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), 'rwe-val019-'));
-  // Real entrypoint per DES-030: gateway:"sdk" via the composition-root override (D-F1), with the
-  // SAME alias table thinkingFor() consults — a non-Anthropic alias must disable thinking.
+  // Real entrypoint per DES-030: gateway:"sdk" via the composition-root override (D-F1) — thinking
+  // disables for a non-anthropic ref regardless (wireEffort reads the parsed provider, not a table).
   server = await createServer({
     port: 0, bind: '127.0.0.1', workRoot: tmpDir,
-    // v24 (DES-144): the SERVER's alias table is what registration validates a declared
-    // `model.default` against — the gateway's own table is consulted only at dispatch, so a
-    // script declaring `local-qwen` would be refused PARAM_CONTRACT_INVALID without this.
-    aliases: QWEN_ALIAS,
     gateway: new ClaudeAgentSdkGatewayClient({
       baseUrl: process.env['OLLAMA_BASE_URL'] ?? 'http://127.0.0.1:4000',
-      aliases: QWEN_ALIAS,
       timeoutMs: 60000,
     }),
   });

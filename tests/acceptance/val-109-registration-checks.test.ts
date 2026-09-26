@@ -4,15 +4,21 @@
 // Mock policy (acceptance, DES-119): no mocking of the SUT's own boundaries. No LLM dispatch
 // needed — these are static/registration-time checks.
 //
-// Red reason: today PARSE_ERROR/UNKNOWN_ALIAS/MCP_NOT_PROVISIONED are checked ONLY at submission
+// Red reason: today PARSE_ERROR/UNKNOWN_MODEL/MCP_NOT_PROVISIONED are checked ONLY at submission
 // (`if (spec.script)` in submission-validator.ts), never at `workflow_register` — every registration
 // below succeeds today regardless of the script's validity, and a run-by-name is not covered by any
 // equivalent check.
+//
+// 2026-09-26 (alias mechanism removed, owner decisions 1/2/6): the model check now lives ONLY in
+// the declared contract (`meta.params.agents.<label>.model`) — `agent(label, {model:'x'})` is
+// ALWAYS refused `SCAN_VIOLATION`/`PARAM_IN_SCRIPT` regardless of the value (an agent() call's own
+// options can never carry a tunable key), so the old "unresolvable alias inside agent() options" case
+// is rewritten to declare its bad ref in the contract instead — the ONLY place a model value is ever
+// checked now.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import Database from 'better-sqlite3';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 
@@ -21,10 +27,7 @@ let tmpDir: string;
 
 beforeAll(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), 'rwe-val109-'));
-  server = await createServer({
-    port: 0, bind: '127.0.0.1', workRoot: tmpDir,
-    aliases: { sonnet: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' } },
-  });
+  server = await createServer({ port: 0, bind: '127.0.0.1', workRoot: tmpDir });
 });
 afterAll(async () => { await server?.close(); rmSync(tmpDir, { recursive: true, force: true }); });
 
@@ -45,24 +48,34 @@ describe('REQ-099: registration enforces the checks the engine used to run only 
     expect(got['code']).toBe('WORKFLOW_NOT_FOUND');
   });
 
-  it('an unresolvable model alias is refused UNKNOWN_ALIAS at registration, nothing stored', async () => {
-    const r = await toolCall('workflow_register', { name: 'val109-alias', script: `await agent('a', { model: 'no-such-alias' });` });
-    expect((r['error'] as { code?: string } | undefined)?.code).toBe('UNKNOWN_ALIAS');
+  it('a bare (non-full-ref) declared model.default is refused UNKNOWN_MODEL at registration, nothing stored', async () => {
+    const script = [
+      "export const meta = { params: { agents: { a: {",
+      "  model: { type: 'string', default: 'no-such-alias' },",
+      "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
+      "  timeoutMs: { type: 'number', default: 60000 },",
+      "} } } };",
+      "phase('Work');",
+      "await agent('a', { prompt: 'hi' });",
+    ].join('\n');
+    const r = await toolCall('workflow_register', { name: 'val109-alias', script, mermaid: 'graph LR\nsubgraph "Work"\nn0(["a"])\nend' });
+    expect((r['error'] as { code?: string } | undefined)?.code).toBe('UNKNOWN_MODEL');
     const got = await toolCall('workflow_source', { name: 'val109-alias' });
     expect(got['code']).toBe('WORKFLOW_NOT_FOUND');
   });
 
   it('a run BY NAME is covered — a legitimately registered workflow runs fine (no path skips validation)', async () => {
     // v24 (DES-143/DES-144/DES-148, TASK-152): the LEGITIMATE script is now spelled with a literal
-    // label + `options.prompt`, the model alias declared as `meta.params.agents.a.model.default`
-    // (writing `model` inside the agent() options is refused SCAN_VIOLATION), and a `mermaid`
-    // diagram whose stadium nodes match the script's labels exactly. Same oracle: a script that
-    // passes every registration-time check registers with no error. `sonnet` is this server's own
-    // configured alias (beforeAll), so the UNKNOWN_ALIAS case above and this one still differ by
-    // exactly one thing — whether the alias is known.
+    // label + `options.prompt`, the model declared as a full ref at
+    // `meta.params.agents.a.model.default` (writing `model` inside the agent() options is refused
+    // SCAN_VIOLATION), and a `mermaid` diagram whose stadium nodes match the script's labels
+    // exactly. Same oracle: a script that passes every registration-time check registers with no
+    // error — this case and the bad-ref case above now differ by exactly one thing: whether the
+    // ref is well-formed (this one is a static-table anthropic id, so it also carries no
+    // MODEL_CATALOG_UNVERIFIED warning).
     const script = [
       "export const meta = { params: { agents: { a: {",
-      "  model: { type: 'string', default: 'sonnet' },",
+      "  model: { type: 'string', default: 'anthropic/claude-sonnet-5' },",
       "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
       "  timeoutMs: { type: 'number', default: 60000 },",
       "} } } };",
@@ -76,40 +89,15 @@ describe('REQ-099: registration enforces the checks the engine used to run only 
   });
 });
 
-describe('REQ-099: a pre-existing workflow that would now fail is NOT retroactively refused, but its staleness is surfaced (VAL-109)', () => {
-  it('a workflow whose alias went stale AFTER registration still runs; workflow_source exposes validation:{ok:false}', async () => {
-    // Hand-seed a v22-schema row referencing an alias this server was never configured with —
-    // models "registered before the alias was removed" (registration itself would refuse
-    // UNKNOWN_ALIAS for a NEW registration, per the case above; this reaches the grandfathered
-    // state directly, the same technique tests/integration/catalog-versions.test.ts uses for its
-    // migration fixtures).
-    const dbPath = join(tmpDir, 'catalog.db');
-    const db = new Database(dbPath);
-    const now = new Date().toISOString();
-    db.prepare('INSERT INTO workflows (name, createdAt, owner, release_version) VALUES (?, ?, NULL, ?)').run('val109-stale', now, 'v1');
-    // v24 (integrator): the seeded row carries a valid v24 PARAM CONTRACT. Without one it is a
-    // pre-v24 row and `run_start` refuses it LEGACY_REREGISTER (DES-144/156) — a correct refusal,
-    // but for a different reason than the one this case is about, which would make the assertion
-    // below pass or fail for the wrong cause. The STALENESS under test lives where it always did:
-    // in the SCRIPT's own `model: 'now-deprovisioned-alias'`, which `validateCurrent` re-checks
-    // against the CURRENT alias table on every read. Both halves of REQ-099's last clause are then
-    // exercised for their own reasons: staleness surfaced, run not retroactively refused.
-    // `sonnet` (this server's ONE configured alias) is the contract default deliberately: v21's
-    // R-G2 re-checks every label's RESOLVED model at admission, so a stale alias in the CONTRACT
-    // would be refused UNKNOWN_ALIAS there and mask the clause under test.
-    const v24Contract = JSON.stringify({
-      agents: { a: { model: { type: 'string', default: 'sonnet' }, effort: { type: 'enum', enum: ['low', 'medium', 'high'], default: 'low' }, timeoutMs: { type: 'number', default: 60_000 } } },
-      args: {},
-    });
-    db.prepare('INSERT INTO workflow_versions (name, version, script, params, createdAt) VALUES (?, ?, ?, ?, ?)')
-      .run('val109-stale', 'v1', `await agent('a', { model: 'now-deprovisioned-alias' }); return 'still-runs';`, v24Contract, now);
-    db.close();
-
-    const got = await toolCall('workflow_source', { name: 'val109-stale' });
-    const validation = (got['result'] as { validation?: { ok?: boolean } } | undefined)?.validation;
-    expect(validation?.ok).toBe(false); // surfaced, not silently swallowed
-
-    const run = await toolCall('run_start', { name: 'val109-stale' });
-    expect(run['error']).toBeUndefined(); // NOT retroactively refused — the last REQ-099 clause
-  });
-});
+// 2026-09-26 (alias mechanism removed, deliberate drop): the SECOND describe block this file used
+// to carry — "a pre-existing workflow whose alias went stale AFTER registration still runs;
+// workflow_source exposes validation:{ok:false}" — pinned `WorkflowCatalog.validateCurrent()`'s
+// read-time re-check of a script's literal `model: '<alias>'` against the CURRENT alias table.
+// That re-check is GONE with the alias mechanism (`validateCurrent`/`validateScriptEntry` now check
+// MCP provisioning only — see `script-checks.ts`'s own header comment): a model ref is checked
+// ONLY at registration time now (the case above), and there is no live catalog re-verification on
+// every read. This is a deliberate scope narrowing, not an oversight — re-verifying an
+// openrouter/ollama ref's existence on every `workflow_source`/`workflow_list` call would mean a
+// live catalog fetch on a read path, which nothing in this engine's design does elsewhere. REQ-099's
+// "not retroactively refused" half still holds trivially (nothing re-checks at all, so nothing can
+// retroactively refuse); its "staleness surfaced" half has no successor and is not asserted anywhere.

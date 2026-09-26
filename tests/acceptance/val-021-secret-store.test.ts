@@ -21,7 +21,6 @@ import type { Server } from '../../src/server.js';
 import { composeConfig } from '../../src/main.js';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
 import { FakeMcpProbe } from '../../src/mcp-probe.js';
-import type { AliasMap } from '../../src/gateway/client.js';
 // Value import — module-not-found when absent (guarantees this file is RED at collection).
 import { resolveConfig, InMemorySecretSource } from '../../src/secret-resolver.js';
 import { runScriptVia } from '../helpers/workflow-fixtures.js';
@@ -29,15 +28,10 @@ import { runScriptVia } from '../helpers/workflow-fixtures.js';
 const HAS_PROVIDER = !!process.env['OLLAMA_BASE_URL'];
 const REAL_SECRET_VALUE = 'val021-real-secret-value-xyz';
 
-const ALIASES: AliasMap = {
-  default: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
-  local: { provider: 'ollama', model: 'qwen2.5:7b' },
-};
-
 function makeFakeProxyManager(): LiteLLMProxyManager {
   const fakeSpawn = vi.fn(() => (Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn() })) as unknown as ChildProcess);
   const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
-  return new LiteLLMProxyManager(ALIASES, {
+  return new LiteLLMProxyManager({
     spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
     fetchImpl: fakeHealthFetch as unknown as typeof fetch,
   });
@@ -58,7 +52,7 @@ beforeAll(async () => {
   process.env['RWE_SECRET_VAL021'] = REAL_SECRET_VALUE;
   const config = await composeConfig(
     {
-      bind: '127.0.0.1', port: 0, workRoot: tmpDir, aliases: ALIASES, gateway: 'sdk', assetRoot: join(tmpDir, 'assets'),
+      bind: '127.0.0.1', port: 0, workRoot: tmpDir, gateway: 'sdk', assetRoot: join(tmpDir, 'assets'),
       // v24 (DES-153/ADR-030, TASK-152): workspace_push's kind:'mcp' http mode now checks egress
       // BEFORE probing — this file's fake MCP configs point at example.com, so it must be allowed.
       mcpEgressAllowlist: ['https://example.com/'],
@@ -94,7 +88,7 @@ async function mcpCall(name: string, args: Record<string, unknown> = {}) {
 function goScript(mcpName: string): string {
   return [
     "export const meta = { params: { agents: { go: {",
-    "  model: { type: 'string', default: 'local' },",
+    "  model: { type: 'string', default: 'ollama/qwen2.5:7b' },",
     "  effort: { type: 'enum', default: 'low' },",
     "  timeoutMs: { type: 'number', default: 30000 },",
     `  mcp: ['${mcpName}'],`,

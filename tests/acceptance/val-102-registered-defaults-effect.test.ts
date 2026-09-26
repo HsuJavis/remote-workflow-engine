@@ -23,10 +23,8 @@ beforeAll(async () => {
     // useLiteLLMProxy:false + 'ollama' provider: onHarness fires unconditionally at session-build
     // time (before the outbound fetch) without spawning the litellm subprocess or needing a live
     // backend/API key — the assertions below only need the DESCRIPTOR, not a completed call.
-    aliases: {
-      'alias-b': { provider: 'ollama', model: 'qwen2.5:7b-haiku-stand-in' },
-      default: { provider: 'ollama', model: 'qwen2.5:7b' },
-    },
+    // 2026-09-26 (alias mechanism removed): no alias table any more — the script below declares the
+    // full ref directly as its `model.default`.
     useLiteLLMProxy: false,
   });
 });
@@ -59,12 +57,12 @@ async function pollUntilHarness(runId: string, label: string, maxMs = 8000): Pro
 const SOLE_AGENT_LABEL = 'hi';
 
 describe('REQ-092: registered defaults take effect at run time, observable in the harness descriptor (VAL-102)', () => {
-  it('a call with NO per-call model dispatches with the registered default (alias-b), not silently ignored', async () => {
+  it('a call with NO per-call model dispatches with the registered default full ref, not silently ignored', async () => {
     // v24 (ADR-035): a flat registered `defaults` no longer exists — the same effect is now a
     // per-agent `meta.params.agents.<label>.model.default` declared inside the script itself.
     const script =
       `export const meta = { params: { agents: { hi: { ` +
-      `model: { type: 'string', default: 'alias-b' }, ` +
+      `model: { type: 'string', default: 'ollama/qwen2.5vl:7b' }, ` +
       `effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, ` +
       `timeoutMs: { type: 'number', default: 60000 } } } } };\n` +
       `return await agent("hi", {});`;
@@ -73,13 +71,12 @@ describe('REQ-092: registered defaults take effect at run time, observable in th
     const runId = run.runId as string;
 
     const { harness } = await pollUntilHarness(runId, SOLE_AGENT_LABEL);
-    // v26 (DES-177, REQ-125, integrator): the harness descriptor's `model` is the RESOLVED provider
-    // model id, never the alias name and never the proxy cloak — REQ-125 exists so the record names
-    // the backend that served the call. `alias-b` resolves to `qwen2.5:7b-haiku-stand-in` in this
-    // server's own alias table (above), so asserting that id pins the SAME property this case
-    // always pinned — the label's registered `model.default` (alias-b) is what actually dispatched,
-    // not the run-wide default — and it now pins it one hop closer to the wire.
-    expect(harness?.model).toBe('qwen2.5:7b-haiku-stand-in');
+    // v26 (DES-177, REQ-125, integrator) — 2026-09-26 (alias mechanism removed): the harness
+    // descriptor's `model` is the bare id parsed off the full ref (`ollama/qwen2.5vl:7b`
+    // -> `qwen2.5vl:7b`) — REQ-125 exists so the record names the backend that served
+    // the call. Asserting that id pins the SAME property this case always pinned — the label's
+    // registered `model.default` is what actually dispatched, not some other rung.
+    expect(harness?.model).toBe('qwen2.5vl:7b');
     expect(harness?.provenance?.['model']).toBe('default');
   });
 
@@ -93,7 +90,7 @@ describe('REQ-092: registered defaults take effect at run time, observable in th
   it("the script writing agent({model:...}) is REFUSED at registration (the 'call' rung is retired, not silently ignored)", async () => {
     const script =
       `export const meta = { params: { agents: { hi: { ` +
-      `model: { type: 'string', default: 'alias-b' }, ` +
+      `model: { type: 'string', default: 'ollama/qwen2.5vl:7b' }, ` +
       `effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, ` +
       `timeoutMs: { type: 'number', default: 60000 } } } } };\n` +
       `return await agent("hi", {model:'default'});`;

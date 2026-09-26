@@ -1,7 +1,7 @@
 // VAL-213 (REQ-137; DES-213/214; TASK-222): real Chromium — the Models tab rewritten to twelve
 // sortable columns, three filters (search/provider/segment), and a 560 px slide-in panel.
 //
-// Mock policy (acceptance): real createServer() (DEFAULT_ALIASES, no mock catalog), real Chromium.
+// Mock policy (acceptance): real createServer() (no mock catalog), real Chromium.
 //
 // Red reason (measured): today's `.models-table` (`ui/models.js`) is a flat 6-column table with no
 // sort, no filter, no slide-in — `[data-model-table]`/`[data-model-panel]` do not exist; a header
@@ -53,7 +53,7 @@ const itReal = (name: string, fn: () => Promise<void>, timeout?: number): void =
   it(name, async (ctx) => { if (reason) ctx.skip(); await fn(); }, timeout);
 };
 
-describe('Models tab: twelve columns, sort, filter, slide-in (VAL-213, REQ-137)', () => {
+describe('Models tab: eleven columns, sort, filter, slide-in (VAL-213, REQ-137)', () => {
   itReal('a cold /dashboard, clicking [data-tab="models"], paints [data-model-table] with a sortable header', async () => {
     const puppeteer = (await import('puppeteer')).default;
     const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
@@ -65,7 +65,9 @@ describe('Models tab: twelve columns, sort, filter, slide-in (VAL-213, REQ-137)'
       await tab!.click();
       await page.waitForSelector('[data-model-table] tbody tr', { timeout: 5000 });
       const headerCount = await page.$$eval('[data-model-table] thead th', (ths) => ths.length);
-      expect(headerCount).toBe(12);
+      // 2026-09-26 (alias mechanism removed, spec rule 9): the `aliases` column is dropped — eleven
+      // columns now, not twelve.
+      expect(headerCount).toBe(11);
     } finally {
       await browser.close();
     }

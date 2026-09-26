@@ -24,17 +24,9 @@ import type { Server } from '../../src/server.js';
 let server: Server;
 let workRoot: string;
 
-// v24 Gate 7.5 (D-12): a DEPLOYMENT-SPECIFIC alias table, deliberately not the default one — the
-// guide must render what THIS engine accepts, so a hard-coded list cannot pass.
-const ALIASES = {
-  'val117-fast': { provider: 'anthropic' as const, model: 'claude-3-5-haiku-20241022' },
-  'val117-deep': { provider: 'anthropic' as const, model: 'claude-opus-4-5' },
-  default: { provider: 'anthropic' as const, model: 'claude-3-5-sonnet-20241022' },
-};
-
 beforeAll(async () => {
   workRoot = mkdtempSync(join(tmpdir(), 'rwe-val117-'));
-  server = await createServer({ port: 0, bind: '127.0.0.1', workRoot, aliases: ALIASES });
+  server = await createServer({ port: 0, bind: '127.0.0.1', workRoot });
 });
 afterAll(async () => { await server?.close(); rmSync(workRoot, { recursive: true, force: true }); });
 
@@ -70,19 +62,28 @@ describe('REQ-106/REQ-117: the authoring rules are discoverable from the MCP sur
     expect(guide.toLowerCase()).toContain('phase title');
   });
 
-  // v24 Gate 7.5 (D-12, REQ-117): the cold subject's FIRST registration was refused because it put
-  // a model ID from `models_list` in `model.default` — nothing on the tool surface named the alias
-  // names this deployment accepts. This is the wiring half: the names must reach the guide THROUGH
-  // THE BOOTED SERVER's own resolved alias table, not merely be renderable by the builder.
-  it("the guide names THIS deployment's model aliases, and a caller can write one straight into model.default", async () => {
+  // 2026-09-26 (alias mechanism removed): the deployment no longer resolves a private alias table,
+  // so there is nothing deployment-specific for the guide to name — the model rule is now STATIC
+  // text (the three closed providers + the `<provider>/<model-id>` shape), reachable from the guide
+  // alone with no client plugin/skill to fall back on. This replaces the old "the guide names THIS
+  // deployment's aliases" case with its full-ref successor, and folds in the 2026-09-26 owner
+  // requirement that the tool schemas THEMSELVES (not only the guide) state the rule, since a cold
+  // client now has only `tools/list` + the guide to go on.
+  it('the guide states the full-ref rule (three static providers, no aliases), and a caller can write a full ref straight into model.default', async () => {
     const body = await rpc('tools/call', { name: 'workflow_authoring_guide', arguments: {} });
     const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { result?: unknown };
     const guide = typeof payload.result === 'string' ? payload.result : JSON.stringify(payload.result ?? '');
-    for (const alias of Object.keys(ALIASES)) expect(guide, `the guide never names the '${alias}' alias`).toContain(alias);
+    expect(guide).toContain('anthropic');
+    expect(guide).toContain('openrouter');
+    expect(guide).toContain('ollama');
+    expect(guide).toMatch(/<provider>\/<model-id>/);
+    expect(guide).toContain('UNKNOWN_MODEL');
+    expect(guide.toLowerCase()).toContain('models_list');
+    expect(guide.toLowerCase()).toContain('no aliases');
 
-    // The names it prints are the ones registration actually accepts — the point of printing them.
+    // The rule it prints is the one registration actually enforces — the point of printing it.
     const script = [
-      "export const meta = { params: { agents: { go: { model: { type: 'string', default: 'val117-fast' },",
+      "export const meta = { params: { agents: { go: { model: { type: 'string', default: 'anthropic/claude-sonnet-5' },",
       "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } } };",
       // v26 (REQ-128): rule L2 plus the LR swimlane — the `if (false)` guard keeps this a
       // registration-only case (nothing dispatches), which makes the lane dynamic, so the node
@@ -91,8 +92,43 @@ describe('REQ-106/REQ-117: the authoring rules are discoverable from the MCP sur
       "if (false) { await agent('go', {}); }",
       "return 'ok';",
     ].join('\n');
-    const reg = await rpc('tools/call', { name: 'workflow_register', arguments: { name: 'val117-alias-check', script, mermaid: 'graph LR\nsubgraph "Go"\ngo(["go"])\nend' } });
+    const reg = await rpc('tools/call', { name: 'workflow_register', arguments: { name: 'val117-fullref-check', script, mermaid: 'graph LR\nsubgraph "Go"\ngo(["go"])\nend' } });
     const regPayload = JSON.parse(reg.result?.content?.[0]?.text ?? '{}') as { error?: { code?: string } };
     expect(regPayload.error).toBeUndefined();
+  });
+
+  // 2026-09-26 owner requirement: since the client plugin is being removed, the full-ref rule must
+  // be discoverable from `tools/list` schemas alone, not only from calling the guide tool — a cold
+  // client that only lists tools (never calls workflow_authoring_guide) must still see it on every
+  // tool that takes a model.
+  it('tools/list descriptions themselves (not just the guide) state the full-ref rule on every tool that takes a model', async () => {
+    const body = await rpc('tools/list', {});
+    const tools = body.result?.tools ?? [];
+    const byName = (n: string) => tools.find((t) => t.name === n);
+
+    const register = byName('workflow_register');
+    expect(register?.description ?? '').toMatch(/anthropic/);
+    expect(register?.description ?? '').toMatch(/openrouter/);
+    expect(register?.description ?? '').toMatch(/ollama/);
+    expect(register?.description ?? '').toMatch(/<provider>\/<model-id>/);
+
+    const runStart = byName('run_start');
+    expect(runStart?.description ?? '').toMatch(/<provider>\/<model-id>/);
+
+    const modelsList = byName('models_list');
+    expect(modelsList?.description ?? '', 'models_list must say ref IS the string to paste').toMatch(/\bref\b/);
+    expect(modelsList?.description ?? '').toMatch(/<provider>\/<model-id>/);
+
+    const modelsProbe = byName('models_probe');
+    expect(modelsProbe?.description ?? '').toMatch(/<provider>\/<model-id>|models_list/);
+
+    // Nothing on the model-bearing tools may point a now-plugin-less cold client at the removed
+    // client plugin for model/alias information — the surface must be self-contained. (`skill` is
+    // deliberately not checked here: it is a legitimate, unrelated vocabulary word elsewhere on the
+    // tool surface — e.g. workspace_push's `skill/mcp` asset kind.)
+    for (const name of ['workflow_register', 'run_start', 'models_list', 'models_probe']) {
+      const d = (byName(name)?.description ?? '').toLowerCase();
+      expect(d, `${name}'s description points at a plugin instead of being self-contained`).not.toMatch(/\bplugin\b/);
+    }
   });
 });
