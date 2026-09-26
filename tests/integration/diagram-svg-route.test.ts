@@ -200,10 +200,17 @@ describe('(c) a render failure degrades to the source display with an observable
 
 describe('cache invalidation — deregister is the ONLY thing that can stale this cache (IT-134, REQ-119)', () => {
   it('deregister → re-register under the same name serves the NEW diagram, not the deleted one', async () => {
-    // Why this is a correctness test and not hygiene: `insertVersion` allocates `v${max+1}` over the
-    // NAME'S OWN rows and `deregister` deletes them all — so deregister+re-register reuses the very
-    // same (name, 'v1') cache key with a different diagram. REQ-111's immutability makes every OTHER
-    // invalidation unnecessary; this one it does not cover.
+    // Originally: `insertVersion` allocated `v${max+1}` over the NAME'S OWN (surviving) rows and
+    // `deregister` deleted them all — so deregister+re-register reused the very same (name, 'v1')
+    // cache key with a different diagram. REQ-111's immutability made every OTHER invalidation
+    // unnecessary; this one did not cover it.
+    //
+    // Issue #87 (2026-09-26) closed the underlying key-REUSE at its root: a monotonic per-name
+    // high-water mark survives a whole-name deregister, so a re-registration under the same name now
+    // allocates 'v2', never 'v1' again — the exact collision this test used to depend on can no
+    // longer happen. The route-level behaviour this test cares about (re-registering serves the NEW
+    // diagram, freshly rendered) still holds and is still asserted below; it just no longer needs a
+    // reused key to prove it, because a fresh key naturally renders fresh.
     const wf = 'it134-deregister';
     const v1 = await register(wf, 'before-deregister');
     expect(v1).toBe('v1');
@@ -213,8 +220,8 @@ describe('cache invalidation — deregister is the ONLY thing that can stale thi
 
     const dereg = await call('workflow_deregister', { name: wf });
     expect(dereg.error).toBeUndefined();
-    const v1again = await register(wf, 'after-a-much-longer-deregister-note');
-    expect(v1again).toBe('v1'); // the SAME key as the deleted workflow's
+    const v2 = await register(wf, 'after-a-much-longer-deregister-note');
+    expect(v2).toBe('v2'); // issue #87: never reallocates the deleted 'v1'
 
     const after = await fetch(`${base()}/api/workflows/${wf}/diagram.svg`);
     expect(after.status).toBe(200);

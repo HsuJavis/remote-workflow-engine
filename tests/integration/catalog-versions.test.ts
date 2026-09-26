@@ -188,6 +188,69 @@ describe("version allocator: MAX over a name's rows, not COUNT (ARCH-071 inv 7, 
   });
 });
 
+// Issue #87: version identifiers must never be reused after a version — or the whole workflow —
+// is deregistered. The pre-fix allocator (`v${MAX(existing rows)+1}`) reads only SURVIVING rows,
+// so deleting the highest version (or every version) frees its number back up for the NEXT
+// registration, silently violating the documented immutability of a version row (docs/AUTHORING.md:
+// "Versions are immutable"). Fix: a monotonic per-name high-water mark, `workflow_version_hwm`,
+// that `deregister`/`deregisterVersion` never touch.
+describe('issue #87: version numbers are never reused after deregister (monotonic per-name high-water mark)', () => {
+  it('v1..v3, deregister v3 (not last, not published), register → v4, not v3 again', async () => {
+    const catalog = new WorkflowCatalog(workRoot, CLOCK);
+    await catalog.register({ name: 'issue87-partial', script: `return 1;`, mermaid: 'graph LR' });
+    await catalog.register({ name: 'issue87-partial', script: `return 2;`, mermaid: 'graph LR' });
+    await catalog.register({ name: 'issue87-partial', script: `return 3;`, mermaid: 'graph LR' });
+    const bypass = { id: null, bypass: true, idSource: 'none' as const };
+    await catalog.deregisterVersion('issue87-partial', 'v3', bypass, null);
+    const { version } = await catalog.register({ name: 'issue87-partial', script: `return 4;`, mermaid: 'graph LR' });
+    expect(version).toBe('v4'); // pre-fix: MAX(v1,v2) + 1 = 'v3' — a DIFFERENT script reusing 'v3'
+  });
+
+  it('v1..v2, deregister the WHOLE workflow, register → v3, not v1 (the counter survives the deleted `workflows` row)', async () => {
+    const catalog = new WorkflowCatalog(workRoot, CLOCK);
+    await catalog.register({ name: 'issue87-whole', script: `return 1;`, mermaid: 'graph LR' });
+    await catalog.register({ name: 'issue87-whole', script: `return 2;`, mermaid: 'graph LR' });
+    await catalog.deregister('issue87-whole');
+    const { version } = await catalog.register({ name: 'issue87-whole', script: `return 3;`, mermaid: 'graph LR' });
+    expect(version).toBe('v3'); // pre-fix: no surviving rows -> MAX(none) + 1 = 'v1'
+  });
+
+  it('VERSION_CEILING_EXCEEDED still counts LIVE rows only — the hwm never gates registration', async () => {
+    const catalog = new WorkflowCatalog(workRoot, CLOCK, { ceilings: { maxTimeoutMs: 600_000, maxAppendPromptBytes: 1024, maxEffort: 'high', maxWorkflowVersions: 3 } as never });
+    await catalog.register({ name: 'issue87-ceiling', script: `return 1;`, mermaid: 'graph LR' });
+    await catalog.register({ name: 'issue87-ceiling', script: `return 2;`, mermaid: 'graph LR' });
+    await catalog.register({ name: 'issue87-ceiling', script: `return 3;`, mermaid: 'graph LR' });
+    const bypass = { id: null, bypass: true, idSource: 'none' as const };
+    await catalog.deregisterVersion('issue87-ceiling', 'v3', bypass, null); // 2 live rows left
+    const { version } = await catalog.register({ name: 'issue87-ceiling', script: `return 4;`, mermaid: 'graph LR' });
+    expect(version).toBe('v4'); // 2 live rows < ceiling of 3 — succeeds, and the number is not reused either
+  });
+
+  it('parallel registrations of a fresh name still allocate 8 distinct versions', async () => {
+    const catalog = new WorkflowCatalog(workRoot, CLOCK);
+    const results = await Promise.all(
+      Array.from({ length: 8 }, (_, i) => catalog.register({ name: 'issue87-parallel', script: `return ${i};`, mermaid: 'graph LR' })),
+    );
+    const versions = results.map((r) => r.version);
+    expect(new Set(versions).size).toBe(8);
+  });
+
+  it('a name with no hwm row (pre-fix DB, or hand-seeded rows) seeds the allocator from MAX(existing) — no regression', async () => {
+    // Hand-seed workflow_versions directly (bypassing insertVersion, so no hwm row is written) —
+    // exactly a production DB's shape the moment this fix ships: existing names have version rows
+    // but no workflow_version_hwm row yet.
+    const catalog = new WorkflowCatalog(workRoot, CLOCK);
+    const raw = new Database(join(workRoot, 'catalog.db'));
+    const now = CLOCK.isoNow();
+    raw.prepare('INSERT INTO workflows (name, createdAt, owner, release_version) VALUES (?, ?, ?, ?)').run('issue87-preexisting', now, null, 'v2');
+    raw.prepare('INSERT INTO workflow_versions (name, version, script, createdAt) VALUES (?, ?, ?, ?)').run('issue87-preexisting', 'v1', `return 'v1';`, now);
+    raw.prepare('INSERT INTO workflow_versions (name, version, script, createdAt) VALUES (?, ?, ?, ?)').run('issue87-preexisting', 'v2', `return 'v2';`, now);
+    raw.close();
+    const { version } = await catalog.register({ name: 'issue87-preexisting', script: `return 'v3';`, mermaid: 'graph LR' });
+    expect(version).toBe('v3');
+  });
+});
+
 describe('per-name version ceiling (ADR-014, S-1 debt closed, IT-084)', () => {
   it('an (N+1)th registration is refused VERSION_CEILING_EXCEEDED, naming both remedies', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK, { ceilings: { maxTimeoutMs: 600_000, maxAppendPromptBytes: 1024, maxEffort: 'high', maxWorkflowVersions: 2 } as never });

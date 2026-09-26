@@ -51,7 +51,7 @@ describe('lib/strings.js: warningText(lang, raw) (UT-244, DES-201, Round v27b)',
     for (const lang of ['zh', 'en']) {
       const out = warningText(lang, DAG_WARNING_EXAMPLES.fallback);
       expect(out).not.toBe(DAG_WARNING_EXAMPLES.fallback); // mapped, not passed through
-      expect(out).toContain('v1'); // the resolved= version from the fixture literal
+      expect(out).toContain('v3'); // the resolved= version from the fixture literal (issue #87: 'v3', not 'v1')
       expect(/skeleton/i.test(out)).toBe(false);
     }
   });

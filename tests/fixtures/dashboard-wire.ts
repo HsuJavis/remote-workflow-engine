@@ -116,7 +116,10 @@ export const REQUIRED_DAG_KEYS = ['kind', 'cells', 'edges', 'warnings', 'started
 // zh-TW legend with CI green. `prose` is `dashboard.ts:432`'s own format VERBATIM and deliberately
 // contains `': '` too (the client splits on the FIRST one and must pass an unknown head through RAW).
 export const DAG_WARNING_EXAMPLES = {
-  fallback: 'PREDICTED_FROM_FALLBACK_VERSION: pinned=v2 resolved=v1',
+  // Issue #87 (2026-09-26): `resolved=v3`, not `v1` — a whole-name deregister no longer resets the
+  // next registration's version numbering (a monotonic per-name high-water mark survives it), so the
+  // scenario this literal pins (register v1, v2; deregister; register once more) allocates 'v3'.
+  fallback: 'PREDICTED_FROM_FALLBACK_VERSION: pinned=v2 resolved=v3',
   unavailable: 'PREDICTED_OVERLAY_UNAVAILABLE: reason=catalog-resolve-failed',
   prose: 'lane 1 is beyond the predicted layout: appended',
 } as const;

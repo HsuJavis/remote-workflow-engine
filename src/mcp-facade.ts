@@ -471,12 +471,16 @@ export class McpFacade {
           const error: ErrEnvelope = { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` };
           return { runId: '', status: 'failed', code: error.code, error };
         }
-        // Gate-8 send-back (real defect): `insertVersion` allocates `v${MAX+1}` over the REMAINING
-        // rows, so deleting the highest version frees its key for the next registration to reuse —
-        // same staleness reason the whole-name path below invalidates for. `invalidate(name)` is
-        // name-wide (the cache has no per-version method), which is over-broad but safe: the cache
-        // is a defence against anonymous-route render abuse, not an optimization (diagram-render.ts
-        // header), so wiping a surviving sibling version's entry just costs one extra re-render.
+        // Gate-8 send-back (real defect), UPDATED by issue #87 (2026-09-26): originally this
+        // invalidated because `insertVersion` allocated `v${MAX+1}` over the REMAINING rows, so
+        // deleting the highest version freed its key for the next registration to reuse. Issue #87's
+        // monotonic per-name high-water mark makes that reuse impossible now — a deleted version's
+        // number is never reallocated — so the invalidation below no longer prevents a COLLISION;
+        // it just clears the deleted version's now-permanently-dead cache slot. Left in place as a
+        // straightforward hygiene measure. `invalidate(name)` is name-wide (the cache has no
+        // per-version method), which is over-broad but safe: the cache is a defence against
+        // anonymous-route render abuse, not an optimization (diagram-render.ts header), so wiping a
+        // surviving sibling version's entry just costs one extra re-render.
         if (removed) this.diagramCache?.invalidate(a.name);
         return { runId: '', status: 'completed', name: a.name, version: a.version, removed, releasedTriggers: claimedTriggers, result: { name: a.name, version: a.version, removed, releasedTriggers: claimedTriggers, remaining } };
       }
@@ -504,8 +508,10 @@ export class McpFacade {
       // asset sync bound at all.
       if (removed) this.assetSync?.deleteWorkflowTree(a.name);
       // v25 (REQ-119, DES-166): and the rendered diagrams — same reason as the asset tree above.
-      // The freed name is re-registrable at the SAME version number, so a surviving cache entry
-      // would serve the deleted workflow's picture to the next owner of the name.
+      // Issue #87 (2026-09-26): a re-registration of the freed NAME no longer starts its version
+      // numbering back at 'v1' (the per-name high-water mark in `workflow_version_hwm` survives a
+      // whole-name deregister), so this no longer prevents a version-number collision either — same
+      // hygiene reasoning as the version-scoped branch above: clears the dead name's cache slots.
       if (removed) this.diagramCache?.invalidate(a.name);
       // v24 (integrator, REQ-118): the CATALOG method is deliberately total (`removed:false`, never
       // throws — catalog-v24.test.ts pins that contract, and it stays). The TOOL is not: its own

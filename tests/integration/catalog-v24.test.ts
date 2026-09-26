@@ -219,11 +219,15 @@ describe('WorkflowCatalog v24 — mermaid/triggers required, assets, deregister 
   });
 
   it('re-registering a deregistered name allocates a fresh version number, not a reused one', async () => {
-    await catalog.register({ name: 'wf-v24-realloc', script: 'workflow(() => {});', mermaid: 'flowchart LR' });
-    await catalog.register({ name: 'wf-v24-realloc', script: 'workflow(() => {});', mermaid: 'flowchart LR' });
+    await catalog.register({ name: 'wf-v24-realloc', script: 'workflow(() => {});', mermaid: 'flowchart LR' }); // v1
+    await catalog.register({ name: 'wf-v24-realloc', script: 'workflow(() => {});', mermaid: 'flowchart LR' }); // v2
     await catalog.deregister('wf-v24-realloc');
     const { version } = await catalog.register({ name: 'wf-v24-realloc', script: 'workflow(() => {});', mermaid: 'flowchart LR' });
-    expect(version).toBe('v1'); // fresh row set (workflow row deleted by deregister) — allocator restarts clean
+    // Issue #87: the pre-fix allocator read only SURVIVING rows, so a whole-name deregister (which
+    // deletes the `workflows` row) reset it to 'v1' — reusing a number already used by a DIFFERENT
+    // script. The monotonic per-name high-water mark (`workflow_version_hwm`, never deleted by
+    // deregister) survives the deleted `workflows` row, so this allocates 'v3'.
+    expect(version).toBe('v3');
   });
 
   describe('migration over a v23 fixture db', () => {
