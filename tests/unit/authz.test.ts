@@ -233,3 +233,30 @@ describe('authz — the generated kind x role x ownership x mode matrix (UT-140 
     }
   });
 });
+
+// Issue #90: a NOT_*_OWNER refusal's `reason` reaches the CALLER verbatim (`call-tool.ts:234`'s
+// `refusalEnvelope(verdict.code ?? 'FORBIDDEN_ROLE', verdict.reason ?? 'refused', ...)`, and
+// `run-manager.ts:642`'s `throw codedError(verdict.code, verdict.reason)`), so it must never name
+// the resource's owner — a non-owner caller (bob) must not learn who owns alice's run/workflow/
+// trigger just by being refused. `principal.id` (the CALLER's own, already-known id) staying out is
+// unnecessary rather than dangerous, but this asserts that too, since neither belongs in a message
+// answered to the caller who triggered the refusal.
+describe('issue #90: a NOT_*_OWNER refusal never discloses the owner identity to the refused caller', () => {
+  const OWNER_CASES: Array<{ n: string; p: Principal; spec: Spec; args: Record<string, unknown>; lookup: OwnerLookup; code: string }> = [
+    { n: 'run', p: ALICE, spec: RUN, args: { runId: 'r' }, lookup: runOwner('owner-secret@example.com'), code: 'NOT_RUN_OWNER' },
+    { n: 'workflow', p: ALICE_AUTHOR, spec: WF, args: { name: 'w' }, lookup: wfOwner('owner-secret@example.com'), code: 'NOT_WORKFLOW_OWNER' },
+    { n: 'trigger', p: ALICE_AUTHOR, spec: TRIG, args: { id: 'i' }, lookup: trigOwner('owner-secret@example.com'), code: 'NOT_TRIGGER_OWNER' },
+    { n: 'asset (workflow scope)', p: ALICE_AUTHOR, spec: ASSET, args: { scope: 'workflow', workflow: 'w' }, lookup: wfOwner('owner-secret@example.com'), code: 'NOT_WORKFLOW_OWNER' },
+    { n: 'moded write', p: ALICE_AUTHOR, spec: MODED, args: { mode: 'write', workflow: 'w' }, lookup: wfOwner('owner-secret@example.com'), code: 'NOT_WORKFLOW_OWNER' },
+  ];
+
+  it.each(OWNER_CASES.map((c) => [c.n, c] as const))('%s refusal reason names neither the owner nor the caller', (_n, c) => {
+    const verdict = authorize(c.p, c.spec as never, c.args, c.lookup);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.code).toBe(c.code);
+    expect(verdict.reason).toBeDefined();
+    expect(verdict.reason).not.toContain('owner-secret@example.com');
+    expect(verdict.reason).not.toContain('alice');
+    expect(JSON.stringify(verdict.detail ?? {})).not.toContain('owner-secret@example.com');
+  });
+});

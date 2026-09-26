@@ -217,6 +217,18 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
     expect(typeof row?.lastRunId).toBe('string');
   });
 
+  // Issue #90: the refused CALLER's own envelope (`error.message`, over the real wire) must not
+  // name the owner — distinct from the `owner` field `workflow_list`/`workflow_describe` legitimately
+  // return to any author (REQ-100's own non-owner allowlist, proven by the F-4 test right below).
+  // This is the refusal CHANNEL specifically: bob is told he does not own alice's workflow, not who
+  // does.
+  it('a NOT_WORKFLOW_OWNER refusal over the real wire does not name the owner (issue #90)', async () => {
+    const r = await callTool('workflow_deregister', { name: WF }, bobToken);
+    expect(codeOf(r)).toBe('NOT_WORKFLOW_OWNER');
+    const message = (r['error'] as { message?: string } | undefined)?.message ?? '';
+    expect(message).not.toContain(ALICE);
+  });
+
   // v24 adjudication #6 F-4: `workflow_list` advertises `{name, owner, versions, channels,
   // runnable}` and `owner` was `null` for every caller on every deployment — `catalog.list()` never
   // selected the column, and the facade's `(w as unknown as {owner?}) ?? null` cast kept tsc quiet
