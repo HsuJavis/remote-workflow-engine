@@ -247,8 +247,12 @@ describe('Dashboard read-only HTTP endpoints (DES-018, ARCH-011)', () => {
     const name = 'dash-fallback-dag';
     // arm (ii)'s reachable-producer recipe (DES-198's own words): register+publish TWICE under
     // `release` (pins v2 on run_start), deregister (removes EVERY version), register+publish ONCE
-    // more under a NEW lineage (restarts at v1). The pin (v2) must OUTNUMBER the re-registered
-    // lineage (v1) or arm (i) finds a same-numbered new row and the case proves nothing.
+    // more under a NEW lineage. Issue #87 (2026-09-26): the new lineage now allocates 'v3' (the
+    // per-name high-water mark survives the whole-name deregister; it never restarts at 'v1' again)
+    // — still numerically distinct from the pin ('v2'), which is the only property this case
+    // actually needs: arm (i)'s `resolve(name, {version: 'v2'})` must find NO surviving row named
+    // 'v2', or the case would prove nothing (a same-numbered new row would mask the fallback path
+    // entirely, matching `DAG_WARNING_EXAMPLES.fallback`'s pinned literal, `dashboard-wire.ts`).
     await registerPublishedVia(callTool, name, 'return 1;');
     await registerPublishedVia(callTool, name, 'return 2;');
     const started = await callTool('run_start', { name }) as { runId?: string };

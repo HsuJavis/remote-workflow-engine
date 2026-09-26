@@ -39,7 +39,9 @@ describe('McpFacade refusal arms (UT-163)', () => {
     const res = await facade.workflowDeregister({ name: 'owned' }, BOB) as Record<string, unknown>;
     expect(res['status']).toBe('failed');
     expect(res['code']).toBe('NOT_WORKFLOW_OWNER');
-    expect((res['error'] as { message?: string }).message).toContain('alice@x.com');
+    // Issue #90: the refused (non-owner) caller's envelope must not name the actual owner.
+    expect((res['error'] as { message?: string }).message).not.toContain('alice@x.com');
+    expect((res['error'] as { message?: string }).message).toMatch(/^NOT_WORKFLOW_OWNER:/);
   });
 
   it('workflowDeregister on an unknown name is WORKFLOW_NOT_FOUND, not a removed:false success', async () => {

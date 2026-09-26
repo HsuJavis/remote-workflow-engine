@@ -310,6 +310,33 @@ export class WorkflowCatalog {
       : 0;
     console.log(`catalog.migrate: ${migrated} workflows → workflow_versions, release published`);
 
+    // Issue #87: a monotonic per-name high-water mark, SEPARATE from `workflows`/`workflow_versions`
+    // — neither `deregister()` (which drops the `workflows` row itself) nor `deregisterVersion()`
+    // (which drops one `workflow_versions` row) may ever delete or decrement it. Without this table
+    // the allocator in `insertVersion` below read `MAX(version)` over SURVIVING rows only, so
+    // deleting the highest version (or every version) freed its number back up for the NEXT
+    // registration — a different script reusing a number already used, silently breaking the
+    // documented immutability of a version row (docs/AUTHORING.md). `lastVersion` is bumped inside
+    // the SAME transaction as the version INSERT (below); nothing else writes this table.
+    this._db.exec(`
+      CREATE TABLE IF NOT EXISTS workflow_version_hwm (
+        name TEXT PRIMARY KEY,
+        lastVersion INTEGER NOT NULL
+      );
+    `);
+    // Boot backfill (idempotent, `INSERT OR IGNORE`): every name that already has version rows gets
+    // a hwm row seeded from its current MAX before any deregister can run against this fixed engine
+    // — closes the one gap `insertVersion`'s own `max(hwm, MAX(existing))` fallback cannot close on
+    // its own: a pre-fix DB with v1..v3 whose v3 is deregistered BEFORE ever registering again would
+    // otherwise still see MAX(existing)=2 on the next registration and reuse 'v3'. A name that has
+    // already been wholly deregistered before this fix shipped has no surviving row to seed from —
+    // its counter cannot be recovered; the next registration under that name starts at 'v1' again
+    // (accepted gap, issue #87).
+    this._db.exec(`
+      INSERT OR IGNORE INTO workflow_version_hwm (name, lastVersion)
+      SELECT name, MAX(CAST(SUBSTR(version, 2) AS INTEGER)) FROM workflow_versions GROUP BY name
+    `);
+
     // v23 (DES-130, TASK-114): the graph-analyzer's own diagram store, folded into the same DB/
     // handle as workflow_versions (a derived store must not outlive its source, ADR-021). PK is
     // (name, version) — a v3 read can never return a v4 row, a schema property, not a code
@@ -636,16 +663,21 @@ export class WorkflowCatalog {
     }
     // DES-098/v36 (DES-244): ownership gate (read-only) — `canMutate` is the truthy form so a
     // pre-v15 `owner === ''` row is never wrongly refused. Re-checked (defence in depth) inside
-    // insertVersion's transaction.
+    // insertVersion's transaction. Issue #90: the message never names the actual owner (`existing.
+    // owner`) — it reaches the refused caller verbatim, so disclosing who owns the name to a
+    // stranger who merely guessed it would be a leak, not a courtesy.
     if (existing && !canMutate(existing.owner, actor)) {
-      throw codedError('NOT_WORKFLOW_OWNER', `NOT_WORKFLOW_OWNER: workflow '${name}' is owned by ${existing.owner}`);
+      throw codedError('NOT_WORKFLOW_OWNER', `NOT_WORKFLOW_OWNER: workflow '${name}' is not owned by the caller`);
     }
 
     return { params: paramsResult.value, labels: scan.labels, agents: paramsResult.value.agents };
   }
 
   /** v24 (ARCH-098, DES-148, TASK-143): the ONE write — INSERTs a new (name, version) row (never
-   *  ON CONFLICT DO UPDATE); version = v<max+1> over that name's OWN rows; published to no channel
+   *  ON CONFLICT DO UPDATE); version = v<max(hwm, MAX(live rows))+1> over that name's OWN rows —
+   *  issue #87: the high-water mark in `workflow_version_hwm` (bumped in the same transaction,
+   *  never deleted by deregister) keeps a number from being reused once a row using it is gone;
+   *  published to no channel
    *  (REQ-097 — registration ≠ publication). The ownership read, the version-count read, and the two
    *  writes all live inside ONE `.immediate()` transaction (defence in depth — `validateRegistration`
    *  already checked both, read-only, above). Residual PK/BUSY races map to a typed
@@ -676,7 +708,7 @@ export class WorkflowCatalog {
       const version = this._db.transaction((): string => {
         const existing = this._db.prepare('SELECT owner FROM workflows WHERE name = ?').get(name) as { owner: string | null } | undefined;
         if (existing && !canMutate(existing.owner, actor)) {
-          throw codedError('NOT_WORKFLOW_OWNER', `NOT_WORKFLOW_OWNER: workflow '${name}' is owned by ${existing.owner}`);
+          throw codedError('NOT_WORKFLOW_OWNER', `NOT_WORKFLOW_OWNER: workflow '${name}' is not owned by the caller`);
         }
         const count = (this._db.prepare('SELECT COUNT(*) AS n FROM workflow_versions WHERE name = ?').get(name) as { n: number }).n;
         const maxWorkflowVersions = (this._ceilings as (Ceilings & { maxWorkflowVersions?: number }) | undefined)?.maxWorkflowVersions;
@@ -692,7 +724,19 @@ export class WorkflowCatalog {
         const maxVersion = (this._db
           .prepare('SELECT MAX(CAST(SUBSTR(version, 2) AS INTEGER)) AS m FROM workflow_versions WHERE name = ?')
           .get(name) as { m: number | null }).m;
-        const v = `v${(maxVersion ?? 0) + 1}`;
+        // Issue #87: version numbers must never be reused, even after every surviving row that used
+        // a number is gone (a version deregister, or a whole-workflow deregister). `maxVersion`
+        // above sees ONLY live rows, so it is not enough on its own — the allocator also takes the
+        // per-name high-water mark (`workflow_version_hwm`, never touched by deregister/
+        // deregisterVersion) and never allocates BELOW it. `hwm ?? 0` covers a name with no hwm row
+        // yet (never registered under this fixed engine — the boot backfill above and this fallback
+        // both seed it from `maxVersion` the first time, so a pre-fix, already-migrated, or
+        // hand-seeded DB still allocates correctly).
+        const hwm = (this._db
+          .prepare('SELECT lastVersion FROM workflow_version_hwm WHERE name = ?')
+          .get(name) as { lastVersion: number } | undefined)?.lastVersion;
+        const next = Math.max(hwm ?? 0, maxVersion ?? 0) + 1;
+        const v = `v${next}`;
         const owner = existing?.owner ?? actor.id;
         if (!existing) {
           this._db.prepare('INSERT INTO workflows (name, createdAt, owner) VALUES (?, ?, ?)').run(name, createdAt, owner);
@@ -700,6 +744,9 @@ export class WorkflowCatalog {
         this._db
           .prepare('INSERT INTO workflow_versions (name, version, script, defaults, params, mermaid, triggers, createdAt, diagram_contract, registeredRemote, seed_manifest_ref, seed_namespace) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)')
           .run(name, v, script, paramsJson, mermaid, triggersJson, createdAt, 'v2', registeredRemote, req.seedManifestRef ?? null, req.seedManifestRef !== undefined ? (req.seedNamespace ?? null) : null);
+        this._db
+          .prepare('INSERT INTO workflow_version_hwm (name, lastVersion) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET lastVersion = excluded.lastVersion')
+          .run(name, next);
         return v;
       }).immediate();
       // v36 (DES-243/244, TASK-242, REQ-213/212): one audit line per successful registration,
@@ -743,7 +790,7 @@ export class WorkflowCatalog {
       | undefined;
 
     if (existing && !canMutate(existing.owner, actor)) {
-      throw codedError('NOT_WORKFLOW_OWNER', `NOT_WORKFLOW_OWNER: workflow '${name}' is owned by ${existing.owner}`);
+      throw codedError('NOT_WORKFLOW_OWNER', `NOT_WORKFLOW_OWNER: workflow '${name}' is not owned by the caller`);
     }
 
     // v24 (ARCH-098, DES-148, TASK-143): `claimedTriggers` = the UNION of `triggers[]` over EVERY
@@ -786,7 +833,7 @@ export class WorkflowCatalog {
     // reachable when the name is registered; an unregistered name falls through to outcome 2 below,
     // identically for every caller.
     if (row && !canMutate(row.owner, actor)) {
-      throw codedError('NOT_WORKFLOW_OWNER', `NOT_WORKFLOW_OWNER: workflow '${name}' is owned by ${row.owner}`);
+      throw codedError('NOT_WORKFLOW_OWNER', `NOT_WORKFLOW_OWNER: workflow '${name}' is not owned by the caller`);
     }
     // 2: an absent NAME mirrors deregister() — a delete of nothing is not an error.
     if (!row) return { removed: false, remaining: [], claimedTriggers: [] };
@@ -932,7 +979,7 @@ export class WorkflowCatalog {
     const actor: Actor = isActor(principalOrActor) ? principalOrActor : actorFromPrincipal(principalOrActor);
     const row = this._requireName(name);
     if (!canMutate(row.owner, actor)) {
-      throw codedError('NOT_WORKFLOW_OWNER', `NOT_WORKFLOW_OWNER: workflow '${name}' is owned by ${row.owner}`);
+      throw codedError('NOT_WORKFLOW_OWNER', `NOT_WORKFLOW_OWNER: workflow '${name}' is not owned by the caller`);
     }
     const known = new Set(this._listVersions(name));
     if (!known.has(version)) {

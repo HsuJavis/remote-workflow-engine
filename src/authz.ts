@@ -167,5 +167,10 @@ export function authorize(
     return adminCrossRead ? { ok: true, crossPrincipalRead: true } : { ok: true };
   }
 
-  return refuse(ownerCode, `owned by ${owner}, not ${principal.id}`, mode);
+  // Issue #90: this reason string reaches the REFUSED CALLER verbatim — `authorize()` is called
+  // from exactly one place, call-tool.ts:232, whose `refusalEnvelope(verdict.code ?? ..., verdict.
+  // reason ?? ..., ...)` puts it straight on the wire — so it must never name the owner. The
+  // caller's own id is not disclosive (they already know who they are), but there is no reason to
+  // echo it either, so the message names neither.
+  return refuse(ownerCode, 'this resource is not owned by the caller', mode);
 }
