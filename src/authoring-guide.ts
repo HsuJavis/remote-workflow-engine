@@ -26,19 +26,14 @@ import { SANDBOX_GLOBALS, DETERMINISM_GUARDED } from './sandbox/guards.js';
 // v26 (DES-187, ARCH-121, TASK-193): the three seed shapes and workspace_push's own description,
 // read from the SAME schema `tools/list` serves — a cold client's only documentation (ADR-032).
 import { TOOL_SPECS } from './tool-specs.js';
-// v26 (DES-187, ARCH-121, TASK-193, ADR-041): the provider capability table, read from the same
-// data resolveAlias/validateAliases check against.
+// v26 (DES-187, ARCH-121, TASK-193, ADR-041) — 2026-09-26 (alias mechanism removed): the provider
+// capability table, read from the same data `parseModelRef`/`checkModelRef` check against.
 import { PROVIDER_CAPS, PROVIDERS } from './providers.js';
 
 export interface GuideCeilings {
   maxTimeoutMs: number;
   maxAppendPromptBytes: number;
   maxEffort: Effort;
-  /** v24 Gate 7.5 (D-12, REQ-117): the model-alias names THIS deployment accepts, from the same
-   *  resolved alias table the registration validator checks `model.default` against (server.ts's
-   *  `aliasNames`). An empty array means the deployment configured none, in which case the
-   *  validator accepts any string — the guide says so rather than printing an empty list. */
-  aliases: readonly string[];
   /** v25 (DES-168, REQ-120, issue #61): this deployment's per-RUN in-flight `agent()` cap — how wide
    *  a `parallel()` actually runs at once (`runConcurrency`, default DEFAULT_RUN_CONCURRENCY). It
    *  belongs here for the same reason the other ceilings do: an author sizing a fan-out has no other
@@ -57,117 +52,6 @@ export interface GuideCeilings {
    *  `ServerConfig` field (ARCH-177's rule against opening one for a value nobody reads stands,
    *  uncorrected: this value already has a reader). */
   confinementPosture?: 'confined' | 'unconfined';
-  /** issue #89 item 6: which model alias the "Declaring the parameter contract" prose sample and
-   *  every `GUIDE_EXAMPLES` entry declares as `model.default`, PLUS a one-line note explaining why —
-   *  computed by `chooseExampleModelAlias()` below, over this deployment's OWN alias probe data
-   *  (server.ts's `aliasMap`/`probeLookup`, threaded through `McpFacade.workflowAuthoringGuide()`).
-   *  `undefined` (the unit-construction / `scripts/gen-authoring-md.ts` default, which has no probe
-   *  store to read) renders every example's literal `'default'`, unchanged from before this field
-   *  existed — this is a pure interpolation input, never computed inside this file. */
-  exampleModelAlias?: { alias: string; note?: string };
-}
-
-/** issue #89 item 6: one configured alias's probe status, as far as `chooseExampleModelAlias` needs
- *  to know it — never the full `ProbeResult`/`AliasMap` shape, so this file does not need to import
- *  the gateway/model-probe modules just to describe a decision over their data. `model` is used only
- *  to NAME the resolved model in the visible note (`"'<provider>/<model>'"`); absent is rendered as
- *  "an unlisted model". `toolUseVerified: null` means "never probed" — NOT a defect, treated the
- *  same as `true` (no evidence the model can't use tools is not evidence that it can't).
- *  `provider`/`costLevel` (verification report finding 1, issue #89 item 6): the SAME facts
- *  `models_list`/`ModelBook` already compute for this alias's target (provider,model) — carried
- *  here so the ranking below can prefer the engine-native provider and a cheaper tier without this
- *  file importing the catalog/gateway modules that price them. `costLevel` is the model book's 0–10
- *  enrichment (`computeCostLevel`/`costLevelFromPrice`); absent/`null` means "unpriced or not yet
- *  fetched", never "free" — it sorts LAST, exactly like an unpriced `ModelEntry` never claims to be
- *  the cheapest option. */
-export interface AliasProbeInfo {
-  alias: string;
-  model?: string;
-  toolUseVerified: boolean | null;
-  provider?: string;
-  costLevel?: number | null;
-}
-
-/** issue #89 item 6: pure decision — which model alias every guide example/prose sample declares.
- *  DECISION (owner): never hard-code a second alias literal. If `'default'` is absent, unprobed, or
- *  probed tool-CAPABLE, keep it (no note — the common case stays silent). If `'default'` is probed
- *  tool-INCAPABLE, switch to the BEST OTHER alias probed tool-capable, ranked by `cmpAliasPreference`
- *  below: (a) provider `'anthropic'` first — the engine-native harness, no extra gateway hop; (b)
- *  then lowest `costLevel` (0–10, `null`/absent sorts LAST — an unknown price is not a reason to
- *  prefer OR reject an alias, so it never wins a tie against a KNOWN price); (c) then a name that
- *  does not look like a dated model id (a run of 6+ digits, e.g. `claude-sonnet-5-20260101`) — a
- *  human-chosen alias name reads better in an example than a machine-generated one; (d) then name
- *  order, the final deterministic tie-break when every field above ties (e.g. every `provider`/
- *  `costLevel` absent, the shape every pre-existing caller/test still supplies). This replaces the
- *  earlier alphabetical-first rule: verification report finding 1 showed production's OWN alias
- *  table making the alphabetically-first verified alias (`claude-fable-5`, its MOST expensive tier)
- *  the guide default the moment the weekly prober marked Anthropic models tool-capable — cost-blind
- *  by construction. If no OTHER alias is verified either, keep `'default'` anyway (there is nothing
- *  better to switch to) but still emit the warning note — a cold author needs to know the example
- *  they are about to copy is not verified, even with no fix on offer. */
-export function chooseExampleModelAlias(aliasProbes: readonly AliasProbeInfo[]): { alias: string; note?: string } {
-  const looksDated = (name: string): boolean => /\d{6,}/.test(name);
-  const cmpAliasPreference = (a: AliasProbeInfo, b: AliasProbeInfo): number => {
-    const anthropicRank = (x: AliasProbeInfo): number => (x.provider === 'anthropic' ? 0 : 1);
-    const rankDiff = anthropicRank(a) - anthropicRank(b);
-    if (rankDiff !== 0) return rankDiff;
-    // `?? Infinity` treats absent (undefined) and explicitly-unknown (null) the SAME way — both
-    // mean "no known price", so neither ever beats a KNOWN costLevel on this tier. Compared by
-    // `!==`/subtraction rather than a bare subtraction of two `Infinity`s (which is `NaN`, and a
-    // `NaN` comparator result leaves `Array.prototype.sort` free to skip every later tie-break).
-    const aCost = a.costLevel ?? Infinity;
-    const bCost = b.costLevel ?? Infinity;
-    if (aCost !== bCost) return aCost - bCost;
-    const datedDiff = (looksDated(a.alias) ? 1 : 0) - (looksDated(b.alias) ? 1 : 0);
-    if (datedDiff !== 0) return datedDiff;
-    return a.alias.localeCompare(b.alias);
-  };
-
-  const dflt = aliasProbes.find((a) => a.alias === 'default');
-  if (dflt === undefined || dflt.toolUseVerified !== false) return { alias: 'default' };
-
-  const dfltModel = dflt.model ?? 'an unlisted model';
-  const verifiedOthers = aliasProbes.filter((a) => a.alias !== 'default' && a.toolUseVerified === true).sort(cmpAliasPreference);
-  const preferred = verifiedOthers[0];
-
-  if (preferred === undefined) {
-    return {
-      alias: 'default',
-      // "in this guide", not "below" — the note is emitted in TWO places (right after the first
-      // worked example in "Declaring the parameter contract", and again before "Registered
-      // examples"), so a fixed relative direction would be wrong at one of them.
-      note: `Every example in this guide declares \`model: { default: 'default' }\` — on THIS ` +
-        `deployment 'default' resolves to ${dfltModel}, whose last probe reports ` +
-        'toolUseVerified:false, and no other configured alias is verified tool-capable either. ' +
-        'Copying an example whose agent holds tools may answer with prose instead of a real tool call.',
-    };
-  }
-  return {
-    alias: preferred.alias,
-    note: `Every example in this guide declares \`model: { default: '${preferred.alias}' }\`, not ` +
-      `\`'default'\` — on THIS deployment 'default' resolves to ${dfltModel}, whose last probe ` +
-      `reports toolUseVerified:false; \`'${preferred.alias}'\` is the preferred configured alias ` +
-      'among those probed tool-capable (engine-native provider and lower cost first), chosen so ' +
-      'the examples in this guide actually work as written, and stay affordable to run.',
-  };
-}
-
-/** issue #89 item 6: substitutes the RENDERED model alias into a COPY of `examples` — never mutates
- *  `GUIDE_EXAMPLES` itself, which stays the fixed corpus `tests/integration/guide-examples-register
- *  .test.ts` (IT-118) registers against a `DEFAULT_ALIASES` test server, and every other test that
- *  imports the constant directly. A no-op when `alias === 'default'` (the overwhelmingly common
- *  case, and what every pre-existing caller of `buildAuthoringGuide` still gets). The two literal
- *  patterns substituted are exactly what `agentSpec`/`stadiumNode` above emit for the 'default'
- *  alias — `default: 'default'` in a script, `default · ` right after `<br/>` in a diagram label —
- *  neither pattern appears anywhere else in a generated example (the 'default'-tools case renders as
- *  `tools: default`, with no trailing middot, so it is never touched by the second replacement). */
-function withExampleModelAlias(examples: readonly GuideExample[], alias: string): GuideExample[] {
-  if (alias === 'default') return [...examples];
-  return examples.map((ex) => ({
-    ...ex,
-    script: ex.script.replaceAll("default: 'default'", `default: '${alias}'`),
-    mermaid: ex.mermaid.replaceAll('default · ', `${alias} · `),
-  }));
 }
 
 export interface GuideExample {
@@ -177,24 +61,32 @@ export interface GuideExample {
   expectRegister: 'ok';
 }
 
+// 2026-09-26 (alias mechanism removed, owner decision 1): every model is now a full
+// `<provider>/<model-id>` ref — no alias table, so every example declares the SAME static
+// anthropic ref (a static-table id — `checkModelRef` accepts it with no catalog lookup and no
+// warning, so this constant never depends on what any deployment's live catalog holds). Chosen
+// over an ollama/openrouter ref specifically because a GENERATED docs page
+// (`scripts/gen-authoring-md.ts`) and a `workflow_authoring_guide` response must both render the
+// SAME text regardless of which providers a given deployment has actually reachable.
+export const EXAMPLE_MODEL = 'anthropic/claude-haiku-4-5-20251001';
+
 // One agent contract block, reused verbatim by every example below (DES-144: model/effort/
-// timeoutMs are all REQUIRED with a `.default`). `model` is always the 'default' alias — no
-// example ever hard-codes a vendor model name, so the guide never goes stale when the operator's
-// alias table changes (tests/unit/authoring-guide.test.ts: "no model alias literal").
+// timeoutMs are all REQUIRED with a `.default`).
 function agentSpec(effort: 'low' | 'medium' | 'high', timeoutMs: number): string {
-  return `{ model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: '${effort}' }, timeoutMs: { type: 'number', default: ${timeoutMs} } }`;
+  return `{ model: { type: 'string', default: '${EXAMPLE_MODEL}' }, effort: { type: 'enum', enum: ['low','medium','high'], default: '${effort}' }, timeoutMs: { type: 'number', default: ${timeoutMs} } }`;
 }
 
 /** v26 (DES-185, ARCH-119, TASK-190): a v2-conformant stadium (agent) node —
  *  `id(["label<br/>model · effort · timeoutMs<br/>tools: …"])`. The middle segment must literally
  *  equal the agent's resolved `model.default`/`effort.default`/`timeoutMs.default` (checkMermaid's
- *  existing v1 value-triple check, step 7). `tools` is the sorted, comma-space `allowedTools`
- *  array, `'none'` for `[]`, or `'default'` when the call carries no `allowedTools` key — ARCH-119
- *  rule (12) skips comparing the 'default' case entirely, so the exact text there is never
- *  checked, but writing it out keeps every example visually consistent. */
+ *  existing v1 value-triple check, step 7) — `EXAMPLE_MODEL` itself, since 2026-09-26 every example
+ *  declares the same full ref. `tools` is the sorted, comma-space `allowedTools` array, `'none'`
+ *  for `[]`, or `'default'` when the call carries no `allowedTools` key — ARCH-119 rule (12) skips
+ *  comparing the 'default' case entirely, so the exact text there is never checked, but writing it
+ *  out keeps every example visually consistent. */
 function stadiumNode(id: string, label: string, effort: string, timeoutMs: number, tools: 'default' | 'none' | string[]): string {
   const toolsText = tools === 'default' ? 'tools: default' : tools === 'none' ? 'tools: none' : `tools: ${[...tools].sort().join(', ')}`;
-  return `${id}(["${label}<br/>default · ${effort} · ${timeoutMs}<br/>${toolsText}"])`;
+  return `${id}(["${label}<br/>${EXAMPLE_MODEL} · ${effort} · ${timeoutMs}<br/>${toolsText}"])`;
 }
 
 // v26 (DES-185, ARCH-119/107, ADR-039, TASK-190): the thirteen named patterns, each a real script +
@@ -425,7 +317,7 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
     script:
       `export const meta = {\n` +
       `  description: 'An agent declared with a skill and an mcp server and NO file tools — the declared skill is still reachable, through the Skill tool',\n` +
-      `  params: { agents: { coder: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'medium' }, timeoutMs: { type: 'number', default: 120000 }, skills: ['repo-search'], mcp: ['project-tracker'] } } },\n` +
+      `  params: { agents: { coder: { model: { type: 'string', default: '${EXAMPLE_MODEL}' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'medium' }, timeoutMs: { type: 'number', default: 120000 }, skills: ['repo-search'], mcp: ['project-tracker'] } } },\n` +
       `};\n` +
       `phase('code');\n` +
       `return await agent('coder', { prompt: 'Use the repo-search skill to say where the retry policy is defined', allowedTools: [] });`,
@@ -560,9 +452,6 @@ function authoringErrorRows(): string {
     .join('\n');
 }
 
-// issue #89 item 6: takes the examples to render as a parameter (the RENDERED, alias-substituted
-// copy from `withExampleModelAlias`) rather than reading `GUIDE_EXAMPLES` off module scope, so the
-// substitution above is the only place that decides which alias appears.
 function exampleRows(examples: readonly GuideExample[]): string {
   return examples.map(
     (ex) =>
@@ -570,21 +459,26 @@ function exampleRows(examples: readonly GuideExample[]): string {
   ).join('\n\n');
 }
 
-/** v24 Gate 7.5 (D-12): the alias sentence, over the deployment's own resolved alias names. */
-function aliasSentence(aliases: readonly string[]): string {
-  if (aliases.length === 0) {
-    return 'This deployment configures no model-alias table, so any string is accepted as a ' +
-      '`model.default` and resolution happens at dispatch time.';
-  }
-  return 'A declared `model.default` (and every entry of a declared `model.enum`) must be one of ' +
-    `this deployment's model ALIAS names — ${aliases.map((a) => `\`${a}\``).join(', ')} — not a ` +
-    'provider model id. `models_list` shows the catalog MODELS an alias may resolve to; it is not ' +
-    'the alias table, and passing an id from it is refused `PARAM_CONTRACT_INVALID: default not a ' +
-    'known alias`. Each catalog row does carry an `aliases` list — every configured name that ' +
-    'resolves to that one model — so a row is where you LOOK UP a legal name, and the row itself ' +
-    'is never the answer. An `agent()` call naming an unknown alias is refused `UNKNOWN_ALIAS`. (The one ' +
-    'exception is an `openrouter/<model-id>` passthrough, which the validator accepts by prefix ' +
-    'and needs no entry in the table above.)';
+/** 2026-09-26 (alias mechanism removed, owner decisions 1/2/6): the model-ref rule — static text,
+ *  the same on every deployment (no resolved table to interpolate any more). */
+function modelRefSentence(): string {
+  return 'A declared `model.default` (and every entry of a declared `model.enum`) MUST be a full ' +
+    '`<provider>/<model-id>` ref — providers are exactly `anthropic`, `openrouter`, `ollama` — split ' +
+    'at the FIRST `/` (an openrouter id can itself carry further `/`s, e.g. ' +
+    '`openrouter/openai/gpt-4.1`; an ollama id can carry `:`/`.`, e.g. `ollama/qwen2.5:7b`). There ' +
+    'are no aliases, no bare names, and no `\'default\'`/`\'local\'`-style shortcut — a bare name, an ' +
+    'unrecognized provider prefix, or an empty model id is refused `UNKNOWN_MODEL`, naming the ' +
+    'expected form and the three providers. `models_list` shows the catalog this deployment can ' +
+    "reach: each row's `ref` field IS the exact string to paste — copy it verbatim, never hand-type " +
+    'a variant. An openrouter/ollama ref is checked against that provider\'s live catalog listing ' +
+    'when one is available (refused `UNKNOWN_MODEL` if genuinely absent from it; accepted with a ' +
+    'non-fatal `MODEL_CATALOG_UNVERIFIED` warning if the listing could not be checked); an anthropic ' +
+    "id not yet in this deployment's static price table is likewise accepted with that same warning " +
+    '— a new Anthropic model is never blocked. The model is bound once at `workflow_register` time ' +
+    '(the `.default` above) and may be replaced with a different full ref per run via ' +
+    '`run_start`\'s `overrides.agents.<label>.model` — there is no other override surface (a ' +
+    'scheduled/webhook-fired run, and a nested `workflow()` call, always use the target version\'s ' +
+    'own bound `.default`).';
 }
 
 /** v24 Gate 7.5 (D-4): the node-shape table, rendered from `checkMermaid`'s own closed grammar. */
@@ -642,11 +536,6 @@ function edgeRows(): string {
  *  codes, the ten examples) is read from its own module, never re-typed here. */
 export function buildAuthoringGuide(ceilings: GuideCeilings): string {
   const parts: string[] = [];
-  // issue #89 item 6: the alias every example/prose sample declares — 'default' with no note unless
-  // the caller (McpFacade.workflowAuthoringGuide) computed a different one via
-  // chooseExampleModelAlias(). Read once here; both use sites below share it.
-  const exampleAlias = ceilings.exampleModelAlias?.alias ?? 'default';
-  const exampleAliasNote = ceilings.exampleModelAlias?.note;
 
   parts.push('# Authoring a workflow script');
   parts.push(
@@ -721,16 +610,12 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "  description: 'Summarize the given topic in one paragraph',\n" +
         '  params: {\n' +
         '    agents: {\n' +
-        `      writer: { model: { type: 'string', default: '${exampleAlias}' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },\n` +
+        `      writer: { model: { type: 'string', default: '${EXAMPLE_MODEL}' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },\n` +
         '    },\n' +
         '  },\n' +
         '};\n' +
         '```\n\n' +
-        // issue #89 item 6: this is the FIRST worked example a cold author copies — if
-        // chooseExampleModelAlias() switched the alias away from 'default', the note explaining why
-        // has to land here too, not only far below at "Registered examples" (this is otherwise the
-        // one spot where the substitution would look unexplained).
-        (exampleAliasNote ? `${exampleAliasNote}\n\n` : '') +
+        `${modelRefSentence()}\n\n` +
         // issues #81/#83: nothing said how a declared skill is activated, and the only example
         // paired one with file tools — authors could not tell a skill never reached the model.
         '**Skills.** `skills: [name, ...]` names skills pushed with `workspace_push` (`kind: \'skill\'`). ' +
@@ -879,29 +764,24 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'silently clamped. A run-time **override** (`run_start`\'s `overrides.agents.<label>`) that ' +
         'names a value outside the effective (author ∩ ceiling) bound is a DIFFERENT refusal, ' +
         '`PARAM_OUT_OF_RANGE`, at admission.\n\n' +
-        // v24 Gate 7.5 (D-12, REQ-117): the alias names, from the SAME resolved table the
-        // registration validator checks against. The cold subject's first registration was refused
-        // because it read a model id out of `models_list` (which lists catalog MODELS, not
-        // aliases) — nothing on the surface named what belongs in `model.default`.
-        aliasSentence(ceilings.aliases),
+        modelRefSentence(),
     ),
   );
 
   parts.push(
     section(
       'Providers and the model catalog',
-      'Every model alias resolves to exactly one of three providers, each with its own declared ' +
-        'capability row — read from the SAME table `resolveAlias`/`validateAliases` check against, ' +
-        'labelled **declared, not probed**: nothing here is learned by dispatching a call.\n\n' +
+      'A full model ref\'s provider prefix names exactly one of three providers, each with its own ' +
+        'declared capability row — read from the SAME table `parseModelRef`/`checkModelRef` check ' +
+        'against, labelled **declared, not probed**: nothing here is learned by dispatching a call.\n\n' +
         providerCapsRows() +
         '\n\nThere is no `openai` row: OpenRouter is the many-model front door for everything that is ' +
-        "not Anthropic-direct or a local Ollama model, so swapping a model — or a transport — is a " +
-        'config change to an alias, not a new provider.\n\n' +
-        "`models_list` shows the CATALOG this deployment's aliases can resolve into — it is not the " +
-        'alias table (see "Engine ceilings" above). It serves ONE row per model, and that row lists ' +
-        'in `aliases` every configured name resolving to it (`ref` is the first — the one to pass to ' +
-        '`agent({model})`), so a model named twice is one priced row, never a duplicate that reports ' +
-        '`price:"unknown"`. Its `toolUseDeclared`/`effortDeclared` flags and ' +
+        'not Anthropic-direct or a local Ollama model, so swapping a model — or a transport — is a ' +
+        'different `<provider>/<model-id>` ref, not a new provider.\n\n' +
+        "`models_list` shows the CATALOG this deployment can reach — every row's `ref` field is the " +
+        'exact `<provider>/<model-id>` string to paste into `model.default`/a run_start override ' +
+        '(see "Engine ceilings" above for the full-ref rule). One row per model — there is no alias ' +
+        'overlay, so a model is never listed twice under two names. Its `toolUseDeclared`/`effortDeclared` flags and ' +
         '`costLevel` rating are DECLARED capability, never probed by dispatching a call, and carry ' +
         "their own provenance: `declaredSource` ('upstream'|'static'|'unknown') says where the flag " +
         'came from, and `catalogFetchedAt` is per-row catalog provenance (a timestamp, or `null`). ' +
@@ -1184,8 +1064,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
   parts.push(
     section(
       'Registered examples',
-      (exampleAliasNote ? `${exampleAliasNote}\n\n` : '') +
-        exampleRows(withExampleModelAlias(GUIDE_EXAMPLES, exampleAlias)),
+      exampleRows(GUIDE_EXAMPLES),
     ),
   );
 

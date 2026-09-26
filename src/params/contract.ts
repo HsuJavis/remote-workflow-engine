@@ -9,8 +9,12 @@
 // are refused outright (`DEFAULTS_RETIRED`) rather than silently accepted. A no-agent
 // (`workflow()`-only) script still parses to an empty contract.
 //
-// Pure: no I/O, no clock, no VM, no randomness.
+// Pure: no I/O, no clock, no VM, no randomness. `catalog` (a `ModelCatalogSnapshot`) is DATA, not a
+// live fetch — the caller (an async function, e.g. `WorkflowCatalog.validateRegistration`) resolves
+// the live/last-good/static snapshot itself and hands the resolved value in.
 import type { ErrorCode } from '../errors.js';
+import { checkModelRef, EMPTY_MODEL_CATALOG as EMPTY_CATALOG, type ModelCatalogSnapshot } from '../providers.js';
+export type { ModelCatalogSnapshot } from '../providers.js';
 
 // v25 (issue #55, adjudication #9 I-1.2): the second member was spelled `tools` while the pipeline
 // that curates an agent's tool surface reads `allowedTools` at every rung (per-call opts >
@@ -100,7 +104,7 @@ export type Err = {
     | 'PARAM_OUT_OF_RANGE'
     | 'PARAM_UNKNOWN'
     | 'PARAM_CONTRACT_INVALID'
-    | 'UNKNOWN_ALIAS'
+    | 'UNKNOWN_MODEL'
     | 'AGENT_UNDECLARED'
     | 'AGENT_DECLARED_NOT_IN_SCRIPT'
     | 'DEFAULTS_RETIRED'
@@ -124,11 +128,6 @@ const MAX_ENUM_MEMBERS = 32;
  *  any string value over this many bytes is truncated with `suppliedTruncated:true`. */
 const MAX_SUPPLIED_BYTES = 64;
 
-/** REQ-038 precedent (`submission-validator.ts`): an `openrouter/<id>`-shaped model string is a
- *  valid passthrough model though never a pre-listed alias — LiteLLM routes it natively via its
- *  `openrouter/*` wildcard, so it needs no entry in `aliasNames`. */
-const OPENROUTER_PASSTHROUGH = /^openrouter\/.+/;
-
 /** v21 Gate 8 RE-REVIEW #5 (F2, MED — BLOCKING): mirrors resolve.ts's `USER_INSTRUCTIONS_CLOSE`
  *  frame marker (ADR-007's structural control) without importing resolve.ts — this module is pure
  *  and resolve.ts already imports types from here, so importing the value back would create a
@@ -143,13 +142,34 @@ const OPENROUTER_PASSTHROUGH = /^openrouter\/.+/;
  *  of the field it guards moved from a flat `appendPrompt` to `agents.<label>.appendPrompt`. */
 export const FRAME_CLOSE_FORGERY = /<\s*\/\s*user-instructions/i;
 
-/** D-AUTH-5-B precedent (`harness-defaults.ts:70`): the alias check only applies when the server
- *  has a configured, non-empty alias table — an unconfigured/default-alias server must not reject
- *  every model string. An `openrouter/<id>` passthrough is always accepted regardless. */
-export function isKnownAlias(alias: string, aliasNames: Set<string>): boolean {
-  if (aliasNames.size === 0) return true;
-  if (OPENROUTER_PASSTHROUGH.test(alias)) return true;
-  return aliasNames.has(alias);
+/** 2026-09-26 (alias mechanism removed, owner decisions 1/6): one non-fatal model-ref warning —
+ *  produced when `checkModelRef` accepts a ref it could not fully verify (an unknown-but-plausible
+ *  anthropic id, or an openrouter/ollama id the live catalog listing was unavailable to check).
+ *  `label` is the agent label the ref was declared/overridden on (or the literal `'<enum>'` marker
+ *  for a `model.enum` entry, which has no single label of its own). */
+export interface ModelRefWarning {
+  code: 'MODEL_CATALOG_UNVERIFIED';
+  label: string;
+  model: string;
+  message: string;
+}
+
+/** The one UNKNOWN_MODEL-shaped `Err` both the registration-time (`validateOneAgentSpec`) and
+ *  admission-time (`validateOneAgentOverride`) doors throw from — never re-typed at either call
+ *  site. `warn`, when supplied, collects `checkModelRef`'s warning instead of throwing (the ref is
+ *  syntactically/existentially fine, just unverified) — the caller decides whether the label is
+ *  `'<enum>'` or a declared agent label. */
+function checkModelRefOrErr(
+  param: string,
+  label: string,
+  ref: string,
+  catalog: ModelCatalogSnapshot,
+  warn: (w: ModelRefWarning) => void,
+): Err | null {
+  const verdict = checkModelRef(ref, catalog);
+  if (!verdict.ok) return invalid(param, verdict.message, 'UNKNOWN_MODEL');
+  if (verdict.warning) warn({ code: 'MODEL_CATALOG_UNVERIFIED', label, model: ref, message: verdict.warning });
+  return null;
 }
 
 // v21 Gate 8 RE-REVIEW #4 (A2): O(n) buffer slice, not a per-char re-measuring loop — the previous
@@ -208,8 +228,8 @@ export function effectiveAgentBounds(spec: AgentParamSpec, ceilings: Ceilings): 
   };
 }
 
-function invalid(param: string, reason: string): Err {
-  return { ok: false, code: 'PARAM_CONTRACT_INVALID', message: reason, detail: { param, reason } };
+function invalid(param: string, reason: string, code: Err['code'] = 'PARAM_CONTRACT_INVALID'): Err {
+  return { ok: false, code, message: reason, detail: { param, reason } };
 }
 
 export function retiredDefaults(param: string): Err {
@@ -285,7 +305,12 @@ function validateNameArray(param: string, value: unknown): Err | null {
   return null;
 }
 
-function validateOneAgentSpec(label: string, raw: unknown, aliasNames: Set<string>): Err | null {
+function validateOneAgentSpec(
+  label: string,
+  raw: unknown,
+  catalog: ModelCatalogSnapshot,
+  warn: (w: ModelRefWarning) => void,
+): Err | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
     return invalid(`agents.${label}`, 'must be an object');
   }
@@ -294,14 +319,17 @@ function validateOneAgentSpec(label: string, raw: unknown, aliasNames: Set<strin
   const modelErr = validateRequiredKeySpec(`agents.${label}.model`, spec.model);
   if (modelErr) return modelErr;
   const model = spec.model as ParamSpec;
-  if (typeof model.default === 'string' && !isKnownAlias(model.default, aliasNames)) {
-    return invalid(`agents.${label}.model`, `default not a known alias: ${String(model.default)}`);
+  // Owner decision 2: `.default` stays REQUIRED (validateRequiredKeySpec above) and must now be a
+  // full <provider>/<model-id> ref — no bare name, no 'default', no alias table.
+  if (typeof model.default === 'string') {
+    const err = checkModelRefOrErr(`agents.${label}.model`, label, model.default, catalog, warn);
+    if (err) return err;
   }
   if (model.enum !== undefined) {
     for (const entry of model.enum) {
-      if (!isKnownAlias(entry as string, aliasNames)) {
-        return invalid(`agents.${label}.model`, `enum entry not a known alias: ${String(entry)}`);
-      }
+      if (typeof entry !== 'string') continue; // validateSpecShape above already refused a non-string enum member
+      const err = checkModelRefOrErr(`agents.${label}.model`, `${label}.enum`, entry, catalog, warn);
+      if (err) return err;
     }
   }
 
@@ -372,8 +400,8 @@ function validateOneAgentSpec(label: string, raw: unknown, aliasNames: Set<strin
 export function parseParamContract(
   metaParams: unknown,
   scriptLabels: string[],
-  aliasNames: Set<string>,
-): { ok: true; value: ParamContract } | Err {
+  catalog: ModelCatalogSnapshot = EMPTY_CATALOG,
+): { ok: true; value: ParamContract; warnings?: ModelRefWarning[] } | Err {
   if (metaParams === undefined) {
     if (scriptLabels.length === 0) return { ok: true, value: { agents: {}, args: {} } };
     return {
@@ -424,8 +452,9 @@ export function parseParamContract(
   }
 
   const agents: Record<string, AgentParamSpec> = {};
+  const warnings: ModelRefWarning[] = [];
   for (const [label, spec] of Object.entries(agentsIn)) {
-    const specErr = validateOneAgentSpec(label, spec, aliasNames);
+    const specErr = validateOneAgentSpec(label, spec, catalog, (w) => warnings.push(w));
     if (specErr) return specErr;
     agents[label] = spec as AgentParamSpec;
   }
@@ -448,7 +477,7 @@ export function parseParamContract(
     args[key] = spec;
   }
 
-  return { ok: true, value: { agents, args } };
+  return { ok: true, value: { agents, args }, ...(warnings.length > 0 ? { warnings } : {}) };
 }
 
 /** v35 (DES-235, ARCH-145, TASK-231, REQ-206): fills declared-but-absent `args` keys from their
@@ -527,7 +556,8 @@ function validateOneAgentOverride(
   label: string,
   eff: AgentParamSpec,
   raw: Record<string, unknown>,
-  aliasNames: Set<string>,
+  catalog: ModelCatalogSnapshot,
+  warn: (w: ModelRefWarning) => void,
 ): { ok: true; value: Record<string, unknown> } | Err {
   const value: Record<string, unknown> = {};
   for (const [key, val] of Object.entries(raw)) {
@@ -608,18 +638,22 @@ function validateOneAgentOverride(
       return { ...result, detail: safe };
     }
 
-    // D-AUTH-5-B / UNKNOWN_ALIAS precedent, applied at submission for the case the author left
-    // `model` unconstrained (no enum): a spec with its own `enum` already screens this via
-    // checkValueAgainstSpec above. The code is the PRE-EXISTING `UNKNOWN_ALIAS`, NOT
-    // `PARAM_OUT_OF_RANGE` — an unresolvable alias is a different rejection from "outside the
-    // author's declared bounds".
-    if (key === 'model' && typeof val === 'string' && spec.enum === undefined && !isKnownAlias(val, aliasNames)) {
-      return {
-        ok: false,
-        code: 'UNKNOWN_ALIAS',
-        message: `model is not a known alias: ${val}`,
-        detail: { param: 'model', agent: label, ...truncatedSupplied(val), allowed: { enum: [...aliasNames] } },
-      };
+    // Owner decisions 1/2: a run_start override's `model` must also be a full <provider>/<model-id>
+    // ref — applied for the case the author left `model` unconstrained (no enum); a spec with its
+    // own `enum` already screened its members at REGISTRATION time (validateOneAgentSpec above).
+    // UNKNOWN_MODEL (not PARAM_OUT_OF_RANGE) — an unresolvable ref is a different rejection from
+    // "outside the author's declared bounds".
+    if (key === 'model' && typeof val === 'string' && spec.enum === undefined) {
+      const verdict = checkModelRef(val, catalog);
+      if (!verdict.ok) {
+        return {
+          ok: false,
+          code: 'UNKNOWN_MODEL',
+          message: verdict.message,
+          detail: { param: 'model', agent: label, ...truncatedSupplied(val) },
+        };
+      }
+      if (verdict.warning) warn({ code: 'MODEL_CATALOG_UNVERIFIED', label, model: val, message: verdict.warning });
     }
 
     value[key] = val;
@@ -633,9 +667,9 @@ function validateOneAgentOverride(
 export function validateUserOverrides(
   c: ParamContract,
   raw: unknown,
-  aliasNames: Set<string>,
-  ceilings: Ceilings,
-): { ok: true; value: UserOverrides } | Err {
+  catalog: ModelCatalogSnapshot = EMPTY_CATALOG,
+  ceilings: Ceilings = DEFAULT_CEILINGS,
+): { ok: true; value: UserOverrides; warnings?: ModelRefWarning[] } | Err {
   const obj = (raw ?? {}) as { agents?: Record<string, Record<string, unknown>> };
   // v24 (integrator; DES-145/ADR-001): the TOP level of `overrides` is closed to `{agents}`. It
   // used to be unread — every key other than `agents` was silently dropped, so the whole v21 FLAT
@@ -666,6 +700,7 @@ export function validateUserOverrides(
   const agentsIn = obj.agents ?? {};
   const known = Object.keys(c.agents);
   const resultAgents: Record<string, Record<string, unknown>> = {};
+  const warnings: ModelRefWarning[] = [];
 
   for (const [label, overridesForLabel] of Object.entries(agentsIn)) {
     const spec = c.agents[label];
@@ -678,12 +713,12 @@ export function validateUserOverrides(
       };
     }
     const eff = effectiveAgentBounds(spec, ceilings);
-    const result = validateOneAgentOverride(label, eff, overridesForLabel ?? {}, aliasNames);
+    const result = validateOneAgentOverride(label, eff, overridesForLabel ?? {}, catalog, (w) => warnings.push(w));
     if (!result.ok) return result;
     resultAgents[label] = result.value;
   }
 
-  return { ok: true, value: { agents: resultAgents } };
+  return { ok: true, value: { agents: resultAgents }, ...(warnings.length > 0 ? { warnings } : {}) };
 }
 
 /** Declared `args` are checked only for fields the contract declares; undeclared keys pass

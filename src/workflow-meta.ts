@@ -4,7 +4,7 @@
 import { runInNewContext } from 'node:vm';
 import { checkMeta } from './sandbox/guards.js';
 import { nonCodeSpans } from './script-spans.js';
-import { parseParamContract, retiredDefaults, TUNABLE_KEYS, type ParamContract, type Err as ParamContractErr } from './params/contract.js';
+import { parseParamContract, retiredDefaults, TUNABLE_KEYS, type ParamContract, type Err as ParamContractErr, type ModelCatalogSnapshot, type ModelRefWarning } from './params/contract.js';
 // v25 (#55): the scanner's accepted-key set is derived from the AgentOpts TYPE, so the two
 // cannot drift apart (see AGENT_OPT_KEYS below).
 import type { AgentOpts } from './types.js';
@@ -54,12 +54,12 @@ export const MAX_META_LITERAL_BYTES = 4096;
  *  otherwise (v24; REQ-090's old unconditional canonical-contract compat is retired by DES-144). */
 export function parseMetaParams(
   script: string,
-  aliasNames: Set<string>,
-): { ok: true; value: ParamContract } | ParamContractErr {
+  catalog?: ModelCatalogSnapshot,
+): { ok: true; value: ParamContract; warnings?: ModelRefWarning[] } | ParamContractErr {
   const labels = scanAgentCalls(script).labels;
   const m = checkMeta(script);
   if (!m.found || !m.pureLiteral || m.objectText === undefined) {
-    return parseParamContract(undefined, labels, aliasNames);
+    return parseParamContract(undefined, labels, catalog);
   }
   if (Buffer.byteLength(m.objectText, 'utf8') > MAX_META_LITERAL_BYTES) {
     return {
@@ -73,7 +73,7 @@ export function parseMetaParams(
   try {
     obj = runInNewContext(`(${m.objectText})`, Object.create(null) as object, { timeout: 50 });
   } catch {
-    return parseParamContract(undefined, labels, aliasNames);
+    return parseParamContract(undefined, labels, catalog);
   }
   // v24 Gate 7.5 (D-2, REQ-110 / ADR-035): `meta.defaults` is a SIBLING of `params`, so
   // `parseParamContract` — whose first argument IS `meta.params` — never saw it, and a script
@@ -85,7 +85,7 @@ export function parseMetaParams(
     return retiredDefaults('meta.defaults');
   }
   const rawParams = obj && typeof obj === 'object' ? (obj as { params?: unknown }).params : undefined;
-  return parseParamContract(rawParams, labels, aliasNames);
+  return parseParamContract(rawParams, labels, catalog);
 }
 
 export type SkeletonKind = 'phase' | 'agent' | 'workflow';

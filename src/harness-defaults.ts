@@ -9,7 +9,8 @@
 // `timeoutMs` already are — adjudication #5's "reject a default no rung can apply" is SUPERSEDED.
 // EFFORT_RANK is the single ordering table (contract.ts) so KNOWN_KEYS validation never drifts
 // from the enum the ceiling/override paths already enforce.
-import { EFFORT_RANK, isKnownAlias, type Effort } from './params/contract.js';
+import { EFFORT_RANK, type Effort } from './params/contract.js';
+import { parseModelRef } from './providers.js';
 
 /** Shared harness configuration that can be bound at workflow registration time. */
 export interface HarnessDefaults {
@@ -49,7 +50,6 @@ const KNOWN_KEYS = new Set<string>(['model', 'tools', 'skills', 'timeoutMs', 'pr
  */
 export function validateHarnessDefaults(
   defaults: Record<string, unknown>,
-  aliasNames?: Set<string>,
 ): { ok: true } | { ok: false; message: string } {
   // D-AUTH-5-A: no unknown keys
   for (const key of Object.keys(defaults)) {
@@ -81,15 +81,12 @@ export function validateHarnessDefaults(
     return { ok: false, message: 'defaults.appendPrompt must be a string' };
   }
 
-  // D-AUTH-5-B: model alias must be resolvable (only when alias table is configured).
-  // v21 Gate 8 RE-REVIEW #5 (F1): shares contract.ts's `isKnownAlias` predicate (empty-table skip
-  // + openrouter/<id> passthrough carve-out) so the SAME declared model string gets the SAME
-  // answer whether it registers through this door (top-level `defaults.model`) or the other
-  // (`meta.params.knobs.model.default`, contract.ts's own `isKnownAlias` call sites).
-  if (typeof defaults.model === 'string' && aliasNames !== undefined) {
-    if (!isKnownAlias(defaults.model, aliasNames)) {
-      return { ok: false, message: `Model alias not resolvable: "${defaults.model}"` };
-    }
+  // D-AUTH-5-B (2026-09-26, alias mechanism removed): `defaults.model`, when present, must be a
+  // syntactically valid full <provider>/<model-id> ref — this is a dead registration path (`meta.
+  // defaults` is refused DEFAULTS_RETIRED before this function is ever reachable; kept for its own
+  // unit-test coverage of the D-AUTH-5 assertions, not a live registration door).
+  if (typeof defaults.model === 'string' && parseModelRef(defaults.model) === undefined) {
+    return { ok: false, message: `Model ref is not a valid <provider>/<model-id> ref: "${defaults.model}"` };
   }
 
   // D-AUTH-5-C: every tool name must be in the curated static allowlist

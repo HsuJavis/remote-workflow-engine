@@ -35,7 +35,8 @@ import { SystemClock } from './clock.js';
 // Bars a VALUE import only (which would drag the validator into a module the catalog stays
 // independent of); typing get()/getFull()'s `params` as ParamContract|undefined instead of
 // `unknown` is the point of the adjudication; list() carries the same typing.
-import type { ParamContract, AgentParamSpec, Ceilings } from './params/contract.js';
+import type { ParamContract, AgentParamSpec, Ceilings, ModelRefWarning } from './params/contract.js';
+import { EMPTY_MODEL_CATALOG, parseModelRef, type ModelCatalogSnapshot } from './providers.js';
 // v22 (DES-111, DES-112, TASK-107): the lifted, pure registration-enforcement checks (TASK-106) —
 // same codes submission used to produce, so no caller learns a new vocabulary (ADR-013).
 import { validateScriptEntry } from './script-checks.js';
@@ -194,15 +195,17 @@ function isActor(x: unknown): x is Actor {
 export interface WorkflowCatalogOpts {
   /** When set and auth is enabled, backfill NULL-owner rows to this email at construction time. */
   backfillOwner?: boolean;
-  /** Set of valid model alias names for register-time validation (D-AUTH-5-B). */
-  aliasNames?: Set<string>;
+  /** 2026-09-26 (alias mechanism removed, owner decision 6): a live, already-resolved catalog
+   *  snapshot fetcher for `model.default`/`enum` existence checks at registration (`checkModelRef`,
+   *  `providers.ts`) — called fresh on every `validateRegistration()` (never memoized at
+   *  construction), so it can be backed by `ModelBook`'s own TTL'd freshness. Omitted -> the empty
+   *  snapshot (every openrouter/ollama ref accepted with a warning, matching a bare/unconfigured
+   *  catalog — the same permissive default an empty `aliasNames` used to give). */
+  catalogSnapshot?: () => Promise<ModelCatalogSnapshot>;
   /** v22 (DES-112, TASK-107): registration-time MCP-name existence predicate, forwarded straight
    *  into validateScriptEntry's ports — never the registry object itself. Omitted -> every name
    *  passes (matches the pre-v22 no-MCP-registry-wired construction). */
   mcpLookup?: (name: string) => boolean;
-  /** v22 (DES-112): forwarded into validateScriptEntry's ports; same REQ-038 default as
-   *  SubmissionValidator's own openrouterPassthrough. */
-  openrouterPassthrough?: boolean;
   /** v21 adjudication #6 (F-1 ceiling interaction) + #7 (G-1): engine ceilings, so ANY value that
    *  reaches the stored `defaults` column above the configured ceiling (e.g. `effort` above
    *  `maxEffort`) is refused at registration — a declared `params.knobs.<knob>.default` and a
@@ -221,20 +224,18 @@ export class WorkflowCatalog {
   private readonly _runWorkspaces = new Map<string, string>(); // runId -> workspace dir
   private readonly _clock: Clock;
   private readonly _workRoot: string;
-  private readonly _aliasNames?: Set<string>;
+  private readonly _catalogSnapshot: () => Promise<ModelCatalogSnapshot>;
   private readonly _ceilings?: Ceilings;
   private readonly _mcpLookup: (name: string) => boolean;
-  private readonly _openrouterPassthrough: boolean;
   /** v36 (DES-243, TASK-241): audit-line sink; TASK-242/244 call it. */
   private readonly _eventSink: EventSink;
 
   constructor(workRoot: string, clock?: Clock, opts?: WorkflowCatalogOpts) {
     this._workRoot = workRoot;
     this._clock = clock ?? new SystemClock();
-    this._aliasNames = opts?.aliasNames;
+    this._catalogSnapshot = opts?.catalogSnapshot ?? (async () => EMPTY_MODEL_CATALOG);
     this._ceilings = opts?.ceilings;
     this._mcpLookup = opts?.mcpLookup ?? (() => true);
-    this._openrouterPassthrough = opts?.openrouterPassthrough ?? true;
     this._eventSink = opts?.eventSink ?? createEventSink({});
     mkdirSync(workRoot, { recursive: true });
     this._db = new Database(join(workRoot, 'catalog.db'));
@@ -555,20 +556,18 @@ export class WorkflowCatalog {
    *  version-count ceiling → owner gate (read-only). Used directly by `register()` below, and by the
    *  facade's trigger-claim sequence (ARCH-091/DES-149: validate → claim each trigger → insertVersion
    *  → release on throw) — `insertVersion` is a SEPARATE step so a claim can happen in between. */
-  async validateRegistration(req: { name: string; script: string; mermaid: string; principal?: string | null; actor?: Actor }): Promise<{ params: ParamContract; labels: string[]; agents: Record<string, AgentParamSpec> }> {
+  async validateRegistration(req: { name: string; script: string; mermaid: string; principal?: string | null; actor?: Actor }): Promise<{ params: ParamContract; labels: string[]; agents: Record<string, AgentParamSpec>; warnings?: ModelRefWarning[] }> {
     const { name, script, mermaid } = req;
     const actor: Actor = req.actor ?? actorFromPrincipal(req.principal ?? null);
 
     // v22 (DES-111, DES-112, DES-117, TASK-107): validateScriptEntry runs FIRST — DES-148's own
     // pinned order (`validateScriptEntry → scanAgentCalls → parseParamContract → checkMermaid → …`)
-    // content checks (ADR-013 — registration ENFORCES fail-closed). Same codes submission used to
-    // produce (PARSE_ERROR / UNKNOWN_ALIAS / MCP_NOT_PROVISIONED); all errors surface, the first is
-    // thrown, the rest travel in `detail.errors`.
-    const scriptCheck = validateScriptEntry(script, {
-      aliases: this._aliasNames ?? new Set(),
-      openrouterPassthrough: this._openrouterPassthrough,
-      mcpLookup: this._mcpLookup,
-    });
+    // content checks (ADR-013 — registration ENFORCES fail-closed). 2026-09-26 (alias mechanism
+    // removed): validateScriptEntry checks PARSE_ERROR / MCP_NOT_PROVISIONED only now — the model
+    // check moved entirely into `parseMetaParams`/`parseParamContract` below, which is where the
+    // catalog-existence check (`checkModelRef`) actually needs to run; all errors surface, the
+    // first is thrown, the rest travel in `detail.errors`.
+    const scriptCheck = validateScriptEntry(script, { mcpLookup: this._mcpLookup });
     if (!scriptCheck.ok) {
       const [first, ...rest] = scriptCheck.errors;
       throw Object.assign(codedError(first!.code, first!.message), { detail: { ...first!.detail, errors: [first, ...rest] } });
@@ -588,10 +587,15 @@ export class WorkflowCatalog {
     // added to the shared function (`meta.defaults` is retired) would have been invisible in
     // production. Same defect class as D-3's two `toErrEnvelope`s. The copy is gone; `scan.labels`
     // is exactly what `parseMetaParams` recomputes internally from the same `scanAgentCalls`.
-    const paramsResult = parseMetaParams(script, this._aliasNames ?? new Set());
+    // 2026-09-26: `catalog` is fetched FRESH here (never memoized) so `.default`/`enum` full-ref
+    // existence (openrouter/ollama live listing, anthropic static table) is checked against
+    // current data, not a boot-time snapshot.
+    const catalog = await this._catalogSnapshot();
+    const paramsResult = parseMetaParams(script, catalog);
     if (!paramsResult.ok) {
       throw codedError(paramsResult.code, paramsResult.message, paramsResult.detail);
     }
+    for (const w of paramsResult.warnings ?? []) console.warn(`[model-catalog] workflow '${name}' agent '${w.label}': ${w.message}`);
 
     // DES-147 (TASK-138): the author-supplied diagram vs the script's own agent labels + declared
     // model/effort/timeoutMs. `agentDefaults` is derived from the just-validated contract — the
@@ -692,7 +696,7 @@ export class WorkflowCatalog {
       throw codedError('NOT_WORKFLOW_OWNER', `NOT_WORKFLOW_OWNER: workflow '${name}' is not owned by the caller`);
     }
 
-    return { params: paramsResult.value, labels: scan.labels, agents: paramsResult.value.agents };
+    return { params: paramsResult.value, labels: scan.labels, agents: paramsResult.value.agents, ...(paramsResult.warnings ? { warnings: paramsResult.warnings } : {}) };
   }
 
   /** v24 (ARCH-098, DES-148, TASK-143): the ONE write — INSERTs a new (name, version) row (never
@@ -982,17 +986,43 @@ export class WorkflowCatalog {
     return this._listVersions(name);
   }
 
+  /** 2026-09-26 (alias mechanism removed, owner decision 10): the distinct full
+   *  `<provider>/<model-id>` refs declared by `agents.<label>.model.default` across EVERY
+   *  registered version row of every workflow — release/beta and every other live version, since a
+   *  live row is one this engine could still run (`resume()` on a non-released version, a pinned
+   *  in-flight run). Deregistered rows are gone from `workflow_versions` already (the single-
+   *  deletion-path rule), so nothing extra needs excluding here. Used ONLY as `ModelProber`'s target
+   *  set — a malformed/legacy entry is silently skipped by `probeTargets` itself. */
+  distinctModelRefs(): string[] {
+    const rows = this._db.prepare('SELECT params FROM workflow_versions WHERE params IS NOT NULL').all() as Array<{ params: string }>;
+    const refs = new Set<string>();
+    for (const row of rows) {
+      let parsed: unknown;
+      try { parsed = JSON.parse(row.params); } catch { continue; }
+      const agents = (parsed as { agents?: Record<string, { model?: { default?: unknown } }> } | null)?.agents;
+      if (!agents) continue;
+      for (const spec of Object.values(agents)) {
+        const ref = spec?.model?.default;
+        if (typeof ref === 'string') refs.add(ref);
+      }
+    }
+    return [...refs];
+  }
+
   /** v22 (DES-115/DES-116, REQ-099, TASK-111): re-runs the SAME registration-time checks
    *  (`validateScriptEntry`, same ports this instance already validates `register()` with) against
-   *  the CURRENT alias/MCP config — never the registration-time result — so an alias removed (or an
-   *  MCP no longer provisioned) AFTER a workflow was registered is visible on every read as
-   *  staleness, not silently stale-green forever. Pure re-check: reads no DB row, stores nothing. */
+   *  the CURRENT MCP config — never the registration-time result — so an MCP no longer provisioned
+   *  AFTER a workflow was registered is visible on every read as staleness, not silently stale-green
+   *  forever. Pure re-check: reads no DB row, stores nothing.
+   *  2026-09-26 (alias mechanism removed, deliberate drop): this used to ALSO re-check the script's
+   *  model literal(s) against the current alias table; that model check is gone (see script-checks.ts's
+   *  own header) and nothing replaces it here — a read-time staleness signal for "the model in this
+   *  registered version no longer exists" does not exist post-registration (the map's own D5: an
+   *  anthropic id is never refused, and re-verifying openrouter/ollama existence on every
+   *  workflow_get would mean a live catalog fetch on a read path, which this method's callers do not
+   *  expect). Only MCP staleness is re-checked now. */
   validateCurrent(script: string): ReturnType<typeof validateScriptEntry> {
-    return validateScriptEntry(script, {
-      aliases: this._aliasNames ?? new Set(),
-      openrouterPassthrough: this._openrouterPassthrough,
-      mcpLookup: this._mcpLookup,
-    });
+    return validateScriptEntry(script, { mcpLookup: this._mcpLookup });
   }
 
   /** v22 (DES-111, REQ-097): moves a named channel pointer to an already-registered version.

@@ -17,12 +17,11 @@ import type { AgentOpts, Caps, HarnessDescriptor, TranscriptEvent, Tokens } from
 import { ZERO_TOKENS } from '../run-guard.js';
 import { redactHarness } from '../agent-executor.js';
 import type { McpServerConfig } from '../mcp-probe.js';
-import type { AliasMap, EffortApplied, GatewayClient, GatewayResult } from './client.js';
+import type { EffortApplied, GatewayClient, GatewayResult } from './client.js';
 import { resolveTimeout, wireEffort, UNKNOWN_CAPS, attemptsFor } from './client.js';
-import { resolveAlias, resolveModelRef, type Provider } from '../providers.js';
+import { parseModelRef, type Provider } from '../providers.js';
 import { isPathContained } from '../path-containment.js';
 import { resolveConfig, type SecretSource } from '../secret-resolver.js';
-import { proxyModelName } from './litellm-proxy.js';
 import { buildBashConfinement, DENY_READ_MODE, readonlyBashRefusal } from './bash-confinement.js';
 import { protectedConfigTarget, sweepPlantedConfig } from './project-config-guard.js';
 import { findProjectMarkerAboveWorkspace, WORKROOT_INSIDE_PROJECT } from '../workroot-guard.js';
@@ -57,12 +56,6 @@ export interface ClaudeAgentSdkGatewayConfig {
   cwd?: string;
   /** Injectable session factory (test seam) — defaults to the real SDK's own `query` export. */
   queryImpl?: QueryImpl;
-  /** D-F6: the same alias table LiteLLMGatewayClient takes — resolves req.opts.model to a provider
-   *  so the thinking policy below can tell an Anthropic-mapped alias from a non-Anthropic one.
-   *  Optional: when omitted (or the alias isn't found), the alias is treated as non-Anthropic
-   *  (the safe default — thinking disabled) since that's the failure mode this policy exists to
-   *  prevent (a non-reasoning Ollama/OpenRouter model 400ing on think:true). */
-  aliases?: AliasMap;
   /** D-F7: bounds invoke() with an AbortController race exactly like LiteLLMGatewayClient — a
    *  hung/stuck session resolves `{ok:false, reason:'timeout'}` instead of hanging unbounded.
    *  Optional: when omitted, invoke() has no bound of its own (unchanged legacy behavior). */
@@ -262,24 +255,15 @@ function abortedBeforeDispatch(): GatewayResult {
   return { ok: false, provider: 'claude-agent-sdk', transport: 'claude-agent-sdk', reason: 'terminal', retryable: false, detail: 'aborted by caller before dispatch (run suspended or stopped)' };
 }
 
-/** REQ-038 passthrough: a model already in `openrouter/<id>` form is NOT a configured alias — its
- *  provider is the prefix and it must NOT be proxy-cloaked (`rwe-proxy-*`). It matches LiteLLM's
- *  `openrouter/*` wildcard route verbatim; a slashed id is never a bare CLI shorthand, so there is
- *  no shorthand-expansion risk to cloak against. */
-export function isPassthroughModel(model: string | undefined): model is string {
-  return typeof model === 'string' && model.startsWith('openrouter/');
-}
-
-/** v26 (DES-173, ARCH-112, TASK-174, REQ-123): the effective provider for routing — the prefix for
- *  a passthrough model, else the alias's configured provider, now resolved via `resolveAlias`
- *  (`providers.ts`, DES-172) — `effectiveProvider`'s OWN former inline lookup (`providerOf`) MOVED
- *  there rather than being retired, per DES-173's own boundary. All three remaining providers get
- *  the caller's `allowedTools` verbatim (REQ-123 retires per-provider tool curation outright, along
- *  with `NON_ANTHROPIC_EXCLUDED_TOOLS`/`curateToolsForProvider`) — this is now used only for
- *  auth/wire routing (thinking policy, effort, anthropic-direct dispatch), never tool curation. */
-export function effectiveProvider(aliases: AliasMap | undefined, model: string | undefined): string | undefined {
-  if (isPassthroughModel(model)) return 'openrouter';
-  return model !== undefined && aliases !== undefined ? resolveAlias(aliases, model)?.provider : undefined;
+/** v26 (DES-173, ARCH-112, TASK-174, REQ-123) — 2026-09-26 (alias mechanism removed): the effective
+ *  provider for routing is now just the parsed prefix of the full `<provider>/<model-id>` ref
+ *  (`providers.ts`'s `parseModelRef`) — no alias table to resolve through any more. All three
+ *  providers get the caller's `allowedTools` verbatim (REQ-123 retires per-provider tool curation
+ *  outright) — this is used only for auth/wire routing (thinking policy, effort, anthropic-direct
+ *  dispatch), never tool curation. `undefined` for a malformed ref (admission already refuses one
+ *  before dispatch; this is the defensive fail-safe, same as before). */
+export function effectiveProvider(model: string | undefined): string | undefined {
+  return model !== undefined ? parseModelRef(model)?.provider : undefined;
 }
 
 /** D-V2G8-1(d): true only when `candidate` resolves to a path genuinely inside `root` (or IS
@@ -735,11 +719,16 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     const exposedSkills = materialized?.skills ?? [];
     const wireTools = exposedSkills.length > 0 && !curatedTools.includes('Skill') ? [...curatedTools, 'Skill'] : curatedTools;
 
-    // REQ-037: provider-aware routing. An alias whose provider is `anthropic` dispatches DIRECT to
-    // the real Anthropic API (LiteLLM bypassed) — so its env carries the real auth AND its model
-    // name must be the REAL Anthropic id (`target.model`), not the proxy-cloaked `rwe-proxy-*` name
-    // the LiteLLM path needs. Every other provider keeps the proxy path (dummy key + proxyModelName).
-    const provider = effectiveProvider(this._config.aliases, req.opts.model);
+    // REQ-037 — 2026-09-26 (alias mechanism removed): provider-aware routing off the full ref's own
+    // prefix. `anthropic` dispatches DIRECT to the real Anthropic API (LiteLLM bypassed) — so its env
+    // carries the real auth AND its model name is the bare id (`parsed.model`), never the full ref.
+    // Every other provider (openrouter, ollama) keeps the proxy path and puts the RAW full ref on the
+    // wire verbatim (matches the static `openrouter/*`/`ollama/*` LiteLLM wildcards) — no cloak is
+    // needed for ANY provider any more: a ref with a `/` in it is never a bare CLI shorthand the
+    // Claude CLI rewrites (the same fact `isPassthroughModel` used to carve out just for openrouter
+    // now holds for every full ref, since none of them are bare any more).
+    const parsedRef = req.opts.model !== undefined ? parseModelRef(req.opts.model) : undefined;
+    const provider = parsedRef?.provider;
     // v26 (DES-179, ARCH-117, TASK-179): computed ONCE per invoke, inside the gateway (the provider
     // is only resolvable here) — the SAME `wireEffort` result travels to onHarness AND (below) onto
     // BOTH `options.thinking` and `options.effort`; `wireEffort` is now the sole writer of each.
@@ -748,28 +737,19 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     // `resolveThinkingMode`, see UNKNOWN_CAPS's own doc comment).
     const wired = wireEffort(provider as Provider | undefined, req.caps ?? UNKNOWN_CAPS, req.opts.effort);
     const applied: EffortApplied = wired.applied;
-    const anthropicTarget = provider === 'anthropic' && req.opts.model !== undefined ? this._config.aliases?.[req.opts.model] : undefined;
-    // REQ-038: a passthrough `openrouter/<id>` goes on the wire RAW (matches LiteLLM's `openrouter/*`
-    // wildcard); anthropic-direct uses the real id; every other case keeps the `rwe-proxy-*` cloak.
-    const modelName = anthropicTarget
-      ? anthropicTarget.model
-      : isPassthroughModel(req.opts.model)
-        ? req.opts.model
-        : proxyModelName(req.opts.model ?? 'default');
-    // v26 (DES-177, ARCH-115, TASK-177, REQ-125): the RESOLVED model id this call actually reached —
-    // never the alias, never the `rwe-proxy-*` cloak `modelName` puts on the wire. An anthropic-direct
-    // or passthrough dispatch already has the resolved id in `modelName`; every other alias resolves
-    // through the SAME alias table `anthropicTarget` reads above, just unconditional on provider.
-    // issue #85: resolved through the SAME normalizer the admission pin uses (`resolveModelRef`), so
-    // a passthrough `openrouter/<id>` stamps `<id>` — the capture keys its price lookup by
-    // `${provider}/${model}`, and stamping the raw ref looked up `openrouter/openrouter/<id>`, a key
-    // no catalog has (always unpriced). An alias resolves to its row's model exactly as before.
-    const aliasTarget = req.opts.model !== undefined ? resolveModelRef(this._config.aliases ?? {}, req.opts.model) : undefined;
-    const resolvedModel = aliasTarget?.model ?? modelName;
-    // v26 (DES-177): the proxy-facing cloak is reportable only when one was actually put on the wire
-    // (the LiteLLM-proxy route) — absent on an anthropic-direct dispatch and on a raw passthrough
-    // (sent verbatim, no cloak to report).
-    const proxyModel = anthropicTarget === undefined && !isPassthroughModel(req.opts.model) ? modelName : undefined;
+    // v26 (DES-177, ARCH-115, TASK-177, REQ-125): `modelName` is what actually goes on the wire;
+    // `resolvedModel` is the bare id the capture keys its price lookup by (`${provider}/${model}`).
+    // anthropic-direct: the bare id, on the wire AND as the resolved model (they're the same string).
+    // openrouter/ollama: the RAW full ref on the wire (LiteLLM's wildcard route), the bare id as
+    // resolved — an admitted ref always parses (admission already refused a malformed one), so
+    // `parsedRef` is defined whenever `req.opts.model` is; a genuinely absent model is a programming
+    // error this class does not paper over with a magic default.
+    const modelName = provider === 'anthropic' ? parsedRef!.model : (req.opts.model as string);
+    const resolvedModel = parsedRef?.model ?? modelName;
+    // v26 (DES-177): reportable proxy-facing wire value — absent on an anthropic-direct dispatch
+    // (there is no proxy hop to report), present (equal to the raw ref actually sent) for every
+    // other provider, which still travels through the LiteLLM proxy.
+    const proxyModel = provider !== 'anthropic' ? modelName : undefined;
     // v26 (DES-177): one stamping seam for every GatewayResult this call can produce (`_drain`'s
     // internal returns included, via `enrich(outcome)` below) — `provider` becomes the RESOLVED
     // provider (never the transport name `_drain`/the early-exit literals below still hard-code) and
@@ -1108,7 +1088,12 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         return {
           ok: true,
           provider: 'claude-agent-sdk',
-          model: model ?? 'default',
+          // 2026-09-26 (alias mechanism removed, rule 3): no 'default' fallback — `invoke()`'s own
+          // `stamp()` unconditionally overwrites `model` with the resolved id on every ok:true
+          // result (see above), so this internal value is never actually read on the production
+          // path; `model!` documents that invariant rather than inventing a fallback string for a
+          // case (an undefined model reaching dispatch) admission is responsible for preventing.
+          model: model!,
           tokens: extractTokens(msg, unmapped),
           content: msg.result,
           events,

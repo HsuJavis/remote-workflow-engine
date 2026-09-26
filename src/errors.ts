@@ -55,7 +55,10 @@ export const ERROR_CATALOG = {
 
   // Script / registration authoring (workflow_authoring_guide-pointing)
   PARSE_ERROR: { see: 'workflow_authoring_guide', hint: 'the script body failed to parse as TypeScript' },
-  UNKNOWN_ALIAS: { see: 'workflow_authoring_guide', hint: 'a model alias in the script is not in the configured alias table' },
+  // Renamed from UNKNOWN_ALIAS (2026-09-26, alias mechanism removed): a model string is not a valid
+  // full <provider>/<model-id> ref, names an unsupported provider, or (for openrouter/ollama) was
+  // not found in the live catalog listing.
+  UNKNOWN_MODEL: { see: 'workflow_authoring_guide', hint: 'the model is not a valid <provider>/<model-id> ref, or (for openrouter/ollama) was not found in the catalog listing — see models_list' },
   MCP_NOT_PROVISIONED: { see: 'workflow_authoring_guide', hint: 'an agent() call references an mcp name with no provisioned secret' },
   SCRIPT_INVALID: { see: 'workflow_authoring_guide', hint: 'the script violates a sandbox-enforced structural rule' },
   SCAN_VIOLATION: { see: 'workflow_authoring_guide', hint: 'an agent() call is not scannable — label/options must be literal (ADR-029)' },

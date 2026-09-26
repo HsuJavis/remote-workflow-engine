@@ -40,20 +40,20 @@ import type { SecretValueProvider } from './secret-resolver.js';
 import { ResumeCache, MISS, type ResumePlan } from './resume-cache.js';
 import { WorkflowCatalog } from './workflow-catalog.js';
 import { assetRootsFor, defaultAssetRoot, globalAssetRoot } from './asset-sync.js';
-import type { GatewayClient, GatewayConfig, AliasMap } from './gateway/client.js';
+import type { GatewayClient, GatewayConfig } from './gateway/client.js';
 import { LiteLLMGatewayClient } from './gateway/client.js';
-import { DEFAULT_ALIASES } from './default-aliases.js';
-import { validateUserOverrides, validateDeclaredArgs, materializeArgDefaults, isKnownAlias, FRAME_CLOSE_FORGERY, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type Err as ParamErr } from './params/contract.js';
+import { validateUserOverrides, validateDeclaredArgs, materializeArgDefaults, FRAME_CLOSE_FORGERY, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type Err as ParamErr, type ModelCatalogSnapshot, type ModelRefWarning } from './params/contract.js';
 import { defaultRunParams, mergeRunParams, type RunParams } from './params/resolve.js';
-import { resolveModelRef } from './providers.js';
-import { ModelBook, reachableModels } from './models/model-book.js';
+import { checkModelRef, parseModelRef, EMPTY_MODEL_CATALOG } from './providers.js';
+import { ModelBook, reachableModels, toModelCatalogSnapshot } from './models/model-book.js';
 import { createEventSink, type EventSink } from './event-log.js';
 import { scanAgentCalls } from './workflow-meta.js';
 import { toolProbeWarnings, type ProbeResult, type ModelToolWarning } from './models/model-probe.js';
 
 // Default gateway config (REQ-004) for the gateway RunManager builds when no GatewayClient is
-// injected — routes through the single-source DEFAULT_ALIASES table (src/default-aliases.ts).
-const DEFAULT_GATEWAY_CONFIG: GatewayConfig = { aliases: DEFAULT_ALIASES, timeoutMs: 15000, retries: 1 };
+// injected. 2026-09-26 (alias mechanism removed): no alias table to route through any more — the
+// gateway resolves each call's full ref directly (`providers.ts`'s `parseModelRef`).
+const DEFAULT_GATEWAY_CONFIG: GatewayConfig = { timeoutMs: 15000, retries: 1 };
 
 export interface RunManagerDeps {
   store?: RunStore;
@@ -121,20 +121,15 @@ export interface RunManagerDeps {
    *  (ADR-005) — refuse, never clamp. Per-key fail-closed defaults when a key is absent from config
    *  (composeConfig() forwards these three from rwe.config.json; see src/main.ts). */
   ceilings?: Partial<Ceilings>;
-  /** v21 Gate 8 send-back (review §4 B1, adopted S-1): the configured model-alias table's key set,
-   *  same convention as WorkflowCatalog's `aliasNames` (server.ts:1141) — validateUserOverrides'
-   *  admission-time UNKNOWN_ALIAS check against it. Omitted/empty = D-AUTH-5-B (no configured
-   *  aliases means every alias passes; the gateway itself is the fail point). */
-  aliasNames?: Set<string>;
   /** v26 (DES-178, ARCH-116, ADR-038, TASK-178): the TTL'd, single-flight catalog snapshot this
    *  manager pins onto every run at admission (`start()`) — never re-resolved on resume. Omitted ->
-   *  an always-empty source (still prices anthropic-static/ollama-zero; everything else `null`). */
+   *  an always-empty source (still prices anthropic-static/ollama-zero; everything else `null`).
+   *  2026-09-26 (alias mechanism removed, owner decision 6): ALSO the source `_refuseUnadmittableParams`
+   *  builds its `ModelCatalogSnapshot` from (`toModelCatalogSnapshot`, model-book.ts) for the
+   *  admission-time openrouter/ollama existence check — one live catalog fetch per admission,
+   *  reused for both the UNKNOWN_MODEL check and the price pin (they used to be two different
+   *  tables — `aliasNames`/`aliasMap` — that could disagree; now there is exactly one). */
   modelBook?: ModelBook;
-  /** v26 (DES-178, TASK-178): the alias table `reachableModels`'s output is resolved against when
-   *  building the price-book pin — the SAME table `aliasNames` above is derived from, so a model
-   *  this run legally reaches (having already passed the UNKNOWN_ALIAS check) always resolves.
-   *  Omitted -> DEFAULT_ALIASES, same fallback as the gateway's own default config. */
-  aliasMap?: AliasMap;
   /** v36 (DES-243, ARCH-159, TASK-241, REQ-213): sink for the `run.terminal` audit line (TASK-243
    *  adds the actual emit call, at `_transition`). Omitted -> a bare console sink. */
   eventSink?: EventSink;
@@ -403,12 +398,9 @@ export class RunManager {
   private readonly _secretValueProvider: SecretValueProvider | undefined;
   /** v21 (ARCH-066, DES-104, TASK-100): engine ceilings bounding the USER-override rung. */
   private readonly _ceilings: Ceilings;
-  /** v21 Gate 8 send-back (review §4 B1): configured alias-name set for admission-time UNKNOWN_ALIAS. */
-  private readonly _aliasNames: Set<string>;
-  /** v26 (DES-178, TASK-178): catalog snapshot pinned onto every run's price_book at admission. */
+  /** v26 (DES-178, TASK-178): catalog snapshot pinned onto every run's price_book at admission —
+   *  ALSO (2026-09-26) the source of the admission-time openrouter/ollama existence check. */
   private readonly _modelBook: ModelBook;
-  /** v26 (DES-178, TASK-178): resolves a reachable alias/model string to {provider, model} for the pin. */
-  private readonly _aliasMap: AliasMap;
   /** v36 (DES-243, TASK-241): `run.terminal` audit sink; TASK-243 calls it from `_transition`. */
   private readonly _eventSink: EventSink;
   /** v37 (ARCH-182, DES-263, TASK-258): this engine's MEASURED confinement posture — read by
@@ -416,7 +408,7 @@ export class RunManager {
   private readonly _confinementPosture: 'confined' | 'unconfined' | undefined;
   private readonly _probeLookup: ((provider: string, model: string) => ProbeResult | undefined) | undefined;
   /** Issue #73 (d): non-fatal admission warnings per started run, read back by `run_start`. */
-  private readonly _admissionWarnings = new Map<string, ModelToolWarning[]>();
+  private readonly _admissionWarnings = new Map<string, Array<ModelToolWarning | ModelRefWarning>>();
   private readonly _runs = new Map<string, RunEntry>();
   /** v25 (#53): runIds already reported for `terminal_without_transition` — one record per run,
    *  not one per poll (a terminal run is polled until the caller notices it is terminal). */
@@ -467,15 +459,10 @@ export class RunManager {
       maxAppendPromptBytes: deps.ceilings?.maxAppendPromptBytes ?? DEFAULT_CEILINGS.maxAppendPromptBytes,
       maxEffort: deps.ceilings?.maxEffort ?? DEFAULT_CEILINGS.maxEffort,
     };
-    // v21 Gate 8 send-back (review §4 B1): mirrors WorkflowCatalog's aliasNames convention
-    // (server.ts) — undefined/omitted -> empty Set (D-AUTH-5-B: no configured aliases means the
-    // check is a no-op, same as before this fix, never a false-positive UNKNOWN_ALIAS).
-    this._aliasNames = deps.aliasNames ?? new Set();
     // v26 (DES-178, TASK-178): an always-empty default source still prices anthropic-static/
     // ollama-zero via ModelBook's own built-in fallback — never a crash for a caller that doesn't
     // inject a real catalog (e.g. a direct RunManager unit test).
     this._modelBook = deps.modelBook ?? new ModelBook(async () => [], { clock: this._clock });
-    this._aliasMap = deps.aliasMap ?? DEFAULT_ALIASES;
     this._eventSink = deps.eventSink ?? createEventSink({});
     this._confinementPosture = deps.confinementPosture;
     this._probeLookup = deps.probeLookup;
@@ -743,8 +730,16 @@ export class RunManager {
       ? materializeArgDefaults((rawArgs ?? {}) as Record<string, unknown>, contract.args)
       : undefined;
     if (resolvedArgs) spec = { ...spec, args: resolvedArgs };
-    const overridesResult = validateUserOverrides(contract, overrides, this._aliasNames, this._ceilings);
+    // v26 (DES-178, ARCH-116, ADR-038, TASK-178) — 2026-09-26 (alias mechanism removed, owner
+    // decision 6): fetched ONCE per admission and reused for BOTH the UNKNOWN_MODEL existence check
+    // (override rung here, effective-value rung in `_refuseUnadmittableParams` below) AND the
+    // price-book pin further down — one live catalog fetch, one snapshot, so the two can never
+    // disagree about what the catalog said for this admission.
+    const bookSnapshot = await this._modelBook.snapshot();
+    const catalog = toModelCatalogSnapshot(bookSnapshot);
+    const overridesResult = validateUserOverrides(contract, overrides, catalog, this._ceilings);
     if (!overridesResult.ok) throw paramCodedError(overridesResult);
+    const admissionWarnings: Array<ModelToolWarning | ModelRefWarning> = [...(overridesResult.warnings ?? [])];
     const argsResult = validateDeclaredArgs(contract, spec.args);
     if (!argsResult.ok) throw paramCodedError(argsResult);
     // defaultRunParams is the ONLY no-overrides producer (DES-104) — the callers that never supply
@@ -759,7 +754,7 @@ export class RunManager {
     // CALLER-SUPPLIED overrides.model; a registered defaults.model that was valid at registration
     // but has since fallen out of the configured alias table (a config change between restarts)
     // was never re-examined — every un-overridden submission using it was silently admitted. Same
-    // UNKNOWN_ALIAS code, same "before any durable work" placement as the override-rung check.
+    // UNKNOWN_MODEL code, same "before any durable work" placement as the override-rung check.
     // v24 (TASK-158): re-checked over EVERY label's resolved model too, not just the (now largely
     // vestigial, HarnessDefaults-only) top-level field — a per-agent override/default is just as
     // reachable here as the old flat one was.
@@ -772,7 +767,9 @@ export class RunManager {
     // too (DES-101 row 6: reported by size only). v24 (TASK-158): both checks cover every label's
     // resolved value. Both live in `_refuseUnadmittableParams`, shared with a nested `workflow()`
     // frame's own admission.
-    const modelsToCheck = this._refuseUnadmittableParams(effectiveParams);
+    const refuseResult = this._refuseUnadmittableParams(effectiveParams, catalog);
+    const modelsToCheck = refuseResult.models;
+    admissionWarnings.push(...refuseResult.warnings);
     // v35 (DES-233): the materialized args RECORD, folded into the admission snapshot BEFORE the
     // redact fork below — `effective_params.args` records it (readable, e.g. by `workflow_describe`
     // fixtures), but stays the redacted ADMISSION record; it is never promoted to a dispatch source
@@ -791,23 +788,16 @@ export class RunManager {
     // Pinned here, never re-resolved on resume — a mid-run price change or listing outage cannot
     // move a pinned run's arithmetic. One entry per reachable model, present even when every entry
     // prices `null` ("we looked and found nothing" vs "we never looked" stay distinguishable only
-    // because the key is THERE). `m` is already alias-validated above, so `resolveModelRef` failing
-    // here would mean the admission table and the pin table disagreed — never expected in practice.
-    const bookSnapshot = await this._modelBook.snapshot();
+    // because the key is THERE).
+    // 2026-09-26 (alias mechanism removed, rule 3): the `'default'` superset member is GONE — every
+    // label's model is REQUIRED with a full-ref `.default` (owner decision 2), so admission already
+    // guarantees a resolved model per label; `modelsToCheck` (== `reachableModels`) is now the exact
+    // pin set, no superset needed (INV-V26-4 holds by construction, not by padding). `m` is already
+    // ref-validated above (`_refuseUnadmittableParams`), so `parseModelRef` failing here would mean
+    // the admission check and the pin disagreed — never expected in practice.
     const pinned: PriceBook['pinned'] = {};
-    // v26 integration (INV-V26-4): the pin is a SUPERSET of the admission set, and the extra member
-    // is `'default'`. `reachableModels` only sees models the AUTHOR named; a script whose `agent()`
-    // calls carry no `model` at all (the common case — `defaultRunParams` leaves `model` undefined)
-    // names none, so the pin came out EMPTY and every call in such a run priced `null`, i.e. REQ-127
-    // recorded nothing for most real runs. Both gateways fall back to the `'default'` alias
-    // (`req.opts.model ?? 'default'`), so it is genuinely reachable and must be pinned. Added HERE
-    // and not inside `reachableModels` on purpose: the admission UNKNOWN_ALIAS check must keep
-    // judging exactly what the author wrote, and `resolveModelRef` simply yields nothing for a
-    // deployment whose table has no `'default'` row.
-    for (const m of [...new Set([...modelsToCheck, 'default'])]) {
-      // issue #85: `resolveModelRef`, not `resolveAlias` — a passthrough `openrouter/<id>` is
-      // admitted without an alias row and must be pinned too, or its price is never looked up.
-      const resolved = resolveModelRef(this._aliasMap, m);
+    for (const m of modelsToCheck) {
+      const resolved = parseModelRef(m);
       if (!resolved) continue;
       pinned[`${resolved.provider}/${resolved.model}`] = bookSnapshot.lookup(resolved.provider, resolved.model);
     }
@@ -875,7 +865,7 @@ export class RunManager {
     // must actually REACH the capture site, or every call is `unpriced:true` with `costUSD: 0` and
     // REQ-127 is inert in production while every unit test stays green (the composeConfig() wiring
     // bug class). This is the `start()` half; `_requireLive` reads the same pin back from the row.
-    const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, secretValueProvider: this._secretValueProvider, priceBook, aliases: this._aliasMap });
+    const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, secretValueProvider: this._secretValueProvider, priceBook });
     const entry: RunEntry = {
       script,
       // v35 (DES-233(d)): `spec.args ?? {}` — no `storedParams?.args` middle term. `runs.args`
@@ -913,18 +903,26 @@ export class RunManager {
     // tool use. Logged for the trigger routes (no caller to answer); run_start returns them.
     if (this._probeLookup) {
       const lookup = this._probeLookup;
-      const warnings = toolProbeWarnings({
+      const toolWarnings = toolProbeWarnings({
         calls: scanAgentCalls(script).calls,
-        modelFor: (label) => effectiveParams.agents?.[label]?.model ?? effectiveParams.model ?? 'default',
-        resolve: (alias) => resolveModelRef(this._aliasMap, alias),
+        // 2026-09-26 (alias mechanism removed, rule 3): no `?? 'default'` fallback — every label's
+        // model is REQUIRED with a full-ref default (owner decision 2), so `effectiveParams.agents[label].model`
+        // is always defined for a label that scanned an agent() call at all.
+        modelFor: (label) => effectiveParams.agents?.[label]?.model as string,
+        resolve: (ref) => parseModelRef(ref),
         lookup,
       });
-      if (warnings.length > 0) {
-        // Trigger-started runs never take theirs — bound the map (oldest first) so they can't pile up.
-        if (this._admissionWarnings.size >= 256) this._admissionWarnings.delete(this._admissionWarnings.keys().next().value!);
-        this._admissionWarnings.set(runId, warnings);
-        for (const w of warnings) console.warn(`[model-probe] run ${runId}: ${w.message}`);
-      }
+      admissionWarnings.push(...toolWarnings);
+    }
+    // 2026-09-26 (owner decision 6, per-coordinator MCP-only surface): MODEL_CATALOG_UNVERIFIED
+    // (registration-time-shaped, but a run_start override can also produce one) travels the SAME
+    // `_admissionWarnings` channel as MODEL_TOOL_USE_UNVERIFIED — one bounded map, one `run_start`
+    // read-back (`takeAdmissionWarnings`), regardless of which check produced the warning.
+    if (admissionWarnings.length > 0) {
+      // Trigger-started runs never take theirs — bound the map (oldest first) so they can't pile up.
+      if (this._admissionWarnings.size >= 256) this._admissionWarnings.delete(this._admissionWarnings.keys().next().value!);
+      this._admissionWarnings.set(runId, admissionWarnings);
+      for (const w of admissionWarnings) console.warn(`[model-catalog] run ${runId}: ${w.message}`);
     }
     entry.seedRef = seedRefView; // v13: overlaid onto RunStatusView by _mergeLive (present on success AND failure)
     if (spec.seedManifestRef !== undefined) entry.seedManifestRef = spec.seedManifestRef; // v14: DES-087
@@ -1202,8 +1200,9 @@ export class RunManager {
     } catch { /* an observer's failure is never the caller's */ }
   }
 
-  /** Issue #73 (d): the admission warnings `start()` recorded for `runId`, handed over ONCE. */
-  takeAdmissionWarnings(runId: string): ModelToolWarning[] {
+  /** Issue #73 (d) / 2026-09-26 (owner decision 6): the admission warnings `start()` recorded for
+   *  `runId` (tool-use AND model-catalog-existence alike), handed over ONCE. */
+  takeAdmissionWarnings(runId: string): Array<ModelToolWarning | ModelRefWarning> {
     const w = this._admissionWarnings.get(runId) ?? [];
     this._admissionWarnings.delete(runId);
     return w;
@@ -1356,6 +1355,22 @@ export class RunManager {
       );
     }
     const effectiveParams = storedParams ?? defaultRunParams(undefined, registeredContract?.agents);
+    // 2026-09-26 (alias mechanism removed, owner decision 12): a run admitted BEFORE this change can
+    // have persisted a bare alias string (e.g. `'haiku'`) as `effective_params.agents.<label>.model`
+    // — `_refuseUnadmittableParams` only runs at `start()`/a nested frame, never on resume, so
+    // without this check a legacy snapshot would dispatch an alias no gateway can resolve any more.
+    // Syntax-only (`parseModelRef`), not a live catalog existence re-check: this is a REPLAY of an
+    // admission that already happened once (rule 12 says "refuse rather than dispatch an
+    // unresolvable name", not "re-verify existence on every resume").
+    for (const m of reachableModels(effectiveParams)) {
+      if (parseModelRef(m) === undefined) {
+        throw codedError(
+          'UNKNOWN_MODEL',
+          `UNKNOWN_MODEL: run ${runId}'s admission-time parameters carry "${m}", which is not a valid <provider>/<model-id> ref (it predates the alias-removal change) and cannot be resumed; re-register the workflow with a full ref and start a new run`,
+          { runId, supplied: m },
+        );
+      }
+    }
 
     const workspace = this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);
     // v26 (DES-181, ARCH-118, TASK-181): 'store' — by the time a WIRE admission reaches here it has
@@ -1386,7 +1401,7 @@ export class RunManager {
     // reads just above), never re-resolved from today's catalog. `null` for a pre-v26 row leaves
     // the sink unpriced, which is its documented "we never looked" state.
     const persistedPriceBook = await this._store.getPriceBook(runId);
-    const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, secretValueProvider: this._secretValueProvider, aliases: this._aliasMap, ...(persistedPriceBook !== null ? { priceBook: persistedPriceBook } : {}) });
+    const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, secretValueProvider: this._secretValueProvider, ...(persistedPriceBook !== null ? { priceBook: persistedPriceBook } : {}) });
     const entry: RunEntry = {
       script,
       // v35 (DES-233(d)): `spec.args ?? {}` — no `storedParams?.args` middle term. `runs.args`
@@ -1532,21 +1547,30 @@ export class RunManager {
 
   /** Admission checks over a resolved parameter snapshot, shared by `start()` and a nested
    *  `workflow()` frame (whose child version is its own admission — see `_handleWorkflowRequest`):
-   *  every reachable model must still be a configured alias (UNKNOWN_ALIAS — a registered default
-   *  can fall out of the table after a config change) and no resolved appendPrompt may carry the
-   *  user-instructions frame close delimiter (PARAM_OUT_OF_RANGE, reported by size only). Returns
-   *  the reachable model set, which the price pin is taken over (INV-V26-4). */
-  private _refuseUnadmittableParams(params: RunParams): string[] {
+   *  every reachable model must still be a valid, catalog-checked full ref (UNKNOWN_MODEL —
+   *  2026-09-26, owner decisions 1/6: syntax via `parseModelRef`, openrouter/ollama existence
+   *  against `catalog` when available) and no resolved appendPrompt may carry the user-instructions
+   *  frame close delimiter (PARAM_OUT_OF_RANGE, reported by size only). Returns the reachable model
+   *  set (the price pin is taken over it, INV-V26-4) plus any non-fatal MODEL_CATALOG_UNVERIFIED
+   *  warnings `checkModelRef` produced. */
+  private _refuseUnadmittableParams(params: RunParams, catalog: ModelCatalogSnapshot): { models: string[]; warnings: ModelRefWarning[] } {
     const models = reachableModels(params);
+    const warnings: ModelRefWarning[] = [];
+    // Reverse-lookup the label a resolved model came from, purely for a readable warning — a
+    // run-wide `params.model` (legacy top-level rung, never author-set post-v24) has no label.
+    const labelOf = (m: string): string =>
+      Object.entries(params.agents ?? {}).find(([, a]) => a.model === m)?.[0] ?? '(run)';
     for (const m of models) {
-      if (m !== undefined && !isKnownAlias(m, this._aliasNames)) {
+      const verdict = checkModelRef(m, catalog);
+      if (!verdict.ok) {
         throw paramCodedError({
           ok: false,
-          code: 'UNKNOWN_ALIAS',
-          message: `model is not a known alias: ${m}`,
-          detail: { param: 'model', supplied: m, allowed: { enum: [...this._aliasNames] } },
+          code: 'UNKNOWN_MODEL',
+          message: verdict.message,
+          detail: { param: 'model', supplied: m },
         });
       }
+      if (verdict.warning) warnings.push({ code: 'MODEL_CATALOG_UNVERIFIED', label: labelOf(m), model: m, message: verdict.warning });
     }
     const appendPrompts = [params.appendPrompt, ...Object.values(params.agents ?? {}).map((a) => a.appendPrompt)];
     for (const ap of appendPrompts) {
@@ -1559,7 +1583,7 @@ export class RunManager {
         });
       }
     }
-    return models;
+    return { models, warnings };
   }
 
   /** INV-V26-4 for a nested frame: the pin taken in `start()` covers only the models the TOP-level
@@ -1573,7 +1597,7 @@ export class RunManager {
     const book = entry.priceBook;
     if (book === null) return; // pre-v26 row: "we never looked" stays that way
     const missing = models
-      .map((m) => resolveModelRef(this._aliasMap, m))
+      .map((m) => parseModelRef(m))
       .filter((r): r is NonNullable<typeof r> => r !== undefined && !Object.hasOwn(book.pinned, `${r.provider}/${r.model}`));
     if (missing.length === 0) return;
     const snapshot = await this._modelBook.snapshot();
@@ -1706,14 +1730,22 @@ export class RunManager {
       );
     }
     const childParams = defaultRunParams(undefined, childContract.agents);
-    await this._pinChildModels(runId, entry, this._refuseUnadmittableParams(childParams));
+    // 2026-09-26 (owner decision 6): the nested frame is its own admission point, so it fetches its
+    // own catalog snapshot rather than inheriting the parent run's (which may be stale by the time a
+    // deep/late nested workflow() fires) — `ModelBook`'s own TTL cache means this is a real fetch
+    // only once per TTL window, not once per nested call.
+    const childCatalog = toModelCatalogSnapshot(await this._modelBook.snapshot());
+    const childRefuse = this._refuseUnadmittableParams(childParams, childCatalog);
+    await this._pinChildModels(runId, entry, childRefuse.models);
+    for (const w of childRefuse.warnings) console.warn(`[model-catalog] run ${runId} (nested '${name}'): ${w.message}`);
     // Issue #73 (d) for the child's agents: WARN, never refuse — logged only, the run_start caller
     // has already been answered by the time a nested frame is admitted.
     if (this._probeLookup) {
       const warnings = toolProbeWarnings({
         calls: scanAgentCalls(registered.script).calls,
-        modelFor: (label) => childParams.agents?.[label]?.model ?? childParams.model ?? 'default',
-        resolve: (alias) => resolveModelRef(this._aliasMap, alias),
+        // 2026-09-26 (rule 3): no `?? 'default'` fallback — see the top-level admission's own note.
+        modelFor: (label) => childParams.agents?.[label]?.model as string,
+        resolve: (ref) => parseModelRef(ref),
         lookup: this._probeLookup,
       });
       for (const w of warnings) console.warn(`[model-probe] run ${runId} (nested '${name}'): ${w.message}`);

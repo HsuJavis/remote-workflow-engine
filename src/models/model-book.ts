@@ -170,10 +170,19 @@ export class ModelBook {
 }
 
 /** v26 (DES-178, ARCH-116, TASK-178): the `modelsToCheck` expression `run-manager.ts` used to build
- *  inline, extracted so the admission UNKNOWN_ALIAS check and the price-book pin derive the SAME
+ *  inline, extracted so the admission UNKNOWN_MODEL check and the price-book pin derive the SAME
  *  reachable set from ONE place (INV-V26-4 is only as strong as the set it pins over). Deduplicated
  *  — a run-wide default plus per-agent overrides frequently repeat the same alias. */
 export function reachableModels(params: RunParams): string[] {
   const raw = [params.model, ...Object.values(params.agents ?? {}).map((a) => a.model)];
   return [...new Set(raw.filter((m): m is string => m !== undefined))];
+}
+
+/** 2026-09-26 (alias mechanism removed, owner decision 6): adapts a `BookSnapshot` (this class's
+ *  own TTL'd catalog fetch) into a `providers.ts` `ModelCatalogSnapshot` — the pure data
+ *  `checkModelRef`'s openrouter/ollama existence arm consults. One adapter, not a second fetch: the
+ *  admission pin (`RunManager.start()`) and the model-ref existence check now read the SAME
+ *  snapshot for the SAME admission, so they can never disagree about what the catalog said. */
+export function toModelCatalogSnapshot(snapshot: BookSnapshot): { entries: Array<{ provider: string; model: string }>; source: BookSnapshot['source'] } {
+  return { entries: snapshot.entries.map((e) => ({ provider: e.provider, model: e.model })), source: snapshot.source };
 }

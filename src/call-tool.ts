@@ -351,9 +351,11 @@ export async function callTool(
     }
     case 'models_probe': {
       if (!deps.modelProber) return refusalEnvelope('INVALID_ARGUMENT', 'model probing is not available on this engine (no gateway configured)');
-      const alias = a['alias'] as string | undefined;
-      const results = await deps.modelProber.probeNow(alias, a['timeoutMs'] as number | undefined);
-      if (results === null) return refusalEnvelope('UNKNOWN_ALIAS', `UNKNOWN_ALIAS: '${alias}' is not a configured model alias`);
+      const model = a['model'] as string | undefined;
+      const results = await deps.modelProber.probeNow(model, a['timeoutMs'] as number | undefined);
+      if (results === null) {
+        return refusalEnvelope('UNKNOWN_MODEL', `UNKNOWN_MODEL: "${model}" is not a valid <provider>/<model-id> ref (providers: anthropic, openrouter, ollama)`);
+      }
       return { result: results };
     }
     case 'system_info': {

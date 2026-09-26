@@ -18,8 +18,8 @@ import { SubmissionValidator } from './submission-validator.js';
 import { CatalogNotFoundError, codedError, toErrEnvelope, type ErrorCode } from './errors.js';
 import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, HarnessDescriptor, RunListFilter, AuditAction, RunSpec, RunUsage, AgentLogView } from './types.js';
 import { parseMeta, toolSurfaceWarnings } from './workflow-meta.js';
-import { buildAuthoringGuide, chooseExampleModelAlias, type AliasProbeInfo } from './authoring-guide.js';
-import { effectiveAgentBounds, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type AgentParamSpec } from './params/contract.js';
+import { buildAuthoringGuide } from './authoring-guide.js';
+import { effectiveAgentBounds, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type AgentParamSpec, type ModelRefWarning } from './params/contract.js';
 import { projectWorkflowForRead, projectWorkflowDescribe, type WorkflowOwnerView } from './workflow-view.js';
 import { scanAgentCalls } from './scan-agent-calls.js';
 import { predictedLanes } from './dashboard.js';
@@ -87,7 +87,7 @@ const NEVER_CLAIMS: TriggerClaimStore = {
  *  trigger-claim step in between) — a structural port so this file does not need the concrete
  *  WorkflowCatalog class beyond what's already imported for read-side helpers. */
 interface RegistrationCatalog {
-  validateRegistration(req: { name: string; script: string; mermaid: string; actor?: Actor }): Promise<{ params: ParamContract }>;
+  validateRegistration(req: { name: string; script: string; mermaid: string; actor?: Actor }): Promise<{ params: ParamContract; warnings?: ModelRefWarning[] }>;
   /** v37 P1 (DES-263's 第三次修訂): `registeredRemote` — the SAME `isRemoteSubmission` the trigger
    *  stores' creation stamp already reads, forwarded one hop further so the version row records
    *  who wrote the script it holds. */
@@ -105,14 +105,9 @@ export interface McpFacadeDeps {
   /** v21 (ARCH-066, DES-104, TASK-100): engine ceilings bounding workflow_source/list's read-time
    *  effective bounds — forwarded from ServerConfig (see server.ts's createServer). */
   ceilings?: Ceilings;
-  /** v24 Gate 7.5 (D-12, REQ-117): the RESOLVED model-alias names this deployment accepts — the
-   *  same Set `RunManager` admission and the catalog's registration check use (server.ts's
-   *  `aliasNames`), so `workflow_authoring_guide` can NAME them instead of leaving a cold model to
-   *  guess. Absent (unit construction) renders the "no alias table configured" sentence. */
-  aliasNames?: Set<string>;
   /** v25 (DES-168, REQ-120, issue #61): this deployment's resolved per-run in-flight agent() cap, so
    *  `workflow_authoring_guide` states the REAL fan-out width instead of a literal. Same
-   *  "resolved, never hard-coded" rule as `ceilings`/`aliasNames` above. */
+   *  "resolved, never hard-coded" rule as `ceilings` above. */
   runConcurrency?: number;
   /** v35 (DES-239, ARCH-147/154, TASK-237, REQ-207): the deployed gateway's worst-case attempt
    *  count — `1 + max(0, config?.retries ?? 1)`, forwarded from server.ts's composition root — so
@@ -128,19 +123,6 @@ export interface McpFacadeDeps {
    *  author to learn it from a refused run. Absent (unit construction, or a deployment where the
    *  probe never ran) renders the guide's dual-posture generic text rather than asserting either. */
   confinementPosture?: 'confined' | 'unconfined';
-  /** issue #89 item 6: this deployment's alias table crossed with its LATEST probe results, so
-   *  `workflow_authoring_guide` can pick a model alias for its examples that is actually
-   *  tool-capable (`chooseExampleModelAlias()`, authoring-guide.ts) rather than teaching every cold
-   *  author to copy `model.default: 'default'` even where that alias probes tool-incapable. A THUNK,
-   *  not a snapshot — server.ts's weekly `ModelProber` rewrites probe results after boot, and this
-   *  is read fresh on every `workflow_authoring_guide` call, never cached at construction. Absent
-   *  (unit construction, or a deployment with no alias/probe wiring) renders every example's literal
-   *  `'default'`, byte-identical to the guide before this field existed.
-   *  Return type is sync-OR-Promise (issue #89 item 6, verification finding 1's fix): `provider`/
-   *  `costLevel` come from the model book, which is priced through an async catalog fetch
-   *  (`ModelBook.snapshot()`), while every existing unit test still hands a plain synchronous
-   *  array — `await`ing a non-Promise value resolves to itself, so both shapes work unchanged. */
-  aliasProbes?: () => readonly AliasProbeInfo[] | Promise<readonly AliasProbeInfo[]>;
   cas?: CasStore;
   assetSync?: AssetSyncService;
   /** v24 (DES-149): the two trigger-claim stores the register/deregister sequence calls into.
@@ -293,11 +275,9 @@ export class McpFacade {
   private readonly runManager: RunManager;
   private readonly validator: SubmissionValidator;
   private readonly ceilings: Ceilings;
-  private readonly aliasNames: Set<string>;
   private readonly runConcurrency: number;
   private readonly gatewayAttempts?: number;
   private readonly confinementPosture?: 'confined' | 'unconfined';
-  private readonly aliasProbes?: () => readonly AliasProbeInfo[] | Promise<readonly AliasProbeInfo[]>;
   private readonly cas?: CasStore;
   // Not readonly: `AssetSyncService` needs the server's bound port for `selfBind` (server.ts
   // constructs it AFTER `http.listen()`, well after the facade). `bindAssetSync` lets the
@@ -316,11 +296,9 @@ export class McpFacade {
     this.runManager = deps.runManager ?? new RunManager({ store: this.store, clock });
     this.validator = deps.validator ?? new SubmissionValidator({ catalog: this.runManager.catalog });
     this.ceilings = deps.ceilings ?? DEFAULT_CEILINGS;
-    this.aliasNames = deps.aliasNames ?? new Set();
     this.runConcurrency = deps.runConcurrency ?? DEFAULT_RUN_CONCURRENCY;
     this.gatewayAttempts = deps.gatewayAttempts;
     this.confinementPosture = deps.confinementPosture;
-    this.aliasProbes = deps.aliasProbes;
     this.cas = deps.cas;
     this.assetSync = deps.assetSync;
     this.diagramCache = deps.diagramCache;
@@ -424,7 +402,10 @@ export class McpFacade {
       }
       const catalog = this.runManager.catalog as unknown as RegistrationCatalog;
       const actor = actorFor(principal, a, 'attribution');
-      const { params } = await catalog.validateRegistration({ name: a.name, script: a.script, mermaid: a.mermaid, actor });
+      // 2026-09-26 (owner decision 6): `modelWarnings` (MODEL_CATALOG_UNVERIFIED) travel to the
+      // response's `result.warnings`, merged with `toolSurfaceWarnings` below — one array, same as
+      // every other non-fatal registration note.
+      const { params, warnings: modelWarnings } = await catalog.validateRegistration({ name: a.name, script: a.script, mermaid: a.mermaid, actor });
       for (const id of triggers) {
         const outcome = this._storeFor(id).claim(id, a.name);
         if (outcome === 'claimed') { claimedThisCall.push(id); continue; }
@@ -450,8 +431,9 @@ export class McpFacade {
       // (notably `script`) is discarded here, never on the envelope.
       const { versions, channels } = await catalog.resolveDetail(a.name, { version });
       // Issue #78(b): non-fatal — the version is already registered. Absent when empty, so an
-      // unaffected registration keeps exactly the reply keys it had before.
-      const warnings = toolSurfaceWarnings(scanAgentCalls(a.script), this.confinementPosture);
+      // unaffected registration keeps exactly the reply keys it had before. 2026-09-26 (owner
+      // decision 6): merged with any MODEL_CATALOG_UNVERIFIED notes from validateRegistration above.
+      const warnings = [...toolSurfaceWarnings(scanAgentCalls(a.script), this.confinementPosture), ...(modelWarnings ?? [])];
       return { runId: '', status: 'completed', version: versionNum, result: { name: a.name, version, versions, channels, ...(a.seedManifestRef !== undefined ? { seedManifestRef: a.seedManifestRef } : {}), ...(warnings.length > 0 ? { warnings } : {}) } };
     } catch (err) {
       const e = toErrEnvelope(err);
@@ -740,25 +722,19 @@ export class McpFacade {
    *  `this.ceilings` is the RESOLVED ServerConfig value (operator-overridable), not
    *  DEFAULT_CEILINGS — the distinction DES-157's own signature insists on. */
   async workflowAuthoringGuide(): Promise<ResultEnvelope<{ text: string }>> {
-    // v24 Gate 7.5 (D-12): the alias names travel with the ceilings — both are "what THIS
-    // deployment accepts", and the guide is the only place the surface states either.
-    // v37 (DES-258 owner ruling, ARCH-181): `confinementPosture` travels the same way — this is
-    // the LIVE tool response, so it states the posture actually measured on THIS deployment,
+    // v37 (DES-258 owner ruling, ARCH-181): `confinementPosture` travels with the ceilings — this
+    // is the LIVE tool response, so it states the posture actually measured on THIS deployment,
     // never the generic dual-posture text the generated static docs/AUTHORING.md falls back to.
-    // issue #89 item 6: `aliasProbes` is read FRESH on every call (a thunk, not a snapshot) — the
-    // weekly ModelProber rewrites probe results after boot, and this is the LIVE tool response.
-    // Absent `aliasProbes` (unit construction) reads as `[]`, which `chooseExampleModelAlias`
-    // resolves to `{alias: 'default'}` — byte-identical to the guide before this field existed.
+    // 2026-09-26 (alias mechanism removed): the model-ref rule is now static text (no resolved
+    // alias table, no example-alias thunk) — see `authoring-guide.ts`'s `modelRefSentence()`.
     return {
       runId: '',
       status: 'completed',
       result: {
         text: buildAuthoringGuide({
           ...this.ceilings,
-          aliases: [...this.aliasNames],
           runConcurrency: this.runConcurrency,
           confinementPosture: this.confinementPosture,
-          exampleModelAlias: chooseExampleModelAlias(await (this.aliasProbes?.() ?? [])),
         }),
       },
     };

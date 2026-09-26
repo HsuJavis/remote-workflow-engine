@@ -113,7 +113,7 @@ const ABSENT_WORKFLOW = 'no-such-workflow-fixture';
 /** The one agent contract block the fixture script declares (DES-144 requires model/effort/
  *  timeoutMs, each with a `.default`). Same shape `authoring-guide.ts`'s examples teach. */
 const FIXTURE_AGENT_SPEC =
-  "{ model: { type: 'string', default: 'default' }, " +
+  "{ model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, " +
   "effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, " +
   'timeoutMs: { type: \'number\', default: 60000 } }';
 
@@ -220,8 +220,9 @@ export const TOOL_SPECS = [
   {
     name: 'workflow_register', entity: 'workflow', key: null,
     description: 'Register a new workflow version under a name; the caller becomes its owner. Registering the same name again appends a new version (v2, v3…) and overwrites nothing; use a different name only for a different purpose. ' +
+      "Every agent() call's model comes from `script`'s own `export const meta = { params: { agents: { <label>: { model: {...} } } } }`: `model` is REQUIRED with a `.default`, and that default MUST be a full `<provider>/<model-id>` ref — providers are exactly anthropic, openrouter, ollama (e.g. \"anthropic/claude-haiku-4-5-20251001\", \"openrouter/openai/gpt-4.1\", \"ollama/qwen2.5:7b\"); there are no aliases, no bare names, no 'default'/'local'-style shortcuts — a bare name is refused UNKNOWN_MODEL. Use models_list to find a valid ref (copy its `ref` field verbatim). A run_start override may replace it with a different full ref per run; see workflow_authoring_guide for the complete authoring rules. " +
       // Issue #78(b): advertised here because a cold client reads only tools/list.
-      "The reply may carry result.warnings — non-fatal notes, the version is registered anyway: BASH_SUBSUMES_FILE_TOOLS when an agent() call's allowedTools names Bash beside Read/Grep/Glob/Write/Edit (allowedTools restricts names, and Bash can do what those do); BASH_READONLY_UNENFORCEABLE when an agent() declares bash:'readonly' on an engine with no working Bash sandbox (every dispatch of it will fail closed there).",
+      "The reply may carry result.warnings — non-fatal notes, the version is registered anyway: BASH_SUBSUMES_FILE_TOOLS when an agent() call's allowedTools names Bash beside Read/Grep/Glob/Write/Edit (allowedTools restricts names, and Bash can do what those do); BASH_READONLY_UNENFORCEABLE when an agent() declares bash:'readonly' on an engine with no working Bash sandbox (every dispatch of it will fail closed there); MODEL_CATALOG_UNVERIFIED when a declared model ref could not be checked against a live catalog listing (openrouter/ollama) or is an anthropic id not yet in this deployment's static price table — the version registers anyway.",
     inputSchema: schema({
       name: { type: 'string' },
       script: { type: 'string' },
@@ -259,7 +260,7 @@ export const TOOL_SPECS = [
     }, ['name', 'script']),
     outputSchema: OUT,
     // v24 (integrator; adjudication #4 C-6 [21] + #2 A-4): reconciled BOTH ways against what the
-    // register path actually throws — `script-checks.ts` (PARSE_ERROR / UNKNOWN_ALIAS /
+    // register path actually throws — `script-checks.ts` (PARSE_ERROR / UNKNOWN_MODEL /
     // MCP_NOT_PROVISIONED), `parseParamContract` (AGENT_UNDECLARED / AGENT_DECLARED_NOT_IN_SCRIPT /
     // PARAM_CONTRACT_INVALID / DEFAULTS_RETIRED), `workflow-catalog.ts` (SCAN_VIOLATION /
     // MERMAID_REQUIRED / MERMAID_INVALID / DIAGRAM_MISMATCH / VERSION_CEILING_EXCEEDED /
@@ -270,7 +271,7 @@ export const TOOL_SPECS = [
     // the tool cannot answer teaches a cold model to branch on something that never arrives.
     // `SCRIPT_INVALID` stays: it is the sandbox structural refusal `validateScriptEntry` raises.
     errors: [
-      'SCRIPT_INVALID', 'PARSE_ERROR', 'UNKNOWN_ALIAS', 'MCP_NOT_PROVISIONED', 'SCAN_VIOLATION',
+      'SCRIPT_INVALID', 'PARSE_ERROR', 'UNKNOWN_MODEL', 'MCP_NOT_PROVISIONED', 'SCAN_VIOLATION',
       'AGENT_UNDECLARED', 'AGENT_DECLARED_NOT_IN_SCRIPT', 'PARAM_CONTRACT_INVALID', 'DEFAULTS_RETIRED',
       'MERMAID_REQUIRED', 'MERMAID_INVALID', 'DIAGRAM_MISMATCH',
       // v26 (REQ-128, DES-184): the v2 diagram contract's own refusals, plus the
@@ -288,7 +289,7 @@ export const TOOL_SPECS = [
       // Issue #82: the seedManifestRef ladder (RunManager.loadSeedManifestRef), run at register time.
       'MISSING_BLOBS', 'INVALID_SEED_SPEC', 'CAS_UNAVAILABLE',
     ],
-    seeAlso: [] as string[],
+    seeAlso: ['models_list'] as string[],
     authz: { minRole: 'author', ownership: 'none' } as AuthzRow,
     fixture: {
       happy: { name: 'demo', script: FIXTURE_SCRIPT, mermaid: FIXTURE_MERMAID },
@@ -429,7 +430,9 @@ export const TOOL_SPECS = [
   // ---- run (8) ----
   {
     name: 'run_start', entity: 'run', key: null,
-    description: "Start a run of a workflow's current release. First-try traps: a just-registered workflow has no release yet — pass {version} to run the version workflow_register just returned, to iterate, and call workflow_publish to move it to release once it is stable — and starting a run returns no result; poll run_status until terminal, then call run_result. The result may carry non-fatal `warnings` (the run is started regardless): MODEL_TOOL_USE_UNVERIFIED names an agent that holds tools on a model whose last probe (models_list toolUseVerified:false) did not use a tool.",
+    description: "Start a run of a workflow's current release. First-try traps: a just-registered workflow has no release yet — pass {version} to run the version workflow_register just returned, to iterate, and call workflow_publish to move it to release once it is stable — and starting a run returns no result; poll run_status until terminal, then call run_result. " +
+      "overrides.agents.<label>.model, when given, MUST be a full `<provider>/<model-id>` ref — providers are exactly anthropic, openrouter, ollama; there are no aliases, no bare names — anything else is refused UNKNOWN_MODEL. Use models_list to find a valid ref (copy its `ref` field verbatim). " +
+      "The result may carry non-fatal `warnings` (the run is started regardless): MODEL_TOOL_USE_UNVERIFIED names an agent that holds tools on a model whose last probe (models_list toolUseVerified:false) did not use a tool.",
     // v24 adjudication #2 A-2: seed/seedManifest/seedRef/seedManifestRef are RESTORED here — only
     // seedNamespace was meant to drop (ADR-028 derives it from the principal). Omitting them left the
     // TASK-153 plugin doc advertising run_start({seedManifestRef}) against an engine that rejected it.
@@ -482,6 +485,10 @@ export const TOOL_SPECS = [
             "Per-agent parameter overrides, keyed by the script's own agent label: " +
             "{agents: {'<label>': {model?, effort?, timeoutMs?, appendPrompt?}}}. " +
             'There are no workflow-wide override fields — an override reaches exactly the label it names. ' +
+            'model, when given, MUST be a full `<provider>/<model-id>` ref — providers are exactly ' +
+            'anthropic, openrouter, ollama (e.g. "anthropic/claude-haiku-4-5-20251001"); there are no ' +
+            'aliases, no bare names — anything else is refused UNKNOWN_MODEL. Use models_list to find ' +
+            'a valid ref (copy its `ref` field verbatim). ' +
             // v25 (#55): INTERPOLATED, not transcribed. The hand-written copy of this list said
             // `tools` and outlived the pipeline's `allowedTools` by three iterations; the drift-lock
             // in params-admission.test.ts checks this description against LOCKED_KEYS itself, and a
@@ -553,7 +560,7 @@ export const TOOL_SPECS = [
       additionalProperties: false,
     },
     outputSchema: OUT,
-    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'CHANNEL_UNPUBLISHED', 'NOT_RUNNABLE', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'PARAM_LOCKED', 'PARAM_UNKNOWN', 'PARAM_OUT_OF_RANGE', 'UNKNOWN_AGENT_LABEL', 'UNKNOWN_ALIAS', 'AGENT_UNDECLARED', 'LEGACY_REREGISTER', 'INVALID_SEED_SPEC', 'SEED_SOURCE_CONFLICT', 'SEEDREF_DISABLED', 'EGRESS_DENIED', 'CAS_UNAVAILABLE', 'MISSING_BLOBS', 'RUN_ADMISSION_LIMIT', 'CONFINEMENT_UNAVAILABLE'],
+    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'CHANNEL_UNPUBLISHED', 'NOT_RUNNABLE', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'PARAM_LOCKED', 'PARAM_UNKNOWN', 'PARAM_OUT_OF_RANGE', 'UNKNOWN_AGENT_LABEL', 'UNKNOWN_MODEL', 'AGENT_UNDECLARED', 'LEGACY_REREGISTER', 'INVALID_SEED_SPEC', 'SEED_SOURCE_CONFLICT', 'SEEDREF_DISABLED', 'EGRESS_DENIED', 'CAS_UNAVAILABLE', 'MISSING_BLOBS', 'RUN_ADMISSION_LIMIT', 'CONFINEMENT_UNAVAILABLE'],
     seeAlso: ['workflow_publish', 'run_status', 'run_result'],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
     fixture: {
@@ -1014,11 +1021,11 @@ export const TOOL_SPECS = [
     // undiscoverable. A cold model reading `{properties:{}}` cannot filter a catalog it must choose
     // a model from.
     description:
-      'List the model catalog. ONE row per model: `aliases` lists EVERY alias name this ' +
-      'deployment configures for it (a model named twice is one priced row, not two rows one of ' +
-      'which claims `price:"unknown"`), and `ref` is the first of them — the string to pass to ' +
-      '`agent({model})`. Each row also carries provider, model, description, modalities, ' +
-      'contextWindow, price, location, plus the engine ratings: `capability` (a one-line ' +
+      'List the model catalog. ONE row per model: `ref` is the exact `<provider>/<model-id>` string ' +
+      '(providers: anthropic, openrouter, ollama) to paste VERBATIM into ' +
+      'meta.params.agents.<label>.model.default at workflow_register, or into a run_start override ' +
+      '— there are no aliases; every model is addressed by this one full ref. Each row also carries ' +
+      'provider, model, description, modalities, contextWindow, price, location, plus the engine ratings: `capability` (a one-line ' +
       'summary), `stability`, and `costLevel` — an integer 0..10 where 0 is free and 10 is the most ' +
       'expensive tier, null when the provider publishes no price. v26: `toolUseDeclared` / ' +
       '`effortDeclared` (boolean, or \'unknown\' when the catalog said nothing) and `declaredSource` ' +
@@ -1052,29 +1059,36 @@ export const TOOL_SPECS = [
     // gateway, so it measures what an agent() call would get.
     name: 'models_probe', entity: 'models', key: null,
     description:
-      'Admin only. Probe the configured models NOW, through the same gateway agents use: per distinct ' +
-      'configured provider/model (or only the one `alias` names), one prose call and one call allowed ' +
-      'only the Bash tool that must run a command and report its unguessable output. Returns one row per ' +
-      'model: alias, provider, model, proseVerified, toolUseVerified, probedAt, latencyMs {prose, tools}, ' +
-      'detail. Results are stored and appear on models_list (toolUseVerified/proseVerified/lastProbedAt/' +
-      'probeDetail/stabilitySource). Takes up to two probe timeouts per model; the engine also re-probes ' +
-      'on its own every modelProbe.intervalMs (default weekly).',
+      'Admin only. Probe models NOW, through the same gateway agents use: per distinct model declared ' +
+      'by a registered workflow version (or only the one full `model` ref names — copy the exact `ref` ' +
+      'string from models_list, e.g. "anthropic/claude-haiku-4-5-20251001"), one prose call and one ' +
+      'call allowed only the Bash tool that must run a command and report its unguessable output. ' +
+      'Returns one row per model: provider, model, proseVerified, toolUseVerified, probedAt, ' +
+      'latencyMs {prose, tools}, detail. Results are stored and appear on models_list ' +
+      '(toolUseVerified/proseVerified/lastProbedAt/probeDetail/stabilitySource). Takes up to two probe ' +
+      "timeouts per model; the engine also re-probes on its own every modelProbe.intervalMs (default weekly).",
     inputSchema: {
       ...schema({
-        alias: { type: 'string', description: 'Probe only this configured alias. Omit to probe every configured model once.' },
+        model: {
+          // No `pattern` here deliberately: a malformed ref must reach the typed UNKNOWN_MODEL
+          // refusal (naming the expected form and the three providers), never a generic ajv
+          // INVALID_ARGUMENT — same convention as run_start's `overrides` schema (tool-specs.ts).
+          type: 'string',
+          description: 'Probe only this full <provider>/<model-id> ref (e.g. "ollama/qwen2.5:7b" — copy from models_list). Providers: anthropic, openrouter, ollama — a bare name or unknown provider is refused UNKNOWN_MODEL. Omit to probe every model a registered workflow version declares.',
+        },
         timeoutMs: { type: 'integer', minimum: 1000, maximum: 600000, description: "Per-call bound for this probe only (default: the engine's modelProbe.timeoutMs)." },
       }),
       additionalProperties: false,
     },
     outputSchema: OUT,
-    errors: ['UNKNOWN_ALIAS', 'INVALID_ARGUMENT', 'FORBIDDEN_ROLE'] as ErrorCode[],
+    errors: ['UNKNOWN_MODEL', 'INVALID_ARGUMENT', 'FORBIDDEN_ROLE'] as ErrorCode[],
     seeAlso: ['models_list'] as string[],
     authz: { minRole: 'admin', ownership: 'none' } as AuthzRow,
     fixture: {
       // A short bound: the conformance engine's provider never answers, so the happy path is a
       // quickly-recorded FAILED probe — which is still the tool working as specified.
-      happy: { alias: 'default', timeoutMs: 1000 },
-      errors: { UNKNOWN_ALIAS: { alias: 'no-such-alias-fixture' }, INVALID_ARGUMENT: { alias: 5 } },
+      happy: { model: 'anthropic/claude-haiku-4-5-20251001', timeoutMs: 1000 },
+      errors: { UNKNOWN_MODEL: { model: 'not-a-valid-ref' }, INVALID_ARGUMENT: { model: 5 } },
     },
   },
   {

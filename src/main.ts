@@ -13,8 +13,9 @@
 // REQ-003 and the product core promise require (user decision D1, twice confirmed; direct-fetch
 // REJECTED as the default). The proxy this SDK session's ANTHROPIC_BASE_URL points at is the same
 // managed LiteLLM proxy subprocess LiteLLMGatewayClient itself uses (src/gateway/litellm-proxy.ts),
-// keyed off the same `aliases` table so there is one alias->provider/model source of truth either
-// way. Setting `gateway: "direct-fetch"` in the config file opts back out to the pre-D-F1 path
+// whose model_list is a static openrouter/*+ollama/* wildcard pair (2026-09-26: no alias table any
+// more — every model is a full <provider>/<model-id> ref). Setting `gateway: "direct-fetch"` in the
+// config file opts back out to the pre-D-F1 path
 // (LiteLLMGatewayClient's own per-provider fetch / its own useLiteLLMProxy toggle), unchanged.
 // This entrypoint is the ONLY place that decides between the two — server.ts's own default (an
 // undefined `config.gateway` falling through to LiteLLMGatewayClient) stays exactly as it was for
@@ -33,9 +34,7 @@ import type { ConfinementProbeResult } from './gateway/confinement-probe.js';
 import { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
 import { assertWorkRootIsolated } from './workroot-guard.js';
-import { DEFAULT_ALIASES } from './default-aliases.js';
 import type { Role } from './tool-specs.js';
-import { validateAliases } from './providers.js';
 import { validateModelProbeConfig } from './models/model-probe.js';
 
 type GatewayChoice = 'sdk' | 'direct-fetch';
@@ -43,10 +42,6 @@ type GatewayChoice = 'sdk' | 'direct-fetch';
 function isNonEmptyString(s: string | undefined): s is string {
   return typeof s === 'string' && s.length > 0;
 }
-
-// DEFAULT_ALIASES (src/default-aliases.ts) is the single-source fallback table, used here only to
-// give the SDK gateway's managed LiteLLM proxy an alias table to route through when the config file
-// omits `aliases` entirely — the same anthropic-only default the rest of the system falls back to.
 
 // Omit ServerConfig's own `gateway` field (typed GatewayClient — an object seam, D-F1): the config
 // FILE's `gateway` key is a plain string choice this entrypoint resolves into that object itself.
@@ -57,7 +52,7 @@ function isNonEmptyString(s: string | undefined): s is string {
 interface FileConfig extends Partial<Omit<ServerConfig, 'gateway' | 'principals' | 'diagramRender' | 'confinementPosture'>> {
   /** D-F4: which GatewayClient main.ts wires up. Default "sdk" (ClaudeAgentSdkGatewayClient, the
    *  real tool-loop-capable path). "direct-fetch" opts out to the legacy LiteLLMGatewayClient path
-   *  (server.ts's own pre-existing default, driven by `aliases`/`useLiteLLMProxy`). */
+   *  (server.ts's own pre-existing default, driven by `useLiteLLMProxy`). */
   gateway?: GatewayChoice;
   /** v24 (ARCH-090, DES-141): raw role map, as it appears in rwe.config.json — `normalizePrincipals`
    *  validates each `role` string into `ServerConfig.principals`'s `Role` union (boot REFUSES on a
@@ -97,7 +92,7 @@ interface FileConfig extends Partial<Omit<ServerConfig, 'gateway' | 'principals'
 // stated reason. Three misses (v11 `updateFlagPath`, v15 `auth`, v26 `agentSlots`) were each found
 // by a real run instead of by a test; a hand-written case per key is what let the fourth hide.
 export const KNOWN_FILE_CONFIG_KEYS: Record<keyof FileConfig, true> = {
-  bind: true, port: true, allowedHosts: true, workRoot: true, aliases: true, timeoutMs: true,
+  bind: true, port: true, allowedHosts: true, workRoot: true, timeoutMs: true,
   retries: true, useLiteLLMProxy: true, proxyManager: true, litellmPort: true,
   gateway: true, issueReporter: true, mcpProbe: true,
   schedulerDbPath: true, assetRoot: true, agentSlots: true, runConcurrency: true, workspaceTtlMs: true,
@@ -119,6 +114,14 @@ export const KNOWN_FILE_CONFIG_KEYS: Record<keyof FileConfig, true> = {
 export const RETIRED_CONFIG_KEYS: Record<string, string> = {
   graphAnalyzer: 'at v24 (ADR-025) — diagrams are author-drawn `mermaid` supplied to `workflow_register`; no replacement, remove the key',
   agentDefinitionsDir: 'at v34 — the server-side agentType mechanism is gone; see workflow_authoring_guide → prompt layering',
+  // 2026-09-26 (owner decisions 1/7): the alias mechanism is removed entirely — every model is now a
+  // full <provider>/<model-id> ref (providers: anthropic, openrouter, ollama), declared REQUIRED at
+  // workflow_register in meta.params.agents.<label>.model.default and overridable per run_start. A
+  // config file that still carries `aliases` must still BOOT (self-update restarts the service with
+  // the existing production config) — this key falls through to the generic unknown-key warning
+  // below (named here so the warning carries a retirement reason, not a bare "unrecognized") and is
+  // never forwarded to ServerConfig.
+  aliases: 'at 2026-09-26 — the alias mechanism is removed; declare a full <provider>/<model-id> ref in meta.params.agents.<label>.model.default instead; remove the key',
 };
 
 /** v24 (ARCH-090, DES-141): validates a raw `FileConfig.principals` role map into
@@ -255,29 +258,6 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   }
 
   const gatewayChoice: GatewayChoice = fileConfig.gateway ?? 'sdk';
-  const aliases = fileConfig.aliases;
-  // v26 (DES-172, ARCH-112, TASK-171/172, REQ-123): REFUSE boot when any alias names a retired/
-  // unsupported provider (e.g. `openai`, `gemini`) — enumerates EVERY offending row, the deliberate
-  // opposite of a first-offender rule (DES-170's validateSeedSpec): the consumer here is a human
-  // editing several bad rows at once during a release. Also what `--check-config` (below) exists to
-  // catch before a restart, without booting anything else.
-  if (aliases !== undefined) {
-    const aliasCheck = validateAliases(aliases);
-    if (!aliasCheck.ok) {
-      const byProvider = new Map<string, string[]>();
-      for (const offender of aliasCheck.offenders) {
-        const names = byProvider.get(offender.provider) ?? [];
-        names.push(offender.alias);
-        byProvider.set(offender.provider, names);
-      }
-      const parts = [...byProvider.entries()].map(
-        ([provider, names]) => `unsupported provider '${provider}' on aliases ${names.join(', ')}`,
-      );
-      throw new Error(
-        `rwe.config.json: ${parts.join('; ')} — remove these rows. Allowed providers: ${aliasCheck.allowed.join(', ')}.`,
-      );
-    }
-  }
   // Issue #73: validated at load, fail-closed (a bad interval must not silently mis-schedule or
   // disable the probe); absent -> the defaults (enabled, weekly). Forwarded below — the
   // composeConfig bug class (compose-config-v2-wiring.test.ts's PROBES row guards it).
@@ -340,7 +320,6 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     bind: process.env['RWE_BIND'] ?? fileConfig.bind ?? '127.0.0.1',
     port: process.env['RWE_PORT'] ? Number(process.env['RWE_PORT']) : (fileConfig.port ?? 8787),
     workRoot,
-    aliases,
     // D-G8-4: same hardcoded fallback the legacy LiteLLMGatewayClient path already gets
     // (server.ts's own `config?.timeoutMs ?? 15000`) — without it, the zero-config ("just run it",
     // no rwe.config.json present) default SDK gateway path had no bound of its own at all, so a
@@ -445,7 +424,9 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   if (gatewayChoice === 'sdk') {
     // Same managed LiteLLM proxy subprocess the direct-fetch path can opt into (D-R1) — started
     // once here so its baseUrl is known before constructing the SDK session's ANTHROPIC_BASE_URL.
-    const proxy = deps.proxyManager ?? new LiteLLMProxyManager(aliases ?? DEFAULT_ALIASES, {
+    // 2026-09-26 (alias mechanism removed): the proxy's model_list is now STATIC — no alias table
+    // to construct it from.
+    const proxy = deps.proxyManager ?? new LiteLLMProxyManager({
       port: fileConfig.litellmPort,
       // S-2: make supervised restarts of the always-on gateway subprocess observable in the logs
       // (a silent crash+restart of the default gateway would otherwise be invisible).
@@ -472,13 +453,11 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // that was its sole production caller (`req.workspace` is non-optional on every real workflow
     // run) — no replacement wiring here, `cwd` is simply omitted (falls back to the gateway's own
     // `req.workspace ?? undefined`).
-    // D-F10(a): forward aliases/timeoutMs/retries — previously omitted, which silently degraded
-    // D-F7's timeout/retry bound to dead code and D-F6's alias-aware thinking policy to "always
-    // disabled" in production (Gate 7.5 round 4's real repro).
+    // D-F10(a): forward timeoutMs/retries — previously omitted, which silently degraded D-F7's
+    // timeout/retry bound to dead code.
     config.gateway = new ClaudeAgentSdkGatewayClient({
       baseUrl,
       queryImpl: deps.queryImpl,
-      aliases,
       // D-G8-4: use the RESOLVED config.timeoutMs (which carries the hardcoded 15000 fallback
       // above), not the raw fileConfig.timeoutMs — the latter is undefined in the exact zero-config
       // shape this fallback exists for, which silently dropped the fallback on this specific
@@ -486,7 +465,7 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
       timeoutMs: config.timeoutMs,
       retries: fileConfig.retries,
       // D-F11: forwarded so a configured core tool set actually reaches the constructed client —
-      // same composition-root-forwarding convention as aliases/timeoutMs/retries above.
+      // same composition-root-forwarding convention as timeoutMs/retries above.
       defaultAllowedTools: fileConfig.defaultAllowedTools,
       // D-V2V-1: the RESOLVED config.assetRoot (carries the same-as-server.ts default fallback
       // above) — read fresh on every invoke() call so a push made after boot still reaches the
@@ -527,18 +506,17 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
 }
 
 // v26 (DES-172, ARCH-112, TASK-172, REQ-123/070, issue #66): `--check-config` — validate
-// rwe.config.json (closed-provider aliases, principals roles, workRoot isolation, ...) via the
-// SAME composeConfig() translation a real boot uses, but with NO side effects: no litellm
-// subprocess spawn, no port bind (a post-call port probe in IT-143 asserts it). Exit 0/1 with
-// composeConfig's own refusal message, so deploy/rwe-update.sh can gate a restart on it BEFORE the
-// live service is ever touched.
+// rwe.config.json (principals roles, workRoot isolation, ...) via the SAME composeConfig()
+// translation a real boot uses, but with NO side effects: no litellm subprocess spawn, no port bind
+// (a post-call port probe in IT-143 asserts it). Exit 0/1 with composeConfig's own refusal message,
+// so deploy/rwe-update.sh can gate a restart on it BEFORE the live service is ever touched.
 async function runCheckConfig(): Promise<void> {
   try {
     const { config: fileConfig, path: configPath } = loadFileConfig();
     // A NOOP proxy manager stand-in, paired with deps.listen:false (composeConfig skips calling
     // `.start()` on it entirely) — belt-and-suspenders against ever spawning a real litellm
-    // subprocess from a config-validation invocation.
-    const noopProxyManager = new LiteLLMProxyManager(fileConfig.aliases ?? DEFAULT_ALIASES, {
+    // subprocess from a config-validation invocation. 2026-09-26: no alias table argument any more.
+    const noopProxyManager = new LiteLLMProxyManager({
       spawnImpl: (() => {
         throw new Error('--check-config must never spawn a proxy subprocess');
       }) as unknown as typeof import('node:child_process').spawn,

@@ -4,9 +4,9 @@
 // Sole custody of provider API keys lives here (parent-only, never exposed to the sandboxed script).
 import type { AgentOpts, Caps, HarnessDescriptor, TranscriptEvent } from '../types.js';
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
-import { LiteLLMProxyManager, proxyModelName } from './litellm-proxy.js';
+import { LiteLLMProxyManager } from './litellm-proxy.js';
 import { redactHarness } from '../agent-executor.js';
-import { PROVIDER_CAPS } from '../providers.js';
+import { PROVIDER_CAPS, parseModelRef } from '../providers.js';
 import type { Provider } from '../providers.js';
 
 /** v26 (DES-178/DES-179, ARCH-116/ARCH-117): the fail-safe capability BOTH gateways resolve
@@ -15,10 +15,6 @@ import type { Provider } from '../providers.js';
  *  private constant on the SDK client only, so a direct-fetch call without a pin degrades exactly
  *  the same way an SDK call without one does. */
 export const UNKNOWN_CAPS: Caps = { reasoning: 'unknown', tools: 'unknown', source: 'unknown' };
-
-export interface AliasMap {
-  [alias: string]: { provider: Provider; model: string };
-}
 
 /** issue #24/#22: validate a caller-supplied per-call timeout (AgentOpts.timeoutMs). Only a positive,
  *  finite number is honored; anything else (0, negative, NaN, a string from an untrusted script) →
@@ -220,7 +216,6 @@ export interface GatewayClient {
 }
 
 export interface GatewayConfig {
-  aliases: AliasMap;
   timeoutMs: number;
   retries: number;
   /** Injectable HTTP transport — defaults to the global fetch. Unit tests inject a fake
@@ -230,13 +225,14 @@ export interface GatewayConfig {
    * D-V1: route agent() calls through a managed LiteLLM proxy subprocess — the same
    * ANTHROPIC_BASE_URL wiring a real @anthropic-ai/claude-agent-sdk headless session would use
    * (confirmed: LiteLLM's proxy serves an Anthropic-Messages-shaped /v1/messages endpoint that
-   * resolves the alias to whichever provider it's configured for) — instead of calling each
+   * resolves the full ref to whichever provider its prefix names) — instead of calling each
    * provider's native API directly. Explicit opt-in (defaults to false/unset): the direct-fetch
    * path above remains the default so existing callers/tests are unaffected; a caller that wants
    * the proxy path sets this to true.
    */
   useLiteLLMProxy?: boolean;
-  /** Injectable proxy manager (tests) — defaults to a real LiteLLMProxyManager over `aliases`. */
+  /** Injectable proxy manager (tests) — defaults to a real LiteLLMProxyManager (2026-09-26: static
+   *  config, no alias table to build it from any more). */
   proxyManager?: LiteLLMProxyManager;
   /** TASK-027: overrides the managed LiteLLM proxy's port (default 4000) when this client builds
    *  its own default LiteLLMProxyManager (i.e. `proxyManager` above is not injected). Only takes
@@ -244,7 +240,7 @@ export interface GatewayConfig {
   litellmPort?: number;
 }
 
-type ProviderTarget = AliasMap[string];
+type ProviderTarget = { provider: Provider; model: string };
 type AttemptFailure = Extract<GatewayResult, { ok: false }>;
 
 /** DES-106/P-A1: the wire-level fields an applied effort directive contributes to an outbound
@@ -413,12 +409,13 @@ async function callProvider(
 /**
  * D-V1: routes one agent() call through the managed LiteLLM proxy's Anthropic-Messages-shaped
  * `/v1/messages` endpoint — the same request shape a real @anthropic-ai/claude-agent-sdk headless
- * session sends when ANTHROPIC_BASE_URL points at this proxy — using the alias name as `model`
- * (LiteLLM resolves it against the generated model_list, independent of the alias's own provider).
+ * session sends when ANTHROPIC_BASE_URL points at this proxy — using the full `<provider>/<model-id>`
+ * ref VERBATIM as `model` (LiteLLM's static `openrouter/*`/`ollama/*` wildcards resolve it natively;
+ * 2026-09-26 no cloak is needed any more — a slashed ref is never a bare CLI shorthand).
  */
 async function callViaLiteLLMProxy(
   proxy: LiteLLMProxyManager,
-  aliasName: string,
+  ref: string,
   target: ProviderTarget,
   req: { prompt: string; runId: string; agentId: string },
   timeoutMs: number,
@@ -449,12 +446,9 @@ async function callViaLiteLLMProxy(
         'x-api-key': 'litellm-proxy', 'anthropic-version': '2023-06-01', 'content-type': 'application/json',
         'x-run-id': req.runId, 'x-agent-id': req.agentId,
       },
-      // v26 Gate 7.5 round 1 (defect D2): the CLOAKED name, never the bare alias.
-      // `generateLiteLLMConfig` registers `rwe-proxy-<alias>` and nothing else, so a bare alias is
-      // answered `400 … no healthy deployments for this model` and every agent() call on
-      // `gateway:"direct-fetch"` (proxy left on) died. `proxyModelName`'s own doc comment says the
-      // prefix must be applied identically on both sides; this side was the one that was missed.
-      body: JSON.stringify({ model: proxyModelName(aliasName), max_tokens: 1024, messages: [{ role: 'user', content: req.prompt }], ...effortBodyFields(applied) }),
+      // 2026-09-26: the RAW full ref, matching the static LiteLLM model_list wildcard entries
+      // (`generateLiteLLMConfig`) — no cloak, no per-model registered row.
+      body: JSON.stringify({ model: ref, max_tokens: 1024, messages: [{ role: 'user', content: req.prompt }], ...effortBodyFields(applied) }),
     });
     if (!res.ok) return terminalHttpFailure(target.provider, res.status >= 500 ? 'unreachable' : 'terminal', res);
     const data = (await res.json()) as any;
@@ -485,8 +479,9 @@ export class LiteLLMGatewayClient implements GatewayClient {
 
   constructor(private readonly _config: GatewayConfig) {
     if (this._config.useLiteLLMProxy) {
-      this._proxy =
-        this._config.proxyManager ?? new LiteLLMProxyManager(this._config.aliases, { port: this._config.litellmPort });
+      // 2026-09-26 (alias mechanism removed): the proxy's config is now STATIC (no alias table to
+      // build it from) — `LiteLLMProxyManager` takes no model-source argument any more.
+      this._proxy = this._config.proxyManager ?? new LiteLLMProxyManager({ port: this._config.litellmPort });
     }
   }
 
@@ -496,9 +491,16 @@ export class LiteLLMGatewayClient implements GatewayClient {
      *  dropped in silence by structural typing: `AgentExecutor` always sent it). Absent -> `wireEffort`'s
      *  fail-safe (`UNKNOWN_CAPS`), same as the SDK transport. */
     caps?: Caps }): Promise<GatewayResult> {
-    const aliasName = req.opts.model ?? 'default';
-    const target = this._config.aliases[aliasName];
-    if (!target) return { ok: false, provider: 'unknown', reason: 'terminal', detail: `no alias registered for model "${aliasName}"` };
+    // 2026-09-26 (alias mechanism removed, rule 3): no `?? 'default'` fallback — `req.opts.model` is
+    // the run's admission-resolved full ref and is never absent by the time a call reaches here
+    // (admission refuses any label with no resolved model); an absent one at THIS point is an
+    // internal error, never silently rerouted to a fictitious 'default' alias.
+    const ref = req.opts.model;
+    const parsed = ref !== undefined ? parseModelRef(ref) : undefined;
+    if (ref === undefined || !parsed) {
+      return { ok: false, provider: 'unknown', reason: 'terminal', detail: `INTERNAL_ERROR: no valid model ref reached the gateway (got ${JSON.stringify(ref)}) — admission should have refused this dispatch` };
+    }
+    const target: ProviderTarget = parsed;
     // DES-106 (TASK-102): computed ONCE per invoke, inside the gateway — the provider is only
     // resolvable here. The SAME object travels to onHarness AND (below) onto the outbound request.
     // v26 (H-1 repair): routed through the SAME `wireEffort` the SDK transport uses (ADR-045's one
@@ -518,14 +520,13 @@ export class LiteLLMGatewayClient implements GatewayClient {
       const descriptor: HarnessDescriptor = {
         ...redactHarness({
           // v26 integration (DES-177, REQ-125, clarification 26): the RESOLVED model id, not the
-          // alias name. `stamp()` below already reports `aliasName` as `proxyModel` on the proxied
-          // arm — it is the id LiteLLM resolves, i.e. this route's cloak — so the descriptor names
-          // the two the same way the result does, and `markHarness` can no longer stamp a cloak
-          // (or a bare alias) where the backend model belongs.
+          // full ref — `stamp()` below reports the full ref as `proxyModel` on the proxied arm (the
+          // literal value actually put on the wire) — so the descriptor names the two the same way
+          // the result does.
           surfaceType: 'none', modelName: target.model, provider: target.provider, prompt: req.prompt,
-          // v26 Gate 7.5 round 1 (defect D2): the cloak that is actually on the wire (DES-177:
-          // "the proxy-facing model id actually put on the wire"), same value `stamp()` reports.
-          ...(this._proxy ? { proxyModel: proxyModelName(aliasName) } : {}),
+          // v26 Gate 7.5 round 1 (defect D2): the value that is actually on the wire (DES-177: "the
+          // proxy-facing model id actually put on the wire"), same value `stamp()` reports.
+          ...(this._proxy ? { proxyModel: ref } : {}),
           curatedTools: [], mergedMcp: [], skills: [],
         }),
         ...(applied !== undefined ? { effortApplied: applied } : {}),
@@ -539,15 +540,15 @@ export class LiteLLMGatewayClient implements GatewayClient {
     const attempts = attemptsFor(this._config.retries, effTimeout);
     // v26 (DES-177, TASK-177): this whole class is a `direct-fetch` transport regardless of which
     // branch below fires — a LiteLLM-proxied call is still a raw HTTP fetch, never the SDK. The
-    // proxy branch also puts a cloak (`aliasName`, LiteLLM's own resolution target) on the wire,
-    // reportable on the ok:true arm only (the type's own convention — see GatewayResult).
+    // proxy branch also reports the full ref actually sent, on the ok:true arm only (the type's own
+    // convention — see GatewayResult).
     const stamp = (r: GatewayResult): GatewayResult =>
-      r.ok && this._proxy ? { ...r, transport: 'direct-fetch', proxyModel: proxyModelName(aliasName) } : { ...r, transport: 'direct-fetch' };
+      r.ok && this._proxy ? { ...r, transport: 'direct-fetch', proxyModel: ref } : { ...r, transport: 'direct-fetch' };
     let last: GatewayResult = { ok: false, provider: target.provider, reason: 'terminal' };
     for (let i = 0; i < attempts; i++) {
       last = stamp(
         this._proxy
-          ? await callViaLiteLLMProxy(this._proxy, aliasName, target, req, effTimeout, fetchImpl, req.signal, applied)
+          ? await callViaLiteLLMProxy(this._proxy, ref, target, req, effTimeout, fetchImpl, req.signal, applied)
           : await callProvider(target, req, effTimeout, fetchImpl, req.signal, applied),
       );
       if (last.ok) return last;

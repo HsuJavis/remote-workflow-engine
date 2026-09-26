@@ -13,7 +13,8 @@ import Database from 'better-sqlite3';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AliasMap, GatewayClient, GatewayResult } from '../gateway/client.js';
+import type { GatewayClient, GatewayResult } from '../gateway/client.js';
+import { parseModelRef } from '../providers.js';
 import type { Clock } from '../clock.js';
 import type { AgentCallScan } from '../workflow-meta.js';
 
@@ -54,7 +55,7 @@ export function validateModelProbeConfig(raw: unknown): { ok: true; value: Model
   return { ok: true, value };
 }
 
-export interface ProbeTarget { alias: string; provider: string; model: string }
+export interface ProbeTarget { provider: string; model: string }
 
 export interface ProbeResult extends ProbeTarget {
   proseVerified: boolean;
@@ -68,16 +69,21 @@ export interface ProbeResult extends ProbeTarget {
 export const DETAIL_CAP = 200;
 const cap = (s: string): string => (s.length > DETAIL_CAP ? s.slice(0, DETAIL_CAP - 1) + '…' : s);
 
-/** One target per DISTINCT configured (provider, model) — the first alias naming it is the one
- *  dispatched (the gateway resolves it exactly as it would an agent's `model`). */
-export function probeTargets(aliases: AliasMap): ProbeTarget[] {
+/** 2026-09-26 (alias mechanism removed, owner decision 10): one target per DISTINCT (provider,
+ *  model) named by `refs` — the distinct full `<provider>/<model-id>` refs declared by registered
+ *  workflow versions (release/beta and every other live version — `WorkflowCatalog`'s own
+ *  `distinctModelRefs()`), no alias table to iterate. A malformed ref is silently skipped (it could
+ *  only come from a pre-2026-09-26 legacy row that predates this ref-only rule; nothing to probe). */
+export function probeTargets(refs: readonly string[]): ProbeTarget[] {
   const seen = new Set<string>();
   const out: ProbeTarget[] = [];
-  for (const [alias, t] of Object.entries(aliases)) {
-    const key = `${t.provider}/${t.model}`;
+  for (const ref of refs) {
+    const parsed = parseModelRef(ref);
+    if (!parsed) continue;
+    const key = `${parsed.provider}/${parsed.model}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ alias, provider: t.provider, model: t.model });
+    out.push({ provider: parsed.provider, model: parsed.model });
   }
   return out;
 }
@@ -134,15 +140,16 @@ export async function runProbe(
   mkdirSync(parent, { recursive: true });
   const workspace = mkdtempSync(join(parent, 'ws-'));
   const nonce = randomBytes(12).toString('hex');
+  const ref = `${target.provider}/${target.model}`;
   let prose: { r: GatewayResult; ms: number };
   let tools: { r: GatewayResult; ms: number };
   try {
     prose = await timed(clock, () => gateway.invoke({
-      prompt: PROSE_PROMPT, opts: { model: target.alias, allowedTools: [], timeoutMs }, runId, agentId: `probe-prose-${target.alias}`, workspace,
+      prompt: PROSE_PROMPT, opts: { model: ref, allowedTools: [], timeoutMs }, runId, agentId: `probe-prose-${ref}`, workspace,
     }));
     writeFileSync(join(workspace, NONCE_FILE), `${nonce}\n`);
     tools = await timed(clock, () => gateway.invoke({
-      prompt: TOOLS_PROMPT, opts: { model: target.alias, allowedTools: ['Bash'], timeoutMs }, runId, agentId: `probe-tools-${target.alias}`, workspace,
+      prompt: TOOLS_PROMPT, opts: { model: ref, allowedTools: ['Bash'], timeoutMs }, runId, agentId: `probe-tools-${ref}`, workspace,
     }));
   } finally {
     rmSync(workspace, { recursive: true, force: true });
@@ -152,20 +159,26 @@ export async function runProbe(
 }
 
 /** Latest probe result per (provider, model), in a sqlite table. Production puts it in the run
- *  store's own `store/index.db`, which the Bash sandbox already denies (ENGINE_STATE_DENY). */
+ *  store's own `store/index.db`, which the Bash sandbox already denies (ENGINE_STATE_DENY).
+ *  2026-09-26 (alias mechanism removed): the `alias` column is gone — keyed by (provider, model)
+ *  alone, which was always the real primary key. A pre-existing db from before this change is
+ *  migrated by DROPPING the old table (the spec's own call: "old rows may be dropped") — probe
+ *  results are a cache the periodic prober repopulates on its own schedule, never load-bearing. */
 export class ModelProbeStore {
   private readonly _db: Database.Database;
   constructor(dbPath: string) {
     this._db = new Database(dbPath);
+    const cols = (this._db.prepare("PRAGMA table_info(model_probes)").all() as Array<{ name: string }>).map((c) => c.name);
+    if (cols.includes('alias')) this._db.exec('DROP TABLE model_probes');
     this._db.exec(`CREATE TABLE IF NOT EXISTS model_probes (
-      provider TEXT NOT NULL, model TEXT NOT NULL, alias TEXT NOT NULL,
+      provider TEXT NOT NULL, model TEXT NOT NULL,
       prose_ok INTEGER NOT NULL, tools_ok INTEGER NOT NULL, probed_at TEXT NOT NULL,
       prose_ms INTEGER NOT NULL, tools_ms INTEGER NOT NULL, detail TEXT NOT NULL,
       PRIMARY KEY (provider, model))`);
   }
   put(r: ProbeResult): void {
-    this._db.prepare(`INSERT OR REPLACE INTO model_probes VALUES (?,?,?,?,?,?,?,?,?)`).run(
-      r.provider, r.model, r.alias, r.proseVerified ? 1 : 0, r.toolUseVerified ? 1 : 0, r.probedAt, r.latencyMs.prose, r.latencyMs.tools, r.detail,
+    this._db.prepare(`INSERT OR REPLACE INTO model_probes VALUES (?,?,?,?,?,?,?,?)`).run(
+      r.provider, r.model, r.proseVerified ? 1 : 0, r.toolUseVerified ? 1 : 0, r.probedAt, r.latencyMs.prose, r.latencyMs.tools, r.detail,
     );
   }
   get(provider: string, model: string): ProbeResult | undefined {
@@ -178,10 +191,10 @@ export class ModelProbeStore {
   close(): void { this._db.close(); }
 }
 
-interface Row { provider: string; model: string; alias: string; prose_ok: number; tools_ok: number; probed_at: string; prose_ms: number; tools_ms: number; detail: string }
+interface Row { provider: string; model: string; prose_ok: number; tools_ok: number; probed_at: string; prose_ms: number; tools_ms: number; detail: string }
 function fromRow(r: Row): ProbeResult {
   return {
-    alias: r.alias, provider: r.provider, model: r.model, proseVerified: r.prose_ok === 1, toolUseVerified: r.tools_ok === 1,
+    provider: r.provider, model: r.model, proseVerified: r.prose_ok === 1, toolUseVerified: r.tools_ok === 1,
     probedAt: r.probed_at, latencyMs: { prose: r.prose_ms, tools: r.tools_ms }, detail: r.detail,
   };
 }
@@ -190,30 +203,36 @@ const HOUR_MS = 60 * 60 * 1000;
 
 /** Owns the admin "probe now" entry point and the periodic re-probe. The periodic check ticks every
  *  min(intervalMs, 1h) — never at boot — and probes only targets whose last result is older than
- *  intervalMs (or absent), so a restart does not re-spend on models probed yesterday. */
+ *  intervalMs (or absent), so a restart does not re-spend on models probed yesterday.
+ *  2026-09-26 (alias mechanism removed, owner decision 10): `modelRefs` replaces the old static
+ *  `aliases` table — a LIVE accessor (called fresh on every `probeNow()`/`dueTargets()`, never
+ *  cached at construction) over the distinct full refs registered workflow versions declare, so a
+ *  newly registered/re-registered workflow's models are probed without a restart. */
 export class ModelProber {
   private _timer: ReturnType<typeof setInterval> | undefined;
   private _running: Promise<unknown> = Promise.resolve();
-  constructor(private readonly _deps: { gateway: GatewayClient; aliases: AliasMap; store: ModelProbeStore; workRoot: string; clock: Clock; config: ModelProbeConfig }) {}
+  constructor(private readonly _deps: { gateway: GatewayClient; modelRefs: () => string[]; store: ModelProbeStore; workRoot: string; clock: Clock; config: ModelProbeConfig }) {}
 
-  /** All configured targets, or only the one `alias` names (dispatched under THAT alias). `null`
-   *  when `alias` is not configured. Probes run one at a time, and never overlap a periodic pass.
-   *  `timeoutMs` overrides the configured per-call bound for this probe only. */
-  async probeNow(alias?: string, timeoutMs?: number): Promise<ProbeResult[] | null> {
+  /** All configured targets, or only the one `ref` names. `null` when `ref` does not parse as a
+   *  valid full model ref. Probes run one at a time, and never overlap a periodic pass. `timeoutMs`
+   *  overrides the configured per-call bound for this probe only. An explicit `ref` is probed even
+   *  when it is not (yet) declared by any registered workflow version — a well-formed ad-hoc check
+   *  is a legitimate use of `models_probe({model})`. */
+  async probeNow(ref?: string, timeoutMs?: number): Promise<ProbeResult[] | null> {
     let targets: ProbeTarget[];
-    if (alias !== undefined) {
-      const t = this._deps.aliases[alias];
-      if (!t) return null;
-      targets = [{ alias, provider: t.provider, model: t.model }];
+    if (ref !== undefined) {
+      const parsed = parseModelRef(ref);
+      if (!parsed) return null;
+      targets = [{ provider: parsed.provider, model: parsed.model }];
     } else {
-      targets = probeTargets(this._deps.aliases);
+      targets = probeTargets(this._deps.modelRefs());
     }
     return this._serial(() => this._probe(targets, timeoutMs));
   }
 
   dueTargets(): ProbeTarget[] {
     const now = this._deps.clock.now();
-    return probeTargets(this._deps.aliases).filter((t) => {
+    return probeTargets(this._deps.modelRefs()).filter((t) => {
       const last = this._deps.store.get(t.provider, t.model);
       return last === undefined || now - Date.parse(last.probedAt) >= this._deps.config.intervalMs;
     });
@@ -260,11 +279,11 @@ export interface ModelToolWarning {
 /** Issue #73 (d): one non-fatal warning per agent label that holds tools but resolves to a model
  *  whose latest probe saw no tool use. `allowedTools: []` is the only "no tools" spelling — an
  *  absent list gets the deployment's default tool set, which is never empty. An unprobed model or
- *  an unresolvable alias warns nothing (no evidence either way). */
+ *  an unparseable ref warns nothing (no evidence either way). */
 export function toolProbeWarnings(input: {
   calls: AgentCallScan['calls'];
   modelFor: (label: string) => string;
-  resolve: (alias: string) => { provider: string; model: string } | undefined;
+  resolve: (ref: string) => { provider: string; model: string } | undefined;
   lookup: (provider: string, model: string) => ProbeResult | undefined;
 }): ModelToolWarning[] {
   const out: ModelToolWarning[] = [];
@@ -272,8 +291,8 @@ export function toolProbeWarnings(input: {
   for (const call of input.calls) {
     if (Array.isArray(call.allowedTools) && call.allowedTools.length === 0) continue;
     if (done.has(call.label)) continue;
-    const alias = input.modelFor(call.label);
-    const target = input.resolve(alias);
+    const ref = input.modelFor(call.label);
+    const target = input.resolve(ref);
     const probe = target ? input.lookup(target.provider, target.model) : undefined;
     if (!probe || probe.toolUseVerified) continue;
     done.add(call.label);
@@ -281,9 +300,9 @@ export function toolProbeWarnings(input: {
       code: 'MODEL_TOOL_USE_UNVERIFIED',
       label: call.label,
       line: call.line,
-      model: alias,
+      model: ref,
       message:
-        `agent('${call.label}') (line ${call.line}) has tools, but model '${alias}' (${probe.provider}/${probe.model}) did not use a tool ` +
+        `agent('${call.label}') (line ${call.line}) has tools, but model '${ref}' (${probe.provider}/${probe.model}) did not use a tool ` +
         `in its last probe (${probe.probedAt}: ${probe.detail}). The run was started anyway; expect a prose answer where a tool call was needed, ` +
         'or pick a model whose models_list row shows toolUseVerified: true.',
     });

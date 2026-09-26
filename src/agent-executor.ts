@@ -1,7 +1,7 @@
 // AgentExecutor (DES-007 / ARCH-004) + AgentTranscriptSink (DES-008 / TASK-010).
 import Ajv from 'ajv';
 import type { AgentOpts, AgentRecord, HarnessDescriptor, TranscriptEvent, PriceBook, Caps } from './types.js';
-import { resolveModelRef } from './providers.js';
+import { parseModelRef } from './providers.js';
 import type { GatewayClient, GatewayResult } from './gateway/client.js';
 import type { RunGuard } from './run-guard.js';
 import { ZERO_TOKENS, priceCall } from './run-guard.js';
@@ -455,15 +455,6 @@ export interface AgentExecutorDeps {
   /** v26 (DES-180, ARCH-118, TASK-180): this run's admission-time price/capability pin — see
    *  `AgentTranscriptSink`'s own doc for the absent-pin fallback. */
   priceBook?: PriceBook;
-  /** v26 integration (DES-179, ARCH-116/117, INV-V26-4, REQ-126, clarification 14): the alias table
-   *  the pin above was KEYED by. The executor needs it to turn this call's effective alias
-   *  (`opts.model`, resolved by the parameter-precedence chain here, which is the only place that
-   *  knows it) into the `provider/model` key `priceBook.pinned` uses, so it can thread the pinned
-   *  `caps` onto the gateway request. Without this, `wireEffort` always saw `UNKNOWN_CAPS` and no
-   *  OpenRouter model ever got an effort dial — REQ-126 inert in production, every unit test green
-   *  because the unit tests pass `caps` to `wireEffort` directly. Absent -> the same fail-safe
-   *  `'unknown'` branch as an absent pin. */
-  aliases?: Record<string, { provider: string; model: string; proxyModel?: string }>;
 }
 
 /** Bounded retry budget for schema-mismatched agent() responses (D-V4) — never an infinite loop. */
@@ -482,7 +473,6 @@ export class AgentExecutor implements AgentSpawner {
   private readonly _clock: { isoNow(): string };
   private readonly _secretValueProvider?: SecretValueProvider;
   private readonly _priceBook?: PriceBook;
-  private readonly _aliases?: Record<string, { provider: string; model: string; proxyModel?: string }>;
 
   constructor(deps: AgentExecutorDeps = {}) {
     this._gateway = deps.gateway ?? NULL_GATEWAY;
@@ -491,19 +481,19 @@ export class AgentExecutor implements AgentSpawner {
     this._store = deps.store;
     this._clock = deps.clock ?? { isoNow: () => new Date().toISOString() }; // det:allow — transcript timestamp, not a decision
     this._priceBook = deps.priceBook;
-    this._aliases = deps.aliases;
   }
 
   /** v26 integration (DES-179, INV-V26-4, REQ-126): the run's PINNED capability for this call's
-   *  effective alias — never a fresh catalog lookup at dispatch. Keyed exactly as
-   *  `RunManager.start()` keyed the pin (`${resolved.provider}/${resolved.model}`). Returns
-   *  `undefined` when there is no pin, no alias table, or the alias is not in it; the gateway then
-   *  falls through to its own `UNKNOWN_CAPS`, which is the documented fail-safe (effort not
-   *  applied, and `effortApplied.reason` says the catalog could not be read). */
+   *  effective model — never a fresh catalog lookup at dispatch. Keyed exactly as
+   *  `RunManager.start()` keyed the pin (`${provider}/${model}`). 2026-09-26 (alias mechanism
+   *  removed): `model` is now the full ref itself, so `parseModelRef` (no alias table needed) is
+   *  the only normalization step. Returns `undefined` when there is no pin, no model, or the ref
+   *  does not parse; the gateway then falls through to its own `UNKNOWN_CAPS`, which is the
+   *  documented fail-safe (effort not applied, and `effortApplied.reason` says the catalog could
+   *  not be read). */
   private _pinnedCapsFor(model: string | undefined): Caps | undefined {
-    if (!this._priceBook || !this._aliases) return undefined;
-    // issue #85: the same normalizer as the pin itself, so a passthrough finds its pinned caps.
-    const resolved = resolveModelRef(this._aliases, model ?? 'default');
+    if (!this._priceBook || model === undefined) return undefined;
+    const resolved = parseModelRef(model);
     if (!resolved) return undefined;
     return this._priceBook.pinned[`${resolved.provider}/${resolved.model}`]?.caps;
   }

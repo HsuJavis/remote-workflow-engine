@@ -1,33 +1,28 @@
 // Unified, normalized, cross-provider model catalog (REQ-039 / REQ-040). Federates a small static
 // table of well-known anthropic models with two LIVE sources — Ollama's local `/api/tags`
-// and OpenRouter's remote `/api/v1/models` — and overlays the curated alias table. Every source is
-// injectable (tests fake the fetch transport; no live network in the unit/integration tiers) and
-// degrades gracefully: a source that throws/times out contributes nothing while the rest still
-// return. NO API key or secret value ever appears in any entry (secret-separated by construction —
-// this module reads no credentials at all).
-import type { AliasMap } from '../gateway/client.js';
+// and OpenRouter's remote `/api/v1/models`. Every source is injectable (tests fake the fetch
+// transport; no live network in the unit/integration tiers) and degrades gracefully: a source that
+// throws/times out contributes nothing while the rest still return. NO API key or secret value ever
+// appears in any entry (secret-separated by construction — this module reads no credentials at all).
+//
+// 2026-09-26 (alias mechanism removed): there is no curated alias table to overlay any more — every
+// row's `ref` is simply `${provider}/${model}`, the full ref an author pastes into
+// `model.default`/a run_start override verbatim.
 import type { FourRates } from '../types.js';
 import type { ProbeResult } from './model-probe.js';
 
 export interface ModelEntry {
   provider: string;
   model: string;
-  /** v26 (D11): EVERY curated alias that resolves to this exact provider+model, in alias-table
-   *  order — absent when no alias names it. Replaces the singular `alias` (no alias window, the
-   *  standing v24 ruling): this deployment names each model TWICE (`haiku` AND `claude-haiku-4-5`),
-   *  and one row can only tell the truth about that as a list. `ref` below stays the ONE
-   *  agent-ready id (the first alias), so the two are not two names for one fact. */
-  aliases?: string[];
   description: string;
   modalities: { in: string[]; out: string[] };
   contextWindow: number | null;
   price: { in: string; out: string } | 'free' | 'unknown';
   toolUse: boolean | 'unknown';
   location: 'local' | 'remote';
-  /** issue #28: the agent-ready model string — pass it straight to `agent({model})`. Present only
-   *  when the entry is directly usable: a curated `alias`, or an openrouter passthrough id
-   *  (`openrouter/<model>`). ABSENT for entries that need a configured alias to resolve (non-aliased
-   *  anthropic/ollama) — so its presence means "callable as-is", not just "listed". */
+  /** issue #28 (2026-09-26: no aliases any more — every row is directly usable). The agent-ready
+   *  model string — pass it straight to `agent({model})`/`model.default`/a run_start override
+   *  verbatim: always `${provider}/${model}`, the exact string this row's own two fields spell. */
   ref?: string;
   /** issue #28: best-effort tier (OpenRouter `:free` variants). These queue / 429 / cold-start and can
    *  hang at 0 tokens — `toolUse:true` is a capability claim, NOT a liveness/reliability guarantee.
@@ -76,8 +71,6 @@ export interface CatalogFilter {
 }
 
 export interface BuildCatalogOptions {
-  /** The curated alias table overlaid onto (or added to) the federated entries. */
-  aliases?: AliasMap;
   /** Injectable transports (tests) — default the global fetch. A source with no reachable transport
    *  (throws/times out/non-ok) simply contributes no entries. */
   ollamaFetch?: typeof fetch;
@@ -251,45 +244,9 @@ async function fetchOpenRouter(fetchImpl: typeof fetch, timeoutMs: number): Prom
   return out;
 }
 
-/** Overlays the curated alias table. ONE row per (provider, model): an alias naming a model the
- *  catalog already lists is APPENDED to that row's `aliases`; only a model no source listed gets an
- *  alias-only row, which a second alias for it then joins the same way.
- *
- *  v26 Gate 7.5 round 4 (defect D11, REQ-127): this is the catalogue's side of `ModelBook`'s index
- *  rule (`model-book.ts`: a PRICED row beats an unpriced one, else source order) — stated in one
- *  place on each side so the served catalog and the price book can never answer two different
- *  prices for one key. It used to attach an alias only to an entry whose `alias` was still
- *  `undefined`, so a SECOND alias appended a `ratesPerM:null` twin: on this deployment's own table
- *  `models_list` / `GET /api/models` advertised 8 anthropic rows for 4 models, 4 of them saying
- *  `price:"unknown"` for a model the other 4 priced. Collapsing them must not lose an alias NAME —
- *  that name is what an author writes in `model.default` — hence `aliases`, not a dropped row. */
-function overlayAliases(entries: ModelEntry[], aliases: AliasMap): ModelEntry[] {
-  const out = entries.map((e) => ({ ...e }));
-  for (const [alias, target] of Object.entries(aliases)) {
-    const match = out.find((e) => e.provider === target.provider && e.model === target.model);
-    if (match) {
-      match.aliases = [...(match.aliases ?? []), alias];
-    } else {
-      out.push({
-        provider: target.provider,
-        model: target.model,
-        aliases: [alias],
-        description: `Curated alias '${alias}' -> ${target.provider}/${target.model}`,
-        modalities: { in: ['text'], out: ['text'] },
-        contextWindow: null,
-        price: 'unknown',
-        toolUse: 'unknown',
-        location: target.provider === 'ollama' ? 'local' : 'remote',
-        ratesPerM: null,
-      });
-    }
-  }
-  return out;
-}
-
 /** Builds the federated catalog. Each live source is guarded independently — a throw/timeout/non-ok
- *  from Ollama or OpenRouter degrades to zero entries for that source while the static table and the
- *  curated aliases still return. NEVER includes any secret (this module reads no credentials). */
+ *  from Ollama or OpenRouter degrades to zero entries for that source while the static table still
+ *  returns. NEVER includes any secret (this module reads no credentials). */
 export async function buildCatalog(opts: BuildCatalogOptions = {}): Promise<ModelEntry[]> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const ollamaBaseUrl = opts.ollamaBaseUrl ?? process.env['OLLAMA_BASE_URL'] ?? 'http://127.0.0.1:11434';
@@ -307,21 +264,19 @@ export async function buildCatalog(opts: BuildCatalogOptions = {}): Promise<Mode
   ]);
   entries.push(...ollama, ...openrouter);
 
-  if (opts.aliases) entries = overlayAliases(entries, opts.aliases);
   return annotate(entries);
 }
 
-/** issue #28: derive the two actionability fields AFTER alias overlay (so `alias` is known):
- *  - `ref` (agent-ready id): the FIRST alias if any (v26/D11: a row can carry several); else an
- *    openrouter passthrough id; else omitted (the
- *    entry needs a configured alias to resolve — advertising `anthropic/<model>` would not work).
+/** issue #28 (2026-09-26: no aliases any more) — derive the two actionability fields:
+ *  - `ref` (agent-ready id): ALWAYS `${provider}/${model}` — every row is directly usable, no
+ *    curated alias to resolve through.
  *  - `besteffort`: OpenRouter's own `:free` variant marker — an exact suffix check, not a price
  *    inference (a $0-formatted paid route must not be misflagged). */
 function annotate(entries: ModelEntry[]): ModelEntry[] {
   return entries.map((e) => {
-    const ref = e.aliases?.[0] ?? (e.provider === 'openrouter' ? `openrouter/${e.model}` : undefined);
+    const ref = `${e.provider}/${e.model}`;
     const besteffort = e.model.endsWith(':free') ? true : undefined;
-    return { ...e, ...(ref !== undefined ? { ref } : {}), ...(besteffort !== undefined ? { besteffort } : {}) };
+    return { ...e, ref, ...(besteffort !== undefined ? { besteffort } : {}) };
   });
 }
 
@@ -484,7 +439,7 @@ export function filterCatalog(entries: ModelEntry[], filter: CatalogFilter = {})
     }
     if (filter.query !== undefined && filter.query !== '') {
       const q = filter.query.toLowerCase();
-      const hay = `${e.model} ${e.description} ${(e.aliases ?? []).join(' ')}`.toLowerCase();
+      const hay = `${e.model} ${e.description}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;

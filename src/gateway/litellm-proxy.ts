@@ -1,14 +1,20 @@
 // LiteLLMProxyManager (D-V1 / ARCH-005): manages a `litellm` proxy subprocess so the SDK-based
 // execution path can be pointed at ONE local endpoint (ANTHROPIC_BASE_URL) instead of each
-// provider's native API directly. The proxy's model_list is generated straight from the same
-// AliasMap GatewayConfig already carries — one source of truth for alias→provider/model, no
-// duplicate bookkeeping in a second config format.
+// provider's native API directly.
+//
+// 2026-09-26 (alias mechanism removed, owner decision 8): the model_list is now STATIC —
+// `openrouter/*` and `ollama/*` wildcard routes, verified at real tier (a local `litellm` proxy
+// really does route `ollama/<id>` through such a wildcard entry, both via its native
+// `/v1/chat/completions` and via the Anthropic-Messages-shaped `/v1/messages` this engine's
+// direct-fetch transport uses) — no per-model registered row, no alias table to generate it from.
+// Anthropic calls never reach this proxy at all (the SDK transport dispatches them direct); the
+// direct-fetch transport's own anthropic branch (`gateway/client.ts`'s `callProvider`) also goes
+// straight to the real API, so no `anthropic/*` entry is needed here either.
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, writeFile, readFile, rm, readdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
-import type { AliasMap } from './client.js';
 
 export interface LiteLLMProxyOptions {
   port?: number;
@@ -28,50 +34,28 @@ export interface LiteLLMProxyOptions {
   onSupervisionEvent?: (ev: { kind: 'restart' | 'exhausted'; restarts: number; code: number | null }) => void;
 }
 
-/** LiteLLM's own provider-prefixed model naming, e.g. "ollama/llama3:8b", "anthropic/claude-3-5-sonnet".
- *  REQ-038: for an `openrouter` alias this yields `openrouter/<model>`, LiteLLM's NATIVE OpenRouter
- *  format (OPENROUTER_API_KEY read from the proxy env automatically). */
-export function toLiteLLMModelName(target: AliasMap[string]): string {
-  return `${target.provider}/${target.model}`;
-}
-
 /**
- * The proxy-facing name for an alias. The Claude CLI rewrites certain bare model strings BEFORE the
- * request leaves for ANTHROPIC_BASE_URL: its built-in shorthands (`haiku`/`sonnet`/`opus`) expand to
- * dated Anthropic ids (e.g. `haiku` → `claude-haiku-4-5-20251001`), and `claude-*` ids are likewise
- * normalized. Since every alias here is served by THIS LiteLLM proxy (model_name == alias), that
- * rewrite makes the CLI put a name on the wire the proxy has no `model_name` entry for — LiteLLM
- * then falls through to its Anthropic passthrough and 400s ("Invalid model name … claude-haiku-…").
- * Prefixing the proxy model_name with a token the CLI never treats as a shorthand keeps the name
- * verbatim end-to-end. MUST be applied identically here and where the gateway sets `query()`'s
- * `model`, so the two always name the same entry.
+ * Renders a LiteLLM proxy `config.yaml`: two static wildcard routes, `openrouter/*` and `ollama/*`
+ * — no per-model registered row, no alias table. Each wildcard matches the id following the prefix
+ * and forwards it verbatim (REQ-038 for openrouter; verified at real tier for ollama, 2026-09-26).
+ * The ollama route carries an explicit `api_base` (`OLLAMA_BASE_URL` env, else the same
+ * `http://127.0.0.1:11434` default `models/model-catalog.ts` uses) rather than relying on
+ * LiteLLM's own built-in default, so the two agree regardless of environment. The shape is fixed
+ * and flat, so this is hand-emitted rather than pulling in a YAML-writer dependency for four lines.
  */
-export function proxyModelName(alias: string): string {
-  return `rwe-proxy-${alias}`;
-}
-
-/**
- * Renders a LiteLLM proxy `config.yaml`: one `model_list` entry per alias, mapping the proxy-facing
- * alias name (`proxyModelName`) straight to `litellm_params.model`. The shape is fixed and flat, so
- * this is hand-emitted rather than pulling in a YAML-writer dependency for a handful of lines.
- */
-export function generateLiteLLMConfig(aliases: AliasMap): string {
-  const lines = ['model_list:'];
-  for (const [alias, target] of Object.entries(aliases)) {
-    lines.push(`  - model_name: ${JSON.stringify(proxyModelName(alias))}`);
-    lines.push('    litellm_params:');
-    lines.push(`      model: ${JSON.stringify(toLiteLLMModelName(target))}`);
-  }
-  // REQ-038 passthrough (SHOULD): a wildcard route so ANY `openrouter/<id>` model string routes
-  // natively through LiteLLM's OpenRouter provider (OPENROUTER_API_KEY read from the proxy's own
-  // env) WITHOUT a pre-listed alias — the model id passes through UNMODIFIED. LiteLLM matches the
-  // `*` against whatever follows the prefix and forwards it verbatim as the OpenRouter model id.
-  // The CLI never rewrites an `openrouter/`-prefixed string (its shorthands are bare
-  // `haiku`/`sonnet`/`opus`), so no proxyModelName cloaking is needed for this passthrough entry.
-  lines.push('  - model_name: "openrouter/*"');
-  lines.push('    litellm_params:');
-  lines.push('      model: "openrouter/*"');
-  return lines.join('\n') + '\n';
+export function generateLiteLLMConfig(): string {
+  const ollamaBase = process.env['OLLAMA_BASE_URL'] ?? 'http://127.0.0.1:11434';
+  return [
+    'model_list:',
+    '  - model_name: "openrouter/*"',
+    '    litellm_params:',
+    '      model: "openrouter/*"',
+    '  - model_name: "ollama/*"',
+    '    litellm_params:',
+    '      model: "ollama/*"',
+    `      api_base: ${JSON.stringify(ollamaBase)}`,
+    '',
+  ].join('\n');
 }
 
 /**
@@ -105,10 +89,7 @@ export class LiteLLMProxyManager {
   private readonly _restartDelayMs: number;
   private readonly _onSupervisionEvent?: LiteLLMProxyOptions['onSupervisionEvent'];
 
-  constructor(
-    private readonly _aliases: AliasMap,
-    opts: LiteLLMProxyOptions = {},
-  ) {
+  constructor(opts: LiteLLMProxyOptions = {}) {
     // D-V3M-4: undefined (no litellmPort configured) -> resolved to a free ephemeral port at
     // start() time; no more hard-coded 4000 squat. An explicit port still pins it.
     this._port = opts.port;
@@ -170,7 +151,7 @@ export class LiteLLMProxyManager {
     //  already read its config so it survived, but its own supervised restart would not have.
     await writeFile(path.join(dir, 'owner.pid'), String(process.pid), 'utf8').catch(() => {});
     const configPath = path.join(dir, 'config.yaml');
-    await writeFile(configPath, generateLiteLLMConfig(this._aliases), 'utf8');
+    await writeFile(configPath, generateLiteLLMConfig(), 'utf8');
 
     // `detached: true` (TASK-027): makes this child its own process-group leader so `stop()` can
     // cascade-kill it AND any worker processes `litellm` itself forks, via a single process-group

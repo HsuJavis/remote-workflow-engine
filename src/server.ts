@@ -11,8 +11,6 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { McpFacade } from './mcp-facade.js';
-// issue #89 item 6: the shape `aliasProbes` (below) reports to McpFacade.workflowAuthoringGuide().
-import type { AliasProbeInfo } from './authoring-guide.js';
 import { RunManager } from './run-manager.js';
 import { createEventSink } from './event-log.js';
 import { createSemaphore } from './agent-semaphore.js';
@@ -21,9 +19,8 @@ import { SubmissionValidator } from './submission-validator.js';
 import { SqliteRunStore } from './store/sqlite-run-store.js';
 import { WorkflowCatalog } from './workflow-catalog.js';
 import { SystemClock } from './clock.js';
-import { LiteLLMGatewayClient, type AliasMap } from './gateway/client.js';
+import { LiteLLMGatewayClient } from './gateway/client.js';
 import { ClaudeAgentSdkGatewayClient } from './gateway/claude-agent-sdk-client.js';
-import { DEFAULT_ALIASES } from './default-aliases.js';
 import type { GatewayClient } from './gateway/client.js';
 import type { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { SqliteSchedulerPort, type Schedule, type NewSchedule } from './scheduler.js';
@@ -40,7 +37,7 @@ import { RealMcpProbe, type McpProbe } from './mcp-probe.js';
 import { IssueReporter, resolveEngineVersion, type IssueReportInput, type IssueListFilter, type IssuesListView } from './github/issue-reporter.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
 import { buildCatalog, filterCatalog, enrichModelEntry, maxPricePerMOf, costLevelFromPrice, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
-import { ModelBook } from './models/model-book.js';
+import { ModelBook, toModelCatalogSnapshot } from './models/model-book.js';
 import { SystemInfoSampler, RealSystemProbe, UTIL_PCT_CONVENTION } from './system-info.js';
 import { assertUpdatePathsOutsideWorkRoot, writeUpdateFlag, SelfUpdateDb, readUpdateResult } from './self-update.js';
 import type { UpdateOutcome } from './update-types.js';
@@ -77,10 +74,6 @@ export interface ServerConfig {
   // add hosts on a trusted network.
   allowedHosts?: string[];
   workRoot?: string;
-  // REQ-004: overrides the default (anthropic-only) alias table for both the gateway
-  // (routing) and SubmissionValidator (UNKNOWN_ALIAS check at submission time) — composition-root
-  // wiring gap found + closed at Gate 7.5 (retro L-002): this was declared but previously unused.
-  aliases?: AliasMap;
   timeoutMs?: number;
   retries?: number;
   // D-R1: production default routes agent() calls through a managed LiteLLM proxy subprocess
@@ -94,8 +87,8 @@ export interface ServerConfig {
   litellmPort?: number;
   // D-F1: additive composition-root override — lets a caller (e.g. the product entrypoint,
   // src/main.ts) supply a fully custom GatewayClient (e.g. a real
-  // ClaudeAgentSdkGatewayClient session) instead of the aliases-driven LiteLLMGatewayClient built
-  // below. No existing caller sets this, so it changes nothing unless explicitly used.
+  // ClaudeAgentSdkGatewayClient session) instead of the LiteLLMGatewayClient built below. No
+  // existing caller sets this, so it changes nothing unless explicitly used.
   gateway?: GatewayClient;
   // v5 (REQ-027..030): injectable IssueReporter for the `issue_report` tool — tests supply a fake
   // (no real GitHub call); omitted -> a real reporter reading RWE_SECRET_GITHUB_TOKEN from the env.
@@ -748,26 +741,51 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // all redact through the SAME secretValueProvider and share the SAME injected clock `_transition`
   // reads (DES-243's own composition-root note).
   const eventSink = createEventSink({ secrets: secretValueProvider, now: () => clock.isoNow() });
-  // v15 (DES-098, DES-099, TASK-089): boot backfill + alias-aware validation
+  // v7 (REQ-039/040): the `models_list` catalog builder — federates the static anthropic table with
+  // the injectable live fetchers (default real fetch). Hoisted above WorkflowCatalog/RunManager (was
+  // built later, only for callTool/the dashboard) so the SAME builder is also `ModelBook`'s injected
+  // source (ARCH-116's own note: "the loader IS the already-injectable config.modelCatalog") — one
+  // catalog fetch, not two independently-configured ones. A fully injectable builder wins when
+  // provided. 2026-09-26 (alias mechanism removed): no `aliases` to overlay any more.
+  const buildModelCatalog = config?.modelCatalog ?? ((): Promise<ModelEntry[]> => buildCatalog({
+    ollamaFetch: config?.modelCatalogFetchers?.ollamaFetch,
+    openrouterFetch: config?.modelCatalogFetchers?.openrouterFetch,
+    ollamaBaseUrl: config?.modelCatalogFetchers?.ollamaBaseUrl,
+  }));
+  // v26 (DES-178, ARCH-116, TASK-178): one TTL'd, single-flight snapshot shared by every run's
+  // admission-time pin AND (2026-09-26) the registration-time/admission-time model-ref existence
+  // check — never one fetch per run, let alone per agent() call.
+  const modelBook = new ModelBook(buildModelCatalog, { clock });
+  // v15 (DES-098, DES-099, TASK-089): boot backfill + registration-time model-ref existence check.
   const catalog = new WorkflowCatalog(workRoot, clock, {
     backfillOwner: config?.auth?.enabled ? true : undefined,
     // v24 (TASK-139/DES-159): the McpRegistry-backed `mcpLookup` is gone with the registry — no
     // replacement wiring here (defaults to WorkflowCatalog's own accept-all, unconfigured `() =>
     // true`; TASK-143/145 own the v24 catalog-backed MCP asset check).
-    // v21 Gate 8 re-review #3 (P-A2): mirror the run manager's own fallback (line ~1196,
-    // R-G3) — an unconfigured deployment must feed the SAME non-empty DEFAULT_ALIASES table to
-    // BOTH registration and admission, or a model.enum/default absent from DEFAULT_ALIASES
-    // registers fine here and is refused only later at every run ("register succeeds, every run
-    // fails", discovered only after the fact).
-    aliasNames: new Set(Object.keys(config?.aliases ?? DEFAULT_ALIASES)),
+    // 2026-09-26 (alias mechanism removed, owner decision 6): the SAME `modelBook` every run's
+    // admission pins against, adapted to `providers.ts`'s pure snapshot shape — fetched fresh (never
+    // memoized here) on every `validateRegistration()` call, so ModelBook's own TTL is the only
+    // caching layer (replaces the old "feed the same non-empty DEFAULT_ALIASES table to both
+    // registration and admission" rule — there is now exactly one live catalog, not two tables that
+    // could independently drift).
+    catalogSnapshot: () => modelBook.snapshot().then(toModelCatalogSnapshot),
     ceilings,
     eventSink,
   });
+  // 2026-09-26 (alias mechanism removed, owner decision 7): the OLD gate was `config?.aliases` truthy
+  // — meaningless now that aliases don't exist. The real intent was "the operator configured this
+  // deployment's direct-fetch/proxy behaviour" — preserved by gating on any of the knobs that only
+  // mean something on this path; `config?.gateway` (an already-built client, e.g. main.ts's SDK
+  // choice) still wins outright. Omitting all of them (the zero-config test-server shape hundreds of
+  // suite files rely on) leaves `gateway` undefined, same as before — RunManager's own
+  // DEFAULT_GATEWAY_CONFIG (no proxy) applies, never a surprise litellm spawn.
+  const directFetchConfigured =
+    config?.timeoutMs !== undefined || config?.retries !== undefined || config?.useLiteLLMProxy !== undefined ||
+    config?.proxyManager !== undefined || config?.litellmPort !== undefined;
   const gateway =
     config?.gateway ??
-    (config?.aliases
+    (directFetchConfigured
       ? new LiteLLMGatewayClient({
-          aliases: config.aliases,
           timeoutMs: config?.timeoutMs ?? 15000,
           retries: config?.retries ?? 1,
           // D-R1: production default = SDK+LiteLLM proxy path, explicit opt-out via useLiteLLMProxy:false.
@@ -791,38 +809,16 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // to BOTH RunManager (admission — refuses) and McpFacade (workflow_get/list read-time effective
   // bounds) so a lowered ceiling is honored consistently everywhere, not just at the rung that
   // happens to enforce it — now including the catalog's own registration-time check (F-1).
-  // v21 Gate 8 RE-REVIEW (review §R2 (c), R-G3 MED): unlike the catalog's aliasNames (line ~1141,
-  // registration-time enum check, deliberately empty=accept-all per D-AUTH-5-B), the admission-time
-  // UNKNOWN_ALIAS check must mirror what DISPATCH actually resolves against — and on the documented
-  // default/unconfigured deployment dispatch resolves via DEFAULT_ALIASES (run-manager.ts's
-  // DEFAULT_GATEWAY_CONFIG), never "accept everything". Feeding an empty Set here left the B1/B2
-  // admission control inert on exactly the deployment shape most installs use.
-  const aliasNames = new Set(Object.keys(config?.aliases ?? DEFAULT_ALIASES));
-  // v26 (DES-178, ARCH-116, TASK-178): `aliasMap` mirrors `aliasNames` one line up (same source,
-  // same DEFAULT_ALIASES fallback) — RunManager resolves a reachable alias to {provider,model} with
-  // it when building each run's price-book pin.
-  const aliasMap = config?.aliases ?? DEFAULT_ALIASES;
-  // v7 (REQ-039/040): the `models_list` catalog builder — federates the config's curated aliases +
-  // the injectable live fetchers (default real fetch). Hoisted above RunManager (was built later,
-  // only for callTool/the dashboard) so the SAME builder is also `ModelBook`'s injected source
-  // (ARCH-116's own note: "the loader IS the already-injectable config.modelCatalog") — one catalog
-  // fetch, not two independently-configured ones. A fully injectable builder wins when provided.
-  const buildModelCatalog = config?.modelCatalog ?? ((): Promise<ModelEntry[]> => buildCatalog({
-    aliases: config?.aliases,
-    ollamaFetch: config?.modelCatalogFetchers?.ollamaFetch,
-    openrouterFetch: config?.modelCatalogFetchers?.openrouterFetch,
-    ollamaBaseUrl: config?.modelCatalogFetchers?.ollamaBaseUrl,
-  }));
-  // v26 (DES-178, ARCH-116, TASK-178): one TTL'd, single-flight snapshot shared by every run's
-  // admission-time pin — never one fetch per run, let alone per agent() call.
-  const modelBook = new ModelBook(buildModelCatalog, { clock });
   // Issue #73: probe results live in the run store's own index.db (the Bash sandbox already denies
   // `store/`), so they survive a restart. The prober needs the deployment's REAL gateway — the same
   // object every agent() call dispatches through — so it exists only when one is configured.
   const probeStore = new ModelProbeStore(join(workRoot, 'store', 'index.db'));
   const probeLookup = (provider: string, model: string): ProbeResult | undefined => probeStore.get(provider, model);
+  // 2026-09-26 (owner decision 10): probe targets are the distinct full refs registered workflow
+  // versions declare — a LIVE accessor (never memoized), so a fresh registration is probed without
+  // a restart.
   const modelProber = gateway
-    ? new ModelProber({ gateway, aliases: aliasMap, store: probeStore, workRoot, clock, config: config?.modelProbe ?? { ...MODEL_PROBE_DEFAULTS, enabled: false } })
+    ? new ModelProber({ gateway, modelRefs: () => catalog.distinctModelRefs(), store: probeStore, workRoot, clock, config: config?.modelProbe ?? { ...MODEL_PROBE_DEFAULTS, enabled: false } })
     : undefined;
   modelProber?.start();
   // v37 (ARCH-182, DES-263, TASK-258): forwards the SAME measured posture `confinementPosture`
@@ -837,7 +833,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // substituted for it (a version the run never carried and no admission check ever saw). The PINNED
   // resume path is still ungated, so call-tool.ts's door is still the cover for an ORDINARY
   // run_resume — the two are complementary, not identical. See DES-263 第三次/第四次修訂.
-  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, aliasNames, modelBook, aliasMap, eventSink, confinementPosture: config?.confinementPosture, probeLookup });
+  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, modelBook, eventSink, confinementPosture: config?.confinementPosture, probeLookup });
   // v8 Defer B (REQ-057/058): durable webhook ingress registry, same workRoot convention.
   const webhooks = new WebhookRegistry({ clock, runManager, catalog, dbPath: config?.webhookDbPath ?? join(workRoot, 'webhooks.db') });
   // v22 (DES-113, TASK-108) SHRINK: SubmissionValidatorDeps is now `{catalog}` — the alias/MCP-name/
@@ -884,8 +880,6 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v24 (DES-149, TASK-148): the trigger-claim stores (schedulerClaims/webhookClaims) are wired
   // just below, once `scheduler`/`webhooks` exist; `assetSync` is bound after `http.listen()`
   // (see `facade.bindAssetSync` near the bottom — it needs the server's own bound port).
-  // v24 Gate 7.5 (D-12): `aliasNames` — the SAME resolved Set admission and registration validate
-  // against — reaches the facade so `workflow_authoring_guide` names the accepted aliases.
   // v25 (REQ-119, DES-166, TASK-166): one renderer/cache per engine. The default render function is
   // the real mmdc child process; `config.diagramRender.render` replaces it in tests.
   const diagrams = new DiagramRenderer({ render: renderWithMmdc, ...config?.diagramRender });
@@ -897,27 +891,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // — the SAME value the `buildToolDeps` door below already reads, set once at boot by `main.ts`'s
   // real probe; `undefined` on every test/zero-config boot, which the guide already treats as
   // "render both postures" (authoring-guide.ts's `hostPathGrantsBody`).
-  // issue #89 item 6: a THUNK over `aliasMap` (802) and `probeLookup` (821), both already in scope
-  // here — read fresh on every `workflow_authoring_guide` call, never snapshotted at boot, so the
-  // weekly ModelProber's rewritten results reach the guide without a restart.
-  // Verification finding 1's fix: `provider`/`costLevel` ride the SAME `modelBook` every other price
-  // consumer here reads (`models_list` above) — `costLevelFromPrice(maxPricePerMOf(...))` is the
-  // identical band computation `enrichModelEntry` uses, never a second price table. The thunk is
-  // ASYNC (McpFacadeDeps.aliasProbes now accepts a Promise) because pricing a live (e.g. OpenRouter)
-  // alias requires `modelBook.snapshot()`'s catalog fetch; `ollama`/`anthropic` targets resolve
-  // without any network call (ModelBook.lookup()'s own static/zero-rate fallback), so this never
-  // blocks on a live fetch for THOSE aliases even on a cold cache.
-  const aliasProbes = async (): Promise<AliasProbeInfo[]> => {
-    const book = await modelBook.snapshot();
-    return Object.entries(aliasMap).map(([alias, target]) => ({
-      alias,
-      model: `${target.provider}/${target.model}`,
-      toolUseVerified: probeLookup(target.provider, target.model)?.toolUseVerified ?? null,
-      provider: target.provider,
-      costLevel: costLevelFromPrice(maxPricePerMOf(book.lookup(target.provider, target.model).price)),
-    }));
-  };
-  const facade = new McpFacade({ clock, store, runManager, validator, ceilings, cas, schedulerClaims: scheduler, webhookClaims: webhooks, aliasNames, diagramCache: diagrams, runConcurrency: config?.runConcurrency, gatewayAttempts, confinementPosture: config?.confinementPosture, aliasProbes });
+  // 2026-09-26 (alias mechanism removed): `chooseExampleModelAlias`/`aliasProbes` (issue #89 item 6,
+  // v0.23.0) are RETIRED with the alias table they existed to pick a verified example from — the
+  // guide's examples now use static full refs directly (`authoring-guide.ts`).
+  const facade = new McpFacade({ clock, store, runManager, validator, ceilings, cas, schedulerClaims: scheduler, webhookClaims: webhooks, diagramCache: diagrams, runConcurrency: config?.runConcurrency, gatewayAttempts, confinementPosture: config?.confinementPosture });
 
   // v24 (DES-139, ARCH-088, TASK-147): authorize()'s OwnerLookup is SYNC (a pure decision
   // function), while RunStore/WorkflowCatalog are async ports — a second connection to each

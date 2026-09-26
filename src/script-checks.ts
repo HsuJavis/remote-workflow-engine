@@ -1,8 +1,14 @@
 // script-checks.ts (DES-112, ARCH-074, TASK-106).
-// Pure, injected-ports lift of submission-validator.ts:92-124's `if (spec.script)` block: the same
-// three checks (PARSE_ERROR / UNKNOWN_ALIAS / MCP_NOT_PROVISIONED), same codes, so no caller learns a
-// new vocabulary. No I/O, no clock, no registry import — `mcpLookup` is a `(name) => boolean`
-// predicate, never the registry object itself (a predicate can't silently grow a dependency).
+// Pure, injected-ports lift of submission-validator.ts:92-124's `if (spec.script)` block. No I/O,
+// no clock, no registry import — `mcpLookup` is a `(name) => boolean` predicate, never the registry
+// object itself (a predicate can't silently grow a dependency).
+//
+// 2026-09-26 (alias mechanism removed): the model-alias static scan (`extractModelAliases` /
+// UNKNOWN_MODEL here) is DROPPED, not ported — it regex-scanned `model: '<literal>'` over the WHOLE
+// script text, which under the v24 contract can only ever match an agent() call's `model` OPT
+// (already refused PARAM_IN_SCRIPT elsewhere, `workflow-meta.ts`'s ARCH-096 scan) or a `model.enum`
+// entry inside `meta.params` (checked properly, with catalog existence, by `contract.ts`'s
+// `validateOneAgentSpec`). This module now checks only PARSE_ERROR / MCP_NOT_PROVISIONED.
 import * as vm from 'node:vm';
 import { checkMeta } from './sandbox/guards.js';
 export { FRAME_CLOSE_FORGERY } from './params/contract.js';
@@ -10,37 +16,19 @@ import { FRAME_CLOSE_FORGERY } from './params/contract.js';
 import type { ErrorCode } from './errors.js';
 
 export interface ScriptCheckPorts {
-  aliases: ReadonlySet<string>;
-  openrouterPassthrough: boolean;
   mcpLookup: (name: string) => boolean;
 }
 
 // v24 (TASK-155, B-7/adjudication #3): constrained to ERROR_CATALOG's own keys via `Extract` —
 // DES-137's type-level net (every codedError(literal) is a catalog key) had exactly one hole
-// left: this bare literal union could drift from the catalog with no compiler signal. The three
-// values are today's valid catalog keys, so nothing behavioral changes; a future fourth value
-// added here without a matching catalog entry now fails `tsc`, not a runtime grep.
-export type ScriptCheckCode = Extract<ErrorCode, 'PARSE_ERROR' | 'UNKNOWN_ALIAS' | 'MCP_NOT_PROVISIONED'>;
+// left: this bare literal union could drift from the catalog with no compiler signal. A future
+// value added here without a matching catalog entry now fails `tsc`, not a runtime grep.
+export type ScriptCheckCode = Extract<ErrorCode, 'PARSE_ERROR' | 'MCP_NOT_PROVISIONED'>;
 
 export interface ScriptCheckError {
   code: ScriptCheckCode;
   message: string;
   detail: Record<string, unknown>;
-}
-
-// REQ-038: an `openrouter/<id>`-shaped passthrough string is not a pre-listed alias yet is still a
-// valid model (LiteLLM's `openrouter/*` wildcard routes it natively) — accepted unchanged.
-const OPENROUTER_PASSTHROUGH = /^openrouter\/.+/;
-
-/** Static scan for `{model: '<alias>'}` occurrences in an inline script's `agent()` calls. */
-function extractModelAliases(script: string): string[] {
-  const aliases: string[] = [];
-  const re = /model\s*:\s*['"]([^'"]+)['"]/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(script))) {
-    aliases.push(m[1]!);
-  }
-  return aliases;
 }
 
 /** Static scan for `mcp: [...]` occurrences in an inline script's `agent()` calls. */
@@ -116,17 +104,6 @@ export function validateScriptEntry(
     new vm.Script(`(async () => {\n${body}\n})`, { filename: 'workflow-script.js' });
   } catch (err) {
     errors.push(parseErrorFor(script, err));
-  }
-
-  // ARCH-005 delegate: model-alias resolve.
-  for (const alias of extractModelAliases(script)) {
-    if (ports.aliases.has(alias)) continue;
-    if (ports.openrouterPassthrough && OPENROUTER_PASSTHROUGH.test(alias)) continue;
-    errors.push({
-      code: 'UNKNOWN_ALIAS',
-      message: `Unknown model alias: ${alias}`,
-      detail: { field: 'model', alias },
-    });
   }
 
   // DES-024 delegate: a referenced-but-unprovisioned MCP name fails fast.
