@@ -1662,7 +1662,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       });
     },
     deleteAsset(c) {
-      catalog.deleteAsset(c.scope === 'global' ? '' : (c.workflow ?? ''), c.kind, c.name);
+      // Issue #92 part B: `WorkflowCatalog.deleteAsset` already returns `{deleted}` — this adapter
+      // used to discard it (a bare statement, no `return`), which is why `workspace_delete` could
+      // never answer anything but a hardcoded `true`.
+      return catalog.deleteAsset(c.scope === 'global' ? '' : (c.workflow ?? ''), c.kind, c.name);
     },
     async listAssets(): Promise<AssetCatalogRow[]> {
       const workflows = await catalog.list();

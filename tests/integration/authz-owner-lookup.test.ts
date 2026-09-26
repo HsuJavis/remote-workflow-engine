@@ -185,6 +185,17 @@ describe('authz OwnerLookup — wired to real store columns (IT-105, DES-139)', 
     expect(verdict.code).toBe('NOT_WORKFLOW_OWNER');
   });
 
+  // Issue #92 part B: `workspace_delete`'s asset mode (`{workflow,kind,name}`, `deleteMode` ⇒
+  // 'workflow') resolves to the SAME `ownership:'workflow'` row `workspace_push`/`workspace_list`
+  // already prove above — confirming the sibling gap named in the issue is not actually open.
+  it('workspace_delete({workflow,kind,name}) in asset mode enforces workflow ownership against the real store', () => {
+    const verdict = authorize(BOB, realSpec('workspace_delete') as never, { workflow: 'wf-a', kind: 'skill', name: 'n' }, lookup);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.code).toBe('NOT_WORKFLOW_OWNER');
+    // ...and the owner is not refused.
+    expect(authorize(ALICE, realSpec('workspace_delete') as never, { workflow: 'wf-a', kind: 'skill', name: 'n' }, lookup).ok).toBe(true);
+  });
+
   it('the REAL rows carrying adminCrossRead are exactly DES-151\'s audited set (minus run_status, which only attaches adminReads[])', () => {
     const flagged = (TOOL_SPECS as ReadonlyArray<{ name: string; authz: unknown }>)
       .flatMap((spec) => {

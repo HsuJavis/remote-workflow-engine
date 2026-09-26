@@ -83,6 +83,76 @@ describe('AssetSyncService v24 — two scopes, mcp gating, clock-sourced pushedA
 });
 
 // ---------------------------------------------------------------------------
+// `delete()` (DES-153, issue #92 part B) — the catalog port's `{deleted}` boolean must be threaded
+// out, not assumed. `fakeCatalogPort()`'s `deleteAsset` returns `undefined` by default, which is
+// exactly the pre-fix shape (`WorkflowCatalog.deleteAsset` really returns `{deleted}` in
+// production, but `AssetCatalogPort` declared `void` and `AssetSyncService.delete()` discarded it) —
+// so each case below supplies its own `deleteAsset` fake returning the real port's shape.
+// ---------------------------------------------------------------------------
+describe('AssetSyncService.delete() threads the catalog port\'s {deleted} boolean (issue #92 part B)', () => {
+  it('kind:"skill", catalog reports deleted:true — the on-disk tree is removed and {deleted:true} is returned', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-v24-del-'));
+    try {
+      const svc = new AssetSyncService({
+        workRoot: dir, globalRoot: join(dir, 'global'), selfBind: { host: '127.0.0.1', port: 1 },
+        clock: new FixedClock(new Date('2026-01-01T00:00:00Z')),
+        catalog: { putAsset: vi.fn(), listAssets: vi.fn(() => []), deleteAsset: vi.fn(() => ({ deleted: true })) },
+        probe: { probe: vi.fn() }, egressAllowlist: [],
+      });
+      // Materialize the tree first (push), then delete it.
+      await svc.push({ scope: 'workflow', workflow: 'wf-a', kind: 'skill', name: 'reviewer', files: [{ path: 'SKILL.md', contentB64: Buffer.from('x').toString('base64') }], pushedBy: 'bob' });
+      const skillDir = join(dir, 'wf-a', 'skill', 'reviewer');
+      const { existsSync } = await import('node:fs');
+      expect(existsSync(skillDir)).toBe(true);
+      const result = await svc.delete({ scope: 'workflow', workflow: 'wf-a', kind: 'skill', name: 'reviewer' });
+      expect(result).toEqual({ deleted: true });
+      expect(existsSync(skillDir)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('kind:"skill", catalog reports deleted:false (no such row) — the on-disk tree is left ALONE and {deleted:false} is returned', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-v24-del-'));
+    try {
+      const svc = new AssetSyncService({
+        workRoot: dir, globalRoot: join(dir, 'global'), selfBind: { host: '127.0.0.1', port: 1 },
+        clock: new FixedClock(new Date('2026-01-01T00:00:00Z')),
+        catalog: { putAsset: vi.fn(), listAssets: vi.fn(() => []), deleteAsset: vi.fn(() => ({ deleted: false })) },
+        probe: { probe: vi.fn() }, egressAllowlist: [],
+      });
+      // An orphan tree on disk with NO catalog row (simulates a name that was never pushed, or
+      // whose row is already gone) — the fix must not blindly rmSync it just because kind==='skill'.
+      const { mkdirSync, writeFileSync, existsSync } = await import('node:fs');
+      const skillDir = join(dir, 'wf-a', 'skill', 'orphan');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(join(skillDir, 'SKILL.md'), '# orphan');
+      const result = await svc.delete({ scope: 'workflow', workflow: 'wf-a', kind: 'skill', name: 'orphan' });
+      expect(result).toEqual({ deleted: false });
+      expect(existsSync(skillDir)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('kind:"mcp" is catalog-only — {deleted} still reflects the catalog\'s answer either way', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-v24-del-'));
+    try {
+      const svc = new AssetSyncService({
+        workRoot: dir, globalRoot: join(dir, 'global'), selfBind: { host: '127.0.0.1', port: 1 },
+        clock: new FixedClock(new Date('2026-01-01T00:00:00Z')),
+        catalog: { putAsset: vi.fn(), listAssets: vi.fn(() => []), deleteAsset: vi.fn(() => ({ deleted: false })) },
+        probe: { probe: vi.fn() }, egressAllowlist: [],
+      });
+      const result = await svc.delete({ scope: 'global', kind: 'mcp', name: 'nope' });
+      expect(result).toEqual({ deleted: false });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // `resolveMcp` (DES-153) — the pure catalog-port helper the SDK gateway binds to. Added at
 // Gate 6.5+7 (verifier): the shipped UT-155 covered `push()` only, leaving `resolveMcp` at 0/17
 // lines despite it being the whole replacement for the deleted `mcp-registry.ts` (TASK-139/145).

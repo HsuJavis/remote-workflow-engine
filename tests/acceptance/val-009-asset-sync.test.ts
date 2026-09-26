@@ -115,6 +115,34 @@ describe('Asset sync via MCP (REQ-009, VAL-009)', () => {
     expect(list.some((a) => a.name === 'rwe-remote-workflow')).toBe(false);
   });
 
+  // Issue #92 part B: `workspace_delete` used to hardcode `{deleted: true}` regardless of what
+  // actually happened, and `kind` was a bare `{type:'string'}` so any junk value reached the
+  // handler. These three cases are the MCP-level pin for both fixes together.
+  it('workspace_delete with an unsupported kind is refused INVALID_ARGUMENT by the schema, before any handler runs', async () => {
+    const r = await mcpCall('workspace_delete', { workflow: LIST_WORKFLOW, kind: 'nonsense', name: 'whatever' });
+    expect((r['error'] as Record<string, unknown> | undefined)?.['code']).toBe('INVALID_ARGUMENT');
+  });
+
+  it('workspace_delete of a name that was never pushed answers {deleted:false}, not an error and not true', async () => {
+    const r = await mcpCall('workspace_delete', { scope: 'global', kind: 'skill', name: 'val-009-never-pushed' });
+    expect(r['error']).toBeUndefined();
+    expect((r['result'] as Record<string, unknown> | undefined)?.['deleted']).toBe(false);
+  });
+
+  it('workspace_delete of a real asset answers {deleted:true}; deleting it again answers {deleted:false}', async () => {
+    await mcpCall('workspace_push', {
+      scope: 'global', kind: 'skill', name: 'val-009-delete-twice',
+      files: [{ path: 'SKILL.md', contentB64: btoa('# delete twice') }],
+    });
+    const first = await mcpCall('workspace_delete', { scope: 'global', kind: 'skill', name: 'val-009-delete-twice' });
+    expect(first['error']).toBeUndefined();
+    expect((first['result'] as Record<string, unknown> | undefined)?.['deleted']).toBe(true);
+
+    const second = await mcpCall('workspace_delete', { scope: 'global', kind: 'skill', name: 'val-009-delete-twice' });
+    expect(second['error']).toBeUndefined();
+    expect((second['result'] as Record<string, unknown> | undefined)?.['deleted']).toBe(false);
+  });
+
   it('pushing a file with path traversal rejects the whole push (partial-push atomicity)', async () => {
     // Uses kind 'skill' as the traversal-test vehicle — 'hook' is refused by workspace_push's own
     // kind guard (DES-153/REQ-019, v3 hook-ban) before the path-safety check is ever reached, so it

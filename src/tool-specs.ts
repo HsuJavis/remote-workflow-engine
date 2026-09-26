@@ -167,10 +167,17 @@ function pushInputSchema(): Record<string, unknown> {
       {
         type: 'object',
         properties: {
-          workflow: { type: 'string' }, kind: { type: 'string' }, name: { type: 'string' },
+          workflow: { type: 'string' },
+          // Issue #92 part B: closed enum of the actually-supported v24 AssetKind values — a bare
+          // `{type:'string'}` let `kind:'nonsense'` (or any other junk) reach the handler; ajv now
+          // answers INVALID_ARGUMENT itself, before any handler runs.
+          kind: { type: 'string', enum: ['skill', 'mcp'] },
+          name: { type: 'string' },
           // v26 Gate 7.5 round 1 (defect D1): item schema — see ARRAY_ITEMS_RULE below.
           files: { type: 'array', description: "A skill's files — each element is {path, contentB64}, the file bytes as base64.", items: { type: 'object', required: ['path', 'contentB64'], properties: { path: { type: 'string' }, contentB64: { type: 'string' } } } },
-          config: { type: 'object' }, scope: { type: 'string' },
+          config: { type: 'object' },
+          // Issue #92 part B: closed enum of the two supported AssetScope values (same reasoning as `kind` above).
+          scope: { type: 'string', enum: ['workflow', 'global'] },
         },
         required: ['kind', 'name'],
         additionalProperties: false,
@@ -706,7 +713,8 @@ export const TOOL_SPECS = [
   },
   {
     name: 'workspace_push', entity: 'workspace', key: null,
-    description: 'Push content: a CAS blob into the caller\'s own pool, or a workflow-owned asset (skill/mcp). Any runId argument is refused — see workflow_authoring_guide.',
+    description: 'Push content: a CAS blob into the caller\'s own pool, or a workflow-owned asset (skill/mcp). Any runId argument is refused — see workflow_authoring_guide. ' +
+      'A CAS blob/manifest is content-addressed within the caller\'s own pool and is retained indefinitely once accepted — there is no delete for it (workspace_delete only removes workflow/global assets, never a CAS blob or manifest).',
     inputSchema: pushInputSchema(),
     outputSchema: OUT,
     // v24 Gate 7.5 (D-6, REQ-118): `HOOKS_UNSUPPORTED` REMOVED — no push can produce it. A
@@ -786,9 +794,13 @@ export const TOOL_SPECS = [
   },
   {
     name: 'workspace_delete', entity: 'workspace', key: null,
-    description: "Delete files from a run's workspace, an asset under a workflow, or (admin) a global asset.",
+    description: "Delete files from a run's workspace, an asset under a workflow, or (admin) a global asset. " +
+      "Asset mode ({workflow or scope:'global', kind, name}) answers {deleted:false} rather than an error when nothing matched the given name — deleting is idempotent, not an existence check. " +
+      "Does not, and cannot, delete a CAS blob or manifest uploaded via workspace_push — those are content-addressed within the caller's own pool and are retained indefinitely once accepted.",
     // v26 Gate 7.5 round 1 (defect D1): item schema — see ARRAY_ITEMS_RULE below.
-    inputSchema: schema({ runId: { type: 'string' }, paths: { type: 'array', description: "Workspace-relative file paths to delete, each a string.", items: { type: 'string' } }, workflow: { type: 'string' }, kind: { type: 'string' }, name: { type: 'string' }, scope: { type: 'string' } }),
+    // Issue #92 part B: `kind`/`scope` are closed enums of the actually-supported AssetKind/
+    // AssetScope values — see the matching comment on workspace_push's mode-B branch above.
+    inputSchema: schema({ runId: { type: 'string' }, paths: { type: 'array', description: "Workspace-relative file paths to delete, each a string.", items: { type: 'string' } }, workflow: { type: 'string' }, kind: { type: 'string', enum: ['skill', 'mcp'] }, name: { type: 'string' }, scope: { type: 'string', enum: ['workflow', 'global'] } }),
     outputSchema: OUT,
     // v24 (integrator; adjudication #4 C-6 [21] — the found example): `withTerminalRun` really
     // throws RUN_NOT_TERMINAL on a live run and this row never said so, so a cold model could not

@@ -115,8 +115,40 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
     // ...and the workflow-scope mode keys off `workflow`, refusing a non-owner of the WORKFLOW.
     expect(codeOf(await callTool('workspace_list', { workflow: WF, kind: 'skill' }, bobToken))).toBe('NOT_WORKFLOW_OWNER');
     expect(codeOf(await callTool('workspace_push', { workflow: WF, kind: 'skill', name: 'n', files: [] }, bobToken))).toBe('NOT_WORKFLOW_OWNER');
-    // The owner is not refused (the check runs, it does not simply reject everyone).
+    // ...and workspace_delete's own asset mode (issue #92 part B verification) is refused the same way.
+    expect(codeOf(await callTool('workspace_delete', { workflow: WF, kind: 'skill', name: 'n' }, bobToken))).toBe('NOT_WORKFLOW_OWNER');
+    // The owner is not refused (the check runs, it does not simply reject everyone) — and the real
+    // {deleted} answer (issue #92 part B) comes back through, not a hardcoded true, for a name that
+    // was never pushed.
     expect(codeOf(await callTool('workspace_list', { runId }, aliceToken))).toBeUndefined();
+    const del = await callTool('workspace_delete', { workflow: WF, kind: 'skill', name: 'never-pushed' }, aliceToken);
+    expect(codeOf(del)).toBeUndefined();
+    expect(((del['result'] ?? del) as { deleted?: boolean }).deleted).toBe(false);
+  });
+
+  // Issue #92 part B follow-up (advisor-caught defect): an arg shape naming neither `scope:'global'`
+  // nor `workflow` matches no MODE the tool declares (`deleteMode()` ⇒ 'invalid', role-only,
+  // ownership:'none') — every authenticated role, not just admin, reaches the facade with it. The
+  // facade's own guard did not close that gap: it silently fell through to the else (workflow) branch
+  // with `workflow: undefined`, and the server.ts adapter's `c.workflow ?? ''` then resolved that to
+  // the GLOBAL-scope sentinel — a non-admin author could delete a global (admin-only-pushed) asset
+  // by simply never naming a scope. Pinned end-to-end, through a real admin-pushed global asset and a
+  // non-admin author caller.
+  it('workspace_delete naming neither scope:"global" nor workflow never falls through to the global scope (issue #92 part B follow-up)', async () => {
+    const pushed = await callTool('workspace_push', {
+      scope: 'global', kind: 'skill', name: 'it124-global-skill',
+      files: [{ path: 'SKILL.md', contentB64: Buffer.from('# x').toString('base64') }],
+    }, rootToken);
+    expect(codeOf(pushed)).toBeUndefined();
+
+    // bob is an author, not admin, and sends NEITHER `scope` nor `workflow`.
+    const del = await callTool('workspace_delete', { kind: 'skill', name: 'it124-global-skill' }, bobToken);
+    expect(codeOf(del)).toBe('INVALID_ARGUMENT');
+
+    // ...and the global row is still there — the bad arg shape must not have deleted it anyway.
+    const list = await callTool('workspace_list', { workflow: WF, kind: 'skill' }, aliceToken);
+    const rows = (list['result'] ?? list) as Array<{ name: string }>;
+    expect(rows.some((r) => r.name === 'it124-global-skill')).toBe(true);
   });
 
   it('an admin cross-principal read of run_result is ALLOWED and AUDITED, and the owner sees it in run_status.adminReads[]', async () => {

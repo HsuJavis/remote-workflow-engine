@@ -97,6 +97,27 @@ describe('every array-typed property in TOOL_SPECS declares items (UT-213, defec
   });
 });
 
+// Issue #92 part B: `kind`/`scope` on workspace_delete/workspace_push used to be bare `{type:
+// 'string'}`, so `kind:'nonsense'` passed ajv and only failed deep inside the handler (or, for
+// workspace_delete specifically, did not fail at all — see val-009's live test). An enum of the
+// actually-supported `AssetKind`/`AssetScope` values makes ajv answer INVALID_ARGUMENT itself,
+// before any handler runs — the schema is the only doc a cold MCP client reads.
+describe('workspace_delete/workspace_push kind and scope are closed enums, not bare strings (issue #92 part B)', () => {
+  it('workspace_delete.kind and .scope are enums of the real AssetKind/AssetScope values', () => {
+    const props = (TOOL_SPECS.find((s) => s.name === 'workspace_delete')!.inputSchema as any).properties;
+    expect(props.kind.enum).toEqual(['skill', 'mcp']);
+    expect(props.scope.enum).toEqual(['workflow', 'global']);
+    // runId/paths mode is untouched — neither key required, so {runId, paths} still validates.
+    expect((TOOL_SPECS.find((s) => s.name === 'workspace_delete')!.inputSchema as any).required ?? []).toEqual([]);
+  });
+
+  it('workspace_push mode-B (asset) .kind and .scope are the same closed enums', () => {
+    const pushModeB = (TOOL_SPECS.find((s) => s.name === 'workspace_push')!.inputSchema as any).oneOf[1];
+    expect(pushModeB.properties.kind.enum).toEqual(['skill', 'mcp']);
+    expect(pushModeB.properties.scope.enum).toEqual(['workflow', 'global']);
+  });
+});
+
 // UT-266 (v33, REQ-201, TASK-227, DES-222, ARCH-087/091): two SERVED descriptions must teach the
 // version loop, because ARCH-087's own rule is "the description text *is* the API" — a cold client
 // registered four names in 45 minutes and published every one to `release` within seconds because
