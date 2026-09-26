@@ -15,6 +15,14 @@ function sha256hex(data: string): string {
   return createHash('sha256').update(data).digest('hex');
 }
 
+/**
+ * DCR default grant_types (RFC 7591) — what POST /register has always clamped its response to
+ * (Decision B), and what registerClient() persists when the caller doesn't specify grantTypes.
+ * A pre-#86 registered_clients row has no grant_types value; getClient() treats that missing
+ * value the same way, since this default is what /register would have stored for it (issue #86).
+ */
+const DEFAULT_DCR_GRANT_TYPES = ['authorization_code', 'refresh_token'];
+
 /** Generate a random opaque token string using the injected CSPRNG. */
 function genRandom(csprng: (n: number) => Buffer): string {
   return csprng(32).toString('hex');
@@ -63,7 +71,8 @@ export class TokenStore {
         client_id TEXT PRIMARY KEY,
         redirect_uris TEXT NOT NULL,
         client_id_issued_at INTEGER NOT NULL,
-        expires_at INTEGER NOT NULL
+        expires_at INTEGER NOT NULL,
+        grant_types TEXT
       );
       CREATE TABLE IF NOT EXISTS refresh_tokens (
         token_hash TEXT PRIMARY KEY,
@@ -79,6 +88,8 @@ export class TokenStore {
     // v20 idempotent migrations: add scope column to auth_codes and oauth_state.
     try { this._db.exec('ALTER TABLE auth_codes ADD COLUMN scope TEXT'); } catch { /* already exists */ }
     try { this._db.exec('ALTER TABLE oauth_state ADD COLUMN scope TEXT'); } catch { /* already exists */ }
+    // issue #86 idempotent migration: add grant_types to pre-existing registered_clients rows.
+    try { this._db.exec('ALTER TABLE registered_clients ADD COLUMN grant_types TEXT'); } catch { /* already exists */ }
   }
 
   /** Issue a new opaque bearer token.  Returns the RAW token (show once) + expiry timestamp. */
@@ -213,27 +224,41 @@ export class TokenStore {
     return { principal: row.principal, scope: row.scope, clientId: row.client_id };
   }
 
-  /** Mint a new RFC 7591 client_id; persists redirect_uris and returns the issued-at timestamp in seconds. */
-  registerClient(params: { redirectUris: string[]; ttlMs: number }): { clientId: string; clientIdIssuedAt: number } {
+  /**
+   * Mint a new RFC 7591 client_id; persists redirect_uris + grant_types and returns the
+   * issued-at timestamp in seconds. `grantTypes` defaults to the DCR default (issue #86) —
+   * pass it explicitly to record what a specific /register response actually clamped to.
+   */
+  registerClient(params: { redirectUris: string[]; ttlMs: number; grantTypes?: string[] }): { clientId: string; clientIdIssuedAt: number } {
     const clientId = genRandom(this._csprng);
     const nowMs = this._clock();
     const clientIdIssuedAt = Math.floor(nowMs / 1000);
     const expiresAt = nowMs + params.ttlMs;
+    const grantTypes = params.grantTypes ?? DEFAULT_DCR_GRANT_TYPES;
     this._db.prepare(
-      'INSERT INTO registered_clients (client_id, redirect_uris, client_id_issued_at, expires_at) VALUES (?, ?, ?, ?)'
-    ).run(clientId, JSON.stringify(params.redirectUris), clientIdIssuedAt, expiresAt);
+      'INSERT INTO registered_clients (client_id, redirect_uris, client_id_issued_at, expires_at, grant_types) VALUES (?, ?, ?, ?, ?)'
+    ).run(clientId, JSON.stringify(params.redirectUris), clientIdIssuedAt, expiresAt, JSON.stringify(grantTypes));
     return { clientId, clientIdIssuedAt };
   }
 
-  /** Look up a registered client by id; returns its redirect_uris or null if unknown/expired. */
-  getClient(clientId: string): { redirectUris: string[] } | null {
+  /**
+   * Look up a registered client by id; returns its redirect_uris + grant_types, or null if
+   * unknown/expired. A row with no grant_types value (pre-#86, before the idempotent ALTER
+   * TABLE migration backfilled nothing) defaults to DEFAULT_DCR_GRANT_TYPES — that's what
+   * /register would have stored for it, since the response has always been clamped to it
+   * (issue #86: treat missing as the /register default rather than "no refresh_token support").
+   */
+  getClient(clientId: string): { redirectUris: string[]; grantTypes: string[] } | null {
     const now = this._clock();
     const row = this._db.prepare(
-      'SELECT redirect_uris, expires_at FROM registered_clients WHERE client_id = ?'
-    ).get(clientId) as { redirect_uris: string; expires_at: number } | undefined;
+      'SELECT redirect_uris, expires_at, grant_types FROM registered_clients WHERE client_id = ?'
+    ).get(clientId) as { redirect_uris: string; expires_at: number; grant_types: string | null } | undefined;
     if (!row) return null;
     if (row.expires_at <= now) return null;
-    return { redirectUris: JSON.parse(row.redirect_uris) as string[] };
+    return {
+      redirectUris: JSON.parse(row.redirect_uris) as string[],
+      grantTypes: row.grant_types ? (JSON.parse(row.grant_types) as string[]) : DEFAULT_DCR_GRANT_TYPES,
+    };
   }
 
   /** Delete expired rows from all five tables; returns total row count deleted. */

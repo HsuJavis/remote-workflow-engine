@@ -281,6 +281,10 @@ describe('REQ-012: OAuth 2.0 discovery via MCP SDK (VAL-095)', () => {
     expect(res.status).toBe(401);
     const wwwParams = extractWWWAuthenticateParams(res);
     expect(wwwParams.resourceMetadataUrl).toBeDefined();
+    // issue #86: the SDK's own parse of the scope auth-param — this is the literal client-side
+    // trigger for the bug (Claude Code resolves scope from this before falling back to "").
+    // Pre-#86: wwwParams.scope was undefined (no scope param on the challenge) → FAIL.
+    expect(wwwParams.scope).toBe('openid email offline_access');
   });
 });
 

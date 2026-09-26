@@ -985,12 +985,14 @@ const V20_CODE_CHALLENGE = createHash('sha256').update(V20_CODE_VERIFIER).digest
  * v20b: callback returns 200 HTML; parse engine-auth-code from id="callback-url".
  * Pre-impl: callback returns 302 → expect(status).toBe(200) throws/fails.
  * opts.scope is forwarded to /authorize; opts.redirectPort defaults to 19990.
+ * opts.clientId overrides the default fixed client_id (issue #86: lets a caller drive the
+ * flow with a DCR-registered client_id instead).
  */
-async function runV20CallbackFlow(opts: { scope?: string; redirectPort?: number } = {}): Promise<URL> {
+async function runV20CallbackFlow(opts: { scope?: string; redirectPort?: number; clientId?: string } = {}): Promise<URL> {
   const port = opts.redirectPort ?? 19990;
   const p = new URLSearchParams({
     response_type: 'code',
-    client_id: 'it078v18-client-id',
+    client_id: opts.clientId ?? 'it078v18-client-id',
     redirect_uri: `http://127.0.0.1:${port}/cb`,
     code_challenge: V20_CODE_CHALLENGE,
     code_challenge_method: 'S256',
@@ -1159,7 +1161,12 @@ describe('v20a: refresh tokens — cases 24-28 (DES-093/DES-095 v20a, IT-078)', 
     expect(errBody.error).toBe('invalid_grant');
   }, 25_000);
 
-  it('case 27: /authorize WITHOUT offline_access → NO refresh_token; scope="" echoed; expires_in present (v20a)', async () => {
+  // issue #86 note: this case's client_id ('it078v18-client-id') is never DCR-registered and
+  // the /token request below sends no client_id, so the new "DCR client declares refresh_token
+  // grant_type" path (issue #86) never engages here — this case is testing the OLD, narrower rule
+  // for a non-DCR/legacy client specifically, not the general "no offline_access" case anymore.
+  // Retitled from "no offline_access → NO refresh_token" to make that scope explicit.
+  it('case 27: non-DCR client, /authorize WITHOUT offline_access → NO refresh_token; scope="" echoed; expires_in present (v20a)', async () => {
     const callbackUrl = await runV20CallbackFlow({ scope: undefined, redirectPort: 19985 });
     const engineCode = callbackUrl.searchParams.get('code') ?? '';
     const tokenResp = await fetch(`http://127.0.0.1:${serverV18.port}/token`, {
@@ -1183,7 +1190,9 @@ describe('v20a: refresh tokens — cases 24-28 (DES-093/DES-095 v20a, IT-078)', 
     expect(body).not.toHaveProperty('refresh_token');
   }, 20_000);
 
-  it('case 28: scope split-membership — offline_accessx ≠ offline_access → NO refresh_token (v20a)', async () => {
+  // issue #86 note: same as case 27 — non-DCR client_id, no client_id sent at /token, so the
+  // grant_types-based path never engages; this is still the correct, narrower "old rule" case.
+  it('case 28: non-DCR client, scope split-membership — offline_accessx ≠ offline_access → NO refresh_token (v20a)', async () => {
     // Guards against substring match (e.g. 'offline_access'.includes('offline_access') is true
     // but 'offline_accessx'.split(' ').includes('offline_access') is false — DES-095 v20a Decision)
     const callbackUrl = await runV20CallbackFlow({ scope: 'openid offline_accessx', redirectPort: 19984 });
@@ -1204,4 +1213,127 @@ describe('v20a: refresh tokens — cases 24-28 (DES-093/DES-095 v20a, IT-078)', 
     expect(body).not.toHaveProperty('refresh_token');
     expect(body.scope).toBe('openid offline_accessx');
   }, 20_000);
+});
+
+// ── issue #86: DCR clients that declare grant_types incl. refresh_token get a refresh
+// token even when the client never asks for offline_access scope (real MCP clients like
+// Claude Code store whatever scope they resolve, which without PRM scopes_supported /
+// WWW-Authenticate scope is "") ───────────────────────────────────────────────────────
+describe('issue #86: PRM/WWW-Authenticate scope advertisement + DCR grant_types-driven refresh_token', () => {
+  it('GET /.well-known/oauth-protected-resource → scopes_supported advertises offline_access', async () => {
+    const res = await fetch(`http://127.0.0.1:${serverV18.port}/.well-known/oauth-protected-resource`);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { scopes_supported?: string[] };
+    // Pre-impl: no scopes_supported key → FAIL
+    expect(body.scopes_supported).toEqual(['openid', 'email', 'offline_access']);
+  });
+
+  it('un-tokened POST /mcp → 401 WWW-Authenticate carries scope="openid email offline_access"', async () => {
+    const res = await fetch(`http://127.0.0.1:${serverV18.port}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+    });
+    expect(res.status).toBe(401);
+    const wwwAuth = res.headers.get('www-authenticate') ?? '';
+    // Pre-impl: no scope param on the challenge → FAIL
+    expect(wwwAuth).toMatch(/scope="openid email offline_access"/);
+    // resource_metadata must still be present alongside it
+    expect(wwwAuth).toMatch(/resource_metadata=/);
+  });
+
+  it('DCR /register default grant_types + NO scope at /authorize → /token STILL issues refresh_token; refresh grant works', async () => {
+    const port = 19983;
+    const registerResp = await fetch(`http://127.0.0.1:${serverV18.port}/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ redirect_uris: [`http://127.0.0.1:${port}/cb`] }),
+    });
+    expect(registerResp.status).toBe(201);
+    const registerBody = await registerResp.json() as { client_id?: string; grant_types?: string[] };
+    const dcrClientId = registerBody.client_id ?? '';
+    expect(dcrClientId.length).toBeGreaterThan(0);
+    expect(registerBody.grant_types).toEqual(['authorization_code', 'refresh_token']);
+
+    // NO scope requested at /authorize — the pre-fix behavior for issue #86.
+    const callbackUrl = await runV20CallbackFlow({ scope: undefined, redirectPort: port, clientId: dcrClientId });
+    const engineCode = callbackUrl.searchParams.get('code') ?? '';
+    expect(engineCode.length).toBeGreaterThan(0);
+
+    const tokenResp = await fetch(`http://127.0.0.1:${serverV18.port}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code: engineCode,
+        code_verifier: V20_CODE_VERIFIER,
+        redirect_uri: `http://127.0.0.1:${port}/cb`,
+        client_id: dcrClientId,
+      }),
+    });
+    expect(tokenResp.status).toBe(200);
+    const body = await tokenResp.json() as { access_token?: string; expires_in?: number; scope?: string; refresh_token?: string };
+    // Scope stays honest: nothing was requested, so nothing is echoed (no offline_access
+    // synthesized in just because a refresh token gets issued via grant_types).
+    expect(body.scope).toBe('');
+    // Pre-impl: refresh_token absent (old rule: scope-gated only) → FAIL (issue #86)
+    expect(body).toHaveProperty('refresh_token');
+    expect(typeof body.refresh_token).toBe('string');
+    expect((body.refresh_token as string).length).toBeGreaterThan(0);
+
+    // The issued refresh token must actually work end-to-end (rotate).
+    const refreshResp = await fetch(`http://127.0.0.1:${serverV18.port}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: body.refresh_token as string,
+        client_id: dcrClientId,
+      }),
+    });
+    expect(refreshResp.status).toBe(200);
+    const refreshBody = await refreshResp.json() as { access_token?: string; refresh_token?: string; token_type?: string };
+    expect(refreshBody.token_type).toBe('Bearer');
+    expect(typeof refreshBody.access_token).toBe('string');
+    expect(refreshBody).toHaveProperty('refresh_token');
+    expect(refreshBody.refresh_token).not.toBe(body.refresh_token);
+  }, 25_000);
+
+  it('guard: DCR client registered with grant_types=["authorization_code"] only + NO scope → NO refresh_token', async () => {
+    // Discriminates the fix from a bug where "any registered client" (regardless of declared
+    // grant_types) gets a refresh token. Direct-inserted via a second /register-shaped check:
+    // the /register handler always clamps its response to include refresh_token (Decision B,
+    // pre-existing), so to exercise a client WITHOUT refresh_token in its stored grant_types we
+    // go through the TokenStore directly against the same DB the running server uses.
+    const dbPath = join(tmpDirV18, 'auth-tokens.db');
+    const db = new Database(dbPath);
+    const directStore = new TokenStore(db, { clock: () => Date.now(), csprng: (n: number) => randomBytes(n) });
+    const port = 19982;
+    const { clientId } = (directStore as unknown as {
+      registerClient: (p: { redirectUris: string[]; ttlMs: number; grantTypes?: string[] }) => { clientId: string };
+    }).registerClient({
+      redirectUris: [`http://127.0.0.1:${port}/cb`],
+      ttlMs: 30 * 24 * 3600_000,
+      grantTypes: ['authorization_code'],
+    });
+    db.close();
+
+    const callbackUrl = await runV20CallbackFlow({ scope: undefined, redirectPort: port, clientId });
+    const engineCode = callbackUrl.searchParams.get('code') ?? '';
+    const tokenResp = await fetch(`http://127.0.0.1:${serverV18.port}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code: engineCode,
+        code_verifier: V20_CODE_VERIFIER,
+        redirect_uri: `http://127.0.0.1:${port}/cb`,
+        client_id: clientId,
+      }),
+    });
+    expect(tokenResp.status).toBe(200);
+    const body = await tokenResp.json() as { scope?: string; refresh_token?: string };
+    expect(body.scope).toBe('');
+    expect(body).not.toHaveProperty('refresh_token');
+  }, 25_000);
 });

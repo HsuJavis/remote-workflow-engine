@@ -248,6 +248,56 @@ describe('TokenStore.issueRefresh + consumeRefresh (DES-093 v20)', () => {
   });
 });
 
+// ── registerClient / getClient grant_types persistence (issue #86) ────────────
+//
+// The /token authorization_code branch needs to know whether the DCR-registered client
+// declared grant_types including 'refresh_token' so it can issue a refresh token even when
+// the requested scope omits offline_access. That requires the client store to actually
+// persist grant_types (previously only redirect_uris were persisted).
+const DAY_MS = 24 * 3600_000;
+
+describe('TokenStore.registerClient + getClient grant_types (issue #86)', () => {
+  it('getClient returns the grantTypes passed to registerClient', () => {
+    const { store } = makeStore(BASE_MS);
+    // Pre-impl: registerClient has no grantTypes param; getClient has no grantTypes field →
+    // `result?.grantTypes` is undefined → FAILS.
+    const { clientId } = (store as AnyStore).registerClient({
+      redirectUris: ['http://127.0.0.1:4000/cb'],
+      ttlMs: 30 * DAY_MS,
+      grantTypes: ['authorization_code'],
+    });
+    const result = (store as AnyStore).getClient(clientId);
+    expect(result?.grantTypes).toEqual(['authorization_code']);
+  });
+
+  it('getClient defaults grantTypes to ["authorization_code","refresh_token"] when registerClient omits it', () => {
+    const { store } = makeStore(BASE_MS);
+    const { clientId } = store.registerClient({
+      redirectUris: ['http://127.0.0.1:4001/cb'],
+      ttlMs: 30 * DAY_MS,
+    });
+    // Pre-impl: getClient has no grantTypes field → undefined → FAILS.
+    const result = (store as AnyStore).getClient(clientId);
+    expect(result?.grantTypes).toEqual(['authorization_code', 'refresh_token']);
+  });
+
+  // Legacy-row migration: a client row written BEFORE this fix has no grant_types column value.
+  // Per issue #86's decision, a missing value is treated as what /register would have stored
+  // (i.e. the DCR default), so pre-existing installs get a refresh token without re-registering.
+  it('getClient defaults grantTypes for a legacy row predating the grant_types column', () => {
+    const { store, db } = makeStore(BASE_MS);
+    // Simulate a v-pre-86 row: insert directly, bypassing registerClient, with no grant_types.
+    // (the INSERT's column list omits grant_types, so the column is NULL for this row —
+    // same as a real pre-#86 row would be after the idempotent ALTER TABLE migration runs)
+    db.prepare(
+      'INSERT INTO registered_clients (client_id, redirect_uris, client_id_issued_at, expires_at) VALUES (?, ?, ?, ?)'
+    ).run('legacy-client-id', JSON.stringify(['http://127.0.0.1:4002/cb']), Math.floor(BASE_MS / 1000), BASE_MS + 30 * DAY_MS);
+    // Pre-impl: getClient() doesn't return a grantTypes field at all → undefined → FAILS.
+    const result = (store as AnyStore).getClient('legacy-client-id');
+    expect(result?.grantTypes).toEqual(['authorization_code', 'refresh_token']);
+  });
+});
+
 // ── putState / consumeState ───────────────────────────────────────────────────
 
 describe('TokenStore.putState + consumeState (DES-093)', () => {
