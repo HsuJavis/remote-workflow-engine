@@ -351,7 +351,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 > LPORT=$(pgrep -af '[l]itellm --config' | grep -oE 'port [0-9]+' | awk '{print $2}')
 > curl -s -X POST http://127.0.0.1:$LPORT/v1/messages -H 'content-type: application/json' \
 >   -H 'x-api-key: dummy' -H 'anthropic-version: 2023-06-01' \
->   -d '{"model":"rwe-proxy-default","max_tokens":10,"messages":[{"role":"user","content":"ping"}]}'
+>   -d '{"model":"ollama/qwen2.5:7b","max_tokens":10,"messages":[{"role":"user","content":"ping"}]}'
 > #   → 回 anthropic 格式 message + usage>0 ⇒ 端點通；回 401/No deployments ⇒ 檢查 OLLAMA_BASE_URL / OPENROUTER_API_KEY。
 > # B. 一個極小 agent 端對端：先 workflow_register（腳本 `phase('probe'); return await agent('probe',{prompt:'say ROUTED'})`
 > #    ＋ 契約 meta.params.agents.probe ＋ mermaid `graph LR\nsubgraph "probe"\nprobe(["probe"])\nend`）
