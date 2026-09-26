@@ -249,6 +249,34 @@ describe('issue #87: version numbers are never reused after deregister (monotoni
     const { version } = await catalog.register({ name: 'issue87-preexisting', script: `return 'v3';`, mermaid: 'graph LR' });
     expect(version).toBe('v3');
   });
+
+  it('the boot backfill seeds the hwm BEFORE a deregister runs, so a name with pre-existing rows but no insertVersion call yet still cannot have its top version reused', async () => {
+    // Distinct from the case right above: there, the hand-seeded rows are still MAX-able at
+    // registration time because nothing was ever deleted. Here the pre-existing top version is
+    // DELETED before the first insertVersion call ever runs — insertVersion's own `hwm ?? 0`
+    // fallback sees no hwm row (nothing wrote one yet) and would fall back to MAX(live rows), which
+    // is now short by exactly the deleted row. Only the BOOT backfill (seeded at construction time,
+    // before any deregister can run) protects this case.
+    const dbDir = workRoot; // reuse this test's own tmp workRoot (beforeEach gives a fresh one)
+    const boot1 = new WorkflowCatalog(dbDir, CLOCK); // first boot: creates the schema, nothing to seed yet
+    void boot1;
+    const raw = new Database(join(dbDir, 'catalog.db'));
+    const now = CLOCK.isoNow();
+    raw.prepare('INSERT INTO workflows (name, createdAt, owner, release_version) VALUES (?, ?, ?, ?)').run('issue87-backfill', now, null, null);
+    raw.prepare('INSERT INTO workflow_versions (name, version, script, createdAt) VALUES (?, ?, ?, ?)').run('issue87-backfill', 'v1', `return 'v1';`, now);
+    raw.prepare('INSERT INTO workflow_versions (name, version, script, createdAt) VALUES (?, ?, ?, ?)').run('issue87-backfill', 'v2', `return 'v2';`, now);
+    raw.prepare('INSERT INTO workflow_versions (name, version, script, createdAt) VALUES (?, ?, ?, ?)').run('issue87-backfill', 'v3', `return 'v3';`, now);
+    raw.close();
+
+    // Second boot: this is where the backfill INSERT OR IGNORE runs against the rows above and
+    // seeds workflow_version_hwm['issue87-backfill'] = 3 — BEFORE insertVersion has ever touched
+    // this name.
+    const boot2 = new WorkflowCatalog(dbDir, CLOCK);
+    const bypass = { id: null, bypass: true, idSource: 'none' as const };
+    await boot2.deregisterVersion('issue87-backfill', 'v3', bypass, null); // only v1, v2 live now
+    const { version } = await boot2.register({ name: 'issue87-backfill', script: `return 'v4';`, mermaid: 'graph LR' });
+    expect(version).toBe('v4'); // without the boot backfill: hwm unseeded -> MAX(live)=2 -> 'v3' again
+  });
 });
 
 describe('per-name version ceiling (ADR-014, S-1 debt closed, IT-084)', () => {
