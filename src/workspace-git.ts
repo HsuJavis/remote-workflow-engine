@@ -11,6 +11,7 @@
 // precheck failure downstream instead of an opaque engine crash. Runs in the workspace only (never
 // touches the host repo); the committer identity is set LOCALLY so it works with no global git config.
 import { execFileSync } from 'node:child_process';
+import { sanitizeGitEnv } from './git-env.js';
 
 export interface GitBaseline {
   /** The baseline commit SHA (40-hex) agents/workflows can diff against, or null if init failed. */
@@ -24,8 +25,12 @@ function git(workspace: string, args: string[]): string {
     stdio: ['ignore', 'pipe', 'pipe'],
     // A committer identity passed via env so we never mutate the host's global git config, and the
     // commit still succeeds on a machine with no user.name/user.email configured at all.
+    // sanitizeGitEnv (not a raw {...process.env} spread): if this engine process were ever launched
+    // with GIT_DIR set (e.g. from a git hook), an unsanitized spread would redirect init/add/commit
+    // at that repo instead of `workspace` — this call mutates a repo, unlike seedref-fetcher's
+    // read-only fetch, so the ambient env is the attack surface here.
     env: {
-      ...process.env,
+      ...sanitizeGitEnv(process.env),
       GIT_AUTHOR_NAME: 'rwe-engine',
       GIT_AUTHOR_EMAIL: 'rwe-engine@localhost',
       GIT_COMMITTER_NAME: 'rwe-engine',

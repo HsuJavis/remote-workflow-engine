@@ -8,6 +8,11 @@ export default defineConfig({
     // tests are plain .js files importing those bytes directly — without this, a .test.js file is
     // never collected at all and its absence reads as a pass (DES-191's own boundary warning).
     include: ['tests/**/*.test.{ts,js}'],
+    // 2026-09-26 incident: a git hook's exported GIT_DIR leaked into git child processes spawned by
+    // tests and mutated the real repo (see tests/setup/scrub-git-env.ts). Runs once per worker
+    // before any test file, so every spawned `git` inherits a clean env regardless of what launched
+    // vitest.
+    setupFiles: ['./tests/setup/scrub-git-env.ts'],
     testTimeout: 15000,
     // Many tests spawn real child processes (sandbox host) or a real HTTP server.
     // Running test files fully in parallel creates host-level scheduling contention
