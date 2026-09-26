@@ -70,18 +70,20 @@ describe('lib/model.js: shortModel (UT-257, REQ-134 row 2)', () => {
 // (correctly) unable to do otherwise. The "sorts last" claim is real coverage where `sortKeyOf` can
 // actually produce `undefined`; asserted below only for those 8 columns. The 4 excluded columns get
 // their own (non-absence) coverage in the following block.
-const ABSENTABLE_COLUMNS = ['aliases', 'context', 'price', 'tools', 'effort', 'modalities', 'latency', 'benchmarks'];
+// 2026-09-26 (alias mechanism removed, spec rule 9): the `aliases` column is dropped entirely — one
+// fewer ABSENTABLE column, and no fixture carries an `aliases` field any more.
+const ABSENTABLE_COLUMNS = ['context', 'price', 'tools', 'effort', 'modalities', 'latency', 'benchmarks'];
 const NEVER_ABSENT_COLUMNS = ['model', 'provider', 'stability', 'location'];
 
 const ABSENT = {
-  model: 'z-absent-model', provider: 'zprov', aliases: undefined, description: '', modalities: { in: [], out: [] },
+  model: 'z-absent-model', provider: 'zprov', description: '', modalities: { in: [], out: [] },
   contextWindow: null, price: 'unknown', toolUseDeclared: 'unknown', location: 'local',
   capability: '', stability: 'best-effort', costLevel: null, effortDeclared: 'unknown',
   declaredSource: 'unknown', catalogFetchedAt: null,
   // no `latency`, no `benchmarks` — the D2 default.
 };
 const RICH = {
-  model: 'a-rich-model', provider: 'aprov', aliases: ['a1', 'a2'], description: 'x', modalities: { in: ['text', 'image'], out: ['text'] },
+  model: 'a-rich-model', provider: 'aprov', description: 'x', modalities: { in: ['text', 'image'], out: ['text'] },
   contextWindow: 200000, price: { in: '3', out: '15' }, ratesPerM: { in: 3, out: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   toolUseDeclared: true, location: 'remote', capability: 'x', stability: 'stable', costLevel: 8,
   effortDeclared: true, declaredSource: 'upstream', catalogFetchedAt: '2026-09-17T00:00:00.000Z',
@@ -164,7 +166,7 @@ describe('lib/model.js: matchModels(entries, {query, provider, loc}) (UT-257, DE
     expect(out).toEqual(expect.arrayContaining(FIVE_ROWS));
   });
 
-  it('a query narrows by model id/alias substring, case-insensitively', () => {
+  it('a query narrows by model id substring, case-insensitively', () => {
     const out = matchModels(FIVE_ROWS, { query: 'RICH', provider: '', loc: 'all' });
     expect(out.map((e) => e.model)).toEqual([RICH.model]);
   });
@@ -211,41 +213,42 @@ describe('lib/model.js: costDots(level) — a 5-dot scale over the 0-10 integer 
 // caller) had zero unit coverage — only exercised indirectly at the browser tier (VAL-213). It is
 // server-testable pure logic, so per the coverage gate it must be unit-tested directly, not left to
 // the browser tier alone.
-describe('lib/model.js: modelRow(entry, lang) — the twelve REQ-137 cells, in column order (UT-257, DES-213)', () => {
-  it('a RICH row renders every cell as a real, non-dash string, and sortKeys carries all twelve columns', () => {
+// 2026-09-26 (alias mechanism removed, spec rule 9): eleven cells now, not twelve — `aliases` is
+// gone and every column after it shifts down by one index.
+describe('lib/model.js: modelRow(entry, lang) — the eleven REQ-137 cells, in column order (UT-257, DES-213)', () => {
+  it('a RICH row renders every cell as a real, non-dash string, and sortKeys carries all eleven columns', () => {
     const { cells, sortKeys } = modelRow(RICH, 'en');
-    expect(cells).toHaveLength(12);
+    expect(cells).toHaveLength(11);
     expect(cells[0]).toBe(RICH.model);
     expect(cells[1]).toBe(RICH.provider);
-    expect(cells[2]).toBe('a1, a2'); // aliases joined
-    expect(cells[5]).toBe('✓ upstream'); // tools declared true
-    expect(cells[6]).toBe('✓ upstream'); // effort declared true
-    expect(cells[8]).toBe('TTFT 900ms · p50 6.8s'); // fmtLatency
-    expect(cells[10]).toBe('78 avg'); // fmtBenchmarks, single value is an integer average
+    expect(cells[4]).toBe('✓ upstream'); // tools declared true
+    expect(cells[5]).toBe('✓ upstream'); // effort declared true
+    expect(cells[7]).toBe('TTFT 900ms · p50 6.8s'); // fmtLatency
+    expect(cells[9]).toBe('78 avg'); // fmtBenchmarks, single value is an integer average
     expect(sortKeys).toHaveProperty('model', RICH.model);
-    expect(Object.keys(sortKeys)).toHaveLength(12);
+    expect(Object.keys(sortKeys)).toHaveLength(11);
+    expect(sortKeys).not.toHaveProperty('aliases');
   });
 
   it('declared:false renders "✕", declared:"unknown" renders "—" — never the same glyph', () => {
     const { cells } = modelRow(FREE, 'en'); // FREE: toolUseDeclared:false, effortDeclared:false
+    expect(cells[4]).toBe('✕');
     expect(cells[5]).toBe('✕');
-    expect(cells[6]).toBe('✕');
     const { cells: absentCells } = modelRow(ABSENT, 'en'); // ABSENT: both 'unknown'
+    expect(absentCells[4]).toBe('—');
     expect(absentCells[5]).toBe('—');
-    expect(absentCells[6]).toBe('—');
   });
 
-  it('an entry with no aliases/latency/benchmarks renders "—" for each, never throws', () => {
+  it('an entry with no latency/benchmarks renders "—" for each, never throws', () => {
     const { cells } = modelRow(ABSENT, 'en');
-    expect(cells[2]).toBe('—'); // aliases
-    expect(cells[8]).toBe('—'); // latency
-    expect(cells[10]).toBe('—'); // benchmarks
+    expect(cells[7]).toBe('—'); // latency
+    expect(cells[9]).toBe('—'); // benchmarks
   });
 
   it('a non-integer benchmark average renders one decimal place, not a fabricated whole number', () => {
     const twoScores = { ...RICH, benchmarks: { mmlu: 70, gpqa: 75 } }; // avg 72.5
     const { cells } = modelRow(twoScores, 'en');
-    expect(cells[10]).toBe('72.5 avg');
+    expect(cells[9]).toBe('72.5 avg');
   });
 });
 
@@ -254,7 +257,7 @@ describe('lib/model.js: modelPanel(entry, lang) — the 560px slide-in projectio
     const panel = modelPanel(RICH, 'en');
     expect(panel).toHaveProperty('kicker');
     expect(panel).toHaveProperty('title', RICH.model);
-    expect(panel.aliases).toEqual(RICH.aliases);
+    expect(panel).not.toHaveProperty('aliases'); // 2026-09-26: alias mechanism removed
     expect(Array.isArray(panel.defs)).toBe(true);
     expect(panel.defs.length).toBeGreaterThan(0);
     expect(Array.isArray(panel.benchmarks)).toBe(true);

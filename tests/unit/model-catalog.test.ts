@@ -2,7 +2,6 @@
 // Unit tier: fake fetch transports — never a live network call.
 import { describe, it, expect } from 'vitest';
 import { buildCatalog, filterCatalog, type ModelEntry } from '../../src/models/model-catalog.js';
-import type { AliasMap } from '../../src/gateway/client.js';
 
 function jsonFetch(body: unknown, ok = true): typeof fetch {
   return (async () => ({ ok, status: ok ? 200 : 500, json: async () => body })) as unknown as typeof fetch;
@@ -81,26 +80,14 @@ describe('buildCatalog federation + mapping (REQ-039)', () => {
     expect(entries.some((e) => e.provider === 'openai')).toBe(false);
   });
 
-  it('overlays curated aliases onto matching entries and adds alias-only entries', async () => {
-    const aliases: AliasMap = {
-      opus: { provider: 'anthropic', model: 'claude-opus-4-8' },
-      custom: { provider: 'openrouter', model: 'some/unlisted-model' },
-    };
-    const entries = await buildCatalog({ ollamaFetch: jsonFetch({ models: [] }), openrouterFetch: jsonFetch({ data: [] }), aliases });
-    const opus = entries.find((e) => e.model === 'claude-opus-4-8')!;
-    // v26 round 4 (D11): the field is `aliases` (plural) — one row now carries every alias that
-    // resolves to it, so the singular name could no longer tell the truth. Deliberate rename.
-    expect(opus.aliases).toEqual(['opus']);
-    const custom = entries.find((e) => (e.aliases ?? []).includes('custom'))!;
-    expect(custom).toMatchObject({ provider: 'openrouter', model: 'some/unlisted-model', location: 'remote' });
-  });
-
-  it('degrades gracefully: a source that throws contributes nothing, static/curated still return', async () => {
-    const aliases: AliasMap = { opus: { provider: 'anthropic', model: 'claude-opus-4-8' } };
-    const entries = await buildCatalog({ ollamaFetch: throwingFetch(), openrouterFetch: throwingFetch(), aliases });
+  // 2026-09-26 (alias mechanism removed): the curated-alias overlay is GONE — every row's `ref` is
+  // simply `${provider}/${model}` (see the "issue #28" describe below), so there is no more
+  // "alias-only entry" to add and nothing to overlay onto a matching one.
+  it('degrades gracefully: a source that throws contributes nothing, the static table still returns', async () => {
+    const entries = await buildCatalog({ ollamaFetch: throwingFetch(), openrouterFetch: throwingFetch() });
     expect(entries.some((e) => e.provider === 'ollama')).toBe(false);
     expect(entries.some((e) => e.provider === 'openrouter')).toBe(false);
-    expect(entries.find((e) => e.model === 'claude-opus-4-8')?.aliases).toEqual(['opus']); // v26/D11 rename
+    expect(entries.find((e) => e.model === 'claude-opus-4-8')?.provider).toBe('anthropic');
   });
 
   it('a non-ok live response degrades to no entries for that source', async () => {
@@ -141,23 +128,22 @@ describe('issue #28: ref (agent-ready id) + besteffort annotation', () => {
     expect(paid.ref).toBe('openrouter/anthropic/claude-3.5-sonnet');
   });
 
-  it('a curated alias becomes the ref; a non-aliased static entry has NO ref (needs an alias to resolve)', async () => {
-    const aliases: AliasMap = { opus: { provider: 'anthropic', model: 'claude-opus-4-8' } };
-    const entries = await buildCatalog({ ollamaFetch: jsonFetch({ models: [] }), openrouterFetch: jsonFetch({ data: [] }), aliases });
+  // 2026-09-26 (alias mechanism removed, owner decision 9): every row's `ref` is ALWAYS
+  // `${provider}/${model}` — no alias to resolve through, no more "non-aliased entry has no ref".
+  it('every anthropic static-table entry gets a ref of exactly `${provider}/${model}`', async () => {
+    const entries = await buildCatalog({ ollamaFetch: jsonFetch({ models: [] }), openrouterFetch: jsonFetch({ data: [] }) });
     const opus = entries.find((e) => e.provider === 'anthropic' && e.model === 'claude-opus-4-8')!;
-    expect(opus.ref).toBe('opus'); // alias wins
+    expect(opus.ref).toBe('anthropic/claude-opus-4-8');
     const sonnet = entries.find((e) => e.provider === 'anthropic' && e.model === 'claude-sonnet-5')!;
-    expect(sonnet.aliases).toBeUndefined(); // v26/D11 rename
-    expect(sonnet.ref).toBeUndefined(); // non-aliased anthropic: no hand-joined provider/model ref
+    expect(sonnet.ref).toBe('anthropic/claude-sonnet-5');
     expect(sonnet.besteffort).toBeUndefined();
   });
 
-  it('the static Haiku entry uses the real dated API id (so its alias attaches → gets a ref)', async () => {
-    const aliases: AliasMap = { haiku: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' } };
-    const entries = await buildCatalog({ ollamaFetch: jsonFetch({ models: [] }), openrouterFetch: jsonFetch({ data: [] }), aliases });
+  it('the static Haiku entry uses the real dated API id, and its ref names it exactly', async () => {
+    const entries = await buildCatalog({ ollamaFetch: jsonFetch({ models: [] }), openrouterFetch: jsonFetch({ data: [] }) });
     const haiku = entries.find((e) => e.provider === 'anthropic' && e.model === 'claude-haiku-4-5-20251001')!;
     expect(haiku).toBeDefined();
-    expect(haiku.ref).toBe('haiku');
+    expect(haiku.ref).toBe('anthropic/claude-haiku-4-5-20251001');
   });
 });
 
@@ -266,85 +252,17 @@ describe('the static anthropic price table (UT-220, defects D3/D4)', () => {
   });
 });
 
-// UT-225 (v26 Gate 7.5 round 4, defect D11, REQ-127): the CATALOGUE's own duplicate rule. On this
-// deployment's alias table every anthropic model is named TWICE (`haiku` AND `claude-haiku-4-5`,
-// and so on), and `overlayAliases` only attached an alias to an entry whose `alias` was still
-// undefined — so the second name appended a SECOND, `ratesPerM:null` row for a model the first row
-// prices. `models_list` / `GET /api/models` therefore served 8 anthropic rows for 4 models, 4 of
-// them advertising `price:"unknown"`. `ModelBook`'s index already resolves this (UT-223: a priced
-// row beats an unpriced one, else source order); the served catalogue must not contradict it, and
-// must not lose an alias name in the process — that name is what an author writes in `model.default`.
-// Mock policy (unit): both live fetchers stubbed non-ok, so only the static table + the alias
-// overlay remain — the same isolation UT-223 uses.
-describe('one row per model, carrying every alias that resolves to it (UT-225, D11, REQ-127)', () => {
-  const HAIKU = 'claude-haiku-4-5-20251001';
-  const notOk = (): typeof fetch => jsonFetch({}, false);
-
-  /** Shaped like the real `rwe.config.json`: two aliases on one PRICED model, twice over. */
-  const TWO_ALIASES_PER_MODEL: AliasMap = {
-    haiku: { provider: 'anthropic', model: HAIKU },
-    opus: { provider: 'anthropic', model: 'claude-opus-4-8' },
-    'claude-haiku-4-5': { provider: 'anthropic', model: HAIKU },
-    'claude-opus-4-8': { provider: 'anthropic', model: 'claude-opus-4-8' },
-  };
-  const built = (aliases: AliasMap): Promise<ModelEntry[]> =>
-    buildCatalog({ aliases, ollamaFetch: notOk(), openrouterFetch: notOk() });
-
-  it('a model named by two aliases is ONE row, not two', async () => {
-    const entries = await built(TWO_ALIASES_PER_MODEL);
-    const anthropic = entries.filter((e) => e.provider === 'anthropic');
-    expect(anthropic.filter((e) => e.model === HAIKU).length).toBe(1);
-    expect(new Set(anthropic.map((e) => e.model)).size).toBe(anthropic.length);
-  });
-
-  it('the row that survives is the PRICED one — no anthropic row says "unknown"', async () => {
-    const entries = await built(TWO_ALIASES_PER_MODEL);
-    const haiku = entries.find((e) => e.provider === 'anthropic' && e.model === HAIKU)!;
-    expect(haiku.ratesPerM).toEqual(STATIC_ANTHROPIC_RATES[HAIKU]);
-    expect(haiku.price).toEqual({ in: '$1/1M', out: '$5/1M' });
-    expect(entries.filter((e) => e.provider === 'anthropic' && e.price === 'unknown')).toEqual([]);
-  });
-
-  it('every alias that resolves to the model is still discoverable ON that row, in table order', async () => {
-    const entries = await built(TWO_ALIASES_PER_MODEL);
-    const haiku = entries.find((e) => e.provider === 'anthropic' && e.model === HAIKU)!;
-    expect(haiku.aliases).toEqual(['haiku', 'claude-haiku-4-5']);
-    const opus = entries.find((e) => e.provider === 'anthropic' && e.model === 'claude-opus-4-8')!;
-    expect(opus.aliases).toEqual(['opus', 'claude-opus-4-8']);
-    expect(haiku.ref).toBe('haiku'); // the first alias stays the agent-ready id
-  });
-
-  it('a model the catalog does not otherwise list, named twice, is also ONE row with both names', async () => {
-    const entries = await built({
-      cheap: { provider: 'openrouter', model: 'some/unlisted-model' },
-      'some-unlisted': { provider: 'openrouter', model: 'some/unlisted-model' },
-    });
-    const rows = entries.filter((e) => e.model === 'some/unlisted-model');
-    expect(rows.length).toBe(1);
-    expect(rows[0]!.aliases).toEqual(['cheap', 'some-unlisted']);
-  });
-
-  it('a model with no alias carries no alias names at all (absent, not an empty lie)', async () => {
-    const entries = await built({ haiku: { provider: 'anthropic', model: HAIKU } });
-    const sonnet = entries.find((e) => e.provider === 'anthropic' && e.model === 'claude-sonnet-5')!;
-    expect(sonnet.aliases).toBeUndefined();
-    expect(sonnet.ref).toBeUndefined();
-  });
-});
-
 // UT-226 (v26 Gate 7.5 round 4, defect D12, REQ-127): `claude-fable-5` had no row in
 // `STATIC_ANTHROPIC_RATES`, so every run through this deployment's own `fable` alias recorded
 // `unpriced:true` and `budgetEnforceable.usd:false` — REQ-127's COST budget cannot bind on a model
 // the catalogue does not price. Rates from the SAME source UT-220 used (the claude-api skill's
 // cached model table): Claude Fable 5 is $10/1M in, $50/1M out; the cache columns follow the table's
 // own multipliers (0.1x input for a READ, 2x for a WRITE at the 1h TTL), not a new rule.
-// Mock policy (unit): pure data + the same stubbed-fetch catalog build as UT-225.
+// Mock policy (unit): pure data + a stubbed-fetch catalog build (both live sources non-ok, so only
+// the static table returns). 2026-09-26 (alias mechanism removed): no alias table to name it twice
+// under any more — a model is always exactly one row, addressed by its own `${provider}/${model}` ref.
 describe('claude-fable-5 is priced (UT-226, D12, REQ-127)', () => {
   const FABLE_RATES = { in: 10e-6, out: 50e-6, cacheRead: 1e-6, cacheWrite: 20e-6 };
-  const FABLE_ALIASES: AliasMap = {
-    fable: { provider: 'anthropic', model: 'claude-fable-5' },
-    'claude-fable-5': { provider: 'anthropic', model: 'claude-fable-5' },
-  };
   const notOk = (): typeof fetch => jsonFetch({}, false);
 
   it('the static table prices it $10/$50 per MTok, on the cache multipliers every row uses', () => {
@@ -353,17 +271,17 @@ describe('claude-fable-5 is priced (UT-226, D12, REQ-127)', () => {
     expect(displayPrice(rates!)).toEqual({ in: '$10/1M', out: '$50/1M' });
   });
 
-  it('the catalog serves it as ONE priced row under both configured alias names', async () => {
-    const entries = await buildCatalog({ aliases: FABLE_ALIASES, ollamaFetch: notOk(), openrouterFetch: notOk() });
+  it('the catalog serves it as ONE priced row with the full ref as its `ref` field', async () => {
+    const entries = await buildCatalog({ ollamaFetch: notOk(), openrouterFetch: notOk() });
     const rows = entries.filter((e) => e.provider === 'anthropic' && e.model === 'claude-fable-5');
     expect(rows.length).toBe(1);
     expect(rows[0]!.ratesPerM).toEqual(FABLE_RATES);
     expect(rows[0]!.price).toEqual({ in: '$10/1M', out: '$50/1M' });
-    expect(rows[0]!.aliases).toEqual(['fable', 'claude-fable-5']);
+    expect(rows[0]!.ref).toBe('anthropic/claude-fable-5');
   });
 
-  it('a run through the `fable` alias can be priced: ModelBook answers a rate, never null', async () => {
-    const entries = await buildCatalog({ aliases: FABLE_ALIASES, ollamaFetch: notOk(), openrouterFetch: notOk() });
+  it('a run through the full ref can be priced: ModelBook answers a rate, never null', async () => {
+    const entries = await buildCatalog({ ollamaFetch: notOk(), openrouterFetch: notOk() });
     const book = new ModelBook(async () => entries, { ttlMs: 3_600_000, clock: new FixedClock(new Date('2026-09-09T00:00:00Z')) });
     const snap = await book.snapshot();
     expect(snap.lookup('anthropic', 'claude-fable-5').price).toEqual(FABLE_RATES);

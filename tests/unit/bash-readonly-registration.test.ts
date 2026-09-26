@@ -25,7 +25,7 @@ const CLOCK = new FixedClock(new Date('2026-09-25T10:00:00.000Z'));
 const OPEN: Principal = { kind: 'auth-disabled' };
 
 const AGENT_DECL =
-  "model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 }";
+  "model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 }";
 
 function script(opts: string, extraDecl = ''): string {
   return (
@@ -36,7 +36,7 @@ function script(opts: string, extraDecl = ''): string {
 }
 function mermaid(tools: string[] | null): string {
   const seg = tools === null ? '' : `<br/>tools: ${tools.length === 0 ? 'none' : [...tools].sort().join(', ')}`;
-  return `graph LR\nsubgraph "P"\na(["a<br/>default · low · 60000${seg}"])\nend`;
+  return `graph LR\nsubgraph "P"\na(["a<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000${seg}"])\nend`;
 }
 
 type Reply = { status?: string; code?: string; error?: { code?: string; message?: string; detail?: Record<string, unknown> }; result?: { version?: string; warnings?: Array<{ code: string; label: string; message: string }> } };
@@ -123,7 +123,7 @@ describe('#78(c) registration — readonly Bash', () => {
 describe('#78(c) authoring guide', () => {
   for (const posture of ['confined', 'unconfined', undefined] as const) {
     it(`documents the mode, its enforcement and the unconfined-host refusal (posture ${String(posture)})`, () => {
-      const g = buildAuthoringGuide({ ...DEFAULT_CEILINGS, aliases: ['default'], runConcurrency: 4, ...(posture ? { confinementPosture: posture } : {}) });
+      const g = buildAuthoringGuide({ ...DEFAULT_CEILINGS, runConcurrency: 4, ...(posture ? { confinementPosture: posture } : {}) });
       expect(g).toContain("bash: 'readonly'");
       expect(g).toContain('BASH_READONLY_UNENFORCEABLE');
       expect(g).toContain('BASH_READONLY_CONFLICT');

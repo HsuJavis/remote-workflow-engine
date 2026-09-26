@@ -46,7 +46,7 @@ describe('ClaudeAgentSdkGatewayClient — D-F5 route-back defects (UT-019)', () 
     queryMock.mockReset();
   });
 
-  it('forwards opts.model (the resolved alias/model id) into the SDK session options.model', async () => {
+  it('forwards opts.model (a full ref) into the SDK session options.model, verbatim — no cloak', async () => {
     queryMock.mockReturnValue(
       fakeSession({
         type: 'result',
@@ -59,14 +59,14 @@ describe('ClaudeAgentSdkGatewayClient — D-F5 route-back defects (UT-019)', () 
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
     const client = new ClaudeAgentSdkGatewayClient({ baseUrl: 'http://127.0.0.1:4000' });
 
-    await client.invoke(req({ model: 'haiku-alias' }));
+    await client.invoke(req({ model: 'openrouter/haiku-alias' }));
 
     expect(queryMock).toHaveBeenCalledTimes(1);
     const [[call]] = queryMock.mock.calls as [[{ options?: { model?: string } }]];
-    // The alias is routed via its proxy-facing name (proxyModelName): a bare shorthand like `haiku`
-    // would be expanded by the CLI to a dated Anthropic id the LiteLLM proxy has no entry for. The
-    // prefix keeps the name verbatim so the proxy matches its own model_name.
-    expect(call.options?.model).toBe('rwe-proxy-haiku-alias');
+    // 2026-09-26 (alias mechanism removed): the full ref reaches the wire RAW — a `rwe-proxy-*`
+    // cloak is no longer needed anywhere, since a ref containing `/` is never a bare CLI shorthand
+    // the CLI could expand into a dated Anthropic id (that was the cloak's only reason to exist).
+    expect(call.options?.model).toBe('openrouter/haiku-alias');
   });
 
   it('an is_error:true result on a subtype:"success" SDK message resolves { ok:false, reason:"terminal" }, never surfaced as success content', async () => {

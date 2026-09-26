@@ -43,7 +43,11 @@ const FULL: WorkflowOwnerView = {
   owner: 'owner@example.com',
   createdAt: '2026-01-01T00:00:00.000Z',
   reportProblem: 'call issue_report({workflow:"wv-fixture"})',
-  validation: { ok: false, errors: [{ code: 'UNKNOWN_ALIAS', message: 'stale alias', detail: {} }] },
+  // 2026-09-26 (alias mechanism removed): `ScriptCheckCode` only ever admitted PARSE_ERROR /
+  // MCP_NOT_PROVISIONED — the model check moved entirely to registration time (never re-checked on
+  // read), so this fixture uses a still-valid `ScriptCheckError` code; the model-check code itself
+  // is irrelevant to what this file actually pins (the key-set oracle over `validation`).
+  validation: { ok: false, errors: [{ code: 'MCP_NOT_PROVISIONED', message: 'example validation-time error', detail: {} }] },
   script: 'return "the actual script bytes";',
 };
 

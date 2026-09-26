@@ -70,13 +70,13 @@ describe('parseWorkflowSkeleton — predicted DAG before running (v9, REQ-062)',
 // "undefined", even a script with zero agent() calls at all.
 describe('parseMetaParams — scriptLabels reaches parseParamContract, not aliasNames (v24, DES-144)', () => {
   it('a script with no agent() calls and no meta.params registers (zero-label contract)', () => {
-    const result = parseMetaParams(`return 1;`, new Set());
+    const result = parseMetaParams(`return 1;`);
     expect(result).toEqual({ ok: true, value: { agents: {}, args: {} } });
   });
 
   it('a script with an agent() call and no meta.params is refused AGENT_UNDECLARED naming that label', () => {
     const script = `const x = await agent('draft', { model: 'sonnet' }); return x;`;
-    const result = parseMetaParams(script, new Set());
+    const result = parseMetaParams(script);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.code).toBe('AGENT_UNDECLARED');
@@ -91,7 +91,7 @@ describe('parseMetaParams — scriptLabels reaches parseParamContract, not alias
 describe('parseMetaParams guard arms (v24, Gate 6.5+7 round 2)', () => {
   it('a meta literal over MAX_META_LITERAL_BYTES is refused PARAM_CONTRACT_INVALID before it is evaluated', () => {
     const filler = 'x'.repeat(MAX_META_LITERAL_BYTES + 100);
-    const result = parseMetaParams(`export const meta = { description: '${filler}' };\nreturn 1;`, new Set());
+    const result = parseMetaParams(`export const meta = { description: '${filler}' };\nreturn 1;`);
     expect(result.ok).toBe(false);
     expect((result as { code?: string }).code).toBe('PARAM_CONTRACT_INVALID');
     expect((result as { detail?: { reason?: string } }).detail?.reason).toBe('source too large');
@@ -100,13 +100,13 @@ describe('parseMetaParams guard arms (v24, Gate 6.5+7 round 2)', () => {
   it('a meta literal V8 refuses to evaluate degrades to the no-contract result, it does not throw', () => {
     // Pure by `checkMeta`'s syntactic grammar, but `SyntaxError: Duplicate __proto__ fields are
     // not allowed in object literals` at evaluation — the one reachable input for the catch arm.
-    const result = parseMetaParams(`export const meta = { __proto__: {}, __proto__: {} };\nreturn 1;`, new Set());
+    const result = parseMetaParams(`export const meta = { __proto__: {}, __proto__: {} };\nreturn 1;`);
     expect(result.ok).toBe(true);
     expect((result as { value: { agents: unknown } }).value.agents).toEqual({});
   });
 
   it('a script with NO meta at all takes the same no-contract path', () => {
-    const result = parseMetaParams('return 1;', new Set());
+    const result = parseMetaParams('return 1;');
     expect(result.ok).toBe(true);
   });
 });

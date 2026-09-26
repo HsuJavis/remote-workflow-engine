@@ -19,7 +19,7 @@ const OPEN: Principal = { kind: 'auth-disabled' };
 
 function script(allowedTools: string): string {
   return (
-    "export const meta = { description: 'd', params: { agents: { w: { model: { type: 'string', default: 'default' }, " +
+    "export const meta = { description: 'd', params: { agents: { w: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, " +
     "effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } } };\n" +
     "phase('P');\n" +
     `return await agent('w', { prompt: 'p', allowedTools: ${allowedTools} });`
@@ -54,7 +54,7 @@ describe('#89 item 5 — TOOLS_MISMATCH names the expected segment text', () => 
   });
 
   it('a literal list → expected text is the sorted comma list', async () => {
-    const r = await register('t2', "['Read', 'Grep']", 'w(["w<br/>default · low · 60000<br/>tools: Read"])');
+    const r = await register('t2', "['Read', 'Grep']", 'w(["w<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: Read"])');
     expect(r.error?.code).toBe('TOOLS_MISMATCH');
     expect(r.error?.message ?? '').toContain('"tools: Grep, Read"');
   });
@@ -70,7 +70,7 @@ describe('#89 item 5 — rule===code diagram refusals carry meaningful text, not
   it('DIAGRAM_DIRECTION names what is wrong (short catalog hint), not just the line', async () => {
     // `register()`'s helper always emits `graph LR` — the header is swapped to TD directly here,
     // since the helper has no direction knob of its own.
-    const mermaid = 'graph TD\nsubgraph "P"\nw(["w<br/>default · low · 60000<br/>tools: none"])\nend';
+    const mermaid = 'graph TD\nsubgraph "P"\nw(["w<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: none"])\nend';
     const bad = (await facade.workflowRegister({ name: 'dd1', script: script('[]'), mermaid }, OPEN)) as Reply;
     expect(bad.error?.code).toBe('DIAGRAM_DIRECTION');
     const msg = bad.error?.message ?? '';
@@ -80,7 +80,7 @@ describe('#89 item 5 — rule===code diagram refusals carry meaningful text, not
 
   it('LANE_MISMATCH names what is wrong (generic phrase — its own catalog hint is too long to read inline), not just the line', async () => {
     const twoPhaseScript =
-      "export const meta = { description: 'd', params: { agents: { w: { model: { type: 'string', default: 'default' }, " +
+      "export const meta = { description: 'd', params: { agents: { w: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, " +
       "effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } } };\n" +
       "phase('one');\n" +
       "await agent('w', { prompt: 'p' });\n" +
@@ -89,7 +89,7 @@ describe('#89 item 5 — rule===code diagram refusals carry meaningful text, not
     // Right lane COUNT, wrong ORDER — "two" before "one" — so checkLanes' title-order arm fires
     // LANE_MISMATCH rather than the earlier DIAGRAM_DIRECTION/count checks.
     const mermaid =
-      'graph LR\nsubgraph "two"\nw(["w<br/>default · low · 60000<br/>tools: default"])\nend\nsubgraph "one"\nend';
+      'graph LR\nsubgraph "two"\nw(["w<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: default"])\nend\nsubgraph "one"\nend';
     const bad = (await facade.workflowRegister({ name: 'lm1', script: twoPhaseScript, mermaid }, OPEN)) as Reply;
     expect(bad.error?.code).toBe('LANE_MISMATCH');
     const msg = bad.error?.message ?? '';

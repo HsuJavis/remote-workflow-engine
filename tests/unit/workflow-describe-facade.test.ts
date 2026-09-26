@@ -109,8 +109,8 @@ describe('workflow_describe over a legacy-shaped row never surfaces a tools valu
     // re-validates one against the other (only `scanAgentCalls(full.script)` for `toolSurface`).
     const bareScript =
       "export const meta = { params: { agents: { " +
-      "withTools: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, " +
-      "bare: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } } };\n" +
+      "withTools: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, " +
+      "bare: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } } };\n" +
       "phase('Work');\n" +
       "await agent('withTools', { prompt: 'x' });\n" +
       "return await agent('bare', { prompt: 'y' });";

@@ -275,6 +275,26 @@ describe('composeConfig — RETIRED_CONFIG_KEYS (DES-227, UT-274)', () => {
     expect(overlap).toEqual([]);
     expect(retired.length).toBeGreaterThan(0);
   });
+
+  // 2026-09-26 (alias mechanism removed, owner decision 7): the SAME RETIRED_CONFIG_KEYS treatment
+  // — a production config that still carries `aliases` across a self-update restart must still
+  // BOOT, with a one-line warning, never a fail-fast. Complements check-config-cli.test.ts's
+  // process-level coverage of the identical spec rule with a faster, more precise unit-tier check
+  // directly on composeConfig() itself.
+  it('aliases (retired 2026-09-26): warns naming it and the removal reason, is NOT forwarded onto ServerConfig, engine boots', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cfg = await composeConfig(
+      { aliases: { sonnet: { provider: 'anthropic', model: 'claude-sonnet-5' } }, gateway: 'direct-fetch' } as any,
+      FAKE_DEPS,
+    );
+    expect(cfg).toBeDefined();
+    expect((cfg as Record<string, unknown>)['aliases']).toBeUndefined();
+    expect(warnSpy.mock.calls.length).toBe(1);
+    const message = String(warnSpy.mock.calls[0]?.[0]);
+    expect(message).toContain('aliases');
+    expect(message.toLowerCase()).toContain('alias mechanism is removed');
+    warnSpy.mockRestore();
+  });
 });
 
 describe('agentSlots is wired (UT-218, defect D7)', () => {
@@ -323,7 +343,6 @@ const PROBES: Record<string, unknown> = {
   port: 8123,
   allowedHosts: ['probe.example'],
   workRoot: '/var/rwe/probe-root',
-  aliases: { default: { provider: 'ollama', model: 'probe-model' } },
   timeoutMs: 4321,
   retries: 3,
   useLiteLLMProxy: false,

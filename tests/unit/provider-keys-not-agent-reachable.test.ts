@@ -24,7 +24,6 @@ import type { ChildProcess } from 'node:child_process';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
 import type { AgentOpts } from '../../src/types.js';
 
-const ALIASES = { default: { provider: 'anthropic' as const, model: 'claude-3-5-haiku-20241022' } };
 const REAL_ANTHROPIC_KEY = 'sk-ant-REAL-secret-for-this-test-only';
 const REAL_OPENAI_KEY = 'sk-openai-REAL-secret-for-this-test-only';
 
@@ -62,7 +61,7 @@ describe('Provider API key custody: proxy receives them, the agent-facing env do
 
     const { fakeSpawn } = makeFakeSpawn(999);
     const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
-    const proxy = new LiteLLMProxyManager(ALIASES, {
+    const proxy = new LiteLLMProxyManager({
       port: 48281,
       spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
       fetchImpl: fakeHealthFetch as unknown as typeof fetch,
@@ -98,7 +97,7 @@ describe('Provider API key custody: proxy receives them, the agent-facing env do
   it('the generated litellm config.yaml never contains a raw provider key value', async () => {
     process.env['ANTHROPIC_API_KEY'] = REAL_ANTHROPIC_KEY;
     const { generateLiteLLMConfig } = await import('../../src/gateway/litellm-proxy.js');
-    const yaml = generateLiteLLMConfig(ALIASES);
+    const yaml = generateLiteLLMConfig();
     expect(yaml).not.toContain(REAL_ANTHROPIC_KEY);
   });
 });

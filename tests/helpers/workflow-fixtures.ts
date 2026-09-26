@@ -151,10 +151,12 @@ const META_DECL_RE = /export\s+const\s+meta\s*=\s*/;
  *  refuses `AGENT_UNDECLARED` — there is no more "no params block ⇒ the engine-global knobs"
  *  fallback. Dozens of pre-v24 fixture scripts declare no `meta` at all. For those (and ONLY
  *  those — a script with its own `export const meta` is returned unchanged, never a second
- *  declaration), this synthesizes the minimal contract from the script's own labels: `'sonnet'`
- *  is the same alias already assumed known throughout this file's other fixtures (empty
- *  `aliasNames` ⇒ any string passes anyway — `isKnownAlias`, contract.ts:131). */
-export function synthesizeMeta(script: string, model = DEFAULT_FIXTURE_ALIAS): string {
+ *  declaration), this synthesizes the minimal contract from the script's own labels.
+ *  2026-09-26 (alias mechanism removed): `model.default` must be a full `<provider>/<model-id>`
+ *  ref — `DEFAULT_FIXTURE_MODEL` is a static-table anthropic ref, accepted with no catalog lookup
+ *  and no warning by `checkModelRef` regardless of what a bare `WorkflowCatalog`'s (unconfigured)
+ *  catalog snapshot holds. */
+export function synthesizeMeta(script: string, model = DEFAULT_FIXTURE_MODEL): string {
   if (META_DECL_RE.test(script)) return script;
   const { labels } = scanAgentCalls(script);
   if (labels.length === 0) return script;
@@ -167,15 +169,19 @@ export function synthesizeMeta(script: string, model = DEFAULT_FIXTURE_ALIAS): s
   return `export const meta = { params: { agents: { ${agents} } } };\n${script}`;
 }
 
-/** v24 (integrator): the synthesized contract's `model.default` used to be `'sonnet'` on the
- *  reasoning that "empty aliasNames ⇒ any string passes". That reasoning holds only for a bare
- *  `WorkflowCatalog`; a BOOTED server always feeds registration a non-empty alias table (its own
- *  `config.aliases`, else `DEFAULT_ALIASES`), and several test servers configure a table without
- *  `sonnet` — those fixtures registered `PARAM_CONTRACT_INVALID: default not a known alias`.
- *  `'default'` is the one key `DEFAULT_ALIASES` guarantees and every alias-configuring test server
- *  in this repo also defines. A server with an exotic table passes its own key via
- *  `RegisterPublishOpts.model`. */
-export const DEFAULT_FIXTURE_ALIAS = 'default';
+/** 2026-09-26 (alias mechanism removed): every `model.default` must now be a full
+ *  `<provider>/<model-id>` ref — no aliases, no bare names, no `'default'` fallback anywhere. This
+ *  one is a static-table anthropic id: `checkModelRef` accepts it with NO warning and NO catalog
+ *  lookup at all (the anthropic arm never consults the live-catalog snapshot), so it is safe as the
+ *  across-the-board fixture default regardless of what catalog (if any) a given test server wires
+ *  up. A fixture that dispatches through a REAL gateway (e.g. an ollama/openrouter smoke test) uses
+ *  its own full ref via `RegisterPublishOpts.model` instead — this default is never itself
+ *  dispatched by most fixtures (a fake spawner/gateway is the norm). */
+export const DEFAULT_FIXTURE_MODEL = 'anthropic/claude-haiku-4-5-20251001';
+/** @deprecated same-value re-export of `DEFAULT_FIXTURE_MODEL` under its pre-2026-09-26 name, so
+ *  the ~140 existing fixture files that import it keep compiling unchanged. Prefer the new name in
+ *  anything written from here on. */
+export const DEFAULT_FIXTURE_ALIAS = DEFAULT_FIXTURE_MODEL;
 
 export interface RegisterPublishOpts {
   /** Threaded through BOTH register and publish: `publish` only skips the ownership gate when the

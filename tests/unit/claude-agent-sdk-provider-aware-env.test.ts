@@ -15,7 +15,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentOpts } from '../../src/types.js';
 import { InMemorySecretSource } from '../../src/secret-resolver.js';
-import type { AliasMap } from '../../src/gateway/client.js';
 
 const queryMock = vi.fn();
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
@@ -29,12 +28,6 @@ function fakeSession(resultText: string) {
 function req(opts: AgentOpts = {}, extra: Record<string, unknown> = {}) {
   return { prompt: 'ping', opts, runId: 'run-1', agentId: 'agent-1', ...extra };
 }
-
-const ALIASES: AliasMap = {
-  sonnet: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
-  gpt: { provider: 'openrouter', model: 'gpt-4.1' },
-  local: { provider: 'ollama', model: 'qwen2.5:7b' },
-};
 
 function lastEnv(): Record<string, string> {
   const [[call]] = queryMock.mock.calls as [[{ options?: { env?: Record<string, string> } }]];
@@ -61,11 +54,10 @@ describe('ClaudeAgentSdkGatewayClient — provider-aware env (REQ-037)', () => {
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
     const client = new ClaudeAgentSdkGatewayClient({
       baseUrl: 'http://127.0.0.1:4000',
-      aliases: ALIASES,
       anthropicAuth: 'api-key',
       secretSource: new InMemorySecretSource({ ANTHROPIC_API_KEY: REAL_KEY }),
     });
-    const result = await client.invoke(req({ model: 'sonnet' }));
+    const result = await client.invoke(req({ model: 'anthropic/claude-3-5-sonnet-20241022' }));
     expect(result.ok).toBe(true);
     const env = lastEnv();
     expect(env['ANTHROPIC_BASE_URL']).toBe('https://api.anthropic.com');
@@ -79,7 +71,7 @@ describe('ClaudeAgentSdkGatewayClient — provider-aware env (REQ-037)', () => {
 
   it('REQ-038 passthrough: an openrouter/<id> model goes on the wire RAW (not rwe-proxy-cloaked), via LiteLLM+dummy', async () => {
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
-    const client = new ClaudeAgentSdkGatewayClient({ baseUrl: 'http://127.0.0.1:4000', aliases: ALIASES });
+    const client = new ClaudeAgentSdkGatewayClient({ baseUrl: 'http://127.0.0.1:4000' });
     const result = await client.invoke(req({ model: 'openrouter/qwen/qwen-2.5-72b-instruct' }));
     expect(result.ok).toBe(true);
     const [[call]] = queryMock.mock.calls as [[{ options?: { model?: string } }]];
@@ -95,11 +87,10 @@ describe('ClaudeAgentSdkGatewayClient — provider-aware env (REQ-037)', () => {
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
     const client = new ClaudeAgentSdkGatewayClient({
       baseUrl: 'http://127.0.0.1:4000',
-      aliases: ALIASES,
       anthropicAuth: 'subscription',
       secretSource: new InMemorySecretSource({ CLAUDE_CODE_OAUTH_TOKEN: OAUTH }),
     });
-    const result = await client.invoke(req({ model: 'sonnet' }));
+    const result = await client.invoke(req({ model: 'anthropic/claude-3-5-sonnet-20241022' }));
     expect(result.ok).toBe(true);
     const env = lastEnv();
     expect(env['ANTHROPIC_BASE_URL']).toBe('https://api.anthropic.com');
@@ -111,10 +102,9 @@ describe('ClaudeAgentSdkGatewayClient — provider-aware env (REQ-037)', () => {
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
     const client = new ClaudeAgentSdkGatewayClient({
       baseUrl: 'http://127.0.0.1:4000',
-      aliases: ALIASES,
       secretSource: new InMemorySecretSource({ CLAUDE_CODE_OAUTH_TOKEN: OAUTH }),
     });
-    await client.invoke(req({ model: 'sonnet' }));
+    await client.invoke(req({ model: 'anthropic/claude-3-5-sonnet-20241022' }));
     const env = lastEnv();
     expect(env['CLAUDE_CODE_OAUTH_TOKEN']).toBe(OAUTH);
     expect(env['ANTHROPIC_API_KEY']).toBeUndefined();
@@ -124,10 +114,9 @@ describe('ClaudeAgentSdkGatewayClient — provider-aware env (REQ-037)', () => {
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
     const client = new ClaudeAgentSdkGatewayClient({
       baseUrl: 'http://127.0.0.1:4000',
-      aliases: ALIASES,
       secretSource: new InMemorySecretSource({ ANTHROPIC_API_KEY: REAL_KEY }),
     });
-    await client.invoke(req({ model: 'sonnet' }));
+    await client.invoke(req({ model: 'anthropic/claude-3-5-sonnet-20241022' }));
     const env = lastEnv();
     expect(env['ANTHROPIC_API_KEY']).toBe(REAL_KEY);
     expect(env['CLAUDE_CODE_OAUTH_TOKEN']).toBeUndefined();
@@ -137,11 +126,10 @@ describe('ClaudeAgentSdkGatewayClient — provider-aware env (REQ-037)', () => {
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
     const client = new ClaudeAgentSdkGatewayClient({
       baseUrl: 'http://127.0.0.1:4000',
-      aliases: ALIASES,
       anthropicAuth: 'api-key',
       secretSource: new InMemorySecretSource({}), // no ANTHROPIC_API_KEY
     });
-    const result = await client.invoke(req({ model: 'sonnet' }));
+    const result = await client.invoke(req({ model: 'anthropic/claude-3-5-sonnet-20241022' }));
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toBe('terminal');
@@ -155,10 +143,9 @@ describe('ClaudeAgentSdkGatewayClient — provider-aware env (REQ-037)', () => {
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
     const client = new ClaudeAgentSdkGatewayClient({
       baseUrl: 'http://127.0.0.1:4999',
-      aliases: ALIASES,
       secretSource: new InMemorySecretSource({ ANTHROPIC_API_KEY: REAL_KEY }),
     });
-    await client.invoke(req({ model: 'gpt' }));
+    await client.invoke(req({ model: 'openrouter/gpt-4.1' }));
     const env = lastEnv();
     expect(env['ANTHROPIC_BASE_URL']).toBe('http://127.0.0.1:4999');
     expect(env['ANTHROPIC_API_KEY']).toBe('sk-local-dev-dummy-not-a-real-key');
@@ -170,12 +157,11 @@ describe('ClaudeAgentSdkGatewayClient — provider-aware env (REQ-037)', () => {
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
     const client = new ClaudeAgentSdkGatewayClient({
       baseUrl: 'http://127.0.0.1:4000',
-      aliases: ALIASES,
       anthropicBaseUrl: 'https://anthropic.internal.example',
       anthropicAuth: 'api-key',
       secretSource: new InMemorySecretSource({ ANTHROPIC_API_KEY: REAL_KEY }),
     });
-    await client.invoke(req({ model: 'sonnet' }));
+    await client.invoke(req({ model: 'anthropic/claude-3-5-sonnet-20241022' }));
     expect(lastEnv()['ANTHROPIC_BASE_URL']).toBe('https://anthropic.internal.example');
   });
 
@@ -185,11 +171,10 @@ describe('ClaudeAgentSdkGatewayClient — provider-aware env (REQ-037)', () => {
       const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
       const client = new ClaudeAgentSdkGatewayClient({
         baseUrl: 'http://127.0.0.1:4000',
-        aliases: ALIASES,
-        anthropicAuth: 'api-key',
+          anthropicAuth: 'api-key',
         secretSource: new InMemorySecretSource({ ANTHROPIC_API_KEY: REAL_KEY }),
       });
-      await client.invoke(req({ model: 'sonnet' }, { workspace }));
+      await client.invoke(req({ model: 'anthropic/claude-3-5-sonnet-20241022' }, { workspace }));
 
       const [[call]] = queryMock.mock.calls as [[{ options?: Record<string, unknown> }]];
       const options = call.options ?? {};

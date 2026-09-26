@@ -3,7 +3,7 @@
 // alias in any example script. Written test-first (Gate 5, RED) — src/authoring-guide.ts does
 // not exist yet.
 import { describe, it, expect } from 'vitest';
-import { buildAuthoringGuide, GUIDE_EXAMPLES, chooseExampleModelAlias, type AliasProbeInfo } from '../../src/authoring-guide.js';
+import { buildAuthoringGuide, GUIDE_EXAMPLES, EXAMPLE_MODEL } from '../../src/authoring-guide.js';
 import { SHAPES, EDGE_FORMS } from '../../src/check-mermaid.js';
 // v37 owner ruling on DES-258 (ARCH-181, ADR-083 posture C): the load-bearing correction test
 // below calls the REAL boot probe against THIS host, same precedent as UT-323b.
@@ -15,7 +15,7 @@ import { ERROR_CATALOG } from '../../src/errors.js';
 import type { ScheduleStatus } from '../../src/scheduler.js';
 import type { WebhookView } from '../../src/webhook-registry.js';
 
-const CEILINGS = { maxTimeoutMs: 600000, maxAppendPromptBytes: 1024, maxEffort: 'high' as const, aliases: ['default', 'sonnet'], runConcurrency: 24 };
+const CEILINGS = { maxTimeoutMs: 600000, maxAppendPromptBytes: 1024, maxEffort: 'high' as const, runConcurrency: 24 };
 
 // issue #89: bounds a "## <title>" section to its OWN text (never bleeding into every later
 // section) — the same slicing convention `toolSurfaceSection` (below) already uses, extracted so
@@ -29,7 +29,7 @@ function sectionOf(text: string, title: string): string {
 
 describe('buildAuthoringGuide (UT-159, DES-157)', () => {
   it('a FAKE ceiling appears verbatim in the text (proves interpolation, not a hard-coded 600000)', () => {
-    const text = buildAuthoringGuide({ maxTimeoutMs: 12345, maxAppendPromptBytes: 999, maxEffort: 'medium', aliases: ['default'], runConcurrency: 24 });
+    const text = buildAuthoringGuide({ maxTimeoutMs: 12345, maxAppendPromptBytes: 999, maxEffort: 'medium', runConcurrency: 24 });
     expect(text).toMatch(/12345/);
   });
 
@@ -43,9 +43,19 @@ describe('buildAuthoringGuide (UT-159, DES-157)', () => {
     }
   });
 
-  it('no example script contains a hard-coded model alias literal', () => {
+  // 2026-09-26 (alias mechanism removed, owner decisions 1/2): rewritten from "no example script
+  // contains a hard-coded model alias literal" — every example now DELIBERATELY hard-codes the SAME
+  // static full ref (`EXAMPLE_MODEL`), which is the whole point (a deployment-independent, always-
+  // valid static-table id, never a per-deployment alias name). The successor property: every example
+  // that declares a model uses EXACTLY that one ref, never a different hard-coded alternative.
+  it('every example script that declares a model uses the SAME static EXAMPLE_MODEL ref, never a different hard-coded alternative', () => {
+    expect(EXAMPLE_MODEL).toMatch(/^anthropic\//);
+    const otherModelLiterals = /sonnet-5|opus|gpt-4/; // EXAMPLE_MODEL itself contains "haiku"
     for (const ex of GUIDE_EXAMPLES as Array<{ script: string }>) {
-      expect(ex.script).not.toMatch(/sonnet-5|opus|haiku|gpt-4/);
+      expect(ex.script).not.toMatch(otherModelLiterals);
+      if (ex.script.includes('model:')) {
+        expect(ex.script).toContain(EXAMPLE_MODEL);
+      }
     }
   });
 
@@ -109,20 +119,39 @@ describe('buildAuthoringGuide (UT-159, DES-157)', () => {
 // ceilings and not the alias table, no tool schema listed them, and `models_list` lists catalog
 // models, not aliases. Per REQ-117's own rule ("write it right the first time; if not, the
 // documentation is at fault"), that is a documentation defect.
-describe('the accepted model aliases are ON the surface (UT-159 v24, D-12, REQ-117)', () => {
-  it("this deployment's alias names appear in the ceilings section, interpolated — never a hard-coded table", () => {
-    const text = buildAuthoringGuide({ maxTimeoutMs: 600000, maxAppendPromptBytes: 1024, maxEffort: 'high', aliases: ['zz-alpha', 'zz-beta'], runConcurrency: 24 });
+// 2026-09-26 (alias mechanism removed, owner decisions 1/2/6): rewritten from "the accepted model
+// aliases are ON the surface" — there is no more resolved alias table for the guide to interpolate.
+// The rule is now static text (identical on every deployment): a full <provider>/<model-id> ref,
+// required at registration, no aliases, no bare names.
+describe('the full-ref model rule is ON the surface (UT-159 v24, D-12, REQ-117 — 2026-09-26 rewrite)', () => {
+  it("the ceilings section states the full-ref rule and the three providers, identically on every deployment", () => {
+    const text = buildAuthoringGuide(CEILINGS);
     const section = text.slice(text.indexOf('Engine ceilings (this deployment)'));
-    expect(section).toMatch(/zz-alpha/);
-    expect(section).toMatch(/zz-beta/);
-    // A different deployment renders different names — the same proof the numeric ceilings get.
-    expect(buildAuthoringGuide(CEILINGS)).not.toMatch(/zz-alpha/);
+    expect(section).toMatch(/<provider>\/<model-id>/);
+    expect(section).toMatch(/anthropic/);
+    expect(section).toMatch(/openrouter/);
+    expect(section).toMatch(/ollama/);
+    // Static — a different deployment's ceilings still render the SAME model-ref rule sentence.
+    // Sliced to the rule's OWN known end anchor, not "to the end of the document" — later sections
+    // legitimately DO vary with the ceilings (e.g. the numeric maxTimeoutMs itself), so a slice with
+    // no end bound would false-red on exactly the kind of faithful implementation this pins.
+    const START = 'A declared `model.default`';
+    const END_ANCHOR = 'own bound `.default`).';
+    function ruleSentence(t: string): string {
+      const start = t.indexOf(START);
+      expect(start, 'model-ref rule sentence not found').toBeGreaterThanOrEqual(0);
+      const end = t.indexOf(END_ANCHOR, start);
+      expect(end, 'model-ref rule sentence end anchor not found').toBeGreaterThanOrEqual(0);
+      return t.slice(start, end + END_ANCHOR.length);
+    }
+    expect(ruleSentence(buildAuthoringGuide({ ...CEILINGS, maxTimeoutMs: 12345 }))).toBe(ruleSentence(text));
   });
 
-  it('the alias names are named as such, so a reader knows what to put in `model.default`', () => {
+  it('the rule names UNKNOWN_MODEL and models_list, so a reader knows what to put in `model.default` and where to find a valid one', () => {
     const text = buildAuthoringGuide(CEILINGS);
-    expect(text).toMatch(/model.*alias|alias.*model/i);
-    expect(text).toMatch(/UNKNOWN_ALIAS|not a known alias/);
+    expect(text).toMatch(/model\.default/);
+    expect(text).toMatch(/UNKNOWN_MODEL/);
+    expect(text).toMatch(/models_list/);
   });
 });
 
@@ -682,136 +711,6 @@ describe('buildAuthoringGuide — "Canonical diagram" rule 3 states the tools se
   });
 });
 
-// issue #89 item 6: every guide example (and the "Declaring the parameter contract" prose example)
-// hard-codes `model.default: 'default'`. On a deployment where the 'default' alias resolves to a
-// tool-incapable model (probed toolUseVerified:false), a cold author copying an example gets a
-// silently tool-incapable agent. DECISION (owner): never hard-code a second alias literal — render
-// the choice, at guide-render time, from this deployment's OWN alias probe data.
-describe('chooseExampleModelAlias — pure decision over alias probe data (issue #89 item 6)', () => {
-  it('keeps \'default\' with no note when its probe is verified tool-capable', () => {
-    const probes: AliasProbeInfo[] = [{ alias: 'default', model: 'anthropic/claude-sonnet-5', toolUseVerified: true }];
-    expect(chooseExampleModelAlias(probes)).toEqual({ alias: 'default' });
-  });
-
-  it('keeps \'default\' with no note when it has never been probed (null = no data, not a defect)', () => {
-    const probes: AliasProbeInfo[] = [{ alias: 'default', model: 'anthropic/claude-sonnet-5', toolUseVerified: null }];
-    expect(chooseExampleModelAlias(probes)).toEqual({ alias: 'default' });
-  });
-
-  it('keeps \'default\' with no note when no alias table is configured at all (empty input)', () => {
-    expect(chooseExampleModelAlias([])).toEqual({ alias: 'default' });
-  });
-
-  it('switches to a DIFFERENT verified alias and names both models when \'default\' probes tool-incapable', () => {
-    const probes: AliasProbeInfo[] = [
-      { alias: 'default', model: 'ollama/qwen2.5:7b', toolUseVerified: false },
-      { alias: 'sonnet', model: 'anthropic/claude-sonnet-5', toolUseVerified: true },
-    ];
-    const result = chooseExampleModelAlias(probes);
-    expect(result.alias).toBe('sonnet');
-    expect(result.note).toBeDefined();
-    expect(result.note).toMatch(/default/);
-    expect(result.note).toMatch(/ollama\/qwen2\.5:7b/);
-    expect(result.note).toMatch(/sonnet/);
-    expect(result.note).toMatch(/tool-incapable|toolUseVerified.*false|not.*tool/i);
-  });
-
-  it('picks deterministically (name order) among several verified alternatives, preferring a non-dated-looking name', () => {
-    const probes: AliasProbeInfo[] = [
-      { alias: 'default', model: 'ollama/qwen2.5:7b', toolUseVerified: false },
-      { alias: 'zeta', model: 'anthropic/claude-opus-4-5', toolUseVerified: true },
-      { alias: 'claude-sonnet-5-20260101', model: 'anthropic/claude-sonnet-5', toolUseVerified: true },
-      { alias: 'alpha', model: 'anthropic/claude-haiku-4-5', toolUseVerified: true },
-    ];
-    // 'alpha' sorts first AND does not look like a dated id — the documented deterministic choice.
-    expect(chooseExampleModelAlias(probes).alias).toBe('alpha');
-  });
-
-  // issue #89 item 6 (verification finding 1): the OLD rule sorted verified aliases by name alone,
-  // so production's own alias table picked 'claude-fable-5' — its MOST expensive tier — the moment
-  // the weekly prober marked Anthropic models tool-capable. New rule, in order: (a) provider
-  // 'anthropic' first (the engine-native harness), (b) then lowest costLevel (null/unknown sorts
-  // LAST), (c) then a non-dated name, (d) then name order.
-  it('on a production-like probe table, prefers a cheap anthropic alias (haiku) over the alphabetically-first verified one', () => {
-    const probes: AliasProbeInfo[] = [
-      { alias: 'default', model: 'ollama/qwen2.5:7b', toolUseVerified: false },
-      { alias: 'claude-fable-5', model: 'anthropic/claude-fable-5', toolUseVerified: true, provider: 'anthropic', costLevel: 9 },
-      { alias: 'fable', model: 'anthropic/claude-fable-5', toolUseVerified: true, provider: 'anthropic', costLevel: 9 },
-      { alias: 'claude-haiku-4-5', model: 'anthropic/claude-haiku-4-5', toolUseVerified: true, provider: 'anthropic', costLevel: 2 },
-      { alias: 'haiku', model: 'anthropic/claude-haiku-4-5', toolUseVerified: true, provider: 'anthropic', costLevel: 2 },
-      { alias: 'claude-opus-4-8', model: 'anthropic/claude-opus-4-8', toolUseVerified: true, provider: 'anthropic', costLevel: 8 },
-      { alias: 'opus', model: 'anthropic/claude-opus-4-8', toolUseVerified: true, provider: 'anthropic', costLevel: 8 },
-      { alias: 'claude-sonnet-5', model: 'anthropic/claude-sonnet-5', toolUseVerified: true, provider: 'anthropic', costLevel: 6 },
-      { alias: 'sonnet', model: 'anthropic/claude-sonnet-5', toolUseVerified: true, provider: 'anthropic', costLevel: 6 },
-      { alias: 'gpt41nano', model: 'openrouter/openai/gpt-4.1-nano', toolUseVerified: true, provider: 'openrouter', costLevel: 1 },
-      { alias: 'gpt4omini', model: 'openrouter/openai/gpt-4o-mini', toolUseVerified: true, provider: 'openrouter', costLevel: 1 },
-    ];
-    const result = chooseExampleModelAlias(probes);
-    expect(result.alias).toMatch(/haiku/);
-    expect(result.alias).not.toBe('claude-fable-5');
-  });
-
-  it('with no verified anthropic alias, the cheapest verified alias wins even against name order', () => {
-    const probes: AliasProbeInfo[] = [
-      { alias: 'default', model: 'ollama/qwen2.5:7b', toolUseVerified: false },
-      { alias: 'gpt41nano', model: 'openrouter/openai/gpt-4.1-nano', toolUseVerified: true, provider: 'openrouter', costLevel: 3 },
-      { alias: 'gpt4omini', model: 'openrouter/openai/gpt-4o-mini', toolUseVerified: true, provider: 'openrouter', costLevel: 1 },
-    ];
-    // 'gpt41nano' sorts first by name, but 'gpt4omini' is cheaper — cost order wins the tie.
-    expect(chooseExampleModelAlias(probes).alias).toBe('gpt4omini');
-  });
-
-  it('a verified alias with a null (unknown) costLevel sorts LAST behind one with a known costLevel, even out of name order', () => {
-    const probes: AliasProbeInfo[] = [
-      { alias: 'default', model: 'ollama/qwen2.5:7b', toolUseVerified: false },
-      { alias: 'aaa-unknown-cost', model: 'anthropic/some-model', toolUseVerified: true, provider: 'anthropic', costLevel: null },
-      { alias: 'zzz-known-cost', model: 'anthropic/other-model', toolUseVerified: true, provider: 'anthropic', costLevel: 4 },
-    ];
-    // 'aaa-unknown-cost' sorts first by name, but a KNOWN price beats an unknown one.
-    expect(chooseExampleModelAlias(probes).alias).toBe('zzz-known-cost');
-  });
-
-  it('keeps \'default\' and still emits a visible warning note when NO alias is verified tool-capable', () => {
-    const probes: AliasProbeInfo[] = [
-      { alias: 'default', model: 'ollama/qwen2.5:7b', toolUseVerified: false },
-      { alias: 'other', model: 'ollama/llama3:8b', toolUseVerified: false },
-    ];
-    const result = chooseExampleModelAlias(probes);
-    expect(result.alias).toBe('default');
-    expect(result.note).toBeDefined();
-    expect(result.note).toMatch(/tool-incapable|not.*verified|toolUseVerified/i);
-  });
-});
-
-describe('buildAuthoringGuide — renders the chosen example model alias at RENDER time, without mutating GUIDE_EXAMPLES (issue #89 item 6)', () => {
-  it('with no exampleModelAlias in ceilings, every example and the prose sample still say \'default\' (back-compat: gen-authoring-md.ts, IT-118 registration corpus)', () => {
-    const text = buildAuthoringGuide(CEILINGS);
-    expect(text).toMatch(/default: 'default'/);
-    // Only the examples that declare at least one agent() have a model default to check — the two
-    // pure workflow()-delegation examples declare `agents: {}` and have none.
-    const withAgents = GUIDE_EXAMPLES.filter((ex) => ex.script.includes("default: '"));
-    expect(withAgents.length).toBeGreaterThan(0);
-    expect(withAgents.every((ex) => ex.script.includes("default: 'default'"))).toBe(true);
-  });
-
-  it('with a chosen alias + note, the rendered examples and prose sample use the CHOSEN alias, and a visible note explains why', () => {
-    const text = buildAuthoringGuide({
-      ...CEILINGS,
-      exampleModelAlias: { alias: 'sonnet', note: "'default' on this deployment resolves to ollama/qwen2.5:7b, probed tool-incapable — examples below use 'sonnet' instead." },
-    });
-    expect(text).toContain("'default' on this deployment resolves to ollama/qwen2.5:7b, probed tool-incapable");
-    const registeredSection = text.slice(text.indexOf('Registered examples'));
-    expect(registeredSection).toContain("default: 'sonnet'");
-    expect(registeredSection).not.toContain("default: 'default'");
-  });
-
-  it('GUIDE_EXAMPLES itself is never mutated by rendering with a different chosen alias (still the fixed IT-118 conformance corpus)', () => {
-    const before = JSON.stringify(GUIDE_EXAMPLES);
-    buildAuthoringGuide({ ...CEILINGS, exampleModelAlias: { alias: 'sonnet' } });
-    expect(JSON.stringify(GUIDE_EXAMPLES)).toBe(before);
-  });
-});
-
 // issue #89 (cheap guard for the whole defect class): every UPPER_SNAKE, error-code-shaped token in
 // the rendered guide must be a real ERROR_CATALOG key, OR be explicitly allowlisted below as a
 // genuine non-code (a warning code, a sub-violation detail code, a script-side sandbox guard code,
@@ -829,6 +728,9 @@ describe('buildAuthoringGuide — every error-code-shaped token is a real ERROR_
     'BASH_SUBSUMES_FILE_TOOLS', // a non-fatal result.warnings[].code, not a refusal code
     'MODEL_TOOL_USE_UNVERIFIED', // a non-fatal run_start warnings[].code, not a refusal code
     'BASH_READONLY_UNENFORCEABLE', // a harness-record / warnings[].code, not a top-level refusal
+    'MODEL_CATALOG_UNVERIFIED', // 2026-09-26: a non-fatal workflow_register/run_start warnings[].code
+    // (checkModelRef's live-catalog-unavailable/anthropic-static-table-miss warn arm) — never a
+    // refusal code, so it has no ERROR_CATALOG entry.
   ]);
 
   it('every UPPER_SNAKE token adjacent to "refused"/"warns"/backtick code style resolves to ERROR_CATALOG or the explicit allowlist', () => {

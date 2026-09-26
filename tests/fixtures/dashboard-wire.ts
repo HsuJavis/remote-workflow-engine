@@ -171,18 +171,20 @@ export const SYSTEM_SECTION_DEGRADED: SystemInfoView & { auth: unknown } = {
 };
 
 // ---- GET /api/models[i] (v28, DES-218, TASK-219, REQ-137) ----
+// 2026-09-26 (alias mechanism removed, spec rule 9): `ref` is now `<provider>/<model-id>` — the
+// exact string a caller pastes into `model.default`/an override — and there is no `aliases` field.
 export const MODEL_ENTRY_OK: EnrichedModelEntry = {
-  provider: 'anthropic', model: 'claude-3-5-sonnet-20241022', aliases: ['sonnet'],
+  provider: 'anthropic', model: 'claude-3-5-sonnet-20241022',
   description: 'a capable general-purpose model', modalities: { in: ['text'], out: ['text'] },
   contextWindow: 200000, price: { in: '3', out: '15' }, toolUseDeclared: true,
-  location: 'remote', ref: 'sonnet', ratesPerM: { in: 3, out: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  location: 'remote', ref: 'anthropic/claude-3-5-sonnet-20241022', ratesPerM: { in: 3, out: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   effortDeclared: true, declaredSource: 'static', capability: 'general-purpose reasoning and tool use',
   stability: 'stable', costLevel: 8, catalogFetchedAt: '2026-09-17T00:00:00.000Z',
   // Issue #73: probe-backed fields — this fixture row was never probed.
   toolUseVerified: null, proseVerified: null, lastProbedAt: null, probeDetail: null, stabilitySource: 'rule',
 };
 export const ALLOWED_MODEL_ENTRY_KEYS = [
-  'provider', 'model', 'aliases', 'description', 'modalities', 'contextWindow', 'price',
+  'provider', 'model', 'description', 'modalities', 'contextWindow', 'price',
   'toolUseDeclared', 'location', 'ref', 'besteffort', 'ratesPerM', 'effortDeclared', 'declaredSource',
   'capability', 'stability', 'costLevel', 'catalogFetchedAt',
   'toolUseVerified', 'proseVerified', 'lastProbedAt', 'probeDetail', 'stabilitySource',

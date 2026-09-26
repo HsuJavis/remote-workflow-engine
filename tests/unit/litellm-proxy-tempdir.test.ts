@@ -15,7 +15,6 @@ import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
 
-const ALIASES = { default: { provider: 'anthropic' as const, model: 'claude-3-5-haiku-20241022' } };
 const HEALTHY = vi.fn(async () => ({ ok: true }) as unknown as Response);
 
 function makeFakeProc(): ChildProcess & EventEmitter {
@@ -34,7 +33,7 @@ describe('#60 LiteLLM temp dir lifecycle', () => {
 
   it('stop() removes the temp dir it created — not just the process', async () => {
     const before = new Set(dirsNow());
-    const proxy = new LiteLLMProxyManager(ALIASES, {
+    const proxy = new LiteLLMProxyManager({
       port: 48310,
       spawnImpl: (() => makeFakeProc()) as unknown as typeof import('node:child_process').spawn,
       fetchImpl: HEALTHY as unknown as typeof fetch,
@@ -66,7 +65,7 @@ describe('#60 LiteLLM temp dir lifecycle', () => {
     const { utimesSync } = await import('node:fs');
     utimesSync(live, ancient / 1000, ancient / 1000);
 
-    const proxy = new LiteLLMProxyManager(ALIASES, {
+    const proxy = new LiteLLMProxyManager({
       port: 48313,
       spawnImpl: (() => makeFakeProc()) as unknown as typeof import('node:child_process').spawn,
       fetchImpl: HEALTHY as unknown as typeof fetch,
@@ -92,7 +91,7 @@ describe('#60 LiteLLM temp dir lifecycle', () => {
     try { process.kill(deadPid, 0); deadPid = 999999; } catch { /* confirmed not running */ }
     writeFileSync(join(orphan, 'owner.pid'), String(deadPid), 'utf8');
 
-    const proxy = new LiteLLMProxyManager(ALIASES, {
+    const proxy = new LiteLLMProxyManager({
       port: 48314,
       spawnImpl: (() => makeFakeProc()) as unknown as typeof import('node:child_process').spawn,
       fetchImpl: HEALTHY as unknown as typeof fetch,
@@ -115,7 +114,7 @@ describe('#60 LiteLLM temp dir lifecycle', () => {
     mkdirSync(fresh, { recursive: true });
     writeFileSync(join(fresh, 'config.yaml'), 'another instance is using this', 'utf8');
 
-    const proxy = new LiteLLMProxyManager(ALIASES, {
+    const proxy = new LiteLLMProxyManager({
       port: 48312,
       spawnImpl: (() => makeFakeProc()) as unknown as typeof import('node:child_process').spawn,
       fetchImpl: HEALTHY as unknown as typeof fetch,
@@ -142,7 +141,7 @@ describe('#60 LiteLLM temp dir lifecycle', () => {
     const { utimesSync } = await import('node:fs');
     utimesSync(stale, old / 1000, old / 1000);
 
-    const proxy = new LiteLLMProxyManager(ALIASES, {
+    const proxy = new LiteLLMProxyManager({
       port: 48311,
       spawnImpl: (() => makeFakeProc()) as unknown as typeof import('node:child_process').spawn,
       fetchImpl: HEALTHY as unknown as typeof fetch,

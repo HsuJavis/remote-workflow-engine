@@ -37,7 +37,6 @@ describe('LiteLLMGatewayClient: optional stop()/dispose() (D-V2I-6)', () => {
     const stopSpy = vi.spyOn(LiteLLMProxyManager.prototype, 'stop').mockResolvedValue(undefined);
     try {
       const gateway = new LiteLLMGatewayClient({
-        aliases: { default: { provider: 'ollama', model: 'llama3' } },
         timeoutMs: 1000,
         retries: 0,
         useLiteLLMProxy: true, // no proxyManager injected -> LiteLLMGatewayClient builds its own
@@ -54,7 +53,6 @@ describe('LiteLLMGatewayClient: optional stop()/dispose() (D-V2I-6)', () => {
   it('stop() cascades to an explicitly-injected proxyManager the same way', async () => {
     const fakeProxy = { start: vi.fn(), stop: vi.fn().mockResolvedValue(undefined), baseUrl: undefined } as unknown as LiteLLMProxyManager;
     const gateway = new LiteLLMGatewayClient({
-      aliases: { default: { provider: 'ollama', model: 'llama3' } },
       timeoutMs: 1000,
       retries: 0,
       useLiteLLMProxy: true,
@@ -72,7 +70,6 @@ describe('LiteLLMGatewayClient: optional stop()/dispose() (D-V2I-6)', () => {
     // today via `stop?.()` optional-chaining to `undefined` (no method exists at all yet), and must
     // keep passing (no throw) once `stop()` is genuinely implemented for this no-proxy case too.
     const gateway = new LiteLLMGatewayClient({
-      aliases: { default: { provider: 'anthropic', model: 'claude-3-5-haiku-20241022' } },
       timeoutMs: 1000,
       retries: 0,
     });

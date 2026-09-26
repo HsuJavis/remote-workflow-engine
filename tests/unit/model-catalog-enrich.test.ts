@@ -194,11 +194,10 @@ describe('enrichModelEntry (UT-080, DES-075)', () => {
   });
 
   it('all original ModelEntry fields are preserved in enriched entry', () => {
-    const e = makeEntry({ provider: 'openai', model: 'gpt-4o', aliases: ['gpt4'] }); // v26/D11 rename
+    const e = makeEntry({ provider: 'openai', model: 'gpt-4o' });
     const enriched = enrichModelEntry(e);
     expect(enriched.provider).toBe('openai');
     expect(enriched.model).toBe('gpt-4o');
-    expect(enriched.aliases).toEqual(['gpt4']);
   });
 
   it('does NOT add cmd/argv/cmdline fields (clean enrichment only)', () => {

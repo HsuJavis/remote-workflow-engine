@@ -7,10 +7,9 @@
 // after ~4 minutes of CLI-internal retry/backoff before resolving to null), SDK default preserved
 // for Anthropic-provider aliases; per-alias config override allowed.
 //
-// This is a verifier-authored design extension to ClaudeAgentSdkGatewayConfig (a new `aliases:
-// AliasMap` field — the same alias table shape LiteLLMGatewayClient already takes) — not yet in
-// 04-design.md, flagged for Gate 6 to finalize, same precedent as D-V5's AgentExecutorDeps.agentTypes
-// seam (UT-017) and D-F2's ServerConfig.agentDefinitionsDir.
+// 2026-09-26 (alias mechanism removed): the provider now comes straight off the model ref's own
+// prefix (`parseModelRef`, providers.ts) — no alias table for `ClaudeAgentSdkGatewayConfig` to carry
+// any more; every `opts.model` below is a full `<provider>/<model-id>` ref.
 //
 // Mock policy (DES-015, unit tier): vi.mock intercepts only the third-party
 // @anthropic-ai/claude-agent-sdk module (same pattern as UT-018/UT-019).
@@ -23,7 +22,6 @@
 // green once the D-F6 alias logic is wired), same precedent as IT-016's "unknown agentType still
 // fails fast" sub-case (05-tests.md IT-016 note).
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { AliasMap } from '../../src/gateway/client.js';
 import type { ClaudeAgentSdkGatewayConfig } from '../../src/gateway/claude-agent-sdk-client.js';
 import { InMemorySecretSource } from '../../src/secret-resolver.js';
 
@@ -36,11 +34,6 @@ function fakeSession() {
   })();
 }
 
-const ALIASES: AliasMap = {
-  local: { provider: 'ollama', model: 'qwen2.5:7b' },
-  sonnet: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
-};
-
 describe('ClaudeAgentSdkGatewayClient thinking policy (UT-020, D-F6)', () => {
   beforeEach(() => {
     queryMock.mockReset();
@@ -49,13 +42,12 @@ describe('ClaudeAgentSdkGatewayClient thinking policy (UT-020, D-F6)', () => {
   it('disables thinking for a non-Anthropic-mapped alias (Ollama, routed via the LiteLLM proxy)', async () => {
     queryMock.mockReturnValue(fakeSession());
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
-    const config: ClaudeAgentSdkGatewayConfig & { aliases: AliasMap } = {
+    const config: ClaudeAgentSdkGatewayConfig = {
       baseUrl: 'http://127.0.0.1:4000',
-      aliases: ALIASES,
     };
     const client = new ClaudeAgentSdkGatewayClient(config);
 
-    await client.invoke({ prompt: 'hi', opts: { model: 'local' }, runId: 'r1', agentId: 'a1' });
+    await client.invoke({ prompt: 'hi', opts: { model: 'ollama/qwen2.5:7b' }, runId: 'r1', agentId: 'a1' });
 
     expect(queryMock).toHaveBeenCalledTimes(1);
     const [[call]] = queryMock.mock.calls as [[{ options?: { thinking?: unknown } }]];
@@ -69,14 +61,13 @@ describe('ClaudeAgentSdkGatewayClient thinking policy (UT-020, D-F6)', () => {
     // REQ-037: an anthropic-mapped alias now dispatches DIRECT to the real Anthropic API with real
     // auth (LiteLLM bypassed). Provide a fake api-key secret so the auth-present path reaches query()
     // and the thinking policy under test (thinking left unset for anthropic) can be asserted.
-    const config: ClaudeAgentSdkGatewayConfig & { aliases: AliasMap } = {
+    const config: ClaudeAgentSdkGatewayConfig = {
       baseUrl: 'http://127.0.0.1:4000',
-      aliases: ALIASES,
       secretSource: new InMemorySecretSource({ ANTHROPIC_API_KEY: 'fake-unit-test-key' }),
     };
     const client = new ClaudeAgentSdkGatewayClient(config);
 
-    await client.invoke({ prompt: 'hi', opts: { model: 'sonnet' }, runId: 'r1', agentId: 'a1' });
+    await client.invoke({ prompt: 'hi', opts: { model: 'anthropic/claude-3-5-sonnet-20241022' }, runId: 'r1', agentId: 'a1' });
 
     expect(queryMock).toHaveBeenCalledTimes(1);
     const [[call]] = queryMock.mock.calls as [[{ options?: { thinking?: unknown } }]];
@@ -92,13 +83,12 @@ describe('ClaudeAgentSdkGatewayClient thinking policy (UT-020, D-F6)', () => {
   it('a non-Anthropic alias at effort:"max" leaves options.thinking byte-identical to today ({type:"disabled"})', async () => {
     queryMock.mockReturnValue(fakeSession());
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
-    const config: ClaudeAgentSdkGatewayConfig & { aliases: AliasMap } = {
+    const config: ClaudeAgentSdkGatewayConfig = {
       baseUrl: 'http://127.0.0.1:4000',
-      aliases: ALIASES,
     };
     const client = new ClaudeAgentSdkGatewayClient(config);
 
-    await client.invoke({ prompt: 'hi', opts: { model: 'local', effort: 'max' }, runId: 'r1', agentId: 'a1' });
+    await client.invoke({ prompt: 'hi', opts: { model: 'ollama/qwen2.5:7b', effort: 'max' }, runId: 'r1', agentId: 'a1' });
 
     expect(queryMock).toHaveBeenCalledTimes(1);
     const [[call]] = queryMock.mock.calls as [[{ options?: { thinking?: unknown } }]];
@@ -114,20 +104,19 @@ describe('ClaudeAgentSdkGatewayClient thinking policy (UT-020, D-F6)', () => {
   it('an Anthropic-mapped alias dispatched at different effort levels produces Options objects that differ at the mapped effort key (B-6, DES-106)', async () => {
     queryMock.mockReturnValue(fakeSession());
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
-    const config: ClaudeAgentSdkGatewayConfig & { aliases: AliasMap } = {
+    const config: ClaudeAgentSdkGatewayConfig = {
       baseUrl: 'http://127.0.0.1:4000',
-      aliases: ALIASES,
       secretSource: new InMemorySecretSource({ ANTHROPIC_API_KEY: 'fake-unit-test-key' }),
     };
 
     const clientLow = new ClaudeAgentSdkGatewayClient(config);
-    await clientLow.invoke({ prompt: 'hi', opts: { model: 'sonnet', effort: 'low' }, runId: 'r1', agentId: 'a1' });
+    await clientLow.invoke({ prompt: 'hi', opts: { model: 'anthropic/claude-3-5-sonnet-20241022', effort: 'low' }, runId: 'r1', agentId: 'a1' });
     const [[lowCall]] = queryMock.mock.calls as [[{ options?: Record<string, unknown> }]];
 
     queryMock.mockReset();
     queryMock.mockReturnValue(fakeSession());
     const clientMax = new ClaudeAgentSdkGatewayClient(config);
-    await clientMax.invoke({ prompt: 'hi', opts: { model: 'sonnet', effort: 'max' }, runId: 'r1', agentId: 'a1' });
+    await clientMax.invoke({ prompt: 'hi', opts: { model: 'anthropic/claude-3-5-sonnet-20241022', effort: 'max' }, runId: 'r1', agentId: 'a1' });
     const [[maxCall]] = queryMock.mock.calls as [[{ options?: Record<string, unknown> }]];
 
     expect(lowCall.options?.['effort']).toBeDefined();
@@ -144,14 +133,13 @@ describe('ClaudeAgentSdkGatewayClient thinking policy (UT-020, D-F6)', () => {
   it('an Anthropic-mapped alias at effort:"max" sets the documented top-level Options.effort field to the requested value (P-A1 SDK-side contract pin)', async () => {
     queryMock.mockReturnValue(fakeSession());
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
-    const config: ClaudeAgentSdkGatewayConfig & { aliases: AliasMap } = {
+    const config: ClaudeAgentSdkGatewayConfig = {
       baseUrl: 'http://127.0.0.1:4000',
-      aliases: ALIASES,
       secretSource: new InMemorySecretSource({ ANTHROPIC_API_KEY: 'fake-unit-test-key' }),
     };
     const client = new ClaudeAgentSdkGatewayClient(config);
 
-    await client.invoke({ prompt: 'hi', opts: { model: 'sonnet', effort: 'max' }, runId: 'r1', agentId: 'a1' });
+    await client.invoke({ prompt: 'hi', opts: { model: 'anthropic/claude-3-5-sonnet-20241022', effort: 'max' }, runId: 'r1', agentId: 'a1' });
 
     const [[call]] = queryMock.mock.calls as [[{ options?: Record<string, unknown> }]];
     expect(call.options?.['effort']).toBe('max');

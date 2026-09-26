@@ -34,10 +34,6 @@ const BOOK: PriceBook = {
     'anthropic/claude-haiku-4-5-20251001': { price: null, caps: { reasoning: false, tools: true, source: 'static' } },
   },
 };
-const ALIASES = {
-  r1: { provider: 'openrouter', model: 'deepseek/deepseek-r1' },
-  default: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
-};
 
 /** Runs one dispatch and hands back whatever `caps` the gateway was given.
  *
@@ -69,25 +65,33 @@ async function capsSeenByGateway(deps: Record<string, unknown>, model?: string):
   return received;
 }
 
+// 2026-09-26 (alias mechanism removed, owner decisions 1/6): `AgentExecutorDeps` no longer carries
+// an `aliases` table at all — `_pinnedCapsFor(model)` resolves the pin key straight off the full
+// ref itself (`parseModelRef`, `providers.ts`), never through a name lookup. Two of the four cases
+// below are rewritten onto the fail-loud successor design; none is weakened, each still proves
+// DES-179's own honesty rule (an unresolvable/unpinned model leaves `caps` unset, never fabricated).
 describe('the run pin reaches the wire: AgentExecutor fills GatewayRequest.caps (UT-187 amendment, DES-179)', () => {
-  it("an aliased model's pinned caps arrive at the gateway verbatim", async () => {
-    expect(await capsSeenByGateway({ priceBook: BOOK, aliases: ALIASES }, 'r1')).toEqual(REASONING_CAPS);
+  it("a full-ref model's pinned caps arrive at the gateway verbatim", async () => {
+    expect(await capsSeenByGateway({ priceBook: BOOK }, 'openrouter/deepseek/deepseek-r1')).toEqual(REASONING_CAPS);
   });
 
-  it('a call with NO model resolves the implicit `default` alias and still carries its pin', async () => {
-    // The common case in production: no `model` in the agent() options at all. If the pin were
-    // keyed only over author-named models this would be the call that silently loses its caps.
-    expect(await capsSeenByGateway({ priceBook: BOOK, aliases: ALIASES })).toEqual({ reasoning: false, tools: true, source: 'static' });
+  // The removed rule-3 "implicit `default` alias" fallback has no successor: model is REQUIRED at
+  // admission (a run whose model cannot be resolved is refused before ever reaching the executor),
+  // so `runParams.model` is never legitimately absent in production. AT THIS LAYER specifically
+  // (called directly, bypassing admission), an absent model does not throw — `_pinnedCapsFor`
+  // treats `model === undefined` the same as any other unresolvable ref: caps stays unset.
+  it('a call with NO model at all leaves caps ABSENT — the implicit-default alias fallback is retired, never revived as a silent guess', async () => {
+    expect(await capsSeenByGateway({ priceBook: BOOK })).toBeUndefined();
   });
 
-  it('with no alias table there is nothing to resolve, so caps is ABSENT — never a fabricated default', async () => {
+  it('a malformed (non-full-ref) model value leaves caps ABSENT — never a fabricated default', async () => {
     // DES-179's honesty rule: an unresolvable model must leave `caps` unset so `wireEffort` reports
     // UNKNOWN_CAPS. Inventing `{reasoning:false}` here would silently disable effort and look
     // identical to a model that truthfully declares no reasoning.
-    expect(await capsSeenByGateway({ priceBook: BOOK }, 'r1')).toBeUndefined();
+    expect(await capsSeenByGateway({ priceBook: BOOK }, 'not-a-valid-ref')).toBeUndefined();
   });
 
-  it('a model the pin never covered is ABSENT too, even with an alias table present', async () => {
-    expect(await capsSeenByGateway({ priceBook: BOOK, aliases: { ...ALIASES, ghost: { provider: 'openrouter', model: 'not/pinned' } } }, 'ghost')).toBeUndefined();
+  it('a well-formed model ref the pin never covered is ABSENT too', async () => {
+    expect(await capsSeenByGateway({ priceBook: BOOK }, 'openrouter/some-vendor/not-pinned')).toBeUndefined();
   });
 });

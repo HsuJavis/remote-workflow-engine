@@ -20,12 +20,44 @@ describe('the deletion is behavioural, not just a grep pass (UT-181, DES-173)', 
     expect(openaiRows).toEqual([]);
   });
 
-  it('generateLiteLLMConfig over a three-provider-only alias table never emits "openai/"', () => {
-    const config = generateLiteLLMConfig({
-      sonnet: { provider: 'anthropic', model: 'claude-sonnet-5' },
-      or: { provider: 'openrouter', model: 'google/gemini-3.8-flash' },
-      default: { provider: 'ollama', model: 'qwen2.5:7b' },
-    } as any);
+  it('generateLiteLLMConfig never emits "openai/" (STATIC_OPENAI retired)', () => {
+    const config = generateLiteLLMConfig();
     expect(config).not.toContain('openai/');
+  });
+});
+
+// 2026-09-26 (alias mechanism removed, owner decision 8): the proxy's model_list is now STATIC —
+// two wildcard routes, no per-alias row, no `rwe-proxy-*` cloak name anywhere in the config. Real
+// routing (does litellm's `ollama/*`/`openrouter/*` wildcard actually dispatch) is verified at real
+// tier, not here — this pins the CONFIG SHAPE the real-tier proxy is booted from.
+describe('generateLiteLLMConfig — static two-wildcard shape (owner decision 8)', () => {
+  const ORIGINAL_OLLAMA_BASE_URL = process.env['OLLAMA_BASE_URL'];
+
+  it('contains exactly the openrouter/* and ollama/* wildcards, and no per-model row', () => {
+    delete process.env['OLLAMA_BASE_URL'];
+    try {
+      const config = generateLiteLLMConfig();
+      expect(config).toContain('model_name: "openrouter/*"');
+      expect(config).toContain('model: "openrouter/*"');
+      expect(config).toContain('model_name: "ollama/*"');
+      expect(config).toContain('model: "ollama/*"');
+      expect(config).not.toContain('rwe-proxy-');
+      // Default api_base when OLLAMA_BASE_URL is unset.
+      expect(config).toContain('api_base: "http://127.0.0.1:11434"');
+    } finally {
+      if (ORIGINAL_OLLAMA_BASE_URL === undefined) delete process.env['OLLAMA_BASE_URL'];
+      else process.env['OLLAMA_BASE_URL'] = ORIGINAL_OLLAMA_BASE_URL;
+    }
+  });
+
+  it('the ollama wildcard\'s api_base follows OLLAMA_BASE_URL when set', () => {
+    process.env['OLLAMA_BASE_URL'] = 'http://custom-ollama-host:9999';
+    try {
+      const config = generateLiteLLMConfig();
+      expect(config).toContain('api_base: "http://custom-ollama-host:9999"');
+    } finally {
+      if (ORIGINAL_OLLAMA_BASE_URL === undefined) delete process.env['OLLAMA_BASE_URL'];
+      else process.env['OLLAMA_BASE_URL'] = ORIGINAL_OLLAMA_BASE_URL;
+    }
   });
 });

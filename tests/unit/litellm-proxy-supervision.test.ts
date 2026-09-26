@@ -8,7 +8,6 @@ import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
 
-const ALIASES = { default: { provider: 'anthropic' as const, model: 'claude-3-5-haiku-20241022' } };
 const HEALTHY = vi.fn(async () => ({ ok: true }) as unknown as Response);
 
 // A fake child that is a real EventEmitter (so we can emit 'exit'). pid:undefined keeps
@@ -39,7 +38,7 @@ describe('LiteLLMProxyManager supervision (S-2)', () => {
   it('auto-restarts the subprocess when it crashes unexpectedly mid-life', async () => {
     const { fakeSpawn, procs } = spawnFactory();
     const events: Array<{ kind: string; restarts: number }> = [];
-    const proxy = new LiteLLMProxyManager(ALIASES, {
+    const proxy = new LiteLLMProxyManager({
       port: 48200,
       restartDelayMs: 0,
       spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
@@ -66,7 +65,7 @@ describe('LiteLLMProxyManager supervision (S-2)', () => {
   it('stops restarting after maxRestarts (crash-loop guard) and reports it down', async () => {
     const { fakeSpawn, procs } = spawnFactory();
     const events: Array<{ kind: string }> = [];
-    const proxy = new LiteLLMProxyManager(ALIASES, {
+    const proxy = new LiteLLMProxyManager({
       port: 48201,
       restartDelayMs: 0,
       maxRestarts: 1,
@@ -89,7 +88,7 @@ describe('LiteLLMProxyManager supervision (S-2)', () => {
 
   it('does NOT restart on an expected stop()', async () => {
     const { fakeSpawn, procs } = spawnFactory();
-    const proxy = new LiteLLMProxyManager(ALIASES, {
+    const proxy = new LiteLLMProxyManager({
       port: 48202,
       restartDelayMs: 0,
       spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,

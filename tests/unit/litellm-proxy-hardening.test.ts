@@ -11,7 +11,6 @@ import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
 
-const ALIASES = { default: { provider: 'anthropic' as const, model: 'claude-3-5-haiku-20241022' } };
 
 function makeFakeSpawn(pid: number | undefined) {
   // A real ChildProcess IS an EventEmitter; this fake was a plain object, so it silently lacked
@@ -37,7 +36,7 @@ describe('LiteLLMProxyManager hardening (TASK-027)', () => {
 
     const { fakeSpawn } = makeFakeSpawn(123);
     const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
-    const proxy = new LiteLLMProxyManager(ALIASES, {
+    const proxy = new LiteLLMProxyManager({
       port,
       spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
       fetchImpl: fakeHealthFetch as unknown as typeof fetch,
@@ -54,7 +53,7 @@ describe('LiteLLMProxyManager hardening (TASK-027)', () => {
     const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
     // Port 0 is never itself bindable as a fixed target for the ownership probe semantics we want
     // to exercise here, so pick a high, essentially-never-colliding fixed port instead.
-    const proxy = new LiteLLMProxyManager(ALIASES, {
+    const proxy = new LiteLLMProxyManager({
       port: 48173,
       spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
       fetchImpl: fakeHealthFetch as unknown as typeof fetch,
@@ -68,7 +67,7 @@ describe('LiteLLMProxyManager hardening (TASK-027)', () => {
   it('D-V3M-4: with NO configured port, binds a dynamic ephemeral port (never the old hard-coded 4000) and spawns litellm with it', async () => {
     const { fakeSpawn } = makeFakeSpawn(321);
     const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
-    const proxy = new LiteLLMProxyManager(ALIASES, {
+    const proxy = new LiteLLMProxyManager({
       // no `port` — the dynamic-port path
       spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
       fetchImpl: fakeHealthFetch as unknown as typeof fetch,
@@ -89,7 +88,7 @@ describe('LiteLLMProxyManager hardening (TASK-027)', () => {
   it('stop() cascade-kills the whole process group via a negative-pid signal, not just the direct handle', async () => {
     const { fakeSpawn, fakeProc } = makeFakeSpawn(789);
     const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
-    const proxy = new LiteLLMProxyManager(ALIASES, {
+    const proxy = new LiteLLMProxyManager({
       port: 48174,
       spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
       fetchImpl: fakeHealthFetch as unknown as typeof fetch,
@@ -106,7 +105,7 @@ describe('LiteLLMProxyManager hardening (TASK-027)', () => {
   it('stop() falls back to the direct handle kill when the child has no usable pid (test-double shape)', async () => {
     const { fakeSpawn, fakeProc } = makeFakeSpawn(undefined);
     const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
-    const proxy = new LiteLLMProxyManager(ALIASES, {
+    const proxy = new LiteLLMProxyManager({
       port: 48175,
       spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
       fetchImpl: fakeHealthFetch as unknown as typeof fetch,
@@ -157,7 +156,7 @@ describe('LiteLLMProxyManager — a spawn failure must not escape as an unhandle
       if (listenersAtFirstPoll === -1) listenersAtFirstPoll = proc!.listenerCount('error');
       return { ok: true } as unknown as Response;
     });
-    const proxy = new LiteLLMProxyManager(ALIASES, {
+    const proxy = new LiteLLMProxyManager({
       port: 48176,
       spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
       fetchImpl: fakeHealthFetch as unknown as typeof fetch,
@@ -186,7 +185,7 @@ describe('LiteLLMProxyManager — the other two startup-failure exits (UT-122, A
     const deadProc = fakeSpawn() as unknown as { exitCode: number | null };
     deadProc.exitCode = 3;
     const fakeHealthFetch = vi.fn(async () => { throw new Error('ECONNREFUSED'); });
-    const proxy = new LiteLLMProxyManager(ALIASES, {
+    const proxy = new LiteLLMProxyManager({
       port: 48177,
       spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
       fetchImpl: fakeHealthFetch as unknown as typeof fetch,
@@ -199,7 +198,7 @@ describe('LiteLLMProxyManager — the other two startup-failure exits (UT-122, A
   it('kills the child and rejects when it never becomes healthy within the startup timeout', async () => {
     const { fakeSpawn, fakeProc } = makeFakeSpawn(undefined); // no pid → direct-handle kill
     const fakeHealthFetch = vi.fn(async () => { throw new Error('ECONNREFUSED'); });
-    const proxy = new LiteLLMProxyManager(ALIASES, {
+    const proxy = new LiteLLMProxyManager({
       port: 48178,
       startupTimeoutMs: 300, // relative to the deadline the SUT computes itself; no date literals
       spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,

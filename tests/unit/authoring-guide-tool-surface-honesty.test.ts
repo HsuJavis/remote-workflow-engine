@@ -8,7 +8,6 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildAuthoringGuide } from '../../src/authoring-guide.js';
-import { DEFAULT_ALIASES } from '../../src/default-aliases.js';
 import { DEFAULT_RUN_CONCURRENCY } from '../../src/run-manager.js';
 
 function toolSurfaceSection(text: string): string {
@@ -19,7 +18,7 @@ function toolSurfaceSection(text: string): string {
 }
 
 const sources: Array<[string, string]> = [
-  ['buildAuthoringGuide()', buildAuthoringGuide({ maxTimeoutMs: 600000, maxAppendPromptBytes: 1024, maxEffort: 'high', aliases: Object.keys(DEFAULT_ALIASES), runConcurrency: DEFAULT_RUN_CONCURRENCY })],
+  ['buildAuthoringGuide()', buildAuthoringGuide({ maxTimeoutMs: 600000, maxAppendPromptBytes: 1024, maxEffort: 'high', runConcurrency: DEFAULT_RUN_CONCURRENCY })],
   ['docs/AUTHORING.md', readFileSync(join(process.cwd(), 'docs/AUTHORING.md'), 'utf8')],
 ];
 

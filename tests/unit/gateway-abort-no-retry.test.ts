@@ -11,7 +11,7 @@
 // retries (UT-021 / claude-agent-sdk-gateway-timeout.test.ts stays the witness for that).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { ClaudeAgentSdkGatewayClient } from '../../src/gateway/claude-agent-sdk-client.js';
-import { LiteLLMGatewayClient, type AliasMap } from '../../src/gateway/client.js';
+import { LiteLLMGatewayClient } from '../../src/gateway/client.js';
 
 /** A session that hangs until the SDK's own abortController fires, then ends WITHOUT a result —
  *  and settles only AFTER the abort (the repro's shape: the attempt resolves after the external
@@ -99,8 +99,6 @@ describe('LiteLLMGatewayClient — no retry after an external abort (#53)', () =
     if (ORIGINAL_KEY === undefined) delete process.env['ANTHROPIC_API_KEY'];
     else process.env['ANTHROPIC_API_KEY'] = ORIGINAL_KEY;
   });
-  const aliases: AliasMap = { default: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' } };
-
   /** Hangs until the request's own signal aborts, then rejects AbortError — a real fetch's shape. */
   function hangingFetch(onCall: () => void): typeof fetch {
     return ((_url: string, init: { signal: AbortSignal }) => {
@@ -117,9 +115,9 @@ describe('LiteLLMGatewayClient — no retry after an external abort (#53)', () =
     let calls = 0;
     let firstStarted!: () => void;
     const started = new Promise<void>((r) => { firstStarted = r; });
-    const gw = new LiteLLMGatewayClient({ aliases, timeoutMs: 300, retries: 2, fetchImpl: hangingFetch(() => { calls += 1; firstStarted(); }) });
+    const gw = new LiteLLMGatewayClient({ timeoutMs: 300, retries: 2, fetchImpl: hangingFetch(() => { calls += 1; firstStarted(); }) });
     const ac = new AbortController();
-    const p = gw.invoke({ prompt: 'hi', opts: {}, runId: 'r1', agentId: 'a1', signal: ac.signal });
+    const p = gw.invoke({ prompt: 'hi', opts: { model: 'anthropic/claude-3-5-sonnet-20241022' }, runId: 'r1', agentId: 'a1', signal: ac.signal });
     await started;
     ac.abort();
     const result = await p;
@@ -129,10 +127,10 @@ describe('LiteLLMGatewayClient — no retry after an external abort (#53)', () =
 
   it('an attempt that starts with an already-aborted signal dispatches nothing', async () => {
     let calls = 0;
-    const gw = new LiteLLMGatewayClient({ aliases, timeoutMs: 300, retries: 2, fetchImpl: hangingFetch(() => { calls += 1; }) });
+    const gw = new LiteLLMGatewayClient({ timeoutMs: 300, retries: 2, fetchImpl: hangingFetch(() => { calls += 1; }) });
     const ac = new AbortController();
     ac.abort();
-    const result = await gw.invoke({ prompt: 'hi', opts: {}, runId: 'r1', agentId: 'a1', signal: ac.signal });
+    const result = await gw.invoke({ prompt: 'hi', opts: { model: 'anthropic/claude-3-5-sonnet-20241022' }, runId: 'r1', agentId: 'a1', signal: ac.signal });
     expect(result.ok).toBe(false);
     expect(calls).toBe(0);
   }, 10000);

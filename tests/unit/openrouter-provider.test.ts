@@ -1,18 +1,17 @@
 // REQ-038: `openrouter` first-class provider — direct-fetch routing (OpenAI-shaped POST to
-// openrouter.ai with Bearer OPENROUTER_API_KEY), LiteLLM native `openrouter/<model>` config +
-// `openrouter/*` passthrough wildcard, per-provider tool curation, and registration-time
-// passthrough acceptance (v22: that check moved out of submission-validator — see the M-6 note
-// below). Unit tier (D-I6): a fake fetch transport — never a live network call.
+// openrouter.ai with Bearer OPENROUTER_API_KEY) and the LiteLLM `openrouter/*` passthrough
+// wildcard. Unit tier (D-I6): a fake fetch transport — never a live network call.
+//
+// 2026-09-26 (alias mechanism removed): every model is now a full `<provider>/<model-id>` ref —
+// `toLiteLLMModelName`/the per-alias LiteLLM config row are RETIRED (the proxy's model_list is a
+// static two-wildcard config, see litellm-config-generate.test.ts); the registration-time
+// "openrouter passthrough at the script check" describe below is REMOVED (not rewritten) — that
+// mechanism (`ScriptCheckPorts.aliases`, `script-checks.ts`'s model-literal scan) is deleted
+// entirely, and the model-ref check now lives ONLY in `params/contract.ts`'s registration-time
+// `checkModelRef`, already covered by `tests/unit/params-contract.test.ts`'s full-ref rewrite.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { LiteLLMGatewayClient } from '../../src/gateway/client.js';
-import type { GatewayConfig } from '../../src/gateway/client.js';
-import { generateLiteLLMConfig, toLiteLLMModelName } from '../../src/gateway/litellm-proxy.js';
-import { validateScriptEntry } from '../../src/script-checks.js';
-
-const ALIASES: GatewayConfig['aliases'] = {
-  or: { provider: 'openrouter', model: 'qwen/qwen-2.5-7b-instruct' },
-  default: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
-};
+import { generateLiteLLMConfig } from '../../src/gateway/litellm-proxy.js';
 
 /** Records the last request and returns a canned OpenAI-shaped chat completion. */
 function recordingFetch(): { impl: typeof fetch; last: () => { url: string; init: RequestInit } | undefined } {
@@ -38,8 +37,8 @@ describe('openrouter provider — direct-fetch routing (REQ-038)', () => {
 
   it('POSTs OpenAI-format to openrouter.ai with a Bearer OPENROUTER_API_KEY header', async () => {
     const fetchRec = recordingFetch();
-    const gw = new LiteLLMGatewayClient({ aliases: ALIASES, timeoutMs: 5000, retries: 0, fetchImpl: fetchRec.impl });
-    const result = await gw.invoke({ prompt: 'hi', opts: { model: 'or' }, runId: 'r1', agentId: 'a1' });
+    const gw = new LiteLLMGatewayClient({ timeoutMs: 5000, retries: 0, fetchImpl: fetchRec.impl });
+    const result = await gw.invoke({ prompt: 'hi', opts: { model: 'openrouter/qwen/qwen-2.5-7b-instruct' }, runId: 'r1', agentId: 'a1' });
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -61,8 +60,8 @@ describe('openrouter provider — direct-fetch routing (REQ-038)', () => {
     delete process.env['OPENROUTER_API_KEY'];
     process.env['OPENAI_API_KEY'] = 'sk-openai-must-not-be-used';
     const fetchRec = recordingFetch();
-    const gw = new LiteLLMGatewayClient({ aliases: ALIASES, timeoutMs: 5000, retries: 0, fetchImpl: fetchRec.impl });
-    const result = await gw.invoke({ prompt: 'hi', opts: { model: 'or' }, runId: 'r1', agentId: 'a1' });
+    const gw = new LiteLLMGatewayClient({ timeoutMs: 5000, retries: 0, fetchImpl: fetchRec.impl });
+    const result = await gw.invoke({ prompt: 'hi', opts: { model: 'openrouter/qwen/qwen-2.5-7b-instruct' }, runId: 'r1', agentId: 'a1' });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe('terminal');
     expect(fetchRec.last()).toBeUndefined(); // never attempted a call without its own key
@@ -70,53 +69,10 @@ describe('openrouter provider — direct-fetch routing (REQ-038)', () => {
   });
 });
 
-describe('openrouter LiteLLM native naming + passthrough wildcard (REQ-038)', () => {
-  it('toLiteLLMModelName yields the native openrouter/<model> form', () => {
-    expect(toLiteLLMModelName({ provider: 'openrouter', model: 'qwen/qwen-2.5-7b-instruct' }))
-      .toBe('openrouter/qwen/qwen-2.5-7b-instruct');
-  });
-
-  it('generated config carries the alias entry AND an openrouter/* passthrough route', () => {
-    const yaml = generateLiteLLMConfig(ALIASES);
-    expect(yaml).toContain('openrouter/qwen/qwen-2.5-7b-instruct');
+describe('openrouter LiteLLM passthrough wildcard (REQ-038) — 2026-09-26: static config, no per-alias row', () => {
+  it('the generated config carries the openrouter/* passthrough route (see litellm-config-generate.test.ts for the full shape)', () => {
+    const yaml = generateLiteLLMConfig();
     expect(yaml).toContain('model_name: "openrouter/*"');
     expect(yaml).toContain('model: "openrouter/*"');
-  });
-});
-
-// "openrouter per-provider tool curation (REQ-038)" — REMOVED, not rewritten (v26, DES-173,
-// ARCH-112, TASK-173/174, issue #66): it pinned `curateToolsForProvider` dropping Read/adding Bash
-// for openrouter, which REQ-123 reverses (no provider-based tool curation at all; openrouter now
-// gets the caller's `allowedTools` verbatim, same as ollama). Re-pointed to IT-144
-// (`tests/integration/ollama-tools-verbatim.test.ts`, REQ-123) — DES-173's own load-bearing
-// behavioural pair for this deletion.
-
-// v22 adjudication #3 (M-6): the alias check these three cases exercise MOVED out of
-// SubmissionValidator into `src/script-checks.ts`, enforced at `WorkflowCatalog.register()`
-// (ADR-013, REQ-099) — `SubmissionValidatorDeps.aliases`/`openrouterPassthrough` no longer exist.
-// The REQ-038 passthrough behaviour they pin is unchanged, so the cases are re-sited onto
-// `validateScriptEntry`, whose `openrouterPassthrough` port is the same switch the validator's was.
-describe('openrouter passthrough at the registration-time script check (REQ-038)', () => {
-  const ports = (openrouterPassthrough: boolean) => ({
-    aliases: new Set(Object.keys(ALIASES)),
-    openrouterPassthrough,
-    mcpLookup: () => true,
-  });
-
-  it('accepts an openrouter/<id> model string with no pre-listed alias (passthrough on by default)', () => {
-    const res = validateScriptEntry(`return agent('x', { model: 'openrouter/meta-llama/llama-3.1-8b-instruct' });`, ports(true));
-    expect(res.ok).toBe(true);
-  });
-
-  it('still rejects a genuinely unknown alias as UNKNOWN_ALIAS', () => {
-    const res = validateScriptEntry(`return agent('x', { model: 'totally-unknown' });`, ports(true));
-    expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.errors.some((e) => e.code === 'UNKNOWN_ALIAS')).toBe(true);
-  });
-
-  it('with passthrough disabled, an openrouter/<id> string is UNKNOWN_ALIAS unless pre-listed', () => {
-    const res = validateScriptEntry(`return agent('x', { model: 'openrouter/meta-llama/llama-3.1-8b-instruct' });`, ports(false));
-    expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.errors.some((e) => e.code === 'UNKNOWN_ALIAS')).toBe(true);
   });
 });

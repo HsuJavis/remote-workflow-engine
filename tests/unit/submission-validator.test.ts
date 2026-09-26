@@ -10,9 +10,8 @@ import { describe, it, expect } from 'vitest';
 import { SubmissionValidator } from '../../src/submission-validator.js';
 import { validateScriptEntry } from '../../src/script-checks.js';
 
+// 2026-09-26 (alias mechanism removed): `ScriptCheckPorts` is now `{ mcpLookup }` only.
 const PORTS = {
-  aliases: new Set(['sonnet', 'haiku', 'opus', 'default']),
-  openrouterPassthrough: true,
   mcpLookup: () => true,
 };
 
@@ -41,15 +40,12 @@ describe('the moved script checks (ADR-013: script-checks.ts, enforced at catalo
     }
   });
 
-  it('unknown model alias returns ok:false with UNKNOWN_ALIAS error', () => {
-    // The check must scan all agent() opts.model values in the script.
-    const result = validateScriptEntry(`return agent('test', {model:'no-such-alias'});`, PORTS);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      const codes = result.errors.map((e) => e.code);
-      expect(codes).toContain('UNKNOWN_ALIAS');
-    }
-  });
+  // 2026-09-26 (alias mechanism removed): this file's "unknown model alias returns ok:false with
+  // UNKNOWN_ALIAS error" case is DELETED WITH NO SUCCESSOR AT THIS LAYER — `script-checks.ts` no
+  // longer scans model values at all (see its own header comment); the model check moved entirely
+  // to `contract.ts`'s `validateOneAgentSpec`/`validateOneAgentOverride` (checked, with catalog
+  // existence, at `meta.params.agents.<label>.model`), covered by tests/unit/params-contract.test.ts
+  // and tests/acceptance/val-109-registration-checks.test.ts.
 
   it('errors array entries each have code, message fields', () => {
     const result = validateScriptEntry('const x: number = 1;', PORTS);

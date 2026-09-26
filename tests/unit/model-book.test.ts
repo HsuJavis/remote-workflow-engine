@@ -5,7 +5,7 @@
 // Mock policy (unit): pure lookups + one loader class; inject a fake `source()` and a FakeClock.
 import { describe, it, expect } from 'vitest';
 import { ModelBook } from '../../src/models/model-book.js';
-import { buildCatalog, STATIC_ANTHROPIC_RATES } from '../../src/models/model-catalog.js';
+import { STATIC_ANTHROPIC_RATES } from '../../src/models/model-catalog.js';
 import { FixedClock } from '../../src/clock.js';
 
 function fakeSource(entries: any[]) {
@@ -119,39 +119,14 @@ describe('ModelBook — TTL, single-flight, last-good/static (UT-185, DES-178)',
 });
 
 // UT-223 (v26 Gate 7.5 round 3, defect D9): the index build itself. A curated alias table with TWO
-// aliases on ONE model — the shape EVERY Anthropic model has on the real deployment
-// (`haiku` and `claude-haiku-4-5` both -> anthropic/claude-haiku-4-5-20251001) — made
-// `overlayAliases` append a second, `ratesPerM:null` row for that model, and the last writer of a
-// key won: the priced static row was overwritten by the unpriced duplicate, `lookup()` answered
-// `price:null` (its own static fallback is never reached — the key WAS found), so every real
-// Anthropic call recorded `costUSD 0 / unpriced:true` and a USD budget could never bind.
-// Mock policy (unit): the same injected `source()`/FakeClock as UT-185 above; `buildCatalog`'s two
-// live fetchers are stubbed non-ok so only the static table + the alias overlay remain.
-describe('ModelBook — a duplicate alias must not un-price a model (UT-223, D9, REQ-127)', () => {
-  const notOk = (async () => ({ ok: false, json: async () => ({}) })) as unknown as typeof fetch;
-
-  /** The production table verbatim in shape: five models, two aliases each. */
-  const PRODUCTION_ALIASES = {
-    local: { provider: 'ollama', model: 'qwen2.5:7b' },
-    default: { provider: 'ollama', model: 'qwen2.5:7b' },
-    sonnet: { provider: 'anthropic', model: 'claude-sonnet-5' },
-    opus: { provider: 'anthropic', model: 'claude-opus-4-8' },
-    haiku: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
-    'claude-sonnet-4-6': { provider: 'anthropic', model: 'claude-sonnet-5' },
-    'claude-opus-4-8': { provider: 'anthropic', model: 'claude-opus-4-8' },
-    'claude-haiku-4-5': { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
-  } as const;
-
-  it('the PRODUCTION alias table (two aliases per model) still prices every anthropic model', async () => {
-    const entries = await buildCatalog({ aliases: PRODUCTION_ALIASES as never, ollamaFetch: notOk, openrouterFetch: notOk });
-    const clock = new FixedClock(new Date('2026-09-09T00:00:00Z'));
-    const book = new ModelBook(async () => entries, { ttlMs: 3_600_000, clock });
-    const snap = await book.snapshot();
-    for (const model of Object.keys(STATIC_ANTHROPIC_RATES)) {
-      expect(snap.lookup('anthropic', model).price).toEqual(STATIC_ANTHROPIC_RATES[model]);
-    }
-  });
-
+// aliases on ONE model used to make `overlayAliases` append a second, `ratesPerM:null` row for that
+// model, and the last writer of a key won: the priced static row was overwritten by the unpriced
+// duplicate. 2026-09-26 (alias mechanism removed): the alias overlay is GONE — `buildCatalog` can
+// no longer manufacture a duplicate (provider,model) key this way — but `ModelBook`'s own
+// index-priority rule (a priced row beats an unpriced one, regardless of source order) is a general
+// robustness property of the class itself, pinned directly against two raw rows below, with no
+// `buildCatalog`/alias apparatus involved at all.
+describe('ModelBook — a duplicate (provider,model) row must not un-price a model (UT-223, D9, REQ-127)', () => {
   it('a ratesPerM:null row never displaces a priced row for the same key', async () => {
     const clock = new FixedClock(new Date('2026-09-09T00:00:00Z'));
     const rates = STATIC_ANTHROPIC_RATES['claude-haiku-4-5-20251001'];

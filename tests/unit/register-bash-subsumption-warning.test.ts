@@ -24,7 +24,7 @@ const OPEN: Principal = { kind: 'auth-disabled' };
 function script(allowedTools: string | null): string {
   const opt = allowedTools === null ? '' : `, allowedTools: ${allowedTools}`;
   return (
-    "export const meta = { description: 'd', params: { agents: { a: { model: { type: 'string', default: 'default' }, " +
+    "export const meta = { description: 'd', params: { agents: { a: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, " +
     "effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } } };\n" +
     "phase('P');\n" +
     `return await agent('a', { prompt: 'p'${opt} });`
@@ -34,7 +34,7 @@ function script(allowedTools: string | null): string {
 function mermaid(allowedTools: string | null): string {
   const names = allowedTools === null ? null : (JSON.parse(allowedTools.replace(/'/g, '"')) as string[]).sort();
   const tools = names === null ? '' : `<br/>tools: ${names.length === 0 ? 'none' : names.join(', ')}`;
-  return `graph LR\nsubgraph "P"\na(["a<br/>default · low · 60000${tools}"])\nend`;
+  return `graph LR\nsubgraph "P"\na(["a<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000${tools}"])\nend`;
 }
 
 type Reply = { status?: string; error?: unknown; result?: { version?: string; warnings?: Array<{ code: string; label: string; message: string }> } };

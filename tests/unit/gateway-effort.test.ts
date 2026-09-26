@@ -14,12 +14,6 @@ import type { GatewayConfig } from '../../src/gateway/client.js';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
 import type { Caps } from '../../src/types.js';
 
-const ALIASES: GatewayConfig['aliases'] = {
-  sonnet: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
-  local: { provider: 'ollama', model: 'qwen2.5:7b' },
-  router: { provider: 'openrouter', model: 'meta-llama/llama-3-70b' },
-};
-
 // Same fake-proxy pattern as tests/integration/gateway-provider-down.test.ts (IT-005): the proxy's
 // OWN health-check spawn/fetch are faked so proxy.start() resolves instantly with no real
 // subprocess — GatewayConfig.fetchImpl (spyFetch below) is a SEPARATE injection point that captures
@@ -27,7 +21,7 @@ const ALIASES: GatewayConfig['aliases'] = {
 function makeFakeProxyManager(): LiteLLMProxyManager {
   const fakeSpawn = vi.fn(() => (Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn() })) as unknown as ChildProcess);
   const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
-  return new LiteLLMProxyManager(ALIASES, {
+  return new LiteLLMProxyManager({
     spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
     fetchImpl: fakeHealthFetch as unknown as typeof fetch,
   });
@@ -56,34 +50,34 @@ describe('LiteLLMGatewayClient effort-on-the-wire (UT-101, DES-106)', () => {
 
   it('a provider with a reasoning dial: low vs max produce different outbound request bodies', async () => {
     const low = spyFetch();
-    const gwLow = new LiteLLMGatewayClient({ aliases: ALIASES, timeoutMs: 5000, retries: 0, fetchImpl: low.fetchImpl });
-    await gwLow.invoke({ prompt: 'hi', opts: { model: 'sonnet', effort: 'low' }, runId: 'r1', agentId: 'a1' });
+    const gwLow = new LiteLLMGatewayClient({ timeoutMs: 5000, retries: 0, fetchImpl: low.fetchImpl });
+    await gwLow.invoke({ prompt: 'hi', opts: { model: 'anthropic/claude-3-5-sonnet-20241022', effort: 'low' }, runId: 'r1', agentId: 'a1' });
 
     const max = spyFetch();
-    const gwMax = new LiteLLMGatewayClient({ aliases: ALIASES, timeoutMs: 5000, retries: 0, fetchImpl: max.fetchImpl });
-    await gwMax.invoke({ prompt: 'hi', opts: { model: 'sonnet', effort: 'max' }, runId: 'r1', agentId: 'a1' });
+    const gwMax = new LiteLLMGatewayClient({ timeoutMs: 5000, retries: 0, fetchImpl: max.fetchImpl });
+    await gwMax.invoke({ prompt: 'hi', opts: { model: 'anthropic/claude-3-5-sonnet-20241022', effort: 'max' }, runId: 'r1', agentId: 'a1' });
 
     expect(low.bodies[0]).not.toEqual(max.bodies[0]);
   });
 
   it('effort-absent request composition is byte-identical to a request with no effort key at all (pre-v21 regression pin)', async () => {
     const a = spyFetch();
-    const gwA = new LiteLLMGatewayClient({ aliases: ALIASES, timeoutMs: 5000, retries: 0, fetchImpl: a.fetchImpl });
-    await gwA.invoke({ prompt: 'hi', opts: { model: 'sonnet' }, runId: 'r1', agentId: 'a1' });
+    const gwA = new LiteLLMGatewayClient({ timeoutMs: 5000, retries: 0, fetchImpl: a.fetchImpl });
+    await gwA.invoke({ prompt: 'hi', opts: { model: 'anthropic/claude-3-5-sonnet-20241022' }, runId: 'r1', agentId: 'a1' });
 
     const b = spyFetch();
-    const gwB = new LiteLLMGatewayClient({ aliases: ALIASES, timeoutMs: 5000, retries: 0, fetchImpl: b.fetchImpl });
-    await gwB.invoke({ prompt: 'hi', opts: { model: 'sonnet', effort: undefined }, runId: 'r1', agentId: 'a1' });
+    const gwB = new LiteLLMGatewayClient({ timeoutMs: 5000, retries: 0, fetchImpl: b.fetchImpl });
+    await gwB.invoke({ prompt: 'hi', opts: { model: 'anthropic/claude-3-5-sonnet-20241022', effort: undefined }, runId: 'r1', agentId: 'a1' });
 
     expect(a.bodies[0]).toEqual(b.bodies[0]);
   });
 
   it('a provider with NO reasoning dial (ollama): the harness descriptor records effortApplied:{applied:false,reason} — no 400, no crash', async () => {
     const { fetchImpl } = spyFetch();
-    const gw = new LiteLLMGatewayClient({ aliases: ALIASES, timeoutMs: 5000, retries: 0, fetchImpl });
+    const gw = new LiteLLMGatewayClient({ timeoutMs: 5000, retries: 0, fetchImpl });
     let captured: { effortApplied?: unknown } | undefined;
     const onHarness = async (h: unknown): Promise<void> => { captured = h as { effortApplied?: unknown }; };
-    const result = await gw.invoke({ prompt: 'hi', opts: { model: 'local', effort: 'max' }, runId: 'r1', agentId: 'a1', onHarness });
+    const result = await gw.invoke({ prompt: 'hi', opts: { model: 'ollama/qwen2.5:7b', effort: 'max' }, runId: 'r1', agentId: 'a1', onHarness });
 
     expect(result.ok).toBe(true);
     expect(captured?.effortApplied).toEqual(expect.objectContaining({ applied: false }));
@@ -117,10 +111,10 @@ describe('direct-fetch effortApplied is IDENTICAL to wireEffort(provider, caps, 
   it('openrouter, caps.reasoning:true — direct-fetch reports the SAME effortApplied as wireEffort (previously differed: this transport had no capability term at all)', async () => {
     const { fetchImpl } = spyFetch();
     const caps: Caps = { reasoning: true, tools: true, source: 'upstream' };
-    const gw = new LiteLLMGatewayClient({ aliases: ALIASES, timeoutMs: 5000, retries: 0, fetchImpl });
+    const gw = new LiteLLMGatewayClient({ timeoutMs: 5000, retries: 0, fetchImpl });
     let captured: { effortApplied?: unknown } | undefined;
     const onHarness = async (h: unknown): Promise<void> => { captured = h as { effortApplied?: unknown }; };
-    const result = await gw.invoke({ prompt: 'hi', opts: { model: 'router', effort: 'low' }, runId: 'r1', agentId: 'a1', onHarness, caps });
+    const result = await gw.invoke({ prompt: 'hi', opts: { model: 'openrouter/meta-llama/llama-3-70b', effort: 'low' }, runId: 'r1', agentId: 'a1', onHarness, caps });
 
     expect(result.ok).toBe(true);
     const expected = wireEffort('openrouter', caps, 'low').applied;
@@ -132,10 +126,10 @@ describe('direct-fetch effortApplied is IDENTICAL to wireEffort(provider, caps, 
   it('anthropic — direct-fetch reports the SAME effortApplied as wireEffort, reading PROVIDER_CAPS (not a duplicated literal)', async () => {
     const { fetchImpl } = spyFetch();
     const caps: Caps = { reasoning: true, tools: true, source: 'static' };
-    const gw = new LiteLLMGatewayClient({ aliases: ALIASES, timeoutMs: 5000, retries: 0, fetchImpl });
+    const gw = new LiteLLMGatewayClient({ timeoutMs: 5000, retries: 0, fetchImpl });
     let captured: { effortApplied?: unknown } | undefined;
     const onHarness = async (h: unknown): Promise<void> => { captured = h as { effortApplied?: unknown }; };
-    const result = await gw.invoke({ prompt: 'hi', opts: { model: 'sonnet', effort: 'high' }, runId: 'r1', agentId: 'a1', onHarness, caps });
+    const result = await gw.invoke({ prompt: 'hi', opts: { model: 'anthropic/claude-3-5-sonnet-20241022', effort: 'high' }, runId: 'r1', agentId: 'a1', onHarness, caps });
 
     expect(result.ok).toBe(true);
     expect(captured?.effortApplied).toEqual(wireEffort('anthropic', caps, 'high').applied);
@@ -143,10 +137,10 @@ describe('direct-fetch effortApplied is IDENTICAL to wireEffort(provider, caps, 
 
   it('no effort requested at all — direct-fetch still omits effortApplied entirely (pre-v26 byte-identical shape preserved)', async () => {
     const { fetchImpl } = spyFetch();
-    const gw = new LiteLLMGatewayClient({ aliases: ALIASES, timeoutMs: 5000, retries: 0, fetchImpl });
+    const gw = new LiteLLMGatewayClient({ timeoutMs: 5000, retries: 0, fetchImpl });
     let captured: { effortApplied?: unknown } | undefined;
     const onHarness = async (h: unknown): Promise<void> => { captured = h as { effortApplied?: unknown }; };
-    await gw.invoke({ prompt: 'hi', opts: { model: 'sonnet' }, runId: 'r1', agentId: 'a1', onHarness });
+    await gw.invoke({ prompt: 'hi', opts: { model: 'anthropic/claude-3-5-sonnet-20241022' }, runId: 'r1', agentId: 'a1', onHarness });
 
     expect(captured && 'effortApplied' in captured).toBe(false);
   });
@@ -174,11 +168,11 @@ describe('LiteLLMGatewayClient effort-on-the-wire — LiteLLM-proxy branch (UT-1
   it('the mapped effort value reaches the outbound request on the LiteLLM-proxy branch', async () => {
     const { fetchImpl, bodies } = spyFetch();
     const gw = new LiteLLMGatewayClient({
-      aliases: ALIASES, timeoutMs: 5000, retries: 0,
+      timeoutMs: 5000, retries: 0,
       useLiteLLMProxy: true, proxyManager: makeFakeProxyManager(),
       fetchImpl,
     });
-    await gw.invoke({ prompt: 'hi', opts: { model: 'sonnet', effort: 'max' }, runId: 'r1', agentId: 'a1' });
+    await gw.invoke({ prompt: 'hi', opts: { model: 'anthropic/claude-3-5-sonnet-20241022', effort: 'max' }, runId: 'r1', agentId: 'a1' });
 
     expect(bodies).toHaveLength(1);
     const parsed = JSON.parse(bodies[0]!) as { output_config?: { effort?: string } };
@@ -188,13 +182,13 @@ describe('LiteLLMGatewayClient effort-on-the-wire — LiteLLM-proxy branch (UT-1
   it('a provider with NO reasoning dial on the proxy branch: onHarness records applied:false and no effort key reaches the outbound proxy body', async () => {
     const { fetchImpl, bodies } = spyFetch();
     const gw = new LiteLLMGatewayClient({
-      aliases: ALIASES, timeoutMs: 5000, retries: 0,
+      timeoutMs: 5000, retries: 0,
       useLiteLLMProxy: true, proxyManager: makeFakeProxyManager(),
       fetchImpl,
     });
     let captured: { effortApplied?: unknown } | undefined;
     const onHarness = async (h: unknown): Promise<void> => { captured = h as { effortApplied?: unknown }; };
-    const result = await gw.invoke({ prompt: 'hi', opts: { model: 'local', effort: 'max' }, runId: 'r1', agentId: 'a1', onHarness });
+    const result = await gw.invoke({ prompt: 'hi', opts: { model: 'ollama/qwen2.5:7b', effort: 'max' }, runId: 'r1', agentId: 'a1', onHarness });
 
     expect(result.ok).toBe(true);
     expect(captured?.effortApplied).toEqual(expect.objectContaining({ applied: false }));
@@ -227,9 +221,9 @@ describe('effort transport-contract shape pin — REST body must nest under outp
     const { fetchImpl, bodies } = spyFetch();
     let captured: { effortApplied?: unknown } | undefined;
     const onHarness = async (h: unknown): Promise<void> => { captured = h as { effortApplied?: unknown }; };
-    const gw = new LiteLLMGatewayClient({ aliases: ALIASES, timeoutMs: 5000, retries: 0, fetchImpl });
+    const gw = new LiteLLMGatewayClient({ timeoutMs: 5000, retries: 0, fetchImpl });
 
-    const result = await gw.invoke({ prompt: 'hi', opts: { model: 'sonnet', effort: 'max' }, runId: 'r1', agentId: 'a1', onHarness });
+    const result = await gw.invoke({ prompt: 'hi', opts: { model: 'anthropic/claude-3-5-sonnet-20241022', effort: 'max' }, runId: 'r1', agentId: 'a1', onHarness });
 
     const body = JSON.parse(bodies[0]!) as { effort?: unknown; output_config?: { effort?: unknown } };
     expect(body.effort).toBeUndefined(); // must NOT be top-level (a real 400 on the live API)
@@ -243,12 +237,12 @@ describe('effort transport-contract shape pin — REST body must nest under outp
   it('LiteLLM-proxy branch: effort lands at body.output_config.effort, never at the top-level body.effort', async () => {
     const { fetchImpl, bodies } = spyFetch();
     const gw = new LiteLLMGatewayClient({
-      aliases: ALIASES, timeoutMs: 5000, retries: 0,
+      timeoutMs: 5000, retries: 0,
       useLiteLLMProxy: true, proxyManager: makeFakeProxyManager(),
       fetchImpl,
     });
 
-    await gw.invoke({ prompt: 'hi', opts: { model: 'sonnet', effort: 'max' }, runId: 'r1', agentId: 'a1' });
+    await gw.invoke({ prompt: 'hi', opts: { model: 'anthropic/claude-3-5-sonnet-20241022', effort: 'max' }, runId: 'r1', agentId: 'a1' });
 
     const body = JSON.parse(bodies[0]!) as { effort?: unknown; output_config?: { effort?: unknown } };
     expect(body.effort).toBeUndefined();

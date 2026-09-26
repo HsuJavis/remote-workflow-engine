@@ -25,8 +25,6 @@
 import { describe, it, expect } from 'vitest';
 import { LiteLLMGatewayClient } from '../../src/gateway/client.js';
 
-const ALIASES = { default: { provider: 'ollama' as const, model: 'qwen2.5:7b' } };
-
 // A sentinel distinguishable from any real GatewayResult, used only to bound THIS TEST's own wall
 // time (not a claim about src's own cancellation behavior) — same convention as UT-021.
 const TEST_LEVEL_BOUND = Symbol('ut-023-test-level-bound');
@@ -53,7 +51,6 @@ describe('LiteLLMGatewayClient (direct-fetch) suspend-cancel wiring (UT-023, D-F
   it('a caller-supplied signal genuinely aborts the in-flight fetch, not just the caller\'s own wait', async () => {
     const { fetchImpl, capturedSignal } = makeHungFetch();
     const gw = new LiteLLMGatewayClient({
-      aliases: ALIASES,
       // Deliberately long: if the caller's own external signal isn't wired in, nothing else would
       // ever cause this call to settle within this test's bound.
       timeoutMs: 30000,
@@ -65,7 +62,7 @@ describe('LiteLLMGatewayClient (direct-fetch) suspend-cancel wiring (UT-023, D-F
 
     const resultPromise = gw.invoke({
       prompt: 'p',
-      opts: {},
+      opts: { model: 'ollama/qwen2.5:7b' },
       runId: 'r1',
       agentId: 'a1',
       signal: external.signal,
