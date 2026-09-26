@@ -856,11 +856,19 @@ git config core.hooksPath deploy/git-hooks     # 這台 clone 的每一次 push 
 ln -s ../../deploy/git-hooks/pre-push .git/hooks/pre-push
 ```
 
-**`core.hooksPath` 是逐 clone/逐 worktree 生效的 repo-local 設定**（寫進這份 checkout 自己的
-`.git/config`，不是全域設定，也不會因為推了一個新 commit 就自動套到別的 clone/worktree）——
-用 `git config core.hooksPath deploy/git-hooks` 那一台機器才會被擋，其他 clone/worktree 要各自
-跑一次。**設定前**先看一眼 `ls .git/hooks/`：`core.hooksPath` 會**整個取代**原本的
-`.git/hooks/` 目錄查找路徑（含任何你原本手動放的其他 hook），不是疊加。
+**`core.hooksPath` 是這份 clone 共用的 repo-local 設定，不是逐 worktree 各自一份**——它寫進
+`$GIT_COMMON_DIR/config`（一般就是主 checkout 的 `.git/config`），同一個 clone 底下**所有**
+linked worktree 共用同一份，**不必**在每個 worktree 裡重跑一次；要各自跑一次的是**不同的
+clone**（例如另一台機器上重新 `git clone` 出來的那份）。**真正逐 worktree 而異的是這個相對路徑
+`deploy/git-hooks` 怎麼展開**：git 是相對於「推送當下那個 worktree 的工作目錄」去找
+`deploy/git-hooks/pre-push` 的——如果你在某個 worktree 上簽出的是還沒有這個檔案的舊 commit，
+git 會找不到它，**而且不會報錯，就是悄悄不跑這個 hook**。想確認某個 worktree 到底會不會跑到
+這個 hook：在那個 worktree 目錄下跑 `git rev-parse --git-path hooks`，看印出來的路徑底下真的有
+沒有 `pre-push`；不放心就把 `core.hooksPath` 設成絕對路徑，不用相對路徑猜。**設定前**先看一眼
+`ls .git/hooks/`：`core.hooksPath` 會**整個取代**原本的 `.git/hooks/` 目錄查找路徑（含任何你
+原本手動放的其他 hook），不是疊加。用 symlink 那個做法（`ln -s ... .git/hooks/pre-push`）**只能
+在主 checkout 裡做**——linked worktree 自己的 `.git` 是一個指向共用目錄的檔案，底下沒有
+`hooks/` 這個目錄可以放 symlink。
 
 **2026-09-26 事故（就是這個 hook 現有註解裡記的那件事）**：從一個 linked worktree 推送時，
 git 會把 `GIT_DIR`（絕對路徑）匯出進 hook 的環境；hook 跑的測試套件會在暫存目錄裡 `git init`/
@@ -1330,11 +1338,19 @@ curl -s http://localhost:8787/api/version
 > 貼出這台主機的 token/secret 值**——照名稱/位置操作即可，值本身留在原本的檔案裡跟著複製過去。
 
 1. **新主機作業系統前置需求**——見 §1a：Node.js 22.6+、npm、（`gateway:"sdk"` 才需要的）
-   Python 3.11/3.12、以及 `bwrap`/`socat`（`sudo apt install bubblewrap socat`）。**這台主機另外
-   量到 `Bash confinement: CONFINED`**（不是預設值，是巢狀 `bwrap --unshare-user` 探測通過），若新
-   主機也跑 Ubuntu/AppArmor，多半要走一次 §1c(e) 的 `apparmor_restrict_unprivileged_userns` 放寬
-   才會拿到一樣的結果；不放寬的話新主機會落在 `unconfined`，本機送出的 run 仍照跑，但**遠端**
-   （webhook／排程／別台機器送出的 `run_start`）會被拒，行為與現在不同，先決定是否接受這個差異。
+   Python 3.11/3.12、以及 `bwrap`/`socat`（`sudo apt install bubblewrap socat`）。**這台主機
+   目前實際量到的姿態、以及一個尚未閉環的狀態要先看清楚，不要假設它是 `CONFINED`**：
+   `journalctl --user -u rwe.service` 裡最後一次開機記的是 `Bash confinement: UNCONFINED`
+   （`bwrap: No permissions to create a new namespace`）；這台主機**已經**做了 §1c(e) 的兩步
+   AppArmor 放寬（`/etc/sysctl.d/60-rwe-userns.conf` 設了
+   `kernel.apparmor_restrict_unprivileged_userns=0`，`bwrap-userns-restrict` 設定檔也已停用），
+   但那兩步是**在最後一次 `rwe.service` 重啟之後**才做的——服務還沒重開過，所以現在這個量測結果
+   反映的是放寬**之前**的狀態，放寬到底有沒有生效**沒有被驗證過**。換機前先在原主機上
+   `systemctl --user restart rwe.service` 一次、看新的開機 log 是不是真的變成 `CONFINED`，
+   再決定新主機要不要照著複製同一套 AppArmor 放寬；本文件不替你做這次重啟（這是操作正式服務的
+   動作，超出這份 checklist 讀取範圍）。不管最終量到哪一種姿態：`unconfined` 時本機送出的 run
+   仍照跑，但**遠端**（webhook／排程／別台機器送出的 `run_start`）會被拒，換機後這個行為只要
+   跟換機前一致，就不算回歸——先確認換機前的實際姿態，才知道要在新主機上重現哪一種。
 
 2. **裝好版控的 git pre-push 保護**——見上面「git pre-push 保護」小節：`git config core.hooksPath
    deploy/git-hooks`（或 symlink）。這是 clone 出來就該做的第一件事，不是部署完才補。
@@ -1357,9 +1373,19 @@ curl -s http://localhost:8787/api/version
      已經照 §6b 步驟五現在的寫法，把六個環境變數直接用 `Environment=` 寫在 unit 裡、`ExecStart`
      指到這台機器實際的 clone 路徑、`SYSTEMCTL` 指到一個兩行的 `systemctl --user "$@"` wrapper
      （helper 內部呼叫裸指令 `systemctl restart rwe`，wrapper 是讓它落到 user instance 的唯一
-     方式，見 §6b 步驟五）——新主機照 §6b 步驟五現在的做法做一次即可，不需要额外發明。
+     方式，見 §6b 步驟五）——新主機照 §6b 步驟五現在的做法做一次即可，不需要額外發明。
    - **`rwe-update.path`**：目前跟 repo 範本一致（`PathExists=%h/rwe-update.flag`），新主機用
      `%h` 會自動展開成新使用者的家目錄，不必改。
+   - **`~/.local/share/rwe-update/`（`RWE_UPDATE_RESULT`／`RWE_UPDATE_LOCK` 指到的那個 0700
+     目錄，第 3 點步驟三已建過）這台主機上實際有的檔案**：`result.json`（最後一次更新結果，見
+     §6b「可觀測性」）、`update.lock`（flock 用的空檔）、`systemctl-user`（上面提到的兩行
+     wrapper）、以及一份 `.webhook-secret`（0600，**操作員自己留的一份 GitHub webhook secret
+     備份，不是引擎會去讀的檔案**——引擎驗 HMAC 讀的是 `RWE_SECRET_GITHUB_WEBHOOK_SECRET`
+     這個環境變數，第 4 點已經搬過去，這份檔案單純是操作員自己方便查而已，要不要一起搬純看
+     個人習慣）。**這個目錄底下若有任何 `rwe.config.json.bak-*`／`backup-*` 之類的備份檔，一律
+     當成跟正式 `rwe.config.json` 一樣機密處理**（見下方第 7 點：這台主機的 `rwe.config.json`
+     目前明碼含 Google OAuth client secret，備份檔自然也含），不要圖方便丟進任何非 600 權限的
+     位置或連同其他非機密檔案一起打包外流。
 
 4. **`rwe.env`（`~/.config/rwe.env`，權限 600）——只搬「鍵名」對得上的那些，值本身直接複製檔案**：
    這台主機目前有 `RWE_SECRET_GITHUB_TOKEN`（`issue_report`/Issues 儀表板用）、
@@ -1372,9 +1398,9 @@ curl -s http://localhost:8787/api/version
    限制」/`no-retired-surface` 那批 grep 守衛）。搬過去最省事的做法是**整份檔案複製**（保留
    600 權限），再回頭刪掉不需要的兩三行，而不是逐鍵手打。
 
-5. **LiteLLM venv（`gateway:"sdk"` 才需要）**——見 §1a 第 3 點：`~/.rwe-litellm-venv`，Python
-   3.12。這台主機用的是這個路徑；新主機沿用同一個慣例的話，第 3 點裡 `rwe.service` 的 `PATH=`
-   才不用改路徑，只需要照抄。
+5. **LiteLLM venv（`gateway:"sdk"` 才需要）**——見 §1a「Python 3.11 或 3.12」那一點：這台主機用的
+   是 `~/.rwe-litellm-venv`，Python 3.12。新主機沿用同一個慣例的話，上面第 3 點裡 `rwe.service`
+   的 `PATH=` 才不用改路徑，只需要照抄。
 
 6. **Ollama 模型（若腳本用到本機模型）**——這台主機目前拉的 tag：`qwen2.5:7b`、`qwen2.5vl:7b`、
    `bge-m3:latest`；新主機要跑哪些腳本，就對照該腳本 `meta.params.agents.<label>.model.default`
@@ -1382,7 +1408,7 @@ curl -s http://localhost:8787/api/version
    有沒有真的被排進要跑的工作流程。
 
 7. **`rwe.config.json`——複製後逐一核對，不要整份檔案原樣照搬**：目前只有這些頂層鍵在用
-   （`aliases` 已於 2026-09-26 移除，不會出現，見 §1a）：`bind`／`port`／`allowedHosts`／
+   （`aliases` 已於 2026-09-26 移除，不會出現，見 §5 疑難排解）：`bind`／`port`／`allowedHosts`／
    `workRoot`／`timeoutMs`／`retries`／`gateway`／`defaultAllowedTools`／`anthropicAuth`／
    `updateFlagPath`／`updateResultPath`／`auth`／`principals`（每個鍵的意義查 §1b 設定總表）。
    換機要特別處理的三個地方：
@@ -1403,11 +1429,14 @@ curl -s http://localhost:8787/api/version
      使用者要照 §1b「角色」小節重新分配，打錯角色字串（不是 `admin`/`author`/`user`）會直接讓
      開機失敗，不是靜默退回。
 
-8. **對外隧道／反向代理**——這台主機用的是使用者層級的 `cloudflared` unit（不是系統層級），
-   ingress 規則是**逐路徑**白名單（只轉發 `/github/webhook`、`/.well-known/`、`/authorize`、
+8. **對外隧道／反向代理**——這台主機用的是使用者層級的 `cloudflared` unit
+   （`~/.config/systemd/user/cloudflared-ssh.service`；名字是舊的，實際上跑的是
+   `cloudflared tunnel --config ~/.cloudflared/config.yml run`，這一份 `config.yml` 底下同時放了
+   SSH、另一個服務、跟這個引擎的 ingress 規則——不是三個各自獨立的 tunnel，是同一個 tunnel 的
+   一份設定檔），ingress 規則是**逐路徑**白名單（只轉發 `/github/webhook`、`/.well-known/`、`/authorize`、
    `/oauth/`、`/token`、`/register`、`/mcp`、`/assets/(blob|manifest)` 到本機的 `RWE_PORT`；
    dashboard 與 `/api/*` **刻意不對外**，只留本機/內網存取），每條規則都把 `httpHostHeader`
-   釘死成 `localhost:<RWE_PORT>`——這是配合 §5 的 Host 白名單防護（伺服器只認得到白名單裡的
+   釘死成 `localhost:<RWE_PORT>`——這是配合 §6 的 Host 白名單防護（伺服器只認得到白名單裡的
    Host，隧道若不覆寫 Host header 會被引擎自己的 403 擋下）。換機時：隧道設定檔本身含憑證與
    隧道 id，不搬過去唸出來，照 cloudflared 官方文件替新機器重新建一個隧道／或把既有隧道的執行
    行程換到新主機上；不管哪種做法，**ingress 規則裡的 port 必須跟第 3 點 `rwe.service` 目前的
