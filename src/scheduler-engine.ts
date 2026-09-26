@@ -196,15 +196,22 @@ function hasPossibleDate(sets: CronFieldSets): boolean {
   return false;
 }
 
-/** PURE named helper: the next minute-boundary timestamp strictly after `after` that matches
- *  `cron` (interpreted in `tz`, default UTC). Minute-granularity, matching this cron dialect's own
- *  precision — searches forward minute-by-minute up to a bounded horizon (no external cron lib
- *  needed for a 5-field expression at minute resolution). */
-export function computeNextFire(cron: string, tz: string | undefined, after: number): number {
+const ONE_HOUR_MS = 60 * ONE_MINUTE_MS;
+// Same 4-year horizon as MAX_MINUTES_AHEAD, expressed in hours (~35,136).
+const MAX_HOURS_AHEAD = 4 * 366 * 24;
+
+/** issue #92 follow-up (part A residual DoS): a cron that passes `hasPossibleDate` (the date exists
+ *  in principle) can still fail to match ANY instant within the 4-year horizon once `dow` is ANDed
+ *  in — e.g. `0 0 29 2 1` (Feb 29 that also falls on a Monday): most 4-year windows contain zero or
+ *  one Feb 29, and it is a Monday in only 1 of 7 possible weekday alignments, so the minute-by-minute
+ *  scan below used to run its full ~2.1M iterations (measured ~15s even with a cached tz formatter,
+ *  §`dtfFor`) before throwing — an event-loop stall on ANY caller's input, not just a malformed one.
+ *
+ *  Reference (obviously-correct, NOT DoS-safe) implementation, kept only so `computeNextFire`'s
+ *  optimized search below can be property-tested against it for identical results — see
+ *  `tests/unit/scheduler-engine.test.ts`'s cross-check suite. Never called in production. */
+export function computeNextFireBruteForce(cron: string, tz: string | undefined, after: number): number {
   const sets = parseCron(cron);
-  if (!hasPossibleDate(sets)) {
-    throw new Error(`computeNextFire: cron "${cron}" can never match any calendar date — every selected day-of-month value exceeds the maximum day count of every selected month`);
-  }
   let candidate = Math.floor(after / ONE_MINUTE_MS) * ONE_MINUTE_MS + ONE_MINUTE_MS;
   for (let i = 0; i < MAX_MINUTES_AHEAD; i++) {
     const f = fieldsAt(candidate, tz);
@@ -212,6 +219,58 @@ export function computeNextFire(cron: string, tz: string | undefined, after: num
       return candidate;
     }
     candidate += ONE_MINUTE_MS;
+  }
+  throw new Error(`computeNextFireBruteForce: no match found for cron "${cron}" within the search horizon`);
+}
+
+/** PURE named helper: the next minute-boundary timestamp strictly after `after` that matches
+ *  `cron` (interpreted in `tz`, default UTC). Minute-granularity, matching this cron dialect's own
+ *  precision.
+ *
+ *  Two-level search (issue #92 follow-up), NOT a plain minute-by-minute scan: an OUTER loop steps
+ *  by whole HOURS (≤ `MAX_HOURS_AHEAD`, ~35k, vs. the ~2.1M-minute brute force above) checking only
+ *  month/dom/dow/hour at each hour-spaced checkpoint; only when those 4 fields match does an INNER
+ *  loop check all 60 minutes of that checkpoint's own local hour.
+ *
+ *  Why this is safe for a NON-whole-hour tz offset (Asia/Kolkata is UTC+5:30) and for DST (America/
+ *  New_York): the outer checkpoints are spaced exactly one real UTC hour apart, all sharing `after`'s
+ *  own minute-of-hour (adding whole hours never changes minute-of-hour). A local "hour block" (all
+ *  60 local minutes sharing one date+hour reading) is always either 60 real minutes wide (the normal
+ *  case), 120 minutes wide (a DST "fall back" repeated hour), or 0 minutes wide (a DST "spring
+ *  forward" skipped hour — no checkpoint can ever land in an hour that does not exist, correctly).
+ *  A non-empty block's width is therefore always >= the 60-minute checkpoint spacing, so by a
+ *  pigeonhole argument (points spaced <= a window's width cannot all miss that window) at least one
+ *  checkpoint is GUARANTEED to land inside every such block — this fix cannot introduce a false
+ *  negative (a skipped real match), only skip hour-blocks it can prove have no chance. Once a
+ *  checkpoint lands inside a block, the block's true boundaries are reconstructed from that
+ *  checkpoint's OWN observed local minute-of-hour (`f.minute`) — not assumed to start at the
+ *  checkpoint — so the inner scan covers the block's real start, not an offset window (the bug an
+ *  earlier draft of this fix had for Kolkata: scanning the 60 minutes highlighted at the checkpoint,
+ *  rather than the 60 minutes of the checkpoint's OWN local hour, silently skips part of the true
+ *  window under a fractional-hour offset). Verified against the brute-force reference above by a
+ *  property test across UTC/America/New_York/Asia/Kolkata and various cron shapes. */
+export function computeNextFire(cron: string, tz: string | undefined, after: number): number {
+  const sets = parseCron(cron);
+  if (!hasPossibleDate(sets)) {
+    throw new Error(`computeNextFire: cron "${cron}" can never match any calendar date — every selected day-of-month value exceeds the maximum day count of every selected month`);
+  }
+  let hourCandidate = Math.floor(after / ONE_MINUTE_MS) * ONE_MINUTE_MS + ONE_MINUTE_MS;
+  for (let h = 0; h < MAX_HOURS_AHEAD; h++) {
+    const f = fieldsAt(hourCandidate, tz);
+    if (sets.month.has(f.month) && sets.dom.has(f.dom) && sets.dow.has(f.dow) && sets.hour.has(f.hour)) {
+      // `hourCandidate` sits `f.minute` minutes into its own local hour block — reconstruct the
+      // block's true start rather than assuming `hourCandidate` itself is minute 0 of it.
+      const blockStart = hourCandidate - f.minute * ONE_MINUTE_MS;
+      for (let m = 0; m < 60; m++) {
+        const candidate = blockStart + m * ONE_MINUTE_MS;
+        if (candidate <= after) continue; // strictly after `after`, matching the brute-force contract
+        const mf = candidate === hourCandidate ? f : fieldsAt(candidate, tz);
+        if (sets.minute.has(mf.minute) && sets.hour.has(mf.hour) && sets.dom.has(mf.dom) && sets.month.has(mf.month) && sets.dow.has(mf.dow)) {
+          return candidate;
+        }
+      }
+    }
+    hourCandidate += ONE_HOUR_MS;
   }
   throw new Error(`computeNextFire: no match found for cron "${cron}" within the search horizon`);
 }

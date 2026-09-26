@@ -4,7 +4,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { FixedClock } from '../../src/clock.js';
 // Value imports — cause module-not-found at load time when the module is absent.
-import { tick, computeNextFire, FakeTicker, bootRearm, parseCron } from '../../src/scheduler-engine.js';
+import { tick, computeNextFire, FakeTicker, bootRearm, parseCron, computeNextFireBruteForce } from '../../src/scheduler-engine.js';
 
 // Fixed anchor — used as a stable reference, not a "future/past" wall-clock comparison.
 const CLOCK = new FixedClock(new Date('2020-06-01T12:00:00.000Z'));
@@ -202,4 +202,66 @@ describe('computeNextFire never-fires detection (issue #92 item 1c)', () => {
     const next = computeNextFire('0 0 29 2 *', undefined, CLOCK.now());
     expect(Number.isFinite(next)).toBe(true);
   });
+});
+
+// issue #92 follow-up: `hasPossibleDate` only rules out a dom/month combination that can NEVER
+// occur (Feb 31). It does not — cannot, cheaply — rule out a combination that occurs so rarely that
+// ANDing in `dow` finds zero matches within the 4-year horizon: `0 0 29 2 1` (Feb 29 that also falls
+// on a Monday) passes `hasPossibleDate` (Feb 29 exists) but has no match in most 4-year windows
+// (leap years are 4 years apart; Feb 29 lands on a Monday in only 1 of 7 possible alignments), so
+// the OLD single-level minute scan still ran its full ~2.1M iterations before throwing — an
+// event-loop stall from ANY caller's cron, not just a malformed one. The two-level (hour-then-
+// minute) restructuring bounds this to ~35k outer iterations regardless of which field combination
+// fails to ever match.
+describe('computeNextFire worst-case bound: dow rules out an otherwise-possible date (issue #92 follow-up)', () => {
+  it('0 0 29 2 1 (Feb 29 AND Monday) throws INVALID-shaped fast, in well under 2s', () => {
+    const start = Date.now();
+    expect(() => computeNextFire('0 0 29 2 1', undefined, CLOCK.now())).toThrow();
+    expect(Date.now() - start).toBeLessThan(2000);
+  });
+
+  it('the same cron throws fast with a tz set too', () => {
+    const start = Date.now();
+    expect(() => computeNextFire('0 0 29 2 1', 'Asia/Taipei', CLOCK.now())).toThrow();
+    expect(Date.now() - start).toBeLessThan(2000);
+  });
+});
+
+// issue #92 follow-up: property-style cross-check. The two-level search must return EXACTLY the
+// same instant as the obviously-correct minute-by-minute brute force for every ordinary cron — the
+// optimization must never change what fires, only how fast the engine decides. Includes a fixed
+// UTC offset with a non-whole-hour phase (Asia/Kolkata, +5:30 — the exact case an earlier draft of
+// this fix got wrong: scanning the 60 minutes STARTING at the hour checkpoint, rather than the 60
+// minutes of the checkpoint's own local hour, silently skips part of the true window) and a DST zone
+// (America/New_York), including anchors straddling both 2024 US DST transitions.
+describe('computeNextFire matches the brute-force reference exactly (issue #92 follow-up property check)', () => {
+  const CRONS = [
+    '* * * * *',
+    '0 * * * *',
+    '30 * * * *',
+    '0 9 * * *',
+    '*/15 * * * *',
+    '0 0 1 * *',
+    '0 12 * * 1-5',
+    '15,45 6,18 * * *',
+    '0 0 * * 0',
+  ];
+  const TIMEZONES: (string | undefined)[] = [undefined, 'America/New_York', 'Asia/Kolkata'];
+  const ANCHORS = [
+    Date.parse('2020-06-01T12:00:00.000Z'),
+    Date.parse('2024-03-10T06:30:00.000Z'), // ~01:30 America/New_York, just before the "spring forward" jump to 03:00
+    Date.parse('2024-11-03T05:30:00.000Z'), // ~01:30 America/New_York EDT, just before the "fall back" repeated hour
+  ];
+
+  for (const cron of CRONS) {
+    for (const tz of TIMEZONES) {
+      for (const after of ANCHORS) {
+        it(`"${cron}" tz=${tz ?? 'UTC'} after=${new Date(after).toISOString()}`, () => {
+          const expected = computeNextFireBruteForce(cron, tz, after);
+          const actual = computeNextFire(cron, tz, after);
+          expect(actual).toBe(expected);
+        });
+      }
+    }
+  }
 });
