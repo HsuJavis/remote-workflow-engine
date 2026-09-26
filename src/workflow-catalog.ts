@@ -1065,7 +1065,10 @@ export class WorkflowCatalog {
     return { channel, version, from };
   }
 
-  async list(): Promise<Array<{ name: string; version: string; createdAt: string; owner: string | null; description: string; params: ParamContract | undefined; versions: string[]; channels: Channels }>> {
+  // issue #93 item 3: `registeredRemote` joins the projection — the SAME column `resolveDetail()`
+  // already reads for `workflow_describe`, added here so `workflow_list`'s own `runnable` can be
+  // just as truthful about a version this host would actually refuse to run.
+  async list(): Promise<Array<{ name: string; version: string; createdAt: string; owner: string | null; description: string; params: ParamContract | undefined; versions: string[]; channels: Channels; registeredRemote: boolean }>> {
     // v9 (REQ-061): surface each workflow's purpose (meta.description) so a client can see WHAT each
     // one does without reading its script — parsed on-demand from the stored script (always in sync).
     // v22 (DES-111): `version`/`description`/`params` describe the RELEASE channel's version when
@@ -1082,13 +1085,14 @@ export class WorkflowCatalog {
       const channels: Channels = { release: r.release_version, beta: r.beta_version };
       const version = r.release_version ?? r.beta_version ?? versions[versions.length - 1] ?? '';
       const vrow = version
-        ? (this._db.prepare('SELECT script, params FROM workflow_versions WHERE name = ? AND version = ?').get(r.name, version) as { script: string; params: string | null } | undefined)
+        ? (this._db.prepare('SELECT script, params, registeredRemote FROM workflow_versions WHERE name = ? AND version = ?').get(r.name, version) as { script: string; params: string | null; registeredRemote: number } | undefined)
         : undefined;
       return {
         name: r.name, version, createdAt: r.createdAt, owner: r.owner,
         description: parseMeta(vrow?.script ?? '').description,
         params: vrow?.params ? JSON.parse(vrow.params) as ParamContract : undefined,
         versions, channels,
+        registeredRemote: vrow?.registeredRemote === 1,
       };
     });
   }

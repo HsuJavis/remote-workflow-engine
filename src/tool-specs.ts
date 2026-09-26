@@ -1080,14 +1080,17 @@ export const TOOL_SPECS = [
   },
   {
     // Issue #73: the admin-only "probe now". Each probe is one prose call plus one call holding
-    // only Bash that must print a random value the probe planted — through the engine's own
-    // gateway, so it measures what an agent() call would get.
+    // only Read that must report a random value the probe planted in a nonce file — through the
+    // engine's own gateway, so it measures what an agent() call would get.
+    // issue #93 item 4: was `Bash` + `cat <nonce file>`; switched to `Read` on the nonce file's
+    // absolute path — same proof (a real tool_use whose result the model could not have guessed)
+    // without a shell.
     name: 'models_probe', entity: 'models', key: null,
     description:
       'Admin only. Probe models NOW, through the same gateway agents use: per distinct model declared ' +
       'by a registered workflow version (or only the one full `model` ref names — copy the exact `ref` ' +
       'string from models_list, e.g. "anthropic/claude-haiku-4-5-20251001"), one prose call and one ' +
-      'call allowed only the Bash tool that must run a command and report its unguessable output. ' +
+      'call allowed only the Read tool that must read a file and report its unguessable content. ' +
       'Returns one row per model: provider, model, proseVerified, toolUseVerified, probedAt, ' +
       'latencyMs {prose, tools}, detail. Results are stored and appear on models_list ' +
       '(toolUseVerified/proseVerified/lastProbedAt/probeDetail/stabilitySource). Takes up to two probe ' +

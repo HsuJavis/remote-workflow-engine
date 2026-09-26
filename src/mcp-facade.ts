@@ -8,7 +8,8 @@ import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
 import type { RunStore } from './run-store.js';
 import { InMemoryRunStore, TERMINAL } from './run-store.js';
-import { RunManager, DEFAULT_RUN_CONCURRENCY } from './run-manager.js';
+import { RunManager, DEFAULT_RUN_CONCURRENCY, admissionRefusal } from './run-manager.js';
+import { CONFINEMENT_REMEDIATION } from './gateway/confinement-probe.js';
 import { resolveVersionRequest, type WorkflowDetail, type Channel, type VersionSelector, type Actor } from './workflow-catalog.js';
 import { SubmissionValidator } from './submission-validator.js';
 // v24 Gate 7.5 (D-3): `toErrEnvelope` is IMPORTED, not re-implemented. This file used to carry a
@@ -553,7 +554,12 @@ export class McpFacade {
   /** v23 (REQ-101, DES-125/126, v24 rename of workflow_describe): the ONE response, same shape for
    *  every principal (DES-125 already dropped the owner/non-owner split — v24 threads `Principal`
    *  only for signature consistency, no masking decision here). */
-  async workflowDescribe(a: { name: string; version?: string; channel?: 'beta' | 'release' }, _principal: Principal): Promise<Record<string, unknown>> {
+  // issue #93 item 3: `isRemoteSubmission` mirrors `runStart`'s own added parameter (same default,
+  // same "existing test call sites keep compiling" reasoning) — THIS caller's own socket peer
+  // locality, folded into `runnable`/`runnableReason` below alongside the resolved version's own
+  // `registeredRemote` (already read off `full`, a few lines down) so a caller who would actually
+  // be refused CONFINEMENT_UNAVAILABLE by `run_start` is told so here too, truthfully.
+  async workflowDescribe(a: { name: string; version?: string; channel?: 'beta' | 'release' }, _principal: Principal, isRemoteSubmission = false): Promise<Record<string, unknown>> {
     const catalog = this.runManager.catalog;
     const sel: VersionSelector = { version: a.version, channel: a.channel };
     let full: WorkflowDetail;
@@ -594,7 +600,10 @@ export class McpFacade {
     // (`scheduler.get(id) ?? webhooks.get(id)`) from the RESOLVED VERSION's own `triggers` column —
     // never by workflow, because `listByWorkflow` was retired with `trigger-bindings.ts` and
     // because a claim belongs to a version, not to a name.
-    const view = projectWorkflowDescribe(ownerView, { ceilings: this.ceilings, triggers: this._resolveTriggers(full.name, full.triggers ?? []), attempts: this.gatewayAttempts });
+    const view = projectWorkflowDescribe(ownerView, {
+      ceilings: this.ceilings, triggers: this._resolveTriggers(full.name, full.triggers ?? []), attempts: this.gatewayAttempts,
+      confinementPosture: this.confinementPosture, isRemoteSubmission, registeredRemote: full.registeredRemote,
+    });
     // v26 (DES-184, ARCH-119, TASK-189): `diagramContract` — added here rather than threading
     // through `WorkflowOwnerView`/`WorkflowDescribeView` (workflow-view.ts, no v26 task's file
     // list): `full.diagramContract` ('v1'/'v2', catalog-computed) is exactly the resolved version's
@@ -682,8 +691,14 @@ export class McpFacade {
     return { runId: '', status: 'completed', owner: full.owner, params, script: full.script, result: resultObj };
   }
 
-  /** v24 (ARCH-091): "workflows only" — the mixed workflow+run listing moves to `run_list`. */
-  async workflowList(a: { onlyRunnable?: boolean }, principal: Principal): Promise<ResultEnvelope<Array<{ name: string; owner: string | null; versions: string[]; channels: Record<string, string>; runnable: boolean; description: string; lastRunAt: string | null }>>> {
+  /** v24 (ARCH-091): "workflows only" — the mixed workflow+run listing moves to `run_list`.
+   *  issue #93 item 3: `isRemoteSubmission` (mirrors `workflowDescribe`'s own added parameter) folds
+   *  into `runnable`/`runnableReason` alongside each row's own `catalog.list()`-reported
+   *  `registeredRemote`, the SAME `admissionRefusal()` predicate `RunManager.start()` and
+   *  `workflowDescribe` use — a version this host would actually refuse to run is never reported
+   *  `runnable:true` here either. `runnableReason` is present ONLY on a row this fires for (an
+   *  additive key — nothing walks this array expecting the field to always exist). */
+  async workflowList(a: { onlyRunnable?: boolean }, principal: Principal, isRemoteSubmission = false): Promise<ResultEnvelope<Array<{ name: string; owner: string | null; versions: string[]; channels: Record<string, string>; runnable: boolean; runnableReason?: 'CONFINEMENT_UNAVAILABLE'; description: string; lastRunAt: string | null }>>> {
     const workflows = await this.runManager.catalog.list();
     // v36 (DES-247, ARCH-163, TASK-245): ONE lookup for the whole request, never one per row — a
     // name absent from the map has never run, which is what turns `?? null` into the honest
@@ -693,17 +708,25 @@ export class McpFacade {
     const rows = workflows
       // v24 adjudication #6 F-4: `w.owner` directly — the `as unknown as {owner?}` cast this line
       // used to carry is what let tsc stay green while `catalog.list()` had no `owner` field at all.
-      .map((w) => ({
-        name: w.name,
-        owner: w.owner,
-        versions: w.versions,
-        channels: w.channels as unknown as Record<string, string>,
-        runnable: (w.channels as unknown as { release?: string | null })?.release != null,
-        // v36 (DES-247, ARCH-163): forwarded, never re-parsed — `catalog.list()` already computes
-        // this (v9/REQ-061); this projection's `.map` was silently dropping it.
-        description: w.description,
-        lastRunAt: lastRuns.get(w.name) ?? null,
-      }))
+      .map((w) => {
+        const published = (w.channels as unknown as { release?: string | null })?.release != null;
+        const confinementRefused = published && admissionRefusal({
+          posture: this.confinementPosture,
+          origin: isRemoteSubmission || w.registeredRemote ? 'remote' : 'local',
+        }) !== null;
+        return {
+          name: w.name,
+          owner: w.owner,
+          versions: w.versions,
+          channels: w.channels as unknown as Record<string, string>,
+          runnable: published && !confinementRefused,
+          ...(confinementRefused ? { runnableReason: 'CONFINEMENT_UNAVAILABLE' as const } : {}),
+          // v36 (DES-247, ARCH-163): forwarded, never re-parsed — `catalog.list()` already computes
+          // this (v9/REQ-061); this projection's `.map` was silently dropping it.
+          description: w.description,
+          lastRunAt: lastRuns.get(w.name) ?? null,
+        };
+      })
       .filter((w) => !onlyRunnable || w.runnable);
     return { runId: '', status: 'completed', result: rows };
   }
@@ -846,8 +869,37 @@ export class McpFacade {
     return lifecycle(this.store, a.runId, () => this.runManager.suspend(a.runId));
   }
 
-  async runResume(a: { runId: string }, _principal: Principal): Promise<ResultEnvelope> {
-    return lifecycle(this.store, a.runId, () => this.runManager.resume(a.runId));
+  // issue #93 item 2 (2026-09-26): `isRemoteSubmission` mirrors `runStart`'s own added parameter
+  // (same default, same ~5 pre-existing test call sites that omit it and must keep compiling
+  // unchanged). Unlike `runStart`, this is NOT delegated into `RunManager.resume()` — that method's
+  // ONE admission stage covers only the legacy-substitution case (a run whose pinned version is
+  // gone), by the owner's own deliberate ruling that an ordinary PINNED resume stays ungated
+  // (INV-V37-5(c), R5-F1's comment on `resume()`). A remote peer resuming a run whose pinned
+  // version is intact must still be refused when this host is unconfined — `call-tool.ts`'s own
+  // early door used to be the sole cover for that case; it is gone now (moved here so a
+  // nonexistent runId still answers RUN_NOT_FOUND first, never a blanket CONFINEMENT_UNAVAILABLE).
+  async runResume(a: { runId: string }, _principal: Principal, isRemoteSubmission = false): Promise<ResultEnvelope> {
+    const view = await this.store.getRun(a.runId);
+    if (!view) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
+    if (isRemoteSubmission) {
+      const refusal = admissionRefusal({ posture: this.confinementPosture, origin: 'remote' });
+      if (refusal !== null) {
+        return {
+          runId: a.runId, status: view.status,
+          error: toErrEnvelope(codedError(
+            refusal,
+            `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — remote run_resume submissions are refused. Remediation: ${CONFINEMENT_REMEDIATION}`,
+          )),
+        };
+      }
+    }
+    try {
+      await this.runManager.resume(a.runId);
+      const after = await this.store.getRun(a.runId);
+      return { runId: a.runId, status: after?.status ?? view.status };
+    } catch (err) {
+      return { runId: a.runId, status: view.status, error: toErrEnvelope(err) };
+    }
   }
 
   async runStop(a: { runId: string }, _principal: Principal): Promise<ResultEnvelope> {

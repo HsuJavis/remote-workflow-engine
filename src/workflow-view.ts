@@ -6,6 +6,13 @@
 // by the caller (DES-116, TASK-111) and handed in as `viewerIsOwner`.
 import type { ScriptCheckError } from './script-checks.js';
 import { LOCKED_KEYS, DEFAULT_CEILINGS, effectiveAgentBounds, type Ceilings, type AgentParamSpec, type ParamSpec } from './params/contract.js';
+// issue #93 item 3: the SAME pure predicate `RunManager.start()` admits/refuses a run with —
+// imported, never re-implemented, so `runnable`/`runnableReason` here and the actual admission
+// decision cannot drift apart. `admissionRefusal` has no fs/db/clock of its own (run-manager.ts's
+// other imports — better-sqlite3 included — are simply unused by this one named export; importing
+// it does not give this module any I/O it didn't already effectively depend on at the process
+// level, since a WorkflowOwnerView is never built without a live RunManager alongside it).
+import { admissionRefusal } from './run-manager.js';
 
 export interface ValidationPublic {
   ok: boolean;
@@ -119,7 +126,10 @@ export interface WorkflowDescribeView {
   mermaid: string | null; // the stored string VERBATIM
   mermaidNote: 'LEGACY_NO_DIAGRAM' | null; // set iff mermaid === null
   runnable: boolean;
-  runnableReason: 'CHANNEL_UNPUBLISHED' | 'LEGACY_REREGISTER' | null;
+  // issue #93 item 3: `'CONFINEMENT_UNAVAILABLE'` joins the union — a version that would otherwise
+  // run (published, non-legacy contract) but that `RunManager.start()` would actually refuse on
+  // THIS host for THIS caller (see `projectWorkflowDescribe`'s own `ctx.confinementPosture` doc).
+  runnableReason: 'CHANNEL_UNPUBLISHED' | 'LEGACY_REREGISTER' | 'CONFINEMENT_UNAVAILABLE' | null;
 }
 
 // Transcribed LITERALLY from WorkflowDescribeView's own top-level field list (same convention as
@@ -183,18 +193,39 @@ function projectAgentParams(
  *  when the caller has no operator override to pass. */
 export function projectWorkflowDescribe(
   full: WorkflowOwnerView,
-  ctx: { triggers: unknown[]; ceilings?: Ceilings; attempts?: number },
+  ctx: {
+    triggers: unknown[]; ceilings?: Ceilings; attempts?: number;
+    // issue #93 item 3: mirrors RunManager.start()'s TWO admission facts EXACTLY —
+    // `confinementPosture` (this engine's boot-time measured posture; `undefined` ⇒ "never
+    // measured", never gated, same fail-open convention `ToolDeps`/`RunManager` already use) and
+    // the union of `isRemoteSubmission` (THIS caller's own socket peer locality — `spec.origin` at
+    // `RunManager.start()`) with `registeredRemote` (THIS version's own registering submission —
+    // `registered.registeredRemote`, the resolved catalog row's column). Both optional/defaulted
+    // so the many pre-existing `projectWorkflowDescribe` test call sites keep compiling unchanged.
+    confinementPosture?: 'confined' | 'unconfined'; isRemoteSubmission?: boolean; registeredRemote?: boolean;
+  },
 ): WorkflowDescribeView {
   const ceilings = ctx.ceilings ?? DEFAULT_CEILINGS;
   const attempts = ctx.attempts ?? DEFAULT_ATTEMPTS;
   const paramsRaw = full.params as { agents?: Record<string, AgentParamSpec>; args?: Record<string, ParamSpec> } | undefined;
   const legacy = isLegacyParamsShape(full.params);
   const published = full.channels['release'] != null || full.channels['beta'] != null;
+  // issue #93 item 3: the SAME `admissionRefusal()` predicate `RunManager.start()` calls, keyed on
+  // the SAME OR'd origin: this call is remote, OR this version was registered remotely. Checked
+  // LAST — after `legacy`/`published` — mirroring `RunManager.start()`'s own precedence exactly
+  // (LEGACY_REREGISTER/CHANNEL_UNPUBLISHED are thrown by `catalog.resolve()`/the contract check,
+  // both well before the deferred confinement throw at the bottom of `start()`).
+  const confinementRefused = admissionRefusal({
+    posture: ctx.confinementPosture,
+    origin: ctx.isRemoteSubmission || ctx.registeredRemote ? 'remote' : 'local',
+  }) !== null;
   const runnableReason: WorkflowDescribeView['runnableReason'] = legacy
     ? 'LEGACY_REREGISTER'
     : !published
       ? 'CHANNEL_UNPUBLISHED'
-      : null;
+      : confinementRefused
+        ? 'CONFINEMENT_UNAVAILABLE'
+        : null;
   const mermaid = full.mermaid ?? null;
 
   return {

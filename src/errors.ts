@@ -5,6 +5,11 @@ import { MARKER_PREFIX, redact } from './secret-resolver.js';
 // VALUE import here is safe: params/contract.ts imports only `type { ErrorCode }` from this file
 // (type-only, erased at compile time), so this is not a runtime cycle.
 import { LOCKED_KEYS } from './params/contract.js';
+// issue #93 item 1: the SAME operator remediation the boot banner (main.ts) states — imported, not
+// re-typed, so a caller reading CONFINEMENT_UNAVAILABLE's hint and an operator reading the boot log
+// are always told the identical fix. Value import, no runtime cycle: confinement-probe.ts imports
+// only `node:child_process`.
+import { CONFINEMENT_REMEDIATION } from './gateway/confinement-probe.js';
 //
 // v24 (DES-137, ARCH-087, TASK-131): ERROR_CATALOG is the closed `ErrorCode` union — every coded
 // refusal this engine can throw is a key here, with the `see` pointer (workflow_authoring_guide|null)
@@ -103,7 +108,10 @@ export const ERROR_CATALOG = {
   // "(a local/loopback submission still runs, unconfined)" — no longer true. A local run_start of
   // a REMOTELY-REGISTERED script is refused identically; only a submission that is local AND
   // resolves to a locally-registered script still runs unconfined.
-  CONFINEMENT_UNAVAILABLE: { see: 'workflow_authoring_guide', hint: "this host could not measure a working Bash sandbox at boot; a run is refused when EITHER its trigger's provenance OR its resolved script version's registering submission is remote — a remote run_start/run_resume, a webhook delivery or schedule firing whose trigger was created remotely, or ANY run (including a local one) resolving to a version registered remotely" },
+  // issue #93 item 1: the hint used to end at "registered remotely" — silent about HOW an operator
+  // fixes the underlying probe failure. `CONFINEMENT_REMEDIATION` (confinement-probe.ts) appends the
+  // Ubuntu/AppArmor remediation this iteration verified end to end on the host that reported it.
+  CONFINEMENT_UNAVAILABLE: { see: 'workflow_authoring_guide', hint: "this host could not measure a working Bash sandbox at boot; a run is refused when EITHER its trigger's provenance OR its resolved script version's registering submission is remote — a remote run_start/run_resume, a webhook delivery or schedule firing whose trigger was created remotely, or ANY run (including a local one) resolving to a version registered remotely. Remediation: " + CONFINEMENT_REMEDIATION },
   NESTING_DEPTH_EXCEEDED: { see: 'workflow_authoring_guide', hint: 'nested workflow() calls exceed the configured maxWorkflowDepth' },
   NESTING_CYCLE: { see: 'workflow_authoring_guide', hint: 'a workflow() call would re-enter an ancestor already on this call\'s chain' },
   DESCENDANT_CAP_EXCEEDED: { see: 'workflow_authoring_guide', hint: 'nested workflow() calls exceed the configured maxWorkflowDescendants' },

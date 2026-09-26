@@ -314,8 +314,8 @@ export interface EnrichedModelEntry extends Omit<ModelEntry, 'toolUse' | 'effort
    *  catalog snapshot timestamp to attach (e.g. a direct `enrichModelEntry` call in a unit test). */
   catalogFetchedAt: string | null;
   /** Issue #73: OBSERVED by the engine's own probe (model-probe.ts) through the real gateway —
-   *  `null` = never probed. `toolUseVerified` is true only when the model ran a real Bash tool call
-   *  AND reported the unguessable value it printed. */
+   *  `null` = never probed. `toolUseVerified` is true only when the model ran a real Read tool call
+   *  (issue #93 item 4: was Bash) AND reported the unguessable value it read. */
   toolUseVerified: boolean | null;
   proseVerified: boolean | null;
   lastProbedAt: string | null;

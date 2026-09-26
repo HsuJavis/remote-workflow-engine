@@ -75,4 +75,13 @@ describe('ERROR_CATALOG — closed ErrorCode union (UT-138, DES-137)', () => {
     }
     expect(ERROR_CATALOG.PARAM_LOCKED.hint).toContain('bash');
   });
+
+  // issue #93 item 1: CONFINEMENT_UNAVAILABLE's hint used to explain WHAT is refused and WHY, but
+  // never told an operator on an Ubuntu/AppArmor host — the exact class this iteration measured and
+  // fixed — HOW to make the probe pass. Rendered from the SAME CONFINEMENT_REMEDIATION constant the
+  // boot banner (main.ts) uses, so the two surfaces cannot drift apart.
+  it('CONFINEMENT_UNAVAILABLE\'s hint carries the Ubuntu/AppArmor operator remediation (issue #93 item 1)', () => {
+    expect(ERROR_CATALOG.CONFINEMENT_UNAVAILABLE.hint).toContain('kernel.apparmor_restrict_unprivileged_userns=0');
+    expect(ERROR_CATALOG.CONFINEMENT_UNAVAILABLE.hint).toContain('bwrap-userns-restrict');
+  });
 });

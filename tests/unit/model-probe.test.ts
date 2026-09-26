@@ -32,38 +32,38 @@ import { parseModelRef } from '../../src/providers.js';
 const NONCE = 'a1b2c3d4e5f60718';
 const ok = (content: unknown, events: unknown[] = []): GatewayResult =>
   ({ ok: true, provider: 'p', model: 'm', tokens: { input: 1, output: 1 }, content, events: events as never });
+const readCall = { ts: 't', kind: 'tool_call' as const, data: { type: 'tool_use', name: 'Read', input: { file_path: '/ws/probe-nonce.txt' } } };
 const bashCall = { ts: 't', kind: 'tool_call' as const, data: { type: 'tool_use', name: 'Bash', input: { command: 'cat probe-nonce.txt' } } };
-const readCall = { ts: 't', kind: 'tool_call' as const, data: { type: 'tool_use', name: 'Read', input: {} } };
 
-describe('classifyProbe (#73) — pass needs a real Bash tool_use AND the unguessable value', () => {
-  it('prose text + Bash tool_use + nonce in the answer -> both verified', () => {
-    const c = classifyProbe(ok('PONG'), ok(`the file says ${NONCE}`, [bashCall]), NONCE);
+describe('classifyProbe (#73) — pass needs a real Read tool_use AND the unguessable value (issue #93 item 4)', () => {
+  it('prose text + Read tool_use + nonce in the answer -> both verified', () => {
+    const c = classifyProbe(ok('PONG'), ok(`the file says ${NONCE}`, [readCall]), NONCE);
     expect(c.proseVerified).toBe(true);
     expect(c.toolUseVerified).toBe(true);
   });
 
   it('empty / whitespace prose answer -> proseVerified false', () => {
-    expect(classifyProbe(ok('   '), ok(NONCE, [bashCall]), NONCE).proseVerified).toBe(false);
-    expect(classifyProbe(ok(null), ok(NONCE, [bashCall]), NONCE).proseVerified).toBe(false);
+    expect(classifyProbe(ok('   '), ok(NONCE, [readCall]), NONCE).proseVerified).toBe(false);
+    expect(classifyProbe(ok(null), ok(NONCE, [readCall]), NONCE).proseVerified).toBe(false);
   });
 
-  it('the nonce without any Bash tool_use (a guess / leaked value) -> toolUseVerified false', () => {
+  it('the nonce without any Read tool_use (a guess / leaked value) -> toolUseVerified false', () => {
     const c = classifyProbe(ok('PONG'), ok(NONCE, []), NONCE);
     expect(c.toolUseVerified).toBe(false);
-    expect(c.detail).toMatch(/no Bash tool_use/);
+    expect(c.detail).toMatch(/no Read tool_use/);
   });
 
   it('a failed tool leg quotes the start of what the model answered instead (diagnosable, not opaque)', () => {
-    const c = classifyProbe(ok('PONG'), ok('{"name": "Bash", "arguments": {"command": "cat probe-nonce.txt"}}', []), NONCE);
-    expect(c.detail).toContain('{"name": "Bash"');
+    const c = classifyProbe(ok('PONG'), ok('{"name": "Read", "arguments": {"file_path": "/ws/probe-nonce.txt"}}', []), NONCE);
+    expect(c.detail).toContain('{"name": "Read"');
   });
 
-  it('a non-Bash tool call does not count', () => {
-    expect(classifyProbe(ok('PONG'), ok(NONCE, [readCall]), NONCE).toolUseVerified).toBe(false);
+  it('a non-Read tool call (e.g. Bash) does not count', () => {
+    expect(classifyProbe(ok('PONG'), ok(NONCE, [bashCall]), NONCE).toolUseVerified).toBe(false);
   });
 
-  it('a Bash tool_use whose answer lacks the nonce -> toolUseVerified false', () => {
-    const c = classifyProbe(ok('PONG'), ok('I ran it', [bashCall]), NONCE);
+  it('a Read tool_use whose answer lacks the nonce -> toolUseVerified false', () => {
+    const c = classifyProbe(ok('PONG'), ok('I ran it', [readCall]), NONCE);
     expect(c.toolUseVerified).toBe(false);
     expect(c.detail).toMatch(/nonce/);
   });
@@ -91,17 +91,17 @@ describe('probeTargets (#73) — distinct full refs only, one per distinct (prov
   });
 });
 
-/** A fake gateway that behaves like a tool-capable model: on the Bash leg it reads the file the
- *  probe planted (the way `cat` would) and answers with it. Records every request. */
+/** A fake gateway that behaves like a tool-capable model: on the Read leg it reads the file the
+ *  probe planted (the way the real `Read` tool would) and answers with it. Records every request. */
 function recordingGateway(behave: 'good' | 'no-tools'): { gw: GatewayClient; reqs: Array<{ prompt: string; opts: AgentOpts; workspace?: string }> } {
   const reqs: Array<{ prompt: string; opts: AgentOpts; workspace?: string }> = [];
   const gw: GatewayClient = {
     async invoke(req) {
       reqs.push({ prompt: req.prompt, opts: req.opts, workspace: req.workspace });
-      if (req.opts.allowedTools && req.opts.allowedTools.includes('Bash')) {
-        if (behave === 'no-tools') return ok('I cannot run commands.');
+      if (req.opts.allowedTools && req.opts.allowedTools.includes('Read')) {
+        if (behave === 'no-tools') return ok('I cannot read files.');
         const value = readFileSync(join(req.workspace!, 'probe-nonce.txt'), 'utf8').trim();
-        return ok(value, [bashCall]);
+        return ok(value, [{ ts: 't', kind: 'tool_call' as const, data: { type: 'tool_use', name: 'Read', input: { file_path: join(req.workspace!, 'probe-nonce.txt') } } }]);
       }
       return ok('PONG');
     },
@@ -110,20 +110,24 @@ function recordingGateway(behave: 'good' | 'no-tools'): { gw: GatewayClient; req
 }
 
 describe('runProbe (#73) — the real GatewayClient.invoke path, a throwaway workspace under workRoot', () => {
-  it('dispatches with model = the full ref; prose leg has no tools, tool leg has exactly [Bash], per-call timeout, workspace inside workRoot and removed after', async () => {
+  it('dispatches with model = the full ref; prose leg has no tools, tool leg has exactly [Read], per-call timeout, workspace inside workRoot and removed after (issue #93 item 4)', async () => {
     const workRoot = mkdtempSync(join(tmpdir(), 'rwe-probe-'));
     try {
       const { gw, reqs } = recordingGateway('good');
       const r = await runProbe(gw, { provider: 'anthropic', model: 'claude-haiku' }, { workRoot, timeoutMs: 1234, clock: new FixedClock(new Date(0)) });
       expect(reqs).toHaveLength(2);
       expect(reqs[0]!.opts).toMatchObject({ model: 'anthropic/claude-haiku', allowedTools: [], timeoutMs: 1234 });
-      expect(reqs[1]!.opts).toMatchObject({ model: 'anthropic/claude-haiku', allowedTools: ['Bash'], timeoutMs: 1234 });
+      expect(reqs[1]!.opts).toMatchObject({ model: 'anthropic/claude-haiku', allowedTools: ['Read'], timeoutMs: 1234 });
       // The tool prompt must NOT contain the value it asks for — otherwise echoing the prompt passes.
       const ws = reqs[1]!.workspace!;
       // Both legs run in the throwaway workspace, like every agent() call runs in its run workspace.
       expect(reqs[0]!.workspace).toBe(ws);
       const rel = relative(workRoot, ws);
       expect(rel.startsWith('..') || isAbsolute(rel)).toBe(false);
+      // issue #93 item 4: the prompt names the ABSOLUTE nonce path, inside the probe workspace the
+      // Read path-guard (claude-agent-sdk-client.ts's toolUsePreCheck) allows for THIS call.
+      expect(reqs[1]!.prompt).toContain(join(ws, 'probe-nonce.txt'));
+      expect(isAbsolute(join(ws, 'probe-nonce.txt'))).toBe(true);
       expect(existsSync(ws)).toBe(false);
       expect(r).toMatchObject({ provider: 'anthropic', model: 'claude-haiku', proseVerified: true, toolUseVerified: true });
       expect(typeof r.probedAt).toBe('string');
@@ -136,7 +140,7 @@ describe('runProbe (#73) — the real GatewayClient.invoke path, a throwaway wor
       const seen: string[] = [];
       const gw: GatewayClient = {
         async invoke(req) {
-          if (req.opts.allowedTools?.includes('Bash')) {
+          if (req.opts.allowedTools?.includes('Read')) {
             const v = readFileSync(join(req.workspace!, 'probe-nonce.txt'), 'utf8').trim();
             seen.push(v);
             expect(req.prompt).not.toContain(v);
@@ -166,7 +170,7 @@ describe('runProbe (#73) — the real GatewayClient.invoke path, a throwaway wor
 
 const RESULT: ProbeResult = {
   provider: 'ollama', model: 'qwen2.5:7b', proseVerified: true, toolUseVerified: false,
-  probedAt: '2026-09-25T00:00:00.000Z', latencyMs: { prose: 812, tools: 4021 }, detail: 'tools: no Bash tool_use in the reply',
+  probedAt: '2026-09-25T00:00:00.000Z', latencyMs: { prose: 812, tools: 4021 }, detail: 'tools: no Read tool_use in the reply',
 };
 
 describe('ModelProbeStore (#73) — persisted so a restart keeps the last result', () => {
