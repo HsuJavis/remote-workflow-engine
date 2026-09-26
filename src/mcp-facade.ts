@@ -18,7 +18,7 @@ import { SubmissionValidator } from './submission-validator.js';
 import { CatalogNotFoundError, codedError, toErrEnvelope, type ErrorCode } from './errors.js';
 import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, HarnessDescriptor, RunListFilter, AuditAction, RunSpec, RunUsage, AgentLogView } from './types.js';
 import { parseMeta, toolSurfaceWarnings } from './workflow-meta.js';
-import { buildAuthoringGuide } from './authoring-guide.js';
+import { buildAuthoringGuide, chooseExampleModelAlias, type AliasProbeInfo } from './authoring-guide.js';
 import { effectiveAgentBounds, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type AgentParamSpec } from './params/contract.js';
 import { projectWorkflowForRead, projectWorkflowDescribe, type WorkflowOwnerView } from './workflow-view.js';
 import { scanAgentCalls } from './scan-agent-calls.js';
@@ -128,6 +128,15 @@ export interface McpFacadeDeps {
    *  author to learn it from a refused run. Absent (unit construction, or a deployment where the
    *  probe never ran) renders the guide's dual-posture generic text rather than asserting either. */
   confinementPosture?: 'confined' | 'unconfined';
+  /** issue #89 item 6: this deployment's alias table crossed with its LATEST probe results, so
+   *  `workflow_authoring_guide` can pick a model alias for its examples that is actually
+   *  tool-capable (`chooseExampleModelAlias()`, authoring-guide.ts) rather than teaching every cold
+   *  author to copy `model.default: 'default'` even where that alias probes tool-incapable. A THUNK,
+   *  not a snapshot — server.ts's weekly `ModelProber` rewrites probe results after boot, and this
+   *  is read fresh on every `workflow_authoring_guide` call, never cached at construction. Absent
+   *  (unit construction, or a deployment with no alias/probe wiring) renders every example's literal
+   *  `'default'`, byte-identical to the guide before this field existed. */
+  aliasProbes?: () => readonly AliasProbeInfo[];
   cas?: CasStore;
   assetSync?: AssetSyncService;
   /** v24 (DES-149): the two trigger-claim stores the register/deregister sequence calls into.
@@ -284,6 +293,7 @@ export class McpFacade {
   private readonly runConcurrency: number;
   private readonly gatewayAttempts?: number;
   private readonly confinementPosture?: 'confined' | 'unconfined';
+  private readonly aliasProbes?: () => readonly AliasProbeInfo[];
   private readonly cas?: CasStore;
   // Not readonly: `AssetSyncService` needs the server's bound port for `selfBind` (server.ts
   // constructs it AFTER `http.listen()`, well after the facade). `bindAssetSync` lets the
@@ -306,6 +316,7 @@ export class McpFacade {
     this.runConcurrency = deps.runConcurrency ?? DEFAULT_RUN_CONCURRENCY;
     this.gatewayAttempts = deps.gatewayAttempts;
     this.confinementPosture = deps.confinementPosture;
+    this.aliasProbes = deps.aliasProbes;
     this.cas = deps.cas;
     this.assetSync = deps.assetSync;
     this.diagramCache = deps.diagramCache;
@@ -720,7 +731,23 @@ export class McpFacade {
     // v37 (DES-258 owner ruling, ARCH-181): `confinementPosture` travels the same way — this is
     // the LIVE tool response, so it states the posture actually measured on THIS deployment,
     // never the generic dual-posture text the generated static docs/AUTHORING.md falls back to.
-    return { runId: '', status: 'completed', result: { text: buildAuthoringGuide({ ...this.ceilings, aliases: [...this.aliasNames], runConcurrency: this.runConcurrency, confinementPosture: this.confinementPosture }) } };
+    // issue #89 item 6: `aliasProbes` is read FRESH on every call (a thunk, not a snapshot) — the
+    // weekly ModelProber rewrites probe results after boot, and this is the LIVE tool response.
+    // Absent `aliasProbes` (unit construction) reads as `[]`, which `chooseExampleModelAlias`
+    // resolves to `{alias: 'default'}` — byte-identical to the guide before this field existed.
+    return {
+      runId: '',
+      status: 'completed',
+      result: {
+        text: buildAuthoringGuide({
+          ...this.ceilings,
+          aliases: [...this.aliasNames],
+          runConcurrency: this.runConcurrency,
+          confinementPosture: this.confinementPosture,
+          exampleModelAlias: chooseExampleModelAlias(this.aliasProbes?.() ?? []),
+        }),
+      },
+    };
   }
 
   // ============================================================================================

@@ -245,3 +245,26 @@ describe('run_start refuses a caller-supplied principal — the guard behind run
     expect(Object.hasOwn(schema.properties, 'principal')).toBe(false);
   });
 });
+
+// issue #89 item 4: `workflow_publish`'s `channel` property is `{type:'string', enum:['release',
+// 'beta']}` and REQUIRED (`inputSchema`'s `required` array) — `call-tool.ts:228`'s ajv validation
+// runs BEFORE `facade.workflowPublish` is ever called (`call-tool.ts:241+`'s switch), so
+// `channel:'alpha'` is refused by ajv's own `must be equal to one of the allowed values` message,
+// as `INVALID_ARGUMENT` — `mcp-facade.ts:536`'s own `INVALID_CHANNEL` throw is UNREACHABLE from the
+// wire (confirmed: `facade.workflowPublish` has exactly one caller, `call-tool.ts`, always past
+// ajv). It stays live and tested for a DIRECT (non-wire) facade caller
+// (`tests/unit/facade-refusal-arms.test.ts`'s own pin) — this item only fixes what the TOOL
+// advertises a wire caller will see.
+describe('workflow_publish advertises the refusal a wire caller actually gets for a bad channel (issue #89 item 4)', () => {
+  it('errors[] lists INVALID_ARGUMENT, not the wire-unreachable INVALID_CHANNEL', () => {
+    const spec = TOOL_SPECS.find((s) => s.name === 'workflow_publish')!;
+    expect(spec.errors).toContain('INVALID_ARGUMENT');
+    expect(spec.errors).not.toContain('INVALID_CHANNEL');
+  });
+
+  it('the channel property\'s own description says an out-of-enum value is refused INVALID_ARGUMENT by schema validation', () => {
+    const spec = TOOL_SPECS.find((s) => s.name === 'workflow_publish')!;
+    const channelDesc = (spec.inputSchema as unknown as { properties: Record<string, { description?: string }> }).properties['channel']?.description ?? '';
+    expect(channelDesc).toMatch(/INVALID_ARGUMENT/);
+  });
+});

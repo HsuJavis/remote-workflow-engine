@@ -5,6 +5,7 @@
 // Mock policy: pure unit, no mocks needed — src/errors.ts has no external deps.
 import { describe, it, expect } from 'vitest';
 import { ERROR_CATALOG, codedError, toErrEnvelope, toErrorCode } from '../../src/errors.js';
+import { LOCKED_KEYS } from '../../src/params/contract.js';
 
 describe('ERROR_CATALOG — closed ErrorCode union (UT-138, DES-137)', () => {
   it('every literal codedError(\'X\', …) call site in src/ is a key of ERROR_CATALOG [T4]', () => {
@@ -62,5 +63,16 @@ describe('ERROR_CATALOG — closed ErrorCode union (UT-138, DES-137)', () => {
   // catalog hint was the one surface REQ-211 left un-fixed; pin it here so it cannot regress.
   it('VERSION_CEILING_EXCEEDED\'s hint names the actual call shape, like its two throw sites', () => {
     expect(ERROR_CATALOG.VERSION_CEILING_EXCEEDED.hint).toContain('workflow_deregister({name, version})');
+  });
+
+  // issue #89 item 1: PARAM_LOCKED's hint hand-typed six names and omitted `bash` — LOCKED_KEYS
+  // (params/contract.ts) has carried `bash` since issue #78(c), so the catalog and the validator
+  // it describes had drifted. Rendered from the SAME constant so a future LOCKED_KEYS edit cannot
+  // silently leave this hint stale again.
+  it('PARAM_LOCKED\'s hint names every LOCKED_KEYS member, including bash, rendered from the constant', () => {
+    for (const key of LOCKED_KEYS) {
+      expect(ERROR_CATALOG.PARAM_LOCKED.hint, `hint is missing "${key}"`).toContain(key);
+    }
+    expect(ERROR_CATALOG.PARAM_LOCKED.hint).toContain('bash');
   });
 });

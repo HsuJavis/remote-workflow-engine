@@ -336,14 +336,20 @@ export const TOOL_SPECS = [
     inputSchema: schema({
       name: { type: 'string' },
       version: { type: 'string', description: "The version string returned by workflow_register, e.g. 'v1'." },
-      channel: { type: 'string', enum: ['release', 'beta'], description: "Which pointer to move. 'release' is the channel a bare run_start resolves." },
+      // issue #89 item 4: `channel` is REQUIRED + a closed enum, so `call-tool.ts`'s ajv validation
+      // (schema BEFORE dispatch, DES-140) refuses an out-of-enum value before `workflowPublish` is
+      // ever called — verified: `facade.workflowPublish` has exactly one wire caller, `call-tool.ts`,
+      // always past ajv. `channel:'alpha'` is therefore refused `INVALID_ARGUMENT` ("/channel must be
+      // equal to one of the allowed values"), never `mcp-facade.ts`'s own `INVALID_CHANNEL` throw —
+      // that code stays live only for a DIRECT (non-wire) facade caller.
+      channel: { type: 'string', enum: ['release', 'beta'], description: "Which pointer to move. 'release' is the channel a bare run_start resolves. A value outside {release, beta} is refused INVALID_ARGUMENT by schema validation, before this tool ever runs." },
       // REQUIRED, per DES-114/ARCH-073's own drift lock (IT-087) — no v24 text retires it. The
       // facade still defaults an omitted channel to 'release' as defence for a direct (non-wire)
       // caller, but a caller reading the schema is told to name it: a silent default that sends the
       // publish to `beta_version` is what made this tool undriveable from its own advertisement.
     }, ['name', 'version', 'channel']),
     outputSchema: OUT,
-    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'INVALID_CHANNEL', 'NOT_WORKFLOW_OWNER', 'FORBIDDEN_ROLE'],
+    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'INVALID_ARGUMENT', 'NOT_WORKFLOW_OWNER', 'FORBIDDEN_ROLE'],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'workflow' } as AuthzRow,
     fixture: {
@@ -351,6 +357,10 @@ export const TOOL_SPECS = [
       errors: {
         WORKFLOW_NOT_FOUND: { name: ABSENT_WORKFLOW, version: 'v1', channel: 'release' },
         VERSION_NOT_FOUND: { name: ref('workflow'), version: 'v999', channel: 'release' },
+        // issue #89 item 4: exercises the ajv-schema refusal LIVE, so the v24 C-6 reverse lock
+        // (every refusal code observed from a live call is declared in that tool's errors[]) covers
+        // this row's INVALID_ARGUMENT the same way its other two fixtures already cover their codes.
+        INVALID_ARGUMENT: { name: ref('workflow'), version: ref('version'), channel: 'alpha' },
       },
     },
   },

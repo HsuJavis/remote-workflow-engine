@@ -11,6 +11,8 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { McpFacade } from './mcp-facade.js';
+// issue #89 item 6: the shape `aliasProbes` (below) reports to McpFacade.workflowAuthoringGuide().
+import type { AliasProbeInfo } from './authoring-guide.js';
 import { RunManager } from './run-manager.js';
 import { createEventSink } from './event-log.js';
 import { createSemaphore } from './agent-semaphore.js';
@@ -895,7 +897,16 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // — the SAME value the `buildToolDeps` door below already reads, set once at boot by `main.ts`'s
   // real probe; `undefined` on every test/zero-config boot, which the guide already treats as
   // "render both postures" (authoring-guide.ts's `hostPathGrantsBody`).
-  const facade = new McpFacade({ clock, store, runManager, validator, ceilings, cas, schedulerClaims: scheduler, webhookClaims: webhooks, aliasNames, diagramCache: diagrams, runConcurrency: config?.runConcurrency, gatewayAttempts, confinementPosture: config?.confinementPosture });
+  // issue #89 item 6: a THUNK over `aliasMap` (802) and `probeLookup` (821), both already in scope
+  // here — read fresh on every `workflow_authoring_guide` call, never snapshotted at boot, so the
+  // weekly ModelProber's rewritten results reach the guide without a restart.
+  const aliasProbes = (): AliasProbeInfo[] =>
+    Object.entries(aliasMap).map(([alias, target]) => ({
+      alias,
+      model: `${target.provider}/${target.model}`,
+      toolUseVerified: probeLookup(target.provider, target.model)?.toolUseVerified ?? null,
+    }));
+  const facade = new McpFacade({ clock, store, runManager, validator, ceilings, cas, schedulerClaims: scheduler, webhookClaims: webhooks, aliasNames, diagramCache: diagrams, runConcurrency: config?.runConcurrency, gatewayAttempts, confinementPosture: config?.confinementPosture, aliasProbes });
 
   // v24 (DES-139, ARCH-088, TASK-147): authorize()'s OwnerLookup is SYNC (a pure decision
   // function), while RunStore/WorkflowCatalog are async ports — a second connection to each

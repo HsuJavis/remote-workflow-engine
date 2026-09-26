@@ -3,13 +3,29 @@
 // alias in any example script. Written test-first (Gate 5, RED) — src/authoring-guide.ts does
 // not exist yet.
 import { describe, it, expect } from 'vitest';
-import { buildAuthoringGuide, GUIDE_EXAMPLES } from '../../src/authoring-guide.js';
+import { buildAuthoringGuide, GUIDE_EXAMPLES, chooseExampleModelAlias, type AliasProbeInfo } from '../../src/authoring-guide.js';
 import { SHAPES, EDGE_FORMS } from '../../src/check-mermaid.js';
 // v37 owner ruling on DES-258 (ARCH-181, ADR-083 posture C): the load-bearing correction test
 // below calls the REAL boot probe against THIS host, same precedent as UT-323b.
 import { probeConfinement } from '../../src/gateway/confinement-probe.js';
+// issue #89: cross-checks against the SAME constants/catalog the guide is supposed to render from
+// (never a second hand-typed copy in the test itself).
+import { LOCKED_KEYS } from '../../src/params/contract.js';
+import { ERROR_CATALOG } from '../../src/errors.js';
+import type { ScheduleStatus } from '../../src/scheduler.js';
+import type { WebhookView } from '../../src/webhook-registry.js';
 
 const CEILINGS = { maxTimeoutMs: 600000, maxAppendPromptBytes: 1024, maxEffort: 'high' as const, aliases: ['default', 'sonnet'], runConcurrency: 24 };
+
+// issue #89: bounds a "## <title>" section to its OWN text (never bleeding into every later
+// section) — the same slicing convention `toolSurfaceSection` (below) already uses, extracted so
+// the new item 1/2/5 assertions cannot pass by accident against unrelated later prose.
+function sectionOf(text: string, title: string): string {
+  const start = text.indexOf(title);
+  expect(start, `section "${title}" not found`).toBeGreaterThanOrEqual(0);
+  const next = text.indexOf('\n## ', start + 1);
+  return text.slice(start, next === -1 ? text.length : next);
+}
 
 describe('buildAuthoringGuide (UT-159, DES-157)', () => {
   it('a FAKE ceiling appears verbatim in the text (proves interpolation, not a hard-coded 600000)', () => {
@@ -556,5 +572,229 @@ describe('the guide teaches how declared skills reach the model (#81/#83)', () =
     expect(ex!.script).toMatch(/skills: \['repo-search'\]/);
     expect(ex!.script).toMatch(/allowedTools: \[\]/);
     expect(ex!.mermaid).toMatch(/tools: none/);
+  });
+});
+
+// issue #89 item 1: "Locked vs. tunable" hand-typed "six" while LOCKED_KEYS (params/contract.ts)
+// carries seven since issue #78(c) added `bash` — the count word must track the constant's own
+// length, not a literal that can silently go stale the next time LOCKED_KEYS grows or shrinks.
+describe('buildAuthoringGuide — "Locked vs. tunable" states the count word matching LOCKED_KEYS.length (issue #89 item 1)', () => {
+  const NUMBER_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
+
+  it('every LOCKED_KEYS member is listed, including bash', () => {
+    const text = buildAuthoringGuide(CEILINGS);
+    const section = sectionOf(text, 'Locked vs. tunable');
+    for (const key of LOCKED_KEYS) expect(section, `missing "${key}"`).toContain(key);
+  });
+
+  it('the number word immediately before "locked keys" matches LOCKED_KEYS.length (never a stale literal)', () => {
+    const text = buildAuthoringGuide(CEILINGS);
+    const m = /\b(\w+)\s+locked keys\b/i.exec(text);
+    expect(m, 'no "<word> locked keys" phrase found').not.toBeNull();
+    expect(m![1]!.toLowerCase()).toBe(NUMBER_WORDS[LOCKED_KEYS.length]);
+  });
+});
+
+// issue #89 item 2: the guide claimed EVERY out-of-ceiling value — declared default AND run-time
+// override alike — is refused PARAM_OUT_OF_RANGE. Verified against params/contract.ts: a
+// REGISTRATION-time declaration above a ceiling (effort/timeoutMs/appendPrompt `.default`) is
+// refused PARAM_CONTRACT_INVALID (validateOneAgentSpec's `invalid()` helper); only a RUN-TIME
+// `overrides` value outside the effective bound is PARAM_OUT_OF_RANGE (checkValueAgainstSpec, via
+// validateOneAgentOverride). DECISION (owner): keep the code behavior, fix the guide.
+describe('buildAuthoringGuide — "Engine ceilings" states PARAM_CONTRACT_INVALID at registration, PARAM_OUT_OF_RANGE only for a run-time override (issue #89 item 2)', () => {
+  const text = buildAuthoringGuide(CEILINGS);
+  const section = sectionOf(text, 'Engine ceilings (this deployment)');
+
+  it('states a declaration above a ceiling is refused PARAM_CONTRACT_INVALID at registration (exact phrase, not just present elsewhere in the section via the alias sentence)', () => {
+    expect(section).toMatch(/declaration[\s\S]{0,120}refused `PARAM_CONTRACT_INVALID`[\s\S]{0,40}registration/i);
+  });
+
+  it('states a run-time override outside the effective bound is the DIFFERENT code PARAM_OUT_OF_RANGE', () => {
+    expect(section).toMatch(/override[\s\S]{0,120}`PARAM_OUT_OF_RANGE`|`PARAM_OUT_OF_RANGE`[\s\S]{0,120}override/i);
+  });
+});
+
+// issue #89 item 3: VERIFIED IN CODE (not just per the issue's initial framing) — a schedule
+// firing's CONFINEMENT_UNAVAILABLE is thrown by RunManager.start() inside the ticker's dispatch
+// (server.ts's `ticker.start(...)` callback) and falls into the GENERIC `.catch()` there, which
+// calls `scheduler.markFailed(firing, code)` — server.ts's own comment says so explicitly ("a
+// thrown CONFINEMENT_UNAVAILABLE falls into the SAME generic .catch() below markFailed already
+// handles"). `markFailed` sets `lastError` (scheduler.ts), NEVER `refusalCount`/`lastRefusedAt`/
+// `lastRefusalReason` — those three are written only by `markRefused`, called from
+// `resolveScheduleTarget`'s OWN pre-dispatch reasons (UNCLAIMED/CHANNEL_UNPUBLISHED/
+// CLAIMED_WORKFLOW_MISSING/NOT_IN_RELEASE), which never include CONFINEMENT_UNAVAILABLE. So the
+// guide's ORIGINAL claim — "surfaced in schedule_list's lastError" — was ALREADY ACCURATE; the
+// issue's premise (drawn from the DIFFERENT, webhook-registry.ts:357-359 behavior, which DOES
+// special-case CONFINEMENT_UNAVAILABLE into the refusal trio) does not hold for schedules. DECISION
+// (this iteration, per re-verification): keep the guide's original `lastError` claim; the
+// scheduler/webhook asymmetry itself is a possible follow-up, reported, not fixed here.
+describe('buildAuthoringGuide — "Host path grants" names the field a schedule\'s CONFINEMENT_UNAVAILABLE actually lands in (issue #89 item 3, re-verified)', () => {
+  // Exhaustive (both directions, via a Record<keyof T, true>) so a future field rename/addition on
+  // either row shape is caught here rather than silently under-checked.
+  const SCHEDULE_FIELDS: Record<keyof ScheduleStatus, true> = {
+    id: true, kind: true, workflow: true, claimedBy: true, createdBy: true, createdRemote: true,
+    enabled: true, cron: true, tz: true, at: true, nextFire: true, lastFire: true, lastRunId: true,
+    lastError: true, refusalCount: true, lastRefusedAt: true, lastRefusalReason: true,
+  };
+  const WEBHOOK_FIELDS: Record<keyof WebhookView, true> = {
+    id: true, workflow: true, createdBy: true, enabled: true, secretFingerprint: true,
+    refusalCount: true, lastRefusedAt: true, lastRefusalReason: true, createdRemote: true,
+  };
+
+  it('the unconfined body attributes a schedule firing\'s refusal to lastError, matching the ACTUAL markFailed/lastError code path (not the refusal trio)', () => {
+    const text = buildAuthoringGuide({ ...CEILINGS, confinementPosture: 'unconfined' });
+    const section = text.slice(text.search(/host path grants/i));
+    expect(section).toContain("schedule_list`'s `lastError`");
+  });
+
+  it('every field the guide attributes to schedule_list/webhook_list actually exists on that tool\'s own output row', () => {
+    const text = buildAuthoringGuide({ ...CEILINGS, confinementPosture: 'unconfined' });
+    const attributedTo = (toolName: string): string[] => {
+      const m = new RegExp('`' + toolName + '`\\\'s ([^)]+)\\)').exec(text);
+      if (!m) return [];
+      return [...m[1]!.matchAll(/`([a-zA-Z]+)`/g)].map((x) => x[1]!);
+    };
+    const scheduleFields = attributedTo('schedule_list');
+    expect(scheduleFields.length, 'expected schedule_list to be attributed at least one field').toBeGreaterThan(0);
+    for (const f of scheduleFields) expect(Object.keys(SCHEDULE_FIELDS), `schedule_list has no field "${f}"`).toContain(f);
+    for (const f of attributedTo('webhook_list')) expect(Object.keys(WEBHOOK_FIELDS), `webhook_list has no field "${f}"`).toContain(f);
+  });
+});
+
+// issue #89 item 5: the "Canonical diagram" rule 3 said the tools `<br/>` segment "may carry" the
+// tool surface, implying it is ALWAYS optional. It is not: checkMermaid's checkTools (rule 12)
+// compares it whenever the agent() call declares a LITERAL `allowedTools` (including `[]`) and
+// refuses TOOLS_MISMATCH for a bare node in that case — it is only skipped when the call declares
+// no `allowedTools` key at all. DECISION (owner): keep checker strictness, fix the guide's claim.
+describe('buildAuthoringGuide — "Canonical diagram" rule 3 states the tools segment is REQUIRED whenever allowedTools is a literal list (issue #89 item 5)', () => {
+  const text = buildAuthoringGuide(CEILINGS);
+  const section = sectionOf(text, 'Canonical diagram');
+
+  it('states the segment is required (not "may carry") when allowedTools is a literal array, including []', () => {
+    expect(section).toMatch(/required/i);
+    expect(section).toMatch(/allowedTools: \[\]|empty array/i);
+    expect(section).toMatch(/TOOLS_MISMATCH/);
+  });
+
+  it('states the segment is optional and skipped ONLY when the call declares no allowedTools key at all', () => {
+    expect(section).toMatch(/no `allowedTools`|declares no allowedTools/i);
+    expect(section).toMatch(/tools: default/);
+  });
+});
+
+// issue #89 item 6: every guide example (and the "Declaring the parameter contract" prose example)
+// hard-codes `model.default: 'default'`. On a deployment where the 'default' alias resolves to a
+// tool-incapable model (probed toolUseVerified:false), a cold author copying an example gets a
+// silently tool-incapable agent. DECISION (owner): never hard-code a second alias literal — render
+// the choice, at guide-render time, from this deployment's OWN alias probe data.
+describe('chooseExampleModelAlias — pure decision over alias probe data (issue #89 item 6)', () => {
+  it('keeps \'default\' with no note when its probe is verified tool-capable', () => {
+    const probes: AliasProbeInfo[] = [{ alias: 'default', model: 'anthropic/claude-sonnet-5', toolUseVerified: true }];
+    expect(chooseExampleModelAlias(probes)).toEqual({ alias: 'default' });
+  });
+
+  it('keeps \'default\' with no note when it has never been probed (null = no data, not a defect)', () => {
+    const probes: AliasProbeInfo[] = [{ alias: 'default', model: 'anthropic/claude-sonnet-5', toolUseVerified: null }];
+    expect(chooseExampleModelAlias(probes)).toEqual({ alias: 'default' });
+  });
+
+  it('keeps \'default\' with no note when no alias table is configured at all (empty input)', () => {
+    expect(chooseExampleModelAlias([])).toEqual({ alias: 'default' });
+  });
+
+  it('switches to a DIFFERENT verified alias and names both models when \'default\' probes tool-incapable', () => {
+    const probes: AliasProbeInfo[] = [
+      { alias: 'default', model: 'ollama/qwen2.5:7b', toolUseVerified: false },
+      { alias: 'sonnet', model: 'anthropic/claude-sonnet-5', toolUseVerified: true },
+    ];
+    const result = chooseExampleModelAlias(probes);
+    expect(result.alias).toBe('sonnet');
+    expect(result.note).toBeDefined();
+    expect(result.note).toMatch(/default/);
+    expect(result.note).toMatch(/ollama\/qwen2\.5:7b/);
+    expect(result.note).toMatch(/sonnet/);
+    expect(result.note).toMatch(/tool-incapable|toolUseVerified.*false|not.*tool/i);
+  });
+
+  it('picks deterministically (name order) among several verified alternatives, preferring a non-dated-looking name', () => {
+    const probes: AliasProbeInfo[] = [
+      { alias: 'default', model: 'ollama/qwen2.5:7b', toolUseVerified: false },
+      { alias: 'zeta', model: 'anthropic/claude-opus-4-5', toolUseVerified: true },
+      { alias: 'claude-sonnet-5-20260101', model: 'anthropic/claude-sonnet-5', toolUseVerified: true },
+      { alias: 'alpha', model: 'anthropic/claude-haiku-4-5', toolUseVerified: true },
+    ];
+    // 'alpha' sorts first AND does not look like a dated id — the documented deterministic choice.
+    expect(chooseExampleModelAlias(probes).alias).toBe('alpha');
+  });
+
+  it('keeps \'default\' and still emits a visible warning note when NO alias is verified tool-capable', () => {
+    const probes: AliasProbeInfo[] = [
+      { alias: 'default', model: 'ollama/qwen2.5:7b', toolUseVerified: false },
+      { alias: 'other', model: 'ollama/llama3:8b', toolUseVerified: false },
+    ];
+    const result = chooseExampleModelAlias(probes);
+    expect(result.alias).toBe('default');
+    expect(result.note).toBeDefined();
+    expect(result.note).toMatch(/tool-incapable|not.*verified|toolUseVerified/i);
+  });
+});
+
+describe('buildAuthoringGuide — renders the chosen example model alias at RENDER time, without mutating GUIDE_EXAMPLES (issue #89 item 6)', () => {
+  it('with no exampleModelAlias in ceilings, every example and the prose sample still say \'default\' (back-compat: gen-authoring-md.ts, IT-118 registration corpus)', () => {
+    const text = buildAuthoringGuide(CEILINGS);
+    expect(text).toMatch(/default: 'default'/);
+    // Only the examples that declare at least one agent() have a model default to check — the two
+    // pure workflow()-delegation examples declare `agents: {}` and have none.
+    const withAgents = GUIDE_EXAMPLES.filter((ex) => ex.script.includes("default: '"));
+    expect(withAgents.length).toBeGreaterThan(0);
+    expect(withAgents.every((ex) => ex.script.includes("default: 'default'"))).toBe(true);
+  });
+
+  it('with a chosen alias + note, the rendered examples and prose sample use the CHOSEN alias, and a visible note explains why', () => {
+    const text = buildAuthoringGuide({
+      ...CEILINGS,
+      exampleModelAlias: { alias: 'sonnet', note: "'default' on this deployment resolves to ollama/qwen2.5:7b, probed tool-incapable — examples below use 'sonnet' instead." },
+    });
+    expect(text).toContain("'default' on this deployment resolves to ollama/qwen2.5:7b, probed tool-incapable");
+    const registeredSection = text.slice(text.indexOf('Registered examples'));
+    expect(registeredSection).toContain("default: 'sonnet'");
+    expect(registeredSection).not.toContain("default: 'default'");
+  });
+
+  it('GUIDE_EXAMPLES itself is never mutated by rendering with a different chosen alias (still the fixed IT-118 conformance corpus)', () => {
+    const before = JSON.stringify(GUIDE_EXAMPLES);
+    buildAuthoringGuide({ ...CEILINGS, exampleModelAlias: { alias: 'sonnet' } });
+    expect(JSON.stringify(GUIDE_EXAMPLES)).toBe(before);
+  });
+});
+
+// issue #89 (cheap guard for the whole defect class): every UPPER_SNAKE, error-code-shaped token in
+// the rendered guide must be a real ERROR_CATALOG key, OR be explicitly allowlisted below as a
+// genuine non-code (a warning code, a sub-violation detail code, a script-side sandbox guard code,
+// or an internal checkMermaid Rule label that RULE_CODE remaps to a real ErrorCode before the wire
+// — none of these live in the closed tool-call ErrorCode union ERROR_CATALOG governs).
+describe('buildAuthoringGuide — every error-code-shaped token is a real ERROR_CATALOG key or an explicit non-code (issue #89 drift guard)', () => {
+  // Genuine non-codes, each with why it is not an ERROR_CATALOG member:
+  const NON_CODES = new Set([
+    'VALUE_MISMATCH', // checkMermaid Rule label; RULE_CODE remaps it to MERMAID_INVALID on the wire
+    'COLLAPSED_EDGE', // same — remaps to MERMAID_INVALID
+    'DETERMINISM_GUARD', // a SCRIPT-thrown GuardError code (sandbox/guards.ts) — script-error
+    // namespace, never routed through toErrEnvelope/ERROR_CATALOG
+    'BASH_MODE_INVALID', // workflow_register SCAN_VIOLATION detail.violations[].code
+    'BASH_READONLY_CONFLICT', // same
+    'BASH_SUBSUMES_FILE_TOOLS', // a non-fatal result.warnings[].code, not a refusal code
+    'MODEL_TOOL_USE_UNVERIFIED', // a non-fatal run_start warnings[].code, not a refusal code
+    'BASH_READONLY_UNENFORCEABLE', // a harness-record / warnings[].code, not a top-level refusal
+  ]);
+
+  it('every UPPER_SNAKE token adjacent to "refused"/"warns"/backtick code style resolves to ERROR_CATALOG or the explicit allowlist', () => {
+    const text = buildAuthoringGuide(CEILINGS);
+    const tokens = [...new Set(text.match(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/g) ?? [])];
+    const unexplained = tokens.filter((t) => !Object.hasOwn(ERROR_CATALOG, t) && !NON_CODES.has(t));
+    expect(unexplained, `unexplained UPPER_SNAKE token(s): ${unexplained.join(', ')}`).toEqual([]);
+  });
+
+  it('the allowlist itself stays exact — no stale entry that has since become a real ERROR_CATALOG key', () => {
+    for (const code of NON_CODES) expect(Object.hasOwn(ERROR_CATALOG, code), `${code} is now a real ERROR_CATALOG key — remove it from NON_CODES`).toBe(false);
   });
 });
