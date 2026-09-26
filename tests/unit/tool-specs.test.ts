@@ -116,6 +116,14 @@ describe('workspace_delete/workspace_push kind and scope are closed enums, not b
     expect(pushModeB.properties.kind.enum).toEqual(['skill', 'mcp']);
     expect(pushModeB.properties.scope.enum).toEqual(['workflow', 'global']);
   });
+
+  // Issue #92 part B/C follow-up: workspace_list.kind was the one sibling still left as a bare
+  // string — a junk kind reached the handler and answered an empty list rather than
+  // INVALID_ARGUMENT (workspace_list has no `scope` argument at all, so only `kind` applies here).
+  it('workspace_list.kind is the same closed enum', () => {
+    const props = (TOOL_SPECS.find((s) => s.name === 'workspace_list')!.inputSchema as any).properties;
+    expect(props.kind.enum).toEqual(['skill', 'mcp']);
+  });
 });
 
 // UT-266 (v33, REQ-201, TASK-227, DES-222, ARCH-087/091): two SERVED descriptions must teach the

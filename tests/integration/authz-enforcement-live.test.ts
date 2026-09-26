@@ -17,10 +17,15 @@ import Database from 'better-sqlite3';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { TokenStore } from '../../src/auth/token-store.js';
+import { FakeMcpProbe } from '../../src/mcp-probe.js';
 
 const ALICE = 'alice@example.com';
 const BOB = 'bob@example.com';
 const ROOT = 'root@example.com';
+// Deliberately UNLISTED in `principals` below — gets the server's hardcoded `defaultRole: 'user'`,
+// the lowest role there is. Issue #92 part B/C follow-up's reproduction needs exactly this: the
+// weakest possible principal, to prove the bypass required no elevated role at all.
+const CAROL = 'carol@example.com';
 const WF = 'it124-owned';
 
 let server: Server;
@@ -28,6 +33,7 @@ let tmpDir: string;
 let aliceToken: string;
 let bobToken: string;
 let rootToken: string;
+let carolToken: string;
 
 function mintBearer(workRoot: string, email: string): string {
   const db = new Database(join(workRoot, 'auth-tokens.db'));
@@ -58,10 +64,15 @@ beforeAll(async () => {
     workRoot: tmpDir,
     auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it124-cid', googleClientSecret: 'it124-cs' },
     principals: { [ALICE]: { role: 'author' }, [BOB]: { role: 'author' }, [ROOT]: { role: 'admin' } },
+    // Issue #92 part B/C follow-up: a fake probe (never real network/process I/O) so a real
+    // `kind:'mcp'` workspace_push can reach the catalog write in this suite.
+    mcpProbe: new FakeMcpProbe(true),
+    mcpEgressAllowlist: ['https://example.com/'],
   } as never);
   aliceToken = mintBearer(tmpDir, ALICE);
   bobToken = mintBearer(tmpDir, BOB);
   rootToken = mintBearer(tmpDir, ROOT);
+  carolToken = mintBearer(tmpDir, CAROL);
   const reg = await callTool('workflow_register', { name: WF, script: 'return "hello";', mermaid: 'graph LR' }, aliceToken);
   expect(reg['error']).toBeUndefined();
   const pub = await callTool('workflow_publish', { name: WF, version: `v${reg['version'] as number}`, channel: 'release' }, aliceToken);
@@ -149,6 +160,25 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
     const list = await callTool('workspace_list', { workflow: WF, kind: 'skill' }, aliceToken);
     const rows = (list['result'] ?? list) as Array<{ name: string }>;
     expect(rows.some((r) => r.name === 'it124-global-skill')).toBe(true);
+  });
+
+  // Issue #92 part B/C follow-up: the SAME gap, on the PUSH side, is worse — there is no on-disk
+  // step to throw first, and `pushMode()` (tool-specs.ts) resolves an arg set naming neither
+  // `scope:'global'` nor `workflow` to `'invalid'` (role-only, `minRole:'user'`), so ANY
+  // authenticated principal — not even `author`, let alone `admin` — reaches the facade with it.
+  // carol here is UNLISTED in `principals` (defaultRole 'user', the lowest role this engine has).
+  // Reproduced first against the server.ts adapter hardening ALONE (committed earlier this issue):
+  // that alone already stops the SILENT global write, turning it into an INTERNAL_ERROR with the
+  // row never created — a fail-safe, but not the contract (`INVALID_ARGUMENT`, arg-shape refused
+  // before assetSync is ever touched). This pins the real contract end-to-end.
+  it('workspace_push(kind:"mcp") naming neither scope:"global" nor workflow never falls through to the global scope, even for the lowest role there is (issue #92 part B/C follow-up)', async () => {
+    const push = await callTool('workspace_push', { kind: 'mcp', name: 'carol-mcp', config: { url: 'https://example.com/x' } }, carolToken);
+    expect(codeOf(push)).toBe('INVALID_ARGUMENT');
+
+    // ...and nothing landed as a global row a normal author would see alongside their own.
+    const list = await callTool('workspace_list', { workflow: WF, kind: 'mcp' }, aliceToken);
+    const rows = (list['result'] ?? list) as Array<{ name: string }>;
+    expect(rows.some((r) => r.name === 'carol-mcp')).toBe(false);
   });
 
   it('an admin cross-principal read of run_result is ALLOWED and AUDITED, and the owner sees it in run_status.adminReads[]', async () => {

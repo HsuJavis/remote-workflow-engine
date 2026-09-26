@@ -772,7 +772,10 @@ export const TOOL_SPECS = [
   {
     name: 'workspace_list', entity: 'workspace', key: null,
     description: "List files in a run's workspace, or an asset's files under a workflow.",
-    inputSchema: schema({ runId: { type: 'string' }, workflow: { type: 'string' }, kind: { type: 'string' } }),
+    // Issue #92 part B/C follow-up: closed enum of the actually-supported AssetKind values — same
+    // reasoning as workspace_delete/workspace_push (a bare {type:'string'} let a junk `kind` reach
+    // the handler and answer an empty list rather than INVALID_ARGUMENT).
+    inputSchema: schema({ runId: { type: 'string' }, workflow: { type: 'string' }, kind: { type: 'string', enum: ['skill', 'mcp'] } }),
     outputSchema: OUT,
     errors: ['RUN_NOT_FOUND', 'WORKFLOW_NOT_FOUND', 'NOT_RUN_OWNER', 'NOT_WORKFLOW_OWNER'],
     seeAlso: [] as string[],

@@ -32,7 +32,7 @@ import { isAllowedHost, isAllowedOrigin, isLoopback, isLoopbackPeer } from './ne
 import { parseWorkflowSkeleton, scanAgentCalls } from './workflow-meta.js';
 import { deriveExpectedGraph } from './skeleton-graph.js';
 import { tick, RealTicker, type Ticker } from './scheduler-engine.js';
-import { AssetSyncService, defaultAssetRoot, globalAssetRoot, migrateLegacyGlobalAssets, resolveMcp, type AssetCatalogPort, type AssetCatalogRow, type AssetKind } from './asset-sync.js';
+import { AssetSyncService, defaultAssetRoot, globalAssetRoot, migrateLegacyGlobalAssets, resolveMcp, type AssetCatalogPort, type AssetCatalogRow, type AssetKind, type AssetScope } from './asset-sync.js';
 import { RealMcpProbe, type McpProbe } from './mcp-probe.js';
 import { IssueReporter, resolveEngineVersion, type IssueReportInput, type IssueListFilter, type IssuesListView } from './github/issue-reporter.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
@@ -647,6 +647,23 @@ async function handleDashboardRequest(
     console.warn(JSON.stringify({ event: 'dashboard_api_degraded', route: path, reason: 'internal', detail: (err as Error).message }));
     sendJson(res, 200, buildDashboardModel([], undefined, undefined, (err as Error).message));
   }
+}
+
+/** Issue #92 part B/C: the ONE place that turns `{scope, workflow}` into the `assets.workflow`
+ *  column value the catalog stores under (`''` is ARCH-098's own global-scope sentinel). Every
+ *  `assetCatalogPort` write/delete below goes through this — `putAsset`/`deleteAsset` used to each
+ *  inline `row.scope === 'global' ? '' : (row.workflow ?? '')`, which silently mapped a MISSING
+ *  workflow name to the SAME sentinel a real `scope:'global'` produces. The facade (`mcp-facade.ts`
+ *  `workspacePush`/`workspaceDelete`) is supposed to refuse that arg shape INVALID_ARGUMENT before
+ *  it ever reaches here — this is the second, independent layer: an `undefined` workflow at a
+ *  non-global scope is an INVARIANT violation, not a silent alias for global, so it throws rather
+ *  than defaulting. Exported so the invariant is unit-testable without booting a server. */
+export function assetWorkflowColumn(scope: AssetScope, workflow: string | undefined): string {
+  if (scope === 'global') return '';
+  if (workflow === undefined) {
+    throw new Error('assetCatalogPort: a workflow-scoped asset row/criteria carries no workflow name (internal invariant violation — the facade should have refused this before it reached the catalog)');
+  }
+  return workflow;
 }
 
 /** Start the MCP Streamable HTTP server. Resolves when listening. */
@@ -1656,7 +1673,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   const assetCatalogPort: AssetCatalogPort = {
     putAsset(row) {
       catalog.putAsset({
-        workflow: row.scope === 'global' ? '' : (row.workflow ?? ''),
+        workflow: assetWorkflowColumn(row.scope, row.workflow),
         kind: row.kind, name: row.name, pushedBy: row.pushedBy ?? null, pushedAt: row.pushedAt,
         config: row.config ? JSON.stringify(row.config) : null,
       });
@@ -1665,7 +1682,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       // Issue #92 part B: `WorkflowCatalog.deleteAsset` already returns `{deleted}` — this adapter
       // used to discard it (a bare statement, no `return`), which is why `workspace_delete` could
       // never answer anything but a hardcoded `true`.
-      return catalog.deleteAsset(c.scope === 'global' ? '' : (c.workflow ?? ''), c.kind, c.name);
+      return catalog.deleteAsset(assetWorkflowColumn(c.scope, c.workflow), c.kind, c.name);
     },
     async listAssets(): Promise<AssetCatalogRow[]> {
       const workflows = await catalog.list();

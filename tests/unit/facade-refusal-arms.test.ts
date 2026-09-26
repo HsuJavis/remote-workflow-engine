@@ -118,6 +118,23 @@ describe('McpFacade refusal arms (UT-163)', () => {
     expect(res['code']).toBe('INVALID_ARGUMENT');
     expect(called).toBe(false);
   });
+
+  // Issue #92 part B/C follow-up: the exact same gap on the PUSH side. `workspacePush` computes
+  // `scope = a.scope === 'global' ? 'global' : 'workflow'` — an arg set naming NEITHER `scope:
+  // 'global'` NOR `workflow` still resolves to `'workflow'`, and the request sent to `assetSync.
+  // push` then carries `workflow: undefined`. Before the server.ts adapter hardening (this same
+  // issue), that `undefined` silently became the GLOBAL-scope sentinel — a `kind:'mcp'` push with
+  // no on-disk step to fail on would land as a global row under `pushMode()`'s role-only `'invalid'`
+  // row (any authenticated principal, not just admin). Pinned here as a unit guard, mirroring the
+  // delete-side fix above: assetSync.push must never be reached for this shape.
+  it('workspacePush refuses INVALID_ARGUMENT when neither scope:"global" nor workflow is given — never silently defaults to the global scope', async () => {
+    let called = false;
+    facade.bindAssetSync({ push: async () => { called = true; return { stored: 'x' }; } } as never);
+    const res = await facade.workspacePush({ kind: 'mcp', name: 'x', config: { url: 'https://example.com' } }, OPEN) as Record<string, unknown>;
+    expect(res['status']).toBe('failed');
+    expect(res['code']).toBe('INVALID_ARGUMENT');
+    expect(called).toBe(false);
+  });
 });
 
 describe('WorkflowCatalog non-default arms (UT-163)', () => {
