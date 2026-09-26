@@ -57,6 +57,86 @@ export interface GuideCeilings {
    *  `ServerConfig` field (ARCH-177's rule against opening one for a value nobody reads stands,
    *  uncorrected: this value already has a reader). */
   confinementPosture?: 'confined' | 'unconfined';
+  /** issue #89 item 6: which model alias the "Declaring the parameter contract" prose sample and
+   *  every `GUIDE_EXAMPLES` entry declares as `model.default`, PLUS a one-line note explaining why —
+   *  computed by `chooseExampleModelAlias()` below, over this deployment's OWN alias probe data
+   *  (server.ts's `aliasMap`/`probeLookup`, threaded through `McpFacade.workflowAuthoringGuide()`).
+   *  `undefined` (the unit-construction / `scripts/gen-authoring-md.ts` default, which has no probe
+   *  store to read) renders every example's literal `'default'`, unchanged from before this field
+   *  existed — this is a pure interpolation input, never computed inside this file. */
+  exampleModelAlias?: { alias: string; note?: string };
+}
+
+/** issue #89 item 6: one configured alias's probe status, as far as `chooseExampleModelAlias` needs
+ *  to know it — never the full `ProbeResult`/`AliasMap` shape, so this file does not need to import
+ *  the gateway/model-probe modules just to describe a decision over their data. `model` is used only
+ *  to NAME the resolved model in the visible note (`"'<provider>/<model>'"`); absent is rendered as
+ *  "an unlisted model". `toolUseVerified: null` means "never probed" — NOT a defect, treated the
+ *  same as `true` (no evidence the model can't use tools is not evidence that it can't). */
+export interface AliasProbeInfo {
+  alias: string;
+  model?: string;
+  toolUseVerified: boolean | null;
+}
+
+/** issue #89 item 6: pure decision — which model alias every guide example/prose sample declares.
+ *  DECISION (owner): never hard-code a second alias literal. If `'default'` is absent, unprobed, or
+ *  probed tool-CAPABLE, keep it (no note — the common case stays silent). If `'default'` is probed
+ *  tool-INCAPABLE, switch to the first OTHER alias probed tool-capable, chosen deterministically by
+ *  name order with a mild preference for a name that does not look like a dated model id (a run of
+ *  6+ digits, e.g. `claude-sonnet-5-20260101`) — a human-chosen alias name reads better in an example
+ *  than a machine-generated one, and this is the simplest rule that expresses that preference without
+ *  guessing at every possible id shape. If no OTHER alias is verified either, keep `'default'` anyway
+ *  (there is nothing better to switch to) but still emit the warning note — a cold author needs to
+ *  know the example they are about to copy is not verified, even with no fix on offer. */
+export function chooseExampleModelAlias(aliasProbes: readonly AliasProbeInfo[]): { alias: string; note?: string } {
+  const looksDated = (name: string): boolean => /\d{6,}/.test(name);
+  const byName = (a: AliasProbeInfo, b: AliasProbeInfo): number => a.alias.localeCompare(b.alias);
+
+  const dflt = aliasProbes.find((a) => a.alias === 'default');
+  if (dflt === undefined || dflt.toolUseVerified !== false) return { alias: 'default' };
+
+  const dfltModel = dflt.model ?? 'an unlisted model';
+  const verifiedOthers = aliasProbes.filter((a) => a.alias !== 'default' && a.toolUseVerified === true).sort(byName);
+  const preferred = verifiedOthers.find((a) => !looksDated(a.alias)) ?? verifiedOthers[0];
+
+  if (preferred === undefined) {
+    return {
+      alias: 'default',
+      // "in this guide", not "below" — the note is emitted in TWO places (right after the first
+      // worked example in "Declaring the parameter contract", and again before "Registered
+      // examples"), so a fixed relative direction would be wrong at one of them.
+      note: `Every example in this guide declares \`model: { default: 'default' }\` — on THIS ` +
+        `deployment 'default' resolves to ${dfltModel}, whose last probe reports ` +
+        'toolUseVerified:false, and no other configured alias is verified tool-capable either. ' +
+        'Copying an example whose agent holds tools may answer with prose instead of a real tool call.',
+    };
+  }
+  return {
+    alias: preferred.alias,
+    note: `Every example in this guide declares \`model: { default: '${preferred.alias}' }\`, not ` +
+      `\`'default'\` — on THIS deployment 'default' resolves to ${dfltModel}, whose last probe ` +
+      `reports toolUseVerified:false; \`'${preferred.alias}'\` is the first configured alias probed ` +
+      'tool-capable, chosen so the examples in this guide actually work as written.',
+  };
+}
+
+/** issue #89 item 6: substitutes the RENDERED model alias into a COPY of `examples` — never mutates
+ *  `GUIDE_EXAMPLES` itself, which stays the fixed corpus `tests/integration/guide-examples-register
+ *  .test.ts` (IT-118) registers against a `DEFAULT_ALIASES` test server, and every other test that
+ *  imports the constant directly. A no-op when `alias === 'default'` (the overwhelmingly common
+ *  case, and what every pre-existing caller of `buildAuthoringGuide` still gets). The two literal
+ *  patterns substituted are exactly what `agentSpec`/`stadiumNode` above emit for the 'default'
+ *  alias — `default: 'default'` in a script, `default · ` right after `<br/>` in a diagram label —
+ *  neither pattern appears anywhere else in a generated example (the 'default'-tools case renders as
+ *  `tools: default`, with no trailing middot, so it is never touched by the second replacement). */
+function withExampleModelAlias(examples: readonly GuideExample[], alias: string): GuideExample[] {
+  if (alias === 'default') return [...examples];
+  return examples.map((ex) => ({
+    ...ex,
+    script: ex.script.replaceAll("default: 'default'", `default: '${alias}'`),
+    mermaid: ex.mermaid.replaceAll('default · ', `${alias} · `),
+  }));
 }
 
 export interface GuideExample {
@@ -343,6 +423,14 @@ function section(title: string, body: string): string {
   return `## ${title}\n\n${body}`;
 }
 
+// issue #89 item 1: the "Locked vs. tunable" section used to hand-type "six" while LOCKED_KEYS
+// (params/contract.ts) grew a seventh member (`bash`, issue #78(c)) — the count word must track the
+// constant's own length so a future LOCKED_KEYS edit cannot silently leave the prose stale again.
+const NUMBER_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
+function numberWord(n: number): string {
+  return NUMBER_WORDS[n] ?? String(n);
+}
+
 // v37 (DES-258 owner ruling 2026-09-22, ARCH-181, ADR-083 posture C): the "Host path grants"
 // section used to state fact (a) — "Bash may write inside the run workspace and nowhere else" —
 // unconditionally, which is FALSE on a deployment whose boot probe measures 'unconfined' (this
@@ -370,6 +458,17 @@ const HOST_PATH_GRANTS_UNCONFINED =
   "version's registering submission was remote — `run_start`/`run_resume` (a remote MCP caller, " +
   'or a LOCAL caller naming a workflow version that was itself registered remotely), a webhook ' +
   'delivery (`POST /hooks/:id` → HTTP 403), and a schedule firing (surfaced in ' +
+  // issue #89 item 3: RE-VERIFIED against server.ts's ticker driver (not just the issue's initial
+  // framing) — a schedule firing's CONFINEMENT_UNAVAILABLE is thrown by RunManager.start() and
+  // falls into the ticker's GENERIC `.catch()`, which calls `scheduler.markFailed(firing, code)`
+  // (server.ts's own comment: "a thrown CONFINEMENT_UNAVAILABLE falls into the SAME generic
+  // .catch() below markFailed already handles"). `markFailed` sets `lastError` — never the
+  // refusalCount/lastRefusedAt/lastRefusalReason trio, which `markRefused` writes only for
+  // resolveScheduleTarget's OWN pre-dispatch reasons (UNCLAIMED/CHANNEL_UNPUBLISHED/
+  // CLAIMED_WORKFLOW_MISSING/NOT_IN_RELEASE — never CONFINEMENT_UNAVAILABLE). So `lastError` is the
+  // ACCURATE claim here, unlike a webhook delivery's CONFINEMENT_UNAVAILABLE (webhook-registry.ts
+  // DOES special-case it into that same trio) — the two admission routes genuinely differ; this is
+  // not a copy-paste of one onto the other.
   '`schedule_list`\'s `lastError`) all return `CONFINEMENT_UNAVAILABLE` instead of admitting ' +
   'Bash-capable work — this is a rule about every admission route this posture gates, not a ' +
   'fixed list of tool names.';
@@ -430,8 +529,11 @@ function authoringErrorRows(): string {
     .join('\n');
 }
 
-function exampleRows(): string {
-  return GUIDE_EXAMPLES.map(
+// issue #89 item 6: takes the examples to render as a parameter (the RENDERED, alias-substituted
+// copy from `withExampleModelAlias`) rather than reading `GUIDE_EXAMPLES` off module scope, so the
+// substitution above is the only place that decides which alias appears.
+function exampleRows(examples: readonly GuideExample[]): string {
+  return examples.map(
     (ex) =>
       `### ${ex.title}\n\n\`\`\`js\n${ex.script}\n\`\`\`\n\nMermaid:\n\n\`\`\`\n${ex.mermaid}\n\`\`\``,
   ).join('\n\n');
@@ -509,6 +611,11 @@ function edgeRows(): string {
  *  codes, the ten examples) is read from its own module, never re-typed here. */
 export function buildAuthoringGuide(ceilings: GuideCeilings): string {
   const parts: string[] = [];
+  // issue #89 item 6: the alias every example/prose sample declares — 'default' with no note unless
+  // the caller (McpFacade.workflowAuthoringGuide) computed a different one via
+  // chooseExampleModelAlias(). Read once here; both use sites below share it.
+  const exampleAlias = ceilings.exampleModelAlias?.alias ?? 'default';
+  const exampleAliasNote = ceilings.exampleModelAlias?.note;
 
   parts.push('# Authoring a workflow script');
   parts.push(
@@ -583,11 +690,16 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "  description: 'Summarize the given topic in one paragraph',\n" +
         '  params: {\n' +
         '    agents: {\n' +
-        "      writer: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },\n" +
+        `      writer: { model: { type: 'string', default: '${exampleAlias}' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },\n` +
         '    },\n' +
         '  },\n' +
         '};\n' +
         '```\n\n' +
+        // issue #89 item 6: this is the FIRST worked example a cold author copies — if
+        // chooseExampleModelAlias() switched the alias away from 'default', the note explaining why
+        // has to land here too, not only far below at "Registered examples" (this is otherwise the
+        // one spot where the substitution would look unexplained).
+        (exampleAliasNote ? `${exampleAliasNote}\n\n` : '') +
         // issues #81/#83: nothing said how a declared skill is activated, and the only example
         // paired one with file tools — authors could not tell a skill never reached the model.
         '**Skills.** `skills: [name, ...]` names skills pushed with `workspace_push` (`kind: \'skill\'`). ' +
@@ -713,8 +825,8 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
   parts.push(
     section(
       'Locked vs. tunable',
-      `The six locked keys are engine-owned and can never be overridden by a caller: ` +
-        `${LOCKED_KEYS.join(', ')}. The four tunable keys an override may target, per declared agent ` +
+      `The ${numberWord(LOCKED_KEYS.length)} locked keys are engine-owned and can never be overridden by a caller: ` +
+        `${LOCKED_KEYS.join(', ')}. The ${numberWord(TUNABLE_KEYS.length)} tunable keys an override may target, per declared agent ` +
         `label, are: ${TUNABLE_KEYS.join(', ')}.`,
     ),
   );
@@ -726,8 +838,16 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         `deployment's engine may render different numbers here: a declared agent's \`timeoutMs.default\` may ` +
         `not exceed ${ceilings.maxTimeoutMs}ms, a declared \`appendPrompt.default\` may not exceed ` +
         `${ceilings.maxAppendPromptBytes} bytes, and a declared \`effort.default\` may not rank above ` +
-        `'${ceilings.maxEffort}'. A declaration above any of these ceilings is refused ` +
-        '`PARAM_OUT_OF_RANGE` at registration — never silently clamped.\n\n' +
+        // issue #89 item 2: registration and a run-time override answer DIFFERENT codes for the
+        // same "out of bounds" fact — verified against params/contract.ts's validateOneAgentSpec
+        // (registration) vs validateOneAgentOverride/checkValueAgainstSpec (a run_start override).
+        // The guide used to say every over-ceiling value is PARAM_OUT_OF_RANGE, which is only true
+        // of the override case; a declaration above a ceiling is PARAM_CONTRACT_INVALID instead.
+        `'${ceilings.maxEffort}'. A declaration above any of these ceilings (in ` +
+        '`meta.params.agents.<label>`) is refused `PARAM_CONTRACT_INVALID` at registration — never ' +
+        'silently clamped. A run-time **override** (`run_start`\'s `overrides.agents.<label>`) that ' +
+        'names a value outside the effective (author ∩ ceiling) bound is a DIFFERENT refusal, ' +
+        '`PARAM_OUT_OF_RANGE`, at admission.\n\n' +
         // v24 Gate 7.5 (D-12, REQ-117): the alias names, from the SAME resolved table the
         // registration validator checks against. The cold subject's first registration was refused
         // because it read a model id out of `models_list` (which lists catalog MODELS, not
@@ -887,12 +1007,22 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'is matched by POSITION, so any non-empty title is accepted for that lane. This is why every ' +
         '`agent()` must sit inside a `phase()`: a call before your first `phase()` is refused ' +
         '`AGENT_BEFORE_PHASE`, since an unnamed zeroth lane is neither checkable nor drawable.\n' +
-        '3. **Tools — `TOOLS_MISMATCH`.** An agent node may carry a third `<br/>` segment naming its ' +
-        'tool surface: `label<br/>model · effort · timeout<br/>tools: Edit, Read` — the names sorted, ' +
-        'comma-space separated, exactly the literal `allowedTools` array on that `agent()` call, or ' +
-        '`tools: none` when you passed `allowedTools: []`. If the call declares no `allowedTools` at ' +
-        'all, the segment is NOT compared: write `tools: default` (the honest word for "whatever ' +
-        'this deployment configures") or leave the segment off.\n' +
+        // issue #89 item 5: this used to say the tools segment "may carry" the surface, implying it
+        // is ALWAYS optional. It is not — checkMermaid's checkTools (rule 12) compares it whenever
+        // the call declares a LITERAL `allowedTools` array (including `[]`) and refuses
+        // TOOLS_MISMATCH for a bare node (no third segment at all) in that case; the checker's own
+        // strictness is unchanged, only this prose was wrong. It is skipped ONLY when the call
+        // declares no `allowedTools` key at all.
+        '3. **Tools — `TOOLS_MISMATCH`.** Whenever an `agent()` call declares a literal ' +
+        '`allowedTools` array — including the empty array `allowedTools: []` — its node\'s third ' +
+        '`<br/>` segment is REQUIRED and checked exactly: `label<br/>model · effort · timeout<br/>' +
+        'tools: Edit, Read` — the names sorted, comma-space separated, exactly the literal ' +
+        '`allowedTools` array on that call, or `tools: none` for `allowedTools: []`. Omitting the ' +
+        'segment (or leaving the node with no `<br/>` at all) while `allowedTools` is a literal array ' +
+        'is refused `TOOLS_MISMATCH` — it does NOT fall back to "not compared". Only when the call ' +
+        'declares no `allowedTools` key at all is the segment optional and skipped entirely: write ' +
+        '`tools: default` (the honest word for "whatever this deployment configures") or leave the ' +
+        'segment off.\n' +
         '4. **Edges — `EDGE_MISMATCH`.** Consecutive calls in your script must be joined in the ' +
         'diagram, across lane boundaries too. A path may run through non-agent shapes (a diamond for ' +
         'a branch, an aggregation for a non-agent join), which is how you draw a ternary or an ' +
@@ -1020,7 +1150,13 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
     ),
   );
 
-  parts.push(section('Registered examples', exampleRows()));
+  parts.push(
+    section(
+      'Registered examples',
+      (exampleAliasNote ? `${exampleAliasNote}\n\n` : '') +
+        exampleRows(withExampleModelAlias(GUIDE_EXAMPLES, exampleAlias)),
+    ),
+  );
 
   return parts.join('\n\n') + '\n';
 }

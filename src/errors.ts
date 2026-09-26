@@ -1,5 +1,10 @@
 // Domain error types. Implemented fully — pure value classes, no business logic.
 import { MARKER_PREFIX, redact } from './secret-resolver.js';
+// issue #89 item 1: PARAM_LOCKED's hint used to hand-type the locked-key list (and had drifted —
+// six names, omitting `bash`, while LOCKED_KEYS itself has carried seven since issue #78(c)). A
+// VALUE import here is safe: params/contract.ts imports only `type { ErrorCode }` from this file
+// (type-only, erased at compile time), so this is not a runtime cycle.
+import { LOCKED_KEYS } from './params/contract.js';
 //
 // v24 (DES-137, ARCH-087, TASK-131): ERROR_CATALOG is the closed `ErrorCode` union — every coded
 // refusal this engine can throw is a key here, with the `see` pointer (workflow_authoring_guide|null)
@@ -78,7 +83,10 @@ export const ERROR_CATALOG = {
   AGENT_DECLARED_NOT_IN_SCRIPT: { see: 'workflow_authoring_guide', hint: 'params.agents declares a label no agent() call in the script uses' },
   PARAM_CONTRACT_INVALID: { see: 'workflow_authoring_guide', hint: 'the declared parameter contract itself is malformed or out of its own bounds' },
   PARAM_OUT_OF_RANGE: { see: 'workflow_authoring_guide', hint: 'a declared or overridden parameter value is outside its allowed range' },
-  PARAM_LOCKED: { see: 'workflow_authoring_guide', hint: 'a caller override targets a key the author locked (prompt/allowedTools/skills/mcp/workdir/cwd)' },
+  // issue #89 item 1: rendered from LOCKED_KEYS itself — never re-typed — so this hint cannot
+  // drift from the constant the validator actually enforces (it had: six names here, omitting
+  // `bash`, against LOCKED_KEYS's real seven).
+  PARAM_LOCKED: { see: 'workflow_authoring_guide', hint: `a caller override targets a key the author locked (${LOCKED_KEYS.join('/')})` },
   PARAM_UNKNOWN: { see: 'workflow_authoring_guide', hint: 'a caller override names a parameter the contract does not declare' },
   UNKNOWN_AGENT_LABEL: { see: 'workflow_authoring_guide', hint: 'a caller override names an agent label the contract does not declare' },
   DEFAULTS_RETIRED: { see: 'workflow_authoring_guide', hint: 'meta.params.knobs / meta.defaults are retired; declare params.agents.<label> instead' },
