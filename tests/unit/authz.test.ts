@@ -234,9 +234,9 @@ describe('authz — the generated kind x role x ownership x mode matrix (UT-140 
   });
 });
 
-// Issue #90: a NOT_*_OWNER refusal's `reason` reaches the CALLER verbatim (`call-tool.ts:234`'s
-// `refusalEnvelope(verdict.code ?? 'FORBIDDEN_ROLE', verdict.reason ?? 'refused', ...)`, and
-// `run-manager.ts:642`'s `throw codedError(verdict.code, verdict.reason)`), so it must never name
+// Issue #90: a NOT_*_OWNER refusal's `reason` reaches the CALLER verbatim — `authorize()` is called
+// from exactly one place, `call-tool.ts:232`, whose `refusalEnvelope(verdict.code ?? 'FORBIDDEN_ROLE',
+// verdict.reason ?? 'refused', ...)` (line 234) puts it straight on the wire — so it must never name
 // the resource's owner — a non-owner caller (bob) must not learn who owns alice's run/workflow/
 // trigger just by being refused. `principal.id` (the CALLER's own, already-known id) staying out is
 // unnecessary rather than dangerous, but this asserts that too, since neither belongs in a message
