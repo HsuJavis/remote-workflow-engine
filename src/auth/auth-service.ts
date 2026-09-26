@@ -14,7 +14,7 @@ export const GOOGLE_JWKS_URL = 'https://www.googleapis.com/oauth2/v3/certs';
 /** Sliding-window refresh-token TTL (~90 days). DES-095 v20. */
 export const REFRESH_TTL_MS = 90 * 24 * 3600_000;
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { TokenStore } from './token-store.js';
+import { DEFAULT_DCR_GRANT_TYPES, type TokenStore } from './token-store.js';
 import { verifyIdToken, type JwksPort } from './google-verifier.js';
 import { buildProtectedResourceMetadata, buildAuthServerMetadata } from './oauth-metadata.js';
 
@@ -347,7 +347,13 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
       // Same as the refresh arm above: the lifetime is `bearerTtlMs`, not a wall-clock subtraction
       // against an expiry the store stamped with its own injected clock.
       const expiresIn = Math.floor(bearerTtlMs / 1000);
-      // v20a: scope ALWAYS echoed (stored null → ''); refresh_token issued iff offline_access granted.
+      // v20a: scope ALWAYS echoed (stored null → ''); refresh_token issued iff offline_access
+      // granted OR (issue #86) the DCR-registered client declared grant_types incl.
+      // refresh_token — that's how a real MCP client that never asks for offline_access (its
+      // resolved scope is "" unless it reads PRM scopes_supported / the 401 challenge scope)
+      // still gets a refresh token instead of hard-expiring after one bearer TTL.
+      // The echoed `scope` stays honest to what was actually requested either way — a
+      // refresh-token grant here does NOT synthesize offline_access into the response.
       const scope = codeData.scope ?? '';
       const responseBody: Record<string, unknown> = {
         access_token: token,
@@ -355,7 +361,9 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
         expires_in: expiresIn,
         scope,
       };
-      if (scope.split(' ').includes('offline_access')) {
+      const registeredClient = clientId ? tokenStore.getClient(clientId) : null;
+      const clientDeclaresRefresh = registeredClient?.grantTypes.includes('refresh_token') ?? false;
+      if (scope.split(' ').includes('offline_access') || clientDeclaresRefresh) {
         const { token: refreshToken } = tokenStore.issueRefresh(codeData.principal, codeData.scope, clientId, REFRESH_TTL_MS);
         responseBody.refresh_token = refreshToken;
       }
@@ -387,17 +395,22 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
       }
       // Clamp metadata (Decision B): accept any grant_types/token_endpoint_auth_method but respond
       // with our fixed public-PKCE values regardless (no client_secret issued).
+      // issue #86: persist the clamped grant_types (always includes refresh_token) so /token's
+      // authorization_code branch can issue a refresh token to this client even when the
+      // client's requested scope omits offline_access.
       // TTL: 30 days (weeks-scale per DES-093 v17 bounding contract).
       const ttlMs = 30 * 24 * 3600_000;
+      const grantTypes = DEFAULT_DCR_GRANT_TYPES;
       const { clientId, clientIdIssuedAt } = tokenStore.registerClient({
         redirectUris: redirectUris.map(String),
         ttlMs,
+        grantTypes,
       });
       localSendJson(res, 201, {
         client_id: clientId,
         client_id_issued_at: clientIdIssuedAt,
         redirect_uris: redirectUris.map(String),
-        grant_types: ['authorization_code', 'refresh_token'],
+        grant_types: grantTypes,
         response_types: ['code'],
         token_endpoint_auth_method: 'none',
       });

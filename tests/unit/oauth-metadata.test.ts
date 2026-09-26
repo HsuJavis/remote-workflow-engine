@@ -58,6 +58,15 @@ describe('buildProtectedResourceMetadata (DES-092)', () => {
     const m = buildProtectedResourceMetadata(CFG);
     expect(m.resource).not.toMatch(/\/\/\.well-known/);
   });
+
+  // issue #86: MCP authorization spec client scope-selection order is (1) 401 challenge scope,
+  // (2) PRM scopes_supported, (3) omit. Without (2) here, a client that skips the 401 leg (or a
+  // spec-following client per SEP-835 priority) never learns offline_access exists.
+  // Pre-impl: PRM has no scopes_supported key → `m['scopes_supported']` is undefined → FAILS.
+  it('scopes_supported is exactly ["openid","email","offline_access"] (issue #86)', () => {
+    const m = buildProtectedResourceMetadata(CFG) as Record<string, unknown>;
+    expect(m['scopes_supported']).toEqual(['openid', 'email', 'offline_access']);
+  });
 });
 
 describe('buildAuthServerMetadata (DES-092)', () => {
@@ -151,5 +160,21 @@ describe('wwwAuthenticateHeader (DES-092)', () => {
     const uriMatch = h.match(/resource_metadata="([^"]+)"/);
     const uri = uriMatch?.[1] ?? '';
     expect(uri.replace(/^https?:\/\//, '')).not.toContain('//');
+  });
+
+  // issue #86: the 401 challenge is scope-selection priority (1) per the MCP authorization spec
+  // (SEP-835). Claude Code stores whatever the client resolves here; without it (and without PRM
+  // scopes_supported) it resolves to "" and the client never learns offline_access exists →
+  // no refresh token → session hard-expires after 7 days.
+  // Pre-impl: header has no scope param → match is null → FAILS.
+  it('contains scope="openid email offline_access" (issue #86)', () => {
+    const h = wwwAuthenticateHeader(CFG);
+    expect(h).toMatch(/scope="openid email offline_access"/);
+  });
+
+  it('still contains resource_metadata alongside scope (both params present)', () => {
+    const h = wwwAuthenticateHeader(CFG);
+    expect(h).toMatch(/resource_metadata=/);
+    expect(h).toMatch(/scope=/);
   });
 });
