@@ -3,7 +3,7 @@
 // Injected spawn — no real subprocess in this file (the real default is exercised for real by every
 // composeConfig() call across the suite, and directly in confinement-probe-real.test.ts below).
 import { describe, it, expect } from 'vitest';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import { probeConfinement } from '../../src/gateway/confinement-probe.js';
 
 function hasBubblewrap(): boolean {
@@ -92,13 +92,26 @@ describe('UT-339 probeConfinement() nested bwrap args mirror the CLI: both layer
 // 0 on this host. Skipped with a clear reason when bwrap itself is absent (same convention as
 // val-253-bash-confinement.test.ts's HAS_SANDBOX_RUNTIME gate) — never silently green on a host
 // that cannot possibly prove this.
-describe('UT-340 probeConfinement() real-tier — this host measures confined (issue #93 item 1)', () => {
+describe('UT-340 probeConfinement() real-tier — agrees with a direct CLI-shaped nested bwrap (issue #93 item 1)', () => {
+  // Host-agnostic: on ANY host with bwrap, the engine's verdict must equal what an independent,
+  // literal CLI-shaped nested invocation measures (a CI runner with the Ubuntu AppArmor userns
+  // restriction still active is legitimately 'unconfined' — that must not turn the suite red).
   it.skipIf(!hasBubblewrap())(
-    'the REAL default spawnSync call returns posture:confined on this host' +
+    'posture is confined iff a direct nested bwrap (both layers --proc/--dev) exits 0' +
       ' [UNVERIFIED here: needs bubblewrap on PATH]',
     () => {
+      const layer = ['--unshare-user', '--unshare-pid', '--ro-bind', '/', '/', '--tmpfs', '/tmp', '--proc', '/proc', '--dev', '/dev', '--'];
+      const direct = spawnSync('bwrap', [...layer, 'bwrap', ...layer, '/bin/true'], { timeout: 5000 });
       const r = probeConfinement();
-      expect(r).toEqual({ posture: 'confined' });
+      expect(r.posture).toBe(direct.status === 0 ? 'confined' : 'unconfined');
+    },
+  );
+  // Host-specific: the production host (sysctl + AppArmor fix applied) must measure confined.
+  // Opt-in so CI runners without that host fix are not failed by a fact about another machine.
+  it.skipIf(!hasBubblewrap() || process.env['RWE_EXPECT_CONFINED'] !== '1')(
+    'RWE_EXPECT_CONFINED=1: this host measures posture:confined',
+    () => {
+      expect(probeConfinement()).toEqual({ posture: 'confined' });
     },
   );
 });
