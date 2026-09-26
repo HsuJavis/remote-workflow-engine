@@ -644,7 +644,16 @@ export class WorkflowCatalog {
       const code = RULE_CODE[diagramCheck.rule!];
       // v26: the detail literal is widened to carry `expected` — the v2 refusal's lane/slot/edge
       // structure as data (TASK-194 pins one such envelope as a literal fixture).
-      throw codedError(code, `${code}: ${diagramCheck.rule ?? 'unknown'}${diagramCheck.line !== undefined ? ` (line ${diagramCheck.line})` : ''}`, {
+      // Issue #89 item 5: a rule named like its code is not repeated ("TOOLS_MISMATCH: TOOLS_MISMATCH"),
+      // and TOOLS_MISMATCH spells out the exact segment text the node must carry.
+      const lineText = diagramCheck.line !== undefined ? ` (line ${diagramCheck.line})` : '';
+      const toolsExp = diagramCheck.rule === 'TOOLS_MISMATCH' ? (diagramCheck.expected as { label?: string; tools?: string[] } | undefined) : undefined;
+      const message = toolsExp?.label !== undefined && Array.isArray(toolsExp.tools)
+        ? `${code}: node '${toolsExp.label}'${lineText} must carry "${toolsExp.tools.length === 0 ? 'tools: none' : `tools: ${[...toolsExp.tools].sort().join(', ')}`}" as its third <br/> segment to match allowedTools ${JSON.stringify(toolsExp.tools)}`
+        : diagramCheck.rule === undefined || diagramCheck.rule === code
+          ? `${code}:${lineText === '' ? ' diagram refused' : lineText}`
+          : `${code}: ${diagramCheck.rule}${lineText}`;
+      throw codedError(code, message, {
         rule: diagramCheck.rule, line: diagramCheck.line, onlyInScript: diagramCheck.onlyInScript, onlyInDiagram: diagramCheck.onlyInDiagram,
         expected: diagramCheck.expected,
       });
