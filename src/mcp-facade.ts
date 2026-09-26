@@ -9,6 +9,7 @@ import { SystemClock } from './clock.js';
 import type { RunStore } from './run-store.js';
 import { InMemoryRunStore, TERMINAL } from './run-store.js';
 import { RunManager, DEFAULT_RUN_CONCURRENCY, admissionRefusal } from './run-manager.js';
+import { CONFINEMENT_REMEDIATION } from './gateway/confinement-probe.js';
 import { resolveVersionRequest, type WorkflowDetail, type Channel, type VersionSelector, type Actor } from './workflow-catalog.js';
 import { SubmissionValidator } from './submission-validator.js';
 // v24 Gate 7.5 (D-3): `toErrEnvelope` is IMPORTED, not re-implemented. This file used to carry a
@@ -887,7 +888,7 @@ export class McpFacade {
           runId: a.runId, status: view.status,
           error: toErrEnvelope(codedError(
             refusal,
-            'CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — remote run_resume submissions are refused.',
+            `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — remote run_resume submissions are refused. Remediation: ${CONFINEMENT_REMEDIATION}`,
           )),
         };
       }

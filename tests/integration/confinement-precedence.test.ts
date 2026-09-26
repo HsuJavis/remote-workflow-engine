@@ -17,6 +17,7 @@ import { RunManager } from '../../src/run-manager.js';
 import { McpFacade } from '../../src/mcp-facade.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import type { Clock } from '../../src/clock.js';
+import { registerPublished } from '../helpers/workflow-fixtures.js';
 
 const ANCHOR = new Date('2026-09-26T00:00:00.000Z');
 const CLOCK: Clock = { now: () => ANCHOR.getTime(), isoNow: () => ANCHOR.toISOString() };
@@ -72,6 +73,36 @@ describe('issue #93 item 2 — remote+unconfined run_start precedence (real call
     const run = await callTool(deps, 'run_start', { name }, AUTH_DISABLED) as { status?: string; error?: { code?: string } };
     expect(run.status).toBe('failed');
     expect(run.error?.code).toBe('CONFINEMENT_UNAVAILABLE');
+    expect(await store.listRuns()).toEqual([]);
+  });
+
+  it('[LOAD-BEARING] an existing workflow, nonexistent VERSION => VERSION_NOT_FOUND, never CONFINEMENT_UNAVAILABLE (thrown inside catalog.resolve(), past where the old door used to fire)', async () => {
+    const name = 'confinement-precedence-version-not-found';
+    const reg = await callTool(partialDeps({ facade }), 'workflow_register', { name, script: SCRIPT, mermaid: MERMAID }, AUTH_DISABLED) as { status?: string; result?: { version?: string } };
+    expect(reg.status).toBe('completed');
+    const pub = await callTool(partialDeps({ facade }), 'workflow_publish', { name, version: reg.result!.version!, channel: 'release' }, AUTH_DISABLED) as { status?: string };
+    expect(pub.status).toBe('completed');
+
+    const deps = partialDeps({ facade, isRemoteSubmission: true, confinementPosture: 'unconfined' });
+    const run = await callTool(deps, 'run_start', { name, version: 'v999' }, AUTH_DISABLED) as { status?: string; error?: { code?: string } };
+    expect(run.status).toBe('failed');
+    expect(run.error?.code).toBe('VERSION_NOT_FOUND');
+    expect(await store.listRuns()).toEqual([]);
+  });
+
+  it('[LOAD-BEARING] a valid workflow, an override naming an undeclared agent label => UNKNOWN_AGENT_LABEL (a PARAM_* class refusal), never CONFINEMENT_UNAVAILABLE', async () => {
+    const name = 'confinement-precedence-param-refusal';
+    // No hand-written meta/mermaid — synthesizeMeta/synthesizePhase/synthesizeMermaid
+    // (tests/helpers/workflow-fixtures.ts, via registerPublished) derive a valid v24 contract and
+    // a matching diagram from the script's own `agent('writer', …)` call, avoiding a
+    // DIAGRAM_SCRIPT_MISMATCH from a hand-authored mermaid that drifts from the script.
+    const script = "return await agent('writer', { prompt: 'hi' });";
+    await registerPublished(catalog, name, script);
+
+    const deps = partialDeps({ facade, isRemoteSubmission: true, confinementPosture: 'unconfined' });
+    const run = await callTool(deps, 'run_start', { name, overrides: { agents: { nope: { effort: 'low' } } } }, AUTH_DISABLED) as { status?: string; error?: { code?: string } };
+    expect(run.status).toBe('failed');
+    expect(run.error?.code).toBe('UNKNOWN_AGENT_LABEL');
     expect(await store.listRuns()).toEqual([]);
   });
 

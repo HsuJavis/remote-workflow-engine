@@ -14,6 +14,11 @@ import { initGitBaseline } from './workspace-git.js';
 import { listArtifacts, type ArtifactEntry } from './workspace-artifacts.js';
 import { IllegalTransitionError, codedError, toErrorCode, toErr, captureFailure } from './errors.js';
 import type { ErrorCode } from './errors.js';
+// issue #93 item 1: appended to every CONFINEMENT_UNAVAILABLE message this file throws — the SAME
+// text the ERROR_CATALOG hint and the boot banner carry (errors.ts, main.ts), so an operator/caller
+// reading a run's own error message is told the remediation too, not just the catalog's generic
+// hint. No cycle: confinement-probe.ts imports only node:child_process.
+import { CONFINEMENT_REMEDIATION } from './gateway/confinement-probe.js';
 import { isEgressAllowed, normalizeSeedRefAllowlist } from './seedref-egress.js';
 import type { SeedRefFetcher } from './seedref-fetcher.js';
 import { HardenedSeedRefFetcher } from './seedref-fetcher.js';
@@ -579,7 +584,7 @@ export class RunManager {
       const refusal = admissionRefusal({ posture: this._confinementPosture, origin: spec.origin });
       if (refusal !== null) {
         confinementRefusalMessage =
-          `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — this run's trigger was created remotely, so it is refused.`;
+          `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — this run's trigger was created remotely, so it is refused. Remediation: ${CONFINEMENT_REMEDIATION}`;
       }
     }
     // v22 (REQ-098, ADR-013, DES-113, DES-117, TASK-108/TASK-109): the inline ban is on INGRESS
@@ -685,7 +690,7 @@ export class RunManager {
         const refusal = admissionRefusal({ posture: this._confinementPosture, origin: registered.registeredRemote ? 'remote' : 'local' });
         if (refusal !== null) {
           confinementRefusalMessage =
-            `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — workflow '${spec.name}' version ${registered.version} was registered remotely, so running it is refused; re-register locally (workflow_register with the same triggers, then workflow_publish) to recover.`;
+            `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — workflow '${spec.name}' version ${registered.version} was registered remotely, so running it is refused; re-register locally (workflow_register with the same triggers, then workflow_publish) to recover. Remediation: ${CONFINEMENT_REMEDIATION}`;
         }
       }
       script = registered.script;
@@ -1011,7 +1016,7 @@ export class RunManager {
         this._runs.delete(runId);
         throw codedError(
           refusal,
-          `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — this run's pinned version ${sub.pinned} no longer exists, and the '${entry.name ?? '?'}' version that would be substituted for it (${sub.resolved}) was registered remotely, so RESUMING it is refused (stopping it is NOT refused ON THIS GROUND — a run that is still suspended/interrupted can be stopped and its workspace purged; one that is already stopped answers ILLEGAL_TRANSITION, which is a different matter and already terminal); re-register that workflow locally (workflow_register with the same triggers, then workflow_publish) and resume again to recover.`,
+          `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — this run's pinned version ${sub.pinned} no longer exists, and the '${entry.name ?? '?'}' version that would be substituted for it (${sub.resolved}) was registered remotely, so RESUMING it is refused (stopping it is NOT refused ON THIS GROUND — a run that is still suspended/interrupted can be stopped and its workspace purged; one that is already stopped answers ILLEGAL_TRANSITION, which is a different matter and already terminal); re-register that workflow locally (workflow_register with the same triggers, then workflow_publish) and resume again to recover. Remediation: ${CONFINEMENT_REMEDIATION}`,
         );
       }
     }
@@ -1737,7 +1742,7 @@ export class RunManager {
       if (refusal !== null) {
         throw codedError(
           refusal,
-          `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — nested workflow() '${name}' version ${registered.version} was registered remotely, so running it is refused.`,
+          `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — nested workflow() '${name}' version ${registered.version} was registered remotely, so running it is refused. Remediation: ${CONFINEMENT_REMEDIATION}`,
         );
       }
     }
