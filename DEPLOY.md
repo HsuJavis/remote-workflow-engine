@@ -835,6 +835,36 @@ scripts/smoke.sh
 [smoke] shutting down server (pid 139727)...
 ```
 
+### git pre-push 保護（推 master 前跑 typecheck + 完整測試）
+
+> 這是**開發端**（在哪裡 `git push` 這台機器）的保護，跟上面的執行期部署無關；換新主機時若也會
+> 在那台機器上開發／推送，記得裝這一段——見 §7 換機檢查清單。
+
+這個免費私有 repo 開不了 GitHub branch protection / rulesets（兩者都回 403「Upgrade to Pro or
+make public」），所以用一個本機 `pre-push` hook 頂替：**推到 `refs/heads/master` 前**先跑
+`npm run typecheck` + `npm test`，任一紅就擋下這次推送（`git push --no-verify` 可緊急略過）；
+推 feature branch/tag 不受影響。hook 本體版控在 `deploy/git-hooks/pre-push`（`.git/hooks/`
+本身**不進版控**，只複製/連結不會自動同步，換主機或換 clone 都要重新接一次）：
+
+```bash
+git config core.hooksPath deploy/git-hooks     # 這台 clone 的每一次 push 都套用
+# 或者，若不想覆蓋 core.hooksPath（例如已用它掛別的 hook）：
+ln -s ../../deploy/git-hooks/pre-push .git/hooks/pre-push
+```
+
+**`core.hooksPath` 是逐 clone/逐 worktree 生效的 repo-local 設定**（寫進這份 checkout 自己的
+`.git/config`，不是全域設定，也不會因為推了一個新 commit 就自動套到別的 clone/worktree）——
+用 `git config core.hooksPath deploy/git-hooks` 那一台機器才會被擋，其他 clone/worktree 要各自
+跑一次。**設定前**先看一眼 `ls .git/hooks/`：`core.hooksPath` 會**整個取代**原本的
+`.git/hooks/` 目錄查找路徑（含任何你原本手動放的其他 hook），不是疊加。
+
+**2026-09-26 事故（就是這個 hook 現有註解裡記的那件事）**：從一個 linked worktree 推送時，
+git 會把 `GIT_DIR`（絕對路徑）匯出進 hook 的環境；hook 跑的測試套件會在暫存目錄裡 `git init`/
+`commit`/`tag`，繼承到這個 `GIT_DIR` 之後全部寫進了**正式部署那份 checkout**——把它的
+`core.bare` 改成 `true`、留下假的 `v1.x` tag、在被推送的分支上多出測試用的 commit。這正是
+hook 一開頭就 `unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE ...` 那一段要防的事，換主機/換 clone
+重新接線時不要把這幾行刪掉。
+
 ### 無訪問控制時的已知風險（`auth.enabled:false`，D5/C4）
 
 **`workspace_push` 會把任意內容真實寫入伺服器端磁碟**——工作流程範圍的資產落在

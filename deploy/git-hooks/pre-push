@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Versioned copy of the operator's pre-push hook (see DEPLOY.md "git pre-push 保護" for how to
+# install it: `git config core.hooksPath deploy/git-hooks`, or symlink from `.git/hooks/`).
+# Edit THIS file, not a live `.git/hooks/pre-push` copy — the latter is not tracked by git and a
+# manual edit there silently diverges from what every other clone/worktree gets.
+#
+# pre-push — local branch-protection substitute for master.
+#
+# GitHub branch protection / rulesets are unavailable on this free PRIVATE repo (both return
+# 403 "Upgrade to Pro or make public"), so this hook enforces "master only lands when green"
+# on THIS machine — the box you push from. It runs typecheck + the full test suite before any
+# push that updates refs/heads/master; a red result blocks the push.
+#
+# Scope: only pushes that update master are gated (feature branches and tags push freely).
+# Emergency bypass: `git push --no-verify` (skips ALL pre-push hooks).
+#
+# Not a server-side gate: it protects pushes from this machine, not merges done in the GitHub
+# UI or from another clone. It complements the two existing test gates (PR CI + the deploy-time
+# helper test-gate) rather than replacing them.
+set -u
+
+PROTECTED="refs/heads/master"
+push_to_master=0
+
+# stdin: one line per ref being pushed — "<local ref> <local sha> <remote ref> <remote sha>".
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  [ "$remote_ref" = "$PROTECTED" ] && push_to_master=1
+done
+
+if [ "$push_to_master" -eq 0 ]; then
+  exit 0   # not touching master → nothing to gate
+fi
+
+ROOT="$(git rev-parse --show-toplevel)" || exit 1
+cd "$ROOT" || exit 1
+
+# 2026-09-26 incident: git exports GIT_DIR (absolute, when pushing from a linked worktree) into this
+# hook. The suite spawns `git init/commit/tag` in temp dirs; inheriting GIT_DIR sent all of it into
+# THIS repo — core.bare=true on the production deploy checkout, fake v1.x tags, test commits on the
+# pushed branch. Never let the suite see the hook's git environment.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_QUARANTINE_PATH
+
+echo "pre-push: master push detected → running typecheck + full test suite (this takes a few minutes)…" >&2
+
+if ! npm run typecheck; then
+  echo "pre-push: ✗ typecheck failed — push to master BLOCKED. Fix, or override with 'git push --no-verify'." >&2
+  exit 1
+fi
+
+if ! npm test; then
+  echo "pre-push: ✗ tests failed — push to master BLOCKED. Fix, or override with 'git push --no-verify'." >&2
+  exit 1
+fi
+
+echo "pre-push: ✓ typecheck + tests green — allowing push to master." >&2
+exit 0
