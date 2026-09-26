@@ -1191,7 +1191,7 @@ GitHub → POST /github/webhook → 引擎（UNPRIVILEGED）
 | **Payload URL** | `https://your-domain/github/webhook`（見步驟二反向代理） |
 | **Content type** | **`application/json`**（⚠ HIGH：必須選此項——form-encoded body 雖然 HMAC 驗過，但 JSON parse 會失敗導致 tag 無法提取，等同靜默 no-op；絕對不要用預設的 `application/x-www-form-urlencoded`） |
 | **Secret** | 隨機高熵字串（建議 32+ bytes hex），記下來（稍後設入環境變數） |
-| **Which events would you like to trigger this webhook?** | 選 **Let me select individual events**，勾選：**Branch or tag creation** + **Pushes**（涵蓋 `create` + `push` 兩種事件類型，GitHub 推送 tag 時兩者皆會發送） |
+| **Which events would you like to trigger this webhook?** | 選 **Let me select individual events**，**只勾 Releases**（`release` 事件）。引擎確實也認得 `create`/`push` 兩種事件（tag 建立/推送），但自我更新現在刻意綁在 **`release` 事件的 `action:"published"`**（且非 prerelease）——這是為了讓流程嚴格照順序走：**tag 推送 → Release CI 重跑 typecheck+完整測試 → 綠燈才發布 Release → Release published 才觸發自我更新**，`create`/`push` 是 tag 一推上去就送達，會搶在 CI 跑完之前武裝自我更新，讓建置/測試還沒過的版本就被部署。不要多勾 **Branch or tag creation**／**Pushes**（舊設計留下的事件，見 `src/self-update-webhook.ts` 的 `extractTag()` 註解） |
 | **Active** | ✓ |
 
 ### 步驟二：反向代理（只轉發 webhook 路由）
@@ -1213,11 +1213,18 @@ location = /github/webhook {
 
 ### 步驟三：旗標與結果路徑（**必須在所有 workRoot 之外**）
 
-建立一個引擎使用者可讀寫的目錄（權限 `0700`，**不在任何 `workRoot` 下**，否則啟動時報 `UPDATE_FLAG_INSIDE_WORKROOT`）：
+> **旗標檔本身的路徑被 shipped 的 `deploy/rwe-update.path` 寫死，不能任意搬動。** 該 unit 用
+> `PathExists=%h/rwe-update.flag` / `PathChanged=%h/rwe-update.flag`（`%h` 是 systemd
+> specifier，展開成這個使用者的家目錄）——`.path` unit 沒有 `Environment=`/`EnvironmentFile=`
+> 可以替換任意路徑，所以旗標檔**只能**放在 `$HOME/rwe-update.flag`；除非你自己改
+> `~/.config/systemd/user/rwe-update.path` 裡的這兩行，`rwe.config.json` 的 `updateFlagPath`
+> 就必須跟這裡完全一致，否則引擎寫了旗標、`.path` unit 卻永遠看不到，自我更新形同沒接上。
+> 結果檔／鎖檔沒有這個限制，建議放進一個引擎使用者可讀寫、其餘人不可讀的目錄（`0700`，且
+> **不在任何 `workRoot` 下**，否則啟動時報 `UPDATE_FLAG_INSIDE_WORKROOT`）：
 
 ```bash
-mkdir -p ~/.local/share/rwe-flags
-chmod 0700 ~/.local/share/rwe-flags
+mkdir -p ~/.local/share/rwe-update
+chmod 0700 ~/.local/share/rwe-update
 ```
 
 ### 步驟四：設定環境變數與 rwe.config.json
@@ -1228,12 +1235,12 @@ chmod 0700 ~/.local/share/rwe-flags
 RWE_SECRET_GITHUB_WEBHOOK_SECRET=<你在 GitHub 設的 Secret>
 ```
 
-在 `rwe.config.json` 加入：
+在 `rwe.config.json` 加入（旗標路徑固定是 `$HOME/rwe-update.flag`，理由見上方步驟三；結果檔可以放進步驟三建立的目錄）：
 
 ```json
 {
-  "updateFlagPath":   "/home/<user>/.local/share/rwe-flags/update.flag",
-  "updateResultPath": "/home/<user>/.local/share/rwe-flags/update-result.json"
+  "updateFlagPath":   "/home/<user>/rwe-update.flag",
+  "updateResultPath": "/home/<user>/.local/share/rwe-update/result.json"
 }
 ```
 
@@ -1254,19 +1261,33 @@ RWE_SECRET_GITHUB_WEBHOOK_SECRET=<你在 GitHub 設的 Secret>
 
 > 特權 helper（`deploy/rwe-update.sh`）負責 git checkout + build + restart，須以有 `systemctl restart rwe` 權限的使用者執行。對 systemd user service 部署，`rwe-update.service` 作為 user service 即可（user service 可 `systemctl --user restart` 自己的服務）。
 
+> **`deploy/rwe-update.path`／`deploy/rwe-update.service` 兩份範本本身沒有 `${VAR}` 佔位字元**
+> （`%h` 是 systemd 自己的 specifier，`envsubst` 不會動它；`rwe-update.service` 內建的
+> `ExecStart=/opt/remote-workflow-engine/deploy/rwe-update.sh` 與
+> `EnvironmentFile=-/etc/rwe/update.env` 是給有 root/`/opt` 安裝路徑的部署用的字面路徑）——
+> **`envsubst` 在這裡等同純複製**，不會幫你把路徑換成這台機器的實際 clone 路徑。systemd
+> **user** 部署（沒有 `/opt`、也沒有 `/etc/rwe/` 寫入權限）要在複製之後手動改兩行：
+
 ```bash
-# 填入實際路徑後安裝
-envsubst < deploy/rwe-update.path > ~/.config/systemd/user/rwe-update.path
-envsubst < deploy/rwe-update.service > ~/.config/systemd/user/rwe-update.service
+cp deploy/rwe-update.path ~/.config/systemd/user/rwe-update.path      # 內容原樣即可（%h 會自動展開）
+cp deploy/rwe-update.service ~/.config/systemd/user/rwe-update.service
+# 手動改這份複製出來的 rwe-update.service（不要動 repo 裡的範本）：
+#   ExecStart=       改成這台機器上的實際路徑，例如
+#                    /home/<user>/Documents/remote-workflow/deploy/rwe-update.sh
+#   EnvironmentFile= 若沒有 /etc/rwe/update.env 的寫入權限，把這一行整個換成下面幾條
+#                    Environment= 直接寫值（user unit 完全合法，不需要額外的檔案）
 systemctl --user daemon-reload
 systemctl --user enable rwe-update.path  # 讓 .path 在登入後自動監看
 
-# 設定 helper 所需的環境變數（寫進 systemd unit 的 Environment 或 EnvironmentFile）
+# helper 所需的環境變數——寫進上面那份 rwe-update.service 的 Environment= 或 EnvironmentFile=：
 # 至少需要：
-#   RWE_UPDATE_FLAG   = /home/<user>/.local/share/rwe-flags/update.flag
-#   RWE_UPDATE_RESULT = /home/<user>/.local/share/rwe-flags/update-result.json
-#   RWE_UPDATE_LOCK   = /home/<user>/.local/share/rwe-flags/update.lock
+#   RWE_UPDATE_FLAG   = /home/<user>/rwe-update.flag                       （必須等於 rwe.config.json 的 updateFlagPath，理由見步驟三）
+#   RWE_UPDATE_RESULT = /home/<user>/.local/share/rwe-update/result.json
+#   RWE_UPDATE_LOCK   = /home/<user>/.local/share/rwe-update/update.lock
 #   RWE_OFFICIAL_REMOTE = <git remote URL，只接受此來源的 tag>
+#   SYSTEMCTL         = 一個把 `systemctl --user "$@"` 轉呼叫的一行 wrapper 的路徑
+#                       （helper 內部呼叫的是裸指令 `systemctl restart rwe`；user 部署要讓它落到
+#                       `systemctl --user restart rwe`，最簡單的做法就是這個 wrapper，不是改 helper 本身）
 # 選用（見上方「重啟前的設定檢查」）：
 #   RWE_CONFIG_PATH   = 這台機器實際要用的 rwe.config.json 路徑——省略則 configCheck 記 skipped
 ```
