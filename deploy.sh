@@ -38,6 +38,20 @@ if [ "${1:-}" = "--dry-run" ]; then
   exit 0
 fi
 
+# 非致命 preflight：只示警、不擋部署繼續進行。bwrap/socat 任一缺席，或 AppArmor 巢狀
+# unprivileged user namespace 限制生效，都會讓開機時的 Bash 圍籠探測量成 unconfined
+# （本機送出的 run 仍照跑，遠端送出的會被拒絕）——完整原因/修法見 DEPLOY.md §1c(e)。
+if ! command -v bwrap >/dev/null 2>&1; then
+  echo "⚠ 找不到 bwrap（bubblewrap）— Bash 圍籠會是 unconfined，詳見 DEPLOY.md §1c(e)（sudo apt install bubblewrap socat）。" >&2
+fi
+if ! command -v socat >/dev/null 2>&1; then
+  echo "⚠ 找不到 socat — Bash 圍籠會是 unconfined，詳見 DEPLOY.md §1c(e)（sudo apt install bubblewrap socat）。" >&2
+fi
+APPARMOR_USERNS_RESTRICT=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+if [ -r "$APPARMOR_USERNS_RESTRICT" ] && [ "$(cat "$APPARMOR_USERNS_RESTRICT" 2>/dev/null)" = "1" ]; then
+  echo "⚠ AppArmor 巢狀 unprivileged user namespace 限制生效中（$APPARMOR_USERNS_RESTRICT = 1）— 巢狀 bwrap 探測可能失敗，詳見 DEPLOY.md §1c(e)。" >&2
+fi
+
 echo "== 步驟 1/5：安裝 Node 依賴 (npm install) =="
 npm install
 

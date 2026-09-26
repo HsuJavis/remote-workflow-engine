@@ -408,6 +408,10 @@ curl -s http://localhost:8787/api/models | python3 -c \
 - **Node.js 22.6 以上**（沙箱子行程 `src/sandbox/child-entry.ts` 與啟動用的 `tsx` 都依賴 Node 22
   原生 `--experimental-transform-types` type-stripping）。
 - npm（隨 Node 附帶）。
+- **`bubblewrap`（`bwrap`）與 `socat`**：真正的 Claude CLI sandbox 硬性需要這兩個執行檔，缺一個
+  Bash 圍籠就直接量成 `unconfined`（見 §1c(e)，遠端送出的 run 會被拒絕）——`sudo apt install
+  bubblewrap socat` 裝好即可；**Ubuntu/AppArmor 主機另有一個常見的巢狀 namespace 限制**會讓兩者
+  都裝了、探測仍失敗，完整原因/取捨/復原步驟見 §1c(e)，這裡不重複。
 - **Python 3.11 或 3.12**：`agent()` 的兩條 gateway 路徑（預設的 `"sdk"` 與可選的
   `"direct-fetch"` 搭配 `useLiteLLMProxy:true`）都會啟動一個真實的
   `litellm --config ... --port ...` Python 子行程（`src/gateway/litellm-proxy.ts`
