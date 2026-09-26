@@ -313,7 +313,17 @@ export class SqliteSchedulerPort {
       try {
         nextFire = computeNextFire(s.cron, s.tz, this._clock.now() - 1);
       } catch (err) {
-        return { error: { code: 'INVALID_CRON', message: `This cron never fires: ${err instanceof Error ? err.message : String(err)}`, field: 'cron' } };
+        const msg = err instanceof Error ? err.message : String(err);
+        // send-back item 5 (verify-b, 2026-09-26): computeNextFire throws for two DIFFERENT
+        // reasons (scheduler-engine.ts) — `hasPossibleDate` fails when the date is analytically
+        // impossible on ANY calendar (e.g. Feb 31 — "never fires" is accurate), but the bounded
+        // scan can ALSO exhaust its 4-year search horizon on a date that genuinely recurs, just not
+        // soon (e.g. `0 0 29 2 1`, Feb 29 that also falls on a Monday — next at 2044-02-29).
+        // "never fires" overclaims for that second case; name the real limitation instead.
+        const prefix = msg.includes('within the search horizon')
+          ? 'This cron does not fire within the next 4 years (search horizon)'
+          : 'This cron never fires';
+        return { error: { code: 'INVALID_CRON', message: `${prefix}: ${msg}`, field: 'cron' } };
       }
     } else if (s.kind === 'once') {
       nextFire = Date.parse(s.at);

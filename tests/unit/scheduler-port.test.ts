@@ -81,6 +81,24 @@ describe('SchedulerPort CRUD (DES-016)', () => {
     const result = await port.create({ kind: 'cron', cron: '0 0 31 2 *', enabled: true });
     expect(result.error?.code).toBe('INVALID_CRON');
     expect(result.error?.field).toBe('cron');
+    // Genuinely impossible on ANY calendar date (no Feb 31 ever exists) — "never fires" is accurate here.
+    expect(result.error?.message).toMatch(/never fires/i);
+  });
+
+  // issue: send-back item 5 (verify-b, 2026-09-26) — `0 0 29 2 1` (Feb 29 that also falls on a
+  // Monday) is NOT analytically impossible (Feb 29 exists, and it lands on a Monday in 2044), it
+  // just doesn't recur within `computeNextFire`'s bounded 4-year search horizon. The pre-fix
+  // message wrapped BOTH cases in "This cron never fires", which overclaims for this one — reworded
+  // to name the actual limitation (the bounded horizon), never the code INVALID_CRON.
+  it('create with a cron outside the bounded search horizon but not analytically impossible (0 0 29 2 1 — Feb 29 on a Monday) does not overclaim "never fires"', async () => {
+    const port = new SqliteSchedulerPort({
+      clock: CLOCK, catalog: makeFakeCatalog(), runManager: makeFakeRunManager(), dbPath: ':memory:',
+    });
+    const result = await port.create({ kind: 'cron', cron: '0 0 29 2 1', enabled: true });
+    expect(result.error?.code).toBe('INVALID_CRON');
+    expect(result.error?.field).toBe('cron');
+    expect(result.error?.message).toMatch(/does not fire within the next 4 years \(search horizon\)/i);
+    expect(result.error?.message).not.toMatch(/never fires/i);
   });
 
   it('create with a step of 0 (*/0 * * * *) returns INVALID_CRON fast — the freeze this closes', async () => {
