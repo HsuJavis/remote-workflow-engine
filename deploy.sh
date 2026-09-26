@@ -44,7 +44,7 @@ npm install
 echo "== 步驟 2/5：確認設定檔 ($RWE_CONFIG_PATH) =="
 if [ ! -f "$RWE_CONFIG_PATH" ]; then
   cp rwe.config.example.json "$RWE_CONFIG_PATH"
-  echo "已從 rwe.config.example.json 建立 $RWE_CONFIG_PATH — 請視需要編輯 workRoot / aliases。"
+  echo "已從 rwe.config.example.json 建立 $RWE_CONFIG_PATH — 請視需要編輯 workRoot。"
   if [ -z "${RWE_WORK_ROOT:-}" ]; then
     # 範例設定檔的 workRoot 預設為系統路徑 (/var/lib/remote-workflow-engine)，非 root 無法寫入。
     # 首次部署且呼叫端未指定 RWE_WORK_ROOT 時，改用使用者可寫的預設路徑，讓一鍵部署免 root 也能成功；

@@ -36,7 +36,7 @@ set -a; . ~/.config/rwe.env; set +a   # 供應商金鑰 / secret（沒有這個�
 ```
 == 步驟 1/5：安裝 Node 依賴 (npm install) ==
 == 步驟 2/5：確認設定檔 (rwe.config.json) ==
-已從 rwe.config.example.json 建立 rwe.config.json — 請視需要編輯 workRoot / aliases。
+已從 rwe.config.example.json 建立 rwe.config.json — 請視需要編輯 workRoot。
 首次部署且未指定 RWE_WORK_ROOT：改用非 root 可寫的預設路徑 ~/.local/share/remote-workflow-engine
 （如需自訂，設定環境變數 RWE_WORK_ROOT 或編輯 rwe.config.json 的 workRoot 後重跑）。
 == 步驟 3/5：確認 LiteLLM Python venv (gateway:"sdk" 需要) ==
@@ -127,7 +127,8 @@ cp rwe.config.example.json rwe.config.json
 # 設定 workRoot 為 repo 外的絕對路徑，例：/home/<user>/.local/share/rwe-data
 # （deploy.sh 走一鍵路徑時，若是全新設定檔且未指定 RWE_WORK_ROOT，會自動用這個非 root
 #   可寫的預設路徑，不需手動編輯；這裡列出是給手動逐步部署或想自訂路徑的人看）
-# 設定 aliases 指向你的供應商/模型（見 §1b 設定總表 aliases 行）
+# 模型不必在設定檔裡設定——每個腳本自己在 meta.params.agents.<label>.model.default 宣告
+# 完整的 <provider>/<model-id> ref（見§情境配方 0）
 
 # 步驟 5：設定環境變數（每個鍵的用途見 §1b 設定總表）
 export PATH="$HOME/.rwe-litellm-venv/bin:$PATH"   # litellm 必須在 PATH 上
@@ -163,7 +164,7 @@ curl -s http://localhost:8787/api/system | python3 -c \
 # 統一模型目錄
 curl -s http://localhost:8787/api/models | python3 -c \
   "import json,sys; d=json.load(sys.stdin); print('models:', len(d), '/ first:', d[0]['provider']+'/'+d[0]['model'])"
-# 預期：models: N / first: ollama/...（或 anthropic/...，依 aliases）
+# 預期：models: N / first: ollama/...（或 anthropic/...，依這台部署接的供應商）
 ```
 
 ## 情境配方：gateway:sdk + LiteLLM 前置「本機/雲端模型」跑完整 sdlc-run
@@ -172,8 +173,9 @@ curl -s http://localhost:8787/api/models | python3 -c \
 > OpenRouter，能跑真正的 iso-agile-sdlc `sdlc-run`（每個 gate 換一顆角色/一顆模型）。步驟 0/1/2/5
 > 都經本機端對端實測，步驟 3/4（把角色提示詞內文貼進腳本 `prompt` 參數）也一樣：下面印出來的
 > 範例腳本與 mermaid 是照著抄就能通過 `workflow_register`、`run_start` 跑到 `completed` 的版本。
-> 兩個角色請用 `run_start` 的 `overrides:{agents:{architect:{model:'haiku'},implementer:{model:'haiku'}}}`
-> 指定模型——預設 `default` 別名指向本機 Ollama，沒跑 Ollama 的機器上那次 run 會整輪逾時（見步驟 0
+> 兩個角色請用 `run_start` 的 `overrides:{agents:{architect:{model:'ollama/<模型tag>'},implementer:{model:'ollama/<模型tag>'}}}`
+> 指定模型（2026-09-26 起沒有別名層，一律寫完整 `<provider>/<model-id>` ref）——沒跑 Ollama
+> 的機器上，若腳本或 override 指到的是 `ollama/...` 這樣的 ref，那次 run 會整輪逾時（見步驟 0
 > 「模型能力提醒」）。
 >
 > **改這張圖的時候有兩條規則會咬人**：stadium 節點只要對應的 `agent()` 宣告了 `allowedTools`，
@@ -197,12 +199,14 @@ curl -s http://localhost:8787/api/models | python3 -c \
 > 模型的呼叫本身不受這個截斷影響，只有記錄下來給你事後看的那份被截。）
 >
 > ### 0) 模型從哪裡來：本機用 Ollama，雲端用 OpenRouter
-> `provider` 只認 `anthropic`、`openrouter`、`ollama` 三種；`rwe.config.json` 的 `aliases` 只要出現
-> 第四種，引擎**開機就拒絕啟動**並逐列點名（見 §5「開機被拒」）。要接自己的模型，兩條路都是一等公民：
+> `provider` 只認 `anthropic`、`openrouter`、`ollama` 三種；腳本 `meta.params.agents.<label>.model`
+> 的 `.default`／`.enum` 只要出現第四種、或不是完整 `<provider>/<model-id>` 形狀的裸名稱，
+> `workflow_register` **當場拒絕註冊**（`UNKNOWN_MODEL`，見 §5「開機被拒」旁的註冊期拒絕）。要接
+> 自己的模型，兩條路都是一等公民：
 > - **本機／自架模型 → Ollama**：把模型放在一個 Ollama（或 Ollama API 相容）伺服器後面，
->   `provider:"ollama"` + `OLLAMA_BASE_URL` 指過去（見下方§1、§2）。
-> - **雲端模型 → OpenRouter**：`provider:"openrouter"` + `OPENROUTER_API_KEY`，單一 key 開放整個
->   OpenRouter 目錄（`models_list` 可查），或 `agent({model:"openrouter/<id>"})` passthrough。
+>   腳本寫 `model.default:"ollama/<模型tag>"` + `OLLAMA_BASE_URL` 指過去（見下方§1、§2）。
+> - **雲端模型 → OpenRouter**：腳本寫 `model.default:"openrouter/<id>"` + `OPENROUTER_API_KEY`，
+>   單一 key 開放整個 OpenRouter 目錄（`models_list` 可查）。
 >
 > ### 1) 設定檔（`rwe.config.json`）
 > ```json
@@ -210,25 +214,22 @@ curl -s http://localhost:8787/api/models | python3 -c \
 >   "bind": "127.0.0.1", "port": 8787,
 >   "workRoot": "/var/lib/remote-workflow-engine",   ⟵ 必須在任何 .git/CLAUDE.md 祖先之外（見 §1b workRoot 行）
 >   "timeoutMs": 300000, "gateway": "sdk",
->   "defaultAllowedTools": ["Read","Write","Edit","Glob","Grep","Bash"],
->   "aliases": {
->     "default":  { "provider": "ollama", "model": "<你 Ollama 伺服器上的某個模型 tag>" },
->     "opus":     { "provider": "openrouter", "model": "<最強的那顆，給決策/複雜任務>" },
->     "sonnet":   { "provider": "openrouter", "model": "<中階，給一般任務>" },
->     "haiku":    { "provider": "ollama", "model": "<便宜快的，給簡單任務>" }
->   }
+>   "defaultAllowedTools": ["Read","Write","Edit","Glob","Grep","Bash"]
 > }
 > ```
-> 別名右邊的 `model` 就是**你 Ollama `/api/tags` 或 OpenRouter `/api/v1/models` 看到的那些 id**；別名
-> 名稱本身隨你的腳本怎麼宣告 `meta.params.agents.<label>.model.default`／`.enum` 而定，不是引擎固定的。
+> **2026-09-26 起沒有 `aliases` 設定鍵**——每個模型直接用它自己唯一的 `<provider>/<model-id>` 全稱
+> 位址，寫在腳本自己的 `meta.params.agents.<label>.model.default`／`.enum` 裡（不是設定檔）；
+> `model` 就是**你 Ollama `/api/tags` 或 OpenRouter `/api/v1/models` 看到的那些 id**，前面加上
+> `ollama/` 或 `openrouter/` 前綴。`models_list` 會列出這台部署能連到的每個模型，`ref` 欄就是可以
+> 直接複製貼上的完整字串。
 > **模型能力提醒**：需要「決策 + 工具呼叫」的任務**別用太小的模型**（7B 級的原生 tool-use 不穩）；
 > 這類任務請挑你環境裡最能穩定做 native tool-use 的那顆（實測 OpenRouter 上的旗艦模型可、本機
 > qwen2.5:7b 不行）。
 >
 > ### 2) 憑證環境變數
 > ```bash
-> export OLLAMA_BASE_URL="http://<你的 Ollama 伺服器host>:11434"   # ← 讓所有 ollama 別名導向它（本機用預設值可省略）
-> export OPENROUTER_API_KEY="<你的 OpenRouter key，sk-or-...>"       # ← 用到 openrouter 別名才需要
+> export OLLAMA_BASE_URL="http://<你的 Ollama 伺服器host>:11434"   # ← 讓所有 ollama/... 的 model ref 導向它（本機用預設值可省略）
+> export OPENROUTER_API_KEY="<你的 OpenRouter key，sk-or-...>"       # ← 用到 openrouter/... 的 model ref 才需要
 > ```
 > LiteLLM 子行程以 `{...process.env}` 繼承這兩個變數。
 > ⚠️ **key 檔格式坑**：若你的 key 存成 `OPENROUTER_API_KEY=sk-...` 這種**整行**檔，別直接
@@ -242,17 +243,20 @@ curl -s http://localhost:8787/api/models | python3 -c \
 > iso-agile-sdlc plugin：可能是 `agents/sdlc-<role>.md`，也可能是別的檔名/角色切法——**不要把任何
 > 特定檔名寫死當事實**，用你自己那份裝好的 plugin 現有的檔案為準），**貼進腳本裡「那個 gate 對應的
 > 那次 `agent()` 呼叫」的 `prompt` 參數最前面**，接上這次真正要做的任務指示。每個角色是一個獨立的
-> `meta.params.agents.<label>` 宣告（各自的 `model`/`effort`/`timeoutMs` 對應第1步準備好的 tier
-> 別名），角色文字是腳本裡的一段字面字串，不是伺服器端檔案查找鍵。示意（完整幾個角色同理，這裡只
-> 示範 2 個）：
+> `meta.params.agents.<label>` 宣告（各自的 `model`/`effort`/`timeoutMs` 對應第1步準備好的完整
+> model ref），角色文字是腳本裡的一段字面字串，不是伺服器端檔案查找鍵。示意（完整幾個角色同理，
+> 這裡只示範 2 個；下面印的 `ollama/qwen2.5:7b`／`ollama/qwen2.5vl:7b` 是本機一個典型 Ollama
+> 安裝會有的兩個 tag，照抄就能通過註冊——想改用 OpenRouter 雲端模型，換成你自己帳號下
+> 真正的 `openrouter/<id>`（`models_list({provider:"openrouter"})` 查得到的那個，不是隨手編的
+> 名字，未上市的 id 會被 `UNKNOWN_MODEL` 拒絕）：
 > ```js
 > export const meta = {
 >   description: 'sdlc gate pass with inlined role prompts',
 >   params: {
 >     args: { feature: { type: 'string' } },
 >     agents: {
->       architect:   { model: { type: 'string', default: 'opus' },   effort: { type: 'enum', enum: ['low','medium','high'], default: 'high' },   timeoutMs: { type: 'number', default: 300000 } },
->       implementer: { model: { type: 'string', default: 'sonnet' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'medium' }, timeoutMs: { type: 'number', default: 300000 } },
+>       architect:   { model: { type: 'string', default: 'ollama/qwen2.5:7b' },   effort: { type: 'enum', enum: ['low','medium','high'], default: 'high' },   timeoutMs: { type: 'number', default: 300000 } },
+>       implementer: { model: { type: 'string', default: 'ollama/qwen2.5vl:7b' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'medium' }, timeoutMs: { type: 'number', default: 300000 } },
 >     },
 >   },
 > };
@@ -287,10 +291,10 @@ curl -s http://localhost:8787/api/models | python3 -c \
 > ```
 > graph LR
 > subgraph "architecture"
-> architect(["architect<br/>opus · high · 300000<br/>tools: Edit, Glob, Grep, Read, Write"])
+> architect(["architect<br/>ollama/qwen2.5:7b · high · 300000<br/>tools: Edit, Glob, Grep, Read, Write"])
 > end
 > subgraph "implementation"
-> implementer(["implementer<br/>sonnet · medium · 300000<br/>tools: Bash, Edit, Glob, Grep, Read, Write"])
+> implementer(["implementer<br/>ollama/qwen2.5vl:7b · medium · 300000<br/>tools: Bash, Edit, Glob, Grep, Read, Write"])
 > end
 > architect --> implementer
 > ```
@@ -325,8 +329,9 @@ curl -s http://localhost:8787/api/models | python3 -c \
 >   `seed:[{path,contentB64}]` 帶上（Gate 1 需求要先在本地備好，state.yaml 的 `gates.requirements.passed=true`）。
 > - **git baseline 自動**：引擎會在 seed 落地後自動 `git init`+baseline commit（REQ-027），precheck 的
 >   `git rev-parse --is-inside-work-tree` 會通過——**你不用手動 seed `.git`**（materializeSeed 本來就會擋）。
-> - **model shorthand 自動處理**：`haiku`/`sonnet`/`opus` 被 CLI 展開成 Anthropic id 的老問題已由
->   `proxyModelName` 前綴根治，你不需做任何事。
+> - **沒有 model shorthand 這回事**：2026-09-26 起模型一律是完整 `<provider>/<model-id>` ref（不是
+>   `haiku`/`sonnet`/`opus` 這種裸名稱），CLI 沒有東西可以「展開」——一個裸名稱在**註冊當下**就被
+>   `UNKNOWN_MODEL` 拒絕，不會留到 dispatch 階段才發現。
 > - **budget**：sdlc 全流程**吃 input token 很兇**（每個 agent 重讀 seed/docs，實作階段還會裝 venv 撐大
 >   context）。`budget` 是物件（裸數字回 `INVALID_ARGUMENT`）：設 `budget:{tokens:<數量>}` 當硬上限；
 >   實測一次 lean 全流程到 Gate 6 約 ~3M token。**撞上限這件事本身沒有「調高後原地續跑」這個按鈕**——
@@ -500,11 +505,11 @@ curl -s http://localhost:8787/api/models | python3 -c \
     全引擎同時最多 2 個渲染子行程；超過上限的請求直接降級回原始碼，不排隊。
     這條路由**不需要認證**（dashboard 的瀏覽器沒有 token），所以這三道限制是它的防護，不是最佳化。
 - 外部依賴：不需要資料庫伺服器（狀態存在本機檔案：SQLite + JSONL journal，路徑見 `workRoot`）。
-- LLM 供應商（依你要用的模型別名擇一或多個）：對應的環境變數（`ANTHROPIC_API_KEY`／
+- LLM 供應商（依你腳本裡的 model ref 用到哪個 provider 擇一或多個）：對應的環境變數（`ANTHROPIC_API_KEY`／
   `OLLAMA_BASE_URL`／`OPENROUTER_API_KEY`／`CLAUDE_CODE_OAUTH_TOKEN`）
   每一個都只在 §1b 設定總表列出一次，請直接查表。
 
-  **未設定的供應商不會擋住啟動** —— 對應別名的 `agent()` 呼叫只會在真正被呼叫時，走 D-G 電路斷路器
+  **未設定的供應商不會擋住啟動** —— 指到該 provider 的 `agent()` 呼叫只會在真正被呼叫時，走 D-G 電路斷路器
   邏輯解析成 `null`（run 繼續跑，不會掛住），真實不可達端點與缺金鑰兩種情境都是這個行為
   （`gateway:"sdk"`/`"direct-fetch"` 兩條路徑皆適用）。
 
@@ -524,7 +529,6 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `gateway` | `"sdk"`（預設，真正的 `@anthropic-ai/claude-agent-sdk` headless session，有工具迴圈）或 `"direct-fetch"`（回退到直接對各供應商 `fetch()`，或搭配 `useLiteLLMProxy:true` 走 LiteLLM 代理；本來就不具備工具迴圈能力，適合純本機/內網不需要工具迴圈的部署） | `"sdk"｜"direct-fetch"` / `"sdk"` | 否 | v1 |
 | `rwe.config.json` → `useLiteLLMProxy` | `direct-fetch` 路徑是否額外走 LiteLLM 代理（`false` 時 ollama 走原生直連 `localhost:11434`，完全不碰 LiteLLM，免依賴部署常用） | `boolean` / `true` | 否 | v1 |
 | `rwe.config.json` → `defaultAllowedTools` | `gateway:"sdk"` 路徑下，`agent()` 呼叫沒帶 `opts.allowedTools` 時套用的預設工具清單；只有兩層優先序：呼叫端 `opts.allowedTools` > 此鍵（省略此鍵才落到內建預設） | `string[]` / `["Read","Write","Edit","Glob","Grep","Bash"]` | 否 | v34 |
-| `rwe.config.json` → `aliases` | 模型別名 → `{provider,model}` 對照表；`provider` 僅 `"anthropic"｜"openrouter"｜"ollama"`（三選一；出現第四種一律開機拒絕，見§情境配方 0）；省略時內建預設等同拿掉 `local` 那份（全指向 anthropic）。**同一個模型可以掛多個別名**（例如 `haiku` 與 `claude-haiku-4-5` 同時指向同一個模型）——價格表以 `provider/model` 為鍵，有價格的那筆永遠不會被沒有價格的那筆蓋掉，花費照記；`models_list`／`GET /api/models` 每個模型只回一列，該列的 `aliases` 會列出所有指向它的別名 | `object` / 見 `rwe.config.example.json` | 否 | v26 |
 | `rwe.config.json` → `allowedHosts` | `bind:"0.0.0.0"` 時額外允許的 Host/Origin authority（LAN IP、代理主機名）清單，供 Host/Origin 白名單（§6）核對 | `string[]` / `[]` | 否（`0.0.0.0` bind 時建議設定） | v11 |
 | `rwe.config.json` → `anthropicBaseUrl` | `anthropic` provider 直連（LiteLLM-bypassed）路徑打的真實 Anthropic API base | `string` / `'https://api.anthropic.com'` | 否 | v7 |
 | `rwe.config.json` → `anthropicAuth` | Anthropic 直連認證模式：`"api-key"`（真實 `ANTHROPIC_API_KEY`）或 `"subscription"`（`claude setup-token` 產生的 `CLAUDE_CODE_OAUTH_TOKEN`）；認證素材本身一律來自 secret store／環境變數，絕不放進此檔 | `"api-key"｜"subscription"` / 依偵測到的 secret 自動判斷 | 否 | v7 |
@@ -544,7 +548,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `runConcurrency` | **單一 run 內同時在飛的 `agent()` 上限** —— 一個 `parallel()` 實際跑多寬。達上限的呼叫在 `acquireSlot()` **排隊**（不拒絕、不丟棄），所以更寬的 fan-out 只是比較慢。另有一層跨所有 run 的主機層上限（agent 號誌），由 `agentSlots` 設定 | `number` / `24` | 否 | v25 |
 | `rwe.config.json` → `agentSlots` | **跨所有 run 的主機層 agent 號誌上限** —— 同一時間允許幾個 agent 子行程存在；達上限的呼叫排隊等槽位。可在 `/api/status` 的 `agentSemaphore.total` 直接看到生效值（設 `"agentSlots": 7` 就會讀到 7）。與 `runConcurrency`（單一 run 內）是兩層不同的上限 | `number` / `32` | 否 | v26 |
 | `rwe.config.json` → `maxConcurrentRuns` | 頂層 run 並行上限（run-admission counter）；達上限時 `start()` 在任何持久化動作之前以 `RUN_ADMISSION_LIMIT` 拒絕；巢狀 `workflow()` 不佔用槽位 | `number` / `64` | 否 | v8 |
-| `rwe.config.json` → `modelProbe` | 週期性模型探測（issue #73）：對每個設定別名的不同 provider/model 打一通純文字＋一通只給 `Bash` 的呼叫，結果供 `models_list` 的 `toolUseVerified`/`proseVerified`/`stabilitySource`，並在 `run_start` 對「帶工具卻落在探測沒用工具的模型」的 agent 發非致命警告。`{enabled, intervalMs, timeoutMs}`：`intervalMs` 為整數且 ≥ 60000、`timeoutMs` 為 1..600000 的整數、不認得的鍵——任一不符即開機拒絕。成本約每模型每週兩通極小呼叫；不在開機時探測，第一次檢查在 min(intervalMs, 1h) 後。`enabled:false` 只關週期探測，admin 的 `models_probe` 仍可用 | `object` / `{enabled:true, intervalMs:604800000, timeoutMs:60000}` | 否 | #73 |
+| `rwe.config.json` → `modelProbe` | 週期性模型探測（issue #73）：對每個已註冊 workflow 版本宣告過的相異 provider/model 打一通純文字＋一通只給 `Bash` 的呼叫，結果供 `models_list` 的 `toolUseVerified`/`proseVerified`/`stabilitySource`，並在 `run_start` 對「帶工具卻落在探測沒用工具的模型」的 agent 發非致命警告。`{enabled, intervalMs, timeoutMs}`：`intervalMs` 為整數且 ≥ 60000、`timeoutMs` 為 1..600000 的整數、不認得的鍵——任一不符即開機拒絕。成本約每模型每週兩通極小呼叫；不在開機時探測，第一次檢查在 min(intervalMs, 1h) 後。`enabled:false` 只關週期探測，admin 的 `models_probe` 仍可用 | `object` / `{enabled:true, intervalMs:604800000, timeoutMs:60000}` | 否 | #73 |
 | `rwe.config.json` → `workspaceTtlMs` | Workspace GC sweep 間隔（ms）：回收閒置舊 workspace 目錄（REQ-026），**同時決定 auth-table GC（`gcExpired()`）間隔**；`0`/省略 = workspace reclaim 關閉，auth 啟用但未設此鍵時 sweep 每小時跑一次 | `number` / `0`（停用） | 否 | v16 |
 | `rwe.config.json` → `continuationDbPath` | on-completion chaining 續接的 SQLite 檔路徑；引擎會開這個檔，但 36 個工具裡沒有任何一個對應到它（沒有 `chain_*` 工具），設了不影響行為 | `string` / `$workRoot/continuations.db` | 否 | v24 |
 | `rwe.config.json` → `webhookDbPath` | webhook 註冊表（`webhooks`+`webhook_deliveries`）SQLite 檔路徑；**secret 明文儲存**於此檔（HMAC 驗簽需要），存取權限即機密邊界；`webhook_list` 只回 sha256 前綴指紋 | `string` / `$workRoot/webhooks.db` | 否 | v8 |
@@ -570,12 +574,12 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | env `RWE_LITELLM_VENV` | 只有 `deploy.sh` 讀：LiteLLM Python venv 的路徑（步驟 3 檢查／建立 `<venv>/bin/litellm`，並把 `<venv>/bin` 加進服務的 `PATH`）；引擎本身不讀這個變數 | `string` / `$HOME/.rwe-litellm-venv` | 否 | v24 |
 | env `RWE_SECRET_<NAME>` | 伺服器端 secret store；provisioned MCP config 裡的 `${secret:NAME}` handle 由此解析（大小寫敏感）；缺少則該次引用以 `SECRET_MISSING` 報錯，從不外洩值或靜默跳過；絕不放進 JSON 設定檔 | `string` / 無預設 | 依 MCP 引用 | v1 |
 | env `RWE_SECRET_GITHUB_TOKEN` | `issue_report`／Issues 儀表板需要；GitHub PAT/fine-grained token，須有目標 repo `issues:write` 權限；缺少時 `issue_report` 回 `GITHUB_TOKEN_MISSING`，`GET /api/issues` 回 200 `{degraded}`（不 500） | `string` / 無預設 | 否（缺少則降級） | v1 |
-| env `ANTHROPIC_API_KEY` | `provider:"anthropic"` 別名的 API key（範例設定檔的 `sonnet`/`haiku`/`opus`/`default` 都指向此）；`gateway:"sdk"` 路徑也可改由 `RWE_SECRET_ANTHROPIC_API_KEY` 提供 | `string` / 無預設 | 用到 anthropic 別名時 | v1 |
+| env `ANTHROPIC_API_KEY` | 每個 `anthropic/<model-id>` ref 用的 API key；`gateway:"sdk"` 路徑也可改由 `RWE_SECRET_ANTHROPIC_API_KEY` 提供 | `string` / 無預設 | 用到 anthropic model ref 時 | v1 |
 | env `RWE_SECRET_ANTHROPIC_API_KEY` | 同上，但走伺服器端 secret store（`gateway:"sdk"` 直連 Anthropic 時優先於 `ANTHROPIC_API_KEY`） | `string` / 無預設 | 否 | v7 |
 | env `CLAUDE_CODE_OAUTH_TOKEN` | `provider:"anthropic"` **直連**的**訂閱制**認證（`anthropicAuth:"subscription"`），用 `claude setup-token`（Pro/Max 帳號）產生；設定時**不要**同時設 `ANTHROPIC_API_KEY` | `string` / 無預設 | 否 | v7 |
 | env `RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN` | 同上，但走伺服器端 secret store（優先於 `CLAUDE_CODE_OAUTH_TOKEN`） | `string` / 無預設 | 否 | v7 |
-| env `OLLAMA_BASE_URL` | `provider:"ollama"` 別名要打的 Ollama 位址（本機/內網/自架模型，免金鑰；見 §6「本機小模型能力上限」與§情境配方 0） | `string` / `http://localhost:11434` | 否 | v1 |
-| env `OPENROUTER_API_KEY` | `provider:"openrouter"` 別名與 `agent({model:"openrouter/<id>"})` passthrough 的 API key（`sk-or-…`）；LiteLLM 以原生 `openrouter/<model>` 路由自動讀取，一把 key 開放整個 OpenRouter 目錄（`models_list` 可查） | `string` / 無預設 | 用到 openrouter 時 | v9 |
+| env `OLLAMA_BASE_URL` | 每個 `ollama/<model-tag>` ref 要打的 Ollama 位址（本機/內網/自架模型，免金鑰；見 §6「本機小模型能力上限」與§情境配方 0） | `string` / `http://localhost:11434` | 否 | v1 |
+| env `OPENROUTER_API_KEY` | 每個 `openrouter/<id>` ref 的 API key（`sk-or-…`）；LiteLLM 以原生 `openrouter/<model>` 路由自動讀取，一把 key 開放整個 OpenRouter 目錄（`models_list` 可查） | `string` / 無預設 | 用到 openrouter model ref 時 | v9 |
 | env `RWE_SECRET_GITHUB_WEBHOOK_SECRET` | 標籤觸發式自動更新的 GitHub webhook HMAC 共享密鑰；`POST /github/webhook` 以此對原始 body bytes 算 HMAC-SHA256 比對 `X-Hub-Signature-256`；缺少（且未設 `updateFlagPath`）則路由回 503 `UPDATE_WEBHOOK_UNCONFIGURED` | `string` / 無預設 | 否（缺少則自動更新停用） | v11 |
 
 `auth.enabled:true` 時的部署前提：
@@ -760,10 +764,11 @@ curl -s -o /dev/null -w "dashboard=%{http_code}\n" http://127.0.0.1:8787/dashboa
 ```json
 {
   "bind": "127.0.0.1", "port": 8787, "workRoot": "./data",
-  "timeoutMs": 300000, "gateway": "direct-fetch", "useLiteLLMProxy": false,
-  "aliases": { "default": { "provider": "ollama", "model": "qwen2.5:7b" } }
+  "timeoutMs": 300000, "gateway": "direct-fetch", "useLiteLLMProxy": false
 }
 ```
+模型不寫在設定檔——腳本自己的 `meta.params.agents.<label>.model.default` 寫
+`"ollama/qwen2.5:7b"`（或你 Ollama 伺服器上真正有的其他 tag）。
 
 **常見的坑**：
 1. **`ExecStart` 不要用 `npm`** —— 若 node 是用版本管理器裝的（例如在 `~/.local/node/bin/`），
@@ -863,11 +868,11 @@ npm run start
 |------|----------|------|
 | 啟動失敗 `EADDRINUSE` | port 已被另一個 remote-workflow-engine process 占用 | `RWE_PORT=<other>` 換一個 port，或先確認/停掉舊 process（`ps aux \| grep "main.ts"`） |
 | `pip install 'litellm[proxy]'` 失敗（`uvloop`/`orjson` 編譯錯誤） | 系統 Python 版本太新（如 3.13/3.14），沒有預編譯 wheel | 用 §1a 的 `uv python install 3.12` 取得一份獨立的 3.12，改用它裝 |
-| `agent()` 一律回傳 `null`、`run_status.agents[].state === "failed"` | 該別名對應的 provider 沒有可用憑證/端點（伺服器不會掛住，只會讓該次呼叫失敗回 `null`）——一個**依序** `await agent(...)` 呼叫失敗或逾時一律回傳 `null`，不拋例外，是刻意設計，不是漏接；`run_status`/`run_result`/`GET /api/runs/:id` 會同時多一個 `failedAgentCount` 欄位，不必自己去掃 `agents[]` 才發現「這次 run 裡有東西失敗了」 | 確認 `ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY`/`OLLAMA_BASE_URL` 已正確設定，且 `rwe.config.json` 的 `aliases` 有指到你要的 provider/model；腳本自己要對 `await agent(...)` 的回傳值判斷 `null` 再往下用，避免把 `null` 字串化接進下一段 prompt |
+| `agent()` 一律回傳 `null`、`run_status.agents[].state === "failed"` | 該 model ref 對應的 provider 沒有可用憑證/端點（伺服器不會掛住，只會讓該次呼叫失敗回 `null`）——一個**依序** `await agent(...)` 呼叫失敗或逾時一律回傳 `null`，不拋例外，是刻意設計，不是漏接；`run_status`/`run_result`/`GET /api/runs/:id` 會同時多一個 `failedAgentCount` 欄位，不必自己去掃 `agents[]` 才發現「這次 run 裡有東西失敗了」 | 確認 `ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY`/`OLLAMA_BASE_URL` 已正確設定，且腳本 `meta.params.agents.<label>.model.default` 寫的完整 ref 指到你要的 provider/model；腳本自己要對 `await agent(...)` 的回傳值判斷 `null` 再往下用，避免把 `null` 字串化接進下一段 prompt |
 | 宣告的 `timeoutMs` 跟實際等到失敗的時間對不上（例如宣告 60000ms、實測快兩倍才失敗） | `timeoutMs` 界定的是**單次嘗試**、不是整個呼叫；部署的 `retries`（`rwe.config.json`，預設 1）會讓實際最壞等待時間變成 `timeoutMs × (1 + retries)` | 呼叫 `workflow_describe` 直接讀 `params.agents.<label>.timeoutMs.attempts`/`.worstCaseMs`（伺服器已經照這條公式算好，不必自己乘） |
-| `workflow_register` 回 `UNKNOWN_ALIAS` | 腳本 `meta.params.agents.<label>.model.default` 的別名沒在 `aliases` 設定檔裡 | 補上該別名，或改用已存在的別名——這是在**註冊當下**就報錯（`model` 不能寫在 `agent()` 呼叫裡，寫了是 `SCAN_VIOLATION`），不會跑到一半才失敗 |
+| `workflow_register` 回 `UNKNOWN_MODEL` | 腳本 `meta.params.agents.<label>.model.default`／`.enum` 不是合法的完整 `<provider>/<model-id>` ref（裸名稱、認不得的 provider 前綴），或 openrouter/ollama 的 id 在該供應商的現行目錄裡真的找不到 | 改成完整 ref（用 `models_list` 查、複製它的 `ref` 欄位貼上）——這是在**註冊當下**就報錯（`model` 不能寫在 `agent()` 呼叫裡，寫了是 `SCAN_VIOLATION`），不會跑到一半才失敗 |
 | 任何工具呼叫回 JSON-RPC `-32601 Unknown tool` | 用的工具名不存在（例如 `workflow_run`／`workflow_status`／`asset_push`／`mcp_provision`／`chain_create`） | 用 `tools/list`（36 個）查現行名稱；權威清單是 `src/tool-specs.ts` |
-| 開機 log 出現 `unrecognized config key(s) in rwe.config.json, ignored: …` | `rwe.config.json` 有引擎不認得的鍵（打錯字，或已不存在的鍵，例如 `graphAnalyzer`） | 把該鍵從設定檔移除；有效鍵只有 §1b 設定總表列出的那些 |
+| 開機 log 出現 `unrecognized config key(s) in rwe.config.json, ignored: …` | `rwe.config.json` 有引擎不認得的鍵（打錯字，或已不存在的鍵，例如 `graphAnalyzer`、`aliases`——2026-09-26 起別名機制整個移除） | 把該鍵從設定檔移除；有效鍵只有 §1b 設定總表列出的那些。**`aliases` 這個鍵不會擋住開機**（自我更新重啟舊設定檔時仍要能正常啟動），但已完全不生效——把每個模型改寫進腳本自己的 `meta.params.agents.<label>.model.default`（完整 `<provider>/<model-id>` ref） |
 | `workflow_register` 回 `MERMAID_REQUIRED` 或 `DIAGRAM_MISMATCH` | 註冊必須附一張非空的 Mermaid 圖，而且圖裡的 stadium 節點 `id(["label"])` 要跟腳本的 `agent()` label 雙向完全對上 | 補上 `mermaid` 參數；節點少了就補、多了就刪。詳細語法見 `docs/AUTHORING.md`（或呼叫 `workflow_authoring_guide`）|
 | `run_start` 回 `PARAM_UNKNOWN`，訊息說 overrides 只有 `agents` 一個鍵 | 用的是扁平的 `overrides:{effort:...}` | 改成逐 agent：`overrides:{agents:{'<label>':{effort:...}}}`；而且該鍵必須在 `meta.params.agents.<label>` 宣告過 |
 | `run_start` 回 `CHANNEL_UNPUBLISHED`；或 `workflow_describe` 回 `runnable:false` | 剛註冊完還沒發布——註冊只建立版本，不會自動指向任何頻道 | `workflow_publish({name, version, channel:"release"})`（三個參數都必填，`version` 是註冊回傳的字串如 `"v1"`）|
@@ -895,7 +900,7 @@ npm run start
   到不了 OpenRouter：實測攔下真正送出的請求，`low` 與 `high` 兩次的內容完全相同、也沒有
   `reasoning_effort` 欄位（CLI 把預算收斂成 `thinking:{type:"adaptive"}`，LiteLLM 再對 openrouter
   丟掉這個參數）。`run_agent_log` 的 `harness.effortApplied` **會如實回報 `{applied:false, reason:…}`
-  並說明原因**。Anthropic 別名的 `effort` 有作用（spawn 出來的 CLI argv 上看得到 `--effort <值>`）。
+  並說明原因**。Anthropic 模型的 `effort` 有作用（spawn 出來的 CLI argv 上看得到 `--effort <值>`）。
 
 - **舊部署（升級上來的 workRoot）：`schedules` 資料表會在下次啟動時自動重建，你不必做任何事。**
   `schedules` 在早期版本把 `workflow` 欄位設成「不可為空」（那時觸發器一定綁著工作流程）；自從
@@ -1179,8 +1184,8 @@ RWE_SECRET_GITHUB_WEBHOOK_SECRET=<你在 GitHub 設的 Secret>
 > 或 `EnvironmentFile=` 都行，跟 `RWE_UPDATE_FLAG` 等變數同一個機制；範本 `deploy/rwe-update.service`
 > 內建 `EnvironmentFile=-/etc/rwe/update.env`，這條線前面的 `-` 代表檔案不存在也不報錯），
 > `deploy/rwe-update.sh` 會在 `npm test` 綠燈之後、真正 `systemctl restart` 之前，額外跑一次
-> `npm run check-config`——用**同一條** `composeConfig()` 翻譯路徑驗證設定值（例如 `aliases` 有沒有
-> 殘留已下架的 provider 列），但完全不 spawn litellm、不綁 port。驗證失敗會跟建置/測試失敗一樣安全
+> `npm run check-config`——用**同一條** `composeConfig()` 翻譯路徑驗證設定值（例如 `principals` 裡
+> 是否有無效的 role 值），但完全不 spawn litellm、不綁 port。驗證失敗會跟建置/測試失敗一樣安全
 > 失敗（退回前一個 SHA，不重啟），並把 `configCheck:"failed"` 寫進結果檔；沒設 `RWE_CONFIG_PATH` 則記
 > `configCheck:"skipped"`（不是靜默略過——面板上看得到）。也可以手動跑一次同一個檢查：
 > `RWE_CONFIG_PATH=<path> npm run check-config`（離線用，不用真的觸發更新）。
@@ -1244,7 +1249,7 @@ curl -s http://localhost:8787/api/version
 ```bash
 BASE=http://那台:PORT
 curl -s $BASE/api/version ; echo          # Ollama ⇒ {"version":"0.x.x"}（另有 /api/tags）
-curl -s $BASE/api/tags | head -c 400      # 看有哪些模型 tag（右邊 aliases.model 就填這些）
+curl -s $BASE/api/tags | head -c 400      # 看有哪些模型 tag——腳本的 model.default 就填 "ollama/<這些tag之一>"
 ```
 
 

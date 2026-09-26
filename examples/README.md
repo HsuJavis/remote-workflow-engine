@@ -39,18 +39,18 @@ workflow_run({
 | field | type | default | notes |
 |---|---|---|---|
 | `inquiry` | string (required) | — | the customer's question |
-| `draftModels` | string[] | two free OpenRouter models | any alias or `openrouter/<id>` passthrough; runs in **parallel** |
-| `verifyModel` | string | `"opus"` | the aggregator/verifier; any alias or `openrouter/<id>` |
+| `draftModels` | string[] | two free OpenRouter models | any full `<provider>/<model-id>` ref; runs in **parallel** |
+| `verifyModel` | string | `"anthropic/claude-opus-4-8"` | the aggregator/verifier; any full `<provider>/<model-id>` ref |
 
-Discover available models with the `models_list` tool (filter e.g. `{location:"remote", toolUse:true, maxPricePerM:1}`).
+Discover available models with the `models_list` tool (filter e.g. `{location:"remote", toolUse:true, maxPricePerM:1}`) — each row's `ref` field is the exact string to paste.
 
 ### Using Anthropic-direct Opus (subscription or API key) as the verifier
 
-`verifyModel:"opus"` needs an **anthropic-provider** alias on the engine (it then bypasses LiteLLM
-for native quality). In `rwe.config.json`:
+`verifyModel:"anthropic/claude-opus-4-8"` dispatches straight to the real Anthropic API (bypassing
+LiteLLM for native quality) — no config-file entry is needed for the model itself, just auth. In
+`rwe.config.json`:
 
 ```jsonc
-"aliases": { "opus": { "provider": "anthropic", "model": "claude-opus-4-8" } },
 "anthropicAuth": "subscription"        // or "api-key"
 ```
 

@@ -1,5 +1,13 @@
 // customer-service.workflow.js — a "multi-model draft → verify/synthesize" workflow.
 //
+// KNOWN STALE (pre-existing, not touched by the 2026-09-26 alias-removal change): this file
+// predates the v24 `agent(label, options)` + static `meta.params.agents.<label>` contract (ARCH-096
+// requires a literal label and a literal options object per call, declared ahead of time) — the
+// dynamic per-item `agent(prompt, {model, label})` calls below will not register on the current
+// engine as-is. Only the alias/model-ref wording and defaults were updated here; a full v24
+// migration (bounded draft slots, each with its own static contract entry) is separate follow-up
+// work, tracked outside this change.
+//
 // Two cheaper/faster models each independently DRAFT a reply to a customer inquiry (in parallel),
 // then one stronger model VERIFIES both drafts (drops hallucinations / over-confident or unsupported
 // claims) and SYNTHESIZES the single best final reply to send. This is a cheap way to raise answer
@@ -11,10 +19,10 @@
 //
 // args:
 //   inquiry      (string, required)  the customer's question
-//   draftModels  (string[], optional) two model aliases/ids that draft in parallel.
-//                default: two free OpenRouter models. Any alias or `openrouter/<id>` passthrough works.
-//   verifyModel  (string, optional)  the aggregator/verifier. default: "opus"
-//                (an Anthropic-direct alias — configure it + auth on the engine; see examples/README.md).
+//   draftModels  (string[], optional) two full `<provider>/<model-id>` refs that draft in parallel.
+//                default: two free OpenRouter models. Any `openrouter/<id>` (or other provider) ref works.
+//   verifyModel  (string, optional)  the aggregator/verifier. default: "anthropic/claude-opus-4-8"
+//                (an anthropic-direct ref — configure auth on the engine; see examples/README.md).
 //
 // returns: { inquiry, draftModels, verifyModel, drafts: [reply1, reply2], final }
 
@@ -32,7 +40,7 @@ const draftModels = args.draftModels ?? [
   'openrouter/google/gemma-4-26b-a4b-it:free',
   'openrouter/openai/gpt-oss-20b:free',
 ];
-const verifyModel = args.verifyModel ?? 'opus';
+const verifyModel = args.verifyModel ?? 'anthropic/claude-opus-4-8';
 
 if (!inquiry) return { error: 'ISSUE: args.inquiry is required (the customer question)' };
 

@@ -34,11 +34,13 @@ export const meta = {
   description: 'Summarize the given topic in one paragraph',
   params: {
     agents: {
-      writer: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },
+      writer: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },
     },
   },
 };
 ```
+
+A declared `model.default` (and every entry of a declared `model.enum`) MUST be a full `<provider>/<model-id>` ref — providers are exactly `anthropic`, `openrouter`, `ollama` — split at the FIRST `/` (an openrouter id can itself carry further `/`s, e.g. `openrouter/openai/gpt-4.1`; an ollama id can carry `:`/`.`, e.g. `ollama/qwen2.5:7b`). There are no aliases, no bare names, and no `'default'`/`'local'`-style shortcut — a bare name, an unrecognized provider prefix, or an empty model id is refused `UNKNOWN_MODEL`, naming the expected form and the three providers. `models_list` shows the catalog this deployment can reach: each row's `ref` field IS the exact string to paste — copy it verbatim, never hand-type a variant. An openrouter/ollama ref is checked against that provider's live catalog listing when one is available (refused `UNKNOWN_MODEL` if genuinely absent from it; accepted with a non-fatal `MODEL_CATALOG_UNVERIFIED` warning if the listing could not be checked); an anthropic id not yet in this deployment's static price table is likewise accepted with that same warning — a new Anthropic model is never blocked. The model is bound once at `workflow_register` time (the `.default` above) and may be replaced with a different full ref per run via `run_start`'s `overrides.agents.<label>.model` — there is no other override surface (a scheduled/webhook-fired run, and a nested `workflow()` call, always use the target version's own bound `.default`).
 
 **Skills.** `skills: [name, ...]` names skills pushed with `workspace_push` (`kind: 'skill'`). The model activates a declared skill through the Skill tool, which the engine adds to that agent's tool surface for you — do not list `Skill` in `allowedTools`. Declaring a skill grants no file tools, and none are needed to reach it: an agent with `allowedTools: []` and a declared skill can still activate it. Only the agent's own declared skills can be activated (other skills are hidden from it), and a skill's inline shell command (the `!` prefix form) is not executed. In `run_agent_log`, `harness.skillsExposed` lists the skills the model could activate; `harness.materialized` only records which files were copied into the workspace.
 
@@ -99,19 +101,19 @@ The seven locked keys are engine-owned and can never be overridden by a caller: 
 
 The ceilings below are this build's resolved values — operator-overridable, so a different deployment's engine may render different numbers here: a declared agent's `timeoutMs.default` may not exceed 600000ms, a declared `appendPrompt.default` may not exceed 1024 bytes, and a declared `effort.default` may not rank above 'high'. A declaration above any of these ceilings (in `meta.params.agents.<label>`) is refused `PARAM_CONTRACT_INVALID` at registration — never silently clamped. A run-time **override** (`run_start`'s `overrides.agents.<label>`) that names a value outside the effective (author ∩ ceiling) bound is a DIFFERENT refusal, `PARAM_OUT_OF_RANGE`, at admission.
 
-A declared `model.default` (and every entry of a declared `model.enum`) must be one of this deployment's model ALIAS names — `sonnet`, `haiku`, `opus`, `default` — not a provider model id. `models_list` shows the catalog MODELS an alias may resolve to; it is not the alias table, and passing an id from it is refused `PARAM_CONTRACT_INVALID: default not a known alias`. Each catalog row does carry an `aliases` list — every configured name that resolves to that one model — so a row is where you LOOK UP a legal name, and the row itself is never the answer. An `agent()` call naming an unknown alias is refused `UNKNOWN_ALIAS`. (The one exception is an `openrouter/<model-id>` passthrough, which the validator accepts by prefix and needs no entry in the table above.)
+A declared `model.default` (and every entry of a declared `model.enum`) MUST be a full `<provider>/<model-id>` ref — providers are exactly `anthropic`, `openrouter`, `ollama` — split at the FIRST `/` (an openrouter id can itself carry further `/`s, e.g. `openrouter/openai/gpt-4.1`; an ollama id can carry `:`/`.`, e.g. `ollama/qwen2.5:7b`). There are no aliases, no bare names, and no `'default'`/`'local'`-style shortcut — a bare name, an unrecognized provider prefix, or an empty model id is refused `UNKNOWN_MODEL`, naming the expected form and the three providers. `models_list` shows the catalog this deployment can reach: each row's `ref` field IS the exact string to paste — copy it verbatim, never hand-type a variant. An openrouter/ollama ref is checked against that provider's live catalog listing when one is available (refused `UNKNOWN_MODEL` if genuinely absent from it; accepted with a non-fatal `MODEL_CATALOG_UNVERIFIED` warning if the listing could not be checked); an anthropic id not yet in this deployment's static price table is likewise accepted with that same warning — a new Anthropic model is never blocked. The model is bound once at `workflow_register` time (the `.default` above) and may be replaced with a different full ref per run via `run_start`'s `overrides.agents.<label>.model` — there is no other override surface (a scheduled/webhook-fired run, and a nested `workflow()` call, always use the target version's own bound `.default`).
 
 ## Providers and the model catalog
 
-Every model alias resolves to exactly one of three providers, each with its own declared capability row — read from the SAME table `resolveAlias`/`validateAliases` check against, labelled **declared, not probed**: nothing here is learned by dispatching a call.
+A full model ref's provider prefix names exactly one of three providers, each with its own declared capability row — read from the SAME table `parseModelRef`/`checkModelRef` check against, labelled **declared, not probed**: nothing here is learned by dispatching a call.
 
 - `anthropic` — tool surface: all, effort applies: yes
 - `openrouter` — tool surface: all, effort applies: no (the provider has a reasoning dial, but this deployment's dispatch path does not carry it — `effortApplied` says so per call)
 - `ollama` — tool surface: all, effort applies: no
 
-There is no `openai` row: OpenRouter is the many-model front door for everything that is not Anthropic-direct or a local Ollama model, so swapping a model — or a transport — is a config change to an alias, not a new provider.
+There is no `openai` row: OpenRouter is the many-model front door for everything that is not Anthropic-direct or a local Ollama model, so swapping a model — or a transport — is a different `<provider>/<model-id>` ref, not a new provider.
 
-`models_list` shows the CATALOG this deployment's aliases can resolve into — it is not the alias table (see "Engine ceilings" above). It serves ONE row per model, and that row lists in `aliases` every configured name resolving to it (`ref` is the first — the one to pass to `agent({model})`), so a model named twice is one priced row, never a duplicate that reports `price:"unknown"`. Its `toolUseDeclared`/`effortDeclared` flags and `costLevel` rating are DECLARED capability, never probed by dispatching a call, and carry their own provenance: `declaredSource` ('upstream'|'static'|'unknown') says where the flag came from, and `catalogFetchedAt` is per-row catalog provenance (a timestamp, or `null`). `toolUseVerified`/`proseVerified` are the OBSERVED counterpart: the engine periodically probes each configured model with one prose call and one call that must run a command through Bash (`null` = never probed; `lastProbedAt`/`probeDetail` say when and what happened), and `stabilitySource:'probe'` means `stability` reflects that probe ('unavailable' = no prose answer, 'degraded' = no tool use). If an agent needs tools, pick a model whose row says `toolUseVerified: true` — `run_start` answers a non-fatal `warnings` entry (MODEL_TOOL_USE_UNVERIFIED) when an agent holding tools lands on one whose probe saw none.
+`models_list` shows the CATALOG this deployment can reach — every row's `ref` field is the exact `<provider>/<model-id>` string to paste into `model.default`/a run_start override (see "Engine ceilings" above for the full-ref rule). One row per model — there is no alias overlay, so a model is never listed twice under two names. Its `toolUseDeclared`/`effortDeclared` flags and `costLevel` rating are DECLARED capability, never probed by dispatching a call, and carry their own provenance: `declaredSource` ('upstream'|'static'|'unknown') says where the flag came from, and `catalogFetchedAt` is per-row catalog provenance (a timestamp, or `null`). `toolUseVerified`/`proseVerified` are the OBSERVED counterpart: the engine periodically probes each configured model with one prose call and one call that must run a command through Bash (`null` = never probed; `lastProbedAt`/`probeDetail` say when and what happened), and `stabilitySource:'probe'` means `stability` reflects that probe ('unavailable' = no prose answer, 'degraded' = no tool use). If an agent needs tools, pick a model whose row says `toolUseVerified: true` — `run_start` answers a non-fatal `warnings` entry (MODEL_TOOL_USE_UNVERIFIED) when an agent holding tools lands on one whose probe saw none.
 
 ## Budget, concurrency, and how wide a fan-out really runs
 
@@ -230,7 +232,7 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 
 - `NOT_TRIGGER_OWNER` — the caller does not own (did not create) this trigger
 - `PARSE_ERROR` — the script body failed to parse as TypeScript
-- `UNKNOWN_ALIAS` — a model alias in the script is not in the configured alias table
+- `UNKNOWN_MODEL` — the model is not a valid <provider>/<model-id> ref, or (for openrouter/ollama) was not found in the catalog listing — see models_list
 - `MCP_NOT_PROVISIONED` — an agent() call references an mcp name with no provisioned secret
 - `SCRIPT_INVALID` — the script violates a sandbox-enforced structural rule
 - `SCAN_VIOLATION` — an agent() call is not scannable — label/options must be literal (ADR-029)
@@ -275,7 +277,7 @@ Phase titles (`phase(title)` and `meta.phases[].title`) are visible to every pri
 ```js
 export const meta = {
   description: 'Summarize the given topic in one paragraph',
-  params: { agents: { writer: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
+  params: { agents: { writer: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
 };
 phase('summarize');
 return await agent('writer', { prompt: 'Summarize the topic' });
@@ -286,7 +288,7 @@ Mermaid:
 ```
 graph LR
 subgraph "summarize"
-writer(["writer<br/>default · low · 60000<br/>tools: default"])
+writer(["writer<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: default"])
 end
 ```
 
@@ -295,7 +297,7 @@ end
 ```js
 export const meta = {
   description: 'Draft, then edit, then finalize a piece of text',
-  params: { agents: { draft: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, edit: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, final: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
+  params: { agents: { draft: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, edit: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, final: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
 };
 phase('draft');
 const drafted = await agent('draft', { prompt: 'Write a first draft' });
@@ -310,13 +312,13 @@ Mermaid:
 ```
 graph LR
 subgraph "draft"
-draft(["draft<br/>default · low · 60000<br/>tools: default"])
+draft(["draft<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: default"])
 end
 subgraph "edit"
-edit(["edit<br/>default · low · 60000<br/>tools: default"])
+edit(["edit<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: default"])
 end
 subgraph "final"
-final(["final<br/>default · low · 60000<br/>tools: default"])
+final(["final<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: default"])
 end
 draft-->edit
 edit-->final
@@ -327,7 +329,7 @@ edit-->final
 ```js
 export const meta = {
   description: 'Fan out research to three topics in parallel, then combine the results',
-  params: { agents: { alpha: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, beta: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, gamma: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, combiner: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'medium' }, timeoutMs: { type: 'number', default: 90000 } } } },
+  params: { agents: { alpha: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, beta: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, gamma: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, combiner: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'medium' }, timeoutMs: { type: 'number', default: 90000 } } } },
 };
 phase('research');
 const results = await parallel([
@@ -344,12 +346,12 @@ Mermaid:
 ```
 graph LR
 subgraph "research"
-alpha(["alpha<br/>default · low · 60000<br/>tools: default"])
-beta(["beta<br/>default · low · 60000<br/>tools: default"])
-gamma(["gamma<br/>default · low · 60000<br/>tools: default"])
+alpha(["alpha<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: default"])
+beta(["beta<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: default"])
+gamma(["gamma<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: default"])
 end
 subgraph "combine"
-combiner(["combiner<br/>default · medium · 90000<br/>tools: default"])
+combiner(["combiner<br/>anthropic/claude-haiku-4-5-20251001 · medium · 90000<br/>tools: default"])
 end
 alpha-->combiner
 beta-->combiner
@@ -361,7 +363,7 @@ gamma-->combiner
 ```js
 export const meta = {
   description: 'Classify urgency, then route to a fast or thorough agent',
-  params: { agents: { classifier: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, fast: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, thorough: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'high' }, timeoutMs: { type: 'number', default: 120000 } } } },
+  params: { agents: { classifier: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, fast: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, thorough: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'high' }, timeoutMs: { type: 'number', default: 120000 } } } },
 };
 phase('classify');
 const urgency = await agent('classifier', { prompt: 'Classify urgency: fast or thorough?' });
@@ -374,12 +376,12 @@ Mermaid:
 ```
 graph LR
 subgraph "classify"
-classifier(["classifier<br/>default · low · 60000<br/>tools: default"])
+classifier(["classifier<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: default"])
 end
 subgraph "route"
 routeChoice{"fast or thorough?"}
-fast(["fast<br/>default · low · 60000<br/>tools: default"])
-thorough(["thorough<br/>default · high · 120000<br/>tools: default"])
+fast(["fast<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: default"])
+thorough(["thorough<br/>anthropic/claude-haiku-4-5-20251001 · high · 120000<br/>tools: default"])
 end
 classifier-->routeChoice
 routeChoice-->|fast|fast
@@ -391,7 +393,7 @@ routeChoice-->|thorough|thorough
 ```js
 export const meta = {
   description: 'Classify the input, then branch to one of two agents',
-  params: { agents: { classifier: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, simple: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, complex: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'high' }, timeoutMs: { type: 'number', default: 120000 } } } },
+  params: { agents: { classifier: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, simple: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, complex: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'high' }, timeoutMs: { type: 'number', default: 120000 } } } },
 };
 phase('classify');
 const kind = await agent('classifier', { prompt: 'Classify the request' });
@@ -408,12 +410,12 @@ Mermaid:
 ```
 graph LR
 subgraph "classify"
-classifier(["classifier<br/>default · low · 60000<br/>tools: default"])
+classifier(["classifier<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: default"])
 end
 subgraph "handle"
 handleChoice{"simple or complex?"}
-simple(["simple<br/>default · low · 60000<br/>tools: default"])
-complex(["complex<br/>default · high · 120000<br/>tools: default"])
+simple(["simple<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: default"])
+complex(["complex<br/>anthropic/claude-haiku-4-5-20251001 · high · 120000<br/>tools: default"])
 end
 classifier-->handleChoice
 handleChoice-->|simple|simple
@@ -425,7 +427,7 @@ handleChoice-->|complex|complex
 ```js
 export const meta = {
   description: 'Score three candidates with an agent, then pick the best score without another agent call',
-  params: { agents: { scorerX: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, scorerY: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, scorerZ: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
+  params: { agents: { scorerX: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, scorerY: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, scorerZ: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
 };
 phase('score');
 const scores = await parallel([
@@ -441,9 +443,9 @@ Mermaid:
 ```
 graph LR
 subgraph "score"
-scorerX(["scorerX<br/>default · low · 60000<br/>tools: default"])
-scorerY(["scorerY<br/>default · low · 60000<br/>tools: default"])
-scorerZ(["scorerZ<br/>default · low · 60000<br/>tools: default"])
+scorerX(["scorerX<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: default"])
+scorerY(["scorerY<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: default"])
+scorerZ(["scorerZ<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: default"])
 aggregate{{"pick the best score (no agent call)"}}
 end
 scorerX-->aggregate
@@ -456,7 +458,7 @@ scorerZ-->aggregate
 ```js
 export const meta = {
   description: 'Write a draft, get one round of critique, then revise — an unrolled fixed-length sequence (an agent call inside a loop body cannot be statically checked)',
-  params: { agents: { writer: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, critic: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
+  params: { agents: { writer: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, critic: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
 };
 phase('draft');
 const drafted = await agent('writer', { prompt: 'Write a draft' });
@@ -471,13 +473,13 @@ Mermaid:
 ```
 graph LR
 subgraph "draft"
-writer1(["writer<br/>default · low · 60000<br/>tools: default"])
+writer1(["writer<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: default"])
 end
 subgraph "critique"
-critic(["critic<br/>default · low · 60000<br/>tools: default"])
+critic(["critic<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: default"])
 end
 subgraph "revise"
-writer2(["writer<br/>default · low · 60000<br/>tools: default"])
+writer2(["writer<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: default"])
 end
 writer1-->critic
 critic-->writer2
@@ -488,7 +490,7 @@ critic-->writer2
 ```js
 export const meta = {
   description: 'Delegates to another registered workflow, then summarizes its result',
-  params: { agents: { summarizer: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
+  params: { agents: { summarizer: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
 };
 phase('delegate');
 const child = await workflow('other-team-etl', { since: 'yesterday' });
@@ -504,7 +506,7 @@ subgraph "delegate"
 etl["workflow: other-team-etl (black box)"]
 end
 subgraph "summarize"
-summarizer(["summarizer<br/>default · low · 60000<br/>tools: default"])
+summarizer(["summarizer<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: default"])
 end
 ```
 
@@ -538,7 +540,7 @@ end
 ```js
 export const meta = {
   description: 'Uses a declared arg to steer the single agent call',
-  params: { args: { topic: { type: 'string' } }, agents: { writer: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
+  params: { args: { topic: { type: 'string' } }, agents: { writer: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
 };
 phase('write');
 return await agent('writer', { prompt: 'Write about: ' + args.topic });
@@ -549,7 +551,7 @@ Mermaid:
 ```
 graph LR
 subgraph "write"
-writer(["writer<br/>default · low · 60000<br/>tools: default"])
+writer(["writer<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: default"])
 end
 ```
 
@@ -558,7 +560,7 @@ end
 ```js
 export const meta = {
   description: 'The phase title is computed from a declared arg — a static scan cannot know it in advance',
-  params: { args: { tier: { type: 'string' } }, agents: { worker: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
+  params: { args: { tier: { type: 'string' } }, agents: { worker: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
 };
 phase('tier:' + args.tier);
 return await agent('worker', { prompt: 'Handle the request' });
@@ -569,7 +571,7 @@ Mermaid:
 ```
 graph LR
 subgraph "processing"
-worker(["worker<br/>default · low · 60000<br/>tools: default"])
+worker(["worker<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: default"])
 end
 ```
 
@@ -578,7 +580,7 @@ end
 ```js
 export const meta = {
   description: 'An agent declared with a skill and an mcp server and NO file tools — the declared skill is still reachable, through the Skill tool',
-  params: { agents: { coder: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'medium' }, timeoutMs: { type: 'number', default: 120000 }, skills: ['repo-search'], mcp: ['project-tracker'] } } },
+  params: { agents: { coder: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'medium' }, timeoutMs: { type: 'number', default: 120000 }, skills: ['repo-search'], mcp: ['project-tracker'] } } },
 };
 phase('code');
 return await agent('coder', { prompt: 'Use the repo-search skill to say where the retry policy is defined', allowedTools: [] });
@@ -589,7 +591,7 @@ Mermaid:
 ```
 graph LR
 subgraph "code"
-coder(["coder<br/>default · medium · 120000<br/>tools: none"])
+coder(["coder<br/>anthropic/claude-haiku-4-5-20251001 · medium · 120000<br/>tools: none"])
 end
 ```
 
@@ -598,7 +600,7 @@ end
 ```js
 export const meta = {
   description: 'A judge agent restricted to no tools at all — pure text reasoning',
-  params: { agents: { judge: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
+  params: { agents: { judge: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
 };
 phase('judge');
 return await agent('judge', { prompt: 'Answer PASS or FAIL', allowedTools: [] });
@@ -609,6 +611,6 @@ Mermaid:
 ```
 graph LR
 subgraph "judge"
-judge(["judge<br/>default · low · 60000<br/>tools: none"])
+judge(["judge<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: none"])
 end
 ```

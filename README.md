@@ -101,19 +101,21 @@
   `state:"refused"`、`reasonCode:"BUDGET_EXCEEDED"`）。腳本裡讀 `budget.spent()`（美金）、
   `budget.tokens()`（四欄＋`sum`）、`budget.limits`。
   本機 Ollama 模型價格是 0，所以純美金上限永遠停不住本機 run——要限制本機 run 請用 `tokens` 上限。
-  同一個模型掛多個別名（例如 `haiku` 和 `claude-haiku-4-5` 都指向同一個模型）不影響計價：價格表
-  以 `provider/model` 為鍵，有價格的那筆不會被沒有價格的蓋掉，`models_list` 也只會回一列（別名
-  全部列在該列的 `aliases`），不會出現一列有價、一列 `price:"unknown"` 的重複列。
+  每個模型只用它自己唯一的 `provider/model` 全稱位址（沒有別名層），價格表也是以 `provider/model`
+  為鍵，`models_list` 每個模型正好一列，不會出現重複列。
 - **系統監控**：`system_info`（CPU 負載 + 核心數 + 利用率 %、記憶體 total/used/free、磁碟、引擎行程 + 主機 Top-N 行程 + 系統行程統計，`GET /api/system`）
 - **模型目錄**：`models_list`（跨供應商統一目錄，含 `capability`/`stability`/`costLevel 0–10`/`modalities`/`ref` 等豐富欄位，支援多維篩選，`GET /api/models`）。
-  **每個模型只有一列**；該列的 `aliases` 列出這台部署所有指向它的別名（`ref` 是其中第一個，也就是可以直接丟給 `agent({model})` 的那個字串）。
-- **模型探測（issue #73）**：`toolUseDeclared`/`effortDeclared` 只是目錄「宣稱」的能力；引擎另外會對**設定的別名**
-  （每個不同的 provider/model 一次，不碰其他目錄列）實際打兩通小呼叫——一通純文字、一通只給 `Bash`、
-  必須執行指令並回報一個猜不到的隨機值——走的是 agent 用的同一個 gateway。結果存進 `store/index.db`（重啟不丟），
+  **每個模型只有一列**；該列的 `ref` 就是可以直接貼進 `meta.params.agents.<label>.model.default`／
+  `run_start` override 的完整字串（`<provider>/<model-id>`，例如 `anthropic/claude-haiku-4-5-20251001`、
+  `openrouter/openai/gpt-4.1`、`ollama/qwen2.5:7b`）——沒有別名層，複製這個字串就對了。
+- **模型探測（issue #73）**：`toolUseDeclared`/`effortDeclared` 只是目錄「宣稱」的能力；引擎另外會對**已註冊
+  workflow 版本宣告過的每個相異 model ref**（每個不同的 provider/model 一次，不碰其他目錄列）實際打兩通小呼叫——
+  一通純文字、一通只給 `Bash`、必須執行指令並回報一個猜不到的隨機值——走的是 agent 用的同一個 gateway。
+  結果存進 `store/index.db`（重啟不丟），
   `models_list`／`GET /api/models` 每列多出 `toolUseVerified`/`proseVerified`（`true|false`，從沒探測過為 `null`）、
   `lastProbedAt`、`probeDetail`，以及 `stabilitySource`：`'probe'` 時文字失敗 → `stability:'unavailable'`、
   工具失敗 → `'degraded'`、兩通都過 → 保留規則層級；`'rule'` 表示沒探測過、沿用原規則。
-  管理員可用 `models_probe`（admin 限定；可帶 `{alias}` 只測一個）立即探測；引擎本身依 `modelProbe.intervalMs`
+  管理員可用 `models_probe`（admin 限定；可帶 `{model}` 只測一個 ref）立即探測；引擎本身依 `modelProbe.intervalMs`
   （預設每週）自動重測。`run_start` 若有帶工具的 agent 落在「最近一次探測沒用工具」的模型上，會照常啟動並在
   `result.warnings` 回 `MODEL_TOOL_USE_UNVERIFIED`（排程/webhook 啟動的 run 則寫進引擎日誌）。
 - **儀表板**：`GET /dashboard` —— 深色系操作介面（畫面右上角三段式主題切換：跟隨系統／淺色／
@@ -127,8 +129,10 @@
     上方的泳道圖直接切換成那次 run，不會離開這一頁。**還沒執行過的 workflow** 一樣看得到圖，顯示的
     是根據腳本推算出來的「預測結構」（哪個 agent 在哪個 phase），不是真的跑過，即使開了登入驗證也
     一樣看得到（不會因為沒登入就變空白）。
-  - **模型**：十二欄可排序表格（模型/供應商/別名/上下文/價格/工具/推理/模態/延遲/穩定性/基準/
-    位置），點欄標題依該欄排序、再點一次切換升降冪；上方有搜尋框、供應商下拉、「全部/遠端/本機」
+  - **模型**：十一欄可排序表格（模型/供應商/上下文/價格/工具/推理/模態/延遲/穩定性/基準/
+    位置——2026-09-26 起別名機制移除，不再有「別名」欄，`ref` 就是可以直接貼進
+    `model.default`／run_start override 的完整字串），點欄標題依該欄排序、再點一次切換升降冪；
+    上方有搜尋框、供應商下拉、「全部/遠端/本機」
     分段篩選，計數會顯示「篩選後 / 全部」。這一版**延遲/基準**兩欄還沒有真正的資料來源，一律顯示
     `—`（不是 0、不是空白，是刻意標示「還沒有這項資料」）。點任一列，右側滑出 560px 面板看完整
     細節（能力、模態、上下文、價格、成本等級、延遲、穩定度、支援的工具/推理參數、benchmark 分數）。
@@ -232,14 +236,14 @@
 `uv`）會停下來並印出明確的下一步指示。停止服務：`kill $(cat .rwe.rwe.config.pid)`
 （PID/log 檔名跟著設定檔走，預設設定檔是 `rwe.config.json`；細節見 DEPLOY.md §0）。
 
-需要客製設定（模型別名、供應商 key）或想逐步手動操作時，展開版步驟與完整設定鍵說明見
+需要客製設定（模型、供應商 key）或想逐步手動操作時，展開版步驟與完整設定鍵說明見
 `DEPLOY.md` §0 / §1b。最少需要的環境變數：
 
 ```bash
-# anthropic 別名：兩種認證擇一 —— API key，或 Pro/Max 訂閱制的 OAuth token
+# anthropic 供應商：兩種認證擇一 —— API key，或 Pro/Max 訂閱制的 OAuth token
 export ANTHROPIC_API_KEY=sk-ant-...                  # 用 API key 時
 # export RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN=...      # 用訂閱制時（rwe.config.json 的 anthropicAuth:"subscription"）
-# export OPENROUTER_API_KEY=sk-or-...                # 用 openrouter 別名時；本機 Ollama 免金鑰
+# export OPENROUTER_API_KEY=sk-or-...                # 用 openrouter 供應商時；本機 Ollama 免金鑰
 # export RWE_SECRET_GITHUB_TOKEN=...                 # 若要用 issue_report/Issues 儀表板
 ./deploy.sh --background
 ```
@@ -305,7 +309,7 @@ cat > /tmp/ping.js <<'JS'
 export const meta = {
   description: 'Reply with one word',
   params: { agents: { ping: {
-    model: { type: 'string', default: 'default' },
+    model: { type: 'string', default: 'ollama/qwen2.5:7b' },
     effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },
     timeoutMs: { type: 'number', default: 300000 },
   } } },
@@ -342,7 +346,8 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 # -> status:"completed"  agents[0].label/provider/model/tokens
 # -> result.scriptVersion 永遠是這次 run 實際執行的版本，即使之後又註冊了新版本也不會變
 # 到終態後用 run_result 取結果（本機 7B 模型常常回一段「看起來像工具呼叫」的文字而不是乾淨的
-# "PONG"，見「已知限制」；換成 anthropic/openrouter 別名就會是乾淨答案）；
+# "PONG"，見「已知限制」；把 model.default 換成 anthropic/... 或 openrouter/... 的完整 ref
+# 就會是乾淨答案）；
 # 想看該次 agent 的 harness 逐字稿：
 #   run_agent_log({runId, label:"ping"})——label 就是腳本裡宣告的那個，不是引擎內部編號。
 
@@ -351,7 +356,7 @@ cat > /tmp/greet2.js <<'JS'
 export const meta = {
   description: 'Greet the caller in one sentence',
   params: { agents: { greet: {
-    model: { type: 'string', default: 'default' },
+    model: { type: 'string', default: 'ollama/qwen2.5:7b' },
     effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },
     timeoutMs: { type: 'number', default: 300000 },
     appendPrompt: { type: 'string', default: '' },
@@ -515,7 +520,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 6. **Webhook HMAC**：常數時間比對 `X-Hub-Signature-256`；deliveryId 去重；±300s 時戳窗口。
 7. **伺服器端 secret**：config 內 `${secret:NAME}` → 由 `RWE_SECRET_<NAME>` 解析；缺失 → `SECRET_MISSING`；字面值永不外洩。
 8. **Redact-at-capture**：`SecretValueProvider.entries()` 拿到所有 provisioned secret 的明文；每次寫入逐字稿/快照/日誌/SDK-capture 前，均先呼叫 `redact({name,value}[])` 把值替換為 `‹secret:NAME›` marker（4 個 sink：appendTranscript/saveSnapshot/appendJournal（整個 JournalEntry 含 key.prompt）/SDK-capture；DES-088 invariant b：工作流程的最終回傳值（script `return` 的內容）維持原始值，不做 redact）。
-9. **Inline script 已關閉**：`run_start`/`run_resume` 不接受呼叫端夾帶的 `script`；`run_start` 的 schema 是封閉的（`additionalProperties:false`），硬塞任何未宣告的欄位都在送出當下被拒（`INLINE_SCRIPT_CLOSED`／`INVALID_ARGUMENT`）。腳本一律要先 `workflow_register`，靜態檢查（語法解析、模型別名、MCP 名稱是否已推送、agent 契約、mermaid 對照）也全在註冊當下做，不會因為改用具名執行就少檢查。
+9. **Inline script 已關閉**：`run_start`/`run_resume` 不接受呼叫端夾帶的 `script`；`run_start` 的 schema 是封閉的（`additionalProperties:false`），硬塞任何未宣告的欄位都在送出當下被拒（`INLINE_SCRIPT_CLOSED`／`INVALID_ARGUMENT`）。腳本一律要先 `workflow_register`，靜態檢查（語法解析、模型 ref 是否合法、MCP 名稱是否已推送、agent 契約、mermaid 對照）也全在註冊當下做，不會因為改用具名執行就少檢查。
 10. **腳本本文只有一個出口，且對非擁有者遮蔽**：能回傳腳本本文的工具只有 `workflow_source`（需要 `author` 角色）。啟用 auth 後，它對非擁有者回傳 `scriptWithheld:true`、不含腳本本文；擁有者/admin 仍可看到完整腳本。`workflow_describe`／`workflow_list`／`/api/workflows*`／儀表板**在設計上就不含**腳本本文，不論身份。`auth.enabled:false`（單人本機部署的預設）沒有「非擁有者」這個概念——任何人都能透過 `workflow_source` 看到完整腳本。
 11. **SSRF-safe seedRef**：`seedRef:{repoUrl,sha}` 由 `HardenedSeedRefFetcher` 拉取；URL 必須匹配 `seedRefAllowlist`，否則 `SEEDREF_EGRESS_DENIED`；省略 allowlist 則全部 `SEEDREF_DISABLED`（fail-closed）；hardened git subprocess，不轉 shell。
 12. **角色（`principals`）fail-closed**：`rwe.config.json` 的 `principals` 角色字串打錯（不是 `admin`/`author`/`user`）→ 開機直接拒絕啟動，不會靜默退回 `user`；整個鍵省略時，`auth.enabled:true` 下每個已驗證呼叫者一律 `user`，且開機那行 `auth:` log 如實顯示（ADR-028）。`workspace_push({kind:"mcp"})` 的 `http` transport 同理受 `mcpEgressAllowlist` fail-closed：省略/不匹配 → `EGRESS_DENIED`，探測次數為零；`stdio` transport（`config.type:"stdio"`）與 `scope:'global'` 的推送都需要 `admin`，其他角色一律 `FORBIDDEN_ROLE`、不會探測也不會啟動任何子行程。
@@ -544,7 +549,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
   但這個值到不了 OpenRouter——實測 `low` 與 `high` 送出的請求內容完全相同、也沒有 `reasoning_effort` 欄位
   （CLI 把預算收斂成 `thinking:{type:"adaptive"}`，LiteLLM 再對 openrouter 丟掉這個參數）。
   `run_agent_log` 的 `harness.effortApplied` 會如實回報 `{applied:false, reason:…}` 並寫明原因。
-  Anthropic 別名的 `effort` 是有作用的（CLI 收到 `--effort <值>`）。
+  Anthropic 模型的 `effort` 是有作用的（CLI 收到 `--effort <值>`）。
 - **目前已知、尚未修復的缺陷**（詳細指令與輸出見 `DEPLOY.md` §6）：
   1. **偶發的 `suspend` → `resume` → `failed`，而且 agent 的工作在終態之後還在跑**
      （run `3977b82d`，無法穩定重現、尚未歸因；
