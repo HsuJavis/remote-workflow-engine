@@ -74,7 +74,10 @@ export interface WebhookView {
  *  v37 Gate-8 round-2 (finding B4, ARCH-182 (3)): the 403 arm (a PERMANENT admission refusal from
  *  `RunManager.start()`) is widened the same way, so a refused delivery leaves the same durable
  *  trace the 409 reasons already do; 503 is the RETRYABLE twin (a concurrency cap, not a policy
- *  refusal) and carries no `code` — `RUN_ADMISSION_LIMIT` is deliberately not a `RefusalReason`. */
+ *  refusal) and carries no `code` — `RUN_ADMISSION_LIMIT` is deliberately not a `RefusalReason`.
+ *  Issue #88: 503 is ALSO what a concurrent duplicate gets back when it finds the same deliveryId
+ *  already claimed but not yet finished (`_replayFromRow`'s `httpStatus === 0` arm) — a second,
+ *  distinct reason to retry, still with no `code`; see `deliver()`'s docblock for the full ordering. */
 export type DeliverResult =
   | { ok: true; httpStatus: 202 | 200; runId?: string; replayed?: boolean }
   | { ok: false; httpStatus: 401 | 404; reason: string }
@@ -175,12 +178,18 @@ export class WebhookRegistry {
     // three-column shape from the CREATE TABLE above (no outcome tracking). `CREATE TABLE IF NOT
     // EXISTS` is a no-op against it, so the new columns are added with a guarded `ALTER TABLE`
     // (checked via PRAGMA, not try/catch — three columns share one clear guard here). NO column
-    // gets a DEFAULT: an existing row therefore has `httpStatus IS NULL`, which is exactly the
-    // "legacy, pre-outcome-tracking" state `_replayFromRow` treats as accepted (its dedup row could
-    // only ever have been written, under the old code, for a delivery that actually got admitted —
-    // see `deliver()`'s docblock). `0` is reserved below as the CLAIMED-BUT-NOT-YET-RECORDED
-    // sentinel, so legacy-NULL / in-flight-0 / recorded-terminal are three distinguishable states
-    // without a fourth boolean column.
+    // gets a DEFAULT: an existing row therefore has `httpStatus IS NULL`, which `_replayFromRow`
+    // treats as accepted. That is NOT a claim that every legacy row actually WAS accepted — this is
+    // exactly the bug this fix closes: the pre-fix `INSERT OR IGNORE` ran before `start()`, so a
+    // legacy row can belong to a delivery that then went on to get 403/503/500, and that delivery's
+    // true outcome is unrecoverable now (the old schema never stored it). The choice is between two
+    // failure modes for that unrecoverable minority: treat legacy = accepted (a handful of
+    // pre-existing refused deliveries stay lost, exactly as lost as they already were under the old
+    // code) or treat legacy = re-processable (every genuinely-accepted legacy delivery re-fires on
+    // its next replay, actively creating NEW duplicate runs post-upgrade). The former is strictly
+    // smaller harm, so `_replayFromRow` picks it — see that method's own docblock. `0` is reserved
+    // below as the CLAIMED-BUT-NOT-YET-RECORDED sentinel, so legacy-NULL / in-flight-0 /
+    // recorded-terminal are three distinguishable states without a fourth boolean column.
     const deliveryCols = (this._db.prepare('PRAGMA table_info(webhook_deliveries)').all() as Array<{ name: string }>).map((c) => c.name);
     if (!deliveryCols.includes('httpStatus')) this._db.exec('ALTER TABLE webhook_deliveries ADD COLUMN httpStatus INTEGER');
     if (!deliveryCols.includes('code')) this._db.exec('ALTER TABLE webhook_deliveries ADD COLUMN code TEXT');
@@ -197,9 +206,13 @@ export class WebhookRegistry {
 
   /** Issue #88: replays the ORIGINAL outcome recorded for an existing `webhook_deliveries` row,
    *  instead of the pre-fix bare `200 {replayed:true}` regardless of what actually happened.
-   *  - `httpStatus IS NULL` — either a legacy pre-migration row (see the migration comment above)
-   *    or, in principle, a row this code itself never left `NULL` (it never does) — either way
-   *    treated as an accepted delivery, since that is the only kind of row the OLD code ever wrote.
+   *  - `httpStatus IS NULL` — a legacy pre-migration row (this code itself never leaves a row at
+   *    NULL — see the migration comment above). Treated as accepted: NOT because that is provably
+   *    what happened (the pre-fix bug this row predates means it might not be), but because it is
+   *    the smaller of two unrecoverable harms — see the migration comment's full reasoning. A
+   *    legacy row belonging to a delivery that was actually refused stays lost, exactly as it
+   *    already was; the alternative (treat legacy as re-processable) would re-fire every
+   *    genuinely-accepted legacy delivery instead.
    *  - `httpStatus === 0` — claimed by another delivery attempt that has not finished yet (or a
    *    concurrent duplicate racing it, or the current attempt lost the INSERT race — see `deliver`).
    *    NOT a 2xx: the sender must not be told "replayed" for work that may still fail.

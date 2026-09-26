@@ -970,9 +970,16 @@ frame，頂層 `""`）+ `startedAt`/`endedAt`，`workflowNodes:[{frame,name,pare
   `bind` 主機，做真正的 authority 比對（防前綴繞過）。
 - `POST /hooks/:id`（webhook 入口，fail-closed）：驗證順序 id 存在且 enabled →
   `X-RWE-Signature: sha256=<hex>` HMAC-SHA256 常數時間比對（對原始 body bytes）→
-  `X-RWE-Timestamp` ±300 秒內 → `X-RWE-Delivery` 去重（重放 → 200 不重跑）→ 啟動**預先綁定**的
+  `X-RWE-Timestamp` ±300 秒內 → `X-RWE-Delivery` 去重 → 啟動**預先綁定**的
   工作流程（名稱來自註冊，絕不取自 request body）。`webhook_create` 產生的 secret **只回傳一次**；
   `webhook_list` 只回 sha256 前綴指紋，永不回 secret 本身；註冊表持久化於 `webhookDbPath`。
+  **去重重放答的是「原始結果」，不是固定 200**（issue #88 修正）：首次被接受（202+runId）的
+  delivery 重放 → 200 `{replayed:true, runId}`；首次被永久拒絕（403 CONFINEMENT_UNAVAILABLE）
+  的重放 → 同一個 403，不會變成 2xx；首次是暫時性失敗（503 併發上限／500）則**不佔用**
+  deliveryId —— 重試會真的重跑一次，不是回放快取的失敗；併發重複送達（同一 deliveryId 還在
+  處理中）得到 503，絕不是 2xx，確保被接受的 delivery 仍是精確一次。UNCLAIMED／
+  CLAIMED_WORKFLOW_MISSING／CHANNEL_UNPUBLISHED／NOT_IN_RELEASE 這四種 409 從未佔用
+  deliveryId（不變），照樣可在條件修好後重試觸發。
 - **`auth.enabled:false`（預設）且公開 `0.0.0.0` bind 時，任何能連到該 port 的人都能呼叫這些
   工具**——白名單只是無 auth 時的過渡管控；要多租戶存取管制請啟用 §1b 的 `auth` 區塊。
 
