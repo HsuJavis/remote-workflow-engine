@@ -415,7 +415,11 @@ export class McpFacade {
         if (outcome === 'claimed') { claimedThisCall.push(id); continue; }
         if (outcome === 'held') continue; // already this workflow's from an earlier version — never released by compensation
         for (const rid of [...claimedThisCall].reverse()) this._storeFor(rid).release(rid, a.name);
-        throw codedError(outcome === 'NOT_FOUND' ? 'TRIGGER_NOT_FOUND' : 'TRIGGER_ALREADY_CLAIMED', `${outcome}: ${id}`);
+        // Issue #89 item 7: the message must start with its OWN code, like every other refusal in
+        // this engine (codedError's convention throughout workflow-catalog.ts/mcp-facade.ts) — not
+        // with `outcome`, the bare `'NOT_FOUND' | 'ALREADY_CLAIMED'` string `claim()` itself answers.
+        const code = outcome === 'NOT_FOUND' ? 'TRIGGER_NOT_FOUND' : 'TRIGGER_ALREADY_CLAIMED';
+        throw codedError(code, `${code}: ${id}`);
       }
       let version: string;
       try {

@@ -95,6 +95,12 @@ describe('workflowRegister trigger ownership (IT-123, DES-139/DES-149 step 2)', 
     expect(res['status']).toBe('failed');
     expect(res['code']).toBe('TRIGGER_ALREADY_CLAIMED');
     expect(scheduler.get(id)?.claimedBy).toBe('wf-one'); // the working claim survives the refusal
+    // Issue #89 item 7: the message prefix must agree with the code — every other refusal in this
+    // engine starts its message with its own code (`codedError`'s convention throughout
+    // workflow-catalog.ts/mcp-facade.ts). `_storeFor(id).claim()` answers the bare string
+    // `'ALREADY_CLAIMED'`, which mcp-facade.ts used to interpolate STRAIGHT into the message
+    // (`${outcome}: ${id}`) instead of the coded prefix `TRIGGER_ALREADY_CLAIMED:`.
+    expect((res['error'] as { message?: string } | undefined)?.message).toMatch(/^TRIGGER_ALREADY_CLAIMED:/);
   });
 
   it('an id in NEITHER store is TRIGGER_NOT_FOUND (step 2 runs before any claim)', async () => {
