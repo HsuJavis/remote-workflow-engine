@@ -58,7 +58,7 @@ const NEVER_RESOLVES_GATEWAY: GatewayClient = {
 // return the script UNCHANGED (`META_DECL_RE` already matches).
 function metaBlock(phaseTitles: string[], agentLabels: string[]): string {
   const agents = agentLabels
-    .map((label) => `${JSON.stringify(label)}: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }`)
+    .map((label) => `${JSON.stringify(label)}: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }`)
     .join(', ');
   const phases = phaseTitles.map((title) => `{ title: ${JSON.stringify(title)} }`).join(', ');
   return `export const meta = { phases: [${phases}], params: { agents: { ${agents} } } };`;

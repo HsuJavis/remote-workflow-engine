@@ -29,20 +29,14 @@ import type { Server } from '../../src/server.js';
 import { composeConfig } from '../../src/main.js';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
 import { FakeMcpProbe } from '../../src/mcp-probe.js';
-import type { AliasMap } from '../../src/gateway/client.js';
 import { runScriptVia } from '../helpers/workflow-fixtures.js';
-
-const ALIASES: AliasMap = {
-  default: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
-  local: { provider: 'ollama', model: 'qwen2.5:7b' },
-};
 
 /** Same fake-proxy pattern as main-composition-root.test.ts (IT-021) — proxy.start() resolves
  *  instantly, no real `litellm` subprocess spawned. */
 function makeFakeProxyManager(): LiteLLMProxyManager {
   const fakeSpawn = vi.fn(() => (Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn() })) as unknown as ChildProcess);
   const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
-  return new LiteLLMProxyManager(ALIASES, {
+  return new LiteLLMProxyManager({
     spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
     fetchImpl: fakeHealthFetch as unknown as typeof fetch,
   });
@@ -70,7 +64,7 @@ describe('a workspace_push mcp asset, once declared by an agent, reaches the rea
     queryImpl = vi.fn(() => fakeSuccessSession());
     const config = await composeConfig(
       {
-        bind: '127.0.0.1', port: 0, workRoot, aliases: ALIASES, gateway: 'sdk', assetRoot: join(workRoot, 'assets'),
+        bind: '127.0.0.1', port: 0, workRoot, gateway: 'sdk', assetRoot: join(workRoot, 'assets'),
         // v24 (DES-153/ADR-030, TASK-152): workspace_push's kind:'mcp' http mode checks egress
         // BEFORE probing — this file's fake config points at example.com, so allow it.
         mcpEgressAllowlist: ['https://example.com/'],
@@ -111,7 +105,7 @@ describe('a workspace_push mcp asset, once declared by an agent, reaches the rea
 
     const script = [
       "export const meta = { params: { agents: { go: {",
-      "  model: { type: 'string', default: 'local' },",
+      "  model: { type: 'string', default: 'ollama/qwen2.5:7b' },",
       "  effort: { type: 'enum', default: 'low' },",
       "  timeoutMs: { type: 'number', default: 30000 },",
       "  mcp: ['demo-mcp'],",

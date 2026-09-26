@@ -42,7 +42,7 @@ describe('main.ts --check-config: validate without binding a port (IT-143, DES-1
   it('exits 0 on a clean config, with no port bound', async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'rwe-it143-clean-'));
     const configPath = join(tmpDir, 'rwe.config.json');
-    writeFileSync(configPath, JSON.stringify({ aliases: { sonnet: { provider: 'anthropic', model: 'claude-sonnet-5' } } }));
+    writeFileSync(configPath, JSON.stringify({ maxTimeoutMs: 600000 }));
     const port = 18787;
     const result = await run(configPath, port);
     expect(result.code).toBe(0);
@@ -50,14 +50,33 @@ describe('main.ts --check-config: validate without binding a port (IT-143, DES-1
     rmSync(tmpDir, { recursive: true, force: true });
   }, 10000);
 
-  it('exits 1 naming a retired provider row, with no port bound', async () => {
+  // 2026-09-26 (alias mechanism removed): a config file that STILL carries `aliases` (a pre-existing
+  // production config, unmodified across a self-update restart) must still BOOT — this is that
+  // spec rule's own automated coverage, not merely the planned real-run's one-off check. `--check-
+  // config` shares `composeConfig()` with the real boot path, so this exercises the exact same
+  // RETIRED_CONFIG_KEYS warning (main.ts) a live restart would hit.
+  it('exits 0 with a one-line deprecation warning on a config that still carries the retired aliases key', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'rwe-it143-aliases-'));
+    const configPath = join(tmpDir, 'rwe.config.json');
+    writeFileSync(configPath, JSON.stringify({ aliases: { sonnet: { provider: 'anthropic', model: 'claude-sonnet-5' } } }));
+    const port = 18789;
+    const result = await run(configPath, port);
+    expect(result.code).toBe(0);
+    const out = result.stdout + result.stderr;
+    expect(out).toContain('aliases');
+    expect(out.toLowerCase()).toContain('alias mechanism is removed');
+    expect(await portIsFree(port)).toBe(true);
+    rmSync(tmpDir, { recursive: true, force: true });
+  }, 10000);
+
+  it('exits 1 naming an invalid principals role, with no port bound', async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'rwe-it143-bad-'));
     const configPath = join(tmpDir, 'rwe.config.json');
-    writeFileSync(configPath, JSON.stringify({ aliases: { gpt41: { provider: 'openai', model: 'gpt-4.1' } } }));
+    writeFileSync(configPath, JSON.stringify({ principals: { alice: { role: 'not-a-real-role' } } }));
     const port = 18788;
     const result = await run(configPath, port);
     expect(result.code).toBe(1);
-    expect(result.stdout + result.stderr).toContain('gpt41');
+    expect(result.stdout + result.stderr).toContain('not-a-real-role');
     expect(await portIsFree(port)).toBe(true);
     rmSync(tmpDir, { recursive: true, force: true });
   }, 10000);

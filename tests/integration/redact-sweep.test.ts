@@ -269,7 +269,7 @@ describe('redact-at-capture completeness sweep — sink (5): effectiveParams sna
       // unchanged: the admission snapshot persisted by `createRun` must not contain the raw secret.
       const script = [
         "export const meta = { params: { agents: { work: {",
-        "  model: { type: 'string', default: 'default' },",
+        "  model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' },",
         "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
         "  timeoutMs: { type: 'number', default: 60000 },",
         "  appendPrompt: { type: 'string' } } } } };",

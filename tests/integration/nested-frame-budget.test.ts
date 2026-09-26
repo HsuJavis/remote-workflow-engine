@@ -24,18 +24,21 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
-import { registerPublishedVia, runScriptVia } from '../helpers/workflow-fixtures.js';
+import { registerPublishedVia, runScriptVia, DEFAULT_FIXTURE_MODEL } from '../helpers/workflow-fixtures.js';
 
 // Integrator (v26 Gate 6, work order §B root-cause note): `budget.spent()` is USD from v26
 // (ADR-037/DES-182), so this test can only observe a non-zero value if the model the fake gateway
 // claims to have served is actually PRICED in the run's admission pin. Two halves, both here in the
 // test rather than in production:
-//   (a) the fake names the model the `default` alias really resolves to, so the pin key
-//       `${provider}/${model}` the capture site looks up is the one `RunManager.start()` pinned;
+//   (a) the fake names the model `registerPublishedVia`/`runScriptVia` actually dispatch on when no
+//       explicit `model` opt is given — `DEFAULT_FIXTURE_MODEL`'s own bare model id (2026-09-26:
+//       alias mechanism removed, and neither helper threads a per-call model override through to
+//       `run_start`'s registration step) — so the pin key `${provider}/${model}` the capture site
+//       looks up is the one `RunManager.start()` actually pinned;
 //   (b) an INJECTED catalog (the existing `createServer({modelCatalog})` seam that feeds
 //       `ModelBook`) gives that model a rate. The static Anthropic table is deliberately NOT grown
 //       to make a test pass — it is a claim about real published prices.
-const PRICED_MODEL = 'claude-3-5-sonnet-20241022'; // DEFAULT_ALIASES.default.model
+const PRICED_MODEL = DEFAULT_FIXTURE_MODEL.split('/')[1]!; // the bare id half of DEFAULT_FIXTURE_MODEL
 const FAKE_PRICED_GATEWAY: GatewayClient = {
   async invoke() {
     return { ok: true, provider: 'anthropic', model: PRICED_MODEL, tokens: { input: 10, output: 5 }, content: 'x' };

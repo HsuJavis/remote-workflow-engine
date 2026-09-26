@@ -14,7 +14,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
-import type { AliasMap } from '../../src/gateway/client.js';
 import type { ModelEntry } from '../../src/models/model-catalog.js';
 
 function jsonFetch(body: unknown, ok = true): typeof fetch {
@@ -31,15 +30,13 @@ const OPENROUTER_MODELS = {
     { id: 'big/expensive', description: 'A pricey model', context_length: 200000, pricing: { prompt: '0.000005', completion: '0.000015' }, architecture: { input_modalities: ['text'], output_modalities: ['text'] }, supported_parameters: ['tools'] },
   ],
 };
-const ALIASES: AliasMap = { opus: { provider: 'anthropic', model: 'claude-opus-4-8' } };
-
 let server: Server;
 let tmpDir: string;
 
 beforeAll(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), 'rwe-it-models-'));
   server = await createServer({
-    port: 0, bind: '127.0.0.1', workRoot: tmpDir, aliases: ALIASES,
+    port: 0, bind: '127.0.0.1', workRoot: tmpDir,
     modelCatalogFetchers: { ollamaFetch: jsonFetch(OLLAMA_TAGS), openrouterFetch: jsonFetch(OPENROUTER_MODELS) },
   });
 });
@@ -71,14 +68,17 @@ describe('models_list wired into MCP (REQ-039/040)', () => {
     expect(props).not.toContain('toolUse');
   });
 
-  it('unfiltered list federates static + curated alias + fake Ollama + fake OpenRouter', async () => {
+  it('unfiltered list federates static + fake Ollama + fake OpenRouter, each row carrying its own full ref', async () => {
     const out = await callTool(server.port, 'models_list', {});
     const models = out.result.map((e) => e.model);
     expect(models).toContain('qwen2.5:7b'); // ollama
     expect(models).toContain('qwen/qwen-2.5-7b-instruct'); // openrouter
     expect(models).toContain('claude-opus-4-8'); // static anthropic
-    // v26 round 4 (D11): `alias` -> `aliases`, the full list of names resolving to this row.
-    expect(out.result.find((e) => e.model === 'claude-opus-4-8')?.aliases).toEqual(['opus']); // curated
+    // 2026-09-26 (alias mechanism removed, spec rule 9): no `aliases` field/overlay any more — `ref`
+    // IS the exact `<provider>/<model-id>` string a caller pastes into `model.default`.
+    expect(out.result.find((e) => e.model === 'claude-opus-4-8')?.ref).toBe('anthropic/claude-opus-4-8');
+    expect(out.result.find((e) => e.model === 'qwen2.5:7b')?.ref).toBe('ollama/qwen2.5:7b');
+    for (const e of out.result) expect(e).not.toHaveProperty('aliases');
   });
 
   it('filters narrow the catalog (remote + toolUseDeclared + cheap + query)', async () => {
@@ -91,10 +91,10 @@ describe('models_list wired into MCP (REQ-039/040)', () => {
     expect(out.result).toEqual([]);
   });
 
-  it('a source-down case degrades gracefully — static/curated still return', async () => {
+  it('a source-down case degrades gracefully — the static table still returns', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rwe-it-models-down-'));
     const downServer = await createServer({
-      port: 0, bind: '127.0.0.1', workRoot: dir, aliases: ALIASES,
+      port: 0, bind: '127.0.0.1', workRoot: dir,
       modelCatalogFetchers: { ollamaFetch: throwingFetch(), openrouterFetch: throwingFetch() },
     });
     try {
@@ -102,7 +102,7 @@ describe('models_list wired into MCP (REQ-039/040)', () => {
       const models = out.result.map((e) => e.model);
       expect(models).not.toContain('qwen2.5:7b');
       expect(models).toContain('claude-opus-4-8'); // static survives
-      expect(out.result.find((e) => e.model === 'claude-opus-4-8')?.aliases).toEqual(['opus']); // curated survives
+      expect(out.result.find((e) => e.model === 'claude-opus-4-8')?.ref).toBe('anthropic/claude-opus-4-8');
     } finally {
       await downServer.close();
       rmSync(dir, { recursive: true, force: true });

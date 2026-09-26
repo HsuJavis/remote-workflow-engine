@@ -8,10 +8,14 @@
 // created — is unchanged; only which facade method is the fail-fast door changed
 // (`workflow_register` for script-shaped faults, `run_start` for name-shaped ones).
 //
+// 2026-09-26 (alias mechanism removed): a malformed (non-full-ref) `model.default` is refused
+// UNKNOWN_MODEL regardless of any catalog snapshot — the ref-shape check runs before any catalog
+// lookup — so this file needs no special catalog wiring to keep that case non-vacuous, unlike the
+// old alias table (which had to be configured with a known name set or every alias passed).
+//
 // Mock policy (integration): real McpFacade + real RunManager + real WorkflowCatalog on a tmp
-// workRoot. The catalog is constructed with an explicit `aliasNames` set because that is what the
-// composition root does (server.ts) — a catalog built with none accepts every alias, which would
-// make the UNKNOWN_ALIAS case vacuous. ONE store instance is shared by RunManager and McpFacade
+// workRoot (no `catalogSnapshot` configured — the permissive empty-catalog default, irrelevant to
+// the malformed-ref case below). ONE store instance is shared by RunManager and McpFacade
 // (D-I1, the facade's own constructor comment) or every facade lookup 404s.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -31,7 +35,7 @@ let workRoot: string;
 beforeAll(() => {
   workRoot = mkdtempSync(join(tmpdir(), 'rwe-it008-'));
   const clock = new SystemClock();
-  catalog = new WorkflowCatalog(workRoot, clock, { aliasNames: new Set(['sonnet', 'default']) });
+  catalog = new WorkflowCatalog(workRoot, clock);
   const store = new InMemoryRunStore(clock);
   const runManager = new RunManager({ store, clock, catalog, workRoot });
   facade = new McpFacade({ store, runManager, clock });
@@ -50,10 +54,22 @@ describe('fail-fast at the McpFacade entry point (ARCH-008)', () => {
     expect(await catalog.exists('it008-ts-syntax')).toBe(false); // refused before any write
   });
 
-  it('workflow_register with an unmapped model alias returns a failed envelope at registration', async () => {
-    const env = await facade.workflowRegister({ name: 'it008-bad-alias', script: `return agent('x',{model:'no-alias'});`, mermaid: '' }, AUTH_DISABLED);
+  it('workflow_register with a malformed (non-full-ref) declared model.default returns a failed envelope at registration', async () => {
+    // 2026-09-26: an agent()'s own call options can never carry a tunable key (SCAN_VIOLATION,
+    // regardless of value) — the bad ref has to be declared in the contract instead, same rewrite
+    // val-109's registration-checks file already applies.
+    const script = [
+      "export const meta = { params: { agents: { x: {",
+      "  model: { type: 'string', default: 'no-such-ref' },",
+      "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
+      "  timeoutMs: { type: 'number', default: 60000 },",
+      "} } } };",
+      "phase('Work');",
+      "return agent('x', {});",
+    ].join('\n');
+    const env = await facade.workflowRegister({ name: 'it008-bad-model-ref', script, mermaid: '' }, AUTH_DISABLED);
     expect(env['status']).toBe('failed');
-    expect((env['error'] as { code?: string }).code).toBe('UNKNOWN_ALIAS');
+    expect((env['error'] as { code?: string }).code).toBe('UNKNOWN_MODEL');
   });
 
   // v24 (integrator, DES-137): `WORKFLOW_NOT_FOUND` — the member of the closed ErrorCode union

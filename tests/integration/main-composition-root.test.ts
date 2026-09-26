@@ -46,7 +46,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ClaudeAgentSdkGatewayClient } from '../../src/gateway/claude-agent-sdk-client.js';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
-import type { AliasMap, GatewayClient } from '../../src/gateway/client.js';
+import type { GatewayClient } from '../../src/gateway/client.js';
 
 // Defensive import-safety harness (NOT part of the wiring assertions themselves): today,
 // `src/main.ts` has no import-guard at all — its bottom-of-file `main().catch(...)` runs for real
@@ -64,10 +64,10 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, spawn: vi.fn(() => (Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn() })) as unknown as ChildProcess) };
 });
 
-const ALIASES: AliasMap = {
-  default: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
-  local: { provider: 'ollama', model: 'qwen2.5:7b' },
-};
+// 2026-09-26 (alias mechanism removed): every model is now a full <provider>/<model-id> ref — no
+// alias table for composeConfig/the gateway to route through any more.
+const OLLAMA_REF = 'ollama/qwen2.5:7b';
+const ANTHROPIC_REF = 'anthropic/claude-haiku-4-5-20251001';
 
 const TEST_LEVEL_BOUND = Symbol('it-021-test-level-bound');
 
@@ -76,7 +76,7 @@ const TEST_LEVEL_BOUND = Symbol('it-021-test-level-bound');
 function makeFakeProxyManager(): LiteLLMProxyManager {
   const fakeSpawn = vi.fn(() => (Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn() })) as unknown as ChildProcess);
   const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
-  return new LiteLLMProxyManager(ALIASES, {
+  return new LiteLLMProxyManager({
     spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
     fetchImpl: fakeHealthFetch as unknown as typeof fetch,
   });
@@ -129,7 +129,7 @@ describe('src/main.ts composition-root wiring-completeness (IT-021, D-F10a/b)', 
     else process.env['RWE_CONFIG_PATH'] = originalConfigPath;
   });
 
-  it("gateway:'sdk' — aliases + timeoutMs + retries reach the constructed ClaudeAgentSdkGatewayClient", async () => {
+  it("gateway:'sdk' — timeoutMs + retries reach the constructed ClaudeAgentSdkGatewayClient", async () => {
     const composeConfig = await loadComposeConfig();
     // Forcing red today: main.ts exports no such helper at all.
     expect(typeof composeConfig).toBe('function');
@@ -141,7 +141,6 @@ describe('src/main.ts composition-root wiring-completeness (IT-021, D-F10a/b)', 
         bind: '127.0.0.1',
         port: 0,
         workRoot,
-        aliases: ALIASES,
         timeoutMs: 150,
         retries: 1,
         gateway: 'sdk',
@@ -159,14 +158,14 @@ describe('src/main.ts composition-root wiring-completeness (IT-021, D-F10a/b)', 
 
     const start = Date.now();
     const result = await Promise.race([
-      config.gateway!.invoke({ prompt: 'hi', opts: { model: 'local' }, runId: 'r1', agentId: 'a1' }),
+      config.gateway!.invoke({ prompt: 'hi', opts: { model: OLLAMA_REF }, runId: 'r1', agentId: 'a1' }),
       new Promise((resolve) => setTimeout(() => resolve(TEST_LEVEL_BOUND), 3000)),
     ]);
     const elapsed = Date.now() - start;
 
     // Forcing red (once the export exists but wiring is still missing, per state.yaml's round-4
     // finding): main.ts's real `new ClaudeAgentSdkGatewayClient({ baseUrl, cwd })` call omits
-    // aliases/timeoutMs/retries entirely, so a hung session never settles at all — this resolves the
+    // timeoutMs/retries entirely, so a hung session never settles at all — this resolves the
     // 3s test-level escape hatch instead of a real bounded GatewayResult.
     expect(result).not.toBe(TEST_LEVEL_BOUND);
     expect((result as { ok: boolean }).ok).toBe(false);
@@ -176,16 +175,16 @@ describe('src/main.ts composition-root wiring-completeness (IT-021, D-F10a/b)', 
     expect(queryCalls).toBe(2);
   }, 10000);
 
-  it("gateway:'sdk' — aliases reach the constructed client's alias-aware thinking policy (D-F6)", async () => {
+  it("gateway:'sdk' — an anthropic/<id> full ref dispatches direct, undisturbed thinking policy (D-F6)", async () => {
     const composeConfig = await loadComposeConfig();
     expect(typeof composeConfig).toBe('function');
 
     const workRoot = mkdtempSync(join(tmpdir(), 'rwe-it021b-'));
     const queryImpl = vi.fn(() => fakeSuccessSession());
-    // REQ-037: the 'default' alias maps to 'anthropic', which now dispatches DIRECT to the real
-    // Anthropic API with real auth (LiteLLM bypassed) — composeConfig wires the SDK gateway's
-    // secretSource from RWE_SECRET_* env. Provide a fake api-key secret so the auth-present path
-    // reaches query() and the D-F6 thinking policy (thinking unset for anthropic) can be asserted.
+    // REQ-037 — 2026-09-26 (alias mechanism removed): an `anthropic/<id>` full ref dispatches DIRECT
+    // to the real Anthropic API with real auth (LiteLLM bypassed) — composeConfig wires the SDK
+    // gateway's secretSource from RWE_SECRET_* env. Provide a fake api-key secret so the auth-present
+    // path reaches query() and the D-F6 thinking policy (thinking unset for anthropic) can be asserted.
     const priorSecret = process.env['RWE_SECRET_ANTHROPIC_API_KEY'];
     process.env['RWE_SECRET_ANTHROPIC_API_KEY'] = 'fake-it021b-key';
     let config: { gateway?: GatewayClient };
@@ -195,7 +194,6 @@ describe('src/main.ts composition-root wiring-completeness (IT-021, D-F10a/b)', 
           bind: '127.0.0.1',
           port: 0,
           workRoot,
-          aliases: ALIASES,
           gateway: 'sdk',
         },
         {
@@ -203,7 +201,7 @@ describe('src/main.ts composition-root wiring-completeness (IT-021, D-F10a/b)', 
           proxyManager: makeFakeProxyManager(),
         },
       );
-      await config.gateway!.invoke({ prompt: 'hi', opts: { model: 'default' }, runId: 'r1', agentId: 'a1' });
+      await config.gateway!.invoke({ prompt: 'hi', opts: { model: ANTHROPIC_REF }, runId: 'r1', agentId: 'a1' });
     } finally {
       if (priorSecret === undefined) delete process.env['RWE_SECRET_ANTHROPIC_API_KEY'];
       else process.env['RWE_SECRET_ANTHROPIC_API_KEY'] = priorSecret;
@@ -211,15 +209,13 @@ describe('src/main.ts composition-root wiring-completeness (IT-021, D-F10a/b)', 
 
     expect(queryImpl).toHaveBeenCalledTimes(1);
     const [[call]] = queryImpl.mock.calls as unknown as [[{ options?: { thinking?: unknown } }]];
-    // Forcing red (once the export exists but `aliases` is never forwarded into
-    // ClaudeAgentSdkGatewayConfig): the 'default' alias (mapped to 'anthropic') can never be
-    // resolved, so thinkingFor() falls back to its safe-default DISABLED branch for every alias,
-    // including this Anthropic one — the SAME symptom round 4 documented ("aliases undefined means
-    // thinkingFor() unconditionally disables thinking ... not the alias-aware design D-F6 specified").
+    // The provider comes straight off the ref's own prefix (`parseModelRef`) now — no alias table to
+    // resolve through — so an `anthropic/<id>` ref reaches the SAME sdk-default thinking branch
+    // (`thinking` left `undefined`) an alias used to have to be configured correctly to reach.
     expect(call.options?.thinking).toBeUndefined();
   }, 10000);
 
-  it("gateway:'direct-fetch' — config.gateway is left unset so createServer()'s own aliases-driven LiteLLMGatewayClient applies", async () => {
+  it("gateway:'direct-fetch' — config.gateway is left unset so createServer()'s own LiteLLMGatewayClient construction applies", async () => {
     const composeConfig = await loadComposeConfig();
     expect(typeof composeConfig).toBe('function');
 
@@ -230,7 +226,7 @@ describe('src/main.ts composition-root wiring-completeness (IT-021, D-F10a/b)', 
     // `RETIRED_CONFIG_KEYS`, covered by `compose-config-v2-wiring.test.ts`'s UT-274). `schedulerDbPath`
     // is the same "forwarded regardless of gateway" convention (DES-022, TASK-023) and stands in.
     const config = await (composeConfig as (fc: unknown, deps: unknown) => Promise<{ gateway?: GatewayClient; schedulerDbPath?: string }>)(
-      { bind: '127.0.0.1', port: 0, workRoot, aliases: ALIASES, gateway: 'direct-fetch', schedulerDbPath: '/nonexistent-on-purpose' },
+      { bind: '127.0.0.1', port: 0, workRoot, gateway: 'direct-fetch', schedulerDbPath: '/nonexistent-on-purpose' },
       {},
     );
 

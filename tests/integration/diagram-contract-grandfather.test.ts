@@ -77,7 +77,7 @@ describe('workflow_describe reports diagramContract (IT-151, DES-184)', () => {
     // — by writing the row the pre-v26 engine would have written — and then asks the LIVE dag route
     // what it draws. `v1FallbackGraph` is the only thing standing between this and an empty graph.
     const name = uniqueWorkflowName('it151-v1run');
-    const v1Script = "export const meta = { params: { agents: { a: { model: { type: 'string', default: 'default' },"
+    const v1Script = "export const meta = { params: { agents: { a: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' },"
       + " effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },"
       + " timeoutMs: { type: 'number', default: 60000 } } } } };\n"
       + "await agent('a', { prompt: 'p' });\nawait agent('a', { prompt: 'q' });\nreturn 'ok';";
@@ -126,7 +126,7 @@ describe('REQ-124: a grandfathered v1 run that has FINISHED draws each call ONCE
       };
 
       const name = uniqueWorkflowName('it151-v1done');
-      const v1Script = "export const meta = { params: { agents: { a: { model: { type: 'string', default: 'default' },"
+      const v1Script = "export const meta = { params: { agents: { a: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' },"
         + " effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },"
         + " timeoutMs: { type: 'number', default: 60000 } } } } };\n"
         + "await agent('a', { prompt: 'p' });\nawait agent('a', { prompt: 'q' });\nreturn 'ok';";

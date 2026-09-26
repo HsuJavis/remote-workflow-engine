@@ -21,13 +21,10 @@ import type { RunParams } from '../../src/params/resolve.js';
 // `req.opts.model` directly (the per-call tunable rung is retired) — so the alias to dispatch on
 // has to travel via a RunParams snapshot, same as a real registered run's admission would produce.
 const sonnetRunParams: RunParams = {
-  model: 'sonnet',
+  model: 'anthropic/claude-3-5-sonnet-20241022',
   provenance: { model: 'engine', effort: 'engine', timeoutMs: 'engine', appendPrompt: 'engine' },
 };
 
-const ALIASES: GatewayConfig['aliases'] = {
-  sonnet: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
-};
 const clock = new FixedClock(new Date('2026-01-01T00:00:00.000Z'));
 
 const ORIGINAL_KEY = process.env['ANTHROPIC_API_KEY'];
@@ -53,9 +50,9 @@ describe('direct-fetch transport ends a terminal 401 attempt immediately, with a
       counter.calls += 1;
       return { ok: false, status: 401, statusText: 'Unauthorized', json: async () => ({}) };
     }) as unknown as typeof fetch;
-    const gw = new LiteLLMGatewayClient({ aliases: ALIASES, timeoutMs: 5000, retries: 3, fetchImpl });
+    const gw = new LiteLLMGatewayClient({ timeoutMs: 5000, retries: 3, fetchImpl });
 
-    const result = await gw.invoke({ prompt: 'hi', opts: { model: 'sonnet' }, runId: 'r1', agentId: 'a1' });
+    const result = await gw.invoke({ prompt: 'hi', opts: { model: 'anthropic/claude-3-5-sonnet-20241022' }, runId: 'r1', agentId: 'a1' });
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -71,21 +68,21 @@ describe('direct-fetch transport ends a terminal 401 attempt immediately, with a
       counter.calls += 1;
       return { ok: false, status: 500, statusText: 'Internal Server Error', json: async () => ({}) };
     }) as unknown as typeof fetch;
-    const gw = new LiteLLMGatewayClient({ aliases: ALIASES, timeoutMs: 5000, retries: 2, fetchImpl });
+    const gw = new LiteLLMGatewayClient({ timeoutMs: 5000, retries: 2, fetchImpl });
 
-    await gw.invoke({ prompt: 'hi', opts: { model: 'sonnet' }, runId: 'r1', agentId: 'a1' });
+    await gw.invoke({ prompt: 'hi', opts: { model: 'anthropic/claude-3-5-sonnet-20241022' }, runId: 'r1', agentId: 'a1' });
 
     expect(counter.calls).toBe(3); // 1 + 2 retries — unchanged legacy behavior for a non-terminal failure
   });
 
   it('the resulting AgentRecord (run_status.agents[] surface) carries state:"failed" and a detail naming the status', async () => {
     const { fetchImpl } = make401Fetch();
-    const gw = new LiteLLMGatewayClient({ aliases: ALIASES, timeoutMs: 5000, retries: 3, fetchImpl });
+    const gw = new LiteLLMGatewayClient({ timeoutMs: 5000, retries: 3, fetchImpl });
     const executor = new AgentExecutor({ gateway: gw, clock });
 
     const agentId = 'agent-401';
     await executor.run({
-      runId: 'r1', agentId, prompt: 'hi', opts: { model: 'sonnet' }, workspace: '/tmp',
+      runId: 'r1', agentId, prompt: 'hi', opts: { model: 'anthropic/claude-3-5-sonnet-20241022' }, workspace: '/tmp',
       signal: new AbortController().signal,
       runParams: sonnetRunParams,
     });

@@ -1,6 +1,6 @@
 // IT-144 (DES-173, ARCH-112, TASK-174, v26, issue #66): the load-bearing paired behavioural
-// assertion for deleting `curateToolsForProvider` — REQ-123's own named acceptance, and this
-// deployment's default path (`default` alias → ollama qwen2.5:7b). An ollama-routed `agent()` call
+// assertion for deleting `curateToolsForProvider` — REQ-123's own named acceptance, over a plain
+// `ollama/qwen2.5:7b` full ref (2026-09-26: no alias table any more). An ollama-routed `agent()` call
 // must reach the session with the caller's `allowedTools` UNCHANGED: no `Read` removed, no `Bash`
 // force-added. Written test-first (Gate 5, RED): today `curateToolsForProvider` strips `Read` for
 // any non-anthropic provider (`NON_ANTHROPIC_EXCLUDED_TOOLS = new Set(['Read'])`,
@@ -20,10 +20,9 @@ describe('ollama preserves the caller allowedTools verbatim (IT-144, DES-173, RE
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
     const client = new ClaudeAgentSdkGatewayClient({
       baseUrl: 'http://127.0.0.1:1',
-      aliases: { default: { provider: 'ollama', model: 'qwen2.5:7b' } } as any,
       queryImpl: ((req: { options: { allowedTools?: string[] } }) => { captured = req.options.allowedTools; return session(); }) as never,
     });
-    await client.invoke({ prompt: 'hi', opts: { model: 'default', allowedTools: ['Read', 'Bash'] }, runId: 'r1', agentId: 'a1' });
+    await client.invoke({ prompt: 'hi', opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Read', 'Bash'] }, runId: 'r1', agentId: 'a1' });
     expect(captured).toEqual(['Read', 'Bash']);
   });
 });

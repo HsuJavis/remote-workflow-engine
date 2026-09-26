@@ -63,7 +63,7 @@ describe('resume determinism: a suspended run continues the version it PINNED, n
       // agent() call so the run can be suspended mid-flight.
       const v1Script = [
         "export const meta = { params: { agents: { slow: {",
-        "  model: { type: 'string', default: 'sonnet' },",
+        "  model: { type: 'string', default: 'anthropic/claude-sonnet-5' },",
         "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
         "  timeoutMs: { type: 'number', default: 60000 },",
         "} } } };",

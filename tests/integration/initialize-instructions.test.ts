@@ -36,7 +36,7 @@ async function initialize(baseUrl: string): Promise<{ result?: { instructions?: 
 }
 
 const AGENT_SCRIPT =
-  "export const meta = { params: { agents: { worker: { model: { type: 'string', default: 'default' }, " +
+  "export const meta = { params: { agents: { worker: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, " +
   "effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } } };\n" +
   "phase('main');\nreturn await agent('worker', {});";
 

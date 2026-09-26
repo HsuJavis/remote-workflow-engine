@@ -49,13 +49,10 @@ const ESCAPE_HATCH_MS = 20000;
 function makeFakeProxyManager(): LiteLLMProxyManager {
   const fakeSpawn = vi.fn(() => (Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn() })) as unknown as ChildProcess);
   const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
-  return new LiteLLMProxyManager(
-    { default: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' } },
-    {
-      spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
-      fetchImpl: fakeHealthFetch as unknown as typeof fetch,
-    },
-  );
+  return new LiteLLMProxyManager({
+    spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
+    fetchImpl: fakeHealthFetch as unknown as typeof fetch,
+  });
 }
 
 /** A session that never yields and never resolves — a genuinely hung real SDK session stand-in. */

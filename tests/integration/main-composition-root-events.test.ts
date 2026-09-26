@@ -237,15 +237,18 @@ describe('P1: the REAL createServer() composition root wires a secrets-aware sin
     const fakeQueryImpl: Query = (async function* (): AsyncGenerator<SDKMessage, void> {
       yield { type: 'result', subtype: 'success', is_error: false, result: 'ok', usage: { input_tokens: 1, output_tokens: 1 } } as SDKMessage;
     })() as unknown as Query;
+    const down = (async () => { throw new Error('offline'); }) as unknown as typeof fetch;
     server = await createServer({
       port: 0,
       bind: '127.0.0.1',
       workRoot,
-      aliases: { default: { provider: 'anthropic', model: 'claude-sonnet-5' } },
       gateway: new ClaudeAgentSdkGatewayClient({
         baseUrl: 'http://127.0.0.1:4000',
         queryImpl: (() => fakeQueryImpl) as any,
       } as any),
+      // Stubbed down so the override ref below is checked deterministically (the "listing
+      // unavailable -> warn, never refuse" branch) regardless of this host's own Ollama state.
+      modelCatalogFetchers: { ollamaFetch: down, openrouterFetch: down },
     });
 
     async function mcpCall(method: string, args: Record<string, unknown>): Promise<any> {
@@ -262,7 +265,15 @@ describe('P1: the REAL createServer() composition root wires a secrets-aware sin
     await registerPublishedVia(mcpCall, name, FIXTURE_SCRIPT, { mermaid: FIXTURE_MERMAID });
 
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const run = await mcpCall('run_start', { name });
+    // 2026-09-26 (alias mechanism removed): FIXTURE_SCRIPT's own declared model.default is a static
+    // anthropic ref, which this class routes DIRECT to the real Anthropic API regardless of
+    // `baseUrl` (REQ-037) — with no real credential configured, dispatch fails fast on
+    // ANTHROPIC_AUTH_MISSING BEFORE `agent.confinement` is ever emitted (buildSubprocessEnv runs
+    // ahead of the emit site — see claude-agent-sdk-client.ts's own pinned order comment). A
+    // run_start override to a non-anthropic ref routes through `config.baseUrl` instead (this fake
+    // gateway's own `queryImpl`, never the real network), which is what this test actually needs to
+    // reach the emit site at all.
+    const run = await mcpCall('run_start', { name, overrides: { agents: { greet: { model: 'ollama/qwen2.5:7b' } } } });
     let status: any;
     for (let i = 0; i < 60; i++) {
       status = await mcpCall('run_status', { runId: run.runId });

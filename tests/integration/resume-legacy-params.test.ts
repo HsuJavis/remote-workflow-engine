@@ -159,7 +159,7 @@ describe('a pre-v34 pinned script carrying agentType is refused at DISPATCH, not
       const name = 'it176-pinned-agenttype';
       const cleanScript =
         `export const meta = { params: { agents: { a: { ` +
-        `model: { type: 'string', default: 'default' }, ` +
+        `model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, ` +
         `effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, ` +
         `timeoutMs: { type: 'number', default: 60000 } } } } };\n` +
         `phase('Work');\n` +

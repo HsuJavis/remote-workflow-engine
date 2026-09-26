@@ -14,10 +14,10 @@
 // mislabelled.
 //
 // Red reason (2026-07-03, before Gate 6 rework): src/server.ts's `createServer()` constructs
-// `new LiteLLMGatewayClient({ aliases: config.aliases, timeoutMs, retries })` with no
-// `useLiteLLMProxy` and no `proxyManager` forwarded at all, so `LiteLLMGatewayClient` always
-// defaults to the direct-per-provider-fetch path (`_proxy` stays undefined). This test's injected
-// proxyManager's `spawnImpl` is therefore never called.
+// `new LiteLLMGatewayClient({ timeoutMs, retries })` with no `useLiteLLMProxy` and no `proxyManager`
+// forwarded at all, so `LiteLLMGatewayClient` always defaults to the direct-per-provider-fetch path
+// (`_proxy` stays undefined). This test's injected proxyManager's `spawnImpl` is therefore never
+// called.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events'; // a real ChildProcess IS an EventEmitter — the fake must be too (v23 adjudication #6 V-2)
 import type { ChildProcess } from 'node:child_process';
@@ -26,15 +26,13 @@ import type { Server, ServerConfig } from '../../src/server.js';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
 import { runScriptVia, type ToolCaller } from '../helpers/workflow-fixtures.js';
 
-const ALIASES = { default: { provider: 'anthropic' as const, model: 'claude-3-5-haiku-20241022' } };
-
 function makeFakeProxyManager() {
   // Fakes the proxy's own process boundary only (D-R2/DES-015: never spawn/require a real
   // `litellm` binary in automated tests) — the health check resolves instantly so no real
   // subprocess timing is involved either.
   const fakeSpawn = vi.fn(() => (Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn() })) as unknown as ChildProcess);
   const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
-  const proxyManager = new LiteLLMProxyManager(ALIASES, {
+  const proxyManager = new LiteLLMProxyManager({
     spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
     fetchImpl: fakeHealthFetch as unknown as typeof fetch,
   });
@@ -83,7 +81,6 @@ describe('Default GatewayClient/server construction uses the LiteLLM proxy path 
     server = await createServer({
       port: 0,
       bind: '127.0.0.1',
-      aliases: ALIASES,
       proxyManager,
     } as ServerConfig & { proxyManager: LiteLLMProxyManager });
     const baseUrl = `http://127.0.0.1:${server.port}`;

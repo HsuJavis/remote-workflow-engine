@@ -93,7 +93,7 @@ describe('args resolution at admission — the bare and declared-default cases (
 // A one-agent script so the run can be suspended mid-flight (the bare-return scripts above
 // complete synchronously and have nothing to suspend across).
 const SUSPENDABLE_SCRIPT =
-  "export const meta = { params: { agents: { worker: { model: { type: 'string', default: 'default' }, " +
+  "export const meta = { params: { agents: { worker: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, " +
   "effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, " +
   "timeoutMs: { type: 'number', default: 60000 } } }, args: { url: { type: 'string', default: 'https://x' } } } };\n" +
   "phase('main');\n" +
@@ -165,7 +165,7 @@ describe('args survive suspend->resume and restart-rehydrate->resume with the SA
     const mgr = new RunManager({ store, clock, workRoot: dir, spawner, secretValueProvider } as never);
     const name = 'it233-secret-arg';
     const script =
-      "export const meta = { params: { agents: { worker: { model: { type: 'string', default: 'default' }, " +
+      "export const meta = { params: { agents: { worker: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, " +
       "effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, " +
       "timeoutMs: { type: 'number', default: 60000 } } } } };\n" +
       "phase('main');\n" +

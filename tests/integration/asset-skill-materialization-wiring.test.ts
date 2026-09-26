@@ -28,17 +28,11 @@ import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { composeConfig } from '../../src/main.js';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
-import type { AliasMap } from '../../src/gateway/client.js';
-
-const ALIASES: AliasMap = {
-  default: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
-  local: { provider: 'ollama', model: 'qwen2.5:7b' },
-};
 
 function makeFakeProxyManager(): LiteLLMProxyManager {
   const fakeSpawn = vi.fn(() => (Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn() })) as unknown as ChildProcess);
   const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
-  return new LiteLLMProxyManager(ALIASES, {
+  return new LiteLLMProxyManager({
     spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
     fetchImpl: fakeHealthFetch as unknown as typeof fetch,
   });
@@ -63,7 +57,7 @@ function agentBlock(declared?: { skills?: string[]; mcp?: string[] }): string {
     declared?.skills ? `skills: ${JSON.stringify(declared.skills)}` : '',
     declared?.mcp ? `mcp: ${JSON.stringify(declared.mcp)}` : '',
   ].filter(Boolean).join(', ');
-  return `{ model: { type: 'string', default: 'local' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 }${extra ? ', ' + extra : ''} }`;
+  return `{ model: { type: 'string', default: 'ollama/qwen2.5:7b' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 }${extra ? ', ' + extra : ''} }`;
 }
 
 describe('REQ-113 selective skill materialization on a REAL dispatch (IT-036/IT-116, DES-154)', () => {
@@ -77,7 +71,7 @@ describe('REQ-113 selective skill materialization on a REAL dispatch (IT-036/IT-
     workRoot = mkdtempSync(join(tmpdir(), 'rwe-it036-'));
     queryImpl = vi.fn(() => fakeSuccessSession());
     const config = await composeConfig(
-      { bind: '127.0.0.1', port: 0, workRoot, aliases: ALIASES, gateway: 'sdk', assetRoot: join(workRoot, 'assets') },
+      { bind: '127.0.0.1', port: 0, workRoot, gateway: 'sdk', assetRoot: join(workRoot, 'assets') },
       { queryImpl: queryImpl as unknown as never, proxyManager: makeFakeProxyManager() },
     );
     server = await createServer(config);

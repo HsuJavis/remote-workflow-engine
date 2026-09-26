@@ -17,7 +17,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
-import type { AliasMap, GatewayClient } from '../../src/gateway/client.js';
+import type { GatewayClient } from '../../src/gateway/client.js';
 import { ClaudeAgentSdkGatewayClient } from '../../src/gateway/claude-agent-sdk-client.js';
 import { buildCatalog } from '../../src/models/model-catalog.js';
 import { registerPublished, registerPublishedVia, uniqueWorkflowName } from '../helpers/workflow-fixtures.js';
@@ -33,20 +33,26 @@ const RATE_OUT = 0.000002;
 const TOKENS = { input: 1000, output: 1000 };
 const EXPECTED_USD = TOKENS.input * RATE_IN + TOKENS.output * RATE_OUT;
 
-const ALIASES: AliasMap = {
-  default: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
-  haiku: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
-  // alias-routed openrouter model — must keep pricing exactly as before
-  gpt41mini: { provider: 'openrouter', model: 'openai/gpt-4.1-mini' },
-};
+// 2026-09-26 (alias mechanism removed): every model is now addressed by its own full
+// `<provider>/<model-id>` ref — no alias table to route through. `HAIKU_REF` is a static-table
+// anthropic id (accepted with no catalog lookup); `GPT41MINI_REF` is the SAME openrouter model id
+// the old `gpt41mini` alias pointed at, now spelled out directly — "alias-routed" is simply "the
+// caller writes the full ref instead of a short name" from here on.
+const HAIKU_REF = 'anthropic/claude-haiku-4-5-20251001';
+const GPT41MINI_REF = 'openrouter/openai/gpt-4.1-mini';
 
 const notOk = (async () => ({ ok: false, json: async () => ({}) })) as unknown as typeof fetch;
+// 2026-09-26 (alias mechanism removed, owner decision 5/6): `UNPRICED` must now be LISTED (else
+// registration itself refuses UNKNOWN_MODEL — a genuinely absent id on an available live listing is
+// no longer silently admitted) but carry no `pricing` — `ratesFromOpenRouterPricing(undefined)` is
+// `null`, so this row exists and dispatches, exactly what "a passthrough model has no price" means.
 const openrouterFetch = (async () => ({
   ok: true,
   json: async () => ({
     data: [
       { id: PRICED, pricing: { prompt: String(RATE_IN), completion: String(RATE_OUT) } },
       { id: 'openai/gpt-4.1-mini', pricing: { prompt: String(RATE_IN), completion: String(RATE_OUT) } },
+      { id: UNPRICED },
     ],
   }),
 })) as unknown as typeof fetch;
@@ -87,15 +93,13 @@ describe('openrouter passthrough models are priced and bind a USD budget (#85)',
   beforeAll(async () => {
     const gateway: GatewayClient = new ClaudeAgentSdkGatewayClient({
       baseUrl: 'http://127.0.0.1:1',
-      aliases: ALIASES,
       queryImpl: (() => okSession()) as never,
     });
     server = await createServer({
       port: 0,
       bind: '127.0.0.1',
       gateway,
-      aliases: ALIASES,
-      modelCatalog: () => buildCatalog({ aliases: ALIASES, ollamaFetch: notOk, openrouterFetch }),
+      modelCatalog: () => buildCatalog({ ollamaFetch: notOk, openrouterFetch }),
     });
   }, 30000);
   afterAll(async () => { await server?.close(); });
@@ -110,8 +114,8 @@ describe('openrouter passthrough models are priced and bind a USD budget (#85)',
     expect(result.meta.budgetEnforceable).toEqual({ usd: true, tokens: true, unpricedModels: [] });
   }, 40000);
 
-  it('an alias-routed openrouter model (gpt41mini) still prices', async () => {
-    const { status } = await runWith('gpt41mini', `await agent('a', { prompt: 'p' }); return 'ok';`);
+  it('an openrouter model addressed by its full ref still prices', async () => {
+    const { status } = await runWith(GPT41MINI_REF, `await agent('a', { prompt: 'p' }); return 'ok';`);
     expect(status.status).toBe('completed');
     const rec = (status.result.agents ?? []).find((a: any) => a.label === 'a');
     expect(rec?.model).toBe('openai/gpt-4.1-mini');
@@ -146,8 +150,7 @@ describe('the admission pin covers passthrough models (#85 seam 1, INV-V26-4)', 
       gateway: { async invoke() { return { ok: true, provider: 'x', model: 'x', tokens: { input: 1, output: 1 }, content: 'x' }; } },
       store,
       clock,
-      aliasMap: ALIASES,
-      modelBook: new ModelBook(() => buildCatalog({ aliases: ALIASES, ollamaFetch: notOk, openrouterFetch }), { clock }),
+      modelBook: new ModelBook(() => buildCatalog({ ollamaFetch: notOk, openrouterFetch }), { clock }),
     });
     const name = uniqueWorkflowName('i85pin');
     await registerPublished(mgr.catalog, name, `await agent('a', { prompt: 'p' }); return 'ok';`, { model: `openrouter/${PRICED}` });
@@ -171,14 +174,13 @@ describe('budgetEnforceable counts an unpriced call even when the pin claimed a 
       port: 0,
       bind: '127.0.0.1',
       gateway: drifting,
-      aliases: ALIASES,
-      modelCatalog: () => buildCatalog({ aliases: ALIASES, ollamaFetch: notOk, openrouterFetch: notOk }),
+      modelCatalog: () => buildCatalog({ ollamaFetch: notOk, openrouterFetch: notOk }),
     });
   }, 30000);
   afterAll(async () => { await server?.close(); });
 
   it('usd is false and the unpriced model is named', async () => {
-    const { runId, status } = await runWith('haiku', `await agent('a', { prompt: 'p' }); return 'ok';`);
+    const { runId, status } = await runWith(HAIKU_REF, `await agent('a', { prompt: 'p' }); return 'ok';`);
     expect(status.status).toBe('completed');
     const result = await mcpCall('run_result', { runId });
     expect(result.meta.usage.unpricedCalls).toBe(1);

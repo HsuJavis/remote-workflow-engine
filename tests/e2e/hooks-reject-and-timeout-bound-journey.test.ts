@@ -19,6 +19,15 @@ import { ClaudeAgentSdkGatewayClient } from '../../src/gateway/claude-agent-sdk-
 import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 const HUNG_PROVIDER_PORT = 38199;
+// 2026-09-26 (alias mechanism removed): `ClaudeAgentSdkGatewayClient` routes `anthropic` straight to
+// the REAL Anthropic API regardless of `config.baseUrl` (REQ-037's provider-aware env) — only a
+// non-anthropic provider's traffic goes through `config.baseUrl`, which is what this file's hung
+// stub actually intercepts. A bare `'default'` alias used to resolve to an anthropic model and still
+// hit the stub because the OLD alias-resolution layer sat in front of that provider check; the
+// full-ref successor has to name a non-anthropic provider directly. Fetchers stubbed down so this
+// openrouter ref is always in the "listing unavailable -> warn, never refuse" branch.
+const down = (async () => { throw new Error('offline'); }) as unknown as typeof fetch;
+const HUNG_MODEL_REF = 'openrouter/some-vendor/some-model';
 
 let server: Server;
 let tmpDir: string;
@@ -38,6 +47,7 @@ beforeAll(async () => {
       timeoutMs: 5000,
       retries: 0,
     }),
+    modelCatalogFetchers: { ollamaFetch: down, openrouterFetch: down },
   });
 });
 
@@ -85,14 +95,14 @@ describe('REQ-020: a hung SDK-gateway provider call is bounded by timeoutMs — 
     // v24 (DES-143/DES-144, TASK-152): agent() now takes a literal label as its first arg
     // (registration scans it) plus a literal options object — the old single-arg `agent(prompt)`
     // form is refused AGENT_LABEL_REQUIRED — and registration requires a matching
-    // `meta.params.agents.hang` declaration (AGENT_UNDECLARED otherwise). `model:'default'` resolves
-    // through `DEFAULT_ALIASES` (this file's server has no explicit `aliases`) to the SAME
-    // real-provider dial the hung stub intercepts (`baseUrl` override, `beforeAll` above).
+    // `meta.params.agents.hang` declaration (AGENT_UNDECLARED otherwise). `HUNG_MODEL_REF` (a
+    // non-anthropic full ref, 2026-09-26: alias mechanism removed) hits the SAME real-provider dial
+    // the hung stub intercepts (`baseUrl` override, `beforeAll` above).
     const run = await runScriptVia(
       mcpCall,
       [
         "export const meta = { params: { agents: { hang: {",
-        "  model: { type: 'string', default: 'default' },",
+        `  model: { type: 'string', default: ${JSON.stringify(HUNG_MODEL_REF)} },`,
         "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
         // The declared per-agent timeoutMs is DELIBERATELY the 5000ms this file's `beforeAll`
         // configures on the gateway: a per-call `opts.timeoutMs` OVERRIDES the client's configured

@@ -24,12 +24,7 @@ import type { Server } from '../../src/server.js';
 import { composeConfig } from '../../src/main.js';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
 import { TokenStore } from '../../src/auth/token-store.js';
-import type { AliasMap } from '../../src/gateway/client.js';
 
-const ALIASES: AliasMap = {
-  default: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
-  local: { provider: 'ollama', model: 'qwen2.5:7b' },
-};
 const OWNER = 'owner@it127.example';
 const OTHER = 'other@it127.example';
 const WF = 'it127-wf';
@@ -39,7 +34,7 @@ const SKILL_MD = '# Owner-only skill\n\nThe previous owner\'s private instructio
 function makeFakeProxyManager(): LiteLLMProxyManager {
   const fakeSpawn = vi.fn(() => (Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn() })) as unknown as ChildProcess);
   const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
-  return new LiteLLMProxyManager(ALIASES, {
+  return new LiteLLMProxyManager({
     spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
     fetchImpl: fakeHealthFetch as unknown as typeof fetch,
   });
@@ -52,7 +47,7 @@ function fakeSuccessSession() {
 }
 
 const AGENT_BLOCK = (skills: string[]) =>
-  `{ model: { type: 'string', default: 'local' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 }, skills: ${JSON.stringify(skills)} }`;
+  `{ model: { type: 'string', default: 'ollama/qwen2.5:7b' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 }, skills: ${JSON.stringify(skills)} }`;
 
 const SCRIPT = (skills: string[]) =>
   `export const meta = { params: { agents: { worker: ${AGENT_BLOCK(skills)} } } };\n` +
@@ -113,7 +108,7 @@ describe('deregister removes the workflow\'s asset tree from disk, not only its 
     workRoot = mkdtempSync(join(tmpdir(), 'rwe-it127-'));
     const config = await composeConfig(
       {
-        bind: '127.0.0.1', port: 0, workRoot, aliases: ALIASES, gateway: 'sdk', assetRoot: join(workRoot, 'assets'),
+        bind: '127.0.0.1', port: 0, workRoot, gateway: 'sdk', assetRoot: join(workRoot, 'assets'),
         auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it127-cid', googleClientSecret: 'it127-cs' },
         principals: { [OWNER]: { role: 'author' }, [OTHER]: { role: 'author' } },
       } as never,

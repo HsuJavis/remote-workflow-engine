@@ -15,12 +15,10 @@ import type { ChildProcess } from 'node:child_process';
 import { LiteLLMGatewayClient } from '../../src/gateway/client.js';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
 
-const ALIASES = { default: { provider: 'anthropic' as const, model: 'claude-3-5-haiku-20241022' } };
-
 function makeFakeProxyManager() {
   const fakeSpawn = vi.fn(() => (Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn() })) as unknown as ChildProcess);
   const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
-  return new LiteLLMProxyManager(ALIASES, {
+  return new LiteLLMProxyManager({
     spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
     fetchImpl: fakeHealthFetch as unknown as typeof fetch,
   });
@@ -42,7 +40,6 @@ function makeHungFetch(): typeof fetch {
 describe('GatewayClient provider-down handling (ARCH-005, D-R1 retimed via injected fakes)', () => {
   it('a hung provider triggers timeout and returns ok:false (never hangs)', async () => {
     const gw = new LiteLLMGatewayClient({
-      aliases: ALIASES,
       timeoutMs: 200,
       retries: 0,
       useLiteLLMProxy: true,
@@ -51,7 +48,7 @@ describe('GatewayClient provider-down handling (ARCH-005, D-R1 retimed via injec
     });
 
     const start = Date.now();
-    const result = await gw.invoke({ prompt: 'test', opts: {}, runId: 'r1', agentId: 'a1' });
+    const result = await gw.invoke({ prompt: 'test', opts: { model: 'anthropic/claude-3-5-haiku-20241022' }, runId: 'r1', agentId: 'a1' });
     const elapsed = Date.now() - start;
 
     expect(result.ok).toBe(false);
@@ -65,7 +62,6 @@ describe('GatewayClient provider-down handling (ARCH-005, D-R1 retimed via injec
   it('retries the configured number of times before giving up', async () => {
     const failingFetch = vi.fn(async () => ({ ok: false, status: 503 }) as unknown as Response) as unknown as typeof fetch;
     const gw = new LiteLLMGatewayClient({
-      aliases: ALIASES,
       timeoutMs: 500,
       retries: 2,
       useLiteLLMProxy: true,
@@ -73,7 +69,7 @@ describe('GatewayClient provider-down handling (ARCH-005, D-R1 retimed via injec
       fetchImpl: failingFetch,
     });
 
-    const result = await gw.invoke({ prompt: 'p', opts: {}, runId: 'r1', agentId: 'a1' });
+    const result = await gw.invoke({ prompt: 'p', opts: { model: 'anthropic/claude-3-5-haiku-20241022' }, runId: 'r1', agentId: 'a1' });
 
     expect(result.ok).toBe(false);
     // 1 initial attempt + 2 retries = exactly 3 calls to the transport — observable and exact,
@@ -87,7 +83,6 @@ describe('GatewayClient provider-down handling (ARCH-005, D-R1 retimed via injec
       json: async () => ({ content: [{ text: 'hello' }], usage: { input_tokens: 5, output_tokens: 2 } }),
     }) as unknown as Response) as unknown as typeof fetch;
     const gw = new LiteLLMGatewayClient({
-      aliases: ALIASES,
       timeoutMs: 5000,
       retries: 1,
       useLiteLLMProxy: true,
@@ -95,7 +90,7 @@ describe('GatewayClient provider-down handling (ARCH-005, D-R1 retimed via injec
       fetchImpl: okFetch,
     });
 
-    const result = await gw.invoke({ prompt: 'say hello', opts: {}, runId: 'r1', agentId: 'a1' });
+    const result = await gw.invoke({ prompt: 'say hello', opts: { model: 'anthropic/claude-3-5-haiku-20241022' }, runId: 'r1', agentId: 'a1' });
 
     expect(result.ok).toBe(true);
     if (result.ok) {

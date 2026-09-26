@@ -35,7 +35,7 @@ async function call(name: string, args: unknown): Promise<any> {
 }
 
 const AGENT_SPEC = (effort: string, timeoutMs: number) =>
-  `{ model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: '${effort}' }, timeoutMs: { type: 'number', default: ${timeoutMs} } }`;
+  `{ model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: '${effort}' }, timeoutMs: { type: 'number', default: ${timeoutMs} } }`;
 
 const SCRIPT = `export const meta = {
   name: 'cs',

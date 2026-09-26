@@ -20,14 +20,21 @@ import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
-import { DEFAULT_ALIASES } from '../../src/default-aliases.js';
-import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
+import { parseModelRef } from '../../src/providers.js';
+import { registerPublishedVia, DEFAULT_FIXTURE_MODEL } from '../helpers/workflow-fixtures.js';
+
+// 2026-09-26 (alias mechanism removed): every ref below is a full `<provider>/<model-id>` static
+// anthropic ref — `checkModelRef` accepts each with no catalog lookup, so the fake `CATALOG` below
+// only needs to carry pricing, never existence.
+const DEFAULT_REF = DEFAULT_FIXTURE_MODEL;
+const HAIKU_REF = 'anthropic/claude-haiku-4-5-20251001';
+const OPUS_REF = 'anthropic/claude-opus-4-8';
 
 const seen: Array<{ prompt: string; model: string | undefined; effort: unknown; timeoutMs: unknown }> = [];
 const GATEWAY: GatewayClient = {
   async invoke(req: any) {
     seen.push({ prompt: req.prompt, model: req.opts?.model, effort: req.opts?.effort, timeoutMs: req.opts?.timeoutMs });
-    const target = DEFAULT_ALIASES[req.opts?.model ?? 'default']!;
+    const target = parseModelRef(req.opts?.model)!;
     return { ok: true, provider: target.provider, model: target.model, tokens: { input: 10, output: 5 }, content: req.prompt };
   },
 } as GatewayClient;
@@ -37,8 +44,8 @@ const priced = (model: string) => ({
   contextWindow: 200_000, price: { in: '$1/1M', out: '$2/1M' }, toolUse: true, location: 'remote',
   ratesPerM: { in: 1, out: 2, cacheRead: 0, cacheWrite: 0 },
 });
-// `default` and `haiku` priced; `opus` deliberately not (only the collision case dispatches it).
-const CATALOG = async (): Promise<any[]> => [priced(DEFAULT_ALIASES.default!.model), priced(DEFAULT_ALIASES.haiku!.model)];
+// DEFAULT_REF and HAIKU_REF priced; OPUS_REF deliberately not (only the collision case dispatches it).
+const CATALOG = async (): Promise<any[]> => [priced(parseModelRef(DEFAULT_REF)!.model), priced(parseModelRef(HAIKU_REF)!.model)];
 
 let server: Server;
 let baseUrl: string;
@@ -75,7 +82,7 @@ afterAll(async () => {
 
 describe('a nested workflow() frame dispatches its agents with the CHILD version\'s declared params', () => {
   it('child echoer declaring haiku runs on haiku, and that call is priced (child model pinned)', async () => {
-    await registerPublishedVia(mcp, 'np-inner', `return await agent('echoer', { prompt: 'inner-echo-1' });`, { model: 'haiku' });
+    await registerPublishedVia(mcp, 'np-inner', `return await agent('echoer', { prompt: 'inner-echo-1' });`, { model: HAIKU_REF });
     await registerPublishedVia(mcp, 'np-outer', `const r = await workflow('np-inner', {}); return r;`);
     const started = await mcp('run_start', { name: 'np-outer' });
     const status = await settle(started.runId);
@@ -83,7 +90,7 @@ describe('a nested workflow() frame dispatches its agents with the CHILD version
 
     const call = seen.find((c) => c.prompt === 'inner-echo-1');
     expect(call).toBeDefined();
-    expect(call!.model).toBe('haiku'); // pre-fix: undefined (parent snapshot has no `echoer` slice)
+    expect(call!.model).toBe(HAIKU_REF); // pre-fix: undefined (parent snapshot has no `echoer` slice)
     expect(call!.effort).toBe('low');
     expect(call!.timeoutMs).toBe(60000);
 
@@ -92,7 +99,7 @@ describe('a nested workflow() frame dispatches its agents with the CHILD version
     const rec = view.agents.find((a: any) => a.label === 'echoer');
     expect(rec).toBeDefined();
     expect(rec.frame).not.toBe('');
-    expect(rec.model).toBe(DEFAULT_ALIASES.haiku!.model);
+    expect(rec.model).toBe(parseModelRef(HAIKU_REF)!.model);
     expect(rec.unpriced).toBe(false);
     expect(rec.costUSD).toBeGreaterThan(0);
 
@@ -101,20 +108,20 @@ describe('a nested workflow() frame dispatches its agents with the CHILD version
   }, 30000);
 
   it("a parent run's override for a colliding label does not leak into the child's same-named agent", async () => {
-    await registerPublishedVia(mcp, 'np-inner2', `return await agent('echoer', { prompt: 'inner-echo-2' });`, { model: 'haiku' });
+    await registerPublishedVia(mcp, 'np-inner2', `return await agent('echoer', { prompt: 'inner-echo-2' });`, { model: HAIKU_REF });
     await registerPublishedVia(mcp, 'np-outer2', `const mine = await agent('echoer', { prompt: 'outer-echo-2' }); const r = await workflow('np-inner2', {}); return { mine, r };`);
-    const started = await mcp('run_start', { name: 'np-outer2', overrides: { agents: { echoer: { model: 'opus', timeoutMs: 30000 } } } });
+    const started = await mcp('run_start', { name: 'np-outer2', overrides: { agents: { echoer: { model: OPUS_REF, timeoutMs: 30000 } } } });
     expect(started.runId).toBeDefined();
     const status = await settle(started.runId);
     expect(status.status).toBe('completed');
 
     // top level: the parent's own echoer takes the parent's override (unchanged behaviour)
     const outer = seen.find((c) => c.prompt === 'outer-echo-2');
-    expect(outer?.model).toBe('opus');
+    expect(outer?.model).toBe(OPUS_REF);
     expect(outer?.timeoutMs).toBe(30000);
     // nested: the child's own declared defaults, never the parent's override
     const inner = seen.find((c) => c.prompt === 'inner-echo-2');
-    expect(inner?.model).toBe('haiku'); // pre-fix: 'opus' (the parent's override leaked)
+    expect(inner?.model).toBe(HAIKU_REF); // pre-fix: OPUS_REF (the parent's override leaked)
     expect(inner?.timeoutMs).toBe(60000);
   }, 30000);
 });

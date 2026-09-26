@@ -128,12 +128,12 @@ describe('ClaudeAgentSdkGatewayClient — D-F5 route-back defects, real CLI + lo
   });
 
   it(
-    'agent() with opts.model alias -> the stub receives that model id in the outbound request body',
+    'agent() with opts.model (a full ref) -> the stub receives that EXACT ref, verbatim, in the outbound request body — no cloak',
     async () => {
       const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
       const client = new ClaudeAgentSdkGatewayClient({ baseUrl: textStub.baseUrl });
 
-      const resultPromise = client.invoke({ prompt: 'say pong', opts: { model: 'haiku-alias' }, runId: 'it-017-a', agentId: 'agent-a' });
+      const resultPromise = client.invoke({ prompt: 'say pong', opts: { model: 'openrouter/haiku-alias' }, runId: 'it-017-a', agentId: 'agent-a' });
 
       const reached = await waitForRequest(textStub.requests);
       if (!reached) {
@@ -145,10 +145,10 @@ describe('ClaudeAgentSdkGatewayClient — D-F5 route-back defects, real CLI + lo
 
       const messagesReq = textStub.requests.find((r) => typeof r.body['model'] === 'string');
       expect(messagesReq).toBeDefined();
-      // The caller's alias reaches the wire as its proxy-facing name (proxyModelName): the prefix
-      // stops the CLI from expanding a bare shorthand into a dated Anthropic id the LiteLLM proxy
-      // could not match. This is the exact model id the proxy keys its model_name list on.
-      expect(messagesReq?.body['model']).toBe('rwe-proxy-haiku-alias');
+      // 2026-09-26 (alias mechanism removed): the full ref reaches the wire RAW — a `rwe-proxy-*`
+      // cloak is no longer needed anywhere, since a ref containing `/` is never a bare CLI shorthand
+      // the CLI could expand into a dated Anthropic id (that was the cloak's only reason to exist).
+      expect(messagesReq?.body['model']).toBe('openrouter/haiku-alias');
     },
     30000,
   );

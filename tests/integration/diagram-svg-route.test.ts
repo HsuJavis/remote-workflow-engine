@@ -28,7 +28,7 @@ let outcome: (src: string) => RenderOutcome = (src) => ({ ok: true, svg: `<svg x
 
 const SCRIPT = [
   "export const meta = { description: 'diagram route', params: { agents: {",
-  "  writer: { model: { type: 'string', default: 'sonnet' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },",
+  "  writer: { model: { type: 'string', default: 'anthropic/claude-sonnet-5' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },",
   '} } };',
   // v26 (REQ-128): rule L2 — every agent() is dispatched inside a phase(), and the diagram carries
   // one subgraph lane per phase() in call order. The `if (false)` guard (this test never RUNS the

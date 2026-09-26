@@ -151,11 +151,11 @@ describe('run_agent_log harness shape (IT-066, DES-067)', () => {
 // self-diagnosing tripwire for the next wiring miss (a knob that silently falls through shows up
 // as provenance.<key>:'engine' where a rung was expected).
 //
-// Separate server: the shared `server` above is built with NO aliases, so its gateway is the
-// NULL_GATEWAY stub (never calls onHarness at all — `harness` stays permanently null regardless of
-// v21). Reaching onHarness needs an aliased gateway; `useLiteLLMProxy:false` + the 'ollama' provider
-// reaches onHarness (called unconditionally before the outbound fetch) without spawning the litellm
-// subprocess or needing any live backend/API key.
+// Separate server: the shared `server` above is built with a direct-fetch gateway unconfigured, so
+// its gateway is the NULL_GATEWAY stub (never calls onHarness at all — `harness` stays permanently
+// null regardless of v21). Reaching onHarness needs a real direct-fetch gateway; `useLiteLLMProxy:
+// false` + an `ollama/...` model ref reaches onHarness (called unconditionally before the outbound
+// fetch) without spawning the litellm subprocess or needing any live backend/API key.
 describe('run_agent_log harness provenance (IT-066 v21, DES-105)', () => {
   let provServer: Server;
   let provTmpDir: string;
@@ -164,7 +164,6 @@ describe('run_agent_log harness provenance (IT-066 v21, DES-105)', () => {
     provTmpDir = mkdtempSync(join(tmpdir(), 'rwe-it066-prov-'));
     provServer = await createServer({
       port: 0, bind: '127.0.0.1', workRoot: provTmpDir,
-      aliases: { default: { provider: 'ollama', model: 'qwen2.5:7b' } },
       useLiteLLMProxy: false,
     });
   });
@@ -239,7 +238,7 @@ describe('run_agent_log harness provenance (IT-066 v21, DES-105)', () => {
   it('persisted descriptor.prompt (no schema) equals the script prompt + framed appendPrompt, byte-for-byte', async () => {
     const script =
       `export const meta = { params: { agents: { say: { ` +
-      `model: { type: 'string', default: 'default' }, ` +
+      `model: { type: 'string', default: 'ollama/qwen2.5:7b' }, ` +
       `effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, ` +
       `timeoutMs: { type: 'number', default: 60000 }, ` +
       `appendPrompt: { type: 'string', default: '' } } } } };\n` +
@@ -268,7 +267,7 @@ describe('run_agent_log harness provenance (IT-066 v21, DES-105)', () => {
   it('persisted descriptor.prompt WITH a schema starts with the composed prompt and carries the OUTPUT FORMAT suffix', async () => {
     const script =
       `export const meta = { params: { agents: { say: { ` +
-      `model: { type: 'string', default: 'default' }, ` +
+      `model: { type: 'string', default: 'ollama/qwen2.5:7b' }, ` +
       `effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, ` +
       `timeoutMs: { type: 'number', default: 60000 } } } } };\n` +
       `phase('Work');\n` +

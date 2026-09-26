@@ -43,10 +43,6 @@ beforeAll(async () => {
     port: 0,
     bind: '127.0.0.1',
     workRoot: tmpDir,
-    aliases: {
-      sonnet: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
-      default: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
-    },
   });
 });
 
@@ -93,7 +89,7 @@ describe('v24 retirement regression (IT-081, TASK-154, DES-144/DES-148): the v15
       name: 'it081-stray-defaults-arg',
       script: 'return "ok";',
       mermaid: 'graph LR',
-      defaults: { model: 'sonnet', timeoutMs: 30_000 }, // the pre-v24 field
+      defaults: { model: 'anthropic/claude-3-5-sonnet-20241022', timeoutMs: 30_000 }, // the pre-v24 field
     });
     expect((r.error as { code?: string } | undefined)?.code ?? r.code).toBe('DEFAULTS_RETIRED');
     expect((r.error as { see?: string } | undefined)?.see).toBe('workflow_authoring_guide');
@@ -108,7 +104,7 @@ describe('v24 retirement regression (IT-081, TASK-154, DES-144/DES-148): the v15
   // to it — while the authoring guide told authors in as many words that `meta.defaults` is
   // refused DEFAULTS_RETIRED. The guide was right about the intent and wrong about the engine.
   it('a top-level `meta.defaults` (sibling to params, not nested under it) is REFUSED DEFAULTS_RETIRED', async () => {
-    const script = `export const meta = { defaults: { model: 'sonnet', timeoutMs: 30000 } };\nreturn 1;`;
+    const script = `export const meta = { defaults: { model: 'anthropic/claude-3-5-sonnet-20241022', timeoutMs: 30000 } };\nreturn 1;`;
     const r = await callTool('workflow_register', { name: 'it081-meta-defaults-sibling', script, mermaid: 'graph LR' });
     expect((r.error as { code?: string } | undefined)?.code ?? r.code).toBe('DEFAULTS_RETIRED');
 

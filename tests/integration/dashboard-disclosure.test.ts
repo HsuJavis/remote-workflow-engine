@@ -150,8 +150,8 @@ describe('dashboard disclosure key-set table (IT-165, ADR-054, DES-192)', () => 
     const homeRes = await fetch(`${base}/api/home`);
     realBodies['GET /api/home'] = await homeRes.json();
 
-    // v28 (DES-218, TASK-219, REQ-137): GET /api/models — real DEFAULT_ALIASES catalog (no
-    // `aliases` override passed to `createServer` above), so this is a genuinely non-empty,
+    // v28 (DES-218, TASK-219, REQ-137): GET /api/models — the real static anthropic catalog table
+    // (always included regardless of any catalog config), so this is a genuinely non-empty,
     // non-mocked `EnrichedModelEntry[]`.
     const modelsRes = await fetch(`${base}/api/models`);
     const modelsList = (await modelsRes.json()) as Array<Record<string, unknown>>;

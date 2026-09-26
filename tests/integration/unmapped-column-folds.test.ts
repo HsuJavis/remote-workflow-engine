@@ -100,7 +100,19 @@ describe('the two folds agree on the WHOLE RunUsage, failed call included (R-1, 
   it('at-rest foldUsage deep-equals the live fold when one call failed carrying unmapped and no tokens', async () => {
     const store = new InMemoryRunStore(new FixedClock(new Date('2026-09-11T00:00:00Z')));
     const mgr = new RunManager({ gateway: gatewayOneDoneOneFailed as any, store });
-    const runId = await startScript(mgr, `await agent('a', { prompt: 'p' }); await agent('b', { prompt: 'q' });`, {});
+    // 2026-09-26 (alias mechanism removed): the DEFAULT_FIXTURE_MODEL this file's `startScript`
+    // would otherwise declare is `anthropic/claude-haiku-4-5-20251001` — the EXACT static-table id
+    // this fake gateway's own result also (coincidentally) claims — so admission would now PIN a
+    // real static-table price for it, breaking this test's premise ("no price book pinned", i.e.
+    // the pin covers a genuinely DIFFERENT model than whatever the gateway happens to return).
+    // Overriding to a well-formed openrouter ref keeps the pin key `openrouter/<...>`, which never
+    // matches the fake's hardcoded `anthropic/claude-haiku-4-5-20251001` result — genuinely unpriced.
+    const runId = await startScript(
+      mgr,
+      `await agent('a', { prompt: 'p' }); await agent('b', { prompt: 'q' });`,
+      {},
+      { agents: { a: { model: 'openrouter/some-vendor/unpriced-model' }, b: { model: 'openrouter/some-vendor/unpriced-model' } } },
+    );
     const view = await pollStatus(mgr, runId);
     expect(view.status).toBe('completed');
 

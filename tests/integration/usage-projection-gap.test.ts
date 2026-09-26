@@ -15,11 +15,9 @@ import { RunManager } from '../../src/run-manager.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import { FixedClock } from '../../src/clock.js';
 import { LiteLLMGatewayClient } from '../../src/gateway/client.js';
-import type { GatewayConfig } from '../../src/gateway/client.js';
 import { facadeCaller, runScriptVia, AUTH_DISABLED } from '../helpers/workflow-fixtures.js';
 
 const CLOCK = new FixedClock(new Date('2026-01-01T00:00:00Z'));
-const ALIASES: GatewayConfig['aliases'] = { default: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' } };
 
 const ORIGINAL_KEY = process.env['ANTHROPIC_API_KEY'];
 beforeEach(() => { process.env['ANTHROPIC_API_KEY'] = 'fake-unit-test-key'; });
@@ -45,11 +43,11 @@ describe('a renamed usage key names itself in run_result.meta.unmappedMessages, 
       ok: true, status: 200,
       json: async () => ({ content: [{ text: 'ok' }], usage: { inputTokens: 5, outputTokens: 3 } }),
     })) as unknown as typeof fetch;
-    const gateway = new LiteLLMGatewayClient({ aliases: ALIASES, timeoutMs: 5000, retries: 0, fetchImpl });
+    const gateway = new LiteLLMGatewayClient({ timeoutMs: 5000, retries: 0, fetchImpl });
 
     const store = new InMemoryRunStore(CLOCK);
     const runManager = new RunManager({ store, clock: CLOCK, gateway });
-    const facade = new McpFacade({ clock: CLOCK, store, runManager, aliasNames: new Set(Object.keys(ALIASES)) });
+    const facade = new McpFacade({ clock: CLOCK, store, runManager });
 
     const run = await runScriptVia(facadeCaller(facade), `const a = await agent('x', {}); return a;`);
     const runId = run.result!.runId;
@@ -71,11 +69,11 @@ describe('a renamed usage key names itself in run_result.meta.unmappedMessages, 
       ok: true, status: 200,
       json: async () => ({ content: [{ text: 'ok' }], usage: { input_tokens: 5, output_tokens: 3 } }),
     })) as unknown as typeof fetch;
-    const gateway = new LiteLLMGatewayClient({ aliases: ALIASES, timeoutMs: 5000, retries: 0, fetchImpl });
+    const gateway = new LiteLLMGatewayClient({ timeoutMs: 5000, retries: 0, fetchImpl });
 
     const store = new InMemoryRunStore(CLOCK);
     const runManager = new RunManager({ store, clock: CLOCK, gateway });
-    const facade = new McpFacade({ clock: CLOCK, store, runManager, aliasNames: new Set(Object.keys(ALIASES)) });
+    const facade = new McpFacade({ clock: CLOCK, store, runManager });
 
     const run = await runScriptVia(facadeCaller(facade), `const a = await agent('x', {}); return a;`);
     const runId = run.result!.runId;

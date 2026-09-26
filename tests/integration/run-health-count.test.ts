@@ -49,9 +49,9 @@ async function waitForStatus(mgr: RunManager, runId: string, want: RunStatus, ma
 }
 
 const TWO_AGENT_SCRIPT =
-  "export const meta = { params: { agents: { a: { model: { type: 'string', default: 'default' }, " +
+  "export const meta = { params: { agents: { a: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, " +
   "effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, " +
-  "b: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } } };\n" +
+  "b: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } } };\n" +
   "phase('main');\n" +
   "const ra = await agent('a', {});\n" +
   "const rb = await agent('b', {});\n" +

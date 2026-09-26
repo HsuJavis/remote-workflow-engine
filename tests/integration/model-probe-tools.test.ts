@@ -1,7 +1,15 @@
 // Issue #73 over real MCP HTTP: the admin-only `models_probe` tool, the probe-backed fields on
 // `models_list` / `GET /api/models`, persistence across an engine restart, and the non-fatal
 // run_start warning (d). The gateway is a fake GatewayClient standing in for a model that answers
-// prose but never uses a tool — no network (the catalog's live fetchers are stubbed down too).
+// prose but never uses a tool.
+//
+// 2026-09-26 (alias mechanism removed, owner decision 10): probe targets are now the distinct model
+// refs from REGISTERED workflow versions, not a configured alias table — this file registers a
+// workflow that declares `ollama/qwen2.5:7b` as an agent's `model.default` BEFORE calling
+// `models_probe`, so that ref is a probe target at all. `models_list` itself is unrelated to
+// registration (it reflects the live/static catalog only), so the ollama fetcher is stubbed to a
+// fake-but-successful `/api/tags` reply (not `down`) — otherwise no `qwen2.5:7b` row would ever
+// appear for the probe-outcome assertions to check against.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,7 +21,11 @@ import { authorize, type Principal } from '../../src/authz.js';
 import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 
 const down = (async () => { throw new Error('offline'); }) as unknown as typeof fetch;
-const ALIASES = { default: { provider: 'ollama' as const, model: 'qwen2.5:7b' } };
+function jsonFetch(body: unknown, ok = true): typeof fetch {
+  return (async () => ({ ok, status: ok ? 200 : 500, json: async () => body })) as unknown as typeof fetch;
+}
+const OLLAMA_TAGS = { models: [{ name: 'qwen2.5:7b', details: { family: 'qwen2', parameter_size: '7.6B' } }] };
+const QWEN_REF = 'ollama/qwen2.5:7b';
 
 let invocations = 0;
 const proseOnly: GatewayClient = {
@@ -28,8 +40,8 @@ let server: Server;
 
 async function boot(): Promise<Server> {
   return createServer({
-    port: 0, bind: '127.0.0.1', workRoot, aliases: ALIASES, gateway: proseOnly,
-    modelCatalogFetchers: { ollamaFetch: down, openrouterFetch: down },
+    port: 0, bind: '127.0.0.1', workRoot, gateway: proseOnly,
+    modelCatalogFetchers: { ollamaFetch: jsonFetch(OLLAMA_TAGS), openrouterFetch: down },
   });
 }
 
@@ -78,17 +90,23 @@ describe('probe -> models_list -> restart -> run_start warning (#73)', () => {
     expect(row).toMatchObject({ toolUseVerified: null, proseVerified: null, lastProbedAt: null, stabilitySource: 'rule', stability: 'variable' });
   });
 
-  it('models_probe runs one prose + one Bash call per configured model and returns the results', async () => {
+  it('models_probe runs one prose + one Bash call per registered-version model ref and returns the results', async () => {
+    // A ref only becomes a probe target once SOME registered workflow version declares it — the
+    // registration itself is what makes `ollama/qwen2.5:7b` reachable to `models_probe({})` below.
+    const name = `probe-target-${Date.now()}`; // det:allow — unique fixture name
+    await registerPublishedVia(call, name, "phase('Work');\nreturn await agent('a', { prompt: 'hi' });", { model: QWEN_REF });
+
     const before = invocations;
     const out = await call('models_probe', {});
     expect(out.result).toHaveLength(1);
-    expect(out.result[0]).toMatchObject({ alias: 'default', provider: 'ollama', model: 'qwen2.5:7b', proseVerified: true, toolUseVerified: false });
+    expect(out.result[0]).toMatchObject({ provider: 'ollama', model: 'qwen2.5:7b', proseVerified: true, toolUseVerified: false });
+    expect(out.result[0]).not.toHaveProperty('alias');
     expect(invocations - before).toBe(2);
   });
 
-  it('an unknown alias is refused UNKNOWN_ALIAS', async () => {
-    const out = await call('models_probe', { alias: 'nope' });
-    expect(out.error?.code ?? out.code).toBe('UNKNOWN_ALIAS');
+  it('a malformed model ref is refused UNKNOWN_MODEL', async () => {
+    const out = await call('models_probe', { model: 'not-a-valid-ref' });
+    expect(out.error?.code ?? out.code).toBe('UNKNOWN_MODEL');
   });
 
   it('models_list and GET /api/models carry the probe outcome (degraded, source probe)', async () => {
@@ -110,19 +128,21 @@ describe('probe -> models_list -> restart -> run_start warning (#73)', () => {
   it('run_start of an agent with tools on that model is ADMITTED with a MODEL_TOOL_USE_UNVERIFIED warning', async () => {
     const name = `probe-warn-${Date.now()}`; // det:allow — unique fixture name
     await registerPublishedVia(call, name, "phase('Work');\nreturn await agent('coder', { prompt: 'list files', allowedTools: ['Bash'] });", {
-      mermaid: 'graph LR\nsubgraph "Work"\nn0(["coder<br/>default · low · 60000<br/>tools: Bash"])\nend',
+      model: QWEN_REF,
+      mermaid: `graph LR\nsubgraph "Work"\nn0(["coder<br/>${QWEN_REF} · low · 60000<br/>tools: Bash"])\nend`,
     });
     const out = await call('run_start', { name });
     expect(out.status).not.toBe('failed');
     expect(out.result.runId).toBe(out.runId);
-    expect(out.result.warnings).toEqual([expect.objectContaining({ code: 'MODEL_TOOL_USE_UNVERIFIED', label: 'coder', model: 'default' })]);
+    expect(out.result.warnings).toEqual([expect.objectContaining({ code: 'MODEL_TOOL_USE_UNVERIFIED', label: 'coder', model: QWEN_REF })]);
     await call('run_stop', { runId: out.runId }).catch(() => undefined);
   });
 
   it('a prose-only agent (allowedTools: []) on the same model gets no warning', async () => {
     const name = `probe-nowarn-${Date.now()}`; // det:allow — unique fixture name
     await registerPublishedVia(call, name, "phase('Work');\nreturn await agent('writer', { prompt: 'say hi', allowedTools: [] });", {
-      mermaid: 'graph LR\nsubgraph "Work"\nn0(["writer<br/>default · low · 60000<br/>tools: none"])\nend',
+      model: QWEN_REF,
+      mermaid: `graph LR\nsubgraph "Work"\nn0(["writer<br/>${QWEN_REF} · low · 60000<br/>tools: none"])\nend`,
     });
     const out = await call('run_start', { name });
     expect(out.status).not.toBe('failed');

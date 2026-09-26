@@ -87,7 +87,16 @@ describe('AgentTranscriptSink captures the SDK message/tool_call/tool_result str
     // v24 (ADR-029): the first argument is a LITERAL LABEL matching /^[A-Za-z_][\w-]*$/ — 'read foo.txt'
     // is AGENT_LABEL_FORMAT — and the prompt travels as `options.prompt`. Same dispatch, new spelling:
     // the fake SDK session below is what this test is actually about, not the prompt text.
-    const run = await runScriptVia(facadeCaller(facade), `return agent('read', { prompt: 'read foo.txt' });`);
+    // 2026-09-26 (alias mechanism removed): `ClaudeAgentSdkGatewayClient` routes `anthropic` straight
+    // to the REAL Anthropic API regardless of `baseUrl` (REQ-037) — with no real credential
+    // configured, that fails fast on ANTHROPIC_AUTH_MISSING BEFORE the mocked `query()` above is
+    // ever reached, starving this test of the message/tool_use/tool_result stream it is actually
+    // about. An `ollama/...` ref routes through `baseUrl` instead, reaching the mock.
+    const run = await runScriptVia(
+      facadeCaller(facade),
+      `return agent('read', { prompt: 'read foo.txt' });`,
+      { overrides: { agents: { read: { model: 'ollama/qwen2.5:7b' } } } },
+    );
     const runId = run.result!.runId;
 
     let status = await facade.runStatus({ runId }, AUTH_DISABLED, false, null);
