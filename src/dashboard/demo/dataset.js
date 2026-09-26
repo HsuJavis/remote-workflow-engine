@@ -87,7 +87,9 @@ export const DEMO = new Map([
     {
       provider: 'anthropic',
       model: 'claude-3-5-sonnet-20241022',
-      aliases: ['sonnet'],
+      // 2026-09-26 (alias mechanism removed, spec rule 9): `ref` is the exact string to paste into
+      // `model.default` — no `aliases` field/overlay any more.
+      ref: 'anthropic/claude-3-5-sonnet-20241022',
       description: '示範模型資料 · demo model row',
       modalities: { in: ['text'], out: ['text'] },
       contextWindow: 200000,

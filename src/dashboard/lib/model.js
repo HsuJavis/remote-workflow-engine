@@ -14,8 +14,10 @@ export function shortModel(model) {
 
 // [v28, DES-213, ADR-060, TASK-222, REQ-137] the Models tab's projections — extends this file
 // rather than a second `lib/models.js` (DES-213's own boundary against two near-homonym
-// `ASSET_KEYS`). `EnrichedModelEntry`'s twelve REQ-137 columns, in order:
-const COLUMNS = ['model', 'provider', 'aliases', 'context', 'price', 'tools', 'effort', 'modalities', 'latency', 'stability', 'benchmarks', 'location'];
+// `ASSET_KEYS`). `EnrichedModelEntry`'s REQ-137 columns, in order. 2026-09-26 (alias mechanism
+// removed, spec rule 9): the `aliases` column is dropped — every row's `ref` IS the one string to
+// paste, and there is no second name to show beside it.
+const COLUMNS = ['model', 'provider', 'context', 'price', 'tools', 'effort', 'modalities', 'latency', 'stability', 'benchmarks', 'location'];
 
 // `null`, `'unknown'` and a missing nested path all normalise to `undefined` — the ONE token
 // `sortRows` (`runlist.js:42`, reused byte-unchanged) ever treats as absent. `0`/`false` are FACTS,
@@ -32,10 +34,6 @@ export function sortKeyOf(entry, column) {
   switch (column) {
     case 'model': return entry.model;
     case 'provider': return entry.provider;
-    case 'aliases': {
-      const a = entry.aliases;
-      return Array.isArray(a) && a.length ? a[0] : undefined;
-    }
     case 'context':
       return isAbsent(entry.contextWindow) ? undefined : entry.contextWindow;
     case 'price': {
@@ -74,18 +72,16 @@ export function sortKeyOf(entry, column) {
 }
 
 /** `matchModels(entries, {query, provider, loc})` — the empty filter is the identity; `query`
- *  narrows by model id/alias substring case-insensitively, `provider` by exact match, `loc` by
- *  exact `location` match ('all' is a no-op). */
+ *  narrows by model id substring case-insensitively, `provider` by exact match, `loc` by
+ *  exact `location` match ('all' is a no-op). 2026-09-26 (alias mechanism removed): there is no
+ *  second name to also match against — `e.model` is the only string a query can narrow by. */
 export function matchModels(entries, filter) {
   const { query, provider, loc } = filter || {};
   const q = (query || '').trim().toLowerCase();
   return entries.filter((e) => {
     if (provider && e.provider !== provider) return false;
     if (loc && loc !== 'all' && e.location !== loc) return false;
-    if (q) {
-      const hay = [e.model, ...(Array.isArray(e.aliases) ? e.aliases : [])].join(' ').toLowerCase();
-      if (!hay.includes(q)) return false;
-    }
+    if (q && !String(e.model).toLowerCase().includes(q)) return false;
     return true;
   });
 }
@@ -170,7 +166,6 @@ export function modelRow(entry, lang) {
   const cells = [
     entry.model,
     entry.provider,
-    Array.isArray(entry.aliases) && entry.aliases.length ? entry.aliases.join(', ') : '—',
     fmtContext(entry.contextWindow),
     fmtPrice(entry.price, lang),
     fmtDeclared(entry.toolUseDeclared, entry.declaredSource),
@@ -219,7 +214,6 @@ export function modelPanel(entry, lang) {
     // them localised the same values (v29f).
     kicker: entry.location ? `${entry.provider} · ${word(LOCATION_KEY, entry.location, lang)}` : entry.provider,
     title: entry.model,
-    aliases: entry.aliases,
     description: entry.description,
     defs: labels.map((label, i) => [label, values[i]]),
     benchmarks,

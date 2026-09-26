@@ -25,10 +25,11 @@ import { el, currentLang } from './dom.js';
 // `sortKeyOf`/`modelRow` column name.
 // [v29f, REQ-162] Column names from the handoff's own STR table. REQ-137's own acceptance text
 // already said 穩定度 and 基準分數; 推理 matched neither it nor the design.
+// 2026-09-26 (alias mechanism removed, spec rule 9): the `aliases` column is dropped — a row's
+// `ref` is the one string an author pastes into `model.default`, and there is no second name.
 const COLUMNS = [
   { key: 'model', zh: '模型', en: 'Model' },
   { key: 'provider', zh: '供應商', en: 'Provider' },
-  { key: 'aliases', zh: '別名', en: 'Aliases' },
   // [v32, REQ-191] the one column README §4 marks as right-aligned.
   { key: 'context', zh: '上下文', en: 'Context', align: 'right' },
   { key: 'price', zh: '價格 / M tokens', en: 'Price / M tokens' },
@@ -218,7 +219,6 @@ function buildPanel(container, state, entry) {
   // explained where it came from underneath it. The close button keeps its own row above both.
   if (vm.kicker) panel.appendChild(el('div', 'kicker', vm.kicker));
   panel.appendChild(el('h2', undefined, vm.title));
-  if (vm.aliases && vm.aliases.length) panel.appendChild(el('p', 'mono', vm.aliases.join(', ')));
   if (vm.description) panel.appendChild(el('p', undefined, vm.description));
 
   const dl = document.createElement('dl');
