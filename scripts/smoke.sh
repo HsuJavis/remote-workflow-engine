@@ -85,7 +85,10 @@ extract() {
 
 # A minimal, REAL v24 workflow: no agent() call at all, so it needs no model provider, and a
 # header-only diagram, which `checkMermaid` accepts for a script with zero agent labels.
-SMOKE_WF="rwe-smoke-$$"
+# issue #91 regression (found by verify-b, 2026-09-26): `rwe-` is the engine-reserved prefix
+# (path-verdict.ts's RESERVED_PREFIX, ARCH-093) -- workflow_register now refuses ANY name starting
+# with it, including this smoke check's own sample workflow. Use a non-reserved prefix instead.
+SMOKE_WF="smoke-$$"
 echo "[smoke] registering sample workflow ${SMOKE_WF}..."
 REG_RESPONSE=$(call_tool workflow_register "{\"name\":\"${SMOKE_WF}\",\"script\":\"return 42;\",\"mermaid\":\"graph LR;\"}")
 VERSION=$(extract_nested "$REG_RESPONSE" version)
