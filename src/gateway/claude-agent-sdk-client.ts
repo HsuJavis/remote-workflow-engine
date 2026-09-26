@@ -398,6 +398,15 @@ function makePreToolUseHook(root: string | undefined): HookCallback {
 // when ANTHROPIC_BASE_URL points somewhere else entirely (a local proxy, or a local stub server).
 const DUMMY_API_KEY = 'sk-local-dev-dummy-not-a-real-key';
 
+// send-back item 2 (verify-b, 2026-09-26): bound on the captured `Options.stderr` ring buffer — a
+// startup crash loop or a chatty debug build must never grow this unbounded; "last 4KB" per the
+// dispatch, enough to hold the CLI's own multi-line sandbox-dependency diagnostic in full.
+const MAX_STDERR_TAIL = 4096;
+// The SHORT tail folded into the agent's own recorded `detail` (agent-executor.ts's `capDetail`
+// caps the WHOLE detail string to 1024B downstream anyway) — the full MAX_STDERR_TAIL buffer
+// always travels separately via the `agent.stderr` EngineEvent for an operator reading the log.
+const MAX_INLINE_STDERR = 300;
+
 // D-G8-5: an explicit ALLOWLIST of host env vars the spawned `claude` CLI subprocess actually
 // needs to run (find its own binaries, resolve $HOME-relative config/cache paths, respect the
 // host's locale/shell) — never the full `process.env`, which would leak every unrelated host
@@ -833,9 +842,21 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
           })
         : { enabled: false };
 
+    // send-back item 2 (verify-b, 2026-09-26): the SDK's own `Options.stderr` callback (sdk.d.ts
+    // ~L1896) is the CLI subprocess's raw stderr — captured here (bounded to the last 4KB, a plain
+    // mutable ref so both `options.stderr` below and the post-drain check after `query()` share the
+    // SAME buffer) as defense-in-depth for a startup crash that never reaches an ordinary `result`
+    // message at all (the thrown-exception path in `_drain`'s catch). Only ever READ after a
+    // failed attempt — see the `agent.stderr` emission below.
+    const stderrRef = { tail: '' };
+    const captureStderr = (data: string): void => {
+      stderrRef.tail = (stderrRef.tail + data).slice(-MAX_STDERR_TAIL);
+    };
+
     const options: Options = {
       cwd: req.workspace ?? this._config.cwd,
       sandbox,
+      stderr: captureStderr,
       // REQ-037: an anthropic-direct call names the REAL Anthropic model id (LiteLLM bypassed);
       // every other provider is routed via the proxy-facing alias name (see proxyModelName) — the
       // CLI would otherwise expand a bare shorthand like `haiku` to a dated Anthropic id the LiteLLM
@@ -994,6 +1015,22 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     const namedDetail = (reason: string): string => `no response from model "${modelName}" (provider "${provider}") — ${reason}`;
     const enrich = (r: GatewayResult): GatewayResult => (!r.ok && r.detail === undefined ? { ...r, detail: namedDetail(r.reason) } : r);
 
+    // send-back item 2 (verify-b, 2026-09-26): ONE seam every failure path this call can produce
+    // (the ordinary `_drain` returns, the aborted/timeout branch below) passes through — mirrors
+    // `enrich`'s own "only touch a failure" shape. The FULL captured buffer always goes to the
+    // engine log (`agent.stderr`, redacted like every other EngineEvent); only a SHORT tail is
+    // folded into the caller-visible `detail` (agent-executor.ts's `capDetail` bounds the whole
+    // detail string to 1024B downstream regardless). A call that never wrote any stderr (the
+    // common case) is a no-op — never an event for nothing to report.
+    const withStderrDiagnostics = (r: GatewayResult): GatewayResult => {
+      if (r.ok) return r;
+      const trimmedTail = stderrRef.tail.trim();
+      if (trimmedTail.length === 0) return r;
+      this._eventSink({ kind: 'agent.stderr', runId: req.runId, agentId: req.agentId, attempt, tail: stderrRef.tail });
+      const short = trimmedTail.length > MAX_INLINE_STDERR ? `…${trimmedTail.slice(-MAX_INLINE_STDERR)}` : trimmedTail;
+      return { ...r, detail: `${r.detail ?? ''}${r.detail ? ' — ' : ''}CLI stderr tail: ${short}` };
+    };
+
     // D-F7/D-F9a: race the session against a timeoutMs-bounded timer and/or the caller's own
     // (RunManager-owned) AbortSignal — whichever fires first wins, exactly like
     // LiteLLMGatewayClient's per-attempt AbortController race. Raced unconditionally now that the
@@ -1005,9 +1042,9 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
 
     try {
       const outcome = await Promise.race([drain, bound]);
-      if (outcome !== 'aborted') return stamp(enrich(outcome));
+      if (outcome !== 'aborted') return stamp(withStderrDiagnostics(enrich(outcome)));
       const reason = timeoutMs !== undefined ? 'timeout' : 'terminal';
-      return stamp({ ok: false, provider: 'claude-agent-sdk', reason, detail: namedDetail(reason) });
+      return stamp(withStderrDiagnostics({ ok: false, provider: 'claude-agent-sdk', reason, detail: namedDetail(reason) }));
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       req.signal?.removeEventListener('abort', onExternalAbort);
@@ -1078,11 +1115,26 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
           continue;
         }
         if (msg.subtype !== 'success' || msg.is_error) {
-          const m = msg as unknown as { subtype?: string; result?: string; error?: string };
-          // v26 (H-3 send-back repair): same UNCAPPED-here reasoning as the `api_retry` branch above.
-          const detail = [m.subtype, m.result ?? m.error].filter(Boolean).join(': ') || 'error';
+          // send-back item 2 (verify-b, 2026-09-26): the real SDK result shape for a failure
+          // (`SDKResultError`, sdk.d.ts) carries its diagnostic text on `errors: string[]`
+          // (PLURAL) — `m.error` (singular) does not exist on this shape and was always
+          // undefined, so an `error_during_execution` result with an empty `result` field used to
+          // surface as the bare, undiagnosable string "error_during_execution" (the exact shape a
+          // real repro on this host's own CLI produced: sandbox startup failed before any tool
+          // call, `num_turns:0`, `result` absent, the actual "socat not installed" text sitting
+          // unread on `errors[0]`).
+          const m = msg as unknown as { subtype?: string; result?: string; errors?: string[] };
+          const errorsText = Array.isArray(m.errors) && m.errors.length > 0 ? m.errors.join('; ') : undefined;
+          const detail = [m.subtype, m.result ?? errorsText].filter(Boolean).join(': ') || 'error';
           const errEv: TranscriptEvent = { ts: new Date().toISOString(), kind: 'message', data: { type: 'error', detail } }; // det:allow — transcript timestamp
           if (streaming) { await onEvent!(errEv); } else { events.push(errEv); }
+          // Same labelling the THROWN sandbox-unavailable path already gets (below) — a doomed
+          // sandbox reaching here as an ordinary result message (rather than a thrown exception)
+          // must not burn through every retry attempt the same way a genuinely transient failure
+          // would.
+          if (isSandboxUnavailableText(detail)) {
+            return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', retryable: false, detail: `${SANDBOX_UNAVAILABLE}: ${detail}`, events, unmapped };
+          }
           return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', detail, events, unmapped };
         }
         return {
@@ -1116,12 +1168,23 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       // `sandbox:{enabled:false}` object should never provoke it), labelling it accurately is still
       // correct, never a regression.
       const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('Sandbox required but unavailable')) {
+      if (isSandboxUnavailableText(msg)) {
         return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', retryable: false, detail: `${SANDBOX_UNAVAILABLE}: ${msg}`, unmapped };
       }
       return { ok: false, provider: 'claude-agent-sdk', reason: timedOut ? 'timeout' : 'unreachable', unmapped };
     }
   }
+}
+
+// send-back item 2 (verify-b, 2026-09-26): ONE case-insensitive check shared by both the thrown-
+// exception path above and the ordinary-result-message path in `_drain` — a real repro on this
+// host produced the sandbox-unavailable failure as an ordinary `result` message
+// (`subtype:'error_during_execution'`), not the thrown exception TASK-250's S10 spike observed;
+// both shapes must get the SAME `retryable:false` labelling. Case-insensitive because the CLI's
+// own raw stderr text ("sandbox required but unavailable: …") and the SDK's thrown `.message`
+// prefix ("Sandbox required but unavailable: …") differ only in the leading letter's case.
+function isSandboxUnavailableText(text: string): boolean {
+  return /sandbox required but unavailable/i.test(text);
 }
 
 // v37 (DES-259, ADR-083, TASK-253, REQ-218): exported ONCE — the exact literal ADR-083's revisit

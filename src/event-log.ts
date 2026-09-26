@@ -21,7 +21,13 @@ export type EngineEvent =
   | { kind: 'agent.confinement'; runId: string; agentId: string; attempt: number; posture: 'confined' | 'unconfined'; root?: string; allowWrite: string[]; denyRead: string[]; enabled: boolean; failIfUnavailable: boolean; sdkVersion: string }
   // Project configuration (PROJECT_CONFIG_PATHS, bash-confinement.ts) found in the run workspace and
   // removed before this attempt's CLI could load it — something planted it; an operator should know.
-  | { kind: 'agent.planted_config_removed'; runId: string; agentId: string; attempt: number; root: string; removed: string[] };
+  | { kind: 'agent.planted_config_removed'; runId: string; agentId: string; attempt: number; root: string; removed: string[] }
+  // send-back item 2 (verify-b, 2026-09-26): raw CLI stderr (Options.stderr, sdk.d.ts ~L1896),
+  // bounded to the last 4KB, emitted ONLY on a failed attempt — a "num_turns:0"/opaque
+  // `error_during_execution` terminal used to be undiagnosable from the run's own record; this line
+  // gives an operator the CLI's own words. Redacted like every other EngineEvent (createEventSink
+  // below), never a raw console.error — the only route that would bypass redaction.
+  | { kind: 'agent.stderr'; runId: string; agentId: string; attempt: number; tail: string };
 
 export type EventSink = (event: EngineEvent) => void;
 
