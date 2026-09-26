@@ -188,10 +188,17 @@
   **OAuth2 `state` round-trip（RFC 6749 §4.1.2）**：客戶端 `state` 參數由 `/authorize` 擷取、
   持久化至 `oauth_state.client_state`，並於最終 client redirect 回傳 `&state=<clientState>&iss=<issuer>`
   （RFC 9207）；
-  **refresh tokens（RFC 6749 §6 / OAuth 2.1 / MCP offline_access）**：AS metadata 廣告
-  `scopes_supported:["openid","email","offline_access"]` + `grant_types_supported:["authorization_code","refresh_token"]`；
-  `offline_access` 流程核發 `refresh_token`（~90 天 TTL、sha256-at-rest）；`grant_type=refresh_token`
-  輪換 token（RFC 9700 rotation，單次使用）；用戶端不需重新走瀏覽器登入即可在 access_token 到期後續用。
+  **refresh tokens（RFC 6749 §6 / OAuth 2.1）**：AS metadata 廣告
+  `scopes_supported:["openid","email","offline_access"]` + `grant_types_supported:["authorization_code","refresh_token"]`，
+  401 回應的 `WWW-Authenticate` 與 `.well-known/oauth-protected-resource`（PRM）也一併廣告這些 scope；
+  **核發規則看的是 client 的 `grant_types`，不要求 `offline_access` scope**——凡是透過 RFC 7591 DCR
+  （`POST /register`）取得、`grant_types` 含 `refresh_token` 的 client（新註冊的預設就含），`/token`
+  一律核發 `refresh_token`（~90 天 TTL、sha256-at-rest），不論 `/authorize` 有沒有帶 `offline_access`
+  scope；沒有 `client_id` 的非-DCR 呼叫、或 `grant_types` 本來就不含 `refresh_token` 的 client，仍然
+  不核發；`grant_type=refresh_token` 輪換 token（RFC 9700 rotation，單次使用）；用戶端不需重新走瀏覽器
+  登入即可在 access_token 到期後續用。**操作備忘**：這個修正上線前已核發的憑證沒有 `refresh_token`，
+  到期後仍會要求使用者重新走一次瀏覽器登入——每個使用者只需要重新登入這一次，之後核發的憑證就會照
+  新規則帶 `refresh_token`。
   **callback success page**：`/oauth/google/callback` 回 200 HTML（含 `id="callback-url"` 可複製 URL
   + meta-refresh/JS 自動轉跳），無論有無 loopback listener 都可操作。
   D-BIND fail-closed（非 loopback 來源若無有效 bearer → 401）；過期 auth 表列由 GC sweep 自動清除

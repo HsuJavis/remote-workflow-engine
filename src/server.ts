@@ -39,7 +39,7 @@ import { AssetSyncService, defaultAssetRoot, globalAssetRoot, migrateLegacyGloba
 import { RealMcpProbe, type McpProbe } from './mcp-probe.js';
 import { IssueReporter, resolveEngineVersion, type IssueReportInput, type IssueListFilter, type IssuesListView } from './github/issue-reporter.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
-import { buildCatalog, filterCatalog, enrichModelEntry, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
+import { buildCatalog, filterCatalog, enrichModelEntry, maxPricePerMOf, costLevelFromPrice, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
 import { ModelBook } from './models/model-book.js';
 import { SystemInfoSampler, RealSystemProbe, UTIL_PCT_CONVENTION } from './system-info.js';
 import { assertUpdatePathsOutsideWorkRoot, writeUpdateFlag, SelfUpdateDb, readUpdateResult } from './self-update.js';
@@ -900,12 +900,23 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // issue #89 item 6: a THUNK over `aliasMap` (802) and `probeLookup` (821), both already in scope
   // here — read fresh on every `workflow_authoring_guide` call, never snapshotted at boot, so the
   // weekly ModelProber's rewritten results reach the guide without a restart.
-  const aliasProbes = (): AliasProbeInfo[] =>
-    Object.entries(aliasMap).map(([alias, target]) => ({
+  // Verification finding 1's fix: `provider`/`costLevel` ride the SAME `modelBook` every other price
+  // consumer here reads (`models_list` above) — `costLevelFromPrice(maxPricePerMOf(...))` is the
+  // identical band computation `enrichModelEntry` uses, never a second price table. The thunk is
+  // ASYNC (McpFacadeDeps.aliasProbes now accepts a Promise) because pricing a live (e.g. OpenRouter)
+  // alias requires `modelBook.snapshot()`'s catalog fetch; `ollama`/`anthropic` targets resolve
+  // without any network call (ModelBook.lookup()'s own static/zero-rate fallback), so this never
+  // blocks on a live fetch for THOSE aliases even on a cold cache.
+  const aliasProbes = async (): Promise<AliasProbeInfo[]> => {
+    const book = await modelBook.snapshot();
+    return Object.entries(aliasMap).map(([alias, target]) => ({
       alias,
       model: `${target.provider}/${target.model}`,
       toolUseVerified: probeLookup(target.provider, target.model)?.toolUseVerified ?? null,
+      provider: target.provider,
+      costLevel: costLevelFromPrice(maxPricePerMOf(book.lookup(target.provider, target.model).price)),
     }));
+  };
   const facade = new McpFacade({ clock, store, runManager, validator, ceilings, cas, schedulerClaims: scheduler, webhookClaims: webhooks, aliasNames, diagramCache: diagrams, runConcurrency: config?.runConcurrency, gatewayAttempts, confinementPosture: config?.confinementPosture, aliasProbes });
 
   // v24 (DES-139, ARCH-088, TASK-147): authorize()'s OwnerLookup is SYNC (a pure decision

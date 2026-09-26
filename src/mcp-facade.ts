@@ -135,8 +135,12 @@ export interface McpFacadeDeps {
    *  not a snapshot — server.ts's weekly `ModelProber` rewrites probe results after boot, and this
    *  is read fresh on every `workflow_authoring_guide` call, never cached at construction. Absent
    *  (unit construction, or a deployment with no alias/probe wiring) renders every example's literal
-   *  `'default'`, byte-identical to the guide before this field existed. */
-  aliasProbes?: () => readonly AliasProbeInfo[];
+   *  `'default'`, byte-identical to the guide before this field existed.
+   *  Return type is sync-OR-Promise (issue #89 item 6, verification finding 1's fix): `provider`/
+   *  `costLevel` come from the model book, which is priced through an async catalog fetch
+   *  (`ModelBook.snapshot()`), while every existing unit test still hands a plain synchronous
+   *  array — `await`ing a non-Promise value resolves to itself, so both shapes work unchanged. */
+  aliasProbes?: () => readonly AliasProbeInfo[] | Promise<readonly AliasProbeInfo[]>;
   cas?: CasStore;
   assetSync?: AssetSyncService;
   /** v24 (DES-149): the two trigger-claim stores the register/deregister sequence calls into.
@@ -293,7 +297,7 @@ export class McpFacade {
   private readonly runConcurrency: number;
   private readonly gatewayAttempts?: number;
   private readonly confinementPosture?: 'confined' | 'unconfined';
-  private readonly aliasProbes?: () => readonly AliasProbeInfo[];
+  private readonly aliasProbes?: () => readonly AliasProbeInfo[] | Promise<readonly AliasProbeInfo[]>;
   private readonly cas?: CasStore;
   // Not readonly: `AssetSyncService` needs the server's bound port for `selfBind` (server.ts
   // constructs it AFTER `http.listen()`, well after the facade). `bindAssetSync` lets the
@@ -754,7 +758,7 @@ export class McpFacade {
           aliases: [...this.aliasNames],
           runConcurrency: this.runConcurrency,
           confinementPosture: this.confinementPosture,
-          exampleModelAlias: chooseExampleModelAlias(this.aliasProbes?.() ?? []),
+          exampleModelAlias: chooseExampleModelAlias(await (this.aliasProbes?.() ?? [])),
         }),
       },
     };

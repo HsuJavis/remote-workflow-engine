@@ -259,4 +259,33 @@ describe('issue #90: a NOT_*_OWNER refusal never discloses the owner identity to
     expect(verdict.reason).not.toContain('alice');
     expect(JSON.stringify(verdict.detail ?? {})).not.toContain('owner-secret@example.com');
   });
+
+  // Issue #90 (verification finding 4): every OTHER catalog refusal message starts with its own
+  // code (`workflow-catalog.ts`'s `` `${code}: workflow '${name}' is not owned by the caller` ``,
+  // the very code+id shape that made the DIFFERENT `workflow_register` conflict path's message
+  // machine-greppable) — `authorize()`'s owner refusals were the one place that convention was
+  // missing. The resource id named here is the CALLER'S OWN request argument (they already know
+  // it), never the owner's — the case above already pins that half.
+  const RESOURCE_ID: Record<string, string> = {
+    run: 'r',
+    workflow: 'w',
+    trigger: 'i',
+    'asset (workflow scope)': 'w',
+    'moded write': 'w',
+  };
+
+  it.each(OWNER_CASES.map((c) => [c.n, c] as const))('%s refusal reason starts with its own code and names the resource (issue #90)', (n, c) => {
+    const verdict = authorize(c.p, c.spec as never, c.args, c.lookup);
+    expect(verdict.reason).toMatch(new RegExp(`^${c.code}: `));
+    expect(verdict.reason).toContain(`'${RESOURCE_ID[n]}'`);
+  });
+
+  it('an ownerless (legacy) resource refusal also starts with its own code', () => {
+    const lookup: OwnerLookup = { ...NOOP_LOOKUP, runOwner: () => null };
+    const verdict = authorize(ALICE, RUN as never, { runId: 'legacy-r' }, lookup);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.code).toBe('NOT_RUN_OWNER');
+    expect(verdict.reason).toMatch(/^NOT_RUN_OWNER: /);
+    expect(verdict.reason).toContain("'legacy-r'");
+  });
 });

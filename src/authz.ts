@@ -125,13 +125,23 @@ export function authorize(
   // and 'trigger' keys off args.id through the ONE triggerOwner method.
   let owner: string | null | undefined;
   let ownerCode: AuthzErrorCode;
+  // issue #90 (verification finding 4): the resource's OWN label/id, named in the refusal message
+  // below the same way `workflow-catalog.ts`'s own `NOT_WORKFLOW_OWNER` refusals already do
+  // (`` `${code}: workflow '${name}' is not owned by the caller` ``) — the caller's OWN request
+  // argument, never the owner's identity, so this carries no new disclosure.
+  let resourceLabel: 'run' | 'workflow' | 'trigger';
+  let resourceId: string;
   if (row.ownership === 'asset') {
     if (args.scope === 'global') return { ok: true };
-    owner = lookup.workflowOwner(args.workflow as string);
+    resourceId = args.workflow as string;
+    owner = lookup.workflowOwner(resourceId);
     ownerCode = 'NOT_WORKFLOW_OWNER';
+    resourceLabel = 'workflow';
   } else if (row.ownership === 'trigger') {
-    owner = lookup.triggerOwner(args.id as string);
+    resourceId = args.id as string;
+    owner = lookup.triggerOwner(resourceId);
     ownerCode = 'NOT_TRIGGER_OWNER';
+    resourceLabel = 'trigger';
   } else {
     // DES-139's subject rule is `args[spec.key]`. The three MODED workspace_* tools carry
     // `key: null` at the SPEC level because their subject differs per mode, so the resolved ROW's
@@ -141,12 +151,15 @@ export function authorize(
     // returned ok — a silent ownership BYPASS on workspace_list/workspace_delete/workspace_push
     // (Gate 6.5+7 round 1 defect (b), IT-105).
     const subject = (spec.key !== null ? args[spec.key] : args[row.ownership === 'run' ? 'runId' : 'workflow']) as string;
+    resourceId = subject;
     if (row.ownership === 'workflow') {
       owner = lookup.workflowOwner(subject);
       ownerCode = 'NOT_WORKFLOW_OWNER';
+      resourceLabel = 'workflow';
     } else {
       owner = lookup.runOwner(subject);
       ownerCode = 'NOT_RUN_OWNER';
+      resourceLabel = 'run';
     }
   }
 
@@ -157,7 +170,9 @@ export function authorize(
   const isAdmin = role === 'admin';
   if (owner === null) {
     // Ownerless (legacy/migrated row): admin-only.
-    return isAdmin ? { ok: true } : refuse(ownerCode, 'this resource has no owner; only admin may act on it', mode);
+    return isAdmin
+      ? { ok: true }
+      : refuse(ownerCode, `${ownerCode}: ${resourceLabel} '${resourceId}' has no owner; only admin may act on it`, mode);
   }
 
   if (owner === principal.id) return { ok: true };
@@ -171,6 +186,8 @@ export function authorize(
   // from exactly one place, call-tool.ts:232, whose `refusalEnvelope(verdict.code ?? ..., verdict.
   // reason ?? ..., ...)` puts it straight on the wire — so it must never name the owner. The
   // caller's own id is not disclosive (they already know who they are), but there is no reason to
-  // echo it either, so the message names neither.
-  return refuse(ownerCode, 'this resource is not owned by the caller', mode);
+  // echo it either, so the message names neither. Issue #90 (verification finding 4): the message
+  // now starts with its own code, `${resourceLabel} '${resourceId}'` and all, matching the SAME
+  // shape `workflow-catalog.ts`'s own `NOT_WORKFLOW_OWNER` refusals already use.
+  return refuse(ownerCode, `${ownerCode}: ${resourceLabel} '${resourceId}' is not owned by the caller`, mode);
 }

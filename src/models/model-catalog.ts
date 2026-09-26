@@ -407,19 +407,25 @@ export function classifyStability(e: ModelEntry): Stability {
   return 'stable';
 }
 
+/** issue #89 item 6: the band lookup half of `computeCostLevel`, pulled out so a caller that
+ *  already has a comparable $/1M scalar in hand (`ModelBook.lookup()`'s `price`, via
+ *  `maxPricePerMOf`) can get the SAME 0–10 tier without going through a `ModelEntry` — one band
+ *  table (`COST_LEVEL_BANDS`), never a second copy of it. `null` (unpriced) stays `null`. */
+export function costLevelFromPrice(price: number | null): number | null {
+  if (price === null) return null;
+  if (price === 0) return 0;
+  for (let i = 1; i < COST_LEVEL_BANDS.length; i++) {
+    if (price < COST_LEVEL_BANDS[i]!) return i;
+  }
+  return 10; // clamped
+}
+
 /** Compute the 0–10 integer cost tier for a model entry (DES-075).
  *  'free'/all-zero rates → 0; unpriced (`ratesPerM` null/absent) → null (never guessed); above the
  *  top band → clamp 10. Uses COST_LEVEL_BANDS with maxPricePerMOf as the single comparable scalar
  *  (ARCH-050 D-v12-C) — v26 (DES-178): reads `e.ratesPerM`, not the derived display string. */
 export function computeCostLevel(e: ModelEntry): number | null {
-  const price = maxPricePerMOf(e.ratesPerM ?? null);
-  if (price === null) return null;
-  if (price === 0) return 0;
-  // Find the first band boundary the scalar exceeds
-  for (let i = 1; i < COST_LEVEL_BANDS.length; i++) {
-    if (price < COST_LEVEL_BANDS[i]!) return i;
-  }
-  return 10; // clamped
+  return costLevelFromPrice(maxPricePerMOf(e.ratesPerM ?? null));
 }
 
 /** Enrich a ModelEntry with capability/stability/costLevel (DES-075, ARCH-050).

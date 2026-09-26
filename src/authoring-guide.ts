@@ -72,33 +72,63 @@ export interface GuideCeilings {
  *  the gateway/model-probe modules just to describe a decision over their data. `model` is used only
  *  to NAME the resolved model in the visible note (`"'<provider>/<model>'"`); absent is rendered as
  *  "an unlisted model". `toolUseVerified: null` means "never probed" — NOT a defect, treated the
- *  same as `true` (no evidence the model can't use tools is not evidence that it can't). */
+ *  same as `true` (no evidence the model can't use tools is not evidence that it can't).
+ *  `provider`/`costLevel` (verification report finding 1, issue #89 item 6): the SAME facts
+ *  `models_list`/`ModelBook` already compute for this alias's target (provider,model) — carried
+ *  here so the ranking below can prefer the engine-native provider and a cheaper tier without this
+ *  file importing the catalog/gateway modules that price them. `costLevel` is the model book's 0–10
+ *  enrichment (`computeCostLevel`/`costLevelFromPrice`); absent/`null` means "unpriced or not yet
+ *  fetched", never "free" — it sorts LAST, exactly like an unpriced `ModelEntry` never claims to be
+ *  the cheapest option. */
 export interface AliasProbeInfo {
   alias: string;
   model?: string;
   toolUseVerified: boolean | null;
+  provider?: string;
+  costLevel?: number | null;
 }
 
 /** issue #89 item 6: pure decision — which model alias every guide example/prose sample declares.
  *  DECISION (owner): never hard-code a second alias literal. If `'default'` is absent, unprobed, or
  *  probed tool-CAPABLE, keep it (no note — the common case stays silent). If `'default'` is probed
- *  tool-INCAPABLE, switch to the first OTHER alias probed tool-capable, chosen deterministically by
- *  name order with a mild preference for a name that does not look like a dated model id (a run of
- *  6+ digits, e.g. `claude-sonnet-5-20260101`) — a human-chosen alias name reads better in an example
- *  than a machine-generated one, and this is the simplest rule that expresses that preference without
- *  guessing at every possible id shape. If no OTHER alias is verified either, keep `'default'` anyway
- *  (there is nothing better to switch to) but still emit the warning note — a cold author needs to
- *  know the example they are about to copy is not verified, even with no fix on offer. */
+ *  tool-INCAPABLE, switch to the BEST OTHER alias probed tool-capable, ranked by `cmpAliasPreference`
+ *  below: (a) provider `'anthropic'` first — the engine-native harness, no extra gateway hop; (b)
+ *  then lowest `costLevel` (0–10, `null`/absent sorts LAST — an unknown price is not a reason to
+ *  prefer OR reject an alias, so it never wins a tie against a KNOWN price); (c) then a name that
+ *  does not look like a dated model id (a run of 6+ digits, e.g. `claude-sonnet-5-20260101`) — a
+ *  human-chosen alias name reads better in an example than a machine-generated one; (d) then name
+ *  order, the final deterministic tie-break when every field above ties (e.g. every `provider`/
+ *  `costLevel` absent, the shape every pre-existing caller/test still supplies). This replaces the
+ *  earlier alphabetical-first rule: verification report finding 1 showed production's OWN alias
+ *  table making the alphabetically-first verified alias (`claude-fable-5`, its MOST expensive tier)
+ *  the guide default the moment the weekly prober marked Anthropic models tool-capable — cost-blind
+ *  by construction. If no OTHER alias is verified either, keep `'default'` anyway (there is nothing
+ *  better to switch to) but still emit the warning note — a cold author needs to know the example
+ *  they are about to copy is not verified, even with no fix on offer. */
 export function chooseExampleModelAlias(aliasProbes: readonly AliasProbeInfo[]): { alias: string; note?: string } {
   const looksDated = (name: string): boolean => /\d{6,}/.test(name);
-  const byName = (a: AliasProbeInfo, b: AliasProbeInfo): number => a.alias.localeCompare(b.alias);
+  const cmpAliasPreference = (a: AliasProbeInfo, b: AliasProbeInfo): number => {
+    const anthropicRank = (x: AliasProbeInfo): number => (x.provider === 'anthropic' ? 0 : 1);
+    const rankDiff = anthropicRank(a) - anthropicRank(b);
+    if (rankDiff !== 0) return rankDiff;
+    // `?? Infinity` treats absent (undefined) and explicitly-unknown (null) the SAME way — both
+    // mean "no known price", so neither ever beats a KNOWN costLevel on this tier. Compared by
+    // `!==`/subtraction rather than a bare subtraction of two `Infinity`s (which is `NaN`, and a
+    // `NaN` comparator result leaves `Array.prototype.sort` free to skip every later tie-break).
+    const aCost = a.costLevel ?? Infinity;
+    const bCost = b.costLevel ?? Infinity;
+    if (aCost !== bCost) return aCost - bCost;
+    const datedDiff = (looksDated(a.alias) ? 1 : 0) - (looksDated(b.alias) ? 1 : 0);
+    if (datedDiff !== 0) return datedDiff;
+    return a.alias.localeCompare(b.alias);
+  };
 
   const dflt = aliasProbes.find((a) => a.alias === 'default');
   if (dflt === undefined || dflt.toolUseVerified !== false) return { alias: 'default' };
 
   const dfltModel = dflt.model ?? 'an unlisted model';
-  const verifiedOthers = aliasProbes.filter((a) => a.alias !== 'default' && a.toolUseVerified === true).sort(byName);
-  const preferred = verifiedOthers.find((a) => !looksDated(a.alias)) ?? verifiedOthers[0];
+  const verifiedOthers = aliasProbes.filter((a) => a.alias !== 'default' && a.toolUseVerified === true).sort(cmpAliasPreference);
+  const preferred = verifiedOthers[0];
 
   if (preferred === undefined) {
     return {
@@ -116,8 +146,9 @@ export function chooseExampleModelAlias(aliasProbes: readonly AliasProbeInfo[]):
     alias: preferred.alias,
     note: `Every example in this guide declares \`model: { default: '${preferred.alias}' }\`, not ` +
       `\`'default'\` — on THIS deployment 'default' resolves to ${dfltModel}, whose last probe ` +
-      `reports toolUseVerified:false; \`'${preferred.alias}'\` is the first configured alias probed ` +
-      'tool-capable, chosen so the examples in this guide actually work as written.',
+      `reports toolUseVerified:false; \`'${preferred.alias}'\` is the preferred configured alias ` +
+      'among those probed tool-capable (engine-native provider and lower cost first), chosen so ' +
+      'the examples in this guide actually work as written, and stay affordable to run.',
   };
 }
 

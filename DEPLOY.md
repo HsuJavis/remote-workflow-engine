@@ -979,7 +979,15 @@ frame，頂層 `""`）+ `startedAt`/`endedAt`，`workflowNodes:[{frame,name,pare
   deliveryId —— 重試會真的重跑一次，不是回放快取的失敗；併發重複送達（同一 deliveryId 還在
   處理中）得到 503，絕不是 2xx，確保被接受的 delivery 仍是精確一次。UNCLAIMED／
   CLAIMED_WORKFLOW_MISSING／CHANNEL_UNPUBLISHED／NOT_IN_RELEASE 這四種 409 從未佔用
-  deliveryId（不變），照樣可在條件修好後重試觸發。
+  deliveryId（不變），照樣可在條件修好後重試觸發。**升級前寫入的舊列（legacy row）**：這個
+  版本上線之前就已經記錄、資料表尚未存過結果三欄（`httpStatus`/`code`/`runId`）的 delivery，
+  重放一律回 200 `{replayed:true}`，即使那次原本其實是被拒絕的——舊資料沒有 outcome 可比對，
+  這是遷移後的必然行為，不是把當初的拒絕事後改判為成功。**已記錄的 403 永久生效**：一旦某個
+  deliveryId 已經寫下 403 CONFINEMENT_UNAVAILABLE，即使之後造成拒絕的原因修好了（這台主機的
+  圍籠探測轉為 confined，或這次要跑的版本改在本機重新註冊），同一個 deliveryId 重放仍然回
+  403——admission 只在首次送達時判定一次，之後一律回放已記錄的結果、不重新判定，這是刻意設計
+  （見上一段「回放答的是原始結果」）。寄送端要讓已經修好的原因真的生效，必須用一個新的
+  deliveryId 重送（等同 redeliver），沿用舊的 deliveryId 永遠只會拿到那次已經定案的 403。
 - **`auth.enabled:false`（預設）且公開 `0.0.0.0` bind 時，任何能連到該 port 的人都能呼叫這些
   工具**——白名單只是無 auth 時的過渡管控；要多租戶存取管制請啟用 §1b 的 `auth` 區塊。
 

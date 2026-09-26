@@ -17,7 +17,7 @@
 import Database from 'better-sqlite3';
 import { mkdirSync, existsSync } from 'node:fs';
 import { join, resolve, sep, isAbsolute } from 'node:path';
-import { CatalogNotFoundError, WorkspaceEscapeError, codedError, type ErrorCode } from './errors.js';
+import { CatalogNotFoundError, WorkspaceEscapeError, codedError, ERROR_CATALOG, type ErrorCode } from './errors.js';
 import { parseMeta, parseMetaParams, parseWorkflowSkeleton } from './workflow-meta.js';
 // v26 integration (REQ-128, DES-184/DES-174, ADR-048): the registration half of "one derivation,
 // two consumers" — the SAME `deriveExpectedGraph` the run-DAG layout uses. ADR-048 put
@@ -648,10 +648,23 @@ export class WorkflowCatalog {
       // and TOOLS_MISMATCH spells out the exact segment text the node must carry.
       const lineText = diagramCheck.line !== undefined ? ` (line ${diagramCheck.line})` : '';
       const toolsExp = diagramCheck.rule === 'TOOLS_MISMATCH' ? (diagramCheck.expected as { label?: string; tools?: string[] } | undefined) : undefined;
+      // Issue #89 item 5 (verification finding 7): when `rule === code` (the v2 rules that self-map
+      // in RULE_CODE — DIAGRAM_DIRECTION/LANE_MISMATCH/EDGE_MISMATCH, TOOLS_MISMATCH handled above)
+      // the message used to be exactly `${code}:${lineText}` — a colon straight into "(line N)" with
+      // no rule text at all ("LANE_MISMATCH: (line 2)"). This interpolates a short, meaningful
+      // phrase: the catalog's own `hint` when it reads well inline, else a generic fallback — never
+      // a SECOND copy of the hint text (`ERROR_CATALOG` stays the one place it is authored).
+      const HINT_INLINE_LIMIT = 80; // chars — a hint written as prose (LANE_MISMATCH's) reads worse
+      // inline than a short generic phrase; a short one (DIAGRAM_DIRECTION's/EDGE_MISMATCH's) is
+      // fine to reuse as-is.
+      const catalogHint = (ERROR_CATALOG as Record<string, { hint?: string }>)[code]?.hint;
+      const meaningfulText = catalogHint !== undefined && catalogHint.length <= HINT_INLINE_LIMIT
+        ? catalogHint
+        : 'diagram does not match the script';
       const message = toolsExp?.label !== undefined && Array.isArray(toolsExp.tools)
         ? `${code}: node '${toolsExp.label}'${lineText} must carry "${toolsExp.tools.length === 0 ? 'tools: none' : `tools: ${[...toolsExp.tools].sort().join(', ')}`}" as its third <br/> segment to match allowedTools ${JSON.stringify(toolsExp.tools)}`
         : diagramCheck.rule === undefined || diagramCheck.rule === code
-          ? `${code}:${lineText === '' ? ' diagram refused' : lineText}`
+          ? `${code}: ${meaningfulText}${lineText}`
           : `${code}: ${diagramCheck.rule}${lineText}`;
       throw codedError(code, message, {
         rule: diagramCheck.rule, line: diagramCheck.line, onlyInScript: diagramCheck.onlyInScript, onlyInDiagram: diagramCheck.onlyInDiagram,

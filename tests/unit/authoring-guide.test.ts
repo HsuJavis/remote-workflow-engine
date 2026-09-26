@@ -727,6 +727,50 @@ describe('chooseExampleModelAlias — pure decision over alias probe data (issue
     expect(chooseExampleModelAlias(probes).alias).toBe('alpha');
   });
 
+  // issue #89 item 6 (verification finding 1): the OLD rule sorted verified aliases by name alone,
+  // so production's own alias table picked 'claude-fable-5' — its MOST expensive tier — the moment
+  // the weekly prober marked Anthropic models tool-capable. New rule, in order: (a) provider
+  // 'anthropic' first (the engine-native harness), (b) then lowest costLevel (null/unknown sorts
+  // LAST), (c) then a non-dated name, (d) then name order.
+  it('on a production-like probe table, prefers a cheap anthropic alias (haiku) over the alphabetically-first verified one', () => {
+    const probes: AliasProbeInfo[] = [
+      { alias: 'default', model: 'ollama/qwen2.5:7b', toolUseVerified: false },
+      { alias: 'claude-fable-5', model: 'anthropic/claude-fable-5', toolUseVerified: true, provider: 'anthropic', costLevel: 9 },
+      { alias: 'fable', model: 'anthropic/claude-fable-5', toolUseVerified: true, provider: 'anthropic', costLevel: 9 },
+      { alias: 'claude-haiku-4-5', model: 'anthropic/claude-haiku-4-5', toolUseVerified: true, provider: 'anthropic', costLevel: 2 },
+      { alias: 'haiku', model: 'anthropic/claude-haiku-4-5', toolUseVerified: true, provider: 'anthropic', costLevel: 2 },
+      { alias: 'claude-opus-4-8', model: 'anthropic/claude-opus-4-8', toolUseVerified: true, provider: 'anthropic', costLevel: 8 },
+      { alias: 'opus', model: 'anthropic/claude-opus-4-8', toolUseVerified: true, provider: 'anthropic', costLevel: 8 },
+      { alias: 'claude-sonnet-5', model: 'anthropic/claude-sonnet-5', toolUseVerified: true, provider: 'anthropic', costLevel: 6 },
+      { alias: 'sonnet', model: 'anthropic/claude-sonnet-5', toolUseVerified: true, provider: 'anthropic', costLevel: 6 },
+      { alias: 'gpt41nano', model: 'openrouter/openai/gpt-4.1-nano', toolUseVerified: true, provider: 'openrouter', costLevel: 1 },
+      { alias: 'gpt4omini', model: 'openrouter/openai/gpt-4o-mini', toolUseVerified: true, provider: 'openrouter', costLevel: 1 },
+    ];
+    const result = chooseExampleModelAlias(probes);
+    expect(result.alias).toMatch(/haiku/);
+    expect(result.alias).not.toBe('claude-fable-5');
+  });
+
+  it('with no verified anthropic alias, the cheapest verified alias wins even against name order', () => {
+    const probes: AliasProbeInfo[] = [
+      { alias: 'default', model: 'ollama/qwen2.5:7b', toolUseVerified: false },
+      { alias: 'gpt41nano', model: 'openrouter/openai/gpt-4.1-nano', toolUseVerified: true, provider: 'openrouter', costLevel: 3 },
+      { alias: 'gpt4omini', model: 'openrouter/openai/gpt-4o-mini', toolUseVerified: true, provider: 'openrouter', costLevel: 1 },
+    ];
+    // 'gpt41nano' sorts first by name, but 'gpt4omini' is cheaper — cost order wins the tie.
+    expect(chooseExampleModelAlias(probes).alias).toBe('gpt4omini');
+  });
+
+  it('a verified alias with a null (unknown) costLevel sorts LAST behind one with a known costLevel, even out of name order', () => {
+    const probes: AliasProbeInfo[] = [
+      { alias: 'default', model: 'ollama/qwen2.5:7b', toolUseVerified: false },
+      { alias: 'aaa-unknown-cost', model: 'anthropic/some-model', toolUseVerified: true, provider: 'anthropic', costLevel: null },
+      { alias: 'zzz-known-cost', model: 'anthropic/other-model', toolUseVerified: true, provider: 'anthropic', costLevel: 4 },
+    ];
+    // 'aaa-unknown-cost' sorts first by name, but a KNOWN price beats an unknown one.
+    expect(chooseExampleModelAlias(probes).alias).toBe('zzz-known-cost');
+  });
+
   it('keeps \'default\' and still emits a visible warning note when NO alias is verified tool-capable', () => {
     const probes: AliasProbeInfo[] = [
       { alias: 'default', model: 'ollama/qwen2.5:7b', toolUseVerified: false },
