@@ -74,7 +74,10 @@ export interface WebhookView {
  *  v37 Gate-8 round-2 (finding B4, ARCH-182 (3)): the 403 arm (a PERMANENT admission refusal from
  *  `RunManager.start()`) is widened the same way, so a refused delivery leaves the same durable
  *  trace the 409 reasons already do; 503 is the RETRYABLE twin (a concurrency cap, not a policy
- *  refusal) and carries no `code` — `RUN_ADMISSION_LIMIT` is deliberately not a `RefusalReason`. */
+ *  refusal) and carries no `code` — `RUN_ADMISSION_LIMIT` is deliberately not a `RefusalReason`.
+ *  Issue #88: 503 is ALSO what a concurrent duplicate gets back when it finds the same deliveryId
+ *  already claimed but not yet finished (`_replayFromRow`'s `httpStatus === 0` arm) — a second,
+ *  distinct reason to retry, still with no `code`; see `deliver()`'s docblock for the full ordering. */
 export type DeliverResult =
   | { ok: true; httpStatus: 202 | 200; runId?: string; replayed?: boolean }
   | { ok: false; httpStatus: 401 | 404; reason: string }
@@ -122,7 +125,10 @@ export class WebhookRegistry {
       CREATE TABLE IF NOT EXISTS webhook_deliveries (
         deliveryId TEXT PRIMARY KEY,
         webhookId TEXT NOT NULL,
-        ts TEXT NOT NULL
+        ts TEXT NOT NULL,
+        httpStatus INTEGER,
+        code TEXT,
+        runId TEXT
       );
     `);
     // v24 (DES-150, TASK-156): a pre-v24 on-disk `webhooks.db` still carries `workflow TEXT NOT
@@ -167,6 +173,62 @@ export class WebhookRegistry {
     // `webhook_create` from `ToolDeps.isRemoteSubmission`, never updated afterwards (see the
     // column's own comment below), read back by `deliver()` to stamp `RunSpec.origin`.
     try { this._db.exec('ALTER TABLE webhooks ADD COLUMN createdRemote INTEGER NOT NULL DEFAULT 0'); } catch { /* already exists */ }
+
+    // Issue #88 fix: additive migration for `webhook_deliveries` — a pre-fix on-disk db has the
+    // three-column shape from the CREATE TABLE above (no outcome tracking). `CREATE TABLE IF NOT
+    // EXISTS` is a no-op against it, so the new columns are added with a guarded `ALTER TABLE`
+    // (checked via PRAGMA, not try/catch — three columns share one clear guard here). NO column
+    // gets a DEFAULT: an existing row therefore has `httpStatus IS NULL`, which `_replayFromRow`
+    // treats as accepted. That is NOT a claim that every legacy row actually WAS accepted — this is
+    // exactly the bug this fix closes: the pre-fix `INSERT OR IGNORE` ran before `start()`, so a
+    // legacy row can belong to a delivery that then went on to get 403/503/500, and that delivery's
+    // true outcome is unrecoverable now (the old schema never stored it). The choice is between two
+    // failure modes for that unrecoverable minority: treat legacy = accepted (a handful of
+    // pre-existing refused deliveries stay lost, exactly as lost as they already were under the old
+    // code) or treat legacy = re-processable (every genuinely-accepted legacy delivery re-fires on
+    // its next replay, actively creating NEW duplicate runs post-upgrade). The former is strictly
+    // smaller harm, so `_replayFromRow` picks it — see that method's own docblock. `0` is reserved
+    // below as the CLAIMED-BUT-NOT-YET-RECORDED sentinel, so legacy-NULL / in-flight-0 /
+    // recorded-terminal are three distinguishable states without a fourth boolean column.
+    const deliveryCols = (this._db.prepare('PRAGMA table_info(webhook_deliveries)').all() as Array<{ name: string }>).map((c) => c.name);
+    if (!deliveryCols.includes('httpStatus')) this._db.exec('ALTER TABLE webhook_deliveries ADD COLUMN httpStatus INTEGER');
+    if (!deliveryCols.includes('code')) this._db.exec('ALTER TABLE webhook_deliveries ADD COLUMN code TEXT');
+    if (!deliveryCols.includes('runId')) this._db.exec('ALTER TABLE webhook_deliveries ADD COLUMN runId TEXT');
+    // A process crash between the claim INSERT (`httpStatus=0`) and the finalize UPDATE/DELETE in
+    // `deliver()` leaves a `0` row stranded forever — every retry would see it as "in flight" and
+    // get a retryable-but-never-actually-retried 503. A fresh process boot has nothing genuinely in
+    // flight (this constructor runs before any `deliver()` call can), so clearing stray `0` rows
+    // here is safe and is the only place that can reliably do it. Residual risk: this assumes a
+    // single live `WebhookRegistry` process per db (true today, per the file's WAL/single-writer
+    // dedup model) — see the report accompanying this fix for the multi-process caveat.
+    this._db.prepare('DELETE FROM webhook_deliveries WHERE httpStatus = 0').run();
+  }
+
+  /** Issue #88: replays the ORIGINAL outcome recorded for an existing `webhook_deliveries` row,
+   *  instead of the pre-fix bare `200 {replayed:true}` regardless of what actually happened.
+   *  - `httpStatus IS NULL` — a legacy pre-migration row (this code itself never leaves a row at
+   *    NULL — see the migration comment above). Treated as accepted: NOT because that is provably
+   *    what happened (the pre-fix bug this row predates means it might not be), but because it is
+   *    the smaller of two unrecoverable harms — see the migration comment's full reasoning. A
+   *    legacy row belonging to a delivery that was actually refused stays lost, exactly as it
+   *    already was; the alternative (treat legacy as re-processable) would re-fire every
+   *    genuinely-accepted legacy delivery instead.
+   *  - `httpStatus === 0` — claimed by another delivery attempt that has not finished yet (or a
+   *    concurrent duplicate racing it, or the current attempt lost the INSERT race — see `deliver`).
+   *    NOT a 2xx: the sender must not be told "replayed" for work that may still fail.
+   *  - `httpStatus === 202` — accepted and a run was started; replay keeps the 200/`replayed:true`
+   *    wire shape callers already depend on, with `runId` added back in when it was recorded.
+   *  - `httpStatus === 403` — a PERMANENT admission refusal; replay must answer with the SAME 403,
+   *    never a 2xx (403 is a policy refusal that will not resolve itself, unlike 503/500 below,
+   *    which are never persisted as a terminal outcome at all — see `deliver`'s catch block). */
+  private _replayFromRow(row: { httpStatus: number | null; code: string | null; runId: string | null }): DeliverResult {
+    if (row.httpStatus === null) return { ok: true, httpStatus: 200, replayed: true };
+    if (row.httpStatus === 0) return { ok: false, httpStatus: 503, reason: 'delivery already in progress; retry' };
+    if (row.httpStatus === 403) {
+      const code = (row.code ?? 'CONFINEMENT_UNAVAILABLE') as RefusalReason;
+      return { ok: false, httpStatus: 403, reason: ERROR_CATALOG['CONFINEMENT_UNAVAILABLE'].hint, code };
+    }
+    return { ok: true, httpStatus: 200, replayed: true, ...(row.runId ? { runId: row.runId } : {}) };
   }
 
   /** Registers a webhook. v24 (DES-149): `workflow` is now OPTIONAL — omitted, the webhook is
@@ -264,12 +326,20 @@ export class WebhookRegistry {
       .run(this._clock.isoNow(), reason, id);
   }
 
-  /** Fail-closed verify + fire. Order (v24, DES-150): exists+enabled → HMAC signature (constant-time,
-   *  over the RAW body) → ±300s timestamp window → one-shot deliveryId dedup CHECK (before the claim
-   *  checks — a caller must not learn claim state without a valid signature) → claim checks → dedup
-   *  RECORD (written only for an ADMITTED delivery, so a retry after the author claims still fires
-   *  for real) → start the claimed workflow with the parsed body as args.event. Any failure starts
-   *  NO run. */
+  /** Fail-closed verify + fire. Order (v24 DES-150; issue #88 revises the dedup step): exists+enabled
+   *  → HMAC signature (constant-time, over the RAW body) → ±300s timestamp window → one-shot
+   *  deliveryId dedup CHECK (before the claim checks — a caller must not learn claim state without a
+   *  valid signature; a record found here REPLAYS ITS ORIGINAL OUTCOME via `_replayFromRow`, not a
+   *  bare 200) → claim checks (UNCLAIMED/CLAIMED_WORKFLOW_MISSING/CHANNEL_UNPUBLISHED/NOT_IN_RELEASE
+   *  — none of these ever write a dedup row, so they stay retryable forever, same as before) → claim
+   *  the delivery id (INSERT, `httpStatus=0` sentinel — "admitted past policy, outcome pending"; a
+   *  losing INSERT means a concurrent duplicate is already in flight or already finished, and this
+   *  call replays THAT row instead of starting a second run) → start the claimed workflow with the
+   *  parsed body as args.event → finalize the claimed row with the real outcome: 202 accepted (kept,
+   *  with `runId`), or 403 permanent refusal (kept — replay must not upgrade a policy refusal to
+   *  2xx), or DELETED on a transient 503/500 (issue #88: a transient admission failure must not
+   *  permanently poison the id — the row is removed so a retry actually reprocesses, not just
+   *  replays a cached failure). Any failure starts NO run. */
   async deliver(id: string, req: { signature?: string; timestamp?: string; deliveryId?: string; rawBody: string; parsedBody: unknown }): Promise<DeliverResult> {
     const row = this._db.prepare('SELECT * FROM webhooks WHERE id = ?').get(id) as WebhookRow | undefined;
     if (!row) return { ok: false, httpStatus: 404, reason: 'unknown webhook' };
@@ -286,10 +356,13 @@ export class WebhookRegistry {
 
     // Dedup CHECK — before the claim checks, never writes a record (that happens only below, on
     // admission). A replay of a delivery that was refused (unclaimed) is therefore NOT a replay —
-    // no record was ever written for it — and fires for real once the webhook is claimed.
+    // no record was ever written for it — and fires for real once the webhook is claimed. Issue #88:
+    // a record found here now replays the ORIGINAL outcome (`_replayFromRow`) instead of an
+    // unconditional 200 — see that method for the httpStatus NULL/0/403/202 states it distinguishes.
     if (req.deliveryId) {
-      const existing = this._db.prepare('SELECT 1 FROM webhook_deliveries WHERE deliveryId = ?').get(req.deliveryId);
-      if (existing) return { ok: true, httpStatus: 200, replayed: true };
+      const existing = this._db.prepare('SELECT httpStatus, code, runId FROM webhook_deliveries WHERE deliveryId = ?')
+        .get(req.deliveryId) as { httpStatus: number | null; code: string | null; runId: string | null } | undefined;
+      if (existing) return this._replayFromRow(existing);
     }
 
     if (row.workflow === null) {
@@ -328,9 +401,23 @@ export class WebhookRegistry {
       return { ok: false, httpStatus: 409, reason: `webhook ${id} is not in workflow '${row.workflow}'s released version`, code: 'NOT_IN_RELEASE' };
     }
 
+    // Issue #88: claim the delivery id BEFORE calling `start()`, with `httpStatus=0` as the
+    // "admitted past policy, outcome not yet recorded" sentinel — and check `changes`, unlike the
+    // pre-fix unconditional INSERT OR IGNORE. Six concurrent identical deliveries (the issue's
+    // reported scenario) all reach this line before any of them finishes `start()`: exactly one
+    // INSERT wins (`changes === 1`); the other five lose it (`changes === 0`) and MUST NOT proceed
+    // to call `start()` a second time — they replay whatever the winner's row currently says, which
+    // is `0` (in-flight, a non-2xx 503) until the winner finishes, then its real terminal outcome.
+    // This is also what makes a dedup record for an ADMITTED delivery exactly-once even though the
+    // claim checks above ran without any lock across the same race window.
     if (req.deliveryId) {
-      this._db.prepare('INSERT OR IGNORE INTO webhook_deliveries (deliveryId, webhookId, ts) VALUES (?, ?, ?)')
+      const claim = this._db.prepare('INSERT OR IGNORE INTO webhook_deliveries (deliveryId, webhookId, ts, httpStatus) VALUES (?, ?, ?, 0)')
         .run(req.deliveryId, id, this._clock.isoNow());
+      if (claim.changes === 0) {
+        const existing = this._db.prepare('SELECT httpStatus, code, runId FROM webhook_deliveries WHERE deliveryId = ?')
+          .get(req.deliveryId) as { httpStatus: number | null; code: string | null; runId: string | null };
+        return this._replayFromRow(existing);
+      }
     }
 
     // v37 P1 (ARCH-182, DES-263, TASK-258, ADR-086's third owner ruling 2026-09-25): the delivery
@@ -356,10 +443,33 @@ export class WebhookRegistry {
       const hint = ERROR_CATALOG[outcome.code].hint;
       if (outcome.httpStatus === 403) {
         this._recordRefusal(id, 'CONFINEMENT_UNAVAILABLE');
+        // Issue #88: a PERMANENT refusal IS the final answer for this delivery id — finalize the
+        // claimed row so a replay gets back the SAME 403, never a 2xx. `refusalCount` is only
+        // incremented here, on the one call that actually reached `start()`; a later replay of this
+        // same id answers straight from `_replayFromRow` and never re-decides admission.
+        if (req.deliveryId) {
+          this._db.prepare('UPDATE webhook_deliveries SET httpStatus = 403, code = ? WHERE deliveryId = ?')
+            .run('CONFINEMENT_UNAVAILABLE', req.deliveryId);
+        }
         return { ok: false, httpStatus: 403, reason: hint, code: 'CONFINEMENT_UNAVAILABLE' };
+      }
+      // 503 (RUN_ADMISSION_LIMIT — explicitly retryable) and 500 (anything else) are TRANSIENT: this
+      // is the crux of issue #88 — the pre-fix code left the claim row in place after either, so a
+      // sender's retry hit the dedup check and got "200 replayed" for work that never happened. The
+      // claimed row is removed instead, so the SAME deliveryId, retried, is treated as brand new and
+      // actually re-processed (re-runs the claim checks too — a webhook claimed/reclaimed in the
+      // interim is re-evaluated, which is correct: nothing durable was ever decided for this id).
+      if (req.deliveryId) {
+        this._db.prepare('DELETE FROM webhook_deliveries WHERE deliveryId = ? AND httpStatus = 0').run(req.deliveryId);
       }
       if (outcome.httpStatus === 503) return { ok: false, httpStatus: 503, reason: hint };
       return { ok: false, httpStatus: 500, reason: hint };
+    }
+    // Issue #88: finalize the claim with the real accepted outcome (kept for a future replay of this
+    // SAME deliveryId — `_replayFromRow` turns `httpStatus=202` back into `200 {replayed:true}`,
+    // adding `runId` back in). The FIRST response to the sender is still 202 with `runId`, unchanged.
+    if (req.deliveryId) {
+      this._db.prepare('UPDATE webhook_deliveries SET httpStatus = 202, runId = ? WHERE deliveryId = ?').run(runId, req.deliveryId);
     }
     return { ok: true, httpStatus: 202, runId };
   }

@@ -1497,7 +1497,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
           deliveryId: req.headers['x-rwe-delivery'] as string | undefined,
           rawBody: raw, parsedBody: parsed,
         });
-        if (out.ok) sendJson(res, out.httpStatus, out.replayed ? { replayed: true } : { runId: out.runId });
+        // Issue #88: a replay of an ACCEPTED delivery now carries `runId` back too when the
+        // registry recorded one (a legacy pre-migration replay has none) — additive, so the
+        // pre-existing `{replayed:true}` shape callers depend on is unchanged either way.
+        if (out.ok) sendJson(res, out.httpStatus, out.replayed ? { replayed: true, ...(out.runId ? { runId: out.runId } : {}) } : { runId: out.runId });
         // v37 Gate-8 round-2 (finding B4, ARCH-182 (3)): "every wire boundary emits `code` + STATIC
         // catalog text" — `DeliverResult`'s `code` (409's `RefusalReason`, 403's now-optional one)
         // previously stopped at this function's own return value and never reached the HTTP body.

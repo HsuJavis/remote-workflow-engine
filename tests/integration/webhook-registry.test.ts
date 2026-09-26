@@ -348,3 +348,164 @@ describe('v24: webhooks created unclaimed, claimed at registration (IT-112, DES-
     }
   });
 });
+
+// Issue #88: a webhook delivery refused AFTER the dedup claim used to consume its deliveryId
+// anyway — the sender's retry (same x-rwe-delivery) then got 200 {replayed:true}, and since
+// senders (GitHub/Stripe style) stop retrying on 2xx, the event was silently lost. Fix: the
+// dedup record now stores the ORIGINAL outcome and a replay reproduces THAT answer; a transient
+// admission failure (503/500) does not poison the id at all, so a retry actually reprocesses.
+describe('issue #88: replay reproduces the ORIGINAL outcome (not a bare 200)', () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'rwe-wh-88-')); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  function mk(rm: ReturnType<typeof fakeRunManager> | ReturnType<typeof scriptedRunManager> | ReturnType<typeof deferredRunManager>) {
+    return new WebhookRegistry({ clock: CLOCK, runManager: rm as never, catalog: fakeCatalog(new Set(['deploy'])), dbPath: join(dir, 'wh.db') });
+  }
+  async function createAndClaim(reg: WebhookRegistry) {
+    const c = (await reg.create({})) as { webhookId: string; secret: string };
+    expect(reg.claim(c.webhookId, 'deploy')).toBe('claimed');
+    return c;
+  }
+  function req(secret: string, deliveryId: string) {
+    const body = '{}';
+    return { signature: sign(secret, body), timestamp: ANCHOR.toISOString(), deliveryId, rawBody: body, parsedBody: {} };
+  }
+  function codedErr(code: string): Error {
+    return Object.assign(new Error('boom'), { code });
+  }
+  /** `start()` runs each scripted outcome in order — throws to simulate an admission failure,
+   *  returns a runId string on success. Running out of outcomes is a test-authoring bug, not a
+   *  code path under test, so it throws loudly rather than silently returning `undefined`. */
+  function scriptedRunManager(outcomes: Array<() => string>) {
+    const started: Array<{ name?: string; args?: unknown }> = [];
+    let i = 0;
+    return {
+      started,
+      async start(spec: { name?: string; args?: unknown }) {
+        const fn = outcomes[i++];
+        if (!fn) throw new Error('scriptedRunManager: ran out of scripted outcomes');
+        const result = fn();
+        started.push({ name: spec.name, args: spec.args });
+        return result;
+      },
+    };
+  }
+  /** `start()` blocks on an externally-released gate — used to hold a delivery "in flight" (claimed,
+   *  outcome not yet recorded) so a concurrent duplicate can be observed mid-flight. */
+  function deferredRunManager() {
+    const started: Array<{ name?: string; args?: unknown }> = [];
+    let release!: () => void;
+    const gate = new Promise<void>((res) => { release = res; });
+    let n = 0;
+    return {
+      started,
+      release,
+      async start(spec: { name?: string; args?: unknown }) {
+        await gate;
+        started.push({ name: spec.name, args: spec.args });
+        return `run-${++n}`;
+      },
+    };
+  }
+
+  it('a PERMANENT refusal (403 CONFINEMENT_UNAVAILABLE) is recorded, and a replay gets back the SAME 403 — never 2xx', async () => {
+    const rm = scriptedRunManager([() => { throw codedErr('CONFINEMENT_UNAVAILABLE'); }]);
+    const reg = mk(rm);
+    const { webhookId, secret } = await createAndClaim(reg);
+    const first = await reg.deliver(webhookId, req(secret, 'd-403'));
+    expect(first).toMatchObject({ ok: false, httpStatus: 403, code: 'CONFINEMENT_UNAVAILABLE' });
+    expect(reg.get(webhookId)?.refusalCount).toBe(1);
+
+    const replay = await reg.deliver(webhookId, req(secret, 'd-403'));
+    expect(replay).toMatchObject({ ok: false, httpStatus: 403, code: 'CONFINEMENT_UNAVAILABLE' });
+    expect(rm.started.length).toBe(0); // start() was never called a second time
+    expect(reg.get(webhookId)?.refusalCount).toBe(1); // a replay is not a new admission decision
+  });
+
+  it('a TRANSIENT 503 (RUN_ADMISSION_LIMIT) does NOT poison the id — a retry actually reprocesses and can succeed', async () => {
+    const rm = scriptedRunManager([() => { throw codedErr('RUN_ADMISSION_LIMIT'); }, () => 'run-ok']);
+    const reg = mk(rm);
+    const { webhookId, secret } = await createAndClaim(reg);
+    const first = await reg.deliver(webhookId, req(secret, 'd-503'));
+    expect(first).toMatchObject({ ok: false, httpStatus: 503 });
+    expect(rm.started.length).toBe(0);
+
+    const retry = await reg.deliver(webhookId, req(secret, 'd-503')); // SAME deliveryId
+    expect(retry).toMatchObject({ ok: true, httpStatus: 202, runId: 'run-ok' }); // actually processed, not "200 replayed"
+    expect(rm.started.length).toBe(1);
+  });
+
+  it('a TRANSIENT 500 does NOT poison the id — a retry actually reprocesses and can succeed', async () => {
+    const rm = scriptedRunManager([() => { throw new Error('unclassified boom'); }, () => 'run-ok']);
+    const reg = mk(rm);
+    const { webhookId, secret } = await createAndClaim(reg);
+    const first = await reg.deliver(webhookId, req(secret, 'd-500'));
+    expect(first).toMatchObject({ ok: false, httpStatus: 500 });
+
+    const retry = await reg.deliver(webhookId, req(secret, 'd-500'));
+    expect(retry).toMatchObject({ ok: true, httpStatus: 202, runId: 'run-ok' });
+    expect(rm.started.length).toBe(1);
+  });
+
+  it('an accepted delivery replays 200 {replayed:true, runId} — the compatible shape, with runId added back', async () => {
+    const rm = fakeRunManager();
+    const reg = mk(rm);
+    const { webhookId, secret } = await createAndClaim(reg);
+    const first = await reg.deliver(webhookId, req(secret, 'd-ok'));
+    expect(first).toMatchObject({ ok: true, httpStatus: 202 });
+    const firstRunId = (first as { runId: string }).runId;
+
+    const replay = await reg.deliver(webhookId, req(secret, 'd-ok'));
+    expect(replay).toMatchObject({ ok: true, httpStatus: 200, replayed: true, runId: firstRunId });
+    expect(rm.started.length).toBe(1);
+  });
+
+  it('a concurrent duplicate that finds the claim in flight gets a non-2xx, not "200 replayed" — then the real outcome replays once it lands', async () => {
+    const rm = deferredRunManager();
+    const reg = mk(rm);
+    const { webhookId, secret } = await createAndClaim(reg);
+
+    const inFlight = reg.deliver(webhookId, req(secret, 'd-race')); // NOT awaited — blocked on the gate
+    // Flush the microtask queue (catalog.resolve() + the synchronous claim INSERT that follows it)
+    // so `inFlight` has definitely claimed the row and is now parked awaiting the gate, before the
+    // duplicate below is sent. A macrotask boundary (setImmediate), not a fixed number of
+    // `Promise.resolve()` ticks, is what makes this robust to the exact microtask chain length.
+    await new Promise((r) => setImmediate(r));
+    const duplicate = await reg.deliver(webhookId, req(secret, 'd-race'));
+    expect(duplicate).toMatchObject({ ok: false, httpStatus: 503 }); // "delivery in progress" — never 2xx
+
+    rm.release();
+    const first = await inFlight;
+    expect(first).toMatchObject({ ok: true, httpStatus: 202 });
+    expect(rm.started.length).toBe(1); // exactly one run, despite the concurrent duplicate
+
+    const afterward = await reg.deliver(webhookId, req(secret, 'd-race'));
+    expect(afterward).toMatchObject({ ok: true, httpStatus: 200, replayed: true });
+    expect(rm.started.length).toBe(1); // still exactly once
+  });
+
+  it('6 parallel identical deliveries start EXACTLY ONE run; the other 5 get a non-2xx in-flight answer', async () => {
+    const rm = deferredRunManager();
+    const reg = mk(rm);
+    const { webhookId, secret } = await createAndClaim(reg);
+
+    // Fire all 6 synchronously, in the same JS turn — none has claimed the row yet (each is parked
+    // at its own `await catalog.resolve()`). Releasing the gate now (also synchronously, before any
+    // microtask runs) just means whichever call eventually wins the claim resolves as soon as it
+    // reaches `start()`; it does not affect who wins.
+    const calls = Array.from({ length: 6 }, () => reg.deliver(webhookId, req(secret, 'd-parallel')));
+    rm.release();
+    const results = await Promise.all(calls);
+
+    const accepted = results.filter((r) => r.httpStatus === 202);
+    const others = results.filter((r) => r.httpStatus !== 202);
+    expect(accepted.length).toBe(1); // exactly-once, despite 6 identical concurrent deliveries
+    expect(others.length).toBe(5);
+    for (const r of others) {
+      expect(r.ok).toBe(false);
+      expect(r.httpStatus).not.toBe(200); // none of the 5 losers is told "replayed" for work that may not have happened
+    }
+    expect(rm.started.length).toBe(1);
+  });
+});

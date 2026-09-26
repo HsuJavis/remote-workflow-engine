@@ -66,6 +66,17 @@ describe('webhook ingress POST /hooks/:id (v8 Defer B, REQ-057)', () => {
     const gotoBody = await good.json() as { runId?: string };
     expect(typeof gotoBody.runId).toBe('string');
 
+    // issue #88: the SAME delivery id, retried (real sender behavior on a dropped ack), replays
+    // the ORIGINAL outcome — 200 {replayed:true, runId}, not a second run — over real HTTP.
+    const replay = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-RWE-Signature': sig, 'X-RWE-Timestamp': new Date().toISOString(), 'X-RWE-Delivery': 'd-good' },
+      body,
+    });
+    expect(replay.status).toBe(200);
+    const replayBody = await replay.json() as { replayed?: boolean; runId?: string };
+    expect(replayBody).toEqual({ replayed: true, runId: gotoBody.runId });
+
     // the pre-bound workflow really ran with the body as args.event
     let result: any;
     for (let i = 0; i < 25; i++) {
