@@ -10,6 +10,8 @@
 // Impure (spawns a real subprocess) — deliberately kept OUT of bash-confinement.ts, which stays
 // fs/process/env/clock-free so its own contract never depends on what this measures.
 import { spawnSync } from 'node:child_process';
+import { accessSync, constants as fsConstants } from 'node:fs';
+import { delimiter, join } from 'node:path';
 
 export type ConfinementPosture = 'confined' | 'unconfined';
 export interface ConfinementProbeResult {
@@ -44,6 +46,18 @@ const NESTED_BWRAP_ARGS = [
  *  profile existed to restrict, so apply it only on a host where every user of this engine is
  *  already trusted at the OS level — not on a shared/multi-tenant box. */
 export const CONFINEMENT_REMEDIATION =
+  // send-back item 1 (verify-b, 2026-09-26): a nested-bwrap PROBE PASS is necessary but not
+  // sufficient — the real Claude CLI sandbox has a SECOND hard binary dependency, `socat`, that
+  // this probe never used to measure at all (confirmed via strings in the installed
+  // @anthropic-ai/claude-agent-sdk-linux-x64 binary's own native checkDependencies() error
+  // catalogue: "bubblewrap (bwrap) not installed", "socat not installed"; real repro on this host:
+  // "sandbox required but unavailable: sandbox is enabled but dependencies are missing: socat not
+  // installed"). Stated FIRST because it is the cheaper, more common fix (one apt install, vs the
+  // AppArmor/sysctl change below) and because `probeConfinement()` now checks it before ever
+  // spawning bwrap, so a `reason` naming a missing binary is fixed by this sentence alone.
+  'the Claude CLI sandbox requires BOTH bubblewrap (bwrap) AND socat installed and on PATH — if ' +
+  'the boot-time probe reason names a missing binary, install it (Ubuntu/Debian: sudo apt install ' +
+  'bubblewrap socat) and restart this engine; separately, ' +
   'on an Ubuntu/AppArmor host, a nested-bwrap probe failure is usually the bwrap-userns-restrict ' +
   'AppArmor profile blocking a second, nested unprivileged user namespace — set ' +
   'kernel.apparmor_restrict_unprivileged_userns=0 (e.g. via /etc/sysctl.d/60-rwe-userns.conf, then ' +
@@ -57,13 +71,54 @@ export type SpawnImpl = (cmd: string, args: string[], opts: { timeout: number })
 
 const REAL_SPAWN: SpawnImpl = (cmd, args, opts) => spawnSync(cmd, args, opts);
 
+export type WhichImpl = (cmd: string) => boolean;
+
+/** Resolves `cmd` against the SAME PATH the spawned Claude CLI subprocess itself gets —
+ *  claude-agent-sdk-client.ts's `buildSubprocessEnv` forwards `process.env.PATH` to the child
+ *  verbatim (its own `ENV_ALLOWLIST`), so this reads `process.env.PATH` too, never a
+ *  re-derivation. A pure PATH walk (`accessSync(..., X_OK)`), not a `which`/`command -v`
+ *  subprocess — the probe should not gain a THIRD external-binary dependency of its own just to
+ *  check the first two. */
+const REAL_WHICH: WhichImpl = (cmd) => {
+  const pathEnv = process.env['PATH'] ?? '';
+  for (const dir of pathEnv.split(delimiter)) {
+    if (!dir) continue;
+    try {
+      accessSync(join(dir, cmd), fsConstants.X_OK);
+      return true;
+    } catch {
+      // not here — keep scanning the rest of PATH
+    }
+  }
+  return false;
+};
+
+// send-back item 1 (verify-b, 2026-09-26): the Claude CLI's real sandbox startup requires BOTH of
+// these on PATH (native checkDependencies(), confirmed via strings in the installed
+// @anthropic-ai/claude-agent-sdk-linux-x64 binary: "bubblewrap (bwrap) not installed", "socat not
+// installed"). The nested-bwrap probe below only ever measured `bwrap` (implicitly, via its own
+// spawn's ENOENT) — a host with bwrap but no socat used to measure a FALSE 'confined' here while
+// the real CLI refused to start at all. Checked explicitly, in order, BEFORE the nested-bwrap
+// spawn (cheap PATH walks vs. a subprocess) so `reason` names exactly which binary is missing.
+const CLI_SANDBOX_HARD_DEPENDENCIES = ['bwrap', 'socat'] as const;
+
 /** Runs the REAL nested-bwrap probe (manually verified against this host, recorded on ADR-083's
  *  owner_decision): a plain unwrapped `bwrap --unshare-user ...` exits 0 on every host that merely
  *  HAS bubblewrap (that is S1's finding, not this question) — only the NESTED invocation reaches the
  *  same apply-seccomp-class failure the real CLI hits. Exit 0 ⇒ 'confined'; any nonzero exit, a
  *  spawn error (ENOENT — no bwrap on PATH at all), or a timeout ⇒ 'unconfined', carrying the probe's
- *  own stderr/error message as `reason` so the failure is diagnosable, never a bare boolean. */
-export function probeConfinement(spawn: SpawnImpl = REAL_SPAWN): ConfinementProbeResult {
+ *  own stderr/error message as `reason` so the failure is diagnosable, never a bare boolean.
+ *
+ *  send-back item 1: a nested-bwrap probe PASS is necessary but not sufficient — see
+ *  `CLI_SANDBOX_HARD_DEPENDENCIES` above. Both hard dependencies are checked FIRST; either missing
+ *  short-circuits straight to 'unconfined' naming the missing binary, and the nested-bwrap spawn
+ *  never runs at all. */
+export function probeConfinement(spawn: SpawnImpl = REAL_SPAWN, which: WhichImpl = REAL_WHICH): ConfinementProbeResult {
+  for (const dep of CLI_SANDBOX_HARD_DEPENDENCIES) {
+    if (!which(dep)) {
+      return { posture: 'unconfined', reason: `${dep} not found on PATH — the Claude CLI sandbox requires it` };
+    }
+  }
   const r = spawn('bwrap', NESTED_BWRAP_ARGS, { timeout: 5000 });
   if (r.error) return { posture: 'unconfined', reason: `bwrap probe failed to start: ${r.error.message}` };
   if (r.status === 0) return { posture: 'confined' };
