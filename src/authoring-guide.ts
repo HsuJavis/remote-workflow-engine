@@ -392,9 +392,11 @@ const HOST_PATH_GRANTS_UNCONFINED =
   // ACCURATE claim here, unlike a webhook delivery's CONFINEMENT_UNAVAILABLE (webhook-registry.ts
   // DOES special-case it into that same trio) — the two admission routes genuinely differ; this is
   // not a copy-paste of one onto the other.
-  '`schedule_list`\'s `lastError`) all return `CONFINEMENT_UNAVAILABLE` instead of admitting ' +
-  'Bash-capable work — this is a rule about every admission route this posture gates, not a ' +
-  'fixed list of tool names.';
+  '`schedule_list`\'s `lastError`) all return `CONFINEMENT_UNAVAILABLE` — **regardless of what ' +
+  'tools any agent in the workflow declares.** A workflow whose every agent declares ' +
+  "`allowedTools: []` (no `Bash`, no file tools, nothing) is refused identically to one that " +
+  'declares `Bash`: this rule gates every admission route by submission/trigger/version ' +
+  'provenance, never by the requested tool surface — there is no tool-free door around it.';
 
 /** Issue #78(c): the read-only shell mode. Enforcement is the kernel sandbox or a refusal — the
  *  closing sentence states which one this deployment gives, from the same measured posture the Host

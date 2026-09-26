@@ -690,6 +690,21 @@ describe('buildAuthoringGuide — "Host path grants" names the field a schedule\
   });
 });
 
+// send-back item 4 (verify-b, 2026-09-26): the unconfined "Host path grants" body framed the
+// refusal as happening "instead of admitting Bash-capable work", implying only a Bash-carrying
+// agent is at risk. Verified in code (claude-agent-sdk-client.ts's admission refusals are keyed on
+// submission/trigger/version provenance, never on the requested tool list) that EVERY remote run
+// is refused on this posture, including a workflow whose every agent declares `allowedTools: []`.
+describe('buildAuthoringGuide — "Host path grants" states the unconfined refusal is tool-surface-independent (send-back item 4)', () => {
+  it('states plainly that a workflow whose every agent declares allowedTools: [] is refused identically — never "instead of admitting Bash-capable work"', () => {
+    const text = buildAuthoringGuide({ ...CEILINGS, confinementPosture: 'unconfined' });
+    const section = text.slice(text.search(/host path grants/i));
+    expect(section).toMatch(/regardless of/i);
+    expect(section).toMatch(/allowedTools: \[\]/);
+    expect(section).not.toMatch(/instead of admitting Bash-capable work/i);
+  });
+});
+
 // issue #89 item 5: the "Canonical diagram" rule 3 said the tools `<br/>` segment "may carry" the
 // tool surface, implying it is ALWAYS optional. It is not: checkMermaid's checkTools (rule 12)
 // compares it whenever the agent() call declares a LITERAL `allowedTools` (including `[]`) and
