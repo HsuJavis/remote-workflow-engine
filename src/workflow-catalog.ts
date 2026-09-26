@@ -25,6 +25,9 @@ import { parseMeta, parseMetaParams, parseWorkflowSkeleton } from './workflow-me
 // thing it projects is the `expected:` block of a refusal, returned to the author who just
 // submitted that script.
 import { deriveExpectedGraph } from './skeleton-graph.js';
+// Issue #91: the SAME literal `path-verdict.ts`'s asset-tree check refuses a reserved-prefix path
+// segment with — reused, not re-typed, so the two checks can never drift on what "reserved" means.
+import { RESERVED_PREFIX } from './path-verdict.js';
 import { scanAgentCalls } from './scan-agent-calls.js';
 import { checkMermaid, type Rule } from './check-mermaid.js';
 import type { Clock } from './clock.js';
@@ -558,6 +561,20 @@ export class WorkflowCatalog {
    *  → release on throw) — `insertVersion` is a SEPARATE step so a claim can happen in between. */
   async validateRegistration(req: { name: string; script: string; mermaid: string; principal?: string | null; actor?: Actor }): Promise<{ params: ParamContract; labels: string[]; agents: Record<string, AgentParamSpec>; warnings?: ModelRefWarning[] }> {
     const { name, script, mermaid } = req;
+
+    // Issue #91: checked FIRST, before any other registration work (including `actorFromPrincipal`
+    // below has no bearing on it) — the engine registers no `rwe-*` workflows for ANY principal,
+    // admin included (owner decision), so a script/mermaid full of unrelated errors must still come
+    // back RESERVED_PREFIX rather than some other code that happened to run first. Same
+    // case-sensitive `startsWith` rule as `path-verdict.ts`'s asset-tree check (no `toLowerCase`) —
+    // a workflow name has no path segments to split on, so the whole name is compared directly.
+    if (name.startsWith(RESERVED_PREFIX)) {
+      throw codedError(
+        'RESERVED_PREFIX',
+        `RESERVED_PREFIX: workflow name '${name}' starts with the engine-reserved '${RESERVED_PREFIX}' prefix (ARCH-093) — the engine registers no ${RESERVED_PREFIX}* workflows`,
+      );
+    }
+
     const actor: Actor = req.actor ?? actorFromPrincipal(req.principal ?? null);
 
     // v22 (DES-111, DES-112, DES-117, TASK-107): validateScriptEntry runs FIRST — DES-148's own
