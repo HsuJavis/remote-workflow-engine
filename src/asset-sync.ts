@@ -276,7 +276,10 @@ export interface AssetCatalogRow {
 /** Injected catalog port (DES-153) — a pure in-memory/db seam, no fs/tmp roots required to fake it. */
 export interface AssetCatalogPort {
   putAsset(row: AssetCatalogRow): void | Promise<void>;
-  deleteAsset(criteria: { scope: AssetScope; workflow?: string; kind: AssetKind; name: string }): void | Promise<void>;
+  // Issue #92 part B: `{deleted}` is the port's real answer (`WorkflowCatalog.deleteAsset` has
+  // always returned it) — it used to be declared `void` here and thrown away at the server.ts
+  // adapter, which is why `workspace_delete` could only ever answer a hardcoded `{deleted: true}`.
+  deleteAsset(criteria: { scope: AssetScope; workflow?: string; kind: AssetKind; name: string }): { deleted: boolean } | Promise<{ deleted: boolean }>;
   listAssets(): AssetCatalogRow[] | Promise<AssetCatalogRow[]>;
 }
 
@@ -432,11 +435,16 @@ export class AssetSyncService {
     return true;
   }
 
-  /** Removes the row THEN the tree (DES-153) — a `skill` row also owns an on-disk tree; `mcp` is catalog-only. */
-  async delete(req: { scope: AssetScope; workflow?: string; kind: AssetKind; name: string }): Promise<void> {
-    await this._catalog.deleteAsset(req);
-    if (req.kind === 'skill') {
+  /** Removes the row THEN the tree (DES-153) — a `skill` row also owns an on-disk tree; `mcp` is
+   *  catalog-only. Issue #92 part B: the tree is only touched when the catalog actually removed a
+   *  row (`deleted:true`) — a `deleted:false` (nothing matched) leaves whatever is on disk alone
+   *  rather than blindly `rmSync`-ing a path that may not even belong to this name. The `{deleted}`
+   *  the catalog reports is returned as-is, not re-derived. */
+  async delete(req: { scope: AssetScope; workflow?: string; kind: AssetKind; name: string }): Promise<{ deleted: boolean }> {
+    const result = await this._catalog.deleteAsset(req);
+    if (result.deleted && req.kind === 'skill') {
       rmSync(this._skillRoot(req.scope, req.workflow, req.name), { recursive: true, force: true });
     }
+    return result;
   }
 }

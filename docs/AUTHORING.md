@@ -198,7 +198,7 @@ A run's workspace can be pre-populated three ways on `run_start`, mutually exclu
 - `seed` — Seed files by inline content — each element is {path, contentB64}, the file bytes as base64. Refused INVALID_SEED_SPEC if any element is missing contentB64.
 - `seedManifest` — Seed files already pushed to the CAS via workspace_push — each element is {path, sha256, exec?}, referenced by hash rather than carrying content inline. Use for large trees, or content you already have a sha256 for.
 - `seedManifestRef` — Seed the whole workspace from ONE manifest previously pushed as a CAS blob — the sha256 of that manifest.
-- `workspace_push` — Push content: a CAS blob into the caller's own pool, or a workflow-owned asset (skill/mcp). Any runId argument is refused — see workflow_authoring_guide.
+- `workspace_push` — Push content: a CAS blob into the caller's own pool, or a workflow-owned asset (skill/mcp). Any runId argument is refused — see workflow_authoring_guide. A CAS blob/manifest is content-addressed within the caller's own pool and is retained indefinitely once accepted — there is no delete for it (workspace_delete only removes workflow/global assets, never a CAS blob or manifest).
 
 Every `seed`/`seedManifest`/`seedManifestRef` element that does not match its declared shape is refused `INVALID_SEED_SPEC` before a single byte is written — a `seed` element missing `contentB64` (or carrying only a `sha256`) does NOT silently materialize a 0-byte file; the refusal names the offending `path` and points at `seedManifest` instead. Content referenced only by hash (`seedManifest`, `seedManifestRef`) must already exist in the CAS — push it first with `workspace_push`.
 

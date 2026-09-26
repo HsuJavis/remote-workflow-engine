@@ -17,10 +17,15 @@ import Database from 'better-sqlite3';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { TokenStore } from '../../src/auth/token-store.js';
+import { FakeMcpProbe } from '../../src/mcp-probe.js';
 
 const ALICE = 'alice@example.com';
 const BOB = 'bob@example.com';
 const ROOT = 'root@example.com';
+// Deliberately UNLISTED in `principals` below — gets the server's hardcoded `defaultRole: 'user'`,
+// the lowest role there is. Issue #92 part B/C follow-up's reproduction needs exactly this: the
+// weakest possible principal, to prove the bypass required no elevated role at all.
+const CAROL = 'carol@example.com';
 const WF = 'it124-owned';
 
 let server: Server;
@@ -28,6 +33,7 @@ let tmpDir: string;
 let aliceToken: string;
 let bobToken: string;
 let rootToken: string;
+let carolToken: string;
 
 function mintBearer(workRoot: string, email: string): string {
   const db = new Database(join(workRoot, 'auth-tokens.db'));
@@ -58,10 +64,15 @@ beforeAll(async () => {
     workRoot: tmpDir,
     auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it124-cid', googleClientSecret: 'it124-cs' },
     principals: { [ALICE]: { role: 'author' }, [BOB]: { role: 'author' }, [ROOT]: { role: 'admin' } },
+    // Issue #92 part B/C follow-up: a fake probe (never real network/process I/O) so a real
+    // `kind:'mcp'` workspace_push can reach the catalog write in this suite.
+    mcpProbe: new FakeMcpProbe(true),
+    mcpEgressAllowlist: ['https://example.com/'],
   } as never);
   aliceToken = mintBearer(tmpDir, ALICE);
   bobToken = mintBearer(tmpDir, BOB);
   rootToken = mintBearer(tmpDir, ROOT);
+  carolToken = mintBearer(tmpDir, CAROL);
   const reg = await callTool('workflow_register', { name: WF, script: 'return "hello";', mermaid: 'graph LR' }, aliceToken);
   expect(reg['error']).toBeUndefined();
   const pub = await callTool('workflow_publish', { name: WF, version: `v${reg['version'] as number}`, channel: 'release' }, aliceToken);
@@ -115,8 +126,59 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
     // ...and the workflow-scope mode keys off `workflow`, refusing a non-owner of the WORKFLOW.
     expect(codeOf(await callTool('workspace_list', { workflow: WF, kind: 'skill' }, bobToken))).toBe('NOT_WORKFLOW_OWNER');
     expect(codeOf(await callTool('workspace_push', { workflow: WF, kind: 'skill', name: 'n', files: [] }, bobToken))).toBe('NOT_WORKFLOW_OWNER');
-    // The owner is not refused (the check runs, it does not simply reject everyone).
+    // ...and workspace_delete's own asset mode (issue #92 part B verification) is refused the same way.
+    expect(codeOf(await callTool('workspace_delete', { workflow: WF, kind: 'skill', name: 'n' }, bobToken))).toBe('NOT_WORKFLOW_OWNER');
+    // The owner is not refused (the check runs, it does not simply reject everyone) — and the real
+    // {deleted} answer (issue #92 part B) comes back through, not a hardcoded true, for a name that
+    // was never pushed.
     expect(codeOf(await callTool('workspace_list', { runId }, aliceToken))).toBeUndefined();
+    const del = await callTool('workspace_delete', { workflow: WF, kind: 'skill', name: 'never-pushed' }, aliceToken);
+    expect(codeOf(del)).toBeUndefined();
+    expect(((del['result'] ?? del) as { deleted?: boolean }).deleted).toBe(false);
+  });
+
+  // Issue #92 part B follow-up (advisor-caught defect): an arg shape naming neither `scope:'global'`
+  // nor `workflow` matches no MODE the tool declares (`deleteMode()` ⇒ 'invalid', role-only,
+  // ownership:'none') — every authenticated role, not just admin, reaches the facade with it. The
+  // facade's own guard did not close that gap: it silently fell through to the else (workflow) branch
+  // with `workflow: undefined`, and the server.ts adapter's `c.workflow ?? ''` then resolved that to
+  // the GLOBAL-scope sentinel — a non-admin author could delete a global (admin-only-pushed) asset
+  // by simply never naming a scope. Pinned end-to-end, through a real admin-pushed global asset and a
+  // non-admin author caller.
+  it('workspace_delete naming neither scope:"global" nor workflow never falls through to the global scope (issue #92 part B follow-up)', async () => {
+    const pushed = await callTool('workspace_push', {
+      scope: 'global', kind: 'skill', name: 'it124-global-skill',
+      files: [{ path: 'SKILL.md', contentB64: Buffer.from('# x').toString('base64') }],
+    }, rootToken);
+    expect(codeOf(pushed)).toBeUndefined();
+
+    // bob is an author, not admin, and sends NEITHER `scope` nor `workflow`.
+    const del = await callTool('workspace_delete', { kind: 'skill', name: 'it124-global-skill' }, bobToken);
+    expect(codeOf(del)).toBe('INVALID_ARGUMENT');
+
+    // ...and the global row is still there — the bad arg shape must not have deleted it anyway.
+    const list = await callTool('workspace_list', { workflow: WF, kind: 'skill' }, aliceToken);
+    const rows = (list['result'] ?? list) as Array<{ name: string }>;
+    expect(rows.some((r) => r.name === 'it124-global-skill')).toBe(true);
+  });
+
+  // Issue #92 part B/C follow-up: the SAME gap, on the PUSH side, is worse — there is no on-disk
+  // step to throw first, and `pushMode()` (tool-specs.ts) resolves an arg set naming neither
+  // `scope:'global'` nor `workflow` to `'invalid'` (role-only, `minRole:'user'`), so ANY
+  // authenticated principal — not even `author`, let alone `admin` — reaches the facade with it.
+  // carol here is UNLISTED in `principals` (defaultRole 'user', the lowest role this engine has).
+  // Reproduced first against the server.ts adapter hardening ALONE (committed earlier this issue):
+  // that alone already stops the SILENT global write, turning it into an INTERNAL_ERROR with the
+  // row never created — a fail-safe, but not the contract (`INVALID_ARGUMENT`, arg-shape refused
+  // before assetSync is ever touched). This pins the real contract end-to-end.
+  it('workspace_push(kind:"mcp") naming neither scope:"global" nor workflow never falls through to the global scope, even for the lowest role there is (issue #92 part B/C follow-up)', async () => {
+    const push = await callTool('workspace_push', { kind: 'mcp', name: 'carol-mcp', config: { url: 'https://example.com/x' } }, carolToken);
+    expect(codeOf(push)).toBe('INVALID_ARGUMENT');
+
+    // ...and nothing landed as a global row a normal author would see alongside their own.
+    const list = await callTool('workspace_list', { workflow: WF, kind: 'mcp' }, aliceToken);
+    const rows = (list['result'] ?? list) as Array<{ name: string }>;
+    expect(rows.some((r) => r.name === 'carol-mcp')).toBe(false);
   });
 
   it('an admin cross-principal read of run_result is ALLOWED and AUDITED, and the owner sees it in run_status.adminReads[]', async () => {

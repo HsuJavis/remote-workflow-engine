@@ -926,7 +926,16 @@ export class McpFacade {
       const scope: AssetScope = a['scope'] === 'global' ? 'global' : 'workflow';
       const kind = a['kind'] as string;
       const name = a['name'] as string;
-      if (!this.assetSync || !name || (kind !== 'skill' && kind !== 'mcp')) {
+      // Issue #92 part B/C follow-up: an arg set naming neither `scope:'global'` nor `workflow`
+      // still computed `scope:'workflow'` above, with `a['workflow']` `undefined` — `pushMode()`
+      // (tool-specs.ts) resolves that same shape to 'invalid' (role-only, `minRole:'user'`), so
+      // every authenticated principal, not just admin, reached this far. For `kind:'mcp'` there is
+      // no on-disk step to fail on, so the request went straight to `assetSync.push`, and the
+      // server.ts catalog adapter's `?? ''` used to resolve the missing workflow to the SAME
+      // sentinel a real `scope:'global'` produces — a non-admin could write a global asset by
+      // simply omitting `scope`. Refused here, before assetSync is ever touched (matching
+      // workspaceDelete's twin guard just above in this file).
+      if (!this.assetSync || !name || (kind !== 'skill' && kind !== 'mcp') || (scope !== 'global' && !a['workflow'])) {
         throw codedError('INVALID_ARGUMENT', 'INVALID_ARGUMENT: workspace_push arguments matched no known mode (see workflow_authoring_guide)');
       }
       const pushedBy = attributionPrincipal(principal) ?? 'local';
@@ -1010,15 +1019,23 @@ export class McpFacade {
           return { runId: a.runId, status: stored?.status ?? 'unknown', result: { deleted, missing, rejected: [] } };
         });
       }
-      if (!this.assetSync || !a.kind || !a.name) {
+      // Issue #92 part B follow-up: `deleteMode()` (tool-specs.ts) resolves an arg set carrying
+      // neither `scope:'global'` nor `workflow` to 'invalid' — a role-only row every authenticated
+      // principal clears. This guard must independently refuse that same shape: without it, the
+      // branch below fell through to `workflow: a.workflow!` (`undefined`), and the server.ts
+      // adapter's `c.workflow ?? ''` silently resolved that `undefined` to the GLOBAL-scope
+      // sentinel — a non-admin caller could delete a global (admin-only-pushed) asset merely by
+      // omitting `scope`, and for `kind:'skill'` the on-disk tree lookup then threw on the same
+      // `undefined` workflow, so the caller saw INTERNAL_ERROR while the row was already gone.
+      if (!this.assetSync || !a.kind || !a.name || (a.scope !== 'global' && !a.workflow)) {
         throw codedError('INVALID_ARGUMENT', 'INVALID_ARGUMENT: workspace_delete arguments matched no known mode (see workflow_authoring_guide)');
       }
-      if (a.scope === 'global') {
-        await this.assetSync.delete({ scope: 'global', kind: a.kind, name: a.name });
-      } else {
-        await this.assetSync.delete({ scope: 'workflow', workflow: a.workflow!, kind: a.kind, name: a.name });
-      }
-      return { runId: '', status: 'completed', result: { deleted: true } };
+      // Issue #92 part B: thread the real `{deleted}` boolean through rather than hardcoding
+      // `true` — a caller could not otherwise tell "removed" from "there was never any such asset".
+      const r = a.scope === 'global'
+        ? await this.assetSync.delete({ scope: 'global', kind: a.kind, name: a.name })
+        : await this.assetSync.delete({ scope: 'workflow', workflow: a.workflow!, kind: a.kind, name: a.name });
+      return { runId: '', status: 'completed', result: { deleted: r.deleted } };
     } catch (err) {
       const e = toErrEnvelope(err);
       return { runId: a.runId ?? '', status: 'failed', code: e.code, error: e };

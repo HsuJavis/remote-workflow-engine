@@ -79,13 +79,61 @@ describe('McpFacade refusal arms (UT-163)', () => {
 
   it('workspaceDelete routes the workflow scope and the global scope to the bound assetSync', async () => {
     const calls: unknown[] = [];
-    facade.bindAssetSync({ delete: async (req: unknown) => { calls.push(req); } } as never);
+    facade.bindAssetSync({ delete: async (req: unknown) => { calls.push(req); return { deleted: true }; } } as never);
     expect((await facade.workspaceDelete({ workflow: 'w', kind: 'skill', name: 'n' }, OPEN))['status']).toBe('completed');
     expect((await facade.workspaceDelete({ scope: 'global', kind: 'skill', name: 'n' }, OPEN))['status']).toBe('completed');
     expect(calls).toEqual([
       { scope: 'workflow', workflow: 'w', kind: 'skill', name: 'n' },
       { scope: 'global', kind: 'skill', name: 'n' },
     ]);
+  });
+
+  // Issue #92 part B: workspace_delete used to hardcode `{deleted: true}` regardless of what the
+  // bound assetSync actually did — a caller could not tell "removed" from "there was never any such
+  // asset". This pins the ANSWER threading through, both ways, not just the route.
+  it('workspaceDelete answers the REAL {deleted} boolean from assetSync.delete, not a hardcoded true', async () => {
+    facade.bindAssetSync({ delete: async () => ({ deleted: false }) } as never);
+    const missResult = await facade.workspaceDelete({ workflow: 'w', kind: 'skill', name: 'never-existed' }, OPEN) as Record<string, unknown>;
+    expect(missResult['status']).toBe('completed');
+    expect((missResult['result'] as { deleted?: boolean } | undefined)?.deleted).toBe(false);
+
+    facade.bindAssetSync({ delete: async () => ({ deleted: true }) } as never);
+    const hitResult = await facade.workspaceDelete({ scope: 'global', kind: 'skill', name: 'real' }, OPEN) as Record<string, unknown>;
+    expect(hitResult['status']).toBe('completed');
+    expect((hitResult['result'] as { deleted?: boolean } | undefined)?.deleted).toBe(true);
+  });
+
+  // Issue #92 part B follow-up (advisor-caught defect): `{kind, name}` with NEITHER `scope:'global'`
+  // NOR `workflow` set matches no declared mode at the tool-specs level (deleteMode() resolves
+  // 'invalid'), but the facade's own guard only checked `!a.kind || !a.name` — the else branch fell
+  // straight through with `workflow: a.workflow!` (`undefined`), and the server.ts adapter's
+  // `c.workflow ?? ''` then silently resolved that to the GLOBAL scope sentinel, deleting a global
+  // asset's catalog row under an arg shape that never named `scope:'global'`. Pinned here as a unit
+  // guard: assetSync.delete must never be reached for this shape.
+  it('workspaceDelete refuses INVALID_ARGUMENT when neither scope:"global" nor workflow is given — never silently defaults to the global scope', async () => {
+    let called = false;
+    facade.bindAssetSync({ delete: async () => { called = true; return { deleted: true }; } } as never);
+    const res = await facade.workspaceDelete({ kind: 'skill', name: 'x' }, OPEN) as Record<string, unknown>;
+    expect(res['status']).toBe('failed');
+    expect(res['code']).toBe('INVALID_ARGUMENT');
+    expect(called).toBe(false);
+  });
+
+  // Issue #92 part B/C follow-up: the exact same gap on the PUSH side. `workspacePush` computes
+  // `scope = a.scope === 'global' ? 'global' : 'workflow'` — an arg set naming NEITHER `scope:
+  // 'global'` NOR `workflow` still resolves to `'workflow'`, and the request sent to `assetSync.
+  // push` then carries `workflow: undefined`. Before the server.ts adapter hardening (this same
+  // issue), that `undefined` silently became the GLOBAL-scope sentinel — a `kind:'mcp'` push with
+  // no on-disk step to fail on would land as a global row under `pushMode()`'s role-only `'invalid'`
+  // row (any authenticated principal, not just admin). Pinned here as a unit guard, mirroring the
+  // delete-side fix above: assetSync.push must never be reached for this shape.
+  it('workspacePush refuses INVALID_ARGUMENT when neither scope:"global" nor workflow is given — never silently defaults to the global scope', async () => {
+    let called = false;
+    facade.bindAssetSync({ push: async () => { called = true; return { stored: 'x' }; } } as never);
+    const res = await facade.workspacePush({ kind: 'mcp', name: 'x', config: { url: 'https://example.com' } }, OPEN) as Record<string, unknown>;
+    expect(res['status']).toBe('failed');
+    expect(res['code']).toBe('INVALID_ARGUMENT');
+    expect(called).toBe(false);
   });
 });
 
