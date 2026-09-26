@@ -296,6 +296,46 @@ describe('TokenStore.registerClient + getClient grant_types (issue #86)', () => 
     const result = (store as AnyStore).getClient('legacy-client-id');
     expect(result?.grantTypes).toEqual(['authorization_code', 'refresh_token']);
   });
+
+  // The test above inserts into a DB whose schema (via this TokenStore's own CREATE TABLE)
+  // already HAS the grant_types column — it proves NULL-handling, but never actually runs the
+  // idempotent `ALTER TABLE registered_clients ADD COLUMN grant_types` migration against a real
+  // pre-#86 table shape. If that ALTER ever silently failed to apply, `getClient`'s
+  // `SELECT ... grant_types` would throw against a genuinely old table (no such column) — a
+  // real production auth-tokens.db predates this fix, so this path matters on next boot.
+  it('idempotent ALTER TABLE migration: a genuinely pre-#86 table (no grant_types column at all) still works after construction', () => {
+    const db = new Database(':memory:');
+    // Hand-build the exact pre-#86 schema (no grant_types column) — no CREATE TABLE IF NOT
+    // EXISTS from TokenStore has run yet, so the constructor below must ALTER this real table.
+    db.exec(`
+      CREATE TABLE registered_clients (
+        client_id TEXT PRIMARY KEY,
+        redirect_uris TEXT NOT NULL,
+        client_id_issued_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+    `);
+    db.prepare(
+      'INSERT INTO registered_clients (client_id, redirect_uris, client_id_issued_at, expires_at) VALUES (?, ?, ?, ?)'
+    ).run('legacy-client-id', JSON.stringify(['http://127.0.0.1:4003/cb']), Math.floor(BASE_MS / 1000), BASE_MS + 30 * DAY_MS);
+
+    // Constructing TokenStore against this pre-existing table must ALTER it in place, not throw.
+    const store = new TokenStore(db, { clock: () => BASE_MS, csprng: makeFakeCsprng() });
+
+    // The migrated legacy row reads back with the default grant_types (no column value stored).
+    const legacy = (store as AnyStore).getClient('legacy-client-id');
+    expect(legacy?.grantTypes).toEqual(['authorization_code', 'refresh_token']);
+
+    // And the now-altered table accepts a fresh registerClient() write with an explicit
+    // grant_types value (proves the ALTER'd column is actually writable, not just readable).
+    const { clientId } = store.registerClient({
+      redirectUris: ['http://127.0.0.1:4004/cb'],
+      ttlMs: 30 * DAY_MS,
+      grantTypes: ['authorization_code'],
+    });
+    const fresh = (store as AnyStore).getClient(clientId);
+    expect(fresh?.grantTypes).toEqual(['authorization_code']);
+  });
 });
 
 // ── putState / consumeState ───────────────────────────────────────────────────

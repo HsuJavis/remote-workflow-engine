@@ -14,7 +14,7 @@ export const GOOGLE_JWKS_URL = 'https://www.googleapis.com/oauth2/v3/certs';
 /** Sliding-window refresh-token TTL (~90 days). DES-095 v20. */
 export const REFRESH_TTL_MS = 90 * 24 * 3600_000;
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { TokenStore } from './token-store.js';
+import { DEFAULT_DCR_GRANT_TYPES, type TokenStore } from './token-store.js';
 import { verifyIdToken, type JwksPort } from './google-verifier.js';
 import { buildProtectedResourceMetadata, buildAuthServerMetadata } from './oauth-metadata.js';
 
@@ -400,7 +400,7 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
       // client's requested scope omits offline_access.
       // TTL: 30 days (weeks-scale per DES-093 v17 bounding contract).
       const ttlMs = 30 * 24 * 3600_000;
-      const grantTypes = ['authorization_code', 'refresh_token'];
+      const grantTypes = DEFAULT_DCR_GRANT_TYPES;
       const { clientId, clientIdIssuedAt } = tokenStore.registerClient({
         redirectUris: redirectUris.map(String),
         ttlMs,

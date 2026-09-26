@@ -21,7 +21,7 @@ function sha256hex(data: string): string {
  * A pre-#86 registered_clients row has no grant_types value; getClient() treats that missing
  * value the same way, since this default is what /register would have stored for it (issue #86).
  */
-const DEFAULT_DCR_GRANT_TYPES = ['authorization_code', 'refresh_token'];
+export const DEFAULT_DCR_GRANT_TYPES = ['authorization_code', 'refresh_token'];
 
 /** Generate a random opaque token string using the injected CSPRNG. */
 function genRandom(csprng: (n: number) => Buffer): string {
