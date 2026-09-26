@@ -19,10 +19,39 @@ export interface ConfinementProbeResult {
   readonly reason?: string;
 }
 
+// issue #93 item 1: BOTH layers now add `--proc /proc --dev /dev`, mirroring the Claude CLI's own
+// sandbox invocation (confirmed by inspecting the strings in the CLI binary). Verified on this host
+// (Ubuntu 26.04, `kernel.apparmor_restrict_unprivileged_userns=0` + `bwrap-userns-restrict`
+// AppArmor profile disabled — see CONFINEMENT_REMEDIATION below) that the OUTER layer must mount a
+// fresh `/proc` for the INNER `bwrap` to be able to set up its own uid map at all: without `--proc`
+// here, the inner invocation fails with "bwrap: setting up uid map: Read-only file system" even
+// though a real nested bwrap (CLI-shaped, both layers carrying `--proc --dev`) succeeds — the
+// pre-fix probe args gave a FALSE `unconfined` reading on a host that can actually run confined.
 const NESTED_BWRAP_ARGS = [
-  '--unshare-user', '--unshare-pid', '--ro-bind', '/', '/', '--tmpfs', '/tmp', '--',
-  'bwrap', '--unshare-user', '--unshare-pid', '--ro-bind', '/', '/', '--tmpfs', '/tmp', '--', '/bin/true',
+  '--unshare-user', '--unshare-pid', '--ro-bind', '/', '/', '--tmpfs', '/tmp', '--proc', '/proc', '--dev', '/dev', '--',
+  'bwrap', '--unshare-user', '--unshare-pid', '--ro-bind', '/', '/', '--tmpfs', '/tmp', '--proc', '/proc', '--dev', '/dev', '--', '/bin/true',
 ];
+
+/** issue #93 item 1: the operator remediation for a host whose nested-bwrap probe fails ONLY
+ *  because of the AppArmor `bwrap-userns-restrict` hardening most current Ubuntu releases ship
+ *  with (which blocks a SECOND, nested unprivileged user namespace) — the exact fix the owner
+ *  applied and re-verified on this host (see this module's own header comment / DES-261 ADR-083
+ *  posture C's independent re-verification). Exported so every surface that tells an operator WHY
+ *  this host measured `unconfined` (the boot log line, the `CONFINEMENT_UNAVAILABLE` error hint,
+ *  DEPLOY.md) states the SAME remediation, once, never re-typed. Security trade-off stated in one
+ *  sentence (also carried into DEPLOY.md, ARCH-181 owner_decision): this permits any unprivileged
+ *  process on the host to create nested user namespaces, which is the exact primitive the AppArmor
+ *  profile existed to restrict, so apply it only on a host where every user of this engine is
+ *  already trusted at the OS level — not on a shared/multi-tenant box. */
+export const CONFINEMENT_REMEDIATION =
+  'on an Ubuntu/AppArmor host, a nested-bwrap probe failure is usually the bwrap-userns-restrict ' +
+  'AppArmor profile blocking a second, nested unprivileged user namespace — set ' +
+  'kernel.apparmor_restrict_unprivileged_userns=0 (e.g. via /etc/sysctl.d/60-rwe-userns.conf, then ' +
+  'sysctl --system) AND disable the profile (ln -s /etc/apparmor.d/bwrap-userns-restrict ' +
+  '/etc/apparmor.d/disable/ && apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict), then ' +
+  'restart this engine; this is a host-wide relaxation (any unprivileged process on the host can now ' +
+  'nest user namespaces) — revert both steps (remove the sysctl override and re-enable the profile: ' +
+  'rm the symlink under disable/ and apparmor_parser again) on a shared/multi-tenant host';
 
 export type SpawnImpl = (cmd: string, args: string[], opts: { timeout: number }) => { status: number | null; error?: Error; stderr: Buffer | string };
 

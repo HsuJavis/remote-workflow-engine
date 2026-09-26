@@ -39,6 +39,16 @@ describe('UT-338 — the boot banner tells the truth about who gets refused', ()
     expect(line).toMatch(/local submission of a locally-registered version/);
   });
 
+  // issue #93 item 1: the banner used to name the three refusal SOURCES but never told an operator
+  // HOW to fix the underlying probe failure on the exact host class this iteration measured
+  // (Ubuntu/AppArmor). Rendered from the SAME `CONFINEMENT_REMEDIATION` constant the
+  // `CONFINEMENT_UNAVAILABLE` error hint uses (error-catalog.test.ts), so the two cannot drift.
+  it('[LOAD-BEARING] the unconfined banner carries the Ubuntu/AppArmor operator remediation (issue #93 item 1)', () => {
+    const line = confinementBannerLine({ posture: 'unconfined', reason: 'probe failed' });
+    expect(line).toMatch(/kernel\.apparmor_restrict_unprivileged_userns=0/);
+    expect(line).toMatch(/bwrap-userns-restrict/);
+  });
+
   it('the confined banner promises nothing about refusals', () => {
     expect(admissionRefusal({ posture: 'confined', origin: 'remote' })).toBeNull();
     expect(confinementBannerLine({ posture: 'confined' })).not.toMatch(/refused/);

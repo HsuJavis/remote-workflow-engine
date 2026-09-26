@@ -29,7 +29,7 @@ import type { ServerConfig } from './server.js';
 import { ClaudeAgentSdkGatewayClient } from './gateway/claude-agent-sdk-client.js';
 import type { ClaudeAgentSdkGatewayConfig } from './gateway/claude-agent-sdk-client.js';
 import { validateHostPathGrants, formatGrantRefusals } from './gateway/bash-confinement.js';
-import { probeConfinement } from './gateway/confinement-probe.js';
+import { probeConfinement, CONFINEMENT_REMEDIATION } from './gateway/confinement-probe.js';
 import type { ConfinementProbeResult } from './gateway/confinement-probe.js';
 import { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
@@ -146,11 +146,14 @@ export function confinementBannerLine(probe: { posture: 'confined' | 'unconfined
   if (probe.posture === 'confined') {
     return '[remote-workflow-engine] Bash confinement: CONFINED (nested-userns probe passed at boot)';
   }
+  // issue #93 item 1: appends the SAME `CONFINEMENT_REMEDIATION` the `CONFINEMENT_UNAVAILABLE`
+  // error hint carries (errors.ts) — an operator reading this boot line and one reading the wire
+  // error are told the identical fix, never two hand-typed copies that can drift.
   return (
     `[remote-workflow-engine] Bash confinement: UNCONFINED (${probe.reason ?? 'nested-userns probe failed'})` +
     ' — a run is refused (CONFINEMENT_UNAVAILABLE) when it is a remote submission, OR its trigger was created remotely,' +
     ' OR the version it resolves to was registered remotely; only a local submission of a locally-registered version' +
-    ' proceeds, unconfined'
+    ' proceeds, unconfined. Remediation: ' + CONFINEMENT_REMEDIATION
   );
 }
 

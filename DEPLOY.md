@@ -542,7 +542,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `proxyManager` / `issueReporter` / `mcpProbe` / `modelCatalog` / `modelCatalogFetchers` / `systemInfo` | **程式注入用的替身接點，JSON 設定檔設不了**（值是函式/物件）。列在這裡只是為了說明：把它們寫進 `rwe.config.json` 不會被當成「不認得的鍵」警告，但也不會有任何效果 | 物件/函式 / — | 否 | v26 |
 | `rwe.config.json` → `mcpEgressAllowlist` | `workspace_push({kind:"mcp"})` 註冊 `http` transport 時的 https-only 白名單（URL 前綴比對，同 `seedRefAllowlist` 的 fail-closed 慣例）；省略/空陣列＝任何 `http` MCP 設定一律 `EGRESS_DENIED`（探測前就擋，探測次數為零） | `string[]` / `[]` | 否 | v24 |
 | `rwe.config.json` → `sandbox.allowHostPaths` | 營運者授予的共用主機路徑清單——agent 的 Bash 除了自己的 run workspace，還可以讀寫這些路徑（REQ-218）。每一筆在開機時驗證：必須是絕對路徑（不展開 `~`）、必須存在於磁碟上（**開機前要先 `mkdir`**，否則以 `UNRESOLVABLE` 拒絕啟動）、不可在 `workRoot` 內也不可包住 `workRoot`、不可等於或包住 `rwe.config.json`/`auth-tokens.db`、不可含萬用字元；任何一筆不合規就**整個拒絕開機**，訊息逐筆列出。省略 = `[]`，最嚴格姿態。**此鍵只申報授權清單，不決定 Bash 是否真的受限——那是量測出來的**（見下一列） | `string[]` / `[]` | 是 | v37 |
-| （量測值，非設定鍵）Bash 圍籠姿態 | 開機時對主機跑一次巢狀 `bwrap --unshare-user` 探測（REQ-218，ADR-083 業主裁決 posture C）：探測通過 → `confined`，這台部署上每個 agent() 呼叫都真的請求 OS 沙箱；探測失敗（常見於本機開發機的 AppArmor `bwrap-userns-restrict` 政策擋住巢狀 namespace）→ `unconfined`，**本機（loopback）送出、且跑的是本機註冊版本的 run 仍會照跑、不受任何 Bash 圍籠**，但**遠端送出的 `run_start`/`run_resume` 一律在進 authz 之前就被拒絕**，而且**不論從哪裡送出，只要這次要跑的版本是遠端註冊的、或觸發器是遠端建立的，同樣被拒**（`CONFINEMENT_UNAVAILABLE`，判定式見 §6）。姿態印在開機那行 log 與每次 `agent.confinement` 事件的 `posture` 欄位，無法用設定檔調高或調低——這是量測，不是宣告 | — | — | v37 |
+| （量測值，非設定鍵）Bash 圍籠姿態 | 開機時對主機跑一次巢狀 `bwrap --unshare-user` 探測（REQ-218，ADR-083 業主裁決 posture C）：探測通過 → `confined`，這台部署上每個 agent() 呼叫都真的請求 OS 沙箱；探測失敗（常見於 AppArmor `bwrap-userns-restrict` 政策擋住巢狀 namespace——修法見下方「探測失敗時怎麼修」）→ `unconfined`，**本機（loopback）送出、且跑的是本機註冊版本的 run 仍會照跑、不受任何 Bash 圍籠**，但**遠端送出的 `run_start`/`run_resume`——在 ajv 參數驗證、authz、以及工作流程/版本是否存在都先過了之後才被拒絕**（issue #93：這道拒絕以前排在最前面，連參數錯誤或工作流程不存在都先回 `CONFINEMENT_UNAVAILABLE`，2026-09-26 已改成排在最後，讓遠端呼叫端至少能看到自己請求本身的錯誤），而且**不論從哪裡送出，只要這次要跑的版本是遠端註冊的、或觸發器是遠端建立的，同樣被拒**（`CONFINEMENT_UNAVAILABLE`，判定式見 §6）。姿態印在開機那行 log 與每次 `agent.confinement` 事件的 `posture` 欄位，無法用設定檔調高或調低——這是量測，不是宣告。**探測失敗時怎麼修（Ubuntu/AppArmor 主機）**：多半是 `bwrap-userns-restrict` AppArmor 設定檔擋住第二層（巢狀）unprivileged user namespace——設定 `kernel.apparmor_restrict_unprivileged_userns=0`（寫進 `/etc/sysctl.d/60-rwe-userns.conf` 再 `sysctl --system`）**並且**停用該設定檔（`ln -s /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/disable/ && apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict`），然後重開引擎；這是**整台主機**層級的放寬（任何非特權行程之後都能建立巢狀 user namespace），只在這台主機上每個會用到本引擎的人都已經是作業系統層信任對象時才這樣做——不是共用/多租戶主機。要復原：移除該 sysctl 覆寫，並重新啟用設定檔（刪掉 `disable/` 下的符號連結，再跑一次 `apparmor_parser`） | — | — | v37 / issue #93 |
 | `rwe.config.json` → `seedRefAllowlist` | engine-pull `seedRef:{repoUrl,sha}` 的 egress 白名單（`https://` URL 前綴）；**fail-closed**：省略/空陣列 = 任何 seedRef 回 `SEEDREF_DISABLED`；不命中前綴（含 `169.254.169.254`/`localhost`/私有 IP/`file://`）→ `SEEDREF_EGRESS_DENIED`（SSRF 安全） | `string[]` / `[]` | 否 | v13 |
 | `rwe.config.json` → `maxBlobBytes` | `POST /assets/blob/:sha`（streaming raw-body 上傳）最大 body bytes；超過 → HTTP 413 `BLOB_TOO_LARGE` | `number` / `268435456`（256 MiB，最小 1048576） | 否 | v10 |
 | `rwe.config.json` → `runConcurrency` | **單一 run 內同時在飛的 `agent()` 上限** —— 一個 `parallel()` 實際跑多寬。達上限的呼叫在 `acquireSlot()` **排隊**（不拒絕、不丟棄），所以更寬的 fan-out 只是比較慢。另有一層跨所有 run 的主機層上限（agent 號誌），由 `agentSlots` 設定 | `number` / `24` | 否 | v25 |
@@ -700,16 +700,34 @@ namespace/chroot 隔離)——它是應用層的權限裁決 + 路徑邊界檢�
 **(e) `Bash` 專屬的圍籠是量出來的，不是宣告的**（REQ-218，ADR-083 業主裁決 posture C）：開機時
 對本機跑一次巢狀 `bwrap --unshare-user` 探測——探測通過，這台部署上每個 `agent()` 呼叫都會真的
 帶 `options.sandbox` 請求 OS 層 namespace 隔離（`src/gateway/bash-confinement.ts`）；探測失敗
-（常見於本機開發機的 AppArmor `bwrap-userns-restrict` 政策擋住巢狀 user namespace，本專案自己的
-開發/CI 機器就是這個情況），`Bash` 就**完全不圍籠**，於是引擎改以「這次啟動該不該被接納」來擋——**被拒絕的是三種情形的聯集**：
-(1) **遠端送出**的 `run_start`/`run_resume`，在進 authz、進 ajv 之前就整個被拒
-（`src/call-tool.ts` 的「遠端提交之門」）；(2) 觸發器是**遠端建立**的（webhook 送達、排程觸發）；
+（常見於 AppArmor `bwrap-userns-restrict` 政策擋住巢狀 user namespace——修法見下段），
+`Bash` 就**完全不圍籠**，於是引擎改以「這次啟動該不該被接納」來擋——**被拒絕的是三種情形的聯集**：
+(1) **遠端送出**的 `run_start`/`run_resume`——**issue #93（2026-09-26）之前，這道拒絕排在 ajv 參數
+驗證、authz、工作流程/版本是否存在**之前**，所以遠端呼叫端連自己打錯參數或指到不存在的工作流程
+都只看得到 `CONFINEMENT_UNAVAILABLE`；現在改成排在這些檢查**之後**、任何持久化動作（建立 run、
+工作目錄、materialize seed）之前——參數錯誤先回 `INVALID_ARGUMENT`，工作流程/版本不存在先回
+`WORKFLOW_NOT_FOUND`/`VERSION_NOT_FOUND`，只有一次「原本會被接受」的送出才回
+`CONFINEMENT_UNAVAILABLE`**；(2) 觸發器是**遠端建立**的（webhook 送達、排程觸發）；
 (3) 這次要跑的**版本是遠端註冊**的——**這一項與呼叫者在哪裡無關，本機呼叫一樣被擋**。
 三者皆非時（本機送出、本機建立的觸發器、本機註冊的版本）才照跑，且是真的不受任何 `Bash` 圍籠。
 判定式、查法與復原步驟見 §6（`CONFINEMENT_UNAVAILABLE`）。姿態量測結果印在開機 log
-的 `Bash confinement: CONFINED`/`UNCONFINED` 那一行，也隨每次 `agent()` 呼叫寫進
-`agent.confinement` 事件的 `posture`/`enabled` 欄位；無法用設定檔調高或調低（只有 §1b
-`sandbox.allowHostPaths` 能在「圍籠生效」的前提下額外開放特定主機路徑）。
+的 `Bash confinement: CONFINED`/`UNCONFINED` 那一行（該行同時附上下段的操作員修法），也隨每次
+`agent()` 呼叫寫進 `agent.confinement` 事件的 `posture`/`enabled` 欄位；無法用設定檔調高或調低
+（只有 §1b `sandbox.allowHostPaths` 能在「圍籠生效」的前提下額外開放特定主機路徑）。
+
+**探測為什麼會失敗、怎麼修（Ubuntu/AppArmor 主機，issue #93 實測驗證過）**：探測本身是巢狀的
+`bwrap --unshare-user`（外層再包一層一樣的 `bwrap`），多半敗在 AppArmor 的
+`bwrap-userns-restrict` 設定檔擋住第二層（巢狀）unprivileged user namespace——修法是兩步都要做：
+(1) `kernel.apparmor_restrict_unprivileged_userns=0`（寫一個
+`/etc/sysctl.d/60-rwe-userns.conf`，內容 `kernel.apparmor_restrict_unprivileged_userns=0`，再跑
+`sysctl --system` 套用）；(2) 停用該 AppArmor 設定檔本身
+（`ln -s /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/disable/ && apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict`）；
+兩步都做完後重開引擎，開機 log 應改印 `Bash confinement: CONFINED`。**安全權衡**：這是整台主機層
+級的放寬——任何非特權行程從此都能建立巢狀 user namespace，AppArmor 那份設定檔原本就是為了擋住
+這個原語；只在這台主機上每一個會用到本引擎的人都已經是作業系統層信任對象時才這樣做，共用／多租戶
+主機不要套用。**復原**：移除該 sysctl 覆寫檔並重新套用，同時重新啟用設定檔
+（刪掉 `/etc/apparmor.d/disable/bwrap-userns-restrict` 符號連結，再跑一次
+`apparmor_parser /etc/apparmor.d/bwrap-userns-restrict`）。
 
 ## 2. 完整部署步驟（超出一鍵路徑之外：常駐化 / 容器化 / 上線前煙霧測試）
 
@@ -888,7 +906,7 @@ npm run start
 | 手動用 `curl http://0.0.0.0:<port>/api/status` 檢查健康狀態，收到 `403 Forbidden`（不是逾時、不是連不上） | 伺服器的 Host-header 允許清單刻意不把 `0.0.0.0` 當成合法 Host（那是「監聽所有介面」的萬用位址，不是真實可連的目的地名稱）——`RWE_BIND=0.0.0.0` 只影響「監聽哪些介面」，不代表 `0.0.0.0` 本身能當 URL 用 | 改用 `127.0.0.1:<port>` 檢查（`deploy.sh` §0 本身在 `RWE_BIND=0.0.0.0` 時也是這樣做）；要從區網其他主機檢查，用該主機看到的 LAN IP（並確認已列在 §1b `allowedHosts`） |
 | `auth.enabled:true` + `bind:"0.0.0.0"`，從**本機**呼叫 `/mcp` 做寫入（`workflow_register`／`workflow_publish`／`workflow_deregister`／`webhook_delete`…），明明帶了有效 bearer 卻回 `PRINCIPAL_REQUIRED`（或角色不足的 `FORBIDDEN_ROLE`） | 這個組合下本機來源走的是 D-BIND 豁免（§1b 部署前提第 3 點），伺服器直接放行、**根本不會去讀你帶的 bearer**，於是這次呼叫沒有身份可用，而寫入類操作在 `auth.enabled:true` 時不接受 `args.principal` 自稱 | 要用 bearer 身份做寫入，就從**非 loopback 來源**呼叫（例如從該主機的 LAN IP 打進去），或把 `bind` 設成 `127.0.0.1`（loopback bind 沒有豁免，bearer 一定會被讀取）；只讀不寫時維持現狀即可 |
 | `RWE_BIND=<LAN IP>`（如 §2 systemd 範例的 `192.168.0.125`）部署後，手動用 `curl http://127.0.0.1:<port>/api/status` 檢查，收到 `Connection refused`（連不上，不是 403） | 服務只監聽 `$RWE_BIND` 指定的那個介面；綁定成具體 LAN IP 時，該主機的 `127.0.0.1` 迴環介面根本沒有服務在聽 | 改用 `$RWE_BIND` 本身（例如 `curl http://192.168.0.125:<port>/api/status`）；`deploy.sh` §0 的健康檢查已依 `RWE_BIND` 是否為 `0.0.0.0`/`::` 自動選擇正確目的地，不需要手動判斷 |
-| `run_start`/`run_resume` 回 `CONFINEMENT_UNAVAILABLE` | 這台部署開機探測量到 `Bash` 圍籠不可用（見 §1c(e)），且**下列兩件事至少成立一件**：(a) 這次呼叫被判定是「遠端提交」——判斷依據是 socket 的 peer 位址不是 loopback，**或**請求帶了任一 tunnel/forwarded 類 header（`X-Forwarded-For`/`X-Real-IP`/`Forwarded`/`CF-Connecting-IP`，即使 peer 本身是 loopback 也一樣，防止 cloudflared 之類的 tunnel 讓遠端流量偽裝成本機）；(b) **這次要跑的版本是遠端註冊的**（`workflow_describe` 的 `registeredRemote`）——**這一項與呼叫者在哪裡無關,本機呼叫一樣被擋**,因為擋的是腳本的來源,不是連線的來源。錯誤訊息會指名是哪一版。這是刻意設計，不是誤判 | (a) 本機（loopback、不帶上述任何 header）呼叫仍會照跑；(b) 在這台主機上重新註冊一次再 publish（§6 的兩個呼叫），或讓這台主機的巢狀 `bwrap --unshare-user` 探測通過（多半要調整 AppArmor 的 `bwrap-userns-restrict` 政策或改用容許巢狀 user namespace 的主機），開機 log 會印 `Bash confinement: CONFINED` |
+| `run_start`/`run_resume` 回 `CONFINEMENT_UNAVAILABLE` | 這台部署開機探測量到 `Bash` 圍籠不可用（見 §1c(e)），且**下列兩件事至少成立一件**：(a) 這次呼叫被判定是「遠端提交」——判斷依據是 socket 的 peer 位址不是 loopback，**或**請求帶了任一 tunnel/forwarded 類 header（`X-Forwarded-For`/`X-Real-IP`/`Forwarded`/`CF-Connecting-IP`，即使 peer 本身是 loopback 也一樣，防止 cloudflared 之類的 tunnel 讓遠端流量偽裝成本機）；(b) **這次要跑的版本是遠端註冊的**（`workflow_describe` 的 `registeredRemote`）——**這一項與呼叫者在哪裡無關,本機呼叫一樣被擋**,因為擋的是腳本的來源,不是連線的來源。錯誤訊息會指名是哪一版。這是刻意設計，不是誤判。（issue #93：這個碼只在送出本身「若非圍籠問題就會被接受」時才出現——工作流程不存在先回 `WORKFLOW_NOT_FOUND`，參數不合法先回 `INVALID_ARGUMENT`，兩者都排在這個碼之前） | (a) 本機（loopback、不帶上述任何 header）呼叫仍會照跑；(b) 在這台主機上重新註冊一次再 publish（§6 的兩個呼叫），或讓這台主機的巢狀 `bwrap --unshare-user` 探測通過（Ubuntu/AppArmor 主機的完整修法見 §1c(e)「探測為什麼會失敗、怎麼修」），開機 log 會印 `Bash confinement: CONFINED` |
 | `POST /hooks/:id` 回 403、body 帶 `CONFINEMENT_UNAVAILABLE`；或 `schedule_list` 某筆的 `lastError.code` 是 `CONFINEMENT_UNAVAILABLE` | 這不是只有 `run_start`/`run_resume` 才會回的碼——同一道圍籠不可用判定也擋 webhook 送達與排程觸發，判斷依據**不是**這次送達/觸發本身的來源，而是 §6 那個聯集：**這個 webhook/schedule 建立時寫下的 `createdRemote`**，**或這次要跑的版本註冊時寫下的 `registeredRemote`**，任一為真就擋。兩個欄位都是建立/註冊當下寫一次、之後不可改寫 | 先分清楚是哪一半：`webhook_list`/`schedule_list` 看 `createdRemote`，`workflow_describe({name})` 看 `registeredRemote`。**版本那一半**——在這台主機上重新 `workflow_register`（把原本的觸發器 id 原樣列進 `triggers[]`）再 `workflow_publish`，webhook 的 id 與 secret 不變（§6 有完整指令）。**觸發器那一半**——沒有改回本機的路徑，只能刪除重建（webhook 連帶換 id 與 secret，排程只換 id），或讓這台主機的巢狀 `bwrap --unshare-user` 探測通過 |
 | `run_result`/`run_status` 的某個 agent `detail` 顯示 `WORKROOT_INSIDE_PROJECT: ... is outside workRoot or carries a project marker between the run workspace and workRoot` | 這是**執行期**的同一個檢查，跟 §1b `workRoot` 那一列的**開機期**檢查是同一顆函式（`findProjectMarkerAboveWorkspace`）——多半是 `workRoot` 底下的 `workflows/<name>/` 這一層目錄意外多出一個 `.git`/`CLAUDE.md`（例如手動在 `workRoot` 內跑過 `git init`） | 找到並移除該路徑下多出來的 `.git`/`CLAUDE.md`；引擎自己在**每個 run 自己的工作目錄根**寫的 `.git`（`initGitBaseline`）不受影響，只有「工作目錄與 `workRoot` 之間的祖先層」才會被擋 |
 

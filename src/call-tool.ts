@@ -121,27 +121,23 @@ export async function callTool(
   if (!spec) return unknownTool(name);
 
   const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
-  // v37 (DES-262, ARCH-181, REQ-218, ADR-083 owner_decision posture C): the remote-submission door.
-  // Ahead of ajv/authorize — same precedent as INLINE_SCRIPT_CLOSED below, and for the same reason:
-  // this is a REFUSAL with a migration-shaped answer ("why", not a bare validation complaint), and
-  // there is no reason to spend a schema/authz check on a call this engine will not run either way.
-  // Gated on BOTH conditions together, never one alone: `confinementPosture === 'unconfined'` (this
-  // engine could not measure a working nested user namespace at boot — the sandbox is not attempted
-  // for ANY run) AND `isRemoteSubmission === true` (the caller's raw socket peer is not loopback).
-  // A LOCAL submission is NOT refused BY THIS DOOR — that is the owner's own accepted cost
-  // (ADR-083: "本機發起的 run 仍不受限制"), not an oversight; only `run_start`/`run_resume` are
-  // gated here — both admit new Bash-capable agent() work, unlike every read tool. v37 P1
-  // (ADR-086's third owner ruling 2026-09-25, DES-263's 第三次修訂): this door's own scope is
-  // unchanged (peer locality only) — but it is no longer the WHOLE story for a local submission.
-  // `RunManager.start()`'s second admission stage separately refuses a local run_start whose
-  // RESOLVED SCRIPT VERSION was itself registered remotely, so "local submissions still run
-  // unconfined" is true of this door, not of the engine as a whole.
-  if ((spec.name === 'run_start' || spec.name === 'run_resume') && deps.confinementPosture === 'unconfined' && deps.isRemoteSubmission === true) {
-    return refusalEnvelope(
-      'CONFINEMENT_UNAVAILABLE',
-      'CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — remote run submissions are refused.',
-    );
-  }
+  // [更正 2026-09-26, issue #93 item 2] The remote-submission door USED to live here (v37 DES-262,
+  // ARCH-181, REQ-218, ADR-083 owner_decision posture C), ahead of ajv/authorize — a bare
+  // CONFINEMENT_UNAVAILABLE regardless of whether the submission's args were even well-formed or
+  // its workflow existed. That was wrong for a REMOTE caller specifically: it could never learn
+  // "workflow does not exist" or "bad argument" from this door, only ever CONFINEMENT_UNAVAILABLE
+  // — a permanent, migration-shaped refusal that gave no signal about its OWN mistake. The door is
+  // REMOVED, not relocated here, for both tools it used to gate:
+  //  - `run_start`: `RunManager.start()` already threads `isRemoteSubmission` through as
+  //    `RunSpec.origin` (`facade.runStart`, below) and now carries the SAME confinement check
+  //    itself, deferred to just before its first durable write — see `admissionRefusal()`'s two
+  //    call sites in run-manager.ts. Ajv (`argErr`, below), `authorize()`, and
+  //    `SubmissionValidator`/`catalog.resolve()`'s existence checks all run first.
+  //  - `run_resume`: `McpFacade.runResume()` now takes the same `isRemoteSubmission` flag (mirrors
+  //    `runStart`'s signature) and refuses AFTER its own RUN_NOT_FOUND check but before
+  //    `RunManager.resume()` is ever called — the sole remaining cover for a remote peer resuming a
+  //    run whose PINNED version was registered locally (INV-V37-5(c)'s "pinned path stays
+  //    ungated" — `RunManager.resume()` itself only gates the legacy-substitution case).
   // v24 (integrator; REQ-098 + DES-142): `run_start`'s schema is CLOSED, so a caller still using the
   // RETIRED inline door (`{script}`) would be answered a bare `INVALID_ARGUMENT: (root) must NOT
   // have additional properties` — technically true and completely useless. The whole point of
@@ -243,9 +239,9 @@ export async function callTool(
     case 'workflow_register': return facade.workflowRegister(a as never, principal, deps.isRemoteSubmission === true);
     case 'workflow_deregister': return facade.workflowDeregister(a as never, principal);
     case 'workflow_publish': return facade.workflowPublish(a as never, principal);
-    case 'workflow_describe': return facade.workflowDescribe(a as never, principal);
+    case 'workflow_describe': return facade.workflowDescribe(a as never, principal, deps.isRemoteSubmission === true);
     case 'workflow_source': return facade.workflowSource(a as never, principal);
-    case 'workflow_list': return facade.workflowList(a as never, principal);
+    case 'workflow_list': return facade.workflowList(a as never, principal, deps.isRemoteSubmission === true);
     case 'workflow_authoring_guide': return facade.workflowAuthoringGuide();
 
     // ---- run (8) ----
@@ -255,7 +251,7 @@ export async function callTool(
     case 'run_status': return facade.runStatus(a as never, principal, crossPrincipalRead, actor);
     case 'run_result': return facade.runResult(a as never, principal, crossPrincipalRead, actor);
     case 'run_suspend': return facade.runSuspend(a as never, principal);
-    case 'run_resume': return facade.runResume(a as never, principal);
+    case 'run_resume': return facade.runResume(a as never, principal, deps.isRemoteSubmission === true);
     case 'run_stop': return facade.runStop(a as never, principal);
     case 'run_agent_log': return facade.runAgentLog(a as never, principal, crossPrincipalRead, actor);
     case 'run_list': return facade.runList(a as never, principal);

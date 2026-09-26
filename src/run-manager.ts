@@ -547,24 +547,39 @@ export class RunManager {
    *  standing temptation to re-merge on resume. The redacted `effectiveParams` snapshot (below) is
    *  the single durable representation. */
   async start(spec: RunSpec, overrides?: unknown): Promise<string> {
-    // v37 P1 (ARCH-182, DES-263, TASK-258, REQ-218, ADR-086's third owner ruling 2026-09-25): the
-    // FIRST of a TWO-STAGE door, ahead of every other check (including RUN_ADMISSION_LIMIT
-    // immediately below) — a submission that can never be admitted under this posture must not
-    // consume an admission slot, and must not be answered with a RETRYABLE code
-    // (RUN_ADMISSION_LIMIT) when the true refusal is deterministic and permanent. This FIRST stage
-    // is keyed on the TRIGGER's own stored provenance (`spec.origin`) — the only fact known before
-    // any catalog lookup — and closes the two admission routes (schedule, webhook) DES-262's
-    // isLoopbackPeer door does not cover. The SECOND stage, immediately after `catalog.resolve()`
-    // below (the moment the SCRIPT's own provenance is first known), ORs in
-    // `registeredRemote` — "who wrote the script that is about to run", which this trigger-side
-    // check cannot see. Both stages call the SAME pure `admissionRefusal()`.
+    // issue #93 item 2 (2026-09-26, amends ADR-086's third owner ruling 2026-09-25): the
+    // confinement door is now a DEFERRED refusal, not an immediate one. It used to throw here, as
+    // the FIRST statement in the function, ahead of every other check — that made call-tool.ts's
+    // own early door (removed by this same change) redundant for `run_start`, but it also meant a
+    // remote+unconfined caller with a MALFORMED submission (a nonexistent workflow, a bad
+    // `version`, a locked/unknown override) was told CONFINEMENT_UNAVAILABLE instead of the actual
+    // problem — a real defect a remote caller cannot act on ("why would re-registering locally fix
+    // a typo in my workflow name?"). The TWO admission checks below still run at (nearly) the same
+    // two POSITIONS as before — same pure `admissionRefusal()`, same two keys (`spec.origin`, the
+    // TRIGGER's own stored provenance; then `registered.registeredRemote`, the SCRIPT's own,
+    // known only after `catalog.resolve()`) — but each one now RECORDS its refusal into
+    // `confinementRefusal` instead of throwing immediately. The recorded refusal is thrown once,
+    // at the bottom of the existence/argument/authorization-shaped checks and immediately before
+    // the first durable write (`createRun`, below) — so `WORKFLOW_NOT_FOUND`/`VERSION_NOT_FOUND`/
+    // `CHANNEL_UNPUBLISHED` (thrown by `catalog.resolve()` itself), `LEGACY_REREGISTER`, and every
+    // `PARAM_*`/`UNKNOWN_MODEL`/seed check still win over a permanent confinement refusal, exactly
+    // as call-tool.ts's own ajv/authorize ordering already does for schema/role refusals. Nothing
+    // is created on a refusal either way: this is still strictly before every durable write.
+    // Trade-off accepted by this move (flagged for whoever next touches RUN_ADMISSION_LIMIT
+    // ordering): the OLD property "a submission that can never be admitted under this posture
+    // must not consume an admission slot / must not be answered with a RETRYABLE code" no longer
+    // holds when the run-count cap is already saturated — `RUN_ADMISSION_LIMIT` (a pure capacity
+    // read, not a write) is still checked before this deferred throw fires, so a confinement-doomed
+    // submission arriving while the engine is at `maxConcurrentRuns` now gets the RETRYABLE 503
+    // instead of the PERMANENT 403. Existence/argument-precedence was judged the more important
+    // property for issue #93's remote-caller experience; RUN_ADMISSION_LIMIT's own ordering is
+    // unchanged by this commit.
+    let confinementRefusalMessage: string | null = null;
     {
       const refusal = admissionRefusal({ posture: this._confinementPosture, origin: spec.origin });
       if (refusal !== null) {
-        throw codedError(
-          refusal,
-          `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — this run's trigger was created remotely, so it is refused.`,
-        );
+        confinementRefusalMessage =
+          `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — this run's trigger was created remotely, so it is refused.`;
       }
     }
     // v22 (REQ-098, ADR-013, DES-113, DES-117, TASK-108/TASK-109): the inline ban is on INGRESS
@@ -658,18 +673,19 @@ export class RunManager {
       // v22 (REQ-097, DES-114, TASK-109): the wire selector — explicit `version` wins over `channel`;
       // neither supplied defaults to `release` (DES-110's resolveVersionRequest truth table).
       const registered = await this._catalog.resolve(spec.name, { version: spec.version, channel: spec.channel }); // throws CatalogNotFoundError/typed resolve error — caught by SubmissionValidator pre-run
-      // v37 P1 (ARCH-182, DES-263, TASK-258, ADR-086's third owner ruling 2026-09-25): the SECOND
-      // admission stage — the resolved VERSION's own `registeredRemote`, known only now. Placed
-      // ahead of LEGACY_REREGISTER and every durable write below (createRun, workspace mkdir,
-      // seed) for the same "never spend durable work on a submission that cannot be admitted"
-      // reason the first stage is placed ahead of RUN_ADMISSION_LIMIT.
-      {
+      // issue #93 item 2: the SECOND admission check — the resolved VERSION's own
+      // `registeredRemote`, known only now (after `catalog.resolve()`, so WORKFLOW_NOT_FOUND/
+      // VERSION_NOT_FOUND/CHANNEL_UNPUBLISHED above already had priority). RECORDS into
+      // `confinementRefusalMessage` (never overwriting the first stage's own message, so the
+      // TRIGGER-side reason wins when both are true — same "first non-null result" precedence the
+      // pre-move comment described) rather than throwing here directly — the actual throw is
+      // deferred to just before `createRun` below, past LEGACY_REREGISTER and every `PARAM_*`/
+      // `UNKNOWN_MODEL` contract check.
+      if (confinementRefusalMessage === null) {
         const refusal = admissionRefusal({ posture: this._confinementPosture, origin: registered.registeredRemote ? 'remote' : 'local' });
         if (refusal !== null) {
-          throw codedError(
-            refusal,
-            `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — workflow '${spec.name}' version ${registered.version} was registered remotely, so running it is refused; re-register locally (workflow_register with the same triggers, then workflow_publish) to recover.`,
-          );
+          confinementRefusalMessage =
+            `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — workflow '${spec.name}' version ${registered.version} was registered remotely, so running it is refused; re-register locally (workflow_register with the same triggers, then workflow_publish) to recover.`;
         }
       }
       script = registered.script;
@@ -802,6 +818,17 @@ export class RunManager {
       pinned[`${resolved.provider}/${resolved.model}`] = bookSnapshot.lookup(resolved.provider, resolved.model);
     }
     const priceBook: PriceBook = { fetchedAt: bookSnapshot.fetchedAt, source: bookSnapshot.source, pinned };
+
+    // issue #93 item 2: the deferred confinement throw — the LAST pure check, immediately before
+    // the first durable write below (`createRun`). Everything above this line that can answer a
+    // more specific typed refusal (WORKFLOW_NOT_FOUND/VERSION_NOT_FOUND/CHANNEL_UNPUBLISHED via
+    // `catalog.resolve()`, INLINE_SCRIPT_CLOSED, RUN_ADMISSION_LIMIT, every seed-shape/seedRef/
+    // seedManifestRef check, LEGACY_REREGISTER, PARAM_LOCKED/PARAM_UNKNOWN/UNKNOWN_AGENT_LABEL/
+    // UNKNOWN_MODEL/AGENT_UNDECLARED) has already had the chance to fire; a remote+unconfined
+    // caller only ever sees CONFINEMENT_UNAVAILABLE for a submission that was otherwise ADMISSIBLE.
+    if (confinementRefusalMessage !== null) {
+      throw codedError('CONFINEMENT_UNAVAILABLE', confinementRefusalMessage);
+    }
 
     const runId = await this._store.createRun(spec, resolvedVersion, persistedParams, priceBook);
     const workspace = this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);

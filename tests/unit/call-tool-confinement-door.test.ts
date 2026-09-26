@@ -1,15 +1,14 @@
-// [更正 2026-09-25, Gate 8 round-5 finding R5-F3] Wherever the header below implies that only a
-// REMOTE submission is refused, or that call-tool.ts's door is the only control: since v37 P1 a run
-// is also refused when its trigger was created remotely or when the version it resolves to was
-// registered remotely — the latter refuses a LOCAL run_start too. See DES-263 第三次/第四次修訂.
-//
-// UT-324 (DES-262, ARCH-181, TASK-257, REQ-218, ADR-083 owner_decision posture C) — the
-// remote-submission door: run_start/run_resume are refused BEFORE schema/authz when this engine's
-// measured confinement posture is 'unconfined' AND the caller is not a loopback peer. A LOCAL
-// submission on the SAME unconfined posture still reaches the facade (the owner's accepted cost:
-// "本機發起的 run 仍不受限制" — a locally-submitted run stays unconfined, never refused).
-// Written test-first (Gate 5b amendment, RED): ToolDeps carries no isRemoteSubmission/
-// confinementPosture field yet, and callTool has no pre-dispatch check for them.
+// [更正 2026-09-26, issue #93 item 2] UT-324 used to pin a door THAT LIVED HERE, in call-tool.ts,
+// refusing run_start/run_resume BEFORE ajv/authorize whenever this engine's measured confinement
+// posture was 'unconfined' AND the caller was not a loopback peer (v37 DES-262, ARCH-181, REQ-218,
+// ADR-083 owner_decision posture C). That door is REMOVED: a remote+unconfined caller with a
+// malformed submission (nonexistent workflow, bad args) could never learn its OWN mistake from it —
+// only ever a blanket CONFINEMENT_UNAVAILABLE. This file now pins the OPPOSITE fact for `run_start`/
+// `run_resume`: `callTool` no longer refuses either one on confinement grounds by itself; it always
+// reaches the facade/authorize, which is where each one's own confinement check now lives —
+// `run_start` inside `RunManager.start()` (deferred to just before its first durable write, see
+// `run-manager-admission-order.test.ts`), `run_resume` inside `McpFacade.runResume()` (after its own
+// RUN_NOT_FOUND check, see `mcp-facade-resume-confinement.test.ts`).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -26,7 +25,6 @@ import type { Clock } from '../../src/clock.js';
 function partialDeps(d: Record<string, unknown>): ToolDeps {
   return d as unknown as ToolDeps;
 }
-type ToolEnvelope = { code?: string; error?: { code?: string | number; message?: string } };
 
 // v37 Gate-8 round-2 (finding B1) — a real store + a fake catalog/runManager (neither `create()`
 // call reaches them): the trigger stores' own constructor/schema, not a mock of `.create()`.
@@ -39,21 +37,23 @@ function b1FakeRunManager() {
   return { async start() { return 'run-x'; } };
 }
 
-describe('UT-324 the confinement door — remote submissions refused when unconfined, local ones still run (DES-262)', () => {
-  it('[LOAD-BEARING] run_start: remote + unconfined ⇒ refused before the facade is ever called', async () => {
+describe('UT-324 (issue #93 item 2) — call-tool.ts no longer gates run_start/run_resume on confinement grounds itself', () => {
+  it('[LOAD-BEARING] run_start: remote + unconfined ⇒ still reaches authorize() and the facade (the confinement check moved into RunManager.start())', async () => {
     const runStart = vi.fn().mockResolvedValue({ runId: 'r1' });
-    const authorizeSpy = vi.fn();
+    const authorizeSpy = vi.fn().mockReturnValue({ ok: true });
     const deps = partialDeps({
       facade: { runStart }, lookup: { workflowOwner: () => 'bob' }, audit: {}, authorize: authorizeSpy,
       confinementPosture: 'unconfined', isRemoteSubmission: true,
     });
-    const result = (await callTool(deps, 'run_start', { name: 'wf' }, { kind: 'user', id: 'bob' })) as ToolEnvelope;
-    expect(runStart).not.toHaveBeenCalled();
-    expect(authorizeSpy).not.toHaveBeenCalled();
-    expect(result.code).toBe('CONFINEMENT_UNAVAILABLE');
+    await callTool(deps, 'run_start', { name: 'wf' }, { kind: 'user', id: 'bob' });
+    expect(authorizeSpy).toHaveBeenCalledTimes(1);
+    expect(runStart).toHaveBeenCalledTimes(1);
+    // `isRemoteSubmission` is still threaded through, as the 3rd arg — `RunManager.start()` is
+    // where it actually gets checked now (via `RunSpec.origin`).
+    expect(runStart.mock.calls[0]?.[2]).toBe(true);
   });
 
-  it('run_start: local (loopback) + unconfined ⇒ still reaches the facade (the accepted local-unconfined cost)', async () => {
+  it('run_start: local (loopback) + unconfined ⇒ still reaches the facade (unaffected by this move)', async () => {
     const runStart = vi.fn().mockResolvedValue({ runId: 'r1' });
     const deps = partialDeps({
       facade: { runStart }, lookup: { workflowOwner: () => 'bob' }, audit: {},
@@ -63,7 +63,7 @@ describe('UT-324 the confinement door — remote submissions refused when unconf
     expect(runStart).toHaveBeenCalledTimes(1);
   });
 
-  it('run_start: remote + confined ⇒ still reaches the facade (the door only closes when the posture is degraded)', async () => {
+  it('run_start: remote + confined ⇒ still reaches the facade', async () => {
     const runStart = vi.fn().mockResolvedValue({ runId: 'r1' });
     const deps = partialDeps({
       facade: { runStart }, lookup: { workflowOwner: () => 'bob' }, audit: {},
@@ -73,25 +73,27 @@ describe('UT-324 the confinement door — remote submissions refused when unconf
     expect(runStart).toHaveBeenCalledTimes(1);
   });
 
-  it('run_start: remote + posture/flag omitted entirely (existing 252-callsite tests) ⇒ unaffected, still reaches the facade', async () => {
+  it('run_start: remote + posture/flag omitted entirely (existing pre-existing-callsite tests) ⇒ unaffected, still reaches the facade', async () => {
     const runStart = vi.fn().mockResolvedValue({ runId: 'r1' });
     const deps = partialDeps({ facade: { runStart }, lookup: { workflowOwner: () => 'bob' }, audit: {} });
     await callTool(deps, 'run_start', { name: 'wf' }, { kind: 'user', id: 'bob' });
     expect(runStart).toHaveBeenCalledTimes(1);
   });
 
-  it('run_resume: remote + unconfined ⇒ refused the same way (resume also spawns agent() Bash calls)', async () => {
+  it('[LOAD-BEARING] run_resume: remote + unconfined ⇒ still reaches authorize() and the facade — `isRemoteSubmission` is threaded through as McpFacade.runResume()\'s 3rd arg', async () => {
     const runResume = vi.fn().mockResolvedValue({ runId: 'r1' });
+    const authorizeSpy = vi.fn().mockReturnValue({ ok: true });
     const deps = partialDeps({
-      facade: { runResume }, lookup: { runOwner: () => 'bob' }, audit: {},
+      facade: { runResume }, lookup: { runOwner: () => 'bob' }, audit: {}, authorize: authorizeSpy,
       confinementPosture: 'unconfined', isRemoteSubmission: true,
     });
-    const result = (await callTool(deps, 'run_resume', { runId: 'r1' }, { kind: 'user', id: 'bob' })) as ToolEnvelope;
-    expect(runResume).not.toHaveBeenCalled();
-    expect(result.code).toBe('CONFINEMENT_UNAVAILABLE');
+    await callTool(deps, 'run_resume', { runId: 'r1' }, { kind: 'user', id: 'bob' });
+    expect(authorizeSpy).toHaveBeenCalledTimes(1);
+    expect(runResume).toHaveBeenCalledTimes(1);
+    expect(runResume.mock.calls[0]?.[2]).toBe(true);
   });
 
-  it('run_status (a read, not a submission): remote + unconfined ⇒ NOT gated by the door', async () => {
+  it('run_status (a read, not a submission): remote + unconfined ⇒ NOT gated', async () => {
     const runStatus = vi.fn().mockResolvedValue({ runId: 'r1' });
     const deps = partialDeps({
       facade: { runStatus }, lookup: { runOwner: () => 'bob' }, audit: {},
@@ -102,6 +104,7 @@ describe('UT-324 the confinement door — remote submissions refused when unconf
   });
 });
 
+// v37 Gate-8 round-2 (finding B1, INV-V37-5(d)) — ToolDeps.isRemoteSubmission stamps createdRemote at creation, read back through the REAL store
 describe('v37 Gate-8 round-2 (finding B1, INV-V37-5(d)) — ToolDeps.isRemoteSubmission stamps createdRemote at creation, read back through the REAL store', () => {
   it('[LOAD-BEARING] webhook_create with isRemoteSubmission:true stores createdRemote=1 on the created row', async () => {
     const webhooks = new WebhookRegistry({ clock: B1_CLOCK, runManager: b1FakeRunManager(), catalog: b1FakeCatalog(), dbPath: ':memory:' });

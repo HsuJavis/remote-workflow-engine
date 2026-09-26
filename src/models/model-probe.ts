@@ -2,9 +2,16 @@
 // what a catalog DECLARES and `stability` is a local rule (model-catalog.ts `classifyStability`) —
 // nothing ever observed a configured model answer, or actually use a tool. This module does, cheaply:
 // per configured (provider, model) pair — never the ~100 catalog rows — ONE prose call and ONE call
-// holding only Bash that must run a command whose output the model cannot guess. Both go through the
+// holding only Read that must read a file whose content the model cannot guess. Both go through the
 // deployment's own `GatewayClient.invoke()` (the same object `AgentExecutor` dispatches every agent()
 // call through), so the probe measures what a run would get, not a parallel client's opinion.
+// issue #93 item 4: the tool leg used to hold `allowedTools:['Bash']` and ask the model to
+// `cat <nonce file>` — a real Bash tool_use plus the OS-level confinement question this file has
+// nothing to do with. `Read` measures the SAME thing (a real tool_use whose result the model could
+// not have guessed) without needing a shell at all, so this leg now asks the model to use the
+// `Read` tool on the nonce file's ABSOLUTE path (inside the probe's own throwaway workspace, which
+// the SDK's own file-tool path-guard — `claude-agent-sdk-client.ts`'s `toolUsePreCheck` — already
+// allows: any path, relative or absolute, that resolves inside the call's `workspace` root).
 //
 // Cost bound: `AgentOpts` has no output-token knob, so "capped" is a one-line prompt asking for a
 // one-line answer plus the per-call `timeoutMs`; the gateway's configured `retries` still apply to a
@@ -91,9 +98,10 @@ export function probeTargets(refs: readonly string[]): ProbeTarget[] {
 const text = (r: GatewayResult): string => (r.ok ? (typeof r.content === 'string' ? r.content : r.content == null ? '' : JSON.stringify(r.content)) : '');
 const failure = (r: GatewayResult): string => (r.ok ? '' : `${r.reason}${r.detail ? ` (${r.detail})` : ''}`);
 
-/** Pure classification of the two legs. Tools pass = a real `Bash` tool_use event in the reply AND
+/** Pure classification of the two legs. Tools pass = a real `Read` tool_use event in the reply AND
  *  the unguessable nonce in the answer — either alone is not proof (a nonce without a tool call is a
- *  leak or a guess; a tool call without the value is a model that did not read its own output). */
+ *  leak or a guess; a tool call without the value is a model that did not read its own output).
+ *  issue #93 item 4: `Bash` → `Read` (see this module's header comment for why). */
 export function classifyProbe(prose: GatewayResult, tools: GatewayResult, nonce: string): { proseVerified: boolean; toolUseVerified: boolean; detail: string } {
   const proseVerified = prose.ok && text(prose).trim().length > 0;
   const proseDetail = prose.ok ? (proseVerified ? 'ok' : 'empty reply') : failure(prose);
@@ -102,10 +110,10 @@ export function classifyProbe(prose: GatewayResult, tools: GatewayResult, nonce:
   if (!tools.ok) {
     toolsDetail = failure(tools);
   } else {
-    const usedBash = (tools.events ?? []).some((e) => e.kind === 'tool_call' && (e.data as { name?: unknown } | undefined)?.name === 'Bash');
+    const usedRead = (tools.events ?? []).some((e) => e.kind === 'tool_call' && (e.data as { name?: unknown } | undefined)?.name === 'Read');
     const hasNonce = text(tools).includes(nonce);
-    toolUseVerified = usedBash && hasNonce;
-    toolsDetail = toolUseVerified ? 'ok' : !usedBash ? 'no Bash tool_use in the reply' : 'Bash ran but the answer lacks the nonce';
+    toolUseVerified = usedRead && hasNonce;
+    toolsDetail = toolUseVerified ? 'ok' : !usedRead ? 'no Read tool_use in the reply' : 'Read ran but the answer lacks the nonce';
     // What it said instead is the diagnosis (e.g. a tool call written out as prose JSON).
     if (!toolUseVerified) toolsDetail += ` — replied: ${text(tools).replace(/\s+/g, ' ').trim().slice(0, 80) || '(empty)'}`;
   }
@@ -114,9 +122,16 @@ export function classifyProbe(prose: GatewayResult, tools: GatewayResult, nonce:
 
 const NONCE_FILE = 'probe-nonce.txt';
 const PROSE_PROMPT = 'Reply with the single word PONG and nothing else.';
-const TOOLS_PROMPT =
-  `Use the Bash tool to run exactly this command: cat ${NONCE_FILE}\n` +
-  'Then reply with only the text that command printed, nothing else. Do not guess — the value is random.';
+// issue #93 item 4: takes the nonce file's ABSOLUTE path (built per-call in `runProbe`, once the
+// throwaway workspace exists) — never the bare relative `NONCE_FILE` name — so the prompt itself
+// names exactly the path the Read path-guard will actually allow, with nothing left for the model
+// to resolve against an assumed cwd.
+function toolsPrompt(absoluteNoncePath: string): string {
+  return (
+    `Use the Read tool to read this exact absolute file path: ${absoluteNoncePath}\n` +
+    'Then reply with only the text that file contains, nothing else. Do not guess — the value is random.'
+  );
+}
 
 async function timed(clock: Clock, fn: () => Promise<GatewayResult>): Promise<{ r: GatewayResult; ms: number }> {
   const t0 = clock.now();
@@ -147,9 +162,10 @@ export async function runProbe(
     prose = await timed(clock, () => gateway.invoke({
       prompt: PROSE_PROMPT, opts: { model: ref, allowedTools: [], timeoutMs }, runId, agentId: `probe-prose-${ref}`, workspace,
     }));
-    writeFileSync(join(workspace, NONCE_FILE), `${nonce}\n`);
+    const noncePath = join(workspace, NONCE_FILE);
+    writeFileSync(noncePath, `${nonce}\n`);
     tools = await timed(clock, () => gateway.invoke({
-      prompt: TOOLS_PROMPT, opts: { model: ref, allowedTools: ['Bash'], timeoutMs }, runId, agentId: `probe-tools-${ref}`, workspace,
+      prompt: toolsPrompt(noncePath), opts: { model: ref, allowedTools: ['Read'], timeoutMs }, runId, agentId: `probe-tools-${ref}`, workspace,
     }));
   } finally {
     rmSync(workspace, { recursive: true, force: true });

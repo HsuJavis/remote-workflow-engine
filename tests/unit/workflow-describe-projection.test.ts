@@ -217,6 +217,69 @@ describe('projectWorkflowDescribe — runnable/runnableReason truth table (DES-1
   }
 });
 
+// issue #93 item 3: a published, non-legacy version that RunManager.start() would actually refuse
+// CONFINEMENT_UNAVAILABLE on THIS host for THIS caller must not report runnable:true — mirrors
+// admissionRefusal() exactly (same predicate run-manager.ts's own admission checks use), checked
+// LAST (LEGACY_REREGISTER/CHANNEL_UNPUBLISHED still take precedence — both are thrown by
+// catalog.resolve()/the contract check well before RunManager.start()'s own deferred confinement
+// throw).
+describe('projectWorkflowDescribe — runnable/runnableReason CONFINEMENT_UNAVAILABLE (issue #93 item 3)', () => {
+  const published = { release: 'v2' };
+
+  it('[LOAD-BEARING] unconfined + remote caller => runnable:false, runnableReason:CONFINEMENT_UNAVAILABLE', () => {
+    const view = projectWorkflowDescribe(fixture({ channels: published }), {
+      triggers: [], confinementPosture: 'unconfined', isRemoteSubmission: true, registeredRemote: false,
+    });
+    expect(view.runnable).toBe(false);
+    expect(view.runnableReason).toBe('CONFINEMENT_UNAVAILABLE');
+  });
+
+  it('[LOAD-BEARING] unconfined + LOCAL caller, but the version itself was registered remotely => still runnable:false, CONFINEMENT_UNAVAILABLE (mirrors RunManager.start()\'s second admission stage)', () => {
+    const view = projectWorkflowDescribe(fixture({ channels: published }), {
+      triggers: [], confinementPosture: 'unconfined', isRemoteSubmission: false, registeredRemote: true,
+    });
+    expect(view.runnable).toBe(false);
+    expect(view.runnableReason).toBe('CONFINEMENT_UNAVAILABLE');
+  });
+
+  it('unconfined + local caller + locally-registered version => still runnable:true (the owner\'s accepted local-unconfined cost)', () => {
+    const view = projectWorkflowDescribe(fixture({ channels: published }), {
+      triggers: [], confinementPosture: 'unconfined', isRemoteSubmission: false, registeredRemote: false,
+    });
+    expect(view.runnable).toBe(true);
+    expect(view.runnableReason).toBeNull();
+  });
+
+  it('confined posture => never CONFINEMENT_UNAVAILABLE regardless of caller locality', () => {
+    const view = projectWorkflowDescribe(fixture({ channels: published }), {
+      triggers: [], confinementPosture: 'confined', isRemoteSubmission: true, registeredRemote: true,
+    });
+    expect(view.runnable).toBe(true);
+    expect(view.runnableReason).toBeNull();
+  });
+
+  it('confinementPosture omitted (never measured) => fail-open, runnable:true, matching every other confinement-gated admission check', () => {
+    const view = projectWorkflowDescribe(fixture({ channels: published }), { triggers: [], isRemoteSubmission: true, registeredRemote: true });
+    expect(view.runnable).toBe(true);
+    expect(view.runnableReason).toBeNull();
+  });
+
+  it('LEGACY_REREGISTER still wins over CONFINEMENT_UNAVAILABLE (both true)', () => {
+    const view = projectWorkflowDescribe(
+      fixture({ channels: published, params: LEGACY_PARAMS as unknown as WorkflowOwnerView['params'] }),
+      { triggers: [], confinementPosture: 'unconfined', isRemoteSubmission: true, registeredRemote: true },
+    );
+    expect(view.runnableReason).toBe('LEGACY_REREGISTER');
+  });
+
+  it('CHANNEL_UNPUBLISHED still wins over CONFINEMENT_UNAVAILABLE (both true)', () => {
+    const view = projectWorkflowDescribe(fixture({ channels: {} }), {
+      triggers: [], confinementPosture: 'unconfined', isRemoteSubmission: true, registeredRemote: true,
+    });
+    expect(view.runnableReason).toBe('CHANNEL_UNPUBLISHED');
+  });
+});
+
 // v35 (DES-239, ARCH-147, TASK-237, REQ-207): `timeoutMs` gains `attempts`/`worstCaseMs` —
 // COMPUTED from an injected `ctx.attempts` (the deployed gateway's `1 + max(0,retries)`), never a
 // hard-coded number. Written test-first (Gate 5, RED) — `projectAgentParams`'s `timeoutMs` entry
