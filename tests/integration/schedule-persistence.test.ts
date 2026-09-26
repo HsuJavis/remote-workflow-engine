@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { FixedClock } from '../../src/clock.js';
 // Value import — causes module-not-found at load time when module is absent.
 import { SqliteSchedulerPort } from '../../src/scheduler.js';
@@ -95,6 +96,54 @@ describe('SqliteSchedulerPort.rearmAtBoot (DES-017, D-V2I-2)', () => {
     expect(() => port.rearmAtBoot()).not.toThrow();
     await port.create({ kind: 'cron', cron: '0 3 * * *', enabled: true }); // no workflow ⇒ unclaimed
     expect(() => port.rearmAtBoot()).not.toThrow();
+  });
+
+  // issue #92 item 1: a row that predates semantic cron validation (or was otherwise written
+  // directly to the db) must not crash or hang the WHOLE boot — every sibling schedule still
+  // re-arms, and the bad row is disabled + `lastError`-tagged instead of retried forever.
+  it('a legacy bad stored cron row (step of 0) is disabled with lastError, and does NOT stop sibling rows from re-arming or hang the boot', async () => {
+    const dbPath = join(tmpDir, 'rearm-bad.db');
+    const bootClock = new FixedClock(new Date('2020-09-01T00:00:00.000Z'));
+    const port1 = new SqliteSchedulerPort({ clock: bootClock, catalog: makeFakeCatalog(), runManager: makeFakeRunManager(), dbPath });
+    const good = await port1.create({ kind: 'cron', workflow: 'wf-good', cron: '0 3 * * *', enabled: true });
+    const bad = await port1.create({ kind: 'cron', workflow: 'wf-bad', cron: '0 3 * * *', enabled: true });
+
+    // Simulate a row written before semantic validation existed — `create()` itself can no longer
+    // produce this; a raw UPDATE bypasses that door entirely, on purpose.
+    const raw = new Database(dbPath);
+    raw.prepare('UPDATE schedules SET cron = ? WHERE id = ?').run('*/0 * * * *', bad.result!.id);
+    raw.close();
+
+    const laterClock = new FixedClock(new Date('2021-09-01T00:00:00.000Z'));
+    const port2 = new SqliteSchedulerPort({ clock: laterClock, catalog: makeFakeCatalog(), runManager: makeFakeRunManager(), dbPath });
+    const start = Date.now();
+    expect(() => port2.rearmAtBoot()).not.toThrow();
+    expect(Date.now() - start, 'the bad row must not hang the boot').toBeLessThan(2000);
+
+    const list = await port2.list();
+    const goodRow = list.find((s) => s.id === good.result!.id)!;
+    const badRow = list.find((s) => s.id === bad.result!.id)!;
+    expect(Date.parse(goodRow.nextFire!), 'the good sibling row still re-arms').toBeGreaterThan(laterClock.now());
+    expect(badRow.enabled, 'the bad row is disabled, not left silently "due" forever').toBe(false);
+    expect(badRow.lastError?.code).toBe('INVALID_CRON');
+  });
+});
+
+describe('SqliteSchedulerPort.claimFiring defence against a bad stored row (issue #92 item 1)', () => {
+  it('a stored cron that can no longer compute a next fire is disabled and refused, not thrown from the fire path', async () => {
+    const dbPath = join(tmpDir, 'claim-bad.db');
+    const port = new SqliteSchedulerPort({ clock: CLOCK, catalog: makeFakeCatalog(), runManager: makeFakeRunManager(), dbPath });
+    const r = await port.create({ kind: 'cron', workflow: 'wf', cron: '0 3 * * *', enabled: true });
+    const id = r.result!.id;
+
+    const raw = new Database(dbPath);
+    raw.prepare('UPDATE schedules SET cron = ?, nextFire = ? WHERE id = ?').run('*/0 * * * *', CLOCK.now() - 1000, id);
+    raw.close();
+
+    expect(() => port.claimFiring({ id, kind: 'cron' })).not.toThrow();
+    const status = port.get(id)!;
+    expect(status.enabled, 'disabled instead of retried at every future tick').toBe(false);
+    expect(status.lastError?.code).toBe('INVALID_CRON');
   });
 });
 

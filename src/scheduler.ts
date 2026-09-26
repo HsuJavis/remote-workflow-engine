@@ -16,7 +16,7 @@ import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Clock } from './clock.js';
 import type { ErrEnvelope, RefusalReason } from './types.js';
-import { computeNextFire, bootRearm, type StoredSchedule } from './scheduler-engine.js';
+import { computeNextFire, bootRearm, parseCron, type StoredSchedule } from './scheduler-engine.js';
 import { toErrEnvelope } from './errors.js';
 
 // v24 (DES-149, ARCH-099, TASK-141): `workflow` becomes OPTIONAL — a trigger can now be created
@@ -103,13 +103,21 @@ export interface SchedulerPortDeps {
   dbPath: string; // ':memory:' for tests, a file path in production
 }
 
-// Minimal 5-field cron syntax check (validation only — computing the next fire time is DES-017's
-// job). Accepts '*', a number, a range ('a-b'), a step ('*/n' or 'a-b/n'), and comma lists thereof.
-const CRON_FIELD = /^(\*|\d+(-\d+)?)(\/\d+)?(,(\*|\d+(-\d+)?)(\/\d+)?)*$/;
-
-function isValidCron(expr: string): boolean {
-  const fields = expr.trim().split(/\s+/);
-  return fields.length === 5 && fields.every((f) => CRON_FIELD.test(f));
+// issue #92 item 1: the old syntax-only regex here (5 fields, each `*`/`n`/`a-b` with an optional
+// `/step`) accepted a step of 0 (`*/0` — `scheduler-engine.ts`'s `parseCronField` then looped
+// `for (v = lo; v <= hi; v += step)` forever, freezing the whole engine event loop) and any numeric
+// value regardless of the field's real range (`99 99 * * *` passed, then `computeNextFire` scanned
+// ~2.1M minutes before throwing a raw `Error` that escaped as a bare JSON-RPC -32000, not a coded
+// refusal). Semantic validation now runs through the SAME grammar `computeNextFire` itself parses
+// with (`parseCron`, scheduler-engine.ts) — one grammar, not two that can drift — so a syntactically
+// odd-looking but engine-accepted field and this door's opinion of it can never disagree.
+function validateCron(expr: string): string | null {
+  try {
+    parseCron(expr);
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
 }
 
 interface ScheduleRow {
@@ -279,8 +287,11 @@ export class SqliteSchedulerPort {
     // changed site: the FIRE path (`resolveScheduleTarget`, server.ts) refuses and RECORDS
     // UNCLAIMED / CLAIMED_WORKFLOW_MISSING / CHANNEL_UNPUBLISHED / NOT_IN_RELEASE, which is the
     // signal REQ-115 asks for and the one place the answer is still true at the moment it matters.
-    if (s.kind === 'cron' && !isValidCron(s.cron)) {
-      return { error: { code: 'INVALID_CRON', message: `Not a valid cron expression: ${s.cron}`, field: 'cron' } };
+    if (s.kind === 'cron') {
+      const cronError = validateCron(s.cron);
+      if (cronError) {
+        return { error: { code: 'INVALID_CRON', message: cronError, field: 'cron' } };
+      }
     }
     if (s.kind === 'once' && Number.isNaN(Date.parse(s.at))) {
       return { error: { code: 'INVALID_AT', message: `Not a valid ISO timestamp: ${s.at}`, field: 'at' } };
@@ -290,10 +301,25 @@ export class SqliteSchedulerPort {
     // DES-017: `nextFire` is computed once at creation (via the injected Clock, never a bare
     // Date.now()) so the firing engine's `tick()` has an immediately-usable due-time for cron/once det:allow — a comment naming the API, not a call
     // schedules; `resident` schedules never fire via tick() (trigger-only) and get no nextFire.
-    const nextFire: number | null =
-      s.kind === 'cron' ? computeNextFire(s.cron, s.tz, this._clock.now() - 1)
-      : s.kind === 'once' ? Date.parse(s.at)
-      : null;
+    // issue #92 item 1(c): `validateCron` above only rejects a semantically malformed FIELD — it
+    // cannot see that a syntactically fine combination of fields (`0 0 31 2 *`: day-of-month 31 in
+    // February) can never actually occur on any calendar date. `computeNextFire` is the thing that
+    // discovers that (it throws once its search proves no match exists), and its throw must never
+    // escape create() as a raw, uncatalogued error the way it used to (issue #92's reproduction:
+    // `99 99 * * *` — now already caught by `validateCron` above — and `0 0 31 2 *`, which still
+    // reaches here because every field is individually in-range).
+    let nextFire: number | null;
+    if (s.kind === 'cron') {
+      try {
+        nextFire = computeNextFire(s.cron, s.tz, this._clock.now() - 1);
+      } catch (err) {
+        return { error: { code: 'INVALID_CRON', message: `This cron never fires: ${err instanceof Error ? err.message : String(err)}`, field: 'cron' } };
+      }
+    } else if (s.kind === 'once') {
+      nextFire = Date.parse(s.at);
+    } else {
+      nextFire = null;
+    }
     this._db
       .prepare(`
         INSERT INTO schedules (id, kind, workflow, claimedBy, createdBy, createdRemote, argsJson, cron, tz, at, enabled, nextFire, lastFire, lastRunId)
@@ -475,7 +501,22 @@ export class SqliteSchedulerPort {
     if (row == null) return false;
     // already advanced past this due instant by a racing tick
     if (row.nextFire != null && row.nextFire > this._clock.now()) return false;
-    const nextFire = computeNextFire(row.cron, row.tz ?? undefined, this._clock.now());
+    // issue #92 item 1: `computeNextFire` runs here against a STORED row, not a caller-supplied
+    // string — `validateCron`'s create-time door cannot protect a row written before that door
+    // existed (a legacy row, or one seeded directly into the db). A throw here happens inside the
+    // ticker driver's synchronous claim step, with no request/caller to hand an ErrEnvelope back to
+    // — left unguarded it would either crash the driver loop (once) or, if the loop swallows it,
+    // silently wedge this firing at "due" forever, retried every tick. Disabling it and recording
+    // `lastError` makes the failure visible in `schedule_list` and stops the retry instead.
+    let nextFire: number;
+    try {
+      nextFire = computeNextFire(row.cron, row.tz ?? undefined, this._clock.now());
+    } catch (err) {
+      const lastError = JSON.stringify({ code: 'INVALID_CRON', at: this._clock.isoNow() });
+      this._db.prepare('UPDATE schedules SET enabled = 0, lastError = ? WHERE id = ?').run(lastError, firing.id);
+      console.error(`[scheduler] claimFiring: schedule ${firing.id} could not compute its next fire and was disabled: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
     this._db.prepare('UPDATE schedules SET nextFire = ? WHERE id = ?').run(nextFire, firing.id);
     return true;
   }
@@ -602,19 +643,33 @@ export class SqliteSchedulerPort {
    *  driver's first tick fires it exactly as if the server had never restarted. */
   rearmAtBoot(): void {
     // v24: an unclaimed trigger (`workflow IS NULL`) is excluded — same reasoning as `all()`.
+    // NOTE (issue #92 item 1, found while hardening this method, not fixed here — out of scope): this
+    // filter still keys on `workflow IS NOT NULL`, while `all()` was fixed (ARCH-099/DES-150) to key
+    // on `claimedBy ?? workflow`. A row claimed AFTER creation (`claim()` writes `claimedBy`, leaves
+    // `workflow` null) is therefore never re-armed at boot and re-arms for the first time only when
+    // `claimFiring()` reaches it off a stale `nextFire`. Pre-existing drift, unrelated to this fix.
     const rows = this._db
       .prepare("SELECT * FROM schedules WHERE kind IN ('cron','once') AND workflow IS NOT NULL")
       .all() as ScheduleRow[];
     if (rows.length === 0) return;
-    const stored: StoredSchedule[] = rows.map((r): StoredSchedule =>
-      r.kind === 'cron'
-        ? { kind: 'cron', id: r.id, workflow: r.workflow!, args: r.argsJson != null ? JSON.parse(r.argsJson) : undefined, cron: r.cron!, tz: r.tz ?? undefined, enabled: r.enabled === 1, nextFire: r.nextFire ?? this._clock.now() }
-        : { kind: 'once', id: r.id, workflow: r.workflow!, args: r.argsJson != null ? JSON.parse(r.argsJson) : undefined, at: r.at!, enabled: r.enabled === 1, nextFire: r.nextFire ?? Date.parse(r.at!) },
-    );
-    const rearmed = bootRearm(stored, this._clock);
     const update = this._db.prepare('UPDATE schedules SET nextFire = ? WHERE id = ?');
-    for (const s of rearmed) {
-      if (s.kind !== 'resident') update.run(s.nextFire, s.id);
+    const markError = this._db.prepare('UPDATE schedules SET enabled = 0, lastError = ? WHERE id = ?');
+    // issue #92 item 1: re-armed ONE ROW AT A TIME (each its own `bootRearm([...], clock)` call,
+    // `bootRearm` itself stays the pure, still-batch-shaped helper `scheduler-engine.test.ts` pins)
+    // so a single bad stored row (e.g. written before semantic cron validation existed) cannot
+    // throw out of the loop and crash/hang the WHOLE boot before any other schedule re-arms.
+    for (const r of rows) {
+      const stored: StoredSchedule =
+        r.kind === 'cron'
+          ? { kind: 'cron', id: r.id, workflow: r.workflow!, args: r.argsJson != null ? JSON.parse(r.argsJson) : undefined, cron: r.cron!, tz: r.tz ?? undefined, enabled: r.enabled === 1, nextFire: r.nextFire ?? this._clock.now() }
+          : { kind: 'once', id: r.id, workflow: r.workflow!, args: r.argsJson != null ? JSON.parse(r.argsJson) : undefined, at: r.at!, enabled: r.enabled === 1, nextFire: r.nextFire ?? Date.parse(r.at!) };
+      try {
+        const [rearmed] = bootRearm([stored], this._clock);
+        if (rearmed && rearmed.kind !== 'resident') update.run(rearmed.nextFire, rearmed.id);
+      } catch (err) {
+        markError.run(JSON.stringify({ code: 'INVALID_CRON', at: this._clock.isoNow() }), r.id);
+        console.error(`[scheduler] rearmAtBoot: schedule ${r.id} failed to re-arm and was disabled: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
 }

@@ -61,6 +61,38 @@ describe('SchedulerPort CRUD (DES-016)', () => {
     expect(result.error?.field).toBe('cron');
   });
 
+  // issue #92 item 1: create()'s OWN reproduction strings. Pre-fix, both escaped as a raw JSON-RPC
+  // -32000 / a raw thrown Error rather than a tool-result ErrEnvelope — this asserts `create()`
+  // returns a normal `{ error }` result (never throws) with the catalogued code.
+  it('create with an out-of-range field (99 99 * * *, issue #92\'s own repro) returns INVALID_CRON, not a raw throw', async () => {
+    const port = new SqliteSchedulerPort({
+      clock: CLOCK, catalog: makeFakeCatalog(), runManager: makeFakeRunManager(), dbPath: ':memory:',
+    });
+    const result = await port.create({ kind: 'cron', cron: '99 99 * * *', enabled: true });
+    expect(result.error?.code).toBe('INVALID_CRON');
+    expect(result.error?.field).toBe('cron');
+    expect(result.result).toBeUndefined();
+  });
+
+  it('create with a cron that can never fire (0 0 31 2 * — Feb 31) returns INVALID_CRON, not a raw throw', async () => {
+    const port = new SqliteSchedulerPort({
+      clock: CLOCK, catalog: makeFakeCatalog(), runManager: makeFakeRunManager(), dbPath: ':memory:',
+    });
+    const result = await port.create({ kind: 'cron', cron: '0 0 31 2 *', enabled: true });
+    expect(result.error?.code).toBe('INVALID_CRON');
+    expect(result.error?.field).toBe('cron');
+  });
+
+  it('create with a step of 0 (*/0 * * * *) returns INVALID_CRON fast — the freeze this closes', async () => {
+    const port = new SqliteSchedulerPort({
+      clock: CLOCK, catalog: makeFakeCatalog(), runManager: makeFakeRunManager(), dbPath: ':memory:',
+    });
+    const start = Date.now();
+    const result = await port.create({ kind: 'cron', cron: '*/0 * * * *', enabled: true });
+    expect(Date.now() - start).toBeLessThan(500);
+    expect(result.error?.code).toBe('INVALID_CRON');
+  });
+
   // v24 Gate 7.5 (D-1, REQ-115's last clause): `create()` no longer resolves the catalog. A
   // trigger is created FIRST and claimed by a workflow at registration, so a name that does not
   // exist yet is the NORMAL case here; the verdict moved to the FIRE path, which refuses

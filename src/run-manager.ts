@@ -946,7 +946,7 @@ export class RunManager {
   }
 
   async suspend(runId: string): Promise<void> {
-    const entry = await this._requireLive(runId);
+    const entry = await this._requireLive(runId, 'suspended');
     if (entry.status !== 'running') throw new IllegalTransitionError(entry.status, 'suspended');
     entry.abortController.abort();
     await entry.sandbox.abort(runId, 'suspend');
@@ -954,7 +954,7 @@ export class RunManager {
   }
 
   async resume(runId: string): Promise<void> {
-    const entry = await this._requireLive(runId);
+    const entry = await this._requireLive(runId, 'running');
     // v37 P1 (Gate 8 round-5 finding R5-F1; ADR-086's third owner ruling, DES-263 第四次修訂):
     // `resume()`'s ONE admission stage. `_requireLive()` only RECORDS that it had to substitute the
     // current `release` for a pin that no longer exists, and whether that substituted version was
@@ -1043,7 +1043,7 @@ export class RunManager {
   }
 
   async stop(runId: string): Promise<void> {
-    const entry = await this._requireLive(runId);
+    const entry = await this._requireLive(runId, 'stopped');
     if (TERMINAL.includes(entry.status)) throw new IllegalTransitionError(entry.status, 'stopped');
     entry.abortController.abort();
     await entry.sandbox.abort(runId, 'stop');
@@ -1052,7 +1052,12 @@ export class RunManager {
 
   async status(runId: string): Promise<RunStatusView> {
     const view = await this._store.getRun(runId);
-    if (!view) throw new IllegalTransitionError('unknown', 'status');
+    // issue #92 item 2: 'not found' replaces the hardcoded 'unknown' — there genuinely is no
+    // recorded status for this id, so the message says that instead of a placeholder. (The MCP
+    // facade's own `run_status`/`run_result` handlers already check `store.getRun` themselves and
+    // answer `RUN_NOT_FOUND` before ever reaching this method for the no-such-run case — this throw
+    // is reached only by a caller of `RunManager.status()` that skips that pre-check.)
+    if (!view) throw new IllegalTransitionError('not found', 'status');
     await this._checkTerminalHasTransition(runId, view);
     const merged = this._mergeLive(runId, view);
     // v35 (DES-234, ARCH-146, ADR-067, TASK-236, REQ-207): one predicate, over the SAME agents
@@ -1270,16 +1275,25 @@ export class RunManager {
    *  (in-flight journal replay cache, phases observed) does not survive restart; the rehydrated
    *  entry resumes cleanly but replays nothing from before the restart (no test currently requires
    *  exact cross-restart cache replay — a documented simplification, not silent data loss). */
-  private async _requireLive(runId: string): Promise<RunEntry> {
+  // issue #92 item 2: `target` is the transition the CALLER (`suspend`/`resume`/`stop`) is actually
+  // attempting — threaded through so a refusal here names it instead of the hardcoded
+  // ('unknown', 'transition') every caller used to share, which rendered as the meaningless
+  // "Illegal state transition: unknown → transition" no matter what was asked for or why. The `from`
+  // side is the real recorded status when one exists (`view.status`), never a literal "unknown" —
+  // 'not found' only when there truly is no run under this id at all.
+  private async _requireLive(runId: string, target: RunStatus): Promise<RunEntry> {
     const cached = this._runs.get(runId);
     if (cached) return cached;
 
     const view = await this._store.getRun(runId);
     if (!view || (view.status !== 'suspended' && view.status !== 'stopped' && view.status !== 'interrupted')) {
-      throw new IllegalTransitionError('unknown', 'transition');
+      throw new IllegalTransitionError(view?.status ?? 'not found', target);
     }
     const spec = await this._store.getSpec(runId);
-    if (!spec) throw new IllegalTransitionError('unknown', 'transition');
+    // `view.status` here IS one of the resumable statuses checked above — a missing spec is a data-
+    // integrity gap, not an illegal FROM status, so the message says exactly that rather than
+    // implying the run's own recorded state was the problem.
+    if (!spec) throw new IllegalTransitionError(`${view.status} (spec missing)`, target);
     // v8 Defer A (fix): a NAMED-workflow run stores no inline script on its spec (start() resolves it
     // from the catalog at launch), so `spec.script` is empty — resume/rehydrate must re-resolve the
     // script from the catalog the SAME way start() does, or the resumed run executes an empty script
