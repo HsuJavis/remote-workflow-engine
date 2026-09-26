@@ -1321,6 +1321,148 @@ curl -s http://localhost:8787/api/version
 
 本機制設計只支援**單一引擎實例**。多實例部署（多個 rwe 綁不同 port 共用同一 git 工作目錄）會造成 helper 在其中一個實例的 `systemctl restart rwe` 時中斷另一個，不在支援範圍內。多實例需求請用多套獨立部署（各自的 git clone + service unit + flag 路徑）。
 
+## 7. 整套移植到新主機（Host Migration Checklist）
+
+> 目的：把「目前這台主機上實際在跑的完整部署」原樣搬到另一台機器——不是重新照 §0/§2 從零架設
+> 一個乾淨範例，是把**這台主機的實際客製**（進階 `gateway:"sdk"` + auth + LiteLLM + 自我更新 +
+> 對外隧道）連同資料一起搬過去。以下每一步都連結到上面已有的章節，不重複寫一次；只補「換機時
+> 才會踩到」的細節與（用 `<占位字元>` 表示的）主機專屬值要換掉的地方。**沒有任何一步需要真的
+> 貼出這台主機的 token/secret 值**——照名稱/位置操作即可，值本身留在原本的檔案裡跟著複製過去。
+
+1. **新主機作業系統前置需求**——見 §1a：Node.js 22.6+、npm、（`gateway:"sdk"` 才需要的）
+   Python 3.11/3.12、以及 `bwrap`/`socat`（`sudo apt install bubblewrap socat`）。**這台主機另外
+   量到 `Bash confinement: CONFINED`**（不是預設值，是巢狀 `bwrap --unshare-user` 探測通過），若新
+   主機也跑 Ubuntu/AppArmor，多半要走一次 §1c(e) 的 `apparmor_restrict_unprivileged_userns` 放寬
+   才會拿到一樣的結果；不放寬的話新主機會落在 `unconfined`，本機送出的 run 仍照跑，但**遠端**
+   （webhook／排程／別台機器送出的 `run_start`）會被拒，行為與現在不同，先決定是否接受這個差異。
+
+2. **裝好版控的 git pre-push 保護**——見上面「git pre-push 保護」小節：`git config core.hooksPath
+   deploy/git-hooks`（或 symlink）。這是 clone 出來就該做的第一件事，不是部署完才補。
+
+3. **Clone repo，比對這台主機的實際客製與 repo 範本的落差**——`deploy/` 底下的 unit 檔是**範本**，
+   這台主機的即時單元經過客製，搬機前先讀一次舊主機上 `~/.config/systemd/user/` 底下的四個檔案
+   （唯讀，不要動它們），跟 `deploy/rwe.user.service`／`deploy/rwe-update.service`／
+   `deploy/rwe-update.path` 逐行比對，把落差抄進新主機那份複製出來的 unit：
+   - **`rwe.service`**：`PATH=` 除了 repo 範本已有的 node bin 目錄，**這台主機的 `gateway:"sdk"`
+     還額外把 LiteLLM venv 的 `bin/`（見下方第 5 點）排在最前面**——不排的話 systemd 用的最小
+     環境找不到 `litellm` 執行檔，開機直接 `fatal startup error: ... spawn litellm ENOENT`（§1a）。
+     `RWE_BIND`/`RWE_PORT` 這台主機分別是 `0.0.0.0`／改由一個 **`rwe.service.d/override.conf`
+     drop-in**（`[Service]` 段一行 `Environment=RWE_PORT=<實際對外 port>`）覆寫成非 8787
+     的值——`systemctl --user cat rwe.service` 能看到套用後的完整 unit，drop-in 本身不在 repo
+     範本裡，是這台主機自己加的，換機時要記得一起搬（`~/.config/systemd/user/rwe.service.d/`
+     整個目錄）或在新主機上重新加一份同樣的 override，**且要跟第 8 點的反向代理/隧道設定的
+     port 對得上**——兩邊不一致的典型症狀是隧道連得上但 502／connection refused。
+   - **`rwe-update.service`**：repo 範本是給 root/`/opt` 安裝路徑寫的（`EnvironmentFile=
+     -/etc/rwe/update.env`、`ExecStart=/opt/.../rwe-update.sh`）；這台主機是 user service，
+     已經照 §6b 步驟五現在的寫法，把六個環境變數直接用 `Environment=` 寫在 unit 裡、`ExecStart`
+     指到這台機器實際的 clone 路徑、`SYSTEMCTL` 指到一個兩行的 `systemctl --user "$@"` wrapper
+     （helper 內部呼叫裸指令 `systemctl restart rwe`，wrapper 是讓它落到 user instance 的唯一
+     方式，見 §6b 步驟五）——新主機照 §6b 步驟五現在的做法做一次即可，不需要额外發明。
+   - **`rwe-update.path`**：目前跟 repo 範本一致（`PathExists=%h/rwe-update.flag`），新主機用
+     `%h` 會自動展開成新使用者的家目錄，不必改。
+
+4. **`rwe.env`（`~/.config/rwe.env`，權限 600）——只搬「鍵名」對得上的那些，值本身直接複製檔案**：
+   這台主機目前有 `RWE_SECRET_GITHUB_TOKEN`（`issue_report`/Issues 儀表板用）、
+   `OPENROUTER_API_KEY`（openrouter 供應商）、`RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN`
+   （anthropic 訂閱制 OAuth，見 §1b／README「前置需求」——這台主機沒有另外設 API-key 那個環境變數，
+   用的是訂閱制）、`RWE_SECRET_GITHUB_WEBHOOK_SECRET`（GitHub webhook HMAC，見 §6b 步驟一/四）。
+   另外還有兩個**跟本功能無關的殘留鍵**，新主機可以整行不搬：`RWE_SECRET_DEMO_TOKEN`／
+   `RWE_SECRET_VAL092_SECRET`（驗證腳本/測試 fixture 用的假密鑰，不是任何真實供應商）、以及一個
+   `OPENAI_` 開頭的殘留鍵（v26 供應商整併前的舊實驗留下，引擎現在完全不讀這個鍵，見上面「已知
+   限制」/`no-retired-surface` 那批 grep 守衛）。搬過去最省事的做法是**整份檔案複製**（保留
+   600 權限），再回頭刪掉不需要的兩三行，而不是逐鍵手打。
+
+5. **LiteLLM venv（`gateway:"sdk"` 才需要）**——見 §1a 第 3 點：`~/.rwe-litellm-venv`，Python
+   3.12。這台主機用的是這個路徑；新主機沿用同一個慣例的話，第 3 點裡 `rwe.service` 的 `PATH=`
+   才不用改路徑，只需要照抄。
+
+6. **Ollama 模型（若腳本用到本機模型）**——這台主機目前拉的 tag：`qwen2.5:7b`、`qwen2.5vl:7b`、
+   `bge-m3:latest`；新主機要跑哪些腳本，就對照該腳本 `meta.params.agents.<label>.model.default`
+   實際寫的 `ollama/<tag>`，`ollama pull <tag>` 補齊——不必整批照抄，帶不到的腳本本來就該先確認
+   有沒有真的被排進要跑的工作流程。
+
+7. **`rwe.config.json`——複製後逐一核對，不要整份檔案原樣照搬**：目前只有這些頂層鍵在用
+   （`aliases` 已於 2026-09-26 移除，不會出現，見 §1a）：`bind`／`port`／`allowedHosts`／
+   `workRoot`／`timeoutMs`／`retries`／`gateway`／`defaultAllowedTools`／`anthropicAuth`／
+   `updateFlagPath`／`updateResultPath`／`auth`／`principals`（每個鍵的意義查 §1b 設定總表）。
+   換機要特別處理的三個地方：
+   - **`allowedHosts`／`auth.issuer`／隧道 hostname 是否換掉是同一個決定**：不換公開網域名的話
+     （只換運算主機、DNS/隧道還是指到同一個名字），這三者原封不動搬過去即可，GitHub webhook 也
+     不用重新設定。**若連公開網域名都換了**：`auth.issuer` 要改成新網域，Google Cloud Console
+     那個 OAuth 用戶端的**已授權重新導向 URI**（`https://<新網域>/oauth/google/callback`）要
+     一起加，舊網域簽發的既有 refresh token（存在 `workRoot/auth-tokens.db`）在新 issuer 下會
+     失效，使用者要重新走一次 OAuth 授權——這不是 bug，是 OAuth issuer 綁定 audience 的必然結果。
+   - **`auth.googleClientId`/`auth.googleClientSecret` 目前是明碼寫在這台主機的
+     `rwe.config.json` 裡**——跟 §1b 開頭「`rwe.config.json` 本身不含機密，金鑰一律走環境變數」
+     這條原則不一致（歷史遺留，這份 checklist 只指出落差，不在這裡動它）。新主機若想收斂成
+     這個原則：`src/secret-resolver.ts` 的 `${secret:NAME}` 替換是對整份設定檔遞迴生效的，原則上
+     可以把這兩個值改寫成 `${secret:GOOGLE_CLIENT_ID}`/`${secret:GOOGLE_CLIENT_SECRET}`、
+     真正的值改放進 `~/.config/rwe.env` 的 `RWE_SECRET_GOOGLE_CLIENT_ID`/
+     `RWE_SECRET_GOOGLE_CLIENT_SECRET`——沒試過這條路徑的人，先在一台非正式機器上驗證過再上線。
+   - **`principals`**：目前是「特定信箱 → 角色」的對照表；换機不换使用者的話原樣搬，換一批
+     使用者要照 §1b「角色」小節重新分配，打錯角色字串（不是 `admin`/`author`/`user`）會直接讓
+     開機失敗，不是靜默退回。
+
+8. **對外隧道／反向代理**——這台主機用的是使用者層級的 `cloudflared` unit（不是系統層級），
+   ingress 規則是**逐路徑**白名單（只轉發 `/github/webhook`、`/.well-known/`、`/authorize`、
+   `/oauth/`、`/token`、`/register`、`/mcp`、`/assets/(blob|manifest)` 到本機的 `RWE_PORT`；
+   dashboard 與 `/api/*` **刻意不對外**，只留本機/內網存取），每條規則都把 `httpHostHeader`
+   釘死成 `localhost:<RWE_PORT>`——這是配合 §5 的 Host 白名單防護（伺服器只認得到白名單裡的
+   Host，隧道若不覆寫 Host header 會被引擎自己的 403 擋下）。換機時：隧道設定檔本身含憑證與
+   隧道 id，不搬過去唸出來，照 cloudflared 官方文件替新機器重新建一個隧道／或把既有隧道的執行
+   行程換到新主機上；不管哪種做法，**ingress 規則裡的 port 必須跟第 3 點 `rwe.service` 目前的
+   `RWE_PORT` override 一致**，兩者其一忘了同步是最常見的「隧道通、502/連不上」成因。若走的是
+   §6b 建議的 nginx 反向代理而非 cloudflared，同一條「只轉發 webhook／OAuth／`/mcp`／assets 路由，
+   其餘不轉」的原則照套即可。
+
+9. **GitHub repo webhook（自我更新用）**——見 §6b 步驟一：事件**只勾 Releases**（`release` 事件、
+   `action:"published"`，理由見步驟一的說明；不要多勾 create/push），content type 是
+   `application/json`，secret 對應 `RWE_SECRET_GITHUB_WEBHOOK_SECRET`（第 4 點已經搬過去）。
+   **只換運算主機、Payload URL 網域不變的話，這個 webhook 完全不用動**——它打的是公開網域，不是
+   實體主機。
+
+10. **`loginctl enable-linger`**——user service 要在登出/重開機後仍運行，見 §2「無 root 部署」
+    步驟二那一行；新主機同樣要跑一次 `loginctl enable-linger "$USER"`，忘了這一步的症狀是
+    「SSH 斷線 unit 就跟著死掉」。
+
+11. **搬 `workRoot` 資料（狀態全在這裡，是唯一真正需要「搬資料」的目錄）**——**先停服務再複製**：
+    ```bash
+    systemctl --user stop rwe.service rwe-update.path
+    ```
+    再把整棵 `workRoot`（`rwe.config.json` 的 `workRoot` 鍵指到哪裡就是哪裡）複製到新主機，
+    **含 `-wal`/`-shm` 檔**（或複製前對每個 `.db` 跑一次
+    `sqlite3 <db> 'PRAGMA wal_checkpoint(TRUNCATE);'` 把 WAL 併回主檔，兩種做法擇一，不要漏掉
+    `-wal` 又不 checkpoint，那樣會遺失還沒寫回主檔的最新資料）。裡面哪些是真正的狀態、哪些可丟：
+    - **狀態，要搬**：`catalog.db*`（工作流程/版本/發布頻道）、`schedules.db*`、`webhooks.db*`、
+      `self-update.db*`、`mcp-registry.db*`、`continuations.db*`、`auth-tokens.db`（啟用 auth
+      時的 refresh token——換 issuer 網域的話這個檔案裡的 token 會失效，見上面第 7 點，仍可以
+      搬過去只是使用者要重新授權一次）、`cas/`、`store/`、`workflows/`、`model-probe/`、
+      `assets/`、`_global_assets/`。
+    - **可丟**：`.graph-analyzer-scratch/`（暫存用途，重跑會自己重建）。
+    - 複製完，`chmod` 維持原本的權限（部分檔案是 0600），啟動前確認 `RWE_CONFIG_PATH` 指到
+      新主機上正確的 `rwe.config.json`。
+
+12. **啟動與自我更新鏈路，回想一次完整流向**——`git tag` 推上官方 remote → `.github/workflows/`
+    的 Release CI 重跑 typecheck + 完整測試 → 綠燈才建立 GitHub Release → Release **published**
+    觸發第 9 點的 webhook → 引擎驗 HMAC、寫 `updateFlagPath`（第 3 點裡固定是 `$HOME/rwe-update.flag`）
+    → `rwe-update.path`（第 3 點）偵測到旗標 → `rwe-update.service` 跑
+    `deploy/rwe-update.sh`（`git fetch` 官方 remote限定 → checkout tag → `npm ci && npm run
+    build` → 跑 `npm run check-config`（有設 `RWE_CONFIG_PATH` 才跑）→ 全綠才
+    `$SYSTEMCTL restart rwe`）→ 失敗在任何一步都安全失敗、服務留在原版本，見 §6b「可觀測性」。
+    新主機第一次啟動建議手動跑一次（`systemctl --user start rwe.service`），確認正常後才
+    `enable` 讓它開機自動跑。
+
+13. **收尾驗證清單（照這個順序）**：
+    - `journalctl --user -u rwe.service | grep -i "confinement\|listening"`——確認看到
+      `Bash confinement: CONFINED`（或已知會是 `UNCONFINED` 並接受第 1 點的差異）與監聽位址/port
+      跟預期一致。
+    - `curl -s http://127.0.0.1:<RWE_PORT>/api/version`——版本號跟搬過來前的 `git describe` 對得上。
+    - `scripts/smoke.sh`——見 §2「上線前煙霧測試」，`PASS` 才算過（不需要任何供應商金鑰）。
+    - `curl -i https://<公開網域>/mcp`（啟用 auth 時）——預期 `401`，且
+      `WWW-Authenticate` 標頭帶 `scope`（D-BIND 的 fail-closed 行為，見 README「安全模型」）。
+    - 打一個測試 tag 走一次完整自我更新鏈（第 12 點）到 `result.json` 記 `"status":"applied"`，
+      才算連自我更新這條路也在新主機上真的接通，不是只有手動啟動能動。
+
 ## 附錄：辨識端點（僅供 Ollama 除錯用）
 
 > `provider` 只有 `anthropic|openrouter|ollama` 三種（見§情境配方 0）。以下只用來確認你的

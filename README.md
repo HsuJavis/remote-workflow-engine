@@ -559,5 +559,6 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 ## 更多
 
 - 部署 / 維運：見 `DEPLOY.md`
+- 整套移植到新主機（換機檢查清單）：見 `DEPLOY.md` §7
 - 設計與追溯：見 `.sdlc/`（工作區索引 `.sdlc/dashboard.html`；本功能 `.sdlc/features/001-remote-workflow-engine/dashboard.html`）
 - 完整真實層驗證證據：`.sdlc/features/001-remote-workflow-engine/08-validation.md`
