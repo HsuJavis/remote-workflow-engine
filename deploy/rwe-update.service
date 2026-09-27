@@ -6,11 +6,24 @@ After=network.target
 
 [Service]
 Type=oneshot
-# Override path/result/lock locations via EnvironmentFile or explicit Environment=.
-# These defaults mirror the path convention documented in DEPLOY.md:
-# engine-user-owned 0700 directory, OUTSIDE every workRoot.
-EnvironmentFile=-/etc/rwe/update.env
-ExecStart=/opt/remote-workflow-engine/deploy/rwe-update.sh
+WorkingDirectory=%h/Documents/remote-workflow
+# helper 需要 git/npm 可執行 —— 這裡沿用這台 production 主機實測可行的 PATH(npm 落在
+# ~/.local/bin)。若這台機器的 node/npm 只裝在別的目錄(例如版本管理器的 ~/.local/node/bin,
+# 見 deploy/rwe.user.service),要把那個目錄一併加進來,否則 `npm ci && npm run build` 會找不到
+# npm(見 DEPLOY.md §6b 步驟五 —— 這是換機時要核對的一點,不是這份範本保證涵蓋所有安裝方式)。
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=RWE_UPDATE_FLAG=%h/rwe-update.flag
+Environment=RWE_UPDATE_RESULT=%h/.local/share/rwe-update/result.json
+Environment=RWE_UPDATE_LOCK=%h/.local/share/rwe-update/update.lock
+# 只接受這個官方 remote 的 tag(見 deploy/rwe-update.sh)——部署自己的 fork 時要換成該 fork 的
+# 遠端 URL,否則 helper 會拒絕解析任何 tag。
+Environment=RWE_OFFICIAL_REMOTE=https://github.com/HsuJavis/remote-workflow-engine.git
+# helper 內部呼叫的是裸指令 `systemctl restart rwe`;user 部署要讓它落到
+# `systemctl --user restart rwe`,靠這個兩行 wrapper(deploy/systemctl-user)轉呼叫。
+Environment=SYSTEMCTL=%h/.local/share/rwe-update/systemctl-user
+# 選用:設了才會在 restart 前多跑一次 `npm run check-config`(見 DEPLOY.md §6b「重啟前的設定檢查」)。
+Environment=RWE_CONFIG_PATH=%h/Documents/remote-workflow/rwe.config.json
+ExecStart=%h/Documents/remote-workflow/deploy/rwe-update.sh
 # Log full output to journald (detail excerpt is also written to RWE_UPDATE_RESULT).
 StandardOutput=journal
 StandardError=journal

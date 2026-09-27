@@ -1,0 +1,6 @@
+#!/bin/sh
+# Two-line wrapper deploy/rwe-update.sh calls via $SYSTEMCTL — the helper's own logic invokes the
+# bare `systemctl restart rwe`; a systemd user-instance deployment needs that to land as
+# `systemctl --user restart rwe`, so the update unit's SYSTEMCTL= env var points here instead of
+# editing the helper itself. Install to ~/.local/share/rwe-update/systemctl-user (see DEPLOY.md §6b).
+exec systemctl --user "$@"

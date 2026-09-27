@@ -769,28 +769,55 @@ sudo systemctl enable --now rwe.service
 `deploy/rwe.service`（systemd unit，上方）、`scripts/smoke.sh`（非互動式煙霧測試，見下）。
 **本機與遠端主機的部署步驟完全相同**——沒有「本機才有的捷徑」。
 
-### 無 root 部署：systemd **user** service + 本地 Ollama
+> `deploy/rwe.service` 是 **system-mode**（root、`/opt` 安裝路徑）的替代方案。這台專案自己的
+> production 主機實際跑的是下一節的 **user-mode** `deploy/rwe.user.service` +
+> `rwe.service.d/override.conf`；§6b 的自我更新單元（`rwe-update.service`／`rwe-update.path`）
+> 也只有 user-mode 範本——沒有對應的 system-mode 更新單元，走 root 部署路線的人要自己另外接自我更新。
+
+### 無 root 部署：systemd **user** service
 
 > 沒有 sudo/root 時的正解——用 systemd 的 **user instance**（`systemctl --user`），unit 放
-> `~/.config/systemd/user/`，完全不需要 root。附檔 `deploy/rwe.user.service` 是這個版本的範本。
-> 全程只用本地 Ollama（`qwen2.5`），**零 API 金鑰、零 LiteLLM/Python 依賴**。
+> `~/.config/systemd/user/`，完全不需要 root。附檔 `deploy/rwe.user.service` 是這個版本的範本，
+> 逐行對照這台專案 production 主機目前實際在跑的 user unit（2026-09-27 收斂）——換機時真正
+> 因主機而異的只剩下方表格列出的幾個值。範本預設把 LiteLLM venv 的 bin/ 放進 `PATH`
+> （`gateway:"sdk"` 才用得到）；只想跑本地 Ollama、零依賴的部署可以不裝這個 venv，PATH 裡多出的
+> 那個目錄不存在時直接被跳過，不影響啟動。
 
 ```bash
-# 1. 安裝 unit（用 cp，不要手打 heredoc——長行/縮排容易被貼壞）
-cp deploy/rwe.user.service ~/.config/systemd/user/rwe.service
-cat ~/.config/systemd/user/rwe.service          # 確認完整 17 行、有 ExecStart 才繼續
+# 1. 安裝 unit（install -D 會自動建目錄/設權限，不要手打 heredoc——長行/縮排容易被貼壞）。
+#    override.conf drop-in是選用的——不裝就沿用範本內建的 RWE_PORT=8787；下面步驟 3 的驗證指令
+#    跟著你有沒有裝這個 drop-in 換 port。
+install -D -m 644 deploy/rwe.user.service ~/.config/systemd/user/rwe.service
+# install -D -m 644 deploy/rwe.service.d/override.conf ~/.config/systemd/user/rwe.service.d/override.conf
+systemctl --user cat rwe.service                 # 確認套用後的完整 unit、有 ExecStart 才繼續
 
 # 2. 啟用 + 啟動 + 讓它在登出後仍續存
 systemctl --user daemon-reload
 systemctl --user enable --now rwe.service
 loginctl enable-linger "$USER"                   # 登出/重開機後 user service 仍運行
 
-# 3. 驗證（看到 active + dashboard=200 即成功）
+# 3. 驗證（看到 active + dashboard=200 即成功；port 沒裝 override.conf 就是範本預設 8787，
+#    裝了就跟著 drop-in 裡的值，例如下面表格的 8899）
 systemctl --user is-active rwe.service
 curl -s -o /dev/null -w "dashboard=%{http_code}\n" http://127.0.0.1:8787/dashboard
 ```
 
-**搭配的 `rwe.config.json`（Ollama-only、免依賴）**：
+**環境變數蓋過設定檔**：`RWE_BIND`／`RWE_PORT` 一旦被 unit 的 `Environment=`（或其 drop-in）設定，
+就會蓋過 `rwe.config.json` 裡的 `bind`／`port`（`src/main.ts`：`process.env['RWE_BIND'] ??
+fileConfig.bind`，`RWE_PORT` 同理）——下面設定檔範例裡的 `bind`／`port` 只在**沒有**任何
+`Environment=RWE_BIND`／`RWE_PORT` 蓋過去時才生效，改 unit（或它的 drop-in）比改設定檔優先生效。
+
+**範本裡跟主機/這次部署有關、通常要改的值**：
+
+| 值 | 範本預設 | 說明 |
+|----|---------|------|
+| `WorkingDirectory`／`ExecStart`／`RWE_CONFIG_PATH` 裡的 repo 路徑 | `%h/Documents/remote-workflow` | `%h` 是 systemd specifier，會展開成執行這個 user instance 的家目錄；clone 不在這個慣例路徑下要手動改這三處 |
+| `deploy/rwe.service.d/override.conf`（選用 drop-in）的 `RWE_PORT` | `8899` | 這是本專案 production 主機實際用的值，只有裝了這個 drop-in 才生效；不裝就沿用 unit 本體的 `RWE_PORT=8787`。要換 port 就編輯這個 drop-in 檔，不要動 `rwe.user.service` 本體 |
+| `rwe.user.service` 本體的 `RWE_BIND` | `0.0.0.0` | 跟 production 一致——會把這個 port 暴露在區網（見§6b 步驟二／§7 第 8 點的白名單隧道說明，隧道本身有另一層路徑白名單擋住 dashboard/`/api/*`）。只在本機測試、不打算讓區網連進來的部署把這一行改成 `127.0.0.1`（改 `rwe.config.json` 的 `bind` 沒用，見上方「環境變數蓋過設定檔」） |
+
+若要跑純本地 Ollama、零 API 金鑰、零 LiteLLM/Python 依賴的最小情境：**不要**安裝
+`override.conf` drop-in，並把複製出來的 `rwe.service` 裡的 `RWE_BIND` 改成 `127.0.0.1`（理由同上表），
+這樣 unit 本體的 `RWE_PORT=8787`／`RWE_BIND=127.0.0.1` 會跟下面**搭配的 `rwe.config.json`** 一致：
 ```json
 {
   "bind": "127.0.0.1", "port": 8787, "workRoot": "./data",
@@ -1204,7 +1231,14 @@ GitHub → POST /github/webhook → 引擎（UNPRIVILEGED）
 
 ### 步驟二：反向代理（只轉發 webhook 路由）
 
-引擎綁定 `127.0.0.1`（loopback），外部流量由反向代理轉入。**只轉發 `POST /github/webhook`**，其餘路由不對外曝露：
+引擎實際綁定哪個介面由 unit 的 `RWE_BIND` 決定（見 §2「無 root 部署」的範本表格）：`127.0.0.1`
+（loopback）時所有外部流量都要靠這裡的反向代理轉入；`0.0.0.0`（`deploy/rwe.user.service` 範本現在
+的預設值，跟這台專案 production 主機一致）時區網可以直接連到，**但仍然只有反向代理/隧道白名單
+轉發的路徑才應該視為對外開放**——`0.0.0.0` 不代表不需要下面這層轉發規則，只是同網段的人不必經過
+它就摸得到整個 `/mcp`／dashboard／`/api/*`，這正是要盡量收斂到 `127.0.0.1`（或至少防火牆擋掉區網）
+的理由。下面這個 nginx 範例只轉發 `POST /github/webhook`——這一節單純為了自我更新的 webhook，其餘
+路由不透過它對外；production 實際用的是 cloudflared 隧道，白名單轉發的路徑不只 webhook 一條，完整
+清單見 §7 第 8 點：
 
 ```nginx
 # nginx 範例
@@ -1255,9 +1289,10 @@ RWE_SECRET_GITHUB_WEBHOOK_SECRET=<你在 GitHub 設的 Secret>
 （`selfUpdateDbPath` 省略即用預設 `$workRoot/self-update.db`。）
 
 > **重啟前的設定檢查。** 若 `rwe-update.sh` 執行時的環境變數帶了
-> `RWE_CONFIG_PATH`（指向這台機器實際要用的 `rwe.config.json`——寫在下面步驟五 unit 的 `Environment=`
-> 或 `EnvironmentFile=` 都行，跟 `RWE_UPDATE_FLAG` 等變數同一個機制；範本 `deploy/rwe-update.service`
-> 內建 `EnvironmentFile=-/etc/rwe/update.env`，這條線前面的 `-` 代表檔案不存在也不報錯），
+> `RWE_CONFIG_PATH`（指向這台機器實際要用的 `rwe.config.json`——範本 `deploy/rwe-update.service`
+> 已經內建一行 `Environment=RWE_CONFIG_PATH=%h/Documents/remote-workflow/rwe.config.json`，
+> `%h` 會展開成這個 user instance 的家目錄，跟 `RWE_UPDATE_FLAG` 等變數同一個機制，clone
+> 不在這個慣例路徑下要改成實際路徑），
 > `deploy/rwe-update.sh` 會在 `npm test` 綠燈之後、真正 `systemctl restart` 之前，額外跑一次
 > `npm run check-config`——用**同一條** `composeConfig()` 翻譯路徑驗證設定值（例如 `principals` 裡
 > 是否有無效的 role 值），但完全不 spawn litellm、不綁 port。驗證失敗會跟建置/測試失敗一樣安全
@@ -1269,36 +1304,30 @@ RWE_SECRET_GITHUB_WEBHOOK_SECRET=<你在 GitHub 設的 Secret>
 
 > 特權 helper（`deploy/rwe-update.sh`）負責 git checkout + build + restart，須以有 `systemctl restart rwe` 權限的使用者執行。對 systemd user service 部署，`rwe-update.service` 作為 user service 即可（user service 可 `systemctl --user restart` 自己的服務）。
 
-> **`deploy/rwe-update.path`／`deploy/rwe-update.service` 兩份範本本身沒有 `${VAR}` 佔位字元**
-> （`%h` 是 systemd 自己的 specifier，`envsubst` 不會動它；`rwe-update.service` 內建的
-> `ExecStart=/opt/remote-workflow-engine/deploy/rwe-update.sh` 與
-> `EnvironmentFile=-/etc/rwe/update.env` 是給有 root/`/opt` 安裝路徑的部署用的字面路徑）——
-> **`envsubst` 在這裡等同純複製**，不會幫你把路徑換成這台機器的實際 clone 路徑。systemd
-> **user** 部署（沒有 `/opt`、也沒有 `/etc/rwe/` 寫入權限）要在複製之後手動改兩行：
+> **`deploy/rwe-update.path`／`deploy/rwe-update.service` 兩份範本現在都是 user-service 形狀**
+> （`Environment=` 直接內建六個值，沒有 `EnvironmentFile=`／`/opt`／`/etc/rwe/` 這些 root 安裝路徑
+> 才用得到的東西；`%h` 是 systemd 自己的 specifier，會展開成這個 user instance 的家目錄）——只要
+> clone 在 `%h/Documents/remote-workflow` 這個慣例路徑下，複製過去就能直接跑，不必再手動編輯：
 
 ```bash
-cp deploy/rwe-update.path ~/.config/systemd/user/rwe-update.path      # 內容原樣即可（%h 會自動展開）
-cp deploy/rwe-update.service ~/.config/systemd/user/rwe-update.service
-# 手動改這份複製出來的 rwe-update.service（不要動 repo 裡的範本）：
-#   ExecStart=       改成這台機器上的實際路徑，例如
-#                    /home/<user>/Documents/remote-workflow/deploy/rwe-update.sh
-#   EnvironmentFile= 若沒有 /etc/rwe/update.env 的寫入權限，把這一行整個換成下面幾條
-#                    Environment= 直接寫值（user unit 完全合法，不需要額外的檔案）
+install -D -m 644 deploy/rwe-update.path ~/.config/systemd/user/rwe-update.path
+install -D -m 644 deploy/rwe-update.service ~/.config/systemd/user/rwe-update.service
+install -D -m 755 deploy/systemctl-user ~/.local/share/rwe-update/systemctl-user   # SYSTEMCTL= 指到這裡
+mkdir -p ~/.local/share/rwe-update && chmod 0700 ~/.local/share/rwe-update         # 若步驟三還沒建過
+
 systemctl --user daemon-reload
 systemctl --user enable rwe-update.path  # 讓 .path 在登入後自動監看
-
-# helper 所需的環境變數——寫進上面那份 rwe-update.service 的 Environment= 或 EnvironmentFile=：
-# 至少需要：
-#   RWE_UPDATE_FLAG   = /home/<user>/rwe-update.flag                       （必須等於 rwe.config.json 的 updateFlagPath，理由見步驟三）
-#   RWE_UPDATE_RESULT = /home/<user>/.local/share/rwe-update/result.json
-#   RWE_UPDATE_LOCK   = /home/<user>/.local/share/rwe-update/update.lock
-#   RWE_OFFICIAL_REMOTE = <git remote URL，只接受此來源的 tag>
-#   SYSTEMCTL         = 一個把 `systemctl --user "$@"` 轉呼叫的一行 wrapper 的路徑
-#                       （helper 內部呼叫的是裸指令 `systemctl restart rwe`；user 部署要讓它落到
-#                       `systemctl --user restart rwe`，最簡單的做法就是這個 wrapper，不是改 helper 本身）
-# 選用（見上方「重啟前的設定檢查」）：
-#   RWE_CONFIG_PATH   = 這台機器實際要用的 rwe.config.json 路徑——省略則 configCheck 記 skipped
 ```
+
+**clone 不在 `%h/Documents/remote-workflow` 這個慣例路徑下**，或要部署自己的 fork，才需要手動改
+複製出來的 `~/.config/systemd/user/rwe-update.service`（不要動 repo 裡的範本）：
+- `WorkingDirectory=`／`ExecStart=`／`RWE_CONFIG_PATH=` 裡的 repo 路徑——改成實際 clone 位置
+- `RWE_OFFICIAL_REMOTE=`——部署自己的 fork 才需要換成該 fork 的遠端 URL
+- `PATH=`——範本預設 `%h/.local/bin:...`；node/npm 若只裝在別的目錄（例如版本管理器的
+  `~/.local/node/bin`，見 `deploy/rwe.user.service`）要把該目錄一併加進來，否則
+  `npm ci && npm run build` 找不到 npm
+- `RWE_UPDATE_FLAG=` 必須跟 `rwe.config.json` 的 `updateFlagPath` 完全一致（見上方步驟三）
+- 選用：省略 `RWE_CONFIG_PATH=` 這一行則 configCheck 記 `skipped`（見上方「重啟前的設定檢查」）
 
 `deploy/rwe-update.path` 使用 `PathExists=` + `PathChanged=`（**不**用 `PathModified=`，避免
 只修改 metadata 的 rename 不觸發）監看旗標檔出現。`deploy/rwe-update.service` 為 `Type=oneshot`。
@@ -1355,37 +1384,37 @@ curl -s http://localhost:8787/api/version
 2. **裝好版控的 git pre-push 保護**——見上面「git pre-push 保護」小節：`git config core.hooksPath
    deploy/git-hooks`（或 symlink）。這是 clone 出來就該做的第一件事，不是部署完才補。
 
-3. **Clone repo，比對這台主機的實際客製與 repo 範本的落差**——`deploy/` 底下的 unit 檔是**範本**，
-   這台主機的即時單元經過客製，搬機前先讀一次舊主機上 `~/.config/systemd/user/` 底下的四個檔案
-   （唯讀，不要動它們），跟 `deploy/rwe.user.service`／`deploy/rwe-update.service`／
-   `deploy/rwe-update.path` 逐行比對，把落差抄進新主機那份複製出來的 unit：
-   - **`rwe.service`**：`PATH=` 除了 repo 範本已有的 node bin 目錄，**這台主機的 `gateway:"sdk"`
-     還額外把 LiteLLM venv 的 `bin/`（見下方第 5 點）排在最前面**——不排的話 systemd 用的最小
-     環境找不到 `litellm` 執行檔，開機直接 `fatal startup error: ... spawn litellm ENOENT`（§1a）。
-     `RWE_BIND`/`RWE_PORT` 這台主機分別是 `0.0.0.0`／改由一個 **`rwe.service.d/override.conf`
-     drop-in**（`[Service]` 段一行 `Environment=RWE_PORT=<實際對外 port>`）覆寫成非 8787
-     的值——`systemctl --user cat rwe.service` 能看到套用後的完整 unit，drop-in 本身不在 repo
-     範本裡，是這台主機自己加的，換機時要記得一起搬（`~/.config/systemd/user/rwe.service.d/`
-     整個目錄）或在新主機上重新加一份同樣的 override，**且要跟第 8 點的反向代理/隧道設定的
-     port 對得上**——兩邊不一致的典型症狀是隧道連得上但 502／connection refused。
-   - **`rwe-update.service`**：repo 範本是給 root/`/opt` 安裝路徑寫的（`EnvironmentFile=
-     -/etc/rwe/update.env`、`ExecStart=/opt/.../rwe-update.sh`）；這台主機是 user service，
-     已經照 §6b 步驟五現在的寫法，把六個環境變數直接用 `Environment=` 寫在 unit 裡、`ExecStart`
-     指到這台機器實際的 clone 路徑、`SYSTEMCTL` 指到一個兩行的 `systemctl --user "$@"` wrapper
-     （helper 內部呼叫裸指令 `systemctl restart rwe`，wrapper 是讓它落到 user instance 的唯一
-     方式，見 §6b 步驟五）——新主機照 §6b 步驟五現在的做法做一次即可，不需要額外發明。
-   - **`rwe-update.path`**：目前跟 repo 範本一致（`PathExists=%h/rwe-update.flag`），新主機用
-     `%h` 會自動展開成新使用者的家目錄，不必改。
+3. **Clone repo，確認 repo 範本跟這台主機的即時單元還一不一致**——2026-09-27 起
+   `deploy/rwe.user.service`／`deploy/rwe.service.d/override.conf`／`deploy/rwe-update.service`／
+   `deploy/rwe-update.path`／`deploy/systemctl-user` 已經直接照這台主機當時實際跑的 user unit
+   收斂（PATH 含 LiteLLM venv、`RWE_BIND=0.0.0.0`、`rwe-update.service` 是 inline-`Environment=`
+   的 user-service 形狀、都用 `%h`），搬機時多半不必再逐行比對落差，但仍先讀一次舊主機
+   `~/.config/systemd/user/` 底下的檔案（唯讀，不要動它們）確認沒有本 checklist 之後又長出的手動
+   客製，剩下真正要核對的：
+   - **repo 路徑**：範本假設 clone 在 `%h/Documents/remote-workflow`（`WorkingDirectory=`／
+     `ExecStart=`／`RWE_CONFIG_PATH=`）——新主機的 clone 位置不同就要手動改這幾行。
+   - **port**：`deploy/rwe.service.d/override.conf` 範本裡的 `RWE_PORT=8899` 是**這台主機自己的
+     值**，`systemctl --user cat rwe.service` 能看到套用後的完整 unit；新主機若用不同的對外 port，
+     改這個 drop-in 檔（不要動 `deploy/rwe.user.service` 本體），**且要跟第 8 點的反向代理/隧道
+     設定的 port 對得上**——兩邊不一致的典型症狀是隧道連得上但 502／connection refused。
+   - **`RWE_OFFICIAL_REMOTE`**：`deploy/rwe-update.service` 範本裡釘死的是這個專案的官方 remote
+     （`https://github.com/HsuJavis/remote-workflow-engine.git`）；新主機若部署的是自己的 fork，
+     要把這一行換成該 fork 的遠端 URL，否則 helper 會拒絕解析任何 tag。
+   - **`PATH=`（`rwe-update.service`）**：範本是 `%h/.local/bin:...`，這台主機的 npm 剛好落在
+     這裡；新主機若 node/npm 只裝在別的目錄（例如版本管理器的 `~/.local/node/bin`，見
+     `deploy/rwe.user.service`），要把那個目錄一併加進來，否則 `npm ci && npm run build`
+     找不到 npm。
    - **`~/.local/share/rwe-update/`（`RWE_UPDATE_RESULT`／`RWE_UPDATE_LOCK` 指到的那個 0700
      目錄，第 3 點步驟三已建過）這台主機上實際有的檔案**：`result.json`（最後一次更新結果，見
-     §6b「可觀測性」）、`update.lock`（flock 用的空檔）、`systemctl-user`（上面提到的兩行
-     wrapper）、以及一份 `.webhook-secret`（0600，**操作員自己留的一份 GitHub webhook secret
-     備份，不是引擎會去讀的檔案**——引擎驗 HMAC 讀的是 `RWE_SECRET_GITHUB_WEBHOOK_SECRET`
-     這個環境變數，第 4 點已經搬過去，這份檔案單純是操作員自己方便查而已，要不要一起搬純看
-     個人習慣）。**這個目錄底下若有任何 `rwe.config.json.bak-*`／`backup-*` 之類的備份檔，一律
-     當成跟正式 `rwe.config.json` 一樣機密處理**（見下方第 7 點：這台主機的 `rwe.config.json`
-     目前明碼含 Google OAuth client secret，備份檔自然也含），不要圖方便丟進任何非 600 權限的
-     位置或連同其他非機密檔案一起打包外流。
+     §6b「可觀測性」）、`update.lock`（flock 用的空檔）、`systemctl-user`（現在就是
+     `deploy/systemctl-user`，見 §6b 步驟五，新主機用 `install -D -m 755` 裝過去即可，不必手打）、
+     以及一份 `.webhook-secret`（0600，**操作員自己留的一份 GitHub webhook secret 備份，不是引擎
+     會去讀的檔案**——引擎驗 HMAC 讀的是 `RWE_SECRET_GITHUB_WEBHOOK_SECRET` 這個環境變數，第 4
+     點已經搬過去，這份檔案單純是操作員自己方便查而已，要不要一起搬純看個人習慣）。**這個目錄
+     底下若有任何 `rwe.config.json.bak-*`／`backup-*` 之類的備份檔，一律當成跟正式
+     `rwe.config.json` 一樣機密處理**（見下方第 7 點：這台主機的 `rwe.config.json` 目前明碼含
+     Google OAuth client secret，備份檔自然也含），不要圖方便丟進任何非 600 權限的位置或連同其他
+     非機密檔案一起打包外流。
 
 4. **`rwe.env`（`~/.config/rwe.env`，權限 600）——只搬「鍵名」對得上的那些，值本身直接複製檔案**：
    這台主機目前有 `RWE_SECRET_GITHUB_TOKEN`（`issue_report`/Issues 儀表板用）、

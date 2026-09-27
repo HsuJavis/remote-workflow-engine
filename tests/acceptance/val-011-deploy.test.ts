@@ -74,3 +74,81 @@ describe('Deploy packaging artifacts (REQ-011, DES-022)', () => {
     expect(text).toMatch(/refs\/heads\/master/);
   });
 });
+
+// 2026-09-27 host-migration follow-up: the USER-mode templates must mirror the production host's
+// live units (shape + values), generalized with systemd's %h specifier (home dir) so they are
+// copy-installable for any user, not just the one machine they were captured from. Comment lines
+// are stripped before the "%h, never a literal /home/" assertion so an explanatory comment can't
+// false-positive the guard.
+function stripUnitComments(text: string): string {
+  return text
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('#') && !l.trim().startsWith(';'))
+    .join('\n');
+}
+
+describe('User-mode systemd templates mirror the live host units (host-migration 2026-09-27)', () => {
+  it('deploy/rwe.user.service PATH includes the LiteLLM venv bin dir (matches gateway:"sdk" live unit)', () => {
+    const text = readFileSync(join(REPO_ROOT, 'deploy', 'rwe.user.service'), 'utf8');
+    expect(text).toMatch(/Environment=PATH=.*\.rwe-litellm-venv\/bin/);
+  });
+
+  it('deploy/rwe.user.service ships RWE_BIND=0.0.0.0 (mirrors the live unit; drop-in/edit for loopback-only)', () => {
+    const text = readFileSync(join(REPO_ROOT, 'deploy', 'rwe.user.service'), 'utf8');
+    expect(text).toMatch(/^Environment=RWE_BIND=0\.0\.0\.0$/m);
+  });
+
+  it('deploy/rwe.user.service base RWE_PORT stays 8787 — the port surface is the drop-in, not this file', () => {
+    const text = readFileSync(join(REPO_ROOT, 'deploy', 'rwe.user.service'), 'utf8');
+    expect(text).toMatch(/^Environment=RWE_PORT=8787$/m);
+  });
+
+  it('deploy/rwe.service.d/override.conf exists and sets the live host\'s RWE_PORT (8899)', () => {
+    const p = join(REPO_ROOT, 'deploy', 'rwe.service.d', 'override.conf');
+    expect(existsSync(p)).toBe(true);
+    const text = readFileSync(p, 'utf8');
+    expect(text).toMatch(/^\[Service\]$/m);
+    expect(text).toMatch(/^Environment=RWE_PORT=8899$/m);
+  });
+
+  it('deploy/rwe-update.service is the user-unit inline-Environment shape, not the root//opt//etc/rwe shape', () => {
+    const text = readFileSync(join(REPO_ROOT, 'deploy', 'rwe-update.service'), 'utf8');
+    expect(text).not.toMatch(/\/opt\/remote-workflow-engine/);
+    expect(text).not.toMatch(/\/etc\/rwe\/update\.env/);
+    expect(text).toMatch(/^Environment=RWE_UPDATE_FLAG=%h\/rwe-update\.flag$/m);
+    expect(text).toMatch(/^Environment=RWE_UPDATE_RESULT=%h\/\.local\/share\/rwe-update\/result\.json$/m);
+    expect(text).toMatch(/^Environment=RWE_UPDATE_LOCK=%h\/\.local\/share\/rwe-update\/update\.lock$/m);
+    expect(text).toMatch(/^Environment=RWE_OFFICIAL_REMOTE=https:\/\/github\.com\//m);
+    expect(text).toMatch(/^Environment=SYSTEMCTL=%h\/\.local\/share\/rwe-update\/systemctl-user$/m);
+    expect(text).toMatch(/^Environment=RWE_CONFIG_PATH=%h\/.*rwe\.config\.json$/m);
+    expect(text).toMatch(/^SuccessExitStatus=0 10 20 30 40$/m);
+  });
+
+  it('deploy/systemctl-user exists, is executable, and wraps `systemctl --user`', () => {
+    const p = join(REPO_ROOT, 'deploy', 'systemctl-user');
+    expect(existsSync(p)).toBe(true);
+    expect(statSync(p).mode & 0o111).not.toBe(0);
+    const text = readFileSync(p, 'utf8');
+    expect(text).toMatch(/systemctl --user "\$@"/);
+  });
+
+  it('deploy/rwe-update.path is unchanged: still %h, no literal home path', () => {
+    const text = readFileSync(join(REPO_ROOT, 'deploy', 'rwe-update.path'), 'utf8');
+    expect(text).toMatch(/^PathExists=%h\/rwe-update\.flag$/m);
+    expect(text).toMatch(/^PathChanged=%h\/rwe-update\.flag$/m);
+  });
+
+  it('none of the four user-mode templates hardcode a literal /home/<user> path (comments excluded)', () => {
+    const files = ['rwe.user.service', 'rwe-update.service', 'rwe-update.path', 'rwe.service.d/override.conf'];
+    for (const f of files) {
+      const text = stripUnitComments(readFileSync(join(REPO_ROOT, 'deploy', f), 'utf8'));
+      expect(text, `${f} should use %h, not a literal /home/ path`).not.toMatch(/\/home\//);
+    }
+  });
+
+  it('the root/system-mode deploy/rwe.service keeps its /opt literals (NOT %h — %h under User=rwe would resolve to root\'s home, not the service user\'s)', () => {
+    const text = readFileSync(join(REPO_ROOT, 'deploy', 'rwe.service'), 'utf8');
+    expect(text).toMatch(/WorkingDirectory=\/opt\/remote-workflow-engine/);
+    expect(text).not.toMatch(/%h/);
+  });
+});

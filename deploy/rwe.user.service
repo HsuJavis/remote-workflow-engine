@@ -4,15 +4,19 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/user/Documents/remote-workflow
+WorkingDirectory=%h/Documents/remote-workflow
 # systemd 用最小環境,node 由使用者版本管理器提供 —— 把它的 bin 放進 PATH,
-# 並用 node 絕對路徑直接跑 tsx(繞過不存在的 /usr/local/bin/npm)
-Environment=PATH=/home/user/.local/node/bin:/usr/local/bin:/usr/bin:/bin
-Environment=RWE_BIND=127.0.0.1
+# 並用 node 絕對路徑直接跑 tsx(繞過不存在的 /usr/local/bin/npm)。
+# LiteLLM venv 的 bin/ 排在最前面(gateway:"sdk" 開機時要 spawn litellm,見 DEPLOY.md §1a/§2)——
+# 只用 gateway:"direct-fetch" 的部署用不到這段,目錄不存在時 PATH 解析直接跳過,無害。
+Environment=PATH=%h/.rwe-litellm-venv/bin:%h/.local/node/bin:/usr/local/bin:/usr/bin:/bin
+# 0.0.0.0 會把這個 port 暴露在區網 —— 這是本專案 production 機器實際跑的值,搭配 cloudflared/
+# nginx 只轉發白名單路徑(見 DEPLOY.md §6b 步驟二、§7 第 8 點)。單機/不對外的部署改成 127.0.0.1。
+Environment=RWE_BIND=0.0.0.0
 Environment=RWE_PORT=8787
-Environment=RWE_CONFIG_PATH=/home/user/Documents/remote-workflow/rwe.config.json
+Environment=RWE_CONFIG_PATH=%h/Documents/remote-workflow/rwe.config.json
 EnvironmentFile=-%h/.config/rwe.env
-ExecStart=/home/user/.local/node/bin/node /home/user/Documents/remote-workflow/node_modules/tsx/dist/cli.mjs src/main.ts
+ExecStart=%h/.local/node/bin/node %h/Documents/remote-workflow/node_modules/tsx/dist/cli.mjs src/main.ts
 Restart=on-failure
 RestartSec=2
 
