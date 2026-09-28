@@ -209,7 +209,19 @@ export function projectWorkflowDescribe(
   const attempts = ctx.attempts ?? DEFAULT_ATTEMPTS;
   const paramsRaw = full.params as { agents?: Record<string, AgentParamSpec>; args?: Record<string, ParamSpec> } | undefined;
   const legacy = isLegacyParamsShape(full.params);
-  const published = full.channels['release'] != null || full.channels['beta'] != null;
+  // #98 item 6: an explicit `version` selector (`full.resolvedBy === 'version'`) is what
+  // `run_start({version})` ALSO resolves regardless of publication state (REQ-097 "explicit
+  // version wins over any channel", and a non-release version is never even reached by a `channel`/
+  // default-release selector — `resolveVersionRequest` throws CHANNEL_UNPUBLISHED before `full` is
+  // ever built when that pointer is null, so `published` for THOSE two `resolvedBy` values is
+  // always true by construction anyway). The bug this fixes: the OLD `release!=null||beta!=null`
+  // term answered CHANNEL_UNPUBLISHED for an owner describing their OWN never-published version by
+  // explicit id, even though `run_start({version})` runs it fine for them — the read and the run
+  // path disagreed about the same row. By the time this function runs, `McpFacade.workflowDescribe`
+  // has already refused a NON-owner's non-release request (VERSION_NOT_FOUND, Q5) with the SAME
+  // `canRunResolved` predicate `RunManager.start()` uses, so `published` here answers ONLY for a
+  // caller who really could run this exact resolved version — never a masking concern.
+  const published = full.resolvedBy === 'version' || full.channels['release'] != null || full.channels['beta'] != null;
   // issue #93 item 3: the SAME `admissionRefusal()` predicate `RunManager.start()` calls, keyed on
   // the SAME OR'd origin: this call is remote, OR this version was registered remotely. Checked
   // LAST — after `legacy`/`published` — mirroring `RunManager.start()`'s own precedence exactly

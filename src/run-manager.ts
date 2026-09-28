@@ -43,7 +43,7 @@ import { AgentExecutor } from './agent-executor.js';
 import { redact, hasSecretMarker } from './secret-resolver.js';
 import type { SecretValueProvider } from './secret-resolver.js';
 import { ResumeCache, MISS, type ResumePlan } from './resume-cache.js';
-import { WorkflowCatalog } from './workflow-catalog.js';
+import { WorkflowCatalog, canRunResolved, actorFromPrincipal, type Actor } from './workflow-catalog.js';
 import { assetRootsFor, defaultAssetRoot, globalAssetRoot } from './asset-sync.js';
 import type { GatewayClient, GatewayConfig } from './gateway/client.js';
 import { LiteLLMGatewayClient } from './gateway/client.js';
@@ -550,8 +550,21 @@ export class RunManager {
   /** `overrides` (v21, ARCH-066, DES-104) is an ARGUMENT, never a RunSpec field — persisting it on
    *  RunSpec (read back wholesale by getSpec() on resume) would be a second unredacted sink plus a
    *  standing temptation to re-merge on resume. The redacted `effectiveParams` snapshot (below) is
-   *  the single durable representation. */
-  async start(spec: RunSpec, overrides?: unknown): Promise<string> {
+   *  the single durable representation.
+   *
+   *  `actor` (v38, issue #100 owner-approved policy): the caller's OWN bypass/identity, minted by
+   *  `McpFacade.runStart` via the SAME `actorFor(principal, a, 'bypass')` register/publish/
+   *  deregister already use (workflow-catalog.ts's `canMutate` notion, applied here unchanged) —
+   *  threaded as a THIRD argument, never a `RunSpec` field, so it is never persisted/read back on
+   *  resume (Q3 of issue #100 is the resume agent's own concern, not this admission gate's).
+   *  Omitted by every non-facade start() site (scheduler.ts/webhook-registry.ts/server.ts's ticker,
+   *  the nested `workflow()` frame, and every pre-#100 test) — those default to
+   *  `actorFromPrincipal(spec.principal ?? null)`, the SAME reproduction `workflow-catalog.ts` already
+   *  established for a legacy `principal`-only caller. All of those sites resolve the DEFAULT
+   *  (release) selector unconditionally already (no `version`/`channel` ever reaches them), so the
+   *  new gate below is a no-op for them regardless of which Actor shape they fall back to. */
+  async start(spec: RunSpec, overrides?: unknown, actor?: Actor): Promise<string> {
+    const resolvedActor = actor ?? actorFromPrincipal(spec.principal ?? null);
     // issue #93 item 2 (2026-09-26, amends ADR-086's third owner ruling 2026-09-25): the
     // confinement door is now a DEFERRED refusal, not an immediate one. It used to throw here, as
     // the FIRST statement in the function, ahead of every other check — that made call-tool.ts's
@@ -677,7 +690,28 @@ export class RunManager {
     if (spec.name && !spec.script) {
       // v22 (REQ-097, DES-114, TASK-109): the wire selector — explicit `version` wins over `channel`;
       // neither supplied defaults to `release` (DES-110's resolveVersionRequest truth table).
-      const registered = await this._catalog.resolve(spec.name, { version: spec.version, channel: spec.channel }); // throws CatalogNotFoundError/typed resolve error — caught by SubmissionValidator pre-run
+      // v38 (issue #100): `resolveDetail`, not `resolve` — the ONLY change from the pre-#100 shape
+      // is that this now ALSO reads `owner`/`channels`, which `resolve()` deliberately omits ("an
+      // authorization input stays off the execution read" — still true for `resolve()` itself;
+      // `_handleWorkflowRequest`'s nested-frame admission, below, still calls the owner-blind
+      // `resolve()` because a nested call always resolves release regardless of owner, so it has no
+      // use for either field). `resolveDetail` internally calls `resolve()` once and keeps what it
+      // already fetched — same SQL, not a second query.
+      const registered = await this._catalog.resolveDetail(spec.name, { version: spec.version, channel: spec.channel }); // throws CatalogNotFoundError/typed resolve error — caught by SubmissionValidator pre-run
+      // v38 (issue #100, owner-approved policy): the NON-OWNER version-pin gate — placed FIRST,
+      // immediately after the version/channel selector resolves and BEFORE the registeredRemote
+      // confinement recheck and LEGACY_REREGISTER below, so a non-owner probing a private/legacy/
+      // unconfined-tainted version learns nothing beyond VERSION_NOT_FOUND — the SAME code and
+      // message SHAPE `resolveVersionRequest` itself uses for a genuinely unknown version (Q5:
+      // existence-masking; a hidden non-release version and a real 404 must be indistinguishable).
+      // `canRunResolved` reuses `canMutate`'s own owner/bypass/ownerless notion (Q1/Q2/Q5's explicit
+      // instruction) — an owner, a bypass actor (admin/auth-disabled/loopback-exempt, matching
+      // `workflow_publish`/`workflow_deregister`'s existing bypass), or an ownerless legacy row may
+      // reach ANY version; everyone else only the CURRENT RELEASE.
+      if (!canRunResolved(registered.owner, resolvedActor, registered.version, registered.channels, spec.channel)) {
+        const label = spec.version ?? spec.channel ?? 'release';
+        throw codedError('VERSION_NOT_FOUND', `VERSION_NOT_FOUND: ${label} (workflow '${spec.name}')`);
+      }
       // issue #93 item 2: the SECOND admission check — the resolved VERSION's own
       // `registeredRemote`, known only now (after `catalog.resolve()`, so WORKFLOW_NOT_FOUND/
       // VERSION_NOT_FOUND/CHANNEL_UNPUBLISHED above already had priority). RECORDS into

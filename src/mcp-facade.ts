@@ -10,7 +10,7 @@ import type { RunStore } from './run-store.js';
 import { InMemoryRunStore, TERMINAL } from './run-store.js';
 import { RunManager, DEFAULT_RUN_CONCURRENCY, admissionRefusal } from './run-manager.js';
 import { CONFINEMENT_REMEDIATION } from './gateway/confinement-probe.js';
-import { resolveVersionRequest, type WorkflowDetail, type Channel, type VersionSelector, type Actor } from './workflow-catalog.js';
+import { resolveVersionRequest, canRunResolved, type WorkflowDetail, type Channel, type VersionSelector, type Actor } from './workflow-catalog.js';
 import { SubmissionValidator } from './submission-validator.js';
 // v24 Gate 7.5 (D-3): `toErrEnvelope` is IMPORTED, not re-implemented. This file used to carry a
 // private copy whose envelope had no `see` field at all, and since every `workflow_*` handler
@@ -559,7 +559,7 @@ export class McpFacade {
   // locality, folded into `runnable`/`runnableReason` below alongside the resolved version's own
   // `registeredRemote` (already read off `full`, a few lines down) so a caller who would actually
   // be refused CONFINEMENT_UNAVAILABLE by `run_start` is told so here too, truthfully.
-  async workflowDescribe(a: { name: string; version?: string; channel?: 'beta' | 'release' }, _principal: Principal, isRemoteSubmission = false): Promise<Record<string, unknown>> {
+  async workflowDescribe(a: { name: string; version?: string; channel?: 'beta' | 'release' }, principal: Principal, isRemoteSubmission = false): Promise<Record<string, unknown>> {
     const catalog = this.runManager.catalog;
     const sel: VersionSelector = { version: a.version, channel: a.channel };
     let full: WorkflowDetail;
@@ -567,6 +567,16 @@ export class McpFacade {
       full = await catalog.resolveDetail(a.name, sel);
     } catch (err) {
       return { runId: '', status: 'failed', ...catalogResolveFailure(err, a.name) };
+    }
+    // v38 (issue #100 Q5, owner-approved policy): a non-owner explicitly asking for a version/
+    // channel other than the current release is answered EXACTLY like an unknown version —
+    // `catalogResolveFailure` on a hand-built VERSION_NOT_FOUND, same code+message shape
+    // `resolveVersionRequest` itself uses — so describe never discloses more about a version a
+    // non-owner could not run anyway (mermaid/params/triggers/etc, all built below this point).
+    // Same `canRunResolved`/`actorFor(...,'bypass')` mechanism `RunManager.start()` now gates on.
+    if (!canRunResolved(full.owner, actorFor(principal, a, 'bypass'), full.version, full.channels, a.channel)) {
+      const label = a.version ?? a.channel ?? 'release';
+      return { runId: '', status: 'failed', ...catalogResolveFailure(codedError('VERSION_NOT_FOUND', `VERSION_NOT_FOUND: ${label} (workflow '${a.name}')`), a.name) };
     }
     const requested = resolveVersionRequest(sel, full.channels, new Set(full.versions));
     const meta = parseMeta(full.script);
@@ -792,7 +802,14 @@ export class McpFacade {
     const validation = await this.validator.validate({ name: a.name });
     if (!validation.ok) return { runId: '', status: 'failed', error: validation.errors[0] };
     try {
-      const attributed = attributionPrincipal(principal);
+      // v38 (issue #100 owner-approved policy): minted via the SAME `actorFor(...,'bypass')`
+      // `workflowDeregister`/`workflowPublish` already use (L461/L497/L546) — `.id` is the
+      // attribution answer (byte-identical to the old `attributionPrincipal(principal)`: run_start's
+      // schema is `additionalProperties:false` and declares no `principal` property, so
+      // `attributionWithArg`'s `args.principal` override is never actually reachable here — see its
+      // own doc comment), `.bypass` is the NEW fact `RunManager.start()`'s non-owner version-pin
+      // gate needs and did not have before.
+      const actor = actorFor(principal, a, 'bypass');
       const runId = await this.runManager.start({
         name: a.name, args: normalizeArgs(a.args), budget: a.budget ?? null, version: a.version, startedBy: { type: 'client' },
         origin: isRemoteSubmission ? 'remote' : 'local',
@@ -804,8 +821,8 @@ export class McpFacade {
         ...(a.seedManifest !== undefined ? { seedManifest: a.seedManifest } : {}),
         ...(a.seedRef !== undefined ? { seedRef: a.seedRef } : {}),
         ...(a.seedManifestRef !== undefined ? { seedManifestRef: a.seedManifestRef } : {}),
-        ...(attributed ? { principal: attributed } : {}),
-      }, a.overrides);
+        ...(actor.id ? { principal: actor.id } : {}),
+      }, a.overrides, actor);
       const view = await this.store.getRun(runId);
       // Issue #73 (d): non-fatal — the run is already admitted; these only say what to expect.
       const warnings = this.runManager.takeAdmissionWarnings?.(runId) ?? [];

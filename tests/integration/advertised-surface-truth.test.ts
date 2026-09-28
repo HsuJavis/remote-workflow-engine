@@ -75,10 +75,18 @@ describe('workflow_describe advertises the arguments it accepts (IT-130, D-7, RE
     const bare = await call('workflow_describe', { name });
     expect(bare.error?.code ?? bare.code).toBe('CHANNEL_UNPUBLISHED');
 
+    // v38 (issue #100 + #98 item 6 fix, 2026-09-28): this used to assert `runnable:false,
+    // runnableReason:'CHANNEL_UNPUBLISHED'` here — that was the DEFECT #98 item 6 reports, not the
+    // intended behaviour: an explicit `version` selector resolves (and `run_start({version})` runs
+    // it) regardless of channel-publication state; only a bare/`channel` selector's resolution
+    // depends on a channel pointer being non-null, and that pointer is already known non-null by
+    // the time `full` is built (`resolveVersionRequest` throws CHANNEL_UNPUBLISHED before then
+    // otherwise). `workflow_describe` now computes `runnable` for the RESOLVED version, matching
+    // `run_start` — see workflow-view.ts's `published` computation and its own comment.
     const pinned = await call('workflow_describe', { name, version: 'v1' });
     expect(pinned.error).toBeUndefined();
-    expect(pinned.result.runnable).toBe(false);
-    expect(pinned.result.runnableReason).toBe('CHANNEL_UNPUBLISHED');
+    expect(pinned.result.runnable).toBe(true);
+    expect(pinned.result.runnableReason).toBeNull();
   });
 });
 
