@@ -1,12 +1,16 @@
-// UT-102 (DES-112, ARCH-074, TASK-106): pure `src/script-checks.ts` — validateScriptEntry with
-// injected ports + the shared `FRAME_CLOSE_FORGERY` frame-delimiter predicate (P6-2's registration
-// half, re-exported never re-declared).
+// UT-102 (DES-112, ARCH-074, TASK-106): pure `src/script-checks.ts` — validateScriptEntry (now
+// PARSE_ERROR only, see file header) + the shared `FRAME_CLOSE_FORGERY` frame-delimiter predicate
+// (P6-2's registration half, re-exported never re-declared).
 //
-// Mock policy (unit, DES-119): pure module, zero I/O/VM/clock/randomness — every port is a plain
-// value/function the test constructs.
+// Mock policy (unit, DES-119): pure module, zero I/O/VM/clock/randomness.
 //
 // Red reason: `src/script-checks.ts` does not exist yet → MODULE NOT FOUND, all cases fail at
 // collect time. Correct red for an unimplemented module (v15/v21 precedent).
+//
+// issue #103(a): the `mcpLookup`-port / MCP_NOT_PROVISIONED cases this file used to pin here are
+// RETIRED along with that mechanism (never wired to a real catalog in production) — see
+// script-checks.ts's own header for where MCP/skill provisioning is checked now (a registration
+// warning + an admission-time refusal, both against the real asset catalog).
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -14,56 +18,16 @@ import { join, relative } from 'node:path';
 // established RED idiom, see tests/unit/scheduler-port.test.ts's header comment).
 import { validateScriptEntry, violatesFrameDelimiter, FRAME_CLOSE_FORGERY } from '../../src/script-checks.js';
 
-// 2026-09-26 (alias mechanism removed): `ScriptCheckPorts` is now `{ mcpLookup }` only — the
-// model-alias static scan this file used to pin (`UNKNOWN_ALIAS`, the openrouter-passthrough
-// carve-out) is DELETED WITH NO SUCCESSOR AT THIS LAYER, per `script-checks.ts`'s own header
-// comment: it only ever matched an agent() call's `model` OPT (already refused PARAM_IN_SCRIPT
-// elsewhere) or a `model.enum` entry (checked properly, with catalog existence, by
-// `contract.ts`'s `validateOneAgentSpec` — see tests/unit/params-contract.test.ts and
-// tests/acceptance/val-109-registration-checks.test.ts for the successor coverage). The two
-// deleted cases here were: "UNKNOWN_ALIAS: a script referencing an unresolvable model alias is
-// refused with that code" and "the openrouter/<id> passthrough is accepted unchanged — not
-// UNKNOWN_ALIAS".
-function ports(overrides: Partial<{ mcpLookup: (n: string) => boolean }> = {}) {
-  return {
-    mcpLookup: overrides.mcpLookup ?? (() => true),
-  };
-}
-
 describe('validateScriptEntry (DES-112, UT-102) — lifted verbatim from submission-validator.ts', () => {
   it('PARSE_ERROR: a script that fails to parse is refused with that code', () => {
-    const r = validateScriptEntry('this is not { valid javascript (((', ports());
+    const r = validateScriptEntry('this is not { valid javascript (((');
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.errors.map((e: { code: string }) => e.code)).toContain('PARSE_ERROR');
   });
 
-  it('MCP_NOT_PROVISIONED: a script referencing an unprovisioned MCP server name is refused with that code', () => {
-    const r = validateScriptEntry(`await agent('a', { mcp: ['not-provisioned'] });`, ports({ mcpLookup: () => false }));
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.errors.map((e: { code: string }) => e.code)).toContain('MCP_NOT_PROVISIONED');
-  });
-
-  it('a clean script referencing a provisioned MCP name is accepted', () => {
-    const r = validateScriptEntry(`await agent('a', { mcp: ['known'] });`, ports({ mcpLookup: (n) => n === 'known' }));
+  it('a clean script referencing an mcp name is accepted (provisioning is not checked at this layer)', () => {
+    const r = validateScriptEntry(`await agent('a', { mcp: ['not-provisioned'] });`);
     expect(r.ok).toBe(true);
-  });
-
-  // 2026-09-26: rewritten onto the two checks this layer still performs — a script can be BOTH
-  // unparseable AND reference an unprovisioned MCP name at once (`extractMcpNames` scans the raw
-  // text unconditionally, outside the parse try/catch), so both codes surface together.
-  it('returns ALL errors in one call (an author fixing multiple things needs one round trip)', () => {
-    const r = validateScriptEntry(`this is not { valid javascript ((( mcp: ['gone']`, ports({ mcpLookup: () => false }));
-    expect(r.ok).toBe(false);
-    if (!r.ok) {
-      const codes = r.errors.map((e: { code: string }) => e.code).sort();
-      expect(codes).toEqual(['MCP_NOT_PROVISIONED', 'PARSE_ERROR']);
-    }
-  });
-
-  it('mcpLookup is invoked as a (name) => boolean predicate, never handed the registry object itself', () => {
-    let sawArg: unknown;
-    validateScriptEntry(`await agent('a', { mcp: ['x'] });`, ports({ mcpLookup: (n) => { sawArg = n; return true; } }));
-    expect(sawArg).toBe('x');
   });
 });
 
@@ -117,7 +81,7 @@ describe('PARSE_ERROR names the line and the construct (UT-214, defect D6)', () 
   const META = "export const meta = {\n  description: 'x',\n  params: { agents: {} },\n};\n";
 
   function parseError(script: string) {
-    const r = validateScriptEntry(script, ports());
+    const r = validateScriptEntry(script);
     if (r.ok) throw new Error('expected a refusal');
     const e = r.errors.find((x) => x.code === 'PARSE_ERROR');
     if (!e) throw new Error(`expected PARSE_ERROR, got ${r.errors.map((x) => x.code).join(',')}`);

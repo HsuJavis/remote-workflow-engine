@@ -783,9 +783,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v15 (DES-098, DES-099, TASK-089): boot backfill + registration-time model-ref existence check.
   const catalog = new WorkflowCatalog(workRoot, clock, {
     backfillOwner: config?.auth?.enabled ? true : undefined,
-    // v24 (TASK-139/DES-159): the McpRegistry-backed `mcpLookup` is gone with the registry — no
-    // replacement wiring here (defaults to WorkflowCatalog's own accept-all, unconfigured `() =>
-    // true`; TASK-143/145 own the v24 catalog-backed MCP asset check).
+    // v24 (TASK-139/DES-159): the McpRegistry-backed `mcpLookup` is gone with the registry.
+    // issue #103(a): `WorkflowCatalog` doesn't take an `mcpLookup` opt at all any more — the v24
+    // catalog-backed MCP/skill asset check now lives entirely in `mcp-facade.ts`'s
+    // `workflowRegister` (a non-fatal warning, via `AssetSyncService.resolveDeclaredAssets`) and
+    // `run-manager.ts`'s `start()` (an admission-time refusal, same resolver).
     // 2026-09-26 (alias mechanism removed, owner decision 6): the SAME `modelBook` every run's
     // admission pins against, adapted to `providers.ts`'s pure snapshot shape — fetched fresh (never
     // memoized here) on every `validateRegistration()` call, so ModelBook's own TTL is the only

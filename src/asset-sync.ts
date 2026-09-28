@@ -366,6 +366,21 @@ export class AssetSyncService {
     return scope === 'workflow' ? join(this._workRoot, workflow!, 'skill', name) : join(this._globalRoot, 'skill', name);
   }
 
+  /** issue #103(a): the ONE resolver both registration (a non-fatal warning) and admission (a
+   *  refusal before any side effect — run_start, a schedule/webhook firing, a nested workflow()
+   *  call) use — the SAME rule dispatch itself resolves with (`gateway/claude-agent-sdk-client.ts`'s
+   *  `materializeAssets` for skills: workflow-scoped tree, then global; this class's own
+   *  `resolveMcp` for mcp: workflow-scoped row, then global) — so admission and dispatch can never
+   *  disagree about what is or isn't provisioned. Skill existence is a plain `existsSync` on the
+   *  SAME two paths `materializeAssets`/`_skillRoot` check, not a second implementation of that
+   *  rule. Empty declared sets short-circuit to empty missing sets with no catalog/fs work at all. */
+  async resolveDeclaredAssets(workflow: string, declared: { skills: string[]; mcp: string[] }): Promise<{ missingSkills: string[]; missingMcp: string[] }> {
+    const missingSkills = declared.skills.filter((name) =>
+      !existsSync(this._skillRoot('workflow', workflow, name)) && !existsSync(this._skillRoot('global', undefined, name)));
+    const { missing: missingMcp } = declared.mcp.length > 0 ? await resolveMcp(this._catalog, workflow, declared.mcp) : { missing: [] };
+    return { missingSkills, missingMcp };
+  }
+
   async push(req: AssetPushRequest): Promise<{ error: string; detail?: Record<string, unknown> } | { stored: string }> {
     const kind = (req as { kind: string }).kind;
     if (kind !== 'skill' && kind !== 'mcp') {

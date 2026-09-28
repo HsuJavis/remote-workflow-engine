@@ -10,14 +10,9 @@ import { describe, it, expect } from 'vitest';
 import { SubmissionValidator } from '../../src/submission-validator.js';
 import { validateScriptEntry } from '../../src/script-checks.js';
 
-// 2026-09-26 (alias mechanism removed): `ScriptCheckPorts` is now `{ mcpLookup }` only.
-const PORTS = {
-  mcpLookup: () => true,
-};
-
 describe('the moved script checks (ADR-013: script-checks.ts, enforced at catalog.register)', () => {
   it('valid script returns ok:true', () => {
-    const result = validateScriptEntry('return 42;', PORTS);
+    const result = validateScriptEntry('return 42;');
     expect(result.ok).toBe(true);
   });
 
@@ -27,12 +22,12 @@ describe('the moved script checks (ADR-013: script-checks.ts, enforced at catalo
     // illegal inside a function body -> PARSE_ERROR "Unexpected token 'export'", so NO real workflow
     // could ever be registered. The check must strip the meta first (as the sandbox does).
     const script = `export const meta = { name: 'x', description: 'd', phases: [{ title: 'P' }] };\nphase('P');\nreturn 1;`;
-    const result = validateScriptEntry(script, PORTS);
+    const result = validateScriptEntry(script);
     expect(result.ok).toBe(true);
   });
 
   it('TypeScript syntax in script returns ok:false with PARSE_ERROR', () => {
-    const result = validateScriptEntry('const x: number = 1; return x;', PORTS);
+    const result = validateScriptEntry('const x: number = 1; return x;');
     expect(result.ok).toBe(false);
     if (!result.ok) {
       const codes = result.errors.map((e) => e.code);
@@ -48,7 +43,7 @@ describe('the moved script checks (ADR-013: script-checks.ts, enforced at catalo
   // and tests/acceptance/val-109-registration-checks.test.ts.
 
   it('errors array entries each have code, message fields', () => {
-    const result = validateScriptEntry('const x: number = 1;', PORTS);
+    const result = validateScriptEntry('const x: number = 1;');
     expect(result.ok).toBe(false);
     if (!result.ok) {
       for (const err of result.errors) {

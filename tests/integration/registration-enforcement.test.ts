@@ -3,13 +3,21 @@
 // `maxWorkflowVersions` threads through the SAME `WorkflowCatalogOpts.ceilings` object as the
 // engine's other ceilings (no new plumbing).
 //
-// Mock policy (integration, DES-119): real WorkflowCatalog + real SQLite under a tmp workRoot; the
-// MCP lookup is the catalog's own injected port (no network).
+// Mock policy (integration, DES-119): real WorkflowCatalog + real SQLite under a tmp workRoot.
 //
 // Red reason: `register()` today runs ONLY `validateHarnessDefaults` + the v21 param-contract
 // checks — it never calls the lifted `validateScriptEntry` (which doesn't exist yet either), so a
-// script with an unparseable body / unknown model ref / unprovisioned MCP name registers
-// successfully today. Correct red for unimplemented enforcement.
+// script with an unparseable body / unknown model ref registers successfully today. Correct red
+// for unimplemented enforcement.
+//
+// issue #103(a): the unprovisioned-MCP case this file used to pin here (`catalog.register()`
+// throwing `MCP_NOT_PROVISIONED` via an injected `mcpLookup` predicate) is RETIRED —
+// `WorkflowCatalog` no longer knows anything about MCP/skill provisioning at all (that predicate
+// was never wired to a real catalog in production anyway). The owner-decided replacement — a
+// non-fatal `result.warnings` entry at registration, and an admission-time refusal against the
+// REAL asset catalog — is covered at the facade/run-manager level: see
+// tests/integration/registration-mcp-provisioning-warning.test.ts and
+// tests/integration/run-start-mcp-skill-provisioning.test.ts.
 import { describe, it, expect } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -23,8 +31,8 @@ const CLOCK = new FixedClock(new Date('2026-01-01T00:00:00Z'));
 
 // 2026-09-26 (alias mechanism removed): there is no alias set to inject any more — a full ref is
 // checked on its own shape (+ catalog existence for openrouter/ollama), never against a name table.
-function makeCatalog(workRoot: string, mcpLookup: (name: string) => boolean = () => true) {
-  return new WorkflowCatalog(workRoot, CLOCK, { mcpLookup });
+function makeCatalog(workRoot: string) {
+  return new WorkflowCatalog(workRoot, CLOCK);
 }
 
 describe('registration enforces validateScriptEntry — same codes submission used to produce (ADR-013, IT-085)', () => {
@@ -62,22 +70,12 @@ describe('registration enforces validateScriptEntry — same codes submission us
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
-  it('a script referencing an unprovisioned MCP name is refused MCP_NOT_PROVISIONED, nothing stored', async () => {
+  // issue #103(a): a script declaring an mcp name no longer refuses registration at all — see this
+  // file's header note for where that case's coverage moved.
+  it('a clean script with a valid model ref, declaring an mcp name, registers fine (provisioning is no longer checked here)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rwe-it085-'));
     try {
-      const catalog = makeCatalog(dir, () => false);
-      await expect(
-        // @ts-expect-error — v24 register() takes {name, script, mermaid, ...}; omitted here since MCP_NOT_PROVISIONED fires before the mermaid check
-        catalog.register({ name: 'bad-mcp', script: `await agent('a', { mcp: ['nope'] });` }),
-      ).rejects.toMatchObject({ code: 'MCP_NOT_PROVISIONED' });
-      expect(await catalog.exists('bad-mcp')).toBe(false);
-    } finally { rmSync(dir, { recursive: true, force: true }); }
-  });
-
-  it('a clean script with a valid model ref and provisioned MCP name registers fine', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'rwe-it085-'));
-    try {
-      const catalog = makeCatalog(dir, (n) => n === 'known');
+      const catalog = makeCatalog(dir);
       const script =
         `export const meta = { params: { agents: { a: { ` +
         `model: { type: 'string', default: ${JSON.stringify(DEFAULT_FIXTURE_MODEL)} }, ` +
@@ -85,7 +83,7 @@ describe('registration enforces validateScriptEntry — same codes submission us
         `timeoutMs: { type: 'number', default: 60000 } } } } };\n` +
         // v26 (REQ-128): rule L2 — every agent() inside a phase(); the diagram is the LR swimlane.
         `phase('Work');\n` +
-        `await agent('a', { mcp: ['known'] });`;
+        `await agent('a', { mcp: ['not-provisioned'] });`;
       const { version } = await catalog.register({ name: 'clean', script, mermaid: 'graph LR\nsubgraph "Work"\nn0(["a"])\nend' });
       expect(version).toBeTruthy();
     } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -116,7 +114,6 @@ describe('per-name version ceiling refused before any write, message names both 
     const dir = mkdtempSync(join(tmpdir(), 'rwe-it085-'));
     try {
       const catalog = new WorkflowCatalog(dir, CLOCK, {
-        mcpLookup: () => true,
         ceilings: { maxTimeoutMs: 600_000, maxAppendPromptBytes: 1024, maxEffort: 'high', maxWorkflowVersions: 1 } as Ceilings & { maxWorkflowVersions: number },
       });
       await catalog.register({ name: 'one-slot', script: `return 1;`, mermaid: 'graph LR' });
@@ -138,7 +135,6 @@ describe('per-name version ceiling refused before any write, message names both 
     const dir = mkdtempSync(join(tmpdir(), 'rwe-it085-insertversion-'));
     try {
       const catalog = new WorkflowCatalog(dir, CLOCK, {
-        mcpLookup: () => true,
         ceilings: { maxTimeoutMs: 600_000, maxAppendPromptBytes: 1024, maxEffort: 'high', maxWorkflowVersions: 1 } as Ceilings & { maxWorkflowVersions: number },
       });
       await catalog.insertVersion({ name: 'one-slot-direct', script: `return 1;`, mermaid: 'graph LR', params: undefined as never });

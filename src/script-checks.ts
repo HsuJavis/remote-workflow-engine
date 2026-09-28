@@ -1,46 +1,40 @@
 // script-checks.ts (DES-112, ARCH-074, TASK-106).
-// Pure, injected-ports lift of submission-validator.ts:92-124's `if (spec.script)` block. No I/O,
-// no clock, no registry import — `mcpLookup` is a `(name) => boolean` predicate, never the registry
-// object itself (a predicate can't silently grow a dependency).
+// Pure lift of submission-validator.ts:92-124's `if (spec.script)` block. No I/O, no clock, no
+// registry import.
 //
 // 2026-09-26 (alias mechanism removed): the model-alias static scan (`extractModelAliases` /
 // UNKNOWN_MODEL here) is DROPPED, not ported — it regex-scanned `model: '<literal>'` over the WHOLE
 // script text, which under the v24 contract can only ever match an agent() call's `model` OPT
 // (already refused PARAM_IN_SCRIPT elsewhere, `workflow-meta.ts`'s ARCH-096 scan) or a `model.enum`
 // entry inside `meta.params` (checked properly, with catalog existence, by `contract.ts`'s
-// `validateOneAgentSpec`). This module now checks only PARSE_ERROR / MCP_NOT_PROVISIONED.
+// `validateOneAgentSpec`).
+//
+// issue #103(a): the MCP_NOT_PROVISIONED check (a raw regex scan for `mcp: [...]` over the script
+// TEXT, checked against an injected `mcpLookup` predicate) is RETIRED from here, not narrowed —
+// it was never wired to a real catalog in production (server.ts's WorkflowCatalog construction
+// left `mcpLookup` unbound, defaulting to accept-all), so a declared-but-unprovisioned mcp/skill
+// name registered fine regardless. The owner-decided replacement lives one layer up
+// (mcp-facade.ts's `workflowRegister`, via `AssetSyncService.resolveDeclaredAssets` — the SAME
+// resolver dispatch uses, `resolveMcp` + the skill-tree existence check) and is a WARNING, not a
+// registration refusal; the refusal moved to admission (run-manager.ts's `start()`), where it can
+// act BEFORE any side effect and is checked against the real, workflow-scoped catalog rather than a
+// script-text regex. This module now checks only PARSE_ERROR.
 import * as vm from 'node:vm';
 import { checkMeta } from './sandbox/guards.js';
 export { FRAME_CLOSE_FORGERY } from './params/contract.js';
 import { FRAME_CLOSE_FORGERY } from './params/contract.js';
 import type { ErrorCode } from './errors.js';
 
-export interface ScriptCheckPorts {
-  mcpLookup: (name: string) => boolean;
-}
-
 // v24 (TASK-155, B-7/adjudication #3): constrained to ERROR_CATALOG's own keys via `Extract` —
 // DES-137's type-level net (every codedError(literal) is a catalog key) had exactly one hole
 // left: this bare literal union could drift from the catalog with no compiler signal. A future
 // value added here without a matching catalog entry now fails `tsc`, not a runtime grep.
-export type ScriptCheckCode = Extract<ErrorCode, 'PARSE_ERROR' | 'MCP_NOT_PROVISIONED'>;
+export type ScriptCheckCode = Extract<ErrorCode, 'PARSE_ERROR'>;
 
 export interface ScriptCheckError {
   code: ScriptCheckCode;
   message: string;
   detail: Record<string, unknown>;
-}
-
-/** Static scan for `mcp: [...]` occurrences in an inline script's `agent()` calls. */
-function extractMcpNames(script: string): string[] {
-  const names: string[] = [];
-  const arrays = script.matchAll(/mcp\s*:\s*\[([^\]]*)\]/g);
-  for (const arr of arrays) {
-    for (const m of arr[1]!.matchAll(/['"]([^'"]+)['"]/g)) {
-      names.push(m[1]!);
-    }
-  }
-  return names;
 }
 
 /** v26 Gate 7.5 round 1 (defect D6): same line count, no content — see the call site. */
@@ -88,7 +82,6 @@ function parseErrorFor(script: string, err: unknown): ScriptCheckError {
 
 export function validateScriptEntry(
   script: string,
-  ports: ScriptCheckPorts,
 ): { ok: true } | { ok: false; errors: ScriptCheckError[] } {
   const errors: ScriptCheckError[] = [];
 
@@ -104,17 +97,6 @@ export function validateScriptEntry(
     new vm.Script(`(async () => {\n${body}\n})`, { filename: 'workflow-script.js' });
   } catch (err) {
     errors.push(parseErrorFor(script, err));
-  }
-
-  // DES-024 delegate: a referenced-but-unprovisioned MCP name fails fast.
-  for (const name of extractMcpNames(script)) {
-    if (!ports.mcpLookup(name)) {
-      errors.push({
-        code: 'MCP_NOT_PROVISIONED',
-        message: `Unprovisioned MCP name: ${name}`,
-        detail: { field: 'mcp', name },
-      });
-    }
   }
 
   return errors.length === 0 ? { ok: true } : { ok: false, errors };

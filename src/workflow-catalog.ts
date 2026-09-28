@@ -234,10 +234,6 @@ export interface WorkflowCatalogOpts {
    *  snapshot (every openrouter/ollama ref accepted with a warning, matching a bare/unconfigured
    *  catalog — the same permissive default an empty `aliasNames` used to give). */
   catalogSnapshot?: () => Promise<ModelCatalogSnapshot>;
-  /** v22 (DES-112, TASK-107): registration-time MCP-name existence predicate, forwarded straight
-   *  into validateScriptEntry's ports — never the registry object itself. Omitted -> every name
-   *  passes (matches the pre-v22 no-MCP-registry-wired construction). */
-  mcpLookup?: (name: string) => boolean;
   /** v21 adjudication #6 (F-1 ceiling interaction) + #7 (G-1): engine ceilings, so ANY value that
    *  reaches the stored `defaults` column above the configured ceiling (e.g. `effort` above
    *  `maxEffort`) is refused at registration — a declared `params.knobs.<knob>.default` and a
@@ -258,7 +254,6 @@ export class WorkflowCatalog {
   private readonly _workRoot: string;
   private readonly _catalogSnapshot: () => Promise<ModelCatalogSnapshot>;
   private readonly _ceilings?: Ceilings;
-  private readonly _mcpLookup: (name: string) => boolean;
   /** v36 (DES-243, TASK-241): audit-line sink; TASK-242/244 call it. */
   private readonly _eventSink: EventSink;
 
@@ -267,7 +262,6 @@ export class WorkflowCatalog {
     this._clock = clock ?? new SystemClock();
     this._catalogSnapshot = opts?.catalogSnapshot ?? (async () => EMPTY_MODEL_CATALOG);
     this._ceilings = opts?.ceilings;
-    this._mcpLookup = opts?.mcpLookup ?? (() => true);
     this._eventSink = opts?.eventSink ?? createEventSink({});
     mkdirSync(workRoot, { recursive: true });
     this._db = new Database(join(workRoot, 'catalog.db'));
@@ -609,11 +603,15 @@ export class WorkflowCatalog {
     // v22 (DES-111, DES-112, DES-117, TASK-107): validateScriptEntry runs FIRST — DES-148's own
     // pinned order (`validateScriptEntry → scanAgentCalls → parseParamContract → checkMermaid → …`)
     // content checks (ADR-013 — registration ENFORCES fail-closed). 2026-09-26 (alias mechanism
-    // removed): validateScriptEntry checks PARSE_ERROR / MCP_NOT_PROVISIONED only now — the model
-    // check moved entirely into `parseMetaParams`/`parseParamContract` below, which is where the
-    // catalog-existence check (`checkModelRef`) actually needs to run; all errors surface, the
+    // removed): the model check moved entirely into `parseMetaParams`/`parseParamContract` below,
+    // which is where the catalog-existence check (`checkModelRef`) actually needs to run. issue
+    // #103(a): validateScriptEntry checks PARSE_ERROR only now — its MCP_NOT_PROVISIONED check (a
+    // regex scan against an injected predicate, never wired to a real catalog in production) is
+    // retired; mcp/skill provisioning is now a non-fatal registration WARNING computed one layer up
+    // (mcp-facade.ts's `workflowRegister`, against the real asset catalog) and an admission-time
+    // REFUSAL (run-manager.ts's `start()`) — never a registration throw. All errors surface, the
     // first is thrown, the rest travel in `detail.errors`.
-    const scriptCheck = validateScriptEntry(script, { mcpLookup: this._mcpLookup });
+    const scriptCheck = validateScriptEntry(script);
     if (!scriptCheck.ok) {
       const [first, ...rest] = scriptCheck.errors;
       throw Object.assign(codedError(first!.code, first!.message), { detail: { ...first!.detail, errors: [first, ...rest] } });
@@ -1066,20 +1064,22 @@ export class WorkflowCatalog {
     return [...refs];
   }
 
-  /** v22 (DES-115/DES-116, REQ-099, TASK-111): re-runs the SAME registration-time checks
-   *  (`validateScriptEntry`, same ports this instance already validates `register()` with) against
-   *  the CURRENT MCP config — never the registration-time result — so an MCP no longer provisioned
-   *  AFTER a workflow was registered is visible on every read as staleness, not silently stale-green
-   *  forever. Pure re-check: reads no DB row, stores nothing.
+  /** v22 (DES-115/DES-116, REQ-099, TASK-111): re-runs the SAME registration-time structural check
+   *  (`validateScriptEntry`) against the CURRENT script — never the registration-time result — so a
+   *  script that would now fail to PARSE is visible on every read as staleness, not silently
+   *  stale-green forever. Pure re-check: reads no DB row, stores nothing.
    *  2026-09-26 (alias mechanism removed, deliberate drop): this used to ALSO re-check the script's
    *  model literal(s) against the current alias table; that model check is gone (see script-checks.ts's
    *  own header) and nothing replaces it here — a read-time staleness signal for "the model in this
    *  registered version no longer exists" does not exist post-registration (the map's own D5: an
    *  anthropic id is never refused, and re-verifying openrouter/ollama existence on every
    *  workflow_get would mean a live catalog fetch on a read path, which this method's callers do not
-   *  expect). Only MCP staleness is re-checked now. */
+   *  expect). issue #103(a): MCP/skill provisioning is no longer re-checked here either — it moved
+   *  off `validateScriptEntry` entirely (registration warning + admission refusal, never a read-time
+   *  `validation` staleness signal); `workflow_describe`/`workflow_source`'s `validation` field is
+   *  PARSE_ERROR-only now. */
   validateCurrent(script: string): ReturnType<typeof validateScriptEntry> {
-    return validateScriptEntry(script, { mcpLookup: this._mcpLookup });
+    return validateScriptEntry(script);
   }
 
   /** v22 (DES-111, REQ-097): moves a named channel pointer to an already-registered version.

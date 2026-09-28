@@ -64,7 +64,14 @@ export const ERROR_CATALOG = {
   // full <provider>/<model-id> ref, names an unsupported provider, or (for openrouter/ollama) was
   // not found in the live catalog listing.
   UNKNOWN_MODEL: { see: 'workflow_authoring_guide', hint: 'the model is not a valid <provider>/<model-id> ref, or (for openrouter/ollama) was not found in the catalog listing — see models_list' },
-  MCP_NOT_PROVISIONED: { see: 'workflow_authoring_guide', hint: 'an agent() call references an mcp name with no provisioned secret' },
+  // issue #103(a): registration WARNS (result.warnings), never throws this any more — the code now
+  // fires only at admission (run_start, a schedule/webhook firing, or a nested workflow() call),
+  // BEFORE any side effect, naming the agent label(s) + the missing mcp name(s) + the fix
+  // (workspace_push({workflow, kind:'mcp', name, config}) then re-run/re-register).
+  MCP_NOT_PROVISIONED: { see: 'workflow_authoring_guide', hint: 'an agent() call declares an mcp name with no workspace_push-provisioned asset (workflow-scoped or global) — admission refuses before any side effect; registration only warns' },
+  // issue #103(a): the skill sibling of MCP_NOT_PROVISIONED — same admission-time-only refusal, same
+  // resolver (workflow-scoped skill tree, then global), same registration-time warning instead.
+  SKILL_NOT_PROVISIONED: { see: 'workflow_authoring_guide', hint: 'an agent() call declares a skill name with no workspace_push-provisioned asset (workflow-scoped or global) — admission refuses before any side effect; registration only warns' },
   SCRIPT_INVALID: { see: 'workflow_authoring_guide', hint: 'the script violates a sandbox-enforced structural rule' },
   SCAN_VIOLATION: { see: 'workflow_authoring_guide', hint: 'an agent() call is not scannable — label/options must be literal (ADR-029)' },
   MERMAID_INVALID: { see: 'workflow_authoring_guide', hint: 'the diagram does not parse under checkMermaid\'s grammar' },

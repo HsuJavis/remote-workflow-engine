@@ -18,7 +18,7 @@ import { SubmissionValidator } from './submission-validator.js';
 // wire — the guide a cold model is told to consult was unreachable from the errors that tell it to.
 import { CatalogNotFoundError, codedError, toErrEnvelope, type ErrorCode } from './errors.js';
 import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, HarnessDescriptor, RunListFilter, AuditAction, RunSpec, RunUsage, AgentLogView } from './types.js';
-import { parseMeta, toolSurfaceWarnings } from './workflow-meta.js';
+import { parseMeta, toolSurfaceWarnings, provisioningWarningsFor, type RegistrationWarning } from './workflow-meta.js';
 import { buildAuthoringGuide } from './authoring-guide.js';
 import { effectiveAgentBounds, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type AgentParamSpec, type ModelRefWarning } from './params/contract.js';
 import { projectWorkflowForRead, projectWorkflowDescribe, type WorkflowOwnerView } from './workflow-view.js';
@@ -445,10 +445,26 @@ export class McpFacade {
       // boundary). Only `versions`/`channels` are lifted off the detail; the rest of WorkflowDetail
       // (notably `script`) is discarded here, never on the envelope.
       const { versions, channels } = await catalog.resolveDetail(a.name, { version });
+      // issue #103(a): a declared-but-unprovisioned mcp/skill name is a non-fatal registration
+      // WARNING now (never a refusal — see script-checks.ts's own header for why the OLD
+      // MCP_NOT_PROVISIONED registration throw is retired), resolved against the REAL asset catalog
+      // via the SAME resolver dispatch uses (`AssetSyncService.resolveDeclaredAssets`) so
+      // registration and admission (run-manager.ts's `start()`) can never disagree. `this.assetSync`
+      // is bound post-construction (see its own field comment) — absent only in a test harness that
+      // never wired one, which then honestly reports no provisioning warnings rather than crashing.
+      const provisioningWarnings: RegistrationWarning[] = [];
+      if (this.assetSync) {
+        for (const [label, spec] of Object.entries(params.agents)) {
+          const declared = { skills: spec.skills ?? [], mcp: spec.mcp ?? [] };
+          if (declared.skills.length === 0 && declared.mcp.length === 0) continue;
+          const missing = await this.assetSync.resolveDeclaredAssets(a.name, declared);
+          provisioningWarnings.push(...provisioningWarningsFor(a.name, label, missing));
+        }
+      }
       // Issue #78(b): non-fatal — the version is already registered. Absent when empty, so an
       // unaffected registration keeps exactly the reply keys it had before. 2026-09-26 (owner
       // decision 6): merged with any MODEL_CATALOG_UNVERIFIED notes from validateRegistration above.
-      const warnings = [...toolSurfaceWarnings(scanAgentCalls(a.script), this.confinementPosture), ...(modelWarnings ?? [])];
+      const warnings = [...toolSurfaceWarnings(scanAgentCalls(a.script), this.confinementPosture), ...(modelWarnings ?? []), ...provisioningWarnings];
       return { runId: '', status: 'completed', version: versionNum, result: { name: a.name, version, versions, channels, ...(a.seedManifestRef !== undefined ? { seedManifestRef: a.seedManifestRef } : {}), ...(warnings.length > 0 ? { warnings } : {}) } };
     } catch (err) {
       const e = toErrEnvelope(err);
