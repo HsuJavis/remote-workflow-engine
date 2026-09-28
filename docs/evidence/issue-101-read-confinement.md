@@ -69,7 +69,9 @@ bound back on top.
   `<cwd-slug>/<session>/tasks/` dir per run, plus any interactive Claude Code session's scratch of the
   same uid) and **`~/.claude/debug/`** *writable*, after the `denyRead` tmpfs. A variant with both in
   `denyRead` still had `ls /tmp/claude-1000` = 0, `$TMPDIR` read/write = 0, `~/.claude/debug/latest` = 0.
-  `CLAUDE_CODE_TMPDIR=<dir>` only adds one more bind; `/tmp/claude-<uid>/` stays. No credentials live
+  `CLAUDE_CODE_TMPDIR=<dir>` only adds one more bind; `/tmp/claude-<uid>/` stays. (Superseded for
+  `/tmp/claude-<uid>/`: setting `TMPDIR` to the same dir too moves the whole scratch, and the engine now
+  does that per dispatch. See `issue-101-cli-scratch.md`.) No credentials live
   there, but any run can read/write what another run left. Full isolation needs the engine under a
   dedicated OS user (not shared with the operator's interactive Claude Code).
 - The CLI's pre-command `source ~/.claude/shell-snapshots/snapshot-*.sh 2>/dev/null || true` now

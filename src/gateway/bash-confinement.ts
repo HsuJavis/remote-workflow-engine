@@ -106,6 +106,9 @@ export interface ConfinementInput {
   readonly allowReadPaths: readonly string[];
   /** Issue #78(c): `'readonly'` ⇒ Bash may write nothing under the root or any grant. */
   readonly bashMode?: 'readonly';
+  /** Issue #101 (CLI scratch): the host-shared CLI scratch `<tmpdir>/claude-<uid>` — denied for
+   *  reads once this dispatch's CLI has its own scratch (`sharedCliScratch`, `CLI_SCRATCH_DIR`). */
+  readonly sharedCliScratch?: string;
 }
 
 function isNonEmptyString(s: string | undefined | null): s is string {
@@ -117,7 +120,7 @@ function isNonEmptyString(s: string | undefined | null): s is string {
  *  workspace means "nothing may be written", never "no sandbox" (the ARCH-176 bug-class: a guard
  *  whose "nothing to check" arm must not return the same verdict as its "checked and clean" arm). */
 export function buildBashConfinement(input: ConfinementInput): SandboxSettings {
-  const { root, grantedHostPaths, protectedFiles, workRoot, homeDir, allowReadPaths, bashMode } = input;
+  const { root, grantedHostPaths, protectedFiles, workRoot, homeDir, allowReadPaths, bashMode, sharedCliScratch } = input;
   const grants = grantedHostPaths.filter(isNonEmptyString);
   const allowPaths = isNonEmptyString(root) ? [root, ...grants] : [];
   const settingsFiles = isNonEmptyString(root) ? [...PROJECT_CONFIG_PATHS, ...ENGINE_OWNED_CONFIG_PATHS].map((rel) => join(root, rel)) : [];
@@ -132,7 +135,7 @@ export function buildBashConfinement(input: ConfinementInput): SandboxSettings {
   // Issue #101: deny the whole home and the whole workRoot; `allowRead` below re-opens exactly this
   // call's workspace, the grants and the toolchain inside them (the CLI mounts a tmpfs over each
   // denied directory, then binds the allowed paths back on top — measured, see the header note).
-  const denyRead = [homeDir, workRoot, ...filteredProtected].filter(isNonEmptyString);
+  const denyRead = [homeDir, workRoot, ...filteredProtected, sharedCliScratch].filter(isNonEmptyString);
   const settings: SandboxSettings = {
     enabled: true,
     failIfUnavailable: true,
@@ -164,6 +167,33 @@ export function buildBashConfinement(input: ConfinementInput): SandboxSettings {
     },
   };
   return settings;
+}
+
+/** Issue #101 (CLI scratch, docs/evidence/issue-101-cli-scratch.md): the Claude CLI always re-binds
+ *  its per-uid scratch `<CLAUDE_CODE_TMPDIR or tmpdir>/claude-<uid>/` WRITABLE after every denyRead,
+ *  so left at the default every run's agent shares `/tmp/claude-<uid>/`. The gateway therefore gives
+ *  each confined dispatch its own scratch under `<workRoot>/CLI_SCRATCH_DIR/` — inside the workRoot
+ *  deny, so no other dispatch can see it — and denies the host-shared one. */
+export const CLI_SCRATCH_DIR = 'cli-tmp';
+
+/** The CLI's own name for its host-shared per-uid scratch (`claude-<uid>` under the tmpdir). */
+export function sharedCliScratch(tmpDir: string, uid: number | undefined): string | undefined {
+  return uid === undefined ? undefined : join(tmpDir, `claude-${uid}`);
+}
+
+// The CLI's sandbox puts its network-bridge sockets straight into $TMPDIR
+// (`claude-socks-<16 hex>.sock`, 34 bytes + '/'); a unix socket path is at most 107 bytes on Linux.
+const UNIX_SOCKET_PATH_MAX = 107;
+const CLI_SOCKET_NAME_BYTES = 35;
+// `mkdtemp(<workRoot>/cli-tmp/d)` ⇒ '/cli-tmp/d' + 6 random chars.
+const CLI_SCRATCH_SUFFIX_BYTES = `/${CLI_SCRATCH_DIR}/d`.length + 6;
+
+/** `null` when this workRoot leaves room for the CLI's sockets under a per-dispatch scratch, else a
+ *  typed refusal — never a silent fallback to the shared scratch. */
+export function cliScratchRefusal(workRoot: string): string | null {
+  const bytes = Buffer.byteLength(workRoot) + CLI_SCRATCH_SUFFIX_BYTES + CLI_SOCKET_NAME_BYTES;
+  if (bytes <= UNIX_SOCKET_PATH_MAX) return null;
+  return `CLI_SCRATCH_PATH_TOO_LONG: workRoot ${workRoot} is too long for the Claude CLI's per-dispatch scratch (its sandbox sockets would need ${bytes} bytes, the unix-socket limit is ${UNIX_SOCKET_PATH_MAX}) — use a shorter workRoot path (at most ${UNIX_SOCKET_PATH_MAX - CLI_SCRATCH_SUFFIX_BYTES - CLI_SOCKET_NAME_BYTES} bytes)`;
 }
 
 /** Issue #101: the home-resident toolchain a denied home must re-open for the agent's commands —

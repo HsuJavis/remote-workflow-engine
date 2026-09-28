@@ -10,7 +10,8 @@
 // integration tier points the real export at a local stub /v1/messages server — IT-015).
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { CanUseTool, HookCallback, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { existsSync, readdirSync, statSync, mkdirSync, copyFileSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, statSync, mkdirSync, mkdtempSync, rmSync, copyFileSync, writeFileSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, isAbsolute, dirname } from 'node:path';
 import { createRequire } from 'node:module';
 import type { AgentOpts, Caps, HarnessDescriptor, TranscriptEvent, Tokens } from '../types.js';
@@ -22,7 +23,7 @@ import { resolveTimeout, wireEffort, UNKNOWN_CAPS, attemptsFor } from './client.
 import { parseModelRef, type Provider } from '../providers.js';
 import { isPathContained } from '../path-containment.js';
 import { resolveConfig, type SecretSource } from '../secret-resolver.js';
-import { buildBashConfinement, readonlyBashRefusal } from './bash-confinement.js';
+import { buildBashConfinement, readonlyBashRefusal, CLI_SCRATCH_DIR, cliScratchRefusal, sharedCliScratch } from './bash-confinement.js';
 import { prepareReadonlyMountTargets, protectedConfigTarget, sweepPlantedConfig } from './project-config-guard.js';
 import { findProjectMarkerAboveWorkspace, WORKROOT_INSIDE_PROJECT } from '../workroot-guard.js';
 import type { EventSink } from '../event-log.js';
@@ -455,6 +456,15 @@ function buildSubprocessEnv(config: ClaudeAgentSdkGatewayConfig, provider: strin
   return { ok: true, env };
 }
 
+/** Issue #101 (CLI scratch): points the CLI's whole scratch at `dir`. BOTH vars, same value — the
+ *  CLI derives `<CLAUDE_CODE_TMPDIR>/claude-<uid>` and, when that is over 44 bytes, ALSO binds
+ *  `<TMPDIR or /tmp>/claude-<uid>` writable (measured, docs/evidence/issue-101-cli-scratch.md);
+ *  with TMPDIR equal the two collapse onto one per-dispatch path. Overrides the host TMPDIR the
+ *  allowlist forwarded. */
+export function withCliScratchEnv(env: Record<string, string>, dir: string): Record<string, string> {
+  return { ...env, TMPDIR: dir, CLAUDE_CODE_TMPDIR: dir };
+}
+
 /** D-G8-2: extracts message/tool_call/tool_result TranscriptEvents from one SDK message's own
  *  content turns (assistant text, tool_use, and the user-role tool_result that follows it) — the
  *  real reasoning/tool-call trace `_drain` previously discarded entirely except the final `result`
@@ -857,6 +867,37 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         });
       }
     }
+    // Issue #101 (CLI scratch): a confined dispatch with a known workRoot gets its OWN CLI scratch
+    // under `<workRoot>/cli-tmp/` (inside the workRoot deny, so invisible to every other dispatch),
+    // and the host-shared `<tmpdir>/claude-<uid>` goes on denyRead. Fail closed: a scratch that
+    // cannot be made refuses the call — never a silent fallback to the shared one.
+    const workRoot = this._config.confinement?.workRoot;
+    let cliScratch: string | undefined;
+    if (this._config.confinementPosture === 'confined' && workRoot !== undefined) {
+      const refusal = cliScratchRefusal(workRoot);
+      let detail = refusal;
+      if (detail === null) {
+        try {
+          mkdirSync(join(workRoot, CLI_SCRATCH_DIR), { recursive: true, mode: 0o700 });
+          cliScratch = mkdtempSync(join(workRoot, CLI_SCRATCH_DIR, 'd'));
+        } catch (err) {
+          detail = `CLI_SCRATCH_UNAVAILABLE: ${(err as Error).message} — refusing to start an agent whose CLI would otherwise share the host's scratch with every other run`;
+        }
+      }
+      if (detail !== null) {
+        if (timer !== undefined) clearTimeout(timer);
+        req.signal?.removeEventListener('abort', onExternalAbort);
+        return stamp({ ok: false, provider: 'claude-agent-sdk', reason: 'terminal', retryable: false, detail });
+      }
+    }
+    const dropCliScratch = (): void => {
+      if (cliScratch === undefined) return;
+      try {
+        rmSync(cliScratch, { recursive: true, force: true });
+      } catch {
+        // the CLI may still be exiting; anything left is swept at the next boot (main.ts)
+      }
+    };
     const sandbox: Options['sandbox'] =
       this._config.confinementPosture === 'confined'
         ? buildBashConfinement({
@@ -869,6 +910,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
             homeDir: this._config.confinement?.homeDir ?? process.env['HOME'],
             allowReadPaths: this._config.confinement?.allowReadPaths ?? [],
             ...(req.opts.bash === 'readonly' ? { bashMode: 'readonly' as const } : {}),
+            ...(cliScratch !== undefined ? { sharedCliScratch: sharedCliScratch(tmpdir(), process.getuid?.()) } : {}),
           })
         : { enabled: false };
 
@@ -951,7 +993,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       // D-G8-5/REQ-037: an explicit allowlist plus the provider-aware routing/auth vars — never the
       // full host process.env (see buildSubprocessEnv). Resolved above so an auth-missing anthropic
       // call fails typed BEFORE query() is ever spawned.
-      env: envResult.env,
+      env: cliScratch !== undefined ? withCliScratchEnv(envResult.env, cliScratch) : envResult.env,
     };
     // v26 (DES-179, ARCH-117, TASK-179): `wireEffort` already resolved the flat `Options.effort`
     // field alongside `thinking` above — set only when it actually applies (the anthropic arm).
@@ -1033,6 +1075,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     if (req.signal?.aborted) {
       if (timer !== undefined) clearTimeout(timer);
       req.signal.removeEventListener('abort', onExternalAbort);
+      dropCliScratch();
       return abortedBeforeDispatch();
     }
     const session = this._query({ prompt: req.prompt, options });
@@ -1082,6 +1125,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       // the timeout arm win and misreport `reason:'timeout'` for a call that actually completed) —
       // idempotent (a no-op if already aborted by the timer/external signal above).
       controller.abort();
+      dropCliScratch();
     }
   }
 

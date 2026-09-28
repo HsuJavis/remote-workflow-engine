@@ -745,12 +745,25 @@ CLI 自己就會回「sandbox is enabled but dependencies are missing: ... not i
 這類系統工具照常可用）。**行為變化**：`~/.gitconfig` 也讀不到了（agent 要 `git commit` 需在工作目錄內
 自行設定身份，例如 `git -c user.name=… -c user.email=… commit`）；CLI 每次在 Bash 前 `source` 的
 shell snapshot（在 `~/.claude/shell-snapshots/`）改為靜默失敗（該步驟本來就是 `|| true`，指令照跑）。
-**已知仍未關閉的跨 run 管道**（CLI 自己的機制，設定蓋不掉，量測過）：CLI 固定把 `/tmp/claude-<uid>/`
-（它的暫存根目錄，內含每個 run/session 的 `tasks/` 子目錄）與 `~/.claude/debug/` 以**可寫**方式 bind
-回每個 sandbox，而且發生在 `denyRead` 之後，所以同一個 uid 下的所有 run 共用這兩處；把它們列進
-`denyRead` 無效，`CLAUDE_CODE_TMPDIR` 只會多 bind 一個目錄、不會移除 `/tmp/claude-<uid>/`。這兩處不含
-憑證，但可以被當作 run 之間的傳遞通道；要徹底隔開，需讓引擎以專用的系統使用者身分執行（不和操作員
-的互動式 Claude Code 共用 uid）。
+**CLI 暫存目錄是每次派工各自一份**（issue #101 殘留項，量測紀錄見 `docs/evidence/issue-101-cli-scratch.md`）：
+CLI 一定會把它的 per-uid 暫存目錄（`<暫存根>/claude-<uid>/`，內含每個 session 的 `tasks/`）在
+`denyRead` **之後**以可寫方式 bind 回 sandbox，所以預設下同一個 uid 的所有 run 共用
+`/tmp/claude-<uid>/`。現在圍籠生效、且 `workRoot` 已知時，引擎每次派工（每次 attempt）都在
+`<workRoot>/cli-tmp/` 底下建一個新的 0700 目錄，把 CLI 子行程的 `TMPDIR` 與 `CLAUDE_CODE_TMPDIR`
+**兩個都**指向它（只設後者不夠：路徑超過 44 bytes 時 CLI 會退回 `$TMPDIR/claude-<uid>` 再 bind 一次），
+並把主機共用的 `/tmp/claude-<uid>`（引擎自己 tmpdir 底下那個）加進 `denyRead`。這個目錄在 `workRoot`
+的 `denyRead` 範圍內，別的派工看不到；呼叫結束就刪掉，引擎開機時（`createServer()` 之前）也會整個清掉
+`<workRoot>/cli-tmp/`，處理被強制終止的行程留下的殘留。在 agent 眼中：`ls /tmp/claude-<uid>` 是空的，寫
+進去的東西只會落在 sandbox 內的 tmpfs、不會到主機上；自己的 `$TMPDIR`/`$CLAUDE_CODE_TMPDIR` 照常可寫
+（`bash:'readonly'` 時也一樣）。**失敗時拒絕，不會退回共用目錄**：`workRoot` 超過 56 bytes（CLI 的
+sandbox socket 直接放在 `$TMPDIR`，路徑必須塞得進 107 bytes 的 unix socket 上限）會回
+`CLI_SCRATCH_PATH_TOO_LONG`（這種 `workRoot` 在圍籠生效、用 sdk gateway 時**開機就會被拒絕**，訊息同一個碼，修法是換較短的 `workRoot` 路徑），建不出目錄會回 `CLI_SCRATCH_UNAVAILABLE`，兩者都在任何 session 開始前拒絕。
+沒有新的設定鍵。**仍未關閉**（CLI/sandbox-runtime 以 `os.homedir()` 寫死，`CLAUDE_CONFIG_DIR` 也移不掉，
+量測過）：引擎 HOME 底下的 `~/.claude/debug/` 與 `~/.npm/_logs/` 只要**存在**，就會以可寫方式 bind 進每個
+sandbox，可以被當成 run 之間的傳遞通道，也讀得到裡面已有的內容（不含憑證；與操作員共用 uid 時，
+`~/.claude/debug/` 裡是操作員互動式 Claude Code 的 debug log）。引擎自己的 CLI 不會建立
+`~/.claude/debug/`（只有 `DEBUG_CLAUDE_AGENT_SDK`/`--debug` 才寫，子行程環境變數是白名單、不會帶到）。所以
+讓引擎以專用的系統使用者身分執行後，**刪掉該使用者的這兩個目錄**，就不會再被 bind。
 
 **開機 log 印 `UNCONFINED (socat not found on PATH ...)` 或 `(bwrap not found on PATH ...)`，怎麼
 修**：先裝缺的那個執行檔——`sudo apt install bubblewrap socat`（兩個都裝最省事，之後不用再回來查
