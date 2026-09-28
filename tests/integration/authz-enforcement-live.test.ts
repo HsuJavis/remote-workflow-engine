@@ -203,23 +203,26 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
     expect(adminReads!.some((e) => e.actor === ROOT && e.action === 'run_result')).toBe(true);
   });
 
-  it('a claimed workflow deregistered under a live schedule refuses UNCLAIMED at fire time (recorded, not silent)', async () => {
+  it('a claimed workflow deregistered under a live schedule becomes UNCLAIMED and never fires or refuses (issue #103f)', async () => {
     // The fire-path policy gate's OTHER arm, through the real driver. The schedule is created
     // while the workflow is published, then the workflow is deregistered underneath it.
     //
-    // v24 Gate 7.5 (D-1b): the expected reason CHANGED from `CLAIMED_WORKFLOW_MISSING` to
-    // `UNCLAIMED`, and that IS the fix. 08-validation.md's observation (b) named this exactly: the
-    // old reason was a symptom of deregister failing to release a trigger bound at creation — the
-    // row still pointed at the deleted name (via the legacy `workflow` column the fire path falls
-    // back to), so the driver reported "the workflow this trigger is claimed by is missing" and,
-    // after a same-name re-registration, fired a phantom run for it. REQ-115: deregister returns
-    // its triggers to UNCLAIMED ("they are the user's resources"), and an unclaimed trigger that
-    // fires is refused and recorded. Both halves of what this case actually guards — nothing
-    // dispatched, exactly one recorded refusal — are unchanged.
+    // v24 Gate 7.5 (D-1b) had this refusing UNCLAIMED at fire time (a recorded refusal), which
+    // was itself the fix for an earlier defect (`CLAIMED_WORKFLOW_MISSING`, a phantom binding left
+    // behind by a deregister that failed to release its trigger — see the old revision of this
+    // comment in git history). Issue #103(f) (owner decision) goes one step further: an UNCLAIMED
+    // trigger must never even be SEEN as due by the driver, full stop. `release()` (called by
+    // deregister) clears BOTH `claimedBy` and `workflow` (scheduler.ts), and `SqliteSchedulerPort
+    // .all()` — the driver's own due-row read — filters on `claimedBy IS NOT NULL OR workflow IS
+    // NOT NULL`, so a fully-released row is excluded from `all()` entirely: `tick()` never returns
+    // it, `claimFiring()`/`markRefused('UNCLAIMED')` are never reached for it, and `enabled` /
+    // `nextFire` / `refusalCount` all stay untouched. So this case now guards THREE things instead
+    // of two: the deregistration's release is immediately observable (schedule_list shows the
+    // trigger unclaimed), and — even well past its due instant, through several real driver ticks —
+    // nothing is dispatched AND nothing is recorded as refused either.
     // v24 adjudication #8 (H-2): the claim is taken at REGISTRATION (`triggers:[id]`), the only
     // remaining door — created unclaimed first, due far enough out that the claim, the publish and
-    // the deregister all land before the due instant, so the single recorded refusal below is the
-    // deregistration's, never a stray pre-claim one.
+    // the deregister all land before the due instant.
     const WF2 = 'it124-doomed';
     const created = await callTool('schedule_create', { kind: 'once', at: new Date(Date.now() + 3000).toISOString() }, aliceToken);
     const id = ((created['result'] ?? created) as { id?: string }).id;
@@ -228,17 +231,24 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
     await callTool('workflow_publish', { name: WF2, version: `v${reg['version'] as number}`, channel: 'release' }, aliceToken);
     expect(codeOf(await callTool('workflow_deregister', { name: WF2 }, aliceToken))).toBeUndefined();
 
-    type Row = { id: string; refusalCount?: number; lastRefusalReason?: string; lastRunId?: string };
-    let row: Row | undefined;
-    for (let i = 0; i < 60; i++) {
-      const rows = (await callTool('schedule_list', {}, aliceToken))['result'] as Row[];
-      row = rows.find((r) => r.id === id);
-      if ((row?.refusalCount ?? 0) > 0 || row?.lastRunId) break;
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    expect(row?.lastRunId).toBeUndefined();          // nothing was dispatched
-    expect(row?.lastRefusalReason).toBe('UNCLAIMED');
-    expect(row?.refusalCount).toBe(1);               // ADR-031 coalescing: one row per due instant
+    type Row = { id: string; claimedBy?: string | null; refusalCount?: number; lastRefusalReason?: string; lastRunId?: string };
+    // The deregistration's effect on the TRIGGER is observable immediately, independent of any tick
+    // — this is what keeps the deregistration's outcome from being silent even though #103(f) means
+    // nothing will ever be recorded on this row by the driver.
+    const rowsNow = (await callTool('schedule_list', {}, aliceToken))['result'] as Row[];
+    expect(rowsNow.find((r) => r.id === id)?.claimedBy ?? null, 'deregister must release the claim (schedule_list shows it unclaimed)').toBeNull();
+
+    // Give the real driver (RealTicker, 500ms cadence) several ticks past the due instant — long
+    // enough that a still-claimed or phantom-bound row would certainly have fired or been refused
+    // by now (the old `CLAIMED_WORKFLOW_MISSING`/`UNCLAIMED`-refusal behaviors this case used to pin
+    // both surfaced within one tick of the due instant).
+    await new Promise((r) => setTimeout(r, 4000));
+    const rows = (await callTool('schedule_list', {}, aliceToken))['result'] as Row[];
+    const row = rows.find((r) => r.id === id);
+    expect(row?.lastRunId).toBeUndefined();           // nothing was dispatched
+    expect(row?.refusalCount ?? 0).toBe(0);            // #103(f): never even seen as due ⇒ nothing to refuse
+    expect(row?.lastRefusalReason).toBeUndefined();
+    expect(row?.claimedBy ?? null).toBeNull();          // still unclaimed — the release was durable
   });
 
   it('a schedule created by an authenticated principal still FIRES — the driver resolves the CLAIM, not the creator', async () => {

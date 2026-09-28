@@ -75,8 +75,18 @@ describe('workflow_register: unprovisioned mcp/skill warns, never refuses (issue
   });
 
   it('a declared mcp name that IS provisioned (workspace_push first) carries no warning', async () => {
+    // Issue #102 (asset squatting): `workspace_push` now requires the workflow scope to already be
+    // registered (WORKFLOW_NOT_FOUND otherwise) — order is register first (unprovisioned, so this
+    // warns, proving the warning path fires), THEN push the mcp, THEN register a new version, which
+    // carries no warning because the name is now provisioned.
+    const first = await call('workflow_register', { name: 'reg-mcp-ok', script: scriptDeclaring(['echo-mcp'], []), mermaid: MERMAID });
+    expect(first['error']).toBeUndefined();
+    const firstResult = first['result'] as { warnings?: Array<{ code: string }> };
+    expect((firstResult.warnings ?? []).some((w) => w.code === 'MCP_NOT_PROVISIONED')).toBe(true);
+
     const pushed = await call('workspace_push', { scope: 'workflow', workflow: 'reg-mcp-ok', kind: 'mcp', name: 'echo-mcp', config: { type: 'http', url: 'https://example.com/mcp' } });
     expect(pushed['error']).toBeUndefined();
+
     const r = await call('workflow_register', { name: 'reg-mcp-ok', script: scriptDeclaring(['echo-mcp'], []), mermaid: MERMAID });
     expect(r['error']).toBeUndefined();
     const result = r['result'] as { warnings?: Array<{ code: string }> };

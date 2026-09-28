@@ -163,19 +163,30 @@ describe('REQ-113 selective skill materialization on a REAL dispatch (IT-036/IT-
     expect(call.options?.settingSources ?? []).not.toContain('local');
   }, 30000);
 
-  it('a label declaring an ABSENT skill still runs, and run_agent_log reports it in materialized.missing (DES-154 boundary + DES-160)', async () => {
+  // issue #103(a) (owner decision, superseding the earlier "still runs" contract this case used to
+  // pin): a label declaring a skill name with no provisioned asset is now refused at admission,
+  // before any dispatch — `registration-mcp-provisioning-warning.test.ts` covers the (non-fatal)
+  // `workflow_register` warning for the very same declaration; this case is what happens next, at
+  // `run_start`, which is where DES-154's `AssetSyncService.resolveDeclaredAssets` is authoritative.
+  it('a label declaring an ABSENT skill is refused SKILL_NOT_PROVISIONED at run_start, before any dispatch (issue #103a)', async () => {
     const script =
       `export const meta = { params: { agents: { hopeful: ${agentBlock({ skills: ['never-pushed'] })} } } };\n` +
       `phase('Work');\n` +
       `return await agent('hopeful', { prompt: 'ask for a skill nobody pushed' });`;
-    const runId = await registerRunAndWait(script, 'graph LR\nsubgraph "Work"\nhopeful(["hopeful"])\nend');
+    const mermaid = 'graph LR\nsubgraph "Work"\nhopeful(["hopeful"])\nend';
+    const registered = await mcpCall('workflow_register', { name: WF_NAME, script, mermaid });
+    expect(registered.error, `workflow_register failed: ${JSON.stringify(registered.error)}`).toBeUndefined();
+    const version = registered.result.version as string;
+    const published = await mcpCall('workflow_publish', { name: WF_NAME, version, channel: 'release' });
+    expect(published.error, `workflow_publish failed: ${JSON.stringify(published.error)}`).toBeUndefined();
 
-    const status = await mcpCall('run_status', { runId });
-    expect(status.result.status, 'a missing skill must NOT fail the run (owner 19.5.3)').toBe('completed');
-    const log = await mcpCall('run_agent_log', { runId, label: 'hopeful' });
-    expect(log.error, `run_agent_log refused: ${JSON.stringify(log.error)}`).toBeUndefined();
-    expect(log.harness?.materialized?.missing).toContain('never-pushed');
-    expect(log.harness?.materialized?.skills ?? []).not.toContain('never-pushed');
+    const run = await mcpCall('run_start', { name: WF_NAME });
+    expect(run.error?.code, `expected SKILL_NOT_PROVISIONED, got: ${JSON.stringify(run.error)}`).toBe('SKILL_NOT_PROVISIONED');
+    expect(run.error?.detail?.missing).toEqual([{ label: 'hopeful', names: ['never-pushed'] }]);
+    // No run was ever created — admission refused before any dispatch, so there is nothing for
+    // run_status/run_agent_log to report on (`runId: ''` is this envelope's own refusal shape,
+    // call-tool.ts's `admissionRefusal()` — not `undefined`).
+    expect(run.runId).toBe('');
   }, 30000);
 
   it('a label declaring NO assets materializes neither of two stored skills (selective, not copy-all)', async () => {

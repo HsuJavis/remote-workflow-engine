@@ -153,12 +153,26 @@ describe('deregister removes the workflow\'s asset tree from disk, not only its 
     // 3. A DIFFERENT principal takes the freed name and declares a skill it never pushed.
     const list = await mcpCall('workspace_list', { workflow: WF, kind: 'skill' }, otherToken);
     expect((list.result ?? []) as unknown[]).toHaveLength(0);
-    const otherRun = await registerRunAndWait([SKILL], otherToken);
 
-    // THE pin, half two: nothing of the previous owner's reaches the new principal's workspace.
-    expect(existsSync(join(workspaceOf(otherRun), '.claude', 'skills', SKILL)), "the previous owner's skill was materialized for another principal").toBe(false);
-    const log = await mcpCall('run_agent_log', { runId: otherRun, label: 'worker' }, otherToken);
-    expect(log.harness?.materialized?.missing ?? []).toContain(SKILL);
-    expect(log.harness?.materialized?.skills ?? []).not.toContain(SKILL);
+    // THE pin, half two: under issue #103(a), declaring a skill with no provisioned asset now
+    // refuses admission outright, before any dispatch — the strongest possible proof that nothing
+    // of the previous owner's is inherited (there is no run, so nothing could be materialized into
+    // one). `registerRunAndWait` asserts `run_start` succeeds, so it cannot be reused for this
+    // expected-refusal case; drive the same register/publish/run_start sequence directly.
+    const reg = await mcpCall('workflow_register', { name: WF, script: SCRIPT([SKILL]), mermaid: MERMAID }, otherToken);
+    expect(reg.error, `register: ${JSON.stringify(reg.error)}`).toBeUndefined();
+    const pub = await mcpCall('workflow_publish', { name: WF, version: reg.result.version as string, channel: 'release' }, otherToken);
+    expect(pub.error, `publish: ${JSON.stringify(pub.error)}`).toBeUndefined();
+    const run = await mcpCall('run_start', { name: WF }, otherToken);
+    expect(run.error?.code, `expected SKILL_NOT_PROVISIONED, got: ${JSON.stringify(run.error)}`).toBe('SKILL_NOT_PROVISIONED');
+    expect(run.error?.detail?.missing).toEqual([{ label: 'worker', names: [SKILL] }]);
+    // `runId: ''` is this envelope's own refusal shape (call-tool.ts's `admissionRefusal()`), not
+    // `undefined` — no run was ever created.
+    expect(run.runId).toBe('');
+
+    // ...and separately, on disk: the previous owner's asset tree was never resurrected under the
+    // new registration (the deregister's disk-clearing effect, asserted above, is durable — the new
+    // principal's own never-pushed declaration did not conjure it back).
+    expect(existsSync(join(assetTree(), 'skill', SKILL)), "the previous owner's skill reappeared on disk").toBe(false);
   }, 40000);
 });
