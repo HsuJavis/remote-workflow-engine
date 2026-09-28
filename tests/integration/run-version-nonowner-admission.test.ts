@@ -193,6 +193,80 @@ describe('workflow_describe (#98 item 6 + #100 Q5): runnable/runnableReason for 
   });
 });
 
+// Follow-up (owner: "don't reveal existence" is not just refusal — an ALLOWED describe/list/source
+// response must not enumerate non-release version ids either): `versions[]`/`channels.beta` are
+// masked for a non-owner (same `canRunResolved`-false semantics: not owner, not admin/bypass, not
+// an ownerless legacy row); owner/admin still see everything.
+describe('workflow_describe/workflow_list/workflow_source (owner follow-up): non-owner never sees non-release version ids via enumeration fields', () => {
+  it('[LOAD-BEARING] BOB describing the (allowed) release version: versions is [release] only, channels.beta is null', async () => {
+    const r = await facade.workflowDescribe({ name: NAME }, BOB) as { status?: string; result?: { versions?: string[]; channels?: { release: string | null; beta: string | null } } };
+    expect(r.status).toBe('completed');
+    expect(r.result?.versions).toEqual([v1]);
+    expect(r.result?.channels).toEqual({ release: v1, beta: null });
+  });
+
+  it('ALICE (owner) describing the same workflow: sees every version and both channels', async () => {
+    const r = await facade.workflowDescribe({ name: NAME }, ALICE) as { status?: string; result?: { versions?: string[]; channels?: { release: string | null; beta: string | null } } };
+    expect(r.status).toBe('completed');
+    expect(r.result?.versions).toEqual(expect.arrayContaining([v1, v2, v3]));
+    expect(r.result?.channels).toEqual({ release: v1, beta: v2 });
+  });
+
+  it('ADMIN describing: sees every version and both channels, same bypass as run_start', async () => {
+    const r = await facade.workflowDescribe({ name: NAME }, ADMIN) as { status?: string; result?: { versions?: string[]; channels?: { release: string | null; beta: string | null } } };
+    expect(r.status).toBe('completed');
+    expect(r.result?.versions).toEqual(expect.arrayContaining([v1, v2, v3]));
+    expect(r.result?.channels).toEqual({ release: v1, beta: v2 });
+  });
+
+  it('a workflow with NO release at all: a non-owner describing it (VERSION_NOT_FOUND) never reaches the masking code, and an owner-only ownerless-legacy row shows versions:[] when unreleased', async () => {
+    const legacyName = 'nonowner-gate-legacy-unreleased-wf';
+    const script = synthesizeMeta(synthesizePhase('return "L";'));
+    const { version } = await catalog.register({ name: legacyName, script, mermaid: synthesizeMermaid(script), principal: null });
+    // Ownerless (owner:null) is unrestricted per canMutate's own `!owner` rule — BOB sees everything.
+    const r = await facade.workflowDescribe({ name: legacyName, version }, BOB) as { status?: string; result?: { versions?: string[]; channels?: { release: string | null; beta: string | null } } };
+    expect(r.status).toBe('completed');
+    expect(r.result?.versions).toEqual([version]);
+    expect(r.result?.channels).toEqual({ release: null, beta: null });
+  });
+
+  it('[LOAD-BEARING] workflow_list: BOB sees only the release version in versions[] and null beta for a workflow he does not own; ALICE sees both', async () => {
+    const bobList = await facade.workflowList({}, BOB);
+    const bobRow = bobList.result?.find((w) => w.name === NAME);
+    expect(bobRow).toBeDefined();
+    expect(bobRow?.versions).toEqual([v1]);
+    expect(bobRow?.channels).toEqual({ release: v1, beta: null });
+
+    const aliceList = await facade.workflowList({}, ALICE);
+    const aliceRow = aliceList.result?.find((w) => w.name === NAME);
+    expect(aliceRow).toBeDefined();
+    expect(aliceRow?.versions).toEqual(expect.arrayContaining([v1, v2, v3]));
+    expect(aliceRow?.channels).toEqual({ release: v1, beta: v2 });
+  });
+
+  it('workflow_list: ADMIN sees both channels and every version too', async () => {
+    const adminList = await facade.workflowList({}, ADMIN);
+    const adminRow = adminList.result?.find((w) => w.name === NAME);
+    expect(adminRow?.versions).toEqual(expect.arrayContaining([v1, v2, v3]));
+    expect(adminRow?.channels).toEqual({ release: v1, beta: v2 });
+  });
+
+  it('[LOAD-BEARING] workflow_source: BOB\'s masked projection shows channels.release but never channels.beta', async () => {
+    const bobSource = await facade.workflowSource({ name: NAME }, BOB) as { status?: string; result?: { channels?: { release: string | null; beta: string | null }; scriptWithheld?: boolean } };
+    expect(bobSource.status).toBe('completed');
+    expect(bobSource.result?.scriptWithheld).toBe(true);
+    expect(bobSource.result?.channels).toEqual({ release: v1, beta: null });
+  });
+
+  it('ALICE (owner): workflow_source returns the OWNER branch (the real, unwithheld script) — no `channels` key on that branch at all, so nothing to mask', async () => {
+    const aliceSource = await facade.workflowSource({ name: NAME }, ALICE) as { status?: string; result?: { channels?: unknown; scriptWithheld?: boolean; script?: string } };
+    expect(aliceSource.status).toBe('completed');
+    expect(aliceSource.result?.scriptWithheld).toBeUndefined();
+    expect(typeof aliceSource.result?.script).toBe('string');
+    expect(aliceSource.result?.channels).toBeUndefined();
+  });
+});
+
 describe('nested workflow() (#100 Q4): always resolves the target release, never a selector, regardless of principal', () => {
   it('[LOAD-BEARING] a newer, unpublished child version is never reached by a nested workflow() call across principals', async () => {
     const child = 'nested-child-it100';

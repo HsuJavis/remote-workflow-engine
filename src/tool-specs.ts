@@ -387,7 +387,7 @@ export const TOOL_SPECS = [
     // v27b (DES-197, ARCH-131, TASK-202, REQ-106's precedent): names `phases[].agents` in the
     // advertised description itself, not just the schema shape, so a cold, schema-only client
     // learns the predicted lane membership without fetching first.
-    description: "Describe a workflow: per-agent parameters, agent labels, live triggers, its author-supplied diagram, and the predicted lane membership (phases[].agents). Also returns registeredRemote: whether THIS version was registered by a remote submission — on a host whose Bash-confinement probe failed at boot, such a version is refused CONFINEMENT_UNAVAILABLE even for a local run_start, and this is the field that says which version to re-register locally. Defaults to the release pointer; pass version or channel to describe another one — an unpublished version must be named with version, since the release default answers CHANNEL_UNPUBLISHED. `runnable`/`runnableReason` are computed for the RESOLVED version and the CALLER, exactly matching what run_start would do — a version the owner/admin could run is `runnable:true` even if unpublished. A non-owner (non-admin) naming a version/channel that is not today's release is refused VERSION_NOT_FOUND, same as run_start and same as an unknown version — this never discloses whether the version exists.",
+    description: "Describe a workflow: per-agent parameters, agent labels, live triggers, its author-supplied diagram, and the predicted lane membership (phases[].agents). Also returns registeredRemote: whether THIS version was registered by a remote submission — on a host whose Bash-confinement probe failed at boot, such a version is refused CONFINEMENT_UNAVAILABLE even for a local run_start, and this is the field that says which version to re-register locally. Defaults to the release pointer; pass version or channel to describe another one — an unpublished version must be named with version, since the release default answers CHANNEL_UNPUBLISHED. `runnable`/`runnableReason` are computed for the RESOLVED version and the CALLER, exactly matching what run_start would do — a version the owner/admin could run is `runnable:true` even if unpublished. A non-owner (non-admin) naming a version/channel that is not today's release is refused VERSION_NOT_FOUND, same as run_start and same as an unknown version — this never discloses whether the version exists. Even on an ALLOWED (release) response, a non-owner's `versions` is `[<release>]` only and `channels.beta` is `null` — no non-release version id is ever named to a caller who could not run it.",
     // v24 Gate 7.5 (D-7, REQ-118): the handler has always accepted `version`/`channel` (it builds
     // a `VersionSelector` from them) and the row advertised only `name`. `version` is not a
     // convenience: a workflow that was never published cannot be described WITHOUT it — the bare
@@ -407,7 +407,7 @@ export const TOOL_SPECS = [
   },
   {
     name: 'workflow_source', entity: 'workflow', key: 'name' as const,
-    description: "Read a workflow version's script. A non-owner author receives a masked projection (scriptWithheld:true) — see workflow_describe for the runnable summary.",
+    description: "Read a workflow version's script. A non-owner author receives a masked projection (scriptWithheld:true) — see workflow_describe for the runnable summary. That masked projection's `channels.beta` is always `null`, regardless of the real beta pointer.",
     // B-1 (v24 adjudication #3): `version` is a STRING, the exact value workflow_register's
     // `result.version` returns — see workflow_publish's row for why.
     inputSchema: schema({ name: { type: 'string' }, version: { type: 'string', description: "The version string returned by workflow_register, e.g. 'v1'." } }, ['name']),
@@ -425,7 +425,7 @@ export const TOOL_SPECS = [
   },
   {
     name: 'workflow_list', entity: 'workflow', key: null,
-    description: "List registered workflows; each row carries whether it currently has a runnable release. `lastRunAt` is the most recent run on record; null = never run.",
+    description: "List registered workflows; each row carries whether it currently has a runnable release. `lastRunAt` is the most recent run on record; null = never run. For a workflow the caller does not own (owner/admin see everything), `versions` and `channels.beta` never name a non-release version id — `versions` is `[<release>]` (or `[]` with none released) and `channels.beta` is `null`, matching what that caller could actually run/describe.",
     inputSchema: schema({ onlyRunnable: { type: 'boolean' } }),
     outputSchema: OUT,
     errors: [] as ErrorCode[],

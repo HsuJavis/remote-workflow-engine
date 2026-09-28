@@ -10,7 +10,7 @@ import type { RunStore } from './run-store.js';
 import { InMemoryRunStore, TERMINAL } from './run-store.js';
 import { RunManager, DEFAULT_RUN_CONCURRENCY, admissionRefusal } from './run-manager.js';
 import { CONFINEMENT_REMEDIATION } from './gateway/confinement-probe.js';
-import { resolveVersionRequest, canRunResolved, type WorkflowDetail, type Channel, type VersionSelector, type Actor } from './workflow-catalog.js';
+import { resolveVersionRequest, canRunResolved, canMutate, type WorkflowDetail, type Channel, type VersionSelector, type Actor } from './workflow-catalog.js';
 import { SubmissionValidator } from './submission-validator.js';
 // v24 Gate 7.5 (D-3): `toErrEnvelope` is IMPORTED, not re-implemented. This file used to carry a
 // private copy whose envelope had no `see` field at all, and since every `workflow_*` handler
@@ -574,7 +574,10 @@ export class McpFacade {
     // `resolveVersionRequest` itself uses — so describe never discloses more about a version a
     // non-owner could not run anyway (mermaid/params/triggers/etc, all built below this point).
     // Same `canRunResolved`/`actorFor(...,'bypass')` mechanism `RunManager.start()` now gates on.
-    if (!canRunResolved(full.owner, actorFor(principal, a, 'bypass'), full.version, full.channels, a.channel)) {
+    // `actor` is minted ONCE and reused below for `viewerIsOwner` (owner follow-up) — a second mint
+    // would risk the two falling out of step under a future `actorFor` change.
+    const actor = actorFor(principal, a, 'bypass');
+    if (!canRunResolved(full.owner, actor, full.version, full.channels, a.channel)) {
       const label = a.version ?? a.channel ?? 'release';
       return { runId: '', status: 'failed', ...catalogResolveFailure(codedError('VERSION_NOT_FOUND', `VERSION_NOT_FOUND: ${label} (workflow '${a.name}')`), a.name) };
     }
@@ -613,6 +616,9 @@ export class McpFacade {
     const view = projectWorkflowDescribe(ownerView, {
       ceilings: this.ceilings, triggers: this._resolveTriggers(full.name, full.triggers ?? []), attempts: this.gatewayAttempts,
       confinementPosture: this.confinementPosture, isRemoteSubmission, registeredRemote: full.registeredRemote,
+      // Owner follow-up (issue #100 Q5): the SAME `canMutate` notion `canRunResolved` above already
+      // folds in — an owner, a bypass actor, or an ownerless row sees every version/channel.
+      viewerIsOwner: canMutate(full.owner, actor),
     });
     // v26 (DES-184, ARCH-119, TASK-189): `diagramContract` — added here rather than threading
     // through `WorkflowOwnerView`/`WorkflowDescribeView` (workflow-view.ts, no v26 task's file
@@ -715,20 +721,31 @@ export class McpFacade {
     // "never run" sentinel rather than a coincidental null timestamp.
     const lastRuns = await this.store.lastRunAtByName();
     const onlyRunnable = a.onlyRunnable ?? (principal.kind === 'user');
+    // Owner follow-up (issue #100 Q5, "don't reveal existence"): minted ONCE per request, reused
+    // per row below — `canMutate`'s owner/bypass/ownerless notion, the SAME one `workflowDescribe`
+    // and `RunManager.start()` apply.
+    const actor = actorFor(principal, a, 'bypass');
     const rows = workflows
       // v24 adjudication #6 F-4: `w.owner` directly — the `as unknown as {owner?}` cast this line
       // used to carry is what let tsc stay green while `catalog.list()` had no `owner` field at all.
       .map((w) => {
-        const published = (w.channels as unknown as { release?: string | null })?.release != null;
+        const channels = w.channels as unknown as { release: string | null; beta: string | null };
+        const published = channels.release != null;
         const confinementRefused = published && admissionRefusal({
           posture: this.confinementPosture,
           origin: isRemoteSubmission || w.registeredRemote ? 'remote' : 'local',
         }) !== null;
+        // Owner follow-up: a non-owner (not owner, not admin/bypass, not an ownerless legacy row —
+        // `canMutate` false) never sees a non-release version id through this row — `versions[]`
+        // collapses to `[release]` (or `[]` with none) and `channels.beta` is masked to `null`. The
+        // released version itself (`channels.release`) stays visible on purpose: it IS what
+        // run_start/describe would run for this caller (Q1/Q2), so it names nothing new.
+        const viewerIsOwner = canMutate(w.owner, actor);
         return {
           name: w.name,
           owner: w.owner,
-          versions: w.versions,
-          channels: w.channels as unknown as Record<string, string>,
+          versions: viewerIsOwner ? w.versions : (channels.release !== null ? [channels.release] : []),
+          channels: (viewerIsOwner ? channels : { release: channels.release, beta: null }) as unknown as Record<string, string>,
           runnable: published && !confinementRefused,
           ...(confinementRefused ? { runnableReason: 'CONFINEMENT_UNAVAILABLE' as const } : {}),
           // v36 (DES-247, ARCH-163): forwarded, never re-parsed — `catalog.list()` already computes
