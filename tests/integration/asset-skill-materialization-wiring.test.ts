@@ -125,6 +125,12 @@ describe('REQ-113 selective skill materialization on a REAL dispatch (IT-036/IT-
   }
 
   it('the ONE declared skill is materialized and the sibling stored skill is NOT — the positive half C-2 found missing', async () => {
+    // Issue #102 (asset squatting): workspace_push now requires WF_NAME to already be registered
+    // (WORKFLOW_NOT_FOUND otherwise) — register a placeholder v1 first; `registerRunAndWait` below
+    // registers the real (skill-declaring) script as v2.
+    const preReg = await mcpCall('workflow_register', { name: WF_NAME, script: 'return "placeholder";', mermaid: 'graph LR' });
+    expect(preReg.error, `pre-register failed: ${JSON.stringify(preReg.error)}`).toBeUndefined();
+
     const declaredMd = '# Declared Skill\n\nThe one this label asked for.\n';
     await pushSkill('declared-skill', declaredMd);
     await pushSkill('undeclared-skill', '# Undeclared Skill\n');

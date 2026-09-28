@@ -621,6 +621,12 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         // issues #81/#83: nothing said how a declared skill is activated, and the only example
         // paired one with file tools — authors could not tell a skill never reached the model.
         '**Skills.** `skills: [name, ...]` names skills pushed with `workspace_push` (`kind: \'skill\'`). ' +
+        // Issue #102 (asset squatting): workspace_push refuses a workflow-scoped push against a
+        // name nobody has registered yet (WORKFLOW_NOT_FOUND) — registering first, THEN pushing,
+        // is not merely convenient, it is now the only order that works.
+        'Register the workflow FIRST (`workflow_register`), then `workspace_push` each declared ' +
+        'skill against that already-registered name — a push naming an unregistered workflow is ' +
+        'refused `WORKFLOW_NOT_FOUND`; registration itself never requires a declared skill to exist yet. ' +
         'The model activates a declared skill through the Skill tool, which the engine adds to that ' +
         "agent's tool surface for you — do not list `Skill` in `allowedTools`. Declaring a skill grants " +
         'no file tools, and none are needed to reach it: an agent with `allowedTools: []` and a declared ' +

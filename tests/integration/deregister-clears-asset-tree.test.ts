@@ -126,6 +126,12 @@ describe('deregister removes the workflow\'s asset tree from disk, not only its 
   });
 
   it('the previous owner\'s skill is neither on disk nor materialized for the next registrant of the same name', async () => {
+    // 0. Issue #102 (asset squatting): workspace_push now requires the workflow to already be
+    // registered (WORKFLOW_NOT_FOUND otherwise) — the supported order is register FIRST, then push
+    // its assets. `registerRunAndWait` below registers the real (skill-declaring) version as v2.
+    const preReg = await mcpCall('workflow_register', { name: WF, script: 'return "placeholder";', mermaid: 'graph LR' }, ownerToken);
+    expect(preReg.error, `pre-register: ${JSON.stringify(preReg.error)}`).toBeUndefined();
+
     // 1. The owner pushes a skill, registers, publishes and runs — the skill really materializes.
     const push = await mcpCall(
       'workspace_push',

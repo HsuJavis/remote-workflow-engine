@@ -111,6 +111,9 @@ describe('McpFacade refusal arms (UT-163)', () => {
   });
 
   it('workspaceDelete routes the workflow scope and the global scope to the bound assetSync', async () => {
+    // Issue #102: a workflow-scoped delete now requires the workflow to actually be registered
+    // (WORKFLOW_NOT_FOUND otherwise) — 'w' must exist for this routing case to reach assetSync at all.
+    await catalog.register({ name: 'w', script: 'return 1;', mermaid: 'graph LR' });
     const calls: unknown[] = [];
     facade.bindAssetSync({ delete: async (req: unknown) => { calls.push(req); return { deleted: true }; } } as never);
     expect((await facade.workspaceDelete({ workflow: 'w', kind: 'skill', name: 'n' }, OPEN))['status']).toBe('completed');
@@ -125,6 +128,8 @@ describe('McpFacade refusal arms (UT-163)', () => {
   // bound assetSync actually did — a caller could not tell "removed" from "there was never any such
   // asset". This pins the ANSWER threading through, both ways, not just the route.
   it('workspaceDelete answers the REAL {deleted} boolean from assetSync.delete, not a hardcoded true', async () => {
+    // Issue #102: 'w' must be registered for a workflow-scoped delete to reach assetSync at all.
+    await catalog.register({ name: 'w', script: 'return 1;', mermaid: 'graph LR' });
     facade.bindAssetSync({ delete: async () => ({ deleted: false }) } as never);
     const missResult = await facade.workspaceDelete({ workflow: 'w', kind: 'skill', name: 'never-existed' }, OPEN) as Record<string, unknown>;
     expect(missResult['status']).toBe('completed');
