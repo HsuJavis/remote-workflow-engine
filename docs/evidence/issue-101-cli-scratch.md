@@ -99,3 +99,7 @@ dispatch, real CLI + kernel sandbox; RED on the pre-fix engine: `shared_entries`
   `~/.claude/debug/`. An `npm` run inside the sandbox cannot create `~/.npm/_logs` on the host
   either, because HOME is a tmpfs there. Only something running as that user outside the
   sandbox can bring either directory back.
+- The denied shared path is `<engine process tmpdir>/claude-<uid>`. If the engine runs with a
+  `TMPDIR` that the operator's interactive Claude Code does not share, the operator's
+  `/tmp/claude-<uid>` is not on `denyRead`, and `--ro-bind / /` leaves it readable (but not
+  writable). Running the engine as a dedicated OS user closes this too.
