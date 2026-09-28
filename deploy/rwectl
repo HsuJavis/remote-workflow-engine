@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# deploy/rwectl — day-2 control of an engine that runs as a dedicated service user (default `rwe`,
+# see deploy/migrate-to-service-user.sh and DEPLOY.md「以獨立系統使用者執行（建議）」).
+# The service user has no login session, so its systemd --user instance is reached by pointing
+# systemctl at its runtime dir + bus explicitly. Run as the operator (uses sudo).
+#
+#   rwectl status                 # = systemctl --user status (as rwe); any systemctl verb works:
+#   rwectl restart rwe.service    #   start/stop/restart/is-active/list-timers/daemon-reload/cat ...
+#   rwectl logs [-f] [-n 200]     # journal of rwe.service (extra args go to journalctl)
+#   rwectl logs-update [-n 50]    # journal of rwe-update.service (self-update runs)
+#   rwectl update-result          # the last self-update outcome (result.json)
+#
+# RWE_USER overrides the account name.
+set -euo pipefail
+RWE_USER="${RWE_USER:-rwe}"
+case "${1:-}" in ""|-h|--help) sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
+uid="$(id -u "$RWE_USER" 2>/dev/null)" || { echo "rwectl: no such user '$RWE_USER'" >&2; exit 1; }
+home="$(getent passwd "$RWE_USER" | cut -d: -f6)"
+cd /   # sudo -u keeps the cwd; the operator's home is unreadable to the service user
+
+journal() {  # journal UNIT [journalctl args...] — lines the unit's processes wrote + manager events
+  local unit="$1"; shift
+  exec sudo journalctl --no-pager _UID="$uid" _SYSTEMD_USER_UNIT="$unit" + _UID="$uid" USER_UNIT="$unit" "$@"
+}
+
+case "${1:-}" in
+  logs) shift; journal rwe.service "$@" ;;
+  logs-update) shift; journal rwe-update.service "$@" ;;
+  update-result) exec sudo cat "$home/.local/share/rwe-update/result.json" ;;
+  *) exec sudo -u "$RWE_USER" env XDG_RUNTIME_DIR="/run/user/$uid" \
+       DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" systemctl --user "$@" ;;
+esac

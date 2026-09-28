@@ -806,7 +806,8 @@ sudo systemctl enable --now rwe.service
 ### 無 root 部署：systemd **user** service
 
 > 沒有 sudo/root 時的正解——用 systemd 的 **user instance**（`systemctl --user`），unit 放
-> `~/.config/systemd/user/`，完全不需要 root。附檔 `deploy/rwe.user.service` 是這個版本的範本，
+> `~/.config/systemd/user/`，完全不需要 root。有 sudo 的主機建議把這套 user unit 放在一個專用的系統帳號底下、
+> 而不是你自己的登入帳號（理由與分階段腳本見 §6c）。附檔 `deploy/rwe.user.service` 是這個版本的範本，
 > 逐行對照這台專案 production 主機目前實際在跑的 user unit（2026-09-27 收斂）——換機時真正
 > 因主機而異的只剩下方表格列出的幾個值。範本預設把 LiteLLM venv 的 bin/ 放進 `PATH`
 > （`gateway:"sdk"` 才用得到）；只想跑本地 Ollama、零依賴的部署可以不裝這個 venv，PATH 裡多出的
@@ -1396,6 +1397,163 @@ curl -s http://localhost:8787/api/version
 
 本機制設計只支援**單一引擎實例**。多實例部署（多個 rwe 綁不同 port 共用同一 git 工作目錄）會造成 helper 在其中一個實例的 `systemctl restart rwe` 時中斷另一個，不在支援範圍內。多實例需求請用多套獨立部署（各自的 git clone + service unit + flag 路徑）。
 
+## §6c 以獨立系統使用者執行（建議）
+
+> 一句話：引擎不要跟你自己的登入帳號共用同一個 uid。§2「無 root 部署」與 §6b 的 user-mode
+> 範本可以直接跑在任何帳號底下——這一節是把它們搬到一個**專用、無登入、無 sudo 的系統使用者**
+> （以下用 `rwe`，家目錄 `/home/rwe`）底下，並附一支分階段腳本
+> `deploy/migrate-to-service-user.sh` 把「正在操作員帳號底下跑的 production」原地搬過去。
+> 全新主機也適用：跳過第五階段（沒有舊資料要搬）即可。
+
+### 為什麼
+
+- **CLI 的 scratch/debug 目錄一定要對 agent 重新開放。** Bash confinement 把整個家目錄與 workRoot
+  設為 `denyRead`，但 Claude CLI 與 sandbox-runtime 固定會把它自己的 per-uid scratch 目錄
+  （`/tmp/claude-<uid>`）、`~/.claude/debug`、`~/.npm/_logs` 放進可寫清單（見
+  `src/gateway/bash-confinement.ts`）——少了它們 CLI 的 shell wrapper 跑不起來。引擎跟操作員同
+  uid 時，`/tmp/claude-<uid>` 就是**操作員自己的 Claude Code session 暫存區**（草稿、工具輸出、
+  背景任務 log），agent 在 sandbox 裡看得到也寫得到。
+- **同 uid = 最後一道牆不存在。** 主機一旦量到 `Bash confinement: UNCONFINED`（AppArmor 擋住
+  userns，見 §1c(e)），或 confinement 規則有任何遺漏，agent 能讀到的就是操作員讀得到的一切：
+  `~/.config/rwe.env`、`~/.cloudflared/` 隧道憑證、SSH 金鑰、其他專案的原始碼。換成獨立 uid 後，
+  這些檔案由 kernel 的檔案權限（`/home/<operator>` 為 750、`/tmp/claude-<uid>` 為 700）擋住，
+  跟 sandbox 有沒有生效無關。
+- 副作用是好的：引擎的 git checkout、workRoot、LiteLLM venv、自我更新全部變成 `rwe` 的私有物，
+  操作員日常的 `git`/`npm`/Claude Code 工作不會再跟 production 的檔案混在一起。
+
+### 前提與這支腳本做的假設
+
+- 以**操作員帳號**執行（不是 root；腳本自己會在需要的步驟呼叫 `sudo`，service user 擁有的東西
+  一律經 `sudo -u rwe -H` 建立）。操作員需要 sudo 權限；`rwe` 本身**沒有**。
+- 舊部署是 §2/§6b 的 user-mode 形狀：`~/.config/systemd/user/rwe.service`（含
+  `rwe.service.d/override.conf`）、`rwe-update.path`／`rwe-update.service`、`~/.config/rwe.env`、
+  checkout 停在某個 release tag 上。
+- 主機專屬值全部是環境變數、預設值從舊部署推導，另一台伺服器照需要覆寫即可（完整清單見腳本開頭）：
+
+| 變數 | 預設 | 說明 |
+|------|------|------|
+| `RWE_USER`／`RWE_HOME` | `rwe`／`/home/rwe` | 服務帳號與其家目錄 |
+| `RWE_CHECKOUT` | `$RWE_HOME/remote-workflow` | 服務帳號的 git checkout（單元範本的 `%h/Documents/remote-workflow` 會被改寫成這裡） |
+| `RWE_WORKROOT` | `$RWE_HOME/.local/share/rwe-data` | 新 workRoot |
+| `OP_CHECKOUT` | `$HOME/Documents/remote-workflow` | 舊部署的 checkout（讀它的 `rwe.config.json`、`git describe --tags`、`origin` URL） |
+| `OP_ENV`／`OP_NODE_DIR`／`OP_UV` | `~/.config/rwe.env`／`~/.local/node`／`command -v uv` | 要複製過去的 secrets 檔、node 安裝、uv 執行檔 |
+| `RWE_PORT_VALUE` | 讀舊的 `override.conf`，沒有就 `8787` | 新單元的 `RWE_PORT`；保持不變，隧道／反向代理就不用改 |
+| `REPO_SSH` | 由 `origin` 的 `https://github.com/<owner>/<repo>.git` 推導成 `git@github.com:<owner>/<repo>.git` | 服務帳號 clone／自我更新用的 SSH remote |
+| `DEPLOY_TAG` | `git -C $OP_CHECKOUT describe --tags --exact-match` | 服務帳號要 checkout 的 tag（舊 checkout 不在 tag 上時必須手動給） |
+
+### 用法
+
+```bash
+deploy/migrate-to-service-user.sh --dry-run <phase>   # 印出每一條指令，不執行、不需要 sudo
+deploy/migrate-to-service-user.sh <phase>             # 真的執行；每條指令執行前都先印出（+ ...）
+```
+
+每個階段都可以重跑（已完成的步驟會被偵測並略過）。**先把每個階段都 `--dry-run` 一次**，確認推導
+出來的路徑、tag、remote、port 都對，再依序真正執行：
+
+| 階段 | 做什麼 | 停機？ |
+|------|--------|--------|
+| `phase1` | `useradd --system --user-group --create-home --home-dir /home/rwe --shell /usr/sbin/nologin rwe`（不加入 sudo／操作員群組，腳本會檢查）、`chmod 750 /home/rwe`、`loginctl enable-linger rwe`，並等 `user@<uid>.service` 起來 | 否 |
+| `phase2` | 工具鏈：把操作員的 `~/.local/node` 整份 `cp -a` 過去（官方 tarball 可搬移，版本保證一致，不需要下載；複製後比對 `node -v`）、`~/.local/bin/{node,npm,npx}` symlink、複製 `uv` 單一執行檔，再以 `rwe` 身分 `uv python install 3.12` + `uv venv` + `uv pip install "litellm[proxy]==<舊 venv 的同一版>"`（**不複製**舊 venv：它的 `pyvenv.cfg` 指向操作員家目錄裡的直譯器，`rwe` 讀不到）。需要對外網路 | 否 |
+| `phase3` | 產生 `rwe` 的 ed25519 deploy key（`/home/rwe/.ssh/id_ed25519`，600），印出**公鑰**後停下來——見下方「GitHub deploy key」 | 否 |
+| `phase3b` | 釘住 github.com 的 host key（`ssh-keyscan` 的指紋必須同時等於 `https://api.github.com/meta` 公布的值與腳本內建的值，否則中止）、確認 deploy key 讀得到 repo、以 SSH clone 到 `$RWE_CHECKOUT`、checkout 舊部署正在跑的同一個 tag（比對 commit）、`npm ci` | 否 |
+| `phase4` | 設定與 secrets：把舊 `rwe.config.json` 複製成 `$RWE_CHECKOUT/rwe.config.json`（600、owner `rwe`），只改寫 `workRoot`／`updateFlagPath`／`updateResultPath` 三個路徑（其他值若仍指向舊家目錄會列出鍵名警告）；`rwe.env` 逐位元組複製到 `/home/rwe/.config/rwe.env`（600，從不印出內容，只列鍵名）；可選擇輪替 Google client secret（見下方）；最後以 `rwe` 身分跑 `npm run check-config` | 否 |
+| `phase5` | **停機開始**：停掉操作員的 `rwe.service`／`rwe-update.path`（等進行中的自我更新跑完）、`cp -a` 整棵 workRoot 到 `$RWE_WORKROOT`、`chown -R rwe:rwe`、`chmod 700`。**原始資料原封不動**（rollback 用）。目的地已存在就拒絕（避免蓋掉 `rwe` 已寫入的新資料），`--force` 會先把它改名成 `.bak-<時間戳>` | **是** |
+| `phase6` | 安裝 `rwe` 的 systemd user 單元（`rwe.user.service`→`rwe.service`、`override.conf`、`rwe-update.service`、`rwe-update.path`，repo 路徑與 `RWE_OFFICIAL_REMOTE` 會被改寫）、`systemctl-user` wrapper 與 0700 的 `~/.local/share/rwe-update/`（順便帶過舊的 `result.json`）、確認 port 已空出、`daemon-reload` + `enable --now`；接著 `disable`（**不刪除**）操作員的單元，等 `/api/version` 回應。**停機到此結束** | 結束 |
+| `phase7` | 驗證（見下方），任何一項失敗就以非零結束並提示 rollback | 否 |
+| `rollback` | 停用 `rwe` 的單元、重新 `enable --now` 操作員的單元 | 短暫 |
+
+停機時間 ≈ `phase5` 的複製時間 + 引擎開機時間（這台主機 workRoot 約 60 MB，秒級）。`phase1`～`phase4`
+可以提前一天做完，只有 `phase5`→`phase6` 需要排維護窗口。
+
+### GitHub deploy key（`phase3` 與 `phase3b` 之間，手動）
+
+repo 是 private 時 `rwe` 需要自己的讀取憑證——**不要**把操作員的 SSH key 或 token 給它。
+
+1. `phase3` 印出的那一行 `ssh-ed25519 AAAA… rwe@<host> …` 是公鑰，可以安全貼出。
+2. GitHub → repo **Settings → Deploy keys → Add deploy key**：Title 填 `rwe@<host>`，Key 貼上。
+3. **不要勾「Allow write access」**——引擎只會 `ls-remote`／`fetch` tag。
+4. 執行 `phase3b`。
+
+`rwe-update.sh` 本身不需要修改：它只是把 `RWE_OFFICIAL_REMOTE` 原樣交給 `git ls-remote --tags`
+與 `git fetch --tags`，scp 形式的 `git@github.com:<owner>/<repo>.git` 一樣可用（`phase6` 把單元裡
+的這一行改寫成 SSH 形式；`tests/integration/rwe-update-ssh-remote.test.ts` 釘住這個行為）。注意
+helper 會吞掉 `ls-remote` 的 stderr：**自我更新之後若一直記 exit 20（tag 解析失敗），第一個要查的
+就是 SSH**——`sudo -u rwe -H ssh -T git@github.com`（應回 `successfully authenticated`）、
+`/home/rwe/.ssh/known_hosts` 是否還有 github.com、deploy key 是否被刪。
+
+### Secret 輪替
+
+- **`rwe.env`** 整份搬過去，值不經過終端機。搬完順便刪掉不用的殘留鍵（見 §7 第 4 點）。
+  若懷疑舊 uid 底下的 agent 讀過這些值（同 uid 期間 agent 在 UNCONFINED 主機上跑過），趁搬家
+  逐一到各供應商輪替，改完 `sudo -u rwe -H sh -c 'umask 077; cat > ~/.config/rwe.env'`
+  重新寫入後 `rwectl restart rwe.service`。
+- **Google OAuth client secret（`auth.googleClientSecret`）** 目前只能明碼寫在 `rwe.config.json`：
+  引擎的 `${secret:NAME}` 展開只作用在 MCP server 設定（`src/gateway/claude-agent-sdk-client.ts`），
+  `auth` 區塊由 `src/main.ts` 原樣轉交，寫成 `${secret:…}` 會把字面字串送給 Google 導致登入失敗。
+  所以輪替的做法是：Google Cloud Console → Credentials → 該 OAuth client → **Add secret**（同一個
+  client 可同時有兩個有效 secret）→ `phase4` 問「Paste a NEW rotated Google client secret now?」時
+  回 `y`，以 `read -s` 貼上（不顯示、只經 stdin 傳給改寫程式，不進 argv／環境變數／暫存檔）→
+  `phase7` 全綠、實際走一次 OAuth 登入之後，再回 Console **停用舊 secret**。新值只存在
+  `/home/rwe/remote-workflow/rwe.config.json`（600、owner `rwe`、家目錄 750），操作員帳號與 agent
+  都讀不到。
+
+### 驗證（`phase7`）
+
+- 引擎行程（`MainPID`）的擁有者是 `rwe`。
+- 開機 log 有 `Bash confinement: CONFINED` 與 `listening on http://…:<RWE_PORT>/mcp`。
+- `curl http://127.0.0.1:<RWE_PORT>/api/version` 帶著 `(<DEPLOY_TAG>)`。
+- 以 `rwe` 身分在它的 checkout 跑 `scripts/smoke.sh`（port `SMOKE_PORT`，預設 8799）→ PASS。
+- `auth.issuer` 有設時：`POST <issuer>/mcp`（不帶 token）→ `401` 且 `WWW-Authenticate` 帶 `scope=`。
+- `rwe` **讀不到** 操作員家目錄、操作員的 `rwe.env`／`rwe.config.json`、`/tmp/claude-<操作員 uid>`。
+- `rwe` 以 SSH `git ls-remote` 讀得到部署中的 tag（自我更新的前提）、`rwe-update.path` 是 active。
+- 操作員的 `rwe.service` 已 disabled。
+
+之後照 §7 第 13 點最後一項，打一個測試 tag 走完一次完整自我更新鏈（`rwectl update-result` 應記
+`"status":"applied"`）——第一次在 `rwe` 底下跑的 `npm test` 就是在這時候，出問題會 safe-fail、
+服務留在原版本。
+
+### Rollback
+
+`deploy/migrate-to-service-user.sh rollback`：停用 `rwe` 的單元、重新啟用操作員的單元，引擎回到
+`phase5` 當下的舊 workRoot。**`rwe` 在切換後寫入的資料**（新 run、新註冊的 workflow）留在
+`/home/rwe/.local/share/rwe-data`，不會自動合併回去。兩邊都不刪任何東西：確定不回頭後，再自行刪除
+操作員那份舊 workRoot、舊 `rwe.env`、舊 checkout（它們仍含 secrets）。
+
+### Day-2：`deploy/rwectl`
+
+`rwe` 沒有登入 session，`systemctl --user` 要指到它的 runtime dir 與 bus。`deploy/rwectl` 包好了
+（以操作員身分執行，內部用 sudo）：
+
+```bash
+deploy/rwectl status                    # = sudo -u rwe XDG_RUNTIME_DIR=/run/user/<uid> … systemctl --user status
+deploy/rwectl restart rwe.service       # 任何 systemctl 動詞都直接轉交
+deploy/rwectl cat rwe.service           # 套用後的完整 unit（含 drop-in）
+deploy/rwectl logs -f                   # rwe.service 的 journal（額外參數交給 journalctl）
+deploy/rwectl logs-update -n 50         # 自我更新（rwe-update.service）的 journal
+deploy/rwectl update-result             # 最後一次自我更新的 result.json
+```
+
+改設定：`sudo -u rwe -H "${EDITOR:-nano}" /home/rwe/remote-workflow/rwe.config.json`（或
+`sudoedit`），改完 `deploy/rwectl restart rwe.service`。以 `rwe` 身分跑一次性指令一律用
+`sudo -u rwe -H <cmd>`（它的 shell 是 nologin，`sudo -iu rwe` 進不去是刻意的）。
+
+### 跟 §7「整套移植到新主機」的關係
+
+§7 是**換機器**（同一個帳號模型搬到另一台）；這一節是**同一台機器換帳號**。兩者可以組合：在新
+主機上先照 §7 準備前置需求（第 1、5、6、8 點），再用這支腳本的 `phase1`～`phase4`、`phase6`、
+`phase7` 直接把部署建在 `rwe` 底下，workRoot 則照 §7 第 11 點從舊主機搬到 `RWE_WORKROOT`
+（`chown -R rwe:rwe`）取代 `phase5`。§7 第 3 點提到的「repo 路徑／`RWE_OFFICIAL_REMOTE`／`PATH`
+要手動改」在 `phase6` 都由腳本改寫；第 10 點的 `enable-linger` 由 `phase1` 對 `rwe` 執行。
+
+**資料可搬移性（已實測）**：把一份 production workRoot 複製到不同的絕對路徑、並以 bwrap 把原路徑
+遮成空目錄後開機，`run_list`（109 筆）、`run_status`／`run_result`／`run_agent_log`、舊 run 的
+`workspace_list`／`workspace_pull`、`workflow_list`／`workflow_source`、以 CAS seed 的 run 開工作區、
+skill 資產的供應檢查、`schedule_*`／`webhook_*` 的建立與列出全部正常；版本高水位也延續。SQLite 與
+檔案裡出現的舊絕對路徑全部是歷史內容（agent 對話紀錄、run 結果文字、run 工作區裡 agent 自己寫的
+檔案、兩個測試用 workflow 的腳本字串），引擎不會拿它們來定位任何東西——所以 `phase5` 不需要做
+路徑改寫。
+
 ## 7. 整套移植到新主機（Host Migration Checklist）
 
 > 目的：把「目前這台主機上實際在跑的完整部署」原樣搬到另一台機器——不是重新照 §0/§2 從零架設
@@ -1403,6 +1561,7 @@ curl -s http://localhost:8787/api/version
 > 對外隧道）連同資料一起搬過去。以下每一步都連結到上面已有的章節，不重複寫一次；只補「換機時
 > 才會踩到」的細節與（用 `<占位字元>` 表示的）主機專屬值要換掉的地方。**沒有任何一步需要真的
 > 貼出這台主機的 token/secret 值**——照名稱/位置操作即可，值本身留在原本的檔案裡跟著複製過去。
+> 同一台主機上只是把引擎從操作員帳號搬到專用系統帳號，見 §6c（分階段腳本）；兩者怎麼組合也寫在那裡。
 
 1. **新主機作業系統前置需求**——見 §1a：Node.js 22.6+、npm、（`gateway:"sdk"` 才需要的）
    Python 3.11/3.12、以及 `bwrap`/`socat`（`sudo apt install bubblewrap socat`）。**這台主機
@@ -1487,11 +1646,11 @@ curl -s http://localhost:8787/api/version
      失效，使用者要重新走一次 OAuth 授權——這不是 bug，是 OAuth issuer 綁定 audience 的必然結果。
    - **`auth.googleClientId`/`auth.googleClientSecret` 目前是明碼寫在這台主機的
      `rwe.config.json` 裡**——跟 §1b 開頭「`rwe.config.json` 本身不含機密，金鑰一律走環境變數」
-     這條原則不一致（歷史遺留，這份 checklist 只指出落差，不在這裡動它）。新主機若想收斂成
-     這個原則：`src/secret-resolver.ts` 的 `${secret:NAME}` 替換是對整份設定檔遞迴生效的，原則上
-     可以把這兩個值改寫成 `${secret:GOOGLE_CLIENT_ID}`/`${secret:GOOGLE_CLIENT_SECRET}`、
-     真正的值改放進 `~/.config/rwe.env` 的 `RWE_SECRET_GOOGLE_CLIENT_ID`/
-     `RWE_SECRET_GOOGLE_CLIENT_SECRET`——沒試過這條路徑的人，先在一台非正式機器上驗證過再上線。
+     這條原則不一致（歷史遺留，這份 checklist 只指出落差，不在這裡動它）。**不能**改寫成
+     `${secret:NAME}`：`src/secret-resolver.ts` 的展開只套用在 MCP server 設定
+     （`src/gateway/claude-agent-sdk-client.ts`），`auth` 區塊由 `src/main.ts` 原樣轉交，寫成
+     handle 會把字面字串送給 Google、登入失敗。目前能做的是把 `rwe.config.json` 維持 600、並讓
+     引擎跑在獨立帳號底下（見 §6c，含輪替這個 secret 的步驟）。
    - **`principals`**：目前是「特定信箱 → 角色」的對照表；换機不换使用者的話原樣搬，換一批
      使用者要照 §1b「角色」小節重新分配，打錯角色字串（不是 `admin`/`author`/`user`）會直接讓
      開機失敗，不是靜默退回。
