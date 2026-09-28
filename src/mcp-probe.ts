@@ -41,7 +41,9 @@ export class FakeMcpProbe implements McpProbe {
   }
 }
 
-const PROBE_TIMEOUT_MS = 5000;
+// issue #103(b): exported so `asset-sync.ts`'s MCP_PROBE_FAILED detail can name the actual timeout
+// window a caller hit, rather than a number hand-duplicated at the call site (and liable to drift).
+export const PROBE_TIMEOUT_MS = 5000;
 
 /** Real probe (exercised only at real-tier, DES-023 mock policy): a lightweight reachability
  *  check — `remote-http` gets a short-timeout HTTP request to the configured URL; `npx-stdio` gets

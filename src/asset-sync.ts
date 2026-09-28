@@ -17,7 +17,7 @@ import { join, dirname } from 'node:path';
 import { pathVerdict, lexicalVerdict } from './path-verdict.js';
 import { codedError } from './errors.js';
 import type { Clock } from './clock.js';
-import type { McpProbe, McpServerConfig } from './mcp-probe.js';
+import { classifyTransport, PROBE_TIMEOUT_MS, type McpProbe, type McpServerConfig } from './mcp-probe.js';
 import { isEgressAllowed } from './seedref-egress.js';
 
 /** Pre-v24 kind union — see file header. */
@@ -324,12 +324,26 @@ export async function resolveMcp(
   return { configs, missing };
 }
 
+// issue #103(b): a probe failure's own `code`/`message` used to be dropped entirely
+// (`push()` answered the bare `{error: 'MCP_PROBE_FAILED'}`) — a caller learned only THAT the
+// probe failed, never WHY. This module has no `SecretValueProvider` injected (unlike
+// `agent-executor.ts`'s marker-substitution `redact()`, which needs one), so "redacted" here is a
+// lighter-weight, structural scrub: strip any userinfo/query string off a URL substring the
+// probe's own message happens to echo back (a fetch/spawn error can include the request URL,
+// which may carry a token in its query string). Never touches `code`/`transport`/`timeoutMs`,
+// which are engine-authored, not caller/network-authored.
+const URL_WITH_CREDS_OR_QUERY = /\b(https?:\/\/)(?:[^/\s@]+@)?([^/\s?]+)(\/[^\s?]*)?(\?[^\s]*)?/gi;
+function redactProbeMessage(message: string): string {
+  return message.replace(URL_WITH_CREDS_OR_QUERY, (_m, scheme: string, host: string, path = '') => `${scheme}${host}${path}`);
+}
+
 /**
  * Stores/lists/deletes assets across the workflow/global scopes via an injected catalog port.
  * `push()` for `kind:'skill'` verdicts EVERY file before writing any (partial-push atomicity),
  * writes the tree, THEN the row; for `kind:'mcp'` it checks egress (when the config carries a
- * `url`) BEFORE any probe, then probes, then the row — nothing is stored on either refusal.
- * `delete()` removes the row THEN the tree. `pushedAt` always comes from `deps.clock`.
+ * `url`) BEFORE any probe, then probes, then the row — nothing is stored on either refusal. A
+ * failed probe's own code/message/transport/timeout travel in `detail`, message redacted (issue
+ * #103b). `delete()` removes the row THEN the tree. `pushedAt` always comes from `deps.clock`.
  */
 export class AssetSyncService {
   private readonly _workRoot: string;
@@ -352,7 +366,7 @@ export class AssetSyncService {
     return scope === 'workflow' ? join(this._workRoot, workflow!, 'skill', name) : join(this._globalRoot, 'skill', name);
   }
 
-  async push(req: AssetPushRequest): Promise<{ error: string } | { stored: string }> {
+  async push(req: AssetPushRequest): Promise<{ error: string; detail?: Record<string, unknown> } | { stored: string }> {
     const kind = (req as { kind: string }).kind;
     if (kind !== 'skill' && kind !== 'mcp') {
       throw codedError(
@@ -379,7 +393,12 @@ export class AssetSyncService {
         if (!verdict.ok) return { error: 'EGRESS_DENIED' };
       }
       const probed = await this._probe.probe(req.config);
-      if (!probed.ok) return { error: 'MCP_PROBE_FAILED' };
+      if (!probed.ok) {
+        return {
+          error: 'MCP_PROBE_FAILED',
+          detail: { code: probed.code, message: redactProbeMessage(probed.message), transport: classifyTransport(req.config), timeoutMs: PROBE_TIMEOUT_MS },
+        };
+      }
       // v24 Gate 7.5 (D-13, REQ-113): a GLOBAL asset is a built-in — the engine-level tree only an
       // admin can write, which every workflow sees.
       await this._catalog.putAsset({ scope: req.scope, workflow, builtin: req.scope === 'global', kind: 'mcp', name: req.name, config: req.config, pushedBy, pushedAt });

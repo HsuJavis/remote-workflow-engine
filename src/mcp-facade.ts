@@ -1064,7 +1064,14 @@ export class McpFacade {
         ? { scope: 'global' as const, kind: kind as AssetKind, name, pushedBy, ...body }
         : { scope: 'workflow' as const, workflow: a['workflow'] as string, kind: kind as AssetKind, name, pushedBy, ...body };
       const r = await this.assetSync.push(req as never);
-      if ('error' in r) return { runId: '', status: 'failed', code: r.error, error: { code: r.error, message: r.error } };
+      if ('error' in r) {
+        // issue #103(b): MCP_PROBE_FAILED is the one `push()` error that carries a `detail` (the
+        // probe's own redacted code/message/transport/timeoutMs) — every other `push()` refusal
+        // (EGRESS_DENIED, RESERVED_PREFIX, BLOB_HASH_MISMATCH, …) is unaffected, message stays the
+        // bare code exactly as before.
+        const message = r.detail !== undefined ? `${r.error}: ${String(r.detail['message'] ?? '')} (transport: ${String(r.detail['transport'] ?? 'unknown')})` : r.error;
+        return { runId: '', status: 'failed', code: r.error, error: { code: r.error, message, ...(r.detail !== undefined ? { detail: r.detail } : {}) } };
+      }
       return { runId: '', status: 'completed', result: r };
     } catch (err) {
       const e = toErrEnvelope(err);
