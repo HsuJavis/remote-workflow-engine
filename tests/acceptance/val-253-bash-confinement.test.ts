@@ -14,7 +14,7 @@ import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { ClaudeAgentSdkGatewayClient } from '../../src/gateway/claude-agent-sdk-client.js';
 import { buildBashConfinement } from '../../src/gateway/bash-confinement.js';
-import { runScriptVia } from '../helpers/workflow-fixtures.js';
+import { runScriptVia, registerPublishedVia, uniqueWorkflowName } from '../helpers/workflow-fixtures.js';
 
 const HAS_PROVIDER = !!process.env['OLLAMA_BASE_URL'];
 function hasBubblewrap(): boolean {
@@ -25,8 +25,24 @@ function hasBubblewrap(): boolean {
     return false;
   }
 }
+function hasSocat(): boolean {
+  try {
+    execSync('which socat', { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
 const HAS_SANDBOX_RUNTIME = HAS_PROVIDER && hasBubblewrap();
 const NO_RUNTIME = " [UNVERIFIED here: needs OLLAMA_BASE_URL + a real bubblewrap-capable host — see TASK-250's spike]";
+
+// Issue #95: `bash:'readonly'` needs a real kernel sandbox (bwrap + socat, #93) AND a real
+// Anthropic credential — a cheap haiku call, not Ollama (bash:'readonly' registration requires a
+// literal `allowedTools`, and the mermaid tools-annotation this drives is easiest to keep correct
+// against the SAME model the rest of this repo's fixtures default to).
+const HAS_ANTHROPIC_CRED = !!(process.env['ANTHROPIC_API_KEY'] || process.env['RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN'] || process.env['CLAUDE_CODE_OAUTH_TOKEN']);
+const HAS_READONLY_RUNTIME = hasBubblewrap() && hasSocat() && HAS_ANTHROPIC_CRED;
+const NO_READONLY_RUNTIME = ' [UNVERIFIED here: needs bwrap + socat + an Anthropic credential (ANTHROPIC_API_KEY or a CLAUDE_CODE_OAUTH_TOKEN) on the real host]';
 
 // 2026-09-26 (alias mechanism removed): the full ref itself — no alias table any more.
 const QWEN_REF = 'ollama/qwen2.5:7b';
@@ -112,4 +128,51 @@ describe("VAL-253: REQ-218 — an agent's Bash cannot write outside the run work
     expect(posture.filesystem?.allowWrite).toContain(grant);
     rmSync(grant, { recursive: true, force: true });
   });
+
+  // Issue #95: `bash:'readonly'` real-tier proof. Before this fix, EVERY Bash call in readonly mode
+  // failed at sandbox setup ("bwrap: Can't create file at <workspace>/.claude/agents: Read-only
+  // file system") before the shell ever started — a refusal-only test would have passed against
+  // that broken state too (both `cat` and `touch` failed identically), so this asserts the
+  // POSITIVE: a seeded file is actually readable, in the SAME tool call whose write is refused.
+  it.skipIf(!HAS_READONLY_RUNTIME)(
+    "a real readonly-Bash agent can read a seeded file, cannot write inside the workspace, and never surfaces bwrap's own error text" + NO_READONLY_RUNTIME,
+    async () => {
+      const name = uniqueWorkflowName('val253-ro');
+      const mermaid = ['graph LR', 'subgraph "main"', 'n0(["ro<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: Bash"])', 'end'].join('\n');
+      const script = [
+        "export const meta = { params: { agents: { ro: {",
+        "  model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' },",
+        "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
+        "  timeoutMs: { type: 'number', default: 60000 },",
+        '} } } };',
+        "const r = await agent('ro', { prompt: 'run this exact shell command via a tool call: cat note.txt; touch ro-probe.txt; echo touch_exit=$?', allowedTools: ['Bash'], bash: 'readonly' });",
+        'return String(r);',
+      ].join('\n');
+      await registerPublishedVia(mcpCall, name, script, { mermaid });
+      const run = await mcpCall('run_start', {
+        name,
+        seed: [{ path: 'note.txt', contentB64: Buffer.from('hello from inline seed').toString('base64') }],
+      });
+      const runId = run['runId'] as string;
+      let finalStatus: string | undefined;
+      for (let i = 0; i < 90; i++) {
+        const s = await mcpCall('run_status', { runId });
+        finalStatus = s['status'] as string;
+        if (finalStatus === 'completed' || finalStatus === 'failed') break;
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      expect(finalStatus).toBe('completed');
+      const log = await mcpCall('run_agent_log', { runId, label: 'ro' });
+      const events = (log['events'] ?? (log['result'] as { events?: unknown[] } | undefined)?.events ?? []) as Array<{ kind: string; data: { content?: string } }>;
+      const toolResults = events.filter((e) => e.kind === 'tool_result').map((e) => e.data.content ?? '');
+      const allText = toolResults.join('\n');
+      expect(allText).toContain('hello from inline seed');
+      expect(allText).toMatch(/read-only file system/i);
+      expect(allText).not.toMatch(/bwrap: can't create file/i);
+      expect(existsSync(join(workRoot, 'workflows', name, 'runs', runId, 'ro-probe.txt'))).toBe(false);
+      const harness = (log['harness'] ?? {}) as { bash?: { mode?: string; enforced?: boolean } };
+      expect(harness.bash).toEqual({ mode: 'readonly', enforced: true });
+    },
+    120000,
+  );
 });

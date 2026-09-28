@@ -1,13 +1,15 @@
 // The run workspace is the Claude CLI's project directory (`cwd` = workspace,
 // `settingSources:['project']`), so project configuration one agent leaves there is loaded by the
-// next agent's CLI in the same run. Two controls live here, both over the list in bash-confinement.ts:
+// next agent's CLI in the same run. Three controls live here, all over the lists in bash-confinement.ts:
 //  - `protectedConfigTarget`: the file-tool check (`toolUsePreCheck`) — no writing tool may name a
 //    path that lands on project configuration, however the path is spelled.
 //  - `sweepPlantedConfig`: before every dispatch, whatever got there anyway (Bash on an unconfined
 //    host, anything the file-tool check cannot see) is removed, so the CLI never loads it.
-import { lstatSync, readlinkSync, rmSync } from 'node:fs';
+//  - `prepareReadonlyMountTargets` (issue #95): before a `bashMode:'readonly'` dispatch, pre-creates
+//    the CLI's OWN forced sandbox mount targets — see `READONLY_MOUNT_TARGETS`'s own doc comment.
+import { lstatSync, mkdirSync, readdirSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
-import { ENGINE_OWNED_CONFIG_PATHS, PROJECT_CONFIG_PATHS } from './bash-confinement.js';
+import { ENGINE_OWNED_CONFIG_PATHS, PROJECT_CONFIG_PATHS, READONLY_MOUNT_TARGETS } from './bash-confinement.js';
 
 /** `.git/config` (`core.fsmonitor`, `core.hooksPath`) and `.git/hooks/` run commands whenever git
  *  runs in the workspace — the CLI does, unsandboxed, for its session context. Not CLI configuration,
@@ -87,7 +89,21 @@ function present(p: string): boolean {
  *  dispatch rather than start a CLI that would load it. A `.claude` that is a symlink is unlinked
  *  first: the CLI would load settings through it, and the engine would materialize skills through it
  *  to wherever it points. Links are removed as links (`rmSync` never follows them). Engine-owned
- *  entries (`.claude/skills`, `.mcp.json`) are left for the engine's own per-dispatch rewrite. */
+ *  entries (`.claude/skills`, `.mcp.json`) are left for the engine's own per-dispatch rewrite.
+ *
+ *  Issue #95: an EMPTY, real (non-symlink) directory at a `PROJECT_CONFIG_PATHS` entry is left alone
+ *  — not removed, not reported. Two of those entries (`.claude/agents`, `.claude/commands`) are ALSO
+ *  `READONLY_MOUNT_TARGETS`, this engine's own pre-created placeholders for a readonly-Bash
+ *  dispatch's kernel sandbox (`prepareReadonlyMountTargets`). Every agent in a run shares ONE
+ *  workspace, and a parallel sibling's dispatch (a different agent in the SAME run, running
+ *  concurrently) calls THIS function too — before this fix, its sweep removed the still-empty
+ *  placeholder a readonly agent's OWN still-running session depends on (its `.claude` never loads a
+ *  second time, but the KERNEL sandbox for its NEXT Bash tool call needs that mount target to still
+ *  exist), reintroducing the exact "Can't create file... Read-only file system" failure this fix
+ *  exists to close, and logging a false `agent.planted_config_removed` for content no agent ever
+ *  planted. An empty directory loads nothing into the CLI either way (a planted `.claude/agents/x.md`
+ *  still has REAL CONTENT and is still removed below) — so leaving one in place changes nothing this
+ *  sweep exists to protect against. */
 export function sweepPlantedConfig(root: string): string[] {
   const removed: string[] = [];
   const dotClaude = join(root, '.claude');
@@ -101,13 +117,51 @@ export function sweepPlantedConfig(root: string): string[] {
     rmSync(dotClaude, { force: true });
     removed.push('.claude');
   }
+  const attempted: string[] = [];
   for (const rel of PROJECT_CONFIG_PATHS) {
     const abs = join(root, rel);
-    if (!present(abs)) continue;
+    let st;
+    try {
+      st = lstatSync(abs);
+    } catch {
+      continue; // absent — nothing to sweep
+    }
+    if (st.isDirectory() && readdirSync(abs).length === 0) continue; // empty real dir — an engine placeholder, not planted content
+    attempted.push(rel);
     rmSync(abs, { recursive: true, force: true });
     removed.push(rel);
   }
-  const left = [dotClaudeIsLink ? '.claude' : null, ...PROJECT_CONFIG_PATHS].filter((rel): rel is string => rel !== null && present(join(root, rel)));
+  const left = [dotClaudeIsLink ? '.claude' : null, ...attempted].filter((rel): rel is string => rel !== null && present(join(root, rel)));
   if (left.length > 0) throw new Error(`could not remove ${left.join(', ')}`);
   return removed;
+}
+
+/** Issue #95: pre-creates each `READONLY_MOUNT_TARGETS` entry under `root` that is not already
+ *  present, as the correct empty TYPE (a `dir` entry as an empty directory, a `file` entry as an
+ *  empty file) — see that constant's own doc comment for WHY this is needed at all. Runs after
+ *  `sweepPlantedConfig` in the dispatch sequence (nothing here overlaps `PROJECT_CONFIG_PATHS`, so
+ *  correctness does not depend on the order between the two, but matching the sweep's own "clean,
+ *  then prepare" shape keeps the two reads together). `mkdirSync(root, {recursive:true})` first:
+ *  a workspace with no seed and no prior materialization may not exist on disk yet, and there is
+ *  nothing to mount read-only if it does not. Idempotent — an already-present target is left
+ *  untouched, so re-dispatching the same run (retry, or a second agent) never re-creates or fails on
+ *  its own earlier work. Returns the workspace-relative paths it created, for the caller's own
+ *  observability; THROWS on a genuine creation failure (e.g. `.claude` surviving the sweep as a
+ *  non-directory, or a real host permission problem) — the caller must refuse the dispatch rather
+ *  than start a CLI whose sandbox setup just failed in an unverifiable way. */
+export function prepareReadonlyMountTargets(root: string): string[] {
+  mkdirSync(root, { recursive: true });
+  const created: string[] = [];
+  for (const { rel, kind } of READONLY_MOUNT_TARGETS) {
+    const abs = join(root, rel);
+    if (present(abs)) continue;
+    if (kind === 'dir') {
+      mkdirSync(abs, { recursive: true });
+    } else {
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, '');
+    }
+    created.push(rel);
+  }
+  return created;
 }
