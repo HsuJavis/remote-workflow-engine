@@ -33,7 +33,11 @@ describe("UT-314 options.sandbox is the builder's own output, at every construct
   it('deep-equals buildBashConfinement() for the SAME input, via a real workspace + confinement config (confinementPosture explicitly confined)', async () => {
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
     const { buildBashConfinement } = await import('../../src/gateway/bash-confinement.js');
-    const workRoot = '/var/lib/rwe-data';
+    // Issue #101 (CLI scratch): a REAL workRoot — a confined dispatch makes its per-dispatch CLI
+    // scratch under it (and refuses typed if it cannot).
+    const { mkdtempSync, realpathSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const workRoot = realpathSync(mkdtempSync(`${tmpdir()}/rwe-ut314-`));
     // v37 Gate-6 (DES-257): nested under workRoot the way every real run workspace is
     // (`workRoot/workflows/<name>/runs/<runId>`, run-manager.ts) — a workspace path unrelated to
     // workRoot now genuinely trips the re-walk's containment check (a real symlink-escape signal),
@@ -49,11 +53,13 @@ describe("UT-314 options.sandbox is the builder's own output, at every construct
     const opts: AgentOpts = {};
     await client.invoke({ prompt: 'ping', opts, runId: 'run-1', agentId: 'agent-1', workspace });
     const [[call]] = queryMock.mock.calls as [[{ options?: { sandbox?: unknown } }]];
-    const expected = buildBashConfinement({ root: workspace, grantedHostPaths: [grant], protectedFiles, workRoot, homeDir: '/home/op', allowReadPaths: ['/home/op/.local/node'] });
+    const expected = buildBashConfinement({ root: workspace, grantedHostPaths: [grant], protectedFiles, workRoot, homeDir: '/home/op', allowReadPaths: ['/home/op/.local/node'], sharedCliScratch: `${tmpdir()}/claude-${process.getuid!()}` });
     // Issue #101: the home/toolchain half of the confinement block reaches the posture, not dropped.
     expect(expected.filesystem?.denyRead).toContain('/home/op');
     expect(expected.filesystem?.allowRead).toContain('/home/op/.local/node');
     expect(call.options?.sandbox).toEqual(expected);
+    const { rmSync } = await import('node:fs');
+    rmSync(workRoot, { recursive: true, force: true });
   });
 
   it('confinementPosture:"confined" + confinement absent ⇒ the workspace-only posture is still built, NEVER sandbox:undefined', async () => {

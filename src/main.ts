@@ -20,7 +20,7 @@
 // This entrypoint is the ONLY place that decides between the two — server.ts's own default (an
 // undefined `config.gateway` falling through to LiteLLMGatewayClient) stays exactly as it was for
 // every test caller, none of which sets RWE_CONFIG_PATH/goes through main().
-import { readFileSync, existsSync, realpathSync, mkdtempSync } from 'node:fs';
+import { readFileSync, existsSync, realpathSync, mkdtempSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -28,7 +28,7 @@ import { createServer } from './server.js';
 import type { ServerConfig } from './server.js';
 import { ClaudeAgentSdkGatewayClient } from './gateway/claude-agent-sdk-client.js';
 import type { ClaudeAgentSdkGatewayConfig } from './gateway/claude-agent-sdk-client.js';
-import { validateHostPathGrants, formatGrantRefusals, toolchainReadCandidates } from './gateway/bash-confinement.js';
+import { validateHostPathGrants, formatGrantRefusals, toolchainReadCandidates, CLI_SCRATCH_DIR } from './gateway/bash-confinement.js';
 import { probeConfinement, CONFINEMENT_REMEDIATION } from './gateway/confinement-probe.js';
 import type { ConfinementProbeResult } from './gateway/confinement-probe.js';
 import { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
@@ -617,6 +617,9 @@ async function main(): Promise<void> {
     ? mkdtempSync(join(tmpdir(), 'rwe-'))
     : undefined;
   const config = await composeConfig(fileConfig, { configPath, confinementProbe, workRootDefault });
+  // Issue #101 (CLI scratch): per-dispatch CLI scratch dirs a previous process left behind (crash,
+  // kill) — nothing is in flight before createServer(), so the whole parent goes.
+  if (config.workRoot !== undefined) rmSync(join(config.workRoot, CLI_SCRATCH_DIR), { recursive: true, force: true });
   const server = await createServer(config);
   // eslint-disable-next-line no-console
   console.log(

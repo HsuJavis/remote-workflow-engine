@@ -11,6 +11,9 @@ import {
   formatGrantRefusals,
   MASK_PROVIDER_ENV,
   toolchainReadCandidates,
+  CLI_SCRATCH_DIR,
+  sharedCliScratch,
+  cliScratchRefusal,
 } from '../../src/gateway/bash-confinement.js';
 
 const WORKROOT = '/var/lib/rwe-data';
@@ -180,5 +183,35 @@ describe('UT-310 validateHostPathGrants() + formatGrantRefusals() — boot refus
     expect(text).toMatch(/srv\/cache\/\*/);
     expect(text).toMatch(/literal/i);
     expect(text.split('\n').filter(Boolean)).toHaveLength(2);
+  });
+});
+
+// Issue #101 residual (CLI scratch): the CLI re-binds its per-uid scratch writable AFTER every
+// denyRead. The engine points each dispatch at its own scratch under workRoot (TMPDIR +
+// CLAUDE_CODE_TMPDIR) and denies the host-shared one — docs/evidence/issue-101-cli-scratch.md.
+describe('issue #101 CLI scratch — the shared per-uid dir is denied, the per-dispatch path is bounded', () => {
+  it('sharedCliScratch is <tmpdir>/claude-<uid> (the CLI\'s own naming); no uid ⇒ undefined', () => {
+    expect(sharedCliScratch('/tmp', 1000)).toBe('/tmp/claude-1000');
+    expect(sharedCliScratch('/tmp', undefined)).toBeUndefined();
+  });
+
+  it('a given sharedCliScratch is appended to denyRead; absent ⇒ denyRead unchanged', () => {
+    const base = { root: ROOT, grantedHostPaths: [], protectedFiles: PROTECTED, workRoot: WORKROOT, homeDir: HOME, allowReadPaths: TOOLCHAIN };
+    expect(buildBashConfinement({ ...base, sharedCliScratch: '/tmp/claude-1000' }).filesystem?.denyRead).toEqual([HOME, WORKROOT, ...PROTECTED, '/tmp/claude-1000']);
+    expect(buildBashConfinement(base).filesystem?.denyRead).toEqual([HOME, WORKROOT, ...PROTECTED]);
+  });
+
+  it('the scratch parent lives directly under workRoot (so the workRoot deny covers every other dispatch\'s scratch)', () => {
+    expect(CLI_SCRATCH_DIR).toBe('cli-tmp');
+  });
+
+  it('cliScratchRefusal: null while <workRoot>/cli-tmp/dXXXXXX + the CLI\'s 34-byte socket name fits a unix socket path (107); typed refusal one byte past it', () => {
+    // dir = workRoot + '/cli-tmp/dXXXXXX' (16 bytes); socket = dir + '/claude-socks-<16hex>.sock' (35).
+    const fits = '/' + 'w'.repeat(107 - 35 - 16 - 1);
+    expect(cliScratchRefusal(fits)).toBeNull();
+    const over = fits + 'w';
+    expect(cliScratchRefusal(over)).toMatch(/^CLI_SCRATCH_PATH_TOO_LONG: /);
+    expect(cliScratchRefusal(over)).toContain(over);
+    expect(cliScratchRefusal('/home/user/.local/share/rwe-data')).toBeNull();
   });
 });
