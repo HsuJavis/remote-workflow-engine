@@ -36,12 +36,20 @@ describe('Run state machine', () => {
     expect(view.status).toBe('stopped');
   });
 
-  it('resume after stop uses cached-prefix resume semantics', async () => {
+  // issue #94 (owner decision): `stopped` is a TRUE terminal state — resume must refuse it, not
+  // revive it. Superseded by suspend/resume's own cached-prefix replay coverage elsewhere
+  // (resume-legacy-substitution-admission.test.ts, IT-056); this file only needs to pin the refusal.
+  it('resume after stop is refused ILLEGAL_TRANSITION "stopped → running" (issue #94), never revives the run', async () => {
     const mgr = new RunManager();
     const runId = await startScript(mgr, 'return 1;');
     await mgr.stop(runId);
-    // resume with same script should succeed (stopped → running via cache)
-    await expect(mgr.resume(runId)).resolves.not.toThrow();
+    await expect(mgr.resume(runId)).rejects.toMatchObject({
+      code: 'ILLEGAL_TRANSITION',
+      message: expect.stringContaining('stopped → running'),
+    });
+    // no state change: the run stays stopped, not silently revived.
+    const view = await mgr.status(runId);
+    expect(view.status).toBe('stopped');
   });
 });
 

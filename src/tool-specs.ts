@@ -625,7 +625,9 @@ export const TOOL_SPECS = [
   },
   {
     name: 'run_suspend', entity: 'run', key: 'runId' as const,
-    description: 'Suspend a running run.',
+    // issue #94: pairs with run_resume — use this (never run_stop) to pause a run you may want to
+    // continue later.
+    description: 'Suspend a running run, so it can be continued later with run_resume.',
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
     errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER'],
@@ -641,7 +643,9 @@ export const TOOL_SPECS = [
   },
   {
     name: 'run_resume', entity: 'run', key: 'runId' as const,
-    description: 'Resume a suspended run.',
+    // issue #94 (owner decision): `stopped` is a TRUE terminal state, not resumable — stated here so
+    // a caller does not learn it only after an ILLEGAL_TRANSITION.
+    description: 'Resume a suspended or interrupted run. A stopped run cannot be resumed — stop is final; use run_suspend instead of run_stop if you may want to continue the run later.',
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
     errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'LEGACY_REREGISTER', 'PARAM_SECRET_UNAVAILABLE', 'CONFINEMENT_UNAVAILABLE'],
@@ -657,7 +661,8 @@ export const TOOL_SPECS = [
   },
   {
     name: 'run_stop', entity: 'run', key: 'runId' as const,
-    description: 'Stop a run.',
+    // issue #94 (owner decision): stop is final, unlike run_suspend.
+    description: 'Stop a run permanently — a terminal state; the run can never be resumed. To pause a run and continue it later, use run_suspend instead.',
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
     errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER'],
