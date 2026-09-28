@@ -1055,6 +1055,18 @@ export class McpFacade {
       if (!this.assetSync || !name || (kind !== 'skill' && kind !== 'mcp') || (scope !== 'global' && !a['workflow'])) {
         throw codedError('INVALID_ARGUMENT', 'INVALID_ARGUMENT: workspace_push arguments matched no known mode (see workflow_authoring_guide)');
       }
+      // Issue #102 (asset squatting): a workflow-scoped push into a name NOBODY has registered
+      // used to be stored anyway — `authorize()`'s ownership check answers `ok:true` for a
+      // workflow that does not exist (DES-139's tri-state: "does not exist" defers to the HANDLER
+      // answering `*_NOT_FOUND`, never leaking existence from authz itself), and until now no
+      // handler ever asked. That let any principal park a skill/mcp asset under an unclaimed name
+      // and have it silently INHERITED by whoever registered that name later — prompt injection via
+      // SKILL.md. Same `catalog.exists` guard `workspaceList` already runs below; the supported
+      // order is now `workflow_register` first, `workspace_push` second (see workspace_push's own
+      // description and workflow_register's).
+      if (scope === 'workflow' && !(await this.runManager.catalog.exists(a['workflow'] as string))) {
+        throw codedError('WORKFLOW_NOT_FOUND', `WORKFLOW_NOT_FOUND: unknown workflow '${a['workflow']}' — register it first (workflow_register), then push its assets`);
+      }
       const pushedBy = attributionPrincipal(principal) ?? 'local';
       const body = kind === 'skill' ? { files: a['files'] } : { config: a['config'] };
       const req = scope === 'global'
@@ -1148,6 +1160,13 @@ export class McpFacade {
       // `undefined` workflow, so the caller saw INTERNAL_ERROR while the row was already gone.
       if (!this.assetSync || !a.kind || !a.name || (a.scope !== 'global' && !a.workflow)) {
         throw codedError('INVALID_ARGUMENT', 'INVALID_ARGUMENT: workspace_delete arguments matched no known mode (see workflow_authoring_guide)');
+      }
+      // Issue #102 (asset squatting, delete-side twin of workspacePush's guard above): a
+      // workflow-scoped delete against a name nobody has registered is refused the same way a
+      // push is — the row's own advertised `errors[]` has promised `WORKFLOW_NOT_FOUND` here since
+      // before this fix; nothing ever produced it.
+      if (a.scope !== 'global' && !(await this.runManager.catalog.exists(a.workflow!))) {
+        throw codedError('WORKFLOW_NOT_FOUND', `WORKFLOW_NOT_FOUND: unknown workflow '${a.workflow}'`);
       }
       // Issue #92 part B: thread the real `{deleted}` boolean through rather than hardcoding
       // `true` — a caller could not otherwise tell "removed" from "there was never any such asset".

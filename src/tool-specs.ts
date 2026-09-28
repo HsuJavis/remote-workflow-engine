@@ -250,6 +250,12 @@ export const TOOL_SPECS = [
       // client plugin is being removed, so this door has to be self-contained here too, not just on
       // workspace_push's asset-name check.
       "`name` may not start with the engine-reserved 'rwe-' prefix — refused RESERVED_PREFIX, for every caller including admin. " +
+      // Issue #102 (asset squatting): the supported order, stated here for symmetry with
+      // workspace_push's own description of the same rule — registration does not require any
+      // declared skill/mcp asset to exist yet, so push AFTER register, never before (a push
+      // against an unregistered name is refused WORKFLOW_NOT_FOUND, not silently parked for
+      // whoever registers the name next).
+      'Registering a name does not require any of its declared skill/mcp assets to already be pushed — the supported order is workflow_register FIRST, then workspace_push({workflow, kind, name, ...}) for each asset. ' +
       // Issue #98 item 8b: workflow_describe's `phases`/`phases[].agents` read `meta.phases` back
       // VERBATIM — they are not derived from your `phase()` calls or your mermaid diagram, so a
       // script that calls `phase()` but never declares `meta.phases` describes as `phases:[]`.
@@ -775,7 +781,14 @@ export const TOOL_SPECS = [
   {
     name: 'workspace_push', entity: 'workspace', key: null,
     description: 'Push content: a CAS blob into the caller\'s own pool, or a workflow-owned asset (skill/mcp). Any runId argument is refused — see workflow_authoring_guide. ' +
-      'A CAS blob/manifest is content-addressed within the caller\'s own pool and is retained indefinitely once accepted — there is no delete for it (workspace_delete only removes workflow/global assets, never a CAS blob or manifest).',
+      'A CAS blob/manifest is content-addressed within the caller\'s own pool and is retained indefinitely once accepted — there is no delete for it (workspace_delete only removes workflow/global assets, never a CAS blob or manifest). ' +
+      // Issue #102 (asset squatting): registration is not a precondition asset PUSH used to
+      // enforce — a skill/mcp pushed under a name nobody had registered yet was silently adopted by
+      // whoever registered that name later (prompt injection via SKILL.md). `workflow` on a
+      // non-global push must now name an ALREADY-REGISTERED workflow (WORKFLOW_NOT_FOUND
+      // otherwise) — the supported order is workflow_register FIRST, then workspace_push its
+      // skill/mcp assets, never the reverse.
+      "A non-global `workflow` must already be registered (workflow_register FIRST, then workspace_push its assets) — WORKFLOW_NOT_FOUND otherwise; registration itself does not require any declared skill to exist yet.",
     inputSchema: pushInputSchema(),
     outputSchema: OUT,
     // v24 Gate 7.5 (D-6, REQ-118): `HOOKS_UNSUPPORTED` REMOVED — no push can produce it. A
@@ -785,7 +798,7 @@ export const TOOL_SPECS = [
     // file through `pathVerdict`'s own CLAUDE_HOOKS strip, not through this code. Advertising a
     // code the tool cannot answer teaches a cold model to branch on something that never arrives —
     // the same reason `WORKFLOW_ALREADY_EXISTS` came off `workflow_register`.
-    errors: ['INVALID_ARGUMENT', 'RESERVED_PREFIX', 'WORKSPACE_ESCAPE', 'BLOB_HASH_MISMATCH', 'FORBIDDEN_ROLE', 'NOT_WORKFLOW_OWNER', 'MCP_PROBE_FAILED', 'EGRESS_DENIED'],
+    errors: ['INVALID_ARGUMENT', 'RESERVED_PREFIX', 'WORKSPACE_ESCAPE', 'BLOB_HASH_MISMATCH', 'FORBIDDEN_ROLE', 'NOT_WORKFLOW_OWNER', 'WORKFLOW_NOT_FOUND', 'MCP_PROBE_FAILED', 'EGRESS_DENIED'],
     seeAlso: ['workflow_authoring_guide'],
     authz: {
       mode: pushMode,
