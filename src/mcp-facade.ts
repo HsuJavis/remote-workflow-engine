@@ -531,7 +531,9 @@ export class McpFacade {
     }
   }
 
-  async workflowPublish(a: { name: string; version: string; channel?: Channel }, principal: Principal): Promise<Record<string, unknown>> {
+  // Issue #98 item 8: `version: null` (an explicit JSON null, never an omitted key) CLEARS the
+  // named channel instead of pointing it — same authz as a normal publish (owner/admin only).
+  async workflowPublish(a: { name: string; version: string | null; channel?: Channel }, principal: Principal): Promise<Record<string, unknown>> {
     try {
       // v24 (integrator, REQ-097 — found by the Batch-B executor): the channel DEFAULTS to
       // 'release'. `catalog.publish` sends everything that is not the literal 'release' to

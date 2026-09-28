@@ -892,9 +892,20 @@ export class WorkflowCatalog {
     if (pinnedRunId !== null) {
       throw codedError('VERSION_PINNED_BY_RUN', `VERSION_PINNED_BY_RUN: run ${pinnedRunId} pins version '${version}' of '${name}'`);
     }
-    // 5: a release/beta channel points at this version — unpublish it there first.
+    // 5: a release/beta channel points at this version — clear it there first.
+    // Issue #98 item 8: names the EXACT call, now that one exists — `workflow_publish` accepts an
+    // explicit `version: null` to clear a channel (see `publish()` above); there was previously no
+    // tool that could ever satisfy this refusal.
     if (row.release_version === version || row.beta_version === version) {
-      throw codedError('VERSION_PINNED_BY_CHANNEL', `VERSION_PINNED_BY_CHANNEL: '${version}' of '${name}' is published to a channel — unpublish it first`);
+      const pinnedOn = [
+        row.release_version === version ? 'release' : null,
+        row.beta_version === version ? 'beta' : null,
+      ].filter((c): c is string => c !== null);
+      const calls = pinnedOn.map((c) => `workflow_publish({name, channel:'${c}', version:null})`).join(' and ');
+      throw codedError(
+        'VERSION_PINNED_BY_CHANNEL',
+        `VERSION_PINNED_BY_CHANNEL: '${version}' of '${name}' is published to ${pinnedOn.join(' and ')} — call ${calls} to clear ${pinnedOn.length > 1 ? 'them' : 'it'} first`,
+      );
     }
     // 6: the only version — whole-name deregister is the honest tool for that.
     if (known.size <= 1) {
@@ -1043,16 +1054,25 @@ export class WorkflowCatalog {
   }
 
   /** v22 (DES-111, REQ-097): moves a named channel pointer to an already-registered version.
-   *  Ownership-gated like register/deregister. */
-  async publish(name: string, version: string, channel: Channel, principalOrActor: string | null | Actor): Promise<{ channel: Channel; version: string; from: string | null }> {
+   *  Ownership-gated like register/deregister.
+   *  Issue #98 item 8: `version: null` CLEARS the channel (sets its column back to NULL) instead of
+   *  pointing it — the same authz as a normal publish, no `VERSION_NOT_FOUND` check (there is no
+   *  version to look up), and `resolve()`'s existing NULL-pointer branch (line ~126/131 above)
+   *  already answers CHANNEL_UNPUBLISHED for it, exactly as it does for a channel that was never
+   *  published — no change needed there. This is the clearing mechanism `VERSION_PINNED_BY_CHANNEL`
+   *  (deregisterVersion, below) tells a caller to use before it retires the last surviving code path
+   *  that could ever produce that refusal for a channel with no other way to become unpinned. */
+  async publish(name: string, version: string | null, channel: Channel, principalOrActor: string | null | Actor): Promise<{ channel: Channel; version: string | null; from: string | null }> {
     const actor: Actor = isActor(principalOrActor) ? principalOrActor : actorFromPrincipal(principalOrActor);
     const row = this._requireName(name);
     if (!canMutate(row.owner, actor)) {
       throw codedError('NOT_WORKFLOW_OWNER', `NOT_WORKFLOW_OWNER: workflow '${name}' is not owned by the caller`);
     }
-    const known = new Set(this._listVersions(name));
-    if (!known.has(version)) {
-      throw codedError('VERSION_NOT_FOUND', `VERSION_NOT_FOUND: '${version}' is not a registered version of '${name}'`);
+    if (version !== null) {
+      const known = new Set(this._listVersions(name));
+      if (!known.has(version)) {
+        throw codedError('VERSION_NOT_FOUND', `VERSION_NOT_FOUND: '${version}' is not a registered version of '${name}'`);
+      }
     }
     const column = channel === 'release' ? 'release_version' : 'beta_version';
     const from = channel === 'release' ? row.release_version : row.beta_version;

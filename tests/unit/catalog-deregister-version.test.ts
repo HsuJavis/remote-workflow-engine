@@ -87,6 +87,30 @@ describe('UT-302: deregisterVersion — six outcomes in order, two DELETEs, re-k
     await expect(cat.deregisterVersion('ut302-chan', v1, ALICE, null)).rejects.toThrow(/VERSION_PINNED_BY_CHANNEL/);
   });
 
+  // Issue #98 item 8: VERSION_PINNED_BY_CHANNEL used to say "unpublish it first" with no tool that
+  // could ever do that — the message now names the EXACT call, and that call actually clears the
+  // pin so a subsequent deregisterVersion succeeds.
+  it('5b (issue #98): VERSION_PINNED_BY_CHANNEL names the exact workflow_publish({..., version:null}) call, and making that call actually unpins the version', async () => {
+    const { cat } = catalog();
+    const [v1] = await twoVersions(cat, 'ut302-chan-clear');
+    await cat.publish('ut302-chan-clear', v1, 'release', 'alice');
+    await expect(cat.deregisterVersion('ut302-chan-clear', v1, ALICE, null))
+      .rejects.toThrow(/workflow_publish\(\{name, channel:'release', version:null\}\)/);
+
+    await cat.publish('ut302-chan-clear', null, 'release', 'alice');
+    const result = await cat.deregisterVersion('ut302-chan-clear', v1, ALICE, null);
+    expect(result.removed).toBe(true);
+  });
+
+  it('5c (issue #98): a version pinned on BOTH channels names BOTH exact calls', async () => {
+    const { cat } = catalog();
+    const [v1] = await twoVersions(cat, 'ut302-chan-both');
+    await cat.publish('ut302-chan-both', v1, 'release', 'alice');
+    await cat.publish('ut302-chan-both', v1, 'beta', 'alice');
+    await expect(cat.deregisterVersion('ut302-chan-both', v1, ALICE, null))
+      .rejects.toThrow(/workflow_publish\(\{name, channel:'release', version:null\}\).*workflow_publish\(\{name, channel:'beta', version:null\}\)/);
+  });
+
   it('6: the LAST remaining version is refused VERSION_LAST_REMAINING, hinting workflow_deregister({name})', async () => {
     const { cat } = catalog();
     const { version } = await cat.insertVersion({ name: 'ut302-last', script: "meta = {description:'x'};\nreturn 1;", mermaid: 'flowchart LR\n', params: undefined as any, principal: 'alice' });

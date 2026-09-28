@@ -60,6 +60,39 @@ describe('McpFacade refusal arms (UT-163)', () => {
     expect((await facade.workflowPublish({ name: 'pub', version }, OPEN))['status']).toBe('completed'); // defaults to release
   });
 
+  // Issue #98 item 8: `workflow_publish({version:null})` CLEARS a channel — before this fix no tool
+  // could ever do this (VERSION_PINNED_BY_CHANNEL said "unpublish it first" with no such door). RED
+  // reason (schema layer, verified against the pre-fix `tool-specs.ts` inputSchema with a throwaway
+  // ajv compile, not re-asserted here as a test): `version` was `{type:'string'}` — `version: null`
+  // failed ajv's own type check ("/version must be string") before `workflowPublish` ever ran, the
+  // same INVALID_ARGUMENT class `call-tool.ts`'s `validateArgs` answers for every other schema
+  // mismatch. This file calls `facade.workflowPublish` directly (below `call-tool.ts`'s ajv gate,
+  // same as every other case in this describe block), so it exercises the HANDLER's new `version:
+  // string | null` acceptance; `tool-specs-guard.test.ts` covers the schema itself accepting null.
+  it('workflowPublish({version:null}) clears the named channel — a subsequent resolve() answers CHANNEL_UNPUBLISHED, same as never-published', async () => {
+    const { version } = await catalog.register({ name: 'clearable', script: 'return 1;', mermaid: 'graph LR' });
+    const published = await facade.workflowPublish({ name: 'clearable', version, channel: 'release' }, OPEN) as Record<string, unknown>;
+    expect(published['status']).toBe('completed');
+    await expect(catalog.resolve('clearable', { channel: 'release' })).resolves.toMatchObject({ version });
+
+    const cleared = await facade.workflowPublish({ name: 'clearable', version: null, channel: 'release' }, OPEN) as Record<string, unknown>;
+    expect(cleared['status']).toBe('completed');
+    expect((cleared['result'] as { version?: string | null } | undefined)?.version).toBeNull();
+    expect((cleared['result'] as { from?: string | null } | undefined)?.from).toBe(version);
+    await expect(catalog.resolve('clearable', { channel: 'release' })).rejects.toMatchObject({ code: 'CHANNEL_UNPUBLISHED' });
+
+    // the OTHER channel (beta) is untouched by clearing release
+    await facade.workflowPublish({ name: 'clearable', version, channel: 'beta' }, OPEN);
+    await expect(catalog.resolve('clearable', { channel: 'beta' })).resolves.toMatchObject({ version });
+  });
+
+  it('workflowPublish({version:null}) clearing an ALREADY-unpublished channel is a harmless idempotent no-op, never NOT_WORKFLOW_OWNER or VERSION_NOT_FOUND', async () => {
+    await catalog.register({ name: 'never-published', script: 'return 1;', mermaid: 'graph LR' });
+    const res = await facade.workflowPublish({ name: 'never-published', version: null, channel: 'release' }, OPEN) as Record<string, unknown>;
+    expect(res['status']).toBe('completed');
+    expect((res['result'] as { from?: string | null } | undefined)?.from).toBeNull();
+  });
+
   it('runList scopes to the caller for a non-admin principal and stays unfiltered for admin/auth-disabled', async () => {
     const scoped = await facade.runList({}, ALICE);
     expect(scoped.status).toBe('completed');

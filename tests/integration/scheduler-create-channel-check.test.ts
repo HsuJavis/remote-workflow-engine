@@ -131,4 +131,31 @@ describe('the release-resolution check lives on the FIRE path, not on schedule_c
     expect(row?.lastRunId, 'a published, claimed schedule must still fire').toBeTruthy();
     expect(row?.refusalCount ?? 0).toBe(0);
   }, 20000);
+
+  // Issue #98 item 8: clearing a channel (`workflow_publish({version:null})`) must make a trigger
+  // bound to it refuse EXACTLY as it does for a channel that was never published — the fire path
+  // re-resolves the release pointer on every tick (this file's own header note: `resolveScheduleTarget`
+  // is a live re-check, not a value cached from claim/publish time), so a CLEARED channel is
+  // indistinguishable, at fire time, from one that was never published. A once-schedule (not a
+  // repeating cron) keeps this to a single ~3s wait, matching this file's other `kind:'once'` cases,
+  // rather than needing a live cron to fire twice a minute apart.
+  it('a channel CLEARED via workflow_publish({version:null}) BEFORE the due instant is refused CHANNEL_UNPUBLISHED exactly like never-published', async () => {
+    const created = await call('schedule_create', { kind: 'once', at: new Date(Date.now() + 3_000).toISOString() });
+    expect(created.error, `create: ${JSON.stringify(created.error)}`).toBeUndefined();
+    const id = ((created.result ?? created) as { id: string }).id;
+
+    const reg = await call('workflow_register', { name: 'h4-cleared', script: 'return 1;', mermaid: 'graph LR', triggers: [id] });
+    expect(reg.error, `claim: ${JSON.stringify(reg.error)}`).toBeUndefined();
+    const version = reg.result.version as string;
+    const published = await call('workflow_publish', { name: 'h4-cleared', version, channel: 'release' });
+    expect(published.error, `publish: ${JSON.stringify(published.error)}`).toBeUndefined();
+
+    const cleared = await call('workflow_publish', { name: 'h4-cleared', version: null, channel: 'release' });
+    expect(cleared.error, `clear: ${JSON.stringify(cleared.error)}`).toBeUndefined();
+    expect((cleared.result as { version?: string | null } | undefined)?.version).toBeNull();
+
+    const row = await until(() => rowFor(id), (r) => (r?.refusalCount ?? 0) > 0, 12000);
+    expect(row?.lastRefusalReason).toBe('CHANNEL_UNPUBLISHED');
+    expect(row?.lastRunId).toBeUndefined();
+  }, 20000);
 });
