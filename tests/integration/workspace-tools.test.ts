@@ -117,4 +117,43 @@ describe('the six workspace_* tools (IT-117, DES-155)', () => {
     // Same guard, same run: purging a live workspace is refused for the identical reason.
     expect((await call('workspace_purge', { runId })).code).toBe('RUN_NOT_TERMINAL');
   }, 30_000);
+
+  // Issue #96 (MCP level, over real HTTP): a batch with one rejected path used to make the whole
+  // call answer {deleted:[], missing:[], rejected:[...]} — the real seeded file in the SAME call
+  // was neither deleted nor reported. Every path must land in exactly one bucket.
+  it('workspace_delete processes every path in the batch — a real file, a never-existed file, and an escaping path each land in exactly one of deleted/missing/rejected', async () => {
+    const QUICK_SCRIPT = "export const meta = { description: 'terminates immediately' };\nreturn 'ok';";
+    const QUICK_MERMAID = 'graph LR';
+    const SEEDED_FILE = 'keep-96.txt';
+
+    const registered = await call('workflow_register', { name: 'it117-del-batch', script: QUICK_SCRIPT, mermaid: QUICK_MERMAID });
+    const version = String(registered.body.result?.version ?? registered.body.version);
+    await call('workflow_publish', { name: 'it117-del-batch', version, channel: 'release' });
+    const started = await call('run_start', {
+      name: 'it117-del-batch',
+      seed: [{ path: SEEDED_FILE, contentB64: Buffer.from('hello from issue #96\n').toString('base64') }],
+    });
+    const runId = started.body.runId as string;
+    expect(runId).toBeTruthy();
+    startedRuns.push(runId);
+
+    let status = '';
+    for (let i = 0; i < 200 && !['completed', 'failed', 'stopped'].includes(status); i++) {
+      status = (await call('run_status', { runId })).body.status;
+      if (!['completed', 'failed', 'stopped'].includes(status)) await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(status).toBe('completed');
+
+    const del = await call('workspace_delete', { runId, paths: [SEEDED_FILE, 'does/not/exist.txt', '../escape.txt'] });
+    expect(del.body.result).toEqual({
+      deleted: [SEEDED_FILE],
+      missing: ['does/not/exist.txt'],
+      rejected: [{ path: '../escape.txt', reason: 'ESCAPE' }],
+    });
+
+    // the real file is actually gone, not just reported as deleted
+    const listed = await call('workspace_list', { runId });
+    const names = ((listed.body.result ?? []) as Array<{ path?: string }>).map((e) => e.path);
+    expect(names).not.toContain(SEEDED_FILE);
+  }, 30_000);
 });

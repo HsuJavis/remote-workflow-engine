@@ -7,7 +7,7 @@
 // (this file's siblings' convention — a hand-mocked catalog cannot exercise the genuine arms),
 // with a fake `fs`/`resolveMcp` only where the function under test declares them as injected seams.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FixedClock } from '../../src/clock.js';
@@ -134,6 +134,37 @@ describe('McpFacade refusal arms (UT-163)', () => {
     expect(res['status']).toBe('failed');
     expect(res['code']).toBe('INVALID_ARGUMENT');
     expect(called).toBe(false);
+  });
+
+  // Issue #96: workspace_delete(run mode) used to ABORT the whole batch as soon as one path was
+  // rejected — the response was {deleted:[], missing:[], rejected:[...]}, so a real, still-present
+  // file in the SAME call silently went neither deleted nor reported. Every input path must now
+  // land in exactly one of the three buckets, independent of every other path's own verdict — a
+  // real (deleted), a never-existed (missing), and an escaping (rejected) path all in one call.
+  it('workspaceDelete (run mode) puts every path in exactly one bucket instead of aborting the batch on the first rejected path', async () => {
+    const wsDir = mkdtempSync(join(tmpdir(), 'rwe-ut163-ws96-'));
+    writeFileSync(join(wsDir, 'keep.txt'), 'hi');
+    const fakeStore = { getRun: async () => ({ status: 'completed' }) } as never;
+    const fakeRunManager = {
+      withTerminalRun: async (_runId: string, fn: () => unknown) => fn(),
+      workspacePath: async () => wsDir,
+    } as never;
+    const f = new McpFacade({ store: fakeStore, runManager: fakeRunManager, clock: CLOCK });
+    try {
+      const res = await f.workspaceDelete(
+        { runId: 'r1', paths: ['keep.txt', 'does/not/exist.txt', '../escape.txt'] },
+        OPEN,
+      ) as Record<string, unknown>;
+      expect(res['status']).toBe('completed');
+      const result = res['result'] as { deleted: string[]; missing: string[]; rejected: Array<{ path: string; reason: string }> };
+      expect(result.deleted).toEqual(['keep.txt']);
+      expect(result.missing).toEqual(['does/not/exist.txt']);
+      expect(result.rejected).toEqual([{ path: '../escape.txt', reason: 'ESCAPE' }]);
+      // the real file was actually removed from disk, not just reported as deleted
+      expect(existsSync(join(wsDir, 'keep.txt'))).toBe(false);
+    } finally {
+      rmSync(wsDir, { recursive: true, force: true });
+    }
   });
 });
 

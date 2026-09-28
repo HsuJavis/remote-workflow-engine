@@ -1052,23 +1052,25 @@ export class McpFacade {
           const stored = await this.store.getRun(a.runId!);
           const workspace = await this.runManager.workspacePath(a.runId!);
           const paths = a.paths ?? [];
-          const rejected: Array<{ path: string; reason: string }> = [];
-          const resolved: string[] = [];
-          for (const p of paths) {
-            const v = workspace ? pathVerdict(workspace, p, undefined, 'run-workspace') : { kind: 'reject' as const, reason: 'ESCAPE' as const };
-            if (v.kind === 'ok' && v.abs) resolved.push(v.abs);
-            else rejected.push({ path: p, reason: v.kind !== 'ok' ? v.reason : 'ESCAPE' });
-          }
-          if (rejected.length > 0) return { runId: a.runId, status: stored?.status ?? 'unknown', result: { deleted: [], missing: [], rejected } };
+          // Issue #96: a batch used to ABORT on the first rejected path — every valid path in the
+          // same call vanished from the response (not in `deleted`, not in `missing`, not in
+          // `rejected`), so a caller reading an empty `deleted`/`missing` concluded there was
+          // nothing to delete while the file it asked for was left on disk. Every input path now
+          // lands in exactly one of the three buckets, independent of every other path's verdict.
           const deleted: string[] = [];
           const missing: string[] = [];
-          for (let i = 0; i < resolved.length; i++) {
-            const abs = resolved[i]!;
-            if (!existsSync(abs)) { missing.push(paths[i]!); continue; }
-            rmSync(abs, { recursive: true, force: true });
-            deleted.push(paths[i]!);
+          const rejected: Array<{ path: string; reason: string }> = [];
+          for (const p of paths) {
+            const v = workspace ? pathVerdict(workspace, p, undefined, 'run-workspace') : { kind: 'reject' as const, reason: 'ESCAPE' as const };
+            if (v.kind === 'ok' && v.abs) {
+              if (!existsSync(v.abs)) { missing.push(p); continue; }
+              rmSync(v.abs, { recursive: true, force: true });
+              deleted.push(p);
+            } else {
+              rejected.push({ path: p, reason: v.kind !== 'ok' ? v.reason : 'ESCAPE' });
+            }
           }
-          return { runId: a.runId, status: stored?.status ?? 'unknown', result: { deleted, missing, rejected: [] } };
+          return { runId: a.runId, status: stored?.status ?? 'unknown', result: { deleted, missing, rejected } };
         });
       }
       // Issue #92 part B follow-up: `deleteMode()` (tool-specs.ts) resolves an arg set carrying

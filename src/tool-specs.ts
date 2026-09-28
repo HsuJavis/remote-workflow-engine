@@ -809,6 +809,7 @@ export const TOOL_SPECS = [
     name: 'workspace_delete', entity: 'workspace', key: null,
     description: "Delete files from a run's workspace, an asset under a workflow, or (admin) a global asset. " +
       "Asset mode ({workflow or scope:'global', kind, name}) answers {deleted:false} rather than an error when nothing matched the given name — deleting is idempotent, not an existence check. " +
+      "Run mode ({runId, paths}) processes EVERY path in the array independently and is never all-or-nothing: each input path lands in exactly one of the response's deleted/missing/rejected lists, so one bad path (escapes the workspace, absolute, a symlink out, etc.) never causes the other, valid paths in the same call to go undeleted and unreported. " +
       "Does not, and cannot, delete a CAS blob or manifest uploaded via workspace_push — those are content-addressed within the caller's own pool and are retained indefinitely once accepted.",
     // v26 Gate 7.5 round 1 (defect D1): item schema — see ARRAY_ITEMS_RULE below.
     // Issue #92 part B: `kind`/`scope` are closed enums of the actually-supported AssetKind/
