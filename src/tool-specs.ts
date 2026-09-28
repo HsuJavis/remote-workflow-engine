@@ -858,7 +858,7 @@ export const TOOL_SPECS = [
     // ever saw them. The store has supported all three kinds since v2; only the schema was narrow.
     inputSchema: { ...schema({
       kind: { type: 'string', enum: ['cron', 'once', 'resident'], description: "Defaults to 'cron' when omitted." },
-      cron: { type: 'string', description: "A 5-field cron expression, e.g. '0 3 * * *'. Required when kind is 'cron'." },
+      cron: { type: 'string', description: "A 5-field cron expression, e.g. '0 3 * * *'. Required when kind is 'cron'. Fields: minute(0-59) hour(0-23) day-of-month(1-31) month(1-12) day-of-week(0-6, Sun=0; 7 is refused, not aliased to 0) — each '*', a number, a range 'a-b', or a comma list, optionally with a '/step'. Standard Vixie/POSIX day rule: day-of-month and day-of-week are each 'restricted' only when the field does NOT start with '*' (so '*/2' still counts as unrestricted even though it filters values). When BOTH are restricted, a date matches if day-of-month OR day-of-week matches (not AND) — e.g. '0 9 1 * 1' fires on the 1st of the month OR every Monday. Must have a next fire within a 4-year search horizon." },
       at: { type: 'string', description: "An ISO-8601 timestamp. Required when kind is 'once'; a past value fires on the next tick." },
       tz: { type: 'string', description: "IANA timezone the cron fields are read in; UTC when omitted." },
       args: { description: 'Run arguments handed to every firing.' },

@@ -85,20 +85,37 @@ describe('SchedulerPort CRUD (DES-016)', () => {
     expect(result.error?.message).toMatch(/never fires/i);
   });
 
-  // issue: send-back item 5 (verify-b, 2026-09-26) — `0 0 29 2 1` (Feb 29 that also falls on a
-  // Monday) is NOT analytically impossible (Feb 29 exists, and it lands on a Monday in 2044), it
-  // just doesn't recur within `computeNextFire`'s bounded 4-year search horizon. The pre-fix
-  // message wrapped BOTH cases in "This cron never fires", which overclaims for this one — reworded
-  // to name the actual limitation (the bounded horizon), never the code INVALID_CRON.
-  it('create with a cron outside the bounded search horizon but not analytically impossible (0 0 29 2 1 — Feb 29 on a Monday) does not overclaim "never fires"', async () => {
+  // issue: send-back item 5 (verify-b, 2026-09-26) — a cron that is NOT analytically impossible
+  // (the date exists) but just doesn't recur within `computeNextFire`'s bounded 4-year search
+  // horizon gets a message naming that actual limitation, never "never fires" (which overclaims).
+  //
+  // issue #99: `0 0 29 2 1` (this test's ORIGINAL repro, Feb 29 ANDed with Monday) is no longer such
+  // a case — day-of-month (`29`) and day-of-week (`1`) are both "restricted" (neither starts with
+  // `*`), so standard Vixie/POSIX semantics now OR them, and it resolves fine (next Monday in
+  // February). The horizon-exceeded case now needs a day-of-week field that still starts with `*`
+  // — counted "unrestricted" by the Vixie rule even though a step narrows it to one weekday — to
+  // stay ANDed with a rare day-of-month: `0 0 29 2 */7` (day-of-week "star step 7" is the single
+  // value Sunday, syntactically starred so it stays AND-mode with day-of-month 29 in February).
+  it('create with a cron outside the bounded search horizon but not analytically impossible (0 0 29 2 */7 — Feb 29 AND the one weekday a star-prefixed step selects) does not overclaim "never fires"', async () => {
     const port = new SqliteSchedulerPort({
       clock: CLOCK, catalog: makeFakeCatalog(), runManager: makeFakeRunManager(), dbPath: ':memory:',
     });
-    const result = await port.create({ kind: 'cron', cron: '0 0 29 2 1', enabled: true });
+    const result = await port.create({ kind: 'cron', cron: '0 0 29 2 */7', enabled: true });
     expect(result.error?.code).toBe('INVALID_CRON');
     expect(result.error?.field).toBe('cron');
     expect(result.error?.message).toMatch(/does not fire within the next 4 years \(search horizon\)/i);
     expect(result.error?.message).not.toMatch(/never fires/i);
+  });
+
+  // issue #99: the flip side of the above — `0 0 29 2 1` used to be this file's horizon-exceeded
+  // repro; now that day-of-month and day-of-week OR (both restricted), it creates successfully.
+  it('create with 0 0 29 2 1 (Feb 29 OR Monday, issue #99) now succeeds — no longer horizon-exceeded', async () => {
+    const port = new SqliteSchedulerPort({
+      clock: CLOCK, catalog: makeFakeCatalog(), runManager: makeFakeRunManager(), dbPath: ':memory:',
+    });
+    const result = await port.create({ kind: 'cron', cron: '0 0 29 2 1', enabled: true });
+    expect(result.error).toBeUndefined();
+    expect(result.result?.kind).toBe('cron');
   });
 
   it('create with a step of 0 (*/0 * * * *) returns INVALID_CRON fast — the freeze this closes', async () => {

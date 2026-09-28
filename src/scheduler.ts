@@ -16,7 +16,7 @@ import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Clock } from './clock.js';
 import type { ErrEnvelope, RefusalReason } from './types.js';
-import { computeNextFire, bootRearm, parseCron, type StoredSchedule } from './scheduler-engine.js';
+import { computeNextFire, bootRearm, parseCron, CRON_SEMANTICS, type StoredSchedule } from './scheduler-engine.js';
 import { toErrEnvelope } from './errors.js';
 
 // v24 (DES-149, ARCH-099, TASK-141): `workflow` becomes OPTIONAL — a trigger can now be created
@@ -289,8 +289,12 @@ export class SqliteSchedulerPort {
     // signal REQ-115 asks for and the one place the answer is still true at the moment it matters.
     if (s.kind === 'cron') {
       const cronError = validateCron(s.cron);
+      // issue #99: every INVALID_CRON refusal states the full semantics (fields, ranges, the
+      // dom/dow OR rule, the horizon) alongside the field-specific complaint — a caller copying a
+      // cron from crontab/GitHub Actions/k8s that gets refused (or silently means something
+      // different) should never have to go read source to find out this dialect's actual rule.
       if (cronError) {
-        return { error: { code: 'INVALID_CRON', message: cronError, field: 'cron' } };
+        return { error: { code: 'INVALID_CRON', message: `${cronError} ${CRON_SEMANTICS}`, field: 'cron' } };
       }
     }
     if (s.kind === 'once' && Number.isNaN(Date.parse(s.at))) {
@@ -316,14 +320,17 @@ export class SqliteSchedulerPort {
         const msg = err instanceof Error ? err.message : String(err);
         // send-back item 5 (verify-b, 2026-09-26): computeNextFire throws for two DIFFERENT
         // reasons (scheduler-engine.ts) — `hasPossibleDate` fails when the date is analytically
-        // impossible on ANY calendar (e.g. Feb 31 — "never fires" is accurate), but the bounded
-        // scan can ALSO exhaust its 4-year search horizon on a date that genuinely recurs, just not
-        // soon (e.g. `0 0 29 2 1`, Feb 29 that also falls on a Monday — next at 2044-02-29).
-        // "never fires" overclaims for that second case; name the real limitation instead.
+        // impossible on ANY calendar (e.g. day-of-month 31 in February, with day-of-week unrestricted
+        // so AND applies — "never fires" is accurate), but the bounded scan can ALSO exhaust its
+        // 4-year search horizon on a date that genuinely recurs, just not soon (issue #99: since the
+        // dom/dow OR rule (scheduler-engine.ts), this now requires a day-of-week field that still starts with `*`
+        // — e.g. day-of-month 29, month 2, a star-prefixed day-of-week step landing on one weekday —
+        // a plain single-value day-of-week like `1` ORs with day-of-month instead and resolves fast).
+        // "never fires" overclaims for the horizon case; name the real limitation instead.
         const prefix = msg.includes('within the search horizon')
           ? 'This cron does not fire within the next 4 years (search horizon)'
           : 'This cron never fires';
-        return { error: { code: 'INVALID_CRON', message: `${prefix}: ${msg}`, field: 'cron' } };
+        return { error: { code: 'INVALID_CRON', message: `${prefix}: ${msg} ${CRON_SEMANTICS}`, field: 'cron' } };
       }
     } else if (s.kind === 'once') {
       nextFire = Date.parse(s.at);

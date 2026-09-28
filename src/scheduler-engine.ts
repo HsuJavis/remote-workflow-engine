@@ -101,7 +101,29 @@ interface CronFieldSets {
   dom: Set<number>;
   month: Set<number>;
   dow: Set<number>;
+  // issue #99: standard Vixie/POSIX cron dialect rule — a field is "restricted" iff its raw text
+  // does NOT start with `*` (so `*/2`, `*,1-5` etc. all count as UNRESTRICTED even though they do
+  // filter values; `0-6`, despite covering every day-of-week value, counts as RESTRICTED because
+  // it doesn't start with `*`). This is the flag the dom/dow OR rule below keys off, matching
+  // Vixie cron's own DOM_STAR/DOW_STAR bookkeeping (set from the field's first character, before
+  // any value parsing) rather than "is the resulting value set the full range".
+  domRestricted: boolean;
+  dowRestricted: boolean;
 }
+
+// issue #99: the ONE place this dialect's semantics are spelled out in prose — reused verbatim by
+// `scheduler.ts`'s INVALID_CRON messages and `tool-specs.ts`'s schedule_create description (that
+// one is a literal copy, not an import: MCP tool descriptions must stay self-contained for a
+// client with no access to this module), so a caller reading any of the three never sees a
+// different story.
+export const CRON_SEMANTICS =
+  '5 space-separated fields: minute(0-59) hour(0-23) day-of-month(1-31) month(1-12) day-of-week(0-6, Sun=0; ' +
+  '7 is refused, not aliased to 0). Each field is "*", a number, a range "a-b", or a comma list of ' +
+  'either, optionally with a "/step". Vixie/POSIX day rule: day-of-month and day-of-week are each ' +
+  '"restricted" only when the field does NOT start with "*" (so "*/2" still counts as unrestricted ' +
+  'even though it filters values). When BOTH are restricted, a date matches if day-of-month OR ' +
+  'day-of-week matches (not AND); otherwise the one restricted field applies as usual (or every date ' +
+  'matches, if neither is restricted). A cron must have a next fire within a 4-year search horizon.';
 
 /** Parses AND semantically validates a full 5-field cron expression — the ONE grammar every
  *  reader of a cron string goes through (`scheduler.ts`'s create-time `validateCron`,
@@ -120,7 +142,20 @@ export function parseCron(cron: string): CronFieldSets {
     dom: parseCronField(fields[2]!, CRON_FIELD_MIN[2]!, CRON_FIELD_MAX[2]!, CRON_FIELD_NAMES[2]),
     month: parseCronField(fields[3]!, CRON_FIELD_MIN[3]!, CRON_FIELD_MAX[3]!, CRON_FIELD_NAMES[3]),
     dow: parseCronField(fields[4]!, CRON_FIELD_MIN[4]!, CRON_FIELD_MAX[4]!, CRON_FIELD_NAMES[4]),
+    domRestricted: !fields[2]!.startsWith('*'),
+    dowRestricted: !fields[4]!.startsWith('*'),
   };
+}
+
+/** issue #99: the ONE date-match predicate shared by `computeNextFire`'s checkpoint/inner-minute
+ *  checks AND `computeNextFireBruteForce` — so the property test that cross-checks them actually
+ *  proves something about the OR rule, rather than two independently-hand-written copies of it
+ *  that could silently drift. Standard Vixie/POSIX semantics: day-of-month and day-of-week are
+ *  ANDed UNLESS both are "restricted" (see `CronFieldSets.domRestricted`/`dowRestricted`), in which
+ *  case they're ORed. Does not check month/hour/minute — callers AND those in separately. */
+function dayMatches(sets: CronFieldSets, dom: number, dow: number): boolean {
+  if (sets.domRestricted && sets.dowRestricted) return sets.dom.has(dom) || sets.dow.has(dow);
+  return sets.dom.has(dom) && sets.dow.has(dow);
 }
 
 // issue #92 item 1: `computeNextFire`'s horizon scan (below) can call `fieldsAt` up to
@@ -175,18 +210,25 @@ const DAYS_IN_MONTH: Record<number, number> = { 1: 31, 2: 29, 3: 31, 4: 30, 5: 3
 /** issue #92 item 1: a cheap analytical short-circuit for the most common "never fires" mistake
  *  (the issue's own worked example — `0 0 31 2 *`, day-of-month 31 in February, which has at most
  *  29 days in any year). If every selected month's max day count is smaller than every selected
- *  day-of-month value, no calendar date can EVER satisfy the cron — full stop, not "not within the
- *  search horizon". Checked BEFORE the minute-by-minute scan below: at
+ *  day-of-month value, no calendar date can EVER satisfy the AND of day-of-month and month — full
+ *  stop, not "not within the search horizon". Checked BEFORE the minute-by-minute scan below: at
  *  `MAX_MINUTES_AHEAD` (~2.1M) iterations even a cached-formatter `fieldsAt` (see `dtfFor` above)
  *  measured ~15s wall time for a `tz`-bearing cron — this turns that into an O(|dom| * |month|)
  *  check (at most 31*12) that returns before the loop ever starts.
  *
- *  Not exhaustive: a `dow` value that never coincides with an otherwise-satisfiable `dom`/`month`
- *  still falls through to the bounded scan (structurally near-impossible — weekdays cycle
- *  independently of the calendar date, so any achievable dom/month eventually lands on every dow
- *  within a 4-year/leap cycle) — this covers the one class this dialect's error catalog and the
- *  reported issue actually name, not every conceivable unsatisfiable combination. */
+ *  issue #99: this short-circuit is only valid when day-of-month and day-of-week are ANDed. Once
+ *  both fields are "restricted" (`CronFieldSets.domRestricted`/`dowRestricted`), they're ORed
+ *  instead (`dayMatches` below), so an impossible day-of-month (e.g. Feb 31) no longer rules
+ *  anything out — day-of-week alone can still satisfy the cron every time it recurs (a non-empty
+ *  day-of-week set always matches some day of every month). Skip the check entirely in that case.
+ *
+ *  Not exhaustive even in the AND case: a `dow` value that never coincides with an otherwise-
+ *  satisfiable `dom`/`month` still falls through to the bounded scan (structurally near-impossible
+ *  — weekdays cycle independently of the calendar date, so any achievable dom/month eventually
+ *  lands on every dow within a 4-year/leap cycle) — this covers the one class this dialect's error
+ *  catalog and the reported issue actually name, not every conceivable unsatisfiable combination. */
 function hasPossibleDate(sets: CronFieldSets): boolean {
+  if (sets.domRestricted && sets.dowRestricted) return true; // OR mode: dow alone can always satisfy it
   for (const month of sets.month) {
     const maxDay = DAYS_IN_MONTH[month] ?? 31;
     for (const dom of sets.dom) {
@@ -201,11 +243,15 @@ const ONE_HOUR_MS = 60 * ONE_MINUTE_MS;
 const MAX_HOURS_AHEAD = 4 * 366 * 24;
 
 /** issue #92 follow-up (part A residual DoS): a cron that passes `hasPossibleDate` (the date exists
- *  in principle) can still fail to match ANY instant within the 4-year horizon once `dow` is ANDed
- *  in — e.g. `0 0 29 2 1` (Feb 29 that also falls on a Monday): most 4-year windows contain zero or
- *  one Feb 29, and it is a Monday in only 1 of 7 possible weekday alignments, so the minute-by-minute
- *  scan below used to run its full ~2.1M iterations (measured ~15s even with a cached tz formatter,
- *  §`dtfFor`) before throwing — an event-loop stall on ANY caller's input, not just a malformed one.
+ *  in principle) can still fail to match ANY instant within the 4-year horizon once dom/dow are
+ *  ANDed (a day-of-week field starting with a star, per issue #99's OR rule, keeps AND semantics
+ *  even though a step on it narrows the value set) — e.g. day-of-month `29`, month `2`, day-of-week
+ *  "star step 7" (a single-weekday set, but still unrestricted because the field starts with `*`,
+ *  so this stays AND — Feb 29 that also falls on that one weekday): most 4-year windows contain
+ *  zero or one Feb 29, and it lands on any single weekday in only 1 of 7 possible alignments, so
+ *  the minute-by-minute scan below used to run its full ~2.1M iterations (measured ~15s even with
+ *  a cached tz formatter, §`dtfFor`) before throwing — an event-loop stall on ANY caller's input,
+ *  not just a malformed one.
  *
  *  Reference (obviously-correct, NOT DoS-safe) implementation, kept only so `computeNextFire`'s
  *  optimized search below can be property-tested against it for identical results — see
@@ -215,7 +261,7 @@ export function computeNextFireBruteForce(cron: string, tz: string | undefined, 
   let candidate = Math.floor(after / ONE_MINUTE_MS) * ONE_MINUTE_MS + ONE_MINUTE_MS;
   for (let i = 0; i < MAX_MINUTES_AHEAD; i++) {
     const f = fieldsAt(candidate, tz);
-    if (sets.minute.has(f.minute) && sets.hour.has(f.hour) && sets.dom.has(f.dom) && sets.month.has(f.month) && sets.dow.has(f.dow)) {
+    if (sets.minute.has(f.minute) && sets.hour.has(f.hour) && sets.month.has(f.month) && dayMatches(sets, f.dom, f.dow)) {
       return candidate;
     }
     candidate += ONE_MINUTE_MS;
@@ -257,7 +303,7 @@ export function computeNextFire(cron: string, tz: string | undefined, after: num
   let hourCandidate = Math.floor(after / ONE_MINUTE_MS) * ONE_MINUTE_MS + ONE_MINUTE_MS;
   for (let h = 0; h < MAX_HOURS_AHEAD; h++) {
     const f = fieldsAt(hourCandidate, tz);
-    if (sets.month.has(f.month) && sets.dom.has(f.dom) && sets.dow.has(f.dow) && sets.hour.has(f.hour)) {
+    if (sets.month.has(f.month) && dayMatches(sets, f.dom, f.dow) && sets.hour.has(f.hour)) {
       // `hourCandidate` sits `f.minute` minutes into its own local hour block — reconstruct the
       // block's true start rather than assuming `hourCandidate` itself is minute 0 of it.
       const blockStart = hourCandidate - f.minute * ONE_MINUTE_MS;
@@ -265,7 +311,7 @@ export function computeNextFire(cron: string, tz: string | undefined, after: num
         const candidate = blockStart + m * ONE_MINUTE_MS;
         if (candidate <= after) continue; // strictly after `after`, matching the brute-force contract
         const mf = candidate === hourCandidate ? f : fieldsAt(candidate, tz);
-        if (sets.minute.has(mf.minute) && sets.hour.has(mf.hour) && sets.dom.has(mf.dom) && sets.month.has(mf.month) && sets.dow.has(mf.dow)) {
+        if (sets.minute.has(mf.minute) && sets.hour.has(mf.hour) && sets.month.has(mf.month) && dayMatches(sets, mf.dom, mf.dow)) {
           return candidate;
         }
       }
