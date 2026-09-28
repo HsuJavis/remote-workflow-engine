@@ -85,7 +85,22 @@ export type DeliverResult =
   | { ok: false; httpStatus: 409; reason: string; code: RefusalReason }
   | { ok: false; httpStatus: 500 | 503; reason: string };
 
-const REPLAY_WINDOW_MS = 300_000; // ±300s
+// issue #97: exported so webhook_create's tool description (tool-specs.ts) and the test that
+// pins that description's stated skew window against this real constant both read the SAME value —
+// never a hand-typed "±300s" that can drift from what `deliver()` actually enforces.
+export const REPLAY_WINDOW_MS = 300_000; // ±300s
+
+// issue #97: the THREE header names a delivery is authenticated/deduped by — the single
+// source `server.ts`'s POST /hooks/:id route reads them from, `webhook_create`'s tool description
+// documents them from, and the test pinning that description reads them from. Before this export
+// existed, the description was silent about the delivery contract entirely (issue #97 item 3) —
+// exporting the literal names, not just documenting them by hand, is what lets a test catch either
+// side drifting from the other.
+export const WEBHOOK_HEADERS = {
+  signature: 'x-rwe-signature',
+  timestamp: 'x-rwe-timestamp',
+  deliveryId: 'x-rwe-delivery',
+} as const;
 
 interface WebhookRow {
   id: string;
