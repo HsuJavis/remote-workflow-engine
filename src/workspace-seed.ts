@@ -54,6 +54,18 @@ export function validateSeedSpec(source: 'seed' | 'seedManifest', value: unknown
     if (typeof path !== 'string' || path.length === 0) {
       return refuse(source, i, null, 'path is required and must be a non-empty string');
     }
+    // issue #103(c): an escaping ('../…') or absolute path used to pass this structural check and
+    // get silently STRIPPED or REJECTED at materialize time (`seedPathVerdict`, below) — invisible
+    // to the caller, who had no way to learn part of the seed it asked for was dropped. Refused
+    // HERE instead, before any durable work. A `.git`-internal or former `.claude` settings/hooks
+    // path is POLICY (silent strip, deliberate — issue #64's own boundary), never a refusal; only
+    // `lexicalVerdict`'s `reject` kind (ESCAPE/ABSOLUTE/NUL/GIT_INTERNAL) counts here. Symlink
+    // escapes are NOT checkable at this pure, no-I/O stage (no workspace root exists yet at
+    // admission) — those stay materialize-time only (`pathVerdict`'s realpath check).
+    const lex = lexicalVerdict('run-workspace', path);
+    if (lex.kind === 'reject') {
+      return refuse(source, i, path, `path escapes the run workspace (${lex.reason})`);
+    }
     if (source === 'seed') {
       const contentB64 = (el as Record<string, unknown>).contentB64;
       if (typeof contentB64 !== 'string') {

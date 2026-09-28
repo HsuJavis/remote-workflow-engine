@@ -540,6 +540,16 @@ export class RunManager {
     if (!Array.isArray(parsedManifest)) {
       throw codedError('INVALID_SEED_SPEC', `seedManifestRef blob must be a JSON array of {path, sha256, exec?}`);
     }
+    // issue #103(c): the SAME door `run_start({seedManifest})` uses for an INLINE manifest —
+    // structural shape (already re-checked above) PLUS the escaping/absolute-path check
+    // (`validateSeedSpec`'s `lexicalVerdict` gate) — run here too, since a seedManifestRef-loaded
+    // manifest bypasses run_start's own pre-load `validateSeedSpec(spec.seedManifest)` call
+    // entirely (that runs before this function is ever called). Shared by every caller of this
+    // loader: run_start's explicit `seedManifestRef`, a version's default seed (also loaded through
+    // this function), and `workflow_register({seedManifestRef})` (mcp-facade.ts), which validates a
+    // version's default seed the same way at registration time.
+    const specCheck = validateSeedSpec('seedManifest', parsedManifest);
+    if (!specCheck.ok) throw codedError('INVALID_SEED_SPEC', specCheck.message, { index: specCheck.index, path: specCheck.path });
     // Re-validate all referenced blobs are present in the namespace (security boundary per DES-087).
     const referencedShas = (parsedManifest as Array<{ sha256?: unknown }>).map((e) => String(e.sha256 ?? ''));
     const missing = await this._cas.missing(ns, referencedShas);
