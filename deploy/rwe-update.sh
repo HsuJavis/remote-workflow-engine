@@ -10,6 +10,7 @@
 #   RWE_UPDATE_RESULT   — path for the UpdateOutcome JSON (temp+rename, atomic)
 #   RWE_UPDATE_LOCK     — path for the flock advisory lock file
 #   RWE_OFFICIAL_REMOTE — pinned official git remote URL/path (only source accepted)
+#   RWE_CONFIG_ENV_FILE — optional env file whose RWE_SECRET_* lines check-config gets (see below)
 #   GIT                 — git binary override (default: git)
 #   NPM                 — npm binary override (default: npm)
 #   SYSTEMCTL           — systemctl binary override (default: systemctl)
@@ -164,9 +165,29 @@ fi
 # recorded, never a silent pass. A refusal (e.g. a retired provider row) safe-fails exactly like a
 # build/test failure: revert to the prior SHA, no restart — a bad config must never boot the live
 # service onto the new tag.
+# rwe.config.json may carry `${secret:NAME}` handles (e.g. auth.googleClientSecret) that check-config
+# must resolve. RWE_CONFIG_ENV_FILE (optional) names the service's own env file; ONLY its
+# RWE_SECRET_* lines are exported, and ONLY into this subshell — never into npm ci / npm test above.
+# Values follow the env-file convention: KEY=VALUE, one optional pair of surrounding quotes stripped.
+check_config() (
+  if [ -n "${RWE_CONFIG_ENV_FILE:-}" ] && [ -r "$RWE_CONFIG_ENV_FILE" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in RWE_SECRET_*=*) ;; *) continue ;; esac
+      key="${line%%=*}"
+      val="${line#*=}"
+      case "$key" in *[!A-Za-z0-9_]*) continue ;; esac
+      case "$val" in
+        \"*\") val="${val#\"}"; val="${val%\"}" ;;
+        \'*\') val="${val#\'}"; val="${val%\'}" ;;
+      esac
+      export "$key=$val"
+    done < "$RWE_CONFIG_ENV_FILE"
+  fi
+  "$NPM" run check-config
+)
 CONFIG_CHECK="skipped"
 if [ -n "${RWE_CONFIG_PATH:-}" ]; then
-  if CONFIG_CHECK_OUT="$("$NPM" run check-config 2>&1)"; then
+  if CONFIG_CHECK_OUT="$(check_config 2>&1)"; then
     CONFIG_CHECK="passed"
   else
     # write_result's own sanitize+cap (write_result's $3) carries the refusal message (e.g. which

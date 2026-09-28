@@ -23,6 +23,9 @@ Environment=RWE_OFFICIAL_REMOTE=https://github.com/HsuJavis/remote-workflow-engi
 Environment=SYSTEMCTL=%h/.local/share/rwe-update/systemctl-user
 # 選用:設了才會在 restart 前多跑一次 `npm run check-config`(見 DEPLOY.md §6b「重啟前的設定檢查」)。
 Environment=RWE_CONFIG_PATH=%h/Documents/remote-workflow/rwe.config.json
+# rwe.config.json 裡若有 `${secret:NAME}`(例如 auth.googleClientSecret),check-config 要解得開——
+# helper 只把這個檔裡 RWE_SECRET_* 開頭的行、只在 check-config 那一步匯出(npm ci/test 看不到)。
+Environment=RWE_CONFIG_ENV_FILE=%h/.config/rwe.env
 ExecStart=%h/Documents/remote-workflow/deploy/rwe-update.sh
 # Log full output to journald (detail excerpt is also written to RWE_UPDATE_RESULT).
 StandardOutput=journal

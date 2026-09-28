@@ -72,6 +72,9 @@ OP_UPDATE_DIR="${OP_UPDATE_DIR:-$OP_HOME/.local/share/rwe-update}"
 RWE_PORT_VALUE="${RWE_PORT_VALUE:-$(sed -n 's/^Environment=RWE_PORT=\([0-9]*\).*/\1/p' "$OP_HOME/.config/systemd/user/rwe.service.d/override.conf" 2>/dev/null | tail -1)}"
 RWE_PORT_VALUE="${RWE_PORT_VALUE:-8787}"
 SMOKE_PORT="${SMOKE_PORT:-8799}"
+# auth.googleClientSecret becomes "${secret:<name>}" in the service user's config; the value lives in
+# its rwe.env as RWE_SECRET_<name> (resolved at boot by src/main.ts).
+GOOGLE_SECRET_NAME="${GOOGLE_SECRET_NAME:-GOOGLE_CLIENT_SECRET}"
 # GitHub's published ed25519 host-key fingerprint (https://api.github.com/meta → ssh_key_fingerprints).
 # phase3b cross-checks the live API against this pin; set it empty to trust the API alone.
 GITHUB_ED25519_FP="${GITHUB_ED25519_FP-SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU}"
@@ -108,6 +111,18 @@ rwe_systemctl() {
   local uid; uid="$(rwe_uid)"
   run sudo -u "$RWE_USER" env XDG_RUNTIME_DIR="/run/user/$uid" \
     DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" systemctl --user "$@"
+}
+# set_rwe_env_secret FILE KEY < value — (re)place KEY=value in the service user's env file, 600.
+# The value arrives on stdin only (printf is a builtin: never in argv / /proc).
+set_rwe_env_secret() {
+  local f="$1" key="$2" v
+  IFS= read -r v || true
+  [ -n "$v" ] || die "empty secret for $key"
+  case "$v" in *[!A-Za-z0-9._~+/=-]*) die "the value for $key has characters an env file would mangle — not written";; esac
+  printf '+ <secret via stdin> | (as %s) set %s in %s (mode 600)\n' "$RWE_USER" "$key" "$f"
+  # shellcheck disable=SC2016
+  printf '%s=%s\n' "$key" "$v" | sudo -u "$RWE_USER" sh -c 'umask 077; { grep -v "^$2=" "$1" 2>/dev/null; cat; } > "$1.tmp" && chmod 600 "$1.tmp" && mv "$1.tmp" "$1"' sh "$f" "$key"
+  v=""
 }
 rwe_test() { [ "$DRY_RUN" = 0 ] && user_exists && sudo -u "$RWE_USER" test "$@" 2>/dev/null; }
 confirm() {
@@ -192,6 +207,11 @@ phase2() {
     run sudo mv "$RWE_HOME/.local/node.new" "$RWE_HOME/.local/node"
   fi
   for b in node npm npx; do as_rwe ln -sfn "$RWE_HOME/.local/node/bin/$b" "$RWE_HOME/.local/bin/$b"; done
+  # The Claude CLI sandbox binds ~/.npm/_logs (and ~/.claude/debug) writable into every agent Bash
+  # sandbox whenever they EXIST (DEPLOY.md §1c(f)) — keep npm's own logs out of ~/.npm/_logs for good.
+  if ! rwe_test -f "$RWE_HOME/.npmrc" || ! sudo -u "$RWE_USER" grep -q '^logs-dir=' "$RWE_HOME/.npmrc"; then
+    printf 'logs-dir=%s/.cache/npm-logs\n' "$RWE_HOME" | write_as_rwe "$RWE_HOME/.npmrc" 644 "printf logs-dir=$RWE_HOME/.cache/npm-logs"
+  fi
   if [ "$DRY_RUN" = 0 ]; then
     have="$(sudo -u "$RWE_USER" -H env PATH="$RWE_PATH" node -v)"
     [ "$have" = "$want" ] || die "node version mismatch: $RWE_USER has $have, operator has $want"
@@ -291,74 +311,100 @@ phase3b() {
 
 phase4() {
   need_rwe
-  say "phase4: $RWE_CHECKOUT/rwe.config.json from $OP_CONFIG with paths moved under $RWE_HOME"
+  local dest="$RWE_CHECKOUT/rwe.config.json" envf="$RWE_HOME/.config/rwe.env"
+  local handle="\${secret:$GOOGLE_SECRET_NAME}" envkey="RWE_SECRET_$GOOGLE_SECRET_NAME"
   [ -r "$OP_CONFIG" ] || die "cannot read $OP_CONFIG"
-  local dest="$RWE_CHECKOUT/rwe.config.json" rotate=0 secret=""
+
+  say "phase4: $envf (copied byte-for-byte, mode 600, never printed)"
+  as_rwe install -d -m 700 "$RWE_HOME/.config"
+  if rwe_test -f "$envf" && [ "$FORCE" = 0 ]; then note "already present — keeping it (use --force to recopy)"
+  else
+    [ -r "$OP_ENV" ] || die "cannot read $OP_ENV"
+    write_as_rwe "$envf" 600 "cat $OP_ENV" < "$OP_ENV"
+  fi
+
+  say "phase4: $dest from $OP_CONFIG — paths moved under $RWE_HOME, no plaintext Google client secret"
   if rwe_test -f "$dest" && [ "$FORCE" = 0 ]; then
     note "$dest already exists — keeping it (use --force to regenerate)"
   else
-    local wr; wr="$(op_workroot)"
-    note "workRoot:         $wr → $RWE_WORKROOT"
+    note "workRoot:         $(op_workroot) → $RWE_WORKROOT"
     note "updateFlagPath:   → $RWE_HOME/rwe-update.flag   (must equal %h/rwe-update.flag in rwe-update.path)"
     note "updateResultPath: → $RWE_HOME/.local/share/rwe-update/result.json"
-    if [ -n "$(json_get "$OP_CONFIG" auth.googleClientSecret)" ]; then
-      cat <<'EOF'
-    auth.googleClientSecret is set. The engine reads this key verbatim (no ${secret:NAME} expansion
-    for auth.* — src/main.ts forwards fileConfig.auth untouched), so a rotated secret is written into
-    the service user's rwe.config.json (mode 600, owner rwe, inside a 750 home) — it cannot live in
-    rwe.env. Rotate first in Google Cloud Console → Credentials → the OAuth client → "Add secret".
-EOF
-      if [ "$DRY_RUN" = 1 ]; then note "(dry-run: would ask whether to rotate, then read -s the new secret)"
+    local current secret="" source=""
+    current="$(json_get "$OP_CONFIG" auth.googleClientSecret)"
+    if [ -n "$current" ]; then
+      # The handle is only safe on engine code that resolves it (a version without that support would
+      # send the literal "${secret:…}" to Google). Checked against the checkout rwe will actually run.
+      if [ "$DRY_RUN" = 1 ]; then note "(dry-run: would require $RWE_CHECKOUT/src/main.ts to resolve auth \${secret:…} handles)"
+      elif ! sudo -u "$RWE_USER" grep -q 'resolveAuthSecrets' "$RWE_CHECKOUT/src/main.ts"; then
+        die "the checked-out tag ($(deploy_tag)) cannot resolve \${secret:…} in auth.googleClientSecret — deploy a release that includes it (DEPLOY_TAG=<tag> phase3b) and rerun phase4"
+      fi
+      note "auth.googleClientSecret → \"$handle\"; the value goes to $envf as $envkey"
+      note "(to rotate: Google Cloud Console → Credentials → the OAuth client → \"Add secret\" first)"
+      if [ "$DRY_RUN" = 1 ]; then note "(dry-run: would ask for a NEW rotated secret; Enter = move the current value)"
       else
-        local ans; read -r -p "    Paste a NEW rotated Google client secret now? [y/N] " ans
-        if [ "$ans" = y ] || [ "$ans" = Y ]; then
-          read -r -s -p "    new googleClientSecret (not echoed): " secret; echo
-          [ -n "$secret" ] || die "empty secret"
-          rotate=1
+        read -r -s -p "    NEW rotated googleClientSecret (not echoed; Enter = keep the current one): " secret; echo
+        if [ -n "$secret" ]; then source="rotated"
+        else
+          # shellcheck disable=SC2016  # a literal ${secret: prefix
+          case "$current" in '${secret:'*)
+            note "current value is already a handle ($current) — nothing to move; make sure $envf has its RWE_SECRET_ line"
+            source="handle" ;;
+          *) source="moved" ;;
+          esac
         fi
       fi
     fi
-    # The secret (if any) travels on stdin only — never argv/env (visible in /proc) or a temp file.
+    # The config rewrite; the secret value itself never passes through here.
     # shellcheck disable=SC2016
     local py='import json,sys
-cfg=json.load(open(sys.argv[1])); home,wr,old=sys.argv[2],sys.argv[3],sys.argv[5]
+cfg=json.load(open(sys.argv[1])); home,wr,handle,old=sys.argv[2],sys.argv[3],sys.argv[4],sys.argv[5]
 cfg["workRoot"]=wr
 cfg["updateFlagPath"]=home+"/rwe-update.flag"
 cfg["updateResultPath"]=home+"/.local/share/rwe-update/result.json"
-if sys.argv[4]=="1": cfg.setdefault("auth",{})["googleClientSecret"]=sys.stdin.readline().rstrip("\n")
+if (cfg.get("auth") or {}).get("googleClientSecret"): cfg["auth"]["googleClientSecret"]=handle
 def walk(v,p):
     if isinstance(v,dict): [walk(x,p+"."+k) for k,x in v.items()]
     elif isinstance(v,list): [walk(x,"%s[%d]"%(p,i)) for i,x in enumerate(v)]
-    elif isinstance(v,str) and old and old in v and not p.endswith("Secret"): sys.stderr.write("    WARNING: %s still points under %s — edit it by hand\n"%(p,old))
+    elif isinstance(v,str) and old and old in v: sys.stderr.write("    WARNING: %s still points under %s — edit it by hand\n"%(p,old))
 walk(cfg,"")
 json.dump(cfg,sys.stdout,indent=2); sys.stdout.write("\n")'
     if [ "$DRY_RUN" = 1 ]; then
-      # still run the rewrite, but only print the three rewritten (non-secret) keys
-      printf '\n' | python3 -c "$py" "$OP_CONFIG" "$RWE_HOME" "$RWE_WORKROOT" 0 "$OP_HOME" \
-        | python3 -c 'import json,sys; c=json.load(sys.stdin); [print("    rendered %s = %s" % (k, c[k])) for k in ("workRoot","updateFlagPath","updateResultPath")]'
+      python3 -c "$py" "$OP_CONFIG" "$RWE_HOME" "$RWE_WORKROOT" "$handle" "$OP_HOME" \
+        | python3 -c 'import json,sys; c=json.load(sys.stdin); [print("    rendered %s = %s" % (k, c[k])) for k in ("workRoot","updateFlagPath","updateResultPath")]; a=c.get("auth") or {}; a.get("googleClientSecret") and print("    rendered auth.googleClientSecret = %s" % a["googleClientSecret"])'
       printf '+ python3 <rewrite> %s | (as %s) write %s mode 600\n' "$OP_CONFIG" "$RWE_USER" "$dest"
+      [ -z "$current" ] || printf '+ <secret via stdin> | (as %s) set %s in %s (mode 600)\n' "$RWE_USER" "$envkey" "$envf"
     else
-      printf '%s\n' "$secret" | python3 -c "$py" "$OP_CONFIG" "$RWE_HOME" "$RWE_WORKROOT" "$rotate" "$OP_HOME" \
-        | write_as_rwe "$dest" 600 "python3 <rewrite> $OP_CONFIG"
+      # secret first: a config that references a handle must never land before the value it needs
+      case "$source" in
+        rotated) printf '%s\n' "$secret" | set_rwe_env_secret "$envf" "$envkey" ;;
+        moved)   json_get "$OP_CONFIG" auth.googleClientSecret | set_rwe_env_secret "$envf" "$envkey" ;;
+      esac
       secret=""
-      [ "$rotate" = 1 ] && note "rotated secret written; after phase7 passes, DISABLE the old secret in Google Cloud Console"
+      python3 -c "$py" "$OP_CONFIG" "$RWE_HOME" "$RWE_WORKROOT" "$handle" "$OP_HOME" \
+        | write_as_rwe "$dest" 600 "python3 <rewrite> $OP_CONFIG"
+      [ "$source" = rotated ] && note "rotated secret stored; after phase7 passes and a real login works, DISABLE the old secret in Google Cloud Console"
     fi
   fi
 
-  say "phase4: $RWE_HOME/.config/rwe.env (copied byte-for-byte, mode 600, never printed)"
-  as_rwe install -d -m 700 "$RWE_HOME/.config"
-  if rwe_test -f "$RWE_HOME/.config/rwe.env" && [ "$FORCE" = 0 ]; then note "already present — keeping it (use --force to recopy)"
-  else
-    [ -r "$OP_ENV" ] || die "cannot read $OP_ENV"
-    write_as_rwe "$RWE_HOME/.config/rwe.env" 600 "cat $OP_ENV" < "$OP_ENV"
-  fi
   if [ "$DRY_RUN" = 0 ]; then
-    note "key names in $RWE_USER's rwe.env: $(sudo -u "$RWE_USER" sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$RWE_HOME/.config/rwe.env" | tr '\n' ' ')"
+    note "key names in $RWE_USER's rwe.env: $(sudo -u "$RWE_USER" sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$envf" | tr '\n' ' ')"
   fi
+  # check-config sees rwe.env's RWE_SECRET_* lines exactly the way the self-update helper feeds them
+  # (RWE_CONFIG_ENV_FILE, deploy/rwe-update.sh) — so a handle that won't resolve fails HERE, pre-downtime.
+  show sudo -u "$RWE_USER" -H env RWE_CONFIG_PATH="$dest" RWE_CONFIG_ENV_FILE="$envf" "<check-config via deploy/rwe-update.sh's env loader>"
   if [ "$DRY_RUN" = 0 ]; then
-    show sudo -u "$RWE_USER" -H env RWE_CONFIG_PATH="$dest" npm run check-config
-    sudo -u "$RWE_USER" -H env -C "$RWE_CHECKOUT" PATH="$RWE_PATH" RWE_CONFIG_PATH="$dest" npm run --silent check-config \
+    sudo -u "$RWE_USER" -H env -C "$RWE_CHECKOUT" PATH="$RWE_PATH" RWE_CONFIG_PATH="$dest" bash -s -- "$envf" <<'LOADER' \
       || die "check-config refused the new config"
+while IFS= read -r line || [ -n "$line" ]; do
+  case "$line" in RWE_SECRET_*=*) ;; *) continue ;; esac
+  key="${line%%=*}"; val="${line#*=}"
+  case "$key" in *[!A-Za-z0-9_]*) continue ;; esac
+  case "$val" in \"*\") val="${val#\"}"; val="${val%\"}" ;; \'*\') val="${val#\'}"; val="${val%\'}" ;; esac
+  export "$key=$val"
+done < "$1"
+exec npm run --silent check-config
+LOADER
   fi
 }
 
@@ -412,6 +458,8 @@ phase6() {
   if [ "$DRY_RUN" = 0 ] && ss -ltnH "sport = :$RWE_PORT_VALUE" | grep -q .; then
     die "port $RWE_PORT_VALUE is still in use — run phase5 first (the operator's engine must be stopped)"
   fi
+  # §1c(f): these two are bound writable into every agent sandbox if they exist — remove before start.
+  as_rwe rm -rf "$RWE_HOME/.npm/_logs" "$RWE_HOME/.claude/debug"
   rwe_systemctl daemon-reload
   rwe_systemctl enable --now rwe.service rwe-update.path
   say "phase6: disable (not delete) the operator's units so a reboot cannot start them again"
@@ -468,6 +516,9 @@ phase7() {
   else bad "git ls-remote over SSH as $RWE_USER (self-update would exit 20)"; fi
   if sudo -u "$RWE_USER" env XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" systemctl --user is-active --quiet rwe-update.path; then
     ok "rwe-update.path active"; else bad "rwe-update.path not active"; fi
+  for p in "$RWE_HOME/.npm/_logs" "$RWE_HOME/.claude/debug"; do
+    if rwe_test -e "$p"; then bad "$p exists (bound writable into every agent sandbox — remove it)"; else ok "$p absent"; fi
+  done
   if systemctl --user is-enabled --quiet rwe.service 2>/dev/null; then bad "operator's rwe.service is still enabled"; else ok "operator's rwe.service disabled"; fi
   [ "$fail" = 0 ] || die "phase7: some checks failed (see above); '$0 rollback' restores the operator's engine"
   say "phase7: ALL CHECKS PASSED"

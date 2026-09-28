@@ -14,12 +14,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
 
-function run(configPath: string, port: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
+function run(configPath: string, port: number, extraEnv: Record<string, string> = {}): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = execFile(
       'npx',
       ['tsx', join(process.cwd(), 'src/main.ts'), '--check-config'],
-      { cwd: process.cwd(), timeout: 8000, env: { ...process.env, RWE_CONFIG_PATH: configPath, RWE_PORT: String(port) } },
+      { cwd: process.cwd(), timeout: 8000, env: { ...process.env, ...extraEnv, RWE_CONFIG_PATH: configPath, RWE_PORT: String(port) } },
       (err, stdout, stderr) => {
         resolve({ code: (err as any)?.code ?? 0, stdout, stderr });
       },
@@ -68,6 +68,21 @@ describe('main.ts --check-config: validate without binding a port (IT-143, DES-1
     expect(await portIsFree(port)).toBe(true);
     rmSync(tmpDir, { recursive: true, force: true });
   }, 10000);
+
+  // 2026-09-28: an auth `${secret:NAME}` handle is validated by --check-config (the self-update gate):
+  // resolved → exit 0 without ever printing the value; unresolvable → exit 1 naming the handle.
+  it('validates an auth.googleClientSecret ${secret:NAME} handle without printing its value', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'rwe-it143-secret-'));
+    const configPath = join(tmpDir, 'rwe.config.json');
+    writeFileSync(configPath, JSON.stringify({ auth: { enabled: false, issuer: 'http://127.0.0.1:0', googleClientId: 'cid', googleClientSecret: '${secret:IT_GOOGLE_CS}' } }));
+    const ok = await run(configPath, 18790, { RWE_SECRET_IT_GOOGLE_CS: 'it143-secret-value-9c1d' });
+    expect(ok.code).toBe(0);
+    expect(ok.stdout + ok.stderr).not.toContain('it143-secret-value-9c1d');
+    const bad = await run(configPath, 18791);
+    expect(bad.code).toBe(1);
+    expect(bad.stdout + bad.stderr).toContain('RWE_SECRET_IT_GOOGLE_CS');
+    rmSync(tmpDir, { recursive: true, force: true });
+  }, 20000);
 
   it('exits 1 naming an invalid principals role, with no port bound', async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'rwe-it143-bad-'));

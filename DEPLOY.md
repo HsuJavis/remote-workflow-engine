@@ -567,8 +567,8 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `maxEffort` | `overrides.effort`／`meta.params` 宣告的 `effort` 上限（`low\|medium\|high\|xhigh\|max` 五階） | `string` / `'high'` | 否 | v21 |
 | `rwe.config.json` → `auth.enabled` | OAuth 2.0 身份認證 toggle；`false`（省略）= 開放行為（無 auth） | `boolean` / `false` | 否 | v15 |
 | `rwe.config.json` → `auth.issuer` | 這台引擎當作 OAuth 授權伺服器時對外宣告的 base URL（寫進 AS metadata、`WWW-Authenticate` 與 client redirect 的 `iss`）；省略時自動用 `http://<bind>:<實際 port>`，公開部署（HTTPS tunnel）必須明寫成對外網址 | `string` / `http://<bind>:<port>` | 否（公開部署時建議設定） | v15 |
-| `rwe.config.json` → `auth.googleClientId` | Google Cloud Console OAuth 2.0 client ID；用於 `/authorize` 重導向 + id_token aud 驗證 | `string` / — | 當 `auth.enabled:true` | v15 |
-| `rwe.config.json` → `auth.googleClientSecret` | Google OAuth 2.0 client secret；用於 `/oauth/google/callback` code exchange | `string` / — | 當 `auth.enabled:true` | v15 |
+| `rwe.config.json` → `auth.googleClientId` | Google Cloud Console OAuth 2.0 client ID；用於 `/authorize` 重導向 + id_token aud 驗證。可寫明碼，或 `${secret:NAME}`（同下一列） | `string` / — | 當 `auth.enabled:true` | v15 |
+| `rwe.config.json` → `auth.googleClientSecret` | Google OAuth 2.0 client secret；用於 `/oauth/google/callback` code exchange。**建議寫成 `${secret:GOOGLE_CLIENT_SECRET}`**，值放在環境變數 `RWE_SECRET_GOOGLE_CLIENT_SECRET`（例如 `~/.config/rwe.env`）——開機（與 `npm run check-config`）時解析，找不到就**拒絕開機**並指名缺的變數（不印值、不把字面 handle 送給 Google）；明碼值仍可用（向後相容） | `string` / — | 當 `auth.enabled:true` | v15 |
 | `rwe.config.json` → `auth.googleAuthorizeUrl` | Google authorization endpoint override（一般部署不需設定） | `string` / `'https://accounts.google.com/o/oauth2/v2/auth'` | 否 | v18 |
 | `rwe.config.json` → `auth.googleTokenUrl` | Google token endpoint override | `string` / `'https://oauth2.googleapis.com/token'` | 否 | v18 |
 | `rwe.config.json` → `auth.googleJwksUrl` | Google JWKS endpoint override | `string` / `'https://www.googleapis.com/oauth2/v3/certs'` | 否 | v18 |
@@ -578,7 +578,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | env `RWE_PORT` | 覆蓋 `port` | `number` / `8787` | 否 | v1 |
 | env `RWE_WORK_ROOT` | 覆蓋 `workRoot` | `string` / 設定檔值或系統暫存目錄 | 否 | v1 |
 | env `RWE_LITELLM_VENV` | 只有 `deploy.sh` 讀：LiteLLM Python venv 的路徑（步驟 3 檢查／建立 `<venv>/bin/litellm`，並把 `<venv>/bin` 加進服務的 `PATH`）；引擎本身不讀這個變數 | `string` / `$HOME/.rwe-litellm-venv` | 否 | v24 |
-| env `RWE_SECRET_<NAME>` | 伺服器端 secret store；provisioned MCP config 裡的 `${secret:NAME}` handle 由此解析（大小寫敏感）；缺少則該次引用以 `SECRET_MISSING` 報錯，從不外洩值或靜默跳過；絕不放進 JSON 設定檔 | `string` / 無預設 | 依 MCP 引用 | v1 |
+| env `RWE_SECRET_<NAME>` | 伺服器端 secret store；provisioned MCP config 與 `auth.googleClientId`／`auth.googleClientSecret` 裡的 `${secret:NAME}` handle 由此解析（大小寫敏感）；缺少則該次引用以 `SECRET_MISSING` 報錯，從不外洩值或靜默跳過；絕不放進 JSON 設定檔 | `string` / 無預設 | 依 MCP 引用 | v1 |
 | env `RWE_SECRET_GITHUB_TOKEN` | `issue_report`／Issues 儀表板需要；GitHub PAT/fine-grained token，須有目標 repo `issues:write` 權限；缺少時 `issue_report` 回 `GITHUB_TOKEN_MISSING`，`GET /api/issues` 回 200 `{degraded}`（不 500） | `string` / 無預設 | 否（缺少則降級） | v1 |
 | env `ANTHROPIC_API_KEY` | 每個 `anthropic/<model-id>` ref 用的 API key；`gateway:"sdk"` 路徑也可改由 `RWE_SECRET_ANTHROPIC_API_KEY` 提供 | `string` / 無預設 | 用到 anthropic model ref 時 | v1 |
 | env `RWE_SECRET_ANTHROPIC_API_KEY` | 同上，但走伺服器端 secret store（`gateway:"sdk"` 直連 Anthropic 時優先於 `ANTHROPIC_API_KEY`） | `string` / 無預設 | 否 | v7 |
@@ -605,9 +605,13 @@ curl -s http://localhost:8787/api/models | python3 -c \
 "auth": {
   "enabled": true,
   "googleClientId": "123456789-abc.apps.googleusercontent.com",
-  "googleClientSecret": "GOCSPX-…"
+  "googleClientSecret": "${secret:GOOGLE_CLIENT_SECRET}"
 }
 ```
+（`~/.config/rwe.env` 裡對應一行 `RWE_SECRET_GOOGLE_CLIENT_SECRET=GOCSPX-…`；明碼寫在 JSON 裡也能跑，但
+設定檔就變成機密。）注意：`RWE_SECRET_*` 是同一個 secret store，任何 workflow 的 MCP 設定也能以
+`${secret:GOOGLE_CLIENT_SECRET}` 引用它——跟 `RWE_SECRET_GITHUB_TOKEN` 等既有值是同一個信任前提
+（能註冊 workflow／推 MCP 資產的人就能用 store 裡的任何名字）。
 
 ### 角色（`principals`）——啟用 auth 前一定要讀
 
@@ -1380,6 +1384,10 @@ systemctl --user enable rwe-update.path  # 讓 .path 在登入後自動監看
   `npm ci && npm run build` 找不到 npm
 - `RWE_UPDATE_FLAG=` 必須跟 `rwe.config.json` 的 `updateFlagPath` 完全一致（見上方步驟三）
 - 選用：省略 `RWE_CONFIG_PATH=` 這一行則 configCheck 記 `skipped`（見上方「重啟前的設定檢查」）
+- `RWE_CONFIG_ENV_FILE=`（範本預設 `%h/.config/rwe.env`）：`rwe.config.json` 用了 `${secret:NAME}`
+  時，check-config 需要那些值——helper 只把這個檔裡 `RWE_SECRET_*` 開頭的行、只在 check-config 那一步
+  匯出（`npm ci`／`npm test` 看不到）。沒有這一行（舊的已安裝單元）又用了 handle，每次更新都會在
+  check-config 安全失敗、記 `configCheck:"failed"`
 
 `deploy/rwe-update.path` 使用 `PathExists=` + `PathChanged=`（**不**用 `PathModified=`，避免
 只修改 metadata 的 rename 不觸發）監看旗標檔出現。`deploy/rwe-update.service` 為 `Type=oneshot`。
@@ -1420,12 +1428,13 @@ curl -s http://localhost:8787/api/version
 
 ### 為什麼
 
-- **CLI 的 scratch/debug 目錄一定要對 agent 重新開放。** Bash confinement 把整個家目錄與 workRoot
-  設為 `denyRead`，但 Claude CLI 與 sandbox-runtime 固定會把它自己的 per-uid scratch 目錄
-  （`/tmp/claude-<uid>`）、`~/.claude/debug`、`~/.npm/_logs` 放進可寫清單（見
-  `src/gateway/bash-confinement.ts`）——少了它們 CLI 的 shell wrapper 跑不起來。引擎跟操作員同
-  uid 時，`/tmp/claude-<uid>` 就是**操作員自己的 Claude Code session 暫存區**（草稿、工具輸出、
-  背景任務 log），agent 在 sandbox 裡看得到也寫得到。
+- **CLI 一定會把引擎 HOME 底下的 `~/.claude/debug/`、`~/.npm/_logs/` 以可寫方式 bind 進每個 agent
+  sandbox**（只要它們存在；CLI/sandbox-runtime 寫死 `os.homedir()`，設定蓋不掉，見 §1c(f)）。CLI 的
+  暫存目錄已經改成每次派工各一份、主機共用的 `/tmp/claude-<uid>` 也已 `denyRead`，但這兩處還在：引擎
+  跟操作員同 uid 時，`~/.claude/debug/` 就是**操作員自己互動式 Claude Code 的 debug log**。換成獨立
+  帳號後，這兩個目錄屬於 `rwe`、裡面沒有操作員的東西；腳本再把它們刪掉（`phase6`），並讓 `rwe` 的
+  npm log 改寫到 `~/.cache/npm-logs`（`phase2` 寫 `~/.npmrc` 的 `logs-dir`），就連 run 之間的傳遞
+  通道也一併關掉。
 - **同 uid = 最後一道牆不存在。** 主機一旦量到 `Bash confinement: UNCONFINED`（AppArmor 擋住
   userns，見 §1c(e)），或 confinement 規則有任何遺漏，agent 能讀到的就是操作員讀得到的一切：
   `~/.config/rwe.env`、`~/.cloudflared/` 隧道憑證、SSH 金鑰、其他專案的原始碼。換成獨立 uid 後，
@@ -1451,7 +1460,7 @@ curl -s http://localhost:8787/api/version
 |------|------|------|
 | `RWE_USER`／`RWE_HOME` | `rwe`／`/home/rwe` | 服務帳號與其家目錄 |
 | `RWE_CHECKOUT` | `$RWE_HOME/remote-workflow` | 服務帳號的 git checkout（單元範本的 `%h/Documents/remote-workflow` 會被改寫成這裡） |
-| `RWE_WORKROOT` | `$RWE_HOME/.local/share/rwe-data` | 新 workRoot |
+| `RWE_WORKROOT` | `$RWE_HOME/.local/share/rwe-data` | 新 workRoot（圍籠生效＋sdk gateway 時長度不可超過 56 bytes，否則開機回 `CLI_SCRATCH_PATH_TOO_LONG`，見 §1c(f)） |
 | `OP_CHECKOUT` | `$HOME/Documents/remote-workflow` | 舊部署的 checkout（讀它的 `rwe.config.json`、`git describe --tags`、`origin` URL） |
 | `OP_ENV`／`OP_NODE_DIR`／`OP_UV` | `~/.config/rwe.env`／`~/.local/node`／`command -v uv` | 要複製過去的 secrets 檔、node 安裝、uv 執行檔 |
 | `RWE_PORT_VALUE` | 讀舊的 `override.conf`，沒有就 `8787` | 新單元的 `RWE_PORT`；保持不變，隧道／反向代理就不用改 |
@@ -1471,12 +1480,12 @@ deploy/migrate-to-service-user.sh <phase>             # 真的執行；每條指
 | 階段 | 做什麼 | 停機？ |
 |------|--------|--------|
 | `phase1` | `useradd --system --user-group --create-home --home-dir /home/rwe --shell /usr/sbin/nologin rwe`（不加入 sudo／操作員群組，腳本會檢查）、`chmod 750 /home/rwe`、`loginctl enable-linger rwe`，並等 `user@<uid>.service` 起來 | 否 |
-| `phase2` | 工具鏈：把操作員的 `~/.local/node` 整份 `cp -a` 過去（官方 tarball 可搬移，版本保證一致，不需要下載；複製後比對 `node -v`）、`~/.local/bin/{node,npm,npx}` symlink、複製 `uv` 單一執行檔，再以 `rwe` 身分 `uv python install 3.12` + `uv venv` + `uv pip install "litellm[proxy]==<舊 venv 的同一版>"`（**不複製**舊 venv：它的 `pyvenv.cfg` 指向操作員家目錄裡的直譯器，`rwe` 讀不到）。需要對外網路 | 否 |
+| `phase2` | 工具鏈：把操作員的 `~/.local/node` 整份 `cp -a` 過去（官方 tarball 可搬移，版本保證一致，不需要下載；複製後比對 `node -v`）、`~/.local/bin/{node,npm,npx}` symlink、`~/.npmrc` 的 `logs-dir=~/.cache/npm-logs`（npm log 不落在會被 bind 進 sandbox 的 `~/.npm/_logs`）、複製 `uv` 單一執行檔，再以 `rwe` 身分 `uv python install 3.12` + `uv venv` + `uv pip install "litellm[proxy]==<舊 venv 的同一版>"`（**不複製**舊 venv：它的 `pyvenv.cfg` 指向操作員家目錄裡的直譯器，`rwe` 讀不到）。需要對外網路 | 否 |
 | `phase3` | 產生 `rwe` 的 ed25519 deploy key（`/home/rwe/.ssh/id_ed25519`，600），印出**公鑰**後停下來——見下方「GitHub deploy key」 | 否 |
 | `phase3b` | 釘住 github.com 的 host key（`ssh-keyscan` 的指紋必須同時等於 `https://api.github.com/meta` 公布的值與腳本內建的值，否則中止）、確認 deploy key 讀得到 repo、以 SSH clone 到 `$RWE_CHECKOUT`、checkout 舊部署正在跑的同一個 tag（比對 commit）、`npm ci` | 否 |
-| `phase4` | 設定與 secrets：把舊 `rwe.config.json` 複製成 `$RWE_CHECKOUT/rwe.config.json`（600、owner `rwe`），只改寫 `workRoot`／`updateFlagPath`／`updateResultPath` 三個路徑（其他值若仍指向舊家目錄會列出鍵名警告）；`rwe.env` 逐位元組複製到 `/home/rwe/.config/rwe.env`（600，從不印出內容，只列鍵名）；可選擇輪替 Google client secret（見下方）；最後以 `rwe` 身分跑 `npm run check-config` | 否 |
+| `phase4` | 設定與 secrets：`rwe.env` 逐位元組複製到 `/home/rwe/.config/rwe.env`（600，從不印出內容，只列鍵名）；把舊 `rwe.config.json` 複製成 `$RWE_CHECKOUT/rwe.config.json`（600、owner `rwe`），改寫 `workRoot`／`updateFlagPath`／`updateResultPath` 三個路徑（其他值若仍指向舊家目錄會列出鍵名警告），並把 `auth.googleClientSecret` 換成 `${secret:GOOGLE_CLIENT_SECRET}`、值寫進 `rwe.env` 的 `RWE_SECRET_GOOGLE_CLIENT_SECRET`（新輪替的值或原本的明碼值，見下方）；最後以 `rwe` 身分、帶著 `rwe.env` 的 `RWE_SECRET_*` 跑 `npm run check-config`——handle 解不開就在停機前失敗 | 否 |
 | `phase5` | **停機開始**：停掉操作員的 `rwe.service`／`rwe-update.path`（等進行中的自我更新跑完）、`cp -a` 整棵 workRoot 到 `$RWE_WORKROOT`、`chown -R rwe:rwe`、`chmod 700`。**原始資料原封不動**（rollback 用）。目的地已存在就拒絕（避免蓋掉 `rwe` 已寫入的新資料），`--force` 會先把它改名成 `.bak-<時間戳>` | **是** |
-| `phase6` | 安裝 `rwe` 的 systemd user 單元（`rwe.user.service`→`rwe.service`、`override.conf`、`rwe-update.service`、`rwe-update.path`，repo 路徑與 `RWE_OFFICIAL_REMOTE` 會被改寫）、`systemctl-user` wrapper 與 0700 的 `~/.local/share/rwe-update/`（順便帶過舊的 `result.json`）、確認 port 已空出、`daemon-reload` + `enable --now`；接著 `disable`（**不刪除**）操作員的單元，等 `/api/version` 回應。**停機到此結束** | 結束 |
+| `phase6` | 刪掉 `rwe` 的 `~/.npm/_logs`、`~/.claude/debug`（見「為什麼」），安裝 `rwe` 的 systemd user 單元（`rwe.user.service`→`rwe.service`、`override.conf`、`rwe-update.service`、`rwe-update.path`，repo 路徑與 `RWE_OFFICIAL_REMOTE` 會被改寫）、`systemctl-user` wrapper 與 0700 的 `~/.local/share/rwe-update/`（順便帶過舊的 `result.json`）、確認 port 已空出、`daemon-reload` + `enable --now`；接著 `disable`（**不刪除**）操作員的單元，等 `/api/version` 回應。**停機到此結束** | 結束 |
 | `phase7` | 驗證（見下方），任何一項失敗就以非零結束並提示 rollback | 否 |
 | `rollback` | 停用 `rwe` 的單元、重新 `enable --now` 操作員的單元 | 短暫 |
 
@@ -1505,15 +1514,17 @@ helper 會吞掉 `ls-remote` 的 stderr：**自我更新之後若一直記 exit 
   若懷疑舊 uid 底下的 agent 讀過這些值（同 uid 期間 agent 在 UNCONFINED 主機上跑過），趁搬家
   逐一到各供應商輪替，改完 `sudo -u rwe -H sh -c 'umask 077; cat > ~/.config/rwe.env'`
   重新寫入後 `rwectl restart rwe.service`。
-- **Google OAuth client secret（`auth.googleClientSecret`）** 目前只能明碼寫在 `rwe.config.json`：
-  引擎的 `${secret:NAME}` 展開只作用在 MCP server 設定（`src/gateway/claude-agent-sdk-client.ts`），
-  `auth` 區塊由 `src/main.ts` 原樣轉交，寫成 `${secret:…}` 會把字面字串送給 Google 導致登入失敗。
-  所以輪替的做法是：Google Cloud Console → Credentials → 該 OAuth client → **Add secret**（同一個
-  client 可同時有兩個有效 secret）→ `phase4` 問「Paste a NEW rotated Google client secret now?」時
-  回 `y`，以 `read -s` 貼上（不顯示、只經 stdin 傳給改寫程式，不進 argv／環境變數／暫存檔）→
-  `phase7` 全綠、實際走一次 OAuth 登入之後，再回 Console **停用舊 secret**。新值只存在
-  `/home/rwe/remote-workflow/rwe.config.json`（600、owner `rwe`、家目錄 750），操作員帳號與 agent
-  都讀不到。
+- **Google OAuth client secret（`auth.googleClientSecret`）不再明碼留在設定檔**：`phase4` 一律把它
+  改成 `${secret:GOOGLE_CLIENT_SECRET}`（名稱可用 `GOOGLE_SECRET_NAME` 改），值放進 `rwe` 的
+  `rwe.env`（`RWE_SECRET_GOOGLE_CLIENT_SECRET=…`，600）。引擎開機時解析，找不到就拒絕開機並指名缺的
+  變數（見 §1b）。`phase4` 會問一次新值：
+  - **要輪替**：先到 Google Cloud Console → Credentials → 該 OAuth client → **Add secret**（同一個
+    client 可同時有兩個有效 secret），在提示下貼上（`read -s`，不顯示；只經 stdin 寫進檔案，不進
+    argv／環境變數／暫存檔）→ `phase7` 全綠、實際走一次 OAuth 登入之後，回 Console **停用舊 secret**。
+  - **不輪替**：直接按 Enter，原本設定檔裡的明碼值會被搬進 `rwe.env`（同樣不經過終端機）。
+  這需要 `rwe` checkout 的那個 tag 已包含 auth handle 解析——舊版引擎會把字面 handle 送給 Google，
+  所以 `phase4` 先檢查，不支援就中止並請你以較新的 `DEPLOY_TAG` 重跑 `phase3b`。自我更新的
+  check-config 透過 `rwe-update.service` 的 `RWE_CONFIG_ENV_FILE`（`phase6` 裝的範本已帶）拿到這個值。
 
 ### 驗證（`phase7`）
 
@@ -1524,7 +1535,7 @@ helper 會吞掉 `ls-remote` 的 stderr：**自我更新之後若一直記 exit 
 - `auth.issuer` 有設時：`POST <issuer>/mcp`（不帶 token）→ `401` 且 `WWW-Authenticate` 帶 `scope=`。
 - `rwe` **讀不到** 操作員家目錄、操作員的 `rwe.env`／`rwe.config.json`、`/tmp/claude-<操作員 uid>`。
 - `rwe` 以 SSH `git ls-remote` 讀得到部署中的 tag（自我更新的前提）、`rwe-update.path` 是 active。
-- 操作員的 `rwe.service` 已 disabled。
+- 操作員的 `rwe.service` 已 disabled；`rwe` 的 `~/.npm/_logs`、`~/.claude/debug` 不存在。
 
 之後照 §7 第 13 點最後一項，打一個測試 tag 走完一次完整自我更新鏈（`rwectl update-result` 應記
 `"status":"applied"`）——第一次在 `rwe` 底下跑的 `npm test` 就是在這時候，出問題會 safe-fail、
@@ -1661,13 +1672,10 @@ skill 資產的供應檢查、`schedule_*`／`webhook_*` 的建立與列出全�
      那個 OAuth 用戶端的**已授權重新導向 URI**（`https://<新網域>/oauth/google/callback`）要
      一起加，舊網域簽發的既有 refresh token（存在 `workRoot/auth-tokens.db`）在新 issuer 下會
      失效，使用者要重新走一次 OAuth 授權——這不是 bug，是 OAuth issuer 綁定 audience 的必然結果。
-   - **`auth.googleClientId`/`auth.googleClientSecret` 目前是明碼寫在這台主機的
-     `rwe.config.json` 裡**——跟 §1b 開頭「`rwe.config.json` 本身不含機密，金鑰一律走環境變數」
-     這條原則不一致（歷史遺留，這份 checklist 只指出落差，不在這裡動它）。**不能**改寫成
-     `${secret:NAME}`：`src/secret-resolver.ts` 的展開只套用在 MCP server 設定
-     （`src/gateway/claude-agent-sdk-client.ts`），`auth` 區塊由 `src/main.ts` 原樣轉交，寫成
-     handle 會把字面字串送給 Google、登入失敗。目前能做的是把 `rwe.config.json` 維持 600、並讓
-     引擎跑在獨立帳號底下（見 §6c，含輪替這個 secret 的步驟）。
+   - **`auth.googleClientSecret`（與可選的 `googleClientId`）寫成 `${secret:NAME}`**，值放在
+     `rwe.env` 的 `RWE_SECRET_NAME`（見 §1b），`rwe.config.json` 就不含機密、搬機時不必當機密檔處理。
+     舊主機若還是明碼：搬之前先改成 handle（或用 §6c 的 `phase4`，它會自動搬值、可順便輪替）；新主機的
+     `rwe-update.service` 要帶 `RWE_CONFIG_ENV_FILE`（範本已有），否則自我更新的 check-config 解不開。
    - **`principals`**：目前是「特定信箱 → 角色」的對照表；换機不换使用者的話原樣搬，換一批
      使用者要照 §1b「角色」小節重新分配，打錯角色字串（不是 `admin`/`author`/`user`）會直接讓
      開機失敗，不是靜默退回。

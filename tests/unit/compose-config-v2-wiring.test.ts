@@ -120,6 +120,53 @@ describe('composeConfig() v2 key wiring (DES-022, standing rule 1)', () => {
     expect((cfg as Record<string, unknown>)['auth']).toEqual(auth);
   });
 
+  // 2026-09-28 (owner: no plaintext secrets in config): auth.googleClientSecret / googleClientId may
+  // be a `${secret:NAME}` handle, resolved at config load from the SAME RWE_SECRET_<NAME> env store
+  // the engine already uses. A missing name refuses boot — the literal handle must never reach Google.
+  describe('auth ${secret:NAME} handles (googleClientSecret / googleClientId)', () => {
+    const SECRET_ENV = 'RWE_SECRET_UT_GOOGLE_CLIENT_SECRET';
+    const ID_ENV = 'RWE_SECRET_UT_GOOGLE_CLIENT_ID';
+    const withEnv = async <T>(vars: Record<string, string>, fn: () => Promise<T>): Promise<T> => {
+      Object.assign(process.env, vars);
+      try { return await fn(); } finally { for (const k of Object.keys(vars)) delete process.env[k]; }
+    };
+
+    it('resolves both handles from RWE_SECRET_* env; the other auth fields pass through untouched', async () => {
+      const auth = { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: '${secret:UT_GOOGLE_CLIENT_ID}', googleClientSecret: '${secret:UT_GOOGLE_CLIENT_SECRET}' };
+      const cfg = await withEnv({ [SECRET_ENV]: 'resolved-cs-value', [ID_ENV]: 'resolved-cid-value' }, () =>
+        composeConfig({ auth, gateway: 'direct-fetch' }, FAKE_DEPS));
+      expect((cfg as Record<string, unknown>)['auth']).toEqual({
+        enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'resolved-cid-value', googleClientSecret: 'resolved-cs-value',
+      });
+      expect(auth.googleClientSecret).toBe('${secret:UT_GOOGLE_CLIENT_SECRET}'); // input not mutated
+    });
+
+    it('refuses boot naming the handle and its env var when the secret is missing — never the literal handle to Google', async () => {
+      delete process.env[SECRET_ENV];
+      const auth = { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'cid', googleClientSecret: '${secret:UT_GOOGLE_CLIENT_SECRET}' };
+      await expect(composeConfig({ auth, gateway: 'direct-fetch' }, FAKE_DEPS)).rejects.toThrow(
+        /auth\.googleClientSecret.*UT_GOOGLE_CLIENT_SECRET.*RWE_SECRET_UT_GOOGLE_CLIENT_SECRET/s,
+      );
+    });
+
+    it('refuses a malformed handle instead of passing it through', async () => {
+      const auth = { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'cid', googleClientSecret: '${secret:bad name}' };
+      await expect(composeConfig({ auth, gateway: 'direct-fetch' }, FAKE_DEPS)).rejects.toThrow(/auth\.googleClientSecret/);
+    });
+
+    it('never writes the resolved value to the console', async () => {
+      const spies = (['log', 'warn', 'error', 'info'] as const).map((m) => vi.spyOn(console, m));
+      try {
+        await withEnv({ [SECRET_ENV]: 'must-not-be-logged-7f3a' }, () => composeConfig({
+          auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'cid', googleClientSecret: '${secret:UT_GOOGLE_CLIENT_SECRET}' },
+          gateway: 'direct-fetch', bogusKeyToForceAWarning: 1,
+        } as never, FAKE_DEPS));
+        const printed = spies.flatMap((s) => s.mock.calls).map((c) => c.map(String).join(' ')).join('\n');
+        expect(printed).not.toContain('must-not-be-logged-7f3a');
+      } finally { for (const s of spies) s.mockRestore(); }
+    });
+  });
+
   it('auth:undefined is forwarded when FileConfig omits the auth block (backward-compat)', async () => {
     const cfg = await composeConfig({ gateway: 'direct-fetch' }, FAKE_DEPS);
     expect((cfg as Record<string, unknown>)['auth']).toBeUndefined();

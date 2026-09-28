@@ -33,6 +33,7 @@ import { probeConfinement, CONFINEMENT_REMEDIATION } from './gateway/confinement
 import type { ConfinementProbeResult } from './gateway/confinement-probe.js';
 import { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
+import { resolveConfig, type SecretSource } from './secret-resolver.js';
 import { assertWorkRootIsolated } from './workroot-guard.js';
 import type { Role } from './tool-specs.js';
 import { validateModelProbeConfig } from './models/model-probe.js';
@@ -250,6 +251,32 @@ interface ComposeConfigDeps {
   homeDir?: string;
   pathEnv?: string;
   execPath?: string;
+  /** Secret store for `auth` `${secret:NAME}` handles; omitted -> `loadSecretSourceFromEnv()`. */
+  secretSource?: SecretSource;
+}
+
+const AUTH_SECRET_KEYS = ['googleClientId', 'googleClientSecret'] as const;
+
+/** Resolves `${secret:NAME}` handles in `auth.googleClientId` / `auth.googleClientSecret` (only those
+ *  two keys). Returns a NEW object (the input is not mutated) or `undefined` when auth is absent. */
+function resolveAuthSecrets(auth: FileConfig['auth'], source: SecretSource): FileConfig['auth'] {
+  if (auth === undefined) return undefined;
+  const out = { ...auth };
+  for (const key of AUTH_SECRET_KEYS) {
+    const value: unknown = out[key];
+    if (typeof value !== 'string' || !value.includes('${secret:')) continue;
+    try {
+      out[key] = resolveConfig(value, source) as string;
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      const name = /\$\{secret:([^}]*)\}/.exec(value)?.[1] ?? '';
+      const why = code === 'SECRET_MISSING'
+        ? `references \${secret:${name}}, but RWE_SECRET_${name} is not set in the engine's environment (add it to the env file the service loads, e.g. ~/.config/rwe.env)`
+        : `holds a malformed secret handle (expected \${secret:NAME}, NAME = [A-Za-z0-9_.-]+)`;
+      throw new Error(`rwe.config.json: auth.${key} ${why}. Refusing to start (a literal handle must never be sent to Google).`);
+    }
+  }
+  return out;
 }
 
 // D-F10(a/b): the FileConfig -> ServerConfig translation main() performs, extracted into an
@@ -280,6 +307,13 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
         '(must be one of admin/author/user). Refusing to start (ADR-028 fail-closed: a typo must never silently resolve to a role).',
     );
   }
+
+  // 2026-09-28 (owner: no plaintext secrets in rwe.config.json): `auth.googleClientSecret` /
+  // `auth.googleClientId` may be a `${secret:NAME}` handle, resolved HERE from the same RWE_SECRET_<NAME>
+  // env store every other handle uses. Fail-closed: an unresolvable/malformed handle refuses boot (and
+  // `--check-config`, which shares this function) — the literal handle must never be sent to Google.
+  // The error names the handle and its env var, never a value. A plain literal passes through as-is.
+  const auth = resolveAuthSecrets(fileConfig.auth, deps.secretSource ?? loadSecretSourceFromEnv());
 
   const gatewayChoice: GatewayChoice = fileConfig.gateway ?? 'sdk';
   // Issue #73: validated at load, fail-closed (a bad interval must not silently mis-schedule or
@@ -437,7 +471,7 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // `auth.enabled:true` in rwe.config.json is parsed by loadFileConfig() but silently dropped
     // here — server.ts keys every auth route registration and D-BIND enforcement off config?.auth?.enabled,
     // so the whole auth subsystem is built-but-unwired at the production entrypoint).
-    auth: fileConfig.auth,
+    auth,
     // issue #97: forward the externally-reachable base URL so webhook_create's returned `url`
     // (and any other wire artifact resolvePublicBaseUrl serves — server.ts) is a real, publicly
     // routable host on the production entrypoint instead of silently dropping the operator's config
