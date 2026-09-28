@@ -1750,6 +1750,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     egressAllowlist: config?.mcpEgressAllowlist ?? [],
   });
   facade.bindAssetSync(assetSync);
+  // issue #103(a): the SAME instance, bound into RunManager too — admission (run_start/a
+  // schedule-or-webhook firing/nested workflow()) resolves declared mcp/skill provisioning through
+  // this ONE resolver, the same one the facade's registration warning and dispatch's own
+  // materialization already use, so no two of the three can ever disagree.
+  runManager.bindAssetSync(assetSync);
   // v24 (integrator; REQ-113, adjudication #4 C-2's wiring sweep): bind the catalog-backed
   // `resolveMcp` port DES-154 introduced to replace the deleted `mcp-registry.ts`. TASK-145 left it
   // unbound "out of scope", so `agents.<label>.mcp` names resolved to nothing on every dispatch.

@@ -44,7 +44,7 @@ import { redact, hasSecretMarker } from './secret-resolver.js';
 import type { SecretValueProvider } from './secret-resolver.js';
 import { ResumeCache, MISS, type ResumePlan } from './resume-cache.js';
 import { WorkflowCatalog, canRunResolved, actorFromPrincipal, type Actor } from './workflow-catalog.js';
-import { assetRootsFor, defaultAssetRoot, globalAssetRoot } from './asset-sync.js';
+import { assetRootsFor, defaultAssetRoot, globalAssetRoot, type AssetSyncService } from './asset-sync.js';
 import type { GatewayClient, GatewayConfig } from './gateway/client.js';
 import { LiteLLMGatewayClient } from './gateway/client.js';
 import { validateUserOverrides, validateDeclaredArgs, materializeArgDefaults, FRAME_CLOSE_FORGERY, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type Err as ParamErr, type ModelCatalogSnapshot, type ModelRefWarning } from './params/contract.js';
@@ -388,6 +388,14 @@ export class RunManager {
   private readonly _workRoot: string;
   private readonly _assetRoot: string;
   private readonly _globalAssetRoot: string;
+  // issue #103(a): bound post-construction (composition root, `server.ts`), same pattern as
+  // `McpFacade.bindAssetSync` — `AssetSyncService` needs the server's own bound port, built AFTER
+  // RunManager. Not `readonly`: `bindAssetSync` is the one post-construction writer. Absent only in
+  // a test harness that never wired one, which then honestly admits every run with no provisioning
+  // check (fail-open — matches this class's every other optional-collaborator default) rather than
+  // refusing MCP_NOT_PROVISIONED/SKILL_NOT_PROVISIONED against a resolver that was never given a
+  // chance to say otherwise.
+  private _assetSync: AssetSyncService | undefined;
   private readonly _semaphore: Semaphore;
   private readonly _maxWorkflowDepth: number;
   private readonly _maxWorkflowDescendants: number;
@@ -491,6 +499,13 @@ export class RunManager {
   /** The catalog this manager resolves named workflows against (shared with SubmissionValidator). */
   get catalog(): WorkflowCatalog {
     return this._catalog;
+  }
+
+  /** issue #103(a): called once by the composition root after `AssetSyncService` is constructed
+   *  (same reason/pattern as `McpFacade.bindAssetSync` — it needs the server's own bound port,
+   *  built after this class). */
+  bindAssetSync(assetSync: AssetSyncService): void {
+    this._assetSync = assetSync;
   }
 
   /** Resolves the on-disk workspace path for a run (D-V7/REQ-013 artifact listing): live state
@@ -756,6 +771,11 @@ export class RunManager {
           { workflow: spec.name, version: resolvedVersion },
         );
       }
+      // issue #103(a): the admission-time provisioning refusal — BEFORE any durable work (seed
+      // materialization, createRun, workspace mkdir), same as every other admission check above.
+      // Covers run_start, every schedule/webhook firing (both dispatch through this SAME door), and
+      // a resident trigger — the only paths that ever set `spec.name && !spec.script`.
+      await this._refuseUnprovisionedAssets(spec.name, registeredContract);
       // Issue #82 (option B): the resolved VERSION's default seed, bound at workflow_register. Here,
       // in the one door every start path shares (run_start, schedule ticker, resident trigger,
       // webhook), so no start path needs its own seed code. Applied only when the run brought NO
@@ -1700,6 +1720,48 @@ export class RunManager {
     return { models, warnings };
   }
 
+  /** issue #103(a): the admission-time door — run_start, a schedule/webhook firing (both dispatch
+   *  through `start()`, the "one door every start path shares" the seed-default comment above also
+   *  names), and a nested `workflow()` call (its own second admission point, same as
+   *  `_refuseUnadmittableParams`/`_pinChildModels` above) all reach this BEFORE any side effect.
+   *  Resolves EVERY label's declared skills/mcp against the SAME resolver registration's warning
+   *  uses (`AssetSyncService.resolveDeclaredAssets`) so the two can never disagree; refuses
+   *  MCP_NOT_PROVISIONED first if any label has a missing mcp name (checked first everywhere else
+   *  this pair appears — ERROR_CATALOG's own ordering), else SKILL_NOT_PROVISIONED, naming every
+   *  offending label + its missing names + the fix. No `_assetSync` bound (a test harness that never
+   *  wired one) -> fail OPEN, no check at all — matches every other optional-collaborator default in
+   *  this class. */
+  private async _refuseUnprovisionedAssets(workflow: string, contract: ParamContract): Promise<void> {
+    if (this._assetSync === undefined) return;
+    const declared = declaredAssetsOf(contract);
+    const missingMcp: Array<{ label: string; names: string[] }> = [];
+    const missingSkills: Array<{ label: string; names: string[] }> = [];
+    for (const [label, d] of Object.entries(declared)) {
+      if (d.skills.length === 0 && d.mcp.length === 0) continue;
+      const resolved = await this._assetSync.resolveDeclaredAssets(workflow, d);
+      if (resolved.missingMcp.length > 0) missingMcp.push({ label, names: resolved.missingMcp });
+      if (resolved.missingSkills.length > 0) missingSkills.push({ label, names: resolved.missingSkills });
+    }
+    const fix = (kind: 'mcp' | 'skill'): string =>
+      `push it first: workspace_push({workflow: '${workflow}', kind: '${kind}', name, ${kind === 'mcp' ? 'config' : 'files'}}), then re-run`;
+    if (missingMcp.length > 0) {
+      const named = missingMcp.map((m) => `${m.label}: ${m.names.join(', ')}`).join('; ');
+      throw codedError(
+        'MCP_NOT_PROVISIONED',
+        `MCP_NOT_PROVISIONED: workflow '${workflow}' declares mcp name(s) with no provisioned asset — ${named} — ${fix('mcp')}`,
+        { workflow, missing: missingMcp },
+      );
+    }
+    if (missingSkills.length > 0) {
+      const named = missingSkills.map((m) => `${m.label}: ${m.names.join(', ')}`).join('; ');
+      throw codedError(
+        'SKILL_NOT_PROVISIONED',
+        `SKILL_NOT_PROVISIONED: workflow '${workflow}' declares skill name(s) with no provisioned asset — ${named} — ${fix('skill')}`,
+        { workflow, missing: missingSkills },
+      );
+    }
+  }
+
   /** INV-V26-4 for a nested frame: the pin taken in `start()` covers only the models the TOP-level
    *  workflow names — a child's are unknowable then (its name is a runtime value, at any depth). A
    *  nested `workflow()` is therefore a second admission point, and the child's reachable models are
@@ -1843,6 +1905,10 @@ export class RunManager {
         { workflow: name, version: registered.version },
       );
     }
+    // issue #103(a): the nested frame's OWN admission-time provisioning refusal — same door, same
+    // resolver as `start()`'s (`_refuseUnprovisionedAssets`), checked against the CHILD's own
+    // contract/name (never the parent's — a nested workflow's declared assets are scoped to it).
+    await this._refuseUnprovisionedAssets(name, childContract);
     const childParams = defaultRunParams(undefined, childContract.agents);
     // 2026-09-26 (owner decision 6): the nested frame is its own admission point, so it fetches its
     // own catalog snapshot rather than inheriting the parent run's (which may be stale by the time a

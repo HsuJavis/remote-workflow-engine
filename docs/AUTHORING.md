@@ -233,7 +233,8 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 - `NOT_TRIGGER_OWNER` — the caller does not own (did not create) this trigger
 - `PARSE_ERROR` — the script body failed to parse as TypeScript
 - `UNKNOWN_MODEL` — the model is not a valid <provider>/<model-id> ref, or (for openrouter/ollama) was not found in the catalog listing — see models_list
-- `MCP_NOT_PROVISIONED` — an agent() call references an mcp name with no provisioned secret
+- `MCP_NOT_PROVISIONED` — an agent() call declares an mcp name with no workspace_push-provisioned asset (workflow-scoped or global) — admission refuses before any side effect; registration only warns
+- `SKILL_NOT_PROVISIONED` — an agent() call declares a skill name with no workspace_push-provisioned asset (workflow-scoped or global) — admission refuses before any side effect; registration only warns
 - `SCRIPT_INVALID` — the script violates a sandbox-enforced structural rule
 - `SCAN_VIOLATION` — an agent() call is not scannable — label/options must be literal (ADR-029)
 - `MERMAID_INVALID` — the diagram does not parse under checkMermaid's grammar

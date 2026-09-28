@@ -256,7 +256,7 @@ export const TOOL_SPECS = [
       "Declare `meta.phases: [{title}, ...]` (in the same order as your `phase()` calls) if you want workflow_describe's `phases`/`phases[].agents` populated — that field is read back verbatim, never derived from `phase()` calls or your mermaid diagram. " +
       "Every agent() call's model comes from `script`'s own `export const meta = { params: { agents: { <label>: { model: {...} } } } }`: `model` is REQUIRED with a `.default`, and that default MUST be a full `<provider>/<model-id>` ref — providers are exactly anthropic, openrouter, ollama (e.g. \"anthropic/claude-haiku-4-5-20251001\", \"openrouter/openai/gpt-4.1\", \"ollama/qwen2.5:7b\"); there are no aliases, no bare names, no 'default'/'local'-style shortcuts — a bare name is refused UNKNOWN_MODEL. Use models_list to find a valid ref (copy its `ref` field verbatim). A run_start override may replace it with a different full ref per run; see workflow_authoring_guide for the complete authoring rules. " +
       // Issue #78(b): advertised here because a cold client reads only tools/list.
-      "The reply may carry result.warnings — non-fatal notes, the version is registered anyway: BASH_SUBSUMES_FILE_TOOLS when an agent() call's allowedTools names Bash beside Read/Grep/Glob/Write/Edit (allowedTools restricts names, and Bash can do what those do); BASH_READONLY_UNENFORCEABLE when an agent() declares bash:'readonly' on an engine with no working Bash sandbox (every dispatch of it will fail closed there); MODEL_CATALOG_UNVERIFIED when a declared model ref could not be checked against a live catalog listing (openrouter/ollama) or is an anthropic id not yet in this deployment's static price table — the version registers anyway.",
+      "The reply may carry result.warnings — non-fatal notes, the version is registered anyway: BASH_SUBSUMES_FILE_TOOLS when an agent() call's allowedTools names Bash beside Read/Grep/Glob/Write/Edit (allowedTools restricts names, and Bash can do what those do); BASH_READONLY_UNENFORCEABLE when an agent() declares bash:'readonly' on an engine with no working Bash sandbox (every dispatch of it will fail closed there); MODEL_CATALOG_UNVERIFIED when a declared model ref could not be checked against a live catalog listing (openrouter/ollama) or is an anthropic id not yet in this deployment's static price table; MCP_NOT_PROVISIONED/SKILL_NOT_PROVISIONED when a label's declared `mcp`/`skills` name has no workspace_push-provisioned asset yet (workflow-scoped or global) — the version registers anyway, but run_start (and every firing, and a nested workflow() call) REFUSES with the same code until it is provisioned.",
     inputSchema: schema({
       name: { type: 'string' },
       script: { type: 'string' },
@@ -295,8 +295,10 @@ export const TOOL_SPECS = [
     }, ['name', 'script']),
     outputSchema: OUT,
     // v24 (integrator; adjudication #4 C-6 [21] + #2 A-4): reconciled BOTH ways against what the
-    // register path actually throws — `script-checks.ts` (PARSE_ERROR / UNKNOWN_MODEL /
-    // MCP_NOT_PROVISIONED), `parseParamContract` (AGENT_UNDECLARED / AGENT_DECLARED_NOT_IN_SCRIPT /
+    // register path actually throws — `script-checks.ts` (PARSE_ERROR only, issue #103a: its old
+    // MCP_NOT_PROVISIONED throw is retired — a declared-but-unprovisioned mcp/skill name is a
+    // `result.warnings` entry now, see this row's description, never a registration refusal),
+    // `parseParamContract` (AGENT_UNDECLARED / AGENT_DECLARED_NOT_IN_SCRIPT /
     // PARAM_CONTRACT_INVALID / DEFAULTS_RETIRED), `workflow-catalog.ts` (SCAN_VIOLATION /
     // MERMAID_REQUIRED / MERMAID_INVALID / DIAGRAM_MISMATCH / VERSION_CEILING_EXCEEDED /
     // NOT_WORKFLOW_OWNER / REGISTRATION_CONFLICT) and the facade's trigger-claim step
@@ -306,7 +308,7 @@ export const TOOL_SPECS = [
     // the tool cannot answer teaches a cold model to branch on something that never arrives.
     // `SCRIPT_INVALID` stays: it is the sandbox structural refusal `validateScriptEntry` raises.
     errors: [
-      'SCRIPT_INVALID', 'PARSE_ERROR', 'UNKNOWN_MODEL', 'MCP_NOT_PROVISIONED', 'SCAN_VIOLATION',
+      'SCRIPT_INVALID', 'PARSE_ERROR', 'UNKNOWN_MODEL', 'SCAN_VIOLATION',
       'AGENT_UNDECLARED', 'AGENT_DECLARED_NOT_IN_SCRIPT', 'PARAM_CONTRACT_INVALID', 'DEFAULTS_RETIRED',
       'MERMAID_REQUIRED', 'MERMAID_INVALID', 'DIAGRAM_MISMATCH',
       // v26 (REQ-128, DES-184): the v2 diagram contract's own refusals, plus the
@@ -623,7 +625,11 @@ export const TOOL_SPECS = [
       additionalProperties: false,
     },
     outputSchema: OUT,
-    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'CHANNEL_UNPUBLISHED', 'NOT_RUNNABLE', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'PARAM_LOCKED', 'PARAM_UNKNOWN', 'PARAM_OUT_OF_RANGE', 'UNKNOWN_AGENT_LABEL', 'UNKNOWN_MODEL', 'AGENT_UNDECLARED', 'LEGACY_REREGISTER', 'INVALID_SEED_SPEC', 'SEED_SOURCE_CONFLICT', 'SEEDREF_DISABLED', 'EGRESS_DENIED', 'CAS_UNAVAILABLE', 'MISSING_BLOBS', 'RUN_ADMISSION_LIMIT', 'CONFINEMENT_UNAVAILABLE'],
+    // issue #103(a): MCP_NOT_PROVISIONED/SKILL_NOT_PROVISIONED joined this row's errors[] —
+    // registration only WARNS about a declared-but-unprovisioned mcp/skill name (workflow_register's
+    // own row, above); admission REFUSES it here, before any side effect, naming the label + the
+    // missing name(s) — push it (workspace_push) then re-run.
+    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'CHANNEL_UNPUBLISHED', 'NOT_RUNNABLE', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'PARAM_LOCKED', 'PARAM_UNKNOWN', 'PARAM_OUT_OF_RANGE', 'UNKNOWN_AGENT_LABEL', 'UNKNOWN_MODEL', 'AGENT_UNDECLARED', 'LEGACY_REREGISTER', 'INVALID_SEED_SPEC', 'SEED_SOURCE_CONFLICT', 'SEEDREF_DISABLED', 'EGRESS_DENIED', 'CAS_UNAVAILABLE', 'MISSING_BLOBS', 'RUN_ADMISSION_LIMIT', 'CONFINEMENT_UNAVAILABLE', 'MCP_NOT_PROVISIONED', 'SKILL_NOT_PROVISIONED'],
     seeAlso: ['workflow_publish', 'run_status', 'run_result'],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
     fixture: {
