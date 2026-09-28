@@ -556,6 +556,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `workspaceTtlMs` | Workspace GC sweep 間隔（ms）：回收閒置舊 workspace 目錄（REQ-026），**同時決定 auth-table GC（`gcExpired()`）間隔**；`0`/省略 = workspace reclaim 關閉，auth 啟用但未設此鍵時 sweep 每小時跑一次 | `number` / `0`（停用） | 否 | v16 |
 | `rwe.config.json` → `continuationDbPath` | on-completion chaining 續接的 SQLite 檔路徑；引擎會開這個檔，但 36 個工具裡沒有任何一個對應到它（沒有 `chain_*` 工具），設了不影響行為 | `string` / `$workRoot/continuations.db` | 否 | v24 |
 | `rwe.config.json` → `webhookDbPath` | webhook 註冊表（`webhooks`+`webhook_deliveries`）SQLite 檔路徑；**secret 明文儲存**於此檔（HMAC 驗簽需要），存取權限即機密邊界；`webhook_list` 只回 sha256 前綴指紋 | `string` / `$workRoot/webhooks.db` | 否 | v8 |
+| `rwe.config.json` → `publicBaseUrl` | `webhook_create` 回傳的 `url` 用哪個 base URL 組出來（issue #97）——省略時退回這個 process 自己的 bind 位址／request `Host` 表頭，對走 cloudflared/nginx 反向代理進來的遠端呼叫端會是不可達的 `http://localhost:8899` 這類值。優先序：明白設定的 `publicBaseUrl` 一律最優先；沒設但 `auth.enabled:true` 時退回 `auth.issuer`（該值已經是這個部署對外宣告的身分，同一顆 base URL 沒有理由分開設定兩次）；兩者都沒有才退回舊行為。**任何有反向代理/隧道（cloudflared 等）在前面的部署都應該明白設這個鍵**，否則 webhook 送達方永遠拿不到能打的網址——見 §6 外部 ingress 安全一節。**開機時不驗證這個值的形狀**（不是合法 URL 也照樣接受、原樣拼進 `url`）——跟 `auth.issuer` 現有的寬鬆程度一致，但這裡沒有 `enabled` 開關保護，打錯就是每一次 `webhook_create` 都回一個打不通的網址，直到手動修正設定檔為止 | `string` / — | 有反向代理/隧道時建議設定 | #97 |
 | `rwe.config.json` → `casDir` | 內容定址 blob 儲存庫（CAS）目錄；`workspace_push({sha256,contentB64})` 以內容 sha256 為鍵（伺服器 byte-verify）。namespace 一律由呼叫者身份推導，不接受呼叫端指定 | `string` / `$workRoot/cas` | 否 | v10 |
 | `rwe.config.json` → `updateFlagPath` | GitHub tag/release webhook 觸發自我更新的旗標檔路徑（mode 0600，原子寫入）；**必須在所有 `workRoot` 之外**（違反則 `UPDATE_FLAG_INSIDE_WORKROOT` 拒絕啟動）；省略時 `/github/webhook` 對已驗簽事件回 503 | `string` / — | 否 | v11 |
 | `rwe.config.json` → `updateResultPath` | 特權 bash helper 寫入更新結果 JSON（`{tag,status,ts,detail?,configCheck?}`，`configCheck` 是 `'passed'\|'skipped'\|'failed'`）的路徑；同樣必須在 `workRoot` 之外 | `string` / — | 否 | v11 |
@@ -1090,6 +1091,15 @@ frame，頂層 `""`）+ `startedAt`/`endedAt`，`workflowNodes:[{frame,name,pare
   deliveryId 重送（等同 redeliver），沿用舊的 deliveryId 永遠只會拿到那次已經定案的 403。
 - **`auth.enabled:false`（預設）且公開 `0.0.0.0` bind 時，任何能連到該 port 的人都能呼叫這些
   工具**——白名單只是無 auth 時的過渡管控；要多租戶存取管制請啟用 §1b 的 `auth` 區塊。
+- **`webhook_create` 回傳的 `url` 是這個 process 自己的 bind 位址／request `Host` 表頭組出來
+  的**（issue #97）：部署在 cloudflared/nginx 之類反向代理或隧道後面時，這個值對外可能是不可達
+  的 `http://localhost:8899/hooks/<id>` 這類網址——遠端寄送端打這個 URL 只會拿到代理層的
+  404/連線失敗，永遠到不了引擎。修法：在 `rwe.config.json` 明白設定 `publicBaseUrl`（見
+  §1b），設了以後 `webhook_create` 回傳的 `url` 一律以它為 base；沒設但 `auth.enabled:true`
+  時自動退回 `auth.issuer`（同一顆對外身分沒有理由分開宣告兩次）；兩者都沒設才退回舊行為的
+  bind/request 推導值。**只影響 `webhook_create` 的 `url`**——OAuth AS metadata（`.well-known/*`）
+  本來就讀 `auth.issuer`，不受這個鍵影響；dashboard 連結一律是相對路徑（瀏覽器本身打的是使用者
+  已經連上的那個 host），同樣不受影響。
 
 **當機可續跑（crash durability）**：引擎在開機恢復（`hydrateAll`）時把仍為 `running` 的 run
 重新分類為 `interrupted`（可續跑、非終態，開機日誌印 `hydrateAll: … N re-classified

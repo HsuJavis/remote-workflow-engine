@@ -12,6 +12,11 @@ import { LOCKED_KEYS } from './params/contract.js';
 // `run_start` schema's `seed.items.contentB64` description and validateSeedSpec's refusal message
 // (run-manager.ts, via workspace-seed.ts) can never drift apart. Pure (no I/O), no cycle.
 import { SEED_ITEM_HINT } from './workspace-seed.js';
+// issue #97: the delivery-contract facts webhook_create's description states — header names,
+// the signature/HMAC key relationship, and the timestamp skew window — are the SAME exported values
+// server.ts's POST /hooks/:id route and webhook-registry.ts's deliver() enforce, so a drift between
+// what a cold client is told and what the wire actually checks fails a test instead of shipping.
+import { WEBHOOK_HEADERS, REPLAY_WINDOW_MS } from './webhook-registry.js';
 
 // v35 (DES-239, ARCH-152/154, TASK-237, REQ-210): ONE exported constant, stating the double-JSON
 // envelope every tool result arrives in — consumed by BOTH the `initialize` handshake (server.ts)
@@ -854,6 +859,7 @@ export const TOOL_SPECS = [
     name: 'workspace_delete', entity: 'workspace', key: null,
     description: "Delete files from a run's workspace, an asset under a workflow, or (admin) a global asset. " +
       "Asset mode ({workflow or scope:'global', kind, name}) answers {deleted:false} rather than an error when nothing matched the given name — deleting is idempotent, not an existence check. " +
+      "Run mode ({runId, paths}) processes EVERY path in the array independently and is never all-or-nothing: each input path lands in exactly one of the response's deleted/missing/rejected lists, so one bad path (escapes the workspace, absolute, a symlink out, etc.) never causes the other, valid paths in the same call to go undeleted and unreported. " +
       "Does not, and cannot, delete a CAS blob or manifest uploaded via workspace_push — those are content-addressed within the caller's own pool and are retained indefinitely once accepted.",
     // v26 Gate 7.5 round 1 (defect D1): item schema — see ARRAY_ITEMS_RULE below.
     // Issue #92 part B: `kind`/`scope` are closed enums of the actually-supported AssetKind/
@@ -972,7 +978,19 @@ export const TOOL_SPECS = [
   // ---- webhook (3) ----
   {
     name: 'webhook_create', entity: 'webhook', key: null,
-    description: 'Create a webhook trigger and return its id, url and (once only) secret; the caller becomes its owner. Name no workflow — hand the id to workflow_register({triggers:[id]}) to bind it to a version.',
+    // issue #97: the delivery contract used to live NOWHERE a cold MCP client could see it —
+    // not this description, not the authoring guide — so the ONLY moment a caller learns the
+    // signature/timestamp/dedup rules is the moment it receives `secret` and has nothing else to go
+    // on. Every fact below is a literal or constant from webhook-registry.ts's real `deliver()`
+    // (see its own docblock) and server.ts's POST /hooks/:id route — pinned by
+    // webhook-create-description-pins-contract.test.ts so this text can never drift from the code
+    // it describes.
+    description: 'Create a webhook trigger and return its id, url and (once only) secret; the caller becomes its owner. Name no workflow — hand the id to workflow_register({triggers:[id]}) to bind it to a version. ' +
+      'Delivery contract: POST the raw JSON body to url exactly as sent (the signature covers those exact bytes, so never re-serialize before signing) — the parsed body reaches the started workflow\'s script as args.event. Headers: ' +
+      `${WEBHOOK_HEADERS.signature} = "sha256=" + hex HMAC-SHA256 of the RAW body, keyed with the returned secret (the timestamp is NOT part of what is signed); ` +
+      `${WEBHOOK_HEADERS.timestamp} = an ISO-8601 timestamp, refused 401 if it differs from server time by more than ${REPLAY_WINDOW_MS / 1000}s in either direction; ` +
+      `${WEBHOOK_HEADERS.deliveryId} (OPTIONAL — omit it and there is no dedup at all, every POST starts a new run) = a caller-chosen dedup id. Replay semantics (issue #88): a delivery this engine actually ACCEPTED (202) or PERMANENTLY refused (403) replays that SAME outcome for any later delivery carrying the SAME id — retrying a refusal needs a NEW id after fixing the cause, never the same one. A 503/500 is transient and is NOT recorded, so retrying with the SAME id reprocesses for real; a 409 claim-state refusal is also never recorded (retry once the claim is fixed). ` +
+      'Responses: 202 {runId} accepted, a run started. 200 {replayed:true, runId?} this exact deliveryId was already resolved — the body reports the ORIGINAL outcome, not a fresh delivery. 401 bad signature, or a missing/stale timestamp. 403 the webhook is disabled (checked BEFORE the signature, so a disabled hook answers 403 even for an unsigned/badly-signed POST), or a permanent admission refusal (e.g. Bash confinement unavailable for a remote-sourced run) — replays the same 403 for this deliveryId. 404 unknown webhook id. 409 the claimed workflow cannot be fired right now (unclaimed / deregistered / channel unpublished / dropped from the released version\'s triggers) — retryable once fixed. 503 transient: over the run-admission concurrency cap, or a concurrent duplicate of the SAME deliveryId still in flight — retry. 500 an otherwise-uncategorized internal failure.',
     // v24 Gate 7.5 (D-1) made `workflow` optional and dropped the create-time catalog check; v24
     // orchestrator adjudication #8 (H-2, issue #56) removes the argument outright — see the
     // schedule_create row above for the reasoning (REQ-115 clause 1, ADR-026 S-5, ARCH-099). A

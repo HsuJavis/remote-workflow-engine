@@ -372,6 +372,11 @@ const PROBES: Record<string, unknown> = {
   // Issue #73: the model-probe block — a fully-specified value, so the validated+normalized object
   // composeConfig() forwards is `toEqual` to what went in.
   modelProbe: { enabled: false, intervalMs: 3_600_000, timeoutMs: 45_000 },
+  // issue #97: the externally-reachable base URL webhook_create's returned url is built from
+  // (server.ts's resolvePublicBaseUrl) — same wiring-gap class as every case above; an operator's
+  // rwe.config.json publicBaseUrl must reach ServerConfig or the production entrypoint keeps
+  // answering a localhost URL no remote client can reach.
+  publicBaseUrl: 'https://rwe.example.com',
 };
 
 describe('every KNOWN_FILE_CONFIG_KEYS entry is probed or excluded (UT-219, defect D7)', () => {
