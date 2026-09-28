@@ -193,7 +193,7 @@ const CLI_SCRATCH_SUFFIX_BYTES = `/${CLI_SCRATCH_DIR}/d`.length + 6;
 export function cliScratchRefusal(workRoot: string): string | null {
   const bytes = Buffer.byteLength(workRoot) + CLI_SCRATCH_SUFFIX_BYTES + CLI_SOCKET_NAME_BYTES;
   if (bytes <= UNIX_SOCKET_PATH_MAX) return null;
-  return `CLI_SCRATCH_PATH_TOO_LONG: workRoot ${workRoot} is too long for the Claude CLI's per-dispatch scratch (its sandbox sockets would need ${bytes} bytes, the unix-socket limit is ${UNIX_SOCKET_PATH_MAX}) — use a workRoot of at most ${UNIX_SOCKET_PATH_MAX - CLI_SCRATCH_SUFFIX_BYTES - CLI_SOCKET_NAME_BYTES} bytes`;
+  return `CLI_SCRATCH_PATH_TOO_LONG: workRoot ${workRoot} is too long for the Claude CLI's per-dispatch scratch (its sandbox sockets would need ${bytes} bytes, the unix-socket limit is ${UNIX_SOCKET_PATH_MAX}) — use a shorter workRoot path (at most ${UNIX_SOCKET_PATH_MAX - CLI_SCRATCH_SUFFIX_BYTES - CLI_SOCKET_NAME_BYTES} bytes)`;
 }
 
 /** Issue #101: the home-resident toolchain a denied home must re-open for the agent's commands —

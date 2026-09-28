@@ -757,7 +757,7 @@ CLI 一定會把它的 per-uid 暫存目錄（`<暫存根>/claude-<uid>/`，內�
 進去的東西只會落在 sandbox 內的 tmpfs、不會到主機上；自己的 `$TMPDIR`/`$CLAUDE_CODE_TMPDIR` 照常可寫
 （`bash:'readonly'` 時也一樣）。**失敗時拒絕，不會退回共用目錄**：`workRoot` 超過 56 bytes（CLI 的
 sandbox socket 直接放在 `$TMPDIR`，路徑必須塞得進 107 bytes 的 unix socket 上限）會回
-`CLI_SCRATCH_PATH_TOO_LONG`，建不出目錄會回 `CLI_SCRATCH_UNAVAILABLE`，兩者都在任何 session 開始前拒絕。
+`CLI_SCRATCH_PATH_TOO_LONG`（這種 `workRoot` 在圍籠生效、用 sdk gateway 時**開機就會被拒絕**，訊息同一個碼，修法是換較短的 `workRoot` 路徑），建不出目錄會回 `CLI_SCRATCH_UNAVAILABLE`，兩者都在任何 session 開始前拒絕。
 沒有新的設定鍵。**仍未關閉**（CLI/sandbox-runtime 以 `os.homedir()` 寫死，`CLAUDE_CONFIG_DIR` 也移不掉，
 量測過）：引擎 HOME 底下的 `~/.claude/debug/` 與 `~/.npm/_logs/` 只要**存在**，就會以可寫方式 bind 進每個
 sandbox，可以被當成 run 之間的傳遞通道，也讀得到裡面已有的內容（不含憑證；與操作員共用 uid 時，

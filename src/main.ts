@@ -28,7 +28,7 @@ import { createServer } from './server.js';
 import type { ServerConfig } from './server.js';
 import { ClaudeAgentSdkGatewayClient } from './gateway/claude-agent-sdk-client.js';
 import type { ClaudeAgentSdkGatewayConfig } from './gateway/claude-agent-sdk-client.js';
-import { validateHostPathGrants, formatGrantRefusals, toolchainReadCandidates, CLI_SCRATCH_DIR } from './gateway/bash-confinement.js';
+import { validateHostPathGrants, formatGrantRefusals, toolchainReadCandidates, CLI_SCRATCH_DIR, cliScratchRefusal } from './gateway/bash-confinement.js';
 import { probeConfinement, CONFINEMENT_REMEDIATION } from './gateway/confinement-probe.js';
 import type { ConfinementProbeResult } from './gateway/confinement-probe.js';
 import { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
@@ -366,6 +366,14 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     resolvedReadPaths = readResult.resolved;
   }
   const allowReadPaths = [...new Set([...derivedReadPaths, ...resolvedReadPaths])];
+  // Issue #101 (CLI scratch): where the kernel sandbox will be used (sdk gateway + a MEASURED
+  // 'confined' probe), every dispatch gets its CLI scratch under `<workRoot>/cli-tmp/` and the CLI's
+  // sandbox sockets live there — a workRoot too long for a unix socket path would refuse every
+  // dispatch, so refuse the boot instead. `--check-config`'s non-absolute placeholder is skipped.
+  if (gatewayChoice === 'sdk' && deps.confinementProbe?.posture === 'confined' && workRoot?.startsWith('/')) {
+    const scratchRefusal = cliScratchRefusal(workRoot);
+    if (scratchRefusal !== null) throw new Error(`workRoot: refusing to start (ADR-028 fail-closed) — ${scratchRefusal}`);
+  }
 
   const config: ServerConfig = {
     bind: process.env['RWE_BIND'] ?? fileConfig.bind ?? '127.0.0.1',
@@ -597,6 +605,12 @@ async function runCheckConfig(): Promise<void> {
   }
 }
 
+/** Issue #101 (CLI scratch): removes every per-dispatch CLI scratch under `<workRoot>/cli-tmp/`. Only
+ *  safe while nothing is in flight — main() calls it once, before createServer(). */
+export function sweepCliScratch(workRoot: string): void {
+  rmSync(join(workRoot, CLI_SCRATCH_DIR), { recursive: true, force: true });
+}
+
 async function main(): Promise<void> {
   if (process.argv.includes('--check-config')) {
     await runCheckConfig();
@@ -619,7 +633,7 @@ async function main(): Promise<void> {
   const config = await composeConfig(fileConfig, { configPath, confinementProbe, workRootDefault });
   // Issue #101 (CLI scratch): per-dispatch CLI scratch dirs a previous process left behind (crash,
   // kill) — nothing is in flight before createServer(), so the whole parent goes.
-  if (config.workRoot !== undefined) rmSync(join(config.workRoot, CLI_SCRATCH_DIR), { recursive: true, force: true });
+  if (config.workRoot !== undefined) sweepCliScratch(config.workRoot);
   const server = await createServer(config);
   // eslint-disable-next-line no-console
   console.log(

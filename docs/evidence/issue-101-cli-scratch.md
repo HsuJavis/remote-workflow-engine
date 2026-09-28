@@ -77,7 +77,8 @@ For every confined dispatch with a known `workRoot` (`claude-agent-sdk-client.ts
    before `createServer()`, for leftovers of a killed process.
 4. Fail closed: a workRoot too long for the sockets (`CLI_SCRATCH_PATH_TOO_LONG`, limit 56 bytes) or
    a scratch that cannot be created (`CLI_SCRATCH_UNAVAILABLE`) refuses the dispatch before any
-   session. It never falls back to the shared scratch.
+   session. It never falls back to the shared scratch. `composeConfig()` already refuses the too-long case at boot
+   (sdk gateway + measured `confined` probe + an absolute workRoot).
 
 `CLAUDE_CONFIG_DIR` and `HOME` are **not** relocated. `CLAUDE_CONFIG_DIR` buys nothing for
 isolation (debug stays bound). A per-dispatch `HOME` would unbind `~/.claude/debug`, but the CLI then
