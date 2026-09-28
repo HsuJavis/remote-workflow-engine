@@ -111,6 +111,25 @@ describe('run_agent_log harness shape (IT-066, DES-067)', () => {
     }
   });
 
+  // issue #103(e): AGENT_LOG_NOT_FOUND used to echo the RUN's own (here: completed) status —
+  // {status:'completed', error} — which reads as success to a caller that only branches on
+  // status==='failed'. `run_agent_log` must use the same failed-refusal envelope every other tool
+  // does (mcp-facade.ts's `lifecycle()`/`refusalError`, issue #98 item 9); the run's real status
+  // still travels, folded into `error.detail.runStatus`.
+  it('AGENT_LOG_NOT_FOUND on a COMPLETED run reports status:"failed", not the run\'s own completed status', async () => {
+    const sub = await runScriptVia(callTool, 'return 1;') as { runId?: string };
+    const runId = sub?.runId!;
+    await pollDone(runId);
+    const runStatus = await callTool('run_status', { runId }) as { status?: string };
+    expect(runStatus.status).toBe('completed');
+
+    const log = await callTool('run_agent_log', { runId, label: 'never-dispatched-103e' }) as
+      MCPEnvelope & { status?: string };
+    expect(log.error?.code).toBe('AGENT_LOG_NOT_FOUND');
+    expect(log.status).toBe('failed');
+    expect((log.error as { detail?: { runStatus?: string } } | undefined)?.detail?.runStatus).toBe('completed');
+  });
+
   it('response includes hasMore:boolean', async () => {
     const { runId, label } = await runAndGetAgentId(`return await agent('hi', {});`);
     const log = await callTool('run_agent_log', { runId, label }) as AgentLogResult;

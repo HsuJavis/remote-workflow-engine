@@ -986,7 +986,10 @@ export class McpFacade {
       ? view.agents.find((ag) => ag.agentId === a.agentId)
       : view.agents.find((ag) => ag.label === a.label) ?? view.agents.find((ag) => ag.agentId === a.label);
     if (!agent) {
-      return { runId: a.runId, status: view.status, error: { code: 'AGENT_LOG_NOT_FOUND', message: `Agent not found: ${requested}`, field: a.agentId !== undefined ? 'agentId' : 'label' }, harness: null, events: [], hasMore: false };
+      // issue #103(e): same failed-refusal envelope as workspace_pull's fix — never the run's own
+      // (here possibly 'completed') status beside an error; the real status travels in
+      // `error.detail.runStatus`.
+      return { runId: a.runId, status: 'failed', error: { code: 'AGENT_LOG_NOT_FOUND', message: `Agent not found: ${requested}`, field: a.agentId !== undefined ? 'agentId' : 'label', detail: { runStatus: view.status } }, harness: null, events: [], hasMore: false };
     }
     const agentId = agent.agentId;
     const owner = stored.principal ?? 'local';
@@ -1082,8 +1085,13 @@ export class McpFacade {
       ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev) }, { actor, action: 'workspace_pull' as AuditAction, runId: a.runId, owner, path: a.path }, doRead)
       : await doRead();
     if ('error' in r) {
+      // issue #103(e): the standard failed-refusal envelope every other tool uses (`status:
+      // 'failed'`, mcp-facade.ts's `lifecycle()`/`refusalError`, issue #98 item 9) — never the
+      // run's own (here possibly 'completed') status beside an error, which reads as success to a
+      // caller that only branches on `status === 'failed'`. The run's actual status still travels,
+      // in `error.detail.runStatus`.
       const code = PULL_REASON_TO_CODE[r.error] ?? 'NOT_FOUND';
-      return { runId: a.runId, status: stored.status, error: { code, message: `workspace_pull denied: ${r.error} (${a.path})` } };
+      return { runId: a.runId, status: 'failed', error: { code, message: `workspace_pull denied: ${r.error} (${a.path})`, detail: { runStatus: stored.status } } };
     }
     return { runId: a.runId, status: stored.status, result: r };
   }
