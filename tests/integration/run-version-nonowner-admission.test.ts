@@ -267,6 +267,59 @@ describe('workflow_describe/workflow_list/workflow_source (owner follow-up): non
   });
 });
 
+// Independent verification follow-up (2026-09-28): workflow_source had NO `canRunResolved` gate at
+// all — a non-owner naming an explicit NON-release version by id got back the MASKED projection
+// (scriptWithheld:true) but description/phases/params/channels/versions all came from THAT real
+// row, confirming the version exists even though workflow_describe/run_start already refuse the
+// identical request VERSION_NOT_FOUND. Gated the SAME way, right after `resolveDetail` succeeds and
+// before any of `meta`/`params`/the owner-branch decision is built.
+describe('workflow_source (independent-verification follow-up): gated the SAME as workflow_describe/run_start', () => {
+  it('[LOAD-BEARING] BOB naming v2 (== beta, not release) by explicit version => VERSION_NOT_FOUND, same envelope shape as workflow_describe, never the masked metadata', async () => {
+    const r = await facade.workflowSource({ name: NAME, version: v2 }, BOB) as { status?: string; code?: string; error?: { code?: string; message?: string }; result?: unknown };
+    expect(r.status).toBe('failed');
+    expect(r.code).toBe('VERSION_NOT_FOUND');
+    expect(r.error?.message).not.toContain(ALICE_ID);
+    expect(r.result).toBeUndefined();
+
+    const describeEquivalent = await facade.workflowDescribe({ name: NAME, version: v2 }, BOB) as { code?: string };
+    expect(describeEquivalent.code).toBe(r.code);
+  });
+
+  it('BOB naming v3 (never published) => VERSION_NOT_FOUND, same code as a genuinely unknown version', async () => {
+    const r = await facade.workflowSource({ name: NAME, version: v3 }, BOB) as { status?: string; code?: string };
+    expect(r.status).toBe('failed');
+    expect(r.code).toBe('VERSION_NOT_FOUND');
+
+    const unknown = await facade.workflowSource({ name: NAME, version: 'v999' }, BOB) as { status?: string; code?: string };
+    expect(unknown.code).toBe('VERSION_NOT_FOUND');
+  });
+
+  it('BOB naming v1 (== release) explicitly still works (masked)', async () => {
+    const r = await facade.workflowSource({ name: NAME, version: v1 }, BOB) as { status?: string; result?: { scriptWithheld?: boolean } };
+    expect(r.status).toBe('completed');
+    expect(r.result?.scriptWithheld).toBe(true);
+  });
+
+  it('ALICE (owner) and ADMIN: still fetch v2/v3 by explicit version — the gate never fires for them', async () => {
+    for (const principal of [ALICE, ADMIN]) {
+      const rV2 = await facade.workflowSource({ name: NAME, version: v2 }, principal);
+      expect((rV2 as { status?: string }).status).toBe('completed');
+      const rV3 = await facade.workflowSource({ name: NAME, version: v3 }, principal);
+      expect((rV3 as { status?: string }).status).toBe('completed');
+    }
+  });
+
+  it('owner-less legacy row: unrestricted for a non-owner, same as today (canMutate\'s own `!owner` rule — matches run_start/describe)', async () => {
+    const legacyName = 'workflow-source-legacy-unowned-wf';
+    const { version: legacyV1 } = await registerPublished(catalog, legacyName, 'return "L1";', { principal: null, channel: 'release' });
+    const { version: legacyV2 } = await registerPublished(catalog, legacyName, 'return "L2";', { principal: null, channel: 'beta' });
+    expect(legacyV1).not.toBe(legacyV2);
+    const r = await facade.workflowSource({ name: legacyName, version: legacyV2 }, BOB) as { status?: string; result?: { scriptWithheld?: boolean } };
+    expect(r.status).toBe('completed');
+    expect(r.result?.scriptWithheld).toBe(true);
+  });
+});
+
 describe('nested workflow() (#100 Q4): always resolves the target release, never a selector, regardless of principal', () => {
   it('[LOAD-BEARING] a newer, unpublished child version is never reached by a nested workflow() call across principals', async () => {
     const child = 'nested-child-it100';

@@ -695,6 +695,19 @@ export class McpFacade {
       const e = toErrEnvelope(err);
       return { runId: '', status: 'failed', code: e.code, error: e };
     }
+    // Independent-verification follow-up (2026-09-28, issue #100 Q5): the SAME `canRunResolved`
+    // gate `workflowDescribe`/`RunManager.start()` already apply — placed FIRST, before `meta`/
+    // `params` are even parsed off the script, so a non-owner naming an explicit non-release
+    // version by id learns nothing beyond VERSION_NOT_FOUND. Before this gate, the masked branch
+    // below still built `description`/`phases`/`params` from THAT real row — `scriptWithheld:true`
+    // hid the script bytes but not the fact the version existed, which `workflow_describe` already
+    // refused for the identical request. `workflow_source` has no `channel` selector at all
+    // (`requestedChannel` is always `undefined`), so a bare/default call is unaffected — it always
+    // resolves the release version already, same as before.
+    if (!canRunResolved(full.owner, actorFor(principal, a, 'bypass'), full.version, full.channels, undefined)) {
+      const label = a.version ?? 'release';
+      return { runId: '', status: 'failed', ...catalogResolveFailure(codedError('VERSION_NOT_FOUND', `VERSION_NOT_FOUND: ${label} (workflow '${a.name}')`), a.name) };
+    }
     const meta = parseMeta(full.script);
     const params = readParams(full.params, this.ceilings);
     const isOwnerOrAdmin = principal.kind === 'admin' || principal.kind === 'auth-disabled'
