@@ -206,24 +206,70 @@ describe('computeNextFire never-fires detection (issue #92 item 1c)', () => {
 
 // issue #92 follow-up: `hasPossibleDate` only rules out a dom/month combination that can NEVER
 // occur (Feb 31). It does not — cannot, cheaply — rule out a combination that occurs so rarely that
-// ANDing in `dow` finds zero matches within the 4-year horizon: `0 0 29 2 1` (Feb 29 that also falls
-// on a Monday) passes `hasPossibleDate` (Feb 29 exists) but has no match in most 4-year windows
-// (leap years are 4 years apart; Feb 29 lands on a Monday in only 1 of 7 possible alignments), so
-// the OLD single-level minute scan still ran its full ~2.1M iterations before throwing — an
-// event-loop stall from ANY caller's cron, not just a malformed one. The two-level (hour-then-
-// minute) restructuring bounds this to ~35k outer iterations regardless of which field combination
-// fails to ever match.
-describe('computeNextFire worst-case bound: dow rules out an otherwise-possible date (issue #92 follow-up)', () => {
-  it('0 0 29 2 1 (Feb 29 AND Monday) throws INVALID-shaped fast, in well under 2s', () => {
+// ANDing dom and dow together finds zero matches within the 4-year horizon. The two-level (hour-
+// then-minute) restructuring bounds this to ~35k outer iterations regardless of which field
+// combination fails to ever match.
+//
+// issue #99: `0 0 29 2 1` — this suite's ORIGINAL worst-case example (Feb 29 ANDed with Monday) —
+// is no longer a worst case at all: day-of-month (`29`) and day-of-week (`1`) are both "restricted"
+// (neither starts with `*`), so standard Vixie/POSIX semantics now OR them, and day-of-week alone
+// resolves it fast (see the OR-semantics describe block below). The AND-mode worst case survives
+// only via a day-of-week field that still starts with `*` — counted "unrestricted" by the Vixie
+// rule even though a step on it narrows the value set to one weekday, e.g. day-of-month `29`,
+// month `2`, day-of-week "star step 7" (`*` with a step of 7 over 0-6 is the single value `{0}`,
+// i.e. Sunday only, syntactically starred so it stays ANDed).
+describe('computeNextFire worst-case bound: an AND-mode dow narrows a rare dom to nothing in horizon (issue #92 follow-up, updated for issue #99)', () => {
+  it('0 0 29 2 */7 (Feb 29 AND the one weekday a star-prefixed step selects) throws INVALID-shaped fast, in well under 2s', () => {
     const start = Date.now();
-    expect(() => computeNextFire('0 0 29 2 1', undefined, CLOCK.now())).toThrow();
+    expect(() => computeNextFire('0 0 29 2 */7', undefined, CLOCK.now())).toThrow(/search horizon/);
     expect(Date.now() - start).toBeLessThan(2000);
   });
 
   it('the same cron throws fast with a tz set too', () => {
     const start = Date.now();
-    expect(() => computeNextFire('0 0 29 2 1', 'Asia/Taipei', CLOCK.now())).toThrow();
+    expect(() => computeNextFire('0 0 29 2 */7', 'Asia/Taipei', CLOCK.now())).toThrow(/search horizon/);
     expect(Date.now() - start).toBeLessThan(2000);
+  });
+});
+
+// issue #99: standard Vixie/POSIX cron day-matching semantics. A field is "restricted" iff its raw
+// text does NOT start with `*` (so `*/2` counts as UNRESTRICTED even though it filters values, and
+// `0-6` counts as RESTRICTED even though it covers every day). When BOTH day-of-month and
+// day-of-week are restricted, a date matches if EITHER matches (OR); otherwise the AND behaviour
+// this engine always had applies (trivially, since an unrestricted field's set already covers every
+// real value).
+describe('computeNextFire dom/dow OR semantics (issue #99)', () => {
+  it("'0 9 1 * 1' fires next Monday or the 1st, whichever is sooner — not their AND (2020-06-01 anchor is itself a Monday, 09:00 already past; next Monday 2020-06-08 beats the next 1st, 2020-07-01)", () => {
+    const next = computeNextFire('0 9 1 * 1', undefined, CLOCK.now());
+    expect(new Date(next).toISOString()).toBe('2020-06-08T09:00:00.000Z');
+  });
+
+  it("'0 0 29 2 1' is now valid (every Monday in Feb OR Feb 29) — resolves to the next Monday in February, not a throw", () => {
+    const next = computeNextFire('0 0 29 2 1', undefined, CLOCK.now());
+    expect(new Date(next).toISOString()).toBe('2021-02-01T00:00:00.000Z'); // 2021-02-01 is a Monday
+  });
+
+  it("'0 0 31 2 *' is still INVALID_CRON — day-of-week is unrestricted ('*'), so AND applies and Feb 31 never occurs", () => {
+    expect(() => computeNextFire('0 0 31 2 *', undefined, CLOCK.now())).toThrow();
+  });
+
+  it("'0 9 * * 1' (day-of-month unrestricted) is unchanged — fires every Monday, matching the pre-#99 behaviour", () => {
+    const next = computeNextFire('0 9 * * 1', undefined, CLOCK.now());
+    expect(new Date(next).toISOString()).toBe('2020-06-08T09:00:00.000Z');
+  });
+
+  it("a day-of-week step on a star ('*/2') still counts as UNRESTRICTED per the Vixie rule — '0 9 1 * */2' ANDs (dom=1 AND dow in {0,2,4,6}), skipping 2020-07-01 (Wed) for 2020-08-01 (Sat)", () => {
+    const next = computeNextFire('0 9 1 * */2', undefined, CLOCK.now());
+    expect(new Date(next).toISOString()).toBe('2020-08-01T09:00:00.000Z');
+  });
+
+  it("day-of-week '0-6' (every day, but RESTRICTED — doesn't start with '*') ORs with an impossible day-of-month 31 in Feb, so every February midnight matches", () => {
+    const next = computeNextFire('0 0 31 2 0-6', undefined, CLOCK.now());
+    expect(new Date(next).toISOString()).toBe('2021-02-01T00:00:00.000Z');
+  });
+
+  it("day-of-week '*/2' (UNRESTRICTED per the star rule) stays AND with day-of-month 31 in Feb — still impossible, still INVALID_CRON", () => {
+    expect(() => computeNextFire('0 0 31 2 */2', undefined, CLOCK.now())).toThrow();
   });
 });
 
@@ -234,6 +280,14 @@ describe('computeNextFire worst-case bound: dow rules out an otherwise-possible 
 // this fix got wrong: scanning the 60 minutes STARTING at the hour checkpoint, rather than the 60
 // minutes of the checkpoint's own local hour, silently skips part of the true window) and a DST zone
 // (America/New_York), including anchors straddling both 2024 US DST transitions.
+//
+// issue #99: `0 9 1 * 1`, `0 0 1,15 * 1-5`, `0 9 1 * */2` added — cheap (resolve within days-to-
+// weeks of every anchor, unlike a bare Feb-29 cron) but each exercises a different corner of the
+// dom/dow rule: the first two are OR-mode (both fields restricted), the third stays AND-mode (dow
+// starts with `*`). `dayMatches` (scheduler-engine.ts) is the SAME predicate both
+// `computeNextFire` and `computeNextFireBruteForce` call, so this only proves the two-level search
+// didn't diverge from the brute force while applying it — see the dedicated OR-semantics describe
+// block above for the actual rule assertions.
 describe('computeNextFire matches the brute-force reference exactly (issue #92 follow-up property check)', () => {
   const CRONS = [
     '* * * * *',
@@ -245,6 +299,9 @@ describe('computeNextFire matches the brute-force reference exactly (issue #92 f
     '0 12 * * 1-5',
     '15,45 6,18 * * *',
     '0 0 * * 0',
+    '0 9 1 * 1',
+    '0 0 1,15 * 1-5',
+    '0 9 1 * */2',
   ];
   const TIMEZONES: (string | undefined)[] = [undefined, 'America/New_York', 'Asia/Kolkata'];
   const ANCHORS = [
@@ -264,4 +321,16 @@ describe('computeNextFire matches the brute-force reference exactly (issue #92 f
       }
     }
   }
+
+  // issue #99: `0 0 29 2 1` (Feb 29 OR Monday) is deliberately NOT in the CRONS matrix above — its
+  // brute force runs up to ~370k minute-steps per anchor (~1s+ each), which across 3 tz x 3 anchors
+  // risks the suite's default timeout. One UTC-only cross-check is enough to prove the two-level
+  // search and the brute force agree on the OR rule for this cron; the OR rule itself is already
+  // asserted (fast, non-brute-force) in the describe block above.
+  it('"0 0 29 2 1" (OR mode) matches the brute-force reference in UTC', () => {
+    const after = Date.parse('2020-06-01T12:00:00.000Z');
+    const expected = computeNextFireBruteForce('0 0 29 2 1', undefined, after);
+    const actual = computeNextFire('0 0 29 2 1', undefined, after);
+    expect(actual).toBe(expected);
+  });
 });
