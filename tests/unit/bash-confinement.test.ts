@@ -4,89 +4,79 @@
 // Written test-first (Gate 5, RED): src/gateway/bash-confinement.ts does not exist yet.
 import { describe, it, expect } from 'vitest';
 import { join } from 'node:path';
+import * as mod from '../../src/gateway/bash-confinement.js';
 import {
   buildBashConfinement,
   validateHostPathGrants,
   formatGrantRefusals,
-  DENY_READ_MODE,
   MASK_PROVIDER_ENV,
-  ENGINE_STATE_DENY,
+  toolchainReadCandidates,
 } from '../../src/gateway/bash-confinement.js';
 
 const WORKROOT = '/var/lib/rwe-data';
 const ROOT = '/var/lib/rwe-data/workflows/wf/runs/run-1';
 const PROTECTED = ['/home/op/rwe.config.json', join(WORKROOT, 'auth-tokens.db')];
+const HOME = '/home/op';
+const TOOLCHAIN = ['/home/op/.local/node'];
 
 describe('UT-309 buildBashConfinement() — the whole posture as one pure function (DES-252)', () => {
-  it('returns every fixed field of the posture for a known root/workRoot, enumerated mode', () => {
-    const s = buildBashConfinement({ root: ROOT, grantedHostPaths: [], protectedFiles: PROTECTED, workRoot: WORKROOT, denyReadMode: 'enumerated' });
+  it('returns every fixed field of the posture for a known root/workRoot/home (issue #101 deny-by-default reads)', () => {
+    const s = buildBashConfinement({ root: ROOT, grantedHostPaths: [], protectedFiles: PROTECTED, workRoot: WORKROOT, homeDir: HOME, allowReadPaths: TOOLCHAIN });
     expect(s.enabled).toBe(true);
     expect(s.failIfUnavailable).toBe(true);
     expect(s.autoAllowBashIfSandboxed).toBe(true);
     expect(s.allowUnsandboxedCommands).toBe(false);
     expect(s.filesystem?.allowWrite).toEqual([ROOT]);
-    expect(s.filesystem?.allowRead).toEqual([ROOT]);
+    // Issue #101: the workspace and the toolchain are re-opened INSIDE the denied home/workRoot.
+    expect(s.filesystem?.allowRead).toEqual([ROOT, ...TOOLCHAIN]);
     // Every project-configuration path the CLI loads from the workspace (bash-confinement.ts
     // PROJECT_CONFIG_PATHS + ENGINE_OWNED_CONFIG_PATHS), spelled out here so a list change is seen.
     expect(s.filesystem?.denyWrite).toEqual(['.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/commands', '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/launch.json', '.claude/skills', '.mcp.json'].map((rel) => join(ROOT, rel)));
-    // v37 Gate-8 send-back note (finding A3): this assertion tests buildBashConfinement()'s OWN
-    // join/concat MECHANICS (does it correctly fold ENGINE_STATE_DENY + protectedFiles into
-    // denyRead?) — deriving the expectation from the same constant is the right shape for THAT
-    // question. It is deliberately NOT the completeness guard for ENGINE_STATE_DENY itself (a
-    // constant compared to a copy of itself can never catch an omission there); INV-V37-4's real
-    // guard is `sandbox-config-wiring.test.ts`'s "an operator-overridden casDir/selfUpdateDbPath
-    // reaches protectedFiles as the resolved value" case, which fails against the COMPOSED CONFIG
-    // if a resolved override silently drops out.
-    expect(s.filesystem?.denyRead).toEqual([...ENGINE_STATE_DENY.map((p: string) => join(WORKROOT, p)), ...PROTECTED]);
+    // Issue #101: the WHOLE home and the WHOLE workRoot are denied (every other run's workspace,
+    // ~/.claude credentials, ~/.config, ...), then protectedFiles on top.
+    expect(s.filesystem?.denyRead).toEqual([HOME, WORKROOT, ...PROTECTED]);
     expect(s.credentials?.files).toEqual(PROTECTED.map((path) => ({ path, mode: 'deny' })));
     expect(s.network).toBeUndefined();
     expect(s.excludedCommands).toBeUndefined();
   });
 
-  it('root === undefined and root === "" take the SAME branch: allowWrite/allowRead: [] — never an absent sandbox', () => {
-    const a = buildBashConfinement({ root: undefined, grantedHostPaths: [], protectedFiles: [], workRoot: WORKROOT, denyReadMode: 'enumerated' });
-    const b = buildBashConfinement({ root: '', grantedHostPaths: [], protectedFiles: [], workRoot: WORKROOT, denyReadMode: 'enumerated' });
+  it('root === undefined and root === "" take the SAME branch: allowWrite: [] and allowRead is only the toolchain — never an absent sandbox', () => {
+    const a = buildBashConfinement({ root: undefined, grantedHostPaths: [], protectedFiles: [], workRoot: WORKROOT, homeDir: HOME, allowReadPaths: TOOLCHAIN });
+    const b = buildBashConfinement({ root: '', grantedHostPaths: [], protectedFiles: [], workRoot: WORKROOT, homeDir: HOME, allowReadPaths: TOOLCHAIN });
     for (const s of [a, b]) {
       expect(s.enabled).toBe(true);
       expect(s.filesystem?.allowWrite).toEqual([]);
-      expect(s.filesystem?.allowRead).toEqual([]);
+      expect(s.filesystem?.allowRead).toEqual(TOOLCHAIN);
       expect(s.filesystem?.denyWrite).toEqual([]);
+      expect(s.filesystem?.denyRead).toEqual([HOME, WORKROOT]);
     }
   });
 
-  it('workRoot === undefined never leaks a literal "undefined" into denyRead, and denyRead is just protectedFiles', () => {
-    const s = buildBashConfinement({ root: ROOT, grantedHostPaths: [], protectedFiles: PROTECTED, workRoot: undefined, denyReadMode: 'enumerated' });
+  it('workRoot/homeDir undefined never leak a literal "undefined" into denyRead, and denyRead is just protectedFiles', () => {
+    const s = buildBashConfinement({ root: ROOT, grantedHostPaths: [], protectedFiles: PROTECTED, workRoot: undefined, homeDir: undefined, allowReadPaths: [] });
     expect(s.filesystem?.denyRead).toEqual(PROTECTED);
     expect(JSON.stringify(s)).not.toContain('undefined');
   });
 
-  it('grants appear verbatim in BOTH allowWrite and allowRead', () => {
+  it('grants appear verbatim in BOTH allowWrite and allowRead; toolchain paths are read-only (allowRead only)', () => {
     const grant = '/srv/shared-cache';
-    const s = buildBashConfinement({ root: ROOT, grantedHostPaths: [grant], protectedFiles: [], workRoot: WORKROOT, denyReadMode: 'enumerated' });
+    const s = buildBashConfinement({ root: ROOT, grantedHostPaths: [grant], protectedFiles: [], workRoot: WORKROOT, homeDir: HOME, allowReadPaths: TOOLCHAIN });
     expect(s.filesystem?.allowWrite).toEqual([ROOT, grant]);
-    expect(s.filesystem?.allowRead).toEqual([ROOT, grant]);
+    expect(s.filesystem?.allowRead).toEqual([ROOT, grant, ...TOOLCHAIN]);
   });
 
-  it('"workroot" mode: denyRead is [workRoot, ...protectedFiles] and allowRead is STILL emitted (load-bearing under this mode)', () => {
-    const grant = '/srv/shared-cache';
-    const s = buildBashConfinement({ root: ROOT, grantedHostPaths: [grant], protectedFiles: PROTECTED, workRoot: WORKROOT, denyReadMode: 'workroot' });
-    expect(s.filesystem?.denyRead).toEqual([WORKROOT, ...PROTECTED]);
-    expect(s.filesystem?.allowRead).toEqual([ROOT, grant]);
+  it('allowManagedReadPathsOnly is NEVER set', () => {
+    const s = buildBashConfinement({ root: ROOT, grantedHostPaths: [], protectedFiles: [], workRoot: WORKROOT, homeDir: HOME, allowReadPaths: [] });
+    expect(s.filesystem?.allowManagedReadPathsOnly).toBeUndefined();
   });
 
-  it('allowManagedReadPathsOnly is NEVER set, in either mode', () => {
-    const enumerated = buildBashConfinement({ root: ROOT, grantedHostPaths: [], protectedFiles: [], workRoot: WORKROOT, denyReadMode: 'enumerated' });
-    const workroot = buildBashConfinement({ root: ROOT, grantedHostPaths: [], protectedFiles: [], workRoot: WORKROOT, denyReadMode: 'workroot' });
-    expect(enumerated.filesystem?.allowManagedReadPathsOnly).toBeUndefined();
-    expect(workroot.filesystem?.allowManagedReadPathsOnly).toBeUndefined();
-  });
-
-  it('DENY_READ_MODE is the fixed module constant "enumerated" until a positive S7 flips it', () => {
-    expect(DENY_READ_MODE).toBe('enumerated');
+  it('issue #101: the retired enumerated posture is gone (no DENY_READ_MODE / ENGINE_STATE_DENY exports)', () => {
+    expect((mod as Record<string, unknown>)['DENY_READ_MODE']).toBeUndefined();
+    expect((mod as Record<string, unknown>)['ENGINE_STATE_DENY']).toBeUndefined();
   });
 
   it('S8: emits credentials.envVars for the three provider-auth vars IFF MASK_PROVIDER_ENV is true (written for both arms)', () => {
-    const s = buildBashConfinement({ root: ROOT, grantedHostPaths: [], protectedFiles: [], workRoot: undefined, denyReadMode: 'enumerated' });
+    const s = buildBashConfinement({ root: ROOT, grantedHostPaths: [], protectedFiles: [], workRoot: undefined, homeDir: undefined, allowReadPaths: [] });
     if (MASK_PROVIDER_ENV) {
       expect(s.credentials?.envVars).toEqual(
         ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'OPENROUTER_API_KEY'].map((name) => ({ name, mode: 'mask' })),
@@ -94,6 +84,27 @@ describe('UT-309 buildBashConfinement() — the whole posture as one pure functi
     } else {
       expect(s.credentials?.envVars).toBeUndefined();
     }
+  });
+});
+
+describe('issue #101 toolchainReadCandidates() — the home-resident toolchain a denied home must re-open', () => {
+  it('keeps PATH entries under home; a node-style <prefix>/bin execPath re-opens the whole prefix (npm/npx live in its lib/)', () => {
+    const path = `/home/op/.venv/bin:/home/op/.local/node/bin:/usr/local/bin:/usr/bin:/bin`;
+    expect(toolchainReadCandidates(path, '/home/op', '/home/op/.local/node/bin/node')).toEqual([
+      '/home/op/.venv/bin', '/home/op/.local/node/bin', '/home/op/.local/node',
+    ]);
+  });
+
+  it('never yields home itself, ~/.local, relative entries, or anything outside home', () => {
+    const path = `/home/op:relative/bin::/home/op/.local/bin:/opt/x/bin`;
+    expect(toolchainReadCandidates(path, '/home/op', '/home/op/.local/bin/node')).toEqual(['/home/op/.local/bin']);
+    expect(toolchainReadCandidates(path, '/home/op', '/home/op/bin/node')).toEqual(['/home/op/.local/bin']);
+    expect(toolchainReadCandidates(path, '/home/op', '/usr/bin/node')).toEqual(['/home/op/.local/bin']);
+  });
+
+  it('no home or no PATH ⇒ nothing', () => {
+    expect(toolchainReadCandidates(undefined, '/home/op', '/home/op/.local/node/bin/node')).toEqual(['/home/op/.local/node']);
+    expect(toolchainReadCandidates('/home/op/.local/node/bin', undefined, '/home/op/.local/node/bin/node')).toEqual([]);
   });
 });
 

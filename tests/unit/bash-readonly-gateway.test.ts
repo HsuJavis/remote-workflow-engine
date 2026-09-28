@@ -31,8 +31,8 @@ const GRANT = '/srv/shared-cache';
 
 describe('#78(c) buildBashConfinement — readonly posture', () => {
   it("bashMode:'readonly' ⇒ allowWrite is [] and denyWrite is EXACTLY the root and every grant; reads are unchanged", () => {
-    const rw = buildBashConfinement({ root: ROOT, grantedHostPaths: [GRANT], protectedFiles: [], workRoot: WORKROOT, denyReadMode: 'enumerated' });
-    const ro = buildBashConfinement({ root: ROOT, grantedHostPaths: [GRANT], protectedFiles: [], workRoot: WORKROOT, denyReadMode: 'enumerated', bashMode: 'readonly' });
+    const rw = buildBashConfinement({ root: ROOT, grantedHostPaths: [GRANT], protectedFiles: [], workRoot: WORKROOT, homeDir: undefined, allowReadPaths: [] });
+    const ro = buildBashConfinement({ root: ROOT, grantedHostPaths: [GRANT], protectedFiles: [], workRoot: WORKROOT, homeDir: undefined, allowReadPaths: [], bashMode: 'readonly' });
     expect(ro.enabled).toBe(true);
     expect(ro.failIfUnavailable).toBe(true);
     expect(ro.allowUnsandboxedCommands).toBe(false);
@@ -48,7 +48,7 @@ describe('#78(c) buildBashConfinement — readonly posture', () => {
   });
 
   it('no bashMode ⇒ byte-identical to before (the writable posture is untouched)', () => {
-    const a = buildBashConfinement({ root: ROOT, grantedHostPaths: [GRANT], protectedFiles: [], workRoot: WORKROOT, denyReadMode: 'enumerated' });
+    const a = buildBashConfinement({ root: ROOT, grantedHostPaths: [GRANT], protectedFiles: [], workRoot: WORKROOT, homeDir: undefined, allowReadPaths: [] });
     expect(a.filesystem?.allowWrite).toEqual([ROOT, GRANT]);
     expect(a.filesystem?.denyWrite).toEqual(['.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/commands', '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/launch.json', '.claude/skills', '.mcp.json'].map((rel) => join(ROOT, rel)));
   });
@@ -94,7 +94,7 @@ describe('#78(c) SDK gateway — readonly Bash is enforced or refused, never dow
       expect(result.ok).toBe(true);
       const [[call]] = queryMock.mock.calls as [[{ options: { sandbox?: unknown; tools?: string[] } }]];
       expect(call.options.sandbox).toEqual(
-        buildBashConfinement({ root: realRoot, grantedHostPaths: [GRANT], protectedFiles: [], workRoot: realWorkRoot, denyReadMode: 'enumerated', bashMode: 'readonly' }),
+        buildBashConfinement({ root: realRoot, grantedHostPaths: [GRANT], protectedFiles: [], workRoot: realWorkRoot, homeDir: undefined, allowReadPaths: [], bashMode: 'readonly' }),
       );
       expect((call.options.sandbox as { filesystem: { allowWrite: string[] } }).filesystem.allowWrite).toEqual([]);
       expect(call.options.tools).toEqual(['Bash', 'Read']);
