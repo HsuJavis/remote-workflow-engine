@@ -445,11 +445,28 @@ function hostPathGrantsBody(posture: 'confined' | 'unconfined' | undefined): str
   );
 }
 
+// issue #103(a): MCP_NOT_PROVISIONED/SKILL_NOT_PROVISIONED are the two `see:
+// 'workflow_authoring_guide'` codes that are NOT a registration refusal — registration only WARNS
+// about them (result.warnings), the refusal is admission-time (run_start / a firing / a nested
+// workflow()). The section heading below ("refused with this code") is accurate for every OTHER
+// row, so these two are carved out into their own, correctly-labeled note instead of silently
+// contradicting the heading they'd otherwise sit under.
+const ADMISSION_ONLY_CODES = new Set(['MCP_NOT_PROVISIONED', 'SKILL_NOT_PROVISIONED']);
+
 /** The `see: 'workflow_authoring_guide'` slice of ERROR_CATALOG, rendered from the SAME table
  *  server.ts's error envelope reads (`toErrEnvelope`) — never a second hand-typed list. */
 function authoringErrorRows(): string {
   return Object.entries(ERROR_CATALOG)
-    .filter(([, v]) => v.see === 'workflow_authoring_guide')
+    .filter(([code, v]) => v.see === 'workflow_authoring_guide' && !ADMISSION_ONLY_CODES.has(code))
+    .map(([code, v]) => `- \`${code}\` — ${v.hint}`)
+    .join('\n');
+}
+
+/** issue #103(a): the admission-only carve-out this section's own heading can't cover — see
+ *  ADMISSION_ONLY_CODES's comment. */
+function admissionOnlyErrorRows(): string {
+  return Object.entries(ERROR_CATALOG)
+    .filter(([code]) => ADMISSION_ONLY_CODES.has(code))
     .map(([code, v]) => `- \`${code}\` — ${v.hint}`)
     .join('\n');
 }
@@ -1034,6 +1051,18 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
     section(
       'Authoring rules this engine enforces (refused with this code)',
       authoringErrorRows(),
+    ),
+  );
+
+  parts.push(
+    section(
+      'Provisioning: warned at registration, refused at admission',
+      'Registering a script whose agent() declares an mcp/skill name with no `workspace_push`-' +
+        'provisioned asset SUCCEEDS anyway (the version registers, with a `result.warnings` entry ' +
+        "naming the label and the missing name(s)) — it is `run_start` (and a schedule/webhook " +
+        'firing, and a nested `workflow()` call) that REFUSES, before any side effect, once the ' +
+        'name is still unprovisioned at admission time:\n\n' +
+        admissionOnlyErrorRows(),
     ),
   );
 

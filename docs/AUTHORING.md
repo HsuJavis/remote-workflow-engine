@@ -233,8 +233,6 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 - `NOT_TRIGGER_OWNER` — the caller does not own (did not create) this trigger
 - `PARSE_ERROR` — the script body failed to parse as TypeScript
 - `UNKNOWN_MODEL` — the model is not a valid <provider>/<model-id> ref, or (for openrouter/ollama) was not found in the catalog listing — see models_list
-- `MCP_NOT_PROVISIONED` — an agent() call declares an mcp name with no workspace_push-provisioned asset (workflow-scoped or global) — admission refuses before any side effect; registration only warns
-- `SKILL_NOT_PROVISIONED` — an agent() call declares a skill name with no workspace_push-provisioned asset (workflow-scoped or global) — admission refuses before any side effect; registration only warns
 - `SCRIPT_INVALID` — the script violates a sandbox-enforced structural rule
 - `SCAN_VIOLATION` — an agent() call is not scannable — label/options must be literal (ADR-029)
 - `MERMAID_INVALID` — the diagram does not parse under checkMermaid's grammar
@@ -264,6 +262,13 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 - `BUDGET_EXCEEDED` — the run's token budget is spent; the engine refused to dispatch this agent() call
 - `RESERVED_PREFIX` — the name or a path segment starts with the engine-reserved 'rwe-' prefix (ARCH-093)
 - `INVALID_SEED_SPEC` — the seed/seedManifest/seedManifestRef payload does not match its declared shape
+
+## Provisioning: warned at registration, refused at admission
+
+Registering a script whose agent() declares an mcp/skill name with no `workspace_push`-provisioned asset SUCCEEDS anyway (the version registers, with a `result.warnings` entry naming the label and the missing name(s)) — it is `run_start` (and a schedule/webhook firing, and a nested `workflow()` call) that REFUSES, before any side effect, once the name is still unprovisioned at admission time:
+
+- `MCP_NOT_PROVISIONED` — an agent() call declares an mcp name with no workspace_push-provisioned asset (workflow-scoped or global) — admission refuses before any side effect; registration only warns
+- `SKILL_NOT_PROVISIONED` — an agent() call declares a skill name with no workspace_push-provisioned asset (workflow-scoped or global) — admission refuses before any side effect; registration only warns
 
 ## Authoring convention (not checked)
 
