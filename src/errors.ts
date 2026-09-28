@@ -123,7 +123,9 @@ export const ERROR_CATALOG = {
   VERSION_CEILING_EXCEEDED: { see: null, hint: 'this workflow name already has the configured maxWorkflowVersions; deregister an old one with workflow_deregister({name, version})' },
   VERSION_NOT_FOUND: { see: null, hint: 'the requested version is not a registered version of this workflow' },
   // v36 (DES-246, TASK-244): `workflow_deregister({name, version})`'s three version-scoped refusals.
-  VERSION_PINNED_BY_CHANNEL: { see: null, hint: 'this version is published to a channel (release or beta) — unpublish it first' },
+  // Issue #98 item 8: names the exact call — `workflow_publish` now accepts an explicit
+  // `version: null` to clear a channel (there was previously no tool that could ever satisfy this).
+  VERSION_PINNED_BY_CHANNEL: { see: null, hint: "this version is published to a channel (release or beta) — clear it first: workflow_publish({name, channel, version: null})" },
   VERSION_LAST_REMAINING: { see: null, hint: 'this is the only version of the workflow — use workflow_deregister({name}) to remove the whole workflow' },
   VERSION_PINNED_BY_RUN: { see: null, hint: 'a non-terminal run is pinned to this version' },
   INVALID_CHANNEL: { see: null, hint: 'the channel value is not "beta" or "release"' },

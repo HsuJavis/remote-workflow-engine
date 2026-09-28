@@ -8,7 +8,9 @@ export type AuditActor = { id: string | null; bypass: boolean; idSource: 'authen
 
 export type EngineEvent =
   | { kind: 'catalog.register'; name: string; version: string; actor: AuditActor }
-  | { kind: 'catalog.publish'; name: string; version: string; channel: string; fromVersion: string | null; actor: AuditActor }
+  // Issue #98 item 8: `version` is `string | null` — `workflow_publish({version:null})` clears a
+  // channel, and this is the same event `catalog.publish()` (workflow-catalog.ts) emits for that.
+  | { kind: 'catalog.publish'; name: string; version: string | null; channel: string; fromVersion: string | null; actor: AuditActor }
   | { kind: 'catalog.deregister'; name: string; version: string; actor: AuditActor }
   | { kind: 'run.terminal'; runId: string; name: string | null; version: string; outcome: string; principal: string | null; code?: string }
   // v37 (ARCH-178, DES-256, TASK-253, REQ-218, ADR-083 owner_decision posture C): the confinement

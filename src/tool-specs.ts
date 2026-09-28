@@ -190,6 +190,20 @@ function pushInputSchema(): Record<string, unknown> {
  *  baseline of a later item exists. Loose here; the real shape lives in each handler's own tests. */
 const OUT = schema({});
 
+// Issue #98 item 5: `seedManifestRef` (workflow_register, run_start) only ever named the HTTP path
+// (POST /assets/blob/<sha>, then POST /assets/manifest) — there is no separate "manifest mode" on
+// `workspace_push`, but the SAME blob-push mode it already has ({sha256, contentB64}) is the MCP
+// path: push each file once, then push the manifest JSON's own bytes the SAME way. Shared here so
+// workflow_register's and run_start's descriptions cannot drift apart on the same mechanic.
+const MCP_MANIFEST_PUSH_HINT =
+  'Over MCP (no separate "manifest mode" — this is the SAME workspace_push blob call, used twice): ' +
+  "push each file's bytes with workspace_push({sha256, contentB64}) (sha256 is that file's own hex sha256; one call per file), " +
+  'then push the manifest ITSELF the same way — workspace_push({sha256, contentB64}) again, where contentB64 is the base64 of the manifest JSON bytes ' +
+  '(a JSON array of {path, sha256, exec?}, each sha256 referencing an already-pushed file blob; exec:true materializes that file 0o755, else 0o644) ' +
+  "and sha256 is that JSON's own hex sha256 — the accepted sha256 from that second push IS the ref. " +
+  '(The HTTP equivalent — POST /assets/blob/<sha> per file, then POST /assets/manifest — does the identical two pushes and returns the same ref as seedManifestRef directly; ' +
+  'it also validates every referenced blob is present at manifest-upload time, where this MCP path defers that check to registration/run_start, answering the same MISSING_BLOBS either way.)';
+
 /** `mode()` is used by exactly three tools (DES-138): workspace_push, workspace_list,
  *  workspace_delete. Each is TOTAL — an arg set matching nothing resolves to `'invalid'`, whose row
  *  is always `{minRole:'user', ownership:'none'}` so the schema check (which runs first) answers
@@ -231,6 +245,10 @@ export const TOOL_SPECS = [
       // client plugin is being removed, so this door has to be self-contained here too, not just on
       // workspace_push's asset-name check.
       "`name` may not start with the engine-reserved 'rwe-' prefix — refused RESERVED_PREFIX, for every caller including admin. " +
+      // Issue #98 item 8b: workflow_describe's `phases`/`phases[].agents` read `meta.phases` back
+      // VERBATIM — they are not derived from your `phase()` calls or your mermaid diagram, so a
+      // script that calls `phase()` but never declares `meta.phases` describes as `phases:[]`.
+      "Declare `meta.phases: [{title}, ...]` (in the same order as your `phase()` calls) if you want workflow_describe's `phases`/`phases[].agents` populated — that field is read back verbatim, never derived from `phase()` calls or your mermaid diagram. " +
       "Every agent() call's model comes from `script`'s own `export const meta = { params: { agents: { <label>: { model: {...} } } } }`: `model` is REQUIRED with a `.default`, and that default MUST be a full `<provider>/<model-id>` ref — providers are exactly anthropic, openrouter, ollama (e.g. \"anthropic/claude-haiku-4-5-20251001\", \"openrouter/openai/gpt-4.1\", \"ollama/qwen2.5:7b\"); there are no aliases, no bare names, no 'default'/'local'-style shortcuts — a bare name is refused UNKNOWN_MODEL. Use models_list to find a valid ref (copy its `ref` field verbatim). A run_start override may replace it with a different full ref per run; see workflow_authoring_guide for the complete authoring rules. " +
       // Issue #78(b): advertised here because a cold client reads only tools/list.
       "The reply may carry result.warnings — non-fatal notes, the version is registered anyway: BASH_SUBSUMES_FILE_TOOLS when an agent() call's allowedTools names Bash beside Read/Grep/Glob/Write/Edit (allowedTools restricts names, and Bash can do what those do); BASH_READONLY_UNENFORCEABLE when an agent() declares bash:'readonly' on an engine with no working Bash sandbox (every dispatch of it will fail closed there); MODEL_CATALOG_UNVERIFIED when a declared model ref could not be checked against a live catalog listing (openrouter/ollama) or is an anthropic id not yet in this deployment's static price table — the version registers anyway.",
@@ -263,9 +281,10 @@ export const TOOL_SPECS = [
         type: 'string',
         pattern: '^[0-9a-f]{64}$',
         description:
-          "Optional default seed for THIS version: the sha256 of a manifest you already uploaded (POST /assets/blob/<sha> for each file, then POST /assets/manifest). " +
+          'Optional default seed for THIS version: the sha256 of a manifest you already uploaded. ' +
+          `${MCP_MANIFEST_PUSH_HINT} ` +
           'Every run of this version that brings no seed of its own — run_start, a scheduled firing, a webhook delivery — starts with those files in its workspace. ' +
-          'A run_start seed (seed/seedManifest/seedManifestRef/seedRef) REPLACES it, never merges. Checked now, in your own CAS namespace: MISSING_BLOBS if you never uploaded it, INVALID_SEED_SPEC if it is not a manifest. ' +
+          'A run_start seed (seed/seedManifest/seedManifestRef/seedRef) REPLACES it, never merges. Checked now, in your own CAS namespace: MISSING_BLOBS if you never uploaded it, INVALID_SEED_SPEC if the referenced blob is not a JSON array of {path, sha256, exec?}. ' +
           'References only — inline seed/seedManifest/seedRef are refused INVALID_ARGUMENT. Versions are immutable: a different seed is a new registration (a new version).',
       },
     }, ['name', 'script']),
@@ -339,7 +358,9 @@ export const TOOL_SPECS = [
   },
   {
     name: 'workflow_publish', entity: 'workflow', key: 'name' as const,
-    description: "Point a workflow's release pointer at one of its registered versions.",
+    // Issue #98 item 8: an explicit `version: null` (JSON null, never an omitted key) CLEARS the
+    // named channel — the only tool that can (VERSION_PINNED_BY_CHANNEL names this exact call).
+    description: "Point a workflow's release pointer at one of its registered versions. Pass `version: null` (an explicit JSON null, not an omitted key) to CLEAR the named channel instead — same authz as publishing (owner/admin only) — after which a bare run_start (or a trigger bound to that channel) answers CHANNEL_UNPUBLISHED, same as a channel that was never published.",
     // B-1 (v24 adjudication #3): `version` is a STRING (e.g. 'v1'), the exact value
     // workflow_register's `result.version` returns — not a number. The catalog stores versions as
     // strings; a number reaches it and comes back VERSION_NOT_FOUND while the correct string was
@@ -353,7 +374,16 @@ export const TOOL_SPECS = [
     // substance too (`publish()` does `known.has(version)`), so it is required here.
     inputSchema: schema({
       name: { type: 'string' },
-      version: { type: 'string', description: "The version string returned by workflow_register, e.g. 'v1'." },
+      // Issue #98 item 8: `anyOf[null, string]` — same shape as run_start's `budget` (tool-specs.ts
+      // above) for the same reason: `null` is a MEANINGFUL explicit value here (clear the channel),
+      // never conflated with "omitted" (which schema `required` below still refuses outright).
+      version: {
+        anyOf: [
+          { type: 'null' },
+          { type: 'string' },
+        ],
+        description: "The version string returned by workflow_register, e.g. 'v1' — or an explicit JSON `null` to CLEAR the named channel instead of pointing it.",
+      },
       // issue #89 item 4: `channel` is REQUIRED + a closed enum, so `call-tool.ts`'s ajv validation
       // (schema BEFORE dispatch, DES-140) refuses an out-of-enum value before `workflowPublish` is
       // ever called — verified: `facade.workflowPublish` has exactly one wire caller, `call-tool.ts`,
@@ -387,7 +417,15 @@ export const TOOL_SPECS = [
     // v27b (DES-197, ARCH-131, TASK-202, REQ-106's precedent): names `phases[].agents` in the
     // advertised description itself, not just the schema shape, so a cold, schema-only client
     // learns the predicted lane membership without fetching first.
-    description: "Describe a workflow: per-agent parameters, agent labels, live triggers, its author-supplied diagram, and the predicted lane membership (phases[].agents). Also returns registeredRemote: whether THIS version was registered by a remote submission — on a host whose Bash-confinement probe failed at boot, such a version is refused CONFINEMENT_UNAVAILABLE even for a local run_start, and this is the field that says which version to re-register locally. Defaults to the release pointer; pass version or channel to describe another one — an unpublished version must be named with version, since the release default answers CHANNEL_UNPUBLISHED.",
+    // Issue #98 item 8b: `phases` is NOT derived from the script's own `phase()` calls (that static
+    // scan feeds only the internal predicted-graph/toolSurface derivation) — it is `meta.phases`,
+    // an author-declared literal in the script's OWN `export const meta = {...}` block
+    // (workflow-meta.ts:parseMeta), read back VERBATIM. A script that calls `phase('P')` but never
+    // declares `meta.phases: [{title:'P'}, ...]` (in the same order as its `phase()` calls) answers
+    // `phases:[]` here, and `phases[].agents` then has no lane to join onto either — this is the
+    // current, measured mechanism (not a bug in this projection), so declare `meta.phases` yourself
+    // if you want either field populated.
+    description: "Describe a workflow: per-agent parameters, agent labels, live triggers, its author-supplied diagram, and the predicted lane membership (phases[].agents). `phases` is your OWN `meta.phases: [{title}, ...]` declaration (workflow_register's script), read back verbatim — NOT derived from your `phase()` calls or your mermaid diagram; a script with `phase()` calls but no declared `meta.phases` answers `phases:[]` here (and `phases[].agents` has no lane to join onto), even though the run itself still executes its phases. Also returns registeredRemote: whether THIS version was registered by a remote submission — on a host whose Bash-confinement probe failed at boot, such a version is refused CONFINEMENT_UNAVAILABLE even for a local run_start, and this is the field that says which version to re-register locally. Defaults to the release pointer; pass version or channel to describe another one — an unpublished version must be named with version, since the release default answers CHANNEL_UNPUBLISHED.",
     // v24 Gate 7.5 (D-7, REQ-118): the handler has always accepted `version`/`channel` (it builds
     // a `VersionSelector` from them) and the row advertised only `name`. `version` is not a
     // convenience: a workflow that was never published cannot be described WITHOUT it — the bare
@@ -548,7 +586,7 @@ export const TOOL_SPECS = [
         },
         seedManifest: {
           type: 'array',
-          description: 'Seed files already pushed to the CAS via workspace_push — each element is {path, sha256, exec?}, referenced by hash rather than carrying content inline. Use for large trees, or content you already have a sha256 for.',
+          description: 'Seed files already pushed to the CAS via workspace_push({sha256, contentB64}) — each element here is {path, sha256, exec?}, referenced by hash rather than carrying content inline (exec:true materializes that file 0o755, else 0o644). Use for large trees, or content you already have a sha256 for.',
           items: {
             type: 'object',
             required: ['path', 'sha256'],
@@ -571,7 +609,9 @@ export const TOOL_SPECS = [
         seedManifestRef: {
           type: 'string',
           pattern: '^[0-9a-f]{64}$',
-          description: 'Seed the whole workspace from ONE manifest previously pushed as a CAS blob — the sha256 of that manifest.',
+          description:
+            'Seed the whole workspace from ONE manifest previously pushed as a CAS blob — the sha256 of that manifest. ' +
+            MCP_MANIFEST_PUSH_HINT,
         },
       }, ['name']),
       additionalProperties: false,
@@ -1129,10 +1169,20 @@ export const TOOL_SPECS = [
     // v24 (integrator, REQ-117 — found by the Batch-B executor): `topN` is implemented
     // (`call-tool.ts` defaults it to 5, `system-info.ts` CLAMPS it to 50 rather than refusing) and
     // was advertised nowhere, so the only way to discover it was to read the engine's source.
+    // Issue #98 item 7: this used to promise "the auth summary" (no such block exists — deliberately
+    // NOT added: it would disclose principal info to every caller of a `minRole:'user'` tool) and "a
+    // block whose probe is unavailable is served as null with a reason, never omitted" (measured
+    // against system-info.ts: `memory`/`disk`/`process.system` are each EITHER their normal shape OR
+    // entirely REPLACED by a `{reason, detail?}` object — never JSON null; `cpu.utilizationPct` is
+    // the one field that IS null on degrade, with the reason in the SIBLING `cpu.utilizationDegraded`
+    // field, present only then; `process.self.cpuPct`/`process.topN[].cpuPct` are null with NO reason
+    // at all on the very first sample — not enough delta yet, not a probe failure).
     description:
-      'Report engine system info: CPU, memory, disk, active processes, and the auth summary. ' +
-      'Sizes are in bytes, load and utilisation as a percent (`usedPct`), uptime in seconds. ' +
-      'A block whose probe is unavailable on this host is served as null with a reason, never omitted.',
+      'Report engine system info: CPU, memory, disk, and process metrics (engine-self plus the top-N by CPU). No auth/principal information is included. ' +
+      'Sizes are in bytes; `cpu.utilizationPct` and every `usedPct` are a percent (0-100); `cpu.loadAvg` is the OS 1/5/15-minute load average, NOT a percent; uptime is in seconds. ' +
+      '`memory`, `disk` and `process.system` are each EITHER their normal shape OR entirely replaced by a `{reason, detail?}` object when that probe is unavailable on this host — never JSON null. ' +
+      '`cpu.utilizationPct` is null (reason in the sibling `cpu.utilizationDegraded`, present only when degraded) on the first sample and on a CPU probe failure. ' +
+      '`process.self.cpuPct` and `process.topN[].cpuPct` are null with no reason field at all on the very first sample — read as "not enough samples yet", not a failure.',
     inputSchema: schema({
       topN: {
         type: 'integer',
