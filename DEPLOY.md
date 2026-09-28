@@ -1428,6 +1428,10 @@ curl -s http://localhost:8787/api/version
 - 舊部署是 §2/§6b 的 user-mode 形狀：`~/.config/systemd/user/rwe.service`（含
   `rwe.service.d/override.conf`）、`rwe-update.path`／`rwe-update.service`、`~/.config/rwe.env`、
   checkout 停在某個 release tag 上。
+- 操作員家目錄必須是 `750`（或更嚴）：Ubuntu 21.04 起的新帳號預設如此，較舊的安裝常是 `755`——
+  先 `stat -c %a ~`，不是的話 `chmod 750 ~`，否則 `rwe` 讀得到它，`phase7` 的隔離檢查會照設計失敗。
+- `phase7` 要求 `Bash confinement: CONFINED`，這取決於主機本身能不能讓非特權使用者建立 user
+  namespace（AppArmor 設定是全主機的，跟帳號無關）；量到 `UNCONFINED` 時先照 §1c(e) 處理。
 - 主機專屬值全部是環境變數、預設值從舊部署推導，另一台伺服器照需要覆寫即可（完整清單見腳本開頭）：
 
 | 變數 | 預設 | 說明 |
