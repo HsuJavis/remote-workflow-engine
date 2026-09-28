@@ -18,7 +18,7 @@ import { SubmissionValidator } from './submission-validator.js';
 // wire — the guide a cold model is told to consult was unreachable from the errors that tell it to.
 import { CatalogNotFoundError, codedError, toErrEnvelope, type ErrorCode } from './errors.js';
 import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, HarnessDescriptor, RunListFilter, AuditAction, RunSpec, RunUsage, AgentLogView } from './types.js';
-import { parseMeta, toolSurfaceWarnings } from './workflow-meta.js';
+import { parseMeta, toolSurfaceWarnings, provisioningWarningsFor, type RegistrationWarning } from './workflow-meta.js';
 import { buildAuthoringGuide } from './authoring-guide.js';
 import { effectiveAgentBounds, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type AgentParamSpec, type ModelRefWarning } from './params/contract.js';
 import { projectWorkflowForRead, projectWorkflowDescribe, type WorkflowOwnerView } from './workflow-view.js';
@@ -445,10 +445,26 @@ export class McpFacade {
       // boundary). Only `versions`/`channels` are lifted off the detail; the rest of WorkflowDetail
       // (notably `script`) is discarded here, never on the envelope.
       const { versions, channels } = await catalog.resolveDetail(a.name, { version });
+      // issue #103(a): a declared-but-unprovisioned mcp/skill name is a non-fatal registration
+      // WARNING now (never a refusal — see script-checks.ts's own header for why the OLD
+      // MCP_NOT_PROVISIONED registration throw is retired), resolved against the REAL asset catalog
+      // via the SAME resolver dispatch uses (`AssetSyncService.resolveDeclaredAssets`) so
+      // registration and admission (run-manager.ts's `start()`) can never disagree. `this.assetSync`
+      // is bound post-construction (see its own field comment) — absent only in a test harness that
+      // never wired one, which then honestly reports no provisioning warnings rather than crashing.
+      const provisioningWarnings: RegistrationWarning[] = [];
+      if (this.assetSync) {
+        for (const [label, spec] of Object.entries(params.agents)) {
+          const declared = { skills: spec.skills ?? [], mcp: spec.mcp ?? [] };
+          if (declared.skills.length === 0 && declared.mcp.length === 0) continue;
+          const missing = await this.assetSync.resolveDeclaredAssets(a.name, declared);
+          provisioningWarnings.push(...provisioningWarningsFor(a.name, label, missing));
+        }
+      }
       // Issue #78(b): non-fatal — the version is already registered. Absent when empty, so an
       // unaffected registration keeps exactly the reply keys it had before. 2026-09-26 (owner
       // decision 6): merged with any MODEL_CATALOG_UNVERIFIED notes from validateRegistration above.
-      const warnings = [...toolSurfaceWarnings(scanAgentCalls(a.script), this.confinementPosture), ...(modelWarnings ?? [])];
+      const warnings = [...toolSurfaceWarnings(scanAgentCalls(a.script), this.confinementPosture), ...(modelWarnings ?? []), ...provisioningWarnings];
       return { runId: '', status: 'completed', version: versionNum, result: { name: a.name, version, versions, channels, ...(a.seedManifestRef !== undefined ? { seedManifestRef: a.seedManifestRef } : {}), ...(warnings.length > 0 ? { warnings } : {}) } };
     } catch (err) {
       const e = toErrEnvelope(err);
@@ -986,7 +1002,10 @@ export class McpFacade {
       ? view.agents.find((ag) => ag.agentId === a.agentId)
       : view.agents.find((ag) => ag.label === a.label) ?? view.agents.find((ag) => ag.agentId === a.label);
     if (!agent) {
-      return { runId: a.runId, status: view.status, error: { code: 'AGENT_LOG_NOT_FOUND', message: `Agent not found: ${requested}`, field: a.agentId !== undefined ? 'agentId' : 'label' }, harness: null, events: [], hasMore: false };
+      // issue #103(e): same failed-refusal envelope as workspace_pull's fix — never the run's own
+      // (here possibly 'completed') status beside an error; the real status travels in
+      // `error.detail.runStatus`.
+      return { runId: a.runId, status: 'failed', error: { code: 'AGENT_LOG_NOT_FOUND', message: `Agent not found: ${requested}`, field: a.agentId !== undefined ? 'agentId' : 'label', detail: { runStatus: view.status } }, harness: null, events: [], hasMore: false };
     }
     const agentId = agent.agentId;
     const owner = stored.principal ?? 'local';
@@ -1073,7 +1092,14 @@ export class McpFacade {
         ? { scope: 'global' as const, kind: kind as AssetKind, name, pushedBy, ...body }
         : { scope: 'workflow' as const, workflow: a['workflow'] as string, kind: kind as AssetKind, name, pushedBy, ...body };
       const r = await this.assetSync.push(req as never);
-      if ('error' in r) return { runId: '', status: 'failed', code: r.error, error: { code: r.error, message: r.error } };
+      if ('error' in r) {
+        // issue #103(b): MCP_PROBE_FAILED is the one `push()` error that carries a `detail` (the
+        // probe's own redacted code/message/transport/timeoutMs) — every other `push()` refusal
+        // (EGRESS_DENIED, RESERVED_PREFIX, BLOB_HASH_MISMATCH, …) is unaffected, message stays the
+        // bare code exactly as before.
+        const message = r.detail !== undefined ? `${r.error}: ${String(r.detail['message'] ?? '')} (transport: ${String(r.detail['transport'] ?? 'unknown')})` : r.error;
+        return { runId: '', status: 'failed', code: r.error, error: { code: r.error, message, ...(r.detail !== undefined ? { detail: r.detail } : {}) } };
+      }
       return { runId: '', status: 'completed', result: r };
     } catch (err) {
       const e = toErrEnvelope(err);
@@ -1094,8 +1120,13 @@ export class McpFacade {
       ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev) }, { actor, action: 'workspace_pull' as AuditAction, runId: a.runId, owner, path: a.path }, doRead)
       : await doRead();
     if ('error' in r) {
+      // issue #103(e): the standard failed-refusal envelope every other tool uses (`status:
+      // 'failed'`, mcp-facade.ts's `lifecycle()`/`refusalError`, issue #98 item 9) — never the
+      // run's own (here possibly 'completed') status beside an error, which reads as success to a
+      // caller that only branches on `status === 'failed'`. The run's actual status still travels,
+      // in `error.detail.runStatus`.
       const code = PULL_REASON_TO_CODE[r.error] ?? 'NOT_FOUND';
-      return { runId: a.runId, status: stored.status, error: { code, message: `workspace_pull denied: ${r.error} (${a.path})` } };
+      return { runId: a.runId, status: 'failed', error: { code, message: `workspace_pull denied: ${r.error} (${a.path})`, detail: { runStatus: stored.status } } };
     }
     return { runId: a.runId, status: stored.status, result: r };
   }

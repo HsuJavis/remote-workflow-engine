@@ -435,7 +435,12 @@ export class SqliteSchedulerPort {
     // ScheduleResult rather than escaping as a rejected promise.
     let runId: string;
     try {
-      runId = await this._runManager.start({ name: workflow, args, startedBy: { type: 'schedule', id: workflow }, origin: row?.createdRemote === 1 ? 'remote' : 'local' });
+      // issue #103(d): startedBy.id is the SCHEDULE id (like a webhook run carries the webhook's
+      // own id), never the workflow name — the name already travels as `name`/`run_origins`'s own
+      // join. `row` can be undefined here (no resident schedule row found for this workflow — ARCH-
+      // 181's own finding that this call path has no production caller today); fall back to the
+      // workflow name in that case rather than omitting `id` outright.
+      runId = await this._runManager.start({ name: workflow, args, startedBy: { type: 'schedule', id: row?.id ?? workflow }, origin: row?.createdRemote === 1 ? 'remote' : 'local' });
     } catch (err) {
       return { error: toErrEnvelope(err) };
     }
@@ -465,17 +470,25 @@ export class SqliteSchedulerPort {
     // v24 (integrator; ARCH-099, DES-150): the filter was `workflow IS NOT NULL` with a note saying
     // the fire-path claim check "lands with the facade wiring in TASK-148, out of this task's
     // scope" — TASK-148 did not land it either, so `markRefused` had NO caller and REQ-115's
-    // "recorded refusals" recorded nothing. Two consequences, both fixed here: an UNCLAIMED due row
-    // was invisible to the driver, so its refusal could never be recorded; and a row claimed AFTER
-    // creation (`claim()` writes `claimedBy`, never `workflow`) would never fire at all. The
-    // authority is `claimedBy` (ARCH-099's rename); `workflow` remains only as the create-time
-    // binding, and an unclaimed row is surfaced with an EMPTY target so the driver refuses it
-    // UNCLAIMED rather than silently skipping it.
+    // "recorded refusals" recorded nothing. That was fixed by surfacing an unclaimed due row with an
+    // EMPTY target so the driver refused it UNCLAIMED rather than silently skipping it — but that
+    // in turn consumed the row (`claimFiring()`'s `once` branch flips `enabled` to 0, and
+    // `markRefused` records the refusal) BEFORE any workflow ever got a chance to claim it, since a
+    // `once` schedule with a past `at` is due on its very first tick after creation.
+    //
+    // issue #103(f) (owner decision): an UNCLAIMED trigger never fires or consumes, full stop — the
+    // driver must never even SEE it as due. `claimedBy ?? workflow` (ARCH-099's rename; `workflow`
+    // remains only as the create-time binding) excludes an unclaimed row from this read entirely,
+    // so `tick()` never returns it, `claimFiring()`/`markRefused('UNCLAIMED')` are never reached for
+    // it, and `enabled`/`nextFire` stay untouched. `claim()` (schedule_create's trigger-claim door,
+    // workflow_register) never touches `nextFire` either, so a `once` row whose `at` is already past
+    // becomes due — and fires — on the very next `all()` read after it is claimed, exactly the "no
+    // durable state changes while unclaimed" contract the trigger-create/claim split promises.
     const rows = this._db
-      .prepare("SELECT * FROM schedules WHERE enabled = 1 AND kind IN ('cron','once') AND nextFire IS NOT NULL")
+      .prepare("SELECT * FROM schedules WHERE enabled = 1 AND kind IN ('cron','once') AND nextFire IS NOT NULL AND (claimedBy IS NOT NULL OR workflow IS NOT NULL)")
       .all() as ScheduleRow[];
     return rows.map((r): StoredSchedule => {
-      const target = r.claimedBy ?? r.workflow ?? '';
+      const target = r.claimedBy ?? r.workflow!;
       return r.kind === 'cron'
         ? { kind: 'cron', id: r.id, workflow: target, args: r.argsJson != null ? JSON.parse(r.argsJson) : undefined, cron: r.cron!, tz: r.tz ?? undefined, enabled: true, nextFire: r.nextFire! }
         : { kind: 'once', id: r.id, workflow: target, args: r.argsJson != null ? JSON.parse(r.argsJson) : undefined, at: r.at!, enabled: true, nextFire: r.nextFire! };

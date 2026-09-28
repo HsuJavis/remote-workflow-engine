@@ -23,6 +23,18 @@ describe('validateSeedSpec — one door, refuses the first offender, never throw
     ['seedManifest: a 63-hex sha is refused', 'seedManifest', [{ path: 'a.txt', sha256: '0'.repeat(63) }], false],
     ['seedManifest: exec:true is accepted', 'seedManifest', [{ path: 'a.txt', sha256: '0'.repeat(64), exec: true }], true],
     ['seedManifest: missing sha256 is refused', 'seedManifest', [{ path: 'a.txt' }], false],
+    // issue #103(c): an escaping/absolute seed path used to pass validateSeedSpec (structural
+    // shape only) and get silently STRIPPED/REJECTED, invisible, at materialize time — never
+    // refused INVALID_SEED_SPEC at admission, so a caller had no way to learn its seed was
+    // partially dropped.
+    ['seed: a "../" escaping path is refused', 'seed', [{ path: '../escape.txt', contentB64: 'AAAA' }], false],
+    ['seed: an absolute path is refused', 'seed', [{ path: '/etc/passwd', contentB64: 'AAAA' }], false],
+    ['seed: a nested "../" escaping path is refused', 'seed', [{ path: 'a/../../escape.txt', contentB64: 'AAAA' }], false],
+    ['seedManifest: a "../" escaping path is refused', 'seedManifest', [{ path: '../escape.txt', sha256: '0'.repeat(64) }], false],
+    ['seedManifest: an absolute path is refused', 'seedManifest', [{ path: '/etc/passwd', sha256: '0'.repeat(64) }], false],
+    // a former .claude settings/hooks path is a silent STRIP at materialize time, not a refusal —
+    // it must stay accepted here (policy, not an escape).
+    ['seed: a .claude/settings.json path is still ACCEPTED (stripped at materialize, not refused)', 'seed', [{ path: '.claude/settings.json', contentB64: 'AAAA' }], true],
   ];
 
   it.each(rows)('%s', (_desc, source, value, expectOk) => {
@@ -57,6 +69,14 @@ describe('validateSeedSpec — one door, refuses the first offender, never throw
     const result = validateSeedSpec('seed', [{ path: 'a.txt', sha256: '0'.repeat(64) }]) as any;
     expect(result.ok).toBe(false);
     expect(result.message).toContain('a.txt');
+  });
+
+  it('an escaping path is refused naming the path and the escape reason', () => {
+    const result = validateSeedSpec('seed', [{ path: '../escape.txt', contentB64: 'AAAA' }]) as any;
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe('INVALID_SEED_SPEC');
+    expect(result.path).toBe('../escape.txt');
+    expect(result.message).toMatch(/escape/i);
   });
 
   it('SEED_ITEM_HINT is the ONE string the validator message and the schema description both read (drift lock)', () => {

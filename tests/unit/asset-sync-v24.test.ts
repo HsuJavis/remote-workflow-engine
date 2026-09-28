@@ -34,6 +34,32 @@ describe('AssetSyncService v24 — two scopes, mcp gating, clock-sourced pushedA
     }
   });
 
+  // issue #103(b): `push()` used to collapse a failed probe to the bare string `{error:
+  // 'MCP_PROBE_FAILED'}`, dropping the probe's own `code`/`message` — the caller learned only
+  // that IT failed, never WHY (unreachable? wrong transport? timed out?). The probe's code/message
+  // now travel in `detail`, redacted (no raw URL/command — see the facade-level test for the
+  // wire-shape assertion of what "redacted" means here).
+  it('kind:"mcp" probe failure carries the probe\'s own code/message/transport in `detail`, not just the bare code', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-v24-'));
+    try {
+      const probe = { probe: vi.fn().mockResolvedValue({ ok: false, code: 'UNREACHABLE', message: 'MCP HTTP endpoint unreachable: fetch failed' }) };
+      const catalog = fakeCatalogPort();
+      const svc = new AssetSyncService({
+        workRoot: dir, globalRoot: join(dir, 'global'),
+        selfBind: { host: '127.0.0.1', port: 1 }, clock: new FixedClock(new Date('2026-01-01T00:00:00Z')),
+        catalog, probe, egressAllowlist: ['https://example.com/'],
+      });
+      const result = await svc.push({ scope: 'workflow', workflow: 'wf-a', kind: 'mcp', name: 'srv', config: { type: 'http', url: 'https://example.com/mcp' }, pushedBy: 'bob' });
+      expect(result).toMatchObject({
+        error: 'MCP_PROBE_FAILED',
+        detail: { code: 'UNREACHABLE', message: expect.stringContaining('unreachable'), transport: 'remote-http' },
+      });
+      expect(catalog.putAsset).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('kind:"hook" is refused by the schema enum — HOOKS_UNSUPPORTED is retired, no path can produce it', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-v24-'));
     try {

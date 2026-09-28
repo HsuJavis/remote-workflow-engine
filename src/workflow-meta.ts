@@ -627,10 +627,18 @@ function readonlyBashConflict(allowedTools: string[] | 'absent'): string | null 
 /** Issue #78(b): the file tools a shell can stand in for. */
 const BASH_SUBSUMED_TOOLS = ['Read', 'Grep', 'Glob', 'Write', 'Edit'];
 
+// issue #103(a): MCP_NOT_PROVISIONED/SKILL_NOT_PROVISIONED joined this union — a NON-FATAL
+// registration warning naming a label + the missing asset name(s) (`names`), computed one layer up
+// (mcp-facade.ts's `workflowRegister`, against the real asset catalog via
+// `AssetSyncService.resolveDeclaredAssets` — the SAME resolver dispatch uses). Unlike the two
+// Bash-surface warnings, a contract label has no source LINE to report (the declaration lives in
+// `meta.params.agents.<label>`, not a scannable `agent()` call site) — `line` widens to optional
+// rather than forcing a fake value, and `names` carries what `line` cannot.
 export interface RegistrationWarning {
-  code: 'BASH_SUBSUMES_FILE_TOOLS' | 'BASH_READONLY_UNENFORCEABLE';
+  code: 'BASH_SUBSUMES_FILE_TOOLS' | 'BASH_READONLY_UNENFORCEABLE' | 'MCP_NOT_PROVISIONED' | 'SKILL_NOT_PROVISIONED';
   label: string;
-  line: number;
+  line?: number;
+  names?: string[];
   message: string;
 }
 
@@ -672,6 +680,39 @@ export function toolSurfaceWarnings(scan: AgentCallScan, posture?: 'confined' | 
         `agent('${call.label}') (line ${call.line}) lists Bash together with ${subsumed.join(', ')}. ` +
         'allowedTools restricts tool names only: Bash can already read, write and search anything those tools can, so this list is no narrower than Bash alone. ' +
         "Keep it if the agent needs a shell; for a read-only agent use ['Read', 'Grep', 'Glob'] with no Bash.",
+    });
+  }
+  return out;
+}
+
+/** issue #103(a): pure formatter — turns one label's resolved `{missingSkills, missingMcp}` (the
+ *  RESOLUTION itself is `AssetSyncService.resolveDeclaredAssets`'s job, the same asset-catalog I/O
+ *  admission uses) into zero, one, or two `RegistrationWarning` entries. The one place this warning
+ *  text is authored, so `workflow_register`'s `result.warnings` and `workflow_authoring_guide`'s
+ *  prose can never say something different about the fix. mcp names are listed before skill names
+ *  (matches ERROR_CATALOG's own MCP_NOT_PROVISIONED-before-SKILL_NOT_PROVISIONED ordering). */
+export function provisioningWarningsFor(
+  workflow: string,
+  label: string,
+  missing: { missingSkills: string[]; missingMcp: string[] },
+): RegistrationWarning[] {
+  const out: RegistrationWarning[] = [];
+  if (missing.missingMcp.length > 0) {
+    out.push({
+      code: 'MCP_NOT_PROVISIONED',
+      label,
+      names: missing.missingMcp,
+      message: `agent('${label}') declares mcp name(s) with no provisioned asset: ${missing.missingMcp.join(', ')}. ` +
+        `The version registers anyway — fix before running it: workspace_push({workflow: '${workflow}', kind: 'mcp', name, config}) for each name, then run_start (a run admits only once every declared mcp/skill name resolves).`,
+    });
+  }
+  if (missing.missingSkills.length > 0) {
+    out.push({
+      code: 'SKILL_NOT_PROVISIONED',
+      label,
+      names: missing.missingSkills,
+      message: `agent('${label}') declares skill name(s) with no provisioned asset: ${missing.missingSkills.join(', ')}. ` +
+        `The version registers anyway — fix before running it: workspace_push({workflow: '${workflow}', kind: 'skill', name, files}) for each name, then run_start (a run admits only once every declared mcp/skill name resolves).`,
     });
   }
   return out;

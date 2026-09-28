@@ -93,7 +93,13 @@ describe('Execution modes (REQ-015, VAL-016)', () => {
       expect(created?.['claimedBy'] ?? null).toBeNull();
     });
 
-    it('a schedule NO workflow ever claimed starts NO run when it comes due — it is refused and the refusal is recorded (D-V2I-3, REQ-115)', async () => {
+    // issue #103(f) (owner decision, supersedes the pre-existing "refused and recorded" contract
+    // this test asserted): an UNCLAIMED trigger never fires OR consumes — the driver must never
+    // even see it as due, so no run starts, no refusal is recorded, and the row is left completely
+    // untouched (still `enabled:true`, `refusalCount:0`) no matter how many ticks it sits due for.
+    // D-V2I-3's actual guarantee — "an unregistered target never silently starts a run" — is
+    // unchanged and is what the first half below still asserts.
+    it('an UNCLAIMED once-trigger past its `at` never fires or consumes — no run, no refusal, row untouched (D-V2I-3, issue #103f)', async () => {
       const r = await mcpCall('schedule_create', {
         kind: 'once', at: new Date(Date.now() + 300).toISOString(), enabled: true,
       });
@@ -101,15 +107,27 @@ describe('Execution modes (REQ-015, VAL-016)', () => {
       const id = (r['result'] as Record<string, unknown>)['id'] as string;
 
       const rowFor = async () => ((await mcpCall('schedule_list'))['result'] as Array<Record<string, unknown>>).find((x) => x['id'] === id);
-      const deadline = Date.now() + 8000;
-      let row = await rowFor();
-      while (((row?.['refusalCount'] as number) ?? 0) === 0 && Date.now() < deadline) {
-        await new Promise((res) => setTimeout(res, 100));
-        row = await rowFor();
-      }
-      expect(row?.['lastRefusalReason']).toBe('UNCLAIMED');
+      // Give the 500ms driver several ticks past the `at` instant — long enough that the OLD
+      // consume-then-refuse behaviour would already have fired at least once.
+      await new Promise((res) => setTimeout(res, 3000));
+      const row = await rowFor();
+      expect(row?.['enabled']).toBe(true);
+      expect(row?.['refusalCount'] ?? 0).toBe(0);
+      expect(row?.['lastRefusalReason']).toBeUndefined();
       expect(row?.['lastRunId']).toBeUndefined();
       expect((await mcpCall('run_list', { workflow: 'never-registered-val-target' }))['result'] ?? []).toEqual([]);
+
+      // Claiming it (workflow_register({triggers:[id]})) is the ONLY thing that makes a due-in-the-
+      // past once-trigger eligible — it then fires on the very next tick after being claimed.
+      await registerWorkflow('val-103f-claimed-late', 'return 1', [id]);
+      const deadline = Date.now() + 8000;
+      let claimedRow = await rowFor();
+      while (!claimedRow?.['lastRunId'] && Date.now() < deadline) {
+        await new Promise((res) => setTimeout(res, 100));
+        claimedRow = await rowFor();
+      }
+      expect(claimedRow?.['lastRunId']).toBeTruthy();
+      expect(claimedRow?.['enabled']).toBe(false); // once-trigger auto-completes after firing
     }, 20000);
 
     it('schedule_list returns the created cron schedule', async () => {

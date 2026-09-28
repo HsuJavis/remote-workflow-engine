@@ -125,6 +125,32 @@ describe('Cron schedule fires a run (REQ-015, E2E-004)', () => {
     expect(enabled).toBe(false);
   });
 
+  // issue #103(d): run_list's startedBy for a schedule firing used to carry the WORKFLOW NAME as
+  // `id` ({type:'schedule', id:<workflow name>}) — a webhook-fired run carries the webhook's own
+  // id, so a schedule-fired run must carry the schedule's own id the same way (the workflow name
+  // already travels separately, as `name`, and the scheduleId->runId join already exists in
+  // `run_origins`).
+  it('a fired schedule\'s run_list startedBy carries the SCHEDULE id, not the workflow name (issue #103d)', async () => {
+    const pastAt = new Date(Date.now() - 5000).toISOString();
+    const createResult = await mcpCall('schedule_create', { kind: 'once', at: pastAt, enabled: false });
+    expect(createResult['error']).toBeUndefined();
+    const id = ((createResult['result'] as Record<string, unknown>))?.['id'] as string;
+    expect(typeof id).toBe('string');
+    await registerWorkflow('startedby-once-target', 'return 4', [id]);
+    expect((await mcpCall('schedule_setEnabled', { id, enabled: true }))['error']).toBeUndefined();
+
+    let row: Record<string, unknown> | undefined;
+    for (let i = 0; i < 25 && !row; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      const runs = ((await mcpCall('run_list', { workflow: 'startedby-once-target' }))['result'] as Array<Record<string, unknown>>) ?? [];
+      row = runs[0];
+    }
+    expect(row).toBeDefined();
+    const startedBy = row!['startedBy'] as { type?: string; id?: string } | undefined;
+    expect(startedBy?.type).toBe('schedule');
+    expect(startedBy?.id).toBe(id);
+  });
+
   it('schedule_delete removes the schedule', async () => {
     const r = await mcpCall('schedule_create', {
       kind: 'resident', enabled: true,

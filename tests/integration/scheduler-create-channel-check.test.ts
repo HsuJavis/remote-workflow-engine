@@ -106,15 +106,24 @@ describe('the release-resolution check lives on the FIRE path, not on schedule_c
     expect((await call('run_list', { workflow: 'h4-unpublished-fire' })).result ?? []).toEqual([]);
   }, 20000);
 
-  it('a schedule nobody ever claimed is likewise created, then refused UNCLAIMED when due — the refusal is recorded, not silent', async () => {
+  // issue #103(f) (owner decision, supersedes this case's old "refused UNCLAIMED, recorded"
+  // assertion): an UNCLAIMED trigger never fires or consumes — the driver never even sees it as
+  // due, so `refusalCount` never advances and the row sits untouched no matter how long it stays
+  // due. See tests/acceptance/val-016-execution-modes.test.ts for the "claim it late, it fires on
+  // the next tick" half of the new contract.
+  it('a schedule nobody ever claimed is created, then NEVER fires or consumes while due — no refusal is ever recorded', async () => {
     const created = await call('schedule_create', {
       kind: 'once', at: new Date(Date.now() + 300).toISOString(),
     });
     expect(created.error).toBeUndefined();
     const id = ((created.result ?? created) as { id: string }).id;
 
-    const row = await until(() => rowFor(id), (r) => (r?.refusalCount ?? 0) > 0);
-    expect(row?.lastRefusalReason).toBe('UNCLAIMED');
+    // Several 500ms driver ticks past the due instant — long enough that the OLD consume-then-
+    // refuse behaviour would already have fired at least once.
+    await new Promise((r) => setTimeout(r, 3000));
+    const row = await rowFor(id);
+    expect(row?.refusalCount ?? 0).toBe(0);
+    expect(row?.lastRefusalReason).toBeUndefined();
     expect(row?.lastRunId).toBeUndefined();
   }, 20000);
 

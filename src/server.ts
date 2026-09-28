@@ -783,9 +783,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v15 (DES-098, DES-099, TASK-089): boot backfill + registration-time model-ref existence check.
   const catalog = new WorkflowCatalog(workRoot, clock, {
     backfillOwner: config?.auth?.enabled ? true : undefined,
-    // v24 (TASK-139/DES-159): the McpRegistry-backed `mcpLookup` is gone with the registry — no
-    // replacement wiring here (defaults to WorkflowCatalog's own accept-all, unconfigured `() =>
-    // true`; TASK-143/145 own the v24 catalog-backed MCP asset check).
+    // v24 (TASK-139/DES-159): the McpRegistry-backed `mcpLookup` is gone with the registry.
+    // issue #103(a): `WorkflowCatalog` doesn't take an `mcpLookup` opt at all any more — the v24
+    // catalog-backed MCP/skill asset check now lives entirely in `mcp-facade.ts`'s
+    // `workflowRegister` (a non-fatal warning, via `AssetSyncService.resolveDeclaredAssets`) and
+    // `run-manager.ts`'s `start()` (an admission-time refusal, same resolver).
     // 2026-09-26 (alias mechanism removed, owner decision 6): the SAME `modelBook` every run's
     // admission pins against, adapted to `providers.ts`'s pure snapshot shape — fetched fresh (never
     // memoized here) on every `validateRegistration()` call, so ModelBook's own TTL is the only
@@ -1070,7 +1072,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         // v37 (ARCH-182, DES-263, TASK-258): `origin` stamped from `resolveScheduleTarget`'s own
         // read of the fired trigger's stored `createdRemote` — a thrown CONFINEMENT_UNAVAILABLE
         // falls into the SAME generic `.catch()` below `markFailed` already handles.
-        .start({ name: target.workflow, args: firing.args, startedBy: { type: 'schedule', id: target.workflow }, origin: target.createdRemote ? 'remote' : 'local' })
+        // issue #103(d): startedBy.id is the SCHEDULE id (`firing.id`), like a webhook run carries
+        // the webhook's own id — never the workflow name, which already travels as `name` and via
+        // `run_origins`'s scheduleId->runId join.
+        .start({ name: target.workflow, args: firing.args, startedBy: { type: 'schedule', id: firing.id }, origin: target.createdRemote ? 'remote' : 'local' })
         .then((runId) => scheduler.markFired(firing, runId))
         .catch((err: unknown) => {
           // DES-118: a failed dispatch (e.g. the catalog entry was deleted after the schedule was
@@ -1745,6 +1750,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     egressAllowlist: config?.mcpEgressAllowlist ?? [],
   });
   facade.bindAssetSync(assetSync);
+  // issue #103(a): the SAME instance, bound into RunManager too — admission (run_start/a
+  // schedule-or-webhook firing/nested workflow()) resolves declared mcp/skill provisioning through
+  // this ONE resolver, the same one the facade's registration warning and dispatch's own
+  // materialization already use, so no two of the three can ever disagree.
+  runManager.bindAssetSync(assetSync);
   // v24 (integrator; REQ-113, adjudication #4 C-2's wiring sweep): bind the catalog-backed
   // `resolveMcp` port DES-154 introduced to replace the deleted `mcp-registry.ts`. TASK-145 left it
   // unbound "out of scope", so `agents.<label>.mcp` names resolved to nothing on every dispatch.

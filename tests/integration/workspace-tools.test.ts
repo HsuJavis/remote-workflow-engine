@@ -118,6 +118,35 @@ describe('the six workspace_* tools (IT-117, DES-155)', () => {
     expect((await call('workspace_purge', { runId })).code).toBe('RUN_NOT_TERMINAL');
   }, 30_000);
 
+  // issue #103(e): workspace_pull's denial envelope used to echo the RUN's own (here: completed)
+  // status — {status:'completed', error} — which reads as success to a caller that only branches
+  // on status==='failed'. Fixed to the standard failed-refusal envelope every other tool uses
+  // (mcp-facade.ts's `lifecycle()`/`refusalError`, issue #98 item 9); the run's real status still
+  // travels, folded into `error.detail.runStatus`.
+  it('workspace_pull denial reports status:"failed", not the run\'s own completed status', async () => {
+    const QUICK_SCRIPT = "export const meta = { description: 'terminates immediately' };\nreturn 'ok';";
+    const QUICK_MERMAID = 'graph LR';
+    const registered = await call('workflow_register', { name: 'it117-pull-denied', script: QUICK_SCRIPT, mermaid: QUICK_MERMAID });
+    const version = String(registered.body.result?.version ?? registered.body.version);
+    await call('workflow_publish', { name: 'it117-pull-denied', version, channel: 'release' });
+    const started = await call('run_start', { name: 'it117-pull-denied' });
+    const runId = started.body.runId as string;
+    expect(runId).toBeTruthy();
+    startedRuns.push(runId);
+
+    let status = '';
+    for (let i = 0; i < 200 && !['completed', 'failed', 'stopped'].includes(status); i++) {
+      status = (await call('run_status', { runId })).body.status;
+      if (!['completed', 'failed', 'stopped'].includes(status)) await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(status).toBe('completed');
+
+    const pull = await call('workspace_pull', { runId, path: '../escape.txt' });
+    expect(pull.body.status).toBe('failed');
+    expect(pull.code).toBe('WORKSPACE_ESCAPE');
+    expect(pull.body.error?.detail?.runStatus).toBe('completed');
+  }, 30_000);
+
   // Issue #96 (MCP level, over real HTTP): a batch with one rejected path used to make the whole
   // call answer {deleted:[], missing:[], rejected:[...]} — the real seeded file in the SAME call
   // was neither deleted nor reported. Every path must land in exactly one bucket.

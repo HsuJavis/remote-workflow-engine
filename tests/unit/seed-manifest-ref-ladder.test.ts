@@ -136,6 +136,24 @@ describe('seedManifestRef 4-way SEED_SOURCE_CONFLICT ladder (DES-087)', () => {
     ).rejects.toMatchObject({ code: 'MISSING_BLOBS' });
   });
 
+  // issue #103(c): a seedManifestRef-loaded manifest naming an escaping path used to pass through
+  // uncaught (validateSeedSpec's structural check ran only on an INLINE seedManifest, before
+  // loadSeedManifestRef ever runs, and `run_start`'s later `spec.seedManifest = await
+  // this.loadSeedManifestRef(...)` assignment was never re-validated) — the path was silently
+  // stripped/rejected at materialize time instead of refused at admission.
+  it('seedManifestRef alone, manifest names an escaping path → INVALID_SEED_SPEC naming the path', async () => {
+    const manifest = makeManifestBytes([{ path: '../escape.txt', sha256: 'c'.repeat(64) }]);
+    const manifestSha = sha256(manifest);
+    await cas.putBlob('ns', manifestSha, manifest);
+
+    await expect(
+      startScript(mgr, 'return 42;', {
+        seedManifestRef: manifestSha,
+        seedNamespace: 'ns',
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_SEED_SPEC', detail: expect.objectContaining({ path: '../escape.txt' }) });
+  });
+
   it('no run is created (no store row) when SEED_SOURCE_CONFLICT fires', async () => {
     const store = new InMemoryRunStore(clock);
     const localMgr = new RunManager({ store, workRoot: tmpDir, cas });
