@@ -1070,7 +1070,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         // v37 (ARCH-182, DES-263, TASK-258): `origin` stamped from `resolveScheduleTarget`'s own
         // read of the fired trigger's stored `createdRemote` — a thrown CONFINEMENT_UNAVAILABLE
         // falls into the SAME generic `.catch()` below `markFailed` already handles.
-        .start({ name: target.workflow, args: firing.args, startedBy: { type: 'schedule', id: target.workflow }, origin: target.createdRemote ? 'remote' : 'local' })
+        // issue #103(d): startedBy.id is the SCHEDULE id (`firing.id`), like a webhook run carries
+        // the webhook's own id — never the workflow name, which already travels as `name` and via
+        // `run_origins`'s scheduleId->runId join.
+        .start({ name: target.workflow, args: firing.args, startedBy: { type: 'schedule', id: firing.id }, origin: target.createdRemote ? 'remote' : 'local' })
         .then((runId) => scheduler.markFired(firing, runId))
         .catch((err: unknown) => {
           // DES-118: a failed dispatch (e.g. the catalog entry was deleted after the schedule was

@@ -194,11 +194,14 @@ describe('SchedulerPort CRUD (DES-016)', () => {
       runManager: mgr,
       dbPath: ':memory:',
     });
-    await port.create({ kind: 'resident', workflow: 'my-workflow', enabled: true });
+    const created = await port.create({ kind: 'resident', workflow: 'my-workflow', enabled: true });
     const result = await port.trigger('my-workflow', { x: 1 });
     expect(result.error).toBeUndefined();
     expect(result.result?.runId).toBe('run-abc');
     expect(mgr.start).toHaveBeenCalledOnce();
+    // issue #103(d): startedBy.id must be the SCHEDULE id (like a webhook run carries the webhook
+    // id), never the workflow name — the workflow name already travels as `name`/`run_origins`.
+    expect(mgr.start).toHaveBeenCalledWith(expect.objectContaining({ startedBy: { type: 'schedule', id: created.result!.id } }));
   });
 
   it('trigger on a disabled resident returns SCHEDULE_DISABLED without starting a run', async () => {

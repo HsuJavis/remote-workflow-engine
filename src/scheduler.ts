@@ -435,7 +435,12 @@ export class SqliteSchedulerPort {
     // ScheduleResult rather than escaping as a rejected promise.
     let runId: string;
     try {
-      runId = await this._runManager.start({ name: workflow, args, startedBy: { type: 'schedule', id: workflow }, origin: row?.createdRemote === 1 ? 'remote' : 'local' });
+      // issue #103(d): startedBy.id is the SCHEDULE id (like a webhook run carries the webhook's
+      // own id), never the workflow name — the name already travels as `name`/`run_origins`'s own
+      // join. `row` can be undefined here (no resident schedule row found for this workflow — ARCH-
+      // 181's own finding that this call path has no production caller today); fall back to the
+      // workflow name in that case rather than omitting `id` outright.
+      runId = await this._runManager.start({ name: workflow, args, startedBy: { type: 'schedule', id: row?.id ?? workflow }, origin: row?.createdRemote === 1 ? 'remote' : 'local' });
     } catch (err) {
       return { error: toErrEnvelope(err) };
     }
