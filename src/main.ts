@@ -347,18 +347,19 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   // this process's own PATH/node (a candidate that is missing or fails the grant rules is DROPPED —
   // the operator never asked for it) plus the operator's `sandbox.allowReadPaths` (a bad entry
   // REFUSES boot, like a bad grant).
-  const readCtx = { workRoot: workRoot ?? '', protectedFiles: [...protectedFiles, homeDir] };
-  const rawReadPaths = fileConfig.sandbox?.allowReadPaths ?? [];
+  const readRule = (root: string) => ({ workRoot: root, protectedFiles: [...protectedFiles, homeDir] });
   const derivedReadPaths = workRoot?.startsWith('/')
     ? toolchainReadCandidates(deps.pathEnv ?? process.env['PATH'], homeDir, deps.execPath ?? process.execPath)
-        .flatMap((p) => { const r = validateHostPathGrants([p], readCtx, realpathSync); return r.ok ? r.resolved : []; })
+        .flatMap((p) => { const r = validateHostPathGrants([p], readRule(workRoot), realpathSync); return r.ok ? r.resolved : []; })
     : [];
+  const rawReadPaths = fileConfig.sandbox?.allowReadPaths ?? [];
   let resolvedReadPaths: string[] = [];
   if (rawReadPaths.length > 0) {
-    if (!workRoot?.startsWith('/')) {
+    // Same gate as allowHostPaths: an EXPLICIT workRoot, so --check-config and a real boot agree.
+    if (explicitWorkRoot === undefined) {
       throw new Error('rwe.config.json: sandbox.allowReadPaths requires workRoot to be set (an entry is validated against workRoot containment) — set workRoot, or remove the entry.');
     }
-    const readResult = validateHostPathGrants(rawReadPaths, readCtx, realpathSync);
+    const readResult = validateHostPathGrants(rawReadPaths, readRule(explicitWorkRoot), realpathSync);
     if (!readResult.ok) {
       throw new Error(`rwe.config.json: invalid sandbox.allowReadPaths entries — refusing to start (ADR-028 fail-closed):\n${formatGrantRefusals(readResult.refusals)}`);
     }

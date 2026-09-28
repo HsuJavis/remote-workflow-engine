@@ -188,6 +188,14 @@ describe('issue #101 composeConfig() validates sandbox.allowReadPaths and derive
     rmSync(workRoot, { recursive: true, force: true });
   });
 
+  it('allowReadPaths without an EXPLICIT workRoot is refused even when a workRootDefault exists (same gate as allowHostPaths, so --check-config and boot agree)', async () => {
+    const extra = mkdtempSync(join(tmpdir(), 'rwe-extra-'));
+    await expect(
+      composeConfig({ gateway: 'direct-fetch', sandbox: { allowReadPaths: [extra] } } as any, { ...FAKE_DEPS, workRootDefault: mkdtempSync(join(tmpdir(), 'rwe-wrd-')) } as any),
+    ).rejects.toThrow(/allowReadPaths requires workRoot/);
+    rmSync(extra, { recursive: true, force: true });
+  });
+
   it('an allowReadPaths entry that is (or covers) the home directory refuses boot — it would undo the home deny', async () => {
     const workRoot = makeWorkRoot();
     const home = realpathSync(mkdtempSync(join(tmpdir(), 'rwe-home-')));

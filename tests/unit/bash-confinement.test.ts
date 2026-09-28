@@ -102,6 +102,10 @@ describe('issue #101 toolchainReadCandidates() — the home-resident toolchain a
     expect(toolchainReadCandidates(path, '/home/op', '/usr/bin/node')).toEqual(['/home/op/.local/bin']);
   });
 
+  it('trailing-slash spellings of home and ~/.local are still excluded', () => {
+    expect(toolchainReadCandidates('/home/op/:/home/op/.local/:/home/op/.local/node/bin/', '/home/op', '/usr/bin/node')).toEqual(['/home/op/.local/node/bin']);
+  });
+
   it('no home or no PATH ⇒ nothing', () => {
     expect(toolchainReadCandidates(undefined, '/home/op', '/home/op/.local/node/bin/node')).toEqual(['/home/op/.local/node']);
     expect(toolchainReadCandidates('/home/op/.local/node/bin', undefined, '/home/op/.local/node/bin/node')).toEqual([]);

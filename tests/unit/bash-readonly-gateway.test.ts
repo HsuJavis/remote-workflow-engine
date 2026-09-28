@@ -94,7 +94,7 @@ describe('#78(c) SDK gateway — readonly Bash is enforced or refused, never dow
       expect(result.ok).toBe(true);
       const [[call]] = queryMock.mock.calls as [[{ options: { sandbox?: unknown; tools?: string[] } }]];
       expect(call.options.sandbox).toEqual(
-        buildBashConfinement({ root: realRoot, grantedHostPaths: [GRANT], protectedFiles: [], workRoot: realWorkRoot, homeDir: undefined, allowReadPaths: [], bashMode: 'readonly' }),
+        buildBashConfinement({ root: realRoot, grantedHostPaths: [GRANT], protectedFiles: [], workRoot: realWorkRoot, homeDir: process.env['HOME'], allowReadPaths: [], bashMode: 'readonly' }),
       );
       expect((call.options.sandbox as { filesystem: { allowWrite: string[] } }).filesystem.allowWrite).toEqual([]);
       expect(call.options.tools).toEqual(['Bash', 'Read']);

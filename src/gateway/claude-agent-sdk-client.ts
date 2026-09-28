@@ -117,7 +117,8 @@ export interface ClaudeAgentSdkGatewayConfig {
    *  behavior — it only lets the composition root stop omitting the whole block. */
   /** Issue #101: `homeDir` (denied for reads as a whole) and `allowReadPaths` (read-only re-opens:
    *  the derived home-resident toolchain + `sandbox.allowReadPaths`) are resolved by composeConfig();
-   *  optional so a direct construction without them keeps the workRoot/protectedFiles denial only. */
+   *  `homeDir` omitted -> `process.env.HOME` (the CLI subprocess's own HOME); `allowReadPaths`
+   *  omitted -> `[]` (a direct construction gets no toolchain re-open, never a weaker home deny). */
   confinement?: { allowHostPaths: readonly string[]; protectedFiles: readonly string[]; workRoot: string | undefined; homeDir?: string; allowReadPaths?: readonly string[] };
   /** v37 (ARCH-181, DES-262, TASK-257, REQ-218, ADR-083 owner_decision posture C): this engine's
    *  MEASURED confinement posture (src/gateway/confinement-probe.ts, run once at boot — never a
@@ -863,7 +864,9 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
             grantedHostPaths: this._config.confinement?.allowHostPaths ?? [],
             protectedFiles: this._config.confinement?.protectedFiles ?? [],
             workRoot: this._config.confinement?.workRoot,
-            homeDir: this._config.confinement?.homeDir,
+            // Issue #101: default to the HOME this class hands the CLI subprocess (buildSubprocessEnv),
+            // so a construction without the composed block is never less confined than one with it.
+            homeDir: this._config.confinement?.homeDir ?? process.env['HOME'],
             allowReadPaths: this._config.confinement?.allowReadPaths ?? [],
             ...(req.opts.bash === 'readonly' ? { bashMode: 'readonly' as const } : {}),
           })
