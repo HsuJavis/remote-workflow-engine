@@ -78,7 +78,12 @@ export function projectWorkflowForRead(
   return {
     name: full.name,
     version: full.version,
-    channels: full.channels,
+    // Owner follow-up ("don't reveal existence" applies to an ALLOWED response too, not just a
+    // refusal): `full.channels` carries BOTH pointers verbatim — release AND beta — and beta names
+    // a version id the non-owner caller may not even be able to run (issue #100 Q1/Q5). Masked to
+    // release-only here, never `full.channels` wholesale; `versions[]` is not on this view at all
+    // (WorkflowPublicView never declared it), so there is nothing else to mask on this surface.
+    channels: { release: full.channels['release'] ?? null, beta: null } as unknown as WorkflowPublicView['channels'],
     description: full.description,
     phases: full.phases as WorkflowPublicView['phases'],
     params: full.params,
@@ -203,13 +208,35 @@ export function projectWorkflowDescribe(
     // `registered.registeredRemote`, the resolved catalog row's column). Both optional/defaulted
     // so the many pre-existing `projectWorkflowDescribe` test call sites keep compiling unchanged.
     confinementPosture?: 'confined' | 'unconfined'; isRemoteSubmission?: boolean; registeredRemote?: boolean;
+    // Owner follow-up (issue #100 Q5, "don't reveal existence"): true for the owner, admin/
+    // auth-disabled/loopback-exempt bypass, or an ownerless legacy row (`WorkflowCatalog.canMutate`'s
+    // own notion — computed by the caller, `McpFacade.workflowDescribe`, never here: this function
+    // stays pure, no auth). Omitted defaults to `true` (full visibility) so the many pre-existing
+    // `projectWorkflowDescribe` call sites — which predate any viewer concept at all — keep
+    // compiling AND keep their prior (unmasked) behaviour unchanged; only the one production call
+    // site that now HAS a viewer to ask passes this explicitly. `false` masks `versions[]` down to
+    // just the release version (or `[]` when there is none) and `channels.beta` to `null` — the
+    // SAME two fields `McpFacade.workflowList`'s per-row projection masks, same reasoning.
+    viewerIsOwner?: boolean;
   },
 ): WorkflowDescribeView {
   const ceilings = ctx.ceilings ?? DEFAULT_CEILINGS;
   const attempts = ctx.attempts ?? DEFAULT_ATTEMPTS;
   const paramsRaw = full.params as { agents?: Record<string, AgentParamSpec>; args?: Record<string, ParamSpec> } | undefined;
   const legacy = isLegacyParamsShape(full.params);
-  const published = full.channels['release'] != null || full.channels['beta'] != null;
+  // #98 item 6: an explicit `version` selector (`full.resolvedBy === 'version'`) is what
+  // `run_start({version})` ALSO resolves regardless of publication state (REQ-097 "explicit
+  // version wins over any channel", and a non-release version is never even reached by a `channel`/
+  // default-release selector — `resolveVersionRequest` throws CHANNEL_UNPUBLISHED before `full` is
+  // ever built when that pointer is null, so `published` for THOSE two `resolvedBy` values is
+  // always true by construction anyway). The bug this fixes: the OLD `release!=null||beta!=null`
+  // term answered CHANNEL_UNPUBLISHED for an owner describing their OWN never-published version by
+  // explicit id, even though `run_start({version})` runs it fine for them — the read and the run
+  // path disagreed about the same row. By the time this function runs, `McpFacade.workflowDescribe`
+  // has already refused a NON-owner's non-release request (VERSION_NOT_FOUND, Q5) with the SAME
+  // `canRunResolved` predicate `RunManager.start()` uses, so `published` here answers ONLY for a
+  // caller who really could run this exact resolved version — never a masking concern.
+  const published = full.resolvedBy === 'version' || full.channels['release'] != null || full.channels['beta'] != null;
   // issue #93 item 3: the SAME `admissionRefusal()` predicate `RunManager.start()` calls, keyed on
   // the SAME OR'd origin: this call is remote, OR this version was registered remotely. Checked
   // LAST — after `legacy`/`published` — mirroring `RunManager.start()`'s own precedence exactly
@@ -227,13 +254,23 @@ export function projectWorkflowDescribe(
         ? 'CONFINEMENT_UNAVAILABLE'
         : null;
   const mermaid = full.mermaid ?? null;
+  // Owner follow-up: masked for anyone who is not the owner/bypass/ownerless-row (`viewerIsOwner
+  // === false`, the ONLY value that turns masking on — `undefined` stays full-visibility, see the
+  // ctx doc comment above). `release` here is ALWAYS `full.version` for a masked caller by
+  // construction: `McpFacade.workflowDescribe`'s own `canRunResolved` gate already refused any
+  // non-owner request that would have resolved to a different version (Q5), so this never has to
+  // re-derive "which version may this caller see" — it only has to stop NAMING the others.
+  const viewerIsOwner = ctx.viewerIsOwner ?? true;
+  const releasePointer = full.channels['release'] ?? null;
+  const maskedChannels = { release: releasePointer, beta: viewerIsOwner ? (full.channels['beta'] ?? null) : null };
+  const maskedVersions = viewerIsOwner ? full.versions : (releasePointer !== null ? [releasePointer] : []);
 
   return {
     name: full.name,
     version: full.version,
     resolvedBy: full.resolvedBy ?? 'default-release',
-    channels: { release: full.channels['release'] ?? null, beta: full.channels['beta'] ?? null },
-    versions: full.versions,
+    channels: maskedChannels,
+    versions: maskedVersions,
     description: full.description ?? '',
     phases: (full.phases as Array<{ title: string }> | undefined) ?? [],
     params: {

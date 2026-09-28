@@ -185,11 +185,40 @@ export function canMutate(owner: string | null, actor: Actor): boolean {
  *  pre-v36-shaped caller passing `principal` instead of a minted `Actor`), never from the
  *  production facade path (`mcp-facade.ts`'s `actorFor` always mints its own `idSource` via
  *  `idSourceOf`, DES-244). Do not read this as "any self-declared identity is audit-attested" —
- *  it manufactures no such guarantee; it only reproduces what the pre-v36 `principal` shape meant. */
-function actorFromPrincipal(principal: string | null): Actor {
+ *  it manufactures no such guarantee; it only reproduces what the pre-v36 `principal` shape meant.
+ *  v38 (issue #100 owner ruling): EXPORTED — `RunManager.start()`'s scheduler/webhook/nested call
+ *  sites never mint an `Actor` at all (no principal travels down those paths), so `start()` falls
+ *  back to this SAME reproduction rather than inventing a second "no actor supplied" convention. */
+export function actorFromPrincipal(principal: string | null): Actor {
   return principal === null
     ? { id: null, bypass: true, idSource: 'none' }
     : { id: principal, bypass: false, idSource: 'authenticated' };
+}
+
+/** v38 (issue #100 + #98 item 6, owner-approved policy): the non-owner RUN/DESCRIBE admission
+ *  predicate — reuses `canMutate`'s OWN owner/bypass/ownerless notion (the issue's explicit
+ *  instruction: "confirm how canMutate/bypass works and apply the same notion") rather than
+ *  inventing a parallel one. An owner, a bypass actor (admin/auth-disabled/loopback-exempt — the
+ *  same three kinds `actorFor(..., 'bypass')` already bypasses for register/publish/deregister),
+ *  or an ownerless legacy row (`!owner`) may reach ANY version. Everyone else is confined to the
+ *  CURRENT RELEASE pointer — Q1/Q2 of issue #100: an explicit `version` is allowed only when it
+ *  equals today's release; a `channel` selector is allowed only for `'release'` itself.
+ *  `requestedChannel === 'beta'` is refused UNCONDITIONALLY (never falls through to the version
+ *  equality check) even in the coincidental case beta and release point at the same version today
+ *  — a non-owner's explicit ask for the beta channel must not be answered any differently than it
+ *  would be the day beta and release diverge again; confirming "beta happens to equal release
+ *  right now" is itself a channel-state disclosure Q5 (VERSION_NOT_FOUND, existence-masking) rules
+ *  out. */
+export function canRunResolved(
+  owner: string | null,
+  actor: Actor,
+  resolvedVersion: string,
+  channels: Channels,
+  requestedChannel?: Channel,
+): boolean {
+  if (canMutate(owner, actor)) return true;
+  if (requestedChannel === 'beta') return false;
+  return resolvedVersion === channels.release;
 }
 function isActor(x: unknown): x is Actor {
   return typeof x === 'object' && x !== null && 'bypass' in x && 'idSource' in x;
