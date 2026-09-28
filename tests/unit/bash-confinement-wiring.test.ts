@@ -32,7 +32,7 @@ describe("UT-314 options.sandbox is the builder's own output, at every construct
   // 'confined'` explicitly to keep testing the confined arm; a fourth case pins the corrected default.
   it('deep-equals buildBashConfinement() for the SAME input, via a real workspace + confinement config (confinementPosture explicitly confined)', async () => {
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
-    const { buildBashConfinement, DENY_READ_MODE } = await import('../../src/gateway/bash-confinement.js');
+    const { buildBashConfinement } = await import('../../src/gateway/bash-confinement.js');
     const workRoot = '/var/lib/rwe-data';
     // v37 Gate-6 (DES-257): nested under workRoot the way every real run workspace is
     // (`workRoot/workflows/<name>/runs/<runId>`, run-manager.ts) — a workspace path unrelated to
@@ -44,12 +44,15 @@ describe("UT-314 options.sandbox is the builder's own output, at every construct
     const client = new ClaudeAgentSdkGatewayClient({
       baseUrl: 'http://127.0.0.1:4000',
       confinementPosture: 'confined',
-      confinement: { allowHostPaths: [grant], protectedFiles, workRoot },
+      confinement: { allowHostPaths: [grant], protectedFiles, workRoot, homeDir: '/home/op', allowReadPaths: ['/home/op/.local/node'] },
     } as any);
     const opts: AgentOpts = {};
     await client.invoke({ prompt: 'ping', opts, runId: 'run-1', agentId: 'agent-1', workspace });
     const [[call]] = queryMock.mock.calls as [[{ options?: { sandbox?: unknown } }]];
-    const expected = buildBashConfinement({ root: workspace, grantedHostPaths: [grant], protectedFiles, workRoot, denyReadMode: DENY_READ_MODE });
+    const expected = buildBashConfinement({ root: workspace, grantedHostPaths: [grant], protectedFiles, workRoot, homeDir: '/home/op', allowReadPaths: ['/home/op/.local/node'] });
+    // Issue #101: the home/toolchain half of the confinement block reaches the posture, not dropped.
+    expect(expected.filesystem?.denyRead).toContain('/home/op');
+    expect(expected.filesystem?.allowRead).toContain('/home/op/.local/node');
     expect(call.options?.sandbox).toEqual(expected);
   });
 

@@ -430,6 +430,27 @@ describe('every KNOWN_FILE_CONFIG_KEYS entry is probed or excluded (UT-219, defe
     rmSync(grant, { recursive: true, force: true });
   });
 
+  // Issue #101: the deny-by-default read posture's two new inputs — the engine's home (denied whole)
+  // and the read-only re-opens (`sandbox.allowReadPaths` + the home-resident toolchain derived from
+  // the engine's own PATH/execPath) — cross the SAME composeConfig hop as allowHostPaths above; a
+  // forgotten forward would silently re-open the whole home (the #101 exfil), so it gets its lock.
+  it("sdk branch: composeConfig() forwards homeDir + sandbox.allowReadPaths (+ derived toolchain) into the gateway's confinement (issue #101)", async () => {
+    const { mkdtempSync, mkdirSync, rmSync, realpathSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-ccwiring-workroot-'));
+    const home = realpathSync(mkdtempSync(join(tmpdir(), 'rwe-ccwiring-home-')));
+    mkdirSync(join(home, '.local', 'node', 'bin'), { recursive: true });
+    const extra = realpathSync(mkdtempSync(join(tmpdir(), 'rwe-ccwiring-extra-')));
+    const cfg = await composeConfig({ gateway: 'sdk', workRoot, sandbox: { allowReadPaths: [extra] } } as any, {
+      ...FAKE_DEPS, homeDir: home, pathEnv: `${join(home, '.local', 'node', 'bin')}:/usr/bin`, execPath: join(home, '.local', 'node', 'bin', 'node'),
+    } as any);
+    const gwConfig = (cfg.gateway as unknown as { _config: { confinement?: { homeDir?: string; allowReadPaths?: readonly string[] } } })._config;
+    expect(gwConfig.confinement?.homeDir).toBe(home);
+    expect(gwConfig.confinement?.allowReadPaths).toEqual([join(home, '.local', 'node', 'bin'), join(home, '.local', 'node'), extra]);
+    for (const d of [workRoot, home, extra]) rmSync(d, { recursive: true, force: true });
+  });
+
   // v37 Gate-8 send-back (finding A5, INV-V37-5): `confinementPosture` crosses TWO hops from
   // `deps.confinementProbe` — main.ts:368 onto `ServerConfig.confinementPosture` (the door's own
   // read in call-tool.ts and RunManager's predicate) and main.ts's sdk-branch gateway construction

@@ -545,7 +545,8 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `principals` | 角色對照表：鍵是 principal id（OAuth 下的使用者 email，或 `"*"` 代表所有已驗證但未列名者），值是 `{role:"admin"｜"author"｜"user"}`；角色字串打錯（例如 `"admn"`）**開機直接拒絕啟動**，絕不會靜默退回 `"user"`（ADR-028 fail-closed）；整個鍵省略時，`auth.enabled:true` 下每個已驗證呼叫者一律 `"user"`（同樣是 fail-closed，且開機那行 `auth:` log 會如實顯示） | `object` / 省略 | 否 | v24 |
 | `rwe.config.json` → `proxyManager` / `issueReporter` / `mcpProbe` / `modelCatalog` / `modelCatalogFetchers` / `systemInfo` | **程式注入用的替身接點，JSON 設定檔設不了**（值是函式/物件）。列在這裡只是為了說明：把它們寫進 `rwe.config.json` 不會被當成「不認得的鍵」警告，但也不會有任何效果 | 物件/函式 / — | 否 | v26 |
 | `rwe.config.json` → `mcpEgressAllowlist` | `workspace_push({kind:"mcp"})` 註冊 `http` transport 時的 https-only 白名單（URL 前綴比對，同 `seedRefAllowlist` 的 fail-closed 慣例）；省略/空陣列＝任何 `http` MCP 設定一律 `EGRESS_DENIED`（探測前就擋，探測次數為零） | `string[]` / `[]` | 否 | v24 |
-| `rwe.config.json` → `sandbox.allowHostPaths` | 營運者授予的共用主機路徑清單——agent 的 Bash 除了自己的 run workspace，還可以讀寫這些路徑（REQ-218）。每一筆在開機時驗證：必須是絕對路徑（不展開 `~`）、必須存在於磁碟上（**開機前要先 `mkdir`**，否則以 `UNRESOLVABLE` 拒絕啟動）、不可在 `workRoot` 內也不可包住 `workRoot`、不可等於或包住 `rwe.config.json`/`auth-tokens.db`、不可含萬用字元；任何一筆不合規就**整個拒絕開機**，訊息逐筆列出。省略 = `[]`，最嚴格姿態。**此鍵只申報授權清單，不決定 Bash 是否真的受限——那是量測出來的**（見下一列） | `string[]` / `[]` | 是 | v37 |
+| `rwe.config.json` → `sandbox.allowHostPaths` | 營運者授予的共用主機路徑清單——agent 的 Bash 除了自己的 run workspace，還可以讀寫這些路徑（REQ-218）。每一筆在開機時驗證：必須是絕對路徑（不展開 `~`）、必須存在於磁碟上（**開機前要先 `mkdir`**，否則以 `UNRESOLVABLE` 拒絕啟動）、不可在 `workRoot` 內也不可包住 `workRoot`、不可等於或包住 `rwe.config.json`/`auth-tokens.db`、不可等於或包住引擎的家目錄（issue #101，否則等於把整個家目錄的讀取封鎖還回去）、不可含萬用字元；任何一筆不合規就**整個拒絕開機**，訊息逐筆列出。省略 = `[]`，最嚴格姿態。**此鍵只申報授權清單，不決定 Bash 是否真的受限——那是量測出來的**（見下一列） | `string[]` / `[]` | 是 | v37 |
+| `rwe.config.json` → `sandbox.allowReadPaths` | issue #101：agent Bash 的讀取是**預設拒絕**（整個家目錄 + 整個 `workRoot`，見 §1c (f)），這個清單是營運者額外**唯讀**重新開放的路徑——給裝在家目錄底下、引擎自動推導沒涵蓋到的工具鏈用（例如 `~/.cargo/bin` 加 `~/.rustup`）。引擎自己 `PATH` 上位於家目錄內的目錄、以及它自己 node 的安裝前綴（`~/.local/node` 這種 `<prefix>/bin/node`）**會自動重新開放，不用列**。驗證規則與 `sandbox.allowHostPaths` 相同（絕對路徑、開機時必須存在、不在也不包住 `workRoot`、不等於也不包住受保護檔案或家目錄本身、無萬用字元），任一筆不合規**整個拒絕開機**；設了這個鍵就必須明確設定 `workRoot`。永遠不可寫。省略 = `[]` | `string[]` / `[]` | 否 | #101 |
 | （量測值，非設定鍵）Bash 圍籠姿態 | 開機時先確認 `bwrap`（bubblewrap）與 `socat` 都在 PATH 上（真正的 Claude CLI sandbox 硬性需要兩者，缺一個直接判 `unconfined`，`reason` 指名缺哪個；`sudo apt install bubblewrap socat` 補齊即可），兩者都在才對主機跑一次巢狀 `bwrap --unshare-user` 探測（REQ-218，ADR-083 業主裁決 posture C）：探測通過 → `confined`，這台部署上每個 agent() 呼叫都真的請求 OS 沙箱；探測失敗（常見於 AppArmor `bwrap-userns-restrict` 政策擋住巢狀 namespace——修法見下方「探測失敗時怎麼修」）→ `unconfined`，**本機（loopback）送出、且跑的是本機註冊版本的 run 仍會照跑、不受任何 Bash 圍籠**，但**遠端送出的 `run_start`/`run_resume`——在 ajv 參數驗證、authz、以及工作流程/版本是否存在都先過了之後才被拒絕**（issue #93：這道拒絕以前排在最前面，連參數錯誤或工作流程不存在都先回 `CONFINEMENT_UNAVAILABLE`，2026-09-26 已改成排在最後，讓遠端呼叫端至少能看到自己請求本身的錯誤），而且**不論從哪裡送出，只要這次要跑的版本是遠端註冊的、或觸發器是遠端建立的，同樣被拒**（`CONFINEMENT_UNAVAILABLE`，判定式見 §6）。姿態印在開機那行 log 與每次 `agent.confinement` 事件的 `posture` 欄位，無法用設定檔調高或調低——這是量測，不是宣告。**探測失敗時怎麼修（Ubuntu/AppArmor 主機）**：多半是 `bwrap-userns-restrict` AppArmor 設定檔擋住第二層（巢狀）unprivileged user namespace——設定 `kernel.apparmor_restrict_unprivileged_userns=0`（寫進 `/etc/sysctl.d/60-rwe-userns.conf` 再 `sysctl --system`）**並且**停用該設定檔（`ln -s /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/disable/ && apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict`），然後重開引擎；這是**整台主機**層級的放寬（任何非特權行程之後都能建立巢狀 user namespace），只在這台主機上每個會用到本引擎的人都已經是作業系統層信任對象時才這樣做——不是共用/多租戶主機。要復原：移除該 sysctl 覆寫，並重新啟用設定檔（刪掉 `disable/` 下的符號連結，再跑一次 `apparmor_parser`） | — | — | v37 / issue #93 |
 | `rwe.config.json` → `seedRefAllowlist` | engine-pull `seedRef:{repoUrl,sha}` 的 egress 白名單（`https://` URL 前綴）；**fail-closed**：省略/空陣列 = 任何 seedRef 回 `SEEDREF_DISABLED`；不命中前綴（含 `169.254.169.254`/`localhost`/私有 IP/`file://`）→ `SEEDREF_EGRESS_DENIED`（SSRF 安全） | `string[]` / `[]` | 否 | v13 |
 | `rwe.config.json` → `maxBlobBytes` | `POST /assets/blob/:sha`（streaming raw-body 上傳）最大 body bytes；超過 → HTTP 413 `BLOB_TOO_LARGE` | `number` / `268435456`（256 MiB，最小 1048576） | 否 | v10 |
@@ -722,7 +723,34 @@ CLI 自己就會回「sandbox is enabled but dependencies are missing: ... not i
 判定式、查法與復原步驟見 §6（`CONFINEMENT_UNAVAILABLE`）。姿態量測結果印在開機 log
 的 `Bash confinement: CONFINED`/`UNCONFINED` 那一行（該行同時附上下段的操作員修法），也隨每次
 `agent()` 呼叫寫進 `agent.confinement` 事件的 `posture`/`enabled` 欄位；無法用設定檔調高或調低
-（只有 §1b `sandbox.allowHostPaths` 能在「圍籠生效」的前提下額外開放特定主機路徑）。
+（只有 §1b `sandbox.allowHostPaths`（讀寫）與 `sandbox.allowReadPaths`（唯讀）能在「圍籠生效」的前提下額外開放特定主機路徑）。
+
+**(f) 圍籠生效時，`Bash` 的「讀取」是預設拒絕的**（issue #101）：寫入一向只允許自己的 run 工作目錄
+（加上 `sandbox.allowHostPaths`），但在 issue #101 之前，**讀取**只擋了 `workRoot` 底下幾個引擎狀態
+檔名，其他整個主機檔案系統都是唯讀可見——agent 的 `Bash` 讀得到**別人 run 的工作目錄**
+（`<workRoot>/workflows/<wf>/runs/<runId>/`）與家目錄裡的憑證（`~/.claude/.credentials.json`、
+`~/.claude.json`、`~/.config/rwe.env`、各種 `~/.*_API_KEY`），而 run 的結果就是一條外洩管道。現在
+`denyRead` 是**引擎自己的整個家目錄**（= CLI 子行程的 `HOME`）+ **整個 `workRoot`**（不論在不在
+家目錄內）+ 受保護檔案（`rwe.config.json`、`auth-tokens.db`、`casDir`/`assetRoot`/各 DB 的實際路徑）；
+`allowRead` 再把以下幾項從被拒絕的樹裡重新開放：這次呼叫自己的工作目錄、營運者的
+`sandbox.allowHostPaths`、以及家目錄內的工具鏈——引擎自己 `PATH` 上落在家目錄內的每一個目錄，
+加上引擎 node 的安裝前綴（`<prefix>/bin/node` ⇒ `<prefix>`，因為 `npm`/`npx` 是指進
+`<prefix>/lib/node_modules` 的 symlink）；永遠不會是家目錄本身或共用的 `~/.local`；不存在或違反
+授權規則的候選會被**靜默略過**（營運者沒要求它），其餘靠 `sandbox.allowReadPaths` 補。機制是 CLI
+自己的 sandbox：每個 `denyRead` 目錄掛一個空 `tmpfs`，再把允許的路徑 bind 回去——已在一台圍籠生效
+的主機上實測（bwrap + socat，CLI 2.1.283，量測紀錄見 `docs/evidence/issue-101-read-confinement.md`，
+自動化驗收是 `tests/acceptance/val-101-bash-read-confinement.test.ts`）。所以在 agent 眼中：
+`ls ~` 或 `ls <workRoot>` 會成功，但只看到通往自己工作目錄/工具鏈的空骨架目錄，看不到其他 run，
+也讀不到任何憑證。`/usr`、`/etc`、`/tmp` 等家目錄以外的系統路徑仍是唯讀可見（`git`、`python3`
+這類系統工具照常可用）。**行為變化**：`~/.gitconfig` 也讀不到了（agent 要 `git commit` 需在工作目錄內
+自行設定身份，例如 `git -c user.name=… -c user.email=… commit`）；CLI 每次在 Bash 前 `source` 的
+shell snapshot（在 `~/.claude/shell-snapshots/`）改為靜默失敗（該步驟本來就是 `|| true`，指令照跑）。
+**已知仍未關閉的跨 run 管道**（CLI 自己的機制，設定蓋不掉，量測過）：CLI 固定把 `/tmp/claude-<uid>/`
+（它的暫存根目錄，內含每個 run/session 的 `tasks/` 子目錄）與 `~/.claude/debug/` 以**可寫**方式 bind
+回每個 sandbox，而且發生在 `denyRead` 之後，所以同一個 uid 下的所有 run 共用這兩處；把它們列進
+`denyRead` 無效，`CLAUDE_CODE_TMPDIR` 只會多 bind 一個目錄、不會移除 `/tmp/claude-<uid>/`。這兩處不含
+憑證，但可以被當作 run 之間的傳遞通道；要徹底隔開，需讓引擎以專用的系統使用者身分執行（不和操作員
+的互動式 Claude Code 共用 uid）。
 
 **開機 log 印 `UNCONFINED (socat not found on PATH ...)` 或 `(bwrap not found on PATH ...)`，怎麼
 修**：先裝缺的那個執行檔——`sudo apt install bubblewrap socat`（兩個都裝最省事，之後不用再回來查

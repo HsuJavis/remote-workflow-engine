@@ -175,7 +175,7 @@ export async function runProbe(
 }
 
 /** Latest probe result per (provider, model), in a sqlite table. Production puts it in the run
- *  store's own `store/index.db`, which the Bash sandbox already denies (ENGINE_STATE_DENY).
+ *  store's own `store/index.db`, which the Bash sandbox already denies (the whole workRoot is denyRead, issue #101).
  *  2026-09-26 (alias mechanism removed): the `alias` column is gone — keyed by (provider, model)
  *  alone, which was always the real primary key. A pre-existing db from before this change is
  *  migrated by DROPPING the old table (the spec's own call: "old rows may be dropped") — probe

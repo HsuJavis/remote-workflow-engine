@@ -6,38 +6,22 @@
 // that answer decides WHETHER this builder's output is even handed to `query()` (ARCH-181/DES-262),
 // never what it contains.
 import type { SandboxSettings } from '@anthropic-ai/claude-agent-sdk';
-import { join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { isPathContained } from '../path-containment.js';
 
-// Fixed by spike S7 (TASK-250, evidence/v37-spike/S7.md — inconclusive, blocked by the same
-// apply-seccomp/AppArmor failure S1 root-caused): a PARAMETER, never a config key. 'enumerated' is
-// the built-in posture because a wrong 'workroot' fails "the agent cannot read its own workspace" —
-// every run dead — not "cross-run reads stay open". A positive S7 flips this constant and deletes
-// the 'enumerated' arm + ENGINE_STATE_DENY in the same change (ARCH-175's own instruction).
-export const DENY_READ_MODE: 'enumerated' | 'workroot' = 'enumerated';
+// Issue #101 (supersedes ARCH-175's 'enumerated' bridge): Bash READS are deny-by-default. The
+// CLI's sandbox builder turns each `denyRead` directory into a `--tmpfs` over it and then re-binds
+// every `allowRead`/`allowWrite` path that lives inside it — measured on a confined host (bwrap +
+// socat, CLI 2.1.283, docs/evidence/issue-101-read-confinement.md): with `denyRead: [$HOME,
+// workRoot]` and `allowRead: [workspace, toolchain]`, the agent reads its own workspace and runs
+// node/npm/python3/git, while another run's workspace, `~/.claude/.credentials.json`,
+// `~/.claude.json`, `~/.gitconfig` and workRoot's engine state are all unreadable. That positive
+// result is the one spike S7 could not get, so the old 'enumerated' arm (a list of engine-state
+// names under workRoot) and its ENGINE_STATE_DENY bridge are deleted, as ARCH-175 prescribed.
 
 // Fixed by spike S8 (blocked by the same S1 finding — could not measure whether masking survives
-// the CLI's own authentication). A parameter, never a config key, same discipline as DENY_READ_MODE.
+// the CLI's own authentication). A parameter, never a config key.
 export const MASK_PROVIDER_ENV = false;
-
-// v37 (ARCH-175 note): denyRead names workRoot's own engine-state directories, not a stale sibling
-// run-directory list (those are created concurrently and would be stale before use).
-// v37 Gate-8 send-back amendment (finding A3, ARCH-175): this is now HALF of the deny surface, and
-// it is a BRIDGE — maintained until a positive spike S7, deleted together with the 'enumerated' arm
-// at the flip (see DENY_READ_MODE's own comment) — not a control anyone should extend. It holds
-// ONLY the knob-less literals: paths with no `FileConfig` override key, so a literal is the honest
-// expression for them rather than an oversight. `mcp-registry.db` (workflow-catalog.ts:398) and
-// `_global_assets` (asset-sync.ts:145, hangs off workRoot, NOT the overridable assetRoot) were
-// MISSING before this amendment. Every OPERATOR-OVERRIDABLE path (casDir, assetRoot,
-// webhookDbPath, schedulerDbPath, selfUpdateDbPath, continuationDbPath) is deliberately NOT here —
-// re-deriving an override from a key name is exactly the class of bug this amendment exists to
-// close (INV-V37-4); those arrive as RESOLVED VALUES in `protectedFiles` from the composition root
-// (main.ts's composeConfig()) instead. `'continuations.db'` is REMOVED — `continuationDbPath` has
-// no production construction site anywhere (verified: `grep -rn -i continuation src/`), so it was
-// a phantom, not a completeness gap.
-export const ENGINE_STATE_DENY = [
-  'store', 'catalog.db', 'auth-tokens.db', 'mcp-registry.db', '_global_assets',
-] as const;
 
 /** Workspace-relative paths the Claude CLI reads as PROJECT configuration from its cwd (= the run
  *  workspace, `settingSources:['project']`) and that can run code or widen what a later agent may do.
@@ -111,8 +95,15 @@ export interface ConfinementInput {
   readonly grantedHostPaths: readonly string[];
   /** Absolute paths that must stay unreadable regardless of any grant (DES-255). */
   readonly protectedFiles: readonly string[];
+  /** Denied for reads as a whole (issue #101): every run's workspace and all engine state. */
   readonly workRoot: string | undefined;
-  readonly denyReadMode: 'enumerated' | 'workroot';
+  /** The engine's home directory (= the CLI subprocess's HOME) — denied for reads as a whole
+   *  (issue #101: `~/.claude/.credentials.json`, `~/.claude.json`, `~/.config`, API-key files, ...). */
+  readonly homeDir: string | undefined;
+  /** Read-only re-opens inside the denied home/workRoot: the home-resident toolchain the agent's
+   *  commands need (`toolchainReadCandidates`) plus the operator's `sandbox.allowReadPaths` —
+   *  validated + realpath'd at boot (composeConfig), never writable. */
+  readonly allowReadPaths: readonly string[];
   /** Issue #78(c): `'readonly'` ⇒ Bash may write nothing under the root or any grant. */
   readonly bashMode?: 'readonly';
 }
@@ -126,7 +117,7 @@ function isNonEmptyString(s: string | undefined | null): s is string {
  *  workspace means "nothing may be written", never "no sandbox" (the ARCH-176 bug-class: a guard
  *  whose "nothing to check" arm must not return the same verdict as its "checked and clean" arm). */
 export function buildBashConfinement(input: ConfinementInput): SandboxSettings {
-  const { root, grantedHostPaths, protectedFiles, workRoot, denyReadMode, bashMode } = input;
+  const { root, grantedHostPaths, protectedFiles, workRoot, homeDir, allowReadPaths, bashMode } = input;
   const grants = grantedHostPaths.filter(isNonEmptyString);
   const allowPaths = isNonEmptyString(root) ? [root, ...grants] : [];
   const settingsFiles = isNonEmptyString(root) ? [...PROJECT_CONFIG_PATHS, ...ENGINE_OWNED_CONFIG_PATHS].map((rel) => join(root, rel)) : [];
@@ -138,10 +129,10 @@ export function buildBashConfinement(input: ConfinementInput): SandboxSettings {
   // CLI's shell wrapper needs it, and it holds no run data.
   const readonly = bashMode === 'readonly';
   const filteredProtected = protectedFiles.filter(isNonEmptyString);
-  const denyRead =
-    denyReadMode === 'workroot'
-      ? [workRoot, ...filteredProtected].filter(isNonEmptyString)
-      : [...(isNonEmptyString(workRoot) ? ENGINE_STATE_DENY.map((p) => join(workRoot, p)) : []), ...filteredProtected].filter(isNonEmptyString);
+  // Issue #101: deny the whole home and the whole workRoot; `allowRead` below re-opens exactly this
+  // call's workspace, the grants and the toolchain inside them (the CLI mounts a tmpfs over each
+  // denied directory, then binds the allowed paths back on top — measured, see the header note).
+  const denyRead = [homeDir, workRoot, ...filteredProtected].filter(isNonEmptyString);
   const settings: SandboxSettings = {
     enabled: true,
     failIfUnavailable: true,
@@ -149,7 +140,7 @@ export function buildBashConfinement(input: ConfinementInput): SandboxSettings {
     allowUnsandboxedCommands: false,
     filesystem: {
       allowWrite: readonly ? [] : allowPaths,
-      allowRead: allowPaths,
+      allowRead: [...allowPaths, ...allowReadPaths.filter(isNonEmptyString)],
       denyRead,
       // Issue #95: readonly's denyWrite is `allowPaths` ONLY — `root` on its own already denies
       // every one of `settingsFiles` (they are all inside it), so re-listing them here bought no
@@ -173,6 +164,21 @@ export function buildBashConfinement(input: ConfinementInput): SandboxSettings {
     },
   };
   return settings;
+}
+
+/** Issue #101: the home-resident toolchain a denied home must re-open for the agent's commands —
+ *  every `PATH` entry that lives under `homeDir` (the CLI subprocess inherits this PATH), plus the
+ *  install prefix of the engine's own node (`<prefix>/bin/node` ⇒ `<prefix>`, because npm/npx are
+ *  symlinks into `<prefix>/lib/node_modules`). Never `homeDir` itself and never `~/.local` (a shared
+ *  prefix that holds `share/` app data — e.g. the default workRoot and the updater's state). PURE:
+ *  the caller (composeConfig) realpaths, drops missing paths and re-validates each candidate. */
+export function toolchainReadCandidates(pathEnv: string | undefined, homeDir: string | undefined, execPath: string): string[] {
+  if (!isNonEmptyString(homeDir)) return [];
+  const shared = new Set([homeDir, join(homeDir, '.local')]);
+  const underHome = (p: string): boolean => p.startsWith('/') && !shared.has(p) && isPathContained(p, homeDir, (x) => x);
+  const out = (pathEnv ?? '').split(':').filter((p) => p.startsWith('/')).map((p) => resolve(p)).filter(underHome);
+  if (basename(dirname(execPath)) === 'bin' && underHome(dirname(dirname(execPath)))) out.push(dirname(dirname(execPath)));
+  return [...new Set(out)];
 }
 
 /** Issue #78(c): tools that write through their own path — a readonly shell beside any of them is not

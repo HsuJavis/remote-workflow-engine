@@ -123,7 +123,8 @@ describe("VAL-253: REQ-218 — an agent's Bash cannot write outside the run work
       grantedHostPaths: [grant],
       protectedFiles: [],
       workRoot,
-      denyReadMode: 'enumerated',
+      homeDir: undefined,
+      allowReadPaths: [],
     });
     expect(posture.filesystem?.allowWrite).toContain(grant);
     rmSync(grant, { recursive: true, force: true });

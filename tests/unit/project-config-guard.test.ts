@@ -144,7 +144,7 @@ describe('file tools may not create or modify CLI project configuration in the r
 
 describe('Bash sandbox denyWrite covers the same project-configuration set', () => {
   it('normal Bash: every protected path under the root is on denyWrite explicitly', () => {
-    const input = { root: '/ws', grantedHostPaths: [], protectedFiles: [], workRoot: '/wr', denyReadMode: 'enumerated' as const };
+    const input = { root: '/ws', grantedHostPaths: [], protectedFiles: [], workRoot: '/wr', homeDir: undefined, allowReadPaths: [] };
     const s = buildBashConfinement(input);
     for (const rel of ['.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/commands', '.claude/skills', '.claude/launch.json', '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.mcp.json']) {
       expect(s.filesystem?.denyWrite).toContain(join('/ws', rel));
@@ -158,7 +158,7 @@ describe('Bash sandbox denyWrite covers the same project-configuration set', () 
   // attempts for paths that (mostly) do not exist yet, each one a latent EROFS failure once the root
   // itself is also on denyWrite.
   it('readonly Bash: denyWrite is the root (and grants) only — no redundant children', () => {
-    const input = { root: '/ws', grantedHostPaths: ['/srv/shared'], protectedFiles: [], workRoot: '/wr', denyReadMode: 'enumerated' as const, bashMode: 'readonly' as const };
+    const input = { root: '/ws', grantedHostPaths: ['/srv/shared'], protectedFiles: [], workRoot: '/wr', homeDir: undefined, allowReadPaths: [], bashMode: 'readonly' as const };
     const s = buildBashConfinement(input);
     expect(s.filesystem?.denyWrite).toEqual(['/ws', '/srv/shared']);
   });

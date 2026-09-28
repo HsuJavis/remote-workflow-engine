@@ -5,7 +5,7 @@
 // Written test-first (Gate 5, RED): main.ts never calls validateHostPathGrants(), and
 // loadFileConfig() is not exported / does not return `{config, path}` yet.
 import { describe, it, expect, vi } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
@@ -175,3 +175,60 @@ describe('UT-312 protectedFiles come from the file loadFileConfig() actually rea
     rmSync(workRoot, { recursive: true, force: true });
   });
 });
+
+// Issue #101: `sandbox.allowReadPaths` (operator read-only re-opens inside the denied home/workRoot)
+// is validated at boot exactly like allowHostPaths — and a derived toolchain path that does not
+// exist, or that would re-open the workRoot, is dropped rather than handed to bwrap.
+describe('issue #101 composeConfig() validates sandbox.allowReadPaths and derives the toolchain re-opens', () => {
+  it('a relative allowReadPaths entry refuses boot, naming the entry', async () => {
+    const workRoot = makeWorkRoot();
+    await expect(
+      composeConfig({ gateway: 'direct-fetch', workRoot, sandbox: { allowReadPaths: ['rel/tool'] } } as any, FAKE_DEPS),
+    ).rejects.toThrow(/sandbox\.allowReadPaths[\s\S]*rel\/tool/);
+    rmSync(workRoot, { recursive: true, force: true });
+  });
+
+  it('allowReadPaths without an EXPLICIT workRoot is refused even when a workRootDefault exists (same gate as allowHostPaths, so --check-config and boot agree)', async () => {
+    const extra = mkdtempSync(join(tmpdir(), 'rwe-extra-'));
+    await expect(
+      composeConfig({ gateway: 'direct-fetch', sandbox: { allowReadPaths: [extra] } } as any, { ...FAKE_DEPS, workRootDefault: mkdtempSync(join(tmpdir(), 'rwe-wrd-')) } as any),
+    ).rejects.toThrow(/allowReadPaths requires workRoot/);
+    rmSync(extra, { recursive: true, force: true });
+  });
+
+  it('an allowReadPaths entry that is (or covers) the home directory refuses boot — it would undo the home deny', async () => {
+    const workRoot = makeWorkRoot();
+    const home = realpathSync(mkdtempSync(join(tmpdir(), 'rwe-home-')));
+    await expect(
+      composeConfig({ gateway: 'direct-fetch', workRoot, sandbox: { allowReadPaths: [home] } } as any, { ...FAKE_DEPS, homeDir: home } as any),
+    ).rejects.toThrow(/COVERS_PROTECTED/);
+    rmSync(workRoot, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('an allowHostPaths grant covering the home directory is refused too', async () => {
+    const workRoot = makeWorkRoot();
+    const home = realpathSync(mkdtempSync(join(tmpdir(), 'rwe-home-')));
+    await expect(
+      composeConfig({ gateway: 'direct-fetch', workRoot, sandbox: { allowHostPaths: [home] } } as any, { ...FAKE_DEPS, homeDir: home } as any),
+    ).rejects.toThrow(/COVERS_PROTECTED/);
+    rmSync(workRoot, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('derived toolchain: a missing PATH dir and a PATH dir inside workRoot are dropped, never passed to the sandbox', async () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), 'rwe-home-')));
+    const workRoot = join(home, 'wr');
+    mkdirSync(join(workRoot, 'bin'), { recursive: true });
+    mkdirSync(join(home, 'tools', 'bin'), { recursive: true });
+    const cfg = await composeConfig({ gateway: 'sdk', workRoot } as any, {
+      ...FAKE_DEPS, homeDir: home, execPath: '/usr/bin/node',
+      pathEnv: [join(home, 'missing', 'bin'), join(workRoot, 'bin'), join(home, 'tools', 'bin'), '/usr/bin'].join(':'),
+    } as any);
+    const c = (cfg.gateway as unknown as { _config: { confinement?: { homeDir?: string; allowReadPaths?: readonly string[] } } })._config.confinement;
+    expect(c?.homeDir).toBe(home);
+    expect(c?.allowReadPaths).toEqual([join(home, 'tools', 'bin')]);
+    rmSync(home, { recursive: true, force: true });
+  });
+});
+

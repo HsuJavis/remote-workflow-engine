@@ -22,13 +22,13 @@
 // every test caller, none of which sets RWE_CONFIG_PATH/goes through main().
 import { readFileSync, existsSync, realpathSync, mkdtempSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createServer } from './server.js';
 import type { ServerConfig } from './server.js';
 import { ClaudeAgentSdkGatewayClient } from './gateway/claude-agent-sdk-client.js';
 import type { ClaudeAgentSdkGatewayConfig } from './gateway/claude-agent-sdk-client.js';
-import { validateHostPathGrants, formatGrantRefusals } from './gateway/bash-confinement.js';
+import { validateHostPathGrants, formatGrantRefusals, toolchainReadCandidates } from './gateway/bash-confinement.js';
 import { probeConfinement, CONFINEMENT_REMEDIATION } from './gateway/confinement-probe.js';
 import type { ConfinementProbeResult } from './gateway/confinement-probe.js';
 import { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
@@ -38,6 +38,14 @@ import type { Role } from './tool-specs.js';
 import { validateModelProbeConfig } from './models/model-probe.js';
 
 type GatewayChoice = 'sdk' | 'direct-fetch';
+
+function safeRealpath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
 
 function isNonEmptyString(s: string | undefined): s is string {
   return typeof s === 'string' && s.length > 0;
@@ -78,7 +86,13 @@ interface FileConfig extends Partial<Omit<ServerConfig, 'gateway' | 'principals'
    *  every offending entry) rather than silently admitted or silently dropped. Absent -> `[]`, the
    *  strictest posture. The OPERATOR grants; there is no author-side request surface this iteration
    *  (ADR-084's deferred (C) — the operator and the author are the same person today). */
-  sandbox?: { allowHostPaths?: string[] };
+  /** Issue #101: `allowReadPaths` — extra READ-ONLY re-opens inside the Bash sandbox's denied home
+   *  and workRoot (e.g. `~/.cargo/bin`, `~/.rustup` for a home-installed toolchain). Validated like
+   *  `allowHostPaths` (absolute, existing, outside workRoot, covering no protected path and not the
+   *  home directory itself) and refused at boot otherwise. The engine's own home-resident PATH
+   *  entries and node prefix are re-opened automatically (`toolchainReadCandidates`); this key is
+   *  only for what those miss. Absent -> `[]`. */
+  sandbox?: { allowHostPaths?: string[]; allowReadPaths?: string[] };
 }
 
 // v24 (ARCH-090, DES-141, standing rule 1 — same "twice-bitten composeConfig bug class" convention
@@ -229,6 +243,13 @@ interface ComposeConfigDeps {
    *  having been EXPLICITLY set in config (INV-V37-4). Omitted (every existing test call site) ->
    *  unchanged pre-v37 behaviour: `workRoot` stays `undefined` when the config doesn't set one. */
   workRootDefault?: string;
+  /** Issue #101: the engine's home directory (denied as a whole to agent Bash reads), its PATH and
+   *  its node executable (the toolchain re-opened inside that deny). Pre-computed VALUES, same seam
+   *  convention as `workRootDefault`; omitted -> `os.homedir()`, `process.env.PATH`,
+   *  `process.execPath` (main()'s real boot path). */
+  homeDir?: string;
+  pathEnv?: string;
+  execPath?: string;
 }
 
 // D-F10(a/b): the FileConfig -> ServerConfig translation main() performs, extracted into an
@@ -306,18 +327,45 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     resolvedCasDir, resolvedAssetRoot, resolvedWebhookDbPath, resolvedSchedulerDbPath,
     resolvedSelfUpdateDbPath, resolvedContinuationDbPath,
   ].filter(isNonEmptyString);
+  // Issue #101: the engine's home is denied to agent Bash reads as a whole (see below).
+  const homeDir = safeRealpath(deps.homeDir ?? homedir());
   const rawGrants = fileConfig.sandbox?.allowHostPaths ?? [];
   let resolvedGrants: string[] = [];
   if (rawGrants.length > 0) {
     if (explicitWorkRoot === undefined) {
       throw new Error('rwe.config.json: sandbox.allowHostPaths requires workRoot to be set (a grant is validated against workRoot containment) — set workRoot, or remove the grant.');
     }
-    const grantResult = validateHostPathGrants(rawGrants, { workRoot: explicitWorkRoot, protectedFiles }, realpathSync);
+    // Issue #101: a grant covering the home directory would hand back the whole home deny.
+    const grantResult = validateHostPathGrants(rawGrants, { workRoot: explicitWorkRoot, protectedFiles: [...protectedFiles, homeDir] }, realpathSync);
     if (!grantResult.ok) {
       throw new Error(`rwe.config.json: invalid sandbox.allowHostPaths entries — refusing to start (ADR-028 fail-closed):\n${formatGrantRefusals(grantResult.refusals)}`);
     }
     resolvedGrants = grantResult.resolved;
   }
+  // Issue #101: agent Bash reads are deny-by-default — the whole home and the whole workRoot
+  // (bash-confinement.ts). What is re-opened read-only: the home-resident toolchain derived from
+  // this process's own PATH/node (a candidate that is missing or fails the grant rules is DROPPED —
+  // the operator never asked for it) plus the operator's `sandbox.allowReadPaths` (a bad entry
+  // REFUSES boot, like a bad grant).
+  const readRule = (root: string) => ({ workRoot: root, protectedFiles: [...protectedFiles, homeDir] });
+  const derivedReadPaths = workRoot?.startsWith('/')
+    ? toolchainReadCandidates(deps.pathEnv ?? process.env['PATH'], homeDir, deps.execPath ?? process.execPath)
+        .flatMap((p) => { const r = validateHostPathGrants([p], readRule(workRoot), realpathSync); return r.ok ? r.resolved : []; })
+    : [];
+  const rawReadPaths = fileConfig.sandbox?.allowReadPaths ?? [];
+  let resolvedReadPaths: string[] = [];
+  if (rawReadPaths.length > 0) {
+    // Same gate as allowHostPaths: an EXPLICIT workRoot, so --check-config and a real boot agree.
+    if (explicitWorkRoot === undefined) {
+      throw new Error('rwe.config.json: sandbox.allowReadPaths requires workRoot to be set (an entry is validated against workRoot containment) — set workRoot, or remove the entry.');
+    }
+    const readResult = validateHostPathGrants(rawReadPaths, readRule(explicitWorkRoot), realpathSync);
+    if (!readResult.ok) {
+      throw new Error(`rwe.config.json: invalid sandbox.allowReadPaths entries — refusing to start (ADR-028 fail-closed):\n${formatGrantRefusals(readResult.refusals)}`);
+    }
+    resolvedReadPaths = readResult.resolved;
+  }
+  const allowReadPaths = [...new Set([...derivedReadPaths, ...resolvedReadPaths])];
 
   const config: ServerConfig = {
     bind: process.env['RWE_BIND'] ?? fileConfig.bind ?? '127.0.0.1',
@@ -500,7 +548,7 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
       // (`confinement.workRoot` is simply `undefined`, exactly as every reader of it already treats
       // via `?.`/`??` — see `claude-agent-sdk-client.ts`'s own note on that field). `resolvedGrants`/
       // `protectedFiles` are already validated above.
-      confinement: { allowHostPaths: resolvedGrants, protectedFiles, workRoot },
+      confinement: { allowHostPaths: resolvedGrants, protectedFiles, workRoot, homeDir, allowReadPaths },
       // v37 (ARCH-181, DES-262): MEASURED posture, independent of the grant block above — set only
       // when the caller supplied a probe result (`main()`'s real boot path); every existing test call
       // site omits it, so the gateway falls back to its OWN 'unconfined' default unchanged
