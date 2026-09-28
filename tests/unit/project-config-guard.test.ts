@@ -12,11 +12,12 @@
 // Mock policy (unit): the injected `queryImpl` seam stands in for the SDK; the workspace is a real
 // temp dir because the check resolves symlinks on disk and the sweep removes real files.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, existsSync, lstatSync, readFileSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, existsSync, lstatSync, readFileSync, chmodSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ClaudeAgentSdkGatewayClient } from '../../src/gateway/claude-agent-sdk-client.js';
-import { buildBashConfinement, PROJECT_CONFIG_PATHS } from '../../src/gateway/bash-confinement.js';
+import { buildBashConfinement, PROJECT_CONFIG_PATHS, READONLY_MOUNT_TARGETS } from '../../src/gateway/bash-confinement.js';
+import { prepareReadonlyMountTargets, sweepPlantedConfig } from '../../src/gateway/project-config-guard.js';
 import type { HarnessDescriptor } from '../../src/types.js';
 import type { EngineEvent } from '../../src/event-log.js';
 
@@ -142,14 +143,24 @@ describe('file tools may not create or modify CLI project configuration in the r
 });
 
 describe('Bash sandbox denyWrite covers the same project-configuration set', () => {
-  it('every protected path under the root is on denyWrite (normal and readonly Bash)', () => {
+  it('normal Bash: every protected path under the root is on denyWrite explicitly', () => {
     const input = { root: '/ws', grantedHostPaths: [], protectedFiles: [], workRoot: '/wr', denyReadMode: 'enumerated' as const };
-    for (const s of [buildBashConfinement(input), buildBashConfinement({ ...input, bashMode: 'readonly' })]) {
-      for (const rel of ['.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/commands', '.claude/skills', '.claude/launch.json', '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.mcp.json']) {
-        expect(s.filesystem?.denyWrite).toContain(join('/ws', rel));
-      }
+    const s = buildBashConfinement(input);
+    for (const rel of ['.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/commands', '.claude/skills', '.claude/launch.json', '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.mcp.json']) {
+      expect(s.filesystem?.denyWrite).toContain(join('/ws', rel));
     }
     expect(PROJECT_CONFIG_PATHS).toContain('.claude/settings.json');
+  });
+
+  // Issue #95: readonly Bash denies the ROOT itself, which already covers every one of those same
+  // paths (they are all inside it) — see bash-confinement.ts's own doc comment on this branch for
+  // why listing them AGAIN here stopped being defense in depth and started being extra bwrap mount
+  // attempts for paths that (mostly) do not exist yet, each one a latent EROFS failure once the root
+  // itself is also on denyWrite.
+  it('readonly Bash: denyWrite is the root (and grants) only — no redundant children', () => {
+    const input = { root: '/ws', grantedHostPaths: ['/srv/shared'], protectedFiles: [], workRoot: '/wr', denyReadMode: 'enumerated' as const, bashMode: 'readonly' as const };
+    const s = buildBashConfinement(input);
+    expect(s.filesystem?.denyWrite).toEqual(['/ws', '/srv/shared']);
   });
 });
 
@@ -262,5 +273,77 @@ describe('before every dispatch the engine removes agent-planted project configu
     expect(events.some((e) => e.kind === 'agent.planted_config_removed')).toBe(false);
     expect(descriptor && 'plantedConfigRemoved' in descriptor).toBe(false);
     expect(existsSync(join(ws, '.claude', 'skills', 'moonfish', 'SKILL.md'))).toBe(true);
+  });
+});
+
+// Issue #95: `bwrap: Can't create file at <workspace>/.claude/agents: Read-only file system` — a
+// readonly-Bash dispatch's kernel sandbox mounts `root` itself on `denyWrite` (bash-confinement.ts),
+// and a REAL bwrap-argv capture (this fix's own derivation — see READONLY_MOUNT_TARGETS' doc
+// comment) showed the Claude CLI's own sandbox builder tries to create bind-mount targets for this
+// exact list AFTER that happens, unconditionally, regardless of what this engine passes on
+// `filesystem.denyWrite`. `prepareReadonlyMountTargets` pre-creates them so bwrap only ever binds an
+// already-present (empty) node.
+describe('prepareReadonlyMountTargets (issue #95) — pre-creates the paths bwrap would otherwise fail to create under a read-only root', () => {
+  let base: string;
+  let root: string;
+  beforeEach(() => {
+    base = mkdtempSync(join(tmpdir(), 'rwe-readonly-mount-'));
+    root = join(base, 'ws');
+  });
+  afterEach(() => rmSync(base, { recursive: true, force: true }));
+
+  it('creates every READONLY_MOUNT_TARGETS entry as the correct empty type, and the workspace itself', () => {
+    const created = prepareReadonlyMountTargets(root);
+    expect(existsSync(root)).toBe(true);
+    expect([...created].sort()).toEqual([...READONLY_MOUNT_TARGETS.map((t) => t.rel)].sort());
+    for (const { rel, kind } of READONLY_MOUNT_TARGETS) {
+      const st = statSync(join(root, rel));
+      expect(st.isDirectory(), rel).toBe(kind === 'dir');
+      if (kind === 'file') {
+        expect(st.isFile(), rel).toBe(true);
+        expect(readFileSync(join(root, rel), 'utf8')).toBe('');
+      }
+    }
+  });
+
+  it('idempotent: an already-present target (any content) is left untouched, not reported as created', () => {
+    mkdirSync(root, { recursive: true });
+    mkdirSync(join(root, '.claude', 'agents'), { recursive: true });
+    writeFileSync(join(root, '.claude', 'agents', 'real.md'), '---\nname: real\n---\n');
+    writeFileSync(join(root, '.bashrc'), 'echo hi\n');
+    const created = prepareReadonlyMountTargets(root);
+    expect(created).not.toContain('.claude/agents');
+    expect(created).not.toContain('.bashrc');
+    expect(existsSync(join(root, '.claude', 'agents', 'real.md'))).toBe(true);
+    expect(readFileSync(join(root, '.bashrc'), 'utf8')).toBe('echo hi\n');
+    // re-running is a no-op the second time too
+    expect(prepareReadonlyMountTargets(root)).toEqual([]);
+  });
+
+  // Issue #95: `.claude/agents` and `.claude/commands` are in BOTH lists — PROJECT_CONFIG_PATHS
+  // (this engine's own denyWrite set, and what sweepPlantedConfig polices) AND
+  // READONLY_MOUNT_TARGETS (the CLI's own forced sandbox mount targets this function pre-creates).
+  // The other 10 READONLY_MOUNT_TARGETS entries are outside PROJECT_CONFIG_PATHS entirely, so a
+  // sweep never touches them regardless; sweepPlantedConfig's own "leave an empty real dir alone"
+  // rule is what keeps it from fighting THESE two (see that function's own doc comment for why a
+  // parallel sibling agent's sweep racing a readonly agent's still-running session matters here).
+  it("sweepPlantedConfig leaves the two overlapping empty placeholders (.claude/agents, .claude/commands) alone — a parallel sibling agent's sweep cannot undo them", () => {
+    prepareReadonlyMountTargets(root);
+    const removed = sweepPlantedConfig(root);
+    expect(removed).toEqual([]);
+    for (const { rel } of READONLY_MOUNT_TARGETS) {
+      expect(existsSync(join(root, rel)), rel).toBe(true);
+    }
+    // genuinely planted content in one of the two overlapping dirs is STILL removed, same as before
+    writeFileSync(join(root, '.claude', 'agents', 'evil.md'), '---\nname: evil\n---\n');
+    const removed2 = sweepPlantedConfig(root);
+    expect(removed2).toEqual(['.claude/agents']);
+    expect(existsSync(join(root, '.claude', 'agents'))).toBe(false);
+  });
+
+  it('throws when a target cannot be created (e.g. .claude survived as a non-directory file) — the caller must refuse the dispatch', () => {
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, '.claude'), 'not a directory');
+    expect(() => prepareReadonlyMountTargets(root)).toThrow();
   });
 });

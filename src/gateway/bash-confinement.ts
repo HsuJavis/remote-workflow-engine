@@ -67,6 +67,43 @@ export const PROJECT_CONFIG_PATHS = [
  *  not exposed (`Options.skills` is an explicit list) and a tampered declared one is re-copied. */
 export const ENGINE_OWNED_CONFIG_PATHS = ['.claude/skills', '.mcp.json'] as const;
 
+/** Issue #95: workspace-relative paths the Claude CLI's OWN sandbox builder (2.1.199 — `claude
+ *  --version`) unconditionally shields from Bash writes, on top of anything THIS module passes via
+ *  `filesystem.denyWrite` — never configurable, never derived from `PROJECT_CONFIG_PATHS` (none of
+ *  these are this engine's own project-configuration set; they are dev-tooling/rc-file paths that
+ *  would run code or change trust on the NEXT shell/editor to read them: `.bashrc`/`.bash_profile`/
+ *  `.zshrc`/`.zprofile`/`.profile` run on shell startup, `.gitconfig`/`.gitmodules` can point git at
+ *  attacker-controlled hooks/submodules, `.vscode`/`.idea` carry per-workspace editor trust/task
+ *  config). Measured, not guessed from the binary's strings: a real bwrap-argv capture (a `bwrap`
+ *  PATH shim logging `"$@"` before `exec`ing the real binary, one real readonly-Bash `agent()` call
+ *  against a real seeded+confined run) showed the CLI mounts a `/dev/null` (file) or empty-tmpfs
+ *  (dir) placeholder over every one of these that is still missing, in this exact order, and — this
+ *  is the bug — AFTER the workspace root's own `--ro-bind`. In every OTHER dispatch that ordering is
+ *  invisible: the CLI seeds the session cwd writable by default (buildBashConfinement's own doc
+ *  comment above), so bwrap can freely create a missing target regardless of where in the sequence
+ *  it falls. `bashMode:'readonly'` is the one posture that puts the root ITSELF on `denyWrite` — so
+ *  by the time bwrap reaches the first still-missing entry here, the directory it needs to create
+ *  that entry under is already read-only, and bwrap fails closed ("Can't create file at
+ *  <workspace>/.claude/agents: Read-only file system") before the shell ever starts.
+ *  `project-config-guard.ts`'s `prepareReadonlyMountTargets` pre-creates each one (as the correct
+ *  empty TYPE below) so bwrap only ever binds an ALREADY-PRESENT node — never asked to create
+ *  anything. A future CLI build changing this set needs this list re-derived the SAME way (a real
+ *  capture), not re-guessed from strings — the exact bug this fix exists to close. */
+export const READONLY_MOUNT_TARGETS: readonly { readonly rel: string; readonly kind: 'dir' | 'file' }[] = [
+  { rel: '.claude/agents', kind: 'dir' },
+  { rel: '.claude/commands', kind: 'dir' },
+  { rel: '.gitconfig', kind: 'file' },
+  { rel: '.gitmodules', kind: 'file' },
+  { rel: '.bashrc', kind: 'file' },
+  { rel: '.bash_profile', kind: 'file' },
+  { rel: '.zshrc', kind: 'file' },
+  { rel: '.zprofile', kind: 'file' },
+  { rel: '.profile', kind: 'file' },
+  { rel: '.ripgreprc', kind: 'file' },
+  { rel: '.vscode', kind: 'dir' },
+  { rel: '.idea', kind: 'dir' },
+] as const;
+
 export interface ConfinementInput {
   /** This call's workspace (req.workspace ?? cfg.cwd). undefined/'' both mean "nothing to write". */
   readonly root: string | undefined;
@@ -114,7 +151,17 @@ export function buildBashConfinement(input: ConfinementInput): SandboxSettings {
       allowWrite: readonly ? [] : allowPaths,
       allowRead: allowPaths,
       denyRead,
-      denyWrite: readonly ? [...allowPaths, ...settingsFiles] : settingsFiles,
+      // Issue #95: readonly's denyWrite is `allowPaths` ONLY — `root` on its own already denies
+      // every one of `settingsFiles` (they are all inside it), so re-listing them here bought no
+      // extra safety, only extra bwrap mount attempts for paths that mostly do not exist yet. That
+      // is not cosmetic: a real bwrap-argv capture (project-config-guard.ts's
+      // `prepareReadonlyMountTargets`, whose own doc comment has the measurement) showed the CLI
+      // processes `root`'s own `--ro-bind` BEFORE it reaches any non-existent child path, so once
+      // `root` is denyWrite'd, bwrap can no longer `mkdir`/`touch` a still-missing entry under it —
+      // every redundant `settingsFiles` member here was a LATENT extra "Read-only file system"
+      // failure point, not defense in depth. Normal (non-readonly) Bash is UNCHANGED: `root` stays
+      // writable there, so `settingsFiles` is the only thing taking those paths back.
+      denyWrite: readonly ? allowPaths : settingsFiles,
     },
     credentials: {
       files: filteredProtected.map((path) => ({ path, mode: 'deny' as const })),

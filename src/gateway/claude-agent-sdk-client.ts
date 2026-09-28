@@ -23,7 +23,7 @@ import { parseModelRef, type Provider } from '../providers.js';
 import { isPathContained } from '../path-containment.js';
 import { resolveConfig, type SecretSource } from '../secret-resolver.js';
 import { buildBashConfinement, DENY_READ_MODE, readonlyBashRefusal } from './bash-confinement.js';
-import { protectedConfigTarget, sweepPlantedConfig } from './project-config-guard.js';
+import { prepareReadonlyMountTargets, protectedConfigTarget, sweepPlantedConfig } from './project-config-guard.js';
 import { findProjectMarkerAboveWorkspace, WORKROOT_INSIDE_PROJECT } from '../workroot-guard.js';
 import type { EventSink } from '../event-log.js';
 
@@ -829,6 +829,29 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     const bashRefusal = readonlyBashRefusal({ bash: req.opts.bash, tools: curatedTools, posture: this._config.confinementPosture, root: confinementRoot });
     if (bashRefusal !== null) {
       return stamp({ ok: false, provider: 'claude-agent-sdk', reason: 'terminal', retryable: false, detail: bashRefusal });
+    }
+    // Issue #95: `bashRefusal === null` here already means `req.opts.bash === 'readonly'` implies a
+    // CONFINED posture and a known, non-empty `confinementRoot` (readonlyBashRefusal's own two
+    // 'readonly'-only branches refuse otherwise) — so the only new condition to test is the mode
+    // itself. Pre-creates the paths the CLI's own sandbox builder needs to already exist under a
+    // workspace it is about to put on `denyWrite` in full (see READONLY_MOUNT_TARGETS' doc comment
+    // for the real bwrap-argv measurement behind this) — a failure here means the sandbox this
+    // dispatch is about to CLAIM as `enforced:true` cannot actually be set up, so it refuses before
+    // any session, the same "never a lying enforced:true" shape as the posture/root checks above.
+    if (req.opts.bash === 'readonly') {
+      try {
+        prepareReadonlyMountTargets(confinementRoot as string);
+      } catch (err) {
+        if (timer !== undefined) clearTimeout(timer);
+        req.signal?.removeEventListener('abort', onExternalAbort);
+        return stamp({
+          ok: false,
+          provider: 'claude-agent-sdk',
+          reason: 'terminal',
+          retryable: false,
+          detail: `BASH_READONLY_SANDBOX_PREP_FAILED: ${(err as Error).message} — refusing to start a readonly-Bash agent whose kernel sandbox mount points could not be prepared in the run workspace, rather than dispatch a session that would either fail at CLI startup or falsely report harness.bash.enforced:true`,
+        });
+      }
     }
     const sandbox: Options['sandbox'] =
       this._config.confinementPosture === 'confined'
