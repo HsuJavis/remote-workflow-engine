@@ -103,7 +103,7 @@ export const KNOWN_FILE_CONFIG_KEYS: Record<keyof FileConfig, true> = {
   auth: true, maxTimeoutMs: true, maxAppendPromptBytes: true, maxEffort: true,
   maxWorkflowVersions: true, principals: true, mcpEgressAllowlist: true,
   defaultAllowedTools: true, anthropicBaseUrl: true, anthropicAuth: true,
-  sandbox: true, modelProbe: true,
+  sandbox: true, modelProbe: true, publicBaseUrl: true,
 };
 
 // v34 (DES-227, ARCH-139, TASK-229, REQ-203): keys that USED to be forwarded by composeConfig and
@@ -382,6 +382,11 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // here — server.ts keys every auth route registration and D-BIND enforcement off config?.auth?.enabled,
     // so the whole auth subsystem is built-but-unwired at the production entrypoint).
     auth: fileConfig.auth,
+    // issue #97: forward the externally-reachable base URL so webhook_create's returned `url`
+    // (and any other wire artifact resolvePublicBaseUrl serves — server.ts) is a real, publicly
+    // routable host on the production entrypoint instead of silently dropping the operator's config
+    // key — same wiring-gap class as v11 updateFlagPath / v15 auth / v16 workspaceTtlMs above.
+    publicBaseUrl: fileConfig.publicBaseUrl,
     // v16 IMPL-122 / MED-2 (REQ-012): forward workspaceTtlMs so the GC sweep uses the
     // configured interval when `npm start` is used. Without this, fileConfig.workspaceTtlMs
     // is silently dropped here — server.ts defaults _gcTtl to 0, so the sweep timer fires

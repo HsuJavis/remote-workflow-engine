@@ -25,7 +25,7 @@ import type { GatewayClient } from './gateway/client.js';
 import type { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { SqliteSchedulerPort, type Schedule, type NewSchedule } from './scheduler.js';
 import type { RefusalReason } from './types.js';
-import { WebhookRegistry } from './webhook-registry.js';
+import { WebhookRegistry, WEBHOOK_HEADERS } from './webhook-registry.js';
 import { CasStore, isValidSha256Hex, isValidNamespace } from './cas-store.js';
 import type { SecretValueProvider } from './secret-resolver.js';
 import { isAllowedHost, isAllowedOrigin, isLoopback, isLoopbackPeer } from './net-guard.js';
@@ -159,6 +159,13 @@ export interface ServerConfig {
   // open behavior is preserved byte-for-byte (no auth gates added). Google is a legitimately-doubled
   // external dep via injected googleAuthorizeUrl/googleTokenUrl/googleJwksUrl+jwksFetch (same contract as the integration tests). DES-095 v18.
   auth?: AuthConfig;
+  // issue #97: the externally-reachable base URL for wire artifacts sent to a remote client —
+  // currently just webhook_create's returned `url`, which otherwise reads back from this process's
+  // own bind address/request Host header (e.g. `http://localhost:8899`, unreachable from outside the
+  // host it runs on). When absent, resolution falls back to `auth.issuer` (already this deployment's
+  // externally-reachable identity whenever auth is configured), then to the pre-fix bind/request-
+  // derived value unchanged. No trailing slash is required; one is stripped if present.
+  publicBaseUrl?: string;
   // v21 (ARCH-066 inv-6, DES-104, TASK-100): engine ceilings bounding the caller-override rung at
   // admission AND, since adjudication #7's G-1 fix, the values stored into a workflow's `defaults`
   // column at registration (ADR-005 — script per-call agent() opts stay unbounded) — refuse, never
@@ -1149,6 +1156,28 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v8 Defer B (REQ-056): the real listening port is known only after listen(); the handler closure
   // reads it via this mutable, assigned below. 0 until then (no request is served before listen).
   let boundPort = 0;
+
+  // issue #97: the ONE place webhookBaseUrl (and any future public-facing URL) is resolved —
+  // every call site below used to inline `http://${req.headers.host ?? \`${bind}:${boundPort}\`}`,
+  // which reads back as e.g. `http://localhost:8899` to a remote client sitting behind a reverse
+  // proxy/tunnel (issue #97). Priority: explicit `config.publicBaseUrl` > `auth.issuer` (already this
+  // deployment's externally-reachable identity whenever auth is configured) > the pre-fix fallback,
+  // unchanged for a deployment that sets neither. Mirrors effectiveIssuer's own port-0-placeholder
+  // replacement (the auth AS's issuer can be configured with the same `:0` startup placeholder).
+  function resolvePublicBaseUrl(req: IncomingMessage): string {
+    const raw = config?.publicBaseUrl ?? authCfg?.issuer;
+    if (raw) {
+      try {
+        const u = new URL(raw);
+        if (u.port === '0') u.port = String(boundPort);
+        return u.toString().replace(/\/$/, '');
+      } catch {
+        return raw.replace(/\/$/, '');
+      }
+    }
+    return `http://${req.headers.host ?? `${bind}:${boundPort}`}`;
+  }
+
   const http = createHttpServer((req, res) => {
     // v11 Sprint 2 (REQ-068, TASK-062/DES-059): GitHub tag webhook — Host-EXEMPT (HMAC is this route's
     // auth; a forwarded delivery carries a public Host, which the REQ-056 allowlist would refuse).
@@ -1355,7 +1384,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
             try {
               if (rpc.method === 'initialize') {
                 const clientProto = (rpc.params as { protocolVersion?: string } | undefined)?.protocolVersion;
-                const webhookBaseUrl = `http://${req.headers.host ?? `${bind}:${boundPort}`}`;
+                const webhookBaseUrl = resolvePublicBaseUrl(req);
                 const instructions = await buildInitializeInstructions(webhookBaseUrl, principalFor(p.principal));
                 sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { protocolVersion: clientProto ?? '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'remote-workflow-engine', version: ENGINE_VERSION }, instructions } });
                 return;
@@ -1370,7 +1399,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
               if (rpc.method === 'tools/call') {
                 const name = rpc.params?.name ?? '';
                 const args = rpc.params?.arguments ?? {};
-                const webhookBaseUrl = `http://${req.headers.host ?? `${bind}:${boundPort}`}`;
+                const webhookBaseUrl = resolvePublicBaseUrl(req);
                 const principal: Principal = principalFor(p.principal);
                 const result = await callTool(buildToolDeps(webhookBaseUrl, isRemoteSubmission), name, args, principal);
                 // v24 (DES-140): the ONE case that lifts to a top-level JSON-RPC `error` — every
@@ -1508,9 +1537,9 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         let parsed: unknown = undefined;
         try { parsed = raw ? JSON.parse(raw) : undefined; } catch { parsed = raw; } // non-JSON body → pass through as text
         const out = await webhooks.deliver(webhookId, {
-          signature: req.headers['x-rwe-signature'] as string | undefined,
-          timestamp: req.headers['x-rwe-timestamp'] as string | undefined,
-          deliveryId: req.headers['x-rwe-delivery'] as string | undefined,
+          signature: req.headers[WEBHOOK_HEADERS.signature] as string | undefined,
+          timestamp: req.headers[WEBHOOK_HEADERS.timestamp] as string | undefined,
+          deliveryId: req.headers[WEBHOOK_HEADERS.deliveryId] as string | undefined,
           rawBody: raw, parsedBody: parsed,
         });
         // Issue #88: a replay of an ACCEPTED delivery now carries `runId` back too when the
@@ -1601,7 +1630,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         // MCP lifecycle handshake (spec-required before a compliant client will call tools).
         if (rpc.method === 'initialize') {
           const clientProto = (rpc.params as { protocolVersion?: string } | undefined)?.protocolVersion;
-          const initWebhookBaseUrl = `http://${req.headers.host ?? `${bind}:${boundPort}`}`;
+          const initWebhookBaseUrl = resolvePublicBaseUrl(req);
           const initPrincipal: Principal = authCfg ? { kind: 'loopback-exempt' } : { kind: 'auth-disabled' };
           const instructions = await buildInitializeInstructions(initWebhookBaseUrl, initPrincipal);
           sendJson(res, 200, {
@@ -1632,7 +1661,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         if (rpc.method === 'tools/call') {
           const name = rpc.params?.name ?? '';
           const args = rpc.params?.arguments ?? {};
-          const webhookBaseUrl = `http://${req.headers.host ?? `${bind}:${boundPort}`}`;
+          const webhookBaseUrl = resolvePublicBaseUrl(req);
           // v24 (ARCH-088): this fallback handler serves BOTH auth-disabled AND a loopback-exempt
           // peer on an auth-ENABLED server (dbindExempt skipped the auth-gated block above) — the
           // two are distinct Principal kinds even though neither carries an id.
