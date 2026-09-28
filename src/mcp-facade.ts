@@ -202,8 +202,22 @@ async function lifecycle(store: RunStore, runId: string, action: () => Promise<v
     const after = await store.getRun(runId);
     return { runId, status: after?.status ?? view.status };
   } catch (err) {
-    return { runId, status: view.status, error: toErrEnvelope(err) };
+    // issue #98 item 9: a refusal (ILLEGAL_TRANSITION and any other coded error) reports the SAME
+    // failed-refusal envelope every other tool uses (`status: 'failed'`), never the run's own status
+    // — echoing `view.status` here (e.g. `{status: 'completed', error}`) made a refusal invisible to
+    // a caller that branches on `status === 'failed'`. The run's actual (unchanged) status still
+    // travels, in `error.detail.runStatus`, for a caller that wants it.
+    return { runId, status: 'failed', error: refusalError(err, view.status) };
   }
+}
+
+/** issue #98 item 9: the one place a run-control refusal becomes its wire `ErrEnvelope` — always
+ *  `toErrEnvelope(err)` plus the run's own (unchanged) status folded into `detail.runStatus`, shared
+ *  by `lifecycle()` and `runResume()` (which cannot use `lifecycle()` — it has its own pre-`resume()`
+ *  admission check) so the two can never drift onto different shapes. */
+function refusalError(err: unknown, runStatus: RunStatusView['status']): ErrEnvelope {
+  const error = toErrEnvelope(err);
+  return { ...error, detail: { ...error.detail, runStatus } };
 }
 
 /** DES-149: `null` for the two no-real-identity Principal kinds; the CATALOG's own internal
@@ -884,12 +898,14 @@ export class McpFacade {
     if (isRemoteSubmission) {
       const refusal = admissionRefusal({ posture: this.confinementPosture, origin: 'remote' });
       if (refusal !== null) {
+        // issue #98 item 9: `status: 'failed'`, matching every other tool's refusal envelope —
+        // see `refusalError`'s doc comment (shared with `lifecycle()`, which `runResume` cannot use).
         return {
-          runId: a.runId, status: view.status,
-          error: toErrEnvelope(codedError(
+          runId: a.runId, status: 'failed',
+          error: refusalError(codedError(
             refusal,
             `CONFINEMENT_UNAVAILABLE: Bash confinement is unavailable on this host (the boot-time sandbox probe found no working nested user namespace) — remote run_resume submissions are refused. Remediation: ${CONFINEMENT_REMEDIATION}`,
-          )),
+          ), view.status),
         };
       }
     }
@@ -898,7 +914,7 @@ export class McpFacade {
       const after = await this.store.getRun(a.runId);
       return { runId: a.runId, status: after?.status ?? view.status };
     } catch (err) {
-      return { runId: a.runId, status: view.status, error: toErrEnvelope(err) };
+      return { runId: a.runId, status: 'failed', error: refusalError(err, view.status) };
     }
   }
 

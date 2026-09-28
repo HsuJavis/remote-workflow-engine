@@ -97,7 +97,10 @@ describe('RunManager + RunGuard integration (ARCH-002)', () => {
     expect(['failed', 'completed']).toContain(view.status);
   });
 
-  it('state machine: start → running; stop → stopped; resume → running again', async () => {
+  // issue #94 (owner decision): `stopped` is a TRUE terminal state — a resume after stop is refused,
+  // never revived. This case used to assert the opposite (stop → stopped; resume → running again);
+  // rewritten to pin the refusal instead of the old revival behavior.
+  it('state machine: start → running; stop → stopped; resume is refused, stays stopped', async () => {
     const mgr = new RunManager();
     const runId = await startScript(mgr, 'return agent("hello", {});');
     const runningView = await mgr.status(runId);
@@ -107,8 +110,11 @@ describe('RunManager + RunGuard integration (ARCH-002)', () => {
     const stoppedView = await mgr.status(runId);
     expect(stoppedView.status).toBe('stopped');
 
-    await mgr.resume(runId);
-    const resumedView = await mgr.status(runId);
-    expect(['running', 'queued', 'completed']).toContain(resumedView.status);
+    await expect(mgr.resume(runId)).rejects.toMatchObject({
+      code: 'ILLEGAL_TRANSITION',
+      message: expect.stringContaining('stopped → running'),
+    });
+    const afterView = await mgr.status(runId);
+    expect(afterView.status).toBe('stopped');
   });
 });

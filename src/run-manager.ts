@@ -987,6 +987,18 @@ export class RunManager {
 
   async resume(runId: string): Promise<void> {
     const entry = await this._requireLive(runId, 'running');
+    // issue #94 (owner decision): `stopped` is a TRUE terminal state — refused UNCONDITIONALLY,
+    // before the legacySubstitution/confinement check below. A non-cached stopped run never reaches
+    // this line at all any more (`_requireLive` above now refuses it directly, caching nothing); this
+    // covers the in-process case where `stop()` left the entry cached with status `'stopped'`. Placed
+    // ahead of the confinement check on purpose: a run that was once resumed via a legacy
+    // substitution (so it still carries `entry.legacySubstitution.remote === true`) and was later
+    // stopped must still answer ILLEGAL_TRANSITION here, never CONFINEMENT_UNAVAILABLE — the
+    // CONFINEMENT_UNAVAILABLE message below already draws exactly this line ("one that is already
+    // stopped answers ILLEGAL_TRANSITION, which is a different matter and already terminal").
+    if (entry.status === 'stopped') {
+      throw new IllegalTransitionError(entry.status, 'running');
+    }
     // v37 P1 (Gate 8 round-5 finding R5-F1; ADR-086's third owner ruling, DES-263 第四次修訂):
     // `resume()`'s ONE admission stage. `_requireLive()` only RECORDS that it had to substitute the
     // current `release` for a pin that no longer exists, and whether that substituted version was
@@ -1020,8 +1032,9 @@ export class RunManager {
         );
       }
     }
-    // v8 Defer A (REQ-060): `interrupted` (crashed while running) is resumable, like suspended/stopped.
-    if (entry.status !== 'suspended' && entry.status !== 'stopped' && entry.status !== 'interrupted') {
+    // v8 Defer A (REQ-060): `interrupted` (crashed while running) is resumable, like suspended.
+    // `stopped` is excluded (issue #94) and already refused above — never reachable here.
+    if (entry.status !== 'suspended' && entry.status !== 'interrupted') {
       throw new IllegalTransitionError(entry.status, 'running');
     }
     // v21 Gate 8 RE-REVIEW (review §R2 (a), R-G1 HIGH): `_requireLive` never restores a redaction
@@ -1302,11 +1315,22 @@ export class RunManager {
   }
 
   /** Looks up a live RunEntry, rehydrating one from persisted state (REQ-006 restart survival)
-   *  when this run isn't in this process's memory — e.g. after a server restart, a suspend/resume/
-   *  stop call for a run that was suspended/stopped before the restart. Live per-process state
+   *  when this run isn't in this process's memory — e.g. after a server restart, a suspend/resume
+   *  call for a run that was suspended/interrupted before the restart. Live per-process state
    *  (in-flight journal replay cache, phases observed) does not survive restart; the rehydrated
    *  entry resumes cleanly but replays nothing from before the restart (no test currently requires
-   *  exact cross-restart cache replay — a documented simplification, not silent data loss). */
+   *  exact cross-restart cache replay — a documented simplification, not silent data loss).
+   *  issue #94 (owner decision): `stopped` is NOT in the eligible-to-rehydrate set below — it is a
+   *  TRUE terminal state, so nothing ever needs a live RunEntry rebuilt for it again. A non-cached
+   *  `stop()`/`suspend()`/`resume()` call against a stopped run refuses right here, typed, before any
+   *  catalog resolution / sandbox construction / caching happens — cheaper than the pre-#94 behaviour
+   *  (full rehydrate, THEN refuse in the caller) and it satisfies "a refused rehydration leaves no
+   *  cached trace" by construction (nothing is ever `_runs.set()` for it). This is safe for `stop()`
+   *  too, despite the R5-F1 comment below warning that a refusal placed in here can leave a run unable
+   *  to ever reach a terminal state: that hazard is about a run that ISN'T terminal yet (suspended/
+   *  interrupted) being blocked from becoming so. A run that is ALREADY `stopped` has nothing left to
+   *  reach — `stop()` on it was always refused anyway (TERMINAL.includes('stopped')), just one call
+   *  frame further out before this change. */
   // issue #92 item 2: `target` is the transition the CALLER (`suspend`/`resume`/`stop`) is actually
   // attempting — threaded through so a refusal here names it instead of the hardcoded
   // ('unknown', 'transition') every caller used to share, which rendered as the meaningless
@@ -1318,7 +1342,7 @@ export class RunManager {
     if (cached) return cached;
 
     const view = await this._store.getRun(runId);
-    if (!view || (view.status !== 'suspended' && view.status !== 'stopped' && view.status !== 'interrupted')) {
+    if (!view || (view.status !== 'suspended' && view.status !== 'interrupted')) {
       throw new IllegalTransitionError(view?.status ?? 'not found', target);
     }
     const spec = await this._store.getSpec(runId);

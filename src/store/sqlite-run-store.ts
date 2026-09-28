@@ -156,7 +156,9 @@ export class SqliteRunStore implements RunStore {
   }
 
   /** Rebuilds the original submission (name/script/args/budget) — lets RunManager reconstruct a
-   *  live RunEntry for a suspended/stopped run after a process restart (REQ-006). */
+   *  live RunEntry for a suspended/interrupted run after a process restart (REQ-006). `stopped` is
+   *  excluded (issue #94: a TRUE terminal state) — `_requireLive` refuses it before ever reaching
+   *  this read. */
   async getSpec(runId: string): Promise<RunSpec | null> {
     // v36 (DES-245, TASK-243): `principal` gains a column here — it was already WRITTEN (:116) and
     // read by the status view (:326), but omitted from this resume-path rebuild (the ADR-067
