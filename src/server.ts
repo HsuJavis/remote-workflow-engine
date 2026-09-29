@@ -999,10 +999,14 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v5 (REQ-027..030): the issue_report reporter. Token from the server-side secret store
   // (RWE_SECRET_GITHUB_TOKEN), never workspace-reachable. A test seam replaces it with a fake.
   const issueReporter = config?.issueReporter ?? new IssueReporter({ secretSource: loadSecretSourceFromEnv(), engineVersion: ENGINE_VERSION, runDiagnostics });
+  // Owner decision 2026-09-30: ONE computed value, used for BOTH the AssetSyncService gate below
+  // AND the system_info policy field — never read `config?.mcpEgressAllowlist` a second time (the
+  // composeConfig wiring-gap bug class this file's other fields already guard against, v11/v15/v16).
+  const mcpEgressAllowlist = config?.mcpEgressAllowlist ?? [];
   // v12 (REQ-076/077, DES-073): ONE SystemInfoSampler instance shared between the system_info tool
   // and GET /api/system (DES-073 "sample once"). Tests inject a StubProbe-backed sampler via
   // config.systemInfo; production defaults to a RealSystemProbe.
-  const systemInfoSampler = config?.systemInfo ?? new SystemInfoSampler(new RealSystemProbe(workRoot), clock, 1500);
+  const systemInfoSampler = config?.systemInfo ?? new SystemInfoSampler(new RealSystemProbe(workRoot), clock, 1500, mcpEgressAllowlist);
   // v2 (DES-019/TASK-021): asset store rooted under workRoot; `selfBind` (this server's own
   // address) is assigned once the real listening port is known, just below.
   let assetSync: AssetSyncService;
@@ -1747,7 +1751,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     clock,
     catalog: assetCatalogPort,
     probe: mcpProbe,
-    egressAllowlist: config?.mcpEgressAllowlist ?? [],
+    egressAllowlist: mcpEgressAllowlist,
   });
   facade.bindAssetSync(assetSync);
   // issue #103(a): the SAME instance, bound into RunManager too — admission (run_start/a

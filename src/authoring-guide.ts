@@ -1158,7 +1158,11 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "author-reachable because it IS gated — `mcpEgressAllowlist` (an `rwe.config.json` key: an " +
         'https-only URL-prefix allowlist, the same fail-closed convention as `seedRefAllowlist`; ' +
         'omitted or empty denies EVERY `http` MCP config with `EGRESS_DENIED`, checked BEFORE the ' +
-        'probe, zero probe attempts) is an operator decision an author cannot widen.\n\n' +
+        'probe, zero probe attempts) is an operator decision an author cannot widen — but you can ' +
+        'SEE it before pushing: `system_info`\'s `policy.mcpEgressAllowlist` (owner decision ' +
+        '2026-09-30) reports this deployment\'s effective list to any authenticated caller, and an ' +
+        '`EGRESS_DENIED` refusal from `workspace_push({kind:\'mcp\'})` points back at that same ' +
+        'field.\n\n' +
         // Q5: global-scope visibility is declaration-gated, not automatic.
         '**Global assets are opt-in per script, not automatic.** An admin-pushed `scope:\'global\'` ' +
         "skill or MCP server is usable by every principal's runs, but ONLY when that run's OWN " +

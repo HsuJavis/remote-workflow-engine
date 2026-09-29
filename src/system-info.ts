@@ -100,6 +100,12 @@ export interface SystemInfoView {
   process: ProcessInfoView;
   sampledAt: string;
   windowMs: number | null;
+  /** Owner decision 2026-09-30: the operator's MCP egress allowlist, exposed to every
+   *  authenticated caller so a remote author can check which `http` MCP URLs are allowed
+   *  BEFORE pushing (workspace_push({kind:'mcp'}) refuses EGRESS_DENIED otherwise). This is the
+   *  SAME value server.ts forwards to AssetSyncService as `egressAllowlist` — single source, never
+   *  re-read from config here. Empty array when not configured (= every http MCP push refused). */
+  policy: { mcpEgressAllowlist: readonly string[] };
 }
 
 /** Injectable OS boundary — untestable in unit tests; StubSystemProbe replaces it. */
@@ -119,14 +125,16 @@ export interface SystemProbe {
  * @param cur   — current raw host snapshot
  * @param prev  — previous raw host snapshot (null on the first call)
  * @param ctx   — { sampledAt: ISO string, windowMs: number|null } derived from the injected clock
- * @param opts  — { topN: number } — clamped to [1,50] by this function (clamp-not-reject)
+ * @param opts  — { topN: number, mcpEgressAllowlist? } — topN clamped to [1,50] by this function
+ *   (clamp-not-reject); mcpEgressAllowlist is passed straight through into `policy` (no math on
+ *   it here — it's config, not a sample), defaulting to [] when omitted.
  * @param procShape — pre-shaped ProcessInfoView built by the sampler from the RawProcSnapshot
  */
 export function buildSystemInfo(
   cur: RawHostSnapshot,
   prev: RawHostSnapshot | null,
   ctx: { sampledAt: string; windowMs: number | null },
-  opts: { topN: number },
+  opts: { topN: number; mcpEgressAllowlist?: readonly string[] },
   procShape: ProcessInfoView,
 ): SystemInfoView {
   // ── CPU ────────────────────────────────────────────────────────────────────────────
@@ -223,6 +231,7 @@ export function buildSystemInfo(
     },
     sampledAt: ctx.sampledAt,
     windowMs: ctx.windowMs,
+    policy: { mcpEgressAllowlist: opts.mcpEgressAllowlist ?? [] },
   };
 }
 
@@ -251,6 +260,11 @@ export class SystemInfoSampler {
     private readonly probe: SystemProbe,
     private readonly clock: Clock,
     private readonly ttlMs: number = 1500,
+    /** Owner decision 2026-09-30: the SAME `mcpEgressAllowlist` value server.ts forwards to
+     *  AssetSyncService — passed in once at construction (single source), never re-read from
+     *  config on each `get()`. Defaults to [] so every existing call site (tests, and any caller
+     *  that predates this policy field) keeps compiling and reads as "nothing allowlisted". */
+    private readonly mcpEgressAllowlist: readonly string[] = [],
   ) {}
 
   async get(opts: { topN?: number } = {}): Promise<SystemInfoView> {
@@ -285,7 +299,7 @@ export class SystemInfoSampler {
       this._cachedCur!,
       this._cachedPrev,
       this._cachedCtx!,
-      { topN },
+      { topN, mcpEgressAllowlist: this.mcpEgressAllowlist },
       this._cachedProcView!,
     );
   }

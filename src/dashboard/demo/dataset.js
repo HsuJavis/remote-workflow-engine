@@ -81,6 +81,9 @@ export const DEMO = new Map([
     },
     sampledAt: '2026-09-17T00:05:00.000Z',
     windowMs: 3000,
+    // Owner decision 2026-09-30: policy.mcpEgressAllowlist is always present on the real wire —
+    // demo mirrors that (an empty allowlist, same as an unconfigured deployment).
+    policy: { mcpEgressAllowlist: [] },
   }],
 
   ['/api/models', [

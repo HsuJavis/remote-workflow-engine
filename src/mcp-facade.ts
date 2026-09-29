@@ -1093,11 +1093,16 @@ export class McpFacade {
         : { scope: 'workflow' as const, workflow: a['workflow'] as string, kind: kind as AssetKind, name, pushedBy, ...body };
       const r = await this.assetSync.push(req as never);
       if ('error' in r) {
-        // issue #103(b): MCP_PROBE_FAILED is the one `push()` error that carries a `detail` (the
-        // probe's own redacted code/message/transport/timeoutMs) — every other `push()` refusal
-        // (EGRESS_DENIED, RESERVED_PREFIX, BLOB_HASH_MISMATCH, …) is unaffected, message stays the
-        // bare code exactly as before.
-        const message = r.detail !== undefined ? `${r.error}: ${String(r.detail['message'] ?? '')} (transport: ${String(r.detail['transport'] ?? 'unknown')})` : r.error;
+        // issue #103(b): MCP_PROBE_FAILED is the one `push()` error whose `detail` carries a
+        // `transport` (the probe's own redacted code/message/transport/timeoutMs) — its message
+        // keeps the "(transport: …)" suffix unchanged. Owner decision 2026-09-30: EGRESS_DENIED
+        // now ALSO carries a `detail.message` (a pointer at system_info's policy field,
+        // asset-sync.ts) but no `transport` key — the suffix is appended only when `detail`
+        // actually has one, so EGRESS_DENIED's message doesn't grow a nonsensical
+        // "(transport: unknown)" tail. Every other bare-code `push()` refusal (RESERVED_PREFIX,
+        // BLOB_HASH_MISMATCH, …) is unaffected, message stays the bare code exactly as before.
+        const transportSuffix = r.detail?.['transport'] !== undefined ? ` (transport: ${String(r.detail['transport'])})` : '';
+        const message = r.detail !== undefined ? `${r.error}: ${String(r.detail['message'] ?? '')}${transportSuffix}` : r.error;
         return { runId: '', status: 'failed', code: r.error, error: { code: r.error, message, ...(r.detail !== undefined ? { detail: r.detail } : {}) } };
       }
       return { runId: '', status: 'completed', result: r };

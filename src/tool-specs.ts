@@ -1245,7 +1245,8 @@ export const TOOL_SPECS = [
       'Sizes are in bytes; `cpu.utilizationPct` and every `usedPct` are a percent (0-100); `cpu.loadAvg` is the OS 1/5/15-minute load average, NOT a percent; uptime is in seconds. ' +
       '`memory`, `disk` and `process.system` are each EITHER their normal shape OR entirely replaced by a `{reason, detail?}` object when that probe is unavailable on this host — never JSON null. ' +
       '`cpu.utilizationPct` is null (reason in the sibling `cpu.utilizationDegraded`, present only when degraded) on the first sample and on a CPU probe failure. ' +
-      '`process.self.cpuPct` and `process.topN[].cpuPct` are null with no reason field at all on the very first sample — read as "not enough samples yet", not a failure.',
+      '`process.self.cpuPct` and `process.topN[].cpuPct` are null with no reason field at all on the very first sample — read as "not enough samples yet", not a failure. ' +
+      '`policy.mcpEgressAllowlist` (owner decision 2026-09-30) is the engine\'s effective `rwe.config.json` `mcpEgressAllowlist` — the https-only URL-prefix allowlist a `workspace_push({kind:\'mcp\'})` config\'s `http` transport is checked against BEFORE any probe. A prefix matches on origin+path with a trailing slash, https only, no userinfo. Always present, `[]` when unconfigured — an empty list means EVERY `http` MCP push is refused `EGRESS_DENIED`. Check this before pushing an `http` MCP server.',
     inputSchema: schema({
       topN: {
         type: 'integer',

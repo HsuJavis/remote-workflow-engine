@@ -157,10 +157,13 @@ export const SYSTEM_OK: SystemInfoView & { auth: unknown } = {
   },
   sampledAt: '2026-09-17T00:00:00.000Z',
   windowMs: 3000,
+  // Owner decision 2026-09-30: the operator's MCP egress allowlist, always present (never
+  // omitted — [] when unconfigured), same "no missing keys" convention as the other sections.
+  policy: { mcpEgressAllowlist: [] },
   auth: undefined,
 };
-export const ALLOWED_SYSTEM_KEYS = ['cpu', 'memory', 'disk', 'process', 'sampledAt', 'windowMs', 'auth'] as const;
-export const REQUIRED_SYSTEM_KEYS = ['cpu', 'memory', 'disk', 'process', 'sampledAt', 'windowMs'] as const;
+export const ALLOWED_SYSTEM_KEYS = ['cpu', 'memory', 'disk', 'process', 'sampledAt', 'windowMs', 'policy', 'auth'] as const;
+export const REQUIRED_SYSTEM_KEYS = ['cpu', 'memory', 'disk', 'process', 'sampledAt', 'windowMs', 'policy'] as const;
 
 // [v28 Gate 5] `cpu` degrades via a SIBLING key (`system-info.ts:133-138`), never a replaced
 // union — REACHABLE FOR REAL on the very FIRST sample after boot (`prev === null` ⇒

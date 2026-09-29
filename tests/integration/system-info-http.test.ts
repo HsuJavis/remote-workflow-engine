@@ -218,3 +218,59 @@ describe('GET /api/system over real server (IT-070, DES-073)', () => {
     expect(httpBody.sampledAt).toBe(toolOut.result!.sampledAt);
   });
 });
+
+// ============================================================
+// policy.mcpEgressAllowlist — owner decision 2026-09-30: expose the operator's MCP egress
+// allowlist via system_info to every authenticated caller (single source: the SAME config value
+// server.ts already forwards to AssetSyncService as `egressAllowlist`, not a second read).
+//
+// Red reason: `SystemInfoView` carries no `policy` field and `SystemInfoSampler`'s constructor
+// takes no allowlist — `result.policy` is `undefined` on both the tool and the HTTP route.
+// ============================================================
+
+describe('system_info / GET /api/system — policy.mcpEgressAllowlist (owner decision 2026-09-30)', () => {
+  it('policy.mcpEgressAllowlist is [] when mcpEgressAllowlist is not configured (system_info tool)', async () => {
+    const out = await callTool(server.port, 'system_info', {}) as {
+      result?: { policy?: { mcpEgressAllowlist: string[] } };
+    };
+    expect(out.result?.policy?.mcpEgressAllowlist).toEqual([]);
+  });
+
+  it('policy.mcpEgressAllowlist is [] when mcpEgressAllowlist is not configured (GET /api/system)', async () => {
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/system`);
+    const body = await res.json() as { policy?: { mcpEgressAllowlist: string[] } };
+    expect(body.policy?.mcpEgressAllowlist).toEqual([]);
+  });
+
+  describe('with mcpEgressAllowlist configured', () => {
+    let configuredServer: Server;
+    let configuredTmpDir: string;
+    const ALLOWLIST = ['https://mcp.example.com/allowed/'];
+
+    beforeAll(async () => {
+      configuredTmpDir = mkdtempSync(join(tmpdir(), 'rwe-it069-policy-'));
+      configuredServer = await createServer({
+        port: 0, bind: '127.0.0.1', workRoot: configuredTmpDir,
+        mcpEgressAllowlist: ALLOWLIST,
+      });
+    });
+
+    afterAll(async () => {
+      await configuredServer?.close();
+      rmSync(configuredTmpDir, { recursive: true, force: true });
+    });
+
+    it('system_info returns policy.mcpEgressAllowlist equal to the configured list', async () => {
+      const out = await callTool(configuredServer.port, 'system_info', {}) as {
+        result?: { policy?: { mcpEgressAllowlist: string[] } };
+      };
+      expect(out.result?.policy?.mcpEgressAllowlist).toEqual(ALLOWLIST);
+    });
+
+    it('GET /api/system returns policy.mcpEgressAllowlist equal to the configured list (same source as system_info)', async () => {
+      const res = await fetch(`http://127.0.0.1:${configuredServer.port}/api/system`);
+      const body = await res.json() as { policy?: { mcpEgressAllowlist: string[] } };
+      expect(body.policy?.mcpEgressAllowlist).toEqual(ALLOWLIST);
+    });
+  });
+});

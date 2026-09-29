@@ -34,6 +34,33 @@ describe('AssetSyncService v24 — two scopes, mcp gating, clock-sourced pushedA
     }
   });
 
+  // Owner decision 2026-09-30: EGRESS_DENIED for a `kind:'mcp'` push must carry a message
+  // pointing the caller at `system_info`'s `policy.mcpEgressAllowlist` (where the currently
+  // allowed https prefixes are visible) — and, since the CODE `EGRESS_DENIED` is shared with
+  // seedRef (errors.ts's ERROR_CATALOG hint stays generic for both), the MCP-specific pointer
+  // lives HERE, in asset-sync's own message, not in the shared catalog hint. The message must
+  // echo the URL the caller sent and nothing host-measured beyond that (no matched-prefix detail).
+  it('kind:"mcp" EGRESS_DENIED carries a detail.message pointing at system_info policy.mcpEgressAllowlist, echoing only the caller\'s URL', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-v24-'));
+    try {
+      const probe = { probe: vi.fn() };
+      const catalog = fakeCatalogPort();
+      const svc = new AssetSyncService({
+        workRoot: dir, globalRoot: join(dir, 'global'),
+        selfBind: { host: '127.0.0.1', port: 1 }, clock: new FixedClock(new Date('2026-01-01T00:00:00Z')),
+        catalog, probe, egressAllowlist: [],
+      });
+      const result = await svc.push({ scope: 'workflow', workflow: 'wf-a', kind: 'mcp', name: 'srv', config: { url: 'https://evil.example.com/hook' }, pushedBy: 'bob' });
+      expect(result).toMatchObject({ error: 'EGRESS_DENIED' });
+      const detail = (result as { detail?: Record<string, unknown> }).detail;
+      expect(detail?.['message']).toEqual(expect.stringContaining('system_info'));
+      expect(detail?.['message']).toEqual(expect.stringContaining('policy.mcpEgressAllowlist'));
+      expect(detail?.['message']).toEqual(expect.stringContaining('https://evil.example.com/hook'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   // issue #103(b): `push()` used to collapse a failed probe to the bare string `{error:
   // 'MCP_PROBE_FAILED'}`, dropping the probe's own `code`/`message` — the caller learned only
   // that IT failed, never WHY (unreachable? wrong transport? timed out?). The probe's code/message

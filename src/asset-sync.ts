@@ -410,7 +410,19 @@ export class AssetSyncService {
     if (req.kind === 'mcp') {
       if (typeof req.config.url === 'string') {
         const verdict = isEgressAllowed(req.config.url, this._egressAllowlist);
-        if (!verdict.ok) return { error: 'EGRESS_DENIED' };
+        // Owner decision 2026-09-30: EGRESS_DENIED's code is shared with seedRef (errors.ts's
+        // ERROR_CATALOG hint stays generic for both) — the MCP-specific pointer at the
+        // system_info policy field lives HERE, in the message, not in the shared catalog hint.
+        // Echoes only the URL the CALLER sent — no host-measured detail (e.g. which allowlist
+        // prefix would have matched) beyond that.
+        if (!verdict.ok) {
+          return {
+            error: 'EGRESS_DENIED',
+            detail: {
+              message: `MCP server URL "${req.config.url}" is not on this engine's mcpEgressAllowlist — call system_info and check policy.mcpEgressAllowlist for the currently allowed https prefixes.`,
+            },
+          };
+        }
       }
       const probed = await this._probe.probe(req.config);
       if (!probed.ok) {
