@@ -373,9 +373,32 @@ function toolUsePreCheck(root: string | undefined, candidates: string[], toolNam
   return { behavior: 'allow' };
 }
 
+// Issue #105 part B (HIGH): the SDK's own `PermissionResult` type (sdk.d.ts) marks `updatedInput`
+// OPTIONAL on the allow branch, but the bundled CLI's own permission-response validator does not
+// accept it missing — every allow response with no `updatedInput` fails there with
+// `ZodError: … expected record, received undefined … path: ["updatedInput"]`, wrapped back as a
+// failed tool_result. Built-in tools (Read/Write/Edit/Glob/Grep/Bash) are bare `allowedTools`
+// entries (D-F11) and are auto-approved before `canUseTool` is ever consulted (the SDK's own
+// `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` warning) — so this path was exercised by NOTHING before a
+// dynamically-provisioned MCP tool (`workspace_push({kind:'mcp'})`) became reachable, and every
+// such call failed the moment it reached this callback, unconditionally, allow or deny alike.
+// `updatedInput: input` echoes the ORIGINAL args back unmodified — this hook only allows/denies,
+// it never rewrites a tool call's arguments.
+//
+// This incidentally MASKED a separate gap: with every allow response rejected wholesale, an MCP
+// tool call that would have targeted `.claude/settings.json`/`.claude/hooks/**` under an
+// UNCONFINED Bash posture never got far enough to reach the `PROJECT_CONFIG_PROTECTED` guard
+// below and prove it either way. Fixing the response shape does not close that gap by itself —
+// `toolUsePreCheck`'s `protectedConfigTarget` scan only recognizes the generic `PATH_ARG_FIELDS`
+// (`file_path`/`path`/`notebook_path`); an MCP tool whose own schema names its write target
+// differently is not inspected by this hook at all (same known limitation `PATH_ARG_FIELDS`'s own
+// docblock states for Bash). The deny branch is untouched — this only ever adds `updatedInput` to
+// an ALREADY-DECIDED allow.
 function makeCanUseTool(root: string | undefined): CanUseTool {
   return async (toolName, input, options) => {
-    return toolUsePreCheck(root, extractCandidatePaths(input as Record<string, unknown>, options.blockedPath), toolName);
+    const decision = toolUsePreCheck(root, extractCandidatePaths(input as Record<string, unknown>, options.blockedPath), toolName);
+    if (decision.behavior === 'deny') return decision;
+    return { behavior: 'allow', updatedInput: input };
   };
 }
 
