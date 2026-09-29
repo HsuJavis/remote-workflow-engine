@@ -898,222 +898,230 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         // the CLI may still be exiting; anything left is swept at the next boot (main.ts)
       }
     };
-    const sandbox: Options['sandbox'] =
-      this._config.confinementPosture === 'confined'
-        ? buildBashConfinement({
-            root: confinementRoot,
-            grantedHostPaths: this._config.confinement?.allowHostPaths ?? [],
-            protectedFiles: this._config.confinement?.protectedFiles ?? [],
-            workRoot: this._config.confinement?.workRoot,
-            // Issue #101: default to the HOME this class hands the CLI subprocess (buildSubprocessEnv),
-            // so a construction without the composed block is never less confined than one with it.
-            homeDir: this._config.confinement?.homeDir ?? process.env['HOME'],
-            allowReadPaths: this._config.confinement?.allowReadPaths ?? [],
-            ...(req.opts.bash === 'readonly' ? { bashMode: 'readonly' as const } : {}),
-            ...(cliScratch !== undefined ? { sharedCliScratch: sharedCliScratch(tmpdir(), process.getuid?.()) } : {}),
-          })
-        : { enabled: false };
-
-    // send-back item 2 (verify-b, 2026-09-26): the SDK's own `Options.stderr` callback (sdk.d.ts
-    // ~L1896) is the CLI subprocess's raw stderr — captured here (bounded to the last 4KB, a plain
-    // mutable ref so both `options.stderr` below and the post-drain check after `query()` share the
-    // SAME buffer) as defense-in-depth for a startup crash that never reaches an ordinary `result`
-    // message at all (the thrown-exception path in `_drain`'s catch). Only ever READ after a
-    // failed attempt — see the `agent.stderr` emission below.
-    const stderrRef = { tail: '' };
-    const captureStderr = (data: string): void => {
-      stderrRef.tail = (stderrRef.tail + data).slice(-MAX_STDERR_TAIL);
-    };
-
-    const options: Options = {
-      cwd: req.workspace ?? this._config.cwd,
-      sandbox,
-      stderr: captureStderr,
-      // REQ-037: an anthropic-direct call names the REAL Anthropic model id (LiteLLM bypassed);
-      // every other provider is routed via the proxy-facing alias name (see proxyModelName) — the
-      // CLI would otherwise expand a bare shorthand like `haiku` to a dated Anthropic id the LiteLLM
-      // proxy has no entry for (0-token `terminal`). An absent model resolves to `default`.
-      model: modelName,
-      thinking: wired.thinking,
-      // D-V2G8-1(a): 'bypassPermissions' skipped EVERY tool-call decision outright — paired with a
-      // curated-but-still-Bash-capable-by-opt-in tool set and no path check, this let any agent()
-      // call drive a fully-privileged shell in the parent trust zone. 'default' + the canUseTool
-      // boundary callback below (D-V2G8-1(d)) makes THIS class's own logic the arbiter of every
-      // tool call instead of bypassing arbitration entirely; canUseTool always resolves promptly
-      // (never returns null), so this stays headless — no interactive prompt ever blocks a run.
-      permissionMode: 'default',
-      canUseTool: makeCanUseTool(req.workspace ?? this._config.cwd),
-      // D-V2G8-1(d) real-execution corollary: a BARE `allowedTools` entry auto-approves that tool
-      // before `canUseTool` above is ever consulted (confirmed via the SDK's own
-      // CLAUDE_SDK_CAN_USE_TOOL_SHADOWED runtime warning) — D-F11/UT-024 still requires this list
-      // to stay bare and non-empty (never left unset, including the built-in fallback), so the
-      // `hooks.PreToolUse` matcher below (the SDK's own suggested mechanism for this exact case)
-      // enforces the SAME workspace-boundary decision for every call this auto-approves.
-      // v37 (REQ-218, ARCH-176): the warning is correct and BY DESIGN, not a defect to silence — it
-      // is harmless under this posture because the decision it skips (`canUseTool`) was never Bash's
-      // last line of defence anyway: for Read/Write/Edit/Glob/Grep/NotebookEdit the `PreToolUse`
-      // hook right below picks up exactly what the shadowed callback would have decided (same
-      // `toolUsePreCheck`); for Bash the last line of defence is the kernel (`bash-confinement.ts`,
-      // when the boot posture is confined) or, on a host where it is not, the remote-submission door
-      // (`call-tool.ts`) that refused this call before any of this ever ran — never `canUseTool`,
-      // shadowed or not.
-      allowedTools: curatedTools,
-      // `allowedTools` alone only auto-approves those tools without prompting — it does NOT remove
-      // the rest from what the CLI puts on the wire (sdk.d.ts:1323's own doc: "To restrict which
-      // tools are available, use the `tools` option instead"). Confirmed via a direct real-CLI
-      // repro (IT-023): with only `allowedTools` set, the outbound request's own `tools` array
-      // still carried the CLI's full built-in surface. `tools` (sdk.d.ts:1370) is the option that
-      // actually narrows the built-in tool set sent to the model — set to the SAME curated list,
-      // plus the Skill tool when this agent has a declared skill to activate (#81/#83, above).
-      tools: wireTools,
-      skills: exposedSkills,
-      // #81/#83: a skill's inline `!`cmd`` would run through the CLI's own shell path at activation.
-      // Skill text is instructions; anything it wants executed goes through the agent's tools.
-      // (Serialized to --settings by the SDK, with `sandbox` below merged into the same object.)
-      settings: { disableSkillShellExecution: true },
-      // The CLI's full uncurated surface (round-5 VAL-003's root cause) also included this HOST
-      // environment's own inherited project/user MCP plugin tools (Playwright, Cloudflare, ...) —
-      // `tools` alone doesn't touch those. `settingSources: []` (SDK isolation mode) skips loading
-      // any filesystem settings (user/project/local, including plugin/MCP config) and
-      // `strictMcpConfig: true` restricts MCP servers to only what `mcpServers` explicitly passes
-      // — together these make every agent() session's tool surface deterministically exactly
-      // `curatedTools` (+ whatever this run's own workspace-scoped `.claude/` materializes, D-V2V-1),
-      // regardless of whatever Claude Code configuration happens to be present on the host machine
-      // running this product.
-      settingSources: req.workspace !== undefined ? ['project'] : [],
-      strictMcpConfig: true,
-      // Our own McpServerConfig (mcp-probe.ts) is a loose superset the SDK's own discriminated
-      // McpServerConfig union narrows further — already validated at push time (server.ts's
-      // checkMcpConfigTransport only ever accepts remote-http/npx-stdio configs into storage).
-      mcpServers: mcpServers as Options['mcpServers'],
-      // D-V2G8-1(d): belt-and-suspenders alongside canUseTool above — fires for every tool call
-      // regardless of whether a bare allowedTools entry already auto-approved it.
-      hooks: { PreToolUse: [{ hooks: [makePreToolUseHook(req.workspace ?? this._config.cwd)] }] },
-      abortController: controller,
-      // D-G8-5/REQ-037: an explicit allowlist plus the provider-aware routing/auth vars — never the
-      // full host process.env (see buildSubprocessEnv). Resolved above so an auth-missing anthropic
-      // call fails typed BEFORE query() is ever spawned.
-      env: cliScratch !== undefined ? withCliScratchEnv(envResult.env, cliScratch) : envResult.env,
-    };
-    // v26 (DES-179, ARCH-117, TASK-179): `wireEffort` already resolved the flat `Options.effort`
-    // field alongside `thinking` above — set only when it actually applies (the anthropic arm).
-    if (wired.effort !== undefined) options.effort = wired.effort;
-    // v37 (ARCH-178, DES-256, TASK-253, REQ-218): the policy applied is OUR data, so it is
-    // unconditional — emitted from `sandbox`, the object the builder above JUST returned, never
-    // re-derived. Once per ATTEMPT (the `attempt` param threaded from `invoke()`'s retry loop, NOT
-    // `sys.attempt` — the CLI's own internal backoff, read inside `_drain`). A call refused before
-    // reaching here (IMPL-377's `WORKROOT_INSIDE_PROJECT` refusal at :709-728, added this same
-    // iteration) emits ZERO lines — "a posture printed for a session that never ran is a nerve
-    // attached to nothing".
-    this._eventSink({
-      kind: 'agent.confinement',
-      runId: req.runId,
-      agentId: req.agentId,
-      attempt,
-      // v37 Gate 6.5+7 fix (verifier, ARCH-176's own "two different reasons must not read the
-      // same" bug class): MIRRORS the `sandbox` ternary two statements above, not an independent
-      // reading of the same field — an earlier draft read this backwards (`=== 'unconfined' ?
-      // 'unconfined' : 'confined'`, so an OMITTED `confinementPosture` reported `posture:'confined'`
-      // on an event whose OWN `sandbox` was simultaneously `{enabled:false}` — the exact mismatch
-      // this iteration exists to make impossible, caught by the TZ-shift regression's own log
-      // output, not by UT-316/317 (both pass an explicit posture).
-      posture: this._config.confinementPosture === 'confined' ? 'confined' : 'unconfined',
-      root: confinementRoot,
-      allowWrite: sandbox?.filesystem?.allowWrite ?? [],
-      denyRead: sandbox?.filesystem?.denyRead ?? [],
-      enabled: sandbox?.enabled === true,
-      failIfUnavailable: sandbox?.failIfUnavailable === true,
-      sdkVersion: SDK_VERSION,
-    });
-    // DES-066 (TASK-069): emit harness descriptor eagerly at session-build time (post-curation, before query).
-    if (req.onHarness) {
-      const descriptor = redactHarness({
-        surfaceType: 'curated',
-        // v26 integration (DES-177, REQ-125, clarification 26): the RESOLVED model id, not
-        // `modelName` (which is the `rwe-proxy-*` cloak on the LiteLLM route). The cloak travels
-        // beside it as `proxyModel`, exactly as it already does on `GatewayResult` via `stamp()`
-        // above — same two values, same two names, on both objects the record is built from.
-        modelName: resolvedModel,
-        ...(proxyModel !== undefined ? { proxyModel } : {}),
-        provider,
-        prompt: req.prompt,
-        curatedTools: wireTools,
-        mergedMcp: Object.entries(mcpConfigs).map(([name, cfg]) => ({ name, ...(cfg as Record<string, unknown>) })),
-        // v24 (ARCH-103, DES-160, TASK-145): the ACTUAL materialized skill set, not "every stored
-        // skill" — a declared-but-absent name is in `materialized.missing`, never silently dropped.
-        skills: materialized?.skills ?? [],
-        // v22 (REQ-099, adjudication #4 N-1): a referenced-but-unprovisioned MCP is dropped from the
-        // session (unchanged) — but the descriptor now admits to it, so `workflow_agent_log` shows
-        // the author which capability their grandfathered workflow lost. Same honest-no-op record as
-        // `effortApplied`'s `{reason}` branch; empty ⇒ the field is not emitted at all.
-        unresolvedMcp: mcpMissing,
-      });
-      // v24 (ARCH-104/DES-160, TASK-145): the materialized set rides the descriptor itself (the ONE
-      // decoration site downstream, `agent-executor.ts`, fills the honest empty set for a dispatch
-      // that never sets `req.assets` at all — e.g. the direct-fetch gateway).
-      if (materialized) descriptor.materialized = materialized;
-      // #81/#83: what the model could actually activate — distinct from what is on disk above.
-      descriptor.skillsExposed = exposedSkills;
-      if (plantedConfigRemoved.length > 0) descriptor.plantedConfigRemoved = plantedConfigRemoved;
-      // Issue #78(c): the effective Bash mode and whether the kernel sandbox actually carried it.
-      if (wireTools.includes('Bash')) descriptor.bash = { mode: req.opts.bash === 'readonly' ? 'readonly' : 'full', enforced: sandbox?.enabled === true };
-      // `applied` travels to the caller as onHarness's own second argument (the single source of
-      // truth downstream decoration reads) — no separate write onto `descriptor` needed here.
-      // v26 (DES-179): `wireEffort.applied` is ALWAYS present (its own doc comment), but the
-      // PERSISTED `effortApplied` field's presence still means "an effort was actually requested"
-      // (agent-executor.ts:492's `applied !== undefined` gate) — unchanged from v25 and matching the
-      // direct-fetch gateway's own `req.opts.effort !== undefined` gate in `LiteLLMGatewayClient.invoke`
-      // (client.ts), which still passes `undefined` here for the same reason. Passing
-      // `wired.applied` unconditionally would silently add `effortApplied:{reason:'no effort
-      // requested'}` to EVERY SDK-gateway record, a persisted-shape change no DES asked for.
-      await req.onHarness(descriptor, req.opts.effort !== undefined ? applied : undefined);
-    }
-    // issue #53: the awaits above (MCP resolution, asset materialization, onHarness) are a window in
-    // which the caller can abort; `onExternalAbort` already fired into `controller`, but `bound`
-    // below would attach its listener to an already-aborted signal and never resolve. Refuse here,
-    // synchronously before the spawn, rather than start a session nobody can stop.
-    if (req.signal?.aborted) {
-      if (timer !== undefined) clearTimeout(timer);
-      req.signal.removeEventListener('abort', onExternalAbort);
-      dropCliScratch();
-      return abortedBeforeDispatch();
-    }
-    const session = this._query({ prompt: req.prompt, options });
-    const drain = this._drain(session, req.opts.model, req.onEvent);
-
-    // issue #22: name the culprit on any failure that lacks its own detail — so a timeout/unreachable
-    // is diagnosable ("which alias→model?") instead of an opaque reason. modelName is the resolved
-    // wire model; provider is the resolved backend. A success or an already-detailed failure is
-    // returned unchanged.
-    const namedDetail = (reason: string): string => `no response from model "${modelName}" (provider "${provider}") — ${reason}`;
-    const enrich = (r: GatewayResult): GatewayResult => (!r.ok && r.detail === undefined ? { ...r, detail: namedDetail(r.reason) } : r);
-
-    // send-back item 2 (verify-b, 2026-09-26): ONE seam every failure path this call can produce
-    // (the ordinary `_drain` returns, the aborted/timeout branch below) passes through — mirrors
-    // `enrich`'s own "only touch a failure" shape. The FULL captured buffer always goes to the
-    // engine log (`agent.stderr`, redacted like every other EngineEvent); only a SHORT tail is
-    // folded into the caller-visible `detail` (agent-executor.ts's `capDetail` bounds the whole
-    // detail string to 1024B downstream regardless). A call that never wrote any stderr (the
-    // common case) is a no-op — never an event for nothing to report.
-    const withStderrDiagnostics = (r: GatewayResult): GatewayResult => {
-      if (r.ok) return r;
-      const trimmedTail = stderrRef.tail.trim();
-      if (trimmedTail.length === 0) return r;
-      this._eventSink({ kind: 'agent.stderr', runId: req.runId, agentId: req.agentId, attempt, tail: stderrRef.tail });
-      const short = trimmedTail.length > MAX_INLINE_STDERR ? `…${trimmedTail.slice(-MAX_INLINE_STDERR)}` : trimmedTail;
-      return { ...r, detail: `${r.detail ?? ''}${r.detail ? ' — ' : ''}CLI stderr tail: ${short}` };
-    };
-
-    // D-F7/D-F9a: race the session against a timeoutMs-bounded timer and/or the caller's own
-    // (RunManager-owned) AbortSignal — whichever fires first wins, exactly like
-    // LiteLLMGatewayClient's per-attempt AbortController race. Raced unconditionally now that the
-    // controller always exists (v26) — `bound` simply never resolves when neither a timer nor an
-    // external signal is configured, so `drain` alone decides the outcome, unchanged.
-    const bound = new Promise<'aborted'>((resolve) => {
-      controller.signal.addEventListener('abort', () => resolve('aborted'), { once: true });
-    });
-
+    // #101 follow-up: the try below now spans creation (cliScratch/dropCliScratch, just above) all
+    // the way to the query() call and the race that drains it — previously only the aborted-before-
+    // dispatch branch and the post-query race called dropCliScratch(), so a throw from an in-between
+    // step (sandbox build, `await req.onHarness`, or a synchronous throw from `this._query` itself)
+    // propagated out of `_invokeOnce` WITHOUT ever running dropCliScratch(), leaking the per-dispatch
+    // scratch dir under workRoot until the next engine boot's sweep. One `finally` now covers every
+    // exit from this point on (the two early `return`s inside keep their own manual cleanup too —
+    // redundant but harmless, both `dropCliScratch()` and the timer/listener teardown are idempotent).
     try {
+      const sandbox: Options['sandbox'] =
+        this._config.confinementPosture === 'confined'
+          ? buildBashConfinement({
+              root: confinementRoot,
+              grantedHostPaths: this._config.confinement?.allowHostPaths ?? [],
+              protectedFiles: this._config.confinement?.protectedFiles ?? [],
+              workRoot: this._config.confinement?.workRoot,
+              // Issue #101: default to the HOME this class hands the CLI subprocess (buildSubprocessEnv),
+              // so a construction without the composed block is never less confined than one with it.
+              homeDir: this._config.confinement?.homeDir ?? process.env['HOME'],
+              allowReadPaths: this._config.confinement?.allowReadPaths ?? [],
+              ...(req.opts.bash === 'readonly' ? { bashMode: 'readonly' as const } : {}),
+              ...(cliScratch !== undefined ? { sharedCliScratch: sharedCliScratch(tmpdir(), process.getuid?.()) } : {}),
+            })
+          : { enabled: false };
+
+      // send-back item 2 (verify-b, 2026-09-26): the SDK's own `Options.stderr` callback (sdk.d.ts
+      // ~L1896) is the CLI subprocess's raw stderr — captured here (bounded to the last 4KB, a plain
+      // mutable ref so both `options.stderr` below and the post-drain check after `query()` share the
+      // SAME buffer) as defense-in-depth for a startup crash that never reaches an ordinary `result`
+      // message at all (the thrown-exception path in `_drain`'s catch). Only ever READ after a
+      // failed attempt — see the `agent.stderr` emission below.
+      const stderrRef = { tail: '' };
+      const captureStderr = (data: string): void => {
+        stderrRef.tail = (stderrRef.tail + data).slice(-MAX_STDERR_TAIL);
+      };
+
+      const options: Options = {
+        cwd: req.workspace ?? this._config.cwd,
+        sandbox,
+        stderr: captureStderr,
+        // REQ-037: an anthropic-direct call names the REAL Anthropic model id (LiteLLM bypassed);
+        // every other provider is routed via the proxy-facing alias name (see proxyModelName) — the
+        // CLI would otherwise expand a bare shorthand like `haiku` to a dated Anthropic id the LiteLLM
+        // proxy has no entry for (0-token `terminal`). An absent model resolves to `default`.
+        model: modelName,
+        thinking: wired.thinking,
+        // D-V2G8-1(a): 'bypassPermissions' skipped EVERY tool-call decision outright — paired with a
+        // curated-but-still-Bash-capable-by-opt-in tool set and no path check, this let any agent()
+        // call drive a fully-privileged shell in the parent trust zone. 'default' + the canUseTool
+        // boundary callback below (D-V2G8-1(d)) makes THIS class's own logic the arbiter of every
+        // tool call instead of bypassing arbitration entirely; canUseTool always resolves promptly
+        // (never returns null), so this stays headless — no interactive prompt ever blocks a run.
+        permissionMode: 'default',
+        canUseTool: makeCanUseTool(req.workspace ?? this._config.cwd),
+        // D-V2G8-1(d) real-execution corollary: a BARE `allowedTools` entry auto-approves that tool
+        // before `canUseTool` above is ever consulted (confirmed via the SDK's own
+        // CLAUDE_SDK_CAN_USE_TOOL_SHADOWED runtime warning) — D-F11/UT-024 still requires this list
+        // to stay bare and non-empty (never left unset, including the built-in fallback), so the
+        // `hooks.PreToolUse` matcher below (the SDK's own suggested mechanism for this exact case)
+        // enforces the SAME workspace-boundary decision for every call this auto-approves.
+        // v37 (REQ-218, ARCH-176): the warning is correct and BY DESIGN, not a defect to silence — it
+        // is harmless under this posture because the decision it skips (`canUseTool`) was never Bash's
+        // last line of defence anyway: for Read/Write/Edit/Glob/Grep/NotebookEdit the `PreToolUse`
+        // hook right below picks up exactly what the shadowed callback would have decided (same
+        // `toolUsePreCheck`); for Bash the last line of defence is the kernel (`bash-confinement.ts`,
+        // when the boot posture is confined) or, on a host where it is not, the remote-submission door
+        // (`call-tool.ts`) that refused this call before any of this ever ran — never `canUseTool`,
+        // shadowed or not.
+        allowedTools: curatedTools,
+        // `allowedTools` alone only auto-approves those tools without prompting — it does NOT remove
+        // the rest from what the CLI puts on the wire (sdk.d.ts:1323's own doc: "To restrict which
+        // tools are available, use the `tools` option instead"). Confirmed via a direct real-CLI
+        // repro (IT-023): with only `allowedTools` set, the outbound request's own `tools` array
+        // still carried the CLI's full built-in surface. `tools` (sdk.d.ts:1370) is the option that
+        // actually narrows the built-in tool set sent to the model — set to the SAME curated list,
+        // plus the Skill tool when this agent has a declared skill to activate (#81/#83, above).
+        tools: wireTools,
+        skills: exposedSkills,
+        // #81/#83: a skill's inline `!`cmd`` would run through the CLI's own shell path at activation.
+        // Skill text is instructions; anything it wants executed goes through the agent's tools.
+        // (Serialized to --settings by the SDK, with `sandbox` below merged into the same object.)
+        settings: { disableSkillShellExecution: true },
+        // The CLI's full uncurated surface (round-5 VAL-003's root cause) also included this HOST
+        // environment's own inherited project/user MCP plugin tools (Playwright, Cloudflare, ...) —
+        // `tools` alone doesn't touch those. `settingSources: []` (SDK isolation mode) skips loading
+        // any filesystem settings (user/project/local, including plugin/MCP config) and
+        // `strictMcpConfig: true` restricts MCP servers to only what `mcpServers` explicitly passes
+        // — together these make every agent() session's tool surface deterministically exactly
+        // `curatedTools` (+ whatever this run's own workspace-scoped `.claude/` materializes, D-V2V-1),
+        // regardless of whatever Claude Code configuration happens to be present on the host machine
+        // running this product.
+        settingSources: req.workspace !== undefined ? ['project'] : [],
+        strictMcpConfig: true,
+        // Our own McpServerConfig (mcp-probe.ts) is a loose superset the SDK's own discriminated
+        // McpServerConfig union narrows further — already validated at push time (server.ts's
+        // checkMcpConfigTransport only ever accepts remote-http/npx-stdio configs into storage).
+        mcpServers: mcpServers as Options['mcpServers'],
+        // D-V2G8-1(d): belt-and-suspenders alongside canUseTool above — fires for every tool call
+        // regardless of whether a bare allowedTools entry already auto-approved it.
+        hooks: { PreToolUse: [{ hooks: [makePreToolUseHook(req.workspace ?? this._config.cwd)] }] },
+        abortController: controller,
+        // D-G8-5/REQ-037: an explicit allowlist plus the provider-aware routing/auth vars — never the
+        // full host process.env (see buildSubprocessEnv). Resolved above so an auth-missing anthropic
+        // call fails typed BEFORE query() is ever spawned.
+        env: cliScratch !== undefined ? withCliScratchEnv(envResult.env, cliScratch) : envResult.env,
+      };
+      // v26 (DES-179, ARCH-117, TASK-179): `wireEffort` already resolved the flat `Options.effort`
+      // field alongside `thinking` above — set only when it actually applies (the anthropic arm).
+      if (wired.effort !== undefined) options.effort = wired.effort;
+      // v37 (ARCH-178, DES-256, TASK-253, REQ-218): the policy applied is OUR data, so it is
+      // unconditional — emitted from `sandbox`, the object the builder above JUST returned, never
+      // re-derived. Once per ATTEMPT (the `attempt` param threaded from `invoke()`'s retry loop, NOT
+      // `sys.attempt` — the CLI's own internal backoff, read inside `_drain`). A call refused before
+      // reaching here (IMPL-377's `WORKROOT_INSIDE_PROJECT` refusal at :709-728, added this same
+      // iteration) emits ZERO lines — "a posture printed for a session that never ran is a nerve
+      // attached to nothing".
+      this._eventSink({
+        kind: 'agent.confinement',
+        runId: req.runId,
+        agentId: req.agentId,
+        attempt,
+        // v37 Gate 6.5+7 fix (verifier, ARCH-176's own "two different reasons must not read the
+        // same" bug class): MIRRORS the `sandbox` ternary two statements above, not an independent
+        // reading of the same field — an earlier draft read this backwards (`=== 'unconfined' ?
+        // 'unconfined' : 'confined'`, so an OMITTED `confinementPosture` reported `posture:'confined'`
+        // on an event whose OWN `sandbox` was simultaneously `{enabled:false}` — the exact mismatch
+        // this iteration exists to make impossible, caught by the TZ-shift regression's own log
+        // output, not by UT-316/317 (both pass an explicit posture).
+        posture: this._config.confinementPosture === 'confined' ? 'confined' : 'unconfined',
+        root: confinementRoot,
+        allowWrite: sandbox?.filesystem?.allowWrite ?? [],
+        denyRead: sandbox?.filesystem?.denyRead ?? [],
+        enabled: sandbox?.enabled === true,
+        failIfUnavailable: sandbox?.failIfUnavailable === true,
+        sdkVersion: SDK_VERSION,
+      });
+      // DES-066 (TASK-069): emit harness descriptor eagerly at session-build time (post-curation, before query).
+      if (req.onHarness) {
+        const descriptor = redactHarness({
+          surfaceType: 'curated',
+          // v26 integration (DES-177, REQ-125, clarification 26): the RESOLVED model id, not
+          // `modelName` (which is the `rwe-proxy-*` cloak on the LiteLLM route). The cloak travels
+          // beside it as `proxyModel`, exactly as it already does on `GatewayResult` via `stamp()`
+          // above — same two values, same two names, on both objects the record is built from.
+          modelName: resolvedModel,
+          ...(proxyModel !== undefined ? { proxyModel } : {}),
+          provider,
+          prompt: req.prompt,
+          curatedTools: wireTools,
+          mergedMcp: Object.entries(mcpConfigs).map(([name, cfg]) => ({ name, ...(cfg as Record<string, unknown>) })),
+          // v24 (ARCH-103, DES-160, TASK-145): the ACTUAL materialized skill set, not "every stored
+          // skill" — a declared-but-absent name is in `materialized.missing`, never silently dropped.
+          skills: materialized?.skills ?? [],
+          // v22 (REQ-099, adjudication #4 N-1): a referenced-but-unprovisioned MCP is dropped from the
+          // session (unchanged) — but the descriptor now admits to it, so `workflow_agent_log` shows
+          // the author which capability their grandfathered workflow lost. Same honest-no-op record as
+          // `effortApplied`'s `{reason}` branch; empty ⇒ the field is not emitted at all.
+          unresolvedMcp: mcpMissing,
+        });
+        // v24 (ARCH-104/DES-160, TASK-145): the materialized set rides the descriptor itself (the ONE
+        // decoration site downstream, `agent-executor.ts`, fills the honest empty set for a dispatch
+        // that never sets `req.assets` at all — e.g. the direct-fetch gateway).
+        if (materialized) descriptor.materialized = materialized;
+        // #81/#83: what the model could actually activate — distinct from what is on disk above.
+        descriptor.skillsExposed = exposedSkills;
+        if (plantedConfigRemoved.length > 0) descriptor.plantedConfigRemoved = plantedConfigRemoved;
+        // Issue #78(c): the effective Bash mode and whether the kernel sandbox actually carried it.
+        if (wireTools.includes('Bash')) descriptor.bash = { mode: req.opts.bash === 'readonly' ? 'readonly' : 'full', enforced: sandbox?.enabled === true };
+        // `applied` travels to the caller as onHarness's own second argument (the single source of
+        // truth downstream decoration reads) — no separate write onto `descriptor` needed here.
+        // v26 (DES-179): `wireEffort.applied` is ALWAYS present (its own doc comment), but the
+        // PERSISTED `effortApplied` field's presence still means "an effort was actually requested"
+        // (agent-executor.ts:492's `applied !== undefined` gate) — unchanged from v25 and matching the
+        // direct-fetch gateway's own `req.opts.effort !== undefined` gate in `LiteLLMGatewayClient.invoke`
+        // (client.ts), which still passes `undefined` here for the same reason. Passing
+        // `wired.applied` unconditionally would silently add `effortApplied:{reason:'no effort
+        // requested'}` to EVERY SDK-gateway record, a persisted-shape change no DES asked for.
+        await req.onHarness(descriptor, req.opts.effort !== undefined ? applied : undefined);
+      }
+      // issue #53: the awaits above (MCP resolution, asset materialization, onHarness) are a window in
+      // which the caller can abort; `onExternalAbort` already fired into `controller`, but `bound`
+      // below would attach its listener to an already-aborted signal and never resolve. Refuse here,
+      // synchronously before the spawn, rather than start a session nobody can stop.
+      if (req.signal?.aborted) {
+        if (timer !== undefined) clearTimeout(timer);
+        req.signal.removeEventListener('abort', onExternalAbort);
+        dropCliScratch();
+        return abortedBeforeDispatch();
+      }
+      const session = this._query({ prompt: req.prompt, options });
+      const drain = this._drain(session, req.opts.model, req.onEvent);
+
+      // issue #22: name the culprit on any failure that lacks its own detail — so a timeout/unreachable
+      // is diagnosable ("which alias→model?") instead of an opaque reason. modelName is the resolved
+      // wire model; provider is the resolved backend. A success or an already-detailed failure is
+      // returned unchanged.
+      const namedDetail = (reason: string): string => `no response from model "${modelName}" (provider "${provider}") — ${reason}`;
+      const enrich = (r: GatewayResult): GatewayResult => (!r.ok && r.detail === undefined ? { ...r, detail: namedDetail(r.reason) } : r);
+
+      // send-back item 2 (verify-b, 2026-09-26): ONE seam every failure path this call can produce
+      // (the ordinary `_drain` returns, the aborted/timeout branch below) passes through — mirrors
+      // `enrich`'s own "only touch a failure" shape. The FULL captured buffer always goes to the
+      // engine log (`agent.stderr`, redacted like every other EngineEvent); only a SHORT tail is
+      // folded into the caller-visible `detail` (agent-executor.ts's `capDetail` bounds the whole
+      // detail string to 1024B downstream regardless). A call that never wrote any stderr (the
+      // common case) is a no-op — never an event for nothing to report.
+      const withStderrDiagnostics = (r: GatewayResult): GatewayResult => {
+        if (r.ok) return r;
+        const trimmedTail = stderrRef.tail.trim();
+        if (trimmedTail.length === 0) return r;
+        this._eventSink({ kind: 'agent.stderr', runId: req.runId, agentId: req.agentId, attempt, tail: stderrRef.tail });
+        const short = trimmedTail.length > MAX_INLINE_STDERR ? `…${trimmedTail.slice(-MAX_INLINE_STDERR)}` : trimmedTail;
+        return { ...r, detail: `${r.detail ?? ''}${r.detail ? ' — ' : ''}CLI stderr tail: ${short}` };
+      };
+
+      // D-F7/D-F9a: race the session against a timeoutMs-bounded timer and/or the caller's own
+      // (RunManager-owned) AbortSignal — whichever fires first wins, exactly like
+      // LiteLLMGatewayClient's per-attempt AbortController race. Raced unconditionally now that the
+      // controller always exists (v26) — `bound` simply never resolves when neither a timer nor an
+      // external signal is configured, so `drain` alone decides the outcome, unchanged.
+      const bound = new Promise<'aborted'>((resolve) => {
+        controller.signal.addEventListener('abort', () => resolve('aborted'), { once: true });
+      });
+
       const outcome = await Promise.race([drain, bound]);
       if (outcome !== 'aborted') return stamp(withStderrDiagnostics(enrich(outcome)));
       const reason = timeoutMs !== undefined ? 'timeout' : 'terminal';

@@ -107,4 +107,25 @@ describe('issue #101 per-dispatch CLI scratch (SDK gateway)', () => {
     expect(r.ok ? '' : r.detail).toMatch(/^CLI_SCRATCH_UNAVAILABLE: /);
     expect(queryMock).not.toHaveBeenCalled();
   });
+
+  // #101 follow-up: the scratch dir used to be created (~L882) but only dropped at the
+  // aborted-before-dispatch return and in the post-query() race's own finally — a throw from
+  // anywhere in between (a caller-supplied `onHarness` included) escaped BOTH of those and left the
+  // per-dispatch dir under `<workRoot>/cli-tmp/` on disk until the next engine boot's sweep.
+  it('a throwing onHarness still drops the per-dispatch CLI scratch dir', async () => {
+    const c = await client({ confinementPosture: 'confined', confinement: confinement() });
+    const boom = new Error('onHarness blew up');
+    await expect(c.invoke({
+      prompt: 'p',
+      opts: {} as AgentOpts,
+      runId: 'run-a',
+      agentId: 'a1',
+      workspace,
+      onHarness: async () => { throw boom; },
+    })).rejects.toThrow('onHarness blew up');
+    // the scratch dir it made for this dispatch must not have leaked
+    expect(readdirSync(join(workRoot, 'cli-tmp'))).toEqual([]);
+    // and query() must never have even been reached — onHarness fires before the CLI is spawned
+    expect(queryMock).not.toHaveBeenCalled();
+  });
 });
