@@ -5,9 +5,11 @@
 // the skill's own top-level SKILL.md is refused INVALID_ARGUMENT.
 //
 // MCP-level (real HTTP, real createServer(), no mock of the SUT boundary — same policy as
-// asset-mcp-tools.test.ts / asset-squatting-ownership.test.ts). Written test-first (Gate 5, RED)
-// against the pre-fix engine, where every pushed file lands with whatever the process umask gives
-// writeFileSync's default mode, never 0o755, and no SKILL.md guard exists.
+// asset-mcp-tools.test.ts / asset-squatting-ownership.test.ts). The RED evidence for this
+// behaviour was carried at the unit tier (tests/unit/asset-exec-mode.test.ts, against
+// AssetSyncService.push() directly, pre-fix); this file was added AFTER that GREEN, to pin the
+// same behaviour over the real MCP HTTP transport rather than assuming the facade forwards
+// `exec` unchanged.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';

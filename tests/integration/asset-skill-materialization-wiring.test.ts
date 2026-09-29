@@ -203,9 +203,12 @@ describe('REQ-113 selective skill materialization on a REAL dispatch (IT-036/IT-
   // Issue #105 part A (owner decision): a skill file's exec flag must survive the WHOLE hop —
   // asset-sync write (0o755/0o644), then the run-workspace materialization copy
   // (`materializeAssets`'s `copyDir`, real fs `copyFileSync` in production) — not just the pushed
-  // asset tree. `copyFileSync` preserves the source file's mode (verified separately); this is the
-  // one test that proves it on a REAL dispatch rather than assuming it. Cheap (fake model session,
-  // same fixture the rest of this file already uses), so it is not gated behind a paid model.
+  // asset tree. `copyFileSync` preserves the source file's mode (verified separately, node -e
+  // repro); this test proves it end-to-end through the SAME real dispatch path (real
+  // composeConfig/createServer/MCP round trips, run-manager, gateway, materializeAssets) this
+  // file's OWN mock policy already uses — only the third-party SDK `query()` export is faked (no
+  // real model call), same as every other case here. Not real-tier / paid-model (that was
+  // optional per the dispatch); this is the same "REAL dispatch" this file's header already means.
   it('exec:true on a pushed skill file survives materialization into the run workspace (issue #105 part A)', async () => {
     const preReg = await mcpCall('workflow_register', { name: WF_NAME, script: 'return "placeholder-exec";', mermaid: 'graph LR' });
     expect(preReg.error, `pre-register failed: ${JSON.stringify(preReg.error)}`).toBeUndefined();

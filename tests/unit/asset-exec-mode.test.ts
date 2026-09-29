@@ -106,4 +106,84 @@ describe('AssetSyncService.push() — per-file exec flag controls materialized m
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // The SKILL.md guard must compare the RESOLVED path, not the caller's raw string — `./SKILL.md`
+  // and `SKILL.md` name the exact same file once `pathVerdict` normalizes it, and a literal
+  // `path === 'SKILL.md'` check would let this spelling smuggle exec:true past the guard.
+  it('exec:true on "./SKILL.md" (a differently-spelled path to the SAME top-level file) is also refused INVALID_ARGUMENT', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-exec-'));
+    try {
+      const svc = new AssetSyncService({
+        workRoot: dir, globalRoot: join(dir, 'global'), selfBind: { host: '127.0.0.1', port: 1 },
+        clock: new FixedClock(new Date('2026-01-01T00:00:00Z')),
+        catalog: fakeCatalogPort(), probe: { probe: vi.fn() }, egressAllowlist: [],
+      });
+      await expect(svc.push({
+        scope: 'workflow', workflow: 'wf-a', kind: 'skill', name: 'bad-skill-dotslash', pushedBy: 'bob',
+        files: [{ path: './SKILL.md', contentB64: Buffer.from('# bad-skill').toString('base64'), exec: true }],
+      })).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+      const { existsSync } = await import('node:fs');
+      expect(existsSync(join(dir, 'wf-a', 'skill', 'bad-skill-dotslash'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // The mode this push declares must always win, not just on first creation — proves the reason
+  // `chmodSync` runs unconditionally after `writeFileSync` rather than relying on its own `mode`
+  // option (which the OS only honours when the open() call actually CREATES the file).
+  it('a re-push of the SAME path with a DIFFERENT exec value overwrites the old mode, both directions', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-exec-'));
+    try {
+      const svc = new AssetSyncService({
+        workRoot: dir, globalRoot: join(dir, 'global'), selfBind: { host: '127.0.0.1', port: 1 },
+        clock: new FixedClock(new Date('2026-01-01T00:00:00Z')),
+        catalog: fakeCatalogPort(), probe: { probe: vi.fn() }, egressAllowlist: [],
+      });
+      const path = join(dir, 'wf-a', 'skill', 're-pushed', 'run.sh');
+
+      await svc.push({
+        scope: 'workflow', workflow: 'wf-a', kind: 'skill', name: 're-pushed', pushedBy: 'bob',
+        files: [{ path: 'run.sh', contentB64: Buffer.from('v1').toString('base64'), exec: true }],
+      });
+      expect(mode(path)).toBe(0o755);
+
+      // Re-push the SAME path, exec omitted — the old 0o755 must not survive the overwrite.
+      await svc.push({
+        scope: 'workflow', workflow: 'wf-a', kind: 'skill', name: 're-pushed', pushedBy: 'bob',
+        files: [{ path: 'run.sh', contentB64: Buffer.from('v2').toString('base64') }],
+      });
+      expect(mode(path)).toBe(0o644);
+
+      // ...and the reverse: re-push again with exec:true, the 0o644 must flip back to 0o755.
+      await svc.push({
+        scope: 'workflow', workflow: 'wf-a', kind: 'skill', name: 're-pushed', pushedBy: 'bob',
+        files: [{ path: 'run.sh', contentB64: Buffer.from('v3').toString('base64'), exec: true }],
+      });
+      expect(mode(path)).toBe(0o755);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // `_skillRoot('global', …)` is the SAME branch of `push()` as the workflow-scoped tests above
+  // (only the root differs) — one direct case pins that `scope:'global'` is not a separate,
+  // untested code path for this flag.
+  it('scope:"global" honours exec:true the same way workflow-scoped pushes do', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-exec-'));
+    try {
+      const svc = new AssetSyncService({
+        workRoot: dir, globalRoot: join(dir, 'global'), selfBind: { host: '127.0.0.1', port: 1 },
+        clock: new FixedClock(new Date('2026-01-01T00:00:00Z')),
+        catalog: fakeCatalogPort(), probe: { probe: vi.fn() }, egressAllowlist: [],
+      });
+      await svc.push({
+        scope: 'global', kind: 'skill', name: 'global-exec-skill', pushedBy: 'root',
+        files: [{ path: 'run.sh', contentB64: Buffer.from('#!/bin/sh\n').toString('base64'), exec: true }],
+      });
+      expect(mode(join(dir, 'global', 'skill', 'global-exec-skill', 'run.sh'))).toBe(0o755);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
