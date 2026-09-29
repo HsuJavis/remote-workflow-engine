@@ -179,7 +179,26 @@ function pushInputSchema(): Record<string, unknown> {
           kind: { type: 'string', enum: ['skill', 'mcp'] },
           name: { type: 'string' },
           // v26 Gate 7.5 round 1 (defect D1): item schema — see ARRAY_ITEMS_RULE below.
-          files: { type: 'array', description: "A skill's files — each element is {path, contentB64}, the file bytes as base64.", items: { type: 'object', required: ['path', 'contentB64'], properties: { path: { type: 'string' }, contentB64: { type: 'string' } } } },
+          // Issue #105 part A (owner decision): each element is {path, contentB64, exec?} — the
+          // SAME shape (and the same materialized-mode meaning) as seedManifest's {path, sha256,
+          // exec?}, so `exec:true` never means two different things on the same surface.
+          files: {
+            type: 'array',
+            description:
+              "A skill's files — each element is {path, contentB64, exec?}, the file bytes as base64. " +
+              'exec:true materializes that file 0o755 — for a script with a shebang or a compiled CLI (an ELF binary, not a text script); absent/false materializes 0o644. ' +
+              "Never set exec:true on this skill's own top-level SKILL.md (INVALID_ARGUMENT) — it is the skill's manifest, never executed. " +
+              'The dispatched agent always runs inside its Bash sandbox either way — exec only decides whether the OS itself can exec the file directly: without it a shebang script still runs via `sh <path>` or `python3 <path>`, but a compiled binary cannot run at all.',
+            items: {
+              type: 'object',
+              required: ['path', 'contentB64'],
+              properties: {
+                path: { type: 'string' },
+                contentB64: { type: 'string' },
+                exec: { type: 'boolean', description: "Materialize this file 0o755 instead of 0o644 (scripts with a shebang, compiled CLIs). Refused INVALID_ARGUMENT on this skill's top-level SKILL.md." },
+              },
+            },
+          },
           config: { type: 'object' },
           // Issue #92 part B: closed enum of the two supported AssetScope values (same reasoning as `kind` above).
           scope: { type: 'string', enum: ['workflow', 'global'] },

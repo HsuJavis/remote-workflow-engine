@@ -200,6 +200,40 @@ describe('REQ-113 selective skill materialization on a REAL dispatch (IT-036/IT-
     expect(existsSync(join(workspace, '.claude', 'skills', 'undeclared-skill'))).toBe(false);
   }, 30000);
 
+  // Issue #105 part A (owner decision): a skill file's exec flag must survive the WHOLE hop —
+  // asset-sync write (0o755/0o644), then the run-workspace materialization copy
+  // (`materializeAssets`'s `copyDir`, real fs `copyFileSync` in production) — not just the pushed
+  // asset tree. `copyFileSync` preserves the source file's mode (verified separately); this is the
+  // one test that proves it on a REAL dispatch rather than assuming it. Cheap (fake model session,
+  // same fixture the rest of this file already uses), so it is not gated behind a paid model.
+  it('exec:true on a pushed skill file survives materialization into the run workspace (issue #105 part A)', async () => {
+    const preReg = await mcpCall('workflow_register', { name: WF_NAME, script: 'return "placeholder-exec";', mermaid: 'graph LR' });
+    expect(preReg.error, `pre-register failed: ${JSON.stringify(preReg.error)}`).toBeUndefined();
+
+    const push = await mcpCall('workspace_push', {
+      workflow: WF_NAME, kind: 'skill', name: 'exec-skill',
+      files: [
+        { path: 'SKILL.md', contentB64: Buffer.from('# Exec Skill\n').toString('base64') },
+        { path: 'run.sh', contentB64: Buffer.from('#!/bin/sh\necho hi\n').toString('base64'), exec: true },
+      ],
+    });
+    expect(push.error, `workspace_push(exec-skill) failed: ${JSON.stringify(push.error)}`).toBeUndefined();
+
+    const script =
+      `export const meta = { params: { agents: { execpicky: ${agentBlock({ skills: ['exec-skill'] })} } } };\n` +
+      `phase('Work');\n` +
+      `return await agent('execpicky', { prompt: 'use the exec skill' });`;
+    const runId = await registerRunAndWait(script, 'graph LR\nsubgraph "Work"\nexecpicky(["execpicky"])\nend');
+    const workspace = expectedWorkspace(runId);
+
+    const runShPath = join(workspace, '.claude', 'skills', 'exec-skill', 'run.sh');
+    const skillMdPath = join(workspace, '.claude', 'skills', 'exec-skill', 'SKILL.md');
+    expect(existsSync(runShPath), 'run.sh was not materialized').toBe(true);
+    const { statSync } = await import('node:fs');
+    expect(statSync(runShPath).mode & 0o777).toBe(0o755);
+    expect(statSync(skillMdPath).mode & 0o777).toBe(0o644);
+  }, 30000);
+
   it("this system's own rwe-* skill stays excluded end-to-end: never stored (regression guard, D4/A-5)", async () => {
     const push = await mcpCall('workspace_push', {
       workflow: WF_NAME, kind: 'skill', name: 'rwe-guard-test',

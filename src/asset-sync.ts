@@ -12,7 +12,7 @@
 // and by tests exercising `isSelfReferential`/`classifyAsset` directly) — TASK-147/148 retire them
 // when the facade is rewritten; they are decoupled from the new `AssetKind` on purpose so neither
 // union constrains the other.
-import { mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, statSync, renameSync, rmdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync, chmodSync, rmSync, existsSync, readdirSync, statSync, renameSync, rmdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { pathVerdict, lexicalVerdict } from './path-verdict.js';
 import { codedError } from './errors.js';
@@ -26,6 +26,11 @@ export type LegacyAssetKind = 'skill' | 'hook' | 'mcp-config';
 export interface AssetPushFile {
   path: string;
   contentB64: string;
+  // Issue #105 part A (owner decision): identical in shape to seedManifest's {path, sha256,
+  // exec?} — exec:true materializes this file 0o755, absent/false materializes 0o644. Ignored by
+  // the pre-v24 `AssetPush`/`isSelfReferential`/`classifyAsset` surface this interface is also
+  // shared with (see file header) — only `AssetSyncService.push()`'s v24 skill branch reads it.
+  exec?: boolean;
 }
 
 export interface AssetPush {
@@ -420,9 +425,21 @@ export class AssetSyncService {
       return { stored: req.name };
     }
 
+    // Issue #105 part A: exec:true on the skill's own top-level SKILL.md is refused outright —
+    // SKILL.md is never executed (it is the skill's manifest, read by the harness, not run), so an
+    // exec bit on it can only be a caller mistake or an attempt to smuggle a different meaning onto
+    // the one file every skill is guaranteed to carry. Checked BEFORE the per-file path verdict
+    // loop below, so this refusal (like every other one here) leaves nothing written.
+    if (req.files.some((f) => f.path === 'SKILL.md' && f.exec === true)) {
+      throw codedError(
+        'INVALID_ARGUMENT',
+        "INVALID_ARGUMENT: exec:true is not permitted on a skill's top-level SKILL.md — it is the skill's manifest, never executed; set exec:true on the script/binary file itself instead.",
+      );
+    }
+
     // kind === 'skill': verdict every file before writing any, write the tree, THEN the row.
     const root = this._skillRoot(req.scope, workflow, req.name);
-    const resolved: Array<{ abs: string; contentB64: string }> = [];
+    const resolved: Array<{ abs: string; contentB64: string; exec: boolean }> = [];
     for (const f of req.files) {
       const v = pathVerdict(root, f.path, undefined, 'asset-tree');
       // v24 Gate 7.5 (D-5, REQ-118): a refused file path answers the code the `workspace_push` row
@@ -433,12 +450,17 @@ export class AssetSyncService {
       // for a cold model to anticipate. The write was always refused; only the code leaked. The
       // whole push is still refused before ANY file is written (no half-written asset dir).
       if (v.kind !== 'ok' || !v.abs) return { error: assetNameErrorCode(v) };
-      resolved.push({ abs: v.abs, contentB64: f.contentB64 });
+      resolved.push({ abs: v.abs, contentB64: f.contentB64, exec: f.exec === true });
     }
     mkdirSync(root, { recursive: true });
-    for (const { abs, contentB64 } of resolved) {
+    for (const { abs, contentB64, exec } of resolved) {
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, Buffer.from(contentB64, 'base64'));
+      // Issue #105 part A: `writeFileSync`'s own `mode` option is only honoured when the OPEN call
+      // actually CREATES the file (O_CREAT) — a re-push that overwrites an existing name would
+      // silently keep that file's OLD mode. `chmodSync` afterward is unconditional, so the mode
+      // this push declared always wins, first push or tenth.
+      chmodSync(abs, exec ? 0o755 : 0o644);
     }
     await this._catalog.putAsset({ scope: req.scope, workflow, builtin: req.scope === 'global', kind: 'skill', name: req.name, pushedBy, pushedAt });
     return { stored: req.name };
