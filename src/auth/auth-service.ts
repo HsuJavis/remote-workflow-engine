@@ -216,25 +216,71 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
       }
       const { nonce, codeChallenge, redirectUri, clientState, scope } = stateData;
       const b = effectiveIssuer.replace(/\/$/, '');
-      // Exchange Google code for id_token
+      // Exchange Google code for id_token. Distinguish network failure (fetch() itself threw) vs
+      // a non-2xx from Google (read its `error` field — never `error_description`, which is
+      // unverified to be free of request-derived values, and never the code/secret we sent) vs
+      // a 2xx response with no id_token — each gets its own operator-facing reason/hint and a
+      // `[auth.google_token]` log line (fix/2026-09-29-google-token-log; was one undifferentiated
+      // 502 with no log line at all).
       let idToken: string;
       try {
-        const tokenRes = await fetch(googleTokenUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({
-            code: googleCode,
-            client_id: cfg.googleClientId,
-            client_secret: cfg.googleClientSecret,
-            redirect_uri: `${b}/oauth/google/callback`,
-            grant_type: 'authorization_code',
-          }).toString(),
-        });
-        const tokenBody = await tokenRes.json() as { id_token?: string };
+        let tokenRes: Response;
+        try {
+          tokenRes = await fetch(googleTokenUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              code: googleCode,
+              client_id: cfg.googleClientId,
+              client_secret: cfg.googleClientSecret,
+              redirect_uri: `${b}/oauth/google/callback`,
+              grant_type: 'authorization_code',
+            }).toString(),
+          });
+        } catch {
+          // eslint-disable-next-line no-console
+          console.warn('[auth.google_token]', { outcome: 'network_error' });
+          localSendJson(res, 502, {
+            error: 'google_token_error',
+            reason: 'network_error',
+            hint: 'the engine could not reach Google\'s token endpoint - check outbound network/DNS connectivity',
+          });
+          return;
+        }
+        const tokenBody = await tokenRes.json().catch(() => ({} as Record<string, unknown>)) as
+          { id_token?: string; error?: string };
+        if (!tokenRes.ok) {
+          const googleError = typeof tokenBody.error === 'string' ? tokenBody.error : 'unknown_error';
+          // eslint-disable-next-line no-console
+          console.warn('[auth.google_token]', { outcome: 'google_error', status: tokenRes.status, error: googleError });
+          const hint = googleError === 'invalid_client'
+            ? 'the engine\'s Google client secret is rejected by Google - check auth.googleClientSecret / RWE_SECRET_GOOGLE_CLIENT_SECRET; new secrets can take minutes to hours to become active'
+            : googleError === 'invalid_grant'
+            ? 'the authorization code was invalid, expired, or already used - retry the sign-in flow'
+            : 'Google rejected the token exchange - see the engine log for the error code';
+          localSendJson(res, 502, { error: 'google_token_error', reason: 'google_rejected', google_error: googleError, hint });
+          return;
+        }
         idToken = tokenBody.id_token ?? '';
-        if (!idToken) throw new Error('no id_token in Google response');
+        if (!idToken) {
+          // eslint-disable-next-line no-console
+          console.warn('[auth.google_token]', { outcome: 'no_id_token', status: tokenRes.status });
+          localSendJson(res, 502, {
+            error: 'google_token_error',
+            reason: 'no_id_token',
+            hint: 'Google returned a token response without an id_token - verify the requested scope includes "openid"',
+          });
+          return;
+        }
       } catch {
-        localSendJson(res, 502, { error: 'google_token_error' });
+        // Defensive catch-all for anything unforeseen above (e.g. a thrown non-Error value).
+        // eslint-disable-next-line no-console
+        console.warn('[auth.google_token]', { outcome: 'unexpected_error' });
+        localSendJson(res, 502, {
+          error: 'google_token_error',
+          reason: 'unexpected_error',
+          hint: 'an unexpected error occurred during the Google token exchange - see the engine log',
+        });
         return;
       }
       // Verify id_token (DES-094: email_verified===true required before adopting email)

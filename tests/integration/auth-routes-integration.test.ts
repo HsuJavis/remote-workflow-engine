@@ -30,7 +30,7 @@
 //   + googleBase pointing at a local test stub). No LLM/gateway mock (run_start uses
 //   script-only, no real model call).
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1336,4 +1336,230 @@ describe('issue #86: PRM/WWW-Authenticate scope advertisement + DCR grant_types-
     expect(body.scope).toBe('');
     expect(body).not.toHaveProperty('refresh_token');
   }, 25_000);
+});
+
+// ── fix/2026-09-29-google-token-log: googleCallback token-exchange error observability ──────
+//
+// RED reason: pre-fix, the token-exchange catch-all in googleCallback() swallows every failure
+// mode into one undifferentiated `502 {error:'google_token_error'}` with NO log line — an
+// operator cannot tell a wrong client secret (Google 401 invalid_client) from a bad/expired
+// code (400 invalid_grant) from a network failure from a 2xx response missing id_token.
+// Post-fix: each class gets its own `reason` in the response body, its own operator hint, and
+// a `[auth.google_token]` console.warn log line carrying `outcome`/status/Google's `error` code
+// (never the client secret, the code, or the id_token).
+//
+// Mock policy: real createServer + real HTTP + real SQLite TokenStore; Google's token endpoint
+// is a controllable local fake server (mode switched per test, same pattern as the v18 block
+// above) plus one dead loopback port (bound then closed) for the network-failure case.
+
+let fakeGlogTokenMode: '401-invalid-client' | '400-invalid-grant' | '200-no-id-token' = '401-invalid-client';
+let fakeGlogTokenServer: import('node:http').Server;
+let fakeGlogTokenPort: number;
+let serverGlog: Server;
+let tmpDirGlog: string;
+let deadTokenPort: number;
+
+beforeAll(async () => {
+  await new Promise<void>((resolve, reject) => {
+    fakeGlogTokenServer = http.createServer((req, res) => {
+      if (req.method === 'POST' && req.url === '/token') {
+        let body = '';
+        req.on('data', (c: Buffer) => { body += c.toString(); });
+        req.on('end', () => {
+          if (fakeGlogTokenMode === '401-invalid-client') {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'invalid_client', error_description: 'Unauthorized' }));
+          } else if (fakeGlogTokenMode === '400-invalid-grant') {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'invalid_grant', error_description: 'Bad Request' }));
+          } else {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ access_token: 'fake-access-glog', token_type: 'Bearer' })); // no id_token
+          }
+        });
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    fakeGlogTokenServer.listen(0, '127.0.0.1', () => {
+      fakeGlogTokenPort = (fakeGlogTokenServer.address() as { port: number }).port;
+      resolve();
+    });
+    fakeGlogTokenServer.once('error', reject);
+  });
+
+  // A guaranteed-dead loopback port for the network-failure case: bind, then close immediately —
+  // nothing listens there afterward, so a fetch() to it throws (ECONNREFUSED), never reaching Google.
+  const probe = http.createServer();
+  await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  deadTokenPort = (probe.address() as { port: number }).port;
+  await new Promise<void>((resolve) => probe.close(() => resolve()));
+
+  tmpDirGlog = mkdtempSync(join(tmpdir(), 'rwe-glog-'));
+  serverGlog = await createServer({
+    port: 0,
+    bind: '127.0.0.1',
+    workRoot: tmpDirGlog,
+    auth: {
+      enabled: true,
+      issuer: 'http://127.0.0.1:0',
+      googleClientId: 'glog-client-id',
+      googleClientSecret: 'glog-super-secret-value-should-never-leak',
+      googleTokenUrl: `http://127.0.0.1:${fakeGlogTokenPort}/token`,
+      jwksFetch: fakeJwksFetch,
+    },
+  } as never);
+});
+
+afterAll(async () => {
+  await serverGlog?.close();
+  await new Promise<void>((r) => fakeGlogTokenServer?.close(() => r()));
+  rmSync(tmpDirGlog, { recursive: true, force: true });
+});
+
+/** Run /authorize → parse engine state + nonce. Does not hit /oauth/google/callback. */
+async function startGlogAuthorize(srv: Server, clientId: string, port: number): Promise<{ state: string }> {
+  const params = new URLSearchParams({
+    response_type: 'code',
+    client_id: clientId,
+    redirect_uri: `http://127.0.0.1:${port}/cb`,
+    code_challenge: 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC',
+    code_challenge_method: 'S256',
+  });
+  const { status, location } = await rawHttpGet(`http://127.0.0.1:${srv.port}/authorize?${params}`);
+  expect(status).toBe(302);
+  const state = new URL(location!).searchParams.get('state') ?? '';
+  return { state };
+}
+
+/** Asserts a secret/code value never appears in any log line or the response body. */
+function expectNoLeak(haystacks: string[], forbidden: string[]): void {
+  for (const h of haystacks) {
+    for (const f of forbidden) {
+      expect(h).not.toContain(f);
+    }
+  }
+}
+
+describe('googleCallback token-exchange error observability (fix/2026-09-29-google-token-log)', () => {
+  it('Google 401 invalid_client -> 502 reason=google_rejected, google_error=invalid_client, logged, no secret/code leak', async () => {
+    fakeGlogTokenMode = '401-invalid-client';
+    const { state } = await startGlogAuthorize(serverGlog, 'glog-client-id', 19970);
+    const logSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const resp = await rawHttpGetFull(
+        `http://127.0.0.1:${serverGlog.port}/oauth/google/callback?` +
+          new URLSearchParams({ state, code: 'fake-glog-code-401' })
+      );
+      expect(resp.status).toBe(502);
+      const body = JSON.parse(resp.body) as { error?: string; google_error?: string; hint?: string; reason?: string };
+      expect(body.reason).toBe('google_rejected');
+      expect(body.google_error).toBe('invalid_client');
+      expect(body.hint).toMatch(/client secret/i);
+
+      const calls = logSpy.mock.calls.map((c) => c.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '));
+      const line = calls.find((l) => l.includes('[auth.google_token]'));
+      expect(line, `expected a [auth.google_token] log line among: ${JSON.stringify(calls)}`).toBeDefined();
+      expect(line).toContain('google_error');
+      expect(line).toContain('401');
+      expect(line).toContain('invalid_client');
+
+      expectNoLeak([...calls, resp.body], ['glog-super-secret-value-should-never-leak', 'fake-glog-code-401']);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('Google 400 invalid_grant -> 502 reason=google_rejected, google_error=invalid_grant, logged, no secret/code leak', async () => {
+    fakeGlogTokenMode = '400-invalid-grant';
+    const { state } = await startGlogAuthorize(serverGlog, 'glog-client-id', 19971);
+    const logSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const resp = await rawHttpGetFull(
+        `http://127.0.0.1:${serverGlog.port}/oauth/google/callback?` +
+          new URLSearchParams({ state, code: 'fake-glog-code-400' })
+      );
+      expect(resp.status).toBe(502);
+      const body = JSON.parse(resp.body) as { google_error?: string; reason?: string; hint?: string };
+      expect(body.reason).toBe('google_rejected');
+      expect(body.google_error).toBe('invalid_grant');
+      expect(body.hint).toMatch(/code/i);
+
+      const calls = logSpy.mock.calls.map((c) => c.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '));
+      const line = calls.find((l) => l.includes('[auth.google_token]'));
+      expect(line, `expected a [auth.google_token] log line among: ${JSON.stringify(calls)}`).toBeDefined();
+      expect(line).toContain('invalid_grant');
+      expect(line).toContain('400');
+
+      expectNoLeak([...calls, resp.body], ['glog-super-secret-value-should-never-leak', 'fake-glog-code-400']);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('Google 200 without id_token -> 502 reason=no_id_token, logged, no secret/code leak', async () => {
+    fakeGlogTokenMode = '200-no-id-token';
+    const { state } = await startGlogAuthorize(serverGlog, 'glog-client-id', 19972);
+    const logSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const resp = await rawHttpGetFull(
+        `http://127.0.0.1:${serverGlog.port}/oauth/google/callback?` +
+          new URLSearchParams({ state, code: 'fake-glog-code-noidtoken' })
+      );
+      expect(resp.status).toBe(502);
+      const body = JSON.parse(resp.body) as { reason?: string; hint?: string };
+      expect(body.reason).toBe('no_id_token');
+      expect(body.hint).toMatch(/id_token/i);
+
+      const calls = logSpy.mock.calls.map((c) => c.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '));
+      const line = calls.find((l) => l.includes('[auth.google_token]'));
+      expect(line, `expected a [auth.google_token] log line among: ${JSON.stringify(calls)}`).toBeDefined();
+      expect(line).toContain('no_id_token');
+
+      expectNoLeak([...calls, resp.body], ['glog-super-secret-value-should-never-leak', 'fake-glog-code-noidtoken']);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('network failure reaching Google token endpoint -> 502 reason=network_error, logged, no secret/code leak', async () => {
+    // Own server pointed at the dead loopback port — nothing listens there → fetch() throws.
+    const tmpDirNet = mkdtempSync(join(tmpdir(), 'rwe-glog-net-'));
+    const serverNet = await createServer({
+      port: 0,
+      bind: '127.0.0.1',
+      workRoot: tmpDirNet,
+      auth: {
+        enabled: true,
+        issuer: 'http://127.0.0.1:0',
+        googleClientId: 'glog-net-client-id',
+        googleClientSecret: 'glog-net-secret-should-never-leak',
+        googleTokenUrl: `http://127.0.0.1:${deadTokenPort}/token`,
+        jwksFetch: fakeJwksFetch,
+      },
+    } as never);
+    const logSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { state } = await startGlogAuthorize(serverNet, 'glog-net-client-id', 19973);
+      const resp = await rawHttpGetFull(
+        `http://127.0.0.1:${serverNet.port}/oauth/google/callback?` +
+          new URLSearchParams({ state, code: 'fake-glog-code-net' })
+      );
+      expect(resp.status).toBe(502);
+      const body = JSON.parse(resp.body) as { reason?: string; hint?: string };
+      expect(body.reason).toBe('network_error');
+
+      const calls = logSpy.mock.calls.map((c) => c.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '));
+      const line = calls.find((l) => l.includes('[auth.google_token]'));
+      expect(line, `expected a [auth.google_token] log line among: ${JSON.stringify(calls)}`).toBeDefined();
+      expect(line).toContain('network_error');
+
+      expectNoLeak([...calls, resp.body], ['glog-net-secret-should-never-leak', 'fake-glog-code-net']);
+    } finally {
+      logSpy.mockRestore();
+      await serverNet.close();
+      rmSync(tmpDirNet, { recursive: true, force: true });
+    }
+  });
 });
