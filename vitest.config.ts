@@ -12,7 +12,7 @@ export default defineConfig({
     // tests and mutated the real repo (see tests/setup/scrub-git-env.ts). Runs once per worker
     // before any test file, so every spawned `git` inherits a clean env regardless of what launched
     // vitest.
-    setupFiles: ['./tests/setup/scrub-git-env.ts'],
+    setupFiles: ['./tests/setup/tmp-root.ts', './tests/setup/scrub-git-env.ts'],
     testTimeout: 15000,
     // Many tests spawn real child processes (sandbox host) or a real HTTP server.
     // Running test files fully in parallel creates host-level scheduling contention

@@ -3,9 +3,13 @@ import { describe, it, expect } from 'vitest';
 import { WorkflowCatalog } from '../../src/workflow-catalog.js';
 import { CatalogNotFoundError, WorkspaceEscapeError } from '../../src/errors.js';
 import { tmpdir } from 'node:os';
+import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 
-const WORK_ROOT = join(tmpdir(), 'rwe-test-catalog');
+// A fixed literal name here (`join(tmpdir(), 'rwe-test-catalog')`) would already be owned by
+// whichever uid last ran this suite in this tmp root — mkdtemp guarantees a fresh directory this
+// process actually owns, unique per test run.
+const WORK_ROOT = mkdtempSync(join(tmpdir(), 'rwe-test-catalog-'));
 
 describe('WorkflowCatalog', () => {
   // v22 (DES-111): get()/getFull() are deleted — resolve()/resolveDetail() take a selector.
