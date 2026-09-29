@@ -726,6 +726,62 @@ describe('buildAuthoringGuide — "Canonical diagram" rule 3 states the tools se
   });
 });
 
+// Issue #105 (q1-q6, owner decision): pins the new "Provisioning skills and MCP servers" section —
+// the role/asset matrix, the MCP config shapes, the secret-handle grammar, and the exec/SKILL.md
+// refusal. Written test-first (Gate 5, RED) against the pre-doc-pass guide, which had none of this.
+describe('buildAuthoringGuide — "Provisioning skills and MCP servers" (issue #105, q1-q6 owner decision)', () => {
+  const text = buildAuthoringGuide(CEILINGS);
+  // The bare title also appears earlier, inside workspace_push's own description text quoted
+  // verbatim by "Seeding a workspace" (its pointer sentence to this section) — `## ` disambiguates
+  // the real heading from that earlier mid-sentence match.
+  const section = sectionOf(text, '## Provisioning skills and MCP servers');
+
+  it('states stdio MCP push is FORBIDDEN_ROLE for author (admin-only), and why (runs outside the Bash sandbox, engine-user trust)', () => {
+    expect(section).toMatch(/Push an MCP server, `type:'stdio'`.*\|\s*`FORBIDDEN_ROLE`\s*\|\s*`FORBIDDEN_ROLE`\s*\|\s*yes/);
+    expect(section).toMatch(/not run inside the per-agent/i);
+    expect(section).toMatch(/ordinary child process of the ENGINE/);
+  });
+
+  it('states global skill push is FORBIDDEN_ROLE for author too, only admin', () => {
+    expect(section).toMatch(/Push a skill, `scope:'global'`.*\|\s*`FORBIDDEN_ROLE`\s*\|\s*`FORBIDDEN_ROLE`\s*\|\s*yes/);
+  });
+
+  it('mentions mcpEgressAllowlist and its fail-closed (empty = denied) behaviour for the http transport', () => {
+    expect(section).toMatch(/mcpEgressAllowlist/);
+    expect(section).toMatch(/EGRESS_DENIED/);
+    expect(section).toMatch(/empty denies EVERY/i);
+  });
+
+  it('a failed probe is attributed to MCP_PROBE_FAILED, not a bare UNSUPPORTED_TRANSPORT/UNREACHABLE refusal', () => {
+    expect(section).toMatch(/MCP_PROBE_FAILED/);
+    expect(section).toMatch(/UNSUPPORTED_TRANSPORT/);
+  });
+
+  it('requires stdio command to be exactly "npx"', () => {
+    expect(section).toMatch(/EXACTLY `"npx"`/);
+  });
+
+  it('states exec:true on SKILL.md is refused INVALID_ARGUMENT', () => {
+    expect(section).toMatch(/top-level `SKILL\.md`.*INVALID_ARGUMENT|INVALID_ARGUMENT.*SKILL\.md/s);
+  });
+
+  it('states a secret handle resolution failure is that agent() call\'s own failure detail, not a workspace_push refusal', () => {
+    expect(section).toMatch(/that `agent\(\)` call fails/);
+    expect(section).toMatch(/SECRET_MISSING/);
+    expect(section).toMatch(/SECRET_HANDLE_INVALID/);
+  });
+
+  it('states global assets are usable only when the run\'s own script declares the name', () => {
+    expect(section).toMatch(/ONLY when that run's OWN/);
+    expect(section).toMatch(/SKILL_NOT_PROVISIONED/);
+    expect(section).toMatch(/MCP_NOT_PROVISIONED/);
+  });
+
+  it('the seedManifest CLI-shipping path is available to user role (no ownership required), unlike the skill-file path', () => {
+    expect(section).toMatch(/seedManifest.*\|\s*yes \(`workspace_push/);
+  });
+});
+
 // issue #89 (cheap guard for the whole defect class): every UPPER_SNAKE, error-code-shaped token in
 // the rendered guide must be a real ERROR_CATALOG key, OR be explicitly allowlisted below as a
 // genuine non-code (a warning code, a sub-violation detail code, a script-side sandbox guard code,
@@ -746,6 +802,17 @@ describe('buildAuthoringGuide — every error-code-shaped token is a real ERROR_
     'MODEL_CATALOG_UNVERIFIED', // 2026-09-26: a non-fatal workflow_register/run_start warnings[].code
     // (checkModelRef's live-catalog-unavailable/anthropic-static-table-miss warn arm) — never a
     // refusal code, so it has no ERROR_CATALOG entry.
+    // Issue #105 (q1): three more real production-emitted codes that never reach ERROR_CATALOG —
+    // each travels one layer BELOW the tool-call refusal surface toErrEnvelope/ERROR_CATALOG governs.
+    'UNSUPPORTED_TRANSPORT', // mcp-probe.ts's McpProbeResult.code — surfaces only as workspace_push's
+    // MCP_PROBE_FAILED envelope's detail.code, never a top-level tool-call refusal code itself.
+    'SECRET_MISSING', // secret-resolver.ts's SecretMissingError.code — caught in
+    // claude-agent-sdk-client.ts's _resolveMcpConfigs and re-thrown as a bare Error (code baked
+    // into the message text) during DISPATCH; it becomes that agent()'s own failure, never a
+    // workspace_push-shaped refusal routed through toErrEnvelope.
+    'SECRET_HANDLE_INVALID', // same class as SECRET_MISSING, same non-ERROR_CATALOG path.
+    'PROBE_FAILED', // mcp-probe.ts's RealMcpProbe stdio-probe non-zero-exit code — same
+    // MCP_PROBE_FAILED detail.code path as UNSUPPORTED_TRANSPORT/UNREACHABLE above.
   ]);
 
   it('every UPPER_SNAKE token adjacent to "refused"/"warns"/backtick code style resolves to ERROR_CATALOG or the explicit allowlist', () => {

@@ -813,7 +813,13 @@ export const TOOL_SPECS = [
       // non-global push must now name an ALREADY-REGISTERED workflow (WORKFLOW_NOT_FOUND
       // otherwise) — the supported order is workflow_register FIRST, then workspace_push its
       // skill/mcp assets, never the reverse.
-      "A non-global `workflow` must already be registered (workflow_register FIRST, then workspace_push its assets) — WORKFLOW_NOT_FOUND otherwise; registration itself does not require any declared skill to exist yet.",
+      "A non-global `workflow` must already be registered (workflow_register FIRST, then workspace_push its assets) — WORKFLOW_NOT_FOUND otherwise; registration itself does not require any declared skill to exist yet. " +
+      // Issue #105 (q6, owner decision): a cold client reading only this description has no way to
+      // know WHICH role can push which asset kind/scope/transport before trying — the guide's
+      // "Provisioning skills and MCP servers" section carries the full role x asset-kind/scope/
+      // transport matrix plus the MCP config shapes, the `${secret:NAME}` grammar, and why `stdio`
+      // is admin-only; pointed at here rather than duplicated (a second copy is a copy that drifts).
+      'See workflow_authoring_guide\'s "Provisioning skills and MCP servers" section for the full role x asset-kind/scope/transport matrix, the two accepted MCP config shapes, and the `${secret:NAME}` handle grammar.',
     inputSchema: pushInputSchema(),
     outputSchema: OUT,
     // v24 Gate 7.5 (D-6, REQ-118): `HOOKS_UNSUPPORTED` REMOVED — no push can produce it. A

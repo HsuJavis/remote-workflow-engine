@@ -787,6 +787,32 @@ sandbox，可以被當成 run 之間的傳遞通道，也讀得到裡面已有�
 （刪掉 `/etc/apparmor.d/disable/bwrap-userns-restrict` 符號連結，再跑一次
 `apparmor_parser /etc/apparmor.d/bwrap-userns-restrict`）。
 
+**(g) `workspace_push({kind:"mcp"})` 的信任邊界（issue #105 q1）**：上面 (a)-(f) 全部是**已 dispatch
+的 agent** 受的限制；`workspace_push` 推 MCP server 這件事本身完全在這層之外，發生在**引擎自己的
+process**，不受 (e)/(f) 的 Bash 圍籠或工作目錄邊界約束。兩種可接受的 transport（`stdio` 的
+`command` 必須**恰好等於** `"npx"`，換成別的執行檔路徑或 `node -e ...` 都不算受支援的 transport）：
+`{"type":"http","url":"https://..."}` 與 `{"type":"stdio","command":"npx","args":[...]}`——其他形狀
+在探測前就拒絕，但不是獨立的頂層拒絕碼：包在 `MCP_PROBE_FAILED` 的 `detail.code` 裡回
+`UNSUPPORTED_TRANSPORT`。**推送時的探測（probe）只跑一次，就在引擎自己的
+process 裡**：`http` 送一個短 timeout 的 HTTP HEAD；`stdio` 直接在引擎主機上 spawn 那個指令一次來確認
+能啟動——因為只接受 `command:"npx"`，套件下載是真的、當場發生，落進**引擎使用者自己的** `~/.npm`
+cache，用的是那個使用者當下的網路權限，跟被 dispatch 的 agent 受限的 sandbox 網路完全是兩回事。
+**為什麼 `stdio` 只有 `admin` 能推**（見 §1b 角色表）：`stdio` MCP server 之後不是跑在任何 agent 的
+Bash 圍籠裡——它是引擎自己的一個普通子行程，擁有引擎使用者完整的檔案系統與網路存取（理論上讀得到
+引擎自己的機密與資料，跟引擎 process 本身同一個信任層級，不是被 dispatch 的 agent 那個層級）；而且
+完全不受 `mcpEgressAllowlist` 管（那份清單只檢查 config 的 `url` 欄位，`stdio` config 根本沒有這個
+欄位）。推一顆 `stdio` server 等於直接交出主機層級的信任，所以 `author` 以下一律 `FORBIDDEN_ROLE`，
+連探測都不會跑——這是刻意設計，不是待補的洞。`type:"http"` 之所以 `author` 也推得動，是因為它真的
+被 `mcpEgressAllowlist`（§1b 那一列）擋著：省略/空陣列 = 每一個 `http` MCP config 一律
+`EGRESS_DENIED`，營運者才是唯一能放寬這道閘的人。config 裡任何位置（不限層數）都可以放
+`${secret:NAME}` 佔位，解析對象是引擎自己環境變數裡的 `RWE_SECRET_<NAME>`（見上面那一列）——
+**解析時機是 dispatch，不是 push**：解析失敗不是 `workspace_push` 的拒絕碼，而是那次
+`agent()` 呼叫自己的失敗——detail 帶著 `SECRET_MISSING`（缺的 handle）或
+`SECRET_HANDLE_INVALID`（語法錯的 handle），全有全無，絕不半套代換。完整角色 × 資產種類/範圍/
+transport 矩陣、config 形狀範例與其餘細節見 `workflow_authoring_guide`（或 `docs/AUTHORING.md`）
+的「Provisioning skills and MCP servers」一節——本段只記信任邊界的「為什麼」，機制細節不在此重複
+一份會漂移的第二份。
+
 ## 2. 完整部署步驟（超出一鍵路徑之外：常駐化 / 容器化 / 上線前煙霧測試）
 
 > 基本開機序列已在 §0 一鍵部署 / 展開版 Quickstart 涵蓋。本節只講超出那條路徑之外的東西：

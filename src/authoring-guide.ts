@@ -548,6 +548,28 @@ function edgeRows(): string {
   return EDGE_FORMS.map((e) => `- \`a${e.token}b\` — ${e.role}`).join('\n');
 }
 
+/** Issue #105 (Q6, owner decision): the role x asset-kind/scope/transport matrix a cold author
+ *  needs up front — issue #105's own reproduction table is what showed nothing this specific
+ *  existed anywhere a client could read before dispatching. `minRole`/`ownership` values match
+ *  `tool-specs.ts`'s `pushMode()`/`workspace_push.authz.rows` exactly; this is prose ABOUT that
+ *  table, not a second copy of the authz engine — a role/ownership check drifting from this text
+ *  is a docs bug, never enforced from here. */
+function roleAssetMatrixRows(): string {
+  return [
+    '| Capability | `user` | `author` | `admin` |',
+    '|---|---|---|---|',
+    "| Push a skill, `scope:'workflow'` (must own the workflow) | `FORBIDDEN_ROLE` | yes | yes |",
+    "| Push a skill, `scope:'global'` | `FORBIDDEN_ROLE` | `FORBIDDEN_ROLE` | yes |",
+    '| Use a skill your own run declares (workflow-scoped OR global — either resolves) | yes | yes | yes |',
+    "| Push an MCP server, `type:'http'` (remote) | `FORBIDDEN_ROLE` | yes, gated on `mcpEgressAllowlist` + a live probe | yes, same gates |",
+    "| Push an MCP server, `type:'stdio'` (local process) | `FORBIDDEN_ROLE` | `FORBIDDEN_ROLE` | yes |",
+    '| Use an MCP server your own run declares (workflow-scoped OR global) | yes | yes | yes |',
+    "| Ship a CLI as a skill file with `exec:true` | `FORBIDDEN_ROLE` | yes, for a workflow you own | yes |",
+    "| Ship a CLI via a `run_start`/version-default `seedManifest` entry with `exec:true` | yes (`workspace_push({sha256,contentB64})` is `cas`-mode, no role floor beyond authenticated `user`; `run_start` itself is `user`-level too) | yes | yes |",
+    '| Install a package/tool AT RUN TIME (`npm install`, `pip install`, a fetched binary, …) | not a supported path on any role — see "Shipping a CLI" below for the posture caveat | | |',
+  ].join('\n');
+}
+
 /** DES-157 / ARCH-107: assembled from the enforcement constants — the ONE builder both
  *  `workflow_authoring_guide` (the MCP tool, over the composition root's RESOLVED ceilings) and
  *  `scripts/gen-authoring-md.ts` (over `DEFAULT_CEILINGS`, the documented unconfigured default)
@@ -1057,6 +1079,93 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
     section(
       'Authoring rules this engine enforces (refused with this code)',
       authoringErrorRows(),
+    ),
+  );
+
+  parts.push(
+    section(
+      'Provisioning skills and MCP servers: roles, config shapes, and the trust boundary',
+      // Issue #105 (q1-q6, owner decision): before this section the engine had NO documentation
+      // anywhere a cold client could read about the MCP config shapes, the secret-handle grammar,
+      // WHY stdio is admin-only, or which role can push what — an author found out by trial and
+      // error (issue #105's own reproduction table). This section is the answer.
+      'The role/scope/transport matrix (`author` = owns the target workflow; `admin` bypasses ' +
+        'ownership):\n\n' +
+        roleAssetMatrixRows() +
+        '\n\n' +
+        // Q2: the skill exec flag (workspace_push's own schema documents the mechanics; this is
+        // the "when" a script author actually needs).
+        '**Skill files and the `exec` flag.** `workspace_push({kind:\'skill\', files:[{path, ' +
+        "contentB64, exec?}]})` materializes each file 0o755 (`exec:true`) or 0o644 (absent/false) " +
+        '— identical in shape and meaning to a `seedManifest` entry\'s `{path, sha256, exec?}`. Set ' +
+        'it on a script with a shebang or a compiled CLI (an ELF binary, not a text script) that the ' +
+        "agent should be able to run directly; never on the skill's own top-level `SKILL.md` " +
+        '(refused `INVALID_ARGUMENT` — it is the manifest, never executed). The dispatched agent ' +
+        'always runs inside its Bash sandbox either way: without `exec` a shebang script still runs ' +
+        'via `sh <path>` or `python3 <path>`, but a compiled binary cannot run at all without it. ' +
+        'Legacy skills pushed before this flag existed carry no mode information — they stay at ' +
+        'whatever mode the original write happened to give them (umask-dependent, never made ' +
+        'executable by this) — push again with `exec:true` to change that.\n\n' +
+        // Q3: no kind:'tool', ship it in a skill or a seed, never install at run time. Posture-
+        // dependent claim (advisor review): "cannot install at run time" is only unconditionally
+        // true when this deployment measures confined — say so, matching readonlyBashBody's own
+        // framing elsewhere in this guide, rather than a categorical "never".
+        '**Shipping a CLI.** There is no separate `kind:\'tool\'` asset — the two supported paths are ' +
+        'a skill file with `exec:true` (above, `author`/`admin` only, and only into a workflow you ' +
+        'own) or a `run_start`/version-default `seedManifest` entry with `exec:true` (see "Seeding a ' +
+        'workspace" above — the CAS blob push and `run_start` behind that path are both `user`-level, ' +
+        'no ownership required). Installing a package or tool AT RUN TIME (`npm install`, `pip ' +
+        'install`, a fetched binary, …) is not a supported path on this engine: on a `confined` ' +
+        'deployment the sandbox blocks egress and confines writes to the run workspace (see "Host ' +
+        'path grants" above for this deployment\'s measured posture), so it genuinely cannot work; ' +
+        'ship the binary bytes with the push instead regardless of posture.\n\n' +
+        // Q1: config shapes, secret handles, the probe, and the trust boundary reasoning.
+        '**MCP config shapes.** `workspace_push({kind:\'mcp\', name, config})` accepts exactly two ' +
+        'server-runnable shapes — `stdio` requires `command` to be EXACTLY `"npx"` (any other ' +
+        'command, including a direct binary path or `node -e ...`, does not classify as a supported ' +
+        'transport). Anything else — the exact two shapes below are the only ones — is refused ' +
+        '`UNSUPPORTED_TRANSPORT` inside `MCP_PROBE_FAILED`\'s `detail.code` before any probe:\n\n' +
+        '```json\n' +
+        '{ "type": "http", "url": "https://example.com/mcp" }\n' +
+        '{ "type": "stdio", "command": "npx", "args": ["-y", "@some/mcp-server"] }\n' +
+        '```\n\n' +
+        'A `${secret:NAME}` placeholder may appear anywhere inside `config` — in any string value, ' +
+        'at any depth of a nested object or array — and is resolved from `RWE_SECRET_<NAME>` in the ' +
+        "engine's OWN environment (operator-provisioned, e.g. `~/.config/rwe.env`), never sent to " +
+        'any sandbox and never visible to an agent. Resolution is atomic and happens at DISPATCH ' +
+        'time (a run actually declaring that MCP name), not at push time: every handle in the config ' +
+        'must resolve or that `agent()` call fails, its failure detail carrying `SECRET_MISSING: ...` ' +
+        '(a handle naming no such secret) or `SECRET_HANDLE_INVALID: ...` (malformed ' +
+        '`${secret:...}` grammar) — never a partial substitution, never the literal placeholder ' +
+        'smuggled through as a value.\n\n' +
+        '**The push-time probe.** Before a `kind:\'mcp\'` push is accepted, the engine runs a ' +
+        "lightweight reachability check ONCE, IN THE ENGINE'S OWN PROCESS: a `type:'http'` config " +
+        'gets a short HTTP HEAD request; a `type:\'stdio\'` config SPAWNS the configured command ' +
+        "directly on the engine host to confirm it launches. Since only `command:'npx'` is accepted, " +
+        "this means the package download happens for real, right then, into the ENGINE USER's own " +
+        '`~/.npm` cache — using whatever network access that user has, not the sandboxed egress a ' +
+        "dispatched agent gets. A failed probe is refused `MCP_PROBE_FAILED`, whose `detail` carries " +
+        'the underlying probe code/message/transport (`UNSUPPORTED_TRANSPORT`, `UNREACHABLE`, ' +
+        '`PROBE_FAILED`, …); nothing is stored either way until the probe succeeds.\n\n' +
+        '**Why `stdio` is admin-only.** A pushed `stdio` MCP server is not run inside the per-agent ' +
+        "Bash sandbox at all — it runs as an ordinary child process of the ENGINE ITSELF, with the " +
+        "engine user's full filesystem and network access (in principle, it can read the engine's " +
+        'own secrets and data — the same trust tier as the engine process, not a dispatched agent). ' +
+        "It is also not gated by `mcpEgressAllowlist` at all (that list only inspects a config's " +
+        "`url` field, which a `stdio` config never carries). Pushing one is handing it host-level " +
+        'trust, which is why every role below `admin` is refused `FORBIDDEN_ROLE` before any probe ' +
+        "ever runs — this is intentional, not a gap to work around. `type:'http'` stays " +
+        "author-reachable because it IS gated — `mcpEgressAllowlist` (an `rwe.config.json` key: an " +
+        'https-only URL-prefix allowlist, the same fail-closed convention as `seedRefAllowlist`; ' +
+        'omitted or empty denies EVERY `http` MCP config with `EGRESS_DENIED`, checked BEFORE the ' +
+        'probe, zero probe attempts) is an operator decision an author cannot widen.\n\n' +
+        // Q5: global-scope visibility is declaration-gated, not automatic.
+        '**Global assets are opt-in per script, not automatic.** An admin-pushed `scope:\'global\'` ' +
+        "skill or MCP server is usable by every principal's runs, but ONLY when that run's OWN " +
+        'script declares the name (`meta.params.agents.<label>.skills`/`.mcp`) — existing at global ' +
+        "scope never auto-grants it to an agent that doesn't ask for it, and a declared-but-absent " +
+        'name (workflow-scoped or global, checked in that order) is refused `SKILL_NOT_PROVISIONED`/' +
+        '`MCP_NOT_PROVISIONED` at admission, not registration.',
     ),
   );
 
