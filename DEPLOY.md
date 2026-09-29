@@ -1554,8 +1554,9 @@ helper 會吞掉 `ls-remote` 的 stderr：**自我更新之後若一直記 exit 
 （以操作員身分執行，內部用 sudo）：
 
 ```bash
-deploy/rwectl status                    # = sudo -u rwe XDG_RUNTIME_DIR=/run/user/<uid> … systemctl --user status
-deploy/rwectl restart rwe.service       # 任何 systemctl 動詞都直接轉交
+deploy/rwectl status                    # = sudo -u rwe XDG_RUNTIME_DIR=/run/user/<uid> … systemctl --user status rwe.service
+deploy/rwectl restart                   # restart/status/stop/start/is-active/enable/disable 沒帶 unit 時預設 rwe.service
+deploy/rwectl restart rwe.service       # 其餘 systemctl 動詞（或帶了 unit）都直接轉交
 deploy/rwectl cat rwe.service           # 套用後的完整 unit（含 drop-in）
 deploy/rwectl logs -f                   # rwe.service 的 journal（額外參數交給 journalctl）
 deploy/rwectl logs-update -n 50         # 自我更新（rwe-update.service）的 journal
@@ -1565,6 +1566,116 @@ deploy/rwectl update-result             # 最後一次自我更新的 result.jso
 改設定：`sudo -u rwe -H "${EDITOR:-nano}" /home/rwe/remote-workflow/rwe.config.json`（或
 `sudoedit`），改完 `deploy/rwectl restart rwe.service`。以 `rwe` 身分跑一次性指令一律用
 `sudo -u rwe -H <cmd>`（它的 shell 是 nologin，`sudo -iu rwe` 進不去是刻意的）。
+
+### 實際搬遷紀錄與注意事項
+
+2026-09-29 這台主機照上面的階段表把 production 搬到獨立系統使用者（`rwe`，uid 997）底下：
+`phase1`～`phase7` 全部做完，自我更新在 `rwe` 底下端對端驗證過兩次（v0.28.2、v0.28.3）。以下是
+實際搬遷過程中踩到、值得留給下一次（換一台主機、或另一個人重做）的東西；跟上面規格性的階段表不
+重複，只記「當時發生了什麼、怎麼查、怎麼修」。
+
+**a. 測試套件必須能在不同 uid 底下跑**——`phase7` 之後的第一次自我更新，`deploy/rwe-update.sh`
+在 apply 前用 `npm test` 當作 gate，而這是**第一次**以 `rwe`（而非平常互動式操作的 uid）身分跑
+這個套件。跑出來 92 個測試以 `SQLITE_READONLY_DIRECTORY` 失敗：根因是不少測試（或它們間接命中
+的 src 預設值，例如 `RunManager` 的 `workRoot` fallback）用 `join(os.tmpdir(), '<固定字面量>')`
+拼路徑，這個固定名字的目錄/檔案一旦被某個 uid 先建立、換另一個 uid 再跑就撞權限——不是邏輯
+bug，是共用 `/tmp` 的撞名。v0.28.2 用「每個 worker 一份私有 `TMPDIR`」修掉
+（`tests/setup/tmp-root.ts`，vitest `setupFiles` 全域跑一次，把 `os.tmpdir()` 重新指向
+`mkdtempSync` 出來的私有根目錄，並轉發同樣的環境變數給子行程）。**當時失敗是安全的失敗**：
+`rwe-update.sh` 的 gate 擋下，服務留在舊版本，沒有半啟動或部分套用——這正是設計要的行為，不是
+需要恐慌的事，只是需要修好 gate 本身才能讓自我更新真的往前走。下次在新主機第一次以服務帳號跑
+`npm test` 之前，先確認 checkout 的 tag ≥ v0.28.2。
+
+**b. 搬遷前後都要找殘留的舊行程**——換帳號不會自動殺掉操作員帳號底下還在跑的舊 engine／LiteLLM
+子行程（例如搬遷途中重跑過 `deploy.sh` 測試、或之前手動啟動過一次忘記關）。這些舊行程的環境變數
+裡仍帶著操作員的 secrets，而且如果是 v0.28.1 之前的 LiteLLM（見下一點）還可能把代理曝露在區網。
+搬遷前後都跑一次：
+
+```bash
+ps -eo user,pid,lstart,args | grep -E 'src/main.ts|litellm' | grep -v grep
+```
+
+看到操作員 uid 底下的舊行程就 `kill` 掉；`phase5` 停機那一步只停 systemd 管理的 unit，管不到手動
+啟動、脫離 unit 的行程。
+
+**c. LiteLLM proxy 的 bind——v0.28.1 之前的版本檢查**：`v0.28.1` 之前，`LiteLLMProxyManager`
+起 `litellm --config <cfg> --port <port>` 沒帶 `--host`，LiteLLM 自己的 CLI 在這個情況下預設綁
+`0.0.0.0`，而且產生的設定檔沒有 master key——等於區網任何人都能打這個 proxy、借用裡面所有供應商
+的 key，完全不需要驗證。`v0.28.1` 修成固定帶 `--host 127.0.0.1`（`litellm-proxy-hardening.test.ts`
+釘住 spawn 參數、`litellm-proxy-host-binding-real.test.ts` 是真行程的驗證）。搬遷或升級後怎麼查：
+
+```bash
+ss -ltn | grep <litellmPort>            # 應該只看到 127.0.0.1:<port>，不是 0.0.0.0:<port>
+curl -m 3 http://<這台的LAN IP>:<litellmPort>/health/liveliness   # 應該連不上（timeout/refused）
+```
+
+只要 checkout 的 tag ≥ v0.28.1 就沒有這個問題；這裡留著是因為搬遷當下的舊 checkout 版本不一定
+比 v0.28.1 新，值得在搬遷時順手確認一次。
+
+**d. Google OAuth client secret 輪替——這次實際走過的坑**：Google 的 client secret 是 35 個字元、
+固定以 `GOCSPX-` 開頭。貼上前先檢查長度／字首（`printf '%s' "$secret" | wc -c` 應為 35，
+`case $secret in GOCSPX-*) ;; *) echo "wrong prefix";; esac`）——這次有一次貼上時不小心貼了兩遍，
+貼出 66 個字元，若沒先做這個檢查會直接寫進 `rwe.env` 再花時間查「secret 為什麼被拒」。另一個
+容易錯的地方是 Google Cloud Console 的 **Credentials 頁可能列著不只一個 OAuth client**：新
+secret 要加在 client ID 前綴（`....apps.googleusercontent.com` 前面那串數字）跟
+`auth.googleClientId`、redirect URI（`<issuer>/oauth/google/callback`）都吻合的那一個，不是
+清單裡隨便一個「看起來像」的 client——加錯 client，Google 回的是 `invalid_client`，症狀跟真的
+打錯 secret 一模一樣，光看回應分不出來，要回 Console 核對 client ID。新 secret 加進 Google 後
+**不會立刻生效**，實測要等一段時間（分鐘到數小時不等）才會被接受。
+
+驗證一個新 secret 有沒有被 Google 接受，不需要真的跑一次瀏覽器登入：直接打 Google 的 token
+endpoint、code 故意給假的——`invalid_grant`（code 有問題）代表 **secret 被接受**；
+`invalid_client`（secret／client 有問題）代表 **secret 被拒**。安全指令（以 `rwe` 身分、
+secret 只經由 stdin 給 curl 的 `client_secret@-`，never 出現在 argv 或終端輸出）：
+
+```bash
+sudo -u rwe -H sh -c '
+  set -a; . "$HOME/.config/rwe.env"; set +a   # 帶進 RWE_SECRET_GOOGLE_CLIENT_SECRET
+  # auth.googleClientId 通常是明碼字串；若也被换成 ${secret:NAME} handle，改讀對應的
+  # RWE_SECRET_<NAME>（跟 googleClientSecret 用的是同一套解析，見 src/main.ts resolveAuthSecrets）
+  client_id=$(python3 -c "import json;print(json.load(open(\"$HOME/remote-workflow/rwe.config.json\"))[\"auth\"][\"googleClientId\"])")
+  printf %s "$RWE_SECRET_GOOGLE_CLIENT_SECRET" | curl -s -X POST https://oauth2.googleapis.com/token \
+    --data-urlencode "client_id=$client_id" \
+    --data-urlencode "code=bogus-code-never-issued" \
+    --data-urlencode "redirect_uri=<issuer>/oauth/google/callback" \
+    --data-urlencode "grant_type=authorization_code" \
+    --data-urlencode "client_secret@-"
+'
+# 期望：{"error":"invalid_grant", ...}   → secret 被接受（code 本來就是假的，被拒是預期）
+#       {"error":"invalid_client", ...}  → secret／client 被拒，回 Console 核對
+```
+
+引擎只在**啟動時**讀一次 `rwe.env`，改完 secret 一定要 `rwectl restart rwe.service` 才生效——
+單改設定檔或 `rwe.env` 不會讓正在跑的行程重新讀取。`v0.28.3` 起，callback 本身也會記
+`[auth.google_token] {status, error}`（`src/auth/auth-service.ts`），不用等到下次自我更新
+的 gate，真的用瀏覽器登入一次失敗時就能直接 `deploy/rwectl logs -n 50` 看到是 Google 拒絕
+（`google_rejected` / `invalid_client`）還是別的原因（`network_error`／`no_id_token`）。
+輪替時**先**在 Google Console 把新 secret 加上去、驗證通過、**用瀏覽器真的登入成功一次**，
+才停用舊 secret——舊 secret 停用前，兩把 key 應該同時有效，切換視窗才不會中斷別人正在用的登入。
+
+**e. `sudo` 必須是操作員在真的終端機打，不能自動化跑**——這支腳本要求互動式 `sudo`（密碼或
+NOPASSWD 規則），在沒有 TTY 的自動化環境（例如這次是透過一個沒有終端機的 agent 執行環境）裡
+`sudo -n` 會直接因為 "interactive authentication is required" 失敗。這次每個 phase 都是操作員
+自己手動在真終端機貼指令跑的，不是腳本自動串接。建議每個 phase 的輸出都 `tee` 進一份 log
+（例如 `deploy/migrate-to-service-user.sh phase5 2>&1 | tee -a ~/migrate-phase5.log`），停機
+窗口短，事後回頭查「當時到底印了什麼」比重跑一次（尤其是 `phase5` 這種會動資料的階段）安全。
+
+**f. 搬完之後，操作員原本的 checkout 只是一份開發用副本**——`phase6` 之後自我更新只會動
+`rwe` 的 `$RWE_CHECKOUT`，操作員帳號底下原本的 `~/Documents/remote-workflow`（連同它的
+`rwe.env`、`rwe.config.json`）不會再被自我更新碰、也不會再啟動任何服務，但檔案本身、裡面的
+secrets 都還在，不會自動清掉（保留給 rollback 用）。確認不會回頭（真的走過至少一次成功的自我
+更新、`phase7` 全綠一段時間）之後，記得刪掉：操作員舊的 workRoot、舊 `rwe.env`、舊 checkout
+的 `rwe.config.json`——它們仍是明碼 secrets，留著就是攻擊面。
+
+**g. `rwectl` 實際用法**（都以操作員身分執行，內部自己 `sudo`）：
+
+```bash
+deploy/rwectl restart                   # = restart rwe.service（沒給 unit 時的預設，見上面的修正）
+deploy/rwectl status                    # = status rwe.service
+deploy/rwectl logs -f                   # 追 rwe.service 的 journal
+deploy/rwectl logs-update -n 50         # 看最近一次自我更新的 journal
+deploy/rwectl update-result             # 最近一次自我更新的 result.json（"status":"applied"/"failed"）
+```
 
 ### 跟 §7「整套移植到新主機」的關係
 

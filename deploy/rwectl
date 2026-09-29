@@ -4,8 +4,11 @@
 # The service user has no login session, so its systemd --user instance is reached by pointing
 # systemctl at its runtime dir + bus explicitly. Run as the operator (uses sudo).
 #
-#   rwectl status                 # = systemctl --user status (as rwe); any systemctl verb works:
-#   rwectl restart rwe.service    #   start/stop/restart/is-active/list-timers/daemon-reload/cat ...
+#   rwectl status                 # = systemctl --user status rwe.service (as rwe); restart/status/
+#   rwectl restart                #   stop/start/is-active/enable/disable default the unit to
+#   rwectl restart rwe.service    #   rwe.service when none is given; any other systemctl verb or an
+#   rwectl list-timers            #   explicit unit passes straight through: list-timers/daemon-reload/
+#                                 #   cat rwe.service/...
 #   rwectl logs [-f] [-n 200]     # journal of rwe.service (extra args go to journalctl)
 #   rwectl logs-update [-n 50]    # journal of rwe-update.service (self-update runs)
 #   rwectl update-result          # the last self-update outcome (result.json)
@@ -13,7 +16,7 @@
 # RWE_USER overrides the account name.
 set -euo pipefail
 RWE_USER="${RWE_USER:-rwe}"
-case "${1:-}" in ""|-h|--help) sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
+case "${1:-}" in ""|-h|--help) sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
 uid="$(id -u "$RWE_USER" 2>/dev/null)" || { echo "rwectl: no such user '$RWE_USER'" >&2; exit 1; }
 home="$(getent passwd "$RWE_USER" | cut -d: -f6)"
 cd /   # sudo -u keeps the cwd; the operator's home is unreadable to the service user
@@ -27,6 +30,14 @@ case "${1:-}" in
   logs) shift; journal rwe.service "$@" ;;
   logs-update) shift; journal rwe-update.service "$@" ;;
   update-result) exec sudo cat "$home/.local/share/rwe-update/result.json" ;;
+  restart|status|stop|start|is-active|enable|disable)
+    # These verbs take exactly one unit; systemctl errors ("Too few arguments.") if none is given.
+    # Default to rwe.service so `rwectl restart` works the same as `rwectl restart rwe.service`;
+    # a unit that IS given (or any extra args) is passed through unchanged.
+    if [ "$#" -eq 1 ]; then set -- "$1" rwe.service; fi
+    exec sudo -u "$RWE_USER" env XDG_RUNTIME_DIR="/run/user/$uid" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" systemctl --user "$@"
+    ;;
   *) exec sudo -u "$RWE_USER" env XDG_RUNTIME_DIR="/run/user/$uid" \
        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" systemctl --user "$@" ;;
 esac
