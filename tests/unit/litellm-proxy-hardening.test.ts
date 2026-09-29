@@ -102,6 +102,28 @@ describe('LiteLLMProxyManager hardening (TASK-027)', () => {
     expect(fakeProc.kill).not.toHaveBeenCalled(); // group signal alone was sufficient
   });
 
+  // Security fix: LiteLLM's own CLI binds 0.0.0.0 by default when `--host` is omitted, and the
+  // generated config carries no master key — an omitted `--host` put the proxy (and every provider
+  // key in its env) on the LAN with no auth. Verified on production: `curl
+  // http://<LAN-IP>:<proxyPort>/health/liveliness` answered 200 from another interface before this
+  // fix. The engine only ever talks to it over `baseUrl` (http://127.0.0.1:<port>) — see the real-tier
+  // reachability test in litellm-proxy-host-binding.test.ts for the end-to-end proof.
+  it('spawns litellm with --host 127.0.0.1 (never the LiteLLM-default 0.0.0.0)', async () => {
+    const { fakeSpawn } = makeFakeSpawn(999);
+    const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
+    const proxy = new LiteLLMProxyManager({
+      port: 48501,
+      spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
+      fetchImpl: fakeHealthFetch as unknown as typeof fetch,
+    });
+
+    await proxy.start();
+
+    const spawnArgs = (fakeSpawn.mock.calls[0] as unknown as unknown[])[1] as string[];
+    expect(spawnArgs).toContain('--host');
+    expect(spawnArgs[spawnArgs.indexOf('--host') + 1]).toBe('127.0.0.1');
+  });
+
   it('stop() falls back to the direct handle kill when the child has no usable pid (test-double shape)', async () => {
     const { fakeSpawn, fakeProc } = makeFakeSpawn(undefined);
     const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);

@@ -164,7 +164,14 @@ export class LiteLLMProxyManager {
     // custody statement; spelling it out here also gives this class a single, greppable place to
     // narrow later if a future round needs to (see buildSubprocessEnv in claude-agent-sdk-client.ts
     // for the CONTRASTING allowlist the agent-facing CLI subprocess gets — never these real keys).
-    const proc = this._spawnImpl('litellm', ['--config', configPath, '--port', String(port)], {
+    // Security fix (LAN exposure): LiteLLM's own CLI defaults to binding 0.0.0.0 when `--host` is
+    // omitted, and the generated config (generateLiteLLMConfig, above) carries no master key — so an
+    // omitted `--host` put this proxy, and every provider key in its env (D-V2G8-1(c), above), on the
+    // LAN with no auth. Verified against production: `curl http://<LAN-IP>:<port>/health/liveliness`
+    // answered 200 from another interface before this fix. The engine itself only ever talks to this
+    // proxy over `baseUrl` (`http://127.0.0.1:${port}`, below) — nothing legitimate needs it reachable
+    // from anywhere else, so `--host 127.0.0.1` matches the engine's own actual usage exactly.
+    const proc = this._spawnImpl('litellm', ['--config', configPath, '--port', String(port), '--host', '127.0.0.1'], {
       stdio: 'ignore',
       detached: true,
       env: { ...process.env },
