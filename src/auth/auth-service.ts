@@ -14,7 +14,7 @@ export const GOOGLE_JWKS_URL = 'https://www.googleapis.com/oauth2/v3/certs';
 /** Sliding-window refresh-token TTL (~90 days). DES-095 v20. */
 export const REFRESH_TTL_MS = 90 * 24 * 3600_000;
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { DEFAULT_DCR_GRANT_TYPES, type TokenStore } from './token-store.js';
+import { DEFAULT_DCR_GRANT_TYPES, SESSION_TTL_MS, type TokenStore } from './token-store.js';
 import { verifyIdToken, type JwksPort } from './google-verifier.js';
 import { buildProtectedResourceMetadata, buildAuthServerMetadata } from './oauth-metadata.js';
 
@@ -53,6 +53,54 @@ export function isLoopbackRedirectUri(uri: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** The dashboard browser-session cookie (spec §A). */
+export const SESSION_COOKIE = 'rwe_session';
+
+/** Validate a login `next` target (spec §A: no open redirect). Only a same-origin RELATIVE path at
+ *  or under `/dashboard` is kept — anything else (absolute/scheme-relative URLs, backslashes,
+ *  dot-segments, control characters, other engine paths, the login route itself) collapses to
+ *  `/dashboard`. Checked when the login starts AND again when the callback redirects. */
+export function safeDashboardNext(raw: string | null | undefined): string {
+  const fallback = '/dashboard';
+  if (typeof raw !== 'string' || raw.length === 0 || raw.length > 2048) return fallback;
+  if (/[\\\s\u0000-\u001f\u007f]/.test(raw)) return fallback;
+  const pathEnd = raw.search(/[?#]/);
+  const path = pathEnd === -1 ? raw : raw.slice(0, pathEnd);
+  if (path !== '/dashboard' && !path.startsWith('/dashboard/')) return fallback;
+  if (path.includes('//')) return fallback;
+  const segments = path.split('/');
+  if (segments.some((seg) => seg === '.' || seg === '..' || /^%2e/i.test(seg) || /%2f|%5c/i.test(seg))) return fallback;
+  if (path === '/dashboard/login' || path.startsWith('/dashboard/login/') || path === '/dashboard/logout' || path === '/dashboard/signed-out') return fallback;
+  return raw.replace(/#.*$/, '');
+}
+
+/** Set-Cookie value for a new/extended session. `Secure` iff the engine's public issuer is https
+ *  (an http deployment would otherwise never get the cookie back). */
+export function sessionCookie(token: string, effectiveIssuer: string, maxAgeMs: number = SESSION_TTL_MS): string {
+  const secure = effectiveIssuer.startsWith('https:') ? '; Secure' : '';
+  return `${SESSION_COOKIE}=${token}; Path=/; Max-Age=${Math.floor(maxAgeMs / 1000)}; HttpOnly; SameSite=Lax${secure}`;
+}
+
+/** Set-Cookie value that clears the session cookie (logout). */
+export function clearSessionCookie(effectiveIssuer: string): string {
+  const secure = effectiveIssuer.startsWith('https:') ? '; Secure' : '';
+  return `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax${secure}`;
+}
+
+/** The raw session token from a Cookie header, or null. */
+export function readSessionCookie(cookieHeader: string | undefined): string | null {
+  if (!cookieHeader) return null;
+  for (const part of cookieHeader.split(';')) {
+    const i = part.indexOf('=');
+    if (i === -1) continue;
+    if (part.slice(0, i).trim() === SESSION_COOKIE) {
+      const v = part.slice(i + 1).trim();
+      return /^[0-9a-f]{64}$/.test(v) ? v : null;
+    }
+  }
+  return null;
 }
 
 export type PrincipalResult =
@@ -112,6 +160,9 @@ export interface AuthRouteHandlers {
   wellKnownAuthServer(res: ServerResponse, effectiveIssuer: string): void;
   /** GET /authorize?response_type=code&client_id=...&redirect_uri=...&code_challenge=...&code_challenge_method=S256 */
   authorize(req: IncomingMessage, res: ServerResponse, effectiveIssuer: string): void;
+  /** GET /dashboard/login?next=... — the dashboard's browser login (spec §A): a state row marked
+   *  `flow:'dashboard'`, then 302 to Google through the SAME client + callback MCP uses. */
+  dashboardLogin(req: IncomingMessage, res: ServerResponse, effectiveIssuer: string): void;
   /** GET /oauth/google/callback?state=...&code=... */
   googleCallback(req: IncomingMessage, res: ServerResponse, effectiveIssuer: string): Promise<void>;
   /** POST /token (application/x-www-form-urlencoded) */
@@ -121,7 +172,13 @@ export interface AuthRouteHandlers {
 }
 
 /** Create handlers for the 5 OAuth routes (DES-095). All side effects go through the injected TokenStore. */
-export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore): AuthRouteHandlers {
+export function createAuthRouteHandlers(
+  cfg: AuthConfig,
+  tokenStore: TokenStore,
+  /** Called with the verified email on every successful sign-in (both flows) — the server records
+   *  it in the known-principals ledger. */
+  onSignIn: (email: string) => void = () => {},
+): AuthRouteHandlers {
   // DES-094/095 v18: 3 distinct Google endpoint URLs.
   // Priority: specific field > googleBase-derived fallback (backward compat) > production constant.
   const googleAuthorizeUrl = cfg.googleAuthorizeUrl
@@ -135,6 +192,19 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
     const j = await r.json() as { keys?: Record<string, unknown>[] };
     return j.keys ?? [];
   });
+
+  function redirectToGoogle(res: ServerResponse, effectiveIssuer: string, state: string, nonce: string): void {
+    const b = effectiveIssuer.replace(/\/$/, '');
+    const gUrl = new URL(googleAuthorizeUrl);
+    gUrl.searchParams.set('response_type', 'code');
+    gUrl.searchParams.set('client_id', cfg.googleClientId);
+    gUrl.searchParams.set('redirect_uri', `${b}/oauth/google/callback`);
+    gUrl.searchParams.set('scope', 'openid email');
+    gUrl.searchParams.set('state', state);
+    gUrl.searchParams.set('nonce', nonce);
+    res.writeHead(302, { 'Location': gUrl.toString() });
+    res.end();
+  }
 
   return {
     wellKnownProtectedResource(res, effectiveIssuer) {
@@ -193,16 +263,18 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
       const scope = url.searchParams.get('scope');
       tokenStore.putState({ state, nonce, codeChallenge, redirectUri, clientState, scope });
       // Redirect to Google's authorization endpoint with state + nonce
-      const b = effectiveIssuer.replace(/\/$/, '');
-      const gUrl = new URL(googleAuthorizeUrl);
-      gUrl.searchParams.set('response_type', 'code');
-      gUrl.searchParams.set('client_id', cfg.googleClientId);
-      gUrl.searchParams.set('redirect_uri', `${b}/oauth/google/callback`);
-      gUrl.searchParams.set('scope', 'openid email');
-      gUrl.searchParams.set('state', state);
-      gUrl.searchParams.set('nonce', nonce);
-      res.writeHead(302, { 'Location': gUrl.toString() });
-      res.end();
+      redirectToGoogle(res, effectiveIssuer, state, nonce);
+    },
+
+    dashboardLogin(req, res, effectiveIssuer) {
+      const url = new URL(req.url ?? '/', 'http://x');
+      // The validated `next` rides the state row's redirect_uri column; no PKCE (the engine itself
+      // is the client here and the code never leaves the engine), no DCR client.
+      const next = safeDashboardNext(url.searchParams.get('next'));
+      const state = randomBytes(16).toString('hex');
+      const nonce = randomBytes(16).toString('hex');
+      tokenStore.putState({ state, nonce, codeChallenge: '', redirectUri: next, flow: 'dashboard' });
+      redirectToGoogle(res, effectiveIssuer, state, nonce);
     },
 
     async googleCallback(req, res, effectiveIssuer) {
@@ -296,6 +368,19 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
         email = verified.email;
       } catch {
         localSendJson(res, 401, { error: 'invalid_id_token' });
+        return;
+      }
+      onSignIn(email);
+      if (stateData.flow === 'dashboard') {
+        // Spec §A: a browser session, never an auth code or bearer. `next` was validated when the
+        // login started and is re-validated here (defence in depth — the row is ours, but cheap).
+        const { token } = tokenStore.createSession(email);
+        res.writeHead(302, {
+          'Location': safeDashboardNext(redirectUri),
+          'Set-Cookie': sessionCookie(token, effectiveIssuer),
+          'Cache-Control': 'no-store',
+        });
+        res.end();
         return;
       }
       // v20a: thread client-requested scope through to auth-code (for /token to issue refresh_token).

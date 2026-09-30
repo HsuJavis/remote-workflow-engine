@@ -23,6 +23,11 @@ function sha256hex(data: string): string {
  */
 export const DEFAULT_DCR_GRANT_TYPES = ['authorization_code', 'refresh_token'];
 
+/** Dashboard browser-session lifetime (spec §A: 7 days, sliding). */
+export const SESSION_TTL_MS = 7 * 24 * 3600_000;
+/** A session is re-extended at most once per this interval (bounds writes to ~1/day/session). */
+const SESSION_SLIDE_EVERY_MS = 24 * 3600_000;
+
 /** Generate a random opaque token string using the injected CSPRNG. */
 function genRandom(csprng: (n: number) => Buffer): string {
   return csprng(32).toString('hex');
@@ -74,6 +79,12 @@ export class TokenStore {
         expires_at INTEGER NOT NULL,
         grant_types TEXT
       );
+      CREATE TABLE IF NOT EXISTS dashboard_sessions (
+        token_hash TEXT PRIMARY KEY,
+        principal TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS refresh_tokens (
         token_hash TEXT PRIMARY KEY,
         principal TEXT NOT NULL,
@@ -90,6 +101,9 @@ export class TokenStore {
     try { this._db.exec('ALTER TABLE oauth_state ADD COLUMN scope TEXT'); } catch { /* already exists */ }
     // issue #86 idempotent migration: add grant_types to pre-existing registered_clients rows.
     try { this._db.exec('ALTER TABLE registered_clients ADD COLUMN grant_types TEXT'); } catch { /* already exists */ }
+    // Dashboard login (spec §A, 2026-09-30): 'dashboard' marks a browser-login state row (its
+    // redirect_uri column holds the validated `next` path); NULL = the MCP /authorize flow.
+    try { this._db.exec('ALTER TABLE oauth_state ADD COLUMN flow TEXT'); } catch { /* already exists */ }
   }
 
   /** Issue a new opaque bearer token.  Returns the RAW token (show once) + expiry timestamp. */
@@ -159,22 +173,25 @@ export class TokenStore {
     clientState?: string | null;
     /** The CLIENT's requested OAuth2 scope string (verbatim). v20. */
     scope?: string | null;
+    /** 'dashboard' for a browser login (spec §A); absent = the MCP /authorize flow. */
+    flow?: 'dashboard' | null;
   }): void {
     const now = this._clock();
     this._db.prepare(
-      'INSERT OR REPLACE INTO oauth_state (state, nonce, code_challenge, redirect_uri, expires_at, client_state, scope) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).run(params.state, params.nonce, params.codeChallenge, params.redirectUri, now + 600_000, params.clientState ?? null, params.scope ?? null);
+      'INSERT OR REPLACE INTO oauth_state (state, nonce, code_challenge, redirect_uri, expires_at, client_state, scope, flow) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(params.state, params.nonce, params.codeChallenge, params.redirectUri, now + 600_000, params.clientState ?? null, params.scope ?? null, params.flow ?? null);
   }
 
   /** Consume a state blob (single-use).  Returns payload or null. */
   consumeState(
     state: string
-  ): { nonce: string; codeChallenge: string; redirectUri: string; clientState: string | null; scope: string | null } | null {
+  ): { nonce: string; codeChallenge: string; redirectUri: string; clientState: string | null; scope: string | null; flow: 'dashboard' | null } | null {
     const now = this._clock();
     const row = this._db.transaction(() => {
       const r = this._db.prepare(
-        'SELECT nonce, code_challenge, redirect_uri, expires_at, client_state, scope FROM oauth_state WHERE state = ?'
+        'SELECT nonce, code_challenge, redirect_uri, expires_at, client_state, scope, flow FROM oauth_state WHERE state = ?'
       ).get(state) as {
+        flow: string | null;
         nonce: string;
         code_challenge: string;
         redirect_uri: string;
@@ -188,7 +205,7 @@ export class TokenStore {
     })();
     if (!row) return null;
     if (row.expires_at <= now) return null;
-    return { nonce: row.nonce, codeChallenge: row.code_challenge, redirectUri: row.redirect_uri, clientState: row.client_state, scope: row.scope };
+    return { nonce: row.nonce, codeChallenge: row.code_challenge, redirectUri: row.redirect_uri, clientState: row.client_state, scope: row.scope, flow: row.flow === 'dashboard' ? 'dashboard' : null };
   }
 
   /** Issue a new opaque refresh token (~90d TTL).  Returns the RAW token (show once) + expiry timestamp. */
@@ -261,7 +278,42 @@ export class TokenStore {
     };
   }
 
-  /** Delete expired rows from all five tables; returns total row count deleted. */
+  /** Create a dashboard browser session (spec §A). Returns the RAW token (the cookie value) —
+   *  only its sha256 is stored. */
+  createSession(principal: string): { token: string; expiresAt: number } {
+    const token = genRandom(this._csprng);
+    const now = this._clock();
+    const expiresAt = now + SESSION_TTL_MS;
+    this._db.prepare(
+      'INSERT INTO dashboard_sessions (token_hash, principal, created_at, expires_at) VALUES (?, ?, ?, ?)'
+    ).run(sha256hex(token), principal, now, expiresAt);
+    return { token, expiresAt };
+  }
+
+  /** Verify a raw session token; null when unknown/expired. Sliding: a session last extended more
+   *  than a day ago is re-extended to a full SESSION_TTL_MS (`slid: true` — the caller re-sets the
+   *  cookie so its Max-Age follows). */
+  verifySession(rawToken: string): { principal: string; expiresAt: number; slid: boolean } | null {
+    const now = this._clock();
+    const hash = sha256hex(rawToken);
+    const row = this._db.prepare(
+      'SELECT principal, expires_at FROM dashboard_sessions WHERE token_hash = ?'
+    ).get(hash) as { principal: string; expires_at: number } | undefined;
+    if (!row || row.expires_at <= now) return null;
+    if (row.expires_at - now < SESSION_TTL_MS - SESSION_SLIDE_EVERY_MS) {
+      const expiresAt = now + SESSION_TTL_MS;
+      this._db.prepare('UPDATE dashboard_sessions SET expires_at = ? WHERE token_hash = ?').run(expiresAt, hash);
+      return { principal: row.principal, expiresAt, slid: true };
+    }
+    return { principal: row.principal, expiresAt: row.expires_at, slid: false };
+  }
+
+  /** Delete a session (logout). Unknown token = no-op. */
+  deleteSession(rawToken: string): void {
+    this._db.prepare('DELETE FROM dashboard_sessions WHERE token_hash = ?').run(sha256hex(rawToken));
+  }
+
+  /** Delete expired rows from all six tables; returns total row count deleted. */
   gcExpired(): number {
     const now = this._clock();
     let n = 0;
@@ -270,6 +322,7 @@ export class TokenStore {
     n += this._db.prepare('DELETE FROM oauth_state WHERE expires_at <= ?').run(now).changes;
     n += this._db.prepare('DELETE FROM registered_clients WHERE expires_at <= ?').run(now).changes;
     n += this._db.prepare('DELETE FROM refresh_tokens WHERE expires_at <= ?').run(now).changes;
+    n += this._db.prepare('DELETE FROM dashboard_sessions WHERE expires_at <= ?').run(now).changes;
     return n;
   }
 }

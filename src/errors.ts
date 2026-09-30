@@ -52,6 +52,10 @@ export const ERROR_CATALOG = {
   // put an uncatalogued string on the wire. `see: null` like its role/ownership siblings: the fix
   // is to authenticate, which is a deployment matter, not an authoring one.
   PRINCIPAL_REQUIRED: { see: null, hint: 'this tool requires an authenticated principal; the caller supplied none' },
+  // Dashboard auth spec §A2 (2026-09-30): the two runtime role-change lockout refusals
+  // (principal_set_role and the dashboard admin page share them).
+  ROLE_LOCKED: { see: null, hint: 'this principal is an admin in rwe.config.json principals; config admins are locked and can only be changed by editing the config and restarting' },
+  LAST_ADMIN: { see: null, hint: 'this change would leave no admin; promote another principal to admin first' },
   // v24 adjudication #6 F-3 (D-14, REQ-116): thrown from the REGISTRATION path (mcp-facade.ts:313)
   // when a registration declares a trigger someone else created. REQ-116 requires a registration
   // that fails on trigger to point at the guide, and does not carve ownership out of "trigger" —

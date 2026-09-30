@@ -285,6 +285,27 @@ export function actorFor(p: Principal, a: unknown, gate: Gate): Actor {
   return { id: attributionId, bypass: gateId === null, idSource: idSourceOf(p, a) };
 }
 
+/** Dashboard auth spec §A (2026-09-30): the `run_list` scoping rule, declared ONCE — `run_list`
+ *  and every dashboard run listing (`/api/runs`, `/api/home`) apply it, so the two surfaces cannot
+ *  disagree on whose runs a caller sees. `undefined` = unfiltered (admin, auth disabled). */
+export function runListScope(p: Principal): string | undefined {
+  return p.kind !== 'admin' && p.kind !== 'auth-disabled' ? nsOf(p) : undefined;
+}
+
+/** Dashboard auth spec §A: the per-row version masking `workflow_list` applies (issue #100 Q5 owner
+ *  follow-up), declared ONCE — also applied by the dashboard's `/api/workflows`. A non-owner (not
+ *  owner, not admin/bypass, not an ownerless legacy row) never sees a non-release version id:
+ *  `versions` collapses to `[release]` (or `[]`) and `channels.beta` to null. */
+export function viewerWorkflowVersions(
+  w: { owner: string | null; versions: string[]; channels: { release: string | null; beta: string | null } },
+  actor: Actor,
+): { viewerIsOwner: boolean; versions: string[]; channels: { release: string | null; beta: string | null } } {
+  const viewerIsOwner = canMutate(w.owner, actor);
+  return viewerIsOwner
+    ? { viewerIsOwner, versions: w.versions, channels: w.channels }
+    : { viewerIsOwner, versions: w.channels.release !== null ? [w.channels.release] : [], channels: { release: w.channels.release, beta: null } };
+}
+
 export class McpFacade {
   private readonly store: RunStore;
   private readonly runManager: RunManager;
@@ -785,12 +806,12 @@ export class McpFacade {
         // collapses to `[release]` (or `[]` with none) and `channels.beta` is masked to `null`. The
         // released version itself (`channels.release`) stays visible on purpose: it IS what
         // run_start/describe would run for this caller (Q1/Q2), so it names nothing new.
-        const viewerIsOwner = canMutate(w.owner, actor);
+        const view = viewerWorkflowVersions({ owner: w.owner, versions: w.versions, channels }, actor);
         return {
           name: w.name,
           owner: w.owner,
-          versions: viewerIsOwner ? w.versions : (channels.release !== null ? [channels.release] : []),
-          channels: (viewerIsOwner ? channels : { release: channels.release, beta: null }) as unknown as Record<string, string>,
+          versions: view.versions,
+          channels: view.channels as unknown as Record<string, string>,
           runnable: published && !confinementRefused,
           ...(confinementRefused ? { runnableReason: 'CONFINEMENT_UNAVAILABLE' as const } : {}),
           // v36 (DES-247, ARCH-163): forwarded, never re-parsed — `catalog.list()` already computes
@@ -801,6 +822,22 @@ export class McpFacade {
       })
       .filter((w) => !onlyRunnable || w.runnable);
     return { runId: '', status: 'completed', result: rows };
+  }
+
+  /** Dashboard auth spec §A: the catalog rows `GET /api/workflows` serves (the dashboard's own
+   *  wider shape — params, createdAt, registeredRemote), masked for `principal` by the SAME
+   *  `viewerWorkflowVersions` rule `workflowList` applies. A non-owner also never gets the
+   *  version/params of a row that has NO release (the catalog would otherwise describe the beta or
+   *  newest draft — a version `workflow_describe` refuses that caller). */
+  async workflowCatalogFor(principal: Principal): Promise<Array<Record<string, unknown>>> {
+    const actor = actorFor(principal, {}, 'bypass');
+    return (await this.runManager.catalog.list()).map((w) => {
+      const channels = w.channels as unknown as { release: string | null; beta: string | null };
+      const view = viewerWorkflowVersions({ owner: w.owner, versions: w.versions, channels }, actor);
+      if (view.viewerIsOwner) return { ...w };
+      const hidden = channels.release === null;
+      return { ...w, versions: view.versions, channels: view.channels, ...(hidden ? { version: '', params: undefined } : {}) };
+    });
   }
 
   /** v24 (DES-157/TASK-150 owns the full builder + GUIDE_EXAMPLES) — a minimal, real (not a stub)
@@ -1044,9 +1081,8 @@ export class McpFacade {
    *  id, never from caller args (the tool schema does not even carry a `principal` key). */
   async runList(a: { workflow?: string; status?: string; limit?: number }, principal: Principal): Promise<ResultEnvelope<RunSummary[]>> {
     const filter: RunListFilter = { workflow: a.workflow, status: a.status as RunListFilter['status'], limit: a.limit };
-    if (principal.kind !== 'admin' && principal.kind !== 'auth-disabled') {
-      filter.principal = nsOf(principal);
-    }
+    const scope = runListScope(principal);
+    if (scope !== undefined) filter.principal = scope;
     const rows = await this.store.list(filter);
     return { runId: '', status: 'completed', result: rows };
   }

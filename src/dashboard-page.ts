@@ -68,10 +68,21 @@ const ENGINE_VERSION = resolveEngineVersion();
 // stylesheet twice per navigation with two paths that can silently disagree (INV-V27-3: every byte
 // comes from ARCH-123's map — the earlier `readFileSync`+`<style>` copy here violated that).
 
+/** Dashboard auth spec §A: who the page was served to — the header's email/role/sign-out and the
+ *  admin tab read it. `enabled:false` = auth off (no header identity); `loopback` = the D-BIND
+ *  local rescue path (no identity). */
+export interface ShellAuth {
+  enabled: boolean;
+  id?: string;
+  role?: string;
+  loopback?: boolean;
+}
+
 interface ShellInit {
   version: string;
   lastUpdate?: UpdateOutcome | null;
   interruptedRuns?: number;
+  auth?: ShellAuth;
 }
 
 /** Assemble the shell's bytes. The data island is DATA, not script — `type="application/json"` is
@@ -103,8 +114,8 @@ function shell(init: ShellInit): string {
  * / `interruptedRuns` are included only when supplied (`JSON.stringify` drops `undefined` keys, so a
  * bare call never emits the literal word "undefined").
  */
-export function buildDashboardHtml(init?: { lastUpdate?: UpdateOutcome | null; interruptedRuns?: number }): string {
-  return shell({ version: ENGINE_VERSION, lastUpdate: init?.lastUpdate, interruptedRuns: init?.interruptedRuns });
+export function buildDashboardHtml(init?: { lastUpdate?: UpdateOutcome | null; interruptedRuns?: number; auth?: ShellAuth }): string {
+  return shell({ version: ENGINE_VERSION, lastUpdate: init?.lastUpdate, interruptedRuns: init?.interruptedRuns, auth: init?.auth });
 }
 
 // Static browser dashboard shell (DES-018/REQ-008, rebuilt v27 per DES-200/ARCH-122): the SAME

@@ -1330,6 +1330,46 @@ export const TOOL_SPECS = [
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
     fixture: { happy: {}, errors: {} },
   },
+  // ---- principals (2) — dashboard auth spec §A2 (2026-09-30) ----
+  {
+    name: 'principals_list', entity: 'principal', key: null,
+    description:
+      'Admin only. List every principal (a Google account email) this engine knows and the role it resolves to NOW. ' +
+      'Known = the rwe.config.json `principals` entries, every runtime role override, and everyone who has ever signed in (MCP bearer/refresh token or dashboard session). ' +
+      'Returns `{ authEnabled, principals: [{ id, role, source, firstSeenAt, lastSeenAt, updatedBy?, updatedAt? }] }`. ' +
+      'role is admin|author|user (admin: everything incl. other principals\' runs and these tools; author: register/publish workflows; user: run published workflows and read their own runs). ' +
+      "source says where the role comes from, in precedence order: 'config-locked' (an admin in rwe.config.json — cannot be changed at runtime), " +
+      "'db' (a runtime override set by principal_set_role; updatedBy/updatedAt say who and when), 'config' (the id's own rwe.config.json entry), " +
+      "'default' (no entry: the config '*' role, else user). firstSeenAt/lastSeenAt are ISO timestamps of sign-ins (null = never signed in since this was recorded). " +
+      'With authEnabled false the engine runs without authentication and roles are stored but not enforced.',
+    inputSchema: { ...schema({}), additionalProperties: false },
+    outputSchema: OUT,
+    errors: ['FORBIDDEN_ROLE'] as ErrorCode[],
+    seeAlso: ['principal_set_role'] as string[],
+    authz: { minRole: 'admin', ownership: 'none' } as AuthzRow,
+    fixture: { happy: {}, errors: {} },
+  },
+  {
+    name: 'principal_set_role', entity: 'principal', key: 'id' as const,
+    description:
+      'Admin only. Change a principal\'s role at runtime — effective on that principal\'s very next request, no restart. ' +
+      '`role` null removes the runtime override so the principal falls back to its rwe.config.json entry, else the config \'*\' role, else user. ' +
+      'The id need not have signed in yet (pre-provisioning is allowed). Returns the principal\'s updated entry (same shape as principals_list). ' +
+      'Refused ROLE_LOCKED for an admin listed in rwe.config.json principals (config admins are locked so a runtime change can never lock the operator out), ' +
+      'and LAST_ADMIN when the change would demote the last remaining admin. Every change is audited: the override row records updatedBy/updatedAt and the engine logs a principal_role_changed line.',
+    inputSchema: {
+      ...schema({
+        id: { type: 'string', minLength: 1, maxLength: 320, description: "The principal's id — the Google account email exactly as principals_list shows it. '*' is refused (edit rwe.config.json for the default role)." },
+        role: { enum: ['admin', 'author', 'user', null], description: 'The new role, or null to remove the runtime override.' },
+      }, ['id', 'role']),
+      additionalProperties: false,
+    },
+    outputSchema: OUT,
+    errors: ['ROLE_LOCKED', 'LAST_ADMIN', 'INVALID_ARGUMENT', 'FORBIDDEN_ROLE'] as ErrorCode[],
+    seeAlso: ['principals_list'] as string[],
+    authz: { minRole: 'admin', ownership: 'none' } as AuthzRow,
+    fixture: { happy: { id: 'fixture-principal@example.com', role: 'author' }, errors: { INVALID_ARGUMENT: { id: 'fixture-principal@example.com', role: 'owner' } } },
+  },
 ] as const satisfies readonly ToolSpec[];
 
 // v24 (TASK-155, DES-138): `as const` above makes `name` a literal per row, so `ToolName` is the

@@ -22,6 +22,7 @@ import type { ObservedStatsProvider } from './models/observed-stats.js';
 import type { SystemInfoSampler } from './system-info.js';
 import type { RunStore } from './run-store.js';
 import type { ErrorCode } from './errors.js';
+import type { PrincipalAdmin } from './auth/principal-admin.js';
 
 // Ajv instance shared by every validateArgs() call — same construction as agent-executor.ts's
 // schema validation (D-V4): allErrors:false (first failure is enough to refuse), strict:false
@@ -74,6 +75,10 @@ export interface ToolDeps {
    *  `Principal.kind`, which conflates auth state with physical locality, and never `ServerConfig`'s
    *  `bind`/`allowedHosts`, which are deployment-wide policy, not this one request's origin). */
   isRemoteSubmission?: boolean;
+  /** Dashboard auth spec §A2: the role store behind `principals_list`/`principal_set_role` (and the
+   *  dashboard admin page). Optional so the existing `ToolDeps` fixtures compile unchanged;
+   *  `server.ts` always wires it (auth on or off). */
+  principals?: PrincipalAdmin;
 }
 
 /** {code:number} marks the ONE case (unknown tool name) that lifts to a top-level JSON-RPC
@@ -383,6 +388,16 @@ export async function callTool(
       } catch (err) {
         return { status: 'error', error: { code: 'PROBE_ERROR', message: String(err) } };
       }
+    }
+    case 'principals_list': {
+      if (!deps.principals) return refusalEnvelope('INTERNAL_ERROR', 'INTERNAL_ERROR: the principal role store is not wired on this engine');
+      return { runId: '', status: 'completed', result: deps.principals.list() };
+    }
+    case 'principal_set_role': {
+      if (!deps.principals) return refusalEnvelope('INTERNAL_ERROR', 'INTERNAL_ERROR: the principal role store is not wired on this engine');
+      const out = deps.principals.setRole(a['id'] as string, (a['role'] ?? null) as 'admin' | 'author' | 'user' | null, actor ?? 'local');
+      if (!out.ok) return refusalEnvelope(out.code, out.reason);
+      return { runId: '', status: 'completed', result: out.entry };
     }
     default: {
       // Exhaustiveness: every TOOL_SPECS row is handled above. Attempted a compile-time

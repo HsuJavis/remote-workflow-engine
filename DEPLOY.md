@@ -6,8 +6,8 @@
 > `.sdlc/features/001-remote-workflow-engine/08-validation.md`。
 
 這是一個可遠端操控的 **Claude 工作流程執行引擎**：一台常駐伺服器，透過 **MCP Streamable HTTP**
-介面對外提供 **36 個工具**（`workflow_*` 7、`run_*` 8、`workspace_*` 6、`schedule_*` 4、`webhook_*` 3、
-`issue_*` 5、`models_list`/`models_probe`/`system_info`），並把每個 `agent()` 呼叫路由到你設定的 LLM 供應商
+介面對外提供 **38 個工具**（`workflow_*` 7、`run_*` 8、`workspace_*` 6、`schedule_*` 4、`webhook_*` 3、
+`issue_*` 5、`models_list`/`models_probe`/`system_info`、`principals_list`/`principal_set_role`），並把每個 `agent()` 呼叫路由到你設定的 LLM 供應商
 （Anthropic / OpenRouter / 本機 Ollama——只有這三條路，見下方 §0 附錄）。狀態全存在本機檔案
 （SQLite + JSONL journal），
 不需要外部資料庫伺服器。**權威工具清單是 `src/tool-specs.ts`**——不在那張表上的名字，引擎一律回
@@ -154,7 +154,7 @@ curl -s -X POST http://localhost:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | python3 -c \
   "import json,sys; d=json.load(sys.stdin); print('tools:', len(d['result']['tools']))"
-# 預期：tools: 36
+# 預期：tools: 38
 
 # 主機系統資源快照（第一次呼叫 utilizationPct=null；第二次有值）
 curl -s http://localhost:8787/api/system | python3 -c \
@@ -507,7 +507,8 @@ curl -s http://localhost:8787/api/models | python3 -c \
     容器／離線／低磁碟環境可以刻意不裝。
   - 渲染是**第一次瀏覽時才做並快取**（快取鍵 `(name, version)`），單次渲染硬逾時 20s、
     全引擎同時最多 2 個渲染子行程；超過上限的請求直接降級回原始碼，不排隊。
-    這條路由**不需要認證**（dashboard 的瀏覽器沒有 token），所以這三道限制是它的防護，不是最佳化。
+    `auth.enabled:false` 時這條路由**不需要認證**，所以這三道限制是它的防護，不是最佳化
+    （`auth.enabled:true` 時它跟其他 `/api/*` 一樣要登入，見 §1b「Dashboard 登入」）。
 - 外部依賴：不需要資料庫伺服器（狀態存在本機檔案：SQLite + JSONL journal，路徑見 `workRoot`）。
 - LLM 供應商（依你腳本裡的 model ref 用到哪個 provider 擇一或多個）：對應的環境變數（`ANTHROPIC_API_KEY`／
   `OLLAMA_BASE_URL`／`OPENROUTER_API_KEY`／`CLAUDE_CODE_OAUTH_TOKEN`）
@@ -555,7 +556,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `maxConcurrentRuns` | 頂層 run 並行上限（run-admission counter）；達上限時 `start()` 在任何持久化動作之前以 `RUN_ADMISSION_LIMIT` 拒絕；巢狀 `workflow()` 不佔用槽位 | `number` / `64` | 否 | v8 |
 | `rwe.config.json` → `modelProbe` | 週期性模型探測（issue #73）：對每個已註冊 workflow 版本宣告過的相異 provider/model 打一通純文字＋一通只給 `Read`（issue #93 item 4 之前是 `Bash`+`cat`，現在是叫模型用 `Read` 工具讀一個 nonce 檔）的呼叫，結果供 `models_list` 的 `toolUseVerified`/`proseVerified`/`stabilitySource`，並在 `run_start` 對「帶工具卻落在探測沒用工具的模型」的 agent 發非致命警告。`{enabled, intervalMs, timeoutMs}`：`intervalMs` 為整數且 ≥ 60000、`timeoutMs` 為 1..600000 的整數、不認得的鍵——任一不符即開機拒絕。成本約每模型每週兩通極小呼叫；不在開機時探測，第一次檢查在 min(intervalMs, 1h) 後。`enabled:false` 只關週期探測，admin 的 `models_probe` 仍可用 | `object` / `{enabled:true, intervalMs:604800000, timeoutMs:60000}` | 否 | #73 |
 | `rwe.config.json` → `workspaceTtlMs` | Workspace GC sweep 間隔（ms）：回收閒置舊 workspace 目錄（REQ-026），**同時決定 auth-table GC（`gcExpired()`）間隔**；`0`/省略 = workspace reclaim 關閉，auth 啟用但未設此鍵時 sweep 每小時跑一次 | `number` / `0`（停用） | 否 | v16 |
-| `rwe.config.json` → `continuationDbPath` | on-completion chaining 續接的 SQLite 檔路徑；引擎會開這個檔，但 36 個工具裡沒有任何一個對應到它（沒有 `chain_*` 工具），設了不影響行為 | `string` / `$workRoot/continuations.db` | 否 | v24 |
+| `rwe.config.json` → `continuationDbPath` | on-completion chaining 續接的 SQLite 檔路徑；引擎會開這個檔，但 38 個工具裡沒有任何一個對應到它（沒有 `chain_*` 工具），設了不影響行為 | `string` / `$workRoot/continuations.db` | 否 | v24 |
 | `rwe.config.json` → `webhookDbPath` | webhook 註冊表（`webhooks`+`webhook_deliveries`）SQLite 檔路徑；**secret 明文儲存**於此檔（HMAC 驗簽需要），存取權限即機密邊界；`webhook_list` 只回 sha256 前綴指紋 | `string` / `$workRoot/webhooks.db` | 否 | v8 |
 | `rwe.config.json` → `publicBaseUrl` | `webhook_create` 回傳的 `url` 用哪個 base URL 組出來（issue #97）——省略時退回這個 process 自己的 bind 位址／request `Host` 表頭，對走 cloudflared/nginx 反向代理進來的遠端呼叫端會是不可達的 `http://localhost:8899` 這類值。優先序：明白設定的 `publicBaseUrl` 一律最優先；沒設但 `auth.enabled:true` 時退回 `auth.issuer`（該值已經是這個部署對外宣告的身分，同一顆 base URL 沒有理由分開設定兩次）；兩者都沒有才退回舊行為。**任何有反向代理/隧道（cloudflared 等）在前面的部署都應該明白設這個鍵**，否則 webhook 送達方永遠拿不到能打的網址——見 §6 外部 ingress 安全一節。**開機時不驗證這個值的形狀**（不是合法 URL 也照樣接受、原樣拼進 `url`）——跟 `auth.issuer` 現有的寬鬆程度一致，但這裡沒有 `enabled` 開關保護，打錯就是每一次 `webhook_create` 都回一個打不通的網址，直到手動修正設定檔為止 | `string` / — | 有反向代理/隧道時建議設定 | #97 |
 | `rwe.config.json` → `casDir` | 內容定址 blob 儲存庫（CAS）目錄；`workspace_push({sha256,contentB64})` 以內容 sha256 為鍵（伺服器 byte-verify）。namespace 一律由呼叫者身份推導，不接受呼叫端指定 | `string` / `$workRoot/cas` | 否 | v10 |
@@ -591,7 +592,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 `auth.enabled:true` 時的部署前提：
 1. `bind` 改成 `0.0.0.0`（或公開 IP），並在 `allowedHosts` 列出你的 LAN IP／主機名稱。
 2. 引擎需有 HTTPS 公開 callback URL（`https://<your-host>/oauth/google/callback`），因為 Google 要求 callback URI 為 HTTPS（cloudflared tunnel 可提供）。在 Google Cloud Console 的「Authorized redirect URIs」填入此 callback URL。
-3. D-BIND fail-closed（`/mcp`、`GET /api/workflows/:name/describe`、blob/manifest 上傳都走這一套）：
+3. D-BIND fail-closed（`/mcp`、dashboard 的 `/dashboard*` 與 `/api/*`、blob/manifest 上傳都走這一套）：
    `auth.enabled:true` 時，沒有有效 bearer 一律 401 + `WWW-Authenticate`，**唯一的豁免**是
    「來源是 loopback（127.0.0.1/::1）**而且** `bind` 不是 loopback」。所以：
    - `bind` 是 `0.0.0.0`／LAN IP → 本機（127.0.0.1）連進來免 bearer，區網來源要 bearer。
@@ -622,7 +623,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | 角色 | 這個角色（含以上）才叫得動的工具 |
 |---|---|
 | `author` | `workflow_register`／`workflow_deregister`／`workflow_publish`／`workflow_source`、`schedule_create`／`schedule_list`／`schedule_delete`／`schedule_setEnabled`、`webhook_create`／`webhook_list`／`webhook_delete`、`workspace_push` 的資產模式（`{workflow,kind,name}`）、`workspace_list`／`workspace_delete` 的工作流程模式 |
-| `admin` | `models_probe`（立即探測設定的模型）、`workspace_push`／`workspace_delete` 的 `scope:"global"`（全域資產）、以及 `workspace_push({kind:"mcp"})` 帶 `stdio` transport（`config.type:"stdio"`）的 MCP server——其他角色回 `FORBIDDEN_ROLE`，不探測、不啟動任何子行程 |
+| `admin` | `principals_list`／`principal_set_role`（查看／執行期變更角色，見下方「執行期角色管理」）、dashboard 的「管理」分頁、`models_probe`（立即探測設定的模型）、`workspace_push`／`workspace_delete` 的 `scope:"global"`（全域資產）、以及 `workspace_push({kind:"mcp"})` 帶 `stdio` transport（`config.type:"stdio"`）的 MCP server——其他角色回 `FORBIDDEN_ROLE`，不探測、不啟動任何子行程 |
 | `user` | 其餘全部：`workflow_describe`／`workflow_list`／`workflow_authoring_guide`、所有 `run_*`、`workspace_diff`／`workspace_pull`／`workspace_purge` 與 run 模式的 `workspace_list`／`workspace_delete`、所有 `issue_*`、`models_list`、`system_info` |
 
 角色不足一律回 `FORBIDDEN_ROLE`。角色**之外**還有一層擁有權檢查（`NOT_WORKFLOW_OWNER`／
@@ -642,6 +643,53 @@ curl -s http://localhost:8787/api/models | python3 -c \
 
 角色字串打錯（例如 `"admn"`）會讓服務**開機直接拒絕啟動**，絕不靜默退回 `user`。
 `auth.enabled:false`（預設）時整個授權層被短路，不套用任何角色檢查。
+
+### 執行期角色管理（2026-09-30 起）——設定檔是「初始值 + 鎖定的管理員」
+
+角色現在可以**不重啟**就改：admin 用 MCP 工具 `principal_set_role({id, role})`（`role:null` 移除覆寫）
+或 dashboard 的「管理」分頁（同一個後端）。變更在該使用者的**下一個請求**就生效。
+
+- **優先序**（每個請求都重新判斷）：設定檔 `principals` 裡的 `admin`（**鎖定**，執行期改不動）
+  ＞ 執行期覆寫（存在 auth DB）＞ 設定檔 `principals[id]` ＞ 設定檔 `"*"` ＞ `user`。
+- **防鎖死**：對設定檔 admin 改角色一律 `ROLE_LOCKED`；會讓「已知使用者裡一個 admin 都不剩」的
+  降級一律 `LAST_ADMIN`。所以**至少在設定檔放一個 admin**——那是 dashboard/工具之外唯一的救援路徑
+  （loopback 豁免的本機呼叫**進不了**管理分頁，見下方 D-BIND 說明）。
+- **已知使用者**（`principals_list` 與管理分頁列出的名單）＝設定檔 `principals` ∪ 執行期覆寫 ∪
+  任何曾經登入過的人（MCP bearer／refresh token、dashboard session），附 `lastSeenAt`；
+  `source` 欄說明角色來源：`config-locked`／`db`／`config`／`default`（`"*"` 或預設 `user`）。
+- **稽核**：覆寫列記 `updatedBy`／`updatedAt`，服務 log 每次變更印一行
+  `{"event":"principal_role_changed","id":…,"previous":…,"role":…,"by":…}`。
+- 儲存位置：`<workRoot>/auth-tokens.db` 的 `principal_roles`、`principals_seen` 兩張表（`auth.enabled`
+  關閉時也會建立；那時角色會存，但不生效）。要整批回到設定檔的值：admin 逐一 `principal_set_role({id, role:null})`。
+
+### Dashboard 登入（Google）與每位使用者的資料範圍
+
+`auth.enabled:true` 時 dashboard 也可以放在公開網址上：
+
+- **登入**：未登入瀏覽 `/dashboard*` 會被導到 `/dashboard/login`，再轉到 Google（**同一個 OAuth client、
+  同一個 callback URI `https://<your-host>/oauth/google/callback`**——Google Cloud Console 不必加新的
+  redirect URI）。驗證 id_token（`email_verified` 等，跟 MCP 流程完全一樣）後發一個瀏覽器 session：
+  cookie `rwe_session`（HttpOnly、SameSite=Lax、`auth.issuer` 是 https 時加 Secure），7 天、使用中會自動
+  延長；DB 只存 sha256。登入後回到原本那頁（`next` 只接受 `/dashboard` 底下的同源相對路徑，沒有 open
+  redirect）。這個流程**不建立** DCR client、**不發** bearer token；MCP 的 `/authorize`／`/token`／refresh
+  流程完全不變。右上角顯示 email、角色與「登出」。
+- **門**：`/dashboard*` 與 `/api/*` 都要 session cookie 或 bearer（跟 `/mcp` 同一個解析器）；沒有就
+  頁面 302 到登入、API 回 401。**例外**：`/api/version`、`/api/status`（健康檢查用，`deploy.sh`／
+  `deploy/migrate-to-service-user.sh` 從本機打；不含任何使用者資料）與 `/static/dashboard/*`（純前端資產）
+  維持公開。
+- **D-BIND 本機救援路徑**跟 `/mcp` 一致：`bind` 不是 loopback 時，沒有 tunnel 標頭的 loopback 來源
+  免登入，但身分是「無人」（`loopback-exempt`）——只看得到系統／模型／issues／工作流程（非擁有者視角），
+  任何 run 頁面與管理分頁回 `PRINCIPAL_REQUIRED`。`bind:127.0.0.1` 時沒有豁免，本機也要登入（或帶 bearer）。
+- **每位使用者看到的資料＝對應 MCP 工具會給他的**（同一個授權判斷，不可能不一致）：run 列表／首頁卡片／
+  成功率等統計只算自己的 run（admin 看全部）；run 詳情、DAG、agent log 只有擁有者或 admin（否則 403
+  `NOT_RUN_OWNER`，admin 讀別人的 agent log 會跟 MCP 一樣記稽核）；工作流程對非擁有者只露 release 版
+  （beta／草稿版本不列、describe/diagram 回 404）；系統、模型、issues 任何登入者可看。
+- **CSRF**：會改東西的 dashboard 請求（登出、改角色）必須同源——`Origin` 的 host 等於請求的 `Host`
+  或引擎自己的公開網址（`publicBaseUrl`／`auth.issuer`，所以隧道改寫 `Host` 也沒關係），或帶
+  `X-Requested-With`；否則 403。引擎自己的公開網址（`publicBaseUrl`／`auth.issuer` 的 host）
+  **自動**加進 Host/Origin 白名單，不必再重複寫進 `allowedHosts`。
+- **公開網址要多開的隧道路徑**（cloudflared ingress，對公開 hostname）：`^/dashboard`、`^/api/`、
+  `^/static/dashboard/`（原本只開 `/mcp`、OAuth 路由時，dashboard 在公開網址上會是 404）。
 
 ## 1c. 安全模型（Security Model）
 
@@ -1009,8 +1057,9 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
-判定標準：回傳 `200`，且 body 的 `result.tools` 陣列包含 36 個工具（`workflow_*` 7、`run_*` 8、
-`workspace_*` 6、`schedule_*` 4、`webhook_*` 3、`issue_*` 5、`models_list`＋`models_probe`＋`system_info`）；
+判定標準：回傳 `200`，且 body 的 `result.tools` 陣列包含 38 個工具（`workflow_*` 7、`run_*` 8、
+`workspace_*` 6、`schedule_*` 4、`webhook_*` 3、`issue_*` 5、`models_list`＋`models_probe`＋`system_info`、
+`principals_list`＋`principal_set_role`）；
 終端機/日誌會印出 `[remote-workflow-engine] ready`；`GET /api/status` 回 `{agentSemaphore,version}`。
 完整真實層驗證證據（含逐 REQ 的真實指令與觀察輸出）見
 `.sdlc/features/001-remote-workflow-engine/08-validation.md`。
@@ -1039,7 +1088,7 @@ npm run start
 | `agent()` 一律回傳 `null`、`run_status.agents[].state === "failed"` | 該 model ref 對應的 provider 沒有可用憑證/端點（伺服器不會掛住，只會讓該次呼叫失敗回 `null`）——一個**依序** `await agent(...)` 呼叫失敗或逾時一律回傳 `null`，不拋例外，是刻意設計，不是漏接；`run_status`/`run_result`/`GET /api/runs/:id` 會同時多一個 `failedAgentCount` 欄位，不必自己去掃 `agents[]` 才發現「這次 run 裡有東西失敗了」 | 確認 `ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY`/`OLLAMA_BASE_URL` 已正確設定，且腳本 `meta.params.agents.<label>.model.default` 寫的完整 ref 指到你要的 provider/model；腳本自己要對 `await agent(...)` 的回傳值判斷 `null` 再往下用，避免把 `null` 字串化接進下一段 prompt |
 | 宣告的 `timeoutMs` 跟實際等到失敗的時間對不上（例如宣告 60000ms、實測快兩倍才失敗） | `timeoutMs` 界定的是**單次嘗試**、不是整個呼叫；部署的 `retries`（`rwe.config.json`，預設 1）會讓實際最壞等待時間變成 `timeoutMs × (1 + retries)` | 呼叫 `workflow_describe` 直接讀 `params.agents.<label>.timeoutMs.attempts`/`.worstCaseMs`（伺服器已經照這條公式算好，不必自己乘） |
 | `workflow_register` 回 `UNKNOWN_MODEL` | 腳本 `meta.params.agents.<label>.model.default`／`.enum` 不是合法的完整 `<provider>/<model-id>` ref（裸名稱、認不得的 provider 前綴），或 openrouter/ollama 的 id 在該供應商的現行目錄裡真的找不到 | 改成完整 ref（用 `models_list` 查、複製它的 `ref` 欄位貼上）——這是在**註冊當下**就報錯（`model` 不能寫在 `agent()` 呼叫裡，寫了是 `SCAN_VIOLATION`），不會跑到一半才失敗 |
-| 任何工具呼叫回 JSON-RPC `-32601 Unknown tool` | 用的工具名不存在（例如 `workflow_run`／`workflow_status`／`asset_push`／`mcp_provision`／`chain_create`） | 用 `tools/list`（36 個）查現行名稱；權威清單是 `src/tool-specs.ts` |
+| 任何工具呼叫回 JSON-RPC `-32601 Unknown tool` | 用的工具名不存在（例如 `workflow_run`／`workflow_status`／`asset_push`／`mcp_provision`／`chain_create`） | 用 `tools/list`（38 個）查現行名稱；權威清單是 `src/tool-specs.ts` |
 | 開機 log 出現 `unrecognized config key(s) in rwe.config.json, ignored: …` | `rwe.config.json` 有引擎不認得的鍵（打錯字，或已不存在的鍵，例如 `graphAnalyzer`、`aliases`——2026-09-26 起別名機制整個移除） | 把該鍵從設定檔移除；有效鍵只有 §1b 設定總表列出的那些。**`aliases` 這個鍵不會擋住開機**（自我更新重啟舊設定檔時仍要能正常啟動），但已完全不生效——把每個模型改寫進腳本自己的 `meta.params.agents.<label>.model.default`（完整 `<provider>/<model-id>` ref） |
 | `workflow_register` 回 `MERMAID_REQUIRED` 或 `DIAGRAM_MISMATCH` | 註冊必須附一張非空的 Mermaid 圖，而且圖裡的 stadium 節點 `id(["label"])` 要跟腳本的 `agent()` label 雙向完全對上 | 補上 `mermaid` 參數；節點少了就補、多了就刪。詳細語法見 `docs/AUTHORING.md`（或呼叫 `workflow_authoring_guide`）|
 | `run_start` 回 `PARAM_UNKNOWN`，訊息說 overrides 只有 `agents` 一個鍵 | 用的是扁平的 `overrides:{effort:...}` | 改成逐 agent：`overrides:{agents:{'<label>':{effort:...}}}`；而且該鍵必須在 `meta.params.agents.<label>` 宣告過 |
@@ -1131,7 +1180,7 @@ frame，頂層 `""`）+ `startedAt`/`endedAt`，`workflowNodes:[{frame,name,pare
 巢狀樹（不攤平）；改動前留下、無快照的舊 run 仍以既有方式重建。**尚未支援**：parallel-group
 標記（需 sandbox-IPC 改動）、樹的靜態預讀+快取。
 
-**沒有跨觸發串接工具**：36 個工具裡沒有 `chain_*` 這類工具（呼叫會得到 `-32601`），也沒有替代工具。
+**沒有跨觸發串接工具**：38 個工具裡沒有 `chain_*` 這類工具（呼叫會得到 `-32601`），也沒有替代工具。
 `continuationDbPath` 設定鍵存在（見 §1b），但沒有任何可呼叫的功能對應到它。要串接多個工作流程，改在腳本裡用 `await workflow(name, args)`
 巢狀呼叫（深度/總數由 `maxWorkflowDepth`／`maxWorkflowDescendants` 把關）。
 
@@ -1139,8 +1188,10 @@ frame，頂層 `""`）+ `startedAt`/`endedAt`，`workflowNodes:[{frame,name,pare
 不需設定）：
 - HTTP handler 對每一條路由（`/mcp`、`/api/*`、`/dashboard`、`/hooks/*`）一致把關：外來 `Host`
   （DNS-rebinding）→ 403；帶有且非白名單的 `Origin`（瀏覽器 drive-by CSRF）→ 403；**缺少 `Origin`
-  則放行**（fail-open，讓程式化 MCP client 不受影響）。白名單為 loopback + 設定的非 loopback
-  `bind` 主機，做真正的 authority 比對（防前綴繞過）。
+  則放行**（fail-open，讓程式化 MCP client 不受影響）——但 dashboard 會改東西的請求（登出、改角色）
+  另外**要求**同源 `Origin` 或 `X-Requested-With`。白名單為 loopback + 設定的非 loopback
+  `bind` 主機 + `allowedHosts` + 引擎自己的公開網址（`publicBaseUrl`／`auth.issuer`），做真正的
+  authority 比對（防前綴繞過）。
 - `POST /hooks/:id`（webhook 入口，fail-closed）：驗證順序 id 存在且 enabled →
   `X-RWE-Signature: sha256=<hex>` HMAC-SHA256 常數時間比對（對原始 body bytes）→
   `X-RWE-Timestamp` ±300 秒內 → `X-RWE-Delivery` 去重 → 啟動**預先綁定**的

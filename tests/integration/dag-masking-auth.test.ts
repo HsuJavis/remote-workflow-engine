@@ -169,14 +169,15 @@ describe('REQ-100: GET /api/runs/:id/dag never leaks the pinned script\'s own so
     expect(SCRIPT).toContain(IT092_SENTINEL);
   });
 
-  it('auth ON, anonymous GET: the sentinel comment planted in the pinned script is absent from the RAW response text', async () => {
+  // Dashboard auth spec §A (2026-09-30): with auth ON every /api/* read needs a caller, so the
+  // auth-server reads in this file carry the OWNER's bearer (the owner may read its own run); an
+  // anonymous read is now 401 before anything is served.
+  it('auth ON, owner GET: the sentinel comment planted in the pinned script is absent from the RAW response text (anonymous: 401)', async () => {
     const ownerToken = await mintBearer(authTmpDir, 'it092-owner@example.com');
     await registerPublishedVia(callerFor(authServer, ownerToken), 'it092-sentinel-auth', SCRIPT);
     const runId = await startRun(authServer, 'it092-sentinel-auth', ownerToken);
-    // The DAG route itself carries no bearer and needs none to be reached (this is exactly the
-    // ORIGINAL H2 finding's own reachability claim — still true, only the disclosure it enables is
-    // now a deliberate one) — the GET below is deliberately anonymous even on the auth-enabled server.
-    const res = await fetch(`http://127.0.0.1:${authServer.port}/api/runs/${runId}/dag`);
+    expect((await fetch(`http://127.0.0.1:${authServer.port}/api/runs/${runId}/dag`)).status).toBe(401);
+    const res = await fetch(`http://127.0.0.1:${authServer.port}/api/runs/${runId}/dag`, { headers: { Authorization: `Bearer ${ownerToken}` } });
     expect(res.status).toBe(200);
     const text = await res.text();
     expect(text).not.toContain(IT092_SENTINEL);
@@ -209,11 +210,11 @@ describe('REQ-140/REQ-133/REQ-134 (Round v27b, ADR-051): the predicted overlay i
     const ownerToken = await mintBearer(authTmpDir, 'it092-owner@example.com');
     await registerPublishedVia(callerFor(authServer, ownerToken), 'it168-auth-unmasked', SCRIPT);
     const runId = await startRun(authServer, 'it168-auth-unmasked', ownerToken);
-    const res = await fetch(`http://127.0.0.1:${authServer.port}/api/runs/${runId}/dag`);
+    const res = await fetch(`http://127.0.0.1:${authServer.port}/api/runs/${runId}/dag`, { headers: { Authorization: `Bearer ${ownerToken}` } });
     const dag = await res.json() as { lanes?: Array<{ index: number; title: string | null }>; current?: number | null; cells?: Array<{ id: string }> };
     expect(Array.isArray(dag.lanes)).toBe(true);
     expect((dag.lanes ?? []).length).toBeGreaterThan(0);
-    // the positive anchor IT-092 used to invert: __skel_ cells now DO reach an anonymous auth-ON GET.
+    // the positive anchor IT-092 used to invert: __skel_ cells now DO reach an auth-ON GET.
     expect((dag.cells ?? []).some((c) => /^__skel_\d+__$/.test(c.id))).toBe(true);
   });
 
@@ -241,7 +242,7 @@ describe('REQ-140/REQ-133/REQ-134 (Round v27b, ADR-051): the predicted overlay i
     const ownerToken = await mintBearer(authTmpDir, 'it092-owner@example.com');
     await registerPublishedVia(callerFor(authServer, ownerToken), 'it168-describe-parity-auth', SCRIPT_PHASED);
     await registerPublishedVia(callerFor(openServer), 'it168-describe-parity-open', SCRIPT_PHASED);
-    const authRes = await fetch(`http://127.0.0.1:${authServer.port}/api/workflows/it168-describe-parity-auth/describe`);
+    const authRes = await fetch(`http://127.0.0.1:${authServer.port}/api/workflows/it168-describe-parity-auth/describe`, { headers: { Authorization: `Bearer ${ownerToken}` } });
     const openRes = await fetch(`http://127.0.0.1:${openServer.port}/api/workflows/it168-describe-parity-open/describe`);
     expect(authRes.status).toBe(200);
     expect(openRes.status).toBe(200);
@@ -279,11 +280,11 @@ describe('REQ-140/REQ-133/REQ-134 (Round v27b, ADR-051): the predicted overlay i
       return predicted.length >= 1 && runningLive.length === 1;
     }
 
-    async function pollUntilStabilized(server: Server, runId: string): Promise<DagPayload> {
+    async function pollUntilStabilized(server: Server, runId: string, bearer?: string): Promise<DagPayload> {
       const deadline = Date.now() + STABILIZE_DEADLINE_MS;
       let last: DagPayload = {};
       while (Date.now() < deadline) {
-        const res = await fetch(`http://127.0.0.1:${server.port}/api/runs/${runId}/dag`);
+        const res = await fetch(`http://127.0.0.1:${server.port}/api/runs/${runId}/dag`, bearer ? { headers: { Authorization: `Bearer ${bearer}` } } : {});
         last = await res.json() as DagPayload;
         if (isStabilized(last)) return last;
         await new Promise((r) => setTimeout(r, STABILIZE_POLL_MS));
@@ -307,7 +308,7 @@ describe('REQ-140/REQ-133/REQ-134 (Round v27b, ADR-051): the predicted overlay i
       // a real convergence problem as a generic hook timeout — exactly what the named per-poll error
       // above exists to prevent.
       const [authDag, openDag] = await Promise.all([
-        pollUntilStabilized(authServer, authRunId),
+        pollUntilStabilized(authServer, authRunId, ownerToken),
         pollUntilStabilized(openServer, openRunId),
       ]);
 

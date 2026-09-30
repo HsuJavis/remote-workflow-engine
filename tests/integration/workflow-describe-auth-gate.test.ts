@@ -1,3 +1,12 @@
+// ── 2026-09-30 OWNER DECISION (dashboard auth spec §A) REVERSES adjudication #8 for auth-ENABLED
+// engines: the dashboard now has a Google login, so the reason #8 removed the gate ("the dashboard's
+// client is a plain browser fetch with no login and no token") no longer holds, and the dashboard is
+// also exposed on the PUBLIC URL. With auth enabled every /api/* route (except the /api/version and
+// /api/status liveness probes) needs a caller — a dashboard session cookie or a bearer — else 401
+// before any store read; a raw loopback peer on a non-loopback bind keeps the D-BIND exemption
+// (row 2). Rows 3a/3b/4 are rewritten to that (anonymous -> 401, valid bearer -> 200); rows 1/2 and
+// the parity row are unchanged. The history below is kept for the record.
+//
 // IT-101 (v24 orchestrator adjudication #8, H-1, issue #57 — OVERRULES ADJ-A1): `GET
 // /api/workflows/:name/describe` carries NO authorization gate. It is the only route that serves a
 // workflow's author-supplied Mermaid and its per-agent parameters to the dashboard, and the
@@ -140,7 +149,7 @@ describe('row 2: auth ENABLED, D-BIND loopback peer -> 200 (IT-101, adjudication
 //    from the exemption ("no non-loopback peers possible"), so `dbindExempt` is unconditionally
 //    false and, under ADJ-A1, EVERY peer — including 127.0.0.1 itself — needed a real bearer. ─────
 
-describe('row 3a: auth ENABLED, genuine non-loopback (LAN) peer, no bearer -> 200 (IT-101, adjudication #8)', () => {
+describe('row 3a: auth ENABLED, genuine non-loopback (LAN) peer, no/invalid bearer -> 401 (spec §A, 2026-09-30)', () => {
   let server: Server;
   let workRoot: string;
   const NAME = uniqueName('lan');
@@ -156,26 +165,23 @@ describe('row 3a: auth ENABLED, genuine non-loopback (LAN) peer, no bearer -> 20
   });
   afterAll(async () => { await server?.close(); rmSync(workRoot, { recursive: true, force: true }); });
 
-  it.skipIf(!HAS_LAN_IP)('connecting via the LAN IP with no bearer -> 200 with the diagram', async () => {
+  it.skipIf(!HAS_LAN_IP)('connecting via the LAN IP with no bearer -> 401', async () => {
     const res = await getDescribe(`http://${LAN_IP}:${server.port}`, NAME);
-    expect(res.status).toBe(200);
-    const body = await res.json() as Record<string, unknown>;
-    expect(body['name']).toBe(NAME);
-    expect(body['mermaid']).toBe(SEEDED_MERMAID);
+    expect(res.status).toBe(401);
   });
 
-  it.skipIf(!HAS_LAN_IP)('an INVALID bearer over the LAN IP is IGNORED, not refused -> 200 (the route makes no authorization decision at all)', async () => {
+  it.skipIf(!HAS_LAN_IP)('an INVALID bearer over the LAN IP -> 401', async () => {
     const res = await getDescribe(`http://${LAN_IP}:${server.port}`, NAME, { Authorization: 'Bearer not-a-real-token' });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(401);
   });
 
-  it.skipIf(!HAS_LAN_IP)('a NEVER-REGISTERED name over the LAN IP -> 404, not 401 — the request reached the catalog', async () => {
+  it.skipIf(!HAS_LAN_IP)('a NEVER-REGISTERED name over the LAN IP -> 401 as well — the gate answers before any catalog read (no existence leak)', async () => {
     const res = await getDescribe(`http://${LAN_IP}:${server.port}`, 'it101-never-registered');
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(401);
   });
 });
 
-describe('row 3b: auth ENABLED, LOOPBACK bind (exemption excluded by construction), NO headers at all -> 200 + full mermaid — the dashboard\'s own request (IT-101, adjudication #8, issue #57)', () => {
+describe('row 3b: auth ENABLED, LOOPBACK bind (exemption excluded by construction), NO headers at all -> 401 (spec §A, 2026-09-30)', () => {
   let server: Server;
   let workRoot: string;
   const NAME = uniqueName('loopbound');
@@ -190,34 +196,24 @@ describe('row 3b: auth ENABLED, LOOPBACK bind (exemption excluded by constructio
   });
   afterAll(async () => { await server?.close(); rmSync(workRoot, { recursive: true, force: true }); });
 
-  it('a browser GET with NO auth headers on an auth-ENABLED engine -> 200 carrying the author-supplied mermaid VERBATIM', async () => {
+  it('a GET with NO credentials on an auth-ENABLED engine -> 401 + WWW-Authenticate, no diagram served', async () => {
     const res = await getDescribe(`http://127.0.0.1:${server.port}`, NAME);
-    expect(res.status).toBe(200);
-    const body = await res.json() as Record<string, unknown>;
-    expect(body['name']).toBe(NAME);
-    // The whole defect: the dashboard renders THIS string. Exact, not truthy — and no
-    // LEGACY_NO_DIAGRAM stand-in.
-    expect(body['mermaid']).toBe(SEEDED_MERMAID);
-    expect(body['mermaidNote']).toBeNull();
-    // DES-125: one projection for every principal — an anonymous caller still gets no script body.
-    expect(JSON.stringify(body)).not.toContain(`return 'v1';`);
+    expect(res.status).toBe(401);
+    expect(res.headers.get('www-authenticate')).toMatch(/^Bearer/);
+    expect(await res.text()).not.toContain('graph TD');
   });
 
-  it('a NEVER-REGISTERED name on the same auth-enabled server -> 404, not 401 — proof the gate is gone, not relocated', async () => {
+  it('a NEVER-REGISTERED name -> the SAME 401 (existence is not disclosed to an anonymous caller)', async () => {
     const res = await getDescribe(`http://127.0.0.1:${server.port}`, 'it101-never-registered-2');
-    expect(res.status).toBe(404);
-    expect(res.headers.get('www-authenticate')).toBeNull();
+    expect(res.status).toBe(401);
   });
 });
 
-// ── Row 4: {authEnabled:true, non-exempt peer, VALID bearer} -> 200, identical to the anonymous
-//    body. ADJ-A1 added this row to prove the gate ADMITTED as well as refused; under adjudication
-//    #8 it proves the stronger property — presenting a token changes NOTHING, which is DES-125's
-//    "every principal gets the same shape" made observable. Same loopback-BOUND construction as row
-//    3b, with a hand-seeded live bearer (IT-078/auth-routes-integration.test.ts's `bearer_tokens`
-//    pattern, expiry derived RELATIVE to now, never a literal date). ───────────────────────────────
+// ── Row 4: {authEnabled:true, non-exempt peer, VALID bearer} -> 200 with the non-owner projection
+//    (the caller is a plain 'user', not the owner — DES-125's single describe shape, no script
+//    body); the same request without the bearer -> 401. ─────────────────────────────────────────
 
-describe('row 4: auth ENABLED, non-exempt peer, VALID bearer -> 200 and byte-identical to anonymous (IT-101, adjudication #8, DES-125)', () => {
+describe('row 4: auth ENABLED, non-exempt peer, VALID bearer -> 200; without it -> 401 (spec §A, 2026-09-30)', () => {
   let server: Server;
   let workRoot: string;
   const NAME = uniqueName('bearer');
@@ -243,16 +239,15 @@ describe('row 4: auth ENABLED, non-exempt peer, VALID bearer -> 200 and byte-ide
     expect(res.status).toBe(200);
     const body = await res.json() as Record<string, unknown>;
     expect(body['name']).toBe(NAME);
+    expect(body['mermaid']).toBe(SEEDED_MERMAID);
     // DES-125: the projection is single — passing a token does NOT turn the caller into an owner,
     // so the response still carries no script body.
     expect(JSON.stringify(body)).not.toContain(`return 'v1';`);
   });
 
-  it('the SAME server serves the SAME name with NO bearer, and the body is identical — the token buys nothing here', async () => {
-    const withToken = await getDescribe(`http://127.0.0.1:${server.port}`, NAME, { Authorization: `Bearer ${RAW_TOKEN}` });
+  it('the SAME server answers the SAME name with NO bearer 401', async () => {
     const anonymous = await getDescribe(`http://127.0.0.1:${server.port}`, NAME);
-    expect(anonymous.status).toBe(200);
-    expect(await anonymous.json()).toEqual(await withToken.json());
+    expect(anonymous.status).toBe(401);
   });
 });
 

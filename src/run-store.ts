@@ -248,7 +248,8 @@ export interface RunStore {
    *  `avgCostUSD` is `null` (never `0`) for a name whose terminal runs are all zero-agent/unpriced
    *  (an `AVG()` over zero priced rows is NULL, not 0). Grouped exactly like `computeWorkflowMetrics`
    *  (a `null`/`undefined` name is ONE group, keyed `undefined`). */
-  workflowMetrics(): Promise<Map<string | undefined, WorkflowMetrics>>;
+  /** Dashboard auth spec §A: `principal` (optional) scopes the aggregate to that principal's runs. */
+  workflowMetrics(principal?: string): Promise<Map<string | undefined, WorkflowMetrics>>;
   /** v36 (REQ-217 follow-up, DES-251, TASK-249): every run CURRENTLY non-terminal
    *  (`ACTIVE` — queued/running/suspended/interrupted) — no LIMIT, unlike `list()`. **Corrected
    *  bound (Gate 8 send-back, ARCH-174/ADR-081)**: this set is active ∪ never-resumed — it grows
@@ -514,8 +515,10 @@ export class InMemoryRunStore implements RunStore {
    *  fine here and makes `computeWorkflowMetrics` the oracle `SqliteRunStore`'s SQL is checked
    *  against. Zero-terminal-run entries are dropped (never a zero-valued row) to match the SQL
    *  side, which structurally never emits a GROUP BY row for a name with no terminal status rows. */
-  async workflowMetrics(): Promise<Map<string | undefined, WorkflowMetrics>> {
-    const all = computeWorkflowMetrics(await this.listRuns());
+  async workflowMetrics(principal?: string): Promise<Map<string | undefined, WorkflowMetrics>> {
+    const all = computeWorkflowMetrics(principal === undefined
+      ? await this.listRuns()
+      : [...this._runs.values()].filter((r) => r.spec.principal === principal).map((r) => this._toSummary(r)));
     const out = new Map<string | undefined, WorkflowMetrics>();
     for (const [name, m] of all) if (m.terminalCount > 0) out.set(name, m);
     return out;
