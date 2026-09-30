@@ -204,6 +204,38 @@ describe('SchedulerPort CRUD (DES-016)', () => {
     expect(mgr.start).toHaveBeenCalledWith(expect.objectContaining({ startedBy: { type: 'schedule', id: created.result!.id } }));
   });
 
+  // Webhook B1 (dash-auth-spec.md §B1): a resident trigger fires a run carrying its own CREATOR
+  // (`createdBy`) as `RunSpec.principal` — the same fix `WebhookRegistry.deliver()`'s webhook path
+  // and server.ts's cron/once ticker dispatch apply — so the creator can read the run afterwards
+  // (run_list/run_status no longer refuse them NOT_RUN_OWNER).
+  it('trigger on a resident created WITH createdBy passes that creator as RunSpec.principal', async () => {
+    const mgr = makeFakeRunManager();
+    const port = new SqliteSchedulerPort({
+      clock: CLOCK,
+      catalog: makeFakeCatalog(),
+      runManager: mgr,
+      dbPath: ':memory:',
+    });
+    await port.create({ kind: 'resident', workflow: 'my-workflow', enabled: true, createdBy: 'alice@x.com' });
+    const result = await port.trigger('my-workflow', { x: 1 });
+    expect(result.error).toBeUndefined();
+    expect(mgr.start).toHaveBeenCalledWith(expect.objectContaining({ principal: 'alice@x.com' }));
+  });
+
+  it('trigger on a resident created WITHOUT createdBy (legacy ownerless) passes NO principal', async () => {
+    const mgr = makeFakeRunManager();
+    const port = new SqliteSchedulerPort({
+      clock: CLOCK,
+      catalog: makeFakeCatalog(),
+      runManager: mgr,
+      dbPath: ':memory:',
+    });
+    await port.create({ kind: 'resident', workflow: 'my-workflow', enabled: true });
+    await port.trigger('my-workflow', { x: 1 });
+    const call = mgr.start.mock.calls[0]![0] as { principal?: string };
+    expect(call.principal).toBeUndefined();
+  });
+
   it('trigger on a disabled resident returns SCHEDULE_DISABLED without starting a run', async () => {
     const mgr = makeFakeRunManager();
     const port = new SqliteSchedulerPort({

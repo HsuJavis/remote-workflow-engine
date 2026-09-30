@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { createHmac } from 'node:crypto';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
-import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
+import { registerPublishedVia, DEFAULT_FIXTURE_MODEL } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -91,5 +91,64 @@ describe('webhook ingress POST /hooks/:id (v8 Defer B, REQ-057)', () => {
     const list = await callTool('webhook_list', {});
     expect(list.result[0].secretFingerprint).toBeTruthy();
     expect(JSON.stringify(list.result)).not.toContain(secret);
+  }, 20000);
+});
+
+// Webhook B2 (dash-auth-spec.md §B2): a real, observable member of ADMISSION_PERMANENT_CODES —
+// `MCP_NOT_PROVISIONED` — reached through the REAL server, no mock in the loop. Registration only
+// WARNS about a declared-but-unprovisioned mcp name (issue #103a); admission REFUSES it inside
+// `RunManager.start()`, exactly on the webhook delivery path this suite drives end to end. Mirrors
+// `schedule-firing-mcp-provisioning.test.ts`'s own real-HTTP proof for the schedule-firing twin of
+// this same admission door.
+function scriptDeclaringMcp(mcp: string[]): string {
+  return [
+    "export const meta = { params: { agents: { a: {",
+    `  model: { type: 'string', default: ${JSON.stringify(DEFAULT_FIXTURE_MODEL)} },`,
+    "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
+    "  timeoutMs: { type: 'number', default: 60000 },",
+    `  mcp: ${JSON.stringify(mcp)},`,
+    "} } } };",
+    "phase('Work');",
+    "await agent('a', {});",
+    "return 'ok';",
+  ].join('\n');
+}
+const MCP_MERMAID = 'graph LR\nsubgraph "Work"\nn0(["a"])\nend';
+
+describe('webhook B2: an admission-time MCP_NOT_PROVISIONED refusal is 409, recorded, and replayed (real HTTP)', () => {
+  it('the delivery is refused 409 before any run starts, replays the SAME 409 for the SAME deliveryId, and webhook_list shows refusalCount 1', async () => {
+    const created = await callTool('webhook_create', {});
+    const { webhookId, url, secret } = created.result as { webhookId: string; url: string; secret: string };
+
+    const reg = await callTool('workflow_register', {
+      name: 'wh-mcp-refuse', script: scriptDeclaringMcp(['echo-mcp']), mermaid: MCP_MERMAID, triggers: [webhookId],
+    });
+    expect(reg.error, JSON.stringify(reg)).toBeUndefined();
+    const version = (reg.result as { version?: string }).version;
+    const pub = await callTool('workflow_publish', { name: 'wh-mcp-refuse', version, channel: 'release' });
+    expect(pub.error).toBeUndefined();
+
+    const body = '{}';
+    const sig = 'sha256=' + createHmac('sha256', secret).update(body).digest('hex');
+    const headers = { 'Content-Type': 'application/json', 'X-RWE-Signature': sig, 'X-RWE-Timestamp': new Date().toISOString(), 'X-RWE-Delivery': 'd-mcp-refuse' };
+
+    const first = await fetch(url, { method: 'POST', headers, body });
+    expect(first.status).toBe(409);
+    const firstBody = await first.json() as { code?: string; error?: string };
+    expect(firstBody.code).toBe('MCP_NOT_PROVISIONED');
+
+    // SAME deliveryId → the SAME 409/code, not an upgraded 2xx (issue #88 permanent-refusal replay).
+    const replay = await fetch(url, { method: 'POST', headers, body });
+    expect(replay.status).toBe(409);
+    const replayBody = await replay.json() as { code?: string };
+    expect(replayBody.code).toBe('MCP_NOT_PROVISIONED');
+
+    const list = await callTool('webhook_list', {});
+    const row = (list.result as Array<{ id: string; refusalCount: number; lastRefusalReason?: string }>).find((w) => w.id === webhookId);
+    expect(row?.refusalCount).toBe(1); // a replay is not a new admission decision
+    expect(row?.lastRefusalReason).toBe('MCP_NOT_PROVISIONED');
+
+    // no run was ever started for this delivery
+    expect((await callTool('run_list', { workflow: 'wh-mcp-refuse' })).result).toEqual([]);
   }, 20000);
 });

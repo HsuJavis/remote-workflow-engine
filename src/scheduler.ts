@@ -15,7 +15,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Clock } from './clock.js';
-import type { ErrEnvelope, RefusalReason } from './types.js';
+import type { ErrEnvelope, RefusalReason, StartedBy } from './types.js';
 import { computeNextFire, bootRearm, parseCron, CRON_SEMANTICS, type StoredSchedule } from './scheduler-engine.js';
 import { toErrEnvelope } from './errors.js';
 
@@ -93,7 +93,12 @@ interface RunManagerPort {
   // `RunManager` stops structurally satisfying this seam.
   // v37 (ARCH-182, DES-263, TASK-258): `origin` is REQUIRED here too, matching `RunSpec.origin` —
   // the compiler, not a reviewer, is what stops this call site from silently omitting it.
-  start(spec: { name?: string; script?: string; args?: unknown; budget?: number | { usd?: number; tokens?: number } | null; startedBy?: { type: string; id?: string }; origin: 'local' | 'remote' }): Promise<string>;
+  // 2026-09-30 (webhook B1): `principal` — a fired run's attributed owner, passed as the trigger's
+  // own `createdBy` (see `trigger()` below). `startedBy` types via the real `StartedBy` (imported
+  // from types.ts), not a hand-loosened `{ type: string; id?: string }` — see
+  // webhook-registry.ts's twin seam for why (adding `principal`, a property `RunSpec` also
+  // declares, broke the pre-existing loose-string fallback and surfaced a real mismatch).
+  start(spec: { name?: string; script?: string; args?: unknown; budget?: number | { usd?: number; tokens?: number } | null; startedBy?: StartedBy; origin: 'local' | 'remote'; principal?: string }): Promise<string>;
 }
 
 export interface SchedulerPortDeps {
@@ -440,7 +445,11 @@ export class SqliteSchedulerPort {
       // join. `row` can be undefined here (no resident schedule row found for this workflow — ARCH-
       // 181's own finding that this call path has no production caller today); fall back to the
       // workflow name in that case rather than omitting `id` outright.
-      runId = await this._runManager.start({ name: workflow, args, startedBy: { type: 'schedule', id: row?.id ?? workflow }, origin: row?.createdRemote === 1 ? 'remote' : 'local' });
+      // 2026-09-30 (webhook B1): `principal` — the trigger's own CREATOR (`row?.createdBy`), same
+      // rule as a webhook delivery (webhook-registry.ts's `deliver()`). `undefined` when there is
+      // no row to consult OR the row is a legacy ownerless trigger (`createdBy` absent) — admin-only
+      // reads, unchanged.
+      runId = await this._runManager.start({ name: workflow, args, startedBy: { type: 'schedule', id: row?.id ?? workflow }, origin: row?.createdRemote === 1 ? 'remote' : 'local', principal: row?.createdBy ?? undefined });
     } catch (err) {
       return { error: toErrEnvelope(err) };
     }
