@@ -7,6 +7,7 @@ import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
 import { TokenStore, SESSION_TTL_MS } from '../../src/auth/token-store.js';
 import { RoleStore } from '../../src/auth/role-store.js';
+import { sessionCookie, readSessionCookie } from '../../src/auth/auth-service.js';
 
 function counterCsprng() {
   let c = 1;
@@ -114,5 +115,19 @@ describe('RoleStore', () => {
     const roles = new RoleStore(db, { clock: () => 0 });
     roles.setOverride('a@x.com', 'admin', 'local');
     expect(roles.knownPrincipals()).toEqual(['a@x.com']);
+  });
+});
+
+describe('session cookie attributes', () => {
+  it('Secure iff the issuer is https; always HttpOnly, SameSite=Lax, Path=/, 7-day Max-Age', () => {
+    const tok = 'a'.repeat(64);
+    expect(sessionCookie(tok, 'https://rwe.example.test')).toBe(`rwe_session=${tok}; Path=/; Max-Age=604800; HttpOnly; SameSite=Lax; Secure`);
+    expect(sessionCookie(tok, 'http://127.0.0.1:1')).toBe(`rwe_session=${tok}; Path=/; Max-Age=604800; HttpOnly; SameSite=Lax`);
+  });
+  it('readSessionCookie picks rwe_session out of a Cookie header and rejects a malformed value', () => {
+    const tok = 'b'.repeat(64);
+    expect(readSessionCookie(`x=1; rwe_session=${tok}; y=2`)).toBe(tok);
+    expect(readSessionCookie('rwe_session=not-hex')).toBeNull();
+    expect(readSessionCookie(undefined)).toBeNull();
   });
 });

@@ -684,8 +684,9 @@ curl -s http://localhost:8787/api/models | python3 -c \
   成功率等統計只算自己的 run（admin 看全部）；run 詳情、DAG、agent log 只有擁有者或 admin（否則 403
   `NOT_RUN_OWNER`，admin 讀別人的 agent log 會跟 MCP 一樣記稽核）；工作流程對非擁有者只露 release 版
   （beta／草稿版本不列、describe/diagram 回 404）；系統、模型、issues 任何登入者可看。
-- **CSRF**：會改東西的 dashboard 請求（登出、改角色）必須同源——`Origin` 的 host 等於請求的 `Host`，
-  或帶 `X-Requested-With`；否則 403。引擎自己的公開網址（`publicBaseUrl`／`auth.issuer` 的 host）
+- **CSRF**：會改東西的 dashboard 請求（登出、改角色）必須同源——`Origin` 的 host 等於請求的 `Host`
+  或引擎自己的公開網址（`publicBaseUrl`／`auth.issuer`，所以隧道改寫 `Host` 也沒關係），或帶
+  `X-Requested-With`；否則 403。引擎自己的公開網址（`publicBaseUrl`／`auth.issuer` 的 host）
   **自動**加進 Host/Origin 白名單，不必再重複寫進 `allowedHosts`。
 - **公開網址要多開的隧道路徑**（cloudflared ingress，對公開 hostname）：`^/dashboard`、`^/api/`、
   `^/static/dashboard/`（原本只開 `/mcp`、OAuth 路由時，dashboard 在公開網址上會是 404）。

@@ -227,3 +227,23 @@ describe('D-BIND: a raw loopback peer on a non-loopback bind is the local rescue
     expect((await fetch(`${b2}/api/system`, { headers: { 'X-Forwarded-For': '203.0.113.9' } })).status).toBe(401);
   });
 });
+
+describe('CSRF behind a proxy that rewrites Host: the engine\'s own public origin counts as same-origin', () => {
+  let s3: Server;
+  let dir3: string;
+  beforeAll(async () => {
+    dir3 = mkdtempSync(join(tmpdir(), 'rwe-dash-pub-'));
+    s3 = await createServer({ port: 0, bind: '127.0.0.1', workRoot: dir3, publicBaseUrl: 'https://rwe.example.test', auth: { enabled: true, issuer: 'https://rwe.example.test', googleClientId: CID, googleClientSecret: 'cs', googleTokenUrl: google.tokenUrl, jwksFetch: fakeJwksFetch } } as never);
+  });
+  afterAll(async () => { await s3?.close(); rmSync(dir3, { recursive: true, force: true }); });
+
+  it('Origin = the public URL while Host = the local listener (cloudflared httpHostHeader) -> accepted; any other Origin -> 403', async () => {
+    const b3 = `http://127.0.0.1:${s3.port}`;
+    const ok = await fetch(`${b3}/dashboard/logout`, { method: 'POST', headers: { Origin: 'https://rwe.example.test' }, redirect: 'manual' });
+    expect(ok.status).toBe(303);
+    // https issuer: the cleared cookie is Secure
+    expect(ok.headers.get('set-cookie')).toMatch(/; Secure/);
+    const other = await fetch(`${b3}/dashboard/logout`, { method: 'POST', headers: { Origin: 'https://other.example.test' }, redirect: 'manual' });
+    expect(other.status).toBe(403);
+  });
+});

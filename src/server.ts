@@ -1349,11 +1349,24 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // CSRF (spec §A): a state-changing dashboard call must PROVE it is same-origin — an `Origin`
     // whose authority is this request's own Host, or an `X-Requested-With` header (a custom header
     // a cross-site page cannot send without a CORS preflight this engine never answers).
+    // Behind a proxy/tunnel that rewrites Host (cloudflared `httpHostHeader`), the browser's Origin
+    // is the engine's own PUBLIC origin while Host is the local listener — that is still
+    // same-origin, so the publicBaseUrl / auth.issuer authorities are accepted too.
     const sameOriginMutation = (): boolean => {
       if (req.headers['x-requested-with'] !== undefined) return true;
       const origin = req.headers.origin;
       if (!origin || origin === 'null') return false;
-      try { return new URL(origin).host.toLowerCase() === String(req.headers.host ?? '').toLowerCase(); } catch { return false; }
+      let originHost: string;
+      try { originHost = new URL(origin).host.toLowerCase(); } catch { return false; }
+      if (originHost === String(req.headers.host ?? '').toLowerCase()) return true;
+      return [config?.publicBaseUrl, authCfg?.issuer].some((raw) => {
+        if (!raw) return false;
+        try {
+          const u = new URL(raw);
+          if (u.port === '0') u.port = String(boundPort);
+          return u.host.toLowerCase() === originHost;
+        } catch { return false; }
+      });
     };
     const sendToolOutcome = (out: unknown): void => {
       const r = out as { status?: string; code?: string; error?: { code?: string; message?: string }; result?: unknown };
