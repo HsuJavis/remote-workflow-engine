@@ -201,21 +201,75 @@ export function admissionRefusal(input: {
   return input.posture === 'unconfined' && input.origin === 'remote' ? 'CONFINEMENT_UNAVAILABLE' : null;
 }
 
-/** v37 Gate-8 round-2 (finding B4, ARCH-182 (3)): classifies a `start()` throw into the outcome
- *  its four callers (facade, webhook route, `Scheduler.trigger()`, the ticker driver) already need
- *  to map identically, so none of them re-derives it separately. Pure — no fs, no db, no clock.
- *  `CONFINEMENT_UNAVAILABLE` is PERMANENT (403, and the caller should leave a durable refusal
- *  trace); `RUN_ADMISSION_LIMIT` is RETRYABLE (503, capacity — not policy — so no durable refusal
- *  row); anything else is an ordinary internal failure (500), and only `err`'s CODE crosses this
- *  boundary — the caller decides what (if any) STATIC catalog text a wire response gets, never
- *  `err.message`, which can carry host-measured detail (e.g. `maxConcurrentRuns=N`) nobody decided
- *  to disclose to an HMAC-authenticated peer. */
-export function admissionErrorToOutcome(err: unknown): { code: ErrorCode; retryable: boolean; httpStatus: 403 | 503 | 500 } {
+// webhook B2 (dash-auth-spec.md §B2, 2026-09-30): the FULL classification of every ERROR_CATALOG
+// code `RunManager.start()` can throw (the same set `run_start`'s own advertised `errors[]` in
+// tool-specs.ts documents, minus `INVALID_ARGUMENT` — that one is ajv schema validation at the
+// MCP wire layer, never thrown BY `start()` itself, so a caller that bypasses the schema — a
+// webhook delivery, a schedule firing — can never see it). One shared table, so the webhook route,
+// `Scheduler.trigger()` and the ticker driver can never classify the SAME code three different
+// ways.
+//
+// Bucketing rule: 409 PERMANENT for a caller/authoring/config problem that will not resolve on its
+// own — the same bad request retried unchanged fails the same way forever, so a replay of the SAME
+// delivery id must answer the SAME 409, never silently upgrade to 2xx once the sender's original
+// (still-bad) request is retried. 403 PERMANENT for confinement (its own long-standing code, kept).
+// 503 RETRYABLE for `RUN_ADMISSION_LIMIT` (a capacity read, not a policy verdict — the exact same
+// request can succeed on the very next tick). Every other catalogued code — `CAS_UNAVAILABLE`,
+// `DANGLING_CHANNEL`, or anything not in this table at all — falls through to 500 RETRYABLE: an
+// operator-side/engine fault, not a caller mistake, so the safer failure mode is "release the id,
+// let a retry reprocess" (worst case: a few pointless retries) rather than "record a permanent
+// refusal" (worst case: a transient outage permanently poisons a delivery id).
+const ADMISSION_STATUS: Partial<Record<ErrorCode, 403 | 409 | 503>> = {
+  CONFINEMENT_UNAVAILABLE: 403,
+  RUN_ADMISSION_LIMIT: 503,
+  WORKFLOW_NOT_FOUND: 409,
+  VERSION_NOT_FOUND: 409,
+  CHANNEL_UNPUBLISHED: 409,
+  NOT_RUNNABLE: 409,
+  INLINE_SCRIPT_CLOSED: 409,
+  LEGACY_REREGISTER: 409,
+  UNKNOWN_MODEL: 409,
+  MCP_NOT_PROVISIONED: 409,
+  SKILL_NOT_PROVISIONED: 409,
+  PARAM_LOCKED: 409,
+  PARAM_UNKNOWN: 409,
+  PARAM_OUT_OF_RANGE: 409,
+  UNKNOWN_AGENT_LABEL: 409,
+  AGENT_UNDECLARED: 409,
+  INVALID_SEED_SPEC: 409,
+  SEED_SOURCE_CONFLICT: 409,
+  SEEDREF_DISABLED: 409,
+  EGRESS_DENIED: 409,
+  MISSING_BLOBS: 409,
+};
+// Exported for the ONE other place this classification must be documented, never hand-copied:
+// webhook_create's tool description (tool-specs.ts) states the rule and is pinned against the
+// real member count here (webhook-create-description-pins-contract.test.ts) — a code added to or
+// removed from this table without touching the description now fails that test instead of
+// shipping a wrong contract. Deliberately EXCLUDES `CONFINEMENT_UNAVAILABLE` (also permanent, but
+// answers its own 403, not 409 — it already has dedicated long-standing tests/description text)
+// and `RUN_ADMISSION_LIMIT` (RETRYABLE, 503, not permanent at all) — this is specifically "every
+// code that answers a recorded+replayed 409", the NEW family this slice adds.
+export const ADMISSION_PERMANENT_CODES: readonly ErrorCode[] =
+  (Object.keys(ADMISSION_STATUS) as ErrorCode[]).filter((c) => ADMISSION_STATUS[c] === 409);
+
+/** v37 Gate-8 round-2 (finding B4, ARCH-182 (3)); widened by webhook B2 (dash-auth-spec.md §B2, 2026-09-30): classifies a
+ *  `start()` throw into the outcome its callers (facade, webhook route, `Scheduler.trigger()`, the
+ *  ticker driver) already need to map identically, so none of them re-derives it separately. Pure
+ *  — no fs, no db, no clock. `permanent === httpStatus < 500` is the ONE predicate a caller
+ *  branches the #88 replay-store semantics on (record + replay vs release-the-id-and-retry) —
+ *  never a bare `=== 403` any more, now that 409 joins 403 in the permanent set. Only `err`'s CODE
+ *  crosses this boundary — the caller decides what (if any) STATIC catalog text a wire response
+ *  gets, never `err.message`, which can carry host-measured detail (e.g. `maxConcurrentRuns=N`)
+ *  nobody decided to disclose to an HMAC-authenticated peer. */
+export function admissionErrorToOutcome(err: unknown): { code: ErrorCode; httpStatus: 403 | 409 | 500 | 503; permanent: boolean } {
   const e = err as { code?: unknown } | null | undefined;
+  // `toErrorCode` folds any string outside the closed ErrorCode union (including "no code at all")
+  // to 'INTERNAL_ERROR' — an uncatalogued or missing code and a genuinely-thrown INTERNAL_ERROR are
+  // indistinguishable at the wire either way, so both fall through to the same 500 default below.
   const code = toErrorCode(typeof e?.code === 'string' ? e.code : '');
-  if (code === 'CONFINEMENT_UNAVAILABLE') return { code, retryable: false, httpStatus: 403 };
-  if (code === 'RUN_ADMISSION_LIMIT') return { code, retryable: true, httpStatus: 503 };
-  return { code: 'INTERNAL_ERROR', retryable: false, httpStatus: 500 };
+  const httpStatus = ADMISSION_STATUS[code] ?? 500;
+  return { code, httpStatus, permanent: httpStatus < 500 };
 }
 
 

@@ -13,8 +13,9 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID, randomBytes, createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { Clock } from './clock.js';
-import type { ErrEnvelope, RefusalReason } from './types.js';
+import type { ErrEnvelope, RefusalReason, StartedBy } from './types.js';
 import { ERROR_CATALOG } from './errors.js';
+import type { ErrorCode } from './errors.js';
 import { admissionErrorToOutcome } from './run-manager.js';
 
 /** Structural seam — matches RunManager.start() without importing the class (as scheduler/continuation). */
@@ -24,7 +25,18 @@ interface RunManagerPort {
   // `RunManager` stops structurally satisfying this seam.
   // v37 (ARCH-182, DES-263, TASK-258): `origin` is REQUIRED here too, matching `RunSpec.origin` —
   // the compiler, not a reviewer, is what stops this call site from silently omitting it.
-  start(spec: { name?: string; script?: string; args?: unknown; budget?: number | { usd?: number; tokens?: number } | null; startedBy?: { type: string; id?: string }; origin: 'local' | 'remote' }): Promise<string>;
+  // B1 (dash-auth-spec.md §B1): `principal` — a fired run's attributed owner. Passed as the
+  // trigger's own `createdBy` (never the delivery peer, which carries no identity) so
+  // `run_list`/`run_status` stop refusing NOT_RUN_OWNER to the very principal who created the
+  // trigger. Omitted for a legacy ownerless trigger (`createdBy === null`) — admin-only, unchanged.
+  // 2026-09-30 (webhook B1): `startedBy` now types via the real `StartedBy` (imported from
+  // types.ts) rather than a hand-loosened `{ type: string; id?: string }` — that looser inline
+  // shape happened to structurally satisfy `RunManager.start()` via TS's method-bivariance fallback
+  // ONLY as long as this seam's object type had no OTHER property in common with `RunSpec`; adding
+  // `principal` (a property `RunSpec` also declares) broke that fallback and surfaced the
+  // `startedBy.type: string` vs `StartedBy.type`'s narrow union mismatch as a real compile error.
+  // Importing the real type removes the reliance on the fallback entirely.
+  start(spec: { name?: string; script?: string; args?: unknown; budget?: number | { usd?: number; tokens?: number } | null; startedBy?: StartedBy; origin: 'local' | 'remote'; principal?: string }): Promise<string>;
 }
 /** Structural seam — matches WorkflowCatalog's own resolve() signature without importing the class.
  *  Widened for H4's second site (07-review.md §4.2/§8.1, ARCH-072 note 1): `create()` needs the SAME
@@ -61,7 +73,12 @@ export interface WebhookView {
   // ScheduleStatus (scheduler.ts) — mirrors that shape rather than declaring its own.
   refusalCount: number;
   lastRefusedAt?: string;
-  lastRefusalReason?: RefusalReason;
+  // Widened from `RefusalReason` (webhook B2): a permanent refusal recorded here is now EITHER one
+  // of the four pre-dispatch claim-state reasons (`RefusalReason` proper) OR one of the
+  // `ADMISSION_PERMANENT_CODES` a `RunManager.start()` throw can carry (e.g. `UNKNOWN_MODEL`,
+  // `MCP_NOT_PROVISIONED`) — both are real `ErrorCode` members, so every existing assignment of a
+  // `RefusalReason` literal here still compiles unchanged.
+  lastRefusalReason?: ErrorCode;
   /** v37 Gate-8 round-2 (finding B3, ARCH-182 (4)): mirrors `ScheduleStatus.createdRemote`
    *  (scheduler.ts) — a value that decides whether code executes and cannot be read back is
    *  unauditable by construction; `webhook_list` needed this to answer "was this webhook created
@@ -77,12 +94,17 @@ export interface WebhookView {
  *  refusal) and carries no `code` — `RUN_ADMISSION_LIMIT` is deliberately not a `RefusalReason`.
  *  Issue #88: 503 is ALSO what a concurrent duplicate gets back when it finds the same deliveryId
  *  already claimed but not yet finished (`_replayFromRow`'s `httpStatus === 0` arm) — a second,
- *  distinct reason to retry, still with no `code`; see `deliver()`'s docblock for the full ordering. */
+ *  distinct reason to retry, still with no `code`; see `deliver()`'s docblock for the full ordering.
+ *  Webhook B2: `code`'s type widens from `RefusalReason` to `ErrorCode` on BOTH the 403 and 409
+ *  arms — a `RunManager.start()` throw mapped through `admissionErrorToOutcome` can now carry any
+ *  `ADMISSION_PERMANENT_CODES` member (e.g. `UNKNOWN_MODEL`, `MCP_NOT_PROVISIONED`), not only the
+ *  four pre-dispatch `RefusalReason` claim-state reasons; every `RefusalReason` literal already in
+ *  use here is itself a valid `ErrorCode`, so this is additive, not a breaking narrowing. */
 export type DeliverResult =
   | { ok: true; httpStatus: 202 | 200; runId?: string; replayed?: boolean }
   | { ok: false; httpStatus: 401 | 404; reason: string }
-  | { ok: false; httpStatus: 403; reason: string; code?: RefusalReason }
-  | { ok: false; httpStatus: 409; reason: string; code: RefusalReason }
+  | { ok: false; httpStatus: 403; reason: string; code?: ErrorCode }
+  | { ok: false; httpStatus: 409; reason: string; code: ErrorCode }
   | { ok: false; httpStatus: 500 | 503; reason: string };
 
 // issue #97: exported so webhook_create's tool description (tool-specs.ts) and the test that
@@ -233,15 +255,25 @@ export class WebhookRegistry {
    *    NOT a 2xx: the sender must not be told "replayed" for work that may still fail.
    *  - `httpStatus === 202` — accepted and a run was started; replay keeps the 200/`replayed:true`
    *    wire shape callers already depend on, with `runId` added back in when it was recorded.
-   *  - `httpStatus === 403` — a PERMANENT admission refusal; replay must answer with the SAME 403,
-   *    never a 2xx (403 is a policy refusal that will not resolve itself, unlike 503/500 below,
-   *    which are never persisted as a terminal outcome at all — see `deliver`'s catch block). */
+   *  - `httpStatus === 403` or `409` — a PERMANENT admission refusal (webhook B2 widens this arm
+   *    from 403-only to "whatever `ADMISSION_STATUS` recorded" — 403 for `CONFINEMENT_UNAVAILABLE`,
+   *    409 for every other permanent code); replay must answer with the SAME status+code, never a
+   *    2xx (a permanent refusal will not resolve itself, unlike 503/500 below, which are never
+   *    persisted as a terminal outcome at all — see `deliver`'s catch block). The hint is looked up
+   *    by the STORED code, never hardcoded to `CONFINEMENT_UNAVAILABLE` — a legacy pre-B2 row with
+   *    `code IS NULL` (every row this code itself ever wrote for a 403 outcome, before B2, was
+   *    ALWAYS `CONFINEMENT_UNAVAILABLE` — no other code reached this branch yet) is the only case
+   *    the null-fallback below covers. */
   private _replayFromRow(row: { httpStatus: number | null; code: string | null; runId: string | null }): DeliverResult {
     if (row.httpStatus === null) return { ok: true, httpStatus: 200, replayed: true };
     if (row.httpStatus === 0) return { ok: false, httpStatus: 503, reason: 'delivery already in progress; retry' };
-    if (row.httpStatus === 403) {
-      const code = (row.code ?? 'CONFINEMENT_UNAVAILABLE') as RefusalReason;
-      return { ok: false, httpStatus: 403, reason: ERROR_CATALOG['CONFINEMENT_UNAVAILABLE'].hint, code };
+    if (row.httpStatus === 403 || row.httpStatus === 409) {
+      const code = (row.code ?? 'CONFINEMENT_UNAVAILABLE') as ErrorCode;
+      const hint = ERROR_CATALOG[code]?.hint ?? ERROR_CATALOG['CONFINEMENT_UNAVAILABLE'].hint;
+      // Two literal returns, not `httpStatus: row.httpStatus` — see the SAME note in `deliver()`'s
+      // catch block; a `403 | 409`-typed value does not narrow to either `DeliverResult` arm alone.
+      if (row.httpStatus === 403) return { ok: false, httpStatus: 403, reason: hint, code };
+      return { ok: false, httpStatus: 409, reason: hint, code };
     }
     return { ok: true, httpStatus: 200, replayed: true, ...(row.runId ? { runId: row.runId } : {}) };
   }
@@ -289,7 +321,7 @@ export class WebhookRegistry {
       refusalCount: r.refusalCount ?? 0,
       createdRemote: r.createdRemote === 1,
       ...(r.lastRefusedAt ? { lastRefusedAt: r.lastRefusedAt } : {}),
-      ...(r.lastRefusalReason ? { lastRefusalReason: r.lastRefusalReason as RefusalReason } : {}),
+      ...(r.lastRefusalReason ? { lastRefusalReason: r.lastRefusalReason as ErrorCode } : {}),
     }));
   }
 
@@ -335,8 +367,10 @@ export class WebhookRegistry {
 
   /** v24 (DES-150): shares `markFailed`'s advance-and-record shape — increments `refusalCount`,
    *  records `lastRefusedAt`/`lastRefusalReason`, never touches `lastError` (the two are mutually
-   *  exclusive: dispatch failure vs policy refusal, stated once here). */
-  private _recordRefusal(id: string, reason: RefusalReason): void {
+   *  exclusive: dispatch failure vs policy refusal, stated once here). Webhook B2: `reason` widens
+   *  from `RefusalReason` to `ErrorCode` — a permanent `RunManager.start()` throw (`UNKNOWN_MODEL`,
+   *  `MCP_NOT_PROVISIONED`, …) is now ALSO recorded here, alongside the four pre-dispatch reasons. */
+  private _recordRefusal(id: string, reason: ErrorCode): void {
     this._db.prepare('UPDATE webhooks SET refusalCount = refusalCount + 1, lastRefusedAt = ?, lastRefusalReason = ? WHERE id = ?')
       .run(this._clock.isoNow(), reason, id);
   }
@@ -445,40 +479,52 @@ export class WebhookRegistry {
     // own typed DeliverResult rather than escaping as a rejected promise.
     let runId: string;
     try {
-      runId = await this._runManager.start({ name: row.workflow, args: { event: req.parsedBody }, startedBy: { type: 'webhook', id }, origin: row.createdRemote === 1 ? 'remote' : 'local' });
+      // B1 (dash-auth-spec.md §B1): `principal` is the trigger's own CREATOR (`row.createdBy`),
+      // never the delivery peer (which carries no identity) — so the run this delivery starts is
+      // readable by the person who created the trigger, exactly as a manual run_start already is
+      // for its caller. `row.createdBy` is `null` for a legacy ownerless trigger (a migrated pre-v24
+      // row) — `?? undefined` keeps that case exactly as it was (no principal, admin-only reads).
+      runId = await this._runManager.start({ name: row.workflow, args: { event: req.parsedBody }, startedBy: { type: 'webhook', id }, origin: row.createdRemote === 1 ? 'remote' : 'local', principal: row.createdBy ?? undefined });
     } catch (err) {
-      // v37 Gate-8 round-2 (finding B4): a PERMANENT refusal (CONFINEMENT_UNAVAILABLE) leaves the
-      // same durable trace the other four RefusalReasons already do; a RETRYABLE one
-      // (RUN_ADMISSION_LIMIT — a concurrency cap, not policy) gets a dedicated retryable status and
-      // NO durable refusal row; anything else is a plain internal failure. Only the static catalog
-      // hint crosses the wire — never `err.message`, which can carry host-measured detail (the
-      // sandbox-probe posture, `maxConcurrentRuns=N`) nobody decided to disclose to an
+      // Webhook B2 (dash-auth-spec.md §B2): `admissionErrorToOutcome` classifies EVERY
+      // ERROR_CATALOG code `RunManager.start()` can throw — see its own docblock (run-manager.ts)
+      // for the full table and the reasoning. `outcome.permanent` (`httpStatus < 500`) replaces the
+      // old bare `=== 403` branch: 403 (CONFINEMENT_UNAVAILABLE) and 409 (every other permanent
+      // code — bad params/model/seed, an unprovisioned mcp/skill asset, a legacy/unrunnable
+      // version, …) are now BOTH recorded + replayed the same way; 503/500 stay TRANSIENT. Only the
+      // static catalog hint crosses the wire — never `err.message`, which can carry host-measured
+      // detail (the sandbox-probe posture, `maxConcurrentRuns=N`) nobody decided to disclose to an
       // HMAC-authenticated peer.
       const outcome = admissionErrorToOutcome(err);
       const hint = ERROR_CATALOG[outcome.code].hint;
-      if (outcome.httpStatus === 403) {
-        this._recordRefusal(id, 'CONFINEMENT_UNAVAILABLE');
+      if (outcome.permanent) {
+        this._recordRefusal(id, outcome.code);
         // Issue #88: a PERMANENT refusal IS the final answer for this delivery id — finalize the
-        // claimed row so a replay gets back the SAME 403, never a 2xx. `refusalCount` is only
-        // incremented here, on the one call that actually reached `start()`; a later replay of this
-        // same id answers straight from `_replayFromRow` and never re-decides admission.
+        // claimed row so a replay gets back the SAME status+code, never a 2xx. `refusalCount` is
+        // only incremented here, on the one call that actually reached `start()`; a later replay of
+        // this same id answers straight from `_replayFromRow` and never re-decides admission.
         if (req.deliveryId) {
-          this._db.prepare('UPDATE webhook_deliveries SET httpStatus = 403, code = ? WHERE deliveryId = ?')
-            .run('CONFINEMENT_UNAVAILABLE', req.deliveryId);
+          this._db.prepare('UPDATE webhook_deliveries SET httpStatus = ?, code = ? WHERE deliveryId = ?')
+            .run(outcome.httpStatus, outcome.code, req.deliveryId);
         }
-        return { ok: false, httpStatus: 403, reason: hint, code: 'CONFINEMENT_UNAVAILABLE' };
+        // Two literal returns, not one generic `httpStatus: outcome.httpStatus` — `DeliverResult`'s
+        // 403 and 409 arms are each pinned to a SINGLE status literal (403 carries `code?`
+        // optionally, since the disabled-webhook 403 above has none; 409 carries it always), and a
+        // union-typed `403 | 409` value does not narrow to either arm on its own.
+        if (outcome.httpStatus === 403) return { ok: false, httpStatus: 403, reason: hint, code: outcome.code };
+        return { ok: false, httpStatus: 409, reason: hint, code: outcome.code };
       }
-      // 503 (RUN_ADMISSION_LIMIT — explicitly retryable) and 500 (anything else) are TRANSIENT: this
-      // is the crux of issue #88 — the pre-fix code left the claim row in place after either, so a
-      // sender's retry hit the dedup check and got "200 replayed" for work that never happened. The
-      // claimed row is removed instead, so the SAME deliveryId, retried, is treated as brand new and
-      // actually re-processed (re-runs the claim checks too — a webhook claimed/reclaimed in the
-      // interim is re-evaluated, which is correct: nothing durable was ever decided for this id).
+      // 503 (RUN_ADMISSION_LIMIT — explicitly retryable) and 500 (anything else, including a
+      // catalogued-but-not-permanent code like CAS_UNAVAILABLE) are TRANSIENT: this is the crux of
+      // issue #88 — the pre-fix code left the claim row in place after either, so a sender's retry
+      // hit the dedup check and got "200 replayed" for work that never happened. The claimed row is
+      // removed instead, so the SAME deliveryId, retried, is treated as brand new and actually
+      // re-processed (re-runs the claim checks too — a webhook claimed/reclaimed in the interim is
+      // re-evaluated, which is correct: nothing durable was ever decided for this id).
       if (req.deliveryId) {
         this._db.prepare('DELETE FROM webhook_deliveries WHERE deliveryId = ? AND httpStatus = 0').run(req.deliveryId);
       }
-      if (outcome.httpStatus === 503) return { ok: false, httpStatus: 503, reason: hint };
-      return { ok: false, httpStatus: 500, reason: hint };
+      return { ok: false, httpStatus: outcome.httpStatus as 500 | 503, reason: hint };
     }
     // Issue #88: finalize the claim with the real accepted outcome (kept for a future replay of this
     // SAME deliveryId — `_replayFromRow` turns `httpStatus=202` back into `200 {replayed:true}`,

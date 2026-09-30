@@ -8,6 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import { TOOL_SPECS } from '../../src/tool-specs.js';
 import { WEBHOOK_HEADERS, REPLAY_WINDOW_MS } from '../../src/webhook-registry.js';
+import { ADMISSION_PERMANENT_CODES } from '../../src/run-manager.js';
 
 function webhookCreateDescription(): string {
   const spec = TOOL_SPECS.find((s) => s.name === 'webhook_create');
@@ -59,13 +60,33 @@ describe('webhook_create description pins the real delivery contract (issue #97 
     expect(d).toMatch(/checked BEFORE the signature/);
   });
 
-  it('documents every response code the real POST /hooks/:id route can answer: 202/200/401/403/404/409/503', () => {
+  it('documents every response code the real POST /hooks/:id route can answer: 202/200/401/403/404/409/500/503', () => {
     const d = webhookCreateDescription();
-    for (const code of ['202', '200', '401', '403', '404', '409', '503']) {
+    for (const code of ['202', '200', '401', '403', '404', '409', '500', '503']) {
       expect(d, `missing response code ${code}`).toContain(code);
     }
     // the two 2xx body shapes specifically
     expect(d).toContain('{runId}');
     expect(d).toMatch(/\{replayed:\s*true/);
+  });
+
+  // Webhook B2 (dash-auth-spec.md §B2): the description now states the SIZE of the 409
+  // admission-permanent-refusal family — derived from `ADMISSION_PERMANENT_CODES`
+  // (run-manager.ts), never a hand-typed number — so a code added to or removed from that table
+  // fails HERE instead of shipping a description whose count silently drifted from the code.
+  it("states the 409 admission-refusal family's real size, derived from ADMISSION_PERMANENT_CODES (never a hand-typed count)", () => {
+    const d = webhookCreateDescription();
+    expect(d).toContain(`one of ${ADMISSION_PERMANENT_CODES.length} PERMANENT admission-time refusals`);
+  });
+
+  it('distinguishes the TWO distinct 409 families: a claim-state refusal (never recorded, retryable once fixed) vs an admission-time refusal (recorded + replayed, same as 403)', () => {
+    const d = webhookCreateDescription();
+    expect(d).toMatch(/CLAIM-STATE refusal.*never recorded/);
+    expect(d).toMatch(/PERMANENT admission-time refusals/);
+  });
+
+  it('documents that 500 is transient and NOT recorded, unlike the 403/409 permanent family', () => {
+    const d = webhookCreateDescription();
+    expect(d).toMatch(/500 an admission fault.*transient, NOT recorded/);
   });
 });

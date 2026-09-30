@@ -1035,7 +1035,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
    *  meets them; `markRefused` shares `markFailed`'s advance, so a refused `cron` gets a fresh
    *  `nextFire` (ADR-031's coalescing — one row per due instant, not 1440 rows a day) and a refused
    *  `once` is CONSUMED. */
-  async function resolveScheduleTarget(firing: { id: string; workflow: string }): Promise<{ workflow: string; createdRemote: boolean } | { refused: RefusalReason }> {
+  async function resolveScheduleTarget(firing: { id: string; workflow: string }): Promise<{ workflow: string; createdRemote: boolean; createdBy?: string } | { refused: RefusalReason }> {
     // The CLAIM, not the owner: `ownerOf` answers `createdBy` (the creating principal) as of the
     // Gate 6.5+7 round-2 authorization fix, so reading it here would resolve a PRINCIPAL ID as a
     // workflow name and refuse every authenticated user's schedule CLAIMED_WORKFLOW_MISSING.
@@ -1045,6 +1045,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // v37 (ARCH-182, DES-263, TASK-258): the SAME row `status` above already loaded — read once,
     // stamped onto the fired run's `RunSpec.origin` below.
     const createdRemote = status?.createdRemote === true;
+    // 2026-09-30 (webhook B1): the SAME row's `createdBy` (the trigger's CREATOR, not the claimant
+    // `claimedBy`) — read here once, stamped onto the fired run's `RunSpec.principal` below, so the
+    // creator can read a run their cron/once schedule started (the same fix `deliver()`'s webhook
+    // path and `Scheduler.trigger()`'s resident path already apply).
+    const createdBy = status?.createdBy;
     if (claimedBy === null || claimedBy === '') return { refused: 'UNCLAIMED' };
     let released;
     try {
@@ -1065,7 +1070,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     //     rows only; the rows exist, so the guard stays. Until AF-2, the first guard did this job by proxy because an empty declaration
     //     was persisted as NULL — the exact conflation that made NOT_IN_RELEASE unreachable.
     if (released.triggers !== undefined && !released.triggers.includes(firing.id) && catalog.declaresTrigger(claimedBy, firing.id)) return { refused: 'NOT_IN_RELEASE' };
-    return { workflow: claimedBy, createdRemote };
+    return { workflow: claimedBy, createdRemote, ...(createdBy !== undefined ? { createdBy } : {}) };
   }
   ticker.start(() => {
     const due = tick(scheduler.all(), clock.now());
@@ -1091,7 +1096,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         // issue #103(d): startedBy.id is the SCHEDULE id (`firing.id`), like a webhook run carries
         // the webhook's own id — never the workflow name, which already travels as `name` and via
         // `run_origins`'s scheduleId->runId join.
-        .start({ name: target.workflow, args: firing.args, startedBy: { type: 'schedule', id: firing.id }, origin: target.createdRemote ? 'remote' : 'local' })
+        // 2026-09-30 (webhook B1): `principal` — `target.createdBy` (the trigger's CREATOR), same
+        // fix as `Scheduler.trigger()`'s resident path and `WebhookRegistry.deliver()`'s webhook
+        // path — the creator can now read a run their cron/once schedule started.
+        .start({ name: target.workflow, args: firing.args, startedBy: { type: 'schedule', id: firing.id }, origin: target.createdRemote ? 'remote' : 'local', principal: target.createdBy })
         .then((runId) => scheduler.markFired(firing, runId))
         .catch((err: unknown) => {
           // DES-118: a failed dispatch (e.g. the catalog entry was deleted after the schedule was

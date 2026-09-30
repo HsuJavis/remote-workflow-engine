@@ -8,6 +8,7 @@ import { createHmac } from 'node:crypto';
 import { WebhookRegistry } from '../../src/webhook-registry.js';
 import type { Clock } from '../../src/clock.js';
 import { CatalogNotFoundError } from '../../src/errors.js';
+import { ADMISSION_PERMANENT_CODES } from '../../src/run-manager.js';
 
 // An advancing-free clock anchored at a real "now" so the ±300s timestamp window is meaningful.
 const ANCHOR = new Date('2024-06-01T12:00:00.000Z');
@@ -31,9 +32,11 @@ function fakeCatalog(known: Set<string>) {
   };
 }
 function fakeRunManager() {
-  const started: Array<{ name?: string; args?: unknown }> = [];
+  // Webhook B1: `principal` captured too (additive — `.toEqual([{name, args}])` assertions
+  // elsewhere in this file are unaffected: vitest's `toEqual` ignores an `undefined` property).
+  const started: Array<{ name?: string; args?: unknown; principal?: string }> = [];
   let n = 0;
-  return { started, async start(spec: { name?: string; args?: unknown }) { started.push({ name: spec.name, args: spec.args }); return `run-${++n}`; } };
+  return { started, async start(spec: { name?: string; args?: unknown; principal?: string }) { started.push({ name: spec.name, args: spec.args, principal: spec.principal }); return `run-${++n}`; } };
 }
 
 function sign(secret: string, rawBody: string): string {
@@ -507,5 +510,106 @@ describe('issue #88: replay reproduces the ORIGINAL outcome (not a bare 200)', (
       expect(r.httpStatus).not.toBe(200); // none of the 5 losers is told "replayed" for work that may not have happened
     }
     expect(rm.started.length).toBe(1);
+  });
+});
+
+// Webhook B1 (dash-auth-spec.md §B1): a run started by a webhook delivery carries the TRIGGER's
+// creator as its `principal` — never the delivery peer (which carries no identity) — so the
+// creator can read it via run_list/run_status (NOT_RUN_OWNER no longer refuses them). A legacy
+// ownerless trigger (`createdBy === null`, a migrated pre-v24 row) stays principal-less, admin-only,
+// unchanged.
+describe('webhook B1: a fired run carries the trigger creator as its principal', () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'rwe-wh-b1-')); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  it('a claimed webhook created WITH createdBy fires a run whose principal is that creator', async () => {
+    const rm = fakeRunManager();
+    const reg = new WebhookRegistry({ clock: CLOCK, runManager: rm, catalog: fakeCatalog(new Set(['deploy'])), dbPath: join(dir, 'wh.db') });
+    const { webhookId, secret } = (await reg.create({ workflow: 'deploy', createdBy: 'alice@x.com' })) as { webhookId: string; secret: string };
+    const body = '{}';
+    const r = await reg.deliver(webhookId, { signature: sign(secret, body), timestamp: CLOCK.isoNow(), deliveryId: 'd-b1', rawBody: body, parsedBody: {} });
+    expect(r).toMatchObject({ ok: true, httpStatus: 202 });
+    expect(rm.started).toEqual([{ name: 'deploy', args: { event: {} }, principal: 'alice@x.com' }]);
+  });
+
+  it('a legacy ownerless webhook (createdBy omitted) fires a run with NO principal, unchanged', async () => {
+    const rm = fakeRunManager();
+    const reg = new WebhookRegistry({ clock: CLOCK, runManager: rm, catalog: fakeCatalog(new Set(['deploy'])), dbPath: join(dir, 'wh.db') });
+    const { webhookId, secret } = (await reg.create({ workflow: 'deploy' })) as { webhookId: string; secret: string };
+    const body = '{}';
+    const r = await reg.deliver(webhookId, { signature: sign(secret, body), timestamp: CLOCK.isoNow(), deliveryId: 'd-b1-legacy', rawBody: body, parsedBody: {} });
+    expect(r).toMatchObject({ ok: true, httpStatus: 202 });
+    expect(rm.started[0]!.principal).toBeUndefined();
+  });
+});
+
+// Webhook B2 (dash-auth-spec.md §B2): every ERROR_CATALOG code `RunManager.start()` can throw on
+// the webhook path now answers a DOCUMENTED status instead of a blanket 500 "unclassified engine
+// fault" — CONFINEMENT_UNAVAILABLE stays 403; RUN_ADMISSION_LIMIT stays 503; every other permanent
+// (caller/authoring/config) code in `ADMISSION_PERMANENT_CODES` (run-manager.ts) now answers 409,
+// recorded + replayed exactly like the existing 403 case (issue #88 semantics); anything NOT in
+// that table (an uncatalogued code, or a catalogued-but-non-admission one like CAS_UNAVAILABLE)
+// stays a TRANSIENT 500 — the table is read directly from run-manager.ts so this suite can never
+// silently drift from what `admissionErrorToOutcome` actually classifies.
+describe('webhook B2: every ADMISSION_PERMANENT_CODES member answers a recorded, replayed 409', () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'rwe-wh-b2-')); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  function codedErr(code: string): Error {
+    return Object.assign(new Error('boom'), { code });
+  }
+  function scriptedRunManager(outcomes: Array<() => string>) {
+    let i = 0;
+    return { async start() {
+      const fn = outcomes[i++];
+      if (!fn) throw new Error('scriptedRunManager: ran out of scripted outcomes');
+      return fn();
+    } };
+  }
+  async function createClaimAndDeliver(rm: ReturnType<typeof scriptedRunManager>, deliveryId: string) {
+    const reg = new WebhookRegistry({ clock: CLOCK, runManager: rm, catalog: fakeCatalog(new Set(['deploy'])), dbPath: join(dir, `wh-${deliveryId}.db`) });
+    const { webhookId, secret } = (await reg.create({ workflow: 'deploy' })) as { webhookId: string; secret: string };
+    const body = '{}';
+    const req = (id: string) => ({ signature: sign(secret, body), timestamp: CLOCK.isoNow(), deliveryId: id, rawBody: body, parsedBody: {} });
+    return { reg, webhookId, req };
+  }
+
+  for (const code of ADMISSION_PERMANENT_CODES) {
+    it(`${code} → 409, recorded on the row, and a replay of the SAME deliveryId answers the SAME 409/code (never a retry)`, async () => {
+      const rm = scriptedRunManager([() => { throw codedErr(code); }]);
+      const { reg, webhookId, req } = await createClaimAndDeliver(rm, code);
+      const first = await reg.deliver(webhookId, req(`d-${code}`));
+      expect(first).toMatchObject({ ok: false, httpStatus: 409, code });
+      expect(reg.get(webhookId)?.refusalCount).toBe(1);
+      expect(reg.get(webhookId)?.lastRefusalReason).toBe(code);
+
+      const replay = await reg.deliver(webhookId, req(`d-${code}`));
+      expect(replay).toMatchObject({ ok: false, httpStatus: 409, code });
+      expect(reg.get(webhookId)?.refusalCount).toBe(1); // a replay is not a new admission decision
+    });
+  }
+
+  // CONFINEMENT_UNAVAILABLE (permanent, but its own 403 — see the dedicated issue #88 suite above
+  // for its recorded+replayed behaviour) and RUN_ADMISSION_LIMIT (503, retryable, not permanent at
+  // all) are deliberately excluded from this 409 family — guards against either silently rejoining
+  // it and losing its own status code.
+  it('ADMISSION_PERMANENT_CODES excludes CONFINEMENT_UNAVAILABLE (403) and RUN_ADMISSION_LIMIT (503, not permanent)', () => {
+    expect(ADMISSION_PERMANENT_CODES).not.toContain('CONFINEMENT_UNAVAILABLE');
+    expect(ADMISSION_PERMANENT_CODES).not.toContain('RUN_ADMISSION_LIMIT');
+    expect(ADMISSION_PERMANENT_CODES.length).toBeGreaterThan(15); // the real, current family — not an empty/stale table
+  });
+
+  it('a catalogued-but-unclassified code (CAS_UNAVAILABLE) is TRANSIENT 500 — released, not recorded, and a retry actually reprocesses', async () => {
+    expect(ADMISSION_PERMANENT_CODES).not.toContain('CAS_UNAVAILABLE');
+    const rm = scriptedRunManager([() => { throw codedErr('CAS_UNAVAILABLE'); }, () => 'run-ok']);
+    const { reg, webhookId, req } = await createClaimAndDeliver(rm, 'cas');
+    const first = await reg.deliver(webhookId, req('d-cas'));
+    expect(first).toMatchObject({ ok: false, httpStatus: 500 });
+    expect(reg.get(webhookId)?.refusalCount).toBe(0); // not recorded — the sender's retry must actually re-reach start()
+
+    const retry = await reg.deliver(webhookId, req('d-cas')); // SAME deliveryId
+    expect(retry).toMatchObject({ ok: true, httpStatus: 202, runId: 'run-ok' });
   });
 });
