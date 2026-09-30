@@ -99,13 +99,21 @@ export interface WebhookView {
  *  arms — a `RunManager.start()` throw mapped through `admissionErrorToOutcome` can now carry any
  *  `ADMISSION_PERMANENT_CODES` member (e.g. `UNKNOWN_MODEL`, `MCP_NOT_PROVISIONED`), not only the
  *  four pre-dispatch `RefusalReason` claim-state reasons; every `RefusalReason` literal already in
- *  use here is itself a valid `ErrorCode`, so this is additive, not a breaking narrowing. */
+ *  use here is itself a valid `ErrorCode`, so this is additive, not a breaking narrowing. The
+ *  500/503 arm now carries an OPTIONAL `code` too (previously none at all — dash-auth-spec.md §B2
+ *  asks for `{code, hint}` at every status, not just the permanent ones): a TRANSIENT outcome is
+ *  never recorded/replayed, but the caller can still be told WHICH catalogued code it was
+ *  (`RUN_ADMISSION_LIMIT`, `CAS_UNAVAILABLE`, …) rather than only the static hint text — `undefined`
+ *  only for the genuinely uncatalogued case (`admissionErrorToOutcome` folds that to
+ *  `INTERNAL_ERROR`, which IS itself a real `ErrorCode`, so in practice this is never actually
+ *  absent from the webhook catch-block's own call site; it stays optional because `deliver()`'s
+ *  OTHER 500/503 producer — the disabled-webhook/bad-signature/etc. arms — has no code to give). */
 export type DeliverResult =
   | { ok: true; httpStatus: 202 | 200; runId?: string; replayed?: boolean }
   | { ok: false; httpStatus: 401 | 404; reason: string }
   | { ok: false; httpStatus: 403; reason: string; code?: ErrorCode }
   | { ok: false; httpStatus: 409; reason: string; code: ErrorCode }
-  | { ok: false; httpStatus: 500 | 503; reason: string };
+  | { ok: false; httpStatus: 500 | 503; reason: string; code?: ErrorCode };
 
 // issue #97: exported so webhook_create's tool description (tool-specs.ts) and the test that
 // pins that description's stated skew window against this real constant both read the SAME value —
@@ -524,7 +532,7 @@ export class WebhookRegistry {
       if (req.deliveryId) {
         this._db.prepare('DELETE FROM webhook_deliveries WHERE deliveryId = ? AND httpStatus = 0').run(req.deliveryId);
       }
-      return { ok: false, httpStatus: outcome.httpStatus as 500 | 503, reason: hint };
+      return { ok: false, httpStatus: outcome.httpStatus as 500 | 503, reason: hint, code: outcome.code };
     }
     // Issue #88: finalize the claim with the real accepted outcome (kept for a future replay of this
     // SAME deliveryId — `_replayFromRow` turns `httpStatus=202` back into `200 {replayed:true}`,

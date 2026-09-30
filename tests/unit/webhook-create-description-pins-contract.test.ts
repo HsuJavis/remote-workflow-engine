@@ -89,4 +89,16 @@ describe('webhook_create description pins the real delivery contract (issue #97 
     const d = webhookCreateDescription();
     expect(d).toMatch(/500 an admission fault.*transient, NOT recorded/);
   });
+
+  // The description points a cold client at "run_start's own errors[]" for the exhaustive 409
+  // code list rather than repeating ~19 names in prose — this pin is what keeps that claim true:
+  // every code this suite's own table classifies as a 409 admission-permanent refusal must also be
+  // advertised on run_start's `errors[]` (both routes dispatch through the SAME RunManager.start()).
+  it("every ADMISSION_PERMANENT_CODES member is advertised on run_start's own errors[] (the description's pointer stays true)", () => {
+    const runStart = TOOL_SPECS.find((s) => s.name === 'run_start');
+    if (!runStart) throw new Error('run_start not found in TOOL_SPECS');
+    for (const code of ADMISSION_PERMANENT_CODES) {
+      expect(runStart.errors, `run_start errors[] is missing ${code}`).toContain(code);
+    }
+  });
 });

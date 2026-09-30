@@ -1576,9 +1576,12 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         // pre-existing `{replayed:true}` shape callers depend on is unchanged either way.
         if (out.ok) sendJson(res, out.httpStatus, out.replayed ? { replayed: true, ...(out.runId ? { runId: out.runId } : {}) } : { runId: out.runId });
         // v37 Gate-8 round-2 (finding B4, ARCH-182 (3)): "every wire boundary emits `code` + STATIC
-        // catalog text" — `DeliverResult`'s `code` (409's `RefusalReason`, 403's now-optional one)
+        // catalog text" — `DeliverResult`'s `code` (409's `ErrorCode`, 403's now-optional one)
         // previously stopped at this function's own return value and never reached the HTTP body.
-        else sendJson(res, out.httpStatus, { error: out.reason, ...('code' in out && out.code !== undefined ? { code: out.code } : {}) });
+        // Webhook B2 (dash-auth-spec.md §B2): the spec's own wire shape is `{code, hint}` — `hint`
+        // is added alongside the pre-existing `error` key (never renamed: existing callers read
+        // `error`) so both names carry the SAME static catalog text.
+        else sendJson(res, out.httpStatus, { error: out.reason, hint: out.reason, ...('code' in out && out.code !== undefined ? { code: out.code } : {}) });
       }).catch((err: unknown) => {
         if (err instanceof BodyTooLargeError) sendJson(res, 413, { error: err.message, code: err.code, cap: err.cap, hint: err.hint });
         else sendJson(res, 500, { error: 'webhook ingress error' });
