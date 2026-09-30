@@ -1,7 +1,7 @@
 # Issue #101 — spike: does the CLI sandbox honour `allowRead` inside a `denyRead` directory?
 
 **Answer: yes.** Measured 2026-09-28 on the production host (Ubuntu, bwrap + socat, AppArmor fix
-applied, boot probe `CONFINED`), Claude CLI 2.1.283 via `@anthropic-ai/claude-agent-sdk` 0.3.199.
+applied, boot probe `CONFINED`), the SDK-bundled Claude CLI 2.1.199 via `@anthropic-ai/claude-agent-sdk` 0.3.199 (corrected 2026-10-01: an earlier revision said 2.1.283 — that was the operator's PATH `claude`; the SDK always spawns its bundled binary).
 This is the question spike S7 (v37) could not answer; it decides `bash-confinement.ts`'s posture.
 
 ## Method (no model, no credential)
