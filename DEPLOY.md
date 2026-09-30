@@ -683,7 +683,9 @@ curl -s http://localhost:8787/api/models | python3 -c \
 - **門**：`/dashboard*` 與 `/api/*` 都要 session cookie 或 bearer（跟 `/mcp` 同一個解析器）；沒有就
   頁面 302 到登入、API 回 401。**例外**：`/api/version`、`/api/status`（健康檢查用，`deploy.sh`／
   `deploy/migrate-to-service-user.sh` 從本機打；不含任何使用者資料）與 `/static/dashboard/*`（純前端資產）
-  維持公開。
+  維持公開。`/api/status` 只有**本機 loopback 直連**（無隧道標頭）或**已登入的 admin** 拿得到完整內容
+  （`lastUpdate`＝自我更新結果含 log 摘錄 `detail`、`interruptedRuns`）；其他人（含經隧道的匿名請求、
+  非 admin）只拿到存活資訊 `{agentSemaphore, version}`。dashboard 頁尾的更新狀態對非 admin 也不含 `detail`。
 - **D-BIND 本機救援路徑**跟 `/mcp` 一致：`bind` 不是 loopback 時，沒有 tunnel 標頭的 loopback 來源
   免登入，但身分是「無人」（`loopback-exempt`）——只看得到系統／模型／issues／工作流程（非擁有者視角），
   任何 run 頁面與管理分頁回 `PRINCIPAL_REQUIRED`。`bind:127.0.0.1` 時沒有豁免，本機也要登入（或帶 bearer）。

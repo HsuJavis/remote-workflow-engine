@@ -1361,6 +1361,23 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // /api/version and /api/status stay PUBLIC: they are the liveness probes deploy.sh and
     // deploy/migrate-to-service-user.sh poll from localhost, and carry no per-principal data.
     const isGatedApi = reqPath.startsWith('/api/') && reqPath !== '/api/version' && reqPath !== '/api/status';
+    const isStatusRoute = req.method === 'GET' && reqPath === '/api/status';
+    // verify-i MEDIUM-2: the self-update log excerpt (`lastUpdate.detail`) and the interrupted-run
+    // count are operator data. `full` = a raw loopback peer (the deploy healthchecks), an
+    // authenticated admin, or auth disabled; anyone else gets liveness only (200 + version +
+    // agentSemaphore — all deploy.sh checks is the 200; the migrate script reads /api/version).
+    const sendStatus = (full: boolean): void => {
+      // Lazily re-read update result so the "failed" case (no restart) is observable.
+      ingestUpdateResult();
+      const statusBody: Record<string, unknown> = {
+        agentSemaphore: runManager.semaphoreGauge(),
+        version: ENGINE_VERSION,
+      };
+      if (full && lastUpdateOutcome) statusBody['lastUpdate'] = lastUpdateOutcome;
+      if (full && interruptedRuns > 0) statusBody['interruptedRuns'] = interruptedRuns;
+      sendJson(res, 200, statusBody);
+    };
+    const rawLoopbackPeer = isLoopbackPeer(req.socket?.remoteAddress, req.headers);
     // CSRF (spec §A): a state-changing dashboard call must PROVE it is same-origin — an `Origin`
     // whose authority is this request's own Host, or an `X-Requested-With` header (a custom header
     // a cross-site page cannot send without a CORS preflight this engine never answers).
@@ -1431,7 +1448,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
           'Cache-Control': 'no-store',
           'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' blob:; connect-src 'self'; form-action 'self'",
         });
-        res.end(buildDashboardHtml({ lastUpdate: lastUpdateOutcome, interruptedRuns: interruptedRuns || undefined, auth }));
+        // verify-i MEDIUM-2: the update log excerpt only for an operator-level viewer.
+        const operatorView = !authCfg || principal.kind === 'admin' || principal.kind === 'auth-disabled' || principal.kind === 'loopback-exempt' || rawLoopbackPeer;
+        const lastUpdate = lastUpdateOutcome && !operatorView ? (({ detail: _omit, ...rest }) => rest)(lastUpdateOutcome) : lastUpdateOutcome;
+        res.end(buildDashboardHtml({ lastUpdate, interruptedRuns: operatorView ? (interruptedRuns || undefined) : undefined, auth }));
         return;
       }
       // Who am I (spec §A + owner decision 2026-09-30): the ONE /api route a pending ('none')
@@ -1540,18 +1560,24 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       // loopback peer on a non-loopback bind is the D-BIND rescue path exactly as on /mcp
       // (`loopback-exempt`: principal-free reads only; every owner/role-gated read refuses
       // PRINCIPAL_REQUIRED); anyone else gets a login redirect (page) or a 401 (API).
+      const resolveCaller = async (): Promise<{ principal: Principal; renew?: string } | null> => {
+        if (typeof req.headers.authorization === 'string') {
+          const p = await resolvePrincipal(req, authTokenStore!, wwwChallenge());
+          if ('principal' in p) return { principal: principalFor(p.principal) };
+        } else {
+          const tok = readSessionCookie(req.headers.cookie);
+          const v = tok ? authTokenStore!.verifySession(tok) : null;
+          if (tok && v) return { principal: principalFor(v.principal), ...(v.slid ? { renew: tok } : {}) };
+        }
+        return dbindExempt ? { principal: { kind: 'loopback-exempt' } } : null;
+      };
+      // verify-i MEDIUM-2: /api/status stays public for liveness, full only for operators.
+      if (isStatusRoute) {
+        if (rawLoopbackPeer) { sendStatus(true); return; }
+        void resolveCaller().then((c) => sendStatus(c?.principal.kind === 'admin')).catch(() => sendStatus(false));
+        return;
+      }
       if (isDashboardPage || isGatedApi) {
-        const resolveCaller = async (): Promise<{ principal: Principal; renew?: string } | null> => {
-          if (typeof req.headers.authorization === 'string') {
-            const p = await resolvePrincipal(req, authTokenStore!, wwwChallenge());
-            if ('principal' in p) return { principal: principalFor(p.principal) };
-          } else {
-            const tok = readSessionCookie(req.headers.cookie);
-            const v = tok ? authTokenStore!.verifySession(tok) : null;
-            if (tok && v) return { principal: principalFor(v.principal), ...(v.slid ? { renew: tok } : {}) };
-          }
-          return dbindExempt ? { principal: { kind: 'loopback-exempt' } } : null;
-        };
         void resolveCaller().then((caller) => {
           if (!caller) {
             if (isDashboardPage) {
@@ -1745,16 +1771,8 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // D-V3M-2 (REQ-020 D-DOS gauge): read-only observability of the process-global agent-slot
     // semaphore — GET /api/status -> { agentSemaphore, version, lastUpdate?, interruptedRuns? }.
     // DES-061 (TASK-064): version + last-update outcome + interrupted-run call-to-action added.
-    if (req.method === 'GET' && (req.url === '/api/status' || req.url?.startsWith('/api/status?'))) {
-      // Lazily re-read update result so the "failed" case (no restart) is observable.
-      ingestUpdateResult();
-      const statusBody: Record<string, unknown> = {
-        agentSemaphore: runManager.semaphoreGauge(),
-        version: ENGINE_VERSION,
-      };
-      if (lastUpdateOutcome) statusBody['lastUpdate'] = lastUpdateOutcome;
-      if (interruptedRuns > 0) statusBody['interruptedRuns'] = interruptedRuns;
-      sendJson(res, 200, statusBody);
+    if (isStatusRoute) {
+      sendStatus(true); // auth disabled: unchanged, full body
       return;
     }
     if (isGatedApi) {
