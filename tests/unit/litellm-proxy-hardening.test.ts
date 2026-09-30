@@ -11,6 +11,17 @@ import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
 
+// Ports are allocated by the OS per test (bind :0, read, release). Fixed ports collided with
+// other suites' OS-assigned ports under parallel runs (the v0.32.0 self-update test gate hit EADDRINUSE).
+let fixedPort = 0;
+async function freePort(): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => { const a = srv.address(); const port = typeof a === 'object' && a ? a.port : 0; srv.close(() => resolve(port)); });
+  });
+}
+
 
 function makeFakeSpawn(pid: number | undefined) {
   // A real ChildProcess IS an EventEmitter; this fake was a plain object, so it silently lacked
@@ -54,13 +65,13 @@ describe('LiteLLMProxyManager hardening (TASK-027)', () => {
     // Port 0 is never itself bindable as a fixed target for the ownership probe semantics we want
     // to exercise here, so pick a high, essentially-never-colliding fixed port instead.
     const proxy = new LiteLLMProxyManager({
-      port: 48173,
+      port: (fixedPort = await freePort()),
       spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
       fetchImpl: fakeHealthFetch as unknown as typeof fetch,
     });
 
     const { baseUrl } = await proxy.start();
-    expect(baseUrl).toBe('http://127.0.0.1:48173');
+    expect(baseUrl).toBe(`http://127.0.0.1:${fixedPort}`);
     expect(fakeSpawn).toHaveBeenCalled();
   });
 
@@ -89,7 +100,7 @@ describe('LiteLLMProxyManager hardening (TASK-027)', () => {
     const { fakeSpawn, fakeProc } = makeFakeSpawn(789);
     const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
     const proxy = new LiteLLMProxyManager({
-      port: 48174,
+      port: (fixedPort = await freePort()),
       spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
       fetchImpl: fakeHealthFetch as unknown as typeof fetch,
     });
@@ -128,7 +139,7 @@ describe('LiteLLMProxyManager hardening (TASK-027)', () => {
     const { fakeSpawn, fakeProc } = makeFakeSpawn(undefined);
     const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
     const proxy = new LiteLLMProxyManager({
-      port: 48175,
+      port: (fixedPort = await freePort()),
       spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
       fetchImpl: fakeHealthFetch as unknown as typeof fetch,
     });
@@ -179,7 +190,7 @@ describe('LiteLLMProxyManager — a spawn failure must not escape as an unhandle
       return { ok: true } as unknown as Response;
     });
     const proxy = new LiteLLMProxyManager({
-      port: 48176,
+      port: (fixedPort = await freePort()),
       spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
       fetchImpl: fakeHealthFetch as unknown as typeof fetch,
     });
@@ -208,7 +219,7 @@ describe('LiteLLMProxyManager — the other two startup-failure exits (UT-122, A
     deadProc.exitCode = 3;
     const fakeHealthFetch = vi.fn(async () => { throw new Error('ECONNREFUSED'); });
     const proxy = new LiteLLMProxyManager({
-      port: 48177,
+      port: (fixedPort = await freePort()),
       spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
       fetchImpl: fakeHealthFetch as unknown as typeof fetch,
     });
@@ -221,7 +232,7 @@ describe('LiteLLMProxyManager — the other two startup-failure exits (UT-122, A
     const { fakeSpawn, fakeProc } = makeFakeSpawn(undefined); // no pid → direct-handle kill
     const fakeHealthFetch = vi.fn(async () => { throw new Error('ECONNREFUSED'); });
     const proxy = new LiteLLMProxyManager({
-      port: 48178,
+      port: (fixedPort = await freePort()),
       startupTimeoutMs: 300, // relative to the deadline the SUT computes itself; no date literals
       spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
       fetchImpl: fakeHealthFetch as unknown as typeof fetch,
