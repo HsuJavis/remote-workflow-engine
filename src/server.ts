@@ -64,6 +64,7 @@ import { resolveRole, type Principal } from './authz.js';
 import { createOwnerLookup } from './owner-lookup.js';
 import { DiagramRenderer, renderWithMmdc, type DiagramRendererOpts } from './diagram-render.js';
 import { ModelProbeStore, ModelProber, MODEL_PROBE_DEFAULTS, type ModelProbeConfig, type ProbeResult } from './models/model-probe.js';
+import { RunStoreObservedStats } from './models/observed-stats.js';
 
 export interface ServerConfig {
   bind?: string;   // default '127.0.0.1'
@@ -840,6 +841,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // object every agent() call dispatches through — so it exists only when one is configured.
   const probeStore = new ModelProbeStore(join(workRoot, 'store', 'index.db'));
   const probeLookup = (provider: string, model: string): ProbeResult | undefined => probeStore.get(provider, model);
+  // Issue #104: models_list's `observed` field — the SAME `store` (SqliteRunStore) and `probeStore`
+  // instances every other read in this file uses; constructed once (TTL-cached internally), never
+  // per-request.
+  const observedStats = new RunStoreObservedStats({ source: store, probes: probeStore, clock });
   // 2026-09-26 (owner decision 10): probe targets are the distinct full refs registered workflow
   // versions declare — a LIVE accessor (never memoized), so a fresh registration is probed without
   // a restart.
@@ -949,7 +954,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // by `main.ts`'s real probe (ARCH-181) — `undefined` on every test/zero-config boot, which the
   // door already treats as "don't gate" (call-tool.ts's own documented default).
   function buildToolDeps(webhookBaseUrl: string, isRemoteSubmission = false): ToolDeps {
-    return { facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, modelBook, probeLookup, modelProber, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store, confinementPosture: config?.confinementPosture, isRemoteSubmission };
+    return { facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, modelBook, probeLookup, modelProber, observedStats, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store, confinementPosture: config?.confinementPosture, isRemoteSubmission };
   }
   // v35 (DES-239b, ARCH-152, TASK-237, REQ-210): BOTH `initialize` results carry `instructions`
   // with `ENVELOPE_NOTE` and a guide-size figure COMPUTED per call from the SAME stringified

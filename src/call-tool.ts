@@ -17,6 +17,7 @@ import type { IssueReporter, IssueReportInput, IssueListFilter } from './github/
 import { filterCatalog, enrichModelEntry, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
 import type { ModelBook } from './models/model-book.js';
 import type { ModelProber, ProbeResult } from './models/model-probe.js';
+import type { ObservedStatsProvider } from './models/observed-stats.js';
 import type { SystemInfoSampler } from './system-info.js';
 import type { RunStore } from './run-store.js';
 import type { ErrorCode } from './errors.js';
@@ -50,6 +51,12 @@ export interface ToolDeps {
    *  fixtures compile unchanged — absent means "never probed" / "probing not wired". */
   probeLookup?: (provider: string, model: string) => ProbeResult | undefined;
   modelProber?: ModelProber;
+  /** Issue #104: engine-measured per-model-ref call stats (src/models/observed-stats.ts),
+   *  TTL-cached over the run store — `models_list`'s `observed` row field reads THIS, never a raw
+   *  per-call scan. Optional for the same reason `probeLookup` is: the many existing `ToolDeps` test
+   *  fixtures compile unchanged; absent means "not wired" (models_list falls back to `source:'none'`
+   *  for every ref). */
+  observedStats?: ObservedStatsProvider;
   systemInfo: SystemInfoSampler;
   lookup: OwnerLookup;
   audit: AuditWriter;

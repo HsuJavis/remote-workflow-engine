@@ -548,6 +548,33 @@ export class SqliteRunStore implements RunStore {
     }));
   }
 
+  /** Issue #104 (ObservedStats): concrete-class-only (not on the `RunStore` port — same convention
+   *  as `getWorkflowName` above) coarse SQL pre-filter for `src/models/observed-stats.ts`'s
+   *  `loadFacts` — run ids whose run reached a terminal, NON-stopped status ('completed'|'failed')
+   *  with `createdAt >= sinceIso`. A user-`stopped` run is excluded HERE, implementing ObservedStats'
+   *  "runs stopped by the user excluded" rule at the source, not by a later filter. `createdAt` is a
+   *  deliberate approximation of "this run's agent calls happened in the window" — exact per-call
+   *  windowing is re-applied by the caller against each `AgentRecord.endedAt`; see that module's own
+   *  header comment for the documented gap (a multi-day-long-running workflow created just before the
+   *  cutoff could be under-counted). Uses `runs_status`'s sibling `runs_name_status_created` is not a
+   *  fit here (leads with `name`) — a straight `status`+`createdAt` scan is the honest plan for this
+   *  query shape; adding a dedicated index is left to a future iteration if this is ever measured hot. */
+  terminalRunIdsSince(sinceIso: string): string[] {
+    const rows = this._db
+      .prepare("SELECT runId FROM runs WHERE status IN ('completed', 'failed') AND createdAt >= ?")
+      .all(sinceIso) as Array<{ runId: string }>;
+    return rows.map((r) => r.runId);
+  }
+
+  /** Issue #104 (ObservedStats): concrete-class-only — every `agent-<id>.jsonl` transcript this run
+   *  has, keyed by agentId. Exposes the SAME read `getRun()` already does internally (`_allTranscripts`)
+   *  because ObservedStats needs the RAW `kind:'harness'` event's `descriptor.tools` (the resolved
+   *  tool surface) to split prose vs tools calls — a distinction `deriveAgentRecords`'s derived
+   *  `AgentRecord` does not carry (it was never meant to; see that module's own field list). */
+  allAgentTranscripts(runId: string): Map<string, TranscriptEvent[]> {
+    return this._allTranscripts(runId);
+  }
+
   /** Boot recovery: enumerates persisted runs; any 'running' run was interrupted by a crash/restart —
    *  v8 Defer A (REQ-060) re-hydrates it as 'interrupted' (RESUMABLE via workflow_resume, replaying its
    *  journaled calls), not 'failed'. (Previously forced running→failed with no resume path.) */
