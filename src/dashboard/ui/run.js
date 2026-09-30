@@ -557,6 +557,20 @@ export async function onTick(container, bodies, ctx) {
   // never the DAG payload's own shape (`cells`/`edges` arrays at top level, DES-064). Bail before
   // fetching further or repainting: last-known render stays (ARCH-125's "never rendered as data"),
   // never an empty swimlane drawn over a live one. Same guard shape as `ui/workflow.js`'s onTick.
+  // Dashboard auth spec §A: a run the signed-in principal may not read answers 403 with the MCP
+  // tool's own refusal (`{code:'NOT_RUN_OWNER'|'PRINCIPAL_REQUIRED', error}`) — say so on the page
+  // rather than leaving an empty swimlane. `textContent` only (the message names the runId).
+  if (dagBody && typeof dagBody.code === 'string' && !Array.isArray(dagBody.cells)) {
+    let refused = state.shell.root.querySelector('[data-run-refused]');
+    if (!refused) {
+      refused = document.createElement('p');
+      refused.className = 'degraded';
+      refused.setAttribute('data-run-refused', '');
+      state.shell.root.prepend(refused);
+    }
+    refused.textContent = String(dagBody.error || dagBody.code);
+    return {};
+  }
   if (!dagBody || dagBody.degraded || !Array.isArray(dagBody.cells)) return {};
   const viewUrl = '/api/runs/' + encodeURIComponent(state.runId);
   const viewRes = await getViewJSON(viewUrl);
