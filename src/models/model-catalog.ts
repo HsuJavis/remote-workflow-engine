@@ -242,11 +242,16 @@ export function ratesFromOpenRouterPricing(
   if (!pricing) return null;
   const inRate = Number(pricing.prompt);
   const outRate = Number(pricing.completion);
-  if (!Number.isFinite(inRate) || !Number.isFinite(outRate)) return null;
+  // F1 (verify-H, issue #104): a handful of live OpenRouter rows (the `auto`/router models) publish
+  // the sentinel price "-1" on prompt/completion, meaning "no fixed price" — not a real rate. Left
+  // unchecked, `Number.isFinite` alone admitted it, so those rows displayed "$-1000000/1M", sorted
+  // first on `sortBy:'price'` (asc = cheapest first) and passed `maxPricePerM:0`. Treat a negative
+  // core rate exactly like a missing one: unknown, never invented.
+  if (!Number.isFinite(inRate) || !Number.isFinite(outRate) || inRate < 0 || outRate < 0) return null;
   const cacheReadRaw = Number(pricing.input_cache_read);
   const cacheWriteRaw = Number(pricing.input_cache_write);
-  const cacheRead = pricing.input_cache_read !== undefined && Number.isFinite(cacheReadRaw) ? cacheReadRaw : inRate;
-  const cacheWrite = pricing.input_cache_write !== undefined && Number.isFinite(cacheWriteRaw) ? cacheWriteRaw : inRate;
+  const cacheRead = pricing.input_cache_read !== undefined && Number.isFinite(cacheReadRaw) && cacheReadRaw >= 0 ? cacheReadRaw : inRate;
+  const cacheWrite = pricing.input_cache_write !== undefined && Number.isFinite(cacheWriteRaw) && cacheWriteRaw >= 0 ? cacheWriteRaw : inRate;
   return { in: inRate, out: outRate, cacheRead, cacheWrite };
 }
 
@@ -375,7 +380,9 @@ function openRouterPricingDetail(p: OpenRouterRow['pricing']): PricingDetail | n
   const put = (key: keyof PricingDetail, raw: unknown, scale: boolean): void => {
     if (raw === undefined || raw === null || raw === '') return;
     const n = Number(raw);
-    if (Number.isFinite(n)) out[key] = scale ? perMillion(n) : n;
+    // F1 (verify-H, issue #104): same "never invented, unknown over negative" rule as
+    // `ratesFromOpenRouterPricing` above — a negative price component is dropped, not surfaced.
+    if (Number.isFinite(n) && n >= 0) out[key] = scale ? perMillion(n) : n;
   };
   put('reasoning', p['internal_reasoning'], true);
   put('request', p['request'], false);
@@ -563,7 +570,10 @@ function linkSameModels(entries: ModelEntry[]): ModelEntry[] {
     return {
       ...linked,
       borrowedFrom: lender.ref!,
-      benchmarks: lender.benchmarks ? { ...lender.benchmarks, borrowedFrom: lender.model } : (e.benchmarks ?? null),
+      // F3 (verify-H, issue #104): the SAME fact, spelled the SAME way as the top-level
+      // `borrowedFrom` above — the full `<provider>/<model-id>` ref, not the bare OpenRouter id
+      // (`lender.model`) this used to carry, which needlessly said the same thing two ways.
+      benchmarks: lender.benchmarks ? { ...lender.benchmarks, borrowedFrom: lender.ref! } : (e.benchmarks ?? null),
       lifecycle: {
         releasedAt: e.lifecycle?.releasedAt ?? lender.lifecycle?.releasedAt ?? null,
         knowledgeCutoff: e.lifecycle?.knowledgeCutoff ?? lender.lifecycle?.knowledgeCutoff ?? null,

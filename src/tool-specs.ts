@@ -1182,7 +1182,7 @@ export const TOOL_SPECS = [
       'capabilities.reasoning + effortAppliedOnTransport).\n' +
       '- local {family, parameterSize, quantization}: Ollama rows only (from Ollama details); null elsewhere.\n' +
       "- lifecycle {releasedAt (OpenRouter's listing date), knowledgeCutoff, expiresAt (scheduled removal)} — ISO strings or null.\n" +
-      '- benchmarks: THIRD-PARTY, GLOBAL quality scores (not about this host): {source: "openrouter:artificial_analysis+design_arena", fetchedAt, borrowedFrom?, ' +
+      '- benchmarks: THIRD-PARTY, GLOBAL quality scores (not about this host): {source: "openrouter:artificial_analysis+design_arena", fetchedAt, borrowedFrom? (same full ref as the top-level borrowedFrom below), ' +
       'artificialAnalysis {intelligence, coding, agentic} (Artificial Analysis indices, higher is better, or null), designArena [{arena, category, elo, winRate, rank}]} as OpenRouter publishes them; ' +
       'benchmarks is null when OpenRouter has no scores for the model.\n' +
       '- sameModelAs: refs of the same underlying model on OTHER providers (e.g. anthropic/claude-haiku-4-5-20251001 <-> openrouter/anthropic/claude-haiku-4.5). ' +
@@ -1202,32 +1202,50 @@ export const TOOL_SPECS = [
       "EXAMPLES: a cheap tool-capable agent model: {modelType:'chat', toolUseVerified:true, sortBy:'avgCostPerCall'} (or toolUseDeclared:true with sortBy:'price' when nothing was probed/measured); " +
       "the strongest coder under $5/1M: {maxPricePerM:5, sortBy:'coding'}; a fast prose summarizer: {callKind:'prose', maxLatencyMsP95:5000, sortBy:'latency'}; " +
       "an embedding model: {modelType:'embedding'}; reliable here: {minSuccessRate:0.95, callKind:'tools'}.",
-    inputSchema: schema({
-      provider: { type: 'string', description: "Exact provider id: 'anthropic', 'openrouter' or 'ollama'." },
-      query: { type: 'string', description: 'Case-insensitive substring match over the model id and description.' },
-      modalityIn: { type: 'string', description: "Only rows accepting this input modality (e.g. 'image')." },
-      modalityOut: { type: 'string', description: "Only rows producing this output modality (e.g. 'text', 'embedding')." },
-      maxPricePerM: { type: 'number', description: 'Upper bound on max(in, out) price in USD per million tokens (unpriced rows never pass).' },
-      minContext: { type: 'number', description: 'Lower bound on contextWindow in tokens (null never passes).' },
-      toolUseDeclared: { type: 'boolean', description: 'Only rows whose catalog declares tool use (true) / declares none (false).' },
-      location: { type: 'string', enum: ['local', 'remote'], description: 'local = this host (Ollama); remote = a hosted API.' },
-      modelType: { type: 'string', enum: ['chat', 'embedding', 'rerank', 'image-gen', 'tts', 'stt', 'moderation', 'unknown'], description: "Only this model type. Use 'chat' for agent() models." },
-      toolUseVerified: { type: 'boolean', description: "Only rows whose last models_probe did (true) / did not (false) make a real tool call; never-probed rows match neither." },
-      structuredOutput: { type: 'boolean', description: 'Only rows whose source declares structured output (JSON schema / response_format).' },
-      reasoning: { type: 'boolean', description: 'Only rows whose capabilities.reasoning.supported equals this.' },
-      minIntelligence: { type: 'number', description: 'Minimum benchmarks.artificialAnalysis.intelligence (third-party index; null never passes).' },
-      minCoding: { type: 'number', description: 'Minimum benchmarks.artificialAnalysis.coding.' },
-      minAgentic: { type: 'number', description: 'Minimum benchmarks.artificialAnalysis.agentic.' },
-      maxLatencyMsP95: { type: 'number', description: 'Maximum observed p95 latency (ms) in the callKind bucket, falling back to the last probe latency; unmeasured rows never pass.' },
-      minSuccessRate: { type: 'number', description: 'Minimum observed success rate (0..1) in the callKind bucket; unmeasured rows never pass.' },
-      maxAvgCostUsdPerCall: { type: 'number', description: 'Maximum observed average USD cost per agent call in the callKind bucket; unmeasured rows never pass.' },
-      callKind: { type: 'string', enum: ['prose', 'tools'], description: "Which observed bucket the observed filters and sorts read: 'tools' (default; calls holding tools) or 'prose' (allowedTools: [])." },
-      sortBy: { type: 'string', enum: [...SORT_KEYS], description: 'Sort key; nulls always last. Omit to keep catalog order (anthropic, ollama, openrouter).' },
-      order: { type: 'string', enum: ['asc', 'desc'], description: 'Sort direction; the default is best-first for the key (asc for price/costLevel/latency/avgCostPerCall, desc otherwise).' },
-      fields: { type: 'array', items: { type: 'string', enum: ['*', ...ALL_FIELDS] }, description: "Top-level fields to return (ref is always included). Omit for the compact default; ['*'] for every field." },
-      limit: { type: 'number', description: `Rows per page (default ${DEFAULT_LIMIT}, max ${MAX_LIMIT}; larger values are clamped).` },
-      cursor: { type: 'string', description: "The previous page's nextCursor, to fetch the next page (keep the same filters)." },
-    }),
+    // F2 (verify-H, issue #104): built as a literal (type/properties/required/additionalProperties
+    // together), not `{...schema(...), additionalProperties:false}` — spreading `schema()`'s
+    // `Record<string, unknown>`-typed return erases its `properties` key at the TYPE level (nothing
+    // runtime-visible; ajv still sees the real object), which broke a test casting this schema to
+    // read `.properties` back out. `pushInputSchema()` above uses the same hand-built-literal shape
+    // for the same `additionalProperties:false` reason. The trailing `as Record<string, unknown>`
+    // widens away the `as const satisfies` array's deep-readonly literal inference (e.g. `enum`
+    // tuples) TOOL_SPECS's own outer cast gives this one entry — every OTHER row gets that same
+    // widening implicitly, via `schema()`'s declared return type.
+    inputSchema: {
+      type: 'object',
+      required: [] as string[],
+      properties: {
+        provider: { type: 'string', description: "Exact provider id: 'anthropic', 'openrouter' or 'ollama'." },
+        query: { type: 'string', description: 'Case-insensitive substring match over the model id and description.' },
+        modalityIn: { type: 'string', description: "Only rows accepting this input modality (e.g. 'image')." },
+        modalityOut: { type: 'string', description: "Only rows producing this output modality (e.g. 'text', 'embedding')." },
+        maxPricePerM: { type: 'number', description: 'Upper bound on max(in, out) price in USD per million tokens (unpriced rows never pass).' },
+        minContext: { type: 'number', description: 'Lower bound on contextWindow in tokens (null never passes).' },
+        toolUseDeclared: { type: 'boolean', description: 'Only rows whose catalog declares tool use (true) / declares none (false).' },
+        location: { type: 'string', enum: ['local', 'remote'], description: 'local = this host (Ollama); remote = a hosted API.' },
+        modelType: { type: 'string', enum: ['chat', 'embedding', 'rerank', 'image-gen', 'tts', 'stt', 'moderation', 'unknown'], description: "Only this model type. Use 'chat' for agent() models." },
+        toolUseVerified: { type: 'boolean', description: "Only rows whose last models_probe did (true) / did not (false) make a real tool call; never-probed rows match neither." },
+        structuredOutput: { type: 'boolean', description: 'Only rows whose source declares structured output (JSON schema / response_format).' },
+        reasoning: { type: 'boolean', description: 'Only rows whose capabilities.reasoning.supported equals this.' },
+        minIntelligence: { type: 'number', description: 'Minimum benchmarks.artificialAnalysis.intelligence (third-party index; null never passes).' },
+        minCoding: { type: 'number', description: 'Minimum benchmarks.artificialAnalysis.coding.' },
+        minAgentic: { type: 'number', description: 'Minimum benchmarks.artificialAnalysis.agentic.' },
+        maxLatencyMsP95: { type: 'number', description: 'Maximum observed p95 latency (ms) in the callKind bucket, falling back to the last probe latency; unmeasured rows never pass.' },
+        minSuccessRate: { type: 'number', description: 'Minimum observed success rate (0..1) in the callKind bucket; unmeasured rows never pass.' },
+        maxAvgCostUsdPerCall: { type: 'number', description: 'Maximum observed average USD cost per agent call in the callKind bucket; unmeasured rows never pass.' },
+        callKind: { type: 'string', enum: ['prose', 'tools'], description: "Which observed bucket the observed filters and sorts read: 'tools' (default; calls holding tools) or 'prose' (allowedTools: [])." },
+        sortBy: { type: 'string', enum: [...SORT_KEYS], description: 'Sort key; nulls always last. Omit to keep catalog order (anthropic, ollama, openrouter).' },
+        order: { type: 'string', enum: ['asc', 'desc'], description: 'Sort direction; the default is best-first for the key (asc for price/costLevel/latency/avgCostPerCall, desc otherwise).' },
+        fields: { type: 'array', items: { type: 'string', enum: ['*', ...ALL_FIELDS] }, description: "Top-level fields to return (ref is always included). Omit for the compact default; ['*'] for every field." },
+        limit: { type: 'number', description: `Rows per page (default ${DEFAULT_LIMIT}, max ${MAX_LIMIT}; larger values are clamped).` },
+        cursor: { type: 'string', description: "The previous page's nextCursor, to fetch the next page (keep the same filters)." },
+      },
+      // CLOSED (`additionalProperties:false`) — every one of the filters `matchesCatalogFilter`/
+      // `queryModels` actually reads is declared above, so a typo'd filter (e.g. `minIntelligenc`)
+      // is refused INVALID_ARGUMENT instead of silently widening the selection to the whole catalog
+      // — the same convention `run_start`'s schema already follows.
+      additionalProperties: false,
+    } as Record<string, unknown>,
     outputSchema: OUT,
     errors: [] as ErrorCode[],
     seeAlso: [] as string[],

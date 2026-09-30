@@ -138,7 +138,9 @@ describe('anthropic-direct rows borrow from the matching OpenRouter entry (canon
     const r = row(await catalog(), 'anthropic/claude-haiku-4-5-20251001');
     expect(r.modelType).toBe('chat');
     expect(r.modelTypeSource).toBe('static');
-    expect(r.benchmarks?.borrowedFrom).toBe('anthropic/claude-haiku-4.5');
+    // F3 (verify-H, issue #104): the SAME fact, spelled the SAME way at both levels — the full
+    // `<provider>/<model-id>` ref, matching `r.borrowedFrom` below (was the bare OpenRouter id here).
+    expect(r.benchmarks?.borrowedFrom).toBe('openrouter/anthropic/claude-haiku-4.5');
     expect(r.benchmarks?.artificialAnalysis).toEqual({ intelligence: 16.9, coding: 43.9, agentic: 8 });
     expect(r.capabilities.reasoning).toEqual({ supported: true, efforts: null, defaultEffort: null, mandatory: false });
     expect(r.limits).toEqual({ contextWindow: 200000, maxOutputTokens: 64000 });

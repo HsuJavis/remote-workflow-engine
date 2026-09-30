@@ -141,6 +141,17 @@ describe('models_list wired into MCP (REQ-039/040)', () => {
     expect((await callTool(server.port, 'models_list', { fields: ['bogus'] })).error?.code).toBe('INVALID_ARGUMENT');
   });
 
+  // F2 (verify-H, issue #104): the schema was OPEN — {foo:1} or a typo like `minIntelligenc` was
+  // silently ignored (ajv admits unknown keys unless additionalProperties:false) and the call
+  // quietly returned the WHOLE catalog instead of the caller's intended filter, exactly the failure
+  // mode `run_start`'s CLOSED schema already refuses loudly.
+  it('an unknown filter key is refused INVALID_ARGUMENT, not silently ignored (F2)', async () => {
+    const out = await callTool(server.port, 'models_list', { foo: 1 });
+    expect(out.error?.code).toBe('INVALID_ARGUMENT');
+    const typo = await callTool(server.port, 'models_list', { minIntelligenc: 90 });
+    expect(typo.error?.code).toBe('INVALID_ARGUMENT');
+  });
+
   it('observed comes from the REAL run store: seeded agent calls surface in `observed` and drive the observed filters/sorts', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rwe-it-models-obs-'));
     // Seed the engine's own run store (the one createServer opens at <workRoot>/store) BEFORE boot:

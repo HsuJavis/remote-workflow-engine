@@ -1,7 +1,7 @@
 // REQ-039/REQ-040: model-catalog federation, mapping, filtering, graceful degradation, secret-free.
 // Unit tier: fake fetch transports — never a live network call.
 import { describe, it, expect } from 'vitest';
-import { buildCatalog, filterCatalog, type ModelEntry } from '../../src/models/model-catalog.js';
+import { buildCatalog, filterCatalog, ratesFromOpenRouterPricing, computeCostLevel, type ModelEntry } from '../../src/models/model-catalog.js';
 
 function jsonFetch(body: unknown, ok = true): typeof fetch {
   return (async () => ({ ok, status: ok ? 200 : 500, json: async () => body })) as unknown as typeof fetch;
@@ -68,6 +68,31 @@ describe('buildCatalog federation + mapping (REQ-039)', () => {
     expect(big.modalities.in).toContain('image');
     const free = or.find((e) => e.model === 'free/experimental')!;
     expect(free.price).toBe('free');
+  });
+
+  // F1 (verify-H, issue #104): a handful of live OpenRouter router/auto rows (openrouter/auto,
+  // auto-beta, fusion, pareto-code, bodybuilder, typesafe/jev-router) publish the SENTINEL price
+  // "-1" on prompt/completion (meaning "ask us", not "we pay you"). `Number.isFinite` alone admitted
+  // it, so these rows showed `price:"$-1000000/1M"`, sorted FIRST on `sortBy:'price'` (asc =
+  // "cheapest first", the exact shape the tool description recommends for picking a cheap model),
+  // and passed `maxPricePerM:0` alongside genuinely free rows. A negative rate is not a real price;
+  // it must be treated exactly like an absent one — unknown, never invented.
+  it('a router row with sentinel "-1" pricing is unpriced end to end (F1): price "unknown", ratesPerM null, costLevel null, excluded by maxPricePerM:0', async () => {
+    const SENTINEL_ROW = {
+      id: 'openrouter/auto',
+      name: 'Auto Router',
+      description: 'Routes to the best model',
+      context_length: 2000000,
+      pricing: { prompt: '-1', completion: '-1' },
+      architecture: { input_modalities: ['text'], output_modalities: ['text'] },
+      supported_parameters: ['tools'],
+    };
+    const entries = await buildCatalog({ ollamaFetch: jsonFetch({ models: [] }), openrouterFetch: jsonFetch({ data: [SENTINEL_ROW] }) });
+    const row = entries.find((e) => e.model === 'openrouter/auto')!;
+    expect(row.price).toBe('unknown');
+    expect(row.ratesPerM).toBeNull();
+    expect(computeCostLevel(row)).toBeNull();
+    expect(filterCatalog(entries, { maxPricePerM: 0 }).map((e) => e.model)).not.toContain('openrouter/auto');
   });
 
   // v26 (REQ-123, DES-173, TASK-174, issue #66): the `openai` provider is RETIRED and its sibling
@@ -285,5 +310,30 @@ describe('claude-fable-5 is priced (UT-226, D12, REQ-127)', () => {
     const book = new ModelBook(async () => entries, { ttlMs: 3_600_000, clock: new FixedClock(new Date('2026-09-09T00:00:00Z')) });
     const snap = await book.snapshot();
     expect(snap.lookup('anthropic', 'claude-fable-5').price).toEqual(FABLE_RATES);
+  });
+});
+
+// F1 (verify-H, issue #104): direct coverage of the function itself, on top of the end-to-end
+// buildCatalog case above. `-1` is OpenRouter's real published sentinel for "no fixed price, ask
+// the router" on rows like `openrouter/auto` — never a rate an admission budget should trust.
+describe('ratesFromOpenRouterPricing rejects negative/non-finite components as unknown (F1)', () => {
+  it('a negative prompt or completion rate nulls the WHOLE object — never half-trusted', () => {
+    expect(ratesFromOpenRouterPricing({ prompt: '-1', completion: '-1' })).toBeNull();
+    expect(ratesFromOpenRouterPricing({ prompt: '-1', completion: '0.000002' })).toBeNull();
+    expect(ratesFromOpenRouterPricing({ prompt: '0.000001', completion: '-1' })).toBeNull();
+  });
+
+  it('non-finite prompt/completion (unchanged behaviour) still nulls the object', () => {
+    expect(ratesFromOpenRouterPricing({ prompt: 'not-a-number', completion: '0.000002' })).toBeNull();
+    expect(ratesFromOpenRouterPricing(undefined)).toBeNull();
+  });
+
+  it('a negative cache rate alone falls back to the input rate, same treatment as an absent one', () => {
+    const r = ratesFromOpenRouterPricing({ prompt: '0.000001', completion: '0.000002', input_cache_read: '-1', input_cache_write: '-2' });
+    expect(r).toEqual({ in: 0.000001, out: 0.000002, cacheRead: 0.000001, cacheWrite: 0.000001 });
+  });
+
+  it('a genuinely free row (all zero) still prices at 0 — zero is a real price, not "unknown"', () => {
+    expect(ratesFromOpenRouterPricing({ prompt: '0', completion: '0' })).toEqual({ in: 0, out: 0, cacheRead: 0, cacheWrite: 0 });
   });
 });

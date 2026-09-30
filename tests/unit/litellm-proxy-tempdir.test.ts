@@ -7,6 +7,14 @@
 // for the PROCESS — the cold-start check confirmed the child dies with the engine. It said nothing
 // about the directory, so the sentence was accurate and the reader still ended up with 11,251 of
 // them. Written test-first (RED).
+//
+// Ports: every case here used to pass a hard-coded `port: 4831x`, one of which (48311) collided with
+// a concurrently running local engine on the same host. `spawnImpl`/`fetchImpl` are faked (no real
+// `litellm` process, no real HTTP), but `LiteLLMProxyManager.start()` still does a real TCP pre-bind
+// ownership check on a CONFIGURED port (litellm-proxy.ts's `_assertPortFree`) — that bind is what
+// collided. Omitting `port` takes the same dynamic-ephemeral path production uses when unconfigured
+// (`_findFreePort`: bind :0, read the OS-assigned port back, release it), which this file's own
+// behaviour under test (temp-dir lifecycle) never depended on a specific port number anyway.
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { existsSync, readdirSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
@@ -34,7 +42,6 @@ describe('#60 LiteLLM temp dir lifecycle', () => {
   it('stop() removes the temp dir it created — not just the process', async () => {
     const before = new Set(dirsNow());
     const proxy = new LiteLLMProxyManager({
-      port: 48310,
       spawnImpl: (() => makeFakeProc()) as unknown as typeof import('node:child_process').spawn,
       fetchImpl: HEALTHY as unknown as typeof fetch,
     } as never);
@@ -66,7 +73,6 @@ describe('#60 LiteLLM temp dir lifecycle', () => {
     utimesSync(live, ancient / 1000, ancient / 1000);
 
     const proxy = new LiteLLMProxyManager({
-      port: 48313,
       spawnImpl: (() => makeFakeProc()) as unknown as typeof import('node:child_process').spawn,
       fetchImpl: HEALTHY as unknown as typeof fetch,
     } as never);
@@ -92,7 +98,6 @@ describe('#60 LiteLLM temp dir lifecycle', () => {
     writeFileSync(join(orphan, 'owner.pid'), String(deadPid), 'utf8');
 
     const proxy = new LiteLLMProxyManager({
-      port: 48314,
       spawnImpl: (() => makeFakeProc()) as unknown as typeof import('node:child_process').spawn,
       fetchImpl: HEALTHY as unknown as typeof fetch,
     } as never);
@@ -115,7 +120,6 @@ describe('#60 LiteLLM temp dir lifecycle', () => {
     writeFileSync(join(fresh, 'config.yaml'), 'another instance is using this', 'utf8');
 
     const proxy = new LiteLLMProxyManager({
-      port: 48312,
       spawnImpl: (() => makeFakeProc()) as unknown as typeof import('node:child_process').spawn,
       fetchImpl: HEALTHY as unknown as typeof fetch,
     } as never);
@@ -142,7 +146,6 @@ describe('#60 LiteLLM temp dir lifecycle', () => {
     utimesSync(stale, old / 1000, old / 1000);
 
     const proxy = new LiteLLMProxyManager({
-      port: 48311,
       spawnImpl: (() => makeFakeProc()) as unknown as typeof import('node:child_process').spawn,
       fetchImpl: HEALTHY as unknown as typeof fetch,
     } as never);
