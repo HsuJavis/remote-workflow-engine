@@ -63,7 +63,8 @@ beforeAll(async () => {
     bind: '127.0.0.1', // NOT 0.0.0.0 — a loopback bind means the D-BIND exemption is off and the bearer is really validated
     workRoot: tmpDir,
     auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it124-cid', googleClientSecret: 'it124-cs' },
-    principals: { [ALICE]: { role: 'author' }, [BOB]: { role: 'author' }, [ROOT]: { role: 'admin' } },
+    // CAROL is the plain 'user' (since 2026-09-30 an UNLISTED principal is 'none' = pending approval).
+    principals: { [ALICE]: { role: 'author' }, [BOB]: { role: 'author' }, [ROOT]: { role: 'admin' }, [CAROL]: { role: 'user' } },
     // Issue #92 part B/C follow-up: a fake probe (never real network/process I/O) so a real
     // `kind:'mcp'` workspace_push can reach the catalog write in this suite.
     mcpProbe: new FakeMcpProbe(true),

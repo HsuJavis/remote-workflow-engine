@@ -543,7 +543,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `maxWorkflowDepth` | 具名 `workflow()` 巢狀組合單一分支深度上限（頂層 run=0）；超過回可分支的 `NESTING_DEPTH_EXCEEDED`（不崩父 run）；≤0 或非整數在啟動時拒絕 | `number` / `4` | 否 | v8 |
 | `rwe.config.json` → `maxWorkflowDescendants` | 巢狀 `workflow()` 呼叫總數上限（整棵 fan-out × depth 樹）；超過回 `DESCENDANT_CAP_EXCEEDED` | `number` / `256` | 否 | v8 |
 | `rwe.config.json` → `maxWorkflowVersions` | 同一工作流程名稱累積保留的版本數上限；達上限時 `workflow_register` 回 `VERSION_CEILING_EXCEEDED`（需先 `workflow_deregister` 舊版本或調高此值） | `number` / 省略 = 不設上限 | 否 | v22 |
-| `rwe.config.json` → `principals` | 角色對照表：鍵是 principal id（OAuth 下的使用者 email，或 `"*"` 代表所有已驗證但未列名者），值是 `{role:"admin"｜"author"｜"user"}`；角色字串打錯（例如 `"admn"`）**開機直接拒絕啟動**，絕不會靜默退回 `"user"`（ADR-028 fail-closed）；整個鍵省略時，`auth.enabled:true` 下每個已驗證呼叫者一律 `"user"`（同樣是 fail-closed，且開機那行 `auth:` log 會如實顯示） | `object` / 省略 | 否 | v24 |
+| `rwe.config.json` → `principals` | 角色對照表：鍵是 principal id（OAuth 下的使用者 email，或 `"*"` 代表所有已驗證但未列名者），值是 `{role:"admin"｜"author"｜"user"｜"none"}`；角色字串打錯（例如 `"admn"`）**開機直接拒絕啟動**（ADR-028 fail-closed）；未列名（也沒有 `"*"`）的已驗證呼叫者是 `"none"`＝**待核准**，每個工具與 dashboard 資料都回 `ACCOUNT_PENDING_APPROVAL`，直到 admin 授予角色（2026-09-30 起；之前是 `"user"`）；開機那行 `auth:` log 的 `defaultRole=` 會如實顯示 | `object` / 省略 | 否 | v24 |
 | `rwe.config.json` → `proxyManager` / `issueReporter` / `mcpProbe` / `modelCatalog` / `modelCatalogFetchers` / `systemInfo` | **程式注入用的替身接點，JSON 設定檔設不了**（值是函式/物件）。列在這裡只是為了說明：把它們寫進 `rwe.config.json` 不會被當成「不認得的鍵」警告，但也不會有任何效果 | 物件/函式 / — | 否 | v26 |
 | `rwe.config.json` → `mcpEgressAllowlist` | `workspace_push({kind:"mcp"})` 註冊 `http` transport 時的 https-only 白名單（URL 前綴比對，同 `seedRefAllowlist` 的 fail-closed 慣例）；省略/空陣列＝任何 `http` MCP 設定一律 `EGRESS_DENIED`（探測前就擋，探測次數為零）。2026-09-30 業主裁決：這份生效清單經 `system_info` 回應的 `policy.mcpEgressAllowlist` 對外可見（任何已驗證呼叫者，同一份值，不重讀設定） | `string[]` / `[]` | 否 | v24 |
 | `rwe.config.json` → `sandbox.allowHostPaths` | 營運者授予的共用主機路徑清單——agent 的 Bash 除了自己的 run workspace，還可以讀寫這些路徑（REQ-218）。每一筆在開機時驗證：必須是絕對路徑（不展開 `~`）、必須存在於磁碟上（**開機前要先 `mkdir`**，否則以 `UNRESOLVABLE` 拒絕啟動）、不可在 `workRoot` 內也不可包住 `workRoot`、不可等於或包住 `rwe.config.json`/`auth-tokens.db`、不可等於或包住引擎的家目錄（issue #101，否則等於把整個家目錄的讀取封鎖還回去）、不可含萬用字元；任何一筆不合規就**整個拒絕開機**，訊息逐筆列出。省略 = `[]`，最嚴格姿態。**此鍵只申報授權清單，不決定 Bash 是否真的受限——那是量測出來的**（見下一列） | `string[]` / `[]` | 是 | v37 |
@@ -616,7 +616,8 @@ curl -s http://localhost:8787/api/models | python3 -c \
 
 ### 角色（`principals`）——啟用 auth 前一定要讀
 
-每個工具都有一個**最低角色**要求。角色共三級（`admin` > `author` > `user`），由 §1b 的
+每個工具都有一個**最低角色**要求。工具角色共三級（`admin` > `author` > `user`），另有 `none`
+（已登入、**待核准**，任何工具都回 `ACCOUNT_PENDING_APPROVAL`），由 §1b 的
 `principals` 表決定：鍵是 principal id（OAuth 下的使用者 email），值是 `{role:"..."}`；
 `"*"` 是萬用鍵，供「已驗證但沒被列名」的人使用。
 
@@ -629,19 +630,25 @@ curl -s http://localhost:8787/api/models | python3 -c \
 角色不足一律回 `FORBIDDEN_ROLE`。角色**之外**還有一層擁有權檢查（`NOT_WORKFLOW_OWNER`／
 `NOT_RUN_OWNER`／`NOT_TRIGGER_OWNER`）：有 `author` 角色不代表能動別人的工作流程。
 
-⚠ **啟用 auth 卻沒設定 `principals` 的話，沒有人能註冊任何東西。** 這是刻意的 fail-closed
-（ADR-028）：`auth.enabled:true` 時每個已驗證但未列名的呼叫者一律解析成 `user`，而 `user` 沒有
-`author`，於是 `workflow_register` 一律 `FORBIDDEN_ROLE`。要開放註冊，至少列一個人：
+⚠ **啟用 auth 卻沒設定 `principals` 的話，沒有人能用任何東西。** 這是刻意的 fail-closed
+（2026-09-30 owner decision，取代 ADR-028 的 `user` 預設）：`auth.enabled:true` 時每個已驗證但未列名
+（也沒有 `"*"`）的呼叫者一律解析成 `none`＝**待核准**——可以完成登入、MCP 可以連上（`initialize`、
+`tools/list` 正常，`initialize` 的說明會寫明待核准），但**每個工具**與 dashboard 的每條資料路由都回
+`ACCOUNT_PENDING_APPROVAL`（dashboard 顯示「等待管理員核准」頁，含 email 與登出；只有
+`GET /api/me` 回自己的 `{id, role:"none", pending:true}`）。admin 在 `principals_list`／管理分頁看到他
+（`role:"none"`），一鍵授予 `user`／`author`／`admin`，下一個請求就生效；`principal_set_role({id, role:"none"})`
+收回權限。**對外開放 dashboard 前務必確認沒有 `"*": {"role":"user"}`**（那等於任何 Google 帳號都能跑已發布的
+工作流程）。至少列一個 admin：
 
 ```json
 "principals": {
   "you@example.com": { "role": "admin" },
   "teammate@example.com": { "role": "author" },
-  "*": { "role": "user" }
+  "viewer@example.com": { "role": "user" }
 }
 ```
 
-角色字串打錯（例如 `"admn"`）會讓服務**開機直接拒絕啟動**，絕不靜默退回 `user`。
+角色字串打錯（例如 `"admn"`）會讓服務**開機直接拒絕啟動**，絕不靜默退回任何預設角色。
 `auth.enabled:false`（預設）時整個授權層被短路，不套用任何角色檢查。
 
 ### 執行期角色管理（2026-09-30 起）——設定檔是「初始值 + 鎖定的管理員」
@@ -650,13 +657,13 @@ curl -s http://localhost:8787/api/models | python3 -c \
 或 dashboard 的「管理」分頁（同一個後端）。變更在該使用者的**下一個請求**就生效。
 
 - **優先序**（每個請求都重新判斷）：設定檔 `principals` 裡的 `admin`（**鎖定**，執行期改不動）
-  ＞ 執行期覆寫（存在 auth DB）＞ 設定檔 `principals[id]` ＞ 設定檔 `"*"` ＞ `user`。
+  ＞ 執行期覆寫（存在 auth DB）＞ 設定檔 `principals[id]` ＞ 設定檔 `"*"` ＞ `none`（待核准）。
 - **防鎖死**：對設定檔 admin 改角色一律 `ROLE_LOCKED`；會讓「已知使用者裡一個 admin 都不剩」的
   降級一律 `LAST_ADMIN`。所以**至少在設定檔放一個 admin**——那是 dashboard/工具之外唯一的救援路徑
   （loopback 豁免的本機呼叫**進不了**管理分頁，見下方 D-BIND 說明）。
 - **已知使用者**（`principals_list` 與管理分頁列出的名單）＝設定檔 `principals` ∪ 執行期覆寫 ∪
   任何曾經登入過的人（MCP bearer／refresh token、dashboard session），附 `lastSeenAt`；
-  `source` 欄說明角色來源：`config-locked`／`db`／`config`／`default`（`"*"` 或預設 `user`）。
+  `source` 欄說明角色來源：`config-locked`／`db`／`config`／`default`（`"*"` 或預設 `none`）。
 - **稽核**：覆寫列記 `updatedBy`／`updatedAt`，服務 log 每次變更印一行
   `{"event":"principal_role_changed","id":…,"previous":…,"role":…,"by":…}`。
 - 儲存位置：`<workRoot>/auth-tokens.db` 的 `principal_roles`、`principals_seen` 兩張表（`auth.enabled`
@@ -683,7 +690,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 - **每位使用者看到的資料＝對應 MCP 工具會給他的**（同一個授權判斷，不可能不一致）：run 列表／首頁卡片／
   成功率等統計只算自己的 run（admin 看全部）；run 詳情、DAG、agent log 只有擁有者或 admin（否則 403
   `NOT_RUN_OWNER`，admin 讀別人的 agent log 會跟 MCP 一樣記稽核）；工作流程對非擁有者只露 release 版
-  （beta／草稿版本不列、describe/diagram 回 404）；系統、模型、issues 任何登入者可看。
+  （beta／草稿版本不列、describe/diagram 回 404）；系統、模型、issues 任何有角色（`user` 以上）的登入者可看（`none` 待核准者什麼都看不到）。
 - **CSRF**：會改東西的 dashboard 請求（登出、改角色）必須同源——`Origin` 的 host 等於請求的 `Host`
   或引擎自己的公開網址（`publicBaseUrl`／`auth.issuer`，所以隧道改寫 `Host` 也沒關係），或帶
   `X-Requested-With`；否則 403。引擎自己的公開網址（`publicBaseUrl`／`auth.issuer` 的 host）

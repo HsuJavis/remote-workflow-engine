@@ -395,7 +395,7 @@ export async function callTool(
     }
     case 'principal_set_role': {
       if (!deps.principals) return refusalEnvelope('INTERNAL_ERROR', 'INTERNAL_ERROR: the principal role store is not wired on this engine');
-      const out = deps.principals.setRole(a['id'] as string, (a['role'] ?? null) as 'admin' | 'author' | 'user' | null, actor ?? 'local');
+      const out = deps.principals.setRole(a['id'] as string, (a['role'] ?? null) as 'admin' | 'author' | 'user' | 'none' | null, actor ?? 'local');
       if (!out.ok) return refusalEnvelope(out.code, out.reason);
       return { runId: '', status: 'completed', result: out.entry };
     }

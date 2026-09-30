@@ -35,7 +35,7 @@ import { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
 import { resolveConfig, type SecretSource } from './secret-resolver.js';
 import { assertWorkRootIsolated } from './workroot-guard.js';
-import type { Role } from './tool-specs.js';
+import type { PrincipalRole as Role } from './authz.js';
 import { validateModelProbeConfig } from './models/model-probe.js';
 
 type GatewayChoice = 'sdk' | 'direct-fetch';
@@ -175,7 +175,7 @@ export function confinementBannerLine(probe: { posture: 'confined' | 'unconfined
 export function normalizePrincipals(
   raw: Record<string, { role: string }> | undefined,
 ): { ok: true; value: Record<string, { role: Role }> } | { ok: false; key: string; role: string } {
-  const VALID_ROLES: readonly string[] = ['admin', 'author', 'user'];
+  const VALID_ROLES: readonly string[] = ['admin', 'author', 'user', 'none'];
   const value: Record<string, { role: Role }> = {};
   for (const [key, entry] of Object.entries(raw ?? {})) {
     if (!VALID_ROLES.includes(entry.role)) return { ok: false, key, role: entry.role };

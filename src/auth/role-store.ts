@@ -4,9 +4,9 @@
 // has logged in. Opened on EVERY boot (auth on or off) so the admin tools answer the same way on
 // both; with auth off the roles it stores are simply not consulted by anything.
 import type Database from 'better-sqlite3';
-import type { Role } from '../authz.js';
+import type { PrincipalRole as Role } from '../authz.js';
 
-const ROLES: readonly Role[] = ['user', 'author', 'admin'];
+const ROLES: readonly Role[] = ['user', 'author', 'admin', 'none'];
 /** A principal's lastSeenAt is written at most once per this interval (a request-rate write
  *  would turn every authenticated call into a DB write). */
 const SEEN_WRITE_EVERY_MS = 60_000;

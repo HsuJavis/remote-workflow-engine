@@ -34,10 +34,10 @@ describe('principals_list / principal_set_role specs', () => {
     expect('LAST_ADMIN' in ERROR_CATALOG).toBe(true);
   });
 
-  it('principal_set_role.role is the closed enum admin|author|user or null', () => {
+  it('principal_set_role.role is the closed enum admin|author|user|none or null', () => {
     const spec = TOOL_SPECS.find((s) => s.name === 'principal_set_role')!;
     const role = (spec.inputSchema as unknown as { properties: Record<string, { enum?: unknown[] }> }).properties['role']!;
-    expect(role.enum).toEqual(['admin', 'author', 'user', null]);
+    expect(role.enum).toEqual(['admin', 'author', 'user', 'none', null]);
   });
 });
 
@@ -66,15 +66,15 @@ describe('principals_list / principal_set_role behaviour', () => {
     const { deps, admin } = setup();
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
-      expect(admin.resolve('bob@x.com')).toBe('user');
+      expect(admin.resolve('bob@x.com')).toBe('none');
       const r = parse(await callTool(deps, 'principal_set_role', { id: 'bob@x.com', role: 'author' }, ROOT));
       expect(r.status).toBe('completed');
       expect(r.result).toMatchObject({ id: 'bob@x.com', role: 'author', source: 'db', updatedBy: 'root@x.com' });
       expect(admin.resolve('bob@x.com')).toBe('author');
       expect(log.mock.calls.map((c) => String(c[0])).some((l) => l.includes('principal_role_changed') && l.includes('bob@x.com'))).toBe(true);
       const cleared = parse(await callTool(deps, 'principal_set_role', { id: 'bob@x.com', role: null }, ROOT));
-      expect(cleared.result).toMatchObject({ id: 'bob@x.com', role: 'user', source: 'default' });
-      expect(admin.resolve('bob@x.com')).toBe('user');
+      expect(cleared.result).toMatchObject({ id: 'bob@x.com', role: 'none', source: 'default' });
+      expect(admin.resolve('bob@x.com')).toBe('none');
     } finally {
       log.mockRestore();
     }

@@ -224,6 +224,7 @@ describe('row 4: auth ENABLED, non-exempt peer, VALID bearer -> 200; without it 
     server = await createServer({
       port: 0, bind: '127.0.0.1', workRoot,
       auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it101-b-cid', googleClientSecret: 'it101-b-cs' },
+      principals: { 'it101-caller@example.com': { role: 'user' } }, // unlisted = 'none' (pending) since 2026-09-30
     } as never);
     seedPublishedWorkflow(join(workRoot, 'catalog.db'), NAME, 'it101-owner4@example.com', 'v1', `return 'v1';`);
     const db = new Database(join(workRoot, 'auth-tokens.db'));

@@ -1104,6 +1104,12 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'ownership):\n\n' +
         roleAssetMatrixRows() +
         '\n\n' +
+        // Owner decision 2026-09-30 (verify-i MEDIUM-1): `user` is the lowest TOOL role, not the
+        // floor for a signed-in account.
+        'With authentication enabled, an account that has signed in but has no role in the engine\'s ' +
+        'principals config (and no role granted at runtime) is `none` = pending approval: EVERY tool ' +
+        'answers `ACCOUNT_PENDING_APPROVAL` until an admin grants user/author/admin with ' +
+        '`principal_set_role` (or the dashboard admin page).\n\n' +
         // Q2: the skill exec flag (workspace_push's own schema documents the mechanics; this is
         // the "when" a script author actually needs).
         '**Skill files and the `exec` flag.** `workspace_push({kind:\'skill\', files:[{path, ' +

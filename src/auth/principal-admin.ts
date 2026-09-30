@@ -1,7 +1,7 @@
 // Dashboard auth spec §A2 (2026-09-30): the ONE backend behind `principals_list` /
 // `principal_set_role` (MCP) and the dashboard admin page — and the per-request role resolver
 // every authenticated request uses, so a change is effective on the very next call (no restart).
-import { roleWithSource, checkRoleChange, type Role, type RoleSource } from '../authz.js';
+import { roleWithSource, checkRoleChange, type PrincipalRole as Role, type RoleSource } from '../authz.js';
 import type { RoleStore } from './role-store.js';
 
 export interface PrincipalEntry {

@@ -51,7 +51,9 @@ beforeAll(async () => {
     bind: '127.0.0.1',
     workRoot: tmpDir,
     auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: CID, googleClientSecret: 'cs', googleAuthorizeUrl: 'http://127.0.0.1:9/auth', googleTokenUrl: google.tokenUrl, jwksFetch: fakeJwksFetch },
-    principals: { [ROOT]: { role: 'admin' }, [ALICE]: { role: 'author' } },
+    // BOB is a plain 'user' by config (an UNLISTED principal is 'none' = pending approval since
+    // 2026-09-30; tests/integration/pending-approval.test.ts covers that).
+    principals: { [ROOT]: { role: 'admin' }, [ALICE]: { role: 'author' }, [BOB]: { role: 'user' } },
   } as never);
   base = `http://127.0.0.1:${server.port}`;
 });

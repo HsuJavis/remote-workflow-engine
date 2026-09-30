@@ -47,7 +47,7 @@ import { TokenStore } from './auth/token-store.js';
 import { createAuthRouteHandlers, resolvePrincipal, readSessionCookie, sessionCookie, clearSessionCookie, type AuthConfig } from './auth/auth-service.js';
 import { RoleStore } from './auth/role-store.js';
 import { PrincipalAdmin } from './auth/principal-admin.js';
-import type { Role } from './tool-specs.js';
+import type { PrincipalRole as Role } from './authz.js';
 import { wwwAuthenticateHeader } from './auth/oauth-metadata.js';
 import { DEFAULT_CEILINGS, type Ceilings, type Effort } from './params/contract.js';
 
@@ -346,7 +346,7 @@ async function handleDashboardRequest(
   modelBook: ModelBook,
   // v24 (DES-141): the same {enabled, principalsCount, defaultRole} shape as the boot line, computed
   // once at boot — GET /api/system's `auth` key (ARCH-090).
-  authAnnounce: { enabled: boolean; principalsCount: number; defaultRole: 'user' } = { enabled: false, principalsCount: 0, defaultRole: 'user' },
+  authAnnounce: { enabled: boolean; principalsCount: number; defaultRole: Role } = { enabled: false, principalsCount: 0, defaultRole: 'none' },
   // v25 (REQ-119, DES-166): the (name, version)-keyed SVG cache in front of the renderer.
   diagrams: DiagramRenderer = new DiagramRenderer(),
   // Issue #73: the latest model-probe result per (provider, model), merged into `/api/models`.
@@ -933,7 +933,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // everyone-is-admin default). `enabled` answers "is role-based authorization active" — true when
   // EITHER a `principals` map was configured OR OAuth (`config.auth.enabled`) is on; these are
   // deliberately not conflated with "principals absent" (ARCH-090's own note). `defaultRole` is
-  // always 'user' (ADR-028) — there is no config knob for it. Computed once at boot (a diagnostic,
+  // the config '*' role, else 'none' (pending approval, owner decision 2026-09-30). Computed once at boot (a diagnostic,
   // not a per-request read); `getRun` (not `listRuns`, which doesn't project `principal`) is the
   // only RunStore read that already carries it (pre-v24, DES-096).
   const principalsCount = Object.keys(config?.principals ?? {}).length;
@@ -951,7 +951,9 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   const ownerlessTriggers =
     (await scheduler.list()).filter((s) => !s.createdBy).length +
     webhooks.list().filter((w) => !w.createdBy).length;
-  const authAnnounce = { enabled: authAnnounceEnabled, principalsCount, defaultRole: 'user' as const };
+  // Owner decision 2026-09-30 (verify-i MEDIUM-1): an unlisted principal resolves to the config
+  // '*' role, else 'none' (pending approval) — the announced default says which.
+  const authAnnounce = { enabled: authAnnounceEnabled, principalsCount, defaultRole: (config?.principals?.['*']?.role ?? 'none') as Role };
 
   // v24 (TASK-139/DES-159): the TriggerPorts composition and the GraphAnalyzer boot (config field,
   // instance, sweepAtBoot, boot logs) are gone with the analyzer/trigger-bindings ports they read —
@@ -1009,6 +1011,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // tool-result object a caller actually receives (no literal, no module-scope memo — DES-239's own
   // boundary (a)).
   async function buildInitializeInstructions(webhookBaseUrl: string, principal: Principal): Promise<string> {
+    // Owner decision 2026-09-30: a pending principal can connect, and is told why every tool will
+    // refuse — without computing (or disclosing) anything from the guide it may not read.
+    if (principal.kind === 'none') {
+      return `${ENVELOPE_NOTE} ACCOUNT_PENDING_APPROVAL: this account (${principal.id}) has signed in but has no role yet; every tool will refuse until an administrator grants one.`;
+    }
     const guideResult = await callTool(buildToolDeps(webhookBaseUrl), 'workflow_authoring_guide', {}, principal);
     const bytes = Buffer.byteLength(JSON.stringify({ content: [{ type: 'text', text: JSON.stringify(guideResult) }] }));
     return `${ENVELOPE_NOTE} workflow_authoring_guide is ~${bytes} bytes.`;
@@ -1380,7 +1387,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       const r = out as { status?: string; code?: string; error?: { code?: string; message?: string }; result?: unknown };
       if (r.status === 'failed') {
         const code = r.code ?? r.error?.code ?? 'INTERNAL_ERROR';
-        const http = code === 'FORBIDDEN_ROLE' || code === 'PRINCIPAL_REQUIRED' ? 403
+        const http = code === 'FORBIDDEN_ROLE' || code === 'PRINCIPAL_REQUIRED' || code === 'ACCOUNT_PENDING_APPROVAL' ? 403
           : code === 'ROLE_LOCKED' || code === 'LAST_ADMIN' ? 409
           : code === 'INVALID_ARGUMENT' ? 400 : 500;
         sendJson(res, http, { code, error: r.error?.message ?? code });
@@ -1425,6 +1432,14 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
           'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' blob:; connect-src 'self'; form-action 'self'",
         });
         res.end(buildDashboardHtml({ lastUpdate: lastUpdateOutcome, interruptedRuns: interruptedRuns || undefined, auth }));
+        return;
+      }
+      // Who am I (spec §A + owner decision 2026-09-30): the ONE /api route a pending ('none')
+      // principal may read — its own id and role, nothing else.
+      if (reqPath === '/api/me' && req.method === 'GET') {
+        sendJson(res, 200, !authCfg || principal.kind === 'auth-disabled' ? { authEnabled: false }
+          : principal.kind === 'loopback-exempt' ? { authEnabled: true, loopback: true }
+          : { authEnabled: true, id: principal.id, role: principal.kind, pending: principal.kind === 'none' });
         return;
       }
       if (reqPath === '/api/principals' || reqPath === '/api/principals/role') {

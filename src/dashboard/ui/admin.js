@@ -80,14 +80,14 @@ function paint(state, body) {
     tr.setAttribute('data-admin-row', row.id);
     tr.appendChild(el('td', 'mono', row.id));
     const roleCell = document.createElement('td');
-    roleCell.appendChild(el('span', 'tag', row.role));
+    roleCell.appendChild(el('span', 'tag', row.pending ? `none (${t(state.lang, 'admPending')})` : row.role));
     tr.appendChild(roleCell);
     tr.appendChild(el('td', 'muted', row.sourceText));
     tr.appendChild(el('td', 'mono', row.lastSeen));
     const cell = document.createElement('td');
     const select = el('select', 'input');
     select.setAttribute('aria-label', `${t(state.lang, 'admChange')} ${row.id}`);
-    for (const value of ['', 'admin', 'author', 'user']) {
+    for (const value of ['', 'admin', 'author', 'user', 'none']) {
       const opt = el('option', undefined, value === '' ? t(state.lang, 'admDefault') : value);
       opt.value = value;
       select.appendChild(opt);
@@ -96,6 +96,16 @@ function paint(state, body) {
     select.disabled = row.locked;
     select.addEventListener('change', () => { changeRole(state, row.id, select.value, select, row.selected); });
     cell.appendChild(select);
+    // Owner decision 2026-09-30: a pending ('none') principal gets one-click grants.
+    if (row.pending && !row.locked) {
+      for (const grant of ['user', 'author', 'admin']) {
+        const b = el('button', 'btn', `${t(state.lang, 'admGrant')} ${grant}`);
+        b.type = 'button';
+        b.setAttribute('data-admin-grant', grant);
+        b.addEventListener('click', () => { changeRole(state, row.id, grant, select, row.selected); });
+        cell.appendChild(b);
+      }
+    }
     tr.appendChild(cell);
     state.tbody.appendChild(tr);
   }

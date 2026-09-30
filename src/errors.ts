@@ -55,6 +55,8 @@ export const ERROR_CATALOG = {
   // Dashboard auth spec §A2 (2026-09-30): the two runtime role-change lockout refusals
   // (principal_set_role and the dashboard admin page share them).
   ROLE_LOCKED: { see: null, hint: 'this principal is an admin in rwe.config.json principals; config admins are locked and can only be changed by editing the config and restarting' },
+  // Owner decision 2026-09-30 (verify-i MEDIUM-1): a signed-in principal with no role is pending.
+  ACCOUNT_PENDING_APPROVAL: { see: null, hint: 'this account signed in but has no role yet; an administrator must grant one (principal_set_role, or the dashboard admin page) before any tool or dashboard data is available' },
   LAST_ADMIN: { see: null, hint: 'this change would leave no admin; promote another principal to admin first' },
   // v24 adjudication #6 F-3 (D-14, REQ-116): thrown from the REGISTRATION path (mcp-facade.ts:313)
   // when a registration declares a trigger someone else created. REQ-116 requires a registration

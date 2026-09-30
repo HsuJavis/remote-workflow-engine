@@ -122,7 +122,8 @@ beforeAll(async () => {
       googleClientId: 'val199-client-id', googleClientSecret: 'val199-client-secret',
       googleBase: 'http://127.0.0.1:0', jwksFetch: async () => [],
     },
-    principals: { [AUTH_OWNER]: { role: 'author' } },
+    // the signed-in viewer below is a plain 'user' (an UNLISTED account is 'none' = pending approval).
+    principals: { [AUTH_OWNER]: { role: 'author' }, 'val199-viewer@example.com': { role: 'user' } },
   } as never);
   authBaseUrl = `http://127.0.0.1:${authServer.port}`;
   const ownerToken = await mintBearer(authTmpDir, AUTH_OWNER);
@@ -209,6 +210,30 @@ describe('workflow detail page, real Chromium (VAL-199, REQ-133)', () => {
       expect(bodyText.toLowerCase()).not.toContain('skeleton');
       expect(bodyText).toContain(AUTH_AGENT_MARKER);
       expect(bodyText).toContain('val199-viewer@example.com'); // the signed-in header
+    } finally {
+      await browser.close();
+    }
+  }, 20000);
+
+  // Owner decision 2026-09-30 (verify-i MEDIUM-1): an UNLISTED signed-in account is 'none' =
+  // pending approval — the page shows the waiting message with its email and sign-out, no tabs,
+  // and none of the workflow's data.
+  itReal('auth-ENABLED engine: an unlisted signed-in account sees only the pending-approval page', async () => {
+    const db = new Database(join(authTmpDir, 'auth-tokens.db'));
+    const { token: session } = new TokenStore(db, { clock: () => Date.now(), csprng: (n: number) => randomBytes(n) }).createSession('val199-pending@example.com');
+    db.close();
+    const puppeteer = (await import('puppeteer')).default;
+    const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
+    try {
+      const page = await browser.newPage();
+      await page.setCookie({ name: 'rwe_session', value: session, url: authBaseUrl, httpOnly: true, sameSite: 'Lax' });
+      await page.goto(`${authBaseUrl}/dashboard/workflow/val199-auth-never-run`, { waitUntil: 'networkidle0', timeout: 10000 });
+      await page.waitForSelector('[data-pending-approval]', { timeout: 3000 });
+      const text = await page.evaluate(() => document.body.innerText);
+      expect(text).toContain('val199-pending@example.com');
+      expect(text).not.toContain(AUTH_AGENT_MARKER);
+      expect(await page.$$eval('.rwe-tabs a', (as) => as.length)).toBe(0);
+      expect(await page.$('[data-sign-out] button')).not.toBeNull();
     } finally {
       await browser.close();
     }

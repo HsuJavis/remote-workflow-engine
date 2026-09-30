@@ -32,7 +32,8 @@ describe('auth boot announcement (IT-107, DES-141)', () => {
     // #59: `auth: { enabled: true }` is now REQUIRED for this expectation. Before the fix this case
     // passed without it, because a present principals map alone announced enabled=true — the very
     // conflation that made every fresh deployment misreport its auth state.
-    expect(bootLine).toMatch(/auth: enabled=true principals=1 defaultRole=user/);
+    // Owner decision 2026-09-30: no '*' entry -> an unlisted principal is 'none' (pending approval).
+    expect(bootLine).toMatch(/auth: enabled=true principals=1 defaultRole=none/);
     logSpy.mockRestore();
   });
 
@@ -51,15 +52,15 @@ describe('auth boot announcement (IT-107, DES-141)', () => {
     const bootLine = logSpy.mock.calls.map((c) => String(c[0])).find((l) => l.includes('auth:'));
     expect(bootLine).toBeDefined();
     // The count still reports what is configured — an inert role table is worth seeing.
-    expect(bootLine).toMatch(/auth: enabled=false principals=2 defaultRole=user/);
+    expect(bootLine).toMatch(/auth: enabled=false principals=2 defaultRole=user/); // its '*' is user
     logSpy.mockRestore();
   });
 
-  it('a MISSING principals map with auth enabled defaults everyone to user AND says so visibly (ADR-028 fail-closed)', async () => {
+  it('a MISSING principals map with auth enabled defaults everyone to none (pending approval) AND says so visibly', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     server = await createServer({ port: 0, bind: '127.0.0.1' });
     const bootLine = logSpy.mock.calls.map((c) => String(c[0])).find((l) => l.includes('auth:'));
-    expect(bootLine).toMatch(/defaultRole=user/);
+    expect(bootLine).toMatch(/defaultRole=none/);
     logSpy.mockRestore();
   });
 

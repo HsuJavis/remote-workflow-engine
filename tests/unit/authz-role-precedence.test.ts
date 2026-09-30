@@ -11,11 +11,11 @@ const CFG = {
 };
 
 describe('resolveRole precedence (spec §A2)', () => {
-  it('keeps the 2-argument form: config entry, then "*", then user', () => {
+  it('keeps the 2-argument form: config entry, then "*", then none (pending approval, owner decision 2026-09-30)', () => {
     expect(resolveRole(CFG, 'alice@x.com')).toBe('author');
     expect(resolveRole({ '*': { role: 'author' } }, 'bob@x.com')).toBe('author');
-    expect(resolveRole(CFG, 'bob@x.com')).toBe('user');
-    expect(resolveRole(undefined, 'bob@x.com')).toBe('user');
+    expect(resolveRole(CFG, 'bob@x.com')).toBe('none');
+    expect(resolveRole(undefined, 'bob@x.com')).toBe('none');
   });
 
   it('a DB override beats config principals[id] and "*"', () => {
@@ -33,7 +33,7 @@ describe('resolveRole precedence (spec §A2)', () => {
     expect(roleWithSource(CFG, 'alice@x.com', 'admin')).toEqual({ role: 'admin', source: 'db' });
     expect(roleWithSource(CFG, 'alice@x.com')).toEqual({ role: 'author', source: 'config' });
     expect(roleWithSource({ '*': { role: 'author' } }, 'bob@x.com')).toEqual({ role: 'author', source: 'default' });
-    expect(roleWithSource(undefined, 'bob@x.com')).toEqual({ role: 'user', source: 'default' });
+    expect(roleWithSource(undefined, 'bob@x.com')).toEqual({ role: 'none', source: 'default' });
   });
 });
 

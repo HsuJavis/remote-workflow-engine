@@ -6,12 +6,19 @@
 import { t } from './strings.js';
 
 const BASE_TABS = ['workflows', 'models', 'system', 'issues'];
-const ROLES = ['admin', 'author', 'user'];
+const ROLES = ['admin', 'author', 'user', 'none'];
 
 /** The tab strip for this page load: the admin tab exists only for a signed-in admin (the server
  *  refuses its API to anyone else anyway — hiding it is presentation, not the control). */
 export function tabsFor(auth) {
+  if (isPending(auth)) return [];
   return auth && auth.enabled && auth.role === 'admin' ? [...BASE_TABS, 'admin'] : [...BASE_TABS];
+}
+
+/** Owner decision 2026-09-30: a signed-in principal with role 'none' is PENDING APPROVAL — the
+ *  app shows the waiting page instead of any view (every data route would refuse it anyway). */
+export function isPending(auth) {
+  return !!(auth && auth.enabled && !auth.loopback && auth.role === 'none');
 }
 
 /** The header's identity cluster, or null when auth is disabled (nobody to name). */
@@ -38,6 +45,7 @@ export function principalRows(body, lang) {
       id: String(p.id),
       role: p.role,
       locked,
+      pending: p.role === 'none',
       selected: p.source === 'db' ? p.role : (locked ? 'admin' : ''),
       lastSeen: fmtSeen(p.lastSeenAt, lang),
       sourceText: p.source === 'db' && p.updatedBy ? `${src} (${t(lang, 'admBy')} ${p.updatedBy})` : src,

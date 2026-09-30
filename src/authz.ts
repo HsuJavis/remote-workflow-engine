@@ -11,6 +11,11 @@ import type { ErrorCode } from './errors.js';
 
 export type { Role };
 
+/** A principal's RESOLVED role (owner decision 2026-09-30, verify-i MEDIUM-1): the three tool roles
+ *  plus `'none'` = signed in but not yet granted anything ("pending approval"). `'none'` is never a
+ *  tool's `minRole`; `authorize()` refuses it ACCOUNT_PENDING_APPROVAL before any other check. */
+export type PrincipalRole = Role | 'none';
+
 /** v24 (DES-139): the role IS the `kind` for an identified caller — there is no separate `role`
  *  field to drift out of step with it. Two special kinds carry no role/id at all: `auth-disabled`
  *  (single-operator mode, short-circuits everything) and `loopback-exempt` (an unauthenticated
@@ -19,6 +24,7 @@ export type Principal =
   | { kind: 'user'; id: string }
   | { kind: 'author'; id: string }
   | { kind: 'admin'; id: string }
+  | { kind: 'none'; id: string }
   | { kind: 'auth-disabled' }
   | { kind: 'loopback-exempt' };
 
@@ -56,6 +62,7 @@ export const AUTHZ_ERROR_CODES = [
   'NOT_WORKFLOW_OWNER',
   'NOT_TRIGGER_OWNER',
   'PRINCIPAL_REQUIRED',
+  'ACCOUNT_PENDING_APPROVAL',
 ] as const satisfies readonly ErrorCode[];
 
 export type AuthzErrorCode = (typeof AUTHZ_ERROR_CODES)[number];
@@ -81,21 +88,22 @@ const ROLE_RANK: Record<Role, number> = { user: 0, author: 1, admin: 2 };
  *  role, else `'user'`. */
 export type RoleSource = 'config-locked' | 'db' | 'config' | 'default';
 
-type PrincipalsMap = Record<string, { role: Role }> | undefined;
+type PrincipalsMap = Record<string, { role: PrincipalRole }> | undefined;
 
 /** Precedence (spec §A2): config admin (LOCKED) > DB override > config `principals[id]` > config
- *  `'*'` > `'user'`. With auth enabled an unlisted id (and a missing/undefined `principals` map)
- *  resolves to `'user'` (ADR-028: fail closed and loud) — never a silent admin default. The
+ *  `'*'` > `'none'`. With auth enabled an unlisted id (and a missing/undefined `principals` map)
+ *  resolves to `'none'` — signed in, pending approval, refused by every tool (owner decision
+ *  2026-09-30; before it was `'user'`, ADR-028) — never a silent admin default. The
  *  override is PASSED IN (this module stays pure — the caller reads the store). */
-export function roleWithSource(principals: PrincipalsMap, id: string, override?: Role): { role: Role; source: RoleSource } {
+export function roleWithSource(principals: PrincipalsMap, id: string, override?: PrincipalRole): { role: PrincipalRole; source: RoleSource } {
   const own = principals?.[id]?.role;
   if (own === 'admin') return { role: 'admin', source: 'config-locked' };
   if (override !== undefined) return { role: override, source: 'db' };
   if (own !== undefined) return { role: own, source: 'config' };
-  return { role: principals?.['*']?.role ?? 'user', source: 'default' };
+  return { role: principals?.['*']?.role ?? 'none', source: 'default' };
 }
 
-export function resolveRole(principals: PrincipalsMap, id: string, override?: Role): Role {
+export function resolveRole(principals: PrincipalsMap, id: string, override?: PrincipalRole): PrincipalRole {
   return roleWithSource(principals, id, override).role;
 }
 
@@ -109,10 +117,10 @@ export type RoleChangeVerdict =
  *  demotes nobody is always allowed, even on a deployment with no admin at all. */
 export function checkRoleChange(a: {
   principals: PrincipalsMap;
-  overrides: ReadonlyMap<string, Role>;
+  overrides: ReadonlyMap<string, PrincipalRole>;
   known: readonly string[];
   id: string;
-  role: Role | null;
+  role: PrincipalRole | null;
 }): RoleChangeVerdict {
   if (a.id === '*') {
     return { ok: false, code: 'INVALID_ARGUMENT', reason: "INVALID_ARGUMENT: '*' is the config default role, not a principal — edit rwe.config.json to change it" };
@@ -160,6 +168,12 @@ export function authorize(
   if (principal.kind === 'auth-disabled') return { ok: true };
 
   const { row, mode } = resolveRow(spec.authz, args);
+
+  // Owner decision 2026-09-30: a signed-in principal with no granted role is refused by EVERY tool
+  // — before role/ownership, so no lookup runs and nothing about the resource is disclosed.
+  if (principal.kind === 'none') {
+    return refuse('ACCOUNT_PENDING_APPROVAL', 'ACCOUNT_PENDING_APPROVAL: this account has signed in but has no role yet — an administrator must grant one (principal_set_role or the dashboard admin page)', mode);
+  }
 
   if (principal.kind === 'loopback-exempt') {
     if (row.minRole === 'user' && row.ownership === 'none') return { ok: true };

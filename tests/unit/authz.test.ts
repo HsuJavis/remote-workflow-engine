@@ -8,8 +8,10 @@ import { resolveRole, authorize, type OwnerLookup, type Principal } from '../../
 const NOOP_LOOKUP: OwnerLookup = { runOwner: () => undefined, workflowOwner: () => undefined, triggerOwner: () => undefined };
 
 describe('authz — Principal/resolveRole/authorize (UT-140, DES-139)', () => {
-  it('resolveRole(undefined, id) with auth enabled defaults to \'user\' (owner Gate-1 decision)', () => {
-    expect(resolveRole({ 'alice@x.com': { role: 'admin' } }, 'bob@x.com')).toBe('user');
+  // Owner decision 2026-09-30 (verify-i MEDIUM-1) supersedes the Gate-1 'user' default: an unlisted
+  // principal is 'none' = pending approval (refused by every tool until an admin grants a role).
+  it('resolveRole(undefined, id) with auth enabled defaults to \'none\' (pending approval)', () => {
+    expect(resolveRole({ 'alice@x.com': { role: 'admin' } }, 'bob@x.com')).toBe('none');
   });
 
   it('principals["*"] supplies the role for any unlisted principal', () => {

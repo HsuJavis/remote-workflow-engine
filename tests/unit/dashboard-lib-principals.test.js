@@ -2,7 +2,7 @@
 // visibility, and the admin page's row model; plus poll.js's 401 -> login redirect (a 401 must
 // re-authenticate, never count as an outage that engages demo mode).
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { tabsFor, headerIdentity, principalRows, roleChangeValue, loginUrlFor } from '../../src/dashboard/lib/principals.js';
+import { tabsFor, headerIdentity, principalRows, roleChangeValue, loginUrlFor, isPending } from '../../src/dashboard/lib/principals.js';
 
 describe('tabsFor(auth)', () => {
   it('adds the admin tab only for an authenticated admin', () => {
@@ -84,5 +84,32 @@ describe('poll.js getJSON: a 401 sends the browser to the login page', () => {
     const { getJSON } = await import('../../src/dashboard/ui/poll.js');
     await getJSON('/api/runs');
     expect(assign).not.toHaveBeenCalled();
+  });
+});
+
+// Owner decision 2026-09-30 (verify-i MEDIUM-1): a signed-in principal with role 'none' is pending.
+describe("pending approval ('none')", () => {
+  it('isPending is true only for a signed-in none principal', () => {
+    expect(isPending({ enabled: true, id: 'n@x', role: 'none' })).toBe(true);
+    expect(isPending({ enabled: true, id: 'u@x', role: 'user' })).toBe(false);
+    expect(isPending({ enabled: true, loopback: true })).toBe(false);
+    expect(isPending({ enabled: false })).toBe(false);
+    expect(isPending(undefined)).toBe(false);
+  });
+  it('a pending principal gets no tabs at all', () => {
+    expect(tabsFor({ enabled: true, id: 'n@x', role: 'none' })).toEqual([]);
+  });
+  it('the header still names them and offers sign-out', () => {
+    expect(headerIdentity({ enabled: true, id: 'n@x', role: 'none' }, 'en')).toEqual({ label: 'n@x', role: 'none', signOut: true });
+  });
+  it('an admin row for a none principal is marked pending (one-click grant) and none is a valid selector value', () => {
+    const rows = principalRows({ authEnabled: true, principals: [
+      { id: 'n@x', role: 'none', source: 'default', firstSeenAt: null, lastSeenAt: '2026-09-30T01:02:03.000Z' },
+      { id: 'r@x', role: 'none', source: 'db', firstSeenAt: null, lastSeenAt: null, updatedBy: 'root@x' },
+      { id: 'u@x', role: 'user', source: 'db', firstSeenAt: null, lastSeenAt: null, updatedBy: 'root@x' },
+    ] }, 'en');
+    expect(rows.map((r) => r.pending)).toEqual([true, true, false]);
+    expect(rows[1].selected).toBe('none');
+    expect(roleChangeValue('none')).toBe('none');
   });
 });

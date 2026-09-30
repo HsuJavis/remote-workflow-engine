@@ -33,7 +33,7 @@ import { t as tStr } from '../lib/strings.js';
 import { endpointsFor, getJSON, setDemoBodies } from './poll.js';
 // Dashboard auth spec §A/§A2 (2026-09-30): who is signed in (from the island) -> the header's
 // identity cluster and whether the admin tab exists.
-import { tabsFor, headerIdentity } from '../lib/principals.js';
+import { tabsFor, headerIdentity, isPending } from '../lib/principals.js';
 import { render as renderHome, onTick as onTickHome } from './home.js';
 
 // [v28, DES-212, TASK-220] populated by `mountApp()`'s boot-time `import('../demo/dataset.js')`
@@ -634,9 +634,32 @@ function mountRoute() {
   mountHomeRoot();
 }
 
+// Owner decision 2026-09-30: a signed-in principal with role 'none' sees ONLY this waiting page —
+// the chrome (brand, identity, sign-out) and a message; no view is mounted and nothing is polled.
+function mountPending(island) {
+  const { nav } = buildChrome(island);
+  const main = document.createElement('main');
+  main.id = 'app-view';
+  main.setAttribute('data-pending-approval', '');
+  const h = document.createElement('h2');
+  h.textContent = tStr(prefs.lang, 'pendingTitle');
+  const who = document.createElement('p');
+  who.className = 'mono';
+  who.textContent = String(island.auth.id ?? '');
+  const p = document.createElement('p');
+  p.className = 'muted';
+  p.textContent = tStr(prefs.lang, 'pendingBody');
+  main.append(h, who, p);
+  document.body.replaceChildren(nav, main);
+}
+
 function mountApp() {
   const island = readIsland();
   applyTheme();
+  if (isPending(island.auth)) {
+    mountPending(island);
+    return;
+  }
   const { nav, routeMount } = buildChrome(island);
   document.body.replaceChildren(nav, routeMount, buildFooter(island, prefs.lang));
   mountRoute();

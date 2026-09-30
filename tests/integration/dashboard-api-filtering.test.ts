@@ -61,7 +61,7 @@ beforeAll(async () => {
   server = await createServer({
     port: 0, bind: '127.0.0.1', workRoot: tmpDir,
     auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: CID, googleClientSecret: 'cs', googleTokenUrl: google.tokenUrl, jwksFetch: fakeJwksFetch },
-    principals: { [ROOT]: { role: 'admin' }, [ALICE]: { role: 'author' } },
+    principals: { [ROOT]: { role: 'admin' }, [ALICE]: { role: 'author' }, [BOB]: { role: 'user' } },
   } as never);
   base = `http://127.0.0.1:${server.port}`;
   const db = new Database(join(tmpDir, 'auth-tokens.db'));
