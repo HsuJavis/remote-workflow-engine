@@ -74,6 +74,9 @@ export const STR = {
     // [v35, DES-240, TASK-238, REQ-205] the failure-reason label rendered next to a failed run's
     // status (detail view + list row), beside error.code/error.message.
     failureReason: '失敗原因',
+    // dash-auth-spec.md section C (2026-09-30): the run-detail badge for a run with >=1 failed
+    // agent — `{n}` is replaced by `agentFailuresBadgeText`, never a hardcoded count baked in here.
+    agentFailuresBadge: '{n} 個 agent 失敗',
   },
   en: {
     predictedLayout: 'predicted layout',
@@ -107,6 +110,7 @@ export const STR = {
     kind_message: 'message', kind_tool_call: 'tool call', kind_tool_result: 'tool result',
     kind_usage: 'usage', kind_harness: 'harness', kind_log: 'log', kind_refused: 'refused',
     failureReason: 'Failure reason',
+    agentFailuresBadge: '{n} agent(s) failed',
   },
 };
 
@@ -148,6 +152,18 @@ export function warningText(lang, raw) {
     return t(lang, key).replace('{resolved}', kv.resolved.replace(/^v/, ''));
   }
   return t(lang, key);
+}
+
+// dash-auth-spec.md section C (2026-09-30): the "completed with N failed agents" run-detail badge
+// text — a pure decision over `RunStatusView.failedAgentCount` (ADR-049: no `ui/*.js` DOM module is
+// unit-testable, so this lives here beside `warningText`, and `ui/run.js`'s `renderLegend` only
+// appends the returned string). `null` (never an empty string) when there is nothing to show —
+// mirrors `versionTagText`'s own "render NO tag" convention (lib/status.js) — so the caller's `if
+// (text)` guard is total over every input shape, including an absent `view`.
+export function agentFailuresBadgeText(lang, view) {
+  const n = view && view.failedAgentCount;
+  if (!n) return null;
+  return t(lang, 'agentFailuresBadge').replace('{n}', String(n));
 }
 
 // [v29, REQ-150] One home for the three wire-vocabulary -> label maps. `lib/runlist.js` held a

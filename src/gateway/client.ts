@@ -151,7 +151,13 @@ export type GatewayResult =
       proxyModel?: string;
     }
   | {
-      ok: false; provider: string; reason: 'timeout' | 'unreachable' | 'terminal';
+      // dash-auth-spec.md section C (2026-09-30): `'aborted'` is produced by exactly ONE site —
+      // `AgentExecutor._finalizeAborted` (agent-executor.ts), when `run_suspend`/`run_stop` cuts a
+      // call short — never by a real gateway implementation (an SDK/HTTP failure is always
+      // 'timeout'/'unreachable'/'terminal'). Kept in the SAME union rather than a sibling type so
+      // every existing `ok:false` branch (capture()'s failed path, `deriveAgentRecords`) handles it
+      // by construction instead of needing a second parallel type to stay in sync.
+      ok: false; provider: string; reason: 'timeout' | 'unreachable' | 'terminal' | 'aborted';
       /** Observability: when a real SDK session ends in a non-success `result` message, the CLI's
        *  error subtype (e.g. `error_during_execution`, `error_max_turns`) and any error text — so a
        *  0-token `terminal` failure is diagnosable instead of opaque. Also carries the partial

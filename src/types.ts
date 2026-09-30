@@ -73,8 +73,16 @@ export interface ResultEnvelope<T = unknown> {
   principal?: string;
   /** v26 (DES-183, ARCH-118, TASK-183, REQ-127): `run_result`'s usage read path — the run's
    *  persisted `RunUsage` plus whether a budget could actually bind, derived at READ from the
-   *  run's price pin (never stored twice). Always present on a `run_result` response. */
-  meta?: { usage: RunUsage; budgetEnforceable: { usd: boolean; tokens: boolean; unpricedModels: string[] } };
+   *  run's price pin (never stored twice). Always present on a `run_result` response.
+   *  `warnings` (dash-auth-spec.md section C, 2026-09-30): `AGENT_FAILED` when this run had at
+   *  least one failed/refused agent — the script's own return value in `result` is untouched
+   *  (`agent()` still resolves `null` on failure, the run still completes); this is the ONE
+   *  surfaced signal that something inside it didn't work. Absent when no agent failed. */
+  meta?: {
+    usage: RunUsage;
+    budgetEnforceable: { usd: boolean; tokens: boolean; unpricedModels: string[] };
+    warnings?: Array<{ code: 'AGENT_FAILED'; message: string }>;
+  };
 }
 
 /** v26 (DES-183, ARCH-118, ADR-046/047, TASK-183, REQ-127): one run's usage total — THREE
@@ -292,6 +300,16 @@ export interface AgentRecord {
   /** v25 (REQ-120): the named reason a `refused` record exists — a closed-catalog ErrorCode
    *  (`BUDGET_EXCEEDED` today). Absent on every other state. */
   reasonCode?: ErrorCode;
+  /** dash-auth-spec.md section C (2026-09-30): the gateway's own `GatewayResult` failure reason,
+   *  set ONLY on a `state:'failed'` record — mirrors `gateway/client.ts`'s `ok:false` `reason`
+   *  union verbatim (never re-mapped here; `summarizeAgentFailures`, run-manager.ts, does the ONE
+   *  mapping down to the caller-facing `'timeout'|'error'|'aborted'|'refused'` vocabulary). Set by
+   *  BOTH producers identically (`capture()`'s failed branch from `result.reason`;
+   *  `deriveAgentRecords`'s failed branch from the persisted usage event's `data.reason`) — the
+   *  same derived≡snapshot mirror DES-188 already holds every other failed-branch field to.
+   *  Absent on a pre-this-slice record (legacy usage event with no `reason`) and on every other
+   *  state. */
+  failReason?: 'timeout' | 'unreachable' | 'terminal' | 'aborted';
   /** issue #20: ISO time of the most recent live transcript event (message/tool_call/tool_result)
    *  the gateway streamed for this still-running agent — bumped per message by the onEvent hook. Lets
    *  workflow_status distinguish a PROGRESSING agent (lastActivityAt advancing past startedAt) from a
@@ -322,6 +340,18 @@ export interface WorkflowNodeView {
   phases?: string[];
 }
 
+/** dash-auth-spec.md section C (2026-09-30): one `failed`/`refused` agent, summarized for a run
+ *  view — never a runId/principal/prompt (same aggregate-only discipline `AgentCallFact` in
+ *  observed-stats.ts already follows for the same reason). `message` is `AgentRecord.detail`
+ *  (already redacted-then-capped at capture, ARCH-115/R-G9) bounded again for THIS summary — see
+ *  `summarizeAgentFailures`'s own doc for the exact fallback per `reason`. */
+export interface AgentFailureSummary {
+  label?: string;
+  agentId: string;
+  reason: 'timeout' | 'error' | 'aborted' | 'refused';
+  message: string;
+}
+
 export interface RunStatusView {
   runId: string;
   status: RunStatus;
@@ -343,6 +373,10 @@ export interface RunStatusView {
   /** v35 (DES-234, TASK-236, REQ-207): count of `failed`/`refused` agents; OMITTED (never `0`)
    *  when the run has no agent records at all. */
   failedAgentCount?: number;
+  /** dash-auth-spec.md section C (2026-09-30): the structured per-agent detail behind
+   *  `failedAgentCount` — same presence gating (`summarizeAgentFailures`, run-manager.ts): absent
+   *  when `failedAgentCount` is absent OR `0`, never `[]`. */
+  agentFailures?: AgentFailureSummary[];
   /** v13 (REQ-080 / DES-083): engine-pull seedRef outcome — the resolved sha, bytes, latency, when it
    *  was fetched, any dropped symlink/gitlink paths, and (on failure) the typed failCode/failDetail.
    *  Absent unless the run used a seedRef. */

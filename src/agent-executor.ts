@@ -394,16 +394,29 @@ export class AgentTranscriptSink {
           ? (redact({ detail: result.detail }, this._secretValueProvider.entries()) as { detail: string }).detail
           : result.detail;
       const detail = redactedDetail === undefined ? undefined : capDetail(redactedDetail);
+      // v26 (DES-177): same harness-wins rule as the done branch, for the pre-harness terminal case
+      // — `prev?.provider` is '' until the first markHarness/markQueued, so `||` falls through to
+      // the gateway's own value exactly on a pre-harness terminal (empty prev).
+      // dash-auth-spec.md section C (2026-09-30) repair: this MERGED value, not `result.provider`
+      // raw, must also be what the usage event below persists — before this fix the record (here)
+      // and the durable event (below) disagreed on exactly this column for `_finalizeAborted`'s
+      // `provider: ''` result, so a restart-reconstructed record (`deriveAgentRecords`, which reads
+      // the EVENT, never this live `_records` map) lost the provider a still-running process had
+      // right. "record ≡ usage-event" is the done branch's own rule (DES-177) — this branch had
+      // silently violated it for one column.
+      const provider = prev?.provider || result.provider;
       this._records.set(req.agentId, {
         agentId: req.agentId, label: req.label, phase, phaseIndex, frame, startedAt, lastActivityAt, endedAt: ts,
         // #20: preserve the model markHarness stamped on the live record — a failed/timed-out call
         // carries no model of its own, and post-mortem (after the operator stops the run) is exactly
         // when "which model failed" matters most. Don't wipe it back to ''.
-        // v26 (DES-177): same harness-wins rule as the done branch, for the pre-harness terminal case.
         // v26 (DES-180 boundary): "a failed call carries no usage and moves no counter" — the SAME
         // known-zero `ZERO_TOKENS` DES-188's derive branch (2) uses, `unpriced: false` (never
         // dispatched, so genuinely not an unpriced call).
-        state: 'failed', provider: prev?.provider || result.provider, model: prev?.model ?? '', tokens: ZERO_TOKENS, costUSD: 0, unpriced: false,
+        state: 'failed', provider, model: prev?.model ?? '', tokens: ZERO_TOKENS, costUSD: 0, unpriced: false,
+        // dash-auth-spec.md section C: the gateway's own failure reason, verbatim — see
+        // `AgentRecord.failReason`'s own doc for why this is never re-mapped at either producer.
+        failReason: result.reason,
         ...(result.transport !== undefined ? { transport: result.transport } : {}),
         ...(detail !== undefined ? { detail } : {}),
         // v26 (M-2 send-back repair, ADR-046, INV-V26-6, ARCH-111): the SAME spread the `done`
@@ -428,7 +441,9 @@ export class AgentTranscriptSink {
         // v26 (M-2 send-back repair): `unmapped` rides this event too, same spread as the done
         // branch — the terminally-failed call whose unmapped provider chatter matters most.
         data: {
-          reason: result.reason, provider: result.provider, detail: result.detail,
+          // dash-auth-spec.md section C: `provider` is the SAME merged local var the record above
+          // was built from — not `result.provider` raw (see that binding's own comment).
+          reason: result.reason, provider, detail: result.detail,
           ...(result.transport !== undefined ? { transport: result.transport } : {}),
           ...(result.unmapped && result.unmapped.length > 0 ? { unmapped: result.unmapped } : {}),
         },
@@ -506,11 +521,17 @@ export class AgentExecutor implements AgentSpawner {
    *  journals makes `deriveAgentRecords` rebuild the same record after a restart. `failed`, not a new
    *  state: the call reached (or was about to reach) a gateway and did not complete, which is what
    *  `failed` already means; its `detail` says why. The resumed re-run gets a NEW agentId. */
+  /** dash-auth-spec.md section C (2026-09-30): `reason: 'aborted'` (never `'terminal'`) — a real
+   *  gateway failure and a suspend/stop cutoff are distinct causes (`AgentFailureSummary.reason`,
+   *  observed-stats.ts's exclusion, both key off this). `provider: ''` here is deliberately the
+   *  UNRESOLVED sentinel, not a claim — `capture()`'s failed branch (below) merges in whatever the
+   *  live record (`markHarness`) already resolved, exactly like every other failure path; this call
+   *  site never needs to know whether that happened. */
   private async _finalizeAborted(req: AgentReq): Promise<AgentOutcome> {
     await this._sink.capture(
       req.runId,
       { agentId: req.agentId, label: req.opts.label },
-      { ok: false, provider: '', reason: 'terminal', detail: 'ABORTED: the run was suspended or stopped while this call was in flight' },
+      { ok: false, provider: '', reason: 'aborted', detail: 'ABORTED: the run was suspended or stopped while this call was in flight' },
       this._clock.isoNow(),
     );
     return { kind: 'null', aborted: true };

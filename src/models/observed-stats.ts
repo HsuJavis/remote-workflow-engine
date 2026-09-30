@@ -36,18 +36,18 @@
 //    failed call moves no counter", so its tokens/cost are a real, counted zero, not an absence).
 //    `'queued'`/`'running'` (not yet settled) and `'refused'` (never dispatched — no provider/model
 //    to attribute it to) are excluded entirely, not counted as failures.
-//    KNOWN GAP (verified by reading agent-executor.ts, not assumed): a call ABORTED by
+//    RESOLVED (dash-auth-spec.md section C, 2026-09-30 — was a KNOWN GAP here): a call ABORTED by
 //    run_suspend/run_stop also settles `state:'failed'` (via `_finalizeAborted` -> the same
-//    `capture()` path), but `_finalizeAborted` stamps its usage event with `provider: ''`
-//    UNCONDITIONALLY, even when the harness had already resolved a real provider before the abort —
-//    so `AgentRecord.provider` is always `''` for an aborted call, regardless of `deriveAgentRecords`'
-//    `data.provider ?? 'unknown'` fallback (`??` does not replace an empty string). This module's own
-//    `!rec.provider` guard below (needed to keep 'refused'/harness-only junk out of the ref
-//    aggregate) therefore ALSO excludes every aborted call as a side effect — an abort never counts
-//    against any model ref today, contrary to a literal reading of "aborts count as failures". Fixing
-//    that means `_finalizeAborted` stamping the harness-resolved provider instead of `''` — out of
-//    this module's scope (agent-executor.ts's capture path, shared by every other caller of
-//    `capture()`), left for a follow-up.
+//    `capture()` path). `_finalizeAborted` used to stamp its usage event with `provider: ''`
+//    UNCONDITIONALLY, even when the harness had already resolved a real provider before the abort,
+//    which is what excluded every aborted call from this aggregate as a side effect of the
+//    `!rec.provider` guard below (needed for 'refused'/harness-only junk). agent-executor.ts's
+//    `capture()` now merges in the harness-resolved provider for ITS failed branch the same way its
+//    done branch always has, so that guard alone would stop excluding an abort — DELIBERATELY,
+//    an abort is excluded HERE instead, explicitly, on `AgentRecord.failReason === 'aborted'`
+//    (`loadFacts`'s own check): a user's suspend/stop is not a statement about the MODEL's
+//    reliability, so it must never move a ref's `successRate`, unlike a genuine
+//    `'timeout'`/`'unreachable'`/`'terminal'` gateway failure, which still counts (unchanged).
 //  - Cost: `unpriced: true` -> excluded from the cost average (a real "we don't know", per
 //    ADR-046) — NOT the same as `costUSD: 0`, which for a `'failed'` call is a real measured zero and
 //    IS averaged in.
@@ -133,7 +133,16 @@ const DEFAULT_TTL_MS = 5 * 60 * 1000;
  *  `'completed'` — it only changes the harness-only branch's state between `'running'`/`'queued'`,
  *  and both are skipped here regardless. `terminalRunIdsSince` already returns the EXACT candidate
  *  set (a run's terminalAt is always >= every one of its calls' endedAt) — the `rec.endedAt <
- *  sinceIso` check below is belt-and-braces, not a second approximation. */
+ *  sinceIso` check below is belt-and-braces, not a second approximation.
+ *
+ *  dash-auth-spec.md section C (2026-09-30) update to the module header's own KNOWN GAP: an aborted
+ *  call's usage event now carries its REAL provider/model (agent-executor.ts's repair — see
+ *  `AgentRecord.failReason`'s own doc), so the `!rec.model || !rec.provider` guard below no longer
+ *  excludes it. It is excluded HERE instead, explicitly, on `rec.failReason === 'aborted'` — a
+ *  `run_suspend`/`run_stop` cutoff says nothing about the MODEL's own reliability (this module's own
+ *  definition: "failure = the state a timeout/gateway error settles into"), so it must never move a
+ *  ref's `successRate`, distinct from a genuine `'timeout'`/`'unreachable'`/`'terminal'` failure,
+ *  which still counts (unchanged). */
 export function loadFacts(source: ObservedStatsSource, sinceIso: string): AgentCallFact[] {
   const runIds = source.terminalRunIdsSince(sinceIso);
   const facts: AgentCallFact[] = [];
@@ -142,6 +151,7 @@ export function loadFacts(source: ObservedStatsSource, sinceIso: string): AgentC
     const records = deriveAgentRecords(transcripts, 'completed');
     for (const rec of records) {
       if (rec.state !== 'done' && rec.state !== 'failed') continue;
+      if (rec.failReason === 'aborted') continue;
       if (!rec.model || !rec.provider) continue;
       if (!rec.startedAt || !rec.endedAt) continue;
       if (rec.endedAt < sinceIso) continue;

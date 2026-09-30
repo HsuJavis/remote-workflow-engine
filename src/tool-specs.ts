@@ -668,7 +668,7 @@ export const TOOL_SPECS = [
   },
   {
     name: 'run_status', entity: 'run', key: 'runId' as const,
-    description: "Poll a run's status; terminal states carry the final outcome. `failedAgentCount` counts terminal non-success agents; it is omitted (never 0) when the run has no agent records yet — absence is not health, poll again once agents exist, and read it against the `agentCount` this same row already returns. A terminal failure's `error.code` alone is not engine-attested — a script can forge one by setting `e.name` before rethrowing — only this run's own captured refusal ledger is. The owner's response also lists any cross-principal reads of this run's workspace or logs.",
+    description: "Poll a run's status; terminal states carry the final outcome. `agent()` calls that fail or time out still resolve `null` to the script, which still completes — `failedAgentCount` counts those terminal non-success agents (failed/refused) LIVE, before the run itself is terminal; it is omitted (never 0) when the run has no agent records yet — absence is not health, poll again once agents exist, and read it against the `agentCount` this same row already returns. When `failedAgentCount` > 0, `agentFailures` names each one: `{label, agentId, reason: 'timeout'|'error'|'aborted'|'refused', message}` — `message` is a bounded, redacted excerpt of that agent's own failure detail, never a runId/principal/prompt. A terminal failure's `error.code` alone is not engine-attested — a script can forge one by setting `e.name` before rethrowing — only this run's own captured refusal ledger is. The owner's response also lists any cross-principal reads of this run's workspace or logs.",
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
     errors: ['RUN_NOT_FOUND', 'NOT_RUN_OWNER'],
@@ -682,7 +682,8 @@ export const TOOL_SPECS = [
     // specialised outputSchema — see DES-183's own boundary) — `meta.usage` is this run's token/USD
     // total plus `unpricedCalls`/`unmappedMessages`; `meta.budgetEnforceable` names which limits can
     // actually bind given the models this run can reach, and which of those have no known price.
-    description: "Fetch a terminal run's result payload. On a failed run, `result.error` is `{code, message}`. This run's own refusal ledger — never anything lifted from outside this run — is engine-attested; `error.code` alone is not and never has been (a script can set `e.name` before rethrowing to forge any code). The response also carries `meta.usage` (tokens, USD cost, unpriced-call count) and `meta.budgetEnforceable` (which limits can bind, and which reachable models have no known price).",
+    // dash-auth-spec.md section C (2026-09-30): `meta.warnings` — see the description string.
+    description: "Fetch a terminal run's result payload. On a failed run, `result.error` is `{code, message}`. This run's own refusal ledger — never anything lifted from outside this run — is engine-attested; `error.code` alone is not and never has been (a script can set `e.name` before rethrowing to forge any code). The response also carries `meta.usage` (tokens, USD cost, unpriced-call count) and `meta.budgetEnforceable` (which limits can bind, and which reachable models have no known price). If any agent() call inside this run failed or timed out — it still resolved `null` to the script, which still completed normally — `meta.warnings` carries one `{code: 'AGENT_FAILED', message}` entry naming how many; call run_status for the per-agent `agentFailures` detail.",
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
     errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'NOT_RUN_OWNER', 'NESTING_DEPTH_EXCEEDED', 'NESTING_CYCLE', 'DESCENDANT_CAP_EXCEEDED'],
@@ -783,7 +784,7 @@ export const TOOL_SPECS = [
   },
   {
     name: 'run_list', entity: 'run', key: null,
-    description: "List runs, filtered to the caller's own rows; unfiltered for the operator role. `failedAgentCount` is terminal-only — a live run's row omits it (absent, never 0); poll run_status for a live count, and read it against each row's own `agentCount`.",
+    description: "List runs, filtered to the caller's own rows; unfiltered for the operator role. `failedAgentCount` is terminal-only — a live run's row omits it (absent, never 0), consistent with run_status's own row for the SAME run once it goes terminal; poll run_status for a live count, and read it against each row's own `agentCount`. This list row does NOT carry `agentFailures` (the per-agent detail array) — call run_status or run_result for that.",
     inputSchema: schema({ workflow: { type: 'string' }, status: { type: 'string' }, limit: { type: 'number' } }),
     outputSchema: OUT,
     errors: [] as ErrorCode[],

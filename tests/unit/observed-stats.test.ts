@@ -218,6 +218,51 @@ describe('ObservedStats — aggregation correctness (issue #104)', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // dash-auth-spec.md section C (2026-09-30): the KNOWN GAP this module's own header documented —
+  // `_finalizeAborted` used to stamp `provider: ''` unconditionally, which is what excluded every
+  // aborted call from this aggregate (via the `!rec.model || !rec.provider` guard in `loadFacts`).
+  // Now that agent-executor.ts's repair keeps the REAL provider/model on an aborted call's usage
+  // event, that guard would stop excluding it — so this module needs its OWN explicit exclusion,
+  // keyed on the new `failReason:'aborted'` the usage event carries, to keep the module's own
+  // definition ("failure = the state a timeout/gateway error settles into") honest: a user's
+  // suspend/stop says nothing about the MODEL's own reliability, so it must never move
+  // `successRate` for a ref it happened to be mid-call on.
+  it('an aborted call (provider now real, per the agent-executor.ts repair) is still excluded — a suspend/stop is not a model failure', async () => {
+    const { store, dir } = newStore();
+    try {
+      const r1 = await mkRun(store, 'alice', 'completed');
+      // A REAL success on the ref, so exclusion of the aborted call is observable (not just "empty").
+      await seedCall(store, r1, {
+        agentId: 'good', provider: 'anthropic', model: 'claude-z', tools: [], success: true,
+        startedAt: '2026-09-29T00:00:00.000Z', endedAt: '2026-09-29T00:00:01.000Z',
+        tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, costUSD: 0.001,
+      });
+      // An aborted call on the SAME ref — harness resolved a real provider/model before the abort
+      // (exactly `capture()`'s failed branch's post-repair shape: the usage event's `provider` is
+      // the merged value, never `''`).
+      await store.appendTranscript(r1, 'aborted-1', {
+        ts: '2026-09-29T00:00:02.000Z', kind: 'harness',
+        data: { agentId: 'aborted-1', descriptor: { model: 'claude-z', provider: 'anthropic', prompt: 'p', tools: [], skills: [], mcpServers: [], surfaceType: 'none' } },
+      });
+      await store.appendTranscript(r1, 'aborted-1', {
+        ts: '2026-09-29T00:00:03.000Z', kind: 'usage',
+        data: { reason: 'aborted', provider: 'anthropic', detail: 'ABORTED: the run was suspended or stopped while this call was in flight' },
+      });
+
+      const probeStore = new ModelProbeStore(join(dir, 'probes.db'));
+      const clock = new MutableClock(NOW.getTime());
+      const provider = new RunStoreObservedStats({ source: store, probes: probeStore, clock });
+      const r = provider.get('anthropic/claude-z');
+      expect(r.source).toBe('runs');
+      expect(r.prose).not.toBeNull();
+      expect(r.prose!.calls).toBe(1); // the aborted call is NOT counted
+      expect(r.prose!.successRate).toBe(1); // would be 0.5 if the aborted call counted as a failure
+      probeStore.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('ObservedStats — probe fallback (issue #104)', () => {
