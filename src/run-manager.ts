@@ -28,7 +28,7 @@ import { HardenedSeedRefFetcher } from './seedref-fetcher.js';
 const SEEDREF_TIMEOUT_MS = 30_000;
 const SEEDREF_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 const SEEDREF_MAX_FILE_BYTES = 10 * 1024 * 1024;
-import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView, ManifestEntry, EngineWarning, PriceBook, Tokens, RunUsage, RunSummary } from './types.js';
+import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView, ManifestEntry, EngineWarning, PriceBook, Tokens, RunUsage, RunSummary, RunListFilter } from './types.js';
 import type { RunStore } from './run-store.js';
 import { InMemoryRunStore } from './run-store.js';
 // v36 (REQ-217, DES-250): type-only — no runtime cycle (dashboard.ts never imports this file).
@@ -1193,8 +1193,8 @@ export class RunManager {
    *  aggregate. This list itself (and the "recent" run rows/cards it feeds) legitimately becomes
    *  "the most recent 50" — that narrowing is the accepted, owner-ruled trade for removing the
    *  cliff on the list path specifically. */
-  async listSummaries(): Promise<RunSummary[]> {
-    const rows = await this._store.list();
+  async listSummaries(filter: RunListFilter = {}): Promise<RunSummary[]> {
+    const rows = await this._store.list(filter);
     let backfillBudget = BACKFILL_PER_TICK;
     let healed = 0;
     const out: RunSummary[] = [];
@@ -1264,8 +1264,8 @@ export class RunManager {
    *  BEFORE `saveSnapshot` writes the usage row — the same brief snapshot-less window `list()`'s
    *  own `usagePresentRaw` gate already tolerates — so a run counted here as terminal can, for one
    *  instant, still read as unpriced; it self-heals on the very next call, same as today.) */
-  async workflowMetrics(): Promise<Map<string | undefined, WorkflowMetrics>> {
-    return this._store.workflowMetrics();
+  async workflowMetrics(principal?: string): Promise<Map<string | undefined, WorkflowMetrics>> {
+    return this._store.workflowMetrics(principal);
   }
 
   /** v36 (REQ-217 follow-up, DES-251, TASK-249): a thin delegate, like `workflowMetrics()` above —

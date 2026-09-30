@@ -471,7 +471,9 @@ export class SqliteRunStore implements RunStore {
    *  `GROUP BY` — absent, not a zero-valued row (REQ-186's "unmeasured is absent" convention).
    *  `AVG()` over zero priced rows is SQL NULL, which better-sqlite3 hands back as `null` — read
    *  straight through, never coalesced to 0 (REQ-217's own zero-run case). */
-  async workflowMetrics(): Promise<Map<string | undefined, WorkflowMetrics>> {
+  async workflowMetrics(principal?: string): Promise<Map<string | undefined, WorkflowMetrics>> {
+    // Dashboard auth spec §A: `principal` scopes the aggregate to one caller's own runs (the
+    // `run_list` rule) — a non-admin's home cards never fold in other principals' runs.
     const rows = this._db.prepare(`
       WITH term AS (
         SELECT r.runId, r.name, r.status, r.createdAt,
@@ -484,6 +486,7 @@ export class SqliteRunStore implements RunStore {
         FROM runs r
         LEFT JOIN run_snapshots s ON s.runId = r.runId
         WHERE r.status IN ('completed', 'failed', 'stopped')
+          AND (? IS NULL OR r.principal = ?)
       )
       SELECT
         name,
@@ -496,7 +499,7 @@ export class SqliteRunStore implements RunStore {
                  END) AS avgDurationMs
       FROM term
       GROUP BY name
-    `).all() as Array<{
+    `).all(principal ?? null, principal ?? null) as Array<{
       name: string | null; terminalCount: number; completedCount: number;
       avgCostUSD: number | null; pricedCount: number; avgDurationMs: number | null;
     }>;

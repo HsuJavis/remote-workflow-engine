@@ -10,7 +10,7 @@ const inflateAsync = promisify(inflate);
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { McpFacade } from './mcp-facade.js';
+import { runListScope, McpFacade } from './mcp-facade.js';
 import { RunManager } from './run-manager.js';
 import { createEventSink } from './event-log.js';
 import { createSemaphore } from './agent-semaphore.js';
@@ -24,7 +24,7 @@ import { ClaudeAgentSdkGatewayClient } from './gateway/claude-agent-sdk-client.j
 import type { GatewayClient } from './gateway/client.js';
 import type { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { SqliteSchedulerPort, type Schedule, type NewSchedule } from './scheduler.js';
-import type { RefusalReason } from './types.js';
+import type { RefusalReason, RunSummary } from './types.js';
 import { WebhookRegistry, WEBHOOK_HEADERS } from './webhook-registry.js';
 import { CasStore, isValidSha256Hex, isValidNamespace } from './cas-store.js';
 import type { SecretValueProvider } from './secret-resolver.js';
@@ -61,8 +61,8 @@ import type { RunStore } from './run-store.js';
 // authz dispatcher, `tools/list` as a pure projection, and the ungated-route identity strip.
 import { callTool, type ToolDeps } from './call-tool.js';
 import { toPublicRunView, toPublicRunSummary } from './run-view.js';
-import { projectToolsList, ENVELOPE_NOTE } from './tool-specs.js';
-import { type Principal, type OwnerLookup } from './authz.js';
+import { projectToolsList, ENVELOPE_NOTE, TOOL_SPECS } from './tool-specs.js';
+import { authorize, type Principal, type OwnerLookup, type AuthzVerdict } from './authz.js';
 import { createOwnerLookup } from './owner-lookup.js';
 import { DiagramRenderer, renderWithMmdc, type DiagramRendererOpts } from './diagram-render.js';
 import { ModelProbeStore, ModelProber, MODEL_PROBE_DEFAULTS, type ModelProbeConfig, type ProbeResult } from './models/model-probe.js';
@@ -356,12 +356,26 @@ async function handleDashboardRequest(
   // Dashboard auth spec §A: WHO is asking (resolved by the gate) and the SAME sync OwnerLookup
   // `authorize()` uses for every MCP tool call — each route below applies the corresponding
   // tool's rule to this principal, so the dashboard can never show what the tool would refuse.
-  viewer: { principal: Principal; lookup: OwnerLookup } = { principal: { kind: 'auth-disabled' }, lookup: { runOwner: () => undefined, workflowOwner: () => undefined, triggerOwner: () => undefined } },
+  viewer: { principal: Principal; lookup: OwnerLookup; isRemoteSubmission?: boolean } = { principal: { kind: 'auth-disabled' }, lookup: { runOwner: () => undefined, workflowOwner: () => undefined, triggerOwner: () => undefined } },
 ): Promise<void> {
   if (req.method !== 'GET') {
     sendJson(res, 405, { error: 'Dashboard API is read-only: only GET is supported.' });
     return;
   }
+  const { principal } = viewer;
+  // Spec §A: every route below first applies its MCP tool's OWN authorize() row (role + ownership,
+  // tri-state: a resource that does not exist passes here and 404s downstream, exactly as the tool
+  // answers *_NOT_FOUND) — a refusal is 403 with the tool's own code.
+  const allowed = (tool: string, args: Record<string, unknown>): AuthzVerdict | null => {
+    const spec = TOOL_SPECS.find((t) => t.name === tool)!;
+    const verdict = authorize(principal, spec, args, viewer.lookup);
+    if (verdict.ok) return verdict;
+    sendJson(res, 403, { code: verdict.code, error: verdict.reason });
+    return null;
+  };
+  // The `run_list` rule (mcp-facade.ts `runListScope`): a non-admin sees only their own runs.
+  const scope = runListScope(principal);
+  const ownRun = (r: RunSummary): boolean => scope === undefined || viewer.lookup.runOwner(r.runId) === scope;
   const path = (req.url ?? '').split('?')[0]!;
   const agentMatch = /^\/api\/runs\/([^/]+)\/agents\/([^/]+)$/.exec(path);
   const dagMatch = /^\/api\/runs\/([^/]+)\/dag$/.exec(path);
@@ -379,21 +393,22 @@ async function handleDashboardRequest(
   try {
     // v11 F1 (REQ-074/075): home view — 3-way grouped workflow cards with reliability metrics.
     if (path === '/api/home') {
+      if (!allowed('run_list', {}) || !allowed('workflow_list', {})) return;
       const [catalogEntries, runs, metrics, activeRuns] = await Promise.all([
         runManager.catalog.list(),
         // v27 (DES-194, ARCH-127, TASK-199): the usage-projected accessor — same one `/api/runs`
         // reads. v36 (REQ-217): now paginated (`listSummaries()` -> `store.list()`, limit 50/cap
         // 500) — cards' latestRunId narrows to the most recent runs (DES-250, accepted).
-        runManager.listSummaries(),
+        runManager.listSummaries(scope !== undefined ? { principal: scope } : {}),
         // v36 (REQ-217, ARCH-172/ADR-080): the full-history aggregate — successRate/avgCostUSD must
         // NOT narrow with the list above, so they are no longer folded from `runs` here.
-        runManager.workflowMetrics(),
+        runManager.workflowMetrics(scope),
         // v36 (REQ-217 follow-up, DES-251, TASK-249): the currently-non-terminal set, unbounded by
         // history — RUNNING/activeRunId resolve from THIS, not from the paginated `runs` above, so
         // a suspended/interrupted run older than the page still keeps its workflow's activeRunId.
         runManager.activeRuns(),
       ]);
-      sendJson(res, 200, buildHomeView(catalogEntries, runs, metrics, activeRuns));
+      sendJson(res, 200, buildHomeView(catalogEntries, runs, metrics, activeRuns.filter(ownRun)));
       return;
     }
     // v12 (REQ-076/077, DES-073): host system info — bare SystemInfoView (no MCP envelope wrapper).
@@ -403,6 +418,7 @@ async function handleDashboardRequest(
     // SystemInfoSampler.get() applies topN at SHAPE time over the cached snapshot, so a different
     // constant per caller is free — and a knob on this unauthenticated route would widen recon).
     if (path === '/api/system') {
+      if (!allowed('system_info', {})) return;
       const view = await systemInfo.get({ topN: 20 });
       // v24 (DES-141): auth = {enabled, principalsCount, defaultRole} (ARCH-090).
       sendJson(res, 200, { ...view, auth: authAnnounce });
@@ -413,6 +429,7 @@ async function handleDashboardRequest(
     // a burst of dashboard loads fires at most one upstream fetch), and `catalogFetchedAt` on each
     // row is the snapshot's own "as of", not a hardcoded `null`.
     if (path === '/api/models') {
+      if (!allowed('models_list', {})) return;
       const snapshot = await modelBook.snapshot();
       const entries = snapshot.entries as ModelEntry[];
       const observed = observedStats?.getAll(); // issue #104: one snapshot per request, joined by ref
@@ -422,24 +439,32 @@ async function handleDashboardRequest(
     if (path === '/api/runs') {
       // v27 (DES-194, ARCH-127, TASK-199): the usage-projected accessor — same precedence chain
       // (live -> snapshot -> one-time backfilled fold -> absent) `/api/runs/:id`'s detail route folds.
-      const runs = await runManager.listSummaries();
+      if (!allowed('run_list', {})) return;
+      const runs = await runManager.listSummaries(scope !== undefined ? { principal: scope } : {});
       // DES-240 rationale item 9: failedAgentCount is declined on this list surface (run_list, the
       // MCP tool, keeps it) — stripped here, not off RunSummary itself.
       sendJson(res, 200, buildDashboardModel(runs.map(toPublicRunSummary)).runs);
       return;
     }
     // v8 Slice 3 (REQ-049): registered-workflow cards for the dashboard home.
+    // Spec §A: masked per viewer by `workflow_list`'s own version rule (facade.workflowCatalogFor).
     if (path === '/api/workflows') {
-      sendJson(res, 200, await runManager.catalog.list());
+      if (!allowed('workflow_list', {})) return;
+      sendJson(res, 200, await facade.workflowCatalogFor(principal));
       return;
     }
     // v23 (REQ-101, DES-125/132, ARCH-083, TASK-120): replaces the deleted /skeleton route — the
     // same `workflow_describe` response the MCP tool returns (DES-132's parity guarantee), unwrapped
     // to its `result` (never the raw envelope). Unauthenticated with no owner branch to make (DES-125
     // drops `viewerIsOwner`), so `ctx` here makes no masking decision either.
+    // Spec §A: the CALLER's principal (not auth-disabled) — a non-owner gets exactly what
+    // workflow_describe answers them (release only; a beta/draft version is VERSION_NOT_FOUND).
+    // `?version=` selects a version, as on diagram.svg below.
     if (describeMatch) {
       const name = decodeURIComponent(describeMatch[1]!);
-      const resp = await facade.workflowDescribe({ name }, { kind: 'auth-disabled' }) as {
+      if (!allowed('workflow_describe', { name })) return;
+      const version = new URL(req.url ?? '/', 'http://x').searchParams.get('version') ?? undefined;
+      const resp = await facade.workflowDescribe({ name, version }, principal, viewer.isRemoteSubmission === true) as {
         status: string; error?: { message?: string }; result?: unknown;
       };
       if (resp.status === 'failed') {
@@ -455,8 +480,9 @@ async function handleDashboardRequest(
     // and no Mermaid library ships to the client (UT-161's guard, unchanged).
     if (diagramMatch) {
       const name = decodeURIComponent(diagramMatch[1]!);
+      if (!allowed('workflow_describe', { name })) return;
       const version = new URL(req.url ?? '/', 'http://x').searchParams.get('version') ?? undefined;
-      const resp = await facade.workflowDescribe({ name, version }, { kind: 'auth-disabled' }) as {
+      const resp = await facade.workflowDescribe({ name, version }, principal, viewer.isRemoteSubmission === true) as {
         status: string; error?: { message?: string }; result?: { version: string; mermaid: string | null; mermaidNote: string | null };
       };
       if (resp.status === 'failed' || !resp.result) {
@@ -497,6 +523,7 @@ async function handleDashboardRequest(
     }
     // v11 (REQ-067): GET /api/issues — read-only issues dashboard list, partitioned by state.
     if (path === '/api/issues') {
+      if (!allowed('issue_list', {})) return;
       const result = await issueReporter.listIssues({ labels: ['agent-reported'], state: 'all' });
       if (!result.ok) {
         sendJson(res, 200, { open: [], resolved: [], degraded: 'GitHub not configured' });
@@ -513,6 +540,7 @@ async function handleDashboardRequest(
     // v11 (REQ-067): GET /api/issues/:number — full IssueView or 404 on not-found; token-missing → 200 degraded.
     if (issuesDetailMatch) {
       const number = Number(issuesDetailMatch[1]);
+      if (!allowed('issue_get', { number })) return;
       const result = await issueReporter.getIssue(number);
       if (!result.ok) {
         if (result.error.code === 'ISSUE_NOT_FOUND') {
@@ -528,6 +556,7 @@ async function handleDashboardRequest(
     // v11 Sprint 3 (TASK-067 / DES-064): GraphPayload envelope — kind:'run' + logical layout cells.
     if (dagMatch) {
       const [, runId] = dagMatch as unknown as [string, string];
+      if (!allowed('run_status', { runId })) return;
       const stored = await store.getRun(runId);
       if (!stored) { sendJson(res, 404, { error: `Run not found: ${runId}` }); return; }
       const view = await runManager.status(runId).catch(() => stored);
@@ -638,7 +667,12 @@ async function handleDashboardRequest(
       const offsetParam = Number(qs.get('offset'));
       const limit = limitParam > 0 ? limitParam : undefined;
       const offset = offsetParam > 0 ? offsetParam : undefined;
-      const shaped = await facade.runAgentLog({ runId, agentId, limit, offset }, { kind: 'auth-disabled' }, false, null);
+      // Spec §A: run_agent_log's own row — owner or admin; an admin's cross-principal read is
+      // AUDITED exactly as the MCP tool audits it (the owner sees it in run_status.adminReads).
+      const verdict = allowed('run_agent_log', { runId });
+      if (!verdict) return;
+      const actor = principal.kind === 'auth-disabled' || principal.kind === 'loopback-exempt' ? null : principal.id;
+      const shaped = await facade.runAgentLog({ runId, agentId, limit, offset }, principal, verdict.crossPrincipalRead === true, actor);
       if (shaped.error) {
         // HTTP: map typed error codes to standard { error: string } 404s (dashboard convention).
         sendJson(res, 404, { error: shaped.error.message });
@@ -649,6 +683,7 @@ async function handleDashboardRequest(
     }
     if (runMatch) {
       const [, runId] = runMatch as unknown as [string, string];
+      if (!allowed('run_status', { runId })) return;
       const stored = await store.getRun(runId);
       if (!stored) { sendJson(res, 404, { error: `Run not found: ${runId}` }); return; }
       const view = await runManager.status(runId).catch(() => stored);
@@ -1296,7 +1331,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // the other, with no type error. Same one-declaration rule as
     // `DEFAULT_CEILINGS`/`UNBOUND_ENTRY_LABEL`.
     const dispatchDashboard = (principal: Principal): void => {
-      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, modelBook, authAnnounce, diagrams, probeLookup, observedStats, { principal, lookup: ownerLookup }).catch((err) => {
+      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, modelBook, authAnnounce, diagrams, probeLookup, observedStats, { principal, lookup: ownerLookup, isRemoteSubmission }).catch((err) => {
         // v27b (DES-198, TASK-203): 'internal' — the closed reason set's one member with no warning
         // by construction (a promise rejection `handleDashboardRequest`'s own try/catch didn't catch).
         console.warn(JSON.stringify({ event: 'dashboard_api_degraded', route: (req.url ?? '').split('?')[0], reason: 'internal', detail: (err as Error)?.message }));
