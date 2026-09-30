@@ -39,7 +39,7 @@ import { WebhookRegistry } from '../../src/webhook-registry.js';
 import { McpFacade } from '../../src/mcp-facade.js';
 import { FixedClock } from '../../src/clock.js';
 import type { Principal } from '../../src/authz.js';
-import { registerPublished, startScript, synthesizeMeta, synthesizePhase, synthesizeMermaid } from '../helpers/workflow-fixtures.js';
+import { registerPublished, startScript, synthesizeMeta, synthesizePhase, synthesizePhases, synthesizeMermaid } from '../helpers/workflow-fixtures.js';
 
 const CLOCK = new FixedClock(new Date('2026-09-28T00:00:00.000Z'));
 
@@ -68,7 +68,7 @@ beforeEach(async () => {
   ({ version: v1 } = await registerPublished(catalog, NAME, 'return "v1";', { principal: ALICE_ID, channel: 'release' }));
   ({ version: v2 } = await registerPublished(catalog, NAME, 'return "v2";', { principal: ALICE_ID, channel: 'beta' }));
   // v3: registered, never published to any channel.
-  const v3Script = synthesizeMeta(synthesizePhase('return "v3";'));
+  const v3Script = synthesizePhases(synthesizeMeta(synthesizePhase('return "v3";')));
   const { version } = await catalog.register({ name: NAME, script: v3Script, mermaid: synthesizeMermaid(v3Script), principal: ALICE_ID });
   v3 = version;
 });
@@ -145,7 +145,7 @@ describe('workflow_describe (#98 item 6 + #100 Q5): runnable/runnableReason for 
 
   it('[LOAD-BEARING #98 item 6, the issue\'s own repro shape] a workflow with NO channel published at all: the owner describing its only version by explicit version => runnable:true (channels:{release:null,beta:null} must not answer CHANNEL_UNPUBLISHED for an explicit-version request)', async () => {
     const onlyName = 'issue98-item6-never-published-wf';
-    const script = synthesizeMeta(synthesizePhase('return "only";'));
+    const script = synthesizePhases(synthesizeMeta(synthesizePhase('return "only";')));
     const { version } = await catalog.register({ name: onlyName, script, mermaid: synthesizeMermaid(script), principal: ALICE_ID });
     const r = await facade.workflowDescribe({ name: onlyName, version }, ALICE) as { status?: string; result?: { channels?: { release: string | null; beta: string | null }; runnable?: boolean; runnableReason?: string | null } };
     expect(r.status).toBe('completed');
@@ -221,7 +221,7 @@ describe('workflow_describe/workflow_list/workflow_source (owner follow-up): non
 
   it('a workflow with NO release at all: a non-owner describing it (VERSION_NOT_FOUND) never reaches the masking code, and an owner-only ownerless-legacy row shows versions:[] when unreleased', async () => {
     const legacyName = 'nonowner-gate-legacy-unreleased-wf';
-    const script = synthesizeMeta(synthesizePhase('return "L";'));
+    const script = synthesizePhases(synthesizeMeta(synthesizePhase('return "L";')));
     const { version } = await catalog.register({ name: legacyName, script, mermaid: synthesizeMermaid(script), principal: null });
     // Ownerless (owner:null) is unrestricted per canMutate's own `!owner` rule — BOB sees everything.
     const r = await facade.workflowDescribe({ name: legacyName, version }, BOB) as { status?: string; result?: { versions?: string[]; channels?: { release: string | null; beta: string | null } } };
@@ -350,7 +350,7 @@ describe('triggers (#100 Q6): a fired run is always pinned to the workflow\'s re
     // `McpFacade.workflowRegister`, and is already pinned by
     // tests/integration/register-trigger-ownership.test.ts; this file calls the catalog directly,
     // the same shortcut `registerPublished` itself uses, to isolate the FIRE-time release pin).
-    const relScript = synthesizeMeta(synthesizePhase(`return 'REL';`));
+    const relScript = synthesizePhases(synthesizeMeta(synthesizePhase(`return 'REL';`)));
     const { version: relV } = await catalog.register({ name: target, script: relScript, mermaid: synthesizeMermaid(relScript), triggers: [webhookId], principal: ALICE_ID });
     await catalog.publish(target, relV, 'release', ALICE_ID);
     // The webhook row itself is CLAIMED by the target workflow — same effect

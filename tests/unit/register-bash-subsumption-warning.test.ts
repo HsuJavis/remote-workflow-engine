@@ -24,7 +24,7 @@ const OPEN: Principal = { kind: 'auth-disabled' };
 function script(allowedTools: string | null): string {
   const opt = allowedTools === null ? '' : `, allowedTools: ${allowedTools}`;
   return (
-    "export const meta = { description: 'd', params: { agents: { a: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, " +
+    "export const meta = { description: 'd', phases: [{ title: 'P' }], params: { agents: { a: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, " +
     "effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } } };\n" +
     "phase('P');\n" +
     `return await agent('a', { prompt: 'p'${opt} });`

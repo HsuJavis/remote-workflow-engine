@@ -88,9 +88,11 @@ extract() {
 # issue #91 regression (found by verify-b, 2026-09-26): `rwe-` is the engine-reserved prefix
 # (path-verdict.ts's RESERVED_PREFIX, ARCH-093) -- workflow_register now refuses ANY name starting
 # with it, including this smoke check's own sample workflow. Use a non-reserved prefix instead.
+# v39 (owner decision 2026-09-30): meta.phases is now REQUIRED on every registration -- this script
+# calls phase() zero times, so it must declare `phases: []` explicitly (PHASES_REQUIRED otherwise).
 SMOKE_WF="smoke-$$"
 echo "[smoke] registering sample workflow ${SMOKE_WF}..."
-REG_RESPONSE=$(call_tool workflow_register "{\"name\":\"${SMOKE_WF}\",\"script\":\"return 42;\",\"mermaid\":\"graph LR;\"}")
+REG_RESPONSE=$(call_tool workflow_register "{\"name\":\"${SMOKE_WF}\",\"script\":\"export const meta = { phases: [] };\\nreturn 42;\",\"mermaid\":\"graph LR;\"}")
 VERSION=$(extract_nested "$REG_RESPONSE" version)
 if [ -z "$VERSION" ] || [ "$VERSION" = "undefined" ]; then
   echo "[smoke] FAIL: workflow_register did not return a version: ${REG_RESPONSE}" >&2

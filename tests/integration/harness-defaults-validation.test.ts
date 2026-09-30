@@ -122,7 +122,7 @@ describe('v24 retirement regression (IT-081, TASK-154, DES-144/DES-148): the v15
     // succeeds. Found while porting this file off `registerPublishedVia`; reported as a cross-task
     // defect (tool-specs.ts is TASK-132's file, mcp-facade.ts/workflow-catalog.ts are outside
     // TASK-154), not fixed here.
-    const r = await callTool('workflow_register', { name: 'it081-no-params', script: 'return "ok";', mermaid: 'graph LR' });
+    const r = await callTool('workflow_register', { name: 'it081-no-params', script: 'export const meta = { phases: [] };\nreturn "ok";', mermaid: 'graph LR' });
     expect(r.error).toBeUndefined();
     expect(typeof r['version']).toBe('number');
   });

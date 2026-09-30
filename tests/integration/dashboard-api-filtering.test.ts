@@ -70,10 +70,10 @@ beforeAll(async () => {
   db.close();
   for (const who of [ROOT, ALICE, BOB]) cookie[who] = (await dashboardLogin(base, who)).cookie;
 
-  const r1 = await mcp('workflow_register', { name: WF, script: 'return "v1";', mermaid: 'graph LR' }, ALICE);
+  const r1 = await mcp('workflow_register', { name: WF, script: 'export const meta = { phases: [] };\nreturn "v1";', mermaid: 'graph LR' }, ALICE);
   expect(r1['error']).toBeUndefined();
   expect(codeOf(await mcp('workflow_publish', { name: WF, version: 'v1', channel: 'release' }, ALICE))).toBeUndefined();
-  const r2 = await mcp('workflow_register', { name: WF, script: 'return "v2-secret-draft";', mermaid: 'graph LR' }, ALICE);
+  const r2 = await mcp('workflow_register', { name: WF, script: 'export const meta = { phases: [] };\nreturn "v2-secret-draft";', mermaid: 'graph LR' }, ALICE);
   expect(r2['error']).toBeUndefined();
   expect(codeOf(await mcp('workflow_publish', { name: WF, version: 'v2', channel: 'beta' }, ALICE))).toBeUndefined();
   aliceRun = (await mcp('run_start', { name: WF }, ALICE))['runId'];

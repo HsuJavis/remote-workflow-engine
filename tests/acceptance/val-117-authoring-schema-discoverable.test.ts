@@ -83,7 +83,7 @@ describe('REQ-106/REQ-117: the authoring rules are discoverable from the MCP sur
 
     // The rule it prints is the one registration actually enforces — the point of printing it.
     const script = [
-      "export const meta = { params: { agents: { go: { model: { type: 'string', default: 'anthropic/claude-sonnet-5' },",
+      "export const meta = { phases: [{ title: 'Go' }], params: { agents: { go: { model: { type: 'string', default: 'anthropic/claude-sonnet-5' },",
       "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } } };",
       // v26 (REQ-128): rule L2 plus the LR swimlane — the `if (false)` guard keeps this a
       // registration-only case (nothing dispatches), which makes the lane dynamic, so the node

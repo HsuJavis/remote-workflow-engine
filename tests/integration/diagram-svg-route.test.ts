@@ -27,7 +27,7 @@ let gate: Promise<void> | null = null;
 let outcome: (src: string) => RenderOutcome = (src) => ({ ok: true, svg: `<svg xmlns="http://www.w3.org/2000/svg"><desc>${src.length}</desc></svg>` });
 
 const SCRIPT = [
-  "export const meta = { description: 'diagram route', params: { agents: {",
+  "export const meta = { description: 'diagram route', phases: [{ title: 'Write' }], params: { agents: {",
   "  writer: { model: { type: 'string', default: 'anthropic/claude-sonnet-5' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },",
   '} } };',
   // v26 (REQ-128): rule L2 — every agent() is dispatched inside a phase(), and the diagram carries

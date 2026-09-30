@@ -147,7 +147,7 @@ describe('UT-336/UT-337 — workflow_register isRemoteSubmission:true, re-listin
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'rwe-c2-restamp-')); });
   afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 
-  const SCRIPT = 'return 1;';
+  const SCRIPT = "export const meta = { phases: [] };\nreturn 1;";
   // v26 (REQ-128): a plain LR swimlane with no agent() label — the same minimal fixture
   // `register-trigger-ownership.test.ts` (IT-123) uses, which registers clean.
   const MERMAID = 'graph LR';

@@ -133,9 +133,13 @@ const FIXTURE_AGENT_SPEC =
 // v26 (REQ-128, DES-184): the fixture is now a v2-CONTRACT workflow, because registration checks
 // one. `phase('Greet')` is not decoration — rule L2 refuses an `agent()` dispatched before the
 // first `phase()`, so the published happy fixture must show the shape it is asking authors for.
+// v39 (owner decision 2026-09-30): `meta.phases` is now REQUIRED and must match the script's own
+// `phase()` calls — the fixture declares `phases: [{title:'Greet'}]`, matching the one `phase('Greet')`
+// call below, or every consumer of this "happy" fixture would be refused PHASES_REQUIRED.
 export const FIXTURE_SCRIPT =
   "export const meta = {\n" +
   "  description: 'Greet the caller in one sentence',\n" +
+  "  phases: [{ title: 'Greet' }],\n" +
   `  params: { agents: { greet: ${FIXTURE_AGENT_SPEC} } },\n` +
   '};\n' +
   "phase('Greet');\n" +
@@ -277,10 +281,10 @@ export const TOOL_SPECS = [
       // against an unregistered name is refused WORKFLOW_NOT_FOUND, not silently parked for
       // whoever registers the name next).
       'Registering a name does not require any of its declared skill/mcp assets to already be pushed — the supported order is workflow_register FIRST, then workspace_push({workflow, kind, name, ...}) for each asset. ' +
-      // Issue #98 item 8b: workflow_describe's `phases`/`phases[].agents` read `meta.phases` back
-      // VERBATIM — they are not derived from your `phase()` calls or your mermaid diagram, so a
-      // script that calls `phase()` but never declares `meta.phases` describes as `phases:[]`.
-      "Declare `meta.phases: [{title}, ...]` (in the same order as your `phase()` calls) if you want workflow_describe's `phases`/`phases[].agents` populated — that field is read back verbatim, never derived from `phase()` calls or your mermaid diagram. " +
+      // v39 (owner decision 2026-09-30): meta.phases is now REQUIRED and checked against the
+      // script's own phase() calls at registration time — self-contained here since the client
+      // plugin is removed and this is a cold model's only documentation of the rule.
+      "`meta.phases: [{title}, ...]` is REQUIRED and must equal your script's own `phase()` calls, in the same count and order (title too, for any phase() call whose title is a plain string literal) — refused `PHASES_REQUIRED` when it is missing or not shaped as an array of `{title:string}`, `PHASES_MISMATCH` when it disagrees with your phase() calls (the message names both lists and the first difference). A script with zero `phase()` calls must still declare `phases: []` explicitly. A `phase()` call whose title is computed at runtime (e.g. `phase('tier:' + args.tier)`) cannot be checked textually — declare ANY non-empty title for it, at the right position; only the position (not the text) is checked there. Example: `export const meta = { phases: [{ title: 'draft' }, { title: 'revise' }] };` beside `phase('draft'); …; phase('revise');`. This is what `workflow_describe`'s `phases`/`phases[].agents` read back (`phasesSource: 'declared'`) — an EXISTING version registered before this rule existed has no such guarantee; `workflow_describe` instead DERIVES its `phases` from that version's own `phase()` calls (`phasesSource: 'derived'`), never from this rule. " +
       "Every agent() call's model comes from `script`'s own `export const meta = { params: { agents: { <label>: { model: {...} } } } }`: `model` is REQUIRED with a `.default`, and that default MUST be a full `<provider>/<model-id>` ref — providers are exactly anthropic, openrouter, ollama (e.g. \"anthropic/claude-haiku-4-5-20251001\", \"openrouter/openai/gpt-4.1\", \"ollama/qwen2.5:7b\"); there are no aliases, no bare names, no 'default'/'local'-style shortcuts — a bare name is refused UNKNOWN_MODEL. Use models_list to find a valid ref (copy its `ref` field verbatim). A run_start override may replace it with a different full ref per run; see workflow_authoring_guide for the complete authoring rules. " +
       // Issue #78(b): advertised here because a cold client reads only tools/list.
       "The reply may carry result.warnings — non-fatal notes, the version is registered anyway: BASH_SUBSUMES_FILE_TOOLS when an agent() call's allowedTools names Bash beside Read/Grep/Glob/Write/Edit (allowedTools restricts names, and Bash can do what those do); BASH_READONLY_UNENFORCEABLE when an agent() declares bash:'readonly' on an engine with no working Bash sandbox (every dispatch of it will fail closed there); MODEL_CATALOG_UNVERIFIED when a declared model ref could not be checked against a live catalog listing (openrouter/ollama) or is an anthropic id not yet in this deployment's static price table; MCP_NOT_PROVISIONED/SKILL_NOT_PROVISIONED when a label's declared `mcp`/`skills` name has no workspace_push-provisioned asset yet (workflow-scoped or global) — the version registers anyway, but run_start (and every firing, and a nested workflow() call) REFUSES with the same code until it is provisioned.",
@@ -337,6 +341,10 @@ export const TOOL_SPECS = [
     errors: [
       'SCRIPT_INVALID', 'PARSE_ERROR', 'UNKNOWN_MODEL', 'SCAN_VIOLATION',
       'AGENT_UNDECLARED', 'AGENT_DECLARED_NOT_IN_SCRIPT', 'PARAM_CONTRACT_INVALID', 'DEFAULTS_RETIRED',
+      // v39 (owner decision 2026-09-30): meta.phases is required on every NEW registration and must
+      // match the script's own phase() calls — checked right after the params contract, before the
+      // mermaid checks below (see workflow-catalog.ts's own pinned-order comment).
+      'PHASES_REQUIRED', 'PHASES_MISMATCH',
       'MERMAID_REQUIRED', 'MERMAID_INVALID', 'DIAGRAM_MISMATCH',
       // v26 (REQ-128, DES-184): the v2 diagram contract's own refusals, plus the
       // `deriveExpectedGraph` rule registration now answers with before it ever reads the diagram.
@@ -361,7 +369,9 @@ export const TOOL_SPECS = [
     fixture: {
       happy: { name: 'demo', script: FIXTURE_SCRIPT, mermaid: FIXTURE_MERMAID },
       errors: {
-        MERMAID_REQUIRED: { name: 'fixture-no-mermaid', script: 'return 1;' },
+        // v39: this script calls phase() zero times, so meta.phases must be declared [] — otherwise
+        // PHASES_REQUIRED would fire first and this fixture would never reach the check it targets.
+        MERMAID_REQUIRED: { name: 'fixture-no-mermaid', script: "export const meta = { phases: [] };\nreturn 1;" },
         // v26: an LR swimlane whose ONE node names a label the script does not declare — the
         // mismatch is still the subject; the direction/lane rules are satisfied so the refusal
         // that comes back is DIAGRAM_MISMATCH and not DIAGRAM_DIRECTION.
@@ -451,15 +461,14 @@ export const TOOL_SPECS = [
     // v27b (DES-197, ARCH-131, TASK-202, REQ-106's precedent): names `phases[].agents` in the
     // advertised description itself, not just the schema shape, so a cold, schema-only client
     // learns the predicted lane membership without fetching first.
-    // Issue #98 item 8b: `phases` is NOT derived from the script's own `phase()` calls (that static
-    // scan feeds only the internal predicted-graph/toolSurface derivation) — it is `meta.phases`,
-    // an author-declared literal in the script's OWN `export const meta = {...}` block
-    // (workflow-meta.ts:parseMeta), read back VERBATIM. A script that calls `phase('P')` but never
-    // declares `meta.phases: [{title:'P'}, ...]` (in the same order as its `phase()` calls) answers
-    // `phases:[]` here, and `phases[].agents` then has no lane to join onto either — this is the
-    // current, measured mechanism (not a bug in this projection), so declare `meta.phases` yourself
-    // if you want either field populated.
-    description: "Describe a workflow: per-agent parameters, agent labels, live triggers, its author-supplied diagram, and the predicted lane membership (phases[].agents). `phases` is your OWN `meta.phases: [{title}, ...]` declaration (workflow_register's script), read back verbatim — NOT derived from your `phase()` calls or your mermaid diagram; a script with `phase()` calls but no declared `meta.phases` answers `phases:[]` here (and `phases[].agents` has no lane to join onto), even though the run itself still executes its phases. Also returns registeredRemote: whether THIS version was registered by a remote submission — on a host whose Bash-confinement probe failed at boot, such a version is refused CONFINEMENT_UNAVAILABLE even for a local run_start, and this is the field that says which version to re-register locally. Defaults to the release pointer; pass version or channel to describe another one — an unpublished version must be named with version, since the release default answers CHANNEL_UNPUBLISHED. `runnable`/`runnableReason` are computed for the RESOLVED version and the CALLER, exactly matching what run_start would do — a version the owner/admin could run is `runnable:true` even if unpublished. A non-owner (non-admin) naming a version/channel that is not today's release is refused VERSION_NOT_FOUND, same as run_start and same as an unknown version — this never discloses whether the version exists. Even on an ALLOWED (release) response, a non-owner's `versions` is `[<release>]` only and `channels.beta` is `null` — no non-release version id is ever named to a caller who could not run it.",
+    // v39 (owner decision 2026-09-30, Part B) supersedes issue #98 item 8b: on a version registered
+    // under the v39 rule, `meta.phases` is REQUIRED and already known to equal the script's own
+    // `phase()` calls (workflow_register's own PHASES_REQUIRED/PHASES_MISMATCH gate), so `phases`
+    // here is read back verbatim (`phasesSource:'declared'`). An EXISTING version registered BEFORE
+    // v39 (immutable, never re-checked) may have no `meta.phases` at all — for THAT row `phases` is
+    // instead DERIVED from the stored script's own `phase()` calls (`phasesSource:'derived'`), so
+    // `phases`/`phases[].agents` are populated either way; only `phasesSource` tells you which.
+    description: "Describe a workflow: per-agent parameters, agent labels, live triggers, its author-supplied diagram, and the predicted lane membership (phases[].agents). `phases` is `meta.phases: [{title}, ...]` when the script validly declares one (`phasesSource:'declared'` — required on every version registered since v39, and workflow_register already checked it equals the script's own `phase()` calls) — else DERIVED from the stored script's own `phase()` calls (`phasesSource:'derived'`, a version registered before v39, immutable and never re-checked against the new rule). Either way `phases[].agents` joins the predicted per-lane agent labels onto it. Also returns registeredRemote: whether THIS version was registered by a remote submission — on a host whose Bash-confinement probe failed at boot, such a version is refused CONFINEMENT_UNAVAILABLE even for a local run_start, and this is the field that says which version to re-register locally. Defaults to the release pointer; pass version or channel to describe another one — an unpublished version must be named with version, since the release default answers CHANNEL_UNPUBLISHED. `runnable`/`runnableReason` are computed for the RESOLVED version and the CALLER, exactly matching what run_start would do — a version the owner/admin could run is `runnable:true` even if unpublished. A non-owner (non-admin) naming a version/channel that is not today's release is refused VERSION_NOT_FOUND, same as run_start and same as an unknown version — this never discloses whether the version exists. Even on an ALLOWED (release) response, a non-owner's `versions` is `[<release>]` only and `channels.beta` is `null` — no non-release version id is ever named to a caller who could not run it.",
     // v24 Gate 7.5 (D-7, REQ-118): the handler has always accepted `version`/`channel` (it builds
     // a `VersionSelector` from them) and the row advertised only `name`. `version` is not a
     // convenience: a workflow that was never published cannot be described WITHOUT it — the bare

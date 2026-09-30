@@ -39,7 +39,7 @@ async function call(name: string, args: Record<string, unknown>): Promise<Record
 // as agent() call options.
 function scriptDeclaring(mcp: string[], skills: string[]): string {
   return [
-    "export const meta = { params: { agents: { a: {",
+    "export const meta = { phases: [{ title: 'Work' }], params: { agents: { a: {",
     `  model: { type: 'string', default: ${JSON.stringify(DEFAULT_FIXTURE_MODEL)} },`,
     "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
     "  timeoutMs: { type: 'number', default: 60000 },",

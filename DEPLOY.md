@@ -252,6 +252,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 > ```js
 > export const meta = {
 >   description: 'sdlc gate pass with inlined role prompts',
+>   phases: [{ title: 'architecture' }, { title: 'implementation' }],
 >   params: {
 >     args: { feature: { type: 'string' } },
 >     agents: {
@@ -354,7 +355,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 >   -d '{"model":"ollama/qwen2.5:7b","max_tokens":10,"messages":[{"role":"user","content":"ping"}]}'
 > #   → 回 anthropic 格式 message + usage>0 ⇒ 端點通；回 401/No deployments ⇒ 檢查 OLLAMA_BASE_URL / OPENROUTER_API_KEY。
 > # B. 一個極小 agent 端對端：先 workflow_register（腳本 `phase('probe'); return await agent('probe',{prompt:'say ROUTED'})`
-> #    ＋ 契約 meta.params.agents.probe ＋ mermaid `graph LR\nsubgraph "probe"\nprobe(["probe"])\nend`）
+> #    ＋ 契約 meta.params.agents.probe ＋ meta.phases:[{title:'probe'}] ＋ mermaid `graph LR\nsubgraph "probe"\nprobe(["probe"])\nend`）
 > #    → workflow_publish → run_start
 > #    回 "ROUTED" 且 agent tokens>0 ⇒ 整條 gateway:sdk→LiteLLM→你的端點 打通。
 > ```

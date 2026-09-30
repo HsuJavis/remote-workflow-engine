@@ -42,6 +42,124 @@ export function parseMeta(script: string): WorkflowMeta {
   return { description, phases };
 }
 
+/** v39 (owner decision 2026-09-30): a STRICT (never lenient-filtering) read of `meta.phases`,
+ *  distinguishing "not declared at all" from "declared, but not a valid `{title:string}[]`" from
+ *  "declared and valid" — `parseMeta` above collapses the first two into `phases:[]` on purpose
+ *  (a read-surface default), which is exactly the distinction the registration gate and the
+ *  read-side derivation below both need and `parseMeta` cannot give them. Re-runs the same
+ *  `checkMeta` + timeout-bounded `runInNewContext` eval `parseMeta`/`parseMetaParams` already do —
+ *  a second read of the same pure literal, not a new side effect. */
+function rawMetaPhases(script: string):
+  | { declared: false }
+  | { declared: true; ok: true; phases: Array<{ title: string }> }
+  | { declared: true; ok: false; reason: string } {
+  const m = checkMeta(script);
+  if (!m.found || !m.pureLiteral || m.objectText === undefined) return { declared: false };
+  let obj: unknown;
+  try {
+    obj = runInNewContext(`(${m.objectText})`, Object.create(null) as object, { timeout: 50 });
+  } catch {
+    return { declared: false };
+  }
+  if (!obj || typeof obj !== 'object') return { declared: false };
+  const o = obj as { phases?: unknown };
+  if (!('phases' in o) || o.phases === undefined) return { declared: false };
+  const raw = o.phases;
+  if (!Array.isArray(raw)) {
+    return { declared: true, ok: false, reason: 'meta.phases must be an array of {title:string} objects' };
+  }
+  const phases: Array<{ title: string }> = [];
+  for (const p of raw) {
+    const title = p && typeof p === 'object' ? (p as { title?: unknown }).title : undefined;
+    // v39 follow-up (mirrors checkMermaid's own SUBGRAPH_TITLE refusal — an empty subgraph title
+    // is refused there, so an empty meta.phases[].title must be refused here too, not silently
+    // accepted as a "non-empty" declared title at a dynamic (null) position).
+    if (typeof title !== 'string' || title === '') {
+      return { declared: true, ok: false, reason: 'every meta.phases entry must be an object with a non-empty string title' };
+    }
+    phases.push({ title });
+  }
+  return { declared: true, ok: true, phases };
+}
+
+export interface PhasesCheckResult {
+  ok: boolean;
+  code?: 'PHASES_REQUIRED' | 'PHASES_MISMATCH';
+  message?: string;
+}
+
+/** v39 (owner decision 2026-09-30, catalog codes PHASES_REQUIRED / PHASES_MISMATCH): the
+ *  registration-time gate — `meta.phases` must be declared as an array of `{title:string}` and
+ *  must equal `scriptTitles` (the script's own `phase()` calls, in source order — the SAME nodes
+ *  `parseWorkflowSkeleton`/`deriveExpectedGraph` turn into lanes) in count, order, and (where the
+ *  script's own title is STATICALLY KNOWN) text. A `null` entry in `scriptTitles` is a `phase()`
+ *  call whose title argument is not a string literal (e.g. `phase('tier:' + args.tier)`) — mirrors
+ *  `checkMermaid`'s own LANE_MISMATCH rule (check-mermaid.ts `checkLanes`: "a `null` title accepts
+ *  any non-empty title at that position") — so the declared title there may be anything non-empty;
+ *  only its POSITION is checked. A script with zero `phase()` calls must still declare `phases: []`
+ *  explicitly — an absent key is PHASES_REQUIRED even when the "correct" value would be empty. */
+export function checkMetaPhases(script: string, scriptTitles: Array<string | null>): PhasesCheckResult {
+  const raw = rawMetaPhases(script);
+  if (!raw.declared || !raw.ok) {
+    const why = raw.declared ? raw.reason : 'meta.phases is missing';
+    const noPhaseCalls = scriptTitles.length === 0 ? ' (this script has no phase() calls — declare phases: [])' : '';
+    return {
+      ok: false,
+      code: 'PHASES_REQUIRED',
+      message: `${why} — declare meta.phases: [{title}, ...] matching this script's phase() calls in count and order${noPhaseCalls}`,
+    };
+  }
+  const declared = raw.phases.map((p) => p.title);
+  const renderScript = (t: string | null): string => (t === null ? '<dynamic>' : JSON.stringify(t));
+  const bothLists = `declared: [${declared.map((t) => JSON.stringify(t)).join(', ')}], script phase() calls: [${scriptTitles.map(renderScript).join(', ')}]`;
+  if (declared.length !== scriptTitles.length) {
+    return {
+      ok: false,
+      code: 'PHASES_MISMATCH',
+      message: `meta.phases has ${declared.length} entr${declared.length === 1 ? 'y' : 'ies'} but the script calls phase() ${scriptTitles.length} time(s) — ${bothLists}`,
+    };
+  }
+  for (let i = 0; i < scriptTitles.length; i++) {
+    const expected = scriptTitles[i]!;
+    if (expected !== null && declared[i] !== expected) {
+      return {
+        ok: false,
+        code: 'PHASES_MISMATCH',
+        message: `meta.phases[${i}].title is ${JSON.stringify(declared[i])} but phase() call #${i + 1} in the script is ${JSON.stringify(expected)} — ${bothLists}`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+/** v39: the read-side placeholder for a DERIVED phase lane whose script `phase()` title is not a
+ *  string literal — `resolvePhases` never returns `null`/`undefined` in a `{title:string}` slot. */
+export const DYNAMIC_PHASE_TITLE = '(dynamic)';
+
+export interface ResolvedPhases {
+  phases: Array<{ title: string }>;
+  phasesSource: 'declared' | 'derived';
+}
+
+/** v39 (owner decision 2026-09-30, Part B): the ONE read-side resolution of a stored version's
+ *  `phases` — used by every surface that reports them (`workflow_describe`, `/api/workflows/:name/
+ *  describe`, `workflow_source`) so none of them can disagree. A version registered under the v39
+ *  rule always has a valid `meta.phases` and this reads it back verbatim (`'declared'`). An
+ *  EXISTING version registered before v39 (immutable, never re-checked — a stored row is never
+ *  rewritten to add the field after the fact) may have no `meta.phases` at all, or one that no
+ *  longer matches its own `phase()` calls; either way this DERIVES the answer from the script's own
+ *  `phase()` calls instead (`'derived'`), the same static scan the predicted-lane projection
+ *  (`predictedLanes`, dashboard.ts) already performs on the identical script — the two can never
+ *  disagree about which phases a derived row has, only about whether they also carry agents. */
+export function resolvePhases(script: string): ResolvedPhases {
+  const raw = rawMetaPhases(script);
+  if (raw.declared && raw.ok) return { phases: raw.phases, phasesSource: 'declared' };
+  const derived = parseWorkflowSkeleton(script)
+    .filter((n): n is SkeletonNode & { kind: 'phase' } => n.kind === 'phase')
+    .map((n) => ({ title: n.title ?? DYNAMIC_PHASE_TITLE }));
+  return { phases: derived, phasesSource: 'derived' };
+}
+
 /** DES-103 (TASK-099): the pre-eval source-size bound (4 KB) for the `meta` literal — measured on
  *  the matched literal TEXT, before `runInNewContext`. Separate from contract.ts's post-eval
  *  structural bounds (DES-101), which only ever see a value that already survived evaluation. */

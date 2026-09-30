@@ -86,7 +86,7 @@ describe('a cron/once schedule firing (server.ts ticker) carries its trigger cre
 
     // alice registers+publishes the workflow her OWN trigger claims (workflow_register's claim
     // door requires the caller to own the trigger being claimed — see the file header note).
-    const reg = await callTool('workflow_register', { name: 'sched-principal-wf', script: 'return "ok";', mermaid: 'graph LR', triggers: [id] }, aliceToken);
+    const reg = await callTool('workflow_register', { name: 'sched-principal-wf', script: 'export const meta = { phases: [] };\nreturn "ok";', mermaid: 'graph LR', triggers: [id] }, aliceToken);
     expect(reg['error'], JSON.stringify(reg)).toBeUndefined();
     const version = (reg['result'] as { version?: string }).version ?? `v${reg['version'] as number}`;
     const pub = await callTool('workflow_publish', { name: 'sched-principal-wf', version, channel: 'release' }, aliceToken);

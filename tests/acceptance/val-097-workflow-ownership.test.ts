@@ -124,7 +124,7 @@ async function mcp(bearer: string, name: string, args: Record<string, unknown>) 
 }
 
 const WF = 'owned-val097';
-const SCRIPT = 'return "owned";';
+const SCRIPT = 'export const meta = { phases: [] };\nreturn "owned";';
 
 describe('REQ-087: workflow ownership gate (VAL-097)', () => {
   let aliceBearer: string;
@@ -154,7 +154,7 @@ describe('REQ-087: workflow ownership gate (VAL-097)', () => {
   });
 
   it('bob tries to overwrite alice workflow → NOT_WORKFLOW_OWNER', async () => {
-    const r = await mcp(bobBearer, 'workflow_register', { name: WF, script: 'return "hijacked";', mermaid: 'graph LR' });
+    const r = await mcp(bobBearer, 'workflow_register', { name: WF, script: 'export const meta = { phases: [] };\nreturn "hijacked";', mermaid: 'graph LR' });
     expect(r.code).toBe('NOT_WORKFLOW_OWNER');
   });
 

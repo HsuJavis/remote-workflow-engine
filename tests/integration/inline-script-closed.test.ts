@@ -36,7 +36,7 @@ async function toolCall(name: string, args: Record<string, unknown>): Promise<Re
 
 describe('REQ-098: inline script is closed — runtime refusal even off the advertised schema (IT-088)', () => {
   it('a hand-rolled run_start({script}) body is refused INLINE_SCRIPT_CLOSED with the two-call migration recipe', async () => {
-    const r = await toolCall('run_start', { script: `return 'sneaky-inline';` });
+    const r = await toolCall('run_start', { script: `export const meta = { phases: [] };\nreturn 'sneaky-inline';` });
     const error = r['error'] as { code?: string; message?: string } | undefined;
     expect(error?.code).toBe('INLINE_SCRIPT_CLOSED');
     expect(error?.message).toMatch(/workflow_register/);
@@ -44,7 +44,7 @@ describe('REQ-098: inline script is closed — runtime refusal even off the adve
   });
 
   it('a hand-rolled run_resume({runId, script}) body is refused INLINE_SCRIPT_CLOSED', async () => {
-    const r = await toolCall('run_resume', { runId: 'irrelevant-does-not-exist', script: `return 'replacement';` });
+    const r = await toolCall('run_resume', { runId: 'irrelevant-does-not-exist', script: `export const meta = { phases: [] };\nreturn 'replacement';` });
     const error = r['error'] as { code?: string } | undefined;
     expect(error?.code).toBe('INLINE_SCRIPT_CLOSED');
   });
@@ -60,7 +60,7 @@ describe('REQ-098: inline script is closed — runtime refusal even off the adve
     // header alone is the whole diagram a zero-agent script needs. Written out here rather than
     // routed through tests/helpers/workflow-fixtures.ts on purpose: this case's whole point is that
     // the HAND-ROLLED sanctioned sequence still works, so it must stay hand-rolled.
-    const reg = await toolCall('workflow_register', { name: 'it088-sanctioned', script: `return 'ok';`, mermaid: 'graph LR' });
+    const reg = await toolCall('workflow_register', { name: 'it088-sanctioned', script: `export const meta = { phases: [] };\nreturn 'ok';`, mermaid: 'graph LR' });
     expect(reg['error']).toBeUndefined();
     const version = (reg['result'] as { version?: string } | undefined)?.version ?? 'v1';
     const pub = await toolCall('workflow_publish', { name: 'it088-sanctioned', version, channel: 'release' });

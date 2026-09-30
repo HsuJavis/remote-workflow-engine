@@ -28,7 +28,7 @@ import { SystemClock } from '../../src/clock.js';
 import type { Principal } from '../../src/authz.js';
 
 const sha256 = (b: Buffer | string): string => createHash('sha256').update(b).digest('hex');
-const SCRIPT = 'return 1;';
+const SCRIPT = "export const meta = { phases: [] };\nreturn 1;";
 const MERMAID = 'graph LR';
 const INPUT = Buffer.from('hello from the version default seed\n');
 const ALICE: Principal = { kind: 'author', id: 'alice' };

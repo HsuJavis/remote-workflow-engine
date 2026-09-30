@@ -124,7 +124,7 @@ describe('the six workspace_* tools (IT-117, DES-155)', () => {
   // (mcp-facade.ts's `lifecycle()`/`refusalError`, issue #98 item 9); the run's real status still
   // travels, folded into `error.detail.runStatus`.
   it('workspace_pull denial reports status:"failed", not the run\'s own completed status', async () => {
-    const QUICK_SCRIPT = "export const meta = { description: 'terminates immediately' };\nreturn 'ok';";
+    const QUICK_SCRIPT = "export const meta = { description: 'terminates immediately', phases: [] };\nreturn 'ok';";
     const QUICK_MERMAID = 'graph LR';
     const registered = await call('workflow_register', { name: 'it117-pull-denied', script: QUICK_SCRIPT, mermaid: QUICK_MERMAID });
     const version = String(registered.body.result?.version ?? registered.body.version);
@@ -151,7 +151,7 @@ describe('the six workspace_* tools (IT-117, DES-155)', () => {
   // call answer {deleted:[], missing:[], rejected:[...]} — the real seeded file in the SAME call
   // was neither deleted nor reported. Every path must land in exactly one bucket.
   it('workspace_delete processes every path in the batch — a real file, a never-existed file, and an escaping path each land in exactly one of deleted/missing/rejected', async () => {
-    const QUICK_SCRIPT = "export const meta = { description: 'terminates immediately' };\nreturn 'ok';";
+    const QUICK_SCRIPT = "export const meta = { description: 'terminates immediately', phases: [] };\nreturn 'ok';";
     const QUICK_MERMAID = 'graph LR';
     const SEEDED_FILE = 'keep-96.txt';
 

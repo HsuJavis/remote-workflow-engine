@@ -49,7 +49,7 @@ function mode(path: string): number {
 describe('workspace_push skill files: exec flag over real MCP HTTP (issue #105 part A)', () => {
   it('exec:true materializes 0o755 on disk, exec absent stays 0o644, in the SAME push call', async () => {
     const wf = 'it105a-exec-mixed';
-    const reg = await callTool('workflow_register', { name: wf, script: 'return 1;', mermaid: 'graph LR' });
+    const reg = await callTool('workflow_register', { name: wf, script: 'export const meta = { phases: [] };\nreturn 1;', mermaid: 'graph LR' });
     expect(codeOf(reg)).toBeUndefined();
 
     const push = await callTool('workspace_push', {
@@ -71,7 +71,7 @@ describe('workspace_push skill files: exec flag over real MCP HTTP (issue #105 p
 
   it('exec:true on the skill\'s top-level SKILL.md is refused INVALID_ARGUMENT, nothing stored', async () => {
     const wf = 'it105a-exec-skillmd';
-    const reg = await callTool('workflow_register', { name: wf, script: 'return 1;', mermaid: 'graph LR' });
+    const reg = await callTool('workflow_register', { name: wf, script: 'export const meta = { phases: [] };\nreturn 1;', mermaid: 'graph LR' });
     expect(codeOf(reg)).toBeUndefined();
 
     const push = await callTool('workspace_push', {

@@ -22,7 +22,7 @@ import { registerPublished } from '../helpers/workflow-fixtures.js';
 const ANCHOR = new Date('2026-09-26T00:00:00.000Z');
 const CLOCK: Clock = { now: () => ANCHOR.getTime(), isoNow: () => ANCHOR.toISOString() };
 const AUTH_DISABLED = { kind: 'auth-disabled' } as const;
-const SCRIPT = 'return 1;';
+const SCRIPT = "export const meta = { phases: [] };\nreturn 1;";
 const MERMAID = 'graph LR';
 
 function partialDeps(d: Record<string, unknown>): ToolDeps {

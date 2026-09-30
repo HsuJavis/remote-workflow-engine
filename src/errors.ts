@@ -80,6 +80,12 @@ export const ERROR_CATALOG = {
   SKILL_NOT_PROVISIONED: { see: 'workflow_authoring_guide', hint: 'an agent() call declares a skill name with no workspace_push-provisioned asset (workflow-scoped or global) — admission refuses before any side effect; registration only warns' },
   SCRIPT_INVALID: { see: 'workflow_authoring_guide', hint: 'the script violates a sandbox-enforced structural rule' },
   SCAN_VIOLATION: { see: 'workflow_authoring_guide', hint: 'an agent() call is not scannable — label/options must be literal (ADR-029)' },
+  // v39 (owner decision 2026-09-30): meta.phases is required on every NEW registration and must
+  // equal the script's own phase() call titles (count/order/title; a non-literal title matches any
+  // non-empty declared title at that position, same rule LANE_MISMATCH applies to a dynamic lane).
+  // Existing (pre-v39) rows are immutable and never re-checked against this rule.
+  PHASES_REQUIRED: { see: 'workflow_authoring_guide', hint: 'meta.phases is missing or not a valid array of {title:string} — declare it, matching your phase() calls in count/order (phases: [] when the script calls phase() zero times)' },
+  PHASES_MISMATCH: { see: 'workflow_authoring_guide', hint: 'meta.phases disagrees with the script\'s own phase() calls in count, order, or title' },
   MERMAID_INVALID: { see: 'workflow_authoring_guide', hint: 'the diagram does not parse under checkMermaid\'s grammar' },
   MERMAID_REQUIRED: { see: 'workflow_authoring_guide', hint: 'v24 registration requires a non-empty mermaid diagram string (ADR-025)' },
   DIAGRAM_MISMATCH: { see: 'workflow_authoring_guide', hint: 'the diagram\'s agent labels disagree with the script\'s' },

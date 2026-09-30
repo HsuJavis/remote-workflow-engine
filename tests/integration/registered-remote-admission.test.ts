@@ -30,7 +30,7 @@ const AUTH_DISABLED = { kind: 'auth-disabled' } as const;
 // The same minimal register-clean fixture UT-336/UT-337 (call-tool-confinement-door.test.ts)
 // already proved passes registration: no agent() calls, so no gateway dispatch needed to prove
 // admission — this file's subject is the refusal/admission gate, not run execution.
-const SCRIPT = 'return 1;';
+const SCRIPT = "export const meta = { phases: [] };\nreturn 1;";
 const MERMAID = 'graph LR';
 
 function partialDeps(d: Record<string, unknown>): ToolDeps {

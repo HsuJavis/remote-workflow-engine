@@ -105,7 +105,7 @@ describe('workspace_push/workspace_delete refuse an UNREGISTERED workflow name (
 
   it('the OWNER (after registering) can push their own skill — the check is existence, not a blanket refusal', async () => {
     const wf = 'it102-owned';
-    const reg = await callTool('workflow_register', { name: wf, script: 'return "hello";', mermaid: 'graph LR' }, aliceToken);
+    const reg = await callTool('workflow_register', { name: wf, script: 'export const meta = { phases: [] };\nreturn "hello";', mermaid: 'graph LR' }, aliceToken);
     expect(codeOf(reg)).toBeUndefined();
 
     const push = await callTool('workspace_push', skillPush(wf, 'alice-skill', "# Alice's own skill\n"), aliceToken);
@@ -119,7 +119,7 @@ describe('workspace_push/workspace_delete refuse an UNREGISTERED workflow name (
 
   it('pushing to an EXISTING workflow owned by someone else is still NOT_WORKFLOW_OWNER, not WORKFLOW_NOT_FOUND (contrast case, unchanged behaviour)', async () => {
     const wf = 'it102-owned-by-alice-2';
-    const reg = await callTool('workflow_register', { name: wf, script: 'return "hello";', mermaid: 'graph LR' }, aliceToken);
+    const reg = await callTool('workflow_register', { name: wf, script: 'export const meta = { phases: [] };\nreturn "hello";', mermaid: 'graph LR' }, aliceToken);
     expect(codeOf(reg)).toBeUndefined();
 
     const push = await callTool('workspace_push', skillPush(wf, 'bob-tries', '# Bob is not the owner\n'), bobToken);
@@ -135,7 +135,7 @@ describe('workspace_push/workspace_delete refuse an UNREGISTERED workflow name (
     // ...but a REGISTERED workflow's asset is reachable by admin regardless of who owns it —
     // authz's admin ownership bypass still applies once the workflow genuinely exists.
     const wf = 'it102-admin-existing';
-    const reg = await callTool('workflow_register', { name: wf, script: 'return 1;', mermaid: 'graph LR' }, aliceToken);
+    const reg = await callTool('workflow_register', { name: wf, script: 'export const meta = { phases: [] };\nreturn 1;', mermaid: 'graph LR' }, aliceToken);
     expect(codeOf(reg)).toBeUndefined();
     const adminPush = await callTool('workspace_push', skillPush(wf, 'admin-pushed', '# admin\n'), rootToken);
     expect(codeOf(adminPush)).toBeUndefined();
@@ -149,7 +149,7 @@ describe('workspace_push/workspace_delete refuse an UNREGISTERED workflow name (
     expect(codeOf(squat)).toBe('WORKFLOW_NOT_FOUND');
 
     // 2) Alice (principal A) registers the name and becomes its owner.
-    const reg = await callTool('workflow_register', { name: wf, script: 'return "hello";', mermaid: 'graph LR' }, aliceToken);
+    const reg = await callTool('workflow_register', { name: wf, script: 'export const meta = { phases: [] };\nreturn "hello";', mermaid: 'graph LR' }, aliceToken);
     expect(codeOf(reg)).toBeUndefined();
 
     // 3) workspace_list shows NO asset at all — bob's push never landed, so there is nothing to
@@ -169,7 +169,7 @@ describe('deregister then re-register by ANOTHER principal inherits nothing push
     const wf = 'it102-deregister-gap';
 
     // Alice registers, then immediately deregisters — the name is now unclaimed again.
-    const reg = await callTool('workflow_register', { name: wf, script: 'return 1;', mermaid: 'graph LR' }, aliceToken);
+    const reg = await callTool('workflow_register', { name: wf, script: 'export const meta = { phases: [] };\nreturn 1;', mermaid: 'graph LR' }, aliceToken);
     expect(codeOf(reg)).toBeUndefined();
     const dereg = await callTool('workflow_deregister', { name: wf }, aliceToken);
     expect(codeOf(dereg)).toBeUndefined();
@@ -179,7 +179,7 @@ describe('deregister then re-register by ANOTHER principal inherits nothing push
     expect(codeOf(squat)).toBe('WORKFLOW_NOT_FOUND');
 
     // Someone else (bob himself, or any principal) later re-registers the SAME name.
-    const rereg = await callTool('workflow_register', { name: wf, script: 'return 2;', mermaid: 'graph LR' }, bobToken);
+    const rereg = await callTool('workflow_register', { name: wf, script: 'export const meta = { phases: [] };\nreturn 2;', mermaid: 'graph LR' }, bobToken);
     expect(codeOf(rereg)).toBeUndefined();
 
     // Nothing of the squat attempt is visible — it was refused, never stored.

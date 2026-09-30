@@ -108,7 +108,7 @@ type Spec = { name: string; fixture: { happy: Record<string, unknown>; errors: R
 const SEEDED_FILE = 'output.txt';
 /** A workflow with no `agent()` call at all: it runs to completion without dialling anything, which
  *  is what makes `terminalRunId` deterministic rather than a race against the provider. */
-const QUICK_SCRIPT = "export const meta = { description: 'terminates immediately' };\nreturn 'ok';";
+const QUICK_SCRIPT = "export const meta = { description: 'terminates immediately', phases: [] };\nreturn 'ok';";
 const QUICK_MERMAID = 'graph LR';
 
 describe('REQ-118 — every MCP tool interface exercised once against a live engine (VAL-129, DES-158)', () => {

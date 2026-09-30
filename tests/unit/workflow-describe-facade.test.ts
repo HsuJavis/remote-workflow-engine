@@ -48,7 +48,7 @@ describe('workflow_describe — resolve table-driven parity with run-admission (
   ];
 
   it.each(CASES)('$label: workflow_describe\'s code equals resolveVersionRequest\'s code for the same input', async ({ sel }) => {
-    const { version } = await catalog.register({ name: 'describe-parity', script: `return 1;`, mermaid: 'graph LR' });
+    const { version } = await catalog.register({ name: 'describe-parity', script: `export const meta = { phases: [] };\nreturn 1;`, mermaid: 'graph LR' });
     await catalog.publish('describe-parity', version, 'release', null);
     const known = new Set([version]);
     const channels: Channels = { release: version, beta: null };
@@ -68,7 +68,7 @@ describe('workflow_describe — resolve table-driven parity with run-admission (
   });
 
   it('DANGLING_CHANNEL is NOT collapsed into CHANNEL_UNPUBLISHED — a pruned-version pointer is a different operator fault', async () => {
-    const { version: v1 } = await catalog.register({ name: 'dangling-fixture', script: `return 1;`, mermaid: 'graph LR' });
+    const { version: v1 } = await catalog.register({ name: 'dangling-fixture', script: `export const meta = { phases: [] };\nreturn 1;`, mermaid: 'graph LR' });
     await catalog.publish('dangling-fixture', v1, 'beta', null);
     // Simulate a dangling pointer directly against the resolve truth table (same technique as the
     // catalog's own resolve() unit coverage — no version-pruning API exists to reach this state
@@ -108,7 +108,7 @@ describe('workflow_describe over a legacy-shaped row never surfaces a tools valu
     // `register()` refuses a mermaid/script mismatch, but `workflow_describe`'s read path never
     // re-validates one against the other (only `scanAgentCalls(full.script)` for `toolSurface`).
     const bareScript =
-      "export const meta = { params: { agents: { " +
+      "export const meta = { phases: [{ title: 'Work' }], params: { agents: { " +
       "withTools: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, " +
       "bare: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } } };\n" +
       "phase('Work');\n" +

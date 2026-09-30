@@ -18,7 +18,7 @@ import { SubmissionValidator } from './submission-validator.js';
 // wire — the guide a cold model is told to consult was unreachable from the errors that tell it to.
 import { CatalogNotFoundError, codedError, toErrEnvelope, type ErrorCode } from './errors.js';
 import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, HarnessDescriptor, RunListFilter, AuditAction, RunSpec, RunUsage, AgentLogView } from './types.js';
-import { parseMeta, toolSurfaceWarnings, provisioningWarningsFor, type RegistrationWarning } from './workflow-meta.js';
+import { parseMeta, resolvePhases, toolSurfaceWarnings, provisioningWarningsFor, type RegistrationWarning } from './workflow-meta.js';
 import { buildAuthoringGuide } from './authoring-guide.js';
 import { effectiveAgentBounds, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type AgentParamSpec, type ModelRefWarning } from './params/contract.js';
 import { projectWorkflowForRead, projectWorkflowDescribe, type WorkflowOwnerView } from './workflow-view.js';
@@ -636,13 +636,20 @@ export class McpFacade {
     }
     const requested = resolveVersionRequest(sel, full.channels, new Set(full.versions));
     const meta = parseMeta(full.script);
+    // v39 (owner decision 2026-09-30, Part B): a version registered since v39 always carries a
+    // valid `meta.phases` (workflow_register checked it against the script's own `phase()` calls) —
+    // `resolvePhases` reads that back verbatim (`'declared'`). An EXISTING, pre-v39 version is
+    // immutable and never re-checked; for one with no valid `meta.phases` this instead DERIVES
+    // `phases` from the stored script's own `phase()` calls (`'derived'`) — never `phases:[]` just
+    // because the author registered before the rule existed.
+    const { phases: resolvedPhases, phasesSource } = resolvePhases(full.script);
     const check = catalog.validateCurrent(full.script);
     const ownerView: WorkflowOwnerView = {
       name: full.name, version: full.version,
       resolvedBy: requested.ok ? requested.requested.kind : 'default-release',
       channels: full.channels as unknown as Record<string, string>,
       versions: full.versions,
-      description: meta.description, phases: meta.phases,
+      description: meta.description, phases: resolvedPhases,
       // v24 (integrator): the RAW stored contract, deliberately NOT `readParams`-normalized here.
       // `readParams` turns an ABSENT contract into `{agents:{},args:{}}`, which erased the one
       // discriminator `projectWorkflowDescribe` uses to answer `runnableReason:'LEGACY_REREGISTER'`
@@ -715,7 +722,11 @@ export class McpFacade {
       // whole point — re-register+publish locally) has no way to CONFIRM which version is tainted.
       // Issue #82: the version's default seed ref (absent when none was bound). The namespace is
       // not shown — it is the registrant's identity, already on `owner`/attribution surfaces.
-      result: { ...view, phases, diagramContract: full.diagramContract, registeredRemote: full.registeredRemote, ...(full.seedManifestRef !== undefined ? { seedManifestRef: full.seedManifestRef } : {}), toolSurface, ...(toolScan.unscannable ? { toolSurfaceUnscannable: true as const } : {}) },
+      // v39 (owner decision 2026-09-30, Part B): `phasesSource` joins the spread on the same seam as
+      // `diagramContract`/`registeredRemote` just above — computed off `full.script`, not carried
+      // through `WorkflowOwnerView`/`WorkflowDescribeView`, so the EXACT-key-set guard on
+      // `projectWorkflowDescribe`'s own return (`EXPECTED_DESCRIBE_KEYS`) never has to change for it.
+      result: { ...view, phases, diagramContract: full.diagramContract, registeredRemote: full.registeredRemote, phasesSource, ...(full.seedManifestRef !== undefined ? { seedManifestRef: full.seedManifestRef } : {}), toolSurface, ...(toolScan.unscannable ? { toolSurfaceUnscannable: true as const } : {}) },
     };
   }
 
@@ -746,6 +757,11 @@ export class McpFacade {
       return { runId: '', status: 'failed', ...catalogResolveFailure(codedError('VERSION_NOT_FOUND', `VERSION_NOT_FOUND: ${label} (workflow '${a.name}')`), a.name) };
     }
     const meta = parseMeta(full.script);
+    // v39 (owner decision 2026-09-30, Part B): same resolution `workflow_describe` uses — declared
+    // verbatim when the script has a valid `meta.phases`, else derived from its own `phase()` calls
+    // (a pre-v39, immutable row) — so `workflow_source`'s `phases` can never disagree with
+    // `workflow_describe`'s for the identical version.
+    const { phases: resolvedPhases } = resolvePhases(full.script);
     const params = readParams(full.params, this.ceilings);
     const isOwnerOrAdmin = principal.kind === 'admin' || principal.kind === 'auth-disabled'
       || (principal.kind !== 'loopback-exempt' && principal.id === full.owner);
@@ -757,7 +773,7 @@ export class McpFacade {
         name: full.name, version: full.version,
         channels: full.channels as unknown as Record<string, string>,
         versions: full.versions,
-        description: meta.description, phases: meta.phases,
+        description: meta.description, phases: resolvedPhases,
         params, owner: full.owner, createdAt: full.createdAt,
         reportProblem: reportProblemFor(full.name, full.owner),
         validation,
@@ -767,7 +783,7 @@ export class McpFacade {
     }
     const resultObj = {
       name: full.name, version: full.version, createdAt: full.createdAt,
-      description: meta.description, phases: meta.phases, script: full.script,
+      description: meta.description, phases: resolvedPhases, script: full.script,
       owner: full.owner, params, validation,
     };
     return { runId: '', status: 'completed', owner: full.owner, params, script: full.script, result: resultObj };

@@ -44,17 +44,17 @@ const b64 = (s: string) => Buffer.from(s).toString('base64');
 beforeAll(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), 'rwe-it129-'));
   server = await createServer({ port: 0, bind: '127.0.0.1', workRoot: tmpDir });
-  const reg = await call('workflow_register', { name: WF, script: "return 'ok';", mermaid: 'graph LR' });
+  const reg = await call('workflow_register', { name: WF, script: "export const meta = { phases: [] };\nreturn 'ok';", mermaid: 'graph LR' });
   expect(reg.error).toBeUndefined();
 });
 afterAll(async () => { await server?.close(); rmSync(tmpDir, { recursive: true, force: true }); });
 
 describe('every authoring refusal carries the guide pointer on the wire (IT-129, D-3, REQ-116)', () => {
   const cases: Array<[string, Record<string, unknown>, string]> = [
-    ['MERMAID_REQUIRED', { name: 'it129-no-mermaid', script: 'return 1;' }, 'MERMAID_REQUIRED'],
-    ['DIAGRAM_MISMATCH', { name: 'it129-mismatch', script: 'return 1;', mermaid: 'graph TD;\nghost(["ghost"])' }, 'DIAGRAM_MISMATCH'],
+    ['MERMAID_REQUIRED', { name: 'it129-no-mermaid', script: 'export const meta = { phases: [] };\nreturn 1;' }, 'MERMAID_REQUIRED'],
+    ['DIAGRAM_MISMATCH', { name: 'it129-mismatch', script: 'export const meta = { phases: [] };\nreturn 1;', mermaid: 'graph TD;\nghost(["ghost"])' }, 'DIAGRAM_MISMATCH'],
     ['PARSE_ERROR', { name: 'it129-parse', script: 'this is not { valid javascript (((', mermaid: 'graph LR' }, 'PARSE_ERROR'],
-    ['MERMAID_INVALID', { name: 'it129-collapsed', script: 'return 1;', mermaid: 'graph TD;\na["a"]\nb["b"]\nc["c"]\na-->b & c' }, 'MERMAID_INVALID'],
+    ['MERMAID_INVALID', { name: 'it129-collapsed', script: 'export const meta = { phases: [] };\nreturn 1;', mermaid: 'graph TD;\na["a"]\nb["b"]\nc["c"]\na-->b & c' }, 'MERMAID_INVALID'],
   ];
 
   for (const [label, args, code] of cases) {
@@ -152,7 +152,7 @@ describe('the trigger arm of a registration refusal carries the guide pointer to
   }
 
   const register = (name: string, triggers: string[], bearer: string) =>
-    callAs('workflow_register', { name, script: "return 'ok';", mermaid: 'graph LR', triggers }, bearer);
+    callAs('workflow_register', { name, script: "export const meta = { phases: [] };\nreturn 'ok';", mermaid: 'graph LR', triggers }, bearer);
 
   let residentId: string;
 

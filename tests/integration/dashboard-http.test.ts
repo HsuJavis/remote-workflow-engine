@@ -129,7 +129,7 @@ describe('Dashboard read-only HTTP endpoints (DES-018, ARCH-011)', () => {
 
   // v8 Slice 3 (REQ-049): registered-workflow cards endpoint (routing gap caught at Gate 7.5 real-run).
   it('GET /api/workflows returns 200 with the registered catalog', async () => {
-    await registerWorkflow('dash-wf-a', 'return 1;');
+    await registerWorkflow('dash-wf-a', 'export const meta = { phases: [] };\nreturn 1;');
     const res = await fetch(`http://127.0.0.1:${server.port}/api/workflows`);
     expect(res.status).toBe(200); // was router-404 before the top-level /api/workflows dispatch fix
     const list = await res.json() as Array<{ name: string; version: string }>;
@@ -189,7 +189,7 @@ describe('Dashboard read-only HTTP endpoints (DES-018, ARCH-011)', () => {
     const name = 'dash-deregistered-dag';
     await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'workflow_register', arguments: { name, script: 'return 1;', mermaid: 'graph LR' } } }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'workflow_register', arguments: { name, script: 'export const meta = { phases: [] };\nreturn 1;', mermaid: 'graph LR' } } }),
     });
     const pub = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },

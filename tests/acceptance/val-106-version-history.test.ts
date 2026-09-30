@@ -81,7 +81,7 @@ describe('REQ-096: a pre-v22 catalog boots non-breaking; a pre-v24 registration 
   });
 
   it('re-registering the SAME script under the same name makes it runnable again (the migration is non-breaking, not a dead end)', async () => {
-    const reg = await toolCall('workflow_register', { name: 'val106-legacy', script: `return 'legacy-still-runs';`, mermaid: 'graph LR' });
+    const reg = await toolCall('workflow_register', { name: 'val106-legacy', script: `export const meta = { phases: [] };\nreturn 'legacy-still-runs';`, mermaid: 'graph LR' });
     const version = (reg['result'] as { version?: string } | undefined)?.version as string;
     expect(version).toBeTruthy();
     await toolCall('workflow_publish', { name: 'val106-legacy', version, channel: 'release' });
@@ -93,6 +93,9 @@ describe('REQ-096: a pre-v22 catalog boots non-breaking; a pre-v24 registration 
     expect(settled['status']).toBe('completed');
     // The pre-v22 row itself is still THERE — the migration preserved history, which is REQ-096's
     // actual subject.
+    // v1 is the RAW pre-v22 legacy row (buildLegacyCatalog, above) — untouched by the v39
+    // registration rule (an existing row is immutable and never re-checked), so its stored script
+    // text is exactly what the legacy fixture seeded, with no injected meta.phases.
     const v1 = await toolCall('workflow_source', { name: 'val106-legacy', version: 'v1' });
     expect((v1['result'] as { script?: string } | undefined)?.script).toBe(`return 'legacy-still-runs';`);
   });
@@ -100,16 +103,16 @@ describe('REQ-096: a pre-v22 catalog boots non-breaking; a pre-v24 registration 
 
 describe('REQ-096: registering twice keeps BOTH versions retrievable (VAL-106)', () => {
   it('workflow_source({name, version:"v1"}) returns the first script after a second registration', async () => {
-    const first = await toolCall('workflow_register', { name: 'val106-two', script: `return 'first';`, mermaid: 'graph LR' });
+    const first = await toolCall('workflow_register', { name: 'val106-two', script: `export const meta = { phases: [] };\nreturn 'first';`, mermaid: 'graph LR' });
     const v1 = (first['result'] as { version?: string } | undefined)?.version;
-    await toolCall('workflow_register', { name: 'val106-two', script: `return 'second';`, mermaid: 'graph LR' });
+    await toolCall('workflow_register', { name: 'val106-two', script: `export const meta = { phases: [] };\nreturn 'second';`, mermaid: 'graph LR' });
 
     const got = await toolCall('workflow_source', { name: 'val106-two', version: v1 });
-    expect((got['result'] as { script?: string } | undefined)?.script).toBe(`return 'first';`);
+    expect((got['result'] as { script?: string } | undefined)?.script).toBe(`export const meta = { phases: [] };\nreturn 'first';`);
   });
 
   it('a run pins its version; run_status still reports it after a THIRD version is registered', async () => {
-    const first = await toolCall('workflow_register', { name: 'val106-pin', script: `return 'pinned';`, mermaid: 'graph LR' });
+    const first = await toolCall('workflow_register', { name: 'val106-pin', script: `export const meta = { phases: [] };\nreturn 'pinned';`, mermaid: 'graph LR' });
     const v1 = (first['result'] as { version?: string } | undefined)?.version as string;
     await toolCall('workflow_publish', { name: 'val106-pin', version: v1, channel: 'release' });
 
@@ -117,13 +120,13 @@ describe('REQ-096: registering twice keeps BOTH versions retrievable (VAL-106)',
     const runId = (run['result'] as { runId?: string } | undefined)?.runId as string;
     await pollUntilSettled(runId);
 
-    await toolCall('workflow_register', { name: 'val106-pin', script: `return 'newer';`, mermaid: 'graph LR' });
+    await toolCall('workflow_register', { name: 'val106-pin', script: `export const meta = { phases: [] };\nreturn 'newer';`, mermaid: 'graph LR' });
     const status = await toolCall('run_status', { runId });
     expect((status['result'] as { scriptVersion?: string } | undefined)?.scriptVersion).toBe(v1);
   });
 
   it('workflow_list reports versions[] and channels{} per workflow', async () => {
-    await toolCall('workflow_register', { name: 'val106-listed', script: `return 1;`, mermaid: 'graph LR' });
+    await toolCall('workflow_register', { name: 'val106-listed', script: `export const meta = { phases: [] };\nreturn 1;`, mermaid: 'graph LR' });
     const list = await toolCall('workflow_list', {});
     const entry = (list['result'] as Array<Record<string, unknown>> | undefined)?.find((e) => e['name'] === 'val106-listed');
     expect(Array.isArray(entry?.['versions'])).toBe(true);

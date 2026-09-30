@@ -51,7 +51,7 @@ const MERMAID = [
   'xss-->writer',
 ].join('\n');
 const SCRIPT = [
-  "export const meta = { description: 'hostile labels', params: { agents: {",
+  "export const meta = { description: 'hostile labels', phases: [{ title: 'Write' }], params: { agents: {",
   "  writer: { model: { type: 'string', default: 'ollama/x7b' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },",
   '} } };',
   "phase('Write');",

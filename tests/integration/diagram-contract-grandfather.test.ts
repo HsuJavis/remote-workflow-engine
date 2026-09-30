@@ -8,7 +8,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
-import { registerPublishedVia, uniqueWorkflowName, synthesizeMeta } from '../helpers/workflow-fixtures.js';
+import { registerPublishedVia, uniqueWorkflowName, synthesizeMeta, synthesizePhases } from '../helpers/workflow-fixtures.js';
 import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -52,7 +52,7 @@ describe('workflow_describe reports diagramContract (IT-151, DES-184)', () => {
 
     const refused = await mcpCall('workflow_register', {
       name: uniqueWorkflowName('it151-td'),
-      script: synthesizeMeta(`phase('one');\nawait agent('a', { prompt: 'p' });`),
+      script: synthesizePhases(synthesizeMeta(`phase('one');\nawait agent('a', { prompt: 'p' });`)),
       mermaid: 'graph TD\na(["a"])',
     });
     expect(refused.error?.code ?? refused.code).toBe('DIAGRAM_DIRECTION');
@@ -62,7 +62,7 @@ describe('workflow_describe reports diagramContract (IT-151, DES-184)', () => {
     // REQ-117's first-try bar: an author told only "scan violation" cannot find the missing phase().
     const refused = await mcpCall('workflow_register', {
       name: uniqueWorkflowName('it151-nophase'),
-      script: synthesizeMeta(`await agent('a', { prompt: 'p' });`),
+      script: synthesizePhases(synthesizeMeta(`await agent('a', { prompt: 'p' });`)),
       mermaid: 'graph LR\nsubgraph "one"\na(["a"])\nend',
     });
     const err = refused.error ?? refused;

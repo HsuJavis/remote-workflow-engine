@@ -32,6 +32,7 @@ import type { WorkflowCatalog } from '../../src/workflow-catalog.js';
 import type { RunSpec } from '../../src/types.js';
 import { scanAgentCalls, parseWorkflowSkeleton } from '../../src/workflow-meta.js';
 import { deriveExpectedGraph } from '../../src/skeleton-graph.js';
+import { checkMeta } from '../../src/sandbox/guards.js';
 import type { Principal } from '../../src/authz.js';
 
 export type Channel = 'beta' | 'release';
@@ -169,6 +170,32 @@ export function synthesizeMeta(script: string, model = DEFAULT_FIXTURE_MODEL): s
   return `export const meta = { params: { agents: { ${agents} } } };\n${script}`;
 }
 
+/** v39 (owner decision 2026-09-30): registration now REQUIRES `meta.phases` to equal the script's
+ *  own `phase()` calls in count/order (title too, where the call's title is a plain string
+ *  literal). Runs LAST in the chain (after `synthesizePhase`/`synthesizeMeta`), over whatever
+ *  script those two produced, so it always sees the FINAL set of `phase()` calls a registration
+ *  would actually scan. Three cases: (1) no `export const meta` at all — prepend a fresh one
+ *  declaring just `phases`; (2) a meta object that does not already declare its own `phases` key —
+ *  inject `phases: [...]` as its first key (legal: a trailing comma before the rest of the object,
+ *  the same object-literal-editing move `synthesizeMeta` itself performs by construction); (3) a
+ *  meta whose object is impure/malformed, or that ALREADY declares its own `phases` — left
+ *  UNCHANGED (a fixture testing THAT shape, or one that already wrote a correct/deliberately-wrong
+ *  declaration of its own, keeps exactly what it wrote — never a second, conflicting `phases` key). */
+export function synthesizePhases(script: string): string {
+  const titles = parseWorkflowSkeleton(script)
+    .filter((n) => n.kind === 'phase')
+    .map((n) => n.title ?? 'dynamic');
+  const phasesLiteral = `[${titles.map((t) => `{ title: ${JSON.stringify(t)} }`).join(', ')}]`;
+  const m = checkMeta(script);
+  if (!m.found) return `export const meta = { phases: ${phasesLiteral} };\n${script}`;
+  if (!m.pureLiteral || m.objectText === undefined) return script;
+  if (/\bphases\s*:/.test(m.objectText)) return script;
+  const declMatch = META_DECL_RE.exec(script)!;
+  const objStart = declMatch.index + declMatch[0].length;
+  const injected = `{ phases: ${phasesLiteral}, ${m.objectText.slice(1)}`;
+  return `${script.slice(0, objStart)}${injected}${script.slice(objStart + m.objectText.length)}`;
+}
+
 /** 2026-09-26 (alias mechanism removed): every `model.default` must now be a full
  *  `<provider>/<model-id>` ref — no aliases, no bare names, no `'default'` fallback anywhere. This
  *  one is a static-table anthropic id: `checkModelRef` accepts it with NO warning and NO catalog
@@ -216,7 +243,7 @@ export async function registerPublished(
   opts: RegisterPublishOpts = {},
 ): Promise<{ version: string }> {
   const principal = opts.principal ?? null;
-  const scriptWithMeta = synthesizeMeta(synthesizePhase(script), opts.model);
+  const scriptWithMeta = synthesizePhases(synthesizeMeta(synthesizePhase(script), opts.model));
   const mermaid = opts.mermaid ?? synthesizeMermaid(scriptWithMeta);
   const { version } = await catalog.register({ name, script: scriptWithMeta, mermaid, principal });
   await catalog.publish(name, version, opts.channel ?? 'release', principal);
@@ -306,7 +333,7 @@ export async function registerPublishedVia(
   // identity in `facadeCaller(facade, principal)` instead. Either way the SAME principal must
   // register and publish: `publish` only skips the ownership gate when the principal is null.
   const who = typeof opts.principal === 'string' ? { principal: opts.principal } : {};
-  const scriptWithMeta = synthesizeMeta(synthesizePhase(script), opts.model);
+  const scriptWithMeta = synthesizePhases(synthesizeMeta(synthesizePhase(script), opts.model));
   const mermaid = opts.mermaid ?? synthesizeMermaid(scriptWithMeta);
   const triggers = opts.triggers && opts.triggers.length > 0 ? { triggers: opts.triggers } : {};
   const registered = await call('workflow_register', { name, script: scriptWithMeta, mermaid, ...triggers, ...who });

@@ -77,7 +77,7 @@ describe('registration enforces validateScriptEntry — same codes submission us
     try {
       const catalog = makeCatalog(dir);
       const script =
-        `export const meta = { params: { agents: { a: { ` +
+        `export const meta = { phases: [{ title: 'Work' }], params: { agents: { a: { ` +
         `model: { type: 'string', default: ${JSON.stringify(DEFAULT_FIXTURE_MODEL)} }, ` +
         `effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, ` +
         `timeoutMs: { type: 'number', default: 60000 } } } } };\n` +
@@ -116,8 +116,8 @@ describe('per-name version ceiling refused before any write, message names both 
       const catalog = new WorkflowCatalog(dir, CLOCK, {
         ceilings: { maxTimeoutMs: 600_000, maxAppendPromptBytes: 1024, maxEffort: 'high', maxWorkflowVersions: 1 } as Ceilings & { maxWorkflowVersions: number },
       });
-      await catalog.register({ name: 'one-slot', script: `return 1;`, mermaid: 'graph LR' });
-      await expect(catalog.register({ name: 'one-slot', script: `return 2;`, mermaid: 'graph LR' })).rejects.toMatchObject({
+      await catalog.register({ name: 'one-slot', script: `export const meta = { phases: [] };\nreturn 1;`, mermaid: 'graph LR' });
+      await expect(catalog.register({ name: 'one-slot', script: `export const meta = { phases: [] };\nreturn 2;`, mermaid: 'graph LR' })).rejects.toMatchObject({
         code: 'VERSION_CEILING_EXCEEDED',
         // Gate-8 send-back (TASK-244 DoD 8): the message must name the real v36 call shape.
         message: expect.stringContaining('workflow_deregister({name, version})'),

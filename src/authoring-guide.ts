@@ -103,6 +103,7 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
     script:
       `export const meta = {\n` +
       `  description: 'Summarize the given topic in one paragraph',\n` +
+      `  phases: [{ title: 'summarize' }],\n` +
       `  params: { agents: { writer: ${agentSpec('low', 60000)} } },\n` +
       `};\n` +
       `phase('summarize');\n` +
@@ -117,6 +118,7 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
     script:
       `export const meta = {\n` +
       `  description: 'Draft, then edit, then finalize a piece of text',\n` +
+      `  phases: [{ title: 'draft' }, { title: 'edit' }, { title: 'final' }],\n` +
       `  params: { agents: { draft: ${agentSpec('low', 60000)}, edit: ${agentSpec('low', 60000)}, final: ${agentSpec('low', 60000)} } },\n` +
       `};\n` +
       `phase('draft');\n` +
@@ -138,6 +140,7 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
     script:
       `export const meta = {\n` +
       `  description: 'Fan out research to three topics in parallel, then combine the results',\n` +
+      `  phases: [{ title: 'research' }, { title: 'combine' }],\n` +
       `  params: { agents: { alpha: ${agentSpec('low', 60000)}, beta: ${agentSpec('low', 60000)}, gamma: ${agentSpec('low', 60000)}, combiner: ${agentSpec('medium', 90000)} } },\n` +
       `};\n` +
       `phase('research');\n` +
@@ -162,6 +165,7 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
     script:
       `export const meta = {\n` +
       `  description: 'Classify urgency, then route to a fast or thorough agent',\n` +
+      `  phases: [{ title: 'classify' }, { title: 'route' }],\n` +
       `  params: { agents: { classifier: ${agentSpec('low', 60000)}, fast: ${agentSpec('low', 60000)}, thorough: ${agentSpec('high', 120000)} } },\n` +
       `};\n` +
       `phase('classify');\n` +
@@ -183,6 +187,7 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
     script:
       `export const meta = {\n` +
       `  description: 'Classify the input, then branch to one of two agents',\n` +
+      `  phases: [{ title: 'classify' }, { title: 'handle' }],\n` +
       `  params: { agents: { classifier: ${agentSpec('low', 60000)}, simple: ${agentSpec('low', 60000)}, complex: ${agentSpec('high', 120000)} } },\n` +
       `};\n` +
       `phase('classify');\n` +
@@ -205,6 +210,7 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
     script:
       `export const meta = {\n` +
       `  description: 'Score three candidates with an agent, then pick the best score without another agent call',\n` +
+      `  phases: [{ title: 'score' }],\n` +
       `  params: { agents: { scorerX: ${agentSpec('low', 60000)}, scorerY: ${agentSpec('low', 60000)}, scorerZ: ${agentSpec('low', 60000)} } },\n` +
       `};\n` +
       `phase('score');\n` +
@@ -233,6 +239,7 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
     script:
       `export const meta = {\n` +
       `  description: 'Write a draft, get one round of critique, then revise — an unrolled fixed-length sequence (an agent call inside a loop body cannot be statically checked)',\n` +
+      `  phases: [{ title: 'draft' }, { title: 'critique' }, { title: 'revise' }],\n` +
       `  params: { agents: { writer: ${agentSpec('low', 60000)}, critic: ${agentSpec('low', 60000)} } },\n` +
       `};\n` +
       `phase('draft');\n` +
@@ -254,6 +261,7 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
     script:
       `export const meta = {\n` +
       `  description: 'Delegates to another registered workflow, then summarizes its result',\n` +
+      `  phases: [{ title: 'delegate' }, { title: 'summarize' }],\n` +
       `  params: { agents: { summarizer: ${agentSpec('low', 60000)} } },\n` +
       `};\n` +
       `phase('delegate');\n` +
@@ -271,6 +279,7 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
     script:
       `export const meta = {\n` +
       `  description: 'Delegates to two other registered workflows in parallel — a parallel() of workflow() calls yields no agent slot',\n` +
+      `  phases: [{ title: 'delegate' }],\n` +
       `  params: { agents: {} },\n` +
       `};\n` +
       `phase('delegate');\n` +
@@ -289,6 +298,7 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
     script:
       `export const meta = {\n` +
       `  description: 'Uses a declared arg to steer the single agent call',\n` +
+      `  phases: [{ title: 'write' }],\n` +
       `  params: { args: { topic: { type: 'string' } }, agents: { writer: ${agentSpec('low', 60000)} } },\n` +
       `};\n` +
       `phase('write');\n` +
@@ -302,7 +312,12 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
     title: 'dynamic phase title',
     script:
       `export const meta = {\n` +
+      // v39: this phase() call's title is computed at runtime — a static scan cannot know it in
+      // advance, so meta.phases[0].title may be ANY non-empty string at that position (only the
+      // POSITION is checked, mirroring the diagram's own LANE_MISMATCH rule for a dynamic lane).
+      // 'processing' is chosen to match the mermaid subgraph title below.
       `  description: 'The phase title is computed from a declared arg — a static scan cannot know it in advance',\n` +
+      `  phases: [{ title: 'processing' }],\n` +
       `  params: { args: { tier: { type: 'string' } }, agents: { worker: ${agentSpec('low', 60000)} } },\n` +
       `};\n` +
       `phase('tier:' + args.tier);\n` +
@@ -317,6 +332,7 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
     script:
       `export const meta = {\n` +
       `  description: 'An agent declared with a skill and an mcp server and NO file tools — the declared skill is still reachable, through the Skill tool',\n` +
+      `  phases: [{ title: 'code' }],\n` +
       `  params: { agents: { coder: { model: { type: 'string', default: '${EXAMPLE_MODEL}' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'medium' }, timeoutMs: { type: 'number', default: 120000 }, skills: ['repo-search'], mcp: ['project-tracker'] } } },\n` +
       `};\n` +
       `phase('code');\n` +
@@ -331,6 +347,7 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
     script:
       `export const meta = {\n` +
       `  description: 'A judge agent restricted to no tools at all — pure text reasoning',\n` +
+      `  phases: [{ title: 'judge' }],\n` +
       `  params: { agents: { judge: ${agentSpec('low', 60000)} } },\n` +
       `};\n` +
       `phase('judge');\n` +
@@ -596,7 +613,9 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '- `await parallel([thunk, ...])` — runs an array of zero-argument thunks concurrently, each ' +
         'returning `null` on its own thrown error rather than rejecting the whole call.\n' +
         '- `await pipeline([item, ...], stage1, stage2, ...)` — runs each item through the stage chain.\n' +
-        "- `phase(title)` — names the current step for observability. Titles are public (see below).\n" +
+        "- `phase(title)` — names the current step for observability. Titles are public (see below). " +
+        "`meta.phases: [{title}, ...]` is REQUIRED and must equal these calls in count/order (see " +
+        "'Declaring the parameter contract' below).\n" +
         '- `log(...)` — a no-op placeholder in this sandbox (accepted, does nothing).\n' +
         '- `args` — the caller-supplied run arguments, shaped by `meta.params.args`.\n' +
         '- `budget` — read-only: `{limits: {usd, tokens}, total, spent(), remaining(), tokens()}` (see ' +
@@ -649,6 +668,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '```js\n' +
         'export const meta = {\n' +
         "  description: 'Summarize the given topic in one paragraph',\n" +
+        "  phases: [{ title: 'summarize' }],\n" +
         '  params: {\n' +
         '    agents: {\n' +
         `      writer: { model: { type: 'string', default: '${EXAMPLE_MODEL}' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },\n` +
@@ -657,6 +677,22 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '};\n' +
         '```\n\n' +
         `${modelRefSentence()}\n\n` +
+        // v39 (owner decision 2026-09-30): meta.phases is now REQUIRED (previously optional, and
+        // silently read back verbatim when present) — this is the whole authoring rule, stated
+        // exactly once, self-contained.
+        '**Declaring `meta.phases`.** `meta.phases: [{title}, ...]` is REQUIRED and must equal your ' +
+        "script's own `phase()` calls, in the same count and order — the SAME `writer: {...}` shape " +
+        "above but with `phase('summarize');` in the script body. A script with zero `phase()` calls " +
+        'must still declare `phases: []` explicitly (an absent key is refused even then). Refused ' +
+        "`PHASES_REQUIRED` when `meta.phases` is missing, not an array, or has an entry with no " +
+        'string `title`; `PHASES_MISMATCH` when it disagrees with the script — count, order, or ' +
+        "title (the message names both lists and the first difference). A `phase()` call whose " +
+        "title is computed at runtime (`phase('tier:' + args.tier)`) cannot be checked textually — " +
+        'declare ANY non-empty title for it, at the right position; only the position, never the ' +
+        "text, is checked there (mirrors the diagram's own dynamic-lane rule below). This is what " +
+        "`workflow_describe`'s `phases` reads back (`phasesSource:'declared'`); a version registered " +
+        "before this rule existed has its `phases` DERIVED from its own `phase()` calls instead " +
+        "(`phasesSource:'derived'`) rather than reported empty.\n\n" +
         // issues #81/#83: nothing said how a declared skill is activated, and the only example
         // paired one with file tools — authors could not tell a skill never reached the model.
         '**Skills.** `skills: [name, ...]` names skills pushed with `workspace_push` (`kind: \'skill\'`). ' +

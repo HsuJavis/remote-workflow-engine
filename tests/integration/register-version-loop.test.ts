@@ -62,7 +62,7 @@ describe("workflow_register's response carries the version loop (IT-172, DES-222
 
   it('a refused registration (MERMAID_REQUIRED) still answers {status:"failed", code}, with NO result key', async () => {
     const name = uniqueWorkflowName('it172-refused');
-    const body = await call('workflow_register', { name, script: 'return 1;' }); // no mermaid, same fixture tool-specs.ts declares for this code
+    const body = await call('workflow_register', { name, script: 'export const meta = { phases: [] };\nreturn 1;' }); // no mermaid, same fixture tool-specs.ts declares for this code
     expect(body.status).toBe('failed');
     expect(body.code).toBe('MERMAID_REQUIRED');
     expect(body.result).toBeUndefined();

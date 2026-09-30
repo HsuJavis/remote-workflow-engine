@@ -50,7 +50,7 @@ const AGENT_BLOCK = (skills: string[]) =>
   `{ model: { type: 'string', default: 'ollama/qwen2.5:7b' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 }, skills: ${JSON.stringify(skills)} }`;
 
 const SCRIPT = (skills: string[]) =>
-  `export const meta = { params: { agents: { worker: ${AGENT_BLOCK(skills)} } } };\n` +
+  `export const meta = { phases: [{ title: 'Work' }], params: { agents: { worker: ${AGENT_BLOCK(skills)} } } };\n` +
   // v26 (REQ-128): rule L2 — every agent() inside a phase(); the lane name matches the diagram.
   `phase('Work');\n` +
   `return await agent('worker', { prompt: 'go' });`;
@@ -129,7 +129,7 @@ describe('deregister removes the workflow\'s asset tree from disk, not only its 
     // 0. Issue #102 (asset squatting): workspace_push now requires the workflow to already be
     // registered (WORKFLOW_NOT_FOUND otherwise) — the supported order is register FIRST, then push
     // its assets. `registerRunAndWait` below registers the real (skill-declaring) version as v2.
-    const preReg = await mcpCall('workflow_register', { name: WF, script: 'return "placeholder";', mermaid: 'graph LR' }, ownerToken);
+    const preReg = await mcpCall('workflow_register', { name: WF, script: 'export const meta = { phases: [] };\nreturn "placeholder";', mermaid: 'graph LR' }, ownerToken);
     expect(preReg.error, `pre-register: ${JSON.stringify(preReg.error)}`).toBeUndefined();
 
     // 1. The owner pushes a skill, registers, publishes and runs — the skill really materializes.

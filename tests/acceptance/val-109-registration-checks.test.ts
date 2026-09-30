@@ -74,7 +74,7 @@ describe('REQ-099: registration enforces the checks the engine used to run only 
     // ref is well-formed (this one is a static-table anthropic id, so it also carries no
     // MODEL_CATALOG_UNVERIFIED warning).
     const script = [
-      "export const meta = { params: { agents: { a: {",
+      "export const meta = { phases: [{ title: 'Work' }], params: { agents: { a: {",
       "  model: { type: 'string', default: 'anthropic/claude-sonnet-5' },",
       "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
       "  timeoutMs: { type: 'number', default: 60000 },",

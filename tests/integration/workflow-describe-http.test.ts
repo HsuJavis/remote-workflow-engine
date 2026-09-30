@@ -47,6 +47,7 @@ const SCRIPT = `export const meta = {
   description: 'anti-drift secret-bearing fixture',
   phases: [{ title: 'Draft' }],
 };
+phase('Draft');
 // ${SECRET}
 return 'ok';`;
 

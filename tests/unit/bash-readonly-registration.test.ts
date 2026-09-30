@@ -29,7 +29,7 @@ const AGENT_DECL =
 
 function script(opts: string, extraDecl = ''): string {
   return (
-    `export const meta = { description: 'd', params: { agents: { a: { ${AGENT_DECL}${extraDecl} } } } };\n` +
+    `export const meta = { description: 'd', phases: [{ title: 'P' }], params: { agents: { a: { ${AGENT_DECL}${extraDecl} } } } };\n` +
     "phase('P');\n" +
     `return await agent('a', { prompt: 'p'${opts} });`
   );

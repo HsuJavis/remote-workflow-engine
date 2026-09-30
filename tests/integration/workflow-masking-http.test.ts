@@ -96,13 +96,13 @@ describe('REQ-100: workflow_source masks the script for non-owners (auth-enabled
     const ownerToken = await mintBearer(authTmpDir, authServer.port, 'it089-owner@example.com');
     // v24 (REQ-111/MERMAID_REQUIRED): registration now requires a non-empty diagram. This script
     // has no `agent()` calls, so the header-only `graph TD;` is the whole diagram checkMermaid needs.
-    const reg = await toolCall(authServer, 'workflow_register', { name: 'it089-owned', script: `return 'secret-script-body';`, mermaid: 'graph LR' }, ownerToken);
+    const reg = await toolCall(authServer, 'workflow_register', { name: 'it089-owned', script: `export const meta = { phases: [] };\nreturn 'secret-script-body';`, mermaid: 'graph LR' }, ownerToken);
     expect(reg['error']).toBeUndefined();
     // v22: registration is not publication — `workflow_source({name})` resolves the `release` channel.
     await toolCall(authServer, 'workflow_publish', { name: 'it089-owned', version: `v${reg['version']}`, channel: 'release' }, ownerToken);
 
     const got = await toolCall(authServer, 'workflow_source', { name: 'it089-owned' }, ownerToken);
-    expect((got['result'] as { script?: string } | undefined)?.script).toBe(`return 'secret-script-body';`);
+    expect((got['result'] as { script?: string } | undefined)?.script).toBe(`export const meta = { phases: [] };\nreturn 'secret-script-body';`);
   });
 
   it('a NON-OWNER bearer gets a masked response with NO script anywhere in it (top-level or nested)', async () => {
@@ -157,10 +157,10 @@ describe('REQ-100: workflow_source masks the script for non-owners (auth-enabled
 
 describe('REQ-100: auth disabled ⇒ pre-v22 surface, byte-for-byte (IT-089)', () => {
   it('with auth OFF, workflow_source returns the full script to anyone (no bearer needed)', async () => {
-    const reg = await toolCall(openServer, 'workflow_register', { name: 'it089-open', script: `return 'open-script';`, mermaid: 'graph LR' }); // v24: MERMAID_REQUIRED
+    const reg = await toolCall(openServer, 'workflow_register', { name: 'it089-open', script: `export const meta = { phases: [] };\nreturn 'open-script';`, mermaid: 'graph LR' }); // v24: MERMAID_REQUIRED
     expect(reg['error']).toBeUndefined();
     await toolCall(openServer, 'workflow_publish', { name: 'it089-open', version: `v${reg['version']}`, channel: 'release' });
     const got = await toolCall(openServer, 'workflow_source', { name: 'it089-open' });
-    expect((got['result'] as { script?: string } | undefined)?.script).toBe(`return 'open-script';`);
+    expect((got['result'] as { script?: string } | undefined)?.script).toBe(`export const meta = { phases: [] };\nreturn 'open-script';`);
   });
 });

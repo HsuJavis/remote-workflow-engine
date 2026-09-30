@@ -35,7 +35,7 @@ afterEach(() => { rmSync(workRoot, { recursive: true, force: true }); });
 
 describe('McpFacade refusal arms (UT-163)', () => {
   it('workflowDeregister turns a catalog THROW into the failed envelope (the catch arm)', async () => {
-    await catalog.register({ name: 'owned', script: 'return 1;', mermaid: 'graph LR', principal: ALICE.id });
+    await catalog.register({ name: 'owned', script: "export const meta = { phases: [] };\nreturn 1;", mermaid: 'graph LR', principal: ALICE.id });
     const res = await facade.workflowDeregister({ name: 'owned' }, BOB) as Record<string, unknown>;
     expect(res['status']).toBe('failed');
     expect(res['code']).toBe('NOT_WORKFLOW_OWNER');
@@ -51,7 +51,7 @@ describe('McpFacade refusal arms (UT-163)', () => {
   });
 
   it('workflowPublish refuses an unrecognised channel INVALID_CHANNEL rather than quietly meaning beta', async () => {
-    const { version } = await catalog.register({ name: 'pub', script: 'return 1;', mermaid: 'graph LR' });
+    const { version } = await catalog.register({ name: 'pub', script: "export const meta = { phases: [] };\nreturn 1;", mermaid: 'graph LR' });
     const res = await facade.workflowPublish({ name: 'pub', version, channel: 'nightly' as never }, OPEN) as Record<string, unknown>;
     expect(res['status']).toBe('failed');
     expect(res['code']).toBe('INVALID_CHANNEL');
@@ -70,7 +70,7 @@ describe('McpFacade refusal arms (UT-163)', () => {
   // same as every other case in this describe block), so it exercises the HANDLER's new `version:
   // string | null` acceptance; `tool-specs-guard.test.ts` covers the schema itself accepting null.
   it('workflowPublish({version:null}) clears the named channel — a subsequent resolve() answers CHANNEL_UNPUBLISHED, same as never-published', async () => {
-    const { version } = await catalog.register({ name: 'clearable', script: 'return 1;', mermaid: 'graph LR' });
+    const { version } = await catalog.register({ name: 'clearable', script: "export const meta = { phases: [] };\nreturn 1;", mermaid: 'graph LR' });
     const published = await facade.workflowPublish({ name: 'clearable', version, channel: 'release' }, OPEN) as Record<string, unknown>;
     expect(published['status']).toBe('completed');
     await expect(catalog.resolve('clearable', { channel: 'release' })).resolves.toMatchObject({ version });
@@ -87,7 +87,7 @@ describe('McpFacade refusal arms (UT-163)', () => {
   });
 
   it('workflowPublish({version:null}) clearing an ALREADY-unpublished channel is a harmless idempotent no-op, never NOT_WORKFLOW_OWNER or VERSION_NOT_FOUND', async () => {
-    await catalog.register({ name: 'never-published', script: 'return 1;', mermaid: 'graph LR' });
+    await catalog.register({ name: 'never-published', script: "export const meta = { phases: [] };\nreturn 1;", mermaid: 'graph LR' });
     const res = await facade.workflowPublish({ name: 'never-published', version: null, channel: 'release' }, OPEN) as Record<string, unknown>;
     expect(res['status']).toBe('completed');
     expect((res['result'] as { from?: string | null } | undefined)?.from).toBeNull();
@@ -113,7 +113,7 @@ describe('McpFacade refusal arms (UT-163)', () => {
   it('workspaceDelete routes the workflow scope and the global scope to the bound assetSync', async () => {
     // Issue #102: a workflow-scoped delete now requires the workflow to actually be registered
     // (WORKFLOW_NOT_FOUND otherwise) — 'w' must exist for this routing case to reach assetSync at all.
-    await catalog.register({ name: 'w', script: 'return 1;', mermaid: 'graph LR' });
+    await catalog.register({ name: 'w', script: "export const meta = { phases: [] };\nreturn 1;", mermaid: 'graph LR' });
     const calls: unknown[] = [];
     facade.bindAssetSync({ delete: async (req: unknown) => { calls.push(req); return { deleted: true }; } } as never);
     expect((await facade.workspaceDelete({ workflow: 'w', kind: 'skill', name: 'n' }, OPEN))['status']).toBe('completed');
@@ -129,7 +129,7 @@ describe('McpFacade refusal arms (UT-163)', () => {
   // asset". This pins the ANSWER threading through, both ways, not just the route.
   it('workspaceDelete answers the REAL {deleted} boolean from assetSync.delete, not a hardcoded true', async () => {
     // Issue #102: 'w' must be registered for a workflow-scoped delete to reach assetSync at all.
-    await catalog.register({ name: 'w', script: 'return 1;', mermaid: 'graph LR' });
+    await catalog.register({ name: 'w', script: "export const meta = { phases: [] };\nreturn 1;", mermaid: 'graph LR' });
     facade.bindAssetSync({ delete: async () => ({ deleted: false }) } as never);
     const missResult = await facade.workspaceDelete({ workflow: 'w', kind: 'skill', name: 'never-existed' }, OPEN) as Record<string, unknown>;
     expect(missResult['status']).toBe('completed');
@@ -208,7 +208,7 @@ describe('McpFacade refusal arms (UT-163)', () => {
 
 describe('WorkflowCatalog non-default arms (UT-163)', () => {
   it('deregister refuses a non-owner NOT_WORKFLOW_OWNER naming the real owner', async () => {
-    await catalog.register({ name: 'owned2', script: 'return 1;', mermaid: 'graph LR', principal: ALICE.id });
+    await catalog.register({ name: 'owned2', script: "export const meta = { phases: [] };\nreturn 1;", mermaid: 'graph LR', principal: ALICE.id });
     await expect(catalog.deregister('owned2', BOB.id)).rejects.toMatchObject({ code: 'NOT_WORKFLOW_OWNER' });
     // the owner may, and the row really goes
     await expect(catalog.deregister('owned2', ALICE.id)).resolves.toMatchObject({ removed: true });
@@ -229,17 +229,19 @@ describe('WorkflowCatalog non-default arms (UT-163)', () => {
       .rejects.toMatchObject({ code: 'PARAM_CONTRACT_INVALID' });
   });
 
-  it('a meta literal that THROWS while evaluating degrades to "no params" — registration still succeeds', async () => {
+  it('a meta literal that THROWS while evaluating still degrades PARAMS to "no params" (parseMetaParams\'s own eval-catch arm, exercised directly — see tests/unit/workflow-meta.test.ts)', async () => {
     // `checkMeta` accepts this as a pure literal (its grammar is syntactic: no calls, vars,
     // spreads or templates), but V8 refuses to evaluate it — `SyntaxError: Duplicate __proto__
-    // fields are not allowed in object literals`. That is the one reachable input for
-    // `_parseParams`' eval-catch arm, and the design says such a script degrades to "no params"
-    // rather than failing the registration.
+    // fields are not allowed in object literals`. `parseMetaParams`' own eval-catch arm still
+    // degrades this to "no params" (workflow-meta.test.ts's "guard arms" describe block asserts
+    // that directly) — but v39 (owner decision 2026-09-30) added a SECOND, independent read of
+    // the same unevaluable literal: `checkMetaPhases` cannot tell "no phases declared" from "meta
+    // is unreadable" (both are the same {declared:false}), so it refuses PHASES_REQUIRED — the
+    // params-degrades-gracefully arm is still reached (params DOES resolve to the empty
+    // contract), it is simply no longer sufficient for the OVERALL registration to succeed.
     const script = `export const meta = { __proto__: {}, __proto__: {} };\nreturn 1;`;
-    const { version } = await catalog.register({ name: 'odd-meta', script, mermaid: 'graph LR' });
-    expect(version).toBe('v1');
-    const resolved = await catalog.resolve('odd-meta', { version }) as { params?: { agents?: unknown; args?: unknown } };
-    expect(resolved.params).toEqual({ agents: {}, args: {} }); // the empty contract, not a refusal
+    await expect(catalog.register({ name: 'odd-meta', script, mermaid: 'graph LR' }))
+      .rejects.toMatchObject({ code: 'PHASES_REQUIRED' });
   });
 });
 

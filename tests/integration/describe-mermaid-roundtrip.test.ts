@@ -45,7 +45,7 @@ const MERMAID = [
 ].join('\n');
 
 const SCRIPT = [
-  "export const meta = { description: 'diagram round trip', params: { agents: {",
+  "export const meta = { description: 'diagram round trip', phases: [{ title: 'Plan' }], params: { agents: {",
   "  planner: { model: { type: 'string', default: 'anthropic/claude-sonnet-5' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },",
   "  writer: { model: { type: 'string', default: 'anthropic/claude-sonnet-5' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },",
   '} } };',

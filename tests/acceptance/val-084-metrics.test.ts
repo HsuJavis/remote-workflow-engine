@@ -96,7 +96,7 @@ describe('VAL-084: home card metrics — avg success rate + avg execution time (
     const wfName = 'val084-never-run';
     await callTool('workflow_register', {
       name: wfName,
-      script: `export const meta = { name: '${wfName}', description: 'never run' };
+      script: `export const meta = { name: '${wfName}', description: 'never run', phases: [] };
                return "unreachable";`,
       mermaid: 'graph LR',
     });

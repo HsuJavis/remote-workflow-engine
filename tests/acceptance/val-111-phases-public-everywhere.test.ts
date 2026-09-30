@@ -61,9 +61,12 @@ async function toolCall(name: string, args: Record<string, unknown>, bearer?: st
 describe('REQ-100 [AMENDED v23]: phases are public even to a non-owner (VAL-111)', () => {
   it('a non-owner workflow_source sees the real phase titles while script stays withheld', async () => {
     const ownerToken = await mintBearer('val111-owner@example.com');
+    // v39 (owner decision 2026-09-30): meta.phases must equal the script's own phase() calls in
+    // count/order — added the two matching phase() calls (this REQ's subject is publication, not
+    // execution, so they carry no agent() dispatch).
     await registerPublishedVia(
       (n, a) => toolCall(n, a, ownerToken), 'val111-flow',
-      `export const meta = { phases: [{title:'Draft'}, {title:'Verify'}] };\nreturn 'val111-secret';`,
+      `export const meta = { phases: [{title:'Draft'}, {title:'Verify'}] };\nphase('Draft');\nphase('Verify');\nreturn 'val111-secret';`,
     );
 
     const otherToken = await mintBearer('val111-stranger@example.com');

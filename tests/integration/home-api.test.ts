@@ -67,7 +67,7 @@ describe('GET /api/home + terminalAt in RunSummary (IT-068, DES-070, DES-071)', 
   it('a registered workflow (no active run) appears under registered[]', async () => {
     await callTool('workflow_register', {
       name: 'it068-idle',
-      script: `export const meta = { name: 'it068-idle', description: 'idle workflow for IT-068' };
+      script: `export const meta = { name: 'it068-idle', description: 'idle workflow for IT-068', phases: [] };
                return "idle";`,
       mermaid: 'graph LR',
     });

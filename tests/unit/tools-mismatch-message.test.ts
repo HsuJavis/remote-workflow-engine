@@ -19,7 +19,7 @@ const OPEN: Principal = { kind: 'auth-disabled' };
 
 function script(allowedTools: string): string {
   return (
-    "export const meta = { description: 'd', params: { agents: { w: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, " +
+    "export const meta = { description: 'd', phases: [{ title: 'P' }], params: { agents: { w: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, " +
     "effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } } };\n" +
     "phase('P');\n" +
     `return await agent('w', { prompt: 'p', allowedTools: ${allowedTools} });`
@@ -80,7 +80,7 @@ describe('#89 item 5 — rule===code diagram refusals carry meaningful text, not
 
   it('LANE_MISMATCH names what is wrong (generic phrase — its own catalog hint is too long to read inline), not just the line', async () => {
     const twoPhaseScript =
-      "export const meta = { description: 'd', params: { agents: { w: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, " +
+      "export const meta = { description: 'd', phases: [{ title: 'one' }, { title: 'two' }], params: { agents: { w: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, " +
       "effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } } };\n" +
       "phase('one');\n" +
       "await agent('w', { prompt: 'p' });\n" +

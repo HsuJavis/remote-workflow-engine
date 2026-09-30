@@ -42,7 +42,7 @@ async function seedSuspendedRunWithMissingPin(dir: string, name: string, registe
   const catalog = new WorkflowCatalog(join(dir, 'catalog'), CLOCK);
   const store = new SqliteRunStore(join(dir, 'store'), CLOCK);
   const runManager = new RunManager({ store, clock: CLOCK, workRoot: dir, catalog, confinementPosture: 'unconfined' });
-  const { version } = await catalog.register({ name, script: `return 'substituted-script';`, mermaid: 'graph LR', registeredRemote });
+  const { version } = await catalog.register({ name, script: `export const meta = { phases: [] };\nreturn 'substituted-script';`, mermaid: 'graph LR', registeredRemote });
   await catalog.publish(name, version, 'release', null);
   const runId = await store.createRun({ origin: 'local', name, args: undefined }, 'v-gone');
   const raw = new Database(join(dir, 'store', 'index.db'));
@@ -95,7 +95,7 @@ describe("IT-307 — resume()'s legacy substitution is admission-checked; its pi
       const catalog = new WorkflowCatalog(join(dir, 'catalog'), CLOCK);
       const store = new SqliteRunStore(join(dir, 'store'), CLOCK);
       const runManager = new RunManager({ store, clock: CLOCK, workRoot: dir, catalog, confinementPosture: 'unconfined' });
-      const remote = await catalog.register({ name, script: `return 'REMOTE';`, mermaid: 'graph LR', registeredRemote: true });
+      const remote = await catalog.register({ name, script: `export const meta = { phases: [] };\nreturn 'REMOTE';`, mermaid: 'graph LR', registeredRemote: true });
       await catalog.publish(name, remote.version, 'release', null);
       const runId = await store.createRun({ origin: 'local', name, args: undefined }, 'v-gone');
       const raw = new Database(join(dir, 'store', 'index.db'));
@@ -105,7 +105,7 @@ describe("IT-307 — resume()'s legacy substitution is admission-checked; its pi
       await expect(runManager.resume(runId)).rejects.toMatchObject({ code: 'CONFINEMENT_UNAVAILABLE' });
 
       // The prescribed recovery, verbatim: register locally (same name), publish to release.
-      const local = await catalog.register({ name, script: `return 'LOCAL-FIXED';`, mermaid: 'graph LR', registeredRemote: false });
+      const local = await catalog.register({ name, script: `export const meta = { phases: [] };\nreturn 'LOCAL-FIXED';`, mermaid: 'graph LR', registeredRemote: false });
       await catalog.publish(name, local.version, 'release', null);
 
       // Same RunManager, same runId — must now resume and run the LOCAL script.

@@ -155,7 +155,7 @@ async function callTool(name: string, args: Record<string, unknown>, bearer?: st
 const ALICE = 'alice@example.com';
 const BOB = 'bob@example.com';
 const OWNER_WORKFLOW = 'owned-workflow-it080';
-const SCRIPT = 'return "hello";';
+const SCRIPT = 'export const meta = { phases: [] };\nreturn "hello";';
 
 describe('Workflow ownership gate (DES-098, IT-080)', () => {
   it('case 1: first registration by alice → owned by alice', async () => {
@@ -187,7 +187,7 @@ describe('Workflow ownership gate (DES-098, IT-080)', () => {
 
   it('case 3: register-overwrite by bob (non-owner) → NOT_WORKFLOW_OWNER + stored unchanged', async () => {
     // Bob is a genuinely authenticated, genuinely different identity — not a self-asserted string.
-    const r = await callTool('workflow_register', { name: OWNER_WORKFLOW, script: 'return "hijacked";', mermaid: 'graph LR' }, bobToken);
+    const r = await callTool('workflow_register', { name: OWNER_WORKFLOW, script: 'export const meta = { phases: [] };\nreturn "hijacked";', mermaid: 'graph LR' }, bobToken);
     expect(r.code).toBe('NOT_WORKFLOW_OWNER');
 
     // Stored definition must be unchanged — asserted at the STORE (see the M-5 note in the header):

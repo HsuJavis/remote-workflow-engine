@@ -20,7 +20,7 @@ import type { Principal } from '../../src/authz.js';
 const ALICE: Principal = { kind: 'author', id: 'alice@x.com' };
 const BOB: Principal = { kind: 'author', id: 'bob@x.com' };
 const ADMIN: Principal = { kind: 'admin', id: 'root@x.com' };
-const SCRIPT = 'return 1;';
+const SCRIPT = "export const meta = { phases: [] };\nreturn 1;";
 // v26 (REQ-128): a new registration must be an LR swimlane; this script has no agent() labels.
 const MERMAID = 'graph LR';
 

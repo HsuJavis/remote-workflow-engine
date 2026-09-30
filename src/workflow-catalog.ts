@@ -18,7 +18,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync, existsSync } from 'node:fs';
 import { join, resolve, sep, isAbsolute } from 'node:path';
 import { CatalogNotFoundError, WorkspaceEscapeError, codedError, ERROR_CATALOG, type ErrorCode } from './errors.js';
-import { parseMeta, parseMetaParams, parseWorkflowSkeleton } from './workflow-meta.js';
+import { parseMeta, parseMetaParams, parseWorkflowSkeleton, checkMetaPhases } from './workflow-meta.js';
 // v26 integration (REQ-128, DES-184/DES-174, ADR-048): the registration half of "one derivation,
 // two consumers" — the SAME `deriveExpectedGraph` the run-DAG layout uses. ADR-048 put
 // `skeleton-graph.ts` on ADR-022's internal-module allowlist for exactly this call site: the only
@@ -578,8 +578,9 @@ export class WorkflowCatalog {
   private static readonly MERMAID_LIMITS = { maxBytes: 8192, maxLines: 120 };
 
   /** v24 (ARCH-098, DES-148, TASK-143): every pure registration-time check, PINNED order, NOTHING
-   *  written — `validateScriptEntry` → `scanAgentCalls` → `parseParamContract` → `checkMermaid` →
-   *  version-count ceiling → owner gate (read-only). Used directly by `register()` below, and by the
+   *  written — `validateScriptEntry` → `scanAgentCalls` → `parseParamContract` → `checkMetaPhases`
+   *  (v39) → `checkMermaid` → version-count ceiling → owner gate (read-only). Used directly by
+   *  `register()` below, and by the
    *  facade's trigger-claim sequence (ARCH-091/DES-149: validate → claim each trigger → insertVersion
    *  → release on throw) — `insertVersion` is a SEPARATE step so a claim can happen in between. */
   async validateRegistration(req: { name: string; script: string; mermaid: string; principal?: string | null; actor?: Actor }): Promise<{ params: ParamContract; labels: string[]; agents: Record<string, AgentParamSpec>; warnings?: ModelRefWarning[] }> {
@@ -640,6 +641,24 @@ export class WorkflowCatalog {
       throw codedError(paramsResult.code, paramsResult.message, paramsResult.detail);
     }
     for (const w of paramsResult.warnings ?? []) console.warn(`[model-catalog] workflow '${name}' agent '${w.label}': ${w.message}`);
+
+    // v39 (owner decision 2026-09-30): `meta.phases` is now REQUIRED on every NEW registration and
+    // must equal the script's own `phase()` calls (count/order/title — `PHASES_REQUIRED` /
+    // `PHASES_MISMATCH`). Checked here — a pure script-content check, right after the other
+    // script-content checks (scan/params) and BEFORE `MERMAID_REQUIRED` below — for the same reason
+    // `MERMAID_REQUIRED`'s own comment gives: a script that fails an earlier, unrelated check must
+    // be refused with THAT code, not a misleading "you forgot the diagram" (or, here, "you forgot
+    // meta.phases" arriving after a diagram-shaped refusal that never got the chance to fire).
+    // `scriptPhaseTitles` is the same `parseWorkflowSkeleton` phase-node scan `deriveExpectedGraph`
+    // (below) turns into lanes — a non-literal `phase()` title is `null`, matched by POSITION only,
+    // mirroring `checkMermaid`'s own LANE_MISMATCH rule for a dynamic lane title.
+    const scriptPhaseTitles = parseWorkflowSkeleton(script)
+      .filter((n): n is typeof n & { kind: 'phase' } => n.kind === 'phase')
+      .map((n) => n.title ?? null);
+    const phasesCheck = checkMetaPhases(script, scriptPhaseTitles);
+    if (!phasesCheck.ok) {
+      throw codedError(phasesCheck.code!, `${phasesCheck.code}: ${phasesCheck.message}`);
+    }
 
     // DES-147 (TASK-138): the author-supplied diagram vs the script's own agent labels + declared
     // model/effort/timeoutMs. `agentDefaults` is derived from the just-validated contract — the

@@ -128,7 +128,7 @@ describe('REQ-113 selective skill materialization on a REAL dispatch (IT-036/IT-
     // Issue #102 (asset squatting): workspace_push now requires WF_NAME to already be registered
     // (WORKFLOW_NOT_FOUND otherwise) — register a placeholder v1 first; `registerRunAndWait` below
     // registers the real (skill-declaring) script as v2.
-    const preReg = await mcpCall('workflow_register', { name: WF_NAME, script: 'return "placeholder";', mermaid: 'graph LR' });
+    const preReg = await mcpCall('workflow_register', { name: WF_NAME, script: 'export const meta = { phases: [] };\nreturn "placeholder";', mermaid: 'graph LR' });
     expect(preReg.error, `pre-register failed: ${JSON.stringify(preReg.error)}`).toBeUndefined();
 
     const declaredMd = '# Declared Skill\n\nThe one this label asked for.\n';
@@ -136,7 +136,7 @@ describe('REQ-113 selective skill materialization on a REAL dispatch (IT-036/IT-
     await pushSkill('undeclared-skill', '# Undeclared Skill\n');
 
     const script =
-      `export const meta = { params: { agents: { picky: ${agentBlock({ skills: ['declared-skill'] })} } } };\n` +
+      `export const meta = { phases: [{ title: 'Work' }], params: { agents: { picky: ${agentBlock({ skills: ['declared-skill'] })} } } };\n` +
       // v26 (REQ-128): rule L2 — every agent() is dispatched inside a phase(); the lane name
       // matches the diagram's subgraph title.
       `phase('Work');\n` +
@@ -170,7 +170,7 @@ describe('REQ-113 selective skill materialization on a REAL dispatch (IT-036/IT-
   // `run_start`, which is where DES-154's `AssetSyncService.resolveDeclaredAssets` is authoritative.
   it('a label declaring an ABSENT skill is refused SKILL_NOT_PROVISIONED at run_start, before any dispatch (issue #103a)', async () => {
     const script =
-      `export const meta = { params: { agents: { hopeful: ${agentBlock({ skills: ['never-pushed'] })} } } };\n` +
+      `export const meta = { phases: [{ title: 'Work' }], params: { agents: { hopeful: ${agentBlock({ skills: ['never-pushed'] })} } } };\n` +
       `phase('Work');\n` +
       `return await agent('hopeful', { prompt: 'ask for a skill nobody pushed' });`;
     const mermaid = 'graph LR\nsubgraph "Work"\nhopeful(["hopeful"])\nend';
@@ -191,7 +191,7 @@ describe('REQ-113 selective skill materialization on a REAL dispatch (IT-036/IT-
 
   it('a label declaring NO assets materializes neither of two stored skills (selective, not copy-all)', async () => {
     const script =
-      `export const meta = { params: { agents: { plain: ${agentBlock()} } } };\n` +
+      `export const meta = { phases: [{ title: 'Work' }], params: { agents: { plain: ${agentBlock()} } } };\n` +
       `phase('Work');\n` +
       `return await agent('plain', { prompt: 'noop' });`;
     const runId = await registerRunAndWait(script, 'graph LR\nsubgraph "Work"\nplain(["plain"])\nend');
@@ -210,7 +210,7 @@ describe('REQ-113 selective skill materialization on a REAL dispatch (IT-036/IT-
   // real model call), same as every other case here. Not real-tier / paid-model (that was
   // optional per the dispatch); this is the same "REAL dispatch" this file's header already means.
   it('exec:true on a pushed skill file survives materialization into the run workspace (issue #105 part A)', async () => {
-    const preReg = await mcpCall('workflow_register', { name: WF_NAME, script: 'return "placeholder-exec";', mermaid: 'graph LR' });
+    const preReg = await mcpCall('workflow_register', { name: WF_NAME, script: 'export const meta = { phases: [] };\nreturn "placeholder-exec";', mermaid: 'graph LR' });
     expect(preReg.error, `pre-register failed: ${JSON.stringify(preReg.error)}`).toBeUndefined();
 
     const push = await mcpCall('workspace_push', {
@@ -223,7 +223,7 @@ describe('REQ-113 selective skill materialization on a REAL dispatch (IT-036/IT-
     expect(push.error, `workspace_push(exec-skill) failed: ${JSON.stringify(push.error)}`).toBeUndefined();
 
     const script =
-      `export const meta = { params: { agents: { execpicky: ${agentBlock({ skills: ['exec-skill'] })} } } };\n` +
+      `export const meta = { phases: [{ title: 'Work' }], params: { agents: { execpicky: ${agentBlock({ skills: ['exec-skill'] })} } } };\n` +
       `phase('Work');\n` +
       `return await agent('execpicky', { prompt: 'use the exec skill' });`;
     const runId = await registerRunAndWait(script, 'graph LR\nsubgraph "Work"\nexecpicky(["execpicky"])\nend');

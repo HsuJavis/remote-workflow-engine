@@ -9,7 +9,7 @@ A workflow script runs inside a restricted VM context with exactly these globals
 - `await agent(label, options)` — dispatches one agent call. `label` MUST be a literal string identifier (`/^[A-Za-z_][\w-]*$/`) matching a `meta.params.agents.<label>` declaration; `options` MUST be a literal object (no variable, no spread).
 - `await parallel([thunk, ...])` — runs an array of zero-argument thunks concurrently, each returning `null` on its own thrown error rather than rejecting the whole call.
 - `await pipeline([item, ...], stage1, stage2, ...)` — runs each item through the stage chain.
-- `phase(title)` — names the current step for observability. Titles are public (see below).
+- `phase(title)` — names the current step for observability. Titles are public (see below). `meta.phases: [{title}, ...]` is REQUIRED and must equal these calls in count/order (see 'Declaring the parameter contract' below).
 - `log(...)` — a no-op placeholder in this sandbox (accepted, does nothing).
 - `args` — the caller-supplied run arguments, shaped by `meta.params.args`.
 - `budget` — read-only: `{limits: {usd, tokens}, total, spent(), remaining(), tokens()}` (see "Budget, concurrency" below for which accessor answers which limit).
@@ -32,6 +32,7 @@ Every `agent(label, ...)` call in the script needs a matching `meta.params.agent
 ```js
 export const meta = {
   description: 'Summarize the given topic in one paragraph',
+  phases: [{ title: 'summarize' }],
   params: {
     agents: {
       writer: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },
@@ -41,6 +42,8 @@ export const meta = {
 ```
 
 A declared `model.default` (and every entry of a declared `model.enum`) MUST be a full `<provider>/<model-id>` ref — providers are exactly `anthropic`, `openrouter`, `ollama` — split at the FIRST `/` (an openrouter id can itself carry further `/`s, e.g. `openrouter/openai/gpt-4.1`; an ollama id can carry `:`/`.`, e.g. `ollama/qwen2.5:7b`). There are no aliases, no bare names, and no `'default'`/`'local'`-style shortcut — a bare name, an unrecognized provider prefix, or an empty model id is refused `UNKNOWN_MODEL`, naming the expected form and the three providers. `models_list` shows the catalog this deployment can reach: each row's `ref` field IS the exact string to paste — copy it verbatim, never hand-type a variant. An openrouter/ollama ref is checked against that provider's live catalog listing when one is available (refused `UNKNOWN_MODEL` if genuinely absent from it; accepted with a non-fatal `MODEL_CATALOG_UNVERIFIED` warning if the listing could not be checked); an anthropic id not yet in this deployment's static price table is likewise accepted with that same warning — a new Anthropic model is never blocked. The model is bound once at `workflow_register` time (the `.default` above) and may be replaced with a different full ref per run via `run_start`'s `overrides.agents.<label>.model` — there is no other override surface (a scheduled/webhook-fired run, and a nested `workflow()` call, always use the target version's own bound `.default`).
+
+**Declaring `meta.phases`.** `meta.phases: [{title}, ...]` is REQUIRED and must equal your script's own `phase()` calls, in the same count and order — the SAME `writer: {...}` shape above but with `phase('summarize');` in the script body. A script with zero `phase()` calls must still declare `phases: []` explicitly (an absent key is refused even then). Refused `PHASES_REQUIRED` when `meta.phases` is missing, not an array, or has an entry with no string `title`; `PHASES_MISMATCH` when it disagrees with the script — count, order, or title (the message names both lists and the first difference). A `phase()` call whose title is computed at runtime (`phase('tier:' + args.tier)`) cannot be checked textually — declare ANY non-empty title for it, at the right position; only the position, never the text, is checked there (mirrors the diagram's own dynamic-lane rule below). This is what `workflow_describe`'s `phases` reads back (`phasesSource:'declared'`); a version registered before this rule existed has its `phases` DERIVED from its own `phase()` calls instead (`phasesSource:'derived'`) rather than reported empty.
 
 **Skills.** `skills: [name, ...]` names skills pushed with `workspace_push` (`kind: 'skill'`). Register the workflow FIRST (`workflow_register`), then `workspace_push` each declared skill against that already-registered name — a push naming an unregistered workflow is refused `WORKFLOW_NOT_FOUND`; registration itself never requires a declared skill to exist yet. The model activates a declared skill through the Skill tool, which the engine adds to that agent's tool surface for you — do not list `Skill` in `allowedTools`. Declaring a skill grants no file tools, and none are needed to reach it: an agent with `allowedTools: []` and a declared skill can still activate it. Only the agent's own declared skills can be activated (other skills are hidden from it), and a skill's inline shell command (the `!` prefix form) is not executed. In `run_agent_log`, `harness.skillsExposed` lists the skills the model could activate; `harness.materialized` only records which files were copied into the workspace.
 
@@ -237,6 +240,8 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 - `UNKNOWN_MODEL` — the model is not a valid <provider>/<model-id> ref, or (for openrouter/ollama) was not found in the catalog listing — see models_list
 - `SCRIPT_INVALID` — the script violates a sandbox-enforced structural rule
 - `SCAN_VIOLATION` — an agent() call is not scannable — label/options must be literal (ADR-029)
+- `PHASES_REQUIRED` — meta.phases is missing or not a valid array of {title:string} — declare it, matching your phase() calls in count/order (phases: [] when the script calls phase() zero times)
+- `PHASES_MISMATCH` — meta.phases disagrees with the script's own phase() calls in count, order, or title
 - `MERMAID_INVALID` — the diagram does not parse under checkMermaid's grammar
 - `MERMAID_REQUIRED` — v24 registration requires a non-empty mermaid diagram string (ADR-025)
 - `DIAGRAM_MISMATCH` — the diagram's agent labels disagree with the script's
@@ -322,6 +327,7 @@ Phase titles (`phase(title)` and `meta.phases[].title`) are visible to every pri
 ```js
 export const meta = {
   description: 'Summarize the given topic in one paragraph',
+  phases: [{ title: 'summarize' }],
   params: { agents: { writer: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
 };
 phase('summarize');
@@ -342,6 +348,7 @@ end
 ```js
 export const meta = {
   description: 'Draft, then edit, then finalize a piece of text',
+  phases: [{ title: 'draft' }, { title: 'edit' }, { title: 'final' }],
   params: { agents: { draft: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, edit: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, final: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
 };
 phase('draft');
@@ -374,6 +381,7 @@ edit-->final
 ```js
 export const meta = {
   description: 'Fan out research to three topics in parallel, then combine the results',
+  phases: [{ title: 'research' }, { title: 'combine' }],
   params: { agents: { alpha: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, beta: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, gamma: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, combiner: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'medium' }, timeoutMs: { type: 'number', default: 90000 } } } },
 };
 phase('research');
@@ -408,6 +416,7 @@ gamma-->combiner
 ```js
 export const meta = {
   description: 'Classify urgency, then route to a fast or thorough agent',
+  phases: [{ title: 'classify' }, { title: 'route' }],
   params: { agents: { classifier: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, fast: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, thorough: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'high' }, timeoutMs: { type: 'number', default: 120000 } } } },
 };
 phase('classify');
@@ -438,6 +447,7 @@ routeChoice-->|thorough|thorough
 ```js
 export const meta = {
   description: 'Classify the input, then branch to one of two agents',
+  phases: [{ title: 'classify' }, { title: 'handle' }],
   params: { agents: { classifier: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, simple: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, complex: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'high' }, timeoutMs: { type: 'number', default: 120000 } } } },
 };
 phase('classify');
@@ -472,6 +482,7 @@ handleChoice-->|complex|complex
 ```js
 export const meta = {
   description: 'Score three candidates with an agent, then pick the best score without another agent call',
+  phases: [{ title: 'score' }],
   params: { agents: { scorerX: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, scorerY: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, scorerZ: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
 };
 phase('score');
@@ -503,6 +514,7 @@ scorerZ-->aggregate
 ```js
 export const meta = {
   description: 'Write a draft, get one round of critique, then revise — an unrolled fixed-length sequence (an agent call inside a loop body cannot be statically checked)',
+  phases: [{ title: 'draft' }, { title: 'critique' }, { title: 'revise' }],
   params: { agents: { writer: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }, critic: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
 };
 phase('draft');
@@ -535,6 +547,7 @@ critic-->writer2
 ```js
 export const meta = {
   description: 'Delegates to another registered workflow, then summarizes its result',
+  phases: [{ title: 'delegate' }, { title: 'summarize' }],
   params: { agents: { summarizer: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
 };
 phase('delegate');
@@ -560,6 +573,7 @@ end
 ```js
 export const meta = {
   description: 'Delegates to two other registered workflows in parallel — a parallel() of workflow() calls yields no agent slot',
+  phases: [{ title: 'delegate' }],
   params: { agents: {} },
 };
 phase('delegate');
@@ -585,6 +599,7 @@ end
 ```js
 export const meta = {
   description: 'Uses a declared arg to steer the single agent call',
+  phases: [{ title: 'write' }],
   params: { args: { topic: { type: 'string' } }, agents: { writer: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
 };
 phase('write');
@@ -605,6 +620,7 @@ end
 ```js
 export const meta = {
   description: 'The phase title is computed from a declared arg — a static scan cannot know it in advance',
+  phases: [{ title: 'processing' }],
   params: { args: { tier: { type: 'string' } }, agents: { worker: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
 };
 phase('tier:' + args.tier);
@@ -625,6 +641,7 @@ end
 ```js
 export const meta = {
   description: 'An agent declared with a skill and an mcp server and NO file tools — the declared skill is still reachable, through the Skill tool',
+  phases: [{ title: 'code' }],
   params: { agents: { coder: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'medium' }, timeoutMs: { type: 'number', default: 120000 }, skills: ['repo-search'], mcp: ['project-tracker'] } } },
 };
 phase('code');
@@ -645,6 +662,7 @@ end
 ```js
 export const meta = {
   description: 'A judge agent restricted to no tools at all — pure text reasoning',
+  phases: [{ title: 'judge' }],
   params: { agents: { judge: { model: { type: 'string', default: 'anthropic/claude-haiku-4-5-20251001' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } },
 };
 phase('judge');

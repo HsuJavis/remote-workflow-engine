@@ -40,9 +40,9 @@ async function refusalMessage(fn: () => Promise<unknown>): Promise<string> {
 describe('issue #90: WorkflowCatalog NOT_WORKFLOW_OWNER refusals never disclose the owner', () => {
   it('validateRegistration (pre-check, read-only) refusal message does not contain the owner', async () => {
     const cat = catalog();
-    await cat.register({ name: 'ut90-validate', script: 'return 1;', mermaid: 'graph LR', principal: OWNER_EMAIL });
+    await cat.register({ name: 'ut90-validate', script: "export const meta = { phases: [] };\nreturn 1;", mermaid: 'graph LR', principal: OWNER_EMAIL });
     const msg = await refusalMessage(() =>
-      cat.validateRegistration({ name: 'ut90-validate', script: 'return 2;', mermaid: 'graph LR', actor: MALLORY }),
+      cat.validateRegistration({ name: 'ut90-validate', script: "export const meta = { phases: [] };\nreturn 2;", mermaid: 'graph LR', actor: MALLORY }),
     );
     expect(msg).toMatch(/^NOT_WORKFLOW_OWNER:/);
     expect(msg).not.toContain(OWNER_EMAIL);
@@ -50,10 +50,10 @@ describe('issue #90: WorkflowCatalog NOT_WORKFLOW_OWNER refusals never disclose 
 
   it('insertVersion (in-transaction defence-in-depth copy) refusal message does not contain the owner', async () => {
     const cat = catalog();
-    const { params } = await cat.validateRegistration({ name: 'ut90-insert', script: 'return 1;', mermaid: 'graph LR', principal: OWNER_EMAIL });
-    await cat.insertVersion({ name: 'ut90-insert', script: 'return 1;', mermaid: 'graph LR', params, principal: OWNER_EMAIL });
+    const { params } = await cat.validateRegistration({ name: 'ut90-insert', script: "export const meta = { phases: [] };\nreturn 1;", mermaid: 'graph LR', principal: OWNER_EMAIL });
+    await cat.insertVersion({ name: 'ut90-insert', script: "export const meta = { phases: [] };\nreturn 1;", mermaid: 'graph LR', params, principal: OWNER_EMAIL });
     const msg = await refusalMessage(() =>
-      cat.insertVersion({ name: 'ut90-insert', script: 'return 2;', mermaid: 'graph LR', params, actor: MALLORY }),
+      cat.insertVersion({ name: 'ut90-insert', script: "export const meta = { phases: [] };\nreturn 2;", mermaid: 'graph LR', params, actor: MALLORY }),
     );
     expect(msg).toMatch(/^NOT_WORKFLOW_OWNER:/);
     expect(msg).not.toContain(OWNER_EMAIL);
@@ -61,7 +61,7 @@ describe('issue #90: WorkflowCatalog NOT_WORKFLOW_OWNER refusals never disclose 
 
   it('deregister refusal message does not contain the owner', async () => {
     const cat = catalog();
-    await cat.register({ name: 'ut90-deregister', script: 'return 1;', mermaid: 'graph LR', principal: OWNER_EMAIL });
+    await cat.register({ name: 'ut90-deregister', script: "export const meta = { phases: [] };\nreturn 1;", mermaid: 'graph LR', principal: OWNER_EMAIL });
     const msg = await refusalMessage(() => cat.deregister('ut90-deregister', MALLORY));
     expect(msg).toMatch(/^NOT_WORKFLOW_OWNER:/);
     expect(msg).not.toContain(OWNER_EMAIL);
@@ -69,7 +69,7 @@ describe('issue #90: WorkflowCatalog NOT_WORKFLOW_OWNER refusals never disclose 
 
   it('deregisterVersion refusal message does not contain the owner', async () => {
     const cat = catalog();
-    await cat.register({ name: 'ut90-deregisterVersion', script: 'return 1;', mermaid: 'graph LR', principal: OWNER_EMAIL });
+    await cat.register({ name: 'ut90-deregisterVersion', script: "export const meta = { phases: [] };\nreturn 1;", mermaid: 'graph LR', principal: OWNER_EMAIL });
     const msg = await refusalMessage(() => cat.deregisterVersion('ut90-deregisterVersion', 'v1', MALLORY, null));
     expect(msg).toMatch(/^NOT_WORKFLOW_OWNER:/);
     expect(msg).not.toContain(OWNER_EMAIL);
@@ -77,7 +77,7 @@ describe('issue #90: WorkflowCatalog NOT_WORKFLOW_OWNER refusals never disclose 
 
   it('publish refusal message does not contain the owner', async () => {
     const cat = catalog();
-    await cat.register({ name: 'ut90-publish', script: 'return 1;', mermaid: 'graph LR', principal: OWNER_EMAIL });
+    await cat.register({ name: 'ut90-publish', script: "export const meta = { phases: [] };\nreturn 1;", mermaid: 'graph LR', principal: OWNER_EMAIL });
     const msg = await refusalMessage(() => cat.publish('ut90-publish', 'v1', 'release', MALLORY));
     expect(msg).toMatch(/^NOT_WORKFLOW_OWNER:/);
     expect(msg).not.toContain(OWNER_EMAIL);

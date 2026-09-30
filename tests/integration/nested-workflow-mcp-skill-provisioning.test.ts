@@ -39,7 +39,7 @@ async function pollUntilSettled(mgr: RunManager, runId: string) {
 // agent() call option.
 function scriptDeclaring(label: string, mcp: string[], skills: string[]): string {
   return [
-    `export const meta = { params: { agents: { ${JSON.stringify(label)}: {`,
+    `export const meta = { phases: [{ title: 'Work' }], params: { agents: { ${JSON.stringify(label)}: {`,
     `  model: { type: 'string', default: ${JSON.stringify(DEFAULT_FIXTURE_MODEL)} },`,
     "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
     "  timeoutMs: { type: 'number', default: 60000 },",

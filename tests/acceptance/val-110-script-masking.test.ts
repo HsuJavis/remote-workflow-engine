@@ -80,10 +80,16 @@ describe('REQ-100: two real principals over /mcp (VAL-110)', () => {
     const ownerToken = await mintBearer(authTmpDir, 'val110-owner@example.com');
     // v22 (DES-110): `workflow_source({name})` resolves the RELEASE channel, so an unpublished draft
     // reads back CHANNEL_UNPUBLISHED rather than the owner/non-owner projections under test.
-    await registerPublishedVia(callerFor(authServer, ownerToken), 'val110-flow', `return 'val110-secret';`);
+    // v39 (owner decision 2026-09-30): registration requires meta.phases — the central fixture
+    // helper (registerPublishedVia -> synthesizePhases) injects `export const meta = { phases: [] };`
+    // ahead of a script with zero phase() calls and no meta of its own, so the STORED (and echoed
+    // back) script text carries that prefix too; the assertion below matches exactly what is stored.
+    const scriptSubmitted = `return 'val110-secret';`;
+    const scriptStored = `export const meta = { phases: [] };\n${scriptSubmitted}`;
+    await registerPublishedVia(callerFor(authServer, ownerToken), 'val110-flow', scriptSubmitted);
 
     const owned = await toolCall(authServer, 'workflow_source', { name: 'val110-flow' }, ownerToken);
-    expect((owned['result'] as { script?: string } | undefined)?.script).toBe(`return 'val110-secret';`);
+    expect((owned['result'] as { script?: string } | undefined)?.script).toBe(scriptStored);
 
     const otherToken = await mintBearer(authTmpDir, 'val110-stranger@example.com');
     const masked = await toolCall(authServer, 'workflow_source', { name: 'val110-flow' }, otherToken);

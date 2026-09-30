@@ -273,9 +273,10 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 # mermaid 是必填：少了就 MERMAID_REQUIRED。圖的第一行必須是 graph LR（或 flowchart LR）。
 # 這個腳本沒有 agent() 呼叫，所以圖裡只要有一個矩形黑箱節點即可
 # （stadium 節點才需要對上 agent label，而且要放進 phase 的泳道裡）。
+# meta.phases 是必填：這個腳本呼叫 phase() 零次，所以要明講 phases:[]（否則 PHASES_REQUIRED）。
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_register","arguments":{"name":"greet","script":"return {answer:42,tags:[\"a\",\"b\"]}","mermaid":"graph LR;\nout[\"return a fixed result\"]"}}}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_register","arguments":{"name":"greet","script":"export const meta = { phases: [] };\nreturn {answer:42,tags:[\"a\",\"b\"]}","mermaid":"graph LR;\nout[\"return a fixed result\"]"}}}'
 # -> {"result":{"content":[{"type":"text","text":"{\"runId\":\"\",\"status\":\"completed\",\"version\":1,\"result\":{\"name\":\"greet\",\"version\":\"v1\",\"versions\":[\"v1\"],\"channels\":{\"release\":null,\"beta\":null}}}"}]}}
 # 每次 workflow_register 都是新版本（v1、v2、…），既有版本不會被覆蓋或刪除；
 # result.versions 是這個名稱目前所有版本、result.channels 是各頻道（release/beta）目前指到哪個版本
@@ -302,6 +303,8 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 # 跑包含 agent() 的工作流程（需要 gateway:"sdk" + LiteLLM + 供應商 key）——一樣先註冊、發布、再指名執行
 # agent() 第一個參數是「label」，prompt 走 options.prompt；每個 label 都要有
 # meta.params.agents.<label> 契約（model/effort/timeoutMs，各自要有 .default）。
+# meta.phases 也是必填：要跟腳本呼叫 phase() 的次數、順序、標題（若標題是常數字串）完全一致
+# （零次 phase() 呼叫就要明講 phases:[]），否則 PHASES_REQUIRED／PHASES_MISMATCH。
 # 圖的規則（四條，違反時錯誤訊息會指出第幾行與期望值）：
 #   1. 第一行是 graph LR（或 flowchart LR）
 #   2. 每呼叫一次 phase() 就要有一個同順序的 subgraph 泳道，agent 節點放在它被派發的那條泳道裡
@@ -313,6 +316,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 cat > /tmp/ping.js <<'JS'
 export const meta = {
   description: 'Reply with one word',
+  phases: [{ title: 'ping' }],
   params: { agents: { ping: {
     model: { type: 'string', default: 'ollama/qwen2.5:7b' },
     effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },
@@ -360,6 +364,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 cat > /tmp/greet2.js <<'JS'
 export const meta = {
   description: 'Greet the caller in one sentence',
+  phases: [{ title: 'greet' }],
   params: { agents: { greet: {
     model: { type: 'string', default: 'ollama/qwen2.5:7b' },
     effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },
