@@ -638,6 +638,9 @@ function mountRoute() {
 // the chrome (brand, identity, sign-out) and a message; no view is mounted and nothing is polled.
 function mountPending(island) {
   const { nav } = buildChrome(island);
+  // Nothing is polled on this page, so a connection tag would read "Connecting…" forever.
+  const tag = nav.querySelector('[data-connection-tag]');
+  if (tag) tag.remove();
   const main = document.createElement('main');
   main.id = 'app-view';
   main.setAttribute('data-pending-approval', '');
