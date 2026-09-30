@@ -288,8 +288,10 @@ export class RunStoreObservedStats implements ObservedStatsProvider {
     return this._cache!.byRef;
   }
 
-  get(ref: string): ObservedForRef {
-    const bucket = this._byRef().get(ref);
+  /** Shared by `get()`/`getAll()` — takes an ALREADY-LOOKED-UP bucket (never re-reads `_byRef()`
+   *  itself) so `getAll()` can snapshot the map once and stay internally consistent even if the TTL
+   *  expires mid-iteration (see `getAll()`'s own comment). */
+  private _fromBucket(ref: string, bucket: { prose: CallStats | null; tools: CallStats | null } | undefined): ObservedForRef {
     if (bucket && (bucket.prose !== null || bucket.tools !== null)) {
       return { window: '30d', source: 'runs', prose: bucket.prose, tools: bucket.tools };
     }
@@ -304,13 +306,20 @@ export class RunStoreObservedStats implements ObservedStatsProvider {
     return { window: '30d', source: 'none', prose: null, tools: null };
   }
 
+  get(ref: string): ObservedForRef {
+    return this._fromBucket(ref, this._byRef().get(ref));
+  }
+
   getAll(): Map<string, ObservedForRef> {
+    // ONE `_byRef()` call, reused for every ref below — a `getAll()` that instead called `get()` in
+    // the loop could straddle a TTL expiry mid-iteration (a background refresh landing between two
+    // lookups) and read two different snapshots in the same response.
     const byRef = this._byRef();
     const out = new Map<string, ObservedForRef>();
-    for (const ref of byRef.keys()) out.set(ref, this.get(ref));
+    for (const ref of byRef.keys()) out.set(ref, this._fromBucket(ref, byRef.get(ref)));
     for (const p of this._deps.probes.all()) {
       const ref = `${p.provider}/${p.model}`;
-      if (!out.has(ref)) out.set(ref, this.get(ref));
+      if (!out.has(ref)) out.set(ref, this._fromBucket(ref, byRef.get(ref)));
     }
     return out;
   }

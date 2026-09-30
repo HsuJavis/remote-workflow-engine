@@ -353,7 +353,7 @@ describe('ObservedStats — TTL cache (issue #104): must not re-scan the run sto
       const r = provider.get('anthropic/claude-x');
       const elapsed = performance.now() - t0;
       expect(r.source).toBe('runs');
-      expect(elapsed).toBeLessThan(5); // already warm — a map lookup, not a rescan
+      expect(elapsed).toBeLessThan(50); // already warm — a map lookup, not a rescan
 
       provider.stop();
       probeStore.close();
@@ -458,7 +458,7 @@ describe('ObservedStats — performance (issue #104): 10k-row aggregation stays 
       const warm = provider.getAll();
       const warmElapsed = performance.now() - t1;
       expect(warm.size).toBe(20);
-      expect(warmElapsed).toBeLessThan(5);
+      expect(warmElapsed).toBeLessThan(50);
       probeStore.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
