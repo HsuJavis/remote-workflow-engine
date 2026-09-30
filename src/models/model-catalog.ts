@@ -10,6 +10,48 @@
 // `model.default`/a run_start override verbatim.
 import type { FourRates } from '../types.js';
 import type { ProbeResult } from './model-probe.js';
+// Issue #104: `effortAppliedOnTransport` reads the ONE effort-delivery table (`PROVIDER_CAPS.
+// effortDelivered`, VAL-186's wire-verified fact). providers.ts imports this module back (for
+// STATIC_ANTHROPIC_RATES) — both uses are inside functions, never at module evaluation, so the
+// cycle is inert.
+import { PROVIDER_CAPS, isProvider } from '../providers.js';
+import { OBSERVED_NONE, type ObservedForRef } from './observed-stats-types.js';
+
+/** Issue #104: what KIND of model a row is — an embedding model listed as text->text chat was the
+ *  reported failure. */
+export type ModelType = 'chat' | 'embedding' | 'rerank' | 'image-gen' | 'tts' | 'stt' | 'moderation' | 'unknown';
+/** Where `modelType` came from: the provider's own declaration, the static anthropic table, or —
+ *  last resort, only when the provider said nothing — a model-id heuristic. */
+export type ModelTypeSource = 'ollama-capabilities' | 'openrouter-modalities' | 'static' | 'id-heuristic' | 'unknown';
+
+/** Issue #104: declared capabilities (never probed — see toolUseVerified for that). `null` = the
+ *  source said nothing. `toolUse` is added at enrichment from the row's own `toolUse`. */
+export interface DeclaredCapabilities {
+  toolChoice: boolean | null;
+  structuredOutput: boolean | null;
+  promptCaching: boolean | null;
+  vision: boolean | null;
+  reasoning: { supported: boolean | null; efforts: string[] | null; defaultEffort: string | null; mandatory: boolean | null };
+}
+export interface Capabilities extends DeclaredCapabilities { toolUse: boolean | null }
+
+/** Issue #104: the price components beyond in/out. Token-denominated keys (reasoning, cacheRead,
+ *  cacheWrite, cacheWrite1h) are USD per 1M tokens; `request`, `image`, `webSearch` are USD per unit
+ *  exactly as OpenRouter publishes them (unscaled). Only keys the source actually gives appear. */
+export interface PricingDetail { reasoning?: number; request?: number; image?: number; webSearch?: number; cacheRead?: number; cacheWrite?: number; cacheWrite1h?: number }
+export interface LocalDetails { family: string | null; parameterSize: string | null; quantization: string | null }
+export interface Lifecycle { releasedAt: string | null; knowledgeCutoff: string | null; expiresAt: string | null }
+export interface DesignArenaScore { arena: string; category: string; elo: number | null; winRate: number | null; rank: number | null }
+export interface ArtificialAnalysisScores { intelligence: number | null; coding: number | null; agentic: number | null }
+/** The catalog-side benchmark data (no provenance yet — `enrichModelEntry` adds source/fetchedAt). */
+export interface BenchmarkData { borrowedFrom?: string; artificialAnalysis: ArtificialAnalysisScores | null; designArena: DesignArenaScore[] }
+export const BENCHMARK_SOURCE = 'openrouter:artificial_analysis+design_arena' as const;
+export interface Benchmarks extends BenchmarkData { source: typeof BENCHMARK_SOURCE; fetchedAt: string | null }
+export interface ProbeFailureReason {
+  leg: 'prose' | 'tools';
+  kind: 'timeout' | 'unreachable' | 'error' | 'empty-reply' | 'no-tool-use' | 'wrong-answer';
+  hint: string;
+}
 
 export interface ModelEntry {
   provider: string;
@@ -54,6 +96,21 @@ export interface ModelEntry {
    *  Dropped again at `enrichModelEntry` (below): `toolUseDeclared`/`effortDeclared` are the named
    *  projection of this same signal, and the output surface must not carry it twice. */
   supported_parameters?: string[];
+  /** Issue #104 selection data — all optional on the SOURCE row (a hand-built fixture, a raw
+   *  ModelBook feed) and normalised to always-present values by `enrichModelEntry`. */
+  modelType?: ModelType;
+  modelTypeSource?: ModelTypeSource;
+  maxOutputTokens?: number | null;
+  capabilities?: DeclaredCapabilities;
+  pricingDetail?: PricingDetail | null;
+  local?: LocalDetails | null;
+  lifecycle?: Lifecycle;
+  benchmarks?: BenchmarkData | null;
+  /** Refs of the same underlying model on OTHER providers (anthropic <-> openrouter/anthropic/…). */
+  sameModelAs?: string[];
+  /** The openrouter ref this row borrowed benchmarks/knowledgeCutoff/releasedAt/reasoning/
+   *  maxOutputTokens from (anthropic-direct rows only), or null. */
+  borrowedFrom?: string | null;
 }
 
 export interface CatalogFilter {
@@ -134,12 +191,29 @@ export const STATIC_ANTHROPIC_RATES: Record<string, FourRates> = {
 // v26 (DES-179, ARCH-117, TASK-179): `effortDeclared:'unknown', declaredSource:'static'` on every
 // static-table row mirrors `model-book.ts`'s own `capsFromRow` exactly for a bare anthropic row (no
 // `supported_parameters` — the static table never sets it) — the SAME fact, computed the same way.
-const STATIC_ANTHROPIC: ModelEntry[] = [
+const STATIC_ANTHROPIC_BASE: ModelEntry[] = [
   { provider: 'anthropic', model: 'claude-fable-5', description: 'Claude Fable 5 — most capable, long-horizon agentic tier', modalities: { in: ['text', 'image'], out: ['text'] }, contextWindow: 1_000_000, price: { in: '$10/1M', out: '$50/1M' }, toolUse: true, location: 'remote', ratesPerM: STATIC_ANTHROPIC_RATES['claude-fable-5'], effortDeclared: 'unknown', declaredSource: 'static' },
   { provider: 'anthropic', model: 'claude-opus-4-8', description: 'Claude Opus 4.8 — most capable Opus-tier model', modalities: { in: ['text', 'image'], out: ['text'] }, contextWindow: 1_000_000, price: { in: '$5/1M', out: '$25/1M' }, toolUse: true, location: 'remote', ratesPerM: STATIC_ANTHROPIC_RATES['claude-opus-4-8'], effortDeclared: 'unknown', declaredSource: 'static' },
   { provider: 'anthropic', model: 'claude-sonnet-5', description: 'Claude Sonnet 5 — balanced speed/intelligence', modalities: { in: ['text', 'image'], out: ['text'] }, contextWindow: 1_000_000, price: { in: '$2/1M', out: '$10/1M' }, toolUse: true, location: 'remote', ratesPerM: STATIC_ANTHROPIC_RATES['claude-sonnet-5'], effortDeclared: 'unknown', declaredSource: 'static' },
   { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', description: 'Claude Haiku 4.5 — fastest, most cost-effective', modalities: { in: ['text', 'image'], out: ['text'] }, contextWindow: 200_000, price: { in: '$1/1M', out: '$5/1M' }, toolUse: true, location: 'remote', ratesPerM: STATIC_ANTHROPIC_RATES['claude-haiku-4-5-20251001'], effortDeclared: 'unknown', declaredSource: 'static' },
 ];
+
+/** Issue #104: what the static anthropic table knows for certain about every row — a chat model
+ *  with tool use, tool_choice, vision and prompt caching (the table prices cache reads/writes).
+ *  Structured output, reasoning levels, max output, benchmarks and dates are NOT asserted here —
+ *  they stay null unless `annotate` borrows them from the matching OpenRouter listing. */
+const perMillion = (n: number): number => Number((n * 1_000_000).toFixed(6));
+const STATIC_ANTHROPIC: ModelEntry[] = STATIC_ANTHROPIC_BASE.map((e) => ({
+  ...e,
+  modelType: 'chat',
+  modelTypeSource: 'static',
+  maxOutputTokens: null,
+  capabilities: { toolChoice: true, structuredOutput: null, promptCaching: true, vision: true, reasoning: { supported: null, efforts: null, defaultEffort: null, mandatory: null } },
+  pricingDetail: e.ratesPerM ? { cacheRead: perMillion(e.ratesPerM.cacheRead), cacheWrite: perMillion(e.ratesPerM.cacheWrite) } : null,
+  local: null,
+  lifecycle: { releasedAt: null, knowledgeCutoff: null, expiresAt: null },
+  benchmarks: null,
+}));
 
 /** Wraps a fetch in a bounded-timeout race (D-G discipline: a source never hangs the whole build). */
 async function fetchWithTimeout(fetchImpl: typeof fetch, url: string, timeoutMs: number): Promise<Response> {
@@ -184,46 +258,161 @@ export function displayPrice(rates: FourRates | null): ModelEntry['price'] {
   return { in: perM(rates.in), out: perM(rates.out) };
 }
 
+/** Issue #104: last-resort model-type guess from the id, used ONLY when the provider declared
+ *  nothing (marked `modelTypeSource:'id-heuristic'`). `null` = no confident guess. */
+function modelTypeFromId(id: string): ModelType | null {
+  const s = id.toLowerCase();
+  if (/rerank/.test(s)) return 'rerank';
+  if (/embed|(^|[/:-])bge-|(^|[/:-])e5-|minilm/.test(s)) return 'embedding';
+  if (/moderation/.test(s)) return 'moderation';
+  if (/whisper|transcri/.test(s)) return 'stt';
+  if (/(^|[/:-])tts/.test(s)) return 'tts';
+  return null;
+}
+
+const str = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null);
+const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+const NO_REASONING: DeclaredCapabilities['reasoning'] = { supported: null, efforts: null, defaultEffort: null, mandatory: null };
+
+interface OllamaTagRow { name?: string; capabilities?: unknown; details?: { family?: string; parameter_size?: string; quantization_level?: string; context_length?: number } }
+interface OllamaShow { capabilities?: unknown; details?: { family?: string; parameter_size?: string; quantization_level?: string }; model_info?: Record<string, unknown> }
+
+/** Issue #104: `POST /api/show {model}` — capabilities, details and `<arch>.context_length`. Only
+ *  called for a row whose `/api/tags` entry lacks them (newer Ollama puts both on /api/tags). Never
+ *  throws: any failure (or a body without those keys) is just "no extra data". Runs inside the
+ *  catalog build, so ModelBook's TTL/single-flight bounds it like every other catalog fetch. */
+async function fetchOllamaShow(fetchImpl: typeof fetch, baseUrl: string, name: string, timeoutMs: number): Promise<OllamaShow | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetchImpl(`${baseUrl}/api/show`, { method: 'POST', body: JSON.stringify({ model: name }), headers: { 'Content-Type': 'application/json' }, signal: controller.signal });
+    if (!res.ok) return null;
+    const body = (await res.json()) as OllamaShow;
+    return body && typeof body === 'object' ? body : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fetchOllama(fetchImpl: typeof fetch, baseUrl: string, timeoutMs: number): Promise<ModelEntry[]> {
   const res = await fetchWithTimeout(fetchImpl, `${baseUrl}/api/tags`, timeoutMs);
   if (!res.ok) return [];
-  const data = (await res.json()) as { models?: Array<{ name?: string; details?: { family?: string; parameter_size?: string } }> };
-  const models = Array.isArray(data?.models) ? data.models : [];
-  const out: ModelEntry[] = [];
-  for (const m of models) {
-    if (typeof m?.name !== 'string') continue;
-    const desc = [m.details?.family, m.details?.parameter_size].filter(Boolean).join(' ') || m.name;
-    // v26 (DES-179, ARCH-117, TASK-179): mirrors `ModelBook.lookup`'s own unconditional ollama
-    // override (`model-book.ts`) — `declaredSource:'static'` for the SAME reason: a known, fixed
-    // fact about this deployment's local provider, not a probe result.
-    out.push({ provider: 'ollama', model: m.name, description: desc, modalities: { in: ['text'], out: ['text'] }, contextWindow: null, price: 'free', toolUse: 'unknown', location: 'local', ratesPerM: ZERO_RATES, effortDeclared: 'unknown', declaredSource: 'static' });
+  const data = (await res.json()) as { models?: OllamaTagRow[] };
+  const models = (Array.isArray(data?.models) ? data.models : []).filter((m): m is OllamaTagRow & { name: string } => typeof m?.name === 'string');
+  return Promise.all(models.map(async (m): Promise<ModelEntry> => {
+    const tagCaps = Array.isArray(m.capabilities) ? (m.capabilities as unknown[]).filter((c): c is string => typeof c === 'string') : null;
+    const tagCtx = num(m.details?.context_length);
+    const show = tagCaps === null || tagCtx === null ? await fetchOllamaShow(fetchImpl, baseUrl, m.name, timeoutMs) : null;
+    const caps = tagCaps ?? (Array.isArray(show?.capabilities) ? (show!.capabilities as unknown[]).filter((c): c is string => typeof c === 'string') : null);
+    const arch = str(show?.model_info?.['general.architecture']);
+    const contextWindow = tagCtx ?? (arch ? num(show?.model_info?.[`${arch}.context_length`]) : null);
+    const details = { ...(show?.details ?? {}), ...(m.details ?? {}) };
+    const desc = [details.family, details.parameter_size].filter(Boolean).join(' ') || m.name;
+    let modelType: ModelType = 'unknown';
+    let modelTypeSource: ModelTypeSource = 'unknown';
+    if (caps) {
+      modelTypeSource = 'ollama-capabilities';
+      modelType = caps.includes('embedding') ? 'embedding' : caps.includes('completion') ? 'chat' : 'unknown';
+    } else {
+      const guess = modelTypeFromId(m.name);
+      if (guess) { modelType = guess; modelTypeSource = 'id-heuristic'; }
+    }
+    const vision = caps ? caps.includes('vision') : null;
+    // v26 (DES-179): with no declaration, `declaredSource:'static'`/`toolUse:'unknown'` exactly as
+    // before (mirrors `ModelBook.lookup`'s unconditional ollama override). Issue #104: when Ollama
+    // itself declares capabilities, they are an upstream declaration like OpenRouter's.
+    return {
+      provider: 'ollama', model: m.name, description: desc,
+      modalities: { in: vision ? ['text', 'image'] : ['text'], out: modelType === 'embedding' ? ['embedding'] : ['text'] },
+      contextWindow, price: 'free', toolUse: caps ? caps.includes('tools') : 'unknown', location: 'local', ratesPerM: ZERO_RATES,
+      effortDeclared: caps ? caps.includes('thinking') : 'unknown', declaredSource: caps ? 'upstream' : 'static',
+      modelType, modelTypeSource, maxOutputTokens: null,
+      capabilities: {
+        toolChoice: null, structuredOutput: null, promptCaching: null, vision,
+        reasoning: caps ? { ...NO_REASONING, supported: caps.includes('thinking') } : NO_REASONING,
+      },
+      pricingDetail: null,
+      local: { family: str(details.family), parameterSize: str(details.parameter_size), quantization: str(details.quantization_level) },
+      lifecycle: { releasedAt: null, knowledgeCutoff: null, expiresAt: null },
+      benchmarks: null,
+    };
+  }));
+}
+
+interface OpenRouterRow {
+  id?: string; name?: string; description?: string; context_length?: number; created?: number;
+  pricing?: Record<string, unknown> & { prompt?: unknown; completion?: unknown; input_cache_read?: unknown; input_cache_write?: unknown };
+  architecture?: { input_modalities?: string[]; output_modalities?: string[] };
+  top_provider?: { max_completion_tokens?: unknown };
+  supported_parameters?: string[];
+  reasoning?: { mandatory?: unknown; supported_efforts?: unknown; default_effort?: unknown };
+  knowledge_cutoff?: unknown; expiration_date?: unknown;
+  benchmarks?: { artificial_analysis?: Record<string, unknown>; design_arena?: unknown };
+}
+
+/** Issue #104: OpenRouter's own output modalities decide the type — any text output is a chat
+ *  model (image/audio-capable chat models stay chat; `modalities.out` says what else comes out). */
+function openRouterModelType(m: OpenRouterRow): { modelType: ModelType; modelTypeSource: ModelTypeSource } {
+  const out = m.architecture?.output_modalities;
+  if (Array.isArray(out) && out.length > 0) {
+    if (out.includes('text')) return { modelType: 'chat', modelTypeSource: 'openrouter-modalities' };
+    if (out.includes('embeddings') || out.includes('embedding')) return { modelType: 'embedding', modelTypeSource: 'openrouter-modalities' };
+    if (out.length === 1 && out[0] === 'image') return { modelType: 'image-gen', modelTypeSource: 'openrouter-modalities' };
+    if (out.length === 1 && out[0] === 'audio') return { modelType: 'tts', modelTypeSource: 'openrouter-modalities' };
   }
+  const guess = modelTypeFromId(m.id ?? '');
+  return guess ? { modelType: guess, modelTypeSource: 'id-heuristic' } : { modelType: 'unknown', modelTypeSource: 'unknown' };
+}
+
+function openRouterPricingDetail(p: OpenRouterRow['pricing']): PricingDetail | null {
+  if (!p) return null;
+  const out: PricingDetail = {};
+  const put = (key: keyof PricingDetail, raw: unknown, scale: boolean): void => {
+    if (raw === undefined || raw === null || raw === '') return;
+    const n = Number(raw);
+    if (Number.isFinite(n)) out[key] = scale ? perMillion(n) : n;
+  };
+  put('reasoning', p['internal_reasoning'], true);
+  put('request', p['request'], false);
+  put('image', p['image'], false);
+  put('webSearch', p['web_search'], false);
+  put('cacheRead', p['input_cache_read'], true);
+  put('cacheWrite', p['input_cache_write'], true);
+  put('cacheWrite1h', p['input_cache_write_1h'], true);
   return out;
+}
+
+function openRouterBenchmarks(b: OpenRouterRow['benchmarks']): BenchmarkData | null {
+  if (!b || typeof b !== 'object') return null;
+  const aa = b.artificial_analysis && typeof b.artificial_analysis === 'object' ? b.artificial_analysis : null;
+  const artificialAnalysis = aa ? { intelligence: num(aa['intelligence_index']), coding: num(aa['coding_index']), agentic: num(aa['agentic_index']) } : null;
+  const designArena = (Array.isArray(b.design_arena) ? b.design_arena : [])
+    .filter((d): d is Record<string, unknown> => d !== null && typeof d === 'object')
+    .map((d) => ({ arena: String(d['arena'] ?? ''), category: String(d['category'] ?? ''), elo: num(d['elo']), winRate: num(d['win_rate']), rank: num(d['rank']) }));
+  if (!artificialAnalysis && designArena.length === 0) return null;
+  return { artificialAnalysis, designArena };
 }
 
 async function fetchOpenRouter(fetchImpl: typeof fetch, timeoutMs: number): Promise<ModelEntry[]> {
   const res = await fetchWithTimeout(fetchImpl, 'https://openrouter.ai/api/v1/models', timeoutMs);
   if (!res.ok) return [];
-  const data = (await res.json()) as {
-    data?: Array<{
-      id?: string; name?: string; description?: string; context_length?: number;
-      pricing?: { prompt?: unknown; completion?: unknown; input_cache_read?: unknown; input_cache_write?: unknown };
-      architecture?: { input_modalities?: string[]; output_modalities?: string[] };
-      supported_parameters?: string[];
-    }>;
-  };
+  const data = (await res.json()) as { data?: OpenRouterRow[] };
   const models = Array.isArray(data?.data) ? data.data : [];
   const out: ModelEntry[] = [];
   for (const m of models) {
     if (typeof m?.id !== 'string') continue;
     const supported = Array.isArray(m.supported_parameters) ? m.supported_parameters : undefined;
     const ratesPerM = ratesFromOpenRouterPricing(m.pricing);
+    const inMods = Array.isArray(m.architecture?.input_modalities) ? m.architecture!.input_modalities! : null;
+    const r = m.reasoning && typeof m.reasoning === 'object' ? m.reasoning : null;
     out.push({
       provider: 'openrouter',
       model: m.id,
       description: m.description ?? m.name ?? m.id,
       modalities: {
-        in: Array.isArray(m.architecture?.input_modalities) ? m.architecture!.input_modalities! : ['text'],
+        in: inMods ?? ['text'],
         out: Array.isArray(m.architecture?.output_modalities) ? m.architecture!.output_modalities! : ['text'],
       },
       contextWindow: typeof m.context_length === 'number' ? m.context_length : null,
@@ -239,6 +428,29 @@ async function fetchOpenRouter(fetchImpl: typeof fetch, timeoutMs: number): Prom
       // v26 integration (clarification 14): the raw array travels on too, so `ModelBook.capsFromRow`
       // sees the SAME declaration these two derived fields were computed from.
       ...(supported ? { supported_parameters: supported } : {}),
+      // Issue #104: selection data, all straight from this same listing row.
+      ...openRouterModelType(m),
+      maxOutputTokens: num(m.top_provider?.max_completion_tokens),
+      capabilities: {
+        toolChoice: supported ? supported.includes('tool_choice') : null,
+        structuredOutput: supported ? supported.includes('structured_outputs') || supported.includes('response_format') : null,
+        promptCaching: m.pricing ? m.pricing.input_cache_read !== undefined || m.pricing.input_cache_write !== undefined : null,
+        vision: inMods ? inMods.includes('image') : null,
+        reasoning: {
+          supported: supported ? supported.includes('reasoning') : null,
+          efforts: r && Array.isArray(r.supported_efforts) ? (r.supported_efforts as unknown[]).filter((x): x is string => typeof x === 'string') : null,
+          defaultEffort: r ? str(r.default_effort) : null,
+          mandatory: r && typeof r.mandatory === 'boolean' ? r.mandatory : null,
+        },
+      },
+      pricingDetail: openRouterPricingDetail(m.pricing),
+      local: null,
+      lifecycle: {
+        releasedAt: typeof m.created === 'number' && Number.isFinite(m.created) ? new Date(m.created * 1000).toISOString() : null,
+        knowledgeCutoff: str(m.knowledge_cutoff),
+        expiresAt: str(m.expiration_date),
+      },
+      benchmarks: openRouterBenchmarks(m.benchmarks),
     });
   }
   return out;
@@ -273,10 +485,90 @@ export async function buildCatalog(opts: BuildCatalogOptions = {}): Promise<Mode
  *  - `besteffort`: OpenRouter's own `:free` variant marker — an exact suffix check, not a price
  *    inference (a $0-formatted paid route must not be misflagged). */
 function annotate(entries: ModelEntry[]): ModelEntry[] {
-  return entries.map((e) => {
+  const annotated = entries.map((e) => {
     const ref = `${e.provider}/${e.model}`;
     const besteffort = e.model.endsWith(':free') ? true : undefined;
     return { ...e, ref, ...(besteffort !== undefined ? { besteffort } : {}) };
+  });
+  return linkSameModels(annotated);
+}
+
+const CLAUDE_FAMILIES = new Set(['fable', 'opus', 'sonnet', 'haiku']);
+
+/** Issue #104: the canonical identity of a Claude model across the two spellings this catalog sees
+ *  — Anthropic's own ids (`claude-haiku-4-5-20251001`, `claude-sonnet-5`) and OpenRouter's
+ *  (`anthropic/claude-haiku-4.5`, `…:batch`, canonical slugs like `anthropic/claude-4.5-haiku-
+ *  20251001`). Rule: drop an `anthropic/` prefix and any `:variant` suffix, require `claude-`, drop a
+ *  trailing `-YYYYMMDD` date, then the remaining `-`-separated tokens must be exactly one family
+ *  word (fable|opus|sonnet|haiku) plus numeric version tokens, which are joined with '.'
+ *  (`4-5` and `4.5` both -> `4.5`). Result `<family>-<version>` (e.g. `haiku-4.5`); `null` for
+ *  anything else — a non-Claude id, or a token this rule does not understand (never a guess). */
+export function anthropicCanonicalKey(id: string): string | null {
+  let s = id.toLowerCase();
+  if (s.startsWith('anthropic/')) s = s.slice('anthropic/'.length);
+  const colon = s.indexOf(':');
+  if (colon >= 0) s = s.slice(0, colon);
+  if (!s.startsWith('claude-')) return null;
+  s = s.slice('claude-'.length).replace(/-\d{8}$/, '');
+  let family: string | null = null;
+  const version: string[] = [];
+  for (const tok of s.split('-')) {
+    if (CLAUDE_FAMILIES.has(tok)) {
+      if (family) return null;
+      family = tok;
+    } else if (/^\d+(\.\d+)*$/.test(tok)) {
+      version.push(tok);
+    } else {
+      return null;
+    }
+  }
+  if (!family || version.length === 0) return null;
+  return `${family}-${version.join('.')}`;
+}
+
+/** Issue #104: cross-provider identity. Every anthropic-direct row whose canonical key matches an
+ *  `openrouter/anthropic/…` row gets `sameModelAs` (all matching openrouter refs, `:batch` variants
+ *  included) and BORROWS from the un-suffixed match (the `:batch` tier is never the lender):
+ *  `benchmarks` (tagged `borrowedFrom`), `lifecycle.knowledgeCutoff`/`releasedAt`,
+ *  `capabilities.reasoning`, and `maxOutputTokens` when its own is null. Price is never borrowed.
+ *  The openrouter rows get the reverse `sameModelAs`. With OpenRouter down nothing is borrowed. */
+function linkSameModels(entries: ModelEntry[]): ModelEntry[] {
+  const orByKey = new Map<string, ModelEntry[]>();
+  const directByKey = new Map<string, ModelEntry[]>();
+  for (const e of entries) {
+    if (e.provider === 'openrouter' && e.model.startsWith('anthropic/')) {
+      const k = anthropicCanonicalKey(e.model);
+      if (k) orByKey.set(k, [...(orByKey.get(k) ?? []), e]);
+    } else if (e.provider === 'anthropic') {
+      const k = anthropicCanonicalKey(e.model);
+      if (k) directByKey.set(k, [...(directByKey.get(k) ?? []), e]);
+    }
+  }
+  return entries.map((e) => {
+    const k = e.provider === 'anthropic' || (e.provider === 'openrouter' && e.model.startsWith('anthropic/')) ? anthropicCanonicalKey(e.model) : null;
+    if (!k) return e;
+    if (e.provider === 'openrouter') {
+      const peers = directByKey.get(k) ?? [];
+      return peers.length ? { ...e, sameModelAs: peers.map((p) => p.ref!) } : e;
+    }
+    const peers = orByKey.get(k) ?? [];
+    if (peers.length === 0) return e;
+    const lender = peers.find((p) => !p.model.includes(':'));
+    const linked: ModelEntry = { ...e, sameModelAs: peers.map((p) => p.ref!) };
+    if (!lender) return linked;
+    const caps = e.capabilities;
+    return {
+      ...linked,
+      borrowedFrom: lender.ref!,
+      benchmarks: lender.benchmarks ? { ...lender.benchmarks, borrowedFrom: lender.model } : (e.benchmarks ?? null),
+      lifecycle: {
+        releasedAt: e.lifecycle?.releasedAt ?? lender.lifecycle?.releasedAt ?? null,
+        knowledgeCutoff: e.lifecycle?.knowledgeCutoff ?? lender.lifecycle?.knowledgeCutoff ?? null,
+        expiresAt: e.lifecycle?.expiresAt ?? null,
+      },
+      maxOutputTokens: e.maxOutputTokens ?? lender.maxOutputTokens ?? null,
+      ...(caps && lender.capabilities ? { capabilities: { ...caps, reasoning: lender.capabilities.reasoning } } : {}),
+    };
   });
 }
 
@@ -294,7 +586,9 @@ export type Stability = 'stable' | 'variable' | 'best-effort' | 'degraded' | 'un
  *  `Omit<ModelEntry, 'toolUse' | 'effortDeclared' | 'declaredSource'>`: the base's raw `toolUse` and
  *  the (optional, absence-prone) raw `effortDeclared`/`declaredSource` never leak through under two
  *  names at once. All fields are computed at call time from the base entry; never persisted. */
-export interface EnrichedModelEntry extends Omit<ModelEntry, 'toolUse' | 'effortDeclared' | 'declaredSource' | 'supported_parameters'> {
+export interface EnrichedModelEntry extends Omit<ModelEntry,
+  'toolUse' | 'effortDeclared' | 'declaredSource' | 'supported_parameters' | 'modelType' | 'modelTypeSource' | 'maxOutputTokens'
+  | 'capabilities' | 'pricingDetail' | 'local' | 'lifecycle' | 'benchmarks' | 'sameModelAs' | 'borrowedFrom'> {
   /** Short capability description (max 200 chars, truncated with '…' if longer; never null). */
   capability: string;
   /** Reliability/SLA tier: stable = paid/curated; variable = local Ollama; best-effort = free-tier. */
@@ -325,6 +619,29 @@ export interface EnrichedModelEntry extends Omit<ModelEntry, 'toolUse' | 'effort
    *  probe proves liveness, not an SLA, so it never promotes a local/free model to `stable`).
    *  `'rule'` (never probed): `classifyStability`. */
   stabilitySource: 'probe' | 'rule';
+  /** Issue #104: why the last probe failed (first failing leg), with a diagnostic hint; null when
+   *  never probed or both legs passed. */
+  probeFailureReason: ProbeFailureReason | null;
+  // ---- Issue #104: selection data (always present; null = the source said nothing) ----
+  modelType: ModelType;
+  modelTypeSource: ModelTypeSource;
+  /** `contextWindow` duplicates the top-level field (kept for compatibility). */
+  limits: { contextWindow: number | null; maxOutputTokens: number | null };
+  capabilities: Capabilities;
+  /** Whether THIS engine's dispatch path for the provider actually carries an `effort` setting to
+   *  the model (`PROVIDER_CAPS.effortDelivered`): anthropic true; openrouter false (the CLI + LiteLLM
+   *  hops drop it — VAL-186); ollama false (no dial). Supersedes reading `effortDeclared`, which is
+   *  only the upstream catalog's declaration. */
+  effortAppliedOnTransport: boolean;
+  pricingDetail: PricingDetail | null;
+  /** Ollama rows only; null elsewhere. */
+  local: LocalDetails | null;
+  lifecycle: Lifecycle;
+  benchmarks: Benchmarks | null;
+  sameModelAs: string[];
+  borrowedFrom: string | null;
+  /** Engine-measured on THIS host (ObservedStats); `source:'none'` when nothing was measured. */
+  observed: ObservedForRef;
 }
 
 /** Ascending price bands ($/1M) for mapping a scalar price to an integer cost level 0–10.
@@ -390,7 +707,7 @@ export function computeCostLevel(e: ModelEntry): number | null {
  *  wired through `ModelBook.snapshot()`) — optional and defaulting to `null` so a direct call with
  *  no catalog context (a unit test, or `check-mermaid.ts`-style internal use) keeps DES-179's
  *  original honest "we never looked" default unchanged. */
-export function enrichModelEntry(e: ModelEntry, catalogFetchedAt: string | null = null, probe?: ProbeResult): EnrichedModelEntry {
+export function enrichModelEntry(e: ModelEntry, catalogFetchedAt: string | null = null, probe?: ProbeResult, observed?: ObservedForRef): EnrichedModelEntry {
   // capability: truncate at 200 chars (199 + '…'); empty/null → fallback "${provider} model"
   let capability = e.description?.trim() ?? '';
   if (!capability) capability = `${e.provider} model`;
@@ -400,7 +717,11 @@ export function enrichModelEntry(e: ModelEntry, catalogFetchedAt: string | null 
   // re-emitted under their v26 names below — no alias window, `toolUse` never reaches the output.
   // v26 integration: `supported_parameters` is dropped for the same reason — it is the RAW signal
   // the two `*Declared` fields below project, and the output must carry one name per fact.
-  const { toolUse, effortDeclared, declaredSource, supported_parameters: _supported, ...rest } = e;
+  const {
+    toolUse, effortDeclared, declaredSource, supported_parameters: _supported,
+    modelType, modelTypeSource, maxOutputTokens, capabilities, pricingDetail, local, lifecycle, benchmarks, sameModelAs, borrowedFrom,
+    ...rest
+  } = e;
   const ruleStability = classifyStability(e);
   const stability: Stability = !probe ? ruleStability : !probe.proseVerified ? 'unavailable' : !probe.toolUseVerified ? 'degraded' : ruleStability;
   return {
@@ -419,30 +740,89 @@ export function enrichModelEntry(e: ModelEntry, catalogFetchedAt: string | null 
     lastProbedAt: probe ? probe.probedAt : null,
     probeDetail: probe ? (probe.detail.length > 200 ? probe.detail.slice(0, 199) + '…' : probe.detail) : null,
     stabilitySource: probe ? 'probe' : 'rule',
+    probeFailureReason: probe ? probeFailureReason(probe, e) : null,
+    modelType: modelType ?? 'unknown',
+    modelTypeSource: modelTypeSource ?? 'unknown',
+    limits: { contextWindow: e.contextWindow, maxOutputTokens: maxOutputTokens ?? null },
+    capabilities: {
+      toolUse: toolUse === 'unknown' ? null : toolUse,
+      toolChoice: capabilities?.toolChoice ?? null,
+      structuredOutput: capabilities?.structuredOutput ?? null,
+      promptCaching: capabilities?.promptCaching ?? null,
+      vision: capabilities?.vision ?? null,
+      reasoning: capabilities?.reasoning ?? { supported: null, efforts: null, defaultEffort: null, mandatory: null },
+    },
+    effortAppliedOnTransport: isProvider(e.provider) ? PROVIDER_CAPS[e.provider].effortDelivered : false,
+    pricingDetail: pricingDetail ?? null,
+    local: e.provider === 'ollama' ? (local ?? null) : null,
+    lifecycle: lifecycle ?? { releasedAt: null, knowledgeCutoff: null, expiresAt: null },
+    benchmarks: benchmarks ? { source: BENCHMARK_SOURCE, fetchedAt: catalogFetchedAt, ...benchmarks } : null,
+    sameModelAs: sameModelAs ?? [],
+    borrowedFrom: borrowedFrom ?? null,
+    observed: observed ?? OBSERVED_NONE,
   };
+}
+
+/** Issue #104: a structured reading of a failed probe's `detail`. The detail string is written by
+ *  `model-probe.ts`'s `classifyProbe` in exactly the form `prose: <x>; tools: <y>`, where a failed
+ *  gateway leg reads `<timeout|unreachable|terminal>[ (<provider detail>)]`. The FIRST failing leg
+ *  is reported (a dead prose leg usually explains the tools leg too). */
+export function probeFailureReason(probe: ProbeResult, e: Pick<ModelEntry, 'provider' | 'model' | 'besteffort'>): ProbeFailureReason | null {
+  if (probe.proseVerified && probe.toolUseVerified) return null;
+  const m = /^prose: (.*?); tools: (.*)$/s.exec(probe.detail);
+  const leg: ProbeFailureReason['leg'] = probe.proseVerified ? 'tools' : 'prose';
+  const text = m ? (leg === 'prose' ? m[1]! : m[2]!) : probe.detail;
+  let kind: ProbeFailureReason['kind'];
+  if (text.startsWith('timeout')) kind = 'timeout';
+  else if (text.startsWith('unreachable')) kind = 'unreachable';
+  else if (text.startsWith('empty reply')) kind = 'empty-reply';
+  else if (text.startsWith('no Read tool_use')) kind = 'no-tool-use';
+  else if (text.startsWith('Read ran but')) kind = 'wrong-answer';
+  else kind = 'error';
+  const freeTier = e.besteffort === true || e.model.endsWith(':free');
+  const hint =
+    kind === 'timeout'
+      ? e.provider === 'ollama'
+        ? 'No reply within the probe timeout. For a local Ollama model this is usually a cold load (the weights are read into memory on the first call after idle — `ollama ps` shows what is loaded) or a host too slow for this model size; re-probe once warm, or raise models_probe timeoutMs.'
+        : freeTier
+          ? 'No reply within the probe timeout. Free-tier routes queue and cold-start under load; a timeout here is common and not proof the model is broken — but it will behave the same inside a run.'
+          : 'No reply within the probe timeout — the provider was slow or overloaded; re-probe, or raise models_probe timeoutMs.'
+      : kind === 'unreachable'
+        ? 'The provider endpoint could not be reached (network, proxy, or the local server is down).'
+        : kind === 'empty-reply'
+          ? 'The model answered with nothing.'
+          : kind === 'no-tool-use'
+            ? 'The model did not emit a real tool call (it may have written the call out as text) — do not give it tools.'
+            : kind === 'wrong-answer'
+              ? 'The tool ran but the model did not report what it read.'
+              : 'The call failed — probeDetail carries the provider message (e.g. auth, unknown model, rate limit).';
+  return { leg, kind, hint };
 }
 
 /** AND-filters the catalog and caps by limit (default 100, hard cap 500). An empty match returns []
  *  (never an error). */
 export function filterCatalog(entries: ModelEntry[], filter: CatalogFilter = {}): ModelEntry[] {
   const limit = Math.min(Math.max(1, filter.limit ?? DEFAULT_LIMIT), HARD_CAP);
-  const matched = entries.filter((e) => {
-    if (filter.provider !== undefined && e.provider !== filter.provider) return false;
-    if (filter.location !== undefined && e.location !== filter.location) return false;
-    if (filter.toolUseDeclared !== undefined && e.toolUse !== filter.toolUseDeclared) return false;
-    if (filter.modalityIn !== undefined && !e.modalities.in.includes(filter.modalityIn)) return false;
-    if (filter.modalityOut !== undefined && !e.modalities.out.includes(filter.modalityOut)) return false;
-    if (filter.minContext !== undefined && (e.contextWindow === null || e.contextWindow < filter.minContext)) return false;
-    if (filter.maxPricePerM !== undefined) {
-      const p = maxPricePerMOf(e.ratesPerM ?? null);
-      if (p === null || p > filter.maxPricePerM) return false;
-    }
-    if (filter.query !== undefined && filter.query !== '') {
-      const q = filter.query.toLowerCase();
-      const hay = `${e.model} ${e.description}`.toLowerCase();
-      if (!hay.includes(q)) return false;
-    }
-    return true;
-  });
-  return matched.slice(0, limit);
+  return entries.filter((e) => matchesCatalogFilter(e, filter)).slice(0, limit);
+}
+
+/** The AND of the catalog-level filters for one row (`limit` is not a match criterion). Shared by
+ *  `filterCatalog` and issue #104's `models_list` query (which pages instead of capping). */
+export function matchesCatalogFilter(e: ModelEntry, filter: CatalogFilter): boolean {
+  if (filter.provider !== undefined && e.provider !== filter.provider) return false;
+  if (filter.location !== undefined && e.location !== filter.location) return false;
+  if (filter.toolUseDeclared !== undefined && e.toolUse !== filter.toolUseDeclared) return false;
+  if (filter.modalityIn !== undefined && !e.modalities.in.includes(filter.modalityIn)) return false;
+  if (filter.modalityOut !== undefined && !e.modalities.out.includes(filter.modalityOut)) return false;
+  if (filter.minContext !== undefined && (e.contextWindow === null || e.contextWindow < filter.minContext)) return false;
+  if (filter.maxPricePerM !== undefined) {
+    const p = maxPricePerMOf(e.ratesPerM ?? null);
+    if (p === null || p > filter.maxPricePerM) return false;
+  }
+  if (filter.query !== undefined && filter.query !== '') {
+    const q = filter.query.toLowerCase();
+    const hay = `${e.model} ${e.description}`.toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  return true;
 }

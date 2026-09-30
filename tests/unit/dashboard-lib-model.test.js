@@ -87,7 +87,8 @@ const RICH = {
   contextWindow: 200000, price: { in: '3', out: '15' }, ratesPerM: { in: 3, out: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   toolUseDeclared: true, location: 'remote', capability: 'x', stability: 'stable', costLevel: 8,
   effortDeclared: true, declaredSource: 'upstream', catalogFetchedAt: '2026-09-17T00:00:00.000Z',
-  latency: { ttftMs: 900, p50Ms: 6800 }, benchmarks: { mmlu: 78 },
+  // Issue #104: the real wire shapes — `observed` (engine-measured) and `benchmarks` (third-party).
+  observed: { window: '30d', source: 'runs', prose: null, tools: { calls: 5, successRate: 1, latencyMsP50: 6800, latencyMsP95: 9000, avgInputTokens: null, avgOutputTokens: null, avgCacheReadTokens: null, avgCacheWriteTokens: null, avgCostUsdPerCall: null, lastAt: '2026-09-29T00:00:00.000Z' } }, benchmarks: { source: 'openrouter:artificial_analysis+design_arena', fetchedAt: null, artificialAnalysis: { intelligence: 78, coding: null, agentic: null }, designArena: [] },
 };
 const FREE = {
   ...ABSENT, model: 'b-free-model', provider: 'bprov', price: 'free', ratesPerM: { in: 0, out: 0, cacheRead: 0, cacheWrite: 0 },
@@ -96,12 +97,12 @@ const FREE = {
 const MID_A = {
   ...ABSENT, model: 'c-mid-model', provider: 'cprov', contextWindow: 64000, price: { in: '1', out: '2' },
   ratesPerM: { in: 1, out: 2, cacheRead: 0.1, cacheWrite: 1.25 }, costLevel: 3, toolUseDeclared: true, effortDeclared: 'unknown',
-  location: 'remote', stability: 'stable', latency: { ttftMs: 500, p50Ms: 3000 }, benchmarks: { mmlu: 60 },
+  location: 'remote', stability: 'stable', observed: { window: '30d', source: 'runs', prose: null, tools: { calls: 5, successRate: 1, latencyMsP50: 3000, latencyMsP95: 5000, avgInputTokens: null, avgOutputTokens: null, avgCacheReadTokens: null, avgCacheWriteTokens: null, avgCostUsdPerCall: null, lastAt: '2026-09-29T00:00:00.000Z' } }, benchmarks: { source: 'openrouter:artificial_analysis+design_arena', fetchedAt: null, artificialAnalysis: { intelligence: 60, coding: null, agentic: null }, designArena: [] },
 };
 const MID_B = {
   ...ABSENT, model: 'd-mid-model', provider: 'dprov', contextWindow: 128000, price: { in: '2', out: '9' },
   ratesPerM: { in: 2, out: 9, cacheRead: 0.2, cacheWrite: 2.5 }, costLevel: 5, toolUseDeclared: false, effortDeclared: true,
-  location: 'local', stability: 'best-effort', latency: { ttftMs: 1200, p50Ms: 9000 }, benchmarks: { mmlu: 70 },
+  location: 'local', stability: 'best-effort', observed: { window: '30d', source: 'runs', prose: null, tools: { calls: 5, successRate: 1, latencyMsP50: 9000, latencyMsP95: 12000, avgInputTokens: null, avgOutputTokens: null, avgCacheReadTokens: null, avgCacheWriteTokens: null, avgCostUsdPerCall: null, lastAt: '2026-09-29T00:00:00.000Z' } }, benchmarks: { source: 'openrouter:artificial_analysis+design_arena', fetchedAt: null, artificialAnalysis: { intelligence: 70, coding: null, agentic: null }, designArena: [] },
 };
 const FIVE_ROWS = [RICH, FREE, MID_A, MID_B, ABSENT];
 
@@ -223,7 +224,7 @@ describe('lib/model.js: modelRow(entry, lang) — the eleven REQ-137 cells, in c
     expect(cells[1]).toBe(RICH.provider);
     expect(cells[4]).toBe('✓ upstream'); // tools declared true
     expect(cells[5]).toBe('✓ upstream'); // effort declared true
-    expect(cells[7]).toBe('TTFT 900ms · p50 6.8s'); // fmtLatency
+    expect(cells[7]).toBe('p50 6.8s · p95 9s'); // fmtLatency — observed tools bucket (issue #104)
     expect(cells[9]).toBe('78 avg'); // fmtBenchmarks, single value is an integer average
     expect(sortKeys).toHaveProperty('model', RICH.model);
     expect(Object.keys(sortKeys)).toHaveLength(11);
@@ -245,8 +246,21 @@ describe('lib/model.js: modelRow(entry, lang) — the eleven REQ-137 cells, in c
     expect(cells[9]).toBe('—'); // benchmarks
   });
 
+  it('issue #104: probe-only observed data renders the probe latency; the prose bucket is the fallback when no tool calls', () => {
+    const probeOnly = { ...RICH, observed: { window: '30d', source: 'probe', prose: null, tools: null, probeLatencyMs: 4000 } };
+    expect(modelRow(probeOnly, 'en').cells[7]).toBe('probe 4s');
+    const proseOnly = { ...RICH, observed: { ...RICH.observed, prose: RICH.observed.tools, tools: null } };
+    expect(modelRow(proseOnly, 'en').cells[7]).toBe('p50 6.8s · p95 9s');
+    expect(modelRow({ ...RICH, observed: { window: '30d', source: 'none', prose: null, tools: null } }, 'en').cells[7]).toBe('—');
+  });
+
+  it('issue #104: benchmarks null renders "—"; the panel lists the Artificial Analysis indices that exist', () => {
+    expect(modelRow({ ...RICH, benchmarks: null }, 'en').cells[9]).toBe('—');
+    expect(modelPanel(RICH, 'en').benchmarks).toEqual([['Intelligence', 78, 78]]);
+  });
+
   it('a non-integer benchmark average renders one decimal place, not a fabricated whole number', () => {
-    const twoScores = { ...RICH, benchmarks: { mmlu: 70, gpqa: 75 } }; // avg 72.5
+    const twoScores = { ...RICH, benchmarks: { source: 'openrouter:artificial_analysis+design_arena', fetchedAt: null, artificialAnalysis: { intelligence: 70, coding: 75, agentic: null }, designArena: [] } }; // avg 72.5
     const { cells } = modelRow(twoScores, 'en');
     expect(cells[9]).toBe('72.5 avg');
   });

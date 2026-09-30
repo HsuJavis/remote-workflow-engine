@@ -228,8 +228,8 @@ function buildPanel(container, state, entry) {
   }
   panel.appendChild(dl);
 
-  // `vm.benchmarks` is `[]` for every real entry this iteration (Won't-have D2, ADR-060) — this
-  // loop renders nothing on a real page today, never a fabricated row (UT-257's own rule).
+  // Issue #104: `vm.benchmarks` lists the Artificial Analysis indices a row actually carries
+  // (`lib/model.js` benchScores) — `[]` when the row has none, never a fabricated row (UT-257).
   // [v30b, REQ-184] The section shows with its count even when empty. Hidden-when-empty left the
   // panel ending after the definition list, so a reader could not tell "this model has no
   // benchmarks" from "this panel stopped rendering" — and `vm.benchmarks` is `[]` for EVERY real

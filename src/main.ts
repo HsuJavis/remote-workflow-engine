@@ -58,7 +58,8 @@ function isNonEmptyString(s: string | undefined): s is string {
 // meaningful field is a FUNCTION (the injected renderer), which a JSON config file cannot express.
 // Its two numeric knobs are engine constants on purpose (`diagram-render.ts`), so there is nothing
 // here for composeConfig to forward and therefore nothing it can forget to forward.
-interface FileConfig extends Partial<Omit<ServerConfig, 'gateway' | 'principals' | 'diagramRender' | 'confinementPosture'>> {
+// Issue #104: `observedStats` is an object seam (an ObservedStatsProvider) the same way.
+interface FileConfig extends Partial<Omit<ServerConfig, 'gateway' | 'principals' | 'diagramRender' | 'confinementPosture' | 'observedStats'>> {
   /** D-F4: which GatewayClient main.ts wires up. Default "sdk" (ClaudeAgentSdkGatewayClient, the
    *  real tool-loop-capable path). "direct-fetch" opts out to the legacy LiteLLMGatewayClient path
    *  (server.ts's own pre-existing default, driven by `useLiteLLMProxy`). */

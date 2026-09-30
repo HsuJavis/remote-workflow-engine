@@ -85,7 +85,7 @@ describe('models_probe (#73) — admin-only, listed, gated like every admin row'
 
 describe('probe -> models_list -> restart -> run_start warning (#73)', () => {
   it('models_list before any probe: verified fields null, stabilitySource rule', async () => {
-    const rows = (await call('models_list', { provider: 'ollama' })).result as any[];
+    const rows = (await call('models_list', { provider: 'ollama', fields: ['*'] })).result.models as any[] /* #104: page wrapper; full rows */;
     const row = rows.find((r) => r.model === 'qwen2.5:7b');
     expect(row).toMatchObject({ toolUseVerified: null, proseVerified: null, lastProbedAt: null, stabilitySource: 'rule', stability: 'variable' });
   });
@@ -110,7 +110,7 @@ describe('probe -> models_list -> restart -> run_start warning (#73)', () => {
   });
 
   it('models_list and GET /api/models carry the probe outcome (degraded, source probe)', async () => {
-    const rows = (await call('models_list', { provider: 'ollama' })).result as any[];
+    const rows = (await call('models_list', { provider: 'ollama', fields: ['*'] })).result.models as any[] /* #104: page wrapper; full rows */;
     const row = rows.find((r) => r.model === 'qwen2.5:7b');
     expect(row).toMatchObject({ toolUseVerified: false, proseVerified: true, stability: 'degraded', stabilitySource: 'probe' });
     expect(typeof row.lastProbedAt).toBe('string');
@@ -121,7 +121,7 @@ describe('probe -> models_list -> restart -> run_start warning (#73)', () => {
   it('the probe result survives an engine restart on the same workRoot', async () => {
     await server.close();
     server = await boot();
-    const rows = (await call('models_list', { provider: 'ollama' })).result as any[];
+    const rows = (await call('models_list', { provider: 'ollama', fields: ['*'] })).result.models as any[] /* #104: page wrapper; full rows */;
     expect(rows.find((r) => r.model === 'qwen2.5:7b')).toMatchObject({ toolUseVerified: false, stabilitySource: 'probe' });
   });
 

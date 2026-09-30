@@ -54,12 +54,14 @@ export function sortKeyOf(entry, column) {
       const outs = m && Array.isArray(m.out) ? m.out : [];
       return ins.length || outs.length ? ins.join(',') + '→' + outs.join(',') : undefined;
     }
-    case 'latency':
-      return entry.latency ? entry.latency.ttftMs : undefined;
+    case 'latency': {
+      const l = latencyOf(entry.observed);
+      return l ? l.sortMs : undefined;
+    }
     case 'stability':
       return entry.stability;
     case 'benchmarks': {
-      const vals = entry.benchmarks ? Object.values(entry.benchmarks) : [];
+      const vals = benchScores(entry.benchmarks).map(([, v]) => v);
       return vals.length ? vals.reduce((a, c) => a + c, 0) / vals.length : undefined;
     }
     case 'location':
@@ -119,18 +121,38 @@ function fmtModalities(modalities) {
   return `${ins.join('+')} → ${outs.join('+')}`;
 }
 
-// `TTFT 900ms · p50 6.8s` (TASK-222's own pinned literal) — `latency`/`benchmarks` are always
-// absent on every real row this iteration (Won't-have D2, ADR-060); the RULE holds generically so
-// a future D2 lift needs no code change here.
-function fmtLatency(latency) {
-  if (!latency) return '—';
-  const p50s = (latency.p50Ms / 1000).toFixed(1).replace(/\.0$/, '');
-  return `TTFT ${latency.ttftMs}ms · p50 ${p50s}s`;
+// Issue #104: latency is the engine-MEASURED `observed` field (runs on this host, 30 days) — the
+// tools bucket first (what an agent with tools sees), else the prose bucket, else the last probe's
+// latency. `sortMs` is the p95 (the same key `models_list`'s `sortBy:'latency'` uses).
+function latencyOf(observed) {
+  if (!observed) return null;
+  const b = observed.tools || observed.prose;
+  if (b && typeof b.latencyMsP95 === 'number') return { p50: b.latencyMsP50, p95: b.latencyMsP95, sortMs: b.latencyMsP95 };
+  if (typeof observed.probeLatencyMs === 'number') return { probe: observed.probeLatencyMs, sortMs: observed.probeLatencyMs };
+  return null;
+}
+const secs = (ms) => (ms / 1000).toFixed(1).replace(/\.0$/, '') + 's';
+// `p50 6.8s · p95 9s`, or `probe 4s` when only a probe measured it.
+function fmtLatency(observed) {
+  const l = latencyOf(observed);
+  if (!l) return '—';
+  if (l.probe !== undefined) return `probe ${secs(l.probe)}`;
+  return typeof l.p50 === 'number' ? `p50 ${secs(l.p50)} · p95 ${secs(l.p95)}` : `p95 ${secs(l.p95)}`;
 }
 
-// `78 avg` (TASK-222's own pinned literal) — the mean of every declared benchmark score.
+// Issue #104: the wire `benchmarks` is `{source, fetchedAt, artificialAnalysis: {intelligence,
+// coding, agentic} | null, designArena: [...]}` or null. The table/panel show the three Artificial
+// Analysis indices (0–100 scale) that are present; a null index is skipped, never shown as 0.
+const BENCH_LABELS = { intelligence: 'Intelligence', coding: 'Coding', agentic: 'Agentic' };
+function benchScores(benchmarks) {
+  const aa = benchmarks && benchmarks.artificialAnalysis;
+  if (!aa) return [];
+  return Object.keys(BENCH_LABELS).filter((k) => typeof aa[k] === 'number').map((k) => [BENCH_LABELS[k], aa[k]]);
+}
+
+// `78 avg` (TASK-222's own pinned literal) — the mean of the benchmark indices present.
 function fmtBenchmarks(benchmarks) {
-  const vals = benchmarks ? Object.values(benchmarks) : [];
+  const vals = benchScores(benchmarks).map(([, v]) => v);
   if (!vals.length) return '—';
   const avg = vals.reduce((a, c) => a + c, 0) / vals.length;
   return `${Number.isInteger(avg) ? avg : avg.toFixed(1)} avg`;
@@ -171,7 +193,7 @@ export function modelRow(entry, lang) {
     fmtDeclared(entry.toolUseDeclared, entry.declaredSource),
     fmtDeclared(entry.effortDeclared, entry.declaredSource),
     fmtModalities(entry.modalities),
-    fmtLatency(entry.latency),
+    fmtLatency(entry.observed),
     word(STABILITY_KEY, entry.stability, lang),
     fmtBenchmarks(entry.benchmarks),
     word(LOCATION_KEY, entry.location, lang),
@@ -200,14 +222,12 @@ export function modelPanel(entry, lang) {
     fmtContext(entry.contextWindow),
     fmtPrice(entry.price, lang),
     costDots(entry.costLevel),
-    fmtLatency(entry.latency),
+    fmtLatency(entry.observed),
     word(STABILITY_KEY, entry.stability, lang),
     fmtDeclared(entry.toolUseDeclared, entry.declaredSource),
     fmtDeclared(entry.effortDeclared, entry.declaredSource),
   ];
-  const benchmarks = entry.benchmarks
-    ? Object.entries(entry.benchmarks).map(([name, value]) => [name, value, Math.max(0, Math.min(100, value))])
-    : [];
+  const benchmarks = benchScores(entry.benchmarks).map(([name, value]) => [name, value, Math.max(0, Math.min(100, value))]);
   return {
     // [v30b, REQ-182] README §4: "kicker provider · location". Location was missing, and the two
     // word-valued fields below went to the zh panel as the raw wire words while the TABLE beside

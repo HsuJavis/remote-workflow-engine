@@ -185,17 +185,31 @@ export const MODEL_ENTRY_OK: EnrichedModelEntry = {
   stability: 'stable', costLevel: 8, catalogFetchedAt: '2026-09-17T00:00:00.000Z',
   // Issue #73: probe-backed fields — this fixture row was never probed.
   toolUseVerified: null, proseVerified: null, lastProbedAt: null, probeDetail: null, stabilitySource: 'rule',
+  // Issue #104: selection fields — always present on the wire (null where the source said nothing).
+  probeFailureReason: null, modelType: 'chat', modelTypeSource: 'static',
+  limits: { contextWindow: 200000, maxOutputTokens: null },
+  capabilities: { toolUse: true, toolChoice: true, structuredOutput: null, promptCaching: true, vision: false, reasoning: { supported: null, efforts: null, defaultEffort: null, mandatory: null } },
+  effortAppliedOnTransport: true, pricingDetail: { cacheRead: 0.3, cacheWrite: 3.75 }, local: null,
+  lifecycle: { releasedAt: null, knowledgeCutoff: null, expiresAt: null }, benchmarks: null,
+  sameModelAs: [], borrowedFrom: null, observed: { window: '30d', source: 'none', prose: null, tools: null },
 };
+// Issue #104: the selection fields every enriched row always carries.
+const ISSUE_104_MODEL_KEYS = [
+  'probeFailureReason', 'modelType', 'modelTypeSource', 'limits', 'capabilities', 'effortAppliedOnTransport',
+  'pricingDetail', 'local', 'lifecycle', 'benchmarks', 'sameModelAs', 'borrowedFrom', 'observed',
+] as const;
 export const ALLOWED_MODEL_ENTRY_KEYS = [
   'provider', 'model', 'description', 'modalities', 'contextWindow', 'price',
   'toolUseDeclared', 'location', 'ref', 'besteffort', 'ratesPerM', 'effortDeclared', 'declaredSource',
   'capability', 'stability', 'costLevel', 'catalogFetchedAt',
   'toolUseVerified', 'proseVerified', 'lastProbedAt', 'probeDetail', 'stabilitySource',
+  ...ISSUE_104_MODEL_KEYS,
 ] as const;
 export const REQUIRED_MODEL_ENTRY_KEYS = [
   'provider', 'model', 'description', 'modalities', 'contextWindow', 'price', 'toolUseDeclared',
   'location', 'capability', 'stability', 'costLevel', 'catalogFetchedAt',
   'toolUseVerified', 'proseVerified', 'lastProbedAt', 'probeDetail', 'stabilitySource',
+  ...ISSUE_104_MODEL_KEYS,
 ] as const;
 
 // ---- GET /api/issues (v28, DES-218, TASK-219, REQ-139) ----

@@ -37,6 +37,7 @@ import { RealMcpProbe, type McpProbe } from './mcp-probe.js';
 import { IssueReporter, resolveEngineVersion, type IssueReportInput, type IssueListFilter, type IssuesListView } from './github/issue-reporter.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
 import { buildCatalog, filterCatalog, enrichModelEntry, maxPricePerMOf, costLevelFromPrice, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
+import type { ObservedStatsProvider } from './models/observed-stats-types.js';
 import { ModelBook, toModelCatalogSnapshot } from './models/model-book.js';
 import { SystemInfoSampler, RealSystemProbe, UTIL_PCT_CONVENTION } from './system-info.js';
 import { assertUpdatePathsOutsideWorkRoot, writeUpdateFlag, SelfUpdateDb, readUpdateResult } from './self-update.js';
@@ -121,6 +122,9 @@ export interface ServerConfig {
   // tests supply fake Ollama/OpenRouter fetchers (no real network). Omitted -> real fetch against
   // the live endpoints. A fully injectable builder (`modelCatalog`) overrides these when set.
   modelCatalogFetchers?: { ollamaFetch?: typeof fetch; openrouterFetch?: typeof fetch; ollamaBaseUrl?: string };
+  /** Issue #104: engine-measured model stats for `models_list`/`GET /api/models` `observed`. An
+   *  injection seam (tests); absent -> `observed.source:'none'` on every row. */
+  observedStats?: ObservedStatsProvider;
   modelCatalog?: () => Promise<ModelEntry[]>;
   // v8 Slice 1 (REQ-041/043): max `workflow()` nesting depth (default 4) and max total nested
   // workflow() invocations per run (default 256). Read from rwe.config.json via main.ts FileConfig;
@@ -348,6 +352,8 @@ async function handleDashboardRequest(
   diagrams: DiagramRenderer = new DiagramRenderer(),
   // Issue #73: the latest model-probe result per (provider, model), merged into `/api/models`.
   probeLookup: (provider: string, model: string) => ProbeResult | undefined = () => undefined,
+  // Issue #104: engine-measured stats behind each row's `observed` (absent -> source 'none').
+  observedStats?: ObservedStatsProvider,
 ): Promise<void> {
   if (req.method !== 'GET') {
     sendJson(res, 405, { error: 'Dashboard API is read-only: only GET is supported.' });
@@ -406,7 +412,7 @@ async function handleDashboardRequest(
     if (path === '/api/models') {
       const snapshot = await modelBook.snapshot();
       const entries = snapshot.entries as ModelEntry[];
-      sendJson(res, 200, filterCatalog(entries).map((e) => enrichModelEntry(e, snapshot.fetchedAt, probeLookup(e.provider, e.model))));
+      sendJson(res, 200, filterCatalog(entries).map((e) => enrichModelEntry(e, snapshot.fetchedAt, probeLookup(e.provider, e.model), observedStats?.get(`${e.provider}/${e.model}`))));
       return;
     }
     if (path === '/api/runs') {
@@ -949,7 +955,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // by `main.ts`'s real probe (ARCH-181) — `undefined` on every test/zero-config boot, which the
   // door already treats as "don't gate" (call-tool.ts's own documented default).
   function buildToolDeps(webhookBaseUrl: string, isRemoteSubmission = false): ToolDeps {
-    return { facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, modelBook, probeLookup, modelProber, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store, confinementPosture: config?.confinementPosture, isRemoteSubmission };
+    return { facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, modelBook, probeLookup, modelProber, observedStats: config?.observedStats, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store, confinementPosture: config?.confinementPosture, isRemoteSubmission };
   }
   // v35 (DES-239b, ARCH-152, TASK-237, REQ-210): BOTH `initialize` results carry `instructions`
   // with `ENVELOPE_NOTE` and a guide-size figure COMPUTED per call from the SAME stringified
@@ -1261,7 +1267,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // the other, with no type error. Same one-declaration rule as
     // `DEFAULT_CEILINGS`/`UNBOUND_ENTRY_LABEL`.
     const dispatchDashboard = (): void => {
-      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, modelBook, authAnnounce, diagrams, probeLookup).catch((err) => {
+      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, modelBook, authAnnounce, diagrams, probeLookup, config?.observedStats).catch((err) => {
         // v27b (DES-198, TASK-203): 'internal' — the closed reason set's one member with no warning
         // by construction (a promise rejection `handleDashboardRequest`'s own try/catch didn't catch).
         console.warn(JSON.stringify({ event: 'dashboard_api_degraded', route: (req.url ?? '').split('?')[0], reason: 'internal', detail: (err as Error)?.message }));

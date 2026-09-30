@@ -342,6 +342,15 @@ export const PARKED_SPEC_ROWS: ReadonlyArray<SpecRow> = [
 // assignment below compiles. The day someone adds `benchmarks` to that interface (D2 lifted),
 // `_D2StillHolds` becomes `never`, `_d2Guard`'s assignment stops compiling, and the resulting
 // `tsc --noEmit` error points straight at this file and PARKED_SPEC_ROWS above.
-type _D2StillHolds = 'benchmarks' extends keyof EnrichedModelEntry ? never : true;
+//
+// Issue #104 (2026-09-30): the tripwire above FIRED — `benchmarks` is now on `EnrichedModelEntry`
+// and `enrichModelEntry` emits it for real rows (D2's data half is lifted). The three rows stay
+// parked for a narrower reason, stated so it can be re-checked: the ONLY benchmark source is the
+// live OpenRouter listing (anthropic rows borrow from it), so on val-203's real, un-mocked server a
+// `.bench-row` paints only when that network fetch succeeds AND the clicked row has scores — a
+// SPEC_ROWS case built on that would be red offline. Restoring them needs a decision on how val-203
+// selects a benchmarked row (owner call, reported with #104), not a rewrite to assert absence.
+// Re-armed: this now trips the day `benchmarks` stops being nullable (every row guaranteed scores).
+type _D2StillHolds = null extends EnrichedModelEntry['benchmarks'] ? true : never;
 const _d2Guard: _D2StillHolds = true;
 void _d2Guard;

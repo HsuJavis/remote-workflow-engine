@@ -14,7 +14,9 @@ import type { CasStore } from './cas-store.js';
 import type { AssetSyncService } from './asset-sync.js';
 import type { McpProbe } from './mcp-probe.js';
 import type { IssueReporter, IssueReportInput, IssueListFilter } from './github/issue-reporter.js';
-import { filterCatalog, enrichModelEntry, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
+import { matchesCatalogFilter, enrichModelEntry, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
+import { queryModels, ModelsQueryError, type ModelsQuery } from './models/models-query.js';
+import type { ObservedStatsProvider } from './models/observed-stats-types.js';
 import type { ModelBook } from './models/model-book.js';
 import type { ModelProber, ProbeResult } from './models/model-probe.js';
 import type { SystemInfoSampler } from './system-info.js';
@@ -50,6 +52,10 @@ export interface ToolDeps {
    *  fixtures compile unchanged — absent means "never probed" / "probing not wired". */
   probeLookup?: (provider: string, model: string) => ProbeResult | undefined;
   modelProber?: ModelProber;
+  /** Issue #104: engine-measured per-model stats (30-day window, runs with probe fallback) behind
+   *  `models_list`'s `observed` field and observed filters/sorts. Absent -> every row reports
+   *  `observed.source:'none'`. */
+  observedStats?: ObservedStatsProvider;
   systemInfo: SystemInfoSampler;
   lookup: OwnerLookup;
   audit: AuditWriter;
@@ -343,7 +349,18 @@ export async function callTool(
       // production wiring site (server.ts's `buildModelCatalog` is `ModelBook`'s own `source()`).
       const snapshot = await deps.modelBook.snapshot();
       const entries = snapshot.entries as ModelEntry[];
-      return { result: filterCatalog(entries, a as CatalogFilter).map((e) => enrichModelEntry(e, snapshot.fetchedAt, deps.probeLookup?.(e.provider, e.model))) };
+      // Issue #104: catalog-level filters first (on the raw rows, exactly as before), then the
+      // enriched-row query — selection filters, sort, cursor page, field projection. `limit` now
+      // pages (default 50, clamped to 200) instead of truncating, and the reply is a page wrapper.
+      const rows = entries
+        .filter((e) => matchesCatalogFilter(e, a as CatalogFilter))
+        .map((e) => enrichModelEntry(e, snapshot.fetchedAt, deps.probeLookup?.(e.provider, e.model), deps.observedStats?.get(`${e.provider}/${e.model}`)));
+      try {
+        return { result: queryModels(rows, a as ModelsQuery) };
+      } catch (err) {
+        if (err instanceof ModelsQueryError) return refusalEnvelope('INVALID_ARGUMENT', `INVALID_ARGUMENT: ${err.message}`);
+        throw err;
+      }
     }
     case 'models_probe': {
       if (!deps.modelProber) return refusalEnvelope('INVALID_ARGUMENT', 'model probing is not available on this engine (no gateway configured)');

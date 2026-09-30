@@ -318,6 +318,14 @@ describe('the guide closes the five cold-client gaps (UT-159x, DES-187, REQ-130)
     expect(text).toMatch(/catalogFetchedAt/);
   });
 
+  it('(f) issue #104: points to the models_list selection surface (page wrapper, observed vs benchmarks, effort on transport)', () => {
+    expect(text).toMatch(/nextCursor/);
+    expect(text).toMatch(/observed/);
+    expect(text).toMatch(/benchmarks/);
+    expect(text).toMatch(/effortAppliedOnTransport/);
+    expect(text).toMatch(/modelType/);
+  });
+
   it('the budget section is rewritten for {usd, tokens} and names which accessor answers which limit', () => {
     expect(text).toMatch(/budget\.tokens\(\)/);
     expect(text).toMatch(/stop-dispatching/i);

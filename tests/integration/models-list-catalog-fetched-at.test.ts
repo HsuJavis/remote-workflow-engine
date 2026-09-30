@@ -16,8 +16,11 @@ import type { Server } from '../../src/server.js';
 
 function countingJsonFetch(body: unknown): { fetchImpl: typeof fetch; calls: () => number } {
   let calls = 0;
-  const fetchImpl = (async () => {
-    calls += 1;
+  // Issue #104: an Ollama catalog build may also POST /api/show per model (when /api/tags lacks
+  // capabilities, as this fake's does) — part of the SAME build; the TTL bound is on builds, so only
+  // the listing call is counted.
+  const fetchImpl = (async (url: string) => {
+    if (!String(url).endsWith('/api/show')) calls += 1;
     return { ok: true, status: 200, json: async () => body };
   }) as unknown as typeof fetch;
   return { fetchImpl, calls: () => calls };
@@ -53,10 +56,13 @@ async function callModelsList(): Promise<{ result: Array<{ catalogFetchedAt: str
   const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'models_list', arguments: {} } }),
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'models_list', arguments: { fields: ['catalogFetchedAt'] } } }),
   });
   const body = (await res.json()) as { result?: { content?: Array<{ text?: string }> } };
-  return JSON.parse(body.result?.content?.[0]?.text ?? '{}');
+  // Issue #104: the reply is a page `{ models, nextCursor, total }`; catalogFetchedAt is not in the
+  // compact default, so it is asked for by name.
+  const parsed = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { result: { models: Array<{ catalogFetchedAt: string | null }> } };
+  return { result: parsed.result.models };
 }
 
 describe('models_list.catalogFetchedAt reads the SAME ModelBook snapshot (IT-163, H-4 repair)', () => {

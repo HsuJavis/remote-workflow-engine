@@ -838,7 +838,18 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "`stabilitySource:'probe'` means `stability` reflects that probe ('unavailable' = no prose " +
         "answer, 'degraded' = no tool use). If an agent needs tools, pick a model whose row says " +
         '`toolUseVerified: true` — `run_start` answers a non-fatal `warnings` entry ' +
-        '(MODEL_TOOL_USE_UNVERIFIED) when an agent holding tools lands on one whose probe saw none.',
+        '(MODEL_TOOL_USE_UNVERIFIED) when an agent holding tools lands on one whose probe saw none.\n\n' +
+        // Issue #104: the selection surface — the tool description itself documents every field.
+        'To CHOOSE a model, `models_list` answers one page `{ models, nextCursor, total }` of compact ' +
+        "rows (`fields: ['*']` for every field; pass `nextCursor` back as `cursor`). Filter by " +
+        "`modelType: 'chat'` (only chat models can drive an agent), `toolUseVerified`, `structuredOutput`, " +
+        '`reasoning`, benchmark minimums, or observed latency/success/cost; sort with `sortBy` (price, ' +
+        'intelligence, coding, agentic, latency, successRate, avgCostPerCall, …; nulls last). `observed` is ' +
+        "what THIS engine measured for the model over 30 days (split `prose` vs `tools` calls — " +
+        '`avgCostUsdPerCall` includes the harness overhead, so it predicts a run\'s cost better than unit ' +
+        'price); `benchmarks` are third-party scores republished by OpenRouter (null when none). ' +
+        '`effortAppliedOnTransport` says whether an agent\'s `effort` actually reaches that model on this ' +
+        "engine's dispatch path — it does not for openrouter or ollama, whatever `effortDeclared` says.",
     ),
   );
 

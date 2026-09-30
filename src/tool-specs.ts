@@ -17,6 +17,7 @@ import { SEED_ITEM_HINT } from './workspace-seed.js';
 // server.ts's POST /hooks/:id route and webhook-registry.ts's deliver() enforce, so a drift between
 // what a cold client is told and what the wire actually checks fails a test instead of shipping.
 import { WEBHOOK_HEADERS, REPLAY_WINDOW_MS } from './webhook-registry.js';
+import { ALL_FIELDS, COMPACT_FIELDS, SORT_KEYS, DEFAULT_LIMIT, MAX_LIMIT } from './models/models-query.js';
 
 // v35 (DES-239, ARCH-152/154, TASK-237, REQ-210): ONE exported constant, stating the double-JSON
 // envelope every tool result arrives in — consumed by BOTH the `initialize` handshake (server.ts)
@@ -1153,32 +1154,79 @@ export const TOOL_SPECS = [
     // `filterCatalog()` implements, and the meaning of the enriched rating fields, were served but
     // undiscoverable. A cold model reading `{properties:{}}` cannot filter a catalog it must choose
     // a model from.
+    // Issue #104: everything model SELECTION needs, self-described here (no client plugin exists).
     description:
-      'List the model catalog. ONE row per model: `ref` is the exact `<provider>/<model-id>` string ' +
-      '(providers: anthropic, openrouter, ollama) to paste VERBATIM into ' +
-      'meta.params.agents.<label>.model.default at workflow_register, or into a run_start override ' +
-      '— there are no aliases; every model is addressed by this one full ref. Each row also carries ' +
-      'provider, model, description, modalities, contextWindow, price, location, plus the engine ratings: `capability` (a one-line ' +
-      'summary), `stability`, and `costLevel` — an integer 0..10 where 0 is free and 10 is the most ' +
-      'expensive tier, null when the provider publishes no price. v26: `toolUseDeclared` / ' +
-      '`effortDeclared` (boolean, or \'unknown\' when the catalog said nothing) and `declaredSource` ' +
-      "('upstream'|'static'|'unknown') are DECLARED capability, never probed by dispatching a call; " +
-      '`catalogFetchedAt` is per-row catalog provenance (string timestamp, or null). ' +
-      '`toolUseVerified` / `proseVerified` are OBSERVED by the engine\'s own probe of each configured ' +
-      'model (see models_probe) — true/false from the last probe, null when never probed — with ' +
-      '`lastProbedAt` and a short `probeDetail`. `stabilitySource` says where `stability` came from: ' +
-      "'probe' (prose failed -> 'unavailable'; tools failed -> 'degraded'; both passed -> the rule tier) " +
-      "or 'rule' (never probed: 'best-effort' for free tiers, 'variable' for local, else 'stable').",
+      'List the model catalog to choose a model. Returns ONE PAGE: `{ models, nextCursor, total }` — `total` counts every row matching the filters; ' +
+      `pass \`nextCursor\` back as \`cursor\` (same filters) for the next page; nextCursor null = last page. \`limit\` defaults to ${DEFAULT_LIMIT}, max ${MAX_LIMIT} ` +
+      '(larger is clamped); a page of very large rows may also end early to stay well under the response size limit — just follow nextCursor. ' +
+      'ONE row per model: `ref` is the exact `<provider>/<model-id>` string (providers: anthropic, openrouter, ollama) to paste VERBATIM into ' +
+      'meta.params.agents.<label>.model.default at workflow_register, or into a run_start override — there are no aliases; every model is addressed by this one full ref.\n' +
+      `ROW SHAPE. By default each row is COMPACT: ${COMPACT_FIELDS.join(', ')} — with capabilities reduced to {toolUse}, benchmarks to {artificialAnalysis} (or null), ` +
+      "and observed to per-bucket {calls, successRate, latencyMsP50, latencyMsP95, avgCostUsdPerCall}. `fields: ['*']` returns every field in full; " +
+      '`fields: [..names]` returns just those top-level fields (+ ref).\n' +
+      'FIELDS (null ALWAYS means "the source did not say / not measured" — never zero, never false, never guessed):\n' +
+      '- provider, model, description, modalities {in, out} (e.g. out ["embedding"] for an embedding model), location local|remote, besteffort (OpenRouter :free tier — queues/429s/cold-starts).\n' +
+      "- modelType: chat|embedding|rerank|image-gen|tts|stt|moderation|unknown. Only 'chat' models can drive an agent() call. modelTypeSource: ollama-capabilities (Ollama's own " +
+      "/api/show capabilities) | openrouter-modalities (any text output = chat) | static (built-in anthropic table) | id-heuristic (the model id alone — least reliable) | unknown.\n" +
+      '- limits {contextWindow, maxOutputTokens} (tokens; OpenRouter context_length and top_provider.max_completion_tokens; Ollama the model\'s trained context length — its runtime num_ctx may be lower). ' +
+      'contextWindow is also kept top-level.\n' +
+      '- price {in, out} display string per 1M tokens, "free", or "unknown"; ratesPerM = the numeric USD-per-TOKEN rates {in, out, cacheRead, cacheWrite}. ' +
+      'pricingDetail = further price components when the source gives them: reasoning, cacheRead, cacheWrite, cacheWrite1h in USD per 1M tokens; request, image, webSearch in USD per unit as OpenRouter publishes them; null when none. ' +
+      'Engine ratings: `capability` (a one-line summary), `stability`, and `costLevel` — an integer 0..10 where 0 is free and 10 is the most expensive tier, null when the provider publishes no price.\n' +
+      '- capabilities {toolUse, toolChoice, structuredOutput, promptCaching, vision, reasoning {supported, efforts, defaultEffort, mandatory}} — DECLARED by the source, never probed: ' +
+      'OpenRouter supported_parameters (tools, tool_choice, structured_outputs/response_format, reasoning), its reasoning block, cache prices (promptCaching), input image modality (vision); ' +
+      'Ollama capabilities (tools, vision, thinking); the anthropic static table (toolUse, toolChoice, promptCaching, vision).\n' +
+      "- effortAppliedOnTransport: whether THIS engine's dispatch path actually carries an agent's `effort` to the model — true for anthropic; false for openrouter (the hop drops it) and ollama (no dial). " +
+      "Use this, not effortDeclared, to decide whether setting effort does anything. `toolUseDeclared` / `effortDeclared` (boolean, or 'unknown' when the catalog said nothing) and `declaredSource` " +
+      "('upstream'|'static'|'unknown') are the older DECLARED flags, never probed by dispatching a call; effortDeclared only says the upstream catalog lists a reasoning parameter (deprecated in favour of " +
+      'capabilities.reasoning + effortAppliedOnTransport).\n' +
+      '- local {family, parameterSize, quantization}: Ollama rows only (from Ollama details); null elsewhere.\n' +
+      "- lifecycle {releasedAt (OpenRouter's listing date), knowledgeCutoff, expiresAt (scheduled removal)} — ISO strings or null.\n" +
+      '- benchmarks: THIRD-PARTY, GLOBAL quality scores (not about this host): {source: "openrouter:artificial_analysis+design_arena", fetchedAt, borrowedFrom?, ' +
+      'artificialAnalysis {intelligence, coding, agentic} (Artificial Analysis indices, higher is better, or null), designArena [{arena, category, elo, winRate, rank}]} as OpenRouter publishes them; ' +
+      'benchmarks is null when OpenRouter has no scores for the model.\n' +
+      '- sameModelAs: refs of the same underlying model on OTHER providers (e.g. anthropic/claude-haiku-4-5-20251001 <-> openrouter/anthropic/claude-haiku-4.5). ' +
+      "borrowedFrom: for an anthropic-direct row, the OpenRouter ref it borrowed benchmarks, knowledgeCutoff, releasedAt, capabilities.reasoning and maxOutputTokens from (never its price); null otherwise.\n" +
+      "- observed: MEASURED BY THIS ENGINE on this host over the last 30 days, split by call kind: {window: '30d', source: 'runs'|'probe'|'none', prose, tools, probeLatencyMs?}. " +
+      "prose = agent calls with allowedTools: []; tools = calls holding tools. Each bucket is {calls, successRate (0..1), latencyMsP50, latencyMsP95 (agent call wall clock), avgInputTokens, avgOutputTokens, " +
+      "avgCacheReadTokens, avgCacheWriteTokens, avgCostUsdPerCall, lastAt} or null (no such calls). source 'probe' = no run data, only the last models_probe latency (probeLatencyMs); " +
+      "'none' = never measured. avgCostUsdPerCall reflects this engine's real harness overhead, so it predicts a run's cost better than unit price. " +
+      'Observed data is what THIS deployment actually saw; benchmarks are what third parties measured elsewhere.\n' +
+      "- Probe results (see models_probe): `toolUseVerified` / `proseVerified` are OBSERVED by the engine's own probe of each configured model — true/false from the last probe, null when never probed — " +
+      "with `lastProbedAt`, a short `probeDetail`, and probeFailureReason {leg: prose|tools, kind: timeout|unreachable|error|empty-reply|no-tool-use|wrong-answer, hint} (null when never probed or passing). " +
+      "`stabilitySource` says where `stability` came from: 'probe' (prose failed -> 'unavailable'; tools failed -> 'degraded'; both passed -> the rule tier) " +
+      "or 'rule' (never probed: 'best-effort' for free tiers, 'variable' for local, else 'stable'). `catalogFetchedAt` is per-row catalog provenance (string timestamp, or null).\n" +
+      'FILTERS (all optional, AND-ed; a row whose value is null never passes a min/max filter). ' +
+      `SORT: sortBy ${SORT_KEYS.join('|')} (observed keys — latency, successRate, avgCostPerCall — read the callKind bucket, default tools; latency falls back to probe latency); ` +
+      'order asc|desc (default: cheapest/fastest/best first — asc for price, costLevel, latency, avgCostPerCall; desc for the rest); nulls sort last whatever the order.\n' +
+      "EXAMPLES: a cheap tool-capable agent model: {modelType:'chat', toolUseVerified:true, sortBy:'avgCostPerCall'} (or toolUseDeclared:true with sortBy:'price' when nothing was probed/measured); " +
+      "the strongest coder under $5/1M: {maxPricePerM:5, sortBy:'coding'}; a fast prose summarizer: {callKind:'prose', maxLatencyMsP95:5000, sortBy:'latency'}; " +
+      "an embedding model: {modelType:'embedding'}; reliable here: {minSuccessRate:0.95, callKind:'tools'}.",
     inputSchema: schema({
-      provider: { type: 'string', description: "Exact provider id, e.g. 'anthropic' or 'ollama'." },
-      query: { type: 'string', description: 'Substring match over the model id and description.' },
-      modalityIn: { type: 'string' },
-      modalityOut: { type: 'string' },
-      maxPricePerM: { type: 'number', description: 'Upper bound on price per million tokens.' },
-      minContext: { type: 'number', description: 'Lower bound on contextWindow.' },
-      toolUseDeclared: { type: 'boolean' },
-      location: { type: 'string', enum: ['local', 'remote'] },
-      limit: { type: 'number' },
+      provider: { type: 'string', description: "Exact provider id: 'anthropic', 'openrouter' or 'ollama'." },
+      query: { type: 'string', description: 'Case-insensitive substring match over the model id and description.' },
+      modalityIn: { type: 'string', description: "Only rows accepting this input modality (e.g. 'image')." },
+      modalityOut: { type: 'string', description: "Only rows producing this output modality (e.g. 'text', 'embedding')." },
+      maxPricePerM: { type: 'number', description: 'Upper bound on max(in, out) price in USD per million tokens (unpriced rows never pass).' },
+      minContext: { type: 'number', description: 'Lower bound on contextWindow in tokens (null never passes).' },
+      toolUseDeclared: { type: 'boolean', description: 'Only rows whose catalog declares tool use (true) / declares none (false).' },
+      location: { type: 'string', enum: ['local', 'remote'], description: 'local = this host (Ollama); remote = a hosted API.' },
+      modelType: { type: 'string', enum: ['chat', 'embedding', 'rerank', 'image-gen', 'tts', 'stt', 'moderation', 'unknown'], description: "Only this model type. Use 'chat' for agent() models." },
+      toolUseVerified: { type: 'boolean', description: "Only rows whose last models_probe did (true) / did not (false) make a real tool call; never-probed rows match neither." },
+      structuredOutput: { type: 'boolean', description: 'Only rows whose source declares structured output (JSON schema / response_format).' },
+      reasoning: { type: 'boolean', description: 'Only rows whose capabilities.reasoning.supported equals this.' },
+      minIntelligence: { type: 'number', description: 'Minimum benchmarks.artificialAnalysis.intelligence (third-party index; null never passes).' },
+      minCoding: { type: 'number', description: 'Minimum benchmarks.artificialAnalysis.coding.' },
+      minAgentic: { type: 'number', description: 'Minimum benchmarks.artificialAnalysis.agentic.' },
+      maxLatencyMsP95: { type: 'number', description: 'Maximum observed p95 latency (ms) in the callKind bucket, falling back to the last probe latency; unmeasured rows never pass.' },
+      minSuccessRate: { type: 'number', description: 'Minimum observed success rate (0..1) in the callKind bucket; unmeasured rows never pass.' },
+      maxAvgCostUsdPerCall: { type: 'number', description: 'Maximum observed average USD cost per agent call in the callKind bucket; unmeasured rows never pass.' },
+      callKind: { type: 'string', enum: ['prose', 'tools'], description: "Which observed bucket the observed filters and sorts read: 'tools' (default; calls holding tools) or 'prose' (allowedTools: [])." },
+      sortBy: { type: 'string', enum: [...SORT_KEYS], description: 'Sort key; nulls always last. Omit to keep catalog order (anthropic, ollama, openrouter).' },
+      order: { type: 'string', enum: ['asc', 'desc'], description: 'Sort direction; the default is best-first for the key (asc for price/costLevel/latency/avgCostPerCall, desc otherwise).' },
+      fields: { type: 'array', items: { type: 'string', enum: ['*', ...ALL_FIELDS] }, description: "Top-level fields to return (ref is always included). Omit for the compact default; ['*'] for every field." },
+      limit: { type: 'number', description: `Rows per page (default ${DEFAULT_LIMIT}, max ${MAX_LIMIT}; larger values are clamped).` },
+      cursor: { type: 'string', description: "The previous page's nextCursor, to fetch the next page (keep the same filters)." },
     }),
     outputSchema: OUT,
     errors: [] as ErrorCode[],

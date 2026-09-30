@@ -104,12 +104,14 @@ async function callModelsList(args: Record<string, unknown> = {}): Promise<{ res
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       jsonrpc: '2.0', id: 1, method: 'tools/call',
-      params: { name: 'models_list', arguments: args },
+      // Issue #104: full rows (the default is now a compact projection) in one page.
+      params: { name: 'models_list', arguments: { fields: ['*'], limit: 200, ...args } },
     }),
   });
   const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };
   const text = body.result?.content?.[0]?.text;
-  return text ? JSON.parse(text) : { result: [] };
+  // Issue #104: the reply is a page `{ models, nextCursor, total }`, no longer a bare array.
+  return text ? { result: (JSON.parse(text) as { result: { models: EnrichedEntry[] } }).result.models } : { result: [] };
 }
 
 // ============================================================
