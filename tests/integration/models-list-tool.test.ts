@@ -15,7 +15,8 @@ import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import type { EnrichedModelEntry } from '../../src/models/model-catalog.js';
-import type { ObservedStatsProvider, ObservedForRef } from '../../src/models/observed-stats-types.js';
+import { SqliteRunStore } from '../../src/store/sqlite-run-store.js';
+import { SystemClock } from '../../src/clock.js';
 import { COMPACT_FIELDS } from '../../src/models/models-query.js';
 
 function jsonFetch(body: unknown, ok = true): typeof fetch {
@@ -140,26 +141,73 @@ describe('models_list wired into MCP (REQ-039/040)', () => {
     expect((await callTool(server.port, 'models_list', { fields: ['bogus'] })).error?.code).toBe('INVALID_ARGUMENT');
   });
 
-  it('an injected ObservedStats provider feeds `observed` and the observed filters', async () => {
+  it('observed comes from the REAL run store: seeded agent calls surface in `observed` and drive the observed filters/sorts', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rwe-it-models-obs-'));
-    const obs: ObservedForRef = {
-      window: '30d', source: 'runs', prose: null,
-      tools: { calls: 3, successRate: 1, latencyMsP50: 800, latencyMsP95: 1500, avgInputTokens: 3000, avgOutputTokens: 50, avgCacheReadTokens: 0, avgCacheWriteTokens: 0, avgCostUsdPerCall: 0, lastAt: '2026-09-29T00:00:00.000Z' },
+    // Seed the engine's own run store (the one createServer opens at <workRoot>/store) BEFORE boot:
+    // two settled runs, qwen2.5:7b with one prose + two tool calls (one failed), all this week.
+    const seed = new SqliteRunStore(join(dir, 'store'), new SystemClock());
+    const now = Date.now();
+    const iso = (msAgo: number): string => new Date(now - msAgo).toISOString();
+    const call = async (runId: string, agentId: string, tools: string[], ok: boolean, startedAgo: number, durMs: number): Promise<void> => {
+      await seed.appendTranscript(runId, agentId, { ts: iso(startedAgo), kind: 'harness', data: { agentId, descriptor: { model: 'qwen2.5:7b', provider: 'ollama', prompt: 'p', tools, skills: [], mcpServers: [], surfaceType: tools.length ? 'curated' : 'none' } } });
+      await seed.appendTranscript(runId, agentId, ok
+        ? { ts: iso(startedAgo - durMs), kind: 'usage', data: { tokens: { input: 3000, output: 40, cacheRead: 0, cacheWrite: 0 }, provider: 'ollama', model: 'qwen2.5:7b', costUSD: 0, unpriced: false } }
+        : { ts: iso(startedAgo - durMs), kind: 'usage', data: { provider: 'ollama' } });
     };
-    const provider: ObservedStatsProvider = {
-      get: (ref) => (ref === 'ollama/qwen2.5:7b' ? obs : { window: '30d', source: 'none', prose: null, tools: null }),
-      getAll: () => new Map([['ollama/qwen2.5:7b', obs]]),
-    };
+    for (const [status, calls] of [['completed', [[[], true, 1000], [['Read'], true, 2000]]], ['failed', [[['Read'], false, 4000]]]] as const) {
+      const runId = await seed.createRun({ origin: 'local', args: {}, principal: 'someone' });
+      await seed.recordTransition(runId, 'queued', 'running', iso(90_000));
+      let n = 0;
+      for (const [tools, ok, dur] of calls) await call(runId, `a${n++}`, [...tools], ok, 60_000, dur);
+      await seed.recordTransition(runId, 'running', status, iso(1_000));
+    }
     const obsServer = await createServer({
-      port: 0, bind: '127.0.0.1', workRoot: dir, observedStats: provider,
+      port: 0, bind: '127.0.0.1', workRoot: dir,
       modelCatalogFetchers: { ollamaFetch: jsonFetch(OLLAMA_TAGS), openrouterFetch: jsonFetch(OPENROUTER_MODELS) },
     });
     try {
-      const out = await callTool(obsServer.port, 'models_list', { minSuccessRate: 0.9 });
-      expect(out.result.models.map((m) => m.ref)).toEqual(['ollama/qwen2.5:7b']);
-      expect(out.result.models[0]!.observed).toMatchObject({ source: 'runs', tools: { calls: 3, latencyMsP95: 1500 } });
+      const all = await callTool(obsServer.port, 'models_list', { provider: 'ollama', fields: ['observed'] });
+      const observed = all.result.models[0]!.observed!;
+      expect(observed.source).toBe('runs');
+      expect(observed.prose).toMatchObject({ calls: 1, successRate: 1, latencyMsP50: 1000 });
+      expect(observed.tools).toMatchObject({ calls: 2, successRate: 0.5, latencyMsP95: 4000, avgCostUsdPerCall: 0 });
+      // Observed filters read the callKind bucket (default tools): 0.5 fails 0.9, prose's 1.0 passes.
+      expect((await callTool(obsServer.port, 'models_list', { minSuccessRate: 0.9 })).result.total).toBe(0);
+      expect((await callTool(obsServer.port, 'models_list', { minSuccessRate: 0.9, callKind: 'prose' })).result.models.map((m) => m.ref)).toEqual(['ollama/qwen2.5:7b']);
+      // Unmeasured rows never pass an observed bound and sort after measured ones.
+      const byLatency = await callTool(obsServer.port, 'models_list', { sortBy: 'latency', limit: 1 });
+      expect(byLatency.result.models[0]!.ref).toBe('ollama/qwen2.5:7b');
+      // Privacy: aggregate numbers only — no run ids, agent ids or principals anywhere on the row.
+      const text = JSON.stringify(all);
+      expect(text).not.toContain('someone');
+      expect(text).not.toMatch(/"a[0-9]"/);
     } finally {
       await obsServer.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('the page stays far below the MCP response limit ON THE WIRE (escaped JSON-RPC body), full fields, max limit', async () => {
+    const { readFileSync } = await import('node:fs');
+    const sample = JSON.parse(readFileSync(join(__dirname, '..', 'fixtures', 'models', 'openrouter-models-sample.json'), 'utf8')) as { data: Array<Record<string, unknown>> };
+    // 400 realistic rows: the captured rows (benchmarks, design_arena, long descriptions) re-id'd.
+    const rows = Array.from({ length: 400 }, (_, i) => ({ ...sample.data[i % sample.data.length]!, id: `${String(sample.data[i % sample.data.length]!['id'])}-${i}` }));
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-it-models-size-'));
+    const big = await createServer({ port: 0, bind: '127.0.0.1', workRoot: dir, modelCatalogFetchers: { ollamaFetch: jsonFetch(OLLAMA_TAGS), openrouterFetch: jsonFetch({ data: rows }) } });
+    try {
+      for (const args of [{ fields: ['*'], limit: 200 }, { limit: 200 }]) {
+        const res = await fetch(`http://127.0.0.1:${big.port}/mcp`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'models_list', arguments: args } }),
+        });
+        const wire = await res.text();
+        expect(Buffer.byteLength(wire), JSON.stringify(args)).toBeLessThan(125_000);
+        const page = JSON.parse(JSON.parse(wire).result.content[0].text).result as Page;
+        expect(page.total).toBe(405); // 400 openrouter + 4 anthropic + 1 ollama
+        expect(page.nextCursor).not.toBeNull();
+      }
+    } finally {
+      await big.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });

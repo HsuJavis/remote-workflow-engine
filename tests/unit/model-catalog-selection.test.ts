@@ -12,7 +12,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildCatalog, enrichModelEntry, anthropicCanonicalKey, type ModelEntry } from '../../src/models/model-catalog.js';
-import type { ObservedForRef } from '../../src/models/observed-stats-types.js';
+import type { ObservedForRef } from '../../src/models/observed-stats.js';
 import type { ProbeResult } from '../../src/models/model-probe.js';
 
 const FIX = join(__dirname, '..', 'fixtures', 'models');

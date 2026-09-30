@@ -37,7 +37,6 @@ import { RealMcpProbe, type McpProbe } from './mcp-probe.js';
 import { IssueReporter, resolveEngineVersion, type IssueReportInput, type IssueListFilter, type IssuesListView } from './github/issue-reporter.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
 import { buildCatalog, filterCatalog, enrichModelEntry, maxPricePerMOf, costLevelFromPrice, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
-import type { ObservedStatsProvider } from './models/observed-stats-types.js';
 import { ModelBook, toModelCatalogSnapshot } from './models/model-book.js';
 import { SystemInfoSampler, RealSystemProbe, UTIL_PCT_CONVENTION } from './system-info.js';
 import { assertUpdatePathsOutsideWorkRoot, writeUpdateFlag, SelfUpdateDb, readUpdateResult } from './self-update.js';
@@ -65,6 +64,7 @@ import { resolveRole, type Principal } from './authz.js';
 import { createOwnerLookup } from './owner-lookup.js';
 import { DiagramRenderer, renderWithMmdc, type DiagramRendererOpts } from './diagram-render.js';
 import { ModelProbeStore, ModelProber, MODEL_PROBE_DEFAULTS, type ModelProbeConfig, type ProbeResult } from './models/model-probe.js';
+import { RunStoreObservedStats, type ObservedStatsProvider } from './models/observed-stats.js';
 
 export interface ServerConfig {
   bind?: string;   // default '127.0.0.1'
@@ -122,9 +122,6 @@ export interface ServerConfig {
   // tests supply fake Ollama/OpenRouter fetchers (no real network). Omitted -> real fetch against
   // the live endpoints. A fully injectable builder (`modelCatalog`) overrides these when set.
   modelCatalogFetchers?: { ollamaFetch?: typeof fetch; openrouterFetch?: typeof fetch; ollamaBaseUrl?: string };
-  /** Issue #104: engine-measured model stats for `models_list`/`GET /api/models` `observed`. An
-   *  injection seam (tests); absent -> `observed.source:'none'` on every row. */
-  observedStats?: ObservedStatsProvider;
   modelCatalog?: () => Promise<ModelEntry[]>;
   // v8 Slice 1 (REQ-041/043): max `workflow()` nesting depth (default 4) and max total nested
   // workflow() invocations per run (default 256). Read from rwe.config.json via main.ts FileConfig;
@@ -412,7 +409,8 @@ async function handleDashboardRequest(
     if (path === '/api/models') {
       const snapshot = await modelBook.snapshot();
       const entries = snapshot.entries as ModelEntry[];
-      sendJson(res, 200, filterCatalog(entries).map((e) => enrichModelEntry(e, snapshot.fetchedAt, probeLookup(e.provider, e.model), observedStats?.get(`${e.provider}/${e.model}`))));
+      const observed = observedStats?.getAll(); // issue #104: one snapshot per request, joined by ref
+      sendJson(res, 200, filterCatalog(entries).map((e) => enrichModelEntry(e, snapshot.fetchedAt, probeLookup(e.provider, e.model), observed?.get(`${e.provider}/${e.model}`))));
       return;
     }
     if (path === '/api/runs') {
@@ -846,6 +844,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // object every agent() call dispatches through — so it exists only when one is configured.
   const probeStore = new ModelProbeStore(join(workRoot, 'store', 'index.db'));
   const probeLookup = (provider: string, model: string): ProbeResult | undefined => probeStore.get(provider, model);
+  // Issue #104: models_list's `observed` field — the SAME `store` (SqliteRunStore) and `probeStore`
+  // instances every other read in this file uses; constructed once (TTL-cached internally), never
+  // per-request.
+  const observedStats = new RunStoreObservedStats({ source: store, probes: probeStore, clock });
   // 2026-09-26 (owner decision 10): probe targets are the distinct full refs registered workflow
   // versions declare — a LIVE accessor (never memoized), so a fresh registration is probed without
   // a restart.
@@ -853,6 +855,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     ? new ModelProber({ gateway, modelRefs: () => catalog.distinctModelRefs(), store: probeStore, workRoot, clock, config: config?.modelProbe ?? { ...MODEL_PROBE_DEFAULTS, enabled: false } })
     : undefined;
   modelProber?.start();
+  // Issue #104: background-refreshes so `models_list`'s `observed` field reads a warm cache on the
+  // request path instead of scanning the run store synchronously — see RunStoreObservedStats' own
+  // class doc for the two-path (background vs lazy-fallback) design.
+  observedStats.start();
   // v37 (ARCH-182, DES-263, TASK-258): forwards the SAME measured posture `confinementPosture`
   // already rides to the facade/gateway (DES-258 owner ruling) — RunManager.start()'s
   // admissionRefusal() covers every `start()`-driven admission route (tools/call's run_start,
@@ -955,7 +961,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // by `main.ts`'s real probe (ARCH-181) — `undefined` on every test/zero-config boot, which the
   // door already treats as "don't gate" (call-tool.ts's own documented default).
   function buildToolDeps(webhookBaseUrl: string, isRemoteSubmission = false): ToolDeps {
-    return { facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, modelBook, probeLookup, modelProber, observedStats: config?.observedStats, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store, confinementPosture: config?.confinementPosture, isRemoteSubmission };
+    return { facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, modelBook, probeLookup, modelProber, observedStats, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store, confinementPosture: config?.confinementPosture, isRemoteSubmission };
   }
   // v35 (DES-239b, ARCH-152, TASK-237, REQ-210): BOTH `initialize` results carry `instructions`
   // with `ENVELOPE_NOTE` and a guide-size figure COMPUTED per call from the SAME stringified
@@ -1267,7 +1273,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // the other, with no type error. Same one-declaration rule as
     // `DEFAULT_CEILINGS`/`UNBOUND_ENTRY_LABEL`.
     const dispatchDashboard = (): void => {
-      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, modelBook, authAnnounce, diagrams, probeLookup, config?.observedStats).catch((err) => {
+      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, modelBook, authAnnounce, diagrams, probeLookup, observedStats).catch((err) => {
         // v27b (DES-198, TASK-203): 'internal' — the closed reason set's one member with no warning
         // by construction (a promise rejection `handleDashboardRequest`'s own try/catch didn't catch).
         console.warn(JSON.stringify({ event: 'dashboard_api_degraded', route: (req.url ?? '').split('?')[0], reason: 'internal', detail: (err as Error)?.message }));
@@ -1800,6 +1806,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       ticker.stop();
       if (gcTimer) clearInterval(gcTimer); // REQ-026: stop the workspace GC sweep on shutdown
       modelProber?.stop(); // issue #73: stop the periodic model probe
+      observedStats.stop(); // issue #104: stop the periodic observed-stats refresh
       return new Promise<void>((resolve, reject) => {
         http.close((err) => (err ? reject(err) : resolve()));
       })

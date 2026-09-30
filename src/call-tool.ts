@@ -16,9 +16,9 @@ import type { McpProbe } from './mcp-probe.js';
 import type { IssueReporter, IssueReportInput, IssueListFilter } from './github/issue-reporter.js';
 import { matchesCatalogFilter, enrichModelEntry, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
 import { queryModels, ModelsQueryError, type ModelsQuery } from './models/models-query.js';
-import type { ObservedStatsProvider } from './models/observed-stats-types.js';
 import type { ModelBook } from './models/model-book.js';
 import type { ModelProber, ProbeResult } from './models/model-probe.js';
+import type { ObservedStatsProvider } from './models/observed-stats.js';
 import type { SystemInfoSampler } from './system-info.js';
 import type { RunStore } from './run-store.js';
 import type { ErrorCode } from './errors.js';
@@ -52,9 +52,11 @@ export interface ToolDeps {
    *  fixtures compile unchanged — absent means "never probed" / "probing not wired". */
   probeLookup?: (provider: string, model: string) => ProbeResult | undefined;
   modelProber?: ModelProber;
-  /** Issue #104: engine-measured per-model stats (30-day window, runs with probe fallback) behind
-   *  `models_list`'s `observed` field and observed filters/sorts. Absent -> every row reports
-   *  `observed.source:'none'`. */
+  /** Issue #104: engine-measured per-model-ref call stats (src/models/observed-stats.ts),
+   *  TTL-cached over the run store — `models_list`'s `observed` row field reads THIS, never a raw
+   *  per-call scan. Optional for the same reason `probeLookup` is: the many existing `ToolDeps` test
+   *  fixtures compile unchanged; absent means "not wired" (models_list falls back to `source:'none'`
+   *  for every ref). */
   observedStats?: ObservedStatsProvider;
   systemInfo: SystemInfoSampler;
   lookup: OwnerLookup;
@@ -352,9 +354,11 @@ export async function callTool(
       // Issue #104: catalog-level filters first (on the raw rows, exactly as before), then the
       // enriched-row query — selection filters, sort, cursor page, field projection. `limit` now
       // pages (default 50, clamped to 200) instead of truncating, and the reply is a page wrapper.
+      // ObservedStats: ONE consistent snapshot per call (`getAll()`), joined by ref.
+      const observed = deps.observedStats?.getAll();
       const rows = entries
         .filter((e) => matchesCatalogFilter(e, a as CatalogFilter))
-        .map((e) => enrichModelEntry(e, snapshot.fetchedAt, deps.probeLookup?.(e.provider, e.model), deps.observedStats?.get(`${e.provider}/${e.model}`)));
+        .map((e) => enrichModelEntry(e, snapshot.fetchedAt, deps.probeLookup?.(e.provider, e.model), observed?.get(`${e.provider}/${e.model}`)));
       try {
         return { result: queryModels(rows, a as ModelsQuery) };
       } catch (err) {

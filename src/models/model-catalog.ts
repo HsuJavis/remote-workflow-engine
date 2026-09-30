@@ -15,7 +15,10 @@ import type { ProbeResult } from './model-probe.js';
 // STATIC_ANTHROPIC_RATES) — both uses are inside functions, never at module evaluation, so the
 // cycle is inert.
 import { PROVIDER_CAPS, isProvider } from '../providers.js';
-import { OBSERVED_NONE, type ObservedForRef } from './observed-stats-types.js';
+import type { ObservedForRef } from './observed-stats.js';
+
+/** What a row's `observed` says when nothing was measured (or no ObservedStats is wired). */
+export const OBSERVED_NONE: ObservedForRef = { window: '30d', source: 'none', prose: null, tools: null };
 
 /** Issue #104: what KIND of model a row is — an embedding model listed as text->text chat was the
  *  reported failure. */

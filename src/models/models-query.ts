@@ -9,11 +9,11 @@
 // `nextCursor` away, never dropped — keeping any page far below the ~198KB MCP response limit.
 import type { EnrichedModelEntry } from './model-catalog.js';
 import { maxPricePerMOf } from './model-catalog.js';
-import type { CallStats, ObservedForRef } from './observed-stats-types.js';
+import type { CallStats, ObservedForRef } from './observed-stats.js';
 
 export const DEFAULT_LIMIT = 50;
 export const MAX_LIMIT = 200;
-export const PAGE_BYTE_BUDGET = 120_000;
+export const PAGE_BYTE_BUDGET = 100_000;
 
 export type SortBy = 'price' | 'costLevel' | 'intelligence' | 'coding' | 'agentic' | 'latency' | 'successRate' | 'avgCostPerCall' | 'contextWindow' | 'releasedAt';
 export const SORT_KEYS: readonly SortBy[] = ['price', 'costLevel', 'intelligence', 'coding', 'agentic', 'latency', 'successRate', 'avgCostPerCall', 'contextWindow', 'releasedAt'];

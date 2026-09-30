@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildCatalog, enrichModelEntry, type EnrichedModelEntry } from '../../src/models/model-catalog.js';
 import { queryModels, ModelsQueryError, COMPACT_FIELDS, MAX_LIMIT, PAGE_BYTE_BUDGET } from '../../src/models/models-query.js';
-import type { CallStats, ObservedForRef } from '../../src/models/observed-stats-types.js';
+import type { CallStats, ObservedForRef } from '../../src/models/observed-stats.js';
 
 const FIX = join(__dirname, '..', 'fixtures', 'models');
 const OR = JSON.parse(readFileSync(join(FIX, 'openrouter-models-sample.json'), 'utf8')) as { data: Array<Record<string, unknown>> };
