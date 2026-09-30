@@ -4,8 +4,14 @@
 // or `system_info.auth` key exists today.
 // Mock policy: real booted engine (createServer), real GET /api/system HTTP route.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import Database from 'better-sqlite3';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { TokenStore } from '../../src/auth/token-store.js';
 
 describe('auth boot announcement (IT-107, DES-141)', () => {
   let server: Server;
@@ -58,13 +64,25 @@ describe('auth boot announcement (IT-107, DES-141)', () => {
   });
 
   it('GET /api/system reports auth = {enabled, principalsCount, defaultRole}', async () => {
-    server = await createServer({
-      port: 0, bind: '127.0.0.1',
-      auth: { enabled: true },
-      principals: { '*': { role: 'user' } },
-    } as never);
-    const res = await fetch(`http://127.0.0.1:${server.port}/api/system`);
-    const body = (await res.json()) as { auth?: unknown };
-    expect(body.auth).toEqual({ enabled: true, principalsCount: 1, defaultRole: 'user' });
+    // Dashboard auth spec §A (2026-09-30): with auth enabled /api/* needs a caller, so this read
+    // carries a bearer (any authenticated role may read /api/system).
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-it107-'));
+    try {
+      server = await createServer({
+        port: 0, bind: '127.0.0.1', workRoot,
+        auth: { enabled: true },
+        principals: { '*': { role: 'user' } },
+      } as never);
+      const db = new Database(join(workRoot, 'auth-tokens.db'));
+      const bearer = new TokenStore(db, { clock: () => Date.now(), csprng: (n) => randomBytes(n) }).issue('reader@x.com', 60_000).token;
+      db.close();
+      const res = await fetch(`http://127.0.0.1:${server.port}/api/system`, { headers: { Authorization: `Bearer ${bearer}` } });
+      const body = (await res.json()) as { auth?: unknown };
+      expect(body.auth).toEqual({ enabled: true, principalsCount: 1, defaultRole: 'user' });
+    } finally {
+      await server?.close();
+      server = undefined as unknown as Server; // closed here so the workRoot can go; afterEach skips it
+      rmSync(workRoot, { recursive: true, force: true });
+    }
   });
 });

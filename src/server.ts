@@ -44,7 +44,9 @@ import type { UpdateOutcome } from './update-types.js';
 import { verifyTagWebhook } from './self-update-webhook.js';
 import Database from 'better-sqlite3';
 import { TokenStore } from './auth/token-store.js';
-import { createAuthRouteHandlers, resolvePrincipal, type AuthConfig } from './auth/auth-service.js';
+import { createAuthRouteHandlers, resolvePrincipal, readSessionCookie, sessionCookie, clearSessionCookie, type AuthConfig } from './auth/auth-service.js';
+import { RoleStore } from './auth/role-store.js';
+import { PrincipalAdmin } from './auth/principal-admin.js';
 import type { Role } from './tool-specs.js';
 import { wwwAuthenticateHeader } from './auth/oauth-metadata.js';
 import { DEFAULT_CEILINGS, type Ceilings, type Effort } from './params/contract.js';
@@ -60,7 +62,7 @@ import type { RunStore } from './run-store.js';
 import { callTool, type ToolDeps } from './call-tool.js';
 import { toPublicRunView, toPublicRunSummary } from './run-view.js';
 import { projectToolsList, ENVELOPE_NOTE } from './tool-specs.js';
-import { resolveRole, type Principal } from './authz.js';
+import { type Principal, type OwnerLookup } from './authz.js';
 import { createOwnerLookup } from './owner-lookup.js';
 import { DiagramRenderer, renderWithMmdc, type DiagramRendererOpts } from './diagram-render.js';
 import { ModelProbeStore, ModelProber, MODEL_PROBE_DEFAULTS, type ModelProbeConfig, type ProbeResult } from './models/model-probe.js';
@@ -351,6 +353,10 @@ async function handleDashboardRequest(
   probeLookup: (provider: string, model: string) => ProbeResult | undefined = () => undefined,
   // Issue #104: engine-measured stats behind each row's `observed` (absent -> source 'none').
   observedStats?: ObservedStatsProvider,
+  // Dashboard auth spec §A: WHO is asking (resolved by the gate) and the SAME sync OwnerLookup
+  // `authorize()` uses for every MCP tool call — each route below applies the corresponding
+  // tool's rule to this principal, so the dashboard can never show what the tool would refuse.
+  viewer: { principal: Principal; lookup: OwnerLookup } = { principal: { kind: 'auth-disabled' }, lookup: { runOwner: () => undefined, workflowOwner: () => undefined, triggerOwner: () => undefined } },
 ): Promise<void> {
   if (req.method !== 'GET') {
     sendJson(res, 405, { error: 'Dashboard API is read-only: only GET is supported.' });
@@ -961,7 +967,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // by `main.ts`'s real probe (ARCH-181) — `undefined` on every test/zero-config boot, which the
   // door already treats as "don't gate" (call-tool.ts's own documented default).
   function buildToolDeps(webhookBaseUrl: string, isRemoteSubmission = false): ToolDeps {
-    return { facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, modelBook, probeLookup, modelProber, observedStats, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store, confinementPosture: config?.confinementPosture, isRemoteSubmission };
+    return { facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, modelBook, probeLookup, modelProber, observedStats, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store, confinementPosture: config?.confinementPosture, isRemoteSubmission, principals: principalAdmin };
   }
   // v35 (DES-239b, ARCH-152, TASK-237, REQ-210): BOTH `initialize` results carry `instructions`
   // with `ENVELOPE_NOTE` and a guide-size figure COMPUTED per call from the SAME stringified
@@ -974,8 +980,12 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   }
   // v24 (DES-140, ARCH-089): `Principal` built ONCE per request from `resolvePrincipal` +
   // `authEnabled` + `isLoopbackPeer` — the three shapes ARCH-088 defines.
+  // Dashboard auth spec §A2: the role is read from the role store on EVERY request (config admin
+  // locked > DB override > config entry > '*' > user), so a principal_set_role change is effective
+  // on the very next call; each authenticated request also lands in the known-principals ledger.
   function principalFor(id: string): Principal {
-    return { kind: resolveRole(config?.principals, id), id };
+    principalAdmin.markSeen(id);
+    return { kind: principalAdmin.resolve(id), id };
   }
   // v6 (REQ-036): best-effort engine-side diagnostics for a runId, pulled through the SAME facade
   // the MCP tools use (status + artifact list + failing/last agent transcript tail), formatted as a
@@ -1114,15 +1124,28 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v15 (REQ-012/086, DES-095, TASK-086): auth AS — token-store + route handlers.
   // When auth disabled/absent, pre-v15 open behavior is preserved byte-for-byte.
   const authCfg = config?.auth?.enabled ? config.auth : undefined;
+  // Dashboard auth spec §A2: the auth DB is opened on every boot — the role store (runtime role
+  // overrides + the known-principals ledger) lives there and backs principals_list /
+  // principal_set_role whether or not auth is enabled. The token tables are created only when it is.
+  const authDb = new Database(join(workRoot, 'auth-tokens.db'));
   const authTokenStore = authCfg
-    ? new TokenStore(new Database(join(workRoot, 'auth-tokens.db')), {
+    ? new TokenStore(authDb, {
         clock: () => clock.now(),
         csprng: (n: number) => randomBytes(n),
       })
     : undefined;
+  const principalAdmin = new PrincipalAdmin({ store: new RoleStore(authDb, { clock: () => clock.now() }), principals: config?.principals, authEnabled: !!authCfg });
   const authHandlers = authCfg && authTokenStore
-    ? createAuthRouteHandlers(authCfg, authTokenStore)
+    ? createAuthRouteHandlers(authCfg, authTokenStore, (email) => principalAdmin.markSeen(email))
     : undefined;
+  // Spec §A: the dashboard is served on the public URL too, so the engine's own public origin
+  // (publicBaseUrl / auth.issuer) is always an allowlisted Host/Origin authority — the operator
+  // does not have to repeat it in `allowedHosts`.
+  const effectiveAllowedHosts = [...(config?.allowedHosts ?? [])];
+  for (const raw of [config?.publicBaseUrl, authCfg?.issuer]) {
+    if (!raw) continue;
+    try { effectiveAllowedHosts.push(new URL(raw).hostname.toLowerCase()); } catch { /* unparseable: not added */ }
+  }
 
   // v24 (ARCH-098, TASK-160; Gate 8 AF-1 / adjudication #7 G-1): the pre-v24 asset migration, and
   // it runs HERE — synchronously, BEFORE the sweep below is armed — because the order IS the
@@ -1248,8 +1271,8 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // real rebind guard for this non-form JSON-RPC route; the CSRF concern (a drive-by browser form POST
     // from an attacker page) does not apply to a JSON body endpoint. An ABSENT Origin is always allowed.
     const isMcpRoute = (req.url ?? '').split('?')[0] === '/mcp';
-    const originOk = isMcpRoute || isAllowedOrigin(req.headers.origin, bind, boundPort, config?.allowedHosts);
-    if (!isAllowedHost(req.headers.host, bind, boundPort, config?.allowedHosts) || !originOk) {
+    const originOk = isMcpRoute || isAllowedOrigin(req.headers.origin, bind, boundPort, effectiveAllowedHosts);
+    if (!isAllowedHost(req.headers.host, bind, boundPort, effectiveAllowedHosts) || !originOk) {
       sendJson(res, 403, { error: 'Forbidden: Host/Origin not allowlisted' });
       return;
     }
@@ -1272,13 +1295,102 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // list was typed out twice; a drift between the two copies would diverge on one path and not
     // the other, with no type error. Same one-declaration rule as
     // `DEFAULT_CEILINGS`/`UNBOUND_ENTRY_LABEL`.
-    const dispatchDashboard = (): void => {
-      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, modelBook, authAnnounce, diagrams, probeLookup, observedStats).catch((err) => {
+    const dispatchDashboard = (principal: Principal): void => {
+      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, modelBook, authAnnounce, diagrams, probeLookup, observedStats, { principal, lookup: ownerLookup }).catch((err) => {
         // v27b (DES-198, TASK-203): 'internal' — the closed reason set's one member with no warning
         // by construction (a promise rejection `handleDashboardRequest`'s own try/catch didn't catch).
         console.warn(JSON.stringify({ event: 'dashboard_api_degraded', route: (req.url ?? '').split('?')[0], reason: 'internal', detail: (err as Error)?.message }));
         sendJson(res, 200, { degraded: 'internal dashboard error' });
       });
+    };
+    // Dashboard auth spec §A/§A2: the dashboard page + /api/* surface, served for an already
+    // RESOLVED principal — the gate below (auth enabled) resolves it from a session cookie / bearer
+    // / the D-BIND loopback exemption; with auth disabled it is `auth-disabled` (unchanged, open).
+    const reqPath = (req.url ?? '').split('?')[0]!;
+    const isDashboardPage = req.method === 'GET' && (reqPath === '/dashboard' || reqPath.startsWith('/dashboard/'));
+    // /api/version and /api/status stay PUBLIC: they are the liveness probes deploy.sh and
+    // deploy/migrate-to-service-user.sh poll from localhost, and carry no per-principal data.
+    const isGatedApi = reqPath.startsWith('/api/') && reqPath !== '/api/version' && reqPath !== '/api/status';
+    // CSRF (spec §A): a state-changing dashboard call must PROVE it is same-origin — an `Origin`
+    // whose authority is this request's own Host, or an `X-Requested-With` header (a custom header
+    // a cross-site page cannot send without a CORS preflight this engine never answers).
+    const sameOriginMutation = (): boolean => {
+      if (req.headers['x-requested-with'] !== undefined) return true;
+      const origin = req.headers.origin;
+      if (!origin || origin === 'null') return false;
+      try { return new URL(origin).host.toLowerCase() === String(req.headers.host ?? '').toLowerCase(); } catch { return false; }
+    };
+    const sendToolOutcome = (out: unknown): void => {
+      const r = out as { status?: string; code?: string; error?: { code?: string; message?: string }; result?: unknown };
+      if (r.status === 'failed') {
+        const code = r.code ?? r.error?.code ?? 'INTERNAL_ERROR';
+        const http = code === 'FORBIDDEN_ROLE' || code === 'PRINCIPAL_REQUIRED' ? 403
+          : code === 'ROLE_LOCKED' || code === 'LAST_ADMIN' ? 409
+          : code === 'INVALID_ARGUMENT' ? 400 : 500;
+        sendJson(res, http, { code, error: r.error?.message ?? code });
+        return;
+      }
+      sendJson(res, 200, r.result);
+    };
+    // The admin page's backend: the SAME two tools (and so the same authorize() row and the same
+    // PrincipalAdmin) an MCP client calls — the dashboard can never grant what the tool refuses.
+    const servePrincipalsRoute = async (principal: Principal): Promise<void> => {
+      const deps = buildToolDeps(resolvePublicBaseUrl(req), isRemoteSubmission);
+      if (reqPath === '/api/principals' && req.method === 'GET') {
+        sendToolOutcome(await callTool(deps, 'principals_list', {}, principal));
+        return;
+      }
+      if (reqPath === '/api/principals/role' && req.method === 'POST') {
+        if (!sameOriginMutation()) { sendJson(res, 403, { code: 'CSRF_REFUSED', error: 'Forbidden: a state-changing dashboard call needs a same-origin Origin or X-Requested-With header' }); return; }
+        let body: Record<string, unknown>;
+        try { body = JSON.parse(await readBody(req, 64 * 1024)) as Record<string, unknown>; } catch { sendJson(res, 400, { code: 'INVALID_ARGUMENT', error: 'INVALID_ARGUMENT: body must be JSON {id, role}' }); return; }
+        sendToolOutcome(await callTool(deps, 'principal_set_role', { id: body['id'], role: body['role'] }, principal));
+        return;
+      }
+      sendJson(res, 405, { error: 'Method not allowed' });
+    };
+    const serveDashboardSurface = (principal: Principal): void => {
+      if (isDashboardPage) {
+        // DES-061 (TASK-064): lazily re-read the update result so the dashboard shows fresh state
+        // even when the engine was NOT restarted after a failed build (the "failed" lazy-read case).
+        ingestUpdateResult();
+        // v27b (DES-198, ARCH-130, TASK-203, REQ-131): the SPA's own CSP — no inline executable JS
+        // remains on this page (the one inline `<script>` left is `type="application/json"`, never
+        // prepared for execution, so it needs no nonce); `blob:` in img-src is load-bearing for the
+        // author-diagram `createObjectURL` render (REQ-119). `form-action 'self'`: the header's
+        // sign-out is a same-origin form POST.
+        const auth = !authCfg ? { enabled: false }
+          : principal.kind === 'loopback-exempt' ? { enabled: true, loopback: true }
+          : principal.kind === 'auth-disabled' ? { enabled: false }
+          : { enabled: true, id: principal.id, role: principal.kind };
+        res.writeHead(200, {
+          'Content-Type': 'text/html',
+          'Cache-Control': 'no-store',
+          'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' blob:; connect-src 'self'; form-action 'self'",
+        });
+        res.end(buildDashboardHtml({ lastUpdate: lastUpdateOutcome, interruptedRuns: interruptedRuns || undefined, auth }));
+        return;
+      }
+      if (reqPath === '/api/principals' || reqPath === '/api/principals/role') {
+        servePrincipalsRoute(principal).catch(() => sendJson(res, 500, { error: 'principals route error' }));
+        return;
+      }
+      // TASK-025 (DES-018): read-only dashboard HTTP API, a distinct transport from /mcp on the
+      // SAME port (no separate dashboard listener/port — one server, two transports).
+      // v11 (REQ-067): /api/issues* added alongside existing /api/runs* and /api/workflows*.
+      // v12 (REQ-076/077/078): /api/system and /api/models added.
+      if (
+        req.url?.startsWith('/api/runs') ||
+        req.url?.startsWith('/api/workflows') ||
+        req.url?.startsWith('/api/issues') ||
+        req.url === '/api/home' || req.url?.startsWith('/api/home?') ||
+        req.url?.startsWith('/api/system') ||
+        req.url?.startsWith('/api/models')
+      ) {
+        dispatchDashboard(principal);
+        return;
+      }
+      sendJson(res, 404, { error: 'Not found' });
     };
     // v15 (DES-095, TASK-086): OAuth AS routes — public (no bearer required), only when auth enabled.
     // effectiveIssuer replaces port 0 with the real bound port (issuer placeholder at startup).
@@ -1330,6 +1442,58 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'registration error' }));
         });
+        return;
+      }
+      // Dashboard auth spec §A: the browser login (Google, via the SAME client + callback as MCP),
+      // the signed-out page and logout — all public by construction, matched BEFORE the gate and
+      // the SPA catch-all (route order is a correctness condition, as for the static assets).
+      if (req.method === 'GET' && reqPath === '/dashboard/login') {
+        authHandlers.dashboardLogin(req, res, effectiveIssuer());
+        return;
+      }
+      if (req.method === 'GET' && reqPath === '/dashboard/signed-out') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': "default-src 'none'", 'Cache-Control': 'no-store' });
+        res.end('<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Signed out</title></head><body><p>Signed out of the Remote Workflow Engine dashboard. / 已登出。</p><p><a href="/dashboard/login">Sign in again / 重新登入</a></p></body></html>');
+        return;
+      }
+      if (req.method === 'POST' && reqPath === '/dashboard/logout') {
+        if (!sameOriginMutation()) { sendJson(res, 403, { code: 'CSRF_REFUSED', error: 'Forbidden: sign-out needs a same-origin Origin or X-Requested-With header' }); return; }
+        const tok = readSessionCookie(req.headers.cookie);
+        if (tok) authTokenStore!.deleteSession(tok);
+        res.writeHead(303, { 'Location': '/dashboard/signed-out', 'Set-Cookie': clearSessionCookie(effectiveIssuer()), 'Cache-Control': 'no-store' });
+        res.end();
+        return;
+      }
+      // The gate (spec §A): /dashboard* and /api/* (minus the two liveness probes) need a caller —
+      // a bearer (the SAME resolver /mcp uses) or a dashboard session cookie. With neither, a raw
+      // loopback peer on a non-loopback bind is the D-BIND rescue path exactly as on /mcp
+      // (`loopback-exempt`: principal-free reads only; every owner/role-gated read refuses
+      // PRINCIPAL_REQUIRED); anyone else gets a login redirect (page) or a 401 (API).
+      if (isDashboardPage || isGatedApi) {
+        const resolveCaller = async (): Promise<{ principal: Principal; renew?: string } | null> => {
+          if (typeof req.headers.authorization === 'string') {
+            const p = await resolvePrincipal(req, authTokenStore!, wwwChallenge());
+            if ('principal' in p) return { principal: principalFor(p.principal) };
+          } else {
+            const tok = readSessionCookie(req.headers.cookie);
+            const v = tok ? authTokenStore!.verifySession(tok) : null;
+            if (tok && v) return { principal: principalFor(v.principal), ...(v.slid ? { renew: tok } : {}) };
+          }
+          return dbindExempt ? { principal: { kind: 'loopback-exempt' } } : null;
+        };
+        void resolveCaller().then((caller) => {
+          if (!caller) {
+            if (isDashboardPage) {
+              res.writeHead(302, { 'Location': `/dashboard/login?next=${encodeURIComponent(req.url ?? '/dashboard')}`, 'Cache-Control': 'no-store' });
+              res.end();
+            } else {
+              send401();
+            }
+            return;
+          }
+          if (caller.renew) res.setHeader('Set-Cookie', sessionCookie(caller.renew, effectiveIssuer()));
+          serveDashboardSurface(caller.principal);
+        }).catch(() => { sendJson(res, 500, { error: 'dashboard auth error' }); });
         return;
       }
       // Auth gate for blob upload (DES-096: resolve-once before putBlobStream consumes req)
@@ -1445,17 +1609,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         }).catch(() => { sendJson(res, 500, { jsonrpc: '2.0', id: null, error: { code: -32603, message: 'Internal error' } }); });
         return;
       }
-      // v24 orchestrator adjudication #8 (H-1, issue #57) OVERRULES ADJ-A1: the auth gate that stood
-      // here — GET /api/workflows/:name/describe as dbindExempt's FOURTH gated member, admitted only
-      // via loopback exemption or resolvePrincipal — is REMOVED, so the route joins the other
-      // unauthenticated dashboard reads (/api/workflows, /api/runs*, /api/home, /api/system).
-      // The dashboard's client is a plain browser fetch with no login and no token, so it satisfied
-      // neither condition: with auth.enabled the one route serving the author's diagram and the
-      // per-agent params answered 401 and the detail pane was blank. ADJ-A1 bought existence-hiding
-      // that /api/workflows already gives away in full (every name, owner, description, versions,
-      // channels and the whole per-agent param spec, anonymously). dbindExempt's three remaining
-      // members (blob/manifest/mcp) are unchanged, and workflow_source — the privileged view, the one
-      // carrying script text — keeps its own protection.
+      // History: v24 adjudication #8 (issue #57) removed an auth gate on the dashboard reads because
+      // the dashboard's browser client had no login and so could never be admitted. The 2026-09-30
+      // owner decision (dashboard auth spec §A) adds that login, and the dashboard gate above now
+      // covers EVERY /dashboard* and /api/* route (minus the liveness probes), with per-principal
+      // filtering inside `handleDashboardRequest`.
     }
     // v27b (DES-198/DES-199, ARCH-130/123, TASK-203/204, REQ-131/140): the dashboard's own static
     // assets (JS/CSS/fonts) — registered BEFORE the `/dashboard` SPA catch-all below. Route ORDER
@@ -1496,20 +1654,15 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // D-V2V-2 (REQ-008 route-back): a real browser-renderable HTML/JS dashboard page, on the SAME
     // port as /mcp and /api/runs* (one data model, two transports — now genuinely two). SPA-style
     // routing: /dashboard/<runId> serves this exact same static page; its own client JS reads the
-    // runId back out of location.pathname.
-    if (req.method === 'GET' && (req.url === '/dashboard' || req.url?.startsWith('/dashboard/'))) {
-      // DES-061 (TASK-064): lazily re-read the update result so the dashboard shows fresh state
-      // even when the engine was NOT restarted after a failed build (the "failed" lazy-read case).
-      ingestUpdateResult();
-      // v27b (DES-198, ARCH-130, TASK-203, REQ-131): the SPA's own CSP — no inline executable JS
-      // remains on this page (the one inline `<script>` left is `type="application/json"`, never
-      // prepared for execution, so it needs no nonce); `blob:` in img-src is load-bearing for the
-      // author-diagram `createObjectURL` render (REQ-119).
-      res.writeHead(200, {
-        'Content-Type': 'text/html',
-        'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' blob:; connect-src 'self'",
-      });
-      res.end(buildDashboardHtml({ lastUpdate: lastUpdateOutcome, interruptedRuns: interruptedRuns || undefined }));
+    // runId back out of location.pathname. With auth enabled the gate above already served every
+    // /dashboard* and gated /api/* request; reaching here means auth is disabled (open, unchanged).
+    if (!authHandlers && req.method === 'GET' && reqPath === '/dashboard/login') {
+      res.writeHead(302, { 'Location': '/dashboard' });
+      res.end();
+      return;
+    }
+    if (isDashboardPage) {
+      serveDashboardSurface({ kind: 'auth-disabled' });
       return;
     }
     // DES-061 (TASK-064): version endpoint — reuses resolveEngineVersion() result, same value
@@ -1533,19 +1686,8 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       sendJson(res, 200, statusBody);
       return;
     }
-    // TASK-025 (DES-018): read-only dashboard HTTP API, a distinct transport from /mcp on the
-    // SAME port (no separate dashboard listener/port — one server, two transports).
-    // v11 (REQ-067): /api/issues* added alongside existing /api/runs* and /api/workflows*.
-    // v12 (REQ-076/077/078): /api/system and /api/models added.
-    if (
-      req.url?.startsWith('/api/runs') ||
-      req.url?.startsWith('/api/workflows') ||
-      req.url?.startsWith('/api/issues') ||
-      req.url === '/api/home' || req.url?.startsWith('/api/home?') ||
-      req.url?.startsWith('/api/system') ||
-      req.url?.startsWith('/api/models')
-    ) {
-      dispatchDashboard();
+    if (isGatedApi) {
+      serveDashboardSurface({ kind: 'auth-disabled' });
       return;
     }
     // v8 Defer B (REQ-057): webhook ingress. POST /hooks/:id — verify (HMAC over the RAW body BEFORE
