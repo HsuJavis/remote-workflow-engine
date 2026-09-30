@@ -38,6 +38,13 @@ export const STR = {
     // [widened v28b, owner ruling 2026-09-18] a colon-terminated PREFIX, not a complete sentence:
     // every call site appends its OWN literal route string directly after this value.
     noDemoData: '此路由無示範資料:',
+    // Dashboard auth spec §A/§A2 (2026-09-30): the header identity and the admin (roles) page.
+    signOut: '登出', admLocal: '本機(loopback)',
+    admTab: '管理', admTitle: '使用者與角色', admId: '帳號', admRole: '角色', admSource: '來源',
+    admLastSeen: '最後登入', admChange: '變更', admDefault: '(預設)', admNever: '從未',
+    admSrc_configLocked: '設定檔管理員(鎖定)', admSrc_db: '執行期變更', admSrc_config: '設定檔', admSrc_default: '預設',
+    admBy: '變更者', admConfirm: '將 {id} 的角色改為 {role}?', admError: '變更失敗:',
+    admAuthOff: '未啟用驗證:角色會儲存,但目前不生效',
     // [v29, REQ-148] run status + trigger type, for the history table's two untranslated columns.
     // Key names follow the delivery handoff's own STR table (`stCompleted`, `byType_client`) so the
     // oracle and the implementation use one vocabulary. Only the values the history table can
@@ -85,6 +92,12 @@ export const STR = {
     demoData: 'Demo data',
     demoBanner: 'Demo data — the engine is unreachable; this view is showing demo content',
     noDemoData: 'No demo data for this route: ',
+    signOut: 'Sign out', admLocal: 'Local (loopback)',
+    admTab: 'Admin', admTitle: 'Users & roles', admId: 'Account', admRole: 'Role', admSource: 'Source',
+    admLastSeen: 'Last sign-in', admChange: 'Change', admDefault: '(default)', admNever: 'never',
+    admSrc_configLocked: 'config admin (locked)', admSrc_db: 'set at runtime', admSrc_config: 'config file', admSrc_default: 'default',
+    admBy: 'by', admConfirm: 'Change the role of {id} to {role}?', admError: 'Change refused: ',
+    admAuthOff: 'Authentication is disabled: roles are stored but not enforced',
     stQueued: 'Queued', stRunning: 'Running', stCompleted: 'Completed', stFailed: 'Failed',
     stStopped: 'Stopped', stSuspended: 'Suspended', stInterrupted: 'Interrupted', stRefused: 'Refused',
     byType_client: 'client', byType_webhook: 'webhook', byType_schedule: 'schedule',

@@ -18,6 +18,7 @@ const DASHBOARD_ROOT = fileURLToPath(new URL('./dashboard/', import.meta.url));
 const ASSET_KEYS = [
   'ui/app.js', 'ui/theme-init.js', 'ui/poll.js', 'ui/home.js', 'ui/workflow.js', 'ui/run.js',
   'ui/agent-panel.js', 'ui/models.js', 'ui/system.js', 'ui/issues.js', 'ui/dom.js', 'ui/clock.js',
+  'ui/admin.js', 'lib/principals.js',
   'lib/theme.js', 'lib/strings.js', 'lib/connection.js', 'lib/swimlane.js', 'lib/runlist.js',
   'lib/agent.js', 'lib/status.js', 'lib/model.js', 'lib/scheduler.js', 'lib/system.js',
   'lib/issues.js',

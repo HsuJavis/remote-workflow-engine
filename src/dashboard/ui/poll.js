@@ -14,6 +14,7 @@
 // /dashboard/workflow/:name), 'issues' | 'models' | 'system' (the ported tabs, TASK-212).
 
 import { classifyResponse } from '../lib/connection.js';
+import { loginUrlFor } from '../lib/principals.js';
 
 const ROUTES = {
   home: () => ['/api/home'],
@@ -30,6 +31,9 @@ const ROUTES = {
   // `/api/runs` client-side, with NO new server route — the same fold `/api/runs`'s own run-history
   // table already reads, so the two can never disagree.
   system: () => ['/api/system', '/api/workflows', '/api/runs'],
+  // Dashboard auth spec §A2: the admin page fetches /api/principals itself (on mount and after each
+  // change) — never re-fetched by the 3s poll, which would repaint a selector mid-edit.
+  admin: () => [],
 };
 
 /** The VISIBLE view's own fetch set (DES-206) — never the whole app's endpoints. `ctx` carries the
@@ -51,6 +55,11 @@ export function endpointsFor(view, ctx) {
 export async function getJSON(url) {
   try {
     const res = await fetch(url);
+    // Dashboard auth spec §A: a 401 means the session is gone (expired / signed out) — go sign in
+    // again, carrying this page back, rather than letting repeated failures read as an outage.
+    if (res.status === 401 && typeof location !== 'undefined') {
+      location.assign(loginUrlFor(location.pathname, location.search));
+    }
     let body = null;
     try {
       body = await res.json();

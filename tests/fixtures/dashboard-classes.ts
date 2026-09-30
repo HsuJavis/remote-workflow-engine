@@ -50,7 +50,7 @@ export const STYLE_HOOKS: readonly string[] = [
   // "current degrees" readout, a `<span>` app.js keeps in sync with the slider's `input` event.
   // `rwe-hue-wrap` — the shared flex-item wrapper around the slider + its readout (one README
   // bullet, one nav child; also what keeps `.rwe-nav`'s flex-wrap from regressing VAL-197).
-  'rwe-hue-value', 'rwe-hue-wrap',
+  'rwe-hue-value', 'rwe-hue-wrap', 'rwe-user',
 
   // -- REQ-132 home --
   'card-section', 'other', 'card-grid', 'cards', 'running', 'kicker', 'meta', 'home-toolbar',

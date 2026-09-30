@@ -272,6 +272,9 @@ pre{white-space:pre-wrap;background:var(--color-panel2);border:1px solid var(--c
    separate `.rwe-nav` children here cost an extra 16px flex gap over one shared 6px internal gap,
    which was enough to tip the nav's own `flex-wrap` at a 1100px viewport and regress VAL-197. */
 .rwe-hue-wrap{display:inline-flex;align-items:center;gap:6px}
+/* Dashboard auth spec §A: the signed-in identity cluster (email, role tag, sign-out form). */
+.rwe-user{display:inline-flex;align-items:center;gap:6px}
+.rwe-user form{margin:0}
 .rwe-hue-slider{width:150px;height:8px;border-radius:4px;-webkit-appearance:none;appearance:none;outline:none;cursor:pointer;background:linear-gradient(90deg,oklch(0.68 0.07 0),oklch(0.68 0.07 45),oklch(0.68 0.07 90),oklch(0.68 0.07 135),oklch(0.68 0.07 180),oklch(0.68 0.07 225),oklch(0.68 0.07 270),oklch(0.68 0.07 315),oklch(0.68 0.07 360))}
 .rwe-hue-slider::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:var(--color-accent);border:2px solid var(--color-bg);box-shadow:0 0 0 1px var(--accent-700)}
 .rwe-hue-slider::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:var(--color-accent);border:2px solid var(--color-bg);box-shadow:0 0 0 1px var(--accent-700)}

@@ -31,6 +31,9 @@ import { nextConnection, demoEngages, resumeReset } from '../lib/connection.js';
 import { nextPoll } from '../lib/scheduler.js';
 import { t as tStr } from '../lib/strings.js';
 import { endpointsFor, getJSON, setDemoBodies } from './poll.js';
+// Dashboard auth spec §A/§A2 (2026-09-30): who is signed in (from the island) -> the header's
+// identity cluster and whether the admin tab exists.
+import { tabsFor, headerIdentity } from '../lib/principals.js';
 import { render as renderHome, onTick as onTickHome } from './home.js';
 
 // [v28, DES-212, TASK-220] populated by `mountApp()`'s boot-time `import('../demo/dataset.js')`
@@ -45,12 +48,12 @@ let DEMO_AVAILABLE = false;
 // table. `System` as a THEME label also collides with the `System` TAB one line above it.
 const LABELS = {
   zh: {
-    workflows: '工作流', models: '模型', system: '系統', issues: '問題',
+    workflows: '工作流', models: '模型', system: '系統', issues: '問題', admin: '管理',
     live: '連線中', offline: '離線', degraded: '部分異常', checking: '連線中…',
     dark: '深', light: '淺', system_theme: '系統', updated: '更新於',
   },
   en: {
-    workflows: 'Workflows', models: 'Models', system: 'System', issues: 'Issues',
+    workflows: 'Workflows', models: 'Models', system: 'System', issues: 'Issues', admin: 'Admin',
     live: 'Live', offline: 'Offline', degraded: 'Degraded', checking: 'Connecting…',
     dark: 'Dark', light: 'Light', system_theme: 'Auto', updated: 'Updated',
   },
@@ -196,7 +199,7 @@ function buildFooter(island, lang) {
 }
 
 let pendingTab = null;
-const TAB_MODULES = { models: './models.js', system: './system.js', issues: './issues.js' };
+const TAB_MODULES = { models: './models.js', system: './system.js', issues: './issues.js', admin: './admin.js' };
 // [v27c AC-5 Gate 8 repair] once a tab's module has loaded, its `onTick` is cached here so
 // switching BACK to an already-mounted tab re-joins the one poll timer without a second
 // `import()` (the module is only ever `render()`ed once — `panel.dataset.mounted` still owns that).
@@ -288,7 +291,7 @@ function buildChrome(island) {
 
   const tabStrip = document.createElement('div');
   tabStrip.className = 'rwe-tabs';
-  for (const tab of ['workflows', 'models', 'system', 'issues']) {
+  for (const tab of tabsFor(island.auth)) {
     // README "Header / chrome": "Tabs are underlined links (`aria-current="page"` -> accent-700
     // text + accent underline)" — an <a> rather than a <button>. `href` points back at the tab
     // root (never changes the URL per this app's own routing contract above); the click handler
@@ -385,6 +388,30 @@ function buildChrome(island) {
   }
   nav.appendChild(themeGroup);
 
+  // Dashboard auth spec §A: signed-in email + role + sign-out. Sign-out is a same-origin form POST
+  // (the browser sends Origin, which the server's CSRF check requires); no script involved.
+  const identity = headerIdentity(island.auth, prefs.lang);
+  if (identity) {
+    const who = document.createElement('span');
+    who.className = 'rwe-user';
+    who.setAttribute('data-auth-user', '');
+    who.appendChild(Object.assign(document.createElement('span'), { className: 'muted', textContent: identity.label }));
+    if (identity.role) who.appendChild(Object.assign(document.createElement('span'), { className: 'tag', textContent: identity.role }));
+    if (identity.signOut) {
+      const form = document.createElement('form');
+      form.method = 'post';
+      form.action = '/dashboard/logout';
+      form.setAttribute('data-sign-out', '');
+      const btn = document.createElement('button');
+      btn.type = 'submit';
+      btn.className = 'btn';
+      btn.textContent = tStr(prefs.lang, 'signOut');
+      form.appendChild(btn);
+      who.appendChild(form);
+    }
+    nav.appendChild(who);
+  }
+
 
   // [v28, DES-212, TASK-220, REQ-143] the shell banner — a child of `nav`, so it is OUTSIDE
   // `mountLazy`'s per-route `container.replaceChildren()` reach and survives every tab/route
@@ -410,7 +437,7 @@ function buildTabPanels() {
   const wrapper = document.createElement('div');
   wrapper.className = 'rwe-tab-panels';
   let workflowsPanel = null;
-  for (const tab of ['workflows', 'models', 'system', 'issues']) {
+  for (const tab of tabsFor(readIsland().auth)) {
     const panel = document.createElement('div');
     panel.dataset.tabPanel = tab;
     panel.style.display = tab === 'workflows' ? '' : 'none';
