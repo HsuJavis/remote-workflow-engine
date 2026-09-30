@@ -121,14 +121,14 @@
 - **儀表板**：`GET /dashboard` —— 深色系操作介面（畫面右上角三段式主題切換：跟隨系統／淺色／
   深色；語言可切中/英；還有一顆 accent 色調滑桿，可即時看到目前角度，喜歡什麼顏色自己調——三者的
   選擇都存在瀏覽器 `localStorage`，換裝置不會帶過去）。分頁列是可鍵盤操作的頁籤（目前分頁有底線
-  標示）。頁尾顯示目前連到哪個 API 位址、以及最後更新時間。分四個分頁：
+  標示）。頁尾顯示目前連到哪個 API 位址、以及最後更新時間。分四個分頁（admin 登入時多一個「管理」分頁：使用者與角色）：
   - **工作流程**（首頁，品牌字樣「工作流引擎 / Workflow Engine」在導覽列上）：卡片依「執行中 /
     已註冊 / 其他」分三段，可搜尋、可依狀態篩選，每張卡片顯示「最後執行」時間、成功率、平均耗時、
     平均費用。點卡片進工作流程詳情頁（`/dashboard/workflow/<name>`）：版本標籤、觸發器列表、最近
     6 筆 run 的圓點按鈕、**泳道圖**（見下）、和完整的執行歷史表；點某個圓點或點歷史表的某一列，
     上方的泳道圖直接切換成那次 run，不會離開這一頁。**還沒執行過的 workflow** 一樣看得到圖，顯示的
-    是根據腳本推算出來的「預測結構」（哪個 agent 在哪個 phase），不是真的跑過，即使開了登入驗證也
-    一樣看得到（不會因為沒登入就變空白）。
+    是根據腳本推算出來的「預測結構」（哪個 agent 在哪個 phase），不是真的跑過（開了登入驗證時，
+    登入後的任何角色都看得到 release 版的預測結構）。
   - **模型**：十一欄可排序表格（模型/供應商/上下文/價格/工具/推理/模態/延遲/穩定性/基準/
     位置——2026-09-26 起別名機制移除，不再有「別名」欄，`ref` 就是可以直接貼進
     `model.default`／run_start override 的完整字串），點欄標題依該欄排序、再點一次切換升降冪；
@@ -211,8 +211,13 @@
   角色（`principals`）：`workflow_register`/`workflow_deregister`/`workflow_publish`/`workflow_source`/
   `schedule_*`/`webhook_*` 需要 `author`，全域資產推送需要 `admin`（見 DEPLOY.md §1b「角色」）。
   啟用方式：在 `rwe.config.json` 加入 `auth:{enabled:true,...}` 區塊（見 `rwe.config.example.json` / DEPLOY.md §1b 設定總表）。
+  **Dashboard 登入 + 執行期角色**（2026-09-30）：auth 開啟時 dashboard 用同一個 Google OAuth client
+  登入（`/dashboard/login`，瀏覽器 session cookie，右上角 email／角色／登出），`/dashboard*` 與 `/api/*`
+  都要登入，每位使用者只看得到對應 MCP 工具會給他的資料（自己的 run、非擁有者只看 release 版）；
+  admin 可用 `principals_list`／`principal_set_role` 或 dashboard「管理」分頁不重啟改角色（設定檔的
+  admin 鎖定、不能把最後一個 admin 降級）。見 DEPLOY.md §1b「執行期角色管理」「Dashboard 登入」。
 
-共 **36 個** MCP 工具（權威清單見 `src/tool-specs.ts`）。
+共 **38 個** MCP 工具（權威清單見 `src/tool-specs.ts`）。
 
 ## 前置需求
 
@@ -428,7 +433,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 # 沒過就回 401 + WWW-Authenticate——而且是在讀到任何工作流程資料「之前」就擋下，
 # 所以未授權的呼叫端連「這個名稱存不存在」都問不出來（存在與不存在都是同一個 401）。
 
-# 查詢 36 個 MCP 工具（含 schema）
+# 查詢 38 個 MCP 工具（含 schema）
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
