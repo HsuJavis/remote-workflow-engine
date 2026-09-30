@@ -271,9 +271,10 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
     expect(((created['result'] ?? created) as { enabled?: boolean }).enabled).toBe(true);
 
     // The real RealTicker(500ms) drives it; poll the row rather than sleep a fixed amount. The
-    // schedule-started RUN carries no principal, so `run_list` (principal-scoped) is the wrong
-    // observation point — the schedule's own row records both outcomes, which is exactly what makes
-    // "fired" and "refused" distinguishable here.
+    // schedule's own row is the observation point because it records BOTH outcomes (lastRunId and
+    // refusalCount), which is exactly what makes "fired" and "refused" distinguishable here. (Since
+    // spec §B1, 2026-09-30, a schedule-started run carries its trigger creator as principal, so it
+    // would also appear in the creator's `run_list` — but only a fired run would.)
     type Row = { id: string; lastRunId?: string; refusalCount?: number; lastRefusalReason?: string };
     let row: Row | undefined;
     for (let i = 0; i < 100; i++) {

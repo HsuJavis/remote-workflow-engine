@@ -177,21 +177,30 @@ describe('workflow detail page, real Chromium (VAL-199, REQ-133)', () => {
     }
   }, 20000);
 
-  // v27b (Round v27b owner ruling, ADR-051; VAL-199/VAL-204's own "may not be judged before
-  // TASK-201's label has landed" note): the Gate 7.5 instruction FLIPPED from "record what degrades
-  // under auth" to "PROVE the overlay IS visible". A structural DOM check (a lane element exists)
-  // would pass on grey boxes reading the literal word "agent" — the actual proof is the AGENT NAME
-  // itself, rendered from `describe.phases[].agents`, visible in an ANONYMOUS page load against an
-  // auth-ENABLED engine (registration needed the bearer; the page GET needs none).
-  itReal('auth-ENABLED engine: a never-run workflow renders the predicted agent NAME, anonymously, with no auth-scoped degradation', async () => {
+  // v27b (Round v27b owner ruling, ADR-051): PROVE the predicted overlay is visible on an
+  // auth-ENABLED engine — the proof is the AGENT NAME itself, rendered from
+  // `describe.phases[].agents`. Dashboard auth spec §A (2026-09-30) replaces "anonymously": with auth
+  // on, an anonymous page load is redirected to /dashboard/login, and a SIGNED-IN non-owner (a
+  // dashboard session seeded straight into the auth DB — the Google leg is not under test here)
+  // sees the released version's predicted agent name with no auth-scoped degradation.
+  it('auth-ENABLED engine: anonymous /dashboard/... is redirected to login (no page, no data)', async () => {
+    const res = await fetch(`${authBaseUrl}/dashboard/workflow/val199-auth-never-run`, { redirect: 'manual' });
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('/dashboard/login?next=%2Fdashboard%2Fworkflow%2Fval199-auth-never-run');
+    expect((await fetch(`${authBaseUrl}/api/workflows/val199-auth-never-run/describe`)).status).toBe(401);
+  });
+
+  itReal('auth-ENABLED engine: a never-run workflow renders the predicted agent NAME for a signed-in non-owner, with no auth-scoped degradation', async () => {
+    const db = new Database(join(authTmpDir, 'auth-tokens.db'));
+    const { token: session } = new TokenStore(db, { clock: () => Date.now(), csprng: (n: number) => randomBytes(n) }).createSession('val199-viewer@example.com');
+    db.close();
     const puppeteer = (await import('puppeteer')).default;
     const browser = await puppeteer.launch({ headless: 'new' as never, executablePath: chrome!, args: ['--no-sandbox'] });
     try {
       const page = await browser.newPage();
-      // No Authorization header at all — the dashboard page and its /api/* GETs carry no bearer on
-      // this route (the same reachability the original H2 finding described); only registration
-      // above needed the mintBearer trap.
+      await page.setCookie({ name: 'rwe_session', value: session, url: authBaseUrl, httpOnly: true, sameSite: 'Lax' });
       await page.goto(`${authBaseUrl}/dashboard/workflow/val199-auth-never-run`, { waitUntil: 'networkidle0', timeout: 10000 });
+      expect(new URL(page.url()).pathname).toBe('/dashboard/workflow/val199-auth-never-run');
       const bodyText = await page.evaluate(() => {
         const clone = document.body.cloneNode(true) as HTMLElement;
         clone.querySelectorAll('script, style').forEach((el) => el.remove());
@@ -199,6 +208,7 @@ describe('workflow detail page, real Chromium (VAL-199, REQ-133)', () => {
       });
       expect(bodyText.toLowerCase()).not.toContain('skeleton');
       expect(bodyText).toContain(AUTH_AGENT_MARKER);
+      expect(bodyText).toContain('val199-viewer@example.com'); // the signed-in header
     } finally {
       await browser.close();
     }

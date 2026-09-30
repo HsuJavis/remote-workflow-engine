@@ -104,10 +104,21 @@ describe('REQ-100: /api/workflows is masked while auth is enabled, no exceptions
   // The surviving masking guarantees are asserted by the cases below and by UT-115's
   // no-skeleton-surface guard.
 
-  it('/api/workflows never carries a `script` field while auth is on', async () => {
-    const res = await fetch(`http://127.0.0.1:${authServer.port}/api/workflows`);
-    const body = await res.json() as Array<Record<string, unknown>>;
+  // Dashboard auth spec §A (2026-09-30): with auth on, /api/* needs a caller — anonymous is 401
+  // before anything is served; an authenticated NON-owner still never receives a `script` field.
+  it('/api/workflows: anonymous -> 401; an authenticated non-owner gets rows with no `script` field', async () => {
+    const ownerToken = await mintBearer(authTmpDir, 'val110-owner@example.com');
+    await registerPublishedVia(callerFor(authServer, ownerToken), 'val110-list', `return 'val110-list-secret';`);
+    const anon = await fetch(`http://127.0.0.1:${authServer.port}/api/workflows`);
+    expect(anon.status).toBe(401);
+    const strangerToken = await mintBearer(authTmpDir, 'val110-stranger@example.com');
+    const res = await fetch(`http://127.0.0.1:${authServer.port}/api/workflows`, { headers: { Authorization: `Bearer ${strangerToken}` } });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    const body = JSON.parse(text) as Array<Record<string, unknown>>;
+    expect(body.some((e) => e['name'] === 'val110-list')).toBe(true); // non-vacuous
     for (const entry of body) expect('script' in entry).toBe(false);
+    expect(text).not.toContain('val110-list-secret');
   });
 });
 

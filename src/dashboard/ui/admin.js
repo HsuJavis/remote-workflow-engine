@@ -103,8 +103,8 @@ function paint(state, body) {
 
 async function load(state) {
   const r = await getViewJSON('/api/principals');
-  if (r.source === 'demo' || r.status !== 'ok' || !r.body) {
-    showError(state, r.source === 'demo' ? t(state.lang, 'noDemoData') + '/api/principals' : t(state.lang, 'admError') + ((r.body && (r.body.error || r.body.code)) || 'unavailable'));
+  if (r.status !== 'ok' || !r.body) {
+    showError(state, t(state.lang, 'admError') + ((r.body && (r.body.error || r.body.code)) || 'unavailable'));
     return;
   }
   paint(state, r.body);
