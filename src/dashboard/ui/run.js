@@ -80,7 +80,7 @@
 // dod item for real (`agent-panel.js`'s own banner covers its side of the fix).
 import { SWIMLANE_BOX, cellRect, svgBox, edgePath, laneX } from '../lib/swimlane.js';
 import { sumTokens, fmtCost, fmtTok } from '../lib/runlist.js';
-import { t, warningText, stateLabel, triggerLabel } from '../lib/strings.js';
+import { t, warningText, stateLabel, triggerLabel, agentFailuresBadgeText } from '../lib/strings.js';
 import { shortModel } from '../lib/model.js';
 import { endpointsFor, getViewJSON } from './poll.js';
 import { openAgentPanel } from './agent-panel.js';
@@ -445,6 +445,17 @@ export function renderLegend(legendEl, payload, view, lang) {
     errEl.className = 'run-error';
     errEl.textContent = t(lang, 'failureReason') + ': ' + view.error.code + ' — ' + view.error.message;
     legendEl.appendChild(errEl);
+  }
+  // dash-auth-spec.md section C (2026-09-30): the "completed with N failed agents" badge — a
+  // SIBLING of the `view.error` block above, not a replacement (a run can fail outright AND report
+  // per-agent failures; both render). `agentFailuresBadgeText` (lib/strings.js) is the pure
+  // decision; this is only the DOM append.
+  const badgeText = agentFailuresBadgeText(lang, view);
+  if (badgeText) {
+    const badgeEl = document.createElement('span');
+    badgeEl.className = 'agent-failures-badge';
+    badgeEl.textContent = badgeText;
+    legendEl.appendChild(badgeEl);
   }
 }
 

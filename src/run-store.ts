@@ -89,6 +89,9 @@ export function deriveAgentRecords(
         // — read here so a restart-reconstructed record stays byte-identical to the live one
         // `capture()` built (ARCH-115: "answerable from the record alone" must survive a restart).
         detail?: string;
+        // dash-auth-spec.md section C (2026-09-30): the failed branch's own `GatewayResult.reason`,
+        // mirrored verbatim — see `AgentRecord.failReason`'s own doc.
+        reason?: 'timeout' | 'unreachable' | 'terminal' | 'aborted';
       };
       const startedAt = firstHarnessTs;
       const endedAt = usage.ts;
@@ -118,6 +121,9 @@ export function deriveAgentRecords(
           // `unmapped` convention two lines below in that branch.
           ...(data.detail !== undefined ? { detail: data.detail } : {}),
           ...(data.unmapped && data.unmapped.length > 0 ? { unmapped: data.unmapped } : {}),
+          // dash-auth-spec.md section C: mirrors `capture()`'s failed branch (DES-188 lock) —
+          // absent on a pre-this-slice event, never a guessed value.
+          ...(data.reason !== undefined ? { failReason: data.reason } : {}),
           ...(startedAt !== undefined ? { startedAt } : {}),
           ...(endedAt !== undefined ? { endedAt } : {}),
         }, harnessCommon));

@@ -26,7 +26,7 @@ import { describe, it, expect } from 'vitest';
 // importer itself goes through the TS-aware transform (a `.ts` test file); a plain `.js` file is
 // resolved by Vite's own loader map, which needs the real extension (measured: `.js` here 404s).
 import { DAG_WARNING_EXAMPLES } from '../fixtures/dashboard-wire.ts';
-import { STR, t, warningText } from '../../src/dashboard/lib/strings.js';
+import { STR, t, warningText, agentFailuresBadgeText } from '../../src/dashboard/lib/strings.js';
 
 describe('lib/strings.js (UT-244, DES-201)', () => {
   it('zh and en share the exact same key set', () => {
@@ -125,5 +125,31 @@ describe('lib/strings.js: failureReason (UT, DES-240, v35, REQ-205)', () => {
     expect(STR.en.failureReason.length).toBeGreaterThan(0);
     expect(t('zh', 'failureReason')).toBe(STR.zh.failureReason);
     expect(t('en', 'failureReason')).toBe(STR.en.failureReason);
+  });
+});
+
+// dash-auth-spec.md section C (2026-09-30): the "completed with N failed agents" dashboard badge —
+// a PURE decision (ADR-049: no `ui/*.js` module touching `document` at import time is reachable
+// from a unit test, so the count->text mapping lives here, same convention as `warningText`/
+// `updatePanelModel`), consumed by `ui/run.js`'s `renderLegend` (which only does the DOM append).
+//
+// Red reason (measured): `agentFailuresBadgeText` is not exported by `lib/strings.js` (named-import
+// failure).
+describe('lib/strings.js: agentFailuresBadgeText (dash-auth-spec section C)', () => {
+  it('renders NO badge when the view has no failedAgentCount (absent, or present but 0)', () => {
+    expect(agentFailuresBadgeText('en', {})).toBeNull();
+    expect(agentFailuresBadgeText('en', { failedAgentCount: 0 })).toBeNull();
+    expect(agentFailuresBadgeText('en', undefined)).toBeNull();
+  });
+
+  it('renders the count, in both languages, through t()', () => {
+    expect(agentFailuresBadgeText('en', { failedAgentCount: 2 })).toBe(t('en', 'agentFailuresBadge').replace('{n}', '2'));
+    expect(agentFailuresBadgeText('zh', { failedAgentCount: 2 })).toBe(t('zh', 'agentFailuresBadge').replace('{n}', '2'));
+    expect(agentFailuresBadgeText('en', { failedAgentCount: 1 })).toMatch(/1/);
+  });
+
+  it('both languages define agentFailuresBadge with a {n} placeholder', () => {
+    expect(STR.zh.agentFailuresBadge).toMatch(/\{n\}/);
+    expect(STR.en.agentFailuresBadge).toMatch(/\{n\}/);
   });
 });

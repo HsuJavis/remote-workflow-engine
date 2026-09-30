@@ -8,7 +8,7 @@ import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
 import type { RunStore } from './run-store.js';
 import { InMemoryRunStore, TERMINAL } from './run-store.js';
-import { RunManager, DEFAULT_RUN_CONCURRENCY, admissionRefusal } from './run-manager.js';
+import { RunManager, DEFAULT_RUN_CONCURRENCY, admissionRefusal, summarizeAgentFailures } from './run-manager.js';
 import { CONFINEMENT_REMEDIATION } from './gateway/confinement-probe.js';
 import { resolveVersionRequest, canRunResolved, canMutate, type WorkflowDetail, type Channel, type VersionSelector, type Actor } from './workflow-catalog.js';
 import { SubmissionValidator } from './submission-validator.js';
@@ -929,8 +929,15 @@ export class McpFacade {
    *  (`store.getRun` already folds/snapshots it, mirroring `agents`) plus `budgetEnforceable`,
    *  derived at READ from the run's price pin — never stored twice. A pre-v26 run (no pin
    *  persisted) reports `usd:false`: "we cannot claim every reachable model is priced" is the
-   *  honest answer, never a crash. */
-  private async _resultMeta(runId: string, view: RunStatusView): Promise<{ usage: RunUsage; budgetEnforceable: { usd: boolean; tokens: boolean; unpricedModels: string[] } }> {
+   *  honest answer, never a crash.
+   *
+   *  `warnings` (dash-auth-spec.md section C, 2026-09-30): `view` here is the RAW `store.getRun()`
+   *  read — it never carries `failedAgentCount`/`agentFailures` (those are `RunManager.status()`'s
+   *  own overlay, DES-234) — so this computes fresh via the SAME `summarizeAgentFailures` predicate
+   *  `status()`/`listSummaries()` use, directly off `view.agents`. `run_result` only ever answers
+   *  for a TERMINAL run (`RunManager.result()`'s own `RUN_NOT_TERMINAL` gate), so `view.agents` here
+   *  is already the settled, final list — no live overlay needed. */
+  private async _resultMeta(runId: string, view: RunStatusView): Promise<{ usage: RunUsage; budgetEnforceable: { usd: boolean; tokens: boolean; unpricedModels: string[] }; warnings?: Array<{ code: 'AGENT_FAILED'; message: string }> }> {
     const usage = view.usage ?? { tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, costUSD: 0, unpricedCalls: 0, unmappedMessages: {} };
     const priceBook = await this.store.getPriceBook(runId);
     const pinnedUnpriced = priceBook ? Object.entries(priceBook.pinned).filter(([, e]) => e.price === null).map(([k]) => k) : [];
@@ -941,7 +948,11 @@ export class McpFacade {
     const usedUnpriced = view.agents.filter((a) => a.state === 'done' && a.unpriced === true).map((a) => `${a.provider}/${a.model}`);
     const unpricedModels = [...new Set([...pinnedUnpriced, ...usedUnpriced])];
     const budgetEnforceable = { usd: priceBook !== null && unpricedModels.length === 0 && usage.unpricedCalls === 0, tokens: true, unpricedModels };
-    return { usage, budgetEnforceable };
+    const { failedAgentCount } = summarizeAgentFailures(view.agents);
+    const warnings = failedAgentCount !== undefined && failedAgentCount > 0
+      ? [{ code: 'AGENT_FAILED' as const, message: `${failedAgentCount} agent(s) failed; see run_status.agentFailures for detail` }]
+      : undefined;
+    return { usage, budgetEnforceable, ...(warnings !== undefined ? { warnings } : {}) };
   }
 
   async runSuspend(a: { runId: string }, _principal: Principal): Promise<ResultEnvelope> {

@@ -28,7 +28,7 @@ import { HardenedSeedRefFetcher } from './seedref-fetcher.js';
 const SEEDREF_TIMEOUT_MS = 30_000;
 const SEEDREF_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 const SEEDREF_MAX_FILE_BYTES = 10 * 1024 * 1024;
-import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView, ManifestEntry, EngineWarning, PriceBook, Tokens, RunUsage, RunSummary } from './types.js';
+import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView, ManifestEntry, EngineWarning, PriceBook, Tokens, RunUsage, RunSummary, AgentFailureSummary } from './types.js';
 import type { RunStore } from './run-store.js';
 import { InMemoryRunStore } from './run-store.js';
 // v36 (REQ-217, DES-250): type-only — no runtime cycle (dashboard.ts never imports this file).
@@ -370,6 +370,60 @@ function summarizeUsage(
     unpricedCalls: u.unpricedCalls,
     tokensTotal: u.tokens.input + u.tokens.output + u.tokens.cacheRead + u.tokens.cacheWrite,
     ...(agentCount !== undefined ? { agentCount } : {}),
+  };
+}
+
+/** dash-auth-spec.md section C (2026-09-30): the ONE predicate every run view's `failedAgentCount`/
+ *  `agentFailures` now goes through — extracted from `status()`'s own v35/DES-234 inline version so
+ *  `listSummaries()`'s live-entry overlay (which used to call only `summarizeUsage`, never this) can
+ *  share it instead of silently disagreeing (the "known run_list vs run_status mismatch" this slice
+ *  fixes — see `listSummaries()`'s own comment for exactly which branch that was and why the fix is
+ *  gated on the row's status, not unconditional).
+ *
+ *  Presence: OMITTED (never `0`) when `agents` is empty (DES-234's own rule, unchanged) — a script
+ *  with no `agent()` calls never reads as unhealthy. Otherwise `failedAgentCount` is always present
+ *  (0 included), and `agentFailures` is present (never `[]`) only when it is > 0.
+ *
+ *  `reason` mapping (the ONE place `AgentRecord.failReason`'s raw gateway vocabulary collapses to
+ *  the caller-facing one): `refused` state -> `'refused'`; `failReason:'timeout'` -> `'timeout'`;
+ *  `failReason:'aborted'` -> `'aborted'`; `'unreachable'`/`'terminal'`/absent -> `'error'` (a real
+ *  gateway/HTTP failure the caller cannot usefully distinguish further).
+ *
+ *  `message`: `AgentRecord.detail` is already redacted-then-capped at 1024 bytes at capture
+ *  (ARCH-115/R-G9) — re-running `redact()`/`capDetail()` here would be the double-processing those
+ *  functions' own docs warn against, so this only bounds it FURTHER (to `MESSAGE_MAX_CHARS`, a
+ *  plain char slice — safe on already-redacted text, since a `‹secret:NAME›` marker is short and
+ *  the boundary risk `capDetail`'s byte-vs-secret ordering exists to avoid was at the ORIGINAL
+ *  redact site, not a second slice of already-clean text) for the summary's own fallback: a
+ *  `refused` record's `reasonCode` (there is no `detail` on that state), or a fixed string when a
+ *  `failed` record genuinely has neither (a legacy pre-ARCH-115 event). */
+const MESSAGE_MAX_CHARS = 200;
+function boundedMessage(s: string): string {
+  return s.length <= MESSAGE_MAX_CHARS ? s : s.slice(0, MESSAGE_MAX_CHARS) + '…';
+}
+function failureReason(a: AgentRecord): AgentFailureSummary['reason'] {
+  if (a.state === 'refused') return 'refused';
+  if (a.failReason === 'timeout') return 'timeout';
+  if (a.failReason === 'aborted') return 'aborted';
+  return 'error';
+}
+function failureMessage(a: AgentRecord): string {
+  if (a.state === 'refused') return a.reasonCode ?? 'refused (no reason recorded)';
+  if (a.detail !== undefined) return boundedMessage(a.detail);
+  return 'no failure detail recorded';
+}
+export function summarizeAgentFailures(agents: AgentRecord[]): { failedAgentCount?: number; agentFailures?: AgentFailureSummary[] } {
+  if (agents.length === 0) return {};
+  const failed = agents.filter((a) => a.state === 'failed' || a.state === 'refused');
+  if (failed.length === 0) return { failedAgentCount: 0 };
+  return {
+    failedAgentCount: failed.length,
+    agentFailures: failed.map((a) => ({
+      ...(a.label !== undefined ? { label: a.label } : {}),
+      agentId: a.agentId,
+      reason: failureReason(a),
+      message: failureMessage(a),
+    })),
   };
 }
 
@@ -1169,13 +1223,14 @@ export class RunManager {
     if (!view) throw new IllegalTransitionError('not found', 'status');
     await this._checkTerminalHasTransition(runId, view);
     const merged = this._mergeLive(runId, view);
-    // v35 (DES-234, ARCH-146, ADR-067, TASK-236, REQ-207): one predicate, over the SAME agents
-    // array `_mergeLive` just resolved (the live overlay OR the restored/store view) — so a
+    // v35 (DES-234, ARCH-146, ADR-067, TASK-236, REQ-207): one predicate (now `summarizeAgentFailures`,
+    // shared with `listSummaries()`'s live branch — dash-auth-spec.md section C), over the SAME
+    // agents array `_mergeLive` just resolved (the live overlay OR the restored/store view) — so a
     // RUNNING run with one already-failed agent reports it immediately, before any snapshot row
-    // exists (the designed asymmetry vs `run_list`, DES-234's case iii). Omitted (never `0`) for a
-    // run with no agent records at all, so a script with no agent() calls never reads as unhealthy.
-    const failed = merged.agents.filter((a) => a.state === 'failed' || a.state === 'refused').length;
-    return { ...merged, ...(merged.agents.length > 0 ? { failedAgentCount: failed } : {}) };
+    // exists (the designed asymmetry vs `run_list`, DES-234's case iii, preserved — see
+    // `listSummaries()`). Omitted (never `0`) for a run with no agent records at all, so a script
+    // with no agent() calls never reads as unhealthy.
+    return { ...merged, ...summarizeAgentFailures(merged.agents) };
   }
 
   /** v27 (DES-194, ARCH-127, ADR-052, TASK-199, REQ-141): the ONE accessor `/api/runs` and
@@ -1204,7 +1259,20 @@ export class RunManager {
         // (1) live entry — the SAME fold `_mergeLive` overlays onto `/api/runs/:id`.
         const agents = entry.spawner.getAllRecords();
         const usage = summarizeUsage(foldUsageFromRecords(agents), agents.length);
-        out.push(usage ? { ...row, ...usage } : row);
+        // dash-auth-spec.md section C (2026-09-30): this branch is NOT only "genuinely running" —
+        // an entry stays cached here for a while after going terminal too (nothing evicts it on
+        // transition), so a run that just completed/failed/stopped can still take this branch on
+        // `run_list`. Before this fix `failedAgentCount` was never computed here at all (only
+        // `summarizeUsage`'s four usage columns), so that SAME run's `run_list` row silently omitted
+        // it even though `run_status` (which always calls `summarizeAgentFailures`, live or
+        // terminal) already reported it — the "known run_list vs run_status mismatch".
+        // Gated on TERMINAL status, not unconditional: a genuinely RUNNING run must still omit it
+        // here, preserving DES-234's documented asymmetry (`run_status` alone reports a live count;
+        // `run_list`'s own tool-specs.ts contract is "terminal-only") — see
+        // tests/integration/agent-failures-visible.test.ts's second case.
+        const failedAgentCount = TERMINAL.includes(row.status) ? summarizeAgentFailures(agents).failedAgentCount : undefined;
+        const overlay = { ...(usage ?? {}), ...(failedAgentCount !== undefined ? { failedAgentCount } : {}) };
+        out.push(Object.keys(overlay).length > 0 ? { ...row, ...overlay } : row);
         continue;
       }
       if (
