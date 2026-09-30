@@ -7,7 +7,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { createServer, type Server } from '../../src/server.js';
 import { TokenStore } from '../../src/auth/token-store.js';
@@ -84,5 +84,37 @@ describe('an unknown email is pending approval', () => {
     expect((await tool('principal_set_role', { id: NEW, role: 'none' }, ROOT)).result).toMatchObject({ role: 'none', source: 'db' });
     expect(codeOf(await tool('workflow_list', {}, NEW))).toBe('ACCOUNT_PENDING_APPROVAL');
     expect(codeOf(await tool('workflow_list', {}, ALICE))).toBeUndefined();
+  });
+});
+
+// verify-j MEDIUM (2026-09-30): the raw HTTP upload routes authenticate by bearer only (no callTool),
+// so they need the pending check themselves — before the body is read or stored.
+describe('a pending principal cannot upload blobs or manifests', () => {
+  const P2 = 'pending-uploader@example.test';
+  const bytes = Buffer.from('pending-upload-bytes');
+  const sha = createHash('sha256').update(bytes).digest('hex');
+  const manifest = JSON.stringify([{ path: 'f.txt', sha256: sha }]);
+  const post = (path: string, body: Uint8Array | string, who: string) =>
+    fetch(`${base}${path}`, { method: 'POST', headers: { Authorization: `Bearer ${bearer[who]}` }, body: body as BodyInit });
+
+  beforeAll(() => {
+    const db = new Database(join(dir, 'auth-tokens.db'));
+    bearer[P2] = new TokenStore(db, { clock: () => Date.now(), csprng: (n) => randomBytes(n) }).issue(P2, 3600_000).token;
+    db.close();
+  });
+
+  it('none -> 403 ACCOUNT_PENDING_APPROVAL on /assets/blob and /assets/manifest, and nothing is stored', async () => {
+    for (const [path, body] of [[`/assets/blob/${sha}`, bytes], ['/assets/manifest', manifest]] as const) {
+      const r = await post(path, body, P2);
+      expect(r.status, path).toBe(403);
+      expect((await r.json()).code, path).toBe('ACCOUNT_PENDING_APPROVAL');
+    }
+    // granted: the earlier blob was never stored (the manifest names a missing blob) — then uploads work
+    expect((await tool('principal_set_role', { id: P2, role: 'user' }, ROOT)).status).toBe('completed');
+    const missing = await post('/assets/manifest', manifest, P2);
+    expect(missing.status).toBe(409);
+    expect((await missing.json()).missing).toEqual([sha]);
+    expect((await post(`/assets/blob/${sha}`, bytes, P2)).status).toBe(200);
+    expect((await post('/assets/manifest', manifest, P2)).status).toBe(200);
   });
 });

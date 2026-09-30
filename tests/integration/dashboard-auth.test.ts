@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import Database from 'better-sqlite3';
+import { request as httpRequest } from 'node:http';
 import { createServer, type Server } from '../../src/server.js';
 import { TokenStore } from '../../src/auth/token-store.js';
 import { startFakeGoogle, fakeJwksFetch, dashboardLogin, type FakeGoogle } from '../helpers/fake-google.js';
@@ -247,6 +248,18 @@ describe('CSRF behind a proxy that rewrites Host: the engine\'s own public origi
     expect(ok.headers.get('set-cookie')).toMatch(/; Secure/);
     const other = await fetch(`${b3}/dashboard/logout`, { method: 'POST', headers: { Origin: 'https://other.example.test' }, redirect: 'manual' });
     expect(other.status).toBe(403);
+  });
+
+  // verify-j LOW-4: Host = the configured PUBLIC host -> only that exact public origin (https) is
+  // same-origin; the same host over http is not. node:http, because fetch drops a caller-set Host.
+  it('Host = the public host: Origin https://<it> -> accepted, Origin http://<it> -> 403', async () => {
+    const postWith = (origin: string) => new Promise<number>((resolve, reject) => {
+      const r = httpRequest({ host: '127.0.0.1', port: s3.port, path: '/dashboard/logout', method: 'POST', headers: { Host: 'rwe.example.test', Origin: origin } }, (res) => { res.resume(); resolve(res.statusCode ?? 0); });
+      r.on('error', reject);
+      r.end();
+    });
+    expect(await postWith('https://rwe.example.test')).toBe(303);
+    expect(await postWith('http://rwe.example.test')).toBe(403);
   });
 });
 

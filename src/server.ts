@@ -1388,20 +1388,26 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       if (req.headers['x-requested-with'] !== undefined) return true;
       const origin = req.headers.origin;
       if (!origin || origin === 'null') return false;
-      // verify-i LOW-4: the FULL origin (scheme + host + port), never the host alone. A direct
-      // connection to this engine is plain http (it terminates no TLS), so its own origin is
-      // `http://<Host>`; the public origins are publicBaseUrl / auth.issuer exactly as configured.
+      // verify-i LOW-4 / verify-j: the FULL origin (scheme + host + port), never the host alone.
+      // The configured public origins (publicBaseUrl / auth.issuer) are accepted exactly as
+      // configured. A request whose Host IS one of those public hosts is accepted ONLY with that
+      // exact origin (so `http://` never passes for an https deployment's host). Any other Host is a
+      // direct connection to this engine, which terminates no TLS: its own origin is `http://<Host>`.
       let originValue: string;
       try { originValue = new URL(origin).origin.toLowerCase(); } catch { return false; }
-      if (originValue === `http://${String(req.headers.host ?? '').toLowerCase()}`) return true;
-      return [config?.publicBaseUrl, authCfg?.issuer].some((raw) => {
-        if (!raw) return false;
+      const publicOrigins: URL[] = [];
+      for (const raw of [config?.publicBaseUrl, authCfg?.issuer]) {
+        if (!raw) continue;
         try {
           const u = new URL(raw);
           if (u.port === '0') u.port = String(boundPort);
-          return u.origin.toLowerCase() === originValue;
-        } catch { return false; }
-      });
+          publicOrigins.push(u);
+        } catch { /* unparseable: ignored */ }
+      }
+      if (publicOrigins.some((u) => u.origin.toLowerCase() === originValue)) return true;
+      const host = String(req.headers.host ?? '').toLowerCase();
+      if (publicOrigins.some((u) => u.host.toLowerCase() === host || u.hostname.toLowerCase() === host)) return false;
+      return originValue === `http://${host}`;
     };
     const sendToolOutcome = (out: unknown): void => {
       const r = out as { status?: string; code?: string; error?: { code?: string; message?: string }; result?: unknown };
@@ -1596,11 +1602,21 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         }).catch(() => { sendJson(res, 500, { error: 'dashboard auth error' }); });
         return;
       }
+      // verify-j MEDIUM: the raw upload routes authenticate by bearer alone (no callTool), so they apply
+      // the pending-approval rule themselves — BEFORE the body is read. The request body is left
+      // unread; the connection closes after the 403 rather than draining an arbitrarily large upload.
+      const refusePending = (id: string): boolean => {
+        if (principalFor(id).kind !== 'none') return false;
+        res.setHeader('Connection', 'close');
+        sendJson(res, 403, { code: 'ACCOUNT_PENDING_APPROVAL', error: 'ACCOUNT_PENDING_APPROVAL: this account has signed in but has no role yet — an administrator must grant one (principal_set_role or the dashboard admin page)' });
+        return true;
+      };
       // Auth gate for blob upload (DES-096: resolve-once before putBlobStream consumes req)
       const blobMatchAuth = req.method === 'POST' ? /^\/assets\/blob\/([^/?]+)/.exec(req.url ?? '') : null;
       if (!dbindExempt && blobMatchAuth) {
         void resolvePrincipal(req, authTokenStore!, wwwChallenge()).then((p) => {
           if ('status' in p) { send401(); return; }
+          if (refusePending(p.principal)) return;
           const sha = decodeURIComponent(blobMatchAuth[1]!);
           // DES-096: principal is the namespace for authenticated uploads (server-derived, not echoed from client).
           const ns = p.principal;
@@ -1621,6 +1637,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       if (!dbindExempt && req.method === 'POST' && req.url?.startsWith('/assets/manifest')) {
         void resolvePrincipal(req, authTokenStore!, wwwChallenge()).then(async (p) => {
           if ('status' in p) { send401(); return; }
+          if (refusePending(p.principal)) return;
           // DES-096: principal is the namespace for authenticated manifest uploads (server-derived).
           const ns = p.principal;
           if (refuseNamespaceParam(req, res)) return;
