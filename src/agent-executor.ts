@@ -1,6 +1,6 @@
 // AgentExecutor (DES-007 / ARCH-004) + AgentTranscriptSink (DES-008 / TASK-010).
 import Ajv from 'ajv';
-import type { AgentOpts, AgentRecord, HarnessDescriptor, TranscriptEvent, PriceBook, Caps } from './types.js';
+import type { AgentOpts, AgentRecord, HarnessDescriptor, HarnessWarning, TranscriptEvent, PriceBook, Caps } from './types.js';
 import { parseModelRef } from './providers.js';
 import type { GatewayClient, GatewayResult } from './gateway/client.js';
 import type { RunGuard } from './run-guard.js';
@@ -288,9 +288,13 @@ export class AgentTranscriptSink {
    *  model/provider a still-running agent is waiting on — so workflow_status shows the backend instead
    *  of a blank model:""/provider:"" that makes a hung/slow backend indistinguishable from progress.
    *  Merge — never clobber state/startedAt/frame from markRunning. No-op if no record exists yet. */
-  markHarness(agentId: string, model: string, provider: string): void {
+  markHarness(agentId: string, model: string, provider: string, warnings?: HarnessWarning[]): void {
     const existing = this._records.get(agentId);
-    if (existing) this._records.set(agentId, { ...existing, model, provider });
+    if (!existing) return;
+    // Issue #106: the record's `warnings` are the LATEST harness descriptor's, exactly what
+    // `deriveAgentRecords` re-reads from the latest harness event — absent clears them.
+    const { warnings: _prev, ...rest } = existing;
+    this._records.set(agentId, { ...rest, model, provider, ...(warnings !== undefined && warnings.length > 0 ? { warnings } : {}) });
   }
 
   /** issue #20: stamp lastActivityAt each time the gateway streams a live transcript event, so
@@ -314,6 +318,8 @@ export class AgentTranscriptSink {
     // #20: carry lastActivityAt into the terminal record too — its absence on a failed/timed-out agent
     // (never produced an event) vs its presence (got partway) is diagnostic post-mortem.
     const lastActivityAt = prev?.lastActivityAt;
+    // Issue #106: harness warnings (markHarness) survive the terminal transition, like lastActivityAt.
+    const warnings = prev?.warnings !== undefined ? { warnings: prev.warnings } : {};
     if (result.ok) {
       // v26 (DES-180): GatewayResult.tokens keeps cacheRead/cacheWrite OPTIONAL (back-compat with
       // ~30 existing test-fake literals — see client.ts's own doc) — normalized to the strict
@@ -345,7 +351,7 @@ export class AgentTranscriptSink {
       this._guard?.addUsage(tokens, costUSD, unpriced, result.unmapped);
       this._records.set(req.agentId, {
         agentId: req.agentId, label: req.label, phase, phaseIndex, frame, startedAt, lastActivityAt, endedAt: ts,
-        state: 'done', provider, model, tokens, costUSD, unpriced,
+        state: 'done', provider, model, tokens, costUSD, unpriced, ...warnings,
         ...(result.transport !== undefined ? { transport: result.transport } : {}),
         ...(result.proxyModel !== undefined ? { proxyModel: result.proxyModel } : {}),
         ...(result.unmapped && result.unmapped.length > 0 ? { unmapped: result.unmapped } : {}),
@@ -416,7 +422,7 @@ export class AgentTranscriptSink {
         state: 'failed', provider, model: prev?.model ?? '', tokens: ZERO_TOKENS, costUSD: 0, unpriced: false,
         // dash-auth-spec.md section C: the gateway's own failure reason, verbatim — see
         // `AgentRecord.failReason`'s own doc for why this is never re-mapped at either producer.
-        failReason: result.reason,
+        failReason: result.reason, ...warnings,
         ...(result.transport !== undefined ? { transport: result.transport } : {}),
         ...(detail !== undefined ? { detail } : {}),
         // v26 (M-2 send-back repair, ADR-046, INV-V26-6, ARCH-111): the SAME spread the `done`
@@ -688,7 +694,7 @@ export class AgentExecutor implements AgentSpawner {
       // the first token) so workflow_status shows WHICH backend a still-running agent is waiting on,
       // instead of a blank model:""/provider:"" that makes a hung backend indistinguishable from
       // progress. The record lives on the transcript sink; markHarness merges (never clobbers state).
-      sink.markHarness(req.agentId, decorated.model, decorated.provider);
+      sink.markHarness(req.agentId, decorated.model, decorated.provider, decorated.warnings);
       if (store) {
         // v21 Gate 8 send-back (review §4 B3, ARCH-066 inv-5 sink-completeness): `redactHarness`
         // (called upstream by the gateway to build `descriptor`) is a STRUCTURAL strip only — it

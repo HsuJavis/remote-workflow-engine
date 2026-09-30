@@ -14,7 +14,7 @@ import { existsSync, readdirSync, statSync, mkdirSync, mkdtempSync, rmSync, copy
 import { tmpdir } from 'node:os';
 import { join, isAbsolute, dirname } from 'node:path';
 import { createRequire } from 'node:module';
-import type { AgentOpts, Caps, HarnessDescriptor, TranscriptEvent, Tokens } from '../types.js';
+import type { AgentOpts, Caps, HarnessDescriptor, HarnessWarning, McpServerStatus, TranscriptEvent, Tokens } from '../types.js';
 import { ZERO_TOKENS } from '../run-guard.js';
 import { redactHarness } from '../agent-executor.js';
 import type { McpServerConfig } from '../mcp-probe.js';
@@ -442,6 +442,54 @@ const MAX_INLINE_STDERR = 300;
 // header comment already promises never happens (D-R2 hermeticity).
 const ENV_ALLOWLIST = ['PATH', 'HOME', 'SHELL', 'LANG', 'LC_ALL', 'TMPDIR', 'TERM'];
 
+/** Issue #106: a constant engine setting, never forwarded from the host. With it unset, the bundled
+ *  CLI (2.1.199) enables "optimistic tool search" whenever ANTHROPIC_BASE_URL is the first-party
+ *  api.anthropic.com — and in that mode it sends turn 1 WITHOUT waiting for stdio MCP servers to
+ *  connect, expecting to announce their tools later through ToolSearch. This class always passes an
+ *  explicit `tools` list that never contains ToolSearch, so tool search is then disabled anyway and
+ *  the MCP tools simply arrive late (turn 2+): a single-turn agent never saw them at all. `false` is
+ *  the CLI's own "standard" mode: it waits for MCP before turn 1 and never defers a tool. (Every
+ *  provider gets it: the explicit `tools` list is the same on every route.) */
+const ENABLE_TOOL_SEARCH = 'false';
+
+/** Issue #106: MCP-status bounds for the harness record — the init tool list is CLI-authored but its
+ *  MCP tool names come from the server, so both the count and each name are capped. */
+const MAX_MCP_TOOLS_RECORDED = 64;
+const MAX_MCP_NAME_CHARS = 128;
+
+/** Issue #106: turns the session's `system/init` message into the per-server record the harness
+ *  carries, plus a `MCP_SERVER_NOT_CONNECTED` warning for each declared server the model could not
+ *  use on its first turn — not `connected`, or none of its `mcp__<server>__*` tools in the init tool
+ *  list (a server that only offers resources/prompts trips the second arm too; the message says
+ *  so). `declared` is the servers actually handed to the CLI (`options.mcpServers`). */
+export function summarizeMcpInit(declared: string[], init: { tools?: unknown; mcp_servers?: unknown }): { mcpStatus: McpServerStatus[]; warnings: HarnessWarning[] } {
+  const initTools = Array.isArray(init.tools) ? init.tools.filter((t): t is string => typeof t === 'string') : [];
+  const servers = Array.isArray(init.mcp_servers) ? (init.mcp_servers as Array<{ name?: unknown; status?: unknown }>) : [];
+  const mcpStatus: McpServerStatus[] = [];
+  const warnings: HarnessWarning[] = [];
+  for (const server of declared) {
+    const entry = servers.find((s) => s?.name === server);
+    const status = typeof entry?.status === 'string' ? entry.status.slice(0, 32) : 'absent';
+    // The CLI builds tool names as mcp__<server>__<tool>, with characters outside [A-Za-z0-9_-]
+    // in the server name replaced by `_`.
+    const prefixes = [`mcp__${server}__`, `mcp__${server.replace(/[^A-Za-z0-9_-]/g, '_')}__`];
+    const matched = initTools.filter((t) => prefixes.some((p) => t.startsWith(p)));
+    const tools = matched.slice(0, MAX_MCP_TOOLS_RECORDED).map((t) => t.slice(0, MAX_MCP_NAME_CHARS));
+    mcpStatus.push({ server, status, tools });
+    if (status !== 'connected' || matched.length === 0) {
+      warnings.push({
+        code: 'MCP_SERVER_NOT_CONNECTED',
+        server,
+        status,
+        message: status !== 'connected'
+          ? `MCP server '${server}' was '${status}' when the session started — its tools were not available on the model's first turn`
+          : `MCP server '${server}' connected but exposed no tools at session start (expected only for a server that offers resources/prompts and no tools)`,
+      });
+    }
+  }
+  return { mcpStatus, warnings };
+}
+
 /** REQ-037: the outcome of building the spawned CLI subprocess env — either the ready env, or a
  *  typed reason the Anthropic-direct auth couldn't be assembled (a missing secret for the chosen
  *  mode). The caller turns the failure into a `{ ok:false, reason:'terminal', detail }` GatewayResult
@@ -466,6 +514,7 @@ function buildSubprocessEnv(config: ClaudeAgentSdkGatewayConfig, provider: strin
     const value = process.env[key];
     if (value !== undefined) env[key] = value;
   }
+  env['ENABLE_TOOL_SEARCH'] = ENABLE_TOOL_SEARCH;
   if (provider === 'anthropic') {
     const auth = resolveAnthropicAuth(config);
     if (!auth.ok) return { ok: false, detail: 'ANTHROPIC_AUTH_MISSING' };
@@ -752,7 +801,15 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       mcpMissing = mcpResolved.missing;
       materialized = await materializeAssets(req.assets.roots, req.workspace, req.assets.declared, async () => mcpResolved);
     }
-    const mcpServers = Object.keys(mcpConfigs).length > 0 ? mcpConfigs : undefined;
+    // Issue #106: every server is dispatched with `alwaysLoad: true` (sdk.d.ts: "blocks startup until
+    // the server is connected (capped at the standard 5s connect timeout) … since the tools must be
+    // present when the turn-1 prompt is built", and never deferred behind tool search) — the
+    // per-server half of the fix beside ENABLE_TOOL_SEARCH (buildSubprocessEnv). An operator's own
+    // explicit `alwaysLoad` in the pushed config wins (spread last).
+    const dispatchedMcp: Record<string, McpServerConfig & { alwaysLoad?: boolean }> = Object.fromEntries(
+      Object.entries(mcpConfigs).map(([name, cfg]) => [name, { alwaysLoad: true, ...cfg }]),
+    );
+    const mcpServers = Object.keys(dispatchedMcp).length > 0 ? dispatchedMcp : undefined;
     // issues #81/#83: materializing a skill's files is not delivering it — the model reaches a
     // skill only through the SDK's Skill tool. Measured against the real CLI: `Options.skills` alone
     // auto-approves `Skill(<name>)` but does NOT put the tool on the wire when `tools` is explicit
@@ -1058,6 +1115,8 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         sdkVersion: SDK_VERSION,
       });
       // DES-066 (TASK-069): emit harness descriptor eagerly at session-build time (post-curation, before query).
+      // Issue #106: kept in scope so the session's `system/init` can re-emit it with `mcpStatus`.
+      let harnessSent: { descriptor: HarnessDescriptor; applied: EffortApplied | undefined } | undefined;
       if (req.onHarness) {
         const descriptor = redactHarness({
           surfaceType: 'curated',
@@ -1098,8 +1157,25 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         // (client.ts), which still passes `undefined` here for the same reason. Passing
         // `wired.applied` unconditionally would silently add `effortApplied:{reason:'no effort
         // requested'}` to EVERY SDK-gateway record, a persisted-shape change no DES asked for.
-        await req.onHarness(descriptor, req.opts.effort !== undefined ? applied : undefined);
+        harnessSent = { descriptor, applied: req.opts.effort !== undefined ? applied : undefined };
+        await req.onHarness(descriptor, harnessSent.applied);
       }
+      // Issue #106: what the CLI reports at init is what the model's FIRST turn was built with. A
+      // declared server that is not `connected` there (or exposed no tool) is recorded as a warning
+      // on the harness (latest harness event wins: run_agent_log, AgentRecord.warnings, run_status)
+      // and on the journal. Only when MCP servers were handed to the CLI at all.
+      const onInit = mcpServers === undefined
+        ? undefined
+        : async (init: { tools?: unknown; mcp_servers?: unknown }): Promise<void> => {
+          const { mcpStatus, warnings } = summarizeMcpInit(Object.keys(mcpServers), init);
+          for (const w of warnings) {
+            const tools = mcpStatus.find((m) => m.server === w.server)?.tools.length ?? 0;
+            this._eventSink({ kind: 'agent.mcp_not_connected', runId: req.runId, agentId: req.agentId, attempt, server: w.server, status: w.status, tools });
+          }
+          if (req.onHarness && harnessSent) {
+            await req.onHarness({ ...harnessSent.descriptor, mcpStatus, ...(warnings.length > 0 ? { warnings } : {}) }, harnessSent.applied);
+          }
+        };
       // issue #53: the awaits above (MCP resolution, asset materialization, onHarness) are a window in
       // which the caller can abort; `onExternalAbort` already fired into `controller`, but `bound`
       // below would attach its listener to an already-aborted signal and never resolve. Refuse here,
@@ -1111,7 +1187,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         return abortedBeforeDispatch();
       }
       const session = this._query({ prompt: req.prompt, options });
-      const drain = this._drain(session, req.opts.model, req.onEvent);
+      const drain = this._drain(session, req.opts.model, req.onEvent, onInit);
 
       // issue #22: name the culprit on any failure that lacks its own detail — so a timeout/unreachable
       // is diagnosable ("which alias→model?") instead of an opaque reason. modelName is the resolved
@@ -1164,7 +1240,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
    *  D-G8-2: every intermediate message/tool_call/tool_result turn along the way is captured (in
    *  order) into the returned GatewayResult.events, not just the final result — the real
    *  reasoning/tool-call trace `workflow_agent_log` is built to show. */
-  private async _drain(session: ReturnType<QueryImpl>, model: string | undefined, onEvent?: (ev: TranscriptEvent) => void | Promise<void>): Promise<GatewayResult> {
+  private async _drain(session: ReturnType<QueryImpl>, model: string | undefined, onEvent?: (ev: TranscriptEvent) => void | Promise<void>, onInit?: (init: { tools?: unknown; mcp_servers?: unknown }) => Promise<void>): Promise<GatewayResult> {
     const events: TranscriptEvent[] = [];
     // v26 (DES-171, ARCH-111): unmapped `system` subtypes observed this call — counted, never
     // their payload (see BENIGN_SYSTEM_SUBTYPES/sanitizeSubtype above).
@@ -1181,6 +1257,9 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
             subtype?: string; error?: string; error_status?: number | null; attempt?: number;
             max_retries?: number; retry_delay_ms?: number;
           };
+          // Issue #106: read the init snapshot (MCP status + tool list) — still counted as benign below.
+          // Observability must never fail the call it observes: a throw here is swallowed.
+          if (sys.subtype === 'init' && onInit !== undefined) await onInit(msg as unknown as { tools?: unknown; mcp_servers?: unknown }).catch(() => undefined);
           if (sys.subtype === 'api_retry') {
             const kind = sys.error ?? 'unknown';
             const status = sys.error_status ?? null;

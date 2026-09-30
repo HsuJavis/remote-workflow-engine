@@ -316,6 +316,11 @@ export interface AgentRecord {
    *  HUNG one (lastActivityAt stays at startedAt / absent), which tokens-only-at-terminal could not.
    *  Absent until the first streamed event; the terminal usage event does not bump it. */
   lastActivityAt?: string;
+  /** Issue #106: non-fatal harness warnings the gateway raised for this dispatch (today only
+   *  `MCP_SERVER_NOT_CONNECTED`) — the latest harness descriptor's `warnings`, stamped live by
+   *  `markHarness` and re-read from the harness event by `deriveAgentRecords`, so both producers
+   *  agree. Absent (never `[]`) when there are none. */
+  warnings?: HarnessWarning[];
 }
 
 export interface PhaseView {
@@ -352,6 +357,13 @@ export interface AgentFailureSummary {
   message: string;
 }
 
+/** Issue #106: one `AgentRecord.warnings` entry rolled up onto `run_status.warnings`, naming the
+ *  agent it belongs to (`summarizeAgentWarnings`, run-manager.ts). */
+export interface AgentWarningSummary extends HarnessWarning {
+  label?: string;
+  agentId: string;
+}
+
 export interface RunStatusView {
   runId: string;
   status: RunStatus;
@@ -377,6 +389,9 @@ export interface RunStatusView {
    *  `failedAgentCount` — same presence gating (`summarizeAgentFailures`, run-manager.ts): absent
    *  when `failedAgentCount` is absent OR `0`, never `[]`. */
   agentFailures?: AgentFailureSummary[];
+  /** Issue #106: every agent's non-fatal harness warnings (e.g. `MCP_SERVER_NOT_CONNECTED`), rolled
+   *  up with the agent's label/agentId. Absent (never `[]`) when no agent has one. */
+  warnings?: AgentWarningSummary[];
   /** v13 (REQ-080 / DES-083): engine-pull seedRef outcome — the resolved sha, bytes, latency, when it
    *  was fetched, any dropped symlink/gitlink paths, and (on failure) the typed failCode/failDetail.
    *  Absent unless the run used a seedRef. */
@@ -638,6 +653,32 @@ export interface HarnessDescriptor {
   /** Project configuration (`.claude/settings.json`, `.claude/hooks/`, ... — PROJECT_CONFIG_PATHS)
    *  found in the workspace and removed before this dispatch's CLI could load it. Absent when none. */
   plantedConfigRemoved?: string[];
+  /** Issue #106: each declared MCP server's state as the CLI reported it in the session's
+   *  `system/init` message — i.e. what the model's FIRST turn was built with: `status` (the CLI's
+   *  own word: `connected`/`pending`/`failed`/...; `absent` when the init message did not list the
+   *  server at all) and the `mcp__<server>__*` tool names the init tool list exposed (bounded).
+   *  Written by a second harness event once init arrives; absent on the first (pre-session) one,
+   *  on a dispatch with no MCP servers, and on records written before it existed. */
+  mcpStatus?: McpServerStatus[];
+  /** Issue #106: non-fatal warnings about this dispatch's harness — `MCP_SERVER_NOT_CONNECTED` when
+   *  a declared MCP server was not `connected` at init, or none of its tools were in the init tool
+   *  list (the model could not use it on turn 1). Absent when there are none. */
+  warnings?: HarnessWarning[];
+}
+
+/** Issue #106: see `HarnessDescriptor.mcpStatus`. */
+export interface McpServerStatus {
+  server: string;
+  status: string;
+  tools: string[];
+}
+
+/** Issue #106: see `HarnessDescriptor.warnings`. */
+export interface HarnessWarning {
+  code: 'MCP_SERVER_NOT_CONNECTED';
+  server: string;
+  status: string;
+  message: string;
 }
 
 export interface TranscriptEvent {

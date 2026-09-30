@@ -678,7 +678,7 @@ export const TOOL_SPECS = [
   },
   {
     name: 'run_status', entity: 'run', key: 'runId' as const,
-    description: "Poll a run's status; terminal states carry the final outcome. `agent()` calls that fail or time out still resolve `null` to the script, which still completes — `failedAgentCount` counts those terminal non-success agents (failed/refused) LIVE, before the run itself is terminal; it is omitted (never 0) when the run has no agent records yet — absence is not health, poll again once agents exist, and read it against the `agentCount` this same row already returns. When `failedAgentCount` > 0, `agentFailures` names each one: `{label, agentId, reason: 'timeout'|'error'|'aborted'|'refused', message}` — `message` is a bounded, redacted summary of that agent's own failure detail, never a runId/principal/prompt; the CLI's stderr diagnostics are left out of it — read them with run_agent_log. A terminal failure's `error.code` alone is not engine-attested — a script can forge one by setting `e.name` before rethrowing — only this run's own captured refusal ledger is. The owner's response also lists any cross-principal reads of this run's workspace or logs.",
+    description: "Poll a run's status; terminal states carry the final outcome. `agent()` calls that fail or time out still resolve `null` to the script, which still completes — `failedAgentCount` counts those terminal non-success agents (failed/refused) LIVE, before the run itself is terminal; it is omitted (never 0) when the run has no agent records yet — absence is not health, poll again once agents exist, and read it against the `agentCount` this same row already returns. When `failedAgentCount` > 0, `agentFailures` names each one: `{label, agentId, reason: 'timeout'|'error'|'aborted'|'refused', message}` — `message` is a bounded, redacted summary of that agent's own failure detail, never a runId/principal/prompt; the CLI's stderr diagnostics are left out of it — read them with run_agent_log. A terminal failure's `error.code` alone is not engine-attested — a script can forge one by setting `e.name` before rethrowing — only this run's own captured refusal ledger is. The owner's response also lists any cross-principal reads of this run's workspace or logs. `warnings`, present only when non-empty, lists non-fatal per-agent harness warnings `{label, agentId, code, server, status, message}` — today `MCP_SERVER_NOT_CONNECTED`: a declared MCP server was not connected (or exposed no tools) when that agent's session started, so its tools were missing from the model's first turn; run_agent_log's harness.mcpStatus has the detail.",
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
     errors: ['RUN_NOT_FOUND', 'NOT_RUN_OWNER'],
@@ -778,7 +778,15 @@ export const TOOL_SPECS = [
       // is replaced by the two-segment truth \u2014 there is no separate systemPrompt slot any more.
       'harness.prompt is the verbatim string dispatched to the model: the script\'s own prompt, ' +
       'then any appendPrompt override framed inline with its <user-instructions untrusted="true">\u2026' +
-      '</user-instructions> delimiters.',
+      '</user-instructions> delimiters. ' +
+      // Issue #106: the session's own system/init snapshot, and the warning derived from it.
+      'For an agent with declared MCP servers, harness.mcpStatus is [{server, status, tools}] as the CLI ' +
+      'reported them when the session started, i.e. what the model\'s first turn was built with: status is ' +
+      'the CLI\'s own word (connected/pending/failed/\u2026, or absent) and tools the mcp__<server>__* names ' +
+      'exposed. Every tool of a declared server is exposed whatever allowedTools says (allowedTools only ' +
+      'pre-approves). harness.warnings carries {code: \'MCP_SERVER_NOT_CONNECTED\', server, status, message} ' +
+      'for a declared server that was not connected then or exposed no tool \u2014 the model could not use it ' +
+      'on that turn.',
     inputSchema: schema({ runId: { type: 'string' }, label: { type: 'string' } }, ['runId', 'label']),
     outputSchema: OUT,
     errors: ['RUN_NOT_FOUND', 'AGENT_LOG_NOT_FOUND', 'NOT_RUN_OWNER'],

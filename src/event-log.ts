@@ -29,7 +29,11 @@ export type EngineEvent =
   // `error_during_execution` terminal used to be undiagnosable from the run's own record; this line
   // gives an operator the CLI's own words. Redacted like every other EngineEvent (createEventSink
   // below), never a raw console.error — the only route that would bypass redaction.
-  | { kind: 'agent.stderr'; runId: string; agentId: string; attempt: number; tail: string };
+  | { kind: 'agent.stderr'; runId: string; agentId: string; attempt: number; tail: string }
+  // Issue #106: a declared MCP server was not usable on the session's first turn (not `connected`
+  // in the CLI's `system/init`, or none of its tools listed there) — same fact as the harness
+  // record's `MCP_SERVER_NOT_CONNECTED` warning, on the operator's journal.
+  | { kind: 'agent.mcp_not_connected'; runId: string; agentId: string; attempt: number; server: string; status: string; tools: number };
 
 export type EventSink = (event: EngineEvent) => void;
 

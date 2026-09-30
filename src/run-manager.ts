@@ -28,7 +28,7 @@ import { HardenedSeedRefFetcher } from './seedref-fetcher.js';
 const SEEDREF_TIMEOUT_MS = 30_000;
 const SEEDREF_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 const SEEDREF_MAX_FILE_BYTES = 10 * 1024 * 1024;
-import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView, ManifestEntry, EngineWarning, PriceBook, Tokens, RunUsage, RunSummary, AgentFailureSummary, RunListFilter } from './types.js';
+import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView, ManifestEntry, EngineWarning, PriceBook, Tokens, RunUsage, RunSummary, AgentFailureSummary, AgentWarningSummary, RunListFilter } from './types.js';
 import type { RunStore } from './run-store.js';
 import { InMemoryRunStore } from './run-store.js';
 // v36 (REQ-217, DES-250): type-only — no runtime cycle (dashboard.ts never imports this file).
@@ -490,6 +490,14 @@ export function summarizeAgentFailures(agents: AgentRecord[]): { failedAgentCoun
       message: failureMessage(a),
     })),
   };
+}
+
+/** Issue #106: rolls every agent's non-fatal harness warnings (`AgentRecord.warnings`, e.g.
+ *  `MCP_SERVER_NOT_CONNECTED`) up onto `run_status.warnings`, each naming its agent. Absent (never
+ *  `[]`) when no agent has one. */
+export function summarizeAgentWarnings(agents: AgentRecord[]): { warnings?: AgentWarningSummary[] } {
+  const warnings = agents.flatMap((a) => (a.warnings ?? []).map((w) => ({ ...(a.label !== undefined ? { label: a.label } : {}), agentId: a.agentId, ...w })));
+  return warnings.length > 0 ? { warnings } : {};
 }
 
 /** v27 (DES-194): max legacy (never-snapshotted) rows healed by ONE `listSummaries()` call — bounds
@@ -1295,7 +1303,7 @@ export class RunManager {
     // exists (the designed asymmetry vs `run_list`, DES-234's case iii, preserved — see
     // `listSummaries()`). Omitted (never `0`) for a run with no agent records at all, so a script
     // with no agent() calls never reads as unhealthy.
-    return { ...merged, ...summarizeAgentFailures(merged.agents) };
+    return { ...merged, ...summarizeAgentFailures(merged.agents), ...summarizeAgentWarnings(merged.agents) };
   }
 
   /** v27 (DES-194, ARCH-127, ADR-052, TASK-199, REQ-141): the ONE accessor `/api/runs` and

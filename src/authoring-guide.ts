@@ -709,6 +709,18 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "skills are hidden from it), and a skill's inline shell command (the `!` prefix form) is not executed. In " +
         "`run_agent_log`, `harness.skillsExposed` lists the skills the model could activate; " +
         '`harness.materialized` only records which files were copied into the workspace.\n\n' +
+        // Issue #106: MCP tools were missing from the first turn; authors could not see it.
+        '**MCP servers.** `mcp: [name, ...]` names MCP servers pushed with `workspace_push` (`kind: ' +
+        "'mcp'`). Every tool of a declared server is on that agent's tool surface from its FIRST turn, " +
+        'whatever `allowedTools` says — `allowedTools` narrows only the built-in tools, and an ' +
+        '`mcp__<server>__<tool>` entry in it only pre-approves that call, it does not hide the ' +
+        "server's other tools. So `allowedTools: []` plus a declared server is a valid MCP-only agent. " +
+        'The engine waits for each declared server to connect before the first turn, for at most ' +
+        'about 5 seconds; a server that is slower than that to start (e.g. a first `npx` download ' +
+        'on a new host) misses the turn. When that happens, or the server fails, `run_agent_log` ' +
+        "shows it: `harness.mcpStatus` lists each server's status and exposed tool names as the " +
+        'session started, and `harness.warnings` (rolled up onto `run_status.warnings` with the ' +
+        "agent's label) carries `MCP_SERVER_NOT_CONNECTED`.\n\n" +
         '`meta.params.args` declares the run-time inputs the script reads off `args.<name>` — `{type, ' +
         'enum?, min?, max?, default?}`. A declared `.default` fills in the key when the caller omits ' +
         "it (or a run_start call omits `args` entirely); an explicit caller-supplied value always " +

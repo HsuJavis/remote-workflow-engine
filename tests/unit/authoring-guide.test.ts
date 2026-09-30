@@ -806,6 +806,7 @@ describe('buildAuthoringGuide — every error-code-shaped token is a real ERROR_
     'BASH_READONLY_CONFLICT', // same
     'BASH_SUBSUMES_FILE_TOOLS', // a non-fatal result.warnings[].code, not a refusal code
     'MODEL_TOOL_USE_UNVERIFIED', // a non-fatal run_start warnings[].code, not a refusal code
+    'MCP_SERVER_NOT_CONNECTED', // issue #106: a non-fatal harness warning (run_agent_log / run_status warnings), not a refusal code
     'BASH_READONLY_UNENFORCEABLE', // a harness-record / warnings[].code, not a top-level refusal
     'MODEL_CATALOG_UNVERIFIED', // 2026-09-26: a non-fatal workflow_register/run_start warnings[].code
     // (checkModelRef's live-catalog-unavailable/anthropic-static-table-miss warn arm) — never a

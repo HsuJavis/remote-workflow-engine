@@ -133,6 +133,8 @@ describe('(c) every UPPER_SNAKE token in a tool\'s hand-written description is a
     'MODEL_CATALOG_UNVERIFIED', 'MODEL_TOOL_USE_UNVERIFIED',   // ditto (run_start/workflow_register warnings)
     'AGENT_FAILED', // dash-auth-spec.md section C (2026-09-30): a run_result.meta.warnings code —
     // same "different closed union from ErrorCode" shape as the RegistrationWarning codes above.
+    'MCP_SERVER_NOT_CONNECTED', // issue #106: a harness warning (run_agent_log harness.warnings,
+    // run_status.warnings) — same "not an ErrorCode" shape.
   ]);
   for (const spec of TOOL_SPECS) {
     it(`${spec.name}: every UPPER_SNAKE token in its description is a catalogued code or allowlisted`, () => {

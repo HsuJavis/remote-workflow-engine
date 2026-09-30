@@ -1,7 +1,7 @@
 // RunStore port + InMemoryRunStore (DES-010).
 import { randomUUID } from 'node:crypto';
 import type { Clock } from './clock.js';
-import type { RunSpec, RunStatusView, RunSummary, JournalEntry, TranscriptEvent, RunStatus, AgentRecord, StateTransition, RunListFilter, AuditEvent, PriceBook, RunUsage } from './types.js';
+import type { RunSpec, RunStatusView, RunSummary, JournalEntry, TranscriptEvent, RunStatus, AgentRecord, StateTransition, RunListFilter, AuditEvent, PriceBook, RunUsage, HarnessWarning } from './types.js';
 // v26 (DES-183, TASK-183): the "at rest" RunUsage fold — shared by InMemoryRunStore and
 // SqliteRunStore's getRun, mirroring deriveAgentRecords above (both live in run-guard.js/here
 // respectively; no runtime cycle — run-guard.ts imports only errors.js and types.js).
@@ -56,13 +56,15 @@ export function deriveAgentRecords(
     // source on every branch that reads it — a finished/failed/queued agent must not lose the name
     // (or, for a failed call, the model) its harness event carried.
     const harnessAny = reversed.find((e) => e.kind === 'harness');
-    const harnessDescriptor = (harnessAny?.data as { descriptor?: { model?: string; provider?: string; label?: string; phase?: string; phaseIndex?: number } } | undefined)?.descriptor;
+    const harnessDescriptor = (harnessAny?.data as { descriptor?: { model?: string; provider?: string; label?: string; phase?: string; phaseIndex?: number; warnings?: HarnessWarning[] } } | undefined)?.descriptor;
     // v26 integration (DES-176 cohort (i)): the lane is read from the harness event on EVERY branch
     // that reads that event at all — DES-176's own "exact from the live stamp OR the harness event".
     const harnessCommon = {
       label: harnessDescriptor?.label,
       phase: harnessDescriptor?.phase,
       phaseIndex: harnessDescriptor?.phaseIndex,
+      // Issue #106: the latest harness event's warnings — what `markHarness` stamps live.
+      warnings: harnessDescriptor?.warnings,
     };
     // v26 (DES-188): startedAt is the FIRST harness event's ts (dispatch time), not the latest.
     const firstHarnessTs = events.find((e) => e.kind === 'harness')?.ts;
@@ -71,8 +73,9 @@ export function deriveAgentRecords(
     // phaseIndex/frame) go through here, never defaulted, so no branch can forget one and no branch
     // can silently invent one (UT-162's "absent, never defaulted" contract extends to the new
     // fields).
-    const withCommon = (rec: AgentRecord, common: { label?: string; phase?: string; phaseIndex?: number; frame?: string }): AgentRecord => ({
+    const withCommon = (rec: AgentRecord, common: { label?: string; phase?: string; phaseIndex?: number; frame?: string; warnings?: HarnessWarning[] }): AgentRecord => ({
       ...rec,
+      ...(common.warnings !== undefined && common.warnings.length > 0 ? { warnings: common.warnings } : {}),
       ...(common.label !== undefined ? { label: common.label } : {}),
       ...(common.phase !== undefined ? { phase: common.phase } : {}),
       ...(common.phaseIndex !== undefined ? { phaseIndex: common.phaseIndex } : {}),
