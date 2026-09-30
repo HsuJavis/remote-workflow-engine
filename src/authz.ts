@@ -75,11 +75,64 @@ export interface AuthzVerdict {
 
 const ROLE_RANK: Record<Role, number> = { user: 0, author: 1, admin: 2 };
 
-/** `principals` keyed by principal id; `'*'` supplies the role for any id not listed. With auth
- *  enabled an unlisted id (and a missing/undefined `principals` map) resolves to `'user'`
- *  (ADR-028: fail closed and loud) — never a silent admin default. */
-export function resolveRole(principals: Record<string, { role: Role }> | undefined, id: string): Role {
-  return principals?.[id]?.role ?? principals?.['*']?.role ?? 'user';
+/** Where an effective role came from (dashboard auth spec §A2, 2026-09-30). `config-locked`: a
+ *  config admin — cannot be changed at runtime. `db`: a runtime override (principal_set_role).
+ *  `config`: the id's own `principals[id]` entry. `default`: no entry of its own — the config `'*'`
+ *  role, else `'user'`. */
+export type RoleSource = 'config-locked' | 'db' | 'config' | 'default';
+
+type PrincipalsMap = Record<string, { role: Role }> | undefined;
+
+/** Precedence (spec §A2): config admin (LOCKED) > DB override > config `principals[id]` > config
+ *  `'*'` > `'user'`. With auth enabled an unlisted id (and a missing/undefined `principals` map)
+ *  resolves to `'user'` (ADR-028: fail closed and loud) — never a silent admin default. The
+ *  override is PASSED IN (this module stays pure — the caller reads the store). */
+export function roleWithSource(principals: PrincipalsMap, id: string, override?: Role): { role: Role; source: RoleSource } {
+  const own = principals?.[id]?.role;
+  if (own === 'admin') return { role: 'admin', source: 'config-locked' };
+  if (override !== undefined) return { role: override, source: 'db' };
+  if (own !== undefined) return { role: own, source: 'config' };
+  return { role: principals?.['*']?.role ?? 'user', source: 'default' };
+}
+
+export function resolveRole(principals: PrincipalsMap, id: string, override?: Role): Role {
+  return roleWithSource(principals, id, override).role;
+}
+
+export type RoleChangeVerdict =
+  | { ok: true }
+  | { ok: false; code: 'ROLE_LOCKED' | 'LAST_ADMIN' | 'INVALID_ARGUMENT'; reason: string };
+
+/** The two lockout rules (spec §A2) for a runtime role change of `id` to `role` (`null` = remove
+ *  the override): a config admin is locked (ROLE_LOCKED), and a change that DEMOTES an admin is
+ *  refused when no admin would remain among the known principals (LAST_ADMIN). A change that
+ *  demotes nobody is always allowed, even on a deployment with no admin at all. */
+export function checkRoleChange(a: {
+  principals: PrincipalsMap;
+  overrides: ReadonlyMap<string, Role>;
+  known: readonly string[];
+  id: string;
+  role: Role | null;
+}): RoleChangeVerdict {
+  if (a.id === '*') {
+    return { ok: false, code: 'INVALID_ARGUMENT', reason: "INVALID_ARGUMENT: '*' is the config default role, not a principal — edit rwe.config.json to change it" };
+  }
+  if (a.principals?.[a.id]?.role === 'admin') {
+    return { ok: false, code: 'ROLE_LOCKED', reason: `ROLE_LOCKED: '${a.id}' is an admin in rwe.config.json principals and cannot be changed at runtime` };
+  }
+  const after = new Map(a.overrides);
+  if (a.role === null) after.delete(a.id); else after.set(a.id, a.role);
+  const ids = new Set([...a.known, a.id]);
+  ids.delete('*');
+  const wasAdmin = resolveRole(a.principals, a.id, a.overrides.get(a.id)) === 'admin';
+  const staysAdmin = resolveRole(a.principals, a.id, after.get(a.id)) === 'admin';
+  if (wasAdmin && !staysAdmin) {
+    const remaining = [...ids].filter((id) => resolveRole(a.principals, id, after.get(id)) === 'admin');
+    if (remaining.length === 0) {
+      return { ok: false, code: 'LAST_ADMIN', reason: `LAST_ADMIN: '${a.id}' is the last admin; promote another principal first` };
+    }
+  }
+  return { ok: true };
 }
 
 function resolveRow(authz: ToolAuthz, args: unknown): { row: AuthzRow; mode?: string } {
