@@ -26,6 +26,13 @@ import type {
   RunUsage,
 } from '../types.js';
 
+/** Issue #104 (ObservedStats): cheap pre-`JSON.parse` line filter for `settledCallEvents` — matches
+ *  the exact `"kind":"harness"` / `"kind":"usage"` / `"kind":"refused"` substring every producer in
+ *  this codebase writes (`JSON.stringify({ts,kind,data})`, `kind` always the second key, never
+ *  reordered). A false negative (missing a settled event) would silently under-count, so this is
+ *  intentionally a simple OR-of-substrings on the literal JSON key, not a hand-rolled parser. */
+const SETTLED_KIND_TEST = /"kind":"(harness|usage|refused)"/;
+
 export class SqliteRunStore implements RunStore {
   private readonly _db: Database.Database;
   private readonly _dir: string;
@@ -549,30 +556,54 @@ export class SqliteRunStore implements RunStore {
   }
 
   /** Issue #104 (ObservedStats): concrete-class-only (not on the `RunStore` port — same convention
-   *  as `getWorkflowName` above) coarse SQL pre-filter for `src/models/observed-stats.ts`'s
-   *  `loadFacts` — run ids whose run reached a terminal, NON-stopped status ('completed'|'failed')
-   *  with `createdAt >= sinceIso`. A user-`stopped` run is excluded HERE, implementing ObservedStats'
-   *  "runs stopped by the user excluded" rule at the source, not by a later filter. `createdAt` is a
-   *  deliberate approximation of "this run's agent calls happened in the window" — exact per-call
-   *  windowing is re-applied by the caller against each `AgentRecord.endedAt`; see that module's own
-   *  header comment for the documented gap (a multi-day-long-running workflow created just before the
-   *  cutoff could be under-counted). Uses `runs_status`'s sibling `runs_name_status_created` is not a
-   *  fit here (leads with `name`) — a straight `status`+`createdAt` scan is the honest plan for this
-   *  query shape; adding a dedicated index is left to a future iteration if this is ever measured hot. */
+   *  as `getWorkflowName` above) SQL pre-filter for `src/models/observed-stats.ts`'s `loadFacts` —
+   *  run ids whose run reached a terminal, NON-stopped status ('completed'|'failed') whose FIRST
+   *  terminal transition timestamp is `>= sinceIso`. A user-`stopped` run is excluded HERE,
+   *  implementing ObservedStats' "runs stopped by the user excluded" rule at the source, not by a
+   *  later filter. Uses `terminalAt` (not `createdAt`) — the same `MIN(transitions.ts)` subquery
+   *  `listRuns()`/`list()`/`activeRuns()` above already use — because a call's `endedAt` is always
+   *  <= its run's terminalAt, so "runs that terminated in the window" is the EXACT candidate set (no
+   *  slack, no approximation); `runs_status` (`WHERE status IN (...)`, ARCH-174) lets SQLite prune
+   *  non-terminal rows before evaluating the correlated subquery on the rest. */
   terminalRunIdsSince(sinceIso: string): string[] {
     const rows = this._db
-      .prepare("SELECT runId FROM runs WHERE status IN ('completed', 'failed') AND createdAt >= ?")
+      .prepare(`
+        SELECT r.runId FROM runs r
+        WHERE r.status IN ('completed', 'failed')
+          AND (SELECT MIN(t.ts) FROM transitions t
+               WHERE t.runId = r.runId AND t.to_status IN ('completed', 'failed', 'stopped')) >= ?
+      `)
       .all(sinceIso) as Array<{ runId: string }>;
     return rows.map((r) => r.runId);
   }
 
-  /** Issue #104 (ObservedStats): concrete-class-only — every `agent-<id>.jsonl` transcript this run
-   *  has, keyed by agentId. Exposes the SAME read `getRun()` already does internally (`_allTranscripts`)
-   *  because ObservedStats needs the RAW `kind:'harness'` event's `descriptor.tools` (the resolved
-   *  tool surface) to split prose vs tools calls — a distinction `deriveAgentRecords`'s derived
-   *  `AgentRecord` does not carry (it was never meant to; see that module's own field list). */
-  allAgentTranscripts(runId: string): Map<string, TranscriptEvent[]> {
-    return this._allTranscripts(runId);
+  /** Issue #104 (ObservedStats): concrete-class-only — the 'harness'/'usage'/'refused' transcript
+   *  events for every agent this run has (keyed by agentId); a leaner sibling of the private
+   *  `_allTranscripts` used by `getRun()`. ObservedStats needs the RAW `kind:'harness'` event's
+   *  `descriptor.tools` (the resolved tool surface, to split prose vs tools) plus 'usage'/'refused'
+   *  for `deriveAgentRecords` — never the streamed 'message'/'tool_call'/'tool_result' events, which
+   *  can outnumber the three kinds it does need many times over in a real transcript. Skipping
+   *  `JSON.parse` on those (a cheap substring test on the raw line first) is what keeps a
+   *  10,000-agent aggregation inside its performance budget — see
+   *  tests/unit/observed-stats.test.ts's real-SqliteRunStore benchmark. */
+  settledCallEvents(runId: string): Map<string, TranscriptEvent[]> {
+    const dir = this._runDir(runId);
+    const map = new Map<string, TranscriptEvent[]>();
+    if (!existsSync(dir)) return map;
+    for (const file of readdirSync(dir)) {
+      const match = /^agent-(.+)\.jsonl$/.exec(file);
+      if (!match) continue;
+      const agentId = match[1];
+      const raw = readFileSync(join(dir, file), 'utf8');
+      const events: TranscriptEvent[] = [];
+      for (const line of raw.split('\n')) {
+        if (line.length === 0) continue;
+        if (!SETTLED_KIND_TEST.test(line)) continue; // skip message/tool_call/tool_result unparsed
+        events.push(JSON.parse(line) as TranscriptEvent);
+      }
+      map.set(agentId, events);
+    }
+    return map;
   }
 
   /** Boot recovery: enumerates persisted runs; any 'running' run was interrupted by a crash/restart —

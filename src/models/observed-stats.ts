@@ -21,20 +21,33 @@
 // benchmark keeps well under 200ms (see tests/unit/observed-stats.test.ts).
 //
 // Precise definitions (owner decisions, since the spec leaves these to the implementer):
-//  - Window: a call counts when its `endedAt` (settle time) is >= now-30d. The SQL pre-filter used
-//    to find candidate runs is coarser (run `createdAt >= sinceIso`, see `terminalRunIdsSince`'s own
-//    doc) — a long-running workflow created just before the cutoff whose agents settled after it
-//    could be under-counted; documented, accepted approximation given the run store's schema.
+//  - Window: a call counts when its `endedAt` (settle time) is >= now-30d. The SQL pre-filter that
+//    finds candidate runs (`terminalRunIdsSince`) is EXACT, not an approximation: it filters on the
+//    run's own terminal-transition timestamp, which is always >= every one of its calls' `endedAt`,
+//    so "runs that terminated in the window" is precisely the candidate set — no run with a
+//    within-window call is ever excluded by it. See that method's own doc.
 //  - "runs stopped by the user excluded": `terminalRunIdsSince` only returns 'completed'/'failed'
 //    runs — a 'stopped' run's calls never enter the aggregate at all.
 //  - "tools" vs "prose": read off the harness event's `descriptor.tools` (the ACTUAL materialized
 //    tool surface for the dispatch, source-of-truth for "resolved allowedTools" per the spec) —
 //    non-empty -> 'tools', empty -> 'prose'.
 //  - Success/failure: `AgentRecord.state === 'done'` -> success; `'failed'` -> failure (this is the
-//    ONE state a timeout/abort/gateway error settles into — see `deriveAgentRecords`'s own branch
-//    comment: "a failed call moves no counter", so its tokens/cost are a real, counted zero, not an
-//    absence). `'queued'`/`'running'` (not yet settled) and `'refused'` (never dispatched — no
-//    provider/model to attribute it to) are excluded entirely, not counted as failures.
+//    state a timeout/gateway error settles into — see `deriveAgentRecords`'s own branch comment: "a
+//    failed call moves no counter", so its tokens/cost are a real, counted zero, not an absence).
+//    `'queued'`/`'running'` (not yet settled) and `'refused'` (never dispatched — no provider/model
+//    to attribute it to) are excluded entirely, not counted as failures.
+//    KNOWN GAP (verified by reading agent-executor.ts, not assumed): a call ABORTED by
+//    run_suspend/run_stop also settles `state:'failed'` (via `_finalizeAborted` -> the same
+//    `capture()` path), but `_finalizeAborted` stamps its usage event with `provider: ''`
+//    UNCONDITIONALLY, even when the harness had already resolved a real provider before the abort —
+//    so `AgentRecord.provider` is always `''` for an aborted call, regardless of `deriveAgentRecords`'
+//    `data.provider ?? 'unknown'` fallback (`??` does not replace an empty string). This module's own
+//    `!rec.provider` guard below (needed to keep 'refused'/harness-only junk out of the ref
+//    aggregate) therefore ALSO excludes every aborted call as a side effect — an abort never counts
+//    against any model ref today, contrary to a literal reading of "aborts count as failures". Fixing
+//    that means `_finalizeAborted` stamping the harness-resolved provider instead of `''` — out of
+//    this module's scope (agent-executor.ts's capture path, shared by every other caller of
+//    `capture()`), left for a follow-up.
 //  - Cost: `unpriced: true` -> excluded from the cost average (a real "we don't know", per
 //    ADR-046) — NOT the same as `costUSD: 0`, which for a `'failed'` call is a real measured zero and
 //    IS averaged in.
@@ -87,7 +100,7 @@ export interface ObservedStatsProvider {
  *  concrete class) so a test can inject a spy/fake without a real sqlite file. */
 export interface ObservedStatsSource {
   terminalRunIdsSince(sinceIso: string): string[];
-  allAgentTranscripts(runId: string): Map<string, TranscriptEvent[]>;
+  settledCallEvents(runId: string): Map<string, TranscriptEvent[]>;
 }
 
 /** One settled agent call, reduced to exactly what the aggregation needs — deliberately NOT
@@ -108,32 +121,31 @@ export interface AgentCallFact {
 }
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-/** How much earlier than the window start a run may have been CREATED and still be a candidate —
- *  covers a workflow that started before the cutoff but whose agent calls settled inside it. Wide
- *  enough for this codebase's actual run durations (minutes–hours, not days); documented
- *  approximation, see this module's header comment. */
-const RUN_CREATED_SLACK_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
 
 /** Reads every settled ('done'|'failed') agent call whose `endedAt` falls in `[sinceIso, now]` out of
  *  `source`, reusing `deriveAgentRecords` for state/tokens/cost/startedAt/endedAt/model/provider and
  *  reading the harness event directly for the tools-vs-prose split (see module header). A
  *  'queued'/'running'/'refused' record, or one missing model/provider/startedAt/endedAt, is skipped
- *  (never dispatched, or not yet settled — nothing to attribute). The `parentStatus` passed to
- *  `deriveAgentRecords` is always `'completed'` — it only changes the harness-only branch's state
- *  between `'running'`/`'queued'`, and both are skipped here regardless. */
+ *  (never dispatched, or not yet settled — nothing to attribute); a ref that fails to parse as
+ *  `<provider>/<model>` (e.g. a pre-#20 record's `provider:'unknown'`) is skipped too, never
+ *  aggregated under a junk key. The `parentStatus` passed to `deriveAgentRecords` is always
+ *  `'completed'` — it only changes the harness-only branch's state between `'running'`/`'queued'`,
+ *  and both are skipped here regardless. `terminalRunIdsSince` already returns the EXACT candidate
+ *  set (a run's terminalAt is always >= every one of its calls' endedAt) — the `rec.endedAt <
+ *  sinceIso` check below is belt-and-braces, not a second approximation. */
 export function loadFacts(source: ObservedStatsSource, sinceIso: string): AgentCallFact[] {
-  const prefilterSince = new Date(Date.parse(sinceIso) - RUN_CREATED_SLACK_MS).toISOString();
-  const runIds = source.terminalRunIdsSince(prefilterSince);
+  const runIds = source.terminalRunIdsSince(sinceIso);
   const facts: AgentCallFact[] = [];
   for (const runId of runIds) {
-    const transcripts = source.allAgentTranscripts(runId);
+    const transcripts = source.settledCallEvents(runId);
     const records = deriveAgentRecords(transcripts, 'completed');
     for (const rec of records) {
       if (rec.state !== 'done' && rec.state !== 'failed') continue;
       if (!rec.model || !rec.provider) continue;
       if (!rec.startedAt || !rec.endedAt) continue;
-      if (rec.endedAt < sinceIso) continue; // exact per-call window (the SQL prefilter above is coarse)
+      if (rec.endedAt < sinceIso) continue;
+      if (parseModelRef(`${rec.provider}/${rec.model}`) === undefined) continue;
       const events = transcripts.get(rec.agentId) ?? [];
       const harness = [...events].reverse().find((e) => e.kind === 'harness');
       const descriptorTools = (harness?.data as { descriptor?: { tools?: string[] } } | undefined)?.descriptor?.tools ?? [];
@@ -214,9 +226,29 @@ export function aggregateFacts(facts: AgentCallFact[]): Map<string, { prose: Cal
 }
 
 /** The concrete `ObservedStatsProvider` — TTL-cached aggregation over `source`'s run data, falling
- *  back to `probes`' persisted `models_probe` latency when a ref has no run-observed calls at all. */
+ *  back to `probes`' persisted `models_probe` latency when a ref has no run-observed calls at all.
+ *
+ *  Two ways the cache gets built, same as `ModelProber` (`model-probe.ts`)'s own start()/stop()
+ *  convention:
+ *   (1) Lazily, inside `get()`/`getAll()`, if the cache is missing or older than `ttlMs` — always
+ *       correct, but on a large deployment this is a synchronous scan of every settled agent call in
+ *       the window (see `loadFacts`), which can take on the order of 100-200ms+ at 10k agent-call
+ *       volume (measured; see tests/unit/observed-stats.test.ts's real-SqliteRunStore benchmark) —
+ *       acceptable as a rare fallback, not as the steady-state path for a request handler.
+ *   (2) Proactively, via `start()` — arms a `setInterval` background refresh (same `ttlMs`) plus one
+ *       deferred initial warm (`setTimeout(…, 0)`, off the synchronous boot path) — so in steady
+ *       state a `get()`/`getAll()` call almost always finds a cache already fresh from the last tick
+ *       and returns in O(1) map lookups, never running the scan on the request path at all. The
+ *       background tick itself still runs synchronously (this store has no async/streaming read
+ *       path) and briefly blocks the event loop for its duration — a deliberate, disclosed trade-off:
+ *       building an indexed SQL fact table would mean writing to the `capture()` hot path this
+ *       module was explicitly scoped OUT of touching (issue #104 dispatch). Given this deployment's
+ *       actual call volumes (far below the 10k-row benchmark), the disclosed cost is a background
+ *       tick well under the interval, not a per-request stall. `start()` is optional — a caller that
+ *       never invokes it still gets correct, just lazily-synchronous, answers. */
 export class RunStoreObservedStats implements ObservedStatsProvider {
   private _cache: { builtAt: number; byRef: Map<string, { prose: CallStats | null; tools: CallStats | null }> } | undefined;
+  private _timer: ReturnType<typeof setInterval> | undefined;
 
   constructor(private readonly _deps: {
     source: ObservedStatsSource;
@@ -225,15 +257,35 @@ export class RunStoreObservedStats implements ObservedStatsProvider {
     ttlMs?: number;
   }) {}
 
+  /** Arms the background refresh described in the class doc above. Idempotent (a second call is a
+   *  no-op while already running). `unref()`s the timers so an otherwise-idle process can still exit. */
+  start(): void {
+    if (this._timer) return;
+    const ttl = this._deps.ttlMs ?? DEFAULT_TTL_MS;
+    this._timer = setInterval(() => this._refresh(), ttl);
+    this._timer.unref?.();
+    const warm = setTimeout(() => this._refresh(), 0);
+    warm.unref?.();
+  }
+
+  stop(): void {
+    if (this._timer) clearInterval(this._timer);
+    this._timer = undefined;
+  }
+
+  private _refresh(): void {
+    const now = this._deps.clock.now();
+    const sinceIso = new Date(now - THIRTY_DAYS_MS).toISOString();
+    const facts = loadFacts(this._deps.source, sinceIso);
+    this._cache = { builtAt: now, byRef: aggregateFacts(facts) };
+  }
+
   private _byRef(): Map<string, { prose: CallStats | null; tools: CallStats | null }> {
     const now = this._deps.clock.now();
     const ttl = this._deps.ttlMs ?? DEFAULT_TTL_MS;
     if (this._cache && now - this._cache.builtAt < ttl) return this._cache.byRef;
-    const sinceIso = new Date(now - THIRTY_DAYS_MS).toISOString();
-    const facts = loadFacts(this._deps.source, sinceIso);
-    const byRef = aggregateFacts(facts);
-    this._cache = { builtAt: now, byRef };
-    return byRef;
+    this._refresh();
+    return this._cache!.byRef;
   }
 
   get(ref: string): ObservedForRef {

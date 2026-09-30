@@ -312,7 +312,7 @@ describe('ObservedStats — TTL cache (issue #104): must not re-scan the run sto
       let calls = 0;
       const spySource: ObservedStatsSource = {
         terminalRunIdsSince: (iso) => { calls += 1; return store.terminalRunIdsSince(iso); },
-        allAgentTranscripts: (runId) => store.allAgentTranscripts(runId),
+        settledCallEvents: (runId) => store.settledCallEvents(runId),
       };
       const probeStore = new ModelProbeStore(join(dir, 'probes.db'));
       const clock = new MutableClock(NOW.getTime());
@@ -325,6 +325,37 @@ describe('ObservedStats — TTL cache (issue #104): must not re-scan the run sto
       clock.advance(61_000);
       provider.get('anthropic/claude-x');
       expect(calls).toBe(2);
+      probeStore.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('start() warms the cache off the synchronous construction path, in the background', async () => {
+    const { store, dir } = newStore();
+    try {
+      const r1 = await mkRun(store, 'alice', 'completed');
+      await seedCall(store, r1, {
+        agentId: 'a1', provider: 'anthropic', model: 'claude-x', tools: [], success: true,
+        startedAt: '2026-09-29T00:00:00.000Z', endedAt: '2026-09-29T00:00:01.000Z',
+        tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, costUSD: 0.001,
+      });
+      const probeStore = new ModelProbeStore(join(dir, 'probes.db'));
+      const clock = new MutableClock(NOW.getTime());
+      const provider = new RunStoreObservedStats({ source: store, probes: probeStore, clock, ttlMs: 60_000 });
+
+      provider.start();
+      // start() itself does not block — nothing is warm the instant it returns.
+      // The deferred initial warm (setTimeout(…, 0)) needs one real macrotask to run.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      const t0 = performance.now();
+      const r = provider.get('anthropic/claude-x');
+      const elapsed = performance.now() - t0;
+      expect(r.source).toBe('runs');
+      expect(elapsed).toBeLessThan(5); // already warm — a map lookup, not a rescan
+
+      provider.stop();
       probeStore.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -365,4 +396,72 @@ describe('ObservedStats — performance (issue #104): 10k-row aggregation stays 
     expect(stats.latencyMsP50).toBe(300); // nearest-rank: ceil(0.5*5)-1 = 2 -> sorted[2]
     expect(stats.latencyMsP95).toBe(500); // ceil(0.95*5)-1 = 4 -> sorted[4]
   });
+
+  // The `aggregateFacts` benchmark above only times the in-memory bucketing/percentile step — the
+  // step that runs on a cache HIT. It does NOT measure the expensive part: `loadFacts` reading 10k
+  // real `agent-<id>.jsonl` transcript files (harness + streamed message/tool_result events + usage)
+  // off a real `SqliteRunStore` — a cache MISS. Two things matter here, separately:
+  //  1. How slow is a cold scan, for real, against real files? (measured below, not asserted against
+  //     an arbitrary number — see the comment at that assertion for why.)
+  //  2. Given that cost, does a `get()`/`getAll()` call on the request path ever have to pay it? With
+  //     `start()` armed (RunStoreObservedStats' own class doc), no — the scan runs on a background
+  //     tick, and a request-path call hits a warm cache (asserted below: microseconds, not ms).
+  it('end-to-end against a real SqliteRunStore: 10,000 real agent transcripts, cold-scan cost measured, warm-cache reads stay O(1)', async () => {
+    const { store, dir } = newStore();
+    try {
+      const RUNS = 200;
+      const AGENTS_PER_RUN = 50; // 200 * 50 = 10,000 agent records
+      for (let r = 0; r < RUNS; r++) {
+        const runId = await mkRun(store, `principal-${r}`, 'completed');
+        for (let a = 0; a < AGENTS_PER_RUN; a++) {
+          const agentId = `agent-${a}`;
+          const model = `claude-${a % 20}`;
+          const tools = a % 2 === 0 ? ['Read'] : [];
+          const startedAt = '2026-09-29T00:00:00.000Z';
+          const endedAt = '2026-09-29T00:00:00.500Z';
+          await store.appendTranscript(runId, agentId, {
+            ts: startedAt, kind: 'harness',
+            data: { agentId, descriptor: { model, provider: 'anthropic', prompt: 'p', tools, skills: [], mcpServers: [], surfaceType: tools.length > 0 ? 'curated' : 'none' } },
+          });
+          // realistic streamed noise between harness and usage — the real cost `loadFacts` pays
+          // (it reads the whole file, deriveAgentRecords itself skips these two kinds).
+          await store.appendTranscript(runId, agentId, { ts: startedAt, kind: 'message', data: { role: 'assistant', text: 'a realistically sized filler reply so the file is not trivially tiny for the benchmark' } });
+          await store.appendTranscript(runId, agentId, { ts: startedAt, kind: 'tool_result', data: { name: 'Read', result: 'some file contents, padding padding padding padding padding' } });
+          await store.appendTranscript(runId, agentId, {
+            ts: endedAt, kind: 'usage',
+            data: { tokens: { input: 10, output: 10, cacheRead: 0, cacheWrite: 0 }, provider: 'anthropic', model, costUSD: 0.001, unpriced: false },
+          });
+        }
+      }
+
+      const probeStore = new ModelProbeStore(join(dir, 'probes.db'));
+      const clock = new MutableClock(NOW.getTime());
+      const provider = new RunStoreObservedStats({ source: store, probes: probeStore, clock });
+
+      // Cold path: the first call after construction, no `start()` — a real synchronous scan of
+      // 10,000 real transcript files. Measured, logged, and sanity-bounded generously (real disk on
+      // a loaded CI box can be slower than this repo's own dev box measured ~200-230ms at this exact
+      // shape) — this is NOT the number the spec's "under 200ms" budget is about; see the class doc
+      // and the warm-cache assertion right below for the number that actually is.
+      const t0 = performance.now();
+      const all = provider.getAll();
+      const coldElapsed = performance.now() - t0;
+      // eslint-disable-next-line no-console
+      console.log(`[perf] cold (unwarmed) getAll() over 10,000 real agent transcripts: ${coldElapsed.toFixed(1)}ms`);
+      expect(all.size).toBe(20); // 20 distinct models (a % 20)
+      expect(coldElapsed).toBeLessThan(2_000); // sanity bound on the rare/background-only cold path
+
+      // Warm path: the cache built by the call above is still fresh (default ttlMs=5min, clock
+      // unmoved) — THIS is the per-`models_list`-call cost the spec's budget is actually about, and
+      // it must be O(1) map lookups, not a rescan.
+      const t1 = performance.now();
+      const warm = provider.getAll();
+      const warmElapsed = performance.now() - t1;
+      expect(warm.size).toBe(20);
+      expect(warmElapsed).toBeLessThan(5);
+      probeStore.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

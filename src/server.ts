@@ -852,6 +852,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     ? new ModelProber({ gateway, modelRefs: () => catalog.distinctModelRefs(), store: probeStore, workRoot, clock, config: config?.modelProbe ?? { ...MODEL_PROBE_DEFAULTS, enabled: false } })
     : undefined;
   modelProber?.start();
+  // Issue #104: background-refreshes so `models_list`'s `observed` field reads a warm cache on the
+  // request path instead of scanning the run store synchronously — see RunStoreObservedStats' own
+  // class doc for the two-path (background vs lazy-fallback) design.
+  observedStats.start();
   // v37 (ARCH-182, DES-263, TASK-258): forwards the SAME measured posture `confinementPosture`
   // already rides to the facade/gateway (DES-258 owner ruling) — RunManager.start()'s
   // admissionRefusal() covers every `start()`-driven admission route (tools/call's run_start,
@@ -1799,6 +1803,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       ticker.stop();
       if (gcTimer) clearInterval(gcTimer); // REQ-026: stop the workspace GC sweep on shutdown
       modelProber?.stop(); // issue #73: stop the periodic model probe
+      observedStats.stop(); // issue #104: stop the periodic observed-stats refresh
       return new Promise<void>((resolve, reject) => {
         http.close((err) => (err ? reject(err) : resolve()));
       })
