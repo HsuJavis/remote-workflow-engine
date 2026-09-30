@@ -677,8 +677,9 @@ curl -s http://localhost:8787/api/models | python3 -c \
   同一個 callback URI `https://<your-host>/oauth/google/callback`**——Google Cloud Console 不必加新的
   redirect URI）。驗證 id_token（`email_verified` 等，跟 MCP 流程完全一樣）後發一個瀏覽器 session：
   cookie `rwe_session`（HttpOnly、SameSite=Lax、`auth.issuer` 是 https 時加 Secure），7 天、使用中會自動
-  延長；DB 只存 sha256。登入後回到原本那頁（`next` 只接受 `/dashboard` 底下的同源相對路徑，沒有 open
-  redirect）。這個流程**不建立** DCR client、**不發** bearer token；MCP 的 `/authorize`／`/token`／refresh
+  延長；DB 只存 sha256。登入後回到原本那頁（`next` 只接受 `/dashboard` 底下、純可列印 ASCII 的同源相對路徑，沒有 open
+  redirect）。登入的 `state` 綁在發起登入的瀏覽器上（10 分鐘的 `rwe_login` cookie，callback 時比對，擋 login CSRF）；
+  匿名的 `/dashboard/login` 每個來源（隧道後以 `CF-Connecting-IP` 計）每分鐘約 30 次、全域同時最多 1000 個未完成登入，超過回 429。這個流程**不建立** DCR client、**不發** bearer token；MCP 的 `/authorize`／`/token`／refresh
   流程完全不變。右上角顯示 email、角色與「登出」。
 - **門**：`/dashboard*` 與 `/api/*` 都要 session cookie 或 bearer（跟 `/mcp` 同一個解析器）；沒有就
   頁面 302 到登入、API 回 401。**例外**：`/api/version`、`/api/status`（健康檢查用，`deploy.sh`／

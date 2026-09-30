@@ -278,6 +278,11 @@ export class TokenStore {
     };
   }
 
+  /** Live (unexpired) state rows of one flow — verify-i LOW-3's global cap on anonymous logins. */
+  countLiveStates(flow: 'dashboard'): number {
+    return (this._db.prepare('SELECT COUNT(*) AS n FROM oauth_state WHERE flow = ? AND expires_at > ?').get(flow, this._clock()) as { n: number }).n;
+  }
+
   /** Create a dashboard browser session (spec §A). Returns the RAW token (the cookie value) —
    *  only its sha256 is stored. */
   createSession(principal: string): { token: string; expiresAt: number } {

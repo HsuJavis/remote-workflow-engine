@@ -461,9 +461,20 @@ function failureReason(a: AgentRecord): AgentFailureSummary['reason'] {
   if (a.failReason === 'aborted') return 'aborted';
   return 'error';
 }
+/** verify-i LOW-5: the summary is not the diagnostic dump. The gateway folds a short CLI stderr
+ *  tail into `detail` after the marker below (`claude-agent-sdk-client.ts` `withStderrDiagnostics`)
+ *  — it can name the auth env var in use — and an SDK error result can carry its result subtype as
+ *  a `success: ` prefix. Both are cut HERE only; the agent record (run_agent_log) keeps the full
+ *  detail for whoever debugs it. */
+const STDERR_MARKER = 'CLI stderr tail:';
+function summaryOfDetail(detail: string): string {
+  const i = detail.indexOf(STDERR_MARKER);
+  const head = (i === -1 ? detail : detail.slice(0, i)).replace(/\s*—\s*$/, '').replace(/^success:\s*/, '').trim();
+  return head.length > 0 ? head : 'agent failed; see run_agent_log for the CLI diagnostics';
+}
 function failureMessage(a: AgentRecord): string {
   if (a.state === 'refused') return a.reasonCode ?? 'refused (no reason recorded)';
-  if (a.detail !== undefined) return boundedMessage(a.detail);
+  if (a.detail !== undefined) return boundedMessage(summaryOfDetail(a.detail));
   return 'no failure detail recorded';
 }
 export function summarizeAgentFailures(agents: AgentRecord[]): { failedAgentCount?: number; agentFailures?: AgentFailureSummary[] } {

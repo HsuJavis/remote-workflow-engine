@@ -249,3 +249,58 @@ describe('CSRF behind a proxy that rewrites Host: the engine\'s own public origi
     expect(other.status).toBe(403);
   });
 });
+
+// verify-i LOW-1..LOW-4 (2026-09-30).
+describe('login hardening (verify-i LOW-1/2/3/4)', () => {
+  it('LOW-1: the dashboard state is bound to the browser that started the login (rwe_login cookie)', async () => {
+    const login = await fetch(`${base}/dashboard/login`, { redirect: 'manual' });
+    const setLogin = login.headers.get('set-cookie') ?? '';
+    expect(setLogin).toMatch(/^rwe_login=[0-9a-f]{32}; Path=\/oauth\/google\/callback; Max-Age=600; HttpOnly; SameSite=Lax/);
+    const g = new URL(login.headers.get('location')!);
+    const q = new URLSearchParams({ state: g.searchParams.get('state')!, code: `${ALICE}|${g.searchParams.get('nonce')}` });
+    // a DIFFERENT browser (no rwe_login cookie) completing the callback gets no session
+    const other = await fetch(`${base}/oauth/google/callback?${q}`, { redirect: 'manual' });
+    expect(other.status).toBe(400);
+    expect(other.headers.get('set-cookie') ?? '').not.toMatch(/rwe_session=[0-9a-f]/);
+    // a browser whose rwe_login names ANOTHER state is refused too
+    const l2 = await fetch(`${base}/dashboard/login`, { redirect: 'manual' });
+    const g2 = new URL(l2.headers.get('location')!);
+    const wrong = await fetch(`${base}/oauth/google/callback?${new URLSearchParams({ state: g2.searchParams.get('state')!, code: `${ALICE}|${g2.searchParams.get('nonce')}` })}`, { headers: { Cookie: 'rwe_login=' + '0'.repeat(32) }, redirect: 'manual' });
+    expect(wrong.status).toBe(400);
+    // the helper's own flow (cookie carried) still works, and the login cookie is cleared
+    const ok = await dashboardLogin(base, ALICE);
+    expect(ok.setCookie).toContain('rwe_session=');
+  });
+
+  it('LOW-2: a non-Latin1 next never 500s after creating a session — it lands on /dashboard', async () => {
+    const r = await dashboardLogin(base, ALICE, '/dashboard/\u0100');
+    expect(r.location).toBe('/dashboard');
+  });
+
+  it('LOW-4: the CSRF check compares the full origin — same host, wrong scheme is refused', async () => {
+    const wrongScheme = await fetch(`${base}/dashboard/logout`, { method: 'POST', headers: { Origin: base.replace('http://', 'https://') }, redirect: 'manual' });
+    expect(wrongScheme.status).toBe(403);
+    const same = await fetch(`${base}/dashboard/logout`, { method: 'POST', headers: { Origin: base }, redirect: 'manual' });
+    expect(same.status).toBe(303);
+  });
+});
+
+describe('LOW-3: anonymous /dashboard/login is rate-limited per client', () => {
+  let s5: Server; let dir5: string;
+  beforeAll(async () => {
+    dir5 = mkdtempSync(join(tmpdir(), 'rwe-dash-rl-'));
+    s5 = await createServer({ port: 0, bind: '127.0.0.1', workRoot: dir5, auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: CID, googleClientSecret: 'cs', googleTokenUrl: google.tokenUrl, jwksFetch: fakeJwksFetch } } as never);
+  });
+  afterAll(async () => { await s5?.close(); rmSync(dir5, { recursive: true, force: true }); });
+
+  it('a burst beyond the per-client budget answers 429 without writing more state rows; another client is unaffected', async () => {
+    const b5 = `http://127.0.0.1:${s5.port}`;
+    const statuses: number[] = [];
+    for (let i = 0; i < 35; i++) statuses.push((await fetch(`${b5}/dashboard/login`, { headers: { 'CF-Connecting-IP': '198.51.100.1' }, redirect: 'manual' })).status);
+    expect(statuses.filter((s) => s === 302)).toHaveLength(30);
+    expect(statuses.slice(30).every((s) => s === 429)).toBe(true);
+    const db = new Database(join(dir5, 'auth-tokens.db'));
+    try { expect((db.prepare("SELECT COUNT(*) AS n FROM oauth_state WHERE flow = 'dashboard'").get() as { n: number }).n).toBe(30); } finally { db.close(); }
+    expect((await fetch(`${b5}/dashboard/login`, { headers: { 'CF-Connecting-IP': '198.51.100.2' }, redirect: 'manual' })).status).toBe(302);
+  });
+});

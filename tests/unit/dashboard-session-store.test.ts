@@ -7,7 +7,7 @@ import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
 import { TokenStore, SESSION_TTL_MS } from '../../src/auth/token-store.js';
 import { RoleStore } from '../../src/auth/role-store.js';
-import { sessionCookie, readSessionCookie } from '../../src/auth/auth-service.js';
+import { sessionCookie, readSessionCookie, LoginRateLimiter, safeDashboardNext } from '../../src/auth/auth-service.js';
 
 function counterCsprng() {
   let c = 1;
@@ -129,5 +129,20 @@ describe('session cookie attributes', () => {
     expect(readSessionCookie(`x=1; rwe_session=${tok}; y=2`)).toBe(tok);
     expect(readSessionCookie('rwe_session=not-hex')).toBeNull();
     expect(readSessionCookie(undefined)).toBeNull();
+  });
+});
+
+describe('verify-i LOW-2/LOW-3 helpers', () => {
+  it('LoginRateLimiter: a burst of capacity, then refused, then refills with time; keys are independent', () => {
+    let now = 0;
+    const l = new LoginRateLimiter(3, 3 / 60_000, () => now);
+    expect([l.take('a'), l.take('a'), l.take('a'), l.take('a')]).toEqual([true, true, true, false]);
+    expect(l.take('b')).toBe(true);
+    now += 20_000; // one token back
+    expect([l.take('a'), l.take('a')]).toEqual([true, false]);
+  });
+  it('safeDashboardNext rejects any non-printable-ASCII next', () => {
+    expect(safeDashboardNext('/dashboard/\u0100')).toBe('/dashboard');
+    expect(safeDashboardNext('/dashboard/workflow/%E4%B8%AD')).toBe('/dashboard/workflow/%E4%B8%AD');
   });
 });

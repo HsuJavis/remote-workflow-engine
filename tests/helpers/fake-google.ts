@@ -52,8 +52,11 @@ export async function dashboardLogin(base: string, email: string, next?: string)
   const login = await fetch(`${base}/dashboard/login${q}`, { redirect: 'manual' });
   if (login.status !== 302) throw new Error(`login answered ${login.status}: ${await login.text()}`);
   const g = new URL(login.headers.get('location')!);
-  const cb = await fetch(`${base}/oauth/google/callback?${new URLSearchParams({ state: g.searchParams.get('state')!, code: `${email}|${g.searchParams.get('nonce')}` })}`, { redirect: 'manual' });
+  // verify-i LOW-1: the login binds its state to this browser with an `rwe_login` cookie — carry it.
+  const loginCookie = (login.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+  const cb = await fetch(`${base}/oauth/google/callback?${new URLSearchParams({ state: g.searchParams.get('state')!, code: `${email}|${g.searchParams.get('nonce')}` })}`, { redirect: 'manual', headers: loginCookie ? { Cookie: loginCookie } : {} });
   const setCookie = cb.headers.get('set-cookie') ?? '';
   if (cb.status !== 302 || !setCookie) throw new Error(`callback answered ${cb.status}: ${await cb.text()}`);
-  return { cookie: setCookie.split(';')[0]!, setCookie, location: cb.headers.get('location') ?? '' };
+  const session = setCookie.split(/,(?=\s*rwe_)/).find((c) => c.trim().startsWith('rwe_session=')) ?? setCookie;
+  return { cookie: session.trim().split(';')[0]!, setCookie: session.trim(), location: cb.headers.get('location') ?? '' };
 }

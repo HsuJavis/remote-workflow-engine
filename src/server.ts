@@ -1388,15 +1388,18 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       if (req.headers['x-requested-with'] !== undefined) return true;
       const origin = req.headers.origin;
       if (!origin || origin === 'null') return false;
-      let originHost: string;
-      try { originHost = new URL(origin).host.toLowerCase(); } catch { return false; }
-      if (originHost === String(req.headers.host ?? '').toLowerCase()) return true;
+      // verify-i LOW-4: the FULL origin (scheme + host + port), never the host alone. A direct
+      // connection to this engine is plain http (it terminates no TLS), so its own origin is
+      // `http://<Host>`; the public origins are publicBaseUrl / auth.issuer exactly as configured.
+      let originValue: string;
+      try { originValue = new URL(origin).origin.toLowerCase(); } catch { return false; }
+      if (originValue === `http://${String(req.headers.host ?? '').toLowerCase()}`) return true;
       return [config?.publicBaseUrl, authCfg?.issuer].some((raw) => {
         if (!raw) return false;
         try {
           const u = new URL(raw);
           if (u.port === '0') u.port = String(boundPort);
-          return u.host.toLowerCase() === originHost;
+          return u.origin.toLowerCase() === originValue;
         } catch { return false; }
       });
     };

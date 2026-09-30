@@ -65,7 +65,9 @@ export const SESSION_COOKIE = 'rwe_session';
 export function safeDashboardNext(raw: string | null | undefined): string {
   const fallback = '/dashboard';
   if (typeof raw !== 'string' || raw.length === 0 || raw.length > 2048) return fallback;
-  if (/[\\\s\u0000-\u001f\u007f]/.test(raw)) return fallback;
+  // Printable ASCII only (verify-i LOW-2): anything else — whitespace, controls, backslash, and any
+  // non-Latin1 character that would make the Location header throw after the session was created.
+  if (/[^\x21-\x7e]/.test(raw) || raw.includes('\\')) return fallback;
   const pathEnd = raw.search(/[?#]/);
   const path = pathEnd === -1 ? raw : raw.slice(0, pathEnd);
   if (path !== '/dashboard' && !path.startsWith('/dashboard/')) return fallback;
@@ -75,6 +77,53 @@ export function safeDashboardNext(raw: string | null | undefined): string {
   if (path === '/dashboard/login' || path.startsWith('/dashboard/login/') || path === '/dashboard/logout' || path === '/dashboard/signed-out') return fallback;
   return raw.replace(/#.*$/, '');
 }
+
+/** verify-i LOW-1: the cookie binding a dashboard login's `state` to the browser that started it
+ *  (double-submit at the callback). Scoped to the callback path, 10 minutes (the state's own TTL). */
+export const LOGIN_COOKIE = 'rwe_login';
+
+function loginCookie(state: string, effectiveIssuer: string, maxAgeSec: number): string {
+  const secure = effectiveIssuer.startsWith('https:') ? '; Secure' : '';
+  return `${LOGIN_COOKIE}=${state}; Path=/oauth/google/callback; Max-Age=${maxAgeSec}; HttpOnly; SameSite=Lax${secure}`;
+}
+
+function readCookie(cookieHeader: string | undefined, name: string): string | null {
+  if (!cookieHeader) return null;
+  for (const part of cookieHeader.split(';')) {
+    const i = part.indexOf('=');
+    if (i !== -1 && part.slice(0, i).trim() === name) return part.slice(i + 1).trim();
+  }
+  return null;
+}
+
+/** verify-i LOW-3: a per-client token bucket for anonymous `GET /dashboard/login` (each call writes
+ *  an oauth_state row). Injected clock; the key map is pruned so it cannot grow without bound. */
+export class LoginRateLimiter {
+  private readonly _buckets = new Map<string, { tokens: number; at: number }>();
+  constructor(
+    private readonly _capacity = 30,
+    private readonly _refillPerMs = 30 / 60_000,
+    private readonly _clock: () => number = () => Date.now(),
+  ) {}
+
+  take(key: string): boolean {
+    const now = this._clock();
+    const b = this._buckets.get(key) ?? { tokens: this._capacity, at: now };
+    b.tokens = Math.min(this._capacity, b.tokens + (now - b.at) * this._refillPerMs);
+    b.at = now;
+    if (this._buckets.size > 10_000) {
+      for (const [k, v] of this._buckets) if (Math.min(this._capacity, v.tokens + (now - v.at) * this._refillPerMs) >= this._capacity) this._buckets.delete(k);
+    }
+    if (b.tokens < 1) { this._buckets.set(key, b); return false; }
+    b.tokens -= 1;
+    this._buckets.set(key, b);
+    return true;
+  }
+}
+
+/** Global cap on live dashboard state rows (verify-i LOW-3) — bounds the table even when many
+ *  distinct client keys are used. */
+export const MAX_LIVE_DASHBOARD_STATES = 1000;
 
 /** Set-Cookie value for a new/extended session. `Secure` iff the engine's public issuer is https
  *  (an http deployment would otherwise never get the cookie back). */
@@ -187,6 +236,7 @@ export function createAuthRouteHandlers(
     ?? (cfg.googleBase ? `${cfg.googleBase}/token` : GOOGLE_TOKEN_URL);
   const googleJwksUrl = cfg.googleJwksUrl
     ?? (cfg.googleBase ? `${cfg.googleBase}/oauth2/v3/certs` : GOOGLE_JWKS_URL);
+  const loginLimiter = new LoginRateLimiter();
   const jwksFetch: JwksPort = cfg.jwksFetch ?? (async (jwksUri: string) => {
     const r = await fetch(jwksUri);
     const j = await r.json() as { keys?: Record<string, unknown>[] };
@@ -267,6 +317,14 @@ export function createAuthRouteHandlers(
     },
 
     dashboardLogin(req, res, effectiveIssuer) {
+      // verify-i LOW-3: each call writes a state row — rate-limited per client (Cloudflare's
+      // CF-Connecting-IP behind the tunnel, else the socket peer) and globally capped.
+      const cf = req.headers['cf-connecting-ip'];
+      const key = typeof cf === 'string' && cf ? cf : (req.socket?.remoteAddress ?? 'unknown');
+      if (!loginLimiter.take(key) || tokenStore.countLiveStates('dashboard') >= MAX_LIVE_DASHBOARD_STATES) {
+        localSendJson(res, 429, { error: 'too_many_requests', hint: 'too many sign-in attempts; wait a minute and try again' }, { 'Retry-After': '60' });
+        return;
+      }
       const url = new URL(req.url ?? '/', 'http://x');
       // The validated `next` rides the state row's redirect_uri column; no PKCE (the engine itself
       // is the client here and the code never leaves the engine), no DCR client.
@@ -274,6 +332,7 @@ export function createAuthRouteHandlers(
       const state = randomBytes(16).toString('hex');
       const nonce = randomBytes(16).toString('hex');
       tokenStore.putState({ state, nonce, codeChallenge: '', redirectUri: next, flow: 'dashboard' });
+      res.setHeader('Set-Cookie', loginCookie(state, effectiveIssuer, 600));
       redirectToGoogle(res, effectiveIssuer, state, nonce);
     },
 
@@ -287,6 +346,12 @@ export function createAuthRouteHandlers(
         return;
       }
       const { nonce, codeChallenge, redirectUri, clientState, scope } = stateData;
+      // verify-i LOW-1: a dashboard login must be completed by the browser that started it — its
+      // `rwe_login` cookie must name this state (login CSRF). The MCP flow is unchanged (PKCE).
+      if (stateData.flow === 'dashboard' && readCookie(req.headers.cookie, LOGIN_COOKIE) !== state) {
+        localSendJson(res, 400, { error: 'invalid_state', hint: 'this sign-in was started in a different browser (or its cookie expired); start again at /dashboard/login' }, { 'Set-Cookie': loginCookie('', effectiveIssuer, 0) });
+        return;
+      }
       const b = effectiveIssuer.replace(/\/$/, '');
       // Exchange Google code for id_token. Distinguish network failure (fetch() itself threw) vs
       // a non-2xx from Google (read its `error` field — never `error_description`, which is
@@ -374,10 +439,12 @@ export function createAuthRouteHandlers(
       if (stateData.flow === 'dashboard') {
         // Spec §A: a browser session, never an auth code or bearer. `next` was validated when the
         // login started and is re-validated here (defence in depth — the row is ours, but cheap).
+        // verify-i LOW-2: the Location value is computed (and validated) BEFORE the session exists.
+        const location = safeDashboardNext(redirectUri);
         const { token } = tokenStore.createSession(email);
         res.writeHead(302, {
-          'Location': safeDashboardNext(redirectUri),
-          'Set-Cookie': sessionCookie(token, effectiveIssuer),
+          'Location': location,
+          'Set-Cookie': [sessionCookie(token, effectiveIssuer), loginCookie('', effectiveIssuer, 0)],
           'Cache-Control': 'no-store',
         });
         res.end();
