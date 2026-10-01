@@ -191,6 +191,11 @@ export const ERROR_CATALOG = {
   BLOB_TOO_LARGE: { see: null, hint: 'the blob exceeds the configured maxBlobBytes' },
   BLOB_UPLOAD_TIMEOUT: { see: null, hint: 'the blob upload stalled past the configured idle timeout' },
   CAS_UNAVAILABLE: { see: null, hint: 'this operation requires a configured content store (cas) and none is available' },
+  // Owner decision 2026-10-02: per-principal CAS quota (refused BEFORE storing; detail carries
+  // {usedBytes, limitBytes, requestedBytes, hint}) and the engine's disk floor (TRANSIENT — uploads
+  // and new run admissions only; detail {freeBytes, floorBytes}).
+  QUOTA_EXCEEDED: { see: null, hint: 'this upload would take your content-store usage past your quota; free space with workspace_prune_blobs (dryRun first) or ask an administrator to raise your quota (principal_set_quota)' },
+  DISK_LOW: { see: null, hint: "the engine's disk is below its free-space floor; new uploads and new runs are refused until space is freed (runs already in flight continue) — transient, retry later" },
   SEEDREF_DISABLED: { see: null, hint: 'seedRef requires seedRefAllowlist in engine config' },
   SEEDREF_ALLOWLIST_INVALID: { see: null, hint: 'the configured seedRefAllowlist itself is malformed' },
   SEEDREF_FETCH_FAILED: { see: null, hint: 'the engine-pull git fetch of the seedRef failed' },

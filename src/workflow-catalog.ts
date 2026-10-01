@@ -1067,6 +1067,15 @@ export class WorkflowCatalog {
    *  in-flight run). Deregistered rows are gone from `workflow_versions` already (the single-
    *  deletion-path rule), so nothing extra needs excluding here. Used ONLY as `ModelProber`'s target
    *  set — a malformed/legacy entry is silently skipped by `probeTargets` itself. */
+  /** Owner decision 2026-10-02 (CAS cleanup): every registered version's default seed manifest ref
+   *  and the CAS namespace it was bound from (null on a row bound without one → read as 'local',
+   *  exactly as `RunManager.start()` reads it). These are LIVE roots `workspace_prune_blobs` never
+   *  removes. Deregistered rows are already gone from `workflow_versions`. */
+  seedManifestRoots(): Array<{ ref: string; namespace: string | null }> {
+    return (this._db.prepare('SELECT DISTINCT seed_manifest_ref AS ref, seed_namespace AS namespace FROM workflow_versions WHERE seed_manifest_ref IS NOT NULL')
+      .all() as Array<{ ref: string; namespace: string | null }>);
+  }
+
   distinctModelRefs(): string[] {
     const rows = this._db.prepare('SELECT params FROM workflow_versions WHERE params IS NOT NULL').all() as Array<{ params: string }>;
     const refs = new Set<string>();

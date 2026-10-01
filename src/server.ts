@@ -26,7 +26,7 @@ import type { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { SqliteSchedulerPort, type Schedule, type NewSchedule } from './scheduler.js';
 import type { RefusalReason, RunSummary } from './types.js';
 import { WebhookRegistry, WEBHOOK_HEADERS } from './webhook-registry.js';
-import { CasStore, isValidSha256Hex, isValidNamespace } from './cas-store.js';
+import { CasStore, isValidSha256Hex, isValidNamespace, casNamespaceFor } from './cas-store.js';
 import type { SecretValueProvider } from './secret-resolver.js';
 import { isAllowedHost, isAllowedOrigin, isLoopback, isLoopbackPeer } from './net-guard.js';
 import { parseWorkflowSkeleton, scanAgentCalls } from './workflow-meta.js';
@@ -46,7 +46,9 @@ import Database from 'better-sqlite3';
 import { TokenStore } from './auth/token-store.js';
 import { createAuthRouteHandlers, resolvePrincipal, readSessionCookie, sessionCookie, clearSessionCookie, type AuthConfig } from './auth/auth-service.js';
 import { RoleStore } from './auth/role-store.js';
-import { PrincipalAdmin } from './auth/principal-admin.js';
+import { PrincipalAdmin, type QuotaView } from './auth/principal-admin.js';
+import { CAS_QUOTA_DEFAULTS, DISK_FLOOR_DEFAULTS, type CasQuotaConfig, type DiskFloorConfig } from './cas-quota.js';
+import { DiskFloor } from './disk-floor.js';
 import type { PrincipalRole as Role } from './authz.js';
 import { wwwAuthenticateHeader } from './auth/oauth-metadata.js';
 import { DEFAULT_CEILINGS, type Ceilings, type Effort } from './params/contract.js';
@@ -144,6 +146,13 @@ export interface ServerConfig {
   // v14 (REQ-081, DES-086): max raw body size for POST /assets/blob/:sha (default 256 MiB, min 1 MiB).
   // Distinct from the 8 MiB MCP JSON-RPC body cap — the streaming route is the only path for large blobs.
   maxBlobBytes?: number;
+  // Owner decision 2026-10-02: per-role CAS upload quota in bytes (null = unlimited; defaults user
+  // 1 GiB, author 5 GiB, admin unlimited — a per-principal override set by principal_set_quota wins)
+  // and the disk floor (uploads + new run admissions refused DISK_LOW while free space on the
+  // workRoot/casDir filesystem < max(percent%, bytes); defaults 5% / 5 GiB; both 0 disables).
+  // composeConfig() validates/normalizes the rwe.config.json values (human units allowed there).
+  casQuota?: Partial<CasQuotaConfig>;
+  diskFloor?: Partial<DiskFloorConfig>;
   // v8 Defer B (REQ-057/058): override the webhook registry's on-disk path (default
   // join(workRoot,'webhooks.db')), same convention as schedulerDbPath/continuationDbPath.
   webhookDbPath?: string;
@@ -314,14 +323,27 @@ function refuseNamespaceParam(req: IncomingMessage, res: ServerResponse): boolea
 
 /** The one CAS blob-upload failure -> HTTP-status mapping, shared by the auth-gated and the
  *  no-identity fallback copy of the `POST /assets/blob/:sha` route. */
+/** The upload's declared size (Content-Length), or 0 when absent/unparseable (chunked) — the
+ *  streaming guard then enforces the real size. */
+function declaredUploadBytes(req: IncomingMessage): number {
+  const n = Number(req.headers['content-length']);
+  return Number.isSafeInteger(n) && n >= 0 ? n : 0;
+}
+
 function sendBlobUploadError(res: ServerResponse, err: unknown): void {
   const code = (err as { code?: string }).code ?? 'BLOB_ERROR';
   const message = (err as { message?: string }).message ?? String(err);
   const status = code === 'BLOB_TOO_LARGE' ? 413
     : code === 'BLOB_UPLOAD_TIMEOUT' ? 408
     : code === 'BLOB_SHA_MISMATCH' ? 409
+    // Owner decision 2026-10-02: 507 Insufficient Storage for the caller's own quota (permanent
+    // until it frees space); 503 for the engine-wide disk floor (transient).
+    : code === 'QUOTA_EXCEEDED' ? 507
+    : code === 'DISK_LOW' ? 503
     : 500;
-  sendJson(res, status, { code, message });
+  const detail = (err as { detail?: Record<string, unknown> }).detail;
+  if (status === 507 || status === 503) res.setHeader('Connection', 'close'); // the rest of the body is never read
+  sendJson(res, status, { code, message, ...(status === 507 || status === 503 ? detail ?? {} : {}) });
 }
 
 // v24 (DES-140, ARCH-089, TASK-147): the pre-v24 positional `callTool` (17 params, the old 9-tool
@@ -869,7 +891,12 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // the RunManager (rations every SDK-CLI dispatch) and surfaced read-only via GET /api/status.
   const agentSemaphore = createSemaphore(config?.agentSlots ?? 32);
   // v10 Slice 2 (REQ-064/065): the content-addressed store backing efficient seedManifest assembly.
-  const cas = new CasStore(config?.casDir ?? join(workRoot, 'cas'));
+  const cas = new CasStore(config?.casDir ?? join(workRoot, 'cas'), { clock: () => clock.now() });
+  // Owner decision 2026-10-02: the disk floor over every filesystem the engine writes uploads/run
+  // workspaces to; consulted by every CAS write and every new run admission.
+  const diskFloorCfg = { ...DISK_FLOOR_DEFAULTS, ...config?.diskFloor };
+  const diskFloor = new DiskFloor({ paths: [workRoot, config?.casDir ?? join(workRoot, 'cas')], percent: diskFloorCfg.percent, bytes: diskFloorCfg.bytes, clock: () => clock.now() });
+  cas.setDiskGuard(() => diskFloor.assert());
   // v14 (REQ-081, DES-086): max raw bytes for POST /assets/blob/:sha (default 256 MiB, min 1 MiB).
   const MIN_BLOB_BYTES = 1024 * 1024; // 1 MiB minimum per DES-086
   const DEFAULT_BLOB_BYTES = 256 * 1024 * 1024; // 256 MiB default per DES-086
@@ -912,7 +939,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // substituted for it (a version the run never carried and no admission check ever saw). The PINNED
   // resume path is still ungated, so call-tool.ts's door is still the cover for an ORDINARY
   // run_resume — the two are complementary, not identical. See DES-263 第三次/第四次修訂.
-  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, modelBook, eventSink, confinementPosture: config?.confinementPosture, probeLookup });
+  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, modelBook, eventSink, confinementPosture: config?.confinementPosture, probeLookup, diskFloor });
   // v8 Defer B (REQ-057/058): durable webhook ingress registry, same workRoot convention.
   const webhooks = new WebhookRegistry({ clock, runManager, catalog, dbPath: config?.webhookDbPath ?? join(workRoot, 'webhooks.db') });
   // v22 (DES-113, TASK-108) SHRINK: SubmissionValidatorDeps is now `{catalog}` — the alias/MCP-name/
@@ -1184,7 +1211,18 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         csprng: (n: number) => randomBytes(n),
       })
     : undefined;
-  const principalAdmin = new PrincipalAdmin({ store: new RoleStore(authDb, { clock: () => clock.now() }), principals: config?.principals, authEnabled: !!authCfg });
+  const principalAdmin = new PrincipalAdmin({
+    store: new RoleStore(authDb, { clock: () => clock.now() }), principals: config?.principals, authEnabled: !!authCfg,
+    quota: { defaults: { ...CAS_QUOTA_DEFAULTS, ...config?.casQuota }, usage: (id) => cas.usage(id) },
+  });
+  // Owner decision 2026-10-02: the CAS quota is per NAMESPACE = principal id. 'local' (auth
+  // disabled, or a loopback-exempt caller with no identity — the operator's own rescue path) has no
+  // principal to charge and is unlimited.
+  const quotaViewFor = (ns: string): QuotaView => ns === casNamespaceFor(null)
+    ? { usedBytes: cas.usage(ns), limitBytes: null, source: 'role-default' }
+    : principalAdmin.quotaView(ns);
+  cas.setQuotaResolver((ns) => (ns === casNamespaceFor(null) ? null : principalAdmin.quotaFor(ns).limitBytes));
+  facade.bindQuotaView(quotaViewFor);
   const authHandlers = authCfg && authTokenStore
     ? createAuthRouteHandlers(authCfg, authTokenStore, (email) => principalAdmin.markSeen(email))
     : undefined;
@@ -1436,6 +1474,15 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         sendToolOutcome(await callTool(deps, 'principal_set_role', { id: body['id'], role: body['role'] }, principal));
         return;
       }
+      // Owner decision 2026-10-02: the admin page's quota override — the SAME principal_set_quota
+      // tool (admin-only authorize() row, same audit), same CSRF rule as the role change above.
+      if (reqPath === '/api/principals/quota' && req.method === 'POST') {
+        if (!sameOriginMutation()) { sendJson(res, 403, { code: 'CSRF_REFUSED', error: 'Forbidden: a state-changing dashboard call needs a same-origin Origin or X-Requested-With header' }); return; }
+        let body: Record<string, unknown>;
+        try { body = JSON.parse(await readBody(req, 64 * 1024)) as Record<string, unknown>; } catch { sendJson(res, 400, { code: 'INVALID_ARGUMENT', error: 'INVALID_ARGUMENT: body must be JSON {id, limit}' }); return; }
+        sendToolOutcome(await callTool(deps, 'principal_set_quota', { id: body['id'], limit: body['limit'] ?? null }, principal));
+        return;
+      }
       sendJson(res, 405, { error: 'Method not allowed' });
     };
     const serveDashboardSurface = (principal: Principal): void => {
@@ -1466,12 +1513,13 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       // Who am I (spec §A + owner decision 2026-09-30): the ONE /api route a pending ('none')
       // principal may read — its own id and role, nothing else.
       if (reqPath === '/api/me' && req.method === 'GET') {
+        // Owner decision 2026-10-02: a signed-in (non-pending) caller also sees its own CAS quota.
         sendJson(res, 200, !authCfg || principal.kind === 'auth-disabled' ? { authEnabled: false }
           : principal.kind === 'loopback-exempt' ? { authEnabled: true, loopback: true }
-          : { authEnabled: true, id: principal.id, role: principal.kind, pending: principal.kind === 'none' });
+          : { authEnabled: true, id: principal.id, role: principal.kind, pending: principal.kind === 'none', ...(principal.kind !== 'none' ? { quota: quotaViewFor(principal.id) } : {}) });
         return;
       }
-      if (reqPath === '/api/principals' || reqPath === '/api/principals/role') {
+      if (reqPath === '/api/principals' || reqPath === '/api/principals/role' || reqPath === '/api/principals/quota') {
         servePrincipalsRoute(principal).catch(() => sendJson(res, 500, { error: 'principals route error' }));
         return;
       }
@@ -1611,6 +1659,12 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         sendJson(res, 403, { code: 'ACCOUNT_PENDING_APPROVAL', error: 'ACCOUNT_PENDING_APPROVAL: this account has signed in but has no role yet — an administrator must grant one (principal_set_role or the dashboard admin page)' });
         return true;
       };
+      // Owner decision 2026-10-02: refuse a quota/disk-floor violation from the DECLARED size
+      // (Content-Length) before a byte of the body is read; CasStore re-checks while streaming and
+      // at commit, so a client that under-declares (or sends chunked) still cannot exceed it.
+      const refuseUploadPreflight = (ns: string, sha: string | null): boolean => {
+        try { cas.preflight(ns, sha, declaredUploadBytes(req)); return false; } catch (err) { sendBlobUploadError(res, err); return true; }
+      };
       // Auth gate for blob upload (DES-096: resolve-once before putBlobStream consumes req)
       const blobMatchAuth = req.method === 'POST' ? /^\/assets\/blob\/([^/?]+)/.exec(req.url ?? '') : null;
       if (!dbindExempt && blobMatchAuth) {
@@ -1627,6 +1681,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
             sendJson(res, 400, { code: 'INVALID_BLOB_REQUEST', message: 'invalid sha256 hex' });
             return;
           }
+          if (refuseUploadPreflight(ns, sha)) return;
           cas.putBlobStream(ns, sha, req, { maxBytes: blobMaxBytes, readTimeoutMs: 120_000 }).then((r) => {
             sendJson(res, 200, { sha256: r.sha256, bytes: r.bytes, namespace: ns });
           }).catch((err: unknown) => sendBlobUploadError(res, err));
@@ -1645,6 +1700,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
             sendJson(res, 400, { code: 'INVALID_BLOB_REQUEST', message: 'CAS not configured' });
             return;
           }
+          if (refuseUploadPreflight(ns, null)) return;
           const rawBytes = await readBodyBuffer(req, blobMaxBytes).catch((err: unknown) => {
             if (err instanceof BodyTooLargeError) sendJson(res, 413, { error: err.message, code: err.code });
             else sendJson(res, 500, { error: 'manifest register error' });
@@ -1666,8 +1722,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
             sendJson(res, 409, { code: 'MISSING_BLOBS', missing, message: `${missing.length} blob(s) not found in namespace ${ns}` });
             return;
           }
-          const { sha256: manifestRef } = await cas.putBlob(ns, createHash('sha256').update(rawBytes).digest('hex'), rawBytes);
-          sendJson(res, 200, { seedManifestRef: manifestRef, namespace: ns });
+          // Owner decision 2026-10-02: the manifest's own bytes are a blob — quota/disk-floor apply.
+          const stored = await cas.putBlob(ns, createHash('sha256').update(rawBytes).digest('hex'), rawBytes).catch((err: unknown) => { sendBlobUploadError(res, err); return null; });
+          if (stored === null) return;
+          sendJson(res, 200, { seedManifestRef: stored.sha256, namespace: ns });
         }).catch(() => { sendJson(res, 500, { error: 'manifest auth error' }); });
         return;
       }
@@ -1847,6 +1905,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         return;
       }
       const maxBytes = blobMaxBytes;
+      try { cas.preflight(ns, sha, declaredUploadBytes(req)); } catch (err) { sendBlobUploadError(res, err); return; }
       cas.putBlobStream(ns, sha, req, { maxBytes, readTimeoutMs: 120_000 }).then((r) => {
         sendJson(res, 200, { sha256: r.sha256, bytes: r.bytes, namespace: ns });
       }).catch((err: unknown) => sendBlobUploadError(res, err));
@@ -1863,6 +1922,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         sendJson(res, 400, { code: 'INVALID_BLOB_REQUEST', message: 'CAS not configured or invalid namespace' });
         return;
       }
+      try { cas.preflight(ns, null, declaredUploadBytes(req)); } catch (err) { sendBlobUploadError(res, err); return; }
       readBodyBuffer(req, blobMaxBytes).then(async (rawBytes) => {
         let parsed: unknown;
         try { parsed = JSON.parse(rawBytes.toString('utf8')); } catch {
@@ -1885,6 +1945,8 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         sendJson(res, 200, { seedManifestRef: manifestRef, namespace: ns });
       }).catch((err: unknown) => {
         if (err instanceof BodyTooLargeError) { sendJson(res, 413, { error: err.message, code: err.code }); return; }
+        const code = (err as { code?: unknown }).code;
+        if (code === 'QUOTA_EXCEEDED' || code === 'DISK_LOW') { sendBlobUploadError(res, err); return; }
         sendJson(res, 500, { error: 'manifest register error' });
       });
       return;

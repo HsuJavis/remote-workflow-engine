@@ -70,9 +70,10 @@ describe('the six workspace_* tools (IT-117, DES-155)', () => {
     return (json.result?.tools ?? []).map((t) => t.name);
   }
 
-  const TOOLS = ['workspace_diff', 'workspace_push', 'workspace_pull', 'workspace_list', 'workspace_delete', 'workspace_purge'];
+  // Owner decision 2026-10-02: workspace_prune_blobs (the CAS cleanup) joins as the seventh.
+  const TOOLS = ['workspace_diff', 'workspace_push', 'workspace_pull', 'workspace_list', 'workspace_delete', 'workspace_purge', 'workspace_prune_blobs'];
 
-  it('the workspace entity is exactly these six tools in tool-specs.ts (no seventh, none renamed)', () => {
+  it('the workspace entity is exactly these seven tools in tool-specs.ts (no eighth, none renamed)', () => {
     const declared = (TOOL_SPECS as ReadonlyArray<{ name: string; entity: string }>)
       .filter((s) => s.entity === 'workspace')
       .map((s) => s.name);

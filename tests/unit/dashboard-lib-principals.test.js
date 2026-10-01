@@ -113,3 +113,29 @@ describe("pending approval ('none')", () => {
     expect(roleChangeValue('none')).toBe('none');
   });
 });
+
+// Owner decision 2026-10-02: the admin page shows each account's CAS usage / effective limit and
+// whether the limit is an override; the quota input maps to principal_set_quota's `limit`.
+describe('principal quota projection', () => {
+  it('row carries quotaText "used / limit" and the override state', async () => {
+    const { principalRows: rowsOf } = await import('../../src/dashboard/lib/principals.js');
+    const rows = rowsOf({ authEnabled: true, principals: [
+      { id: 'a@x', role: 'author', source: 'config', firstSeenAt: null, lastSeenAt: null, quota: { usedBytes: 1536, limitBytes: 5 * 1024 ** 3, source: 'role-default' } },
+      { id: 'b@x', role: 'user', source: 'config', firstSeenAt: null, lastSeenAt: null, quota: { usedBytes: 0, limitBytes: null, source: 'override', updatedBy: 'root@x' } },
+      { id: 'c@x', role: 'user', source: 'config', firstSeenAt: null, lastSeenAt: null },
+    ] }, 'en');
+    expect(rows[0]).toMatchObject({ quotaText: '1.5 KiB / 5 GiB', quotaOverride: false });
+    expect(rows[1]).toMatchObject({ quotaText: '0 B / unlimited', quotaOverride: true });
+    expect(rows[1].quotaSourceText).toContain('root@x');
+    expect(rows[2].quotaText).toBe('');
+  });
+
+  it('quotaLimitValue: blank = clear (null); "unlimited"/size strings pass through; digits become a number', async () => {
+    const { quotaLimitValue } = await import('../../src/dashboard/lib/principals.js');
+    expect(quotaLimitValue('')).toBeNull();
+    expect(quotaLimitValue('  ')).toBeNull();
+    expect(quotaLimitValue('2GiB')).toBe('2GiB');
+    expect(quotaLimitValue('unlimited')).toBe('unlimited');
+    expect(quotaLimitValue('4096')).toBe(4096);
+  });
+});

@@ -424,6 +424,11 @@ const PROBES: Record<string, unknown> = {
   // rwe.config.json publicBaseUrl must reach ServerConfig or the production entrypoint keeps
   // answering a localhost URL no remote client can reach.
   publicBaseUrl: 'https://rwe.example.com',
+  // Owner decision 2026-10-02: per-role CAS quota and the disk floor. Fully-specified, already
+  // normalized (bytes; null = unlimited), so the validated value composeConfig() forwards is
+  // `toEqual` to what went in.
+  casQuota: { user: 1000, author: 2000, admin: null },
+  diskFloor: { percent: 10, bytes: 4096 },
 };
 
 describe('every KNOWN_FILE_CONFIG_KEYS entry is probed or excluded (UT-219, defect D7)', () => {
@@ -524,5 +529,20 @@ describe('modelProbe is validated and defaulted by composeConfig (#73)', () => {
   it('a bad value refuses to start, naming the key', async () => {
     await expect(composeConfig({ gateway: 'direct-fetch', modelProbe: { intervalMs: 5 } } as any, FAKE_DEPS)).rejects.toThrow(/modelProbe/);
     await expect(composeConfig({ gateway: 'direct-fetch', modelProbe: { enabled: 'yes' } } as any, FAKE_DEPS)).rejects.toThrow(/modelProbe/);
+  });
+});
+
+// Owner decision 2026-10-02: casQuota/diskFloor accept human units and partial objects in
+// rwe.config.json — composeConfig() normalizes them (bytes, defaults filled) and refuses boot on a
+// malformed value (ADR-028 fail-closed), never silently dropping it.
+describe('casQuota / diskFloor normalization at composeConfig()', () => {
+  it('human units and partial objects are normalized with defaults filled', async () => {
+    const cfg = await composeConfig({ casQuota: { user: '2GiB' }, diskFloor: { bytes: '1GiB' }, gateway: 'direct-fetch' } as any, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['casQuota']).toEqual({ user: 2 * 1024 ** 3, author: 5 * 1024 ** 3, admin: null });
+    expect((cfg as Record<string, unknown>)['diskFloor']).toEqual({ percent: 5, bytes: 1024 ** 3 });
+  });
+  it('a malformed value refuses to start', async () => {
+    await expect(composeConfig({ casQuota: { user: 'lots' }, gateway: 'direct-fetch' } as any, FAKE_DEPS)).rejects.toThrow(/casQuota/);
+    await expect(composeConfig({ diskFloor: { percent: 500 }, gateway: 'direct-fetch' } as any, FAKE_DEPS)).rejects.toThrow(/diskFloor/);
   });
 });

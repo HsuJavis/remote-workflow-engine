@@ -216,8 +216,12 @@
   都要登入，每位使用者只看得到對應 MCP 工具會給他的資料（自己的 run、非擁有者只看 release 版）；
   admin 可用 `principals_list`／`principal_set_role` 或 dashboard「管理」分頁不重啟改角色（設定檔的
   admin 鎖定、不能把最後一個 admin 降級）。見 DEPLOY.md §1b「執行期角色管理」「Dashboard 登入」。
+- **CAS 上傳配額與磁碟水位**（2026-10-02）：每個帳號上傳到內容儲存庫的總量有上限（預設 user 1 GiB、
+  author 5 GiB、admin 不限，`casQuota` 可調；admin 可用 `principal_set_quota` 或管理分頁逐帳號覆寫），
+  超過回 `QUOTA_EXCEEDED`；用 `workspace_prune_blobs` 清掉沒被已註冊版本用到的舊 blob。磁碟可用空間低於
+  `diskFloor`（預設 max(5%, 5 GiB)）時，上傳與新 run 一律暫時拒絕 `DISK_LOW`。見 DEPLOY.md §1b。
 
-共 **38 個** MCP 工具（權威清單見 `src/tool-specs.ts`）。
+共 **40 個** MCP 工具（權威清單見 `src/tool-specs.ts`）。
 
 ## 前置需求
 

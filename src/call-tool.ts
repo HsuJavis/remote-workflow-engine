@@ -272,6 +272,7 @@ export async function callTool(
     // ---- workspace (6) ----
     case 'workspace_diff': return facade.workspaceDiff(a as never, principal);
     case 'workspace_push': return facade.workspacePush(a as never, principal);
+    case 'workspace_prune_blobs': return facade.workspacePruneBlobs(a as never, principal);
     case 'workspace_pull': return facade.workspacePull(a as never, principal, crossPrincipalRead, actor);
     case 'workspace_list': return facade.workspaceList(a as never, principal, crossPrincipalRead, actor);
     case 'workspace_delete': return facade.workspaceDelete(a as never, principal);
@@ -396,6 +397,12 @@ export async function callTool(
     case 'principal_set_role': {
       if (!deps.principals) return refusalEnvelope('INTERNAL_ERROR', 'INTERNAL_ERROR: the principal role store is not wired on this engine');
       const out = deps.principals.setRole(a['id'] as string, (a['role'] ?? null) as 'admin' | 'author' | 'user' | 'none' | null, actor ?? 'local');
+      if (!out.ok) return refusalEnvelope(out.code, out.reason);
+      return { runId: '', status: 'completed', result: out.entry };
+    }
+    case 'principal_set_quota': {
+      if (!deps.principals) return refusalEnvelope('INTERNAL_ERROR', 'INTERNAL_ERROR: the principal role store is not wired on this engine');
+      const out = deps.principals.setQuota(a['id'] as string, a['limit'] ?? null, actor ?? 'local');
       if (!out.ok) return refusalEnvelope(out.code, out.reason);
       return { runId: '', status: 'completed', result: out.entry };
     }
