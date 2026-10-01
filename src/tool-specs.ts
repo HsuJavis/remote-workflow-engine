@@ -253,6 +253,11 @@ function pushMode(args: any): 'cas' | 'asset' | 'global' | 'stdio' | 'invalid' {
   return 'invalid';
 }
 
+/** Owner decision 2026-10-02: `workspace_prune_blobs` on ANOTHER namespace is admin-only. */
+function pruneMode(args: any): 'own' | 'other' {
+  return args && typeof args === 'object' && 'namespace' in args ? 'other' : 'own';
+}
+
 function listMode(args: any): 'run' | 'workflow' | 'invalid' {
   if (args && typeof args === 'object' && 'runId' in args) return 'run';
   if (args && typeof args === 'object' && 'workflow' in args && 'kind' in args) return 'workflow';
@@ -665,7 +670,7 @@ export const TOOL_SPECS = [
     // registration only WARNS about a declared-but-unprovisioned mcp/skill name (workflow_register's
     // own row, above); admission REFUSES it here, before any side effect, naming the label + the
     // missing name(s) — push it (workspace_push) then re-run.
-    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'CHANNEL_UNPUBLISHED', 'NOT_RUNNABLE', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'PARAM_LOCKED', 'PARAM_UNKNOWN', 'PARAM_OUT_OF_RANGE', 'UNKNOWN_AGENT_LABEL', 'UNKNOWN_MODEL', 'AGENT_UNDECLARED', 'LEGACY_REREGISTER', 'INVALID_SEED_SPEC', 'SEED_SOURCE_CONFLICT', 'SEEDREF_DISABLED', 'EGRESS_DENIED', 'CAS_UNAVAILABLE', 'MISSING_BLOBS', 'RUN_ADMISSION_LIMIT', 'CONFINEMENT_UNAVAILABLE', 'MCP_NOT_PROVISIONED', 'SKILL_NOT_PROVISIONED'],
+    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'CHANNEL_UNPUBLISHED', 'NOT_RUNNABLE', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'PARAM_LOCKED', 'PARAM_UNKNOWN', 'PARAM_OUT_OF_RANGE', 'UNKNOWN_AGENT_LABEL', 'UNKNOWN_MODEL', 'AGENT_UNDECLARED', 'LEGACY_REREGISTER', 'INVALID_SEED_SPEC', 'SEED_SOURCE_CONFLICT', 'SEEDREF_DISABLED', 'EGRESS_DENIED', 'CAS_UNAVAILABLE', 'MISSING_BLOBS', 'RUN_ADMISSION_LIMIT', 'DISK_LOW', 'CONFINEMENT_UNAVAILABLE', 'MCP_NOT_PROVISIONED', 'SKILL_NOT_PROVISIONED'],
     seeAlso: ['workflow_publish', 'run_status', 'run_result'],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
     fixture: {
@@ -737,7 +742,7 @@ export const TOOL_SPECS = [
     description: 'Resume a suspended or interrupted run. A stopped run cannot be resumed — stop is final; use run_suspend instead of run_stop if you may want to continue the run later.',
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
-    errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'LEGACY_REREGISTER', 'PARAM_SECRET_UNAVAILABLE', 'CONFINEMENT_UNAVAILABLE'],
+    errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'LEGACY_REREGISTER', 'PARAM_SECRET_UNAVAILABLE', 'CONFINEMENT_UNAVAILABLE', 'DISK_LOW'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run' } as AuthzRow,
     fixture: {
@@ -814,7 +819,9 @@ export const TOOL_SPECS = [
   // ---- workspace (6) ----
   {
     name: 'workspace_diff', entity: 'workspace', key: null,
-    description: "Diff a manifest against the caller's own content-addressed blob pool.",
+    description: "Diff a manifest against the caller's own content-addressed blob pool. Returns `{ missing, quota }`: `missing` = the sha256s you still need to upload; " +
+      "`quota` = your own content-store quota `{ usedBytes, limitBytes, source }` (limitBytes null = unlimited; source 'role-default' or 'override' set by an administrator). " +
+      "Usage is the total size of every blob in YOUR pool (a blob other principals also hold still counts fully for you); an upload that would exceed limitBytes is refused QUOTA_EXCEEDED before anything is stored — free space with workspace_prune_blobs.",
     // v26 Gate 7.5 round 1 (defect D1): item schema — see ARRAY_ITEMS_RULE below.
     inputSchema: schema({ manifest: { type: 'array', description: 'The files you intend to seed — each element is {path, sha256}. Only the sha256 is compared; `missing` answers which hashes are not in your pool yet.', items: { type: 'object', required: ['sha256'], properties: { path: { type: 'string' }, sha256: { type: 'string', pattern: '^[0-9a-f]{64}$' } } } } }, ['manifest']),
     outputSchema: OUT,
@@ -826,7 +833,8 @@ export const TOOL_SPECS = [
   {
     name: 'workspace_push', entity: 'workspace', key: null,
     description: 'Push content: a CAS blob into the caller\'s own pool, or a workflow-owned asset (skill/mcp). Any runId argument is refused — see workflow_authoring_guide. ' +
-      'A CAS blob/manifest is content-addressed within the caller\'s own pool and is retained indefinitely once accepted — there is no delete for it (workspace_delete only removes workflow/global assets, never a CAS blob or manifest). ' +
+      'A CAS blob/manifest is content-addressed within the caller\'s own pool and counts against the caller\'s content-store quota (see workspace_diff for usedBytes/limitBytes): a push that would exceed it is refused QUOTA_EXCEEDED {usedBytes, limitBytes, requestedBytes, hint} before anything is stored, and any push is refused DISK_LOW {freeBytes, floorBytes} (transient — retry later) while the engine\'s disk is below its free-space floor. ' +
+      'Accepted blobs stay until removed with workspace_prune_blobs (which only removes blobs no registered workflow version\'s seed needs and that were not used recently) — workspace_delete never removes a CAS blob or manifest. ' +
       // Issue #102 (asset squatting): registration is not a precondition asset PUSH used to
       // enforce — a skill/mcp pushed under a name nobody had registered yet was silently adopted by
       // whoever registered that name later (prompt injection via SKILL.md). `workflow` on a
@@ -849,7 +857,7 @@ export const TOOL_SPECS = [
     // file through `pathVerdict`'s own CLAUDE_HOOKS strip, not through this code. Advertising a
     // code the tool cannot answer teaches a cold model to branch on something that never arrives —
     // the same reason `WORKFLOW_ALREADY_EXISTS` came off `workflow_register`.
-    errors: ['INVALID_ARGUMENT', 'RESERVED_PREFIX', 'WORKSPACE_ESCAPE', 'BLOB_HASH_MISMATCH', 'FORBIDDEN_ROLE', 'NOT_WORKFLOW_OWNER', 'WORKFLOW_NOT_FOUND', 'MCP_PROBE_FAILED', 'EGRESS_DENIED'],
+    errors: ['INVALID_ARGUMENT', 'RESERVED_PREFIX', 'WORKSPACE_ESCAPE', 'BLOB_HASH_MISMATCH', 'FORBIDDEN_ROLE', 'NOT_WORKFLOW_OWNER', 'WORKFLOW_NOT_FOUND', 'MCP_PROBE_FAILED', 'EGRESS_DENIED', 'QUOTA_EXCEEDED', 'DISK_LOW'],
     seeAlso: ['workflow_authoring_guide'],
     authz: {
       mode: pushMode,
@@ -925,7 +933,7 @@ export const TOOL_SPECS = [
     description: "Delete files from a run's workspace, an asset under a workflow, or (admin) a global asset. " +
       "Asset mode ({workflow or scope:'global', kind, name}) answers {deleted:false} rather than an error when nothing matched the given name — deleting is idempotent, not an existence check. " +
       "Run mode ({runId, paths}) processes EVERY path in the array independently and is never all-or-nothing: each input path lands in exactly one of the response's deleted/missing/rejected lists, so one bad path (escapes the workspace, absolute, a symlink out, etc.) never causes the other, valid paths in the same call to go undeleted and unreported. " +
-      "Does not, and cannot, delete a CAS blob or manifest uploaded via workspace_push — those are content-addressed within the caller's own pool and are retained indefinitely once accepted.",
+      "Does not, and cannot, delete a CAS blob or manifest uploaded via workspace_push or POST /assets/* — those are content-addressed within the caller's own pool; remove unused ones with workspace_prune_blobs.",
     // v26 Gate 7.5 round 1 (defect D1): item schema — see ARRAY_ITEMS_RULE below.
     // Issue #92 part B: `kind`/`scope` are closed enums of the actually-supported AssetKind/
     // AssetScope values — see the matching comment on workspace_push's mode-B branch above.
@@ -1055,7 +1063,7 @@ export const TOOL_SPECS = [
       `${WEBHOOK_HEADERS.signature} = "sha256=" + hex HMAC-SHA256 of the RAW body, keyed with the returned secret (the timestamp is NOT part of what is signed); ` +
       `${WEBHOOK_HEADERS.timestamp} = an ISO-8601 timestamp, refused 401 if it differs from server time by more than ${REPLAY_WINDOW_MS / 1000}s in either direction; ` +
       `${WEBHOOK_HEADERS.deliveryId} (OPTIONAL — omit it and there is no dedup at all, every POST starts a new run) = a caller-chosen dedup id. Replay semantics (issue #88): a delivery this engine actually ACCEPTED (202) or PERMANENTLY refused (403, or 409 from an admission-time refusal below) replays that SAME outcome for any later delivery carrying the SAME id — retrying a refusal needs a NEW id after fixing the cause, never the same one. A 503/500, or a 409 CLAIM-STATE refusal (the claimed workflow cannot be fired right now), is transient and is NOT recorded, so retrying with the SAME id reprocesses for real. ` +
-      `Responses: 202 {runId} accepted, a run started. 200 {replayed:true, runId?} this exact deliveryId was already resolved — the body reports the ORIGINAL outcome, not a fresh delivery. 401 bad signature, or a missing/stale timestamp. 403 the webhook is disabled (checked BEFORE the signature, so a disabled hook answers 403 even for an unsigned/badly-signed POST), or Bash confinement unavailable for a remote-sourced run — a PERMANENT admission refusal that replays the same 403 for this deliveryId. 404 unknown webhook id. 409 EITHER the claimed workflow cannot be fired right now (unclaimed / deregistered / channel unpublished / dropped from the released version's triggers) — a CLAIM-STATE refusal, never recorded, retryable once fixed — OR one of ${ADMISSION_PERMANENT_CODES.length} PERMANENT admission-time refusals RunManager.start() itself can throw (a bad/locked/unknown parameter, an unknown model, an unprovisioned mcp/skill asset, a legacy/unrunnable/missing workflow version, a malformed seed spec — see run_start's own errors[] for the exhaustive list), which DOES replay the SAME 409 + {code} for this deliveryId, same as 403 above — retry needs a NEW id after fixing the cause. 503 transient: over the run-admission concurrency cap, or a concurrent duplicate of the SAME deliveryId still in flight — retry. 500 an admission fault this engine could not otherwise classify (e.g. a content-store outage) — transient, NOT recorded, retry with the SAME id reprocesses for real.`,
+      `Responses: 202 {runId} accepted, a run started. 200 {replayed:true, runId?} this exact deliveryId was already resolved — the body reports the ORIGINAL outcome, not a fresh delivery. 401 bad signature, or a missing/stale timestamp. 403 the webhook is disabled (checked BEFORE the signature, so a disabled hook answers 403 even for an unsigned/badly-signed POST), or Bash confinement unavailable for a remote-sourced run — a PERMANENT admission refusal that replays the same 403 for this deliveryId. 404 unknown webhook id. 409 EITHER the claimed workflow cannot be fired right now (unclaimed / deregistered / channel unpublished / dropped from the released version's triggers) — a CLAIM-STATE refusal, never recorded, retryable once fixed — OR one of ${ADMISSION_PERMANENT_CODES.length} PERMANENT admission-time refusals RunManager.start() itself can throw (a bad/locked/unknown parameter, an unknown model, an unprovisioned mcp/skill asset, a legacy/unrunnable/missing workflow version, a malformed seed spec — see run_start's own errors[] for the exhaustive list), which DOES replay the SAME 409 + {code} for this deliveryId, same as 403 above — retry needs a NEW id after fixing the cause. 503 transient: over the run-admission concurrency cap, the engine's disk below its free-space floor ({code: DISK_LOW}), or a concurrent duplicate of the SAME deliveryId still in flight — retry. 500 an admission fault this engine could not otherwise classify (e.g. a content-store outage) — transient, NOT recorded, retry with the SAME id reprocesses for real.`,
     // v24 Gate 7.5 (D-1) made `workflow` optional and dropped the create-time catalog check; v24
     // orchestrator adjudication #8 (H-2, issue #56) removes the argument outright — see the
     // schedule_create row above for the reasoning (REQ-115 clause 1, ADR-026 S-5, ARCH-099). A
@@ -1353,17 +1361,18 @@ export const TOOL_SPECS = [
     description:
       'Admin only. List every principal (a Google account email) this engine knows and the role it resolves to NOW. ' +
       'Known = the rwe.config.json `principals` entries, every runtime role override, and everyone who has ever signed in (MCP bearer/refresh token or dashboard session). ' +
-      'Returns `{ authEnabled, principals: [{ id, role, source, firstSeenAt, lastSeenAt, updatedBy?, updatedAt? }] }`. ' +
+      'Returns `{ authEnabled, principals: [{ id, role, source, firstSeenAt, lastSeenAt, updatedBy?, updatedAt?, quota }] }`. ' +
       'role is admin|author|user|none (admin: everything incl. other principals\' runs and these tools; author: register/publish workflows; user: run published workflows and read their own runs; ' +
       'none: signed in but PENDING APPROVAL — every tool answers ACCOUNT_PENDING_APPROVAL; grant with principal_set_role). ' +
       "source says where the role comes from, in precedence order: 'config-locked' (an admin in rwe.config.json — cannot be changed at runtime), " +
       "'db' (a runtime override set by principal_set_role; updatedBy/updatedAt say who and when), 'config' (the id's own rwe.config.json entry), " +
       "'default' (no entry: the config '*' role, else none = pending approval). firstSeenAt/lastSeenAt are ISO timestamps of sign-ins (null = never signed in since this was recorded). " +
+      "quota = the principal's content-store (uploaded blob) quota { usedBytes, limitBytes (null = unlimited), source, updatedBy?, updatedAt? }: source 'override' (set by principal_set_quota) or 'role-default' (rwe.config.json casQuota for its role — defaults user 1 GiB, author 5 GiB, admin unlimited; a pending principal 0). " +
       'With authEnabled false the engine runs without authentication and roles are stored but not enforced.',
     inputSchema: { ...schema({}), additionalProperties: false },
     outputSchema: OUT,
     errors: ['FORBIDDEN_ROLE'] as ErrorCode[],
-    seeAlso: ['principal_set_role'] as string[],
+    seeAlso: ['principal_set_role', 'principal_set_quota'] as string[],
     authz: { minRole: 'admin', ownership: 'none' } as AuthzRow,
     fixture: { happy: {}, errors: {} },
   },
@@ -1388,6 +1397,58 @@ export const TOOL_SPECS = [
     seeAlso: ['principals_list'] as string[],
     authz: { minRole: 'admin', ownership: 'none' } as AuthzRow,
     fixture: { happy: { id: 'fixture-principal@example.com', role: 'author' }, errors: { INVALID_ARGUMENT: { id: 'fixture-principal@example.com', role: 'owner' } } },
+  },
+  // Owner decision 2026-10-02: per-principal content-store quota override — a sibling of
+  // principal_set_role (not an extra argument on it) so the role lockout rules and the quota stay
+  // two independent, separately audited changes.
+  {
+    name: 'principal_set_quota', entity: 'principal', key: 'id' as const,
+    description:
+      "Admin only. Set or clear a principal's content-store quota OVERRIDE — the cap on the total size of blobs it may upload (POST /assets/blob, POST /assets/manifest, workspace_push blob mode, engine-fetched seedRef trees). Effective on its very next upload, no restart. " +
+      '`limit` = a byte count (integer), a size string ("500MiB", "5GiB", "2GB" — KiB/MiB/GiB/TiB binary, KB/MB/GB/TB decimal), or "unlimited"; null removes the override so the principal falls back to its role default (rwe.config.json casQuota: user 1 GiB, author 5 GiB, admin unlimited unless configured; a pending principal 0). ' +
+      'Lowering a limit below current usage deletes nothing — further uploads are refused QUOTA_EXCEEDED until the principal frees space (workspace_prune_blobs). The id need not have signed in yet. ' +
+      'Returns the principal\'s updated entry (same shape as principals_list, incl. quota {usedBytes, limitBytes, source}). Audited like a role change: the override row records updatedBy/updatedAt and the engine logs a principal_quota_changed line.',
+    inputSchema: {
+      ...schema({
+        id: { type: 'string', minLength: 1, maxLength: 320, description: "The principal's id — the Google account email exactly as principals_list shows it. '*' is refused (edit rwe.config.json casQuota for role defaults)." },
+        limit: { type: ['integer', 'string', 'null'], description: 'Bytes (integer >= 0), a size string like "5GiB", "unlimited", or null to remove the override.' },
+      }, ['id', 'limit']),
+      additionalProperties: false,
+    },
+    outputSchema: OUT,
+    errors: ['INVALID_ARGUMENT', 'FORBIDDEN_ROLE'] as ErrorCode[],
+    seeAlso: ['principals_list', 'workspace_prune_blobs'] as string[],
+    authz: { minRole: 'admin', ownership: 'none' } as AuthzRow,
+    fixture: { happy: { id: 'fixture-principal@example.com', limit: '2GiB' }, errors: { INVALID_ARGUMENT: { id: 'fixture-principal@example.com', limit: 'plenty' } } },
+  },
+  // Owner decision 2026-10-02: the content-store cleanup.
+  {
+    name: 'workspace_prune_blobs', entity: 'workspace', key: null,
+    description:
+      "Free content-store quota: remove blobs from YOUR OWN pool (the blobs and manifests you uploaded via POST /assets/blob, POST /assets/manifest or workspace_push blob mode) that nothing needs. DEFAULT IS A DRY RUN — pass dryRun:false to actually remove. " +
+      'A blob in your pool is removed only when BOTH hold: (1) it is not a live root — not the seedManifestRef of any workflow version registered from your pool (workflow_register({seedManifestRef})), nor any blob that manifest lists; and (2) it has not been USED for olderThanDays days (default 30, min 1) — "used" = uploaded again, named in a manifest registration, checked by workspace_diff, or read by a run admission (run_start with seedManifest/seedManifestRef, or a version default seed). ' +
+      'Removing a blob from your pool lowers your usage by its size; the file itself is deleted from the engine\'s disk only when no other principal\'s pool still holds it. Runs already started are unaffected (their workspace is already materialized). ' +
+      'Returns `{ namespace, dryRun, olderThanDays, refs: [{sha256, bytes, lastUsedAt}] (first 500), refsCount, truncated, freedBytes, blobFilesDeleted, diskBytesFreed, quota: {usedBytes, limitBytes, source} }` — on a dry run refs/freedBytes are what WOULD be removed and nothing changes. ' +
+      '`namespace` (admin only) prunes another principal\'s pool (its id as principals_list shows it, or "local" for uploads made with authentication disabled); any other caller passing it is refused FORBIDDEN_ROLE.',
+    inputSchema: {
+      ...schema({
+        dryRun: { type: 'boolean', description: 'Default true: report only. false = remove.' },
+        olderThanDays: { type: 'integer', minimum: 1, maximum: 3650, description: 'Grace window in days (default 30): a blob used more recently than this is kept.' },
+        namespace: { type: 'string', minLength: 1, maxLength: 320, description: "Admin only: the principal id whose pool to prune (default: your own)." },
+      }),
+      additionalProperties: false,
+    },
+    outputSchema: OUT,
+    errors: ['INVALID_ARGUMENT', 'FORBIDDEN_ROLE', 'CAS_UNAVAILABLE'] as ErrorCode[],
+    seeAlso: ['workspace_diff', 'workspace_push', 'principal_set_quota'] as string[],
+    authz: {
+      mode: pruneMode,
+      rows: {
+        own: { minRole: 'user', ownership: 'none' },
+        other: { minRole: 'admin', ownership: 'none' },
+      },
+    } as ToolAuthz,
+    fixture: { happy: {}, errors: { INVALID_ARGUMENT: { olderThanDays: 0 } } },
   },
 ] as const satisfies readonly ToolSpec[];
 

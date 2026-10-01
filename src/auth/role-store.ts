@@ -13,6 +13,8 @@ const SEEN_WRITE_EVERY_MS = 60_000;
 
 export interface RoleOverrideRow { id: string; role: Role; updatedBy: string; updatedAt: string }
 export interface SeenRow { id: string; firstSeenAt: string; lastSeenAt: string }
+/** Owner decision 2026-10-02: a per-principal CAS quota override. `limitBytes` null = unlimited. */
+export interface QuotaOverrideRow { id: string; limitBytes: number | null; updatedBy: string; updatedAt: string }
 
 export class RoleStore {
   private readonly _db: Database.Database;
@@ -33,6 +35,12 @@ export class RoleStore {
         id TEXT PRIMARY KEY,
         firstSeenAt TEXT NOT NULL,
         lastSeenAt TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS principal_quotas (
+        id TEXT PRIMARY KEY,
+        limitBytes INTEGER,
+        updatedBy TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
       );
     `);
   }
@@ -66,6 +74,28 @@ export class RoleStore {
     return rows.filter((r) => (ROLES as readonly string[]).includes(r.role));
   }
 
+  /** Owner decision 2026-10-02: the CAS quota override for `id` (limitBytes null = unlimited), or
+   *  undefined when none is set (the role default applies). */
+  getQuotaOverride(id: string): QuotaOverrideRow | undefined {
+    return this._db.prepare('SELECT id, limitBytes, updatedBy, updatedAt FROM principal_quotas WHERE id = ?').get(id) as QuotaOverrideRow | undefined;
+  }
+
+  /** Set a byte limit, `'unlimited'`, or remove (`null`) the quota override for `id`. Storage only. */
+  setQuotaOverride(id: string, limit: number | 'unlimited' | null, updatedBy: string): void {
+    if (limit === null) {
+      this._db.prepare('DELETE FROM principal_quotas WHERE id = ?').run(id);
+      return;
+    }
+    this._db.prepare(
+      'INSERT INTO principal_quotas (id, limitBytes, updatedBy, updatedAt) VALUES (?, ?, ?, ?) ' +
+      'ON CONFLICT(id) DO UPDATE SET limitBytes = excluded.limitBytes, updatedBy = excluded.updatedBy, updatedAt = excluded.updatedAt'
+    ).run(id, limit === 'unlimited' ? null : limit, updatedBy, this._iso());
+  }
+
+  quotaOverrides(): QuotaOverrideRow[] {
+    return this._db.prepare('SELECT id, limitBytes, updatedBy, updatedAt FROM principal_quotas ORDER BY id').all() as QuotaOverrideRow[];
+  }
+
   /** Record that `id` authenticated just now (throttled per id). */
   markSeen(id: string): void {
     const now = this._clock();
@@ -83,12 +113,13 @@ export class RoleStore {
     return this._db.prepare('SELECT id, firstSeenAt, lastSeenAt FROM principals_seen ORDER BY id').all() as SeenRow[];
   }
 
-  /** Every principal this DB knows of: overrides, the seen ledger, and — so principals who logged
+  /** Every principal this DB knows of: role and quota overrides, the seen ledger, and — so principals who logged
    *  in before this ledger existed are not invisible — every holder of a bearer token, refresh
    *  token or dashboard session (those tables exist only when auth is enabled). */
   knownPrincipals(): string[] {
     const ids = new Set<string>();
     for (const r of this.overrides()) ids.add(r.id);
+    for (const r of this.quotaOverrides()) ids.add(r.id);
     for (const r of this.seen()) ids.add(r.id);
     for (const table of ['bearer_tokens', 'refresh_tokens', 'dashboard_sessions']) {
       try {

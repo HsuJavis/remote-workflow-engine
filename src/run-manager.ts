@@ -146,6 +146,10 @@ export interface RunManagerDeps {
   /** Issue #73 (d): the latest model-probe result for a resolved (provider, model). Omitted -> no
    *  probe-based admission warnings. */
   probeLookup?: (provider: string, model: string) => ProbeResult | undefined;
+  /** Owner decision 2026-10-02: the disk floor — `assert()` throws DISK_LOW while the engine's disk
+   *  is below it. Checked at every NEW admission (start, resume, nested workflow()); runs in flight
+   *  are never touched. Omitted -> never refuses. */
+  diskFloor?: { assert(): void };
 }
 
 /** v25 (DES-168, REQ-120, owner ruling): the default per-run in-flight agent() cap. Explicit and
@@ -214,7 +218,8 @@ export function admissionRefusal(input: {
 // delivery id must answer the SAME 409, never silently upgrade to 2xx once the sender's original
 // (still-bad) request is retried. 403 PERMANENT for confinement (its own long-standing code, kept).
 // 503 RETRYABLE for `RUN_ADMISSION_LIMIT` (a capacity read, not a policy verdict — the exact same
-// request can succeed on the very next tick). Every other catalogued code — `CAS_UNAVAILABLE`,
+// request can succeed on the very next tick) and `DISK_LOW` (owner decision 2026-10-02: the disk
+// floor — same shape, the request succeeds once space is freed). Every other catalogued code — `CAS_UNAVAILABLE`,
 // `DANGLING_CHANNEL`, or anything not in this table at all — falls through to 500 RETRYABLE: an
 // operator-side/engine fault, not a caller mistake, so the safer failure mode is "release the id,
 // let a retry reprocess" (worst case: a few pointless retries) rather than "record a permanent
@@ -222,6 +227,7 @@ export function admissionRefusal(input: {
 const ADMISSION_STATUS: Partial<Record<ErrorCode, 403 | 409 | 503>> = {
   CONFINEMENT_UNAVAILABLE: 403,
   RUN_ADMISSION_LIMIT: 503,
+  DISK_LOW: 503,
   WORKFLOW_NOT_FOUND: 409,
   VERSION_NOT_FOUND: 409,
   CHANNEL_UNPUBLISHED: 409,
@@ -546,6 +552,7 @@ export class RunManager {
   /** v37 (ARCH-182, DES-263, TASK-258): this engine's MEASURED confinement posture — read by
    *  `admissionRefusal()` at the top of `start()`. */
   private readonly _confinementPosture: 'confined' | 'unconfined' | undefined;
+  private readonly _diskFloor: { assert(): void } | undefined;
   private readonly _probeLookup: ((provider: string, model: string) => ProbeResult | undefined) | undefined;
   /** Issue #73 (d): non-fatal admission warnings per started run, read back by `run_start`. */
   private readonly _admissionWarnings = new Map<string, Array<ModelToolWarning | ModelRefWarning>>();
@@ -605,6 +612,7 @@ export class RunManager {
     this._modelBook = deps.modelBook ?? new ModelBook(async () => [], { clock: this._clock });
     this._eventSink = deps.eventSink ?? createEventSink({});
     this._confinementPosture = deps.confinementPosture;
+    this._diskFloor = deps.diskFloor;
     this._probeLookup = deps.probeLookup;
   }
 
@@ -767,6 +775,8 @@ export class RunManager {
     // v8 REQ-054: admission chokepoint — reject BEFORE any durable/expensive work (createRun,
     // workspace mkdir, seed, sandbox spawn) when the cap is already reached. The global agent
     // semaphore caps only agent() dispatch, not run count / sandbox forks / workspace materialization.
+    // Owner decision 2026-10-02: the disk floor — a capacity read like the cap below (503, transient).
+    this._diskFloor?.assert();
     if (this._liveRunCount() >= this._maxConcurrentRuns) {
       throw codedError('RUN_ADMISSION_LIMIT', `maxConcurrentRuns=${this._maxConcurrentRuns} reached; run rejected`);
     }
@@ -1177,6 +1187,8 @@ export class RunManager {
   }
 
   async resume(runId: string): Promise<void> {
+    // Owner decision 2026-10-02: the disk floor — before `_requireLive` caches anything.
+    this._diskFloor?.assert();
     const entry = await this._requireLive(runId, 'running');
     // issue #94 (owner decision): `stopped` is a TRUE terminal state — refused UNCONDITIONALLY,
     // before the legacySubstitution/confinement check below. A non-cached stopped run never reaches
@@ -2013,6 +2025,9 @@ export class RunManager {
     if ((entry.descendants += 1) > this._maxWorkflowDescendants) {
       throw codedError('DESCENDANT_CAP_EXCEEDED', `workflow() exceeds maxWorkflowDescendants=${this._maxWorkflowDescendants} for this run`);
     }
+    // Owner decision 2026-10-02: a nested frame is a NEW admission — refused DISK_LOW below the
+    // disk floor (the script sees the throw; the parent run itself is not stopped).
+    this._diskFloor?.assert();
 
     const registered = await this._catalog.resolve(name, {}); // throws CatalogNotFoundError/typed resolve error — message names the missing workflow
     // v37 P1 (ARCH-182, DES-263, TASK-258, ADR-086's third owner ruling 2026-09-25): the THIRD

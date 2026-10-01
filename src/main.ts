@@ -37,6 +37,7 @@ import { resolveConfig, type SecretSource } from './secret-resolver.js';
 import { assertWorkRootIsolated } from './workroot-guard.js';
 import type { PrincipalRole as Role } from './authz.js';
 import { validateModelProbeConfig } from './models/model-probe.js';
+import { validateCasQuotaConfig, validateDiskFloorConfig } from './cas-quota.js';
 
 type GatewayChoice = 'sdk' | 'direct-fetch';
 
@@ -58,7 +59,15 @@ function isNonEmptyString(s: string | undefined): s is string {
 // meaningful field is a FUNCTION (the injected renderer), which a JSON config file cannot express.
 // Its two numeric knobs are engine constants on purpose (`diagram-render.ts`), so there is nothing
 // here for composeConfig to forward and therefore nothing it can forget to forward.
-interface FileConfig extends Partial<Omit<ServerConfig, 'gateway' | 'principals' | 'diagramRender' | 'confinementPosture'>> {
+interface FileConfig extends Partial<Omit<ServerConfig, 'gateway' | 'principals' | 'diagramRender' | 'confinementPosture' | 'casQuota' | 'diskFloor'>> {
+  /** Owner decision 2026-10-02: per-role CAS upload quota as written in rwe.config.json —
+   *  `{user?, author?, admin?}`, each a byte count, a size string ("5GiB", "500MB") or
+   *  "unlimited"/null. Validated + normalized (bytes, defaults filled) by `validateCasQuotaConfig`;
+   *  boot refuses a malformed value. */
+  casQuota?: Record<string, unknown>;
+  /** Owner decision 2026-10-02: the disk floor — `{percent?, bytes?}` (bytes may be a size string).
+   *  Validated + normalized by `validateDiskFloorConfig`; boot refuses a malformed value. */
+  diskFloor?: Record<string, unknown>;
   /** D-F4: which GatewayClient main.ts wires up. Default "sdk" (ClaudeAgentSdkGatewayClient, the
    *  real tool-loop-capable path). "direct-fetch" opts out to the legacy LiteLLMGatewayClient path
    *  (server.ts's own pre-existing default, driven by `useLiteLLMProxy`). */
@@ -119,6 +128,7 @@ export const KNOWN_FILE_CONFIG_KEYS: Record<keyof FileConfig, true> = {
   maxWorkflowVersions: true, principals: true, mcpEgressAllowlist: true,
   defaultAllowedTools: true, anthropicBaseUrl: true, anthropicAuth: true,
   sandbox: true, modelProbe: true, publicBaseUrl: true,
+  casQuota: true, diskFloor: true,
 };
 
 // v34 (DES-227, ARCH-139, TASK-229, REQ-203): keys that USED to be forwarded by composeConfig and
@@ -323,6 +333,11 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   if (!modelProbe.ok) {
     throw new Error(`rwe.config.json: invalid modelProbe — ${modelProbe.message}. Refusing to start (ADR-028 fail-closed).`);
   }
+  // Owner decision 2026-10-02: same fail-closed validation as modelProbe above; forwarded below.
+  const casQuota = validateCasQuotaConfig(fileConfig.casQuota);
+  if (!casQuota.ok) throw new Error(`rwe.config.json: invalid casQuota — ${casQuota.message}. Refusing to start (ADR-028 fail-closed).`);
+  const diskFloor = validateDiskFloorConfig(fileConfig.diskFloor);
+  if (!diskFloor.ok) throw new Error(`rwe.config.json: invalid diskFloor — ${diskFloor.message}. Refusing to start (ADR-028 fail-closed).`);
   const explicitWorkRoot = process.env['RWE_WORK_ROOT'] ?? fileConfig.workRoot;
   // D-V3M-5 (REQ-021): fail-closed if the configured workRoot is inside a Claude Code project — a
   // nested run workspace makes the SDK-gateway agent CLI load that project's CLAUDE.md/auto-memory
@@ -511,6 +526,10 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // allowlist just means no `http` MCP config is ever admitted).
     mcpEgressAllowlist: fileConfig.mcpEgressAllowlist,
     modelProbe: modelProbe.value,
+    // Owner decision 2026-10-02: validated + normalized above (the composeConfig bug class —
+    // compose-config-v2-wiring.test.ts's PROBES rows guard both).
+    casQuota: casQuota.value,
+    diskFloor: diskFloor.value,
     // v37 (ARCH-181, DES-262, TASK-257, REQ-218): MEASURED, never declared — set only when the
     // caller actually supplied a probe result (deps.confinementProbe, `main()`'s real boot path).
     // Every existing test call site omits it, so `confinementPosture` stays unset here exactly as

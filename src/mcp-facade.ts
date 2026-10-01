@@ -29,6 +29,7 @@ import { pathVerdict } from './path-verdict.js';
 import { auditedWorkspaceRead } from './audited-read.js';
 import type { CasStore } from './cas-store.js';
 import { casNamespaceFor } from './cas-store.js';
+import type { QuotaView } from './auth/principal-admin.js';
 import type { AssetSyncService, AssetKind, AssetScope } from './asset-sync.js';
 
 // v21 (DES-103/DES-104): the engine ceilings bound the read surfaces (workflow_source/list) at read
@@ -322,9 +323,14 @@ export class McpFacade {
   private readonly diagramCache?: DiagramInvalidator;
   private readonly schedulerClaims: TriggerClaimStore;
   private readonly webhookClaims: TriggerClaimStore;
+  private readonly _clock: Clock;
+  // Owner decision 2026-10-02: a namespace's quota view (usage + effective limit + source). Late-bound
+  // like `assetSync`: the principal/role store it reads is built after the facade.
+  private _quotaView?: (namespace: string) => QuotaView;
 
   constructor(deps: McpFacadeDeps) {
     const clock = deps.clock ?? new SystemClock();
+    this._clock = clock;
     // Construct the store FIRST and inject it into RunManager (D-I1) — otherwise RunManager
     // builds its own private InMemoryRunStore and every lookup through `this.store` 404s
     // (RUN_NOT_FOUND) even for runs that really are in flight.
@@ -346,6 +352,11 @@ export class McpFacade {
    *  `AssetSyncService` is constructed (needs the server's bound port). */
   bindAssetSync(assetSync: AssetSyncService): void {
     this.assetSync = assetSync;
+  }
+
+  /** See the `_quotaView` field comment — called once by the composition root. */
+  bindQuotaView(fn: (namespace: string) => QuotaView): void {
+    this._quotaView = fn;
   }
 
   private _triggerOwner(id: string): string | null | undefined {
@@ -1107,11 +1118,51 @@ export class McpFacade {
   // workspace_* (6)
   // ============================================================================================
 
-  async workspaceDiff(a: { manifest?: Array<{ sha256: string }> }, principal: Principal): Promise<ResultEnvelope<{ missing: string[] }>> {
+  async workspaceDiff(a: { manifest?: Array<{ sha256: string }> }, principal: Principal): Promise<ResultEnvelope<{ missing: string[]; quota?: QuotaView }>> {
     const ns = nsOf(principal);
     const shas = (a.manifest ?? []).map((e) => e.sha256).filter(Boolean);
     const missing = this.cas ? await this.cas.missing(ns, shas) : shas;
-    return { runId: '', status: 'completed', result: { missing } };
+    const quota = this._quotaView?.(ns);
+    return { runId: '', status: 'completed', result: { missing, ...(quota ? { quota } : {}) } };
+  }
+
+  /** Owner decision 2026-10-02 (CAS cleanup): see workspace_prune_blobs' tool description for the
+   *  contract. Live roots for `ns` = every registered version bound from `ns` (its manifest ref +
+   *  every sha it lists); `keepFiles` = the same roots across ALL namespaces (belt and braces: a
+   *  file another namespace's version needs is never unlinked, even if its ref rows were somehow
+   *  gone). Authorization (another namespace = admin) is the `pruneMode` authz row. */
+  async workspacePruneBlobs(a: { dryRun?: boolean; olderThanDays?: number; namespace?: string }, principal: Principal): Promise<Record<string, unknown>> {
+    if (!this.cas) {
+      return { runId: '', status: 'failed', code: 'CAS_UNAVAILABLE', error: toErrEnvelope(codedError('CAS_UNAVAILABLE', 'CAS_UNAVAILABLE: no content store configured')) };
+    }
+    const ns = a.namespace ?? nsOf(principal);
+    const dryRun = a.dryRun !== false;
+    const olderThanDays = a.olderThanDays ?? 30;
+    const protect = new Set<string>();
+    const keepFiles = new Set<string>();
+    for (const root of this.runManager.catalog.seedManifestRoots()) {
+      const shas = [root.ref];
+      try {
+        const listed = JSON.parse(this.cas.readBlobSync(root.ref)?.toString('utf8') ?? '[]') as unknown;
+        if (Array.isArray(listed)) for (const e of listed) if (typeof (e as { sha256?: unknown })?.sha256 === 'string') shas.push((e as { sha256: string }).sha256);
+      } catch { /* unreadable manifest: its own ref is still protected */ }
+      for (const s of shas) {
+        keepFiles.add(s);
+        if ((root.namespace ?? casNamespaceFor(null)) === ns) protect.add(s);
+      }
+    }
+    const r = this.cas.prune(ns, { protect, keepFiles, dryRun, keepUsedSinceMs: this._clock.now() - olderThanDays * 86_400_000 });
+    const LIST_CAP = 500;
+    const quota = this._quotaView?.(ns);
+    return {
+      runId: '', status: 'completed',
+      result: {
+        namespace: ns, dryRun, olderThanDays,
+        refs: r.refs.slice(0, LIST_CAP), refsCount: r.refs.length, truncated: r.refs.length > LIST_CAP,
+        freedBytes: r.freedBytes, blobFilesDeleted: r.blobFilesDeleted, diskBytesFreed: r.diskBytesFreed,
+        ...(quota ? { quota } : {}),
+      },
+    };
   }
 
   async workspacePush(a: Record<string, unknown>, principal: Principal): Promise<Record<string, unknown>> {
