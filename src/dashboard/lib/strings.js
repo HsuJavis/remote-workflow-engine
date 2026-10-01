@@ -48,6 +48,9 @@ export const STR = {
     // Owner decision 2026-09-30: role 'none' = signed in, pending approval.
     pendingTitle: '等待管理員核准', pendingBody: '你已登入,但這個帳號還沒有任何權限。請等待管理員授予角色後再重新整理此頁。',
     admPending: '待核准', admGrant: '授予',
+    admQuota: '儲存配額(已用/上限)', admQuotaOverride: '個別設定', admQuotaRoleDefault: '角色預設',
+    admQuotaSet: '設定', admQuotaClear: '恢復預設', admQuotaPlaceholder: '例:5GiB、unlimited',
+    admQuotaConfirm: '將 {id} 的儲存配額設為 {limit}?',
     // [v29, REQ-148] run status + trigger type, for the history table's two untranslated columns.
     // Key names follow the delivery handoff's own STR table (`stCompleted`, `byType_client`) so the
     // oracle and the implementation use one vocabulary. Only the values the history table can
@@ -106,6 +109,9 @@ export const STR = {
     admAuthOff: 'Authentication is disabled: roles are stored but not enforced',
     pendingTitle: 'Waiting for an administrator', pendingBody: 'You are signed in, but this account has not been granted access yet. Reload this page after an administrator grants you a role.',
     admPending: 'pending', admGrant: 'Grant',
+    admQuota: 'Storage (used / limit)', admQuotaOverride: 'per-account override', admQuotaRoleDefault: 'role default',
+    admQuotaSet: 'Set', admQuotaClear: 'Use default', admQuotaPlaceholder: 'e.g. 5GiB, unlimited',
+    admQuotaConfirm: 'Set the storage quota of {id} to {limit}?',
     stQueued: 'Queued', stRunning: 'Running', stCompleted: 'Completed', stFailed: 'Failed',
     stStopped: 'Stopped', stSuspended: 'Suspended', stInterrupted: 'Interrupted', stRefused: 'Refused',
     byType_client: 'client', byType_webhook: 'webhook', byType_schedule: 'schedule',

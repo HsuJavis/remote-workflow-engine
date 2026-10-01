@@ -1076,7 +1076,23 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'seed of their own — bind one to the workflow VERSION instead: `workflow_register({name, ' +
         'script, mermaid, seedManifestRef})`. ' +
         ((TOOL_SPECS.find((t) => t.name === 'workflow_register')!.inputSchema as unknown as { properties: Record<string, { description?: string }> })
-          .properties.seedManifestRef?.description ?? ''),
+          .properties.seedManifestRef?.description ?? '') +
+        // Owner decision 2026-10-02: the CAS quota, cleanup and disk floor an author meets while seeding.
+        '\n\n**Storage quota and cleanup.** Everything you upload to the CAS (POST /assets/blob, ' +
+        'POST /assets/manifest, `workspace_push` blob mode, and trees the engine fetches for your ' +
+        '`seedRef`) counts against YOUR content-store quota — by default user 1 GiB, author 5 GiB, ' +
+        'admin unlimited (the operator sets `casQuota`; an administrator can override one account ' +
+        'with `principal_set_quota`). Usage is the total size of every blob in your pool; a blob ' +
+        'other accounts also hold still counts fully for you. `workspace_diff` returns your ' +
+        '`quota {usedBytes, limitBytes, source}` with every diff. An upload that would exceed the ' +
+        'limit is refused `QUOTA_EXCEEDED {usedBytes, limitBytes, requestedBytes, hint}` (HTTP 507) ' +
+        'before anything is stored. Free space with `workspace_prune_blobs` — a dry run by default; ' +
+        '`dryRun:false` removes blobs that no version you registered with `seedManifestRef` needs ' +
+        '(the manifest and every blob it lists are kept) and that were not used for `olderThanDays` ' +
+        '(default 30). Separately, while the engine\'s disk is below its free-space floor every ' +
+        'upload and every new run (run_start, run_resume, schedule/webhook firings, nested ' +
+        '`workflow()`) is refused `DISK_LOW {freeBytes, floorBytes}` — transient (HTTP 503), retry ' +
+        'later; runs already in flight continue.',
     ),
   );
 

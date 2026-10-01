@@ -34,6 +34,35 @@ function fmtSeen(iso, lang) {
   return typeof iso === 'string' && iso.length >= 19 ? iso.replace('T', ' ').slice(0, 19) : t(lang, 'admNever');
 }
 
+/** Owner decision 2026-10-02: bytes as the admin page shows them (binary units). */
+function fmtBytes(n) {
+  if (n === null) return 'unlimited';
+  if (typeof n !== 'number' || !Number.isFinite(n)) return '';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let v = n; let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${i === 0 ? v : Number(v.toFixed(2))} ${units[i]}`;
+}
+
+function quotaFields(q, lang) {
+  if (!q || typeof q !== 'object') return { quotaText: '', quotaOverride: false, quotaSourceText: '' };
+  const override = q.source === 'override';
+  const src = t(lang, override ? 'admQuotaOverride' : 'admQuotaRoleDefault');
+  return {
+    quotaText: `${fmtBytes(q.usedBytes)} / ${fmtBytes(q.limitBytes)}`,
+    quotaOverride: override,
+    quotaSourceText: override && q.updatedBy ? `${src} (${t(lang, 'admBy')} ${q.updatedBy})` : src,
+  };
+}
+
+/** The quota input -> principal_set_quota's `limit`: blank clears the override (null), plain
+ *  digits are bytes, anything else ("2GiB", "unlimited") is passed through for the server to parse. */
+export function quotaLimitValue(text) {
+  const s = String(text ?? '').trim();
+  if (s === '') return null;
+  return /^\d+$/.test(s) ? Number(s) : s;
+}
+
 /** Rows for the admin table from a `principals_list` result. `selected` is the role selector's
  *  value: the runtime override when there is one, '' (= no override / default) otherwise. */
 export function principalRows(body, lang) {
@@ -49,6 +78,7 @@ export function principalRows(body, lang) {
       selected: p.source === 'db' ? p.role : (locked ? 'admin' : ''),
       lastSeen: fmtSeen(p.lastSeenAt, lang),
       sourceText: p.source === 'db' && p.updatedBy ? `${src} (${t(lang, 'admBy')} ${p.updatedBy})` : src,
+      ...quotaFields(p.quota, lang),
     };
   });
 }

@@ -1,15 +1,16 @@
 // src/dashboard/ui/admin.js
 // Dashboard auth spec §A2 (2026-09-30) — the admin (users & roles) tab. Visible only to a signed-in
 // admin (`lib/principals.js` `tabsFor`); the server refuses its two routes to anyone else anyway.
-// Reads GET /api/principals and writes POST /api/principals/role — the SAME backend as the MCP
-// tools principals_list / principal_set_role, so this page can never grant what a tool refuses.
+// Reads GET /api/principals and writes POST /api/principals/role and (owner decision 2026-10-02)
+// POST /api/principals/quota — the SAME backend as the MCP tools principals_list /
+// principal_set_role / principal_set_quota, so this page can never grant what a tool refuses.
 // Loads on mount and after each change only (never on the 3s poll: a repaint would reset a
 // selector mid-edit). Every string is `textContent` — ids are user-controlled emails.
 
 import { el, currentLang } from './dom.js';
 import { t } from '../lib/strings.js';
 import { getViewJSON } from './poll.js';
-import { principalRows, roleChangeValue } from '../lib/principals.js';
+import { principalRows, roleChangeValue, quotaLimitValue } from '../lib/principals.js';
 
 function buildShell(container, lang) {
   container.replaceChildren();
@@ -27,7 +28,7 @@ function buildShell(container, lang) {
   table.setAttribute('data-admin-table', '');
   const thead = document.createElement('thead');
   const tr = document.createElement('tr');
-  for (const key of ['admId', 'admRole', 'admSource', 'admLastSeen', 'admChange']) tr.appendChild(el('th', undefined, t(lang, key)));
+  for (const key of ['admId', 'admRole', 'admSource', 'admLastSeen', 'admChange', 'admQuota']) tr.appendChild(el('th', undefined, t(lang, key)));
   thead.appendChild(tr);
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
@@ -71,6 +72,58 @@ async function changeRole(state, id, value, select, previous) {
   await load(state);
 }
 
+/** Owner decision 2026-10-02: set (`limit`) or clear (null) a per-account storage quota override. */
+async function changeQuota(state, id, limit) {
+  const label = limit === null ? t(state.lang, 'admQuotaClear') : String(limit);
+  if (!window.confirm(t(state.lang, 'admQuotaConfirm').replace('{id}', id).replace('{limit}', label))) return;
+  showError(state, '');
+  try {
+    const res = await fetch('/api/principals/quota', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'rwe-dashboard' },
+      body: JSON.stringify({ id, limit }),
+    });
+    if (!res.ok) {
+      let body = null;
+      try { body = await res.json(); } catch { body = null; }
+      showError(state, t(state.lang, 'admError') + (body && (body.error || body.code) ? String(body.error || body.code) : String(res.status)));
+      return;
+    }
+  } catch {
+    showError(state, t(state.lang, 'admError') + 'network');
+    return;
+  }
+  await load(state);
+}
+
+function quotaCell(state, row) {
+  const cell = document.createElement('td');
+  cell.setAttribute('data-admin-quota', row.id);
+  cell.appendChild(el('span', 'mono', row.quotaText));
+  cell.appendChild(el('div', 'muted', row.quotaSourceText));
+  const input = el('input', 'input');
+  input.type = 'text';
+  input.placeholder = t(state.lang, 'admQuotaPlaceholder');
+  input.setAttribute('aria-label', `${t(state.lang, 'admQuota')} ${row.id}`);
+  const set = el('button', 'btn', t(state.lang, 'admQuotaSet'));
+  set.type = 'button';
+  set.setAttribute('data-admin-quota-set', '');
+  set.addEventListener('click', () => {
+    const limit = quotaLimitValue(input.value);
+    if (limit !== null) changeQuota(state, row.id, limit);
+  });
+  cell.appendChild(input);
+  cell.appendChild(set);
+  if (row.quotaOverride) {
+    const clear = el('button', 'btn', t(state.lang, 'admQuotaClear'));
+    clear.type = 'button';
+    clear.setAttribute('data-admin-quota-clear', '');
+    clear.addEventListener('click', () => { changeQuota(state, row.id, null); });
+    cell.appendChild(clear);
+  }
+  return cell;
+}
+
 function paint(state, body) {
   state.note.textContent = t(state.lang, 'admAuthOff');
   state.note.hidden = body.authEnabled !== false;
@@ -107,6 +160,7 @@ function paint(state, body) {
       }
     }
     tr.appendChild(cell);
+    tr.appendChild(quotaCell(state, row));
     state.tbody.appendChild(tr);
   }
 }
