@@ -975,7 +975,7 @@ export const TOOL_SPECS = [
   // ---- schedule (4) ----
   {
     name: 'schedule_create', entity: 'schedule', key: null,
-    description: "Create a time trigger and return its id; the caller becomes its owner. Name no workflow — hand the id to workflow_register({triggers:[id]}) to bind it to a version. Defaults to kind:'cron' — pass kind:'once' with {at} for a one-shot, or kind:'resident' for a trigger-only schedule that never fires on a clock.",
+    description: "Create a time trigger and return its id; the caller becomes its owner. Name no workflow — hand the id to workflow_register({triggers:[id]}) to bind it to a version. Defaults to kind:'cron' — pass kind:'once' with {at} for a one-shot, or kind:'resident' for a trigger-only schedule that never fires on a clock. A `once` firing that fails or is refused is CONSUMED — it never retries, no matter the cause (even a transient one like DISK_LOW) — so check schedule_list after a `once` firing to confirm it actually ran; create a new schedule to try again.",
     // v24 (integrator, REQ-015): the row advertised ONLY `{workflow, cron}` with both required, so
     // the one-shot and resident kinds REQ-015 clause 2 specifies (and VAL-016 validates) were
     // unreachable through the tool surface — ajv refused them for a missing `cron` before the store
@@ -1016,7 +1016,7 @@ export const TOOL_SPECS = [
   },
   {
     name: 'schedule_list', entity: 'schedule', key: null,
-    description: "List the caller's own schedules; unfiltered for the operator role. A failed dispatch carries lastError:{code,at,message} and a policy refusal before dispatch carries lastRefusedAt/lastRefusalReason/lastRefusalMessage — both messages are a static, secret-free hint for the code, never raw error text. A refused `once` trigger is still consumed (enabled:false) even though it never dispatched; read lastRefusalReason/lastRefusalMessage to see why.",
+    description: "List the caller's own schedules; unfiltered for the operator role. A failed dispatch carries lastError:{code,at,message} and a policy refusal before dispatch carries lastRefusedAt/lastRefusalReason/lastRefusalMessage — both messages are a static, secret-free hint for the code, never raw error text. A refused `once` trigger is still consumed (enabled:false) even though it never dispatched; read lastRefusalReason/lastRefusalMessage to see why. For a `once` row (never a `cron` row) that message also says so plainly, e.g. \"... — this one-shot schedule was consumed by the failed firing and will not fire again; fix the cause and create a new schedule\" — the bare catalog hint alone (which may say \"retry later\") would otherwise read as a promise this engine cannot keep for a row that already disabled itself. A later successful fire clears lastError/lastRefusedAt/lastRefusalReason (and refusalCount, already reset) — nothing stale survives a real dispatch.",
     inputSchema: schema({}),
     outputSchema: OUT,
     errors: [] as ErrorCode[],

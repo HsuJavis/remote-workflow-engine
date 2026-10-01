@@ -15,7 +15,7 @@
 // as `enabled=0` alone, mirroring `markFailed`'s existing `once` branch verbatim, so `once` never
 // touches `nextFire` on a refusal).
 import { describe, it, expect } from 'vitest';
-import { SqliteSchedulerPort } from '../../src/scheduler.js';
+import { SqliteSchedulerPort, onceConsumedNote } from '../../src/scheduler.js';
 import { tick } from '../../src/scheduler-engine.js';
 import { FixedClock } from '../../src/clock.js';
 import { ERROR_CATALOG } from '../../src/errors.js';
@@ -84,6 +84,39 @@ describe('scheduler refusal accounting (UT-151, DES-150)', () => {
     expect(status?.refusalCount).toBe(0);
   });
 
+  // LOW-4 (owner decision 2026-10-02, verify-k): a stale `lastRefusalReason`/`lastRefusedAt` must
+  // not survive a LATER successful fire — before this fix only `refusalCount` reset to 0, so
+  // `schedule_list` kept showing e.g. CHANNEL_UNPUBLISHED (and its derived `lastRefusalMessage`)
+  // from the earlier refused instant even once the schedule had since fired for real.
+  it('markFired clears a prior refusal (lastRefusedAt/lastRefusalReason/lastRefusalMessage), not just refusalCount', async () => {
+    const clock = new FixedClock(new Date('2026-01-01T00:00:00Z'));
+    const port = makePort(clock);
+    const created = await port.create({ kind: 'cron', workflow: 'wf-a', cron: '0 0 * * *', enabled: true });
+    const firing = { kind: 'cron' as const, id: (created as { result: { id: string } }).result.id };
+    port.markRefused(firing, 'CHANNEL_UNPUBLISHED');
+    port.markFired(firing, 'run-x');
+    const status = (await port.list()).find((s: { id: string }) => s.id === firing.id);
+    expect(status?.lastRefusedAt).toBeUndefined();
+    expect(status?.lastRefusalReason).toBeUndefined();
+    expect(status?.lastRefusalMessage).toBeUndefined();
+    expect(status?.lastRunId).toBe('run-x');
+  });
+
+  // LOW-4: same clearing for a prior DISPATCH failure's `lastError` — the exact scenario verify-k
+  // found (a cron's DISK_LOW `lastError` from an earlier low-disk window stayed visible, reading
+  // "retry later" from a timestamp before the floor lifted, even after it had since re-fired).
+  it('markFired clears a prior dispatch failure (lastError), not just refusalCount', async () => {
+    const clock = new FixedClock(new Date('2026-01-01T00:00:00Z'));
+    const port = makePort(clock);
+    const created = await port.create({ kind: 'cron', workflow: 'wf-a', cron: '0 0 * * *', enabled: true });
+    const firing = { kind: 'cron' as const, id: (created as { result: { id: string } }).result.id };
+    port.markFailed(firing, 'DISK_LOW');
+    port.markFired(firing, 'run-y');
+    const status = (await port.list()).find((s: { id: string }) => s.id === firing.id);
+    expect(status?.lastError).toBeUndefined();
+    expect(status?.lastRunId).toBe('run-y');
+  });
+
   it('a refused `once` is consumed — claiming it later does not resurrect it', async () => {
     const clock = new FixedClock(new Date('2026-01-01T00:00:00Z'));
     const port = makePort(clock);
@@ -121,14 +154,17 @@ describe('scheduler refusal accounting (UT-151, DES-150)', () => {
   // trigger must be readable from `schedule_list` alone — `enabled:false` plus `lastRefusalReason`
   // WITH a human-readable `lastRefusalMessage` (the same static `ERROR_CATALOG` hint, never a raw
   // internal string), not just the bare machine code.
-  it.each(reasons)('lastRefusalMessage carries the catalogued hint for reason %s', async (reason) => {
+  // MEDIUM-1 (owner decision 2026-10-02, verify-k): a `once` row's lastRefusalMessage is the
+  // catalogued hint PLUS the once-consumed note — the row is disabled by this SAME call
+  // (`markRefused`'s `once` branch), so it will never get a chance to act on the bare hint alone.
+  it.each(reasons)('lastRefusalMessage carries the catalogued hint PLUS the once-consumed note for reason %s', async (reason) => {
     const clock = new FixedClock(new Date('2026-01-01T00:00:00Z'));
     const port = makePort(clock);
     const created = await port.create({ kind: 'once', workflow: 'wf-a', at: '2026-01-01T00:00:00Z', enabled: true });
     const firing = { kind: 'once' as const, id: (created as { result: { id: string } }).result.id };
     port.markRefused(firing, reason);
     const status = (await port.list()).find((s: { id: string }) => s.id === firing.id);
-    expect(status?.lastRefusalMessage).toBe(ERROR_CATALOG[reason].hint);
+    expect(status?.lastRefusalMessage).toBe(`${ERROR_CATALOG[reason].hint} — ${onceConsumedNote('refused')}`);
   });
 
   it('a consumed-by-refusal once trigger is unambiguous from schedule_list alone: enabled:false + reason + message', async () => {
@@ -140,6 +176,18 @@ describe('scheduler refusal accounting (UT-151, DES-150)', () => {
     const status = (await port.list()).find((s: { id: string }) => s.id === firing.id);
     expect(status?.enabled).toBe(false);
     expect(status?.lastRefusalReason).toBe('CHANNEL_UNPUBLISHED');
+    expect(status?.lastRefusalMessage).toBe(`${ERROR_CATALOG.CHANNEL_UNPUBLISHED.hint} — ${onceConsumedNote('refused')}`);
+  });
+
+  // MEDIUM-1: a cron row's lastRefusalMessage stays the BARE catalog hint — a cron keeps firing
+  // (markRefused's cron branch never disables it), so "retry later"-shaped hints stay literally true.
+  it('lastRefusalMessage stays the bare catalogued hint for a cron row (never the once-consumed note)', async () => {
+    const clock = new FixedClock(new Date('2026-01-01T00:00:00Z'));
+    const port = makePort(clock);
+    const created = await port.create({ kind: 'cron', workflow: 'wf-a', cron: '0 0 * * *', enabled: true });
+    const firing = { kind: 'cron' as const, id: (created as { result: { id: string } }).result.id };
+    port.markRefused(firing, 'CHANNEL_UNPUBLISHED');
+    const status = (await port.list()).find((s: { id: string }) => s.id === firing.id);
     expect(status?.lastRefusalMessage).toBe(ERROR_CATALOG.CHANNEL_UNPUBLISHED.hint);
   });
 

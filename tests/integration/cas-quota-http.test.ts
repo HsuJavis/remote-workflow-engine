@@ -11,7 +11,7 @@
 //   • Disk floor: uploads -> 503 DISK_LOW; run_start / run_resume refused DISK_LOW; a webhook
 //     delivery -> 503 {code: DISK_LOW} (transient, the delivery id is released).
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes, createHash, createHmac } from 'node:crypto';
@@ -28,6 +28,7 @@ const ALICE = 'alice@example.test'; // author
 const BOB = 'bob@example.test'; // user
 const CAROL = 'carol@example.test'; // user
 const DAVE = 'dave@example.test'; // user
+const EVE = 'eve@example.test'; // user — used only by the LOW-1 re-POST test, kept off every other principal's usage assertion
 let google: FakeGoogle; let server: Server; let dir: string; let base: string;
 const bearer: Record<string, string> = {};
 
@@ -46,13 +47,13 @@ beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'rwe-quota-http-'));
   server = await createServer({ port: 0, bind: '127.0.0.1', workRoot: dir,
     auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: CID, googleClientSecret: 'cs', googleTokenUrl: google.tokenUrl, jwksFetch: fakeJwksFetch },
-    principals: { [ROOT]: { role: 'admin' }, [ALICE]: { role: 'author' }, [BOB]: { role: 'user' }, [CAROL]: { role: 'user' }, [DAVE]: { role: 'user' } },
+    principals: { [ROOT]: { role: 'admin' }, [ALICE]: { role: 'author' }, [BOB]: { role: 'user' }, [CAROL]: { role: 'user' }, [DAVE]: { role: 'user' }, [EVE]: { role: 'user' } },
     casQuota: { user: 1000, author: 100_000, admin: null },
     diskFloor: { percent: 0, bytes: 0 } } as never);
   base = `http://127.0.0.1:${server.port}`;
   const db = new Database(join(dir, 'auth-tokens.db'));
   const ts = new TokenStore(db, { clock: () => Date.now(), csprng: (n) => randomBytes(n) });
-  for (const who of [ROOT, ALICE, BOB, CAROL, DAVE]) bearer[who] = ts.issue(who, 3600_000).token;
+  for (const who of [ROOT, ALICE, BOB, CAROL, DAVE, EVE]) bearer[who] = ts.issue(who, 3600_000).token;
   db.close();
 });
 afterAll(async () => { await server?.close(); await google?.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -70,6 +71,29 @@ describe('quota on the upload routes', () => {
     const m = await post('/assets/manifest', JSON.stringify([{ path: 'b', sha256: sha(b) }]), BOB);
     expect(m.status).toBe(409);
     expect((await m.json()).missing).toEqual([sha(b)]);
+  });
+
+  // LOW-1 (owner decision 2026-10-02, verify-k): a manifest re-POST this namespace ALREADY HOLDS
+  // must be free, exactly like a blob re-upload already is (A 1f) — the up-front preflight used to
+  // always pass `sha:null` (the real sha was unknown before the body was read), so it could never
+  // apply the held-sha exemption and charged the identical body as new EVERY time.
+  it('an identical manifest re-POST at the quota edge is free (held-sha exemption), not refused 507', async () => {
+    // EVE (own principal, untouched by any other test's usage assertions) uploads a 600 B blob,
+    // leaving 400 B of headroom to the 1000 B limit. This manifest body is exactly 350 B — fits once
+    // (950 <= 1000) but NOT twice if charged again as new (1300 > 1000), which is exactly the bug: a
+    // naive re-charge of an already-held sha.
+    const a = blob(600, 'a');
+    expect((await post(`/assets/blob/${sha(a)}`, a, EVE)).status).toBe(200);
+    const path = 'p'.repeat(261);
+    const manifest = JSON.stringify([{ path, sha256: sha(a) }]);
+    expect(manifest.length).toBe(350);
+    const first = await post('/assets/manifest', manifest, EVE);
+    const firstBody = await first.json();
+    expect(first.status, JSON.stringify(firstBody)).toBe(200);
+    const second = await post('/assets/manifest', manifest, EVE);
+    const secondBody = await second.json();
+    expect(second.status, JSON.stringify(secondBody)).toBe(200);
+    expect(secondBody.seedManifestRef).toBe(firstBody.seedManifestRef);
   });
 
   it('a chunked body that never declared its size is cut off mid-stream with 507 QUOTA_EXCEEDED', async () => {
@@ -106,6 +130,30 @@ describe('quota on the upload routes', () => {
     const r = await tool('workspace_push', { sha256: sha(z), contentB64: z.toString('base64') }, BOB);
     expect(codeOf(r)).toBe('QUOTA_EXCEEDED');
     expect(r.error.detail).toMatchObject({ usedBytes: 600, limitBytes: 1000, requestedBytes: 600 });
+  });
+
+  // LOW-5 (owner decision 2026-10-02, verify-k): the auth-gated manifest route's own `putBlob`
+  // failure handler must mirror the no-identity fallback route — only QUOTA_EXCEEDED/DISK_LOW get the
+  // caller-facing (static, catalog-shaped) body; anything else (a raw fs error, which can carry a
+  // blob path) stays a generic 500 and never echoes `err.message`. Forced here with a REAL fs error:
+  // the manifest's own content-addressed 2-hex-prefix directory is pre-created as a FILE, so
+  // CasStore's `mkdirSync(dirname(blobPath), {recursive:true})` throws ENOTDIR.
+  it("a non-quota putBlob failure on the auth-gated manifest route answers a generic 500, never raw err.message", async () => {
+    const prefix = 'ff'; // must be valid lowercase hex — sha256 hexdigest never contains non-hex chars
+    const blobsDir = join(dir, 'cas', 'blobs');
+    mkdirSync(blobsDir, { recursive: true });
+    writeFileSync(join(blobsDir, prefix), ''); // a FILE where CasStore expects to mkdir a directory
+    let body = '';
+    for (let i = 0; i < 100_000; i += 1) {
+      const candidate = `[]${' '.repeat(i)}`; // valid JSON (trailing whitespace); varies the hash
+      if (sha(candidate).startsWith(prefix)) { body = candidate; break; }
+    }
+    expect(body).not.toBe('');
+    const r = await post('/assets/manifest', body, ROOT); // admin: unlimited quota, no DISK_LOW
+    const json = await r.json();
+    expect(r.status, JSON.stringify(json)).toBe(500);
+    expect(json).toEqual({ error: 'manifest register error' });
+    expect(JSON.stringify(json)).not.toMatch(/ENOTDIR|ENOENT|EACCES|blobs/);
   });
 });
 

@@ -2022,12 +2022,16 @@ export class RunManager {
     if (ancestors.has(name)) {
       throw codedError('NESTING_CYCLE', `workflow() cycle: '${name}' is already an ancestor in this nesting chain`);
     }
+    // LOW-3 (owner decision 2026-10-02, verify-k): the disk-floor check runs BEFORE the descendant
+    // slot is counted — a nested frame is a NEW admission, refused DISK_LOW below the disk floor
+    // (the script sees the throw; the parent run itself is not stopped), and a refusal that never
+    // dispatched anything must not burn a maxWorkflowDescendants slot a parent that loops/retries
+    // workflow() during a low-disk window could otherwise exhaust for nothing. The other refusal
+    // ordering (depth, then cycle, then this) is unchanged.
+    this._diskFloor?.assert();
     if ((entry.descendants += 1) > this._maxWorkflowDescendants) {
       throw codedError('DESCENDANT_CAP_EXCEEDED', `workflow() exceeds maxWorkflowDescendants=${this._maxWorkflowDescendants} for this run`);
     }
-    // Owner decision 2026-10-02: a nested frame is a NEW admission — refused DISK_LOW below the
-    // disk floor (the script sees the throw; the parent run itself is not stopped).
-    this._diskFloor?.assert();
 
     const registered = await this._catalog.resolve(name, {}); // throws CatalogNotFoundError/typed resolve error — message names the missing workflow
     // v37 P1 (ARCH-182, DES-263, TASK-258, ADR-086's third owner ruling 2026-09-25): the THIRD

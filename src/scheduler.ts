@@ -70,6 +70,11 @@ export interface ScheduleStatus {
   // surface — never `err.message`, which can carry host/path detail a dispatch-failure Error
   // happens to include. Computed on READ (`rowToStatus`), not stored, so it can never drift from a
   // later catalog wording change the way a frozen write-time copy would.
+  // MEDIUM-1 (owner decision 2026-10-02, verify-k): for a `once` row this message is the catalog
+  // hint PLUS `onceConsumedNote()` — many catalog hints (DISK_LOW, RUN_ADMISSION_LIMIT, …) literally
+  // say "retry later", which is false for a `once` firing: `claimFiring()` already consumed it
+  // (`enabled:false`) before dispatch ever ran, so there is nothing left to retry. A `cron` row's
+  // message is the bare hint, unchanged — it genuinely does retry at its next `nextFire`.
   lastError?: { code: string; at: string; message: string };
   // v24 (DES-150, TASK-141): coalesced fire-path refusal accounting — never touched by a dispatch
   // failure (`lastError`), only by a policy refusal BEFORE dispatch (`markRefused`).
@@ -80,6 +85,8 @@ export interface ScheduleStatus {
   // as `lastError.message` above, for the refusal trio — lets a consumed-by-refusal `once` trigger
   // (`enabled:false` + this reason) read as a human-readable fact straight off `schedule_list`,
   // never just a bare machine code.
+  // MEDIUM-1: same `onceConsumedNote()` suffix as `lastError.message`, for the same reason — a
+  // refused `once` row is consumed exactly like a failed one (`markRefused`'s own `once` branch).
   lastRefusalMessage?: string;
 }
 
@@ -156,6 +163,13 @@ interface ScheduleRow {
   lastRefusalReason: string | null;
 }
 
+// MEDIUM-1 (owner decision 2026-10-02, verify-k): exported so the once-row tests in
+// scheduler-failed-dispatch.test.ts / scheduler-refusal.test.ts assert against the SAME string
+// `rowToStatus` composes, rather than a hand-duplicated copy that could silently drift from it.
+export function onceConsumedNote(cause: 'failed' | 'refused'): string {
+  return `this one-shot schedule was consumed by the ${cause} firing and will not fire again; fix the cause and create a new schedule`;
+}
+
 function rowToSchedule(r: ScheduleRow): Schedule {
   const args = r.argsJson != null ? (JSON.parse(r.argsJson) as unknown) : undefined;
   const shared = { workflow: r.workflow ?? undefined, claimedBy: r.claimedBy, createdBy: r.createdBy ?? undefined, createdRemote: r.createdRemote === 1 };
@@ -186,7 +200,11 @@ function rowToStatus(r: ScheduleRow): ScheduleStatus {
     lastError: r.lastError != null
       ? ((): { code: string; at: string; message: string } => {
           const parsed = JSON.parse(r.lastError!) as { code: string; at: string };
-          return { ...parsed, message: ERROR_CATALOG[toErrorCode(parsed.code)].hint };
+          const hint = ERROR_CATALOG[toErrorCode(parsed.code)].hint;
+          // MEDIUM-1: a `once` row never gets another firing to retry on — say so instead of
+          // repeating the catalog's generic "retry later" for a row that provably cannot.
+          const message = r.kind === 'once' ? `${hint} — ${onceConsumedNote('failed')}` : hint;
+          return { ...parsed, message };
         })()
       : undefined,
     refusalCount: r.refusalCount ?? 0,
@@ -196,7 +214,13 @@ function rowToStatus(r: ScheduleRow): ScheduleStatus {
     // closed union), so this lookup never needs `toErrorCode`'s unknown-code fallback the way
     // `lastError.code` above does (an arbitrary string from a caught Error vs. a reason THIS
     // module itself chose from a 5-member literal union).
-    lastRefusalMessage: r.lastRefusalReason != null ? ERROR_CATALOG[r.lastRefusalReason as RefusalReason].hint : undefined,
+    // MEDIUM-1: same once-consumed suffix as `lastError.message` above.
+    lastRefusalMessage: r.lastRefusalReason != null
+      ? ((): string => {
+          const hint = ERROR_CATALOG[r.lastRefusalReason as RefusalReason].hint;
+          return r.kind === 'once' ? `${hint} — ${onceConsumedNote('refused')}` : hint;
+        })()
+      : undefined,
   };
 }
 
@@ -584,14 +608,20 @@ export class SqliteSchedulerPort {
     const ts = this._clock.isoNow();
     // v24 (DES-150, TASK-141): a successful fire resets the consecutive-refusal counter — the field
     // reads "refusals since the last successful fire", not a lifetime total.
+    // LOW-4 (owner decision 2026-10-02, verify-k): a successful fire also clears `lastError` and the
+    // refusal trio's two detail fields (`lastRefusedAt`/`lastRefusalReason` — `refusalCount` already
+    // reset above stays the running "since the last success" counter, untouched here beyond that).
+    // Before this fix a cron row that failed/was refused once and then fired successfully kept
+    // showing the STALE `lastError`/`lastRefusalReason` from the earlier bad instant forever — the
+    // dispatch that just succeeded made that information wrong, not merely old.
     if (firing.kind === 'once') {
-      this._db.prepare('UPDATE schedules SET lastFire = ?, lastRunId = ?, enabled = 0, refusalCount = 0 WHERE id = ?').run(ts, runId, firing.id);
+      this._db.prepare('UPDATE schedules SET lastFire = ?, lastRunId = ?, enabled = 0, refusalCount = 0, lastError = NULL, lastRefusedAt = NULL, lastRefusalReason = NULL WHERE id = ?').run(ts, runId, firing.id);
     } else {
       // [v29, REQ-152] `nextFire` is NOT recomputed here any more — `claimFiring()` advanced it at
       // the moment this firing left `tick()`. Advancing again would skip one whole occurrence per
       // fire, which is the regression a naive fix introduces (UT-270 pins it). This method now
       // records only WHAT HAPPENED; the schedule's future belongs to the claim.
-      this._db.prepare('UPDATE schedules SET lastFire = ?, lastRunId = ?, refusalCount = 0 WHERE id = ?').run(ts, runId, firing.id);
+      this._db.prepare('UPDATE schedules SET lastFire = ?, lastRunId = ?, refusalCount = 0, lastError = NULL, lastRefusedAt = NULL, lastRefusalReason = NULL WHERE id = ?').run(ts, runId, firing.id);
     }
     this._db
       .prepare('INSERT OR REPLACE INTO run_origins (runId, scheduleId, kind) VALUES (?, ?, ?)')

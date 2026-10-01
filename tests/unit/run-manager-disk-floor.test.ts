@@ -45,6 +45,21 @@ describe('RunManager disk-floor admission', () => {
     expect(['running', 'queued']).toContain((await rm.status(runId)).status);
   });
 
+  // LOW-3 (owner decision 2026-10-02, verify-k): a nested frame refused DISK_LOW must not consume a
+  // descendant slot — before this fix `entry.descendants` was incremented BEFORE the disk-floor
+  // check, so a parent that loops/retries workflow() during a low-disk window burned its
+  // maxWorkflowDescendants cap on attempts that never actually dispatched anything.
+  it('a nested workflow() frame refused DISK_LOW does not consume a descendant slot', async () => {
+    const f = floor();
+    const rm = new RunManager({ diskFloor: f });
+    const runId = await rm.start({ origin: 'local' });
+    f.state.low = true;
+    const handle = (rm as unknown as { _handleWorkflowRequest: (...a: unknown[]) => Promise<unknown> })._handleWorkflowRequest.bind(rm);
+    await expect(handle(runId, 'child', {}, '', 0, 1, new Set<string>())).rejects.toMatchObject({ code: 'DISK_LOW' });
+    const entry = (rm as unknown as { _runs: Map<string, { descendants: number }> })._runs.get(runId)!;
+    expect(entry.descendants).toBe(0);
+  });
+
   it('DISK_LOW is transient: 503, not permanent, and not in the replayed-409 family', () => {
     expect(admissionErrorToOutcome(codedError('DISK_LOW', 'x'))).toEqual({ code: 'DISK_LOW', httpStatus: 503, permanent: false });
     expect(ADMISSION_PERMANENT_CODES).not.toContain('DISK_LOW');

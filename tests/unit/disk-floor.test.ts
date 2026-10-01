@@ -3,7 +3,7 @@
 // max(percent of the filesystem, bytes) — defaults 5% / 5 GiB, configurable `diskFloor`. statfs is
 // read through a short cache (5 s). Also the human byte-size parser and the two config validators
 // composeConfig() uses.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { DiskFloor } from '../../src/disk-floor.js';
 import { parseByteSize, validateCasQuotaConfig, validateDiskFloorConfig, CAS_QUOTA_DEFAULTS, DISK_FLOOR_DEFAULTS } from '../../src/cas-quota.js';
 
@@ -53,6 +53,26 @@ describe('DiskFloor', () => {
   it('a path statfs cannot read is skipped, not fatal', () => {
     const d = new DiskFloor({ paths: ['/missing', '/b'], percent: 0, bytes: GiB, statfs: (p: string) => { if (p === '/missing') throw new Error('ENOENT'); return fs(100 * GiB, 50 * GiB); }, clock: () => 0 });
     expect(d.status().ok).toBe(true);
+  });
+
+  // LOW-2 (owner decision 2026-10-02, verify-k): fail OPEN (availability) when EVERY configured
+  // path's statfs fails (e.g. both workRoot and casDir sit on an unmounted volume) — ADR-028's
+  // fail-closed default would refuse every upload/admission instead, which is worse for a condition
+  // this engine cannot even measure. The trade-off must not be silent, so it logs a warning once per
+  // DiskFloor instance (not on every `status()` call, even across cache misses).
+  it('fails OPEN and logs a warning ONCE when statfs fails on every configured path', () => {
+    let t = 0;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const d = new DiskFloor({ paths: ['/a', '/b'], percent: 5, bytes: GiB, statfs: () => { throw new Error('ENOENT'); }, clock: () => t });
+      expect(d.status()).toEqual({ ok: true, freeBytes: 0, floorBytes: 0 });
+      t += 6000; // past the 5s cache window — statfs is retried, still fails
+      expect(d.status()).toEqual({ ok: true, freeBytes: 0, floorBytes: 0 });
+      expect(() => d.assert()).not.toThrow();
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

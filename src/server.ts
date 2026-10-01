@@ -346,6 +346,17 @@ function sendBlobUploadError(res: ServerResponse, err: unknown): void {
   sendJson(res, status, { code, message, ...(status === 507 || status === 503 ? detail ?? {} : {}) });
 }
 
+// LOW-5 (owner decision 2026-10-02, verify-k): a manifest's `putBlob` failure must only reach the
+// caller via `sendBlobUploadError` (a static, catalog-shaped body) for the caller's OWN refusal
+// codes (QUOTA_EXCEEDED/DISK_LOW); anything else (a raw fs error — ENOSPC/EACCES/EEXIST/…, which can
+// carry a blob path under workRoot) stays a generic, static 500. Shared by both manifest routes
+// (auth-gated and the no-identity fallback) so neither can drift from the other's mapping again.
+function sendManifestPutBlobError(res: ServerResponse, err: unknown): void {
+  const code = (err as { code?: unknown }).code;
+  if (code === 'QUOTA_EXCEEDED' || code === 'DISK_LOW') sendBlobUploadError(res, err);
+  else sendJson(res, 500, { error: 'manifest register error' });
+}
+
 // v24 (DES-140, ARCH-089, TASK-147): the pre-v24 positional `callTool` (17 params, the old 9-tool
 // switch) is RETIRED — dispatch now goes through `callTool(deps, name, args, principal)` in
 // `call-tool.ts`, built from `ToolDeps` at each `/mcp` handler below.
@@ -1700,13 +1711,18 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
             sendJson(res, 400, { code: 'INVALID_BLOB_REQUEST', message: 'CAS not configured' });
             return;
           }
-          if (refuseUploadPreflight(ns, null)) return;
           const rawBytes = await readBodyBuffer(req, blobMaxBytes).catch((err: unknown) => {
             if (err instanceof BodyTooLargeError) sendJson(res, 413, { error: err.message, code: err.code });
             else sendJson(res, 500, { error: 'manifest register error' });
             return null;
           });
           if (rawBytes === null) return;
+          // LOW-1 (owner decision 2026-10-02, verify-k): the body is fully read now, so preflight
+          // with its REAL sha256 — not `null` — so a re-POST of a manifest this namespace already
+          // holds gets the SAME held-sha exemption a blob re-upload already gets (cas-store.ts's
+          // `_checkQuota`), instead of always being charged as new.
+          const manifestSha = createHash('sha256').update(rawBytes).digest('hex');
+          try { cas.preflight(ns, manifestSha, rawBytes.length); } catch (err) { sendBlobUploadError(res, err); return; }
           let parsed: unknown;
           try { parsed = JSON.parse(rawBytes.toString('utf8')); } catch {
             sendJson(res, 400, { code: 'INVALID_SEED_SPEC', message: 'manifest body is not valid JSON' });
@@ -1723,7 +1739,8 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
             return;
           }
           // Owner decision 2026-10-02: the manifest's own bytes are a blob — quota/disk-floor apply.
-          const stored = await cas.putBlob(ns, createHash('sha256').update(rawBytes).digest('hex'), rawBytes).catch((err: unknown) => { sendBlobUploadError(res, err); return null; });
+          // LOW-5: non-quota putBlob failures (e.g. a raw fs error) must not surface `err.message`.
+          const stored = await cas.putBlob(ns, manifestSha, rawBytes).catch((err: unknown) => { sendManifestPutBlobError(res, err); return null; });
           if (stored === null) return;
           sendJson(res, 200, { seedManifestRef: stored.sha256, namespace: ns });
         }).catch(() => { sendJson(res, 500, { error: 'manifest auth error' }); });
@@ -1922,8 +1939,14 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         sendJson(res, 400, { code: 'INVALID_BLOB_REQUEST', message: 'CAS not configured or invalid namespace' });
         return;
       }
-      try { cas.preflight(ns, null, declaredUploadBytes(req)); } catch (err) { sendBlobUploadError(res, err); return; }
       readBodyBuffer(req, blobMaxBytes).then(async (rawBytes) => {
+        // LOW-1 (owner decision 2026-10-02, verify-k): see the auth-gated manifest route's comment
+        // above — preflight with the body's REAL sha256 (now fully read) instead of `null`, so a
+        // re-POST of an already-held manifest gets the same held-sha exemption a blob re-upload
+        // already gets. A throw here (QUOTA_EXCEEDED/DISK_LOW) is handled by the `.catch` below,
+        // same as every other failure in this chain.
+        const manifestSha = createHash('sha256').update(rawBytes).digest('hex');
+        cas.preflight(ns, manifestSha, rawBytes.length);
         let parsed: unknown;
         try { parsed = JSON.parse(rawBytes.toString('utf8')); } catch {
           sendJson(res, 400, { code: 'INVALID_SEED_SPEC', message: 'manifest body is not valid JSON' });
@@ -1941,13 +1964,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
           return;
         }
         // Store the manifest as a CAS blob (seedManifestRef = sha256(rawBytes) — client-derivable).
-        const { sha256: manifestRef } = await cas.putBlob(ns, createHash('sha256').update(rawBytes).digest('hex'), rawBytes);
+        const { sha256: manifestRef } = await cas.putBlob(ns, manifestSha, rawBytes);
         sendJson(res, 200, { seedManifestRef: manifestRef, namespace: ns });
       }).catch((err: unknown) => {
         if (err instanceof BodyTooLargeError) { sendJson(res, 413, { error: err.message, code: err.code }); return; }
-        const code = (err as { code?: unknown }).code;
-        if (code === 'QUOTA_EXCEEDED' || code === 'DISK_LOW') { sendBlobUploadError(res, err); return; }
-        sendJson(res, 500, { error: 'manifest register error' });
+        sendManifestPutBlobError(res, err);
       });
       return;
     }

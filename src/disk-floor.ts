@@ -19,6 +19,10 @@ export class DiskFloor {
   private readonly _statfs: (path: string) => StatfsLike;
   private readonly _clock: () => number;
   private _cached: { at: number; status: DiskFloorStatus } | undefined;
+  // LOW-2 (owner decision 2026-10-02, verify-k): latches true the first time every configured path's
+  // statfs fails — logged once per instance, not once per `status()` call (a 5s cache miss would
+  // otherwise spam the log for as long as the condition lasts).
+  private _warnedAllPathsUnreadable = false;
 
   constructor(opts: { paths: string[]; percent: number; bytes: number; statfs?: (path: string) => StatfsLike; clock?: () => number }) {
     this._paths = [...new Set(opts.paths)];
@@ -43,6 +47,14 @@ export class DiskFloor {
       const floorBytes = Math.max(Math.floor((this._percent / 100) * total), this._bytes);
       const cand = { ok: freeBytes >= floorBytes, freeBytes, floorBytes };
       if (!worst || cand.freeBytes - cand.floorBytes < worst.freeBytes - worst.floorBytes) worst = cand;
+    }
+    // LOW-2: fail OPEN (an availability choice — ADR-028's fail-closed default would refuse every
+    // upload/admission instead) when every configured path's statfs failed; say so once, since a
+    // silent fail-open here is a defect waiting to be found the hard way (an unmounted workRoot/casDir
+    // volume lets uploads/admissions proceed with the floor effectively disabled).
+    if (worst === undefined && this._paths.length > 0 && !this._warnedAllPathsUnreadable) {
+      this._warnedAllPathsUnreadable = true;
+      console.warn(JSON.stringify({ event: 'disk_floor_fail_open', reason: 'statfs failed on every configured path', paths: this._paths }));
     }
     const status = worst ?? { ok: true, freeBytes: 0, floorBytes: 0 };
     this._cached = { at: now, status };

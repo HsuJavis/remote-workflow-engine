@@ -12,7 +12,7 @@
 // `port.markFailed is not a function`, TypeError. A SINGLE-TICK test would pass today and prove
 // nothing (the defect is only visible on tick 2 — DES-118's own words) — hence three ticks.
 import { describe, it, expect, vi } from 'vitest';
-import { SqliteSchedulerPort } from '../../src/scheduler.js';
+import { SqliteSchedulerPort, onceConsumedNote } from '../../src/scheduler.js';
 import { tick } from '../../src/scheduler-engine.js';
 import { ERROR_CATALOG } from '../../src/errors.js';
 import type { Clock } from '../../src/clock.js';
@@ -86,7 +86,11 @@ describe('Scheduler.markFailed — once schedule (DES-118, UT-105)', () => {
   // human-readable, secret-free `message` alongside `code` — the SAME static `ERROR_CATALOG` hint
   // `webhook-registry.ts`'s own replay/catch paths already surface, never `err.message` (which can
   // carry host/path detail a dispatch-failure Error happens to include).
-  it("lastError.message carries the catalogued hint for the code, never a raw/uncatalogued message", async () => {
+  // MEDIUM-1 (owner decision 2026-10-02, verify-k): a `once` row's `lastError.message` is the
+  // catalogued hint PLUS a plain "this was consumed, not retried" note — the bare hint alone (e.g.
+  // DISK_LOW's "retry later") reads as a lie for a row `claimFiring()` already disabled before
+  // dispatch ran.
+  it("lastError.message carries the catalogued hint PLUS the once-consumed note for a `once` row, never a raw/uncatalogued message", async () => {
     const start = Date.parse('2026-01-01T00:00:00.000Z');
     const clock = new MutableClock(start);
     const runManager = failingRunManager('WORKFLOW_NOT_FOUND');
@@ -97,7 +101,11 @@ describe('Scheduler.markFailed — once schedule (DES-118, UT-105)', () => {
     await driveOneTick(port, runManager, clock.now());
 
     const list = await port.list();
-    expect(list[0]!.lastError).toEqual({ code: 'WORKFLOW_NOT_FOUND', at: expect.any(String), message: ERROR_CATALOG.WORKFLOW_NOT_FOUND.hint });
+    expect(list[0]!.lastError).toEqual({
+      code: 'WORKFLOW_NOT_FOUND',
+      at: expect.any(String),
+      message: `${ERROR_CATALOG.WORKFLOW_NOT_FOUND.hint} — ${onceConsumedNote('failed')}`,
+    });
   });
 
   // An uncatalogued code (e.g. the driver's own 'DISPATCH_FAILED' fallback when the rejected Error
@@ -115,7 +123,11 @@ describe('Scheduler.markFailed — once schedule (DES-118, UT-105)', () => {
     await driveOneTick(port, runManager, clock.now());
 
     const list = await port.list();
-    expect(list[0]!.lastError).toEqual({ code: 'DISPATCH_FAILED', at: expect.any(String), message: ERROR_CATALOG.INTERNAL_ERROR.hint });
+    expect(list[0]!.lastError).toEqual({
+      code: 'DISPATCH_FAILED',
+      at: expect.any(String),
+      message: `${ERROR_CATALOG.INTERNAL_ERROR.hint} — ${onceConsumedNote('failed')}`,
+    });
   });
 });
 
@@ -144,6 +156,12 @@ describe('Scheduler.markFailed — cron schedule (DES-118, UT-105)', () => {
     const afterList = await port.list();
     expect(afterList[0]!.enabled).toBe(true); // cron stays enabled, unlike 'once'
     expect(afterList[0]!.nextFire).not.toBe(nextFireBefore); // a fresh future nextFire, never the stale due one
-    expect((afterList[0] as unknown as { lastError?: { code: string; at: string } }).lastError).toMatchObject({ code: 'WORKFLOW_NOT_FOUND' });
+    // MEDIUM-1: a cron row's lastError.message stays the BARE catalog hint — unlike a `once` row,
+    // it genuinely does retry at its freshly-advanced nextFire, so "retry later" is still true.
+    expect((afterList[0] as unknown as { lastError?: { code: string; at: string; message: string } }).lastError).toEqual({
+      code: 'WORKFLOW_NOT_FOUND',
+      at: expect.any(String),
+      message: ERROR_CATALOG.WORKFLOW_NOT_FOUND.hint,
+    });
   });
 });
