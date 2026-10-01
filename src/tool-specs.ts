@@ -1008,7 +1008,7 @@ export const TOOL_SPECS = [
   },
   {
     name: 'schedule_list', entity: 'schedule', key: null,
-    description: "List the caller's own schedules; unfiltered for the operator role.",
+    description: "List the caller's own schedules; unfiltered for the operator role. A failed dispatch carries lastError:{code,at,message} and a policy refusal before dispatch carries lastRefusedAt/lastRefusalReason/lastRefusalMessage — both messages are a static, secret-free hint for the code, never raw error text. A refused `once` trigger is still consumed (enabled:false) even though it never dispatched; read lastRefusalReason/lastRefusalMessage to see why.",
     inputSchema: schema({}),
     outputSchema: OUT,
     errors: [] as ErrorCode[],
@@ -1079,7 +1079,7 @@ export const TOOL_SPECS = [
   },
   {
     name: 'webhook_list', entity: 'webhook', key: null,
-    description: "List the caller's own webhooks; unfiltered for the operator role.",
+    description: "List the caller's own webhooks; unfiltered for the operator role. A permanent delivery refusal carries lastRefusedAt/lastRefusalReason/lastRefusalMessage — the message is the same static, secret-free hint for the code the HTTP delivery response itself returns, never raw error text.",
     inputSchema: schema({}),
     outputSchema: OUT,
     errors: [] as ErrorCode[],

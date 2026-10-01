@@ -2051,6 +2051,14 @@ export class RunManager {
     // contract/name (never the parent's — a nested workflow's declared assets are scoped to it).
     await this._refuseUnprovisionedAssets(name, childContract);
     const childParams = defaultRunParams(undefined, childContract.agents);
+    // Nested-asset-scope fix: this frame's OWN per-label declared skills/mcp + workflow name
+    // (REQ-113's nested half) — threaded down to `_handleAgentRequest` exactly like `childParams`
+    // already is (`frameParams`), below. Before this, a nested dispatch built `AgentReq.assets`
+    // from `entry.declaredAssets`/`entry.name` — the PARENT run's own admission snapshot — so a
+    // same-named label on the parent leaked its skills/mcp into the child (or, when the parent had
+    // no matching label at all, the child got nothing). A nested workflow() is another workflow's
+    // black box (AUTHORING.md) — its declared assets are its own, never the parent's.
+    const frameAssets = { workflow: name, declared: declaredAssetsOf(childContract) };
     // 2026-09-26 (owner decision 6): the nested frame is its own admission point, so it fetches its
     // own catalog snapshot rather than inheriting the parent run's (which may be stale by the time a
     // deep/late nested workflow() fires) — `ModelBook`'s own TTL cache means this is a real fetch
@@ -2098,7 +2106,7 @@ export class RunManager {
       // generation (after an immediate resume they otherwise ran live under the new controller).
       onAgentRequest: (prompt, opts, callSeq, phase) => {
         if (generation.aborted) throw new Error(`run ${runId}: agent() from a suspended/stopped nested workflow() frame`);
-        return this._handleAgentRequest(runId, prompt, opts, frameBase + callSeq, framePathKey, phase, childParams);
+        return this._handleAgentRequest(runId, prompt, opts, frameBase + callSeq, framePathKey, phase, childParams, frameAssets);
       },
       // v8 REQ-041: a deeper workflow() recurses here one level down, carrying this frame's path +
       // the extended ancestor set — enabling N-level composition (was: no delegate → NESTING_ERROR).
@@ -2138,7 +2146,7 @@ export class RunManager {
 
   /** Handles one child agent() call: replay from the resume cache when available, otherwise
    *  enforce budget + concurrency (RunGuard, single authority) and dispatch to the AgentSpawner. */
-  private async _handleAgentRequest(runId: string, positional: string, opts: unknown, callSeq: number, framePath = '', phase?: { title: string; index: number }, frameParams?: RunParams): Promise<unknown> {
+  private async _handleAgentRequest(runId: string, positional: string, opts: unknown, callSeq: number, framePath = '', phase?: { title: string; index: number }, frameParams?: RunParams, frameAssets?: { workflow: string; declared: Record<string, { skills: string[]; mcp: string[] }> }): Promise<unknown> {
     const entry = this._runs.get(runId);
     if (!entry) throw new Error(`Unknown run: ${runId}`);
     // v24 (integrator; DES-143/ADR-029 + REQ-110/REQ-113): the script-facing call is
@@ -2230,9 +2238,14 @@ export class RunManager {
       // behaviour at all. Built here from the three things only this scope has together: the run's
       // workflow name, THIS label's declared `skills`/`mcp`, and the resolved asset roots.
       // Absent for an ad-hoc/unnamed run or an unlabelled call — nothing to scope assets BY.
-      const declared = key.opts.label ? entry.declaredAssets[key.opts.label] : undefined;
-      const assets = entry.name !== undefined && declared !== undefined
-        ? { roots: assetRootsFor(this._assetRoot, this._globalAssetRoot, entry.name), declared, workflow: entry.name }
+      // A nested workflow() frame passes its OWN `frameAssets` (this label's declared set + the
+      // CHILD workflow's name, built in `_handleWorkflowRequest` from the child's own contract) —
+      // never the parent run's `entry.declaredAssets`/`entry.name`, which belong to another
+      // workflow entirely. A top-level call passes none and reads the run's own registration.
+      const assetScope = frameAssets ?? (entry.name !== undefined ? { workflow: entry.name, declared: entry.declaredAssets } : undefined);
+      const declared = key.opts.label && assetScope !== undefined ? assetScope.declared[key.opts.label] : undefined;
+      const assets = assetScope !== undefined && declared !== undefined
+        ? { roots: assetRootsFor(this._assetRoot, this._globalAssetRoot, assetScope.workflow), declared, workflow: assetScope.workflow }
         : undefined;
       const outcome = await this._semaphore.withSlot(() =>
         entry.spawner.run({

@@ -17,7 +17,7 @@ import { randomUUID } from 'node:crypto';
 import type { Clock } from './clock.js';
 import type { ErrEnvelope, RefusalReason, StartedBy } from './types.js';
 import { computeNextFire, bootRearm, parseCron, CRON_SEMANTICS, type StoredSchedule } from './scheduler-engine.js';
-import { toErrEnvelope } from './errors.js';
+import { toErrEnvelope, ERROR_CATALOG, toErrorCode } from './errors.js';
 
 // v24 (DES-149, ARCH-099, TASK-141): `workflow` becomes OPTIONAL — a trigger can now be created
 // UNCLAIMED (no bound workflow) and claimed later via `claim()`/`release()`/`ownerOf()`. A caller
@@ -65,12 +65,22 @@ export interface ScheduleStatus {
   nextFire?: string;
   lastFire?: string;
   lastRunId?: string;
-  lastError?: { code: string; at: string };
+  // Owner decision (schedule/webhook refusal message visibility): `message` is the SAME static,
+  // secret-free `ERROR_CATALOG[code].hint` webhook-registry.ts's own replay/catch paths already
+  // surface — never `err.message`, which can carry host/path detail a dispatch-failure Error
+  // happens to include. Computed on READ (`rowToStatus`), not stored, so it can never drift from a
+  // later catalog wording change the way a frozen write-time copy would.
+  lastError?: { code: string; at: string; message: string };
   // v24 (DES-150, TASK-141): coalesced fire-path refusal accounting — never touched by a dispatch
   // failure (`lastError`), only by a policy refusal BEFORE dispatch (`markRefused`).
   refusalCount?: number;
   lastRefusedAt?: string;
   lastRefusalReason?: RefusalReason;
+  // Owner decision (schedule/webhook refusal message visibility): same catalogued-hint convention
+  // as `lastError.message` above, for the refusal trio — lets a consumed-by-refusal `once` trigger
+  // (`enabled:false` + this reason) read as a human-readable fact straight off `schedule_list`,
+  // never just a bare machine code.
+  lastRefusalMessage?: string;
 }
 
 export interface ScheduleResult<T> {
@@ -173,10 +183,20 @@ function rowToStatus(r: ScheduleRow): ScheduleStatus {
     nextFire: r.nextFire != null ? new Date(r.nextFire).toISOString() : undefined,
     lastFire: r.lastFire ?? undefined,
     lastRunId: r.lastRunId ?? undefined,
-    lastError: r.lastError != null ? (JSON.parse(r.lastError) as { code: string; at: string }) : undefined,
+    lastError: r.lastError != null
+      ? ((): { code: string; at: string; message: string } => {
+          const parsed = JSON.parse(r.lastError!) as { code: string; at: string };
+          return { ...parsed, message: ERROR_CATALOG[toErrorCode(parsed.code)].hint };
+        })()
+      : undefined,
     refusalCount: r.refusalCount ?? 0,
     lastRefusedAt: r.lastRefusedAt ?? undefined,
     lastRefusalReason: (r.lastRefusalReason as RefusalReason | null) ?? undefined,
+    // Every `RefusalReason` literal is itself a real `ErrorCode` (pinned by `errors.ts`'s own
+    // closed union), so this lookup never needs `toErrorCode`'s unknown-code fallback the way
+    // `lastError.code` above does (an arbitrary string from a caught Error vs. a reason THIS
+    // module itself chose from a 5-member literal union).
+    lastRefusalMessage: r.lastRefusalReason != null ? ERROR_CATALOG[r.lastRefusalReason as RefusalReason].hint : undefined,
   };
 }
 
