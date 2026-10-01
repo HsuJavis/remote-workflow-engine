@@ -891,11 +891,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // the RunManager (rations every SDK-CLI dispatch) and surfaced read-only via GET /api/status.
   const agentSemaphore = createSemaphore(config?.agentSlots ?? 32);
   // v10 Slice 2 (REQ-064/065): the content-addressed store backing efficient seedManifest assembly.
-  const cas = new CasStore(config?.casDir ?? join(workRoot, 'cas'));
+  const cas = new CasStore(config?.casDir ?? join(workRoot, 'cas'), { clock: () => clock.now() });
   // Owner decision 2026-10-02: the disk floor over every filesystem the engine writes uploads/run
   // workspaces to; consulted by every CAS write and every new run admission.
   const diskFloorCfg = { ...DISK_FLOOR_DEFAULTS, ...config?.diskFloor };
-  const diskFloor = new DiskFloor({ paths: [workRoot, config?.casDir ?? join(workRoot, 'cas')], percent: diskFloorCfg.percent, bytes: diskFloorCfg.bytes });
+  const diskFloor = new DiskFloor({ paths: [workRoot, config?.casDir ?? join(workRoot, 'cas')], percent: diskFloorCfg.percent, bytes: diskFloorCfg.bytes, clock: () => clock.now() });
   cas.setDiskGuard(() => diskFloor.assert());
   // v14 (REQ-081, DES-086): max raw bytes for POST /assets/blob/:sha (default 256 MiB, min 1 MiB).
   const MIN_BLOB_BYTES = 1024 * 1024; // 1 MiB minimum per DES-086
