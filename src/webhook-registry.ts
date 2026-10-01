@@ -79,6 +79,11 @@ export interface WebhookView {
   // `MCP_NOT_PROVISIONED`) — both are real `ErrorCode` members, so every existing assignment of a
   // `RefusalReason` literal here still compiles unchanged.
   lastRefusalReason?: ErrorCode;
+  /** Owner decision (schedule/webhook refusal message visibility): the SAME static, secret-free
+   *  `ERROR_CATALOG[lastRefusalReason].hint` `_replayFromRow`'s own hint lookup already uses for the
+   *  HTTP response body — surfaced here too so `webhook_list` shows a human-readable reason, not
+   *  just the bare machine code, mirroring `ScheduleStatus.lastRefusalMessage` (scheduler.ts). */
+  lastRefusalMessage?: string;
   /** v37 Gate-8 round-2 (finding B3, ARCH-182 (4)): mirrors `ScheduleStatus.createdRemote`
    *  (scheduler.ts) — a value that decides whether code executes and cannot be read back is
    *  unauditable by construction; `webhook_list` needed this to answer "was this webhook created
@@ -329,7 +334,7 @@ export class WebhookRegistry {
       refusalCount: r.refusalCount ?? 0,
       createdRemote: r.createdRemote === 1,
       ...(r.lastRefusedAt ? { lastRefusedAt: r.lastRefusedAt } : {}),
-      ...(r.lastRefusalReason ? { lastRefusalReason: r.lastRefusalReason as ErrorCode } : {}),
+      ...(r.lastRefusalReason ? { lastRefusalReason: r.lastRefusalReason as ErrorCode, lastRefusalMessage: ERROR_CATALOG[r.lastRefusalReason as ErrorCode]?.hint ?? ERROR_CATALOG['CONFINEMENT_UNAVAILABLE'].hint } : {}),
     }));
   }
 

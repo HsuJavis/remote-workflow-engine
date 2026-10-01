@@ -18,6 +18,7 @@ import { describe, it, expect } from 'vitest';
 import { SqliteSchedulerPort } from '../../src/scheduler.js';
 import { tick } from '../../src/scheduler-engine.js';
 import { FixedClock } from '../../src/clock.js';
+import { ERROR_CATALOG } from '../../src/errors.js';
 import type { RefusalReason } from '../../src/types.js';
 
 function makePort(clock: FixedClock) {
@@ -114,6 +115,32 @@ describe('scheduler refusal accounting (UT-151, DES-150)', () => {
     const status = (await port.list()).find((s: { id: string }) => s.id === firing.id);
     expect(status?.lastRefusalReason).toBe(reason);
     expect(status?.refusalCount).toBe(1);
+  });
+
+  // Owner decision (schedule/webhook refusal message visibility): a consumed-by-refusal `once`
+  // trigger must be readable from `schedule_list` alone — `enabled:false` plus `lastRefusalReason`
+  // WITH a human-readable `lastRefusalMessage` (the same static `ERROR_CATALOG` hint, never a raw
+  // internal string), not just the bare machine code.
+  it.each(reasons)('lastRefusalMessage carries the catalogued hint for reason %s', async (reason) => {
+    const clock = new FixedClock(new Date('2026-01-01T00:00:00Z'));
+    const port = makePort(clock);
+    const created = await port.create({ kind: 'once', workflow: 'wf-a', at: '2026-01-01T00:00:00Z', enabled: true });
+    const firing = { kind: 'once' as const, id: (created as { result: { id: string } }).result.id };
+    port.markRefused(firing, reason);
+    const status = (await port.list()).find((s: { id: string }) => s.id === firing.id);
+    expect(status?.lastRefusalMessage).toBe(ERROR_CATALOG[reason].hint);
+  });
+
+  it('a consumed-by-refusal once trigger is unambiguous from schedule_list alone: enabled:false + reason + message', async () => {
+    const clock = new FixedClock(new Date('2026-01-01T00:00:00Z'));
+    const port = makePort(clock);
+    const created = await port.create({ kind: 'once', workflow: 'wf-a', at: '2026-01-01T00:00:00Z', enabled: true });
+    const firing = { kind: 'once' as const, id: (created as { result: { id: string } }).result.id };
+    port.markRefused(firing, 'CHANNEL_UNPUBLISHED');
+    const status = (await port.list()).find((s: { id: string }) => s.id === firing.id);
+    expect(status?.enabled).toBe(false);
+    expect(status?.lastRefusalReason).toBe('CHANNEL_UNPUBLISHED');
+    expect(status?.lastRefusalMessage).toBe(ERROR_CATALOG.CHANNEL_UNPUBLISHED.hint);
   });
 
   it('lastRefusedAt is stamped from the injected Clock, not the wall clock', async () => {

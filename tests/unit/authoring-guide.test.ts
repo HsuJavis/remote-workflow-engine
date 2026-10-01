@@ -672,10 +672,12 @@ describe('buildAuthoringGuide — "Host path grants" names the field a schedule\
     id: true, kind: true, workflow: true, claimedBy: true, createdBy: true, createdRemote: true,
     enabled: true, cron: true, tz: true, at: true, nextFire: true, lastFire: true, lastRunId: true,
     lastError: true, refusalCount: true, lastRefusedAt: true, lastRefusalReason: true,
+    lastRefusalMessage: true,
   };
   const WEBHOOK_FIELDS: Record<keyof WebhookView, true> = {
     id: true, workflow: true, createdBy: true, enabled: true, secretFingerprint: true,
     refusalCount: true, lastRefusedAt: true, lastRefusalReason: true, createdRemote: true,
+    lastRefusalMessage: true,
   };
 
   it('the unconfined body attributes a schedule firing\'s refusal to lastError, matching the ACTUAL markFailed/lastError code path (not the refusal trio)', () => {

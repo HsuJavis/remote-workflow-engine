@@ -14,6 +14,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { SqliteSchedulerPort } from '../../src/scheduler.js';
 import { tick } from '../../src/scheduler-engine.js';
+import { ERROR_CATALOG } from '../../src/errors.js';
 import type { Clock } from '../../src/clock.js';
 
 /** A mutable fake clock (this repo's FixedClock is immutable) — needed to drive multiple ticks. */
@@ -79,6 +80,42 @@ describe('Scheduler.markFailed — once schedule (DES-118, UT-105)', () => {
     expect(list).toHaveLength(1);
     expect(list[0]!.enabled).toBe(false); // 'once' auto-disabled, same as a successful markFired
     expect((list[0] as unknown as { lastError?: { code: string; at: string } }).lastError).toMatchObject({ code: 'WORKFLOW_NOT_FOUND' });
+  });
+
+  // Owner decision (schedule/webhook refusal message visibility): `lastError` carries a
+  // human-readable, secret-free `message` alongside `code` — the SAME static `ERROR_CATALOG` hint
+  // `webhook-registry.ts`'s own replay/catch paths already surface, never `err.message` (which can
+  // carry host/path detail a dispatch-failure Error happens to include).
+  it("lastError.message carries the catalogued hint for the code, never a raw/uncatalogued message", async () => {
+    const start = Date.parse('2026-01-01T00:00:00.000Z');
+    const clock = new MutableClock(start);
+    const runManager = failingRunManager('WORKFLOW_NOT_FOUND');
+    const port = new SqliteSchedulerPort({ clock, catalog: OK_CATALOG, runManager, dbPath: ':memory:' });
+    const created = await port.create({ kind: 'once', workflow: 'gone-workflow', at: new Date(start - 1000).toISOString(), enabled: true });
+    expect(created.error).toBeUndefined();
+
+    await driveOneTick(port, runManager, clock.now());
+
+    const list = await port.list();
+    expect(list[0]!.lastError).toEqual({ code: 'WORKFLOW_NOT_FOUND', at: expect.any(String), message: ERROR_CATALOG.WORKFLOW_NOT_FOUND.hint });
+  });
+
+  // An uncatalogued code (e.g. the driver's own 'DISPATCH_FAILED' fallback when the rejected Error
+  // carried none) must still fold to a SAFE message via the same `toErrorCode` -> INTERNAL_ERROR
+  // path `errors.ts` already uses everywhere else — never crash, never pass an arbitrary string
+  // through to `ERROR_CATALOG` unchecked.
+  it("an uncatalogued markFailed code falls back to INTERNAL_ERROR's catalogued hint, never crashes", async () => {
+    const start = Date.parse('2026-01-01T00:00:00.000Z');
+    const clock = new MutableClock(start);
+    const runManager = { start: vi.fn().mockRejectedValue(new Error('dispatch failed, no .code at all')) };
+    const port = new SqliteSchedulerPort({ clock, catalog: OK_CATALOG, runManager, dbPath: ':memory:' });
+    const created = await port.create({ kind: 'once', workflow: 'gone-workflow', at: new Date(start - 1000).toISOString(), enabled: true });
+    expect(created.error).toBeUndefined();
+
+    await driveOneTick(port, runManager, clock.now());
+
+    const list = await port.list();
+    expect(list[0]!.lastError).toEqual({ code: 'DISPATCH_FAILED', at: expect.any(String), message: ERROR_CATALOG.INTERNAL_ERROR.hint });
   });
 });
 

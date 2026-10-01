@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { createHmac } from 'node:crypto';
 import { WebhookRegistry } from '../../src/webhook-registry.js';
 import type { Clock } from '../../src/clock.js';
-import { CatalogNotFoundError } from '../../src/errors.js';
+import { CatalogNotFoundError, ERROR_CATALOG } from '../../src/errors.js';
 import { ADMISSION_PERMANENT_CODES } from '../../src/run-manager.js';
 
 // An advancing-free clock anchored at a real "now" so the ±300s timestamp window is meaningful.
@@ -78,6 +78,10 @@ describe('WebhookRegistry (v8 Defer B, REQ-057/058)', () => {
     const r = await reg.deliver(webhookId, { signature: sign(secret, body), timestamp: CLOCK.isoNow(), deliveryId: 'd-nope', rawBody: body, parsedBody: {} });
     expect(r).toMatchObject({ ok: false, code: 'CLAIMED_WORKFLOW_MISSING' });
     expect(reg.get(webhookId)?.lastRefusalReason).toBe('CLAIMED_WORKFLOW_MISSING');
+    // Owner decision (schedule/webhook refusal message visibility): `webhook_list`'s last refusal
+    // carries the same static, secret-free `ERROR_CATALOG` hint `lastRefusalMessage` the scheduler's
+    // `ScheduleStatus` now does — never only the bare machine code.
+    expect(reg.get(webhookId)?.lastRefusalMessage).toBe(ERROR_CATALOG.CLAIMED_WORKFLOW_MISSING.hint);
   });
 
   it('deliver: a correctly-signed fresh delivery fires the PRE-BOUND workflow with args.event → 202', async () => {
