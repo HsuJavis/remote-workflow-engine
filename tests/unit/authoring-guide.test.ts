@@ -839,3 +839,18 @@ describe('buildAuthoringGuide — every error-code-shaped token is a real ERROR_
     for (const code of NON_CODES) expect(Object.hasOwn(ERROR_CATALOG, code), `${code} is now a real ERROR_CATALOG key — remove it from NON_CODES`).toBe(false);
   });
 });
+
+// Send-back L8 (spec §Docs): a cold MCP-only consumer reading ONLY this guide must learn that
+// non-interactive access exists, how to exchange a token, and the headersHelper output shape.
+describe('buildAuthoringGuide — "Service accounts (non-interactive access)" section (send-back L8)', () => {
+  it('states the client_credentials exchange, the headersHelper JSON-object shape, and points at DEPLOY.md', () => {
+    const text = buildAuthoringGuide(CEILINGS);
+    const sec = sectionOf(text, 'Service accounts (non-interactive access)');
+    expect(sec).toContain('client_credentials');
+    expect(sec).toContain('POST /token');
+    expect(sec).toContain('service_account_create');
+    expect(sec).toContain('headersHelper');
+    expect(sec).toContain('JSON OBJECT');
+    expect(sec).toContain('DEPLOY.md');
+  });
+});

@@ -63,6 +63,9 @@ export const ERROR_CATALOG = {
   // that fails on trigger to point at the guide, and does not carve ownership out of "trigger" —
   // the guide is where the create-then-claim lifecycle is explained.
   NOT_TRIGGER_OWNER: { see: 'workflow_authoring_guide', hint: 'the caller does not own (did not create) this trigger' },
+  // Service accounts spec (owner decision 2026-10-03): a service account created with a
+  // `workflows` allowlist, naming a workflow outside it on a workflow-scoped tool.
+  WORKFLOW_NOT_ALLOWED: { see: 'workflow_authoring_guide', hint: 'this service account is restricted to a workflows allowlist (service_account_create/_update) and this workflow is not in it' },
 
   // Script / registration authoring (workflow_authoring_guide-pointing)
   PARSE_ERROR: { see: 'workflow_authoring_guide', hint: 'the script body failed to parse as TypeScript' },
@@ -209,6 +212,21 @@ export const ERROR_CATALOG = {
   // closed vocabulary (`dir`, `id` — mcp-run-state.ts) — refused at push time, before the probe.
   UNKNOWN_RUN_PLACEHOLDER: { see: 'workflow_authoring_guide', hint: 'a pushed mcp config references ${run:xxx} with an unknown name — only ${run:dir} (a per-run, per-server private directory) and ${run:id} (this run\'s id) are supported' },
   ISSUE_NOT_FOUND: { see: null, hint: 'no GitHub issue matches this reference' },
+
+  // Service accounts (owner decision 2026-10-03): the 6 service_account_* admin tools, and the
+  // /token client_credentials grant's per-request re-check of an already-issued bearer.
+  SERVICE_ACCOUNT_EXISTS: { see: null, hint: 'a service account with this name already exists' },
+  // Send-back D2 (owner decision: tombstone deleted names): `sa:<name>` is also the catalog/run/
+  // webhook/schedule/CAS-namespace ownership string, so re-creating a deleted name would silently
+  // inherit everything the old account ever touched. A deleted name is retired forever.
+  SERVICE_ACCOUNT_NAME_RETIRED: { see: null, hint: 'this name belonged to a deleted service account and can never be reused (it would inherit the old account\'s workflows/runs/webhooks/CAS pool) — pick a different name' },
+  SERVICE_ACCOUNT_NOT_FOUND: { see: null, hint: 'no service account is registered under this name' },
+  SERVICE_ACCOUNT_SECRET_NOT_FOUND: { see: null, hint: 'this service account has no secret with that id' },
+  TOO_MANY_SECRETS: { see: null, hint: 'a service account may hold at most 2 active secrets (rotation overlap) — revoke one before rotating again' },
+  // Spec §Model: disabled/expired/deleted is refused everywhere with this code, never the
+  // ACCOUNT_PENDING_APPROVAL ('none' role) semantics a human principal gets — a service account's
+  // role is never 'none', so the two refusals must stay visibly distinct on the wire.
+  SERVICE_ACCOUNT_DISABLED: { see: null, hint: 'this service account is disabled, expired, or deleted; an admin must re-enable it, extend its expiry, or issue a new one' },
 } as const satisfies Record<string, { see: 'workflow_authoring_guide' | null; hint: string }>;
 
 export type ErrorCode = keyof typeof ERROR_CATALOG;

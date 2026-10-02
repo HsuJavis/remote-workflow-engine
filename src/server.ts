@@ -47,6 +47,8 @@ import { TokenStore } from './auth/token-store.js';
 import { createAuthRouteHandlers, resolvePrincipal, readSessionCookie, sessionCookie, clearSessionCookie, type AuthConfig } from './auth/auth-service.js';
 import { RoleStore } from './auth/role-store.js';
 import { PrincipalAdmin, type QuotaView } from './auth/principal-admin.js';
+import { ServiceAccountStore } from './auth/service-account-store.js';
+import { ERROR_CATALOG } from './errors.js';
 import { CAS_QUOTA_DEFAULTS, DISK_FLOOR_DEFAULTS, type CasQuotaConfig, type DiskFloorConfig } from './cas-quota.js';
 import { DiskFloor } from './disk-floor.js';
 import type { PrincipalRole as Role } from './authz.js';
@@ -950,7 +952,12 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // substituted for it (a version the run never carried and no admission check ever saw). The PINNED
   // resume path is still ungated, so call-tool.ts's door is still the cover for an ORDINARY
   // run_resume — the two are complementary, not identical. See DES-263 第三次/第四次修訂.
-  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, modelBook, eventSink, confinementPosture: config?.confinementPosture, probeLookup, diskFloor });
+  // Service accounts spec (owner decision 2026-10-03): `principalAdmin` is constructed further
+  // below in this same function body — safe to reference here via closure, since RunManager only
+  // CALLS this function later (on a nested workflow() dispatch), by which point construction has
+  // completed (same convention `buildToolDeps`'s own forward reference to `principalAdmin` already
+  // relies on).
+  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, modelBook, eventSink, confinementPosture: config?.confinementPosture, probeLookup, diskFloor, serviceAccountStatus: (principal) => principalAdmin.serviceAccountStatus(principal) });
   // v8 Defer B (REQ-057/058): durable webhook ingress registry, same workRoot convention.
   const webhooks = new WebhookRegistry({ clock, runManager, catalog, dbPath: config?.webhookDbPath ?? join(workRoot, 'webhooks.db') });
   // v22 (DES-113, TASK-108) SHRINK: SubmissionValidatorDeps is now `{catalog}` — the alias/MCP-name/
@@ -1042,7 +1049,12 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // by `main.ts`'s real probe (ARCH-181) — `undefined` on every test/zero-config boot, which the
   // door already treats as "don't gate" (call-tool.ts's own documented default).
   function buildToolDeps(webhookBaseUrl: string, isRemoteSubmission = false): ToolDeps {
-    return { facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, modelBook, probeLookup, modelProber, observedStats, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store, confinementPosture: config?.confinementPosture, isRemoteSubmission, principals: principalAdmin };
+    return {
+      facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, modelBook, probeLookup, modelProber, observedStats, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store, confinementPosture: config?.confinementPosture, isRemoteSubmission, principals: principalAdmin,
+      // Service accounts spec (owner decision 2026-10-03): wired unconditionally — `serviceAccounts`
+      // is constructed on every boot, same lifetime as `principalAdmin` just above.
+      serviceAccounts, revokeServiceAccountTokens: (principal) => authTokenStore?.revokeAllFor(principal) ?? 0,
+    };
   }
   // v35 (DES-239b, ARCH-152, TASK-237, REQ-210): BOTH `initialize` results carry `instructions`
   // with `ENVELOPE_NOTE` and a guide-size figure COMPUTED per call from the SAME stringified
@@ -1065,7 +1077,26 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // on the very next call; each authenticated request also lands in the known-principals ledger.
   function principalFor(id: string): Principal {
     principalAdmin.markSeen(id);
-    return { kind: principalAdmin.resolve(id), id };
+    const role = principalAdmin.resolve(id);
+    // Service accounts spec (owner decision 2026-10-03), §Authorization: the allowlist rides the
+    // Principal object itself (authz.ts's authorize() reads `.workflows`) — set only for a live
+    // `sa:<name>` id with a non-empty allowlist (workflowsFor returns undefined otherwise).
+    const workflows = principalAdmin.workflowsFor(id);
+    if (workflows && (role === 'user' || role === 'author')) return { kind: role, id, workflows };
+    return { kind: role, id };
+  }
+  /** Service accounts spec §Model/§Token exchange: "on each request the SA row is re-checked
+   *  (disabled/deleted/expired … take effect immediately even for already-issued tokens)". Checked
+   *  at every bearer-resolution site BEFORE `principalFor` would otherwise fold a disabled/expired/
+   *  deleted account into the ordinary 'none' (ACCOUNT_PENDING_APPROVAL) path — spec: "no
+   *  ACCOUNT_PENDING semantics; use a clear code". `null` for a non-`sa:` id or a live account. */
+  function serviceAccountBearerRefusal(principalId: string): boolean {
+    if (!principalId.startsWith('sa:')) return false;
+    return !serviceAccounts.isLive(principalId.slice('sa:'.length)).live;
+  }
+  function sendServiceAccountDisabled(res: ServerResponse): void {
+    res.setHeader('WWW-Authenticate', 'Bearer error="invalid_token"');
+    sendJson(res, 401, { code: 'SERVICE_ACCOUNT_DISABLED', error: ERROR_CATALOG.SERVICE_ACCOUNT_DISABLED.hint });
   }
   // v6 (REQ-036): best-effort engine-side diagnostics for a runId, pulled through the SAME facade
   // the MCP tools use (status + artifact list + failing/last agent transcript tail), formatted as a
@@ -1222,9 +1253,14 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         csprng: (n: number) => randomBytes(n),
       })
     : undefined;
+  // Service accounts spec (owner decision 2026-10-03): opened on EVERY boot, auth on or off — same
+  // convention as RoleStore just below (principals_list/the 6 service_account_* tools answer the
+  // same way whether or not auth is enabled; the client_credentials grant itself still requires it).
+  const serviceAccounts = new ServiceAccountStore(authDb, { clock: () => clock.now(), csprng: (n: number) => randomBytes(n) });
   const principalAdmin = new PrincipalAdmin({
     store: new RoleStore(authDb, { clock: () => clock.now() }), principals: config?.principals, authEnabled: !!authCfg,
     quota: { defaults: { ...CAS_QUOTA_DEFAULTS, ...config?.casQuota }, usage: (id) => cas.usage(id) },
+    serviceAccounts,
   });
   // Owner decision 2026-10-02: the CAS quota is per NAMESPACE = principal id. 'local' (auth
   // disabled, or a loopback-exempt caller with no identity — the operator's own rescue path) has no
@@ -1235,7 +1271,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   cas.setQuotaResolver((ns) => (ns === casNamespaceFor(null) ? null : principalAdmin.quotaFor(ns).limitBytes));
   facade.bindQuotaView(quotaViewFor);
   const authHandlers = authCfg && authTokenStore
-    ? createAuthRouteHandlers(authCfg, authTokenStore, (email) => principalAdmin.markSeen(email))
+    ? createAuthRouteHandlers(authCfg, authTokenStore, (email) => principalAdmin.markSeen(email), serviceAccounts)
     : undefined;
   // Spec §A: the dashboard is served on the public URL too, so the engine's own public origin
   // (publicBaseUrl / auth.issuer) is always an allowlisted Host/Origin authority — the operator
@@ -1463,7 +1499,8 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       if (r.status === 'failed') {
         const code = r.code ?? r.error?.code ?? 'INTERNAL_ERROR';
         const http = code === 'FORBIDDEN_ROLE' || code === 'PRINCIPAL_REQUIRED' || code === 'ACCOUNT_PENDING_APPROVAL' ? 403
-          : code === 'ROLE_LOCKED' || code === 'LAST_ADMIN' ? 409
+          : code === 'ROLE_LOCKED' || code === 'LAST_ADMIN' || code === 'SERVICE_ACCOUNT_EXISTS' || code === 'SERVICE_ACCOUNT_NAME_RETIRED' || code === 'TOO_MANY_SECRETS' ? 409
+          : code === 'SERVICE_ACCOUNT_NOT_FOUND' || code === 'SERVICE_ACCOUNT_SECRET_NOT_FOUND' ? 404
           : code === 'INVALID_ARGUMENT' ? 400 : 500;
         sendJson(res, http, { code, error: r.error?.message ?? code });
         return;
@@ -1493,6 +1530,45 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         try { body = JSON.parse(await readBody(req, 64 * 1024)) as Record<string, unknown>; } catch { sendJson(res, 400, { code: 'INVALID_ARGUMENT', error: 'INVALID_ARGUMENT: body must be JSON {id, limit}' }); return; }
         sendToolOutcome(await callTool(deps, 'principal_set_quota', { id: body['id'], limit: body['limit'] ?? null }, principal));
         return;
+      }
+      sendJson(res, 405, { error: 'Method not allowed' });
+    };
+    // Service accounts spec (owner decision 2026-10-03): the dashboard "Service accounts" section's
+    // backend — the SAME 6 admin-only tools an MCP client calls, same authorize() row, same audit;
+    // the dashboard can never grant what the tool refuses. Same CSRF rule as /api/principals/*.
+    const serveServiceAccountsRoute = async (principal: Principal): Promise<void> => {
+      const deps = buildToolDeps(resolvePublicBaseUrl(req), isRemoteSubmission);
+      const readJsonBody = async (): Promise<Record<string, unknown> | null> => {
+        try { return JSON.parse(await readBody(req, 64 * 1024)) as Record<string, unknown>; } catch { return null; }
+      };
+      if (reqPath === '/api/service-accounts' && req.method === 'GET') {
+        sendToolOutcome(await callTool(deps, 'service_account_list', {}, principal));
+        return;
+      }
+      if (reqPath === '/api/service-accounts' && req.method === 'POST') {
+        if (!sameOriginMutation()) { sendJson(res, 403, { code: 'CSRF_REFUSED', error: 'Forbidden: a state-changing dashboard call needs a same-origin Origin or X-Requested-With header' }); return; }
+        const body = await readJsonBody();
+        if (!body) { sendJson(res, 400, { code: 'INVALID_ARGUMENT', error: 'INVALID_ARGUMENT: body must be JSON {name, role, description?, workflows?, expiresAt?}' }); return; }
+        // Send-back L4: this response carries a raw client_secret (shown once) — same RFC 6749
+        // §5.1 reasoning as POST /token's own no-store headers.
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Pragma', 'no-cache');
+        sendToolOutcome(await callTool(deps, 'service_account_create', body, principal));
+        return;
+      }
+      for (const [suffix, tool] of [['update', 'service_account_update'], ['rotate', 'service_account_rotate_secret'], ['revoke', 'service_account_revoke_secret'], ['delete', 'service_account_delete']] as const) {
+        if (reqPath === `/api/service-accounts/${suffix}` && req.method === 'POST') {
+          if (!sameOriginMutation()) { sendJson(res, 403, { code: 'CSRF_REFUSED', error: 'Forbidden: a state-changing dashboard call needs a same-origin Origin or X-Requested-With header' }); return; }
+          const body = await readJsonBody();
+          if (!body) { sendJson(res, 400, { code: 'INVALID_ARGUMENT', error: 'INVALID_ARGUMENT: body must be JSON' }); return; }
+          // Send-back L4: `rotate`'s response also carries a raw client_secret.
+          if (suffix === 'rotate') {
+            res.setHeader('Cache-Control', 'no-store');
+            res.setHeader('Pragma', 'no-cache');
+          }
+          sendToolOutcome(await callTool(deps, tool, body, principal));
+          return;
+        }
       }
       sendJson(res, 405, { error: 'Method not allowed' });
     };
@@ -1532,6 +1608,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       }
       if (reqPath === '/api/principals' || reqPath === '/api/principals/role' || reqPath === '/api/principals/quota') {
         servePrincipalsRoute(principal).catch(() => sendJson(res, 500, { error: 'principals route error' }));
+        return;
+      }
+      if (reqPath === '/api/service-accounts' || reqPath.startsWith('/api/service-accounts/')) {
+        serveServiceAccountsRoute(principal).catch(() => sendJson(res, 500, { error: 'service accounts route error' }));
         return;
       }
       // TASK-025 (DES-018): read-only dashboard HTTP API, a distinct transport from /mcp on the
@@ -1631,7 +1711,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       const resolveCaller = async (): Promise<{ principal: Principal; renew?: string } | null> => {
         if (typeof req.headers.authorization === 'string') {
           const p = await resolvePrincipal(req, authTokenStore!, wwwChallenge());
-          if ('principal' in p) return { principal: principalFor(p.principal) };
+          // Service accounts spec §Management surface: "Dashboard login is human-only (SAs cannot
+          // get a dashboard session)" — an sa: bearer is never a valid caller here, live or not
+          // (falls through to the D-BIND rescue / "no caller" path below, same as no bearer at all).
+          if ('principal' in p && !p.principal.startsWith('sa:')) return { principal: principalFor(p.principal) };
         } else {
           const tok = readSessionCookie(req.headers.cookie);
           const v = tok ? authTokenStore!.verifySession(tok) : null;
@@ -1681,6 +1764,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       if (!dbindExempt && blobMatchAuth) {
         void resolvePrincipal(req, authTokenStore!, wwwChallenge()).then((p) => {
           if ('status' in p) { send401(); return; }
+          if (serviceAccountBearerRefusal(p.principal)) { sendServiceAccountDisabled(res); return; }
           if (refusePending(p.principal)) return;
           const sha = decodeURIComponent(blobMatchAuth[1]!);
           // DES-096: principal is the namespace for authenticated uploads (server-derived, not echoed from client).
@@ -1703,6 +1787,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       if (!dbindExempt && req.method === 'POST' && req.url?.startsWith('/assets/manifest')) {
         void resolvePrincipal(req, authTokenStore!, wwwChallenge()).then(async (p) => {
           if ('status' in p) { send401(); return; }
+          if (serviceAccountBearerRefusal(p.principal)) { sendServiceAccountDisabled(res); return; }
           if (refusePending(p.principal)) return;
           // DES-096: principal is the namespace for authenticated manifest uploads (server-derived).
           const ns = p.principal;
@@ -1750,6 +1835,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       if (!dbindExempt && req.method === 'POST' && req.url?.startsWith('/mcp')) {
         void resolvePrincipal(req, authTokenStore!, wwwChallenge()).then((p) => {
           if ('status' in p) { send401(); return; }
+          if (serviceAccountBearerRefusal(p.principal)) { sendServiceAccountDisabled(res); return; }
           return readBodyDecoded(req).then(async (raw) => {
             let rpc: JsonRpcRequest;
             try {

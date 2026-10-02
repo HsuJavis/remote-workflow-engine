@@ -120,6 +120,18 @@ describe('composeConfig() v2 key wiring (DES-022, standing rule 1)', () => {
     expect((cfg as Record<string, unknown>)['auth']).toEqual(auth);
   });
 
+  // Service accounts spec (owner decision 2026-10-03): the composeConfig wiring bug class this repo
+  // has already hit twice (v11 updateFlagPath, v15 auth itself) — a NEW field added to an already-
+  // forwarded block can still get lost if that block were ever reconstructed field-by-field.
+  // `auth` is forwarded wholesale (`resolveAuthSecrets` spreads `{...auth}`), so this passes without
+  // a composeConfig.ts change — this case exists to make that guarantee explicit and regression-
+  // tested, not merely implied by the block-forwarding test above.
+  it('auth.serviceAccountTokenTtlMs is forwarded from FileConfig into the returned ServerConfig', async () => {
+    const auth = { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'test-id', googleClientSecret: 'test-secret', serviceAccountTokenTtlMs: 1800_000 };
+    const cfg = await composeConfig({ auth, gateway: 'direct-fetch' }, FAKE_DEPS);
+    expect(((cfg as Record<string, unknown>)['auth'] as Record<string, unknown>)['serviceAccountTokenTtlMs']).toBe(1800_000);
+  });
+
   // 2026-09-28 (owner: no plaintext secrets in config): auth.googleClientSecret / googleClientId may
   // be a `${secret:NAME}` handle, resolved at config load from the SAME RWE_SECRET_<NAME> env store
   // the engine already uses. A missing name refuses boot — the literal handle must never reach Google.

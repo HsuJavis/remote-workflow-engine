@@ -275,6 +275,20 @@ describe('REQ-118 — every MCP tool interface exercised once against a live eng
     // in TOOL_SPECS — one shared id would make the later row fail for the earlier row's reason.
     const deletable = await callOk('schedule_create', { cron: '0 0 2 1 *' });
     setup.deletableScheduleId = String(deletable.result?.id ?? deletable.id);
+
+    // Service accounts spec (owner decision 2026-10-03): a DISTINCT name from service_account_
+    // create's own happy fixture ('v24-fixture-sa') — this one is consumed by update/rotate/
+    // revoke/delete's happy fixtures, so the two can never collide on SERVICE_ACCOUNT_EXISTS.
+    const sa = await callOk('service_account_create', { name: 'v24-fixture-sa-setup', role: 'user' });
+    setup.serviceAccountName = 'v24-fixture-sa-setup';
+    setup.serviceAccountSecretId = String(sa.result?.account?.secrets?.[0]?.id ?? sa.account?.secrets?.[0]?.id);
+
+    // Send-back D2: create-then-delete a THROWAWAY name so service_account_create's
+    // SERVICE_ACCOUNT_NAME_RETIRED fixture has a real tombstone to hit (distinct from both
+    // 'v24-fixture-sa' and 'v24-fixture-sa-setup' above, neither of which is ever deleted here).
+    await callOk('service_account_create', { name: 'v24-fixture-sa-retired', role: 'user' });
+    await callOk('service_account_delete', { name: 'v24-fixture-sa-retired' });
+    setup.retiredServiceAccountName = 'v24-fixture-sa-retired';
   }
 
   function requireSetup(): void {

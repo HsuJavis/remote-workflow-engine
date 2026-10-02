@@ -20,9 +20,13 @@ export type PrincipalRole = Role | 'none';
  *  field to drift out of step with it. Two special kinds carry no role/id at all: `auth-disabled`
  *  (single-operator mode, short-circuits everything) and `loopback-exempt` (an unauthenticated
  *  local caller allowed through ONLY for the narrowest tools). */
+// Service accounts spec (owner decision 2026-10-03): `workflows`, set ONLY for a service-account-
+// resolved principal (server.ts's `principalFor`) that was created with a non-empty allowlist — a
+// human principal never carries it. Absent/undefined means "no restriction beyond role", same as an
+// empty array (PrincipalAdmin never sets an empty array — see its own doc).
 export type Principal =
-  | { kind: 'user'; id: string }
-  | { kind: 'author'; id: string }
+  | { kind: 'user'; id: string; workflows?: string[] }
+  | { kind: 'author'; id: string; workflows?: string[] }
   | { kind: 'admin'; id: string }
   | { kind: 'none'; id: string }
   | { kind: 'auth-disabled' }
@@ -63,6 +67,9 @@ export const AUTHZ_ERROR_CODES = [
   'NOT_TRIGGER_OWNER',
   'PRINCIPAL_REQUIRED',
   'ACCOUNT_PENDING_APPROVAL',
+  // Service accounts spec (owner decision 2026-10-03): a service account created with a
+  // `workflows` allowlist, naming a workflow outside it.
+  'WORKFLOW_NOT_ALLOWED',
 ] as const satisfies readonly ErrorCode[];
 
 export type AuthzErrorCode = (typeof AUTHZ_ERROR_CODES)[number];
@@ -86,7 +93,10 @@ const ROLE_RANK: Record<Role, number> = { user: 0, author: 1, admin: 2 };
  *  config admin — cannot be changed at runtime. `db`: a runtime override (principal_set_role).
  *  `config`: the id's own `principals[id]` entry. `default`: no entry of its own — the config `'*'`
  *  role, else `'user'`. */
-export type RoleSource = 'config-locked' | 'db' | 'config' | 'default';
+// Service accounts spec (owner decision 2026-10-03): 'service-account' is a `sa:<name>` id's own
+// row (never principal_roles/config) — PrincipalAdmin sets it, this module never produces it itself
+// (roleWithSource is never called for an `sa:` id).
+export type RoleSource = 'config-locked' | 'db' | 'config' | 'default' | 'service-account';
 
 type PrincipalsMap = Record<string, { role: PrincipalRole }> | undefined;
 
@@ -155,6 +165,27 @@ function refuse(code: AuthzErrorCode, reason: string, mode?: string): AuthzVerdi
   return { ok: false, code, reason, see: 'workflow_authoring_guide', ...(mode !== undefined ? { detail: { mode } } : {}) };
 }
 
+/** Service accounts spec (owner decision 2026-10-03): the workflow name a row's allowlist check
+ *  applies to, or `undefined` for a row the allowlist does not restrict.
+ *   - `row.workflowArg` set: `args[row.workflowArg]` (the create-shaped tools — see AuthzRow's doc).
+ *   - `ownership:'workflow'`: `args[spec.key]`, or `args.workflow` for a moded row (`key:null`) —
+ *     the SAME subject resolution `authorize()`'s own ownership branch below uses.
+ *   - `ownership:'asset'` with `scope !== 'global'`: `args.workflow` (global scope is admin-only
+ *     already, via `row.minRole`, and a service account is never admin).
+ *   - `ownership:'run'`/`'trigger'`: `undefined`, deliberately. By the time a principal can act on
+ *     an EXISTING run/trigger, ownership already restricts it to that principal's own (checked
+ *     below); it could only have been created in the first place through a workflow-scoped tool
+ *     this allowlist already gated. Re-deriving the workflow name from a runId/triggerId would need
+ *     a new synchronous OwnerLookup method for no additional safety. */
+function workflowNameSubject(row: AuthzRow, spec: { key: ToolSpec['key'] }, args: Record<string, unknown>): string | undefined {
+  if ('workflowArg' in row && row.workflowArg) return args[row.workflowArg] as string | undefined;
+  if (row.ownership === 'workflow') {
+    return (spec.key !== null ? args[spec.key] : args['workflow']) as string | undefined;
+  }
+  if (row.ownership === 'asset' && args['scope'] !== 'global') return args['workflow'] as string | undefined;
+  return undefined;
+}
+
 /** Total over `Principal.kind x row.minRole x row.ownership x (mode ? resolved row : the row)`.
  *  Order: `auth-disabled` short-circuits first (no actor id ⇒ never an audit row); row resolution
  *  (`'mode' in spec.authz`) next, so a `loopback-exempt`/role refusal on a moded tool still carries
@@ -183,6 +214,21 @@ export function authorize(
   const role = principal.kind;
   if (ROLE_RANK[role] < ROLE_RANK[row.minRole]) {
     return refuse('FORBIDDEN_ROLE', `role '${role}' is below the required '${row.minRole}'`, mode);
+  }
+
+  // Service accounts spec (owner decision 2026-10-03), §Authorization: a service account created
+  // with a `workflows` allowlist is refused on any workflow-scoped tool naming a workflow outside
+  // it — checked BEFORE the ownership tri-state below, so a disallowed name is refused the same way
+  // whether or not it happens to exist yet (the existence-disclosure rule the ownership branch
+  // already follows applies here too: this must not become a second, inconsistent oracle).
+  // 'workflows' is set ONLY on a service-account-resolved `user`/`author` principal (never admin —
+  // a service account can never hold that role). 'run'/'trigger' ownership rows are deliberately
+  // NOT re-checked here: see workflowNameSubject's own doc.
+  if ((principal.kind === 'user' || principal.kind === 'author') && principal.workflows && principal.workflows.length > 0) {
+    const subject = workflowNameSubject(row, spec, args);
+    if (subject !== undefined && !principal.workflows.includes(subject)) {
+      return refuse('WORKFLOW_NOT_ALLOWED', `WORKFLOW_NOT_ALLOWED: this caller is restricted to workflows [${principal.workflows.join(', ')}]`, mode);
+    }
   }
 
   if (row.ownership === 'none') return { ok: true };

@@ -6,8 +6,9 @@
 > `.sdlc/features/001-remote-workflow-engine/08-validation.md`。
 
 這是一個可遠端操控的 **Claude 工作流程執行引擎**：一台常駐伺服器，透過 **MCP Streamable HTTP**
-介面對外提供 **40 個工具**（`workflow_*` 7、`run_*` 8、`workspace_*` 7、`schedule_*` 4、`webhook_*` 3、
-`issue_*` 5、`models_list`/`models_probe`/`system_info`、`principals_list`/`principal_set_role`/`principal_set_quota`），並把每個 `agent()` 呼叫路由到你設定的 LLM 供應商
+介面對外提供 **46 個工具**（`workflow_*` 7、`run_*` 8、`workspace_*` 7、`schedule_*` 4、`webhook_*` 3、
+`issue_*` 5、`models_list`/`models_probe`/`system_info`、`principals_list`/`principal_set_role`/`principal_set_quota`、
+`service_account_create`/`_list`/`_update`/`_rotate_secret`/`_revoke_secret`/`_delete`），並把每個 `agent()` 呼叫路由到你設定的 LLM 供應商
 （Anthropic / OpenRouter / 本機 Ollama——只有這三條路，見下方 §0 附錄）。狀態全存在本機檔案
 （SQLite + JSONL journal），
 不需要外部資料庫伺服器。**權威工具清單是 `src/tool-specs.ts`**——不在那張表上的名字，引擎一律回
@@ -703,6 +704,102 @@ curl -s http://localhost:8787/api/models | python3 -c \
   **自動**加進 Host/Origin 白名單，不必再重複寫進 `allowedHosts`。
 - **公開網址要多開的隧道路徑**（cloudflared ingress，對公開 hostname）：`^/dashboard`、`^/api/`、
   `^/static/dashboard/`（原本只開 `/mcp`、OAuth 路由時，dashboard 在公開網址上會是 404）。
+
+### 服務帳號（Service accounts）——給程式/CI 用的非互動式存取
+
+2026-10-03 起（`auth.enabled:true` 時）：CI job、bot、另一個服務這類「背後沒有人即時登入」的呼叫端，
+不該走 Google OAuth 互動流程，而是用**服務帳號**——`client_id` 固定是 `sa:<name>`，`<name>` 要符合
+`[a-z0-9][a-z0-9-]{1,40}`（2–41 字，與 email 帳號的命名空間天生不重疊：email 的 local-part 不能含
+`:`）。角色只能是 `author`／`user`（絕不會是 `admin`），可選一個 `workflows` 白名單把它能碰的工作流程名
+鎖死（省略/空陣列＝除了角色本身的限制外沒有額外限制）。管理走 6 個 admin-only 工具
+（`service_account_create`/`_list`/`_update`/`_rotate_secret`/`_revoke_secret`/`_delete`，見
+`workflow_authoring_guide`／`tools/list` 的完整欄位說明）或 dashboard 管理頁的「Service accounts」
+分頁——後端是同一套，dashboard 不會准許工具會拒絕的事。**停用／過期的帳號對已經發出去的 bearer 立即
+生效**（下一次請求就擋，不必等 token 自然過期）；dashboard 登入本身仍然只給真人（服務帳號的 bearer
+打 `/dashboard*`／`/api/*` 一律當作沒有登入）。
+
+**1. 換 token**（RFC 6749 §4.4 `client_credentials`，client secret 只在建立/輪替時顯示一次，之後
+只存 sha256）：
+
+```bash
+# HTTP Basic（client_secret_basic，client_id/secret 先各自 percent-encode 再接 ":" base64）
+curl -s https://<host>/token \
+  -u 'sa%3Aci-bot:rwe_sa_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' \
+  -d grant_type=client_credentials | jq .
+
+# 或表單（client_secret_post）——兩種引擎都接受
+curl -s https://<host>/token \
+  -d grant_type=client_credentials \
+  -d client_id=sa:ci-bot \
+  -d client_secret=rwe_sa_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx | jq .
+# => {"access_token":"...","token_type":"Bearer","expires_in":3600}  （沒有 refresh_token——到期重換即可）
+```
+
+帳號不存在、密碼錯、或帳號停用/過期，三種情況**回一模一樣的 `401 {"error":"invalid_client"}`**（不
+洩漏是哪一種），`expires_in` 預設 3600 秒（`auth.serviceAccountTokenTtlMs` 可調）。拿到的 `access_token`
+就是一般的引擎 bearer，直接當 `Authorization: Bearer <token>` 打 `/mcp`。
+
+**2. 接 Claude Code（`claude -p` 非互動）**——用 `headersHelper`：一支小腳本，每次被呼叫時做上面的
+token 交換（有快取就在接近到期前才真的換新的），**把 header 印成一個 JSON 物件（不是純文字的
+`Header: value` 那種格式）**到 stdout，這點已經對照過 bundled CLI 本體字串核實過（`headersHelper`
+的輸出要被 `JSON.parse`，不是 `authorization`/HTTP 那種純文字行；印錯格式 CLI 會回報
+`"... did not return a valid value"`/`"must return a JSON object with string key-value pairs"`）：
+
+```bash
+#!/usr/bin/env bash
+# rwe-token.sh — headersHelper for the rwe MCP server. Caches the token in a
+# 0600 file under $HOME (NEVER inside the repo), re-exchanges near expiry.
+set -euo pipefail
+CACHE="$HOME/.cache/rwe-sa-token.json"
+CLIENT_ID="sa:ci-bot"
+CLIENT_SECRET="rwe_sa_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+TOKEN_URL="https://<host>/token"
+
+# 送審修正 L1：$HOME/.cache 在一台乾淨主機上不一定存在——沒有這行，set -e 下腳本在第一次
+# 寫快取檔時就整個 exit 1、連一行輸出都沒有，headersHelper 收到空字串直接判定失敗。
+mkdir -p "$(dirname "$CACHE")"
+
+now=$(date +%s)
+if [ -f "$CACHE" ]; then
+  exp=$(jq -r '.exp // 0' "$CACHE")
+  if [ "$exp" -gt $((now + 60)) ]; then
+    tok=$(jq -r '.access_token' "$CACHE")
+    printf '{"Authorization":"Bearer %s"}\n' "$tok"
+    exit 0
+  fi
+fi
+resp=$(curl -sf "$TOKEN_URL" -d grant_type=client_credentials \
+  -d client_id="$CLIENT_ID" -d client_secret="$CLIENT_SECRET")
+tok=$(printf '%s' "$resp" | jq -r '.access_token')
+ttl=$(printf '%s' "$resp" | jq -r '.expires_in // 3600')
+umask 077
+printf '%s' "$resp" | jq --argjson exp "$((now + ttl))" '. + {exp:$exp}' > "$CACHE"
+printf '{"Authorization":"Bearer %s"}\n' "$tok"
+```
+
+```bash
+chmod +x rwe-token.sh
+claude mcp add-json rwe '{"type":"http","url":"https://<host>/mcp","headersHelper":"/path/to/rwe-token.sh"}'
+# 或不碰 ~/.claude.json，用一份獨立 MCP config 檔跑單次呼叫：
+claude -p "list the rwe tools" --mcp-config rwe-mcp.json --strict-mcp-config
+```
+
+**3. secret 只顯示一次、輪替、最小權限**：`service_account_create`／`service_account_rotate_secret`
+回傳的 `clientSecret` **只有那一次 API 回應裡看得到**——沒存到就只能重新輪替一次拿新的，引擎本身只存
+sha256，連 admin 都讀不回來。單一帳號最多同時 2 把有效 secret（給輪替一個重疊期）：想換 secret 時先
+`service_account_rotate_secret` 拿新的、把呼叫端換過去，確認沒問題後再 `service_account_revoke_secret`
+把舊的那把收掉；馬上要整支帳號停用則用 `service_account_update({disabled:true})`（對已發出的 bearer
+立即生效）或直接 `service_account_delete`（連同已發出的 bearer 一起撤銷，此帳號註冊過的 workflow／
+啟動過的 run 不會被刪除或轉讓，仍標示為這個已刪除的 `sa:<name>` 擁有，只有 admin 看得到/碰得到；
+**`name` 從此永久退役**——`sa:<name>` 同時是 catalog／run／webhook／schedule／CAS 命名空間的擁有權
+字串本身，所以 `service_account_create` 用同一個名字一律拒絕 `SERVICE_ACCOUNT_NAME_RETIRED`，不會有
+「重建同名帳號、意外繼承舊帳號資源」這種事；要接手就換一個新名字）。
+**最小權限**：建立時就給 `workflows` 白名單，只開這個服務真的需要跑的工作流程名——`role:'user'`
+還是能跑名單外的別人工作流程？不行，白名單疊加在角色權限之上，兩者都要過。巢狀 `workflow()`
+呼叫（一個已註冊腳本內部再叫另一個工作流程）也會檢查同一份白名單——不會因為外層被允許就連帶放行
+任何巢狀目標。縮小白名單**不會**溯及已經在跑（或可續跑）的 run：那個 run 在啟動當下已經通過檢查，
+之後收緊白名單只影響它的下一次 `run_start`／巢狀 `workflow()` 呼叫，不會讓進行中的 run 突然被中止
+（`run_resume` 本身不重新檢查白名單，原因相同）。
 
 ## 1c. 安全模型（Security Model）
 

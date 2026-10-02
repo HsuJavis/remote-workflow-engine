@@ -101,6 +101,26 @@ describe('TokenStore.issue + verifyByHash (DES-093)', () => {
     const { token: t2 } = store.issue('bob@example.com', HOUR_MS);
     expect(t1).not.toBe(t2);
   });
+
+  // Service accounts spec (owner decision 2026-10-03): service_account_delete revokes every
+  // already-issued bearer for the dead principal — a holder of a live token must not keep working
+  // after its account is deleted.
+  it('revokeAllFor(principal) deletes every bearer token issued to that principal, leaving others', () => {
+    const { store } = makeStore(BASE_MS);
+    const { token: a1 } = store.issue('sa:ci-bot', HOUR_MS);
+    const { token: a2 } = store.issue('sa:ci-bot', HOUR_MS);
+    const { token: other } = store.issue('alice@example.com', HOUR_MS);
+    const n = store.revokeAllFor('sa:ci-bot');
+    expect(n).toBe(2);
+    expect(store.verifyByHash(a1)).toBeNull();
+    expect(store.verifyByHash(a2)).toBeNull();
+    expect(store.verifyByHash(other)).toBe('alice@example.com');
+  });
+
+  it('revokeAllFor(principal) returns 0 when the principal holds no tokens', () => {
+    const { store } = makeStore(BASE_MS);
+    expect(store.revokeAllFor('sa:nobody')).toBe(0);
+  });
 });
 
 // ── mintAuthCode / consumeAuthCode ───────────────────────────────────────────

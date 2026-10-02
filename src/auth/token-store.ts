@@ -318,6 +318,13 @@ export class TokenStore {
     this._db.prepare('DELETE FROM dashboard_sessions WHERE token_hash = ?').run(sha256hex(rawToken));
   }
 
+  /** Service accounts spec (owner decision 2026-10-03): revoke every bearer token already issued
+   *  to `principal` — used by service_account_delete so a holder of a live token stops working the
+   *  moment the account is deleted, not merely on its next re-exchange. Returns the count deleted. */
+  revokeAllFor(principal: string): number {
+    return this._db.prepare('DELETE FROM bearer_tokens WHERE principal = ?').run(principal).changes;
+  }
+
   /** Delete expired rows from all six tables; returns total row count deleted. */
   gcExpired(): number {
     const now = this._clock();

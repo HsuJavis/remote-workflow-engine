@@ -156,6 +156,17 @@ export interface RunManagerDeps {
    *  is below it. Checked at every NEW admission (start, resume, nested workflow()); runs in flight
    *  are never touched. Omitted -> never refuses. */
   diskFloor?: { assert(): void };
+  /** Service accounts spec (owner decision 2026-10-03), §Authorization + send-back D1: resolves a
+   *  `sa:<name>` principal's CURRENT live/allowlist status — the SAME status `PrincipalAdmin`
+   *  already computes for `authorize()`'s bearer-layer check, reused here because `authorize()`
+   *  itself is never consulted for a trigger firing (no bearer) or a nested `workflow()` call (see
+   *  `_handleWorkflowRequest`'s own doc) — `RunManager.start()`/`resume()`/the nested-frame admission
+   *  are the ONLY chokepoints those two paths share. `undefined` = not an `sa:` principal (never
+   *  gates — includes every human caller and every pre-existing RunManager test that omits this
+   *  dependency entirely). `{live:false}` = disabled/expired/deleted (refused everywhere,
+   *  unconditionally). `{live:true, workflows}` = live; `workflows` present+non-empty is the
+   *  allowlist a requested name must be in. */
+  serviceAccountStatus?: (principal: string) => { live: boolean; workflows?: string[] } | undefined;
 }
 
 /** v25 (DES-168, REQ-120, owner ruling): the default per-run in-flight agent() cap. Explicit and
@@ -252,6 +263,15 @@ const ADMISSION_STATUS: Partial<Record<ErrorCode, 403 | 409 | 503>> = {
   CONFINEMENT_UNAVAILABLE: 403,
   RUN_ADMISSION_LIMIT: 503,
   DISK_LOW: 503,
+  // Service accounts spec (owner decision 2026-10-03) send-back D1: a trigger (schedule/webhook)
+  // firing carries no bearer, so the ONLY enforcement point for a disabled/expired/deleted sa:
+  // creator or a narrowed allowlist is HERE, inside start()'s own admission — same bucket as every
+  // other permanent admission refusal (bad params/model, unprovisioned asset, …), so a webhook
+  // delivery records+replays it exactly like those, and a schedule firing's markFailed/lastError
+  // path picks it up for free (see webhook-registry.ts's deliver() / server.ts's ticker dispatch,
+  // both already generic over every ADMISSION_STATUS member).
+  SERVICE_ACCOUNT_DISABLED: 409,
+  WORKFLOW_NOT_ALLOWED: 409,
   WORKFLOW_NOT_FOUND: 409,
   VERSION_NOT_FOUND: 409,
   CHANNEL_UNPUBLISHED: 409,
@@ -586,6 +606,7 @@ export class RunManager {
   private readonly _confinementPosture: 'confined' | 'unconfined' | undefined;
   private readonly _diskFloor: { assert(): void } | undefined;
   private readonly _probeLookup: ((provider: string, model: string) => ProbeResult | undefined) | undefined;
+  private readonly _serviceAccountStatus: ((principal: string) => { live: boolean; workflows?: string[] } | undefined) | undefined;
   /** Issue #73 (d): non-fatal admission warnings per started run, read back by `run_start`. */
   private readonly _admissionWarnings = new Map<string, Array<ModelToolWarning | ModelRefWarning>>();
   private readonly _runs = new Map<string, RunEntry>();
@@ -647,6 +668,28 @@ export class RunManager {
     this._confinementPosture = deps.confinementPosture;
     this._diskFloor = deps.diskFloor;
     this._probeLookup = deps.probeLookup;
+    this._serviceAccountStatus = deps.serviceAccountStatus;
+  }
+
+  /** Service accounts spec send-back D1: the ONE admission check shared by start(), resume(), and
+   *  the nested workflow() frame (_handleWorkflowRequest) — every place a run (or a nested
+   *  composition of one) can begin executing for a given principal + workflow name, including the
+   *  two paths that carry no bearer and so never reach authorize() at all (a schedule/webhook
+   *  trigger firing). `principal` absent, or not an `sa:` id, or `_serviceAccountStatus` unwired
+   *  (every pre-existing caller) -> no-op. A disabled/expired/deleted account refuses
+   *  unconditionally, BEFORE the allowlist is even consulted (spec: "refused everywhere", no
+   *  narrower case to disclose). `workflowName` absent (an ad-hoc/nested call with nothing to name
+   *  yet) skips the allowlist half only — liveness is still checked. */
+  private _assertServiceAccountAdmission(principal: string | null | undefined, workflowName: string | undefined): void {
+    if (!principal) return;
+    const status = this._serviceAccountStatus?.(principal);
+    if (!status) return;
+    if (!status.live) {
+      throw codedError('SERVICE_ACCOUNT_DISABLED', 'SERVICE_ACCOUNT_DISABLED: this service account is disabled, expired, or deleted; an admin must re-enable it, extend its expiry, or issue a new one');
+    }
+    if (status.workflows && status.workflows.length > 0 && workflowName !== undefined && !status.workflows.includes(workflowName)) {
+      throw codedError('WORKFLOW_NOT_ALLOWED', `WORKFLOW_NOT_ALLOWED: this caller is restricted to workflows [${status.workflows.join(', ')}]`);
+    }
   }
 
   /** v8 Slice 4 (REQ-054): count of live (non-terminal) top-level runs in this process — the
@@ -757,6 +800,11 @@ export class RunManager {
    *  (release) selector unconditionally already (no `version`/`channel` ever reaches them), so the
    *  new gate below is a no-op for them regardless of which Actor shape they fall back to. */
   async start(spec: RunSpec, overrides?: unknown, actor?: Actor): Promise<string> {
+    // Service accounts spec send-back D1: checked FIRST, before confinement/seed/anything else —
+    // this is the ONLY admission chokepoint a bearer-less trigger firing (schedule/webhook) ever
+    // reaches; a bearer-carrying run_start is ALSO checked here (redundant with authorize()'s own
+    // pre-check, but cheap and keeps this one rule in one place for every caller).
+    this._assertServiceAccountAdmission(spec.principal, spec.name);
     const resolvedActor = actor ?? actorFromPrincipal(spec.principal ?? null);
     // issue #93 item 2 (2026-09-26, amends ADR-086's third owner ruling 2026-09-25): the
     // confinement door is now a DEFERRED refusal, not an immediate one. It used to throw here, as
@@ -1240,6 +1288,12 @@ export class RunManager {
     if (entry.status === 'stopped') {
       throw new IllegalTransitionError(entry.status, 'running');
     }
+    // Service accounts spec send-back D1 (owner decision, reversing the original "forward-only"
+    // call): a disabled/expired/deleted sa: principal, or one whose allowlist has since narrowed to
+    // exclude this run's own workflow, cannot resume it — re-checked on every resume, not only at
+    // the admission that started it. A stopped run above already took priority (ILLEGAL_TRANSITION
+    // is a run-state fact, not an authz one, and must not be masked by this).
+    this._assertServiceAccountAdmission(entry.principal, entry.name);
     // v37 P1 (Gate 8 round-5 finding R5-F1; ADR-086's third owner ruling, DES-263 第四次修訂):
     // `resume()`'s ONE admission stage. `_requireLive()` only RECORDS that it had to substitute the
     // current `release` for a pin that no longer exists, and whether that substituted version was
@@ -2071,6 +2125,13 @@ export class RunManager {
     if (ancestors.has(name)) {
       throw codedError('NESTING_CYCLE', `workflow() cycle: '${name}' is already an ancestor in this nesting chain`);
     }
+    // Service accounts spec (owner decision 2026-10-03), §Authorization + send-back D1: this nested
+    // dispatch never goes through authorize() (see this method's own doc — "a nested call always
+    // resolves release regardless of owner"), so an sa:-owned run's liveness/allowlist would
+    // otherwise be silently bypassed by its own workflow() calls. Checked before any resolve/side
+    // effect, same as the depth/cycle doors above. Shared with start()/resume() — see that helper's
+    // own doc for the full liveness+allowlist contract.
+    this._assertServiceAccountAdmission(entry.principal, name);
     // LOW-3 (owner decision 2026-10-02, verify-k): the disk-floor check runs BEFORE the descendant
     // slot is counted — a nested frame is a NEW admission, refused DISK_LOW below the disk floor
     // (the script sees the throw; the parent run itself is not stopped), and a refusal that never
