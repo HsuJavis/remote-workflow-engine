@@ -494,6 +494,12 @@ export function createAuthRouteHandlers(
     },
 
     async tokenExchange(req, res) {
+      // Send-back L4: RFC 6749 §5.1 requires no-store on every token response (it carries a bearer/
+      // refresh token in the body) — pre-existing gap for every grant this handler already served;
+      // set once, here, so every `localSendJson(res, …)` call below inherits it (Node's `writeHead`
+      // merges in whatever was set via `setHeader` beforehand, as long as it hasn't been called yet).
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Pragma', 'no-cache');
       let params: URLSearchParams;
       try {
         params = await readFormBody(req);
@@ -518,7 +524,13 @@ export function createAuthRouteHandlers(
         if (typeof authHeader === 'string' && authHeader.startsWith('Basic ')) {
           try {
             const decoded = Buffer.from(authHeader.slice(6), 'base64').toString('utf8');
-            const sep = decoded.indexOf(':');
+            // Send-back L5: split at the LAST ':', not the first — an unencoded `sa:<name>:SECRET`
+            // (the common "didn't percent-encode the client_id" mistake, since secrets never
+            // contain ':' but client_id always does) now still resolves correctly. A properly
+            // percent-encoded id (DEPLOY.md's own documented form) has no literal ':' in either
+            // half, so `lastIndexOf` and `indexOf` agree for it — this is strictly more lenient,
+            // never a NEW way to misparse a well-formed header.
+            const sep = decoded.lastIndexOf(':');
             if (sep !== -1) {
               clientId = decodeURIComponent(decoded.slice(0, sep));
               clientSecret = decodeURIComponent(decoded.slice(sep + 1));
@@ -527,24 +539,35 @@ export function createAuthRouteHandlers(
         }
         if (clientId === null) clientId = params.get('client_id');
         if (clientSecret === null) clientSecret = params.get('client_secret');
-        const invalidClient = (): void => {
+        // Send-back D3 (spec §Audit: "log line on … token issuance", no secrets): one line per
+        // outcome, client id or 'unknown' (clientId never resolved at all), source IP, never the
+        // secret or the issued token.
+        const auditDeny = (reason: string): void => {
+          // eslint-disable-next-line no-console
+          console.log(JSON.stringify({ event: 'service_account_token_denied', clientId: clientId ?? 'unknown', reason, ip }));
+        };
+        const invalidClient = (reason: string): void => {
+          auditDeny(reason);
           localSendJson(res, 401, { error: 'invalid_client' }, { 'WWW-Authenticate': 'Basic' });
         };
         if (!clientCredentialsLimiter.take(`${ip}|${clientId ?? ''}`)) {
+          auditDeny('rate_limited');
           localSendJson(res, 429, { error: 'slow_down' }, { 'Retry-After': '60' });
           return;
         }
         if (!clientId || !clientSecret || !serviceAccounts) {
-          invalidClient();
+          invalidClient('missing_credentials');
           return;
         }
         const verified = serviceAccounts.verifyCredentials(clientId, clientSecret);
         if (!verified) {
-          invalidClient();
+          invalidClient('invalid_credentials');
           return;
         }
         const ttlMs = cfg.serviceAccountTokenTtlMs ?? 3600_000;
         const { token } = tokenStore.issue(`sa:${verified.name}`, ttlMs);
+        // eslint-disable-next-line no-console
+        console.log(JSON.stringify({ event: 'service_account_token_issued', clientId, ip }));
         // No refresh_token (spec §Token exchange) and no `scope` — client_credentials carries
         // neither in this engine.
         localSendJson(res, 200, { access_token: token, token_type: 'Bearer', expires_in: Math.floor(ttlMs / 1000) });

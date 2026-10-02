@@ -755,6 +755,10 @@ CLIENT_ID="sa:ci-bot"
 CLIENT_SECRET="rwe_sa_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 TOKEN_URL="https://<host>/token"
 
+# 送審修正 L1：$HOME/.cache 在一台乾淨主機上不一定存在——沒有這行，set -e 下腳本在第一次
+# 寫快取檔時就整個 exit 1、連一行輸出都沒有，headersHelper 收到空字串直接判定失敗。
+mkdir -p "$(dirname "$CACHE")"
+
 now=$(date +%s)
 if [ -f "$CACHE" ]; then
   exp=$(jq -r '.exp // 0' "$CACHE")
@@ -786,7 +790,10 @@ sha256，連 admin 都讀不回來。單一帳號最多同時 2 把有效 secret
 `service_account_rotate_secret` 拿新的、把呼叫端換過去，確認沒問題後再 `service_account_revoke_secret`
 把舊的那把收掉；馬上要整支帳號停用則用 `service_account_update({disabled:true})`（對已發出的 bearer
 立即生效）或直接 `service_account_delete`（連同已發出的 bearer 一起撤銷，此帳號註冊過的 workflow／
-啟動過的 run 不會被刪除或轉讓，仍標示為這個已刪除的 `sa:<name>` 擁有，只有 admin 看得到/碰得到）。
+啟動過的 run 不會被刪除或轉讓，仍標示為這個已刪除的 `sa:<name>` 擁有，只有 admin 看得到/碰得到；
+**`name` 從此永久退役**——`sa:<name>` 同時是 catalog／run／webhook／schedule／CAS 命名空間的擁有權
+字串本身，所以 `service_account_create` 用同一個名字一律拒絕 `SERVICE_ACCOUNT_NAME_RETIRED`，不會有
+「重建同名帳號、意外繼承舊帳號資源」這種事；要接手就換一個新名字）。
 **最小權限**：建立時就給 `workflows` 白名單，只開這個服務真的需要跑的工作流程名——`role:'user'`
 還是能跑名單外的別人工作流程？不行，白名單疊加在角色權限之上，兩者都要過。巢狀 `workflow()`
 呼叫（一個已註冊腳本內部再叫另一個工作流程）也會檢查同一份白名單——不會因為外層被允許就連帶放行

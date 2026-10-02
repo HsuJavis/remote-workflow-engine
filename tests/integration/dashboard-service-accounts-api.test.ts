@@ -97,6 +97,17 @@ describe('dashboard /api/service-accounts* (service accounts spec §Management s
     expect(await afterDelete.json()).toEqual([]);
   });
 
+  it('create and rotate responses carry Cache-Control: no-store (send-back L4 — both return a raw secret)', async () => {
+    const token = await mintBearer('admin@x.com');
+    const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Requested-With': 'rwe-dashboard' };
+    const created = await fetch(apiUrl('/api/service-accounts'), { method: 'POST', headers, body: JSON.stringify({ name: 'cache-hdr-bot', role: 'user' }) });
+    expect(created.headers.get('cache-control')).toBe('no-store');
+    expect(created.headers.get('pragma')).toBe('no-cache');
+    const rotated = await fetch(apiUrl('/api/service-accounts/rotate'), { method: 'POST', headers, body: JSON.stringify({ name: 'cache-hdr-bot' }) });
+    expect(rotated.headers.get('cache-control')).toBe('no-store');
+    expect(rotated.headers.get('pragma')).toBe('no-cache');
+  });
+
   it('a not-found update -> 404', async () => {
     const token = await mintBearer('admin@x.com');
     const res = await fetch(apiUrl('/api/service-accounts/update'), {

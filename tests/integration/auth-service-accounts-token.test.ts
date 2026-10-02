@@ -143,7 +143,11 @@ describe('POST /token grant_type=client_credentials (service accounts spec §Tok
   });
 
   it('an expired account with the CORRECT secret → the SAME 401 {"error":"invalid_client"}', async () => {
-    const created = seedServiceAccount({ name: 'expired-sa', role: 'user', expiresAt: Date.now() - 1000 });
+    // Send-back L3: create() now refuses a past expiresAt — create with a near-future one and wait
+    // for it to lapse (this file's seedServiceAccount uses the real wall clock, not an injectable
+    // fake), rather than constructing the already-expired row directly.
+    const created = seedServiceAccount({ name: 'expired-sa', role: 'user', expiresAt: Date.now() + 50 });
+    await new Promise((r) => setTimeout(r, 100));
     const res = await fetch(tokenUrl(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -161,6 +165,39 @@ describe('POST /token grant_type=client_credentials (service accounts spec §Tok
     });
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'invalid_client' });
+  });
+});
+
+describe('POST /token response headers (send-back L4/L5)', () => {
+  it('every /token response carries Cache-Control: no-store + Pragma: no-cache (RFC 6749 §5.1)', async () => {
+    const created = seedServiceAccount({ name: 'headers-sa', role: 'user' });
+    const ok = await fetch(tokenUrl(), {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'client_credentials', client_id: 'sa:headers-sa', client_secret: created.clientSecret }),
+    });
+    expect(ok.headers.get('cache-control')).toBe('no-store');
+    expect(ok.headers.get('pragma')).toBe('no-cache');
+
+    const failed = await fetch(tokenUrl(), {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'client_credentials', client_id: 'sa:headers-sa', client_secret: 'wrong' }),
+    });
+    expect(failed.status).toBe(401);
+    expect(failed.headers.get('cache-control')).toBe('no-store');
+    expect(failed.headers.get('pragma')).toBe('no-cache');
+  });
+
+  it('HTTP Basic auth splits at the LAST ":" — an unencoded "sa:name:SECRET" still authenticates', async () => {
+    const created = seedServiceAccount({ name: 'unencoded-sa', role: 'user' });
+    // The "forgot to percent-encode the client_id" mistake: a RAW `sa:unencoded-sa:SECRET` string,
+    // base64'd directly (no percent-encoding of the embedded ':' in "sa:unencoded-sa").
+    const auth = Buffer.from(`sa:unencoded-sa:${created.clientSecret}`).toString('base64');
+    const res = await fetch(tokenUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Authorization: `Basic ${auth}` },
+      body: new URLSearchParams({ grant_type: 'client_credentials' }),
+    });
+    expect(res.status).toBe(200);
   });
 });
 

@@ -700,3 +700,15 @@ subgraph "judge"
 judge(["judge<br/>anthropic/claude-haiku-4-5-20251001 · low · 60000<br/>tools: none"])
 end
 ```
+
+## Service accounts (non-interactive access)
+
+A program, CI job, or bot connects without a human login via a SERVICE ACCOUNT — an admin creates one with `service_account_create` (role `author`/`user`, never `admin`; an optional `workflows` allowlist). It authenticates with `POST /token` (RFC 6749 §4.4 `client_credentials`), client id `sa:<name>`, client secret the `clientSecret` shown ONCE at create/rotate:
+
+```bash
+curl -s https://<host>/token -d grant_type=client_credentials \
+  -d client_id=sa:ci-bot -d client_secret=rwe_sa_...
+# => {"access_token":"...","token_type":"Bearer","expires_in":3600}  (no refresh_token)
+```
+
+The `access_token` is a normal engine bearer — `Authorization: Bearer <token>` on `/mcp`, same as a human session. To connect Claude Code non-interactively, configure the rwe MCP server with a `headersHelper` script that performs this exchange (caching until near expiry) and prints the header as a JSON OBJECT — `{"Authorization":"Bearer <token>"}` — NOT a raw `Header: value` text line; the bundled CLI `JSON.parse`s the script's stdout. Full worked example (the complete script, `claude mcp add-json`/`--mcp-config --strict-mcp-config` usage, rotation procedure, least-privilege allowlist guidance): see DEPLOY.md's "服務帳號 (Service accounts)" section.

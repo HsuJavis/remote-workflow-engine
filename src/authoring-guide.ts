@@ -1382,5 +1382,26 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
     ),
   );
 
+  // Send-back L8 (spec §Docs): a cold MCP-only consumer reading ONLY this guide (never DEPLOY.md)
+  // had no way to learn that non-interactive access exists at all — service_account_create's own
+  // description covers the admin-tool side, but nothing here covered the OTHER end: how a program
+  // actually connects. Kept short on purpose; DEPLOY.md's own "服務帳號" section has the full
+  // worked example (curl, a complete headersHelper script, rotation procedure).
+  parts.push(
+    section(
+      'Service accounts (non-interactive access)',
+      'A program, CI job, or bot connects without a human login via a SERVICE ACCOUNT — an admin creates one with `service_account_create` (role `author`/`user`, never `admin`; an optional `workflows` allowlist). ' +
+        'It authenticates with `POST /token` (RFC 6749 §4.4 `client_credentials`), client id `sa:<name>`, client secret the `clientSecret` shown ONCE at create/rotate:\n\n' +
+        '```bash\n' +
+        'curl -s https://<host>/token -d grant_type=client_credentials \\\n' +
+        '  -d client_id=sa:ci-bot -d client_secret=rwe_sa_...\n' +
+        '# => {"access_token":"...","token_type":"Bearer","expires_in":3600}  (no refresh_token)\n' +
+        '```\n\n' +
+        'The `access_token` is a normal engine bearer — `Authorization: Bearer <token>` on `/mcp`, same as a human session. ' +
+        'To connect Claude Code non-interactively, configure the rwe MCP server with a `headersHelper` script that performs this exchange (caching until near expiry) and prints the header as a JSON OBJECT — `{"Authorization":"Bearer <token>"}` — NOT a raw `Header: value` text line; the bundled CLI `JSON.parse`s the script\'s stdout. ' +
+        'Full worked example (the complete script, `claude mcp add-json`/`--mcp-config --strict-mcp-config` usage, rotation procedure, least-privilege allowlist guidance): see DEPLOY.md\'s "服務帳號 (Service accounts)" section.',
+    ),
+  );
+
   return parts.join('\n\n') + '\n';
 }
