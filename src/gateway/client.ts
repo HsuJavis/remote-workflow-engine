@@ -2,7 +2,7 @@
 // Narrow invoke(prompt,opts) over the configured provider; bounded timeout -> retry -> null semantics
 // (D-G): a dead/hung/misconfigured provider resolves { ok:false } rather than hanging or throwing.
 // Sole custody of provider API keys lives here (parent-only, never exposed to the sandboxed script).
-import type { AgentOpts, Caps, HarnessDescriptor, TranscriptEvent } from '../types.js';
+import type { AgentOpts, Caps, HarnessDescriptor, Tokens, TranscriptEvent } from '../types.js';
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import { LiteLLMProxyManager } from './litellm-proxy.js';
 import { redactHarness } from '../agent-executor.js';
@@ -149,6 +149,11 @@ export type GatewayResult =
        *  resolution target) — present only on a call that went through a LiteLLM proxy, absent on a
        *  direct-to-provider dispatch (there is no cloak to report). */
       proxyModel?: string;
+      /** issue #127: `true` iff `tokens` is a lower-bound accumulated sum rather than the provider's
+       *  own finalized total — see `AgentRecord.partial`'s own doc for when that happens. Only ever
+       *  set when retrying a call whose earlier attempt(s) contributed a partial figure (the ok:true
+       *  arm's own `tokens` are always authoritative for the attempt that actually finished). */
+      partial?: true;
     }
   | {
       // dash-auth-spec.md section C (2026-09-30): `'aborted'` is produced by exactly ONE site —
@@ -164,6 +169,14 @@ export type GatewayResult =
        *  transcript captured before the failure. */
       detail?: string;
       events?: TranscriptEvent[];
+      /** issue #127: usage spent before this call ended without success — a terminal `result`
+       *  message (e.g. `error_max_turns`) carries its own finalized `usage`, reported here verbatim
+       *  (not `partial`); an abort/timeout/no-result failure has no such message, so this is the
+       *  deduped sum of every streamed assistant turn's own `usage` seen before the cutoff instead
+       *  (`partial:true`, a lower bound — see `AgentRecord.partial`). Absent when the gateway never
+       *  saw any usage at all before failing (e.g. refused before dispatch, or a pre-#127 gateway). */
+      tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
+      partial?: true;
       /** v26 (DES-171, ARCH-111, TASK-176, issue #65): `false` on a `classifyApiError`-terminal
        *  failure — `invoke()`'s retry loop stops immediately instead of burning the full
        *  `timeoutMs × (1+retries)` bound against a provider that already said no. Absent (not
@@ -210,6 +223,11 @@ export interface GatewayClient {
      *  result), so agent_log grows and lastActivityAt advances DURING the call. Gateways with no
      *  turn-by-turn stream (LiteLLMGatewayClient) never call it — unchanged terminal-only behavior. */
     onEvent?: (ev: TranscriptEvent) => void | Promise<void>;
+    /** issue #127: called with the LIVE cumulative (deduped-by-message.id) token sum as the session
+     *  streams it — before any terminal outcome, so a caller that abandons this call's own returned
+     *  Promise (AgentExecutor's abort race) still has the latest known spend to record. Gateways with
+     *  no turn-by-turn usage to report (LiteLLMGatewayClient) never call it. */
+    onUsage?: (cumulative: Tokens) => void;
     /** v26 (DES-179, ARCH-117, TASK-179): the run's admission-time pinned capability for THIS call's
      *  model (ARCH-116) — both gateways thread it into their own `wireEffort` call. Absent -> the
      *  fail-safe branch (see `wireEffort` / `UNKNOWN_CAPS`). */

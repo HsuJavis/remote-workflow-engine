@@ -95,13 +95,25 @@ export function deriveAgentRecords(
         // dash-auth-spec.md section C (2026-09-30): the failed branch's own `GatewayResult.reason`,
         // mirrored verbatim — see `AgentRecord.failReason`'s own doc.
         reason?: 'timeout' | 'unreachable' | 'terminal' | 'aborted';
+        // issue #127: present only on the failed branch's usage event (agent-executor.ts's
+        // `capture()`) — a lower-bound figure, mirrored verbatim onto the reconstructed record.
+        partial?: true;
       };
       const startedAt = firstHarnessTs;
       const endedAt = usage.ts;
-      if (data.tokens) {
+      // issue #127: the discriminator CANNOT be `data.tokens` presence any more — a failed call can
+      // now carry real tokens too (the gateway-side fix that reports what was spent before an abort/
+      // timeout/terminal failure). `reason` is the one field exactly ONE of `capture()`'s two
+      // branches ever writes onto a usage event (the done branch never sets it; the failed branch
+      // always does, even when it has no `detail`/`tokens` of its own — see its own `data:{reason:
+      // result.reason, ...}` literal) — so its presence is what `state` actually keys on, both live
+      // and at rest.
+      if (data.reason === undefined) {
         records.push(withCommon({
           agentId, state: 'done', provider: data.provider ?? 'unknown', model: data.model ?? '',
-          tokens: { input: data.tokens.input, output: data.tokens.output, cacheRead: data.tokens.cacheRead ?? 0, cacheWrite: data.tokens.cacheWrite ?? 0 },
+          tokens: data.tokens
+            ? { input: data.tokens.input, output: data.tokens.output, cacheRead: data.tokens.cacheRead ?? 0, cacheWrite: data.tokens.cacheWrite ?? 0 }
+            : ZERO_TOKENS,
           // A legacy (pre-v26) usage event carries neither field — the honest reading is "never
           // priced", not "free" (ADR-046).
           costUSD: data.costUSD ?? 0, unpriced: data.unpriced ?? true,
@@ -117,7 +129,14 @@ export function deriveAgentRecords(
       } else {
         records.push(withCommon({
           agentId, state: 'failed', provider: data.provider ?? 'unknown', model: harnessDescriptor?.model ?? '',
-          tokens: ZERO_TOKENS, costUSD: 0, unpriced: false,
+          // issue #127: a failed call MAY carry real tokens/costUSD/unpriced too (agent-executor.ts's
+          // `capture()` failed branch, `failUsage`) — present only when the event carries them,
+          // keeping a pre-#127 event's ZERO_TOKENS/costUSD:0/unpriced:false shape byte-identical.
+          tokens: data.tokens
+            ? { input: data.tokens.input, output: data.tokens.output, cacheRead: data.tokens.cacheRead ?? 0, cacheWrite: data.tokens.cacheWrite ?? 0 }
+            : ZERO_TOKENS,
+          costUSD: data.costUSD ?? 0, unpriced: data.unpriced ?? false,
+          ...(data.partial === true ? { partial: true as const } : {}),
           ...(data.transport !== undefined ? { transport: data.transport } : {}),
           // v26 (H-3/M-2 send-back repair, DES-188 lock): same fields `capture()`'s failed branch
           // sets live — present only when the event carries them, matching the ok-branch's own

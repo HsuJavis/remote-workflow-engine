@@ -591,6 +591,67 @@ function extractTokens(msg: unknown, gaps: string[]): Tokens {
   return ZERO_TOKENS;
 }
 
+/** issue #127: `t1 + t2`, elementwise over the four columns — the one addition every accumulator
+ *  below goes through, so "what counts as summing two token figures" cannot drift between call sites. */
+function addTokens(t1: Tokens, t2: Tokens): Tokens {
+  return { input: t1.input + t2.input, output: t1.output + t2.output, cacheRead: t1.cacheRead + t2.cacheRead, cacheWrite: t1.cacheWrite + t2.cacheWrite };
+}
+
+/** issue #127: the per-field MAX of two token figures for the SAME `message.id` — defensive dedup for
+ *  a CLI build that ever re-emits a frame for an id already seen (never expected with
+ *  `includePartialMessages` left unset/false, the one hard requirement this accumulator relies on —
+ *  see `_drain`'s own doc). Never `addTokens`: two frames sharing an id describe the SAME turn, not
+ *  two turns, so summing them would double-count it. */
+function maxTokens(t1: Tokens, t2: Tokens): Tokens {
+  return { input: Math.max(t1.input, t2.input), output: Math.max(t1.output, t2.output), cacheRead: Math.max(t1.cacheRead, t2.cacheRead), cacheWrite: Math.max(t1.cacheWrite, t2.cacheWrite) };
+}
+
+/** issue #127: reads the four usage columns off an arbitrary `{usage?: {...}}`-shaped object — the
+ *  SAME snake_case field names `extractTokens` reads off a `result` message's own `usage` (a per-turn
+ *  `SDKAssistantMessage.message.usage` is the identical `BetaUsage` shape upstream). `undefined` when
+ *  there is no usage to read at all (never a fabricated zero — a message that never reports usage
+ *  contributes nothing to the running sum, which is different from "reported zero usage"). */
+function usageOf(u: Record<string, unknown> | undefined): Tokens | undefined {
+  if (!u) return undefined;
+  const input = u['input_tokens'];
+  const output = u['output_tokens'];
+  if (typeof input !== 'number' && typeof output !== 'number') return undefined;
+  return {
+    input: typeof input === 'number' ? input : 0,
+    output: typeof output === 'number' ? output : 0,
+    cacheRead: typeof u['cache_read_input_tokens'] === 'number' ? (u['cache_read_input_tokens'] as number) : 0,
+    cacheWrite: typeof u['cache_creation_input_tokens'] === 'number' ? (u['cache_creation_input_tokens'] as number) : 0,
+  };
+}
+
+/** issue #127: the live, per-attempt usage accumulator `_drain` folds every streamed
+ *  `SDKAssistantMessage` through — keyed by `message.id` (per-field MAX on a repeat id, `maxTokens`'s
+ *  own doc), summed across ids (`addTokens`) to answer "how much has this attempt spent SO FAR",
+ *  called out to `onUsage` after every update so a caller has the latest figure even if it never
+ *  learns how the attempt itself ends (an abandoned gateway Promise on `run_suspend`/`run_stop`). A
+ *  thin stateful class rather than a closure so `_drain` can read `.total()` one more time at any of
+ *  its own exit points without re-deriving it. */
+class UsageAccumulator {
+  private readonly _seen = new Map<string, Tokens>();
+  constructor(private readonly _onUsage?: (cumulative: Tokens) => void) {}
+  observe(id: string | undefined, u: Record<string, unknown> | undefined): void {
+    const t = usageOf(u);
+    if (id === undefined || t === undefined) return;
+    const prev = this._seen.get(id);
+    this._seen.set(id, prev ? maxTokens(prev, t) : t);
+    // `_seen` just gained an entry (above), so `total()` is never undefined here.
+    this._onUsage?.(this.total()!);
+  }
+  /** `undefined` when nothing was ever observed — distinct from "observed an all-zero usage", which
+   *  `_drain`'s failure returns treat as a real (if unusual) measurement, not an absence. */
+  total(): Tokens | undefined {
+    if (this._seen.size === 0) return undefined;
+    let t = ZERO_TOKENS;
+    for (const v of this._seen.values()) t = addTokens(t, v);
+    return t;
+  }
+}
+
 // v26 (DES-171, ARCH-111, ADR-040, TASK-176, issue #65): `classifyApiError` is total over the
 // closed 10-member `SDKAssistantMessageError` union (pinned against the INSTALLED
 // @anthropic-ai/claude-agent-sdk@0.3.199's sdk.d.ts, confirmed by direct read). `kind` is widened
@@ -692,6 +753,10 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
   }
 
   async invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; assets?: { roots: { workflow: string; global: string }; declared: { skills: string[]; mcp: string[] }; workflow: string }; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>; onEvent?: (ev: TranscriptEvent) => void | Promise<void>;
+    /** issue #127: live cumulative-usage callback — see `GatewayClient.invoke`'s own doc. Wrapped
+     *  below (never forwarded raw) so the caller always sees the sum across every attempt, not just
+     *  the attempt currently in flight. */
+    onUsage?: (cumulative: Tokens) => void;
     /** v26 (DES-179, ARCH-117, TASK-179): the run's admission-time pinned capability for THIS call's
      *  model (ARCH-116) — threaded by the executor when it wires the pin (out of this task's scope);
      *  absent -> UNKNOWN_CAPS, `wireEffort`'s documented fail-safe branch. */
@@ -703,14 +768,28 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     const effTimeout = resolveTimeout(req.opts.timeoutMs) ?? this._config.timeoutMs;
     const attempts = attemptsFor(this._config.retries, effTimeout);
     let last: GatewayResult = { ok: false, provider: 'claude-agent-sdk', reason: 'terminal' };
+    // issue #127: usage carried forward from every FAILED attempt so far this call — folded into
+    // whichever attempt finally settles it (success or exhausted retries alike). `carriedPartial`
+    // propagates once any contributing attempt's own figure was itself an estimate (never cleared).
+    let carried: Tokens = ZERO_TOKENS;
+    let carriedPartial = false;
     for (let i = 0; i < attempts; i++) {
       // v37 (DES-256): `agent.confinement`'s own `attempt` counter — DISTINCT from `sys.attempt`
       // (the CLI's internal backoff, read inside `_drain`) — one per pass through THIS loop, so the
       // event's contract is "once per attempt", the claim a single "once per call" line could never
       // hold (the options literal, and the posture it carries, is rebuilt inside `_invokeOnce` on
       // every pass).
-      last = await this._invokeOnce(req, i + 1);
-      if (last.ok) return last;
+      const attemptReq = req.onUsage === undefined ? req : { ...req, onUsage: (cum: Tokens) => req.onUsage!(addTokens(carried, cum)) };
+      last = await this._invokeOnce(attemptReq, i + 1);
+      if (last.ok) {
+        const normalized: Tokens = { input: last.tokens.input, output: last.tokens.output, cacheRead: last.tokens.cacheRead ?? 0, cacheWrite: last.tokens.cacheWrite ?? 0 };
+        const total = addTokens(carried, normalized);
+        return carriedPartial ? { ...last, tokens: total, partial: true } : { ...last, tokens: total };
+      }
+      if (last.tokens) {
+        carried = addTokens(carried, { input: last.tokens.input, output: last.tokens.output, cacheRead: last.tokens.cacheRead ?? 0, cacheWrite: last.tokens.cacheWrite ?? 0 });
+        if (last.partial === true) carriedPartial = true;
+      }
       // v26 (DES-171, ARCH-111, TASK-176, issue #65): a classifyApiError-terminal failure ends the
       // attempt immediately — retrying costs a full timeoutMs against a provider that already said
       // no. `retryable` is `false` on that classification; every other failure reason (absent
@@ -723,10 +802,18 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       // surface as `reason:'timeout'`, and only the latter may retry.
       if (req.signal?.aborted) break;
     }
+    // issue #127: `carried` already includes `last`'s own tokens (folded into it right after this
+    // attempt settled, above) — overlay it onto the final returned failure rather than re-adding it.
+    // `partial` reflects `carriedPartial` (whether ANY folded-in attempt's figure was itself an
+    // estimate), never forced true just because the call spanned more than one attempt — a run whose
+    // every attempt ended on an authoritative `result.usage` stays non-partial here too.
+    if (!last.ok && carried.input + carried.output + carried.cacheRead + carried.cacheWrite > 0) {
+      return carriedPartial ? { ...last, tokens: carried, partial: true } : { ...last, tokens: carried };
+    }
     return last;
   }
 
-  private async _invokeOnce(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; assets?: { roots: { workflow: string; global: string }; declared: { skills: string[]; mcp: string[] }; workflow: string }; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>; onEvent?: (ev: TranscriptEvent) => void | Promise<void>; caps?: Caps }, attempt = 1): Promise<GatewayResult> {
+  private async _invokeOnce(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; assets?: { roots: { workflow: string; global: string }; declared: { skills: string[]; mcp: string[] }; workflow: string }; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>; onEvent?: (ev: TranscriptEvent) => void | Promise<void>; onUsage?: (cumulative: Tokens) => void; caps?: Caps }, attempt = 1): Promise<GatewayResult> {
     // issue #24/#22: per-call AgentOpts.timeoutMs overrides the configured default (both directions);
     // MUST match invoke()'s attempts calc above so a bounded attempt count never pairs with an
     // unbounded timer (or vice-versa). resolveTimeout rejects a bad value → gateway default applies.
@@ -1188,7 +1275,16 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         return abortedBeforeDispatch();
       }
       const session = this._query({ prompt: req.prompt, options });
-      const drain = this._drain(session, req.opts.model, req.onEvent, onInit);
+      // issue #127: this attempt's own latest-known cumulative usage, mirrored from EVERY `onUsage`
+      // call `_drain` makes — read below when the `bound` abort/timeout race (not `drain` itself)
+      // decides the outcome, so a call whose returned Promise is abandoned mid-stream still reports
+      // what it spent instead of silently reaching `_drain`'s own (now unreachable) return value.
+      let attemptUsage: Tokens | undefined;
+      const onUsage = (cumulative: Tokens): void => {
+        attemptUsage = cumulative;
+        req.onUsage?.(cumulative);
+      };
+      const drain = this._drain(session, req.opts.model, req.onEvent, onInit, onUsage);
 
       // issue #22: name the culprit on any failure that lacks its own detail — so a timeout/unreachable
       // is diagnosable ("which alias→model?") instead of an opaque reason. modelName is the resolved
@@ -1225,7 +1321,12 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       const outcome = await Promise.race([drain, bound]);
       if (outcome !== 'aborted') return stamp(withStderrDiagnostics(enrich(outcome)));
       const reason = timeoutMs !== undefined ? 'timeout' : 'terminal';
-      return stamp(withStderrDiagnostics({ ok: false, provider: 'claude-agent-sdk', reason, detail: namedDetail(reason) }));
+      return stamp(withStderrDiagnostics({
+        ok: false, provider: 'claude-agent-sdk', reason, detail: namedDetail(reason),
+        // issue #127: `attemptUsage` is whatever this attempt streamed before the race was decided —
+        // `drain`'s own eventual return (with the same figure) is abandoned the instant `bound` wins.
+        ...(attemptUsage !== undefined ? { tokens: attemptUsage, partial: true as const } : {}),
+      }));
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       req.signal?.removeEventListener('abort', onExternalAbort);
@@ -1240,8 +1341,16 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
   /** Reads a session's own async-generator agent loop to its 'result' message (or natural end).
    *  D-G8-2: every intermediate message/tool_call/tool_result turn along the way is captured (in
    *  order) into the returned GatewayResult.events, not just the final result — the real
-   *  reasoning/tool-call trace `workflow_agent_log` is built to show. */
-  private async _drain(session: ReturnType<QueryImpl>, model: string | undefined, onEvent?: (ev: TranscriptEvent) => void | Promise<void>, onInit?: (init: { tools?: unknown; mcp_servers?: unknown }) => Promise<void>): Promise<GatewayResult> {
+   *  reasoning/tool-call trace `workflow_agent_log` is built to show.
+   *  issue #127: ALSO folds every streamed `SDKAssistantMessage`'s own `message.usage` through a
+   *  `UsageAccumulator` (`usage` param) as it arrives — the ONLY source of truth for what a call that
+   *  never reaches a `result` message (aborted/timed out/session ended early) actually spent. This
+   *  relies on `includePartialMessages` staying UNSET (never passed to `query()` anywhere in this
+   *  class) — with it on, the SDK also streams `SDKPartialAssistantMessage` deltas that repeat the
+   *  SAME `message.id` with a growing `usage`, which `UsageAccumulator`'s per-id MAX already tolerates
+   *  defensively, but turning partials on was never evaluated against the dedup assumption below it
+   *  (every `message.id` seen here is a COMPLETE turn) and is out of this fix's scope. */
+  private async _drain(session: ReturnType<QueryImpl>, model: string | undefined, onEvent?: (ev: TranscriptEvent) => void | Promise<void>, onInit?: (init: { tools?: unknown; mcp_servers?: unknown }) => Promise<void>, onUsage?: (cumulative: Tokens) => void): Promise<GatewayResult> {
     const events: TranscriptEvent[] = [];
     // v26 (DES-171, ARCH-111): unmapped `system` subtypes observed this call — counted, never
     // their payload (see BENIGN_SYSTEM_SUBTYPES/sanitizeSubtype above).
@@ -1251,6 +1360,16 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     // capture() would otherwise re-emit the same events at terminal (duplicates). No sink → unchanged
     // legacy behavior: accumulate and return events for capture() to emit once at the end.
     const streaming = onEvent !== undefined;
+    // issue #127: this attempt's own live usage accumulator — read via `.total()` at every failure
+    // exit below, so a figure accumulates regardless of which branch this attempt ends on.
+    const usage = new UsageAccumulator(onUsage);
+    /** issue #127: spreads `{tokens, partial:true}` onto a failure literal ONLY when something was
+     *  actually observed — a call that failed before any assistant turn streamed keeps the pre-#127
+     *  shape (no `tokens` field at all), not a fabricated zero. */
+    const partialUsage = (): { tokens: Tokens; partial: true } | Record<string, never> => {
+      const t = usage.total();
+      return t === undefined ? {} : { tokens: t, partial: true };
+    };
     try {
       for await (const msg of session as AsyncIterable<SDKMessage>) {
         if (msg.type === 'system') {
@@ -1286,7 +1405,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
             const detail = `${kind}${status !== null ? ` (status ${status})` : ''} — provider ended the attempt (attempt ${attempt})`;
             const errEv: TranscriptEvent = { ts: new Date().toISOString(), kind: 'message', data: { type: 'error', detail, status, kind, attempt } }; // det:allow — transcript timestamp
             if (streaming) { await onEvent!(errEv); } else { events.push(errEv); }
-            return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', retryable: false, detail, error: { kind, status, attempt }, events, unmapped };
+            return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', retryable: false, detail, error: { kind, status, attempt }, events, unmapped, ...partialUsage() };
           }
           // Every other `system` subtype is COUNTED (never its payload) unless it's routine
           // control-plane chatter — includes any subtype a future SDK adds, the safe default.
@@ -1294,6 +1413,14 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
           continue;
         }
         if (msg.type !== 'result') {
+          // issue #127: every streamed `assistant` turn's own `message.usage` folds into this
+          // attempt's running total BEFORE the event extraction below — a failure return later in
+          // this same attempt (or in `_invokeOnce`'s abort race, which never reaches this point at
+          // all) still has it, via `onUsage`'s live callback as much as via `partialUsage()` here.
+          if (msg.type === 'assistant') {
+            const am = msg as unknown as { message?: { id?: string; usage?: Record<string, unknown> } };
+            usage.observe(am.message?.id, am.message?.usage);
+          }
           const evs = extractEvents(msg, new Date().toISOString()); // det:allow — transcript timestamp, not a decision
           if (streaming) { for (const ev of evs) await onEvent!(ev); }
           else { events.push(...evs); }
@@ -1313,14 +1440,19 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
           const detail = [m.subtype, m.result ?? errorsText].filter(Boolean).join(': ') || 'error';
           const errEv: TranscriptEvent = { ts: new Date().toISOString(), kind: 'message', data: { type: 'error', detail } }; // det:allow — transcript timestamp
           if (streaming) { await onEvent!(errEv); } else { events.push(errEv); }
+          // issue #127: this IS a real `result` message (`SDKResultError`, sdk.d.ts) — it carries its
+          // own finalized `usage`/`modelUsage`, the SAME fields the success branch below reads via
+          // `extractTokens`. That is the provider's OWN total for everything this attempt spent, not
+          // an estimate — precedence over the per-turn accumulator above, and never `partial`.
+          const failTokens = extractTokens(msg, unmapped);
           // Same labelling the THROWN sandbox-unavailable path already gets (below) — a doomed
           // sandbox reaching here as an ordinary result message (rather than a thrown exception)
           // must not burn through every retry attempt the same way a genuinely transient failure
           // would.
           if (isSandboxUnavailableText(detail)) {
-            return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', retryable: false, detail: `${SANDBOX_UNAVAILABLE}: ${detail}`, events, unmapped };
+            return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', retryable: false, detail: `${SANDBOX_UNAVAILABLE}: ${detail}`, events, unmapped, tokens: failTokens };
           }
-          return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', detail, events, unmapped };
+          return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', detail, events, unmapped, tokens: failTokens };
         }
         return {
           ok: true,
@@ -1338,7 +1470,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         };
       }
       // Session ended without ever emitting a result message.
-      return { ok: false, provider: 'claude-agent-sdk', reason: 'unreachable', unmapped };
+      return { ok: false, provider: 'claude-agent-sdk', reason: 'unreachable', unmapped, ...partialUsage() };
     } catch (err) {
       const timedOut = err instanceof Error && err.name === 'AbortError';
       // v37 (DES-259, ADR-083, TASK-253, REQ-218): a sandbox that cannot start THROWS on the async
@@ -1354,9 +1486,9 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       // correct, never a regression.
       const msg = err instanceof Error ? err.message : String(err);
       if (isSandboxUnavailableText(msg)) {
-        return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', retryable: false, detail: `${SANDBOX_UNAVAILABLE}: ${msg}`, unmapped };
+        return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', retryable: false, detail: `${SANDBOX_UNAVAILABLE}: ${msg}`, unmapped, ...partialUsage() };
       }
-      return { ok: false, provider: 'claude-agent-sdk', reason: timedOut ? 'timeout' : 'unreachable', unmapped };
+      return { ok: false, provider: 'claude-agent-sdk', reason: timedOut ? 'timeout' : 'unreachable', unmapped, ...partialUsage() };
     }
   }
 }

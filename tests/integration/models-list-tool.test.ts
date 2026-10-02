@@ -163,7 +163,10 @@ describe('models_list wired into MCP (REQ-039/040)', () => {
       await seed.appendTranscript(runId, agentId, { ts: iso(startedAgo), kind: 'harness', data: { agentId, descriptor: { model: 'qwen2.5:7b', provider: 'ollama', prompt: 'p', tools, skills: [], mcpServers: [], surfaceType: tools.length ? 'curated' : 'none' } } });
       await seed.appendTranscript(runId, agentId, ok
         ? { ts: iso(startedAgo - durMs), kind: 'usage', data: { tokens: { input: 3000, output: 40, cacheRead: 0, cacheWrite: 0 }, provider: 'ollama', model: 'qwen2.5:7b', costUSD: 0, unpriced: false } }
-        : { ts: iso(startedAgo - durMs), kind: 'usage', data: { provider: 'ollama' } });
+        // issue #127: deriveAgentRecords now keys `done` vs `failed` on `reason` presence (a failed
+        // usage event always carries one in production — GatewayResult.reason is required on the
+        // ok:false arm) rather than `tokens` presence, so this fixture needs one too.
+        : { ts: iso(startedAgo - durMs), kind: 'usage', data: { reason: 'terminal', provider: 'ollama' } });
     };
     for (const [status, calls] of [['completed', [[[], true, 1000], [['Read'], true, 2000]]], ['failed', [[['Read'], false, 4000]]]] as const) {
       const runId = await seed.createRun({ origin: 'local', args: {}, principal: 'someone' });

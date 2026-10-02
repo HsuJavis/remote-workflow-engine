@@ -983,7 +983,27 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'its contents alike (`args instanceof Object` is false; `Array.isArray(args.xs)` is true — ' +
         'realm-safe checks work). Errors you construct yourself inside the script are ordinary and ' +
         'unaffected. Every engine refusal carries the same `e.code`/`e.name` catalog code as ' +
-        '`run_result.error.code`, plus a human `e.message`.',
+        '`run_result.error.code`, plus a human `e.message`.\n\n' +
+        // issue #127: an agent() call cut short by run_suspend/run_stop, a timeout, or a terminal
+        // provider error still charges whatever it spent — the pre-#127 engine silently dropped it,
+        // so cost/budget under-counted real provider spend and a budget could be exceeded without
+        // ever tripping. Two things an author needs from this, beyond what the resume-replay
+        // paragraph above already says (same root cause, two different surfaces).
+        '`run_status.agents[].tokens`/`costUSD` are populated on a FAILED agent too, not only a ' +
+        'done one, whenever the gateway reported usage before the call ended; `agents[].partial: ' +
+        'true` marks that figure as a LOWER BOUND — the deduped sum of what streamed in before the ' +
+        'cutoff, not the provider\'s own finalized total (a terminal provider error that DID report ' +
+        'its own total is NOT marked partial — only a genuine abort/timeout/mid-stream cutoff is). ' +
+        'This figure is charged against `budget` exactly like a completed call\'s, so a repeated ' +
+        'suspend/resume cycle of a usage-heavy agent now counts toward, and can trip, a token or ' +
+        'USD limit even though every individual attempt was interrupted. Separately: resuming a ' +
+        'suspended/interrupted run RE-DISPATCHES the agent() call that was in flight at the cutoff ' +
+        'from the START, with a NEW agentId — it does not continue the old one. An agent() whose ' +
+        'ONLY effect is its return value (e.g. a pure-text or `schema`-validated response) is safe to ' +
+        're-dispatch this way; one that also performs a non-idempotent side effect through an MCP ' +
+        'tool or Bash (writing a row, sending a message, charging something) may perform that effect ' +
+        'TWICE across a suspend/resume — design such a call to be idempotent (a dedupe key, an ' +
+        '"upsert" instead of an "insert") or keep it out of a label a workflow might resume into.',
     ),
   );
 

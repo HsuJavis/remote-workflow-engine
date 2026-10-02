@@ -6,23 +6,38 @@
 // while the agent dispatched by that resume kept running for another ~36 seconds and produced real
 // output nobody could ever read. Neither symptom left a single line behind.
 //
-// This file is deliberately NOT a fix for the race. The sequence is non-deterministic (the same
-// steps with the suspend at +3s instead of +1s complete normally) and adjudication #9 I-2 rules
-// against guessing at a fix on a concurrency path: "不猜著修,加觀測" — the goal is that the NEXT
-// occurrence leaves evidence at the scene instead of being caught by coincidence again. No existing
-// behaviour changes: a terminal state still does not abort the work it owns (that is a separate
-// decision with its own tests), and nothing here alters control flow.
+// Originally (2026-09-07, adjudication #9 I-2) this file was deliberately NOT a fix for the race:
+// "不猜著修,加觀測" — add observability, don't guess at a fix on a concurrency path. The ORIGINAL
+// first test below reproduced the orphan with a gateway that ignores `req.signal` and asserted the
+// `agent_live_at_terminal` warning fires for it.
+//
+// issue #127 (2026-10-02 owner ruling — a NAMED, deliberate revisit of that stance, not a reopening
+// of it): `RunManager.stop()`/`suspend()` now give every in-flight agent() call's own abort-triggered
+// bookkeeping (`AgentExecutor.settleInflight`, called from `_finalizeAborted`/`capture()`) a bounded
+// head start before the terminal/suspend snapshot is taken. Measured directly (see the git history of
+// this file): the abort race inside `AgentExecutor._invokeOnce` resolves off the RUN's OWN
+// `AbortSignal`, independent of whether the gateway itself ever observes it, and `capture()`'s
+// `this._records.set(...)` runs SYNCHRONOUSLY in its own call stack, before any of `capture()`'s own
+// `await`s — so the in-memory record flips to `failed` within the same microtask flush the abort
+// triggers, which lands before `settleInflight`'s own `await` returns control to `_transition`
+// REGARDLESS of the configured bound (even 0ms — Node drains every ready microtask before advancing
+// to the next macrotask/timer phase). The orphan this file's first test used to reproduce can
+// therefore no longer be reproduced via a signal-ignoring fake gateway: that WAS exactly the
+// mechanism issue #127 fixes. The first test below now asserts the FIX directly — no orphan, no
+// warning — and the `agent_live_at_terminal` detection code itself (run-manager.ts `_transition`,
+// still present, unremoved) is left as a safety net for whatever genuinely never reaches `run()`'s own
+// tracking at all (an operator's custom `AgentSpawner`, which `_transition` already treats as
+// contributing an empty `agents` array either way) — not something this synthetic harness can still
+// exercise honestly. No OTHER existing behaviour changes: a terminal state still does not abort the
+// REAL external work it owns (the sandbox child, the gateway's own subprocess) — that remains a
+// separate decision with its own tests; this file is only about the BOOKKEEPING catching up before
+// the snapshot read.
 //
 // Mock policy (integration tier): real RunManager, real RunGuard, real AgentExecutor, real sandbox
-// child process, real SqliteRunStore. Only `GatewayClient` (third-party network) is faked, and it
-// is faked in the ONE way that reproduces #53's orphan: it ignores the abort signal, so the agent
-// is provably still `running` at the moment the run is written terminal. The second case needs no
-// fake at all — it puts a REAL sqlite store into the exact on-disk state #53 was observed in
-// (`runs.status = 'failed'`, no `failed` row in `transitions`) with one UPDATE, which is the state
-// the incident presented and one no engine code path is supposed to be able to produce.
-//
-// RED before the fix: `RunManagerDeps.onWarning` does not exist (tsc), and with the sink stubbed
-// out both `warnings` arrays stay empty — which is precisely what happened to run 3977b82d.
+// child process, real SqliteRunStore. Only `GatewayClient` (third-party network) is faked. The second
+// warning kind needs no fake at all — it puts a REAL sqlite store into the exact on-disk state #53
+// was observed in (`runs.status = 'failed'`, no `failed` row in `transitions`) with one UPDATE, which
+// is the state the incident presented and one no engine code path is supposed to be able to produce.
 import { describe, it, expect, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -57,15 +72,15 @@ async function waitForAgents(mgr: RunManager, runId: string, predicate: (a: Agen
   return view.agents;
 }
 
-describe('a terminal state that leaves live work behind is recorded (IT-133, #53)', () => {
-  it('run stopped while its agent is still running ⇒ one warning naming the run, the agent, its state and the terminal state', async () => {
+describe('a terminal state no longer leaves live bookkeeping behind (IT-133 + issue #127)', () => {
+  it('stop() while an agent is still at the gateway (ignoring the abort signal) still finalizes it to failed, no orphan warning', async () => {
     const warnings: EngineWarning[] = [];
     let releaseAgent!: () => void;
     const held = new Promise<void>((resolve) => { releaseAgent = resolve; });
 
-    // The orphan, reproduced: a gateway call that does NOT observe `req.signal`. #53's agent kept
-    // going for 36 seconds after its run was terminal, so a fake that aborts obediently would test
-    // the case that never fails.
+    // The SAME signal-ignoring gateway #53's orphan used — the strongest setup available: it proves
+    // the fix does not depend on the gateway's own cooperation at all, only on the run's own
+    // AbortSignal (which the gateway never sees here).
     const gateway: GatewayClient = {
       invoke: async () => {
         await held;
@@ -76,19 +91,19 @@ describe('a terminal state that leaves live work behind is recorded (IT-133, #53
 
     const runId = await startScript(mgr, `return await agent('orphan', { prompt: 'hold' });`);
     const agents = await waitForAgents(mgr, runId, (a) => a.some((r) => r.state === 'running'));
-    expect(agents.find((a) => a.label === 'orphan')?.state, 'the agent must be live BEFORE the terminal write, or this case proves nothing').toBe('running');
+    expect(agents.find((a) => a.label === 'orphan')?.state, 'the agent must be live BEFORE stop(), or this case proves nothing').toBe('running');
 
     await mgr.stop(runId);
 
-    const orphaned = warnings.filter((w) => w.kind === 'agent_live_at_terminal');
-    expect(orphaned).toHaveLength(1);
-    expect(orphaned[0]).toMatchObject({
-      runId,
-      terminalState: 'stopped',
-      agent: { label: 'orphan', state: 'running' },
-    });
-    expect(orphaned[0]?.ts, 'a warning with no timestamp cannot be correlated with anything').toMatch(/^\d{4}-\d{2}-\d{2}T/);
-    expect(orphaned[0]?.agent?.agentId).toBeTruthy();
+    // issue #127: the fix — finalized to failed, not left stuck running.
+    const view = await mgr.status(runId);
+    const orphan = view.agents.find((a) => a.label === 'orphan');
+    expect(orphan?.state).toBe('failed');
+    expect(orphan?.failReason).toBe('aborted');
+    expect(orphan?.endedAt).toBeDefined();
+
+    // ...so the orphan warning this exact scenario used to produce no longer fires.
+    expect(warnings.filter((w) => w.kind === 'agent_live_at_terminal')).toEqual([]);
 
     releaseAgent();
   });
@@ -108,27 +123,6 @@ describe('a terminal state that leaves live work behind is recorded (IT-133, #53
     }
     expect(view.status).toBe('completed');
     expect(warnings).toEqual([]);
-  });
-
-  it('the default sink is console.warn — the warning reaches the engine log with no operator configuration', async () => {
-    const lines: string[] = [];
-    const original = console.warn;
-    console.warn = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
-    try {
-      let release!: () => void;
-      const held = new Promise<void>((resolve) => { release = resolve; });
-      const gateway: GatewayClient = { invoke: async () => { await held; return { ok: true, provider: 'f', model: 'm', tokens: { input: 1, output: 1 }, content: 'x' }; } };
-      // No onWarning: this is the production wiring. A sink that only exists when someone remembers
-      // to pass it is the composeConfig bug class this ledger has recorded twice.
-      const mgr = new RunManager({ gateway, workRoot: tempDir() });
-      const runId = await startScript(mgr, `return await agent('orphan', { prompt: 'hold' });`);
-      await waitForAgents(mgr, runId, (a) => a.some((r) => r.state === 'running'));
-      await mgr.stop(runId);
-      release();
-      expect(lines.some((l) => l.includes('agent_live_at_terminal') && l.includes(runId))).toBe(true);
-    } finally {
-      console.warn = original;
-    }
   });
 });
 
@@ -185,5 +179,34 @@ describe('a terminal status with no matching transition row is recorded (IT-133,
     await mgr.status(broken);
     await mgr.status(broken);
     expect(warnings.filter((w) => w.runId === broken), 'a terminal run is polled; one record per run is evidence, one per poll is noise').toHaveLength(1);
+  });
+
+  // issue #127: the DEFAULT sink (no `onWarning` passed — production wiring) still reaches
+  // console.warn — moved here from the (now-fixed) agent-orphan scenario in the describe block
+  // above, which no longer reproduces via a signal-ignoring gateway (see the file-top comment). This
+  // `terminal_without_transition` path is untouched by issue #127 and stays fully reproducible, so it
+  // is what proves the default-sink wiring without relying on timing at all.
+  it('the default sink is console.warn — the warning reaches the engine log with no operator configuration', async () => {
+    const lines: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
+    try {
+      const dir = tempDir();
+      const store = new SqliteRunStore(dir, new SystemClock());
+      // No onWarning: this is the production wiring. A sink that only exists when someone remembers
+      // to pass it is the composeConfig bug class this ledger has recorded twice.
+      const mgr = new RunManager({ store, workRoot: tempDir() });
+
+      const runId = await store.createRun({ origin: 'local', script: 'return 1;', name: 'it133-default-sink' });
+      await store.recordTransition(runId, null, 'queued', new Date().toISOString());
+      const db = new Database(join(dir, 'index.db'));
+      db.prepare("UPDATE runs SET status = 'failed' WHERE runId = ?").run(runId);
+      db.close();
+
+      await mgr.status(runId);
+      expect(lines.some((l) => l.includes('terminal_without_transition') && l.includes(runId))).toBe(true);
+    } finally {
+      console.warn = original;
+    }
   });
 });

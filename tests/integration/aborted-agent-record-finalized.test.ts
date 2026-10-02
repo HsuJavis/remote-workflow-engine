@@ -119,6 +119,10 @@ function gatewayHarnessThenHang(): { gateway: GatewayClient; firstStarted: Promi
       calls += 1;
       if (calls === 1) {
         req.onHarness?.({ model: 'claude-abort-1', provider: 'anthropic', prompt: 'p', tools: [], skills: [], mcpServers: [], surfaceType: 'none' });
+        // issue #127: streams live usage before hanging — `_finalizeAborted` reads this off the
+        // sink's live record (`markUsage`) once the abort race wins, independent of whether this
+        // call's own Promise (below) is ever awaited to completion.
+        req.onUsage?.({ input: 11, output: 4, cacheRead: 0, cacheWrite: 0 });
         started();
         await new Promise<void>((resolve) => {
           if (req.signal?.aborted) resolve();
@@ -151,15 +155,25 @@ describe('an aborted call keeps its resolved provider/model (dash-auth-spec C; i
     expect(aborted.provider).toBe('anthropic'); // not '' — the harness had already resolved it
     expect(aborted.model).toBe('claude-abort-1');
     expect(aborted.failReason).toBe('aborted'); // distinct from a genuine gateway 'timeout'
+    // issue #127: the usage streamed before the abort survives finalization — priced (even if
+    // unpriced:true with no catalog pin here) and marked `partial` (a lower bound, no finalized
+    // `result.usage` ever arrived for this attempt).
+    expect(aborted.tokens).toEqual({ input: 11, output: 4, cacheRead: 0, cacheWrite: 0 });
+    expect(aborted.partial).toBe(true);
 
-    // NOTE: this file does NOT also open a second `SqliteRunStore` over the same directory to prove
-    // the restart-reconstructed record agrees — `RunManager.stop()`'s terminal snapshot write races
-    // the in-flight abort's `capture()` (the pre-existing, DELIBERATELY-unfixed #53/adjudication #9
-    // I-2 "add observability, don't guess a fix" race this file's OWN top comment documents; the
-    // `agent_live_at_terminal` EngineWarning fires on exactly this run for exactly that reason), so
-    // a second store instance here would assert against whichever snapshot happened to win the
-    // race, not against `deriveAgentRecords`'s repair. That repair (this-slice: `provider`/
-    // `failReason` reconstructed identically to the live record) is proven directly, deterministically,
-    // against a hand-built transcript in tests/unit/agent-record-abort-provider.test.ts instead.
+    // issue #127: `RunManager.stop()` now waits (bounded, `AgentExecutor.settleInflight`) for the
+    // in-flight abort's `capture()` to land BEFORE the terminal snapshot — closing the race this
+    // comment used to document as deliberately unfixed (#53/adjudication #9 I-2; see
+    // `tests/integration/terminal-state-warnings.test.ts`'s own updated file-top comment for the
+    // measured reason it closes). A second, FRESH `SqliteRunStore` over the SAME directory now
+    // reliably reconstructs the identical record via `deriveAgentRecords` — proving the durable
+    // snapshot/journal agrees with the live view, not just whichever one happened to win a race.
+    const store2 = new SqliteRunStore(join(dir, 'store'), new SystemClock());
+    const restarted = await store2.getRun(runId);
+    const restartedAgent = restarted?.agents.find((a) => a.agentId === aborted.agentId);
+    expect(restartedAgent?.state).toBe('failed');
+    expect(restartedAgent?.failReason).toBe('aborted');
+    expect(restartedAgent?.tokens).toEqual({ input: 11, output: 4, cacheRead: 0, cacheWrite: 0 });
+    expect(restartedAgent?.partial).toBe(true);
   }, 20000);
 });

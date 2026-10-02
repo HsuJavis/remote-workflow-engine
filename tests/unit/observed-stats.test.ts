@@ -95,10 +95,13 @@ async function seedCall(store: SqliteRunStore, runId: string, spec: CallSpec): P
   } else {
     // A failed/timed-out call: a `usage` event carrying no `tokens` (deriveAgentRecords' failed
     // branch) — model/provider come from the harness descriptor, exactly as issue #22 fixed.
+    // issue #127: `reason` is what the failed branch is now keyed on (a `done` event never carries
+    // one) — every real `capture()` failed-branch usage event always has one (`GatewayResult.reason`
+    // is a required field on the `ok:false` arm), so this fixture matches production.
     await store.appendTranscript(runId, spec.agentId, {
       ts: spec.endedAt,
       kind: 'usage',
-      data: { provider: spec.provider },
+      data: { reason: 'terminal', provider: spec.provider },
     });
   }
 }

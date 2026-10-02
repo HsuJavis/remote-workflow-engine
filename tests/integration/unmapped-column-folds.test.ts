@@ -136,3 +136,57 @@ describe('the two folds agree on the WHOLE RunUsage, failed call included (R-1, 
     expect(foldUsage(events as any).unpricedCalls).toBe(1); // the DONE call only (no price book pinned)
   });
 });
+
+// issue #127 (repair): `unpricedCalls` on the LIVE fold used to be gated on `state === 'done'`,
+// which disagreed with the AT-REST fold (`data.unpriced ?? true`, gated only on the event carrying
+// `tokens`) the instant a FAILED call could also carry `tokens`/`unpriced` — the gateway-side #127
+// fix that reports usage spent before an abort/timeout/terminal failure. This feeds one done call
+// and one FAILED-WITH-TOKENS call (both genuinely unpriced — no price book entry for either model)
+// and deep-equals the whole RunUsage, so a future re-introduction of the `state` gate fails here too.
+const gatewayOneDoneOneFailedWithTokens = {
+  async invoke(req: any) {
+    const failing = req.agentId?.endsWith('2') ?? false;
+    if (failing) {
+      return {
+        ok: false, provider: 'anthropic', reason: 'aborted', detail: 'simulated abort mid-flight',
+        tokens: { input: 7, output: 3, cacheRead: 0, cacheWrite: 0 }, partial: true,
+      };
+    }
+    return {
+      ok: true, provider: 'anthropic', model: 'claude-haiku-4-5-20251001',
+      tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+      content: 'x',
+    };
+  },
+};
+
+describe('unpricedCalls counts a FAILED call carrying tokens too, live and at rest alike (issue #127 repair)', () => {
+  it('both folds deep-equal RunUsage when one call failed WITH real tokens (not the pre-#127 zero shape)', async () => {
+    const store = new InMemoryRunStore(new FixedClock(new Date('2026-10-02T00:00:00Z')));
+    const mgr = new RunManager({ gateway: gatewayOneDoneOneFailedWithTokens as any, store });
+    const runId = await startScript(
+      mgr,
+      `await agent('a', { prompt: 'p' }); await agent('b', { prompt: 'q' });`,
+      {},
+      { agents: { a: { model: 'openrouter/some-vendor/unpriced-model' }, b: { model: 'openrouter/some-vendor/unpriced-model' } } },
+    );
+    const view = await pollStatus(mgr, runId);
+    expect(view.status).toBe('completed');
+
+    const events: any[] = [];
+    for (const a of view.agents ?? []) {
+      events.push(...(await store.getTranscript(runId, a.agentId)));
+    }
+    // The failed call persisted its tokens on the usage event (issue #127) — NOT the pre-#127
+    // always-tokenless failed shape IT-156's own R-1 case still separately covers.
+    const failedUsage = events.find((e) => e.kind === 'usage' && e.data.reason === 'aborted');
+    expect(failedUsage?.data.tokens).toEqual({ input: 7, output: 3, cacheRead: 0, cacheWrite: 0 });
+    expect(failedUsage?.data.unpriced).toBe(true);
+
+    expect(foldUsage(events as any)).toEqual(view.usage);
+    expect(foldUsage(events as any).tokens).toEqual({ input: 17, output: 8, cacheRead: 0, cacheWrite: 0 });
+    // The falsifying assertion: BOTH calls are unpriced (no price book entry for either model), and
+    // the failed one must count exactly like the done one — `state === 'done'` would under-count this to 1.
+    expect(foldUsage(events as any).unpricedCalls).toBe(2);
+  });
+});
