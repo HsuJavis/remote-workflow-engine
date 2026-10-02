@@ -19,6 +19,7 @@ import { codedError } from './errors.js';
 import type { Clock } from './clock.js';
 import { classifyTransport, PROBE_TIMEOUT_MS, type McpProbe, type McpServerConfig } from './mcp-probe.js';
 import { isEgressAllowed } from './seedref-egress.js';
+import { validateRunPlaceholders, UnknownRunPlaceholderError } from './mcp-run-state.js';
 
 /** Pre-v24 kind union — see file header. */
 export type LegacyAssetKind = 'skill' | 'hook' | 'mcp-config';
@@ -502,6 +503,18 @@ export class AssetSyncService {
             },
           };
         }
+      }
+      // issue #126 B: an unknown ${run:xxx} placeholder is refused BEFORE the probe (which may
+      // spawn a real process / make a network call) — `${run:dir}`/`${run:id}` themselves are
+      // left UNRESOLVED here and stored verbatim; resolution is per-dispatch (the gateway), never
+      // at push time, so the SAME stored config serves every future run with its own isolated dir.
+      try {
+        validateRunPlaceholders(req.config);
+      } catch (err) {
+        if (err instanceof UnknownRunPlaceholderError) {
+          return { error: 'UNKNOWN_RUN_PLACEHOLDER', detail: { message: err.message } };
+        }
+        throw err;
       }
       const probed = await this._probe.probe(req.config);
       if (!probed.ok) {

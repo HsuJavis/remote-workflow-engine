@@ -364,3 +364,53 @@ describe('resolveMcp — workflow scope wins a name clash with global (UT-155, D
     expect(configs.gh).toEqual({ command: 'global-bin' });
   });
 });
+
+// issue #126 B: an unknown ${run:...} placeholder in a pushed mcp config is refused at push time,
+// BEFORE the (possibly slow/network-touching) probe ever runs — so an author with a typo finds out
+// immediately, and the probe is never asked to launch a config it cannot resolve.
+describe('AssetSyncService.push() refuses an unknown ${run:...} placeholder (issue #126 B)', () => {
+  it('UNKNOWN_RUN_PLACEHOLDER before the probe is ever called, nothing stored', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-v24-'));
+    try {
+      const probe = { probe: vi.fn() };
+      const catalog = fakeCatalogPort();
+      const svc = new AssetSyncService({
+        workRoot: dir, globalRoot: join(dir, 'global'),
+        selfBind: { host: '127.0.0.1', port: 1 }, clock: new FixedClock(new Date('2026-01-01T00:00:00Z')),
+        catalog, probe, egressAllowlist: [],
+      });
+      const result = await svc.push({
+        scope: 'global', kind: 'mcp', name: 'kv',
+        config: { type: 'stdio', command: 'npx', args: ['-y', 'x'], env: { MEMORY_FILE_PATH: '${run:bogus}/memory.jsonl' } } as never,
+        pushedBy: 'admin',
+      });
+      expect(result).toMatchObject({ error: 'UNKNOWN_RUN_PLACEHOLDER' });
+      const detail = (result as { detail?: Record<string, unknown> }).detail;
+      expect(detail?.['message']).toEqual(expect.stringContaining('${run:bogus}'));
+      expect(probe.probe).not.toHaveBeenCalled();
+      expect(catalog.putAsset).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('${run:dir} and ${run:id} are accepted (not refused) and reach the probe unresolved — stored verbatim with the placeholder still in it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-v24-'));
+    try {
+      const probe = { probe: vi.fn().mockResolvedValue({ ok: true }) };
+      const catalog = fakeCatalogPort();
+      const svc = new AssetSyncService({
+        workRoot: dir, globalRoot: join(dir, 'global'),
+        selfBind: { host: '127.0.0.1', port: 1 }, clock: new FixedClock(new Date('2026-01-01T00:00:00Z')),
+        catalog, probe, egressAllowlist: [],
+      });
+      const config = { type: 'stdio', command: 'npx', args: ['-y', 'x'], env: { MEMORY_FILE_PATH: '${run:dir}/memory.jsonl', RUN: '${run:id}' } };
+      const result = await svc.push({ scope: 'global', kind: 'mcp', name: 'kv', config: config as never, pushedBy: 'admin' });
+      expect(result).toEqual({ stored: 'kv' });
+      // The STORED row keeps the placeholder — resolution is per-dispatch, not at push time.
+      expect(catalog.putAsset).toHaveBeenCalledWith(expect.objectContaining({ config }));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

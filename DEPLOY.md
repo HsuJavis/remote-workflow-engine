@@ -874,6 +874,39 @@ transport 矩陣、config 形狀範例與其餘細節見 `workflow_authoring_gui
 的「Provisioning skills and MCP servers」一節——本段只記信任邊界的「為什麼」，機制細節不在此重複
 一份會漂移的第二份。
 
+**(h) `stdio` MCP server 自己的狀態是 host 全域共用的（issue #126）**：(g) 講的是 server「碰得到」
+什麼（跟引擎 process 同信任層級）；這裡講的是它「留下」什麼。`stdio` server 是引擎 host 上的一個
+普通子行程，不是每個 run 各自一份全新實例——所以它在**自己 process 之外**留下的任何狀態（引擎
+使用者 HOME 底下的檔案、它自己的 `npx` package cache、寫死在它預設值裡的絕對路徑）是**所有宣告
+同一個 server 名字的每一個 run、每一個 principal 共用的同一份** store。`@modelcontextprotocol/
+server-memory` 就是現成例子：預設把資料寫進自己 npx package 目錄底下的一個 JSONL 檔——兩個不相干
+的 run，各自以為自己在操作「自己的」knowledge graph，實際上讀寫的是同一個檔案。run 的 sandbox
+（workspace、`/tmp`、materialize 出來的 skill）本身每個 run 都確實各自分開；這是唯一一個不是的
+管道，因為 server 本身就跑在那層 sandbox 之外（見 (g)）。
+
+**修法**：在 `workspace_push({kind:"mcp"})` 的 `config.env`/`config.args` 裡用
+`${run:dir}`（引擎在這個 run 第一次用到時才建立的 0700 私有目錄，路徑是
+`<workRoot>/workflows/<name>/mcp-state/<runId>/<serverName>/`——刻意放在**可被
+`workspace_pull`/`workspace_list` 讀到的 run workspace 之外**，因為那條路徑面向呼叫者，而這個目錄
+是引擎自己管的狀態）與/或 `${run:id}`（這個 run 的 id，純字串）。兩者都在 **dispatch 時**解析（跟
+`${secret:NAME}` 同一個時機，也跟它一樣原樣存在 catalog 裡），同一個 run 底下先後呼叫的
+`agent()` 共用同一份 `${run:dir}`，不同 run（即使同一個 workflow、同一個 principal）永遠拿到不同
+目錄，run 的 workspace 被 GC 回收時這個目錄也跟著清掉（沿用既有的 workspace 保留/GC 設定，見下方
+`workspaceTtlMs`，不是另一條定時器）。範例——把上面 server-memory 的例子改成逐 run 各自一份：
+
+```json
+{
+  "type": "stdio", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-memory"],
+  "env": { "MEMORY_FILE_PATH": "${run:dir}/memory.jsonl" }
+}
+```
+
+`config` 裡出現除了 `dir`/`id` 以外的 `${run:xxx}` 名字，`workspace_push` 當場用
+`UNKNOWN_RUN_PLACEHOLDER` 拒絕（探測都不會跑）——打錯字當下就知道，不必等到 run 第一次 dispatch
+才看到語焉不詳的啟動失敗。本身不留狀態的 server（每個請求/回應處理完就沒事了，多數 server 是這種
+形狀）兩個占位符都不需要；拿不準的話，優先選不留狀態的 server，真的要留狀態就把它指到
+`${run:dir}`。
+
 ## 2. 完整部署步驟（超出一鍵路徑之外：常駐化 / 容器化 / 上線前煙霧測試）
 
 > 基本開機序列已在 §0 一鍵部署 / 展開版 Quickstart 涵蓋。本節只講超出那條路徑之外的東西：

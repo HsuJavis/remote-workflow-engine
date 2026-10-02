@@ -76,4 +76,46 @@ describe('reclaimStaleWorkspaces (REQ-026)', () => {
     expect(reclaimStaleWorkspaces(root, 5_000, () => null, NOW, (n) => n === 'live-wf', assetRoot)).toEqual([]);
     expect(existsSync(join(assetRoot, 'live-wf'))).toBe(true);
   });
+
+  // issue #126 B: a run's own MCP state dir (<workflowFolder>/mcp-state/<runId>/, a SIBLING of
+  // runs/<runId> — mcp-run-state.ts) is reclaimed on the SAME terminal+TTL sweep as its workspace.
+  describe('mcp-state dir cleanup (issue #126 B)', () => {
+    function mkMcpState(name: string, runId: string): string {
+      const dir = join(root, 'workflows', name, 'mcp-state', runId, 'kv');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'memory.jsonl'), '{}');
+      return dir;
+    }
+
+    it('a TERMINAL + TTL-expired run also reclaims its mcp-state dir', () => {
+      const ws = mkRun('wf', 'old-done', 10_000);
+      const state = mkMcpState('wf', 'old-done');
+      const reclaimed = reclaimStaleWorkspaces(root, 5_000, () => 'completed' as RunStatus, NOW);
+      expect(reclaimed).toEqual(['old-done']); // unchanged shape — no second entry for the mcp-state dir
+      expect(existsSync(ws)).toBe(false);
+      expect(existsSync(state)).toBe(false);
+    });
+
+    it('an ACTIVE run\'s mcp-state dir is KEPT, same as its workspace', () => {
+      mkRun('wf', 'running', 10_000);
+      const state = mkMcpState('wf', 'running');
+      reclaimStaleWorkspaces(root, 5_000, () => 'running' as RunStatus, NOW);
+      expect(existsSync(state)).toBe(true);
+    });
+
+    it('a run with no mcp-state dir at all is a no-op for that part — no throw, workspace still reclaimed', () => {
+      const ws = mkRun('wf', 'old-done-no-state', 10_000);
+      expect(() => reclaimStaleWorkspaces(root, 5_000, () => 'completed' as RunStatus, NOW)).not.toThrow();
+      expect(existsSync(ws)).toBe(false);
+    });
+
+    it('two DIFFERENT runs never share or cross-delete each other\'s mcp-state dir', () => {
+      mkRun('wf', 'keep-me', 10_000);
+      const keepState = mkMcpState('wf', 'keep-me');
+      mkRun('wf', 'old-done', 10_000);
+      mkMcpState('wf', 'old-done');
+      reclaimStaleWorkspaces(root, 5_000, (id) => (id === 'old-done' ? 'completed' as RunStatus : 'running' as RunStatus), NOW);
+      expect(existsSync(keepState)).toBe(true);
+    });
+  });
 });

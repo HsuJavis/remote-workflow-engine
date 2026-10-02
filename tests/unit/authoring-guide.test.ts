@@ -824,6 +824,8 @@ describe('buildAuthoringGuide — every error-code-shaped token is a real ERROR_
     'SECRET_HANDLE_INVALID', // same class as SECRET_MISSING, same non-ERROR_CATALOG path.
     'PROBE_FAILED', // mcp-probe.ts's RealMcpProbe stdio-probe non-zero-exit code — same
     // MCP_PROBE_FAILED detail.code path as UNSUPPORTED_TRANSPORT/UNREACHABLE above.
+    'MEMORY_FILE_PATH', // issue #126 B: the real @modelcontextprotocol/server-memory package's own
+    // env var name, used in the ${run:dir} worked example — not an engine error code at all.
   ]);
 
   it('every UPPER_SNAKE token adjacent to "refused"/"warns"/backtick code style resolves to ERROR_CATALOG or the explicit allowlist', () => {

@@ -23,6 +23,7 @@ import { resolveTimeout, wireEffort, UNKNOWN_CAPS, attemptsFor } from './client.
 import { parseModelRef, type Provider } from '../providers.js';
 import { isPathContained } from '../path-containment.js';
 import { resolveConfig, type SecretSource } from '../secret-resolver.js';
+import { resolveRunPlaceholders, mcpStateDir, workflowFolderOfWorkspace } from '../mcp-run-state.js';
 import { buildBashConfinement, readonlyBashRefusal, CLI_SCRATCH_DIR, cliScratchRefusal, sharedCliScratch } from './bash-confinement.js';
 import { prepareReadonlyMountTargets, protectedConfigTarget, sweepPlantedConfig } from './project-config-guard.js';
 import { findProjectMarkerAboveWorkspace, WORKROOT_INSIDE_PROJECT } from '../workroot-guard.js';
@@ -673,13 +674,28 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
    *  surfaces a clear error rather than silently running a tool with no credential or (worse)
    *  smuggling the literal handle through as a value. The throw propagates up as that agent()'s
    *  failure (same shape as an unknown MCP name). */
-  private async _resolveMcpConfigs(workflow: string, names: string[]): Promise<{ configs: Record<string, McpServerConfig>; missing: string[] }> {
+  /** issue #126 B: after `${secret:NAME}` substitution, also resolves `${run:dir}`/`${run:id}`
+   *  (mcp-run-state.ts) against THIS run's own private state dir — `<workflowFolder>/mcp-state/
+   *  <runId>/<server>/`, a SIBLING of the run workspace (never inside it, so it is invisible to
+   *  `workspace_pull`/`workspace_list` and to the run's own confined Bash), derived structurally
+   *  from `workspace` (never threaded as a new field — `workspace` is the one value every caller
+   *  of this method already has). Created 0700 on first use, ONLY when the config actually
+   *  references `${run:dir}` (`usedDir`) — a server that never asks for one never gets a directory.
+   *  `mkdirSync({recursive:true})` is idempotent, so a second agent in the SAME run resolving the
+   *  SAME server reuses the SAME directory without error — "persists across agents within a run,
+   *  never across runs" falls out of the path alone (keyed by runId), no separate bookkeeping. */
+  private async _resolveMcpConfigs(workflow: string, names: string[], runId: string, workspace: string): Promise<{ configs: Record<string, McpServerConfig>; missing: string[] }> {
     if (this._config.resolveMcp === undefined || names.length === 0) return { configs: {}, missing: names };
     const resolved = await this._config.resolveMcp(workflow, names);
+    const workflowFolder = workflowFolderOfWorkspace(workspace);
     const out: Record<string, McpServerConfig> = {};
     for (const [name, config] of Object.entries(resolved.configs)) {
       try {
-        out[name] = (this._config.secretSource !== undefined ? resolveConfig(config, this._config.secretSource) : config) as McpServerConfig;
+        const secretResolved = (this._config.secretSource !== undefined ? resolveConfig(config, this._config.secretSource) : config) as McpServerConfig;
+        const stateDir = mcpStateDir(workflowFolder, runId, name);
+        const { config: runResolved, usedDir } = resolveRunPlaceholders(secretResolved, { id: runId, dir: stateDir });
+        if (usedDir) mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+        out[name] = runResolved as McpServerConfig;
       } catch (err) {
         const code = (err as { code?: unknown }).code;
         if (code === 'SECRET_MISSING' || code === 'SECRET_HANDLE_INVALID') {
@@ -797,7 +813,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     let mcpConfigs: Record<string, McpServerConfig> = {};
     let mcpMissing: string[] = [];
     if (req.workspace !== undefined && req.assets !== undefined) {
-      const mcpResolved = await this._resolveMcpConfigs(req.assets.workflow, req.assets.declared.mcp);
+      const mcpResolved = await this._resolveMcpConfigs(req.assets.workflow, req.assets.declared.mcp, req.runId, req.workspace);
       mcpConfigs = mcpResolved.configs;
       mcpMissing = mcpResolved.missing;
       materialized = await materializeAssets(req.assets.roots, req.workspace, req.assets.declared, async () => mcpResolved);
