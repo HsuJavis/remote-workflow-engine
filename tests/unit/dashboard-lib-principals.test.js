@@ -46,6 +46,18 @@ describe('principalRows(list, lang)', () => {
     expect(principalRows(null, 'en')).toEqual([]);
     expect(principalRows({ principals: 'x' }, 'en')).toEqual([]);
   });
+
+  // Service accounts spec (owner decision 2026-10-03): principals_list now carries kind:'human'|
+  // 'service' — the admin page's row/role table filters 'service' rows OUT (ui/admin.js), since
+  // those are managed exclusively through the "Service accounts" section.
+  it('passes kind through so the caller can filter service accounts out of the role table', () => {
+    const rows = principalRows({ authEnabled: true, principals: [
+      { id: 'root@x', kind: 'human', role: 'admin', source: 'config-locked', firstSeenAt: null, lastSeenAt: null },
+      { id: 'sa:ci-bot', kind: 'service', role: 'user', source: 'service-account', firstSeenAt: null, lastSeenAt: null },
+    ] }, 'en');
+    expect(rows[0].kind).toBe('human');
+    expect(rows[1].kind).toBe('service');
+  });
 });
 
 describe('roleChangeValue(selectValue)', () => {

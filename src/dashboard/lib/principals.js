@@ -72,6 +72,9 @@ export function principalRows(body, lang) {
     const src = t(lang, SOURCE_KEY[p.source] ?? 'admSrc_default');
     return {
       id: String(p.id),
+      // Service accounts spec (owner decision 2026-10-03): 'human' or 'service' — ui/admin.js
+      // filters 'service' rows out of this table (managed in the "Service accounts" section).
+      kind: p.kind,
       role: p.role,
       locked,
       pending: p.role === 'none',

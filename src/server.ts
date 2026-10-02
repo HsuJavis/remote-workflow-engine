@@ -1494,7 +1494,8 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       if (r.status === 'failed') {
         const code = r.code ?? r.error?.code ?? 'INTERNAL_ERROR';
         const http = code === 'FORBIDDEN_ROLE' || code === 'PRINCIPAL_REQUIRED' || code === 'ACCOUNT_PENDING_APPROVAL' ? 403
-          : code === 'ROLE_LOCKED' || code === 'LAST_ADMIN' ? 409
+          : code === 'ROLE_LOCKED' || code === 'LAST_ADMIN' || code === 'SERVICE_ACCOUNT_EXISTS' || code === 'TOO_MANY_SECRETS' ? 409
+          : code === 'SERVICE_ACCOUNT_NOT_FOUND' || code === 'SERVICE_ACCOUNT_SECRET_NOT_FOUND' ? 404
           : code === 'INVALID_ARGUMENT' ? 400 : 500;
         sendJson(res, http, { code, error: r.error?.message ?? code });
         return;
@@ -1524,6 +1525,36 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         try { body = JSON.parse(await readBody(req, 64 * 1024)) as Record<string, unknown>; } catch { sendJson(res, 400, { code: 'INVALID_ARGUMENT', error: 'INVALID_ARGUMENT: body must be JSON {id, limit}' }); return; }
         sendToolOutcome(await callTool(deps, 'principal_set_quota', { id: body['id'], limit: body['limit'] ?? null }, principal));
         return;
+      }
+      sendJson(res, 405, { error: 'Method not allowed' });
+    };
+    // Service accounts spec (owner decision 2026-10-03): the dashboard "Service accounts" section's
+    // backend — the SAME 6 admin-only tools an MCP client calls, same authorize() row, same audit;
+    // the dashboard can never grant what the tool refuses. Same CSRF rule as /api/principals/*.
+    const serveServiceAccountsRoute = async (principal: Principal): Promise<void> => {
+      const deps = buildToolDeps(resolvePublicBaseUrl(req), isRemoteSubmission);
+      const readJsonBody = async (): Promise<Record<string, unknown> | null> => {
+        try { return JSON.parse(await readBody(req, 64 * 1024)) as Record<string, unknown>; } catch { return null; }
+      };
+      if (reqPath === '/api/service-accounts' && req.method === 'GET') {
+        sendToolOutcome(await callTool(deps, 'service_account_list', {}, principal));
+        return;
+      }
+      if (reqPath === '/api/service-accounts' && req.method === 'POST') {
+        if (!sameOriginMutation()) { sendJson(res, 403, { code: 'CSRF_REFUSED', error: 'Forbidden: a state-changing dashboard call needs a same-origin Origin or X-Requested-With header' }); return; }
+        const body = await readJsonBody();
+        if (!body) { sendJson(res, 400, { code: 'INVALID_ARGUMENT', error: 'INVALID_ARGUMENT: body must be JSON {name, role, description?, workflows?, expiresAt?}' }); return; }
+        sendToolOutcome(await callTool(deps, 'service_account_create', body, principal));
+        return;
+      }
+      for (const [suffix, tool] of [['update', 'service_account_update'], ['rotate', 'service_account_rotate_secret'], ['revoke', 'service_account_revoke_secret'], ['delete', 'service_account_delete']] as const) {
+        if (reqPath === `/api/service-accounts/${suffix}` && req.method === 'POST') {
+          if (!sameOriginMutation()) { sendJson(res, 403, { code: 'CSRF_REFUSED', error: 'Forbidden: a state-changing dashboard call needs a same-origin Origin or X-Requested-With header' }); return; }
+          const body = await readJsonBody();
+          if (!body) { sendJson(res, 400, { code: 'INVALID_ARGUMENT', error: 'INVALID_ARGUMENT: body must be JSON' }); return; }
+          sendToolOutcome(await callTool(deps, tool, body, principal));
+          return;
+        }
       }
       sendJson(res, 405, { error: 'Method not allowed' });
     };
@@ -1563,6 +1594,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       }
       if (reqPath === '/api/principals' || reqPath === '/api/principals/role' || reqPath === '/api/principals/quota') {
         servePrincipalsRoute(principal).catch(() => sendJson(res, 500, { error: 'principals route error' }));
+        return;
+      }
+      if (reqPath === '/api/service-accounts' || reqPath.startsWith('/api/service-accounts/')) {
+        serveServiceAccountsRoute(principal).catch(() => sendJson(res, 500, { error: 'service accounts route error' }));
         return;
       }
       // TASK-025 (DES-018): read-only dashboard HTTP API, a distinct transport from /mcp on the

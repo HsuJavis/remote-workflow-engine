@@ -244,6 +244,7 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 ## Authoring rules this engine enforces (refused with this code)
 
 - `NOT_TRIGGER_OWNER` — the caller does not own (did not create) this trigger
+- `WORKFLOW_NOT_ALLOWED` — this service account is restricted to a workflows allowlist (service_account_create/_update) and this workflow is not in it
 - `PARSE_ERROR` — the script body failed to parse as TypeScript
 - `UNKNOWN_MODEL` — the model is not a valid <provider>/<model-id> ref, or (for openrouter/ollama) was not found in the catalog listing — see models_list
 - `SCRIPT_INVALID` — the script violates a sandbox-enforced structural rule
