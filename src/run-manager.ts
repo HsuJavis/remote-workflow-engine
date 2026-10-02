@@ -176,6 +176,24 @@ function paramCodedError(err: ParamErr): Error {
   return Object.assign(codedError(err.code, err.message), { detail: err.detail });
 }
 
+/** v35 continued (issue #107): materializes declared-but-absent `args` keys from `contract.args`'
+ *  own `.default` — the SAME `isRecordArgs` normalization `start()` already applied to its own
+ *  submission before `validateDeclaredArgs` — shared with a nested `workflow()` frame's own
+ *  admission (`_handleWorkflowRequest`) so neither call site re-derives the ternary. Returns the
+ *  value to dispatch/validate (`args`, unchanged for a non-record value — materializing over a
+ *  string/array would spread it into index keys) and, for a plain-record args value only, the
+ *  materialized RECORD (`resolvedArgs`) — `start()` alone folds that into its admission snapshot
+ *  (`effectiveParams.args`, `INV-V35-2`); a nested frame builds no such snapshot and uses only
+ *  `args`. Pure — throws nothing; the caller validates with `validateDeclaredArgs` at its own pinned
+ *  point (overrides-then-args precedence in `start()`; no overrides exist on the nested path). */
+function materializeRunArgs(contract: ParamContract, rawArgs: unknown): { args: unknown; resolvedArgs: Record<string, unknown> | undefined } {
+  const isRecordArgs = rawArgs !== null && typeof rawArgs === 'object' && !Array.isArray(rawArgs);
+  const resolvedArgs = (rawArgs === undefined || rawArgs === null || isRecordArgs)
+    ? materializeArgDefaults((rawArgs ?? {}) as Record<string, unknown>, contract.args)
+    : undefined;
+  return { args: resolvedArgs ?? rawArgs, resolvedArgs };
+}
+
 /** v37 (ARCH-182, DES-263, TASK-258, REQ-218, ADR-086): the admission predicate — pure (no fs, no
  *  db, no clock). `undefined` posture means 「never measured」 ⇒ do not gate, the same
  *  fail-open-for-the-existing-suite convention `ToolDeps` already uses for this field.
@@ -946,12 +964,11 @@ export class RunManager {
     // persists the RESOLVED record, never the caller's bare `null`/omission. A non-record `args`
     // (a caller CAN send `args: "hello"` today — `run_start`'s schema declares no type on it) is
     // passed through untouched: materializing over it would spread a string into index keys.
-    const rawArgs = spec.args;
-    const isRecordArgs = rawArgs !== null && typeof rawArgs === 'object' && !Array.isArray(rawArgs);
-    const resolvedArgs = (rawArgs === undefined || rawArgs === null || isRecordArgs)
-      ? materializeArgDefaults((rawArgs ?? {}) as Record<string, unknown>, contract.args)
-      : undefined;
-    if (resolvedArgs) spec = { ...spec, args: resolvedArgs };
+    // issue #107: materialize-defaults is now the SAME shared helper a nested `workflow()` frame's
+    // own admission calls — see `materializeRunArgs`'s own doc for why only `resolvedArgs` (the
+    // record case) reassigns `spec.args` here.
+    const { args: materializedArgs, resolvedArgs } = materializeRunArgs(contract, spec.args);
+    if (resolvedArgs) spec = { ...spec, args: materializedArgs };
     // v26 (DES-178, ARCH-116, ADR-038, TASK-178) — 2026-09-26 (alias mechanism removed, owner
     // decision 6): fetched ONCE per admission and reused for BOTH the UNKNOWN_MODEL existence check
     // (override rung here, effective-value rung in `_refuseUnadmittableParams` below) AND the
@@ -2069,6 +2086,17 @@ export class RunManager {
     // resolver as `start()`'s (`_refuseUnprovisionedAssets`), checked against the CHILD's own
     // contract/name (never the parent's — a nested workflow's declared assets are scoped to it).
     await this._refuseUnprovisionedAssets(name, childContract);
+    // issue #107: the nested frame's OWN materialize-defaults + declared-args validation — the SAME
+    // door `start()` applies to a top-level submission (`materializeRunArgs` + `validateDeclaredArgs`,
+    // shared, not re-derived), run against the CHILD's own contract (never the parent's — another
+    // workflow's declared args are its own, AUTHORING.md's "nested workflow() black box") and BEFORE
+    // any child run/record exists (the `WorkflowNodeView` push and `nested.run()` below). A caller
+    // script's `workflow(name, args)` is itself untrusted input reaching the CHILD's own prompt —
+    // without this, any bound the child declared (type/enum/min/max) was reachable only via
+    // run_start, never via a sibling workflow composing it (cross-principal prompt injection).
+    const { args: childArgs } = materializeRunArgs(childContract, args);
+    const childArgsResult = validateDeclaredArgs(childContract, childArgs);
+    if (!childArgsResult.ok) throw paramCodedError(childArgsResult);
     const childParams = defaultRunParams(undefined, childContract.agents);
     // Nested-asset-scope fix: this frame's OWN per-label declared skills/mcp + workflow name
     // (REQ-113's nested half) — threaded down to `_handleAgentRequest` exactly like `childParams`
@@ -2150,7 +2178,7 @@ export class RunManager {
     generation.addEventListener('abort', killNested, { once: true });
     let outcome: Awaited<ReturnType<SandboxHost['run']>>;
     try {
-      outcome = await nested.run(`${runId}-nested`, registered.script, args, null);
+      outcome = await nested.run(`${runId}-nested`, registered.script, childArgs, null);
     } finally {
       generation.removeEventListener('abort', killNested);
     }
