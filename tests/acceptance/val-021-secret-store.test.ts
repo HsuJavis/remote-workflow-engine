@@ -27,6 +27,9 @@ import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 const HAS_PROVIDER = !!process.env['OLLAMA_BASE_URL'];
 const REAL_SECRET_VALUE = 'val021-real-secret-value-xyz';
+// issue #128: a SECOND handle, distinct from VAL021 above, so this file's own `.mcp.json`-absence
+// case does not depend on anything the SECRET_MISSING/VAL021 cases already set up.
+const ISSUE128_SECRET_VALUE = 'issue128-canary-secret-abc';
 
 function makeFakeProxyManager(): LiteLLMProxyManager {
   const fakeSpawn = vi.fn(() => (Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn() })) as unknown as ChildProcess);
@@ -50,6 +53,7 @@ beforeAll(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), 'rwe-val021-'));
   // The secret store is loaded at composeConfig() time (loadSecretSourceFromEnv) — set BEFORE it.
   process.env['RWE_SECRET_VAL021'] = REAL_SECRET_VALUE;
+  process.env['RWE_SECRET_ISSUE128'] = ISSUE128_SECRET_VALUE;
   const config = await composeConfig(
     {
       bind: '127.0.0.1', port: 0, workRoot: tmpDir, gateway: 'sdk', assetRoot: join(tmpDir, 'assets'),
@@ -66,6 +70,7 @@ afterAll(async () => {
   await server?.close();
   rmSync(tmpDir, { recursive: true, force: true });
   delete process.env['RWE_SECRET_VAL021'];
+  delete process.env['RWE_SECRET_ISSUE128'];
 });
 
 async function mcpCall(name: string, args: Record<string, unknown> = {}) {
@@ -133,6 +138,53 @@ describe('VAL-021: REQ-018 — a resolved secret never appears on any run-worksp
       }
     }
   });
+});
+
+// issue #128: a declared global MCP server's resolved config used to be REWRITTEN into
+// `<workspace>/.mcp.json` on every dispatch, unredacted — including a `${secret:NAME}` handle's
+// real value, since `_resolveMcpConfigs` substitutes it BEFORE `materializeAssets` ever sees the
+// config. Any principal who could start this run (including role `user` running an author's
+// released workflow) could then `workspace_pull({runId, path:'.mcp.json'})` it straight back out.
+// The fix is "never write the file at all" — `strictMcpConfig:true` means the CLI never needed to
+// read a project `.mcp.json` either (same hermetic seam as the rest of this file: no live model).
+describe('VAL-021 / issue #128: a declared MCP server\'s resolved config (incl. a ${secret:NAME} value) never lands in a workspace-reachable .mcp.json', () => {
+  it('after a completed run, .mcp.json does not exist under the run workspace, workspace_pull/workspace_list show nothing for it, and the secret value is nowhere under the workspace tree', async () => {
+    await mcpCall('workspace_push', {
+      scope: 'global', kind: 'mcp', name: 'issue128-mcp',
+      config: { url: 'https://example.com/mcp', headers: { Authorization: 'Bearer ${secret:ISSUE128}' } },
+    });
+    const run = await runScriptVia(mcpCall, goScript('issue128-mcp'));
+    const runId = run['runId'] as string;
+    for (let i = 0; i < 20; i++) {
+      const s = await mcpCall('run_status', { runId });
+      if (s['status'] === 'completed' || s['status'] === 'failed') break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    expect((await mcpCall('run_status', { runId }))['status']).toBe('completed');
+
+    // Facade-level: a direct pull of the exact path the old code used to write answers NOT_FOUND,
+    // not the file's (former) contents.
+    const pull = await mcpCall('workspace_pull', { runId, path: '.mcp.json' });
+    expect((pull['error'] as { code?: string } | undefined)?.code).toBe('NOT_FOUND');
+
+    // workspace_list (no `kind`/`scope` -> lists this run's workspace files) never names it either.
+    const listed = (await mcpCall('workspace_list', { runId }))['result'] as Array<{ path?: string }> | undefined;
+    expect((listed ?? []).map((e) => e.path)).not.toContain('.mcp.json');
+
+    // Filesystem-level, same walk as the sibling case above: no file under the run's own workspace
+    // tree is named .mcp.json, and none contains the resolved secret value.
+    const runWorkspaceRoot = join(tmpDir, 'workflows');
+    expect(existsSync(runWorkspaceRoot)).toBe(true);
+    const walk = (dir: string): string[] => readdirSync(dir).flatMap((n) => {
+      const p = join(dir, n);
+      return statSync(p).isDirectory() ? walk(p) : [p];
+    });
+    const files = walk(runWorkspaceRoot);
+    expect(files.some((f) => f.endsWith('.mcp.json'))).toBe(false);
+    for (const file of files) {
+      expect(readFileSync(file, 'utf-8')).not.toContain(ISSUE128_SECRET_VALUE);
+    }
+  }, 30000);
 });
 
 describe('VAL-021: REQ-018 — a real resolved secret works end to end with no byte of it in the transcript', () => {

@@ -1052,7 +1052,9 @@ port 直接暴露在公開網路上。**
 > `gateway:"sdk"` 路徑上，一次 `agent()` 呼叫如果同時有 run workspace 和資產資訊，就會用
 > `materializeAssets()` 把**該 agent label 在契約裡宣告的**（`meta.params.agents.<label>.skills`／
 > `.mcp`）skill 展開進該次 run 的 workspace（`.claude/skills/<name>/`，以
-> `settingSources:['project']` 載入），並改寫該 workspace 的 `.mcp.json` + 設定 `options.mcpServers`。
+> `settingSources:['project']` 載入），MCP 設定只經由 `options.mcpServers`（`strictMcpConfig`）交給 CLI——
+> 引擎不會把解析後的 MCP 設定（含已代換的 `${secret:}` 值）寫進 workspace；workspace 裡任何 `.mcp.json`
+> 都會在派發前被清除（issue #128）。
 > 換句話說：**推送的 skill/MCP config 會真的被 agent 載入並執行**——沒被宣告的資產不會被展開，
 > 但「推送」與「被宣告」都在同一個 `author` 手上。引擎自己的 `rwe-` 前綴是保留字
 > （`RESERVED_PREFIX`），防止推送的資產冒充引擎內建的技能。`gateway:"direct-fetch"` 從不帶資產，

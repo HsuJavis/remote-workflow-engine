@@ -88,8 +88,11 @@ function present(p: string): boolean {
  *  (workspace-relative), or throws if something could not be removed — the caller must then refuse to
  *  dispatch rather than start a CLI that would load it. A `.claude` that is a symlink is unlinked
  *  first: the CLI would load settings through it, and the engine would materialize skills through it
- *  to wherever it points. Links are removed as links (`rmSync` never follows them). Engine-owned
- *  entries (`.claude/skills`, `.mcp.json`) are left for the engine's own per-dispatch rewrite.
+ *  to wherever it points. Links are removed as links (`rmSync` never follows them). The one
+ *  engine-owned entry (`.claude/skills`) is left for the engine's own per-dispatch rewrite —
+ *  **issue #128**: `.mcp.json` used to be a second one (rewritten per dispatch, so a planted one
+ *  never survived to be loaded); the engine stopped writing it at all, so it moved into
+ *  `PROJECT_CONFIG_PATHS` (bash-confinement.ts) and is swept like everything else in this loop.
  *
  *  Issue #95: an EMPTY, real (non-symlink) directory at a `PROJECT_CONFIG_PATHS` entry is left alone
  *  — not removed, not reported. Two of those entries (`.claude/agents`, `.claude/commands`) are ALSO

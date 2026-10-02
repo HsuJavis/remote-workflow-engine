@@ -36,20 +36,29 @@ export const MASK_PROVIDER_ENV = false;
  *    inline `!cmd` shell.
  *  - `workflows/`, `routines/`, `scheduled_tasks.json`, `launch.json`: things the CLI runs or
  *    schedules on its own (`launch.json` is a dev-server command the CLI's Write auto-approves).
+ *  - `.mcp.json`: **issue #128** — not a CLI-execution risk (`strictMcpConfig:true` means the CLI
+ *    never LOADS a project `.mcp.json` even when one exists), but a CONFIDENTIALITY one: the engine
+ *    itself never writes this file any more (`materializeAssets`, claude-agent-sdk-client.ts), so
+ *    one appearing here can only be an earlier agent (or Bash, on an unconfined host) planting a
+ *    global server's resolved config — including a `${secret:NAME}` handle's real value — somewhere
+ *    `workspace_pull` can read it back out. Swept like every other entry here, not left for an
+ *    engine rewrite that no longer happens.
  *  NOT here, and why: `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, `.claude/rules/`,
  *  `.claude/output-styles/` are prompt text — they change what the next agent reads, never what it
  *  may do (their `@import` of a file OUTSIDE the project needs a per-project approval the headless
  *  CLI never gives). The engine sweeps these paths before every dispatch (project-config-guard.ts). */
 export const PROJECT_CONFIG_PATHS = [
   '.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/commands',
-  '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/launch.json',
+  '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/launch.json', '.mcp.json',
 ] as const;
 
-/** Project configuration the ENGINE writes (skills materialized per dispatch, `.mcp.json` rewritten
- *  per dispatch — and inert anyway under `strictMcpConfig:true`). An agent may not write them; the
- *  pre-dispatch sweep leaves them alone, because they are the engine's own output. A planted skill is
- *  not exposed (`Options.skills` is an explicit list) and a tampered declared one is re-copied. */
-export const ENGINE_OWNED_CONFIG_PATHS = ['.claude/skills', '.mcp.json'] as const;
+/** Project configuration the ENGINE writes (skills materialized per dispatch). An agent may not
+ *  write it; the pre-dispatch sweep leaves it alone, because it is the engine's own output. A
+ *  planted skill is not exposed (`Options.skills` is an explicit list) and a tampered declared one
+ *  is re-copied. **issue #128**: `.mcp.json` used to be here too (rewritten per dispatch) — it
+ *  moved to `PROJECT_CONFIG_PATHS` above once the engine stopped writing it at all, so a planted one
+ *  is actually removed instead of relying on a rewrite that no longer happens. */
+export const ENGINE_OWNED_CONFIG_PATHS = ['.claude/skills'] as const;
 
 /** Issue #95: workspace-relative paths the Claude CLI's OWN sandbox builder (2.1.199 — `claude
  *  --version`) unconditionally shields from Bash writes, on top of anything THIS module passes via

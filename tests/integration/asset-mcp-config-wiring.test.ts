@@ -6,12 +6,17 @@
 // Registry it redirected to) is ITSELF retired — an mcp config is now pushed DIRECTLY as
 // `workspace_push({kind:'mcp', config})` (a real catalog row, DES-153) and, when an agent DECLARES
 // it (`meta.params.agents.<label>.mcp`), the SDK gateway's `materializeAssets` (DES-154) resolves
-// it and writes a real `.mcp.json` for that dispatch — the opposite of the old "never reaches
-// options.mcpServers" invariant this file used to pin. Rewritten to the v24 contract: the pushed
-// mcp asset DOES reach the real SDK-gateway call once declared, `strictMcpConfig:true` still holds
-// (D-V2V-1, unchanged since v2), and an UNDECLARED push (no `mcp` key on the label) does NOT reach
-// it (DES-154's `missing[]` case, `tests/unit/materialize-assets.test.ts` covers the fake-fs unit
-// shape; this integration case is the real SDK-gateway-call shape TASK-152 restores here).
+// it and threads it straight into `options.mcpServers` for that dispatch — the opposite of the old
+// "never reaches options.mcpServers" invariant this file used to pin. (Issue #128, 2026-10-02:
+// `materializeAssets` used to ALSO rewrite the resolved config into `<workspace>/.mcp.json`; that
+// write was removed as a secret-confidentiality leak — `workspace_pull` could read an admin-pushed
+// server's resolved env straight back out — and `options.mcpServers` was always the real delivery
+// path under `strictMcpConfig:true` regardless, so nothing about the invariant THIS file pins
+// changed.) Rewritten to the v24 contract: the pushed mcp asset DOES reach the real SDK-gateway
+// call once declared, `strictMcpConfig:true` still holds (D-V2V-1, unchanged since v2), and an
+// UNDECLARED push (no `mcp` key on the label) does NOT reach it (DES-154's `missing[]` case,
+// `tests/unit/materialize-assets.test.ts` covers the fake-fs unit shape; this integration case is
+// the real SDK-gateway-call shape TASK-152 restores here).
 //
 // Mock policy (DES-015, integration tier): real `composeConfig()` + real `createServer()` + real
 // HTTP `workspace_push`/`run_start`/`run_status` round trip (no mock of the SUT's own asset
