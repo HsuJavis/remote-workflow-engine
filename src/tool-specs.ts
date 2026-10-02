@@ -387,7 +387,11 @@ export const TOOL_SPECS = [
       'MISSING_BLOBS', 'INVALID_SEED_SPEC', 'CAS_UNAVAILABLE',
     ],
     seeAlso: ['models_list'] as string[],
-    authz: { minRole: 'author', ownership: 'none' } as AuthzRow,
+    // Service accounts spec (owner decision 2026-10-03): a create-shaped tool — no ownership
+    // subject of its own (a NEW name has no owner yet; an EXISTING name's ownership is the
+    // catalog's own NOT_WORKFLOW_OWNER check, downstream of authorize()) — `workflowArg` is what
+    // lets an allowlisted service account be restricted here at all.
+    authz: { minRole: 'author', ownership: 'none', workflowArg: 'name' } as AuthzRow,
     fixture: {
       happy: { name: 'demo', script: FIXTURE_SCRIPT, mermaid: FIXTURE_MERMAID },
       errors: {
@@ -505,7 +509,9 @@ export const TOOL_SPECS = [
     outputSchema: OUT,
     errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'CHANNEL_UNPUBLISHED'],
     seeAlso: [] as string[],
-    authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
+    // Service accounts spec: ownership:'none' (reading metadata needs no ownership) — `workflowArg`
+    // is the only thing that lets an allowlisted service account be restricted here at all.
+    authz: { minRole: 'user', ownership: 'none', workflowArg: 'name' } as AuthzRow,
     fixture: { happy: { name: ref('workflow') }, errors: { WORKFLOW_NOT_FOUND: { name: ABSENT_WORKFLOW } } },
   },
   {
@@ -517,7 +523,8 @@ export const TOOL_SPECS = [
     outputSchema: OUT,
     errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'FORBIDDEN_ROLE'],
     seeAlso: ['workflow_describe'],
-    authz: { minRole: 'author', ownership: 'none' } as AuthzRow,
+    // Service accounts spec: same reasoning as workflow_describe's row just above.
+    authz: { minRole: 'author', ownership: 'none', workflowArg: 'name' } as AuthzRow,
     fixture: {
       happy: { name: ref('workflow') },
       errors: {
@@ -689,7 +696,10 @@ export const TOOL_SPECS = [
     // missing name(s) — push it (workspace_push) then re-run.
     errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'CHANNEL_UNPUBLISHED', 'NOT_RUNNABLE', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'PARAM_LOCKED', 'PARAM_UNKNOWN', 'PARAM_OUT_OF_RANGE', 'UNKNOWN_AGENT_LABEL', 'UNKNOWN_MODEL', 'AGENT_UNDECLARED', 'LEGACY_REREGISTER', 'INVALID_SEED_SPEC', 'SEED_SOURCE_CONFLICT', 'SEEDREF_DISABLED', 'EGRESS_DENIED', 'CAS_UNAVAILABLE', 'MISSING_BLOBS', 'RUN_ADMISSION_LIMIT', 'DISK_LOW', 'CONFINEMENT_UNAVAILABLE', 'MCP_NOT_PROVISIONED', 'SKILL_NOT_PROVISIONED'],
     seeAlso: ['workflow_publish', 'run_status', 'run_result'],
-    authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
+    // Service accounts spec: run_start has no ownership subject of its own (ownership:'none' —
+    // "run any version" vs "release only" is a separate rule inside RunManager.start(), not
+    // authz.ts) — `workflowArg` is what lets an allowlisted service account be restricted here.
+    authz: { minRole: 'user', ownership: 'none', workflowArg: 'name' } as AuthzRow,
     fixture: {
       happy: { name: ref('workflow') },
       errors: {
