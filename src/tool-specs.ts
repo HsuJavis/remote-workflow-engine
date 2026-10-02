@@ -31,8 +31,15 @@ export const ENVELOPE_NOTE =
 export type Role = 'admin' | 'author' | 'user';
 type Ownership = 'none' | 'run' | 'workflow' | 'trigger' | 'asset';
 
+// Service accounts spec (owner decision 2026-10-03), §Authorization: `workflowArg` names the args
+// property holding a workflow name for a row with no ownership subject of its own to key off (every
+// CREATE-shaped tool — workflow_register, run_start, workflow_describe/source — whose row is
+// `ownership:'none'` because there is nothing to own yet, or because reading a workflow's metadata
+// needs no ownership at all). `authz.ts`'s allowlist check reads it for those rows; a row with
+// `ownership:'workflow'`/`'asset'` needs no such field (its own existing subject resolution already
+// names a workflow — see that check's own doc for why).
 export type AuthzRow =
-  | { minRole: Role; ownership: Ownership }
+  | { minRole: Role; ownership: Ownership; workflowArg?: string }
   | { minRole: 'admin' | 'author' | 'user'; ownership: 'run'; adminCrossRead: true };
 
 export type ToolAuthz = AuthzRow | { mode: (args: any) => string; rows: Record<string, AuthzRow> };
