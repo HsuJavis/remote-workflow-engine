@@ -2095,7 +2095,15 @@ export class RunManager {
     // run_start, never via a sibling workflow composing it (cross-principal prompt injection).
     const { args: childArgs } = materializeRunArgs(childContract, args);
     const childArgsResult = validateDeclaredArgs(childContract, childArgs);
-    if (!childArgsResult.ok) throw paramCodedError(childArgsResult);
+    // Review send-back LOW-2: an args refusal never creates a child run/record — same "a refusal
+    // that never dispatched anything must not burn a slot" rule LOW-3 already applies to the
+    // disk-floor check above the counter. The counter is incremented earlier (before `resolve()`,
+    // pinned by run-manager-disk-floor.test.ts's DISK_LOW-before-resolve ordering) so it cannot
+    // simply move below this check; released here instead.
+    if (!childArgsResult.ok) {
+      entry.descendants -= 1;
+      throw paramCodedError(childArgsResult);
+    }
     const childParams = defaultRunParams(undefined, childContract.agents);
     // Nested-asset-scope fix: this frame's OWN per-label declared skills/mcp + workflow name
     // (REQ-113's nested half) — threaded down to `_handleAgentRequest` exactly like `childParams`

@@ -265,6 +265,39 @@ describe('validateUserOverrides() — the per-agent rejection table (v24, DES-14
     expect(r.ok).toBe(true);
   });
 
+  // Review send-back LOW-1 (issue #107 follow-up): a non-record `args` against a contract that
+  // DOES declare args used to throw an uncoded `TypeError` ("Cannot use 'in' operator to search for
+  // '<key>' in <value>") from the bare `key in obj` below — the same crash on both doors (run_start
+  // and a nested workflow() call, which share this one function). A declared contract with no args
+  // at all is unaffected (nothing to check a non-record value against).
+  it('[LOW-1] a string `args` against a contract that declares args is a CODED PARAM_OUT_OF_RANGE, never a TypeError', () => {
+    expect(() => validateDeclaredArgs(CONTRACT, 'just-a-string')).not.toThrow();
+    const r = validateDeclaredArgs(CONTRACT, 'just-a-string');
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('PARAM_OUT_OF_RANGE');
+      expect(r.detail['param']).toBe('args');
+    }
+  });
+
+  it('[LOW-1] a number/array `args` against a declared contract is likewise a coded PARAM_OUT_OF_RANGE', () => {
+    for (const bad of [42, ['a', 'b'], true]) {
+      const r = validateDeclaredArgs(CONTRACT, bad);
+      expect(r.ok, `args=${JSON.stringify(bad)}`).toBe(false);
+      if (!r.ok) expect(r.code).toBe('PARAM_OUT_OF_RANGE');
+    }
+  });
+
+  it('[LOW-1] a non-record `args` against a contract declaring NO args at all is harmless (ok:true — nothing to check it against)', () => {
+    const noArgsContract: ParamContract = { agents: {}, args: {} };
+    expect(validateDeclaredArgs(noArgsContract, 'just-a-string')).toEqual({ ok: true });
+  });
+
+  it('[LOW-1] undefined/null `args` against a declared contract still passes (materialized to {} as before)', () => {
+    expect(validateDeclaredArgs(CONTRACT, undefined)).toEqual({ ok: true });
+    expect(validateDeclaredArgs(CONTRACT, null)).toEqual({ ok: true });
+  });
+
   it('maxEffort ceiling refuses xhigh/max by default (EFFORT_RANK comparison)', () => {
     const r = validateUserOverrides(CONTRACT, { agents: { plan: { effort: 'max' } } }, CATALOG, CEILINGS);
     expect(r.ok).toBe(false);

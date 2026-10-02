@@ -77,6 +77,34 @@ describe('issue #107: nested workflow() applies the CHILD contract\'s args valid
     expect((await mgr.status(runId)).workflowNodes).toEqual([]);
   });
 
+  // Review send-back LOW-1: a non-record args value against a declared contract used to throw an
+  // uncoded TypeError (`key in obj` on a primitive) on BOTH doors that share `validateDeclaredArgs`
+  // — a nested `workflow(name, 'a-string')` call AND a direct `run_start({args:'a-string'})`. Pinned
+  // on both here since the fix lives in the one shared function.
+  it('[LOW-1] a non-record (string) arg via nested workflow() is a coded PARAM_OUT_OF_RANGE, never an uncaught TypeError', async () => {
+    await registerPublished(catalog, 'c107-string-args', `export const meta = { params: { args: { x: { type: 'number' } } } };\nreturn args.x;`);
+    const runId = await startScript(mgr, TRY_WORKFLOW(`workflow('c107-string-args', 'just-a-string')`));
+    expect(await completedValue(mgr, runId)).toEqual({ code: 'PARAM_OUT_OF_RANGE' });
+  });
+
+  it('[LOW-1] a non-record (string) arg via a DIRECT run_start is likewise a coded PARAM_OUT_OF_RANGE, never INTERNAL_ERROR', async () => {
+    await registerPublished(catalog, 'c107-string-args-direct', `export const meta = { params: { args: { x: { type: 'number' } } } };\nreturn args.x;`);
+    await expect(mgr.start({ origin: 'local', name: 'c107-string-args-direct', args: 'just-a-string' })).rejects.toMatchObject({ code: 'PARAM_OUT_OF_RANGE' });
+  });
+
+  // Review send-back LOW-2: a nested frame refused by args validation still incremented
+  // `entry.descendants` BEFORE the check ran (run-manager.ts, the same counter LOW-3's disk-floor
+  // ruling already protects) — a parent that loops/retries a refused workflow() call could exhaust
+  // `maxWorkflowDescendants` on attempts that never created a child run at all.
+  it('[LOW-2] an args-validation refusal does not consume a maxWorkflowDescendants slot', async () => {
+    await registerPublished(catalog, 'c107-slot-refuse', `export const meta = { params: { args: { x: { type: 'number' } } } };\nreturn args.x;`);
+    const runId = await mgr.start({ origin: 'local' }); // ad-hoc no-op top-level run, just to own an entry
+    const handle = (mgr as unknown as { _handleWorkflowRequest: (...a: unknown[]) => Promise<unknown> })._handleWorkflowRequest.bind(mgr);
+    await expect(handle(runId, 'c107-slot-refuse', { x: 'bad' }, '', 0, 1, new Set<string>())).rejects.toMatchObject({ code: 'PARAM_OUT_OF_RANGE' });
+    const entry = (mgr as unknown as { _runs: Map<string, { descendants: number }> })._runs.get(runId)!;
+    expect(entry.descendants).toBe(0);
+  });
+
   it('a value outside the declared enum is refused PARAM_OUT_OF_RANGE', async () => {
     await registerPublished(catalog, 'c107-enum', `export const meta = { params: { args: { mode: { type: 'string', enum: ['a', 'b'] } } } };\nreturn args.mode;`);
     const runId = await startScript(mgr, TRY_WORKFLOW(`workflow('c107-enum', { mode: 'z' })`));
