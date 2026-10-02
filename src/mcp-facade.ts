@@ -1245,7 +1245,7 @@ export class McpFacade {
     return { runId: a.runId, status: stored.status, result: r };
   }
 
-  async workspaceList(a: { runId?: string; workflow?: string; kind?: AssetKind }, _principal: Principal, crossPrincipalRead: boolean, actor: string | null): Promise<ResultEnvelope<ArtifactEntry[] | unknown[]>> {
+  async workspaceList(a: { runId?: string; workflow?: string; kind?: AssetKind; scope?: AssetScope }, _principal: Principal, crossPrincipalRead: boolean, actor: string | null): Promise<ResultEnvelope<ArtifactEntry[] | unknown[]>> {
     if (a.runId) {
       const stored = await this.store.getRun(a.runId);
       if (!stored) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
@@ -1255,6 +1255,24 @@ export class McpFacade {
         ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev) }, { actor, action: 'workspace_list' as AuditAction, runId: a.runId, owner }, doRead)
         : await doRead();
       return { runId: a.runId, status: stored.status, result: files ?? [] };
+    }
+    // issue #109: the GLOBAL-scope discovery branch — role gating (`user`+, `none` refused) lives
+    // entirely in `tool-specs.ts`'s authz row (`global: {minRole:'user', ownership:'none'}`); by the
+    // time control reaches here the caller has already cleared that. `scope:'global'` with a
+    // `workflow` is a self-contradictory request (global assets are engine-wide, not scoped to any
+    // one workflow) — refused clearly rather than silently picking one meaning.
+    if (a.scope === 'global') {
+      if (a.workflow !== undefined) {
+        return { runId: '', status: 'failed', error: { code: 'INVALID_ARGUMENT', message: "INVALID_ARGUMENT: workspace_list scope:'global' does not take a workflow — global assets are engine-wide, not scoped to one workflow" } };
+      }
+      // `kind` is REQUIRED for a global listing — same "an empty list must be a fact, never a
+      // missing-argument's silent stand-in" rule the per-workflow branch below already states
+      // (REQ-118); `a.kind` absent is a malformed request, not "no global assets of no kind".
+      if (!a.kind) {
+        return { runId: '', status: 'failed', error: { code: 'INVALID_ARGUMENT', message: "INVALID_ARGUMENT: workspace_list scope:'global' requires kind:'skill'|'mcp'" } };
+      }
+      const rows = this.assetSync ? await this.assetSync.listGlobal(a.kind) : [];
+      return { runId: '', status: 'completed', result: rows };
     }
     // v24 (integrator, REQ-118): the asset-scope branch used to answer `[]` for a workflow that was
     // never registered, which reads identically to "registered, no assets" — and the row's own

@@ -12,7 +12,7 @@
 // and by tests exercising `isSelfReferential`/`classifyAsset` directly) — TASK-147/148 retire them
 // when the facade is rewritten; they are decoupled from the new `AssetKind` on purpose so neither
 // union constrains the other.
-import { mkdirSync, writeFileSync, chmodSync, rmSync, existsSync, readdirSync, statSync, renameSync, rmdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync, chmodSync, rmSync, existsSync, readdirSync, statSync, renameSync, rmdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { pathVerdict, lexicalVerdict } from './path-verdict.js';
 import { codedError } from './errors.js';
@@ -278,6 +278,14 @@ export interface AssetCatalogRow {
   config?: McpServerConfig; // kind === 'mcp' only
 }
 
+/** issue #109: the safe-to-disclose projection of a GLOBAL-scope row, returned by
+ *  `AssetSyncService.listGlobal()` — NEVER `command`/`args`/`env`/`url`/headers/secret refs/file
+ *  contents, only what a discovery listing needs: the exact name to opt in with, plus a skill's own
+ *  advertised description or an MCP server's transport kind. */
+export type GlobalAssetView =
+  | { kind: 'skill'; name: string; description: string | null }
+  | { kind: 'mcp'; name: string; transport: string | null };
+
 /** Injected catalog port (DES-153) — a pure in-memory/db seam, no fs/tmp roots required to fake it. */
 export interface AssetCatalogPort {
   putAsset(row: AssetCatalogRow): void | Promise<void>;
@@ -340,6 +348,37 @@ export async function resolveMcp(
 const URL_WITH_CREDS_OR_QUERY = /\b(https?:\/\/)(?:[^/\s@]+@)?([^/\s?]+)(\/[^\s?]*)?(\?[^\s]*)?/gi;
 function redactProbeMessage(message: string): string {
   return message.replace(URL_WITH_CREDS_OR_QUERY, (_m, scheme: string, host: string, path = '') => `${scheme}${host}${path}`);
+}
+
+// issue #109: how far a global skill's `description` travels into a discovery listing — bounded so
+// a SKILL.md author cannot turn the ONE field `listGlobal` discloses into an unbounded free-text
+// channel toward every approved principal.
+export const GLOBAL_SKILL_DESCRIPTION_MAX_CHARS = 500;
+const SKILL_FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---/;
+const SKILL_DESCRIPTION_LINE_RE = /^description\s*:\s*(.*)$/i;
+
+/** issue #109: reads the `description:` field out of a global skill's own `SKILL.md` YAML
+ *  frontmatter (the same `---\n...\n---` block every skill fixture in this codebase already
+ *  writes) — `null` when the file is missing, has no frontmatter block, or declares no
+ *  `description`. Never throws: a malformed/missing skill file degrades to "no description", never
+ *  a listing failure. Deliberately dumb (no real YAML parser) — this reads ONE scalar line, not
+ *  nested structure, and a quoted value has its surrounding quotes stripped. */
+function readGlobalSkillDescription(globalRoot: string, name: string): string | null {
+  let md: string;
+  try {
+    md = readFileSync(join(globalRoot, 'skill', name, 'SKILL.md'), 'utf-8');
+  } catch {
+    return null;
+  }
+  const frontmatter = SKILL_FRONTMATTER_RE.exec(md);
+  if (!frontmatter) return null;
+  for (const line of frontmatter[1]!.split(/\r?\n/)) {
+    const m = SKILL_DESCRIPTION_LINE_RE.exec(line);
+    if (!m) continue;
+    const value = m[1]!.trim().replace(/^['"]|['"]$/g, '');
+    return value.length > 0 ? value.slice(0, GLOBAL_SKILL_DESCRIPTION_MAX_CHARS) : null;
+  }
+  return null;
 }
 
 /**
@@ -486,6 +525,21 @@ export class AssetSyncService {
   async list(query: { workflow: string; kind: AssetKind }): Promise<AssetCatalogRow[]> {
     const rows = await this._catalog.listAssets();
     return rows.filter((r) => r.kind === query.kind && (r.scope === 'global' || r.workflow === query.workflow));
+  }
+
+  /** issue #109: the GLOBAL-scope discovery read — before this, no tool enumerated `scope:'global'`
+   *  rows at all, so an author without the exact name already in hand had no way to find an
+   *  admin-pushed skill/MCP server (the only existence oracle was a missing-registration WARNING,
+   *  which requires guessing the name first). Callable by any approved principal (role gating lives
+   *  at the tool layer, mcp-facade.ts/tool-specs.ts — this method itself is role-blind, matching
+   *  `list()` above). Projects EVERY global row of the requested `kind` to the safe subset
+   *  (`GlobalAssetView`) — never the stored `config` object itself, which for `kind:'mcp'` may carry
+   *  `command`/`args`/`env`/a credential-bearing `url`. */
+  async listGlobal(kind: AssetKind): Promise<GlobalAssetView[]> {
+    const rows = (await this._catalog.listAssets()).filter((r) => r.scope === 'global' && r.kind === kind);
+    return kind === 'skill'
+      ? rows.map((r) => ({ kind: 'skill' as const, name: r.name, description: readGlobalSkillDescription(this._globalRoot, r.name) }))
+      : rows.map((r) => ({ kind: 'mcp' as const, name: r.name, transport: typeof r.config?.type === 'string' ? r.config.type : null }));
   }
 
   /** v24 Gate 7.5 (D-10, REQ-113): the WHOLE workflow's asset tree, for `workflow_deregister`.

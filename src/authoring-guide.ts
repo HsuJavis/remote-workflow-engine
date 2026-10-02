@@ -1264,7 +1264,12 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'script declares the name (`meta.params.agents.<label>.skills`/`.mcp`) — existing at global ' +
         "scope never auto-grants it to an agent that doesn't ask for it, and a declared-but-absent " +
         'name (workflow-scoped or global, checked in that order) is refused `SKILL_NOT_PROVISIONED`/' +
-        '`MCP_NOT_PROVISIONED` at admission, not registration.',
+        '`MCP_NOT_PROVISIONED` at admission, not registration. ' +
+        // issue #109: the one-line pointer to the discovery tool — global assets are opt-in by
+        // exact name, so finding that name is the first step; this is where it's discoverable.
+        "Don't know the exact name? `workspace_list({scope:'global', kind:'skill'|'mcp'})` lists " +
+        "every global asset of that kind — name plus (skill) its SKILL.md description or (mcp) its " +
+        'transport type, nothing more.',
     ),
   );
 
