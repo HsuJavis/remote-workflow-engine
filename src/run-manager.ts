@@ -43,7 +43,7 @@ import { AgentExecutor } from './agent-executor.js';
 import { redact, hasSecretMarker } from './secret-resolver.js';
 import type { SecretValueProvider } from './secret-resolver.js';
 import { ResumeCache, MISS, type ResumePlan } from './resume-cache.js';
-import { WorkflowCatalog, canRunResolved, actorFromPrincipal, type Actor } from './workflow-catalog.js';
+import { WorkflowCatalog, actorFromPrincipal, type Actor } from './workflow-catalog.js';
 import { assetRootsFor, defaultAssetRoot, globalAssetRoot, type AssetSyncService } from './asset-sync.js';
 import type { GatewayClient, GatewayConfig } from './gateway/client.js';
 import { LiteLLMGatewayClient } from './gateway/client.js';
@@ -877,21 +877,20 @@ export class RunManager {
       // `resolve()` because a nested call always resolves release regardless of owner, so it has no
       // use for either field). `resolveDetail` internally calls `resolve()` once and keeps what it
       // already fetched — same SQL, not a second query.
-      const registered = await this._catalog.resolveDetail(spec.name, { version: spec.version, channel: spec.channel }); // throws CatalogNotFoundError/typed resolve error — caught by SubmissionValidator pre-run
-      // v38 (issue #100, owner-approved policy): the NON-OWNER version-pin gate — placed FIRST,
-      // immediately after the version/channel selector resolves and BEFORE the registeredRemote
-      // confinement recheck and LEGACY_REREGISTER below, so a non-owner probing a private/legacy/
-      // unconfined-tainted version learns nothing beyond VERSION_NOT_FOUND — the SAME code and
-      // message SHAPE `resolveVersionRequest` itself uses for a genuinely unknown version (Q5:
-      // existence-masking; a hidden non-release version and a real 404 must be indistinguishable).
-      // `canRunResolved` reuses `canMutate`'s own owner/bypass/ownerless notion (Q1/Q2/Q5's explicit
-      // instruction) — an owner, a bypass actor (admin/auth-disabled/loopback-exempt, matching
-      // `workflow_publish`/`workflow_deregister`'s existing bypass), or an ownerless legacy row may
-      // reach ANY version; everyone else only the CURRENT RELEASE.
-      if (!canRunResolved(registered.owner, resolvedActor, registered.version, registered.channels, spec.channel)) {
-        const label = spec.version ?? spec.channel ?? 'release';
-        throw codedError('VERSION_NOT_FOUND', `VERSION_NOT_FOUND: ${label} (workflow '${spec.name}')`);
-      }
+      // v38 (issue #100, owner-approved policy) / issue #108 (2026-10-02, oracle fix): the
+      // NON-OWNER version-pin gate — an owner, a bypass actor (admin/auth-disabled/
+      // loopback-exempt, matching `workflow_publish`/`workflow_deregister`'s existing bypass), or an
+      // ownerless legacy row may reach ANY version; everyone else only the CURRENT RELEASE, masked
+      // as the SAME `VERSION_NOT_FOUND` code+message `resolveVersionRequest` itself uses for a
+      // genuinely unknown version (Q5: existence-masking). This used to be a POST-hoc `canRunResolved`
+      // check run AFTER `resolveDetail` — which meant `resolveDetail` itself (via
+      // `resolveVersionRequest`) could already throw the REAL `CHANNEL_UNPUBLISHED`/
+      // `VERSION_NOT_FOUND` for a non-owner's `beta`/explicit-version ask before the masking gate
+      // ever ran, leaking exactly the "is this non-release thing published" fact Q5 forbids (issue
+      // #108). `resolveForActor` (workflow-catalog.ts) folds the SAME predicate to BEFORE resolution
+      // — the masking decision is made first, using only the owner row + channel pointers, so a
+      // masked request's real code never escapes this call at all.
+      const registered = await this._catalog.resolveForActor(spec.name, { version: spec.version, channel: spec.channel }, resolvedActor); // throws CatalogNotFoundError/typed resolve error — caught by SubmissionValidator pre-run
       // issue #93 item 2: the SECOND admission check — the resolved VERSION's own
       // `registeredRemote`, known only now (after `catalog.resolve()`, so WORKFLOW_NOT_FOUND/
       // VERSION_NOT_FOUND/CHANNEL_UNPUBLISHED above already had priority). RECORDS into

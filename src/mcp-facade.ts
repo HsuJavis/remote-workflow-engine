@@ -10,7 +10,7 @@ import type { RunStore } from './run-store.js';
 import { InMemoryRunStore, TERMINAL } from './run-store.js';
 import { RunManager, DEFAULT_RUN_CONCURRENCY, admissionRefusal, summarizeAgentFailures } from './run-manager.js';
 import { CONFINEMENT_REMEDIATION } from './gateway/confinement-probe.js';
-import { resolveVersionRequest, canRunResolved, canMutate, type WorkflowDetail, type Channel, type VersionSelector, type Actor } from './workflow-catalog.js';
+import { resolveVersionRequest, canMutate, type WorkflowDetail, type Channel, type VersionSelector, type Actor } from './workflow-catalog.js';
 import { SubmissionValidator } from './submission-validator.js';
 // v24 Gate 7.5 (D-3): `toErrEnvelope` is IMPORTED, not re-implemented. This file used to carry a
 // private copy whose envelope had no `see` field at all, and since every `workflow_*` handler
@@ -626,24 +626,23 @@ export class McpFacade {
   async workflowDescribe(a: { name: string; version?: string; channel?: 'beta' | 'release' }, principal: Principal, isRemoteSubmission = false): Promise<Record<string, unknown>> {
     const catalog = this.runManager.catalog;
     const sel: VersionSelector = { version: a.version, channel: a.channel };
+    // v38 (issue #100 Q5, owner-approved policy) / issue #108 (2026-10-02, oracle fix): a non-owner
+    // explicitly asking for a version/channel other than the current release is answered EXACTLY
+    // like an unknown version — `catalogResolveFailure` on a hand-built VERSION_NOT_FOUND, same
+    // code+message shape `resolveVersionRequest` itself uses — so describe never discloses more
+    // about a version a non-owner could not run anyway (mermaid/params/triggers/etc, all built below
+    // this point), NOR whether that forbidden version/channel even exists or is published (issue
+    // #108: `resolveDetail` itself used to throw the REAL `CHANNEL_UNPUBLISHED`/`VERSION_NOT_FOUND`
+    // before a POST-hoc `canRunResolved` gate ever ran — `resolveForActor` folds the SAME predicate
+    // to BEFORE resolution, same `RunManager.start()` fix). `actor` is minted ONCE and reused below
+    // for `viewerIsOwner` (owner follow-up) — a second mint would risk the two falling out of step
+    // under a future `actorFor` change.
+    const actor = actorFor(principal, a, 'bypass');
     let full: WorkflowDetail;
     try {
-      full = await catalog.resolveDetail(a.name, sel);
+      full = await catalog.resolveForActor(a.name, sel, actor);
     } catch (err) {
       return { runId: '', status: 'failed', ...catalogResolveFailure(err, a.name) };
-    }
-    // v38 (issue #100 Q5, owner-approved policy): a non-owner explicitly asking for a version/
-    // channel other than the current release is answered EXACTLY like an unknown version —
-    // `catalogResolveFailure` on a hand-built VERSION_NOT_FOUND, same code+message shape
-    // `resolveVersionRequest` itself uses — so describe never discloses more about a version a
-    // non-owner could not run anyway (mermaid/params/triggers/etc, all built below this point).
-    // Same `canRunResolved`/`actorFor(...,'bypass')` mechanism `RunManager.start()` now gates on.
-    // `actor` is minted ONCE and reused below for `viewerIsOwner` (owner follow-up) — a second mint
-    // would risk the two falling out of step under a future `actorFor` change.
-    const actor = actorFor(principal, a, 'bypass');
-    if (!canRunResolved(full.owner, actor, full.version, full.channels, a.channel)) {
-      const label = a.version ?? a.channel ?? 'release';
-      return { runId: '', status: 'failed', ...catalogResolveFailure(codedError('VERSION_NOT_FOUND', `VERSION_NOT_FOUND: ${label} (workflow '${a.name}')`), a.name) };
     }
     const requested = resolveVersionRequest(sel, full.channels, new Set(full.versions));
     const meta = parseMeta(full.script);
@@ -744,28 +743,24 @@ export class McpFacade {
   /** v24 rename of `workflow_get` (ARCH-091: "the former workflow_get") — owner/admin full,
    *  non-owner `author` gets the masked projection (`scriptWithheld:true, see:'workflow_describe'`). */
   async workflowSource(a: { name: string; version?: string }, principal: Principal): Promise<Record<string, unknown>> {
+    // Independent-verification follow-up (2026-09-28, issue #100 Q5) / issue #108 (2026-10-02,
+    // oracle fix): the SAME masking gate `workflowDescribe`/`RunManager.start()` already apply —
+    // now applied BEFORE resolution (`resolveForActor`, not a post-hoc `canRunResolved` over an
+    // already-resolved row), so a non-owner naming an explicit non-release version by id learns
+    // nothing beyond VERSION_NOT_FOUND — not even whether that version exists, is published, or is
+    // merely not theirs to run (`CHANNEL_UNPUBLISHED` vs `VERSION_NOT_FOUND` was itself a disclosure
+    // before this fix). `workflow_source` has no `channel` selector at all (`requestedChannel` is
+    // always `undefined`), so a bare/default call is unaffected — it always resolves the release
+    // version already, same as before.
     let full: WorkflowDetail;
     try {
-      full = await this.runManager.catalog.resolveDetail(a.name, { version: a.version });
+      full = await this.runManager.catalog.resolveForActor(a.name, { version: a.version }, actorFor(principal, a, 'bypass'));
     } catch (err) {
       if (err instanceof CatalogNotFoundError) {
         return { runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` } };
       }
       const e = toErrEnvelope(err);
       return { runId: '', status: 'failed', code: e.code, error: e };
-    }
-    // Independent-verification follow-up (2026-09-28, issue #100 Q5): the SAME `canRunResolved`
-    // gate `workflowDescribe`/`RunManager.start()` already apply — placed FIRST, before `meta`/
-    // `params` are even parsed off the script, so a non-owner naming an explicit non-release
-    // version by id learns nothing beyond VERSION_NOT_FOUND. Before this gate, the masked branch
-    // below still built `description`/`phases`/`params` from THAT real row — `scriptWithheld:true`
-    // hid the script bytes but not the fact the version existed, which `workflow_describe` already
-    // refused for the identical request. `workflow_source` has no `channel` selector at all
-    // (`requestedChannel` is always `undefined`), so a bare/default call is unaffected — it always
-    // resolves the release version already, same as before.
-    if (!canRunResolved(full.owner, actorFor(principal, a, 'bypass'), full.version, full.channels, undefined)) {
-      const label = a.version ?? 'release';
-      return { runId: '', status: 'failed', ...catalogResolveFailure(codedError('VERSION_NOT_FOUND', `VERSION_NOT_FOUND: ${label} (workflow '${a.name}')`), a.name) };
     }
     const meta = parseMeta(full.script);
     // v39 (owner decision 2026-09-30, Part B): same resolution `workflow_describe` uses — declared
