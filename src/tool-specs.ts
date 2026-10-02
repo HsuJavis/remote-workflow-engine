@@ -728,7 +728,10 @@ export const TOOL_SPECS = [
     description: "Fetch a terminal run's result payload. On a failed run, `result.error` is `{code, message}`. This run's own refusal ledger — never anything lifted from outside this run — is engine-attested; `error.code` alone is not and never has been (a script can set `e.name` before rethrowing to forge any code). The response also carries `meta.usage` (tokens, USD cost, unpriced-call count) and `meta.budgetEnforceable` (which limits can bind, and which reachable models have no known price). If any agent() call inside this run failed or timed out — it still resolved `null` to the script, which still completed normally — `meta.warnings` carries one `{code: 'AGENT_FAILED', message}` entry naming how many; call run_status for the per-agent `agentFailures` detail.",
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
-    errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'NOT_RUN_OWNER', 'NESTING_DEPTH_EXCEEDED', 'NESTING_CYCLE', 'DESCENDANT_CAP_EXCEEDED'],
+    // Service accounts spec: WORKFLOW_NOT_ALLOWED joins its three NESTING_*/DESCENDANT_CAP_EXCEEDED
+    // siblings for the same reason they are here — an uncaught nested workflow() refusal becomes
+    // THIS run's own terminal `result.error`.
+    errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'NOT_RUN_OWNER', 'NESTING_DEPTH_EXCEEDED', 'NESTING_CYCLE', 'DESCENDANT_CAP_EXCEEDED', 'WORKFLOW_NOT_ALLOWED'],
     seeAlso: [] as string[],
     // Gate 6.5+7 round 2 (verifier): `adminCrossRead` was MISSING here while DES-151 states in so
     // many words that "`run_result` is added to the audited set" and `AuditAction` names it. Without
