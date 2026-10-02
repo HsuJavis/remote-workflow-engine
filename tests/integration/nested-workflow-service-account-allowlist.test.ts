@@ -13,8 +13,10 @@
 // Mock policy (integration tier, mirrors nested-workflow-n-level.test.ts IT-026 lineage): real
 // RunManager + real on-disk WorkflowCatalog + real sandbox child processes/IPC, echo AgentSpawner.
 //
-// Red reason: `RunManager` has no `serviceAccountWorkflows` dependency and `_handleWorkflowRequest`
-// never consults one — a nested workflow() call from an sa:-owned run reaches any released name.
+// Red reason (original): `RunManager` had no service-account dependency at all and
+// `_handleWorkflowRequest` consulted none — a nested workflow() call from an sa:-owned run reached
+// any released name. Send-back D1 later renamed/widened that dependency to `serviceAccountStatus`
+// (adding liveness alongside the allowlist) — this file's cases were updated to match, in place.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -56,7 +58,7 @@ describe('nested workflow() respects a service account\'s workflows allowlist (s
     const store = new InMemoryRunStore(CLOCK);
     const mgr = new RunManager({
       store, clock: CLOCK, catalog, spawner: echoSpawner(),
-      serviceAccountWorkflows: (principal) => (principal === 'sa:ci-bot' ? ['allowed-top'] : undefined),
+      serviceAccountStatus: (principal) => (principal === 'sa:ci-bot' ? { live: true, workflows: ['allowed-top'] } : undefined),
     });
 
     const runId = await startScript(
@@ -73,7 +75,7 @@ describe('nested workflow() respects a service account\'s workflows allowlist (s
     const store = new InMemoryRunStore(CLOCK);
     const mgr = new RunManager({
       store, clock: CLOCK, catalog, spawner: echoSpawner(),
-      serviceAccountWorkflows: (principal) => (principal === 'sa:ci-bot' ? ['allowed-top', 'leaf'] : undefined),
+      serviceAccountStatus: (principal) => (principal === 'sa:ci-bot' ? { live: true, workflows: ['allowed-top', 'leaf'] } : undefined),
     });
 
     const runId = await startScript(
@@ -84,14 +86,39 @@ describe('nested workflow() respects a service account\'s workflows allowlist (s
     expect(await completedValue(mgr, runId)).toEqual({ m: 'L' });
   });
 
+  // Send-back D1: the nested-call guard shares the SAME admission helper as start()/resume(), so a
+  // disabled account is refused SERVICE_ACCOUNT_DISABLED here too, before the allowlist is even
+  // consulted — a disabled SA's already-running top-level script cannot keep composing new work via
+  // workflow() once the account goes dark mid-run.
+  it('refuses a nested workflow() call once the sa: principal is disabled mid-run, even inside its own allowlist', async () => {
+    const catalog = new WorkflowCatalog(workRoot, CLOCK);
+    await registerPublished(catalog, 'leaf', `return 'L';`);
+    const store = new InMemoryRunStore(CLOCK);
+    // Live for the top-level start() (so the run actually begins), disabled by the time the
+    // script's OWN nested workflow() call reaches this same admission check — simulates an admin
+    // disabling the account while the run is already in flight.
+    let calls = 0;
+    const mgr = new RunManager({
+      store, clock: CLOCK, catalog, spawner: echoSpawner(),
+      serviceAccountStatus: (principal) => (principal === 'sa:ci-bot' ? { live: (calls++ === 0), workflows: ['allowed-top', 'leaf'] } : undefined),
+    });
+
+    const runId = await startScript(
+      mgr,
+      `try { const m = await workflow('leaf', {}); return { m }; } catch (e) { return { code: e && (e.code || e.name) }; }`,
+      { name: 'allowed-top', principal: 'sa:ci-bot' },
+    );
+    expect(await completedValue(mgr, runId)).toEqual({ code: 'SERVICE_ACCOUNT_DISABLED' });
+  });
+
   it('a human (non sa:) principal is unaffected — no allowlist concept for nested calls today', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
     await registerPublished(catalog, 'leaf', `return 'L';`);
     const store = new InMemoryRunStore(CLOCK);
     const mgr = new RunManager({
       store, clock: CLOCK, catalog, spawner: echoSpawner(),
-      // Mirrors the real contract (PrincipalAdmin.workflowsFor): undefined for a non-`sa:` id.
-      serviceAccountWorkflows: (principal) => (principal.startsWith('sa:') ? ['nothing-matches'] : undefined),
+      // Mirrors the real contract (PrincipalAdmin.serviceAccountStatus): undefined for a non-`sa:` id.
+      serviceAccountStatus: (principal: string) => (principal.startsWith('sa:') ? { live: true, workflows: ['nothing-matches'] } : undefined),
     });
 
     const runId = await startScript(
@@ -102,7 +129,7 @@ describe('nested workflow() respects a service account\'s workflows allowlist (s
     expect(await completedValue(mgr, runId)).toEqual({ m: 'L' });
   });
 
-  it('no serviceAccountWorkflows dependency at all (e.g. every pre-existing RunManager test) never gates anyone', async () => {
+  it('no serviceAccountStatus dependency at all (e.g. every pre-existing RunManager test) never gates anyone', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
     await registerPublished(catalog, 'leaf', `return 'L';`);
     const store = new InMemoryRunStore(CLOCK);

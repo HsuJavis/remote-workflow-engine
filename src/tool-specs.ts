@@ -85,7 +85,10 @@ export type SetupKey =
   // sequence (distinct from service_account_create's OWN happy-fixture name, so the two never
   // collide) — consumed by update/rotate/revoke/delete's happy fixtures.
   | 'serviceAccountName'
-  | 'serviceAccountSecretId';
+  | 'serviceAccountSecretId'
+  // Send-back D2: a name created then immediately deleted by the setup sequence, so service_
+  // account_create's SERVICE_ACCOUNT_NAME_RETIRED fixture has a real tombstone to hit.
+  | 'retiredServiceAccountName';
 
 /** A fixture slot filled from the setup sequence rather than by a literal. Deliberately a tagged
  *  object, not a `'${…}'` string convention: a marker that shares a type with real argument values
@@ -770,10 +773,14 @@ export const TOOL_SPECS = [
     // issue #94 (owner decision): `stopped` is a TRUE terminal state, not resumable — stated here so
     // a caller does not learn it only after an ILLEGAL_TRANSITION.
     description: 'Resume a suspended or interrupted run. A stopped run cannot be resumed — stop is final; use run_suspend instead of run_stop if you may want to continue the run later. ' +
-      "A service account's workflows allowlist is NOT re-checked here: a run already admitted (and any nested workflow() call it already made) keeps the access it was granted at admission time, even if the account's allowlist is narrowed afterward — narrowing takes effect on the NEXT run_start/nested workflow() call, never retroactively on one already in flight.",
+      // Send-back D1 (owner decision 2026-10-03, reversing the original "forward-only" call): a
+      // disabled/expired/deleted service account, or one whose allowlist no longer includes this
+      // run's own workflow, is refused HERE too — not only at a fresh run_start. There is no window
+      // where a suspended/interrupted run outlives its creator's current standing.
+      "A service account's CURRENT liveness and workflows allowlist are re-checked on every resume, not only at the run's original admission: SERVICE_ACCOUNT_DISABLED for a disabled/expired/deleted account, WORKFLOW_NOT_ALLOWED if the allowlist has since narrowed past this run's own workflow. A run already stopped still answers ILLEGAL_TRANSITION first (a run-state fact, never masked by either of those).",
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
-    errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'LEGACY_REREGISTER', 'PARAM_SECRET_UNAVAILABLE', 'CONFINEMENT_UNAVAILABLE', 'DISK_LOW'],
+    errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'LEGACY_REREGISTER', 'PARAM_SECRET_UNAVAILABLE', 'CONFINEMENT_UNAVAILABLE', 'DISK_LOW', 'SERVICE_ACCOUNT_DISABLED', 'WORKFLOW_NOT_ALLOWED'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run' } as AuthzRow,
     fixture: {
@@ -1411,7 +1418,11 @@ export const TOOL_SPECS = [
       'Admin only. List every principal (a Google account email) this engine knows and the role it resolves to NOW. ' +
       'Known = the rwe.config.json `principals` entries, every runtime role override, and everyone who has ever signed in (MCP bearer/refresh token or dashboard session). ' +
       'Returns `{ authEnabled, principals: [{ id, kind, role, source, firstSeenAt, lastSeenAt, updatedBy?, updatedAt?, quota }] }`. ' +
-      "kind is 'human' (a Google account email) or 'service' (an `sa:<name>` service account, service_account_create/_list) — a service account's role/workflows live on its OWN row (service_account_update), never principal_roles: principal_set_role/principal_set_quota refuse an `sa:` id with INVALID_ARGUMENT for the role (quota still applies normally). " +
+      // L7 fix (send-back review): the pre-fix wording read as "both tools refuse an sa: id",
+      // which is wrong — only principal_set_role does (role lives on the account's own row); quota
+      // has no service_account_* equivalent and is a normal per-id override for ANY id, service
+      // account included, with one extra rule send-back D2 added: an sa: id must already exist.
+      "kind is 'human' (a Google account email) or 'service' (an `sa:<name>` service account, service_account_create/_list) — a service account's role/workflows live on its OWN row (service_account_update), never principal_roles. principal_set_role refuses an `sa:` id outright (INVALID_ARGUMENT — points at service_account_update instead). principal_set_quota has NO such restriction: a service account's CAS quota is a normal per-id override exactly like a human's, except an `sa:` id must already exist (SERVICE_ACCOUNT_NOT_FOUND for an unknown or deleted one — unlike a human id, it cannot be pre-provisioned). " +
       'role is admin|author|user|none (admin: everything incl. other principals\' runs and these tools; author: register/publish workflows; user: run published workflows and read their own runs; ' +
       'none: signed in but PENDING APPROVAL — every tool answers ACCOUNT_PENDING_APPROVAL; grant with principal_set_role). ' +
       "source says where the role comes from, in precedence order: 'config-locked' (an admin in rwe.config.json — cannot be changed at runtime), " +
@@ -1456,7 +1467,13 @@ export const TOOL_SPECS = [
     description:
       "Admin only. Set or clear a principal's content-store quota OVERRIDE — the cap on the total size of blobs it may upload (POST /assets/blob, POST /assets/manifest, workspace_push blob mode, engine-fetched seedRef trees). Effective on its very next upload, no restart. " +
       '`limit` = a byte count (integer), a size string ("500MiB", "5GiB", "2GB" — KiB/MiB/GiB/TiB binary, KB/MB/GB/TB decimal), or "unlimited"; null removes the override so the principal falls back to its role default (rwe.config.json casQuota: user 1 GiB, author 5 GiB, admin unlimited unless configured; a pending principal 0). ' +
-      'Lowering a limit below current usage deletes nothing — further uploads are refused QUOTA_EXCEEDED until the principal frees space (workspace_prune_blobs). The id need not have signed in yet. ' +
+      'Lowering a limit below current usage deletes nothing — further uploads are refused QUOTA_EXCEEDED until the principal frees space (workspace_prune_blobs). A human (email) id need not have signed in yet — pre-provisioning is allowed. ' +
+      // L7 fix (send-back review): an `sa:<name>` id has NO such pre-provisioning — it must already
+      // exist (and not be deleted), refused SERVICE_ACCOUNT_NOT_FOUND otherwise (send-back D2: a
+      // quota staged for a name that could never legally be reused anyway would just be dead
+      // weight). This is a DIFFERENT rule from principal_set_role's: quota has no service_account_*
+      // equivalent, so it stays the one normal per-id override a service account's CAS pool uses.
+      "An `sa:<name>` id must already exist (SERVICE_ACCOUNT_NOT_FOUND otherwise, including a deleted name) — unlike a human id, it cannot be pre-provisioned. " +
       'Returns the principal\'s updated entry (same shape as principals_list, incl. quota {usedBytes, limitBytes, source}). Audited like a role change: the override row records updatedBy/updatedAt and the engine logs a principal_quota_changed line.',
     inputSchema: {
       ...schema({
@@ -1466,10 +1483,16 @@ export const TOOL_SPECS = [
       additionalProperties: false,
     },
     outputSchema: OUT,
-    errors: ['INVALID_ARGUMENT', 'FORBIDDEN_ROLE'] as ErrorCode[],
+    errors: ['INVALID_ARGUMENT', 'FORBIDDEN_ROLE', 'SERVICE_ACCOUNT_NOT_FOUND'] as ErrorCode[],
     seeAlso: ['principals_list', 'workspace_prune_blobs'] as string[],
     authz: { minRole: 'admin', ownership: 'none' } as AuthzRow,
-    fixture: { happy: { id: 'fixture-principal@example.com', limit: '2GiB' }, errors: { INVALID_ARGUMENT: { id: 'fixture-principal@example.com', limit: 'plenty' } } },
+    fixture: {
+      happy: { id: 'fixture-principal@example.com', limit: '2GiB' },
+      errors: {
+        INVALID_ARGUMENT: { id: 'fixture-principal@example.com', limit: 'plenty' },
+        SERVICE_ACCOUNT_NOT_FOUND: { id: 'sa:no-such-service-account-fixture', limit: '1GiB' },
+      },
+    },
   },
   // ---- service accounts (6) — owner decision 2026-10-03: non-interactive full-MCP principals.
   // Admin only, ownership:'none' (one admin manages every account centrally — there is no
@@ -1482,7 +1505,13 @@ export const TOOL_SPECS = [
       'Admin only. Create a service account for non-interactive full-MCP access (a CI job, a bot, another service — RFC 6749 client_credentials, POST /token) and return its credentials. ' +
       '`name` must match [a-z0-9][a-z0-9-]{1,40} and be unique — its client_id is `sa:<name>`, which can never collide with a Google account email (an email local-part cannot contain \':\'). ' +
       'role is \'author\' or \'user\' (the SAME role semantics as a human principal) — NEVER \'admin\', refused INVALID_ARGUMENT. ' +
-      '`workflows` (optional) is an allowlist of workflow names: every workflow-scoped tool (run_start, workflow_register/describe/source/publish, workspace_*, schedule_create/webhook_create then binding via workflow_register, run_* on the account\'s own runs) is limited to those names — refused WORKFLOW_NOT_ALLOWED otherwise; workflow_list/run_list filter to it. Omitted/empty = no restriction beyond role. ' +
+      // L6 fix (send-back review): the pre-fix wording over-claimed "run_* on the account's own
+      // runs" and "run_list filters to it" — most run_* tools (run_status/run_result/run_suspend/
+      // run_stop/run_agent_log) take a runId, not a workflow name, and are scoped by OWNERSHIP
+      // (the account's own runs), never re-checked against the allowlist by name; run_list needs no
+      // separate filter for the same reason. The one run_* exception is run_resume (send-back D1):
+      // it DOES re-check both liveness and the allowlist on every resume, not only at admission.
+      '`workflows` (optional) is an allowlist of workflow names: run_start, the workflow_register/describe/source/publish family, workspace_push/list/delete (asset mode), run_resume (re-checked on every resume, not only at the run\'s original admission), and a nested workflow() call from one of the account\'s own runs are all limited to those names — refused WORKFLOW_NOT_ALLOWED otherwise. workflow_list filters its rows to the allowlist. A trigger (schedule/webhook) firing created by this account is checked the SAME way at the moment it fires: a disabled/expired/deleted account or a since-narrowed allowlist refuses the firing, never silently starting it. run_list needs no separate filter — it is already scoped to the account\'s own runs, which can only ever be runs of a workflow the account was allowed to start in the first place. Omitted/empty = no restriction beyond role. ' +
       '`expiresAt` (optional ISO-8601) — omitted = never expires; the account is refused everywhere (SERVICE_ACCOUNT_DISABLED, or invalid_client at /token) once passed, on every subsequent request even for an already-issued bearer. ' +
       'Returns `{ clientId, clientSecret, account }` — clientSecret (`rwe_sa_...`, >=256 bits) is shown ONLY HERE; store it now, it cannot be retrieved again (rotate to get a new one). `account` is the same shape service_account_list shows (secrets carry id/createdAt/expiresAt/lastUsedAt, never a hash or the raw value). Audited: the engine logs a service_account_created line (no secret).',
     inputSchema: {
@@ -1496,7 +1525,7 @@ export const TOOL_SPECS = [
       additionalProperties: false,
     },
     outputSchema: OUT,
-    errors: ['INVALID_ARGUMENT', 'SERVICE_ACCOUNT_EXISTS', 'FORBIDDEN_ROLE'] as ErrorCode[],
+    errors: ['INVALID_ARGUMENT', 'SERVICE_ACCOUNT_EXISTS', 'SERVICE_ACCOUNT_NAME_RETIRED', 'FORBIDDEN_ROLE'] as ErrorCode[],
     seeAlso: ['service_account_list', 'service_account_update', 'service_account_rotate_secret'] as string[],
     authz: { minRole: 'admin', ownership: 'none' } as AuthzRow,
     fixture: {
@@ -1504,6 +1533,9 @@ export const TOOL_SPECS = [
       errors: {
         SERVICE_ACCOUNT_EXISTS: { name: 'v24-fixture-sa', role: 'user' },
         INVALID_ARGUMENT: { name: 'v24-fixture-sa-admin-attempt', role: 'admin' },
+        // Filled by the setup sequence, which creates-then-deletes a throwaway name for this one
+        // fixture — see v24-tool-surface.test.ts's own runSetupSequence.
+        SERVICE_ACCOUNT_NAME_RETIRED: { name: ref('retiredServiceAccountName'), role: 'user' },
       },
     },
   },
@@ -1596,7 +1628,12 @@ export const TOOL_SPECS = [
   {
     name: 'service_account_delete', entity: 'service_account', key: 'name' as const,
     description:
-      'Admin only. Delete a service account and revoke every bearer it currently holds (immediate — no waiting for expiry). Workflows it registered and runs it started are NOT deleted or reassigned — they remain, owned by the now-dead `sa:<name>` id (visible to admin, e.g. via run_list/workflow_list; nobody else can act on them, same as any other ownerless-by-departure resource). Irreversible: a new account with the same name is a DIFFERENT principal with no relationship to the deleted one\'s history. Audited: service_account_deleted.',
+      // D2 fix (send-back review, owner decision: tombstone deleted names): the pre-fix text said
+      // "a new account with the same name is a DIFFERENT principal with no relationship to the
+      // deleted one's history" — false. Ownership everywhere (catalog/runs/webhooks/schedules/CAS
+      // namespace) is the bare string `sa:<name>`, so a re-created account would have SILENTLY
+      // inherited everything. Fixed by retiring the name outright, never by re-issuing it.
+      'Admin only. Delete a service account and revoke every bearer it currently holds (immediate — no waiting for expiry). Workflows it registered and runs it started are NOT deleted or reassigned — they remain, owned by the now-dead `sa:<name>` id (visible to admin, e.g. via run_list/workflow_list; nobody else can act on them, same as any other ownerless-by-departure resource). Irreversible: `name` is RETIRED PERMANENTLY — service_account_create refuses it forever (SERVICE_ACCOUNT_NAME_RETIRED), because `sa:<name>` is also the bare ownership string in the catalog/runs/webhooks/schedules/CAS namespace, and reusing it would silently inherit everything the deleted account ever touched. Pick a different name for a replacement account. Audited: service_account_deleted.',
     inputSchema: { ...schema({ name: { type: 'string' } }, ['name']), additionalProperties: false },
     outputSchema: OUT,
     errors: ['SERVICE_ACCOUNT_NOT_FOUND', 'FORBIDDEN_ROLE'] as ErrorCode[],

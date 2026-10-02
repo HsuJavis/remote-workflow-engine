@@ -48,7 +48,7 @@ export type SetRoleOutcome =
   | { ok: false; code: 'ROLE_LOCKED' | 'LAST_ADMIN' | 'INVALID_ARGUMENT'; reason: string };
 export type SetQuotaOutcome =
   | { ok: true; entry: PrincipalEntry }
-  | { ok: false; code: 'INVALID_ARGUMENT'; reason: string };
+  | { ok: false; code: 'INVALID_ARGUMENT' | 'SERVICE_ACCOUNT_NOT_FOUND'; reason: string };
 
 export class PrincipalAdmin {
   private readonly _store: RoleStore;
@@ -85,6 +85,18 @@ export class PrincipalAdmin {
     if (!isServiceAccountId(id)) return undefined;
     const sa = this._serviceAccounts?.get(serviceAccountName(id));
     return sa?.workflows && sa.workflows.length > 0 ? sa.workflows : undefined;
+  }
+
+  /** Service accounts spec send-back D1: the richer status `RunManager` needs at every admission a
+   *  bearer-less trigger firing (or a nested workflow() call) can reach — `workflowsFor` alone
+   *  cannot distinguish "unrestricted" from "disabled" (both would otherwise look like "nothing to
+   *  check"). `undefined` for a non-`sa:` id (never gates); `{live:false}` for an unknown/disabled/
+   *  expired account; `{live:true, workflows}` otherwise (`workflows` present only when non-empty). */
+  serviceAccountStatus(id: string): { live: boolean; workflows?: string[] } | undefined {
+    if (!isServiceAccountId(id)) return undefined;
+    const live = this._serviceAccounts?.isLive(serviceAccountName(id));
+    if (!live?.live) return { live: false };
+    return { live: true, ...(live.workflows && live.workflows.length > 0 ? { workflows: live.workflows } : {}) };
   }
 
   /** The effective CAS quota for `id`: its override, else its role's default (a pending 'none'
@@ -194,6 +206,14 @@ export class PrincipalAdmin {
    *  updatedBy/updatedAt and a principal_quota_changed line is logged. */
   setQuota(id: string, limit: unknown, actor: string): SetQuotaOutcome {
     if (id === '*') return { ok: false, code: 'INVALID_ARGUMENT', reason: "INVALID_ARGUMENT: '*' has no quota of its own — set casQuota in rwe.config.json for the role defaults" };
+    // Send-back D2: a quota override staged in advance for an sa: id that was never created (or was
+    // deleted) would otherwise sit there ready to apply the moment someone recreates — or could
+    // recreate, if not for the SERVICE_ACCOUNT_NAME_RETIRED tombstone above — that name. Human ids
+    // keep pre-provisioning (no equivalent check): an email can always sign in later; an `sa:` id
+    // cannot "sign in" without first existing.
+    if (isServiceAccountId(id) && !this._serviceAccounts?.get(serviceAccountName(id))) {
+      return { ok: false, code: 'SERVICE_ACCOUNT_NOT_FOUND', reason: `SERVICE_ACCOUNT_NOT_FOUND: no service account named '${serviceAccountName(id)}'` };
+    }
     let value: number | 'unlimited' | null;
     if (limit === null) value = null;
     else {

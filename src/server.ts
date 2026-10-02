@@ -957,7 +957,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // CALLS this function later (on a nested workflow() dispatch), by which point construction has
   // completed (same convention `buildToolDeps`'s own forward reference to `principalAdmin` already
   // relies on).
-  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, modelBook, eventSink, confinementPosture: config?.confinementPosture, probeLookup, diskFloor, serviceAccountWorkflows: (principal) => principalAdmin.workflowsFor(principal) });
+  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, modelBook, eventSink, confinementPosture: config?.confinementPosture, probeLookup, diskFloor, serviceAccountStatus: (principal) => principalAdmin.serviceAccountStatus(principal) });
   // v8 Defer B (REQ-057/058): durable webhook ingress registry, same workRoot convention.
   const webhooks = new WebhookRegistry({ clock, runManager, catalog, dbPath: config?.webhookDbPath ?? join(workRoot, 'webhooks.db') });
   // v22 (DES-113, TASK-108) SHRINK: SubmissionValidatorDeps is now `{catalog}` — the alias/MCP-name/
@@ -1549,6 +1549,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         if (!sameOriginMutation()) { sendJson(res, 403, { code: 'CSRF_REFUSED', error: 'Forbidden: a state-changing dashboard call needs a same-origin Origin or X-Requested-With header' }); return; }
         const body = await readJsonBody();
         if (!body) { sendJson(res, 400, { code: 'INVALID_ARGUMENT', error: 'INVALID_ARGUMENT: body must be JSON {name, role, description?, workflows?, expiresAt?}' }); return; }
+        // Send-back L4: this response carries a raw client_secret (shown once) — same RFC 6749
+        // §5.1 reasoning as POST /token's own no-store headers.
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Pragma', 'no-cache');
         sendToolOutcome(await callTool(deps, 'service_account_create', body, principal));
         return;
       }
@@ -1557,6 +1561,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
           if (!sameOriginMutation()) { sendJson(res, 403, { code: 'CSRF_REFUSED', error: 'Forbidden: a state-changing dashboard call needs a same-origin Origin or X-Requested-With header' }); return; }
           const body = await readJsonBody();
           if (!body) { sendJson(res, 400, { code: 'INVALID_ARGUMENT', error: 'INVALID_ARGUMENT: body must be JSON' }); return; }
+          // Send-back L4: `rotate`'s response also carries a raw client_secret.
+          if (suffix === 'rotate') {
+            res.setHeader('Cache-Control', 'no-store');
+            res.setHeader('Pragma', 'no-cache');
+          }
           sendToolOutcome(await callTool(deps, tool, body, principal));
           return;
         }
