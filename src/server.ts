@@ -1499,7 +1499,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       if (r.status === 'failed') {
         const code = r.code ?? r.error?.code ?? 'INTERNAL_ERROR';
         const http = code === 'FORBIDDEN_ROLE' || code === 'PRINCIPAL_REQUIRED' || code === 'ACCOUNT_PENDING_APPROVAL' ? 403
-          : code === 'ROLE_LOCKED' || code === 'LAST_ADMIN' || code === 'SERVICE_ACCOUNT_EXISTS' || code === 'TOO_MANY_SECRETS' ? 409
+          : code === 'ROLE_LOCKED' || code === 'LAST_ADMIN' || code === 'SERVICE_ACCOUNT_EXISTS' || code === 'SERVICE_ACCOUNT_NAME_RETIRED' || code === 'TOO_MANY_SECRETS' ? 409
           : code === 'SERVICE_ACCOUNT_NOT_FOUND' || code === 'SERVICE_ACCOUNT_SECRET_NOT_FOUND' ? 404
           : code === 'INVALID_ARGUMENT' ? 400 : 500;
         sendJson(res, http, { code, error: r.error?.message ?? code });
