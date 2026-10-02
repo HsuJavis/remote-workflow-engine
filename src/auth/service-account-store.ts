@@ -33,7 +33,7 @@ export interface ServiceAccountRow {
   secrets: ServiceAccountSecretRow[];
 }
 
-export type ServiceAccountErrorCode = 'INVALID_ARGUMENT' | 'SERVICE_ACCOUNT_EXISTS' | 'SERVICE_ACCOUNT_NOT_FOUND' | 'SERVICE_ACCOUNT_SECRET_NOT_FOUND' | 'TOO_MANY_SECRETS';
+export type ServiceAccountErrorCode = 'INVALID_ARGUMENT' | 'SERVICE_ACCOUNT_EXISTS' | 'SERVICE_ACCOUNT_NOT_FOUND' | 'SERVICE_ACCOUNT_SECRET_NOT_FOUND' | 'TOO_MANY_SECRETS' | 'SERVICE_ACCOUNT_NAME_RETIRED';
 export type ServiceAccountOutcome<T> = { ok: true } & T | { ok: false; code: ServiceAccountErrorCode; reason: string };
 
 /** The spec's name grammar: `[a-z0-9][a-z0-9-]{1,40}` (2-41 chars total). */
@@ -107,6 +107,11 @@ export class ServiceAccountStore {
         expires_at INTEGER,
         last_used_at INTEGER
       );
+      CREATE TABLE IF NOT EXISTS deleted_service_accounts (
+        name TEXT PRIMARY KEY,
+        deleted_at INTEGER NOT NULL,
+        deleted_by TEXT NOT NULL
+      );
     `);
   }
 
@@ -138,11 +143,31 @@ export class ServiceAccountStore {
     return null;
   }
 
+  /** Send-back L3: a past `expiresAt` would create/update/rotate an account or secret that is dead
+   *  on arrival, with no warning — refused instead. `null` (explicit "never expires") and
+   *  `undefined` (omitted — create()'s "never expires" default, update()'s "unchanged") are both
+   *  valid and never checked here; only an actual timestamp is validated against the clock. */
+  private _validateFutureExpiresAt(expiresAt: number | null | undefined): string | null {
+    if (expiresAt === null || expiresAt === undefined) return null;
+    if (expiresAt <= this._clock()) {
+      return `INVALID_ARGUMENT: expiresAt must be in the future (got ${new Date(expiresAt).toISOString()})`;
+    }
+    return null;
+  }
+
   create(params: { name: string; description?: string | null; role: ServiceAccountRole; workflows?: string[]; expiresAt?: number | null; createdBy: string }): ServiceAccountOutcome<{ clientId: string; clientSecret: string; account: ServiceAccountRow }> {
     const err = this._validatePatch(params.name, params.role);
     if (err) return { ok: false, code: 'INVALID_ARGUMENT', reason: err };
+    const expiresErr = this._validateFutureExpiresAt(params.expiresAt);
+    if (expiresErr) return { ok: false, code: 'INVALID_ARGUMENT', reason: expiresErr };
     if (this._row(params.name)) {
       return { ok: false, code: 'SERVICE_ACCOUNT_EXISTS', reason: `SERVICE_ACCOUNT_EXISTS: a service account named '${params.name}' already exists` };
+    }
+    // Send-back D2 (owner decision: tombstone deleted names): `sa:<name>` is the bare ownership
+    // string everywhere (catalog/runs/webhooks/schedules/CAS namespace) — re-creating a deleted
+    // name would silently inherit everything the old account ever touched. Retired forever.
+    if (this.isNameRetired(params.name).retired) {
+      return { ok: false, code: 'SERVICE_ACCOUNT_NAME_RETIRED', reason: `SERVICE_ACCOUNT_NAME_RETIRED: '${params.name}' belonged to a deleted service account and can never be reused — pick a different name` };
     }
     const now = this._clock();
     const workflows = params.workflows && params.workflows.length > 0 ? params.workflows : null;
@@ -173,6 +198,8 @@ export class ServiceAccountStore {
     if (!existing) return { ok: false, code: 'SERVICE_ACCOUNT_NOT_FOUND', reason: `SERVICE_ACCOUNT_NOT_FOUND: no service account named '${name}'` };
     const err = this._validatePatch(null, patch.role);
     if (err) return { ok: false, code: 'INVALID_ARGUMENT', reason: err };
+    const expiresErr = this._validateFutureExpiresAt(patch.expiresAt);
+    if (expiresErr) return { ok: false, code: 'INVALID_ARGUMENT', reason: expiresErr };
     const role = patch.role ?? existing.role;
     const workflows = patch.workflows !== undefined ? (patch.workflows && patch.workflows.length > 0 ? patch.workflows : null) : existing.workflows;
     const description = patch.description !== undefined ? patch.description : existing.description;
@@ -189,8 +216,15 @@ export class ServiceAccountStore {
   rotateSecret(name: string, expiresAt: number | undefined, updatedBy: string): ServiceAccountOutcome<{ secretId: string; clientSecret: string }> {
     const existing = this._row(name);
     if (!existing) return { ok: false, code: 'SERVICE_ACCOUNT_NOT_FOUND', reason: `SERVICE_ACCOUNT_NOT_FOUND: no service account named '${name}'` };
-    if (existing.secrets.length >= MAX_ACTIVE_SECRETS) {
-      return { ok: false, code: 'TOO_MANY_SECRETS', reason: `TOO_MANY_SECRETS: '${name}' already has ${MAX_ACTIVE_SECRETS} active secrets — revoke one first (service_account_revoke_secret)` };
+    const expiresErr = this._validateFutureExpiresAt(expiresAt);
+    if (expiresErr) return { ok: false, code: 'INVALID_ARGUMENT', reason: expiresErr };
+    // Send-back L2: an expired secret is already useless (verifyCredentials already excludes it) —
+    // it must not occupy a cap slot forever. Only secrets still live (no expiry, or not yet past
+    // it) count toward MAX_ACTIVE_SECRETS.
+    const now = this._clock();
+    const activeCount = existing.secrets.filter((s) => s.expiresAt === null || s.expiresAt > now).length;
+    if (activeCount >= MAX_ACTIVE_SECRETS) {
+      return { ok: false, code: 'TOO_MANY_SECRETS', reason: `TOO_MANY_SECRETS: '${name}' already has ${MAX_ACTIVE_SECRETS} active (non-expired) secrets — revoke one first (service_account_revoke_secret)` };
     }
     const clientSecret = genSecret(this._csprng);
     const secretId = genSecretId(this._csprng);
@@ -216,9 +250,15 @@ export class ServiceAccountStore {
 
   delete(name: string, deletedBy: string): ServiceAccountOutcome<object> {
     if (!this._row(name)) return { ok: false, code: 'SERVICE_ACCOUNT_NOT_FOUND', reason: `SERVICE_ACCOUNT_NOT_FOUND: no service account named '${name}'` };
+    const now = this._clock();
     this._db.transaction(() => {
       this._db.prepare('DELETE FROM service_account_secrets WHERE name = ?').run(name);
       this._db.prepare('DELETE FROM service_accounts WHERE name = ?').run(name);
+      // Send-back D2: tombstone the name so it can never be re-created (see isNameRetired/create()).
+      this._db.prepare(
+        'INSERT INTO deleted_service_accounts (name, deleted_at, deleted_by) VALUES (?, ?, ?) ' +
+        'ON CONFLICT(name) DO UPDATE SET deleted_at = excluded.deleted_at, deleted_by = excluded.deleted_by'
+      ).run(name, now, deletedBy);
     })();
     // eslint-disable-next-line no-console
     console.log(JSON.stringify({ event: 'service_account_deleted', name, by: deletedBy }));
@@ -261,5 +301,13 @@ export class ServiceAccountStore {
     const row = this._row(name);
     if (!row || row.disabled || (row.expiresAt !== null && row.expiresAt <= this._clock())) return { live: false };
     return { live: true, role: row.role, workflows: row.workflows };
+  }
+
+  /** Send-back D2: whether `name` was ever deleted — `create()`'s own gate, exposed for callers
+   *  (e.g. an admin UI wanting to explain a SERVICE_ACCOUNT_NAME_RETIRED refusal) that want the
+   *  who/when without provoking the refusal themselves. */
+  isNameRetired(name: string): { retired: true; deletedAt: number; deletedBy: string } | { retired: false } {
+    const row = this._db.prepare('SELECT deleted_at, deleted_by FROM deleted_service_accounts WHERE name = ?').get(name) as { deleted_at: number; deleted_by: string } | undefined;
+    return row ? { retired: true, deletedAt: row.deleted_at, deletedBy: row.deleted_by } : { retired: false };
   }
 }

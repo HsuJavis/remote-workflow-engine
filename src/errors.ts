@@ -216,6 +216,10 @@ export const ERROR_CATALOG = {
   // Service accounts (owner decision 2026-10-03): the 6 service_account_* admin tools, and the
   // /token client_credentials grant's per-request re-check of an already-issued bearer.
   SERVICE_ACCOUNT_EXISTS: { see: null, hint: 'a service account with this name already exists' },
+  // Send-back D2 (owner decision: tombstone deleted names): `sa:<name>` is also the catalog/run/
+  // webhook/schedule/CAS-namespace ownership string, so re-creating a deleted name would silently
+  // inherit everything the old account ever touched. A deleted name is retired forever.
+  SERVICE_ACCOUNT_NAME_RETIRED: { see: null, hint: 'this name belonged to a deleted service account and can never be reused (it would inherit the old account\'s workflows/runs/webhooks/CAS pool) — pick a different name' },
   SERVICE_ACCOUNT_NOT_FOUND: { see: null, hint: 'no service account is registered under this name' },
   SERVICE_ACCOUNT_SECRET_NOT_FOUND: { see: null, hint: 'this service account has no secret with that id' },
   TOO_MANY_SECRETS: { see: null, hint: 'a service account may hold at most 2 active secrets (rotation overlap) — revoke one before rotating again' },

@@ -222,6 +222,101 @@ describe('ServiceAccountStore.delete', () => {
   });
 });
 
+// Send-back D2 (MEDIUM-HIGH, owner decision: tombstone deleted names): `sa:<name>` is the bare
+// ownership string in the catalog/runs/webhooks/schedules/CAS namespace/known-principals ledger —
+// re-creating a deleted name would silently inherit everything the old account ever touched.
+describe('ServiceAccountStore tombstoning deleted names (send-back D2)', () => {
+  it('delete() records a tombstone; create() with the same name is refused SERVICE_ACCOUNT_NAME_RETIRED', () => {
+    const { store } = makeStore();
+    store.create({ name: 'ci-bot', role: 'user', createdBy: 'x' });
+    store.delete('ci-bot', 'admin@x.com');
+    const out = store.create({ name: 'ci-bot', role: 'user', createdBy: 'admin@x.com' });
+    expect(out.ok).toBe(false);
+    if (out.ok) return;
+    expect(out.code).toBe('SERVICE_ACCOUNT_NAME_RETIRED');
+  });
+
+  it('a name that was never created (no tombstone) still creates normally', () => {
+    const { store } = makeStore();
+    const out = store.create({ name: 'never-used', role: 'user', createdBy: 'x' });
+    expect(out.ok).toBe(true);
+  });
+
+  it('isNameRetired() reports the tombstone with who/when', () => {
+    const { store, setNow } = makeStore();
+    store.create({ name: 'ci-bot', role: 'user', createdBy: 'x' });
+    setNow(BASE_MS + DAY_MS);
+    store.delete('ci-bot', 'admin@x.com');
+    const t = store.isNameRetired('ci-bot');
+    expect(t).toMatchObject({ retired: true, deletedBy: 'admin@x.com', deletedAt: BASE_MS + DAY_MS });
+  });
+
+  it('isNameRetired() reports false for a name never deleted', () => {
+    const { store } = makeStore();
+    expect(store.isNameRetired('never-used')).toEqual({ retired: false });
+  });
+});
+
+// Send-back L2 (MEDIUM): an expired secret must not occupy a cap slot forever.
+describe('ServiceAccountStore.rotateSecret excludes expired secrets from the 2-secret cap (send-back L2)', () => {
+  it('a rotate whose only other secret is EXPIRED succeeds (does not count toward the cap)', () => {
+    const { store, setNow } = makeStore();
+    const created = store.create({ name: 'ci-bot', role: 'user', expiresAt: BASE_MS + 1000, createdBy: 'x' });
+    if (!created.ok) throw new Error('setup');
+    setNow(BASE_MS + 2000); // the create-time secret is now expired
+    const rotated = store.rotateSecret('ci-bot', undefined, 'admin@x.com');
+    expect(rotated.ok).toBe(true);
+  });
+
+  it('TOO_MANY_SECRETS still fires with 2 genuinely active secrets, and the message says "active (non-expired)"', () => {
+    const { store } = makeStore();
+    store.create({ name: 'ci-bot', role: 'user', createdBy: 'x' });
+    store.rotateSecret('ci-bot', undefined, 'admin@x.com');
+    const out = store.rotateSecret('ci-bot', undefined, 'admin@x.com');
+    expect(out.ok).toBe(false);
+    if (out.ok) return;
+    expect(out.code).toBe('TOO_MANY_SECRETS');
+    expect(out.reason).toMatch(/active \(non-expired\)/);
+  });
+});
+
+// Send-back L3 (LOW): a past expiresAt creates/updates/rotates something dead on arrival.
+describe('ServiceAccountStore refuses a past expiresAt on create/update/rotateSecret (send-back L3)', () => {
+  it('create() refuses a past expiresAt', () => {
+    const { store } = makeStore();
+    const out = store.create({ name: 'exp-bot', role: 'user', expiresAt: BASE_MS - 1000, createdBy: 'x' });
+    expect(out.ok).toBe(false);
+    if (out.ok) return;
+    expect(out.code).toBe('INVALID_ARGUMENT');
+    expect(out.reason).toMatch(/future/);
+  });
+
+  it('create() accepts a future expiresAt and omitted expiresAt (never expires)', () => {
+    const { store } = makeStore();
+    expect(store.create({ name: 'future-bot', role: 'user', expiresAt: BASE_MS + DAY_MS, createdBy: 'x' }).ok).toBe(true);
+    expect(store.create({ name: 'forever-bot', role: 'user', createdBy: 'x' }).ok).toBe(true);
+  });
+
+  it('update() refuses a past expiresAt but accepts null (clear) and a future one', () => {
+    const { store } = makeStore();
+    store.create({ name: 'ci-bot', role: 'user', createdBy: 'x' });
+    const past = store.update('ci-bot', { expiresAt: BASE_MS - 1000 }, 'admin@x.com');
+    expect(past.ok).toBe(false);
+    if (!past.ok) expect(past.reason).toMatch(/future/);
+    expect(store.update('ci-bot', { expiresAt: null }, 'admin@x.com').ok).toBe(true);
+    expect(store.update('ci-bot', { expiresAt: BASE_MS + DAY_MS }, 'admin@x.com').ok).toBe(true);
+  });
+
+  it('rotateSecret() refuses a past expiresAt but accepts an omitted one', () => {
+    const { store } = makeStore();
+    store.create({ name: 'ci-bot', role: 'user', createdBy: 'x' });
+    const past = store.rotateSecret('ci-bot', BASE_MS - 1000, 'admin@x.com');
+    expect(past.ok).toBe(false);
+    if (!past.ok) expect(past.reason).toMatch(/future/);
+    expect(store.rotateSecret('ci-bot', undefined, 'admin@x.com').ok).toBe(true);
+  });
+});
+
 describe('ServiceAccountStore.verifyCredentials (constant-time, no oracle)', () => {
   it('returns the live row for a correct id+secret', () => {
     const { store } = makeStore();

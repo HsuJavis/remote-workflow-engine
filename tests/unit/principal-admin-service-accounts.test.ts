@@ -99,4 +99,25 @@ describe('PrincipalAdmin — service account awareness (service accounts spec §
     if (!out.ok) return;
     expect(out.entry.quota.limitBytes).toBe(5 * 1024 ** 3);
   });
+
+  // Send-back D2: a quota staged for a never-created (or deleted) sa: id would otherwise sit ready
+  // to apply the moment that name could be reused — closed alongside the SERVICE_ACCOUNT_NAME_
+  // RETIRED tombstone (service-account-store.test.ts), here for the id that never existed at all.
+  it('setQuota refuses an sa: id that was never created', () => {
+    const { admin } = setup();
+    const out = admin.setQuota('sa:never-existed', '5GiB', 'root@x.com');
+    expect(out.ok).toBe(false);
+    if (out.ok) return;
+    expect(out.code).toBe('SERVICE_ACCOUNT_NOT_FOUND');
+  });
+
+  it('setQuota refuses an sa: id that was deleted', () => {
+    const { admin, serviceAccounts } = setup();
+    serviceAccounts.create({ name: 'ci-bot', role: 'user', createdBy: 'root@x.com' });
+    serviceAccounts.delete('ci-bot', 'root@x.com');
+    const out = admin.setQuota('sa:ci-bot', '5GiB', 'root@x.com');
+    expect(out.ok).toBe(false);
+    if (out.ok) return;
+    expect(out.code).toBe('SERVICE_ACCOUNT_NOT_FOUND');
+  });
 });
