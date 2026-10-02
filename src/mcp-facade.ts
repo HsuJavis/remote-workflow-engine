@@ -31,6 +31,7 @@ import type { CasStore } from './cas-store.js';
 import { casNamespaceFor } from './cas-store.js';
 import type { QuotaView } from './auth/principal-admin.js';
 import type { AssetSyncService, AssetKind, AssetScope } from './asset-sync.js';
+import { mcpStateRunDir, workflowFolderOfWorkspace } from './mcp-run-state.js';
 
 // v21 (DES-103/DES-104): the engine ceilings bound the read surfaces (workflow_source/list) at read
 // time — TASK-100 wires the live values from ServerConfig via McpFacadeDeps.ceilings (server.ts);
@@ -1358,6 +1359,19 @@ export class McpFacade {
         const existed = !!workspace && existsSync(workspace);
         if (workspace && existed) {
           try { rmSync(workspace, { recursive: true, force: true }); } catch { /* already gone — idempotent */ }
+        }
+        // Review v035 M-1: a purge used to delete only `runs/<runId>`, leaving the run's own
+        // MCP state dir (`mcp-run-state.ts`'s `mcpStateRunDir` — a SIBLING of the workspace,
+        // never inside it, so the `rmSync` above never reaches it) on disk forever — the one
+        // run-deletion path `workspace-gc.ts`'s terminal+TTL sweep can never catch, because
+        // that sweep only ever finds a run's mcp-state dir by walking `runs/<runId>`, and this
+        // purge has already made that lookup come up empty. Removed here too, independently
+        // try/catch'd (same "no mcp-state dir at all" no-op as the GC's own cleanup) so a run
+        // that declared no stateful MCP server is unaffected. Nested child workflows share the
+        // PARENT run's runId/workspace (mcp-run-state.ts's own doc), so this single dir purge
+        // already covers a child's state too — there is no separate child-scoped dir to miss.
+        if (workspace) {
+          try { rmSync(mcpStateRunDir(workflowFolderOfWorkspace(workspace), a.runId), { recursive: true, force: true }); } catch { /* no mcp-state dir for this run — nothing to purge */ }
         }
         return { runId: a.runId, status: 'completed', result: { purged: existed } };
       });

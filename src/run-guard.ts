@@ -31,15 +31,15 @@ export function priceCall(tokens: Tokens, rates: FourRates | null): number | nul
  *  run-manager.ts) applies to records, which is why the two agree. Nothing here ENFORCES that; the
  *  lock is IT-156's third case, which deep-equals both folds over one run containing a
  *  terminally-failed call (v26 R-1 is what a comment promising agreement was worth):
- *   - **tokens / costUSD / unpricedCalls** count only on a usage event carrying `tokens`, i.e. a
- *     `done` call (DES-180: "a failed call carries no usage and moves no counter"). `unpriced`
- *     follows the SAME rule `deriveAgentRecords` (run-store.ts) applies to its `done` branch —
- *     absent means "pre-v26 event", read as unpriced, never as free. The live fold spells this
- *     `r.state === 'done'`; the two spellings are ONE rule, because a `tokens` field on a usage
- *     event is exactly what makes `deriveAgentRecords` derive `state: 'done'` (and `capture()`
- *     writes `tokens`/`costUSD`/`unpriced` together, unconditionally, on that one event) —
- *     DES-183's "`unpricedCalls` follows ONE rule … applied by the guard live and by `foldUsage`
- *     at rest".
+ *   - **tokens / costUSD / unpricedCalls** count on any usage event carrying a `tokens` field — this
+ *     is NO LONGER "a `done` call" alone: issue #127 made a FAILED (aborted/timed-out/terminal-error)
+ *     call's usage event carry a real lower-bound `tokens` figure too (the gateway's retry-fold), and
+ *     it counts here exactly like a done call's. `done` vs `failed` is a SEPARATE discriminator —
+ *     `deriveAgentRecords` (run-store.ts) keys `state` on whether the event's `reason` field is
+ *     present (one field exactly ONE of `capture()`'s two branches ever writes), orthogonal to
+ *     whether `tokens` is present. `unpriced` follows the SAME tokens-presence rule
+ *     `deriveAgentRecords` applies on either branch — absent means "pre-v26 event", read as
+ *     unpriced, never as free.
  *   - **unmappedMessages** counts on EVERY usage event, tokens or not — v26 R-1: the failed branch
  *     emits `unmapped` with no `tokens` (M-2), and the live fold counts `r.unmapped` on records of
  *     every state, so gating this column on `tokens` is precisely how the two folds disagreed on a

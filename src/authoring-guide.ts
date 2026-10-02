@@ -994,6 +994,10 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'true` marks that figure as a LOWER BOUND — the deduped sum of what streamed in before the ' +
         'cutoff, not the provider\'s own finalized total (a terminal provider error that DID report ' +
         'its own total is NOT marked partial — only a genuine abort/timeout/mid-stream cutoff is). ' +
+        'On a `partial` figure, treat `output` as the column most likely to be a severe ' +
+        'underestimate (the per-turn streamed snapshot it is built from only reaches a turn\'s true ' +
+        '`output_tokens` on that turn\'s own final frame, which a cut-short call\'s in-flight turn ' +
+        'never reaches) — `input`/cache columns track the eventual finalized total closely. ' +
         'This figure is charged against `budget` exactly like a completed call\'s, so a repeated ' +
         'suspend/resume cycle of a usage-heavy agent now counts toward, and can trip, a token or ' +
         'USD limit even though every individual attempt was interrupted. Separately: resuming a ' +

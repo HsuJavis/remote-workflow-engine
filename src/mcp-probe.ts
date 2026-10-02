@@ -90,14 +90,17 @@ export class RealMcpProbe implements McpProbe {
    *  dir is probe-only scratch — never the real per-run state dir a dispatch later creates — and
    *  is removed again once the probe settles. */
   private async _probeStdioConfig(cfg: McpServerConfig): Promise<McpProbeResult> {
+    // review v035 L-3: resolve BOTH `${run:dir}`/`${run:id}` in args AND env unconditionally — the
+    // old `else if (cfg.env !== undefined)` branch meant a config with `${run:id}` in `args` but no
+    // `env` and no `${run:dir}` was probed with the literal, unresolved placeholder text. This first
+    // pass (against `dir: ''`) is always taken; only when it reports `${run:dir}` actually appeared
+    // somewhere is a real disposable temp dir created and a second resolution pass run against it.
     const dryRun = resolveRunPlaceholders(cfg, { id: 'probe', dir: '' });
     let probeDir: string | undefined;
-    let resolved = cfg;
+    let resolved = dryRun.config as McpServerConfig;
     if (dryRun.usedDir) {
       probeDir = mkdtempSync(join(tmpdir(), 'rwe-mcp-probe-'));
       resolved = resolveRunPlaceholders(cfg, { id: 'probe', dir: probeDir }).config as McpServerConfig;
-    } else if (cfg.env !== undefined) {
-      resolved = resolveRunPlaceholders(cfg, { id: 'probe', dir: '' }).config as McpServerConfig;
     }
     try {
       return await this._probeStdio(resolved.command!, resolved.args ?? [], resolved.env);

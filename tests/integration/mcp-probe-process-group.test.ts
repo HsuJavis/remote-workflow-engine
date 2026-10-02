@@ -104,4 +104,26 @@ describe('RealMcpProbe — ${run:dir} resolution at push time (issue #126 B)', (
     const result = await probe.probe({ type: 'stdio', command: 'npx', args: ['-y', 'fake-pkg'] });
     expect(result).toEqual({ ok: true });
   }, 10000);
+
+  // review v035 L-3: a config with `${run:id}` in `args` but NO `env` and NO `${run:dir}` used to be
+  // probed with the LITERAL `${run:id}` text — `_probeStdioConfig` only resolved placeholders when
+  // `${run:dir}` appeared (to create a probe temp dir) or `env` was present (an `else if` branch),
+  // leaving an args-only `${run:id}` config unresolved. Fixed: both placeholders are resolved in
+  // args and env unconditionally at probe time.
+  it('L-3: resolves ${run:id} in args even with no env and no ${run:dir} (previously left as the literal text)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-pidfile-'));
+    const pidFile = join(dir, 'grandchild.pid');
+    const argsFile = join(dir, 'args.txt');
+    binDir = mkdtempSync(join(tmpdir(), 'rwe-fake-npx-'));
+    const script = join(binDir, 'npx');
+    writeFileSync(script, `#!/bin/sh\nsleep 100 &\necho $! > "${pidFile}"\necho "$@" > "${argsFile}"\nexit 0\n`);
+    chmodSync(script, 0o755);
+    process.env['PATH'] = `${binDir}:${process.env['PATH']}`;
+    const probe = new RealMcpProbe();
+    const result = await probe.probe({ type: 'stdio', command: 'npx', args: ['-y', 'fake-pkg', '--session=${run:id}'] });
+    expect(result.ok).toBe(true);
+    await new Promise((r) => setTimeout(r, 200));
+    const receivedArgs = readFileSync(argsFile, 'utf-8').trim();
+    expect(receivedArgs).toBe('-y fake-pkg --session=probe');
+  }, 10000);
 });

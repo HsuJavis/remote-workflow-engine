@@ -3,7 +3,7 @@
 // AND older than the TTL — never an active/suspended/queued run, never a runId unknown to the store
 // (a snapshot lookup miss => keep). `statusOf`/`nowMs` are injected so this is unit-testable without
 // wall-clock or a live store.
-import { readdirSync, statSync, rmSync } from 'node:fs';
+import { readdirSync, statSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { defaultAssetRoot } from './asset-sync.js';
 import { mcpStateRunDir } from './mcp-run-state.js';
@@ -45,11 +45,12 @@ export function reclaimStaleWorkspaces(
   }
   for (const name of names) {
     const runsDir = join(wfRoot, name, 'runs');
-    let runIds: string[];
+    const mcpStateDirPath = join(wfRoot, name, 'mcp-state');
+    let runIds: string[] = [];
     try {
       runIds = readdirSync(runsDir);
     } catch {
-      continue;
+      runIds = []; // no runs/ dir for this workflow — fall through to the orphan mcp-state sweep below
     }
     for (const runId of runIds) {
       const dir = join(runsDir, runId);
@@ -81,6 +82,32 @@ export function reclaimStaleWorkspaces(
       } catch {
         /* no mcp-state dir for this run (the common case — most runs declare no stateful MCP
            server), or raced/permission — either way, nothing to report and nothing to retry for */
+      }
+    }
+    // review v035 M-1 part 2: the TTL loop above only ever reclaims a run's mcp-state dir as a
+    // SIDE EFFECT of iterating `runs/<runId>` — once something else has ALREADY removed
+    // `runs/<runId>` (`workspace_purge`, mcp-facade.ts, terminal-gated the same as this sweep) that
+    // runId is no longer in `runIds` above, so its mcp-state dir would be orphaned forever. This
+    // walks `mcp-state/` itself and reclaims any `<runId>` whose `runs/<runId>` sibling is ALREADY
+    // gone — independent of the TTL (there is nothing left to age out: the workspace is gone). Never
+    // deletes a runId the TTL loop above still owns (its `runs/<runId>` sibling still exists), and
+    // never deletes one the store reports as still live — nothing in this engine deletes
+    // `runs/<runId>` while a run is live, but a defense-in-depth re-check costs nothing here.
+    let stateRunIds: string[] = [];
+    try {
+      stateRunIds = readdirSync(mcpStateDirPath);
+    } catch {
+      continue; // no mcp-state dir for this workflow at all
+    }
+    for (const runId of stateRunIds) {
+      if (existsSync(join(runsDir, runId))) continue; // still has a runs/<runId> sibling — the TTL loop above owns it
+      const status = statusOf(runId);
+      if (status !== null && !TERMINAL.has(status)) continue; // defense-in-depth: never touch a live run
+      try {
+        rmSync(join(mcpStateDirPath, runId), { recursive: true, force: true });
+        reclaimed.push(`mcp-state/${runId}`);
+      } catch {
+        /* raced/permission — skip, try next sweep */
       }
     }
   }

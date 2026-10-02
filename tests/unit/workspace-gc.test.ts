@@ -117,5 +117,39 @@ describe('reclaimStaleWorkspaces (REQ-026)', () => {
       reclaimStaleWorkspaces(root, 5_000, (id) => (id === 'old-done' ? 'completed' as RunStatus : 'running' as RunStatus), NOW);
       expect(existsSync(keepState)).toBe(true);
     });
+
+    // review v035 M-1 part 2: the loop above only ever finds a run's mcp-state dir by walking
+    // `runs/<runId>` — once something else has ALREADY removed `runs/<runId>` (e.g. `workspace_purge`,
+    // mcp-facade.ts, which is terminal-gated the same as this GC) the above loop never iterates that
+    // runId again, so its mcp-state dir would be orphaned forever. This sweep walks `mcp-state/`
+    // itself and reclaims any `<runId>` whose `runs/<runId>` sibling is already gone — independent of
+    // the TTL (the workspace is already gone, so there's nothing left to age out).
+    describe('orphan mcp-state sweep — runs/<runId> already gone (review v035 M-1 part 2)', () => {
+      it('a mcp-state dir whose runs/<runId> no longer exists is reclaimed even though the TTL loop never iterates it', () => {
+        const state = mkMcpState('wf', 'already-purged');
+        const reclaimed = reclaimStaleWorkspaces(root, 5_000, () => 'completed' as RunStatus, NOW);
+        expect(reclaimed).toContain('mcp-state/already-purged');
+        expect(existsSync(state)).toBe(false);
+      });
+
+      it('an orphaned mcp-state dir whose run is UNKNOWN to the store (status null) is also reclaimed — the workspace\'s own absence is independent proof it is not live', () => {
+        const state = mkMcpState('wf', 'forgotten-run');
+        reclaimStaleWorkspaces(root, 5_000, () => null, NOW);
+        expect(existsSync(state)).toBe(false);
+      });
+
+      it('an orphaned mcp-state dir is KEPT when the store reports the run as still LIVE (defense-in-depth — nothing should ever delete runs/<runId> while a run is live)', () => {
+        const state = mkMcpState('wf', 'somehow-still-running');
+        reclaimStaleWorkspaces(root, 5_000, () => 'running' as RunStatus, NOW);
+        expect(existsSync(state)).toBe(true);
+      });
+
+      it('a run whose runs/<runId> STILL exists is left to the TTL loop above — the orphan sweep never double-handles it', () => {
+        mkRun('wf', 'young', 1_000); // younger than the TTL — the TTL loop above keeps it
+        const state = mkMcpState('wf', 'young');
+        reclaimStaleWorkspaces(root, 5_000, () => 'completed' as RunStatus, NOW);
+        expect(existsSync(state)).toBe(true);
+      });
+    });
   });
 });

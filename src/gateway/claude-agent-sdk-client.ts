@@ -852,8 +852,26 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       // event's contract is "once per attempt", the claim a single "once per call" line could never
       // hold (the options literal, and the posture it carries, is rebuilt inside `_invokeOnce` on
       // every pass).
-      const attemptReq = req.onUsage === undefined ? req : { ...req, onUsage: (cum: Tokens) => req.onUsage!(addTokens(carried, cum)) };
+      // Review v035 L-1: snapshot `carried` per attempt (never read the mutable `carried` by
+      // reference inside the closure) AND stop forwarding this attempt's `onUsage` once it has
+      // settled. `_invokeOnce`'s race (`Promise.race([drain, bound])`) abandons rather than cancels
+      // `drain` on a timeout/abort — the underlying session can keep streaming for a moment after
+      // that race already decided the attempt's fate, and `controller.abort()` only runs in its
+      // `finally`, AFTER the race settles. Without both guards, a superseded attempt's late frame
+      // re-adds its own already-folded tokens a second time into whatever `req.onUsage` next reports
+      // — exactly the figure `_finalizeAborted` (agent-executor.ts) could charge to the budget if
+      // run_stop/run_suspend landed in that window.
+      const base = carried;
+      let settled = false;
+      const attemptReq = req.onUsage === undefined ? req : {
+        ...req,
+        onUsage: (cum: Tokens) => {
+          if (settled) return; // a late frame from an attempt this loop has already moved past
+          req.onUsage!(addTokens(base, cum));
+        },
+      };
       last = await this._invokeOnce(attemptReq, i + 1);
+      settled = true;
       if (last.ok) {
         const normalized: Tokens = { input: last.tokens.input, output: last.tokens.output, cacheRead: last.tokens.cacheRead ?? 0, cacheWrite: last.tokens.cacheWrite ?? 0 };
         const total = addTokens(carried, normalized);

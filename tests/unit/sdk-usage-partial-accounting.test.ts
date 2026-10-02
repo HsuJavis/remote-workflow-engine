@@ -128,6 +128,50 @@ describe('issue #127: partial usage accounting in ClaudeAgentSdkGatewayClient', 
     expect(call).toBe(2);
   }, 10000);
 
+  // Review v035 L-1: `invoke()`'s retry wrapper closes over the mutable `let carried` BY REFERENCE
+  // (claude-agent-sdk-client.ts ~855), not a per-attempt snapshot. A timed-out attempt's `_drain` is
+  // abandoned (`Promise.race` in `_invokeOnce`), not cancelled — the underlying session can keep
+  // streaming for a moment after the race already decided the attempt's fate, and `controller.abort()`
+  // only runs in `_invokeOnce`'s `finally`, after that race settles. If one more frame arrives on that
+  // now-superseded attempt AFTER the outer loop has already folded its tokens into `carried` and moved
+  // on to the next attempt, the shared-by-reference closure re-adds that same attempt's own tokens a
+  // second time into whatever the live `onUsage` callback reports next — exactly the figure
+  // `_finalizeAborted` (agent-executor.ts) would charge to the budget if run_stop/run_suspend landed in
+  // that window. Fix: snapshot `carried` per attempt AND stop forwarding a superseded attempt's late
+  // frames once it has settled.
+  it('L-1: a stale (superseded) attempt\'s late onUsage frame does not double-count into the live running total', async () => {
+    let call = 0;
+    const queryImpl = ((args: { options: { abortController?: AbortController } }) => {
+      call += 1;
+      if (call === 1) {
+        return (async function* () {
+          yield assistantMsg('msg_a1', usage(10, 4));
+          // Models the real CLI: the session doesn't die the instant `controller.abort()` runs in
+          // `_invokeOnce`'s `finally` — it keeps streaming a little longer, attributed to THIS
+          // (already-superseded) attempt's own abandoned `_drain`.
+          await new Promise<void>((resolve) => {
+            const s = args.options.abortController?.signal;
+            if (s?.aborted) resolve();
+            else s?.addEventListener('abort', () => resolve(), { once: true });
+          });
+          await new Promise((r) => setTimeout(r, 20));
+          yield assistantMsg('msg_a1_late', usage(2, 1));
+        })();
+      }
+      // attempt 2: reports its own usage promptly, then hangs (so this test fully controls when
+      // the whole call ends — it is left to time out too, exhausting `retries`).
+      return sessionThenHang([assistantMsg('msg_b1', usage(5, 2))], args.options);
+    }) as never;
+    const client = new ClaudeAgentSdkGatewayClient({ baseUrl: 'http://127.0.0.1:1', queryImpl, timeoutMs: 50, retries: 1 });
+    const live: Tokens[] = [];
+    const p = client.invoke({ prompt: 'hi', opts: {}, runId: 'r1', agentId: 'a1', onUsage: (t) => live.push(t) });
+    await p; // both attempts time out (retries exhausted) — the call is fully settled
+    // Correct total after both attempts: attempt 1's {10,4} + attempt 2's own {5,2} = {15,6}.
+    // The bug would push a THIRD, later update that double-counts attempt 1's {10,4} on top of its
+    // own late cumulative, landing on {22,9} instead.
+    expect(live[live.length - 1]).toEqual({ input: 15, output: 6, cacheRead: 0, cacheWrite: 0 });
+  }, 10000);
+
   it('a healthy single-attempt call never gains a tokens/partial field from this change', async () => {
     async function* session() {
       yield { type: 'result', subtype: 'success', is_error: false, result: 'ok', usage: usage(3, 2) };
