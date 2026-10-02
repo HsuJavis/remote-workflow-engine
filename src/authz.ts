@@ -93,7 +93,10 @@ const ROLE_RANK: Record<Role, number> = { user: 0, author: 1, admin: 2 };
  *  config admin — cannot be changed at runtime. `db`: a runtime override (principal_set_role).
  *  `config`: the id's own `principals[id]` entry. `default`: no entry of its own — the config `'*'`
  *  role, else `'user'`. */
-export type RoleSource = 'config-locked' | 'db' | 'config' | 'default';
+// Service accounts spec (owner decision 2026-10-03): 'service-account' is a `sa:<name>` id's own
+// row (never principal_roles/config) — PrincipalAdmin sets it, this module never produces it itself
+// (roleWithSource is never called for an `sa:` id).
+export type RoleSource = 'config-locked' | 'db' | 'config' | 'default' | 'service-account';
 
 type PrincipalsMap = Record<string, { role: PrincipalRole }> | undefined;
 
