@@ -10,7 +10,7 @@
 // integration tier points the real export at a local stub /v1/messages server — IT-015).
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { CanUseTool, HookCallback, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { existsSync, readdirSync, statSync, mkdirSync, mkdtempSync, rmSync, copyFileSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, statSync, mkdirSync, mkdtempSync, rmSync, copyFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, isAbsolute, dirname } from 'node:path';
 import { createRequire } from 'node:module';
@@ -174,16 +174,11 @@ function copyDirRecursive(src: string, dest: string): void {
 export interface AssetFsFacade {
   exists(path: string): boolean;
   copyDir(src: string, dest: string): void;
-  writeFile(path: string, content: string): void;
 }
 
 const REAL_FS: AssetFsFacade = {
   exists: existsSync,
   copyDir: copyDirRecursive,
-  writeFile: (path, content) => {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, content);
-  },
 };
 
 /** v24 (ARCH-103/DES-154, TASK-145): SELECTIVE materialization — REPLACES the old copy-every-
@@ -191,9 +186,15 @@ const REAL_FS: AssetFsFacade = {
  *  run got every author's skill). Copies ONLY `declared.skills` into
  *  `<workspace>/.claude/skills/<name>/` (workflow scope wins a name clash with global — checked
  *  first); a name absent from BOTH roots lands in `missing` and the run proceeds (owner 19.5.3 — no
- *  refusal). `.mcp.json` is REWRITTEN (never merged) from `resolveMcp(declared.mcp)`'s configs,
- *  an empty declared.mcp writing an empty server map. Pure over the injected `fs` facade (unit
- *  tier: a fake; production: `REAL_FS`, the default). */
+ *  refusal). `resolveMcp(declared.mcp)`'s resolved configs (secrets already substituted) are
+ *  returned to the caller for `options.mcpServers` ONLY — **issue #128**: nothing is ever written
+ *  to `<workspace>/.mcp.json` any more. That file used to be REWRITTEN here (never merged) on every
+ *  dispatch; it was pure belt-and-suspenders (the CLI never loads a project `.mcp.json` once
+ *  `strictMcpConfig:true` is set — see `_invokeOnce` below) and the belt was itself a leak: any
+ *  runner of the SAME run could `workspace_pull({path:'.mcp.json'})` an admin-pushed global
+ *  server's resolved `command`/`args`/`env` — including a `${secret:NAME}` handle's real value —
+ *  straight out of the workspace. Pure over the injected `fs` facade (unit tier: a fake;
+ *  production: `REAL_FS`, the default) — now used for skill materialization only. */
 export async function materializeAssets(
   roots: { workflow: string; global: string },
   workspace: string,
@@ -218,7 +219,6 @@ export async function materializeAssets(
   }
   const { configs, missing: mcpMissing } = await resolveMcp(declared.mcp);
   missing.push(...mcpMissing);
-  fs.writeFile(join(workspace, '.mcp.json'), JSON.stringify({ mcpServers: configs }, null, 2));
   return { skills, mcp: Object.keys(configs), missing };
 }
 
@@ -772,9 +772,10 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     // No workspace / no `req.assets` (e.g. a direct unit-tier invoke(), or the direct-fetch gateway,
     // which never sets `req.assets` at all — DES-154's boundary) -> nothing materialized, the
     // executor's decoration site reports the honest empty set (DES-160).
-    // `.mcp.json` is REWRITTEN by `materializeAssets` itself; `strictMcpConfig: true` below still
-    // needs the SAME resolved configs on `options.mcpServers` (a project `.mcp.json` is not read
-    // once `strictMcpConfig` is set) — resolved ONCE here and threaded into both.
+    // issue #128: `materializeAssets` no longer writes anything to `<workspace>/.mcp.json` — its
+    // resolved configs go ONLY to `options.mcpServers` below, under `strictMcpConfig: true` (which
+    // also means a project `.mcp.json` would never have been READ even when one existed). Resolved
+    // ONCE here, threaded straight into the dispatch.
     // Project configuration another agent (or anything else) left in the workspace is removed before
     // this CLI can load it — and before skills are materialized, so a `.claude` symlink cannot carry
     // them out of the workspace. The file tools cannot write these paths (toolUsePreCheck); this
