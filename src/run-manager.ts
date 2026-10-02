@@ -107,6 +107,12 @@ export interface RunManagerDeps {
    *  bug class this codebase has already hit twice (v11 updateFlagPath, v15 auth). Fire-and-forget,
    *  like `onTerminal` — a throwing listener never wedges a run. */
   onWarning?: (warning: EngineWarning) => void;
+  /** issue #127 (#53/adjudication #9 I-2 follow-up): bounded wait `stop()`/`suspend()` give every
+   *  in-flight agent() call's own abort-triggered `capture()` to land BEFORE the terminal/suspend
+   *  snapshot — see `AgentExecutor.settleInflight`'s own doc. Default 2000ms. Something that still
+   *  has not settled by this bound is left exactly as before this fix: the snapshot/live-view may
+   *  miss it, and the `agent_live_at_terminal` warning (`onWarning` above) still names it. */
+  agentSettleTimeoutMs?: number;
   /** v8 Slice 4 (REQ-054): max live (non-terminal) top-level runs; an over-limit start() is rejected
    *  with RUN_ADMISSION_LIMIT before any durable work. Default 64. Invalid (≤0/non-integer) rejected. */
   maxConcurrentRuns?: number;
@@ -401,14 +407,20 @@ function declaredAssetsOf(contract: ParamContract | undefined): Record<string, {
  *  the persisted usage event, and `deriveAgentRecords` derives it back the same way.
  *  **The per-column rule this fold applies — and the one `foldUsage` (run-guard.ts) must keep
  *  applying for "one arithmetic, two entry points" to be true:** `tokens`/`costUSD` accumulate off
- *  every record (a non-`done` record carries the known zero `ZERO_TOKENS`/`costUSD: 0`, so it adds
- *  nothing), `unpricedCalls` counts `state === 'done' && unpriced === true` — at rest that same
- *  rule is spelled "the usage event carries `tokens`", which is exactly the condition that derives
- *  `state: 'done'` — and `unmappedMessages` counts `r.unmapped` on records of EVERY state, at rest
- *  every usage event, tokens or not. v26 R-1: for one iteration the at-rest fold ran its
+ *  every record (a record with no measured usage carries the known zero `ZERO_TOKENS`/`costUSD: 0`,
+ *  so it adds nothing), `unpricedCalls` counts `unpriced === true` — at rest that same rule is
+ *  spelled "the usage event's own `unpriced` field is truthy" (`foldUsage`'s `data.unpriced ?? true`,
+ *  gated on the event carrying `tokens` at all). v26 R-1: for one iteration the at-rest fold ran its
  *  `!data.tokens` guard BEFORE the `unmapped` accumulation, so the two folds silently disagreed on
  *  that whole column for a terminally-failed call (which carries `unmapped` and no `tokens`). Fixed
- *  in run-guard.ts; IT-156's deep-equal-both-folds case is the lock that keeps it fixed. */
+ *  in run-guard.ts; IT-156's deep-equal-both-folds case is the lock that keeps it fixed.
+ *  issue #127 (repair): this column USED to be gated on `state === 'done'` too, which silently
+ *  disagreed with `foldUsage` the instant a FAILED record could also carry `tokens`/`unpriced` (the
+ *  gateway-side fix that reports usage spent before an abort/timeout/terminal failure) — a failed-
+ *  but-unpriced call counted at rest and not live. `unpriced === true` alone is the same discriminator
+ *  `foldUsage` already uses and needs no `state` check: `queued`/`running`/`refused` records (and a
+ *  token-less `failed` one) all carry `unpriced: false` or `undefined`, never `true`, so nothing else
+ *  starts counting here that didn't already. */
 function foldUsageFromRecords(records: AgentRecord[]): RunUsage {
   const tokens: Tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   let costUSD = 0;
@@ -422,7 +434,7 @@ function foldUsageFromRecords(records: AgentRecord[]): RunUsage {
     tokens.cacheRead += r.tokens?.cacheRead ?? 0;
     tokens.cacheWrite += r.tokens?.cacheWrite ?? 0;
     costUSD += r.costUSD ?? 0;
-    if (r.state === 'done' && r.unpriced === true) unpricedCalls += 1;
+    if (r.unpriced === true) unpricedCalls += 1;
     for (const name of r.unmapped ?? []) {
       unmappedMessages[name] = (unmappedMessages[name] ?? 0) + 1;
     }
@@ -552,6 +564,8 @@ export class RunManager {
   private readonly _maxWorkflowDescendants: number;
   private readonly _onTerminal: ((runId: string, status: RunStatus) => void) | undefined;
   private readonly _onWarning: (warning: EngineWarning) => void;
+  /** issue #127: see `RunManagerDeps.agentSettleTimeoutMs`'s own doc. */
+  private readonly _agentSettleTimeoutMs: number;
   private readonly _maxConcurrentRuns: number;
   private readonly _cas: CasStore | undefined;
   /** v13 (REQ-080, TASK-077): normalized allowlist for seedRef egress gate; [] = disabled. */
@@ -612,6 +626,7 @@ export class RunManager {
     this._maxWorkflowDescendants = RunManager._positiveInt(deps.maxWorkflowDescendants, 256, 'maxWorkflowDescendants');
     this._onTerminal = deps.onTerminal;
     this._onWarning = deps.onWarning ?? ((w) => { console.warn(`[remote-workflow-engine] ${JSON.stringify(w)}`); });
+    this._agentSettleTimeoutMs = deps.agentSettleTimeoutMs ?? 2000;
     this._maxConcurrentRuns = RunManager._positiveInt(deps.maxConcurrentRuns, 64, 'maxConcurrentRuns');
     this._cas = deps.cas;
     // v13 (REQ-080, TASK-077): normalize allowlist at construction (config-load check); default [] = disabled.
@@ -1199,6 +1214,13 @@ export class RunManager {
     if (entry.status !== 'running') throw new IllegalTransitionError(entry.status, 'suspended');
     entry.abortController.abort();
     await entry.sandbox.abort(runId, 'suspend');
+    // issue #127 (#53/adjudication #9 I-2 follow-up): bounded wait for every in-flight agent() call's
+    // OWN `_finalizeAborted`/`capture()` to land — see `AgentExecutor.settleInflight`'s own doc for
+    // why this matters even though 'suspended' writes no terminal snapshot: an immediate
+    // `resume()`/`status()` right after this call otherwise reads a transiently stale 'running'
+    // record (and `resume()`'s own `ResumeCache.build` reads `entry.journal`, which the SAME
+    // in-flight capture may still be about to touch).
+    if (entry.spawner instanceof AgentExecutor) await entry.spawner.settleInflight(this._agentSettleTimeoutMs);
     await this._transition(runId, entry, 'suspended');
   }
 
@@ -1311,6 +1333,17 @@ export class RunManager {
     if (TERMINAL.includes(entry.status)) throw new IllegalTransitionError(entry.status, 'stopped');
     entry.abortController.abort();
     await entry.sandbox.abort(runId, 'stop');
+    // issue #127 (#53/adjudication #9 I-2 follow-up, dash-auth-spec section C): the terminal snapshot
+    // below (`_transition`) reads `entry.spawner.getAllRecords()` — a bounded wait HERE for every
+    // in-flight agent() call's own abort-triggered `_finalizeAborted`/`capture()` to land closes the
+    // `run_list` (snapshot-sourced) vs `run_status` (live-sourced) `failedAgentCount` mismatch
+    // `tests/integration/terminal-state-warnings.test.ts` (IT-133) used to document as accepted/
+    // unfixed — the abort already fired (above), so every in-flight call is already racing its own
+    // abort listener (`_invokeOnce`'s race); this just gives that race a BOUNDED head start before
+    // the snapshot reads whatever state it left behind. See `AgentExecutor.settleInflight`'s own doc
+    // for the bound and the (observable, via `agent_live_at_terminal`) fallback when something still
+    // doesn't settle.
+    if (entry.spawner instanceof AgentExecutor) await entry.spawner.settleInflight(this._agentSettleTimeoutMs);
     await this._transition(runId, entry, 'stopped');
   }
 

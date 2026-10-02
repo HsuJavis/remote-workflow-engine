@@ -1,6 +1,6 @@
 // AgentExecutor (DES-007 / ARCH-004) + AgentTranscriptSink (DES-008 / TASK-010).
 import Ajv from 'ajv';
-import type { AgentOpts, AgentRecord, HarnessDescriptor, HarnessWarning, TranscriptEvent, PriceBook, Caps } from './types.js';
+import type { AgentOpts, AgentRecord, HarnessDescriptor, HarnessWarning, TranscriptEvent, PriceBook, Caps, Tokens } from './types.js';
 import { parseModelRef } from './providers.js';
 import type { GatewayClient, GatewayResult } from './gateway/client.js';
 import type { RunGuard } from './run-guard.js';
@@ -305,6 +305,26 @@ export class AgentTranscriptSink {
     if (existing) this._records.set(agentId, { ...existing, lastActivityAt: ts });
   }
 
+  /** issue #127: stamps the LIVE cumulative usage the gateway's own `onUsage` callback reports as a
+   *  call streams, so an abort (run_suspend/run_stop) that abandons the gateway's own returned
+   *  Promise still has a figure to finalize with — `_finalizeAborted` (AgentExecutor) reads this
+   *  record's `tokens` the moment it gives up on that Promise. Merge — never clobber state/model/
+   *  provider, mirroring `markActivity`. No-op if no record exists yet (never fabricates one), OR the
+   *  record is already TERMINAL (`endedAt` set — `capture()` is the only writer of that field).
+   *  Measured on a real engine (issue #127 verification): the SDK CLI subprocess keeps streaming a
+   *  handful of messages for a brief window AFTER `_finalizeAborted`/`capture()` has already priced
+   *  and charged a figure via `addUsage` — without this guard, a late `onUsage` call silently
+   *  overwrote `tokens` on the now-`failed` record with a LARGER figure than the one `costUSD` was
+   *  actually computed from (and than `RunGuard`/the durable usage event/the terminal snapshot all
+   *  recorded), making the live record internally inconsistent with every other surface for no
+   *  reason a caller could see. The figure `capture()` priced and charged is the one every surface
+   *  reports — frozen, not "best effort so far". Always `partial:true` when it DOES apply: a figure
+   *  that reaches here came from an in-flight call that has not (yet) reported a finalized total. */
+  markUsage(agentId: string, tokens: Tokens): void {
+    const existing = this._records.get(agentId);
+    if (existing && existing.endedAt === undefined) this._records.set(agentId, { ...existing, tokens, partial: true });
+  }
+
   /** Records the outcome of one agent() call: captures the usage event and feeds RunGuard.addTokens exactly once. */
   async capture(runId: string, req: { agentId: string; label?: string }, result: GatewayResult, ts: string): Promise<void> {
     const prev = this._records.get(req.agentId); // v8 Slice 2/2b: carry frame (markQueued) + startedAt (markRunning)
@@ -355,6 +375,11 @@ export class AgentTranscriptSink {
         ...(result.transport !== undefined ? { transport: result.transport } : {}),
         ...(result.proxyModel !== undefined ? { proxyModel: result.proxyModel } : {}),
         ...(result.unmapped && result.unmapped.length > 0 ? { unmapped: result.unmapped } : {}),
+        // issue #127: an ok:true result CAN still be `partial` — `invoke()`'s retry loop sums a
+        // PRIOR failed attempt's own lower-bound tokens into this one's total when the FINAL attempt
+        // succeeds (ClaudeAgentSdkGatewayClient.invoke). The success itself is never in question;
+        // only the combined FIGURE is an estimate for the part contributed by the earlier attempt.
+        ...(result.partial === true ? { partial: true as const } : {}),
       });
       // D-G8-2: forward the real message/tool_call/tool_result stream the gateway captured (when
       // present — only ClaudeAgentSdkGatewayClient produces these today) BEFORE the terminal usage
@@ -375,6 +400,8 @@ export class AgentTranscriptSink {
         ts, kind: 'usage',
         data: {
           tokens, costUSD, unpriced, provider, model,
+          // issue #127: mirrors the record's own `partial` spread above — same rule, same source.
+          ...(result.partial === true ? { partial: true as const } : {}),
           // v26 integration (DES-177/DES-188, REQ-125): `transport`/`proxyModel` ride the event too.
           // They were written onto the LIVE record and onto the terminal snapshot (which is folded
           // from records) but NOT onto the durable event, so a snapshot-less read after a restart
@@ -411,6 +438,25 @@ export class AgentTranscriptSink {
       // right. "record ≡ usage-event" is the done branch's own rule (DES-177) — this branch had
       // silently violated it for one column.
       const provider = prev?.provider || result.provider;
+      // issue #127: a failed/aborted/timed-out call MAY still carry real usage — the gateway's own
+      // `_drain` now reports the deduped per-turn sum (or, when a terminal `result` message arrived,
+      // its own finalized total) instead of nothing. Priced through the SAME `priceCall` the `done`
+      // branch uses, so budget enforcement (`RunGuard.addUsage`) sees it too — before this fix the
+      // failed branch never called `addUsage` at all, so every token spent before a `run_suspend`/
+      // `run_stop`/timeout/terminal failure was invisible to both the cost total and the budget.
+      // `result.tokens` absent (the pre-#127 common case: refused before dispatch, or a gateway that
+      // predates this fix) keeps the EXACT prior shape — ZERO_TOKENS, costUSD:0, unpriced:false, no
+      // `addUsage` call, no `partial` field.
+      const failUsage = result.tokens === undefined
+        ? undefined
+        : (() => {
+            const tokens = { input: result.tokens!.input, output: result.tokens!.output, cacheRead: result.tokens!.cacheRead ?? 0, cacheWrite: result.tokens!.cacheWrite ?? 0 };
+            const priced = priceCall(tokens, this._priceBook?.pinned[`${provider}/${prev?.model ?? ''}`]?.price ?? null);
+            const costUSD = priced ?? 0;
+            const unpriced = priced === null;
+            this._guard?.addUsage(tokens, costUSD, unpriced, result.unmapped);
+            return { tokens, costUSD, unpriced, partial: result.partial };
+          })();
       this._records.set(req.agentId, {
         agentId: req.agentId, label: req.label, phase, phaseIndex, frame, startedAt, lastActivityAt, endedAt: ts,
         // #20: preserve the model markHarness stamped on the live record — a failed/timed-out call
@@ -418,8 +464,11 @@ export class AgentTranscriptSink {
         // when "which model failed" matters most. Don't wipe it back to ''.
         // v26 (DES-180 boundary): "a failed call carries no usage and moves no counter" — the SAME
         // known-zero `ZERO_TOKENS` DES-188's derive branch (2) uses, `unpriced: false` (never
-        // dispatched, so genuinely not an unpriced call).
-        state: 'failed', provider, model: prev?.model ?? '', tokens: ZERO_TOKENS, costUSD: 0, unpriced: false,
+        // dispatched, so genuinely not an unpriced call) — UNLESS issue #127's `failUsage` above
+        // computed a real figure, which wins.
+        state: 'failed', provider, model: prev?.model ?? '',
+        tokens: failUsage?.tokens ?? ZERO_TOKENS, costUSD: failUsage?.costUSD ?? 0, unpriced: failUsage?.unpriced ?? false,
+        ...(failUsage?.partial === true ? { partial: true as const } : {}),
         // dash-auth-spec.md section C: the gateway's own failure reason, verbatim — see
         // `AgentRecord.failReason`'s own doc for why this is never re-mapped at either producer.
         failReason: result.reason, ...warnings,
@@ -446,12 +495,17 @@ export class AgentTranscriptSink {
         // `transport` live, so the event must carry it or the restart-rebuilt record loses it.
         // v26 (M-2 send-back repair): `unmapped` rides this event too, same spread as the done
         // branch — the terminally-failed call whose unmapped provider chatter matters most.
+        // issue #127: `tokens`/`costUSD`/`unpriced`/`partial` ride this event too, beside `reason` —
+        // ONLY when `failUsage` computed a real figure (see `deriveAgentRecords`'s matching read,
+        // keyed off `reason` presence rather than `tokens` presence now that a FAILED event can also
+        // carry tokens — run-store.ts).
         data: {
           // dash-auth-spec.md section C: `provider` is the SAME merged local var the record above
           // was built from — not `result.provider` raw (see that binding's own comment).
           reason: result.reason, provider, detail: result.detail,
           ...(result.transport !== undefined ? { transport: result.transport } : {}),
           ...(result.unmapped && result.unmapped.length > 0 ? { unmapped: result.unmapped } : {}),
+          ...(failUsage !== undefined ? { tokens: failUsage.tokens, costUSD: failUsage.costUSD, unpriced: failUsage.unpriced, ...(failUsage.partial === true ? { partial: true as const } : {}) } : {}),
         },
       });
     }
@@ -534,16 +588,63 @@ export class AgentExecutor implements AgentSpawner {
    *  live record (`markHarness`) already resolved, exactly like every other failure path; this call
    *  site never needs to know whether that happened. */
   private async _finalizeAborted(req: AgentReq): Promise<AgentOutcome> {
+    // issue #127: the gateway's own returned Promise is abandoned the instant the run's abort wins
+    // `_invokeOnce`'s race (below) — whatever it would eventually report is lost UNLESS it already
+    // streamed a live figure onto this agent's record via `onUsage`/`markUsage` before that happened.
+    // Read here, not re-derived: this call site has no SDK-layer visibility of its own, by design.
+    const live = this._sink.getRecord(req.agentId);
     await this._sink.capture(
       req.runId,
       { agentId: req.agentId, label: req.opts.label },
-      { ok: false, provider: '', reason: 'aborted', detail: 'ABORTED: the run was suspended or stopped while this call was in flight' },
+      {
+        ok: false, provider: '', reason: 'aborted', detail: 'ABORTED: the run was suspended or stopped while this call was in flight',
+        ...(live?.tokens !== undefined ? { tokens: live.tokens, partial: true as const } : {}),
+      },
       this._clock.isoNow(),
     );
     return { kind: 'null', aborted: true };
   }
 
+  /** issue #127: every in-flight `run()` call, tracked so `settleInflight` (below) can wait for them.
+   *  A plain `Set` of the SAME Promise `run()` itself returns — removed the instant that Promise
+   *  settles, whichever way. */
+  private readonly _inflight = new Set<Promise<AgentOutcome>>();
+
   async run(req: AgentReq): Promise<AgentOutcome> {
+    const p = this._runTracked(req);
+    this._inflight.add(p);
+    // A SEPARATE derived promise does the tracking cleanup + swallows its own rejection (a pre-
+    // dispatch validation throw, e.g. PARAM_OUT_OF_RANGE) so that never becomes an unhandled
+    // rejection on its own account — the caller below still gets `p` itself, untouched, so a
+    // genuine throw still propagates to it exactly as before this change.
+    p.finally(() => this._inflight.delete(p)).catch(() => {});
+    return p;
+  }
+
+  /** issue #127 (#53/adjudication #9 I-2 follow-up): bounded wait for every `run()` call in flight
+   *  AT THE MOMENT THIS IS CALLED to settle — called by `RunManager.stop()`/`suspend()` AFTER
+   *  aborting (so every in-flight call is already racing its own abort listener, see `_invokeOnce`'s
+   *  own race) and BEFORE the terminal/suspend snapshot is taken, closing the race
+   *  `tests/integration/terminal-state-warnings.test.ts` (IT-133) used to document as "deliberately
+   *  NOT a fix … adjudication #9 I-2 rules against guessing at a fix on a concurrency path" — that
+   *  2026-09-07 ruling was about THIS EXACT #53 race (not, as an earlier draft of this comment
+   *  wrongly said, issue #61's separate `BudgetExceededError` reservation-arithmetic ruling, which
+   *  lives in `run-guard.ts`'s own header); issue #127's 2026-10-02 owner ruling is the named revisit
+   *  that authorizes fixing it now. A caller is never blocked unboundedly — `timeoutMs` (default
+   *  2000) caps the wait; whatever has not settled by then is left for `_transition`'s snapshot to
+   *  miss, exactly as before this fix, and the `agent_live_at_terminal` EngineWarning (run-manager.ts)
+   *  still fires on it so the miss stays observable, never silent — though in practice the in-memory
+   *  record update (`capture()`'s own `this._records.set`, synchronous, before any of its own awaits)
+   *  lands within the first couple of microtask ticks after the abort fires, well inside ANY nonzero
+   *  bound, so reproducing that residual path needs something that never gets `run()`-tracked at all
+   *  (see IT-133's own updated comments), not merely a slow store. */
+  async settleInflight(timeoutMs = 2000): Promise<void> {
+    if (this._inflight.size === 0) return;
+    const all = Promise.allSettled([...this._inflight]);
+    await Promise.race([all, new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))]);
+  }
+
+  private async _runTracked(req: AgentReq): Promise<AgentOutcome> {
     if (req.signal.aborted) return this._finalizeAborted(req);
 
     // v21 (ARCH-068, DES-105, TASK-101): a script-supplied per-call knob outside the contract
@@ -739,11 +840,17 @@ export class AgentExecutor implements AgentSpawner {
       }
       sink.markActivity(req.agentId, ev.ts);
     };
+    // issue #127: the gateway's live cumulative-usage callback — stamps the record so a later abort
+    // (`_finalizeAborted`) has a figure to finalize with even if it never awaits `invokePromise`
+    // itself. Gateways with nothing to report (LiteLLMGatewayClient) simply never call it.
+    const onUsage = (tokens: Tokens): void => {
+      sink.markUsage(req.agentId, tokens);
+    };
     // v26 integration (DES-179's own signature line: "`GatewayClient.invoke(req)` gains `caps?:
     // Caps`, threaded by the executor from the RUN'S PIN"). This is that thread; before it, the
     // field existed on both sides and nothing ever filled it.
     const caps = this._pinnedCapsFor(opts.model);
-    const invokePromise = this._gateway.invoke({ prompt, opts, runId: req.runId, agentId: req.agentId, signal: req.signal, workspace: req.workspace, assets: req.assets, onHarness, onEvent, ...(caps !== undefined ? { caps } : {}) });
+    const invokePromise = this._gateway.invoke({ prompt, opts, runId: req.runId, agentId: req.agentId, signal: req.signal, workspace: req.workspace, assets: req.assets, onHarness, onEvent, onUsage, ...(caps !== undefined ? { caps } : {}) });
     const aborted = new Promise<'aborted'>((resolve) => {
       req.signal.addEventListener('abort', () => resolve('aborted'), { once: true });
     });

@@ -321,6 +321,14 @@ export interface AgentRecord {
    *  `markHarness` and re-read from the harness event by `deriveAgentRecords`, so both producers
    *  agree. Absent (never `[]`) when there are none. */
   warnings?: HarnessWarning[];
+  /** issue #127 (REQ-TBD): `true` iff `tokens`/`costUSD` are a LOWER BOUND rather than the provider's
+   *  own finalized total — set on a call cut short by `run_suspend`/`run_stop` (`'aborted'`), a
+   *  timeout, or a terminal failure that never reached an SDK `result` message, where the only figure
+   *  available is the deduped sum of each streamed assistant turn's own `usage` (ClaudeAgentSdkGatewayClient
+   *  `_drain`'s per-`message.id` accumulator). Absent — never `false` — on a `done` record and on a
+   *  `failed` record whose gateway result DID carry an authoritative `result.usage` (e.g.
+   *  `error_max_turns`): those totals are exactly what the provider reported, not an estimate. */
+  partial?: true;
 }
 
 export interface PhaseView {

@@ -44,8 +44,12 @@ function usageEvent(agentId: string, failed = false): TranscriptEvent {
     ts: new Date().toISOString(),
     kind: 'usage',
     data: failed
-      ? { provider: 'p', model: 'm' } // no tokens → failed
-      : { tokens: { input: 10, output: 5 }, provider: 'p', model: 'm', reason: 'stop' },
+      ? { reason: 'terminal', provider: 'p', model: 'm' } // issue #127: `reason` present → failed
+      // issue #127: a `done` usage event never carries `reason` (deriveAgentRecords' discriminator,
+      // run-store.ts) — this fixture used to carry an unrelated `reason: 'stop'` that happened to be
+      // harmless under the old tokens-presence discriminator; it collides with the new one and never
+      // represented anything `capture()`'s done branch actually emits (confirmed by reading it).
+      : { tokens: { input: 10, output: 5 }, provider: 'p', model: 'm' },
   };
 }
 

@@ -36,7 +36,7 @@ describe('deriveAgentRecords: an un-measured call has no token figure (UT-277, R
   it('a FAILED call keeps its zeros — DES-188: it moved no counter, which is a measurement', () => {
     const events = [
       harness('triage'),
-      { kind: 'usage', data: { failed: true, provider: 'ollama' } } as unknown as TranscriptEvent,
+      { kind: 'usage', data: { reason: 'terminal', provider: 'ollama' } } as unknown as TranscriptEvent, // issue #127: a failed usage event always carries `reason` (never an ad-hoc `failed:true` marker, which production never emits) — that is what deriveAgentRecords' discriminator keys on now.
     ];
     const [rec] = deriveAgentRecords(one(events), 'running');
     expect(rec!.state).toBe('failed');
@@ -78,7 +78,7 @@ describe('deriveAgentRecords: an un-measured call has no cost figure either (UT-
   it('a FAILED call keeps costUSD 0 — terminal, and the zero is the measurement', () => {
     const events = [
       harness('triage'),
-      { kind: 'usage', data: { failed: true, provider: 'ollama' } } as unknown as TranscriptEvent,
+      { kind: 'usage', data: { reason: 'terminal', provider: 'ollama' } } as unknown as TranscriptEvent, // issue #127: a failed usage event always carries `reason` (never an ad-hoc `failed:true` marker, which production never emits) — that is what deriveAgentRecords' discriminator keys on now.
     ];
     const [rec] = deriveAgentRecords(one(events), 'running');
     expect(rec!.state).toBe('failed');
