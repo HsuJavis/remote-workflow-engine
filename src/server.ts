@@ -48,6 +48,7 @@ import { createAuthRouteHandlers, resolvePrincipal, readSessionCookie, sessionCo
 import { RoleStore } from './auth/role-store.js';
 import { PrincipalAdmin, type QuotaView } from './auth/principal-admin.js';
 import { ServiceAccountStore } from './auth/service-account-store.js';
+import { ERROR_CATALOG } from './errors.js';
 import { CAS_QUOTA_DEFAULTS, DISK_FLOOR_DEFAULTS, type CasQuotaConfig, type DiskFloorConfig } from './cas-quota.js';
 import { DiskFloor } from './disk-floor.js';
 import type { PrincipalRole as Role } from './authz.js';
@@ -1066,7 +1067,26 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // on the very next call; each authenticated request also lands in the known-principals ledger.
   function principalFor(id: string): Principal {
     principalAdmin.markSeen(id);
-    return { kind: principalAdmin.resolve(id), id };
+    const role = principalAdmin.resolve(id);
+    // Service accounts spec (owner decision 2026-10-03), §Authorization: the allowlist rides the
+    // Principal object itself (authz.ts's authorize() reads `.workflows`) — set only for a live
+    // `sa:<name>` id with a non-empty allowlist (workflowsFor returns undefined otherwise).
+    const workflows = principalAdmin.workflowsFor(id);
+    if (workflows && (role === 'user' || role === 'author')) return { kind: role, id, workflows };
+    return { kind: role, id };
+  }
+  /** Service accounts spec §Model/§Token exchange: "on each request the SA row is re-checked
+   *  (disabled/deleted/expired … take effect immediately even for already-issued tokens)". Checked
+   *  at every bearer-resolution site BEFORE `principalFor` would otherwise fold a disabled/expired/
+   *  deleted account into the ordinary 'none' (ACCOUNT_PENDING_APPROVAL) path — spec: "no
+   *  ACCOUNT_PENDING semantics; use a clear code". `null` for a non-`sa:` id or a live account. */
+  function serviceAccountBearerRefusal(principalId: string): boolean {
+    if (!principalId.startsWith('sa:')) return false;
+    return !serviceAccounts.isLive(principalId.slice('sa:'.length)).live;
+  }
+  function sendServiceAccountDisabled(res: ServerResponse): void {
+    res.setHeader('WWW-Authenticate', 'Bearer error="invalid_token"');
+    sendJson(res, 401, { code: 'SERVICE_ACCOUNT_DISABLED', error: ERROR_CATALOG.SERVICE_ACCOUNT_DISABLED.hint });
   }
   // v6 (REQ-036): best-effort engine-side diagnostics for a runId, pulled through the SAME facade
   // the MCP tools use (status + artifact list + failing/last agent transcript tail), formatted as a
@@ -1637,7 +1657,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       const resolveCaller = async (): Promise<{ principal: Principal; renew?: string } | null> => {
         if (typeof req.headers.authorization === 'string') {
           const p = await resolvePrincipal(req, authTokenStore!, wwwChallenge());
-          if ('principal' in p) return { principal: principalFor(p.principal) };
+          // Service accounts spec §Management surface: "Dashboard login is human-only (SAs cannot
+          // get a dashboard session)" — an sa: bearer is never a valid caller here, live or not
+          // (falls through to the D-BIND rescue / "no caller" path below, same as no bearer at all).
+          if ('principal' in p && !p.principal.startsWith('sa:')) return { principal: principalFor(p.principal) };
         } else {
           const tok = readSessionCookie(req.headers.cookie);
           const v = tok ? authTokenStore!.verifySession(tok) : null;
@@ -1687,6 +1710,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       if (!dbindExempt && blobMatchAuth) {
         void resolvePrincipal(req, authTokenStore!, wwwChallenge()).then((p) => {
           if ('status' in p) { send401(); return; }
+          if (serviceAccountBearerRefusal(p.principal)) { sendServiceAccountDisabled(res); return; }
           if (refusePending(p.principal)) return;
           const sha = decodeURIComponent(blobMatchAuth[1]!);
           // DES-096: principal is the namespace for authenticated uploads (server-derived, not echoed from client).
@@ -1709,6 +1733,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       if (!dbindExempt && req.method === 'POST' && req.url?.startsWith('/assets/manifest')) {
         void resolvePrincipal(req, authTokenStore!, wwwChallenge()).then(async (p) => {
           if ('status' in p) { send401(); return; }
+          if (serviceAccountBearerRefusal(p.principal)) { sendServiceAccountDisabled(res); return; }
           if (refusePending(p.principal)) return;
           // DES-096: principal is the namespace for authenticated manifest uploads (server-derived).
           const ns = p.principal;
@@ -1756,6 +1781,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       if (!dbindExempt && req.method === 'POST' && req.url?.startsWith('/mcp')) {
         void resolvePrincipal(req, authTokenStore!, wwwChallenge()).then((p) => {
           if ('status' in p) { send401(); return; }
+          if (serviceAccountBearerRefusal(p.principal)) { sendServiceAccountDisabled(res); return; }
           return readBodyDecoded(req).then(async (raw) => {
             let rpc: JsonRpcRequest;
             try {
