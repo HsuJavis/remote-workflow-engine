@@ -249,7 +249,6 @@ describe('materializeAssets scope precedence (UT-163)', () => {
   const fakeFs = (present: Set<string>, copied: string[][]) => ({
     exists: (p: string) => present.has(p),
     copyDir: (from: string, to: string) => { copied.push([from, to]); },
-    writeFile: () => { /* .mcp.json */ },
   });
 
   it('falls back to the GLOBAL skill root when the workflow root has no such skill', async () => {
