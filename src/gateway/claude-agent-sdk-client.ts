@@ -9,8 +9,9 @@
 // credential; `queryImpl` stays injectable (unit tier fakes the SDK module entirely — UT-018;
 // integration tier points the real export at a local stub /v1/messages server — IT-015).
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
-import type { CanUseTool, HookCallback, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { CanUseTool, HookCallback, Options, SDKMessage, SpawnedProcess } from '@anthropic-ai/claude-agent-sdk';
 import { existsSync, readdirSync, statSync, mkdirSync, mkdtempSync, rmSync, copyFileSync, readFileSync } from 'node:fs';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, isAbsolute, dirname } from 'node:path';
 import { createRequire } from 'node:module';
@@ -27,6 +28,7 @@ import { resolveRunPlaceholders, mcpStateDir, workflowFolderOfWorkspace } from '
 import { buildBashConfinement, readonlyBashRefusal, CLI_SCRATCH_DIR, cliScratchRefusal, sharedCliScratch } from './bash-confinement.js';
 import { prepareReadonlyMountTargets, protectedConfigTarget, sweepPlantedConfig } from './project-config-guard.js';
 import { findProjectMarkerAboveWorkspace, WORKROOT_INSIDE_PROJECT } from '../workroot-guard.js';
+import { RealCliLifecycle } from '../cli-lifecycle.js';
 import type { EventSink } from '../event-log.js';
 
 // v37 (DES-256, ARCH-178, TASK-253, REQ-218): the installed SDK's OWN package.json version, read
@@ -270,6 +272,57 @@ function abortedBeforeDispatch(): GatewayResult {
  *  before dispatch; this is the defensive fail-safe, same as before). */
 export function effectiveProvider(model: string | undefined): string | undefined {
   return model !== undefined ? parseModelRef(model)?.provider : undefined;
+}
+
+/** issue #129(b): wraps a freshly-spawned, DETACHED CLI child so BOTH an explicit `.kill()` call
+ *  and the child's own natural exit reap the WHOLE process group — a bare `child.kill()` (the
+ *  SDK's own default spawn behavior, `spawnLocalProcess`) only signals the direct child, orphaning
+ *  every stdio-MCP grandchild that CLI session spawned (the real-repro shape: "10 stray processes
+ *  on a throwaway engine" after a run finished). Reuses `cli-lifecycle.ts`'s
+ *  `RealCliLifecycle.killGroup` (DES-029, TASK-037 — SIGTERM now, SIGKILL after its own grace
+ *  period if still alive) rather than a second hand-rolled escalation.
+ *
+ *  Two trigger points, both needed:
+ *   - `kill(signal)`: the SDK's OWN `close()` (stdin EOF -> ~2s grace -> `process.kill()`) calls
+ *     `.kill()` on exactly the object this function returns (it IS `this.process`), so wiring
+ *     THIS method is enough to make that existing escalation reap the group — no SDK-internal
+ *     change needed.
+ *   - the child's `'exit'` event: covers the case `close()`'s own kill branch skips entirely — the
+ *     CLI process exits ON ITS OWN (success or error) while a grandchild it spawned is still
+ *     alive. Node's `kill(-pgid, …)` still reaches every surviving member of that process group
+ *     even after the group's leader (this `child`) itself has already exited.
+ *
+ *  Exported so the escalation is unit-testable (a real detached process tree, no real `claude`
+ *  CLI) without going through the full `_invokeOnce` dispatch plumbing. `child.pid` is always
+ *  defined here in practice (the caller only wraps a child it just spawned successfully, before
+ *  ever reading `.pid`); the `undefined` guard is defensive, never hit on a real spawn. */
+export function wrapCliChildForGroupKill(child: ChildProcess, lifecycle: Pick<RealCliLifecycle, 'killGroup'>): SpawnedProcess {
+  const reap = (): void => {
+    if (child.pid === undefined) return;
+    try {
+      lifecycle.killGroup({ pid: child.pid });
+    } catch {
+      // group already gone — nothing to reap
+    }
+  };
+  child.once('exit', reap);
+  return {
+    stdin: child.stdin!,
+    stdout: child.stdout!,
+    get killed() {
+      return child.killed;
+    },
+    get exitCode() {
+      return child.exitCode;
+    },
+    kill: (signal?: NodeJS.Signals) => {
+      reap();
+      return child.kill(signal);
+    },
+    on: child.on.bind(child) as SpawnedProcess['on'],
+    once: child.once.bind(child) as SpawnedProcess['once'],
+    off: child.off.bind(child) as SpawnedProcess['off'],
+  };
 }
 
 /** D-V2G8-1(d): true only when `candidate` resolves to a path genuinely inside `root` (or IS
@@ -643,6 +696,10 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
   // in `composeConfig()` BEFORE the sink's owner (server.ts's `store`) exists. A NO-OP sink at
   // construction means "nothing bound yet" and "did it" are never the same line of code.
   private _eventSink: EventSink = () => {};
+  // issue #129(b): the CLI subprocess's own group-kill escalation (wrapCliChildForGroupKill below
+  // consumes only its `killGroup` method) — one instance per gateway, stateless beyond the default
+  // node:child_process/process.kill primitives it wraps.
+  private readonly _cliLifecycle = new RealCliLifecycle({});
 
   constructor(private readonly _config: ClaudeAgentSdkGatewayConfig) {
     this._query = _config.queryImpl ?? sdkQuery;
@@ -1035,6 +1092,31 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         cwd: req.workspace ?? this._config.cwd,
         sandbox,
         stderr: captureStderr,
+        // issue #129(b): a custom spawner so the CLI child is spawned DETACHED (its own process
+        // group) and wrapped for group-kill (wrapCliChildForGroupKill above) — the SDK's default
+        // `spawnLocalProcess` spawns a plain (non-detached) child, so its own graceful-close
+        // `.kill()` (and a CLI that exits on its own) only ever reaps that ONE process, orphaning
+        // every stdio-MCP grandchild the session spawned. Replicates `spawnLocalProcess`'s own
+        // stdio shape (`['pipe','pipe','pipe']`, `windowsHide:true`) exactly — including piping
+        // stderr into `captureStderr` by hand, since that wiring normally lives ONLY inside
+        // `spawnLocalProcess` and is silently skipped for any caller-supplied spawner (measured
+        // against the installed SDK's own source — sdk.mjs's `spawnLocalProcess`/`initialize`).
+        // Deliberately does NOT pass `spawnOpts.signal` into the raw `spawn()` call: Node's own
+        // `{signal}` abort handling would call the RAW child's `.kill()` directly, bypassing this
+        // wrapper's group-kill — the SDK's existing `abortController`-driven `close()` (which DOES
+        // go through `this.process.kill()`, i.e. the wrapped object below) is the only abort path
+        // this needs.
+        spawnClaudeCodeProcess: (spawnOpts) => {
+          const child = spawn(spawnOpts.command, spawnOpts.args, {
+            cwd: spawnOpts.cwd,
+            env: spawnOpts.env,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            windowsHide: true,
+            detached: true,
+          });
+          child.stderr?.on('data', (data: Buffer) => captureStderr(data.toString()));
+          return wrapCliChildForGroupKill(child, this._cliLifecycle);
+        },
         // REQ-037: an anthropic-direct call names the REAL Anthropic model id (LiteLLM bypassed);
         // every other provider is routed via the proxy-facing alias name (see proxyModelName) — the
         // CLI would otherwise expand a bare shorthand like `haiku` to a dated Anthropic id the LiteLLM
