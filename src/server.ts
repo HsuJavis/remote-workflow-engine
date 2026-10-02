@@ -47,6 +47,7 @@ import { TokenStore } from './auth/token-store.js';
 import { createAuthRouteHandlers, resolvePrincipal, readSessionCookie, sessionCookie, clearSessionCookie, type AuthConfig } from './auth/auth-service.js';
 import { RoleStore } from './auth/role-store.js';
 import { PrincipalAdmin, type QuotaView } from './auth/principal-admin.js';
+import { ServiceAccountStore } from './auth/service-account-store.js';
 import { CAS_QUOTA_DEFAULTS, DISK_FLOOR_DEFAULTS, type CasQuotaConfig, type DiskFloorConfig } from './cas-quota.js';
 import { DiskFloor } from './disk-floor.js';
 import type { PrincipalRole as Role } from './authz.js';
@@ -1222,9 +1223,14 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         csprng: (n: number) => randomBytes(n),
       })
     : undefined;
+  // Service accounts spec (owner decision 2026-10-03): opened on EVERY boot, auth on or off — same
+  // convention as RoleStore just below (principals_list/the 6 service_account_* tools answer the
+  // same way whether or not auth is enabled; the client_credentials grant itself still requires it).
+  const serviceAccounts = new ServiceAccountStore(authDb, { clock: () => clock.now(), csprng: (n: number) => randomBytes(n) });
   const principalAdmin = new PrincipalAdmin({
     store: new RoleStore(authDb, { clock: () => clock.now() }), principals: config?.principals, authEnabled: !!authCfg,
     quota: { defaults: { ...CAS_QUOTA_DEFAULTS, ...config?.casQuota }, usage: (id) => cas.usage(id) },
+    serviceAccounts,
   });
   // Owner decision 2026-10-02: the CAS quota is per NAMESPACE = principal id. 'local' (auth
   // disabled, or a loopback-exempt caller with no identity — the operator's own rescue path) has no
@@ -1235,7 +1241,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   cas.setQuotaResolver((ns) => (ns === casNamespaceFor(null) ? null : principalAdmin.quotaFor(ns).limitBytes));
   facade.bindQuotaView(quotaViewFor);
   const authHandlers = authCfg && authTokenStore
-    ? createAuthRouteHandlers(authCfg, authTokenStore, (email) => principalAdmin.markSeen(email))
+    ? createAuthRouteHandlers(authCfg, authTokenStore, (email) => principalAdmin.markSeen(email), serviceAccounts)
     : undefined;
   // Spec §A: the dashboard is served on the public URL too, so the engine's own public origin
   // (publicBaseUrl / auth.issuer) is always an allowlisted Host/Origin authority — the operator

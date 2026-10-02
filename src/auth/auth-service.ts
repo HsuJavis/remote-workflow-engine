@@ -34,6 +34,16 @@ export interface AuthConfig {
   googleJwksUrl?: string;
   /** Injectable JWKS fetcher — overrides the default network fetch (tests inject a fake). */
   jwksFetch?: JwksPort;
+  /** Service accounts spec (owner decision 2026-10-03): TTL of a bearer issued by the
+   *  client_credentials grant. Default 1h. */
+  serviceAccountTokenTtlMs?: number;
+}
+
+/** Service accounts spec §Token exchange: the narrow port `tokenExchange`'s client_credentials arm
+ *  needs — `ServiceAccountStore.verifyCredentials` only, so this module stays independent of the
+ *  concrete store class (same seam-narrowing convention `TokenStore`'s own pick-types use). */
+export interface ServiceAccountCredentialsPort {
+  verifyCredentials(clientId: string, secret: string): { name: string; role: 'author' | 'user'; workflows: string[] | null } | null;
 }
 
 /**
@@ -227,6 +237,10 @@ export function createAuthRouteHandlers(
   /** Called with the verified email on every successful sign-in (both flows) — the server records
    *  it in the known-principals ledger. */
   onSignIn: (email: string) => void = () => {},
+  /** Service accounts spec: wired whenever the auth DB is open (server.ts constructs it
+   *  unconditionally). Absent only in a test fixture that doesn't need the client_credentials
+   *  grant — that arm then answers invalid_client exactly as an unknown client would. */
+  serviceAccounts?: ServiceAccountCredentialsPort,
 ): AuthRouteHandlers {
   // DES-094/095 v18: 3 distinct Google endpoint URLs.
   // Priority: specific field > googleBase-derived fallback (backward compat) > production constant.
@@ -237,6 +251,12 @@ export function createAuthRouteHandlers(
   const googleJwksUrl = cfg.googleJwksUrl
     ?? (cfg.googleBase ? `${cfg.googleBase}/oauth2/v3/certs` : GOOGLE_JWKS_URL);
   const loginLimiter = new LoginRateLimiter();
+  // Service accounts spec §Token exchange: "rate-limit failures per client_id/IP if there is an
+  // existing limiter; otherwise a simple in-memory limiter" — reusing LoginRateLimiter's existing
+  // token-bucket (same capacity/refill the dashboard login already uses) is simpler than a second
+  // policy, and every call (not only failures) consumes a token, exactly like dashboardLogin's own
+  // use of it; a legitimate automated caller re-exchanging well under 30/min is unaffected.
+  const clientCredentialsLimiter = new LoginRateLimiter();
   const jwksFetch: JwksPort = cfg.jwksFetch ?? (async (jwksUri: string) => {
     const r = await fetch(jwksUri);
     const j = await r.json() as { keys?: Record<string, unknown>[] };
@@ -482,6 +502,54 @@ export function createAuthRouteHandlers(
         return;
       }
       const grantType = params.get('grant_type') ?? '';
+
+      // Service accounts spec §Token exchange: grant_type=client_credentials (RFC 6749 §4.4).
+      // Client auth via HTTP Basic (client_secret_basic, §2.3.1) OR the form body
+      // (client_secret_post) — Basic wins when both are present. Every failure (malformed auth,
+      // unknown client, wrong secret, disabled/expired account) answers the IDENTICAL 401
+      // {"error":"invalid_client"} — no wire distinction (spec's no-oracle rule); `verifyCredentials`
+      // itself is constant-time.
+      if (grantType === 'client_credentials') {
+        const cf = req.headers['cf-connecting-ip'];
+        const ip = typeof cf === 'string' && cf ? cf : (req.socket?.remoteAddress ?? 'unknown');
+        let clientId: string | null = null;
+        let clientSecret: string | null = null;
+        const authHeader = req.headers['authorization'];
+        if (typeof authHeader === 'string' && authHeader.startsWith('Basic ')) {
+          try {
+            const decoded = Buffer.from(authHeader.slice(6), 'base64').toString('utf8');
+            const sep = decoded.indexOf(':');
+            if (sep !== -1) {
+              clientId = decodeURIComponent(decoded.slice(0, sep));
+              clientSecret = decodeURIComponent(decoded.slice(sep + 1));
+            }
+          } catch { /* malformed Basic header: both stay null -> invalid_client below */ }
+        }
+        if (clientId === null) clientId = params.get('client_id');
+        if (clientSecret === null) clientSecret = params.get('client_secret');
+        const invalidClient = (): void => {
+          localSendJson(res, 401, { error: 'invalid_client' }, { 'WWW-Authenticate': 'Basic' });
+        };
+        if (!clientCredentialsLimiter.take(`${ip}|${clientId ?? ''}`)) {
+          localSendJson(res, 429, { error: 'slow_down' }, { 'Retry-After': '60' });
+          return;
+        }
+        if (!clientId || !clientSecret || !serviceAccounts) {
+          invalidClient();
+          return;
+        }
+        const verified = serviceAccounts.verifyCredentials(clientId, clientSecret);
+        if (!verified) {
+          invalidClient();
+          return;
+        }
+        const ttlMs = cfg.serviceAccountTokenTtlMs ?? 3600_000;
+        const { token } = tokenStore.issue(`sa:${verified.name}`, ttlMs);
+        // No refresh_token (spec §Token exchange) and no `scope` — client_credentials carries
+        // neither in this engine.
+        localSendJson(res, 200, { access_token: token, token_type: 'Bearer', expires_in: Math.floor(ttlMs / 1000) });
+        return;
+      }
 
       // v20a (DES-095): grant_type=refresh_token branch (no PKCE, rotating single-use).
       if (grantType === 'refresh_token') {

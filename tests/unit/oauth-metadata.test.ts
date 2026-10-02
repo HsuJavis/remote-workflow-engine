@@ -91,11 +91,11 @@ describe('buildAuthServerMetadata (DES-092)', () => {
     expect(m.response_types_supported).toEqual(['code']);
   });
 
-  // v20 (DES-092 v20): grant_types_supported gains refresh_token
-  // Pre-impl: ['authorization_code'] → toEqual(['authorization_code','refresh_token']) FAILS
-  it('grant_types_supported is exactly ["authorization_code","refresh_token"] (v20)', () => {
+  // Service accounts spec (owner decision 2026-10-03): grant_types_supported gains
+  // client_credentials (RFC 6749 §4.4) alongside the existing two.
+  it('grant_types_supported is exactly ["authorization_code","refresh_token","client_credentials"]', () => {
     const m = buildAuthServerMetadata(CFG);
-    expect(m.grant_types_supported).toEqual(['authorization_code', 'refresh_token']);
+    expect(m.grant_types_supported).toEqual(['authorization_code', 'refresh_token', 'client_credentials']);
   });
 
   // v20 (DES-092 v20): new fields required by MCP offline_access / RFC 8414
@@ -105,9 +105,12 @@ describe('buildAuthServerMetadata (DES-092)', () => {
     expect(m['scopes_supported']).toEqual(['openid', 'email', 'offline_access']);
   });
 
-  it('token_endpoint_auth_methods_supported is exactly ["none"] (v20)', () => {
+  // Service accounts spec: 'none' stays FIRST (never breaks an existing DCR/PKCE client reading
+  // this array positionally) — client_secret_basic/client_secret_post are additive, for the new
+  // client_credentials grant only.
+  it('token_endpoint_auth_methods_supported is exactly ["none","client_secret_basic","client_secret_post"]', () => {
     const m = buildAuthServerMetadata(CFG) as Record<string, unknown>;
-    expect(m['token_endpoint_auth_methods_supported']).toEqual(['none']);
+    expect(m['token_endpoint_auth_methods_supported']).toEqual(['none', 'client_secret_basic', 'client_secret_post']);
   });
 
   it('authorization_response_iss_parameter_supported is true (v20)', () => {

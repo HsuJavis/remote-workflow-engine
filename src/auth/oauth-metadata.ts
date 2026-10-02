@@ -56,9 +56,13 @@ export function buildAuthServerMetadata(cfg: AuthCfg): {
     registration_endpoint: `${b}/register`,
     code_challenge_methods_supported: ['S256'],
     response_types_supported: ['code'],
-    grant_types_supported: ['authorization_code', 'refresh_token'],
+    // Service accounts spec (owner decision 2026-10-03): client_credentials (RFC 6749 §4.4) for a
+    // non-interactive `sa:<name>` principal, alongside the existing PKCE/refresh pair.
+    grant_types_supported: ['authorization_code', 'refresh_token', 'client_credentials'],
     scopes_supported: OAUTH_SCOPES_SUPPORTED,
-    token_endpoint_auth_methods_supported: ['none'],
+    // 'none' stays first — every existing PKCE/DCR client keeps working unchanged;
+    // client_secret_basic/client_secret_post are additive, for client_credentials only.
+    token_endpoint_auth_methods_supported: ['none', 'client_secret_basic', 'client_secret_post'],
     authorization_response_iss_parameter_supported: true,
   };
 }
