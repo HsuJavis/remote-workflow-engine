@@ -140,6 +140,32 @@ describe('issue #109: workspace_list({scope:"global", kind}) — safe global-ass
     expect(r.text).not.toContain('"env"');
   });
 
+  // Review send-back F0 (MEDIUM): the PER-WORKFLOW branch of workspace_list merges global rows in
+  // RAW — any author who can register a workflow could read every admin-pushed global MCP server's
+  // full config (command/args/env) through their OWN workflow's listing, even though the dedicated
+  // scope:'global' door (tested above) already projects the exact same row down to {name,
+  // transport}. This is the live repro from the review: register an own workflow, then list its mcp
+  // assets — the global row must come back projected, never raw.
+  it('[F0, LOAD-BEARING] author listing their OWN workflow\'s mcp assets never sees a global row\'s raw config/secrets', async () => {
+    const reg = await call('workflow_register', { name: 'g109-authors-own', script: "export const meta = { phases: [] };\nreturn 'x';", mermaid: 'graph LR' }, authorToken);
+    expect(codeOf(reg.json), JSON.stringify(reg.json)).toBeUndefined();
+    const r = await call('workspace_list', { workflow: 'g109-authors-own', kind: 'mcp' }, authorToken);
+    expect(codeOf(r.json)).toBeUndefined();
+    const rows = r.json['result'] as Array<Record<string, unknown>>;
+    const row = rows.find((x) => x['name'] === 'g109-thinker');
+    expect(row).toBeDefined();
+    // The row's non-secret metadata (scope/builtin — REQ-113's "a global asset lists as builtin",
+    // advertised-surface-truth.test.ts) survives the merge; only `config` is gone.
+    expect(row).toMatchObject({ scope: 'global', builtin: true, kind: 'mcp', name: 'g109-thinker', transport: 'stdio' });
+    expect(Object.hasOwn(row!, 'config')).toBe(false);
+    expect(r.text).not.toContain('SECRET-XYZ-999');
+    expect(r.text).not.toContain('sekrit-value-12345');
+    expect(r.text).not.toContain('g109-secret-launcher');
+    expect(r.text).not.toContain('"command"');
+    expect(r.text).not.toContain('"args"');
+    expect(r.text).not.toContain('"env"');
+  });
+
   it('role:"none" is refused ACCOUNT_PENDING_APPROVAL for a global list, same as every other tool', async () => {
     const r = await call('workspace_list', { scope: 'global', kind: 'skill' }, noneToken);
     expect(codeOf(r.json)).toBe('ACCOUNT_PENDING_APPROVAL');
@@ -152,6 +178,21 @@ describe('issue #109: workspace_list({scope:"global", kind}) — safe global-ass
 
   it('scope:"global" with no kind is refused INVALID_ARGUMENT, never a silent []', async () => {
     const r = await call('workspace_list', { scope: 'global' }, authorToken);
+    expect(codeOf(r.json)).toBe('INVALID_ARGUMENT');
+  });
+
+  // Review send-back LOW-4: `workspace_list({kind})` with neither `workflow` nor `scope:'global'`
+  // is a malformed request (which asset tree is this even asking about?), not "zero assets of that
+  // kind" — the same "an empty list must be a fact, never a missing-argument's silent stand-in"
+  // rule REQ-118 already states for the per-workflow branch just below this one.
+  it('[LOW-4] workspace_list({kind}) with neither workflow nor scope is refused INVALID_ARGUMENT, never a silent []', async () => {
+    const r = await call('workspace_list', { kind: 'skill' }, authorToken);
+    expect(codeOf(r.json)).toBe('INVALID_ARGUMENT');
+    expect((r.json['error'] as { message?: string })?.message).toMatch(/workflow|scope/);
+  });
+
+  it('[LOW-4] workspace_list({}) with nothing at all is likewise refused INVALID_ARGUMENT', async () => {
+    const r = await call('workspace_list', {}, authorToken);
     expect(codeOf(r.json)).toBe('INVALID_ARGUMENT');
   });
 

@@ -1274,6 +1274,14 @@ export class McpFacade {
       const rows = this.assetSync ? await this.assetSync.listGlobal(a.kind) : [];
       return { runId: '', status: 'completed', result: rows };
     }
+    // issue #109 review send-back (LOW-4): `{kind}` (or nothing at all) with neither `workflow` nor
+    // `scope:'global'` is a malformed request — there is no asset tree to answer about — not "zero
+    // assets of that kind", which is what it used to fall through to below. Same REQ-118 "an empty
+    // list must be a fact, never a missing-argument's silent stand-in" rule this file already
+    // states one comment down for the workflow-exists check.
+    if (a.workflow === undefined) {
+      return { runId: '', status: 'failed', error: { code: 'INVALID_ARGUMENT', message: "INVALID_ARGUMENT: workspace_list requires runId, workflow (with kind), or scope:'global' (with kind) — pass workflow or scope:'global'" } };
+    }
     // v24 (integrator, REQ-118): the asset-scope branch used to answer `[]` for a workflow that was
     // never registered, which reads identically to "registered, no assets" — and the row's own
     // advertised `errors[]` promises `WORKFLOW_NOT_FOUND`. An empty list is a fact about an

@@ -356,12 +356,45 @@ function redactProbeMessage(message: string): string {
 export const GLOBAL_SKILL_DESCRIPTION_MAX_CHARS = 500;
 const SKILL_FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---/;
 const SKILL_DESCRIPTION_LINE_RE = /^description\s*:\s*(.*)$/i;
+// Review send-back LOW-3: a YAML block-scalar indicator (`|`, `|-`, `|+`, `>`, `>-`, `>+`, each with
+// an optional explicit indentation digit) — the ONE-line reader below used to return this literal
+// marker as if it were the description text.
+const SKILL_BLOCK_SCALAR_RE = /^([|>])[+-]?\d*$/;
+
+/** issue #109 (review send-back LOW-3): folds a YAML block-scalar `description` (`|`/`>`, with
+ *  either chomping indicator) into plain text instead of returning the bare marker — `startIndex`
+ *  is the index, within `lines`, of the `description: |`/`>` line itself. `|` (literal) keeps line
+ *  breaks; `>` (folded) joins lines with spaces, treating a blank line as a paragraph break (the
+ *  YAML folding rule, simplified — good enough for a one-line discovery description, not a full
+ *  parser). The block's own lines are whatever is MORE indented than the `description:` key itself;
+ *  the first line at the key's own indentation or less ends the block. Returns `null` when the
+ *  block has no lines at all (nothing to fold) rather than echoing the indicator back. */
+function foldBlockScalar(lines: string[], startIndex: number, style: '|' | '>'): string | null {
+  const keyIndent = (lines[startIndex]!.match(/^(\s*)/)?.[1] ?? '').length;
+  const blockLines: string[] = [];
+  for (let i = startIndex + 1; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.trim() === '') { blockLines.push(''); continue; }
+    const indent = (line.match(/^(\s*)/)?.[1] ?? '').length;
+    if (indent <= keyIndent) break;
+    blockLines.push(line);
+  }
+  // Trim trailing blank lines (chomping) without needing to honour `-`/`+` precisely — this is a
+  // display description, not a byte-exact YAML round-trip.
+  while (blockLines.length > 0 && blockLines[blockLines.length - 1] === '') blockLines.pop();
+  if (blockLines.length === 0) return null;
+  const minIndent = Math.min(...blockLines.filter((l) => l !== '').map((l) => (l.match(/^(\s*)/)?.[1] ?? '').length));
+  const dedented = blockLines.map((l) => (l === '' ? '' : l.slice(minIndent)));
+  const text = style === '|' ? dedented.join('\n') : dedented.join(' ').replace(/\s+/g, ' ').trim();
+  return text.length > 0 ? text : null;
+}
 
 /** issue #109: reads the `description:` field out of a global skill's own `SKILL.md` YAML
  *  frontmatter (the same `---\n...\n---` block every skill fixture in this codebase already
  *  writes) — `null` when the file is missing, has no frontmatter block, or declares no
  *  `description`. Never throws: a malformed/missing skill file degrades to "no description", never
- *  a listing failure. Deliberately dumb (no real YAML parser) — this reads ONE scalar line, not
+ *  a listing failure. Deliberately dumb (no real YAML parser) — this reads ONE scalar line (or, for
+ *  a block-scalar `|`/`>` value, folds the following indented lines — `foldBlockScalar`), not
  *  nested structure, and a quoted value has its surrounding quotes stripped. */
 function readGlobalSkillDescription(globalRoot: string, name: string): string | null {
   let md: string;
@@ -372,10 +405,17 @@ function readGlobalSkillDescription(globalRoot: string, name: string): string | 
   }
   const frontmatter = SKILL_FRONTMATTER_RE.exec(md);
   if (!frontmatter) return null;
-  for (const line of frontmatter[1]!.split(/\r?\n/)) {
-    const m = SKILL_DESCRIPTION_LINE_RE.exec(line);
+  const lines = frontmatter[1]!.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const m = SKILL_DESCRIPTION_LINE_RE.exec(lines[i]!);
     if (!m) continue;
-    const value = m[1]!.trim().replace(/^['"]|['"]$/g, '');
+    const raw = m[1]!.trim();
+    const blockScalar = SKILL_BLOCK_SCALAR_RE.exec(raw);
+    if (blockScalar) {
+      const folded = foldBlockScalar(lines, i, blockScalar[1] as '|' | '>');
+      return folded !== null ? folded.slice(0, GLOBAL_SKILL_DESCRIPTION_MAX_CHARS) : null;
+    }
+    const value = raw.replace(/^['"]|['"]$/g, '');
     return value.length > 0 ? value.slice(0, GLOBAL_SKILL_DESCRIPTION_MAX_CHARS) : null;
   }
   return null;
@@ -521,10 +561,40 @@ export class AssetSyncService {
     return { stored: req.name };
   }
 
-  /** Both scopes in one response (DES-153): global rows always included, workflow rows filtered by `workflow`. */
-  async list(query: { workflow: string; kind: AssetKind }): Promise<AssetCatalogRow[]> {
+  /** issue #109 review send-back (F0): the ONE projection of a GLOBAL row to what is safe to
+   *  disclose — shared by `list()` (the per-workflow merge, below) and `listGlobal()` (the dedicated
+   *  `scope:'global'` door), so a global row can never carry its full `config` (command/args/env/a
+   *  credential-bearing `url`) out through ONE door while the other already projects it. A
+   *  WORKFLOW-scoped row never reaches this — only the caller's own asset, kept as-is by `list()`. */
+  private _projectGlobalRow(r: AssetCatalogRow): GlobalAssetView {
+    return r.kind === 'skill'
+      ? { kind: 'skill', name: r.name, description: readGlobalSkillDescription(this._globalRoot, r.name) }
+      : { kind: 'mcp', name: r.name, transport: typeof r.config?.type === 'string' ? r.config.type : null };
+  }
+
+  /** issue #109 review send-back (F0): the per-workflow `list()` merge keeps the row's existing
+   *  non-secret metadata (`scope`, `builtin`, `pushedBy`, `pushedAt`, `kind`, `name` — the shape
+   *  `advertised-surface-truth.test.ts`'s REQ-113 case already pins: "a global asset lists as
+   *  builtin" lets a caller tell a global row apart from their own workflow-scoped one in the SAME
+   *  merged response) but drops `config` and substitutes the same safe field `_projectGlobalRow`
+   *  already computes for the dedicated `listGlobal()` door — never the narrower `GlobalAssetView`
+   *  alone, which would silently drop `scope`/`builtin`/attribution a caller already relies on. */
+  private _projectGlobalRowForList(r: AssetCatalogRow): Omit<AssetCatalogRow, 'config'> & GlobalAssetView {
+    const { config: _config, ...rest } = r;
+    return { ...rest, ...this._projectGlobalRow(r) };
+  }
+
+  /** Both scopes in one response (DES-153): global rows always included, workflow rows filtered by
+   *  `workflow`. issue #109 review send-back (F0): a global row merged in here is projected through
+   *  `_projectGlobalRowForList` — it is exactly as sensitive as one reached via `listGlobal()`'s
+   *  dedicated `scope:'global'` door, and must never hand out its raw `config` just because the
+   *  caller asked through their OWN workflow's listing instead. A workflow-scoped row the caller
+   *  already owns keeps its full shape (`config` included), unchanged. */
+  async list(query: { workflow: string; kind: AssetKind }): Promise<Array<AssetCatalogRow | (Omit<AssetCatalogRow, 'config'> & GlobalAssetView)>> {
     const rows = await this._catalog.listAssets();
-    return rows.filter((r) => r.kind === query.kind && (r.scope === 'global' || r.workflow === query.workflow));
+    return rows
+      .filter((r) => r.kind === query.kind && (r.scope === 'global' || r.workflow === query.workflow))
+      .map((r) => (r.scope === 'global' ? this._projectGlobalRowForList(r) : r));
   }
 
   /** issue #109: the GLOBAL-scope discovery read — before this, no tool enumerated `scope:'global'`
@@ -533,13 +603,11 @@ export class AssetSyncService {
    *  which requires guessing the name first). Callable by any approved principal (role gating lives
    *  at the tool layer, mcp-facade.ts/tool-specs.ts — this method itself is role-blind, matching
    *  `list()` above). Projects EVERY global row of the requested `kind` to the safe subset
-   *  (`GlobalAssetView`) — never the stored `config` object itself, which for `kind:'mcp'` may carry
-   *  `command`/`args`/`env`/a credential-bearing `url`. */
+   *  (`GlobalAssetView`, `_projectGlobalRow`) — never the stored `config` object itself, which for
+   *  `kind:'mcp'` may carry `command`/`args`/`env`/a credential-bearing `url`. */
   async listGlobal(kind: AssetKind): Promise<GlobalAssetView[]> {
     const rows = (await this._catalog.listAssets()).filter((r) => r.scope === 'global' && r.kind === kind);
-    return kind === 'skill'
-      ? rows.map((r) => ({ kind: 'skill' as const, name: r.name, description: readGlobalSkillDescription(this._globalRoot, r.name) }))
-      : rows.map((r) => ({ kind: 'mcp' as const, name: r.name, transport: typeof r.config?.type === 'string' ? r.config.type : null }));
+    return rows.map((r) => this._projectGlobalRow(r));
   }
 
   /** v24 Gate 7.5 (D-10, REQ-113): the WHOLE workflow's asset tree, for `workflow_deregister`.
