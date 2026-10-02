@@ -1050,6 +1050,47 @@ export class WorkflowCatalog {
     };
   }
 
+  /** issue #108: the owner-masking SIBLING of `resolveDetail` — every one of its three call sites
+   *  (`RunManager.start()`, `workflowDescribe`, `workflowSource`) already applies the SAME
+   *  `canRunResolved` gate AFTER `resolveDetail` succeeds, so a non-owner asking for a real-but-
+   *  forbidden version/channel was already answered the masked `VERSION_NOT_FOUND` — but
+   *  `resolveDetail` ITSELF throws the real `CHANNEL_UNPUBLISHED`/`VERSION_NOT_FOUND` the moment
+   *  `resolveVersionRequest` fails, which happens BEFORE that gate ever runs. A non-owner naming an
+   *  unpublished `beta` got `CHANNEL_UNPUBLISHED`; the same non-owner naming a published `beta`
+   *  (resolution succeeds, THEN the gate masks it) got `VERSION_NOT_FOUND` — two different codes for
+   *  the two states of a channel they can never read anyway, an existence oracle (Q5). Decides the
+   *  masking policy BEFORE calling `resolve()` at all (so a would-be-masked request's thrown code
+   *  never leaks past this method), using only the owner row and the channel pointers — the exact
+   *  same two facts `canRunResolved` reads, just available one step earlier here. Review send-back
+   *  (INFO 5): rather than re-deriving `canRunResolved`'s three-branch predicate inline (its own
+   *  policy and this method's would silently drift the next time either changes), this CALLS
+   *  `canRunResolved` directly once a candidate resolution exists — `channel:'beta'` is refused
+   *  UNCONDITIONALLY for a non-owner (published or not — confirming "published" is itself a
+   *  disclosure) via that function's own second branch; an explicit `version` (or `channel:'release'`,
+   *  or no selector) is let through to the REAL resolution only when it will turn out to equal
+   *  today's release pointer (its third branch), so `workflow_describe`-style owner/bypass/ownerless
+   *  behaviour and a release-pointed explicit version are BYTE-IDENTICAL to calling `resolveDetail`
+   *  directly — only the masked branch's wording changes, never its real content. A failed
+   *  resolution (`!verdict.ok` — no version/channel exists to even ask `canRunResolved` about) is
+   *  never permitted, the same as the unconditional `'beta'` case. */
+  async resolveForActor(name: string, sel: VersionSelector, actor: Actor): Promise<WorkflowDetail> {
+    const row = this._requireName(name); // throws CatalogNotFoundError for an unknown name — unrelated to the oracle (issue #108), unaffected
+    const known = new Set(this._listVersions(name));
+    if (known.size === 0) throw new CatalogNotFoundError(name);
+    const channels: Channels = { release: row.release_version, beta: row.beta_version };
+    const nonOwner = !canMutate(row.owner, actor);
+    const nonRelease = sel.version !== undefined || (sel.channel !== undefined && sel.channel !== 'release');
+    if (nonOwner && nonRelease) {
+      const verdict = resolveVersionRequest(sel, channels, known);
+      const permitted = verdict.ok && canRunResolved(row.owner, actor, verdict.version, channels, sel.channel);
+      if (!permitted) {
+        const label = sel.version ?? sel.channel ?? 'release';
+        throw codedError('VERSION_NOT_FOUND', `VERSION_NOT_FOUND: ${label} (workflow '${name}')`);
+      }
+    }
+    return this.resolveDetail(name, sel);
+  }
+
   /** v22 (DES-111): existence check that never throws — replaces the repo-wide
    *  try/catch-around-the-deleted-accessor pattern (4 call sites). */
   async exists(name: string): Promise<boolean> {

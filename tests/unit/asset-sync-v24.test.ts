@@ -133,6 +133,113 @@ describe('AssetSyncService v24 — two scopes, mcp gating, clock-sourced pushedA
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // Review send-back F0 (MEDIUM, issue #109 follow-up): `list({workflow, kind})` merges GLOBAL rows
+  // in RAW — any author who can register a workflow could read every admin-pushed global MCP
+  // server's full `config` (command/args/env/url) through their OWN workflow's asset listing, even
+  // though `listGlobal()` (the dedicated `scope:'global'` door) already projects the exact same row
+  // down to `{name, transport}`. A global row reached via `{workflow, kind}` is exactly as sensitive
+  // as one reached via `{scope:'global', kind}` — only a WORKFLOW-SCOPED row the caller already owns
+  // may keep its full config.
+  it('[F0] list({workflow, kind:"mcp"}) projects a GLOBAL mcp row to {kind,name,transport} — config/command/args/env never reach the per-workflow listing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-v24-f0-'));
+    try {
+      const catalog = fakeCatalogPort();
+      const svc = new AssetSyncService({
+        workRoot: dir, globalRoot: join(dir, 'global'), selfBind: { host: '127.0.0.1', port: 1 },
+        clock: new FixedClock(new Date('2026-01-01T00:00:00Z')),
+        catalog, probe: { probe: vi.fn().mockResolvedValue({ ok: true }) }, egressAllowlist: [],
+      });
+      await svc.push({ scope: 'global', kind: 'mcp', name: 'house-thinker', config: { type: 'stdio', command: 'npx', args: ['g', '--token=SECRET-XYZ-999'], env: { G109_API_KEY: 'sekrit-value-12345' } } as never, pushedBy: 'admin' });
+      const result = await svc.list({ workflow: 'some-authors-own-workflow', kind: 'mcp' });
+      // The row's existing non-secret metadata (scope/builtin/pushedBy/pushedAt — REQ-113's "a
+      // global asset lists as builtin", advertised-surface-truth.test.ts) survives; only `config` is
+      // gone, replaced by the same safe `transport` field `listGlobal()` itself would return.
+      expect(result).toEqual([expect.objectContaining({ scope: 'global', builtin: true, kind: 'mcp', name: 'house-thinker', transport: 'stdio' })]);
+      expect(Object.hasOwn(result[0] as object, 'config')).toBe(false);
+      expect(JSON.stringify(result)).not.toMatch(/SECRET-XYZ-999|sekrit-value-12345|command|args|env/i);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('[F0] list({workflow, kind}) keeps the FULL row for a workflow-scoped asset — only the global merge is projected', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-v24-f0b-'));
+    try {
+      const catalog = fakeCatalogPort();
+      const svc = new AssetSyncService({
+        workRoot: dir, globalRoot: join(dir, 'global'), selfBind: { host: '127.0.0.1', port: 1 },
+        clock: new FixedClock(new Date('2026-01-01T00:00:00Z')),
+        catalog, probe: { probe: vi.fn().mockResolvedValue({ ok: true }) }, egressAllowlist: [],
+      });
+      await svc.push({ scope: 'workflow', workflow: 'wf-owned', kind: 'mcp', name: 'own-server', config: { type: 'stdio', command: 'npx', args: ['y'] } as never, pushedBy: 'bob' });
+      const result = await svc.list({ workflow: 'wf-owned', kind: 'mcp' });
+      expect(result).toEqual([expect.objectContaining({ scope: 'workflow', name: 'own-server', config: { type: 'stdio', command: 'npx', args: ['y'] } })]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Review send-back LOW-3 (issue #109 follow-up): `description: >-` / `|` / `|-` is legal YAML a
+  // skill author may reasonably write for a multi-line description; the one-line frontmatter reader
+  // used to return the bare indicator string itself (e.g. literally `">-"`) as the description.
+  async function pushSkillWithBody(svc: AssetSyncService, name: string, body: string): Promise<void> {
+    const r = await svc.push({ scope: 'global', kind: 'skill', name, files: [{ path: 'SKILL.md', contentB64: Buffer.from(body).toString('base64') }], pushedBy: 'admin' });
+    if ('error' in r) throw new Error(`push failed: ${JSON.stringify(r)}`);
+  }
+
+  it('[LOW-3] a folded block-scalar description (">-") is folded into text, never the bare ">-" marker', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-v24-low3a-'));
+    try {
+      const svc = new AssetSyncService({
+        workRoot: dir, globalRoot: join(dir, 'global'), selfBind: { host: '127.0.0.1', port: 1 },
+        clock: new FixedClock(new Date('2026-01-01T00:00:00Z')), catalog: fakeCatalogPort(), probe: { probe: vi.fn() }, egressAllowlist: [],
+      });
+      await pushSkillWithBody(
+        svc,
+        'block-desc',
+        '---\nname: block-desc\ndescription: >-\n  Formats quarterly\n  reports nicely.\n---\n\nbody\n',
+      );
+      const [row] = await svc.listGlobal('skill');
+      expect(row).toEqual({ kind: 'skill', name: 'block-desc', description: 'Formats quarterly reports nicely.' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('[LOW-3] a literal block-scalar description ("|") keeps its line breaks, never the bare "|" marker', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-v24-low3b-'));
+    try {
+      const svc = new AssetSyncService({
+        workRoot: dir, globalRoot: join(dir, 'global'), selfBind: { host: '127.0.0.1', port: 1 },
+        clock: new FixedClock(new Date('2026-01-01T00:00:00Z')), catalog: fakeCatalogPort(), probe: { probe: vi.fn() }, egressAllowlist: [],
+      });
+      await pushSkillWithBody(
+        svc,
+        'block-desc-lit',
+        '---\nname: block-desc-lit\ndescription: |\n  Line one.\n  Line two.\n---\n\nbody\n',
+      );
+      const [row] = await svc.listGlobal('skill');
+      expect(row).toEqual({ kind: 'skill', name: 'block-desc-lit', description: 'Line one.\nLine two.' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('[LOW-3] an empty block scalar (no following indented lines) returns null, never the bare marker', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-asset-v24-low3c-'));
+    try {
+      const svc = new AssetSyncService({
+        workRoot: dir, globalRoot: join(dir, 'global'), selfBind: { host: '127.0.0.1', port: 1 },
+        clock: new FixedClock(new Date('2026-01-01T00:00:00Z')), catalog: fakeCatalogPort(), probe: { probe: vi.fn() }, egressAllowlist: [],
+      });
+      await pushSkillWithBody(svc, 'block-desc-empty', '---\nname: block-desc-empty\ndescription: |-\n---\n\nbody\n');
+      const [row] = await svc.listGlobal('skill');
+      expect(row).toEqual({ kind: 'skill', name: 'block-desc-empty', description: null });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

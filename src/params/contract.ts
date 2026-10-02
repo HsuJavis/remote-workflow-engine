@@ -725,6 +725,25 @@ export function validateUserOverrides(
  *  through unchanged (backward compat). Unchanged in v24 — `args` still lives flat on
  *  `ParamContract`, untouched by the agents/knobs split. */
 export function validateDeclaredArgs(c: ParamContract, args: unknown): { ok: true } | Err {
+  // Review send-back LOW-1 (issue #107 follow-up): `key in obj` below throws a bare, uncoded
+  // `TypeError` when `args` is a non-record primitive (string/number/boolean) — reachable from
+  // BOTH `start()` and a nested `workflow()` call (this function is the one door both share) the
+  // instant the contract declares at least one `args` key. Refused the same way any other wrong-
+  // shaped args value is: `PARAM_OUT_OF_RANGE`, reported by type only (never the value — same
+  // convention `checkValueAgainstSpec` already uses). A contract declaring NO args at all has
+  // nothing to check a non-record value against, so it is left alone (`undefined`/`null` already
+  // degrade to `{}` below, unchanged).
+  if (Object.keys(c.args).length > 0 && args !== undefined && args !== null) {
+    const isRecord = typeof args === 'object' && !Array.isArray(args);
+    if (!isRecord) {
+      return {
+        ok: false,
+        code: 'PARAM_OUT_OF_RANGE',
+        message: 'args has the wrong type',
+        detail: { param: 'args', suppliedType: Array.isArray(args) ? 'array' : typeof args, expectedType: 'object' },
+      };
+    }
+  }
   const obj = (args ?? {}) as Record<string, unknown>;
   for (const [key, spec] of Object.entries(c.args)) {
     if (!(key in obj)) continue;

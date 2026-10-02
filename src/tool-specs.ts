@@ -258,8 +258,13 @@ function pruneMode(args: any): 'own' | 'other' {
   return args && typeof args === 'object' && 'namespace' in args ? 'other' : 'own';
 }
 
-function listMode(args: any): 'run' | 'workflow' | 'invalid' {
+// issue #109: `scope:'global'` is checked BEFORE the `workflow`+`kind` branch (same order
+// `pushMode`/`deleteMode` already use for their own `global` row) — `{scope:'global', workflow}`
+// still resolves here to `'global'`, and the HANDLER (mcp-facade.ts's `workspaceList`) is what
+// refuses that combination clearly, rather than the authz layer silently preferring one meaning.
+function listMode(args: any): 'run' | 'workflow' | 'global' | 'invalid' {
   if (args && typeof args === 'object' && 'runId' in args) return 'run';
+  if (args && args.scope === 'global') return 'global';
   if (args && typeof args === 'object' && 'workflow' in args && 'kind' in args) return 'workflow';
   return 'invalid';
 }
@@ -904,19 +909,35 @@ export const TOOL_SPECS = [
   },
   {
     name: 'workspace_list', entity: 'workspace', key: null,
-    description: "List files in a run's workspace, or an asset's files under a workflow.",
+    // issue #109: `scope:'global'` is the ONLY way to discover a global skill/MCP server by name —
+    // self-contained here since the client plugin is removed and this is a cold model's only
+    // documentation of it. Global assets are opt-in by EXACT name in your own script's declared
+    // `skills`/`mcp` (see workflow_authoring_guide) — this just lets you find the name in the first
+    // place; it never grants or auto-declares anything.
+    description: "List files in a run's workspace, an asset's files under a workflow, or " +
+      "({scope:'global', kind}, `kind` required) every GLOBAL skill/MCP server any admin has pushed " +
+      "— name only, plus (skills) the SKILL.md description or (mcp) the transport type; never " +
+      "command/args/env/url/secrets. Callable by any approved principal (role 'user' or above); " +
+      "`scope:'global'` does not take a `workflow` (refused INVALID_ARGUMENT — global assets are " +
+      'engine-wide). A global asset is opt-in by EXACT name, never auto-granted — use the name this ' +
+      'lists in your own agent\'s declared `meta.params.agents.<label>.skills`/`.mcp` to actually ' +
+      'reach it (workflow_authoring_guide has the full rule).',
     // Issue #92 part B/C follow-up: closed enum of the actually-supported AssetKind values — same
     // reasoning as workspace_delete/workspace_push (a bare {type:'string'} let a junk `kind` reach
     // the handler and answer an empty list rather than INVALID_ARGUMENT).
-    inputSchema: schema({ runId: { type: 'string' }, workflow: { type: 'string' }, kind: { type: 'string', enum: ['skill', 'mcp'] } }),
+    inputSchema: schema({ runId: { type: 'string' }, workflow: { type: 'string' }, kind: { type: 'string', enum: ['skill', 'mcp'] }, scope: { type: 'string', enum: ['workflow', 'global'] } }),
     outputSchema: OUT,
-    errors: ['RUN_NOT_FOUND', 'WORKFLOW_NOT_FOUND', 'NOT_RUN_OWNER', 'NOT_WORKFLOW_OWNER'],
+    errors: ['RUN_NOT_FOUND', 'WORKFLOW_NOT_FOUND', 'NOT_RUN_OWNER', 'NOT_WORKFLOW_OWNER', 'INVALID_ARGUMENT'],
     seeAlso: [] as string[],
     authz: {
       mode: listMode,
       rows: {
         run: { minRole: 'user', ownership: 'run', adminCrossRead: true },
         workflow: { minRole: 'author', ownership: 'workflow' },
+        // issue #109: role-only (any approved principal, i.e. not role:'none') — same shape as
+        // workspace_push/workspace_delete's own `global` row minus the `admin` floor: a global
+        // READ is open to every approved principal, only a global WRITE is admin-only.
+        global: { minRole: 'user', ownership: 'none' },
         invalid: { minRole: 'user', ownership: 'none' },
       },
     } as ToolAuthz,
@@ -925,6 +946,7 @@ export const TOOL_SPECS = [
       errors: {
         RUN_NOT_FOUND: { runId: ABSENT_ID },
         WORKFLOW_NOT_FOUND: { workflow: ABSENT_WORKFLOW, kind: 'skill' },
+        INVALID_ARGUMENT: { scope: 'global', workflow: ABSENT_WORKFLOW, kind: 'skill' },
       },
     },
   },

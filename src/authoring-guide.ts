@@ -726,6 +726,20 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "it (or a run_start call omits `args` entirely); an explicit caller-supplied value always " +
         "wins, including an explicit `undefined`. `type` is one of `string | number | enum` (an " +
         '`enum` type requires the `enum` array of legal values).\n\n' +
+        // issue #107: args are typed data the AUTHOR places into their own trusted prompt — the
+        // bound is the contract's job, not the caller's good behaviour, because `args` is validated
+        // on BOTH admission doors a run can arrive through.
+        '`args` are typed data YOU (the author) interpolate into your own trusted prompt — declaring ' +
+        '`type`/`enum`/`min`/`max` is what keeps a caller-supplied value inside the shape you wrote ' +
+        'the prompt for. This is enforced on `run_start` AND on a nested `workflow(name, args)` call ' +
+        "(the SAME contract, the CALLED workflow's own — a caller composing your workflow cannot " +
+        'send anything your declared `args` would not already accept directly); a value outside the ' +
+        'contract is refused before your script runs at all. `appendPrompt` is the separate, ' +
+        "author-OPT-IN channel for a caller's own free-text instructions, framed so the model can " +
+        "tell them apart from yours — a `string`-typed arg you interpolate verbatim carries no such " +
+        'framing, so a loose `{type:\'string\'}` (no `enum`/`maxLength`-style `max`) lets ANY text ' +
+        'through your own bound; constrain it with `enum`/`max`, or route free text through ' +
+        '`appendPrompt` instead.\n\n' +
         `\`meta.params.knobs\` and \`meta.defaults\` are retired — a script that declares either is ` +
         `refused \`DEFAULTS_RETIRED\`, naming \`meta.params.agents.<label>.<key>.default\` as the ` +
         `replacement.\n\n` +
@@ -1250,7 +1264,12 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'script declares the name (`meta.params.agents.<label>.skills`/`.mcp`) — existing at global ' +
         "scope never auto-grants it to an agent that doesn't ask for it, and a declared-but-absent " +
         'name (workflow-scoped or global, checked in that order) is refused `SKILL_NOT_PROVISIONED`/' +
-        '`MCP_NOT_PROVISIONED` at admission, not registration.',
+        '`MCP_NOT_PROVISIONED` at admission, not registration. ' +
+        // issue #109: the one-line pointer to the discovery tool — global assets are opt-in by
+        // exact name, so finding that name is the first step; this is where it's discoverable.
+        "Don't know the exact name? `workspace_list({scope:'global', kind:'skill'|'mcp'})` lists " +
+        "every global asset of that kind — name plus (skill) its SKILL.md description or (mcp) its " +
+        'transport type, nothing more.',
     ),
   );
 

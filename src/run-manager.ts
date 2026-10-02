@@ -43,7 +43,7 @@ import { AgentExecutor } from './agent-executor.js';
 import { redact, hasSecretMarker } from './secret-resolver.js';
 import type { SecretValueProvider } from './secret-resolver.js';
 import { ResumeCache, MISS, type ResumePlan } from './resume-cache.js';
-import { WorkflowCatalog, canRunResolved, actorFromPrincipal, type Actor } from './workflow-catalog.js';
+import { WorkflowCatalog, actorFromPrincipal, type Actor } from './workflow-catalog.js';
 import { assetRootsFor, defaultAssetRoot, globalAssetRoot, type AssetSyncService } from './asset-sync.js';
 import type { GatewayClient, GatewayConfig } from './gateway/client.js';
 import { LiteLLMGatewayClient } from './gateway/client.js';
@@ -174,6 +174,24 @@ function hasExplicitSeed(spec: RunSpec): boolean {
  *  any caller that wants it, ignored by ones (like McpFacade.toErrEnvelope) that don't. */
 function paramCodedError(err: ParamErr): Error {
   return Object.assign(codedError(err.code, err.message), { detail: err.detail });
+}
+
+/** v35 continued (issue #107): materializes declared-but-absent `args` keys from `contract.args`'
+ *  own `.default` — the SAME `isRecordArgs` normalization `start()` already applied to its own
+ *  submission before `validateDeclaredArgs` — shared with a nested `workflow()` frame's own
+ *  admission (`_handleWorkflowRequest`) so neither call site re-derives the ternary. Returns the
+ *  value to dispatch/validate (`args`, unchanged for a non-record value — materializing over a
+ *  string/array would spread it into index keys) and, for a plain-record args value only, the
+ *  materialized RECORD (`resolvedArgs`) — `start()` alone folds that into its admission snapshot
+ *  (`effectiveParams.args`, `INV-V35-2`); a nested frame builds no such snapshot and uses only
+ *  `args`. Pure — throws nothing; the caller validates with `validateDeclaredArgs` at its own pinned
+ *  point (overrides-then-args precedence in `start()`; no overrides exist on the nested path). */
+function materializeRunArgs(contract: ParamContract, rawArgs: unknown): { args: unknown; resolvedArgs: Record<string, unknown> | undefined } {
+  const isRecordArgs = rawArgs !== null && typeof rawArgs === 'object' && !Array.isArray(rawArgs);
+  const resolvedArgs = (rawArgs === undefined || rawArgs === null || isRecordArgs)
+    ? materializeArgDefaults((rawArgs ?? {}) as Record<string, unknown>, contract.args)
+    : undefined;
+  return { args: resolvedArgs ?? rawArgs, resolvedArgs };
 }
 
 /** v37 (ARCH-182, DES-263, TASK-258, REQ-218, ADR-086): the admission predicate — pure (no fs, no
@@ -859,21 +877,20 @@ export class RunManager {
       // `resolve()` because a nested call always resolves release regardless of owner, so it has no
       // use for either field). `resolveDetail` internally calls `resolve()` once and keeps what it
       // already fetched — same SQL, not a second query.
-      const registered = await this._catalog.resolveDetail(spec.name, { version: spec.version, channel: spec.channel }); // throws CatalogNotFoundError/typed resolve error — caught by SubmissionValidator pre-run
-      // v38 (issue #100, owner-approved policy): the NON-OWNER version-pin gate — placed FIRST,
-      // immediately after the version/channel selector resolves and BEFORE the registeredRemote
-      // confinement recheck and LEGACY_REREGISTER below, so a non-owner probing a private/legacy/
-      // unconfined-tainted version learns nothing beyond VERSION_NOT_FOUND — the SAME code and
-      // message SHAPE `resolveVersionRequest` itself uses for a genuinely unknown version (Q5:
-      // existence-masking; a hidden non-release version and a real 404 must be indistinguishable).
-      // `canRunResolved` reuses `canMutate`'s own owner/bypass/ownerless notion (Q1/Q2/Q5's explicit
-      // instruction) — an owner, a bypass actor (admin/auth-disabled/loopback-exempt, matching
-      // `workflow_publish`/`workflow_deregister`'s existing bypass), or an ownerless legacy row may
-      // reach ANY version; everyone else only the CURRENT RELEASE.
-      if (!canRunResolved(registered.owner, resolvedActor, registered.version, registered.channels, spec.channel)) {
-        const label = spec.version ?? spec.channel ?? 'release';
-        throw codedError('VERSION_NOT_FOUND', `VERSION_NOT_FOUND: ${label} (workflow '${spec.name}')`);
-      }
+      // v38 (issue #100, owner-approved policy) / issue #108 (2026-10-02, oracle fix): the
+      // NON-OWNER version-pin gate — an owner, a bypass actor (admin/auth-disabled/
+      // loopback-exempt, matching `workflow_publish`/`workflow_deregister`'s existing bypass), or an
+      // ownerless legacy row may reach ANY version; everyone else only the CURRENT RELEASE, masked
+      // as the SAME `VERSION_NOT_FOUND` code+message `resolveVersionRequest` itself uses for a
+      // genuinely unknown version (Q5: existence-masking). This used to be a POST-hoc `canRunResolved`
+      // check run AFTER `resolveDetail` — which meant `resolveDetail` itself (via
+      // `resolveVersionRequest`) could already throw the REAL `CHANNEL_UNPUBLISHED`/
+      // `VERSION_NOT_FOUND` for a non-owner's `beta`/explicit-version ask before the masking gate
+      // ever ran, leaking exactly the "is this non-release thing published" fact Q5 forbids (issue
+      // #108). `resolveForActor` (workflow-catalog.ts) folds the SAME predicate to BEFORE resolution
+      // — the masking decision is made first, using only the owner row + channel pointers, so a
+      // masked request's real code never escapes this call at all.
+      const registered = await this._catalog.resolveForActor(spec.name, { version: spec.version, channel: spec.channel }, resolvedActor); // throws CatalogNotFoundError/typed resolve error — caught by SubmissionValidator pre-run
       // issue #93 item 2: the SECOND admission check — the resolved VERSION's own
       // `registeredRemote`, known only now (after `catalog.resolve()`, so WORKFLOW_NOT_FOUND/
       // VERSION_NOT_FOUND/CHANNEL_UNPUBLISHED above already had priority). RECORDS into
@@ -946,12 +963,11 @@ export class RunManager {
     // persists the RESOLVED record, never the caller's bare `null`/omission. A non-record `args`
     // (a caller CAN send `args: "hello"` today — `run_start`'s schema declares no type on it) is
     // passed through untouched: materializing over it would spread a string into index keys.
-    const rawArgs = spec.args;
-    const isRecordArgs = rawArgs !== null && typeof rawArgs === 'object' && !Array.isArray(rawArgs);
-    const resolvedArgs = (rawArgs === undefined || rawArgs === null || isRecordArgs)
-      ? materializeArgDefaults((rawArgs ?? {}) as Record<string, unknown>, contract.args)
-      : undefined;
-    if (resolvedArgs) spec = { ...spec, args: resolvedArgs };
+    // issue #107: materialize-defaults is now the SAME shared helper a nested `workflow()` frame's
+    // own admission calls — see `materializeRunArgs`'s own doc for why only `resolvedArgs` (the
+    // record case) reassigns `spec.args` here.
+    const { args: materializedArgs, resolvedArgs } = materializeRunArgs(contract, spec.args);
+    if (resolvedArgs) spec = { ...spec, args: materializedArgs };
     // v26 (DES-178, ARCH-116, ADR-038, TASK-178) — 2026-09-26 (alias mechanism removed, owner
     // decision 6): fetched ONCE per admission and reused for BOTH the UNKNOWN_MODEL existence check
     // (override rung here, effective-value rung in `_refuseUnadmittableParams` below) AND the
@@ -2069,6 +2085,25 @@ export class RunManager {
     // resolver as `start()`'s (`_refuseUnprovisionedAssets`), checked against the CHILD's own
     // contract/name (never the parent's — a nested workflow's declared assets are scoped to it).
     await this._refuseUnprovisionedAssets(name, childContract);
+    // issue #107: the nested frame's OWN materialize-defaults + declared-args validation — the SAME
+    // door `start()` applies to a top-level submission (`materializeRunArgs` + `validateDeclaredArgs`,
+    // shared, not re-derived), run against the CHILD's own contract (never the parent's — another
+    // workflow's declared args are its own, AUTHORING.md's "nested workflow() black box") and BEFORE
+    // any child run/record exists (the `WorkflowNodeView` push and `nested.run()` below). A caller
+    // script's `workflow(name, args)` is itself untrusted input reaching the CHILD's own prompt —
+    // without this, any bound the child declared (type/enum/min/max) was reachable only via
+    // run_start, never via a sibling workflow composing it (cross-principal prompt injection).
+    const { args: childArgs } = materializeRunArgs(childContract, args);
+    const childArgsResult = validateDeclaredArgs(childContract, childArgs);
+    // Review send-back LOW-2: an args refusal never creates a child run/record — same "a refusal
+    // that never dispatched anything must not burn a slot" rule LOW-3 already applies to the
+    // disk-floor check above the counter. The counter is incremented earlier (before `resolve()`,
+    // pinned by run-manager-disk-floor.test.ts's DISK_LOW-before-resolve ordering) so it cannot
+    // simply move below this check; released here instead.
+    if (!childArgsResult.ok) {
+      entry.descendants -= 1;
+      throw paramCodedError(childArgsResult);
+    }
     const childParams = defaultRunParams(undefined, childContract.agents);
     // Nested-asset-scope fix: this frame's OWN per-label declared skills/mcp + workflow name
     // (REQ-113's nested half) — threaded down to `_handleAgentRequest` exactly like `childParams`
@@ -2150,7 +2185,7 @@ export class RunManager {
     generation.addEventListener('abort', killNested, { once: true });
     let outcome: Awaited<ReturnType<SandboxHost['run']>>;
     try {
-      outcome = await nested.run(`${runId}-nested`, registered.script, args, null);
+      outcome = await nested.run(`${runId}-nested`, registered.script, childArgs, null);
     } finally {
       generation.removeEventListener('abort', killNested);
     }
