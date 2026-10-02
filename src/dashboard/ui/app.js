@@ -199,10 +199,19 @@ function buildFooter(island, lang) {
 }
 
 let pendingTab = null;
+// VAL-238 (owner-reported bug, 2026-10-02): the last tab `activateTab` actually put on screen —
+// survives a full `mountApp()` remount (a language/theme toggle), unlike `pendingTab` (which is
+// ONLY ever set by cross-route navigation, `setTab` below, and consumed once). `mountHomeRoot()`
+// falls back to this instead of a hardcoded `'workflows'`, so a remount re-opens whatever tab the
+// operator was actually looking at.
+let currentTab = 'workflows';
 const TAB_MODULES = { models: './models.js', system: './system.js', issues: './issues.js', admin: './admin.js' };
 // [v27c AC-5 Gate 8 repair] once a tab's module has loaded, its `onTick` is cached here so
 // switching BACK to an already-mounted tab re-joins the one poll timer without a second
-// `import()` (the module is only ever `render()`ed once — `panel.dataset.mounted` still owns that).
+// `import()` — the module itself is cached, but ITS PANEL is not: `mountHomeRoot()` rebuilds a
+// fresh `[data-tab-panel]` DOM tree on every remount, so `render()` must still run again on that
+// fresh panel (VAL-238: skipping it on a cache hit left every tab but the first-visited one blank
+// after a language toggle, `panel.dataset.mounted` or not).
 const tabModuleCache = {};
 
 // [v27c AC-5 Gate 8 repair] this function used to only toggle panel visibility — `currentView`
@@ -212,6 +221,7 @@ const tabModuleCache = {};
 // tab on every activation, which is what makes `endpointsFor(currentView.name)` (in `tick()`)
 // return that tab's route.
 function activateTab(tab) {
+  currentTab = tab;
   const panels = document.querySelectorAll('[data-tab-panel]');
   panels.forEach((p) => {
     p.style.display = p.dataset.tabPanel === tab ? '' : 'none';
@@ -232,25 +242,36 @@ function activateTab(tab) {
     // `tick()` already skips calling a null `onTick`, and the per-url fetch it always does still
     // reports this tab's route status to `nextConnection` in the meantime.
     currentView = { name: tab, ctx: {}, container: panel, onTick: cached ? cached.onTick : null };
-    if (!cached && panel && !panel.dataset.mounted) {
+    // VAL-238: this panel node is fresh on every `mountHomeRoot()` remount regardless of whether
+    // the MODULE is cached — `!panel.dataset.mounted` alone decides whether THIS panel still needs
+    // a `render()` call; the cache only decides whether that call needs a new `import()` first.
+    if (panel && !panel.dataset.mounted) {
       panel.dataset.mounted = '1';
-      import(TAB_MODULES[tab]).then((mod) => {
-        tabModuleCache[tab] = mod;
-        mod.render(panel, {}, {});
-        // Only join THIS module's onTick to the timer if the operator is still on this tab — a fast
-        // switch away before the import settled must not steal the tick back from whichever tab is
-        // actually visible now.
-        if (currentView && currentView.name === tab) {
-          currentView.onTick = mod.onTick;
-          // [v28, DES-210, TASK-217] the cold path: fire again now this tab's onTick is mounted,
-          // rather than leaving its panel empty for up to 3s until the ambient cycle catches up.
-          scheduleTick();
-        }
-      }).catch(() => {
-        const p = document.createElement('p');
-        p.textContent = `${tab} unavailable`;
-        panel.appendChild(p);
-      });
+      if (cached) {
+        // `currentView.onTick` is already `cached.onTick` (set above) and the unconditional
+        // `scheduleTick()` at the end of this function already fires the next tick with it wired
+        // in — no second tick needed here (unlike the cold `import()` path below, which lands
+        // asynchronously, after that trailing call has already fired without an `onTick` to call).
+        cached.render(panel, {}, {});
+      } else {
+        import(TAB_MODULES[tab]).then((mod) => {
+          tabModuleCache[tab] = mod;
+          mod.render(panel, {}, {});
+          // Only join THIS module's onTick to the timer if the operator is still on this tab — a fast
+          // switch away before the import settled must not steal the tick back from whichever tab is
+          // actually visible now.
+          if (currentView && currentView.name === tab) {
+            currentView.onTick = mod.onTick;
+            // [v28, DES-210, TASK-217] the cold path: fire again now this tab's onTick is mounted,
+            // rather than leaving its panel empty for up to 3s until the ambient cycle catches up.
+            scheduleTick();
+          }
+        }).catch(() => {
+          const p = document.createElement('p');
+          p.textContent = `${tab} unavailable`;
+          panel.appendChild(p);
+        });
+      }
     }
   }
   // [v28, DES-210, TASK-217] every activation ends with an immediate re-poll of the now-visible
@@ -615,7 +636,12 @@ function mountHomeRoot() {
   renderHome(workflowsPanel, { cards: [], lang: prefs.lang }, handlers);
   // `activateTab` (below) now ends with its own `scheduleTick()` [v28, DES-210, TASK-217] — that is
   // what puts real cards on screen before `networkidle0`, no separate call needed here.
-  activateTab(pendingTab || 'workflows');
+  // VAL-238: `pendingTab` is only set by explicit cross-route navigation (`setTab` below); any OTHER
+  // remount (a language/theme toggle calling `mountApp()` again) carries no `pendingTab` at all, so
+  // falling back to a hardcoded `'workflows'` here is what silently dropped the operator back to the
+  // home tab. `currentTab` is `activateTab`'s own record of the tab last put on screen, so this now
+  // re-opens whichever tab that actually was.
+  activateTab(pendingTab || currentTab);
   pendingTab = null;
 }
 
