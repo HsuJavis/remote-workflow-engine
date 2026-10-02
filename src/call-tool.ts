@@ -23,6 +23,7 @@ import type { SystemInfoSampler } from './system-info.js';
 import type { RunStore } from './run-store.js';
 import type { ErrorCode } from './errors.js';
 import type { PrincipalAdmin } from './auth/principal-admin.js';
+import type { ServiceAccountStore, ServiceAccountRow, ServiceAccountSecretRow } from './auth/service-account-store.js';
 
 // Ajv instance shared by every validateArgs() call — same construction as agent-executor.ts's
 // schema validation (D-V4): allErrors:false (first failure is enough to refuse), strict:false
@@ -79,6 +80,14 @@ export interface ToolDeps {
    *  dashboard admin page). Optional so the existing `ToolDeps` fixtures compile unchanged;
    *  `server.ts` always wires it (auth on or off). */
   principals?: PrincipalAdmin;
+  /** Service accounts spec (owner decision 2026-10-03): the store behind the 6 service_account_*
+   *  tools. Optional so existing ToolDeps fixtures compile unchanged; server.ts always wires it
+   *  (auth on or off — same convention as `principals`). */
+  serviceAccounts?: ServiceAccountStore;
+  /** Revokes every bearer already issued to `principal` (e.g. "sa:ci-bot") — service_account_delete's
+   *  "revokes all tokens" (spec §Management surface). Decoupled from TokenStore's concrete type the
+   *  same way `principals`/`audit` are their own narrow capabilities. */
+  revokeServiceAccountTokens?: (principal: string) => number;
 }
 
 /** {code:number} marks the ONE case (unknown tool name) that lifts to a top-level JSON-RPC
@@ -112,6 +121,35 @@ function validateArgs(schema: Record<string, unknown>, args: unknown): string | 
   if (validate(args)) return null;
   const err = validate.errors?.[0];
   return err ? `${err.instancePath || '(root)'} ${err.message}` : 'invalid arguments';
+}
+
+/** Service accounts spec (owner decision 2026-10-03): `expiresAt` is ISO-8601 on the wire, epoch ms
+ *  in ServiceAccountStore. `undefined` (omitted) passes through unchanged; a non-parseable string
+ *  is the sentinel 'INVALID' so the caller can refuse INVALID_ARGUMENT without a try/catch. */
+function parseIsoOrUndefined(raw: unknown): number | undefined | 'INVALID' {
+  if (raw === undefined) return undefined;
+  const t = Date.parse(String(raw));
+  return Number.isNaN(t) ? 'INVALID' : t;
+}
+/** Same as above, but `null` (explicit clear — service_account_update) passes through as `null`. */
+function parseIsoOrNullOrUndefined(raw: unknown): number | null | undefined | 'INVALID' {
+  if (raw === null) return null;
+  return parseIsoOrUndefined(raw);
+}
+function renderServiceAccountSecret(s: ServiceAccountSecretRow): Record<string, unknown> {
+  return { id: s.id, createdAt: new Date(s.createdAt).toISOString(), expiresAt: s.expiresAt !== null ? new Date(s.expiresAt).toISOString() : null, lastUsedAt: s.lastUsedAt !== null ? new Date(s.lastUsedAt).toISOString() : null };
+}
+/** Service accounts spec: the wire shape of an account — `clientId` ("sa:<name>") alongside `name`
+ *  since every management tool's argument is the bare name but a caller using the credentials needs
+ *  the client_id form; timestamps are ISO-8601; `secrets[]` never carries a hash or raw value. */
+function renderServiceAccount(row: ServiceAccountRow): Record<string, unknown> {
+  return {
+    clientId: `sa:${row.name}`, name: row.name, description: row.description, role: row.role,
+    workflows: row.workflows, expiresAt: row.expiresAt !== null ? new Date(row.expiresAt).toISOString() : null,
+    createdBy: row.createdBy, createdAt: new Date(row.createdAt).toISOString(), disabled: row.disabled,
+    lastUsedAt: row.lastUsedAt !== null ? new Date(row.lastUsedAt).toISOString() : null,
+    secrets: row.secrets.map(renderServiceAccountSecret),
+  };
 }
 
 /** The `*_list` scoping rule, declared ONCE (Gate 6.5+7 round 2 simplify): both trigger stores'
@@ -405,6 +443,60 @@ export async function callTool(
       const out = deps.principals.setQuota(a['id'] as string, a['limit'] ?? null, actor ?? 'local');
       if (!out.ok) return refusalEnvelope(out.code, out.reason);
       return { runId: '', status: 'completed', result: out.entry };
+    }
+
+    // ---- service accounts (6) — owner decision 2026-10-03 ----
+    case 'service_account_create': {
+      if (!deps.serviceAccounts) return refusalEnvelope('INTERNAL_ERROR', 'INTERNAL_ERROR: the service account store is not wired on this engine');
+      const expiresAt = parseIsoOrUndefined(a['expiresAt']);
+      if (expiresAt === 'INVALID') return refusalEnvelope('INVALID_ARGUMENT', 'INVALID_ARGUMENT: expiresAt must be a parseable ISO-8601 timestamp');
+      const out = deps.serviceAccounts.create({
+        name: a['name'] as string, description: (a['description'] as string | undefined) ?? null,
+        role: a['role'] as 'author' | 'user', workflows: a['workflows'] as string[] | undefined,
+        expiresAt, createdBy: actor ?? 'local',
+      });
+      if (!out.ok) return refusalEnvelope(out.code, out.reason);
+      return { runId: '', status: 'completed', result: { clientId: out.clientId, clientSecret: out.clientSecret, account: renderServiceAccount(out.account) } };
+    }
+    case 'service_account_list': {
+      if (!deps.serviceAccounts) return refusalEnvelope('INTERNAL_ERROR', 'INTERNAL_ERROR: the service account store is not wired on this engine');
+      return { runId: '', status: 'completed', result: deps.serviceAccounts.list().map(renderServiceAccount) };
+    }
+    case 'service_account_update': {
+      if (!deps.serviceAccounts) return refusalEnvelope('INTERNAL_ERROR', 'INTERNAL_ERROR: the service account store is not wired on this engine');
+      const expiresAt = parseIsoOrNullOrUndefined(a['expiresAt']);
+      if (expiresAt === 'INVALID') return refusalEnvelope('INVALID_ARGUMENT', 'INVALID_ARGUMENT: expiresAt must be a parseable ISO-8601 timestamp or null');
+      const patch: Parameters<ServiceAccountStore['update']>[1] = {};
+      if (a['role'] !== undefined) patch.role = a['role'] as 'author' | 'user';
+      if (a['workflows'] !== undefined) patch.workflows = a['workflows'] as string[] | null;
+      if (a['description'] !== undefined) patch.description = a['description'] as string | null;
+      if (a['disabled'] !== undefined) patch.disabled = a['disabled'] as boolean;
+      if (expiresAt !== undefined) patch.expiresAt = expiresAt;
+      const out = deps.serviceAccounts.update(a['name'] as string, patch, actor ?? 'local');
+      if (!out.ok) return refusalEnvelope(out.code, out.reason);
+      return { runId: '', status: 'completed', result: renderServiceAccount(out.account) };
+    }
+    case 'service_account_rotate_secret': {
+      if (!deps.serviceAccounts) return refusalEnvelope('INTERNAL_ERROR', 'INTERNAL_ERROR: the service account store is not wired on this engine');
+      const expiresAt = parseIsoOrUndefined(a['expiresAt']);
+      if (expiresAt === 'INVALID') return refusalEnvelope('INVALID_ARGUMENT', 'INVALID_ARGUMENT: expiresAt must be a parseable ISO-8601 timestamp');
+      const out = deps.serviceAccounts.rotateSecret(a['name'] as string, expiresAt, actor ?? 'local');
+      if (!out.ok) return refusalEnvelope(out.code, out.reason);
+      return { runId: '', status: 'completed', result: { secretId: out.secretId, clientSecret: out.clientSecret } };
+    }
+    case 'service_account_revoke_secret': {
+      if (!deps.serviceAccounts) return refusalEnvelope('INTERNAL_ERROR', 'INTERNAL_ERROR: the service account store is not wired on this engine');
+      const out = deps.serviceAccounts.revokeSecret(a['name'] as string, a['secretId'] as string, actor ?? 'local');
+      if (!out.ok) return refusalEnvelope(out.code, out.reason);
+      return { runId: '', status: 'completed', result: { revoked: true } };
+    }
+    case 'service_account_delete': {
+      if (!deps.serviceAccounts) return refusalEnvelope('INTERNAL_ERROR', 'INTERNAL_ERROR: the service account store is not wired on this engine');
+      const name = a['name'] as string;
+      const out = deps.serviceAccounts.delete(name, actor ?? 'local');
+      if (!out.ok) return refusalEnvelope(out.code, out.reason);
+      deps.revokeServiceAccountTokens?.(`sa:${name}`);
+      return { runId: '', status: 'completed', result: { deleted: true } };
     }
     default: {
       // Exhaustiveness: every TOOL_SPECS row is handled above. Attempted a compile-time

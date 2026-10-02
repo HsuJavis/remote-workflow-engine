@@ -80,7 +80,12 @@ export type SetupKey =
   | 'seededPath'      // a file seeded into terminalRunId's workspace, for workspace_pull/delete
   | 'scheduleId'      // a schedule minted by schedule_create, for schedule_setEnabled
   | 'deletableScheduleId' // a SECOND schedule, consumed by schedule_delete's happy path
-  | 'webhookId';      // a webhook minted by webhook_create
+  | 'webhookId'       // a webhook minted by webhook_create
+  // Service accounts spec (owner decision 2026-10-03): a service account minted by the setup
+  // sequence (distinct from service_account_create's OWN happy-fixture name, so the two never
+  // collide) — consumed by update/rotate/revoke/delete's happy fixtures.
+  | 'serviceAccountName'
+  | 'serviceAccountSecretId';
 
 /** A fixture slot filled from the setup sequence rather than by a literal. Deliberately a tagged
  *  object, not a `'${…}'` string convention: a marker that shares a type with real argument values
@@ -1391,7 +1396,8 @@ export const TOOL_SPECS = [
     description:
       'Admin only. List every principal (a Google account email) this engine knows and the role it resolves to NOW. ' +
       'Known = the rwe.config.json `principals` entries, every runtime role override, and everyone who has ever signed in (MCP bearer/refresh token or dashboard session). ' +
-      'Returns `{ authEnabled, principals: [{ id, role, source, firstSeenAt, lastSeenAt, updatedBy?, updatedAt?, quota }] }`. ' +
+      'Returns `{ authEnabled, principals: [{ id, kind, role, source, firstSeenAt, lastSeenAt, updatedBy?, updatedAt?, quota }] }`. ' +
+      "kind is 'human' (a Google account email) or 'service' (an `sa:<name>` service account, service_account_create/_list) — a service account's role/workflows live on its OWN row (service_account_update), never principal_roles: principal_set_role/principal_set_quota refuse an `sa:` id with INVALID_ARGUMENT for the role (quota still applies normally). " +
       'role is admin|author|user|none (admin: everything incl. other principals\' runs and these tools; author: register/publish workflows; user: run published workflows and read their own runs; ' +
       'none: signed in but PENDING APPROVAL — every tool answers ACCOUNT_PENDING_APPROVAL; grant with principal_set_role). ' +
       "source says where the role comes from, in precedence order: 'config-locked' (an admin in rwe.config.json — cannot be changed at runtime), " +
@@ -1450,6 +1456,142 @@ export const TOOL_SPECS = [
     seeAlso: ['principals_list', 'workspace_prune_blobs'] as string[],
     authz: { minRole: 'admin', ownership: 'none' } as AuthzRow,
     fixture: { happy: { id: 'fixture-principal@example.com', limit: '2GiB' }, errors: { INVALID_ARGUMENT: { id: 'fixture-principal@example.com', limit: 'plenty' } } },
+  },
+  // ---- service accounts (6) — owner decision 2026-10-03: non-interactive full-MCP principals.
+  // Admin only, ownership:'none' (one admin manages every account centrally — there is no
+  // per-account ownership concept the way workflows/runs have one). client_secret is shown ONCE,
+  // at create/rotate; everywhere else (list/get) only {id, createdAt, expiresAt, lastUsedAt} per
+  // secret. expiresAt is ISO-8601 on the wire (epoch ms internally — see call-tool.ts's render).
+  {
+    name: 'service_account_create', entity: 'service_account', key: 'name' as const,
+    description:
+      'Admin only. Create a service account for non-interactive full-MCP access (a CI job, a bot, another service — RFC 6749 client_credentials, POST /token) and return its credentials. ' +
+      '`name` must match [a-z0-9][a-z0-9-]{1,40} and be unique — its client_id is `sa:<name>`, which can never collide with a Google account email (an email local-part cannot contain \':\'). ' +
+      'role is \'author\' or \'user\' (the SAME role semantics as a human principal) — NEVER \'admin\', refused INVALID_ARGUMENT. ' +
+      '`workflows` (optional) is an allowlist of workflow names: every workflow-scoped tool (run_start, workflow_register/describe/source/publish, workspace_*, schedule_create/webhook_create then binding via workflow_register, run_* on the account\'s own runs) is limited to those names — refused WORKFLOW_NOT_ALLOWED otherwise; workflow_list/run_list filter to it. Omitted/empty = no restriction beyond role. ' +
+      '`expiresAt` (optional ISO-8601) — omitted = never expires; the account is refused everywhere (SERVICE_ACCOUNT_DISABLED, or invalid_client at /token) once passed, on every subsequent request even for an already-issued bearer. ' +
+      'Returns `{ clientId, clientSecret, account }` — clientSecret (`rwe_sa_...`, >=256 bits) is shown ONLY HERE; store it now, it cannot be retrieved again (rotate to get a new one). `account` is the same shape service_account_list shows (secrets carry id/createdAt/expiresAt/lastUsedAt, never a hash or the raw value). Audited: the engine logs a service_account_created line (no secret).',
+    inputSchema: {
+      ...schema({
+        name: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{1,40}$', description: 'Unique; forms the client_id sa:<name>.' },
+        description: { type: 'string', description: 'Free-text note (e.g. what this account is for).' },
+        role: { type: 'string', enum: ['author', 'user'], description: 'Never admin — refused INVALID_ARGUMENT.' },
+        workflows: { type: 'array', items: { type: 'string' }, description: 'Optional workflow-name allowlist. Omitted/empty = no restriction beyond role.' },
+        expiresAt: { type: 'string', description: 'Optional ISO-8601 timestamp. Omitted = never expires.' },
+      }, ['name', 'role']),
+      additionalProperties: false,
+    },
+    outputSchema: OUT,
+    errors: ['INVALID_ARGUMENT', 'SERVICE_ACCOUNT_EXISTS', 'FORBIDDEN_ROLE'] as ErrorCode[],
+    seeAlso: ['service_account_list', 'service_account_update', 'service_account_rotate_secret'] as string[],
+    authz: { minRole: 'admin', ownership: 'none' } as AuthzRow,
+    fixture: {
+      happy: { name: 'v24-fixture-sa', role: 'user' },
+      errors: {
+        SERVICE_ACCOUNT_EXISTS: { name: 'v24-fixture-sa', role: 'user' },
+        INVALID_ARGUMENT: { name: 'v24-fixture-sa-admin-attempt', role: 'admin' },
+      },
+    },
+  },
+  {
+    name: 'service_account_list', entity: 'service_account', key: null,
+    description:
+      'Admin only. List every service account. Returns an array of `{ clientId, name, description, role, workflows, expiresAt, createdBy, createdAt, disabled, lastUsedAt, secrets: [{id, createdAt, expiresAt, lastUsedAt}] }` — never a secret hash or raw value (only service_account_create/_rotate_secret ever show the raw secret, once). ' +
+      'Also visible, read-only, from principals_list (kind:\'service\'); this tool is the one that shows the allowlist/secrets/disabled detail principals_list does not.',
+    inputSchema: { ...schema({}), additionalProperties: false },
+    outputSchema: OUT,
+    errors: ['FORBIDDEN_ROLE'] as ErrorCode[],
+    seeAlso: ['service_account_create', 'principals_list'] as string[],
+    authz: { minRole: 'admin', ownership: 'none' } as AuthzRow,
+    fixture: { happy: {}, errors: {} },
+  },
+  {
+    name: 'service_account_update', entity: 'service_account', key: 'name' as const,
+    description:
+      'Admin only. Patch a service account\'s role/workflows/description/disabled/expiresAt — only the fields supplied change; omitted fields are left as-is. `disabled:true` refuses the account everywhere on its VERY NEXT request (SERVICE_ACCOUNT_DISABLED / invalid_client at /token), even for an already-issued bearer — no restart, no waiting for the token to expire. ' +
+      '`workflows`/`expiresAt` accept `null` to CLEAR (no allowlist / never expires); omitted leaves the current value. role is \'author\'/\'user\' only — never \'admin\' (INVALID_ARGUMENT). Returns the updated account (same shape as service_account_list\'s rows). Audited: service_account_updated.',
+    inputSchema: {
+      ...schema({
+        name: { type: 'string', description: 'The account to update (as created by service_account_create).' },
+        role: { type: 'string', enum: ['author', 'user'] },
+        workflows: { type: ['array', 'null'], items: { type: 'string' }, description: 'null clears the allowlist (no restriction beyond role); omitted leaves it unchanged.' },
+        description: { type: 'string' },
+        disabled: { type: 'boolean' },
+        expiresAt: { type: ['string', 'null'], description: 'null clears expiry (never expires); omitted leaves it unchanged.' },
+      }, ['name']),
+      additionalProperties: false,
+    },
+    outputSchema: OUT,
+    errors: ['INVALID_ARGUMENT', 'SERVICE_ACCOUNT_NOT_FOUND', 'FORBIDDEN_ROLE'] as ErrorCode[],
+    seeAlso: ['service_account_create', 'service_account_list'] as string[],
+    authz: { minRole: 'admin', ownership: 'none' } as AuthzRow,
+    fixture: {
+      happy: { name: ref('serviceAccountName'), description: 'updated by v24-tool-surface fixture' },
+      errors: { SERVICE_ACCOUNT_NOT_FOUND: { name: 'no-such-service-account-fixture', disabled: true } },
+    },
+  },
+  {
+    name: 'service_account_rotate_secret', entity: 'service_account', key: 'name' as const,
+    description:
+      'Admin only. Mint a NEW active secret for a service account (rotation overlap — up to 2 active secrets at once, so a caller can switch to the new one before the old is revoked). Refused TOO_MANY_SECRETS at the cap; revoke one first (service_account_revoke_secret). ' +
+      'Returns `{ secretId, clientSecret }` — clientSecret is shown ONLY HERE, once. `expiresAt` (optional ISO-8601) applies to this NEW secret only. Audited: service_account_secret_rotated (no secret).',
+    inputSchema: {
+      ...schema({
+        name: { type: 'string' },
+        expiresAt: { type: 'string', description: 'Optional ISO-8601 timestamp for the new secret. Omitted = never expires.' },
+      }, ['name']),
+      additionalProperties: false,
+    },
+    outputSchema: OUT,
+    errors: ['INVALID_ARGUMENT', 'SERVICE_ACCOUNT_NOT_FOUND', 'TOO_MANY_SECRETS', 'FORBIDDEN_ROLE'] as ErrorCode[],
+    seeAlso: ['service_account_create', 'service_account_revoke_secret'] as string[],
+    authz: { minRole: 'admin', ownership: 'none' } as AuthzRow,
+    fixture: {
+      happy: { name: ref('serviceAccountName') },
+      errors: {
+        SERVICE_ACCOUNT_NOT_FOUND: { name: 'no-such-service-account-fixture' },
+        // Consumes the setup account's SECOND active-secret slot (the create-time one is the
+        // first) — a third rotate on the SAME account, run after the happy case above, is refused.
+        TOO_MANY_SECRETS: { name: ref('serviceAccountName') },
+      },
+    },
+  },
+  {
+    name: 'service_account_revoke_secret', entity: 'service_account', key: 'name' as const,
+    description:
+      'Admin only. Revoke ONE secret by id (service_account_create/_rotate_secret\'s returned secretId, or service_account_list\'s secrets[].id) — the account itself and its other secret(s) are unaffected. A bearer already issued from the revoked secret is unaffected until it expires (the secret, not the bearer, is what is revoked) — disable the account instead for an immediate cutoff. Audited: service_account_secret_revoked.',
+    inputSchema: {
+      ...schema({
+        name: { type: 'string' },
+        secretId: { type: 'string' },
+      }, ['name', 'secretId']),
+      additionalProperties: false,
+    },
+    outputSchema: OUT,
+    errors: ['SERVICE_ACCOUNT_NOT_FOUND', 'SERVICE_ACCOUNT_SECRET_NOT_FOUND', 'FORBIDDEN_ROLE'] as ErrorCode[],
+    seeAlso: ['service_account_rotate_secret', 'service_account_list'] as string[],
+    authz: { minRole: 'admin', ownership: 'none' } as AuthzRow,
+    fixture: {
+      happy: { name: ref('serviceAccountName'), secretId: ref('serviceAccountSecretId') },
+      errors: {
+        SERVICE_ACCOUNT_NOT_FOUND: { name: 'no-such-service-account-fixture', secretId: '00000000-0000-0000-0000-000000000000' },
+        SERVICE_ACCOUNT_SECRET_NOT_FOUND: { name: ref('serviceAccountName'), secretId: '00000000-0000-0000-0000-000000000000' },
+      },
+    },
+  },
+  {
+    name: 'service_account_delete', entity: 'service_account', key: 'name' as const,
+    description:
+      'Admin only. Delete a service account and revoke every bearer it currently holds (immediate — no waiting for expiry). Workflows it registered and runs it started are NOT deleted or reassigned — they remain, owned by the now-dead `sa:<name>` id (visible to admin, e.g. via run_list/workflow_list; nobody else can act on them, same as any other ownerless-by-departure resource). Irreversible: a new account with the same name is a DIFFERENT principal with no relationship to the deleted one\'s history. Audited: service_account_deleted.',
+    inputSchema: { ...schema({ name: { type: 'string' } }, ['name']), additionalProperties: false },
+    outputSchema: OUT,
+    errors: ['SERVICE_ACCOUNT_NOT_FOUND', 'FORBIDDEN_ROLE'] as ErrorCode[],
+    seeAlso: ['service_account_create'] as string[],
+    authz: { minRole: 'admin', ownership: 'none' } as AuthzRow,
+    fixture: {
+      happy: { name: ref('serviceAccountName') },
+      errors: { SERVICE_ACCOUNT_NOT_FOUND: { name: 'no-such-service-account-fixture' } },
+    },
   },
   // Owner decision 2026-10-02: the content-store cleanup.
   {

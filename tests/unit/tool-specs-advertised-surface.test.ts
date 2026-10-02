@@ -48,6 +48,8 @@ function dummyFor(propSchema: unknown): unknown {
   if (type === 'string') {
     const pattern = s['pattern'];
     if (pattern === '^[0-9a-f]{64}$') return '0'.repeat(64);
+    // Service accounts spec (owner decision 2026-10-03): service_account_create's name grammar.
+    if (pattern === '^[a-z0-9][a-z0-9-]{1,40}$') return 'xx';
     if (typeof pattern === 'string') throw new Error(`tool-specs-advertised-surface.test.ts: unhandled string pattern "${pattern}" — add a dummyFor() case for it`);
     return 'x';
   }

@@ -843,7 +843,12 @@ export class McpFacade {
           lastRunAt: lastRuns.get(w.name) ?? null,
         };
       })
-      .filter((w) => !onlyRunnable || w.runnable);
+      // Service accounts spec (owner decision 2026-10-03), §Authorization: an allowlisted
+      // service-account principal sees only the workflows named in its allowlist — run_list needs
+      // no equivalent filter (it is already scoped to the caller's OWN runs via runListScope/nsOf,
+      // which an allowlisted SA can only ever have for an allowlisted workflow in the first place).
+      .filter((w) => !onlyRunnable || w.runnable)
+      .filter((w) => !(principal.kind === 'user' || principal.kind === 'author') || !principal.workflows || principal.workflows.length === 0 || principal.workflows.includes(w.name));
     return { runId: '', status: 'completed', result: rows };
   }
 
