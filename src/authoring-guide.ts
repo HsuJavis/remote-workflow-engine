@@ -1278,6 +1278,46 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '2026-09-30) reports this deployment\'s effective list to any authenticated caller, and an ' +
         '`EGRESS_DENIED` refusal from `workspace_push({kind:\'mcp\'})` points back at that same ' +
         'field.\n\n' +
+        // issue #126: a stdio MCP server's own persisted state (not the engine's secrets/data
+        // covered above — its OWN files) is shared host-wide unless the config opts into a
+        // per-run private directory via ${run:dir}/${run:id}.
+        '**A `stdio` server\'s own state is shared across EVERY run and principal that declares it, ' +
+        'unless you ask for it to be kept per-run.** The trust-tier point above is about what the ' +
+        'server CAN reach; this is about what it actually keeps. A `stdio` server runs as one ' +
+        "ordinary engine-host process per agent session — not a fresh process per run — so any " +
+        "state it persists OUTSIDE its own process (a file under its default location in the " +
+        "engine user's HOME, its `npx` package cache, an absolute path baked into its own " +
+        'defaults) is a single host-global store every run of every principal that declares the ' +
+        'SAME server name reads and writes. `@modelcontextprotocol/server-memory`, for example, ' +
+        'defaults to a JSONL file inside its own npx package directory — two unrelated runs ' +
+        'started minutes apart by two different principals, each creating entities under what ' +
+        'they each believe is THEIR OWN graph, actually read and write the exact same file. ' +
+        "Nothing in the run sandbox catches this (the workspace, `/tmp`, and materialized skills " +
+        'are each correctly kept separate per run — this is the one channel that is not, because ' +
+        "the server itself runs outside that sandbox, per the trust-tier paragraph above).\n\n" +
+        '`config`\'s `env` values and `args` items may reference two per-run placeholders, resolved ' +
+        'at DISPATCH time (same timing as `${secret:NAME}`, and stored unresolved, same as it): ' +
+        '`${run:dir}` (an empty, private directory this engine creates 0700 the first time THIS ' +
+        'run uses it — `<workflowFolder>/mcp-state/<runId>/<serverName>/`, never inside the ' +
+        'pulled run workspace, so it is NOT reachable via `workspace_pull`/`workspace_list`) and ' +
+        '`${run:id}` (this run\'s id, as a plain string). The SAME run\'s agents that declare the ' +
+        'same server share the SAME `${run:dir}` (sequential `agent()` calls can hand off through ' +
+        "it); a DIFFERENT run — even of the same workflow, even started by the same principal — " +
+        "never sees it, and it is deleted when the run's own workspace is (the engine's existing " +
+        'workspace retention/GC policy, unchanged — see DEPLOY.md). Any OTHER `${run:xxx}` name is ' +
+        'refused `UNKNOWN_RUN_PLACEHOLDER` at push time, before the probe ever runs, so a typo is ' +
+        'caught immediately rather than surfacing as a confusing launch failure on a run\'s first ' +
+        'dispatch. Example — the server-memory server above, made per-run instead of host-global:\n\n' +
+        '```json\n' +
+        '{\n' +
+        '  "type": "stdio", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-memory"],\n' +
+        '  "env": { "MEMORY_FILE_PATH": "${run:dir}/memory.jsonl" }\n' +
+        '}\n' +
+        '```\n\n' +
+        'A server with no state of its own (nothing written outside the one request/response it is ' +
+        'handling) needs neither placeholder — most servers are this shape, and `${run:dir}` costs ' +
+        'nothing for them to skip. When in doubt, prefer a stateless server, or point whatever state ' +
+        'it keeps at `${run:dir}`.\n\n' +
         // Q5: global-scope visibility is declaration-gated, not automatic.
         '**Global assets are opt-in per script, not automatic.** An admin-pushed `scope:\'global\'` ' +
         "skill or MCP server is usable by every principal's runs, but ONLY when that run's OWN " +

@@ -6,6 +6,7 @@
 import { readdirSync, statSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { defaultAssetRoot } from './asset-sync.js';
+import { mcpStateRunDir } from './mcp-run-state.js';
 import type { RunStatus } from './types.js';
 
 const TERMINAL = new Set<RunStatus>(['stopped', 'completed', 'failed']);
@@ -68,6 +69,18 @@ export function reclaimStaleWorkspaces(
         reclaimed.push(runId);
       } catch {
         /* raced/permission — skip, try next sweep */
+      }
+      // issue #126 B: a run's own MCP state dir (`${run:dir}` placeholders resolve under
+      // `<workflowFolder>/mcp-state/<runId>/`, mcp-run-state.ts — a SIBLING of `runs/<runId>`,
+      // never inside it) is reclaimed on the SAME terminal+TTL gate as the run's own workspace —
+      // independently try/catch'd so one failing rm never blocks the other, and (same as the
+      // workspace rm above) a raced/permission failure here is simply retried on the next sweep
+      // rather than ever thrown.
+      try {
+        rmSync(mcpStateRunDir(join(wfRoot, name), runId), { recursive: true, force: true });
+      } catch {
+        /* no mcp-state dir for this run (the common case — most runs declare no stateful MCP
+           server), or raced/permission — either way, nothing to report and nothing to retry for */
       }
     }
   }

@@ -135,6 +135,8 @@ describe('(c) every UPPER_SNAKE token in a tool\'s hand-written description is a
     // same "different closed union from ErrorCode" shape as the RegistrationWarning codes above.
     'MCP_SERVER_NOT_CONNECTED', // issue #106: a harness warning (run_agent_log harness.warnings,
     // run_status.warnings) — same "not an ErrorCode" shape.
+    'MEMORY_FILE_PATH', // issue #126 B: @modelcontextprotocol/server-memory's own env var name,
+    // used in workspace_push's description as the ${run:dir} worked example — not an engine code.
   ]);
   for (const spec of TOOL_SPECS) {
     it(`${spec.name}: every UPPER_SNAKE token in its description is a catalogued code or allowlisted`, () => {

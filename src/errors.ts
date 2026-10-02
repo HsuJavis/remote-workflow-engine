@@ -205,6 +205,9 @@ export const ERROR_CATALOG = {
   // MCP / issues / misc surfaces
   MCP_PROBE_FAILED: { see: null, hint: 'the MCP probe could not reach or validate the configured server' },
   EGRESS_DENIED: { see: null, hint: 'the requested network egress (seedRef repoUrl or MCP server URL) does not match any allowlisted prefix' },
+  // issue #126 B: a pushed mcp config's env/args referenced `${run:xxx}` with an xxx outside the
+  // closed vocabulary (`dir`, `id` — mcp-run-state.ts) — refused at push time, before the probe.
+  UNKNOWN_RUN_PLACEHOLDER: { see: 'workflow_authoring_guide', hint: 'a pushed mcp config references ${run:xxx} with an unknown name — only ${run:dir} (a per-run, per-server private directory) and ${run:id} (this run\'s id) are supported' },
   ISSUE_NOT_FOUND: { see: null, hint: 'no GitHub issue matches this reference' },
 } as const satisfies Record<string, { see: 'workflow_authoring_guide' | null; hint: string }>;
 

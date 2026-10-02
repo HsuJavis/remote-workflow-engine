@@ -852,7 +852,8 @@ export const TOOL_SPECS = [
       // "Provisioning skills and MCP servers" section carries the full role x asset-kind/scope/
       // transport matrix plus the MCP config shapes, the `${secret:NAME}` grammar, and why `stdio`
       // is admin-only; pointed at here rather than duplicated (a second copy is a copy that drifts).
-      'See workflow_authoring_guide\'s "Provisioning skills and MCP servers" section for the full role x asset-kind/scope/transport matrix, the two accepted MCP config shapes, and the `${secret:NAME}` handle grammar.',
+      "A `kind:'mcp'` stdio server's own persisted state is shared host-wide across every run/principal that declares it unless its `env`/`args` opt into a per-run private directory with `${run:dir}` (created fresh for THIS run only, e.g. `MEMORY_FILE_PATH:'${run:dir}/memory.jsonl'`) and/or `${run:id}` (this run's id) — any other `${run:xxx}` name is refused UNKNOWN_RUN_PLACEHOLDER before the probe runs. " +
+      'See workflow_authoring_guide\'s "Provisioning skills and MCP servers" section for the full role x asset-kind/scope/transport matrix, the two accepted MCP config shapes, the `${secret:NAME}`/`${run:...}` handle grammars, and why stdio server state needs keeping per-run.',
     inputSchema: pushInputSchema(),
     outputSchema: OUT,
     // v24 Gate 7.5 (D-6, REQ-118): `HOOKS_UNSUPPORTED` REMOVED — no push can produce it. A
@@ -862,7 +863,7 @@ export const TOOL_SPECS = [
     // file through `pathVerdict`'s own CLAUDE_HOOKS strip, not through this code. Advertising a
     // code the tool cannot answer teaches a cold model to branch on something that never arrives —
     // the same reason `WORKFLOW_ALREADY_EXISTS` came off `workflow_register`.
-    errors: ['INVALID_ARGUMENT', 'RESERVED_PREFIX', 'WORKSPACE_ESCAPE', 'BLOB_HASH_MISMATCH', 'FORBIDDEN_ROLE', 'NOT_WORKFLOW_OWNER', 'WORKFLOW_NOT_FOUND', 'MCP_PROBE_FAILED', 'EGRESS_DENIED', 'QUOTA_EXCEEDED', 'DISK_LOW'],
+    errors: ['INVALID_ARGUMENT', 'RESERVED_PREFIX', 'WORKSPACE_ESCAPE', 'BLOB_HASH_MISMATCH', 'FORBIDDEN_ROLE', 'NOT_WORKFLOW_OWNER', 'WORKFLOW_NOT_FOUND', 'MCP_PROBE_FAILED', 'EGRESS_DENIED', 'QUOTA_EXCEEDED', 'DISK_LOW', 'UNKNOWN_RUN_PLACEHOLDER'],
     seeAlso: ['workflow_authoring_guide'],
     authz: {
       mode: pushMode,
