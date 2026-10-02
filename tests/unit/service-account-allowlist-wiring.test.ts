@@ -48,4 +48,25 @@ describe('service_account workflow allowlist is actually wired into TOOL_SPECS r
     expect(verdict.ok).toBe(false);
     expect(verdict.code).toBe('WORKFLOW_NOT_ALLOWED');
   });
+
+  // Advisor review finding: these two rows have `ownership:'workflow'`/`'asset'` (not
+  // `workflowArg`) — the generic mechanism (authz-workflow-allowlist.test.ts) already covers the
+  // shape, but this pins the REAL TOOL_SPECS rows specifically, and — critically — that the
+  // allowlist refusal (WORKFLOW_NOT_ALLOWED) wins over the ownership refusal (NOT_WORKFLOW_OWNER)
+  // for a name that exists but isn't allowlisted, so the allowlist boundary never discloses whether
+  // a disallowed name happens to exist (same non-disclosure property authorize()'s own ownership
+  // branch already upholds for existence).
+  it('workflow_publish refuses a non-allowlisted name with WORKFLOW_NOT_ALLOWED, not NOT_WORKFLOW_OWNER, even when the lookup says it exists under someone else', () => {
+    const lookup: OwnerLookup = { ...NOOP_LOOKUP, workflowOwner: () => 'someone-else@example.com' };
+    const verdict = authorize({ kind: 'author', id: 'sa:ci-bot', workflows: ['foo'] }, spec('workflow_publish'), { name: 'bar', channel: 'release' }, lookup);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.code).toBe('WORKFLOW_NOT_ALLOWED');
+  });
+
+  it('workspace_push (asset mode) refuses a non-allowlisted workflow name', () => {
+    const pushSpec = spec('workspace_push');
+    const verdict = authorize({ kind: 'author', id: 'sa:ci-bot', workflows: ['foo'] }, pushSpec, { workflow: 'bar', kind: 'skill', name: 'x', files: [] }, NOOP_LOOKUP);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.code).toBe('WORKFLOW_NOT_ALLOWED');
+  });
 });

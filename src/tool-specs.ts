@@ -766,7 +766,8 @@ export const TOOL_SPECS = [
     name: 'run_resume', entity: 'run', key: 'runId' as const,
     // issue #94 (owner decision): `stopped` is a TRUE terminal state, not resumable — stated here so
     // a caller does not learn it only after an ILLEGAL_TRANSITION.
-    description: 'Resume a suspended or interrupted run. A stopped run cannot be resumed — stop is final; use run_suspend instead of run_stop if you may want to continue the run later.',
+    description: 'Resume a suspended or interrupted run. A stopped run cannot be resumed — stop is final; use run_suspend instead of run_stop if you may want to continue the run later. ' +
+      "A service account's workflows allowlist is NOT re-checked here: a run already admitted (and any nested workflow() call it already made) keeps the access it was granted at admission time, even if the account's allowlist is narrowed afterward — narrowing takes effect on the NEXT run_start/nested workflow() call, never retroactively on one already in flight.",
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
     errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'LEGACY_REREGISTER', 'PARAM_SECRET_UNAVAILABLE', 'CONFINEMENT_UNAVAILABLE', 'DISK_LOW'],

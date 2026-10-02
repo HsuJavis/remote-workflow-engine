@@ -952,7 +952,12 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // substituted for it (a version the run never carried and no admission check ever saw). The PINNED
   // resume path is still ungated, so call-tool.ts's door is still the cover for an ORDINARY
   // run_resume — the two are complementary, not identical. See DES-263 第三次/第四次修訂.
-  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, modelBook, eventSink, confinementPosture: config?.confinementPosture, probeLookup, diskFloor });
+  // Service accounts spec (owner decision 2026-10-03): `principalAdmin` is constructed further
+  // below in this same function body — safe to reference here via closure, since RunManager only
+  // CALLS this function later (on a nested workflow() dispatch), by which point construction has
+  // completed (same convention `buildToolDeps`'s own forward reference to `principalAdmin` already
+  // relies on).
+  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, modelBook, eventSink, confinementPosture: config?.confinementPosture, probeLookup, diskFloor, serviceAccountWorkflows: (principal) => principalAdmin.workflowsFor(principal) });
   // v8 Defer B (REQ-057/058): durable webhook ingress registry, same workRoot convention.
   const webhooks = new WebhookRegistry({ clock, runManager, catalog, dbPath: config?.webhookDbPath ?? join(workRoot, 'webhooks.db') });
   // v22 (DES-113, TASK-108) SHRINK: SubmissionValidatorDeps is now `{catalog}` — the alias/MCP-name/

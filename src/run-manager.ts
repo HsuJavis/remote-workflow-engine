@@ -156,6 +156,15 @@ export interface RunManagerDeps {
    *  is below it. Checked at every NEW admission (start, resume, nested workflow()); runs in flight
    *  are never touched. Omitted -> never refuses. */
   diskFloor?: { assert(): void };
+  /** Service accounts spec (owner decision 2026-10-03), §Authorization: resolves a `sa:<name>`
+   *  principal's workflow allowlist — the SAME `PrincipalAdmin.workflowsFor` server.ts already wires
+   *  into `authorize()`, reused here so a nested `workflow()` call from an sa:-owned run cannot
+   *  compose a name outside that run's allowlist (authorize() itself is never consulted for a
+   *  nested call — see `_handleWorkflowRequest`'s own doc). Returns undefined for a non-`sa:`
+   *  principal, an unknown account, or one with no (or an empty) allowlist — never gates. Omitted
+   *  (every pre-existing RunManager caller) -> never gates anyone, matching this field's own
+   *  fail-open-for-the-existing-suite convention. */
+  serviceAccountWorkflows?: (principal: string) => string[] | undefined;
 }
 
 /** v25 (DES-168, REQ-120, owner ruling): the default per-run in-flight agent() cap. Explicit and
@@ -586,6 +595,7 @@ export class RunManager {
   private readonly _confinementPosture: 'confined' | 'unconfined' | undefined;
   private readonly _diskFloor: { assert(): void } | undefined;
   private readonly _probeLookup: ((provider: string, model: string) => ProbeResult | undefined) | undefined;
+  private readonly _serviceAccountWorkflows: ((principal: string) => string[] | undefined) | undefined;
   /** Issue #73 (d): non-fatal admission warnings per started run, read back by `run_start`. */
   private readonly _admissionWarnings = new Map<string, Array<ModelToolWarning | ModelRefWarning>>();
   private readonly _runs = new Map<string, RunEntry>();
@@ -647,6 +657,7 @@ export class RunManager {
     this._confinementPosture = deps.confinementPosture;
     this._diskFloor = deps.diskFloor;
     this._probeLookup = deps.probeLookup;
+    this._serviceAccountWorkflows = deps.serviceAccountWorkflows;
   }
 
   /** v8 Slice 4 (REQ-054): count of live (non-terminal) top-level runs in this process — the
@@ -2070,6 +2081,18 @@ export class RunManager {
     }
     if (ancestors.has(name)) {
       throw codedError('NESTING_CYCLE', `workflow() cycle: '${name}' is already an ancestor in this nesting chain`);
+    }
+    // Service accounts spec (owner decision 2026-10-03), §Authorization: this nested dispatch
+    // never goes through authorize() (see this method's own doc — "a nested call always resolves
+    // release regardless of owner"), so an sa:-owned run's allowlist would otherwise be silently
+    // bypassed by its own workflow() calls. Checked before any resolve/side effect, same as the
+    // depth/cycle doors above. A non-`sa:` principal, or an sa: id with no (or an empty) allowlist,
+    // is never gated — `serviceAccountWorkflows` returns undefined for both.
+    if (entry.principal) {
+      const allowlist = this._serviceAccountWorkflows?.(entry.principal);
+      if (allowlist && allowlist.length > 0 && !allowlist.includes(name)) {
+        throw codedError('WORKFLOW_NOT_ALLOWED', `WORKFLOW_NOT_ALLOWED: this caller is restricted to workflows [${allowlist.join(', ')}]`);
+      }
     }
     // LOW-3 (owner decision 2026-10-02, verify-k): the disk-floor check runs BEFORE the descendant
     // slot is counted — a nested frame is a NEW admission, refused DISK_LOW below the disk floor
