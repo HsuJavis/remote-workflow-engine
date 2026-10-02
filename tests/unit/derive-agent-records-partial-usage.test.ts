@@ -35,7 +35,7 @@ describe('deriveAgentRecords — a failed usage event carrying tokens stays stat
     expect(record.partial).toBe(true);
   });
 
-  it('a done usage event never carries a partial flag, even when present:false-ish on the event (absence rule)', () => {
+  it('a done usage event with no partial field derives no partial field (absence rule)', () => {
     const transcripts = new Map([
       ['a2', [
         { ts: 't0', kind: 'harness' as const, data: { agentId: 'a2', descriptor: { model: 'the-model', provider: 'anthropic' } } },
@@ -46,5 +46,21 @@ describe('deriveAgentRecords — a failed usage event carrying tokens stays stat
     const record = records.find((r) => r.agentId === 'a2') as any;
     expect(record.state).toBe('done');
     expect('partial' in record).toBe(false);
+  });
+
+  it('a DONE usage event CAN carry partial:true (invoke()\'s retry loop summed a prior failed attempt into the final success) and it survives derivation', () => {
+    const transcripts = new Map([
+      ['a3', [
+        { ts: 't0', kind: 'harness' as const, data: { agentId: 'a3', descriptor: { model: 'the-model', provider: 'anthropic' } } },
+        {
+          ts: 't1', kind: 'usage' as const,
+          data: { tokens: { input: 30, output: 13, cacheRead: 0, cacheWrite: 0 }, provider: 'anthropic', model: 'the-model', costUSD: 0.001, unpriced: false, partial: true },
+        },
+      ]],
+    ]);
+    const records = deriveAgentRecords(transcripts, 'completed');
+    const record = records.find((r) => r.agentId === 'a3') as any;
+    expect(record.state).toBe('done');
+    expect(record.partial).toBe(true);
   });
 });

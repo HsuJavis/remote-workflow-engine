@@ -95,8 +95,10 @@ export function deriveAgentRecords(
         // dash-auth-spec.md section C (2026-09-30): the failed branch's own `GatewayResult.reason`,
         // mirrored verbatim — see `AgentRecord.failReason`'s own doc.
         reason?: 'timeout' | 'unreachable' | 'terminal' | 'aborted';
-        // issue #127: present only on the failed branch's usage event (agent-executor.ts's
-        // `capture()`) — a lower-bound figure, mirrored verbatim onto the reconstructed record.
+        // issue #127: a lower-bound figure, mirrored verbatim onto the reconstructed record — set
+        // on the FAILED branch's usage event when the gateway reported a usage estimate, or on the
+        // DONE branch's when `invoke()`'s retry loop summed a prior failed attempt's own lower-bound
+        // tokens into the final successful total (ClaudeAgentSdkGatewayClient.invoke).
         partial?: true;
       };
       const startedAt = firstHarnessTs;
@@ -120,6 +122,7 @@ export function deriveAgentRecords(
           // v26 integration (DES-183/DES-177, DES-188 lock): each derived exactly as `capture()`
           // sets it live — present only when the event carries it — so the reconstructed record
           // stays byte-identical to the live one it is standing in for.
+          ...(data.partial === true ? { partial: true as const } : {}),
           ...(data.transport !== undefined ? { transport: data.transport } : {}),
           ...(data.proxyModel !== undefined ? { proxyModel: data.proxyModel } : {}),
           ...(data.unmapped && data.unmapped.length > 0 ? { unmapped: data.unmapped } : {}),

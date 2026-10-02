@@ -309,12 +309,20 @@ export class AgentTranscriptSink {
    *  call streams, so an abort (run_suspend/run_stop) that abandons the gateway's own returned
    *  Promise still has a figure to finalize with — `_finalizeAborted` (AgentExecutor) reads this
    *  record's `tokens` the moment it gives up on that Promise. Merge — never clobber state/model/
-   *  provider, mirroring `markActivity`. No-op if no record exists yet (never fabricates one). Always
-   *  `partial:true`: a figure that reached here came from an in-flight call that has not (yet)
-   *  reported a finalized total. */
+   *  provider, mirroring `markActivity`. No-op if no record exists yet (never fabricates one), OR the
+   *  record is already TERMINAL (`endedAt` set — `capture()` is the only writer of that field).
+   *  Measured on a real engine (issue #127 verification): the SDK CLI subprocess keeps streaming a
+   *  handful of messages for a brief window AFTER `_finalizeAborted`/`capture()` has already priced
+   *  and charged a figure via `addUsage` — without this guard, a late `onUsage` call silently
+   *  overwrote `tokens` on the now-`failed` record with a LARGER figure than the one `costUSD` was
+   *  actually computed from (and than `RunGuard`/the durable usage event/the terminal snapshot all
+   *  recorded), making the live record internally inconsistent with every other surface for no
+   *  reason a caller could see. The figure `capture()` priced and charged is the one every surface
+   *  reports — frozen, not "best effort so far". Always `partial:true` when it DOES apply: a figure
+   *  that reaches here came from an in-flight call that has not (yet) reported a finalized total. */
   markUsage(agentId: string, tokens: Tokens): void {
     const existing = this._records.get(agentId);
-    if (existing) this._records.set(agentId, { ...existing, tokens, partial: true });
+    if (existing && existing.endedAt === undefined) this._records.set(agentId, { ...existing, tokens, partial: true });
   }
 
   /** Records the outcome of one agent() call: captures the usage event and feeds RunGuard.addTokens exactly once. */
@@ -367,6 +375,11 @@ export class AgentTranscriptSink {
         ...(result.transport !== undefined ? { transport: result.transport } : {}),
         ...(result.proxyModel !== undefined ? { proxyModel: result.proxyModel } : {}),
         ...(result.unmapped && result.unmapped.length > 0 ? { unmapped: result.unmapped } : {}),
+        // issue #127: an ok:true result CAN still be `partial` — `invoke()`'s retry loop sums a
+        // PRIOR failed attempt's own lower-bound tokens into this one's total when the FINAL attempt
+        // succeeds (ClaudeAgentSdkGatewayClient.invoke). The success itself is never in question;
+        // only the combined FIGURE is an estimate for the part contributed by the earlier attempt.
+        ...(result.partial === true ? { partial: true as const } : {}),
       });
       // D-G8-2: forward the real message/tool_call/tool_result stream the gateway captured (when
       // present — only ClaudeAgentSdkGatewayClient produces these today) BEFORE the terminal usage
@@ -387,6 +400,8 @@ export class AgentTranscriptSink {
         ts, kind: 'usage',
         data: {
           tokens, costUSD, unpriced, provider, model,
+          // issue #127: mirrors the record's own `partial` spread above — same rule, same source.
+          ...(result.partial === true ? { partial: true as const } : {}),
           // v26 integration (DES-177/DES-188, REQ-125): `transport`/`proxyModel` ride the event too.
           // They were written onto the LIVE record and onto the terminal snapshot (which is folded
           // from records) but NOT onto the durable event, so a snapshot-less read after a restart

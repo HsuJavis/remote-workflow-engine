@@ -98,6 +98,39 @@ describe('issue #127: AgentExecutor/AgentTranscriptSink partial usage accounting
     expect(record?.partial).toBe(true);
   });
 
+  it('a late onUsage call after the record has already finalized does NOT overwrite tokens (frozen once terminal)', async () => {
+    // issue #127 real-run finding: the SDK CLI subprocess kept streaming for ~260ms after
+    // `_finalizeAborted`/`capture()` had already priced and charged a figure via addUsage — a late
+    // `onUsage` call must not silently inflate the already-finalized record past what was charged.
+    let capturedOnUsage: ((t: Tokens) => void) | undefined;
+    const gw: GatewayClient = {
+      invoke: async (r) => {
+        capturedOnUsage = r.onUsage;
+        r.onUsage?.(T);
+        return new Promise<GatewayResult>(() => {}); // never settles — models the abandoned attempt
+      },
+    };
+    const guard = new RunGuard({ concurrency: 4, budget: { usd: null, tokens: null } } as never);
+    const executor = new AgentExecutor({ gateway: gw, guard });
+    const ac = new AbortController();
+
+    executor.markQueued('a-late');
+    const p = executor.run(req('a-late', {}, ac.signal));
+    await new Promise((r) => setTimeout(r, 20));
+    ac.abort();
+    await p;
+
+    const finalized = executor.getRecord('a-late');
+    expect(finalized?.state).toBe('failed');
+    expect(finalized?.tokens).toEqual(T);
+
+    // The gateway's own subprocess streams one more (larger) figure AFTER the record is terminal.
+    capturedOnUsage?.({ input: 999, output: 999, cacheRead: 0, cacheWrite: 0 });
+
+    const afterLateUsage = executor.getRecord('a-late');
+    expect(afterLateUsage?.tokens).toEqual(T); // unchanged — the late call was a no-op
+  });
+
   it('budget: repeated aborts of a usage-heavy agent eventually trip the token budget', async () => {
     const gw: GatewayClient = {
       invoke: async (r) => {
