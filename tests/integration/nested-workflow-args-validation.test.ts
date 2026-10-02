@@ -25,7 +25,7 @@ import { WorkflowCatalog } from '../../src/workflow-catalog.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import { FixedClock } from '../../src/clock.js';
 import type { AgentSpawner } from '../../src/agent-executor.js';
-import { registerPublished, startScript } from '../helpers/workflow-fixtures.js';
+import { registerPublished, startScript, DEFAULT_FIXTURE_MODEL } from '../helpers/workflow-fixtures.js';
 
 const CLOCK = new FixedClock(new Date('2024-01-01T00:00:00Z'));
 
@@ -110,17 +110,29 @@ describe('issue #107: nested workflow() applies the CHILD contract\'s args valid
   });
 
   it('[cross-principal regression] a non-owner nesting another principal\'s released workflow with a wrong-type arg is refused, no child run ever created', async () => {
-    // 'alice' owns and releases the child; 'bob' registers and runs the composing parent — the
-    // same cross-principal shape the reported issue used (an admin-owned workflow, a different
-    // author's script nesting it), reduced to what this unit tier can assert without a live
-    // gateway: the refusal code and the absence of any child admission record.
-    await registerPublished(catalog, 'c107-alice-secure', `export const meta = { params: { args: { x: { type: 'number' } } } };\nreturn 'alice-secret:' + args.x;`, { principal: 'alice' });
+    // 'alice' owns and releases the child — which, like the reported issue's admin-owned workflow,
+    // actually dispatches an agent() interpolating the declared arg into its prompt; 'bob' registers
+    // and runs the composing parent. A recording spawner (not the shared `mgr`'s echoSpawner) lets
+    // this witness the ACTUAL claim: the child's prompt is never built, not merely that no
+    // WorkflowNodeView was recorded.
+    const dispatchedPrompts: string[] = [];
+    const recordingSpawner: AgentSpawner = { async run(req) { dispatchedPrompts.push(req.prompt); return { kind: 'text', value: req.prompt }; } };
+    const mgr2 = new RunManager({ store: new InMemoryRunStore(CLOCK), clock: CLOCK, catalog, spawner: recordingSpawner });
+    await registerPublished(
+      catalog,
+      'c107-alice-secure',
+      `export const meta = { params: { agents: { echoer: { model: { type: 'string', default: ${JSON.stringify(DEFAULT_FIXTURE_MODEL)} }, effort: { type: 'enum', enum: ['low', 'medium', 'high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } }, args: { x: { type: 'number' } } } };\nphase('Work');\nreturn await agent('echoer', { prompt: 'alice-secret:' + args.x });`,
+      { principal: 'alice' },
+    );
     const runId = await startScript(
-      mgr,
+      mgr2,
       TRY_WORKFLOW(`workflow('c107-alice-secure', { x: 'HARMLESS-NOT-A-NUMBER' })`),
       { principal: 'bob' },
     );
-    expect(await completedValue(mgr, runId)).toEqual({ code: 'PARAM_OUT_OF_RANGE' });
-    expect((await mgr.status(runId)).workflowNodes).toEqual([]);
+    expect(await completedValue(mgr2, runId)).toEqual({ code: 'PARAM_OUT_OF_RANGE' });
+    expect((await mgr2.status(runId)).workflowNodes).toEqual([]);
+    // The actual pin: the child's agent() never dispatched, so its prompt (which would have carried
+    // the caller's raw string into an owner's agent) was never even built.
+    expect(dispatchedPrompts).toEqual([]);
   });
 });
