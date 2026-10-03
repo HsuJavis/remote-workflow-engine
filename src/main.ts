@@ -184,7 +184,14 @@ export const RETIRED_CONFIG_KEYS: Record<string, string> = {
  *  job is to force whoever changes the admission surface back to this line. */
 export function confinementBannerLine(probe: { posture: 'confined' | 'unconfined'; reason?: string }): string {
   if (probe.posture === 'confined') {
-    return '[remote-workflow-engine] Bash confinement: CONFINED (nested-userns probe passed at boot)';
+    // review L7: used to hardcode "nested-userns probe passed" — true only for the sdk gateway's own
+    // probeConfinement() (a literal nested-bwrap --unshare-user measurement). gateway:"pi" measures
+    // confinement through a DIFFERENT probe (probePiPath(), real srt bwrap+ripgrep wrapping — see
+    // pi-path-probe.ts's own header for why it is a separate question), so printing "nested-userns"
+    // unconditionally misnamed which probe actually ran for a pi deployment. Generic wording covers
+    // both truthfully; `probe` carries no discriminator for which probe produced it, so branching on
+    // the reason text would be guessing, not reporting.
+    return '[remote-workflow-engine] Bash confinement: CONFINED (confinement probe passed at boot)';
   }
   // issue #93 item 1: appends the SAME `CONFINEMENT_REMEDIATION` the `CONFINEMENT_UNAVAILABLE`
   // error hint carries (errors.ts) — an operator reading this boot line and one reading the wire

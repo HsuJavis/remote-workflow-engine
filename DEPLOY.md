@@ -650,6 +650,16 @@ anthropic 列——換句話說，這個部署的使用者根本看不到 anthro
   `@anthropic-ai/claude-agent-sdk-<platform>` 套件自帶的那支 `claude` 執行檔（用 `argv0:'rg'` 的方式
   冒充 ripgrep）——不需要額外裝系統套件。只有在這個套件完全沒裝（平台不支援）時才會真的缺 `rg`，
   此時圍籠探測量到 `unconfined` 並說明原因。
+- **（review B4）第二個、獨立的 `rg` 需求——pi 自己的 `Grep` 工具**：上面那支是 srt 圍籠包裝層自己的
+  依賴檢查（`SandboxManager.initialize({ripgrep})`），跟 pi 內建 `Grep` **工具本體**（`tools-manager.js`
+  的 `ensureTool('rg')`）是兩條完全不同的程式路徑——後者**只檢查自己的 bin 目錄**
+  （`getAgentDir()/bin`，由 `PI_CODING_AGENT_DIR` 決定）優先於 PATH，而且這個常數在這支模組**第一次
+  被載入時**就凍結，子行程啟動後再改 `process.env` 完全無效。引擎的修法：子行程的 spawn-time
+  `env`（而非子行程自己執行中再設）就帶上 `PI_CODING_AGENT_DIR` 指向每次 dispatch 專屬的 agentDir，
+  並在那個 agentDir 的 `bin/rg` 寫入一支 wrapper script（`exec -a rg <本引擎已裝的 claude 執行檔>`，
+  跟上面 srt 那支用同一顆冒充二進位檔，只是放的位置不同）——這樣 `Grep` 工具在圍籠內外都能真的找到
+  `rg` 並正常運作，已用真實 Bash 圍籠驗證（workspace 內可查、workspace 外被拒、符號連結指到 workspace
+  外的目錄不會被搜尋）。
 - **已知的部署陷阱（這次迭代真的踩到過）**：如果引擎自己的 `node_modules` 剛好裝在**家目錄底下**
   （issue #101 的整個家目錄預設拒讀政策範圍內——開發用的 clone 常常是這樣），`@anthropic-ai/
   sandbox-runtime` 自帶的 `vendor/seccomp/<arch>/apply-seccomp` 執行檔會因為整個家目錄被拒讀而在
@@ -710,8 +720,8 @@ children`（Linux-only，跟本檔其他假設一致）遞迴列出 pi 子行程
 沒有 inline shell（`!cmd`）技能語法，所以 sdk gateway 的 `disableSkillShellExecution` 在 pi 這邊沒有
 對應物可設，不是忘記接。
 
-**`effort`/OpenRouter `reasoning.effort` 的請求形狀驗證**：已用錄製式 fake server 驗證（見下方
-「pi harness 的已知差異」）。`system_info`（MCP 工具與 `GET /api/system`）的 `harness` 欄位即時反映
+**`effort`/OpenRouter `reasoning.effort` 的請求形狀驗證**：已用錄製式 fake server 驗證。
+`system_info`（MCP 工具與 `GET /api/system`）的 `harness` 欄位即時反映
 這台部署實際在跑哪一種 harness——`{name:"pi", version, providers, unsupportedTools, effort,
 usage}`——不要用這份文件推測，直接查 `system_info`。
 

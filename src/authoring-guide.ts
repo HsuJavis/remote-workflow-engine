@@ -548,7 +548,14 @@ function modelRefSentence(): string {
     '(the `.default` above) and may be replaced with a different full ref per run via ' +
     '`run_start`\'s `overrides.agents.<label>.model` — there is no other override surface (a ' +
     'scheduled/webhook-fired run, and a nested `workflow()` call, always use the target version\'s ' +
-    'own bound `.default`).';
+    'own bound `.default`). ' +
+    // review L7: this rule is static text, identical on every deployment (this guide's own header
+    // comment) — but a `gateway:"pi"` deployment narrows the provider set to just two of these
+    // three; said in full, with the exact refusal code, in the pi harness note further below. Named
+    // here too so a reader who stops at THIS sentence (the first place "three providers" is stated)
+    // is not left believing anthropic always works.
+    'A `gateway:"pi"` deployment narrows this to only `openrouter`/`ollama` — see the pi harness note ' +
+    'below for the exact refusal code and remediation.';
 }
 
 /** v24 Gate 7.5 (D-4): the node-shape table, rendered from `checkMermaid`'s own closed grammar. */

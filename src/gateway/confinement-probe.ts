@@ -65,7 +65,17 @@ export const CONFINEMENT_REMEDIATION =
   '/etc/apparmor.d/disable/ && apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict), then ' +
   'restart this engine; this is a host-wide relaxation (any unprivileged process on the host can now ' +
   'nest user namespaces) — revert both steps (remove the sysctl override and re-enable the profile: ' +
-  'rm the symlink under disable/ and apparmor_parser again) on a shared/multi-tenant host';
+  'rm the symlink under disable/ and apparmor_parser again) on a shared/multi-tenant host; ' +
+  // review L7: gateway:"pi" measures confinement through a DIFFERENT probe (probePiPath(), srt's own
+  // bwrap wrapping — see pi-path-probe.ts) with its OWN extra hard dependency this shared text never
+  // named: a real `rg` (ripgrep) binary, which srt requires on PATH and which this engine supplies
+  // via the bundled @anthropic-ai/claude-agent-sdk-<platform> package's own CLI binary, not a
+  // separate apt install — a pi deployment's probe reason naming "no bundled ripgrep-capable CLI
+  // binary" means that platform package did not install correctly.
+  'under gateway:"pi" specifically, srt additionally requires a real `rg` (ripgrep) binary on PATH, ' +
+  'supplied via the bundled @anthropic-ai/claude-agent-sdk-<platform> package (not a separate apt ' +
+  'install) — a probe reason naming "no bundled ripgrep-capable CLI binary" means that platform ' +
+  'package did not install correctly; reinstall this engine\'s own dependencies (npm ci) and restart';
 
 export type SpawnImpl = (cmd: string, args: string[], opts: { timeout: number }) => { status: number | null; error?: Error; stderr: Buffer | string };
 
