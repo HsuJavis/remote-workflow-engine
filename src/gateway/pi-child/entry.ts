@@ -10,6 +10,7 @@
 // (owner decision 3) — never logs `config` verbatim (it may carry one).
 import { createInterface } from 'node:readline';
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { runPiChildSession } from './session-runner.ts';
 import { buildBashEnv, isWrapped } from './bash-env.ts';
 import { isPathContained, resolveLanding } from '../../path-containment.ts';
@@ -28,6 +29,39 @@ const deps = { isPathContained, buildBashEnv, isWrapped, resolveLanding, resolve
 
 function emit(event: PiChildEvent): void {
   process.stdout.write(JSON.stringify(event) + '\n');
+}
+
+/** review M6: under the UNCONFINED posture, a Bash command that backgrounds a process
+ *  (`nohup sleep 3017 &`, `setsid ...`) escapes both this child's process GROUP and session — the
+ *  parent's own group-kill (`reap()`, always run on every exit including a normal one) and its
+ *  escaped-descendant sweep (`killDescendantsBestEffort`, pi-gateway-client.ts) cannot reach it on a
+ *  NORMAL completion either way: by the time the parent observes this child's 'exit' event, this
+ *  child's OWN `/proc/<pid>` entry is already gone and any surviving descendant has already
+ *  reparented to init, with no trace of which dispatch it came from left to walk. Confined Bash does
+ *  not need this (`bwrap --unshare-pid --die-with-parent`, measured clean by the review) — this is
+ *  the UNCONFINED-posture gap specifically. The one place left that can still see this child's own
+ *  descendant tree is this child ITSELF, right before it exits — called on every exit path below
+ *  (normal completion AND a programming-defect fatal alike; the two exits before `runPiChildSession`
+ *  ever starts never spawned anything, so they are not included). Same `/proc/<pid>/task/<pid>/
+ *  children` walk `pi-gateway-client.ts`'s own `collectDescendantPids` uses — not shared code (this
+ *  file's own "zero local value imports beyond this list" discipline, see the memory note above), but
+ *  the same, simple, well-proven technique. */
+function killOwnDescendants(): void {
+  const queue = [process.pid];
+  while (queue.length > 0) {
+    const pid = queue.shift()!;
+    let children: number[];
+    try {
+      const raw = readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf8').trim();
+      children = raw.length === 0 ? [] : raw.split(/\s+/).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+    } catch {
+      continue;
+    }
+    for (const child of children) {
+      try { process.kill(child, 'SIGKILL'); } catch { /* already gone */ }
+      queue.push(child);
+    }
+  }
 }
 
 /** `entry.ts --probe`: the pi-path confinement boot probe (spec "Confinement posture"), run as its
@@ -77,8 +111,10 @@ async function main(): Promise<void> {
     // every dispatch-shaped failure into an {t:'error'} event itself) — surfaced as 'fatal' so the
     // parent never mistakes it for an ordinary provider failure it should classify/retry.
     emit({ t: 'fatal', message: err instanceof Error ? (err.stack ?? err.message) : String(err) });
+    killOwnDescendants();
     process.exit(1);
   }
+  killOwnDescendants();
   process.exit(0);
 }
 

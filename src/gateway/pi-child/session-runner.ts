@@ -21,6 +21,7 @@ import { SandboxManager } from '@anthropic-ai/sandbox-runtime';
 import { spawn } from 'node:child_process';
 import { join, resolve, relative, sep, dirname } from 'node:path';
 import { readFile, writeFile, mkdir, access, stat, readdir, lstat, chmod } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
 /** srt's own `apply-seccomp` vendor binary (vendor/seccomp/<arch>/apply-seccomp) must be readable
@@ -202,6 +203,48 @@ async function resolveModel(config: PiChildConfig, runtime: ModelRuntime) {
   const model = runtime.getModel('openrouter', config.model.model);
   if (!model) throw new Error(`MODEL_REGISTRATION_FAILED: openrouter/${config.model.model} did not register`);
   return model;
+}
+
+/** review M6: under the UNCONFINED posture, a bash command that backgrounds a process via `nohup`/
+ *  `setsid` escapes both this child's process group AND the bash subprocess's own session. The kernel
+ *  reparents an orphan to its nearest subreaper (normally pid 1) AS PART OF the parent's own exit
+ *  processing — fully complete before Node's `close` event for that parent ever fires — so there is
+ *  NO reliable point after bash exits to discover it was ever bash's child at all. The only window is
+ *  WHILE bash is still running: poll `/proc/<bashPid>/task/<bashPid>/children` periodically for the
+ *  whole lifetime of the exec() call and remember every pid ever seen — a process keeps its PID
+ *  NUMBER across reparenting, so `process.kill(pid, 'SIGKILL')` on an accumulated pid still reaches it
+ *  even after its ppid has changed. Confined Bash does not need this at all (`bwrap --unshare-pid
+ *  --die-with-parent`, measured clean by the review) — this is the UNCONFINED-posture gap
+ *  specifically. Best-effort, same spirit as the review's own L3 (PID-reuse TOCTOU is accepted as
+ *  negligible at default pid_max): a process forked and exited entirely between two 100ms polls is
+ *  missed, same shape as every other descendant-sweep in this codebase. */
+const BASH_DESCENDANT_POLL_MS = 100;
+
+function directChildPids(pid: number): number[] {
+  try {
+    const raw = readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf8').trim();
+    return raw.length === 0 ? [] : raw.split(/\s+/).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  } catch {
+    return [];
+  }
+}
+
+function watchBashDescendants(bashPid: number): { stop: () => void; seen: Set<number> } {
+  const seen = new Set<number>();
+  const scan = (pid: number): void => {
+    for (const kid of directChildPids(pid)) {
+      if (!seen.has(kid)) { seen.add(kid); scan(kid); }
+      else scan(kid); // still recurse — a grandchild forked after the last poll is new even if kid isn't
+    }
+  };
+  const timer = setInterval(() => scan(bashPid), BASH_DESCENDANT_POLL_MS);
+  return { stop: () => clearInterval(timer), seen };
+}
+
+function killSeenDescendants(seen: ReadonlySet<number>): void {
+  for (const pid of seen) {
+    try { process.kill(pid, 'SIGKILL'); } catch { /* already gone — fine */ }
+  }
 }
 
 /** A minimal glob matcher for the jailed `find` tool's operations (spec: pi's own `find` tool is
@@ -435,6 +478,11 @@ function buildCustomTools(config: PiChildConfig, deps: SessionDeps): ToolDefinit
           async exec(command, cwd, { onData, signal, timeout }) {
             return new Promise((resolvePromise, reject) => {
               const child = spawn('bash', ['-c', command], { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+              // review M6: watches bash's own descendant tree for the FULL lifetime of this call (see
+              // watchBashDescendants' own doc) — a `nohup`/`setsid`-backgrounded grandchild is
+              // reparented away the instant bash itself exits, before this exec() ever gets control
+              // back, so this is the only window that can see it at all.
+              const watcher = child.pid !== undefined ? watchBashDescendants(child.pid) : undefined;
               let timedOut = false;
               let timer: NodeJS.Timeout | undefined;
               const killGroup = (): void => { try { process.kill(-child.pid!, 'SIGKILL'); } catch { child.kill('SIGKILL'); } };
@@ -443,10 +491,12 @@ function buildCustomTools(config: PiChildConfig, deps: SessionDeps): ToolDefinit
               child.stderr?.on('data', onData);
               const onAbort = (): void => killGroup();
               signal?.addEventListener('abort', onAbort, { once: true });
-              child.on('error', (e) => { if (timer) clearTimeout(timer); reject(e); });
+              child.on('error', (e) => { if (timer) clearTimeout(timer); watcher?.stop(); killSeenDescendants(watcher?.seen ?? new Set()); reject(e); });
               child.on('close', (code) => {
                 if (timer) clearTimeout(timer);
                 signal?.removeEventListener('abort', onAbort);
+                watcher?.stop();
+                killSeenDescendants(watcher?.seen ?? new Set());
                 if (signal?.aborted) reject(new Error('aborted'));
                 else if (timedOut) reject(new Error(`timeout:${timeout}`));
                 else resolvePromise({ exitCode: code });

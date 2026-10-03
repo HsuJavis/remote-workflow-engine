@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from 'node:http';
 import type { Server as HttpServer } from 'node:http';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PiGatewayClient } from '../../src/gateway/pi-gateway-client.js';
@@ -163,6 +163,36 @@ describe('pi harness v1 — file-tool jail, driven deterministically (review B3/
       expect(JSON.stringify(results[0]?.result)).toMatch(/PATH_ESCAPES_WORKSPACE/);
     } finally {
       await new Promise((r) => fake.server.close(() => r(undefined)));
+    }
+  }, 30_000);
+
+  it('M6: under the UNCONFINED posture, nohup/setsid-backgrounded processes do not survive a NORMAL dispatch completion', async () => {
+    // Deliberately UNCONFINED (confinementPosture omitted — the gateway's own default) and a REAL
+    // bash spawn (no confined-bash sandbox involved at all): `nohup`/`setsid` both escape the pi
+    // child's own process GROUP and SESSION, the exact mechanism review M6's repro used.
+    const m6ws = mkdtempSync(join(tmpdir(), 'rwe-pi-jail-m6-'));
+    const command = 'nohup sleep 3017 >/dev/null 2>&1 & echo -n $! > nohup.pid; setsid sleep 3018 >/dev/null 2>&1 & echo -n $! > setsid.pid; sleep 0.3';
+    const fake = await startScriptedServer([{ name: 'bash', args: { command } }]);
+    try {
+      const gw = new PiGatewayClient({ secretSource: { resolve: () => 'fake-key' }, timeoutMs: 30_000, retries: 0, openrouterBaseUrl: `http://127.0.0.1:${fake.port}/api/v1` });
+      const { results } = await driveScript(gw, m6ws, ['Bash']);
+      expect(results[0]?.isError).toBe(false);
+      const nohupPid = Number(readFileSync(join(m6ws, 'nohup.pid'), 'utf8').trim());
+      const setsidPid = Number(readFileSync(join(m6ws, 'setsid.pid'), 'utf8').trim());
+      expect(nohupPid).toBeGreaterThan(0);
+      expect(setsidPid).toBeGreaterThan(0);
+      // Give the parent's own post-dispatch cleanup (entry.ts's killOwnDescendants, run right before
+      // this child's own normal process.exit(0)) a brief moment, matching the other real-tier
+      // leftover checks in this suite.
+      await new Promise((r) => setTimeout(r, 300));
+      for (const pid of [nohupPid, setsidPid]) {
+        let alive = true;
+        try { process.kill(pid, 0); } catch { alive = false; }
+        expect(alive).toBe(false);
+      }
+    } finally {
+      await new Promise((r) => fake.server.close(() => r(undefined)));
+      rmSync(m6ws, { recursive: true, force: true });
     }
   }, 30_000);
 });
