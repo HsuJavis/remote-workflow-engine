@@ -106,6 +106,10 @@ export interface PiGatewayConfig {
   /** Test seam: overrides `resolveRipgrepOverride()` — a unit test injects a fake resolved override
    *  without depending on which `@anthropic-ai/claude-agent-sdk-*` platform package is installed. */
   resolveRipgrepOverride?: () => { command: string; argv0: 'rg' } | null;
+  /** slice (i): overrides OpenRouter's base URL — a recording fake server stands in for
+   *  `https://openrouter.ai/api/v1` so the request shape (model id, tools, `reasoning.effort`) can
+   *  be verified with no real OpenRouter key. Omitted -> the real OpenRouter endpoint. */
+  openrouterBaseUrl?: string;
 }
 
 /** `tool_call`/`tool_result` events carry their args/result JSON-stringified by the child (protocol.ts's
@@ -203,6 +207,19 @@ export class PiGatewayClient implements GatewayClient {
       };
     }
 
+    // spec "Effort": effort maps directly onto pi's thinkingLevel (session-runner.ts). applied:true
+    // is claimed ONLY where VERIFIED — openrouter's reasoning.effort field was confirmed on the real
+    // outbound wire through the full session path in this iteration's own real-tier evidence
+    // (tests/acceptance/pi-harness-openrouter-fake-server.test.ts), stronger than pi-spike-report.md
+    // S8's raw completeSimple() check. ollama has no reasoning dial at all (PROVIDER_CAPS.ollama.effort
+    // is null) — effort is accepted but never reaches the wire.
+    const effortApplied: { applied: true; param: string; restPath: string[]; value: unknown } | { applied: false; reason: string } | undefined =
+      req.opts.effort === undefined
+        ? undefined
+        : parsed.provider === 'openrouter'
+          ? { applied: true, param: 'thinkingLevel', restPath: ['reasoning', 'effort'], value: req.opts.effort }
+          : { applied: false, reason: 'ollama has no reasoning dial' };
+
     if (req.onHarness) {
       await req.onHarness(
         {
@@ -210,8 +227,11 @@ export class PiGatewayClient implements GatewayClient {
           ...(mapped.piNames.includes('bash')
             ? { bash: { mode: (req.opts.bash === 'readonly' ? 'readonly' : 'full') as 'readonly' | 'full', enforced: this._config.confinementPosture === 'confined' } }
             : {}),
+          ...(effortApplied !== undefined
+            ? { effortApplied: effortApplied.applied ? { param: effortApplied.param, value: effortApplied.value } : { reason: effortApplied.reason } }
+            : {}),
         },
-        undefined,
+        effortApplied,
       );
     }
 
@@ -228,6 +248,8 @@ export class PiGatewayClient implements GatewayClient {
       protectedFiles: [...(this._config.confinement?.protectedFiles ?? [])],
       ...(sandbox !== undefined ? { sandbox } : {}),
       ...(req.opts.bash === 'readonly' ? { bashMode: 'readonly' as const } : {}),
+      ...(req.opts.effort !== undefined ? { effort: req.opts.effort } : {}),
+      ...(this._config.openrouterBaseUrl !== undefined ? { openrouterBaseUrl: this._config.openrouterBaseUrl } : {}),
     };
 
     const effTimeout = resolveTimeout(req.opts.timeoutMs) ?? this._config.timeoutMs;

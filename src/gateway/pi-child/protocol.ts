@@ -30,6 +30,10 @@ export interface PiChildConfig {
   /** Full-control ResourceLoader's system prompt — the engine supplies it; pi's own default/context-
    *  file discovery is never reached. */
   systemPrompt: string;
+  /** spec "Effort": mapped directly onto pi's `thinkingLevel` (the AgentOpts effort union
+   *  `'low'|'medium'|'high'|'xhigh'|'max'` is already a subset of pi's own ThinkingLevel values).
+   *  Absent -> `'off'`. */
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   /** Optional override of OpenRouter's base URL (slice (i): a recording fake server stands in for
    *  `https://openrouter.ai/api/v1` so the request shape can be verified with no real key). Absent
    *  -> the real OpenRouter endpoint. Ignored for ollama (which always uses `model.baseUrl`). */

@@ -284,6 +284,30 @@ describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => 
     expect(result.data).toEqual({ toolCallId: 'tc1', toolName: 'bash', result: { exitCode: 0 }, isError: false });
   });
 
+  it('claims effortApplied:true for openrouter (verified on the real wire) and false for ollama (no dial)', async () => {
+    const f1 = fakeChild();
+    const gw1 = new PiGatewayClient({ spawnChild: (() => f1.child) as never, entryPath: '/fake/entry.ts', secretSource: { resolve: () => 'fake-key' } });
+    let harness1: any;
+    const p1 = gw1.invoke(req({ opts: { model: 'openrouter/openai/gpt-4.1', effort: 'high' } as AgentOpts, onHarness: async (h, applied) => { harness1 = { h, applied }; } }));
+    await new Promise((r) => setTimeout(r, 10));
+    f1.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+    f1.exit(0);
+    await p1;
+    expect(harness1.applied).toEqual({ applied: true, param: 'thinkingLevel', restPath: ['reasoning', 'effort'], value: 'high' });
+    expect(harness1.h.effortApplied).toEqual({ param: 'thinkingLevel', value: 'high' });
+
+    const f2 = fakeChild();
+    const gw2 = new PiGatewayClient({ spawnChild: (() => f2.child) as never, entryPath: '/fake/entry.ts' });
+    let harness2: any;
+    const p2 = gw2.invoke(req({ opts: { model: 'ollama/qwen2.5:7b', effort: 'high' } as AgentOpts, onHarness: async (h, applied) => { harness2 = { h, applied }; } }));
+    await new Promise((r) => setTimeout(r, 10));
+    f2.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+    f2.exit(0);
+    await p2;
+    expect(harness2.applied).toEqual({ applied: false, reason: 'ollama has no reasoning dial' });
+    expect(harness2.h.effortApplied).toEqual({ reason: 'ollama has no reasoning dial' });
+  });
+
   it('the eager harness descriptor reports bash.enforced honestly from the measured posture', async () => {
     const f = fakeChild();
     const gw = new PiGatewayClient({

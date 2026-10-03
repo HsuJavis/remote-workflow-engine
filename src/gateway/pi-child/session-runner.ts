@@ -371,7 +371,7 @@ export async function runPiChildSession(config: PiChildConfig, emit: (event: PiC
     cwd: config.cwd,
     agentDir: config.agentDir,
     model,
-    thinkingLevel: 'off',
+    thinkingLevel: config.effort ?? 'off',
     modelRuntime: runtime,
     resourceLoader: emptyResourceLoader(config.systemPrompt),
     noTools: 'builtin',
