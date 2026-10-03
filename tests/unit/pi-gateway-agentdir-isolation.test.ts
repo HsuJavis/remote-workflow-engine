@@ -226,6 +226,33 @@ describe('PiGatewayClient — the agentDir PARENT is private, verified, and fail
     }
   });
 
+  // review round 3, LOW-1: the symlink test above only proved the FINAL verdict (refused). The
+  // review found that the pre-fix code called `chmodSync(parent, 0o700)` BEFORE `verifyPrivateDir`'s
+  // lstat check ever ran — `chmodSync` FOLLOWS a symlink, so a symlink pointing at a directory this
+  // engine does not even intend to touch had its mode silently flipped to 0700 before the refusal
+  // fired. This asserts the SIDE EFFECT never happens, not just the verdict.
+  it("review R3 LOW-1: a symlinked parent is refused WITHOUT ever chmod'ing the symlink's target — the target's own mode is untouched", async () => {
+    const ws = mkdtempSync(join(tmpdir(), 'rwe-pi-agentdir-low1-'));
+    const elsewhere = mkdtempSync(join(tmpdir(), 'rwe-pi-agentdir-low1-elsewhere-'));
+    chmodSync(elsewhere, 0o755); // a mode the fix must never touch, let alone "repair" to 0700
+    try {
+      symlinkSync(elsewhere, join(ws, 'pi-agentdirs'));
+      const f = fakeChild();
+      const gw = new PiGatewayClient({
+        spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts',
+        confinementPosture: 'confined',
+        confinement: { allowHostPaths: [], protectedFiles: [], workRoot: ws },
+      });
+      const result = await gw.invoke({ prompt: 'hi', opts: { model: 'ollama/qwen2.5:7b' } as AgentOpts, runId: 'r-low1', agentId: 'a', workspace: ws });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.detail).toMatch(/AGENTDIR_UNAVAILABLE/);
+      expect(statSync(elsewhere).mode & 0o777).toBe(0o755);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
   it('repairs the mode (chmod back to 0700) and proceeds when the parent pre-exists too permissive but is still owned by this process', async () => {
     const ws = mkdtempSync(join(tmpdir(), 'rwe-pi-agentdir-r2-1-mode-'));
     try {

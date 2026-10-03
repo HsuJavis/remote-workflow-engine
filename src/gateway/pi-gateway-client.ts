@@ -205,7 +205,14 @@ function killDescendantsBestEffort(childPid: number | undefined): void {
 // which is exactly (b)'s scenario.
 class AgentDirUnavailableError extends Error {}
 
-function verifyPrivateDir(path: string): void {
+/** `checkMode: false` (review round 3, LOW-1) is used for the PRE-chmod check: a pre-existing entry
+ *  must be confirmed "not a symlink, a real directory, owned by us" BEFORE `chmodSync` ever touches
+ *  it — `chmodSync` FOLLOWS a symlink, so calling it first (the pre-fix order) silently reconfigured
+ *  whatever a planted symlink pointed at before this function ever got a chance to refuse it. The
+ *  mode itself is irrelevant at that stage (it may legitimately need repairing, which IS the
+ *  "repairs the mode" case below) — only re-checked, with `checkMode` at its default `true`, AFTER
+ *  chmod has actually run. */
+function verifyPrivateDir(path: string, opts: { checkMode?: boolean } = {}): void {
   let st;
   try {
     st = lstatSync(path);
@@ -225,7 +232,7 @@ function verifyPrivateDir(path: string): void {
   if (ownUid !== undefined && st.uid !== ownUid) {
     throw new AgentDirUnavailableError(`${path} is owned by uid ${st.uid}, not this process's own uid ${ownUid} — refusing to use a directory this engine does not own`);
   }
-  if ((st.mode & 0o777) !== 0o700) {
+  if (opts.checkMode !== false && (st.mode & 0o777) !== 0o700) {
     throw new AgentDirUnavailableError(`${path} has mode ${(st.mode & 0o777).toString(8)}, expected 0700 — refusing to use it as the agentDir parent`);
   }
 }
@@ -239,10 +246,21 @@ let processLocalAgentDirParent: string | undefined;
 function piAgentDirParent(workRoot: string | undefined): string {
   if (workRoot !== undefined) {
     const parent = join(workRoot, 'pi-agentdirs');
-    try {
-      mkdirSync(parent, { recursive: true });
-    } catch (err) {
-      throw new AgentDirUnavailableError(`cannot create ${parent}: ${err instanceof Error ? err.message : String(err)}`);
+    // review round 3, LOW-1: verify a PRE-EXISTING entry BEFORE ever chmod'ing it — `chmodSync`
+    // follows a symlink, so chmod-then-verify (the pre-fix order) silently reconfigured whatever a
+    // planted symlink pointed at before the refusal below ever ran. `checkMode:false` here: the
+    // mode may legitimately need repairing below (same uid, just too permissive) — only "is this
+    // even a real directory this engine owns" is checked pre-chmod, never the mode itself.
+    let alreadyExists = true;
+    try { lstatSync(parent); } catch { alreadyExists = false; }
+    if (alreadyExists) {
+      verifyPrivateDir(parent, { checkMode: false });
+    } else {
+      try {
+        mkdirSync(parent, { recursive: true });
+      } catch (err) {
+        throw new AgentDirUnavailableError(`cannot create ${parent}: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
     try {
       chmodSync(parent, 0o700);
