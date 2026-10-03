@@ -136,16 +136,13 @@ describe('PiGatewayClient — agentDir lives outside the workspace (residual har
   });
 });
 
-describe('PiGatewayClient — sweeps a planted .pi/.pi-agent-dir/.agents from the workspace before dispatch (residual hardening)', () => {
-  it('a planted .pi-agent-dir in the workspace is removed before the child is spawned, reported on the harness descriptor and as agent.planted_config_removed', async () => {
+describe('PiGatewayClient — sweeps planted SHARED project config (.claude/*, .mcp.json) before dispatch; .pi/.pi-agent-dir/.agents are deliberately NOT swept (review M1/B1)', () => {
+  it('a planted .claude/settings.json is removed before the child is spawned, reported on the harness descriptor and as agent.planted_config_removed (same sweepPlantedConfig the sdk gateway uses)', async () => {
     const ws = mkdtempSync(join(tmpdir(), 'rwe-pi-agentdir-planted-'));
     try {
-      const plantedDir = join(ws, '.pi-agent-dir');
-      mkdirSync(plantedDir, { recursive: true });
-      writeFileSync(join(plantedDir, 'mcp.json'), '{"servers":{}}');
-      const plantedPi = join(ws, '.pi');
-      mkdirSync(plantedPi, { recursive: true });
-      writeFileSync(join(plantedPi, 'settings.json'), '{}');
+      const plantedClaude = join(ws, '.claude');
+      mkdirSync(plantedClaude, { recursive: true });
+      writeFileSync(join(plantedClaude, 'settings.json'), '{"hooks":{}}');
 
       const f = fakeChild();
       const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
@@ -163,12 +160,46 @@ describe('PiGatewayClient — sweeps a planted .pi/.pi-agent-dir/.agents from th
       const result = await promise;
 
       expect(result.ok).toBe(true);
-      expect(existsSync(plantedDir)).toBe(false);
-      expect(existsSync(plantedPi)).toBe(false);
-      expect(harnessCalls[0]?.plantedConfigRemoved).toEqual(expect.arrayContaining(['.pi-agent-dir', '.pi']));
+      expect(existsSync(join(plantedClaude, 'settings.json'))).toBe(false);
+      expect(harnessCalls[0]?.plantedConfigRemoved).toEqual(['.claude/settings.json']);
       const removedEvents = events.filter((e): e is Extract<EngineEvent, { kind: 'agent.planted_config_removed' }> => e.kind === 'agent.planted_config_removed');
       expect(removedEvents.length).toBe(1);
-      expect(removedEvents[0]!.removed).toEqual(expect.arrayContaining(['.pi-agent-dir', '.pi']));
+      expect(removedEvents[0]!.removed).toEqual(['.claude/settings.json']);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  it('a planted .pi-agent-dir and .pi are left ALONE (review M1/B1: reverted — pi\'s full-control ResourceLoader never discovers them, so there is nothing to protect against; see bash-confinement.ts\'s PROJECT_CONFIG_PATHS doc comment)', async () => {
+    const ws = mkdtempSync(join(tmpdir(), 'rwe-pi-agentdir-notswept-'));
+    try {
+      const plantedDir = join(ws, '.pi-agent-dir');
+      mkdirSync(plantedDir, { recursive: true });
+      writeFileSync(join(plantedDir, 'mcp.json'), '{"servers":{}}');
+      const plantedPi = join(ws, '.pi');
+      mkdirSync(plantedPi, { recursive: true });
+      writeFileSync(join(plantedPi, 'settings.json'), '{}');
+      const plantedAgents = join(ws, '.agents');
+      mkdirSync(plantedAgents, { recursive: true });
+      writeFileSync(join(plantedAgents, 'README.md'), 'x');
+
+      const f = fakeChild();
+      const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
+      const harnessCalls: Array<{ plantedConfigRemoved?: string[] }> = [];
+      const promise = gw.invoke({
+        prompt: 'hi', opts: { model: 'ollama/qwen2.5:7b' } as AgentOpts,
+        runId: 'r5b', agentId: 'a5b', workspace: ws,
+        onHarness: async (h) => { harnessCalls.push(h as never); },
+      });
+      await new Promise((r) => setTimeout(r, 10));
+      f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      f.exit(0);
+      await promise;
+
+      expect(existsSync(plantedDir)).toBe(true);
+      expect(existsSync(plantedPi)).toBe(true);
+      expect(existsSync(plantedAgents)).toBe(true);
+      expect(harnessCalls[0]?.plantedConfigRemoved).toBeUndefined();
     } finally {
       rmSync(ws, { recursive: true, force: true });
     }

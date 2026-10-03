@@ -50,16 +50,24 @@ export const MASK_PROVIDER_ENV = false;
 export const PROJECT_CONFIG_PATHS = [
   '.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/commands',
   '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/launch.json', '.mcp.json',
-  // pi harness v1 (residual hardening): `.pi/` (pi's own project-config dir: `.pi/settings.json`,
-  // `.pi/mcp.json`, `.pi/extensions`, `.pi/skills`), `.pi-agent-dir` (this engine's OWN former
-  // agentDir name — kept here even after agentDir moved OUT of the workspace, specifically so a
-  // PLANTED one left over from an older run, a seeded repo, or an unrelated tool never gets swept-in
-  // as if it were real engine state) and `.agents/skills` (pi's project-trust-gated skill discovery
-  // path) are all swept the same way, even though the full-control pi child never reads any of them
-  // itself (`noContextFiles`/`noExtensions`/`noSkills` in session-runner.ts) — defense in depth
-  // against a future embedding change, and against Bash planting one on an unconfined host.
-  '.pi', '.pi-agent-dir', '.agents',
 ] as const;
+
+// pi harness v1 review (M1/B1): a `.pi`/`.pi-agent-dir`/`.agents` entry was ADDED here in an earlier
+// iteration — reverted. This list is SHARED with the sdk gateway (sweepPlantedConfig, Bash denyWrite,
+// toolUsePreCheck's protectedConfigTarget all key off it), and the sdk gateway must stay byte-
+// identical: `tests/unit/bash-readonly-gateway.test.ts`'s own "no bashMode ⇒ byte-identical to
+// before" pin went red the moment this list grew (11 -> 14 denyWrite entries) — a real regression the
+// previous iteration's own `bash-confinement.test.ts` update masked by also changing its expectation,
+// instead of noticing the list is shared. Verified live (review M1): `DefaultResourceLoader` given a
+// planted `.pi/settings.json` (with `extensions` + local/npm `packages`) and a `.pi/extensions/
+// evil.ts` loaded NEITHER — pi's full-control ResourceLoader (`noContextFiles`/`noExtensions`/
+// `noSkills` in session-runner.ts) never discovers anything under the workspace, and agentDir now
+// lives entirely outside it (a separate fix, M4) — so a planted `.pi`/`.pi-agent-dir`/`.agents` is
+// INERT under pi: there is no file to sweep that pi would ever load. No pi-only sweep was added
+// either, for the same reason the sdk-shared one was reverted: "keep minimal" means not adding a
+// sweep with zero proven security benefit. If a FUTURE pi embedding ever adds real discovery
+// (`DefaultResourceLoader` with `noContextFiles:false`, or any built-in extension that reads project
+// files), this decision needs revisiting alongside that change, not before.
 
 /** Project configuration the ENGINE writes (skills materialized per dispatch). An agent may not
  *  write it; the pre-dispatch sweep leaves it alone, because it is the engine's own output. A
