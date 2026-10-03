@@ -11,7 +11,7 @@ import { assertJailed, walkDir } from '../../src/gateway/pi-child/session-runner
 import { isPathContained, resolveLanding } from '../../src/path-containment.js';
 import type { PiChildConfig } from '../../src/gateway/pi-child/protocol.js';
 
-const deps = { isPathContained, resolveLanding, buildBashEnv: (_c: unknown, _s: unknown) => ({}) as NodeJS.ProcessEnv, isWrapped: () => false };
+const deps = { isPathContained, resolveLanding, buildBashEnv: (_c: unknown, _s: unknown) => ({}) as NodeJS.ProcessEnv, isWrapped: () => false, resolveRipgrepOverride: () => null };
 
 function config(cwd: string): PiChildConfig {
   return { runId: 'r', agentId: 'a', prompt: '', model: { provider: 'ollama', model: 'x', baseUrl: 'http://x' }, cwd, agentDir: '/tmp/unused', systemPrompt: '', tools: [], protectedFiles: [] };

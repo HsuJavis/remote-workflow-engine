@@ -17,7 +17,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
-import { readdirSync, unlinkSync, readFileSync, mkdtempSync, rmSync, chmodSync } from 'node:fs';
+import { readdirSync, unlinkSync, readFileSync, mkdtempSync, mkdirSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import type { AgentOpts, Caps, HarnessDescriptor, Tokens, TranscriptEvent } from '../types.js';
 import type { GatewayClient, GatewayResult, EffortApplied } from './client.js';
@@ -67,7 +67,7 @@ const ENTRY_PATH = fileURLToPath(new URL('./pi-child/entry.ts', import.meta.url)
  *  so `RWE_SECRET_*` is never even reachable by a pi/node_modules extension running inside it. */
 const CHILD_ENV_ALLOWLIST = ['PATH', 'HOME', 'SHELL', 'LANG', 'LC_ALL', 'TMPDIR', 'TERM'];
 
-function buildChildEnv(): NodeJS.ProcessEnv {
+function buildChildEnv(agentDir: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const key of CHILD_ENV_ALLOWLIST) {
     const v = process.env[key];
@@ -79,6 +79,13 @@ function buildChildEnv(): NodeJS.ProcessEnv {
   env['PI_OFFLINE'] = '1';
   env['PI_SKIP_VERSION_CHECK'] = '1';
   env['PI_TELEMETRY'] = '0';
+  // review B4: MUST be set at process SPAWN, not from inside session-runner.ts after
+  // `@earendil-works/pi-coding-agent` is already imported — `tools-manager.js` computes
+  // `const TOOLS_DIR = getBinDir()` as a MODULE-LEVEL constant, frozen the instant the package's
+  // module graph first loads (a static top-level `import` in session-runner.ts, which runs before
+  // ANY function body in that file). Setting this env var later has no effect; setting it here, on
+  // the env the child process is BORN with, does.
+  env['PI_CODING_AGENT_DIR'] = agentDir;
   return env;
 }
 
@@ -160,8 +167,22 @@ function killDescendantsBestEffort(childPid: number | undefined): void {
  *  already excludes it), mode 0700, created before the child is spawned and removed when the dispatch
  *  ends (success, error, abort or timeout alike). Explicitly added to the sandbox's `denyRead` too
  *  (not just "never in allowRead/allowWrite") as the belt to this suspenders. */
+// review M4: ALL per-dispatch agentDirs live under ONE engine-owned parent, so a single `denyRead`
+// entry on the PARENT (added to the sandbox once, below) hides every sibling dispatch's agentDir —
+// including its mcp.log, which can carry another run's MCP-server-controlled log lines — from THIS
+// dispatch's confined Bash. Denying only "this dispatch's own dir" (the earlier shape) left every
+// OTHER dispatch's dir fully readable, since confined Bash's deny-by-default reads are scoped to
+// explicitly denied directories, not "everything under os.tmpdir() this engine did not allow".
+const AGENTDIR_PARENT = join(tmpdir(), 'rwe-pi-agentdirs');
+
+function piAgentDirParent(): string {
+  mkdirSync(AGENTDIR_PARENT, { recursive: true });
+  try { chmodSync(AGENTDIR_PARENT, 0o700); } catch { /* best-effort; the denyRead entry is the real control */ }
+  return AGENTDIR_PARENT;
+}
+
 function buildPiAgentDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'rwe-pi-agentdir-'));
+  const dir = mkdtempSync(join(piAgentDirParent(), 'd-'));
   chmodSync(dir, 0o700);
   return dir;
 }
@@ -425,10 +446,13 @@ export class PiGatewayClient implements GatewayClient {
       const ripgrepOverride = (this._config.resolveRipgrepOverride ?? resolveRipgrepOverride)();
       const fs = settings.filesystem as PiChildSandboxConfig['filesystem'];
       sandbox = {
-        // residual hardening: agentDir already lives outside workspace/workRoot/home (so it is never
-        // in `allowRead`/`allowWrite` to begin with) — ALSO explicitly denied here, belt-and-
-        // suspenders, so a future grant that happened to cover os.tmpdir() could never re-open it.
-        filesystem: { ...fs, denyRead: [...fs.denyRead, agentDir] },
+        // review M4: deny the WHOLE agentDir PARENT (every dispatch's agentDir lives under it), not
+        // just this dispatch's own subdirectory — a confined Bash's deny-by-default reads are scoped
+        // to explicitly denied directories, so denying only "mine" left every sibling dispatch's
+        // agentDir (and its mcp.log, which can carry another run's MCP-server-controlled data)
+        // readable by anyone sharing os.tmpdir(). agentDir itself is never in `allowRead`/
+        // `allowWrite` to begin with; this is the actual control, not belt-and-suspenders.
+        filesystem: { ...fs, denyRead: [...fs.denyRead, piAgentDirParent()] },
         credentials: settings.credentials as PiChildSandboxConfig['credentials'],
         ripgrepOverride,
       };
@@ -559,7 +583,7 @@ export class PiGatewayClient implements GatewayClient {
     const entryPath = this._config.entryPath ?? ENTRY_PATH;
     const child = spawnImpl('node', ['--experimental-transform-types', '--disable-warning=ExperimentalWarning', entryPath], {
       cwd: childConfig.cwd,
-      env: buildChildEnv(),
+      env: buildChildEnv(childConfig.agentDir),
       detached: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });

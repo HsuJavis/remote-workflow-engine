@@ -24,7 +24,7 @@ import type { PiChildConfig, PiChildEvent } from './protocol.ts';
 // path-containment.ts both hold zero local imports of their own, so loading them HERE, by explicit
 // `.ts` extension, is safe — they are then passed down as plain function parameters (dependency
 // injection), never imported a second time inside session-runner.ts.
-const deps = { isPathContained, buildBashEnv, isWrapped, resolveLanding };
+const deps = { isPathContained, buildBashEnv, isWrapped, resolveLanding, resolveRipgrepOverride };
 
 function emit(event: PiChildEvent): void {
   process.stdout.write(JSON.stringify(event) + '\n');

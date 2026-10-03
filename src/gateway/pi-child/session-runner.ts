@@ -20,7 +20,7 @@ import {
 import { SandboxManager } from '@anthropic-ai/sandbox-runtime';
 import { spawn } from 'node:child_process';
 import { join, resolve, relative, sep, dirname } from 'node:path';
-import { readFile, writeFile, mkdir, access, stat, readdir, lstat } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, access, stat, readdir, lstat, chmod } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 
 /** srt's own `apply-seccomp` vendor binary (vendor/seccomp/<arch>/apply-seccomp) must be readable
@@ -54,6 +54,31 @@ export interface SessionDeps {
    *  `resolveLanding(path)` — reusing the exact function `project-config-guard.ts`'s own
    *  `protectedConfigTarget` already trusts for the SDK path's project-config write refusal. */
   resolveLanding: (path: string) => string;
+  /** review B4 (HIGH, functional): pi's built-in `grep` tool ALWAYS shells out to a real `rg` binary
+   *  (`ensureTool('rg')`, `core/tools/grep.js`) regardless of the custom `isDirectory`/`readFile`
+   *  operations this file already supplies — those cover formatting/line-reading only, never the
+   *  actual pattern search. `null` means no bundled native-CLI binary is available on this host (same
+   *  meaning as `PiChildSandboxConfig.ripgrepOverride`, but resolved INDEPENDENTLY of bash confinement
+   *  — grep must work in BOTH postures, confined or not, and never touches srt at all). */
+  resolveRipgrepOverride: () => { command: string; argv0: 'rg' } | null;
+}
+
+/** review B4: pi's own `getToolPath('rg')` checks `<PI_CODING_AGENT_DIR>/bin/rg` BEFORE ever touching
+ *  PATH or attempting a download — writing the shim straight there (rather than prepending a shim
+ *  directory to PATH) needs no env/PATH plumbing at all beyond the ONE env var that redirects
+ *  `getAgentDir()` itself (set in `runPiChildSession`, below). The shim is a tiny bash script, not a
+ *  symlink: `argv0` must be the literal string `"rg"` for the bundled multicall `claude` binary to
+ *  answer as ripgrep (the same `exec -a rg <bin>` trick `ripgrep-override.ts`'s own header comment
+ *  documents, and the one this dev host's own `rg` shell FUNCTION already uses) — a symlink cannot
+ *  change argv0, only `exec -a`/`ARGV0=` can. Mode 0755 (readable+executable by the dispatch's own
+ *  uid; agentDir itself is already 0700, so no other uid can reach it regardless). */
+async function installRipgrepShim(agentDir: string, override: { command: string; argv0: 'rg' }): Promise<void> {
+  const binDir = join(agentDir, 'bin');
+  await mkdir(binDir, { recursive: true });
+  const shimPath = join(binDir, 'rg');
+  const script = `#!/usr/bin/env bash\nexec -a rg ${JSON.stringify(override.command)} "$@"\n`;
+  await writeFile(shimPath, script, { mode: 0o755 });
+  await chmod(shimPath, 0o755);
 }
 
 const emptyResourceLoader = (systemPrompt: string): ResourceLoader => ({
@@ -440,6 +465,20 @@ function buildCustomTools(config: PiChildConfig, deps: SessionDeps): ToolDefinit
  *  events so entry.ts's wire protocol stays uniform; a thrown error here means a programming defect,
  *  not a dispatch failure. */
 export async function runPiChildSession(config: PiChildConfig, emit: (event: PiChildEvent) => void, deps: SessionDeps): Promise<void> {
+  // review B4: `PI_CODING_AGENT_DIR` (which redirects pi's OWN `getAgentDir()`/`getBinDir()`, used by
+  // `ensureTool` — independently of the `agentDir` SDK option passed to `createAgentSession` further
+  // down; the two are not the same seam) is set on the CHILD'S ENV AT SPAWN TIME
+  // (pi-gateway-client.ts's `buildChildEnv`), never here: `tools-manager.js` computes
+  // `const TOOLS_DIR = getBinDir()` as a module-level constant, frozen the instant
+  // `@earendil-works/pi-coding-agent`'s module graph first loads (this file's own top-level
+  // `import`, evaluated before this function body ever runs) — setting `process.env` from inside
+  // this function would be too late. All that is left to do here is write the shim INTO the
+  // directory the child was already born pointing at.
+  await mkdir(config.agentDir, { recursive: true });
+  const ripgrepOverride = deps.resolveRipgrepOverride();
+  if (ripgrepOverride !== null) {
+    await installRipgrepShim(config.agentDir, ripgrepOverride);
+  }
   const runtime = await ModelRuntime.create({
     authPath: join(config.agentDir, 'auth.json'),
     modelsPath: join(config.agentDir, 'models.json'),
@@ -452,11 +491,6 @@ export async function runPiChildSession(config: PiChildConfig, emit: (event: PiC
   }
   const model = await resolveModel(config, runtime);
   const customTools = buildCustomTools(config, deps);
-  // mcp.log (createMcpExtension's default, when MCP is declared) and auth.json/models.json above all
-  // live under agentDir — ensure the engine-owned dir actually exists before anything tries to write
-  // into it (ModelRuntime.create's own authPath/modelsPath args have always implicitly required this;
-  // made explicit here now that a THIRD file may land there).
-  await mkdir(config.agentDir, { recursive: true });
   const mcpDeclared = Object.keys(config.mcp ?? {}).length > 0;
   const resourceLoader = await buildResourceLoader(config);
 
