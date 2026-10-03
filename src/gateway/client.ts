@@ -201,6 +201,28 @@ export function attemptsFor(retries: number | undefined, timeoutMs: number | und
   return timeoutMs === undefined ? 1 : 1 + Math.max(0, retries ?? 0);
 }
 
+/** pi harness v1 (research doc §3.1: "Generalize this to an optional interface ... instead of
+ *  adding a second `instanceof`"): the two late binds `server.ts` wires onto a constructed gateway
+ *  AFTER composeConfig() builds it (the asset-catalog-backed MCP resolver, and the confinement-event
+ *  sink) — both optional, both a structural capability check (`'bindResolveMcp' in gateway`) rather
+ *  than a concrete-class `instanceof`, so a second `GatewayClient` implementation (PiGatewayClient)
+ *  can opt in without server.ts growing a second `instanceof` branch. A gateway that implements
+ *  neither (LiteLLMGatewayClient today) is untouched — omitting both methods is a complete, valid
+ *  implementation of this interface. */
+export interface BindableGateway {
+  /** Same shape as `ClaudeAgentSdkGatewayConfig['resolveMcp']` / `ResolveMcpFn`
+   *  (mcp-config-resolver.ts) — not imported from either to avoid a cross-import between the two
+   *  gateway modules; the structural shape is the contract. */
+  bindResolveMcp?(resolve: (workflow: string, names: string[]) => Promise<{ configs: Record<string, unknown>; missing: string[] }>): void;
+  /** Same shape as `EventSink` (event-log.ts: `(event: EngineEvent) => void`) — not imported here
+   *  for the same cross-import reason as `bindResolveMcp` above. `any` (not `unknown`) deliberately:
+   *  this is a structural bridge type, not a safety boundary — `unknown` would make a real,
+   *  narrower-parameter `EventSink` function unassignable here (contravariance), defeating the
+   *  whole point of the bridge. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  bindEventSink?(sink: (event: any) => void): void;
+}
+
 export interface GatewayClient {
   /** `signal` (D-F9a): an optional external AbortSignal — RunManager's own per-run
    *  abortController, threaded through AgentExecutor — that a real implementation should honor to

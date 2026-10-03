@@ -20,8 +20,7 @@ import { SqliteRunStore } from './store/sqlite-run-store.js';
 import { WorkflowCatalog } from './workflow-catalog.js';
 import { SystemClock } from './clock.js';
 import { LiteLLMGatewayClient } from './gateway/client.js';
-import { ClaudeAgentSdkGatewayClient } from './gateway/claude-agent-sdk-client.js';
-import type { GatewayClient } from './gateway/client.js';
+import type { BindableGateway, GatewayClient } from './gateway/client.js';
 import type { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { SqliteSchedulerPort, type Schedule, type NewSchedule } from './scheduler.js';
 import type { RefusalReason, RunSummary } from './types.js';
@@ -2220,15 +2219,19 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // production path is now the one `asset-sync-v24.test.ts` already covers. (`assetsOf` is left in
   // place, orphaned in production but still pinned by IT catalog-v24 — v25 debt, not a silent
   // deletion that would weaken a test.)
-  if (gateway instanceof ClaudeAgentSdkGatewayClient) {
-    gateway.bindResolveMcp((workflow, names) => resolveMcp(assetCatalogPort, workflow, names));
-    // v37 Gate 6.5+7 (seam-wiring check, DES-256/ARCH-178): `bindEventSink` was called only by
-    // `agent-confinement-events.test.ts` (UT-316..319) — same shape as `bindResolveMcp` above, same
-    // hole `bindResolveMcp`'s own comment already names ("left unbound, out of scope"). Wired to the
-    // SAME `eventSink` instance the catalog/RunManager audit lines already share (line ~741), so
-    // `agent.confinement` redacts through the SAME secretValueProvider, not a second unaudited path.
-    gateway.bindEventSink(eventSink);
-  }
+  // pi harness v1 (research doc §3.1): a structural-capability check (`BindableGateway`,
+  // src/gateway/client.ts) instead of `instanceof ClaudeAgentSdkGatewayClient` — a second
+  // `GatewayClient` implementation (PiGatewayClient) can opt into either bind without this site
+  // growing a second `instanceof` branch. Behaviour-unchanged for the sdk gateway: it still
+  // implements both methods, so both calls below still fire exactly as before.
+  const bindable = gateway as unknown as BindableGateway | undefined;
+  bindable?.bindResolveMcp?.((workflow, names) => resolveMcp(assetCatalogPort, workflow, names));
+  // v37 Gate 6.5+7 (seam-wiring check, DES-256/ARCH-178): `bindEventSink` was called only by
+  // `agent-confinement-events.test.ts` (UT-316..319) — same shape as `bindResolveMcp` above, same
+  // hole `bindResolveMcp`'s own comment already names ("left unbound, out of scope"). Wired to the
+  // SAME `eventSink` instance the catalog/RunManager audit lines already share (line ~741), so
+  // `agent.confinement` redacts through the SAME secretValueProvider, not a second unaudited path.
+  bindable?.bindEventSink?.(eventSink);
 
   // v24 (DES-141): the boot announcement — "visibly", built rather than merely asserted.
   // eslint-disable-next-line no-console

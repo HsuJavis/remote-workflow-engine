@@ -23,8 +23,8 @@ import type { EffortApplied, GatewayClient, GatewayResult } from './client.js';
 import { resolveTimeout, wireEffort, UNKNOWN_CAPS, attemptsFor } from './client.js';
 import { parseModelRef, type Provider } from '../providers.js';
 import { isPathContained } from '../path-containment.js';
-import { resolveConfig, type SecretSource } from '../secret-resolver.js';
-import { resolveRunPlaceholders, mcpStateDir, workflowFolderOfWorkspace } from '../mcp-run-state.js';
+import { type SecretSource } from '../secret-resolver.js';
+import { resolveMcpConfigs } from './mcp-config-resolver.js';
 import { buildBashConfinement, readonlyBashRefusal, CLI_SCRATCH_DIR, cliScratchRefusal, sharedCliScratch } from './bash-confinement.js';
 import { prepareReadonlyMountTargets, protectedConfigTarget, sweepPlantedConfig } from './project-config-guard.js';
 import { findProjectMarkerAboveWorkspace, WORKROOT_INSIDE_PROJECT } from '../workroot-guard.js';
@@ -803,26 +803,10 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
    *  SAME server reuses the SAME directory without error — "persists across agents within a run,
    *  never across runs" falls out of the path alone (keyed by runId), no separate bookkeeping. */
   private async _resolveMcpConfigs(workflow: string, names: string[], runId: string, workspace: string): Promise<{ configs: Record<string, McpServerConfig>; missing: string[] }> {
-    if (this._config.resolveMcp === undefined || names.length === 0) return { configs: {}, missing: names };
-    const resolved = await this._config.resolveMcp(workflow, names);
-    const workflowFolder = workflowFolderOfWorkspace(workspace);
-    const out: Record<string, McpServerConfig> = {};
-    for (const [name, config] of Object.entries(resolved.configs)) {
-      try {
-        const secretResolved = (this._config.secretSource !== undefined ? resolveConfig(config, this._config.secretSource) : config) as McpServerConfig;
-        const stateDir = mcpStateDir(workflowFolder, runId, name);
-        const { config: runResolved, usedDir } = resolveRunPlaceholders(secretResolved, { id: runId, dir: stateDir });
-        if (usedDir) mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-        out[name] = runResolved as McpServerConfig;
-      } catch (err) {
-        const code = (err as { code?: unknown }).code;
-        if (code === 'SECRET_MISSING' || code === 'SECRET_HANDLE_INVALID') {
-          throw new Error(`${code}: provisioned MCP '${name}' has an unresolved secret handle — ${(err as Error).message}`);
-        }
-        throw err;
-      }
-    }
-    return { configs: out, missing: resolved.missing };
+    // pi harness v1 (spec "Shared MCP resolution"): extracted verbatim into
+    // src/gateway/mcp-config-resolver.ts so PiGatewayClient uses the SAME ${secret:NAME}/${run:dir}/
+    // ${run:id} resolution — no behaviour change here (byte-identical delegation).
+    return resolveMcpConfigs({ resolveMcp: this._config.resolveMcp, secretSource: this._config.secretSource }, workflow, names, runId, workspace);
   }
 
   async invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; assets?: { roots: { workflow: string; global: string }; declared: { skills: string[]; mcp: string[] }; workflow: string }; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>; onEvent?: (ev: TranscriptEvent) => void | Promise<void>;
