@@ -89,6 +89,31 @@ describe('probeTargets (#73) — distinct full refs only, one per distinct (prov
       { provider: 'ollama', model: 'qwen2.5:7b' },
     ]);
   });
+
+  // review M7: a pi deployment's catalog can still carry a legacy anthropic ref in
+  // `workflow_versions.params` (a version registered back when the deployment ran gateway:"sdk",
+  // before switching to gateway:"pi" — the same stale-pin scenario review L2 refuses at run_resume
+  // admission). The periodic prober and the no-ref `models_probe` door must never spend a real call
+  // probing it, matching models_list's own "anthropic never reaches enrichment under pi" filter
+  // (call-tool.ts's owner decision 2).
+  it('an explicit harnessProviders list drops every ref whose provider is not in it, even when well-formed', () => {
+    const t = probeTargets(
+      ['anthropic/claude-haiku-4-5-20251001', 'ollama/qwen2.5:7b', 'openrouter/openai/gpt-4.1'],
+      ['openrouter', 'ollama'],
+    );
+    expect(t).toEqual([
+      { provider: 'ollama', model: 'qwen2.5:7b' },
+      { provider: 'openrouter', model: 'openai/gpt-4.1' },
+    ]);
+  });
+
+  it('harnessProviders omitted (the sdk gateway) keeps every well-formed ref, unchanged', () => {
+    const t = probeTargets(['anthropic/claude-haiku-4-5-20251001', 'ollama/qwen2.5:7b']);
+    expect(t).toEqual([
+      { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' },
+      { provider: 'ollama', model: 'qwen2.5:7b' },
+    ]);
+  });
 });
 
 /** A fake gateway that behaves like a tool-capable model: on the Read leg it reads the file the
@@ -324,6 +349,33 @@ describe('ModelProber (#73) — probeNow over all distinct refs, or one; malform
       store.put({ ...RESULT, model: 'fresh', probedAt: '2026-09-24T00:00:00.000Z' });
       store.put({ ...RESULT, model: 'stale', probedAt: '2026-09-01T00:00:00.000Z' });
       expect(prober.dueTargets().map((t) => `${t.provider}/${t.model}`)).toEqual(['ollama/stale', 'ollama/never']);
+      store.close();
+    } finally { rmSync(workRoot, { recursive: true, force: true }); }
+  });
+
+  // review M7: a `harnessProviders`-scoped prober (the pi deployment's own) must not probe — or
+  // return — an anthropic ref even when one still sits in the catalog (a version registered back
+  // when this same deployment ran gateway:"sdk", before switching to "pi" — review L2's exact
+  // stale-pin scenario, one layer over). `harnessProviders` undefined (every existing test above,
+  // the sdk gateway) is untouched: zero behavior change there.
+  it('a harnessProviders-scoped prober drops a legacy anthropic ref from both probeNow() and dueTargets(), never spending a call on it', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-prober-'));
+    try {
+      const store = new ModelProbeStore(join(workRoot, 'index.db'));
+      const { gw, reqs } = recordingGateway('no-tools');
+      const prober = new ModelProber({
+        gateway: gw, store, workRoot, clock: new FixedClock(new Date(0)), config: { ...MODEL_PROBE_DEFAULTS, timeoutMs: 500 },
+        modelRefs: () => ['ollama/q', 'anthropic/h'],
+        harnessProviders: ['openrouter', 'ollama'],
+      });
+      // dueTargets checked BEFORE probing (both targets are never-probed -> both "due" absent the
+      // harnessProviders filter) — probing ollama/q below would otherwise make it freshly-probed and
+      // no longer due, confounding what this assertion is actually checking.
+      expect(prober.dueTargets().map((t) => `${t.provider}/${t.model}`)).toEqual(['ollama/q']);
+      const all = await prober.probeNow();
+      expect(all!.map((r) => `${r.provider}/${r.model}`)).toEqual(['ollama/q']);
+      expect(reqs).toHaveLength(2); // one target's two legs, never anthropic/h's
+      expect(store.get('anthropic', 'h')).toBeUndefined();
       store.close();
     } finally { rmSync(workRoot, { recursive: true, force: true }); }
   });

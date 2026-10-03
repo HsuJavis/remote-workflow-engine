@@ -948,8 +948,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // 2026-09-26 (owner decision 10): probe targets are the distinct full refs registered workflow
   // versions declare — a LIVE accessor (never memoized), so a fresh registration is probed without
   // a restart.
+  // review M7: `harnessProviders` forwarded so the prober (both the admin `models_probe({model})`
+  // door and its own periodic sweep) never probes a legacy anthropic ref left in the catalog from
+  // before this deployment switched to gateway:"pi" — see `ModelProber`'s own field doc.
   const modelProber = gateway
-    ? new ModelProber({ gateway, modelRefs: () => catalog.distinctModelRefs(), store: probeStore, workRoot, clock, config: config?.modelProbe ?? { ...MODEL_PROBE_DEFAULTS, enabled: false } })
+    ? new ModelProber({ gateway, modelRefs: () => catalog.distinctModelRefs(), store: probeStore, workRoot, clock, config: config?.modelProbe ?? { ...MODEL_PROBE_DEFAULTS, enabled: false }, harnessProviders: config?.harnessProviders })
     : undefined;
   modelProber?.start();
   // Issue #104: background-refreshes so `models_list`'s `observed` field reads a warm cache on the

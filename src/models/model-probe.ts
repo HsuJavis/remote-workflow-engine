@@ -80,13 +80,22 @@ const cap = (s: string): string => (s.length > DETAIL_CAP ? s.slice(0, DETAIL_CA
  *  model) named by `refs` — the distinct full `<provider>/<model-id>` refs declared by registered
  *  workflow versions (release/beta and every other live version — `WorkflowCatalog`'s own
  *  `distinctModelRefs()`), no alias table to iterate. A malformed ref is silently skipped (it could
- *  only come from a pre-2026-09-26 legacy row that predates this ref-only rule; nothing to probe). */
-export function probeTargets(refs: readonly string[]): ProbeTarget[] {
+ *  only come from a pre-2026-09-26 legacy row that predates this ref-only rule; nothing to probe).
+ *  review M7: `harnessProviders`, when supplied (only a `gateway:"pi"` deployment supplies it — see
+ *  `ModelProber`'s own field), drops any ref whose provider it does not list — the SAME gate
+ *  `checkModelRef`'s own harnessProviders check and `models_list`'s own filter apply (call-tool.ts's
+ *  "owner decision 2"). This is what keeps a legacy anthropic ref (one `workflow_versions.params` row
+ *  registered back when this deployment ran gateway:"sdk", before switching to "pi" — review L2's
+ *  exact stale-pin scenario, one layer over) from ever being probed or returned once the deployment
+ *  is pi. Omitted (the sdk gateway, every call site before this review): unchanged, every well-formed
+ *  ref is kept. */
+export function probeTargets(refs: readonly string[], harnessProviders?: readonly string[]): ProbeTarget[] {
   const seen = new Set<string>();
   const out: ProbeTarget[] = [];
   for (const ref of refs) {
     const parsed = parseModelRef(ref);
     if (!parsed) continue;
+    if (harnessProviders !== undefined && !harnessProviders.includes(parsed.provider)) continue;
     const key = `${parsed.provider}/${parsed.model}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -227,28 +236,49 @@ const HOUR_MS = 60 * 60 * 1000;
 export class ModelProber {
   private _timer: ReturnType<typeof setInterval> | undefined;
   private _running: Promise<unknown> = Promise.resolve();
-  constructor(private readonly _deps: { gateway: GatewayClient; modelRefs: () => string[]; store: ModelProbeStore; workRoot: string; clock: Clock; config: ModelProbeConfig }) {}
+  constructor(
+    private readonly _deps: {
+      gateway: GatewayClient;
+      modelRefs: () => string[];
+      store: ModelProbeStore;
+      workRoot: string;
+      clock: Clock;
+      config: ModelProbeConfig;
+      /** review M7: present only for a `gateway:"pi"` deployment (the SAME `ServerConfig.harnessProviders`
+       *  `checkModelRef`'s provider gate and `models_list`'s filter read) — see `probeTargets`' own
+       *  doc for why this is needed even though registration already refuses a NEW anthropic ref
+       *  under pi: a LEGACY row from before the deployment switched gateways can still be sitting in
+       *  the catalog. Omitted (the sdk gateway): unchanged. */
+      harnessProviders?: readonly string[];
+    },
+  ) {}
 
   /** All configured targets, or only the one `ref` names. `null` when `ref` does not parse as a
-   *  valid full model ref. Probes run one at a time, and never overlap a periodic pass. `timeoutMs`
-   *  overrides the configured per-call bound for this probe only. An explicit `ref` is probed even
-   *  when it is not (yet) declared by any registered workflow version — a well-formed ad-hoc check
-   *  is a legitimate use of `models_probe({model})`. */
+   *  valid full model ref, OR (review M7) when `harnessProviders` is set and `ref`'s provider is not
+   *  in it — `call-tool.ts`'s `models_probe` handler is the primary door for that case (it refuses
+   *  with the specific `PROVIDER_UNSUPPORTED_BY_HARNESS` code before ever reaching here); this is
+   *  only the defense-in-depth backstop for a direct caller that skips that door, so folding it into
+   *  the existing "malformed" `null` is enough — it is never the path a real admin tool reply reads.
+   *  Probes run one at a time, and never overlap a periodic pass. `timeoutMs` overrides the
+   *  configured per-call bound for this probe only. An explicit `ref` is probed even when it is not
+   *  (yet) declared by any registered workflow version — a well-formed ad-hoc check is a legitimate
+   *  use of `models_probe({model})`. */
   async probeNow(ref?: string, timeoutMs?: number): Promise<ProbeResult[] | null> {
     let targets: ProbeTarget[];
     if (ref !== undefined) {
       const parsed = parseModelRef(ref);
       if (!parsed) return null;
+      if (this._deps.harnessProviders !== undefined && !this._deps.harnessProviders.includes(parsed.provider)) return null;
       targets = [{ provider: parsed.provider, model: parsed.model }];
     } else {
-      targets = probeTargets(this._deps.modelRefs());
+      targets = probeTargets(this._deps.modelRefs(), this._deps.harnessProviders);
     }
     return this._serial(() => this._probe(targets, timeoutMs));
   }
 
   dueTargets(): ProbeTarget[] {
     const now = this._deps.clock.now();
-    return probeTargets(this._deps.modelRefs()).filter((t) => {
+    return probeTargets(this._deps.modelRefs(), this._deps.harnessProviders).filter((t) => {
       const last = this._deps.store.get(t.provider, t.model);
       return last === undefined || now - Date.parse(last.probedAt) >= this._deps.config.intervalMs;
     });

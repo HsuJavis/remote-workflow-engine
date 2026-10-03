@@ -19,7 +19,7 @@ import { queryModels, ModelsQueryError, type ModelsQuery } from './models/models
 import type { ModelBook } from './models/model-book.js';
 import type { ModelProber, ProbeResult } from './models/model-probe.js';
 import type { ObservedStatsProvider } from './models/observed-stats.js';
-import type { Provider } from './providers.js';
+import { checkModelRef, PROVIDERS, type Provider } from './providers.js';
 import { buildHarnessAnnounce } from './harness-info.js';
 import type { SystemInfoSampler } from './system-info.js';
 import type { RunStore } from './run-store.js';
@@ -423,11 +423,24 @@ export async function callTool(
       }
     }
     case 'models_probe': {
-      if (!deps.modelProber) return refusalEnvelope('INVALID_ARGUMENT', 'model probing is not available on this engine (no gateway configured)');
       const model = a['model'] as string | undefined;
+      // review M7: refused BEFORE the "no gateway configured" door below (and before ever reaching
+      // `ModelProber`) — the SAME gate `checkModelRef`'s own harnessProviders check and
+      // `models_list`'s filter apply (owner decision 2, above), so an explicit anthropic/* ref under
+      // gateway:"pi" is never probed, regardless of whether a prober is even wired on this engine.
+      if (model !== undefined) {
+        const verdict = checkModelRef(model, { entries: [], harnessProviders: deps.harnessProviders });
+        if (!verdict.ok && verdict.code === 'PROVIDER_UNSUPPORTED_BY_HARNESS') {
+          return refusalEnvelope('PROVIDER_UNSUPPORTED_BY_HARNESS', verdict.message);
+        }
+      }
+      if (!deps.modelProber) return refusalEnvelope('INVALID_ARGUMENT', 'model probing is not available on this engine (no gateway configured)');
       const results = await deps.modelProber.probeNow(model, a['timeoutMs'] as number | undefined);
       if (results === null) {
-        return refusalEnvelope('UNKNOWN_MODEL', `UNKNOWN_MODEL: "${model}" is not a valid <provider>/<model-id> ref (providers: anthropic, openrouter, ollama)`);
+        // review M7 (accuracy): lists only the providers THIS deployment actually accepts, not
+        // always the static full three — matches `checkModelRef`'s own malformed-ref message shape.
+        const providers = deps.harnessProviders ?? PROVIDERS;
+        return refusalEnvelope('UNKNOWN_MODEL', `UNKNOWN_MODEL: "${model}" is not a valid <provider>/<model-id> ref (providers: ${providers.join(', ')})`);
       }
       return { result: results };
     }
