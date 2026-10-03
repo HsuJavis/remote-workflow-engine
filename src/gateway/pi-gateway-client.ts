@@ -3,15 +3,16 @@
 // `ClaudeAgentSdkGatewayClient` implements, selected by `gateway:"pi"` in rwe.config.json
 // (composeConfig(), src/main.ts) instead of the default `gateway:"sdk"`.
 //
-// Status as of slice (e) (tracked honestly, not silently): spawns one detached child per dispatch
+// Status (tracked honestly, not silently): spawns one detached child per dispatch
 // (src/gateway/pi-child/entry.ts) speaking JSONL over stdio, routes openrouter/ollama models, maps
-// the tool surface with TOOL_UNSUPPORTED_BY_HARNESS refusal, jails file tools, and wraps bash
-// through real srt confinement with an honest `harness.bash.enforced` — all proven against a real
-// local ollama + real bwrap in this iteration's evidence. Still NOT in this file: a retry loop
-// beyond one attempt (arguably spec-compliant as-is — "the engine's outer retry loop is the only
-// retry"), 401/403/404-vs-429/5xx error classification, `tool_call`/`tool_result` transcript events
-// (only one `message` event per assistant turn today), MCP (slice g), skills (slice h), effort
-// mapping / OpenRouter request-shape verification (slice i).
+// the tool surface with TOOL_UNSUPPORTED_BY_HARNESS refusal, jails file tools, wraps bash through
+// real srt confinement with an honest `harness.bash.enforced`, loops `attemptsFor` retries with
+// classified 401/403/404-vs-429/5xx errors, bridges MCP (`pi.registerMcpServer`/`exposure:'direct'`)
+// and skills (materialized + `SKILL_REQUIRES_READ_TOOL` when no read tool is present), maps
+// `tool_call`/`tool_result`/`mcp_init` transcript events, and verifies OpenRouter's `reasoning.effort`
+// request shape — all proven against a real local ollama (+ a real stdio MCP server, + real bwrap)
+// in this iteration's evidence. Not supported at all (refused, never silently dropped): WebFetch/
+// WebSearch/Task/NotebookEdit tools, anthropic/* models, a Claude subscription token.
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
