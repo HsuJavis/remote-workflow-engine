@@ -809,7 +809,6 @@ describe('buildAuthoringGuide — every error-code-shaped token is a real ERROR_
     'BASH_SUBSUMES_FILE_TOOLS', // a non-fatal result.warnings[].code, not a refusal code
     'MODEL_TOOL_USE_UNVERIFIED', // a non-fatal run_start warnings[].code, not a refusal code
     'MCP_SERVER_NOT_CONNECTED', // issue #106: a non-fatal harness warning (run_agent_log / run_status warnings), not a refusal code
-    'BASH_READONLY_UNENFORCEABLE', // a harness-record / warnings[].code, not a top-level refusal
     'MODEL_CATALOG_UNVERIFIED', // 2026-09-26: a non-fatal workflow_register/run_start warnings[].code
     // (checkModelRef's live-catalog-unavailable/anthropic-static-table-miss warn arm) — never a
     // refusal code, so it has no ERROR_CATALOG entry.
@@ -826,6 +825,10 @@ describe('buildAuthoringGuide — every error-code-shaped token is a real ERROR_
     // MCP_PROBE_FAILED detail.code path as UNSUPPORTED_TRANSPORT/UNREACHABLE above.
     'MEMORY_FILE_PATH', // issue #126 B: the real @modelcontextprotocol/server-memory package's own
     // env var name, used in the ${run:dir} worked example — not an engine error code at all.
+    // review round 4 (R4-1): OPENROUTER_AUTH_MISSING's own ERROR_CATALOG hint names the two env/
+    // secret-store var names an operator can set — both are configuration var names, never engine
+    // error codes.
+    'RWE_SECRET_OPENROUTER_API_KEY', 'OPENROUTER_API_KEY',
   ]);
 
   it('every UPPER_SNAKE token adjacent to "refused"/"warns"/backtick code style resolves to ERROR_CATALOG or the explicit allowlist', () => {

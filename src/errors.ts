@@ -90,6 +90,38 @@ export const ERROR_CATALOG = {
   // declared with neither tool is refused up front, never silently shipping a materialized skill the
   // model is never even told exists.
   SKILL_REQUIRES_READ_TOOL: { see: 'workflow_authoring_guide', hint: "this engine runs the pi harness (gateway:\"pi\"); a declared skill requires 'Read' or 'Bash' in this dispatch's allowedTools — pi only lists a skill in its system prompt when one of those two tools is present (no separate Skill tool exists on pi)" },
+  // review round 4 (R4-1): the pi gateway's own per-dispatch scratch-directory failures — these are
+  // NOT thrown as a typed `ErrorCode` anywhere (GatewayResult.detail is a bare `string`, by the SAME
+  // `CODE: message` convention PLANTED_CONFIG_UNREMOVABLE/CONFINEMENT_UNAVAILABLE already use), so
+  // they never reach a tool's own `errors[]` list — they surface in a failed agent's own
+  // run_status.agentFailures[].message / run_agent_log, not as a direct MCP tool-call response.
+  // Catalogued anyway so an operator reading either has a `hint` to act on, not just a raw detail
+  // string.
+  AGENTDIR_UNAVAILABLE: { see: 'workflow_authoring_guide', hint: 'the pi gateway could not create or verify its own private per-dispatch directory (agentDir) under confinement.workRoot, or a private per-process fallback — check that workRoot (or the host tmp dir, with no workRoot configured) is writable by this engine\'s own user and that nothing else (a symlink, a foreign-owned directory, a stray file) occupies the `pi-agentdirs` path there' },
+  TMPDIR_SCRATCH_UNAVAILABLE: { see: 'workflow_authoring_guide', hint: 'the pi gateway could not create or verify its own private per-dispatch TMPDIR scratch directory under confinement.workRoot (the `pi-tmp` sibling of `pi-agentdirs`) — same remediation as AGENTDIR_UNAVAILABLE: check that workRoot is writable and nothing foreign occupies that path' },
+  // pi harness v1: srt (the confined-Bash sandbox library) refuses to initialize when it cannot find
+  // a usable ripgrep-capable CLI binary, or when it did initialize but the resulting invocation is
+  // not actually wrapped in a real bwrap sandbox (a defense-in-depth check, never silently running a
+  // Bash call unconfined when confinement was claimed).
+  SANDBOX_UNAVAILABLE: { see: 'workflow_authoring_guide', hint: 'the pi gateway\'s confined Bash sandbox (srt / @anthropic-ai/sandbox-runtime) could not be initialized on this host — check that bwrap and socat are installed, and that a ripgrep-capable CLI binary is reachable (the engine normally supplies its own via the bundled @anthropic-ai/claude-agent-sdk-<platform> package; see DEPLOY.md §1b2 for the platform-support caveat)' },
+  // Shared with the sdk gateway's own bash:'readonly' refusal (bash-confinement.ts) — kept here
+  // under the same catalog rather than two near-duplicate keys.
+  BASH_READONLY_UNENFORCEABLE: { see: 'workflow_authoring_guide', hint: "an agent() call declared bash:'readonly', but this engine cannot enforce it on this dispatch — either the boot confinement probe measured this host as unconfined (no working kernel Bash sandbox), or the call has no known workspace root to deny writes to; drop bash:'readonly' on this deployment, or fix host confinement (DEPLOY.md's confinement remediation) and retry" },
+  // pi harness v1: no OpenRouter key reachable (RWE_SECRET_OPENROUTER_API_KEY in the secret store, or
+  // a bare OPENROUTER_API_KEY env var) at the moment an openrouter/* model was about to dispatch.
+  OPENROUTER_AUTH_MISSING: { see: 'workflow_authoring_guide', hint: 'no OpenRouter API key is configured on this engine — set RWE_SECRET_OPENROUTER_API_KEY (preferred) or a bare OPENROUTER_API_KEY environment variable before dispatching an openrouter/* model under gateway:"pi"' },
+  // pi harness v1 (file-tool jail, session-runner.ts): the SAME path-containment check the sdk
+  // gateway's own tools enforce, under a different literal — a Read/Write/Edit/Glob/Grep/LS/Bash call
+  // resolved to a path outside the run's own workspace.
+  PATH_ESCAPES_WORKSPACE: { see: 'workflow_authoring_guide', hint: "a tool call (Read/Write/Edit/Glob/Grep/LS/Bash) under gateway:\"pi\" resolved to a path outside this run's own workspace — including through a symlink planted inside the workspace that points outside it; every file tool is jailed to the workspace root and refuses rather than follow the link" },
+  // pi harness v1 (mcp-config-resolver.ts / session-runner.ts): a declared MCP server's resolved
+  // config has neither an `http`/`https` url nor a `command` to spawn — nothing runnable for pi's
+  // own `pi.registerMcpServer()` to connect.
+  MCP_SERVER_CONFIG_INVALID: { see: 'workflow_authoring_guide', hint: 'a declared MCP server\'s resolved configuration has no runnable transport — it needs either {type:"http", url:...} or {command:...}; check the workspace_push({kind:"mcp"}) config that provisioned it' },
+  // pi harness v1 (session-runner.ts): pi's own ModelRuntime failed to register the dispatch's
+  // openrouter/ollama model object — a pi-internal/provider-side failure, not a model-ref validation
+  // problem (that is UNKNOWN_MODEL/PROVIDER_UNSUPPORTED_BY_HARNESS, both checked well before this).
+  MODEL_REGISTRATION_FAILED: { see: 'workflow_authoring_guide', hint: 'the pi harness could not register this dispatch\'s model with its own ModelRuntime — usually transient (a provider-side hiccup) or a sign the model id itself is not one openrouter/ollama actually serves; retry, and verify the exact ref against models_list' },
   // issue #103(a): registration WARNS (result.warnings), never throws this any more — the code now
   // fires only at admission (run_start, a schedule/webhook firing, or a nested workflow() call),
   // BEFORE any side effect, naming the agent label(s) + the missing mcp name(s) + the fix

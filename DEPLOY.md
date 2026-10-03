@@ -758,6 +758,24 @@ Bash 全部拒絕派工（引擎刻意不會去刪它不確定擁有權的主機
 現在的行為：`/tmp/claude` 存在時 dispatch 照常進行，只會送出一個 `agent.host_shared_tmpdir_present`
 事件（`{runId, agentId, attempt, path}`）讓 operator 知道，不擋、不碰主機上的任何東西。
 
+**pi 分支新增的錯誤碼（review round 4，R4-1）**：下面這些是 `gateway:"pi"` 專屬、這次迭代新增、
+`ERROR_CATALOG`（`src/errors.ts`）收錄的代碼——多數不會出現在任何 MCP 工具呼叫自己的直接回應裡（它們
+是某個 agent 派工失敗時的 `detail` 字串，會出現在 `run_status.agentFailures[].message`／
+`run_agent_log`，不是 `errors[]` 清單能涵蓋的範圍），`PROVIDER_UNSUPPORTED_BY_HARNESS`／
+`TOOL_UNSUPPORTED_BY_HARNESS` 是例外——這兩個在准入期（`workflow_register`／`run_start`／`run_resume`／
+`models_probe`）就可能直接被工具呼叫擋下，已經加進對應工具的 `errors[]`：
+
+| 代碼 | 意思 | 處置 |
+|---|---|---|
+| `AGENTDIR_UNAVAILABLE` | 引擎建立/驗證自己私有的每次派工目錄（`pi-agentdirs` 底下）失敗 | 檢查 `confinement.workRoot`（或沒設時的系統 tmp 目錄）這個引擎的使用者是否可寫，該路徑底下沒有符號連結/別人擁有的目錄/雜物檔案擋著 |
+| `TMPDIR_SCRATCH_UNAVAILABLE` | 同上，但是 `pi-tmp`（上面 TMPDIR 那段）那份 | 同上 |
+| `SANDBOX_UNAVAILABLE` | srt 初始化失敗，或產生的呼叫不是真正的 bwrap 呼叫 | 確認主機有裝 `bwrap`/`socat`，且有一支可用的 ripgrep-capable 執行檔在路徑上（通常引擎會自動冒充，見上方「主機依賴」一節） |
+| `BASH_READONLY_UNENFORCEABLE` | `agent()` 宣告 `bash:'readonly'`，但這台部署的開機圍籠探測量到 unconfined，或這次呼叫沒有已知的 workspace root | 修好主機圍籠（見「安全模型」的 remediation），或這次呼叫不要宣告 `bash:'readonly'` |
+| `OPENROUTER_AUTH_MISSING` | 要送 openrouter/* model 時找不到任何 OpenRouter key | 設定 `RWE_SECRET_OPENROUTER_API_KEY`（優先）或裸 `OPENROUTER_API_KEY` |
+| `PATH_ESCAPES_WORKSPACE` | 檔案工具（Read/Write/Edit/Glob/Grep/LS/Bash）解析出的路徑跑到 run 自己的 workspace 外面（含 workspace 內放的符號連結指到外面） | 作者檢查 script/工具呼叫為何會引用 workspace 外的路徑；這是圍籠本身的設計，不是可以關掉的選項 |
+| `MCP_SERVER_CONFIG_INVALID` | 宣告的 MCP server 解析後的設定沒有可執行的 transport（既不是 `{type:'http',url}` 也不是 `{command}`） | 檢查當初 `workspace_push({kind:"mcp"})` 寫入的設定內容 |
+| `MODEL_REGISTRATION_FAILED` | pi 自己的 `ModelRuntime` 沒能註冊這次派工的 openrouter/ollama model 物件 | 通常是暫時性的供應端問題；重試，並對照 `models_list` 核對確切的 ref 字串 |
+
 **npm audit（pi 相依套件新增的部分）**：新增這三個相依套件（`@earendil-works/pi-coding-agent`、
 `@earendil-works/pi-ai`、`@anthropic-ai/sandbox-runtime`）引入兩個新發現，已處理：
 - `brace-expansion`（`pi-coding-agent → minimatch → brace-expansion`，三個 DoS regex CVE）——**已修**，
