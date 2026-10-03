@@ -7,9 +7,10 @@
 //    host, anything the file-tool check cannot see) is removed, so the CLI never loads it.
 //  - `prepareReadonlyMountTargets` (issue #95): before a `bashMode:'readonly'` dispatch, pre-creates
 //    the CLI's OWN forced sandbox mount targets — see `READONLY_MOUNT_TARGETS`'s own doc comment.
-import { lstatSync, mkdirSync, readdirSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { ENGINE_OWNED_CONFIG_PATHS, PROJECT_CONFIG_PATHS, READONLY_MOUNT_TARGETS } from './bash-confinement.js';
+import { resolveLanding } from '../path-containment.js';
 
 /** `.git/config` (`core.fsmonitor`, `core.hooksPath`) and `.git/hooks/` run commands whenever git
  *  runs in the workspace — the CLI does, unsandboxed, for its session context. Not CLI configuration,
@@ -18,37 +19,6 @@ import { ENGINE_OWNED_CONFIG_PATHS, PROJECT_CONFIG_PATHS, READONLY_MOUNT_TARGETS
 const GIT_EXEC_PATHS = ['.git/config', '.git/hooks'] as const;
 
 const TOOL_DENIED = [...PROJECT_CONFIG_PATHS, ...ENGINE_OWNED_CONFIG_PATHS, ...GIT_EXEC_PATHS].map((p) => p.toLowerCase());
-
-/** Where `p` really lands, the way the kernel walks it: component by component, following every
- *  symlink (including a dangling LEAF link — writing through it creates its target) and applying
- *  `..` after resolution. A component that does not exist yet ends the walk; the rest is appended. */
-function resolveLanding(p: string, hops = 0): string {
-  const parts = p.split('/');
-  let cur = '/';
-  for (let i = 0; i < parts.length; i++) {
-    const part = parts[i]!;
-    if (part === '' || part === '.') continue;
-    if (part === '..') {
-      cur = dirname(cur);
-      continue;
-    }
-    const next = join(cur, part);
-    let isLink: boolean;
-    try {
-      isLink = lstatSync(next).isSymbolicLink();
-    } catch {
-      return join(next, ...parts.slice(i + 1).filter((x) => x !== '' && x !== '.'));
-    }
-    if (!isLink) {
-      cur = next;
-      continue;
-    }
-    if (hops >= 40) return next; // ELOOP: the write fails anyway; judge the link itself
-    const target = readlinkSync(next);
-    cur = resolveLanding(isAbsolute(target) ? target : `${cur}/${target}`, hops + 1);
-  }
-  return cur;
-}
 
 function matchUnder(abs: string, root: string): string | null {
   const rel = relative(root, abs);

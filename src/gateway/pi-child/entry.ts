@@ -12,7 +12,7 @@ import { createInterface } from 'node:readline';
 import { spawn } from 'node:child_process';
 import { runPiChildSession } from './session-runner.ts';
 import { buildBashEnv, isWrapped } from './bash-env.ts';
-import { isPathContained } from '../../path-containment.ts';
+import { isPathContained, resolveLanding } from '../../path-containment.ts';
 import { resolveRipgrepOverride } from './ripgrep-override.ts';
 import { runPiPathProbe } from './pi-path-probe.ts';
 import type { PiChildConfig, PiChildEvent } from './protocol.ts';
@@ -24,7 +24,7 @@ import type { PiChildConfig, PiChildEvent } from './protocol.ts';
 // path-containment.ts both hold zero local imports of their own, so loading them HERE, by explicit
 // `.ts` extension, is safe — they are then passed down as plain function parameters (dependency
 // injection), never imported a second time inside session-runner.ts.
-const deps = { isPathContained, buildBashEnv, isWrapped };
+const deps = { isPathContained, buildBashEnv, isWrapped, resolveLanding };
 
 function emit(event: PiChildEvent): void {
   process.stdout.write(JSON.stringify(event) + '\n');

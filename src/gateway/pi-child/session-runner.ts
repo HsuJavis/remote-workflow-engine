@@ -20,7 +20,7 @@ import {
 import { SandboxManager } from '@anthropic-ai/sandbox-runtime';
 import { spawn } from 'node:child_process';
 import { join, resolve, relative, sep, dirname } from 'node:path';
-import { readFile, writeFile, mkdir, access, stat, readdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, access, stat, readdir, lstat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 
 /** srt's own `apply-seccomp` vendor binary (vendor/seccomp/<arch>/apply-seccomp) must be readable
@@ -46,6 +46,14 @@ export interface SessionDeps {
   isPathContained: (path: string, root: string) => boolean;
   buildBashEnv: (callerEnv: Readonly<NodeJS.ProcessEnv>, sandboxEnv: Readonly<NodeJS.ProcessEnv>) => NodeJS.ProcessEnv;
   isWrapped: (argv: readonly string[]) => boolean;
+  /** review B3 (dangling-symlink write escape): where a path REALLY lands once every symlink in it
+   *  (including a dangling leaf) is followed — `isPathContained(path, root)` alone is not enough for
+   *  a CREATE/WRITE, because `realpathSync` throws on a dangling target and `isPathContained` falls
+   *  back to the symlink's own (contained) lexical path, while the actual write follows the link to
+   *  its (uncontained) target. `assertJailed` below checks containment of BOTH the lexical path and
+   *  `resolveLanding(path)` — reusing the exact function `project-config-guard.ts`'s own
+   *  `protectedConfigTarget` already trusts for the SDK path's project-config write refusal. */
+  resolveLanding: (path: string) => string;
 }
 
 const emptyResourceLoader = (systemPrompt: string): ResourceLoader => ({
@@ -189,7 +197,7 @@ function globToRegExp(pattern: string): RegExp {
   return new RegExp(`^${re}$`);
 }
 
-async function walkDir(dir: string, base: string, out: string[], ignore: readonly string[], limit: number): Promise<void> {
+export async function walkDir(dir: string, base: string, out: string[], ignore: readonly string[], limit: number): Promise<void> {
   if (out.length >= limit) return;
   let entries: string[];
   try { entries = await readdir(dir); } catch { return; }
@@ -198,9 +206,15 @@ async function walkDir(dir: string, base: string, out: string[], ignore: readonl
     if (ignore.some((ig) => name === ig)) continue;
     const abs = join(dir, name);
     const rel = relative(base, abs).split(sep).join('/');
-    let isDir: boolean;
-    try { isDir = (await stat(abs)).isDirectory(); } catch { continue; }
-    if (isDir) await walkDir(abs, base, out, ignore, limit);
+    // review M5: `lstat` (never follows the final symlink component) instead of `stat` — a symlinked
+    // directory is neither traversed into NOR listed as a result, matching `ls`'s own existing
+    // refusal of a symlinked directory argument. `ls -d/-l` elsewhere in `find`'s own contract is a
+    // leaf-name listing, not a containment boundary itself; `assertJailed`'s `cwd` check above covers
+    // escaping the jail via `path`, this covers escaping it via a symlink discovered BELOW `cwd`.
+    let lst;
+    try { lst = await lstat(abs); } catch { continue; }
+    if (lst.isSymbolicLink()) continue;
+    if (lst.isDirectory()) await walkDir(abs, base, out, ignore, limit);
     else out.push(rel);
   }
 }
@@ -212,14 +226,21 @@ async function walkDir(dir: string, base: string, out: string[], ignore: readonl
  *  (pi's tool-call pipeline turns a thrown Operations error into a tool-result error, matching
  *  `toolUsePreCheck`'s own refusal shape on the sdk gateway) unless BOTH: (a) contained within
  *  `config.cwd`, and (b) not equal to / inside any of `config.protectedFiles`. */
-function assertJailed(absolutePath: string, config: PiChildConfig, deps: SessionDeps): void {
+export function assertJailed(absolutePath: string, config: PiChildConfig, deps: SessionDeps): void {
   const root = resolve(config.cwd);
   const target = resolve(absolutePath);
-  if (!deps.isPathContained(target, root)) {
+  // review B3: `landing` is where this path ACTUALLY resolves once every symlink (including a
+  // dangling leaf) is followed — checked IN ADDITION to the lexical `target` (never instead of:
+  // `target` alone still catches a plain `../` escape and an existing-target symlink; `landing`
+  // alone would miss nothing dangling ever existing in the first place, but checking both is cheap
+  // and matches `protectedConfigTarget`'s own "lexical AND landing" discipline exactly).
+  const landing = resolve(deps.resolveLanding(target));
+  if (!deps.isPathContained(target, root) || !deps.isPathContained(landing, root)) {
     throw new Error(`PATH_ESCAPES_WORKSPACE: "${absolutePath}" is outside this run's workspace`);
   }
   for (const protectedPath of config.protectedFiles) {
-    if (deps.isPathContained(target, protectedPath) || target === resolve(protectedPath)) {
+    const resolvedProtected = resolve(protectedPath);
+    if (deps.isPathContained(target, protectedPath) || deps.isPathContained(landing, protectedPath) || target === resolvedProtected || landing === resolvedProtected) {
       throw new Error(`PROJECT_CONFIG_PROTECTED: "${absolutePath}" is a protected path`);
     }
   }
