@@ -17,7 +17,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
-import { readdirSync, unlinkSync } from 'node:fs';
+import { readdirSync, unlinkSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import type { AgentOpts, Caps, HarnessDescriptor, Tokens, TranscriptEvent } from '../types.js';
 import type { GatewayClient, GatewayResult, EffortApplied } from './client.js';
@@ -103,6 +103,48 @@ function sweepSrtMuxSockets(pid: number): void {
   for (const name of entries) {
     if (!name.startsWith(prefix) || !name.endsWith('.sock')) continue;
     try { unlinkSync(join(tmpdir(), name)); } catch { /* already gone — fine */ }
+  }
+}
+
+/** residual fix, found by the real-tier MCP abort test (tests/acceptance/pi-harness-mcp-real.test.ts):
+ *  `npm exec`/`npx` — what every stdio MCP server config in this engine launches through — calls
+ *  `setpgid`/`setsid` on itself immediately at startup, becoming its OWN process group leader.
+ *  Confirmed empirically (`ps -eo pid,pgid,sid` during a live abort): the npm-exec process's pgid
+ *  equals its own pid, not the pi child's. The existing group-kill (#129 semantics, `killGroup(-
+ *  childPid)`) can therefore NEVER reach it or its own children on abort/timeout — a real,
+ *  reproducible leak (an `npx`-launched MCP server + its own node grandchild left running after an
+ *  early abort), not a hypothetical. `/proc/<pid>/task/<pid>/children` (Linux-only, matching every
+ *  other Linux-specific assumption already in this file) lists a process's DIRECT children with no
+ *  dependency on process-group membership at all — walked recursively here to capture the FULL
+ *  descendant tree, then every captured pid is killed directly, reaching an escaped grandchild the
+ *  group-kill cannot. Captured and killed in ADDITION to (never instead of) the existing group-kill:
+ *  the group-kill is still correct and sufficient for everything that does NOT escape its group. */
+function linuxDirectChildren(pid: number): number[] {
+  try {
+    const raw = readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf8').trim();
+    return raw.length === 0 ? [] : raw.split(/\s+/).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  } catch {
+    return [];
+  }
+}
+
+function collectDescendantPids(rootPid: number): number[] {
+  const all: number[] = [];
+  const queue = [rootPid];
+  while (queue.length > 0) {
+    const pid = queue.shift()!;
+    for (const kid of linuxDirectChildren(pid)) {
+      all.push(kid);
+      queue.push(kid);
+    }
+  }
+  return all;
+}
+
+function killDescendantsBestEffort(childPid: number | undefined): void {
+  if (childPid === undefined) return;
+  for (const pid of collectDescendantPids(childPid)) {
+    try { process.kill(pid, 'SIGKILL'); } catch { /* already gone — fine */ }
   }
 }
 
@@ -476,10 +518,21 @@ export class PiGatewayClient implements GatewayClient {
 
     let timedOut = false;
     const timer = timeoutMs !== undefined
-      ? setTimeout(() => { timedOut = true; try { child.kill('SIGTERM'); } catch { /* already gone */ } reap(); }, timeoutMs)
+      ? setTimeout(() => {
+          timedOut = true;
+          // Captured BEFORE any kill signal, while the tree is still fully alive — see
+          // killDescendantsBestEffort's own doc.
+          killDescendantsBestEffort(child.pid);
+          try { child.kill('SIGTERM'); } catch { /* already gone */ }
+          reap();
+        }, timeoutMs)
       : undefined;
     child.once('exit', () => { if (timer) clearTimeout(timer); });
-    const onAbort = (): void => { try { child.kill('SIGTERM'); } catch { /* already gone */ } reap(); };
+    const onAbort = (): void => {
+      killDescendantsBestEffort(child.pid);
+      try { child.kill('SIGTERM'); } catch { /* already gone */ }
+      reap();
+    };
     req.signal?.addEventListener('abort', onAbort, { once: true });
 
     let cumulative: Tokens = { ...ZERO_TOKENS };

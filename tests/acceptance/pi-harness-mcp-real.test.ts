@@ -109,4 +109,44 @@ describe('pi harness v1 — REAL MCP via a real stdio server-everything + real o
     console.log(calledTheTool ? 'MCP REAL CHECK: the model called mcp__everything__echo on turn 1.' : 'MCP REAL CHECK: the model never called the echo tool in 3 tries (small-model flakiness) — turn-1 availability is proven separately by the previous test; last dispatch ok=' + lastResultOk);
     expect(typeof calledTheTool).toBe('boolean');
   }, 240_000);
+
+  it.skipIf(!HAS_OLLAMA)('abort mid-flight (AFTER the MCP server connected) still fully reaps the stdio server — the discriminating case pi\'s own client.close() SIGTERM never runs for' + WHY_NOT, async () => {
+    // Discriminating on purpose: a normal completion (the first test above) lets pi's own
+    // client.close() send a clean SIGTERM to the server before the child exits — that path was
+    // already proven. An ABORT kills the pi child itself via the parent's group-SIGKILL
+    // (pi-gateway-client.ts's reap()) BEFORE pi's MCP extension ever gets to run its own close()
+    // — the only thing that can reap the server in that case is the process-GROUP kill reaching a
+    // grandchild that was never individually tracked. This is the case that actually tests it.
+    const ws = mkdtempSync(join(tmpdir(), 'rwe-pi-mcp-real-abort-'));
+    try {
+      const gw = new PiGatewayClient({ ollamaBaseUrl: 'http://localhost:11434', timeoutMs: 60_000, resolveMcp: everythingResolveMcp });
+      const controller = new AbortController();
+      let sawMcpInit = false;
+      const promise = gw.invoke({
+        prompt: 'Write a very long, detailed 500-word essay about the history of the number zero.',
+        opts: { model: 'ollama/qwen2.5:7b' },
+        runId: 'mcp-real-abort-r1',
+        agentId: 'mcp-real-abort-a1',
+        workspace: ws,
+        assets: { roots: { workflow: ws, global: ws }, declared: { skills: [], mcp: ['everything'] }, workflow: 'wf' },
+        signal: controller.signal,
+        onHarness: async (h) => {
+          // The SECOND onHarness call (mcpStatus present) only fires after mcp_init, i.e. after the
+          // server already connected — abort right after it, not before (a pre-connect abort would
+          // prove nothing about reaping a CONNECTED server).
+          if ((h as { mcpStatus?: unknown }).mcpStatus !== undefined && !sawMcpInit) {
+            sawMcpInit = true;
+            controller.abort();
+          }
+        },
+      });
+      const result = await promise;
+      expect(result.ok).toBe(false);
+      expect(sawMcpInit).toBe(true);
+      await new Promise((r) => setTimeout(r, 500));
+      expect(pgrepServerEverything()).toBe('');
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  }, 90_000);
 });

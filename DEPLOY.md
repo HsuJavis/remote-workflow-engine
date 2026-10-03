@@ -678,10 +678,20 @@ pi `direct` exposure 自己的 `startupWaitMs` 預設一致）算出來，映射
 `summarizeMcpInit()`——未連上的 server 一樣回報 `agent.mcp_not_connected` 事件與
 `MCP_SERVER_NOT_CONNECTED` warning。一個解析不出來的 MCP 名字進 `materialized.missing`、**run 照跑**
 （業主 19.5.3 裁決，跟 sdk gateway 一致，不是拒絕）。stdio MCP 子行程**不在** Bash 圍籠內（跟
-`gateway:"sdk"` 現狀一致），而且因為 `@modelcontextprotocol/sdk` 的 `StdioClientTransport` 預設
-`detached:false`，這些子行程會留在 pi 子行程**自己的** process group 裡——既有的 group-kill（#129，
-已經為 bash/abort/timeout 接好）原封不動就能一併回收，不需要額外程式碼（2026-10-03 真機驗證：
-`npx -y @modelcontextprotocol/server-everything` 在正常完成與逾時兩種路徑後都被完全清掉）。
+`gateway:"sdk"` 現狀一致）。
+
+**回收（2026-10-03 真機驗證抓到的真實漏洞，已修）**：正常完成時可靠回收（`npx`/`npm exec` 自己的子行程
+在 stdin 被關閉後會自然退出）。但**中途 abort 時原本會漏行程**：實測確認 `npm exec`（`npx` 背後呼叫
+的指令）一啟動就對自己呼叫 `setpgid`/`setsid`、變成自己的 process group leader（`ps -eo
+pid,pgid,sid` 現場量到：npm exec 的 pgid 等於它自己的 pid，不是 pi 子行程的）——既有的
+group-kill（`killGroup(-childPid)`，#129 語意）因此**完全碰不到**它與它自己的子行程，只對沒有
+`setsid` 逃逸的一般子行程有效。修法：在送出任何 kill 訊號**之前**，先用 `/proc/<pid>/task/<pid>/
+children`（Linux-only，跟本檔其他假設一致）遞迴列出 pi 子行程當下的完整子孫行程清單，再對清單裡
+每一個 pid 直接送 `SIGKILL`——不管它在哪個 process group 都打得到，與既有的 group-kill 並存（group-kill
+仍是沒有逃逸的子行程的正確、足夠機制）。真機驗證：模擬 `setsid` 逃逸情境的單元測試
+（`tests/unit/pi-gateway-escaped-descendant-sweep.test.ts`）先紅後綠；對真正的
+`npx -y @modelcontextprotocol/server-everything` 在 mcp_init 剛連上就 abort（最容易漏行程的早期中止
+情境）重跑 4 次，`pgrep` 均確認無殘留。
 `workspace_push({kind:"mcp"})` 帶 `stdio` transport 的 admin-only 限制不變（見下方角色表）。
 
 **Skills（`agent(..., {skills:[...]})`）**：已接上。`materializeAssets`（跟 `gateway:"sdk"` 同一份函式）
