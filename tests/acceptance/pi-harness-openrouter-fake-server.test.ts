@@ -19,6 +19,17 @@ interface RecordedRequest {
   body: unknown;
 }
 
+/** rest-of-slice-(f) finding: pi-ai's openai-completions client always sends `stream:true`
+ *  (openai-completions.js:575) — a plain non-streaming JSON body (what this helper used to send)
+ *  makes the real `openai` client fail parsing with "Stream ended without finish_reason". Before the
+ *  `erroredOut` fix in session-runner.ts (pi-child/session-runner.ts — a real defect this same
+ *  iteration's error-classification work found and fixed: an assistant message with
+ *  `stopReason:'error'` did not stop `runPiChildSession` from ALSO emitting a `{t:'final'}` event
+ *  right after, so the parent's `settled` was silently overwritten from the real failure into a fake
+ *  `ok:true`/empty-content "success"), this test was GREEN by accident — it verified the OUTBOUND
+ *  request shape correctly, but never actually proved a real completion came back, because one never
+ *  did. Responding with a real OpenAI-shaped SSE stream (not a single JSON object) is both the
+ *  correct fix and makes this test's `result.ok` assertion test something real. */
 function startFakeOpenRouterServer(): Promise<{ server: HttpServer; port: number; requests: RecordedRequest[] }> {
   const requests: RecordedRequest[] = [];
   return new Promise((resolve) => {
@@ -30,12 +41,15 @@ function startFakeOpenRouterServer(): Promise<{ server: HttpServer; port: number
         let body: unknown = raw;
         try { body = JSON.parse(raw); } catch { /* keep raw */ }
         requests.push({ method: req.method, url: req.url, headers: req.headers as Record<string, string | string[] | undefined>, body });
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({
-          id: 'chatcmpl-fake-1', object: 'chat.completion', created: Math.floor(Date.now() / 1000), model: 'fake-model',
-          choices: [{ index: 0, message: { role: 'assistant', content: 'FAKE_RESPONSE_OK' }, finish_reason: 'stop' }],
-          usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 },
-        }));
+        const id = 'chatcmpl-fake-1';
+        const created = Math.floor(Date.now() / 1000);
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+        const chunk1 = { id, object: 'chat.completion.chunk', created, model: 'fake-model', choices: [{ index: 0, delta: { role: 'assistant', content: 'FAKE_RESPONSE_OK' }, finish_reason: null }] };
+        const chunk2 = { id, object: 'chat.completion.chunk', created, model: 'fake-model', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } };
+        res.write(`data: ${JSON.stringify(chunk1)}\n\n`);
+        res.write(`data: ${JSON.stringify(chunk2)}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
       });
     });
     server.listen(0, '127.0.0.1', () => {
@@ -80,6 +94,11 @@ describe('pi harness v1 — OpenRouter request shape via a recording fake server
       expect(result.provider).toBe('openrouter');
       expect(result.model).toBe('anthropic/claude-3.5-sonnet');
       expect(result.transport).toBe('pi');
+      // A REAL completion came back (the point of the SSE-shaped fake response above, not just a
+      // request-shape capture) — proves the erroredOut fix: before it, this field was '' because the
+      // real "Stream ended without finish_reason" failure was silently overwritten into a fake
+      // ok:true/empty-content success.
+      expect(result.content).toBe('FAKE_RESPONSE_OK');
     }
 
     expect(fake.requests.length).toBeGreaterThan(0);

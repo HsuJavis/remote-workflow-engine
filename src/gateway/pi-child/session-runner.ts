@@ -383,6 +383,17 @@ export async function runPiChildSession(config: PiChildConfig, emit: (event: PiC
   // pi-spike-report.md design changes 7/8: no stable message id exists; key on an adapter-owned
   // sequence counter, incremented on every ASSISTANT message_end (message_end fires for every role).
   let seq = 0;
+  // rest of slice (f), a real defect found by the real fake-server error-classification evidence
+  // (tests/acceptance/pi-harness-error-classification-fake-server.test.ts, run against a REAL 401/
+  // 429/500 HTTP response — not fabricated child events): `session.prompt()` does NOT reject when a
+  // provider call fails mid-turn — pi ends that turn with `stopReason:'error'` on the assistant
+  // message (handled below, emits `{t:'error'}`) and then RESOLVES normally. Before this fix,
+  // execution fell through past the `try` block unconditionally and ALSO emitted `{t:'final', ...}`
+  // right after the error — the PARENT (`pi-gateway-client.ts`) lets whichever event arrives LAST win
+  // `settled`, so every real provider error was silently overwritten into a fake `ok:true` success.
+  // This flag is the fix: once the turn has ended in error, the post-prompt() code path below is
+  // skipped entirely.
+  let erroredOut = false;
   const safeJson = (v: unknown): string => {
     try { return JSON.stringify(v) ?? 'null'; } catch (err) { return JSON.stringify({ unserializable: err instanceof Error ? err.message : String(err) }); }
   };
@@ -401,6 +412,7 @@ export async function runPiChildSession(config: PiChildConfig, emit: (event: PiC
     const usage = { input: msg.usage.input, output: msg.usage.output, cacheRead: msg.usage.cacheRead, cacheWrite: msg.usage.cacheWrite };
     seq += 1;
     if (msg.stopReason === 'error') {
+      erroredOut = true;
       emit({ t: 'error', message: msg.errorMessage ?? 'pi reported stopReason:"error" with no errorMessage', stopReason: msg.stopReason });
       return;
     }
@@ -411,6 +423,12 @@ export async function runPiChildSession(config: PiChildConfig, emit: (event: PiC
     await session.prompt(config.prompt);
   } catch (err) {
     emit({ t: 'error', message: err instanceof Error ? err.message : String(err) });
+    session.dispose();
+    await resetSandboxManager();
+    return;
+  }
+
+  if (erroredOut) {
     session.dispose();
     await resetSandboxManager();
     return;

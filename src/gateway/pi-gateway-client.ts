@@ -20,13 +20,15 @@ import { readdirSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import type { AgentOpts, Caps, HarnessDescriptor, Tokens, TranscriptEvent } from '../types.js';
 import type { GatewayClient, GatewayResult, EffortApplied } from './client.js';
-import { resolveTimeout } from './client.js';
+import { resolveTimeout, attemptsFor } from './client.js';
 import { redactHarness } from '../agent-executor.js';
 import { parseModelRef } from '../providers.js';
 import { RealCliLifecycle } from '../cli-lifecycle.js';
 import { buildBashConfinement, readonlyBashRefusal } from './bash-confinement.js';
 import { resolveRipgrepOverride } from './pi-child/ripgrep-override.js';
 import type { PiChildConfig, PiChildEvent, PiChildSandboxConfig } from './pi-child/protocol.js';
+import type { EventSink } from '../event-log.js';
+import { PI_HARNESS_VERSION } from '../harness-info.js';
 
 /** Engine tool name -> pi tool name (spec "Tool mapping"). Semantic differences, documented: `Glob`
  *  (gitignore-aware, Claude-shaped globbing) maps to pi's `find` (pi's own docs: "respects
@@ -99,6 +101,39 @@ function sweepSrtMuxSockets(pid: number): void {
   }
 }
 
+function addTokens(a: Tokens, b: Tokens): Tokens {
+  return { input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite };
+}
+
+/** A failed `GatewayResult`'s `tokens` field types its cache fields optional (unlike the ok arm) —
+ *  normalized to 0 before folding into `addTokens`, same convention `claude-agent-sdk-client.ts`'s
+ *  own retry loop uses at its equivalent fold site. */
+function normalizeTokens(t: Partial<Tokens> & { input: number; output: number }): Tokens {
+  return { input: t.input, output: t.output, cacheRead: t.cacheRead ?? 0, cacheWrite: t.cacheWrite ?? 0 };
+}
+
+/** rest of slice (f) ("Error classification"): pi's `AssistantMessage.errorMessage` is a plain
+ *  string built by pi-ai's own `formatProviderError` (`<status>: <body>` or `<prefix> (<status>):
+ *  <body>` when a status/body were extracted from the provider SDK's error object, else the raw
+ *  `error.message` verbatim) — there is NO structured status anywhere on the wire our adapter can
+ *  read instead (confirmed by reading `pi-ai/dist/types.d.ts`'s `AssistantMessage` shape: only
+ *  `errorMessage?: string` and an unrelated `rawStopReason?: string`), so unlike the sdk gateway's
+ *  `classifyApiError` (which classifies a closed, typed SDK error-kind union), this one has to
+ *  pattern-match the composed string. Three shapes covered: a bare leading status (openai-node's own
+ *  `${status} ${message}`, e.g. "401 Incorrect API key provided..."), `formatProviderError`'s own
+ *  no-prefix form (`"<status>: <body>"`), and its prefixed form (`"<prefix> (<status>): <body>"`).
+ *  401/403/404 -> 'terminal' (retrying costs a full timeout against a provider that already said no,
+ *  same rationale as `classifyApiError`); every other status (429/5xx/etc.), and a message with NO
+ *  extractable status at all (keyword-only text like "overloaded" or a network error) -> 'retry' —
+ *  the same "absent means retry" default `classifyApiError` uses for its own 'unknown' bucket. */
+const TERMINAL_HTTP_STATUSES = new Set([401, 403, 404]);
+
+export function classifyPiErrorMessage(message: string): 'terminal' | 'retry' {
+  const match = message.match(/^(\d{3})\b/) ?? message.match(/\((\d{3})\)/) ?? message.match(/^(\d{3}):/);
+  if (match === null) return 'retry';
+  return TERMINAL_HTTP_STATUSES.has(Number(match[1])) ? 'terminal' : 'retry';
+}
+
 export interface PiGatewayConfig {
   /** The OpenRouter API key, from the same secret store `resolveAnthropicAuth` reads from
    *  (RWE_SECRET_OPENROUTER_API_KEY / OPENROUTER_API_KEY) — injected only into the pi child's
@@ -149,8 +184,18 @@ function resolveOpenrouterKey(config: PiGatewayConfig): string | undefined {
 
 export class PiGatewayClient implements GatewayClient {
   private readonly _cliLifecycle = new RealCliLifecycle({});
+  // research doc §3.1 "generalize the late binds": mirrors ClaudeAgentSdkGatewayClient's own
+  // `_eventSink` exactly — a no-op default (nothing bound yet is NEVER confused with "did it"),
+  // late-bound by server.ts's existing structural `BindableGateway` check (`bindable?.bindEventSink?.`),
+  // which already calls this method on ANY gateway that implements it — no server.ts change needed.
+  private _eventSink: EventSink = () => {};
 
   constructor(private readonly _config: PiGatewayConfig) {}
+
+  /** Same shape/reason as `ClaudeAgentSdkGatewayClient.bindEventSink` — see that method's own doc. */
+  bindEventSink(sink: EventSink): void {
+    this._eventSink = sink;
+  }
 
   async invoke(req: {
     prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string;
@@ -249,6 +294,7 @@ export class PiGatewayClient implements GatewayClient {
       await req.onHarness(
         {
           ...redactHarness({ surfaceType: 'curated', modelName: parsed.model, provider: parsed.provider, prompt: req.prompt, curatedTools: requestedTools, mergedMcp: [], skills: [] }),
+          harnessVersion: PI_HARNESS_VERSION,
           ...(mapped.piNames.includes('bash')
             ? { bash: { mode: (req.opts.bash === 'readonly' ? 'readonly' : 'full') as 'readonly' | 'full', enforced: this._config.confinementPosture === 'confined' } }
             : {}),
@@ -278,7 +324,61 @@ export class PiGatewayClient implements GatewayClient {
     };
 
     const effTimeout = resolveTimeout(req.opts.timeoutMs) ?? this._config.timeoutMs;
-    return this._dispatchOnce(childConfig, parsed.provider, req, effTimeout);
+
+    // DES-249 (attemptsFor — the ONE formula every GatewayClient conformer uses, client.ts): an
+    // untimed call gets exactly one attempt; a timed call gets `1 + retries`. Childconfig/sandbox/
+    // onHarness above are computed ONCE (they do not vary across attempts — the sandbox POLICY and
+    // the curated tool surface are facts about this call, not about which attempt is in flight), but
+    // each attempt gets its OWN `agent.confinement` line (mirrors the sdk gateway's own "once per
+    // ATTEMPT, not once per call" discipline — v37/DES-256) and its own spawned child.
+    const attempts = attemptsFor(this._config.retries, effTimeout);
+    let last: GatewayResult = { ok: false, provider: parsed.provider, reason: 'terminal', transport: 'pi', retryable: false, detail: 'INTERNAL_ERROR: attemptsFor() returned 0 — no attempt was ever made' };
+    let carried: Tokens = { ...ZERO_TOKENS };
+    let carriedPartial = false;
+    for (let i = 0; i < attempts; i++) {
+      this._eventSink({
+        kind: 'agent.confinement',
+        runId: req.runId,
+        agentId: req.agentId,
+        attempt: i + 1,
+        posture: this._config.confinementPosture === 'confined' ? 'confined' : 'unconfined',
+        root: workspace,
+        allowWrite: sandbox?.filesystem.allowWrite ?? [],
+        denyRead: sandbox?.filesystem.denyRead ?? [],
+        enabled: sandbox !== undefined,
+        failIfUnavailable: false,
+        harnessVersion: PI_HARNESS_VERSION,
+      });
+      const base = carried;
+      let settledThisAttempt = false;
+      // issue #127 / v035 L-1 parity: snapshot `carried` per attempt and stop forwarding this
+      // attempt's own onUsage once IT has settled — the exact same race `claude-agent-sdk-client.ts`'s
+      // own retry loop guards against (a superseded attempt's late frame re-adding already-folded
+      // tokens a second time).
+      const attemptReq = req.onUsage === undefined ? req : {
+        ...req,
+        onUsage: (cum: Tokens) => {
+          if (settledThisAttempt) return;
+          req.onUsage!(addTokens(base, cum));
+        },
+      };
+      last = await this._dispatchOnce(childConfig, parsed.provider, attemptReq, effTimeout);
+      settledThisAttempt = true;
+      if (last.ok) {
+        const total = addTokens(carried, normalizeTokens(last.tokens));
+        return carriedPartial ? { ...last, tokens: total, partial: true } : { ...last, tokens: total };
+      }
+      if (last.tokens) {
+        carried = addTokens(carried, normalizeTokens(last.tokens));
+        if (last.partial === true) carriedPartial = true;
+      }
+      if (!last.ok && last.retryable === false) break;
+      if (req.signal?.aborted) break;
+    }
+    if (!last.ok && carried.input + carried.output + carried.cacheRead + carried.cacheWrite > 0) {
+      return carriedPartial ? { ...last, tokens: carried, partial: true } : { ...last, tokens: carried };
+    }
+    return last;
   }
 
   private async _dispatchOnce(
@@ -339,7 +439,16 @@ export class PiGatewayClient implements GatewayClient {
       } else if (event.t === 'final') {
         settled = { ok: true, provider, model: childConfig.model.model, transport: 'pi', tokens: cumulative, content: event.text };
       } else if (event.t === 'error' || event.t === 'fatal') {
-        settled = { ok: false, provider, reason: 'terminal', transport: 'pi', detail: event.message, tokens: cumulative, ...(cumulative.input > 0 || cumulative.output > 0 ? { partial: true as const } : {}) };
+        // rest of slice (f) "Error classification": `fatal` is a child-side programming defect
+        // (INTERNAL_ERROR: bad config, uncaught throw — session-runner.ts documents every ordinary
+        // dispatch failure as `{t:'error'}` instead) — never worth retrying. An `error` event's
+        // message is classified by `classifyPiErrorMessage` (401/403/404 -> terminal).
+        const retryable = event.t === 'fatal' ? false : classifyPiErrorMessage(event.message) !== 'terminal';
+        settled = {
+          ok: false, provider, reason: 'terminal', transport: 'pi', detail: event.message, tokens: cumulative,
+          ...(retryable ? {} : { retryable: false as const }),
+          ...(cumulative.input > 0 || cumulative.output > 0 ? { partial: true as const } : {}),
+        };
       } else if (event.t === 'tool_call') {
         void req.onEvent?.({ ts: new Date().toISOString(), kind: 'tool_call', data: { toolCallId: event.toolCallId, toolName: event.toolName, args: safeParse(event.argsJson) } });
       } else if (event.t === 'tool_result') {

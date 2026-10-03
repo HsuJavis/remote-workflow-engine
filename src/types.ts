@@ -658,6 +658,11 @@ export interface HarnessDescriptor {
    *  posture confined). A readonly call is never dispatched unenforced, so `{mode:'readonly',
    *  enforced:false}` cannot occur — it is refused `BASH_READONLY_UNENFORCEABLE` before a session. */
   bash?: { mode: 'readonly' | 'full'; enforced: boolean };
+  /** pi harness v1 (spec "Transcript and harness record"): the PINNED
+   *  `@earendil-works/pi-coding-agent` version (harness-info.ts's `PI_HARNESS_VERSION`) this dispatch
+   *  ran under — the pi-gateway equivalent of `agent.confinement`'s `sdkVersion`. Absent on every
+   *  sdk-gateway descriptor (nothing pi-specific to report) and on every pre-pi-harness record. */
+  harnessVersion?: string;
   /** Project configuration (`.claude/settings.json`, `.claude/hooks/`, ... — PROJECT_CONFIG_PATHS)
    *  found in the workspace and removed before this dispatch's CLI could load it. Absent when none. */
   plantedConfigRemoved?: string[];
