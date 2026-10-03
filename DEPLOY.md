@@ -667,10 +667,39 @@ anthropic 列——換句話說，這個部署的使用者根本看不到 anthro
 的 Bash 需要連本機服務，目前只能先切回 `gateway:"sdk"`；真正的網路白名單（而非全部允許）留給後續
 迭代。
 
-**目前還沒接的能力（故意，不是遺漏——拒絕而非靜默丟棄）**：MCP（`agent(..., {mcp:[...]})`，一律
-`MCP_UNSUPPORTED_BY_HARNESS`）、skills（`SKILL_UNSUPPORTED_BY_HARNESS`）、`effort`/OpenRouter
-`reasoning.effort` 的請求形狀驗證。`system_info`（MCP 工具與 `GET /api/system`）的 `harness` 欄位
-即時反映這台部署實際在跑哪一種 harness——`{name:"pi", version, providers, unsupportedTools, effort,
+**MCP（`agent(..., {mcp:[...]})`）**：已接上。解析走跟 `gateway:"sdk"` **同一份**共用解析器
+（`${secret:NAME}`/`${run:dir}`/`${run:id}` 代換——兩個 gateway 不會分岔），每個宣告的 server 從 pi
+子行程內一個 inline extension 用 `pi.registerMcpServer(name, {...cfg, exposure:'direct'})` 註冊
+（故意不用檔案式 `mcp.json`——pi 1.0.0 的 `createMcpExtension()` 預設設定載入器會忽略自訂
+`agentDir`，改讀全域 `~/.pi/agent/mcp.json` 並把該目錄建出來，是真的會發生的副作用，已用
+`loadConfig` 覆寫完全避開）。pi 本身沒有連線狀態查詢 API，turn-1 可用性是用
+`session.getActiveToolNames()` 輪詢每個宣告 server 的 `mcp__<name>__` 前綴工具（最多等 10 秒，跟
+pi `direct` exposure 自己的 `startupWaitMs` 預設一致）算出來，映射到跟 `gateway:"sdk"` **同一個**
+`summarizeMcpInit()`——未連上的 server 一樣回報 `agent.mcp_not_connected` 事件與
+`MCP_SERVER_NOT_CONNECTED` warning。一個解析不出來的 MCP 名字進 `materialized.missing`、**run 照跑**
+（業主 19.5.3 裁決，跟 sdk gateway 一致，不是拒絕）。stdio MCP 子行程**不在** Bash 圍籠內（跟
+`gateway:"sdk"` 現狀一致），而且因為 `@modelcontextprotocol/sdk` 的 `StdioClientTransport` 預設
+`detached:false`，這些子行程會留在 pi 子行程**自己的** process group 裡——既有的 group-kill（#129，
+已經為 bash/abort/timeout 接好）原封不動就能一併回收，不需要額外程式碼（2026-10-03 真機驗證：
+`npx -y @modelcontextprotocol/server-everything` 在正常完成與逾時兩種路徑後都被完全清掉）。
+`workspace_push({kind:"mcp"})` 帶 `stdio` transport 的 admin-only 限制不變（見下方角色表）。
+
+**Skills（`agent(..., {skills:[...]})`）**：已接上。`materializeAssets`（跟 `gateway:"sdk"` 同一份函式）
+把宣告的技能複製進 `<ws>/.claude/skills/<name>/`，路徑清單以 pi 的 `additionalSkillPaths` 傳給一個
+`DefaultResourceLoader`（`noContextFiles`/`noExtensions`/`noSkills`/`noPromptTemplates`/`noThemes`
+全部 `true`——「不discovery、全權交給引擎」的精神不變，`extensionFactories`/`additionalSkillPaths`
+是文件明載的兩個例外，不受那些旗標影響）。**skill-only agent 的決定**：pi 的模型只能透過 `read`
+工具自己讀 `SKILL.md`（沒有像 sdk gateway 的獨立 `Skill` 工具），所以宣告了技能但 `allowedTools` 沒有
+`Read` 的呼叫一律在派工前就以 `SKILL_REQUIRES_READ_TOOL` 拒絕——清楚失敗，不是靜默材料化一個模型
+永遠打不開的技能。曾考慮「自動補一個只能讀技能目錄的 jailed read」，v1 判定為多一種、containment
+語意跟全引擎唯一一個 `read` 工具不同的第二份定義，不值得為 v1 多開這個介面，故不採用。`exec:true`
+（`workspace_push`/`seedManifest` 的技能檔案旗標）在這裡**純粹是檔案權限**（0o755 vs 0o644）——pi
+沒有 inline shell（`!cmd`）技能語法，所以 sdk gateway 的 `disableSkillShellExecution` 在 pi 這邊沒有
+對應物可設，不是忘記接。
+
+**`effort`/OpenRouter `reasoning.effort` 的請求形狀驗證**：已用錄製式 fake server 驗證（見下方
+「pi harness 的已知差異」）。`system_info`（MCP 工具與 `GET /api/system`）的 `harness` 欄位即時反映
+這台部署實際在跑哪一種 harness——`{name:"pi", version, providers, unsupportedTools, effort,
 usage}`——不要用這份文件推測，直接查 `system_info`。
 
 **回滾**：把 `rwe.config.json` 的 `"gateway"` 改回 `"sdk"`（或整個刪掉這個鍵，預設就是 `"sdk"`），

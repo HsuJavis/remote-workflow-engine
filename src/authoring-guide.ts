@@ -509,9 +509,15 @@ function harnessDisclosureParagraph(): string {
     "narrower surface: only `openrouter`/`ollama` models are usable (an `anthropic/*` ref is refused " +
     "`PROVIDER_UNSUPPORTED_BY_HARNESS` at registration/run_start/admission — route a Claude model " +
     'through `openrouter/anthropic/...` instead); the tool surface is limited to Read/Write/Edit/' +
-    `Bash/Grep/Glob/LS (${PI_UNSUPPORTED_TOOLS.join('/')} are refused \`TOOL_UNSUPPORTED_BY_HARNESS\`); ` +
-    'MCP and skill declarations are refused (`MCP_UNSUPPORTED_BY_HARNESS`/`SKILL_UNSUPPORTED_BY_HARNESS`) ' +
-    "rather than silently ignored. `system_info`'s `harness` field states which one THIS engine runs " +
+    `Bash/Grep/Glob/LS (${PI_UNSUPPORTED_TOOLS.join('/')} are refused \`TOOL_UNSUPPORTED_BY_HARNESS\`). ` +
+    'MCP and skills ARE supported under `gateway:"pi"` (resolved through the same shared resolver/ ' +
+    'materializer as the sdk gateway — `${secret:}`/`${run:dir}` substitution never diverges between ' +
+    'the two), with two pi-specific differences: a declared skill requires `Read` in `allowedTools` ' +
+    "(pi's model reaches a skill only through the `read` tool, never a separate `Skill` tool — refused " +
+    '`SKILL_REQUIRES_READ_TOOL` up front otherwise), and a `seedManifest`/`workspace_push` skill file\'s ' +
+    '`exec:true` is only ever a file-permission bit (0o755 vs 0o644) on pi — there is no inline-shell ' +
+    '(`!cmd`) skill syntax to gate the way the sdk gateway\'s `disableSkillShellExecution` does. ' +
+    "`system_info`'s `harness` field states which one THIS engine runs " +
     '(`{name, version, providers, unsupportedTools, effort, usage}`) — read it rather than assuming.'
   );
 }

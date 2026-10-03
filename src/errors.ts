@@ -84,11 +84,11 @@ export const ERROR_CATALOG = {
   // (WebFetch, WebSearch, Task, NotebookEdit, or any other name outside Read/Write/Edit/Bash/Grep/
   // Glob/LS) — refused at registration AND dispatch, never silently dropped from the tool surface.
   TOOL_UNSUPPORTED_BY_HARNESS: { see: 'workflow_authoring_guide', hint: 'this tool has no mapping under the pi harness (gateway:"pi") — only Read/Write/Edit/Bash/Grep/Glob/LS are supported; declare a supported tool or switch this engine back to gateway:"sdk"' },
-  // pi harness v1: MCP (slice g) and skills (slice h) are not yet wired into the pi path — an agent
-  // declaring either is refused at dispatch, never silently ignored (the same "never silently drop a
-  // declared capability" standard TOOL_UNSUPPORTED_BY_HARNESS holds tools to).
-  MCP_UNSUPPORTED_BY_HARNESS: { see: 'workflow_authoring_guide', hint: 'this engine runs the pi harness (gateway:"pi"), which does not yet bridge MCP servers — remove the mcp declaration from this agent() call or switch this engine back to gateway:"sdk"' },
-  SKILL_UNSUPPORTED_BY_HARNESS: { see: 'workflow_authoring_guide', hint: 'this engine runs the pi harness (gateway:"pi"), which does not yet materialize skills — remove the skill declaration from this agent() call or switch this engine back to gateway:"sdk"' },
+  // pi harness v1 (spec "Skills"): pi's model reaches a skill only through the `read` tool (it reads
+  // SKILL.md itself — no separate Skill tool exists on pi, unlike the sdk gateway's dedicated Skill
+  // tool). A skill-only agent (`allowedTools` without `read`) is refused up front, never silently
+  // shipping a materialized skill the model has no way to open.
+  SKILL_REQUIRES_READ_TOOL: { see: 'workflow_authoring_guide', hint: "this engine runs the pi harness (gateway:\"pi\"); a declared skill requires 'Read' in this dispatch's allowedTools — pi's model opens a skill's SKILL.md only through the read tool (no separate Skill tool exists on pi)" },
   // issue #103(a): registration WARNS (result.warnings), never throws this any more — the code now
   // fires only at admission (run_start, a schedule/webhook firing, or a nested workflow() call),
   // BEFORE any side effect, naming the agent label(s) + the missing mcp name(s) + the fix
