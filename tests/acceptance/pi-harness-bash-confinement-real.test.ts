@@ -149,4 +149,23 @@ describe('pi harness v1 — pi-path confinement probe (slice e)', () => {
     const result = await probePiPath();
     expect(result.posture).toBe('confined');
   }, 20_000);
+
+  // review L1: entry.ts's `--probe` mode (run at boot, and by `--check-config`) spawns its own
+  // short-lived child that calls SandboxManager.initialize()/wrapWithSandboxArgv() (pi-path-probe.ts)
+  // but never SandboxManager.reset() nor process.exit's own exit-handler race gave it a chance to —
+  // the same srt-mux-<pid>-<seq>.sock leak class pi-gateway-client.ts's own `sweepSrtMuxSockets`
+  // already fixed for a DISPATCH child, left open for the PROBE child. Scoped to the probe's own pid
+  // prefix (`srt-mux-<pid>-`, collected from `probePiPath`'s spawned child before it exits — this
+  // module exposes no pid, so instead this snapshots the WHOLE srt-mux-* name set before/after and
+  // asserts no entry present after is one that was not present before, per probe call, run twice back
+  // to back so a single still-settling socket from the first call cannot mask a real per-call leak).
+  it.skipIf(!HAS_PROBE_DEPS)('leaves no srt-mux-*.sock file behind after the probe exits (review L1)' + WHY_NOT, async () => {
+    const muxSocks = (): Set<string> => new Set(readdirSync(tmpdir()).filter((n) => n.startsWith('srt-mux-') && n.endsWith('.sock')));
+    const before = muxSocks();
+    await probePiPath();
+    await probePiPath();
+    const after = muxSocks();
+    const leaked = [...after].filter((n) => !before.has(n));
+    expect(leaked).toEqual([]);
+  }, 30_000);
 });

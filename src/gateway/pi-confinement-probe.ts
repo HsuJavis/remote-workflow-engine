@@ -8,6 +8,7 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import type { ConfinementProbeResult } from './confinement-probe.js';
+import { sweepSrtMuxSockets } from './srt-mux-sweep.js';
 
 const ENTRY_PATH = fileURLToPath(new URL('./pi-child/entry.ts', import.meta.url));
 
@@ -45,6 +46,10 @@ export async function probePiPath(deps: PiConfinementProbeDeps = {}): Promise<Co
     child.stderr?.on('data', (d: Buffer) => { errOut += d.toString(); });
     const timer = setTimeout(() => {
       try { child.kill('SIGKILL'); } catch { /* already gone */ }
+      // review L1: a SIGKILLed probe child never runs its own `finally` (pi-path-probe.ts's
+      // `SandboxManager.reset()`) — the same belt-and-suspenders backstop
+      // pi-gateway-client.ts applies for a SIGKILLed DISPATCH child, applied here too.
+      if (child.pid !== undefined) sweepSrtMuxSockets(child.pid);
       settle({ posture: 'unconfined', reason: `pi-path probe timed out after ${timeoutMs}ms` });
     }, timeoutMs);
     child.once('error', (err) => {
@@ -53,6 +58,11 @@ export async function probePiPath(deps: PiConfinementProbeDeps = {}): Promise<Co
     });
     child.once('exit', () => {
       clearTimeout(timer);
+      // review L1: unconditional, before any branch below returns — the same backstop as above, for
+      // the normal-exit path (pi-path-probe.ts's own `finally` is the primary, fast-path cleanup;
+      // this is belt-and-suspenders in case THAT raced the process end exactly as srt's own
+      // `process.once('exit', ...)`-based teardown already does — see srt-mux-sweep.ts's header).
+      if (child.pid !== undefined) sweepSrtMuxSockets(child.pid);
       const line = out.trim().split('\n').pop();
       if (line === undefined || line.length === 0) {
         settle({ posture: 'unconfined', reason: `pi-path probe produced no output${errOut.trim() ? ` (stderr: ${errOut.trim().slice(-500)})` : ''}` });

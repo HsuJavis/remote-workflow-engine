@@ -45,6 +45,15 @@ export async function runPiPathProbe(
   } catch (err) {
     return { posture: 'unconfined', reason: `srt SandboxManager.initialize() failed: ${err instanceof Error ? err.message : String(err)}` };
   }
+  // review L1: `SandboxManager.initialize()` above starts srt's mux proxy, which opens a unix socket
+  // under `os.tmpdir()` (`srt-mux-<this process's pid>-<seq>.sock` — see srt-mux-sweep.ts's own
+  // header for the full "why srt's own exit-time cleanup is not enough" reasoning, identical here).
+  // This probe runs in its OWN short-lived `entry.ts --probe` child specifically so that process
+  // (never the long-lived engine) owns any srt-left-behind state — but until this `finally`, NOTHING
+  // ever called `SandboxManager.reset()` before that child's `process.exit(0)`, leaking one socket
+  // per boot probe / `--check-config` invocation forever. `reset()` is async and best-effort (never
+  // lets a teardown failure change the measured posture) — matches session-runner.ts's own
+  // `resetSandboxManager()` for the dispatch path exactly.
   try {
     const { argv, env } = await SandboxManager.wrapWithSandboxArgv(
       'true',
@@ -61,5 +70,7 @@ export async function runPiPathProbe(
     return { posture: 'confined' };
   } catch (err) {
     return { posture: 'unconfined', reason: `srt wrapWithSandboxArgv probe failed: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    try { await SandboxManager.reset(); } catch { /* best-effort teardown, never block the probe result on this */ }
   }
 }
