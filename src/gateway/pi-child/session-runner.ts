@@ -412,6 +412,7 @@ export async function runPiChildSession(config: PiChildConfig, emit: (event: PiC
   } catch (err) {
     emit({ t: 'error', message: err instanceof Error ? err.message : String(err) });
     session.dispose();
+    await resetSandboxManager();
     return;
   }
 
@@ -424,4 +425,23 @@ export async function runPiChildSession(config: PiChildConfig, emit: (event: PiC
     stopReason: 'stop',
   });
   session.dispose();
+  await resetSandboxManager();
+}
+
+/** residual fix (srt-mux socket leak): srt's OWN exit-time cleanup (`registerCleanup()` in
+ *  sandbox-manager.js) is async but wired only to `process.once('exit', ...)`, a listener Node runs
+ *  SYNCHRONOUSLY right before the event loop stops — the `await muxProxyServer.close()` inside
+ *  `SandboxManager.reset()` never gets to finish there, so the socket under `os.tmpdir()` leaks on
+ *  every confined dispatch even when nothing went wrong. Calling it explicitly here, BEFORE
+ *  entry.ts's own `process.exit(0)` runs, lets that same close() actually complete — this is the
+ *  fast, clean path for every exit this function controls (normal completion, a provider error).
+ *  It does NOT cover a SIGKILLed child (abort/timeout, reaped by the parent's group-kill before this
+ *  line could ever run) — the parent's own `sweepSrtMuxSockets()` (pi-gateway-client.ts) is the
+ *  unconditional backstop for that case. `reset()` is safe to call even when the sandbox was never
+ *  initialized (every internal reference is already `undefined`/falsy, confirmed by reading
+ *  sandbox-manager.js) — called unconditionally rather than threading an "was bash ever used" flag
+ *  through, which would be one more place this call could be forgotten. Best-effort: a reset
+ *  failure must never block the child's own exit. */
+async function resetSandboxManager(): Promise<void> {
+  try { await SandboxManager.reset(); } catch { /* best-effort teardown, never block exit on this */ }
 }

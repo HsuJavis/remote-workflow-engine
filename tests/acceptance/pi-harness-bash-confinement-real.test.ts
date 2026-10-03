@@ -6,7 +6,7 @@
 // convention as val-253-bash-confinement.test.ts.
 import { describe, it, expect } from 'vitest';
 import { execSync } from 'node:child_process';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { PiGatewayClient } from '../../src/gateway/pi-gateway-client.js';
@@ -114,6 +114,35 @@ describe('pi harness v1 — REAL srt bash confinement (slice e)', () => {
       }));
       expect(result.ok).toBe(true);
       if (result.ok) expect(String(result.content)).toMatch(/v\d+\.\d+\.\d+/);
+    } finally {
+      rmSync(workRoot, { recursive: true, force: true });
+    }
+  }, 240_000);
+});
+
+describe('pi harness v1 — srt-mux socket cleanup (residual fix)', () => {
+  it.skipIf(!HAS_CONFINED_RUNTIME)('leaves no srt-mux-*.sock behind after a real confined bash dispatch' + WHY_NOT, async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-pi-confined-sweep-'));
+    const ws = join(workRoot, 'ws');
+    mkdirSync(ws, { recursive: true });
+    const baseline = new Set(readdirSync(tmpdir()).filter((f) => f.startsWith('srt-mux-')));
+    try {
+      const gw = new PiGatewayClient({
+        ollamaBaseUrl: 'http://localhost:11434',
+        timeoutMs: 60_000,
+        confinementPosture: 'confined',
+        confinement: { allowHostPaths: [], protectedFiles: [], workRoot },
+      });
+      await retryReal(() => gw.invoke({
+        prompt: 'Call the bash tool ONCE with this exact command and report the raw output verbatim: echo hello',
+        opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Bash'] },
+        runId: 'confined-sweep-r1',
+        agentId: 'confined-sweep-a1',
+        workspace: ws,
+      }));
+      await new Promise((r) => setTimeout(r, 300));
+      const after = readdirSync(tmpdir()).filter((f) => f.startsWith('srt-mux-') && !baseline.has(f));
+      expect(after).toEqual([]);
     } finally {
       rmSync(workRoot, { recursive: true, force: true });
     }

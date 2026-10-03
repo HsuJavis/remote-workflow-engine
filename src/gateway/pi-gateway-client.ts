@@ -16,6 +16,8 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import { readdirSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import type { AgentOpts, Caps, HarnessDescriptor, Tokens, TranscriptEvent } from '../types.js';
 import type { GatewayClient, GatewayResult, EffortApplied } from './client.js';
 import { resolveTimeout } from './client.js';
@@ -73,6 +75,29 @@ function buildChildEnv(): NodeJS.ProcessEnv {
 }
 
 const ZERO_TOKENS: Tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+
+/** residual fix (srt-mux socket leak): `@anthropic-ai/sandbox-runtime`'s mux proxy names its unix
+ *  socket `srt-mux-<process.pid>-<seq>.sock` under `os.tmpdir()` — that pid is the pi CHILD's own
+ *  (SandboxManager runs inside session-runner.ts, in-process with the child, never a grandchild),
+ *  so it is byte-identical to `child.pid` here. srt's own teardown (`SandboxManager.reset()`) is
+ *  async but is registered only on `process.once('exit', ...)`, a listener Node runs synchronously
+ *  right before the event loop stops — the awaited `muxProxyServer.close()` inside it never finishes
+ *  before the process actually ends, so the socket leaks even on a clean successful dispatch, and a
+ *  SIGKILLed child (abort/timeout) never runs any exit handler at all. The child ALSO calls
+ *  `SandboxManager.reset()` itself before exiting (session-runner.ts) as the fast, clean path for a
+ *  normal exit — this sweep is the belt-and-suspenders backstop that is unconditionally correct even
+ *  when that race is lost or the child was killed outright. Swept only by exact `<pid>-` prefix, so a
+ *  socket some OTHER process on the host created is never touched. Best-effort: a missing/already-
+ *  removed file is not an error. */
+function sweepSrtMuxSockets(pid: number): void {
+  const prefix = `srt-mux-${pid}-`;
+  let entries: string[];
+  try { entries = readdirSync(tmpdir()); } catch { return; }
+  for (const name of entries) {
+    if (!name.startsWith(prefix) || !name.endsWith('.sock')) continue;
+    try { unlinkSync(join(tmpdir(), name)); } catch { /* already gone — fine */ }
+  }
+}
 
 export interface PiGatewayConfig {
   /** The OpenRouter API key, from the same secret store `resolveAnthropicAuth` reads from
@@ -270,6 +295,10 @@ export class PiGatewayClient implements GatewayClient {
       detached: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+    // Captured now (not read off `child` again later): some fake-process test doubles clear `.pid`
+    // after 'exit' fires, and the real node ChildProcess keeps it, but the sweep below must work
+    // identically either way.
+    const childPid = child.pid;
     let stderrTail = '';
     child.stderr?.on('data', (d: Buffer) => { stderrTail = (stderrTail + d.toString()).slice(-4096); });
     const reap = (): void => {
@@ -324,6 +353,10 @@ export class PiGatewayClient implements GatewayClient {
     });
     rl.close();
     req.signal?.removeEventListener('abort', onAbort);
+    // residual fix (srt-mux socket leak): unconditional, before any branch below returns — every
+    // path through this dispatch (settled ok, settled error, aborted, timed out, or a bare exit with
+    // no event at all) may have initialized srt's mux proxy inside the child.
+    if (childPid !== undefined) sweepSrtMuxSockets(childPid);
 
     if (settled) return settled;
     if (req.signal?.aborted) {
