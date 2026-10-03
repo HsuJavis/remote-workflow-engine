@@ -29,7 +29,7 @@ import type { ServerConfig } from './server.js';
 import { ClaudeAgentSdkGatewayClient } from './gateway/claude-agent-sdk-client.js';
 import type { ClaudeAgentSdkGatewayConfig } from './gateway/claude-agent-sdk-client.js';
 import { validateHostPathGrants, formatGrantRefusals, toolchainReadCandidates, CLI_SCRATCH_DIR, cliScratchRefusal } from './gateway/bash-confinement.js';
-import { probeConfinement, CONFINEMENT_REMEDIATION } from './gateway/confinement-probe.js';
+import { probeConfinement, CONFINEMENT_REMEDIATION, PI_CONFINEMENT_REMEDIATION_ADDENDUM } from './gateway/confinement-probe.js';
 import type { ConfinementProbeResult } from './gateway/confinement-probe.js';
 import { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
@@ -182,25 +182,38 @@ export const RETIRED_CONFIG_KEYS: Record<string, string> = {
  *  `admissionRefusal()`'s call sites in `run-manager.ts` so that deleting a refusal also fails it.
  *  Neither half alone would have caught round 4's drift; the count is deliberately coarse, and its
  *  job is to force whoever changes the admission surface back to this line. */
-export function confinementBannerLine(probe: { posture: 'confined' | 'unconfined'; reason?: string }): string {
+// review round 2 (owner ruling): round 1's L7 fix made the CONFINED line's wording generic
+// ("confinement probe passed") for BOTH gateways, reasoning that "nested-userns probe passed" named
+// the sdk-specific mechanism — true, but the fix changed the sdk gateway's own boot text too, which
+// the owner ruled is not acceptable: `ERROR_CATALOG.CONFINEMENT_UNAVAILABLE.hint` is a static
+// constant baked at module load (it cannot vary by gateway either), so "sdk must stay byte-identical
+// to master" extends to this banner. `gateway` (default `'sdk'`, matching every pre-existing call
+// site/test) restores master's EXACT sdk-mode string; only `gateway:'pi'` gets the pi-specific one —
+// the one place that actually knows which probe ran is main()'s own boot sequence (`fileConfig.gateway`),
+// not this pure function guessing from the measured `probe` value alone.
+export function confinementBannerLine(probe: { posture: 'confined' | 'unconfined'; reason?: string }, gateway: 'sdk' | 'pi' = 'sdk'): string {
   if (probe.posture === 'confined') {
-    // review L7: used to hardcode "nested-userns probe passed" — true only for the sdk gateway's own
-    // probeConfinement() (a literal nested-bwrap --unshare-user measurement). gateway:"pi" measures
-    // confinement through a DIFFERENT probe (probePiPath(), real srt bwrap+ripgrep wrapping — see
-    // pi-path-probe.ts's own header for why it is a separate question), so printing "nested-userns"
-    // unconditionally misnamed which probe actually ran for a pi deployment. Generic wording covers
-    // both truthfully; `probe` carries no discriminator for which probe produced it, so branching on
-    // the reason text would be guessing, not reporting.
-    return '[remote-workflow-engine] Bash confinement: CONFINED (confinement probe passed at boot)';
+    if (gateway === 'pi') {
+      // pi-path confinement is a SEPARATE measurement from the sdk gateway's own nested-bwrap probe
+      // (probePiPath(), real srt bwrap+ripgrep wrapping — see pi-path-probe.ts's own header) — named
+      // accurately here, never borrowing the sdk probe's own "nested-userns" wording.
+      return '[remote-workflow-engine] Bash confinement: CONFINED (pi-path confinement probe passed at boot)';
+    }
+    return '[remote-workflow-engine] Bash confinement: CONFINED (nested-userns probe passed at boot)';
   }
   // issue #93 item 1: appends the SAME `CONFINEMENT_REMEDIATION` the `CONFINEMENT_UNAVAILABLE`
   // error hint carries (errors.ts) — an operator reading this boot line and one reading the wire
   // error are told the identical fix, never two hand-typed copies that can drift.
+  // review round 2 (owner ruling): the pi rg addendum is appended HERE, only in the one branch that
+  // actually knows `gateway:"pi"` is running — `CONFINEMENT_REMEDIATION` itself (and the
+  // CONFINEMENT_UNAVAILABLE error hint, which shares it) stays byte-identical to master's sdk-only
+  // text for every other caller.
   return (
     `[remote-workflow-engine] Bash confinement: UNCONFINED (${probe.reason ?? 'nested-userns probe failed'})` +
     ' — a run is refused (CONFINEMENT_UNAVAILABLE) when it is a remote submission, OR its trigger was created remotely,' +
     ' OR the version it resolves to was registered remotely; only a local submission of a locally-registered version' +
-    ' proceeds, unconfined. Remediation: ' + CONFINEMENT_REMEDIATION
+    ' proceeds, unconfined. Remediation: ' + CONFINEMENT_REMEDIATION +
+    (gateway === 'pi' ? ' ' + PI_CONFINEMENT_REMEDIATION_ADDENDUM : '')
   );
 }
 
@@ -750,7 +763,7 @@ async function main(): Promise<void> {
   // is confined to that workspace") survived 70 warnings and two days without anything failing.
   // Never say "isolated"/"sandboxed" without the measured fact attached — the line itself is
   // `confinementBannerLine()` above, which a test pins against the admission rule it describes.
-  console.log(confinementBannerLine(confinementProbe));
+  console.log(confinementBannerLine(confinementProbe, fileConfig.gateway === 'pi' ? 'pi' : 'sdk'));
   // Healthcheck-friendly startup line other tooling can grep for.
   console.log('[remote-workflow-engine] ready');
 

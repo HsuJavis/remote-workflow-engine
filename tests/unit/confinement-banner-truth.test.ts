@@ -91,3 +91,38 @@ describe('UT-338 — the boot banner tells the truth about who gets refused', ()
     expect(line).toMatch(/registered remotely/);
   });
 });
+
+// review round 2 (owner ruling): round 1's L7 fix made the CONFINED banner's wording generic for
+// BOTH gateways ("nested-userns probe passed" -> "confinement probe passed") — the owner ruled the
+// sdk gateway's own text must stay byte-identical to master; only `gateway:"pi"` may differ, since
+// that is the one caller (main.ts's own boot sequence) that actually knows which probe ran.
+describe('UT-338 round 2 — confinementBannerLine(probe, gateway) — sdk stays byte-identical to master; only pi differs', () => {
+  it('[LOAD-BEARING] gateway omitted (every pre-existing call site) is byte-identical to master\'s own CONFINED string', () => {
+    expect(confinementBannerLine({ posture: 'confined' })).toBe(
+      '[remote-workflow-engine] Bash confinement: CONFINED (nested-userns probe passed at boot)',
+    );
+  });
+
+  it('[LOAD-BEARING] gateway:"sdk" explicitly is the SAME byte-identical string', () => {
+    expect(confinementBannerLine({ posture: 'confined' }, 'sdk')).toBe(
+      '[remote-workflow-engine] Bash confinement: CONFINED (nested-userns probe passed at boot)',
+    );
+  });
+
+  it('gateway:"pi" names the pi-path probe specifically, never "nested-userns" (that names the sdk probe)', () => {
+    const line = confinementBannerLine({ posture: 'confined' }, 'pi');
+    expect(line).toMatch(/pi-path confinement probe passed/);
+    expect(line).not.toMatch(/nested-userns/);
+  });
+
+  it('gateway:"pi" UNCONFINED carries the SAME shared remediation PLUS the pi-specific rg addendum; sdk carries only the shared one', () => {
+    const sdkLine = confinementBannerLine({ posture: 'unconfined', reason: 'x' }, 'sdk');
+    const piLine = confinementBannerLine({ posture: 'unconfined', reason: 'x' }, 'pi');
+    expect(sdkLine).not.toMatch(/gateway:"pi"/);
+    expect(piLine).toMatch(/gateway:"pi"/);
+    expect(piLine).toMatch(/ripgrep/);
+    // Both still carry the SAME shared CONFINEMENT_REMEDIATION text, unmodified by the pi addendum.
+    expect(sdkLine).toMatch(/bubblewrap \(bwrap\) AND socat/);
+    expect(piLine).toMatch(/bubblewrap \(bwrap\) AND socat/);
+  });
+});
