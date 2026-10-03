@@ -3,13 +3,15 @@
 // `ClaudeAgentSdkGatewayClient` implements, selected by `gateway:"pi"` in rwe.config.json
 // (composeConfig(), src/main.ts) instead of the default `gateway:"sdk"`.
 //
-// Slice (c) scope (this commit): spawns one detached child per dispatch
-// (src/gateway/pi-child/entry.ts) speaking JSONL over stdio, routes openrouter/ollama models, and
-// reports a real GatewayResult for a text-only (no tools) run — proven against a real local ollama
-// in this iteration's evidence. NOT yet in this file (tracked honestly, not silently): bash/file
-// tools (slice d), srt bash confinement (slice e), full retry/abort/timeout semantics and transcript
-// mapping beyond one onEvent per assistant turn (slice f), MCP (slice g), skills (slice h), effort/
-// OpenRouter verification (slice i).
+// Status as of slice (e) (tracked honestly, not silently): spawns one detached child per dispatch
+// (src/gateway/pi-child/entry.ts) speaking JSONL over stdio, routes openrouter/ollama models, maps
+// the tool surface with TOOL_UNSUPPORTED_BY_HARNESS refusal, jails file tools, and wraps bash
+// through real srt confinement with an honest `harness.bash.enforced` — all proven against a real
+// local ollama + real bwrap in this iteration's evidence. Still NOT in this file: a retry loop
+// beyond one attempt (arguably spec-compliant as-is — "the engine's outer retry loop is the only
+// retry"), 401/403/404-vs-429/5xx error classification, `tool_call`/`tool_result` transcript events
+// (only one `message` event per assistant turn today), MCP (slice g), skills (slice h), effort
+// mapping / OpenRouter request-shape verification (slice i).
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -136,6 +138,14 @@ export class PiGatewayClient implements GatewayClient {
     }
     if (req.signal?.aborted) {
       return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: 'aborted by caller before dispatch (run suspended or stopped)' };
+    }
+    // Slices (g)/(h) are not wired yet — a declared mcp/skill is refused, never silently dropped
+    // (the same standard TOOL_UNSUPPORTED_BY_HARNESS holds the tool surface to).
+    if ((req.assets?.declared.mcp.length ?? 0) > 0) {
+      return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: `MCP_UNSUPPORTED_BY_HARNESS: this engine runs the pi harness, which does not yet bridge MCP servers (declared: ${req.assets!.declared.mcp.join(', ')})` };
+    }
+    if ((req.assets?.declared.skills.length ?? 0) > 0) {
+      return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: `SKILL_UNSUPPORTED_BY_HARNESS: this engine runs the pi harness, which does not yet materialize skills (declared: ${req.assets!.declared.skills.join(', ')})` };
     }
 
     const workspace = req.workspace ?? process.cwd();

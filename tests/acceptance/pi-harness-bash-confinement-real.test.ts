@@ -30,18 +30,23 @@ const HAS_OLLAMA = ollamaReachable();
 const HAS_CONFINED_RUNTIME = HAS_BWRAP && HAS_SOCAT && HAS_RG_OVERRIDE && HAS_OLLAMA;
 const WHY_NOT = ' [UNVERIFIED here: needs bwrap + socat + a bundled ripgrep-override CLI binary + a reachable local Ollama]';
 
-/** qwen2.5:7b (a 7B model) is observed to be unreliable at actually emitting a tool call for a
- *  multi-command bash string, occasionally producing no tool call at all within the timeout — a
- *  real small-model characteristic, not a defect in the harness (the SAME confinement/jail/canary
- *  mechanics are exercised regardless of which attempt succeeds). Retried up to 3 times so the test
- *  asserts the SAFETY property reliably without masking a genuine regression: every attempt still
- *  has to produce a successful, verified result — only the "did the model bother to call bash at
- *  all this time" flakiness is absorbed. */
-async function retryReal<T extends { ok: boolean }>(fn: () => Promise<T>, attempts = 3): Promise<T> {
+/** qwen2.5:7b (a 7B model) is observed to occasionally produce NO tool call at all within the
+ *  timeout (a zero-usage timeout: `message_end` never even fired once) — a real small-model
+ *  characteristic, not a defect in the harness. Retried ONLY for that exact shape. Deliberately
+ *  narrow: a timeout that already accrued usage (`partial:true` with nonzero tokens — the model DID
+ *  call the tool and something hung downstream, e.g. the apply-seccomp regression this suite exists
+ *  to catch) or any `SANDBOX_UNAVAILABLE` detail fails IMMEDIATELY, never retried — masking either
+ *  would defeat the point of this real-tier test. */
+async function retryReal<T extends { ok: boolean; reason?: string; detail?: string; tokens?: { output: number } }>(
+  fn: () => Promise<T>,
+  attempts = 3,
+): Promise<T> {
   let last: T | undefined;
   for (let i = 0; i < attempts; i++) {
     last = await fn();
     if (last.ok) return last;
+    const neverCalledTheTool = last.reason === 'timeout' && (last.tokens?.output ?? 0) === 0;
+    if (!neverCalledTheTool) return last; // a real failure shape — surface it now, don't retry
   }
   return last!;
 }
@@ -60,7 +65,7 @@ describe('pi harness v1 — REAL srt bash confinement (slice e)', () => {
     try {
       const gw = new PiGatewayClient({
         ollamaBaseUrl: 'http://localhost:11434',
-        timeoutMs: 30_000,
+        timeoutMs: 60_000,
         confinementPosture: 'confined',
         confinement: { allowHostPaths: [], protectedFiles: [], workRoot },
       });
@@ -87,7 +92,7 @@ describe('pi harness v1 — REAL srt bash confinement (slice e)', () => {
       rmSync(workRoot, { recursive: true, force: true });
       await new Promise((r) => setTimeout(r, 300));
     }
-  }, 120_000);
+  }, 240_000);
 
   it.skipIf(!HAS_CONFINED_RUNTIME)('the toolchain (node) still runs inside the confined bash' + WHY_NOT, async () => {
     const workRoot = mkdtempSync(join(tmpdir(), 'rwe-pi-confined-toolchain-'));
@@ -96,7 +101,7 @@ describe('pi harness v1 — REAL srt bash confinement (slice e)', () => {
     try {
       const gw = new PiGatewayClient({
         ollamaBaseUrl: 'http://localhost:11434',
-        timeoutMs: 30_000,
+        timeoutMs: 60_000,
         confinementPosture: 'confined',
         confinement: { allowHostPaths: [], protectedFiles: [], workRoot, homeDir: process.env['HOME'], allowReadPaths: [dirname(process.execPath)] },
       });
@@ -112,7 +117,7 @@ describe('pi harness v1 — REAL srt bash confinement (slice e)', () => {
     } finally {
       rmSync(workRoot, { recursive: true, force: true });
     }
-  }, 120_000);
+  }, 240_000);
 });
 
 describe('pi harness v1 — pi-path confinement probe (slice e)', () => {

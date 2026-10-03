@@ -243,6 +243,30 @@ describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => 
     expect(sent.sandbox).toBeUndefined();
   });
 
+  it('refuses a declared mcp asset with MCP_UNSUPPORTED_BY_HARNESS, never silently ignoring it (slice g not wired yet)', async () => {
+    const spawnChild = vi.fn();
+    const gw = new PiGatewayClient({ spawnChild: spawnChild as never, entryPath: '/fake/entry.ts' });
+    const result = await gw.invoke(req({
+      opts: { model: 'ollama/qwen2.5:7b', mcp: ['everything'] } as AgentOpts,
+      assets: { roots: { workflow: '/wf', global: '/gl' }, declared: { skills: [], mcp: ['everything'] }, workflow: 'wf' },
+    }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.detail).toMatch(/MCP_UNSUPPORTED_BY_HARNESS/);
+    expect(spawnChild).not.toHaveBeenCalled();
+  });
+
+  it('refuses a declared skill asset with SKILL_UNSUPPORTED_BY_HARNESS, never silently ignoring it (slice h not wired yet)', async () => {
+    const spawnChild = vi.fn();
+    const gw = new PiGatewayClient({ spawnChild: spawnChild as never, entryPath: '/fake/entry.ts' });
+    const result = await gw.invoke(req({
+      opts: { model: 'ollama/qwen2.5:7b' } as AgentOpts,
+      assets: { roots: { workflow: '/wf', global: '/gl' }, declared: { skills: ['my-skill'], mcp: [] }, workflow: 'wf' },
+    }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.detail).toMatch(/SKILL_UNSUPPORTED_BY_HARNESS/);
+    expect(spawnChild).not.toHaveBeenCalled();
+  });
+
   it('the eager harness descriptor reports bash.enforced honestly from the measured posture', async () => {
     const f = fakeChild();
     const gw = new PiGatewayClient({
