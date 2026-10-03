@@ -71,6 +71,7 @@ import { DiagramRenderer, renderWithMmdc, type DiagramRendererOpts } from './dia
 import { ModelProbeStore, ModelProber, MODEL_PROBE_DEFAULTS, type ModelProbeConfig, type ProbeResult } from './models/model-probe.js';
 import { RunStoreObservedStats, type ObservedStatsProvider } from './models/observed-stats.js';
 import type { Provider } from './providers.js';
+import { buildHarnessAnnounce } from './harness-info.js';
 
 export interface ServerConfig {
   bind?: string;   // default '127.0.0.1'
@@ -467,7 +468,7 @@ async function handleDashboardRequest(
       if (!allowed('system_info', {})) return;
       const view = await systemInfo.get({ topN: 20 });
       // v24 (DES-141): auth = {enabled, principalsCount, defaultRole} (ARCH-090).
-      sendJson(res, 200, { ...view, auth: authAnnounce });
+      sendJson(res, 200, { ...view, auth: authAnnounce, harness: buildHarnessAnnounce(harnessProviders) });
       return;
     }
     // v12 (REQ-078, DES-075/076): enriched model list — returns EnrichedModelEntry[] directly.

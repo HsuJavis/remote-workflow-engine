@@ -29,6 +29,7 @@ import { TOOL_SPECS } from './tool-specs.js';
 // v26 (DES-187, ARCH-121, TASK-193, ADR-041) — 2026-09-26 (alias mechanism removed): the provider
 // capability table, read from the same data `parseModelRef`/`checkModelRef` check against.
 import { PROVIDER_CAPS, PROVIDERS } from './providers.js';
+import { PI_UNSUPPORTED_TOOLS } from './harness-info.js';
 
 export interface GuideCeilings {
   maxTimeoutMs: number;
@@ -495,6 +496,26 @@ function exampleRows(examples: readonly GuideExample[]): string {
   ).join('\n\n');
 }
 
+/** pi harness v1 (spec "Disclosure"): static text describing the ALTERNATIVE `gateway:"pi"`
+ *  configuration — this guide is generated once (`npm run gen:authoring`), not per-deployment, so it
+ *  cannot read a live `ServerConfig.harnessProviders` the way `system_info`'s `harness` field does;
+ *  it instead documents the gap honestly as a configuration fact, and points at `system_info` for
+ *  which one THIS deployment actually runs. Kept in sync with `harness-info.ts`'s own data (the
+ *  provider list and unsupported-tools list are literals there; read the same list here). */
+function harnessDisclosureParagraph(): string {
+  return (
+    'This deployment may instead be configured with `gateway:"pi"` in rwe.config.json (default and ' +
+    'production stay `"sdk"`) — a different harness with the SAME agent()/tool contract but a ' +
+    "narrower surface: only `openrouter`/`ollama` models are usable (an `anthropic/*` ref is refused " +
+    "`PROVIDER_UNSUPPORTED_BY_HARNESS` at registration/run_start/admission — route a Claude model " +
+    'through `openrouter/anthropic/...` instead); the tool surface is limited to Read/Write/Edit/' +
+    `Bash/Grep/Glob/LS (${PI_UNSUPPORTED_TOOLS.join('/')} are refused \`TOOL_UNSUPPORTED_BY_HARNESS\`); ` +
+    'MCP and skill declarations are refused (`MCP_UNSUPPORTED_BY_HARNESS`/`SKILL_UNSUPPORTED_BY_HARNESS`) ' +
+    "rather than silently ignored. `system_info`'s `harness` field states which one THIS engine runs " +
+    '(`{name, version, providers, unsupportedTools, effort, usage}`) — read it rather than assuming.'
+  );
+}
+
 /** 2026-09-26 (alias mechanism removed, owner decisions 1/2/6): the model-ref rule — static text,
  *  the same on every deployment (no resolved table to interpolate any more). */
 function modelRefSentence(): string {
@@ -911,7 +932,8 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '`avgCostUsdPerCall` includes the harness overhead, so it predicts a run\'s cost better than unit ' +
         'price); `benchmarks` are third-party scores republished by OpenRouter (null when none). ' +
         '`effortAppliedOnTransport` says whether an agent\'s `effort` actually reaches that model on this ' +
-        "engine's dispatch path — it does not for openrouter or ollama, whatever `effortDeclared` says.",
+        "engine's dispatch path — it does not for openrouter or ollama, whatever `effortDeclared` says.\n\n" +
+        harnessDisclosureParagraph(),
     ),
   );
 

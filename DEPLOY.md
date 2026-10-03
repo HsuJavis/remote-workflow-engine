@@ -533,7 +533,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `workRoot` | 狀態/journal/run 工作目錄根，**必須在任何 `.git`/`CLAUDE.md` 祖先之外**（否則啟動時 `WORKROOT_INSIDE_PROJECT` fail-fast） | `string` / 系統暫存目錄自動建立 | 否 | v1 |
 | `rwe.config.json` → `timeoutMs` | 單次 `agent()` LLM 呼叫的逾時斷路器（非整體 workflow 逾時） | `number` / `15000`（`gateway:"sdk"` 零設定也套用此保底值） | 否 | v1 |
 | `rwe.config.json` → `retries` | `agent()` 呼叫失敗重試次數 | `number` / `1` | 否 | v1 |
-| `rwe.config.json` → `gateway` | `"sdk"`（預設，真正的 `@anthropic-ai/claude-agent-sdk` headless session，有工具迴圈）或 `"direct-fetch"`（回退到直接對各供應商 `fetch()`，或搭配 `useLiteLLMProxy:true` 走 LiteLLM 代理；本來就不具備工具迴圈能力，適合純本機/內網不需要工具迴圈的部署） | `"sdk"｜"direct-fetch"` / `"sdk"` | 否 | v1 |
+| `rwe.config.json` → `gateway` | `"sdk"`（預設，真正的 `@anthropic-ai/claude-agent-sdk` headless session，有工具迴圈）、`"direct-fetch"`（回退到直接對各供應商 `fetch()`，或搭配 `useLiteLLMProxy:true` 走 LiteLLM 代理；本來就不具備工具迴圈能力，適合純本機/內網不需要工具迴圈的部署），或 `"pi"`（pi harness，v1 起新增——見下方「§1b2 pi harness（替代 gateway）」一節；**production 仍停在 `"sdk"`**） | `"sdk"｜"direct-fetch"｜"pi"` / `"sdk"` | 否 | v1 / pi-v1 |
 | `rwe.config.json` → `useLiteLLMProxy` | `direct-fetch` 路徑是否額外走 LiteLLM 代理（`false` 時 ollama 走原生直連 `localhost:11434`，完全不碰 LiteLLM，免依賴部署常用） | `boolean` / `true` | 否 | v1 |
 | `rwe.config.json` → `defaultAllowedTools` | `gateway:"sdk"` 路徑下，`agent()` 呼叫沒帶 `opts.allowedTools` 時套用的預設工具清單；只有兩層優先序：呼叫端 `opts.allowedTools` > 此鍵（省略此鍵才落到內建預設） | `string[]` / `["Read","Write","Edit","Glob","Grep","Bash"]` | 否 | v34 |
 | `rwe.config.json` → `allowedHosts` | `bind:"0.0.0.0"` 時額外允許的 Host/Origin authority（LAN IP、代理主機名）清單，供 Host/Origin 白名單（§6）核對 | `string[]` / `[]` | 否（`0.0.0.0` bind 時建議設定） | v11 |
@@ -617,6 +617,65 @@ curl -s http://localhost:8787/api/models | python3 -c \
 設定檔就變成機密。）注意：`RWE_SECRET_*` 是同一個 secret store，任何 workflow 的 MCP 設定也能以
 `${secret:GOOGLE_CLIENT_SECRET}` 引用它——跟 `RWE_SECRET_GITHUB_TOKEN` 等既有值是同一個信任前提
 （能註冊 workflow／推 MCP 資產的人就能用 store 裡的任何名字）。
+
+## §1b2 pi harness（替代 `gateway`）
+
+一個與 `"sdk"` 平行的第三種 `gateway` 選項：`@earendil-works/pi-coding-agent`（pinned `1.0.0`），
+一支開源的 coding-agent harness，取代 `@anthropic-ai/claude-agent-sdk` 當作 `agent()` 的執行引擎。
+**預設與 production 都還是 `"sdk"`**；這是給想要換引擎、或想避開 Anthropic 認證途徑的部署的選項。
+
+**怎麼切換**：`rwe.config.json` 設 `"gateway": "pi"`，重開引擎（或 `rwe-update.sh` 這種會重啟的流程）。
+不需要額外的 `"pi"` 設定區塊——沒有per-agent/per-run 開關，整個引擎只有一種 harness 生效。
+
+**支援的 provider（只有兩個，故意的）**：`openrouter/*` 與 `ollama/*`。**完全不碰 Anthropic**——
+沒有 `ANTHROPIC_API_KEY`，也不接受 `CLAUDE_CODE_OAUTH_TOKEN`（owner 2026-10-03 決定：spike 發現透過
+第三方 harness 用 Claude 訂閱 token 會被算成「extra usage」計費，不是正常的訂閱額度）。任何
+`anthropic/*` model ref——不管是 `workflow_register` 時的預設值、`run_start`/`run_resume` 的
+override，還是巢狀 `workflow()` 解析出來的——一律在准入時以 `PROVIDER_UNSUPPORTED_BY_HARNESS` 拒絕，
+提示改用 `openrouter/anthropic/...`（透過 OpenRouter 轉送 Claude 模型）或 `ollama/*`。`models_list`、
+`GET /api/models`、dashboard 的模型清單、`system_info` 都只會列出 openrouter／ollama，不會出現任何
+anthropic 列——換句話說，這個部署的使用者根本看不到 anthropic 模型存在。`OPENROUTER_API_KEY` 來源
+與其他地方相同（`RWE_SECRET_OPENROUTER_API_KEY` 或裸 `OPENROUTER_API_KEY`），只會被注入 pi 子行程的
+記憶體（`setRuntimeApiKey`）——不進 bash 環境、不落地到任何檔案。`OLLAMA_BASE_URL` 意義不變。
+
+**不經過 LiteLLM**：pi 原生支援 OpenRouter 與 Ollama，`gateway:"pi"` 下**不會**啟動 LiteLLM 代理子行程
+（`config.proxyManager` 維持未設定）。
+
+**主機依賴（host dependencies）**：
+- `bwrap`（bubblewrap）與 `socat`——跟 `gateway:"sdk"` 的 Bash 圍籠要求相同。
+- **額外多一個**：一支真正的 `rg`（ripgrep）**執行檔**在 PATH 上——srt（`@anthropic-ai/sandbox-runtime`，
+  pi 用來做 Bash 圍籠的函式庫）啟動時會硬性檢查這個，缺了就整個拒絕初始化。**這台主機如果裝了
+  Claude CLI，`rg` 常常只是一個呼叫 CLI multicall 執行檔的 shell function，不是真正的執行檔**——這個
+  情況引擎自己會處理：pi 路徑的圍籠探測與每次 Bash 呼叫都會自動指向本引擎已經安裝的
+  `@anthropic-ai/claude-agent-sdk-<platform>` 套件自帶的那支 `claude` 執行檔（用 `argv0:'rg'` 的方式
+  冒充 ripgrep）——不需要額外裝系統套件。只有在這個套件完全沒裝（平台不支援）時才會真的缺 `rg`，
+  此時圍籠探測量到 `unconfined` 並說明原因。
+- **已知的部署陷阱（這次迭代真的踩到過）**：如果引擎自己的 `node_modules` 剛好裝在**家目錄底下**
+  （issue #101 的整個家目錄預設拒讀政策範圍內——開發用的 clone 常常是這樣），`@anthropic-ai/
+  sandbox-runtime` 自帶的 `vendor/seccomp/<arch>/apply-seccomp` 執行檔會因為整個家目錄被拒讀而在
+  bwrap 沙箱**內部**看不到，Bash 呼叫會卡住直到逾時（`reason:"timeout"`，無任何輸出）。引擎已經修好
+  這個：圍籠設定永遠會把 `@anthropic-ai/sandbox-runtime` 自己的安裝目錄加進 Bash 的 `allowRead`，
+  與營運者的 `sandbox.allowReadPaths` 無關——**不需要營運者動作**，列在這裡是為了讓看到 Bash 逾時
+  又查不出原因的人知道這個歷史。
+
+**已知的網路姿態落差（尚未解決，記在這裡供日後追蹤）**：pi 路徑的 Bash 網路政策是「全部允許」
+（透過一個永遠回答「允許」的 ask-callback 達成，因為 srt 的網路欄位是必填，留空等於全部拒絕）——
+對外部網域（`curl https://example.com` 這類）這次迭代已經用真實主機驗證過確實可行。但 srt 只要
+設定了網路欄位，**所有**流量就會走它自己的 MITM 代理，這代表從圍籠內的 Bash 連 `localhost`／
+`127.0.0.1`（例如同主機上的另一個服務）會連不到——這跟今天 `gateway:"sdk"` 的 Bash（完全不設網路
+欄位、因此保留主機原生網路含 loopback）不一樣，是一個真實的行為落差，不是臆測。如果有 workflow
+的 Bash 需要連本機服務，目前只能先切回 `gateway:"sdk"`；真正的網路白名單（而非全部允許）留給後續
+迭代。
+
+**目前還沒接的能力（故意，不是遺漏——拒絕而非靜默丟棄）**：MCP（`agent(..., {mcp:[...]})`，一律
+`MCP_UNSUPPORTED_BY_HARNESS`）、skills（`SKILL_UNSUPPORTED_BY_HARNESS`）、`effort`/OpenRouter
+`reasoning.effort` 的請求形狀驗證。`system_info`（MCP 工具與 `GET /api/system`）的 `harness` 欄位
+即時反映這台部署實際在跑哪一種 harness——`{name:"pi", version, providers, unsupportedTools, effort,
+usage}`——不要用這份文件推測，直接查 `system_info`。
+
+**回滾**：把 `rwe.config.json` 的 `"gateway"` 改回 `"sdk"`（或整個刪掉這個鍵，預設就是 `"sdk"`），
+重開引擎即可——沒有資料遷移、沒有殘留狀態（pi 的 `agentDir`/session 都是每次 dispatch 用過即丟的
+記憶體內物件，從不寫進 `workRoot`）。
 
 ### 角色（`principals`）——啟用 auth 前一定要讀
 

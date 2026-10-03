@@ -124,6 +124,8 @@ There is no `openai` row: OpenRouter is the many-model front door for everything
 
 To CHOOSE a model, `models_list` answers one page `{ models, nextCursor, total }` of compact rows (`fields: ['*']` for every field; pass `nextCursor` back as `cursor`). Filter by `modelType: 'chat'` (only chat models can drive an agent), `toolUseVerified`, `structuredOutput`, `reasoning`, benchmark minimums, or observed latency/success/cost; sort with `sortBy` (price, intelligence, coding, agentic, latency, successRate, avgCostPerCall, …; nulls last). `observed` is what THIS engine measured for the model over 30 days (split `prose` vs `tools` calls — `avgCostUsdPerCall` includes the harness overhead, so it predicts a run's cost better than unit price); `benchmarks` are third-party scores republished by OpenRouter (null when none). `effortAppliedOnTransport` says whether an agent's `effort` actually reaches that model on this engine's dispatch path — it does not for openrouter or ollama, whatever `effortDeclared` says.
 
+This deployment may instead be configured with `gateway:"pi"` in rwe.config.json (default and production stay `"sdk"`) — a different harness with the SAME agent()/tool contract but a narrower surface: only `openrouter`/`ollama` models are usable (an `anthropic/*` ref is refused `PROVIDER_UNSUPPORTED_BY_HARNESS` at registration/run_start/admission — route a Claude model through `openrouter/anthropic/...` instead); the tool surface is limited to Read/Write/Edit/Bash/Grep/Glob/LS (WebFetch/WebSearch/Task/NotebookEdit are refused `TOOL_UNSUPPORTED_BY_HARNESS`); MCP and skill declarations are refused (`MCP_UNSUPPORTED_BY_HARNESS`/`SKILL_UNSUPPORTED_BY_HARNESS`) rather than silently ignored. `system_info`'s `harness` field states which one THIS engine runs (`{name, version, providers, unsupportedTools, effort, usage}`) — read it rather than assuming.
+
 ## Budget, concurrency, and how wide a fan-out really runs
 
 `parallel([a, b, c, ...])` dispatches every thunk, and this deployment runs up to **24** of them at a time (`runConcurrency`, operator-configurable). Past that they QUEUE and run as slots free: a wider fan-out is slower, never truncated.
@@ -247,6 +249,10 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 - `WORKFLOW_NOT_ALLOWED` — this service account is restricted to a workflows allowlist (service_account_create/_update) and this workflow is not in it
 - `PARSE_ERROR` — the script body failed to parse as TypeScript
 - `UNKNOWN_MODEL` — the model is not a valid <provider>/<model-id> ref, or (for openrouter/ollama) was not found in the catalog listing — see models_list
+- `PROVIDER_UNSUPPORTED_BY_HARNESS` — this engine runs the pi harness, which supports only openrouter/ollama models — use an openrouter/anthropic/... model instead (e.g. "openrouter/anthropic/claude-sonnet-4-5") or an ollama/* model, never "anthropic/*" directly
+- `TOOL_UNSUPPORTED_BY_HARNESS` — this tool has no mapping under the pi harness (gateway:"pi") — only Read/Write/Edit/Bash/Grep/Glob/LS are supported; declare a supported tool or switch this engine back to gateway:"sdk"
+- `MCP_UNSUPPORTED_BY_HARNESS` — this engine runs the pi harness (gateway:"pi"), which does not yet bridge MCP servers — remove the mcp declaration from this agent() call or switch this engine back to gateway:"sdk"
+- `SKILL_UNSUPPORTED_BY_HARNESS` — this engine runs the pi harness (gateway:"pi"), which does not yet materialize skills — remove the skill declaration from this agent() call or switch this engine back to gateway:"sdk"
 - `SCRIPT_INVALID` — the script violates a sandbox-enforced structural rule
 - `SCAN_VIOLATION` — an agent() call is not scannable — label/options must be literal (ADR-029)
 - `PHASES_REQUIRED` — meta.phases is missing or not a valid array of {title:string} — declare it, matching your phase() calls in count/order (phases: [] when the script calls phase() zero times)

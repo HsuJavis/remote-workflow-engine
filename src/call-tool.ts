@@ -20,6 +20,7 @@ import type { ModelBook } from './models/model-book.js';
 import type { ModelProber, ProbeResult } from './models/model-probe.js';
 import type { ObservedStatsProvider } from './models/observed-stats.js';
 import type { Provider } from './providers.js';
+import { buildHarnessAnnounce } from './harness-info.js';
 import type { SystemInfoSampler } from './system-info.js';
 import type { RunStore } from './run-store.js';
 import type { ErrorCode } from './errors.js';
@@ -434,7 +435,10 @@ export async function callTool(
       const topN = a['topN'] !== undefined ? Math.floor(Number(a['topN'])) : 5;
       try {
         const view = await deps.systemInfo.get({ topN });
-        return { status: 'ok', result: view };
+        // pi harness v1 (spec "Disclosure"): the self-describing MCP surface states the harness,
+        // its provider set, unsupported tools, and effort/usage semantics — same source
+        // (harness-info.ts) the authoring guide and DEPLOY.md read, so the three can never drift.
+        return { status: 'ok', result: { ...view, harness: buildHarnessAnnounce(deps.harnessProviders) } };
       } catch (err) {
         return { status: 'error', error: { code: 'PROBE_ERROR', message: String(err) } };
       }
