@@ -97,7 +97,12 @@ export type PiChildEvent =
   | { t: 'ready' }
   | { t: 'message_end'; seq: number; text: string; usage: Tokens; stopReason: string }
   | { t: 'final'; seq: number; text: string; usage: Tokens; stopReason: string }
-  | { t: 'error'; message: string; stopReason?: string }
+  /** residual fix (#127): an assistant message with `stopReason:'error'` carries REAL partial usage
+   *  (pi-spike-report.md S4: confirmed on a real abort; the same is true of a mid-stream provider
+   *  error) — `usage` is present exactly when the error came from that shape (session-runner.ts's own
+   *  `msg.stopReason === 'error'` branch); absent for a thrown/fatal failure with no message usage to
+   *  report at all (never a fabricated zero standing in for "unknown"). */
+  | { t: 'error'; message: string; stopReason?: string; usage?: Tokens }
   | { t: 'fatal'; message: string }
   /** spec "Transcript and harness record": pi's own `tool_execution_start`/`tool_execution_end`
    *  events (slice f), mapped 1:1 — `args`/`result` are JSON-serialized defensively (an

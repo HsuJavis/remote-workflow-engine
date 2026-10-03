@@ -511,7 +511,10 @@ export async function runPiChildSession(config: PiChildConfig, emit: (event: PiC
     seq += 1;
     if (msg.stopReason === 'error') {
       erroredOut = true;
-      emit({ t: 'error', message: msg.errorMessage ?? 'pi reported stopReason:"error" with no errorMessage', stopReason: msg.stopReason });
+      // residual fix (#127): `usage` was computed above (same as the message_end branch below) and
+      // is real even on an errored message (spike S4) — forwarded here so the parent folds it into
+      // cumulative instead of silently dropping a mid-stream 429/5xx attempt's own tokens.
+      emit({ t: 'error', message: msg.errorMessage ?? 'pi reported stopReason:"error" with no errorMessage', stopReason: msg.stopReason, usage });
       return;
     }
     emit({ t: 'message_end', seq, text, usage, stopReason: msg.stopReason });

@@ -623,6 +623,19 @@ export class PiGatewayClient implements GatewayClient {
         // dispatch failure as `{t:'error'}` instead) — never worth retrying. An `error` event's
         // message is classified by `classifyPiErrorMessage` (401/403/404 -> terminal).
         const retryable = event.t === 'fatal' ? false : classifyPiErrorMessage(event.message) !== 'terminal';
+        // residual fix (#127): an `error` event's OWN usage (present exactly when it came from a real
+        // `stopReason:'error'` assistant message — spike S4 confirms usage is real even then) is
+        // folded into `cumulative` BEFORE this attempt settles, same as every `message_end` above —
+        // never silently dropped. A `fatal` event carries no usage field at all (nothing to fold).
+        if (event.t === 'error' && event.usage !== undefined) {
+          cumulative = {
+            input: cumulative.input + event.usage.input,
+            output: cumulative.output + event.usage.output,
+            cacheRead: cumulative.cacheRead + event.usage.cacheRead,
+            cacheWrite: cumulative.cacheWrite + event.usage.cacheWrite,
+          };
+          req.onUsage?.(cumulative);
+        }
         settled = {
           ok: false, provider, reason: 'terminal', transport: 'pi', detail: event.message, tokens: cumulative,
           ...(retryable ? {} : { retryable: false as const }),

@@ -171,6 +171,75 @@ describe('PiGatewayClient — agent.confinement event + harnessVersion (rest of 
   });
 });
 
+describe('PiGatewayClient — usage on an errored assistant message is not dropped (residual fix, #127)', () => {
+  it('an error event carrying its own usage folds it into the reported tokens, marked partial', async () => {
+    const f = fakeChild();
+    const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
+    const promise = gw.invoke(req());
+    await new Promise((r) => setTimeout(r, 10));
+    // No prior message_end — the error event is the ONLY source of usage for this attempt (spike
+    // S4: "usage IS present on an aborted/errored message" — pi reports real partial tokens even
+    // when the turn itself ends in error).
+    f.sendLine({ t: 'error', message: '503: overloaded', usage: { input: 42, output: 7, cacheRead: 0, cacheWrite: 0 } });
+    f.exit(1);
+    const result = await promise;
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.tokens).toEqual({ input: 42, output: 7, cacheRead: 0, cacheWrite: 0 });
+      expect(result.partial).toBe(true);
+    }
+  });
+
+  it('an error event\'s own usage is ADDED to usage already folded from a prior message_end in the SAME attempt', async () => {
+    const f = fakeChild();
+    const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
+    const promise = gw.invoke(req());
+    await new Promise((r) => setTimeout(r, 10));
+    f.sendLine({ t: 'message_end', seq: 1, text: 'partial reply', usage: { input: 10, output: 3, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+    f.sendLine({ t: 'error', message: '500: boom', usage: { input: 2, output: 1, cacheRead: 0, cacheWrite: 0 } });
+    f.exit(1);
+    const result = await promise;
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.tokens).toEqual({ input: 12, output: 4, cacheRead: 0, cacheWrite: 0 });
+      expect(result.partial).toBe(true);
+    }
+  });
+
+  it('errored-attempt usage is summed into the total across a retry that then succeeds', async () => {
+    let n = 0;
+    const spawnChild = vi.fn(() => {
+      n += 1;
+      const f = fakeChild();
+      if (n === 1) {
+        queueMicrotask(() => { f.sendLine({ t: 'error', message: '500: boom', usage: { input: 5, output: 2, cacheRead: 0, cacheWrite: 0 } }); f.exit(1); });
+      } else {
+        queueMicrotask(() => {
+          f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+          f.exit(0);
+        });
+      }
+      return f.child as never;
+    });
+    const gw = new PiGatewayClient({ spawnChild: spawnChild as never, entryPath: '/fake/entry.ts', retries: 1 });
+    const result = await gw.invoke(req({ opts: { model: 'ollama/qwen2.5:7b', timeoutMs: 5000 } as AgentOpts }));
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.tokens).toEqual({ input: 5, output: 2, cacheRead: 0, cacheWrite: 0 });
+  });
+
+  it('a fatal event (no usage field at all) still reports zero tokens, never throws on the missing field', async () => {
+    const f = fakeChild();
+    const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
+    const promise = gw.invoke(req());
+    await new Promise((r) => setTimeout(r, 10));
+    f.sendLine({ t: 'fatal', message: 'INTERNAL_ERROR: boom' });
+    f.exit(1);
+    const result = await promise;
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.tokens).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+  });
+});
+
 describe('PiGatewayClient — timeout path (rest of slice f)', () => {
   it('a child that never responds before timeoutMs is killed and reported as reason:"timeout"', async () => {
     const f = fakeChild();
