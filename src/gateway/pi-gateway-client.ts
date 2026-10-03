@@ -46,10 +46,28 @@ const TOOL_NAME_MAP: Record<string, string> = { Read: 'read', Write: 'write', Ed
 /** spec "Tool mapping": WebFetch, WebSearch, Task, NotebookEdit and any other unmapped tool are
  *  refused at registration and dispatch with TOOL_UNSUPPORTED_BY_HARNESS — never silently dropped.
  *  Returns the pi tool names on success. */
+/** review M2: `docs/AUTHORING.md:50` documents `mcp__<server>__<tool>` entries in `allowedTools` as a
+ *  valid pre-approval pattern (the sdk gateway's own `Options.allowedTools` convention) — an existing
+ *  workflow written that way broke outright on switching to pi before this fix, refused
+ *  TOOL_UNSUPPORTED_BY_HARNESS for a name that was never meant to go through the base tool-name map at
+ *  all. pi's own MCP tool exposure is controlled entirely by `pi.registerMcpServer(...,
+ *  {exposure:'direct'})` (session-runner.ts's `buildResourceLoader`), independent of the base tool
+ *  set — passing an `mcp__*` name through harmlessly (never translated, never checked against
+ *  `TOOL_NAME_MAP`) is both correct and sufficient: nothing downstream does anything special with it
+ *  (`buildCustomTools`'s `want.has(...)` checks simply never match it), and the MCP tool was already
+ *  going to be available to the model whenever its server is declared. */
+function isMcpToolName(name: string): boolean {
+  return name.startsWith('mcp__');
+}
+
 function mapTools(engineNames: readonly string[]): { ok: true; piNames: string[] } | { ok: false; unmapped: string[] } {
   const piNames: string[] = [];
   const unmapped: string[] = [];
   for (const name of engineNames) {
+    if (isMcpToolName(name)) {
+      piNames.push(name);
+      continue;
+    }
     const mapped = TOOL_NAME_MAP[name];
     if (mapped === undefined) unmapped.push(name);
     else piNames.push(mapped);

@@ -13,6 +13,25 @@ export const PI_HARNESS_VERSION = '1.0.0';
  *  disclosure fact, not a routing table — the two are allowed to be reviewed independently. */
 export const PI_UNSUPPORTED_TOOLS = ['WebFetch', 'WebSearch', 'Task', 'NotebookEdit'] as const;
 
+/** review M3: the base tool names pi DOES support (the positive side of `PI_UNSUPPORTED_TOOLS`'
+ *  negative list) — kept here, independently of `pi-gateway-client.ts`'s own `TOOL_NAME_MAP`, for the
+ *  SAME reason `PI_UNSUPPORTED_TOOLS` is: this is the registration-time disclosure/validation fact,
+ *  not the dispatch-time routing table. `tests/unit/harness-info.test.ts` cross-checks the two stay
+ *  in sync. */
+const PI_SUPPORTED_BASE_TOOLS = ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'LS'] as const;
+
+/** review M3: pi harness v1's spec says an unsupported tool is "refused at registration AND
+ *  dispatch" — before this, only dispatch refused (`PiGatewayClient.invoke`'s own `mapTools`), so a
+ *  workflow declaring `allowedTools:['Read','WebFetch']` registered cleanly and only failed once a
+ *  run actually tried to dispatch that agent. Pure (no gateway import — see `PI_UNSUPPORTED_TOOLS`'s
+ *  own doc on why these two files stay independent): an `mcp__<server>__<tool>` entry (review M2) is
+ *  always accepted, matching `pi-gateway-client.ts`'s own `isMcpToolName` carve-out exactly. Returns
+ *  every unsupported name found (never just the first), so the registration error can name them all
+ *  at once. */
+export function piUnsupportedToolNames(allowedTools: readonly string[]): string[] {
+  return allowedTools.filter((t) => !t.startsWith('mcp__') && !(PI_SUPPORTED_BASE_TOOLS as readonly string[]).includes(t));
+}
+
 export interface HarnessAnnounce {
   name: 'sdk' | 'pi';
   version?: string;

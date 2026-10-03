@@ -198,6 +198,19 @@ describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => 
     expect(sent.tools.sort()).toEqual(['bash', 'edit', 'find', 'grep', 'ls', 'read', 'write'].sort());
   });
 
+  it('review M2: accepts an mcp__<server>__<tool> entry in allowedTools (docs/AUTHORING.md:50\'s documented pre-approval pattern), never refusing it', async () => {
+    const f = fakeChild();
+    const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
+    const promise = gw.invoke(req({ opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Read', 'mcp__everything__echo'] } as AgentOpts }));
+    await new Promise((r) => setTimeout(r, 10));
+    f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+    f.exit(0);
+    const result = await promise;
+    expect(result.ok).toBe(true);
+    const sent = JSON.parse(f.stdinWritten.join(''));
+    expect(sent.tools.sort()).toEqual(['mcp__everything__echo', 'read'].sort());
+  });
+
   it("refuses bash:'readonly' as BASH_READONLY_UNENFORCEABLE on an unconfined posture, never spawning a child", async () => {
     const spawnChild = vi.fn();
     const gw = new PiGatewayClient({ spawnChild: spawnChild as never, entryPath: '/fake/entry.ts', confinementPosture: 'unconfined' });

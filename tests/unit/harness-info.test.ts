@@ -1,7 +1,7 @@
 // pi harness v1 (spec "Disclosure") — buildHarnessAnnounce() is the ONE source system_info
 // (MCP tool + /api/system), the authoring guide and DEPLOY.md all read disclosure facts from.
 import { describe, it, expect } from 'vitest';
-import { buildHarnessAnnounce, PI_HARNESS_VERSION, PI_UNSUPPORTED_TOOLS } from '../../src/harness-info.js';
+import { buildHarnessAnnounce, PI_HARNESS_VERSION, PI_UNSUPPORTED_TOOLS, piUnsupportedToolNames } from '../../src/harness-info.js';
 
 describe('buildHarnessAnnounce (pi harness v1 disclosure)', () => {
   it('reports the sdk harness with all three providers and no pi-specific caveats when harnessProviders is absent', () => {
@@ -28,5 +28,27 @@ describe('buildHarnessAnnounce (pi harness v1 disclosure)', () => {
     const sdk = buildHarnessAnnounce(undefined);
     expect(sdk.effort).toBeUndefined();
     expect(sdk.usage).toBeUndefined();
+  });
+});
+
+describe('piUnsupportedToolNames (review M3 — registration-time tool refusal)', () => {
+  it('finds every PI_UNSUPPORTED_TOOLS name present, never just the first', () => {
+    expect(piUnsupportedToolNames(['Read', 'WebFetch', 'Bash', 'Task'])).toEqual(['WebFetch', 'Task']);
+  });
+
+  it('accepts every base tool pi supports (Read/Write/Edit/Bash/Grep/Glob/LS)', () => {
+    expect(piUnsupportedToolNames(['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'LS'])).toEqual([]);
+  });
+
+  it('accepts an mcp__<server>__<tool> entry (review M2 parity — never flagged as unsupported)', () => {
+    expect(piUnsupportedToolNames(['Read', 'mcp__everything__echo'])).toEqual([]);
+  });
+
+  it('an empty list is trivially supported', () => {
+    expect(piUnsupportedToolNames([])).toEqual([]);
+  });
+
+  it('every PI_UNSUPPORTED_TOOLS entry is independently confirmed unsupported, one at a time', () => {
+    for (const name of PI_UNSUPPORTED_TOOLS) expect(piUnsupportedToolNames([name])).toEqual([name]);
   });
 });
