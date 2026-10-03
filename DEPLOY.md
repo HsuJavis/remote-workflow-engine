@@ -677,6 +677,16 @@ anthropic 列——換句話說，這個部署的使用者根本看不到 anthro
 的 Bash 需要連本機服務，目前只能先切回 `gateway:"sdk"`；真正的網路白名單（而非全部允許）留給後續
 迭代。
 
+**已知的限制（review R2-2 裁決，刻意不修）：`gateway:"pi"` 下 unconfined posture 的 Bash，一個自己呼叫
+`setsid` 逃出 process group 的背景行程不會在 dispatch 正常結束時被清掉**。pi 子行程把 unconfined Bash
+用 `detached:true` 啟動，所以 Bash 自己的 pid 同時就是它的 process group id——`nohup cmd &`（非互動式
+`bash -c` 沒有 job control，背景工作沿用 Bash 自己的 group）清得到，`setsid cmd &`（明確建立新
+session+group）清不到，因為 kill 整個 group 的訊號本質上就打不到另一個 group。這是 unconfined 這個
+posture 本身「只給本機 run」政策下可接受的已知落差，不是漏修；confined posture 完全沒有這個問題
+（bwrap 的 `--unshare-pid --die-with-parent` 在整個 pid namespace 隨 bwrap 結束一起收掉，不管行程在
+哪個 process group）。真機驗證：`nohup sleep & setsid sleep &` 這組指令下，unconfined 量到 nohup 的
+那支消失、setsid 的那支仍在跑；confined 量到兩支都消失。
+
 **MCP（`agent(..., {mcp:[...]})`）**：已接上。解析走跟 `gateway:"sdk"` **同一份**共用解析器
 （`${secret:NAME}`/`${run:dir}`/`${run:id}` 代換——兩個 gateway 不會分岔），每個宣告的 server 從 pi
 子行程內一個 inline extension 用 `pi.registerMcpServer(name, {...cfg, exposure:'direct'})` 註冊

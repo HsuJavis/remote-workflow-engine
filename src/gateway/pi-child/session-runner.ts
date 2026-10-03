@@ -21,7 +21,6 @@ import { SandboxManager } from '@anthropic-ai/sandbox-runtime';
 import { spawn } from 'node:child_process';
 import { join, resolve, relative, sep, dirname } from 'node:path';
 import { readFile, writeFile, mkdir, access, stat, readdir, lstat, chmod } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
 /** srt's own `apply-seccomp` vendor binary (vendor/seccomp/<arch>/apply-seccomp) must be readable
@@ -205,46 +204,61 @@ async function resolveModel(config: PiChildConfig, runtime: ModelRuntime) {
   return model;
 }
 
-/** review M6: under the UNCONFINED posture, a bash command that backgrounds a process via `nohup`/
- *  `setsid` escapes both this child's process group AND the bash subprocess's own session. The kernel
- *  reparents an orphan to its nearest subreaper (normally pid 1) AS PART OF the parent's own exit
- *  processing — fully complete before Node's `close` event for that parent ever fires — so there is
- *  NO reliable point after bash exits to discover it was ever bash's child at all. The only window is
- *  WHILE bash is still running: poll `/proc/<bashPid>/task/<bashPid>/children` periodically for the
- *  whole lifetime of the exec() call and remember every pid ever seen — a process keeps its PID
- *  NUMBER across reparenting, so `process.kill(pid, 'SIGKILL')` on an accumulated pid still reaches it
- *  even after its ppid has changed. Confined Bash does not need this at all (`bwrap --unshare-pid
- *  --die-with-parent`, measured clean by the review) — this is the UNCONFINED-posture gap
- *  specifically. Best-effort, same spirit as the review's own L3 (PID-reuse TOCTOU is accepted as
- *  negligible at default pid_max): a process forked and exited entirely between two 100ms polls is
- *  missed, same shape as every other descendant-sweep in this codebase. */
-const BASH_DESCENDANT_POLL_MS = 100;
+/** review R2-2 (coordinator round 2, MEDIUM — supersedes the round-1 M6 fix below): the round-1
+ *  approach polled `/proc/<bashPid>/task/<bashPid>/children` every 100ms for the exec() call's whole
+ *  lifetime and SIGKILLed every pid it ever saw at close time. Two real defects: (1) a `nohup`/
+ *  `setsid` child reparented away before the FIRST 100ms poll ever ran was never seen at all — the
+ *  round-1 test only passed because its OWN command padded a trailing `sleep 0.3` to keep bash alive
+ *  long enough for one poll tick, which a real dispatch never guarantees; (2) killing every pid EVER
+ *  seen (not just pids still alive) widened the round-1-accepted PID-reuse TOCTOU window from
+ *  microseconds (the gap between reading `/proc` and calling `kill`) to the WHOLE command's lifetime
+ *  — a long-running build forking thousands of short-lived processes could have its early pids reused
+ *  by an unrelated process on the host by the time this SIGKILLed them.
+ *
+ *  Fixed by not tracking individual pids at all: bash is already spawned `detached: true` (below),
+ *  which makes bash's own pid ALSO its process GROUP id — `process.kill(-bashPid, signal)` reaches
+ *  bash and every descendant that stayed in that group. Under a non-interactive `bash -c` script (no
+ *  job control), a plain `cmd &` or `nohup cmd &` background job never gets its own process group —
+ *  it inherits bash's — so the group kill reaches it even after bash itself has exited and
+ *  reparenting has already happened, because a process group id cannot be reused while ANY member of
+ *  it is still alive (unlike a bare pid, which can be reused the instant its own process exits). A
+ *  `setsid cmd &` explicitly creates a NEW session and process group, unreachable by a group kill —
+ *  this is the one documented limitation (DEPLOY.md, the authoring guide): the unconfined posture is
+ *  local-only by policy, and confined Bash never has this gap at all (bwrap's own `--unshare-pid
+ *  --die-with-parent` already reaps everything in its own pid namespace when bwrap itself exits — no
+ *  group-kill of any kind is needed there, see `createJailedBashOps`, which this function is NOT
+ *  part of).
+ *
+ *  Runs on EVERY exit path (normal completion, error, abort, timeout) — not only abort/timeout, the
+ *  round-1 gap review R2-2 is titled after. SIGTERM, then (if the group is still alive) SIGKILL after
+ *  a short grace — a group probe via signal 0 short-circuits the common case (nothing backgrounded)
+ *  without ever paying the grace period. */
+const GROUP_KILL_GRACE_MS = 2000; // same grace cli-lifecycle.ts's own killGroup() uses
 
-function directChildPids(pid: number): number[] {
+function reapBashGroup(bashPid: number): void {
+  // Fast path: ESRCH means the group is already empty (the common case — nothing was backgrounded),
+  // so this returns immediately instead of always paying the grace period below.
   try {
-    const raw = readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf8').trim();
-    return raw.length === 0 ? [] : raw.split(/\s+/).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+    process.kill(-bashPid, 0);
   } catch {
-    return [];
+    return;
   }
-}
-
-function watchBashDescendants(bashPid: number): { stop: () => void; seen: Set<number> } {
-  const seen = new Set<number>();
-  const scan = (pid: number): void => {
-    for (const kid of directChildPids(pid)) {
-      if (!seen.has(kid)) { seen.add(kid); scan(kid); }
-      else scan(kid); // still recurse — a grandchild forked after the last poll is new even if kid isn't
-    }
-  };
-  const timer = setInterval(() => scan(bashPid), BASH_DESCENDANT_POLL_MS);
-  return { stop: () => clearInterval(timer), seen };
-}
-
-function killSeenDescendants(seen: ReadonlySet<number>): void {
-  for (const pid of seen) {
-    try { process.kill(pid, 'SIGKILL'); } catch { /* already gone — fine */ }
-  }
+  try { process.kill(-bashPid, 'SIGTERM'); } catch { return; /* already gone between the probe and here — nothing to escalate */ }
+  const escalate = setTimeout(() => {
+    // review (advisor catch, pre-commit): a pgid is only SAFE to signal while a member of it is
+    // still alive — the fast-path probe above establishes that at call time, but this callback runs
+    // `GROUP_KILL_GRACE_MS` LATER, in a process (this pi child) that can easily still be running
+    // then (unref() only means "don't keep the event loop alive for this timer", not "cancel it" —
+    // if something else keeps the process up, it still fires). If the SIGTERM above was enough, the
+    // group — and its pgid NUMBER — may already be gone, and on a busy host that number CAN be
+    // reused by an unrelated process's group in the meantime. SIGKILLing `-bashPid` blind at that
+    // point could hit a completely unrelated group. Re-probing immediately before the real signal
+    // closes that window down to the same microsecond TOCTOU every other signal-then-act pair in
+    // this codebase already accepts (round-1's own L3 finding) — not a new unbounded gap.
+    try { process.kill(-bashPid, 0); } catch { return; }
+    try { process.kill(-bashPid, 'SIGKILL'); } catch { /* gone between the re-probe and here — fine */ }
+  }, GROUP_KILL_GRACE_MS);
+  escalate.unref?.();
 }
 
 /** A minimal glob matcher for the jailed `find` tool's operations (spec: pi's own `find` tool is
@@ -478,25 +492,29 @@ function buildCustomTools(config: PiChildConfig, deps: SessionDeps): ToolDefinit
           async exec(command, cwd, { onData, signal, timeout }) {
             return new Promise((resolvePromise, reject) => {
               const child = spawn('bash', ['-c', command], { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-              // review M6: watches bash's own descendant tree for the FULL lifetime of this call (see
-              // watchBashDescendants' own doc) — a `nohup`/`setsid`-backgrounded grandchild is
-              // reparented away the instant bash itself exits, before this exec() ever gets control
-              // back, so this is the only window that can see it at all.
-              const watcher = child.pid !== undefined ? watchBashDescendants(child.pid) : undefined;
               let timedOut = false;
               let timer: NodeJS.Timeout | undefined;
-              const killGroup = (): void => { try { process.kill(-child.pid!, 'SIGKILL'); } catch { child.kill('SIGKILL'); } };
-              if (timeout) timer = setTimeout(() => { timedOut = true; killGroup(); }, timeout * 1000);
+              // Immediate (no grace) group kill — the URGENT paths below (abort/timeout) want it
+              // stopped NOW, not after `reapBashGroup`'s own grace period.
+              const killGroupNow = (): void => { try { process.kill(-child.pid!, 'SIGKILL'); } catch { child.kill('SIGKILL'); } };
+              if (timeout) timer = setTimeout(() => { timedOut = true; killGroupNow(); }, timeout * 1000);
               child.stdout?.on('data', onData);
               child.stderr?.on('data', onData);
-              const onAbort = (): void => killGroup();
+              const onAbort = (): void => killGroupNow();
               signal?.addEventListener('abort', onAbort, { once: true });
-              child.on('error', (e) => { if (timer) clearTimeout(timer); watcher?.stop(); killSeenDescendants(watcher?.seen ?? new Set()); reject(e); });
+              child.on('error', (e) => {
+                if (timer) clearTimeout(timer);
+                if (child.pid !== undefined) reapBashGroup(child.pid);
+                reject(e);
+              });
               child.on('close', (code) => {
                 if (timer) clearTimeout(timer);
                 signal?.removeEventListener('abort', onAbort);
-                watcher?.stop();
-                killSeenDescendants(watcher?.seen ?? new Set());
+                // review R2-2: group-kill on EVERY exit path, not only abort/timeout (which already
+                // SIGKILLed the group above, immediately, via killGroupNow()) — this call is what
+                // actually closes the NORMAL-completion gap review R2-2 is about. A cheap no-op when
+                // nothing was backgrounded (reapBashGroup's own signal-0 probe short-circuits it).
+                if (child.pid !== undefined) reapBashGroup(child.pid);
                 if (signal?.aborted) reject(new Error('aborted'));
                 else if (timedOut) reject(new Error(`timeout:${timeout}`));
                 else resolvePromise({ exitCode: code });

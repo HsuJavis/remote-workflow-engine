@@ -166,31 +166,78 @@ describe('pi harness v1 — file-tool jail, driven deterministically (review B3/
     }
   }, 30_000);
 
-  it('M6: under the UNCONFINED posture, nohup/setsid-backgrounded processes do not survive a NORMAL dispatch completion', async () => {
+  it('R2-2 (M6 corrected): under the UNCONFINED posture, a nohup\'d background process (stays in bash\'s own process GROUP) is group-killed on normal completion; a setsid\'d one (escapes the group into its own session) is a documented survivor, never masked by padding the command with a trailing sleep', async () => {
     // Deliberately UNCONFINED (confinementPosture omitted — the gateway's own default) and a REAL
-    // bash spawn (no confined-bash sandbox involved at all): `nohup`/`setsid` both escape the pi
-    // child's own process GROUP and SESSION, the exact mechanism review M6's repro used.
+    // bash spawn (no confined-bash sandbox involved at all). No trailing `sleep` padding in the
+    // command — review R2-2's own finding: a padded command only proves the race is won WHEN bash
+    // outlives one poll tick, which is not what a real dispatch guarantees. `nohup cmd &` under a
+    // non-interactive `bash -c` script (no job control) stays in bash's OWN process group — group-
+    // killing bash's pgid reaches it. `setsid cmd &` explicitly creates a NEW session and process
+    // group — unreachable by a group kill, by construction; the review's own ruling is to document
+    // this as the unconfined posture's limitation, not to chase it with a poll.
     const m6ws = mkdtempSync(join(tmpdir(), 'rwe-pi-jail-m6-'));
-    const command = 'nohup sleep 3017 >/dev/null 2>&1 & echo -n $! > nohup.pid; setsid sleep 3018 >/dev/null 2>&1 & echo -n $! > setsid.pid; sleep 0.3';
+    // review R2-2 debugging notes, both earned empirically against the real dispatch path:
+    // (1) `setsid sleep N &` captured via the backgrounding job's own `$!` is NOT a reliable way to
+    //     name the real long-running process — util-linux's `setsid` (absent `-f`/`--fork`) calls
+    //     setsid(2) IN PLACE via exec only when it is not already a process group leader, and falls
+    //     back to an internal fork+exit-the-original-wrapper otherwise; which path runs is a genuine
+    //     host/timing-dependent race, so `$!` sometimes names a wrapper pid that exits in
+    //     milliseconds, unrelated to this fix, rather than the process that keeps running. `setsid
+    //     bash -c 'echo -n $$ > setsid.pid; exec sleep N'` sidesteps the ambiguity: `$$` is read from
+    //     WHICHEVER process ends up running it, and `exec sleep N` replaces that exact process (same
+    //     pid, no further fork).
+    // (2) That inner bash needs a moment to fork/exec/setsid(2) before it can write its own pid —
+    //     genuinely asynchronous relative to the outer script, which otherwise finishes (and this
+    //     fix's OWN group-kill fires) in under a millisecond. A bare retry-with-delay read raced
+    //     reapBashGroup's own SIGTERM, which — while the backgrounded job is still transitioning out
+    //     of bash's group — can still reach and kill it before it escapes, intermittently. Fixed with
+    //     a real synchronization primitive, a FIFO: the outer script blocks on `cat setsid.ready`
+    //     until the inner process has ACTUALLY reached its own `echo > setsid.ready` line, which can
+    //     only happen after setsid(2) + the pid file write already landed — a deterministic barrier,
+    //     not a sleep-shaped hope.
+    const command =
+      "nohup sleep 3017 >/dev/null 2>&1 & echo -n $! > nohup.pid; mkfifo setsid.ready; " +
+      "setsid bash -c 'echo -n $$ > setsid.pid; echo go > setsid.ready; exec sleep 3018' >/dev/null 2>&1 & " +
+      'cat setsid.ready > /dev/null';
     const fake = await startScriptedServer([{ name: 'bash', args: { command } }]);
+    let setsidPid: number | undefined;
     try {
       const gw = new PiGatewayClient({ secretSource: { resolve: () => 'fake-key' }, timeoutMs: 30_000, retries: 0, openrouterBaseUrl: `http://127.0.0.1:${fake.port}/api/v1` });
       const { results } = await driveScript(gw, m6ws, ['Bash']);
       expect(results[0]?.isError).toBe(false);
       const nohupPid = Number(readFileSync(join(m6ws, 'nohup.pid'), 'utf8').trim());
-      const setsidPid = Number(readFileSync(join(m6ws, 'setsid.pid'), 'utf8').trim());
+      // By the time driveScript() resolves, the outer script's own `cat setsid.ready` has already
+      // unblocked — which can only happen AFTER setsid.pid was written (see the command comment
+      // above) — so this read is never racing an in-flight write.
+      // `Number('')` is `0`, not `NaN` — a falsy-looking but NOT-undefined pid. Guarded here (not
+      // just `!== undefined` later) so `setsidPid` is only ever `undefined` (nothing to clean up) or
+      // a real, positive pid, never 0 — `process.kill(0, …)` sends to THIS PROCESS'S OWN group (the
+      // vitest worker running this very test), not a harmless no-op, and that is exactly what a
+      // bare `Number(...)` of an unexpectedly-empty read would produce.
+      const parsedSetsidPid = existsSync(join(m6ws, 'setsid.pid')) ? Number(readFileSync(join(m6ws, 'setsid.pid'), 'utf8').trim()) : NaN;
+      setsidPid = Number.isInteger(parsedSetsidPid) && parsedSetsidPid > 0 ? parsedSetsidPid : undefined;
       expect(nohupPid).toBeGreaterThan(0);
       expect(setsidPid).toBeGreaterThan(0);
-      // Give the parent's own post-dispatch cleanup (entry.ts's killOwnDescendants, run right before
-      // this child's own normal process.exit(0)) a brief moment, matching the other real-tier
-      // leftover checks in this suite.
-      await new Promise((r) => setTimeout(r, 300));
-      for (const pid of [nohupPid, setsidPid]) {
-        let alive = true;
-        try { process.kill(pid, 0); } catch { alive = false; }
-        expect(alive).toBe(false);
-      }
+      // The group kill runs synchronously inside the exec() call's own 'close' handler (SIGTERM, a
+      // short grace, SIGKILL) — driveScript() has already resolved by the time we get here, so no
+      // arbitrary sleep is needed to "give cleanup a moment" the way the pre-fix test did.
+      let nohupAlive = true;
+      try { process.kill(nohupPid, 0); } catch { nohupAlive = false; }
+      expect(nohupAlive).toBe(false);
+      // The documented survivor — asserted explicitly so a future regression that ALSO kills setsid
+      // (impossible without a confined posture or a subreaper) doesn't silently fix this test.
+      let setsidAlive = true;
+      try { process.kill(setsidPid!, 0); } catch { setsidAlive = false; } // non-null: asserted > 0 just above
+      expect(setsidAlive).toBe(true);
     } finally {
+      // The documented survivor is a REAL leaked process — clean it up ourselves, same discipline
+      // the review flagged ("leaked sleep processes") against the implementer's own throwaway runs.
+      // `> 0` (not just `!== undefined`) is deliberate defense-in-depth: a pid of 0 would send
+      // `process.kill(0, …)` to THIS PROCESS'S OWN group (the vitest worker running this very
+      // test), not a harmless no-op — the assignment above already only ever produces `undefined`
+      // or a real positive pid, but this guard is cheap insurance against that invariant ever
+      // drifting.
+      if (setsidPid !== undefined && setsidPid > 0) { try { process.kill(setsidPid, 'SIGKILL'); } catch { /* already gone */ } }
       await new Promise((r) => fake.server.close(() => r(undefined)));
       rmSync(m6ws, { recursive: true, force: true });
     }

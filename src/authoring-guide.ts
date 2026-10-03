@@ -510,6 +510,10 @@ function harnessDisclosureParagraph(): string {
     "`PROVIDER_UNSUPPORTED_BY_HARNESS` at registration/run_start/admission — route a Claude model " +
     'through `openrouter/anthropic/...` instead); the tool surface is limited to Read/Write/Edit/' +
     `Bash/Grep/Glob/LS (${PI_UNSUPPORTED_TOOLS.join('/')} are refused \`TOOL_UNSUPPORTED_BY_HARNESS\`). ` +
+    "Pre-existing Glob quirk, unrelated to pi specifically but worth restating here since pi's Glob " +
+    "maps straight onto it: a `**/*.txt`-shaped pattern does not match a file sitting directly in the " +
+    "searched directory (only one nested one level or deeper does) — unlike Claude's own Glob tool, " +
+    'which matches the root too; write `*.txt` (or `{,**/}*.txt`) when top-level files must match. ' +
     'MCP and skills ARE supported under `gateway:"pi"` (resolved through the same shared resolver/ ' +
     'materializer as the sdk gateway — `${secret:}`/`${run:dir}` substitution never diverges between ' +
     'the two), with two pi-specific differences: a declared skill requires `Read` or `Bash` in ' +
@@ -524,6 +528,11 @@ function harnessDisclosureParagraph(): string {
     '`gateway:"sdk"`, whose Bash leaves the network field unset entirely and keeps full host network ' +
     'including loopback. A workflow whose Bash needs a same-host service must use `gateway:"sdk"` for ' +
     'now (see DEPLOY.md §1b2 for the full writeup). ' +
+    "Known unconfined-posture limitation (review R2-2): a Bash command that backgrounds a process " +
+    "via `setsid` (not `nohup`, which stays reachable) escapes this dispatch's process group and " +
+    'survives even normal completion — accepted because the unconfined posture only ever runs a ' +
+    'local submission to begin with; the confined posture never has this gap (bwrap\'s own pid-' +
+    'namespace teardown reaps everything regardless of process group). ' +
     "`system_info`'s `harness` field states which one THIS engine runs " +
     '(`{name, version, providers, unsupportedTools, effort, usage}`) — read it rather than assuming.'
   );
