@@ -17,7 +17,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
-import { readFileSync, mkdtempSync, mkdirSync, rmSync, chmodSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, rmSync, chmodSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import type { AgentOpts, Caps, HarnessDescriptor, Tokens, TranscriptEvent } from '../types.js';
 import type { GatewayClient, GatewayResult, EffortApplied } from './client.js';
@@ -178,16 +178,96 @@ function killDescendantsBestEffort(childPid: number | undefined): void {
 // dispatch's confined Bash. Denying only "this dispatch's own dir" (the earlier shape) left every
 // OTHER dispatch's dir fully readable, since confined Bash's deny-by-default reads are scoped to
 // explicitly denied directories, not "everything under os.tmpdir() this engine did not allow".
-const AGENTDIR_PARENT = join(tmpdir(), 'rwe-pi-agentdirs');
+//
+// review R2-1 (coordinator round 2, HIGH): the parent used to be ONE FIXED, well-known name
+// (`join(tmpdir(), 'rwe-pi-agentdirs')`) shared by every uid on the host. `mkdirSync(recursive)`
+// silently accepts a directory ANOTHER uid created first; the swallowed `chmodSync` EPERM then left
+// that directory's real mode whatever that other uid left it at. Two concrete failures followed:
+// (a) on a host where more than one uid runs this engine (a dev user AND the `rwe` service user
+// sharing one /tmp — exactly this host), whichever uid wins the race owns it — every OTHER uid's
+// `mkdtempSync` inside it then throws EACCES, and that throw happened OUTSIDE any try/catch in
+// `invoke()`, escaping as a rejected promise instead of a typed `GatewayResult` (about 60 ungated
+// unit tests hit this in the self-update's `npm test`); (b) a local user can pre-create the SAME
+// well-known path world-writable or as a symlink, race the engine's own per-dispatch `bin/rg` shim
+// (executed ON THE HOST, unsandboxed, by pi's Grep tool) into place before the agent's first Grep
+// call — code execution as the engine uid.
+//
+// Fixed two ways: (1) no more fixed name — the parent is `<workRoot>/pi-agentdirs` when this
+// gateway was given a `confinement.workRoot` (composeConfig forwards the SAME workRoot the sdk
+// gateway/RunManager use, already engine-owned and already wholesale denyRead for confined Bash),
+// or a PRIVATE `mkdtemp`-generated parent created once per PROCESS when no workRoot was wired at
+// all (many unit tests) — never a literal string another process could predict or pre-create either
+// way. (2) every candidate parent is `lstat`-verified before use: a real directory (not a symlink),
+// owned by `process.getuid()`, mode exactly 0700 — refused via a typed `AgentDirUnavailableError`
+// otherwise, which `invoke()` (below) converts to a `GatewayResult`, never an escaping exception. A
+// failed `chmodSync` is no longer swallowed as "best-effort, the denyRead entry is the real
+// control" — the denyRead entry does not help against a directory the engine does not even own,
+// which is exactly (b)'s scenario.
+class AgentDirUnavailableError extends Error {}
 
-function piAgentDirParent(): string {
-  mkdirSync(AGENTDIR_PARENT, { recursive: true });
-  try { chmodSync(AGENTDIR_PARENT, 0o700); } catch { /* best-effort; the denyRead entry is the real control */ }
-  return AGENTDIR_PARENT;
+function verifyPrivateDir(path: string): void {
+  let st;
+  try {
+    st = lstatSync(path);
+  } catch (err) {
+    throw new AgentDirUnavailableError(`cannot stat ${path}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  // `lstat` never follows a symlink, so a symlink's own isDirectory() is already false regardless
+  // of what it points to — `isSymbolicLink()` is checked too, explicitly, so the refusal message
+  // names the actual reason rather than a generic "not a directory".
+  if (st.isSymbolicLink()) {
+    throw new AgentDirUnavailableError(`${path} is a symlink, refusing to use it as the agentDir parent`);
+  }
+  if (!st.isDirectory()) {
+    throw new AgentDirUnavailableError(`${path} is not a directory, refusing to use it as the agentDir parent`);
+  }
+  const ownUid = process.getuid?.();
+  if (ownUid !== undefined && st.uid !== ownUid) {
+    throw new AgentDirUnavailableError(`${path} is owned by uid ${st.uid}, not this process's own uid ${ownUid} — refusing to use a directory this engine does not own`);
+  }
+  if ((st.mode & 0o777) !== 0o700) {
+    throw new AgentDirUnavailableError(`${path} has mode ${(st.mode & 0o777).toString(8)}, expected 0700 — refusing to use it as the agentDir parent`);
+  }
 }
 
-function buildPiAgentDir(): string {
-  const dir = mkdtempSync(join(piAgentDirParent(), 'd-'));
+// The per-process fallback (no `confinement.workRoot` wired at all) — memoized so repeated
+// dispatches in one process reuse the SAME private parent rather than minting a fresh randomly
+// named directory every single call; removed at process exit (best-effort) so a workRoot-less
+// engine (or a vitest worker constructing many gateways across many test files) never leaks one.
+let processLocalAgentDirParent: string | undefined;
+
+function piAgentDirParent(workRoot: string | undefined): string {
+  if (workRoot !== undefined) {
+    const parent = join(workRoot, 'pi-agentdirs');
+    try {
+      mkdirSync(parent, { recursive: true });
+    } catch (err) {
+      throw new AgentDirUnavailableError(`cannot create ${parent}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    try {
+      chmodSync(parent, 0o700);
+    } catch (err) {
+      throw new AgentDirUnavailableError(`cannot chmod ${parent} to 0700: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    verifyPrivateDir(parent);
+    return parent;
+  }
+  if (processLocalAgentDirParent === undefined) {
+    let dir: string;
+    try {
+      dir = mkdtempSync(join(tmpdir(), 'rwe-pi-agentdirs-'));
+    } catch (err) {
+      throw new AgentDirUnavailableError(`cannot create a private agentDir parent: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    verifyPrivateDir(dir);
+    processLocalAgentDirParent = dir;
+    process.once('exit', () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ } });
+  }
+  return processLocalAgentDirParent;
+}
+
+function buildPiAgentDirIn(parent: string): string {
+  const dir = mkdtempSync(join(parent, 'd-'));
   chmodSync(dir, 0o700);
   return dir;
 }
@@ -328,9 +408,20 @@ export class PiGatewayClient implements GatewayClient {
       return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: 'aborted by caller before dispatch (run suspended or stopped)' };
     }
     const workspace = req.workspace ?? process.cwd();
-    const agentDir = buildPiAgentDir();
+    // review R2-1: the WHOLE agentDir-parent-plus-per-dispatch-dir build is wrapped here — a prior
+    // iteration called `buildPiAgentDir()` with no try/catch at all, so any mkdir/chmod/lstat/mkdtemp
+    // failure (e.g. AGENTDIR_UNAVAILABLE from `verifyPrivateDir`) escaped `invoke()` as a rejected
+    // promise instead of the typed `GatewayResult` every OTHER refusal in this method returns.
+    let agentDirParent: string;
+    let agentDir: string;
     try {
-      return await this._invokeWithWorkspace(req, parsed, workspace, agentDir);
+      agentDirParent = piAgentDirParent(this._config.confinement?.workRoot);
+      agentDir = buildPiAgentDirIn(agentDirParent);
+    } catch (err) {
+      return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: `AGENTDIR_UNAVAILABLE: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    try {
+      return await this._invokeWithWorkspace(req, parsed, workspace, agentDir, agentDirParent);
     } finally {
       removePiAgentDir(agentDir);
     }
@@ -351,11 +442,16 @@ export class PiGatewayClient implements GatewayClient {
     parsed: NonNullable<ReturnType<typeof parseModelRef>>,
     workspace: string,
     agentDir: string,
+    agentDirParent: string,
   ): Promise<GatewayResult> {
     // Project configuration another agent (or Bash on an unconfined host) left in the workspace is
-    // removed before this child can ever be spawned — same contract as the sdk gateway's own
-    // sweepPlantedConfig wiring (claude-agent-sdk-client.ts), now including `.pi`/`.pi-agent-dir`/
-    // `.agents` (bash-confinement.ts's PROJECT_CONFIG_PATHS). Unremovable -> refuse, never load it.
+    // removed before this child can ever be spawned — the SAME `sweepPlantedConfig`/
+    // `PROJECT_CONFIG_PATHS` the sdk gateway uses (bash-confinement.ts), byte-identical to master.
+    // review M1/B1 (reverted): this comment used to claim the swept set now ALSO covers `.pi`/
+    // `.pi-agent-dir`/`.agents` — false since the revert (bash-confinement.ts's own
+    // PROJECT_CONFIG_PATHS doc comment has the full story: pi's full-control ResourceLoader never
+    // discovers those paths at all, so sweeping them bought no security and broke the sdk gateway's
+    // own byte-identical contract). Unremovable (of the UNCHANGED set) -> refuse, never load it.
     let plantedConfigRemoved: string[] = [];
     try {
       plantedConfigRemoved = sweepPlantedConfig(workspace);
@@ -457,7 +553,11 @@ export class PiGatewayClient implements GatewayClient {
         // agentDir (and its mcp.log, which can carry another run's MCP-server-controlled data)
         // readable by anyone sharing os.tmpdir(). agentDir itself is never in `allowRead`/
         // `allowWrite` to begin with; this is the actual control, not belt-and-suspenders.
-        filesystem: { ...fs, denyRead: [...fs.denyRead, piAgentDirParent()] },
+        // review R2-1: the ALREADY-VERIFIED parent `invoke()` computed once for this dispatch —
+        // never recomputed here (which would mean a second mkdir/chmod/lstat round trip per
+        // dispatch for no benefit; the value is identical either way, since both reads resolve the
+        // SAME `confinement.workRoot`).
+        filesystem: { ...fs, denyRead: [...fs.denyRead, agentDirParent] },
         credentials: settings.credentials as PiChildSandboxConfig['credentials'],
         ripgrepOverride,
       };

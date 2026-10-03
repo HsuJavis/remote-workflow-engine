@@ -221,30 +221,45 @@ describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => 
   });
 
   it("refuses bash:'readonly' beside a write tool as BASH_READONLY_CONFLICT", async () => {
-    const spawnChild = vi.fn();
-    const gw = new PiGatewayClient({ spawnChild: spawnChild as never, entryPath: '/fake/entry.ts', confinementPosture: 'confined', confinement: { allowHostPaths: [], protectedFiles: [], workRoot: '/tmp/pi-gw-unit-ws' } });
-    const result = await gw.invoke(req({ workspace: '/tmp/pi-gw-unit-ws', opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Bash', 'Write'], bash: 'readonly' } as AgentOpts }));
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.detail).toMatch(/BASH_READONLY_CONFLICT/);
-    expect(spawnChild).not.toHaveBeenCalled();
+    // review R2-1: a real per-test workRoot, never the old literal `/tmp/pi-gw-unit-ws` — that
+    // string drove `confinement.workRoot`, which `piAgentDirParent()` now actually `mkdirSync`s
+    // under (review R2-1's own fix), so a shared fixed literal across tests/files is exactly the
+    // "never a fixed /tmp path" hazard the review calls out, even though this call is refused for
+    // an unrelated reason before a child is ever spawned.
+    const root = mkdtempSync(join(tmpdir(), 'rwe-pi-unit-readonly-conflict-'));
+    try {
+      const spawnChild = vi.fn();
+      const gw = new PiGatewayClient({ spawnChild: spawnChild as never, entryPath: '/fake/entry.ts', confinementPosture: 'confined', confinement: { allowHostPaths: [], protectedFiles: [], workRoot: root } });
+      const result = await gw.invoke(req({ workspace: root, opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Bash', 'Write'], bash: 'readonly' } as AgentOpts }));
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.detail).toMatch(/BASH_READONLY_CONFLICT/);
+      expect(spawnChild).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('builds a sandbox config (with a resolved ripgrep override) onto childConfig when posture is confined and bash is requested', async () => {
-    const f = fakeChild();
-    const gw = new PiGatewayClient({
-      spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts',
-      confinementPosture: 'confined',
-      confinement: { allowHostPaths: [], protectedFiles: ['/home/x/.creds'], workRoot: '/tmp/pi-gw-unit-ws' },
-      resolveRipgrepOverride: () => ({ command: '/fake/claude', argv0: 'rg' }),
-    });
-    const promise = gw.invoke(req({ opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Bash'] } as AgentOpts }));
-    await new Promise((r) => setTimeout(r, 10));
-    f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
-    f.exit(0);
-    await promise;
-    const sent = JSON.parse(f.stdinWritten.join(''));
-    expect(sent.sandbox.ripgrepOverride).toEqual({ command: '/fake/claude', argv0: 'rg' });
-    expect(sent.sandbox.filesystem).toBeDefined();
+    const root = mkdtempSync(join(tmpdir(), 'rwe-pi-unit-sandbox-cfg-')); // review R2-1: real per-test workRoot
+    try {
+      const f = fakeChild();
+      const gw = new PiGatewayClient({
+        spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts',
+        confinementPosture: 'confined',
+        confinement: { allowHostPaths: [], protectedFiles: ['/home/x/.creds'], workRoot: root },
+        resolveRipgrepOverride: () => ({ command: '/fake/claude', argv0: 'rg' }),
+      });
+      const promise = gw.invoke(req({ opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Bash'] } as AgentOpts }));
+      await new Promise((r) => setTimeout(r, 10));
+      f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      f.exit(0);
+      await promise;
+      const sent = JSON.parse(f.stdinWritten.join(''));
+      expect(sent.sandbox.ripgrepOverride).toEqual({ command: '/fake/claude', argv0: 'rg' });
+      expect(sent.sandbox.filesystem).toBeDefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('never builds a sandbox config when posture is unconfined — bash runs unwrapped, never a false confinement claim', async () => {
@@ -418,19 +433,24 @@ describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => 
   });
 
   it('the eager harness descriptor reports bash.enforced honestly from the measured posture', async () => {
-    const f = fakeChild();
-    const gw = new PiGatewayClient({
-      spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts',
-      confinementPosture: 'confined',
-      confinement: { allowHostPaths: [], protectedFiles: [], workRoot: '/tmp/pi-gw-unit-ws' },
-      resolveRipgrepOverride: () => ({ command: '/fake/claude', argv0: 'rg' }),
-    });
-    let harness: { bash?: { mode: string; enforced: boolean } } | undefined;
-    const promise = gw.invoke(req({ opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Bash'] } as AgentOpts, onHarness: async (h) => { harness = h as never; } }));
-    await new Promise((r) => setTimeout(r, 10));
-    f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
-    f.exit(0);
-    await promise;
-    expect(harness?.bash).toEqual({ mode: 'full', enforced: true });
+    const root = mkdtempSync(join(tmpdir(), 'rwe-pi-unit-harness-bash-')); // review R2-1: real per-test workRoot
+    try {
+      const f = fakeChild();
+      const gw = new PiGatewayClient({
+        spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts',
+        confinementPosture: 'confined',
+        confinement: { allowHostPaths: [], protectedFiles: [], workRoot: root },
+        resolveRipgrepOverride: () => ({ command: '/fake/claude', argv0: 'rg' }),
+      });
+      let harness: { bash?: { mode: string; enforced: boolean } } | undefined;
+      const promise = gw.invoke(req({ opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Bash'] } as AgentOpts, onHarness: async (h) => { harness = h as never; } }));
+      await new Promise((r) => setTimeout(r, 10));
+      f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      f.exit(0);
+      await promise;
+      expect(harness?.bash).toEqual({ mode: 'full', enforced: true });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

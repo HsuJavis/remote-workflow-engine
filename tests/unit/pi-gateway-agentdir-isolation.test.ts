@@ -10,7 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, statSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, existsSync, statSync, chmodSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { isPathContained } from '../../src/path-containment.js';
@@ -129,10 +129,14 @@ describe('PiGatewayClient — agentDir lives outside the workspace (residual har
       f.exit(0);
       await promise;
       expect(capturedAgentDir).toBeDefined();
-      // Not the dir itself — its PARENT (join(tmpdir(), 'rwe-pi-agentdirs')), the directory EVERY
-      // dispatch's own agentDir is created under, so one shared denyRead entry hides every sibling
-      // dispatch's agentDir (and its mcp.log) from this dispatch's confined Bash, not just this one.
-      const expectedParent = join(tmpdir(), 'rwe-pi-agentdirs');
+      // Not the dir itself — its PARENT, the directory EVERY dispatch's own agentDir is created
+      // under, so one shared denyRead entry hides every sibling dispatch's agentDir (and its
+      // mcp.log) from this dispatch's confined Bash, not just this one.
+      // review R2-1: the parent is no longer a single FIXED name shared by every uid on the host
+      // (`join(tmpdir(), 'rwe-pi-agentdirs')`) — it lives under THIS dispatch's own `workRoot`
+      // (`confinement.workRoot`, here == `ws`), which is already engine-owned and already
+      // wholesale denyRead for confined Bash.
+      const expectedParent = join(ws, 'pi-agentdirs');
       expect(capturedAgentDir).toMatch(new RegExp(`^${expectedParent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/`));
       expect(capturedDenyRead).toContain(expectedParent);
     } finally {
@@ -179,11 +183,111 @@ describe('PiGatewayClient — agentDir lives outside the workspace (residual har
 
       expect(agentDirs.length).toBe(2);
       expect(agentDirs[0]).not.toBe(agentDirs[1]); // two distinct per-dispatch dirs ...
-      const parent = join(tmpdir(), 'rwe-pi-agentdirs');
+      const parent = join(ws, 'pi-agentdirs'); // review R2-1: under this dispatch's own workRoot, not a fixed /tmp name
       for (const dir of agentDirs) expect(dir.startsWith(parent + '/')).toBe(true); // ... under ONE shared parent
       for (const denyRead of capturedDenyReads) expect(denyRead).toContain(parent); // ... denied as one entry, covering both
     } finally {
       rmSync(ws, { recursive: true, force: true });
+    }
+  });
+});
+
+// review R2-1 (coordinator round 2, HIGH): the parent used to be ONE FIXED, well-known name
+// (`join(tmpdir(), 'rwe-pi-agentdirs')`) shared by every uid on the host — a deterministic self-
+// update blocker (whichever uid creates it first locks every other uid out via `mkdtempSync` EACCES,
+// escaping `invoke()` as a raw exception instead of a GatewayResult) and a privilege-escalation
+// surface (another local user can pre-create it world-writable or as a symlink, then race the
+// engine's own `bin/rg` shim — executed ON THE HOST, unsandboxed, by pi's Grep tool). Fixed: the
+// parent now lives under THIS dispatch's own `confinement.workRoot` (already engine-owned, already
+// wholesale denyRead) when one was given, or a private per-PROCESS `mkdtemp`-generated directory
+// (never a literal name) otherwise — and every candidate is `lstat`-verified (not a symlink, owned
+// by `process.getuid()`, mode 0700) before use, refusing with a typed `AGENTDIR_UNAVAILABLE`
+// `GatewayResult` — never an escaping exception — when it is not.
+describe('PiGatewayClient — the agentDir PARENT is private, verified, and fails closed (review R2-1)', () => {
+  it('refuses with a typed AGENTDIR_UNAVAILABLE result (never throws/rejects) when the parent path is a symlink', async () => {
+    const ws = mkdtempSync(join(tmpdir(), 'rwe-pi-agentdir-r2-1-symlink-'));
+    const elsewhere = mkdtempSync(join(tmpdir(), 'rwe-pi-agentdir-r2-1-elsewhere-'));
+    try {
+      // The attack this reproduces: another local user (or a leftover from a different uid) left a
+      // symlink where the engine's own agentDir parent should be.
+      symlinkSync(elsewhere, join(ws, 'pi-agentdirs'));
+      const f = fakeChild();
+      const gw = new PiGatewayClient({
+        spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts',
+        confinementPosture: 'confined',
+        confinement: { allowHostPaths: [], protectedFiles: [], workRoot: ws },
+      });
+      const result = await gw.invoke({ prompt: 'hi', opts: { model: 'ollama/qwen2.5:7b' } as AgentOpts, runId: 'r-r2-1a', agentId: 'a', workspace: ws });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.detail).toMatch(/AGENTDIR_UNAVAILABLE/);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('repairs the mode (chmod back to 0700) and proceeds when the parent pre-exists too permissive but is still owned by this process', async () => {
+    const ws = mkdtempSync(join(tmpdir(), 'rwe-pi-agentdir-r2-1-mode-'));
+    try {
+      const parent = join(ws, 'pi-agentdirs');
+      mkdirSync(parent, { recursive: true });
+      chmodSync(parent, 0o755); // too permissive — same uid, so the engine both CAN and MUST fix this
+      const f = fakeChild();
+      const gw = new PiGatewayClient({
+        spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts',
+        confinementPosture: 'confined',
+        confinement: { allowHostPaths: [], protectedFiles: [], workRoot: ws },
+      });
+      const promise = gw.invoke({ prompt: 'hi', opts: { model: 'ollama/qwen2.5:7b' } as AgentOpts, runId: 'r-r2-1b', agentId: 'a', workspace: ws });
+      await new Promise((r) => setTimeout(r, 10));
+      f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      f.exit(0);
+      const result = await promise;
+      expect(result.ok).toBe(true);
+      expect(statSync(parent).mode & 0o777).toBe(0o700);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  it('with no confinement.workRoot wired at all, the parent is a private per-process directory, never the old fixed name — shared across two gateways in the same process', async () => {
+    const f1 = fakeChild();
+    const f2 = fakeChild();
+    let capturedParent1: string | undefined;
+    let capturedParent2: string | undefined;
+    const spawnChild1 = ((_cmd: string, _args: string[], _opts: unknown) => {
+      f1.child.stdin.on('data', (d: Buffer) => { capturedParent1 = resolve((JSON.parse(d.toString()) as { agentDir: string }).agentDir, '..'); });
+      return f1.child;
+    }) as never;
+    const spawnChild2 = ((_cmd: string, _args: string[], _opts: unknown) => {
+      f2.child.stdin.on('data', (d: Buffer) => { capturedParent2 = resolve((JSON.parse(d.toString()) as { agentDir: string }).agentDir, '..'); });
+      return f2.child;
+    }) as never;
+    const gw1 = new PiGatewayClient({ spawnChild: spawnChild1, entryPath: '/fake/entry.ts' });
+    const gw2 = new PiGatewayClient({ spawnChild: spawnChild2, entryPath: '/fake/entry.ts' });
+    const ws1 = mkdtempSync(join(tmpdir(), 'rwe-pi-agentdir-r2-1-noroot1-'));
+    const ws2 = mkdtempSync(join(tmpdir(), 'rwe-pi-agentdir-r2-1-noroot2-'));
+    try {
+      const p1 = gw1.invoke({ prompt: 'hi', opts: { model: 'ollama/qwen2.5:7b' } as AgentOpts, runId: 'r-r2-1c1', agentId: 'a', workspace: ws1 });
+      await new Promise((r) => setTimeout(r, 10));
+      f1.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      f1.exit(0);
+      await p1;
+      const p2 = gw2.invoke({ prompt: 'hi', opts: { model: 'ollama/qwen2.5:7b' } as AgentOpts, runId: 'r-r2-1c2', agentId: 'a', workspace: ws2 });
+      await new Promise((r) => setTimeout(r, 10));
+      f2.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      f2.exit(0);
+      await p2;
+
+      expect(capturedParent1).toBeDefined();
+      expect(capturedParent2).toBeDefined();
+      // Same process -> ONE shared private parent (memoized, created once) ...
+      expect(capturedParent1).toBe(capturedParent2);
+      // ... and it is NEVER the old fixed, cross-uid-shared name.
+      expect(capturedParent1).not.toBe(join(tmpdir(), 'rwe-pi-agentdirs'));
+    } finally {
+      rmSync(ws1, { recursive: true, force: true });
+      rmSync(ws2, { recursive: true, force: true });
     }
   });
 });
