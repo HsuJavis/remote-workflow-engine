@@ -627,6 +627,9 @@ curl -s http://localhost:8787/api/models | python3 -c \
 **怎麼切換**：`rwe.config.json` 設 `"gateway": "pi"`，重開引擎（或 `rwe-update.sh` 這種會重啟的流程）。
 不需要額外的 `"pi"` 設定區塊——沒有per-agent/per-run 開關，整個引擎只有一種 harness 生效。
 
+**Node 版本**：pi 套件（ESM-only）需要 **Node.js 22.19 以上**——比引擎本身的 22.6 下限更高。升級引擎到含
+pi 的版本前，先用引擎帳號確認：`sudo -u rwe node -v`（或 `ExecStart` 實際指向的那支 node）。
+
 **支援的 provider（只有兩個，故意的）**：`openrouter/*` 與 `ollama/*`。**完全不碰 Anthropic**——
 沒有 `ANTHROPIC_API_KEY`，也不接受 `CLAUDE_CODE_OAUTH_TOKEN`（owner 2026-10-03 決定：spike 發現透過
 第三方 harness 用 Claude 訂閱 token 會被算成「extra usage」計費，不是正常的訂閱額度）。任何
