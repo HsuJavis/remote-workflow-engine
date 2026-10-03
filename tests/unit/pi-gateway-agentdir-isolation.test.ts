@@ -10,7 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, existsSync, statSync, chmodSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, existsSync, statSync, chmodSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { isPathContained } from '../../src/path-containment.js';
@@ -315,6 +315,179 @@ describe('PiGatewayClient — the agentDir PARENT is private, verified, and fail
     } finally {
       rmSync(ws1, { recursive: true, force: true });
       rmSync(ws2, { recursive: true, force: true });
+    }
+  });
+});
+
+// review round 3 (HIGH, R3-1): srt sets confined bash's `TMPDIR` to its own hardcoded, cross-run-
+// shared `/tmp/claude` whenever `CLAUDE_CODE_TMPDIR` is unset — never set by this gateway before this
+// fix. This is the ungated unit-level proof of the CONFIG PROJECTION (what `invoke()` puts on
+// `childConfig`/`sandbox`) — the real-tier proof that it actually WORKS inside a real bwrap sandbox
+// lives in pi-harness-bash-confinement-real.test.ts (needs bwrap/socat, opt-in).
+describe("PiGatewayClient — per-dispatch TMPDIR scratch, never srt's shared /tmp/claude (review round 3, R3-1)", () => {
+  it('childConfig.tmpDir is a verified per-dispatch directory under <workRoot>/pi-tmp/, removed after the dispatch settles', async () => {
+    const ws = mkdtempSync(join(tmpdir(), 'rwe-pi-tmpdir-r3-1-'));
+    try {
+      let capturedTmpDir: string | undefined;
+      const f = fakeChild();
+      f.child.stdin.on('data', (d: Buffer) => { capturedTmpDir = (JSON.parse(d.toString()) as { tmpDir: string }).tmpDir; });
+      const gw = new PiGatewayClient({
+        spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts',
+        confinement: { allowHostPaths: [], protectedFiles: [], workRoot: ws },
+      });
+      const promise = gw.invoke({ prompt: 'hi', opts: { model: 'ollama/qwen2.5:7b' } as AgentOpts, runId: 'r-tmp1', agentId: 'a', workspace: ws });
+      await new Promise((r) => setTimeout(r, 10));
+      f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      f.exit(0);
+      await promise;
+      expect(capturedTmpDir).toBeDefined();
+      const expectedParent = join(ws, 'pi-tmp');
+      expect(capturedTmpDir).toMatch(new RegExp(`^${expectedParent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/`));
+      // Distinct from agentDir's own parent — two independent scratch kinds, never sharing one dir.
+      expect(capturedTmpDir).not.toMatch(/pi-agentdirs/);
+      expect(existsSync(capturedTmpDir!)).toBe(false);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  it('when confined + bash is requested, the tmpDir PARENT is denied for read, and the literal /tmp/claude is denied for write (read-deny is a documented no-op there — see hostSharedTmpdirRefusal instead)', async () => {
+    // review round 3 owner correction: hostSharedTmpdirRefusal() now refuses the dispatch outright
+    // whenever /tmp/claude exists at all (see its own doc) — guard so this test never spuriously fails
+    // on a host where it's genuinely present, the same caution the dedicated describe block below uses.
+    if (existsSync('/tmp/claude')) return;
+    const ws = mkdtempSync(join(tmpdir(), 'rwe-pi-tmpdir-r3-1-deny-'));
+    try {
+      let capturedDenyRead: string[] | undefined;
+      let capturedDenyWrite: string[] | undefined;
+      const f = fakeChild();
+      f.child.stdin.on('data', (d: Buffer) => {
+        const cfg = JSON.parse(d.toString()) as { sandbox?: { filesystem: { denyRead: string[]; denyWrite: string[] } } };
+        capturedDenyRead = cfg.sandbox?.filesystem.denyRead;
+        capturedDenyWrite = cfg.sandbox?.filesystem.denyWrite;
+      });
+      const gw = new PiGatewayClient({
+        spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts',
+        confinementPosture: 'confined',
+        confinement: { allowHostPaths: [], protectedFiles: [], workRoot: ws },
+        resolveRipgrepOverride: () => ({ command: '/fake/claude', argv0: 'rg' }),
+      });
+      const promise = gw.invoke({ prompt: 'hi', opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Bash'] } as AgentOpts, runId: 'r-tmp2', agentId: 'a', workspace: ws });
+      await new Promise((r) => setTimeout(r, 10));
+      f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      f.exit(0);
+      await promise;
+      // Deliberately NOT asserted: `/tmp/claude` in denyRead — it would be a no-op there even combined
+      // with denyWrite (srt's own unconditional write-bind wins over a later read-deny mask, confirmed
+      // live both ways), so this gateway never puts it there; the real protection against its content
+      // being read is `hostSharedTmpdirRefusal()`'s hard refuse-when-present, verified separately.
+      expect(capturedDenyWrite).toContain('/tmp/claude');
+      expect(capturedDenyRead).toContain(join(ws, 'pi-tmp'));
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  it('two concurrent dispatches get distinct tmpDir scratch dirs under one shared, verified parent', async () => {
+    const ws = mkdtempSync(join(tmpdir(), 'rwe-pi-tmpdir-r3-1-concurrent-'));
+    try {
+      const tmpDirs: string[] = [];
+      const makeChild = () => {
+        const f = fakeChild();
+        f.child.stdin.on('data', (d: Buffer) => { tmpDirs.push((JSON.parse(d.toString()) as { tmpDir: string }).tmpDir); });
+        return f;
+      };
+      const f1 = makeChild();
+      const f2 = makeChild();
+      let n = 0;
+      const spawnChild = (() => (n++ === 0 ? f1.child : f2.child)) as never;
+      const gw = new PiGatewayClient({
+        spawnChild, entryPath: '/fake/entry.ts',
+        confinement: { allowHostPaths: [], protectedFiles: [], workRoot: ws },
+      });
+      const dispatch = (f: ReturnType<typeof fakeChild>, runId: string) => gw.invoke({
+        prompt: 'hi', opts: { model: 'ollama/qwen2.5:7b' } as AgentOpts, runId, agentId: 'a', workspace: ws,
+      });
+      const p1 = dispatch(f1, 'r-tmp3-1');
+      const p2 = dispatch(f2, 'r-tmp3-2');
+      await new Promise((r) => setTimeout(r, 10));
+      f1.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      f1.exit(0);
+      f2.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      f2.exit(0);
+      await Promise.all([p1, p2]);
+
+      expect(tmpDirs.length).toBe(2);
+      expect(tmpDirs[0]).not.toBe(tmpDirs[1]);
+      const parent = join(ws, 'pi-tmp');
+      for (const dir of tmpDirs) expect(dir.startsWith(parent + '/')).toBe(true);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+});
+
+// review round 3, R3-1: `hostSharedTmpdirRefusal()`'s hard refuse-when-present — srt's own literal
+// `/tmp/claude` is a FIXED, global host path (not test-scoped the way agentDir/tmpDir's own verified
+// parents are), so these tests touch it directly. Every case guards with `existsSync` first and
+// skips rather than risk clobbering a real pre-existing one in a shared/dev environment — on a clean
+// host (the normal case, confirmed earlier via the reviewer's own cmd-drive.mts repro) this always
+// runs for real. Neither test ever writes to, nor deletes anything from, a /tmp/claude it did not
+// itself create within the test body (review round 3 owner correction — see PI_HOST_SHARED_TMPDIR's
+// own doc in pi-gateway-client.ts for the full "why").
+describe("PiGatewayClient — hostSharedTmpdirRefusal() verifies /tmp/claude before every confined dispatch (review round 3, R3-1)", () => {
+  const HOST_SHARED = '/tmp/claude';
+
+  it('refuses HOST_SHARED_TMPDIR_UNSAFE when /tmp/claude exists but is not a plain directory (a symlink)', async () => {
+    if (existsSync(HOST_SHARED)) return; // do not touch a real pre-existing one
+    const elsewhere = mkdtempSync(join(tmpdir(), 'rwe-pi-tmp-claude-elsewhere-'));
+    const ws = mkdtempSync(join(tmpdir(), 'rwe-pi-tmp-claude-ws1-'));
+    try {
+      symlinkSync(elsewhere, HOST_SHARED);
+      const f = fakeChild();
+      const gw = new PiGatewayClient({
+        spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts',
+        confinementPosture: 'confined',
+        confinement: { allowHostPaths: [], protectedFiles: [], workRoot: ws },
+        resolveRipgrepOverride: () => ({ command: '/fake/claude', argv0: 'rg' }),
+      });
+      const result = await gw.invoke({ prompt: 'hi', opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Bash'] } as AgentOpts, runId: 'r-hstmp-symlink', agentId: 'a', workspace: ws });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.detail).toMatch(/HOST_SHARED_TMPDIR_UNSAFE/);
+    } finally {
+      rmSync(HOST_SHARED, { force: true }); // unlinks the symlink itself, never follows it
+      rmSync(elsewhere, { recursive: true, force: true });
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  it('review round 3 owner correction: when /tmp/claude already exists (even a plain directory owned by this very process), the dispatch is REFUSED and its contents are left completely untouched — never emptied, never deleted', async () => {
+    if (existsSync(HOST_SHARED)) return; // do not touch a real pre-existing one
+    const ws = mkdtempSync(join(tmpdir(), 'rwe-pi-tmp-claude-ws2-'));
+    try {
+      mkdirSync(HOST_SHARED, { recursive: true });
+      chmodSync(HOST_SHARED, 0o700);
+      writeFileSync(join(HOST_SHARED, 'stale-from-a-past-dispatch.txt'), 'STALE_CONTENT');
+      const f = fakeChild();
+      const gw = new PiGatewayClient({
+        spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts',
+        confinementPosture: 'confined',
+        confinement: { allowHostPaths: [], protectedFiles: [], workRoot: ws },
+        resolveRipgrepOverride: () => ({ command: '/fake/claude', argv0: 'rg' }),
+      });
+      const result = await gw.invoke({ prompt: 'hi', opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Bash'] } as AgentOpts, runId: 'r-hstmp-refuse', agentId: 'a', workspace: ws });
+      // Masking /tmp/claude from inside the sandbox is not achievable through srt's config surface
+      // (see PI_HOST_SHARED_TMPDIR's own doc for the live-proven "why"), and this engine must never
+      // delete a shared host path's files — even ones it believes it owns, since the ORIGINAL repro
+      // (run A's secret read by run B) happens even when both share this same uid. So the only safe
+      // behavior is a hard refusal, leaving the host path exactly as it was found.
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.detail).toMatch(/HOST_SHARED_TMPDIR_UNSAFE/);
+      expect(existsSync(join(HOST_SHARED, 'stale-from-a-past-dispatch.txt'))).toBe(true);
+      expect(readFileSync(join(HOST_SHARED, 'stale-from-a-past-dispatch.txt'), 'utf8')).toBe('STALE_CONTENT');
+    } finally {
+      rmSync(HOST_SHARED, { recursive: true, force: true });
+      rmSync(ws, { recursive: true, force: true });
     }
   });
 });

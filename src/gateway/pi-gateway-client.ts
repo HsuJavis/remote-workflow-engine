@@ -237,15 +237,23 @@ function verifyPrivateDir(path: string, opts: { checkMode?: boolean } = {}): voi
   }
 }
 
-// The per-process fallback (no `confinement.workRoot` wired at all) — memoized so repeated
-// dispatches in one process reuse the SAME private parent rather than minting a fresh randomly
-// named directory every single call; removed at process exit (best-effort) so a workRoot-less
-// engine (or a vitest worker constructing many gateways across many test files) never leaks one.
-let processLocalAgentDirParent: string | undefined;
+// The per-process fallback (no `confinement.workRoot` wired at all) — memoized PER DIRECTORY NAME so
+// repeated dispatches in one process reuse the SAME private parent rather than minting a fresh
+// randomly named directory every single call, and two different scratch kinds (agentDirs, pi-tmp —
+// review round 3, R3-1) each get their OWN private directory, never sharing one. Removed at process
+// exit (best-effort) so a workRoot-less engine (or a vitest worker constructing many gateways across
+// many test files) never leaks one.
+const processLocalScratchParents = new Map<string, string>();
 
-function piAgentDirParent(workRoot: string | undefined): string {
+/** Shared by `piAgentDirParent` (review R2-1) and `piTmpDirParent` (review round 3, R3-1) — both
+ *  need the exact same "one engine-owned, verified, 0700 parent under workRoot, or a private
+ *  per-process mkdtemp fallback" shape, differing only in the directory NAME. `dirName` is also the
+ *  per-process fallback's name prefix, so two different kinds never collide (and the error `new
+ *  Error` messages below name the engine's-own `dirName`, not a hardcoded "agentDir" literal, now
+ *  that this function is used for more than that one purpose). */
+function verifiedScratchParent(workRoot: string | undefined, dirName: string): string {
   if (workRoot !== undefined) {
-    const parent = join(workRoot, 'pi-agentdirs');
+    const parent = join(workRoot, dirName);
     // review round 3, LOW-1: verify a PRE-EXISTING entry BEFORE ever chmod'ing it — `chmodSync`
     // follows a symlink, so chmod-then-verify (the pre-fix order) silently reconfigured whatever a
     // planted symlink pointed at before the refusal below ever ran. `checkMode:false` here: the
@@ -270,26 +278,107 @@ function piAgentDirParent(workRoot: string | undefined): string {
     verifyPrivateDir(parent);
     return parent;
   }
-  if (processLocalAgentDirParent === undefined) {
-    let dir: string;
+  let dir = processLocalScratchParents.get(dirName);
+  if (dir === undefined) {
     try {
-      dir = mkdtempSync(join(tmpdir(), 'rwe-pi-agentdirs-'));
+      dir = mkdtempSync(join(tmpdir(), `rwe-${dirName}-`));
     } catch (err) {
-      throw new AgentDirUnavailableError(`cannot create a private agentDir parent: ${err instanceof Error ? err.message : String(err)}`);
+      throw new AgentDirUnavailableError(`cannot create a private ${dirName} parent: ${err instanceof Error ? err.message : String(err)}`);
     }
     verifyPrivateDir(dir);
-    processLocalAgentDirParent = dir;
-    process.once('exit', () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ } });
+    processLocalScratchParents.set(dirName, dir);
+    const dirToRemove = dir;
+    process.once('exit', () => { try { rmSync(dirToRemove, { recursive: true, force: true }); } catch { /* best-effort */ } });
   }
-  return processLocalAgentDirParent;
+  return dir;
 }
 
+function piAgentDirParent(workRoot: string | undefined): string {
+  return verifiedScratchParent(workRoot, 'pi-agentdirs');
+}
+
+/** review round 3 (HIGH, R3-1): srt (`@anthropic-ai/sandbox-runtime`) sets the confined bash
+ *  subprocess's `TMPDIR` to `process.env.CLAUDE_CODE_TMPDIR || process.env.CLAUDE_TMPDIR ||
+ *  '/tmp/claude'` (sandbox-utils.js) — never set by this gateway before this fix, so every confined
+ *  dispatch got the bare literal fallback. Two concrete failures, both reproduced live: (a) when
+ *  `/tmp/claude` does not exist (the normal case on a fresh host), `mktemp` and anything else that
+ *  honors `$TMPDIR` fails inside EVERY confined bash call; (b) when it exists, it is shared across
+ *  EVERY run and EVERY principal on the host — one dispatch's `echo secret > $TMPDIR/f` was read
+ *  back by a completely unrelated dispatch's `cat /tmp/claude/f`, and any local user can pre-create
+ *  the directory to plant or read what pi writes there.
+ *
+ *  Fixed in two parts: (1) point `CLAUDE_CODE_TMPDIR` at a per-dispatch, per-process-VERIFIED scratch
+ *  (`piTmpDirParent`, below — the exact same shape as `piAgentDirParent`; set in session-runner.ts,
+ *  right before the sandbox is ever initialized), so well-behaved `$TMPDIR`-aware tools (mktemp, pip,
+ *  npm, compilers, ...) never touch the shared path at all. (2) `/tmp/claude` ITSELF cannot be masked
+ *  from inside the sandbox by ANY combination of this engine's config surface — proved live, twice,
+ *  before settling on the design below (review round 3 owner correction: an earlier version of this
+ *  fix emptied `/tmp/claude`'s contents when it judged the directory "ours"; that is WRONG — this
+ *  engine must never delete a shared host path's files, even ones it believes it owns, because the
+ *  exact repro this fix exists for — run A's secret read by run B — happens even when A and B share
+ *  the same uid, so "owned by us" was never actually a safe signal to act on):
+ *    - `denyRead: ['/tmp/claude']` alone: srt mounts a tmpfs over it, exactly as it does for
+ *      `agentDirParent`/`tmpDirParent` above, but `/tmp/claude` is unconditionally one of srt's OWN
+ *      write paths (`SANDBOX_OWN_WRITE_PATHS` in sandbox-utils.js — a static literal, never derived
+ *      from `TMPDIR` and never excludable through any public `SandboxConfig` field: "What the sandbox
+ *      itself needs (stdio, /tmp/claude) is never left out", by srt's own doc comment). srt's tmpfs
+ *      step (`pushReadDenyDirMounts`, linux-sandbox-utils.js) unconditionally RE-BINDS every
+ *      write-allowed path sitting under a tmpfs it just mounted, using the REAL host directory —
+ *      "tmpfs wiped any earlier write binds under this path — restore them", by its own comment.
+ *      `/tmp/claude` is always write-allowed, so this restore always fires and the tmpfs never
+ *      actually hides anything. Confirmed live: a planted `/tmp/claude/leak.txt` stayed fully
+ *      readable with ONLY `denyRead` set.
+ *    - `denyRead` + `denyWrite` together: the denyWrite pass detects its destination is "already
+ *      hidden by" the denyRead tmpfs, skips emitting its own bind, but then re-emits that SAME
+ *      restored write path READ-ONLY instead of re-establishing the tmpfs. Net effect: writes
+ *      correctly fail ("Read-only file system"), but reads still see the real host content. Confirmed
+ *      live: the same planted secret, and `leak.txt` in a directory listing, were both still visible
+ *      with both `denyRead` and `denyWrite` set.
+ *  No other public filesystem config field exists to exclude `/tmp/claude` from srt's hardcoded
+ *  default write-path list, and this gateway only reaches srt through its documented `SandboxConfig`
+ *  surface (no raw bwrap-argv escape hatch is exposed). So masking `/tmp/claude`'s CONTENT while it
+ *  remains on the host is not achievable from here — and deleting that content is exactly what this
+ *  engine must not do to a shared host path. The only safe option left is a hard refusal:
+ *  `hostSharedTmpdirRefusal()`, below, called every confined dispatch BEFORE any sandbox is built —
+ *  absent, proceed (srt's own write loop skips a non-existent path, confirmed live, and now harmless
+ *  either way since nothing's `$TMPDIR` points there any more); present, for ANY reason, REFUSE with a
+ *  typed `HOST_SHARED_TMPDIR_UNSAFE` rather than attempt to neutralize it. This refusal touches
+ *  nothing on the host; clearing `/tmp/claude` so confined Bash can run again is an operator action,
+ *  never something this engine does for itself. */
+const PI_HOST_SHARED_TMPDIR = '/tmp/claude';
+
+/** See `PI_HOST_SHARED_TMPDIR`'s own doc for the full "why" this is a hard refuse-when-present rather
+ *  than an attempt to mask or clean the path. `null` = absent, safe to proceed. A non-null string is
+ *  this dispatch's refusal detail — the host path (and everything in it) is left completely untouched
+ *  either way; this function never writes, deletes or opens anything under `PI_HOST_SHARED_TMPDIR`. */
+function hostSharedTmpdirRefusal(): string | null {
+  let st;
+  try {
+    st = lstatSync(PI_HOST_SHARED_TMPDIR);
+  } catch {
+    return null; // absent — nothing to refuse, and srt's own write loop skips a non-existent path.
+  }
+  const shape = st.isSymbolicLink() ? 'a symlink' : st.isDirectory() ? 'a directory' : 'present';
+  return `HOST_SHARED_TMPDIR_UNSAFE: ${PI_HOST_SHARED_TMPDIR} exists (${shape}) — srt binds it read-write into every confined Bash call unconditionally, and no filesystem policy this engine can set hides its contents from inside the sandbox (denyRead alone is undone by srt's own write-path restore; denyRead+denyWrite still exposes reads — see this constant's own doc). Refusing rather than touching a path this engine does not own outright; an operator must remove it on the host before confined Bash can run again`;
+}
+
+/** review round 3, R3-1: a per-dispatch TMPDIR scratch, the SAME verified-parent shape as
+ *  `piAgentDirParent` — see `PI_HOST_SHARED_TMPDIR`'s own doc for the full "why". */
+function piTmpDirParent(workRoot: string | undefined): string {
+  return verifiedScratchParent(workRoot, 'pi-tmp');
+}
+
+/** Reused for BOTH the per-dispatch agentDir (under `piAgentDirParent()`) and the per-dispatch TMPDIR
+ *  scratch (under `piTmpDirParent()`, review round 3 R3-1) — `mkdtempSync` is itself what makes this
+ *  safe for either purpose (atomically unique, created 0700 by the OS already; the explicit
+ *  `chmodSync` below is belt-and-suspenders against an unusual umask). */
 function buildPiAgentDirIn(parent: string): string {
   const dir = mkdtempSync(join(parent, 'd-'));
   chmodSync(dir, 0o700);
   return dir;
 }
 
+/** Reused for both scratch kinds (see `buildPiAgentDirIn`'s own doc). */
 function removePiAgentDir(dir: string): void {
   try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
 }
@@ -438,10 +527,23 @@ export class PiGatewayClient implements GatewayClient {
     } catch (err) {
       return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: `AGENTDIR_UNAVAILABLE: ${err instanceof Error ? err.message : String(err)}` };
     }
+    // review round 3, R3-1: the SAME shape, SAME reasoning, for a per-dispatch TMPDIR scratch — a
+    // SEPARATE try/catch (not folded into the one above) so a failure here is reported with its own
+    // distinct code (`TMPDIR_SCRATCH_UNAVAILABLE`) rather than being misread as an agentDir problem.
+    let tmpDirParent: string;
+    let tmpDir: string;
     try {
-      return await this._invokeWithWorkspace(req, parsed, workspace, agentDir, agentDirParent);
+      tmpDirParent = piTmpDirParent(this._config.confinement?.workRoot);
+      tmpDir = buildPiAgentDirIn(tmpDirParent);
+    } catch (err) {
+      removePiAgentDir(agentDir);
+      return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: `TMPDIR_SCRATCH_UNAVAILABLE: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    try {
+      return await this._invokeWithWorkspace(req, parsed, workspace, agentDir, agentDirParent, tmpDir, tmpDirParent);
     } finally {
       removePiAgentDir(agentDir);
+      removePiAgentDir(tmpDir);
     }
   }
 
@@ -461,6 +563,8 @@ export class PiGatewayClient implements GatewayClient {
     workspace: string,
     agentDir: string,
     agentDirParent: string,
+    tmpDir: string,
+    tmpDirParent: string,
   ): Promise<GatewayResult> {
     // Project configuration another agent (or Bash on an unconfined host) left in the workspace is
     // removed before this child can ever be spawned — the SAME `sweepPlantedConfig`/
@@ -553,6 +657,13 @@ export class PiGatewayClient implements GatewayClient {
     // own `config.sandbox !== undefined` branch).
     let sandbox: PiChildSandboxConfig | undefined;
     if (this._config.confinementPosture === 'confined' && mapped.piNames.includes('bash')) {
+      // review round 3, R3-1: refused BEFORE building any sandbox config at all — see
+      // `hostSharedTmpdirRefusal`'s own doc (PI_HOST_SHARED_TMPDIR) for the full "why" this cannot
+      // be handled via a `denyRead` config entry the way agentDirParent/tmpDirParent are.
+      const hostSharedTmpdirIssue = hostSharedTmpdirRefusal();
+      if (hostSharedTmpdirIssue !== null) {
+        return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: hostSharedTmpdirIssue };
+      }
       const settings = buildBashConfinement({
         root: workspace,
         grantedHostPaths: this._config.confinement?.allowHostPaths ?? [],
@@ -575,7 +686,31 @@ export class PiGatewayClient implements GatewayClient {
         // never recomputed here (which would mean a second mkdir/chmod/lstat round trip per
         // dispatch for no benefit; the value is identical either way, since both reads resolve the
         // SAME `confinement.workRoot`).
-        filesystem: { ...fs, denyRead: [...fs.denyRead, agentDirParent] },
+        // review round 3, R3-1: `tmpDirParent` denied the same way as `agentDirParent` — one
+        // dispatch's TMPDIR scratch must not be readable from another's confined Bash.
+        //
+        // Denying `tmpDirParent` for READ alone is not enough to make `tmpDir` itself usable (found
+        // live, via cmd-drive.mts): srt's write policy is a pure ALLOWLIST (nothing is writable
+        // unless named in `allowWrite`, unlike the read policy's deny-by-exception model), and
+        // `tmpDir` sits under `workRoot`, which is never itself in `allowWrite`. Without the two
+        // lines below, `mktemp` failed with ENOENT even though `TMPDIR` correctly pointed at it — the
+        // directory existed on the HOST but bwrap never bound it in at all. `allowRead` RE-OPENS this
+        // dispatch's own leaf within `tmpDirParent`'s denyRead above (srt's own documented "allowRead
+        // within a denied region" rule — confirmed live), so a SIBLING dispatch's `d-*` directory
+        // stays invisible while this one is fully usable.
+        //
+        // `/tmp/claude` is deliberately NOT in `denyRead` here — see `PI_HOST_SHARED_TMPDIR`'s own
+        // doc for why that would be a no-op (srt's unconditional write-bind for it wins over a later
+        // read-deny mask) and what `hostSharedTmpdirRefusal()`, called above, does instead. `denyWrite`
+        // DOES still work against that same unconditional bind (confirmed live) and is kept as real
+        // defense-in-depth for a tool that hardcodes the literal path mid-dispatch.
+        filesystem: {
+          ...fs,
+          allowRead: [...fs.allowRead, tmpDir],
+          allowWrite: [...fs.allowWrite, tmpDir],
+          denyRead: [...fs.denyRead, agentDirParent, tmpDirParent],
+          denyWrite: [...fs.denyWrite, PI_HOST_SHARED_TMPDIR],
+        },
         credentials: settings.credentials as PiChildSandboxConfig['credentials'],
         ripgrepOverride,
       };
@@ -626,6 +761,7 @@ export class PiGatewayClient implements GatewayClient {
       ...(apiKey !== undefined ? { apiKey } : {}),
       cwd: workspace,
       agentDir,
+      tmpDir,
       systemPrompt: 'You are a helpful assistant.',
       tools: mapped.piNames,
       protectedFiles: [...(this._config.confinement?.protectedFiles ?? [])],

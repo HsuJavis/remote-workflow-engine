@@ -333,6 +333,11 @@ export function assertJailed(absolutePath: string, config: PiChildConfig, deps: 
  *  sanctioned way to turn that into the child's actual env; pi's own `env` argument (built from
  *  `getShellEnv()` = `{...process.env, PI_*}`) is discarded entirely, never merged. */
 function createJailedBashOps(config: PiChildConfig, sandbox: PiChildSandboxConfig, deps: SessionDeps): BashOperations {
+  // review round 3, R3-1: srt reads `CLAUDE_CODE_TMPDIR` FRESH on every confined exec call (not
+  // frozen at module load — confirmed by reading sandbox-utils.js's generateProxyEnvVars directly),
+  // so setting it once per dispatch, here, before the first real exec, is correct and sufficient —
+  // every confined bash call in this dispatch sees `config.tmpDir`, never srt's own shared fallback.
+  process.env['CLAUDE_CODE_TMPDIR'] = config.tmpDir;
   let initialized = false;
   const ensureInit = async (): Promise<void> => {
     if (initialized) return;

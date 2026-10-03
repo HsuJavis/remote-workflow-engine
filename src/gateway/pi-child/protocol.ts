@@ -27,6 +27,14 @@ export interface PiChildConfig {
    *  `createAgentSession({agentDir})` both point here, so pi's own file-based config/auth never
    *  exists on disk to begin with (full-control ResourceLoader also disables discovery). */
   agentDir: string;
+  /** review round 3, R3-1: an engine-owned, per-dispatch, per-process-VERIFIED scratch directory
+   *  (the exact same shape as `agentDir` above) — set as `CLAUDE_CODE_TMPDIR` in the child BEFORE any
+   *  confined bash call, so srt's `TMPDIR` for that call points HERE, never at its own cross-run,
+   *  cross-principal shared fallback `/tmp/claude` (see `PI_HOST_SHARED_TMPDIR`'s own doc in
+   *  pi-gateway-client.ts for the full "why"). Always present, even when confinement is off or bash
+   *  is never used this dispatch — computing it costs one cheap mkdir and keeps this field
+   *  unconditional, matching `agentDir`'s own shape. */
+  tmpDir: string;
   /** Full-control ResourceLoader's system prompt — the engine supplies it; pi's own default/context-
    *  file discovery is never reached. */
   systemPrompt: string;
