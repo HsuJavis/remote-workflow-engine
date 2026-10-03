@@ -22,6 +22,7 @@ import type { HomeView } from '../../src/dashboard.js';
 import type { SystemInfoView } from '../../src/system-info.js';
 import type { EnrichedModelEntry } from '../../src/models/model-catalog.js';
 import type { IssuesListView, IssueSummary } from '../../src/github/issue-reporter.js';
+import type { HarnessAnnounce } from '../../src/harness-info.js';
 
 // ---- run_agent_log / GET /api/runs/:id/agents/:agentId ----
 
@@ -146,7 +147,18 @@ export const REQUIRED_HOME_KEYS = ['running', 'registered', 'other'] as const;
 // out; `cpu`/`disk`/`process` stay real) — because DES-215's own split rule (the counts card's
 // state is a ROUTE verdict, the other three cards' state is a SECTION reason) needs a fixture that
 // can fail ONE section without failing the whole route.
-export const SYSTEM_OK: SystemInfoView & { auth: unknown } = {
+// pi harness v1 (spec "Disclosure", review L8): `GET /api/system` carries a `harness` field
+// UNCONDITIONALLY (server.ts's handler always spreads `harness: buildHarnessAnnounce(harnessProviders)`
+// — never omitted, sdk gateway included: `buildHarnessAnnounce(undefined)` returns the sdk-mode
+// shape, not `undefined`), so the real body this file's own golden-contract test fetches (a plain
+// `createServer()` with no `harnessProviders` — the sdk gateway) always carries it too. This fixture
+// predates that addition (it was never updated when `harness` was wired in), which is exactly the
+// "undeclared key" class ADR-054's own key-set lock exists to catch — review L8 flagged it as
+// genuinely additive, not a leak, so the fix is to acknowledge it here, in both ALLOWED and REQUIRED
+// (the "no missing keys" convention `policy` already follows below), not to strip it from the route.
+const SYSTEM_HARNESS_SDK: HarnessAnnounce = { name: 'sdk', providers: ['anthropic', 'openrouter', 'ollama'] };
+
+export const SYSTEM_OK: SystemInfoView & { auth: unknown; harness: HarnessAnnounce } = {
   cpu: { cores: 8, loadAvg: [1.2, 1.1, 0.9], utilizationPct: 42 },
   memory: { totalBytes: 17179869184, usedBytes: 8589934592, freeBytes: 8589934592, usedPct: 50 },
   disk: { path: '/', totalBytes: 500000000000, usedBytes: 250000000000, freeBytes: 250000000000, usedPct: 50 },
@@ -161,9 +173,10 @@ export const SYSTEM_OK: SystemInfoView & { auth: unknown } = {
   // omitted — [] when unconfigured), same "no missing keys" convention as the other sections.
   policy: { mcpEgressAllowlist: [] },
   auth: undefined,
+  harness: SYSTEM_HARNESS_SDK,
 };
-export const ALLOWED_SYSTEM_KEYS = ['cpu', 'memory', 'disk', 'process', 'sampledAt', 'windowMs', 'policy', 'auth'] as const;
-export const REQUIRED_SYSTEM_KEYS = ['cpu', 'memory', 'disk', 'process', 'sampledAt', 'windowMs', 'policy'] as const;
+export const ALLOWED_SYSTEM_KEYS = ['cpu', 'memory', 'disk', 'process', 'sampledAt', 'windowMs', 'policy', 'auth', 'harness'] as const;
+export const REQUIRED_SYSTEM_KEYS = ['cpu', 'memory', 'disk', 'process', 'sampledAt', 'windowMs', 'policy', 'harness'] as const;
 
 // [v28 Gate 5] `cpu` degrades via a SIBLING key (`system-info.ts:133-138`), never a replaced
 // union — REACHABLE FOR REAL on the very FIRST sample after boot (`prev === null` ⇒
