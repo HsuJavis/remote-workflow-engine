@@ -383,7 +383,18 @@ export async function runPiChildSession(config: PiChildConfig, emit: (event: PiC
   // pi-spike-report.md design changes 7/8: no stable message id exists; key on an adapter-owned
   // sequence counter, incremented on every ASSISTANT message_end (message_end fires for every role).
   let seq = 0;
+  const safeJson = (v: unknown): string => {
+    try { return JSON.stringify(v) ?? 'null'; } catch (err) { return JSON.stringify({ unserializable: err instanceof Error ? err.message : String(err) }); }
+  };
   session.subscribe((event) => {
+    if (event.type === 'tool_execution_start') {
+      emit({ t: 'tool_call', toolCallId: event.toolCallId, toolName: event.toolName, argsJson: safeJson(event.args) });
+      return;
+    }
+    if (event.type === 'tool_execution_end') {
+      emit({ t: 'tool_result', toolCallId: event.toolCallId, toolName: event.toolName, resultJson: safeJson(event.result), isError: event.isError });
+      return;
+    }
     if (event.type !== 'message_end' || event.message.role !== 'assistant') return;
     const msg = event.message;
     const text = msg.content.filter((c): c is { type: 'text'; text: string } => c.type === 'text').map((c) => c.text).join('');

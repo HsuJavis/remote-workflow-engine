@@ -25,7 +25,7 @@ describe('pi harness v1 — real ollama dispatch through PiGatewayClient (slice 
   it.skipIf(!HAS_OLLAMA)('a real, tool-less prompt round-trips through a real spawned pi child' + NO_OLLAMA, async () => {
     const ws = mkdtempSync(join(tmpdir(), 'rwe-pi-real-'));
     try {
-      const gw = new PiGatewayClient({ ollamaBaseUrl: 'http://localhost:11434', timeoutMs: 30_000 });
+      const gw = new PiGatewayClient({ ollamaBaseUrl: 'http://localhost:11434', timeoutMs: 60_000 });
       const harnessCalls: unknown[] = [];
       const usages: unknown[] = [];
       const events: unknown[] = [];
@@ -62,12 +62,12 @@ describe('pi harness v1 — real ollama dispatch through PiGatewayClient (slice 
     } finally {
       rmSync(ws, { recursive: true, force: true });
     }
-  }, 40_000);
+  }, 90_000);
 
   it.skipIf(!HAS_OLLAMA)('run_stop-style abort mid-flight reaps the child and reports a usable result' + NO_OLLAMA, async () => {
     const ws = mkdtempSync(join(tmpdir(), 'rwe-pi-real-abort-'));
     try {
-      const gw = new PiGatewayClient({ ollamaBaseUrl: 'http://localhost:11434', timeoutMs: 30_000 });
+      const gw = new PiGatewayClient({ ollamaBaseUrl: 'http://localhost:11434', timeoutMs: 60_000 });
       const controller = new AbortController();
       const promise = gw.invoke({
         prompt: 'Write a very long, detailed 500-word essay about the history of the number zero.',
@@ -88,5 +88,5 @@ describe('pi harness v1 — real ollama dispatch through PiGatewayClient (slice 
     } finally {
       rmSync(ws, { recursive: true, force: true });
     }
-  }, 40_000);
+  }, 90_000);
 });

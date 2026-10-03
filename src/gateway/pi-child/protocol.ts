@@ -82,4 +82,10 @@ export type PiChildEvent =
   | { t: 'message_end'; seq: number; text: string; usage: Tokens; stopReason: string }
   | { t: 'final'; seq: number; text: string; usage: Tokens; stopReason: string }
   | { t: 'error'; message: string; stopReason?: string }
-  | { t: 'fatal'; message: string };
+  | { t: 'fatal'; message: string }
+  /** spec "Transcript and harness record": pi's own `tool_execution_start`/`tool_execution_end`
+   *  events (slice f), mapped 1:1 — `args`/`result` are JSON-serialized defensively (an
+   *  args/result value pi hands back is not guaranteed JSON-safe; a circular/BigInt value would
+   *  otherwise throw inside JSON.stringify(event) at the call site in entry.ts). */
+  | { t: 'tool_call'; toolCallId: string; toolName: string; argsJson: string }
+  | { t: 'tool_result'; toolCallId: string; toolName: string; resultJson: string; isError: boolean };

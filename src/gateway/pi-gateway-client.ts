@@ -108,6 +108,12 @@ export interface PiGatewayConfig {
   resolveRipgrepOverride?: () => { command: string; argv0: 'rg' } | null;
 }
 
+/** `tool_call`/`tool_result` events carry their args/result JSON-stringified by the child (protocol.ts's
+ *  own doc on why) — parsed back here defensively for the transcript consumer. */
+function safeParse(json: string): unknown {
+  try { return JSON.parse(json); } catch { return json; }
+}
+
 function resolveOpenrouterKey(config: PiGatewayConfig): string | undefined {
   return config.secretSource?.resolve('OPENROUTER_API_KEY') ?? process.env['RWE_SECRET_OPENROUTER_API_KEY'] ?? process.env['OPENROUTER_API_KEY'];
 }
@@ -283,6 +289,10 @@ export class PiGatewayClient implements GatewayClient {
         settled = { ok: true, provider, model: childConfig.model.model, transport: 'pi', tokens: cumulative, content: event.text };
       } else if (event.t === 'error' || event.t === 'fatal') {
         settled = { ok: false, provider, reason: 'terminal', transport: 'pi', detail: event.message, tokens: cumulative, ...(cumulative.input > 0 || cumulative.output > 0 ? { partial: true as const } : {}) };
+      } else if (event.t === 'tool_call') {
+        void req.onEvent?.({ ts: new Date().toISOString(), kind: 'tool_call', data: { toolCallId: event.toolCallId, toolName: event.toolName, args: safeParse(event.argsJson) } });
+      } else if (event.t === 'tool_result') {
+        void req.onEvent?.({ ts: new Date().toISOString(), kind: 'tool_result', data: { toolCallId: event.toolCallId, toolName: event.toolName, result: safeParse(event.resultJson), isError: event.isError } });
       }
     });
 

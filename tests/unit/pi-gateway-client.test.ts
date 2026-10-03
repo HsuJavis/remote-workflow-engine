@@ -267,6 +267,23 @@ describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => 
     expect(spawnChild).not.toHaveBeenCalled();
   });
 
+  it('maps tool_call/tool_result child events onto TranscriptEvent kind:tool_call/tool_result (slice f)', async () => {
+    const f = fakeChild();
+    const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
+    const events: unknown[] = [];
+    const promise = gw.invoke(req({ onEvent: (ev) => { events.push(ev); } }));
+    await new Promise((r) => setTimeout(r, 10));
+    f.sendLine({ t: 'tool_call', toolCallId: 'tc1', toolName: 'bash', argsJson: JSON.stringify({ command: 'echo hi' }) });
+    f.sendLine({ t: 'tool_result', toolCallId: 'tc1', toolName: 'bash', resultJson: JSON.stringify({ exitCode: 0 }), isError: false });
+    f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+    f.exit(0);
+    await promise;
+    const call = events.find((e: any) => e.kind === 'tool_call') as any;
+    const result = events.find((e: any) => e.kind === 'tool_result') as any;
+    expect(call.data).toEqual({ toolCallId: 'tc1', toolName: 'bash', args: { command: 'echo hi' } });
+    expect(result.data).toEqual({ toolCallId: 'tc1', toolName: 'bash', result: { exitCode: 0 }, isError: false });
+  });
+
   it('the eager harness descriptor reports bash.enforced honestly from the measured posture', async () => {
     const f = fakeChild();
     const gw = new PiGatewayClient({
