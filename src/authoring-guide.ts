@@ -517,6 +517,12 @@ function harnessDisclosureParagraph(): string {
     '`SKILL_REQUIRES_READ_TOOL` up front otherwise), and a `seedManifest`/`workspace_push` skill file\'s ' +
     '`exec:true` is only ever a file-permission bit (0o755 vs 0o644) on pi — there is no inline-shell ' +
     '(`!cmd`) skill syntax to gate the way the sdk gateway\'s `disableSkillShellExecution` does. ' +
+    "Known network difference: pi's Bash network policy is allow-all, but the underlying sandbox " +
+    'library routes ALL traffic through its own MITM proxy once any network field is set at all, which ' +
+    'makes `localhost`/`127.0.0.1` destinations from inside the confined Bash unreachable — unlike ' +
+    '`gateway:"sdk"`, whose Bash leaves the network field unset entirely and keeps full host network ' +
+    'including loopback. A workflow whose Bash needs a same-host service must use `gateway:"sdk"` for ' +
+    'now (see DEPLOY.md §1b2 for the full writeup). ' +
     "`system_info`'s `harness` field states which one THIS engine runs " +
     '(`{name, version, providers, unsupportedTools, effort, usage}`) — read it rather than assuming.'
   );

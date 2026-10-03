@@ -31,5 +31,12 @@
   "optionalDependencies": {
     "@mermaid-js/mermaid-cli": "^11.17.0",
     "puppeteer": "^25.10.0"
+  },
+  "overrides": {
+    "@earendil-works/pi-coding-agent": {
+      "minimatch": {
+        "brace-expansion": "5.0.12"
+      }
+    }
   }
 }

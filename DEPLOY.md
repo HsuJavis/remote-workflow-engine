@@ -706,6 +706,20 @@ usage}`——不要用這份文件推測，直接查 `system_info`。
 重開引擎即可——沒有資料遷移、沒有殘留狀態（pi 的 `agentDir`/session 都是每次 dispatch 用過即丟的
 記憶體內物件，從不寫進 `workRoot`）。
 
+**npm audit（pi 相依套件新增的部分）**：新增這三個相依套件（`@earendil-works/pi-coding-agent`、
+`@earendil-works/pi-ai`、`@anthropic-ai/sandbox-runtime`）引入兩個新發現，已處理：
+- `brace-expansion`（`pi-coding-agent → minimatch → brace-expansion`，三個 DoS regex CVE）——**已修**，
+  非破壞性：`package.json` 的 `overrides` 把這條鏈結精準釘到 `5.0.12`（修好的版本），**沒有**動
+  `pi-coding-agent`/`minimatch` 本身的版本範圍，只覆寫這一條巢狀路徑。驗證：`npm ls brace-expansion`
+  顯示 `5.0.12 overridden`；`rm -rf node_modules && npm ci` 後仍然是 `5.0.12`（自我更新流程跑的就是
+  `npm ci`，確認會吃到這個 override，不是只在手動 `npm install` 下才生效）。
+- `node-forge`（`@anthropic-ai/sandbox-runtime` 依賴的 RSA PKCS#1 簽章驗證問題）——**刻意不修**：
+  npm 自己建議的修法是把 srt 降到 `0.0.50`（npm 自己標成「breaking」），比我們釘死的 `0.0.78` 舊很
+  多個版本，會賭上這整個 pi harness 唯一的圍籠機制；`--force` 不是這裡的選項。需要上游 srt 自己發一個
+  修好 node-forge 又維持 API 相容的版本——記在這裡等後續追蹤，不是遺漏。
+- `npm audit` 其餘的 `vitest`/`vite`/`vite-node`/`esbuild` 鏈結是既有的 dev-only 相依問題（與這次新增
+  的 pi 相依套件無關，待辦的 vitest 1.6→5 升級在別的追蹤項目裡），這裡不重複處理。
+
 ### 角色（`principals`）——啟用 auth 前一定要讀
 
 每個工具都有一個**最低角色**要求。工具角色共三級（`admin` > `author` > `user`），另有 `none`
