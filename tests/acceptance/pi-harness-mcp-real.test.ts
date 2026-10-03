@@ -1,8 +1,14 @@
 // pi harness v1, slice (g) real-tier evidence: a REAL PiGatewayClient.invoke() dispatch, through a
 // REAL spawned pi child, to a REAL local Ollama (qwen2.5:7b), with a REAL stdio MCP server
 // (`npx -y @modelcontextprotocol/server-everything`) registered via `pi.registerMcpServer()` +
-// `exposure:'direct'` — no fakes anywhere on this path. Gated on Ollama being reachable, same
-// convention as pi-harness-ollama-real.test.ts.
+// `exposure:'direct'` — no fakes anywhere on this path.
+//
+// review B2 (HIGH): gated on the EXPLICIT opt-in RWE_PI_REAL_TESTS=1 PLUS Ollama/model/npm-registry
+// reachability (review P6-3: the old gate never checked the registry, so with Ollama up and the
+// registry down this failed at dispatch instead of skipping). review P6-2: leftover-process checks
+// are scoped to THIS test's own spawned descendant pids (captured via `collectDescendantPids` while
+// the dispatch is still in flight), never a host-wide `pgrep -af "server-everythin[g]"` that would
+// also match an unrelated server-everything running elsewhere on the host.
 //
 // Dispatch instruction: "Small models may be flaky — retry a few times, and if the model never calls
 // the tool, prove turn-1 availability from the init status/tool list instead and say so." Both are
@@ -10,36 +16,44 @@
 // checked on EVERY successful dispatch regardless of whether the model actually called the tool;
 // the model-actually-called-it claim is retried up to 3 times and reported honestly either way.
 import { describe, it, expect } from 'vitest';
-import { execSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PiGatewayClient } from '../../src/gateway/pi-gateway-client.js';
 import type { ResolveMcpFn } from '../../src/gateway/mcp-config-resolver.js';
+import { piRealTestsEnabled, ollamaReachable, ollamaModelPulled, npmRegistryReachable, collectDescendantPids, isDead } from '../helpers/pi-real-gate.js';
 
-function ollamaReachable(): boolean {
-  try {
-    return execSync('curl -s -o /dev/null -w "%{http_code}" --max-time 2 http://localhost:11434/api/tags', { encoding: 'utf8' }).trim() === '200';
-  } catch {
-    return false;
-  }
-}
-const HAS_OLLAMA = ollamaReachable();
-const WHY_NOT = ' [UNVERIFIED here: needs a real local Ollama at localhost:11434 with qwen2.5:7b pulled, and npm registry access for npx]';
+const MODEL_TAG = 'qwen2.5:7b';
+const RUN = piRealTestsEnabled() && ollamaReachable() && ollamaModelPulled(MODEL_TAG) && npmRegistryReachable();
+const WHY_NOT = ` [UNVERIFIED here: needs RWE_PI_REAL_TESTS=1, a real local Ollama at localhost:11434 with ${MODEL_TAG} pulled, and npm registry access for npx]`;
 
 const everythingResolveMcp: ResolveMcpFn = async (_workflow, names) => ({
   configs: Object.fromEntries(names.map((n) => [n, { type: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-everything'] }])),
   missing: [],
 });
 
-function pgrepServerEverything(): string {
-  try { return execSync('pgrep -af "server-everythin[g]" || true', { encoding: 'utf8' }).trim(); } catch { return ''; }
+/** review P6-2: wraps `spawnChild` to capture the pi child's own pid, so a test can snapshot its
+ *  descendant tree (the npx-launched MCP server and ITS children) while the dispatch is still alive —
+ *  `collectDescendantPids` walks `/proc/<pid>/task/<pid>/children` by PARENT-CHILD relationship, which
+ *  survives npm-exec's own `setpgid` (that changes process GROUP, never the ppid tree). */
+function spawnChildCapturingPid(capture: { pid?: number }) {
+  return ((cmd: string, args: string[], opts: Record<string, unknown>) => {
+    const child = spawn(cmd, args, opts);
+    capture.pid = child.pid;
+    return child;
+  }) as never;
+}
+
+function expectDescendantsDead(pids: readonly number[]): void {
+  for (const pid of pids) expect(isDead(pid)).toBe(true);
 }
 
 describe('pi harness v1 — REAL MCP via a real stdio server-everything + real ollama (slice g)', () => {
-  it.skipIf(!HAS_OLLAMA)('turn-1 availability: mcp_init reports the everything server connected with its tools, regardless of whether the model calls one' + WHY_NOT, async () => {
+  it.skipIf(!RUN)('turn-1 availability: mcp_init reports the everything server connected with its tools, regardless of whether the model calls one' + WHY_NOT, async () => {
     const ws = mkdtempSync(join(tmpdir(), 'rwe-pi-mcp-real-'));
     type Refined = { mcpStatus?: Array<{ server: string; status: string; tools: string[] }>; warnings?: unknown[] };
+    const descendantPids: number[] = [];
     try {
       let refined: Refined | undefined;
       // Retried: a slow ollama reply can make the WHOLE dispatch time out even though the mcp_init
@@ -47,7 +61,8 @@ describe('pi harness v1 — REAL MCP via a real stdio server-everything + real o
       // small-model/cold-npx-start latency, not an MCP defect. Each attempt's own onHarness calls are
       // inspected regardless of whether that attempt's dispatch ultimately timed out.
       for (let attempt = 0; attempt < 3 && refined === undefined; attempt++) {
-        const gw = new PiGatewayClient({ ollamaBaseUrl: 'http://localhost:11434', timeoutMs: 75_000, resolveMcp: everythingResolveMcp });
+        const captured: { pid?: number } = {};
+        const gw = new PiGatewayClient({ ollamaBaseUrl: 'http://localhost:11434', timeoutMs: 75_000, resolveMcp: everythingResolveMcp, spawnChild: spawnChildCapturingPid(captured) });
         const harnessCalls: Refined[] = [];
         await gw.invoke({
           prompt: 'Reply with exactly the single word: PONG. Do not call any tool.',
@@ -56,7 +71,15 @@ describe('pi harness v1 — REAL MCP via a real stdio server-everything + real o
           agentId: `mcp-real-a1-${attempt}`,
           workspace: ws,
           assets: { roots: { workflow: ws, global: ws }, declared: { skills: [], mcp: ['everything'] }, workflow: 'wf' },
-          onHarness: async (h) => { harnessCalls.push(h as never); },
+          onHarness: async (h) => {
+            harnessCalls.push(h as never);
+            // Snapshot the descendant tree NOW, while the pi child (and its npx grandchild) is still
+            // alive — the second onHarness call fires right after mcp_init, i.e. after npx has
+            // connected.
+            if ((h as Refined).mcpStatus !== undefined && captured.pid !== undefined) {
+              descendantPids.push(...collectDescendantPids(captured.pid));
+            }
+          },
         });
         if (harnessCalls.length >= 2) refined = harnessCalls[harnessCalls.length - 1];
       }
@@ -73,17 +96,19 @@ describe('pi harness v1 — REAL MCP via a real stdio server-everything + real o
     } finally {
       rmSync(ws, { recursive: true, force: true });
       await new Promise((r) => setTimeout(r, 500));
-      expect(pgrepServerEverything()).toBe('');
+      expectDescendantsDead(descendantPids);
     }
   }, 260_000);
 
-  it.skipIf(!HAS_OLLAMA)('the model calls the echo tool on turn 1 (retried up to 3x for real small-model flakiness)' + WHY_NOT, async () => {
+  it.skipIf(!RUN)('the model calls the echo tool on turn 1 (retried up to 3x for real small-model flakiness)' + WHY_NOT, async () => {
     const ws = mkdtempSync(join(tmpdir(), 'rwe-pi-mcp-real-echo-'));
     let calledTheTool = false;
     let lastResultOk = false;
+    const descendantPids: number[] = [];
     try {
       for (let attempt = 0; attempt < 3 && !calledTheTool; attempt++) {
-        const gw = new PiGatewayClient({ ollamaBaseUrl: 'http://localhost:11434', timeoutMs: 60_000, resolveMcp: everythingResolveMcp });
+        const captured: { pid?: number } = {};
+        const gw = new PiGatewayClient({ ollamaBaseUrl: 'http://localhost:11434', timeoutMs: 60_000, resolveMcp: everythingResolveMcp, spawnChild: spawnChildCapturingPid(captured) });
         const events: Array<{ kind: string; data: unknown }> = [];
         const result = await gw.invoke({
           prompt: "Call the 'echo' tool from the 'everything' MCP server with message='hi-from-pi-harness'. You MUST use the tool, do not just describe it.",
@@ -93,6 +118,11 @@ describe('pi harness v1 — REAL MCP via a real stdio server-everything + real o
           workspace: ws,
           assets: { roots: { workflow: ws, global: ws }, declared: { skills: [], mcp: ['everything'] }, workflow: 'wf' },
           onEvent: (ev) => { events.push(ev as never); },
+          onHarness: async (h) => {
+            if ((h as { mcpStatus?: unknown }).mcpStatus !== undefined && captured.pid !== undefined) {
+              descendantPids.push(...collectDescendantPids(captured.pid));
+            }
+          },
         });
         lastResultOk = result.ok;
         calledTheTool = events.some((e) => e.kind === 'tool_call' && (e.data as { toolName?: string }).toolName?.includes('echo'));
@@ -100,7 +130,7 @@ describe('pi harness v1 — REAL MCP via a real stdio server-everything + real o
     } finally {
       rmSync(ws, { recursive: true, force: true });
       await new Promise((r) => setTimeout(r, 500));
-      expect(pgrepServerEverything()).toBe('');
+      expectDescendantsDead(descendantPids);
     }
     // Honest report either way, per the dispatch's own instruction: a 7B model is not guaranteed to
     // call a tool it was told about even across 3 tries — the MECHANISM is independently proven by
@@ -110,16 +140,19 @@ describe('pi harness v1 — REAL MCP via a real stdio server-everything + real o
     expect(typeof calledTheTool).toBe('boolean');
   }, 240_000);
 
-  it.skipIf(!HAS_OLLAMA)('abort mid-flight (AFTER the MCP server connected) still fully reaps the stdio server — the discriminating case pi\'s own client.close() SIGTERM never runs for' + WHY_NOT, async () => {
+  it.skipIf(!RUN)('abort mid-flight (AFTER the MCP server connected) still fully reaps the stdio server — the discriminating case pi\'s own client.close() SIGTERM never runs for' + WHY_NOT, async () => {
     // Discriminating on purpose: a normal completion (the first test above) lets pi's own
     // client.close() send a clean SIGTERM to the server before the child exits — that path was
     // already proven. An ABORT kills the pi child itself via the parent's group-SIGKILL
     // (pi-gateway-client.ts's reap()) BEFORE pi's MCP extension ever gets to run its own close()
-    // — the only thing that can reap the server in that case is the process-GROUP kill reaching a
-    // grandchild that was never individually tracked. This is the case that actually tests it.
+    // — the only thing that can reap the server in that case is the escaped-descendant sweep
+    // (pi-gateway-client.ts's own /proc-walk fix for npx's setpgid escape). This is the case that
+    // actually tests it.
     const ws = mkdtempSync(join(tmpdir(), 'rwe-pi-mcp-real-abort-'));
+    const descendantPids: number[] = [];
     try {
-      const gw = new PiGatewayClient({ ollamaBaseUrl: 'http://localhost:11434', timeoutMs: 60_000, resolveMcp: everythingResolveMcp });
+      const captured: { pid?: number } = {};
+      const gw = new PiGatewayClient({ ollamaBaseUrl: 'http://localhost:11434', timeoutMs: 60_000, resolveMcp: everythingResolveMcp, spawnChild: spawnChildCapturingPid(captured) });
       const controller = new AbortController();
       let sawMcpInit = false;
       const promise = gw.invoke({
@@ -136,6 +169,7 @@ describe('pi harness v1 — REAL MCP via a real stdio server-everything + real o
           // prove nothing about reaping a CONNECTED server).
           if ((h as { mcpStatus?: unknown }).mcpStatus !== undefined && !sawMcpInit) {
             sawMcpInit = true;
+            if (captured.pid !== undefined) descendantPids.push(...collectDescendantPids(captured.pid));
             controller.abort();
           }
         },
@@ -144,7 +178,7 @@ describe('pi harness v1 — REAL MCP via a real stdio server-everything + real o
       expect(result.ok).toBe(false);
       expect(sawMcpInit).toBe(true);
       await new Promise((r) => setTimeout(r, 500));
-      expect(pgrepServerEverything()).toBe('');
+      expectDescendantsDead(descendantPids);
     } finally {
       rmSync(ws, { recursive: true, force: true });
     }

@@ -2,33 +2,28 @@
 // confinement through PiGatewayClient + a REAL local Ollama, replicating VAL-253's own sdk-path
 // evidence shape (own workspace read/write, sibling-workspace ENOENT, RWE_SECRET_* canary
 // invisible, toolchain still runs) for the pi path specifically — plus the real pi-path confinement
-// probe. Gated (it.skipIf) on bwrap/socat/ollama/the ripgrep-override binary all being present, same
-// convention as val-253-bash-confinement.test.ts.
+// probe.
+//
+// review B2 (HIGH): gated on the EXPLICIT opt-in RWE_PI_REAL_TESTS=1, in ADDITION to (never instead
+// of) bwrap/socat/ollama/the ripgrep-override binary all being present — the host checks alone are
+// true on the production host too (same convention as tests/helpers/pi-real-gate.ts's other callers).
 import { describe, it, expect } from 'vitest';
-import { execSync } from 'node:child_process';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { PiGatewayClient } from '../../src/gateway/pi-gateway-client.js';
 import { probePiPath } from '../../src/gateway/pi-confinement-probe.js';
 import { resolveRipgrepOverride } from '../../src/gateway/pi-child/ripgrep-override.js';
+import { piRealTestsEnabled, hasBinary, ollamaReachable, ollamaModelPulled } from '../helpers/pi-real-gate.js';
 
-function hasBinary(cmd: string): boolean {
-  try { execSync(`which ${cmd}`, { stdio: 'ignore' }); return true; } catch { return false; }
-}
-function ollamaReachable(): boolean {
-  try {
-    return execSync('curl -s -o /dev/null -w "%{http_code}" --max-time 2 http://localhost:11434/api/tags', { encoding: 'utf8' }).trim() === '200';
-  } catch {
-    return false;
-  }
-}
 const HAS_BWRAP = hasBinary('bwrap');
 const HAS_SOCAT = hasBinary('socat');
 const HAS_RG_OVERRIDE = resolveRipgrepOverride() !== null;
-const HAS_OLLAMA = ollamaReachable();
-const HAS_CONFINED_RUNTIME = HAS_BWRAP && HAS_SOCAT && HAS_RG_OVERRIDE && HAS_OLLAMA;
-const WHY_NOT = ' [UNVERIFIED here: needs bwrap + socat + a bundled ripgrep-override CLI binary + a reachable local Ollama]';
+const HAS_OLLAMA = ollamaReachable() && ollamaModelPulled('qwen2.5:7b');
+const OPT_IN = piRealTestsEnabled();
+const HAS_CONFINED_RUNTIME = OPT_IN && HAS_BWRAP && HAS_SOCAT && HAS_RG_OVERRIDE && HAS_OLLAMA;
+const HAS_PROBE_DEPS = OPT_IN && HAS_BWRAP && HAS_SOCAT && HAS_RG_OVERRIDE;
+const WHY_NOT = ' [UNVERIFIED here: needs RWE_PI_REAL_TESTS=1, bwrap + socat + a bundled ripgrep-override CLI binary + a reachable local Ollama with qwen2.5:7b pulled]';
 
 /** qwen2.5:7b (a 7B model) is observed to occasionally produce NO tool call at all within the
  *  timeout (a zero-usage timeout: `message_end` never even fired once) — a real small-model
@@ -150,7 +145,7 @@ describe('pi harness v1 — srt-mux socket cleanup (residual fix)', () => {
 });
 
 describe('pi harness v1 — pi-path confinement probe (slice e)', () => {
-  it.skipIf(!HAS_BWRAP || !HAS_SOCAT || !HAS_RG_OVERRIDE)('measures confined on a real host with bwrap/socat/ripgrep-override present' + WHY_NOT, async () => {
+  it.skipIf(!HAS_PROBE_DEPS)('measures confined on a real host with bwrap/socat/ripgrep-override present' + WHY_NOT, async () => {
     const result = await probePiPath();
     expect(result.posture).toBe('confined');
   }, 20_000);
