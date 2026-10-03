@@ -54,6 +54,18 @@ export interface PiChildConfig {
    *  parent's `readonlyBashRefusal()` check already passed (confined posture, no write tool beside
    *  it, a known workspace root) — the child never downgrades it. */
   bashMode?: 'readonly';
+  /** slice (g): resolved MCP server configs (already `${secret:}`/`${run:dir}`/`${run:id}`-substituted
+   *  by the PARENT via the shared `mcp-config-resolver.ts` — the SAME function the sdk gateway uses,
+   *  never re-resolved here). Absent/empty -> no `pi.registerMcpServer()` calls at all, and the child
+   *  uses the existing zero-discovery `emptyResourceLoader` unchanged (no behavior change for a
+   *  dispatch with no declared MCP). A secret value may ride inside `env`/`headers` here — same
+   *  stdin-only, never-logged contract as `apiKey` above. */
+  mcp?: Record<string, { type?: string; url?: string; command?: string; args?: string[]; env?: Record<string, string> }>;
+  /** slice (h): absolute paths of already-materialized skill directories (the parent copies
+   *  `<ws>/.claude/skills/<name>` via the SAME `materializeAssets` the sdk gateway uses, BEFORE the
+   *  child is spawned) — passed as pi's `additionalSkillPaths`. Absent/empty -> no skills, same
+   *  zero-discovery `emptyResourceLoader` path as before. */
+  skillPaths?: string[];
 }
 
 export type PiChildModelConfig =
@@ -92,4 +104,11 @@ export type PiChildEvent =
    *  args/result value pi hands back is not guaranteed JSON-safe; a circular/BigInt value would
    *  otherwise throw inside JSON.stringify(event) at the call site in entry.ts). */
   | { t: 'tool_call'; toolCallId: string; toolName: string; argsJson: string }
-  | { t: 'tool_result'; toolCallId: string; toolName: string; resultJson: string; isError: boolean };
+  | { t: 'tool_result'; toolCallId: string; toolName: string; resultJson: string; isError: boolean }
+  /** slice (g): emitted ONCE, right before `session.prompt()`, when `config.mcp` is non-empty — pi
+   *  has no connection-status API on the plain session surface (pi-spike-report.md S5: only
+   *  `getActiveToolNames()` is observable), so this is "every MCP tool name active at the moment the
+   *  child stopped waiting" (either every declared server's `direct` tools showed up, or the ~10s
+   *  `startupWaitMs` window elapsed first) — the parent derives per-server status from it via the
+   *  SAME `mcp__<server>__` prefix matching `summarizeMcpInit` already does for the sdk gateway. */
+  | { t: 'mcp_init'; servers: string[]; activeTools: string[] };

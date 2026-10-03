@@ -5,6 +5,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PiGatewayClient } from '../../src/gateway/pi-gateway-client.js';
 import type { AgentOpts } from '../../src/types.js';
 
@@ -243,28 +246,95 @@ describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => 
     expect(sent.sandbox).toBeUndefined();
   });
 
-  it('refuses a declared mcp asset with MCP_UNSUPPORTED_BY_HARNESS, never silently ignoring it (slice g not wired yet)', async () => {
-    const spawnChild = vi.fn();
-    const gw = new PiGatewayClient({ spawnChild: spawnChild as never, entryPath: '/fake/entry.ts' });
-    const result = await gw.invoke(req({
+  it('slice (g): resolves a declared MCP server (with a ${secret:} substitution) and sends it to the child, never refusing', async () => {
+    const f = fakeChild();
+    const gw = new PiGatewayClient({
+      spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts',
+      secretSource: { resolve: (name) => (name === 'EVERYTHING_TOKEN' ? 'sk-real-value' : undefined) },
+      resolveMcp: async (_wf, names) => ({
+        configs: Object.fromEntries(names.map((n) => [n, { type: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-everything'], env: { TOKEN: '${secret:EVERYTHING_TOKEN}' } }])),
+        missing: [],
+      }),
+    });
+    const promise = gw.invoke(req({
       opts: { model: 'ollama/qwen2.5:7b', mcp: ['everything'] } as AgentOpts,
       assets: { roots: { workflow: '/wf', global: '/gl' }, declared: { skills: [], mcp: ['everything'] }, workflow: 'wf' },
     }));
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.detail).toMatch(/MCP_UNSUPPORTED_BY_HARNESS/);
-    expect(spawnChild).not.toHaveBeenCalled();
+    await new Promise((r) => setTimeout(r, 10));
+    f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+    f.exit(0);
+    const result = await promise;
+    expect(result.ok).toBe(true);
+    const sent = JSON.parse(f.stdinWritten.join(''));
+    expect(sent.mcp.everything).toEqual({ type: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-everything'], env: { TOKEN: 'sk-real-value' } });
   });
 
-  it('refuses a declared skill asset with SKILL_UNSUPPORTED_BY_HARNESS, never silently ignoring it (slice h not wired yet)', async () => {
-    const spawnChild = vi.fn();
-    const gw = new PiGatewayClient({ spawnChild: spawnChild as never, entryPath: '/fake/entry.ts' });
-    const result = await gw.invoke(req({
-      opts: { model: 'ollama/qwen2.5:7b' } as AgentOpts,
-      assets: { roots: { workflow: '/wf', global: '/gl' }, declared: { skills: ['my-skill'], mcp: [] }, workflow: 'wf' },
+  it('slice (g): a declared MCP name with no resolveMcp bound lands in materialized.missing and the run PROCEEDS (owner decision 19.5.3, no refusal)', async () => {
+    const f = fakeChild();
+    const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
+    let harness: { materialized?: { missing: string[] } } | undefined;
+    const promise = gw.invoke(req({
+      opts: { model: 'ollama/qwen2.5:7b', mcp: ['everything'] } as AgentOpts,
+      assets: { roots: { workflow: '/wf', global: '/gl' }, declared: { skills: [], mcp: ['everything'] }, workflow: 'wf' },
+      onHarness: async (h) => { harness = h as never; },
     }));
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.detail).toMatch(/SKILL_UNSUPPORTED_BY_HARNESS/);
-    expect(spawnChild).not.toHaveBeenCalled();
+    await new Promise((r) => setTimeout(r, 10));
+    f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+    f.exit(0);
+    const result = await promise;
+    expect(result.ok).toBe(true);
+    expect(harness?.materialized?.missing).toEqual(['everything']);
+    const sent = JSON.parse(f.stdinWritten.join(''));
+    expect(sent.mcp).toBeUndefined();
+  });
+
+  it('slice (h): materializes a declared skill and sends its path to the child when read is in the tool set', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'rwe-pi-skill-unit-'));
+    try {
+      const ws = join(root, 'ws');
+      mkdirSync(ws, { recursive: true });
+      mkdirSync(join(root, 'wf', 'skill', 'my-skill'), { recursive: true });
+      writeFileSync(join(root, 'wf', 'skill', 'my-skill', 'SKILL.md'), '---\nname: my-skill\n---\nBody');
+      const f = fakeChild();
+      const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
+      const promise = gw.invoke(req({
+        workspace: ws,
+        opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Read'] } as AgentOpts,
+        assets: { roots: { workflow: join(root, 'wf'), global: join(root, 'gl') }, declared: { skills: ['my-skill'], mcp: [] }, workflow: 'wf' },
+      }));
+      await new Promise((r) => setTimeout(r, 10));
+      f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      f.exit(0);
+      const result = await promise;
+      expect(result.ok).toBe(true);
+      const sent = JSON.parse(f.stdinWritten.join(''));
+      expect(sent.skillPaths).toEqual([join(ws, '.claude', 'skills', 'my-skill')]);
+      expect(existsSync(join(ws, '.claude', 'skills', 'my-skill', 'SKILL.md'))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('slice (h): refuses SKILL_REQUIRES_READ_TOOL when a skill is declared but read is not in the tool set (decided+documented policy)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'rwe-pi-skill-unit-norread-'));
+    try {
+      const ws = join(root, 'ws');
+      mkdirSync(ws, { recursive: true });
+      mkdirSync(join(root, 'wf', 'skill', 'my-skill'), { recursive: true });
+      writeFileSync(join(root, 'wf', 'skill', 'my-skill', 'SKILL.md'), '---\nname: my-skill\n---\nBody');
+      const spawnChild = vi.fn();
+      const gw = new PiGatewayClient({ spawnChild: spawnChild as never, entryPath: '/fake/entry.ts' });
+      const result = await gw.invoke(req({
+        workspace: ws,
+        opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Bash'] } as AgentOpts,
+        assets: { roots: { workflow: join(root, 'wf'), global: join(root, 'gl') }, declared: { skills: ['my-skill'], mcp: [] }, workflow: 'wf' },
+      }));
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.detail).toMatch(/SKILL_REQUIRES_READ_TOOL/);
+      expect(spawnChild).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('maps tool_call/tool_result child events onto TranscriptEvent kind:tool_call/tool_result (slice f)', async () => {

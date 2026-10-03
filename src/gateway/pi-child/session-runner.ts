@@ -15,6 +15,7 @@ import {
   createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition,
   createGrepToolDefinition, createFindToolDefinition, createLsToolDefinition, createBashToolDefinition,
   type BashOperations,
+  DefaultResourceLoader, createMcpExtension, type ExtensionAPI, type McpServerConfig as PiMcpServerConfig,
 } from '@earendil-works/pi-coding-agent';
 import { SandboxManager } from '@anthropic-ai/sandbox-runtime';
 import { spawn } from 'node:child_process';
@@ -49,8 +50,10 @@ export interface SessionDeps {
 
 const emptyResourceLoader = (systemPrompt: string): ResourceLoader => ({
   // Full-control (spec "Inside the child"): no discovery, no context files — the engine supplies
-  // the whole system prompt; skills (slice h) extend getSkills() with an explicit list, never
-  // directory discovery.
+  // the whole system prompt. Unchanged for a dispatch with NO declared MCP and NO skills — see
+  // `buildResourceLoader` below for the DefaultResourceLoader branch those two slices need (pi's
+  // public SDK gives no way to hand a custom ResourceLoader an already-loaded Extension/Skill list;
+  // `loadExtensionFromFactory`, the one function that could, is not exported).
   getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
   getSkills: () => ({ skills: [], diagnostics: [] }),
   getPrompts: () => ({ prompts: [], diagnostics: [] }),
@@ -63,6 +66,68 @@ const emptyResourceLoader = (systemPrompt: string): ResourceLoader => ({
   extendResources: () => {},
   reload: async () => {},
 });
+
+/** slice (g), spike S5's proven mechanism + design change 4: the engine's generic
+ *  `{type?,url?,command?,args?,env?}` config (mcp-config-resolver.ts's already-`${secret:}`/
+ *  `${run:dir}`-substituted output) projected into pi's own public `McpServerConfig` union, always
+ *  `exposure:'direct'` (owner/spec: declared to the model on turn 1, never codemode/deferred/hidden
+ *  for v1). Throws (never silently drops) when neither a `url` nor a `command` is present — this
+ *  mirrors `classifyTransport`'s own closed universe (`mcp-probe.ts`): every config that reaches a
+ *  gateway at all has already passed that check upstream, so this is defense in depth, not the
+ *  primary gate. */
+function toPiMcpServerConfig(cfg: NonNullable<PiChildConfig['mcp']>[string]): PiMcpServerConfig {
+  if (cfg.type === 'http' && typeof cfg.url === 'string') {
+    return { type: 'http', url: cfg.url, exposure: 'direct' };
+  }
+  if (typeof cfg.command === 'string') {
+    return { type: 'stdio', command: cfg.command, args: cfg.args, env: cfg.env, exposure: 'direct' };
+  }
+  throw new Error(`MCP_SERVER_CONFIG_INVALID: no runnable transport (need {type:'http',url:...} or {command:...})`);
+}
+
+/** slice (g)/(h): the full-control `DefaultResourceLoader` branch, used ONLY when this dispatch
+ *  declares MCP servers or skills — a dispatch with neither keeps using `emptyResourceLoader` above,
+ *  byte-identical to every pre-slice-(g)/(h) dispatch (zero behavior change, zero re-verification
+ *  risk for the tool/bash/effort/usage slices already proven real). `noContextFiles`/`noExtensions`/
+ *  `noSkills`/`noPromptTemplates`/`noThemes` all `true`: pi-harness-research.md's "full control, no
+ *  discovery" still holds — `extensionFactories` and `additionalSkillPaths` are the two EXPLICIT
+ *  exceptions the options type documents as loading regardless (confirmed by reading
+ *  resource-loader.js: `noExtensions` only suppresses DISK-discovered extension paths,
+ *  `this.extensionFactories` always loads; `noSkills` only suppresses discovered skill paths,
+ *  `additionalSkillPaths` is always merged in). `loadConfig: () => ({servers:[], errors:[]})` on the
+ *  built-in MCP extension is load-bearing, not cosmetic: pi-spike-report.md S5's landmine —
+ *  `createMcpExtension()`'s DEFAULT config loader ignores a custom `agentDir` entirely and reads the
+ *  REAL global `~/.pi/agent/mcp.json`, CREATING `~/.pi/agent` as a side effect (a write outside the
+ *  run's workspace, and under the `rwe` service user a write to `/home/rwe/.pi`) — this override
+ *  avoids it completely; the ONLY servers this session ever sees are the ones `engineMcpExtension`
+ *  registers below. */
+async function buildResourceLoader(config: PiChildConfig): Promise<ResourceLoader> {
+  const mcpEntries = Object.entries(config.mcp ?? {});
+  if (mcpEntries.length === 0 && (config.skillPaths?.length ?? 0) === 0) {
+    return emptyResourceLoader(config.systemPrompt);
+  }
+  function engineMcpExtension(pi: ExtensionAPI): void {
+    for (const [name, cfg] of mcpEntries) {
+      pi.registerMcpServer(name, toPiMcpServerConfig(cfg));
+    }
+  }
+  const loader = new DefaultResourceLoader({
+    cwd: config.cwd,
+    agentDir: config.agentDir,
+    noContextFiles: true,
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    systemPrompt: config.systemPrompt,
+    additionalSkillPaths: config.skillPaths ?? [],
+    extensionFactories: mcpEntries.length > 0
+      ? [createMcpExtension({ loadConfig: () => ({ servers: [], errors: [] }), logPath: join(config.agentDir, 'mcp.log') }), engineMcpExtension]
+      : [],
+  });
+  await loader.reload();
+  return loader;
+}
 
 /** pi-spike-report.md design change 5: `registerProvider()`'s typed API requires a COMPLETE
  *  `ProviderModelConfig` (id/name/input/cost/reasoning/contextWindow/maxTokens all mandatory) — the
@@ -366,6 +431,13 @@ export async function runPiChildSession(config: PiChildConfig, emit: (event: PiC
   }
   const model = await resolveModel(config, runtime);
   const customTools = buildCustomTools(config, deps);
+  // mcp.log (createMcpExtension's default, when MCP is declared) and auth.json/models.json above all
+  // live under agentDir — ensure the engine-owned dir actually exists before anything tries to write
+  // into it (ModelRuntime.create's own authPath/modelsPath args have always implicitly required this;
+  // made explicit here now that a THIRD file may land there).
+  await mkdir(config.agentDir, { recursive: true });
+  const mcpDeclared = Object.keys(config.mcp ?? {}).length > 0;
+  const resourceLoader = await buildResourceLoader(config);
 
   const { session } = await createAgentSession({
     cwd: config.cwd,
@@ -373,12 +445,38 @@ export async function runPiChildSession(config: PiChildConfig, emit: (event: PiC
     model,
     thinkingLevel: config.effort ?? 'off',
     modelRuntime: runtime,
-    resourceLoader: emptyResourceLoader(config.systemPrompt),
+    resourceLoader,
     noTools: 'builtin',
     customTools,
     sessionManager: SessionManager.inMemory(config.cwd),
     settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false, maxRetries: 0 } }),
   });
+
+  const hasSkills = (config.skillPaths?.length ?? 0) > 0;
+  if (mcpDeclared) {
+    // spike S5's proven sequence (`mcp-register-debug.ts`/`real-call-4-mcp-child.ts`): extensions are
+    // not live until bound, and `direct`-exposure servers get up to the built-in 10s `startupWaitMs`
+    // to connect before the first prompt. No first-class connection-status API exists on this surface
+    // (S5, confirmed again by reading `extensions/mcp/runtime.js`) — the only observable signal is
+    // `getActiveToolNames()`, polled here until every declared server has at least one `mcp__<name>__`
+    // tool active, or the window elapses, whichever comes first (never waits longer than it has to).
+    await session.bindExtensions({});
+    const declaredNames = Object.keys(config.mcp ?? {});
+    const hasToolsFor = (name: string, active: readonly string[]): boolean => {
+      const prefixes = [`mcp__${name}__`, `mcp__${name.replace(/[^A-Za-z0-9_-]/g, '_')}__`];
+      return active.some((t) => prefixes.some((p) => t.startsWith(p)));
+    };
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline && !declaredNames.every((n) => hasToolsFor(n, session.getActiveToolNames()))) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    emit({ t: 'mcp_init', servers: declaredNames, activeTools: session.getActiveToolNames() });
+  } else if (hasSkills) {
+    // Skills-only (no MCP): still need extensions bound once (the loader was built via
+    // DefaultResourceLoader above) — cheap, and keeps one code path for "used the full-control
+    // loader" rather than threading a second condition through this function.
+    await session.bindExtensions({});
+  }
 
   // pi-spike-report.md design changes 7/8: no stable message id exists; key on an adapter-owned
   // sequence counter, incremented on every ASSISTANT message_end (message_end fires for every role).

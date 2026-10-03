@@ -29,6 +29,10 @@ import { resolveRipgrepOverride } from './pi-child/ripgrep-override.js';
 import type { PiChildConfig, PiChildEvent, PiChildSandboxConfig } from './pi-child/protocol.js';
 import type { EventSink } from '../event-log.js';
 import { PI_HARNESS_VERSION } from '../harness-info.js';
+import { materializeAssets, summarizeMcpInit } from './claude-agent-sdk-client.js';
+import { resolveMcpConfigs, type ResolveMcpFn } from './mcp-config-resolver.js';
+import type { McpServerConfig } from '../mcp-probe.js';
+import type { SecretSource } from '../secret-resolver.js';
 
 /** Engine tool name -> pi tool name (spec "Tool mapping"). Semantic differences, documented: `Glob`
  *  (gitignore-aware, Claude-shaped globbing) maps to pi's `find` (pi's own docs: "respects
@@ -143,6 +147,10 @@ export interface PiGatewayConfig {
   ollamaBaseUrl?: string;
   timeoutMs?: number;
   retries?: number;
+  /** slice (g): the asset-catalog-backed MCP resolver — late-bound via `bindResolveMcp` (see that
+   *  method's own doc), never set here directly in production. Absent/no declared names -> no MCP
+   *  servers registered, same as today. */
+  resolveMcp?: ResolveMcpFn;
   /** v37 (ARCH-181/262): the pi-PATH confinement posture — a SEPARATE measurement from the sdk
    *  gateway's own boot probe (srt may not match the CLI-bundled sandbox-runtime version; the pi
    *  path also needs the ripgrep-binary override the sdk path never required). Set once at boot by
@@ -197,6 +205,15 @@ export class PiGatewayClient implements GatewayClient {
     this._eventSink = sink;
   }
 
+  /** slice (g): same shape/reason as `ClaudeAgentSdkGatewayClient.bindResolveMcp` — late-bound
+   *  because the gateway is constructed in `composeConfig()`, before `createServer()` builds the
+   *  asset catalog. Wired automatically by server.ts's existing structural `BindableGateway` check
+   *  (`bindable?.bindResolveMcp?.(...)`) — no server.ts change needed, the same seam `bindEventSink`
+   *  above already rides. */
+  bindResolveMcp(resolve: ResolveMcpFn): void {
+    (this._config as { resolveMcp?: ResolveMcpFn }).resolveMcp = resolve;
+  }
+
   async invoke(req: {
     prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string;
     assets?: { roots: { workflow: string; global: string }; declared: { skills: string[]; mcp: string[] }; workflow: string };
@@ -219,15 +236,6 @@ export class PiGatewayClient implements GatewayClient {
     if (req.signal?.aborted) {
       return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: 'aborted by caller before dispatch (run suspended or stopped)' };
     }
-    // Slices (g)/(h) are not wired yet — a declared mcp/skill is refused, never silently dropped
-    // (the same standard TOOL_UNSUPPORTED_BY_HARNESS holds the tool surface to).
-    if ((req.assets?.declared.mcp.length ?? 0) > 0) {
-      return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: `MCP_UNSUPPORTED_BY_HARNESS: this engine runs the pi harness, which does not yet bridge MCP servers (declared: ${req.assets!.declared.mcp.join(', ')})` };
-    }
-    if ((req.assets?.declared.skills.length ?? 0) > 0) {
-      return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: `SKILL_UNSUPPORTED_BY_HARNESS: this engine runs the pi harness, which does not yet materialize skills (declared: ${req.assets!.declared.skills.join(', ')})` };
-    }
-
     const workspace = req.workspace ?? process.cwd();
     const agentDir = join(workspace, '.pi-agent-dir');
     const model: PiChildConfig['model'] =
@@ -245,6 +253,45 @@ export class PiGatewayClient implements GatewayClient {
     const mapped = mapTools(requestedTools);
     if (!mapped.ok) {
       return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: `TOOL_UNSUPPORTED_BY_HARNESS: ${mapped.unmapped.join(', ')} ${mapped.unmapped.length === 1 ? 'has' : 'have'} no mapping under the pi harness — only Read/Write/Edit/Bash/Grep/Glob/LS are supported` };
+    }
+
+    // spec "MCP": resolve declared MCP servers through the SAME shared resolver the sdk gateway uses
+    // (`${secret:NAME}`/`${run:dir}`/`${run:id}` substitution — mcp-config-resolver.ts) — no second
+    // implementation to drift. Owner 19.5.3 parity: a name that cannot be resolved lands in `missing`
+    // and the run PROCEEDS (never a refusal) — `materializeAssets` folds skill-missing and mcp-missing
+    // into the same list.
+    let mcpConfigs: Record<string, McpServerConfig> = {};
+    let materialized: { skills: string[]; mcp: string[]; missing: string[] } | undefined;
+    if (req.assets !== undefined) {
+      try {
+        // `PiGatewayConfig.secretSource` only ever had `.resolve()` (the pre-existing OpenRouter-key
+        // lookup) — `resolveMcpConfigs`'s shared `secretSource` param wants the full `SecretSource`
+        // (it never calls `.names()` either, but the TYPE is shared verbatim with the sdk gateway, by
+        // design, so it is not narrowed just for this one caller). A tiny adapter, not a cast: `.names()`
+        // is never reachable from this path (`resolveConfig` never calls it), so a stub is honest.
+        const secretSource: SecretSource | undefined = this._config.secretSource !== undefined
+          ? { resolve: (name: string) => this._config.secretSource!.resolve(name), names: () => [] }
+          : undefined;
+        const mcpResolved = await resolveMcpConfigs({ resolveMcp: this._config.resolveMcp, secretSource }, req.assets.workflow, req.assets.declared.mcp, req.runId, workspace);
+        mcpConfigs = mcpResolved.configs;
+        materialized = await materializeAssets(req.assets.roots, workspace, req.assets.declared, async () => mcpResolved);
+      } catch (err) {
+        // Fail-loud contract (mcp-config-resolver.ts's own doc): an unresolved `${secret:...}` handle
+        // on a provisioned MCP server is a clear, typed error — never a silent partial dispatch.
+        return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: err instanceof Error ? err.message : String(err) };
+      }
+    }
+
+    // spec "Skills" / research doc §4 "Requires read in the tool set": pi's model reaches a skill
+    // ONLY through the `read` tool (it reads SKILL.md itself — no separate Skill tool exists on pi,
+    // unlike the sdk gateway). A skill-only agent with no `read` tool (`allowedTools` excludes it) can
+    // therefore never actually use a materialized skill — refused clearly rather than silently
+    // shipping a skill the model has no way to open (decided + documented, spec "Skills": "decide and
+    // document"; the alternative considered was auto-adding a jailed read scoped to the skill dir,
+    // rejected for v1 as a second, narrower read-tool definition with different containment semantics
+    // than the one real `read` tool everywhere else in this file — not worth the surface for v1).
+    if ((materialized?.skills.length ?? 0) > 0 && !mapped.piNames.includes('read')) {
+      return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: `SKILL_REQUIRES_READ_TOOL: ${materialized!.skills.join(', ')} ${materialized!.skills.length === 1 ? 'was' : 'were'} materialized but this dispatch's tool set has no 'read' tool — pi's model can only open a skill's SKILL.md through the read tool (no separate Skill tool exists on pi); add Read to allowedTools or drop the skill` };
     }
 
     // spec "Bash" / issue #78(c) parity: bash:'readonly' is only ever dispatched with the kernel
@@ -290,20 +337,27 @@ export class PiGatewayClient implements GatewayClient {
           ? { applied: true, param: 'thinkingLevel', restPath: ['reasoning', 'effort'], value: req.opts.effort }
           : { applied: false, reason: 'ollama has no reasoning dial' };
 
+    // Captured (not just dispatched) so the SECOND onHarness call below — once the child's `mcp_init`
+    // event arrives with the real turn-1 tool list (issue #106 parity: `summarizeMcpInit`) — can
+    // merge `mcpStatus`/`warnings` onto the SAME base descriptor, mirroring the sdk gateway's own
+    // eager-then-init-refined onHarness shape.
+    const baseDescriptor: HarnessDescriptor = {
+      ...redactHarness({
+        surfaceType: 'curated', modelName: parsed.model, provider: parsed.provider, prompt: req.prompt, curatedTools: requestedTools,
+        mergedMcp: Object.keys(mcpConfigs).map((name) => ({ name })),
+        skills: materialized?.skills ?? [],
+      }),
+      harnessVersion: PI_HARNESS_VERSION,
+      ...(materialized !== undefined ? { materialized } : {}),
+      ...(mapped.piNames.includes('bash')
+        ? { bash: { mode: (req.opts.bash === 'readonly' ? 'readonly' : 'full') as 'readonly' | 'full', enforced: this._config.confinementPosture === 'confined' } }
+        : {}),
+      ...(effortApplied !== undefined
+        ? { effortApplied: effortApplied.applied ? { param: effortApplied.param, value: effortApplied.value } : { reason: effortApplied.reason } }
+        : {}),
+    };
     if (req.onHarness) {
-      await req.onHarness(
-        {
-          ...redactHarness({ surfaceType: 'curated', modelName: parsed.model, provider: parsed.provider, prompt: req.prompt, curatedTools: requestedTools, mergedMcp: [], skills: [] }),
-          harnessVersion: PI_HARNESS_VERSION,
-          ...(mapped.piNames.includes('bash')
-            ? { bash: { mode: (req.opts.bash === 'readonly' ? 'readonly' : 'full') as 'readonly' | 'full', enforced: this._config.confinementPosture === 'confined' } }
-            : {}),
-          ...(effortApplied !== undefined
-            ? { effortApplied: effortApplied.applied ? { param: effortApplied.param, value: effortApplied.value } : { reason: effortApplied.reason } }
-            : {}),
-        },
-        effortApplied,
-      );
+      await req.onHarness(baseDescriptor, effortApplied);
     }
 
     const childConfig: PiChildConfig = {
@@ -321,6 +375,8 @@ export class PiGatewayClient implements GatewayClient {
       ...(req.opts.bash === 'readonly' ? { bashMode: 'readonly' as const } : {}),
       ...(req.opts.effort !== undefined ? { effort: req.opts.effort } : {}),
       ...(this._config.openrouterBaseUrl !== undefined ? { openrouterBaseUrl: this._config.openrouterBaseUrl } : {}),
+      ...(Object.keys(mcpConfigs).length > 0 ? { mcp: mcpConfigs } : {}),
+      ...((materialized?.skills.length ?? 0) > 0 ? { skillPaths: materialized!.skills.map((name) => join(workspace, '.claude', 'skills', name)) } : {}),
     };
 
     const effTimeout = resolveTimeout(req.opts.timeoutMs) ?? this._config.timeoutMs;
@@ -362,7 +418,7 @@ export class PiGatewayClient implements GatewayClient {
           req.onUsage!(addTokens(base, cum));
         },
       };
-      last = await this._dispatchOnce(childConfig, parsed.provider, attemptReq, effTimeout);
+      last = await this._dispatchOnce(childConfig, parsed.provider, attemptReq, effTimeout, { attempt: i + 1, baseDescriptor });
       settledThisAttempt = true;
       if (last.ok) {
         const total = addTokens(carried, normalizeTokens(last.tokens));
@@ -384,8 +440,9 @@ export class PiGatewayClient implements GatewayClient {
   private async _dispatchOnce(
     childConfig: PiChildConfig,
     provider: string,
-    req: { signal?: AbortSignal; onEvent?: (ev: TranscriptEvent) => void | Promise<void>; onUsage?: (cumulative: Tokens) => void },
+    req: { runId: string; agentId: string; signal?: AbortSignal; onEvent?: (ev: TranscriptEvent) => void | Promise<void>; onUsage?: (cumulative: Tokens) => void; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void> },
     timeoutMs: number | undefined,
+    mcpCtx?: { attempt: number; baseDescriptor: HarnessDescriptor },
   ): Promise<GatewayResult> {
     const spawnImpl = this._config.spawnChild ?? spawn;
     const entryPath = this._config.entryPath ?? ENTRY_PATH;
@@ -453,6 +510,27 @@ export class PiGatewayClient implements GatewayClient {
         void req.onEvent?.({ ts: new Date().toISOString(), kind: 'tool_call', data: { toolCallId: event.toolCallId, toolName: event.toolName, args: safeParse(event.argsJson) } });
       } else if (event.t === 'tool_result') {
         void req.onEvent?.({ ts: new Date().toISOString(), kind: 'tool_result', data: { toolCallId: event.toolCallId, toolName: event.toolName, result: safeParse(event.resultJson), isError: event.isError } });
+      } else if (event.t === 'mcp_init' && mcpCtx !== undefined) {
+        // Issue #106 parity, pi shape: the child's ONLY observable turn-1 signal (spike S5 — no
+        // connection-status API exists) is which `mcp__<server>__*` tools are active. A synthetic
+        // `mcp_servers` status is built from that same prefix match (declared.mcpServers comes off
+        // the EAGER descriptor already sent, so it is exactly the server names this dispatch
+        // registered) and fed through the SAME `summarizeMcpInit` the sdk gateway uses — one
+        // MCP_SERVER_NOT_CONNECTED warning shape for both gateways.
+        const declared = mcpCtx.baseDescriptor.mcpServers;
+        const hasToolsFor = (name: string): boolean => {
+          const prefixes = [`mcp__${name}__`, `mcp__${name.replace(/[^A-Za-z0-9_-]/g, '_')}__`];
+          return event.activeTools.some((t) => prefixes.some((p) => t.startsWith(p)));
+        };
+        const { mcpStatus, warnings } = summarizeMcpInit(declared, {
+          tools: event.activeTools,
+          mcp_servers: declared.map((name) => ({ name, status: hasToolsFor(name) ? 'connected' : 'unknown' })),
+        });
+        void req.onHarness?.({ ...mcpCtx.baseDescriptor, mcpStatus, ...(warnings.length > 0 ? { warnings } : {}) });
+        for (const w of warnings) {
+          const tools = mcpStatus.find((m) => m.server === w.server)?.tools.length ?? 0;
+          this._eventSink({ kind: 'agent.mcp_not_connected', runId: req.runId, agentId: req.agentId, attempt: mcpCtx.attempt, server: w.server, status: w.status, tools });
+        }
       }
     });
 
