@@ -388,6 +388,11 @@ export const TOOL_SPECS = [
       'RESERVED_PREFIX',
       // Issue #82: the seedManifestRef ladder (RunManager.loadSeedManifestRef), run at register time.
       'MISSING_BLOBS', 'INVALID_SEED_SPEC', 'CAS_UNAVAILABLE',
+      // review round 4 (R4-1): only reachable under gateway:"pi" (harnessProviders set) — an
+      // anthropic/* model ref (via checkModelRef's harnessProviders gate, inside parseMetaParams)
+      // or a declared allowedTools name the pi harness has no mapping for (workflow-catalog.ts's own
+      // post-params check) is refused here, at registration, never silently deferred to dispatch.
+      'PROVIDER_UNSUPPORTED_BY_HARNESS', 'TOOL_UNSUPPORTED_BY_HARNESS',
     ],
     seeAlso: ['models_list'] as string[],
     // Service accounts spec (owner decision 2026-10-03): a create-shaped tool — no ownership
@@ -697,7 +702,10 @@ export const TOOL_SPECS = [
     // registration only WARNS about a declared-but-unprovisioned mcp/skill name (workflow_register's
     // own row, above); admission REFUSES it here, before any side effect, naming the label + the
     // missing name(s) — push it (workspace_push) then re-run.
-    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'CHANNEL_UNPUBLISHED', 'NOT_RUNNABLE', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'PARAM_LOCKED', 'PARAM_UNKNOWN', 'PARAM_OUT_OF_RANGE', 'UNKNOWN_AGENT_LABEL', 'UNKNOWN_MODEL', 'AGENT_UNDECLARED', 'LEGACY_REREGISTER', 'INVALID_SEED_SPEC', 'SEED_SOURCE_CONFLICT', 'SEEDREF_DISABLED', 'EGRESS_DENIED', 'CAS_UNAVAILABLE', 'MISSING_BLOBS', 'RUN_ADMISSION_LIMIT', 'DISK_LOW', 'CONFINEMENT_UNAVAILABLE', 'MCP_NOT_PROVISIONED', 'SKILL_NOT_PROVISIONED', 'SERVICE_ACCOUNT_DISABLED', 'WORKFLOW_NOT_ALLOWED'],
+    // review round 4 (R4-1): PROVIDER_UNSUPPORTED_BY_HARNESS joined this row — only reachable under
+    // gateway:"pi" (harnessProviders set), when _refuseUnadmittableParams's checkModelRef gate finds
+    // a reachable model this harness cannot dispatch (run-manager.ts).
+    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'CHANNEL_UNPUBLISHED', 'NOT_RUNNABLE', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'PARAM_LOCKED', 'PARAM_UNKNOWN', 'PARAM_OUT_OF_RANGE', 'UNKNOWN_AGENT_LABEL', 'UNKNOWN_MODEL', 'PROVIDER_UNSUPPORTED_BY_HARNESS', 'AGENT_UNDECLARED', 'LEGACY_REREGISTER', 'INVALID_SEED_SPEC', 'SEED_SOURCE_CONFLICT', 'SEEDREF_DISABLED', 'EGRESS_DENIED', 'CAS_UNAVAILABLE', 'MISSING_BLOBS', 'RUN_ADMISSION_LIMIT', 'DISK_LOW', 'CONFINEMENT_UNAVAILABLE', 'MCP_NOT_PROVISIONED', 'SKILL_NOT_PROVISIONED', 'SERVICE_ACCOUNT_DISABLED', 'WORKFLOW_NOT_ALLOWED'],
     seeAlso: ['workflow_publish', 'run_status', 'run_result'],
     // Service accounts spec: run_start has no ownership subject of its own (ownership:'none' —
     // "run any version" vs "release only" is a separate rule inside RunManager.start(), not
@@ -780,7 +788,10 @@ export const TOOL_SPECS = [
       "A service account's CURRENT liveness and workflows allowlist are re-checked on every resume, not only at the run's original admission: SERVICE_ACCOUNT_DISABLED for a disabled/expired/deleted account, WORKFLOW_NOT_ALLOWED if the allowlist has since narrowed past this run's own workflow. A run already stopped still answers ILLEGAL_TRANSITION first (a run-state fact, never masked by either of those).",
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
-    errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'LEGACY_REREGISTER', 'PARAM_SECRET_UNAVAILABLE', 'CONFINEMENT_UNAVAILABLE', 'DISK_LOW', 'SERVICE_ACCOUNT_DISABLED', 'WORKFLOW_NOT_ALLOWED'],
+    // review round 4 (R4-1): PROVIDER_UNSUPPORTED_BY_HARNESS joined this row — run-manager.ts's own
+    // review-L2 resume-time re-check (a run admitted under gateway:"sdk" can be resumed after the
+    // deployment switched to gateway:"pi", which cannot dispatch an anthropic/* ref it was pinned to).
+    errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'LEGACY_REREGISTER', 'PARAM_SECRET_UNAVAILABLE', 'PROVIDER_UNSUPPORTED_BY_HARNESS', 'CONFINEMENT_UNAVAILABLE', 'DISK_LOW', 'SERVICE_ACCOUNT_DISABLED', 'WORKFLOW_NOT_ALLOWED'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run' } as AuthzRow,
     fixture: {
@@ -1366,7 +1377,10 @@ export const TOOL_SPECS = [
       additionalProperties: false,
     },
     outputSchema: OUT,
-    errors: ['UNKNOWN_MODEL', 'INVALID_ARGUMENT', 'FORBIDDEN_ROLE'] as ErrorCode[],
+    // review round 4 (R4-1): PROVIDER_UNSUPPORTED_BY_HARNESS joined this row — call-tool.ts's own
+    // checkModelRef gate (owner decision 2, M7) refuses an explicit anthropic/* ref before ever
+    // reaching ModelProber, under gateway:"pi".
+    errors: ['UNKNOWN_MODEL', 'PROVIDER_UNSUPPORTED_BY_HARNESS', 'INVALID_ARGUMENT', 'FORBIDDEN_ROLE'] as ErrorCode[],
     seeAlso: ['models_list'] as string[],
     authz: { minRole: 'admin', ownership: 'none' } as AuthzRow,
     fixture: {

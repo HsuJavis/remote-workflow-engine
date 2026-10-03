@@ -49,7 +49,7 @@ import type { GatewayClient, GatewayConfig } from './gateway/client.js';
 import { LiteLLMGatewayClient } from './gateway/client.js';
 import { validateUserOverrides, validateDeclaredArgs, materializeArgDefaults, FRAME_CLOSE_FORGERY, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type Err as ParamErr, type ModelCatalogSnapshot, type ModelRefWarning } from './params/contract.js';
 import { defaultRunParams, mergeRunParams, type RunParams } from './params/resolve.js';
-import { checkModelRef, parseModelRef, EMPTY_MODEL_CATALOG } from './providers.js';
+import { checkModelRef, parseModelRef, EMPTY_MODEL_CATALOG, type Provider } from './providers.js';
 import { ModelBook, reachableModels, toModelCatalogSnapshot } from './models/model-book.js';
 import { createEventSink, type EventSink } from './event-log.js';
 import { scanAgentCalls } from './workflow-meta.js';
@@ -141,6 +141,12 @@ export interface RunManagerDeps {
    *  reused for both the UNKNOWN_MODEL check and the price pin (they used to be two different
    *  tables — `aliasNames`/`aliasMap` — that could disagree; now there is exactly one). */
   modelBook?: ModelBook;
+  /** pi harness v1 (owner decision 2): forwarded from `ServerConfig.harnessProviders` (set only
+   *  under `gateway:"pi"`) — stamped onto every `ModelCatalogSnapshot` this manager builds via
+   *  `toModelCatalogSnapshot` (admission at `start()` AND nested-workflow admission), so
+   *  `checkModelRef`'s provider gate sees it at both admission doors. Omitted (the "sdk" gateway,
+   *  every existing test/call site) -> unchanged pre-pi behavior (no provider gate). */
+  harnessProviders?: readonly Provider[];
   /** v36 (DES-243, ARCH-159, TASK-241, REQ-213): sink for the `run.terminal` audit line (TASK-243
    *  adds the actual emit call, at `_transition`). Omitted -> a bare console sink. */
   eventSink?: EventSink;
@@ -599,6 +605,9 @@ export class RunManager {
   /** v26 (DES-178, TASK-178): catalog snapshot pinned onto every run's price_book at admission —
    *  ALSO (2026-09-26) the source of the admission-time openrouter/ollama existence check. */
   private readonly _modelBook: ModelBook;
+  /** pi harness v1 (owner decision 2): forwarded `ServerConfig.harnessProviders`, stamped onto
+   *  every `ModelCatalogSnapshot` this manager builds — see `RunManagerDeps.harnessProviders`. */
+  private readonly _harnessProviders: readonly Provider[] | undefined;
   /** v36 (DES-243, TASK-241): `run.terminal` audit sink; TASK-243 calls it from `_transition`. */
   private readonly _eventSink: EventSink;
   /** v37 (ARCH-182, DES-263, TASK-258): this engine's MEASURED confinement posture — read by
@@ -664,6 +673,7 @@ export class RunManager {
     // ollama-zero via ModelBook's own built-in fallback — never a crash for a caller that doesn't
     // inject a real catalog (e.g. a direct RunManager unit test).
     this._modelBook = deps.modelBook ?? new ModelBook(async () => [], { clock: this._clock });
+    this._harnessProviders = deps.harnessProviders;
     this._eventSink = deps.eventSink ?? createEventSink({});
     this._confinementPosture = deps.confinementPosture;
     this._diskFloor = deps.diskFloor;
@@ -1037,7 +1047,7 @@ export class RunManager {
     // price-book pin further down — one live catalog fetch, one snapshot, so the two can never
     // disagree about what the catalog said for this admission.
     const bookSnapshot = await this._modelBook.snapshot();
-    const catalog = toModelCatalogSnapshot(bookSnapshot);
+    const catalog = toModelCatalogSnapshot(bookSnapshot, this._harnessProviders);
     const overridesResult = validateUserOverrides(contract, overrides, catalog, this._ceilings);
     if (!overridesResult.ok) throw paramCodedError(overridesResult);
     const admissionWarnings: Array<ModelToolWarning | ModelRefWarning> = [...(overridesResult.warnings ?? [])];
@@ -1752,6 +1762,18 @@ export class RunManager {
     // Syntax-only (`parseModelRef`), not a live catalog existence re-check: this is a REPLAY of an
     // admission that already happened once (rule 12 says "refuse rather than dispatch an
     // unresolvable name", not "re-verify existence on every resume").
+    // review L2: a SECOND, independent check over the same loop — not an existence re-check (that is
+    // still deliberately excluded by rule 12's own comment above), but a DEPLOYMENT-CAPABILITY one:
+    // can the harness THIS process is running even dispatch the pinned provider at all. A run
+    // admitted while this deployment ran gateway:"sdk" (harnessProviders unset, so checkModelRef's
+    // anthropic arm admits unconditionally) can be suspended, the deployment restarted under
+    // gateway:"pi", and resumed — without this, it would reach pi-gateway-client.ts's own
+    // dispatch-time defense-in-depth refusal (a confusing internal error, by its own comment "should
+    // have been refused at admission") instead of this typed admission refusal. `checkModelRef` is
+    // given an EMPTY entries catalog deliberately — paired with `harnessProviders`, its ONLY possible
+    // refusal is PROVIDER_UNSUPPORTED_BY_HARNESS (an empty `entries` can never trigger its
+    // existence-based UNKNOWN_MODEL arm — see its own "listing unavailable -> accept with warning"
+    // rule), so this cannot silently turn into the re-verification rule 12 forbids.
     for (const m of reachableModels(effectiveParams)) {
       if (parseModelRef(m) === undefined) {
         throw codedError(
@@ -1759,6 +1781,10 @@ export class RunManager {
           `UNKNOWN_MODEL: run ${runId}'s admission-time parameters carry "${m}", which is not a valid <provider>/<model-id> ref (it predates the alias-removal change) and cannot be resumed; re-register the workflow with a full ref and start a new run`,
           { runId, supplied: m },
         );
+      }
+      const harnessVerdict = checkModelRef(m, { entries: [], harnessProviders: this._harnessProviders });
+      if (!harnessVerdict.ok && harnessVerdict.code === 'PROVIDER_UNSUPPORTED_BY_HARNESS') {
+        throw codedError('PROVIDER_UNSUPPORTED_BY_HARNESS', harnessVerdict.message, { runId, supplied: m });
       }
     }
 
@@ -1955,7 +1981,7 @@ export class RunManager {
       if (!verdict.ok) {
         throw paramCodedError({
           ok: false,
-          code: 'UNKNOWN_MODEL',
+          code: verdict.code ?? 'UNKNOWN_MODEL',
           message: verdict.message,
           detail: { param: 'model', supplied: m },
         });
@@ -2211,7 +2237,7 @@ export class RunManager {
     // own catalog snapshot rather than inheriting the parent run's (which may be stale by the time a
     // deep/late nested workflow() fires) — `ModelBook`'s own TTL cache means this is a real fetch
     // only once per TTL window, not once per nested call.
-    const childCatalog = toModelCatalogSnapshot(await this._modelBook.snapshot());
+    const childCatalog = toModelCatalogSnapshot(await this._modelBook.snapshot(), this._harnessProviders);
     const childRefuse = this._refuseUnadmittableParams(childParams, childCatalog);
     await this._pinChildModels(runId, entry, childRefuse.models);
     for (const w of childRefuse.warnings) console.warn(`[model-catalog] run ${runId} (nested '${name}'): ${w.message}`);

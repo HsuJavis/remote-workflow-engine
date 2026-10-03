@@ -84,6 +84,11 @@ export const DEMO = new Map([
     // Owner decision 2026-09-30: policy.mcpEgressAllowlist is always present on the real wire —
     // demo mirrors that (an empty allowlist, same as an unconfigured deployment).
     policy: { mcpEgressAllowlist: [] },
+    // pi harness v1 (spec "Disclosure", review L8): `harness` is present on EVERY real
+    // GET /api/system reply, sdk gateway included (buildHarnessAnnounce(undefined) returns the
+    // sdk-mode shape, never omitted) — demo mirrors the default/unconfigured sdk deployment, the
+    // same convention `policy` above already follows ("no missing keys").
+    harness: { name: 'sdk', providers: ['anthropic', 'openrouter', 'ollama'] },
   }],
 
   ['/api/models', [

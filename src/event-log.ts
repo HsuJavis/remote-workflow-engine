@@ -20,7 +20,17 @@ export type EngineEvent =
   // UNCONFINED without inferring it from `enabled`/`allowWrite`, which a 'confined'-but-no-workspace
   // call can also report empty (ARCH-176's own bug class: two different reasons must not read the
   // same). No `AuditActor` — this is an engine fact, not a principal-attributable action.
-  | { kind: 'agent.confinement'; runId: string; agentId: string; attempt: number; posture: 'confined' | 'unconfined'; root?: string; allowWrite: string[]; denyRead: string[]; enabled: boolean; failIfUnavailable: boolean; sdkVersion: string }
+  // pi harness v1 (spec "Transcript and harness record"): `sdkVersion` is Claude-Agent-SDK-specific
+  // (UT-318 pins it to the INSTALLED @anthropic-ai/claude-agent-sdk package.json version) and stays
+  // required+unchanged for that gateway. `harnessVersion` is the pi-gateway's own equivalent (the
+  // PINNED @earendil-works/pi-coding-agent version, harness-info.ts's PI_HARNESS_VERSION) — a
+  // DIFFERENT field, not a renamed one, because the two numbers answer different questions (which
+  // SDK CLI vs which pi package) and a reader should never have to guess which gateway produced a
+  // given line from an overloaded field. `sdkVersion` widened to optional only so a pi-gateway
+  // emission (which has no SDK version at all) is a valid line of this same event shape rather than
+  // needing a parallel event kind — every existing sdk-gateway emission is unaffected (it always sets
+  // `sdkVersion`, never `harnessVersion`).
+  | { kind: 'agent.confinement'; runId: string; agentId: string; attempt: number; posture: 'confined' | 'unconfined'; root?: string; allowWrite: string[]; denyRead: string[]; enabled: boolean; failIfUnavailable: boolean; sdkVersion?: string; harnessVersion?: string }
   // Project configuration (PROJECT_CONFIG_PATHS, bash-confinement.ts) found in the run workspace and
   // removed before this attempt's CLI could load it — something planted it; an operator should know.
   | { kind: 'agent.planted_config_removed'; runId: string; agentId: string; attempt: number; root: string; removed: string[] }
@@ -33,7 +43,15 @@ export type EngineEvent =
   // Issue #106: a declared MCP server was not usable on the session's first turn (not `connected`
   // in the CLI's `system/init`, or none of its tools listed there) — same fact as the harness
   // record's `MCP_SERVER_NOT_CONNECTED` warning, on the operator's journal.
-  | { kind: 'agent.mcp_not_connected'; runId: string; agentId: string; attempt: number; server: string; status: string; tools: number };
+  | { kind: 'agent.mcp_not_connected'; runId: string; agentId: string; attempt: number; server: string; status: string; tools: number }
+  // pi harness v1 review round 4 (R4-2, owner ruling): the host's shared srt scratch path
+  // (`/tmp/claude`) existed at dispatch time — no longer a refusal (an unprivileged local user could
+  // otherwise `mkdir /tmp/claude` to deny confined pi Bash service to the whole host), but an
+  // operator should still be able to see it: `denyWrite` already makes it read-only for this
+  // dispatch's confined Bash (see pi-gateway-client.ts's `PI_HOST_SHARED_TMPDIR` doc for the full
+  // "why" this is safe), so nothing is refused and nothing on the host is touched — this is pure
+  // visibility, once per dispatch, not a security control itself.
+  | { kind: 'agent.host_shared_tmpdir_present'; runId: string; agentId: string; attempt: number; path: string };
 
 export type EventSink = (event: EngineEvent) => void;
 

@@ -45,6 +45,13 @@ const NESTED_BWRAP_ARGS = [
  *  process on the host to create nested user namespaces, which is the exact primitive the AppArmor
  *  profile existed to restrict, so apply it only on a host where every user of this engine is
  *  already trusted at the OS level — not on a shared/multi-tenant box. */
+// review round 2 (owner ruling): round 1's L7 fix appended a pi-specific rg sentence to THIS shared
+// constant — but `ERROR_CATALOG.CONFINEMENT_UNAVAILABLE.hint` (errors.ts) bakes it in at module
+// load, with no gateway context to branch on, so the appended sentence reached every sdk deployment
+// too, not byte-identical to master any more. Reverted to master's exact text — the pi-specific rg
+// remediation now lives ONLY where the gateway is actually known: `confinementBannerLine()`'s own
+// pi-gateway branch (main.ts), which composes it alongside this shared text rather than baking it
+// in here, plus DEPLOY.md §1b2's own dedicated bullet (review B4).
 export const CONFINEMENT_REMEDIATION =
   // send-back item 1 (verify-b, 2026-09-26): a nested-bwrap PROBE PASS is necessary but not
   // sufficient — the real Claude CLI sandbox has a SECOND hard binary dependency, `socat`, that
@@ -66,6 +73,16 @@ export const CONFINEMENT_REMEDIATION =
   'restart this engine; this is a host-wide relaxation (any unprivileged process on the host can now ' +
   'nest user namespaces) — revert both steps (remove the sysctl override and re-enable the profile: ' +
   'rm the symlink under disable/ and apparmor_parser again) on a shared/multi-tenant host';
+
+/** review round 2 (owner ruling): the pi-specific rg remediation, split out of the shared
+ *  `CONFINEMENT_REMEDIATION` above so the sdk gateway's own text (and `CONFINEMENT_UNAVAILABLE`'s
+ *  static hint) stays byte-identical to master. Appended ONLY by `confinementBannerLine()`'s own
+ *  pi-gateway branch (main.ts) — the one place that actually knows which gateway is running. */
+export const PI_CONFINEMENT_REMEDIATION_ADDENDUM =
+  'under gateway:"pi" specifically, srt additionally requires a real `rg` (ripgrep) binary on PATH, ' +
+  'supplied via the bundled @anthropic-ai/claude-agent-sdk-<platform> package (not a separate apt ' +
+  'install) — a probe reason naming "no bundled ripgrep-capable CLI binary" means that platform ' +
+  'package did not install correctly; reinstall this engine\'s own dependencies (npm ci) and restart';
 
 export type SpawnImpl = (cmd: string, args: string[], opts: { timeout: number }) => { status: number | null; error?: Error; stderr: Buffer | string };
 

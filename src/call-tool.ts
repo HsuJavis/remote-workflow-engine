@@ -19,6 +19,8 @@ import { queryModels, ModelsQueryError, type ModelsQuery } from './models/models
 import type { ModelBook } from './models/model-book.js';
 import type { ModelProber, ProbeResult } from './models/model-probe.js';
 import type { ObservedStatsProvider } from './models/observed-stats.js';
+import { checkModelRef, PROVIDERS, type Provider } from './providers.js';
+import { buildHarnessAnnounce } from './harness-info.js';
 import type { SystemInfoSampler } from './system-info.js';
 import type { RunStore } from './run-store.js';
 import type { ErrorCode } from './errors.js';
@@ -60,6 +62,11 @@ export interface ToolDeps {
    *  fixtures compile unchanged; absent means "not wired" (models_list falls back to `source:'none'`
    *  for every ref). */
   observedStats?: ObservedStatsProvider;
+  /** pi harness v1 owner decision 2: set ONLY under `gateway:"pi"` — `models_list` filters its rows
+   *  to this provider set so anthropic models never appear in the listing (users only see openrouter
+   *  and ollama). Optional for the same reason `probeLookup`/`observedStats` are: absent -> every
+   *  provider the catalog returns is listed, unchanged pre-pi behavior. */
+  harnessProviders?: readonly Provider[];
   systemInfo: SystemInfoSampler;
   lookup: OwnerLookup;
   audit: AuditWriter;
@@ -394,7 +401,12 @@ export async function callTool(
       // rather than a raw catalog fetch per call — `entries` is really `ModelEntry[]` at the one
       // production wiring site (server.ts's `buildModelCatalog` is `ModelBook`'s own `source()`).
       const snapshot = await deps.modelBook.snapshot();
-      const entries = snapshot.entries as ModelEntry[];
+      // pi harness v1 owner decision 2: filtered BEFORE the catalog-level filter below, so an
+      // anthropic row never reaches enrichment/pagination — models_list never returns anthropic
+      // models under gateway:"pi".
+      const entries = (snapshot.entries as ModelEntry[]).filter(
+        (e) => deps.harnessProviders === undefined || (deps.harnessProviders as readonly string[]).includes(e.provider),
+      );
       // Issue #104: catalog-level filters first (on the raw rows, exactly as before), then the
       // enriched-row query — selection filters, sort, cursor page, field projection. `limit` now
       // pages (default 50, clamped to 200) instead of truncating, and the reply is a page wrapper.
@@ -411,11 +423,24 @@ export async function callTool(
       }
     }
     case 'models_probe': {
-      if (!deps.modelProber) return refusalEnvelope('INVALID_ARGUMENT', 'model probing is not available on this engine (no gateway configured)');
       const model = a['model'] as string | undefined;
+      // review M7: refused BEFORE the "no gateway configured" door below (and before ever reaching
+      // `ModelProber`) — the SAME gate `checkModelRef`'s own harnessProviders check and
+      // `models_list`'s filter apply (owner decision 2, above), so an explicit anthropic/* ref under
+      // gateway:"pi" is never probed, regardless of whether a prober is even wired on this engine.
+      if (model !== undefined) {
+        const verdict = checkModelRef(model, { entries: [], harnessProviders: deps.harnessProviders });
+        if (!verdict.ok && verdict.code === 'PROVIDER_UNSUPPORTED_BY_HARNESS') {
+          return refusalEnvelope('PROVIDER_UNSUPPORTED_BY_HARNESS', verdict.message);
+        }
+      }
+      if (!deps.modelProber) return refusalEnvelope('INVALID_ARGUMENT', 'model probing is not available on this engine (no gateway configured)');
       const results = await deps.modelProber.probeNow(model, a['timeoutMs'] as number | undefined);
       if (results === null) {
-        return refusalEnvelope('UNKNOWN_MODEL', `UNKNOWN_MODEL: "${model}" is not a valid <provider>/<model-id> ref (providers: anthropic, openrouter, ollama)`);
+        // review M7 (accuracy): lists only the providers THIS deployment actually accepts, not
+        // always the static full three — matches `checkModelRef`'s own malformed-ref message shape.
+        const providers = deps.harnessProviders ?? PROVIDERS;
+        return refusalEnvelope('UNKNOWN_MODEL', `UNKNOWN_MODEL: "${model}" is not a valid <provider>/<model-id> ref (providers: ${providers.join(', ')})`);
       }
       return { result: results };
     }
@@ -423,7 +448,10 @@ export async function callTool(
       const topN = a['topN'] !== undefined ? Math.floor(Number(a['topN'])) : 5;
       try {
         const view = await deps.systemInfo.get({ topN });
-        return { status: 'ok', result: view };
+        // pi harness v1 (spec "Disclosure"): the self-describing MCP surface states the harness,
+        // its provider set, unsupported tools, and effort/usage semantics — same source
+        // (harness-info.ts) the authoring guide and DEPLOY.md read, so the three can never drift.
+        return { status: 'ok', result: { ...view, harness: buildHarnessAnnounce(deps.harnessProviders) } };
       } catch (err) {
         return { status: 'error', error: { code: 'PROBE_ERROR', message: String(err) } };
       }

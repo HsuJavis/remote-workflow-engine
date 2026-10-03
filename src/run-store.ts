@@ -87,7 +87,7 @@ export function deriveAgentRecords(
       const data = usage.data as {
         tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
         provider?: string; model?: string; costUSD?: number; unpriced?: boolean; unmapped?: string[];
-        transport?: 'claude-agent-sdk' | 'direct-fetch'; proxyModel?: string;
+        transport?: 'claude-agent-sdk' | 'direct-fetch' | 'pi'; proxyModel?: string;
         // v26 (H-3/M-2 send-back repair, DES-188 lock): the failed-branch usage event carries both
         // — read here so a restart-reconstructed record stays byte-identical to the live one
         // `capture()` built (ARCH-115: "answerable from the record alone" must survive a restart).

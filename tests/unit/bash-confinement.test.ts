@@ -37,6 +37,11 @@ describe('UT-309 buildBashConfinement() — the whole posture as one pure functi
     // issue #128: `.mcp.json` moved from ENGINE_OWNED_CONFIG_PATHS into PROJECT_CONFIG_PATHS (the
     // engine no longer rewrites it per dispatch, so it is swept like any other planted config) —
     // same membership, new position (right after `.claude/launch.json`, ahead of `.claude/skills`).
+    // pi harness v1 review (M1/B1): a `.pi`/`.pi-agent-dir`/`.agents` addition here was REVERTED —
+    // this list is shared with the sdk gateway and must stay byte-identical (see
+    // bash-confinement.ts's own PROJECT_CONFIG_PATHS doc comment for the full reasoning: pi's
+    // full-control ResourceLoader never discovers anything under the workspace, so there was never a
+    // file for a pi-scoped sweep to protect against in the first place).
     expect(s.filesystem?.denyWrite).toEqual(['.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/commands', '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/launch.json', '.mcp.json', '.claude/skills'].map((rel) => join(ROOT, rel)));
     // Issue #101: the WHOLE home and the WHOLE workRoot are denied (every other run's workspace,
     // ~/.claude credentials, ~/.config, ...), then protectedFiles on top.

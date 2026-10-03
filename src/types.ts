@@ -245,7 +245,7 @@ export interface AgentRecord {
    *  from `provider`/`model`, which are now the RESOLVED provider/model the harness stamped (never
    *  the transport name). Optional: absent on a pre-v26 record and on a call that never reached a
    *  gateway (queued/refused). */
-  transport?: 'claude-agent-sdk' | 'direct-fetch';
+  transport?: 'claude-agent-sdk' | 'direct-fetch' | 'pi';
   /** v26 (DES-177, TASK-177): the LiteLLM-proxy-facing model id actually put on the wire (the
    *  `rwe-proxy-*` cloak or a raw passthrough id) — present only on the LiteLLM-proxy route,
    *  absent on an Anthropic-direct dispatch (there is no cloak to report). */
@@ -658,6 +658,11 @@ export interface HarnessDescriptor {
    *  posture confined). A readonly call is never dispatched unenforced, so `{mode:'readonly',
    *  enforced:false}` cannot occur — it is refused `BASH_READONLY_UNENFORCEABLE` before a session. */
   bash?: { mode: 'readonly' | 'full'; enforced: boolean };
+  /** pi harness v1 (spec "Transcript and harness record"): the PINNED
+   *  `@earendil-works/pi-coding-agent` version (harness-info.ts's `PI_HARNESS_VERSION`) this dispatch
+   *  ran under — the pi-gateway equivalent of `agent.confinement`'s `sdkVersion`. Absent on every
+   *  sdk-gateway descriptor (nothing pi-specific to report) and on every pre-pi-harness record. */
+  harnessVersion?: string;
   /** Project configuration (`.claude/settings.json`, `.claude/hooks/`, ... — PROJECT_CONFIG_PATHS)
    *  found in the workspace and removed before this dispatch's CLI could load it. Absent when none. */
   plantedConfigRemoved?: string[];

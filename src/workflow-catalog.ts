@@ -40,6 +40,7 @@ import { SystemClock } from './clock.js';
 // `unknown` is the point of the adjudication; list() carries the same typing.
 import type { ParamContract, AgentParamSpec, Ceilings, ModelRefWarning } from './params/contract.js';
 import { EMPTY_MODEL_CATALOG, parseModelRef, type ModelCatalogSnapshot } from './providers.js';
+import { piUnsupportedToolNames } from './harness-info.js';
 // v22 (DES-111, DES-112, TASK-107): the lifted, pure registration-enforcement checks (TASK-106) —
 // same codes submission used to produce, so no caller learns a new vocabulary (ADR-013).
 import { validateScriptEntry } from './script-checks.js';
@@ -641,6 +642,30 @@ export class WorkflowCatalog {
       throw codedError(paramsResult.code, paramsResult.message, paramsResult.detail);
     }
     for (const w of paramsResult.warnings ?? []) console.warn(`[model-catalog] workflow '${name}' agent '${w.label}': ${w.message}`);
+
+    // review M3: pi harness v1's spec says an unsupported tool (WebFetch/WebSearch/Task/
+    // NotebookEdit/...) is refused "at registration AND dispatch" — only dispatch
+    // (`PiGatewayClient.invoke`'s own `mapTools`) was wired; a workflow declaring
+    // `allowedTools:['Read','WebFetch']` registered successfully and only failed once a run actually
+    // tried to dispatch that agent, with the run left `completed` and the agent `failed`. Gated on
+    // `catalog.harnessProviders !== undefined` — the SAME flag `checkModelRef`'s anthropic-provider
+    // gate already uses, present only under `gateway:"pi"` (never under `"sdk"`, zero behavior change
+    // there). `scan.calls` already has each agent() call's literal `allowedTools` from `scanAgentCalls`
+    // above (DES-143) — no new script parse needed. An `'absent'` allowedTools (the deployment
+    // default, Read/Write/Edit/Glob/Grep/Bash — all pi-supported) needs no check.
+    if (catalog.harnessProviders !== undefined) {
+      for (const call of scan.calls) {
+        if (call.allowedTools === undefined || call.allowedTools === 'absent') continue;
+        const unsupported = piUnsupportedToolNames(call.allowedTools);
+        if (unsupported.length > 0) {
+          throw codedError(
+            'TOOL_UNSUPPORTED_BY_HARNESS',
+            `TOOL_UNSUPPORTED_BY_HARNESS: ${unsupported.join(', ')} ${unsupported.length === 1 ? 'has' : 'have'} no mapping under the pi harness (gateway:"pi") — agent '${call.label}' (line ${call.line}) declares allowedTools including it; only Read/Write/Edit/Bash/Grep/Glob/LS and mcp__<server>__<tool> names are supported`,
+            { line: call.line, label: call.label, unsupported },
+          );
+        }
+      }
+    }
 
     // v39 (owner decision 2026-09-30): `meta.phases` is now REQUIRED on every NEW registration and
     // must equal the script's own `phase()` calls (count/order/title — `PHASES_REQUIRED` /

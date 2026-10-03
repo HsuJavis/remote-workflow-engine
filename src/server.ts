@@ -20,8 +20,7 @@ import { SqliteRunStore } from './store/sqlite-run-store.js';
 import { WorkflowCatalog } from './workflow-catalog.js';
 import { SystemClock } from './clock.js';
 import { LiteLLMGatewayClient } from './gateway/client.js';
-import { ClaudeAgentSdkGatewayClient } from './gateway/claude-agent-sdk-client.js';
-import type { GatewayClient } from './gateway/client.js';
+import type { BindableGateway, GatewayClient } from './gateway/client.js';
 import type { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { SqliteSchedulerPort, type Schedule, type NewSchedule } from './scheduler.js';
 import type { RefusalReason, RunSummary } from './types.js';
@@ -71,6 +70,8 @@ import { createOwnerLookup } from './owner-lookup.js';
 import { DiagramRenderer, renderWithMmdc, type DiagramRendererOpts } from './diagram-render.js';
 import { ModelProbeStore, ModelProber, MODEL_PROBE_DEFAULTS, type ModelProbeConfig, type ProbeResult } from './models/model-probe.js';
 import { RunStoreObservedStats, type ObservedStatsProvider } from './models/observed-stats.js';
+import type { Provider } from './providers.js';
+import { buildHarnessAnnounce } from './harness-info.js';
 
 export interface ServerConfig {
   bind?: string;   // default '127.0.0.1'
@@ -221,6 +222,14 @@ export interface ServerConfig {
   // enabled, weekly); a direct createServer() caller that omits it gets NO periodic probe (tests),
   // while the admin `models_probe` tool and the probe-backed models_list fields work either way.
   modelProbe?: ModelProbeConfig;
+  // pi harness v1 owner decision 2: set ONLY under `gateway:"pi"` (composeConfig()) — the closed set
+  // of providers that gateway supports (`['openrouter', 'ollama']`; never 'anthropic'). Deliberately
+  // NOT a `FileConfig`/rwe.config.json key (same convention as `gateway`/`confinementPosture`) — it
+  // is DERIVED from the gateway choice, never independently declared. Forwarded to WorkflowCatalog's
+  // `catalogSnapshot` (registration) and RunManager (admission, both top-level and nested) so
+  // `checkModelRef`'s provider gate fires at every model-validation choke point, and to the
+  // `models_list`/`/api/models` readers so anthropic models never appear in the catalog listing.
+  harnessProviders?: readonly Provider[];
 }
 
 export interface Server {
@@ -388,6 +397,9 @@ async function handleDashboardRequest(
   probeLookup: (provider: string, model: string) => ProbeResult | undefined = () => undefined,
   // Issue #104: engine-measured stats behind each row's `observed` (absent -> source 'none').
   observedStats?: ObservedStatsProvider,
+  // pi harness v1 owner decision 2: forwarded `ServerConfig.harnessProviders` — same gate as the
+  // models_list tool (call-tool.ts); absent -> every provider the catalog returns is listed.
+  harnessProviders?: readonly Provider[],
   // Dashboard auth spec §A: WHO is asking (resolved by the gate) and the SAME sync OwnerLookup
   // `authorize()` uses for every MCP tool call — each route below applies the corresponding
   // tool's rule to this principal, so the dashboard can never show what the tool would refuse.
@@ -456,7 +468,7 @@ async function handleDashboardRequest(
       if (!allowed('system_info', {})) return;
       const view = await systemInfo.get({ topN: 20 });
       // v24 (DES-141): auth = {enabled, principalsCount, defaultRole} (ARCH-090).
-      sendJson(res, 200, { ...view, auth: authAnnounce });
+      sendJson(res, 200, { ...view, auth: authAnnounce, harness: buildHarnessAnnounce(harnessProviders) });
       return;
     }
     // v12 (REQ-078, DES-075/076): enriched model list — returns EnrichedModelEntry[] directly.
@@ -466,7 +478,11 @@ async function handleDashboardRequest(
     if (path === '/api/models') {
       if (!allowed('models_list', {})) return;
       const snapshot = await modelBook.snapshot();
-      const entries = snapshot.entries as ModelEntry[];
+      // pi harness v1 owner decision 2: same gate as the models_list tool (call-tool.ts) — anthropic
+      // rows never reach this dashboard/API surface under gateway:"pi".
+      const entries = (snapshot.entries as ModelEntry[]).filter(
+        (e) => harnessProviders === undefined || (harnessProviders as readonly string[]).includes(e.provider),
+      );
       const observed = observedStats?.getAll(); // issue #104: one snapshot per request, joined by ref
       sendJson(res, 200, filterCatalog(entries).map((e) => enrichModelEntry(e, snapshot.fetchedAt, probeLookup(e.provider, e.model), observed?.get(`${e.provider}/${e.model}`))));
       return;
@@ -874,7 +890,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // caching layer (replaces the old "feed the same non-empty DEFAULT_ALIASES table to both
     // registration and admission" rule — there is now exactly one live catalog, not two tables that
     // could independently drift).
-    catalogSnapshot: () => modelBook.snapshot().then(toModelCatalogSnapshot),
+    catalogSnapshot: () => modelBook.snapshot().then((s) => toModelCatalogSnapshot(s, config?.harnessProviders)),
     ceilings,
     eventSink,
   });
@@ -932,8 +948,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // 2026-09-26 (owner decision 10): probe targets are the distinct full refs registered workflow
   // versions declare — a LIVE accessor (never memoized), so a fresh registration is probed without
   // a restart.
+  // review M7: `harnessProviders` forwarded so the prober (both the admin `models_probe({model})`
+  // door and its own periodic sweep) never probes a legacy anthropic ref left in the catalog from
+  // before this deployment switched to gateway:"pi" — see `ModelProber`'s own field doc.
   const modelProber = gateway
-    ? new ModelProber({ gateway, modelRefs: () => catalog.distinctModelRefs(), store: probeStore, workRoot, clock, config: config?.modelProbe ?? { ...MODEL_PROBE_DEFAULTS, enabled: false } })
+    ? new ModelProber({ gateway, modelRefs: () => catalog.distinctModelRefs(), store: probeStore, workRoot, clock, config: config?.modelProbe ?? { ...MODEL_PROBE_DEFAULTS, enabled: false }, harnessProviders: config?.harnessProviders })
     : undefined;
   modelProber?.start();
   // Issue #104: background-refreshes so `models_list`'s `observed` field reads a warm cache on the
@@ -957,7 +976,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // CALLS this function later (on a nested workflow() dispatch), by which point construction has
   // completed (same convention `buildToolDeps`'s own forward reference to `principalAdmin` already
   // relies on).
-  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, modelBook, eventSink, confinementPosture: config?.confinementPosture, probeLookup, diskFloor, serviceAccountStatus: (principal) => principalAdmin.serviceAccountStatus(principal) });
+  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, modelBook, eventSink, confinementPosture: config?.confinementPosture, probeLookup, diskFloor, serviceAccountStatus: (principal) => principalAdmin.serviceAccountStatus(principal), harnessProviders: config?.harnessProviders });
   // v8 Defer B (REQ-057/058): durable webhook ingress registry, same workRoot convention.
   const webhooks = new WebhookRegistry({ clock, runManager, catalog, dbPath: config?.webhookDbPath ?? join(workRoot, 'webhooks.db') });
   // v22 (DES-113, TASK-108) SHRINK: SubmissionValidatorDeps is now `{catalog}` — the alias/MCP-name/
@@ -1050,7 +1069,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // door already treats as "don't gate" (call-tool.ts's own documented default).
   function buildToolDeps(webhookBaseUrl: string, isRemoteSubmission = false): ToolDeps {
     return {
-      facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, modelBook, probeLookup, modelProber, observedStats, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store, confinementPosture: config?.confinementPosture, isRemoteSubmission, principals: principalAdmin,
+      facade, scheduler, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, issueReporter, modelBook, probeLookup, modelProber, observedStats, harnessProviders: config?.harnessProviders, systemInfo: systemInfoSampler, lookup: ownerLookup, audit: store, confinementPosture: config?.confinementPosture, isRemoteSubmission, principals: principalAdmin,
       // Service accounts spec (owner decision 2026-10-03): wired unconditionally — `serviceAccounts`
       // is constructed on every boot, same lifetime as `principalAdmin` just above.
       serviceAccounts, revokeServiceAccountTokens: (principal) => authTokenStore?.revokeAllFor(principal) ?? 0,
@@ -1431,7 +1450,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // the other, with no type error. Same one-declaration rule as
     // `DEFAULT_CEILINGS`/`UNBOUND_ENTRY_LABEL`.
     const dispatchDashboard = (principal: Principal): void => {
-      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, modelBook, authAnnounce, diagrams, probeLookup, observedStats, { principal, lookup: ownerLookup, isRemoteSubmission }).catch((err) => {
+      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, modelBook, authAnnounce, diagrams, probeLookup, observedStats, config?.harnessProviders, { principal, lookup: ownerLookup, isRemoteSubmission }).catch((err) => {
         // v27b (DES-198, TASK-203): 'internal' — the closed reason set's one member with no warning
         // by construction (a promise rejection `handleDashboardRequest`'s own try/catch didn't catch).
         console.warn(JSON.stringify({ event: 'dashboard_api_degraded', route: (req.url ?? '').split('?')[0], reason: 'internal', detail: (err as Error)?.message }));
@@ -2204,15 +2223,19 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // production path is now the one `asset-sync-v24.test.ts` already covers. (`assetsOf` is left in
   // place, orphaned in production but still pinned by IT catalog-v24 — v25 debt, not a silent
   // deletion that would weaken a test.)
-  if (gateway instanceof ClaudeAgentSdkGatewayClient) {
-    gateway.bindResolveMcp((workflow, names) => resolveMcp(assetCatalogPort, workflow, names));
-    // v37 Gate 6.5+7 (seam-wiring check, DES-256/ARCH-178): `bindEventSink` was called only by
-    // `agent-confinement-events.test.ts` (UT-316..319) — same shape as `bindResolveMcp` above, same
-    // hole `bindResolveMcp`'s own comment already names ("left unbound, out of scope"). Wired to the
-    // SAME `eventSink` instance the catalog/RunManager audit lines already share (line ~741), so
-    // `agent.confinement` redacts through the SAME secretValueProvider, not a second unaudited path.
-    gateway.bindEventSink(eventSink);
-  }
+  // pi harness v1 (research doc §3.1): a structural-capability check (`BindableGateway`,
+  // src/gateway/client.ts) instead of `instanceof ClaudeAgentSdkGatewayClient` — a second
+  // `GatewayClient` implementation (PiGatewayClient) can opt into either bind without this site
+  // growing a second `instanceof` branch. Behaviour-unchanged for the sdk gateway: it still
+  // implements both methods, so both calls below still fire exactly as before.
+  const bindable = gateway as unknown as BindableGateway | undefined;
+  bindable?.bindResolveMcp?.((workflow, names) => resolveMcp(assetCatalogPort, workflow, names));
+  // v37 Gate 6.5+7 (seam-wiring check, DES-256/ARCH-178): `bindEventSink` was called only by
+  // `agent-confinement-events.test.ts` (UT-316..319) — same shape as `bindResolveMcp` above, same
+  // hole `bindResolveMcp`'s own comment already names ("left unbound, out of scope"). Wired to the
+  // SAME `eventSink` instance the catalog/RunManager audit lines already share (line ~741), so
+  // `agent.confinement` redacts through the SAME secretValueProvider, not a second unaudited path.
+  bindable?.bindEventSink?.(eventSink);
 
   // v24 (DES-141): the boot announcement — "visibly", built rather than merely asserted.
   // eslint-disable-next-line no-console

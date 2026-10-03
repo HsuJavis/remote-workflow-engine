@@ -11,5 +11,5 @@
     "skipLibCheck": true
   },
   "include": ["src", "tests", "vitest.config.ts"],
-  "exclude": ["node_modules", "dist", "src/sandbox/child-entry.ts"]
+  "exclude": ["node_modules", "dist", "src/sandbox/child-entry.ts", "src/gateway/pi-child/entry.ts"]
 }

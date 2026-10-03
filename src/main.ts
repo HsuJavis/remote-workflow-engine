@@ -29,7 +29,7 @@ import type { ServerConfig } from './server.js';
 import { ClaudeAgentSdkGatewayClient } from './gateway/claude-agent-sdk-client.js';
 import type { ClaudeAgentSdkGatewayConfig } from './gateway/claude-agent-sdk-client.js';
 import { validateHostPathGrants, formatGrantRefusals, toolchainReadCandidates, CLI_SCRATCH_DIR, cliScratchRefusal } from './gateway/bash-confinement.js';
-import { probeConfinement, CONFINEMENT_REMEDIATION } from './gateway/confinement-probe.js';
+import { probeConfinement, CONFINEMENT_REMEDIATION, PI_CONFINEMENT_REMEDIATION_ADDENDUM } from './gateway/confinement-probe.js';
 import type { ConfinementProbeResult } from './gateway/confinement-probe.js';
 import { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
@@ -38,8 +38,20 @@ import { assertWorkRootIsolated } from './workroot-guard.js';
 import type { PrincipalRole as Role } from './authz.js';
 import { validateModelProbeConfig } from './models/model-probe.js';
 import { validateCasQuotaConfig, validateDiskFloorConfig } from './cas-quota.js';
+import { PiGatewayClient } from './gateway/pi-gateway-client.js';
+import { probePiPath } from './gateway/pi-confinement-probe.js';
+import type { Provider } from './providers.js';
 
-type GatewayChoice = 'sdk' | 'direct-fetch';
+// pi harness v1 owner decision 2: the closed provider set the pi harness supports — never
+// 'anthropic' (no Anthropic subscription token/API key is used under pi). Exported so the wiring
+// test and any other reader can assert against the SAME literal rather than a re-typed copy.
+export const PI_HARNESS_PROVIDERS: readonly Provider[] = ['openrouter', 'ollama'];
+
+// pi harness v1 (owner decision 1): a THIRD value, `"pi"`, alongside the existing two. Default
+// stays "sdk"; production stays on "sdk". One harness per engine — no per-agent/per-run switch
+// (pi-harness-research.md §5.1 option A, the chosen design; option B — a per-agent harness router —
+// is deferred to v2).
+type GatewayChoice = 'sdk' | 'direct-fetch' | 'pi';
 
 function safeRealpath(p: string): string {
   try {
@@ -59,7 +71,10 @@ function isNonEmptyString(s: string | undefined): s is string {
 // meaningful field is a FUNCTION (the injected renderer), which a JSON config file cannot express.
 // Its two numeric knobs are engine constants on purpose (`diagram-render.ts`), so there is nothing
 // here for composeConfig to forward and therefore nothing it can forget to forward.
-interface FileConfig extends Partial<Omit<ServerConfig, 'gateway' | 'principals' | 'diagramRender' | 'confinementPosture' | 'casQuota' | 'diskFloor'>> {
+// pi harness v1 (owner decision 2): `harnessProviders` joins `confinementPosture` in this Omit —
+// both are DERIVED (from the probe / from the `gateway` choice), never an independently-declared
+// rwe.config.json key.
+interface FileConfig extends Partial<Omit<ServerConfig, 'gateway' | 'principals' | 'diagramRender' | 'confinementPosture' | 'casQuota' | 'diskFloor' | 'harnessProviders'>> {
   /** Owner decision 2026-10-02: per-role CAS upload quota as written in rwe.config.json —
    *  `{user?, author?, admin?}`, each a byte count, a size string ("5GiB", "500MB") or
    *  "unlimited"/null. Validated + normalized (bytes, defaults filled) by `validateCasQuotaConfig`;
@@ -167,18 +182,38 @@ export const RETIRED_CONFIG_KEYS: Record<string, string> = {
  *  `admissionRefusal()`'s call sites in `run-manager.ts` so that deleting a refusal also fails it.
  *  Neither half alone would have caught round 4's drift; the count is deliberately coarse, and its
  *  job is to force whoever changes the admission surface back to this line. */
-export function confinementBannerLine(probe: { posture: 'confined' | 'unconfined'; reason?: string }): string {
+// review round 2 (owner ruling): round 1's L7 fix made the CONFINED line's wording generic
+// ("confinement probe passed") for BOTH gateways, reasoning that "nested-userns probe passed" named
+// the sdk-specific mechanism — true, but the fix changed the sdk gateway's own boot text too, which
+// the owner ruled is not acceptable: `ERROR_CATALOG.CONFINEMENT_UNAVAILABLE.hint` is a static
+// constant baked at module load (it cannot vary by gateway either), so "sdk must stay byte-identical
+// to master" extends to this banner. `gateway` (default `'sdk'`, matching every pre-existing call
+// site/test) restores master's EXACT sdk-mode string; only `gateway:'pi'` gets the pi-specific one —
+// the one place that actually knows which probe ran is main()'s own boot sequence (`fileConfig.gateway`),
+// not this pure function guessing from the measured `probe` value alone.
+export function confinementBannerLine(probe: { posture: 'confined' | 'unconfined'; reason?: string }, gateway: 'sdk' | 'pi' = 'sdk'): string {
   if (probe.posture === 'confined') {
+    if (gateway === 'pi') {
+      // pi-path confinement is a SEPARATE measurement from the sdk gateway's own nested-bwrap probe
+      // (probePiPath(), real srt bwrap+ripgrep wrapping — see pi-path-probe.ts's own header) — named
+      // accurately here, never borrowing the sdk probe's own "nested-userns" wording.
+      return '[remote-workflow-engine] Bash confinement: CONFINED (pi-path confinement probe passed at boot)';
+    }
     return '[remote-workflow-engine] Bash confinement: CONFINED (nested-userns probe passed at boot)';
   }
   // issue #93 item 1: appends the SAME `CONFINEMENT_REMEDIATION` the `CONFINEMENT_UNAVAILABLE`
   // error hint carries (errors.ts) — an operator reading this boot line and one reading the wire
   // error are told the identical fix, never two hand-typed copies that can drift.
+  // review round 2 (owner ruling): the pi rg addendum is appended HERE, only in the one branch that
+  // actually knows `gateway:"pi"` is running — `CONFINEMENT_REMEDIATION` itself (and the
+  // CONFINEMENT_UNAVAILABLE error hint, which shares it) stays byte-identical to master's sdk-only
+  // text for every other caller.
   return (
     `[remote-workflow-engine] Bash confinement: UNCONFINED (${probe.reason ?? 'nested-userns probe failed'})` +
     ' — a run is refused (CONFINEMENT_UNAVAILABLE) when it is a remote submission, OR its trigger was created remotely,' +
     ' OR the version it resolves to was registered remotely; only a local submission of a locally-registered version' +
-    ' proceeds, unconfined. Remediation: ' + CONFINEMENT_REMEDIATION
+    ' proceeds, unconfined. Remediation: ' + CONFINEMENT_REMEDIATION +
+    (gateway === 'pi' ? ' ' + PI_CONFINEMENT_REMEDIATION_ADDENDUM : '')
   );
 }
 
@@ -536,9 +571,35 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // it did before this field existed — no test anywhere newly gates on a posture it never asked
     // about.
     ...(deps.confinementProbe ? { confinementPosture: deps.confinementProbe.posture } : {}),
+    // pi harness v1 owner decision 2: DERIVED from the gateway choice, never an independent
+    // rwe.config.json key (joins the FileConfig Omit above) — set only under gateway:"pi" so
+    // `checkModelRef`'s provider gate and the models_list/`/api/models` filters engage.
+    ...(gatewayChoice === 'pi' ? { harnessProviders: PI_HARNESS_PROVIDERS } : {}),
   };
 
-  if (gatewayChoice === 'sdk') {
+  if (gatewayChoice === 'pi') {
+    // pi harness v1 owner decision 3: no LiteLLM proxy — pi talks to OpenRouter and Ollama
+    // natively. `config.proxyManager` stays unset (nothing for main()'s shutdown handler to
+    // cascade-kill) and `deps.proxyManager` (the "sdk" branch's own test seam) is never touched —
+    // a caller that supplies one under gateway:"pi" gets it silently ignored, which is correct:
+    // this branch has nothing to hand it to.
+    config.gateway = new PiGatewayClient({
+      secretSource: loadSecretSourceFromEnv(),
+      ollamaBaseUrl: process.env['OLLAMA_BASE_URL'],
+      timeoutMs: config.timeoutMs,
+      retries: fileConfig.retries,
+      defaultAllowedTools: fileConfig.defaultAllowedTools,
+      // slice (e): the SAME grant/protected/workRoot block the sdk branch forwards below, from the
+      // SAME resolution above (resolvedGrants/protectedFiles/workRoot/homeDir/allowReadPaths) — one
+      // resolution, two gateways.
+      confinement: { allowHostPaths: resolvedGrants, protectedFiles, workRoot, homeDir, allowReadPaths },
+      // v37 (ARCH-181/262): `deps.confinementProbe` here is main()'s SEPARATE pi-path probe
+      // (probePiPath(), gated on `fileConfig.gateway === 'pi'` at the one real call site) — never
+      // the sdk path's nested-bwrap probe. Every existing test call site omits it, so this gateway
+      // falls back to its own 'unconfined'-shaped default (no `confinementPosture` set at all).
+      ...(deps.confinementProbe ? { confinementPosture: deps.confinementProbe.posture } : {}),
+    });
+  } else if (gatewayChoice === 'sdk') {
     // Same managed LiteLLM proxy subprocess the direct-fetch path can opt into (D-R1) — started
     // once here so its baseUrl is known before constructing the SDK session's ANTHROPIC_BASE_URL.
     // 2026-09-26 (alias mechanism removed): the proxy's model_list is now STATIC — no alias table
@@ -640,8 +701,9 @@ async function runCheckConfig(): Promise<void> {
     });
     // v37 (ARCH-181): --check-config is read-only apparatus (its own header comment: "NO side
     // effects") — the nested-bwrap probe is a READ, not a mutation, and reporting the posture here
-    // is exactly the "at startup, before any run" visibility REQ-218 asks for.
-    const confinementProbe = probeConfinement();
+    // is exactly the "at startup, before any run" visibility REQ-218 asks for. pi harness v1: the
+    // SAME gateway-keyed probe choice `main()`'s real boot path uses (see its own comment).
+    const confinementProbe = fileConfig.gateway === 'pi' ? await probePiPath() : probeConfinement();
     // v37 Gate-8 send-back (finding A2): a clearly-labelled NON-created placeholder — this command's
     // own "no side effects" contract forbids a real `mkdtempSync` here. It can never reach grant
     // validation (that still requires an EXPLICIT `fileConfig.workRoot`/`RWE_WORK_ROOT`, checked
@@ -675,7 +737,11 @@ async function main(): Promise<void> {
   // run is ever submitted, not at the first agent() call. `main()` is the ONLY real caller; every
   // test constructs `composeConfig()` directly and omits this (safe default: no door gating, no
   // `confinementPosture` on the gateway — see ComposeConfigDeps.confinementProbe's own doc comment).
-  const confinementProbe = probeConfinement();
+  // pi harness v1 (spec "Confinement posture"): under gateway:"pi" this is a SEPARATE measurement
+  // (probePiPath(), src/gateway/pi-confinement-probe.ts) — srt's bundled sandbox-runtime version and
+  // its ripgrep-binary dependency are not the same question the sdk path's `probeConfinement()`
+  // answers. Exactly one of the two ever runs; never both, never neither.
+  const confinementProbe = fileConfig.gateway === 'pi' ? await probePiPath() : probeConfinement();
   // v37 Gate-8 send-back (finding A2, ARCH-177 amendment): ONE `mkdtempSync` — the SAME resolved
   // value `ServerConfig.workRoot` and the confinement block both carry, computed once so a second
   // resolution (server.ts:655's own `??` fallback, kept for direct `createServer()` test callers)
@@ -697,7 +763,7 @@ async function main(): Promise<void> {
   // is confined to that workspace") survived 70 warnings and two days without anything failing.
   // Never say "isolated"/"sandboxed" without the measured fact attached — the line itself is
   // `confinementBannerLine()` above, which a test pins against the admission rule it describes.
-  console.log(confinementBannerLine(confinementProbe));
+  console.log(confinementBannerLine(confinementProbe, fileConfig.gateway === 'pi' ? 'pi' : 'sdk'));
   // Healthcheck-friendly startup line other tooling can grep for.
   console.log('[remote-workflow-engine] ready');
 

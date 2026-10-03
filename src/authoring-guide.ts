@@ -29,6 +29,7 @@ import { TOOL_SPECS } from './tool-specs.js';
 // v26 (DES-187, ARCH-121, TASK-193, ADR-041) — 2026-09-26 (alias mechanism removed): the provider
 // capability table, read from the same data `parseModelRef`/`checkModelRef` check against.
 import { PROVIDER_CAPS, PROVIDERS } from './providers.js';
+import { PI_UNSUPPORTED_TOOLS } from './harness-info.js';
 
 export interface GuideCeilings {
   maxTimeoutMs: number;
@@ -495,6 +496,56 @@ function exampleRows(examples: readonly GuideExample[]): string {
   ).join('\n\n');
 }
 
+/** pi harness v1 (spec "Disclosure"): static text describing the ALTERNATIVE `gateway:"pi"`
+ *  configuration — this guide is generated once (`npm run gen:authoring`), not per-deployment, so it
+ *  cannot read a live `ServerConfig.harnessProviders` the way `system_info`'s `harness` field does;
+ *  it instead documents the gap honestly as a configuration fact, and points at `system_info` for
+ *  which one THIS deployment actually runs. Kept in sync with `harness-info.ts`'s own data (the
+ *  provider list and unsupported-tools list are literals there; read the same list here). */
+function harnessDisclosureParagraph(): string {
+  return (
+    'This deployment may instead be configured with `gateway:"pi"` in rwe.config.json (default and ' +
+    'production stay `"sdk"`) — a different harness with the SAME agent()/tool contract but a ' +
+    "narrower surface: only `openrouter`/`ollama` models are usable (an `anthropic/*` ref is refused " +
+    "`PROVIDER_UNSUPPORTED_BY_HARNESS` at registration/run_start/admission — route a Claude model " +
+    'through `openrouter/anthropic/...` instead); the tool surface is limited to Read/Write/Edit/' +
+    `Bash/Grep/Glob/LS (${PI_UNSUPPORTED_TOOLS.join('/')} are refused \`TOOL_UNSUPPORTED_BY_HARNESS\`). ` +
+    "Pre-existing Glob quirk, unrelated to pi specifically but worth restating here since pi's Glob " +
+    "maps straight onto it: a `**/*.txt`-shaped pattern does not match a file sitting directly in the " +
+    "searched directory (only one nested one level or deeper does) — unlike Claude's own Glob tool, " +
+    'which matches the root too; write `*.txt` (or `{,**/}*.txt`) when top-level files must match. ' +
+    'MCP and skills ARE supported under `gateway:"pi"` (resolved through the same shared resolver/ ' +
+    'materializer as the sdk gateway — `${secret:}`/`${run:dir}` substitution never diverges between ' +
+    'the two), with two pi-specific differences: a declared skill requires `Read` or `Bash` in ' +
+    "`allowedTools` (pi only lists a skill in its system prompt when one of those two tools is present " +
+    '— no separate `Skill` tool exists on pi — refused `SKILL_REQUIRES_READ_TOOL` up front with ' +
+    'neither), and a `seedManifest`/`workspace_push` skill file\'s ' +
+    '`exec:true` is only ever a file-permission bit (0o755 vs 0o644) on pi — there is no inline-shell ' +
+    '(`!cmd`) skill syntax to gate the way the sdk gateway\'s `disableSkillShellExecution` does. ' +
+    "Known network difference: pi's Bash network policy is allow-all, but the underlying sandbox " +
+    'library routes ALL traffic through its own MITM proxy once any network field is set at all, which ' +
+    'makes `localhost`/`127.0.0.1` destinations from inside the confined Bash unreachable — unlike ' +
+    '`gateway:"sdk"`, whose Bash leaves the network field unset entirely and keeps full host network ' +
+    'including loopback. A workflow whose Bash needs a same-host service must use `gateway:"sdk"` for ' +
+    'now (see DEPLOY.md §1b2 for the full writeup). ' +
+    "Known unconfined-posture limitation (review R2-2): a Bash command that backgrounds a process " +
+    "via `setsid` (not `nohup`, which stays reachable) escapes this dispatch's process group and " +
+    'survives even normal completion — accepted because the unconfined posture only ever runs a ' +
+    'local submission to begin with; the confined posture never has this gap (bwrap\'s own pid-' +
+    'namespace teardown reaps everything regardless of process group). ' +
+    'Confined Bash\'s own `TMPDIR` is a per-dispatch directory this engine verifies, never srt\'s ' +
+    'shared `/tmp/claude` fallback — a host `/tmp/claude` (any local user can create one) is readable ' +
+    '(the same exposure as every other host `/tmp` path) but never writable from inside confined ' +
+    'Bash, and its mere presence only emits an operator-visible warning event, never a refusal ' +
+    '(review round 4, R4-2 — see DEPLOY.md §1b2 for the full writeup). Other pi-specific refusals an ' +
+    'operator may see on a failed agent (run_status.agentFailures / run_agent_log, not a direct ' +
+    'tool-call error) are listed with the rest of this engine\'s error codes below, and in DEPLOY.md ' +
+    '§1b2\'s own remediation table. ' +
+    "`system_info`'s `harness` field states which one THIS engine runs " +
+    '(`{name, version, providers, unsupportedTools, effort, usage}`) — read it rather than assuming.'
+  );
+}
+
 /** 2026-09-26 (alias mechanism removed, owner decisions 1/2/6): the model-ref rule — static text,
  *  the same on every deployment (no resolved table to interpolate any more). */
 function modelRefSentence(): string {
@@ -514,7 +565,14 @@ function modelRefSentence(): string {
     '(the `.default` above) and may be replaced with a different full ref per run via ' +
     '`run_start`\'s `overrides.agents.<label>.model` — there is no other override surface (a ' +
     'scheduled/webhook-fired run, and a nested `workflow()` call, always use the target version\'s ' +
-    'own bound `.default`).';
+    'own bound `.default`). ' +
+    // review L7: this rule is static text, identical on every deployment (this guide's own header
+    // comment) — but a `gateway:"pi"` deployment narrows the provider set to just two of these
+    // three; said in full, with the exact refusal code, in the pi harness note further below. Named
+    // here too so a reader who stops at THIS sentence (the first place "three providers" is stated)
+    // is not left believing anthropic always works.
+    'A `gateway:"pi"` deployment narrows this to only `openrouter`/`ollama` — see the pi harness note ' +
+    'below for the exact refusal code and remediation.';
 }
 
 /** v24 Gate 7.5 (D-4): the node-shape table, rendered from `checkMermaid`'s own closed grammar. */
@@ -911,7 +969,8 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '`avgCostUsdPerCall` includes the harness overhead, so it predicts a run\'s cost better than unit ' +
         'price); `benchmarks` are third-party scores republished by OpenRouter (null when none). ' +
         '`effortAppliedOnTransport` says whether an agent\'s `effort` actually reaches that model on this ' +
-        "engine's dispatch path — it does not for openrouter or ollama, whatever `effortDeclared` says.",
+        "engine's dispatch path — it does not for openrouter or ollama, whatever `effortDeclared` says.\n\n" +
+        harnessDisclosureParagraph(),
     ),
   );
 

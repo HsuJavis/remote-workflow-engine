@@ -144,7 +144,7 @@ export type GatewayResult =
        *  across this codebase — `NULL_GATEWAY`, per-call error literals, every test fake — would
        *  otherwise need a mechanical edit unrelated to what they test; `capture()` (agent-executor.ts)
        *  already treats an absent `transport` as the pre-v26 case. */
-      transport?: 'claude-agent-sdk' | 'direct-fetch';
+      transport?: 'claude-agent-sdk' | 'direct-fetch' | 'pi';
       /** v26 (DES-177, TASK-177): the proxy-facing model id actually put on the wire (LiteLLM's
        *  resolution target) — present only on a call that went through a LiteLLM proxy, absent on a
        *  direct-to-provider dispatch (there is no cloak to report). */
@@ -190,7 +190,7 @@ export type GatewayResult =
       /** v26 (DES-171): unmapped `system` message subtypes observed before this failure. */
       unmapped?: string[];
       /** v26 (DES-177): which wire this failed attempt went out on — see the ok:true arm's doc. */
-      transport?: 'claude-agent-sdk' | 'direct-fetch';
+      transport?: 'claude-agent-sdk' | 'direct-fetch' | 'pi';
     };
 
 /** DES-249 (ARCH-171/173, TASK-247, REQ-216/K6+K7, REQ-207): the one `attempts` formula both
@@ -199,6 +199,28 @@ export type GatewayResult =
  *  exactly ONE attempt (the guide's own promise); a timed call gets `1 + retries` (clamped at 0). */
 export function attemptsFor(retries: number | undefined, timeoutMs: number | undefined): number {
   return timeoutMs === undefined ? 1 : 1 + Math.max(0, retries ?? 0);
+}
+
+/** pi harness v1 (research doc §3.1: "Generalize this to an optional interface ... instead of
+ *  adding a second `instanceof`"): the two late binds `server.ts` wires onto a constructed gateway
+ *  AFTER composeConfig() builds it (the asset-catalog-backed MCP resolver, and the confinement-event
+ *  sink) — both optional, both a structural capability check (`'bindResolveMcp' in gateway`) rather
+ *  than a concrete-class `instanceof`, so a second `GatewayClient` implementation (PiGatewayClient)
+ *  can opt in without server.ts growing a second `instanceof` branch. A gateway that implements
+ *  neither (LiteLLMGatewayClient today) is untouched — omitting both methods is a complete, valid
+ *  implementation of this interface. */
+export interface BindableGateway {
+  /** Same shape as `ClaudeAgentSdkGatewayConfig['resolveMcp']` / `ResolveMcpFn`
+   *  (mcp-config-resolver.ts) — not imported from either to avoid a cross-import between the two
+   *  gateway modules; the structural shape is the contract. */
+  bindResolveMcp?(resolve: (workflow: string, names: string[]) => Promise<{ configs: Record<string, unknown>; missing: string[] }>): void;
+  /** Same shape as `EventSink` (event-log.ts: `(event: EngineEvent) => void`) — not imported here
+   *  for the same cross-import reason as `bindResolveMcp` above. `any` (not `unknown`) deliberately:
+   *  this is a structural bridge type, not a safety boundary — `unknown` would make a real,
+   *  narrower-parameter `EventSink` function unassignable here (contravariance), defeating the
+   *  whole point of the bridge. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  bindEventSink?(sink: (event: any) => void): void;
 }
 
 export interface GatewayClient {

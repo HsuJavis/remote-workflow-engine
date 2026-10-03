@@ -533,7 +533,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `workRoot` | 狀態/journal/run 工作目錄根，**必須在任何 `.git`/`CLAUDE.md` 祖先之外**（否則啟動時 `WORKROOT_INSIDE_PROJECT` fail-fast） | `string` / 系統暫存目錄自動建立 | 否 | v1 |
 | `rwe.config.json` → `timeoutMs` | 單次 `agent()` LLM 呼叫的逾時斷路器（非整體 workflow 逾時） | `number` / `15000`（`gateway:"sdk"` 零設定也套用此保底值） | 否 | v1 |
 | `rwe.config.json` → `retries` | `agent()` 呼叫失敗重試次數 | `number` / `1` | 否 | v1 |
-| `rwe.config.json` → `gateway` | `"sdk"`（預設，真正的 `@anthropic-ai/claude-agent-sdk` headless session，有工具迴圈）或 `"direct-fetch"`（回退到直接對各供應商 `fetch()`，或搭配 `useLiteLLMProxy:true` 走 LiteLLM 代理；本來就不具備工具迴圈能力，適合純本機/內網不需要工具迴圈的部署） | `"sdk"｜"direct-fetch"` / `"sdk"` | 否 | v1 |
+| `rwe.config.json` → `gateway` | `"sdk"`（預設，真正的 `@anthropic-ai/claude-agent-sdk` headless session，有工具迴圈）、`"direct-fetch"`（回退到直接對各供應商 `fetch()`，或搭配 `useLiteLLMProxy:true` 走 LiteLLM 代理；本來就不具備工具迴圈能力，適合純本機/內網不需要工具迴圈的部署），或 `"pi"`（pi harness，v1 起新增——見下方「§1b2 pi harness（替代 gateway）」一節；**production 仍停在 `"sdk"`**） | `"sdk"｜"direct-fetch"｜"pi"` / `"sdk"` | 否 | v1 / pi-v1 |
 | `rwe.config.json` → `useLiteLLMProxy` | `direct-fetch` 路徑是否額外走 LiteLLM 代理（`false` 時 ollama 走原生直連 `localhost:11434`，完全不碰 LiteLLM，免依賴部署常用） | `boolean` / `true` | 否 | v1 |
 | `rwe.config.json` → `defaultAllowedTools` | `gateway:"sdk"` 路徑下，`agent()` 呼叫沒帶 `opts.allowedTools` 時套用的預設工具清單；只有兩層優先序：呼叫端 `opts.allowedTools` > 此鍵（省略此鍵才落到內建預設） | `string[]` / `["Read","Write","Edit","Glob","Grep","Bash"]` | 否 | v34 |
 | `rwe.config.json` → `allowedHosts` | `bind:"0.0.0.0"` 時額外允許的 Host/Origin authority（LAN IP、代理主機名）清單，供 Host/Origin 白名單（§6）核對 | `string[]` / `[]` | 否（`0.0.0.0` bind 時建議設定） | v11 |
@@ -617,6 +617,205 @@ curl -s http://localhost:8787/api/models | python3 -c \
 設定檔就變成機密。）注意：`RWE_SECRET_*` 是同一個 secret store，任何 workflow 的 MCP 設定也能以
 `${secret:GOOGLE_CLIENT_SECRET}` 引用它——跟 `RWE_SECRET_GITHUB_TOKEN` 等既有值是同一個信任前提
 （能註冊 workflow／推 MCP 資產的人就能用 store 裡的任何名字）。
+
+## §1b2 pi harness（替代 `gateway`）
+
+一個與 `"sdk"` 平行的第三種 `gateway` 選項：`@earendil-works/pi-coding-agent`（pinned `1.0.0`），
+一支開源的 coding-agent harness，取代 `@anthropic-ai/claude-agent-sdk` 當作 `agent()` 的執行引擎。
+**預設與 production 都還是 `"sdk"`**；這是給想要換引擎、或想避開 Anthropic 認證途徑的部署的選項。
+
+**怎麼切換**：`rwe.config.json` 設 `"gateway": "pi"`，重開引擎（或 `rwe-update.sh` 這種會重啟的流程）。
+不需要額外的 `"pi"` 設定區塊——沒有per-agent/per-run 開關，整個引擎只有一種 harness 生效。
+
+**Node 版本**：pi 套件（ESM-only）需要 **Node.js 22.19 以上**——比引擎本身的 22.6 下限更高。升級引擎到含
+pi 的版本前，先用引擎帳號確認：`sudo -u rwe node -v`（或 `ExecStart` 實際指向的那支 node）。
+
+**支援的 provider（只有兩個，故意的）**：`openrouter/*` 與 `ollama/*`。**完全不碰 Anthropic**——
+沒有 `ANTHROPIC_API_KEY`，也不接受 `CLAUDE_CODE_OAUTH_TOKEN`（owner 2026-10-03 決定：spike 發現透過
+第三方 harness 用 Claude 訂閱 token 會被算成「extra usage」計費，不是正常的訂閱額度）。任何
+`anthropic/*` model ref——不管是 `workflow_register` 時的預設值、`run_start`/`run_resume` 的
+override，還是巢狀 `workflow()` 解析出來的——一律在准入時以 `PROVIDER_UNSUPPORTED_BY_HARNESS` 拒絕，
+提示改用 `openrouter/anthropic/...`（透過 OpenRouter 轉送 Claude 模型）或 `ollama/*`。`models_list`、
+`GET /api/models`、dashboard 的模型清單、`system_info` 都只會列出 openrouter／ollama，不會出現任何
+anthropic 列——換句話說，這個部署的使用者根本看不到 anthropic 模型存在。`OPENROUTER_API_KEY` 來源
+與其他地方相同（`RWE_SECRET_OPENROUTER_API_KEY` 或裸 `OPENROUTER_API_KEY`），只會被注入 pi 子行程的
+記憶體（`setRuntimeApiKey`）——不進 bash 環境、不落地到任何檔案。`OLLAMA_BASE_URL` 意義不變。
+
+**不經過 LiteLLM**：pi 原生支援 OpenRouter 與 Ollama，`gateway:"pi"` 下**不會**啟動 LiteLLM 代理子行程
+（`config.proxyManager` 維持未設定）。
+
+**主機依賴（host dependencies）**：
+- `bwrap`（bubblewrap）與 `socat`——跟 `gateway:"sdk"` 的 Bash 圍籠要求相同。
+- **額外多一個**：一支真正的 `rg`（ripgrep）**執行檔**在 PATH 上——srt（`@anthropic-ai/sandbox-runtime`，
+  pi 用來做 Bash 圍籠的函式庫）啟動時會硬性檢查這個，缺了就整個拒絕初始化。**這台主機如果裝了
+  Claude CLI，`rg` 常常只是一個呼叫 CLI multicall 執行檔的 shell function，不是真正的執行檔**——這個
+  情況引擎自己會處理：pi 路徑的圍籠探測與每次 Bash 呼叫都會自動指向本引擎已經安裝的
+  `@anthropic-ai/claude-agent-sdk-<platform>` 套件自帶的那支 `claude` 執行檔（用 `argv0:'rg'` 的方式
+  冒充 ripgrep）——不需要額外裝系統套件。只有在這個套件完全沒裝（平台不支援）時才會真的缺 `rg`，
+  此時圍籠探測量到 `unconfined` 並說明原因。
+- **（review B4）第二個、獨立的 `rg` 需求——pi 自己的 `Grep` 工具**：上面那支是 srt 圍籠包裝層自己的
+  依賴檢查（`SandboxManager.initialize({ripgrep})`），跟 pi 內建 `Grep` **工具本體**（`tools-manager.js`
+  的 `ensureTool('rg')`）是兩條完全不同的程式路徑——後者**只檢查自己的 bin 目錄**
+  （`getAgentDir()/bin`，由 `PI_CODING_AGENT_DIR` 決定）優先於 PATH，而且這個常數在這支模組**第一次
+  被載入時**就凍結，子行程啟動後再改 `process.env` 完全無效。引擎的修法：子行程的 spawn-time
+  `env`（而非子行程自己執行中再設）就帶上 `PI_CODING_AGENT_DIR` 指向每次 dispatch 專屬的 agentDir，
+  並在那個 agentDir 的 `bin/rg` 寫入一支 wrapper script（`exec -a rg <本引擎已裝的 claude 執行檔>`，
+  跟上面 srt 那支用同一顆冒充二進位檔，只是放的位置不同）——這樣 `Grep` 工具在圍籠內外都能真的找到
+  `rg` 並正常運作，已用真實 Bash 圍籠驗證（workspace 內可查、workspace 外被拒、符號連結指到 workspace
+  外的目錄不會被搜尋）。
+- **已知的部署陷阱（這次迭代真的踩到過）**：如果引擎自己的 `node_modules` 剛好裝在**家目錄底下**
+  （issue #101 的整個家目錄預設拒讀政策範圍內——開發用的 clone 常常是這樣），`@anthropic-ai/
+  sandbox-runtime` 自帶的 `vendor/seccomp/<arch>/apply-seccomp` 執行檔會因為整個家目錄被拒讀而在
+  bwrap 沙箱**內部**看不到，Bash 呼叫會卡住直到逾時（`reason:"timeout"`，無任何輸出）。引擎已經修好
+  這個：圍籠設定永遠會把 `@anthropic-ai/sandbox-runtime` 自己的安裝目錄加進 Bash 的 `allowRead`，
+  與營運者的 `sandbox.allowReadPaths` 無關——**不需要營運者動作**，列在這裡是為了讓看到 Bash 逾時
+  又查不出原因的人知道這個歷史。
+
+**已知的網路姿態落差（尚未解決，記在這裡供日後追蹤）**：pi 路徑的 Bash 網路政策是「全部允許」
+（透過一個永遠回答「允許」的 ask-callback 達成，因為 srt 的網路欄位是必填，留空等於全部拒絕）——
+對外部網域（`curl https://example.com` 這類）這次迭代已經用真實主機驗證過確實可行。但 srt 只要
+設定了網路欄位，**所有**流量就會走它自己的 MITM 代理，這代表從圍籠內的 Bash 連 `localhost`／
+`127.0.0.1`（例如同主機上的另一個服務）會連不到——這跟今天 `gateway:"sdk"` 的 Bash（完全不設網路
+欄位、因此保留主機原生網路含 loopback）不一樣，是一個真實的行為落差，不是臆測。如果有 workflow
+的 Bash 需要連本機服務，目前只能先切回 `gateway:"sdk"`；真正的網路白名單（而非全部允許）留給後續
+迭代。
+
+**已知的限制（review R2-2 裁決，刻意不修）：`gateway:"pi"` 下 unconfined posture 的 Bash，一個自己呼叫
+`setsid` 逃出 process group 的背景行程不會在 dispatch 正常結束時被清掉**。pi 子行程把 unconfined Bash
+用 `detached:true` 啟動，所以 Bash 自己的 pid 同時就是它的 process group id——`nohup cmd &`（非互動式
+`bash -c` 沒有 job control，背景工作沿用 Bash 自己的 group）清得到，`setsid cmd &`（明確建立新
+session+group）清不到，因為 kill 整個 group 的訊號本質上就打不到另一個 group。這是 unconfined 這個
+posture 本身「只給本機 run」政策下可接受的已知落差，不是漏修；confined posture 完全沒有這個問題
+（bwrap 的 `--unshare-pid --die-with-parent` 在整個 pid namespace 隨 bwrap 結束一起收掉，不管行程在
+哪個 process group）。真機驗證：`nohup sleep & setsid sleep &` 這組指令下，unconfined 量到 nohup 的
+那支消失、setsid 的那支仍在跑；confined 量到兩支都消失。
+
+**MCP（`agent(..., {mcp:[...]})`）**：已接上。解析走跟 `gateway:"sdk"` **同一份**共用解析器
+（`${secret:NAME}`/`${run:dir}`/`${run:id}` 代換——兩個 gateway 不會分岔），每個宣告的 server 從 pi
+子行程內一個 inline extension 用 `pi.registerMcpServer(name, {...cfg, exposure:'direct'})` 註冊
+（故意不用檔案式 `mcp.json`——pi 1.0.0 的 `createMcpExtension()` 預設設定載入器會忽略自訂
+`agentDir`，改讀全域 `~/.pi/agent/mcp.json` 並把該目錄建出來，是真的會發生的副作用，已用
+`loadConfig` 覆寫完全避開）。pi 本身沒有連線狀態查詢 API，turn-1 可用性是用
+`session.getActiveToolNames()` 輪詢每個宣告 server 的 `mcp__<name>__` 前綴工具（最多等 10 秒，跟
+pi `direct` exposure 自己的 `startupWaitMs` 預設一致）算出來，映射到跟 `gateway:"sdk"` **同一個**
+`summarizeMcpInit()`——未連上的 server 一樣回報 `agent.mcp_not_connected` 事件與
+`MCP_SERVER_NOT_CONNECTED` warning。一個解析不出來的 MCP 名字進 `materialized.missing`、**run 照跑**
+（業主 19.5.3 裁決，跟 sdk gateway 一致，不是拒絕）。stdio MCP 子行程**不在** Bash 圍籠內（跟
+`gateway:"sdk"` 現狀一致）。
+
+**回收（2026-10-03 真機驗證抓到的真實漏洞，已修）**：正常完成時可靠回收（`npx`/`npm exec` 自己的子行程
+在 stdin 被關閉後會自然退出）。但**中途 abort 時原本會漏行程**：實測確認 `npm exec`（`npx` 背後呼叫
+的指令）一啟動就對自己呼叫 `setpgid`/`setsid`、變成自己的 process group leader（`ps -eo
+pid,pgid,sid` 現場量到：npm exec 的 pgid 等於它自己的 pid，不是 pi 子行程的）——既有的
+group-kill（`killGroup(-childPid)`，#129 語意）因此**完全碰不到**它與它自己的子行程，只對沒有
+`setsid` 逃逸的一般子行程有效。修法：在送出任何 kill 訊號**之前**，先用 `/proc/<pid>/task/<pid>/
+children`（Linux-only，跟本檔其他假設一致）遞迴列出 pi 子行程當下的完整子孫行程清單，再對清單裡
+每一個 pid 直接送 `SIGKILL`——不管它在哪個 process group 都打得到，與既有的 group-kill 並存（group-kill
+仍是沒有逃逸的子行程的正確、足夠機制）。真機驗證：模擬 `setsid` 逃逸情境的單元測試
+（`tests/unit/pi-gateway-escaped-descendant-sweep.test.ts`）先紅後綠；對真正的
+`npx -y @modelcontextprotocol/server-everything` 在 mcp_init 剛連上就 abort（最容易漏行程的早期中止
+情境）重跑 4 次，`pgrep` 均確認無殘留。
+`workspace_push({kind:"mcp"})` 帶 `stdio` transport 的 admin-only 限制不變（見下方角色表）。
+
+**Skills（`agent(..., {skills:[...]})`）**：已接上。`materializeAssets`（跟 `gateway:"sdk"` 同一份函式）
+把宣告的技能複製進 `<ws>/.claude/skills/<name>/`，路徑清單以 pi 的 `additionalSkillPaths` 傳給一個
+`DefaultResourceLoader`（`noContextFiles`/`noExtensions`/`noSkills`/`noPromptTemplates`/`noThemes`
+全部 `true`——「不discovery、全權交給引擎」的精神不變，`extensionFactories`/`additionalSkillPaths`
+是文件明載的兩個例外，不受那些旗標影響）。**skill-only agent 的決定**：讀過 pi 自己的
+`system-prompt.js`原始碼確認，系統提示詞裡的技能清單只在工具集含 `read` **或** `bash` 其中之一時
+才會出現（`skillFileReadTool = ["read","bash"].find(tool => selectedTools.includes(tool))`——按
+「名字」比對這個會話實際選用的工具清單，不是跟 pi 內建工具物件做 identity 比對，所以我們自訂、同名的
+`read`/`bash` 工具一樣算數）；沒有獨立的 `Skill` 工具。所以宣告了技能但 `allowedTools` 裡**兩者都沒有**
+的呼叫一律在派工前就以 `SKILL_REQUIRES_READ_TOOL` 拒絕——清楚失敗，不是靜默材料化一個模型永遠不知道
+存在的技能。曾考慮「自動補一個只能讀技能目錄的 jailed read」，v1 判定為多一種、containment
+語意跟全引擎唯一一個 `read` 工具不同的第二份定義，不值得為 v1 多開這個介面，故不採用。`exec:true`
+（`workspace_push`/`seedManifest` 的技能檔案旗標）在這裡**純粹是檔案權限**（0o755 vs 0o644）——pi
+沒有 inline shell（`!cmd`）技能語法，所以 sdk gateway 的 `disableSkillShellExecution` 在 pi 這邊沒有
+對應物可設，不是忘記接。
+
+**`effort`/OpenRouter `reasoning.effort` 的請求形狀驗證**：已用錄製式 fake server 驗證。
+`system_info`（MCP 工具與 `GET /api/system`）的 `harness` 欄位即時反映
+這台部署實際在跑哪一種 harness——`{name:"pi", version, providers, unsupportedTools, effort,
+usage}`——不要用這份文件推測，直接查 `system_info`。
+
+**回滾**：把 `rwe.config.json` 的 `"gateway"` 改回 `"sdk"`（或整個刪掉這個鍵，預設就是 `"sdk"`），
+重開引擎即可——沒有資料遷移、沒有殘留狀態（pi 的 `agentDir`/session 都是每次 dispatch 用過即丟的
+記憶體內物件，從不寫進 `workRoot`）。
+
+**圍籠 Bash 的 TMPDIR（R3-1 修好、R4-2 修正）**：srt（圍籠函式庫）把確認過的 confined Bash 呼叫的
+`TMPDIR` 設成 `CLAUDE_CODE_TMPDIR || CLAUDE_TMPDIR || '/tmp/claude'`——這個引擎現在每次派工都把
+`CLAUDE_CODE_TMPDIR` 指到一個引擎自己驗證過、該次派工專屬的目錄（`<workRoot>/pi-tmp/d-<id>`，跟
+`agentDir` 同一套驗證邏輯），所以 `mktemp` 之類的工具永遠不會碰到主機共用的那個路徑。主機上真的存在
+的 `/tmp/claude`（任何本機使用者都能 `mkdir /tmp/claude` 建出來，或是另一支 Claude CLI 沙箱留下的）
+**無法**被這個引擎能設定的任何 srt 政策組合「藏起來」讓圍籠內看不到內容——`denyRead` 單獨設是
+no-op（srt 自己的寫入路徑還原邏輯會把真正的主機目錄重新綁回去），`denyRead`+`denyWrite` 一起設也一樣
+（寫入正確擋下，但讀取仍然看得到真正內容）。引擎因此**只設 `denyWrite:['/tmp/claude']`**：confined
+Bash 讀得到 `/tmp/claude`（跟主機上其他任何 `/tmp` 路徑一樣的暴露程度，不是新洞），但寫不進去——
+即使攻擊者在兩次 Bash 呼叫之間（check 之後、真正呼叫之前）才建出 `/tmp/claude` 也一樣擋得住，已用
+兩個並發 dispatch 互相搶的方式在真機驗證過。R4 另外驗證過一件事：confined Bash **自己完全建不出**
+`/tmp/claude`——主機真正的 `/tmp` 在圍籠內是唯讀 bind mount，`mkdir`/`ln -s`/`touch` 在 `/tmp` 下
+一律回報「Read-only file system」，主機上什麼都不會留下。R3 原本在 `/tmp/claude` 存在時直接拒絕整個
+dispatch（`HOST_SHARED_TMPDIR_UNSAFE`）——R4 業主裁決**撤掉這個拒絕**：上面這些事實證明它買不到額外
+的安全性，代價卻是真的——任何一個本機使用者只要 `mkdir /tmp/claude` 就能讓整台主機的 confined pi
+Bash 全部拒絕派工（引擎刻意不會去刪它不確定擁有權的主機路徑，所以只能等 operator 自己動手清掉）。
+現在的行為：`/tmp/claude` 存在時 dispatch 照常進行，只會送出一個 `agent.host_shared_tmpdir_present`
+事件（`{runId, agentId, attempt, path}`）讓 operator 知道，不擋、不碰主機上的任何東西。
+
+**pi 分支新增的錯誤碼（review round 4，R4-1）**：下面這些是 `gateway:"pi"` 專屬、這次迭代新增、
+`ERROR_CATALOG`（`src/errors.ts`）收錄的代碼——多數不會出現在任何 MCP 工具呼叫自己的直接回應裡（它們
+是某個 agent 派工失敗時的 `detail` 字串，會出現在 `run_status.agentFailures[].message`／
+`run_agent_log`，不是 `errors[]` 清單能涵蓋的範圍），`PROVIDER_UNSUPPORTED_BY_HARNESS`／
+`TOOL_UNSUPPORTED_BY_HARNESS` 是例外——這兩個在准入期（`workflow_register`／`run_start`／`run_resume`／
+`models_probe`）就可能直接被工具呼叫擋下，已經加進對應工具的 `errors[]`：
+
+| 代碼 | 意思 | 處置 |
+|---|---|---|
+| `AGENTDIR_UNAVAILABLE` | 引擎建立/驗證自己私有的每次派工目錄（`pi-agentdirs` 底下）失敗 | 檢查 `confinement.workRoot`（或沒設時的系統 tmp 目錄）這個引擎的使用者是否可寫，該路徑底下沒有符號連結/別人擁有的目錄/雜物檔案擋著 |
+| `TMPDIR_SCRATCH_UNAVAILABLE` | 同上，但是 `pi-tmp`（上面 TMPDIR 那段）那份 | 同上 |
+| `SANDBOX_UNAVAILABLE` | srt 初始化失敗，或產生的呼叫不是真正的 bwrap 呼叫 | 確認主機有裝 `bwrap`/`socat`，且有一支可用的 ripgrep-capable 執行檔在路徑上（通常引擎會自動冒充，見上方「主機依賴」一節） |
+| `BASH_READONLY_UNENFORCEABLE` | `agent()` 宣告 `bash:'readonly'`，但這台部署的開機圍籠探測量到 unconfined，或這次呼叫沒有已知的 workspace root | 修好主機圍籠（見「安全模型」的 remediation），或這次呼叫不要宣告 `bash:'readonly'` |
+| `OPENROUTER_AUTH_MISSING` | 要送 openrouter/* model 時找不到任何 OpenRouter key | 設定 `RWE_SECRET_OPENROUTER_API_KEY`（優先）或裸 `OPENROUTER_API_KEY` |
+| `PATH_ESCAPES_WORKSPACE` | 檔案工具（Read/Write/Edit/Glob/Grep/LS/Bash）解析出的路徑跑到 run 自己的 workspace 外面（含 workspace 內放的符號連結指到外面） | 作者檢查 script/工具呼叫為何會引用 workspace 外的路徑；這是圍籠本身的設計，不是可以關掉的選項 |
+| `MCP_SERVER_CONFIG_INVALID` | 宣告的 MCP server 解析後的設定沒有可執行的 transport（既不是 `{type:'http',url}` 也不是 `{command}`） | 檢查當初 `workspace_push({kind:"mcp"})` 寫入的設定內容 |
+| `MODEL_REGISTRATION_FAILED` | pi 自己的 `ModelRuntime` 沒能註冊這次派工的 openrouter/ollama model 物件 | 通常是暫時性的供應端問題；重試，並對照 `models_list` 核對確切的 ref 字串 |
+
+**npm audit（pi 相依套件新增的部分）**：新增這三個相依套件（`@earendil-works/pi-coding-agent`、
+`@earendil-works/pi-ai`、`@anthropic-ai/sandbox-runtime`）引入兩個新發現，已處理：
+- `brace-expansion`（`pi-coding-agent → minimatch → brace-expansion`，三個 DoS regex CVE）——**已修**，
+  非破壞性：`package.json` 的 `overrides` 把這條鏈結精準釘到 `5.0.12`（修好的版本），**沒有**動
+  `pi-coding-agent`/`minimatch` 本身的版本範圍，只覆寫這一條巢狀路徑。驗證：`npm ls brace-expansion`
+  顯示 `5.0.12 overridden`；`rm -rf node_modules && npm ci` 後仍然是 `5.0.12`（自我更新流程跑的就是
+  `npm ci`，確認會吃到這個 override，不是只在手動 `npm install` 下才生效）。
+- `node-forge`（`@anthropic-ai/sandbox-runtime` 依賴的 RSA PKCS#1 簽章驗證問題）——**刻意不修**：
+  npm 自己建議的修法是把 srt 降到 `0.0.50`（npm 自己標成「breaking」），比我們釘死的 `0.0.78` 舊很
+  多個版本，會賭上這整個 pi harness 唯一的圍籠機制；`--force` 不是這裡的選項。需要上游 srt 自己發一個
+  修好 node-forge 又維持 API 相容的版本——記在這裡等後續追蹤，不是遺漏。
+- `npm audit` 其餘的 `vitest`/`vite`/`vite-node`/`esbuild` 鏈結是既有的 dev-only 相依問題（與這次新增
+  的 pi 相依套件無關，待辦的 vitest 1.6→5 升級在別的追蹤項目裡），這裡不重複處理。
+
+**lockfile 的非 linux-x64 平台項目（review L11/R2 跨輪追蹤）**：上面的 `rm -f package-lock.json &&
+npm install` 全量重算（為了讓 brace-expansion override 真的生效——見上方）有個副作用：`npm` 把
+`@anthropic-ai/claude-agent-sdk-*` 這組 optional 平台二進位套件的 8 個變體砍到只剩 `linux-x64`／
+`linux-x64-musl`（這台開發機自己的平台），其餘 6 個（`darwin-arm64`/`darwin-x64`/`linux-arm64`/
+`linux-arm64-musl`/`win32-arm64`/`win32-x64`）連同另一批 esbuild/rollup 的跨平台項目一起消失——這些
+項目本該在 lockfile 裡全列著（讓非本機平台的 `npm ci` 也能解析出自己要裝的那個），即使實際只有「跟
+本機平台相符」的那個會真的落地到 `node_modules`。已修：手動從 regression 前的 lockfile 把那 6 個
+`claude-agent-sdk-*` 變體原樣補回去（版本、`resolved`、`integrity` 皆未變動，且已逐一對 npm registry
+核對那個版本仍然存在）——純附加的 diff，沒動到任何既有行。esbuild/rollup 那批（review L11 估計約 80
+項）因為是遞移相依（非這次新增的直接依賴），暫未逐一補回，留待下次真的需要跨平台 `npm ci` 時再處理，
+不在這次 pi harness 的影響半徑內。
+
+**第二輪嘗試（review round 2 裁決：「從 master 的 lockfile 當底，試一次」）**：`git show
+origin/master:package-lock.json` 當起點、`npm install --package-lock-only` 疊上這個分支新增的 pi 相
+依套件——這個組合完整保留了全部 ~86 個跨平台項目（claude-agent-sdk 全 8 個 + esbuild/rollup 那批都
+在），達成了「cheap 保留跨平台項目」這個目標本身。但代價是 brace-expansion override **沒有**生效：
+`--package-lock-only`（試了兩次，含單獨對 `@earendil-works/pi-coding-agent` 子樹重跑一次）都回報
+「up to date」，解出的仍是舊版 `5.0.9`。接著試了 `rm -rf node_modules && npm install`（從這個以
+master 為底、已含 pi 相依的 lockfile 出發，而非從零)：這次 `npm ls` 顯示 `overridden: true`，但版本
+**仍然**是 `5.0.9`——override 旗標亮著卻沒套用正確版本，像是 npm 自己的一個不一致（可能跟上一輪遺留
+的 npm 快取有關），值得記錄但超出「試一次」的預算。結論：**保留**本節上方、已驗證正確（brace-
+expansion 確實是 `5.0.12`）、6 個 `claude-agent-sdk-*` 變體手動補回的既有版本，**不採用**這次 master
+為底的版本——寧可少補 80 個 dev 期間遲早要處理的跨平台項目，也不要賠上一個已經修好的 CVE。
 
 ### 角色（`principals`）——啟用 auth 前一定要讀
 
