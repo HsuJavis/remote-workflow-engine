@@ -20,7 +20,32 @@ import { resolveTimeout } from './client.js';
 import { redactHarness } from '../agent-executor.js';
 import { parseModelRef } from '../providers.js';
 import { RealCliLifecycle } from '../cli-lifecycle.js';
-import type { PiChildConfig, PiChildEvent } from './pi-child/protocol.js';
+import { buildBashConfinement, readonlyBashRefusal } from './bash-confinement.js';
+import { resolveRipgrepOverride } from './pi-child/ripgrep-override.js';
+import type { PiChildConfig, PiChildEvent, PiChildSandboxConfig } from './pi-child/protocol.js';
+
+/** Engine tool name -> pi tool name (spec "Tool mapping"). Semantic differences, documented: `Glob`
+ *  (gitignore-aware, Claude-shaped globbing) maps to pi's `find` (pi's own docs: "respects
+ *  .gitignore", semantically the SAME as Claude's Glob despite the Unix-`find`-shaped name — spike
+ *  S6); this engine's jailed `find` operations (session-runner.ts) are a simplified glob matcher
+ *  that does NOT replicate gitignore-awareness, a documented simplification. */
+const TOOL_NAME_MAP: Record<string, string> = { Read: 'read', Write: 'write', Edit: 'edit', Bash: 'bash', Grep: 'grep', Glob: 'find', LS: 'ls' };
+
+/** spec "Tool mapping": WebFetch, WebSearch, Task, NotebookEdit and any other unmapped tool are
+ *  refused at registration and dispatch with TOOL_UNSUPPORTED_BY_HARNESS — never silently dropped.
+ *  Returns the pi tool names on success. */
+function mapTools(engineNames: readonly string[]): { ok: true; piNames: string[] } | { ok: false; unmapped: string[] } {
+  const piNames: string[] = [];
+  const unmapped: string[] = [];
+  for (const name of engineNames) {
+    const mapped = TOOL_NAME_MAP[name];
+    if (mapped === undefined) unmapped.push(name);
+    else piNames.push(mapped);
+  }
+  return unmapped.length > 0 ? { ok: false, unmapped } : { ok: true, piNames };
+}
+
+const DEFAULT_ALLOWED_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'];
 
 const ENTRY_PATH = fileURLToPath(new URL('./pi-child/entry.ts', import.meta.url));
 
@@ -63,11 +88,22 @@ export interface PiGatewayConfig {
    *  `ClaudeAgentSdkGatewayConfig.confinementPosture`. Not yet consumed (slice e wires bash
    *  confinement); carried now so composeConfig()'s wiring doesn't change shape later. */
   confinementPosture?: 'confined' | 'unconfined';
+  /** v37-equivalent (ARCH-176/177 parity): the SAME grant/protected/workRoot block
+   *  `buildBashConfinement()` consumes on the sdk gateway, forwarded by composeConfig() from the
+   *  SAME resolved values (resolvedGrants/protectedFiles/workRoot/homeDir/allowReadPaths) — one
+   *  resolution, two gateways. */
+  confinement?: { allowHostPaths: readonly string[]; protectedFiles: readonly string[]; workRoot: string | undefined; homeDir?: string; allowReadPaths?: readonly string[] };
+  /** D-F11 parity: the configurable default core tool set, forwarded from `defaultAllowedTools` in
+   *  rwe.config.json. Omitted -> DEFAULT_ALLOWED_TOOLS. */
+  defaultAllowedTools?: string[];
   /** Test/engine seam: overrides `node --experimental-transform-types <entryPath>` — a unit test
    *  injects a fake child process instead of spawning a real one. Omitted -> the real spawn below. */
   spawnChild?: typeof spawn;
   /** Test seam: overrides the resolved entry.ts path. */
   entryPath?: string;
+  /** Test seam: overrides `resolveRipgrepOverride()` — a unit test injects a fake resolved override
+   *  without depending on which `@anthropic-ai/claude-agent-sdk-*` platform package is installed. */
+  resolveRipgrepOverride?: () => { command: string; argv0: 'rg' } | null;
 }
 
 function resolveOpenrouterKey(config: PiGatewayConfig): string | undefined {
@@ -113,9 +149,52 @@ export class PiGatewayClient implements GatewayClient {
       return { ok: false, provider: 'openrouter', reason: 'terminal', retryable: false, transport: 'pi', detail: 'OPENROUTER_AUTH_MISSING: no OpenRouter API key in the secret store (RWE_SECRET_OPENROUTER_API_KEY) or OPENROUTER_API_KEY env' };
     }
 
+    // spec "Tool mapping": the engine tool surface for this call (opts.allowedTools, '[]' honored,
+    // defaultAllowedTools otherwise) — mapped to pi names BEFORE a child is ever spawned.
+    const requestedTools = req.opts.allowedTools ?? this._config.defaultAllowedTools ?? DEFAULT_ALLOWED_TOOLS;
+    const mapped = mapTools(requestedTools);
+    if (!mapped.ok) {
+      return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: `TOOL_UNSUPPORTED_BY_HARNESS: ${mapped.unmapped.join(', ')} ${mapped.unmapped.length === 1 ? 'has' : 'have'} no mapping under the pi harness — only Read/Write/Edit/Bash/Grep/Glob/LS are supported` };
+    }
+
+    // spec "Bash" / issue #78(c) parity: bash:'readonly' is only ever dispatched with the kernel
+    // enforcing it — refused BEFORE any child is spawned, the same shape as the sdk gateway.
+    const bashRefusal = readonlyBashRefusal({ bash: req.opts.bash, tools: requestedTools, posture: this._config.confinementPosture, root: workspace });
+    if (bashRefusal !== null) {
+      return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: bashRefusal };
+    }
+
+    // spec "Confinement posture": sandbox is built ONLY when this engine measured `confined` at boot
+    // (the pi-path probe — a SEPARATE measurement from the sdk gateway's own) — absent, the child's
+    // bash tool runs unwrapped, never a claimed confinement with no evidence (session-runner.ts's
+    // own `config.sandbox !== undefined` branch).
+    let sandbox: PiChildSandboxConfig | undefined;
+    if (this._config.confinementPosture === 'confined' && mapped.piNames.includes('bash')) {
+      const settings = buildBashConfinement({
+        root: workspace,
+        grantedHostPaths: this._config.confinement?.allowHostPaths ?? [],
+        protectedFiles: this._config.confinement?.protectedFiles ?? [],
+        workRoot: this._config.confinement?.workRoot,
+        homeDir: this._config.confinement?.homeDir ?? process.env['HOME'],
+        allowReadPaths: this._config.confinement?.allowReadPaths ?? [],
+        ...(req.opts.bash === 'readonly' ? { bashMode: 'readonly' as const } : {}),
+      });
+      const ripgrepOverride = (this._config.resolveRipgrepOverride ?? resolveRipgrepOverride)();
+      sandbox = {
+        filesystem: settings.filesystem as PiChildSandboxConfig['filesystem'],
+        credentials: settings.credentials as PiChildSandboxConfig['credentials'],
+        ripgrepOverride,
+      };
+    }
+
     if (req.onHarness) {
       await req.onHarness(
-        redactHarness({ surfaceType: 'none', modelName: parsed.model, provider: parsed.provider, prompt: req.prompt, curatedTools: [], mergedMcp: [], skills: [] }),
+        {
+          ...redactHarness({ surfaceType: 'curated', modelName: parsed.model, provider: parsed.provider, prompt: req.prompt, curatedTools: requestedTools, mergedMcp: [], skills: [] }),
+          ...(mapped.piNames.includes('bash')
+            ? { bash: { mode: (req.opts.bash === 'readonly' ? 'readonly' : 'full') as 'readonly' | 'full', enforced: this._config.confinementPosture === 'confined' } }
+            : {}),
+        },
         undefined,
       );
     }
@@ -129,6 +208,10 @@ export class PiGatewayClient implements GatewayClient {
       cwd: workspace,
       agentDir,
       systemPrompt: 'You are a helpful assistant.',
+      tools: mapped.piNames,
+      protectedFiles: [...(this._config.confinement?.protectedFiles ?? [])],
+      ...(sandbox !== undefined ? { sandbox } : {}),
+      ...(req.opts.bash === 'readonly' ? { bashMode: 'readonly' as const } : {}),
     };
 
     const effTimeout = resolveTimeout(req.opts.timeoutMs) ?? this._config.timeoutMs;

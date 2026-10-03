@@ -39,6 +39,7 @@ import type { PrincipalRole as Role } from './authz.js';
 import { validateModelProbeConfig } from './models/model-probe.js';
 import { validateCasQuotaConfig, validateDiskFloorConfig } from './cas-quota.js';
 import { PiGatewayClient } from './gateway/pi-gateway-client.js';
+import { probePiPath } from './gateway/pi-confinement-probe.js';
 import type { Provider } from './providers.js';
 
 // pi harness v1 owner decision 2: the closed provider set the pi harness supports — never
@@ -567,11 +568,15 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
       ollamaBaseUrl: process.env['OLLAMA_BASE_URL'],
       timeoutMs: config.timeoutMs,
       retries: fileConfig.retries,
-      // PROVISIONAL (slice a): reuses the SAME nested-bwrap probe the sdk gateway uses. Spec item
-      // (e) requires a SEPARATE pi-path probe (srt's own ripgrep-binary dependency, a possibly
-      // different bundled sandbox-runtime version) feeding BOTH this gateway and RunManager
-      // admission — added in a follow-up commit in this same iteration; until then this is a
-      // reasonable but unverified stand-in, never a claim that pi's bash is confined.
+      defaultAllowedTools: fileConfig.defaultAllowedTools,
+      // slice (e): the SAME grant/protected/workRoot block the sdk branch forwards below, from the
+      // SAME resolution above (resolvedGrants/protectedFiles/workRoot/homeDir/allowReadPaths) — one
+      // resolution, two gateways.
+      confinement: { allowHostPaths: resolvedGrants, protectedFiles, workRoot, homeDir, allowReadPaths },
+      // v37 (ARCH-181/262): `deps.confinementProbe` here is main()'s SEPARATE pi-path probe
+      // (probePiPath(), gated on `fileConfig.gateway === 'pi'` at the one real call site) — never
+      // the sdk path's nested-bwrap probe. Every existing test call site omits it, so this gateway
+      // falls back to its own 'unconfined'-shaped default (no `confinementPosture` set at all).
       ...(deps.confinementProbe ? { confinementPosture: deps.confinementProbe.posture } : {}),
     });
   } else if (gatewayChoice === 'sdk') {
@@ -676,8 +681,9 @@ async function runCheckConfig(): Promise<void> {
     });
     // v37 (ARCH-181): --check-config is read-only apparatus (its own header comment: "NO side
     // effects") — the nested-bwrap probe is a READ, not a mutation, and reporting the posture here
-    // is exactly the "at startup, before any run" visibility REQ-218 asks for.
-    const confinementProbe = probeConfinement();
+    // is exactly the "at startup, before any run" visibility REQ-218 asks for. pi harness v1: the
+    // SAME gateway-keyed probe choice `main()`'s real boot path uses (see its own comment).
+    const confinementProbe = fileConfig.gateway === 'pi' ? await probePiPath() : probeConfinement();
     // v37 Gate-8 send-back (finding A2): a clearly-labelled NON-created placeholder — this command's
     // own "no side effects" contract forbids a real `mkdtempSync` here. It can never reach grant
     // validation (that still requires an EXPLICIT `fileConfig.workRoot`/`RWE_WORK_ROOT`, checked
@@ -711,7 +717,11 @@ async function main(): Promise<void> {
   // run is ever submitted, not at the first agent() call. `main()` is the ONLY real caller; every
   // test constructs `composeConfig()` directly and omits this (safe default: no door gating, no
   // `confinementPosture` on the gateway — see ComposeConfigDeps.confinementProbe's own doc comment).
-  const confinementProbe = probeConfinement();
+  // pi harness v1 (spec "Confinement posture"): under gateway:"pi" this is a SEPARATE measurement
+  // (probePiPath(), src/gateway/pi-confinement-probe.ts) — srt's bundled sandbox-runtime version and
+  // its ripgrep-binary dependency are not the same question the sdk path's `probeConfinement()`
+  // answers. Exactly one of the two ever runs; never both, never neither.
+  const confinementProbe = fileConfig.gateway === 'pi' ? await probePiPath() : probeConfinement();
   // v37 Gate-8 send-back (finding A2, ARCH-177 amendment): ONE `mkdtempSync` — the SAME resolved
   // value `ServerConfig.workRoot` and the confinement block both carry, computed once so a second
   // resolution (server.ts:655's own `??` fallback, kept for direct `createServer()` test callers)

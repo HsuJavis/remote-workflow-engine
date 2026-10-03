@@ -1,20 +1,51 @@
-// src/gateway/pi-child/session-runner.ts (pi harness v1, slice c). The REAL per-dispatch pi session
-// logic — kept in its own typechecked module (unlike entry.ts, which is excluded from both
+// src/gateway/pi-child/session-runner.ts (pi harness v1, slices c/d/e). The REAL per-dispatch pi
+// session logic — kept in its own typechecked module (unlike entry.ts, which is excluded from both
 // tsconfigs the same way src/sandbox/child-entry.ts is) so this file gets full tsc coverage. Loaded
-// by entry.ts via an explicit `.ts` specifier (raw `node --experimental-transform-types`); the ONLY
-// local import here is `import type` from protocol.ts, which is erased by type-stripping and so
-// never triggers a runtime module resolution that extension would otherwise break (see protocol.ts's
-// own header comment).
-//
-// v1-c scope (this file): ollama text-only, no tools (`noTools:'all'`) — proves the child/gateway
-// skeleton with a real model call. Bash/file tools (slice d/e), MCP (slice g) and skills (slice h)
-// extend `buildSession` below without changing this file's shape.
+// by entry.ts via an explicit `.ts` specifier (raw `node --experimental-transform-types`); this file
+// must therefore hold NO local VALUE import of its own (only `import type` from protocol.ts, erased
+// by type-stripping — see that file's header comment). `isPathContained`/`buildBashEnv`/`isWrapped`
+// are real engine logic this file needs but cannot import directly (they are reached through a
+// local `.js`/`.ts` sibling, the exact hazard the "rwe sandbox child .ts imports" memory note
+// describes) — entry.ts imports them (safely: each of those three files itself holds zero local
+// imports) and passes them in as `SessionDeps`, the composition pattern src/sandbox/child-entry.ts
+// already uses for guards.ts.
 import {
   createAgentSession, createExtensionRuntime, ModelRuntime,
-  SessionManager, SettingsManager, type ResourceLoader,
+  SessionManager, SettingsManager, type ResourceLoader, type ToolDefinition,
+  createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition,
+  createGrepToolDefinition, createFindToolDefinition, createLsToolDefinition, createBashToolDefinition,
+  type BashOperations,
 } from '@earendil-works/pi-coding-agent';
-import { join } from 'node:path';
-import type { PiChildConfig, PiChildEvent } from './protocol.js';
+import { SandboxManager } from '@anthropic-ai/sandbox-runtime';
+import { spawn } from 'node:child_process';
+import { join, resolve, relative, sep, dirname } from 'node:path';
+import { readFile, writeFile, mkdir, access, stat, readdir } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+
+/** srt's own `apply-seccomp` vendor binary (vendor/seccomp/<arch>/apply-seccomp) must be readable
+ *  from INSIDE the bwrap sandbox it builds — bash itself execs it as the final step of applying the
+ *  seccomp filter, from inside the new mount namespace. Discovered empirically in this iteration: on
+ *  a dev checkout where the engine's own `node_modules` lives under the denied HOME directory (issue
+ *  #101's whole-home deny), srt's bash failed `.../apply-seccomp: No such file or directory` even
+ *  though the file exists and is executable on the HOST — it was simply invisible inside the jail.
+ *  This is an internal MECHANISM requirement of srt itself (not a policy decision for
+ *  `buildBashConfinement()`'s agent-facing semantics), so it is added here, always, never left to an
+ *  operator's `sandbox.allowReadPaths` to remember. */
+function srtInstallDir(): string | null {
+  try {
+    const require = createRequire(import.meta.url);
+    return dirname(require.resolve('@anthropic-ai/sandbox-runtime/package.json'));
+  } catch {
+    return null;
+  }
+}
+import type { PiChildConfig, PiChildEvent, PiChildSandboxConfig } from './protocol.js';
+
+export interface SessionDeps {
+  isPathContained: (path: string, root: string) => boolean;
+  buildBashEnv: (callerEnv: Readonly<NodeJS.ProcessEnv>, sandboxEnv: Readonly<NodeJS.ProcessEnv>) => NodeJS.ProcessEnv;
+  isWrapped: (argv: readonly string[]) => boolean;
+}
 
 const emptyResourceLoader = (systemPrompt: string): ResourceLoader => ({
   // Full-control (spec "Inside the child"): no discovery, no context files — the engine supplies
@@ -75,12 +106,254 @@ async function resolveModel(config: PiChildConfig, runtime: ModelRuntime) {
   return model;
 }
 
+/** A minimal glob matcher for the jailed `find` tool's operations (spec: pi's own `find` tool is
+ *  semantically Claude's `Glob`, per spike S6 — "respects .gitignore" in pi's own built-in
+ *  implementation, which this jailed replacement does NOT reproduce; a known, documented
+ *  simplification, not a safety gap — the containment check in `assertJailed` is what matters here).
+ *  Supports `*` (any run of characters except `/`), `**` (any run of characters including `/`) and
+ *  `?` (one character) — translated to a regex anchored over the POSIX-relative path from `cwd`. */
+function globToRegExp(pattern: string): RegExp {
+  let re = '';
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === '*' && pattern[i + 1] === '*') { re += '.*'; i++; }
+    else if (c === '*') re += '[^/]*';
+    else if (c === '?') re += '[^/]';
+    else re += c!.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`^${re}$`);
+}
+
+async function walkDir(dir: string, base: string, out: string[], ignore: readonly string[], limit: number): Promise<void> {
+  if (out.length >= limit) return;
+  let entries: string[];
+  try { entries = await readdir(dir); } catch { return; }
+  for (const name of entries) {
+    if (out.length >= limit) return;
+    if (ignore.some((ig) => name === ig)) continue;
+    const abs = join(dir, name);
+    const rel = relative(base, abs).split(sep).join('/');
+    let isDir: boolean;
+    try { isDir = (await stat(abs)).isDirectory(); } catch { continue; }
+    if (isDir) await walkDir(abs, base, out, ignore, limit);
+    else out.push(rel);
+  }
+}
+
+/** File-tool jail (spec "File jail"): every path-taking tool resolves its `path` arg against
+ *  `config.cwd` FIRST (pi's own tools already do this internally for relative paths, but the
+ *  operations layer below receives whatever pi hands it — defensively `resolve()` it again here so
+ *  containment is checked against an ABSOLUTE path regardless), then refuses with a thrown error
+ *  (pi's tool-call pipeline turns a thrown Operations error into a tool-result error, matching
+ *  `toolUsePreCheck`'s own refusal shape on the sdk gateway) unless BOTH: (a) contained within
+ *  `config.cwd`, and (b) not equal to / inside any of `config.protectedFiles`. */
+function assertJailed(absolutePath: string, config: PiChildConfig, deps: SessionDeps): void {
+  const root = resolve(config.cwd);
+  const target = resolve(absolutePath);
+  if (!deps.isPathContained(target, root)) {
+    throw new Error(`PATH_ESCAPES_WORKSPACE: "${absolutePath}" is outside this run's workspace`);
+  }
+  for (const protectedPath of config.protectedFiles) {
+    if (deps.isPathContained(target, protectedPath) || target === resolve(protectedPath)) {
+      throw new Error(`PROJECT_CONFIG_PROTECTED: "${absolutePath}" is a protected path`);
+    }
+  }
+}
+
+/** srt's returned env is the CALLING process's whole `process.env` plus its own additions (the
+ *  single most safety-critical finding in the whole spike) — `deps.buildBashEnv` is the ONLY
+ *  sanctioned way to turn that into the child's actual env; pi's own `env` argument (built from
+ *  `getShellEnv()` = `{...process.env, PI_*}`) is discarded entirely, never merged. */
+function createJailedBashOps(config: PiChildConfig, sandbox: PiChildSandboxConfig, deps: SessionDeps): BashOperations {
+  let initialized = false;
+  const ensureInit = async (): Promise<void> => {
+    if (initialized) return;
+    if (sandbox.ripgrepOverride === null) {
+      throw Object.assign(new Error('SANDBOX_UNAVAILABLE: no bundled ripgrep-capable CLI binary was found on this host — the pi bash tool refuses rather than call SandboxManager.initialize() with no override'), { code: 'SANDBOX_UNAVAILABLE' });
+    }
+    await SandboxManager.initialize(
+      {
+        // Base config: deliberately the strictest empty posture — every REAL call below supplies
+        // its own complete `customConfig` (filesystem/credentials/network), never relying on this
+        // base (pi-spike-report.md S1: "the override mechanism is not racy", confirmed per-call
+        // customConfig fully replaces policy).
+        network: { allowedDomains: [], deniedDomains: [] },
+        filesystem: { allowWrite: [], allowRead: [], denyRead: [], denyWrite: [] },
+        ripgrep: sandbox.ripgrepOverride,
+      } as Parameters<typeof SandboxManager.initialize>[0],
+      // design change 6: "allow all" network parity with today's unrestricted-bash-network posture
+      // under confinement — srt's `network` field is MANDATORY (unlike the SDK's optional one), and
+      // an empty `allowedDomains` alone means deny-all; an ask callback that always answers "allow"
+      // is the one mechanism that is BOTH expressible in srt's typed config AND verified working on
+      // this host (external HTTPS egress confirmed via a real fake-server round trip during this
+      // iteration — see the PR report's real-run evidence). KNOWN GAP, documented: srt routes ALL
+      // egress through its MITM proxy once `network` is configured at all, and `localhost`/127.0.0.1
+      // destinations from INSIDE the sandboxed bash are consequently unreachable (measured during
+      // this iteration) — a real behavior change from today's SDK-gateway bash, which leaves
+      // `network` unset entirely and keeps full host network including loopback. Flagged as a
+      // residual risk in the report; not re-litigated per call.
+      async () => true,
+    );
+    initialized = true;
+  };
+
+  return {
+    async exec(command, cwd, { onData, signal, timeout, env: _piEnv }) {
+      await ensureInit();
+      const srtDir = srtInstallDir();
+      const customConfig = {
+        filesystem: {
+          ...sandbox.filesystem,
+          allowRead: srtDir !== null ? [...sandbox.filesystem.allowRead, srtDir] : sandbox.filesystem.allowRead,
+        },
+        network: { allowedDomains: [], deniedDomains: [] },
+        credentials: sandbox.credentials,
+        enableWeakerNestedSandbox: false,
+      } as Parameters<typeof SandboxManager.wrapWithSandboxArgv>[2];
+      const { argv, env: sandboxEnv } = await SandboxManager.wrapWithSandboxArgv(command, 'bash', customConfig, signal, cwd);
+      // design change 2 / the enforced check: a real `bwrap ... --unshare` invocation must actually
+      // be present in the joined argv — `argv[0]` is always `'bash'`, never a usable signal.
+      if (!deps.isWrapped(argv)) {
+        throw Object.assign(new Error('SANDBOX_UNAVAILABLE: wrapWithSandboxArgv did not produce a real bwrap invocation for this command'), { code: 'SANDBOX_UNAVAILABLE' });
+      }
+      const finalEnv = deps.buildBashEnv(process.env, sandboxEnv);
+      return new Promise((resolvePromise, reject) => {
+        const child = spawn(argv[0]!, argv.slice(1), { cwd, env: finalEnv, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+        let timedOut = false;
+        let timer: NodeJS.Timeout | undefined;
+        const killGroup = (): void => { try { process.kill(-child.pid!, 'SIGKILL'); } catch { child.kill('SIGKILL'); } };
+        if (timeout) timer = setTimeout(() => { timedOut = true; killGroup(); }, timeout * 1000);
+        child.stdout?.on('data', onData);
+        child.stderr?.on('data', onData);
+        const onAbort = (): void => killGroup();
+        signal?.addEventListener('abort', onAbort, { once: true });
+        child.on('error', (e) => { if (timer) clearTimeout(timer); reject(e); });
+        child.on('close', (code) => {
+          if (timer) clearTimeout(timer);
+          signal?.removeEventListener('abort', onAbort);
+          if (signal?.aborted) reject(new Error('aborted'));
+          else if (timedOut) reject(new Error(`timeout:${timeout}`));
+          else resolvePromise({ exitCode: code });
+        });
+      });
+    },
+  };
+}
+
+/** Translates `config.tools` (already-mapped pi names, pre-validated by the parent —
+ *  TOOL_UNSUPPORTED_BY_HARNESS never reaches this far) into `customTools` + jailed/sandboxed
+ *  operations, per spec "Tool mapping" / "File jail" / "Bash". `noTools:'builtin'` is the OTHER
+ *  half (set by the caller) — confirmed by spike S6 as the correct, complete override mechanism
+ *  (the built-in LOCAL executor is never reached once both are set). */
+function buildCustomTools(config: PiChildConfig, deps: SessionDeps): ToolDefinition<any, any, any>[] {
+  const want = new Set(config.tools);
+  // `ToolDefinition<any, any, any>`: each `create*ToolDefinition()` call below returns a distinctly
+  // (and correctly) typed ToolDefinition over its OWN typebox schema — a bare `ToolDefinition[]`
+  // array (TParams defaulting to the abstract TSchema) rejects every one of them on `renderCall`'s
+  // contravariant `args` parameter. `customTools` itself accepts a loosely-typed array at the
+  // `createAgentSession()` call site below.
+  const tools: ToolDefinition<any, any, any>[] = [];
+  if (want.has('read')) {
+    tools.push(createReadToolDefinition(config.cwd, {
+      operations: {
+        readFile: async (p) => { assertJailed(p, config, deps); return readFile(p); },
+        access: async (p) => { assertJailed(p, config, deps); await access(p); },
+      },
+    }));
+  }
+  if (want.has('write') && config.bashMode !== 'readonly') {
+    tools.push(createWriteToolDefinition(config.cwd, {
+      operations: {
+        writeFile: async (p, content) => { assertJailed(p, config, deps); await writeFile(p, content); },
+        mkdir: async (d) => { assertJailed(d, config, deps); await mkdir(d, { recursive: true }); },
+      },
+    }));
+  }
+  if (want.has('edit') && config.bashMode !== 'readonly') {
+    tools.push(createEditToolDefinition(config.cwd, {
+      operations: {
+        readFile: async (p) => { assertJailed(p, config, deps); return readFile(p); },
+        writeFile: async (p, content) => { assertJailed(p, config, deps); await writeFile(p, content); },
+        access: async (p) => { assertJailed(p, config, deps); await access(p); },
+      },
+    }));
+  }
+  if (want.has('grep')) {
+    tools.push(createGrepToolDefinition(config.cwd, {
+      operations: {
+        isDirectory: async (p) => { assertJailed(p, config, deps); return (await stat(p)).isDirectory(); },
+        readFile: async (p) => { assertJailed(p, config, deps); return readFile(p, 'utf8'); },
+      },
+    }));
+  }
+  if (want.has('find')) {
+    tools.push(createFindToolDefinition(config.cwd, {
+      operations: {
+        exists: async (p) => {
+          assertJailed(p, config, deps);
+          try { await access(p); return true; } catch { return false; }
+        },
+        glob: async (pattern, cwd, options) => {
+          assertJailed(cwd, config, deps);
+          const all: string[] = [];
+          await walkDir(cwd, cwd, all, options.ignore, options.limit * 20); // overcollect, then filter
+          const re = globToRegExp(pattern);
+          return all.filter((f) => re.test(f)).slice(0, options.limit);
+        },
+      },
+    }));
+  }
+  if (want.has('ls')) {
+    tools.push(createLsToolDefinition(config.cwd, {
+      operations: {
+        exists: async (p) => {
+          assertJailed(p, config, deps);
+          try { await access(p); return true; } catch { return false; }
+        },
+        stat: async (p) => { assertJailed(p, config, deps); return stat(p); },
+        readdir: async (p) => { assertJailed(p, config, deps); return readdir(p); },
+      },
+    }));
+  }
+  if (want.has('bash')) {
+    const operations = config.sandbox !== undefined
+      ? createJailedBashOps(config, config.sandbox, deps)
+      // Unconfined posture: plain exec, no srt wrap — matches the sdk gateway's own
+      // `{enabled:false}` behavior (never a silent claim of confinement with no evidence either way).
+      : ({
+          async exec(command, cwd, { onData, signal, timeout }) {
+            return new Promise((resolvePromise, reject) => {
+              const child = spawn('bash', ['-c', command], { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+              let timedOut = false;
+              let timer: NodeJS.Timeout | undefined;
+              const killGroup = (): void => { try { process.kill(-child.pid!, 'SIGKILL'); } catch { child.kill('SIGKILL'); } };
+              if (timeout) timer = setTimeout(() => { timedOut = true; killGroup(); }, timeout * 1000);
+              child.stdout?.on('data', onData);
+              child.stderr?.on('data', onData);
+              const onAbort = (): void => killGroup();
+              signal?.addEventListener('abort', onAbort, { once: true });
+              child.on('error', (e) => { if (timer) clearTimeout(timer); reject(e); });
+              child.on('close', (code) => {
+                if (timer) clearTimeout(timer);
+                signal?.removeEventListener('abort', onAbort);
+                if (signal?.aborted) reject(new Error('aborted'));
+                else if (timedOut) reject(new Error(`timeout:${timeout}`));
+                else resolvePromise({ exitCode: code });
+              });
+            });
+          },
+        } satisfies BashOperations);
+    tools.push(createBashToolDefinition(config.cwd, { operations }));
+  }
+  return tools;
+}
+
 /** Runs ONE agent() dispatch end to end inside the child process, streaming `PiChildEvent`s to
  *  `emit` as pi's own session reports them, and resolving when the prompt settles (success, error or
  *  abort). Never throws for a provider/session failure — those become `{t:'error'}`/`{t:'fatal'}`
  *  events so entry.ts's wire protocol stays uniform; a thrown error here means a programming defect,
  *  not a dispatch failure. */
-export async function runPiChildSession(config: PiChildConfig, emit: (event: PiChildEvent) => void): Promise<void> {
+export async function runPiChildSession(config: PiChildConfig, emit: (event: PiChildEvent) => void, deps: SessionDeps): Promise<void> {
   const runtime = await ModelRuntime.create({
     authPath: join(config.agentDir, 'auth.json'),
     modelsPath: join(config.agentDir, 'models.json'),
@@ -92,6 +365,7 @@ export async function runPiChildSession(config: PiChildConfig, emit: (event: PiC
     await runtime.setRuntimeApiKey(config.model.provider, config.apiKey);
   }
   const model = await resolveModel(config, runtime);
+  const customTools = buildCustomTools(config, deps);
 
   const { session } = await createAgentSession({
     cwd: config.cwd,
@@ -100,7 +374,8 @@ export async function runPiChildSession(config: PiChildConfig, emit: (event: PiC
     thinkingLevel: 'off',
     modelRuntime: runtime,
     resourceLoader: emptyResourceLoader(config.systemPrompt),
-    noTools: 'all',
+    noTools: 'builtin',
+    customTools,
     sessionManager: SessionManager.inMemory(config.cwd),
     settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false, maxRetries: 0 } }),
   });

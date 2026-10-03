@@ -34,11 +34,44 @@ export interface PiChildConfig {
    *  `https://openrouter.ai/api/v1` so the request shape can be verified with no real key). Absent
    *  -> the real OpenRouter endpoint. Ignored for ollama (which always uses `model.baseUrl`). */
   openrouterBaseUrl?: string;
+  /** pi tool names to enable — already translated from engine names AND validated by the parent
+   *  (TOOL_UNSUPPORTED_BY_HARNESS is refused before a child is ever spawned). `noTools:'builtin'`
+   *  plus `customTools` overrides for exactly these names (spike S6) — never pi's own unsandboxed
+   *  built-ins. `[]` is honored (no tools at all). */
+  tools: string[];
+  /** Absolute paths that must stay unreadable to the file tools regardless of workspace
+   *  containment (credentials etc.) — the SAME list `sandbox.credentials.files` denies for bash. */
+  protectedFiles: string[];
+  /** Present only when this engine measured `confined` at boot (the pi-path probe, a SEPARATE
+   *  measurement from the sdk gateway's own — see confinement-probe.ts in this directory). Absent ->
+   *  bash runs unwrapped (spec "Confinement posture"). */
+  sandbox?: PiChildSandboxConfig;
+  /** Issue #78(c) parity: `'readonly'` makes the bash tool refuse any write. Only ever set when the
+   *  parent's `readonlyBashRefusal()` check already passed (confined posture, no write tool beside
+   *  it, a known workspace root) — the child never downgrades it. */
+  bashMode?: 'readonly';
 }
 
 export type PiChildModelConfig =
   | { provider: 'ollama'; model: string; baseUrl: string }
   | { provider: 'openrouter'; model: string };
+
+/** Projected from `buildBashConfinement()`'s SandboxSettings output (shared with the sdk gateway —
+ *  field names are identical in both the SDK's own `SandboxSettings` and srt's
+ *  `SandboxRuntimeConfig`, confirmed in the spike) into plain JSON-safe data the PARENT (which can
+ *  import bash-confinement.ts directly — it is never raw-node-loaded) computes ONCE per dispatch and
+ *  ships over stdin. Absent on `PiChildConfig.sandbox` means this engine measured `unconfined` at
+ *  boot — the child's bash tool then runs WITHOUT any srt wrap (never a claimed confinement with no
+ *  evidence), matching the sdk gateway's own `{enabled:false}` posture. */
+export interface PiChildSandboxConfig {
+  filesystem: { allowWrite: string[]; allowRead: string[]; denyRead: string[]; denyWrite: string[] };
+  credentials?: { files: Array<{ path: string; mode: 'deny' | 'mask' }> };
+  /** design change 1: resolved ONCE by the parent (`resolveRipgrepOverride()`); `null` means no
+   *  bundled native-CLI binary was found on this host — the child's bash tool refuses
+   *  SANDBOX_UNAVAILABLE rather than silently calling `SandboxManager.initialize()` with no
+   *  override (which would itself throw once it PATH-walks a possibly-fake `rg` shell function). */
+  ripgrepOverride: { command: string; argv0: 'rg' } | null;
+}
 
 /** Streamed child -> parent, one JSON object per stdout line (JSONL). `message_end`/`final`/`error`
  *  map directly onto `message.role === 'assistant'` events from pi's own `session.subscribe()` —

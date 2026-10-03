@@ -168,3 +168,95 @@ describe('PiGatewayClient — JSONL child protocol (slice c)', () => {
     expect(result.transport).toBe('pi');
   });
 });
+
+describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => {
+  it('refuses an unmapped tool (WebFetch) with TOOL_UNSUPPORTED_BY_HARNESS, never spawning a child', async () => {
+    const spawnChild = vi.fn();
+    const gw = new PiGatewayClient({ spawnChild: spawnChild as never, entryPath: '/fake/entry.ts' });
+    const result = await gw.invoke(req({ opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Read', 'WebFetch'] } as AgentOpts }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.detail).toMatch(/TOOL_UNSUPPORTED_BY_HARNESS/);
+      expect(result.detail).toMatch(/WebFetch/);
+      expect(result.retryable).toBe(false);
+    }
+    expect(spawnChild).not.toHaveBeenCalled();
+  });
+
+  it('maps every supported engine tool name to its pi name and sends it on childConfig.tools', async () => {
+    const f = fakeChild();
+    const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
+    const promise = gw.invoke(req({ opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'LS'] } as AgentOpts }));
+    await new Promise((r) => setTimeout(r, 10));
+    f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+    f.exit(0);
+    await promise;
+    const sent = JSON.parse(f.stdinWritten.join(''));
+    expect(sent.tools.sort()).toEqual(['bash', 'edit', 'find', 'grep', 'ls', 'read', 'write'].sort());
+  });
+
+  it("refuses bash:'readonly' as BASH_READONLY_UNENFORCEABLE on an unconfined posture, never spawning a child", async () => {
+    const spawnChild = vi.fn();
+    const gw = new PiGatewayClient({ spawnChild: spawnChild as never, entryPath: '/fake/entry.ts', confinementPosture: 'unconfined' });
+    const result = await gw.invoke(req({ opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Bash'], bash: 'readonly' } as AgentOpts }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.detail).toMatch(/BASH_READONLY_UNENFORCEABLE/);
+    expect(spawnChild).not.toHaveBeenCalled();
+  });
+
+  it("refuses bash:'readonly' beside a write tool as BASH_READONLY_CONFLICT", async () => {
+    const spawnChild = vi.fn();
+    const gw = new PiGatewayClient({ spawnChild: spawnChild as never, entryPath: '/fake/entry.ts', confinementPosture: 'confined', confinement: { allowHostPaths: [], protectedFiles: [], workRoot: '/tmp/pi-gw-unit-ws' } });
+    const result = await gw.invoke(req({ workspace: '/tmp/pi-gw-unit-ws', opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Bash', 'Write'], bash: 'readonly' } as AgentOpts }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.detail).toMatch(/BASH_READONLY_CONFLICT/);
+    expect(spawnChild).not.toHaveBeenCalled();
+  });
+
+  it('builds a sandbox config (with a resolved ripgrep override) onto childConfig when posture is confined and bash is requested', async () => {
+    const f = fakeChild();
+    const gw = new PiGatewayClient({
+      spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts',
+      confinementPosture: 'confined',
+      confinement: { allowHostPaths: [], protectedFiles: ['/home/x/.creds'], workRoot: '/tmp/pi-gw-unit-ws' },
+      resolveRipgrepOverride: () => ({ command: '/fake/claude', argv0: 'rg' }),
+    });
+    const promise = gw.invoke(req({ opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Bash'] } as AgentOpts }));
+    await new Promise((r) => setTimeout(r, 10));
+    f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+    f.exit(0);
+    await promise;
+    const sent = JSON.parse(f.stdinWritten.join(''));
+    expect(sent.sandbox.ripgrepOverride).toEqual({ command: '/fake/claude', argv0: 'rg' });
+    expect(sent.sandbox.filesystem).toBeDefined();
+  });
+
+  it('never builds a sandbox config when posture is unconfined — bash runs unwrapped, never a false confinement claim', async () => {
+    const f = fakeChild();
+    const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts', confinementPosture: 'unconfined' });
+    const promise = gw.invoke(req({ opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Bash'] } as AgentOpts }));
+    await new Promise((r) => setTimeout(r, 10));
+    f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+    f.exit(0);
+    await promise;
+    const sent = JSON.parse(f.stdinWritten.join(''));
+    expect(sent.sandbox).toBeUndefined();
+  });
+
+  it('the eager harness descriptor reports bash.enforced honestly from the measured posture', async () => {
+    const f = fakeChild();
+    const gw = new PiGatewayClient({
+      spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts',
+      confinementPosture: 'confined',
+      confinement: { allowHostPaths: [], protectedFiles: [], workRoot: '/tmp/pi-gw-unit-ws' },
+      resolveRipgrepOverride: () => ({ command: '/fake/claude', argv0: 'rg' }),
+    });
+    let harness: { bash?: { mode: string; enforced: boolean } } | undefined;
+    const promise = gw.invoke(req({ opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Bash'] } as AgentOpts, onHarness: async (h) => { harness = h as never; } }));
+    await new Promise((r) => setTimeout(r, 10));
+    f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+    f.exit(0);
+    await promise;
+    expect(harness?.bash).toEqual({ mode: 'full', enforced: true });
+  });
+});

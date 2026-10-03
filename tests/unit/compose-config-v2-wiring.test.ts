@@ -565,6 +565,32 @@ describe('composeConfig() — gateway:"pi" (pi harness v1, owner decisions 1/2/3
   it('harnessProviders is never a FileConfig key an operator can set directly (compose-config bug class guard)', () => {
     expect('harnessProviders' in KNOWN_FILE_CONFIG_KEYS).toBe(false);
   });
+
+  // slice (e) / v37 Gate-8 send-back (finding A5) parity: a SEPARATE probe from the sdk gateway's
+  // own (spec "Confinement posture") — `deps.confinementProbe` here must be main()'s pi-path probe
+  // result, forwarded onto BOTH ServerConfig.confinementPosture AND the constructed PiGatewayClient's
+  // own config, exactly like the sdk branch's own lock above. Dropping either forward is silently
+  // INSECURE (every run ships unconfined with no observable signal), not silently inert.
+  it('forwards deps.confinementProbe.posture onto BOTH ServerConfig AND the constructed PiGatewayClient (REQ-218 parity)', async () => {
+    const cfg = await composeConfig({ gateway: 'pi' }, { ...FAKE_DEPS, confinementProbe: { posture: 'confined' } } as unknown as Parameters<typeof composeConfig>[1]);
+    expect((cfg as Record<string, unknown>)['confinementPosture']).toBe('confined');
+    const gwConfig = (cfg.gateway as unknown as { _config: { confinementPosture?: string } })._config;
+    expect(gwConfig.confinementPosture).toBe('confined');
+  });
+
+  it('forwards the SAME grant/protected/workRoot block onto the constructed PiGatewayClient as the sdk branch forwards', async () => {
+    const { mkdtempSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-ccwiring-pi-workroot-'));
+    try {
+      const cfg = await composeConfig({ gateway: 'pi', workRoot }, FAKE_DEPS);
+      const gwConfig = (cfg.gateway as unknown as { _config: { confinement?: { workRoot?: string } } })._config;
+      expect(gwConfig.confinement?.workRoot).toBe(workRoot);
+    } finally {
+      rmSync(workRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 // Issue #73: `modelProbe` is validated at config load (fail-closed) and defaulted when absent — a
