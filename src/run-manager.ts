@@ -1762,6 +1762,18 @@ export class RunManager {
     // Syntax-only (`parseModelRef`), not a live catalog existence re-check: this is a REPLAY of an
     // admission that already happened once (rule 12 says "refuse rather than dispatch an
     // unresolvable name", not "re-verify existence on every resume").
+    // review L2: a SECOND, independent check over the same loop — not an existence re-check (that is
+    // still deliberately excluded by rule 12's own comment above), but a DEPLOYMENT-CAPABILITY one:
+    // can the harness THIS process is running even dispatch the pinned provider at all. A run
+    // admitted while this deployment ran gateway:"sdk" (harnessProviders unset, so checkModelRef's
+    // anthropic arm admits unconditionally) can be suspended, the deployment restarted under
+    // gateway:"pi", and resumed — without this, it would reach pi-gateway-client.ts's own
+    // dispatch-time defense-in-depth refusal (a confusing internal error, by its own comment "should
+    // have been refused at admission") instead of this typed admission refusal. `checkModelRef` is
+    // given an EMPTY entries catalog deliberately — paired with `harnessProviders`, its ONLY possible
+    // refusal is PROVIDER_UNSUPPORTED_BY_HARNESS (an empty `entries` can never trigger its
+    // existence-based UNKNOWN_MODEL arm — see its own "listing unavailable -> accept with warning"
+    // rule), so this cannot silently turn into the re-verification rule 12 forbids.
     for (const m of reachableModels(effectiveParams)) {
       if (parseModelRef(m) === undefined) {
         throw codedError(
@@ -1769,6 +1781,10 @@ export class RunManager {
           `UNKNOWN_MODEL: run ${runId}'s admission-time parameters carry "${m}", which is not a valid <provider>/<model-id> ref (it predates the alias-removal change) and cannot be resumed; re-register the workflow with a full ref and start a new run`,
           { runId, supplied: m },
         );
+      }
+      const harnessVerdict = checkModelRef(m, { entries: [], harnessProviders: this._harnessProviders });
+      if (!harnessVerdict.ok && harnessVerdict.code === 'PROVIDER_UNSUPPORTED_BY_HARNESS') {
+        throw codedError('PROVIDER_UNSUPPORTED_BY_HARNESS', harnessVerdict.message, { runId, supplied: m });
       }
     }
 
