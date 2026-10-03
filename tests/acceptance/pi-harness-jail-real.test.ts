@@ -243,48 +243,9 @@ describe('pi harness v1 — file-tool jail, driven deterministically (review B3/
     }
   }, 30_000);
 
-  // review round 2 (owner ruling): "keep a regression test that a planted .pi/settings.json with
-  // extensions is not LOADED" — a stronger property than "not swept" (pi-gateway-agentdir-isolation
-  // test's own M1/B1 describe block already covers that the file survives on disk untouched). This
-  // exercises the REAL DefaultResourceLoader branch (session-runner.ts's buildResourceLoader): that
-  // branch is used ONLY when a dispatch declares an MCP server or skill (a bare dispatch uses the
-  // "empty" loader, which trivially never discovers anything, by construction, and would prove
-  // nothing here) — a fake, never-connecting stdio MCP server (`command:'false'`) is declared via
-  // `resolveMcp` purely to take that branch; buildResourceLoader() runs and completes BEFORE any
-  // model call, so the dispatch's own eventual ok/error outcome is irrelevant to what this checks.
-  it("R2 lows: a planted .pi/settings.json declaring an extension is not LOADED (noExtensions holds under the real DefaultResourceLoader branch)", async () => {
-    const plantedWs = mkdtempSync(join(tmpdir(), 'rwe-pi-jail-planted-pi-'));
-    const marker = join(plantedWs, 'EXTENSION_WAS_LOADED');
-    try {
-      const plantedPi = join(plantedWs, '.pi');
-      mkdirSync(join(plantedPi, 'extensions'), { recursive: true });
-      writeFileSync(join(plantedPi, 'settings.json'), JSON.stringify({ extensions: ['./extensions/evil.ts'] }));
-      // Writes its marker at MODULE EVALUATION time (a bare top-level side effect) — detects any
-      // attempt to load/require/import this file at all, independent of whether it would otherwise
-      // satisfy pi's own extension-module shape.
-      writeFileSync(join(plantedPi, 'extensions', 'evil.ts'), `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'LOADED');\nexport default {};\n`);
-
-      const fake = await startScriptedServer([]); // no tool calls needed — only buildResourceLoader() matters
-      try {
-        const gw = new PiGatewayClient({
-          secretSource: { resolve: () => 'fake-key' }, timeoutMs: 30_000, retries: 0,
-          openrouterBaseUrl: `http://127.0.0.1:${fake.port}/api/v1`,
-          resolveMcp: async (_wf, names) => ({ configs: Object.fromEntries(names.map((n) => [n, { command: 'false' }])), missing: [] }),
-        });
-        await gw.invoke({
-          prompt: 'go', opts: { model: 'openrouter/fake/model', allowedTools: [], mcp: ['neverconnects'] },
-          runId: 'jail-real-planted-pi', agentId: 'a1', workspace: plantedWs,
-          assets: { roots: { workflow: '/wf', global: '/gl' }, declared: { skills: [], mcp: ['neverconnects'] }, workflow: 'wf' },
-        });
-      } finally {
-        await new Promise((r) => fake.server.close(() => r(undefined)));
-      }
-      expect(existsSync(marker)).toBe(false);
-      // The planted file itself is left untouched (M1/B1: no pi-specific sweep) — distinct from, and
-      // in addition to, the "never loaded" property this test's own name is about.
-      expect(existsSync(join(plantedPi, 'settings.json'))).toBe(true);
-    } finally {
-      rmSync(plantedWs, { recursive: true, force: true });
-    }
-  }, 30_000);
+  // review round 2 owner ruling's "planted .pi not loaded" regression test used to live here —
+  // moved to its own ungated file, tests/acceptance/pi-harness-planted-config-not-loaded.test.ts
+  // (review round 3, LOW-2), to remove any ambiguity about this file's own gating status for a
+  // reader who only looks at filenames (this file was never actually behind RWE_PI_REAL_TESTS, see
+  // this file's own header comment, but the "-real" in its name read as a signal otherwise).
 });
