@@ -753,6 +753,30 @@ usage}`——不要用這份文件推測，直接查 `system_info`。
 - `npm audit` 其餘的 `vitest`/`vite`/`vite-node`/`esbuild` 鏈結是既有的 dev-only 相依問題（與這次新增
   的 pi 相依套件無關，待辦的 vitest 1.6→5 升級在別的追蹤項目裡），這裡不重複處理。
 
+**lockfile 的非 linux-x64 平台項目（review L11/R2 跨輪追蹤）**：上面的 `rm -f package-lock.json &&
+npm install` 全量重算（為了讓 brace-expansion override 真的生效——見上方）有個副作用：`npm` 把
+`@anthropic-ai/claude-agent-sdk-*` 這組 optional 平台二進位套件的 8 個變體砍到只剩 `linux-x64`／
+`linux-x64-musl`（這台開發機自己的平台），其餘 6 個（`darwin-arm64`/`darwin-x64`/`linux-arm64`/
+`linux-arm64-musl`/`win32-arm64`/`win32-x64`）連同另一批 esbuild/rollup 的跨平台項目一起消失——這些
+項目本該在 lockfile 裡全列著（讓非本機平台的 `npm ci` 也能解析出自己要裝的那個），即使實際只有「跟
+本機平台相符」的那個會真的落地到 `node_modules`。已修：手動從 regression 前的 lockfile 把那 6 個
+`claude-agent-sdk-*` 變體原樣補回去（版本、`resolved`、`integrity` 皆未變動，且已逐一對 npm registry
+核對那個版本仍然存在）——純附加的 diff，沒動到任何既有行。esbuild/rollup 那批（review L11 估計約 80
+項）因為是遞移相依（非這次新增的直接依賴），暫未逐一補回，留待下次真的需要跨平台 `npm ci` 時再處理，
+不在這次 pi harness 的影響半徑內。
+
+**第二輪嘗試（review round 2 裁決：「從 master 的 lockfile 當底，試一次」）**：`git show
+origin/master:package-lock.json` 當起點、`npm install --package-lock-only` 疊上這個分支新增的 pi 相
+依套件——這個組合完整保留了全部 ~86 個跨平台項目（claude-agent-sdk 全 8 個 + esbuild/rollup 那批都
+在），達成了「cheap 保留跨平台項目」這個目標本身。但代價是 brace-expansion override **沒有**生效：
+`--package-lock-only`（試了兩次，含單獨對 `@earendil-works/pi-coding-agent` 子樹重跑一次）都回報
+「up to date」，解出的仍是舊版 `5.0.9`。接著試了 `rm -rf node_modules && npm install`（從這個以
+master 為底、已含 pi 相依的 lockfile 出發，而非從零)：這次 `npm ls` 顯示 `overridden: true`，但版本
+**仍然**是 `5.0.9`——override 旗標亮著卻沒套用正確版本，像是 npm 自己的一個不一致（可能跟上一輪遺留
+的 npm 快取有關），值得記錄但超出「試一次」的預算。結論：**保留**本節上方、已驗證正確（brace-
+expansion 確實是 `5.0.12`）、6 個 `claude-agent-sdk-*` 變體手動補回的既有版本，**不採用**這次 master
+為底的版本——寧可少補 80 個 dev 期間遲早要處理的跨平台項目，也不要賠上一個已經修好的 CVE。
+
 ### 角色（`principals`）——啟用 auth 前一定要讀
 
 每個工具都有一個**最低角色**要求。工具角色共三級（`admin` > `author` > `user`），另有 `none`
