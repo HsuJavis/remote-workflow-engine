@@ -50,6 +50,15 @@ export const MASK_PROVIDER_ENV = false;
 export const PROJECT_CONFIG_PATHS = [
   '.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/commands',
   '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/launch.json', '.mcp.json',
+  // pi harness v1 (residual hardening): `.pi/` (pi's own project-config dir: `.pi/settings.json`,
+  // `.pi/mcp.json`, `.pi/extensions`, `.pi/skills`), `.pi-agent-dir` (this engine's OWN former
+  // agentDir name — kept here even after agentDir moved OUT of the workspace, specifically so a
+  // PLANTED one left over from an older run, a seeded repo, or an unrelated tool never gets swept-in
+  // as if it were real engine state) and `.agents/skills` (pi's project-trust-gated skill discovery
+  // path) are all swept the same way, even though the full-control pi child never reads any of them
+  // itself (`noContextFiles`/`noExtensions`/`noSkills` in session-runner.ts) — defense in depth
+  // against a future embedding change, and against Bash planting one on an unconfined host.
+  '.pi', '.pi-agent-dir', '.agents',
 ] as const;
 
 /** Project configuration the ENGINE writes (skills materialized per dispatch). An agent may not

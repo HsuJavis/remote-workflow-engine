@@ -37,7 +37,9 @@ describe('UT-309 buildBashConfinement() — the whole posture as one pure functi
     // issue #128: `.mcp.json` moved from ENGINE_OWNED_CONFIG_PATHS into PROJECT_CONFIG_PATHS (the
     // engine no longer rewrites it per dispatch, so it is swept like any other planted config) —
     // same membership, new position (right after `.claude/launch.json`, ahead of `.claude/skills`).
-    expect(s.filesystem?.denyWrite).toEqual(['.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/commands', '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/launch.json', '.mcp.json', '.claude/skills'].map((rel) => join(ROOT, rel)));
+    // pi harness v1 residual hardening: `.pi`/`.pi-agent-dir`/`.agents` added (shared list — the sdk
+    // gateway never creates these names itself, so this is pure defense-in-depth gain for it too).
+    expect(s.filesystem?.denyWrite).toEqual(['.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/commands', '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/launch.json', '.mcp.json', '.pi', '.pi-agent-dir', '.agents', '.claude/skills'].map((rel) => join(ROOT, rel)));
     // Issue #101: the WHOLE home and the WHOLE workRoot are denied (every other run's workspace,
     // ~/.claude credentials, ~/.config, ...), then protectedFiles on top.
     expect(s.filesystem?.denyRead).toEqual([HOME, WORKROOT, ...PROTECTED]);

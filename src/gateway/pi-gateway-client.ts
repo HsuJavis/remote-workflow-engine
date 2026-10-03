@@ -17,7 +17,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
-import { readdirSync, unlinkSync, readFileSync } from 'node:fs';
+import { readdirSync, unlinkSync, readFileSync, mkdtempSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import type { AgentOpts, Caps, HarnessDescriptor, Tokens, TranscriptEvent } from '../types.js';
 import type { GatewayClient, GatewayResult, EffortApplied } from './client.js';
@@ -31,6 +31,7 @@ import type { PiChildConfig, PiChildEvent, PiChildSandboxConfig } from './pi-chi
 import type { EventSink } from '../event-log.js';
 import { PI_HARNESS_VERSION } from '../harness-info.js';
 import { materializeAssets, summarizeMcpInit } from './claude-agent-sdk-client.js';
+import { sweepPlantedConfig } from './project-config-guard.js';
 import { resolveMcpConfigs, type ResolveMcpFn } from './mcp-config-resolver.js';
 import type { McpServerConfig } from '../mcp-probe.js';
 import type { SecretSource } from '../secret-resolver.js';
@@ -146,6 +147,27 @@ function killDescendantsBestEffort(childPid: number | undefined): void {
   for (const pid of collectDescendantPids(childPid)) {
     try { process.kill(pid, 'SIGKILL'); } catch { /* already gone — fine */ }
   }
+}
+
+/** residual hardening (coordinator review, 2026-10-03): `agentDir` used to live at
+ *  `<workspace>/.pi-agent-dir` — INSIDE the file-tool jail root (`assertJailed` in session-runner.ts
+ *  checks containment against `config.cwd`, i.e. the workspace) and, when confined, inside bash's
+ *  default-allowed area — so a Read/Write/Edit tool call, or Bash on an unconfined host, could plant
+ *  pi config/extensions/an MCP config there for a LATER dispatch to load, and `workspace_pull` could
+ *  read `mcp.log` back out (issue #128's exact concern class). Fixed by moving it OUTSIDE the
+ *  workspace entirely: a per-dispatch directory under `os.tmpdir()` (never under `workRoot` or the
+ *  workspace, so it needs no containment logic of its own — `isPathContained` against `config.cwd`
+ *  already excludes it), mode 0700, created before the child is spawned and removed when the dispatch
+ *  ends (success, error, abort or timeout alike). Explicitly added to the sandbox's `denyRead` too
+ *  (not just "never in allowRead/allowWrite") as the belt to this suspenders. */
+function buildPiAgentDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'rwe-pi-agentdir-'));
+  chmodSync(dir, 0o700);
+  return dir;
+}
+
+function removePiAgentDir(dir: string): void {
+  try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
 }
 
 function addTokens(a: Tokens, b: Tokens): Tokens {
@@ -280,7 +302,44 @@ export class PiGatewayClient implements GatewayClient {
       return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: 'aborted by caller before dispatch (run suspended or stopped)' };
     }
     const workspace = req.workspace ?? process.cwd();
-    const agentDir = join(workspace, '.pi-agent-dir');
+    const agentDir = buildPiAgentDir();
+    try {
+      return await this._invokeWithWorkspace(req, parsed, workspace, agentDir);
+    } finally {
+      removePiAgentDir(agentDir);
+    }
+  }
+
+  /** Split out of `invoke()` purely so `agentDir`'s cleanup (above) is a single `finally` around
+   *  EVERY exit path of the rest of this method (every early refusal return, every attempt in the
+   *  retry loop, success or failure) — never duplicated per return site. */
+  private async _invokeWithWorkspace(
+    req: {
+      prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string;
+      assets?: { roots: { workflow: string; global: string }; declared: { skills: string[]; mcp: string[] }; workflow: string };
+      onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>;
+      onEvent?: (ev: TranscriptEvent) => void | Promise<void>;
+      onUsage?: (cumulative: Tokens) => void;
+      caps?: Caps;
+    },
+    parsed: NonNullable<ReturnType<typeof parseModelRef>>,
+    workspace: string,
+    agentDir: string,
+  ): Promise<GatewayResult> {
+    // Project configuration another agent (or Bash on an unconfined host) left in the workspace is
+    // removed before this child can ever be spawned — same contract as the sdk gateway's own
+    // sweepPlantedConfig wiring (claude-agent-sdk-client.ts), now including `.pi`/`.pi-agent-dir`/
+    // `.agents` (bash-confinement.ts's PROJECT_CONFIG_PATHS). Unremovable -> refuse, never load it.
+    let plantedConfigRemoved: string[] = [];
+    try {
+      plantedConfigRemoved = sweepPlantedConfig(workspace);
+    } catch (err) {
+      return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: `PLANTED_CONFIG_UNREMOVABLE: ${(err as Error).message} in the run workspace — refusing to start an agent that would load it` };
+    }
+    if (plantedConfigRemoved.length > 0) {
+      this._eventSink({ kind: 'agent.planted_config_removed', runId: req.runId, agentId: req.agentId, attempt: 1, root: workspace, removed: plantedConfigRemoved });
+    }
+
     const model: PiChildConfig['model'] =
       parsed.provider === 'ollama'
         ? { provider: 'ollama', model: parsed.model, baseUrl: this._config.ollamaBaseUrl ?? process.env['OLLAMA_BASE_URL'] ?? 'http://localhost:11434' }
@@ -364,8 +423,12 @@ export class PiGatewayClient implements GatewayClient {
         ...(req.opts.bash === 'readonly' ? { bashMode: 'readonly' as const } : {}),
       });
       const ripgrepOverride = (this._config.resolveRipgrepOverride ?? resolveRipgrepOverride)();
+      const fs = settings.filesystem as PiChildSandboxConfig['filesystem'];
       sandbox = {
-        filesystem: settings.filesystem as PiChildSandboxConfig['filesystem'],
+        // residual hardening: agentDir already lives outside workspace/workRoot/home (so it is never
+        // in `allowRead`/`allowWrite` to begin with) — ALSO explicitly denied here, belt-and-
+        // suspenders, so a future grant that happened to cover os.tmpdir() could never re-open it.
+        filesystem: { ...fs, denyRead: [...fs.denyRead, agentDir] },
         credentials: settings.credentials as PiChildSandboxConfig['credentials'],
         ripgrepOverride,
       };
@@ -395,6 +458,7 @@ export class PiGatewayClient implements GatewayClient {
         skills: materialized?.skills ?? [],
       }),
       harnessVersion: PI_HARNESS_VERSION,
+      ...(plantedConfigRemoved.length > 0 ? { plantedConfigRemoved } : {}),
       ...(materialized !== undefined ? { materialized } : {}),
       ...(mapped.piNames.includes('bash')
         ? { bash: { mode: (req.opts.bash === 'readonly' ? 'readonly' : 'full') as 'readonly' | 'full', enforced: this._config.confinementPosture === 'confined' } }
