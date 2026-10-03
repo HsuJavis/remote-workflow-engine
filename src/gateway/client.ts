@@ -144,7 +144,7 @@ export type GatewayResult =
        *  across this codebase — `NULL_GATEWAY`, per-call error literals, every test fake — would
        *  otherwise need a mechanical edit unrelated to what they test; `capture()` (agent-executor.ts)
        *  already treats an absent `transport` as the pre-v26 case. */
-      transport?: 'claude-agent-sdk' | 'direct-fetch';
+      transport?: 'claude-agent-sdk' | 'direct-fetch' | 'pi';
       /** v26 (DES-177, TASK-177): the proxy-facing model id actually put on the wire (LiteLLM's
        *  resolution target) — present only on a call that went through a LiteLLM proxy, absent on a
        *  direct-to-provider dispatch (there is no cloak to report). */
@@ -190,7 +190,7 @@ export type GatewayResult =
       /** v26 (DES-171): unmapped `system` message subtypes observed before this failure. */
       unmapped?: string[];
       /** v26 (DES-177): which wire this failed attempt went out on — see the ok:true arm's doc. */
-      transport?: 'claude-agent-sdk' | 'direct-fetch';
+      transport?: 'claude-agent-sdk' | 'direct-fetch' | 'pi';
     };
 
 /** DES-249 (ARCH-171/173, TASK-247, REQ-216/K6+K7, REQ-207): the one `attempts` formula both

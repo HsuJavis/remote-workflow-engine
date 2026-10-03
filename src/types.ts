@@ -245,7 +245,7 @@ export interface AgentRecord {
    *  from `provider`/`model`, which are now the RESOLVED provider/model the harness stamped (never
    *  the transport name). Optional: absent on a pre-v26 record and on a call that never reached a
    *  gateway (queued/refused). */
-  transport?: 'claude-agent-sdk' | 'direct-fetch';
+  transport?: 'claude-agent-sdk' | 'direct-fetch' | 'pi';
   /** v26 (DES-177, TASK-177): the LiteLLM-proxy-facing model id actually put on the wire (the
    *  `rwe-proxy-*` cloak or a raw passthrough id) — present only on the LiteLLM-proxy route,
    *  absent on an Anthropic-direct dispatch (there is no cloak to report). */

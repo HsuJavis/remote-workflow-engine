@@ -531,6 +531,42 @@ describe('every KNOWN_FILE_CONFIG_KEYS entry is probed or excluded (UT-219, defe
   });
 });
 
+// pi harness v1 (owner decisions 1/2/3): `gateway:"pi"` is a THIRD composeConfig() branch, like
+// `confinementPosture` NOT a plain FileConfig forward — `harnessProviders` is DERIVED from the
+// gateway choice (never an independent rwe.config.json key: joins the Omit in main.ts's own
+// `FileConfig` declaration), and the constructed gateway is a `PiGatewayClient`, never the
+// `ClaudeAgentSdkGatewayClient` the "sdk" branch builds.
+describe('composeConfig() — gateway:"pi" (pi harness v1, owner decisions 1/2/3)', () => {
+  it('sets ServerConfig.harnessProviders to exactly [openrouter, ollama] — never anthropic', async () => {
+    const cfg = await composeConfig({ gateway: 'pi' }, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['harnessProviders']).toEqual(['openrouter', 'ollama']);
+  });
+
+  it('constructs a PiGatewayClient as ServerConfig.gateway (never falls through to LiteLLMGatewayClient)', async () => {
+    const { PiGatewayClient } = await import('../../src/gateway/pi-gateway-client.js');
+    const cfg = await composeConfig({ gateway: 'pi' }, FAKE_DEPS);
+    expect(cfg.gateway).toBeInstanceOf(PiGatewayClient);
+  });
+
+  it('never starts the managed LiteLLM proxy (no proxy needed — pi talks to openrouter/ollama natively)', async () => {
+    // A fresh proxyManager double, scoped to this test only — FAKE_DEPS.proxyManager is a
+    // module-level shared mock whose call count accumulates across every other test in this file.
+    const freshProxyManager = { start: vi.fn().mockResolvedValue({ port: 4001 }), stop: vi.fn(), isRunning: vi.fn().mockReturnValue(false) };
+    const cfg = await composeConfig({ gateway: 'pi' }, { ...FAKE_DEPS, proxyManager: freshProxyManager } as unknown as Parameters<typeof composeConfig>[1]);
+    expect(freshProxyManager.start).not.toHaveBeenCalled();
+    expect(cfg.proxyManager).toBeUndefined();
+  });
+
+  it('the default gateway stays "sdk" and the "sdk" branch is byte-unchanged (no harnessProviders set)', async () => {
+    const cfg = await composeConfig({}, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['harnessProviders']).toBeUndefined();
+  });
+
+  it('harnessProviders is never a FileConfig key an operator can set directly (compose-config bug class guard)', () => {
+    expect('harnessProviders' in KNOWN_FILE_CONFIG_KEYS).toBe(false);
+  });
+});
+
 // Issue #73: `modelProbe` is validated at config load (fail-closed) and defaulted when absent — a
 // bad value must refuse the boot rather than silently disable or mis-schedule the probe.
 describe('modelProbe is validated and defaulted by composeConfig (#73)', () => {

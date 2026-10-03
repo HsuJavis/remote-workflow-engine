@@ -105,6 +105,7 @@ export type Err = {
     | 'PARAM_UNKNOWN'
     | 'PARAM_CONTRACT_INVALID'
     | 'UNKNOWN_MODEL'
+    | 'PROVIDER_UNSUPPORTED_BY_HARNESS'
     | 'AGENT_UNDECLARED'
     | 'AGENT_DECLARED_NOT_IN_SCRIPT'
     | 'DEFAULTS_RETIRED'
@@ -167,7 +168,7 @@ function checkModelRefOrErr(
   warn: (w: ModelRefWarning) => void,
 ): Err | null {
   const verdict = checkModelRef(ref, catalog);
-  if (!verdict.ok) return invalid(param, verdict.message, 'UNKNOWN_MODEL');
+  if (!verdict.ok) return invalid(param, verdict.message, verdict.code ?? 'UNKNOWN_MODEL');
   if (verdict.warning) warn({ code: 'MODEL_CATALOG_UNVERIFIED', label, model: ref, message: verdict.warning });
   return null;
 }
@@ -648,7 +649,7 @@ function validateOneAgentOverride(
       if (!verdict.ok) {
         return {
           ok: false,
-          code: 'UNKNOWN_MODEL',
+          code: verdict.code ?? 'UNKNOWN_MODEL',
           message: verdict.message,
           detail: { param: 'model', agent: label, ...truncatedSupplied(val) },
         };

@@ -73,6 +73,17 @@ export const ERROR_CATALOG = {
   // full <provider>/<model-id> ref, names an unsupported provider, or (for openrouter/ollama) was
   // not found in the live catalog listing.
   UNKNOWN_MODEL: { see: 'workflow_authoring_guide', hint: 'the model is not a valid <provider>/<model-id> ref, or (for openrouter/ollama) was not found in the catalog listing — see models_list' },
+  // pi harness v1 owner decision 2: this engine runs `gateway:"pi"`, which supports only
+  // openrouter/ollama — no Anthropic subscription token/API key is used under pi (the spike found a
+  // subscription token through a third-party harness billed as "extra usage"). Thrown wherever a
+  // model ref is validated (checkModelRef's own harnessProviders gate): workflow_register, run_start/
+  // run_resume admission, and nested workflow() admission. An existing registered version that still
+  // pins anthropic/* fails with this code at run time — never a silent fallback to another provider.
+  PROVIDER_UNSUPPORTED_BY_HARNESS: { see: 'workflow_authoring_guide', hint: 'this engine runs the pi harness, which supports only openrouter/ollama models — use an openrouter/anthropic/... model instead (e.g. "openrouter/anthropic/claude-sonnet-4-5") or an ollama/* model, never "anthropic/*" directly' },
+  // pi harness v1 (spec "Tool mapping"): an agent declares a tool the pi harness has no mapping for
+  // (WebFetch, WebSearch, Task, NotebookEdit, or any other name outside Read/Write/Edit/Bash/Grep/
+  // Glob/LS) — refused at registration AND dispatch, never silently dropped from the tool surface.
+  TOOL_UNSUPPORTED_BY_HARNESS: { see: 'workflow_authoring_guide', hint: 'this tool has no mapping under the pi harness (gateway:"pi") — only Read/Write/Edit/Bash/Grep/Glob/LS are supported; declare a supported tool or switch this engine back to gateway:"sdk"' },
   // issue #103(a): registration WARNS (result.warnings), never throws this any more — the code now
   // fires only at admission (run_start, a schedule/webhook firing, or a nested workflow() call),
   // BEFORE any side effect, naming the agent label(s) + the missing mcp name(s) + the fix

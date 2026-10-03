@@ -13,6 +13,7 @@ import type { Clock } from '../clock.js';
 import type { RunParams } from '../params/resolve.js';
 import type { FourRates, Caps, BookEntry } from '../types.js';
 import { ZERO_RATES, STATIC_ANTHROPIC_RATES, ratesFromOpenRouterPricing } from './model-catalog.js';
+import type { Provider } from '../providers.js';
 
 /** The shape `ModelBook`'s injected `source()` returns one row per (provider,model) as. A
  *  production source (`config.modelCatalog`, i.e. `model-catalog.ts`'s `ModelEntry[]`) already
@@ -183,6 +184,19 @@ export function reachableModels(params: RunParams): string[] {
  *  `checkModelRef`'s openrouter/ollama existence arm consults. One adapter, not a second fetch: the
  *  admission pin (`RunManager.start()`) and the model-ref existence check now read the SAME
  *  snapshot for the SAME admission, so they can never disagree about what the catalog said. */
-export function toModelCatalogSnapshot(snapshot: BookSnapshot): { entries: Array<{ provider: string; model: string }>; source: BookSnapshot['source'] } {
-  return { entries: snapshot.entries.map((e) => ({ provider: e.provider, model: e.model })), source: snapshot.source };
+// pi harness v1 (owner decision 2): `harnessProviders` rides along as a THIRD, optional argument
+// (never folded into `BookSnapshot` itself, which is purely "what the catalog fetch returned" and
+// has nothing to do with which providers a harness choice supports) — stamped onto the
+// `ModelCatalogSnapshot` this adapter already produces for `checkModelRef`'s one gate. Every real
+// call site threads the SAME `ServerConfig.harnessProviders` value (set only under `gateway:"pi"`);
+// omitted (the "sdk" gateway, every existing call site/test) -> unchanged pre-pi behavior.
+export function toModelCatalogSnapshot(
+  snapshot: BookSnapshot,
+  harnessProviders?: readonly Provider[],
+): { entries: Array<{ provider: string; model: string }>; source: BookSnapshot['source']; harnessProviders?: readonly Provider[] } {
+  return {
+    entries: snapshot.entries.map((e) => ({ provider: e.provider, model: e.model })),
+    source: snapshot.source,
+    ...(harnessProviders !== undefined ? { harnessProviders } : {}),
+  };
 }

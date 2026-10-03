@@ -156,3 +156,44 @@ describe('checkModelRef — existence (owner decision 6)', () => {
     if (v.ok) expect(v.warning).toBeDefined();
   });
 });
+
+// pi harness v1 owner decision 2: under gateway:"pi" (no Anthropic subscription token/API key — the
+// subscription token through a third-party harness billed as "extra usage"), anthropic/* model refs
+// are refused everywhere a model is validated. `catalog.harnessProviders` (set only when
+// gateway:"pi") is the ONE gate `checkModelRef` itself enforces, ahead of the per-provider existence
+// checks below it — every one of the three real call sites (workflow_register's
+// validateOneAgentSpec, run_start/resume's validateOneAgentOverride, and the nested-workflow
+// admission door in run-manager.ts) funnels through this same function, so this is the single choke
+// point for the refusal.
+describe('checkModelRef — harnessProviders gate (pi harness v1, owner decision 2)', () => {
+  it('refuses an anthropic ref with PROVIDER_UNSUPPORTED_BY_HARNESS when harnessProviders excludes it', () => {
+    const catalog: ModelCatalogSnapshot = { entries: [], harnessProviders: ['openrouter', 'ollama'] };
+    const v = checkModelRef('anthropic/claude-haiku-4-5-20251001', catalog);
+    expect(v.ok).toBe(false);
+    if (!v.ok) {
+      expect(v.code).toBe('PROVIDER_UNSUPPORTED_BY_HARNESS');
+      // The hint must say the engine runs the pi harness and point at an openrouter/anthropic/... ref.
+      expect(v.message).toMatch(/pi harness/i);
+      expect(v.message).toMatch(/openrouter\/anthropic/);
+    }
+  });
+
+  it('still accepts openrouter/ollama refs when harnessProviders is the pi set', () => {
+    const catalog: ModelCatalogSnapshot = { entries: [], source: 'static', harnessProviders: ['openrouter', 'ollama'] };
+    expect(checkModelRef('openrouter/openai/gpt-4.1', catalog).ok).toBe(true);
+    expect(checkModelRef('ollama/qwen2.5:7b', catalog).ok).toBe(true);
+  });
+
+  it('never gates on provider when harnessProviders is absent (sdk gateway, unchanged behavior)', () => {
+    const catalog: ModelCatalogSnapshot = { entries: [] };
+    const v = checkModelRef('anthropic/claude-haiku-4-5-20251001', catalog);
+    expect(v.ok).toBe(true);
+  });
+
+  it('a non-anthropic UNKNOWN_MODEL refusal still carries no PROVIDER_UNSUPPORTED_BY_HARNESS code', () => {
+    const catalog: ModelCatalogSnapshot = { entries: [{ provider: 'openrouter', model: 'openai/gpt-4.1' }], source: 'live', harnessProviders: ['openrouter', 'ollama'] };
+    const v = checkModelRef('openrouter/openai/does-not-exist', catalog);
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.code).toBe('UNKNOWN_MODEL');
+  });
+});

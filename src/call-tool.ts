@@ -19,6 +19,7 @@ import { queryModels, ModelsQueryError, type ModelsQuery } from './models/models
 import type { ModelBook } from './models/model-book.js';
 import type { ModelProber, ProbeResult } from './models/model-probe.js';
 import type { ObservedStatsProvider } from './models/observed-stats.js';
+import type { Provider } from './providers.js';
 import type { SystemInfoSampler } from './system-info.js';
 import type { RunStore } from './run-store.js';
 import type { ErrorCode } from './errors.js';
@@ -60,6 +61,11 @@ export interface ToolDeps {
    *  fixtures compile unchanged; absent means "not wired" (models_list falls back to `source:'none'`
    *  for every ref). */
   observedStats?: ObservedStatsProvider;
+  /** pi harness v1 owner decision 2: set ONLY under `gateway:"pi"` — `models_list` filters its rows
+   *  to this provider set so anthropic models never appear in the listing (users only see openrouter
+   *  and ollama). Optional for the same reason `probeLookup`/`observedStats` are: absent -> every
+   *  provider the catalog returns is listed, unchanged pre-pi behavior. */
+  harnessProviders?: readonly Provider[];
   systemInfo: SystemInfoSampler;
   lookup: OwnerLookup;
   audit: AuditWriter;
@@ -394,7 +400,12 @@ export async function callTool(
       // rather than a raw catalog fetch per call — `entries` is really `ModelEntry[]` at the one
       // production wiring site (server.ts's `buildModelCatalog` is `ModelBook`'s own `source()`).
       const snapshot = await deps.modelBook.snapshot();
-      const entries = snapshot.entries as ModelEntry[];
+      // pi harness v1 owner decision 2: filtered BEFORE the catalog-level filter below, so an
+      // anthropic row never reaches enrichment/pagination — models_list never returns anthropic
+      // models under gateway:"pi".
+      const entries = (snapshot.entries as ModelEntry[]).filter(
+        (e) => deps.harnessProviders === undefined || (deps.harnessProviders as readonly string[]).includes(e.provider),
+      );
       // Issue #104: catalog-level filters first (on the raw rows, exactly as before), then the
       // enriched-row query — selection filters, sort, cursor page, field projection. `limit` now
       // pages (default 50, clamped to 200) instead of truncating, and the reply is a page wrapper.

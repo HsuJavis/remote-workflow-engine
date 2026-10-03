@@ -80,6 +80,17 @@ export interface ModelCatalogSnapshot {
    *  treated as "unavailable", the same as a genuinely-empty live listing for a provider with no
    *  configured models. Omitted (a caller with no snapshot at all) behaves like `'static'`. */
   source?: 'live' | 'last-good' | 'static';
+  /** pi harness v1 owner decision 2: set ONLY when this deployment is running `gateway:"pi"` — the
+   *  closed set of providers the pi harness actually supports (`['openrouter', 'ollama']`; never
+   *  `'anthropic'` — no Anthropic subscription token/API key is used under pi, since the spike found
+   *  a subscription token through a third-party harness is billed as "extra usage"). Rides on this
+   *  SAME pure DTO (rather than a new parameter threaded through every caller) because it is already
+   *  carried end-to-end, unchanged, to the exact three call sites that must enforce it: registration
+   *  (`validateOneAgentSpec`), run_start/resume admission (`validateOneAgentOverride`), and nested-
+   *  workflow admission (`RunManager._refuseUnadmittableParams`) — `toModelCatalogSnapshot` is the
+   *  ONE place that stamps it, from `ServerConfig.harnessProviders`. Omitted (the "sdk" gateway,
+   *  every existing test/call site) -> `checkModelRef` never gates on provider, unchanged. */
+  harnessProviders?: readonly Provider[];
 }
 
 /** The empty snapshot — every openrouter/ollama ref is accepted with a warning (catalog
@@ -89,7 +100,7 @@ export const EMPTY_MODEL_CATALOG: ModelCatalogSnapshot = { entries: [] };
 
 export type ModelRefVerdict =
   | { ok: true; provider: Provider; model: string; warning?: string }
-  | { ok: false; message: string };
+  | { ok: false; message: string; code?: 'UNKNOWN_MODEL' | 'PROVIDER_UNSUPPORTED_BY_HARNESS' };
 
 /** Owner decision 6 — model existence: openrouter/ollama ids are checked against `catalog` when its
  *  listing for that provider is available (refuse `UNKNOWN_MODEL` if the id is absent from it); when
@@ -106,12 +117,26 @@ export function checkModelRef(ref: unknown, catalog: ModelCatalogSnapshot = EMPT
   if (!parsed) {
     return {
       ok: false,
+      code: 'UNKNOWN_MODEL',
       message:
         `"${String(ref)}" is not a valid model reference — expected <provider>/<model-id> where provider is one of ` +
         `${PROVIDERS.join(', ')} (e.g. "anthropic/claude-haiku-4-5-20251001", "openrouter/openai/gpt-4.1", "ollama/qwen2.5:7b")`,
     };
   }
   const { provider, model } = parsed;
+  // pi harness v1 owner decision 2: gate BEFORE every per-provider branch below — the anthropic
+  // branch in particular would otherwise unconditionally ACCEPT any anthropic ref (it never
+  // consults `catalog` at all), so this check must come first, not be folded into that branch.
+  if (catalog.harnessProviders !== undefined && !catalog.harnessProviders.includes(provider)) {
+    return {
+      ok: false,
+      code: 'PROVIDER_UNSUPPORTED_BY_HARNESS',
+      message:
+        `"${provider}/${model}" is refused: this engine runs the pi harness, which supports only ` +
+        `${catalog.harnessProviders.join('/')} models — use an openrouter/anthropic/... model instead ` +
+        `(e.g. "openrouter/anthropic/claude-sonnet-4-5") or an ollama/* model, never "anthropic/*" directly.`,
+    };
+  }
   if (provider === 'anthropic') {
     if (Object.hasOwn(STATIC_ANTHROPIC_RATES, model)) return { ok: true, provider, model };
     return {
@@ -134,6 +159,7 @@ export function checkModelRef(ref: unknown, catalog: ModelCatalogSnapshot = EMPT
   if (!found) {
     return {
       ok: false,
+      code: 'UNKNOWN_MODEL',
       message: `"${provider}/${model}" was not found in the ${provider} catalog listing — check models_list({provider:"${provider}"}) for the exact id string to copy`,
     };
   }

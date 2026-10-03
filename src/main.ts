@@ -38,8 +38,19 @@ import { assertWorkRootIsolated } from './workroot-guard.js';
 import type { PrincipalRole as Role } from './authz.js';
 import { validateModelProbeConfig } from './models/model-probe.js';
 import { validateCasQuotaConfig, validateDiskFloorConfig } from './cas-quota.js';
+import { PiGatewayClient } from './gateway/pi-gateway-client.js';
+import type { Provider } from './providers.js';
 
-type GatewayChoice = 'sdk' | 'direct-fetch';
+// pi harness v1 owner decision 2: the closed provider set the pi harness supports — never
+// 'anthropic' (no Anthropic subscription token/API key is used under pi). Exported so the wiring
+// test and any other reader can assert against the SAME literal rather than a re-typed copy.
+export const PI_HARNESS_PROVIDERS: readonly Provider[] = ['openrouter', 'ollama'];
+
+// pi harness v1 (owner decision 1): a THIRD value, `"pi"`, alongside the existing two. Default
+// stays "sdk"; production stays on "sdk". One harness per engine — no per-agent/per-run switch
+// (pi-harness-research.md §5.1 option A, the chosen design; option B — a per-agent harness router —
+// is deferred to v2).
+type GatewayChoice = 'sdk' | 'direct-fetch' | 'pi';
 
 function safeRealpath(p: string): string {
   try {
@@ -59,7 +70,10 @@ function isNonEmptyString(s: string | undefined): s is string {
 // meaningful field is a FUNCTION (the injected renderer), which a JSON config file cannot express.
 // Its two numeric knobs are engine constants on purpose (`diagram-render.ts`), so there is nothing
 // here for composeConfig to forward and therefore nothing it can forget to forward.
-interface FileConfig extends Partial<Omit<ServerConfig, 'gateway' | 'principals' | 'diagramRender' | 'confinementPosture' | 'casQuota' | 'diskFloor'>> {
+// pi harness v1 (owner decision 2): `harnessProviders` joins `confinementPosture` in this Omit —
+// both are DERIVED (from the probe / from the `gateway` choice), never an independently-declared
+// rwe.config.json key.
+interface FileConfig extends Partial<Omit<ServerConfig, 'gateway' | 'principals' | 'diagramRender' | 'confinementPosture' | 'casQuota' | 'diskFloor' | 'harnessProviders'>> {
   /** Owner decision 2026-10-02: per-role CAS upload quota as written in rwe.config.json —
    *  `{user?, author?, admin?}`, each a byte count, a size string ("5GiB", "500MB") or
    *  "unlimited"/null. Validated + normalized (bytes, defaults filled) by `validateCasQuotaConfig`;
@@ -536,9 +550,31 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // it did before this field existed — no test anywhere newly gates on a posture it never asked
     // about.
     ...(deps.confinementProbe ? { confinementPosture: deps.confinementProbe.posture } : {}),
+    // pi harness v1 owner decision 2: DERIVED from the gateway choice, never an independent
+    // rwe.config.json key (joins the FileConfig Omit above) — set only under gateway:"pi" so
+    // `checkModelRef`'s provider gate and the models_list/`/api/models` filters engage.
+    ...(gatewayChoice === 'pi' ? { harnessProviders: PI_HARNESS_PROVIDERS } : {}),
   };
 
-  if (gatewayChoice === 'sdk') {
+  if (gatewayChoice === 'pi') {
+    // pi harness v1 owner decision 3: no LiteLLM proxy — pi talks to OpenRouter and Ollama
+    // natively. `config.proxyManager` stays unset (nothing for main()'s shutdown handler to
+    // cascade-kill) and `deps.proxyManager` (the "sdk" branch's own test seam) is never touched —
+    // a caller that supplies one under gateway:"pi" gets it silently ignored, which is correct:
+    // this branch has nothing to hand it to.
+    config.gateway = new PiGatewayClient({
+      secretSource: loadSecretSourceFromEnv(),
+      ollamaBaseUrl: process.env['OLLAMA_BASE_URL'],
+      timeoutMs: config.timeoutMs,
+      retries: fileConfig.retries,
+      // PROVISIONAL (slice a): reuses the SAME nested-bwrap probe the sdk gateway uses. Spec item
+      // (e) requires a SEPARATE pi-path probe (srt's own ripgrep-binary dependency, a possibly
+      // different bundled sandbox-runtime version) feeding BOTH this gateway and RunManager
+      // admission — added in a follow-up commit in this same iteration; until then this is a
+      // reasonable but unverified stand-in, never a claim that pi's bash is confined.
+      ...(deps.confinementProbe ? { confinementPosture: deps.confinementProbe.posture } : {}),
+    });
+  } else if (gatewayChoice === 'sdk') {
     // Same managed LiteLLM proxy subprocess the direct-fetch path can opt into (D-R1) — started
     // once here so its baseUrl is known before constructing the SDK session's ANTHROPIC_BASE_URL.
     // 2026-09-26 (alias mechanism removed): the proxy's model_list is now STATIC — no alias table
