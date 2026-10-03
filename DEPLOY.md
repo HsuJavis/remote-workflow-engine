@@ -739,6 +739,25 @@ usage}`——不要用這份文件推測，直接查 `system_info`。
 重開引擎即可——沒有資料遷移、沒有殘留狀態（pi 的 `agentDir`/session 都是每次 dispatch 用過即丟的
 記憶體內物件，從不寫進 `workRoot`）。
 
+**圍籠 Bash 的 TMPDIR（R3-1 修好、R4-2 修正）**：srt（圍籠函式庫）把確認過的 confined Bash 呼叫的
+`TMPDIR` 設成 `CLAUDE_CODE_TMPDIR || CLAUDE_TMPDIR || '/tmp/claude'`——這個引擎現在每次派工都把
+`CLAUDE_CODE_TMPDIR` 指到一個引擎自己驗證過、該次派工專屬的目錄（`<workRoot>/pi-tmp/d-<id>`，跟
+`agentDir` 同一套驗證邏輯），所以 `mktemp` 之類的工具永遠不會碰到主機共用的那個路徑。主機上真的存在
+的 `/tmp/claude`（任何本機使用者都能 `mkdir /tmp/claude` 建出來，或是另一支 Claude CLI 沙箱留下的）
+**無法**被這個引擎能設定的任何 srt 政策組合「藏起來」讓圍籠內看不到內容——`denyRead` 單獨設是
+no-op（srt 自己的寫入路徑還原邏輯會把真正的主機目錄重新綁回去），`denyRead`+`denyWrite` 一起設也一樣
+（寫入正確擋下，但讀取仍然看得到真正內容）。引擎因此**只設 `denyWrite:['/tmp/claude']`**：confined
+Bash 讀得到 `/tmp/claude`（跟主機上其他任何 `/tmp` 路徑一樣的暴露程度，不是新洞），但寫不進去——
+即使攻擊者在兩次 Bash 呼叫之間（check 之後、真正呼叫之前）才建出 `/tmp/claude` 也一樣擋得住，已用
+兩個並發 dispatch 互相搶的方式在真機驗證過。R4 另外驗證過一件事：confined Bash **自己完全建不出**
+`/tmp/claude`——主機真正的 `/tmp` 在圍籠內是唯讀 bind mount，`mkdir`/`ln -s`/`touch` 在 `/tmp` 下
+一律回報「Read-only file system」，主機上什麼都不會留下。R3 原本在 `/tmp/claude` 存在時直接拒絕整個
+dispatch（`HOST_SHARED_TMPDIR_UNSAFE`）——R4 業主裁決**撤掉這個拒絕**：上面這些事實證明它買不到額外
+的安全性，代價卻是真的——任何一個本機使用者只要 `mkdir /tmp/claude` 就能讓整台主機的 confined pi
+Bash 全部拒絕派工（引擎刻意不會去刪它不確定擁有權的主機路徑，所以只能等 operator 自己動手清掉）。
+現在的行為：`/tmp/claude` 存在時 dispatch 照常進行，只會送出一個 `agent.host_shared_tmpdir_present`
+事件（`{runId, agentId, attempt, path}`）讓 operator 知道，不擋、不碰主機上的任何東西。
+
 **npm audit（pi 相依套件新增的部分）**：新增這三個相依套件（`@earendil-works/pi-coding-agent`、
 `@earendil-works/pi-ai`、`@anthropic-ai/sandbox-runtime`）引入兩個新發現，已處理：
 - `brace-expansion`（`pi-coding-agent → minimatch → brace-expansion`，三個 DoS regex CVE）——**已修**，

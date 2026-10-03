@@ -310,56 +310,51 @@ function piAgentDirParent(workRoot: string | undefined): string {
  *  Fixed in two parts: (1) point `CLAUDE_CODE_TMPDIR` at a per-dispatch, per-process-VERIFIED scratch
  *  (`piTmpDirParent`, below — the exact same shape as `piAgentDirParent`; set in session-runner.ts,
  *  right before the sandbox is ever initialized), so well-behaved `$TMPDIR`-aware tools (mktemp, pip,
- *  npm, compilers, ...) never touch the shared path at all. (2) `/tmp/claude` ITSELF cannot be masked
- *  from inside the sandbox by ANY combination of this engine's config surface — proved live, twice,
- *  before settling on the design below (review round 3 owner correction: an earlier version of this
- *  fix emptied `/tmp/claude`'s contents when it judged the directory "ours"; that is WRONG — this
- *  engine must never delete a shared host path's files, even ones it believes it owns, because the
- *  exact repro this fix exists for — run A's secret read by run B — happens even when A and B share
- *  the same uid, so "owned by us" was never actually a safe signal to act on):
- *    - `denyRead: ['/tmp/claude']` alone: srt mounts a tmpfs over it, exactly as it does for
- *      `agentDirParent`/`tmpDirParent` above, but `/tmp/claude` is unconditionally one of srt's OWN
- *      write paths (`SANDBOX_OWN_WRITE_PATHS` in sandbox-utils.js — a static literal, never derived
- *      from `TMPDIR` and never excludable through any public `SandboxConfig` field: "What the sandbox
- *      itself needs (stdio, /tmp/claude) is never left out", by srt's own doc comment). srt's tmpfs
- *      step (`pushReadDenyDirMounts`, linux-sandbox-utils.js) unconditionally RE-BINDS every
- *      write-allowed path sitting under a tmpfs it just mounted, using the REAL host directory —
- *      "tmpfs wiped any earlier write binds under this path — restore them", by its own comment.
- *      `/tmp/claude` is always write-allowed, so this restore always fires and the tmpfs never
- *      actually hides anything. Confirmed live: a planted `/tmp/claude/leak.txt` stayed fully
- *      readable with ONLY `denyRead` set.
- *    - `denyRead` + `denyWrite` together: the denyWrite pass detects its destination is "already
- *      hidden by" the denyRead tmpfs, skips emitting its own bind, but then re-emits that SAME
- *      restored write path READ-ONLY instead of re-establishing the tmpfs. Net effect: writes
- *      correctly fail ("Read-only file system"), but reads still see the real host content. Confirmed
- *      live: the same planted secret, and `leak.txt` in a directory listing, were both still visible
- *      with both `denyRead` and `denyWrite` set.
- *  No other public filesystem config field exists to exclude `/tmp/claude` from srt's hardcoded
- *  default write-path list, and this gateway only reaches srt through its documented `SandboxConfig`
- *  surface (no raw bwrap-argv escape hatch is exposed). So masking `/tmp/claude`'s CONTENT while it
- *  remains on the host is not achievable from here — and deleting that content is exactly what this
- *  engine must not do to a shared host path. The only safe option left is a hard refusal:
- *  `hostSharedTmpdirRefusal()`, below, called every confined dispatch BEFORE any sandbox is built —
- *  absent, proceed (srt's own write loop skips a non-existent path, confirmed live, and now harmless
- *  either way since nothing's `$TMPDIR` points there any more); present, for ANY reason, REFUSE with a
- *  typed `HOST_SHARED_TMPDIR_UNSAFE` rather than attempt to neutralize it. This refusal touches
- *  nothing on the host; clearing `/tmp/claude` so confined Bash can run again is an operator action,
- *  never something this engine does for itself. */
+ *  npm, compilers, ...) never touch the shared path at all. (2) `denyWrite: ['/tmp/claude']` (below) —
+ *  srt binds `/tmp/claude` READ-ONLY rather than hiding it: `/tmp/claude` is unconditionally one of
+ *  srt's OWN write paths (`SANDBOX_OWN_WRITE_PATHS` in sandbox-utils.js — a static literal, never
+ *  derived from `TMPDIR` and never excludable through any public `SandboxConfig` field: "What the
+ *  sandbox itself needs (stdio, /tmp/claude) is never left out", by srt's own doc comment), and a
+ *  `denyRead` entry for it is a no-op — srt's own tmpfs-mount step (`pushReadDenyDirMounts`,
+ *  linux-sandbox-utils.js) unconditionally RE-BINDS every write-allowed path sitting under a tmpfs it
+ *  just mounted, using the REAL host directory ("tmpfs wiped any earlier write binds under this path
+ *  — restore them", by its own comment), and `/tmp/claude` is always write-allowed. Confirmed live,
+ *  round 3: a planted `/tmp/claude/leak.txt` stayed fully readable with `denyRead` set (alone or
+ *  together with `denyWrite`). `denyWrite` alone DOES work, though (also confirmed live): writes
+ *  correctly fail ("Read-only file system") while the real content stays readable — the SAME read
+ *  exposure as every other host `/tmp` path confined Bash can already read (round 1 parity, not a new
+ *  hole), never a write channel between runs or principals.
+ *
+ *  review round 4 (R4-2, owner ruling): an earlier version of this fix REFUSED the dispatch outright
+ *  (`HOST_SHARED_TMPDIR_UNSAFE`) whenever `/tmp/claude` existed, reasoning that masking its content
+ *  was impossible and this engine must never delete a shared host path's files (true, and still true
+ *  — see above). That refusal is DROPPED: round 4 proved live that confined Bash cannot itself create
+ *  `/tmp/claude` (the host's real `/tmp` is bind-mounted READ-ONLY inside the sandbox — `mkdir
+ *  /tmp/claude`, `mkdir -p .../x`, `ln -s` and a bare `touch` under `/tmp` all failed with "Read-only
+ *  file system", and nothing appeared on the host afterwards), and that `denyWrite` alone already
+ *  closes the one channel that matters even under TOCTOU (planted the host `/tmp/claude` mid-dispatch,
+ *  between a dispatch's own existence check and its next Bash call — the write still failed read-only,
+ *  live, both sequentially and under two concurrent dispatches racing each other). So an existing
+ *  `/tmp/claude` buys an attacker nothing beyond ordinary host-`/tmp` read access it already has, and
+ *  the refusal's own cost was real: ANY unprivileged local user (or an admin-provisioned stdio MCP
+ *  server) could run `mkdir /tmp/claude` and deny confined pi Bash service to the WHOLE host, since
+ *  this engine deliberately never deletes a path it does not own outright — nothing short of an
+ *  operator intervening would ever clear it. Replaced with a non-blocking, operator-visible warning
+ *  (`hostSharedTmpdirPresent()`, `agent.host_shared_tmpdir_present` on the event sink, below) — the
+ *  dispatch proceeds exactly as it would if `/tmp/claude` were absent; nothing on the host is ever
+ *  touched either way. */
 const PI_HOST_SHARED_TMPDIR = '/tmp/claude';
 
-/** See `PI_HOST_SHARED_TMPDIR`'s own doc for the full "why" this is a hard refuse-when-present rather
- *  than an attempt to mask or clean the path. `null` = absent, safe to proceed. A non-null string is
- *  this dispatch's refusal detail — the host path (and everything in it) is left completely untouched
- *  either way; this function never writes, deletes or opens anything under `PI_HOST_SHARED_TMPDIR`. */
-function hostSharedTmpdirRefusal(): string | null {
-  let st;
+/** See `PI_HOST_SHARED_TMPDIR`'s own doc for the full "why" this is now a non-blocking visibility
+ *  check, not a refusal or a cleanup attempt — this function never writes, deletes or opens anything
+ *  under `PI_HOST_SHARED_TMPDIR`, only `lstat`s it. */
+function hostSharedTmpdirPresent(): boolean {
   try {
-    st = lstatSync(PI_HOST_SHARED_TMPDIR);
+    lstatSync(PI_HOST_SHARED_TMPDIR);
+    return true;
   } catch {
-    return null; // absent — nothing to refuse, and srt's own write loop skips a non-existent path.
+    return false; // absent — the normal case, and srt's own write loop skips a non-existent path.
   }
-  const shape = st.isSymbolicLink() ? 'a symlink' : st.isDirectory() ? 'a directory' : 'present';
-  return `HOST_SHARED_TMPDIR_UNSAFE: ${PI_HOST_SHARED_TMPDIR} exists (${shape}) — srt binds it read-write into every confined Bash call unconditionally, and no filesystem policy this engine can set hides its contents from inside the sandbox (denyRead alone is undone by srt's own write-path restore; denyRead+denyWrite still exposes reads — see this constant's own doc). Refusing rather than touching a path this engine does not own outright; an operator must remove it on the host before confined Bash can run again`;
 }
 
 /** review round 3, R3-1: a per-dispatch TMPDIR scratch, the SAME verified-parent shape as
@@ -657,12 +652,12 @@ export class PiGatewayClient implements GatewayClient {
     // own `config.sandbox !== undefined` branch).
     let sandbox: PiChildSandboxConfig | undefined;
     if (this._config.confinementPosture === 'confined' && mapped.piNames.includes('bash')) {
-      // review round 3, R3-1: refused BEFORE building any sandbox config at all — see
-      // `hostSharedTmpdirRefusal`'s own doc (PI_HOST_SHARED_TMPDIR) for the full "why" this cannot
-      // be handled via a `denyRead` config entry the way agentDirParent/tmpDirParent are.
-      const hostSharedTmpdirIssue = hostSharedTmpdirRefusal();
-      if (hostSharedTmpdirIssue !== null) {
-        return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: hostSharedTmpdirIssue };
+      // review round 4 (R4-2, owner ruling): a WARNING, never a refusal — see `PI_HOST_SHARED_TMPDIR`'s
+      // own doc for the full "why" dropping the round-3 refusal is safe (denyWrite below already
+      // closes the one channel that mattered, even under TOCTOU). Checked BEFORE building the sandbox
+      // config purely so the warning always fires regardless of what buildBashConfinement() returns.
+      if (hostSharedTmpdirPresent()) {
+        this._eventSink({ kind: 'agent.host_shared_tmpdir_present', runId: req.runId, agentId: req.agentId, attempt: 1, path: PI_HOST_SHARED_TMPDIR });
       }
       const settings = buildBashConfinement({
         root: workspace,
@@ -701,9 +696,10 @@ export class PiGatewayClient implements GatewayClient {
         //
         // `/tmp/claude` is deliberately NOT in `denyRead` here — see `PI_HOST_SHARED_TMPDIR`'s own
         // doc for why that would be a no-op (srt's unconditional write-bind for it wins over a later
-        // read-deny mask) and what `hostSharedTmpdirRefusal()`, called above, does instead. `denyWrite`
-        // DOES still work against that same unconditional bind (confirmed live) and is kept as real
-        // defense-in-depth for a tool that hardcodes the literal path mid-dispatch.
+        // read-deny mask), and `hostSharedTmpdirPresent()`, called above, only warns rather than
+        // trying to fix that (round 4 owner ruling). `denyWrite` DOES still work against that same
+        // unconditional bind (confirmed live, including under TOCTOU — round 4) and is the actual
+        // control: it makes an existing `/tmp/claude` read-only, never a write channel between runs.
         filesystem: {
           ...fs,
           allowRead: [...fs.allowRead, tmpDir],

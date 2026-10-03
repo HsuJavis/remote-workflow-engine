@@ -14,6 +14,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, chmodSync, existsSync, r
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { PiGatewayClient } from '../../src/gateway/pi-gateway-client.js';
+import type { EngineEvent } from '../../src/event-log.js';
 import { probePiPath } from '../../src/gateway/pi-confinement-probe.js';
 import { resolveRipgrepOverride } from '../../src/gateway/pi-child/ripgrep-override.js';
 import { piRealTestsEnabled, hasBinary, ollamaReachable, ollamaModelPulled } from '../helpers/pi-real-gate.js';
@@ -209,7 +210,7 @@ function startOneBashCommandServer(command: string): Promise<{ server: HttpServe
   });
 }
 
-async function dispatchOneBash(port: number, workRoot: string, command: string): Promise<string> {
+async function dispatchOneBash(port: number, workRoot: string, command: string, opts: { onEvent?: (ev: EngineEvent) => void } = {}): Promise<string> {
   const gw = new PiGatewayClient({
     secretSource: { resolve: () => 'fake-key' }, timeoutMs: 60_000, retries: 0,
     openrouterBaseUrl: `http://127.0.0.1:${port}/api/v1`,
@@ -217,6 +218,7 @@ async function dispatchOneBash(port: number, workRoot: string, command: string):
     confinement: { allowHostPaths: [], protectedFiles: [], workRoot },
     resolveRipgrepOverride,
   });
+  if (opts.onEvent) gw.bindEventSink(opts.onEvent);
   const r = await gw.invoke({
     prompt: 'go', opts: { model: 'openrouter/fake/model', allowedTools: ['Bash'] },
     runId: 'r3-1-' + Math.random().toString(36).slice(2), agentId: 'a1', workspace: join(workRoot, 'ws'),
@@ -252,37 +254,46 @@ describe('pi harness v1 — confined Bash gets its own TMPDIR, never srt\'s shar
     }
   }, 60_000);
 
-  // review round 3 owner correction: masking /tmp/claude's CONTENT from inside the sandbox is not
-  // achievable through srt's config surface (proved live — see PI_HOST_SHARED_TMPDIR's own doc in
-  // pi-gateway-client.ts), and this engine must never delete or empty a shared host path's files, even
-  // ones it believes it owns. So the only safe behavior left is a hard refusal, and the correct
-  // assertion here is: the dispatch is REFUSED, and the planted file is left on the host completely
-  // unchanged — never that it becomes invisible while the dispatch still succeeds.
-  it.skipIf(!HAS_PROBE_DEPS)('a pre-existing /tmp/claude with a planted file causes the dispatch to be REFUSED, and the planted file is left on the host untouched' + WHY_NOT, async () => {
+  // review round 4 (R4-2, owner ruling): the round-3 refusal is DROPPED — confined Bash cannot create
+  // `/tmp/claude` itself (the host's real /tmp is bind-mounted read-only inside the sandbox, proved
+  // live elsewhere this round), and `denyWrite:['/tmp/claude']` already closes the one channel that
+  // mattered (writes), even under TOCTOU. So a pre-existing `/tmp/claude` no longer refuses the
+  // dispatch: it proceeds, confined Bash can READ it (the same exposure as any other host /tmp path —
+  // round 1 parity, not a new hole) but cannot WRITE to it, nothing on the host ever changes, and a
+  // `agent.host_shared_tmpdir_present` warning event is emitted so an operator can still see it.
+  it.skipIf(!HAS_PROBE_DEPS)('a pre-existing /tmp/claude no longer refuses the dispatch: confined Bash can read it but not write to it, nothing on the host changes, and a warning event fires' + WHY_NOT, async () => {
     const HOST_SHARED = '/tmp/claude';
     if (existsSync(HOST_SHARED)) return; // never touch a real pre-existing one
-    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-pi-r3-1-hostshared-'));
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-pi-r4-2-hostshared-'));
     mkdirSync(join(workRoot, 'ws'), { recursive: true });
     try {
       mkdirSync(HOST_SHARED, { recursive: true });
       chmodSync(HOST_SHARED, 0o700);
-      writeFileSync(join(HOST_SHARED, 'leak.txt'), 'PLANTED_SECRET_DATA_SHOULD_NOT_BE_VISIBLE');
+      writeFileSync(join(HOST_SHARED, 'leak.txt'), 'HOST_TMP_CLAUDE_CONTENT\n');
       const command = 'cat /tmp/claude/leak.txt 2>&1; echo CATEND; ls /tmp/claude 2>&1; echo LSEND; echo w > /tmp/claude/pwn.txt 2>&1';
       const fake = await startOneBashCommandServer(command);
-      let caught: unknown;
-      try {
-        await dispatchOneBash(fake.port, workRoot, command);
-      } catch (err) {
-        caught = err;
-      }
+      const events: EngineEvent[] = [];
+      await dispatchOneBash(fake.port, workRoot, command, { onEvent: (ev) => events.push(ev) });
       await new Promise((r) => fake.server.close(() => r(undefined)));
-      expect(String(caught)).toMatch(/HOST_SHARED_TMPDIR_UNSAFE/);
-      // The fake server was never even reached with a tool-call round trip: the refusal happens before
-      // any sandbox (and so any bash command) ever runs.
-      expect(fake.resultText()).toBe('');
-      // The planted file is byte-for-byte exactly as planted — never emptied, never deleted.
+      const result = fake.resultText();
+      const lines = result.split('\n');
+      const catOut = lines.slice(0, lines.indexOf('CATEND')).join('\n');
+      const lsOut = lines.slice(lines.indexOf('CATEND') + 1, lines.indexOf('LSEND')).join('\n');
+      const writeOut = lines.slice(lines.indexOf('LSEND') + 1).join('\n');
+      // Read works — the same read exposure as any other host /tmp path.
+      expect(catOut).toBe('HOST_TMP_CLAUDE_CONTENT');
+      expect(lsOut).toContain('leak.txt');
+      // Write fails — denyWrite is the actual control.
+      expect(writeOut).toMatch(/read-only file system/i);
+      // The warning fired exactly once, naming the path, for an operator watching the event stream.
+      const warnings = events.filter((e): e is Extract<EngineEvent, { kind: 'agent.host_shared_tmpdir_present' }> => e.kind === 'agent.host_shared_tmpdir_present');
+      expect(warnings.length).toBe(1);
+      expect(warnings[0]!.path).toBe('/tmp/claude');
+      // Nothing on the host ever changed: the planted file is byte-for-byte as planted, and no write
+      // landed.
       expect(existsSync(join(HOST_SHARED, 'leak.txt'))).toBe(true);
-      expect(readFileSync(join(HOST_SHARED, 'leak.txt'), 'utf8')).toBe('PLANTED_SECRET_DATA_SHOULD_NOT_BE_VISIBLE');
+      expect(readFileSync(join(HOST_SHARED, 'leak.txt'), 'utf8')).toBe('HOST_TMP_CLAUDE_CONTENT\n');
+      expect(existsSync(join(HOST_SHARED, 'pwn.txt'))).toBe(false);
     } finally {
       rmSync(HOST_SHARED, { recursive: true, force: true });
       rmSync(workRoot, { recursive: true, force: true });

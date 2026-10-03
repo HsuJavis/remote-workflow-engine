@@ -43,7 +43,15 @@ export type EngineEvent =
   // Issue #106: a declared MCP server was not usable on the session's first turn (not `connected`
   // in the CLI's `system/init`, or none of its tools listed there) — same fact as the harness
   // record's `MCP_SERVER_NOT_CONNECTED` warning, on the operator's journal.
-  | { kind: 'agent.mcp_not_connected'; runId: string; agentId: string; attempt: number; server: string; status: string; tools: number };
+  | { kind: 'agent.mcp_not_connected'; runId: string; agentId: string; attempt: number; server: string; status: string; tools: number }
+  // pi harness v1 review round 4 (R4-2, owner ruling): the host's shared srt scratch path
+  // (`/tmp/claude`) existed at dispatch time — no longer a refusal (an unprivileged local user could
+  // otherwise `mkdir /tmp/claude` to deny confined pi Bash service to the whole host), but an
+  // operator should still be able to see it: `denyWrite` already makes it read-only for this
+  // dispatch's confined Bash (see pi-gateway-client.ts's `PI_HOST_SHARED_TMPDIR` doc for the full
+  // "why" this is safe), so nothing is refused and nothing on the host is touched — this is pure
+  // visibility, once per dispatch, not a security control itself.
+  | { kind: 'agent.host_shared_tmpdir_present'; runId: string; agentId: string; attempt: number; path: string };
 
 export type EventSink = (event: EngineEvent) => void;
 
