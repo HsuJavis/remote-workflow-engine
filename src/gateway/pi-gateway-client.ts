@@ -283,16 +283,20 @@ export class PiGatewayClient implements GatewayClient {
       }
     }
 
-    // spec "Skills" / research doc §4 "Requires read in the tool set": pi's model reaches a skill
-    // ONLY through the `read` tool (it reads SKILL.md itself — no separate Skill tool exists on pi,
-    // unlike the sdk gateway). A skill-only agent with no `read` tool (`allowedTools` excludes it) can
-    // therefore never actually use a materialized skill — refused clearly rather than silently
-    // shipping a skill the model has no way to open (decided + documented, spec "Skills": "decide and
-    // document"; the alternative considered was auto-adding a jailed read scoped to the skill dir,
-    // rejected for v1 as a second, narrower read-tool definition with different containment semantics
-    // than the one real `read` tool everywhere else in this file — not worth the surface for v1).
-    if ((materialized?.skills.length ?? 0) > 0 && !mapped.piNames.includes('read')) {
-      return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: `SKILL_REQUIRES_READ_TOOL: ${materialized!.skills.join(', ')} ${materialized!.skills.length === 1 ? 'was' : 'were'} materialized but this dispatch's tool set has no 'read' tool — pi's model can only open a skill's SKILL.md through the read tool (no separate Skill tool exists on pi); add Read to allowedTools or drop the skill` };
+    // spec "Skills" / research doc §4 "Requires read in the tool set": pi puts the skills listing
+    // into the system prompt only when the dispatch's tool set includes a way to open SKILL.md — read
+    // directly by `read.js:system-prompt.js`'s own `skillFileReadTool = ["read","bash"].find(tool =>
+    // selectedTools.includes(tool))`, confirmed by reading the installed package (NOT identity/
+    // instanceof against pi's built-ins — a name match against OUR custom tool names, which is why
+    // our own `read`/`bash` names satisfy it exactly like pi's built-ins would). A dispatch with
+    // NEITHER tool therefore materializes a skill the model is never even told exists (no separate
+    // Skill tool exists on pi, unlike the sdk gateway) — refused clearly rather than silently shipping
+    // dead weight (decided + documented, spec "Skills": "decide and document"; the alternative
+    // considered was auto-adding a jailed read scoped to the skill dir, rejected for v1 as a second,
+    // narrower read-tool definition with different containment semantics than the one real `read`
+    // tool everywhere else in this file — not worth the surface for v1).
+    if ((materialized?.skills.length ?? 0) > 0 && !mapped.piNames.includes('read') && !mapped.piNames.includes('bash')) {
+      return { ok: false, provider: parsed.provider, reason: 'terminal', retryable: false, transport: 'pi', detail: `SKILL_REQUIRES_READ_TOOL: ${materialized!.skills.join(', ')} ${materialized!.skills.length === 1 ? 'was' : 'were'} materialized but this dispatch's tool set has neither 'read' nor 'bash' — pi only lists a skill in its system prompt when one of those two tools is present (no separate Skill tool exists on pi); add Read or Bash to allowedTools, or drop the skill` };
     }
 
     // spec "Bash" / issue #78(c) parity: bash:'readonly' is only ever dispatched with the kernel

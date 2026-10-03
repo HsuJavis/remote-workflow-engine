@@ -315,7 +315,33 @@ describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => 
     }
   });
 
-  it('slice (h): refuses SKILL_REQUIRES_READ_TOOL when a skill is declared but read is not in the tool set (decided+documented policy)', async () => {
+  it('slice (h): materializes a declared skill and sends its path to the child when ONLY bash (no read) is in the tool set — pi\'s own system-prompt.js accepts bash as a skill-file-read tool too', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'rwe-pi-skill-unit-bashonly-'));
+    try {
+      const ws = join(root, 'ws');
+      mkdirSync(ws, { recursive: true });
+      mkdirSync(join(root, 'wf', 'skill', 'my-skill'), { recursive: true });
+      writeFileSync(join(root, 'wf', 'skill', 'my-skill', 'SKILL.md'), '---\nname: my-skill\n---\nBody');
+      const f = fakeChild();
+      const gw = new PiGatewayClient({ spawnChild: (() => f.child) as never, entryPath: '/fake/entry.ts' });
+      const promise = gw.invoke(req({
+        workspace: ws,
+        opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Bash'] } as AgentOpts,
+        assets: { roots: { workflow: join(root, 'wf'), global: join(root, 'gl') }, declared: { skills: ['my-skill'], mcp: [] }, workflow: 'wf' },
+      }));
+      await new Promise((r) => setTimeout(r, 10));
+      f.sendLine({ t: 'final', seq: 1, text: 'ok', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, stopReason: 'stop' });
+      f.exit(0);
+      const result = await promise;
+      expect(result.ok).toBe(true);
+      const sent = JSON.parse(f.stdinWritten.join(''));
+      expect(sent.skillPaths).toEqual([join(ws, '.claude', 'skills', 'my-skill')]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('slice (h): refuses SKILL_REQUIRES_READ_TOOL when a skill is declared but NEITHER read NOR bash is in the tool set (decided+documented policy)', async () => {
     const root = mkdtempSync(join(tmpdir(), 'rwe-pi-skill-unit-norread-'));
     try {
       const ws = join(root, 'ws');
@@ -326,7 +352,7 @@ describe('PiGatewayClient — tool mapping + bash readonly (slices d/e)', () => 
       const gw = new PiGatewayClient({ spawnChild: spawnChild as never, entryPath: '/fake/entry.ts' });
       const result = await gw.invoke(req({
         workspace: ws,
-        opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Bash'] } as AgentOpts,
+        opts: { model: 'ollama/qwen2.5:7b', allowedTools: ['Grep'] } as AgentOpts,
         assets: { roots: { workflow: join(root, 'wf'), global: join(root, 'gl') }, declared: { skills: ['my-skill'], mcp: [] }, workflow: 'wf' },
       }));
       expect(result.ok).toBe(false);

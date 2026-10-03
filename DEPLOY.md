@@ -688,10 +688,13 @@ pi `direct` exposure 自己的 `startupWaitMs` 預設一致）算出來，映射
 把宣告的技能複製進 `<ws>/.claude/skills/<name>/`，路徑清單以 pi 的 `additionalSkillPaths` 傳給一個
 `DefaultResourceLoader`（`noContextFiles`/`noExtensions`/`noSkills`/`noPromptTemplates`/`noThemes`
 全部 `true`——「不discovery、全權交給引擎」的精神不變，`extensionFactories`/`additionalSkillPaths`
-是文件明載的兩個例外，不受那些旗標影響）。**skill-only agent 的決定**：pi 的模型只能透過 `read`
-工具自己讀 `SKILL.md`（沒有像 sdk gateway 的獨立 `Skill` 工具），所以宣告了技能但 `allowedTools` 沒有
-`Read` 的呼叫一律在派工前就以 `SKILL_REQUIRES_READ_TOOL` 拒絕——清楚失敗，不是靜默材料化一個模型
-永遠打不開的技能。曾考慮「自動補一個只能讀技能目錄的 jailed read」，v1 判定為多一種、containment
+是文件明載的兩個例外，不受那些旗標影響）。**skill-only agent 的決定**：讀過 pi 自己的
+`system-prompt.js`原始碼確認，系統提示詞裡的技能清單只在工具集含 `read` **或** `bash` 其中之一時
+才會出現（`skillFileReadTool = ["read","bash"].find(tool => selectedTools.includes(tool))`——按
+「名字」比對這個會話實際選用的工具清單，不是跟 pi 內建工具物件做 identity 比對，所以我們自訂、同名的
+`read`/`bash` 工具一樣算數）；沒有獨立的 `Skill` 工具。所以宣告了技能但 `allowedTools` 裡**兩者都沒有**
+的呼叫一律在派工前就以 `SKILL_REQUIRES_READ_TOOL` 拒絕——清楚失敗，不是靜默材料化一個模型永遠不知道
+存在的技能。曾考慮「自動補一個只能讀技能目錄的 jailed read」，v1 判定為多一種、containment
 語意跟全引擎唯一一個 `read` 工具不同的第二份定義，不值得為 v1 多開這個介面，故不採用。`exec:true`
 （`workspace_push`/`seedManifest` 的技能檔案旗標）在這裡**純粹是檔案權限**（0o755 vs 0o644）——pi
 沒有 inline shell（`!cmd`）技能語法，所以 sdk gateway 的 `disableSkillShellExecution` 在 pi 這邊沒有

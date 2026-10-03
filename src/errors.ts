@@ -84,11 +84,12 @@ export const ERROR_CATALOG = {
   // (WebFetch, WebSearch, Task, NotebookEdit, or any other name outside Read/Write/Edit/Bash/Grep/
   // Glob/LS) — refused at registration AND dispatch, never silently dropped from the tool surface.
   TOOL_UNSUPPORTED_BY_HARNESS: { see: 'workflow_authoring_guide', hint: 'this tool has no mapping under the pi harness (gateway:"pi") — only Read/Write/Edit/Bash/Grep/Glob/LS are supported; declare a supported tool or switch this engine back to gateway:"sdk"' },
-  // pi harness v1 (spec "Skills"): pi's model reaches a skill only through the `read` tool (it reads
-  // SKILL.md itself — no separate Skill tool exists on pi, unlike the sdk gateway's dedicated Skill
-  // tool). A skill-only agent (`allowedTools` without `read`) is refused up front, never silently
-  // shipping a materialized skill the model has no way to open.
-  SKILL_REQUIRES_READ_TOOL: { see: 'workflow_authoring_guide', hint: "this engine runs the pi harness (gateway:\"pi\"); a declared skill requires 'Read' in this dispatch's allowedTools — pi's model opens a skill's SKILL.md only through the read tool (no separate Skill tool exists on pi)" },
+  // pi harness v1 (spec "Skills"): pi only lists a skill in its system prompt when the tool set
+  // includes `read` or `bash` (pi's own system-prompt.js: skillFileReadTool = ["read","bash"].find(...)
+  // — no separate Skill tool exists on pi, unlike the sdk gateway's dedicated Skill tool). A skill
+  // declared with neither tool is refused up front, never silently shipping a materialized skill the
+  // model is never even told exists.
+  SKILL_REQUIRES_READ_TOOL: { see: 'workflow_authoring_guide', hint: "this engine runs the pi harness (gateway:\"pi\"); a declared skill requires 'Read' or 'Bash' in this dispatch's allowedTools — pi only lists a skill in its system prompt when one of those two tools is present (no separate Skill tool exists on pi)" },
   // issue #103(a): registration WARNS (result.warnings), never throws this any more — the code now
   // fires only at admission (run_start, a schedule/webhook firing, or a nested workflow() call),
   // BEFORE any side effect, naming the agent label(s) + the missing mcp name(s) + the fix

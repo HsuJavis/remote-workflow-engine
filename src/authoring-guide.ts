@@ -512,9 +512,10 @@ function harnessDisclosureParagraph(): string {
     `Bash/Grep/Glob/LS (${PI_UNSUPPORTED_TOOLS.join('/')} are refused \`TOOL_UNSUPPORTED_BY_HARNESS\`). ` +
     'MCP and skills ARE supported under `gateway:"pi"` (resolved through the same shared resolver/ ' +
     'materializer as the sdk gateway — `${secret:}`/`${run:dir}` substitution never diverges between ' +
-    'the two), with two pi-specific differences: a declared skill requires `Read` in `allowedTools` ' +
-    "(pi's model reaches a skill only through the `read` tool, never a separate `Skill` tool — refused " +
-    '`SKILL_REQUIRES_READ_TOOL` up front otherwise), and a `seedManifest`/`workspace_push` skill file\'s ' +
+    'the two), with two pi-specific differences: a declared skill requires `Read` or `Bash` in ' +
+    "`allowedTools` (pi only lists a skill in its system prompt when one of those two tools is present " +
+    '— no separate `Skill` tool exists on pi — refused `SKILL_REQUIRES_READ_TOOL` up front with ' +
+    'neither), and a `seedManifest`/`workspace_push` skill file\'s ' +
     '`exec:true` is only ever a file-permission bit (0o755 vs 0o644) on pi — there is no inline-shell ' +
     '(`!cmd`) skill syntax to gate the way the sdk gateway\'s `disableSkillShellExecution` does. ' +
     "Known network difference: pi's Bash network policy is allow-all, but the underlying sandbox " +
