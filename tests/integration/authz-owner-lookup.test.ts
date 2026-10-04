@@ -204,8 +204,12 @@ describe('authz OwnerLookup — wired to real store columns (IT-105, DES-139)', 
         return rows.some((r) => r.adminCrossRead === true) ? [spec.name] : [];
       })
       .sort();
-    // DES-151: `AuditAction = Extract<ToolName, 'workspace_list'|'workspace_pull'|'run_agent_log'|'run_result'>`.
-    expect(flagged).toEqual(['run_agent_log', 'run_result', 'workspace_list', 'workspace_pull']);
+    // DES-151 + issue #134: `AuditAction = Extract<ToolName, 'workspace_list'|'workspace_pull'|
+    // 'run_agent_log'|'run_result'|'issue_report'>` — issue_report joined the set because it
+    // publishes a run's diagnostics to the PUBLIC tracker, the same cross-principal exposure the
+    // other four already audit (call-tool.ts writes the row itself, never going through
+    // mcp-facade.ts's own audited methods).
+    expect(flagged).toEqual(['issue_report', 'run_agent_log', 'run_result', 'workspace_list', 'workspace_pull']);
   });
 
   it('triggerOwner is total across BOTH stores — an id in neither is undefined (authz never leaks existence)', () => {

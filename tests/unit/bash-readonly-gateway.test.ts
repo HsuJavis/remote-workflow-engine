@@ -49,6 +49,15 @@ describe('#78(c) buildBashConfinement — readonly posture', () => {
     expect(ro.filesystem?.denyRead).toEqual(rw.filesystem?.denyRead);
   });
 
+  // Issue #133: every OTHER case in this file passes `homeDir: undefined`, so none of them actually
+  // covers the home-convenience denyWrite entries under the readonly posture specifically — this is
+  // the one pin that does, with a real `homeDir`.
+  it("bashMode:'readonly' with a real homeDir ⇒ denyWrite ALSO carries the two home-convenience paths, appended after /tmp/claude", () => {
+    const HOME = '/home/op';
+    const ro = buildBashConfinement({ root: ROOT, grantedHostPaths: [GRANT], protectedFiles: [], workRoot: WORKROOT, homeDir: HOME, allowReadPaths: [], bashMode: 'readonly' });
+    expect(ro.filesystem?.denyWrite).toEqual([ROOT, GRANT, '/tmp/claude', join(HOME, '.npm', '_logs'), join(HOME, '.claude', 'debug')]);
+  });
+
   it('no bashMode ⇒ byte-identical to before (the writable posture is untouched)', () => {
     const a = buildBashConfinement({ root: ROOT, grantedHostPaths: [GRANT], protectedFiles: [], workRoot: WORKROOT, homeDir: undefined, allowReadPaths: [] });
     expect(a.filesystem?.allowWrite).toEqual([ROOT, GRANT]);

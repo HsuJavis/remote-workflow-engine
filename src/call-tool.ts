@@ -14,6 +14,7 @@ import type { CasStore } from './cas-store.js';
 import type { AssetSyncService } from './asset-sync.js';
 import type { McpProbe } from './mcp-probe.js';
 import type { IssueReporter, IssueReportInput, IssueListFilter } from './github/issue-reporter.js';
+import { auditedWorkspaceRead } from './audited-read.js';
 import { matchesCatalogFilter, enrichModelEntry, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
 import { queryModels, ModelsQueryError, type ModelsQuery } from './models/models-query.js';
 import type { ModelBook } from './models/model-book.js';
@@ -383,10 +384,22 @@ export async function callTool(
       // used to file silently with no diagnostics rather than refuse, unlike run_status. `deps.
       // lookup.runOwner` is the SAME sync port authorize() just read — no second oracle.
       const runId = (a as { runId?: unknown }).runId;
-      if (typeof runId === 'string' && deps.lookup.runOwner(runId) === undefined) {
+      const owner = typeof runId === 'string' ? deps.lookup.runOwner(runId) : undefined;
+      if (typeof runId === 'string' && owner === undefined) {
         return { error: { code: 'RUN_NOT_FOUND', message: `Run not found: ${runId}` } };
       }
-      const res = await deps.issueReporter.report(a as unknown as IssueReportInput);
+      // Issue #134: issue_report publishes a run's diagnostics (transcript tail) to the PUBLIC
+      // tracker — the same cross-principal exposure run_result/run_agent_log/workspace_list already
+      // audit via `auditedWorkspaceRead`. issue_report doesn't go through any of mcp-facade.ts's own
+      // audited methods (it calls `IssueReporter.report()` directly), so the SAME row is appended
+      // here instead, before the report is filed — gated on the SAME `crossPrincipalRead` flag
+      // `authorize()` already raised above (now that issue_report's `run` row carries
+      // `adminCrossRead:true`, tool-specs.ts). An ownerless run's admin-only read never sets the
+      // flag (authz.ts), so it stays unaudited exactly like every other audited tool's ownerless case.
+      const doReport = () => deps.issueReporter.report(a as unknown as IssueReportInput);
+      const res = typeof runId === 'string' && crossPrincipalRead
+        ? await auditedWorkspaceRead(deps.audit, { actor, action: 'issue_report', runId, owner: owner ?? 'local' }, doReport)
+        : await doReport();
       return res.ok ? { result: { issueNumber: res.issueNumber, url: res.url, deduped: res.deduped } } : { error: res.error };
     }
     case 'issue_get': {

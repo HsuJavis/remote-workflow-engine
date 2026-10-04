@@ -1123,7 +1123,7 @@ sandbox socket 直接放在 `$TMPDIR`，路徑必須塞得進 107 bytes 的 unix
 `CLI_SCRATCH_PATH_TOO_LONG`（這種 `workRoot` 在圍籠生效、用 sdk gateway 時**開機就會被拒絕**，訊息同一個碼，修法是換較短的 `workRoot` 路徑），建不出目錄會回 `CLI_SCRATCH_UNAVAILABLE`，兩者都在任何 session 開始前拒絕。
 沒有新的設定鍵。
 
-**issue #131（sdk gateway 補上 `/tmp/claude` denyWrite）**：注意這跟上一段的 `/tmp/claude-<uid>`
+**issue #131（sdk 與 pi 共用的 sandbox 設定補上 `/tmp/claude` denyWrite）**：注意這跟上一段的 `/tmp/claude-<uid>`
 （per-uid、issue #101 已處理）是兩個不同的路徑——這裡講的是**字面上**的 `/tmp/claude`，沒有 uid
 後綴，任何本機使用者都能建出來。Claude CLI 內建的 sandbox-runtime（跟 pi harness 用的是同一套
 `@anthropic-ai/sandbox-runtime`）把這個字面路徑寫死進它自己「一律可寫」的清單
@@ -1143,12 +1143,34 @@ confined Bash 連 `mkdir /tmp/claude` 都失敗（`Read-only file system`——�
 `agent.host_shared_tmpdir_present` 警告事件（`path:"/tmp/claude"`，不拒絕、不碰主機上任何東西）——
 sdk 與 pi 兩個 gateway 現在共用同一個事件種類。沒有新的設定鍵。
 
-**仍未關閉**（CLI/sandbox-runtime 以 `os.homedir()` 寫死，`CLAUDE_CONFIG_DIR` 也移不掉，
-量測過）：引擎 HOME 底下的 `~/.claude/debug/` 與 `~/.npm/_logs/` 只要**存在**，就會以可寫方式 bind 進每個
-sandbox，可以被當成 run 之間的傳遞通道，也讀得到裡面已有的內容（不含憑證；與操作員共用 uid 時，
-`~/.claude/debug/` 裡是操作員互動式 Claude Code 的 debug log）。引擎自己的 CLI 不會建立
-`~/.claude/debug/`（只有 `DEBUG_CLAUDE_AGENT_SDK`/`--debug` 才寫，子行程環境變數是白名單、不會帶到）。所以
-讓引擎以專用的系統使用者身分執行後，**刪掉該使用者的這兩個目錄**，就不會再被 bind。
+**issue #133（sdk 與 pi 共用的 sandbox 設定補上 `~/.npm/_logs`、`~/.claude/debug` 的 denyWrite）**：這兩個目錄是
+`/tmp/claude`（上一段，issue #131）的同類——Claude CLI 內建的 sandbox-runtime 一樣把它們（從
+`os.homedir()`，也就是 CLI 子行程自己的 `HOME`，`CLAUDE_CONFIG_DIR` 移不掉）寫死進它自己「一律可寫」的
+清單，不受任何公開的 `SandboxConfig` 欄位排除——只要這兩個目錄在引擎 HOME 底下**存在**，確認過的
+（`docs/evidence/issue-101-read-confinement.md`「home」那個變體）量測結果是：連把 `~/.claude/debug`
+本身加進 `denyRead` 都擋不住裡面的可寫 bind——confined Bash 裡的寫入照樣成功，變成一條跨 run、跨
+principal 的共用管道（同 #131 那一類）。sandbox-runtime 的 npm 套件（`@anthropic-ai/sandbox-runtime`
+0.0.78，是 pi gateway 在執行期實際載入的正式依賴；但 sdk gateway 的 CLI 子行程跑的是 CLI 二進位自帶的那一份，不是這個套件）新版雖然加了一個「`denyRead` 蓋到就不列入可寫」
+的條件判斷，但那不是 SDK 綁定的 CLI 二進位實際跑的程式碼——這裡一律以實測到的 CLI 行為為準，不是
+npm 套件版本號。修法：`buildBashConfinement()`（兩個 gateway 共用的同一個函式）現在把這兩個目錄
+（從 `homeDir` 組出絕對路徑）無條件加進 `denyWrite`，緊跟在 `/tmp/claude` 後面——跟 #131 同一個
+機制（`denyWrite` 贏過 srt 自己的可寫清單）。已在真實圍籠主機上用 `anthropic/claude-haiku-4-5-20251001`
+實測驗證（confined sdk gateway，一次性丟棄引擎、丟棄 `HOME`）：在引擎的 `HOME` 底下先放好
+`~/.npm/_logs/`、`~/.claude/debug/`（各帶一個既有檔案，模擬操作員自己留下的內容）；(1) run A 的
+confined Bash 對兩個目錄各寫一個新檔，兩次都回報 `Read-only file system`（寫入確實被擋，agent 呼叫本身
+正常 `completed`）；(2) 主機上直接檢查（在任何 sandbox 外）：run A 跑完後兩個目錄裡都沒有多出任何
+檔案；(3) run B 的 confined Bash `cat` 同一個檔名，兩次都是 `No such file or directory`——看不到 run A
+的任何痕跡；(4) 同一段期間 `~/.npm/_logs/` 底下多出的三個 debug log，是**引擎自己這次 `npm run
+start` 呼叫**寫的（不經過任何 sandbox）——證實這個修法只擋了 confined Bash，CLI／npm 行程本身的
+正常寫入完全不受影響。`@anthropic-ai/sandbox-runtime`（0.0.78）自己「一律可寫」清單上的其餘項目
+（`/dev/stdout`、`/dev/stderr`、`/dev/null`、`/dev/tty`：shell 自己的標準輸出入，不是 run 之間的
+共用狀態；`/dev/dtracehelper`、`/dev/autofs_nowait`：macOS 專屬裝置節點，這個引擎的受支援部署
+只有 Linux/bwrap，這兩個在 Linux 上不存在；`/private/tmp/claude`：macOS 把 `/tmp` resolve 成
+`/private/tmp` 之後的 `/tmp/claude` 同一條路徑，一樣只在 macOS 才會踩到）在這個引擎的部署形狀下
+都不是新洞，沒有另外處理——未來如果真的要支援 macOS 部署，`/private/tmp/claude` 需要跟 `/tmp/claude`
+一樣的待遇。現有的「以專用系統使用者身分執行、`phase6` 刪掉這兩個目錄」仍然保留，當作第二層
+防護（belt-and-suspenders）：即使哪天這個 denyWrite 漏列或 CLI 換掉整套 sandbox-runtime 邏輯，
+專用使用者底下的這兩個目錄還是空的。沒有新的設定鍵。
 
 **開機 log 印 `UNCONFINED (socat not found on PATH ...)` 或 `(bwrap not found on PATH ...)`，怎麼
 修**：先裝缺的那個執行檔——`sudo apt install bubblewrap socat`（兩個都裝最省事，之後不用再回來查
@@ -1874,12 +1896,12 @@ curl -s http://localhost:8787/api/version
 ### 為什麼
 
 - **CLI 一定會把引擎 HOME 底下的 `~/.claude/debug/`、`~/.npm/_logs/` 以可寫方式 bind 進每個 agent
-  sandbox**（只要它們存在；CLI/sandbox-runtime 寫死 `os.homedir()`，設定蓋不掉，見 §1c(f)）。CLI 的
-  暫存目錄已經改成每次派工各一份、主機共用的 `/tmp/claude-<uid>` 也已 `denyRead`，但這兩處還在：引擎
-  跟操作員同 uid 時，`~/.claude/debug/` 就是**操作員自己互動式 Claude Code 的 debug log**。換成獨立
-  帳號後，這兩個目錄屬於 `rwe`、裡面沒有操作員的東西；腳本再把它們刪掉（`phase6`），並讓 `rwe` 的
-  npm log 改寫到 `~/.cache/npm-logs`（`phase2` 寫 `~/.npmrc` 的 `logs-dir`），就連 run 之間的傳遞
-  通道也一併關掉。
+  sandbox**（只要它們存在；CLI/sandbox-runtime 寫死 `os.homedir()`，設定蓋不掉，見 §1c(f)）。issue
+  #133 之後 `denyWrite` 已經在 gateway 層擋掉跨 run 的寫入（§1c(f) 有實測紀錄），這裡是第二層
+  防護：引擎跟操作員同 uid 時，`~/.claude/debug/` 讀得到的仍是**操作員自己互動式 Claude Code 的 debug
+  log**（denyWrite 不影響既有內容的可讀性）。換成獨立帳號後，這兩個目錄屬於 `rwe`、裡面沒有操作員的
+  東西；腳本再把它們刪掉（`phase6`），並讓 `rwe` 的 npm log 改寫到 `~/.cache/npm-logs`（`phase2` 寫
+  `~/.npmrc` 的 `logs-dir`），即使 gateway 層的 denyWrite 哪天漏列，這兩個目錄底下也沒有東西可讀可寫。
 - **同 uid = 最後一道牆不存在。** 主機一旦量到 `Bash confinement: UNCONFINED`（AppArmor 擋住
   userns，見 §1c(e)），或 confinement 規則有任何遺漏，agent 能讀到的就是操作員讀得到的一切：
   `~/.config/rwe.env`、`~/.cloudflared/` 隧道憑證、SSH 金鑰、其他專案的原始碼。換成獨立 uid 後，

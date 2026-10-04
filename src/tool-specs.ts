@@ -1198,7 +1198,7 @@ export const TOOL_SPECS = [
       // caller's own run, or the caller must be admin — refused NOT_RUN_OWNER otherwise, nothing
       // filed; a nonexistent runId answers RUN_NOT_FOUND, the same as run_status, before any
       // GitHub call. Omitting `runId` needs no ownership at all.
-      "A `runId` argument is checked for ownership exactly like run_status({runId}) — only the run's owner or an admin may attach it, else the whole report is refused (NOT_RUN_OWNER / RUN_NOT_FOUND) and nothing is filed.",
+      "A `runId` argument is checked for ownership exactly like run_status({runId}) — only the run's owner or an admin may attach it, else the whole report is refused (NOT_RUN_OWNER / RUN_NOT_FOUND) and nothing is filed. An admin attaching another principal's run is recorded in that run's audit trail (action issue_report) before anything is filed.",
     inputSchema: schema({
       title: { type: 'string' },
       reproSteps: { type: 'string', description: 'How to reproduce it — required, non-empty.' },
@@ -1216,7 +1216,13 @@ export const TOOL_SPECS = [
     authz: {
       mode: issueReportMode,
       rows: {
-        run: { minRole: 'user', ownership: 'run' },
+        // Issue #134: an admin attaching another principal's run publishes that run's diagnostics
+        // (transcript tail) to the PUBLIC tracker — the same cross-principal exposure run_result/
+        // run_agent_log/workspace_list already audit. Without this flag `authorize()` never raised
+        // `crossPrincipalRead`, so `call-tool.ts`'s own audited wrapper around `issueReporter.report`
+        // was unreachable: the cross-read happened, unaudited (same defect class the Gate 6.5+7
+        // round-2 comment on `run_result`'s own row above describes).
+        run: { minRole: 'user', ownership: 'run', adminCrossRead: true },
         bare: { minRole: 'user', ownership: 'none' },
       },
     } as ToolAuthz,
@@ -1315,7 +1321,12 @@ export const TOOL_SPECS = [
       'FILTERS (all optional, AND-ed; a row whose value is null never passes a min/max filter). ' +
       `SORT: sortBy ${SORT_KEYS.join('|')} (observed keys — latency, successRate, avgCostPerCall — read the callKind bucket, default tools; latency falls back to probe latency); ` +
       'order asc|desc (default: cheapest/fastest/best first — asc for price, costLevel, latency, avgCostPerCall; desc for the rest); nulls sort last whatever the order.\n' +
-      "EXAMPLES: a cheap tool-capable agent model: {modelType:'chat', toolUseVerified:true, sortBy:'avgCostPerCall'} (or toolUseDeclared:true with sortBy:'price' when nothing was probed/measured); " +
+      "READING THE NUMBERS (issue #132): (1) a null benchmark or observed value means the source did not publish / this engine has not measured it — never a low score; OpenRouter only republishes Artificial Analysis intelligence/coding/agentic (often null for coding/agentic even on frontier models) plus Design Arena, so there is no instruction-following, tool-calling, long-context or language score to filter on — compare candidates only on dimensions both have. " +
+      "(2) observed successRate counts agent calls that ended without a provider/harness failure; a call whose output kept failing an agent() `schema` (the script receives null after the bounded schema retries) still counts as a success there — the engine enforces `schema` itself on every model (schema stated in the prompt, reply validated, up to 3 re-asks), so capabilities.structuredOutput (an upstream declaration, null on anthropic-direct rows) neither enables nor guarantees it — keep the schema a small top-level object, prefer stronger models for strict JSON, and handle a null result in the script (e.g. retry with another model). Fields outside the compact row (capabilities, ratesPerM, full observed buckets incl. avgCacheReadTokens) need `fields`. " +
+      "(3) the upstream vendor of an openrouter ref is its second path segment (openrouter/<vendor>/<model>); a `:batch` / `:free` suffix is the SAME model under a different pricing/queueing tier (`besteffort` marks :free) — drop duplicates yourself when assembling a cross-vendor panel. " +
+      "(4) there is no blended-price or score-per-dollar field: compute it from ratesPerM (e.g. blended = (3*in + out)/4) and the benchmark you care about; once a model has run here, observed avgCostUsdPerCall is the better cost predictor. " +
+      "(5) a model that loops on tool calls shows up as high avgCacheReadTokens / avgInputTokens with low avgOutputTokens in observed.tools; cap any agent with timeoutMs and the run budget.\n" +
+    "EXAMPLES: a cheap tool-capable agent model: {modelType:'chat', toolUseVerified:true, sortBy:'avgCostPerCall'} (or toolUseDeclared:true with sortBy:'price' when nothing was probed/measured); " +
       "the strongest coder under $5/1M: {maxPricePerM:5, sortBy:'coding'}; a fast prose summarizer: {callKind:'prose', maxLatencyMsP95:5000, sortBy:'latency'}; " +
       "an embedding model: {modelType:'embedding'}; reliable here: {minSuccessRate:0.95, callKind:'tools'}.",
     // F2 (verify-H, issue #104): built as a literal (type/properties/required/additionalProperties

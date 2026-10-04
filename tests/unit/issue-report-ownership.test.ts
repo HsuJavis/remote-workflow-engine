@@ -21,15 +21,24 @@ import type { OwnerLookup, Principal } from '../../src/authz.js';
 
 const NOOP_LOOKUP: OwnerLookup = { runOwner: () => undefined, workflowOwner: () => undefined, triggerOwner: () => undefined };
 
-function depsWith(runOwner: OwnerLookup['runOwner'], reportResult: unknown = { ok: true, issueNumber: 1, url: 'https://x/1', deduped: false }): { deps: ToolDeps; report: ReturnType<typeof vi.fn> } {
+type AuditRow = { ts: string; actor: string; action: string; runId: string; owner: string; path?: string };
+
+function depsWith(runOwner: OwnerLookup['runOwner'], reportResult: unknown = { ok: true, issueNumber: 1, url: 'https://x/1', deduped: false }): { deps: ToolDeps; report: ReturnType<typeof vi.fn>; auditRows: AuditRow[] } {
   const report = vi.fn().mockResolvedValue(reportResult);
+  const auditRows: AuditRow[] = [];
   const deps = {
     facade: {},
     lookup: { ...NOOP_LOOKUP, runOwner },
-    audit: {},
+    // Issue #134: a real (in-memory) fake, not `{}` — `call-tool.ts`'s own audited wrapper around
+    // `issueReporter.report` calls `deps.audit.appendAudit` for a cross-principal attach, so `{}`
+    // would throw (TypeError: appendAudit is not a function) the moment that wrapper is reached.
+    audit: {
+      appendAudit: (ev: AuditRow) => { auditRows.push(ev); },
+      auditFor: (runId: string) => auditRows.filter((r) => r.runId === runId),
+    },
     issueReporter: { report },
   } as unknown as ToolDeps;
-  return { deps, report };
+  return { deps, report, auditRows };
 }
 
 const ALICE: Principal = { kind: 'user', id: 'alice' };
@@ -55,6 +64,39 @@ describe('issue #130 — issue_report({runId}) ownership (integration: tool-spec
     const res = (await callTool(deps, 'issue_report', OK_ARGS, ADMIN)) as ToolEnvelope;
     expect(res.error).toBeUndefined();
     expect(report).toHaveBeenCalledTimes(1);
+  });
+
+  // Issue #134: issue_report({runId}) used to read with the cross-principal audit flag OFF
+  // (server.ts's runDiagnostics), unlike run_result/run_agent_log/workspace_list — an admin
+  // publishing another principal's run diagnostics to the PUBLIC tracker left no audit trail at
+  // all. Fix: issue_report's `run` authz row now carries `adminCrossRead:true` (tool-specs.ts), so
+  // `authorize()` raises `crossPrincipalRead` exactly as it already does for run_result, and
+  // call-tool.ts wraps the report() call in the SAME `auditedWorkspaceRead` helper those three
+  // tools use.
+  it('an admin attaching another principal\'s run writes a cross-principal audit row (store.auditFor(runId))', async () => {
+    const { deps, report, auditRows } = depsWith(() => 'alice');
+    const res = (await callTool(deps, 'issue_report', OK_ARGS, ADMIN)) as ToolEnvelope;
+    expect(res.error).toBeUndefined();
+    expect(report).toHaveBeenCalledTimes(1);
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0]).toMatchObject({ actor: 'root', action: 'issue_report', runId: 'run-1', owner: 'alice' });
+  });
+
+  it('the owner attaching their own run writes NO cross-principal audit row', async () => {
+    const { deps, report, auditRows } = depsWith(() => 'alice');
+    const res = (await callTool(deps, 'issue_report', OK_ARGS, ALICE)) as ToolEnvelope;
+    expect(res.error).toBeUndefined();
+    expect(report).toHaveBeenCalledTimes(1);
+    expect(auditRows).toHaveLength(0);
+  });
+
+  it('a bare report (no runId) writes no audit row either', async () => {
+    const { deps, report, auditRows } = depsWith(() => { throw new Error('runOwner must not be consulted when no runId is given'); });
+    const { runId: _runId, ...bareArgs } = OK_ARGS;
+    const res = (await callTool(deps, 'issue_report', bareArgs, BOB)) as ToolEnvelope;
+    expect(res.error).toBeUndefined();
+    expect(report).toHaveBeenCalledTimes(1);
+    expect(auditRows).toHaveLength(0);
   });
 
   it("a non-owner is refused NOT_RUN_OWNER and NOTHING is filed — the fake reporter is never called", async () => {
