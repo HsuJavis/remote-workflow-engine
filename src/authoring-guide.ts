@@ -972,6 +972,16 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'price); `benchmarks` are third-party scores republished by OpenRouter (null when none). ' +
         '`effortAppliedOnTransport` says whether an agent\'s `effort` actually reaches that model on this ' +
         "engine's dispatch path — it does not for openrouter or ollama, whatever `effortDeclared` says.\n\n" +
+        'Reading the numbers: `null` means "not published / not measured", never a low score — OpenRouter ' +
+        'republishes only Artificial Analysis intelligence/coding/agentic (plus Design Arena), so compare models ' +
+        'only on dimensions both have; there is no instruction-following or tool-calling score. `observed.successRate` ' +
+        'counts calls that finished, NOT schema conformance: a call whose output keeps failing an agent() `schema` ' +
+        'resolves null in your script yet still counts as a success — if you rely on `schema`, prefer ' +
+        '`capabilities.structuredOutput: true`, keep the schema a small top-level object, and handle a null result ' +
+        '(retry with another model). The vendor of `openrouter/<vendor>/<model>` is its second segment; `:batch`/`:free` ' +
+        'suffixes are the same model on another pricing tier. There is no score-per-dollar field — compute it from ' +
+        '`ratesPerM`. Cap every agent with `timeoutMs` and the run budget so a model that loops on tools cannot run away ' +
+        '(visible as high `avgCacheReadTokens` and low `avgOutputTokens` in `observed.tools`).\n\n' +
         harnessDisclosureParagraph(),
     ),
   );
