@@ -1121,7 +1121,29 @@ CLI 一定會把它的 per-uid 暫存目錄（`<暫存根>/claude-<uid>/`，內�
 （`bash:'readonly'` 時也一樣）。**失敗時拒絕，不會退回共用目錄**：`workRoot` 超過 56 bytes（CLI 的
 sandbox socket 直接放在 `$TMPDIR`，路徑必須塞得進 107 bytes 的 unix socket 上限）會回
 `CLI_SCRATCH_PATH_TOO_LONG`（這種 `workRoot` 在圍籠生效、用 sdk gateway 時**開機就會被拒絕**，訊息同一個碼，修法是換較短的 `workRoot` 路徑），建不出目錄會回 `CLI_SCRATCH_UNAVAILABLE`，兩者都在任何 session 開始前拒絕。
-沒有新的設定鍵。**仍未關閉**（CLI/sandbox-runtime 以 `os.homedir()` 寫死，`CLAUDE_CONFIG_DIR` 也移不掉，
+沒有新的設定鍵。
+
+**issue #131（sdk gateway 補上 `/tmp/claude` denyWrite）**：注意這跟上一段的 `/tmp/claude-<uid>`
+（per-uid、issue #101 已處理）是兩個不同的路徑——這裡講的是**字面上**的 `/tmp/claude`，沒有 uid
+後綴，任何本機使用者都能建出來。Claude CLI 內建的 sandbox-runtime（跟 pi harness 用的是同一套
+`@anthropic-ai/sandbox-runtime`）把這個字面路徑寫死進它自己「一律可寫」的清單
+（`SANDBOX_OWN_WRITE_PATHS`），不受任何公開的 `SandboxConfig` 欄位排除——在這個修法之前，sdk
+gateway 的 confined Bash 可以自由寫進這個目錄，變成跨 run、跨 principal 共用的寫入管道（pi harness
+v1 起已經用 `denyWrite:['/tmp/claude']` 關過同一個洞，見上方「§1b2 pi harness」一節的完整實測紀錄）。
+修法：`buildBashConfinement()`（sdk 與 pi 两個 gateway 共用的同一個函式）現在把 `/tmp/claude` 字面
+路徑無條件加進 `denyWrite`——兩個 gateway 都拿到同一份保護，pi 自己原本重複加一次的程式碼也拿掉了。
+已在真實圍籠主機上用 `anthropic/claude-haiku-4-5-20251001` 實測驗證（confined sdk gateway）：
+(1) 先在主機上建一個 `/tmp/claude/planted.txt`；confined Bash 寫 `/tmp/claude/a.txt` 回報
+`Read-only file system`（寫入確實被擋），讀 `planted.txt` 正常看得到內容（跟主機上其他 `/tmp`
+路徑一樣的暴露程度，不是新洞）；(2) 另一個 run 看不到前一個 run 的任何痕跡，`mktemp`/`$TMPDIR`
+正常可寫（issue #101 的每次派工一份 TMPDIR 不受影響）；(3) 把 `/tmp/claude` 從主機整個刪掉後，
+confined Bash 連 `mkdir /tmp/claude` 都失敗（`Read-only file system`——主機真正的 `/tmp` 在圍籠內
+本來就是唯讀 bind mount，跟 pi 的量測結果一致）；(4) 全程結束後主機上的 `planted.txt`
+位元組不變，`/tmp/claude` 也沒有被引擎自己建出來。該目錄若在派工當下存在，引擎會送出一個
+`agent.host_shared_tmpdir_present` 警告事件（`path:"/tmp/claude"`，不拒絕、不碰主機上任何東西）——
+sdk 與 pi 兩個 gateway 現在共用同一個事件種類。沒有新的設定鍵。
+
+**仍未關閉**（CLI/sandbox-runtime 以 `os.homedir()` 寫死，`CLAUDE_CONFIG_DIR` 也移不掉，
 量測過）：引擎 HOME 底下的 `~/.claude/debug/` 與 `~/.npm/_logs/` 只要**存在**，就會以可寫方式 bind 進每個
 sandbox，可以被當成 run 之間的傳遞通道，也讀得到裡面已有的內容（不含憑證；與操作員共用 uid 時，
 `~/.claude/debug/` 裡是操作員互動式 Claude Code 的 debug log）。引擎自己的 CLI 不會建立

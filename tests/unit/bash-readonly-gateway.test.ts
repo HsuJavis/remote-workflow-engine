@@ -42,7 +42,9 @@ describe('#78(c) buildBashConfinement — readonly posture', () => {
     // showed the CLI processes `root`'s own `--ro-bind` before it reaches any of those still-missing
     // children, so keeping them here bought no extra safety, only extra "Read-only file system"
     // failure points (bash-confinement.ts's own doc comment on this branch has the measurement).
-    expect(ro.filesystem?.denyWrite).toEqual([ROOT, GRANT]);
+    // Issue #131: `/tmp/claude` (srt's own hardcoded always-writable path) is now denied
+    // unconditionally too, alongside the root and every grant.
+    expect(ro.filesystem?.denyWrite).toEqual([ROOT, GRANT, '/tmp/claude']);
     expect(ro.filesystem?.allowRead).toEqual(rw.filesystem?.allowRead);
     expect(ro.filesystem?.denyRead).toEqual(rw.filesystem?.denyRead);
   });
@@ -52,7 +54,8 @@ describe('#78(c) buildBashConfinement — readonly posture', () => {
     expect(a.filesystem?.allowWrite).toEqual([ROOT, GRANT]);
     // issue #128: `.mcp.json` moved from ENGINE_OWNED_CONFIG_PATHS into PROJECT_CONFIG_PATHS (see
     // bash-confinement.test.ts) — same membership, now ahead of `.claude/skills`.
-    expect(a.filesystem?.denyWrite).toEqual(['.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/commands', '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/launch.json', '.mcp.json', '.claude/skills'].map((rel) => join(ROOT, rel)));
+    // Issue #131: `/tmp/claude` appended after the root-relative entries, same as every posture.
+    expect(a.filesystem?.denyWrite).toEqual(['.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/commands', '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/launch.json', '.mcp.json', '.claude/skills'].map((rel) => join(ROOT, rel)).concat('/tmp/claude'));
   });
 });
 

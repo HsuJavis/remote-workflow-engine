@@ -160,7 +160,8 @@ describe('Bash sandbox denyWrite covers the same project-configuration set', () 
   it('readonly Bash: denyWrite is the root (and grants) only — no redundant children', () => {
     const input = { root: '/ws', grantedHostPaths: ['/srv/shared'], protectedFiles: [], workRoot: '/wr', homeDir: undefined, allowReadPaths: [], bashMode: 'readonly' as const };
     const s = buildBashConfinement(input);
-    expect(s.filesystem?.denyWrite).toEqual(['/ws', '/srv/shared']);
+    // Issue #131: `/tmp/claude` is also denied unconditionally now.
+    expect(s.filesystem?.denyWrite).toEqual(['/ws', '/srv/shared', '/tmp/claude']);
   });
 });
 

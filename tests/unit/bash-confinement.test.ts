@@ -42,7 +42,10 @@ describe('UT-309 buildBashConfinement() — the whole posture as one pure functi
     // bash-confinement.ts's own PROJECT_CONFIG_PATHS doc comment for the full reasoning: pi's
     // full-control ResourceLoader never discovers anything under the workspace, so there was never a
     // file for a pi-scoped sweep to protect against in the first place).
-    expect(s.filesystem?.denyWrite).toEqual(['.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/commands', '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/launch.json', '.mcp.json', '.claude/skills'].map((rel) => join(ROOT, rel)));
+    // Issue #131: `/tmp/claude` (srt's OWN hardcoded always-writable path, distinct from the
+    // per-uid `/tmp/claude-<uid>` CLI scratch issue #101 already handles) is now on `denyWrite`
+    // unconditionally, appended after every root-relative entry above.
+    expect(s.filesystem?.denyWrite).toEqual(['.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/commands', '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/launch.json', '.mcp.json', '.claude/skills'].map((rel) => join(ROOT, rel)).concat('/tmp/claude'));
     // Issue #101: the WHOLE home and the WHOLE workRoot are denied (every other run's workspace,
     // ~/.claude credentials, ~/.config, ...), then protectedFiles on top.
     expect(s.filesystem?.denyRead).toEqual([HOME, WORKROOT, ...PROTECTED]);
@@ -58,7 +61,9 @@ describe('UT-309 buildBashConfinement() — the whole posture as one pure functi
       expect(s.enabled).toBe(true);
       expect(s.filesystem?.allowWrite).toEqual([]);
       expect(s.filesystem?.allowRead).toEqual(TOOLCHAIN);
-      expect(s.filesystem?.denyWrite).toEqual([]);
+      // Issue #131: `/tmp/claude` is denied for write even with no root/allowPaths at all — an
+      // absent workspace means "nothing may be written" (ARCH-176), never "nothing to deny".
+      expect(s.filesystem?.denyWrite).toEqual(['/tmp/claude']);
       expect(s.filesystem?.denyRead).toEqual([HOME, WORKROOT]);
     }
   });

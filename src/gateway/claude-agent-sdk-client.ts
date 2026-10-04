@@ -25,7 +25,8 @@ import { parseModelRef, type Provider } from '../providers.js';
 import { isPathContained } from '../path-containment.js';
 import { type SecretSource } from '../secret-resolver.js';
 import { resolveMcpConfigs } from './mcp-config-resolver.js';
-import { buildBashConfinement, readonlyBashRefusal, CLI_SCRATCH_DIR, cliScratchRefusal, sharedCliScratch } from './bash-confinement.js';
+import { buildBashConfinement, readonlyBashRefusal, CLI_SCRATCH_DIR, cliScratchRefusal, sharedCliScratch, HOST_SHARED_TMPDIR } from './bash-confinement.js';
+import { hostSharedTmpdirPresent } from './host-shared-tmpdir.js';
 import { prepareReadonlyMountTargets, protectedConfigTarget, sweepPlantedConfig } from './project-config-guard.js';
 import { findProjectMarkerAboveWorkspace, WORKROOT_INSIDE_PROJECT } from '../workroot-guard.js';
 import { RealCliLifecycle } from '../cli-lifecycle.js';
@@ -1150,6 +1151,15 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     // exit from this point on (the two early `return`s inside keep their own manual cleanup too —
     // redundant but harmless, both `dropCliScratch()` and the timer/listener teardown are idempotent).
     try {
+      // Issue #131: the SAME non-blocking visibility check the pi gateway already runs before
+      // building its own sandbox (pi-gateway-client.ts) — `buildBashConfinement()` below now puts
+      // `HOST_SHARED_TMPDIR` ('/tmp/claude') on `denyWrite` unconditionally (bash-confinement.ts's
+      // own doc has the full "why" a confined write there must be denied), so this is ONLY the
+      // operator-visible warning half: a pre-existing `/tmp/claude` never refuses the dispatch and
+      // nothing on the host is ever touched (read, written or removed) by this check itself.
+      if (this._config.confinementPosture === 'confined' && hostSharedTmpdirPresent()) {
+        this._eventSink({ kind: 'agent.host_shared_tmpdir_present', runId: req.runId, agentId: req.agentId, attempt, path: HOST_SHARED_TMPDIR });
+      }
       const sandbox: Options['sandbox'] =
         this._config.confinementPosture === 'confined'
           ? buildBashConfinement({

@@ -537,7 +537,9 @@ function harnessDisclosureParagraph(): string {
     'shared `/tmp/claude` fallback — a host `/tmp/claude` (any local user can create one) is readable ' +
     '(the same exposure as every other host `/tmp` path) but never writable from inside confined ' +
     'Bash, and its mere presence only emits an operator-visible warning event, never a refusal ' +
-    '(review round 4, R4-2 — see DEPLOY.md §1b2 for the full writeup). Other pi-specific refusals an ' +
+    '(review round 4, R4-2). Issue #131: `gateway:"sdk"` (the default) got this identical ' +
+    '`/tmp/claude` protection too — no longer a pi-only difference — see DEPLOY.md §1b2/§1c for the ' +
+    'full writeup. Other pi-specific refusals an ' +
     'operator may see on a failed agent (run_status.agentFailures / run_agent_log, not a direct ' +
     'tool-call error) are listed with the rest of this engine\'s error codes below, and in DEPLOY.md ' +
     '§1b2\'s own remediation table. ' +
