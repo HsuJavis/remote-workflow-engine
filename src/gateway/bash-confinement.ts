@@ -81,7 +81,7 @@ export const HOST_SHARED_TMPDIR = '/tmp/claude';
 // production host (docs/evidence/issue-101-read-confinement.md, "home" variant): the captured bwrap
 // argv binds `~/.claude/debug` with a plain `--bind` (read-write), not `--ro-bind`, even with
 // `~/.claude/debug` itself ADDED to `denyRead` — this engine's bundled CLI (2.1.199 via SDK 0.3.199)
-// embeds its OWN compiled copy of srt, not the `@anthropic-ai/sandbox-runtime` devDependency on disk
+// embeds its OWN compiled copy of srt, not the `@anthropic-ai/sandbox-runtime` package on disk (a runtime dependency, but loaded only by the pi gateway)
 // (0.0.78's own `homeDirsNotReadDenied` WOULD exclude a denyRead-covered convenience dir — that
 // newer logic is simply not what ships inside the CLI binary this engine spawns). The measured host
 // CLI is the ground truth here, not the npm package version string. Two concurrent runs sharing this

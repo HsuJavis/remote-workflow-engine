@@ -1123,7 +1123,7 @@ sandbox socket 直接放在 `$TMPDIR`，路徑必須塞得進 107 bytes 的 unix
 `CLI_SCRATCH_PATH_TOO_LONG`（這種 `workRoot` 在圍籠生效、用 sdk gateway 時**開機就會被拒絕**，訊息同一個碼，修法是換較短的 `workRoot` 路徑），建不出目錄會回 `CLI_SCRATCH_UNAVAILABLE`，兩者都在任何 session 開始前拒絕。
 沒有新的設定鍵。
 
-**issue #131（sdk gateway 補上 `/tmp/claude` denyWrite）**：注意這跟上一段的 `/tmp/claude-<uid>`
+**issue #131（sdk 與 pi 共用的 sandbox 設定補上 `/tmp/claude` denyWrite）**：注意這跟上一段的 `/tmp/claude-<uid>`
 （per-uid、issue #101 已處理）是兩個不同的路徑——這裡講的是**字面上**的 `/tmp/claude`，沒有 uid
 後綴，任何本機使用者都能建出來。Claude CLI 內建的 sandbox-runtime（跟 pi harness 用的是同一套
 `@anthropic-ai/sandbox-runtime`）把這個字面路徑寫死進它自己「一律可寫」的清單
@@ -1143,14 +1143,14 @@ confined Bash 連 `mkdir /tmp/claude` 都失敗（`Read-only file system`——�
 `agent.host_shared_tmpdir_present` 警告事件（`path:"/tmp/claude"`，不拒絕、不碰主機上任何東西）——
 sdk 與 pi 兩個 gateway 現在共用同一個事件種類。沒有新的設定鍵。
 
-**issue #133（sdk gateway 補上 `~/.npm/_logs`、`~/.claude/debug` 的 denyWrite）**：這兩個目錄是
+**issue #133（sdk 與 pi 共用的 sandbox 設定補上 `~/.npm/_logs`、`~/.claude/debug` 的 denyWrite）**：這兩個目錄是
 `/tmp/claude`（上一段，issue #131）的同類——Claude CLI 內建的 sandbox-runtime 一樣把它們（從
 `os.homedir()`，也就是 CLI 子行程自己的 `HOME`，`CLAUDE_CONFIG_DIR` 移不掉）寫死進它自己「一律可寫」的
 清單，不受任何公開的 `SandboxConfig` 欄位排除——只要這兩個目錄在引擎 HOME 底下**存在**，確認過的
 （`docs/evidence/issue-101-read-confinement.md`「home」那個變體）量測結果是：連把 `~/.claude/debug`
 本身加進 `denyRead` 都擋不住裡面的可寫 bind——confined Bash 裡的寫入照樣成功，變成一條跨 run、跨
 principal 的共用管道（同 #131 那一類）。sandbox-runtime 的 npm 套件（`@anthropic-ai/sandbox-runtime`
-0.0.78，純屬開發期依賴，CLI 子行程跑的不是這一份）新版雖然加了一個「`denyRead` 蓋到就不列入可寫」
+0.0.78，是 pi gateway 在執行期實際載入的正式依賴；但 sdk gateway 的 CLI 子行程跑的是 CLI 二進位自帶的那一份，不是這個套件）新版雖然加了一個「`denyRead` 蓋到就不列入可寫」
 的條件判斷，但那不是 SDK 綁定的 CLI 二進位實際跑的程式碼——這裡一律以實測到的 CLI 行為為準，不是
 npm 套件版本號。修法：`buildBashConfinement()`（兩個 gateway 共用的同一個函式）現在把這兩個目錄
 （從 `homeDir` 組出絕對路徑）無條件加進 `denyWrite`，緊跟在 `/tmp/claude` 後面——跟 #131 同一個
