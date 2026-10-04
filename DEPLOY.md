@@ -1130,7 +1130,7 @@ sandbox socket 直接放在 `$TMPDIR`，路徑必須塞得進 107 bytes 的 unix
 （`SANDBOX_OWN_WRITE_PATHS`），不受任何公開的 `SandboxConfig` 欄位排除——在這個修法之前，sdk
 gateway 的 confined Bash 可以自由寫進這個目錄，變成跨 run、跨 principal 共用的寫入管道（pi harness
 v1 起已經用 `denyWrite:['/tmp/claude']` 關過同一個洞，見上方「§1b2 pi harness」一節的完整實測紀錄）。
-修法：`buildBashConfinement()`（sdk 與 pi 两個 gateway 共用的同一個函式）現在把 `/tmp/claude` 字面
+修法：`buildBashConfinement()`（sdk 與 pi 兩個 gateway 共用的同一個函式）現在把 `/tmp/claude` 字面
 路徑無條件加進 `denyWrite`——兩個 gateway 都拿到同一份保護，pi 自己原本重複加一次的程式碼也拿掉了。
 已在真實圍籠主機上用 `anthropic/claude-haiku-4-5-20251001` 實測驗證（confined sdk gateway）：
 (1) 先在主機上建一個 `/tmp/claude/planted.txt`；confined Bash 寫 `/tmp/claude/a.txt` 回報
