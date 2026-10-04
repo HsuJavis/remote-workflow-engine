@@ -72,6 +72,43 @@ export const PROJECT_CONFIG_PATHS = [
 // a refusal and never anything this pure module does itself.
 export const HOST_SHARED_TMPDIR = '/tmp/claude';
 
+// Issue #133: siblings of #131's HOST_SHARED_TMPDIR. srt's own `getDefaultWritePaths`
+// (sandbox-utils.js) ALSO unconditionally lists `~/.npm/_logs` and `~/.claude/debug` — resolved
+// from `os.homedir()`, i.e. the sandboxed CLI subprocess's own HOME, which `ENV_ALLOWLIST` (both
+// gateways) passes straight through from this engine's `homeDir` — on its always-writable list,
+// the same `SANDBOX_OWN_WRITE_PATHS`/`HOME_CONVENIENCE_WRITE_DIRS` doc comment says "what the
+// sandbox itself needs", never excludable through any public `SandboxConfig` field. Measured on the
+// production host (docs/evidence/issue-101-read-confinement.md, "home" variant): the captured bwrap
+// argv binds `~/.claude/debug` with a plain `--bind` (read-write), not `--ro-bind`, even with
+// `~/.claude/debug` itself ADDED to `denyRead` — this engine's bundled CLI (2.1.199 via SDK 0.3.199)
+// embeds its OWN compiled copy of srt, not the `@anthropic-ai/sandbox-runtime` devDependency on disk
+// (0.0.78's own `homeDirsNotReadDenied` WOULD exclude a denyRead-covered convenience dir — that
+// newer logic is simply not what ships inside the CLI binary this engine spawns). The measured host
+// CLI is the ground truth here, not the npm package version string. Two concurrent runs sharing this
+// engine's HOME can otherwise read/write each other's content through either directory — a
+// cross-run, cross-principal channel, same class as #131. `denyWrite` wins inside srt's own
+// write-allow set (the same mechanism #131 relies on for `/tmp/claude`), so appending these closes
+// it without touching the CLI PROCESS's own (unsandboxed) debug-log writes, which never go through
+// Bash. Live-reverified after this fix (throwaway engine, confined, `anthropic/claude-haiku-4-5-
+// 20251001`, both directories pre-seeded with a planted file): a write from confined Bash into
+// either now fails `Read-only file system`, a second run sees no trace of the first's attempt, and
+// the run itself still completes. Also checked the OTHER direction — the production shape left by
+// `deploy/migrate-to-service-user.sh`'s own deletion of both directories (ARCH-176: an absent
+// denyWrite target must not crash the mount, same bug class as #95's readonly mount-target prep):
+// with `~/.claude/debug` genuinely absent for the whole dispatch, the run still completed normally
+// (no bwrap failure) — `~/.npm/_logs` could not be isolated the same way in that same run (the
+// engine's own `npm run start` recreates it, unsandboxed, before any dispatch reaches the sandbox
+// builder at all) but is resolved through the exact same `HOME_CONVENIENCE_WRITE_DIRS` array and the
+// same srt code path, never special-cased between the two entries.
+export const HOME_CONVENIENCE_WRITE_DIRS = ['.npm/_logs', '.claude/debug'] as const;
+
+/** Issue #133: `HOME_CONVENIENCE_WRITE_DIRS` resolved against this call's `homeDir` — `[]` when
+ *  `homeDir` is absent (nothing to resolve against, same as every other optional path in this
+ *  module). */
+function homeConvenienceWritePaths(homeDir: string | undefined): string[] {
+  return isNonEmptyString(homeDir) ? HOME_CONVENIENCE_WRITE_DIRS.map((rel) => join(homeDir, rel)) : [];
+}
+
 // pi harness v1 review (M1/B1): a `.pi`/`.pi-agent-dir`/`.agents` entry was ADDED here in an earlier
 // iteration — reverted. This list is SHARED with the sdk gateway (sweepPlantedConfig, Bash denyWrite,
 // toolUsePreCheck's protectedConfigTarget all key off it), and the sdk gateway must stay byte-
@@ -205,7 +242,9 @@ export function buildBashConfinement(input: ConfinementInput): SandboxSettings {
       // always-writable bind for it applies regardless of root/bashMode, so the counter-measure
       // must too (an absent `root` must not mean "nothing to deny" here, same ARCH-176 reasoning as
       // the rest of this function).
-      denyWrite: [...(readonly ? allowPaths : settingsFiles), HOST_SHARED_TMPDIR],
+      // Issue #133: the home-convenience write dirs, same unconditional treatment — keyed off
+      // `homeDir` alone, independent of `root`/`bashMode`.
+      denyWrite: [...(readonly ? allowPaths : settingsFiles), HOST_SHARED_TMPDIR, ...homeConvenienceWritePaths(homeDir)],
     },
     credentials: {
       files: filteredProtected.map((path) => ({ path, mode: 'deny' as const })),

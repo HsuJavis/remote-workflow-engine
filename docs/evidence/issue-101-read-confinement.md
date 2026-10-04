@@ -76,3 +76,12 @@ bound back on top.
   dedicated OS user (not shared with the operator's interactive Claude Code).
 - The CLI's pre-command `source ~/.claude/shell-snapshots/snapshot-*.sh 2>/dev/null || true` now
   fails silently (commands still run; PATH comes from the subprocess env).
+
+(Superseded for `~/.claude/debug/`, and its sibling `~/.npm/_logs/` this spike did not test
+separately: issue #133 added both, resolved from `homeDir`, to `buildBashConfinement()`'s
+`denyWrite` — the same `denyWrite`-wins-over-srt's-own-write-allow mechanism issue #131 already
+used for `/tmp/claude`. Live-reverified on a confined host with `anthropic/claude-haiku-4-5-
+20251001`: a write to either directory from confined Bash now fails `Read-only file system`, and a
+second run sees nothing the first one attempted to leave behind. Reading pre-existing content in
+either directory is unaffected — same documented residual as `/tmp/claude`'s own read exposure,
+see DEPLOY.md §1c(f).)

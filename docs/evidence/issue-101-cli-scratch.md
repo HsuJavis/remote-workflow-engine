@@ -100,6 +100,10 @@ dispatch, real CLI + kernel sandbox; RED on the pre-fix engine: `shared_entries`
   `~/.claude/debug/`. An `npm` run inside the sandbox cannot create `~/.npm/_logs` on the host
   either, because HOME is a tmpfs there. Only something running as that user outside the
   sandbox can bring either directory back.
+  (Superseded for the WRITE side: issue #133 added both, resolved from `homeDir`, to
+  `buildBashConfinement()`'s `denyWrite` — live-reverified on a confined host, a write to either
+  from confined Bash now fails `Read-only file system` and leaves nothing for a later run to see.
+  The read side is unchanged and intentionally so — see DEPLOY.md §1c(f).)
 - The denied shared path is `<engine process tmpdir>/claude-<uid>`. If the engine runs with a
   `TMPDIR` that the operator's interactive Claude Code does not share, the operator's
   `/tmp/claude-<uid>` is not on `denyRead`, and `--ro-bind / /` leaves it readable (but not

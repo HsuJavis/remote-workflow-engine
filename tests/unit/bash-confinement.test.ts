@@ -45,7 +45,10 @@ describe('UT-309 buildBashConfinement() — the whole posture as one pure functi
     // Issue #131: `/tmp/claude` (srt's OWN hardcoded always-writable path, distinct from the
     // per-uid `/tmp/claude-<uid>` CLI scratch issue #101 already handles) is now on `denyWrite`
     // unconditionally, appended after every root-relative entry above.
-    expect(s.filesystem?.denyWrite).toEqual(['.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/commands', '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/launch.json', '.mcp.json', '.claude/skills'].map((rel) => join(ROOT, rel)).concat('/tmp/claude'));
+    // Issue #133: srt's `HOME_CONVENIENCE_WRITE_DIRS` (`~/.npm/_logs`, `~/.claude/debug`, resolved
+    // from the engine's `homeDir`) are siblings of `/tmp/claude` — always-writable, not excludable
+    // via any public SandboxConfig field — so they are appended right after it.
+    expect(s.filesystem?.denyWrite).toEqual(['.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/commands', '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/launch.json', '.mcp.json', '.claude/skills'].map((rel) => join(ROOT, rel)).concat('/tmp/claude', join(HOME, '.npm', '_logs'), join(HOME, '.claude', 'debug')));
     // Issue #101: the WHOLE home and the WHOLE workRoot are denied (every other run's workspace,
     // ~/.claude credentials, ~/.config, ...), then protectedFiles on top.
     expect(s.filesystem?.denyRead).toEqual([HOME, WORKROOT, ...PROTECTED]);
@@ -63,7 +66,9 @@ describe('UT-309 buildBashConfinement() — the whole posture as one pure functi
       expect(s.filesystem?.allowRead).toEqual(TOOLCHAIN);
       // Issue #131: `/tmp/claude` is denied for write even with no root/allowPaths at all — an
       // absent workspace means "nothing may be written" (ARCH-176), never "nothing to deny".
-      expect(s.filesystem?.denyWrite).toEqual(['/tmp/claude']);
+      // Issue #133: the home-convenience write dirs are independent of `root`/`allowPaths` too —
+      // they key off `homeDir` alone.
+      expect(s.filesystem?.denyWrite).toEqual(['/tmp/claude', join(HOME, '.npm', '_logs'), join(HOME, '.claude', 'debug')]);
       expect(s.filesystem?.denyRead).toEqual([HOME, WORKROOT]);
     }
   });
