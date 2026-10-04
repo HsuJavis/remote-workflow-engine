@@ -48,9 +48,13 @@ export type EngineEvent =
   // (`/tmp/claude`) existed at dispatch time — no longer a refusal (an unprivileged local user could
   // otherwise `mkdir /tmp/claude` to deny confined pi Bash service to the whole host), but an
   // operator should still be able to see it: `denyWrite` already makes it read-only for this
-  // dispatch's confined Bash (see pi-gateway-client.ts's `PI_HOST_SHARED_TMPDIR` doc for the full
-  // "why" this is safe), so nothing is refused and nothing on the host is touched — this is pure
-  // visibility, once per dispatch, not a security control itself.
+  // dispatch's confined Bash (see bash-confinement.ts's `HOST_SHARED_TMPDIR` doc for the full "why"
+  // this is safe), so nothing is refused and nothing on the host is touched — this is pure
+  // visibility, once per dispatch, not a security control itself. Issue #131: the sdk gateway
+  // (claude-agent-sdk-client.ts) emits this SAME event kind now too — the CLI bundled with the
+  // Agent SDK carries the identical `/tmp/claude` always-writable default pi's own fix already
+  // closed, so both gateways share one event shape (`host-shared-tmpdir.ts`'s
+  // `hostSharedTmpdirPresent()`), not a pi-only line any more.
   | { kind: 'agent.host_shared_tmpdir_present'; runId: string; agentId: string; attempt: number; path: string };
 
 export type EventSink = (event: EngineEvent) => void;

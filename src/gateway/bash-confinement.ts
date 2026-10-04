@@ -52,6 +52,26 @@ export const PROJECT_CONFIG_PATHS = [
   '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/launch.json', '.mcp.json',
 ] as const;
 
+// Issue #131: the Claude CLI's bundled sandbox is the SAME code as @anthropic-ai/sandbox-runtime
+// (srt), which hardcodes the literal `/tmp/claude` into its OWN always-writable path list
+// (`SANDBOX_OWN_WRITE_PATHS` in srt's sandbox-utils.js — "what the sandbox itself needs" by srt's
+// own doc comment, never excludable through any public `SandboxConfig` field). This is a DIFFERENT
+// path from `/tmp/claude-<uid>` (the CLI's own per-uid scratch, issue #101, handled separately by
+// `sharedCliScratch`/`CLI_SCRATCH_DIR` below) — `/tmp/claude` has no uid suffix and is whatever any
+// local user (or another CLI invocation) created. Left unguarded, any confined Bash call writes
+// through it freely: a cross-run, cross-principal shared channel, exactly the class the pi gateway
+// (`pi-gateway-client.ts`'s own `PI_HOST_SHARED_TMPDIR` doc has the full live-verified story)
+// already closed with `denyWrite:['/tmp/claude']` — srt's write-allow for it is a static literal,
+// but `denyWrite` wins inside that allow set (same mechanism documented just below for
+// `settingsFiles`), confirmed live under TOCTOU on the pi path. Folded into THIS shared builder
+// (rather than left for each gateway to bolt on) so the sdk gateway gets it for free and pi's own
+// call site no longer needs to append it a second time. Read-only exposure is unaffected (the same
+// as every other host `/tmp` path already was) and nothing on the host is ever created, deleted or
+// masked — `host-shared-tmpdir.ts`'s `hostSharedTmpdirPresent()` is a separate, purely VISIBILITY
+// check (an `agent.host_shared_tmpdir_present` warning event) each gateway calls on its own, never
+// a refusal and never anything this pure module does itself.
+export const HOST_SHARED_TMPDIR = '/tmp/claude';
+
 // pi harness v1 review (M1/B1): a `.pi`/`.pi-agent-dir`/`.agents` entry was ADDED here in an earlier
 // iteration — reverted. This list is SHARED with the sdk gateway (sweepPlantedConfig, Bash denyWrite,
 // toolUsePreCheck's protectedConfigTarget all key off it), and the sdk gateway must stay byte-
@@ -181,7 +201,11 @@ export function buildBashConfinement(input: ConfinementInput): SandboxSettings {
       // every redundant `settingsFiles` member here was a LATENT extra "Read-only file system"
       // failure point, not defense in depth. Normal (non-readonly) Bash is UNCHANGED: `root` stays
       // writable there, so `settingsFiles` is the only thing taking those paths back.
-      denyWrite: readonly ? allowPaths : settingsFiles,
+      // Issue #131: `HOST_SHARED_TMPDIR` unconditionally, in BOTH postures — srt's own
+      // always-writable bind for it applies regardless of root/bashMode, so the counter-measure
+      // must too (an absent `root` must not mean "nothing to deny" here, same ARCH-176 reasoning as
+      // the rest of this function).
+      denyWrite: [...(readonly ? allowPaths : settingsFiles), HOST_SHARED_TMPDIR],
     },
     credentials: {
       files: filteredProtected.map((path) => ({ path, mode: 'deny' as const })),

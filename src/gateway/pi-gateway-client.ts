@@ -25,7 +25,8 @@ import { resolveTimeout, attemptsFor } from './client.js';
 import { redactHarness } from '../agent-executor.js';
 import { parseModelRef } from '../providers.js';
 import { RealCliLifecycle } from '../cli-lifecycle.js';
-import { buildBashConfinement, readonlyBashRefusal } from './bash-confinement.js';
+import { buildBashConfinement, readonlyBashRefusal, HOST_SHARED_TMPDIR } from './bash-confinement.js';
+import { hostSharedTmpdirPresent } from './host-shared-tmpdir.js';
 import { sweepSrtMuxSockets } from './srt-mux-sweep.js';
 import { resolveRipgrepOverride } from './pi-child/ripgrep-override.js';
 import type { PiChildConfig, PiChildEvent, PiChildSandboxConfig } from './pi-child/protocol.js';
@@ -342,23 +343,19 @@ function piAgentDirParent(workRoot: string | undefined): string {
  *  operator intervening would ever clear it. Replaced with a non-blocking, operator-visible warning
  *  (`hostSharedTmpdirPresent()`, `agent.host_shared_tmpdir_present` on the event sink, below) — the
  *  dispatch proceeds exactly as it would if `/tmp/claude` were absent; nothing on the host is ever
- *  touched either way. */
-const PI_HOST_SHARED_TMPDIR = '/tmp/claude';
-
-/** See `PI_HOST_SHARED_TMPDIR`'s own doc for the full "why" this is now a non-blocking visibility
- *  check, not a refusal or a cleanup attempt — this function never writes, deletes or opens anything
- *  under `PI_HOST_SHARED_TMPDIR`, only `lstat`s it. */
-function hostSharedTmpdirPresent(): boolean {
-  try {
-    lstatSync(PI_HOST_SHARED_TMPDIR);
-    return true;
-  } catch {
-    return false; // absent — the normal case, and srt's own write loop skips a non-existent path.
-  }
-}
+ *  touched either way.
+ *
+ *  Issue #131: the `denyWrite:['/tmp/claude']` half of this fix (and the `HOST_SHARED_TMPDIR`
+ *  constant itself) moved into the SHARED `buildBashConfinement()` (bash-confinement.ts) so the sdk
+ *  gateway gets the identical protection — this gateway no longer appends it a second time below
+ *  (see the `sandbox.filesystem` assignment's own comment). `hostSharedTmpdirPresent()` (the
+ *  existence check for the warning event) moved to `host-shared-tmpdir.ts`, imported by both
+ *  gateways, for the same "one fix, not two" reason — kept out of pi-gateway-client.ts and out of
+ *  bash-confinement.ts (its own header declares it PURE; `lstatSync` is not) to avoid a circular
+ *  import (this file already imports FROM claude-agent-sdk-client.ts). */
 
 /** review round 3, R3-1: a per-dispatch TMPDIR scratch, the SAME verified-parent shape as
- *  `piAgentDirParent` — see `PI_HOST_SHARED_TMPDIR`'s own doc for the full "why". */
+ *  `piAgentDirParent` — see the `HOST_SHARED_TMPDIR` doc just above for the full "why". */
 function piTmpDirParent(workRoot: string | undefined): string {
   return verifiedScratchParent(workRoot, 'pi-tmp');
 }
@@ -652,12 +649,13 @@ export class PiGatewayClient implements GatewayClient {
     // own `config.sandbox !== undefined` branch).
     let sandbox: PiChildSandboxConfig | undefined;
     if (this._config.confinementPosture === 'confined' && mapped.piNames.includes('bash')) {
-      // review round 4 (R4-2, owner ruling): a WARNING, never a refusal — see `PI_HOST_SHARED_TMPDIR`'s
-      // own doc for the full "why" dropping the round-3 refusal is safe (denyWrite below already
-      // closes the one channel that mattered, even under TOCTOU). Checked BEFORE building the sandbox
-      // config purely so the warning always fires regardless of what buildBashConfinement() returns.
+      // review round 4 (R4-2, owner ruling): a WARNING, never a refusal — see `HOST_SHARED_TMPDIR`'s
+      // own doc (bash-confinement.ts) for the full "why" dropping the round-3 refusal is safe
+      // (denyWrite, now built into buildBashConfinement() itself per issue #131, already closes the
+      // one channel that mattered, even under TOCTOU). Checked BEFORE building the sandbox config
+      // purely so the warning always fires regardless of what buildBashConfinement() returns.
       if (hostSharedTmpdirPresent()) {
-        this._eventSink({ kind: 'agent.host_shared_tmpdir_present', runId: req.runId, agentId: req.agentId, attempt: 1, path: PI_HOST_SHARED_TMPDIR });
+        this._eventSink({ kind: 'agent.host_shared_tmpdir_present', runId: req.runId, agentId: req.agentId, attempt: 1, path: HOST_SHARED_TMPDIR });
       }
       const settings = buildBashConfinement({
         root: workspace,
@@ -694,18 +692,20 @@ export class PiGatewayClient implements GatewayClient {
         // within a denied region" rule — confirmed live), so a SIBLING dispatch's `d-*` directory
         // stays invisible while this one is fully usable.
         //
-        // `/tmp/claude` is deliberately NOT in `denyRead` here — see `PI_HOST_SHARED_TMPDIR`'s own
-        // doc for why that would be a no-op (srt's unconditional write-bind for it wins over a later
-        // read-deny mask), and `hostSharedTmpdirPresent()`, called above, only warns rather than
-        // trying to fix that (round 4 owner ruling). `denyWrite` DOES still work against that same
-        // unconditional bind (confirmed live, including under TOCTOU — round 4) and is the actual
-        // control: it makes an existing `/tmp/claude` read-only, never a write channel between runs.
+        // `/tmp/claude` is deliberately NOT in `denyRead` here — see `HOST_SHARED_TMPDIR`'s own doc
+        // (bash-confinement.ts) for why that would be a no-op (srt's unconditional write-bind for it
+        // wins over a later read-deny mask), and `hostSharedTmpdirPresent()`, called above, only
+        // warns rather than trying to fix that (round 4 owner ruling). `denyWrite` DOES still work
+        // against that same unconditional bind (confirmed live, including under TOCTOU — round 4)
+        // and is the actual control: it makes an existing `/tmp/claude` read-only, never a write
+        // channel between runs. Issue #131: `fs.denyWrite` already carries `HOST_SHARED_TMPDIR` —
+        // `buildBashConfinement()` itself puts it there now, for both gateways — so this no longer
+        // appends it a second time (it used to, before the fix moved into the shared builder).
         filesystem: {
           ...fs,
           allowRead: [...fs.allowRead, tmpDir],
           allowWrite: [...fs.allowWrite, tmpDir],
           denyRead: [...fs.denyRead, agentDirParent, tmpDirParent],
-          denyWrite: [...fs.denyWrite, PI_HOST_SHARED_TMPDIR],
         },
         credentials: settings.credentials as PiChildSandboxConfig['credentials'],
         ripgrepOverride,

@@ -375,6 +375,17 @@ export async function callTool(
 
     // ---- issue (5) — envelope-not-throw, unchanged from the pre-v24 surface bar the renames. ----
     case 'issue_report': {
+      // Issue #130: `authorize()` above already refused a non-owner/non-admin NOT_RUN_OWNER (and
+      // let an ownerless/legacy run through to admin-only, per the `ownership:'run'` tri-state —
+      // see authz.ts). What it does NOT refuse is a `runId` that does not exist at all (tri-state
+      // `undefined` ⇒ "let the handler answer NOT_FOUND", same as every other `ownership:'run'`
+      // tool) — `issue_report` had no handler-side existence check of its own, so a bogus runId
+      // used to file silently with no diagnostics rather than refuse, unlike run_status. `deps.
+      // lookup.runOwner` is the SAME sync port authorize() just read — no second oracle.
+      const runId = (a as { runId?: unknown }).runId;
+      if (typeof runId === 'string' && deps.lookup.runOwner(runId) === undefined) {
+        return { error: { code: 'RUN_NOT_FOUND', message: `Run not found: ${runId}` } };
+      }
       const res = await deps.issueReporter.report(a as unknown as IssueReportInput);
       return res.ok ? { result: { issueNumber: res.issueNumber, url: res.url, deduped: res.deduped } } : { error: res.error };
     }

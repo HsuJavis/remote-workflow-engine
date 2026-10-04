@@ -291,6 +291,17 @@ function deleteMode(args: any): 'run' | 'workflow' | 'global' | 'invalid' {
   return 'invalid';
 }
 
+// Issue #130: `issue_report({runId})` used to attach that run's diagnostics (server.ts's
+// `runDiagnostics`) with NO ownership check at all — any principal who learned another principal's
+// runId could publish excerpts of its transcript to the PUBLIC GitHub issue tracker. `key: null`
+// (same as workspace_push/list/delete above) lets authz.ts's existing moded-row fallback resolve
+// the ownership subject off `args.runId` directly — this is the SAME mechanism run_status's own
+// `ownership:'run'` row already uses, not a new one. A bare report (no `runId`) keeps needing no
+// ownership at all.
+function issueReportMode(args: any): 'run' | 'bare' {
+  return args && typeof args === 'object' && 'runId' in args ? 'run' : 'bare';
+}
+
 export const TOOL_SPECS = [
   // ---- workflow (7) ----
   {
@@ -1182,7 +1193,12 @@ export const TOOL_SPECS = [
     // schema was refused ISSUE_REPORT_INVALID for a field it was never shown — while `workflow`,
     // which is live (it adds the `workflow:<name>` label and enters the ARCH-024 dedup
     // fingerprint), was undiscoverable.
-    description: 'File a pre-analyzed issue against the engine. Reports are deduplicated by title+component+workflow.',
+    description: 'File a pre-analyzed issue against the engine. Reports are deduplicated by title+component+workflow. ' +
+      // Issue #130: the ownership rule is the SAME as run_status's own — a `runId` must be the
+      // caller's own run, or the caller must be admin — refused NOT_RUN_OWNER otherwise, nothing
+      // filed; a nonexistent runId answers RUN_NOT_FOUND, the same as run_status, before any
+      // GitHub call. Omitting `runId` needs no ownership at all.
+      "A `runId` argument is checked for ownership exactly like run_status({runId}) — only the run's owner or an admin may attach it, else the whole report is refused (NOT_RUN_OWNER / RUN_NOT_FOUND) and nothing is filed.",
     inputSchema: schema({
       title: { type: 'string' },
       reproSteps: { type: 'string', description: 'How to reproduce it — required, non-empty.' },
@@ -1190,14 +1206,20 @@ export const TOOL_SPECS = [
       logs: { type: 'string' },
       severity: { type: 'string' },
       component: { type: 'string' },
-      runId: { type: 'string', description: 'The run this was observed on, if any.' },
+      runId: { type: 'string', description: "The run this was observed on, if any — must be the caller's own run (or caller is admin); refused NOT_RUN_OWNER/RUN_NOT_FOUND otherwise, before anything is filed." },
       workflow: { type: 'string', description: 'Binds the report to a registered workflow name; adds a workflow:<name> label.' },
       version: { type: 'string', description: "The engine version, or (with `workflow`) that workflow's version." },
     }, ['title', 'reproSteps', 'analysis']),
     outputSchema: OUT,
-    errors: [] as ErrorCode[],
-    seeAlso: [] as string[],
-    authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
+    errors: ['RUN_NOT_FOUND', 'NOT_RUN_OWNER'] as ErrorCode[],
+    seeAlso: ['run_status'],
+    authz: {
+      mode: issueReportMode,
+      rows: {
+        run: { minRole: 'user', ownership: 'run' },
+        bare: { minRole: 'user', ownership: 'none' },
+      },
+    } as ToolAuthz,
     fixture: { happy: { title: 'fixture issue', reproSteps: 'call issue_report', analysis: 'REQ-118 surface probe' }, errors: {} },
   },
   {

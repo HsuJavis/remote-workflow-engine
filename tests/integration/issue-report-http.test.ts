@@ -6,6 +6,7 @@ import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { IssueReporter, type GithubIssueClient } from '../../src/github/issue-reporter.js';
 import type { SecretSource } from '../../src/secret-resolver.js';
+import { uniqueWorkflowName } from '../helpers/workflow-fixtures.js';
 
 interface RpcResponse { result?: { tools?: Array<{ name: string }>; content?: Array<{ text: string }> }; error?: { code: number; message: string }; }
 async function rpc(baseUrl: string, method: string, params: unknown): Promise<RpcResponse> {
@@ -21,6 +22,13 @@ const srcWith = (m: Record<string, string>): SecretSource => ({ resolve: (h) => 
 
 describe('issue_report over the real MCP HTTP surface (REQ-027..030)', () => {
   let server: Server; let baseUrl: string;
+  // Issue #130: `issue_report({runId})` now goes through the SAME ownership/existence check as
+  // run_status — a nonexistent id like the old literal `'run-1'` now answers RUN_NOT_FOUND before
+  // any GitHub call. This server is auth-disabled (no auth config), under which `authorize()`
+  // short-circuits ownership entirely, but the EXISTENCE check (call-tool.ts) is not an authz
+  // concern and still applies — so a real, terminal run is seeded once here and its id reused by
+  // every fixture below that needs a `runId`.
+  let realRunId = '';
   const calls: Array<{ title: string; body: string; labels: string[] }> = [];
   const fakeClient: GithubIssueClient = {
     async createIssue(i) { calls.push(i); return { number: 7, url: 'https://github.com/HsuJavis/remote-workflow-engine/issues/7' }; },
@@ -35,7 +43,20 @@ describe('issue_report over the real MCP HTTP surface (REQ-027..030)', () => {
     const issueReporter = new IssueReporter({ secretSource: srcWith({ GITHUB_TOKEN: 'tkn' }), clientImpl: fakeClient, engineVersion: '9.9.9', nowIso: () => '2026-07-19T00:00:00Z' });
     server = await createServer({ port: 0, bind: '127.0.0.1', issueReporter });
     baseUrl = `http://127.0.0.1:${server.port}`;
-  });
+
+    const name = uniqueWorkflowName('it-issue-report');
+    const QUICK_SCRIPT = "export const meta = { description: 'terminates immediately', phases: [] };\nreturn 'ok';";
+    const registered = await toolCall(baseUrl, 'workflow_register', { name, script: QUICK_SCRIPT, mermaid: 'graph LR' });
+    const version = String(registered.result?.version ?? registered.version);
+    await toolCall(baseUrl, 'workflow_publish', { name, version, channel: 'release' });
+    const started = await toolCall(baseUrl, 'run_start', { name });
+    realRunId = started.runId as string;
+    for (let i = 0; i < 200; i++) {
+      const st = await toolCall(baseUrl, 'run_status', { runId: realRunId });
+      if (['completed', 'failed', 'stopped'].includes(st.status)) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }, 30_000);
   afterAll(async () => { await server?.close(); });
 
   it('tools/list advertises issue_report', async () => {
@@ -44,13 +65,13 @@ describe('issue_report over the real MCP HTTP surface (REQ-027..030)', () => {
   });
 
   it('files an issue and returns {issueNumber, url}; body carries the structured template', async () => {
-    const res = await toolCall(baseUrl, 'issue_report', { title: 'X breaks', reproSteps: 'do X', analysis: 'root cause Y', severity: 'high', runId: 'run-1' });
+    const res = await toolCall(baseUrl, 'issue_report', { title: 'X breaks', reproSteps: 'do X', analysis: 'root cause Y', severity: 'high', runId: realRunId });
     expect(res.error).toBeUndefined();
     expect(res.result).toEqual({ issueNumber: 7, url: 'https://github.com/HsuJavis/remote-workflow-engine/issues/7', deduped: false });
     expect(calls).toHaveLength(1);
     expect(calls[0].labels).toEqual(expect.arrayContaining(['agent-reported', 'severity:high']));
     expect(calls[0].body).toContain('## Reproduction steps');
-    expect(calls[0].body).toContain('run-1');
+    expect(calls[0].body).toContain(realRunId);
   });
 
   // v24 (TASK-152) MIGRATION, split in two rather than re-coded. `issue_report`'s advertised
@@ -92,7 +113,7 @@ describe('issue_report over the real MCP HTTP surface (REQ-027..030)', () => {
   it('v21 (REQ-095): issue_report({workflow,version}) labels the issue "workflow:<name>" and the body carries name@version', async () => {
     const before = calls.length;
     const res = await toolCall(baseUrl, 'issue_report', {
-      title: 'Bug in my-flow', reproSteps: 'run it', analysis: 'root cause', runId: 'run-9',
+      title: 'Bug in my-flow', reproSteps: 'run it', analysis: 'root cause', runId: realRunId,
       workflow: 'my-flow', version: 'v2',
     });
     expect(res.error).toBeUndefined();
