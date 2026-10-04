@@ -457,11 +457,14 @@ export interface RunSummary {
   failedAgentCount?: number;
 }
 
-/** v24 (DES-151, TASK-155): the four tool names whose read surfaces an admin cross-owner read
- *  audits. `TOOL_SPECS` is now `as const` (TASK-155), so `ToolName` is a true 35-member literal
- *  union and this `Extract` narrows to the intended 4 — never `never` (verified: TASK-155's
- *  report records the positive/negative compile check). */
-export type AuditAction = Extract<ToolName, 'workspace_list' | 'workspace_pull' | 'run_agent_log' | 'run_result'>;
+/** v24 (DES-151, TASK-155): the tool names whose read surfaces an admin cross-owner read audits.
+ *  `TOOL_SPECS` is now `as const` (TASK-155), so `ToolName` is a true literal union and this
+ *  `Extract` narrows to the intended set — never `never` (verified: TASK-155's report records the
+ *  positive/negative compile check). Issue #134: `issue_report` joined this set — it publishes a
+ *  run's diagnostics to the public tracker, the same cross-principal exposure `run_result` already
+ *  audits, but does not read through `mcp-facade.ts`'s own audited methods (it calls
+ *  `IssueReporter.report()` directly), so `call-tool.ts` writes this row itself. */
+export type AuditAction = Extract<ToolName, 'workspace_list' | 'workspace_pull' | 'run_agent_log' | 'run_result' | 'issue_report'>;
 
 /** v24 (DES-151): one recorded admin cross-owner read. `owner` is the run's actual owner (not the
  *  reading admin); `path` only for workspace reads. */

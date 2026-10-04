@@ -1216,7 +1216,13 @@ export const TOOL_SPECS = [
     authz: {
       mode: issueReportMode,
       rows: {
-        run: { minRole: 'user', ownership: 'run' },
+        // Issue #134: an admin attaching another principal's run publishes that run's diagnostics
+        // (transcript tail) to the PUBLIC tracker — the same cross-principal exposure run_result/
+        // run_agent_log/workspace_list already audit. Without this flag `authorize()` never raised
+        // `crossPrincipalRead`, so `call-tool.ts`'s own audited wrapper around `issueReporter.report`
+        // was unreachable: the cross-read happened, unaudited (same defect class the Gate 6.5+7
+        // round-2 comment on `run_result`'s own row above describes).
+        run: { minRole: 'user', ownership: 'run', adminCrossRead: true },
         bare: { minRole: 'user', ownership: 'none' },
       },
     } as ToolAuthz,
