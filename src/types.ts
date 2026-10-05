@@ -664,6 +664,17 @@ export interface HarnessDescriptor {
    *  and a skill that never reached the model read as delivered. `[]` = no Skill tool on the wire.
    *  Absent on records written before it existed. */
   skillsExposed?: string[];
+  /** issue #141: how many schema re-asks preceded THIS dispatch (D-V4's bounded retry-on-mismatch
+   *  loop, agent-executor.ts) — `1` on the first re-ask, `2` on the second, etc. Absent on the first
+   *  attempt and on every pre-#141 record (never `0`, the same "absent, never a zero default"
+   *  convention every other optional field here follows). Deliberately NOT a reason to overwrite
+   *  `prompt`: ADR-061/TASK-229 define `descriptor.prompt` as the exact string THIS dispatch put on
+   *  the wire (verified by IT-174/175's byte-for-byte/startsWith pins), and a re-ask's prompt
+   *  genuinely differs (it carries the "did not parse" nudge) — persisting attempt 0's prompt here
+   *  instead would make the descriptor claim a string this dispatch never sent. `reaskCount` is how a
+   *  reader learns "this call retried" without breaking that echo-is-truth invariant; the first
+   *  prompt is still recoverable (it is `descriptor.prompt` minus the constant nudge suffix). */
+  reaskCount?: number;
   /** Issue #78(c): present exactly when Bash was on the wire. `mode` is the effective Bash mode;
    *  `enforced` is whether the kernel sandbox was actually handed to the CLI for this call (host
    *  posture confined). A readonly call is never dispatched unenforced, so `{mode:'readonly',
