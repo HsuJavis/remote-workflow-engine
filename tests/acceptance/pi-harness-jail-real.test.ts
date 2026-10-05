@@ -19,8 +19,8 @@ interface ToolCall { name: string; args: Record<string, unknown> }
  *  responding fake SSE server — each request gets the NEXT tool call in `script`, and the final
  *  request gets a plain text reply. Returns the tool_result payload for each step (by result event
  *  order) plus the raw gateway result. */
-async function driveScript(gw: PiGatewayClient, workspace: string, allowedTools: string[]): Promise<{ results: Array<{ name: string; result: unknown; isError: boolean }>; ok: boolean }> {
-  const results: Array<{ name: string; result: unknown; isError: boolean }> = [];
+async function driveScript(gw: PiGatewayClient, workspace: string, allowedTools: string[]): Promise<{ results: Array<{ result: unknown; isError: boolean }>; ok: boolean }> {
+  const results: Array<{ result: unknown; isError: boolean }> = [];
   const r = await gw.invoke({
     prompt: 'go',
     opts: { model: 'openrouter/fake/model', allowedTools },
@@ -28,9 +28,15 @@ async function driveScript(gw: PiGatewayClient, workspace: string, allowedTools:
     agentId: 'a1',
     workspace,
     onEvent: (ev) => {
+      // issue #139(a) / v0374 review L-4: the engine-canonical tool_result shape
+      // (pi-gateway-client.ts's own fix) is `{type:'tool_result', tool_use_id, content, is_error}` —
+      // this used to read pi's old raw `{toolCallId, toolName, result, isError}` shape, so every
+      // field here read `undefined` after that fix landed. `tool_use_id`/no tool name on this event
+      // kind matches the real Anthropic content-block shape (the name lives on the matching
+      // `tool_call` event instead) — this driver never needed the name, only `result`/`isError`.
       if (ev.kind === 'tool_result') {
-        const d = ev.data as { toolName: string; result: unknown; isError: boolean };
-        results.push({ name: d.toolName, result: d.result, isError: d.isError });
+        const d = ev.data as { content: unknown; is_error: boolean };
+        results.push({ result: d.content, isError: d.is_error });
       }
     },
   });
