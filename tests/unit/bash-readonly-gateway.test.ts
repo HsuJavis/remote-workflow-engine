@@ -61,8 +61,9 @@ describe('#78(c) buildBashConfinement — readonly posture', () => {
   it('no bashMode ⇒ byte-identical to before (the writable posture is untouched)', () => {
     const a = buildBashConfinement({ root: ROOT, grantedHostPaths: [GRANT], protectedFiles: [], workRoot: WORKROOT, homeDir: undefined, allowReadPaths: [] });
     expect(a.filesystem?.allowWrite).toEqual([ROOT, GRANT]);
-    // issue #128: `.mcp.json` moved from ENGINE_OWNED_CONFIG_PATHS into PROJECT_CONFIG_PATHS (see
-    // bash-confinement.test.ts) — same membership, now ahead of `.claude/skills`.
+    // issue #128: `.mcp.json` moved into PROJECT_CONFIG_PATHS (see bash-confinement.test.ts) — ahead
+    // of `.claude/skills`, which issue #144 moved here too (the old `ENGINE_OWNED_CONFIG_PATHS` is
+    // gone entirely — its one entry merged into this same list).
     // Issue #131: `/tmp/claude` appended after the root-relative entries, same as every posture.
     expect(a.filesystem?.denyWrite).toEqual(['.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/commands', '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/launch.json', '.mcp.json', '.claude/skills'].map((rel) => join(ROOT, rel)).concat('/tmp/claude'));
   });
