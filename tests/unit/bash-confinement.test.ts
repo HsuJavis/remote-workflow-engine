@@ -33,10 +33,13 @@ describe('UT-309 buildBashConfinement() — the whole posture as one pure functi
     // Issue #101: the workspace and the toolchain are re-opened INSIDE the denied home/workRoot.
     expect(s.filesystem?.allowRead).toEqual([ROOT, ...TOOLCHAIN]);
     // Every project-configuration path the CLI loads from the workspace (bash-confinement.ts
-    // PROJECT_CONFIG_PATHS + ENGINE_OWNED_CONFIG_PATHS), spelled out here so a list change is seen.
-    // issue #128: `.mcp.json` moved from ENGINE_OWNED_CONFIG_PATHS into PROJECT_CONFIG_PATHS (the
-    // engine no longer rewrites it per dispatch, so it is swept like any other planted config) —
-    // same membership, new position (right after `.claude/launch.json`, ahead of `.claude/skills`).
+    // PROJECT_CONFIG_PATHS — `ENGINE_OWNED_CONFIG_PATHS` is GONE, issue #144: its one entry,
+    // `.claude/skills`, merged into this one list too), spelled out here so a list change is seen.
+    // issue #128: `.mcp.json` moved from the old ENGINE_OWNED_CONFIG_PATHS into PROJECT_CONFIG_PATHS
+    // (the engine no longer rewrites it per dispatch, so it is swept like any other planted config)
+    // — right after `.claude/launch.json`. issue #144: `.claude/skills` followed the identical path
+    // for the identical reason (the engine no longer materializes a skill into the workspace at
+    // all) — appended last.
     // pi harness v1 review (M1/B1): a `.pi`/`.pi-agent-dir`/`.agents` addition here was REVERTED —
     // this list is shared with the sdk gateway and must stay byte-identical (see
     // bash-confinement.ts's own PROJECT_CONFIG_PATHS doc comment for the full reasoning: pi's

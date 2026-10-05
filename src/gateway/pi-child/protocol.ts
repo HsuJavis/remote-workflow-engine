@@ -69,11 +69,24 @@ export interface PiChildConfig {
    *  dispatch with no declared MCP). A secret value may ride inside `env`/`headers` here — same
    *  stdin-only, never-logged contract as `apiKey` above. */
   mcp?: Record<string, { type?: string; url?: string; command?: string; args?: string[]; env?: Record<string, string> }>;
-  /** slice (h): absolute paths of already-materialized skill directories (the parent copies
-   *  `<ws>/.claude/skills/<name>` via the SAME `materializeAssets` the sdk gateway uses, BEFORE the
-   *  child is spawned) — passed as pi's `additionalSkillPaths`. Absent/empty -> no skills, same
-   *  zero-discovery `emptyResourceLoader` path as before. */
+  /** slice (h); issue #144: absolute paths of already-materialized skill directories (the parent
+   *  copies them via the SAME `materializeAssets` the sdk gateway uses, BEFORE the child is spawned)
+   *  — passed as pi's `additionalSkillPaths`. Absent/empty -> no skills, same zero-discovery
+   *  `emptyResourceLoader` path as before. **Issue #144**: these now live under this dispatch's own
+   *  private `tmpDir` (above), never under `cwd` — pi's full-control `DefaultResourceLoader` loads
+   *  `additionalSkillPaths` directly off disk regardless of `cwd` (`noSkills:true` only suppresses
+   *  DISK-discovered paths, never this explicit list — session-runner.ts's own doc comment), so the
+   *  move needs no change there. It DOES need `skillReadRoots` below: pi tells the model to `read` a
+   *  skill's own `SKILL.md` by absolute path (`formatSkillsForPrompt`'s `<location>`), and the
+   *  model's `read`/`grep`/`find`/`ls` tools are jailed to `cwd` by default (`assertJailed`,
+   *  session-runner.ts) — without `skillReadRoots` naming this same directory, that `read` call would
+   *  fail `PATH_ESCAPES_WORKSPACE` the moment a skill moved outside the workspace. */
   skillPaths?: string[];
+  /** Issue #144: read-only root(s) `assertJailed` (session-runner.ts) also accepts, alongside `cwd`,
+   *  for `read`/`grep`/`find`/`ls`/edit's own read half (never `write`/edit's write half — a skill's
+   *  materialized copy stays read-only to the model). Set to this dispatch's own skill-materialization
+   *  directory whenever `skillPaths` is non-empty; omitted otherwise (unchanged jail — `cwd` only). */
+  skillReadRoots?: string[];
 }
 
 export type PiChildModelConfig =

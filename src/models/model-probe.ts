@@ -24,6 +24,7 @@ import type { GatewayClient, GatewayResult } from '../gateway/client.js';
 import { parseModelRef } from '../providers.js';
 import type { Clock } from '../clock.js';
 import type { AgentCallScan } from '../workflow-meta.js';
+import type { Caps, TranscriptEvent } from '../types.js';
 
 export interface ModelProbeConfig {
   /** Run the periodic probe. The admin `models_probe` tool works either way. */
@@ -207,7 +208,15 @@ export function classifyProbe(prose: GatewayResult, tools: GatewayResult, nonce:
   if (!tools.ok) {
     toolsDetail = failure(tools);
   } else {
-    const usedRead = (tools.events ?? []).some((e) => e.kind === 'tool_call' && (e.data as { name?: unknown } | undefined)?.name === 'Read');
+    // issue #139(a): the engine-canonical shape/name is what every gateway is now expected to emit
+    // (fixed at the source for pi — see pi-gateway-client.ts's `engineToolName`) — matched
+    // case-insensitively here too, defense in depth, so a future harness that gets the CASE wrong
+    // (but the right tool) still counts as real tool use rather than a silent false negative.
+    const usedRead = (tools.events ?? []).some((e) => {
+      if (e.kind !== 'tool_call') return false;
+      const name = (e.data as { name?: unknown } | undefined)?.name;
+      return typeof name === 'string' && name.toLowerCase() === 'read';
+    });
     const hasNonce = text(tools).includes(nonce);
     toolUseVerified = usedRead && hasNonce;
     toolsDetail = toolUseVerified ? 'ok' : !usedRead ? 'no Read tool_use in the reply' : 'Read ran but the answer lacks the nonce';
@@ -240,11 +249,19 @@ async function timed(clock: Clock, fn: () => Promise<GatewayResult>): Promise<{ 
 /** Probe one target through `gateway.invoke()`. Both legs run in a throwaway workspace UNDER
  *  workRoot — as every agent() call runs in its run workspace (the SDK gateway refuses one outside
  *  workRoot — WORKROOT_INSIDE_PROJECT) — removed afterwards. Never throws: a gateway exception is a
- *  failed leg. */
+ *  failed leg.
+ *
+ *  issue #139(b): `opts.caps`, when supplied, is the SAME pinned `Caps` a real agent() dispatch would
+ *  carry for this (provider, model) — threaded through to `gateway.invoke()` unchanged on BOTH legs
+ *  so a mandatory-reasoning endpoint (OpenRouter's own `reasoning.mandatory`) gets a real effort
+ *  level under pi instead of the terminal 400 an effort-less dispatch used to get
+ *  (`PiGatewayClient`'s own `effectiveEffort` is what actually applies it; this is just the wire that
+ *  reaches it). Omitted -> `req.caps` is undefined, byte-identical to this function's pre-#139(b)
+ *  behavior (every existing call site, and the sdk gateway, which never had this problem). */
 export async function runProbe(
   gateway: GatewayClient,
   target: ProbeTarget,
-  opts: { workRoot: string; timeoutMs: number; clock: Clock },
+  opts: { workRoot: string; timeoutMs: number; clock: Clock; caps?: Caps },
 ): Promise<ProbeResult> {
   const { clock, timeoutMs } = opts;
   const runId = `model-probe-${clock.now()}`;
@@ -255,19 +272,41 @@ export async function runProbe(
   const ref = `${target.provider}/${target.model}`;
   let prose: { r: GatewayResult; ms: number };
   let tools: { r: GatewayResult; ms: number };
+  // v0374 integration review H-1 (see the full doc at the tools-leg `invoke()` call below): declared
+  // OUTSIDE the try block — it is read again after the `finally` once the tools leg has settled.
+  const collected: TranscriptEvent[] = [];
   try {
     prose = await timed(clock, () => gateway.invoke({
       prompt: PROSE_PROMPT, opts: { model: ref, allowedTools: [], timeoutMs }, runId, agentId: `probe-prose-${ref}`, workspace,
+      ...(opts.caps !== undefined ? { caps: opts.caps } : {}),
     }));
     const noncePath = join(workspace, NONCE_FILE);
     writeFileSync(noncePath, `${nonce}\n`);
+    // v0374 integration review H-1: `PiGatewayClient`'s own successful `GatewayResult` carries NO
+    // `events` at all — pi streams tool_call/tool_result ONLY through the `onEvent` callback
+    // (`_dispatchOnce`'s readline handler), unlike the sdk gateway, which also fills
+    // `GatewayResult.events` (claude-agent-sdk-client.ts's `extractEvents`). `classifyProbe` below
+    // reads `tools.events`, so a probe through pi always saw an empty list and reported
+    // `toolUseVerified:false` even when the model genuinely called Read — the exact false negative
+    // issue #139(a) was supposed to fix. Collecting through `onEvent` here (never passed by any
+    // caller before this fix) and merging it onto the returned result — ONLY for classification, the
+    // merged object is never returned from this function or persisted — closes the gap for every
+    // gateway uniformly: a gateway that already fills `events` (the sdk gateway) is unaffected
+    // (`tools.r.events` wins when present, never overwritten by a possibly-partial `onEvent` replay).
     tools = await timed(clock, () => gateway.invoke({
       prompt: toolsPrompt(noncePath), opts: { model: ref, allowedTools: ['Read'], timeoutMs }, runId, agentId: `probe-tools-${ref}`, workspace,
+      onEvent: (ev) => { collected.push(ev); },
+      ...(opts.caps !== undefined ? { caps: opts.caps } : {}),
     }));
   } finally {
     rmSync(workspace, { recursive: true, force: true });
   }
-  const c = classifyProbe(prose.r, tools.r, nonce);
+  // Classification-only merge (see the comment above `tools = await timed(...)`): never mutates or
+  // replaces `tools.r` itself, so nothing downstream of this function (harness/transport fields,
+  // ModelProbeStore.put) ever sees the collected events — only `classifyProbe`'s own `usedRead` scan
+  // does, via this ONE extra argument.
+  const toolsForClassification: GatewayResult = tools.r.events !== undefined ? tools.r : { ...tools.r, events: collected } as GatewayResult;
+  const c = classifyProbe(prose.r, toolsForClassification, nonce);
   // issue #138: read straight off whichever leg's own GatewayResult carried a transport (both legs
   // go through the SAME gateway/call, so they always agree when either reports one) — never guessed
   // from deployment config. Neither leg reporting one (a pre-v26 gateway, or a test fake) is recorded
@@ -319,6 +358,27 @@ export class ModelProbeStore {
         if (!/duplicate column name/i.test((err as Error).message)) throw err;
       }
     }
+    // v0374 integration review M-1: a SEPARATE table (never a column on `model_probes`, which is
+    // keyed on a COMPLETED result) recording "a probe for this target started at this time" — read
+    // by `ModelProber.dueTargets()` so a crash-loop restart (the process dies between starting a
+    // probe and ever calling `put()`) does not re-dispatch the SAME target on every single restart.
+    // A brand-new table needs no migration (nothing predates it).
+    this._db.exec(`CREATE TABLE IF NOT EXISTS model_probe_started (
+      provider TEXT NOT NULL, model TEXT NOT NULL, started_at TEXT NOT NULL,
+      PRIMARY KEY (provider, model))`);
+  }
+  /** v0374 integration review M-1: called once per target right before `runProbe` dispatches it —
+   *  see the table's own doc above. Overwrites any prior marker for the same target: only the LATEST
+   *  attempt's start time matters for the cooldown check in `dueTargets()`. */
+  markStarted(provider: string, model: string, startedAt: string): void {
+    this._db.prepare('INSERT OR REPLACE INTO model_probe_started VALUES (?,?,?)').run(provider, model, startedAt);
+  }
+  /** `undefined` when this target has never had a probe started (or started a process ago, before
+   *  this column existed — a hand-migrated pre-M-1 db simply has no rows in this table yet, which
+   *  is the same as "never started", never a guessed timestamp). */
+  startedAt(provider: string, model: string): string | undefined {
+    const row = this._db.prepare('SELECT started_at FROM model_probe_started WHERE provider = ? AND model = ?').get(provider, model) as { started_at: string } | undefined;
+    return row?.started_at;
   }
   put(r: ProbeResult): void {
     this._db.prepare(`INSERT OR REPLACE INTO model_probes VALUES (?,?,?,?,?,?,?,?,?)`).run(
@@ -347,15 +407,33 @@ function fromRow(r: Row): ProbeResult {
 
 const HOUR_MS = 60 * 60 * 1000;
 
+/** v0374 integration review M-1: how long a `markStarted` marker with no matching newer completed
+ *  result suppresses re-dispatch of the SAME target in `dueTargets()` — long enough to outlast a
+ *  real in-flight probe (two legs, each bounded by the configured `timeoutMs`, default 60s), short
+ *  enough that a genuinely crashed attempt is retried on a human timescale rather than waiting out
+ *  the full `intervalMs` (7 days default). */
+export const PROBE_INFLIGHT_COOLDOWN_MS = 5 * 60_000;
+
+/** v0374 integration review M-1: the grace period `server.ts` waits AFTER `http.listen()` resolves
+ *  before calling `modelProber.start({bootProbeDelayMs})` — see `ModelProber.start`'s own doc for
+ *  the crash-loop-spend reasoning this closes. */
+export const DEFAULT_BOOT_PROBE_GRACE_MS = 2 * 60_000;
+
 /** Owns the admin "probe now" entry point and the periodic re-probe. The periodic check ticks every
- *  min(intervalMs, 1h) — never at boot — and probes only targets whose last result is older than
- *  intervalMs (or absent), so a restart does not re-spend on models probed yesterday.
+ *  min(intervalMs, 1h); `start({bootProbeDelayMs})` ALSO runs one immediate sweep, delayed by that
+ *  grace period (v0374 review M-1 — server.ts calls it after `http.listen()`, so this is no longer
+ *  "never at boot": it runs once at boot, after a short wait, then on the normal periodic cadence).
+ *  Either way, only targets whose last result is older than intervalMs (or absent) are probed, and a
+ *  target with a recent, uncompleted `markStarted` marker is skipped for `PROBE_INFLIGHT_COOLDOWN_MS`
+ *  — a restart does not re-spend on a model probed yesterday, or on one whose probe is still in
+ *  flight (or crashed moments ago) from a previous process.
  *  2026-09-26 (alias mechanism removed, owner decision 10): `modelRefs` replaces the old static
  *  `aliases` table — a LIVE accessor (called fresh on every `probeNow()`/`dueTargets()`, never
  *  cached at construction) over the distinct full refs registered workflow versions declare, so a
  *  newly registered/re-registered workflow's models are probed without a restart. */
 export class ModelProber {
   private _timer: ReturnType<typeof setInterval> | undefined;
+  private _bootTimer: ReturnType<typeof setTimeout> | undefined;
   private _running: Promise<unknown> = Promise.resolve();
   constructor(
     private readonly _deps: {
@@ -381,6 +459,14 @@ export class ModelProber {
        *  omitted entirely skips this check (never defaulted to either value) — every pre-#138 call
        *  site, none of which pass it, keeps its EXACT prior behavior: due-ness gated on age alone. */
       activeHarness?: 'sdk' | 'pi';
+      /** issue #139(b): resolves the SAME pinned `Caps` a real agent() dispatch for this
+       *  (provider, model) would carry (server.ts wires this from `modelBook.snapshot()`, which is
+       *  itself async — a TTL-cached fetch, not a free sync read) — threaded into `runProbe` so a
+       *  mandatory-reasoning model is probed WITH a real effort level instead of an effort-less
+       *  dispatch that a mandatory endpoint rejects outright. Omitted -> `runProbe` gets no `caps`,
+       *  byte-identical to this field's pre-#139(b) absence (every existing call site, and any
+       *  deployment that constructs `ModelProber` directly in a test). */
+      capsFor?: (provider: string, model: string) => Promise<Caps | undefined>;
     },
   ) {}
 
@@ -412,6 +498,18 @@ export class ModelProber {
     const activeHarness = this._deps.activeHarness;
     return probeTargets(this._deps.modelRefs(), this._deps.harnessProviders).filter((t) => {
       const last = this._deps.store.get(t.provider, t.model);
+      // v0374 integration review M-1: a probe that STARTED (markStarted) more recently than the
+      // last COMPLETED result (or that has no completed result at all) might simply be slow, or the
+      // process that started it might have crashed before ever calling `put()` — a crash-loop
+      // restart (systemd `rwe.service`: RestartSec=2s, no StartLimit) must not re-dispatch the SAME
+      // target on every single restart just because it looks "never probed". Suppressed only for
+      // `PROBE_INFLIGHT_COOLDOWN_MS` — long enough to cover a real in-flight call (the configured
+      // per-leg `timeoutMs`, default 60s, times two legs), short enough that a genuinely crashed
+      // attempt is retried well before the normal `intervalMs` (7 days default) would ever catch it.
+      const startedAt = this._deps.store.startedAt(t.provider, t.model);
+      if (startedAt !== undefined && (last === undefined || Date.parse(startedAt) > Date.parse(last.probedAt))) {
+        if (now - Date.parse(startedAt) < PROBE_INFLIGHT_COOLDOWN_MS) return false;
+      }
       if (last === undefined) return true;
       // issue #138 review M-138-2: a row recorded under a harness other than the one actively
       // running is due NOW, regardless of age — see this field's own doc above for why age alone
@@ -422,8 +520,27 @@ export class ModelProber {
     });
   }
 
-  start(): void {
-    if (!this._deps.config.enabled || this._timer) return;
+  /** v0374 integration review M-1: `bootProbeDelayMs` postpones ONLY the first (boot) sweep — the
+   *  periodic interval below is unaffected (it already fires no sooner than `min(intervalMs, 1h)`,
+   *  far longer than any sane grace period). Omitted -> 0, byte-identical to this parameter's
+   *  pre-M-1 absence (every pre-existing call site, including every test that calls `start()` bare).
+   *  Production (server.ts) calls this AFTER `http.listen()` resolves, with a multi-minute grace —
+   *  `rwe.service` restarts every 2s with no systemd StartLimit, so probing immediately at
+   *  construction time (before the server can even serve a request) paid for every due target on
+   *  EVERY restart of a crash loop. */
+  start(opts?: { bootProbeDelayMs?: number }): void {
+    if (!this._deps.config.enabled || this._timer || this._bootTimer) return;
+    const bootProbeDelayMs = opts?.bootProbeDelayMs ?? 0;
+    const runBootSweep = (): void => {
+      this._bootTimer = undefined;
+      void this._serial(() => this._probe(this.dueTargets())).catch((err) => console.error('[model-probe] initial probe failed:', err));
+    };
+    if (bootProbeDelayMs > 0) {
+      this._bootTimer = setTimeout(runBootSweep, bootProbeDelayMs);
+      this._bootTimer.unref?.();
+    } else {
+      runBootSweep();
+    }
     this._timer = setInterval(() => {
       void this._serial(() => this._probe(this.dueTargets())).catch((err) => console.error('[model-probe] periodic probe failed:', err));
     }, Math.min(this._deps.config.intervalMs, HOUR_MS));
@@ -433,6 +550,8 @@ export class ModelProber {
   stop(): void {
     if (this._timer) clearInterval(this._timer);
     this._timer = undefined;
+    if (this._bootTimer) clearTimeout(this._bootTimer);
+    this._bootTimer = undefined;
   }
 
   private _serial<T>(fn: () => Promise<T>): Promise<T> {
@@ -444,9 +563,32 @@ export class ModelProber {
   private async _probe(targets: ProbeTarget[], timeoutMs = this._deps.config.timeoutMs): Promise<ProbeResult[]> {
     const out: ProbeResult[] = [];
     for (const t of targets) {
-      const r = await runProbe(this._deps.gateway, t, { workRoot: this._deps.workRoot, timeoutMs, clock: this._deps.clock });
-      this._deps.store.put(r);
-      out.push(r);
+      // issue #139(c): one target's own DISPATCH failure (a `capsFor` lookup throwing — a catalog
+      // outage) must not skip every target QUEUED AFTER it in this same sweep — `runProbe` itself
+      // already never throws (its own doc), so this covers only the surrounding per-target work.
+      try {
+        const caps = await this._deps.capsFor?.(t.provider, t.model);
+        // v0374 integration review M-1: marked BEFORE dispatch, so a crash mid-`runProbe` (or even
+        // mid-`capsFor`) leaves a marker `dueTargets()` can see on the next boot — see that
+        // method's own doc and `PROBE_INFLIGHT_COOLDOWN_MS`.
+        this._deps.store.markStarted(t.provider, t.model, this._deps.clock.isoNow());
+        const r = await runProbe(this._deps.gateway, t, { workRoot: this._deps.workRoot, timeoutMs, clock: this._deps.clock, ...(caps !== undefined ? { caps } : {}) });
+        // v0374 integration review M-1: a `store.put` failure is different IN KIND from a dispatch
+        // failure above — if the STORE itself is broken (disk full, a locked sqlite file), every
+        // SUBSEQUENT `put()` in this sweep will fail too, so dispatching more targets only spends
+        // money and persists nothing. This nested try/catch STOPS the whole sweep (via `break`,
+        // escaping the `for` loop) rather than continuing to the next target, unlike the outer
+        // catch below (which is scoped to THIS one target's own dispatch problem).
+        try {
+          this._deps.store.put(r);
+        } catch (err) {
+          console.error(`[model-probe] store.put failed for ${t.provider}/${t.model} — stopping this sweep (the store itself looks broken):`, err);
+          break;
+        }
+        out.push(r);
+      } catch (err) {
+        console.error(`[model-probe] probing ${t.provider}/${t.model} failed:`, err);
+      }
     }
     return out;
   }

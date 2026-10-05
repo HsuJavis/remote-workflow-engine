@@ -194,9 +194,29 @@ async function resolveModel(config: PiChildConfig, runtime: ModelRuntime) {
     return model;
   }
   // openrouter (slice i extends this arm with openrouterBaseUrl / recording-fake-server support).
+  // issue #142: `api: 'openai-completions'` is REQUIRED here, not implied by baseUrl. pi's own
+  // built-in 'openrouter' provider (providers/openrouter.js) ships a static catalog with TWO api
+  // shapes — most ids are 'openai-completions', but 15 chat ids under the vendor namespace
+  // `anthropic/*` (including `anthropic/claude-sonnet-5.5` and `anthropic/claude-haiku-4.5`, both
+  // reported 404ing) are catalogued as 'anthropic-messages'. `registerProvider()`'s composition
+  // (`provider-composer.js`'s `extensionModelFromDefinition`/`findExtensionModelDefaults`) looks up
+  // DEFAULTS for our one-model registration by matching the model ID against that SAME builtin
+  // catalog FIRST — so an id that happens to collide with one of those 15 silently inherited
+  // 'anthropic-messages' (since `buildModelConfig` sets no `api` of its own), and pi dispatched it
+  // through the Anthropic Messages wire shape against our OpenRouter baseUrl. Reproduced via the
+  // recording fake server (tests/acceptance/pi-harness-openrouter-fake-server.test.ts): the outbound
+  // request landed at `POST <baseUrl>/v1/messages` (the Anthropic SDK client's own path, appended a
+  // SECOND `v1` on top of the already-versioned OpenRouter baseUrl) with an Anthropic-shaped body
+  // (`system`, `thinking`, content-block `messages`) instead of OpenAI chat-completions' `/chat/
+  // completions` + flat `messages`. Setting `api` explicitly at the PROVIDER level here wins before
+  // any builtin-catalog default is ever consulted (provider-composer.js's own `definition.api ??
+  // config.api ?? defaults?.api` order) — every openrouter model this engine dispatches now always
+  // uses the OpenAI-completions wire shape, independent of whatever vendor namespace its id happens
+  // to share with pi's static catalog.
   runtime.registerProvider('openrouter', {
     baseUrl: config.openrouterBaseUrl ?? 'https://openrouter.ai/api/v1',
     apiKey: config.apiKey,
+    api: 'openai-completions',
     models: [buildModelConfig(config.model.model, true)],
   });
   const model = runtime.getModel('openrouter', config.model.model);
@@ -307,8 +327,19 @@ export async function walkDir(dir: string, base: string, out: string[], ignore: 
  *  containment is checked against an ABSOLUTE path regardless), then refuses with a thrown error
  *  (pi's tool-call pipeline turns a thrown Operations error into a tool-result error, matching
  *  `toolUsePreCheck`'s own refusal shape on the sdk gateway) unless BOTH: (a) contained within
- *  `config.cwd`, and (b) not equal to / inside any of `config.protectedFiles`. */
-export function assertJailed(absolutePath: string, config: PiChildConfig, deps: SessionDeps): void {
+ *  `config.cwd` OR (when `opts.readOnly`) one of `config.skillReadRoots`, and (b) not equal to /
+ *  inside any of `config.protectedFiles`.
+ *
+ *  Issue #144: `opts.readOnly` is set by every READ operation below (`read`/`grep`/`find`/`ls`, and
+ *  edit's own `readFile`/`access` half) and OMITTED by every WRITE operation (`write`'s `writeFile`/
+ *  `mkdir`, edit's own `writeFile`) — a declared skill's materialized directory is readable to the
+ *  model (pi tells it to `read` the skill's own `SKILL.md` by absolute path, outside `cwd` since
+ *  issue #144 moved skill materialization out of the workspace; `formatSkillsForPrompt`'s own
+ *  `<location>` field is that path) but never writable: `config.skillReadRoots` only widens the
+ *  containment check below, never which root `config.protectedFiles` or a write op is checked
+ *  against. `config.cwd` ITSELF stays checked unconditionally either way — `skillReadRoots` only ever
+ *  ADDS an extra allowed root for a read, never removes `cwd`. */
+export function assertJailed(absolutePath: string, config: PiChildConfig, deps: SessionDeps, opts?: { readOnly?: boolean }): void {
   const root = resolve(config.cwd);
   const target = resolve(absolutePath);
   // review B3: `landing` is where this path ACTUALLY resolves once every symlink (including a
@@ -317,7 +348,9 @@ export function assertJailed(absolutePath: string, config: PiChildConfig, deps: 
   // alone would miss nothing dangling ever existing in the first place, but checking both is cheap
   // and matches `protectedConfigTarget`'s own "lexical AND landing" discipline exactly).
   const landing = resolve(deps.resolveLanding(target));
-  if (!deps.isPathContained(target, root) || !deps.isPathContained(landing, root)) {
+  const containedIn = (r: string): boolean => deps.isPathContained(target, r) && deps.isPathContained(landing, r);
+  const skillReadRoots = opts?.readOnly ? (config.skillReadRoots ?? []) : [];
+  if (!containedIn(root) && !skillReadRoots.some(containedIn)) {
     throw new Error(`PATH_ESCAPES_WORKSPACE: "${absolutePath}" is outside this run's workspace`);
   }
   for (const protectedPath of config.protectedFiles) {
@@ -429,8 +462,8 @@ function buildCustomTools(config: PiChildConfig, deps: SessionDeps): ToolDefinit
   if (want.has('read')) {
     tools.push(createReadToolDefinition(config.cwd, {
       operations: {
-        readFile: async (p) => { assertJailed(p, config, deps); return readFile(p); },
-        access: async (p) => { assertJailed(p, config, deps); await access(p); },
+        readFile: async (p) => { assertJailed(p, config, deps, { readOnly: true }); return readFile(p); },
+        access: async (p) => { assertJailed(p, config, deps, { readOnly: true }); await access(p); },
       },
     }));
   }
@@ -445,17 +478,17 @@ function buildCustomTools(config: PiChildConfig, deps: SessionDeps): ToolDefinit
   if (want.has('edit') && config.bashMode !== 'readonly') {
     tools.push(createEditToolDefinition(config.cwd, {
       operations: {
-        readFile: async (p) => { assertJailed(p, config, deps); return readFile(p); },
+        readFile: async (p) => { assertJailed(p, config, deps, { readOnly: true }); return readFile(p); },
         writeFile: async (p, content) => { assertJailed(p, config, deps); await writeFile(p, content); },
-        access: async (p) => { assertJailed(p, config, deps); await access(p); },
+        access: async (p) => { assertJailed(p, config, deps, { readOnly: true }); await access(p); },
       },
     }));
   }
   if (want.has('grep')) {
     tools.push(createGrepToolDefinition(config.cwd, {
       operations: {
-        isDirectory: async (p) => { assertJailed(p, config, deps); return (await stat(p)).isDirectory(); },
-        readFile: async (p) => { assertJailed(p, config, deps); return readFile(p, 'utf8'); },
+        isDirectory: async (p) => { assertJailed(p, config, deps, { readOnly: true }); return (await stat(p)).isDirectory(); },
+        readFile: async (p) => { assertJailed(p, config, deps, { readOnly: true }); return readFile(p, 'utf8'); },
       },
     }));
   }
@@ -463,11 +496,11 @@ function buildCustomTools(config: PiChildConfig, deps: SessionDeps): ToolDefinit
     tools.push(createFindToolDefinition(config.cwd, {
       operations: {
         exists: async (p) => {
-          assertJailed(p, config, deps);
+          assertJailed(p, config, deps, { readOnly: true });
           try { await access(p); return true; } catch { return false; }
         },
         glob: async (pattern, cwd, options) => {
-          assertJailed(cwd, config, deps);
+          assertJailed(cwd, config, deps, { readOnly: true });
           const all: string[] = [];
           await walkDir(cwd, cwd, all, options.ignore, options.limit * 20); // overcollect, then filter
           const re = globToRegExp(pattern);
@@ -480,11 +513,11 @@ function buildCustomTools(config: PiChildConfig, deps: SessionDeps): ToolDefinit
     tools.push(createLsToolDefinition(config.cwd, {
       operations: {
         exists: async (p) => {
-          assertJailed(p, config, deps);
+          assertJailed(p, config, deps, { readOnly: true });
           try { await access(p); return true; } catch { return false; }
         },
-        stat: async (p) => { assertJailed(p, config, deps); return stat(p); },
-        readdir: async (p) => { assertJailed(p, config, deps); return readdir(p); },
+        stat: async (p) => { assertJailed(p, config, deps, { readOnly: true }); return stat(p); },
+        readdir: async (p) => { assertJailed(p, config, deps, { readOnly: true }); return readdir(p); },
       },
     }));
   }
@@ -590,8 +623,17 @@ export async function runPiChildSession(config: PiChildConfig, emit: (event: PiC
     // tool active, or the window elapses, whichever comes first (never waits longer than it has to).
     await session.bindExtensions({});
     const declaredNames = Object.keys(config.mcp ?? {});
+    // issue #145: pi's OWN tool-name sanitizer (`@earendil-works/pi-coding-agent`'s
+    // `extensions/mcp/tools.js`: `` `mcp__${server}__${tool}`.replace(/[^A-Za-z0-9_]/g, '_') ``)
+    // replaces EVERY character outside [A-Za-z0-9_] — including a hyphen — unlike the Claude CLI's
+    // rule this used to (wrongly) borrow (`[^A-Za-z0-9_-]`, which keeps a hyphen). A hyphenated
+    // server name ('tooltest-memory') produces `mcp__tooltest_memory__<tool>`, which the old regex
+    // never matched: this loop gave up only at the full 10s deadline (never found a match) and the
+    // parent then misreported a real, working connection as 'unknown' with a false
+    // MCP_SERVER_NOT_CONNECTED warning (pi-gateway-client.ts applies the SAME corrected rule to its
+    // own copy of this check, built from the `mcp_init` event this loop emits below).
     const hasToolsFor = (name: string, active: readonly string[]): boolean => {
-      const prefixes = [`mcp__${name}__`, `mcp__${name.replace(/[^A-Za-z0-9_-]/g, '_')}__`];
+      const prefixes = [`mcp__${name}__`, `mcp__${name.replace(/[^A-Za-z0-9_]/g, '_')}__`];
       return active.some((t) => prefixes.some((p) => t.startsWith(p)));
     };
     const deadline = Date.now() + 10_000;

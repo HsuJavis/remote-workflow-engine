@@ -125,7 +125,10 @@ describe('pi harness v1 — REAL MCP via a real stdio server-everything + real o
           },
         });
         lastResultOk = result.ok;
-        calledTheTool = events.some((e) => e.kind === 'tool_call' && (e.data as { toolName?: string }).toolName?.includes('echo'));
+        // issue #139(a) / v0374 review L-4: the engine-canonical tool_call shape (pi-gateway-client.ts's
+        // own fix) carries the tool name on `name`, not `toolName` — this used to always read
+        // `undefined`, so `calledTheTool` was always false regardless of what the model actually did.
+        calledTheTool = events.some((e) => e.kind === 'tool_call' && (e.data as { name?: string }).name?.includes('echo'));
       }
     } finally {
       rmSync(ws, { recursive: true, force: true });

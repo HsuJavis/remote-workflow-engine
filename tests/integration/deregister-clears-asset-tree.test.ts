@@ -13,7 +13,7 @@
 // two seams IT-036 uses) — no real network/process I/O and no model.
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -140,7 +140,13 @@ describe('deregister removes the workflow\'s asset tree from disk, not only its 
     );
     expect(push.error, `push: ${JSON.stringify(push.error)}`).toBeUndefined();
     const ownerRun = await registerRunAndWait([SKILL], ownerToken);
-    expect(readFileSync(join(workspaceOf(ownerRun), '.claude', 'skills', SKILL, 'SKILL.md'), 'utf-8')).toBe(SKILL_MD);
+    // Issue #144: the skill materializes into a PRIVATE per-dispatch directory outside the run
+    // workspace (gone again before this `run_status`-polling loop even sees the run go terminal) —
+    // `run_agent_log`'s own durable `harness.materialized` record is the only post-hoc way to prove
+    // it reached that agent at all; the workspace itself must never have had it.
+    const log = await mcpCall('run_agent_log', { runId: ownerRun, label: 'worker' }, ownerToken);
+    expect(log.harness?.materialized?.skills).toEqual([SKILL]);
+    expect(existsSync(join(workspaceOf(ownerRun), '.claude', 'skills'))).toBe(false);
     expect(existsSync(join(assetTree(), 'skill', SKILL, 'SKILL.md'))).toBe(true);
 
     // 2. The owner deregisters the name.

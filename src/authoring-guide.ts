@@ -766,9 +766,19 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "agent's tool surface for you — do not list `Skill` in `allowedTools`. Declaring a skill grants " +
         'no file tools, and none are needed to reach it: an agent with `allowedTools: []` and a declared ' +
         "skill can still activate it. Only the agent's own declared skills can be activated (other " +
-        "skills are hidden from it), and a skill's inline shell command (the `!` prefix form) is not executed. In " +
-        "`run_agent_log`, `harness.skillsExposed` lists the skills the model could activate; " +
-        '`harness.materialized` only records which files were copied into the workspace.\n\n' +
+        "skills are hidden from it), and a skill's inline shell command (the `!` prefix form) is not executed. " +
+        "A declared skill's files are PRIVATE to the dispatch that declared it: they materialize into a " +
+        "directory outside the run workspace for the lifetime of that one dispatch only, never into " +
+        '`.claude/skills/` or anywhere else inside the workspace — another agent in the same run ' +
+        '(parallel or later, sharing that workspace) cannot read them with Read/Bash/Glob, they are ' +
+        "never visible to `workspace_pull`/`workspace_list`, and they are gone once the dispatch ends. " +
+        "If a skill's own instructions reference a supporting file by relative path, resolve it against " +
+        "the base directory the Skill tool itself reports when activating it (or, under `gateway:\"pi\"`, " +
+        'the path in the skill listing pi\'s own prompt shows) — never a hand-written `.claude/skills/...` ' +
+        "path, which will not exist. In `run_agent_log`, `harness.skillsExposed` lists the skills the " +
+        "model could activate (by the plain name you declared); `harness.materialized` records which " +
+        'ones were actually found and materialized for this dispatch (also by plain name) — neither ' +
+        'field, and nothing else in this run, exposes WHERE a materialized skill lives on disk.\n\n' +
         // Issue #106: MCP tools were missing from the first turn; authors could not see it.
         '**MCP servers.** `mcp: [name, ...]` names MCP servers pushed with `workspace_push` (`kind: ' +
         "'mcp'`). Every tool of a declared server is on that agent's tool surface from its FIRST turn, " +
@@ -1069,6 +1079,16 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         // so cost/budget under-counted real provider spend and a budget could be exceeded without
         // ever tripping. Two things an author needs from this, beyond what the resume-replay
         // paragraph above already says (same root cause, two different surfaces).
+        // v0374 integration review L-3: `markUsage`'s live-streamed per-attempt figure (issue #141's
+        // own `_liveAttemptUsage` side channel) is never stamped onto a running agent's own record —
+        // only a FULLY SETTLED attempt's committed usage is. Document this before an author assumes
+        // polling run_status mid-call will show a live-updating token count.
+        'A `running` agent\'s `tokens`/`costUSD` on `run_status` show only COMMITTED usage — every ' +
+        'already-settled attempt so far (e.g. an earlier schema re-ask that failed validation and is ' +
+        'retrying) — never the CURRENTLY in-flight attempt\'s own live total; for a plain single-' +
+        'attempt call that means no `tokens` field at all until the agent itself goes terminal. ' +
+        'Polling `run_status` mid-call will not show a live-updating count; read run_agent_log for the ' +
+        'transcript as it streams instead.\n\n' +
         '`run_status.agents[].tokens`/`costUSD` are populated on a FAILED agent too, not only a ' +
         'done one, whenever the gateway reported usage before the call ended; `agents[].partial: ' +
         'true` marks that figure as a LOWER BOUND — the deduped sum of what streamed in before the ' +
@@ -1210,7 +1230,22 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '(default 30). Separately, while the engine\'s disk is below its free-space floor every ' +
         'upload and every new run (run_start, run_resume, schedule/webhook firings, nested ' +
         '`workflow()`) is refused `DISK_LOW {freeBytes, floorBytes}` — transient (HTTP 503), retry ' +
-        'later; runs already in flight continue.',
+        'later; runs already in flight continue.\n\n' +
+        // Issue #144 / v0374 review L-1: a seeded `.claude/skills/**` was never activatable (the
+        // engine's own `Options.skills`/`plugins` wiring is an explicit list it builds itself, never
+        // scanned off the workspace), but before this engine also removed it entirely at the first
+        // dispatch (the same leftover-config sweep that already removed `.claude/settings.json`/
+        // `.claude/hooks`/`.mcp.json`), it just sat there unreachable; a cold author seeding one had
+        // no way to learn why it silently did nothing, and now also why it disappears from
+        // `workspace_pull` after the run\'s first agent() call.
+        '**A seeded `.claude/skills/**` is removed, not merely inert.** If your `seed`/`seedManifest` ' +
+        'includes files under `.claude/skills/`, the engine strips them from the run workspace before ' +
+        'the first `agent()` dispatch — the same sweep that already removes a planted `.claude/' +
+        'settings.json`, `.claude/hooks/`, or `.mcp.json` (leftover engine-owned config paths, never ' +
+        'something a seed is meant to control). They will not appear in `workspace_pull` after that ' +
+        'point, and were never activatable even before the sweep existed. Provision a skill with ' +
+        "`workspace_push({kind:'skill', workflow, name, files})` instead — see \"Provisioning skills " +
+        'and MCP servers\" below.',
     ),
   );
 

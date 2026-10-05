@@ -15,7 +15,15 @@ export type Verdict =
 
 // `.claude/settings.json`, `.claude/settings.local.json`, anything under `.claude/hooks/` — the
 // entries `settingSources:['project']` would EXECUTE. A plain `.claude/skills/**` or the user's own
-// CLAUDE.md is NOT stripped (copied verbatim from the former workspace-seed.ts STRIP_RE).
+// CLAUDE.md is NOT stripped AT SEED TIME (copied verbatim from the former workspace-seed.ts
+// STRIP_RE — this module only decides what a SEED write may land as, never what survives past it).
+// Issue #144 / v0374 review L-1: a seeded `.claude/skills/**` IS removed later, at the FIRST
+// dispatch — `PROJECT_CONFIG_PATHS` (bash-confinement.ts) now includes `.claude/skills`, swept from
+// the run workspace by `sweepPlantedConfig` before every agent() call, because the engine itself no
+// longer materializes a declared skill into the workspace at all (it goes to a private per-dispatch
+// directory instead — see that constant's own doc). A user who seeds their own `.claude/skills/`
+// will see it vanish from `workspace_pull` after the first dispatch; push skills via
+// `workspace_push({kind:'skill'})` instead (documented in the authoring guide and DEPLOY.md).
 const STRIP_RE = /(^|\/)\.claude\/(settings[^/]*\.json|hooks\/.*)$/;
 
 // Issue #91: exported so every other caller-supplied-NAME check (workflow_register's, so far —

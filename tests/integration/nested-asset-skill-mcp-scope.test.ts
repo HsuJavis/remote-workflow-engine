@@ -33,6 +33,7 @@ import { composeConfig } from '../../src/main.js';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
 import { FakeMcpProbe } from '../../src/mcp-probe.js';
 import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
+import { RWE_SKILLS_PLUGIN_NAME } from '../../src/gateway/claude-agent-sdk-client.js';
 
 function makeFakeProxyManager(): LiteLLMProxyManager {
   const fakeSpawn = vi.fn(() => (Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn() })) as unknown as ChildProcess);
@@ -171,9 +172,9 @@ describe('a nested workflow() child agent gets ITS OWN declared skills/mcp, neve
 
     // pre-fix: both calls read `entry.declaredAssets['w']`/`entry.name` off the PARENT's own
     // admission snapshot, so childCall would be byte-identical to parentCall (skill 'a', no mcp).
-    expect(parentCall.options?.skills).toEqual(['a']);
+    expect(parentCall.options?.skills).toEqual([`${RWE_SKILLS_PLUGIN_NAME}:a`]);
     expect(parentCall.options?.mcpServers ?? {}).toEqual({});
-    expect(childCall.options?.skills).toEqual(['b']); // never 'a'
+    expect(childCall.options?.skills).toEqual([`${RWE_SKILLS_PLUGIN_NAME}:b`]); // never 'a'
     expect(childCall.options?.mcpServers?.['child-mcp']).toBeDefined();
 
     // run_agent_log's own harness.materialized — the durable record `run_agent_log` exposes —
@@ -208,7 +209,7 @@ describe('a nested workflow() child agent gets ITS OWN declared skills/mcp, neve
     const lastCall = calls[calls.length - 1]![0];
     // pre-fix: `entry.declaredAssets['w']` is undefined on a parent with no 'w' label at all, so
     // `assets` was never built and nothing materialized for the nested call either.
-    expect(lastCall.options?.skills).toEqual(['b']);
+    expect(lastCall.options?.skills).toEqual([`${RWE_SKILLS_PLUGIN_NAME}:b`]);
     expect(lastCall.options?.mcpServers?.['child-mcp']).toBeDefined();
   }, 30000);
 });

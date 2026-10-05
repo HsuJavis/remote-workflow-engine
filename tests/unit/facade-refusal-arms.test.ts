@@ -245,10 +245,14 @@ describe('WorkflowCatalog non-default arms (UT-163)', () => {
   });
 });
 
+// Issue #144: the second `materializeAssets` param is a PRIVATE per-dispatch directory, never the
+// run workspace — `/ws` below is just this suite's name for it (kept short; it is no longer a
+// workspace path semantically, only a stand-in string the fake `fs` facade is checked against).
 describe('materializeAssets scope precedence (UT-163)', () => {
   const fakeFs = (present: Set<string>, copied: string[][]) => ({
     exists: (p: string) => present.has(p),
     copyDir: (from: string, to: string) => { copied.push([from, to]); },
+    writeFile: () => {},
   });
 
   it('falls back to the GLOBAL skill root when the workflow root has no such skill', async () => {
@@ -260,7 +264,7 @@ describe('materializeAssets scope precedence (UT-163)', () => {
       fakeFs(new Set([join('/gl', 'skill', 'shared')]), copied) as never,
     );
     expect(res.skills).toEqual(['shared']);
-    expect(copied).toEqual([[join('/gl', 'skill', 'shared'), join('/ws', '.claude', 'skills', 'shared')]]);
+    expect(copied).toEqual([[join('/gl', 'skill', 'shared'), join('/ws', 'skills', 'shared')]]);
   });
 
   it('workflow scope WINS the same name, and a name in neither root lands in missing', async () => {

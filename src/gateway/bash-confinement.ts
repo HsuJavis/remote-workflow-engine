@@ -43,6 +43,13 @@ export const MASK_PROVIDER_ENV = false;
  *    global server's resolved config — including a `${secret:NAME}` handle's real value — somewhere
  *    `workspace_pull` can read it back out. Swept like every other entry here, not left for an
  *    engine rewrite that no longer happens.
+ *  - `.claude/skills`: **issue #144** — the SAME shape as `.mcp.json` above, moved here for the SAME
+ *    reason: the engine no longer materializes a declared skill into the workspace at all (it goes to
+ *    a private per-dispatch directory outside it, loaded via the SDK's `plugins` option —
+ *    `claude-agent-sdk-client.ts`'s own doc comment on `materializeAssets` has the full story), so a
+ *    `.claude/skills/<name>/` appearing HERE can only be an earlier (pre-#144) engine's leftover or
+ *    something an agent/Bash planted — never the engine's own current output. Swept unconditionally,
+ *    like `.mcp.json` — no longer left alone for a per-dispatch rewrite that no longer happens.
  *  NOT here, and why: `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, `.claude/rules/`,
  *  `.claude/output-styles/` are prompt text — they change what the next agent reads, never what it
  *  may do (their `@import` of a file OUTSIDE the project needs a per-project approval the headless
@@ -50,6 +57,7 @@ export const MASK_PROVIDER_ENV = false;
 export const PROJECT_CONFIG_PATHS = [
   '.claude/settings.json', '.claude/settings.local.json', '.claude/hooks', '.claude/agents', '.claude/commands',
   '.claude/workflows', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/launch.json', '.mcp.json',
+  '.claude/skills',
 ] as const;
 
 // Issue #131: the Claude CLI's bundled sandbox is the SAME code as @anthropic-ai/sandbox-runtime
@@ -126,13 +134,15 @@ function homeConvenienceWritePaths(homeDir: string | undefined): string[] {
 // (`DefaultResourceLoader` with `noContextFiles:false`, or any built-in extension that reads project
 // files), this decision needs revisiting alongside that change, not before.
 
-/** Project configuration the ENGINE writes (skills materialized per dispatch). An agent may not
- *  write it; the pre-dispatch sweep leaves it alone, because it is the engine's own output. A
- *  planted skill is not exposed (`Options.skills` is an explicit list) and a tampered declared one
- *  is re-copied. **issue #128**: `.mcp.json` used to be here too (rewritten per dispatch) — it
- *  moved to `PROJECT_CONFIG_PATHS` above once the engine stopped writing it at all, so a planted one
- *  is actually removed instead of relying on a rewrite that no longer happens. */
-export const ENGINE_OWNED_CONFIG_PATHS = ['.claude/skills'] as const;
+// Issue #144: this list used to hold `.claude/skills` — "project configuration the ENGINE writes
+// (skills materialized per dispatch)", left alone by the sweep because it was the engine's own
+// output, rewritten fresh on every dispatch. The engine no longer writes a workspace `.claude/skills`
+// at all (skills materialize into a private per-dispatch directory outside the workspace — see
+// `materializeAssets`'s own doc comment, claude-agent-sdk-client.ts), so there is no longer anything
+// for this list to protect from the sweep — exactly the `.mcp.json`/issue #128 precedent repeated: a
+// list that used to mean "the engine's own output, leave it" is now empty because the engine stopped
+// writing there, and the entry moved into `PROJECT_CONFIG_PATHS` above (swept unconditionally) rather
+// than this type ever having an empty array with nothing left to hold.
 
 /** Issue #95: workspace-relative paths the Claude CLI's OWN sandbox builder (2.1.199 — `claude
  *  --version`) unconditionally shields from Bash writes, on top of anything THIS module passes via
@@ -206,7 +216,9 @@ export function buildBashConfinement(input: ConfinementInput): SandboxSettings {
   const { root, grantedHostPaths, protectedFiles, workRoot, homeDir, allowReadPaths, bashMode, sharedCliScratch } = input;
   const grants = grantedHostPaths.filter(isNonEmptyString);
   const allowPaths = isNonEmptyString(root) ? [root, ...grants] : [];
-  const settingsFiles = isNonEmptyString(root) ? [...PROJECT_CONFIG_PATHS, ...ENGINE_OWNED_CONFIG_PATHS].map((rel) => join(root, rel)) : [];
+  // Issue #144: `ENGINE_OWNED_CONFIG_PATHS` is gone (its one entry, `.claude/skills`, merged into
+  // `PROJECT_CONFIG_PATHS` above) — this no longer unions two lists, just the one.
+  const settingsFiles = isNonEmptyString(root) ? PROJECT_CONFIG_PATHS.map((rel) => join(root, rel)) : [];
   // Issue #78(c) readonly: `allowWrite: []` alone is NOT read-only. The CLI (2.1.199, read from its
   // settings→sandbox builder) always seeds the write list with "." (the session cwd = root) and its
   // own per-uid scratch dir before merging `allowWrite`, and sandbox-runtime adds a fixed list

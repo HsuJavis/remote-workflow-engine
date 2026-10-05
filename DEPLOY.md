@@ -558,8 +558,8 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `runConcurrency` | **單一 run 內同時在飛的 `agent()` 上限** —— 一個 `parallel()` 實際跑多寬。達上限的呼叫在 `acquireSlot()` **排隊**（不拒絕、不丟棄），所以更寬的 fan-out 只是比較慢。另有一層跨所有 run 的主機層上限（agent 號誌），由 `agentSlots` 設定 | `number` / `24` | 否 | v25 |
 | `rwe.config.json` → `agentSlots` | **跨所有 run 的主機層 agent 號誌上限** —— 同一時間允許幾個 agent 子行程存在；達上限的呼叫排隊等槽位。可在 `/api/status` 的 `agentSemaphore.total` 直接看到生效值（設 `"agentSlots": 7` 就會讀到 7）。與 `runConcurrency`（單一 run 內）是兩層不同的上限 | `number` / `32` | 否 | v26 |
 | `rwe.config.json` → `maxConcurrentRuns` | 頂層 run 並行上限（run-admission counter）；達上限時 `start()` 在任何持久化動作之前以 `RUN_ADMISSION_LIMIT` 拒絕；巢狀 `workflow()` 不佔用槽位 | `number` / `64` | 否 | v8 |
-| `rwe.config.json` → `modelProbe` | 週期性模型探測（issue #73）：對每個已註冊 workflow 版本宣告過的相異 provider/model 打一通純文字＋一通只給 `Read`（issue #93 item 4 之前是 `Bash`+`cat`，現在是叫模型用 `Read` 工具讀一個 nonce 檔）的呼叫，結果供 `models_list` 的 `toolUseVerified`/`proseVerified`/`stabilitySource`，並在 `run_start` 對「帶工具卻落在探測沒用工具的模型」的 agent 發非致命警告。`{enabled, intervalMs, timeoutMs}`：`intervalMs` 為整數且 ≥ 60000、`timeoutMs` 為 1..600000 的整數、不認得的鍵——任一不符即開機拒絕。成本約每模型每週兩通極小呼叫；不在開機時探測，第一次檢查在 min(intervalMs, 1h) 後。`enabled:false` 只關週期探測，admin 的 `models_probe` 仍可用 | `object` / `{enabled:true, intervalMs:604800000, timeoutMs:60000}` | 否 | #73 |
-| `modelProbe` 的探測結果現在按 harness 分（issue #138） | 每筆探測結果記住是哪個 harness/transport（`claude-agent-sdk`／`direct-fetch`／`pi`）量到的；切換 `gateway`（例如 `sdk`→`pi`）後，舊 harness 量到的結果對目前這個 harness 一律視為「還沒探測過」——`toolUseVerified`/`proseVerified` 讀回 `null`、`stabilitySource` 落回 `rule`、`run_start` 不再用舊 harness 的結果發 `MODEL_TOOL_USE_UNVERIFIED`。週期探測器會在下一個整點 tick 自動重新探測（不必等 `intervalMs` 那麼久）；要立刻刷新可手動呼叫一次不帶參數的 admin `models_probe()`（探測所有已宣告的相異 model）。**升級**：`store/index.db` 的 `model_probes` 表會自動補上 `harness` 欄位，舊資料列保留、標成 `harness:'sdk'`（這張表存的時間點必定早於 pi harness 存在，所以「不是 pi」是確定的事實）。**降版（rollback）**：這張表只是週期探測器會自己重建的快取，從來不是必要資料——降到本次變更之前的版本前，先 `DROP TABLE model_probes`（或直接刪 `store/index.db` 重建也可以，但會連 run 歷史一起清掉，優先選只刪這張表），否則舊版引擎的寫入會因欄位數不符而失敗 | — | — | #138 |
+| `rwe.config.json` → `modelProbe` | 週期性模型探測（issue #73）：對每個已註冊 workflow 版本宣告過的相異 provider/model 打一通純文字＋一通只給 `Read`（issue #93 item 4 之前是 `Bash`+`cat`，現在是叫模型用 `Read` 工具讀一個 nonce 檔）的呼叫，結果供 `models_list` 的 `toolUseVerified`/`proseVerified`/`stabilitySource`，並在 `run_start` 對「帶工具卻落在探測沒用工具的模型」的 agent 發非致命警告。`{enabled, intervalMs, timeoutMs}`：`intervalMs` 為整數且 ≥ 60000、`timeoutMs` 為 1..600000 的整數、不認得的鍵——任一不符即開機拒絕。成本約每模型每週兩通極小呼叫；v0.37.4 起會在開機時探測一次（伺服器開始接受連線後等待一段緩衝時間，預設 2 分鐘，`DEFAULT_BOOT_PROBE_GRACE_MS`），之後才進入 min(intervalMs, 1h) 的週期檢查；為了讓 `rwe.service` 這種每 2 秒重啟一次、沒有 systemd StartLimit 的崩潰迴圈不會每次重啟都重新付費探測同一個 target，探測「已開始但尚未完成」會留一個持久化標記（`model_probe_started` 表），在冷卻視窗內（預設 5 分鐘，`PROBE_INFLIGHT_COOLDOWN_MS`）同一個 target 不會被重新派發。`enabled:false` 只關週期探測（以及開機那一次），admin 的 `models_probe` 仍可用 | `object` / `{enabled:true, intervalMs:604800000, timeoutMs:60000}` | 否 | #73 |
+| `modelProbe` 的探測結果現在按 harness 分（issue #138） | 每筆探測結果記住是哪個 harness/transport（`claude-agent-sdk`／`direct-fetch`／`pi`）量到的；切換 `gateway`（例如 `sdk`→`pi`）後，舊 harness 量到的結果對目前這個 harness 一律視為「還沒探測過」——`toolUseVerified`/`proseVerified` 讀回 `null`、`stabilitySource` 落回 `rule`、`run_start` 不再用舊 harness 的結果發 `MODEL_TOOL_USE_UNVERIFIED`。週期探測器會在引擎開始接受連線約 2 分鐘後的開機探測自動重新探測（之後每小時檢查一次，不必等 `intervalMs` 那麼久）；要立刻刷新可手動呼叫一次不帶參數的 admin `models_probe()`（探測所有已宣告的相異 model）。**升級**：`store/index.db` 的 `model_probes` 表會自動補上 `harness` 欄位，舊資料列保留、標成 `harness:'sdk'`（這張表存的時間點必定早於 pi harness 存在，所以「不是 pi」是確定的事實）。**降版（rollback）**：這張表只是週期探測器會自己重建的快取，從來不是必要資料——降到本次變更之前的版本前，先 `DROP TABLE model_probes`（或直接刪 `store/index.db` 重建也可以，但會連 run 歷史一起清掉，優先選只刪這張表），否則舊版引擎的寫入會因欄位數不符而失敗 | — | — | #138 |
 | `rwe.config.json` → `workspaceTtlMs` | Workspace GC sweep 間隔（ms）：回收閒置舊 workspace 目錄（REQ-026），**同時決定 auth-table GC（`gcExpired()`）間隔**；`0`/省略 = workspace reclaim 關閉，auth 啟用但未設此鍵時 sweep 每小時跑一次 | `number` / `0`（停用） | 否 | v16 |
 | `rwe.config.json` → `continuationDbPath` | on-completion chaining 續接的 SQLite 檔路徑；引擎會開這個檔，但 40 個工具裡沒有任何一個對應到它（沒有 `chain_*` 工具），設了不影響行為 | `string` / `$workRoot/continuations.db` | 否 | v24 |
 | `rwe.config.json` → `webhookDbPath` | webhook 註冊表（`webhooks`+`webhook_deliveries`）SQLite 檔路徑；**secret 明文儲存**於此檔（HMAC 驗簽需要），存取權限即機密邊界；`webhook_list` 只回 sha256 前綴指紋 | `string` / `$workRoot/webhooks.db` | 否 | v8 |
@@ -719,10 +719,16 @@ children`（Linux-only，跟本檔其他假設一致）遞迴列出 pi 子行程
 `workspace_push({kind:"mcp"})` 帶 `stdio` transport 的 admin-only 限制不變（見下方角色表）。
 
 **Skills（`agent(..., {skills:[...]})`）**：已接上。`materializeAssets`（跟 `gateway:"sdk"` 同一份函式）
-把宣告的技能複製進 `<ws>/.claude/skills/<name>/`，路徑清單以 pi 的 `additionalSkillPaths` 傳給一個
+把宣告的技能複製進**該次派工私有、run workspace 之外**的目錄（issue #144 修復：不再是
+`<ws>/.claude/skills/<name>/`——那是共用 workspace，同一 run 裡沒宣告該技能的 agent 光靠
+Read/Bash/Glob 就讀得到，且派工結束後也不會清掉；現在的私有目錄隨該次派工建立、派工結束
+〔成功/失敗/abort/timeout 皆同〕立刻刪除），路徑清單以 pi 的 `additionalSkillPaths` 傳給一個
 `DefaultResourceLoader`（`noContextFiles`/`noExtensions`/`noSkills`/`noPromptTemplates`/`noThemes`
 全部 `true`——「不discovery、全權交給引擎」的精神不變，`extensionFactories`/`additionalSkillPaths`
-是文件明載的兩個例外，不受那些旗標影響）。**skill-only agent 的決定**：讀過 pi 自己的
+是文件明載的兩個例外，不受那些旗標影響）。模型要讀技能本身（SKILL.md）或其附帶檔案時會呼叫
+`read`/`bash`，走的是 pi 檔案 jail 的 `assertJailed`——issue #144 另外加了 `skillReadRoots`
+（唯讀，只開放這次派工自己的私有目錄，從不給 `write`/`edit` 用）才能讀到 workspace 之外的這份
+拷貝，否則一律 `PATH_ESCAPES_WORKSPACE`。**skill-only agent 的決定**：讀過 pi 自己的
 `system-prompt.js`原始碼確認，系統提示詞裡的技能清單只在工具集含 `read` **或** `bash` 其中之一時
 才會出現（`skillFileReadTool = ["read","bash"].find(tool => selectedTools.includes(tool))`——按
 「名字」比對這個會話實際選用的工具清單，不是跟 pi 內建工具物件做 identity 比對，所以我們自訂、同名的
@@ -1427,14 +1433,27 @@ port 直接暴露在公開網路上。**
 > ⚠ **「寫入後會被執行」這個風險是真的成立的**：
 > `gateway:"sdk"` 路徑上，一次 `agent()` 呼叫如果同時有 run workspace 和資產資訊，就會用
 > `materializeAssets()` 把**該 agent label 在契約裡宣告的**（`meta.params.agents.<label>.skills`／
-> `.mcp`）skill 展開進該次 run 的 workspace（`.claude/skills/<name>/`，以
-> `settingSources:['project']` 載入），MCP 設定只經由 `options.mcpServers`（`strictMcpConfig`）交給 CLI——
+> `.mcp`）skill 展開進**該次派工私有、run workspace 之外**的目錄（issue #144：不再是
+> `.claude/skills/<name>/`，改以 SDK 的 `Options.plugins`〔local plugin〕載入，派工結束即刪除），
+> MCP 設定只經由 `options.mcpServers`（`strictMcpConfig`）交給 CLI——
 > 引擎不會把解析後的 MCP 設定（含已代換的 `${secret:}` 值）寫進 workspace；workspace 裡任何 `.mcp.json`
-> 都會在派發前被清除（issue #128）。
+> 都會在派發前被清除（issue #128），`.claude/skills` 若因舊版引擎殘留也一併清除（issue #144，同一套
+> `sweepPlantedConfig`）。
 > 換句話說：**推送的 skill/MCP config 會真的被 agent 載入並執行**——沒被宣告的資產不會被展開，
 > 但「推送」與「被宣告」都在同一個 `author` 手上。引擎自己的 `rwe-` 前綴是保留字
 > （`RESERVED_PREFIX`），防止推送的資產冒充引擎內建的技能。`gateway:"direct-fetch"` 從不帶資產，
 > 這條路徑不受影響。
+>
+> **殘留風險（issue #144 修復後仍然成立）**：Read/Glob/Grep 這幾個檔案工具的 workspace 邊界檢查
+> （`toolUsePreCheck`）與 pi 的檔案 jail（`assertJailed`）都已經個別加開一個「只准讀、該次派工自己
+> 的私有技能目錄」的例外，所以另一個 agent（無論平行跑或晚一點跑）即使有 Read/Glob/Grep 也讀不到；
+> 這對 confined 與 unconfined 兩種姿態都成立（純 app 層判斷，不靠 kernel）。Bash 則不同：confined
+> 姿態下私有目錄只掛進這次派工自己的 `allowRead`（sdk：`allowReadPaths`；pi：`sandbox.filesystem.
+> allowRead`），其餘 dispatch 連同該目錄的「上層」都在 `denyRead`，所以另一個 confined dispatch 的
+> Bash 一樣讀不到。**唯一殘留的縫是本機未設限（`confinementPosture:'unconfined'`）時**：這個姿態下
+> Bash 本來就跟引擎 process 同一份主機檔案系統權限，私有技能目錄只是「路徑隨機、不公開」帶來的隱蔽
+> 性，不是真正的存取控制——跟這份文件別處對 unconfined Bash 的既有警語（§1b2／`AUTHORING.md`
+> 「Unconfined」小節）同一個已接受的代價，不是這次修復新增的缺口。
 
 **`GET /api/system`（Dashboard 的儀表板端點，不需要認證）一次回傳最多 20 筆主機 process 列，
 `bind:"0.0.0.0"` 時任何能連到這台主機的人都看得到——每筆只有 `comm`（process 名稱）這一個欄位，

@@ -27,6 +27,12 @@ export interface CatalogSourceRow {
   ratesPerM?: FourRates | null;
   pricing?: { prompt?: unknown; completion?: unknown; input_cache_read?: unknown; input_cache_write?: unknown };
   supported_parameters?: string[];
+  /** issue #139(b): structurally the SAME shape `model-catalog.ts`'s `ModelEntry.capabilities` already
+   *  carries (this type is a subset a production row — a real `ModelEntry[]` — always satisfies, so
+   *  no production call site changes); only the one sub-field `capsFromRow` actually reads is named
+   *  here. Absent (every hand-built test row from before this issue) -> `capsFromRow` leaves
+   *  `reasoningMandatory`/`reasoningEfforts` unset, byte-identical to its pre-#139(b) behavior. */
+  capabilities?: { reasoning?: { mandatory?: boolean | null; efforts?: readonly string[] | null } };
 }
 
 export interface BookSnapshot {
@@ -53,15 +59,26 @@ const UNKNOWN_CAPS: Caps = { reasoning: 'unknown', tools: 'unknown', source: 'un
  *  (`supported_parameters` present, however that later maps its named dials); a bare anthropic row
  *  (no `supported_parameters` — the static table never sets it) reports 'static'; anything else with
  *  no declaration at all is 'unknown', never guessed. */
+/** issue #139(b): `reasoningMandatory`/`reasoningEfforts` are read from `row.capabilities.reasoning`
+ *  independently of which branch below fires — a row can declare `supported_parameters` (so
+ *  `reasoning`/`tools` come from it) while ALSO carrying a catalog-sourced `capabilities.reasoning`
+ *  block (OpenRouter's own `reasoning.mandatory`); the two are orthogonal signals, not alternatives. */
 function capsFromRow(row: CatalogSourceRow): Caps {
+  const mandatory = row.capabilities?.reasoning?.mandatory;
+  const efforts = row.capabilities?.reasoning?.efforts;
+  const mandatoryFields = {
+    ...(mandatory === true ? { reasoningMandatory: true as const } : {}),
+    ...(efforts && efforts.length > 0 ? { reasoningEfforts: efforts } : {}),
+  };
   if (row.supported_parameters) {
     return {
       reasoning: row.supported_parameters.includes('reasoning'),
       tools: row.supported_parameters.includes('tools'),
       source: 'upstream',
+      ...mandatoryFields,
     };
   }
-  return { reasoning: 'unknown', tools: 'unknown', source: row.provider === 'anthropic' ? 'static' : 'unknown' };
+  return { reasoning: 'unknown', tools: 'unknown', source: row.provider === 'anthropic' ? 'static' : 'unknown', ...mandatoryFields };
 }
 
 /** `ratesPerM` (even explicitly `null`) always wins over parsing raw `pricing` — a production row
