@@ -1079,6 +1079,16 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         // so cost/budget under-counted real provider spend and a budget could be exceeded without
         // ever tripping. Two things an author needs from this, beyond what the resume-replay
         // paragraph above already says (same root cause, two different surfaces).
+        // v0374 integration review L-3: `markUsage`'s live-streamed per-attempt figure (issue #141's
+        // own `_liveAttemptUsage` side channel) is never stamped onto a running agent's own record —
+        // only a FULLY SETTLED attempt's committed usage is. Document this before an author assumes
+        // polling run_status mid-call will show a live-updating token count.
+        'A `running` agent\'s `tokens`/`costUSD` on `run_status` show only COMMITTED usage — every ' +
+        'already-settled attempt so far (e.g. an earlier schema re-ask that failed validation and is ' +
+        'retrying) — never the CURRENTLY in-flight attempt\'s own live total; for a plain single-' +
+        'attempt call that means no `tokens` field at all until the agent itself goes terminal. ' +
+        'Polling `run_status` mid-call will not show a live-updating count; read run_agent_log for the ' +
+        'transcript as it streams instead.\n\n' +
         '`run_status.agents[].tokens`/`costUSD` are populated on a FAILED agent too, not only a ' +
         'done one, whenever the gateway reported usage before the call ended; `agents[].partial: ' +
         'true` marks that figure as a LOWER BOUND — the deduped sum of what streamed in before the ' +
