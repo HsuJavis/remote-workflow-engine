@@ -576,6 +576,16 @@ export class AgentTranscriptSink {
       // loop with a genuine gateway failure; that prior total must not be lost just because the
       // attempt that happened to end the loop reported nothing of its own.
       const hasPrior = prev?.tokens !== undefined;
+      // issue #141 repair (v0374 pre-push regression, failed-call-unmapped-meta /
+      // unmapped-column-folds): `unmapped` is NOT usage — a terminally-failed call can carry
+      // `result.unmapped` subtype names with NO `tokens` at all (M-2/ADR-046's whole point: the
+      // engine still counts what the provider said that it could not map, even when nothing was
+      // spent). Gating it behind the SAME `failUsage` object that only exists when there is a
+      // tokens figure (this attempt's or a prior re-ask attempt's) silently dropped it on exactly
+      // that no-tokens/no-prior case — computed unconditionally here instead, merged with any
+      // earlier re-ask attempt's own `unmapped` the same way `tokens`/`costUSD` are, never gated on
+      // whether `failUsage` itself ends up defined.
+      const totalUnmappedFail = [...priorUnmapped, ...(result.unmapped ?? [])];
       const failUsage = result.tokens === undefined && !hasPrior
         ? undefined
         : (() => {
@@ -596,12 +606,11 @@ export class AgentTranscriptSink {
             const tokens = addTokenVectors(priorTokens, thisTokens ?? ZERO_TOKENS);
             const costUSD = priorCostUSD + thisCostUSD;
             const unpriced = priorUnpriced || thisUnpriced;
-            const unmapped = [...priorUnmapped, ...(result.unmapped ?? [])];
             // issue #141: the merge of two EXACT totals is exact — never synthesize `partial` just
             // because a re-ask happened; only THIS attempt's own `result.partial` (issue #127's
             // lower-bound-on-failure figure) or an earlier attempt's already-partial total propagate.
             const partial = priorPartial || result.partial === true ? (true as const) : undefined;
-            return { tokens, costUSD, unpriced, unmapped, partial };
+            return { tokens, costUSD, unpriced, partial };
           })();
       this._records.set(req.agentId, {
         agentId: req.agentId, label: req.label, phase, phaseIndex, frame, startedAt, lastActivityAt, endedAt: ts,
@@ -628,9 +637,11 @@ export class AgentTranscriptSink {
         // `unmapped` accumulation and so discarded the names this repair had just taught the event
         // below to carry. Both sites are closed; IT-156 deep-equals the two folds over a run
         // containing exactly this branch.
-        // issue #141: `failUsage.unmapped` is the MERGED total (prior re-ask attempts + this one),
-        // same convention as `tokens`/`costUSD` above — never `result.unmapped` raw.
-        ...(failUsage !== undefined && failUsage.unmapped.length > 0 ? { unmapped: failUsage.unmapped } : {}),
+        // issue #141: `totalUnmappedFail` is the MERGED total (prior re-ask attempts + this one),
+        // same convention as `tokens`/`costUSD` above — never `result.unmapped` raw. Computed
+        // UNCONDITIONALLY (never gated on `failUsage`, which can be `undefined` on a no-tokens/
+        // no-prior call that still carries `unmapped` — see that variable's own doc).
+        ...(totalUnmappedFail.length > 0 ? { unmapped: totalUnmappedFail } : {}),
       });
       // Forward any partial transcript + the CLI error detail captured before a terminal failure,
       // so a 0-token `terminal` is diagnosable (the error subtype/text) instead of opaque.
@@ -652,8 +663,9 @@ export class AgentTranscriptSink {
           // was built from — not `result.provider` raw (see that binding's own comment).
           reason: result.reason, provider, detail: result.detail,
           ...(result.transport !== undefined ? { transport: result.transport } : {}),
-          // issue #141: the merged total, same as the record above — not `result.unmapped` raw.
-          ...(failUsage !== undefined && failUsage.unmapped.length > 0 ? { unmapped: failUsage.unmapped } : {}),
+          // issue #141: the merged total, same as the record above — not `result.unmapped` raw, and
+          // never gated on `failUsage` (see `totalUnmappedFail`'s own doc).
+          ...(totalUnmappedFail.length > 0 ? { unmapped: totalUnmappedFail } : {}),
           ...(failUsage !== undefined ? { tokens: failUsage.tokens, costUSD: failUsage.costUSD, unpriced: failUsage.unpriced, ...(failUsage.partial === true ? { partial: true as const } : {}) } : {}),
         },
       });
